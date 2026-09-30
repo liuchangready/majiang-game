@@ -79,12 +79,6 @@ class ApplicationCoordinator(
     val humanPlayerIndex: Int
         get() = controllerRegistry.humanPlayerIndex
 
-    val pendingAiResponse: GameAction?
-        get() {
-            val window = activeRound?.responseWindow ?: return null
-            return window.responses.values.firstOrNull { it !is GameAction.Pass }?.deepCopy()
-        }
-
     // 兼容层镜像目标（仅 GameStateMachine 注册，新路径默认为 null）
     private var legacyMirror: GameState? = null
 
@@ -166,27 +160,6 @@ class ApplicationCoordinator(
         if (rwLock.writeLock().tryLock()) {
             try {
                 syncFromLegacyMirror()
-            } finally {
-                rwLock.writeLock().unlock()
-            }
-        }
-    }
-
-    /**
-     * 针对旧 GameStateMachine 适配路径的显式状态导入（安全 tryLock，不阻塞）
-     */
-    internal fun importLegacyStateIfUnstarted(legacyState: GameState) {
-        if (isProcessingAction.get()) return
-        if (currentExecutingThread.get() == Thread.currentThread()) return
-        if (rwLock.writeLock().tryLock()) {
-            try {
-                val round = activeRound
-                if (round != null && round.version == 0L) {
-                    legacyState.deepCopy().copyInto(round.state)
-                    round.startingScores = round.state.scores.toList()
-                    round.startingRiichiSticks = round.state.riichiSticks
-                    session.syncInitialState(round.state)
-                }
             } finally {
                 rwLock.writeLock().unlock()
             }

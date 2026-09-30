@@ -2,13 +2,11 @@ package com.majiang.state
 
 import com.majiang.ai.AIPlayer
 import com.majiang.application.ApplicationCoordinator
-import com.majiang.application.deepCopy
-import com.majiang.cheat.CheatActionExecutor
-import com.majiang.cheat.SuspicionSystem
 import com.majiang.event.GameEventBus
 import com.majiang.match.MatchProgression
-import com.majiang.rules.*
-import com.majiang.settlement.*
+import com.majiang.rules.RiichiRuleEngine
+import com.majiang.rules.WinningScoreEvaluator
+import com.majiang.settlement.SettlementService
 import kotlin.random.Random
 
 /**
@@ -27,10 +25,6 @@ class GameStateMachine(
     val state: GameState,
     val eventBus: GameEventBus,
     val ruleEngine: RiichiRuleEngine = RiichiRuleEngine.INSTANCE,
-    val yakuEvaluator: YakuEvaluator = YakuEvaluator(),
-    val fuCalculator: FuCalculator = FuCalculator.INSTANCE,
-    val scoreCalculator: ScoreCalculator = ScoreCalculator.INSTANCE,
-    val decomposer: HandDecomposer = HandDecomposer.INSTANCE,
     val winningScoreEvaluator: WinningScoreEvaluator = WinningScoreEvaluator.INSTANCE,
     val settlementService: SettlementService = SettlementService.INSTANCE,
     val matchProgression: MatchProgression = MatchProgression(),
@@ -62,34 +56,9 @@ class GameStateMachine(
     val humanPlayerIndex: Int
         get() = coordinator.humanPlayerIndex
 
-    private var _explicitPendingAiResponse: GameAction? = null
-
-    /** 人类可响应时暂存的最高优先级待决动作（保留兼容字段） */
-    var pendingAiResponse: GameAction?
-        get() {
-            val fromCoordinator = coordinator.pendingAiResponse
-            if (fromCoordinator != null) return fromCoordinator
-            return _explicitPendingAiResponse?.deepCopy()
-        }
-        internal set(value) {
-            _explicitPendingAiResponse = value?.deepCopy()
-        }
-
     /** 当前活跃的响应窗口（若处于 RESPONSE_WINDOW 或 CHANKAN_WINDOW） */
     val currentResponseWindow: ResponseWindow?
         get() = coordinator.activeRound?.responseWindow
-
-    /** 尾局庄家是否满足并可选择终了 (Agari-Yame) */
-    val canDealerDeclareAgariYame: Boolean
-        get() = coordinator.session.canDealerDeclareAgariYame
-
-    /** 千术系统（可选注入） */
-    var suspicionSystem: SuspicionSystem? = null
-    var cheatExecutor: CheatActionExecutor? = null
-
-    internal fun syncLegacyFacade() {
-        coordinator.syncToLegacyMirror()
-    }
 
     // ========================================
     // 控制者查询与配置

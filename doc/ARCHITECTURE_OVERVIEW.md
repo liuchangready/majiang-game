@@ -381,7 +381,7 @@ interface PlayerEndpoint : AutoCloseable {
 - `TileDrawBuffer` 指令分桶，`flush()` 固定顺序：**一次 Filled 形状 pass → 单次 SpriteBatch 会话（贴图+文字+浮层贴图）→ 浮层 Filled（宝牌辉光）→ 一次 Line pass**，每 pass 重新启用 GL_BLEND（规避 libGDX 坑）。消除逐牌 begin/end 切换，像素结果不变。
 - 纯布局：`TileArranger`（万→索→筒→风→三元排序 + 摸牌分离）、`MeldDisplayLayout`（副露右对齐 36×52、暗杠背面、加杠叠加）。
 - 特效：`DiscardAnimation`（REACH→GRAB→CARRY→PLACE→RETRACT 五段 0.82s 二次贝塞尔弧线弃牌动画，带牌河一致性调和）、`DoraSparkle`（1.2s 正弦呼吸辉光+四层环+十字星，红五常亮）、`GhostHandTexture`（程序化 Pixmap 白手套）。
-- **⚠ 已脚手架未接线**：`AnimationQueue`/`GameEventRenderer`（事件→动画工厂映射）已实现但 `GameScreen` 未使用——GameScreen 用自研的 diff 驱动单槽弃牌动画队列（`checkDiscardsDiff` 对比 `PlayerView.discards`）。见第十六节技术债。
+- 弃牌动画由 GameScreen 的 diff 驱动单槽队列承担（`checkDiscardsDiff` 对比 `PlayerView.discards`）。早期脚手架的 `AnimationQueue`/`GameEventRenderer`（事件→动画工厂映射）因零接线已于 2026-09-30 死代码清理中删除；未来引入事件驱动动画管线时按 SessionUpdate 可见事件重建（见第十六节）。
 
 ---
 
@@ -409,7 +409,7 @@ interface PlayerEndpoint : AutoCloseable {
 
 ### 13.2 已预留、未打通（如实声明）
 
-- `GameAction.UseCheatTechnique` 与 `GamePhase.CHEAT_WINDOW` 存在，但当前 `RoundRuleService` 对出千动作返回 `UNSUPPORTED_ACTION`——**新架构路径上出千尚不可玩**（旧 `GameStateMachine` 上为可选注入：`suspicionSystem/cheatExecutor` 可空字段）。
+- `GameAction.UseCheatTechnique` 与 `GamePhase.CHEAT_WINDOW` 存在，但当前 `RoundRuleService` 对出千动作返回 `UNSUPPORTED_ACTION`——**新架构路径上出千尚不可玩**（曾在旧 `GameStateMachine` 上的 `suspicionSystem/cheatExecutor` 可空注入点因零引用已删除，接线时应走 round/application 新路径）。
 - `GameScreen` 中零出千 UI（无出千按钮/怀疑度表/视线指示），仅 `MenuScreen` 的"千术秘籍"弹窗展示机制说明。
 - **[STACKING_ALGORITHM.md](../STACKING_ALGORITHM.md) 描述的 `AdaptiveWallStackingEngine`（34 维余弦重叠度衰减的开局码牌引擎）在代码库中不存在**（`com.majiang.algo` 包未创建）。当前 `StartStacking` 为普通洗牌+发牌，带 `stackingPlans` 的开局返回 `UNSUPPORTED_ACTION`。该文档目前是**设计构想**，其"牌山开局后冻结"原则已由 `TileMovement` 事实上遵守。
 
@@ -440,7 +440,7 @@ interface PlayerEndpoint : AutoCloseable {
 |---|---|---|---|
 | 1 | **出千玩法未接入新路径** | 域侧完整（执行器/怀疑度/事件），但 `RoundRuleService` 拒绝出千动作、UI 无入口 | 在 `RoundTransitionPlanner` 增加出千过渡 + GameScreen 出千 HUD（怀疑度表/视线指示/绝技轮盘），这是游戏核心卖点，优先级最高 |
 | 2 | **开局码牌引擎未实现** | STACKING_ALGORITHM.md 为纯设计文档 | 实现 `AdaptiveWallStackingEngine`（34 维画像/余弦衰减/Jitter/天胡模板），挂到 `StartStacking` 的 plans 参数上 |
-| 3 | **事件动画管线双轨** | `AnimationQueue/GameEventRenderer` 脚手架闲置，GameScreen 用自研 diff 弃牌队列 | 统一到事件驱动管线，支撑千术特效（袖中换牌/视线转向/抓包演出） |
+| 3 | **事件动画管线待建** | 旧 `AnimationQueue/GameEventRenderer` 脚手架已于死代码清理中删除；现仅 GameScreen 自研 diff 弃牌队列 | 按事件驱动重建统一动画管线，支撑千术特效（袖中换牌/视线转向/抓包演出） |
 | 4 | **GameScreen 体量** | 2880 行，热区/渲染/弹窗内联 | 继续抽纯模型（已有侧车模式可循），或引入 Scene2D 表格化布局 |
 | 5 | **联机（设计已备）** | [NETWORK_LOBBY_DESIGN.md](NETWORK_LOBBY_DESIGN.md)：Ktor 权威服 + WebSocket、`core` 拆 `core-domain`+`server`、`EventRedactor` 按座位过滤、resumeToken 重连、iOS RoboVM 预留 | 现有 `PlayerEndpoint/EndpointCapabilities/RequestRegistry 幂等/事件快照` 即为此预留的接缝；P1 起模块拆分 |
 | 6 | **版本管理** | 项目当前不在 Git 仓库中 | 建议初始化版本控制（架构重构曾靠 `build/round-session-split/` 基线快照代替） |

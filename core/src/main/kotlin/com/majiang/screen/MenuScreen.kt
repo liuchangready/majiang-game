@@ -65,10 +65,6 @@ class MenuScreen(private val game: MahjongGame) : Screen, InputAdapter() {
         )
     }
 
-    // 设置状态
-    private var soundEnabled = true
-    private var difficulty = "EXPERT" // NOVICE, EXPERT, MASTER
-
     override fun show() {
         Gdx.input.inputProcessor = this
     }
@@ -358,10 +354,8 @@ class MenuScreen(private val game: MahjongGame) : Screen, InputAdapter() {
 
             font.data.setScale(1.4f)
             font.color = Color.WHITE
-            font.draw(batch, "SOUND EFFECTS : [ ${if (soundEnabled) "ON (CLICK TO TOGGLE)" else "OFF (CLICK TO TOGGLE)"} ]", modalRect.x + 80f, modalRect.y + 370f)
-            font.draw(batch, "AI DIFFICULTY : [ $difficulty (CLICK TO SWITCH) ]", modalRect.x + 80f, modalRect.y + 310f)
-            font.draw(batch, "TILE SKIN     : [ ${game.skinManager.currentSkinId.name} (CLICK TO SWITCH) ]", modalRect.x + 80f, modalRect.y + 250f)
-            font.draw(batch, "CONTROLS      : PC Mouse Drag / Mobile Touch Gestures", modalRect.x + 80f, modalRect.y + 190f)
+            font.draw(batch, "TILE SKIN     : [ ${game.skinManager.currentSkinId.name} (CLICK TO SWITCH) ]", modalRect.x + 80f, modalRect.y + 370f)
+            font.draw(batch, "CONTROLS      : PC Mouse Drag / Mobile Touch Gestures", modalRect.x + 80f, modalRect.y + 310f)
         }
 
         // 关闭按钮文本
@@ -395,18 +389,6 @@ class MenuScreen(private val game: MahjongGame) : Screen, InputAdapter() {
             // 设置弹窗内点击切换选项
             if (activeModal == ModalState.SETTINGS) {
                 if (ty in 345f..395f) {
-                    soundEnabled = !soundEnabled
-                    return true
-                }
-                if (ty in 285f..335f) {
-                    difficulty = when (difficulty) {
-                        "NOVICE" -> "EXPERT"
-                        "EXPERT" -> "MASTER"
-                        else -> "NOVICE"
-                    }
-                    return true
-                }
-                if (ty in 225f..275f) {
                     game.skinManager.toggleSkin()
                     return true
                 }

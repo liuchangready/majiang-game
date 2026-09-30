@@ -11,7 +11,6 @@ import com.majiang.client.PlayerEndpoint
 import com.majiang.render.SkinManager
 import com.majiang.screen.GameScreen
 import com.majiang.screen.MenuScreen
-import com.majiang.session.GameSession
 
 /**
  * 游戏主入口（基于 Game 状态机与多 Screen 场景架构）。
@@ -66,13 +65,6 @@ class MahjongGame(
             localRuntime = null
         }
         setScreen(GameScreen(this, endpoint))
-    }
-
-    /**
-     * 兼容旧代码使用 session 命名参数或 GameSession 类型调用
-     */
-    fun launchGame(session: GameSession) {
-        launchGame(endpoint = session)
     }
 
     override fun render() {

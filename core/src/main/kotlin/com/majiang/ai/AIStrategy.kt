@@ -170,14 +170,3 @@ class BasicAIStrategy : AIStrategy {
         return score
     }
 }
-
-/**
- * 高级 AI 策略 — 基于向听数和期望值（预留接口）
- */
-class AdvancedAIStrategy(
-    private val delegate: AIStrategy = BasicAIStrategy()
-) : AIStrategy {
-    override val name = "高级AI"
-    override fun decideAction(view: PlayerView, legalActions: List<GameAction>): GameAction? =
-        delegate.decideAction(view, legalActions)
-}
