@@ -1,0 +1,30 @@
+buildscript {
+    repositories {
+        mavenCentral()
+        google()
+    }
+    dependencies {
+        // 注意：AGP 固定 8.9.3 —— 更高版本与 Gradle 9.6+ 存在内部 API 兼容问题
+        classpath "com.android.tools.build:gradle:$androidPluginVersion"
+        classpath "org.jetbrains.kotlin:kotlin-gradle-plugin:$kotlinVersion"
+    }
+}
+
+allprojects {
+    repositories {
+        mavenCentral()
+        google()
+    }
+}
+
+subprojects {
+    tasks.withType(JavaCompile).configureEach {
+        options.encoding = 'UTF-8'
+        // 注意：AGP 禁止 Android 模块用 --release（会破坏 bootclasspath），
+        // Android 模块用其 build.gradle 里的 sourceCompatibility/targetCompatibility
+        if (project.name != 'android') {
+            options.release = Integer.parseInt(project.property('javaVersion') as String)
+        }
+    }
+}
+

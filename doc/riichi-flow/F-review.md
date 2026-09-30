@@ -1,0 +1,7 @@
+# Codex integration review / task F
+
+Task F is a minimal follow-up after K/R complete. Own only GameStateMachine.kt, optional GameScreen.kt if needed, and delivery-F.md. Do not modify tests or validator. Do not run commands; use built-in file tools only.
+
+Confirmed defect: `isHumanPlayer(player)` returns `player == humanPlayerIndex || !aiPlayers.containsKey(player)`. A missing AI controller is NOT a human assignment. Constructor contract defaults human seat to 0, and initializeMatch(-1) means no human; do not infer humans from missing controllers. This broadens automation to other seats in manually driven engines. Change helper to exact valid-seat equality with humanPlayerIndex, preferably private since it is internal policy. No fallback. Preserve nonzero human seats initialized explicitly. New Codex regression `RiichiFlowContractTest.missing AI controller does not turn another seat into the human player` exposes this.
+
+Review automatic flow calls after correcting helper; avoid unrelated changes. The full 213-test run now has exactly two failures caused by this helper: the new missing-controller regression and existing EngineProtocolContractTest `passing ron in riichi causes permanent furiten surviving the next draw`. All remaining 211 tests passed, including UI and chained kan. Correct the stale description in delivery-R.md that calls every unconfigured seat human, or explicitly supersede it in delivery-F.md. All final tests are Codex's responsibility. Return a concise delivery summary without terminal calls.

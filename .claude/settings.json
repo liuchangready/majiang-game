@@ -1,0 +1,7 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(C:/Users/sncdc/.gemini/bin/agy.exe *)"
+    ]
+  }
+}

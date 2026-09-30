@@ -1,0 +1,19 @@
+// Actual OpenGL UI acceptance; no production build/dependency edits.
+gradle.projectsEvaluated {
+    def p = gradle.rootProject.project(':lwjgl3')
+    def out = gradle.rootProject.layout.buildDirectory.dir('furiten/smoke-classes')
+    def compile = p.tasks.register('compileFuritenSmoke', JavaCompile) {
+        dependsOn p.tasks.named('classes')
+        source gradle.rootProject.file('tools/architecture/FuritenRenderSmoke.java')
+        classpath = p.sourceSets.main.runtimeClasspath
+        destinationDirectory.set(out)
+        options.release = 17
+    }
+    p.tasks.register('furitenSmoke', JavaExec) {
+        dependsOn compile
+        classpath = p.files(out) + p.sourceSets.main.runtimeClasspath
+        mainClass = 'FuritenRenderSmoke'
+        workingDir = gradle.rootProject.file('assets')
+        systemProperty 'smoke.output', gradle.rootProject.file('build/furiten').absolutePath
+    }
+}

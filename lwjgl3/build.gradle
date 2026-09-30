@@ -1,0 +1,30 @@
+apply plugin: 'java'
+apply plugin: 'application'
+apply plugin: 'org.jetbrains.kotlin.jvm'
+
+dependencies {
+    implementation project(':core')
+    implementation "com.badlogicgames.gdx:gdx-backend-lwjgl3:$gdxVersion"
+    implementation "com.badlogicgames.gdx:gdx-platform:$gdxVersion:natives-desktop"
+    implementation "com.badlogicgames.gdx:gdx-freetype-platform:$gdxVersion:natives-desktop"
+}
+
+java {
+    sourceCompatibility = JavaVersion.VERSION_17
+    targetCompatibility = JavaVersion.VERSION_17
+}
+
+kotlin {
+    compilerOptions {
+        jvmTarget = org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17
+    }
+}
+
+application {
+    mainClass = 'com.majiang.desktop.DesktopLauncher'
+}
+
+run {
+    workingDir = file('../assets')
+}
+

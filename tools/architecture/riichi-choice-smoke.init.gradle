@@ -1,0 +1,19 @@
+// Actual OpenGL UI acceptance; no production build/dependency edits.
+gradle.projectsEvaluated {
+    def p = gradle.rootProject.project(':lwjgl3')
+    def out = gradle.rootProject.layout.buildDirectory.dir('riichi-choice/smoke-classes')
+    def compile = p.tasks.register('compileRiichiChoiceSmoke', JavaCompile) {
+        dependsOn p.tasks.named('classes')
+        source gradle.rootProject.file('tools/architecture/RiichiChoiceRenderSmoke.java')
+        classpath = p.sourceSets.main.runtimeClasspath
+        destinationDirectory.set(out)
+        options.release = 17
+    }
+    p.tasks.register('riichiChoiceSmoke', JavaExec) {
+        dependsOn compile
+        classpath = p.files(out) + p.sourceSets.main.runtimeClasspath
+        mainClass = 'RiichiChoiceRenderSmoke'
+        workingDir = gradle.rootProject.file('assets')
+        systemProperty 'smoke.output', gradle.rootProject.file('build/riichi-choice').absolutePath
+    }
+}

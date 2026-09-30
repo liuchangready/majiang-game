@@ -1,0 +1,8 @@
+# Task F: review corrections (production files only)
+
+R and V are delivered; 252 tests pass. Codex observed two issues. You own only `FuritenRules.kt` and `GameScreen.kt` for this follow-up; do not edit tests/harness/Gradle/design or other production files. Use native read/edit/search tools ONLY, no RunCommand, terminal or MCP tools. Codex runs all checks.
+
+1. `FuritenRules.waits` currently accepts a lone tile without four melds, since `HandDecomposer.calculateWaits` accepts any 1 mod 3 tile count. The documented contract requires 13 equivalent concealed+meld tiles. Return empty unless `hand.melds.size in 0..4 && closedTiles.size + 3 * hand.melds.size == 13`. Four physical tiles in a kan count as one meld. Keep optional closedTiles parameter and fifth-copy filtering. `completesHand` then inherits this guard. Do not change general HandDecomposer.
+2. Preview warning string starts at x580 and single cause nearly reaches panel right edge x1030; multiple reasons overflow. Also “THIS DISCARD CAUSES” is misleading when temporary/riichi furiten was inherited. Replace with concise, bounded status describing the result after the discard, e.g. `AFTER DISCARD: FURITEN - TSUMO ONLY` on title row at x580, and cause details in right-side unused area x740..1010 with wrapping/measurement. Thirteen wait tiles end around x708, so do not cover tiles. Share text formatting between drawing and previewFuritenText rather than maintaining duplicate strings. HUD x380..900 also must fit all three reasons, via measured scale or multiline layout within its bounds. Preserve font state. Keep all wait tiles and selection semantics.
+
+Write `doc/furiten/delivery-F.md` with changes. No tests/build claims; Codex independently validates.

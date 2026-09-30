@@ -1,0 +1,18 @@
+gradle.projectsEvaluated {
+    def p = gradle.rootProject.project(':lwjgl3')
+    def out = gradle.rootProject.layout.buildDirectory.dir('meld-display/smoke-classes')
+    def compile = p.tasks.register('compileMeldDisplaySmoke', JavaCompile) {
+        dependsOn p.tasks.named('classes')
+        source gradle.rootProject.file('tools/architecture/MeldDisplayRenderSmoke.java')
+        classpath = p.sourceSets.main.runtimeClasspath
+        destinationDirectory.set(out)
+        options.release = 17
+    }
+    p.tasks.register('meldDisplaySmoke', JavaExec) {
+        dependsOn compile
+        classpath = p.files(out) + p.sourceSets.main.runtimeClasspath
+        mainClass = 'MeldDisplayRenderSmoke'
+        workingDir = gradle.rootProject.file('assets')
+        systemProperty 'smoke.output', gradle.rootProject.file('build/meld-display').absolutePath
+    }
+}

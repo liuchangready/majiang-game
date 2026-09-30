@@ -1,0 +1,19 @@
+// Codex-owned actual OpenGL/input acceptance. No production dependency changes.
+gradle.projectsEvaluated {
+    def p = gradle.rootProject.project(':lwjgl3')
+    def out = gradle.rootProject.layout.buildDirectory.dir('meld-choice/smoke-classes')
+    def compile = p.tasks.register('compileMeldChoiceSmoke', JavaCompile) {
+        dependsOn p.tasks.named('classes')
+        source gradle.rootProject.file('tools/architecture/MeldChoiceRenderSmoke.java')
+        classpath = p.sourceSets.main.runtimeClasspath
+        destinationDirectory.set(out)
+        options.release = 17
+    }
+    p.tasks.register('meldChoiceSmoke', JavaExec) {
+        dependsOn compile
+        classpath = p.files(out) + p.sourceSets.main.runtimeClasspath
+        mainClass = 'MeldChoiceRenderSmoke'
+        workingDir = gradle.rootProject.file('assets')
+        systemProperty 'smoke.output', gradle.rootProject.file('build/meld-choice').absolutePath
+    }
+}
