@@ -1,58 +1,54 @@
 # 🀄 千术麻将 (Mahjong Cheater) 设计文档库
 
-本目录（`doc/`）存放《千术麻将》完整的架构设计与日麻规则规范文档，供开发者与设计者参考：
+本目录（`doc/`）存放《千术麻将》完整的架构设计、日麻规则与千术算法规范文档。当前系统默认且唯一生产架构为 **V4 架构**（R1~R6 全部完成验收），旧单体 `core` 与 V3 兼容链已彻底移除。
 
 ---
 
-## 📚 文档导航
+## 📚 核心设计与规范导航
 
-### [游戏方案 v3：整场、单局、客户端与展示](./GAME_ARCHITECTURE_V3.md)
+### 1. [千术麻将游戏方案 V4：菜单/牌桌拆分、Client 桥接与 Server 接口化 (GAME_ARCHITECTURE_V4.md)](./GAME_ARCHITECTURE_V4.md)
+- **最新目标与落地架构**：
+  - 七模块物理拆分（`engine`、`protocol`、`client`、`server`、`presentation`、`lwjgl3`、`android`）；
+  - 单机与联机同一条代码路径（单机 = 进程内传输 + `InProcessServer`；联机 = 可靠 UDP + `UdpTableServer`）；
+  - Server 唯一权威循环与串行裁决（动作 > 超时 > AI 托管 > 控制权切换）；
+  - 全量快照基线 + 单调递增游标（cursor）事件订阅与对账。
 
-- **目标设计（2026-10-01，本轮迁移验收通过）**：Session / Mahjong Game / Client / Screen 职责与三种运行模式；实际完成范围见下方验收记录。
-- **核心契约**：赛制与账本、每座位 20＋3 计时、超时默认动作、掉线 AI 接管、统一接口、事件同步与展示。
-- **实施与验收**：现有代码映射、迁移顺序、并行任务边界与必要测试；不代表所列网络及三人能力已经实现。
-- **当前代码与结果**：[V3 模块与运行路径](./v3-migration/ARCHITECTURE.md)、[实际验收状态](./v3-migration/STATUS.md)。旧架构文档保留其标注日期的历史实况。
+### 2. [整体架构与物理守恒机制 (FRAMEWORK_ARCHITECTURE.md)](./FRAMEWORK_ARCHITECTURE.md)
+- **严格 136 张物理闭环**：单副麻将实体牌绝对守恒，手牌、牌山、牌河、副露之间仅发生物理转移，无中生有即判定作弊穿帮。
+- **四大千术绝技与视线博弈**：
+  - 袖里乾坤（手牌与藏牌互换）、移花接木（牌山偷摸换牌）、神仙透视（窥探对手暗牌与牌山深层）、声东击西（敲击引开全场视线）。
+  - `SuspicionSystem` 怀疑度系统（0~100%），AI 动态视线追踪与抓包判定（Busted）。
 
-### 0. [当前整体架构全景 (ARCHITECTURE_OVERVIEW.md)](./ARCHITECTURE_OVERVIEW.md)
-- **现状全景（2026-09-30 代码实况）**：round-session-split 落地后的分层架构、运行时数据流、prepare/install 两阶段提交、事件快照隔离、渲染管线与测试体系。
-- **实况与设计边界的如实标注**：出千 UI 未接线、开局码牌引擎与联机均为未实现设计。
-- **技术债清单与演进方向**。
-
-### 1. [整体架构与系统设计 (FRAMEWORK_ARCHITECTURE.md)](./FRAMEWORK_ARCHITECTURE.md)
-- **三层分离架构**：表现层 (Presentation)、领域层 (Domain)、千术层 (Cheat System)。
-- **136 张物理守恒机制**：`TilePool` 与 Zone 区域物理转移防穿帮规范。
-- **事件驱动与特效解耦**：`GameEventBus` + `AnimationQueue` + `AnimationFactory`。
-- **对局状态机 (FSM)**：`GamePhase` 9阶段时序流转与优先级仲裁。
-- **千术绝技与视线博弈**：四大绝技运行时物理交换机制 + `SuspicionSystem` 怀疑度与抓包。
-- **源码索引**：24 个核心源文件的分包与职责映射。
-
-### 2. [日本立直麻将规则详细设计 (RIICHI_RULES_DESIGN.md)](./RIICHI_RULES_DESIGN.md)
+### 3. [日本立直麻将规则设计标准 (RIICHI_RULES_DESIGN.md)](./RIICHI_RULES_DESIGN.md)
 > 参照雀魂（Mahjong Soul）规则标准规范
 
-- **牌张构成与分类**：136 张牌、幺九/老头/中张/绿牌与 34 维索引。
-- **对局结构与发牌流程**：东风战/半庄战、王牌区分离、4轮+1配牌顺序、庄家多取1张。
-- **回合流程与响应仲裁**：摸打时序、吃碰杠荣优先级。
-- **和牌判定**：标准形（4面子+1雀头）、七对子、国士无双。
-- **役种规范**：41 种日麻役种与役满判定（含门前/副露翻数差异）。
-- **符数计算**：副底 + 面子符 + 雀头符 + 听牌符 + 和了加符完整计算表与向上取整规范。
-- **得点计算全表**：1~4 翻全符数对照表（庄/闲 × 荣和/自摸）与满贯/跳满/倍满/三倍满/役满固定得点。
-- **Dora 体系**：表 Dora、里 Dora、杠 Dora、赤 Dora 判定与循环。
-- **振听机制**：舍牌振听、同巡振听、立直振听定义与代码实现。
-- **流局判定**：荒牌流局、不听罚符分配、五种途中流局。
-- **胜负判定**：半庄终了条件、西入延长规则、最终排名与顺位马。
+- **规则全集**：四人东风/半庄战、41 种役种与役满、王牌区 14 张、表/里/杠宝牌机制。
+- **算分全表**：副底、面子符、雀头符、听牌符、和了符（庄/闲 × 荣和/自摸）与满贯以上固定得点。
+- **振听机制**：舍牌振听、同巡振听、立直振听定义与权威状态机裁决。
+- **流局判定**：荒牌流局不听罚符分配、四风连打/四杠散了/四家立直/九种九牌途中流局。
 
-### 3. [联网与大厅系统设计 (NETWORK_LOBBY_DESIGN.md)](./NETWORK_LOBBY_DESIGN.md)
-- **三种游戏模式**：单机（本地状态机 + AI）/ 大厅（官方服匹配）/ 自建服务（桌面客户端内嵌主机，好友 IP 直连），三模式共用同一服务端代码、同一协议、同一渲染管线。
-- **权威服务端**：Ktor + WebSocket(JSON)，服务端复用 `core-domain` 领域层，规则单一来源；同一份 `server` 模块既可独立部署（LOBBY 模式）也可内嵌客户端（ROOM 模式）。
-- **模块改造**：`core` 拆分为 `core-domain`（纯 Kotlin）+ `core`（libGDX 表现层）+ `server`（Ktor 服务端，仅 lwjgl3 内嵌）。
-- **通信协议**：`ClientMessage` / `ServerMessage` 密封类 + `PlayerAction` 网络白名单 + `HostCommand` 房主管理 + 事件序号补发。
-- **大厅/房间/匹配**：游客昵称制、4 位房间码、快速匹配队列、AI 补位混合局、超时托管计时器。
-- **信息可见性**：`EventRedactor` 按座位过滤事件（他家摸牌遮蔽、里 Dora 延迟公开、出千零信号、透视定向下发），内嵌主机无房主特权视角。
-- **断线重连**：resumeToken + 按座位裁剪快照 + 事件增量补发 + AI 暂时托管（官方服与自建主机一致）。
-- **跨平台预留**：iOS（RoboVM）预留为纯客户端；共享代码自 P1 起遵守兼容契约——依赖白名单、JDK API 水位（禁用 Java 11 后 API）、`NetworkClient` 纯接口、1280x720 通用坐标（详见 7.5 节）。
-- **实施路线图**：P1 模块拆分 → P2 协议骨架 → P3 权威对局 → P4 客户端接入 → P5 自建服务模式 → P6 重连打磨 → P7（预留）iOS 客户端。
+### 4. [服务端与客户端通信协议 (SERVER_CLIENT_API.md)](./SERVER_CLIENT_API.md)
+- 房间生命周期、连接代次、顶号注销与超时托管。
+- 大厅会话（`LobbySession`）与牌桌会话（`GameSession`）线上契约。
+- 可靠 UDP 数据报协议（22 字节帧头、分片重组、心跳保活、幂等重试、滑动重传窗口）。
 
-### 4. [开局码牌算法设计说明书 (../STACKING_ALGORITHM.md)](../STACKING_ALGORITHM.md)
-- 34 维向量余弦相似度计算两两冲突。
-- 定向衰减公式与起手牌槽位 (0~52) + 摸牌流槽位 (53~135) 预排。
-- 碰杠破千法则。
+### 5. 核心算法设计说明书（项目根目录）
+- **[开局码牌算法说明书 (../STACKING_ALGORITHM.md)](../STACKING_ALGORITHM.md)**：
+  - 34 维向量空间与起手牌（0~52）、摸牌流（53~135）预排分布。
+  - 碰杠破千法则（动牌导致牌流跳跃）。
+- **[牌型重叠度矩阵算法 (../TILE_OVERLAP_MATRIX_ALGORITHM.md)](../TILE_OVERLAP_MATRIX_ALGORITHM.md)**：
+  - 牌型特征向量余弦相似度计算冲突矩阵，异花色 0 干扰，同花色冲突衰减。
+
+---
+
+## 🏛️ 迁移记录与归档导航
+
+- **[V4 迁移验收总报告 (v4-migration/ACCEPTANCE-R6.md)](./v4-migration/ACCEPTANCE-R6.md)**：
+  - R1~R6 全部完成验收记录、978 项测试全绿、188 项独立审查全绿、11 组真实 GL 冒烟测试全过。
+- **[V4 最终契约与规范 (v4-migration/CONTRACT.md)](./v4-migration/CONTRACT.md)**：
+  - 严格模块单向依赖（Presentation → Client → Protocol ← Server → Engine）、三层 DTO 隔离。
+- **[历史归档目录 (archive/)](./archive/)**：
+  - `archive/architecture-v2/`：V2 历史评审与 GSM 合并方案
+  - `archive/v3-migration/`：旧 V3 阶段全套任务与交付记录
+  - `archive/v4-migration-tasks/`：V4 迁移过程中的 80+ 个临时 Agent 任务派发与反馈单
+  - `archive/legacy-specs/`：早期过时设计草案（Ktor/WebSocket 网络设计、V1 API 等）

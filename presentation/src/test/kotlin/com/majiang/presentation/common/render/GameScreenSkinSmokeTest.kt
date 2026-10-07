@@ -1,6 +1,4 @@
-package com.majiang.render
-
-import com.majiang.presentation.common.render.*
+package com.majiang.presentation.common.render
 
 import com.badlogic.gdx.Gdx
 import com.majiang.GdxHeadlessTestRunner
