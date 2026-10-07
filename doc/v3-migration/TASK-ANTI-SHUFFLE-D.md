@@ -1,0 +1,11 @@
+# D：准备界面与默认产品接线
+
+Read SHUFFLE-CONTRACT.md. Own core/src/main/** ONLY. No engine/client/server/tests/build/assets/shell edits. A/B/C APIs frozen; implement against them evennotyetpresent. KeepGameScreen minimal: extract new ShufflePreparationPanel/model in presentation orscreen package rather than add giantlogicblock. Codex supplies necessary Chinese font asset separately.
+
+GameScreenClient submitShufflePlan(request) defaultunsupportedfuture, V3AdapterdelegateGameClient. MatchConfig(shuffleConfig=ShuffleConfig(enabled=true)) defaultproduct createLocalHost/launchGame only (keepcurrentwinds). HostB adds initial50/100economy; UIreadsrealavailable. AvoidGameScreen(MahjongGame()) legacyfakepathchangingsemantics.
+
+Actual10s popup: title洗牌千术, independentbig countdown, availablebalance, two sections 偷天换日40/瞒天过海20 each6 toggle targets (清一色万/条/筒、大三元、国士无双、大四喜), equalweightmultiselect, cost+remainingpreview, skip/confirm. Toggletechnique byempty/nonemptytargets. Mixedtargetsnotcompatible show generalnotice“多选为混合倾向，不保证同时成牌”；drawnotice“吃碰杠会改变预期摸牌”。Bothcost60 enableonlyaffordable, alloweditingoutofbudget butdisableconfirm withreason. Confirm onlyonce async lockbuttons; recover authoritativeconfirmedselection onreconnect; timeout doesn'tautoconfirmdraft. Same round snapshot noresetdraft, newroundreset. Paused/closed/modalupdategate, no clickthrough intohand, takeover, sorting ornext. Menuexit allowed. prep emptyhand doesnotshow StartGame button again orhidepanel; setup timer freeze via snap.paused/serverNow; hideordinary3+20clockduringprep orshow waiting, donotcallauthorityclock.
+
+UTF8 Chinese labels mustrender legibly. Font asset contract: assets/fonts/NotoSansSC-Regular.ttf (Codex will supply openlicensedfont); use gdx FreeTypeFontGenerator withexplicitChinesecharacter set required bypanel, no wholeUnicode glyphgeneration (memory). Cache/disposepanelowned font only; protectheadless tests (lazyfontcreation onlywhenrenderwithrealGL, neverconstructor). Reuse spritebatch/shaperenderer withcorrect begin/end/projection & restorefont state; keep alloldermodals andnewopponentmeldUI behavior.
+
+Expose puremodel for tests withclearpublic draft/cost/confirmed state and hitboxes through panel asneeded (do not exposeauthority). Support1280x720 virtualcamera mouse/mobile. Report delivery-ANTI-SHUFFLE-D.md with UIpublictestsurface. No testclaims.

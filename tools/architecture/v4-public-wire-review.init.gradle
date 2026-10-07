@@ -1,0 +1,12 @@
+// Protocol-only independent PUBLIC wire probes while concrete bindings await their next stage.
+gradle.projectsEvaluated {
+    def p = gradle.rootProject.project(':protocol')
+    def stage = gradle.startParameter.projectProperties['reviewStage'] ?: 'R4B2-WIRE'
+    if (!(stage ==~ /[A-Za-z0-9_-]+/)) {
+        throw new GradleException('Invalid reviewStage')
+    }
+    p.layout.buildDirectory.set(p.file("../build/v4-migration/review-${stage}/protocol"))
+    def kotlinTests = p.extensions.getByName('kotlin').sourceSets.getByName('test').kotlin
+    kotlinTests.setSrcDirs([p.file('../tools/architecture/v4-review')])
+    kotlinTests.include('V4PublicWireAcceptanceTest.kt')
+}

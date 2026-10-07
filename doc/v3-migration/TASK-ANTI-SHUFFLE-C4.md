@@ -1,0 +1,5 @@
+# C4 bounded close race correction
+
+Own ONLY client/src/main/kotlin/com/majiang/client/GameClient.kt. C2 done. C3 running owns ProtocolJson only so NO overlap. No tests/build/shell. Minimal correction, report delivery-ANTI-SHUFFLE-C4.md.
+
+Review new trackActionReceipt callback has race: it removes outputFuture from pendingOutputFutures under pendingLock THEN releases lock THEN checks isClosed. If close occurs in between, close does not see removed future, callback observes closed and returns, leaving outputFuture incomplete forever. requestControl has same pattern. Fix atomic ownership transfer/completion with close: never remove without completing output (including CLIENT_CLOSED), serialize terminal choice/removal under same lock or complete explicit CLIENT_CLOSED in closed branch. Ensure no postclose pendingState resurrection, no oldcallback clears newrequest pending flag, reentrant completion listeners can issue a next request. Keep close one-shot, late responses ignored after settled. Also synchronous supplier-exception route should not race late close into lost output. Do not broaden unrelated API or modify ProtocolJson.

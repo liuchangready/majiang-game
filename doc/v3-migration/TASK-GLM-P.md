@@ -1,0 +1,3 @@
+# GLM-P: network protocol
+
+Own ONLY client/src/main/kotlin/com/majiang/network/protocol/**. Implement TASK-N2.md completely against actual engine declarations. FuritenStatus is in rules/FuritenRules.kt; ScoreBreakdown/DoraBreakdown in rules/WinningScoreEvaluator.kt, FuBreakdown in rules/FuCalculator.kt; ActionOption in application/ActionDecisionDto.kt. Read client/src/test/kotlin/com/majiang/v3/NetworkCodecAcceptanceTest.kt. H owns engine, T owns network/*.kt and server, U owns UI. No test/build edits. Preserve NetworkRequest/Response external API; add protocolVersion default3 to NetworkRequest and strict required read validation. Preserve complete settlement and physical tile identity. Report delivery-GLM-P.md. Do not claim execution success without actual evidence.

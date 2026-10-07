@@ -1,0 +1,14 @@
+# R4B1ROOM repair, not accepted
+
+Continue same ROOM conversation and current source. Read FEEDBACK-R4B1ROOM.md completely now; it contains live compiler/test results not fully addressed in your delivery. Same file ownership as ROOM, plus necessary shared resume identity API. File tools only, no shells/builds/commits/reviewer edits. Do not reread all domain/UDP files; those are not the task.
+
+Priority fixes:
+1. Actual compile error ServerTableHost.kt:342 ControllerRole.LOCAL_HUMAN does not exist; use correct domain role semantics. Review2 never ran tests. Previous17-review had host-leave failure; server75 had2fail.
+2. Remove new LOCAL_ROOM_ID/LOCAL_RESUME_TOKEN special create/join/resume compatibility branches. The user does NOT require old entry compatibility. Update old shape-only module assertions (fixed room name/count/token) to real shared-room identity, preserving lifecycle/privacy/close behavior. Do not fake success for arbitrary create/join/resume input when bound.
+3. Shared room validates resume room/token/generation at execution. InProcess resume currently ignores request roomId/token, so wrong/revoked identity succeeds. Explicit leave revokes tokens in all phases; temporary disconnect remains resumable. Joining must validate pre-join current binding generation, then establish new seat. Respect server assembly policy so local leave/create is auto-ready and server tick/currentHost tracks newly created room.
+4. Fix host leave deterministically: successful caller receipt, unbound live connection, other members get ROOM_CLOSED, resources shut down once. No canceling successful leave via host.close, no leaked roomNotificationExecutor after isClosed already set, no scheduling CLOSED then unregistering it before delivery. close must terminate pending futures even with stalled executor and must not race unsynchronized authoritative room array mutation.
+5. Bounded ordered observer delivery. Current RoomSubscriber queue unbounded, and InProcess initial callback uses a different executor from live updates, allowing reorder/unregistered callback. One per-observer ordered path, latest-full-view coalescing allowed, binding/generation/unregister guard at delivery. Slow listener must not block authority/future/other observers. Retain terminal close signal.
+
+Relevant independent tests are tools/architecture/v4-review/V4LobbyAcceptanceTest.kt local leave/recreate and slowRoomObserver; Codex runs17 selected authority/domain/local probes and fullserver tests. Add module coverage for incorrect/revoked resume token, ordered slow-observer updates/close and genuine new lobby semantics. All R4A behavior tests retained. Do not touch reviewer sources.
+
+Read FEEDBACK-R4B1ROOMFIX1.md if present and reread FEEDBACK-R4B1ROOM.md before delivery. Write delivery-ANTI-R4B1ROOMFIX1.md with actual remaining gaps; tests not run by Anti. Do not claim compiler/test acceptance. Do not implement UDP or R4B2/R5.

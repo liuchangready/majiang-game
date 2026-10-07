@@ -1,3 +1,2 @@
 rootProject.name = 'majiang'
-include 'core', 'lwjgl3', 'android'
-
+include 'engine', 'protocol', 'client', 'server', 'presentation', 'lwjgl3', 'android'

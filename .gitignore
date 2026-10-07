@@ -2,6 +2,14 @@
 .gradle/
 build/
 
+# Kotlin
+.kotlin/
+
+# Logs & crash dumps
+*.log
+hs_err_pid*
+replay_pid*
+
 # IDE
 .idea/
 *.iml

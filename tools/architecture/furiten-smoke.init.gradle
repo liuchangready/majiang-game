@@ -4,6 +4,7 @@ gradle.projectsEvaluated {
     def out = gradle.rootProject.layout.buildDirectory.dir('furiten/smoke-classes')
     def compile = p.tasks.register('compileFuritenSmoke', JavaCompile) {
         dependsOn p.tasks.named('classes')
+        source gradle.rootProject.files('tools/architecture/V4SmokeSession.java', 'tools/architecture/V4SmokeViews.java')
         source gradle.rootProject.file('tools/architecture/FuritenRenderSmoke.java')
         classpath = p.sourceSets.main.runtimeClasspath
         destinationDirectory.set(out)

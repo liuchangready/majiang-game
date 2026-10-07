@@ -1,0 +1,21 @@
+gradle.projectsEvaluated {
+    def p = gradle.rootProject.project(':lwjgl3')
+    def out = gradle.rootProject.layout.buildDirectory.dir('v3-migration/smoke-classes')
+    def compile = p.tasks.register('compileV3Smoke', JavaCompile) {
+        dependsOn p.tasks.named('classes')
+        source gradle.rootProject.files('tools/architecture/V4LocalRenderSmoke.java', 'tools/architecture/V3RenderSmoke.java')
+        classpath = p.sourceSets.main.runtimeClasspath
+        destinationDirectory.set(out)
+        options.release = 17
+    }
+    p.tasks.register('v3Smoke', JavaExec) {
+        dependsOn compile
+        classpath = p.files(out) + p.sourceSets.main.runtimeClasspath
+        mainClass = 'V3RenderSmoke'
+        workingDir = gradle.rootProject.file('assets')
+        minHeapSize = '32m'
+        maxHeapSize = '256m'
+        jvmArgs '-XX:+UseSerialGC', '-XX:ReservedCodeCacheSize=64m', '-XX:TieredStopAtLevel=1'
+        systemProperty 'smoke.output', gradle.rootProject.file('build/v3-migration').absolutePath
+    }
+}

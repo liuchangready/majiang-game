@@ -1,0 +1,8 @@
+// Run the domain configuration probes while unfinished bindings cannot compile.
+gradle.projectsEvaluated {
+    def p = gradle.rootProject.project(':engine')
+    p.layout.buildDirectory.set(p.file('../build/v4-migration/domain-review/engine'))
+    def tests = p.extensions.getByName('kotlin').sourceSets.getByName('test').kotlin
+    tests.setSrcDirs([p.file('../tools/architecture/v4-review')])
+    tests.include('V4LobbyConfigurationAcceptanceTest.kt')
+}

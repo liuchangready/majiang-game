@@ -1,0 +1,49 @@
+apply plugin: 'java-library'
+apply plugin: 'application'
+apply plugin: 'org.jetbrains.kotlin.jvm'
+
+dependencies {
+    implementation project(':engine')
+    implementation project(':protocol')
+    implementation "com.google.code.gson:gson:2.11.0"
+    implementation "org.jetbrains.kotlin:kotlin-stdlib:$kotlinVersion"
+
+    testImplementation "org.junit.jupiter:junit-jupiter:5.10.2"
+    testImplementation "org.jetbrains.kotlin:kotlin-test-junit5:$kotlinVersion"
+    testImplementation testFixtures(project(':engine'))
+    // V4 mapper pipeline test verifies server DTO -> protocol JSON -> client view.
+    testImplementation project(':client')
+}
+
+application {
+    mainClass = 'com.majiang.server.TableServerMainKt'
+}
+
+tasks.named('run', JavaExec) {
+    standardInput = System.in
+    if (project.hasProperty('port')) {
+        args "--port", project.property('port')
+    }
+    if (project.hasProperty('bind')) {
+        args "--bind", project.property('bind')
+    }
+}
+
+test {
+    useJUnitPlatform()
+    testLogging {
+        events "passed", "skipped", "failed"
+        showStandardStreams = true
+    }
+}
+
+java {
+    sourceCompatibility = JavaVersion.VERSION_17
+    targetCompatibility = JavaVersion.VERSION_17
+}
+
+kotlin {
+    compilerOptions {
+        jvmTarget = org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17
+    }
+}

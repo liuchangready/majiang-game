@@ -1,0 +1,22 @@
+gradle.projectsEvaluated {
+    def p = gradle.rootProject.project(':lwjgl3')
+    def out = gradle.rootProject.layout.buildDirectory.dir('v3-migration/end-tenpai-smoke-classes')
+    def smokeClasspath = p.sourceSets.main.runtimeClasspath
+    def compile = p.tasks.register('compileEndTenpaiSmoke', JavaCompile) {
+        dependsOn p.tasks.named('classes')
+        source gradle.rootProject.files('tools/architecture/EndTenpaiRenderSmoke.java', 'tools/architecture/V4SmokeSession.java', 'tools/architecture/V4SmokeViews.java', 'tools/architecture/V4SmokeNavigation.java')
+        classpath = smokeClasspath
+        destinationDirectory.set(out)
+        options.release = 17
+    }
+    p.tasks.register('endTenpaiSmoke', JavaExec) {
+        dependsOn compile
+        classpath = p.files(out) + smokeClasspath
+        mainClass = 'EndTenpaiRenderSmoke'
+        workingDir = gradle.rootProject.file('assets')
+        minHeapSize = '32m'
+        maxHeapSize = '256m'
+        jvmArgs '-XX:+UseSerialGC', '-XX:ReservedCodeCacheSize=64m', '-XX:TieredStopAtLevel=1'
+        systemProperty 'smoke.output', gradle.rootProject.file('build/v3-migration').absolutePath
+    }
+}

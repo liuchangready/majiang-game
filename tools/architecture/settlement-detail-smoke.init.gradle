@@ -3,7 +3,7 @@ gradle.projectsEvaluated {
     def out = gradle.rootProject.layout.buildDirectory.dir('settlement-detail/smoke-classes')
     def compile = p.tasks.register('compileSettlementDetailSmoke', JavaCompile) {
         dependsOn p.tasks.named('classes')
-        source gradle.rootProject.file('tools/architecture/SettlementDetailRenderSmoke.java')
+        source gradle.rootProject.files('tools/architecture/SettlementDetailRenderSmoke.java', 'tools/architecture/V4SmokeSession.java', 'tools/architecture/V4SmokeViews.java')
         classpath = p.sourceSets.main.runtimeClasspath
         destinationDirectory.set(out)
         options.release = 17

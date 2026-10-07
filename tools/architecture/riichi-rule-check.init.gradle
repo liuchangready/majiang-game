@@ -1,7 +1,7 @@
 // Independent rule acceptance while the flow task is still in development.
 // This partial gate never substitutes for the unfiltered final test suite.
 gradle.projectsEvaluated {
-    def p = gradle.rootProject.project(':core')
+    def p = gradle.rootProject.project(':presentation')
     p.layout.buildDirectory.set(p.file('../build/riichi-flow/rule-check'))
     p.extensions.getByName('kotlin').sourceSets.getByName('test').kotlin.setIncludes([
         'com/majiang/rules/RiichiKanValidatorContractTest.kt'

@@ -1,0 +1,7 @@
+gradle.projectsEvaluated {
+    def p = gradle.rootProject.project(':protocol')
+    p.layout.buildDirectory.set(p.file('../build/v4-migration/protocol-review/protocol'))
+    def tests = p.extensions.getByName('kotlin').sourceSets.getByName('test').kotlin
+    tests.setSrcDirs([p.file('../tools/architecture/v4-review')])
+    tests.include('V4RoomProtocolAcceptanceTest.kt')
+}

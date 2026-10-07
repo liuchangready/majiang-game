@@ -1,0 +1,11 @@
+# GLM-H: finish authority integration and compile repair
+
+Own engine/src/main/kotlin/com/majiang/host/**, access/**, timing/**, control/**, application/**, round/**, match/**, economy/**, state/**, event/** only. No client/core/server/tests/build edits. Other workers own UI, protocol and transport. Read TASK-D5.md and STATUS.md plus actual source/test declarations. Domain is now engine/src/main, tests engine/src/test; TableLifecycleAcceptanceTest moved client/src/test because it tests GameClient.
+
+First fix real syntax failure TableHost.tick: missing function closing brace after return withSerialLock block causes all later members to be parsed as local functions (post-migration-compile.log). Finish partially executed D5 (pause/time projection, private locked disconnect helper, obsolete unused LocalSessionAccess deletion). D5 quota interruption is not a completed delivery.
+
+Add trusted host `applyCheatLedgerEntry(entryId:String,seat:Int,amount:Int,reason:String):ActionResult` serial wrapper around coordinator approved ledger operation. Publish committed state/events through host onStateChanged only on success, no public arbitrary resource mutation in SessionAccess. Existing tests cover Coordinator cross-round transactions; add no tests yourself. Resource operation cannot reopen current decision with a free fresh deadline: preserve timing where decision remains logically the same, or explicitly stable decision identity.
+
+Verify every code path with actual declared APIs (no reflection/fake APIs). Config snapshots defensively copied. Real initial deal, epoch tokens, deadline semantics, local pause suppresses all gameplay, old round bindings not relabeled, true last-connection disconnect, first update cursor grows, real per-tick150ms auto progression, AI selfdraw/kan preferences, no session-phase deadlock. Do not broaden into rules changes. Host engine authoritative state not public to clients.
+
+Specific tests to read: engine/src/test/kotlin/com/majiang/v3/{TableHostAcceptanceTest,HostRhythmAcceptanceTest,CheatLedgerIntegrationAcceptanceTest,TimeControlAcceptanceTest}.kt and client/src/test/.../TableLifecycleAcceptanceTest.kt. Preserve all existing rule tests. Report GLM-H when implemented; Codex compiles/tests.

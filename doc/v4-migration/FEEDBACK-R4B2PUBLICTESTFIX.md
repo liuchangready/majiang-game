@@ -1,0 +1,3 @@
+# 最终静态审查补充
+
+任务简报第5项已明确扩大到PublicTableProjection.kt的CopyOnReadEventList两个helper修复：数组事件与普通List equals对称性，listIterator非法起点立即检查。请重新读TASK-ANTI-R4B2PUBLICTESTFIX.md最新完整范围。此范围与PREVIEW互斥，不改原GameEvent或其他生产。模块测试API装配错误仍是本批首要修复；所有修改尚未由Codex编译验收。

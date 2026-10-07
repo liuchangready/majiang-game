@@ -1,0 +1,1390 @@
+package com.majiang.authority
+
+import com.majiang.access.ActionReceipt
+import com.majiang.access.ClockView
+import com.majiang.access.PlayerSnapshot
+import com.majiang.access.PublicRoundRecord
+import com.majiang.access.PublicSessionResult
+import com.majiang.access.ReceiptStatus
+import com.majiang.access.SeatControlView
+import com.majiang.access.SessionView
+import com.majiang.access.deepCopy
+import com.majiang.application.ActionChoice
+import com.majiang.application.ApplicationCoordinator
+import com.majiang.application.PlayerDecision
+import com.majiang.application.deepCopy
+import com.majiang.economy.CheatEconomyConfig
+import com.majiang.event.GameEvent
+import com.majiang.match.MatchConfig
+import com.majiang.match.MatchProgression
+import com.majiang.match.SessionLifecycle
+import com.majiang.projection.PublicProjectionFactory
+import com.majiang.projection.PublicTableProjection
+import com.majiang.round.RoundPreparationRecord
+import com.majiang.session.PlayerView
+import com.majiang.session.SessionUpdate
+import com.majiang.stacking.SeatShufflePlan
+import com.majiang.stacking.ShufflePlanRequest
+import com.majiang.stacking.ShufflePreparationStatus
+import com.majiang.stacking.ShufflePreparationView
+import com.majiang.stacking.ShuffleSelection
+import com.majiang.stacking.ShuffleTarget
+import com.majiang.stacking.ShuffleWallGenerator
+import com.majiang.state.ActionResult
+import com.majiang.state.GameAction
+import com.majiang.state.GamePhase
+import com.majiang.state.GameState
+import com.majiang.state.SeatController
+import com.majiang.timing.DecisionClock
+import com.majiang.timing.DecisionKey
+import com.majiang.timing.DecisionTiming
+import com.majiang.timing.MonotonicClock
+import com.majiang.timing.SystemMonotonicClock
+import com.majiang.timing.TimeControlConfig
+import com.majiang.timing.TimeoutPolicy
+import java.security.SecureRandom
+import java.util.Collections
+import java.util.concurrent.ConcurrentHashMap
+
+/**
+ * 领域纯同步权威入口 (TableAuthority)
+ *
+ * 遵循 V4 架构契约与 TASK-ANTI-R4A 规范：
+ * 1. 作为纯领域同步门面，直接聚合 [ApplicationCoordinator]、[DecisionClock] 与洗牌千术规则组件；
+ * 2. 接收来自上层授信的 seat、controlEpoch 与 now 权威时间戳；
+ * 3. 拥有纯走子、准备阶段 (STACKING) 牌山生成物理守恒、倒计时与超时兜底计算；
+ * 4. 严禁感知 Socket、网络代次、断线恢复令牌 (resumeToken)、连接端点、订阅流或后台线程池；
+ * 5. 严禁委托向旧版 TableHost。
+ */
+class TableAuthority @JvmOverloads constructor(
+    config: MatchConfig = MatchConfig(),
+    timeControl: TimeControlConfig = TimeControlConfig(),
+    val clock: MonotonicClock = SystemMonotonicClock,
+    controllers: List<SeatController> = listOf(
+        SeatController.LocalHuman(),
+        SeatController.Computer(),
+        SeatController.Computer(),
+        SeatController.Computer()
+    ),
+    initialState: GameState? = null,
+    val adminSeat: Int = 0,
+    initialCoordinator: ApplicationCoordinator? = null
+) : AutoCloseable {
+
+    // 配置与控制者列表防御性复制
+    var config: MatchConfig = sanitizeConfig(config)
+        private set
+
+    var timeControl: TimeControlConfig = timeControl
+        private set
+
+    private val isInitialStateAlreadyDealt = initialState != null &&
+        (initialState.phase != GamePhase.STACKING || initialState.wall.isNotEmpty() || initialState.players.any { it.closedTiles.isNotEmpty() })
+
+    private var hasStarted: Boolean = isInitialStateAlreadyDealt
+
+    private val _controllers = controllers.toMutableList()
+    val controllers: List<SeatController> get() = Collections.unmodifiableList(_controllers)
+
+    init {
+        this.config.validateSupported()
+        require(adminSeat in 0..3) { "adminSeat must be in 0..3, got $adminSeat" }
+        require(this._controllers.size == 4) { "controllers list must contain exactly 4 items, got ${this._controllers.size}" }
+    }
+
+    // 内部应用协调器（默认关闭同步 AI 与自动摸切，启用延迟自动动作）
+    val coordinator: ApplicationCoordinator = initialCoordinator ?: run {
+        val baseState = if (initialState != null) {
+            initialState.deepCopy()
+        } else {
+            val s = GameState()
+            for (i in 0 until 4) {
+                s.scores[i] = this.config.startingScores[i]
+            }
+            s.roundWind = this.config.winds.firstOrNull() ?: 1
+            s.dealerIndex = 0
+            s.currentPlayer = 0
+            s.phase = GamePhase.STACKING
+            if (this.config.cheatEconomy.enabled) {
+                for (i in 0 until 4) {
+                    s.cheatPoints[i] = this.config.cheatEconomy.initialPoints.getOrElse(i) { 0 }
+                }
+            }
+            s
+        }
+        val coord = ApplicationCoordinator(
+            initialState = baseState,
+            matchProgression = MatchProgression(this.config.toRuleConfig()),
+            autoPlayAi = false,
+            autoRiichiDiscard = false,
+            deferAutomaticActions = true,
+            shuffleConfig = this.config.shuffleConfig
+        )
+        if (!coord.hasControllerConfiguration) {
+            coord.initializeMatch(this._controllers)
+        }
+        coord
+    }
+
+    // 纯 JVM 权威决策时钟
+    var decisionClock: DecisionClock = DecisionClock(config = timeControl, clock = clock)
+        private set
+
+    // 幂等请求与回执存储
+    private data class ReceiptKey(val seat: Int, val requestId: String)
+    private data class StoredSubmission(val choice: ActionChoice?, val receipt: ActionReceipt)
+    private val storedReceipts = ConcurrentHashMap<ReceiptKey, StoredSubmission>()
+
+    // 历史单局结算事件记录 (roundId -> visibleEvents)
+    private val roundResultEvents = ConcurrentHashMap<String, List<GameEvent>>()
+    private var lastActiveRoundId: String? = null
+    private var pausedAuthorityTimeMillis: Long? = null
+    private var lastCompletedRoundId: String? = null
+    private var lastCompletedSettlementEvents: List<GameEvent> = emptyList()
+
+    // 洗牌千术准备阶段状态 (Task ANTI-SHUFFLE-B)
+    private var preparationRoundId: String? = null
+    private var prepStatus: ShufflePreparationStatus = ShufflePreparationStatus.SELECTING
+    private var prepOpensAtMillis: Long = 0L
+    private var prepDeadlineMillis: Long = 0L
+    private var prepRoundSeed: Long = 0L
+    private val prepConfirmed = BooleanArray(4) { false }
+    private val prepSelections = arrayOfNulls<ShuffleSelection>(4)
+    private val prepReserved = IntArray(4) { 0 }
+
+    private data class ShuffleReceiptKey(val seat: Int, val roundId: String, val requestId: String)
+    private data class StoredShufflePlan(val request: ShufflePlanRequest, val receipt: ActionReceipt)
+    private val storedShufflePlans = ConcurrentHashMap<ShuffleReceiptKey, StoredShufflePlan>()
+
+    private val secureRandom = SecureRandom()
+
+    val currentRoundId: String? get() = coordinator.activeRound?.roundId
+    val isPaused: Boolean get() = decisionClock.isPausedState
+    val hasActiveRoundNotEnded: Boolean
+        get() {
+            val round = coordinator.activeRound
+            return round != null && round.state.phase != GamePhase.ROUND_END && !isPreparationActive()
+        }
+
+    @Synchronized
+    fun initializeInitialClocks(): Boolean {
+        val round = coordinator.activeRound
+        if (round != null && round.state.phase != GamePhase.ROUND_END && !isPreparationActive()) {
+            decisionClock.beginRound(round.roundId)
+            lastActiveRoundId = round.roundId
+            syncDecisionsAndClocks(clock.nowMillis(), emptySet())
+            return true
+        }
+        return false
+    }
+
+    init {
+        val round = this.coordinator.activeRound
+        if (round != null && round.state.phase != GamePhase.ROUND_END) {
+            if (this.config.shuffleConfig.enabled && !isInitialStateAlreadyDealt) {
+                // 等待 startSession 开启洗牌准备阶段
+            } else {
+                decisionClock.beginRound(round.roundId)
+                lastActiveRoundId = round.roundId
+                syncDecisionsAndClocks(clock.nowMillis(), emptySet())
+            }
+        }
+    }
+
+    // ========================================
+    // 变更与执行结果包装
+    // ========================================
+
+    data class MutationResult(
+        val receipt: ActionReceipt,
+        val events: List<GameEvent>,
+        val stateChanged: Boolean
+    )
+
+    sealed class AutoStepResult {
+        data class PreparationDealt(val events: List<GameEvent>) : AutoStepResult()
+        data class TimeoutResolved(val seat: Int, val action: GameAction, val events: List<GameEvent>) : AutoStepResult()
+        data class DealerChoiceTaken(val dealer: Int, val action: GameAction, val events: List<GameEvent>) : AutoStepResult()
+        data class NextRoundStarted(val events: List<GameEvent>) : AutoStepResult()
+        data class RiichiAutoDiscarded(val seat: Int, val action: GameAction, val events: List<GameEvent>) : AutoStepResult()
+
+        val allEvents: List<GameEvent> get() = when (this) {
+            is PreparationDealt -> events
+            is TimeoutResolved -> events
+            is DealerChoiceTaken -> events
+            is NextRoundStarted -> events
+            is RiichiAutoDiscarded -> events
+        }
+    }
+
+    data class AiDecisionRequest(
+        val seat: Int,
+        val roundId: String,
+        val decisionId: String,
+        val controlEpoch: Long,
+        val view: PlayerView,
+        val legalActions: List<GameAction>
+    )
+
+    // ========================================
+    // 准备阶段判定与视图
+    // ========================================
+
+    fun isPreparationActive(): Boolean {
+        val prepId = preparationRoundId ?: return false
+        val activeRound = coordinator.activeRound ?: return false
+        return activeRound.roundId == prepId &&
+            activeRound.state.phase == GamePhase.STACKING &&
+            activeRound.state.wall.isEmpty()
+    }
+
+    fun preparationDeadline(): Long = prepDeadlineMillis
+
+    fun buildPreparationViewForSeat(seat: Int): ShufflePreparationView? {
+        if (!isPreparationActive()) return null
+        val roundId = preparationRoundId ?: return null
+        val round = coordinator.activeRound
+        val record = if (round != null && round.roundId == roundId) round.preparationRecord else null
+
+        val confirmed = record?.confirmed?.getOrNull(seat) ?: prepConfirmed[seat]
+        val selection = record?.selections?.getOrNull(seat) ?: prepSelections[seat]
+        val reserved = record?.reserved?.getOrNull(seat) ?: prepReserved[seat]
+
+        val now = if (decisionClock.isPausedState && pausedAuthorityTimeMillis != null) {
+            pausedAuthorityTimeMillis!!
+        } else {
+            clock.nowMillis()
+        }
+        val currentPoints = if (config.cheatEconomy.enabled) {
+            if (round != null && round.readState().cheatPoints.size > seat) {
+                round.readState().cheatPoints[seat]
+            } else {
+                coordinator.session.betweenRoundCheatPoints.getOrElse(seat) { 0 }
+            }
+        } else {
+            0
+        }
+        val available = maxOf(0, currentPoints - reserved)
+        return ShufflePreparationView(
+            roundId = roundId,
+            status = prepStatus,
+            opensAtMillis = prepOpensAtMillis,
+            deadlineMillis = prepDeadlineMillis,
+            serverNowMillis = now,
+            confirmed = confirmed,
+            selection = selection?.deepCopy(),
+            reservedPoints = reserved,
+            availablePoints = available
+        )
+    }
+
+    private fun startPreparation(roundId: String, now: Long) {
+        preparationRoundId = roundId
+        prepStatus = ShufflePreparationStatus.SELECTING
+        prepOpensAtMillis = now
+        prepDeadlineMillis = prepOpensAtMillis + config.shuffleConfig.selectionMillis
+        prepRoundSeed = secureRandom.nextLong()
+        prepConfirmed.fill(false)
+        prepSelections.fill(null)
+        prepReserved.fill(0)
+        coordinator.activeRound?.let { round ->
+            if (round.roundId == roundId) {
+                round.updatePreparationRecord(
+                    RoundPreparationRecord(
+                        roundId = roundId,
+                        seed = prepRoundSeed,
+                        selections = prepSelections.map { it?.deepCopy() },
+                        confirmed = prepConfirmed.toList(),
+                        reserved = prepReserved.toList()
+                    )
+                )
+            }
+        }
+    }
+
+    // ========================================
+    // 纯同步玩法操作
+    // ========================================
+
+    @Synchronized
+    fun start(seat: Int, now: Long): MutationResult {
+        if (decisionClock.isPausedState) {
+            return MutationResult(ActionReceipt("start", ReceiptStatus.REJECTED, reason = "HOST_PAUSED"), emptyList(), false)
+        }
+        if (seat != adminSeat) {
+            return MutationResult(ActionReceipt("start", ReceiptStatus.REJECTED, reason = "PERMISSION_DENIED"), emptyList(), false)
+        }
+        if (coordinator.session.lifecycle == SessionLifecycle.FINISHED) {
+            return MutationResult(ActionReceipt("start", ReceiptStatus.REJECTED, reason = "MATCH_FINISHED"), emptyList(), false)
+        }
+
+        val round = coordinator.activeRound
+        val isAlreadyDealt = round != null && (round.readState().phase != GamePhase.STACKING || round.readState().wall.isNotEmpty())
+        if (isAlreadyDealt) {
+            hasStarted = true
+            return MutationResult(ActionReceipt("start", ReceiptStatus.APPLIED), emptyList(), false)
+        }
+
+        if (config.shuffleConfig.enabled && !isInitialStateAlreadyDealt) {
+            if (round != null) {
+                if (isPreparationActive()) {
+                    return MutationResult(ActionReceipt("start", ReceiptStatus.APPLIED), emptyList(), false)
+                }
+                hasStarted = true
+                startPreparation(round.roundId, now)
+                return MutationResult(ActionReceipt("start", ReceiptStatus.APPLIED), emptyList(), true)
+            }
+        }
+
+        val result = coordinator.start()
+        if (result is ActionResult.Accepted) {
+            hasStarted = true
+            val newRound = coordinator.activeRound
+            if (newRound != null) {
+                if (config.shuffleConfig.enabled && !isInitialStateAlreadyDealt) {
+                    startPreparation(newRound.roundId, now)
+                } else {
+                    decisionClock.beginRound(newRound.roundId)
+                    lastActiveRoundId = newRound.roundId
+                }
+            }
+            recordSettlementEvents(result.events)
+            return MutationResult(ActionReceipt("start", ReceiptStatus.APPLIED), result.events, true)
+        } else {
+            val reason = if (result is ActionResult.Rejected) result.reason.name else "START_FAILED"
+            return MutationResult(ActionReceipt("start", ReceiptStatus.REJECTED, reason = reason), emptyList(), false)
+        }
+    }
+
+    fun validateNextRoundPreconditions(): ActionReceipt? {
+        if (decisionClock.isPausedState) {
+            return ActionReceipt("nextRound", ReceiptStatus.REJECTED, reason = "HOST_PAUSED")
+        }
+        if (coordinator.session.lifecycle == SessionLifecycle.FINISHED) {
+            return ActionReceipt("nextRound", ReceiptStatus.REJECTED, reason = "MATCH_FINISHED")
+        }
+        if (coordinator.session.lifecycle == SessionLifecycle.WAITING_DEALER_CHOICE) {
+            return ActionReceipt("nextRound", ReceiptStatus.REJECTED, reason = "WAITING_DEALER_CHOICE")
+        }
+        if (coordinator.session.lifecycle == SessionLifecycle.CREATED || coordinator.session.lifecycle == SessionLifecycle.WAITING_START) {
+            return ActionReceipt("nextRound", ReceiptStatus.REJECTED, reason = "SESSION_NOT_STARTED")
+        }
+        if (isPreparationActive()) {
+            return ActionReceipt("nextRound", ReceiptStatus.REJECTED, reason = "PREPARATION_ACTIVE")
+        }
+        if (coordinator.activeRound != null && coordinator.activeRound?.state?.phase != GamePhase.ROUND_END) {
+            return ActionReceipt("nextRound", ReceiptStatus.REJECTED, reason = "ROUND_ACTIVE")
+        }
+        return null
+    }
+
+    @Synchronized
+    fun nextRound(seat: Int, now: Long): MutationResult {
+        val preError = validateNextRoundPreconditions()
+        if (preError != null) {
+            return MutationResult(preError, emptyList(), false)
+        }
+
+        val result = coordinator.nextRound()
+        if (result is ActionResult.Accepted) {
+            hasStarted = true
+            val newRound = coordinator.activeRound
+            if (newRound != null) {
+                if (config.shuffleConfig.enabled) {
+                    startPreparation(newRound.roundId, now)
+                } else {
+                    decisionClock.beginRound(newRound.roundId)
+                    lastActiveRoundId = newRound.roundId
+                }
+            }
+            recordSettlementEvents(result.events)
+            return MutationResult(ActionReceipt("nextRound", ReceiptStatus.APPLIED), result.events, true)
+        } else {
+            val reason = if (result is ActionResult.Rejected) result.reason.name else "NEXT_ROUND_FAILED"
+            return MutationResult(ActionReceipt("nextRound", ReceiptStatus.REJECTED, reason = reason), emptyList(), false)
+        }
+    }
+
+    @Synchronized
+    fun submitChoice(seat: Int, choice: ActionChoice, now: Long): MutationResult {
+        if (decisionClock.isPausedState) {
+            return MutationResult(ActionReceipt(choice.requestId, ReceiptStatus.REJECTED, reason = "HOST_PAUSED"), emptyList(), false)
+        }
+        if (seat !in 0..3) {
+            return MutationResult(ActionReceipt(choice.requestId, ReceiptStatus.REJECTED, reason = "INVALID_SEAT"), emptyList(), false)
+        }
+        if (isPreparationActive()) {
+            val rejected = ActionReceipt(choice.requestId, ReceiptStatus.REJECTED, reason = "WRONG_PHASE")
+            storedReceipts[ReceiptKey(seat, choice.requestId)] = StoredSubmission(choice, rejected)
+            return MutationResult(rejected, emptyList(), false)
+        }
+
+        // 1. 幂等与重试校验
+        val receiptKey = ReceiptKey(seat, choice.requestId)
+        val stored = storedReceipts[receiptKey]
+        if (stored != null) {
+            if (stored.choice == choice) {
+                return MutationResult(stored.receipt, emptyList(), false)
+            } else {
+                val rejected = ActionReceipt(choice.requestId, ReceiptStatus.REJECTED, reason = "REQUEST_ID_CONFLICT")
+                return MutationResult(rejected, emptyList(), false)
+            }
+        }
+
+        // 2. 当前有效决策与代次校验
+        val currentDecision = coordinator.queryDecision(seat)
+        if (choice.controlEpoch != currentDecision.controlEpoch) {
+            val rejected = ActionReceipt(choice.requestId, ReceiptStatus.REJECTED, reason = "STALE_CONTROL_EPOCH")
+            storedReceipts[receiptKey] = StoredSubmission(choice, rejected)
+            return MutationResult(rejected, emptyList(), false)
+        }
+
+        if (currentDecision.decisionId != choice.decisionId || choice.roundId != currentDecision.roundId) {
+            val rejected = ActionReceipt(choice.requestId, ReceiptStatus.REJECTED, reason = "DECISION_MISMATCH")
+            storedReceipts[receiptKey] = StoredSubmission(choice, rejected)
+            return MutationResult(rejected, emptyList(), false)
+        }
+
+        val selectedOption = currentDecision.options.firstOrNull { it.optionId == choice.optionId }
+        if (selectedOption == null) {
+            val rejected = ActionReceipt(choice.requestId, ReceiptStatus.REJECTED, reason = "OPTION_NOT_FOUND")
+            storedReceipts[receiptKey] = StoredSubmission(choice, rejected)
+            return MutationResult(rejected, emptyList(), false)
+        }
+
+        // 3. 权威截止时间校验
+        val timing = decisionClock.timing(seat)
+        val roundId = choice.roundId
+        if (roundId != null) {
+            val decisionKey = DecisionKey(roundId, seat, choice.decisionId)
+            if (timing != null && timing.key == decisionKey) {
+                if (now >= timing.deadlineMillis) {
+                    val rejected = ActionReceipt(choice.requestId, ReceiptStatus.REJECTED, reason = "DEADLINE_EXPIRED")
+                    storedReceipts[receiptKey] = StoredSubmission(choice, rejected)
+                    return MutationResult(rejected, emptyList(), false)
+                }
+            }
+        }
+
+        // 4. 提交执行动作
+        val actionResult = coordinator.submitChoice(seat, choice)
+        if (actionResult !is ActionResult.Accepted) {
+            val reasonStr = when (actionResult) {
+                is ActionResult.Rejected -> actionResult.reason.name
+                else -> "REJECTED"
+            }
+            val rejected = ActionReceipt(choice.requestId, ReceiptStatus.REJECTED, reason = reasonStr)
+            storedReceipts[receiptKey] = StoredSubmission(choice, rejected)
+            return MutationResult(rejected, emptyList(), false)
+        }
+
+        // 5. 成功执行后结算计时
+        if (roundId != null && timing != null && timing.key == DecisionKey(roundId, seat, choice.decisionId)) {
+            decisionClock.complete(timing.key, now)
+        }
+
+        // 6. 回执状态判断
+        val round = coordinator.activeRound
+        val window = round?.responseWindow
+        val isWindowWaiting = window != null && !window.isComplete
+        val status = if (isWindowWaiting) ReceiptStatus.RECORDED else ReceiptStatus.APPLIED
+
+        if (round != null && window == null) {
+            cancelUnsubmittedTimings(round.roundId, now)
+        }
+
+        recordSettlementEvents(actionResult.events)
+        val receipt = ActionReceipt(choice.requestId, status)
+        storedReceipts[receiptKey] = StoredSubmission(choice, receipt)
+        return MutationResult(receipt, actionResult.events, true)
+    }
+
+    @Synchronized
+    fun submitShufflePlan(seat: Int, request: ShufflePlanRequest, now: Long): MutationResult {
+        if (decisionClock.isPausedState) {
+            return MutationResult(ActionReceipt(request.requestId, ReceiptStatus.REJECTED, reason = "HOST_PAUSED"), emptyList(), false)
+        }
+        if (seat !in 0..3) {
+            return MutationResult(ActionReceipt(request.requestId, ReceiptStatus.REJECTED, reason = "INVALID_SEAT"), emptyList(), false)
+        }
+
+        val receiptKey = ShuffleReceiptKey(seat, request.roundId, request.requestId)
+        val stored = storedShufflePlans[receiptKey]
+        if (stored != null) {
+            if (stored.request.selection == request.selection && stored.request.controlEpoch == request.controlEpoch) {
+                return MutationResult(stored.receipt, emptyList(), false)
+            } else {
+                return MutationResult(ActionReceipt(request.requestId, ReceiptStatus.REJECTED, reason = "CONFLICTING_PAYLOAD"), emptyList(), false)
+            }
+        }
+
+        val currentEpoch = coordinator.epochFor(seat)
+        if (request.controlEpoch != currentEpoch) {
+            return MutationResult(ActionReceipt(request.requestId, ReceiptStatus.REJECTED, reason = "STALE_EPOCH"), emptyList(), false)
+        }
+
+        if (!isPreparationActive() || request.roundId != preparationRoundId || prepStatus != ShufflePreparationStatus.SELECTING) {
+            return MutationResult(ActionReceipt(request.requestId, ReceiptStatus.REJECTED, reason = "WRONG_PHASE"), emptyList(), false)
+        }
+
+        if (now >= prepDeadlineMillis) {
+            return MutationResult(ActionReceipt(request.requestId, ReceiptStatus.REJECTED, reason = "PREPARATION_EXPIRED"), emptyList(), false)
+        }
+
+        if (prepConfirmed[seat]) {
+            return MutationResult(ActionReceipt(request.requestId, ReceiptStatus.REJECTED, reason = "ALREADY_CONFIRMED"), emptyList(), false)
+        }
+
+        val safeSelection = request.selection.deepCopy()
+        val cost = safeSelection.cost()
+        if (cost !in 0..60) {
+            return MutationResult(ActionReceipt(request.requestId, ReceiptStatus.REJECTED, reason = "INVALID_COST"), emptyList(), false)
+        }
+
+        val currentPoints = coordinator.activeRound?.state?.cheatPoints?.get(seat) ?: 0
+        if (currentPoints < cost) {
+            return MutationResult(ActionReceipt(request.requestId, ReceiptStatus.REJECTED, reason = "INSUFFICIENT_FUNDS"), emptyList(), false)
+        }
+
+        prepConfirmed[seat] = true
+        prepSelections[seat] = safeSelection
+        prepReserved[seat] = cost
+        coordinator.activeRound?.let { round ->
+            if (round.roundId == preparationRoundId) {
+                round.updatePreparationRecord(
+                    RoundPreparationRecord(
+                        roundId = round.roundId,
+                        seed = prepRoundSeed,
+                        selections = prepSelections.map { it?.deepCopy() },
+                        confirmed = prepConfirmed.toList(),
+                        reserved = prepReserved.toList()
+                    )
+                )
+            }
+        }
+
+        val receipt = ActionReceipt(request.requestId, ReceiptStatus.RECORDED)
+        storedShufflePlans[receiptKey] = StoredShufflePlan(request.deepCopy(), receipt)
+        return MutationResult(receipt, emptyList(), true)
+    }
+
+    @Synchronized
+    fun submitAiChoice(
+        seat: Int,
+        roundId: String,
+        decisionId: String,
+        controlEpoch: Long,
+        action: GameAction,
+        now: Long
+    ): MutationResult {
+        if (decisionClock.isPausedState) {
+            return MutationResult(ActionReceipt(decisionId, ReceiptStatus.REJECTED, reason = "HOST_PAUSED"), emptyList(), false)
+        }
+        val currTiming = decisionClock.timing(seat)
+        val currDecision = coordinator.queryDecision(seat)
+
+        val matchesRound = roundId == (currDecision.roundId ?: "session")
+        val matchesDecision = decisionId == currDecision.decisionId
+        val matchesEpoch = controlEpoch == currDecision.controlEpoch
+        val matchesTiming = currTiming != null && currTiming.key == DecisionKey(roundId, seat, decisionId)
+        val notExpired = currTiming != null && now < currTiming.deadlineMillis
+        val validAction = currDecision.options.any { it.action == action }
+
+        if (!matchesRound || !matchesDecision || !matchesEpoch || !matchesTiming || !notExpired || !validAction) {
+            return MutationResult(ActionReceipt(decisionId, ReceiptStatus.REJECTED, reason = "STALE_AI_SUBMISSION"), emptyList(), false)
+        }
+
+        val actionResult = coordinator.handleAction(action)
+        if (actionResult is ActionResult.Accepted) {
+            decisionClock.complete(currTiming!!.key, now)
+            val round = coordinator.activeRound
+            val win = round?.responseWindow
+            if (round != null && win == null) {
+                cancelUnsubmittedTimings(round.roundId, now)
+            }
+            recordSettlementEvents(actionResult.events)
+            return MutationResult(ActionReceipt(decisionId, ReceiptStatus.APPLIED), actionResult.events, true)
+        }
+        return MutationResult(ActionReceipt(decisionId, ReceiptStatus.REJECTED, reason = "ACTION_REJECTED"), emptyList(), false)
+    }
+
+    @Synchronized
+    fun applyCheatLedgerEntry(entryId: String, seat: Int, amount: Int, reason: String, now: Long): MutationResult {
+        if (decisionClock.isPausedState) {
+            return MutationResult(ActionReceipt(entryId, ReceiptStatus.REJECTED, reason = "HOST_PAUSED"), emptyList(), false)
+        }
+        if (seat !in 0..3) {
+            return MutationResult(ActionReceipt(entryId, ReceiptStatus.REJECTED, reason = "INVALID_SEAT"), emptyList(), false)
+        }
+        if (isPreparationActive() && amount < 0) {
+            val currentPoints = coordinator.queryCheatPoints(seat)
+            val reserved = prepReserved[seat]
+            if (currentPoints + amount < reserved) {
+                return MutationResult(ActionReceipt(entryId, ReceiptStatus.REJECTED, reason = "INSUFFICIENT_FUNDS"), emptyList(), false)
+            }
+        }
+
+        val timingsBefore = (0 until 4).mapNotNull { s -> decisionClock.timing(s) }
+        val result = coordinator.applyCheatLedgerEntry(entryId, seat, amount, reason)
+        if (result is ActionResult.Accepted) {
+            for (timing in timingsBefore) {
+                val newDecision = coordinator.queryDecision(timing.key.seat)
+                val newRoundId = newDecision.roundId
+                if (newRoundId != null && newRoundId == timing.key.roundId && newDecision.options.isNotEmpty()) {
+                    val newKey = DecisionKey(newRoundId, timing.key.seat, newDecision.decisionId)
+                    if (newKey != timing.key) {
+                        decisionClock.rekey(timing.key, newKey)
+                    }
+                }
+            }
+            recordSettlementEvents(result.events)
+            return MutationResult(ActionReceipt(entryId, ReceiptStatus.APPLIED), result.events, true)
+        } else {
+            val reasonStr = if (result is ActionResult.Rejected) result.reason.name else "REJECTED"
+            return MutationResult(ActionReceipt(entryId, ReceiptStatus.REJECTED, reason = reasonStr), emptyList(), false)
+        }
+    }
+
+    // ========================================
+    // 纯计算 Tick 自动推进
+    // ========================================
+
+    @Synchronized
+    fun checkPreparationStep(now: Long, automatedSeats: Set<Int>, nativeAiSeats: Set<Int>): AutoStepResult? {
+        if (!isPreparationActive()) return null
+        val round = coordinator.activeRound ?: return null
+        if (round.state.phase != GamePhase.STACKING) return null
+
+        var aiUpdated = false
+        for (s in 0 until 4) {
+            val isNative = s in nativeAiSeats
+            if (s in automatedSeats && !prepConfirmed[s]) {
+                if (isNative && config.shuffleConfig.aiMaySpend) {
+                    val currentPoints = round.state.cheatPoints.getOrElse(s) { 0 }
+                    val selection = when {
+                        currentPoints >= 60 -> ShuffleSelection(
+                            initialTargets = setOf(ShuffleTarget.CHINITSU_MAN),
+                            drawTargets = setOf(ShuffleTarget.DAISANGEN)
+                        )
+                        currentPoints >= 40 -> ShuffleSelection(
+                            initialTargets = setOf(ShuffleTarget.CHINITSU_MAN)
+                        )
+                        currentPoints >= 20 -> ShuffleSelection(
+                            drawTargets = setOf(ShuffleTarget.DAISANGEN)
+                        )
+                        else -> ShuffleSelection()
+                    }
+                    prepConfirmed[s] = true
+                    prepSelections[s] = selection
+                    prepReserved[s] = selection.cost()
+                    aiUpdated = true
+                } else {
+                    prepConfirmed[s] = true
+                    prepSelections[s] = ShuffleSelection()
+                    prepReserved[s] = 0
+                    aiUpdated = true
+                }
+            }
+        }
+        if (aiUpdated) {
+            round.updatePreparationRecord(
+                RoundPreparationRecord(
+                    roundId = round.roundId,
+                    seed = prepRoundSeed,
+                    selections = prepSelections.map { it?.deepCopy() },
+                    confirmed = prepConfirmed.toList(),
+                    reserved = prepReserved.toList()
+                )
+            )
+        }
+
+        if (now >= prepDeadlineMillis) {
+            prepStatus = ShufflePreparationStatus.GENERATING
+            var timeoutUpdated = false
+            for (s in 0 until 4) {
+                if (!prepConfirmed[s]) {
+                    prepConfirmed[s] = true
+                    prepSelections[s] = ShuffleSelection()
+                    prepReserved[s] = 0
+                    timeoutUpdated = true
+                }
+            }
+            if (timeoutUpdated) {
+                round.updatePreparationRecord(
+                    RoundPreparationRecord(
+                        roundId = round.roundId,
+                        seed = prepRoundSeed,
+                        selections = prepSelections.map { it?.deepCopy() },
+                        confirmed = prepConfirmed.toList(),
+                        reserved = prepReserved.toList()
+                    )
+                )
+            }
+
+            val record = round.preparationRecord
+            val plans = (0 until 4).map {
+                val sel = record?.selections?.getOrNull(it) ?: prepSelections[it] ?: ShuffleSelection()
+                SeatShufflePlan(it, sel)
+            }
+            val seedToUse = record?.seed ?: prepRoundSeed
+            val generator = ShuffleWallGenerator()
+            val tiles = try {
+                generator.generate(
+                    seed = seedToUse,
+                    dealerSeat = round.state.dealerIndex,
+                    plans = plans,
+                    config = config.shuffleConfig
+                )
+            } catch (t: Throwable) {
+                null
+            }
+
+            if (tiles != null && tiles.size == 136) {
+                val costs = (0 until 4).associateWith { plans[it].selection.cost() }
+                val reasons = (0 until 4).associateWith { "shuffle_plan" }
+                val dealResult = coordinator.executeDealWithPreparation(
+                    roundId = round.roundId,
+                    wallTiles = tiles,
+                    cheatCosts = costs,
+                    costReasons = reasons
+                )
+                if (dealResult is ActionResult.Accepted) {
+                    preparationRoundId = null
+                    prepStatus = ShufflePreparationStatus.SELECTING
+                    decisionClock.beginRound(round.roundId)
+                    lastActiveRoundId = round.roundId
+                    recordSettlementEvents(dealResult.events)
+                    return AutoStepResult.PreparationDealt(dealResult.events)
+                }
+            }
+            prepStatus = ShufflePreparationStatus.GENERATING
+        }
+        return null
+    }
+
+    @Synchronized
+    fun checkTimeout(now: Long): AutoStepResult? {
+        val expiredTimings = decisionClock.expired(now)
+        if (expiredTimings.isNotEmpty()) {
+            val timing = expiredTimings.first()
+            val seat = timing.key.seat
+            val decision = coordinator.queryDecision(seat)
+
+            if (decision.decisionId == timing.key.decisionId && decision.options.isNotEmpty()) {
+                val options = decision.options.map { it.action }
+                val view = coordinator.queryView(seat)
+                val defaultAction = TimeoutPolicy.choose(view, options)
+
+                if (defaultAction != null) {
+                    val actionResult = coordinator.handleAction(defaultAction)
+                    if (actionResult is ActionResult.Accepted) {
+                        decisionClock.expire(timing.key, timing.generation)
+                        val activeRound = coordinator.activeRound
+                        val win = activeRound?.responseWindow
+                        if (activeRound != null && win == null) {
+                            cancelUnsubmittedTimings(timing.key.roundId, now)
+                        }
+                        recordSettlementEvents(actionResult.events)
+                        return AutoStepResult.TimeoutResolved(seat, defaultAction, actionResult.events)
+                    }
+                }
+            }
+        }
+        return null
+    }
+
+    @Synchronized
+    fun checkWaitingDealerChoice(now: Long, automatedDealer: Boolean): AutoStepResult? {
+        if (coordinator.session.lifecycle == SessionLifecycle.WAITING_DEALER_CHOICE && automatedDealer) {
+            val dealer = coordinator.session.currentDealer
+            val decision = coordinator.queryDecision(dealer)
+            if (decision.options.isNotEmpty()) {
+                val chosenAction = decision.options.firstOrNull { it.optionId == "opt-continue" }?.action
+                    ?: decision.options.first().action
+
+                val actionResult = coordinator.handleAction(chosenAction)
+                if (actionResult is ActionResult.Accepted) {
+                    val newRound = coordinator.activeRound
+                    if (newRound != null && newRound.roundId != lastActiveRoundId) {
+                        if (config.shuffleConfig.enabled) {
+                            startPreparation(newRound.roundId, now)
+                        } else {
+                            decisionClock.beginRound(newRound.roundId)
+                            lastActiveRoundId = newRound.roundId
+                        }
+                    }
+                    recordSettlementEvents(actionResult.events)
+                    return AutoStepResult.DealerChoiceTaken(dealer, chosenAction, actionResult.events)
+                }
+            }
+        }
+        return null
+    }
+
+    @Synchronized
+    fun checkAutoNextRound(now: Long, allReady: Boolean): AutoStepResult? {
+        val roundAtEnd = coordinator.activeRound?.state?.phase == GamePhase.ROUND_END
+        val sessionAtEnd = coordinator.session.lifecycle in setOf(SessionLifecycle.ROUND_RESULT, SessionLifecycle.WAITING_READY)
+        if ((roundAtEnd || sessionAtEnd) &&
+            coordinator.session.lifecycle != SessionLifecycle.WAITING_DEALER_CHOICE &&
+            coordinator.session.lifecycle != SessionLifecycle.FINISHED
+        ) {
+            if (allReady) {
+                val result = coordinator.nextRound()
+                if (result is ActionResult.Accepted) {
+                    val newRound = coordinator.activeRound
+                    if (newRound != null) {
+                        if (config.shuffleConfig.enabled) {
+                            startPreparation(newRound.roundId, now)
+                        } else {
+                            decisionClock.beginRound(newRound.roundId)
+                            lastActiveRoundId = newRound.roundId
+                        }
+                    }
+                    recordSettlementEvents(result.events)
+                    return AutoStepResult.NextRoundStarted(result.events)
+                }
+            }
+        }
+        return null
+    }
+
+    @Synchronized
+    fun checkRiichiAutoDiscard(now: Long, humanAutoRiichiSeats: Set<Int>): AutoStepResult? {
+        val round = coordinator.activeRound
+        if (round != null && round.state.phase in setOf(GamePhase.CHEAT_WINDOW, GamePhase.DISCARD)) {
+            val currPlayer = round.state.currentPlayer
+            if (currPlayer in humanAutoRiichiSeats &&
+                round.state.riichiDeclared[currPlayer] &&
+                round.state.players[currPlayer].drawnTile != null
+            ) {
+                val actions = coordinator.legalActions(currPlayer)
+                val hasTsumo = actions.any { it is GameAction.DeclareTsumo }
+                val hasKan = actions.any { it is GameAction.DeclareKan }
+                if (!hasTsumo && !hasKan) {
+                    val drawnTile = round.state.players[currPlayer].drawnTile!!
+                    val discardAction = GameAction.DiscardTile(currPlayer, drawnTile)
+                    val timing = decisionClock.timing(currPlayer)
+                    val actionResult = coordinator.handleAction(discardAction)
+                    if (actionResult is ActionResult.Accepted) {
+                        if (timing != null) {
+                            decisionClock.complete(timing.key, now)
+                        }
+                        recordSettlementEvents(actionResult.events)
+                        return AutoStepResult.RiichiAutoDiscarded(currPlayer, discardAction, actionResult.events)
+                    }
+                }
+            }
+        }
+        return null
+    }
+
+    @Synchronized
+    fun syncDecisionsAndClocks(now: Long, automatedSeats: Set<Int>): List<AiDecisionRequest> {
+        val round = coordinator.activeRound
+        if (round != null && round.state.phase == GamePhase.ROUND_END) {
+            val res = round.result
+            if (res != null) {
+                roundResultEvents[res.roundId] = res.events
+            }
+        }
+
+        if (coordinator.session.lifecycle == SessionLifecycle.FINISHED || isPreparationActive()) {
+            for (s in 0..3) {
+                val t = decisionClock.timing(s)
+                if (t != null) {
+                    decisionClock.cancel(t.key, now)
+                }
+            }
+            return emptyList()
+        }
+
+        val activeRoundId = round?.roundId
+        val aiRequests = mutableListOf<AiDecisionRequest>()
+
+        for (s in 0..3) {
+            val decision = coordinator.queryDecision(s)
+            val roundId = decision.roundId
+
+            if (roundId != null && roundId == activeRoundId && decision.options.isNotEmpty()) {
+                val key = DecisionKey(roundId, s, decision.decisionId)
+                val existing = decisionClock.timing(s)
+                if (existing == null) {
+                    decisionClock.open(key, now)
+                } else if (existing.key != key) {
+                    decisionClock.cancel(existing.key, now)
+                    decisionClock.open(key, now)
+                }
+
+                if (s in automatedSeats) {
+                    val epoch = decision.controlEpoch
+                    val view = coordinator.queryView(s).deepCopy()
+                    val legals = decision.options.map { it.action.deepCopy() }
+                    aiRequests.add(AiDecisionRequest(s, roundId, decision.decisionId, epoch, view, legals))
+                }
+            } else {
+                val existing = decisionClock.timing(s)
+                if (existing != null) {
+                    decisionClock.cancel(existing.key, now)
+                }
+            }
+        }
+        return aiRequests
+    }
+
+    fun setSeatController(seat: Int, controller: SeatController) {
+        require(seat in 0..3) { "seat must be in 0..3, got $seat" }
+        _controllers[seat] = controller
+        coordinator.setSeatController(seat, controller)
+    }
+
+    fun controllerFor(seat: Int): SeatController {
+        require(seat in 0..3) { "seat must be in 0..3, got $seat" }
+        return coordinator.controllerFor(seat)
+    }
+
+    fun cancelUnsubmittedTimings(roundId: String, now: Long) {
+        for (s in 0..3) {
+            val timing = decisionClock.timing(s)
+            if (timing != null && timing.key.roundId == roundId) {
+                decisionClock.cancel(timing.key, now)
+            }
+        }
+    }
+
+    // ========================================
+    // 时钟暂停与恢复
+    // ========================================
+
+    @Synchronized
+    fun pause(now: Long): Boolean {
+        val wasPaused = decisionClock.isPausedState
+        decisionClock.pause(now)
+        if (!wasPaused) {
+            pausedAuthorityTimeMillis = now
+            return true
+        }
+        return false
+    }
+
+    @Synchronized
+    fun resume(now: Long): Boolean {
+        val wasPaused = decisionClock.isPausedState
+        decisionClock.resume(now)
+        if (wasPaused) {
+            val pausedAt = pausedAuthorityTimeMillis
+            if (pausedAt != null && isPreparationActive()) {
+                val pauseDuration = maxOf(0L, now - pausedAt)
+                prepOpensAtMillis += pauseDuration
+                prepDeadlineMillis += pauseDuration
+            }
+            pausedAuthorityTimeMillis = null
+            return true
+        }
+        return false
+    }
+
+    // ========================================
+    // 查询接口
+    // ========================================
+
+    fun queryView(seat: Int): PlayerView = coordinator.queryView(seat)
+
+    fun queryDecision(seat: Int, isAutomated: Boolean): PlayerDecision {
+        if (isPreparationActive()) {
+            val epoch = coordinator.epochFor(seat)
+            return PlayerDecision(
+                roundId = preparationRoundId,
+                decisionId = "preparation-$preparationRoundId-$seat",
+                controlEpoch = epoch,
+                options = emptyList()
+            )
+        }
+        val raw = coordinator.queryDecision(seat)
+        return if (isAutomated) {
+            PlayerDecision(
+                roundId = raw.roundId,
+                decisionId = raw.decisionId,
+                controlEpoch = raw.controlEpoch,
+                options = emptyList()
+            )
+        } else {
+            PlayerDecision(
+                roundId = raw.roundId,
+                decisionId = raw.decisionId,
+                controlEpoch = raw.controlEpoch,
+                options = raw.options.map { it.deepCopy() }
+            )
+        }
+    }
+
+    fun queryRoundResultEvents(seat: Int, roundId: String): List<GameEvent> {
+        if (seat !in 0..3) return emptyList()
+        val rawEvents = roundResultEvents[roundId]
+            ?: if (coordinator.activeRound?.roundId == roundId) {
+                coordinator.activeRound?.result?.events ?: emptyList()
+            } else {
+                emptyList()
+            }
+        return SessionUpdate.filterVisibleEvents(rawEvents, seat)
+    }
+
+    private fun isUraRevealed(events: List<GameEvent>): Boolean =
+        events.any { it is GameEvent.TsumoWin || it is GameEvent.RonWin }
+
+    fun queryPublicProjection(): PublicTableProjection {
+        val session = coordinator.session.readState()
+        val activeRound = coordinator.activeRound
+        val state = activeRound?.readState()
+        val roundId = activeRound?.roundId
+        val roundVersion = activeRound?.version
+        val clocks = buildClockViews()
+        val paused = decisionClock.isPausedState
+
+        val isTerminalSettlement = (activeRound == null || activeRound.state.phase == GamePhase.ROUND_END) &&
+            coordinator.session.lifecycle in setOf(
+                SessionLifecycle.ROUND_RESULT,
+                SessionLifecycle.WAITING_DEALER_CHOICE,
+                SessionLifecycle.WAITING_READY,
+                SessionLifecycle.FINISHED
+            )
+
+        val completedId = if (isTerminalSettlement) {
+            lastCompletedRoundId ?: activeRound?.roundId ?: coordinator.session.roundRecords.lastOrNull()?.roundId
+        } else {
+            null
+        }
+
+        val rawSettlementEvents = if (isTerminalSettlement && completedId != null) {
+            if (lastCompletedSettlementEvents.isNotEmpty()) {
+                lastCompletedSettlementEvents
+            } else {
+                roundResultEvents[completedId] ?: emptyList()
+            }
+        } else {
+            emptyList()
+        }
+
+        val revealUra = isUraRevealed(rawSettlementEvents)
+
+        return PublicProjectionFactory.project(
+            session = session,
+            state = state,
+            roundId = if (isTerminalSettlement && roundId == null) completedId else roundId,
+            roundVersion = roundVersion,
+            clocks = clocks,
+            paused = paused,
+            settlementRoundId = completedId,
+            settlementEvents = rawSettlementEvents,
+            revealSettlementUra = revealUra
+        )
+    }
+
+    fun queryPublicRoundResultEvents(roundId: String): List<GameEvent> {
+        val rawEvents = roundResultEvents[roundId]
+            ?: if (coordinator.activeRound?.roundId == roundId) {
+                coordinator.activeRound?.result?.events ?: emptyList()
+            } else {
+                emptyList()
+            }
+        val revealUra = isUraRevealed(rawEvents)
+        return PublicProjectionFactory.publicEvents(rawEvents, revealSettlementUra = revealUra)
+    }
+
+    fun filterPublicEvents(events: List<GameEvent>): List<GameEvent> {
+        val revealUra = isUraRevealed(events)
+        return PublicProjectionFactory.publicEvents(events, revealSettlementUra = revealUra)
+    }
+
+    fun buildClockViews(now: Long = if (decisionClock.isPausedState && pausedAuthorityTimeMillis != null) pausedAuthorityTimeMillis!! else clock.nowMillis()): List<ClockView> {
+        val list = mutableListOf<ClockView>()
+        for (s in 0..3) {
+            val timing = decisionClock.timing(s)
+            val reserve = decisionClock.remainingReserve(s)
+            if (timing != null) {
+                list.add(
+                    ClockView(
+                        seat = s,
+                        opensAt = timing.opensAtMillis,
+                        deadline = timing.deadlineMillis,
+                        reserve = reserve,
+                        serverNow = now
+                    )
+                )
+            } else {
+                list.add(
+                    ClockView(
+                        seat = s,
+                        opensAt = 0L,
+                        deadline = 0L,
+                        reserve = reserve,
+                        serverNow = now
+                    )
+                )
+            }
+        }
+        return Collections.unmodifiableList(list)
+    }
+
+    fun buildSessionView(): SessionView {
+        val session = coordinator.session
+        val activeRound = coordinator.activeRound
+        val scores = if (activeRound != null && activeRound.state.phase != GamePhase.ROUND_END) {
+            activeRound.readState().scores.toList()
+        } else {
+            session.betweenRoundScores.toList()
+        }
+
+        val records = session.roundRecords.map { r ->
+            PublicRoundRecord(
+                roundId = r.roundId,
+                resultId = r.resultId,
+                finalScores = r.finalScores.toList(),
+                deltas = r.deltas.toList(),
+                finalCheatPoints = r.finalCheatPoints.toList(),
+                cheatDeltas = r.cheatDeltas.toList()
+            )
+        }
+
+        val finalRes = session.result?.let { res ->
+            PublicSessionResult(
+                finalScores = res.finalScores.toList(),
+                rankedSeats = res.rankings.map { it.seat },
+                reason = res.reason.name,
+                finalCheatPoints = res.finalCheatPoints.toList()
+            )
+        }
+
+        return SessionView(
+            lifecycle = session.lifecycle.name,
+            scores = scores,
+            roundWind = session.currentRoundWind,
+            roundNumber = session.currentRoundNumber,
+            dealerSeat = session.currentDealer,
+            honba = session.currentHonba,
+            roundRecords = records,
+            finalResult = finalRes
+        )
+    }
+
+    fun querySnapshot(
+        seat: Int,
+        syncEpoch: String,
+        cursor: Long,
+        controls: List<SeatControlView>
+    ): PlayerSnapshot {
+        val isAutomated = controls.getOrNull(seat)?.role != "HUMAN"
+        val view = coordinator.queryView(seat)
+        val decision = queryDecision(seat, isAutomated)
+        val clocks = buildClockViews()
+        val prepView = buildPreparationViewForSeat(seat)
+
+        val cheatPoints = if (config.cheatEconomy.enabled) {
+            val activeRound = coordinator.activeRound
+            if (activeRound != null) {
+                activeRound.readState().cheatPoints.toList()
+            } else {
+                coordinator.session.betweenRoundCheatPoints
+            }
+        } else {
+            emptyList()
+        }
+
+        val sessionView = buildSessionView()
+        val paused = decisionClock.isPausedState
+
+        val activeRound = coordinator.activeRound
+        val isTerminalSettlement = (activeRound == null || activeRound.state.phase == GamePhase.ROUND_END) &&
+            coordinator.session.lifecycle in setOf(
+                SessionLifecycle.ROUND_RESULT,
+                SessionLifecycle.WAITING_DEALER_CHOICE,
+                SessionLifecycle.WAITING_READY,
+                SessionLifecycle.FINISHED
+            )
+
+        val completedId = if (isTerminalSettlement) {
+            lastCompletedRoundId ?: activeRound?.roundId ?: coordinator.session.roundRecords.lastOrNull()?.roundId
+        } else {
+            null
+        }
+
+        val rawSettlementEvents = if (isTerminalSettlement && completedId != null) {
+            if (lastCompletedSettlementEvents.isNotEmpty()) {
+                lastCompletedSettlementEvents
+            } else {
+                roundResultEvents[completedId] ?: emptyList()
+            }
+        } else {
+            emptyList()
+        }
+
+        val settlementEvents = if (isTerminalSettlement && completedId != null) {
+            SessionUpdate.filterVisibleEvents(rawSettlementEvents.filter { isSettlementEvent(it) }, seat)
+        } else {
+            emptyList()
+        }
+
+        val snapshotRoundId = coordinator.activeRound?.roundId ?: (if (isTerminalSettlement) completedId else null)
+        val presentationPreview = if (snapshotRoundId != null && snapshotRoundId == decision.roundId) {
+            com.majiang.session.PlayerPresentationPreviewProvider.createPreview(view, decision)
+        } else {
+            null
+        }
+
+        return PlayerSnapshot(
+            sessionId = coordinator.session.sessionId,
+            roundId = snapshotRoundId,
+            syncEpoch = syncEpoch,
+            cursor = cursor,
+            sessionVersion = coordinator.session.version,
+            roundVersion = coordinator.activeRound?.version,
+            view = view,
+            decision = decision,
+            clocks = clocks,
+            cheatPoints = cheatPoints,
+            session = sessionView,
+            controls = controls,
+            paused = paused,
+            settlementRoundId = completedId,
+            settlementEvents = settlementEvents,
+            preparation = prepView,
+            presentationPreview = presentationPreview
+        )
+    }
+
+    private fun recordSettlementEvents(events: List<GameEvent>) {
+        val prevRoundId = lastActiveRoundId
+        val currentRound = coordinator.activeRound
+        val currentRoundId = currentRound?.roundId
+
+        if (currentRound != null && currentRound.state.phase != GamePhase.ROUND_END && currentRoundId != lastCompletedRoundId) {
+            lastCompletedRoundId = null
+            lastCompletedSettlementEvents = emptyList()
+        }
+
+        if (prevRoundId != null && (currentRoundId == null || currentRoundId != prevRoundId)) {
+            if (!roundResultEvents.containsKey(prevRoundId)) {
+                roundResultEvents[prevRoundId] = events.filter { isSettlementEvent(it) }
+            }
+        }
+        if (currentRound != null && currentRound.state.phase == GamePhase.ROUND_END) {
+            val res = currentRound.result
+            val completedId = res?.roundId ?: currentRound.roundId
+            lastCompletedRoundId = completedId
+            val filteredEvents = if (res != null) {
+                res.events.filter { isSettlementEvent(it) }
+            } else {
+                events.filter { isSettlementEvent(it) }
+            }
+            lastCompletedSettlementEvents = filteredEvents
+            roundResultEvents[completedId] = filteredEvents
+        }
+        lastActiveRoundId = currentRoundId
+    }
+
+    private fun isSettlementEvent(event: GameEvent): Boolean = when (event) {
+        is GameEvent.TsumoWin,
+        is GameEvent.RonWin,
+        is GameEvent.DrawGame,
+        is GameEvent.ScoreSettled,
+        is GameEvent.RoundEnded,
+        is GameEvent.MatchEnded -> true
+        is GameEvent.DoraRevealed -> event.isUraDora
+        is GameEvent.CheatPointsChanged -> true
+        else -> false
+    }
+
+    override fun close() {
+        decisionClock.reset()
+        pausedAuthorityTimeMillis = null
+        lastCompletedRoundId = null
+        lastCompletedSettlementEvents = emptyList()
+        preparationRoundId = null
+        prepStatus = ShufflePreparationStatus.SELECTING
+        prepOpensAtMillis = 0L
+        prepDeadlineMillis = 0L
+        prepRoundSeed = 0L
+        prepConfirmed.fill(false)
+        prepSelections.fill(null)
+        prepReserved.fill(0)
+        storedShufflePlans.clear()
+        storedReceipts.clear()
+        roundResultEvents.clear()
+    }
+
+    @Synchronized
+    fun updateLobbyConfig(newConfig: MatchConfig, newTimeControl: TimeControlConfig = this.timeControl): Boolean {
+        if (hasStarted) {
+            return false
+        }
+        if (isPreparationActive() || preparationRoundId != null) {
+            return false
+        }
+        if (coordinator.session.roundRecords.isNotEmpty()) {
+            return false
+        }
+        if (coordinator.session.lifecycle in setOf(
+                SessionLifecycle.ROUND_RESULT,
+                SessionLifecycle.WAITING_DEALER_CHOICE,
+                SessionLifecycle.WAITING_READY,
+                SessionLifecycle.FINISHED,
+                SessionLifecycle.PAUSED,
+                SessionLifecycle.CLOSED
+            )
+        ) {
+            return false
+        }
+        val round = coordinator.activeRound ?: return false
+        val s = round.readState()
+        if (s.phase != GamePhase.STACKING || s.wall.isNotEmpty() || s.players.any { it.closedTiles.isNotEmpty() }) {
+            return false
+        }
+
+        newConfig.validateSupported()
+        TimeControlConfig(newTimeControl.baseMillis, newTimeControl.reserveMillis, newTimeControl.reserveScope)
+
+        val sanitized = sanitizeConfig(newConfig)
+        val coordSuccess = coordinator.updateLobbyConfig(sanitized)
+        if (!coordSuccess) {
+            return false
+        }
+
+        this.config = sanitized
+        this.timeControl = newTimeControl
+        val freshClock = DecisionClock(config = newTimeControl, clock = clock)
+        if (!sanitized.shuffleConfig.enabled) {
+            val active = coordinator.activeRound
+            if (active != null && active.state.phase != GamePhase.ROUND_END) {
+                freshClock.beginRound(active.roundId)
+                lastActiveRoundId = active.roundId
+            }
+        }
+        this.decisionClock = freshClock
+        return true
+    }
+
+    companion object {
+        fun sanitizeConfig(config: MatchConfig): MatchConfig {
+            val effectiveCheatEconomy = if (config.shuffleConfig.enabled && !config.cheatEconomy.enabled) {
+                val presetPoints = if (config.winds == listOf(1)) 50 else 100
+                CheatEconomyConfig(
+                    enabled = true,
+                    initialPoints = List(4) { presetPoints },
+                    costs = mapOf("shuffle_initial" to 40, "shuffle_draw" to 20, "initial" to 40, "draw" to 20)
+                )
+            } else {
+                config.cheatEconomy
+            }
+            return config.copy(
+                startingScores = config.startingScores.toList(),
+                winds = config.winds.toList(),
+                tieBreakSeats = config.tieBreakSeats.toList(),
+                cheatEconomy = effectiveCheatEconomy.copy(
+                    initialPoints = effectiveCheatEconomy.initialPoints.toList(),
+                    costs = HashMap(effectiveCheatEconomy.costs)
+                ),
+                shuffleConfig = config.shuffleConfig.copy()
+            )
+        }
+    }
+}

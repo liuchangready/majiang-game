@@ -4,10 +4,11 @@ gradle.projectsEvaluated {
     def out = gradle.rootProject.layout.buildDirectory.dir('architecture-v2/desktop-smoke-classes')
     def compile = p.tasks.register('compileArchitectureRenderSmoke', JavaCompile) {
         dependsOn p.tasks.named('classes')
-        source gradle.rootProject.file('tools/architecture/DesktopRenderSmoke.java')
+        source gradle.rootProject.files('tools/architecture/V4LocalRenderSmoke.java', 'tools/architecture/DesktopRenderSmoke.java')
         classpath = p.sourceSets.main.runtimeClasspath
         destinationDirectory.set(out)
         options.release = 17
+        options.encoding = 'UTF-8'
     }
     p.tasks.register('architectureRenderSmoke', JavaExec) {
         dependsOn compile
@@ -15,5 +16,8 @@ gradle.projectsEvaluated {
         mainClass = 'DesktopRenderSmoke'
         workingDir = gradle.rootProject.file('assets')
         systemProperty 'smoke.output', gradle.rootProject.file('build/architecture-v2').absolutePath
+        doFirst {
+            gradle.rootProject.file('build/architecture-v2').mkdirs()
+        }
     }
 }

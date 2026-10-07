@@ -1,0 +1,41 @@
+apply plugin: 'java-library'
+apply plugin: 'org.jetbrains.kotlin.jvm'
+
+dependencies {
+    api project(':client')
+    implementation project(':server')
+
+    api "com.badlogicgames.gdx:gdx:$gdxVersion"
+    api "com.badlogicgames.gdx:gdx-freetype:$gdxVersion"
+    implementation "org.jetbrains.kotlin:kotlin-stdlib:$kotlinVersion"
+
+    testImplementation project(':engine')
+    testImplementation testFixtures(project(':engine'))
+    testImplementation "com.badlogicgames.gdx:gdx-backend-headless:$gdxVersion"
+    testImplementation "com.badlogicgames.gdx:gdx-platform:$gdxVersion:natives-desktop"
+    testImplementation "org.junit.jupiter:junit-jupiter:5.10.2"
+    testImplementation "org.jetbrains.kotlin:kotlin-test-junit5:$kotlinVersion"
+}
+
+test {
+    useJUnitPlatform()
+    testLogging {
+        events "passed", "skipped", "failed"
+        showStandardStreams = true
+    }
+}
+
+// 共享资源目录：presentation 与各平台模块统一从根目录 assets/ 读取
+sourceSets.main.resources.srcDirs = ['../assets']
+sourceSets.test.resources.srcDirs = ['../assets']
+
+java {
+    sourceCompatibility = JavaVersion.VERSION_17
+    targetCompatibility = JavaVersion.VERSION_17
+}
+
+kotlin {
+    compilerOptions {
+        jvmTarget = org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17
+    }
+}

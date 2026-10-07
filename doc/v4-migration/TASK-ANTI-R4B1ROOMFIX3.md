@@ -1,0 +1,7 @@
+# Fix module test wiring and remaining truthful local-seat assembly
+
+Current ROOMFIX2 production compiles and Codex independent21 selected authority/domain/local probes ALL PASS (R4B1ROOMFIX2-local-review2.log). Full server test is blocked at compileTestKotlin: SharedRoomTest.kt:404 calls authority.pause() without required now. Fix test to use real async host pause().await() on the authoritative queue, preserving paused-start rejection/admission assertions. Do not weaken/delete tests.
+
+Owned: relevant server module tests, and only essential local assembly correction if needed. Built-in file tools only, no shells/builds/commits/reviewer edits. Current InProcessServer.createLocalTable(humanSeat!=0) still binds that seat while SharedRoom always makes seat0 the human/admin and othersAI. Honor the currently exposed parameter correctly through shared assembly, or remove the unused compatibility parameter consistently with all callers under user no-entry-compatibility instruction; do not leave an API silently binding the human to an AI seat. Preserve substantive singleplayer/control/lifecycle tests.
+
+Read FEEDBACK-R4B1ROOMFIX3.md before final delivery if present. Deliver narrow correction promptly in delivery-ANTI-R4B1ROOMFIX3.md, tests not run by Anti. No UDP/runtime/B2/R5. Avoid rereading broad modules already understood. Codex will run server module tests and current independent probes on final source.

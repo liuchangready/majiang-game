@@ -3,10 +3,11 @@ gradle.projectsEvaluated {
     def out = gradle.rootProject.layout.buildDirectory.dir('round-session-split/smoke-classes')
     def compile = p.tasks.register('compileRoundSessionSmoke', JavaCompile) {
         dependsOn p.tasks.named('classes')
-        source gradle.rootProject.file('tools/architecture/RoundSessionRenderSmoke.java')
+        source gradle.rootProject.files('tools/architecture/V4LocalRenderSmoke.java', 'tools/architecture/RoundSessionRenderSmoke.java')
         classpath = p.sourceSets.main.runtimeClasspath
         destinationDirectory.set(out)
         options.release = 17
+        options.encoding = 'UTF-8'
     }
     p.tasks.register('roundSessionSmoke', JavaExec) {
         dependsOn compile
@@ -14,5 +15,8 @@ gradle.projectsEvaluated {
         mainClass = 'RoundSessionRenderSmoke'
         workingDir = gradle.rootProject.file('assets')
         systemProperty 'smoke.output', gradle.rootProject.file('build/round-session-split').absolutePath
+        doFirst {
+            gradle.rootProject.file('build/round-session-split').mkdirs()
+        }
     }
 }

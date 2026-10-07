@@ -1,0 +1,23 @@
+gradle.projectsEvaluated {
+    def p = gradle.rootProject.project(':lwjgl3')
+    def out = gradle.rootProject.layout.buildDirectory.dir('v3-migration/meld-smoke-classes')
+    def smokeClasspath = p.sourceSets.main.runtimeClasspath
+    def compile = p.tasks.register('compileMeldSmoke', JavaCompile) {
+        dependsOn p.tasks.named('classes')
+        source gradle.rootProject.files('tools/architecture/V4SmokeSession.java', 'tools/architecture/V4SmokeViews.java', 'tools/architecture/MeldRenderSmoke.java')
+        classpath = smokeClasspath
+        destinationDirectory.set(out)
+        options.release = 17
+        options.encoding = 'UTF-8'
+    }
+    p.tasks.register('meldSmoke', JavaExec) {
+        dependsOn compile
+        classpath = p.files(out) + smokeClasspath
+        mainClass = 'MeldRenderSmoke'
+        workingDir = gradle.rootProject.file('assets')
+        systemProperty 'smoke.output', gradle.rootProject.file('build/v3-migration').absolutePath
+        doFirst {
+            gradle.rootProject.file('build/v3-migration').mkdirs()
+        }
+    }
+}

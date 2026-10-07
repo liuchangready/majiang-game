@@ -1,0 +1,11 @@
+# 确定性独立回归失败：旧回调提交污染新房缓存
+
+新增 reviewer 用例 tools/architecture/v4-review/V4RuntimeAcceptanceTest.kt 的 roomCallbackAlreadyInFlightCannotPoisonReplacementCache 已编译并运行失败，断言位于646附近，证据 build/v4-migration/R4B1-room-commit-baseline.log。测试源码只读。当前完整独立目标由112变成114（另一个单纯旧callback场景通过）。
+
+交错：旧callback通过handleInboundRoomUpdate入口的epoch/roomId检查，在roomLock前暂停；另一线程成功leave并create新绑定；旧callback随后拿roomLock，不重新验证旧epoch/binding，写入v90。通知可能被guard拒绝，但cache已污染，当前绑定v2被丢弃，getRoomInfo回传90。
+
+修复重点：绑定/连接/room代次有效性必须在缓存提交的线性化点再次验证，并与清缓存/新绑定生命周期一致。query完成同样检查。保留锁外UI通知和既有R3 pending/重连/full snapshot语义，不引入锁顺序死锁。测试通过模拟先检查后暂停，不应通过删除roomLock字段来避开（若合理重构锁结构，向Codex报告用于迁移测试装配；不可编辑reviewer）。
+
+注意：create/join本身递增currentEpoch并重绑监听，所以“离房后再调用旧callback”现有保护有效，独立 retiredRoomCallbackCannotAttachToNewBindingWithSameRoomId 已通过；不要对这个已通过场景做无意义重写。真正失败是已经进入的回调跨生命周期提交。
+
+同时检查room通知提交后在锁外dispatch的相对顺序，不能更新缓存v3后把v2延迟发送给UI。请补真正跨线程、可控屏障与有界等待的模块回归，保留全部有效断言。

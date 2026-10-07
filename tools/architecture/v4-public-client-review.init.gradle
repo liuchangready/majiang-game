@@ -1,0 +1,12 @@
+// Isolated runtime probes while server production and developer module fixtures are incomplete.
+// This does not replace the full module or real InProcess/UDP acceptance gates.
+gradle.projectsEvaluated {
+    def p = gradle.rootProject.project(':client')
+    def stage = gradle.startParameter.projectProperties['reviewStage'] ?: 'R4B2-PUBLIC-CLIENT'
+    if (!(stage ==~ /[A-Za-z0-9_-]+/)) throw new GradleException('Invalid reviewStage')
+    p.layout.buildDirectory.set(p.file("../build/v4-migration/review-${stage}/client"))
+    def kotlinTests = p.extensions.getByName('kotlin').sourceSets.getByName('test').kotlin
+    kotlinTests.setSrcDirs([p.file('../tools/architecture/v4-review')])
+    kotlinTests.include('V4SpectatorRuntimeIsolationTest.kt')
+    kotlinTests.include('V4SpectatorUdpClientIsolationTest.kt')
+}

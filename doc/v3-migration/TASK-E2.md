@@ -1,0 +1,3 @@
+# E2: Windows PowerShell 5.1 migration compatibility
+
+Own only tools/architecture/migrate-v3.ps1. E migration script currently uses System.IO.Path.GetRelativePath, unavailable in this environment Windows PowerShell 5.1 / .NET Framework. pwsh is not installed. Replace relative path calculations with a compatible implementation validating paths inside the workspace. Check all APIs and syntax for PS 5.1. Retain dry-run default, explicit Apply, no recursive delete, SHA256 pre/post, fail on conflicting destination. Script must work `powershell -NoProfile -ExecutionPolicy Bypass -File tools/architecture/migrate-v3.ps1`. Do not move source files or touch any production Kotlin. Codex will review and run. Record delivery-E2.md. Do not run shell.

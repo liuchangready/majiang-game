@@ -1,0 +1,13 @@
+# R4B2 CLIENT RESUME 开发中检视（Codex）
+
+当前仍在开发，尚未运行本批构建；原 CLIENTCONT 的完整反馈及4项独立实测继续生效。
+
+10:45发现新的逻辑冲突：UdpClientBinding.adoptAuthoritativePublicSnapshot 已改为同流 cursor <= lastPublicCursor 返回 false，用于避免重复通知；但 triggerPublicSnapshotSelfHeal 调用 publicSnapshot()，该查询的响应解码 lambda 已先调用一次 adoptAuthoritativePublicSnapshot。接着 selfHeal.whenComplete 再次 adopt 相同快照必然返回 false，因此不再 dispatch full 更新。结果是传输层游标悄悄推进，runtime/监听器却没有收到自愈基线；早期缓冲溢出、超窗缺口等都可能卡住。
+
+请分清权威响应采纳与通知的单次归属，不要以去掉全部去重修复。可让受请求token保护的自愈路径只采纳一次并派发该次合法基线，或返回明确采纳信息；不能为此泄漏内部类型到client公开门面。旧绑定迟到响应仍必须丢弃，已采纳的普通/full重复仍ACK但不能重复通知。相同问题也需检查对early overflow触发查询的处理。建议补可控传输模块回归：制造缺口或早期溢出，自愈查询返回新cursor，断言监听器实际得到一次full并继续处理下一条普通更新。
+
+Codex已新增只读reviewer V4SpectatorUdpClientIsolationTest.kt，两项（尚未运行）：实际UdpClientBinding/codec+可控收发帧，验证超大缺口触发PUBLIC_SNAPSHOT后监听器收到一次full且下一普通更新能继续；以及无listener连续300条导致early buffer溢出，注册listener查询返回当前相同cursor仍必须给该listener一次full基线。第二种情况下传输层已到300但runtime没有完整历史，不能简单用“没推进cursor”抑制恢复通知。重复合法网络full仍需去重。不得修改reviewer。
+
+10:54补充：dispatchPublicUpdate 只在复制 listener 列表前检查来源身份，后续逐个调用不检查；onPublicUpdate early buffer 同样先取本地列表再无条件逐个回调。首个回调若同步 close/成功 leave/换绑，后续仍交付旧数据。runtime.notifyPublicUpdateListeners 目前也只在整批前检查。请在每次用户回调前重新校验来源身份及关闭状态，不要持内部锁调用用户代码；早期回放亦同。reviewer新增两项确定性测试（未运行）：首个 listener close 后其它 listener 不收到旧推送；early 两条回放中第一条 close 后不再收到第二条。
+
+10:56补充：selfHeal现在改成无条件派发响应full，仍需防旧快照通知：例如gap300发出查询，可靠full400先到，查询随后返回300；publicSnapshot采纳阶段虽已拒绝回退，selfHeal又无条件通知300，导致订阅者观察400→300。应检查恢复token及响应实际有效性，既支持early overflow相同cursor建立基线，也拒绝已过期响应。reviewer新增该确定性场景，UDP隔离共5项，runtime共5项（另加首listener成功leave后不再通知余者）；server竞态另2项，完整预计179，以实际XML为准。尚未运行，不得以新数字宣称通过。

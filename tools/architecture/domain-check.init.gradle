@@ -1,7 +1,7 @@
 // Temporary independent service gate while the V2 engine/UI are being integrated.
-// This is a PARTIAL check, never a substitute for the unfiltered final :core:test.
+// This is a PARTIAL check, never a substitute for the unfiltered final :presentation:test.
 gradle.projectsEvaluated {
-    def p = gradle.rootProject.project(':core')
+    def p = gradle.rootProject.project(':presentation')
     p.layout.buildDirectory.set(p.file('../build/architecture-v2/domain-check'))
     def kotlin = p.extensions.getByName('kotlin')
     kotlin.sourceSets.getByName('main').kotlin.setIncludes([

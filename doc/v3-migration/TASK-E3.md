@@ -1,0 +1,3 @@
+# E3 tiny script correction
+
+Own only tools/architecture/migrate-v3.ps1. Fix `if (Test-Path variable:PSScriptRoot -and $PSScriptRoot)` to `if ((Test-Path variable:PSScriptRoot) -and $PSScriptRoot)` and same PSCommandPath expression: -and otherwise parsed as cmdlet parameter. Native UTF8 noBOM script cannot load Chinese on Windows PS5.1. Codex will normalize file UTF8 BOM after you finish; do not rewrite entire script for this. Use actual PS5.1 syntax. Check migration classification: keep new presentation/** in core (F currently creates UI adapters there). No production source moves. No unrelated rewrites. delivery-E3.md.

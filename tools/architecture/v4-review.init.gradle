@@ -1,0 +1,20 @@
+// Independent review probes; adds tests without modifying Anti's task files.
+// Run: gradlew -I tools/architecture/v4-review.init.gradle :server:test --tests 'com.majiang.review.*'
+gradle.projectsEvaluated {
+    def p = gradle.rootProject.project(':server')
+    def stage = gradle.startParameter.projectProperties['reviewStage']
+    if (stage != null && !(stage ==~ /[A-Za-z0-9_-]+/)) {
+        throw new GradleException('Invalid reviewStage')
+    }
+    p.layout.buildDirectory.set(p.file(stage == null
+        ? '../build/v4-review/server'
+        : "../build/v4-migration/review-${stage}/server"))
+    def reviewSources = p.file('../tools/architecture/v4-review')
+    def kotlinTests = p.extensions.getByName('kotlin').sourceSets.getByName('test').kotlin
+    if (gradle.startParameter.projectProperties['reviewOnly'] == 'true') {
+        // Isolated reviewer run; module tests remain mandatory in the normal full build.
+        kotlinTests.setSrcDirs([reviewSources])
+    } else {
+        kotlinTests.srcDir(reviewSources)
+    }
+}

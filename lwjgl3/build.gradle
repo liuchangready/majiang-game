@@ -3,7 +3,7 @@ apply plugin: 'application'
 apply plugin: 'org.jetbrains.kotlin.jvm'
 
 dependencies {
-    implementation project(':core')
+    implementation project(':presentation')
     implementation "com.badlogicgames.gdx:gdx-backend-lwjgl3:$gdxVersion"
     implementation "com.badlogicgames.gdx:gdx-platform:$gdxVersion:natives-desktop"
     implementation "com.badlogicgames.gdx:gdx-freetype-platform:$gdxVersion:natives-desktop"

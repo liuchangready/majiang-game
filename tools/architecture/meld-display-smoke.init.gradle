@@ -4,6 +4,7 @@ gradle.projectsEvaluated {
     def compile = p.tasks.register('compileMeldDisplaySmoke', JavaCompile) {
         dependsOn p.tasks.named('classes')
         source gradle.rootProject.file('tools/architecture/MeldDisplayRenderSmoke.java')
+        source gradle.rootProject.files('tools/architecture/V4SmokeSession.java', 'tools/architecture/V4SmokeViews.java')
         classpath = p.sourceSets.main.runtimeClasspath
         destinationDirectory.set(out)
         options.release = 17

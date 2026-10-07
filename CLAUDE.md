@@ -1,5 +1,7 @@
 # majiang — 千术麻将 (libGDX 2D 跨平台游戏工程)
 
+当前最高优先级：用户授权继续 V4 迁移，由 Anti 开发、Codex 测试验收，完成后删除无用 V3，不保留旧入口兼容性。按 [V4 计划](doc/v4-migration/PLAN.md)、[最终契约](doc/v4-migration/CONTRACT.md) 和 R 系列任务执行；下文 V3 描述仅代表迁移起点。禁止通过削弱有效测试完成迁移。
+
 一款以**出千绝技**（袖里藏牌、偷天换日、透视、声东击西、怀疑度与防抓包）为核心玩法的跨平台麻将游戏。
 
 ## 技术栈
@@ -16,7 +18,11 @@
 
 ```
 majiang/
-├── core/       平台无关的游戏逻辑与UI（唯一写玩法代码的地方）
+├── engine/     纯 Kotlin 权威引擎、Round/Session、规则、计时、Host 与共享 access 接口
+├── protocol/   共享契约：server.api 接口与 DTO、UDP 协议栈、V4 消息编解码（client 与 server 共同依赖）
+├── client/     GameClient、同步器与网络客户端/协议
+├── server/     纯 JVM 房间和 TCP 服务
+├── presentation/ libGDX 展示、Screen、渲染与组合根（原 core，V3 迁移后更名）
 │   └── src/main/kotlin/com/majiang/
 │       ├── MahjongGame.kt   主类 (Game 状态机)
 │       └── screen/          场景集合 (MenuScreen 菜单, GameScreen 牌桌)
@@ -27,7 +33,7 @@ majiang/
 └── local.properties  本机 Android SDK 路径
 ```
 
-核心原则：**玩法代码只写 `core/`**，`lwjgl3/` 和 `android/` 保持薄壳。
+当前正在执行用户授权的 V3 模块迁移：规则与权威业务放 `engine/`，客户端放 `client/`，展示放 `presentation/`；`lwjgl3/` 和 `android/` 保持薄壳。迁移状态见 `doc/v3-migration/STATUS.md`。并行开发必须遵守各任务文件所有权，不能因旧路径注释把代码重新搬回 presentation。
 
 ## 常用命令
 
@@ -57,4 +63,3 @@ run_tests.bat
 - 虚拟坐标固定 1280x720（横屏模式，PC 窗口与手机横屏自动等比缩放）。
 - 资源统一放 `assets/`，用 `Gdx.files.internal("...")` 引用。
 - 版本号统一在根 `gradle.properties` 管理，勿在子模块中硬编码。
-
