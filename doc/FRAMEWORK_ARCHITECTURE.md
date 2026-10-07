@@ -1,369 +1,289 @@
 # 🀄 千术麻将 (Mahjong Cheater) — 整体架构与系统设计文档
 
-本文档详细阐述《千术麻将》的游戏整体框架设计、三层分离架构、136张牌物理守恒律、事件驱动特效解耦机制、状态机流转及千术系统实现。
-
-> 2026-09-29 架构 V2：当前对局实现契约以 [DESIGN.md](architecture-v2/DESIGN.md) 为准，独立验收见 [REVIEW.md](architecture-v2/REVIEW.md)。实际入口为 `GameScreen → GameSession → GameStateMachine`，UI/AI 使用座位视图与合法动作；真实容器守恒由 `StateInvariants` 审计，移动、结算、响应裁决和场次推进分别交给专用服务。本文后续动画、千术完整交互、拆分模块和联机章节包含后续设计，不代表均已接入本轮实现。
-
-> 立直交互补充契约：[自动摸切、自摸暂停与严格暗杠](riichi-flow/DESIGN.md)，验收状态见 [REVIEW.md](riichi-flow/REVIEW.md)。
-
-> 宣言前的表现层选择：[立直选牌与待牌预览](riichi-choice/DESIGN.md)。`RiichiPreviewProvider` 仅从 `PlayerView` 与合法动作计算方案，`RiichiSelectionModel` 保存临时选择；UI 确认前不修改领域状态。
+本文档说明当前 V4 的模块职责、136 张牌物理守恒、数据映射、生命周期和权威调度。2026-10-07 已按当前源码刷新，连接控制归 server，见 [本次验收](v4-migration/ACCEPTANCE-CONNECTION-OWNERSHIP.md)。
 
 ---
 
 ## 目录
 
 1. [设计目标与核心原则](#一设计目标与核心原则)
-2. [分层架构设计](#二分层架构设计)
+2. [七模块分层架构与数据流水线](#二七模块分层架构与数据流水线)
 3. [136 张物理守恒机制 (TilePool)](#三136-张物理守恒机制-tilepool)
-4. [特效与实现分离机制 (Event-Driven FX)](#四特效与实现分离机制-event-driven-fx)
-5. [游戏状态机与流转模型 (FSM)](#五游戏状态机与流转模型-fsm)
+4. [表现层与事件驱动流水线 (Event & Projection)](#四表现层与事件驱动流水线-event--projection)
+5. [三级生命周期与状态机流转 (Lifecycles & FSM)](#五三级生命周期与状态机流转-lifecycles--fsm)
 6. [千术系统与视线博弈 (Cheat & Suspicion)](#六千术系统与视线博弈-cheat--suspicion)
-7. [AI 策略与决策系统 (AI System)](#七ai-策略与决策系统-ai-system)
-8. [源码文件清单与职责索引](#八源码文件清单与职责索引)
-9. [联网与大厅系统概览 (Online & Lobby)](#九联网与大厅系统概览-online--lobby)
+7. [AI 策略与异步决策调度 (AI System)](#七ai-策略与异步决策调度-ai-system)
+8. [模块源码文件结构与职责索引](#八模块源码文件结构与职责索引)
+9. [网络与房间系统概览 (UDP & InProcess)](#九网络与房间系统概览-udp--inprocess)
 
 ---
 
 ## 一、设计目标与核心原则
 
-本项目旨在打造一款 **2D 策略心理战日式麻将**，核心差异化特色在于**绝技出千与视线防抓包博弈**。整体系统架构遵循以下四大核心设计原则：
+本项目旨在打造一款 **2D 策略心理战日式麻将**，核心差异化特色在于**绝技出千与视线防抓包博弈**。系统遵循以下核心原则：
 
-1. **三层严格解耦**：
-   - **表现层 (Presentation)**：只负责根据事件播放动画与渲染 UI，**严禁直接修改游戏状态**。
-   - **领域层 (Domain)**：纯 Kotlin 编写，**零 libGDX 依赖**，具备 100% 独立单测能力。
-   - **千术层 (Cheat System)**：作为领域层的扩展，操纵牌桌与视线博弈，但**绝对不突破物理守恒边界**。
+1. **分层严格解耦**：
+   - **表现层 (presentation)**：菜单/对局/共享仅依赖 `client.api`，不接触领域逻辑或网络实现；`MahjongGame` 组合根装配服务端与客户端；
+   - **客户端 (client)**：维护本地缓存、有序对账与重连，仅依赖 `protocol`；
+   - **协议库 (protocol)**：独立线路 DTO 与 UDP 可靠性传输库，无外部业务依赖；
+   - **服务端 (server)**：权威串行调度中心，依赖 `engine` + `protocol`，拥有连接控制；
+   - **领域层 (engine)**：纯 Kotlin 核心业务与规则，零外部框架依赖，100% 独立单测。
 2. **136 张牌物理守恒闭环**：
-   - 牌桌上任何时刻、无论经历多少次发牌、摸打、副露或出千（袖里乾坤/移花接木），**全场恰好 136 张物理牌**，无任何牌凭空产生或消失。
-3. **特效与逻辑彻底分离 (Event-Driven)**：
-   - 逻辑层产生不可变的 `GameEvent` 快照推送到 `GameEventBus`；表现层 `subscribe` 事件并转化为动画入队 (`AnimationQueue`)，支持通过接口无缝替换皮肤与特效实现。
-4. **状态机严格约束时序 (State Machine)**：
-   - 基于 `GamePhase` 与 `GameAction` 驱动，响应窗口具备严格的吃/碰/杠/荣优先级仲裁。
+   - 牌桌上任何时刻、无论经历多少次发牌、摸打、副露或出千（袖里乾坤/移花接木），全场恰好 136 张物理牌（`tileId` 0..135），绝无凭空增删。
+3. **单向投递与数据隔离**：
+   - 领域事件不直接穿透给 UI。数据严格经：`engine` → `server EngineProtocolMapper` → `protocol DTO` → `client ProtocolViewMapper` → `client 视图模型`。
+4. **权威串行裁决与单桌执行**：
+   - 每桌维护独占串行队列，统一入队串行裁决；玩家提交严格校验 deadline，tick 先处理超时再调度 AI，不同决策按序生效，响应窗口允许多个座位提交记录；权威 Deadline（20s + 3s）优先执行，不受客户端动画推迟。
 
 ---
 
-## 二、分层架构设计
+## 二、七模块分层架构与数据流水线
 
-### 2.1 架构拓扑图
+### 2.1 模块依赖拓扑
 
 ```mermaid
-flowchart TB
-    subgraph Presentation["🎨 表现层 (Presentation - libGDX / LWJGL3 / Android)"]
-        direction TB
-        GameScreen["GameScreen / MenuScreen<br/>(场景管理与输入捕获)"]
-        EventRenderer["GameEventRenderer<br/>(事件 → 动画映射)"]
-        AnimQueue["AnimationQueue<br/>(顺序 / 并行动画流水线)"]
-        AnimFactory["AnimationFactory 接口<br/>(注入具体特效与绘制)"]
+flowchart TD
+    subgraph PresentationLayer["🎨 表现层"]
+        presentation["presentation<br/>(menu / game / common)"]
     end
 
-    subgraph Event["📡 事件总线 (Event Layer)"]
-        direction TB
-        EventBus["GameEventBus<br/>(强类型事件发布 / 订阅 / 回放)"]
-        Events["GameEvent 密封类族<br/>(TileDrawn / TileDiscarded / CheatAttempted...)"]
+    subgraph ClientLayer["💻 客户端契约与缓存"]
+        client["client<br/>(client.api & 传输绑定)"]
     end
 
-    subgraph Domain["🧠 领域与规则层 (Domain & Rules - 纯 Kotlin)"]
-        direction TB
-        FSM["GameStateMachine<br/>(状态机控制器)"]
-        State["GameState<br/>(对局可变状态快照)"]
-        RuleEngine["RiichiRuleEngine<br/>(动作合法性与振听判定)"]
-        Decomposer["HandDecomposer<br/>(递归回溯 4面子+1雀头 / 7对 / 国士)"]
-        Yaku["YakuEvaluator<br/>(41 种役种与役满仲裁)"]
-        Score["ScoreCalculator & FuCalculator<br/>(符数取整与得点计算表)"]
-        Pool["TilePool<br/>(136 张物理归属与守恒断言)"]
+    subgraph ProtocolLayer["📦 独立协议库"]
+        protocol["protocol<br/>(DTO / 二进制帧 / 编解码)"]
     end
 
-    subgraph Cheat["🃏 千术与博弈系统 (Cheat System)"]
-        direction TB
-        CheatExec["CheatActionExecutor<br/>(袖里乾坤 / 移花接木 / 神仙透视 / 声东击西)"]
-        Suspicion["SuspicionSystem<br/>(AI 观察者个性 / 视线随机游走 / 抓包判定)"]
-        Stacking["AdaptiveWallStackingEngine<br/>(开局牌山定向需求与码牌)"]
+    subgraph ServerLayer["⚙️ 服务端权威宿主"]
+        server["server<br/>(ServerTableHost / 房间 / control)"]
     end
 
-    subgraph AI["🤖 AI 智能体 (AI System)"]
-        AIPlayer["AIPlayer<br/>(托管与对手驱动)"]
-        AIStrategy["AIStrategy<br/>(向听数与贪心策略)"]
+    subgraph DomainLayer["🧠 核心领域规则与状态"]
+        engine["engine<br/>(TableAuthority / 规则 / 算分 / 守恒)"]
     end
 
-    %% 交互流向
-    GameScreen -->|"1. 提交用户意图"| FSM
-    GameScreen -->|"更新渲染帧"| EventRenderer
-    EventRenderer -->|"驱动动画更新"| AnimQueue
-    AnimQueue -.->|"调用具体实现"| AnimFactory
+    subgraph PlatformLayer["🚀 平台启动器"]
+        lwjgl3["lwjgl3 (桌面端)"]
+        android["android (移动端)"]
+    end
 
-    FSM -->|"校验规则合法性"| RuleEngine
-    RuleEngine -->|"手牌拆解"| Decomposer
-    RuleEngine -->|"算番"| Yaku
-    RuleEngine -->|"算符与点数"| Score
-    FSM -->|"物理转移与断言"| Pool
-    FSM -->|"2. 发布状态快照事件"| EventBus
-
-    CheatExec -->|"物理交换 / 只读透视"| State
-    CheatExec -->|"转移记录"| Pool
-    CheatExec -->|"引发视线关注"| Suspicion
-    CheatExec -->|"发布出千事件"| EventBus
-
-    Suspicion -->|"视线变化事件"| EventBus
-
-    AIPlayer -->|"计算决策"| AIStrategy
-    AIPlayer -->|"输出 GameAction"| FSM
-
-    EventBus -->|"3. 表现层消费事件"| EventRenderer
+    presentation --> client
+    presentation -.组合根装配.-> server
+    client --> protocol
+    server --> engine
+    server --> protocol
+    lwjgl3 --> presentation
+    android --> presentation
 ```
+
+### 2.2 数据流动与投影流水线
+
+```mermaid
+flowchart LR
+    E[engine: GameState / Event] -->|EngineProtocolMapper| S[server: Protocol DTO]
+    S -->|UDP / InProcess| C[client: Protocol DTO]
+    C -->|ProtocolViewMapper| V[client.api: GameSnapshotView]
+    V -->|驱动渲染| P[presentation: GameScreen]
+```
+
+UI 不直接订阅 engine 内的 `GameEventBus`，而是通过 `client.api.GameSession` 接收完整快照与本次可见事件，不维护第二套增量状态。
 
 ---
 
 ## 三、136 张物理守恒机制 (TilePool)
 
-### 3.1 物理守恒定律
+### 3.1 物理守恒定律与实体定义
 
-单副麻将包含 34 种牌型，每种牌型对应 4 张不可替代的物理副本（`copyIndex` 从 0 到 3）。
-在代码中，[`TilePool`](file:///d:/majiang/core/src/main/kotlin/com/majiang/model/TilePool.kt) 负责全程追踪每张牌所处的唯一**物理区域 (Zone)**：
+单副麻将包含 34 种牌型，每种牌型对应 4 张不可替代的物理副本（`tileId` 范围 0..135）。
+在 `engine` 模块中，每张牌在任何时刻均处于唯一的**物理区域 (Zone)**：
 
-```kotlin
-enum class Zone {
-    WALL,       // 牌山（可摸牌区）
-    HAND,       // 玩家暗牌区
-    DISCARD,    // 牌河（各家弃牌堆）
-    MELD,       // 明牌副露区（吃碰杠）
-    DEAD_WALL,  // 王牌区（14 张：岭上牌 + Dora 指示牌）
-    SLEEVE,     // 袖中暗藏牌（千术专用口袋）
-    UNASSIGNED  // 初始化中间态
-}
-```
+- `WALL`：牌山可摸牌区；
+- `HAND`：玩家暗牌手牌区；
+- `DISCARD`：牌河弃牌堆；
+- `MELD`：明牌副露区（吃碰明杠）；
+- `DEAD_WALL`：王牌区（14 张：岭上牌 + Dora 指示牌）；
+- `SLEEVE`：袖中暗藏牌（千术专用空间）；
+- `UNASSIGNED`：初始化中间态。
 
-### 3.2 转移防穿帮规范
+### 3.2 转移防穿帮规范与守恒断言
 
-所有针对牌的操作必须通过 `transfer` 方法，**严禁直接 `add` 或 `new`**：
+所有牌的位置变更均通过原子转移执行，严禁直接构造或丢失牌：
+- **袖里乾坤 (`SLEEVE_SWAP`)**：手牌与袖中牌原地 1:1 双向置换所有权；
+- **移花接木 (`WALL_STEAL`)**：手牌与牌山指定槽位 1:1 等额置换；
+- **神仙透视 (`DIVINE_SIGHT`)**：纯只读内存投影，无任何物理移动；
+- **声东击西 (`DIVERSION`)**：仅改变观察者视线向量，不接触物理牌。
 
-```kotlin
-fun transfer(tile: Tile, fromZone: Zone, toZone: Zone, playerIndex: Int = -1) {
-    val currentInfo = tileMap[tile]
-    require(currentInfo != null) { "Tile $tile not found in pool" }
-    require(currentInfo.first == fromZone) { 
-        "Tile $tile is in ${currentInfo.first}, but expected in $fromZone" 
-    }
-    tileMap[tile] = Pair(toZone, playerIndex)
-}
-```
-
-每次发牌、摸牌、打牌、吃碰杠、以及千术执行完毕后，均执行：
-```kotlin
-fun assertConservation() {
-    require(tileMap.size == 136) { "Pool must contain exactly 136 tiles" }
-    val duplicates = tileMap.keys.groupingBy { it }.eachCount().filter { it.value > 1 }
-    require(duplicates.isEmpty()) { "Pool contains duplicate tiles: $duplicates" }
-}
-```
-**出千防抓包保证**：
-- **袖里乾坤**：手中一张牌放入袖子，袖中一张牌放入手中（两张牌原地互换所有权，总牌数严格不变）。
-- **移花接木**：手中一张牌与当前牌山指针指向的顶牌交换（牌山与手牌等额置换）。
-- **神仙透视**：纯只读操作，不触发任何状态与区域流转。
-- **声东击西**：仅影响 AI 的视线状态机，不涉及任何物理牌。
+每次阶段流转或出千完成后，调用物理守恒审计：
+`TilePool` 绑定 `GameState` 时，调用 `StateInvariants.assertValid` 执行真实各区域容器、唯一实体归属（0..135）和账本强一致审计；未绑定状态时执行 136 张标准合法身份全覆盖断言。
 
 ---
 
-## 四、特效与实现分离机制 (Event-Driven FX)
+## 四、表现层与事件驱动流水线 (Event & Projection)
 
-### 4.1 为什么要特效分离？
-若将“播放摸牌动画”、“显示吃碰特效”、“屏幕闪烁”等代码直接混杂在麻将逻辑状态机中，会导致：
-1. 逻辑无法独立进行无界面的单元测试。
-2. 跨平台适配成本高（桌面 LWJGL 与 Android 绘制管线差异）。
-3. 难以切换主题皮肤或动画风格。
-
-### 4.2 事件总线 (GameEventBus)
-逻辑状态机只负责计算并发布事件快照：
-- [`GameEvent.TileDrawn`](file:///d:/majiang/core/src/main/kotlin/com/majiang/event/GameEvent.kt)
-- [`GameEvent.TileDiscarded`](file:///d:/majiang/core/src/main/kotlin/com/majiang/event/GameEvent.kt)
-- [`GameEvent.ChiDeclared`](file:///d:/majiang/core/src/main/kotlin/com/majiang/event/GameEvent.kt)
-- [`GameEvent.CheatAttempted`](file:///d:/majiang/core/src/main/kotlin/com/majiang/event/GameEvent.kt)
-- [`GameEvent.BustedEvent`](file:///d:/majiang/core/src/main/kotlin/com/majiang/event/GameEvent.kt)
-- [`GameEvent.GazeShifted`](file:///d:/majiang/core/src/main/kotlin/com/majiang/event/GameEvent.kt)
-
-### 4.3 动画队列 (AnimationQueue)
-表现层通过 [`GameEventRenderer`](file:///d:/majiang/core/src/main/kotlin/com/majiang/render/GameEventRenderer.kt) 订阅感兴趣的事件，将其转换为动画对象放入队列：
-
-```kotlin
-// 表现层接口：外部可自由注入不同风格的特效实现
-interface AnimationFactory {
-    fun createDrawAnimation(player: Int, wallRemaining: Int): AnimationQueue.GameAnimation?
-    fun createDiscardAnimation(player: Int, isRiichiDiscard: Boolean): AnimationQueue.GameAnimation?
-    fun createBustedAnimation(player: Int, caughtBy: Int): AnimationQueue.GameAnimation?
-    fun createCheatSuccessAnimation(technique: CheatTechnique): AnimationQueue.GameAnimation?
-    // ...
-}
-```
-
-队列支持：
-- **顺序动画**（如：先打牌动画 0.3s → 再触发振听警告 0.2s）
-- **并行动画组**（如：四位玩家视线同时转向 + 桌面震动特效）
-- **非阻塞更新**：每帧传入 `delta` 时间驱动进度更新。
+1. **逻辑与表现彻底解耦**：
+   - 领域计算不包含任何 LibGDX 绘制调用或 sleep 延迟；
+   - 牌桌场景 `GameScreen` 消费 `GameUpdateView` 的完整 `snapshot + visibleEvents`，由 `DiscardAnimation`、`TileDrawBuffer` 等驱动显示；动画仅门控客户端自动推进节奏，不阻塞底层网络与协议心跳（未宣称实现所有千术/鸣牌动画）。
+2. **脱敏与信息不对称安全**：
+   - 玩家快照与事件经过按席位投影及协议映射，不下发未经授权的他家暗牌、他人出千余额和私人账本原因；
+   - 观战流经 `PublicProtocolMapper` 构造独立公开快照。规则允许的终局公开信息与私人信息分别处理。
 
 ---
 
-## 五、游戏状态机与流转模型 (FSM)
+## 五、三级生命周期与状态机流转 (Lifecycles & FSM)
 
-### 5.1 对局阶段定义 (GamePhase)
+系统清晰分离三套独立生命周期状态机：
 
+### 5.1 房间生命周期 (`ProtocolRoomLifecycle` / `RoomLifecycle`)
 ```mermaid
 stateDiagram-v2
-    [*] --> STACKING: 开局重置
-    STACKING --> DEALING: 码牌完成
-    DEALING --> DRAW: 配牌结束 (各13张，庄家多1张)
-    
-    DRAW --> CHEAT_WINDOW: 摸牌后短暂窗口
-    CHEAT_WINDOW --> DISCARD: 放弃或执行千术
-    CHEAT_WINDOW --> ROUND_END: 自摸和了
-    
-    DISCARD --> RESPONSE_WINDOW: 打出牌
-    
-    RESPONSE_WINDOW --> ROUND_END: 荣和成功
-    RESPONSE_WINDOW --> KAN_DRAW: 声明杠牌
-    RESPONSE_WINDOW --> DRAW: 吃/碰后打牌或无人响应切换下家
-    
-    KAN_DRAW --> CHEAT_WINDOW: 岭上摸牌成功
-    
-    DRAW --> ROUND_END: 牌山摸完荒牌流局
-    
-    ROUND_END --> STACKING: 连庄 / 下一局
-    ROUND_END --> MATCH_END: 半庄结束 / 破产
-    MATCH_END --> [*]
+    direction LR
+    [*] --> LOBBY
+    LOBBY --> PREPARING : 成员就绪且启用码牌
+    LOBBY --> PLAYING : 成员就绪且未启用码牌
+    PREPARING --> PLAYING : 码牌与洗牌完成
+    PLAYING --> SETTLED : 单局和了/流局结算
+    SETTLED --> PREPARING : 下一局(启用码牌)
+    SETTLED --> PLAYING : 下一局(未启用码牌)
+    SETTLED --> FINISHED : 整场对局结束
+    PLAYING --> FINISHED : 本局结算直接满足终场条件
+    LOBBY --> CLOSED : 房主离房/解散
+    PREPARING --> CLOSED : 房主离房/解散
+    PLAYING --> CLOSED : 房主离房/解散
+    SETTLED --> CLOSED : 房主离房/解散
+    FINISHED --> CLOSED : 离房退出
+    CLOSED --> [*]
 ```
 
-### 5.2 响应窗口仲裁法
-当玩家打出一张牌后，进入 `RESPONSE_WINDOW`，系统向其他三家发起广播，按如下优先级仲裁：
-1. **荣和 (Ron)**：优先级最高。支持头跳（上家优先）或多响结算。
-2. **杠 (Kan)** / **碰 (Pon)**：高于吃。若一人要碰，一人要吃，碰牌者胜出。
-3. **吃 (Chi)**：仅限打牌者的下家有效。
-4. **全员放弃 (Pass)**：进入下一位玩家的 `DRAW` 阶段。
+### 5.2 整场账本生命周期 (`SessionLifecycle` / `MatchSession`)
+```mermaid
+stateDiagram-v2
+    direction LR
+    [*] --> CREATED
+    CREATED --> ROUND_ACTIVE : 绑定初始单局实例
+    ROUND_ACTIVE --> WAITING_READY : 接受结算，准备继续
+    ROUND_ACTIVE --> WAITING_DEALER_CHOICE : 结算后允许庄家选择终局
+    ROUND_ACTIVE --> FINISHED : 结算后满足终场条件
+    WAITING_DEALER_CHOICE --> WAITING_READY : 选择继续
+    WAITING_DEALER_CHOICE --> FINISHED : 宣告和了止
+    WAITING_READY --> ROUND_ACTIVE : 绑定下一局新实例
+    FINISHED --> [*]
+```
+
+图示为当前领域提交的主要路径：初始单局可尚未发牌，大厅是否开赛由房间层控制。接受单局结算时直接提交等待准备、庄家选择或终场状态，不经过独立的 `ROUND_RESULT` 中间提交。
+
+`WAITING_START`、`ROUND_RESULT` 等仍在枚举中保留，但不应据此画成当前必经状态。产品暂停由 `TableAuthority` 冻结 `DecisionClock`，房间关闭由 server 管理；二者不等于整场生命周期必然切到同名枚举。
+
+### 5.3 单局流转状态机 (`RoundStateMachine`)
+```mermaid
+stateDiagram-v2
+    direction TB
+    [*] --> STACKING : 开局码牌
+    STACKING --> DEALING : 码牌完成
+    DEALING --> CHEAT_WINDOW : 配牌完成(中间过渡，庄家直接持14张)
+    DRAW --> CHEAT_WINDOW : 摸牌完成(中间过渡)
+    CHEAT_WINDOW --> DISCARD : 放弃/完成出千，进入出牌
+    CHEAT_WINDOW --> RESPONSE_WINDOW : 直接舍牌
+    CHEAT_WINDOW --> KAN_DRAW : 暗杠后摸岭上
+    CHEAT_WINDOW --> CHANKAN_WINDOW : 宣告加杠(ADDED_KAN，打开抢杠)
+    CHEAT_WINDOW --> ROUND_END : 自摸和了 / 九种九牌途中流局
+    DISCARD --> RESPONSE_WINDOW : 舍牌进入他家响应窗口
+    RESPONSE_WINDOW --> DISCARD : 他家吃/碰副露成功
+    RESPONSE_WINDOW --> KAN_DRAW : 他家大明杠响应成功
+    RESPONSE_WINDOW --> DRAW : 全员Pass且牌山有余牌(下家摸牌)
+    RESPONSE_WINDOW --> ROUND_END : 他家荣和 / 荒牌流局
+    CHANKAN_WINDOW --> KAN_DRAW : 全员Pass抢杠(加杠成立摸岭上)
+    CHANKAN_WINDOW --> ROUND_END : 抢杠荣和
+    KAN_DRAW --> CHEAT_WINDOW : 岭上摸牌完成(中间过渡)
+    ROUND_END --> [*] : 终态冻结(新局创建新实例)
+```
+
+- **单局不可复用**：`RoundStateMachine` 达到 `ROUND_END` 即永久冻结，无任何回退边。下一局（包含连庄）均由 `ApplicationCoordinator` 创建全新的状态机实例与新 `roundId`；
+- **中间过渡与原子推进**：`DEALING`、`DRAW` 与 `KAN_DRAW` 在单次动作执行中可能为瞬时中间阶段。例如开局发牌在单步操作中经过 `DEALING` 立即抵达庄家 `CHEAT_WINDOW`（庄家已持 14 张牌）；
+- **加杠与抢杠仲裁**：加杠（`ADDED_KAN`）由当前摸牌/出千玩家在 `CHEAT_WINDOW` 主动宣告并直接打开 `CHANKAN_WINDOW`；若全员放弃抢杠，则摸岭上牌（`KAN_DRAW`）继续；大明杠响应则经 `RESPONSE_WINDOW` 裁决胜出后进入 `KAN_DRAW`。
 
 ---
 
 ## 六、千术系统与视线博弈 (Cheat & Suspicion)
 
-### 6.1 四大绝技的运行时实现
+### 6.1 四大绝技机制
 
-| 绝技名称 | 枚举代码 | 物理实现机制 | 风险与代价 |
+| 绝技名称 | 代码 | 机制 | 风险与代价 |
 |:---|:---|:---|:---|
-| **袖里乾坤** | `SLEEVE_SWAP` | `hand.closedTiles` ↔ `state.sleeveTiles` 双向置换 | 被注视时怀疑度 +35%，超阈值立即抓包 |
-| **移花接木** | `WALL_STEAL` | `state.wall[wallPointer]` ↔ `hand.closedTiles` 置换 | 被注视时怀疑度 +40%，超阈值立即抓包 |
-| **神仙透视** | `DIVINE_SIGHT` | 只读拷贝：对手暗牌 / 牌山前 N 张 / 王牌区 | 只读不换牌，被注视怀疑度 +20% |
-| **声东击西** | `DIVERSION` | 强制改变全体 AI 观察者的 `gazeTarget` 持续 3.0s | 风险极低（轻微增加 5% 疑惑度），为后续出千制造绝对安全期 |
+| **袖里乾坤** | `SLEEVE_SWAP` | 手牌 ↔ 袖牌等额互换 | 消耗出千点，直视时怀疑度剧增 |
+| **移花接木** | `WALL_STEAL` | 手牌 ↔ 牌山指针顶牌互换 | 消耗出千点，高抓包风险 |
+| **神仙透视** | `DIVINE_SIGHT` | 只读窥探暗牌/牌山/王牌 | 风险适中，不改变物理状态 |
+| **声东击西** | `DIVERSION` | 制造响动吸引全场视线偏转 3 秒 | 制造响动吸引全场视线偏转，但出千合法性与判定仍由领域规则裁决 |
 
-### 6.2 AI 怀疑度与视线系统 (SuspicionSystem)
+### 6.2 怀疑度与抓包判定 (SuspicionSystem)
 
-每个 AI 玩家拥有独立的注视状态与性格属性：
-```kotlin
-enum class SuspicionPersonality(
-    val gazeShiftInterval: Float,   // 视线切换平均间隔（秒）
-    val suspicionGrowthRate: Float,  // 怀疑度增长系数
-    val bustThreshold: Float,        // 抓包爆发阈值 (如偏执型 45% 即抓包)
-    val naturalDecayRate: Float      // 每秒怀疑度自然衰减
-) {
-    OBLIVIOUS("迟钝型", 4.0f, 0.5f, 90f, 0.5f),
-    NORMAL("普通型",    2.5f, 1.0f, 75f, 0.3f),
-    SHARP("敏锐型",     1.5f, 1.5f, 60f, 0.2f),
-    PARANOID("偏执型",  0.8f, 2.0f, 45f, 0.1f)
-}
-```
-
-- **视线目标 (`gazeTarget`)**：`null` 代表低头看自己的手牌，`0~3` 代表注视对应玩家。
-- **权重计算**：某玩家的怀疑度越高，AI 视线随机切换到该玩家的权重越大。
-- **抓包判定 (Busted)**：当出千动作发生且有 AI 正在直视出千者，且累计怀疑度 ≥ `bustThreshold`，立即触发 `GameEvent.BustedEvent`，直接中止对局并予以极刑惩罚。
+- **视线目标 (`gazeTarget`)**：`null` 表示低头看自己牌，`0..3` 表示注视对应座位；
+- **抓包组件 (Busted)**：`SuspicionSystem` 检查注视与怀疑度阈值，`CheatActionExecutor` 被抓包时发布 `GameEvent.BustedEvent` 并返回失败结果。组件产生事件不等于已实现整局判负及重罚结算，产品接线与结算行为以权威动作处理链为准。
 
 ---
 
-## 七、AI 策略与决策系统 (AI System)
+## 七、AI 策略与异步决策调度 (AI System)
 
-- **接口抽象**：[`AIStrategy`](file:///d:/majiang/core/src/main/kotlin/com/majiang/ai/AIStrategy.kt) 定义了打牌、吃、碰、杠、立直、和了的纯计算决策。
-- **基本策略 (`BasicAIStrategy`)**：
-  - 遇到和了机会（自摸/荣和）100% 声明。
-  - 门前清满足听牌条件且无振听时，宣告立直。
-  - 遇到可碰的役牌（白、发、中、圈风、门风）进行副露。
-  - 打牌采用**向听数最小化 + 孤张幺九优先切出**的贪心策略。
+1. **异步推理脱离权威临界区**：
+   - AI 启发式搜索在权威串行执行器之外的独立线程池异步执行，不占用权威单桌锁；
+   - 决策计算完成提交时，严格比对 `(roundId, decisionId, controlEpoch)`，确保因真人收回或超时导致的过期决策直接作废。
+2. **策略实现**：
+   - `BasicAIStrategy`：向听数最小化、孤张幺九优先切出、和了/立直贪心判定；
+   - `TsumogiriAIStrategy`：摸切托管策略。
 
 ---
 
-## 八、源码文件清单与职责索引
-
-全部核心逻辑已落地至 `core/src/main/kotlin/com/majiang/` 目录下（共 24 个源文件，零编译错误，零警告）：
+## 八、模块源码文件结构与职责索引
 
 ```
-com.majiang
-├── MahjongGame.kt                  // 游戏全局上下文与屏幕管理器
-├── model/                          // 领域数据模型
-│   ├── Tile.kt                     // 34维牌值对象、花色、属性判断、Dora目标推导
-│   ├── TilePool.kt                 // 136张牌物理守恒池、Zone区域流转、守恒断言
-│   ├── Meld.kt                     // 吃/碰/大明杠/暗杠/加杠副露结构
-│   └── PlayerHand.kt               // 玩家手牌、副露、牌河、立直与一发状态
-├── state/                          // 状态机
-│   ├── GamePhase.kt                // 对局阶段枚举与合法转移校验
-│   ├── GameAction.kt               // 玩家与系统意图操作密封类
-│   ├── GameState.kt                // 完整可变状态快照容器
-│   └── GameStateMachine.kt         // 核心状态机驱动与仲裁引擎
-├── rules/                          // 日麻规则与计分引擎
-│   ├── HandDecomposer.kt           // 递归回溯手牌拆解（标准形/七对/国士）与听牌计算
-│   ├── YakuEvaluator.kt            // 41 种役种判定与役满仲裁
-│   ├── FuCalculator.kt             // 符数完整计算器（底符/面子/雀头/听牌/和了加符）
-│   ├── ScoreCalculator.kt          // 翻符算点、满贯阶梯分级与支付分割
-│   └── RiichiRuleEngine.kt         // 吃碰杠立直合法性、振听判定与规则校验
-├── cheat/                          // 千术与视线博弈
-│   ├── SuspicionSystem.kt          // AI 观察者视线游走、怀疑度衰减与抓包判定
-│   └── CheatActionExecutor.kt      // 四大绝技的运行时物理交换实现
-├── event/                          // 事件驱动基础设施
-│   ├── GameEvent.kt                // 20+ 不可变游戏事件密封类
-│   └── GameEventBus.kt             // 强类型事件总线与历史录像回放
-├── render/                         // 表现层抽象
-│   ├── AnimationQueue.kt           // 顺序与并行动画队列
-│   └── GameEventRenderer.kt        // 事件到动画的映射器与工厂接口
-├── ai/                             // AI 智能体
-│   ├── AIStrategy.kt               // AI 决策策略接口与贪心实现
-│   └── AIPlayer.kt                 // AI 操作转换器
-└── screen/                         // libGDX 场景
-    ├── MenuScreen.kt               // 主菜单、出千秘籍弹窗
-    └── GameScreen.kt               // 牌桌游戏场景
+majiang/
+├── engine/                       // 纯 JVM 核心领域逻辑
+│   └── src/main/kotlin/com/majiang/
+│       ├── authority/           // TableAuthority 纯同步权威入口
+│       ├── application/         // ApplicationCoordinator, ControllerRegistry
+│       ├── model/               // Tile, Meld, TilePool, PlayerHand
+│       ├── rules/               // RiichiRuleEngine, 役种, 算分
+│       ├── round/               // RoundStateMachine (单局 FSM)
+│       ├── match/               // MatchSession, SessionLifecycle
+│       └── access/              // SeatControlView, PlayerSnapshot 领域模型
+├── protocol/                     // 独立通信协议库 (无业务实现)
+│   └── src/main/kotlin/com/majiang/
+│       ├── server/api/          // LobbyApi, SessionApi, SpectatorApi, ServerConnection, RoomBinding, SpectatorBinding
+│       └── transport/           // Protocol DTOs, UdpFrame, PushSequencer, 编解码
+├── server/                       // 权威宿主与房间服务
+│   └── src/main/kotlin/com/majiang/server/
+│       ├── control/             // ConnectionControl, DisconnectPolicy (连接控制实现)
+│       ├── host/                // ServerTableHost (每桌串行队列)
+│       ├── room/                // RoomRegistry, SharedRoom (传输中立房间)
+│       ├── mapping/             // EngineProtocolMapper, PublicProtocolMapper
+│       ├── inprocess/           // InProcessServer, InProcessBinding (单机模式)
+│       └── udp/                 // UdpTableServer, UdpRoom (联机模式)
+├── client/                       // 客户端门面与传输适配
+│   └── src/main/kotlin/com/majiang/client/
+│       ├── api/                 // GameSession, LobbySession, SpectatorSession, ProtocolViewMapper, ServerConnectionSession, ClientModels, ClockInfo
+│       └── transport/           // udp/ ScheduledExecutorUdpScheduler, UdpClient
+├── presentation/                 // libGDX 展示层
+│   └── src/main/kotlin/com/majiang/
+│       ├── MahjongGame.kt       // 组合根与画面切换器 (装配 client 与 server)
+│       └── presentation/
+│           ├── menu/            // MenuScreen (主菜单/房间UI)
+│           ├── game/            // GameScreen (牌桌渲染/动画)
+│           └── common/          // 字体、UI资源、皮肤管理
+├── lwjgl3/                       // 桌面启动器
+└── android/                      // 移动端沉浸式启动器
 ```
 
 ---
 
-## 九、联网与大厅系统概览 (Online & Lobby)
+## 九、网络与房间系统概览 (UDP & InProcess)
 
-游戏支持**三种模式**，采用 **Ktor 权威服务端 + WebSocket(JSON)** 的统一联机架构，详细设计见 [`doc/NETWORK_LOBBY_DESIGN.md`](file:///d:/majiang/doc/NETWORK_LOBBY_DESIGN.md)：
-
-| 模式 | 形态 | 网络要求 |
-|:---|:---|:---|
-| **单机模式** | 本地 `GameStateMachine` + AI 对手（现有路径原样保留） | 无 |
-| **大厅模式** | 连接官方部署的 Ktor 服务端：房间制 / 快速匹配 / AI 补位混合局 | 公网 |
-| **自建服务模式** | 桌面客户端**内嵌主机**（房主即服务器，回环连接自入），朋友 IP 直连 | 局域网 / 点对点 |
-
-> 平台覆盖：PC（lwjgl3）与 Android 先行落地，PC 桌面端额外承担内嵌主机角色；**iOS 已按 RoboVM 路线预留为纯客户端**——共享代码须遵守 JDK API 水位、`NetworkClient` 纯接口等兼容契约（详见联网设计文档 7.5 节），P7 启动时只增不改。
-
-与本三层架构的关系：
-
-1. **一套服务端，两种部署**：`core` 拆分为 `core-domain`（纯 Kotlin 领域层）与 `core`（libGDX 表现层）两个模块；`server` 模块既可独立部署为官方大厅服，也可作为库内嵌进 lwjgl3 客户端做自建主机。服务端直接运行 `GameStateMachine` + `RiichiRuleEngine`，规则单一来源，杜绝双端漂移。
-2. **表现层零改动**：三种模式共用事件驱动渲染管线——联机时 `GameEventBus` 的生产者从本地状态机换成 `OnlineGameSession`（网络层），`GameEventRenderer` / `AnimationQueue` 不感知网络存在，更不感知模式差异；房主也是通过回环 WebSocket 连入内嵌服务端的普通客户端，联机代码路径唯一。
-3. **信息不对称即安全**：他家暗牌、牌山序列、袖中牌、里 Dora 等隐藏信息绝不下发给无权客户端；神仙透视结果由服务端定向下发给出千者本人（`EventRedactor` 按座位过滤每个事件，两种部署形态共用同一套规则）。
-4. **千术抓包语义**：`BustedEvent` 仅由 AI 观察者的视线/怀疑度系统触发，真人对战不设抓包操作（设计决策，详见联网设计文档第六节）。
-
-```mermaid
-flowchart LR
-    subgraph Client["客户端 (lwjgl3 / Android)"]
-        UI["表现层<br/>(GameScreen / Renderer)"]
-        SES["OnlineGameSession"]
-        UI --> SES
-    end
-    subgraph Server["权威服务端 (server/ · Ktor)"]
-        GATE["/ws 网关"]
-        LOBBY["大厅 / 房间 / 匹配"]
-        MATCH["MatchSession × N<br/>(core-domain 状态机 + EventRedactor + AI 补位)"]
-        GATE --> LOBBY --> MATCH
-    end
-    SES <-->|"GameAction ↑ / 过滤后 GameEvent ↓"| GATE
-    Server -.->|"同一份代码内嵌<br/>(自建模式)"| Client
-```
-
----
-
-## 相关文档
-- 联网与大厅系统设计：[`doc/NETWORK_LOBBY_DESIGN.md`](file:///d:/majiang/doc/NETWORK_LOBBY_DESIGN.md)
-- 雀魂规则与发牌计分详细设计：[`doc/RIICHI_RULES_DESIGN.md`](file:///D:/majiang/doc/RIICHI_RULES_DESIGN.md)
-- 开局码牌算法设计：[`STACKING_ALGORITHM.md`](file:///D:/majiang/STACKING_ALGORITHM.md)
+1. **单机与联机双绑定**：
+   - **单机 (`InProcessServer`)**：内存异步调度，零网络开销，由 `MahjongGame.render` 驱动 `server.tick`；
+   - **联机 (`UdpTableServer`)**：可靠二进制 UDP，独立 50ms Ticker 驱动 `tick`。
+2. **UDP v4 传输协议**：
+   - 22 字节二进制帧头，最大 1200 字节，1090 字节分片阈值；
+   - 3 秒心跳探测，10 秒入站判死；
+   - 服务端推送维护 256 条滑动重传窗口（客户端维护 64 有界接收缓冲与 256 游标去重）；PUSH 始终为全量快照 + 可见事件，`isFullSnapshot` 标识建立或重置基线；
+   - 独立座位游标与观战独立流，强绑定 `(sessionId, syncEpoch)`。
+3. **未实现功能边界声明**：
+   - 公网用户账号体系、全自动撮合匹配、三人麻将玩法、断电持久化恢复、动态主机迁移与 TLS/DTLS 加密信道尚未实现，不得作为已具备功能写入文档。

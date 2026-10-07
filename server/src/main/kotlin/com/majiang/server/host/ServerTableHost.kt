@@ -13,9 +13,9 @@ import com.majiang.application.ActionChoice
 import com.majiang.application.PlayerDecision
 import com.majiang.application.deepCopy
 import com.majiang.authority.TableAuthority
-import com.majiang.control.ConnectionControl
-import com.majiang.control.ControllerRole
-import com.majiang.control.DisconnectPolicy
+import com.majiang.server.control.ConnectionControl
+import com.majiang.server.control.ControllerRole
+import com.majiang.server.control.DisconnectPolicy
 import com.majiang.event.GameEvent
 import com.majiang.host.ai.TsumogiriAIStrategy
 import com.majiang.match.MatchConfig

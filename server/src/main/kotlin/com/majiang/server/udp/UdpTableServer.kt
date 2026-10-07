@@ -1,7 +1,7 @@
 package com.majiang.server.udp
 
 import com.majiang.access.PlayerUpdate
-import com.majiang.control.DisconnectPolicy
+import com.majiang.server.control.DisconnectPolicy
 import com.majiang.event.GameEvent
 import com.majiang.match.MatchConfig
 import com.majiang.server.api.ApiErrors

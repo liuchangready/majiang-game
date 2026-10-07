@@ -8,7 +8,7 @@ import com.majiang.ai.AIStrategy
 import com.majiang.economy.CheatEconomyConfig
 import com.majiang.application.ActionChoice
 import com.majiang.application.PlayerDecision
-import com.majiang.control.DisconnectPolicy
+import com.majiang.server.control.DisconnectPolicy
 import com.majiang.event.GameEvent
 import com.majiang.match.MatchConfig
 import com.majiang.match.MatchFinishReason

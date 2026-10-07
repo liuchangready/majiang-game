@@ -1,10 +1,10 @@
-package com.majiang.control
+package com.majiang.server.control
 
 import com.majiang.timing.MonotonicClock
 import com.majiang.timing.SystemMonotonicClock
 
 /**
- * 控制者角色 (V3 架构 §3.3)
+ * 控制者角色 (V4 服务端连接控制)
  */
 enum class ControllerRole {
     /** 真人玩家 */

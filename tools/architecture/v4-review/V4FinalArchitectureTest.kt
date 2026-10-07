@@ -155,6 +155,23 @@ class V4FinalArchitectureTest {
         assertTrue(engineHost.isEmpty(), "Connection host remains in domain: ${engineHost.map { it.path }}")
     }
 
+    @Test fun connectionLifecycleImplementationsBelongToServer() {
+        val all = sources()
+        val connectionTypes = setOf("ConnectionControl", "DisconnectPolicy", "DisconnectMode",
+            "ConnectionStatus", "SeatConnectionState", "ControllerRole")
+        for (name in connectionTypes) {
+            val declaration = Regex("\\b(?:class|interface|object|typealias)\\s+${Regex.escape(name)}\\b")
+            val owners = all.filter { declaration.containsMatchIn(it.text) }
+            assertTrue(owners.size == 1 && owners.single().module == "server" &&
+                owners.single().pkg == "com.majiang.server.control",
+                "$name must have exactly one server implementation, without legacy aliases: ${owners.map { it.path }}")
+        }
+        val legacyReferences = all.filter {
+            Regex("\\bcom\\.majiang\\.control(?:\\.|\\b)").containsMatchIn(it.text)
+        }
+        assertTrue(legacyReferences.isEmpty(), "Old engine connection-control references: ${legacyReferences.map { it.path }}")
+    }
+
     @Test fun facadePublicTypesDoNotLeakDomainOrProtocolObjects() {
         val seen = mutableSetOf<Type>()
         val leaks = mutableListOf<String>()

@@ -2,7 +2,7 @@ package com.majiang.server.host
 
 import com.majiang.access.ReceiptStatus
 import com.majiang.application.ActionChoice
-import com.majiang.control.DisconnectPolicy
+import com.majiang.server.control.DisconnectPolicy
 import com.majiang.match.MatchConfig
 import com.majiang.stacking.ShuffleConfig
 import com.majiang.state.GameAction

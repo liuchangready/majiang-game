@@ -1,7 +1,7 @@
-package com.majiang.control
+package com.majiang.server.control
 
 /**
- * 掉线处理模式 (V3 架构 §8.1)
+ * 掉线处理模式 (V4 服务端连接控制)
  */
 enum class DisconnectMode {
     /** 掉线确认后立即转给配置的 AI 托管接管 */

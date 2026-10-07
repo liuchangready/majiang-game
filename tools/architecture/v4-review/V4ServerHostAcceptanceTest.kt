@@ -1,7 +1,7 @@
 package com.majiang.v4authority
 
 import com.majiang.ai.AIStrategy
-import com.majiang.control.DisconnectPolicy
+import com.majiang.server.control.DisconnectPolicy
 import com.majiang.server.host.ServerTableHost
 import com.majiang.session.PlayerView
 import com.majiang.state.GameAction
