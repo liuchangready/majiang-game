@@ -37,6 +37,7 @@ import org.junit.jupiter.api.Assertions.assertNotNull
 import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
+import com.majiang.client.mapping.ProtocolViewMapper
 
 class ProtocolViewMappingRegressionTest {
 

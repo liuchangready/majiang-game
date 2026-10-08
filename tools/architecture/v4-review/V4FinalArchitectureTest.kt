@@ -113,12 +113,8 @@ class V4FinalArchitectureTest {
                     violations.add("${root.relativize(source.path)} references $declared in ${targetModules.single()}")
                 }
                 if (uiPackage) {
-                    val target = all.firstOrNull { it.pkg == declared.substringBeforeLast('.') &&
-                        Regex("\\b(?:class|interface|object|typealias)\\s+${Regex.escape(declared.substringAfterLast('.'))}\\b")
-                            .containsMatchIn(it.text) }
-                    if (target != null && target.module == "client" && target.path.fileName.toString() in
-                        setOf("ServerConnectionSession.kt", "ProtocolViewMapper.kt", "EngineDtoMapper.kt")) {
-                        violations.add("UI implementation reference: ${root.relativize(source.path)} -> $declared")
+                    if ("presentation" !in targetModules && !declared.startsWith("com.majiang.client.api.")) {
+                        violations.add("UI non-API reference: ${root.relativize(source.path)} -> $declared")
                     }
                     if (declared == "com.majiang.MahjongGame") {
                         violations.add("UI composition-root reference: ${root.relativize(source.path)}")
@@ -137,6 +133,45 @@ class V4FinalArchitectureTest {
             Regex("\\b(?:class|interface|object|typealias)\\s+(${staleTypes.joinToString("|")})\\b").containsMatchIn(source.text)
         }.map { root.relativize(it.path).toString() }
         assertTrue(violations.isEmpty(), "Obsolete V3 runtime still defined: $violations")
+    }
+
+    @Test fun clientImplementationTypesStayOutsideApiWithoutCompatibilityAliases() {
+        val all = sources()
+        for (name in listOf("ServerConnectionSession", "ProtocolViewMapper")) {
+            val declarations = all.filter {
+                Regex("\\b(?:class|object|typealias)\\s+$name\\b").containsMatchIn(it.text)
+            }
+            assertTrue(declarations.size == 1 && declarations.single().module == "client" &&
+                !declarations.single().pkg.startsWith("com.majiang.client.api"),
+                "$name must have one client implementation outside client.api: ${declarations.map { it.path }}")
+            assertTrue(runCatching {
+                Class.forName("com.majiang.client.api.$name", false, javaClass.classLoader)
+            }.exceptionOrNull() is ClassNotFoundException, "Old API implementation class still loads: $name")
+        }
+        val api = all.filter { it.module == "client" &&
+            (it.pkg == "com.majiang.client.api" || it.pkg.startsWith("com.majiang.client.api.")) }
+        val leaks = api.filter {
+            Regex("(?m)^\\s*import\\s+com\\.majiang\\.").containsMatchIn(it.text.replace(
+                Regex("(?m)^\\s*import\\s+com\\.majiang\\.client\\.api\\.[^\\n]+"), ""))
+        }
+        assertTrue(leaks.isEmpty(), "Client API imports implementation or wire types: ${leaks.map { it.path }}")
+    }
+
+    @Test fun authorityCoordinatorCannotBeReadThroughTheServerFacade() {
+        val all = sources()
+        val authority = all.single { it.module == "engine" && it.path.fileName.toString() == "TableAuthority.kt" }
+        assertTrue(Regex("\\b(?:private|internal)\\s+val\\s+coordinator\\s*:").containsMatchIn(authority.text),
+            "Coordinator must have explicit private/internal Kotlin visibility")
+        val bypasses = all.filter { it.module in setOf("server", "client", "presentation") &&
+            Regex("\\.coordinator\\b").containsMatchIn(it.text.replace(Regex("(?s)/\\*.*?\\*/|(?m)//[^\\n]*"), "")) }
+        assertTrue(bypasses.isEmpty(), "Production modules bypass TableAuthority: ${bypasses.map { it.path }}")
+        val forbiddenResults = setOf("com.majiang.application.ApplicationCoordinator", "com.majiang.match.MatchSession",
+            "com.majiang.state.GameState", "com.majiang.round.RoundStateMachine")
+        val type = Class.forName("com.majiang.authority.TableAuthority", false, javaClass.classLoader)
+        val getters = type.declaredMethods.filter { Modifier.isPublic(it.modifiers) && !it.isSynthetic &&
+            !it.name.contains('$') && it.returnType.name in forbiddenResults }
+        assertTrue(getters.isEmpty(), "Facade returns mutable internals: ${getters.map { it.name }}")
+        assertTrue(type.fields.none { it.type.name in forbiddenResults }, "Facade exposes mutable internal fields")
     }
 
     @Test fun presentationPackagesAndDomainAuthorityExist() {

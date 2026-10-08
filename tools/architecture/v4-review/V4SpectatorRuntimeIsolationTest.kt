@@ -1,6 +1,6 @@
 package com.majiang.v4lobby
 
-import com.majiang.client.api.ServerConnectionSession
+import com.majiang.client.session.ServerConnectionSession
 import com.majiang.server.api.JoinSpectatorRequest
 import com.majiang.server.api.ServerConnection
 import com.majiang.server.api.SpectatorBinding

@@ -50,6 +50,7 @@ import org.junit.jupiter.api.Assertions.assertNotNull
 import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
+import com.majiang.client.mapping.ProtocolViewMapper
 
 class ProtocolViewMapperTest {
 

@@ -1,4 +1,6 @@
-package com.majiang.client.api
+package com.majiang.client.mapping
+
+import com.majiang.client.api.*
 
 import com.majiang.server.api.RoomSummary
 import com.majiang.transport.api.ProtocolAccessCapabilities

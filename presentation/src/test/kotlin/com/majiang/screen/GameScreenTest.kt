@@ -7,7 +7,7 @@ import com.majiang.MahjongGame
 import com.majiang.client.api.GamePhaseView
 import com.majiang.client.api.MatchConfig
 import com.majiang.client.api.ReceiptStatus
-import com.majiang.client.api.ServerConnectionSession
+import com.majiang.client.session.ServerConnectionSession
 import com.majiang.client.api.ShuffleConfig
 import com.majiang.client.api.TileView
 import com.majiang.presentation.game.GameScreen as V4GameScreen

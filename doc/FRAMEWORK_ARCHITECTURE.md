@@ -260,7 +260,9 @@ majiang/
 │       └── udp/                 // UdpTableServer, UdpRoom (联机模式)
 ├── client/                       // 客户端门面与传输适配
 │   └── src/main/kotlin/com/majiang/client/
-│       ├── api/                 // GameSession, LobbySession, SpectatorSession, ProtocolViewMapper, ServerConnectionSession, ClientModels, ClockInfo
+│       ├── api/                 // GameSession, LobbySession, SpectatorSession, ClientModels, ClockInfo
+│       ├── session/             // ServerConnectionSession
+│       ├── mapping/             // ProtocolViewMapper
 │       └── transport/           // udp/ ScheduledExecutorUdpScheduler, UdpClient
 ├── presentation/                 // libGDX 展示层
 │   └── src/main/kotlin/com/majiang/

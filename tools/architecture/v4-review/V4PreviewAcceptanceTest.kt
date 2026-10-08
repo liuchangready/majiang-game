@@ -5,7 +5,7 @@ import com.majiang.access.PlayerSnapshot
 import com.majiang.access.SeatControlView
 import com.majiang.application.ActionChoice
 import com.majiang.authority.TableAuthority
-import com.majiang.client.api.ProtocolViewMapper
+import com.majiang.client.mapping.ProtocolViewMapper
 import com.majiang.model.Suit
 import com.majiang.model.Tile
 import com.majiang.server.mapping.EngineProtocolMapper
@@ -38,7 +38,7 @@ class V4PreviewAcceptanceTest {
                 is SeatController.Takeover -> "TAKEOVER"
             }
             SeatControlView(it, true, role,
-                authority.coordinator.epochFor(it))
+                authority.controlEpochFor(it))
         })
 
     // Only new preview getters are reflected while the independently implemented DTO names settle.
@@ -105,7 +105,7 @@ class V4PreviewAcceptanceTest {
             for (shape in representations(after)) {
                 assertEquals(TenpaiPreviewProvider.waits(after.view).map { it.tileId }, tileIds(preview(shape), "waits"))
             }
-            TestTableBuilder.assertPhysical(authority.coordinator.activeRound!!.readState())
+            TestTableBuilder.assertPhysical(authority.reviewCoordinator().activeRound!!.readState())
         }
     }
 
@@ -172,7 +172,7 @@ class V4PreviewAcceptanceTest {
 
     @Test fun automatedControlNeverPublishesHumanSubmittablePreviews() {
         TableAuthority(initialState = redFiveState(), controllers = humans).use { authority ->
-            val humanEpoch = authority.coordinator.epochFor(2)
+            val humanEpoch = authority.controlEpochFor(2)
             authority.setSeatController(2, SeatController.Takeover())
             val source = snapshot(authority)
             assertTrue(source.decision.controlEpoch > humanEpoch)

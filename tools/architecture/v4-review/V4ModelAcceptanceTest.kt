@@ -185,7 +185,7 @@ class V4ModelAcceptanceTest {
     @Test fun publishedClientSnapshotCollectionsAreImmutable() {
         InProcessServer().use { server ->
             val snapshot = server.createLocalTable().snapshot().get(4, TimeUnit.SECONDS)
-            val view = com.majiang.client.api.ProtocolViewMapper.mapSnapshot(snapshot)
+            val view = com.majiang.client.mapping.ProtocolViewMapper.mapSnapshot(snapshot)
             assertFails { (view.decision.options as MutableList<*>).clear() }
             assertFails { (view.clocks as MutableList<*>).clear() }
             assertFails { (view.view.discards as MutableList<*>).clear() }

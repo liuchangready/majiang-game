@@ -10,7 +10,7 @@ import com.majiang.client.api.ReceiptStatus
 import com.majiang.client.api.RoomInfo
 import com.majiang.client.api.RoomLifecycle
 import com.majiang.client.api.RoomSummaryView
-import com.majiang.client.api.ServerConnectionSession
+import com.majiang.client.session.ServerConnectionSession
 import com.majiang.presentation.common.TableNavigation
 import com.majiang.presentation.common.UiAssets
 import com.majiang.presentation.common.render.SkinId

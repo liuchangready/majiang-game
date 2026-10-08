@@ -11,6 +11,7 @@ import com.badlogic.gdx.utils.Align;
 import com.badlogic.gdx.utils.ScreenUtils;
 import com.majiang.MahjongGame;
 import com.majiang.client.api.*;
+import com.majiang.client.mapping.ProtocolViewMapper;
 import com.majiang.model.PlayerHand;
 import com.majiang.model.Suit;
 import com.majiang.model.Tile;

@@ -9,7 +9,7 @@ import com.majiang.access.SeatControlView
 import com.majiang.application.ActionOption
 import com.majiang.application.PlayerDecision
 import com.majiang.authority.TableAuthority
-import com.majiang.client.api.ProtocolViewMapper
+import com.majiang.client.mapping.ProtocolViewMapper
 import com.majiang.match.MatchConfig
 import com.majiang.model.Meld
 import com.majiang.model.MeldType

@@ -51,6 +51,7 @@ import java.util.concurrent.ExecutionException
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicReference
+import com.majiang.client.session.ServerConnectionSession
 
 class ServerConnectionSessionTest {
 

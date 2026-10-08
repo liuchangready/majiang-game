@@ -158,7 +158,9 @@ interface PushChannel {
 - **`LobbySession`**：大厅交互（建房、加房、准备、配置修改、房间广播监听）；
 - **`GameSession`**：对局交互（拉取快照 `snapshot()`、提交决策 `submit()`、码牌计划 `submitShufflePlan()`、开赛 `start()`、下一局 `nextRound()`、收回控制 `claimControl()`、交出托管 `releaseControl()`、推送监听 `onUpdate()`）；
 - **`SpectatorSession`**：观战交互（拉取公开快照 `publicSnapshot()`、对账恢复 `resumePublic()`、公开更新监听 `onPublicUpdate()`）；
-- **`ServerConnectionSession`**：统一组合门面（位于 `client.api`），管理底层连接生命周期、自动重连与绑定切换。
+- **`ServerConnectionSession`**：统一组合门面（位于 `client.session`），管理底层连接生命周期、自动重连与绑定切换。
+
+`ProtocolViewMapper` 位于 `client.mapping`，`client.api` 保留门面与视图契约。
 
 ### 4.2 客户端纯数据视图模型
 - `GameSnapshotView`：包含手牌、牌河、副露、场风、局数、点棒、20+3 权威时钟 (`ClockInfo`)、怀疑度与出千余额；

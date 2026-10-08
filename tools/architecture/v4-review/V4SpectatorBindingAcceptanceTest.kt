@@ -2,7 +2,7 @@ package com.majiang.v4lobby
 
 import com.google.gson.JsonElement
 import com.google.gson.JsonParser
-import com.majiang.client.api.ServerConnectionSession
+import com.majiang.client.session.ServerConnectionSession
 import com.majiang.model.Suit
 import com.majiang.model.Tile
 import com.majiang.server.api.*
@@ -483,7 +483,7 @@ class V4SpectatorBindingAcceptanceTest {
             assertEquals(ProtocolRoomLifecycle.PLAYING, table.host.getRoomInfo().await().lifecycle,
                 "A genuinely dealt initial table cannot masquerade as lobby")
             val (observer, binding) = table.spectator()
-            val originalRound = assertNotNull(table.room.tableHost.authority.coordinator.activeRound)
+            val originalRound = assertNotNull(table.room.tableHost.authority.reviewCoordinator().activeRound)
             val decision = table.host.decision().await()
             val win = decision.options.single { it.action is ProtocolLegalAction.DeclareTsumo }
             val ended = CountDownLatch(1)

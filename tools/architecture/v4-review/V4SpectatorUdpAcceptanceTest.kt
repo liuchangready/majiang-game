@@ -2,7 +2,7 @@ package com.majiang.v4lobby
 
 import com.google.gson.JsonParser
 import com.majiang.client.api.ConnectionState
-import com.majiang.client.api.ServerConnectionSession
+import com.majiang.client.session.ServerConnectionSession
 import com.majiang.client.transport.udp.UdpClient
 import com.majiang.server.api.ApiProtocol
 import com.majiang.server.api.CreateRoomRequest

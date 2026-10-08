@@ -1,6 +1,6 @@
 package com.majiang.client.transport.udp
 
-import com.majiang.client.api.ServerConnectionSession
+import com.majiang.client.session.ServerConnectionSession
 import com.majiang.transport.udp.Cancellable
 import com.majiang.transport.udp.UdpClock
 import com.majiang.transport.udp.UdpScheduler

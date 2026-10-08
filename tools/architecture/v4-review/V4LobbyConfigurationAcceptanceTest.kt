@@ -10,6 +10,14 @@ import com.majiang.timing.TimeControlConfig
 import org.junit.jupiter.api.Test
 import kotlin.test.*
 
+// White-box review only: retain rule/configuration and physical-state assertions without
+// adding a production accessor for mutable internals. Never used to mutate the authority.
+internal fun TableAuthority.reviewCoordinator(): com.majiang.application.ApplicationCoordinator =
+    TableAuthority::class.java.getDeclaredField("coordinator").let {
+        it.isAccessible = true
+        it.get(this) as com.majiang.application.ApplicationCoordinator
+    }
+
 /** Domain probes run independently before room bindings are integrated. */
 class V4LobbyConfigurationAcceptanceTest {
     private class Clock(var now: Long = 100L) : MonotonicClock {
@@ -19,21 +27,21 @@ class V4LobbyConfigurationAcceptanceTest {
     @Test fun lobbyConfigurationChangesActualRulesScoresAndClockWithStableSession() {
         val clock = Clock()
         TableAuthority(clock = clock).use { authority ->
-            val sessionId = authority.coordinator.session.sessionId
+            val sessionId = authority.sessionId
             val changed = MatchConfig(winds = listOf(1), handsPerWind = 2,
                 startingScores = listOf(26000, 24000, 25000, 25000), targetScore = 28000)
             assertTrue(authority.updateLobbyConfig(changed,
                 TimeControlConfig(baseMillis = 2000L, reserveMillis = 10000L)))
-            assertEquals(sessionId, authority.coordinator.session.sessionId)
-            assertEquals(changed.toRuleConfig(), authority.coordinator.session.ruleConfig)
-            assertEquals(changed.toRuleConfig(), authority.coordinator.matchProgression.config)
-            assertEquals(changed.startingScores, authority.coordinator.queryView(0).scores)
+            assertEquals(sessionId, authority.sessionId)
+            assertEquals(changed.toRuleConfig(), authority.reviewCoordinator().session.ruleConfig)
+            assertEquals(changed.toRuleConfig(), authority.reviewCoordinator().matchProgression.config)
+            assertEquals(changed.startingScores, authority.queryView(0).scores)
             assertEquals(ReceiptStatus.APPLIED, authority.start(0, clock.now).receipt.status)
             authority.syncDecisionsAndClocks(clock.now, emptySet())
-            assertEquals(changed.startingScores, authority.coordinator.queryView(0).scores)
+            assertEquals(changed.startingScores, authority.queryView(0).scores)
             val timer = authority.querySnapshot(0, "domain-review", 0L, emptyList()).clocks.first { it.seat == 0 }
             assertEquals(12000L, timer.deadline - timer.opensAt)
-            assertEquals(sessionId, authority.coordinator.session.sessionId)
+            assertEquals(sessionId, authority.sessionId)
         }
     }
 
@@ -41,12 +49,12 @@ class V4LobbyConfigurationAcceptanceTest {
         val clock = Clock()
         TableAuthority(clock = clock).use { authority ->
             val config = authority.config
-            val sessionId = authority.coordinator.session.sessionId
+            val sessionId = authority.sessionId
             assertFailsWith<IllegalArgumentException> {
                 authority.updateLobbyConfig(config.copy(startingScores = listOf(1)))
             }
             assertEquals(config, authority.config)
-            assertEquals(sessionId, authority.coordinator.session.sessionId)
+            assertEquals(sessionId, authority.sessionId)
             assertEquals(ReceiptStatus.APPLIED, authority.start(0, clock.now).receipt.status)
             authority.syncDecisionsAndClocks(clock.now, emptySet())
             val before = authority.querySnapshot(0, "domain-review", 0L, emptyList())
@@ -68,7 +76,7 @@ class V4LobbyConfigurationAcceptanceTest {
             assertTrue(authority.updateLobbyConfig(changed))
             assertEquals(ReceiptStatus.APPLIED, authority.start(0, clock.now).receipt.status)
             assertTrue(authority.isPreparationActive())
-            assertEquals(GamePhase.STACKING, authority.coordinator.activeRound!!.readState().phase)
+            assertEquals(GamePhase.STACKING, authority.reviewCoordinator().activeRound!!.readState().phase)
             assertEquals(listOf(50, 50, 50, 50),
                 authority.querySnapshot(0, "domain-review", 0L, emptyList()).cheatPoints)
             assertFalse(authority.updateLobbyConfig(MatchConfig()),

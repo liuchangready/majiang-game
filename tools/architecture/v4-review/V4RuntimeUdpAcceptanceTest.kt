@@ -1,7 +1,7 @@
 package com.majiang.v4runtime
 
 import com.majiang.client.api.ConnectionState
-import com.majiang.client.api.ServerConnectionSession
+import com.majiang.client.session.ServerConnectionSession
 import com.majiang.server.udp.UdpTableServer
 import com.majiang.transport.api.ApiMessageCodec
 import com.majiang.transport.api.ApiTags

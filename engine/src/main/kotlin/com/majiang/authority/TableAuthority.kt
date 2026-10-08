@@ -93,7 +93,7 @@ class TableAuthority @JvmOverloads constructor(
     }
 
     // 内部应用协调器（默认关闭同步 AI 与自动摸切，启用延迟自动动作）
-    val coordinator: ApplicationCoordinator = initialCoordinator ?: run {
+    internal val coordinator: ApplicationCoordinator = initialCoordinator ?: run {
         val baseState = if (initialState != null) {
             initialState.deepCopy()
         } else {
@@ -157,6 +157,12 @@ class TableAuthority @JvmOverloads constructor(
     private val storedShufflePlans = ConcurrentHashMap<ShuffleReceiptKey, StoredShufflePlan>()
 
     private val secureRandom = SecureRandom()
+
+    // 权威只读门面：收拢对外暴露，不对外暴露协调器及可变Session
+    val sessionId: String get() = coordinator.session.sessionId
+    val sessionLifecycle: SessionLifecycle get() = coordinator.session.lifecycle
+    val currentDealer: Int get() = coordinator.session.currentDealer
+    fun controlEpochFor(seat: Int): Long = coordinator.epochFor(seat)
 
     val currentRoundId: String? get() = coordinator.activeRound?.roundId
     val isPaused: Boolean get() = decisionClock.isPausedState

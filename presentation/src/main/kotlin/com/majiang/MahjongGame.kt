@@ -12,7 +12,7 @@ import com.majiang.client.api.LobbySession
 import com.majiang.client.api.MatchConfig
 import com.majiang.client.api.Receipt
 import com.majiang.client.api.ReceiptStatus
-import com.majiang.client.api.ServerConnectionSession
+import com.majiang.client.session.ServerConnectionSession
 import com.majiang.client.api.SpectatorSession
 import com.majiang.client.api.ShuffleConfig
 import com.majiang.presentation.common.TableNavigation

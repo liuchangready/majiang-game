@@ -184,7 +184,7 @@ class SharedRoom @JvmOverloads constructor(
         }
 
         if (initialState != null) {
-            val sessionLifecycle = tableHost.authority.coordinator.session.lifecycle
+            val sessionLifecycle = tableHost.authority.sessionLifecycle
             lifecycle = when (sessionLifecycle) {
                 SessionLifecycle.ROUND_RESULT,
                 SessionLifecycle.WAITING_DEALER_CHOICE,
@@ -307,7 +307,7 @@ class SharedRoom @JvmOverloads constructor(
         if (lifecycle == ProtocolRoomLifecycle.LOBBY) return
 
         val prevLifecycle = lifecycle
-        val sessionLifecycle = tableHost.authority.coordinator.session.lifecycle
+        val sessionLifecycle = tableHost.authority.sessionLifecycle
         val newLifecycle = when (sessionLifecycle) {
             SessionLifecycle.ROUND_RESULT,
             SessionLifecycle.WAITING_DEALER_CHOICE,
@@ -517,7 +517,7 @@ class SharedRoom @JvmOverloads constructor(
             if (tableHost.isPaused) {
                 return@enqueueOperation ProtocolActionReceipt("start", ProtocolReceiptStatus.REJECTED, reason = "HOST_PAUSED")
             }
-            if (tableHost.authority.coordinator.session.lifecycle == SessionLifecycle.FINISHED) {
+            if (tableHost.authority.sessionLifecycle == SessionLifecycle.FINISHED) {
                 return@enqueueOperation ProtocolActionReceipt("start", ProtocolReceiptStatus.REJECTED, reason = "MATCH_FINISHED")
             }
 

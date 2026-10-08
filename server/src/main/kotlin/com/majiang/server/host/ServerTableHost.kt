@@ -221,11 +221,11 @@ class ServerTableHost @JvmOverloads constructor(
     }
 
     private val seatStreams: Array<SeatStream> = Array(4) { seat ->
-        SeatStream(seat = seat, syncEpoch = "${authority.coordinator.session.sessionId}-$seat")
+        SeatStream(seat = seat, syncEpoch = "${authority.sessionId}-$seat")
     }
 
     private val publicStream: PublicStream = PublicStream(
-        syncEpoch = "${authority.coordinator.session.sessionId}-public"
+        syncEpoch = "${authority.sessionId}-public"
     )
 
     // 独立单线程公开流派发器（保证单调有序派发，且慢消费者完全不阻塞 serialExecutor）
@@ -676,7 +676,7 @@ class ServerTableHost @JvmOverloads constructor(
      * 校验失败抛 IllegalStateException，调用方不得据此递增成员代次或替换现有绑定。
      */
     internal fun performValidatePublicCheckpointOnQueue(checkpoint: PublicCheckpoint) {
-        val sessionId = authority.coordinator.session.sessionId
+        val sessionId = authority.sessionId
         if (checkpoint.sessionId != sessionId ||
             checkpoint.syncEpoch != publicStream.syncEpoch ||
             checkpoint.cursor < 0L ||
@@ -950,8 +950,8 @@ class ServerTableHost @JvmOverloads constructor(
         }
 
         // 3. 局间庄家决策推进
-        val dealer = authority.coordinator.session.currentDealer
-        if (authority.coordinator.session.lifecycle == com.majiang.match.SessionLifecycle.WAITING_DEALER_CHOICE && connectionControl.seatState(dealer).isAutomated) {
+        val dealer = authority.currentDealer
+        if (authority.sessionLifecycle == com.majiang.match.SessionLifecycle.WAITING_DEALER_CHOICE && connectionControl.seatState(dealer).isAutomated) {
             val elapsed = now - lastActionTimeMillis
             if (!presentationBusy && (rhythmIntervalMillis <= 0L || elapsed !in 0 until rhythmIntervalMillis)) {
                 val dealerResult = authority.checkWaitingDealerChoice(now, automatedDealer = true)
@@ -1199,7 +1199,7 @@ class ServerTableHost @JvmOverloads constructor(
         val list = mutableListOf<SeatControlView>()
         for (s in 0..3) {
             val state = connectionControl.seatState(s)
-            val epoch = authority.coordinator.queryDecision(s).controlEpoch
+            val epoch = authority.controlEpochFor(s)
             list.add(
                 SeatControlView(
                     seat = s,

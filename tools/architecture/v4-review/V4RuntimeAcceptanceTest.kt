@@ -1,6 +1,6 @@
 package com.majiang.v4runtime
 
-import com.majiang.client.api.ServerConnectionSession
+import com.majiang.client.session.ServerConnectionSession
 import com.majiang.client.api.ActionChoice
 import com.majiang.client.api.ConnectionState
 import com.majiang.server.api.ApiProtocol
