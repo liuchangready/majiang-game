@@ -1,0 +1,23 @@
+{
+  "taskId": "V1",
+  "recipient": "codex",
+  "status": "ready_for_review",
+  "modifiedFiles": [
+    "presentation/src/main/kotlin/com/majiang/presentation/game/OpponentHandPresentation.kt",
+    "presentation/src/main/kotlin/com/majiang/presentation/game/RiverHintPresentation.kt",
+    "presentation/src/main/kotlin/com/majiang/presentation/game/RiverHintPanel.kt",
+    "presentation/src/main/kotlin/com/majiang/presentation/common/render/TileSkin.kt",
+    "presentation/src/main/kotlin/com/majiang/presentation/common/render/TileDrawBuffer.kt",
+    "presentation/src/main/kotlin/com/majiang/presentation/common/render/MeldDisplayRenderer.kt",
+    "presentation/src/main/kotlin/com/majiang/presentation/game/TileMarkPanel.kt",
+    "presentation/src/main/kotlin/com/majiang/presentation/game/GameScreen.kt",
+    "doc/tile-mark/PROGRESS-ANTI-VISUAL.md",
+    "doc/tile-mark/DELIVERY-ANTI-VISUAL.md"
+  ],
+  "tests": {
+    "command": ".\\gradlew.bat test :lwjgl3:classes :android:assembleDebug --console=plain",
+    "exitCode": 0,
+    "result": "PASSED (all unit/acceptance/smoke tests passed, lwjgl3 classes compiled, android debug apk assembled)"
+  },
+  "remainingIssues": []
+}

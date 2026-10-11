@@ -45,8 +45,28 @@ interface TileSkin : Disposable {
         width: Float,
         height: Float,
         isHover: Boolean = false,
-        isDrawn: Boolean = false
+        isDrawn: Boolean = false,
+        alpha: Float = 1f
     )
+
+    /**
+     * 向绘制缓冲追加旋转牌面的绘制指令。
+     * 默认实现不进行旋转，直接委托 [appendTileDraw]。
+     */
+    fun appendRotatedTileDraw(
+        buf: TileDrawBuffer,
+        tile: TileView,
+        x: Float,
+        y: Float,
+        width: Float,
+        height: Float,
+        isHover: Boolean = false,
+        isDrawn: Boolean = false,
+        alpha: Float = 1f,
+        rotationDeg: Float = 0f
+    ) {
+        appendTileDraw(buf, tile, x, y, width, height, isHover, isDrawn, alpha)
+    }
 
     /**
      * 向绘制缓冲追加飞行牌的绘制指令。
@@ -61,13 +81,14 @@ interface TileSkin : Disposable {
         height: Float,
         scaleX: Float = 1f,
         scaleY: Float = 1f,
-        rotationDeg: Float = 0f
+        rotationDeg: Float = 0f,
+        alpha: Float = 1f
     ) {
         val w = width * scaleX
         val h = height * scaleY
         val drawX = x + (width - w) / 2f
         val drawY = y + (height - h) / 2f
-        appendTileDraw(buf, tile, drawX, drawY, w, h, isHover = false, isDrawn = false)
+        appendTileDraw(buf, tile, drawX, drawY, w, h, isHover = false, isDrawn = false, alpha = alpha)
     }
 
     /**
@@ -166,7 +187,8 @@ class WikipediaSkin(
         width: Float,
         height: Float,
         isHover: Boolean,
-        isDrawn: Boolean
+        isDrawn: Boolean,
+        alpha: Float
     ) {
         val texture = getTexture(tile)
         val texW = texture.width.toFloat()
@@ -180,13 +202,82 @@ class WikipediaSkin(
         val drawY = y + (height - drawH) / 2f
 
         // 1. 追加牌面纹理绘制指令 (TextureOp)
-        buf.addTexture(texture, drawX, drawY, drawW, drawH)
+        val tintColor = if (alpha >= 1f) Color.WHITE else Color(1f, 1f, 1f, alpha)
+        buf.addTexture(texture, drawX, drawY, drawW, drawH, tint = tintColor)
 
-        // 2. 若处于悬停或摸牌状态，追加高亮边框指令 (双层 LineRectOp)
+        // 2. 有效半透明标记牌追加细边框，防止在桌布底色上边缘模糊消失
+        if (alpha < 1f) {
+            buf.addLineRect(drawX, drawY, drawW, drawH, Color(0.20f, 0.70f, 0.85f, 0.75f))
+        }
+
+        // 3. 若处于悬停或摸牌状态，追加高亮边框指令 (双层 LineRectOp)
         if (isHover || isDrawn) {
             val color = if (isHover) Color.YELLOW else Color(1.0f, 0.85f, 0.2f, 1f)
             buf.addLineRect(drawX, drawY, drawW, drawH, color)
             buf.addLineRect(drawX - 1f, drawY - 1f, drawW + 2f, drawH + 2f, color)
+        }
+    }
+
+    override fun appendRotatedTileDraw(
+        buf: TileDrawBuffer,
+        tile: TileView,
+        x: Float,
+        y: Float,
+        width: Float,
+        height: Float,
+        isHover: Boolean,
+        isDrawn: Boolean,
+        alpha: Float,
+        rotationDeg: Float
+    ) {
+        if (rotationDeg == 0f) {
+            appendTileDraw(buf, tile, x, y, width, height, isHover, isDrawn, alpha)
+            return
+        }
+
+        val texture = getTexture(tile)
+        val texW = texture.width.toFloat()
+        val texH = texture.height.toFloat()
+
+        // 当旋转 ±90° 时，纹理的高在屏幕上呈现为宽，纹理的宽呈现为高
+        val effectiveW = texH
+        val effectiveH = texW
+
+        val scale = minOf(width / effectiveW, height / effectiveH)
+        val drawW = texW * scale
+        val drawH = texH * scale
+
+        val centerX = x + width / 2f
+        val centerY = y + height / 2f
+        val drawX = centerX - drawW / 2f
+        val drawY = centerY - drawH / 2f
+
+        val tintColor = if (alpha >= 1f) Color.WHITE else Color(1f, 1f, 1f, alpha)
+        buf.addTexture(
+            texture = texture,
+            x = drawX,
+            y = drawY,
+            width = drawW,
+            height = drawH,
+            rotationDeg = rotationDeg,
+            originX = drawW / 2f,
+            originY = drawH / 2f,
+            tint = tintColor
+        )
+
+        val visualW = effectiveW * scale
+        val visualH = effectiveH * scale
+        val boxX = centerX - visualW / 2f
+        val boxY = centerY - visualH / 2f
+
+        if (alpha < 1f) {
+            buf.addLineRect(boxX, boxY, visualW, visualH, Color(0.20f, 0.70f, 0.85f, 0.75f))
+        }
+
+        if (isHover || isDrawn) {
+            val color = if (isHover) Color.YELLOW else Color(1.0f, 0.85f, 0.2f, 1f)
+            buf.addLineRect(boxX, boxY, visualW, visualH, color)
+            buf.addLineRect(boxX - 1f, boxY - 1f, visualW + 2f, visualH + 2f, color)
         }
     }
 
@@ -199,7 +290,8 @@ class WikipediaSkin(
         height: Float,
         scaleX: Float,
         scaleY: Float,
-        rotationDeg: Float
+        rotationDeg: Float,
+        alpha: Float
     ) {
         val texture = getTexture(tile)
         val texW = texture.width.toFloat()
@@ -211,6 +303,7 @@ class WikipediaSkin(
         val drawX = x + (width - drawW) / 2f
         val drawY = y + (height - drawH) / 2f
 
+        val tintColor = if (alpha >= 1f) Color.WHITE else Color(1f, 1f, 1f, alpha)
         buf.addOverlayTexture(
             texture = texture,
             x = drawX,
@@ -221,7 +314,8 @@ class WikipediaSkin(
             originX = drawW / 2f,
             originY = drawH / 2f,
             scaleX = scaleX,
-            scaleY = scaleY
+            scaleY = scaleY,
+            tint = tintColor
         )
     }
 
@@ -301,27 +395,30 @@ class ClassicSkin : TileSkin {
         width: Float,
         height: Float,
         isHover: Boolean,
-        isDrawn: Boolean
+        isDrawn: Boolean,
+        alpha: Float
     ) {
         val isSmall = height < 60f
         val margin = if (isSmall) 2f else 3f
+        val a = alpha.coerceIn(0f, 1f)
 
         // 1. 牌体背景与内阴影 (2 FilledRectOp)
         if (isDrawn) {
-            buf.addFilledRect(x, y, width, height, Color(1.0f, 0.98f, 0.85f, 1f))
-            buf.addFilledRect(x + margin, y + margin, width - margin * 2f, height - margin * 2f, Color(0.95f, 0.90f, 0.72f, 1f))
+            buf.addFilledRect(x, y, width, height, Color(1.0f, 0.98f, 0.85f, a))
+            buf.addFilledRect(x + margin, y + margin, width - margin * 2f, height - margin * 2f, Color(0.95f, 0.90f, 0.72f, a))
         } else if (isSmall) {
-            buf.addFilledRect(x, y, width, height, Color(0.95f, 0.93f, 0.88f, 1f))
-            buf.addFilledRect(x + margin, y + margin, width - margin * 2f, height - margin * 2f, Color(0.85f, 0.82f, 0.74f, 1f))
+            buf.addFilledRect(x, y, width, height, Color(0.95f, 0.93f, 0.88f, a))
+            buf.addFilledRect(x + margin, y + margin, width - margin * 2f, height - margin * 2f, Color(0.85f, 0.82f, 0.74f, a))
         } else {
-            buf.addFilledRect(x, y, width, height, Color(0.96f, 0.94f, 0.89f, 1f))
-            buf.addFilledRect(x + margin, y + margin, width - margin * 2f, height - margin * 2f, Color(0.88f, 0.85f, 0.78f, 1f))
+            buf.addFilledRect(x, y, width, height, Color(0.96f, 0.94f, 0.89f, a))
+            buf.addFilledRect(x + margin, y + margin, width - margin * 2f, height - margin * 2f, Color(0.88f, 0.85f, 0.78f, a))
         }
 
         // 2. 边框 (1 LineRectOp)
         val borderColor = when {
             isHover -> Color.YELLOW
             isDrawn -> Color(1.0f, 0.85f, 0.2f, 1f)
+            alpha < 1f -> Color(0.20f, 0.70f, 0.85f, 0.8f)
             isSmall -> Color(0.4f, 0.35f, 0.25f, 0.8f)
             else -> Color(0.45f, 0.40f, 0.30f, 0.8f)
         }
@@ -329,7 +426,8 @@ class ClassicSkin : TileSkin {
 
         // 3. 牌面文字 (1 TextOp)
         val text = getTileText(tile)
-        val textColor = getTileTextColor(tile)
+        val baseTextColor = getTileTextColor(tile)
+        val textColor = Color(baseTextColor.r, baseTextColor.g, baseTextColor.b, baseTextColor.a * a)
         if (isSmall) {
             buf.addText(text, textColor, x + 3f, y + 24f, 0.8f, 0.8f)
         } else {
@@ -344,7 +442,7 @@ class ClassicSkin : TileSkin {
         width: Float,
         height: Float
     ) {
-        buf.addFilledRect(x, y, width, height, Color(0.05f, 0.38f, 0.22f, 0.85f))
+        buf.addFilledRect(x, y, width, height, Color(0.05f, 0.38f, 0.22f, 1f))
         buf.addLineRect(x, y, width, height, Color(0.95f, 0.85f, 0.40f, 1f))
     }
 

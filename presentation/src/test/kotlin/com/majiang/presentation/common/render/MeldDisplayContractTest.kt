@@ -166,7 +166,8 @@ class MeldDisplayContractTest {
                 width: Float,
                 height: Float,
                 isHover: Boolean,
-                isDrawn: Boolean
+                isDrawn: Boolean,
+                alpha: Float
             ) {
                 faces.add(tile)
             }

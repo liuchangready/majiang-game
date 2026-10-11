@@ -19,8 +19,8 @@ import com.majiang.presentation.common.render.TileSkin
  * 1. 独立表现层组件，拥有并暴露只读 [model] 与公共几何包围盒供单元测试与输入判定；
  * 2. 暴露只读 [btnOpenRect]、[btnConfirmRect]、[btnCancelRect]，即真实绘制与点击判定的包围盒；
  * 3. 施术确认调用 [GameSession.submitTileMark]，立即执行防双击保护；
- * 4. 追踪栏展示最多三组各四张牌的牌面、位置与独立期限，1280x720 视口下点击翻页可查全部 12 张；
- * 5. 对手区域显示“落汗识别”授权牌面；
+ * 4. 追踪栏展示最多三组各四张牌的牌面与图形寿命区，1280x720 视口下点击翻页可查全部 12 张；
+ * 5. 对手区域完整对手手牌展示；
  * 6. 集中管理 [translateServerReason] 与 [TILE_MARK_CHARS] 字体子集；
  * 7. 资源生命周期严格自闭环 (Disposable)。
  */
@@ -37,10 +37,10 @@ class TileMarkPanel(
     // 选牌信息横幅
     val selectionBannerRect = Rectangle(230f, 210f, 820f, 130f)
 
-    // 追踪栏几何包围盒 (可翻页查看三组共 12 张)
-    val trackingPanelRect = Rectangle(20f, 470f, 320f, 175f)
-    val btnTrackingPrevRect = Rectangle(200f, 618f, 42f, 22f)
-    val btnTrackingNextRect = Rectangle(250f, 618f, 42f, 22f)
+    // 追踪栏几何包围盒 (紧凑图形区，不遮挡对手手牌，可翻页查看三组共 12 张)
+    val trackingPanelRect = Rectangle(20f, 530f, 185f, 95f)
+    val btnTrackingPrevRect = Rectangle(100f, 595f, 38f, 22f)
+    val btnTrackingNextRect = Rectangle(142f, 595f, 38f, 22f)
     var trackingPage: Int = 0
 
     var isDisposed: Boolean = false
@@ -75,7 +75,7 @@ class TileMarkPanel(
     }
 
     /**
-     * 绘制落汗表现层所有 UI（按钮、选牌横幅、追踪栏与对手识别）。
+     * 绘制落汗表现层所有 UI（按钮、选牌横幅、追踪栏与完整对手手牌展示）。
      */
     fun render(
         camera: OrthographicCamera,
@@ -188,7 +188,7 @@ class TileMarkPanel(
             batch.end()
         }
 
-        // 3. 追踪栏展示 (三组各四张牌)
+        // 3. 标记组展示 (四张小牌图标与四格寿命点)
         val groups = mark.activeGroups
         if (groups.isNotEmpty()) {
             shape.begin(ShapeRenderer.ShapeType.Filled)
@@ -203,6 +203,14 @@ class TileMarkPanel(
 
             val safePage = trackingPage.coerceIn(0, groups.size - 1)
             val curGroup = groups[safePage]
+
+            // 绘制组别标题与翻页按钮
+            batch.begin()
+            font.data.setScale(0.75f)
+            font.color = Color(0.85f, 0.95f, 0.90f, 1f)
+            val groupTitle = if (groups.size > 1) "组 ${safePage + 1}/${groups.size}" else "落汗组"
+            font.draw(batch, groupTitle, trackingPanelRect.x + 10f, trackingPanelRect.y + 80f)
+            batch.end()
 
             // 绘制翻页按钮（当有多组时）
             if (groups.size > 1) {
@@ -219,99 +227,89 @@ class TileMarkPanel(
                 shape.end()
 
                 batch.begin()
-                font.data.setScale(0.75f)
+                font.data.setScale(0.70f)
                 font.color = Color.WHITE
-                font.draw(batch, "上组", btnTrackingPrevRect.x + 8f, btnTrackingPrevRect.y + 16f)
-                font.draw(batch, "下组", btnTrackingNextRect.x + 8f, btnTrackingNextRect.y + 16f)
+                font.draw(batch, "上组", btnTrackingPrevRect.x + 5f, btnTrackingPrevRect.y + 15f)
+                font.draw(batch, "下组", btnTrackingNextRect.x + 5f, btnTrackingNextRect.y + 15f)
                 batch.end()
             }
 
-            batch.begin()
-            font.data.setScale(0.90f)
-            font.color = Color(1.0f, 0.85f, 0.35f, 1f)
-            val groupTitle = "落汗追踪 [组 ${safePage + 1}/${groups.size}]"
-            font.draw(batch, groupTitle, trackingPanelRect.x + 12f, trackingPanelRect.y + trackingPanelRect.height - 12f)
+            // 绘制当前组 4 张小牌图标
+            val smallTileW = 20f
+            val smallTileH = 28f
+            val tileStartX = trackingPanelRect.x + 10f
+            val tileSpacing = 23f
+            val tileY = trackingPanelRect.y + 36f
 
-            font.data.setScale(0.85f)
-            font.color = Color(0.75f, 0.95f, 0.85f, 1f)
-            val duration = "有效期限: ${TileMarkPresentation.durationText(curGroup)}"
-            font.draw(batch, duration, trackingPanelRect.x + 12f, trackingPanelRect.y + trackingPanelRect.height - 34f)
-
-            for (i in curGroup.tiles.indices) {
-                val t = curGroup.tiles[i]
-                val loc = TileMarkPresentation.locationText(t, snapshot.viewerSeat)
-                val tileName = if (t.tile.isRedFive) "赤${t.tile.displayName()}" else t.tile.displayName()
-                font.color = Color.WHITE
-                font.draw(
-                    batch,
-                    "$tileName : $loc",
-                    trackingPanelRect.x + 16f,
-                    trackingPanelRect.y + trackingPanelRect.height - 60f - i * 26f
-                )
-            }
-            batch.end()
-        }
-
-        // 4. 对手区域显示“落汗识别”分行小牌面
-        val viewer = snapshot.viewerSeat
-        tileDrawBuffer?.clear()
-        for (seat in 0..3) {
-            if (seat == viewer) continue
-            val oppMarks = TileMarkPresentation.opponentMarks(snapshot, seat)
-            if (oppMarks.isNotEmpty()) {
-                val (baseX, baseY) = when ((seat - viewer + 4) % 4) {
-                    1 -> Pair(1140f, 345f) // 下家 (右侧)，分行排布，不越界(1140..1250)，在按钮(y=150)和P1信息(y=364..400)之间
-                    2 -> Pair(500f, 670f)  // 对家 (顶部)，分行排布，在P2(x=640)左侧，避开右侧melds(x>=846)及左侧追踪栏(x<=340)
-                    3 -> Pair(40f, 345f)   // 上家 (左侧)，分行排布，在左侧(x=40..140)，不越入牌桌中心，在追踪栏(y=470..645)下方
-                    else -> Pair(40f, 345f)
+            if (tileSkin != null && tileDrawBuffer != null) {
+                for (i in curGroup.tiles.indices) {
+                    val tx = tileStartX + i * tileSpacing
+                    tileSkin.appendTileDraw(
+                        buf = tileDrawBuffer,
+                        tile = curGroup.tiles[i].tile,
+                        x = tx,
+                        y = tileY,
+                        width = smallTileW,
+                        height = smallTileH,
+                        isHover = false,
+                        isDrawn = false,
+                        alpha = 0.85f
+                    )
                 }
-                batch.begin()
-                font.data.setScale(0.85f)
-                font.color = Color(0.35f, 0.90f, 1.0f, 1f)
-                font.draw(batch, "落汗识别:", baseX, baseY)
-                batch.end()
+                tileDrawBuffer.flush(batch, shape, font)
+            }
 
-                if (tileSkin != null && tileDrawBuffer != null) {
-                    val tileW = 26f
-                    val tileH = 36f
-                    val spacingX = 28f
-                    val spacingY = 38f
-                    for ((idx, markTile) in oppMarks.take(12).withIndex()) {
-                        val col = idx % 4
-                        val row = idx / 4
-                        val tileX = baseX + col * spacingX
-                        val tileY = baseY - 20f - tileH - row * spacingY
-                        tileSkin.appendTileDraw(
-                            buf = tileDrawBuffer,
-                            tile = markTile.tile,
-                            x = tileX,
-                            y = tileY,
-                            width = tileW,
-                            height = tileH,
-                            isHover = false,
-                            isDrawn = false
-                        )
+            // 绘制四格寿命点：
+            // - 已消耗局：空心点
+            // - 本局有效：描边高亮（局间准备阶段变空）
+            // - 后续有效局：实心点
+            val future = curGroup.futureRoundsRemaining
+            val consumed = (3 - future).coerceIn(0, 3)
+            val isStacking = (snapshot.view.phase == com.majiang.client.api.GamePhaseView.STACKING)
+            val dotStartX = trackingPanelRect.x + 18f
+            val dotSpacing = 20f
+            val dotY = trackingPanelRect.y + 18f
+            val dotR = 4.5f
+
+            for (d in 0..3) {
+                val cx = dotStartX + d * dotSpacing
+                when {
+                    d < consumed -> {
+                        // 已经消耗的局：空心点
+                        shape.begin(ShapeRenderer.ShapeType.Line)
+                        shape.color = Color(0.45f, 0.50f, 0.50f, 0.70f)
+                        shape.circle(cx, dotY, dotR)
+                        shape.end()
                     }
-                } else {
-                    batch.begin()
-                    font.data.setScale(0.80f)
-                    val lines = oppMarks.chunked(4)
-                    for ((lineIdx, chunk) in lines.withIndex()) {
-                        val lineText = chunk.joinToString(" ") {
-                            if (it.tile.isRedFive) "赤${it.tile.displayName()}" else it.tile.displayName()
+                    d == consumed -> {
+                        // 本局格：局间变空，当局描边高亮
+                        if (isStacking) {
+                            shape.begin(ShapeRenderer.ShapeType.Line)
+                            shape.color = Color(0.45f, 0.50f, 0.50f, 0.70f)
+                            shape.circle(cx, dotY, dotR)
+                            shape.end()
+                        } else {
+                            shape.begin(ShapeRenderer.ShapeType.Filled)
+                            shape.color = Color(1.0f, 0.85f, 0.35f, 1f)
+                            shape.circle(cx, dotY, dotR)
+                            shape.end()
+
+                            shape.begin(ShapeRenderer.ShapeType.Line)
+                            shape.color = Color(1.0f, 1.0f, 0.85f, 1f)
+                            shape.circle(cx, dotY, dotR + 2f)
+                            shape.end()
                         }
-                        font.draw(batch, lineText, baseX, baseY - 20f - lineIdx * 20f)
                     }
-                    batch.end()
+                    else -> {
+                        // 后续有效局：实心点
+                        shape.begin(ShapeRenderer.ShapeType.Filled)
+                        shape.color = Color(0.25f, 0.80f, 0.65f, 0.95f)
+                        shape.circle(cx, dotY, dotR)
+                        shape.end()
+                    }
                 }
             }
         }
-        if (tileSkin != null && tileDrawBuffer != null && !tileDrawBuffer.isEmpty()) {
-            shape.projectionMatrix = camera.combined
-            batch.projectionMatrix = camera.combined
-            tileDrawBuffer.flush(batch, shape, font)
-        }
-        font.data.setScale(1.0f)
     }
 
     override fun dispose() {
@@ -351,7 +349,8 @@ class TileMarkPanel(
             append(" !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~")
             append("·：；？！“”‘’—，。（）[]【】《》/、")
             // 核心契约用字集（包含可见文案全集）
-            append("落汗 标记四张牌 请选择 4 张 10 额度 最多 12 张 确认 取消 自己手中 下家手中 对家手中 上家手中 牌河第 13 张 当前不可见 另余 3 局 本局最后有效 落汗识别")
+            append("落汗 标记四张牌 请选择 4 张 10 额度 最多 12 张 确认 取消 牌河提示 东南西北")
+            append("自己手中 下家手中 对家手中 上家手中 牌河第 13 张 当前不可见 另余 3 局 本局最后有效 落汗识别")
             // 拒绝原因翻译文本用字集
             val reasons = listOf(
                 "TILE_MARK_DISABLED", "TILE_MARK_CAPACITY_EXCEEDED", "INSUFFICIENT_FUNDS",

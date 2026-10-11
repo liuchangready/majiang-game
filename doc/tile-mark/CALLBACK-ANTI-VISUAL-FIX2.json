@@ -1,0 +1,29 @@
+{
+  "taskId": "V1FIX2",
+  "recipient": "codex",
+  "status": "ready_for_review",
+  "developer": "Anti",
+  "commands": [
+    {
+      "command": ".\\gradlew.bat :presentation:test --console=plain",
+      "exitCode": 0,
+      "passedCount": 254,
+      "failedCount": 0
+    },
+    {
+      "command": ".\\gradlew.bat :lwjgl3:tileMarkHintSmoke --init-script tools/architecture/tile-mark-hint-smoke.init.gradle --console=plain",
+      "exitCode": 0,
+      "assertionSummary": "TILE_MARK_HINT_GL_PASS fourWinds=true expiry=true wallZero=true escape=true riverFocus=true scroll=true drag=true scaledDiscard=true"
+    },
+    {
+      "command": ".\\gradlew.bat :lwjgl3:tileMarkHintSmoke --init-script tools/architecture/tile-mark-hint-smoke.init.gradle -PsmokeWidth=960 -PsmokeHeight=540 -PsmokeVariant=-scaled --console=plain",
+      "exitCode": 0,
+      "assertionSummary": "TILE_MARK_HINT_GL_PASS (scaled) fourWinds=true expiry=true wallZero=true escape=true riverFocus=true scroll=true drag=true scaledDiscard=true"
+    }
+  ],
+  "screenshotConclusions": {
+    "hint-scrolled-bottom.png": "滚动后南家方位标题完整处于视口外自动隐藏，固定四方牌河标题清晰独立无任何重叠；南家牌面、西家标题与牌面、北家标题与牌面干净呈现，北家末张完整可达且可点击",
+    "hint-scrolled-bottom-scaled.png": "960x540 缩放变体下同样完全无重叠，固定标题四方牌河清晰独立，布局自适应正确"
+  },
+  "remainingIssues": []
+}

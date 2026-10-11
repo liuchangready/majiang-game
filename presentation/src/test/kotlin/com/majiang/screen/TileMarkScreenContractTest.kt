@@ -127,8 +127,138 @@ class TileMarkScreenContractTest : GdxHeadlessTestRunner() {
     }
 
     @Test
-    fun `font subset covers technique limits locations durations and translated refusals`() {
-        val visible = "落汗 标记四张牌 请选择 4 张 10 额度 最多 12 张 确认 取消 自己手中 下家手中 对家手中 上家手中 牌河第 13 张 当前不可见 另余 3 局 本局最后有效 落汗识别" +
+    fun `river hint button toggles and escape or android back closes without leaving the game`() {
+        val fake = FakeGameSession(initialSnapshot = snapshot())
+        val assets = TestUiAssets.create()
+        val screen = GameScreen(assets, fake, FakeTableNavigation())
+        try {
+            screen.startGame()
+            assertFalse(screen.riverHintPanel.isOpen)
+            click(screen, screen.riverHintPanel.btnToggleRect)
+            assertTrue(screen.riverHintPanel.isOpen)
+            click(screen, screen.riverHintPanel.btnToggleRect)
+            assertFalse(screen.riverHintPanel.isOpen)
+            for (key in listOf(Input.Keys.ESCAPE, Input.Keys.BACK)) {
+                click(screen, screen.riverHintPanel.btnToggleRect)
+                assertTrue(screen.riverHintPanel.isOpen)
+                assertTrue(screen.keyDown(key))
+                assertFalse(screen.riverHintPanel.isOpen)
+                assertFalse(screen.isDisposed)
+                assertFalse(fake.closed)
+            }
+            assertTrue(fake.submittedChoices.isEmpty())
+            assertTrue(fake.submittedMarks.isEmpty())
+        } finally { screen.dispose(); assets.dispose() }
+    }
+
+    @Test
+    fun `tile marking modal blocks underlying hint button and keeps selection active`() {
+        val fake = FakeGameSession(initialSnapshot = snapshot())
+        val assets = TestUiAssets.create()
+        val screen = GameScreen(assets, fake, FakeTableNavigation())
+        try {
+            screen.startGame()
+            click(screen, screen.tileMarkPanel.btnOpenRect)
+            assertTrue(screen.tileMarkPanel.model.isSelecting)
+            click(screen, screen.riverHintPanel.btnToggleRect)
+            assertFalse(screen.riverHintPanel.isOpen)
+            assertTrue(screen.tileMarkPanel.model.isSelecting)
+            screen.keyDown(Input.Keys.ESCAPE)
+            assertFalse(screen.tileMarkPanel.model.isSelecting)
+            assertFalse(screen.isDisposed)
+            assertTrue(fake.submittedChoices.isEmpty())
+            assertTrue(fake.submittedMarks.isEmpty())
+        } finally { screen.dispose(); assets.dispose() }
+    }
+
+    @Test
+    fun `rendering active selection automatically closes hint without cancelling the selection`() {
+        val fake = FakeGameSession(initialSnapshot = snapshot())
+        val assets = TestUiAssets.create()
+        val screen = GameScreen(assets, fake, FakeTableNavigation())
+        try {
+            screen.startGame()
+            click(screen, screen.riverHintPanel.btnToggleRect)
+            assertTrue(screen.riverHintPanel.isOpen)
+            assertTrue(screen.tileMarkPanel.model.begin())
+            screen.render(0f)
+            assertFalse(screen.riverHintPanel.isOpen)
+            assertTrue(screen.tileMarkPanel.model.isSelecting)
+            assertTrue(fake.submittedChoices.isEmpty())
+            assertTrue(fake.submittedMarks.isEmpty())
+        } finally { screen.dispose(); assets.dispose() }
+    }
+
+    @Test
+    fun `riichi selection blocks hint toggle and escape cancels the selection first`() {
+        val fake = FakeGameSession(initialSnapshot = snapshot())
+        val assets = TestUiAssets.create()
+        val screen = GameScreen(assets, fake, FakeTableNavigation())
+        try {
+            screen.startGame()
+            val discard = TestViewBuilder.tile(0)
+            screen.riichiSelectionModel.update(listOf(RiichiPreviewOptionView("riichi",
+                LegalActionView.DeclareRiichi(0, discard), listOf(TestViewBuilder.tile(4)), FuritenStatusView())))
+            assertTrue(screen.riichiSelectionModel.begin())
+            click(screen, screen.riverHintPanel.btnToggleRect)
+            assertFalse(screen.riverHintPanel.isOpen)
+            assertTrue(screen.riichiSelectionModel.isSelecting)
+            assertTrue(screen.keyDown(Input.Keys.ESCAPE))
+            assertFalse(screen.riichiSelectionModel.isSelecting)
+            assertFalse(screen.isDisposed)
+            assertTrue(fake.submittedChoices.isEmpty())
+        } finally { screen.dispose(); assets.dispose() }
+    }
+
+    @Test
+    fun `meld selection blocks hint toggle without submitting a choice`() {
+        val fake = FakeGameSession(initialSnapshot = snapshot())
+        val assets = TestUiAssets.create()
+        val screen = GameScreen(assets, fake, FakeTableNavigation())
+        try {
+            screen.startGame()
+            val hand = listOf(TestViewBuilder.tile(0), TestViewBuilder.tile(1))
+            val called = TestViewBuilder.tile(2)
+            val option = MeldPreviewOptionView("pon", LegalActionView.DeclarePon(0, hand),
+                MeldTypeView.PON, hand + called, hand, calledTile = called, fromPlayer = 3)
+            screen.meldSelectionModel.update(PlayerPresentationPreviewView("round", "decision", 0,
+                meldOptions = listOf(option)))
+            assertTrue(screen.meldSelectionModel.begin(MeldChoiceKindView.PON))
+            click(screen, screen.riverHintPanel.btnToggleRect)
+            assertFalse(screen.riverHintPanel.isOpen)
+            assertTrue(screen.meldSelectionModel.isSelecting)
+            assertTrue(fake.submittedChoices.isEmpty())
+            assertTrue(fake.submittedMarks.isEmpty())
+        } finally { screen.dispose(); assets.dispose() }
+    }
+
+    @Test
+    fun `preparation snapshot blocks hint input and closes already opened hint on render`() {
+        val initial = snapshot()
+        val fake = FakeGameSession(initialSnapshot = initial)
+        val assets = TestUiAssets.create()
+        val screen = GameScreen(assets, fake, FakeTableNavigation())
+        try {
+            screen.startGame()
+            click(screen, screen.riverHintPanel.btnToggleRect)
+            assertTrue(screen.riverHintPanel.isOpen)
+            val preparation = ShufflePreparationView("round", ShufflePreparationStatusView.SELECTING,
+                0, 10000, 0, false, null, 0, 100)
+            screen.onSnapshotAndEvents(initial.copy(cursor = 2,
+                view = initial.view.copy(phase = GamePhaseView.STACKING), tileMark = null,
+                preparation = preparation), emptyList())
+            screen.render(0f)
+            assertFalse(screen.riverHintPanel.isOpen)
+            click(screen, screen.riverHintPanel.btnToggleRect)
+            assertFalse(screen.riverHintPanel.isOpen)
+            assertTrue(fake.submittedChoices.isEmpty())
+            assertTrue(fake.submittedMarks.isEmpty())
+        } finally { screen.dispose(); assets.dispose() }
+    }
+
+    @Test
+    fun `font subset covers technique selection graphical hint directions and translated refusals`() {
+        val visible = "落汗 标记四张牌 请选择 4 张 10 额度 最多 12 张 确认 取消 牌河提示 东南西北" +
             listOf("TILE_MARK_DISABLED", "TILE_MARK_CAPACITY_EXCEEDED", "INSUFFICIENT_FUNDS", "DEADLINE_EXPIRED", "DECISION_MISMATCH", "NOT_YOUR_TURN", "SEAT_NOT_HUMAN", "ACTION_IN_FLIGHT", "SESSION_CLOSED", "TILE_MARK_RIICHI_LOCKED", "TILE_MARK_INVALID_SELECTION", "TILE_MARK_TILE_NOT_OWNED", "TILE_MARK_ALREADY_MARKED", "STALE_CONTROL_EPOCH", "WRONG_PHASE", "NO_ACTIVE_DECISION")
                 .joinToString("") { TileMarkPanel.translateServerReason(it) }
         val missing = visible.toSet() - TileMarkPanel.TILE_MARK_CHARS.toSet()

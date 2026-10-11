@@ -8,6 +8,8 @@ import com.badlogic.gdx.utils.ScreenUtils;
 import com.majiang.MahjongGame;
 import com.majiang.client.api.*;
 import com.majiang.presentation.game.GameScreen;
+import com.majiang.presentation.game.OpponentHandPresentation;
+import com.majiang.presentation.game.RiverHintPresentation;
 import java.io.File;
 import java.util.*;
 
@@ -16,7 +18,8 @@ public final class TileMarkVisibilitySmoke extends ApplicationAdapter {
     private MahjongGame game;
     private V4SmokeSession session;
     private GameScreen screen;
-    private int frames, scenario, page;
+    private int frames, scenario;
+    private boolean capturedClosed;
 
     public static void main(String[] args) {
         var config = new Lwjgl3ApplicationConfiguration();
@@ -83,20 +86,36 @@ public final class TileMarkVisibilitySmoke extends ApplicationAdapter {
     @Override public void render() {
         screen.render(0f);
         if (++frames % 5 != 0) return;
-        capture("visibility-" + scenario + (page == 0 ? "" : "-page-" + page));
-        if (scenario == 0) {
-            var panel = screen.getTileMarkPanel();
-            var next = panel.getBtnTrackingNextRect();
-            screen.touchDown((int)((next.x + next.width / 2)*Gdx.graphics.getWidth()/1280f),
-                (int)((720-next.y-next.height/2)*Gdx.graphics.getHeight()/720f),0,0);
-            if (panel.getTrackingPage() != (page + 1) % 3) throw new AssertionError("Tracking pages inaccessible at full quota");
-            if (++page < 3) return;
-            page = 0;
+        if (!capturedClosed) {
+            capture("visibility-" + scenario);
+            var toggle = screen.getRiverHintPanel().getBtnToggleRect();
+            screen.touchDown((int)((toggle.x+toggle.width/2)*Gdx.graphics.getWidth()/1280f),
+                (int)((720-toggle.y-toggle.height/2)*Gdx.graphics.getHeight()/720f),0,0);
+            if (!screen.getRiverHintPanel().isOpen()) throw new AssertionError("Hint button must remain reachable");
+            capturedClosed = true;
+            return;
         }
+        capture("visibility-" + scenario + "-hint");
+        var snapshot = screen.getCurrentSnapshot();
+        var rows = OpponentHandPresentation.INSTANCE.build(snapshot);
+        if (rows.size() != 3) throw new AssertionError("All three opponent hands must be displayed");
+        int faces = 0;
+        for (var row : rows) {
+            if (row.getSlots().size() != snapshot.getView().getHandTileCounts().get(row.getSeat()))
+                throw new AssertionError("Marked faces must replace backs, never add tiles");
+            faces += (int) row.getSlots().stream().filter(slot -> slot.getTile() != null).count();
+        }
+        int expected = scenario < 3 ? 12 : scenario == 5 ? 9 : 0;
+        if (faces != expected) throw new AssertionError("Authorized opponent face count " + faces + " != " + expected);
+        var hint = RiverHintPresentation.INSTANCE.build(snapshot);
+        if (hint.getHands().size() != 4 || !Objects.equals(hint.getWallRemaining(), 70))
+            throw new AssertionError("Hint must expose four winds and authoritative drawable total");
         if (scenario == 6) {
             System.out.println("TILE_MARK_VISIBILITY_GL_PASS scenarios=7");
             Gdx.app.exit(); return;
         }
+        screen.getRiverHintPanel().close();
+        capturedClosed = false;
         publish(++scenario);
         screen.fastForwardDiscardAnimations();
     }

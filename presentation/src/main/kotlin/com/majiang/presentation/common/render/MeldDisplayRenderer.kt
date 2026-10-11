@@ -22,7 +22,8 @@ object MeldDisplayRenderer {
         skin: TileSkin,
         groups: List<MeldDisplayGroup>,
         doraTargets: Set<Int> = emptySet(),
-        sparkleAlpha: Float = 0f
+        sparkleAlpha: Float = 0f,
+        markedTileIds: Set<Int> = emptySet()
     ) {
         if (groups.isEmpty()) return
 
@@ -32,6 +33,7 @@ object MeldDisplayRenderer {
                 if (dt.faceDown) {
                     skin.appendTileBackDraw(buffer, dt.x, dt.y, dt.width, dt.height)
                 } else {
+                    val tileAlpha = if (dt.tile.tileId in markedTileIds) 0.55f else 1.0f
                     skin.appendTileDraw(
                         buf = buffer,
                         tile = dt.tile,
@@ -40,7 +42,8 @@ object MeldDisplayRenderer {
                         width = dt.width,
                         height = dt.height,
                         isHover = false,
-                        isDrawn = false
+                        isDrawn = false,
+                        alpha = tileAlpha
                     )
 
                     if (DoraSparkle.isSparkleTarget(dt.tile, doraTargets) && sparkleAlpha > 0f) {

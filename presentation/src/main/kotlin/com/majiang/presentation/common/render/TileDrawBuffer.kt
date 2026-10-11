@@ -207,39 +207,41 @@ class TileDrawBuffer {
         // 2. 纹理与文字批次（合并在同一个 batch.begin / batch.end 会话中，保持恰好一次）
         if (textureDraws.isNotEmpty() || textDraws.isNotEmpty() || overlayTextures.isNotEmpty()) {
             val wasBatchDrawing = batch.isDrawing
+            val initialBatchColor = Color(batch.color)
+            val initialFontColor = Color(font.color)
+            val initialFontScaleX = font.data.scaleX
+            val initialFontScaleY = font.data.scaleY
             if (!wasBatchDrawing) batch.begin()
 
-            // 绘制所有桌面普通纹理
-            if (textureDraws.isNotEmpty()) {
-                val origColor = batch.color
-                for (op in textureDraws) {
-                    drawTextureOp(batch, op)
+            try {
+                // 绘制所有桌面普通纹理
+                if (textureDraws.isNotEmpty()) {
+                    for (op in textureDraws) {
+                        drawTextureOp(batch, op)
+                    }
                 }
-                batch.color = origColor
-            }
 
-            // 绘制所有牌面文字
-            if (textDraws.isNotEmpty()) {
-                val prevScaleX = font.data.scaleX
-                val prevScaleY = font.data.scaleY
-                for (op in textDraws) {
-                    font.data.setScale(op.scaleX, op.scaleY)
-                    font.color = op.color
-                    font.draw(batch, op.text, op.x, op.y)
+                // 绘制所有牌面文字
+                if (textDraws.isNotEmpty()) {
+                    for (op in textDraws) {
+                        font.data.setScale(op.scaleX, op.scaleY)
+                        font.color = op.color
+                        font.draw(batch, op.text, op.x, op.y)
+                    }
                 }
-                font.data.setScale(prevScaleX, prevScaleY)
-            }
 
-            // 绘制覆盖层纹理（飞行牌与幽灵白手套：手压在牌之上）
-            if (overlayTextures.isNotEmpty()) {
-                val origColor = batch.color
-                for (op in overlayTextures) {
-                    drawTextureOp(batch, op)
+                // 绘制覆盖层纹理（飞行牌与幽灵白手套：手压在牌之上）
+                if (overlayTextures.isNotEmpty()) {
+                    for (op in overlayTextures) {
+                        drawTextureOp(batch, op)
+                    }
                 }
-                batch.color = origColor
+            } finally {
+                batch.color = initialBatchColor
+                font.data.setScale(initialFontScaleX, initialFontScaleY)
+                font.color = initialFontColor
+                if (!wasBatchDrawing) batch.end()
             }
-
-            if (!wasBatchDrawing) batch.end()
         }
 
         // 3. 覆盖层填充矩形批次（纹理/文字之上、线框之下）：宝牌整牌辉光叠加、闪光星等

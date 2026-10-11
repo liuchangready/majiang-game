@@ -1,0 +1,33 @@
+{
+  "taskId": "V1FIX1",
+  "recipient": "codex",
+  "status": "ready_for_review",
+  "developer": "Anti",
+  "commands": [
+    {
+      "command": ".\\gradlew.bat :presentation:test --console=plain",
+      "exitCode": 0,
+      "passedCount": 254,
+      "failedCount": 0
+    },
+    {
+      "command": ".\\gradlew.bat :lwjgl3:tileMarkHintSmoke :lwjgl3:tileMarkVisibilitySmoke --init-script tools/architecture/tile-mark-hint-smoke.init.gradle --init-script tools/architecture/tile-mark-visibility-smoke.init.gradle --continue --console=plain",
+      "exitCode": 0,
+      "assertionSummary": "TILE_MARK_HINT_GL_PASS fourWinds=true expiry=true wallZero=true escape=true riverFocus=true scroll=true drag=true scaledDiscard=true; TILE_MARK_VISIBILITY_GL_PASS scenarios=7"
+    },
+    {
+      "command": ".\\gradlew.bat :lwjgl3:tileMarkHintSmoke :lwjgl3:tileMarkVisibilitySmoke --init-script tools/architecture/tile-mark-hint-smoke.init.gradle --init-script tools/architecture/tile-mark-visibility-smoke.init.gradle -PsmokeWidth=960 -PsmokeHeight=540 -PsmokeVariant=-scaled --continue --console=plain",
+      "exitCode": 0,
+      "assertionSummary": "TILE_MARK_HINT_GL_PASS (scaled) fourWinds=true expiry=true wallZero=true escape=true riverFocus=true scroll=true drag=true scaledDiscard=true; TILE_MARK_VISIBILITY_GL_PASS (scaled) scenarios=7"
+    }
+  ],
+  "screenshotConclusions": {
+    "hint-open.png": "主牌桌等比缩放至左侧840px居中区，与右侧展开面板留出充裕安全边距；关闭提示按钮置顶可见；左右对手手牌落汗真实旋转90度饱满呈现",
+    "hint-scrolled-bottom.png": "北家牌河三行18张平滑滚入视口，末张完整显示并支持点击；手牌行与顶部总数固定未漂移",
+    "visibility-0.png": "寿命追踪面板紧凑化（185x95，Y=530..625），与上家手牌Y=182..518彻底分离无重叠；右侧暗手牌落汗牌面旋转90度填满34x24槽位",
+    "visibility-4-hint.png": "对家加杠副露、下家碰牌副露、本人大明杠副露及左家暗杠副露100%完整位于左侧缩放区，彻底解决副露被侧栏遮挡问题",
+    "visibility-5-hint.png": "对家手牌与副露完整无遮挡展示",
+    "screenshots-scaled": "960x540分辨率下缩放变体断言全部通过，视觉元素自适应等比无变形"
+  },
+  "remainingIssues": []
+}
