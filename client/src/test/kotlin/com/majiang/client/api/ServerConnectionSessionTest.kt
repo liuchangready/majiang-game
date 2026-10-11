@@ -55,11 +55,11 @@ import com.majiang.client.session.ServerConnectionSession
 
 class ServerConnectionSessionTest {
 
-    private class FakeUdpClock(var now: Long = 1000L) : UdpClock {
+    internal class FakeUdpClock(var now: Long = 1000L) : UdpClock {
         override fun currentTimeMillis(): Long = now
     }
 
-    private class FakeUdpScheduler(private val clock: FakeUdpClock) : UdpScheduler {
+    internal class FakeUdpScheduler(private val clock: FakeUdpClock) : UdpScheduler {
         data class ScheduledTask(val triggerTime: Long, val task: Runnable, var cancelled: Boolean = false)
         val tasks = mutableListOf<ScheduledTask>()
 
@@ -83,7 +83,7 @@ class ServerConnectionSessionTest {
         }
     }
 
-    private class FakeServerConnection : ServerConnection {
+    internal class FakeServerConnection : ServerConnection {
         var closedState: Boolean = false
         var disconnectReasonState: String? = null
 
@@ -110,9 +110,12 @@ class ServerConnectionSessionTest {
         var lastReleasedControl: Boolean = false
 
         var customCreateRoomFuture: CompletableFuture<RoomBinding>? = null
+        var customResumeSessionFuture: CompletableFuture<RoomBinding>? = null
         var customResumeCursorFuture: CompletableFuture<ProtocolPlayerSnapshot>? = null
         var customSubmitFuture: CompletableFuture<ProtocolActionReceipt>? = null
         var customSubmitShuffleFuture: CompletableFuture<ProtocolActionReceipt>? = null
+        var customSubmitMarkFuture: CompletableFuture<ProtocolActionReceipt>? = null
+        var lastSubmittedMark: com.majiang.transport.api.ProtocolTileMarkRequest? = null
         var customSnapshotFuture: CompletableFuture<ProtocolPlayerSnapshot>? = null
         var lastResumeCursorRequested: Long? = null
         val resumeCursorRequests = mutableListOf<Long>()
@@ -192,6 +195,7 @@ class ServerConnectionSessionTest {
 
         override fun resumeSession(req: ResumeRequest): CompletableFuture<RoomBinding> {
             lastResumeReq = req
+            customResumeSessionFuture?.let { return it }
             val binding = RoomBinding(req.roomId, 0, req.token, defaultSnapshot)
             return CompletableFuture.completedFuture(binding)
         }
@@ -229,6 +233,13 @@ class ServerConnectionSessionTest {
             lastSubmittedPlan = plan
             customSubmitShuffleFuture?.let { return it }
             return CompletableFuture.completedFuture(ProtocolActionReceipt(plan.requestId, ProtocolReceiptStatus.RECORDED))
+        }
+
+        override fun submitTileMark(request: com.majiang.transport.api.ProtocolTileMarkRequest): CompletableFuture<ProtocolActionReceipt> {
+            check(synchronousFailure != "submitTileMark") { "submitTileMark failed synchronously" }
+            lastSubmittedMark = request
+            return customSubmitMarkFuture ?: CompletableFuture.completedFuture(
+                ProtocolActionReceipt(request.requestId, ProtocolReceiptStatus.APPLIED, cursor = 11L))
         }
 
         override fun start(): CompletableFuture<ProtocolActionReceipt> {

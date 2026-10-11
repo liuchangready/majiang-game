@@ -48,6 +48,10 @@
 
 ---
 
+## 功能设计草案
+
+- [落汗千术设计](tile-mark/DESIGN.md)：每次从本人手牌标记 4 张实体牌，消耗 10 个额度；每位玩家最多保留 12 张有效标记，各组当局生效并持续后续 3 局，牌河记录具体位置。Anti 实现，Codex 独立编写测试及检视，已完成全链路验收：1000项测试、双端构建和真实GL通过，详见[最终验收](tile-mark/ACCEPTANCE.md)。Android真机触摸尚未验证。
+
 ## 🏛️ 迁移记录与归档导航
 
 - **[V4 迁移验收总报告 (v4-migration/ACCEPTANCE-R6.md)](./v4-migration/ACCEPTANCE-R6.md)**：

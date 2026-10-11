@@ -8,6 +8,7 @@ import com.majiang.access.ReceiptStatus
 import com.majiang.application.ActionChoice
 import com.majiang.application.PlayerDecision
 import com.majiang.event.GameEvent
+import com.majiang.cheat.mark.TileMarkRequest
 import com.majiang.match.SessionLifecycle
 import com.majiang.server.api.ApiProtocol
 import com.majiang.server.api.PublicCheckpoint
@@ -893,6 +894,13 @@ class SharedRoom @JvmOverloads constructor(
         sessionValidator: (() -> Boolean)? = null
     ): CompletableFuture<ActionReceipt> =
         tableHost.submitShufflePlan(seat, plan, sessionValidator)
+
+    fun submitTileMark(
+        seat: Int,
+        request: TileMarkRequest,
+        sessionValidator: (() -> Boolean)? = null
+    ): CompletableFuture<ActionReceipt> =
+        tableHost.submitTileMark(seat, request, sessionValidator)
 
     fun claimControl(seat: Int, sessionValidator: (() -> Boolean)? = null): CompletableFuture<ActionReceipt> =
         tableHost.claimControl(seat, sessionValidator)

@@ -13,6 +13,7 @@ import com.majiang.application.ActionChoice
 import com.majiang.application.PlayerDecision
 import com.majiang.application.deepCopy
 import com.majiang.authority.TableAuthority
+import com.majiang.cheat.mark.TileMarkRequest
 import com.majiang.server.control.ConnectionControl
 import com.majiang.server.control.ControllerRole
 import com.majiang.server.control.DisconnectPolicy
@@ -261,6 +262,7 @@ class ServerTableHost @JvmOverloads constructor(
     private sealed class HostReceiptKey {
         data class Action(val roundId: String, val seat: Int, val requestId: String) : HostReceiptKey()
         data class Shuffle(val roundId: String, val seat: Int, val requestId: String) : HostReceiptKey()
+        data class Mark(val roundId: String, val seat: Int, val requestId: String) : HostReceiptKey()
     }
 
     private val maxIssuedReceipts = 1000
@@ -538,6 +540,41 @@ class ServerTableHost @JvmOverloads constructor(
                     publishStateChanges(emptyList())
                 }
                 val key = HostReceiptKey.Shuffle(request.roundId, seat, request.requestId)
+                if (!res.stateChanged && res.receipt.status != ReceiptStatus.REJECTED) {
+                    issuedReceipts[key] ?: res.receipt.copy(cursor = seatStreams[seat].cursor).also {
+                        issuedReceipts[key] = it
+                    }
+                } else {
+                    val r = res.receipt.copy(cursor = seatStreams[seat].cursor)
+                    if (r.status != ReceiptStatus.REJECTED) {
+                        issuedReceipts[key] = r
+                    }
+                    r
+                }
+            }
+        }
+    }
+
+    fun submitTileMark(
+        seat: Int,
+        request: TileMarkRequest,
+        sessionValidator: (() -> Boolean)? = null
+    ): CompletableFuture<ActionReceipt> {
+        return enqueueOperation {
+            if (sessionValidator?.invoke() == false) {
+                ActionReceipt(request.requestId, ReceiptStatus.REJECTED, reason = "STALE_SESSION")
+            } else if (connectionControl.seatState(seat).isDisconnected) {
+                ActionReceipt(request.requestId, ReceiptStatus.REJECTED, reason = "SEAT_DISCONNECTED")
+            } else if (!connectionControl.isHuman(seat)) {
+                ActionReceipt(request.requestId, ReceiptStatus.REJECTED, reason = "SEAT_NOT_HUMAN")
+            } else {
+                val res = authority.submitTileMark(seat, request, clock.nowMillis())
+                if (res.stateChanged) {
+                    syncDecisionsAndClocks()
+                    publishStateChanges(res.events)
+                    lastActionTimeMillis = clock.nowMillis()
+                }
+                val key = HostReceiptKey.Mark(request.roundId, seat, request.requestId)
                 if (!res.stateChanged && res.receipt.status != ReceiptStatus.REJECTED) {
                     issuedReceipts[key] ?: res.receipt.copy(cursor = seatStreams[seat].cursor).also {
                         issuedReceipts[key] = it
@@ -1081,6 +1118,7 @@ class ServerTableHost @JvmOverloads constructor(
                 prevSnap.settlementRoundId != candidateSnap.settlementRoundId ||
                 prevSnap.settlementEvents != candidateSnap.settlementEvents ||
                 prevSnap.preparation != candidateSnap.preparation ||
+                prevSnap.tileMark != candidateSnap.tileMark ||
                 hasMeaningfulClockChange
 
             if (!hasVisibleChange) {

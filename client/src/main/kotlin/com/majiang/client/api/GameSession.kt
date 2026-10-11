@@ -78,6 +78,15 @@ interface GameSession : AutoCloseable {
     fun submitShufflePlan(plan: ShufflePlan): CompletableFuture<Receipt>
 
     /**
+     * 提交落汗千术请求
+     *
+     * @param request 客户端标记请求
+     * @return 操作回执
+     */
+    fun submitTileMark(request: TileMarkRequest): CompletableFuture<Receipt> =
+        CompletableFuture.failedFuture(UnsupportedOperationException("submitTileMark is not supported"))
+
+    /**
      * 开始比赛（房主席位专属）
      */
     fun start(): CompletableFuture<Receipt>

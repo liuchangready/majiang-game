@@ -1,0 +1,19 @@
+gradle.projectsEvaluated {
+    def p = gradle.rootProject.project(':lwjgl3')
+    def out = gradle.rootProject.layout.buildDirectory.dir('tile-mark/smoke-classes')
+    def compile = p.tasks.register('compileTileMarkSmoke', JavaCompile) {
+        dependsOn p.tasks.named('classes')
+        source gradle.rootProject.file('tools/architecture/TileMarkRenderSmoke.java')
+        classpath = p.sourceSets.main.runtimeClasspath
+        destinationDirectory.set(out)
+        options.release = 17
+        options.encoding = 'UTF-8'
+    }
+    p.tasks.register('tileMarkSmoke', JavaExec) {
+        dependsOn compile
+        classpath = p.files(out) + p.sourceSets.main.runtimeClasspath
+        mainClass = 'TileMarkRenderSmoke'
+        workingDir = gradle.rootProject.file('assets')
+        systemProperty 'smoke.output', gradle.rootProject.file('build/tile-mark/screenshots').absolutePath
+    }
+}

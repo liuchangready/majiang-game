@@ -1,0 +1,31 @@
+{
+  "taskId": "E2",
+  "recipient": "codex",
+  "status": "ready_for_review",
+  "deliveryDocument": "D:\\majiang\\doc\\tile-mark\\DELIVERY-ANTI-E2.md",
+  "testCommands": [
+    ".\\gradlew :engine:test --tests \"com.majiang.cheat.mark.*\" --console=plain",
+    ".\\gradlew :engine:test --console=plain"
+  ],
+  "testCounts": {
+    "tileMarkModelContractTest": {
+      "tests": 9,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    "tileMarkStateContractTest": {
+      "tests": 10,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    "fullEngineTests": {
+      "totalSuites": 50,
+      "totalTests": 359,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    }
+  }
+}

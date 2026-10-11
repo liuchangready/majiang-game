@@ -1,0 +1,24 @@
+gradle.projectsEvaluated {
+    def p = gradle.rootProject.project(':lwjgl3')
+    def out = gradle.rootProject.layout.buildDirectory.dir('tile-mark/visibility-classes')
+    def compile = p.tasks.register('compileTileMarkVisibilitySmoke', JavaCompile) {
+        dependsOn p.tasks.named('classes')
+        source(['TileMarkVisibilitySmoke.java', 'V4SmokeSession.java', 'V4SmokeViews.java'].collect {
+            gradle.rootProject.file('tools/architecture/' + it)
+        })
+        classpath = p.sourceSets.main.runtimeClasspath
+        destinationDirectory.set(out)
+        options.release = 17
+        options.encoding = 'UTF-8'
+    }
+    p.tasks.register('tileMarkVisibilitySmoke', JavaExec) {
+        dependsOn compile
+        classpath = p.files(out) + p.sourceSets.main.runtimeClasspath
+        mainClass = 'TileMarkVisibilitySmoke'
+        workingDir = gradle.rootProject.file('assets')
+        systemProperty 'smoke.width', gradle.rootProject.findProperty('smokeWidth') ?: '1280'
+        systemProperty 'smoke.height', gradle.rootProject.findProperty('smokeHeight') ?: '720'
+        def variant = gradle.rootProject.findProperty('smokeVariant') ?: ''
+        systemProperty 'smoke.output', gradle.rootProject.file('build/tile-mark/screenshots' + variant).absolutePath
+    }
+}

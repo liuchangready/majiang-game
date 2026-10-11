@@ -15,6 +15,7 @@ import com.majiang.client.api.ReceiptStatus
 import com.majiang.client.session.ServerConnectionSession
 import com.majiang.client.api.SpectatorSession
 import com.majiang.client.api.ShuffleConfig
+import com.majiang.client.api.TileMarkConfig
 import com.majiang.presentation.common.TableNavigation
 import com.majiang.presentation.common.UiAssets
 import com.majiang.presentation.common.render.SkinManager
@@ -280,9 +281,17 @@ class MahjongGame(
         val lobbyFuture = openLocalLobby()
         val token = connectionSequence.get()
         lobbyFuture.thenCompose { lobby ->
+            val defaultCosts = mapOf(
+                "TILE_MARK" to 10
+            )
             lobby.createRoom(playerName = "玩家", config = MatchConfig(
-                cheatEconomy = CheatEconomyConfig(enabled = true, initialPoints = List(4) { 100 }),
-                shuffleConfig = ShuffleConfig(enabled = true)
+                cheatEconomy = CheatEconomyConfig(
+                    enabled = true,
+                    initialPoints = List(4) { 100 },
+                    costs = defaultCosts
+                ),
+                shuffleConfig = ShuffleConfig(enabled = true),
+                tileMarkConfig = TileMarkConfig(enabled = true)
             )).thenCompose {
                 lobby.start()
             }

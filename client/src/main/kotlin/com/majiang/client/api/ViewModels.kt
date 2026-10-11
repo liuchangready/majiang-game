@@ -1381,7 +1381,8 @@ class GameSnapshotView(
     settlementEvents: List<GameEventView> = emptyList(),
     val settlementDetail: SettlementDetailView? = null,
     val preparation: ShufflePreparationView? = null,
-    val presentationPreview: PlayerPresentationPreviewView? = null
+    val presentationPreview: PlayerPresentationPreviewView? = null,
+    val tileMark: TileMarkView? = null
 ) {
     val clocks: List<ClockInfo> = Collections.unmodifiableList(ArrayList(clocks))
     val cheatPoints: List<Int> = Collections.unmodifiableList(ArrayList(cheatPoints))
@@ -1434,6 +1435,30 @@ class GameSnapshotView(
                 }
             }
         }
+        if (tileMark != null) {
+            for (group in tileMark.activeGroups) {
+                for (tile in group.tiles) {
+                    if (tile.area == TileMarkArea.DISCARD) {
+                        val pos = tile.riverPosition
+                            ?: throw IllegalArgumentException("Missing riverPosition for DISCARD marked tile")
+                        require(roundId != null && pos.roundId == roundId) {
+                            "RiverPosition roundId (${pos.roundId}) does not match snapshot roundId ($roundId)"
+                        }
+                        require(pos.seat == tile.seat) {
+                            "RiverPosition seat (${pos.seat}) does not match marked tile seat (${tile.seat})"
+                        }
+                        val discards = view.discards.getOrNull(pos.seat)
+                            ?: throw IllegalArgumentException("Seat ${pos.seat} discards not found in view")
+                        require(pos.discardIndex in discards.indices) {
+                            "RiverPosition discardIndex (${pos.discardIndex}) out of range (0 until ${discards.size})"
+                        }
+                        require(discards[pos.discardIndex].tileId == tile.tileId) {
+                            "RiverPosition tile at seat ${pos.seat} index ${pos.discardIndex} is ${discards[pos.discardIndex].tileId}, expected ${tile.tileId}"
+                        }
+                    }
+                }
+            }
+        }
     }
 
     fun copy(
@@ -1454,11 +1479,21 @@ class GameSnapshotView(
         settlementEvents: List<GameEventView> = this.settlementEvents,
         settlementDetail: SettlementDetailView? = this.settlementDetail,
         preparation: ShufflePreparationView? = this.preparation,
-        presentationPreview: PlayerPresentationPreviewView? = this.presentationPreview
+        presentationPreview: PlayerPresentationPreviewView? = this.presentationPreview,
+        tileMark: TileMarkView? = this.tileMark
     ): GameSnapshotView = GameSnapshotView(
         sessionId, roundId, syncEpoch, cursor, sessionVersion, roundVersion,
         view, decision, clocks, cheatPoints, session, controls, paused,
-        settlementRoundId, settlementEvents, settlementDetail, preparation, presentationPreview
+        settlementRoundId, settlementEvents, settlementDetail, preparation, presentationPreview,
+        tileMark
+    )
+
+    fun deepCopy(): GameSnapshotView = copy(
+        clocks = ArrayList(clocks),
+        cheatPoints = ArrayList(cheatPoints),
+        controls = ArrayList(controls),
+        settlementEvents = ArrayList(settlementEvents),
+        tileMark = tileMark?.deepCopy()
     )
 
     override fun equals(other: Any?): Boolean = other is GameSnapshotView &&
@@ -1470,7 +1505,8 @@ class GameSnapshotView(
         session == other.session && controls == other.controls &&
         paused == other.paused && settlementRoundId == other.settlementRoundId &&
         settlementEvents == other.settlementEvents && settlementDetail == other.settlementDetail &&
-        preparation == other.preparation && presentationPreview == other.presentationPreview
+        preparation == other.preparation && presentationPreview == other.presentationPreview &&
+        tileMark == other.tileMark
 
     override fun hashCode(): Int {
         var r = sessionId.hashCode()
@@ -1491,11 +1527,12 @@ class GameSnapshotView(
         r = 31 * r + (settlementDetail?.hashCode() ?: 0)
         r = 31 * r + (preparation?.hashCode() ?: 0)
         r = 31 * r + (presentationPreview?.hashCode() ?: 0)
+        r = 31 * r + (tileMark?.hashCode() ?: 0)
         return r
     }
 
     override fun toString(): String =
-        "GameSnapshotView(sessionId=$sessionId, roundId=$roundId, cursor=$cursor, sessionVersion=$sessionVersion, view=$view, decision=$decision)"
+        "GameSnapshotView(sessionId=$sessionId, roundId=$roundId, cursor=$cursor, sessionVersion=$sessionVersion, view=$view, decision=$decision, tileMark=$tileMark)"
 }
 
 /**

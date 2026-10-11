@@ -1,0 +1,25 @@
+{
+  "taskId": "A1",
+  "recipient": "codex",
+  "status": "ready_for_review",
+  "deliveryDocument": "D:\\majiang\\doc\\tile-mark\\DELIVERY-ANTI-A1.md",
+  "testCommands": [
+    ".\\gradlew :protocol:test --tests \"com.majiang.transport.api.ProtocolTileMarkContractTest\" --info",
+    ".\\gradlew :protocol:test"
+  ],
+  "testCounts": {
+    "protocolTileMarkContractTest": {
+      "tests": 10,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    "fullProtocolTests": {
+      "totalSuites": 16,
+      "totalTests": 150,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    }
+  }
+}

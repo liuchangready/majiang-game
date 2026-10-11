@@ -2,6 +2,8 @@ package com.majiang.application
 
 import com.majiang.ai.AIPlayer
 import com.majiang.ai.BasicAIStrategy
+import com.majiang.cheat.mark.TileMarkGroup
+import com.majiang.cheat.mark.TileMarkRequest
 import com.majiang.economy.*
 import com.majiang.event.GameEvent
 import com.majiang.event.GameEventBus
@@ -93,6 +95,7 @@ class ApplicationCoordinator(
     private val rwLock = ReentrantReadWriteLock()
     private val isProcessingAction = AtomicBoolean(false)
     private val currentExecutingThread = AtomicReference<Thread?>(null)
+    private val pendingClose = AtomicBoolean(false)
 
     private val subscribers = CopyOnWriteArrayList<(List<GameEvent>) -> Unit>()
     private val consumedResults = mutableSetOf<String>()
@@ -140,8 +143,7 @@ class ApplicationCoordinator(
             decisionRegistry.invalidateAll()
         } finally {
             currentExecutingThread.set(null)
-            isProcessingAction.set(false)
-            rwLock.writeLock().unlock()
+            finalizeActionExecutionWithoutReadLock()
         }
     }
 
@@ -212,12 +214,11 @@ class ApplicationCoordinator(
                 try {
                     broadcastEvents(allEvents)
                 } finally {
-                    isProcessingAction.set(false)
                     rwLock.readLock().unlock()
+                    finalizeActionExecution()
                 }
             } else {
-                isProcessingAction.set(false)
-                rwLock.writeLock().unlock()
+                finalizeActionExecutionWithoutReadLock()
             }
         }
     }
@@ -270,8 +271,7 @@ class ApplicationCoordinator(
             return true
         } finally {
             currentExecutingThread.set(null)
-            isProcessingAction.set(false)
-            rwLock.writeLock().unlock()
+            finalizeActionExecutionWithoutReadLock()
         }
     }
 
@@ -573,12 +573,11 @@ class ApplicationCoordinator(
                 try {
                     broadcastEvents(allEvents)
                 } finally {
-                    isProcessingAction.set(false)
                     rwLock.readLock().unlock()
+                    finalizeActionExecution()
                 }
             } else {
-                isProcessingAction.set(false)
-                rwLock.writeLock().unlock()
+                finalizeActionExecutionWithoutReadLock()
             }
         }
     }
@@ -640,12 +639,11 @@ class ApplicationCoordinator(
                 try {
                     broadcastEvents(allEvents)
                 } finally {
-                    isProcessingAction.set(false)
                     rwLock.readLock().unlock()
+                    finalizeActionExecution()
                 }
             } else {
-                isProcessingAction.set(false)
-                rwLock.writeLock().unlock()
+                finalizeActionExecutionWithoutReadLock()
             }
         }
     }
@@ -689,12 +687,11 @@ class ApplicationCoordinator(
                 try {
                     broadcastEvents(allEvents)
                 } finally {
-                    isProcessingAction.set(false)
                     rwLock.readLock().unlock()
+                    finalizeActionExecution()
                 }
             } else {
-                isProcessingAction.set(false)
-                rwLock.writeLock().unlock()
+                finalizeActionExecutionWithoutReadLock()
             }
         }
     }
@@ -746,12 +743,11 @@ class ApplicationCoordinator(
                 try {
                     broadcastEvents(allEvents)
                 } finally {
-                    isProcessingAction.set(false)
                     rwLock.readLock().unlock()
+                    finalizeActionExecution()
                 }
             } else {
-                isProcessingAction.set(false)
-                rwLock.writeLock().unlock()
+                finalizeActionExecutionWithoutReadLock()
             }
         }
     }
@@ -791,12 +787,11 @@ class ApplicationCoordinator(
                 try {
                     broadcastEvents(allEvents)
                 } finally {
-                    isProcessingAction.set(false)
                     rwLock.readLock().unlock()
+                    finalizeActionExecution()
                 }
             } else {
-                isProcessingAction.set(false)
-                rwLock.writeLock().unlock()
+                finalizeActionExecutionWithoutReadLock()
             }
         }
     }
@@ -931,13 +926,212 @@ class ApplicationCoordinator(
                 try {
                     broadcastEvents(allEvents)
                 } finally {
-                    isProcessingAction.set(false)
                     rwLock.readLock().unlock()
+                    finalizeActionExecution()
                 }
             } else {
-                isProcessingAction.set(false)
-                rwLock.writeLock().unlock()
+                finalizeActionExecutionWithoutReadLock()
             }
+        }
+    }
+
+    /**
+     * 提交落汗千术原子操作 (Task E3)
+     */
+    fun submitTileMark(seat: Int, request: TileMarkRequest): ActionResult {
+        if (currentExecutingThread.get() == Thread.currentThread()) {
+            return ActionResult.Rejected(RejectionReason.ACTION_NOT_AVAILABLE)
+        }
+        if (!rwLock.writeLock().tryLock()) {
+            return ActionResult.Rejected(RejectionReason.ACTION_NOT_AVAILABLE)
+        }
+        if (!isProcessingAction.compareAndSet(false, true)) {
+            rwLock.writeLock().unlock()
+            return ActionResult.Rejected(RejectionReason.ACTION_NOT_AVAILABLE)
+        }
+        currentExecutingThread.set(Thread.currentThread())
+
+        val allEvents = mutableListOf<GameEvent>()
+        var acceptedResultToReturn: ActionResult? = null
+        try {
+            if (session.lifecycle == SessionLifecycle.FINISHED || session.lifecycle == SessionLifecycle.CLOSED) {
+                return ActionResult.Rejected(RejectionReason.MATCH_FINISHED)
+            }
+            val round = activeRound ?: return ActionResult.Rejected(RejectionReason.WRONG_PHASE)
+            if (round.roundId != request.roundId) {
+                return ActionResult.Rejected(RejectionReason.WRONG_PHASE)
+            }
+            if (session.sessionId != request.sessionId) {
+                return ActionResult.Rejected(RejectionReason.WRONG_PHASE)
+            }
+            if (seat !in 0..3) {
+                return ActionResult.Rejected(RejectionReason.INVALID_PLAYER)
+            }
+            if (request.requestId.isBlank()) {
+                return ActionResult.Rejected(RejectionReason.ACTION_NOT_AVAILABLE)
+            }
+
+            val candidateState = round.readState()
+            if (candidateState.currentPlayer != seat) {
+                return ActionResult.Rejected(RejectionReason.NOT_YOUR_TURN)
+            }
+            if (candidateState.phase !in setOf(GamePhase.CHEAT_WINDOW, GamePhase.DISCARD) || round.responseWindow != null) {
+                return ActionResult.Rejected(RejectionReason.WRONG_PHASE)
+            }
+            if (candidateState.riichiDeclared[seat]) {
+                return ActionResult.Rejected(RejectionReason.ACTION_NOT_AVAILABLE)
+            }
+
+            // 选牌校验
+            if (request.tileIds.size != 4 || request.tileIds.distinct().size != 4 || request.tileIds.any { it !in 0..135 }) {
+                return ActionResult.Rejected(RejectionReason.ACTION_NOT_AVAILABLE)
+            }
+            val playerHand = candidateState.players[seat].closedTiles + listOfNotNull(candidateState.players[seat].drawnTile)
+            val playerTileIds = playerHand.map { it.tileId }.toSet()
+            if (!request.tileIds.all { it in playerTileIds }) {
+                return ActionResult.Rejected(RejectionReason.ACTION_NOT_AVAILABLE)
+            }
+
+            // 组数与容量校验
+            val seatGroups = session.tileMarkState.groupsForSeat(seat)
+            val seatMarkedIds = seatGroups.flatMap { it.tileIds }.toSet()
+            if (request.tileIds.any { it in seatMarkedIds }) {
+                return ActionResult.Rejected(RejectionReason.ACTION_NOT_AVAILABLE)
+            }
+            if (seatGroups.size >= 3 || seatMarkedIds.size + 4 > 12) {
+                return ActionResult.Rejected(RejectionReason.ACTION_NOT_AVAILABLE)
+            }
+
+            // 费用校验（10点）
+            val cost = 10
+            if (candidateState.cheatPoints[seat] < cost) {
+                return ActionResult.Rejected(RejectionReason.ACTION_NOT_AVAILABLE)
+            }
+
+            // 应用扣费流水
+            val ledgerConfig = CheatEconomyConfig(
+                enabled = true,
+                initialPoints = round.frozenStartingCheatPoints
+            )
+            val ledgerSnapshot = CheatLedgerSnapshot(
+                balances = candidateState.cheatPoints.toList(),
+                entries = candidateState.cheatEntries.toList()
+            )
+            val ledger = CheatLedger.fromSnapshot(ledgerConfig, ledgerSnapshot)
+            val entryId = "mark-$seat-${request.requestId}"
+            val appliedEntry = try {
+                ledger.apply(entryId, seat, -cost, "TILE_MARK")
+            } catch (e: Exception) {
+                return ActionResult.Rejected(RejectionReason.ACTION_NOT_AVAILABLE)
+            }
+
+            candidateState.cheatPoints[seat] = appliedEntry.balanceAfter
+            candidateState.cheatEntries.add(appliedEntry.copy())
+
+            // 创建 TileMarkGroup
+            val group = TileMarkGroup(
+                groupId = "mark-$seat-${request.requestId}",
+                ownerSeat = seat,
+                tileIds = request.tileIds,
+                createdRoundId = round.roundId,
+                createdRoundOrdinal = session.tileMarkState.dealtRoundOrdinal,
+                expiresAfterRoundOrdinal = session.tileMarkState.dealtRoundOrdinal + 3
+            )
+
+            val sessionStep = ApprovedSessionStep.ApplyTileMark(group)
+            val sessionChange = session.prepare(sessionStep)
+
+            val event = GameEvent.CheatPointsChanged(
+                turnNumber = candidateState.turnNumber,
+                seat = seat,
+                amount = -cost,
+                newBalance = appliedEntry.balanceAfter
+            )
+            val roundChange = RoundChange(
+                roundId = round.roundId,
+                sourceVersion = round.version,
+                state = candidateState,
+                responseWindow = round.responseWindow,
+                result = round.result,
+                events = listOf(event)
+            )
+
+            // 不变量审计
+            StateInvariants.assertValid(candidateState)
+
+            // 原子安装 Session 变更与 Round 变更
+            session.install(sessionChange)
+            round.install(roundChange)
+
+            val snap = snapshotGameEvent(event)
+            allEvents.add(snap)
+            eventBus.publish(snap)
+
+            decisionRegistry.invalidateAll()
+
+            val acceptedResult = ActionResult.Accepted(allEvents.map { snapshotGameEvent(it) })
+            acceptedResultToReturn = acceptedResult
+            return acceptedResult
+        } finally {
+            currentExecutingThread.set(null)
+            if (acceptedResultToReturn != null) {
+                rwLock.readLock().lock()
+                rwLock.writeLock().unlock()
+                try {
+                    broadcastEvents(allEvents)
+                } finally {
+                    rwLock.readLock().unlock()
+                    finalizeActionExecution()
+                }
+            } else {
+                finalizeActionExecutionWithoutReadLock()
+            }
+        }
+    }
+
+    fun close() {
+        if (rwLock.readHoldCount > 0) {
+            // 在事件广播回调中持有读锁，不能升级写锁，否则永久死锁。
+            // 记录延迟关闭标志，待当前通知快照发布完成释放读锁后立即原子执行关闭。
+            pendingClose.set(true)
+            return
+        }
+        if (rwLock.isWriteLockedByCurrentThread) {
+            performCloseInternal()
+            return
+        }
+        rwLock.writeLock().withLock {
+            performCloseInternal()
+        }
+    }
+
+    private fun performCloseInternal() {
+        if (session.lifecycle != SessionLifecycle.CLOSED) {
+            val change = session.prepare(ApprovedSessionStep.Close)
+            session.install(change)
+        }
+    }
+
+    private fun finalizeActionExecution() {
+        try {
+            if (pendingClose.compareAndSet(true, false)) {
+                rwLock.writeLock().withLock {
+                    performCloseInternal()
+                }
+            }
+        } finally {
+            isProcessingAction.set(false)
+        }
+    }
+
+    private fun finalizeActionExecutionWithoutReadLock() {
+        try {
+            if (pendingClose.compareAndSet(true, false)) {
+                performCloseInternal()
+            }
+        } finally {
+            isProcessingAction.set(false)
+            rwLock.writeLock().unlock()
         }
     }
 
@@ -1091,6 +1285,11 @@ class ApplicationCoordinator(
         }
 
         // 原子安装本局变更及整场交接
+        if (action is GameAction.StartStacking) {
+            val dealStep = ApprovedSessionStep.RegisterDealtRound(round.roundId)
+            val dealChange = session.prepare(dealStep)
+            session.install(dealChange)
+        }
         round.install(change)
         if (sessionChange != null && roundRes != null) {
             session.install(sessionChange)
@@ -1188,7 +1387,10 @@ class ApplicationCoordinator(
         StateInvariants.assertValid(roundChange.state)
 
         // 6. 所有校验审计通过后，原子安装 Session 与 Round
-        session.install(sessionChange)
+        val updatedSessionChange = sessionChange.copy(
+            targetTileMarkState = session.tileMarkState.registerDealtRound(nextRound.roundId)
+        )
+        session.install(updatedSessionChange)
         nextRound.install(roundChange)
 
         // 7. 收集并记录事件
@@ -1365,7 +1567,11 @@ class ApplicationCoordinator(
             // 4. 强不变量审计（物理守恒、非负点数等）
             StateInvariants.assertValid(candidate)
 
-            // 5. 原子安装单局变更
+            // 5. 原子安装单局变更与发牌局次登记
+            val sessionStep = ApprovedSessionStep.RegisterDealtRound(round.roundId)
+            val sessionChange = session.prepare(sessionStep)
+            session.install(sessionChange)
+
             val change = RoundChange(
                 roundId = round.roundId,
                 sourceVersion = round.version,
@@ -1399,12 +1605,11 @@ class ApplicationCoordinator(
                 try {
                     broadcastEvents(allEvents)
                 } finally {
-                    isProcessingAction.set(false)
                     rwLock.readLock().unlock()
+                    finalizeActionExecution()
                 }
             } else {
-                isProcessingAction.set(false)
-                rwLock.writeLock().unlock()
+                finalizeActionExecutionWithoutReadLock()
             }
         }
     }

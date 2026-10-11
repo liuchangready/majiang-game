@@ -33,6 +33,7 @@ import java.util.Collections
  * @property tieBreakSeats 同分排名时的优先级座次顺序（默认起家优先 [0, 1, 2, 3]）
  * @property cheatEconomy 独立出千经济系统配置
  * @property shuffleConfig 洗牌千术准备阶段配置
+ * @property tileMarkConfig 落汗千术配置
  */
 data class MatchConfig @JvmOverloads constructor(
     val playerCount: Int = 4,
@@ -47,7 +48,8 @@ data class MatchConfig @JvmOverloads constructor(
     val targetScore: Int = 30000,
     val tieBreakSeats: List<Int> = listOf(0, 1, 2, 3),
     val cheatEconomy: CheatEconomyConfig = CheatEconomyConfig(),
-    val shuffleConfig: ShuffleConfig = ShuffleConfig()
+    val shuffleConfig: ShuffleConfig = ShuffleConfig(),
+    val tileMarkConfig: com.majiang.cheat.mark.TileMarkConfig = com.majiang.cheat.mark.TileMarkConfig()
 ) {
     /**
      * 校验当前配置是否被引擎支持
@@ -96,6 +98,14 @@ data class MatchConfig @JvmOverloads constructor(
             }
             require(shuffleConfig.interference >= 0.0 && !shuffleConfig.interference.isNaN() && !shuffleConfig.interference.isInfinite()) {
                 "shuffleConfig.interference must be non-negative and finite, got ${shuffleConfig.interference}"
+            }
+        }
+        if (tileMarkConfig.enabled) {
+            require(cheatEconomy.enabled) {
+                "tileMarkConfig requires cheatEconomy to be enabled"
+            }
+            require(cheatEconomy.costs["TILE_MARK"] == 10) {
+                "tileMarkConfig requires cheatEconomy.costs['TILE_MARK'] == 10, got: ${cheatEconomy.costs["TILE_MARK"]}"
             }
         }
         return this

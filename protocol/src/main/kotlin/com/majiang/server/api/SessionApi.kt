@@ -7,6 +7,7 @@ import com.majiang.transport.api.ProtocolGameEvent
 import com.majiang.transport.api.ProtocolPlayerDecision
 import com.majiang.transport.api.ProtocolPlayerSnapshot
 import com.majiang.transport.api.ProtocolShufflePlan
+import com.majiang.transport.api.ProtocolTileMarkRequest
 import java.util.concurrent.CompletableFuture
 
 /**
@@ -108,4 +109,13 @@ interface SessionApi {
      * @return 该局公开结算事件列表凭据（包含役种/番/符/宝牌与计分明细）
      */
     fun queryRoundResult(roundId: String): CompletableFuture<List<ProtocolGameEvent>>
+
+    /**
+     * 提交落汗千术请求
+     *
+     * @param request 标记请求载荷（含 requestId、sessionId、roundId、decisionId、controlEpoch、tileIds）
+     * @return 操作回执凭据 [ProtocolActionReceipt]（APPLIED 生效 / REJECTED 拒绝）
+     */
+    fun submitTileMark(request: ProtocolTileMarkRequest): CompletableFuture<ProtocolActionReceipt> =
+        CompletableFuture.failedFuture(UnsupportedOperationException("submitTileMark not implemented"))
 }

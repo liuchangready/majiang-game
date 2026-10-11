@@ -180,7 +180,8 @@ class MatchConfig(
     val targetScore: Int = 30000,
     tieBreakSeats: List<Int> = listOf(0, 1, 2, 3),
     val cheatEconomy: CheatEconomyConfig = CheatEconomyConfig(),
-    val shuffleConfig: ShuffleConfig = ShuffleConfig()
+    val shuffleConfig: ShuffleConfig = ShuffleConfig(),
+    val tileMarkConfig: TileMarkConfig = TileMarkConfig()
 ) {
     val winds: List<Int> = Collections.unmodifiableList(ArrayList(winds))
     val startingScores: List<Int> = Collections.unmodifiableList(ArrayList(startingScores))
@@ -199,6 +200,7 @@ class MatchConfig(
     operator fun component11(): List<Int> = tieBreakSeats
     operator fun component12(): CheatEconomyConfig = cheatEconomy
     operator fun component13(): ShuffleConfig = shuffleConfig
+    operator fun component14(): TileMarkConfig = tileMarkConfig
 
     fun copy(
         playerCount: Int = this.playerCount,
@@ -213,12 +215,19 @@ class MatchConfig(
         targetScore: Int = this.targetScore,
         tieBreakSeats: List<Int> = this.tieBreakSeats,
         cheatEconomy: CheatEconomyConfig = this.cheatEconomy,
-        shuffleConfig: ShuffleConfig = this.shuffleConfig
+        shuffleConfig: ShuffleConfig = this.shuffleConfig,
+        tileMarkConfig: TileMarkConfig = this.tileMarkConfig
     ): MatchConfig = MatchConfig(
         playerCount, handsPerWind, winds, startingScores,
         allowExtension, allowAgariYame, bankruptcyEnabled,
         bankruptcyThreshold, bankruptcyInclusive, targetScore,
-        tieBreakSeats, cheatEconomy, shuffleConfig
+        tieBreakSeats, cheatEconomy, shuffleConfig, tileMarkConfig
+    )
+
+    fun deepCopy(): MatchConfig = copy(
+        winds = ArrayList(winds),
+        startingScores = ArrayList(startingScores),
+        tieBreakSeats = ArrayList(tieBreakSeats)
     )
 
     override fun equals(other: Any?): Boolean {
@@ -236,7 +245,8 @@ class MatchConfig(
             targetScore == other.targetScore &&
             tieBreakSeats == other.tieBreakSeats &&
             cheatEconomy == other.cheatEconomy &&
-            shuffleConfig == other.shuffleConfig
+            shuffleConfig == other.shuffleConfig &&
+            tileMarkConfig == other.tileMarkConfig
     }
 
     override fun hashCode(): Int {
@@ -253,11 +263,12 @@ class MatchConfig(
         result = 31 * result + tieBreakSeats.hashCode()
         result = 31 * result + cheatEconomy.hashCode()
         result = 31 * result + shuffleConfig.hashCode()
+        result = 31 * result + tileMarkConfig.hashCode()
         return result
     }
 
     override fun toString(): String =
-        "MatchConfig(playerCount=$playerCount, handsPerWind=$handsPerWind, winds=$winds, startingScores=$startingScores, allowExtension=$allowExtension, allowAgariYame=$allowAgariYame, bankruptcyEnabled=$bankruptcyEnabled, bankruptcyThreshold=$bankruptcyThreshold, bankruptcyInclusive=$bankruptcyInclusive, targetScore=$targetScore, tieBreakSeats=$tieBreakSeats, cheatEconomy=$cheatEconomy, shuffleConfig=$shuffleConfig)"
+        "MatchConfig(playerCount=$playerCount, handsPerWind=$handsPerWind, winds=$winds, startingScores=$startingScores, allowExtension=$allowExtension, allowAgariYame=$allowAgariYame, bankruptcyEnabled=$bankruptcyEnabled, bankruptcyThreshold=$bankruptcyThreshold, bankruptcyInclusive=$bankruptcyInclusive, targetScore=$targetScore, tieBreakSeats=$tieBreakSeats, cheatEconomy=$cheatEconomy, shuffleConfig=$shuffleConfig, tileMarkConfig=$tileMarkConfig)"
 }
 
 /**
@@ -268,7 +279,8 @@ class Capabilities(
     supportedPlayerCounts: Set<Int> = setOf(4),
     val remoteTransport: Boolean = false,
     val persistence: Boolean = false,
-    val resumption: Boolean = true
+    val resumption: Boolean = true,
+    val tileMarkSupported: Boolean = false
 ) {
     val supportedPlayerCounts: Set<Int> = Collections.unmodifiableSet(LinkedHashSet(supportedPlayerCounts))
 
@@ -277,15 +289,17 @@ class Capabilities(
     operator fun component3(): Boolean = remoteTransport
     operator fun component4(): Boolean = persistence
     operator fun component5(): Boolean = resumption
+    operator fun component6(): Boolean = tileMarkSupported
 
     fun copy(
         protocolVersion: Int = this.protocolVersion,
         supportedPlayerCounts: Set<Int> = this.supportedPlayerCounts,
         remoteTransport: Boolean = this.remoteTransport,
         persistence: Boolean = this.persistence,
-        resumption: Boolean = this.resumption
+        resumption: Boolean = this.resumption,
+        tileMarkSupported: Boolean = this.tileMarkSupported
     ): Capabilities = Capabilities(
-        protocolVersion, supportedPlayerCounts, remoteTransport, persistence, resumption
+        protocolVersion, supportedPlayerCounts, remoteTransport, persistence, resumption, tileMarkSupported
     )
 
     override fun equals(other: Any?): Boolean {
@@ -295,7 +309,8 @@ class Capabilities(
             supportedPlayerCounts == other.supportedPlayerCounts &&
             remoteTransport == other.remoteTransport &&
             persistence == other.persistence &&
-            resumption == other.resumption
+            resumption == other.resumption &&
+            tileMarkSupported == other.tileMarkSupported
     }
 
     override fun hashCode(): Int {
@@ -304,11 +319,12 @@ class Capabilities(
         result = 31 * result + remoteTransport.hashCode()
         result = 31 * result + persistence.hashCode()
         result = 31 * result + resumption.hashCode()
+        result = 31 * result + tileMarkSupported.hashCode()
         return result
     }
 
     override fun toString(): String =
-        "Capabilities(protocolVersion=$protocolVersion, supportedPlayerCounts=$supportedPlayerCounts, remoteTransport=$remoteTransport, persistence=$persistence, resumption=$resumption)"
+        "Capabilities(protocolVersion=$protocolVersion, supportedPlayerCounts=$supportedPlayerCounts, remoteTransport=$remoteTransport, persistence=$persistence, resumption=$resumption, tileMarkSupported=$tileMarkSupported)"
 }
 
 /**

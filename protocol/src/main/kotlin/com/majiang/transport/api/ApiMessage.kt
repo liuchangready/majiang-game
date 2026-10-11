@@ -46,6 +46,7 @@ object ApiTags {
     const val DECISION = "DECISION"
     const val SUBMIT_CHOICE = "SUBMIT_CHOICE"
     const val SUBMIT_SHUFFLE_PLAN = "SUBMIT_SHUFFLE_PLAN"
+    const val SUBMIT_TILE_MARK = "SUBMIT_TILE_MARK"
     const val START_MATCH = "START_MATCH"
     const val NEXT_ROUND = "NEXT_ROUND"
     const val RESUME_CURSOR = "RESUME_CURSOR"
@@ -64,7 +65,7 @@ object ApiTags {
     val KNOWN: Set<String> = setOf(
         CREATE_ROOM, JOIN_ROOM, LIST_ROOMS, RESUME_SESSION, LEAVE_ROOM,
         GET_ROOM_INFO, SET_READY, UPDATE_CONFIG,
-        CAPABILITIES, SNAPSHOT, DECISION, SUBMIT_CHOICE, SUBMIT_SHUFFLE_PLAN,
+        CAPABILITIES, SNAPSHOT, DECISION, SUBMIT_CHOICE, SUBMIT_SHUFFLE_PLAN, SUBMIT_TILE_MARK,
         START_MATCH, NEXT_ROUND, RESUME_CURSOR, CLAIM_CONTROL, RELEASE_CONTROL,
         QUERY_ROUND_RESULT,
         JOIN_SPECTATOR, RESUME_SPECTATOR, PUBLIC_SNAPSHOT, RESUME_PUBLIC, QUERY_PUBLIC_ROUND_RESULT
@@ -91,7 +92,8 @@ data class ApiRequest(
     val roomConfig: ProtocolRoomConfig? = null,
     val spectatorId: String? = null,
     val spectatorName: String? = null,
-    val publicCheckpoint: PublicCheckpoint? = null
+    val publicCheckpoint: PublicCheckpoint? = null,
+    val tileMark: ProtocolTileMarkRequest? = null
 ) {
     init {
         require(api.isNotBlank()) { "api cannot be blank" }
@@ -951,7 +953,7 @@ private class ProtocolMatchConfigAdapter : JsonDeserializer<ProtocolMatchConfig>
             setOf(
                 "playerCount", "handsPerWind", "winds", "startingScores", "allowExtension",
                 "allowAgariYame", "bankruptcyEnabled", "bankruptcyThreshold", "bankruptcyInclusive",
-                "targetScore", "tieBreakSeats", "cheatEconomy", "shuffleConfig"
+                "targetScore", "tieBreakSeats", "cheatEconomy", "shuffleConfig", "tileMarkConfig"
             ),
             "ProtocolMatchConfig"
         )
@@ -994,22 +996,30 @@ private class ProtocolMatchConfigAdapter : JsonDeserializer<ProtocolMatchConfig>
         val shuffleConfig: ProtocolShuffleConfig = if (obj.has("shuffleConfig") && !obj.get("shuffleConfig").isJsonNull) {
             context.deserialize(obj.get("shuffleConfig"), ProtocolShuffleConfig::class.java)
         } else ProtocolShuffleConfig()
+        val tileMarkConfig: ProtocolTileMarkConfig = if (obj.has("tileMarkConfig") && !obj.get("tileMarkConfig").isJsonNull) {
+            context.deserialize(obj.get("tileMarkConfig"), ProtocolTileMarkConfig::class.java)
+        } else ProtocolTileMarkConfig()
 
-        return ProtocolMatchConfig(
-            playerCount = playerCount,
-            handsPerWind = handsPerWind,
-            winds = winds,
-            startingScores = startingScores,
-            allowExtension = allowExtension,
-            allowAgariYame = allowAgariYame,
-            bankruptcyEnabled = bankruptcyEnabled,
-            bankruptcyThreshold = bankruptcyThreshold,
-            bankruptcyInclusive = bankruptcyInclusive,
-            targetScore = targetScore,
-            tieBreakSeats = tieBreakSeats,
-            cheatEconomy = cheatEconomy,
-            shuffleConfig = shuffleConfig
-        )
+        return try {
+            ProtocolMatchConfig(
+                playerCount = playerCount,
+                handsPerWind = handsPerWind,
+                winds = winds,
+                startingScores = startingScores,
+                allowExtension = allowExtension,
+                allowAgariYame = allowAgariYame,
+                bankruptcyEnabled = bankruptcyEnabled,
+                bankruptcyThreshold = bankruptcyThreshold,
+                bankruptcyInclusive = bankruptcyInclusive,
+                targetScore = targetScore,
+                tieBreakSeats = tieBreakSeats,
+                cheatEconomy = cheatEconomy,
+                shuffleConfig = shuffleConfig,
+                tileMarkConfig = tileMarkConfig
+            )
+        } catch (e: IllegalArgumentException) {
+            throw JsonParseException(e.message, e)
+        }
     }
 }
 
@@ -1476,7 +1486,7 @@ private class ProtocolAccessCapabilitiesAdapter : JsonDeserializer<ProtocolAcces
     override fun deserialize(json: JsonElement, typeOfT: Type, context: JsonDeserializationContext): ProtocolAccessCapabilities {
         if (!json.isJsonObject) throw JsonParseException("ProtocolAccessCapabilities must be a JSON object")
         val obj = json.asJsonObject
-        checkUnknownFields(obj, setOf("protocolVersion", "supportedPlayerCounts", "remoteTransport", "persistence", "resumption"), "ProtocolAccessCapabilities")
+        checkUnknownFields(obj, setOf("protocolVersion", "supportedPlayerCounts", "remoteTransport", "persistence", "resumption", "tileMarkSupported"), "ProtocolAccessCapabilities")
         val pv = if (obj.has("protocolVersion") && !obj.get("protocolVersion").isJsonNull) {
             val v = validateStrictInt(obj.get("protocolVersion"), "ProtocolAccessCapabilities.protocolVersion")
             if (v < 1) throw JsonParseException("protocolVersion must be >= 1: $v")
@@ -1496,7 +1506,10 @@ private class ProtocolAccessCapabilitiesAdapter : JsonDeserializer<ProtocolAcces
         val resume = if (obj.has("resumption") && !obj.get("resumption").isJsonNull) {
             validateStrictBoolean(obj.get("resumption"), "ProtocolAccessCapabilities.resumption")
         } else true
-        return ProtocolAccessCapabilities(pv, counts, remote, persist, resume)
+        val tileMarkSupported = if (obj.has("tileMarkSupported") && !obj.get("tileMarkSupported").isJsonNull) {
+            validateStrictBoolean(obj.get("tileMarkSupported"), "ProtocolAccessCapabilities.tileMarkSupported")
+        } else false
+        return ProtocolAccessCapabilities(pv, counts, remote, persist, resume, tileMarkSupported)
     }
 }
 
@@ -1680,7 +1693,7 @@ private class ApiRequestAdapter : JsonDeserializer<ApiRequest> {
         val obj = json.asJsonObject
         checkUnknownFields(
             obj,
-            setOf("api", "requestId", "roomId", "token", "playerName", "preferSeat", "config", "choice", "shufflePlan", "cursor", "roundId", "protocolVersion", "ready", "roomConfig", "spectatorId", "spectatorName", "publicCheckpoint"),
+            setOf("api", "requestId", "roomId", "token", "playerName", "preferSeat", "config", "choice", "shufflePlan", "cursor", "roundId", "protocolVersion", "ready", "roomConfig", "spectatorId", "spectatorName", "publicCheckpoint", "tileMark"),
             "ApiRequest"
         )
         val api = validateStrictString(obj.get("api") ?: throw JsonParseException("missing or blank api"), "api")
@@ -1705,6 +1718,9 @@ private class ApiRequestAdapter : JsonDeserializer<ApiRequest> {
             }
             if (obj.has("shufflePlan")) {
                 throw JsonParseException("Spectator request cannot contain player authority field 'shufflePlan'")
+            }
+            if (obj.has("tileMark")) {
+                throw JsonParseException("Spectator request cannot contain player authority field 'tileMark'")
             }
             when (api) {
                 ApiTags.JOIN_SPECTATOR -> {
@@ -1799,7 +1815,30 @@ private class ApiRequestAdapter : JsonDeserializer<ApiRequest> {
         val publicCheckpoint = if (obj.has("publicCheckpoint") && !obj.get("publicCheckpoint").isJsonNull) {
             context.deserialize<PublicCheckpoint>(obj.get("publicCheckpoint"), PublicCheckpoint::class.java)
         } else null
-        return ApiRequest(api, requestId, roomId, token, playerName, preferSeat, config, choice, shufflePlan, cursor, roundId, protocolVersion, ready, roomConfig, spectatorId, spectatorName, publicCheckpoint)
+        val tileMark = if (obj.has("tileMark") && !obj.get("tileMark").isJsonNull) {
+            context.deserialize<ProtocolTileMarkRequest>(obj.get("tileMark"), ProtocolTileMarkRequest::class.java)
+        } else null
+
+        if (api == ApiTags.SUBMIT_TILE_MARK) {
+            if (tileMark == null) {
+                throw JsonParseException("Missing tileMark payload in SUBMIT_TILE_MARK request")
+            }
+            if (tileMark.requestId != requestId) {
+                throw JsonParseException("requestId mismatch between envelope ($requestId) and tileMark (${tileMark.requestId})")
+            }
+            if (choice != null || obj.has("choice")) {
+                throw JsonParseException("SUBMIT_TILE_MARK cannot contain choice payload")
+            }
+            if (shufflePlan != null || obj.has("shufflePlan")) {
+                throw JsonParseException("SUBMIT_TILE_MARK cannot contain shufflePlan payload")
+            }
+        } else {
+            if (tileMark != null || obj.has("tileMark")) {
+                throw JsonParseException("tileMark payload is only allowed for SUBMIT_TILE_MARK")
+            }
+        }
+
+        return ApiRequest(api, requestId, roomId, token, playerName, preferSeat, config, choice, shufflePlan, cursor, roundId, protocolVersion, ready, roomConfig, spectatorId, spectatorName, publicCheckpoint, tileMark)
     }
 }
 
@@ -2169,7 +2208,8 @@ private class ProtocolPlayerSnapshotAdapter : JsonDeserializer<ProtocolPlayerSna
             setOf(
                 "sessionId", "roundId", "syncEpoch", "cursor", "sessionVersion", "roundVersion",
                 "view", "decision", "clocks", "cheatPoints", "session", "controls",
-                "paused", "settlementRoundId", "settlementEvents", "preparation", "presentationPreview"
+                "paused", "settlementRoundId", "settlementEvents", "preparation", "presentationPreview",
+                "tileMark"
             ),
             "ProtocolPlayerSnapshot"
         )
@@ -2278,25 +2318,59 @@ private class ProtocolPlayerSnapshotAdapter : JsonDeserializer<ProtocolPlayerSna
             }
         }
 
-        return ProtocolPlayerSnapshot(
-            sessionId = sessionId,
-            roundId = roundId,
-            syncEpoch = syncEpoch,
-            cursor = cursor,
-            sessionVersion = sessionVersion,
-            roundVersion = roundVersion,
-            view = view,
-            decision = decision,
-            clocks = clocks,
-            cheatPoints = cheatPoints,
-            session = session,
-            controls = controls,
-            paused = paused,
-            settlementRoundId = settlementRoundId,
-            settlementEvents = settlementEvents,
-            preparation = preparation,
-            presentationPreview = presentationPreview
-        )
+        val tileMark: ProtocolTileMarkView? = if (obj.has("tileMark") && !obj.get("tileMark").isJsonNull) {
+            context.deserialize(obj.get("tileMark"), ProtocolTileMarkView::class.java)
+        } else null
+
+        if (tileMark != null) {
+            for (group in tileMark.activeGroups) {
+                for (tile in group.tiles) {
+                    if (tile.area == ProtocolTileMarkArea.DISCARD) {
+                        val pos = tile.riverPosition
+                            ?: throw JsonParseException("Missing riverPosition for DISCARD marked tile")
+                        if (roundId == null || pos.roundId != roundId) {
+                            throw JsonParseException("RiverPosition roundId (${pos.roundId}) does not match snapshot roundId ($roundId)")
+                        }
+                        if (pos.seat != tile.seat) {
+                            throw JsonParseException("RiverPosition seat (${pos.seat}) does not match marked tile seat (${tile.seat})")
+                        }
+                        val discards = view.discards.getOrNull(pos.seat)
+                            ?: throw JsonParseException("Seat ${pos.seat} discards not found in view")
+                        if (pos.discardIndex !in discards.indices) {
+                            throw JsonParseException("RiverPosition discardIndex (${pos.discardIndex}) out of range (0 until ${discards.size})")
+                        }
+                        if (discards[pos.discardIndex].tileId != tile.tileId) {
+                            throw JsonParseException("RiverPosition tile at seat ${pos.seat} index ${pos.discardIndex} is ${discards[pos.discardIndex].tileId}, expected ${tile.tileId}")
+                        }
+                    }
+                }
+            }
+        }
+
+        return try {
+            ProtocolPlayerSnapshot(
+                sessionId = sessionId,
+                roundId = roundId,
+                syncEpoch = syncEpoch,
+                cursor = cursor,
+                sessionVersion = sessionVersion,
+                roundVersion = roundVersion,
+                view = view,
+                decision = decision,
+                clocks = clocks,
+                cheatPoints = cheatPoints,
+                session = session,
+                controls = controls,
+                paused = paused,
+                settlementRoundId = settlementRoundId,
+                settlementEvents = settlementEvents,
+                preparation = preparation,
+                presentationPreview = presentationPreview,
+                tileMark = tileMark
+            )
+        } catch (e: IllegalArgumentException) {
+            throw JsonParseException(e.message, e)
+        }
     }
 }
 
@@ -3249,6 +3323,306 @@ private class ProtocolRoomInfoAdapter : JsonSerializer<ProtocolRoomInfo>, JsonDe
 }
 
 /**
+ * ProtocolTileMarkConfig TypeAdapter
+ */
+private class ProtocolTileMarkConfigAdapter : JsonSerializer<ProtocolTileMarkConfig>, JsonDeserializer<ProtocolTileMarkConfig> {
+    override fun serialize(src: ProtocolTileMarkConfig, typeOfSrc: Type, context: JsonSerializationContext): JsonElement {
+        val obj = JsonObject()
+        obj.addProperty("enabled", src.enabled)
+        return obj
+    }
+
+    override fun deserialize(json: JsonElement, typeOfT: Type, context: JsonDeserializationContext): ProtocolTileMarkConfig {
+        if (!json.isJsonObject) throw JsonParseException("ProtocolTileMarkConfig must be a JSON object: $json")
+        val obj = json.asJsonObject
+        checkUnknownFields(obj, setOf("enabled"), "ProtocolTileMarkConfig")
+        val enabled = if (obj.has("enabled") && !obj.get("enabled").isJsonNull) {
+            validateStrictBoolean(obj.get("enabled"), "ProtocolTileMarkConfig.enabled")
+        } else false
+        return ProtocolTileMarkConfig(enabled)
+    }
+}
+
+/**
+ * ProtocolTileMarkRequest TypeAdapter
+ */
+private class ProtocolTileMarkRequestAdapter : JsonSerializer<ProtocolTileMarkRequest>, JsonDeserializer<ProtocolTileMarkRequest> {
+    override fun serialize(src: ProtocolTileMarkRequest, typeOfSrc: Type, context: JsonSerializationContext): JsonElement {
+        val obj = JsonObject()
+        obj.addProperty("requestId", src.requestId)
+        obj.addProperty("sessionId", src.sessionId)
+        obj.addProperty("roundId", src.roundId)
+        obj.addProperty("decisionId", src.decisionId)
+        obj.addProperty("controlEpoch", src.controlEpoch)
+        val arr = com.google.gson.JsonArray()
+        for (id in src.tileIds) arr.add(id)
+        obj.add("tileIds", arr)
+        return obj
+    }
+
+    override fun deserialize(json: JsonElement, typeOfT: Type, context: JsonDeserializationContext): ProtocolTileMarkRequest {
+        if (!json.isJsonObject) throw JsonParseException("ProtocolTileMarkRequest must be a JSON object: $json")
+        val obj = json.asJsonObject
+        checkUnknownFields(
+            obj,
+            setOf("requestId", "sessionId", "roundId", "decisionId", "controlEpoch", "tileIds"),
+            "ProtocolTileMarkRequest"
+        )
+        val requestId = validateStrictString(obj.get("requestId") ?: throw JsonParseException("Missing requestId in ProtocolTileMarkRequest"), "requestId")
+        if (requestId.isBlank()) throw JsonParseException("requestId cannot be blank")
+        val sessionId = validateStrictString(obj.get("sessionId") ?: throw JsonParseException("Missing sessionId in ProtocolTileMarkRequest"), "sessionId")
+        if (sessionId.isBlank()) throw JsonParseException("sessionId cannot be blank")
+        val roundId = validateStrictString(obj.get("roundId") ?: throw JsonParseException("Missing roundId in ProtocolTileMarkRequest"), "roundId")
+        if (roundId.isBlank()) throw JsonParseException("roundId cannot be blank")
+        val decisionId = validateStrictString(obj.get("decisionId") ?: throw JsonParseException("Missing decisionId in ProtocolTileMarkRequest"), "decisionId")
+        if (decisionId.isBlank()) throw JsonParseException("decisionId cannot be blank")
+        val controlEpoch = validateStrictLong(obj.get("controlEpoch") ?: throw JsonParseException("Missing controlEpoch in ProtocolTileMarkRequest"), "controlEpoch")
+        if (controlEpoch < 0L) throw JsonParseException("controlEpoch must be non-negative: $controlEpoch")
+        val tileIdsElem = obj.get("tileIds") ?: throw JsonParseException("Missing tileIds in ProtocolTileMarkRequest")
+        val tileIds = validateStrictIntList(tileIdsElem, "tileIds")
+        for (id in tileIds) {
+            if (id !in 0..135) throw JsonParseException("tileId out of range 0..135: $id")
+        }
+        return try {
+            ProtocolTileMarkRequest(requestId, sessionId, roundId, decisionId, controlEpoch, tileIds)
+        } catch (e: IllegalArgumentException) {
+            throw JsonParseException("Invalid ProtocolTileMarkRequest: ${e.message}", e)
+        }
+    }
+}
+
+/**
+ * ProtocolRiverPosition TypeAdapter
+ */
+private class ProtocolRiverPositionAdapter : JsonSerializer<ProtocolRiverPosition>, JsonDeserializer<ProtocolRiverPosition> {
+    override fun serialize(src: ProtocolRiverPosition, typeOfSrc: Type, context: JsonSerializationContext): JsonElement {
+        val obj = JsonObject()
+        obj.addProperty("roundId", src.roundId)
+        obj.addProperty("seat", src.seat)
+        obj.addProperty("discardIndex", src.discardIndex)
+        return obj
+    }
+
+    override fun deserialize(json: JsonElement, typeOfT: Type, context: JsonDeserializationContext): ProtocolRiverPosition {
+        if (!json.isJsonObject) throw JsonParseException("ProtocolRiverPosition must be a JSON object: $json")
+        val obj = json.asJsonObject
+        checkUnknownFields(obj, setOf("roundId", "seat", "discardIndex"), "ProtocolRiverPosition")
+        val roundId = validateStrictString(obj.get("roundId") ?: throw JsonParseException("Missing roundId in ProtocolRiverPosition"), "roundId")
+        if (roundId.isBlank()) throw JsonParseException("roundId cannot be blank")
+        val seat = validateStrictInt(obj.get("seat") ?: throw JsonParseException("Missing seat in ProtocolRiverPosition"), "seat")
+        if (seat !in 0..3) throw JsonParseException("seat must be in 0..3: $seat")
+        val discardIndex = validateStrictInt(obj.get("discardIndex") ?: throw JsonParseException("Missing discardIndex in ProtocolRiverPosition"), "discardIndex")
+        if (discardIndex < 0) throw JsonParseException("discardIndex must be non-negative: $discardIndex")
+        return ProtocolRiverPosition(roundId, seat, discardIndex)
+    }
+}
+
+/**
+ * ProtocolMarkedTileView TypeAdapter
+ */
+private class ProtocolMarkedTileViewAdapter : JsonSerializer<ProtocolMarkedTileView>, JsonDeserializer<ProtocolMarkedTileView> {
+    override fun serialize(src: ProtocolMarkedTileView, typeOfSrc: Type, context: JsonSerializationContext): JsonElement {
+        val obj = JsonObject()
+        obj.addProperty("tileId", src.tileId)
+        obj.add("tile", context.serialize(src.tile, ProtocolTile::class.java))
+        obj.addProperty("area", src.area.name)
+        if (src.seat != null) obj.addProperty("seat", src.seat)
+        if (src.riverPosition != null) obj.add("riverPosition", context.serialize(src.riverPosition, ProtocolRiverPosition::class.java))
+        return obj
+    }
+
+    override fun deserialize(json: JsonElement, typeOfT: Type, context: JsonDeserializationContext): ProtocolMarkedTileView {
+        if (!json.isJsonObject) throw JsonParseException("ProtocolMarkedTileView must be a JSON object: $json")
+        val obj = json.asJsonObject
+        checkUnknownFields(obj, setOf("tileId", "tile", "area", "seat", "riverPosition"), "ProtocolMarkedTileView")
+        val tileId = validateStrictInt(obj.get("tileId") ?: throw JsonParseException("Missing tileId in ProtocolMarkedTileView"), "tileId")
+        if (tileId !in 0..135) throw JsonParseException("tileId must be in 0..135: $tileId")
+        val tileElem = obj.get("tile") ?: throw JsonParseException("Missing tile in ProtocolMarkedTileView")
+        val tile: ProtocolTile = context.deserialize(tileElem, ProtocolTile::class.java)
+        if (tile.tileId != tileId) throw JsonParseException("tile.tileId (${tile.tileId}) does not match tileId ($tileId)")
+        val areaElem = obj.get("area") ?: throw JsonParseException("Missing area in ProtocolMarkedTileView")
+        val areaStr = validateStrictString(areaElem, "area")
+        val area = try {
+            ProtocolTileMarkArea.valueOf(areaStr)
+        } catch (e: Exception) {
+            throw JsonParseException("Invalid area in ProtocolMarkedTileView: $areaStr", e)
+        }
+        val seat = if (obj.has("seat") && !obj.get("seat").isJsonNull) {
+            val s = validateStrictInt(obj.get("seat"), "seat")
+            if (s !in 0..3) throw JsonParseException("seat must be in 0..3: $s")
+            s
+        } else null
+        val riverPosition = if (obj.has("riverPosition") && !obj.get("riverPosition").isJsonNull) {
+            context.deserialize<ProtocolRiverPosition>(obj.get("riverPosition"), ProtocolRiverPosition::class.java)
+        } else null
+
+        if (area == ProtocolTileMarkArea.DISCARD) {
+            if (seat == null || seat !in 0..3) throw JsonParseException("seat must be non-null and in 0..3 for DISCARD, got: $seat")
+            if (riverPosition == null) throw JsonParseException("riverPosition must be non-null for DISCARD")
+            if (riverPosition.seat != seat) throw JsonParseException("riverPosition.seat (${riverPosition.seat}) must match seat ($seat)")
+        } else {
+            if (riverPosition != null) throw JsonParseException("riverPosition must be null when area is not DISCARD, was: $riverPosition")
+        }
+        if (area == ProtocolTileMarkArea.OWN_HAND || area == ProtocolTileMarkArea.OPPONENT_HAND || area == ProtocolTileMarkArea.EXPOSED_MELD) {
+            if (seat == null || seat !in 0..3) throw JsonParseException("seat must be non-null and in 0..3 for $area, got: $seat")
+        } else if (area == ProtocolTileMarkArea.EXPOSED_INDICATOR || area == ProtocolTileMarkArea.NOT_VISIBLE) {
+            if (seat != null) throw JsonParseException("seat must be null for $area, got: $seat")
+        }
+
+        return try {
+            ProtocolMarkedTileView(tileId, tile, area, seat, riverPosition)
+        } catch (e: IllegalArgumentException) {
+            throw JsonParseException("Invalid ProtocolMarkedTileView: ${e.message}", e)
+        }
+    }
+}
+
+/**
+ * ProtocolTileMarkGroupView TypeAdapter
+ */
+private class ProtocolTileMarkGroupViewAdapter : JsonSerializer<ProtocolTileMarkGroupView>, JsonDeserializer<ProtocolTileMarkGroupView> {
+    override fun serialize(src: ProtocolTileMarkGroupView, typeOfSrc: Type, context: JsonSerializationContext): JsonElement {
+        val obj = JsonObject()
+        obj.addProperty("groupId", src.groupId)
+        obj.addProperty("createdRoundId", src.createdRoundId)
+        obj.addProperty("createdRoundOrdinal", src.createdRoundOrdinal)
+        obj.addProperty("expiresAfterRoundOrdinal", src.expiresAfterRoundOrdinal)
+        obj.addProperty("futureRoundsRemaining", src.futureRoundsRemaining)
+        obj.addProperty("isLastEffectiveRound", src.isLastEffectiveRound)
+        val arr = com.google.gson.JsonArray()
+        for (t in src.tiles) arr.add(context.serialize(t, ProtocolMarkedTileView::class.java))
+        obj.add("tiles", arr)
+        return obj
+    }
+
+    override fun deserialize(json: JsonElement, typeOfT: Type, context: JsonDeserializationContext): ProtocolTileMarkGroupView {
+        if (!json.isJsonObject) throw JsonParseException("ProtocolTileMarkGroupView must be a JSON object: $json")
+        val obj = json.asJsonObject
+        checkUnknownFields(
+            obj,
+            setOf("groupId", "createdRoundId", "createdRoundOrdinal", "expiresAfterRoundOrdinal", "futureRoundsRemaining", "isLastEffectiveRound", "tiles"),
+            "ProtocolTileMarkGroupView"
+        )
+        val groupId = validateStrictString(obj.get("groupId") ?: throw JsonParseException("Missing groupId in ProtocolTileMarkGroupView"), "groupId")
+        if (groupId.isBlank()) throw JsonParseException("groupId cannot be blank")
+        val createdRoundId = validateStrictString(obj.get("createdRoundId") ?: throw JsonParseException("Missing createdRoundId in ProtocolTileMarkGroupView"), "createdRoundId")
+        if (createdRoundId.isBlank()) throw JsonParseException("createdRoundId cannot be blank")
+        val createdRoundOrdinal = validateStrictInt(obj.get("createdRoundOrdinal") ?: throw JsonParseException("Missing createdRoundOrdinal in ProtocolTileMarkGroupView"), "createdRoundOrdinal")
+        if (createdRoundOrdinal < 1 || createdRoundOrdinal > Int.MAX_VALUE - 3) {
+            throw JsonParseException("createdRoundOrdinal out of valid range 1..${Int.MAX_VALUE - 3}: $createdRoundOrdinal")
+        }
+        val expiresAfterRoundOrdinal = validateStrictInt(obj.get("expiresAfterRoundOrdinal") ?: throw JsonParseException("Missing expiresAfterRoundOrdinal in ProtocolTileMarkGroupView"), "expiresAfterRoundOrdinal")
+        if (expiresAfterRoundOrdinal.toLong() != createdRoundOrdinal.toLong() + 3L) {
+            throw JsonParseException("expiresAfterRoundOrdinal ($expiresAfterRoundOrdinal) must equal createdRoundOrdinal ($createdRoundOrdinal) + 3")
+        }
+        val futureRoundsRemaining = validateStrictInt(obj.get("futureRoundsRemaining") ?: throw JsonParseException("Missing futureRoundsRemaining in ProtocolTileMarkGroupView"), "futureRoundsRemaining")
+        if (futureRoundsRemaining !in 0..3) {
+            throw JsonParseException("futureRoundsRemaining must be in 0..3: $futureRoundsRemaining")
+        }
+        val isLastEffectiveRound = validateStrictBoolean(obj.get("isLastEffectiveRound") ?: throw JsonParseException("Missing isLastEffectiveRound in ProtocolTileMarkGroupView"), "isLastEffectiveRound")
+        if (isLastEffectiveRound != (futureRoundsRemaining == 0)) {
+            throw JsonParseException("isLastEffectiveRound ($isLastEffectiveRound) must be true if and only if futureRoundsRemaining == 0 ($futureRoundsRemaining)")
+        }
+        val tilesElem = obj.get("tiles") ?: throw JsonParseException("Missing tiles in ProtocolTileMarkGroupView")
+        if (!tilesElem.isJsonArray) throw JsonParseException("tiles must be a JSON array")
+        val tilesArr = tilesElem.asJsonArray
+        if (tilesArr.size() != 4) throw JsonParseException("Group tiles size must be exactly 4, got: ${tilesArr.size()}")
+        val list = ArrayList<ProtocolMarkedTileView>(4)
+        for (elem in tilesArr) {
+            if (elem == null || elem.isJsonNull || !elem.isJsonObject) {
+                throw JsonParseException("tiles element must be a non-null JSON object")
+            }
+            list.add(context.deserialize(elem, ProtocolMarkedTileView::class.java))
+        }
+        if (list.map { it.tileId }.distinct().size != 4) {
+            throw JsonParseException("tiles within group must have 4 distinct tileIds")
+        }
+        return ProtocolTileMarkGroupView(groupId, createdRoundId, createdRoundOrdinal, expiresAfterRoundOrdinal, futureRoundsRemaining, isLastEffectiveRound, Collections.unmodifiableList(list))
+    }
+}
+
+/**
+ * ProtocolTileMarkView TypeAdapter
+ */
+private class ProtocolTileMarkViewAdapter : JsonSerializer<ProtocolTileMarkView>, JsonDeserializer<ProtocolTileMarkView> {
+    override fun serialize(src: ProtocolTileMarkView, typeOfSrc: Type, context: JsonSerializationContext): JsonElement {
+        val obj = JsonObject()
+        obj.addProperty("canApply", src.canApply)
+        if (src.disabledReason != null) obj.addProperty("disabledReason", src.disabledReason)
+        obj.addProperty("cost", src.cost)
+        obj.addProperty("activeTileCount", src.activeTileCount)
+        obj.addProperty("maxActiveTiles", src.maxActiveTiles)
+        val selArr = com.google.gson.JsonArray()
+        for (id in src.selectableTileIds) selArr.add(id)
+        obj.add("selectableTileIds", selArr)
+        obj.addProperty("decisionId", src.decisionId)
+        obj.addProperty("controlEpoch", src.controlEpoch)
+        obj.addProperty("stateVersion", src.stateVersion)
+        val grpArr = com.google.gson.JsonArray()
+        for (g in src.activeGroups) grpArr.add(context.serialize(g, ProtocolTileMarkGroupView::class.java))
+        obj.add("activeGroups", grpArr)
+        return obj
+    }
+
+    override fun deserialize(json: JsonElement, typeOfT: Type, context: JsonDeserializationContext): ProtocolTileMarkView {
+        if (!json.isJsonObject) throw JsonParseException("ProtocolTileMarkView must be a JSON object: $json")
+        val obj = json.asJsonObject
+        checkUnknownFields(
+            obj,
+            setOf("canApply", "disabledReason", "cost", "activeTileCount", "maxActiveTiles", "selectableTileIds", "decisionId", "controlEpoch", "stateVersion", "activeGroups"),
+            "ProtocolTileMarkView"
+        )
+        val canApply = validateStrictBoolean(obj.get("canApply") ?: throw JsonParseException("Missing canApply in ProtocolTileMarkView"), "canApply")
+        val disabledReason = validateStrictOptionalString(obj.get("disabledReason"), "disabledReason")
+        val cost = validateStrictInt(obj.get("cost") ?: throw JsonParseException("Missing cost in ProtocolTileMarkView"), "cost")
+        if (cost != 10) throw JsonParseException("cost must be 10, got: $cost")
+        val activeTileCount = validateStrictInt(obj.get("activeTileCount") ?: throw JsonParseException("Missing activeTileCount in ProtocolTileMarkView"), "activeTileCount")
+        if (activeTileCount !in 0..12) throw JsonParseException("activeTileCount must be in 0..12, got: $activeTileCount")
+        val maxActiveTiles = if (obj.has("maxActiveTiles") && !obj.get("maxActiveTiles").isJsonNull) {
+            validateStrictInt(obj.get("maxActiveTiles"), "maxActiveTiles")
+        } else 12
+        if (maxActiveTiles != 12) throw JsonParseException("maxActiveTiles must be 12, got: $maxActiveTiles")
+        val selectableTileIds = if (obj.has("selectableTileIds") && !obj.get("selectableTileIds").isJsonNull) {
+            validateStrictIntList(obj.get("selectableTileIds"), "selectableTileIds")
+        } else emptyList()
+        val decisionId = validateStrictString(obj.get("decisionId") ?: throw JsonParseException("Missing decisionId in ProtocolTileMarkView"), "decisionId")
+        if (decisionId.isBlank()) throw JsonParseException("decisionId cannot be blank")
+        val controlEpoch = validateStrictLong(obj.get("controlEpoch") ?: throw JsonParseException("Missing controlEpoch in ProtocolTileMarkView"), "controlEpoch")
+        if (controlEpoch < 0L) throw JsonParseException("controlEpoch must be non-negative: $controlEpoch")
+        val stateVersion = validateStrictLong(obj.get("stateVersion") ?: throw JsonParseException("Missing stateVersion in ProtocolTileMarkView"), "stateVersion")
+        if (stateVersion < 0L) throw JsonParseException("stateVersion must be non-negative: $stateVersion")
+        val activeGroupsElem = obj.get("activeGroups") ?: throw JsonParseException("Missing activeGroups in ProtocolTileMarkView")
+        if (!activeGroupsElem.isJsonArray) throw JsonParseException("activeGroups must be a JSON array")
+        val grpArr = activeGroupsElem.asJsonArray
+        if (grpArr.size() > 3) throw JsonParseException("activeGroups size cannot exceed 3, got: ${grpArr.size()}")
+        val groupsList = ArrayList<ProtocolTileMarkGroupView>(grpArr.size())
+        for (elem in grpArr) {
+            if (elem == null || elem.isJsonNull || !elem.isJsonObject) {
+                throw JsonParseException("activeGroups element must be a non-null JSON object")
+            }
+            groupsList.add(context.deserialize(elem, ProtocolTileMarkGroupView::class.java))
+        }
+        val totalTiles = groupsList.sumOf { it.tiles.size }
+        if (totalTiles != activeTileCount) {
+            throw JsonParseException("activeTileCount ($activeTileCount) must equal total tiles in activeGroups ($totalTiles)")
+        }
+        val allTileIds = groupsList.flatMap { g -> g.tiles.map { it.tileId } }
+        if (allTileIds.distinct().size != allTileIds.size) {
+            throw JsonParseException("duplicate tileId across activeGroups: $allTileIds")
+        }
+        val allGroupIds = groupsList.map { it.groupId }
+        if (allGroupIds.distinct().size != allGroupIds.size) {
+            throw JsonParseException("duplicate groupId across activeGroups: $allGroupIds")
+        }
+        return try {
+            ProtocolTileMarkView(canApply, disabledReason, cost, activeTileCount, maxActiveTiles, selectableTileIds, decisionId, controlEpoch, stateVersion, groupsList)
+        } catch (e: IllegalArgumentException) {
+            throw JsonParseException("Invalid ProtocolTileMarkView: ${e.message}", e)
+        }
+    }
+}
+
+/**
  * V4 消息编解码器 (ApiMessageCodec)
  *
  * 采用独立 Gson 实例，不 import engine，对多态类型进行显式标签编解码和严格输入边界校验。
@@ -3310,6 +3684,12 @@ object ApiMessageCodec {
         .registerTypeAdapter(JoinSpectatorRequest::class.java, JoinSpectatorRequestAdapter())
         .registerTypeAdapter(ResumeSpectatorRequest::class.java, ResumeSpectatorRequestAdapter())
         .registerTypeAdapter(SpectatorBinding::class.java, SpectatorBindingAdapter())
+        .registerTypeAdapter(ProtocolTileMarkConfig::class.java, ProtocolTileMarkConfigAdapter())
+        .registerTypeAdapter(ProtocolTileMarkRequest::class.java, ProtocolTileMarkRequestAdapter())
+        .registerTypeAdapter(ProtocolRiverPosition::class.java, ProtocolRiverPositionAdapter())
+        .registerTypeAdapter(ProtocolMarkedTileView::class.java, ProtocolMarkedTileViewAdapter())
+        .registerTypeAdapter(ProtocolTileMarkGroupView::class.java, ProtocolTileMarkGroupViewAdapter())
+        .registerTypeAdapter(ProtocolTileMarkView::class.java, ProtocolTileMarkViewAdapter())
         .create()
 
     fun validateControlEpochElement(epochElem: JsonElement, context: String) {
@@ -3420,6 +3800,9 @@ object ApiMessageCodec {
             }
             if (rootObj.has("shufflePlan")) {
                 throw JsonParseException("Spectator request cannot contain player authority field 'shufflePlan'")
+            }
+            if (rootObj.has("tileMark")) {
+                throw JsonParseException("Spectator request cannot contain player authority field 'tileMark'")
             }
             when (apiStr) {
                 ApiTags.JOIN_SPECTATOR -> {
@@ -3544,6 +3927,24 @@ object ApiMessageCodec {
                 }
             } else if (!planElem.isJsonNull) {
                 throw JsonParseException("shufflePlan must be a JSON object")
+            }
+        }
+
+        // 严格线路上校验 tileMark 边界
+        if (rootObj.has("tileMark")) {
+            val tmElem = rootObj.get("tileMark")
+            if (tmElem.isJsonObject) {
+                val tmObj = tmElem.asJsonObject
+                if (!tmObj.has("controlEpoch")) {
+                    throw JsonParseException("tileMark requires controlEpoch at wire boundary")
+                }
+                validateControlEpochElement(tmObj.get("controlEpoch"), "tileMark")
+                val roundIdElem = tmObj.get("roundId")
+                if (roundIdElem == null || !roundIdElem.isJsonPrimitive || roundIdElem.asString.isBlank()) {
+                    throw JsonParseException("tileMark requires roundId at wire boundary")
+                }
+            } else if (!tmElem.isJsonNull) {
+                throw JsonParseException("tileMark must be a JSON object")
             }
         }
 

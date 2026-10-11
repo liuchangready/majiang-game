@@ -94,6 +94,7 @@ interface SessionApi {
     fun decision(): CompletableFuture<ProtocolPlayerDecision>
     fun submit(choice: ProtocolActionChoice): CompletableFuture<ProtocolActionReceipt>
     fun submitShufflePlan(plan: ProtocolShufflePlan): CompletableFuture<ProtocolActionReceipt>
+    fun submitTileMark(request: ProtocolTileMarkRequest): CompletableFuture<ProtocolActionReceipt>
     fun start(): CompletableFuture<ProtocolActionReceipt>
     fun nextRound(): CompletableFuture<ProtocolActionReceipt>
     fun resume(cursor: Long): CompletableFuture<ProtocolPlayerSnapshot>
@@ -148,6 +149,18 @@ interface PushChannel {
 - 仅提供只读接口（`publicSnapshot`、`resumePublic`、`onPublicUpdate`），禁止调用玩家写操作（出牌、鸣牌、出千、控制权切换等）；但观战连接仍支持调用 `leaveRoom()` 退出观战及查询房间公开信息；
 - 公开流游标与玩家游标完全隔离，基于 `(sessionId, syncEpoch, cursor)` 校验检查点。
 
+### 3.4 落汗：`submitTileMark`
+
+`ApiTags.SUBMIT_TILE_MARK` 的线路值为 `submitTileMark`，载荷放在 `ApiRequest.tileMark`，包含 `requestId`、`sessionId`、`roundId`、`decisionId`、`controlEpoch` 与 `tileIds`。信封和载荷的请求 ID 必须一致，不能混入 `choice` 或 `shufflePlan`。座位由绑定身份确定，请求不能指定所有者、费用或有效期。
+
+房间需显式启用 `tileMarkConfig.enabled`，同时开启经济并配置 `TILE_MARK=10`；模型默认关闭。新服务端的 `tileMarkSupported=true` 表示实现支持该接口，不代表每个房间都已启用；缺失能力字段按 false 处理。进程内及 UDP 请求统一进入 `ServerTableHost` 串行队列执行身份校验与权威裁决。
+
+每次选本人当前手牌中的 4 张不同实体牌，成功扣 10 额度，每位玩家最多 12 张有效标记。各组当局生效并持续后续 3 个实际发牌局，独立到期；施术不弃牌、不刷新截止时间。领域重放按排序后的牌集合识别语义相同请求，返回原回执及原游标。UDP 仍保留原始载荷冲突规则，自动重试必须复用完全相同的请求内容。
+
+私有 `ProtocolPlayerSnapshot.tileMark` 包含候选、费用、上限及完整 `activeGroups`。每张牌带区域、允许公开的位置和牌面；`DISCARD` 必须含 `riverPosition(roundId, seat, discardIndex)`，索引从 0 开始，与当前牌河中的实体 ID 一致。`NOT_VISIBLE` 不带座位或牌山下标，对手手牌不带真实排序槽位或摸牌标志。完整快照中空组、组消失或 `tileMark=null` 都替换旧效果，重连通过快照恢复。
+
+公开快照和观战 API 不增加标记字段。本地观战写入返回 `SPECTATOR_READ_ONLY`，UDP 观战写入返回 `UNAUTHENTICATED_SESSION`。业务拒绝原因包括 `TILE_MARK_INVALID_SELECTION`、`TILE_MARK_TILE_NOT_OWNED`、`TILE_MARK_ALREADY_MARKED`、`TILE_MARK_CAPACITY_EXCEEDED`、`TILE_MARK_RIICHI_LOCKED`、`INSUFFICIENT_FUNDS`、`DECISION_MISMATCH` 与 `DEADLINE_EXPIRED`。完整设计及分阶段验收见 [落汗设计](tile-mark/DESIGN.md) 和 [API 检视](tile-mark/REVIEW-API.md)。
+
 ---
 
 ## 4. 客户端门面模型 (client.api)
@@ -156,7 +169,7 @@ interface PushChannel {
 
 ### 4.1 门面抽象
 - **`LobbySession`**：大厅交互（建房、加房、准备、配置修改、房间广播监听）；
-- **`GameSession`**：对局交互（拉取快照 `snapshot()`、提交决策 `submit()`、码牌计划 `submitShufflePlan()`、开赛 `start()`、下一局 `nextRound()`、收回控制 `claimControl()`、交出托管 `releaseControl()`、推送监听 `onUpdate()`）；
+- **`GameSession`**：对局交互（拉取快照 `snapshot()`、提交决策 `submit()`、码牌计划 `submitShufflePlan()`、落汗 `submitTileMark()`、开赛 `start()`、下一局 `nextRound()`、收回控制 `claimControl()`、交出托管 `releaseControl()`、推送监听 `onUpdate()`）；
 - **`SpectatorSession`**：观战交互（拉取公开快照 `publicSnapshot()`、对账恢复 `resumePublic()`、公开更新监听 `onPublicUpdate()`）；
 - **`ServerConnectionSession`**：统一组合门面（位于 `client.session`），管理底层连接生命周期、自动重连与绑定切换。
 
@@ -167,6 +180,7 @@ interface PushChannel {
 - `DecisionView` / `ActionOptionView`：当前合法候选动作集合；
 - `Receipt`：包含 `requestId`、`ReceiptStatus (APPLIED / RECORDED / REJECTED)`、`cursor` 与 `reason`；
 - `ActionChoice`：提交决策的幂等载荷（包含 `requestId`、`roundId`、`decisionId`、`controlEpoch`、`optionId`）。
+- `TileMarkRequest` / `TileMarkView` / `RiverPositionView`：独立客户端落汗请求、私有追踪视图与当前牌河位置；`GameSnapshotView.tileMark` 可空。集合防御复制且只读，提交沿用 `isPending` 和连接/房间代次，回执不乐观改变费用或标记。
 
 ---
 

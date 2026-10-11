@@ -80,7 +80,8 @@ data class PlayerSnapshot(
     val settlementRoundId: String? = null,
     val settlementEvents: List<GameEvent> = emptyList(),
     val preparation: ShufflePreparationView? = null,
-    val presentationPreview: PlayerPresentationPreview? = null
+    val presentationPreview: PlayerPresentationPreview? = null,
+    val tileMark: com.majiang.cheat.mark.TileMarkView? = null
 ) {
     /** 观察者座位快捷属性，代理至 view.viewerSeat */
     val viewerSeat: Int get() = view.viewerSeat
@@ -151,7 +152,8 @@ data class PlayerSnapshot(
         settlementRoundId = settlementRoundId,
         settlementEvents = Collections.unmodifiableList(settlementEvents.map { snapshotGameEvent(it) }),
         preparation = preparation?.deepCopy(),
-        presentationPreview = presentationPreview?.deepCopy()
+        presentationPreview = presentationPreview?.deepCopy(),
+        tileMark = tileMark?.deepCopy()
     )
 }
 

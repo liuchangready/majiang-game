@@ -58,6 +58,13 @@ import com.majiang.transport.api.ProtocolPublicSessionSummary
 import com.majiang.transport.api.ProtocolPublicSnapshot
 import com.majiang.transport.api.ProtocolPublicUpdate
 import com.majiang.transport.api.ProtocolRoundOutcome
+import com.majiang.transport.api.ProtocolTileMarkConfig
+import com.majiang.transport.api.ProtocolTileMarkRequest
+import com.majiang.transport.api.ProtocolTileMarkArea
+import com.majiang.transport.api.ProtocolRiverPosition
+import com.majiang.transport.api.ProtocolMarkedTileView
+import com.majiang.transport.api.ProtocolTileMarkGroupView
+import com.majiang.transport.api.ProtocolTileMarkView
 import com.majiang.transport.api.validatePublicGameEvent
 import java.util.Collections
 import java.util.LinkedHashMap
@@ -655,7 +662,8 @@ object ProtocolViewMapper {
         settlementEvents = Collections.unmodifiableList(snap.settlementEvents.map { mapGameEvent(it) }),
         settlementDetail = projectSettlementDetail(snap.settlementEvents),
         preparation = snap.preparation?.let { mapShufflePreparation(it) },
-        presentationPreview = snap.presentationPreview?.let { mapPresentationPreview(it) }
+        presentationPreview = snap.presentationPreview?.let { mapPresentationPreview(it) },
+        tileMark = snap.tileMark?.let { mapTileMark(it) }
     )
 
     fun mapUpdate(update: ProtocolPlayerUpdate): GameUpdateView = GameUpdateView(
@@ -774,7 +782,8 @@ object ProtocolViewMapper {
         targetScore = config.targetScore,
         tieBreakSeats = config.tieBreakSeats,
         cheatEconomy = mapCheatEconomyConfig(config.cheatEconomy),
-        shuffleConfig = mapShuffleConfig(config.shuffleConfig)
+        shuffleConfig = mapShuffleConfig(config.shuffleConfig),
+        tileMarkConfig = mapTileMarkConfig(config.tileMarkConfig)
     )
 
     fun toProtocolMatchConfig(config: MatchConfig): ProtocolMatchConfig = ProtocolMatchConfig(
@@ -790,7 +799,8 @@ object ProtocolViewMapper {
         targetScore = config.targetScore,
         tieBreakSeats = config.tieBreakSeats,
         cheatEconomy = toProtocolCheatEconomyConfig(config.cheatEconomy),
-        shuffleConfig = toProtocolShuffleConfig(config.shuffleConfig)
+        shuffleConfig = toProtocolShuffleConfig(config.shuffleConfig),
+        tileMarkConfig = toProtocolTileMarkConfig(config.tileMarkConfig)
     )
 
     fun mapCapabilities(caps: ProtocolAccessCapabilities): Capabilities = Capabilities(
@@ -798,7 +808,8 @@ object ProtocolViewMapper {
         supportedPlayerCounts = caps.supportedPlayerCounts,
         remoteTransport = caps.remoteTransport,
         persistence = caps.persistence,
-        resumption = caps.resumption
+        resumption = caps.resumption,
+        tileMarkSupported = caps.tileMarkSupported
     )
 
     fun toProtocolCapabilities(caps: Capabilities): ProtocolAccessCapabilities = ProtocolAccessCapabilities(
@@ -806,7 +817,8 @@ object ProtocolViewMapper {
         supportedPlayerCounts = caps.supportedPlayerCounts,
         remoteTransport = caps.remoteTransport,
         persistence = caps.persistence,
-        resumption = caps.resumption
+        resumption = caps.resumption,
+        tileMarkSupported = caps.tileMarkSupported
     )
 
     fun mapRoomSummary(room: RoomSummary): RoomSummaryView = RoomSummaryView(
@@ -1200,5 +1212,118 @@ object ProtocolViewMapper {
             toProtocolGameEvent(it)
         }),
         isFullSnapshot = view.isFullSnapshot
+    )
+
+    // ==========================================
+    // 落汗千术 (TileMark) 模型映射
+    // ==========================================
+
+    fun mapTileMarkConfig(config: ProtocolTileMarkConfig): TileMarkConfig = TileMarkConfig(
+        enabled = config.enabled
+    )
+
+    fun toProtocolTileMarkConfig(config: TileMarkConfig): ProtocolTileMarkConfig = ProtocolTileMarkConfig(
+        enabled = config.enabled
+    )
+
+    fun toProtocolTileMarkRequest(request: TileMarkRequest): ProtocolTileMarkRequest = ProtocolTileMarkRequest(
+        requestId = request.requestId,
+        sessionId = request.sessionId,
+        roundId = request.roundId,
+        decisionId = request.decisionId,
+        controlEpoch = request.controlEpoch,
+        tileIds = request.tileIds
+    )
+
+    fun mapTileMarkArea(area: ProtocolTileMarkArea): TileMarkArea = when (area) {
+        ProtocolTileMarkArea.OWN_HAND -> TileMarkArea.OWN_HAND
+        ProtocolTileMarkArea.OPPONENT_HAND -> TileMarkArea.OPPONENT_HAND
+        ProtocolTileMarkArea.DISCARD -> TileMarkArea.DISCARD
+        ProtocolTileMarkArea.EXPOSED_MELD -> TileMarkArea.EXPOSED_MELD
+        ProtocolTileMarkArea.EXPOSED_INDICATOR -> TileMarkArea.EXPOSED_INDICATOR
+        ProtocolTileMarkArea.NOT_VISIBLE -> TileMarkArea.NOT_VISIBLE
+    }
+
+    fun toProtocolTileMarkArea(area: TileMarkArea): ProtocolTileMarkArea = when (area) {
+        TileMarkArea.OWN_HAND -> ProtocolTileMarkArea.OWN_HAND
+        TileMarkArea.OPPONENT_HAND -> ProtocolTileMarkArea.OPPONENT_HAND
+        TileMarkArea.DISCARD -> ProtocolTileMarkArea.DISCARD
+        TileMarkArea.EXPOSED_MELD -> ProtocolTileMarkArea.EXPOSED_MELD
+        TileMarkArea.EXPOSED_INDICATOR -> ProtocolTileMarkArea.EXPOSED_INDICATOR
+        TileMarkArea.NOT_VISIBLE -> ProtocolTileMarkArea.NOT_VISIBLE
+    }
+
+    fun mapRiverPosition(pos: ProtocolRiverPosition): RiverPositionView = RiverPositionView(
+        roundId = pos.roundId,
+        seat = pos.seat,
+        discardIndex = pos.discardIndex
+    )
+
+    fun toProtocolRiverPosition(pos: RiverPositionView): ProtocolRiverPosition = ProtocolRiverPosition(
+        roundId = pos.roundId,
+        seat = pos.seat,
+        discardIndex = pos.discardIndex
+    )
+
+    fun mapMarkedTile(tile: ProtocolMarkedTileView): MarkedTileView = MarkedTileView(
+        tileId = tile.tileId,
+        tile = mapTile(tile.tile),
+        area = mapTileMarkArea(tile.area),
+        seat = tile.seat,
+        riverPosition = tile.riverPosition?.let { mapRiverPosition(it) }
+    )
+
+    fun toProtocolMarkedTile(tile: MarkedTileView): ProtocolMarkedTileView = ProtocolMarkedTileView(
+        tileId = tile.tileId,
+        tile = toProtocolTile(tile.tile),
+        area = toProtocolTileMarkArea(tile.area),
+        seat = tile.seat,
+        riverPosition = tile.riverPosition?.let { toProtocolRiverPosition(it) }
+    )
+
+    fun mapTileMarkGroup(group: ProtocolTileMarkGroupView): TileMarkGroupView = TileMarkGroupView(
+        groupId = group.groupId,
+        createdRoundId = group.createdRoundId,
+        createdRoundOrdinal = group.createdRoundOrdinal,
+        expiresAfterRoundOrdinal = group.expiresAfterRoundOrdinal,
+        futureRoundsRemaining = group.futureRoundsRemaining,
+        isLastEffectiveRound = group.isLastEffectiveRound,
+        tiles = group.tiles.map { mapMarkedTile(it) }
+    )
+
+    fun toProtocolTileMarkGroup(group: TileMarkGroupView): ProtocolTileMarkGroupView = ProtocolTileMarkGroupView(
+        groupId = group.groupId,
+        createdRoundId = group.createdRoundId,
+        createdRoundOrdinal = group.createdRoundOrdinal,
+        expiresAfterRoundOrdinal = group.expiresAfterRoundOrdinal,
+        futureRoundsRemaining = group.futureRoundsRemaining,
+        isLastEffectiveRound = group.isLastEffectiveRound,
+        tiles = group.tiles.map { toProtocolMarkedTile(it) }
+    )
+
+    fun mapTileMark(mark: ProtocolTileMarkView): TileMarkView = TileMarkView(
+        canApply = mark.canApply,
+        disabledReason = mark.disabledReason,
+        cost = mark.cost,
+        activeTileCount = mark.activeTileCount,
+        maxActiveTiles = mark.maxActiveTiles,
+        selectableTileIds = mark.selectableTileIds,
+        decisionId = mark.decisionId,
+        controlEpoch = mark.controlEpoch,
+        stateVersion = mark.stateVersion,
+        activeGroups = mark.activeGroups.map { mapTileMarkGroup(it) }
+    )
+
+    fun toProtocolTileMark(mark: TileMarkView): ProtocolTileMarkView = ProtocolTileMarkView(
+        canApply = mark.canApply,
+        disabledReason = mark.disabledReason,
+        cost = mark.cost,
+        activeTileCount = mark.activeTileCount,
+        maxActiveTiles = mark.maxActiveTiles,
+        selectableTileIds = mark.selectableTileIds,
+        decisionId = mark.decisionId,
+        controlEpoch = mark.controlEpoch,
+        stateVersion = mark.stateVersion,
+        activeGroups = mark.activeGroups.map { toProtocolTileMarkGroup(it) }
     )
 }

@@ -418,7 +418,8 @@ class ProtocolAccessCapabilities(
     supportedPlayerCounts: Set<Int> = setOf(4),
     val remoteTransport: Boolean = false,
     val persistence: Boolean = false,
-    val resumption: Boolean = true
+    val resumption: Boolean = true,
+    val tileMarkSupported: Boolean = false
 ) {
     val supportedPlayerCounts: Set<Int> = Collections.unmodifiableSet(LinkedHashSet(supportedPlayerCounts))
 
@@ -432,15 +433,17 @@ class ProtocolAccessCapabilities(
     operator fun component3(): Boolean = remoteTransport
     operator fun component4(): Boolean = persistence
     operator fun component5(): Boolean = resumption
+    operator fun component6(): Boolean = tileMarkSupported
 
     fun copy(
         protocolVersion: Int = this.protocolVersion,
         supportedPlayerCounts: Set<Int> = this.supportedPlayerCounts,
         remoteTransport: Boolean = this.remoteTransport,
         persistence: Boolean = this.persistence,
-        resumption: Boolean = this.resumption
+        resumption: Boolean = this.resumption,
+        tileMarkSupported: Boolean = this.tileMarkSupported
     ): ProtocolAccessCapabilities = ProtocolAccessCapabilities(
-        protocolVersion, supportedPlayerCounts, remoteTransport, persistence, resumption
+        protocolVersion, supportedPlayerCounts, remoteTransport, persistence, resumption, tileMarkSupported
     )
 
     override fun equals(other: Any?): Boolean {
@@ -450,7 +453,8 @@ class ProtocolAccessCapabilities(
             supportedPlayerCounts == other.supportedPlayerCounts &&
             remoteTransport == other.remoteTransport &&
             persistence == other.persistence &&
-            resumption == other.resumption
+            resumption == other.resumption &&
+            tileMarkSupported == other.tileMarkSupported
     }
 
     override fun hashCode(): Int {
@@ -459,11 +463,12 @@ class ProtocolAccessCapabilities(
         result = 31 * result + remoteTransport.hashCode()
         result = 31 * result + persistence.hashCode()
         result = 31 * result + resumption.hashCode()
+        result = 31 * result + tileMarkSupported.hashCode()
         return result
     }
 
     override fun toString(): String =
-        "ProtocolAccessCapabilities(protocolVersion=$protocolVersion, supportedPlayerCounts=$supportedPlayerCounts, remoteTransport=$remoteTransport, persistence=$persistence, resumption=$resumption)"
+        "ProtocolAccessCapabilities(protocolVersion=$protocolVersion, supportedPlayerCounts=$supportedPlayerCounts, remoteTransport=$remoteTransport, persistence=$persistence, resumption=$resumption, tileMarkSupported=$tileMarkSupported)"
 }
 
 /**
@@ -655,7 +660,8 @@ class ProtocolMatchConfig(
     val targetScore: Int = 30000,
     tieBreakSeats: List<Int> = listOf(0, 1, 2, 3),
     val cheatEconomy: ProtocolCheatEconomyConfig = ProtocolCheatEconomyConfig(),
-    val shuffleConfig: ProtocolShuffleConfig = ProtocolShuffleConfig()
+    val shuffleConfig: ProtocolShuffleConfig = ProtocolShuffleConfig(),
+    val tileMarkConfig: ProtocolTileMarkConfig = ProtocolTileMarkConfig()
 ) {
     val winds: List<Int> = Collections.unmodifiableList(ArrayList(winds))
     val startingScores: List<Int> = Collections.unmodifiableList(ArrayList(startingScores))
@@ -670,6 +676,12 @@ class ProtocolMatchConfig(
         require(this.tieBreakSeats.size == playerCount) { "tieBreakSeats size must match playerCount" }
         require(this.tieBreakSeats.toSet().size == playerCount) { "tieBreakSeats must not contain duplicates" }
         require(targetScore >= 0) { "targetScore must be non-negative: $targetScore" }
+        if (tileMarkConfig.enabled) {
+            require(cheatEconomy.enabled) { "cheatEconomy must be enabled when tileMarkConfig is enabled" }
+            require(cheatEconomy.costs["TILE_MARK"] == 10) {
+                "TILE_MARK cost must be explicitly 10 when tileMarkConfig is enabled, got: ${cheatEconomy.costs["TILE_MARK"]}"
+            }
+        }
     }
 
     operator fun component1(): Int = playerCount
@@ -685,6 +697,7 @@ class ProtocolMatchConfig(
     operator fun component11(): List<Int> = tieBreakSeats
     operator fun component12(): ProtocolCheatEconomyConfig = cheatEconomy
     operator fun component13(): ProtocolShuffleConfig = shuffleConfig
+    operator fun component14(): ProtocolTileMarkConfig = tileMarkConfig
 
     fun copy(
         playerCount: Int = this.playerCount,
@@ -699,11 +712,18 @@ class ProtocolMatchConfig(
         targetScore: Int = this.targetScore,
         tieBreakSeats: List<Int> = this.tieBreakSeats,
         cheatEconomy: ProtocolCheatEconomyConfig = this.cheatEconomy,
-        shuffleConfig: ProtocolShuffleConfig = this.shuffleConfig
+        shuffleConfig: ProtocolShuffleConfig = this.shuffleConfig,
+        tileMarkConfig: ProtocolTileMarkConfig = this.tileMarkConfig
     ): ProtocolMatchConfig = ProtocolMatchConfig(
         playerCount, handsPerWind, winds, startingScores,
         allowExtension, allowAgariYame, bankruptcyEnabled, bankruptcyThreshold,
-        bankruptcyInclusive, targetScore, tieBreakSeats, cheatEconomy, shuffleConfig
+        bankruptcyInclusive, targetScore, tieBreakSeats, cheatEconomy, shuffleConfig, tileMarkConfig
+    )
+
+    fun deepCopy(): ProtocolMatchConfig = copy(
+        winds = ArrayList(winds),
+        startingScores = ArrayList(startingScores),
+        tieBreakSeats = ArrayList(tieBreakSeats)
     )
 
     override fun equals(other: Any?): Boolean {
@@ -721,7 +741,8 @@ class ProtocolMatchConfig(
             targetScore == other.targetScore &&
             tieBreakSeats == other.tieBreakSeats &&
             cheatEconomy == other.cheatEconomy &&
-            shuffleConfig == other.shuffleConfig
+            shuffleConfig == other.shuffleConfig &&
+            tileMarkConfig == other.tileMarkConfig
     }
 
     override fun hashCode(): Int {
@@ -738,11 +759,12 @@ class ProtocolMatchConfig(
         result = 31 * result + tieBreakSeats.hashCode()
         result = 31 * result + cheatEconomy.hashCode()
         result = 31 * result + shuffleConfig.hashCode()
+        result = 31 * result + tileMarkConfig.hashCode()
         return result
     }
 
     override fun toString(): String =
-        "ProtocolMatchConfig(playerCount=$playerCount, handsPerWind=$handsPerWind, winds=$winds, startingScores=$startingScores, allowExtension=$allowExtension, allowAgariYame=$allowAgariYame, bankruptcyEnabled=$bankruptcyEnabled, bankruptcyThreshold=$bankruptcyThreshold, bankruptcyInclusive=$bankruptcyInclusive, targetScore=$targetScore, tieBreakSeats=$tieBreakSeats, cheatEconomy=$cheatEconomy, shuffleConfig=$shuffleConfig)"
+        "ProtocolMatchConfig(playerCount=$playerCount, handsPerWind=$handsPerWind, winds=$winds, startingScores=$startingScores, allowExtension=$allowExtension, allowAgariYame=$allowAgariYame, bankruptcyEnabled=$bankruptcyEnabled, bankruptcyThreshold=$bankruptcyThreshold, bankruptcyInclusive=$bankruptcyInclusive, targetScore=$targetScore, tieBreakSeats=$tieBreakSeats, cheatEconomy=$cheatEconomy, shuffleConfig=$shuffleConfig, tileMarkConfig=$tileMarkConfig)"
 }
 
 /**
@@ -1606,7 +1628,8 @@ class ProtocolPlayerSnapshot(
     val settlementRoundId: String? = null,
     settlementEvents: List<ProtocolGameEvent> = emptyList(),
     val preparation: ProtocolShufflePreparation? = null,
-    val presentationPreview: ProtocolPlayerPresentationPreview? = null
+    val presentationPreview: ProtocolPlayerPresentationPreview? = null,
+    val tileMark: ProtocolTileMarkView? = null
 ) {
     val viewerSeat: Int get() = view.viewerSeat
     val clocks: List<ProtocolClock> = Collections.unmodifiableList(ArrayList(clocks))
@@ -1661,6 +1684,30 @@ class ProtocolPlayerSnapshot(
                 }
             }
         }
+        if (tileMark != null) {
+            for (group in tileMark.activeGroups) {
+                for (tile in group.tiles) {
+                    if (tile.area == ProtocolTileMarkArea.DISCARD) {
+                        val pos = tile.riverPosition
+                            ?: throw IllegalArgumentException("Missing riverPosition for DISCARD marked tile")
+                        require(roundId != null && pos.roundId == roundId) {
+                            "RiverPosition roundId (${pos.roundId}) does not match snapshot roundId ($roundId)"
+                        }
+                        require(pos.seat == tile.seat) {
+                            "RiverPosition seat (${pos.seat}) does not match marked tile seat (${tile.seat})"
+                        }
+                        val discards = view.discards.getOrNull(pos.seat)
+                            ?: throw IllegalArgumentException("Seat ${pos.seat} discards not found in view")
+                        require(pos.discardIndex in discards.indices) {
+                            "RiverPosition discardIndex (${pos.discardIndex}) out of range (0 until ${discards.size})"
+                        }
+                        require(discards[pos.discardIndex].tileId == tile.tileId) {
+                            "RiverPosition tile at seat ${pos.seat} index ${pos.discardIndex} is ${discards[pos.discardIndex].tileId}, expected ${tile.tileId}"
+                        }
+                    }
+                }
+            }
+        }
     }
 
     operator fun component1(): String = sessionId
@@ -1680,6 +1727,7 @@ class ProtocolPlayerSnapshot(
     operator fun component15(): List<ProtocolGameEvent> = settlementEvents
     operator fun component16(): ProtocolShufflePreparation? = preparation
     operator fun component17(): ProtocolPlayerPresentationPreview? = presentationPreview
+    operator fun component18(): ProtocolTileMarkView? = tileMark
 
     fun copy(
         sessionId: String = this.sessionId,
@@ -1698,11 +1746,12 @@ class ProtocolPlayerSnapshot(
         settlementRoundId: String? = this.settlementRoundId,
         settlementEvents: List<ProtocolGameEvent> = this.settlementEvents,
         preparation: ProtocolShufflePreparation? = this.preparation,
-        presentationPreview: ProtocolPlayerPresentationPreview? = this.presentationPreview
+        presentationPreview: ProtocolPlayerPresentationPreview? = this.presentationPreview,
+        tileMark: ProtocolTileMarkView? = this.tileMark
     ): ProtocolPlayerSnapshot = ProtocolPlayerSnapshot(
         sessionId, roundId, syncEpoch, cursor, sessionVersion, roundVersion,
         view, decision, clocks, cheatPoints, session, controls, paused,
-        settlementRoundId, settlementEvents, preparation, presentationPreview
+        settlementRoundId, settlementEvents, preparation, presentationPreview, tileMark
     )
 
     override fun equals(other: Any?): Boolean {
@@ -1716,7 +1765,8 @@ class ProtocolPlayerSnapshot(
             session == other.session && controls == other.controls &&
             paused == other.paused && settlementRoundId == other.settlementRoundId &&
             settlementEvents == other.settlementEvents && preparation == other.preparation &&
-            presentationPreview == other.presentationPreview
+            presentationPreview == other.presentationPreview &&
+            tileMark == other.tileMark
     }
 
     override fun hashCode(): Int {
@@ -1737,6 +1787,7 @@ class ProtocolPlayerSnapshot(
         result = 31 * result + settlementEvents.hashCode()
         result = 31 * result + (preparation?.hashCode() ?: 0)
         result = 31 * result + (presentationPreview?.hashCode() ?: 0)
+        result = 31 * result + (tileMark?.hashCode() ?: 0)
         return result
     }
 

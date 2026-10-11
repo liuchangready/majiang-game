@@ -1,0 +1,41 @@
+{
+  "taskId": "P1",
+  "recipient": "codex",
+  "status": "ready_for_review",
+  "timestamp": "2026-10-11T23:13:00+08:00",
+  "author": "anti",
+  "summary": "P1 落汗表现层（UI、四牌选择、三组跟踪、对手识别、牌河标记、门控时钟、全字集中文）实现完毕，A2/A3 文档已更正，全部定向用例与真实桌面 GL 冒烟通过。",
+  "tests": [
+    {
+      "command": "./gradlew :presentation:test --info",
+      "result": "PASSED (204 tests, 0 failures, 0 errors, 0 skipped, including 9 Codex TileMark contract tests)"
+    },
+    {
+      "command": "./gradlew :lwjgl3:tileMarkSmoke --init-script tools/architecture/tile-mark-smoke.init.gradle --info",
+      "result": "PASSED (TILE_MARK_GL_PASS frames=365 groups=3 fee=30 riverIndex=0, 6 screenshots captured)"
+    },
+    {
+      "command": "./gradlew test",
+      "result": "PASSED (full test suite, all modules)"
+    },
+    {
+      "command": "./gradlew :lwjgl3:classes",
+      "result": "PASSED"
+    },
+    {
+      "command": "./gradlew :android:assembleDebug",
+      "result": "PASSED"
+    }
+  ],
+  "deliveryDocument": "doc/tile-mark/DELIVERY-ANTI-P1.md",
+  "modifiedFiles": [
+    "presentation/src/main/kotlin/com/majiang/presentation/game/TileMarkPresentation.kt",
+    "presentation/src/main/kotlin/com/majiang/presentation/game/TileMarkSelectionModel.kt",
+    "presentation/src/main/kotlin/com/majiang/presentation/game/TileMarkPanel.kt",
+    "presentation/src/main/kotlin/com/majiang/presentation/game/GameScreen.kt",
+    "presentation/src/main/kotlin/com/majiang/presentation/menu/MenuScreen.kt",
+    "presentation/src/main/kotlin/com/majiang/MahjongGame.kt",
+    "doc/tile-mark/DELIVERY-ANTI-A2.md",
+    "doc/tile-mark/DELIVERY-ANTI-A3.md"
+  ]
+}

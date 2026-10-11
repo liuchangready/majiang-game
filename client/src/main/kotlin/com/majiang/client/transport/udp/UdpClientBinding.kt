@@ -30,6 +30,7 @@ import com.majiang.transport.api.PushType
 import com.majiang.transport.api.ProtocolRoomConfig
 import com.majiang.transport.api.ProtocolRoomInfo
 import com.majiang.transport.api.ProtocolShufflePlan
+import com.majiang.transport.api.ProtocolTileMarkRequest
 import com.majiang.transport.udp.Fragmenter
 import com.majiang.transport.udp.HeartbeatPacer
 import com.majiang.transport.udp.PushOfferResult
@@ -1204,6 +1205,21 @@ class UdpClientBinding(
         return sendRequest(apiReq) { rsp, _ ->
             rsp.receipt ?: ProtocolActionReceipt(
                 requestId = plan.requestId,
+                status = ProtocolReceiptStatus.REJECTED,
+                reason = rsp.error ?: ApiErrors.INTERNAL_ERROR
+            )
+        }
+    }
+
+    override fun submitTileMark(request: ProtocolTileMarkRequest): CompletableFuture<ProtocolActionReceipt> {
+        val apiReq = ApiRequest(
+            api = ApiTags.SUBMIT_TILE_MARK,
+            requestId = request.requestId,
+            tileMark = request
+        )
+        return sendRequest(apiReq) { rsp, _ ->
+            rsp.receipt ?: ProtocolActionReceipt(
+                requestId = request.requestId,
                 status = ProtocolReceiptStatus.REJECTED,
                 reason = rsp.error ?: ApiErrors.INTERNAL_ERROR
             )

@@ -1,0 +1,46 @@
+{
+  "taskId": "P1FIX1",
+  "recipient": "codex",
+  "status": "ready_for_review",
+  "timestamp": "2026-10-11T23:40:00+08:00",
+  "author": "anti",
+  "summary": "P1FIX1 6项审查退回意见已全部修正：统一同源单调毫秒时钟与连接环境门控、对手识别改为分行小牌面不越界不遮挡并保留赤宝牌、追踪栏绘制清晰翻页按钮与分层防重叠、公开副露renderMelds匹配绘制落汗徽标、秘籍文案纠偏并清理defaultCosts。落汗11项、presentation204项、全量1000项及两个真实GL通过，截图已人工复核。",
+  "tests": [
+    {
+      "command": "./gradlew :presentation:test --tests com.majiang.screen.TileMark*",
+      "result": "PASSED (11 tests, 0 failures, 0 errors, 0 skipped)"
+    },
+    {
+      "command": "./gradlew :presentation:test",
+      "result": "PASSED (204 tests, 0 failures, 0 errors, 0 skipped)"
+    },
+    {
+      "command": "./gradlew :lwjgl3:tileMarkSmoke --init-script tools/architecture/tile-mark-smoke.init.gradle",
+      "result": "PASSED (TILE_MARK_GL_PASS frames=366 groups=3 fee=30 riverIndex=0)"
+    },
+    {
+      "command": "./gradlew :lwjgl3:tileMarkVisibilitySmoke --init-script tools/architecture/tile-mark-visibility-smoke.init.gradle",
+      "result": "PASSED (TILE_MARK_VISIBILITY_GL_PASS scenarios=7)"
+    },
+    {
+      "command": "./gradlew test",
+      "result": "PASSED (1000 tests across all modules, 0 failures, 0 errors)"
+    },
+    {
+      "command": "./gradlew :lwjgl3:classes",
+      "result": "PASSED"
+    },
+    {
+      "command": "./gradlew :android:assembleDebug",
+      "result": "PASSED"
+    }
+  ],
+  "deliveryDocument": "doc/tile-mark/DELIVERY-ANTI-P1FIX1.md",
+  "modifiedFiles": [
+    "presentation/src/main/kotlin/com/majiang/presentation/game/TileMarkSelectionModel.kt",
+    "presentation/src/main/kotlin/com/majiang/presentation/game/TileMarkPanel.kt",
+    "presentation/src/main/kotlin/com/majiang/presentation/game/GameScreen.kt",
+    "presentation/src/main/kotlin/com/majiang/presentation/menu/MenuScreen.kt",
+    "presentation/src/main/kotlin/com/majiang/MahjongGame.kt"
+  ]
+}

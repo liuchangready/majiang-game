@@ -1266,6 +1266,17 @@ class UdpTableServer @JvmOverloads constructor(
                     completeLobby(0, resp)
                 }
             }
+            ApiTags.CAPABILITIES -> {
+                val caps = ProtocolAccessCapabilities(
+                    protocolVersion = ApiProtocol.PROTOCOL_VERSION,
+                    supportedPlayerCounts = setOf(4),
+                    remoteTransport = true,
+                    persistence = false,
+                    resumption = true,
+                    tileMarkSupported = true
+                )
+                completeLobby(0, ApiResponse(requestId = request.requestId, success = true, capabilities = caps))
+            }
             else -> {
                 val errCode = if (ApiTags.KNOWN.contains(request.api)) {
                     ApiErrors.UNAUTHENTICATED_SESSION
@@ -1352,6 +1363,7 @@ class UdpTableServer @JvmOverloads constructor(
             ApiTags.DECISION,
             ApiTags.SUBMIT_CHOICE,
             ApiTags.SUBMIT_SHUFFLE_PLAN,
+            ApiTags.SUBMIT_TILE_MARK,
             ApiTags.START_MATCH,
             ApiTags.NEXT_ROUND,
             ApiTags.RESUME_CURSOR,
@@ -1583,7 +1595,8 @@ class UdpTableServer @JvmOverloads constructor(
                     supportedPlayerCounts = setOf(4),
                     remoteTransport = true,
                     persistence = false,
-                    resumption = true
+                    resumption = true,
+                    tileMarkSupported = true
                 )
                 replySession(ApiResponse(requestId = request.requestId, success = true, capabilities = caps))
             }
@@ -1622,6 +1635,14 @@ class UdpTableServer @JvmOverloads constructor(
                     return
                 }
                 respondReceipt(room.submitShufflePlan(session, plan))
+            }
+            ApiTags.SUBMIT_TILE_MARK -> {
+                val mark = request.tileMark
+                if (mark == null) {
+                    replySession(ApiResponse(requestId = request.requestId, success = false, error = ApiErrors.MALFORMED_REQUEST))
+                    return
+                }
+                respondReceipt(room.submitTileMark(session, mark))
             }
             ApiTags.START_MATCH -> {
                 respondReceipt(room.startMatch(session))

@@ -1,0 +1,56 @@
+{
+  "taskId": "E3FIX1",
+  "recipient": "codex",
+  "status": "ready_for_review",
+  "deliveryDocument": "D:\\majiang\\doc\\tile-mark\\DELIVERY-ANTI-E3FIX1.md",
+  "testCommands": [
+    ".\\gradlew :engine:test --tests \"com.majiang.cheat.mark.*\" --console=plain",
+    ".\\gradlew :engine:test --console=plain"
+  ],
+  "testCounts": {
+    "tileMarkCloseCallbackTest": {
+      "tests": 1,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    "tileMarkAuthorityContractTest": {
+      "tests": 16,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    "tileMarkModelContractTest": {
+      "tests": 9,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    "tileMarkStateContractTest": {
+      "tests": 10,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    "tileMarkRequestIsolationTest": {
+      "tests": 1,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    "totalTileMarkTests": {
+      "totalSuites": 5,
+      "totalTests": 37,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    "fullEngineTests": {
+      "totalSuites": 53,
+      "totalTests": 377,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    }
+  }
+}

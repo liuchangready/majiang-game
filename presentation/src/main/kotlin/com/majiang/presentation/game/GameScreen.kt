@@ -15,6 +15,7 @@ import com.badlogic.gdx.math.Rectangle
 import com.badlogic.gdx.math.Vector3
 import com.majiang.client.api.ActionChoice
 import com.majiang.client.api.ClockInfo
+import com.majiang.client.api.ConnectionState
 import com.majiang.client.api.GameEventView
 import com.majiang.client.api.GamePhaseView
 import com.majiang.client.api.GameSession
@@ -28,6 +29,8 @@ import com.majiang.client.api.ReceiptStatus
 import com.majiang.client.api.ScoreBreakdownView
 import com.majiang.client.api.SettlementDetailView
 import com.majiang.client.api.SuitView
+import com.majiang.client.api.TileMarkArea
+import com.majiang.client.api.TileMarkRequest
 import com.majiang.client.api.TileView
 import com.majiang.presentation.common.ClockDisplay
 import com.majiang.presentation.common.FinalResultRenderer
@@ -130,6 +133,8 @@ class GameScreen(
     val riichiSelectionModel = RiichiSelectionModel()
     val meldSelectionModel = MeldSelectionModel()
     val shufflePreparationPanel = ShufflePreparationPanel(session)
+    val tileMarkPanel = TileMarkPanel(session)
+    private var isSubmittingMark = false
 
     var gameStarted = false
 
@@ -365,6 +370,13 @@ class GameScreen(
 
         currentSnapshot = snap
         shufflePreparationPanel.update(snap)
+        val isConnected = (session.connectionState == ConnectionState.CONNECTED) && !session.closed
+        tileMarkPanel.update(
+            snapshot = snap,
+            pending = session.isPending,
+            connected = isConnected,
+            nowMillis = tileMarkPanel.model.monotonicClock()
+        )
 
         if (snap.view.myAllClosedTiles.isNotEmpty() || snap.view.phase != GamePhaseView.STACKING || shufflePreparationPanel.isActive) {
             gameStarted = true
@@ -559,7 +571,8 @@ class GameScreen(
             for (i in displayTiles.indices) {
                 val tile = displayTiles[i]
                 val isSelected = (!isDiscardPlaybackBusy && riichiSelectionModel.isSelecting && riichiSelectionModel.selectedTile == tile) ||
-                        (!isDiscardPlaybackBusy && meldSelectionModel.isSelecting && meldHandTiles.contains(tile))
+                        (!isDiscardPlaybackBusy && meldSelectionModel.isSelecting && meldHandTiles.contains(tile)) ||
+                        (!isDiscardPlaybackBusy && tileMarkPanel.model.isSelecting && tileMarkPanel.model.selectedTileIds.contains(tile.tileId))
                 val isHover = (!isDiscardPlaybackBusy && (i == hoveredTileIndex || (hoveredTileIndex == -1 && hoveredTile == tile)))
                 val x = startX + i * xSpacing
                 val y = if (isSelected || isHover) baseY + 12f else baseY
@@ -569,7 +582,8 @@ class GameScreen(
             for (i in closed.indices) {
                 val tile = closed[i]
                 val isSelected = (!isDiscardPlaybackBusy && riichiSelectionModel.isSelecting && riichiSelectionModel.selectedTile == tile) ||
-                        (!isDiscardPlaybackBusy && meldSelectionModel.isSelecting && meldHandTiles.contains(tile))
+                        (!isDiscardPlaybackBusy && meldSelectionModel.isSelecting && meldHandTiles.contains(tile)) ||
+                        (!isDiscardPlaybackBusy && tileMarkPanel.model.isSelecting && tileMarkPanel.model.selectedTileIds.contains(tile.tileId))
                 val isHover = (!isDiscardPlaybackBusy && (i == hoveredTileIndex || (hoveredTileIndex == -1 && hoveredTile == tile)))
                 val x = startX + i * xSpacing
                 val y = if (isSelected || isHover) baseY + 12f else baseY
@@ -579,7 +593,8 @@ class GameScreen(
             if (drawn != null) {
                 val drawnIdx = closed.size
                 val isSelected = (!isDiscardPlaybackBusy && riichiSelectionModel.isSelecting && riichiSelectionModel.selectedTile == drawn) ||
-                        (!isDiscardPlaybackBusy && meldSelectionModel.isSelecting && meldHandTiles.contains(drawn))
+                        (!isDiscardPlaybackBusy && meldSelectionModel.isSelecting && meldHandTiles.contains(drawn)) ||
+                        (!isDiscardPlaybackBusy && tileMarkPanel.model.isSelecting && tileMarkPanel.model.selectedTileIds.contains(drawn.tileId))
                 val isHover = (!isDiscardPlaybackBusy && (drawnIdx == hoveredTileIndex || (hoveredTileIndex == -1 && hoveredTile == drawn)))
                 val drawnX = startX + closed.size * xSpacing + 24f
                 val y = if (isSelected || isHover) baseY + 12f else baseY
@@ -719,6 +734,38 @@ class GameScreen(
         }
     }
 
+    fun submitTileMarkAsync() {
+        if (isSubmittingMark || isSubmitting || session.isPending) return
+        val current = currentSnapshot ?: return
+        val mark = current.tileMark ?: return
+        if (!tileMarkPanel.model.canConfirm) return
+        val selected = tileMarkPanel.model.selectedTileIds.toList()
+        if (selected.size != 4) return
+
+        val roundId = current.roundId ?: return
+        isSubmittingMark = true
+        val req = TileMarkRequest(
+            requestId = UUID.randomUUID().toString(),
+            sessionId = current.sessionId,
+            roundId = roundId,
+            decisionId = mark.decisionId,
+            controlEpoch = mark.controlEpoch,
+            tileIds = selected
+        )
+        session.submitTileMark(req).whenComplete { receipt, err ->
+            runOnUi {
+                isSubmittingMark = false
+                tileMarkPanel.model.cancel()
+                if (err != null) {
+                    showToast("落汗提交失败: ${err.message ?: err.javaClass.simpleName}")
+                } else if (receipt.status == ReceiptStatus.REJECTED) {
+                    val reason = TileMarkPanel.translateServerReason(receipt.reason ?: "UNKNOWN")
+                    showToast("落汗失败: $reason")
+                }
+            }
+        }
+    }
+
     private fun refreshLocalSelectionModels() {
         riichiSelectionModel.update(currentSnapshot?.presentationPreview)
         meldSelectionModel.update(currentSnapshot?.presentationPreview)
@@ -756,6 +803,14 @@ class GameScreen(
         }
 
         updateDiscardAnimation(delta)
+
+        val isConnected = (session.connectionState == ConnectionState.CONNECTED) && !session.closed
+        tileMarkPanel.update(
+            snapshot = currentSnapshot,
+            pending = session.isPending,
+            connected = isConnected,
+            nowMillis = tileMarkPanel.model.monotonicClock()
+        )
 
         camera.update()
         Gdx.gl.glClearColor(0.08f, 0.22f, 0.14f, 1f)
@@ -808,6 +863,22 @@ class GameScreen(
 
         // 8. 操作按钮
         renderActionButtons(shape, batch, font)
+
+        // 8.5 落汗表现层面板
+        tileMarkPanel.render(
+            camera = camera,
+            shape = shape,
+            batch = batch,
+            font = chineseFont ?: font,
+            snapshot = currentSnapshot,
+            isDiscardPlaybackBusy = isDiscardPlaybackBusy,
+            isPaused = isPaused,
+            isSubmitting = isSubmitting || isSubmittingMark,
+            riichiSelecting = riichiSelectionModel.isSelecting,
+            meldSelecting = meldSelectionModel.isSelecting,
+            tileSkin = tileSkin,
+            tileDrawBuffer = tileDrawBuffer
+        )
 
         // 9. 洗牌千术准备弹窗
         if (shufflePreparationPanel.isActive) {
@@ -951,6 +1022,8 @@ class GameScreen(
     private fun renderDiscards(batch: SpriteBatch, shape: ShapeRenderer, font: BitmapFont) {
         val viewer = currentSnapshot?.viewerSeat ?: 0
         val anim = currentDiscardAnim
+        val riverMarks = TileMarkPresentation.riverMarks(currentSnapshot)
+        val markedRiverPositions = mutableListOf<Pair<Float, Float>>()
 
         for (seat in 0..3) {
             val discards = currentView.discards.getOrElse(seat) { emptyList() }
@@ -975,6 +1048,9 @@ class GameScreen(
                 if (isQueued) continue
 
                 val pos = getDiscardSlotPosition(seat, i)
+                if (riverMarks.any { it.seat == seat && it.riverPosition?.discardIndex == i && it.tileId == tile.tileId }) {
+                    markedRiverPositions.add(pos)
+                }
                 tileSkin.appendTileDraw(
                     buf = tileDrawBuffer,
                     tile = tile,
@@ -990,6 +1066,13 @@ class GameScreen(
         shape.projectionMatrix = camera.combined
         batch.projectionMatrix = camera.combined
         tileDrawBuffer.flush(batch, shape, font)
+
+        if (markedRiverPositions.isNotEmpty()) {
+            shape.projectionMatrix = camera.combined
+            for (pos in markedRiverPositions) {
+                drawTileMarkBadge(shape, pos.first, pos.second, 38f, 52f)
+            }
+        }
     }
 
     private fun renderMelds(batch: SpriteBatch, shape: ShapeRenderer, font: BitmapFont) {
@@ -999,6 +1082,19 @@ class GameScreen(
         shape.projectionMatrix = camera.combined
         batch.projectionMatrix = camera.combined
         tileDrawBuffer.flush(batch, shape, font)
+
+        val exposedMarks = currentSnapshot?.tileMark?.activeGroups?.flatMap { it.tiles }
+            ?.filter { it.area == TileMarkArea.EXPOSED_MELD } ?: emptyList()
+        if (exposedMarks.isNotEmpty()) {
+            shape.projectionMatrix = camera.combined
+            for (group in groups) {
+                for (dt in group.tiles) {
+                    if (exposedMarks.any { it.seat == group.ownerSeat && it.tileId == dt.tile.tileId }) {
+                        drawTileMarkBadge(shape, dt.x, dt.y, dt.width, dt.height)
+                    }
+                }
+            }
+        }
     }
 
     private fun renderPlayerHands(batch: SpriteBatch, font: BitmapFont) {
@@ -1021,6 +1117,19 @@ class GameScreen(
         assets.shapeRenderer.projectionMatrix = camera.combined
         batch.projectionMatrix = camera.combined
         tileDrawBuffer.flush(batch, assets.shapeRenderer, font)
+
+        val ownMarkedIds = currentSnapshot?.tileMark?.activeGroups?.flatMap { it.tiles }
+            ?.filter { it.area == TileMarkArea.OWN_HAND }
+            ?.map { it.tileId }?.toSet() ?: emptySet()
+        if (ownMarkedIds.isNotEmpty()) {
+            val shape = assets.shapeRenderer
+            shape.projectionMatrix = camera.combined
+            for (slot in slots) {
+                if (slot.tile.tileId in ownMarkedIds) {
+                    drawTileMarkBadge(shape, slot.rect.x, slot.rect.y, slot.rect.width, slot.rect.height)
+                }
+            }
+        }
     }
 
     private fun renderFlyingDiscard(batch: SpriteBatch, shape: ShapeRenderer, font: BitmapFont) {
@@ -1044,6 +1153,27 @@ class GameScreen(
         shape.projectionMatrix = camera.combined
         batch.projectionMatrix = camera.combined
         tileDrawBuffer.flush(batch, shape, font)
+
+        if (currentSnapshot?.tileMark?.activeGroups?.any { g -> g.tiles.any { it.tileId == anim.tile.tileId } } == true) {
+            shape.projectionMatrix = camera.combined
+            drawTileMarkBadge(shape, pose.x - tileW / 2f, pose.y - tileH / 2f, tileW, tileH)
+        }
+    }
+
+    private fun drawTileMarkBadge(shape: ShapeRenderer, x: Float, y: Float, width: Float, height: Float) {
+        shape.begin(ShapeRenderer.ShapeType.Line)
+        shape.color = Color(0.15f, 0.85f, 0.95f, 0.9f)
+        shape.rect(x - 1f, y - 1f, width + 2f, height + 2f)
+        shape.end()
+
+        shape.begin(ShapeRenderer.ShapeType.Filled)
+        shape.color = Color(0.10f, 0.75f, 0.95f, 1f)
+        val dropX = x + width - 6f
+        val dropY = y + height - 6f
+        shape.circle(dropX, dropY, 4.5f)
+        shape.color = Color(0.85f, 0.95f, 1f, 1f)
+        shape.circle(dropX - 1.2f, dropY + 1.2f, 1.8f)
+        shape.end()
     }
 
     private fun renderRiichiSelectionOverlay(shape: ShapeRenderer, batch: SpriteBatch, font: BitmapFont) {
@@ -1349,6 +1479,10 @@ class GameScreen(
 
     override fun keyDown(keycode: Int): Boolean {
         if (keycode == Input.Keys.ESCAPE || keycode == Input.Keys.BACK) {
+            if (tileMarkPanel.model.isSelecting) {
+                tileMarkPanel.model.cancel()
+                return true
+            }
             if (meldSelectionModel.isSelecting) {
                 meldSelectionModel.cancel()
                 return true
@@ -1383,6 +1517,15 @@ class GameScreen(
 
         val wasMeldSelecting = meldSelectionModel.isSelecting
         val wasRiichiSelecting = riichiSelectionModel.isSelecting
+        val wasTileMarkSelecting = tileMarkPanel.model.isSelecting
+
+        val isConnected = (session.connectionState == ConnectionState.CONNECTED) && !session.closed
+        tileMarkPanel.update(
+            snapshot = currentSnapshot,
+            pending = session.isPending,
+            connected = isConnected,
+            nowMillis = tileMarkPanel.model.monotonicClock()
+        )
 
         if (backButtonRect.contains(tx, ty)) {
             exitToMenu()
@@ -1407,8 +1550,30 @@ class GameScreen(
             return true
         }
 
+        // 选牌模式拦截：优先处理落汗选牌交互
+        if (tileMarkPanel.model.isSelecting) {
+            if (tileMarkPanel.btnCancelRect.contains(tx, ty)) {
+                tileMarkPanel.model.cancel()
+                return true
+            }
+            if (tileMarkPanel.btnConfirmRect.contains(tx, ty)) {
+                submitTileMarkAsync()
+                return true
+            }
+            val slots = refreshHandTileRects()
+            for (slot in slots) {
+                val hitRect = Rectangle(slot.rect.x, 40f, slot.rect.width, 94f)
+                if (hitRect.contains(tx, ty) || slot.rect.contains(tx, ty)) {
+                    tileMarkPanel.model.toggle(slot.tile.tileId)
+                    return true
+                }
+            }
+            return true
+        }
+
         val modalInvalidatedByRefresh = (wasMeldSelecting && !meldSelectionModel.isSelecting) ||
-                (wasRiichiSelecting && !riichiSelectionModel.isSelecting)
+                (wasRiichiSelecting && !riichiSelectionModel.isSelecting) ||
+                (wasTileMarkSelecting && !tileMarkPanel.model.isSelecting)
         if (modalInvalidatedByRefresh) {
             return true
         }
@@ -1527,7 +1692,7 @@ class GameScreen(
             return true
         }
 
-        if (isDiscardPlaybackBusy || isLoading || session.isPending || isSubmitting || isPaused) {
+        if (isDiscardPlaybackBusy || isLoading || session.isPending || isSubmitting || isSubmittingMark || isPaused) {
             return true
         }
 
@@ -1684,6 +1849,27 @@ class GameScreen(
             return true
         }
 
+        // 落汗千术选牌入口
+        val mark = currentSnapshot?.tileMark
+        val canOpenTileMark = mark != null && mark.canApply &&
+            !isDiscardPlaybackBusy &&
+            !isPaused &&
+            !session.isPending &&
+            !isSubmitting &&
+            !isSubmittingMark &&
+            !riichiSelectionModel.isSelecting &&
+            !meldSelectionModel.isSelecting
+        if (canOpenTileMark && tileMarkPanel.btnOpenRect.contains(tx, ty)) {
+            tileMarkPanel.model.begin()
+            return true
+        }
+
+        // 落汗追踪翻页
+        val activeGroupCount = currentSnapshot?.tileMark?.activeGroups?.size ?: 0
+        if (tileMarkPanel.touchDown(tx, ty, activeGroupCount)) {
+            return true
+        }
+
         // 人类出牌点击
         if (isHumanTurn()) {
             val slots = refreshHandTileRects()
@@ -1774,6 +1960,7 @@ class GameScreen(
                 input.inputProcessor = null
             }
         }
+        tileMarkPanel.dispose()
         shufflePreparationPanel.dispose()
         settlementDetailRenderer.dispose()
     }

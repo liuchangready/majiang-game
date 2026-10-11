@@ -41,6 +41,13 @@ import com.majiang.stacking.ShuffleSelection
 import com.majiang.stacking.ShuffleTarget
 import com.majiang.state.GameAction
 import com.majiang.state.GamePhase
+import com.majiang.cheat.mark.MarkedTileView
+import com.majiang.cheat.mark.RiverPosition
+import com.majiang.cheat.mark.TileMarkArea
+import com.majiang.cheat.mark.TileMarkConfig
+import com.majiang.cheat.mark.TileMarkGroupView
+import com.majiang.cheat.mark.TileMarkRequest
+import com.majiang.cheat.mark.TileMarkView
 import com.majiang.timing.ReserveScope
 import com.majiang.timing.TimeControlConfig
 import com.majiang.transport.api.ProtocolAccessCapabilities
@@ -59,6 +66,7 @@ import com.majiang.transport.api.ProtocolFuritenStatus
 import com.majiang.transport.api.ProtocolGameEvent
 import com.majiang.transport.api.ProtocolGamePhase
 import com.majiang.transport.api.ProtocolLegalAction
+import com.majiang.transport.api.ProtocolMarkedTileView
 import com.majiang.transport.api.ProtocolMatchConfig
 import com.majiang.transport.api.ProtocolMeld
 import com.majiang.transport.api.ProtocolMeldPreviewOption
@@ -70,6 +78,7 @@ import com.majiang.transport.api.ProtocolPlayerSnapshot
 import com.majiang.transport.api.ProtocolPlayerUpdate
 import com.majiang.transport.api.ProtocolPlayerView
 import com.majiang.transport.api.ProtocolRiichiPreviewOption
+import com.majiang.transport.api.ProtocolRiverPosition
 import com.majiang.transport.api.ProtocolPublicRoundRecord
 import com.majiang.transport.api.ProtocolPublicSessionResult
 import com.majiang.transport.api.ProtocolReceiptStatus
@@ -85,6 +94,11 @@ import com.majiang.transport.api.ProtocolShuffleSelection
 import com.majiang.transport.api.ProtocolShuffleTarget
 import com.majiang.transport.api.ProtocolSuit
 import com.majiang.transport.api.ProtocolTile
+import com.majiang.transport.api.ProtocolTileMarkArea
+import com.majiang.transport.api.ProtocolTileMarkConfig
+import com.majiang.transport.api.ProtocolTileMarkGroupView
+import com.majiang.transport.api.ProtocolTileMarkRequest
+import com.majiang.transport.api.ProtocolTileMarkView
 import com.majiang.transport.api.ProtocolTimeControlConfig
 import java.util.Collections
 import java.util.LinkedHashMap
@@ -400,7 +414,8 @@ object EngineProtocolMapper {
         supportedPlayerCounts = Collections.unmodifiableSet(LinkedHashSet(caps.supportedPlayerCounts)),
         remoteTransport = caps.remoteTransport,
         persistence = caps.persistence,
-        resumption = caps.resumption
+        resumption = caps.resumption,
+        tileMarkSupported = true
     )
 
     // === ClockView / SeatControlView ===
@@ -513,6 +528,14 @@ object EngineProtocolMapper {
         aiMaySpend = config.aiMaySpend
     )
 
+    // === TileMarkConfig ===
+
+    fun toProtocolTileMarkConfig(config: TileMarkConfig): ProtocolTileMarkConfig =
+        ProtocolTileMarkConfig(enabled = config.enabled)
+
+    fun toEngineTileMarkConfig(config: ProtocolTileMarkConfig?): TileMarkConfig =
+        if (config == null) TileMarkConfig() else TileMarkConfig(enabled = config.enabled)
+
     fun toProtocolConfig(config: MatchConfig): ProtocolMatchConfig = ProtocolMatchConfig(
         playerCount = config.playerCount,
         handsPerWind = config.handsPerWind,
@@ -526,7 +549,8 @@ object EngineProtocolMapper {
         targetScore = config.targetScore,
         tieBreakSeats = Collections.unmodifiableList(config.tieBreakSeats.toList()),
         cheatEconomy = toProtocolCheatEconomyConfig(config.cheatEconomy),
-        shuffleConfig = toProtocolShuffleConfig(config.shuffleConfig)
+        shuffleConfig = toProtocolShuffleConfig(config.shuffleConfig),
+        tileMarkConfig = toProtocolTileMarkConfig(config.tileMarkConfig)
     )
 
     fun toEngineConfig(config: ProtocolMatchConfig?): MatchConfig {
@@ -544,7 +568,8 @@ object EngineProtocolMapper {
             targetScore = config.targetScore,
             tieBreakSeats = Collections.unmodifiableList(config.tieBreakSeats.toList()),
             cheatEconomy = toEngineCheatEconomyConfig(config.cheatEconomy),
-            shuffleConfig = toEngineShuffleConfig(config.shuffleConfig)
+            shuffleConfig = toEngineShuffleConfig(config.shuffleConfig),
+            tileMarkConfig = toEngineTileMarkConfig(config.tileMarkConfig)
         )
     }
 
@@ -861,6 +886,120 @@ object EngineProtocolMapper {
 
     // === PlayerSnapshot ===
 
+    // === TileMark ===
+
+    fun toEngineTileMarkRequest(request: ProtocolTileMarkRequest): TileMarkRequest = TileMarkRequest(
+        requestId = request.requestId,
+        sessionId = request.sessionId,
+        roundId = request.roundId,
+        decisionId = request.decisionId,
+        controlEpoch = request.controlEpoch,
+        tileIds = Collections.unmodifiableList(ArrayList(request.tileIds))
+    )
+
+    fun toProtocolTileMarkRequest(request: TileMarkRequest): ProtocolTileMarkRequest = ProtocolTileMarkRequest(
+        requestId = request.requestId,
+        sessionId = request.sessionId,
+        roundId = request.roundId,
+        decisionId = request.decisionId,
+        controlEpoch = request.controlEpoch,
+        tileIds = Collections.unmodifiableList(ArrayList(request.tileIds))
+    )
+
+    fun toProtocolTileMarkArea(area: TileMarkArea): ProtocolTileMarkArea = when (area) {
+        TileMarkArea.OWN_HAND -> ProtocolTileMarkArea.OWN_HAND
+        TileMarkArea.OPPONENT_HAND -> ProtocolTileMarkArea.OPPONENT_HAND
+        TileMarkArea.DISCARD -> ProtocolTileMarkArea.DISCARD
+        TileMarkArea.EXPOSED_MELD -> ProtocolTileMarkArea.EXPOSED_MELD
+        TileMarkArea.EXPOSED_INDICATOR -> ProtocolTileMarkArea.EXPOSED_INDICATOR
+        TileMarkArea.NOT_VISIBLE -> ProtocolTileMarkArea.NOT_VISIBLE
+    }
+
+    fun toEngineTileMarkArea(area: ProtocolTileMarkArea): TileMarkArea = when (area) {
+        ProtocolTileMarkArea.OWN_HAND -> TileMarkArea.OWN_HAND
+        ProtocolTileMarkArea.OPPONENT_HAND -> TileMarkArea.OPPONENT_HAND
+        ProtocolTileMarkArea.DISCARD -> TileMarkArea.DISCARD
+        ProtocolTileMarkArea.EXPOSED_MELD -> TileMarkArea.EXPOSED_MELD
+        ProtocolTileMarkArea.EXPOSED_INDICATOR -> TileMarkArea.EXPOSED_INDICATOR
+        ProtocolTileMarkArea.NOT_VISIBLE -> TileMarkArea.NOT_VISIBLE
+    }
+
+    fun toProtocolRiverPosition(pos: RiverPosition): ProtocolRiverPosition = ProtocolRiverPosition(
+        roundId = pos.roundId,
+        seat = pos.seat,
+        discardIndex = pos.discardIndex
+    )
+
+    fun toEngineRiverPosition(pos: ProtocolRiverPosition): RiverPosition = RiverPosition(
+        roundId = pos.roundId,
+        seat = pos.seat,
+        discardIndex = pos.discardIndex
+    )
+
+    fun toProtocolMarkedTile(view: MarkedTileView): ProtocolMarkedTileView = ProtocolMarkedTileView(
+        tileId = view.tileId,
+        tile = toProtocolTile(view.tile),
+        area = toProtocolTileMarkArea(view.area),
+        seat = view.seat,
+        riverPosition = view.riverPosition?.let { toProtocolRiverPosition(it) }
+    )
+
+    fun toEngineMarkedTile(proto: ProtocolMarkedTileView): MarkedTileView = MarkedTileView(
+        tileId = proto.tileId,
+        tile = toEngineTile(proto.tile),
+        area = toEngineTileMarkArea(proto.area),
+        seat = proto.seat,
+        riverPosition = proto.riverPosition?.let { toEngineRiverPosition(it) }
+    )
+
+    fun toProtocolTileMarkGroup(group: TileMarkGroupView): ProtocolTileMarkGroupView = ProtocolTileMarkGroupView(
+        groupId = group.groupId,
+        createdRoundId = group.createdRoundId,
+        createdRoundOrdinal = group.createdRoundOrdinal,
+        expiresAfterRoundOrdinal = group.expiresAfterRoundOrdinal,
+        futureRoundsRemaining = group.futureRoundsRemaining,
+        isLastEffectiveRound = group.isLastEffectiveRound,
+        tiles = Collections.unmodifiableList(group.tiles.map { toProtocolMarkedTile(it) })
+    )
+
+    fun toEngineTileMarkGroup(proto: ProtocolTileMarkGroupView): TileMarkGroupView = TileMarkGroupView(
+        groupId = proto.groupId,
+        createdRoundId = proto.createdRoundId,
+        createdRoundOrdinal = proto.createdRoundOrdinal,
+        expiresAfterRoundOrdinal = proto.expiresAfterRoundOrdinal,
+        futureRoundsRemaining = proto.futureRoundsRemaining,
+        isLastEffectiveRound = proto.isLastEffectiveRound,
+        tiles = Collections.unmodifiableList(proto.tiles.map { toEngineMarkedTile(it) })
+    )
+
+    fun toProtocolTileMarkView(view: TileMarkView): ProtocolTileMarkView = ProtocolTileMarkView(
+        canApply = view.canApply,
+        disabledReason = view.disabledReason,
+        cost = view.cost,
+        activeTileCount = view.activeTileCount,
+        maxActiveTiles = view.maxActiveTiles,
+        selectableTileIds = Collections.unmodifiableList(ArrayList(view.selectableTileIds)),
+        decisionId = view.decisionId,
+        controlEpoch = view.controlEpoch,
+        stateVersion = view.stateVersion,
+        activeGroups = Collections.unmodifiableList(view.activeGroups.map { toProtocolTileMarkGroup(it) })
+    )
+
+    fun toEngineTileMarkView(proto: ProtocolTileMarkView): TileMarkView = TileMarkView(
+        canApply = proto.canApply,
+        disabledReason = proto.disabledReason,
+        cost = proto.cost,
+        activeTileCount = proto.activeTileCount,
+        maxActiveTiles = proto.maxActiveTiles,
+        selectableTileIds = Collections.unmodifiableList(ArrayList(proto.selectableTileIds)),
+        decisionId = proto.decisionId,
+        controlEpoch = proto.controlEpoch,
+        stateVersion = proto.stateVersion,
+        activeGroups = Collections.unmodifiableList(proto.activeGroups.map { toEngineTileMarkGroup(it) })
+    )
+
+    // === PlayerSnapshot ===
+
     fun toProtocolSnapshot(snap: PlayerSnapshot): ProtocolPlayerSnapshot = ProtocolPlayerSnapshot(
         sessionId = snap.sessionId,
         roundId = snap.roundId,
@@ -878,7 +1017,8 @@ object EngineProtocolMapper {
         settlementRoundId = snap.settlementRoundId,
         settlementEvents = toProtocolEvents(snap.settlementEvents),
         preparation = snap.preparation?.let { toProtocolShufflePreparation(it) },
-        presentationPreview = snap.presentationPreview?.let { toProtocolPresentationPreview(it) }
+        presentationPreview = snap.presentationPreview?.let { toProtocolPresentationPreview(it) },
+        tileMark = snap.tileMark?.let { toProtocolTileMarkView(it) }
     )
 
     // === PlayerUpdate ===

@@ -1,5 +1,7 @@
 package com.majiang.match
 
+import com.majiang.cheat.mark.TileMarkGroup
+import com.majiang.cheat.mark.TileMarkState
 import com.majiang.economy.CheatLedgerEntry
 import com.majiang.economy.CheatLedgerSummary
 import com.majiang.economy.CheatSeatStatistics
@@ -82,6 +84,8 @@ sealed interface ApprovedSessionStep {
     object Pause : ApprovedSessionStep
     object Resume : ApprovedSessionStep
     object Close : ApprovedSessionStep
+    data class ApplyTileMark(val group: TileMarkGroup) : ApprovedSessionStep
+    data class RegisterDealtRound(val roundId: String) : ApprovedSessionStep
 }
 
 /**
@@ -103,7 +107,8 @@ data class SessionChange @JvmOverloads constructor(
     val targetCanDealerDeclareAgariYame: Boolean = false,
     val targetResult: SessionResult? = null,
     val events: List<GameEvent> = emptyList(),
-    val targetCheatPoints: List<Int> = emptyList()
+    val targetCheatPoints: List<Int> = emptyList(),
+    val targetTileMarkState: TileMarkState? = null
 )
 
 /**
@@ -124,7 +129,8 @@ data class SessionSnapshot @JvmOverloads constructor(
     val roundRecords: List<RoundRecord>,
     val canDealerDeclareAgariYame: Boolean,
     val result: SessionResult?,
-    val betweenRoundCheatPoints: List<Int> = List(4) { 0 }
+    val betweenRoundCheatPoints: List<Int> = List(4) { 0 },
+    val tileMarkState: TileMarkState = TileMarkState()
 )
 
 /**
@@ -248,6 +254,9 @@ class MatchSession @JvmOverloads constructor(
             _result = value
         }
 
+    var tileMarkState: TileMarkState = TileMarkState()
+        private set
+
     /**
      * 读取整场当前不可变快照
      */
@@ -266,7 +275,8 @@ class MatchSession @JvmOverloads constructor(
         roundRecords = roundRecords,
         canDealerDeclareAgariYame = canDealerDeclareAgariYame,
         result = result,
-        betweenRoundCheatPoints = Collections.unmodifiableList(betweenRoundCheatPoints.toList())
+        betweenRoundCheatPoints = Collections.unmodifiableList(betweenRoundCheatPoints.toList()),
+        tileMarkState = tileMarkState
     )
 
     /**
@@ -316,6 +326,15 @@ class MatchSession @JvmOverloads constructor(
     internal fun prepare(step: ApprovedSessionStep): SessionChange {
         return when (step) {
             is ApprovedSessionStep.StartSession -> {
+                val state = step.firstRound.readState()
+                val isDealt = state.phase != com.majiang.state.GamePhase.STACKING ||
+                    state.wall.isNotEmpty() ||
+                    state.players.any { it.closedTiles.isNotEmpty() }
+                val targetTileMark = if (isDealt) {
+                    tileMarkState.registerDealtRound(step.firstRound.roundId)
+                } else {
+                    null
+                }
                 SessionChange(
                     sessionId = sessionId,
                     sourceVersion = version,
@@ -331,7 +350,8 @@ class MatchSession @JvmOverloads constructor(
                     targetCanDealerDeclareAgariYame = false,
                     targetResult = null,
                     events = emptyList(),
-                    targetCheatPoints = Collections.unmodifiableList(betweenRoundCheatPoints.toList())
+                    targetCheatPoints = Collections.unmodifiableList(betweenRoundCheatPoints.toList()),
+                    targetTileMarkState = targetTileMark
                 )
             }
 
@@ -348,6 +368,12 @@ class MatchSession @JvmOverloads constructor(
                     cheatDeltas = Collections.unmodifiableList(roundRes.cheatPointDeltas.toList()),
                     cheatEntries = Collections.unmodifiableList(roundRes.cheatEntries.map { it.copy() })
                 )
+
+                val completedMarkState = if (tileMarkState.dealtRoundIds.isNotEmpty() && tileMarkState.dealtRoundIds.last() == roundRes.roundId) {
+                    tileMarkState.completeRound(roundRes.roundId)
+                } else {
+                    tileMarkState
+                }
 
                 when (step.progressionPlan.kind) {
                     ProgressionPlanKind.FINISH_SESSION -> {
@@ -406,7 +432,8 @@ class MatchSession @JvmOverloads constructor(
                             targetCanDealerDeclareAgariYame = false,
                             targetResult = sessionRes,
                             events = listOf(matchEndEvent),
-                            targetCheatPoints = Collections.unmodifiableList(roundRes.finalCheatPoints.toList())
+                            targetCheatPoints = Collections.unmodifiableList(roundRes.finalCheatPoints.toList()),
+                            targetTileMarkState = completedMarkState.clearAll()
                         )
                     }
 
@@ -427,7 +454,8 @@ class MatchSession @JvmOverloads constructor(
                             targetCanDealerDeclareAgariYame = true,
                             targetResult = null,
                             events = emptyList(),
-                            targetCheatPoints = Collections.unmodifiableList(roundRes.finalCheatPoints.toList())
+                            targetCheatPoints = Collections.unmodifiableList(roundRes.finalCheatPoints.toList()),
+                            targetTileMarkState = completedMarkState
                         )
                     }
 
@@ -449,7 +477,8 @@ class MatchSession @JvmOverloads constructor(
                             targetCanDealerDeclareAgariYame = false,
                             targetResult = null,
                             events = emptyList(),
-                            targetCheatPoints = Collections.unmodifiableList(roundRes.finalCheatPoints.toList())
+                            targetCheatPoints = Collections.unmodifiableList(roundRes.finalCheatPoints.toList()),
+                            targetTileMarkState = completedMarkState
                         )
                     }
                 }
@@ -511,7 +540,8 @@ class MatchSession @JvmOverloads constructor(
                         targetCanDealerDeclareAgariYame = false,
                         targetResult = sessionRes,
                         events = listOf(matchEndEvent),
-                        targetCheatPoints = Collections.unmodifiableList(betweenRoundCheatPoints.toList())
+                        targetCheatPoints = Collections.unmodifiableList(betweenRoundCheatPoints.toList()),
+                        targetTileMarkState = tileMarkState.clearAll()
                     )
                 } else {
                     val next = step.progressionPlan.nextRound
@@ -618,7 +648,50 @@ class MatchSession @JvmOverloads constructor(
                     targetCanDealerDeclareAgariYame = false,
                     targetResult = result,
                     events = emptyList(),
-                    targetCheatPoints = Collections.unmodifiableList(betweenRoundCheatPoints.toList())
+                    targetCheatPoints = Collections.unmodifiableList(betweenRoundCheatPoints.toList()),
+                    targetTileMarkState = tileMarkState.clearAll()
+                )
+            }
+
+            is ApprovedSessionStep.ApplyTileMark -> {
+                SessionChange(
+                    sessionId = sessionId,
+                    sourceVersion = version,
+                    targetLifecycle = lifecycle,
+                    targetDealer = currentDealer,
+                    targetRoundWind = currentRoundWind,
+                    targetRoundNumber = currentRoundNumber,
+                    targetHonba = currentHonba,
+                    targetScores = Collections.unmodifiableList(betweenRoundScores.toList()),
+                    targetRiichiSticks = betweenRoundRiichiSticks,
+                    targetActiveRound = activeRound,
+                    targetPendingProgression = _pendingProgressionPlan?.copy(),
+                    targetCanDealerDeclareAgariYame = canDealerDeclareAgariYame,
+                    targetResult = result,
+                    events = emptyList(),
+                    targetCheatPoints = Collections.unmodifiableList(betweenRoundCheatPoints.toList()),
+                    targetTileMarkState = tileMarkState.addGroup(step.group)
+                )
+            }
+
+            is ApprovedSessionStep.RegisterDealtRound -> {
+                SessionChange(
+                    sessionId = sessionId,
+                    sourceVersion = version,
+                    targetLifecycle = lifecycle,
+                    targetDealer = currentDealer,
+                    targetRoundWind = currentRoundWind,
+                    targetRoundNumber = currentRoundNumber,
+                    targetHonba = currentHonba,
+                    targetScores = Collections.unmodifiableList(betweenRoundScores.toList()),
+                    targetRiichiSticks = betweenRoundRiichiSticks,
+                    targetActiveRound = activeRound,
+                    targetPendingProgression = _pendingProgressionPlan?.copy(),
+                    targetCanDealerDeclareAgariYame = canDealerDeclareAgariYame,
+                    targetResult = result,
+                    events = emptyList(),
+                    targetCheatPoints = Collections.unmodifiableList(betweenRoundCheatPoints.toList()),
+                    targetTileMarkState = tileMarkState.registerDealtRound(step.roundId)
                 )
             }
         }
@@ -641,6 +714,9 @@ class MatchSession @JvmOverloads constructor(
         this.betweenRoundRiichiSticks = change.targetRiichiSticks
         if (change.targetCheatPoints.isNotEmpty()) {
             this._betweenRoundCheatPoints = Collections.unmodifiableList(change.targetCheatPoints.toList())
+        }
+        change.targetTileMarkState?.let {
+            this.tileMarkState = it
         }
         this.activeRound = change.targetActiveRound
         change.newRoundRecord?.let { rec ->

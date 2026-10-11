@@ -22,6 +22,7 @@ import com.majiang.transport.api.ProtocolRoomConfig
 import com.majiang.transport.api.ProtocolRoomInfo
 import com.majiang.transport.api.ProtocolRoomLifecycle
 import com.majiang.transport.api.ProtocolShufflePlan
+import com.majiang.transport.api.ProtocolTileMarkRequest
 import com.majiang.transport.udp.ResendResponse
 import com.majiang.transport.udp.UdpClock
 import java.net.SocketAddress
@@ -860,6 +861,16 @@ class UdpRoom(
             )
         val enginePlan = EngineProtocolMapper.toEngineShufflePlan(plan)
         return sharedRoom.submitShufflePlan(session.seat, enginePlan, sessionValidator(session))
+            .thenApply { EngineProtocolMapper.toProtocolReceipt(it) }
+    }
+
+    fun submitTileMark(session: UdpClientSession, request: ProtocolTileMarkRequest): CompletableFuture<ProtocolActionReceipt> {
+        commandTarget(session)
+            ?: return CompletableFuture.completedFuture(
+                ProtocolActionReceipt(request.requestId, ProtocolReceiptStatus.REJECTED, reason = "STALE_SESSION")
+            )
+        val engineRequest = EngineProtocolMapper.toEngineTileMarkRequest(request)
+        return sharedRoom.submitTileMark(session.seat, engineRequest, sessionValidator(session))
             .thenApply { EngineProtocolMapper.toProtocolReceipt(it) }
     }
 

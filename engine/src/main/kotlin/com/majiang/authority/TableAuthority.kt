@@ -13,6 +13,10 @@ import com.majiang.application.ActionChoice
 import com.majiang.application.ApplicationCoordinator
 import com.majiang.application.PlayerDecision
 import com.majiang.application.deepCopy
+import com.majiang.cheat.mark.TileMarkConfig
+import com.majiang.cheat.mark.TileMarkProjectionFactory
+import com.majiang.cheat.mark.TileMarkRequest
+import com.majiang.cheat.mark.TileMarkView
 import com.majiang.economy.CheatEconomyConfig
 import com.majiang.event.GameEvent
 import com.majiang.match.MatchConfig
@@ -130,9 +134,25 @@ class TableAuthority @JvmOverloads constructor(
     var decisionClock: DecisionClock = DecisionClock(config = timeControl, clock = clock)
         private set
 
+    @Volatile
+    private var isClosed: Boolean = false
+
     // 幂等请求与回执存储
     private data class ReceiptKey(val seat: Int, val requestId: String)
-    private data class StoredSubmission(val choice: ActionChoice?, val receipt: ActionReceipt)
+    private enum class SubmissionKind { CHOICE, TILE_MARK }
+    private data class NormalizedTileMarkPayload(
+        val sessionId: String,
+        val roundId: String,
+        val decisionId: String,
+        val controlEpoch: Long,
+        val normalizedTileIds: List<Int>
+    )
+    private data class StoredSubmission(
+        val kind: SubmissionKind,
+        val receipt: ActionReceipt,
+        val choice: ActionChoice? = null,
+        val tileMarkPayload: NormalizedTileMarkPayload? = null
+    )
     private val storedReceipts = ConcurrentHashMap<ReceiptKey, StoredSubmission>()
 
     // 历史单局结算事件记录 (roundId -> visibleEvents)
@@ -237,6 +257,7 @@ class TableAuthority @JvmOverloads constructor(
     // ========================================
 
     fun isPreparationActive(): Boolean {
+        if (isClosed || coordinator.session.lifecycle == SessionLifecycle.CLOSED) return false
         val prepId = preparationRoundId ?: return false
         val activeRound = coordinator.activeRound ?: return false
         return activeRound.roundId == prepId &&
@@ -345,16 +366,18 @@ class TableAuthority @JvmOverloads constructor(
         val result = coordinator.start()
         if (result is ActionResult.Accepted) {
             hasStarted = true
-            val newRound = coordinator.activeRound
-            if (newRound != null) {
-                if (config.shuffleConfig.enabled && !isInitialStateAlreadyDealt) {
-                    startPreparation(newRound.roundId, now)
-                } else {
-                    decisionClock.beginRound(newRound.roundId)
-                    lastActiveRoundId = newRound.roundId
+            if (!isClosed && coordinator.session.lifecycle != SessionLifecycle.CLOSED) {
+                val newRound = coordinator.activeRound
+                if (newRound != null) {
+                    if (config.shuffleConfig.enabled && !isInitialStateAlreadyDealt) {
+                        startPreparation(newRound.roundId, now)
+                    } else {
+                        decisionClock.beginRound(newRound.roundId)
+                        lastActiveRoundId = newRound.roundId
+                    }
                 }
+                recordSettlementEvents(result.events)
             }
-            recordSettlementEvents(result.events)
             return MutationResult(ActionReceipt("start", ReceiptStatus.APPLIED), result.events, true)
         } else {
             val reason = if (result is ActionResult.Rejected) result.reason.name else "START_FAILED"
@@ -394,16 +417,18 @@ class TableAuthority @JvmOverloads constructor(
         val result = coordinator.nextRound()
         if (result is ActionResult.Accepted) {
             hasStarted = true
-            val newRound = coordinator.activeRound
-            if (newRound != null) {
-                if (config.shuffleConfig.enabled) {
-                    startPreparation(newRound.roundId, now)
-                } else {
-                    decisionClock.beginRound(newRound.roundId)
-                    lastActiveRoundId = newRound.roundId
+            if (!isClosed && coordinator.session.lifecycle != SessionLifecycle.CLOSED) {
+                val newRound = coordinator.activeRound
+                if (newRound != null) {
+                    if (config.shuffleConfig.enabled) {
+                        startPreparation(newRound.roundId, now)
+                    } else {
+                        decisionClock.beginRound(newRound.roundId)
+                        lastActiveRoundId = newRound.roundId
+                    }
                 }
+                recordSettlementEvents(result.events)
             }
-            recordSettlementEvents(result.events)
             return MutationResult(ActionReceipt("nextRound", ReceiptStatus.APPLIED), result.events, true)
         } else {
             val reason = if (result is ActionResult.Rejected) result.reason.name else "NEXT_ROUND_FAILED"
@@ -413,48 +438,55 @@ class TableAuthority @JvmOverloads constructor(
 
     @Synchronized
     fun submitChoice(seat: Int, choice: ActionChoice, now: Long): MutationResult {
+        if (isClosed || coordinator.session.lifecycle == SessionLifecycle.CLOSED) {
+            return MutationResult(ActionReceipt(choice.requestId, ReceiptStatus.REJECTED, reason = "SESSION_CLOSED"), emptyList(), false)
+        }
         if (decisionClock.isPausedState) {
             return MutationResult(ActionReceipt(choice.requestId, ReceiptStatus.REJECTED, reason = "HOST_PAUSED"), emptyList(), false)
         }
         if (seat !in 0..3) {
             return MutationResult(ActionReceipt(choice.requestId, ReceiptStatus.REJECTED, reason = "INVALID_SEAT"), emptyList(), false)
         }
-        if (isPreparationActive()) {
-            val rejected = ActionReceipt(choice.requestId, ReceiptStatus.REJECTED, reason = "WRONG_PHASE")
-            storedReceipts[ReceiptKey(seat, choice.requestId)] = StoredSubmission(choice, rejected)
-            return MutationResult(rejected, emptyList(), false)
-        }
-
         // 1. 幂等与重试校验
         val receiptKey = ReceiptKey(seat, choice.requestId)
         val stored = storedReceipts[receiptKey]
         if (stored != null) {
-            if (stored.choice == choice) {
+            if (stored.kind == SubmissionKind.CHOICE && stored.choice == choice) {
                 return MutationResult(stored.receipt, emptyList(), false)
             } else {
                 val rejected = ActionReceipt(choice.requestId, ReceiptStatus.REJECTED, reason = "REQUEST_ID_CONFLICT")
                 return MutationResult(rejected, emptyList(), false)
             }
         }
+        if (storedShufflePlans.any { it.key.seat == seat && it.key.requestId == choice.requestId }) {
+            val rejected = ActionReceipt(choice.requestId, ReceiptStatus.REJECTED, reason = "REQUEST_ID_CONFLICT")
+            return MutationResult(rejected, emptyList(), false)
+        }
+
+        if (isPreparationActive()) {
+            val rejected = ActionReceipt(choice.requestId, ReceiptStatus.REJECTED, reason = "WRONG_PHASE")
+            storedReceipts[receiptKey] = StoredSubmission(SubmissionKind.CHOICE, rejected, choice = choice)
+            return MutationResult(rejected, emptyList(), false)
+        }
 
         // 2. 当前有效决策与代次校验
         val currentDecision = coordinator.queryDecision(seat)
         if (choice.controlEpoch != currentDecision.controlEpoch) {
             val rejected = ActionReceipt(choice.requestId, ReceiptStatus.REJECTED, reason = "STALE_CONTROL_EPOCH")
-            storedReceipts[receiptKey] = StoredSubmission(choice, rejected)
+            storedReceipts[receiptKey] = StoredSubmission(SubmissionKind.CHOICE, rejected, choice = choice)
             return MutationResult(rejected, emptyList(), false)
         }
 
         if (currentDecision.decisionId != choice.decisionId || choice.roundId != currentDecision.roundId) {
             val rejected = ActionReceipt(choice.requestId, ReceiptStatus.REJECTED, reason = "DECISION_MISMATCH")
-            storedReceipts[receiptKey] = StoredSubmission(choice, rejected)
+            storedReceipts[receiptKey] = StoredSubmission(SubmissionKind.CHOICE, rejected, choice = choice)
             return MutationResult(rejected, emptyList(), false)
         }
 
         val selectedOption = currentDecision.options.firstOrNull { it.optionId == choice.optionId }
         if (selectedOption == null) {
             val rejected = ActionReceipt(choice.requestId, ReceiptStatus.REJECTED, reason = "OPTION_NOT_FOUND")
-            storedReceipts[receiptKey] = StoredSubmission(choice, rejected)
+            storedReceipts[receiptKey] = StoredSubmission(SubmissionKind.CHOICE, rejected, choice = choice)
             return MutationResult(rejected, emptyList(), false)
         }
 
@@ -466,7 +498,7 @@ class TableAuthority @JvmOverloads constructor(
             if (timing != null && timing.key == decisionKey) {
                 if (now >= timing.deadlineMillis) {
                     val rejected = ActionReceipt(choice.requestId, ReceiptStatus.REJECTED, reason = "DEADLINE_EXPIRED")
-                    storedReceipts[receiptKey] = StoredSubmission(choice, rejected)
+                    storedReceipts[receiptKey] = StoredSubmission(SubmissionKind.CHOICE, rejected, choice = choice)
                     return MutationResult(rejected, emptyList(), false)
                 }
             }
@@ -480,33 +512,38 @@ class TableAuthority @JvmOverloads constructor(
                 else -> "REJECTED"
             }
             val rejected = ActionReceipt(choice.requestId, ReceiptStatus.REJECTED, reason = reasonStr)
-            storedReceipts[receiptKey] = StoredSubmission(choice, rejected)
+            storedReceipts[receiptKey] = StoredSubmission(SubmissionKind.CHOICE, rejected, choice = choice)
             return MutationResult(rejected, emptyList(), false)
         }
 
-        // 5. 成功执行后结算计时
-        if (roundId != null && timing != null && timing.key == DecisionKey(roundId, seat, choice.decisionId)) {
-            decisionClock.complete(timing.key, now)
-        }
-
-        // 6. 回执状态判断
+        // 5. 成功执行后结算计时与状态判断
         val round = coordinator.activeRound
         val window = round?.responseWindow
         val isWindowWaiting = window != null && !window.isComplete
         val status = if (isWindowWaiting) ReceiptStatus.RECORDED else ReceiptStatus.APPLIED
+        val receipt = ActionReceipt(choice.requestId, status)
 
-        if (round != null && window == null) {
-            cancelUnsubmittedTimings(round.roundId, now)
+        if (!isClosed && coordinator.session.lifecycle != SessionLifecycle.CLOSED) {
+            if (roundId != null && timing != null && timing.key == DecisionKey(roundId, seat, choice.decisionId)) {
+                decisionClock.complete(timing.key, now)
+            }
+
+            if (round != null && window == null) {
+                cancelUnsubmittedTimings(round.roundId, now)
+            }
+
+            recordSettlementEvents(actionResult.events)
+            storedReceipts[receiptKey] = StoredSubmission(SubmissionKind.CHOICE, receipt, choice = choice)
         }
 
-        recordSettlementEvents(actionResult.events)
-        val receipt = ActionReceipt(choice.requestId, status)
-        storedReceipts[receiptKey] = StoredSubmission(choice, receipt)
         return MutationResult(receipt, actionResult.events, true)
     }
 
     @Synchronized
     fun submitShufflePlan(seat: Int, request: ShufflePlanRequest, now: Long): MutationResult {
+        if (isClosed || coordinator.session.lifecycle == SessionLifecycle.CLOSED) {
+            return MutationResult(ActionReceipt(request.requestId, ReceiptStatus.REJECTED, reason = "SESSION_CLOSED"), emptyList(), false)
+        }
         if (decisionClock.isPausedState) {
             return MutationResult(ActionReceipt(request.requestId, ReceiptStatus.REJECTED, reason = "HOST_PAUSED"), emptyList(), false)
         }
@@ -522,6 +559,9 @@ class TableAuthority @JvmOverloads constructor(
             } else {
                 return MutationResult(ActionReceipt(request.requestId, ReceiptStatus.REJECTED, reason = "CONFLICTING_PAYLOAD"), emptyList(), false)
             }
+        }
+        if (storedReceipts.containsKey(ReceiptKey(seat, request.requestId))) {
+            return MutationResult(ActionReceipt(request.requestId, ReceiptStatus.REJECTED, reason = "REQUEST_ID_CONFLICT"), emptyList(), false)
         }
 
         val currentEpoch = coordinator.epochFor(seat)
@@ -583,6 +623,9 @@ class TableAuthority @JvmOverloads constructor(
         action: GameAction,
         now: Long
     ): MutationResult {
+        if (isClosed || coordinator.session.lifecycle == SessionLifecycle.CLOSED) {
+            return MutationResult(ActionReceipt(decisionId, ReceiptStatus.REJECTED, reason = "SESSION_CLOSED"), emptyList(), false)
+        }
         if (decisionClock.isPausedState) {
             return MutationResult(ActionReceipt(decisionId, ReceiptStatus.REJECTED, reason = "HOST_PAUSED"), emptyList(), false)
         }
@@ -602,13 +645,15 @@ class TableAuthority @JvmOverloads constructor(
 
         val actionResult = coordinator.handleAction(action)
         if (actionResult is ActionResult.Accepted) {
-            decisionClock.complete(currTiming!!.key, now)
-            val round = coordinator.activeRound
-            val win = round?.responseWindow
-            if (round != null && win == null) {
-                cancelUnsubmittedTimings(round.roundId, now)
+            if (!isClosed && coordinator.session.lifecycle != SessionLifecycle.CLOSED) {
+                decisionClock.complete(currTiming.key, now)
+                val round = coordinator.activeRound
+                val win = round?.responseWindow
+                if (round != null && win == null) {
+                    cancelUnsubmittedTimings(round.roundId, now)
+                }
+                recordSettlementEvents(actionResult.events)
             }
-            recordSettlementEvents(actionResult.events)
             return MutationResult(ActionReceipt(decisionId, ReceiptStatus.APPLIED), actionResult.events, true)
         }
         return MutationResult(ActionReceipt(decisionId, ReceiptStatus.REJECTED, reason = "ACTION_REJECTED"), emptyList(), false)
@@ -616,6 +661,9 @@ class TableAuthority @JvmOverloads constructor(
 
     @Synchronized
     fun applyCheatLedgerEntry(entryId: String, seat: Int, amount: Int, reason: String, now: Long): MutationResult {
+        if (isClosed || coordinator.session.lifecycle == SessionLifecycle.CLOSED) {
+            return MutationResult(ActionReceipt(entryId, ReceiptStatus.REJECTED, reason = "SESSION_CLOSED"), emptyList(), false)
+        }
         if (decisionClock.isPausedState) {
             return MutationResult(ActionReceipt(entryId, ReceiptStatus.REJECTED, reason = "HOST_PAUSED"), emptyList(), false)
         }
@@ -633,22 +681,186 @@ class TableAuthority @JvmOverloads constructor(
         val timingsBefore = (0 until 4).mapNotNull { s -> decisionClock.timing(s) }
         val result = coordinator.applyCheatLedgerEntry(entryId, seat, amount, reason)
         if (result is ActionResult.Accepted) {
-            for (timing in timingsBefore) {
-                val newDecision = coordinator.queryDecision(timing.key.seat)
-                val newRoundId = newDecision.roundId
-                if (newRoundId != null && newRoundId == timing.key.roundId && newDecision.options.isNotEmpty()) {
-                    val newKey = DecisionKey(newRoundId, timing.key.seat, newDecision.decisionId)
-                    if (newKey != timing.key) {
-                        decisionClock.rekey(timing.key, newKey)
+            if (!isClosed && coordinator.session.lifecycle != SessionLifecycle.CLOSED) {
+                for (timing in timingsBefore) {
+                    val newDecision = coordinator.queryDecision(timing.key.seat)
+                    val newRoundId = newDecision.roundId
+                    if (newRoundId != null && newRoundId == timing.key.roundId && newDecision.options.isNotEmpty()) {
+                        val newKey = DecisionKey(newRoundId, timing.key.seat, newDecision.decisionId)
+                        if (newKey != timing.key) {
+                            decisionClock.rekey(timing.key, newKey)
+                        }
                     }
                 }
+                recordSettlementEvents(result.events)
             }
-            recordSettlementEvents(result.events)
             return MutationResult(ActionReceipt(entryId, ReceiptStatus.APPLIED), result.events, true)
         } else {
             val reasonStr = if (result is ActionResult.Rejected) result.reason.name else "REJECTED"
             return MutationResult(ActionReceipt(entryId, ReceiptStatus.REJECTED, reason = reasonStr), emptyList(), false)
         }
+    }
+
+    @Synchronized
+    fun submitTileMark(seat: Int, request: TileMarkRequest, now: Long): MutationResult {
+        if (!config.tileMarkConfig.enabled) {
+            return MutationResult(ActionReceipt(request.requestId, ReceiptStatus.REJECTED, reason = "TILE_MARK_DISABLED"), emptyList(), false)
+        }
+        if (isClosed || coordinator.session.lifecycle == SessionLifecycle.CLOSED) {
+            return MutationResult(ActionReceipt(request.requestId, ReceiptStatus.REJECTED, reason = "SESSION_CLOSED"), emptyList(), false)
+        }
+        if (decisionClock.isPausedState) {
+            return MutationResult(ActionReceipt(request.requestId, ReceiptStatus.REJECTED, reason = "HOST_PAUSED"), emptyList(), false)
+        }
+        if (seat !in 0..3) {
+            return MutationResult(ActionReceipt(request.requestId, ReceiptStatus.REJECTED, reason = "INVALID_SEAT"), emptyList(), false)
+        }
+
+        // 1. 幂等与冲突校验
+        val currentPayload = NormalizedTileMarkPayload(
+            sessionId = request.sessionId,
+            roundId = request.roundId,
+            decisionId = request.decisionId,
+            controlEpoch = request.controlEpoch,
+            normalizedTileIds = request.tileIds.sorted()
+        )
+        val receiptKey = ReceiptKey(seat, request.requestId)
+        val stored = storedReceipts[receiptKey]
+        if (stored != null) {
+            if (stored.kind == SubmissionKind.TILE_MARK && stored.tileMarkPayload == currentPayload) {
+                return MutationResult(stored.receipt, emptyList(), false)
+            } else {
+                val rejected = ActionReceipt(request.requestId, ReceiptStatus.REJECTED, reason = "REQUEST_ID_CONFLICT")
+                return MutationResult(rejected, emptyList(), false)
+            }
+        }
+        if (storedShufflePlans.any { it.key.seat == seat && it.key.requestId == request.requestId }) {
+            val rejected = ActionReceipt(request.requestId, ReceiptStatus.REJECTED, reason = "REQUEST_ID_CONFLICT")
+            return MutationResult(rejected, emptyList(), false)
+        }
+
+        if (isPreparationActive()) {
+            val rejected = ActionReceipt(request.requestId, ReceiptStatus.REJECTED, reason = "WRONG_PHASE")
+            storedReceipts[receiptKey] = StoredSubmission(SubmissionKind.TILE_MARK, rejected, tileMarkPayload = currentPayload)
+            return MutationResult(rejected, emptyList(), false)
+        }
+
+        // 2. 当前有效局与代次/决策标识校验
+        val round = coordinator.activeRound
+        if (round == null || round.state.phase == GamePhase.ROUND_END || request.roundId != round.roundId || request.sessionId != coordinator.session.sessionId) {
+            val rejected = ActionReceipt(request.requestId, ReceiptStatus.REJECTED, reason = "DECISION_MISMATCH")
+            storedReceipts[receiptKey] = StoredSubmission(SubmissionKind.TILE_MARK, rejected, tileMarkPayload = currentPayload)
+            return MutationResult(rejected, emptyList(), false)
+        }
+
+        val currentDecision = coordinator.queryDecision(seat)
+        if (request.controlEpoch != currentDecision.controlEpoch) {
+            val rejected = ActionReceipt(request.requestId, ReceiptStatus.REJECTED, reason = "STALE_CONTROL_EPOCH")
+            storedReceipts[receiptKey] = StoredSubmission(SubmissionKind.TILE_MARK, rejected, tileMarkPayload = currentPayload)
+            return MutationResult(rejected, emptyList(), false)
+        }
+        if (request.decisionId != currentDecision.decisionId) {
+            val rejected = ActionReceipt(request.requestId, ReceiptStatus.REJECTED, reason = "DECISION_MISMATCH")
+            storedReceipts[receiptKey] = StoredSubmission(SubmissionKind.TILE_MARK, rejected, tileMarkPayload = currentPayload)
+            return MutationResult(rejected, emptyList(), false)
+        }
+
+        val controller = coordinator.controllerFor(seat)
+        if (controller !is SeatController.LocalHuman && controller !is SeatController.RemoteHuman) {
+            val rejected = ActionReceipt(request.requestId, ReceiptStatus.REJECTED, reason = "ACTION_NOT_AVAILABLE")
+            storedReceipts[receiptKey] = StoredSubmission(SubmissionKind.TILE_MARK, rejected, tileMarkPayload = currentPayload)
+            return MutationResult(rejected, emptyList(), false)
+        }
+
+        // 3. 权威截止时间校验
+        val timing = decisionClock.timing(seat)
+        val decisionKey = DecisionKey(round.roundId, seat, request.decisionId)
+        if (timing == null || timing.key != decisionKey) {
+            val rejected = ActionReceipt(request.requestId, ReceiptStatus.REJECTED, reason = "NO_ACTIVE_DECISION")
+            storedReceipts[receiptKey] = StoredSubmission(SubmissionKind.TILE_MARK, rejected, tileMarkPayload = currentPayload)
+            return MutationResult(rejected, emptyList(), false)
+        }
+        if (now >= timing.deadlineMillis) {
+            val rejected = ActionReceipt(request.requestId, ReceiptStatus.REJECTED, reason = "DEADLINE_EXPIRED")
+            storedReceipts[receiptKey] = StoredSubmission(SubmissionKind.TILE_MARK, rejected, tileMarkPayload = currentPayload)
+            return MutationResult(rejected, emptyList(), false)
+        }
+
+        // 4. 阶段与回合校验
+        val candidateState = round.readState()
+        if (candidateState.currentPlayer != seat) {
+            val rejected = ActionReceipt(request.requestId, ReceiptStatus.REJECTED, reason = "NOT_YOUR_TURN")
+            storedReceipts[receiptKey] = StoredSubmission(SubmissionKind.TILE_MARK, rejected, tileMarkPayload = currentPayload)
+            return MutationResult(rejected, emptyList(), false)
+        }
+        if (candidateState.phase !in setOf(GamePhase.CHEAT_WINDOW, GamePhase.DISCARD) || round.responseWindow != null) {
+            val rejected = ActionReceipt(request.requestId, ReceiptStatus.REJECTED, reason = "WRONG_PHASE")
+            storedReceipts[receiptKey] = StoredSubmission(SubmissionKind.TILE_MARK, rejected, tileMarkPayload = currentPayload)
+            return MutationResult(rejected, emptyList(), false)
+        }
+        if (candidateState.riichiDeclared[seat]) {
+            val rejected = ActionReceipt(request.requestId, ReceiptStatus.REJECTED, reason = "TILE_MARK_RIICHI_LOCKED")
+            storedReceipts[receiptKey] = StoredSubmission(SubmissionKind.TILE_MARK, rejected, tileMarkPayload = currentPayload)
+            return MutationResult(rejected, emptyList(), false)
+        }
+
+        // 5. 牌张选择与归属校验
+        if (request.tileIds.size != 4 || request.tileIds.distinct().size != 4 || request.tileIds.any { it !in 0..135 }) {
+            val rejected = ActionReceipt(request.requestId, ReceiptStatus.REJECTED, reason = "TILE_MARK_INVALID_SELECTION")
+            storedReceipts[receiptKey] = StoredSubmission(SubmissionKind.TILE_MARK, rejected, tileMarkPayload = currentPayload)
+            return MutationResult(rejected, emptyList(), false)
+        }
+        val playerHand = candidateState.players[seat].closedTiles + listOfNotNull(candidateState.players[seat].drawnTile)
+        val playerTileIds = playerHand.map { it.tileId }.toSet()
+        if (!request.tileIds.all { it in playerTileIds }) {
+            val rejected = ActionReceipt(request.requestId, ReceiptStatus.REJECTED, reason = "TILE_MARK_TILE_NOT_OWNED")
+            storedReceipts[receiptKey] = StoredSubmission(SubmissionKind.TILE_MARK, rejected, tileMarkPayload = currentPayload)
+            return MutationResult(rejected, emptyList(), false)
+        }
+        val seatGroups = coordinator.session.tileMarkState.groupsForSeat(seat)
+        val seatMarkedIds = seatGroups.flatMap { it.tileIds }.toSet()
+        if (request.tileIds.any { it in seatMarkedIds }) {
+            val rejected = ActionReceipt(request.requestId, ReceiptStatus.REJECTED, reason = "TILE_MARK_ALREADY_MARKED")
+            storedReceipts[receiptKey] = StoredSubmission(SubmissionKind.TILE_MARK, rejected, tileMarkPayload = currentPayload)
+            return MutationResult(rejected, emptyList(), false)
+        }
+        if (seatGroups.size >= 3 || seatMarkedIds.size + 4 > 12) {
+            val rejected = ActionReceipt(request.requestId, ReceiptStatus.REJECTED, reason = "TILE_MARK_CAPACITY_EXCEEDED")
+            storedReceipts[receiptKey] = StoredSubmission(SubmissionKind.TILE_MARK, rejected, tileMarkPayload = currentPayload)
+            return MutationResult(rejected, emptyList(), false)
+        }
+
+        // 6. 费用校验
+        val cost = config.cheatEconomy.costs["TILE_MARK"] ?: 10
+        if (candidateState.cheatPoints[seat] < cost) {
+            val rejected = ActionReceipt(request.requestId, ReceiptStatus.REJECTED, reason = "INSUFFICIENT_FUNDS")
+            storedReceipts[receiptKey] = StoredSubmission(SubmissionKind.TILE_MARK, rejected, tileMarkPayload = currentPayload)
+            return MutationResult(rejected, emptyList(), false)
+        }
+
+        // 7. 执行原子扣费与安装标记
+        val coordResult = coordinator.submitTileMark(seat, request)
+        if (coordResult !is ActionResult.Accepted) {
+            val reasonStr = when (coordResult) {
+                is ActionResult.Rejected -> coordResult.reason.name
+                else -> "REJECTED"
+            }
+            val rejected = ActionReceipt(request.requestId, ReceiptStatus.REJECTED, reason = reasonStr)
+            storedReceipts[receiptKey] = StoredSubmission(SubmissionKind.TILE_MARK, rejected, tileMarkPayload = currentPayload)
+            return MutationResult(rejected, emptyList(), false)
+        }
+
+        // 8. 计时 rekey 延续（保留截止时间与储备）
+        val receipt = ActionReceipt(request.requestId, ReceiptStatus.APPLIED)
+        if (!isClosed && coordinator.session.lifecycle != SessionLifecycle.CLOSED) {
+            val newDecision = coordinator.queryDecision(seat)
+            val newKey = DecisionKey(round.roundId, seat, newDecision.decisionId)
+            decisionClock.rekey(timing.key, newKey)
+            storedReceipts[receiptKey] = StoredSubmission(SubmissionKind.TILE_MARK, receipt, tileMarkPayload = currentPayload)
+            recordSettlementEvents(coordResult.events)
+        }
+
+        return MutationResult(receipt, coordResult.events, true)
     }
 
     // ========================================
@@ -770,6 +982,7 @@ class TableAuthority @JvmOverloads constructor(
 
     @Synchronized
     fun checkTimeout(now: Long): AutoStepResult? {
+        if (isClosed || coordinator.session.lifecycle == SessionLifecycle.CLOSED) return null
         val expiredTimings = decisionClock.expired(now)
         if (expiredTimings.isNotEmpty()) {
             val timing = expiredTimings.first()
@@ -801,6 +1014,7 @@ class TableAuthority @JvmOverloads constructor(
 
     @Synchronized
     fun checkWaitingDealerChoice(now: Long, automatedDealer: Boolean): AutoStepResult? {
+        if (isClosed || coordinator.session.lifecycle == SessionLifecycle.CLOSED) return null
         if (coordinator.session.lifecycle == SessionLifecycle.WAITING_DEALER_CHOICE && automatedDealer) {
             val dealer = coordinator.session.currentDealer
             val decision = coordinator.queryDecision(dealer)
@@ -829,6 +1043,7 @@ class TableAuthority @JvmOverloads constructor(
 
     @Synchronized
     fun checkAutoNextRound(now: Long, allReady: Boolean): AutoStepResult? {
+        if (isClosed || coordinator.session.lifecycle == SessionLifecycle.CLOSED) return null
         val roundAtEnd = coordinator.activeRound?.state?.phase == GamePhase.ROUND_END
         val sessionAtEnd = coordinator.session.lifecycle in setOf(SessionLifecycle.ROUND_RESULT, SessionLifecycle.WAITING_READY)
         if ((roundAtEnd || sessionAtEnd) &&
@@ -887,6 +1102,7 @@ class TableAuthority @JvmOverloads constructor(
 
     @Synchronized
     fun syncDecisionsAndClocks(now: Long, automatedSeats: Set<Int>): List<AiDecisionRequest> {
+        if (isClosed || coordinator.session.lifecycle == SessionLifecycle.CLOSED) return emptyList()
         val round = coordinator.activeRound
         if (round != null && round.state.phase == GamePhase.ROUND_END) {
             val res = round.result
@@ -1237,6 +1453,24 @@ class TableAuthority @JvmOverloads constructor(
             null
         }
 
+        val tileMarkView = if (config.tileMarkConfig.enabled) {
+            TileMarkProjectionFactory.create(
+                observerSeat = seat,
+                session = coordinator.session,
+                activeRound = coordinator.activeRound,
+                view = view,
+                decision = decision,
+                controls = controls,
+                nowMillis = if (decisionClock.isPausedState && pausedAuthorityTimeMillis != null) pausedAuthorityTimeMillis!! else clock.nowMillis(),
+                timing = decisionClock.timing(seat),
+                isPaused = paused,
+                config = config.tileMarkConfig,
+                economyConfig = config.cheatEconomy
+            )
+        } else {
+            null
+        }
+
         return PlayerSnapshot(
             sessionId = coordinator.session.sessionId,
             roundId = snapshotRoundId,
@@ -1254,7 +1488,8 @@ class TableAuthority @JvmOverloads constructor(
             settlementRoundId = completedId,
             settlementEvents = settlementEvents,
             preparation = prepView,
-            presentationPreview = presentationPreview
+            presentationPreview = presentationPreview,
+            tileMark = tileMarkView
         )
     }
 
@@ -1300,7 +1535,10 @@ class TableAuthority @JvmOverloads constructor(
         else -> false
     }
 
+    @Synchronized
     override fun close() {
+        isClosed = true
+        coordinator.close()
         decisionClock.reset()
         pausedAuthorityTimeMillis = null
         lastCompletedRoundId = null
@@ -1389,7 +1627,8 @@ class TableAuthority @JvmOverloads constructor(
                     initialPoints = effectiveCheatEconomy.initialPoints.toList(),
                     costs = HashMap(effectiveCheatEconomy.costs)
                 ),
-                shuffleConfig = config.shuffleConfig.copy()
+                shuffleConfig = config.shuffleConfig.copy(),
+                tileMarkConfig = config.tileMarkConfig.copy()
             )
         }
     }

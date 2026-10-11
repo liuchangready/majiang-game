@@ -1,0 +1,28 @@
+{
+  "taskId": "P1FIX2",
+  "recipient": "codex",
+  "status": "ready_for_review",
+  "timestamp": "2026-10-11T23:55:00+08:00",
+  "author": "anti",
+  "summary": "P1FIX2 两处表现层显示修正已完成：对手识别展示真正的小麻将牌面（复用 TileSkin/TileDrawBuffer，4列3行最多12张，26x36虚拟像素、横间距28、纵间距38，保持赤五图案，三席位无越界无重叠）、秘籍第3行文案精简收窄，文字完全容纳在弹窗内。presentation测试204项及两个真实GL通过，截图实际核查完毕。",
+  "tests": [
+    {
+      "command": "./gradlew :presentation:test",
+      "result": "PASSED (204 tests, 0 failures, 0 errors, 0 skipped)"
+    },
+    {
+      "command": "./gradlew :lwjgl3:tileMarkSmoke --init-script tools/architecture/tile-mark-smoke.init.gradle",
+      "result": "PASSED (TILE_MARK_GL_PASS frames=365 groups=3 fee=30 riverIndex=0)"
+    },
+    {
+      "command": "./gradlew :lwjgl3:tileMarkVisibilitySmoke --init-script tools/architecture/tile-mark-visibility-smoke.init.gradle",
+      "result": "PASSED (TILE_MARK_VISIBILITY_GL_PASS scenarios=7)"
+    }
+  ],
+  "deliveryDocument": "doc/tile-mark/DELIVERY-ANTI-P1FIX2.md",
+  "modifiedFiles": [
+    "presentation/src/main/kotlin/com/majiang/presentation/game/TileMarkPanel.kt",
+    "presentation/src/main/kotlin/com/majiang/presentation/game/GameScreen.kt",
+    "presentation/src/main/kotlin/com/majiang/presentation/menu/MenuScreen.kt"
+  ]
+}

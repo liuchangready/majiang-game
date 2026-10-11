@@ -47,6 +47,7 @@ class FakeGameSession(
     val submittedActions = mutableListOf<LegalActionView>()
     val submitted: List<LegalActionView> get() = submittedActions
     val submittedPlans = mutableListOf<ShufflePlan>()
+    val submittedMarks = mutableListOf<TileMarkRequest>()
 
     var started: Boolean = false
     var nextRoundCalls: Int = 0
@@ -107,6 +108,15 @@ class FakeGameSession(
             return custom
         }
         return CompletableFuture.completedFuture(Receipt(plan.requestId, ReceiptStatus.RECORDED))
+    }
+
+    override fun submitTileMark(request: TileMarkRequest): CompletableFuture<Receipt> {
+        submittedMarks.add(request)
+        val result = submitResult ?: CompletableFuture.completedFuture(Receipt(request.requestId, ReceiptStatus.APPLIED))
+        submitResult = null
+        isPending = true
+        result.whenComplete { _, _ -> isPending = false }
+        return result
     }
 
     override fun start(): CompletableFuture<Receipt> {

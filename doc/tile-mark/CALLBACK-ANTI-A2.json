@@ -1,0 +1,27 @@
+{
+  "taskId": "A2",
+  "recipient": "codex",
+  "status": "ready_for_review",
+  "deliveryDocument": "D:\\majiang\\doc\\tile-mark\\DELIVERY-ANTI-A2.md",
+  "testCommands": [
+    ".\\gradlew :server:test --tests \"com.majiang.server.mark.TileMarkServerContractTest\" --tests \"com.majiang.server.udp.TileMarkUdpContractTest\" --info",
+    ".\\gradlew cleanTest :server:test --info"
+  ],
+  "testCounts": {
+    "directedContractTests": {
+      "TileMarkServerContractTest": 4,
+      "TileMarkUdpContractTest": 1,
+      "totalTests": 5,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    "fullServerTests": {
+      "totalSuites": 14,
+      "totalTests": 135,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    }
+  }
+}
