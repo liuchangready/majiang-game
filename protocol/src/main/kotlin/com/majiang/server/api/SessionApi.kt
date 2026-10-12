@@ -7,6 +7,8 @@ import com.majiang.transport.api.ProtocolGameEvent
 import com.majiang.transport.api.ProtocolPlayerDecision
 import com.majiang.transport.api.ProtocolPlayerSnapshot
 import com.majiang.transport.api.ProtocolShufflePlan
+import com.majiang.transport.api.ProtocolSleeveBloomChoiceRequest
+import com.majiang.transport.api.ProtocolSleeveBloomRequest
 import com.majiang.transport.api.ProtocolTileMarkRequest
 import java.util.concurrent.CompletableFuture
 
@@ -118,4 +120,16 @@ interface SessionApi {
      */
     fun submitTileMark(request: ProtocolTileMarkRequest): CompletableFuture<ProtocolActionReceipt> =
         CompletableFuture.failedFuture(UnsupportedOperationException("submitTileMark not implemented"))
+
+    /**
+     * 提交袖里藏花激活请求
+     */
+    fun submitSleeveBloom(request: ProtocolSleeveBloomRequest): CompletableFuture<ProtocolActionReceipt> =
+        CompletableFuture.failedFuture(UnsupportedOperationException("submitSleeveBloom not implemented"))
+
+    /**
+     * 提交袖里藏花二选一决策请求
+     */
+    fun submitSleeveBloomChoice(request: ProtocolSleeveBloomChoiceRequest): CompletableFuture<ProtocolActionReceipt> =
+        CompletableFuture.failedFuture(UnsupportedOperationException("submitSleeveBloomChoice not implemented"))
 }

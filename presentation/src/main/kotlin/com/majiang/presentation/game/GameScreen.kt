@@ -30,6 +30,10 @@ import com.majiang.client.api.ScoreBreakdownView
 import com.majiang.client.api.SettlementDetailView
 import com.majiang.client.api.SuitView
 import com.majiang.client.api.TileMarkArea
+import com.majiang.client.api.SleeveBloomChoiceRequest
+import com.majiang.client.api.SleeveBloomKeep
+import com.majiang.client.api.SleeveBloomOfferView
+import com.majiang.client.api.SleeveBloomRequest
 import com.majiang.client.api.TileMarkRequest
 import com.majiang.client.api.TileView
 import com.majiang.presentation.common.ClockDisplay
@@ -90,7 +94,8 @@ class GameScreen(
 
     fun isModalActive(): Boolean =
         showFinalResult || showSettlement || shufflePreparationPanel.isActive ||
-        tileMarkPanel.model.isSelecting || riichiSelectionModel.isSelecting || meldSelectionModel.isSelecting
+        tileMarkPanel.model.isSelecting || riichiSelectionModel.isSelecting || meldSelectionModel.isSelecting ||
+        sleeveBloomPanel.model.isChoosing
 
     // 会话订阅与快照
     private var updateSubscription: AutoCloseable? = null
@@ -102,6 +107,7 @@ class GameScreen(
     private var lastSyncEpoch: String? = currentSnapshot?.syncEpoch
     private var lastRoundId: String? = currentSnapshot?.roundId
     private var lastCursor: Long? = currentSnapshot?.cursor
+    private var lastSessionId: String? = currentSnapshot?.sessionId
     private var lastClockUpdateLocalMillis: Long = System.currentTimeMillis()
     private var activeSettlementRoundId: String? = null
 
@@ -134,7 +140,7 @@ class GameScreen(
 
     // 状态盒与控制按钮
     val statusBoxRect = Rectangle(35f, 40f, 175f, 82f)
-    val btnTakeoverRect = Rectangle(1080f, 108f, 140f, 36f)
+    val btnTakeoverRect = Rectangle(1080f, 6f, 140f, 36f)
     private var isTakeoverHovered = false
 
     // 选牌模型与准备面板
@@ -142,8 +148,13 @@ class GameScreen(
     val meldSelectionModel = MeldSelectionModel()
     val shufflePreparationPanel = ShufflePreparationPanel(session)
     val tileMarkPanel = TileMarkPanel(session)
+    val sleeveBloomPanel = SleeveBloomPanel(session)
     val riverHintPanel = RiverHintPanel()
     private var isSubmittingMark = false
+    private var isSubmittingBloom = false
+    private var isSubmittingBloomChoice = false
+    private var activeBloomOffer: SleeveBloomOfferView? = null
+    private var bloomChoiceSubmitted: Boolean = false
 
     private var lastMouseX = 0f
     private var lastMouseY = 0f
@@ -277,7 +288,7 @@ class GameScreen(
     val btnNextRoundRect = Rectangle(520f, 145f, 240f, 46f)
     val btnNextRoundSplitRect = Rectangle(370f, 145f, 260f, 46f)
     val btnAgariYameRect = Rectangle(660f, 145f, 260f, 46f)
-    val btnSortRect = Rectangle(1080f, 58f, 140f, 44f)
+    val btnSortRect = Rectangle(1080f, 50f, 140f, 44f)
 
     var isAutoSort: Boolean = false
 
@@ -370,8 +381,9 @@ class GameScreen(
         val epochChanged = (lastSyncEpoch != null && snap.syncEpoch != lastSyncEpoch)
         val roundChanged = (lastRoundId != null && snap.roundId != lastRoundId)
         val cursorJumped = (lastCursor != null && snap.cursor > lastCursor!! + 1L)
+        val sessionChanged = (lastSessionId != null && snap.sessionId != lastSessionId)
 
-        if (epochChanged || roundChanged || cursorJumped) {
+        if (epochChanged || roundChanged || cursorJumped || sessionChanged) {
             fastForwardDiscardAnimations()
             riichiSelectionModel.cancel()
             meldSelectionModel.cancel()
@@ -380,6 +392,7 @@ class GameScreen(
         lastSyncEpoch = snap.syncEpoch
         lastRoundId = snap.roundId
         lastCursor = snap.cursor
+        lastSessionId = snap.sessionId
         lastClockUpdateLocalMillis = System.currentTimeMillis()
 
         currentSnapshot = snap
@@ -391,6 +404,41 @@ class GameScreen(
             connected = isConnected,
             nowMillis = tileMarkPanel.model.monotonicClock()
         )
+        sleeveBloomPanel.update(
+            snapshot = snap,
+            pending = session.isPending,
+            connected = isConnected,
+            nowMillis = sleeveBloomPanel.model.monotonicClock()
+        )
+
+        val oldOffer = activeBloomOffer
+        val newOffer = snap.sleeveBloom?.pendingOffer
+        if (oldOffer != null && newOffer == null) {
+            val latestServerNow = snap.clocks.map { it.serverNow }.maxOrNull() ?: 0L
+            val myDiscards = snap.view.discards.getOrNull(snap.viewerSeat) ?: emptyList()
+            val firstTileDiscarded = (myDiscards.lastOrNull()?.tileId == oldOffer.firstTile.tileId) ||
+                (snap.view.lastDiscard?.tileId == oldOffer.firstTile.tileId && snap.view.lastDiscardPlayer == snap.viewerSeat)
+            val myControl = snap.controls.firstOrNull { it.seat == snap.viewerSeat }
+            val isTakeover = (myControl?.role == "TAKEOVER")
+            val isTimeout = (latestServerNow >= oldOffer.deadlineMillis && oldOffer.deadlineMillis > 0L) &&
+                firstTileDiscarded &&
+                !isTakeover
+            if (isTimeout && !bloomChoiceSubmitted && !roundChanged && !epochChanged && !sessionChanged &&
+                snap.view.phase != GamePhaseView.ROUND_END && snap.view.phase != GamePhaseView.MATCH_END) {
+                showToast("超时已默认保留第一张，额度不退")
+            }
+            activeBloomOffer = null
+            bloomChoiceSubmitted = false
+        } else if (newOffer != null) {
+            if (newOffer.offerId != oldOffer?.offerId) {
+                activeBloomOffer = newOffer
+                bloomChoiceSubmitted = false
+            }
+        }
+        if (roundChanged || epochChanged || sessionChanged) {
+            activeBloomOffer = newOffer
+            bloomChoiceSubmitted = false
+        }
 
         if (snap.view.myAllClosedTiles.isNotEmpty() || snap.view.phase != GamePhaseView.STACKING || shufflePreparationPanel.isActive) {
             gameStarted = true
@@ -781,6 +829,65 @@ class GameScreen(
         }
     }
 
+    fun submitSleeveBloomAsync() {
+        if (isSubmittingBloom || isSubmitting || session.isPending) return
+        val current = currentSnapshot ?: return
+        val bloom = current.sleeveBloom ?: return
+        if (!sleeveBloomPanel.model.canActivate) return
+
+        val roundId = current.roundId ?: return
+        isSubmittingBloom = true
+        val req = SleeveBloomRequest(
+            requestId = UUID.randomUUID().toString(),
+            sessionId = current.sessionId,
+            roundId = roundId,
+            decisionId = bloom.decisionId,
+            controlEpoch = bloom.controlEpoch
+        )
+        session.submitSleeveBloom(req).whenComplete { receipt, err ->
+            runOnUi {
+                isSubmittingBloom = false
+                if (err != null) {
+                    showToast("袖里藏花提交失败: ${err.message ?: err.javaClass.simpleName}")
+                } else if (receipt?.status == ReceiptStatus.REJECTED) {
+                    val reason = SleeveBloomPanel.translateServerReason(receipt.reason ?: "UNKNOWN")
+                    showToast("袖里藏花失败: $reason")
+                }
+            }
+        }
+    }
+
+    fun submitSleeveBloomChoiceAsync(keep: SleeveBloomKeep) {
+        if (isSubmittingBloomChoice || isSubmitting || session.isPending) return
+        val current = currentSnapshot ?: return
+        val bloom = current.sleeveBloom ?: return
+        val offer = bloom.pendingOffer ?: return
+
+        val roundId = current.roundId ?: return
+        isSubmittingBloomChoice = true
+        bloomChoiceSubmitted = true
+        val req = SleeveBloomChoiceRequest(
+            requestId = UUID.randomUUID().toString(),
+            sessionId = current.sessionId,
+            roundId = roundId,
+            decisionId = current.decision.decisionId,
+            controlEpoch = current.decision.controlEpoch,
+            offerId = offer.offerId,
+            keep = keep
+        )
+        session.submitSleeveBloomChoice(req).whenComplete { receipt, err ->
+            runOnUi {
+                isSubmittingBloomChoice = false
+                if (err != null) {
+                    showToast("选择提交失败: ${err.message ?: err.javaClass.simpleName}")
+                } else if (receipt?.status == ReceiptStatus.REJECTED) {
+                    val reason = SleeveBloomPanel.translateServerReason(receipt.reason ?: "UNKNOWN")
+                    showToast("选择失败: $reason")
+                }
+            }
+        }
+    }
+
     private fun refreshLocalSelectionModels() {
         riichiSelectionModel.update(currentSnapshot?.presentationPreview)
         meldSelectionModel.update(currentSnapshot?.presentationPreview)
@@ -825,6 +932,12 @@ class GameScreen(
             pending = session.isPending,
             connected = isConnected,
             nowMillis = tileMarkPanel.model.monotonicClock()
+        )
+        sleeveBloomPanel.update(
+            snapshot = currentSnapshot,
+            pending = session.isPending,
+            connected = isConnected,
+            nowMillis = sleeveBloomPanel.model.monotonicClock()
         )
         riverHintPanel.update(currentSnapshot)
         if (isModalActive()) {
@@ -912,7 +1025,25 @@ class GameScreen(
             riichiSelecting = riichiSelectionModel.isSelecting,
             meldSelecting = meldSelectionModel.isSelecting,
             tileSkin = tileSkin,
-            tileDrawBuffer = tileDrawBuffer
+            tileDrawBuffer = tileDrawBuffer,
+            sleeveBloomChoosing = sleeveBloomPanel.model.isChoosing
+        )
+
+        // 8.55 袖里藏花表现层面板
+        sleeveBloomPanel.render(
+            camera = tableCamera,
+            shape = shape,
+            batch = batch,
+            font = chineseFont ?: font,
+            snapshot = currentSnapshot,
+            isDiscardPlaybackBusy = isDiscardPlaybackBusy,
+            isPaused = isPaused,
+            isSubmitting = isSubmitting || isSubmittingBloom || isSubmittingBloomChoice,
+            riichiSelecting = riichiSelectionModel.isSelecting,
+            meldSelecting = meldSelectionModel.isSelecting,
+            tileSkin = tileSkin,
+            tileDrawBuffer = tileDrawBuffer,
+            tileMarkSelecting = tileMarkPanel.model.isSelecting
         )
 
         // 8.6 牌河提示面板与切换按钮 (先画展开面板，再画切换按钮使其置顶)
@@ -1628,6 +1759,24 @@ class GameScreen(
         textFont.draw(batch, if (isAutoSort) "理牌: 开" else "理牌: 关", btnSortRect.x + 30f, btnSortRect.y + 28f)
         batch.end()
 
+        // 托管/收回按钮
+        val controls = currentSnapshot?.controls ?: emptyList()
+        val myControl = controls.firstOrNull { it.seat == (currentSnapshot?.viewerSeat ?: 0) }
+        val isTakeover = (myControl?.role == "TAKEOVER")
+        shape.projectionMatrix = tableCamera.combined
+        shape.begin(ShapeRenderer.ShapeType.Filled)
+        shape.color = if (isTakeover) Color(0.85f, 0.40f, 0.20f, 1f) else Color(0.25f, 0.35f, 0.45f, 1f)
+        shape.rect(btnTakeoverRect.x, btnTakeoverRect.y, btnTakeoverRect.width, btnTakeoverRect.height)
+        shape.end()
+
+        batch.projectionMatrix = tableCamera.combined
+        batch.begin()
+        textFont.data.setScale(1.0f)
+        textFont.color = Color.WHITE
+        val takeoverText = if (isTakeover) "收回控制" else "托管"
+        textFont.draw(batch, takeoverText, btnTakeoverRect.x + if (isTakeover) 30f else 50f, btnTakeoverRect.y + 24f)
+        batch.end()
+
         if (isDiscardPlaybackBusy || isPaused || session.isPending || isSubmitting) return
 
         if (riichiSelectionModel.isSelecting) {
@@ -1707,6 +1856,10 @@ class GameScreen(
 
     override fun keyDown(keycode: Int): Boolean {
         if (keycode == Input.Keys.ESCAPE || keycode == Input.Keys.BACK) {
+            if (sleeveBloomPanel.model.isChoosing) {
+                submitSleeveBloomChoiceAsync(SleeveBloomKeep.FIRST)
+                return true
+            }
             if (riverHintPanel.isOpen) {
                 riverHintPanel.close()
                 return true
@@ -1752,6 +1905,7 @@ class GameScreen(
         val wasMeldSelecting = meldSelectionModel.isSelecting
         val wasRiichiSelecting = riichiSelectionModel.isSelecting
         val wasTileMarkSelecting = tileMarkPanel.model.isSelecting
+        val wasSleeveBloomChoosing = sleeveBloomPanel.model.isChoosing
 
         val isConnected = (session.connectionState == ConnectionState.CONNECTED) && !session.closed
         tileMarkPanel.update(
@@ -1759,6 +1913,12 @@ class GameScreen(
             pending = session.isPending,
             connected = isConnected,
             nowMillis = tileMarkPanel.model.monotonicClock()
+        )
+        sleeveBloomPanel.update(
+            snapshot = currentSnapshot,
+            pending = session.isPending,
+            connected = isConnected,
+            nowMillis = sleeveBloomPanel.model.monotonicClock()
         )
 
         // 0. 弹窗模态优先级最高：在模态展示期间，拦截所有输入并禁止与底层提示/牌桌交互
@@ -1890,6 +2050,29 @@ class GameScreen(
             return true
         }
 
+        if (sleeveBloomPanel.model.isChoosing) {
+            if (sleeveBloomPanel.btnConfirmRect.contains(uiTx, uiTy)) {
+                val sel = sleeveBloomPanel.model.selected
+                if (sel != null) {
+                    submitSleeveBloomChoiceAsync(sel)
+                }
+                return true
+            }
+            if (sleeveBloomPanel.btnCancelRect.contains(uiTx, uiTy)) {
+                submitSleeveBloomChoiceAsync(SleeveBloomKeep.FIRST)
+                return true
+            }
+            if (sleeveBloomPanel.firstCardRect.contains(uiTx, uiTy)) {
+                sleeveBloomPanel.model.select(SleeveBloomKeep.FIRST)
+                return true
+            }
+            if (sleeveBloomPanel.secondCardRect.contains(uiTx, uiTy)) {
+                sleeveBloomPanel.model.select(SleeveBloomKeep.SECOND)
+                return true
+            }
+            return true
+        }
+
         // 1. 牌河提示面板切换按钮与展开面板内交互 (非模态下可用)
         if (!isModalActive() && riverHintPanel.btnToggleRect.contains(uiTx, uiTy)) {
             riverHintPanel.toggle()
@@ -1908,7 +2091,8 @@ class GameScreen(
 
         val modalInvalidatedByRefresh = (wasMeldSelecting && !meldSelectionModel.isSelecting) ||
                 (wasRiichiSelecting && !riichiSelectionModel.isSelecting) ||
-                (wasTileMarkSelecting && !tileMarkPanel.model.isSelecting)
+                (wasTileMarkSelecting && !tileMarkPanel.model.isSelecting) ||
+                (wasSleeveBloomChoosing && !sleeveBloomPanel.model.isChoosing)
         if (modalInvalidatedByRefresh) {
             return true
         }
@@ -1921,6 +2105,38 @@ class GameScreen(
             Pair((uiTx - offsetX) / scale, (uiTy - offsetY) / scale)
         } else {
             Pair(uiTx, uiTy)
+        }
+
+        // 1.8 袖里藏花入口 (防止穿透)
+        if (sleeveBloomPanel.btnOpenRect.contains(tableTx, tableTy)) {
+            val canOpenBloom = sleeveBloomPanel.model.canActivate &&
+                !isDiscardPlaybackBusy &&
+                !isPaused &&
+                !session.isPending &&
+                !isSubmitting &&
+                !isSubmittingMark &&
+                !isSubmittingBloom &&
+                !isSubmittingBloomChoice &&
+                !riichiSelectionModel.isSelecting &&
+                !meldSelectionModel.isSelecting &&
+                !tileMarkPanel.model.isSelecting &&
+                !sleeveBloomPanel.model.isChoosing
+            if (canOpenBloom) {
+                submitSleeveBloomAsync()
+            } else {
+                val bloom = currentSnapshot?.sleeveBloom
+                val viewerSeat = currentSnapshot?.viewerSeat ?: 0
+                val pts = currentSnapshot?.cheatPoints?.getOrNull(viewerSeat) ?: 0
+                val disReason = bloom?.disabledReason
+                val reasonText = when {
+                    disReason != null -> SleeveBloomPanel.translateServerReason(disReason)
+                    pts < (bloom?.cost ?: 10) -> "千术点不足"
+                    isSubmittingBloom || isSubmittingBloomChoice -> "正在提交中..."
+                    else -> "当前不可施展袖里藏花"
+                }
+                showToast(reasonText)
+            }
+            return true
         }
 
         // 托管切换
@@ -2111,10 +2327,15 @@ class GameScreen(
             !session.isPending &&
             !isSubmitting &&
             !isSubmittingMark &&
+            !isSubmittingBloom &&
+            !isSubmittingBloomChoice &&
             !riichiSelectionModel.isSelecting &&
-            !meldSelectionModel.isSelecting
-        if (canOpenTileMark && tileMarkPanel.btnOpenRect.contains(tableTx, tableTy)) {
-            tileMarkPanel.model.begin()
+            !meldSelectionModel.isSelecting &&
+            !sleeveBloomPanel.model.isChoosing
+        if (tileMarkPanel.btnOpenRect.contains(tableTx, tableTy)) {
+            if (canOpenTileMark) {
+                tileMarkPanel.model.begin()
+            }
             return true
         }
 
@@ -2278,6 +2499,7 @@ class GameScreen(
             }
         }
         tileMarkPanel.dispose()
+        sleeveBloomPanel.dispose()
         riverHintPanel.dispose()
         shufflePreparationPanel.dispose()
         settlementDetailRenderer.dispose()

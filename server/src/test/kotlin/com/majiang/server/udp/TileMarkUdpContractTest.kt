@@ -55,6 +55,34 @@ class TileMarkUdpContractTest {
     }
 
     @Test
+    fun `raw spectator cannot forge either sleeve bloom operation through UDP dispatch`() {
+        val clock = FakeUdpClock()
+        UdpTableServer(clock = clock, scheduler = FakeUdpScheduler(clock)).use { server ->
+            server.start()
+            WireClient(server.boundPort, clock).use { host ->
+                WireClient(server.boundPort, clock).use { observer ->
+                    val config = ProtocolMatchConfig(cheatEconomy = ProtocolCheatEconomyConfig(true, List(4) { 20 }, mapOf("SLEEVE_BLOOM" to 10)),
+                        sleeveBloomConfig = ProtocolSleeveBloomConfig(true))
+                    val created = host.request(ApiRequest(ApiTags.CREATE_ROOM, "bloom-room", config = config))
+                    assertTrue(created.success, created.error)
+                    assertTrue(observer.request(ApiRequest(ApiTags.JOIN_SPECTATOR, "watch-bloom", roomId = created.roomId, spectatorName = "Observer")).success)
+                    val activation = ProtocolSleeveBloomRequest("forged-bloom", "unknown-session", "unknown-round", "unknown-decision", 0)
+                    val choice = ProtocolSleeveBloomChoiceRequest("forged-bloom-choice", "unknown-session", "unknown-round", "unknown-decision", 0,
+                        "unknown-offer", ProtocolSleeveBloomKeep.SECOND)
+                    for (request in listOf(ApiRequest(ApiTags.SUBMIT_SLEEVE_BLOOM, activation.requestId, sleeveBloom = activation),
+                        ApiRequest(ApiTags.SUBMIT_SLEEVE_BLOOM_CHOICE, choice.requestId, sleeveBloomChoice = choice))) {
+                        val denied = observer.request(request)
+                        assertFalse(denied.success)
+                        assertEquals(ApiErrors.UNAUTHENTICATED_SESSION, denied.error)
+                        assertNull(denied.snapshot)
+                        assertNull(denied.receipt)
+                    }
+                }
+            }
+        }
+    }
+
+    @Test
     fun `real UDP carries twelve marks fragmented snapshots private recovery and exact river position`() {
         val clock = FakeUdpClock()
         UdpTableServer(clock = clock, scheduler = FakeUdpScheduler(clock)).use { server ->

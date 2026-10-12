@@ -1273,7 +1273,8 @@ class UdpTableServer @JvmOverloads constructor(
                     remoteTransport = true,
                     persistence = false,
                     resumption = true,
-                    tileMarkSupported = true
+                    tileMarkSupported = true,
+                    sleeveBloomSupported = true
                 )
                 completeLobby(0, ApiResponse(requestId = request.requestId, success = true, capabilities = caps))
             }
@@ -1364,6 +1365,8 @@ class UdpTableServer @JvmOverloads constructor(
             ApiTags.SUBMIT_CHOICE,
             ApiTags.SUBMIT_SHUFFLE_PLAN,
             ApiTags.SUBMIT_TILE_MARK,
+            ApiTags.SUBMIT_SLEEVE_BLOOM,
+            ApiTags.SUBMIT_SLEEVE_BLOOM_CHOICE,
             ApiTags.START_MATCH,
             ApiTags.NEXT_ROUND,
             ApiTags.RESUME_CURSOR,
@@ -1596,7 +1599,8 @@ class UdpTableServer @JvmOverloads constructor(
                     remoteTransport = true,
                     persistence = false,
                     resumption = true,
-                    tileMarkSupported = true
+                    tileMarkSupported = true,
+                    sleeveBloomSupported = true
                 )
                 replySession(ApiResponse(requestId = request.requestId, success = true, capabilities = caps))
             }
@@ -1643,6 +1647,22 @@ class UdpTableServer @JvmOverloads constructor(
                     return
                 }
                 respondReceipt(room.submitTileMark(session, mark))
+            }
+            ApiTags.SUBMIT_SLEEVE_BLOOM -> {
+                val bloom = request.sleeveBloom
+                if (bloom == null) {
+                    replySession(ApiResponse(requestId = request.requestId, success = false, error = ApiErrors.MALFORMED_REQUEST))
+                    return
+                }
+                respondReceipt(room.submitSleeveBloom(session, bloom))
+            }
+            ApiTags.SUBMIT_SLEEVE_BLOOM_CHOICE -> {
+                val choice = request.sleeveBloomChoice
+                if (choice == null) {
+                    replySession(ApiResponse(requestId = request.requestId, success = false, error = ApiErrors.MALFORMED_REQUEST))
+                    return
+                }
+                respondReceipt(room.submitSleeveBloomChoice(session, choice))
             }
             ApiTags.START_MATCH -> {
                 respondReceipt(room.startMatch(session))

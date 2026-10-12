@@ -1,0 +1,42 @@
+{
+  "taskId": "SB-E2",
+  "recipient": "codex",
+  "status": "ready_for_review",
+  "modifiedFiles": [
+    "protocol/src/main/kotlin/com/majiang/transport/api/ProtocolSleeveBloomModels.kt",
+    "protocol/src/main/kotlin/com/majiang/transport/api/ProtocolModels.kt",
+    "protocol/src/main/kotlin/com/majiang/transport/api/ApiMessage.kt",
+    "protocol/src/main/kotlin/com/majiang/server/api/SessionApi.kt",
+    "server/src/main/kotlin/com/majiang/server/mapping/EngineProtocolMapper.kt",
+    "server/src/main/kotlin/com/majiang/server/host/ServerTableHost.kt",
+    "server/src/main/kotlin/com/majiang/server/room/SharedRoom.kt",
+    "server/src/main/kotlin/com/majiang/server/inprocess/InProcessBinding.kt",
+    "server/src/main/kotlin/com/majiang/server/udp/UdpRoom.kt",
+    "server/src/main/kotlin/com/majiang/server/udp/UdpTableServer.kt",
+    "client/src/main/kotlin/com/majiang/client/api/SleeveBloomModels.kt",
+    "client/src/main/kotlin/com/majiang/client/api/ClientModels.kt",
+    "client/src/main/kotlin/com/majiang/client/api/ViewModels.kt",
+    "client/src/main/kotlin/com/majiang/client/mapping/ProtocolViewMapper.kt",
+    "client/src/main/kotlin/com/majiang/client/api/GameSession.kt",
+    "client/src/main/kotlin/com/majiang/client/session/ServerConnectionSession.kt",
+    "client/src/main/kotlin/com/majiang/client/transport/udp/UdpClientBinding.kt",
+    "doc/sleeve-bloom/PROGRESS-ANTI-E2.md",
+    "doc/sleeve-bloom/DELIVERY-ANTI-E2.md",
+    "doc/sleeve-bloom/CALLBACK-ANTI-E2.json"
+  ],
+  "tests": {
+    "total": 1096,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0,
+    "moduleBreakdown": {
+      "client": 136,
+      "engine": 407,
+      "presentation": 254,
+      "protocol": 158,
+      "server": 141
+    },
+    "sleeveBloomContractTests": 16
+  },
+  "remainingIssues": []
+}

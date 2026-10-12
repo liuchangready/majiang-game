@@ -1382,7 +1382,8 @@ class GameSnapshotView(
     val settlementDetail: SettlementDetailView? = null,
     val preparation: ShufflePreparationView? = null,
     val presentationPreview: PlayerPresentationPreviewView? = null,
-    val tileMark: TileMarkView? = null
+    val tileMark: TileMarkView? = null,
+    val sleeveBloom: SleeveBloomView? = null
 ) {
     val clocks: List<ClockInfo> = Collections.unmodifiableList(ArrayList(clocks))
     val cheatPoints: List<Int> = Collections.unmodifiableList(ArrayList(cheatPoints))
@@ -1459,6 +1460,25 @@ class GameSnapshotView(
                 }
             }
         }
+        if (sleeveBloom?.pendingOffer != null) {
+            val offer = sleeveBloom.pendingOffer
+            require(roundId != null) { "pendingOffer cannot be present when roundId is null" }
+            require(view.phase == GamePhaseView.CHEAT_WINDOW) {
+                "pendingOffer requires phase == CHEAT_WINDOW, got: ${view.phase}"
+            }
+            require(view.currentTurnPlayer == view.viewerSeat) {
+                "pendingOffer requires currentTurnPlayer (${view.currentTurnPlayer}) == viewerSeat (${view.viewerSeat})"
+            }
+            require(view.myDrawnTile != null && view.myDrawnTile.tileId == offer.firstTile.tileId) {
+                "pendingOffer firstTile (${offer.firstTile.tileId}) does not match myDrawnTile (${view.myDrawnTile?.tileId})"
+            }
+            require(offer.decisionId == decision.decisionId) {
+                "pendingOffer decisionId (${offer.decisionId}) does not match decision.decisionId (${decision.decisionId})"
+            }
+            require(offer.controlEpoch == decision.controlEpoch) {
+                "pendingOffer controlEpoch (${offer.controlEpoch}) does not match decision.controlEpoch (${decision.controlEpoch})"
+            }
+        }
     }
 
     fun copy(
@@ -1480,12 +1500,13 @@ class GameSnapshotView(
         settlementDetail: SettlementDetailView? = this.settlementDetail,
         preparation: ShufflePreparationView? = this.preparation,
         presentationPreview: PlayerPresentationPreviewView? = this.presentationPreview,
-        tileMark: TileMarkView? = this.tileMark
+        tileMark: TileMarkView? = this.tileMark,
+        sleeveBloom: SleeveBloomView? = this.sleeveBloom
     ): GameSnapshotView = GameSnapshotView(
         sessionId, roundId, syncEpoch, cursor, sessionVersion, roundVersion,
         view, decision, clocks, cheatPoints, session, controls, paused,
         settlementRoundId, settlementEvents, settlementDetail, preparation, presentationPreview,
-        tileMark
+        tileMark, sleeveBloom
     )
 
     fun deepCopy(): GameSnapshotView = copy(
@@ -1493,7 +1514,8 @@ class GameSnapshotView(
         cheatPoints = ArrayList(cheatPoints),
         controls = ArrayList(controls),
         settlementEvents = ArrayList(settlementEvents),
-        tileMark = tileMark?.deepCopy()
+        tileMark = tileMark?.deepCopy(),
+        sleeveBloom = sleeveBloom?.deepCopy()
     )
 
     override fun equals(other: Any?): Boolean = other is GameSnapshotView &&
@@ -1506,7 +1528,7 @@ class GameSnapshotView(
         paused == other.paused && settlementRoundId == other.settlementRoundId &&
         settlementEvents == other.settlementEvents && settlementDetail == other.settlementDetail &&
         preparation == other.preparation && presentationPreview == other.presentationPreview &&
-        tileMark == other.tileMark
+        tileMark == other.tileMark && sleeveBloom == other.sleeveBloom
 
     override fun hashCode(): Int {
         var r = sessionId.hashCode()
@@ -1528,11 +1550,12 @@ class GameSnapshotView(
         r = 31 * r + (preparation?.hashCode() ?: 0)
         r = 31 * r + (presentationPreview?.hashCode() ?: 0)
         r = 31 * r + (tileMark?.hashCode() ?: 0)
+        r = 31 * r + (sleeveBloom?.hashCode() ?: 0)
         return r
     }
 
     override fun toString(): String =
-        "GameSnapshotView(sessionId=$sessionId, roundId=$roundId, cursor=$cursor, sessionVersion=$sessionVersion, view=$view, decision=$decision, tileMark=$tileMark)"
+        "GameSnapshotView(sessionId=$sessionId, roundId=$roundId, cursor=$cursor, sessionVersion=$sessionVersion, view=$view, decision=$decision, tileMark=$tileMark, sleeveBloom=$sleeveBloom)"
 }
 
 /**

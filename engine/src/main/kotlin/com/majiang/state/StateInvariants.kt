@@ -50,6 +50,38 @@ object StateInvariants {
             require(entry.entryId.isNotBlank()) { "CheatLedgerEntry entryId cannot be blank" }
         }
 
+        // 1.2 杠计数不变量校验
+        require(state.totalKanCount in 0..4) {
+            "totalKanCount must be in 0..4, was ${state.totalKanCount}"
+        }
+        require(state.playerKanCounts.size == 4) {
+            "playerKanCounts size must be 4, was ${state.playerKanCounts.size}"
+        }
+        for (i in 0 until 4) {
+            require(state.playerKanCounts[i] in 0..4) {
+                "playerKanCounts[$i] must be in 0..4, was ${state.playerKanCounts[i]}"
+            }
+        }
+        require(state.playerKanCounts.sum() == state.totalKanCount) {
+            "playerKanCounts sum (${state.playerKanCounts.sum()}) must equal totalKanCount (${state.totalKanCount})"
+        }
+
+        // 1.3 袖里藏花挂起二选一校验
+        state.sleeveBloomOffer?.let { offer ->
+            require(offer.seat in 0..3) { "sleeveBloomOffer seat out of bounds: ${offer.seat}" }
+            require(offer.offerId.isNotBlank()) { "sleeveBloomOffer offerId cannot be blank" }
+            require(offer.seat == state.currentPlayer) {
+                "sleeveBloomOffer seat (${offer.seat}) must match currentPlayer (${state.currentPlayer})"
+            }
+            require(state.phase == GamePhase.CHEAT_WINDOW) {
+                "sleeveBloomOffer can only exist in CHEAT_WINDOW phase, was ${state.phase}"
+            }
+            val hand = state.players[offer.seat]
+            require(hand.drawnTile == offer.firstTile) {
+                "sleeveBloomOffer firstTile (${offer.firstTile}) must match player drawnTile (${hand.drawnTile})"
+            }
+        }
+
         // 2. 检查尚未开局时的全 UNASSIGNED 特殊状态
         val containersEmpty = state.wall.isEmpty() && state.deadWall.isEmpty() &&
                 state.deadWallReplacements.isEmpty() &&

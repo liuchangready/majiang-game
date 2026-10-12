@@ -1,0 +1,40 @@
+{
+  "taskId": "SB-E1FIX1",
+  "recipient": "codex",
+  "status": "ready_for_review",
+  "modifiedFiles": [
+    "engine/src/main/kotlin/com/majiang/cheat/bloom/SleeveBloomModels.kt",
+    "engine/src/main/kotlin/com/majiang/application/ApplicationCoordinator.kt",
+    "engine/src/main/kotlin/com/majiang/authority/TableAuthority.kt",
+    "engine/src/main/kotlin/com/majiang/match/MatchConfig.kt",
+    "engine/src/main/kotlin/com/majiang/state/GameState.kt",
+    "engine/src/main/kotlin/com/majiang/access/PlayerSnapshot.kt",
+    "engine/src/main/kotlin/com/majiang/state/ActionResult.kt",
+    "engine/src/main/kotlin/com/majiang/model/TileMovement.kt",
+    "engine/src/main/kotlin/com/majiang/state/LegalActionProvider.kt",
+    "engine/src/main/kotlin/com/majiang/round/RoundTransitionPlanner.kt",
+    "engine/src/main/kotlin/com/majiang/state/StateInvariants.kt",
+    "doc/sleeve-bloom/PROGRESS-ANTI-E1.md",
+    "doc/sleeve-bloom/DELIVERY-ANTI-E1.md",
+    "doc/sleeve-bloom/CALLBACK-ANTI-E1.json"
+  ],
+  "tests": {
+    "bloomSpecialized": {
+      "command": ".\\gradlew.bat :engine:test --tests 'com.majiang.cheat.bloom.*' --console=plain",
+      "exitCode": 0,
+      "tests": 30,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    "engineFull": {
+      "command": ".\\gradlew.bat :engine:test --console=plain",
+      "exitCode": 0,
+      "tests": 407,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    }
+  },
+  "remainingIssues": []
+}

@@ -81,7 +81,8 @@ data class PlayerSnapshot(
     val settlementEvents: List<GameEvent> = emptyList(),
     val preparation: ShufflePreparationView? = null,
     val presentationPreview: PlayerPresentationPreview? = null,
-    val tileMark: com.majiang.cheat.mark.TileMarkView? = null
+    val tileMark: com.majiang.cheat.mark.TileMarkView? = null,
+    val sleeveBloom: com.majiang.cheat.bloom.SleeveBloomView? = null
 ) {
     /** 观察者座位快捷属性，代理至 view.viewerSeat */
     val viewerSeat: Int get() = view.viewerSeat
@@ -133,6 +134,29 @@ data class PlayerSnapshot(
                 }
             }
         }
+        if (sleeveBloom != null) {
+            require(sleeveBloom.cost == 10) { "sleeveBloom cost must be 10, got: ${sleeveBloom.cost}" }
+            require(sleeveBloom.controlEpoch >= 0L) { "sleeveBloom controlEpoch must be >= 0: ${sleeveBloom.controlEpoch}" }
+            require(sleeveBloom.stateVersion >= 0L) { "sleeveBloom stateVersion must be >= 0: ${sleeveBloom.stateVersion}" }
+            val pendingOffer = sleeveBloom.pendingOffer
+            if (pendingOffer != null) {
+                require(view.phase == com.majiang.state.GamePhase.CHEAT_WINDOW) {
+                    "pendingOffer requires CHEAT_WINDOW phase, got: ${view.phase}"
+                }
+                require(view.currentTurnPlayer == view.viewerSeat) {
+                    "pendingOffer requires current turn player to be viewer, current: ${view.currentTurnPlayer}, viewer: ${view.viewerSeat}"
+                }
+                require(view.myDrawnTile != null && view.myDrawnTile.tileId == pendingOffer.firstTile.tileId) {
+                    "pendingOffer firstTile (${pendingOffer.firstTile}) must match view.myDrawnTile (${view.myDrawnTile})"
+                }
+                require(pendingOffer.decisionId == decision.decisionId) {
+                    "pendingOffer decisionId (${pendingOffer.decisionId}) must match decision.decisionId (${decision.decisionId})"
+                }
+                require(pendingOffer.controlEpoch == decision.controlEpoch) {
+                    "pendingOffer controlEpoch (${pendingOffer.controlEpoch}) must match decision.controlEpoch (${decision.controlEpoch})"
+                }
+            }
+        }
     }
 
     fun deepCopy(): PlayerSnapshot = PlayerSnapshot(
@@ -153,7 +177,8 @@ data class PlayerSnapshot(
         settlementEvents = Collections.unmodifiableList(settlementEvents.map { snapshotGameEvent(it) }),
         preparation = preparation?.deepCopy(),
         presentationPreview = presentationPreview?.deepCopy(),
-        tileMark = tileMark?.deepCopy()
+        tileMark = tileMark?.deepCopy(),
+        sleeveBloom = sleeveBloom?.deepCopy()
     )
 }
 

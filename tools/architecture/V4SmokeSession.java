@@ -73,7 +73,7 @@ public class V4SmokeSession implements GameSession {
             1L, 1L, view, decision, Collections.emptyList(),
             Arrays.asList(100, 100, 100, 100), progress, Collections.emptyList(), false,
             settlement != null ? "smoke-settlement-" + (++settlementCounter) : null,
-            events, settlement, null, preview, null);
+            events, settlement, null, preview, null, null);
         GameUpdateView update = new GameUpdateView(snapshot, prior, events, false);
         for (Function1<? super GameUpdateView, Unit> listener : new ArrayList<>(listeners)) listener.invoke(update);
     }

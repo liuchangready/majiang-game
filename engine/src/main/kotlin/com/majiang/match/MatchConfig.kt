@@ -49,7 +49,8 @@ data class MatchConfig @JvmOverloads constructor(
     val tieBreakSeats: List<Int> = listOf(0, 1, 2, 3),
     val cheatEconomy: CheatEconomyConfig = CheatEconomyConfig(),
     val shuffleConfig: ShuffleConfig = ShuffleConfig(),
-    val tileMarkConfig: com.majiang.cheat.mark.TileMarkConfig = com.majiang.cheat.mark.TileMarkConfig()
+    val tileMarkConfig: com.majiang.cheat.mark.TileMarkConfig = com.majiang.cheat.mark.TileMarkConfig(),
+    val sleeveBloomConfig: com.majiang.cheat.bloom.SleeveBloomConfig = com.majiang.cheat.bloom.SleeveBloomConfig()
 ) {
     /**
      * 校验当前配置是否被引擎支持
@@ -106,6 +107,14 @@ data class MatchConfig @JvmOverloads constructor(
             }
             require(cheatEconomy.costs["TILE_MARK"] == 10) {
                 "tileMarkConfig requires cheatEconomy.costs['TILE_MARK'] == 10, got: ${cheatEconomy.costs["TILE_MARK"]}"
+            }
+        }
+        if (sleeveBloomConfig.enabled) {
+            require(cheatEconomy.enabled) {
+                "sleeveBloomConfig requires cheatEconomy to be enabled"
+            }
+            require(cheatEconomy.costs["SLEEVE_BLOOM"] == 10) {
+                "sleeveBloomConfig requires cheatEconomy.costs['SLEEVE_BLOOM'] == 10, got: ${cheatEconomy.costs["SLEEVE_BLOOM"]}"
             }
         }
         return this

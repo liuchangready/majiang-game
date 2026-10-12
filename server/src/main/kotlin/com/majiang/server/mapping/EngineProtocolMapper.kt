@@ -48,6 +48,13 @@ import com.majiang.cheat.mark.TileMarkConfig
 import com.majiang.cheat.mark.TileMarkGroupView
 import com.majiang.cheat.mark.TileMarkRequest
 import com.majiang.cheat.mark.TileMarkView
+import com.majiang.cheat.bloom.SleeveBloomConfig
+import com.majiang.cheat.bloom.SleeveBloomDrawKind
+import com.majiang.cheat.bloom.SleeveBloomKeep
+import com.majiang.cheat.bloom.SleeveBloomOfferView
+import com.majiang.cheat.bloom.SleeveBloomRequest
+import com.majiang.cheat.bloom.SleeveBloomChoiceRequest
+import com.majiang.cheat.bloom.SleeveBloomView
 import com.majiang.timing.ReserveScope
 import com.majiang.timing.TimeControlConfig
 import com.majiang.transport.api.ProtocolAccessCapabilities
@@ -100,6 +107,13 @@ import com.majiang.transport.api.ProtocolTileMarkGroupView
 import com.majiang.transport.api.ProtocolTileMarkRequest
 import com.majiang.transport.api.ProtocolTileMarkView
 import com.majiang.transport.api.ProtocolTimeControlConfig
+import com.majiang.transport.api.ProtocolSleeveBloomConfig
+import com.majiang.transport.api.ProtocolSleeveBloomDrawKind
+import com.majiang.transport.api.ProtocolSleeveBloomKeep
+import com.majiang.transport.api.ProtocolSleeveBloomOfferView
+import com.majiang.transport.api.ProtocolSleeveBloomRequest
+import com.majiang.transport.api.ProtocolSleeveBloomChoiceRequest
+import com.majiang.transport.api.ProtocolSleeveBloomView
 import java.util.Collections
 import java.util.LinkedHashMap
 import java.util.LinkedHashSet
@@ -415,7 +429,8 @@ object EngineProtocolMapper {
         remoteTransport = caps.remoteTransport,
         persistence = caps.persistence,
         resumption = caps.resumption,
-        tileMarkSupported = true
+        tileMarkSupported = true,
+        sleeveBloomSupported = true
     )
 
     // === ClockView / SeatControlView ===
@@ -536,6 +551,14 @@ object EngineProtocolMapper {
     fun toEngineTileMarkConfig(config: ProtocolTileMarkConfig?): TileMarkConfig =
         if (config == null) TileMarkConfig() else TileMarkConfig(enabled = config.enabled)
 
+    // === SleeveBloomConfig ===
+
+    fun toProtocolSleeveBloomConfig(config: SleeveBloomConfig): ProtocolSleeveBloomConfig =
+        ProtocolSleeveBloomConfig(enabled = config.enabled)
+
+    fun toEngineSleeveBloomConfig(config: ProtocolSleeveBloomConfig?): SleeveBloomConfig =
+        if (config == null) SleeveBloomConfig() else SleeveBloomConfig(enabled = config.enabled)
+
     fun toProtocolConfig(config: MatchConfig): ProtocolMatchConfig = ProtocolMatchConfig(
         playerCount = config.playerCount,
         handsPerWind = config.handsPerWind,
@@ -550,7 +573,8 @@ object EngineProtocolMapper {
         tieBreakSeats = Collections.unmodifiableList(config.tieBreakSeats.toList()),
         cheatEconomy = toProtocolCheatEconomyConfig(config.cheatEconomy),
         shuffleConfig = toProtocolShuffleConfig(config.shuffleConfig),
-        tileMarkConfig = toProtocolTileMarkConfig(config.tileMarkConfig)
+        tileMarkConfig = toProtocolTileMarkConfig(config.tileMarkConfig),
+        sleeveBloomConfig = toProtocolSleeveBloomConfig(config.sleeveBloomConfig)
     )
 
     fun toEngineConfig(config: ProtocolMatchConfig?): MatchConfig {
@@ -569,7 +593,8 @@ object EngineProtocolMapper {
             tieBreakSeats = Collections.unmodifiableList(config.tieBreakSeats.toList()),
             cheatEconomy = toEngineCheatEconomyConfig(config.cheatEconomy),
             shuffleConfig = toEngineShuffleConfig(config.shuffleConfig),
-            tileMarkConfig = toEngineTileMarkConfig(config.tileMarkConfig)
+            tileMarkConfig = toEngineTileMarkConfig(config.tileMarkConfig),
+            sleeveBloomConfig = toEngineSleeveBloomConfig(config.sleeveBloomConfig)
         )
     }
 
@@ -998,6 +1023,108 @@ object EngineProtocolMapper {
         activeGroups = Collections.unmodifiableList(proto.activeGroups.map { toEngineTileMarkGroup(it) })
     )
 
+    // === SleeveBloom ===
+
+    fun toProtocolSleeveBloomDrawKind(kind: SleeveBloomDrawKind): ProtocolSleeveBloomDrawKind = when (kind) {
+        SleeveBloomDrawKind.DEAL_EXTRA -> ProtocolSleeveBloomDrawKind.DEAL_EXTRA
+        SleeveBloomDrawKind.NORMAL -> ProtocolSleeveBloomDrawKind.NORMAL
+        SleeveBloomDrawKind.RINSHAN -> ProtocolSleeveBloomDrawKind.RINSHAN
+    }
+
+    fun toEngineSleeveBloomDrawKind(kind: ProtocolSleeveBloomDrawKind): SleeveBloomDrawKind = when (kind) {
+        ProtocolSleeveBloomDrawKind.DEAL_EXTRA -> SleeveBloomDrawKind.DEAL_EXTRA
+        ProtocolSleeveBloomDrawKind.NORMAL -> SleeveBloomDrawKind.NORMAL
+        ProtocolSleeveBloomDrawKind.RINSHAN -> SleeveBloomDrawKind.RINSHAN
+    }
+
+    fun toProtocolSleeveBloomKeep(keep: SleeveBloomKeep): ProtocolSleeveBloomKeep = when (keep) {
+        SleeveBloomKeep.FIRST -> ProtocolSleeveBloomKeep.FIRST
+        SleeveBloomKeep.SECOND -> ProtocolSleeveBloomKeep.SECOND
+    }
+
+    fun toEngineSleeveBloomKeep(keep: ProtocolSleeveBloomKeep): SleeveBloomKeep = when (keep) {
+        ProtocolSleeveBloomKeep.FIRST -> SleeveBloomKeep.FIRST
+        ProtocolSleeveBloomKeep.SECOND -> SleeveBloomKeep.SECOND
+    }
+
+    fun toEngineSleeveBloomRequest(request: ProtocolSleeveBloomRequest): SleeveBloomRequest = SleeveBloomRequest(
+        requestId = request.requestId,
+        sessionId = request.sessionId,
+        roundId = request.roundId,
+        decisionId = request.decisionId,
+        controlEpoch = request.controlEpoch
+    )
+
+    fun toProtocolSleeveBloomRequest(request: SleeveBloomRequest): ProtocolSleeveBloomRequest = ProtocolSleeveBloomRequest(
+        requestId = request.requestId,
+        sessionId = request.sessionId,
+        roundId = request.roundId,
+        decisionId = request.decisionId,
+        controlEpoch = request.controlEpoch
+    )
+
+    fun toEngineSleeveBloomChoiceRequest(request: ProtocolSleeveBloomChoiceRequest): SleeveBloomChoiceRequest = SleeveBloomChoiceRequest(
+        requestId = request.requestId,
+        sessionId = request.sessionId,
+        roundId = request.roundId,
+        decisionId = request.decisionId,
+        controlEpoch = request.controlEpoch,
+        offerId = request.offerId,
+        keep = toEngineSleeveBloomKeep(request.keep)
+    )
+
+    fun toProtocolSleeveBloomChoiceRequest(request: SleeveBloomChoiceRequest): ProtocolSleeveBloomChoiceRequest = ProtocolSleeveBloomChoiceRequest(
+        requestId = request.requestId,
+        sessionId = request.sessionId,
+        roundId = request.roundId,
+        decisionId = request.decisionId,
+        controlEpoch = request.controlEpoch,
+        offerId = request.offerId,
+        keep = toProtocolSleeveBloomKeep(request.keep)
+    )
+
+    fun toProtocolSleeveBloomOfferView(view: SleeveBloomOfferView): ProtocolSleeveBloomOfferView = ProtocolSleeveBloomOfferView(
+        offerId = view.offerId,
+        firstTile = toProtocolTile(view.firstTile),
+        secondTile = toProtocolTile(view.secondTile),
+        drawKind = toProtocolSleeveBloomDrawKind(view.drawKind),
+        deadlineMillis = view.deadlineMillis,
+        decisionId = view.decisionId,
+        controlEpoch = view.controlEpoch
+    )
+
+    fun toEngineSleeveBloomOfferView(proto: ProtocolSleeveBloomOfferView): SleeveBloomOfferView = SleeveBloomOfferView(
+        offerId = proto.offerId,
+        firstTile = toEngineTile(proto.firstTile),
+        secondTile = toEngineTile(proto.secondTile),
+        drawKind = toEngineSleeveBloomDrawKind(proto.drawKind),
+        deadlineMillis = proto.deadlineMillis,
+        decisionId = proto.decisionId,
+        controlEpoch = proto.controlEpoch
+    )
+
+    fun toProtocolSleeveBloomView(view: SleeveBloomView): ProtocolSleeveBloomView = ProtocolSleeveBloomView(
+        canApply = view.canApply,
+        disabledReason = view.disabledReason,
+        cost = view.cost,
+        drawKind = view.drawKind?.let { toProtocolSleeveBloomDrawKind(it) },
+        decisionId = view.decisionId,
+        controlEpoch = view.controlEpoch,
+        stateVersion = view.stateVersion,
+        pendingOffer = view.pendingOffer?.let { toProtocolSleeveBloomOfferView(it) }
+    )
+
+    fun toEngineSleeveBloomView(proto: ProtocolSleeveBloomView): SleeveBloomView = SleeveBloomView(
+        canApply = proto.canApply,
+        disabledReason = proto.disabledReason,
+        cost = proto.cost,
+        drawKind = proto.drawKind?.let { toEngineSleeveBloomDrawKind(it) },
+        decisionId = proto.decisionId,
+        controlEpoch = proto.controlEpoch,
+        stateVersion = proto.stateVersion,
+        pendingOffer = proto.pendingOffer?.let { toEngineSleeveBloomOfferView(it) }
+    )
+
     // === PlayerSnapshot ===
 
     fun toProtocolSnapshot(snap: PlayerSnapshot): ProtocolPlayerSnapshot = ProtocolPlayerSnapshot(
@@ -1018,7 +1145,8 @@ object EngineProtocolMapper {
         settlementEvents = toProtocolEvents(snap.settlementEvents),
         preparation = snap.preparation?.let { toProtocolShufflePreparation(it) },
         presentationPreview = snap.presentationPreview?.let { toProtocolPresentationPreview(it) },
-        tileMark = snap.tileMark?.let { toProtocolTileMarkView(it) }
+        tileMark = snap.tileMark?.let { toProtocolTileMarkView(it) },
+        sleeveBloom = snap.sleeveBloom?.let { toProtocolSleeveBloomView(it) }
     )
 
     // === PlayerUpdate ===

@@ -73,7 +73,7 @@ public final class TileMarkVisibilitySmoke extends ApplicationAdapter {
         TileMarkView mark = which == 6 ? null : new TileMarkView(false,"TILE_MARK_CAPACITY_EXCEEDED",10,12,12,List.of(),"visual-decision",0,1,groups);
         var snapshot = new GameSnapshotView("visual-session","visual-round","visual-epoch",which+1,
             1L,1L,builder.build(),new DecisionView("visual-round","visual-decision",0,List.of(),List.of()),
-            List.of(),List.of(70,100,100,100),null,List.of(),false,null,List.of(),null,null,null,mark);
+            List.of(),List.of(70,100,100,100),null,List.of(),false,null,List.of(),null,null,null,mark,null);
         session.publishSnapshot(snapshot,List.of());
     }
     private void capture(String name) {

@@ -87,6 +87,24 @@ interface GameSession : AutoCloseable {
         CompletableFuture.failedFuture(UnsupportedOperationException("submitTileMark is not supported"))
 
     /**
+     * 提交袖里藏花千术激活请求
+     *
+     * @param request 客户端激活请求
+     * @return 操作回执
+     */
+    fun submitSleeveBloom(request: SleeveBloomRequest): CompletableFuture<Receipt> =
+        CompletableFuture.failedFuture(UnsupportedOperationException("submitSleeveBloom is not supported"))
+
+    /**
+     * 提交袖里藏花二选一决策请求
+     *
+     * @param request 客户端选择请求
+     * @return 操作回执
+     */
+    fun submitSleeveBloomChoice(request: SleeveBloomChoiceRequest): CompletableFuture<Receipt> =
+        CompletableFuture.failedFuture(UnsupportedOperationException("submitSleeveBloomChoice is not supported"))
+
+    /**
      * 开始比赛（房主席位专属）
      */
     fun start(): CompletableFuture<Receipt>

@@ -23,6 +23,8 @@ import com.majiang.transport.api.ProtocolRoomInfo
 import com.majiang.transport.api.ProtocolRoomLifecycle
 import com.majiang.transport.api.ProtocolShufflePlan
 import com.majiang.transport.api.ProtocolTileMarkRequest
+import com.majiang.transport.api.ProtocolSleeveBloomRequest
+import com.majiang.transport.api.ProtocolSleeveBloomChoiceRequest
 import com.majiang.transport.udp.ResendResponse
 import com.majiang.transport.udp.UdpClock
 import java.net.SocketAddress
@@ -871,6 +873,26 @@ class UdpRoom(
             )
         val engineRequest = EngineProtocolMapper.toEngineTileMarkRequest(request)
         return sharedRoom.submitTileMark(session.seat, engineRequest, sessionValidator(session))
+            .thenApply { EngineProtocolMapper.toProtocolReceipt(it) }
+    }
+
+    fun submitSleeveBloom(session: UdpClientSession, request: ProtocolSleeveBloomRequest): CompletableFuture<ProtocolActionReceipt> {
+        commandTarget(session)
+            ?: return CompletableFuture.completedFuture(
+                ProtocolActionReceipt(request.requestId, ProtocolReceiptStatus.REJECTED, reason = "STALE_SESSION")
+            )
+        val engineRequest = EngineProtocolMapper.toEngineSleeveBloomRequest(request)
+        return sharedRoom.submitSleeveBloom(session.seat, engineRequest, sessionValidator(session))
+            .thenApply { EngineProtocolMapper.toProtocolReceipt(it) }
+    }
+
+    fun submitSleeveBloomChoice(session: UdpClientSession, request: ProtocolSleeveBloomChoiceRequest): CompletableFuture<ProtocolActionReceipt> {
+        commandTarget(session)
+            ?: return CompletableFuture.completedFuture(
+                ProtocolActionReceipt(request.requestId, ProtocolReceiptStatus.REJECTED, reason = "STALE_SESSION")
+            )
+        val engineRequest = EngineProtocolMapper.toEngineSleeveBloomChoiceRequest(request)
+        return sharedRoom.submitSleeveBloomChoice(session.seat, engineRequest, sessionValidator(session))
             .thenApply { EngineProtocolMapper.toProtocolReceipt(it) }
     }
 

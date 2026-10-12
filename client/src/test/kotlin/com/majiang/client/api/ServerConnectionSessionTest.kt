@@ -116,6 +116,10 @@ class ServerConnectionSessionTest {
         var customSubmitShuffleFuture: CompletableFuture<ProtocolActionReceipt>? = null
         var customSubmitMarkFuture: CompletableFuture<ProtocolActionReceipt>? = null
         var lastSubmittedMark: com.majiang.transport.api.ProtocolTileMarkRequest? = null
+        var customSubmitBloomFuture: CompletableFuture<ProtocolActionReceipt>? = null
+        var customSubmitBloomChoiceFuture: CompletableFuture<ProtocolActionReceipt>? = null
+        var lastSubmittedBloom: com.majiang.transport.api.ProtocolSleeveBloomRequest? = null
+        var lastSubmittedBloomChoice: com.majiang.transport.api.ProtocolSleeveBloomChoiceRequest? = null
         var customSnapshotFuture: CompletableFuture<ProtocolPlayerSnapshot>? = null
         var lastResumeCursorRequested: Long? = null
         val resumeCursorRequests = mutableListOf<Long>()
@@ -240,6 +244,20 @@ class ServerConnectionSessionTest {
             lastSubmittedMark = request
             return customSubmitMarkFuture ?: CompletableFuture.completedFuture(
                 ProtocolActionReceipt(request.requestId, ProtocolReceiptStatus.APPLIED, cursor = 11L))
+        }
+
+        override fun submitSleeveBloom(request: com.majiang.transport.api.ProtocolSleeveBloomRequest): CompletableFuture<ProtocolActionReceipt> {
+            check(synchronousFailure != "submitSleeveBloom") { "submitSleeveBloom failed synchronously" }
+            lastSubmittedBloom = request
+            return customSubmitBloomFuture ?: CompletableFuture.completedFuture(
+                ProtocolActionReceipt(request.requestId, ProtocolReceiptStatus.APPLIED, cursor = 11L))
+        }
+
+        override fun submitSleeveBloomChoice(request: com.majiang.transport.api.ProtocolSleeveBloomChoiceRequest): CompletableFuture<ProtocolActionReceipt> {
+            check(synchronousFailure != "submitSleeveBloomChoice") { "submitSleeveBloomChoice failed synchronously" }
+            lastSubmittedBloomChoice = request
+            return customSubmitBloomChoiceFuture ?: CompletableFuture.completedFuture(
+                ProtocolActionReceipt(request.requestId, ProtocolReceiptStatus.APPLIED, cursor = 12L))
         }
 
         override fun start(): CompletableFuture<ProtocolActionReceipt> {

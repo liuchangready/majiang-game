@@ -47,6 +47,8 @@ object ApiTags {
     const val SUBMIT_CHOICE = "SUBMIT_CHOICE"
     const val SUBMIT_SHUFFLE_PLAN = "SUBMIT_SHUFFLE_PLAN"
     const val SUBMIT_TILE_MARK = "SUBMIT_TILE_MARK"
+    const val SUBMIT_SLEEVE_BLOOM = "SUBMIT_SLEEVE_BLOOM"
+    const val SUBMIT_SLEEVE_BLOOM_CHOICE = "SUBMIT_SLEEVE_BLOOM_CHOICE"
     const val START_MATCH = "START_MATCH"
     const val NEXT_ROUND = "NEXT_ROUND"
     const val RESUME_CURSOR = "RESUME_CURSOR"
@@ -66,6 +68,7 @@ object ApiTags {
         CREATE_ROOM, JOIN_ROOM, LIST_ROOMS, RESUME_SESSION, LEAVE_ROOM,
         GET_ROOM_INFO, SET_READY, UPDATE_CONFIG,
         CAPABILITIES, SNAPSHOT, DECISION, SUBMIT_CHOICE, SUBMIT_SHUFFLE_PLAN, SUBMIT_TILE_MARK,
+        SUBMIT_SLEEVE_BLOOM, SUBMIT_SLEEVE_BLOOM_CHOICE,
         START_MATCH, NEXT_ROUND, RESUME_CURSOR, CLAIM_CONTROL, RELEASE_CONTROL,
         QUERY_ROUND_RESULT,
         JOIN_SPECTATOR, RESUME_SPECTATOR, PUBLIC_SNAPSHOT, RESUME_PUBLIC, QUERY_PUBLIC_ROUND_RESULT
@@ -93,7 +96,9 @@ data class ApiRequest(
     val spectatorId: String? = null,
     val spectatorName: String? = null,
     val publicCheckpoint: PublicCheckpoint? = null,
-    val tileMark: ProtocolTileMarkRequest? = null
+    val tileMark: ProtocolTileMarkRequest? = null,
+    val sleeveBloom: ProtocolSleeveBloomRequest? = null,
+    val sleeveBloomChoice: ProtocolSleeveBloomChoiceRequest? = null
 ) {
     init {
         require(api.isNotBlank()) { "api cannot be blank" }
@@ -953,7 +958,8 @@ private class ProtocolMatchConfigAdapter : JsonDeserializer<ProtocolMatchConfig>
             setOf(
                 "playerCount", "handsPerWind", "winds", "startingScores", "allowExtension",
                 "allowAgariYame", "bankruptcyEnabled", "bankruptcyThreshold", "bankruptcyInclusive",
-                "targetScore", "tieBreakSeats", "cheatEconomy", "shuffleConfig", "tileMarkConfig"
+                "targetScore", "tieBreakSeats", "cheatEconomy", "shuffleConfig", "tileMarkConfig",
+                "sleeveBloomConfig"
             ),
             "ProtocolMatchConfig"
         )
@@ -999,6 +1005,9 @@ private class ProtocolMatchConfigAdapter : JsonDeserializer<ProtocolMatchConfig>
         val tileMarkConfig: ProtocolTileMarkConfig = if (obj.has("tileMarkConfig") && !obj.get("tileMarkConfig").isJsonNull) {
             context.deserialize(obj.get("tileMarkConfig"), ProtocolTileMarkConfig::class.java)
         } else ProtocolTileMarkConfig()
+        val sleeveBloomConfig: ProtocolSleeveBloomConfig = if (obj.has("sleeveBloomConfig") && !obj.get("sleeveBloomConfig").isJsonNull) {
+            context.deserialize(obj.get("sleeveBloomConfig"), ProtocolSleeveBloomConfig::class.java)
+        } else ProtocolSleeveBloomConfig()
 
         return try {
             ProtocolMatchConfig(
@@ -1015,7 +1024,8 @@ private class ProtocolMatchConfigAdapter : JsonDeserializer<ProtocolMatchConfig>
                 tieBreakSeats = tieBreakSeats,
                 cheatEconomy = cheatEconomy,
                 shuffleConfig = shuffleConfig,
-                tileMarkConfig = tileMarkConfig
+                tileMarkConfig = tileMarkConfig,
+                sleeveBloomConfig = sleeveBloomConfig
             )
         } catch (e: IllegalArgumentException) {
             throw JsonParseException(e.message, e)
@@ -1486,7 +1496,7 @@ private class ProtocolAccessCapabilitiesAdapter : JsonDeserializer<ProtocolAcces
     override fun deserialize(json: JsonElement, typeOfT: Type, context: JsonDeserializationContext): ProtocolAccessCapabilities {
         if (!json.isJsonObject) throw JsonParseException("ProtocolAccessCapabilities must be a JSON object")
         val obj = json.asJsonObject
-        checkUnknownFields(obj, setOf("protocolVersion", "supportedPlayerCounts", "remoteTransport", "persistence", "resumption", "tileMarkSupported"), "ProtocolAccessCapabilities")
+        checkUnknownFields(obj, setOf("protocolVersion", "supportedPlayerCounts", "remoteTransport", "persistence", "resumption", "tileMarkSupported", "sleeveBloomSupported"), "ProtocolAccessCapabilities")
         val pv = if (obj.has("protocolVersion") && !obj.get("protocolVersion").isJsonNull) {
             val v = validateStrictInt(obj.get("protocolVersion"), "ProtocolAccessCapabilities.protocolVersion")
             if (v < 1) throw JsonParseException("protocolVersion must be >= 1: $v")
@@ -1509,7 +1519,10 @@ private class ProtocolAccessCapabilitiesAdapter : JsonDeserializer<ProtocolAcces
         val tileMarkSupported = if (obj.has("tileMarkSupported") && !obj.get("tileMarkSupported").isJsonNull) {
             validateStrictBoolean(obj.get("tileMarkSupported"), "ProtocolAccessCapabilities.tileMarkSupported")
         } else false
-        return ProtocolAccessCapabilities(pv, counts, remote, persist, resume, tileMarkSupported)
+        val sleeveBloomSupported = if (obj.has("sleeveBloomSupported") && !obj.get("sleeveBloomSupported").isJsonNull) {
+            validateStrictBoolean(obj.get("sleeveBloomSupported"), "ProtocolAccessCapabilities.sleeveBloomSupported")
+        } else false
+        return ProtocolAccessCapabilities(pv, counts, remote, persist, resume, tileMarkSupported, sleeveBloomSupported)
     }
 }
 
@@ -1693,7 +1706,7 @@ private class ApiRequestAdapter : JsonDeserializer<ApiRequest> {
         val obj = json.asJsonObject
         checkUnknownFields(
             obj,
-            setOf("api", "requestId", "roomId", "token", "playerName", "preferSeat", "config", "choice", "shufflePlan", "cursor", "roundId", "protocolVersion", "ready", "roomConfig", "spectatorId", "spectatorName", "publicCheckpoint", "tileMark"),
+            setOf("api", "requestId", "roomId", "token", "playerName", "preferSeat", "config", "choice", "shufflePlan", "cursor", "roundId", "protocolVersion", "ready", "roomConfig", "spectatorId", "spectatorName", "publicCheckpoint", "tileMark", "sleeveBloom", "sleeveBloomChoice"),
             "ApiRequest"
         )
         val api = validateStrictString(obj.get("api") ?: throw JsonParseException("missing or blank api"), "api")
@@ -1721,6 +1734,12 @@ private class ApiRequestAdapter : JsonDeserializer<ApiRequest> {
             }
             if (obj.has("tileMark")) {
                 throw JsonParseException("Spectator request cannot contain player authority field 'tileMark'")
+            }
+            if (obj.has("sleeveBloom")) {
+                throw JsonParseException("Spectator request cannot contain player authority field 'sleeveBloom'")
+            }
+            if (obj.has("sleeveBloomChoice")) {
+                throw JsonParseException("Spectator request cannot contain player authority field 'sleeveBloomChoice'")
             }
             when (api) {
                 ApiTags.JOIN_SPECTATOR -> {
@@ -1818,6 +1837,12 @@ private class ApiRequestAdapter : JsonDeserializer<ApiRequest> {
         val tileMark = if (obj.has("tileMark") && !obj.get("tileMark").isJsonNull) {
             context.deserialize<ProtocolTileMarkRequest>(obj.get("tileMark"), ProtocolTileMarkRequest::class.java)
         } else null
+        val sleeveBloom = if (obj.has("sleeveBloom") && !obj.get("sleeveBloom").isJsonNull) {
+            context.deserialize<ProtocolSleeveBloomRequest>(obj.get("sleeveBloom"), ProtocolSleeveBloomRequest::class.java)
+        } else null
+        val sleeveBloomChoice = if (obj.has("sleeveBloomChoice") && !obj.get("sleeveBloomChoice").isJsonNull) {
+            context.deserialize<ProtocolSleeveBloomChoiceRequest>(obj.get("sleeveBloomChoice"), ProtocolSleeveBloomChoiceRequest::class.java)
+        } else null
 
         if (api == ApiTags.SUBMIT_TILE_MARK) {
             if (tileMark == null) {
@@ -1832,13 +1857,69 @@ private class ApiRequestAdapter : JsonDeserializer<ApiRequest> {
             if (shufflePlan != null || obj.has("shufflePlan")) {
                 throw JsonParseException("SUBMIT_TILE_MARK cannot contain shufflePlan payload")
             }
+            if (sleeveBloom != null || obj.has("sleeveBloom")) {
+                throw JsonParseException("SUBMIT_TILE_MARK cannot contain sleeveBloom payload")
+            }
+            if (sleeveBloomChoice != null || obj.has("sleeveBloomChoice")) {
+                throw JsonParseException("SUBMIT_TILE_MARK cannot contain sleeveBloomChoice payload")
+            }
         } else {
             if (tileMark != null || obj.has("tileMark")) {
                 throw JsonParseException("tileMark payload is only allowed for SUBMIT_TILE_MARK")
             }
         }
 
-        return ApiRequest(api, requestId, roomId, token, playerName, preferSeat, config, choice, shufflePlan, cursor, roundId, protocolVersion, ready, roomConfig, spectatorId, spectatorName, publicCheckpoint, tileMark)
+        if (api == ApiTags.SUBMIT_SLEEVE_BLOOM) {
+            if (sleeveBloom == null) {
+                throw JsonParseException("Missing sleeveBloom payload in SUBMIT_SLEEVE_BLOOM request")
+            }
+            if (sleeveBloom.requestId != requestId) {
+                throw JsonParseException("requestId mismatch between envelope ($requestId) and sleeveBloom (${sleeveBloom.requestId})")
+            }
+            if (choice != null || obj.has("choice")) {
+                throw JsonParseException("SUBMIT_SLEEVE_BLOOM cannot contain choice payload")
+            }
+            if (shufflePlan != null || obj.has("shufflePlan")) {
+                throw JsonParseException("SUBMIT_SLEEVE_BLOOM cannot contain shufflePlan payload")
+            }
+            if (tileMark != null || obj.has("tileMark")) {
+                throw JsonParseException("SUBMIT_SLEEVE_BLOOM cannot contain tileMark payload")
+            }
+            if (sleeveBloomChoice != null || obj.has("sleeveBloomChoice")) {
+                throw JsonParseException("SUBMIT_SLEEVE_BLOOM cannot contain sleeveBloomChoice payload")
+            }
+        } else {
+            if (sleeveBloom != null || obj.has("sleeveBloom")) {
+                throw JsonParseException("sleeveBloom payload is only allowed for SUBMIT_SLEEVE_BLOOM")
+            }
+        }
+
+        if (api == ApiTags.SUBMIT_SLEEVE_BLOOM_CHOICE) {
+            if (sleeveBloomChoice == null) {
+                throw JsonParseException("Missing sleeveBloomChoice payload in SUBMIT_SLEEVE_BLOOM_CHOICE request")
+            }
+            if (sleeveBloomChoice.requestId != requestId) {
+                throw JsonParseException("requestId mismatch between envelope ($requestId) and sleeveBloomChoice (${sleeveBloomChoice.requestId})")
+            }
+            if (choice != null || obj.has("choice")) {
+                throw JsonParseException("SUBMIT_SLEEVE_BLOOM_CHOICE cannot contain choice payload")
+            }
+            if (shufflePlan != null || obj.has("shufflePlan")) {
+                throw JsonParseException("SUBMIT_SLEEVE_BLOOM_CHOICE cannot contain shufflePlan payload")
+            }
+            if (tileMark != null || obj.has("tileMark")) {
+                throw JsonParseException("SUBMIT_SLEEVE_BLOOM_CHOICE cannot contain tileMark payload")
+            }
+            if (sleeveBloom != null || obj.has("sleeveBloom")) {
+                throw JsonParseException("SUBMIT_SLEEVE_BLOOM_CHOICE cannot contain sleeveBloom payload")
+            }
+        } else {
+            if (sleeveBloomChoice != null || obj.has("sleeveBloomChoice")) {
+                throw JsonParseException("sleeveBloomChoice payload is only allowed for SUBMIT_SLEEVE_BLOOM_CHOICE")
+            }
+        }
+
+        return ApiRequest(api, requestId, roomId, token, playerName, preferSeat, config, choice, shufflePlan, cursor, roundId, protocolVersion, ready, roomConfig, spectatorId, spectatorName, publicCheckpoint, tileMark, sleeveBloom, sleeveBloomChoice)
     }
 }
 
@@ -2209,7 +2290,7 @@ private class ProtocolPlayerSnapshotAdapter : JsonDeserializer<ProtocolPlayerSna
                 "sessionId", "roundId", "syncEpoch", "cursor", "sessionVersion", "roundVersion",
                 "view", "decision", "clocks", "cheatPoints", "session", "controls",
                 "paused", "settlementRoundId", "settlementEvents", "preparation", "presentationPreview",
-                "tileMark"
+                "tileMark", "sleeveBloom"
             ),
             "ProtocolPlayerSnapshot"
         )
@@ -2347,6 +2428,10 @@ private class ProtocolPlayerSnapshotAdapter : JsonDeserializer<ProtocolPlayerSna
             }
         }
 
+        val sleeveBloom: ProtocolSleeveBloomView? = if (obj.has("sleeveBloom") && !obj.get("sleeveBloom").isJsonNull) {
+            context.deserialize(obj.get("sleeveBloom"), ProtocolSleeveBloomView::class.java)
+        } else null
+
         return try {
             ProtocolPlayerSnapshot(
                 sessionId = sessionId,
@@ -2366,7 +2451,8 @@ private class ProtocolPlayerSnapshotAdapter : JsonDeserializer<ProtocolPlayerSna
                 settlementEvents = settlementEvents,
                 preparation = preparation,
                 presentationPreview = presentationPreview,
-                tileMark = tileMark
+                tileMark = tileMark,
+                sleeveBloom = sleeveBloom
             )
         } catch (e: IllegalArgumentException) {
             throw JsonParseException(e.message, e)
@@ -3623,6 +3709,229 @@ private class ProtocolTileMarkViewAdapter : JsonSerializer<ProtocolTileMarkView>
 }
 
 /**
+ * ProtocolSleeveBloomConfig TypeAdapter
+ */
+private class ProtocolSleeveBloomConfigAdapter : JsonSerializer<ProtocolSleeveBloomConfig>, JsonDeserializer<ProtocolSleeveBloomConfig> {
+    override fun serialize(src: ProtocolSleeveBloomConfig, typeOfSrc: Type, context: JsonSerializationContext): JsonElement {
+        val obj = JsonObject()
+        obj.addProperty("enabled", src.enabled)
+        return obj
+    }
+
+    override fun deserialize(json: JsonElement, typeOfT: Type, context: JsonDeserializationContext): ProtocolSleeveBloomConfig {
+        if (!json.isJsonObject) throw JsonParseException("ProtocolSleeveBloomConfig must be a JSON object: $json")
+        val obj = json.asJsonObject
+        checkUnknownFields(obj, setOf("enabled"), "ProtocolSleeveBloomConfig")
+        val enabled = if (obj.has("enabled") && !obj.get("enabled").isJsonNull) {
+            validateStrictBoolean(obj.get("enabled"), "ProtocolSleeveBloomConfig.enabled")
+        } else false
+        return ProtocolSleeveBloomConfig(enabled)
+    }
+}
+
+/**
+ * ProtocolSleeveBloomRequest TypeAdapter
+ */
+private class ProtocolSleeveBloomRequestAdapter : JsonSerializer<ProtocolSleeveBloomRequest>, JsonDeserializer<ProtocolSleeveBloomRequest> {
+    override fun serialize(src: ProtocolSleeveBloomRequest, typeOfSrc: Type, context: JsonSerializationContext): JsonElement {
+        val obj = JsonObject()
+        obj.addProperty("requestId", src.requestId)
+        obj.addProperty("sessionId", src.sessionId)
+        obj.addProperty("roundId", src.roundId)
+        obj.addProperty("decisionId", src.decisionId)
+        obj.addProperty("controlEpoch", src.controlEpoch)
+        return obj
+    }
+
+    override fun deserialize(json: JsonElement, typeOfT: Type, context: JsonDeserializationContext): ProtocolSleeveBloomRequest {
+        if (!json.isJsonObject) throw JsonParseException("ProtocolSleeveBloomRequest must be a JSON object: $json")
+        val obj = json.asJsonObject
+        checkUnknownFields(
+            obj,
+            setOf("requestId", "sessionId", "roundId", "decisionId", "controlEpoch"),
+            "ProtocolSleeveBloomRequest"
+        )
+        val requestId = validateStrictString(obj.get("requestId") ?: throw JsonParseException("Missing requestId in ProtocolSleeveBloomRequest"), "requestId")
+        if (requestId.isBlank()) throw JsonParseException("requestId cannot be blank")
+        val sessionId = validateStrictString(obj.get("sessionId") ?: throw JsonParseException("Missing sessionId in ProtocolSleeveBloomRequest"), "sessionId")
+        if (sessionId.isBlank()) throw JsonParseException("sessionId cannot be blank")
+        val roundId = validateStrictString(obj.get("roundId") ?: throw JsonParseException("Missing roundId in ProtocolSleeveBloomRequest"), "roundId")
+        if (roundId.isBlank()) throw JsonParseException("roundId cannot be blank")
+        val decisionId = validateStrictString(obj.get("decisionId") ?: throw JsonParseException("Missing decisionId in ProtocolSleeveBloomRequest"), "decisionId")
+        if (decisionId.isBlank()) throw JsonParseException("decisionId cannot be blank")
+        val controlEpochElem = obj.get("controlEpoch") ?: throw JsonParseException("Missing controlEpoch in ProtocolSleeveBloomRequest")
+        ApiMessageCodec.validateControlEpochElement(controlEpochElem, "controlEpoch")
+        val controlEpoch = validateStrictLong(controlEpochElem, "controlEpoch")
+        if (controlEpoch < 0L) throw JsonParseException("controlEpoch must be non-negative: $controlEpoch")
+        return try {
+            ProtocolSleeveBloomRequest(requestId, sessionId, roundId, decisionId, controlEpoch)
+        } catch (e: IllegalArgumentException) {
+            throw JsonParseException("Invalid ProtocolSleeveBloomRequest: ${e.message}", e)
+        }
+    }
+}
+
+/**
+ * ProtocolSleeveBloomChoiceRequest TypeAdapter
+ */
+private class ProtocolSleeveBloomChoiceRequestAdapter : JsonSerializer<ProtocolSleeveBloomChoiceRequest>, JsonDeserializer<ProtocolSleeveBloomChoiceRequest> {
+    override fun serialize(src: ProtocolSleeveBloomChoiceRequest, typeOfSrc: Type, context: JsonSerializationContext): JsonElement {
+        val obj = JsonObject()
+        obj.addProperty("requestId", src.requestId)
+        obj.addProperty("sessionId", src.sessionId)
+        obj.addProperty("roundId", src.roundId)
+        obj.addProperty("decisionId", src.decisionId)
+        obj.addProperty("controlEpoch", src.controlEpoch)
+        obj.addProperty("offerId", src.offerId)
+        obj.addProperty("keep", src.keep.name)
+        return obj
+    }
+
+    override fun deserialize(json: JsonElement, typeOfT: Type, context: JsonDeserializationContext): ProtocolSleeveBloomChoiceRequest {
+        if (!json.isJsonObject) throw JsonParseException("ProtocolSleeveBloomChoiceRequest must be a JSON object: $json")
+        val obj = json.asJsonObject
+        checkUnknownFields(
+            obj,
+            setOf("requestId", "sessionId", "roundId", "decisionId", "controlEpoch", "offerId", "keep"),
+            "ProtocolSleeveBloomChoiceRequest"
+        )
+        val requestId = validateStrictString(obj.get("requestId") ?: throw JsonParseException("Missing requestId in ProtocolSleeveBloomChoiceRequest"), "requestId")
+        if (requestId.isBlank()) throw JsonParseException("requestId cannot be blank")
+        val sessionId = validateStrictString(obj.get("sessionId") ?: throw JsonParseException("Missing sessionId in ProtocolSleeveBloomChoiceRequest"), "sessionId")
+        if (sessionId.isBlank()) throw JsonParseException("sessionId cannot be blank")
+        val roundId = validateStrictString(obj.get("roundId") ?: throw JsonParseException("Missing roundId in ProtocolSleeveBloomChoiceRequest"), "roundId")
+        if (roundId.isBlank()) throw JsonParseException("roundId cannot be blank")
+        val decisionId = validateStrictString(obj.get("decisionId") ?: throw JsonParseException("Missing decisionId in ProtocolSleeveBloomChoiceRequest"), "decisionId")
+        if (decisionId.isBlank()) throw JsonParseException("decisionId cannot be blank")
+        val controlEpochElem = obj.get("controlEpoch") ?: throw JsonParseException("Missing controlEpoch in ProtocolSleeveBloomChoiceRequest")
+        ApiMessageCodec.validateControlEpochElement(controlEpochElem, "controlEpoch")
+        val controlEpoch = validateStrictLong(controlEpochElem, "controlEpoch")
+        if (controlEpoch < 0L) throw JsonParseException("controlEpoch must be non-negative: $controlEpoch")
+        val offerId = validateStrictString(obj.get("offerId") ?: throw JsonParseException("Missing offerId in ProtocolSleeveBloomChoiceRequest"), "offerId")
+        if (offerId.isBlank()) throw JsonParseException("offerId cannot be blank")
+        val keepElem = obj.get("keep") ?: throw JsonParseException("Missing keep in ProtocolSleeveBloomChoiceRequest")
+        val keepStr = validateStrictString(keepElem, "keep")
+        val keep = try {
+            ProtocolSleeveBloomKeep.valueOf(keepStr)
+        } catch (e: Exception) {
+            throw JsonParseException("Invalid keep in ProtocolSleeveBloomChoiceRequest: $keepStr", e)
+        }
+        return try {
+            ProtocolSleeveBloomChoiceRequest(requestId, sessionId, roundId, decisionId, controlEpoch, offerId, keep)
+        } catch (e: IllegalArgumentException) {
+            throw JsonParseException("Invalid ProtocolSleeveBloomChoiceRequest: ${e.message}", e)
+        }
+    }
+}
+
+/**
+ * ProtocolSleeveBloomOfferView TypeAdapter
+ */
+private class ProtocolSleeveBloomOfferViewAdapter : JsonSerializer<ProtocolSleeveBloomOfferView>, JsonDeserializer<ProtocolSleeveBloomOfferView> {
+    override fun serialize(src: ProtocolSleeveBloomOfferView, typeOfSrc: Type, context: JsonSerializationContext): JsonElement {
+        val obj = JsonObject()
+        obj.addProperty("offerId", src.offerId)
+        obj.add("firstTile", context.serialize(src.firstTile, ProtocolTile::class.java))
+        obj.add("secondTile", context.serialize(src.secondTile, ProtocolTile::class.java))
+        obj.addProperty("drawKind", src.drawKind.name)
+        obj.addProperty("deadlineMillis", src.deadlineMillis)
+        obj.addProperty("decisionId", src.decisionId)
+        obj.addProperty("controlEpoch", src.controlEpoch)
+        return obj
+    }
+
+    override fun deserialize(json: JsonElement, typeOfT: Type, context: JsonDeserializationContext): ProtocolSleeveBloomOfferView {
+        if (!json.isJsonObject) throw JsonParseException("ProtocolSleeveBloomOfferView must be a JSON object: $json")
+        val obj = json.asJsonObject
+        checkUnknownFields(
+            obj,
+            setOf("offerId", "firstTile", "secondTile", "drawKind", "deadlineMillis", "decisionId", "controlEpoch"),
+            "ProtocolSleeveBloomOfferView"
+        )
+        val offerId = validateStrictString(obj.get("offerId") ?: throw JsonParseException("Missing offerId in ProtocolSleeveBloomOfferView"), "offerId")
+        if (offerId.isBlank()) throw JsonParseException("offerId cannot be blank")
+        val firstTileElem = obj.get("firstTile") ?: throw JsonParseException("Missing firstTile in ProtocolSleeveBloomOfferView")
+        val firstTile: ProtocolTile = context.deserialize(firstTileElem, ProtocolTile::class.java)
+        val secondTileElem = obj.get("secondTile") ?: throw JsonParseException("Missing secondTile in ProtocolSleeveBloomOfferView")
+        val secondTile: ProtocolTile = context.deserialize(secondTileElem, ProtocolTile::class.java)
+        val drawKindElem = obj.get("drawKind") ?: throw JsonParseException("Missing drawKind in ProtocolSleeveBloomOfferView")
+        val drawKindStr = validateStrictString(drawKindElem, "drawKind")
+        val drawKind = try {
+            ProtocolSleeveBloomDrawKind.valueOf(drawKindStr)
+        } catch (e: Exception) {
+            throw JsonParseException("Invalid drawKind in ProtocolSleeveBloomOfferView: $drawKindStr", e)
+        }
+        val deadlineMillis = validateStrictLong(obj.get("deadlineMillis") ?: throw JsonParseException("Missing deadlineMillis in ProtocolSleeveBloomOfferView"), "deadlineMillis")
+        if (deadlineMillis < 0L) throw JsonParseException("deadlineMillis must be non-negative: $deadlineMillis")
+        val decisionId = validateStrictString(obj.get("decisionId") ?: throw JsonParseException("Missing decisionId in ProtocolSleeveBloomOfferView"), "decisionId")
+        if (decisionId.isBlank()) throw JsonParseException("decisionId cannot be blank")
+        val controlEpoch = validateStrictLong(obj.get("controlEpoch") ?: throw JsonParseException("Missing controlEpoch in ProtocolSleeveBloomOfferView"), "controlEpoch")
+        if (controlEpoch < 0L) throw JsonParseException("controlEpoch must be non-negative: $controlEpoch")
+        return try {
+            ProtocolSleeveBloomOfferView(offerId, firstTile, secondTile, drawKind, deadlineMillis, decisionId, controlEpoch)
+        } catch (e: IllegalArgumentException) {
+            throw JsonParseException("Invalid ProtocolSleeveBloomOfferView: ${e.message}", e)
+        }
+    }
+}
+
+/**
+ * ProtocolSleeveBloomView TypeAdapter
+ */
+private class ProtocolSleeveBloomViewAdapter : JsonSerializer<ProtocolSleeveBloomView>, JsonDeserializer<ProtocolSleeveBloomView> {
+    override fun serialize(src: ProtocolSleeveBloomView, typeOfSrc: Type, context: JsonSerializationContext): JsonElement {
+        val obj = JsonObject()
+        obj.addProperty("canApply", src.canApply)
+        if (src.disabledReason != null) obj.addProperty("disabledReason", src.disabledReason)
+        obj.addProperty("cost", src.cost)
+        if (src.drawKind != null) obj.addProperty("drawKind", src.drawKind.name)
+        obj.addProperty("decisionId", src.decisionId)
+        obj.addProperty("controlEpoch", src.controlEpoch)
+        obj.addProperty("stateVersion", src.stateVersion)
+        if (src.pendingOffer != null) {
+            obj.add("pendingOffer", context.serialize(src.pendingOffer, ProtocolSleeveBloomOfferView::class.java))
+        }
+        return obj
+    }
+
+    override fun deserialize(json: JsonElement, typeOfT: Type, context: JsonDeserializationContext): ProtocolSleeveBloomView {
+        if (!json.isJsonObject) throw JsonParseException("ProtocolSleeveBloomView must be a JSON object: $json")
+        val obj = json.asJsonObject
+        checkUnknownFields(
+            obj,
+            setOf("canApply", "disabledReason", "cost", "drawKind", "decisionId", "controlEpoch", "stateVersion", "pendingOffer"),
+            "ProtocolSleeveBloomView"
+        )
+        val canApply = validateStrictBoolean(obj.get("canApply") ?: throw JsonParseException("Missing canApply in ProtocolSleeveBloomView"), "canApply")
+        val disabledReason = validateStrictOptionalString(obj.get("disabledReason"), "disabledReason")
+        val cost = validateStrictInt(obj.get("cost") ?: throw JsonParseException("Missing cost in ProtocolSleeveBloomView"), "cost")
+        if (cost != 10) throw JsonParseException("cost must be 10, got: $cost")
+        val drawKind = if (obj.has("drawKind") && !obj.get("drawKind").isJsonNull) {
+            val drawKindStr = validateStrictString(obj.get("drawKind"), "drawKind")
+            try {
+                ProtocolSleeveBloomDrawKind.valueOf(drawKindStr)
+            } catch (e: Exception) {
+                throw JsonParseException("Invalid drawKind in ProtocolSleeveBloomView: $drawKindStr", e)
+            }
+        } else null
+        val decisionId = validateStrictString(obj.get("decisionId") ?: throw JsonParseException("Missing decisionId in ProtocolSleeveBloomView"), "decisionId")
+        if (decisionId.isBlank()) throw JsonParseException("decisionId cannot be blank")
+        val controlEpoch = validateStrictLong(obj.get("controlEpoch") ?: throw JsonParseException("Missing controlEpoch in ProtocolSleeveBloomView"), "controlEpoch")
+        if (controlEpoch < 0L) throw JsonParseException("controlEpoch must be non-negative: $controlEpoch")
+        val stateVersion = validateStrictLong(obj.get("stateVersion") ?: throw JsonParseException("Missing stateVersion in ProtocolSleeveBloomView"), "stateVersion")
+        if (stateVersion < 0L) throw JsonParseException("stateVersion must be non-negative: $stateVersion")
+        val pendingOffer: ProtocolSleeveBloomOfferView? = if (obj.has("pendingOffer") && !obj.get("pendingOffer").isJsonNull) {
+            context.deserialize(obj.get("pendingOffer"), ProtocolSleeveBloomOfferView::class.java)
+        } else null
+        return try {
+            ProtocolSleeveBloomView(canApply, disabledReason, cost, drawKind, decisionId, controlEpoch, stateVersion, pendingOffer)
+        } catch (e: IllegalArgumentException) {
+            throw JsonParseException("Invalid ProtocolSleeveBloomView: ${e.message}", e)
+        }
+    }
+}
+
+/**
  * V4 消息编解码器 (ApiMessageCodec)
  *
  * 采用独立 Gson 实例，不 import engine，对多态类型进行显式标签编解码和严格输入边界校验。
@@ -3690,6 +3999,11 @@ object ApiMessageCodec {
         .registerTypeAdapter(ProtocolMarkedTileView::class.java, ProtocolMarkedTileViewAdapter())
         .registerTypeAdapter(ProtocolTileMarkGroupView::class.java, ProtocolTileMarkGroupViewAdapter())
         .registerTypeAdapter(ProtocolTileMarkView::class.java, ProtocolTileMarkViewAdapter())
+        .registerTypeAdapter(ProtocolSleeveBloomConfig::class.java, ProtocolSleeveBloomConfigAdapter())
+        .registerTypeAdapter(ProtocolSleeveBloomRequest::class.java, ProtocolSleeveBloomRequestAdapter())
+        .registerTypeAdapter(ProtocolSleeveBloomChoiceRequest::class.java, ProtocolSleeveBloomChoiceRequestAdapter())
+        .registerTypeAdapter(ProtocolSleeveBloomOfferView::class.java, ProtocolSleeveBloomOfferViewAdapter())
+        .registerTypeAdapter(ProtocolSleeveBloomView::class.java, ProtocolSleeveBloomViewAdapter())
         .create()
 
     fun validateControlEpochElement(epochElem: JsonElement, context: String) {
@@ -3803,6 +4117,12 @@ object ApiMessageCodec {
             }
             if (rootObj.has("tileMark")) {
                 throw JsonParseException("Spectator request cannot contain player authority field 'tileMark'")
+            }
+            if (rootObj.has("sleeveBloom")) {
+                throw JsonParseException("Spectator request cannot contain player authority field 'sleeveBloom'")
+            }
+            if (rootObj.has("sleeveBloomChoice")) {
+                throw JsonParseException("Spectator request cannot contain player authority field 'sleeveBloomChoice'")
             }
             when (apiStr) {
                 ApiTags.JOIN_SPECTATOR -> {
@@ -3945,6 +4265,41 @@ object ApiMessageCodec {
                 }
             } else if (!tmElem.isJsonNull) {
                 throw JsonParseException("tileMark must be a JSON object")
+            }
+        }
+        // 严格线路上校验 sleeveBloom 边界
+        if (rootObj.has("sleeveBloom")) {
+            val elem = rootObj.get("sleeveBloom")
+            if (elem.isJsonObject) {
+                val obj = elem.asJsonObject
+                if (!obj.has("controlEpoch")) {
+                    throw JsonParseException("sleeveBloom requires controlEpoch at wire boundary")
+                }
+                validateControlEpochElement(obj.get("controlEpoch"), "sleeveBloom")
+                val roundIdElem = obj.get("roundId")
+                if (roundIdElem == null || !roundIdElem.isJsonPrimitive || roundIdElem.asString.isBlank()) {
+                    throw JsonParseException("sleeveBloom requires roundId at wire boundary")
+                }
+            } else if (!elem.isJsonNull) {
+                throw JsonParseException("sleeveBloom must be a JSON object")
+            }
+        }
+
+        // 严格线路上校验 sleeveBloomChoice 边界
+        if (rootObj.has("sleeveBloomChoice")) {
+            val elem = rootObj.get("sleeveBloomChoice")
+            if (elem.isJsonObject) {
+                val obj = elem.asJsonObject
+                if (!obj.has("controlEpoch")) {
+                    throw JsonParseException("sleeveBloomChoice requires controlEpoch at wire boundary")
+                }
+                validateControlEpochElement(obj.get("controlEpoch"), "sleeveBloomChoice")
+                val roundIdElem = obj.get("roundId")
+                if (roundIdElem == null || !roundIdElem.isJsonPrimitive || roundIdElem.asString.isBlank()) {
+                    throw JsonParseException("sleeveBloomChoice requires roundId at wire boundary")
+                }
+            } else if (!elem.isJsonNull) {
+                throw JsonParseException("sleeveBloomChoice must be a JSON object")
             }
         }
 

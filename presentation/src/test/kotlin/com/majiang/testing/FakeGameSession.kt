@@ -48,6 +48,8 @@ class FakeGameSession(
     val submitted: List<LegalActionView> get() = submittedActions
     val submittedPlans = mutableListOf<ShufflePlan>()
     val submittedMarks = mutableListOf<TileMarkRequest>()
+    val submittedBlooms = mutableListOf<SleeveBloomRequest>()
+    val submittedBloomChoices = mutableListOf<SleeveBloomChoiceRequest>()
 
     var started: Boolean = false
     var nextRoundCalls: Int = 0
@@ -112,6 +114,24 @@ class FakeGameSession(
 
     override fun submitTileMark(request: TileMarkRequest): CompletableFuture<Receipt> {
         submittedMarks.add(request)
+        val result = submitResult ?: CompletableFuture.completedFuture(Receipt(request.requestId, ReceiptStatus.APPLIED))
+        submitResult = null
+        isPending = true
+        result.whenComplete { _, _ -> isPending = false }
+        return result
+    }
+
+    override fun submitSleeveBloom(request: SleeveBloomRequest): CompletableFuture<Receipt> {
+        submittedBlooms.add(request)
+        val result = submitResult ?: CompletableFuture.completedFuture(Receipt(request.requestId, ReceiptStatus.APPLIED))
+        submitResult = null
+        isPending = true
+        result.whenComplete { _, _ -> isPending = false }
+        return result
+    }
+
+    override fun submitSleeveBloomChoice(request: SleeveBloomChoiceRequest): CompletableFuture<Receipt> {
+        submittedBloomChoices.add(request)
         val result = submitResult ?: CompletableFuture.completedFuture(Receipt(request.requestId, ReceiptStatus.APPLIED))
         submitResult = null
         isPending = true

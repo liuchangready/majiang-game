@@ -2,6 +2,7 @@ package com.majiang.application
 
 import com.majiang.ai.AIPlayer
 import com.majiang.ai.BasicAIStrategy
+import com.majiang.cheat.bloom.*
 import com.majiang.cheat.mark.TileMarkGroup
 import com.majiang.cheat.mark.TileMarkRequest
 import com.majiang.economy.*
@@ -47,12 +48,20 @@ class ApplicationCoordinator(
     val winningScoreEvaluator: WinningScoreEvaluator = WinningScoreEvaluator.INSTANCE,
     val settlementService: SettlementService = SettlementService.INSTANCE,
     val deferAutomaticActions: Boolean = false,
-    shuffleConfig: ShuffleConfig = ShuffleConfig()
+    shuffleConfig: ShuffleConfig = ShuffleConfig(),
+    cheatEconomyConfig: CheatEconomyConfig = CheatEconomyConfig(),
+    sleeveBloomConfig: SleeveBloomConfig = SleeveBloomConfig()
 ) {
     var matchProgression: MatchProgression = matchProgression
         private set
 
     var shuffleConfig: ShuffleConfig = shuffleConfig
+        private set
+
+    var cheatEconomyConfig: CheatEconomyConfig = cheatEconomyConfig
+        private set
+
+    var sleeveBloomConfig: SleeveBloomConfig = sleeveBloomConfig
         private set
 
     val roundCommandProcessor: RoundCommandProcessor = RoundCommandProcessor(
@@ -265,6 +274,8 @@ class ApplicationCoordinator(
             session.updateLobbyConfig(newConfig)
             this.matchProgression = MatchProgression(newConfig.toRuleConfig())
             this.shuffleConfig = newConfig.shuffleConfig.copy()
+            this.cheatEconomyConfig = newConfig.cheatEconomy.copy()
+            this.sleeveBloomConfig = newConfig.sleeveBloomConfig.copy()
             round.updateLobbyConfig(newConfig)
 
             decisionRegistry.invalidateAll()
@@ -473,6 +484,9 @@ class ApplicationCoordinator(
         try {
             if (seat !in 0..3) {
                 return ActionResult.Rejected(RejectionReason.INVALID_PLAYER)
+            }
+            if (activeRound?.state?.sleeveBloomOffer?.seat == seat) {
+                return ActionResult.Rejected(RejectionReason.SLEEVE_BLOOM_CHOICE_PENDING)
             }
 
             // 1. 请求幂等与回放校验（按座位去重，相同返回原回执，不同载荷冲突拒绝）
@@ -972,6 +986,9 @@ class ApplicationCoordinator(
             }
 
             val candidateState = round.readState()
+            if (candidateState.sleeveBloomOffer != null && candidateState.sleeveBloomOffer?.seat == seat) {
+                return ActionResult.Rejected(RejectionReason.SLEEVE_BLOOM_CHOICE_PENDING)
+            }
             if (candidateState.currentPlayer != seat) {
                 return ActionResult.Rejected(RejectionReason.NOT_YOUR_TURN)
             }
@@ -1086,6 +1103,418 @@ class ApplicationCoordinator(
             } else {
                 finalizeActionExecutionWithoutReadLock()
             }
+        }
+    }
+
+    /**
+     * 提交袖里藏花激活请求
+     */
+    fun submitSleeveBloom(seat: Int, request: SleeveBloomRequest, now: Long): ActionResult {
+        if (currentExecutingThread.get() == Thread.currentThread()) {
+            return ActionResult.Rejected(RejectionReason.ACTION_NOT_AVAILABLE)
+        }
+        if (!rwLock.writeLock().tryLock()) {
+            return ActionResult.Rejected(RejectionReason.ACTION_NOT_AVAILABLE)
+        }
+        if (!isProcessingAction.compareAndSet(false, true)) {
+            rwLock.writeLock().unlock()
+            return ActionResult.Rejected(RejectionReason.ACTION_NOT_AVAILABLE)
+        }
+        currentExecutingThread.set(Thread.currentThread())
+
+        val allEvents = mutableListOf<GameEvent>()
+        var acceptedResultToReturn: ActionResult? = null
+        try {
+            if (session.lifecycle == SessionLifecycle.FINISHED || session.lifecycle == SessionLifecycle.CLOSED) {
+                return ActionResult.Rejected(RejectionReason.MATCH_FINISHED)
+            }
+            val round = activeRound ?: return ActionResult.Rejected(RejectionReason.WRONG_PHASE)
+            if (round.roundId != request.roundId) {
+                return ActionResult.Rejected(RejectionReason.WRONG_PHASE)
+            }
+            if (session.sessionId != request.sessionId) {
+                return ActionResult.Rejected(RejectionReason.WRONG_PHASE)
+            }
+            if (seat !in 0..3) {
+                return ActionResult.Rejected(RejectionReason.INVALID_PLAYER)
+            }
+            if (request.requestId.isBlank()) {
+                return ActionResult.Rejected(RejectionReason.ACTION_NOT_AVAILABLE)
+            }
+
+            if (!sleeveBloomConfig.enabled || !cheatEconomyConfig.enabled) {
+                return ActionResult.Rejected(RejectionReason.ACTION_NOT_AVAILABLE)
+            }
+            val cost = cheatEconomyConfig.costs["SLEEVE_BLOOM"]
+                ?: return ActionResult.Rejected(RejectionReason.ACTION_NOT_AVAILABLE)
+            if (cost != 10) {
+                return ActionResult.Rejected(RejectionReason.ACTION_NOT_AVAILABLE)
+            }
+
+            val controller = controllerRegistry.getController(seat)
+            if (controller !is SeatController.LocalHuman && controller !is SeatController.RemoteHuman) {
+                return ActionResult.Rejected(RejectionReason.ACTION_NOT_AVAILABLE)
+            }
+            if (request.controlEpoch != controllerRegistry.getEpoch(seat)) {
+                return ActionResult.Rejected(RejectionReason.ACTION_NOT_AVAILABLE)
+            }
+
+            val candidateState = round.readState()
+            if (candidateState.currentPlayer != seat) {
+                return ActionResult.Rejected(RejectionReason.NOT_YOUR_TURN)
+            }
+            if (candidateState.phase != GamePhase.CHEAT_WINDOW || round.responseWindow != null) {
+                return ActionResult.Rejected(RejectionReason.WRONG_PHASE)
+            }
+            if (candidateState.riichiDeclared[seat]) {
+                return ActionResult.Rejected(RejectionReason.ACTION_NOT_AVAILABLE)
+            }
+
+            val drawnTile = candidateState.players[seat].drawnTile
+                ?: return ActionResult.Rejected(RejectionReason.ACTION_NOT_AVAILABLE)
+            if (candidateState.tilePool.getLocation(drawnTile) != TileLocation.hand(seat)) {
+                return ActionResult.Rejected(RejectionReason.ACTION_NOT_AVAILABLE)
+            }
+
+            if (candidateState.lastDrawKind == SleeveBloomDrawKind.DEAL_EXTRA) {
+                return ActionResult.Rejected(RejectionReason.ACTION_NOT_AVAILABLE)
+            }
+            if (candidateState.sleeveBloomOffer != null) {
+                return ActionResult.Rejected(RejectionReason.ACTION_NOT_AVAILABLE)
+            }
+            if (candidateState.sleeveBloomUsedOnTurn == candidateState.turnNumber) {
+                return ActionResult.Rejected(RejectionReason.ACTION_NOT_AVAILABLE)
+            }
+
+            val secondTile = when (candidateState.lastDrawKind) {
+                SleeveBloomDrawKind.NORMAL -> {
+                    if (candidateState.wallRemaining < 1 ||
+                        candidateState.wallPointer >= candidateState.wallEndExclusive
+                    ) {
+                        return ActionResult.Rejected(RejectionReason.ACTION_NOT_AVAILABLE)
+                    }
+                    val nextTile = candidateState.wall.getOrNull(candidateState.wallPointer)
+                        ?: return ActionResult.Rejected(RejectionReason.ACTION_NOT_AVAILABLE)
+                    if (candidateState.tilePool.getLocation(nextTile) != TileLocation.WALL) {
+                        return ActionResult.Rejected(RejectionReason.ACTION_NOT_AVAILABLE)
+                    }
+                    nextTile
+                }
+                SleeveBloomDrawKind.RINSHAN -> {
+                    if (candidateState.rinshanPointer !in 1..4) {
+                        return ActionResult.Rejected(RejectionReason.ACTION_NOT_AVAILABLE)
+                    }
+                    if (candidateState.deadWall.getOrNull(candidateState.rinshanPointer - 1) != drawnTile) {
+                        return ActionResult.Rejected(RejectionReason.ACTION_NOT_AVAILABLE)
+                    }
+                    if (candidateState.deadWallReplacements.isEmpty()) {
+                        return ActionResult.Rejected(RejectionReason.ACTION_NOT_AVAILABLE)
+                    }
+                    val repl = candidateState.deadWallReplacements.last()
+                    if (candidateState.tilePool.getLocation(repl) != TileLocation.DEAD_WALL) {
+                        return ActionResult.Rejected(RejectionReason.ACTION_NOT_AVAILABLE)
+                    }
+                    repl
+                }
+                SleeveBloomDrawKind.DEAL_EXTRA -> {
+                    return ActionResult.Rejected(RejectionReason.ACTION_NOT_AVAILABLE)
+                }
+            }
+
+            if (candidateState.cheatPoints[seat] < cost) {
+                return ActionResult.Rejected(RejectionReason.ACTION_NOT_AVAILABLE)
+            }
+
+            val ledgerConfig = cheatEconomyConfig.copy(
+                enabled = true,
+                initialPoints = round.frozenStartingCheatPoints
+            )
+            val ledgerSnapshot = CheatLedgerSnapshot(
+                balances = candidateState.cheatPoints.toList(),
+                entries = candidateState.cheatEntries.toList()
+            )
+            val ledger = CheatLedger.fromSnapshot(ledgerConfig, ledgerSnapshot)
+            val entryId = "bloom-$seat-${request.requestId}"
+            val appliedEntry = try {
+                ledger.apply(entryId, seat, -cost, "SLEEVE_BLOOM")
+            } catch (e: Exception) {
+                return ActionResult.Rejected(RejectionReason.ACTION_NOT_AVAILABLE)
+            }
+
+            candidateState.cheatPoints[seat] = appliedEntry.balanceAfter
+            candidateState.cheatEntries.add(appliedEntry.copy())
+
+            candidateState.sleeveBloomUsedOnTurn = candidateState.turnNumber
+            candidateState.sleeveBloomOffer = SleeveBloomOffer(
+                offerId = "bloom-$seat-${request.requestId}",
+                seat = seat,
+                drawKind = candidateState.lastDrawKind,
+                firstTile = drawnTile,
+                secondTile = secondTile,
+                createdTurnNumber = candidateState.turnNumber
+            )
+
+            val event = GameEvent.CheatPointsChanged(
+                turnNumber = candidateState.turnNumber,
+                seat = seat,
+                amount = -cost,
+                newBalance = appliedEntry.balanceAfter
+            )
+            val roundChange = RoundChange(
+                roundId = round.roundId,
+                sourceVersion = round.version,
+                state = candidateState,
+                responseWindow = round.responseWindow,
+                result = round.result,
+                events = listOf(event)
+            )
+
+            StateInvariants.assertValid(candidateState)
+            round.install(roundChange)
+
+            val snap = snapshotGameEvent(event)
+            allEvents.add(snap)
+            eventBus.publish(snap)
+
+            decisionRegistry.invalidateAll()
+
+            val acceptedResult = ActionResult.Accepted(allEvents.map { snapshotGameEvent(it) })
+            acceptedResultToReturn = acceptedResult
+            return acceptedResult
+        } finally {
+            currentExecutingThread.set(null)
+            if (acceptedResultToReturn != null) {
+                rwLock.readLock().lock()
+                rwLock.writeLock().unlock()
+                try {
+                    broadcastEvents(allEvents)
+                } finally {
+                    rwLock.readLock().unlock()
+                    finalizeActionExecution()
+                }
+            } else {
+                finalizeActionExecutionWithoutReadLock()
+            }
+        }
+    }
+
+    /**
+     * 提交袖里藏花二选一决策请求
+     */
+    fun submitSleeveBloomChoice(seat: Int, request: SleeveBloomChoiceRequest): ActionResult {
+        if (currentExecutingThread.get() == Thread.currentThread()) {
+            return ActionResult.Rejected(RejectionReason.ACTION_NOT_AVAILABLE)
+        }
+        if (!rwLock.writeLock().tryLock()) {
+            return ActionResult.Rejected(RejectionReason.ACTION_NOT_AVAILABLE)
+        }
+        if (!isProcessingAction.compareAndSet(false, true)) {
+            rwLock.writeLock().unlock()
+            return ActionResult.Rejected(RejectionReason.ACTION_NOT_AVAILABLE)
+        }
+        currentExecutingThread.set(Thread.currentThread())
+
+        val allEvents = mutableListOf<GameEvent>()
+        var acceptedResultToReturn: ActionResult? = null
+        try {
+            if (session.lifecycle == SessionLifecycle.FINISHED || session.lifecycle == SessionLifecycle.CLOSED) {
+                return ActionResult.Rejected(RejectionReason.MATCH_FINISHED)
+            }
+            val round = activeRound ?: return ActionResult.Rejected(RejectionReason.WRONG_PHASE)
+            if (round.roundId != request.roundId) {
+                return ActionResult.Rejected(RejectionReason.WRONG_PHASE)
+            }
+            if (session.sessionId != request.sessionId) {
+                return ActionResult.Rejected(RejectionReason.WRONG_PHASE)
+            }
+            if (seat !in 0..3) {
+                return ActionResult.Rejected(RejectionReason.INVALID_PLAYER)
+            }
+            if (request.requestId.isBlank()) {
+                return ActionResult.Rejected(RejectionReason.ACTION_NOT_AVAILABLE)
+            }
+
+            if (!sleeveBloomConfig.enabled || !cheatEconomyConfig.enabled) {
+                return ActionResult.Rejected(RejectionReason.ACTION_NOT_AVAILABLE)
+            }
+
+            val controller = controllerRegistry.getController(seat)
+            if (controller !is SeatController.LocalHuman && controller !is SeatController.RemoteHuman) {
+                return ActionResult.Rejected(RejectionReason.ACTION_NOT_AVAILABLE)
+            }
+            if (request.controlEpoch != controllerRegistry.getEpoch(seat)) {
+                return ActionResult.Rejected(RejectionReason.ACTION_NOT_AVAILABLE)
+            }
+
+            val candidateState = round.readState()
+            if (candidateState.currentPlayer != seat) {
+                return ActionResult.Rejected(RejectionReason.NOT_YOUR_TURN)
+            }
+            if (candidateState.phase != GamePhase.CHEAT_WINDOW || round.responseWindow != null) {
+                return ActionResult.Rejected(RejectionReason.WRONG_PHASE)
+            }
+
+            val offer = candidateState.sleeveBloomOffer
+                ?: return ActionResult.Rejected(RejectionReason.ACTION_NOT_AVAILABLE)
+            if (offer.seat != seat || offer.offerId != request.offerId) {
+                return ActionResult.Rejected(RejectionReason.ACTION_NOT_AVAILABLE)
+            }
+            if (offer.createdTurnNumber != candidateState.turnNumber) {
+                return ActionResult.Rejected(RejectionReason.ACTION_NOT_AVAILABLE)
+            }
+
+            val drawnTile = candidateState.players[seat].drawnTile
+                ?: return ActionResult.Rejected(RejectionReason.ACTION_NOT_AVAILABLE)
+            if (drawnTile != offer.firstTile || candidateState.tilePool.getLocation(drawnTile) != TileLocation.hand(seat)) {
+                return ActionResult.Rejected(RejectionReason.ACTION_NOT_AVAILABLE)
+            }
+
+            if (request.keep == SleeveBloomKeep.SECOND) {
+                when (offer.drawKind) {
+                    SleeveBloomDrawKind.NORMAL -> {
+                        if (candidateState.wallRemaining < 1 ||
+                            candidateState.wallPointer >= candidateState.wallEndExclusive ||
+                            candidateState.wall.getOrNull(candidateState.wallPointer) != offer.secondTile ||
+                            candidateState.tilePool.getLocation(offer.secondTile) != TileLocation.WALL
+                        ) {
+                            return ActionResult.Rejected(RejectionReason.ACTION_NOT_AVAILABLE)
+                        }
+                        TileMovement.swapHandWithWall(
+                            candidateState,
+                            seat,
+                            handTile = drawnTile,
+                            wallIndex = candidateState.wallPointer
+                        )
+                    }
+                    SleeveBloomDrawKind.RINSHAN -> {
+                        if (candidateState.rinshanPointer !in 1..4 ||
+                            candidateState.deadWall.getOrNull(candidateState.rinshanPointer - 1) != offer.firstTile ||
+                            candidateState.deadWallReplacements.isEmpty() ||
+                            candidateState.deadWallReplacements.last() != offer.secondTile ||
+                            candidateState.tilePool.getLocation(offer.secondTile) != TileLocation.DEAD_WALL
+                        ) {
+                            return ActionResult.Rejected(RejectionReason.ACTION_NOT_AVAILABLE)
+                        }
+                        TileMovement.swapDrawnWithRinshanReplacement(candidateState, seat)
+                    }
+                    SleeveBloomDrawKind.DEAL_EXTRA -> {
+                        return ActionResult.Rejected(RejectionReason.ACTION_NOT_AVAILABLE)
+                    }
+                }
+            }
+
+            candidateState.sleeveBloomOffer = null
+            StateInvariants.assertValid(candidateState)
+
+            val roundChange = RoundChange(
+                roundId = round.roundId,
+                sourceVersion = round.version,
+                state = candidateState,
+                responseWindow = round.responseWindow,
+                result = round.result,
+                events = emptyList()
+            )
+            round.install(roundChange)
+            decisionRegistry.invalidateAll()
+
+            val acceptedResult = ActionResult.Accepted(emptyList())
+            acceptedResultToReturn = acceptedResult
+            return acceptedResult
+        } finally {
+            currentExecutingThread.set(null)
+            if (acceptedResultToReturn != null) {
+                rwLock.readLock().lock()
+                rwLock.writeLock().unlock()
+                try {
+                    broadcastEvents(allEvents)
+                } finally {
+                    rwLock.readLock().unlock()
+                    finalizeActionExecution()
+                }
+            } else {
+                finalizeActionExecutionWithoutReadLock()
+            }
+        }
+    }
+
+    /**
+     * 超时/清理兜底：保留第一张并清除 offer
+     */
+    internal fun resolveSleeveBloomKeepFirst(seat: Int): List<GameEvent> {
+        if (currentExecutingThread.get() == Thread.currentThread()) {
+            return emptyList()
+        }
+        if (!rwLock.writeLock().tryLock()) {
+            return emptyList()
+        }
+        if (!isProcessingAction.compareAndSet(false, true)) {
+            rwLock.writeLock().unlock()
+            return emptyList()
+        }
+        currentExecutingThread.set(Thread.currentThread())
+
+        try {
+            val round = activeRound ?: return emptyList()
+            val candidateState = round.readState()
+            if (candidateState.sleeveBloomOffer?.seat != seat) {
+                return emptyList()
+            }
+            candidateState.sleeveBloomOffer = null
+            StateInvariants.assertValid(candidateState)
+            val roundChange = RoundChange(
+                roundId = round.roundId,
+                sourceVersion = round.version,
+                state = candidateState,
+                responseWindow = round.responseWindow,
+                result = round.result,
+                events = emptyList()
+            )
+            round.install(roundChange)
+            decisionRegistry.invalidateAll()
+            return emptyList()
+        } finally {
+            currentExecutingThread.set(null)
+            finalizeActionExecutionWithoutReadLock()
+        }
+    }
+
+    /**
+     * 清理失效 offer（不退款、不交换、不摸切）
+     */
+    internal fun cleanStaleSleeveBloomOffer(seat: Int) {
+        if (currentExecutingThread.get() == Thread.currentThread()) {
+            return
+        }
+        if (!rwLock.writeLock().tryLock()) {
+            return
+        }
+        if (!isProcessingAction.compareAndSet(false, true)) {
+            rwLock.writeLock().unlock()
+            return
+        }
+        currentExecutingThread.set(Thread.currentThread())
+
+        try {
+            val round = activeRound ?: return
+            val candidateState = round.readState()
+            if (candidateState.sleeveBloomOffer?.seat != seat) {
+                return
+            }
+            candidateState.sleeveBloomOffer = null
+            StateInvariants.assertValid(candidateState)
+            val roundChange = RoundChange(
+                roundId = round.roundId,
+                sourceVersion = round.version,
+                state = candidateState,
+                responseWindow = round.responseWindow,
+                result = round.result,
+                events = emptyList()
+            )
+            round.install(roundChange)
+            decisionRegistry.invalidateAll()
+        } finally {
+            currentExecutingThread.set(null)
+            finalizeActionExecutionWithoutReadLock()
         }
     }
 
@@ -1230,6 +1659,11 @@ class ApplicationCoordinator(
         val round = activeRound ?: return ActionResult.Rejected(RejectionReason.WRONG_PHASE)
         if (round.state.phase == GamePhase.ROUND_END) {
             return ActionResult.Rejected(RejectionReason.WRONG_PHASE)
+        }
+
+        val player = getActionPlayer(action)
+        if (round.state.sleeveBloomOffer != null && round.state.sleeveBloomOffer?.seat == player) {
+            return ActionResult.Rejected(RejectionReason.SLEEVE_BLOOM_CHOICE_PENDING)
         }
 
         val prep = roundCommandProcessor.prepare(round, action)
@@ -1558,6 +1992,7 @@ class ApplicationCoordinator(
 
             // 庄家第 14 张牌放入 drawnTile
             val extraTile = TileMovement.dealExtra(candidate, candidate.dealerIndex)
+            candidate.lastDrawKind = SleeveBloomDrawKind.DEAL_EXTRA
             stepEvents.add(GameEvent.TileDealt(candidate.turnNumber, candidate.dealerIndex, extraTile))
 
             stepEvents.add(GameEvent.DealingComplete(candidate.turnNumber))

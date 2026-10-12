@@ -31,6 +31,8 @@ import com.majiang.transport.api.ProtocolRoomConfig
 import com.majiang.transport.api.ProtocolRoomInfo
 import com.majiang.transport.api.ProtocolShufflePlan
 import com.majiang.transport.api.ProtocolTileMarkRequest
+import com.majiang.transport.api.ProtocolSleeveBloomRequest
+import com.majiang.transport.api.ProtocolSleeveBloomChoiceRequest
 import com.majiang.transport.udp.Fragmenter
 import com.majiang.transport.udp.HeartbeatPacer
 import com.majiang.transport.udp.PushOfferResult
@@ -1216,6 +1218,36 @@ class UdpClientBinding(
             api = ApiTags.SUBMIT_TILE_MARK,
             requestId = request.requestId,
             tileMark = request
+        )
+        return sendRequest(apiReq) { rsp, _ ->
+            rsp.receipt ?: ProtocolActionReceipt(
+                requestId = request.requestId,
+                status = ProtocolReceiptStatus.REJECTED,
+                reason = rsp.error ?: ApiErrors.INTERNAL_ERROR
+            )
+        }
+    }
+
+    override fun submitSleeveBloom(request: ProtocolSleeveBloomRequest): CompletableFuture<ProtocolActionReceipt> {
+        val apiReq = ApiRequest(
+            api = ApiTags.SUBMIT_SLEEVE_BLOOM,
+            requestId = request.requestId,
+            sleeveBloom = request
+        )
+        return sendRequest(apiReq) { rsp, _ ->
+            rsp.receipt ?: ProtocolActionReceipt(
+                requestId = request.requestId,
+                status = ProtocolReceiptStatus.REJECTED,
+                reason = rsp.error ?: ApiErrors.INTERNAL_ERROR
+            )
+        }
+    }
+
+    override fun submitSleeveBloomChoice(request: ProtocolSleeveBloomChoiceRequest): CompletableFuture<ProtocolActionReceipt> {
+        val apiReq = ApiRequest(
+            api = ApiTags.SUBMIT_SLEEVE_BLOOM_CHOICE,
+            requestId = request.requestId,
+            sleeveBloomChoice = request
         )
         return sendRequest(apiReq) { rsp, _ ->
             rsp.receipt ?: ProtocolActionReceipt(

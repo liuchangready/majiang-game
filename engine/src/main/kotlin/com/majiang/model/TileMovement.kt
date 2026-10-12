@@ -539,4 +539,44 @@ object TileMovement {
         state.tilePool.transfer(handTile, TileLocation.hand(player), TileLocation.sleeve(player))
         state.tilePool.transfer(sleeveTile, TileLocation.sleeve(player), TileLocation.hand(player))
     }
+
+    /**
+     * 袖里藏花杠后原语：将刚补到的岭上牌与王牌区最新替补牌交换
+     */
+    fun swapDrawnWithRinshanReplacement(state: GameState, player: Int): Tile {
+        require(player in 0..3) { "Invalid player: $player" }
+        val hand = state.players[player]
+        val currentDrawn = hand.drawnTile
+            ?: throw IllegalStateException("Cannot swap rinshan replacement: player $player has no drawnTile")
+        require(state.tilePool.getLocation(currentDrawn) == TileLocation.hand(player)) {
+            "drawnTile $currentDrawn not in hand of player $player"
+        }
+        require(state.rinshanPointer in 1..4) {
+            "rinshanPointer must be in 1..4 to rollback, was ${state.rinshanPointer}"
+        }
+        val originalRinshan = state.deadWall[state.rinshanPointer - 1]
+        require(originalRinshan == currentDrawn) {
+            "Original rinshan tile mismatch: deadWall[${state.rinshanPointer - 1}] is $originalRinshan but drawnTile is $currentDrawn"
+        }
+        require(state.deadWallReplacements.isNotEmpty()) {
+            "deadWallReplacements is empty, cannot swap"
+        }
+        val replacementTile = state.deadWallReplacements.last()
+        require(state.tilePool.getLocation(replacementTile) == TileLocation.DEAD_WALL) {
+            "replacementTile $replacementTile not in DEAD_WALL"
+        }
+
+        // 移除替补与回退岭上指针
+        state.deadWallReplacements.removeAt(state.deadWallReplacements.lastIndex)
+        state.rinshanPointer--
+
+        // 置换 drawnTile
+        hand.drawnTile = replacementTile
+
+        // 账本记账
+        state.tilePool.transfer(currentDrawn, TileLocation.hand(player), TileLocation.DEAD_WALL)
+        state.tilePool.transfer(replacementTile, TileLocation.DEAD_WALL, TileLocation.hand(player))
+
+        return replacementTile
+    }
 }

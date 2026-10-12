@@ -23,6 +23,7 @@ import com.majiang.client.api.RoomInfo
 import com.majiang.client.api.RoomLifecycle
 import com.majiang.client.api.RoomSummaryView
 import com.majiang.client.api.ShuffleConfig
+import com.majiang.client.api.SleeveBloomConfig
 import com.majiang.client.api.TileMarkConfig
 import com.majiang.presentation.common.TableNavigation
 import com.majiang.presentation.common.UiAssets
@@ -664,15 +665,18 @@ class MenuScreen(
         font.color = Color(1.0f, 0.85f, 0.35f, 1f)
         drawCenteredText(batch, font, "-- 雀圣千术绝技秘籍 --", modalRect.x + modalRect.width / 2f, modalRect.y + 460f)
 
-        font.data.setScale(1.1f)
+        font.data.setScale(1.0f)
         font.color = Color.WHITE
-        font.draw(batch, "1. 落汗绝技: 摸牌/出牌决策时，选择手牌中 4 张不同实体牌进行微痕标记。", modalRect.x + 60f, modalRect.y + 390f)
-        font.draw(batch, "2. 千术消耗: 每次落汗消耗 10 额度点数，每名玩家最多同时维持 12 张标记牌。", modalRect.x + 60f, modalRect.y + 330f)
-        font.draw(batch, "3. 有效期限: 当局立即生效，另持续后续 3 局；思考超时仅禁止新施术。", modalRect.x + 60f, modalRect.y + 270f)
-        font.draw(batch, "4. 洞察识别: 标记牌进入对手手牌时可识别牌面，打入牌河时精准定位标识。", modalRect.x + 60f, modalRect.y + 210f)
+        font.draw(batch, "1. 落汗绝技: 摸牌/出牌决策时，选择手牌中 4 张不同实体牌进行微痕标记。", modalRect.x + 50f, modalRect.y + 405f)
+        font.draw(batch, "2. 千术消耗: 每次落汗消耗 10 额度点数，每名玩家最多同时维持 12 张标记牌。", modalRect.x + 50f, modalRect.y + 365f)
+        font.draw(batch, "3. 有效期限: 当局立即生效，另持续后续 3 局；思考超时仅禁止新施术。", modalRect.x + 50f, modalRect.y + 325f)
+        font.draw(batch, "4. 洞察识别: 标记牌进入对手手牌时可识别牌面，打入牌河时精准定位标识。", modalRect.x + 50f, modalRect.y + 285f)
+        font.draw(batch, "5. 袖里藏花: 摸牌后出牌前消耗 10 额度，翻看第二候选牌二选一保留；", modalRect.x + 50f, modalRect.y + 245f)
+        font.draw(batch, "   第二候选为牌山次张或杠后王牌替补；未选牌留在或退回对应位置；", modalRect.x + 50f, modalRect.y + 219f)
+        font.draw(batch, "   超时保留原摸牌并摸切，费用不退。", modalRect.x + 50f, modalRect.y + 193f)
 
         font.color = Color(0.95f, 0.45f, 0.45f, 1f)
-        font.draw(batch, "注意: 立直后、非本人回合或思考超时禁止施展落汗，请选准时机！", modalRect.x + 60f, modalRect.y + 150f)
+        font.draw(batch, "注意: 立直后、非本人回合或思考超时禁止施展落汗与袖里藏花，请选准时机！", modalRect.x + 50f, modalRect.y + 150f)
 
         font.color = Color.WHITE
         drawCenteredText(batch, font, "关闭 [X]", btnModalClose.x + btnModalClose.width / 2f, btnModalClose.y + 26f)
@@ -821,7 +825,8 @@ class MenuScreen(
                 targetLobby = lobby
                 attachLobby(lobby)
                 val defaultCosts = mapOf(
-                    "TILE_MARK" to 10
+                    "TILE_MARK" to 10,
+                    "SLEEVE_BLOOM" to 10
                 )
                 lobby.createRoom(playerName = "玩家", config = MatchConfig(
                     cheatEconomy = CheatEconomyConfig(
@@ -830,7 +835,8 @@ class MenuScreen(
                         costs = defaultCosts
                     ),
                     shuffleConfig = ShuffleConfig(enabled = true),
-                    tileMarkConfig = TileMarkConfig(enabled = true)
+                    tileMarkConfig = TileMarkConfig(enabled = true),
+                    sleeveBloomConfig = SleeveBloomConfig(enabled = true)
                 ))
             }.thenCompose { snap ->
                 myViewerSeat = snap.viewerSeat
@@ -1021,7 +1027,8 @@ class MenuScreen(
         if (btnCreateConfirm.contains(tx, ty)) {
             val lobby = activeLobby ?: return
             val defaultCosts = mapOf(
-                "TILE_MARK" to 10
+                "TILE_MARK" to 10,
+                "SLEEVE_BLOOM" to 10
             )
             val config = MatchConfig(
                 handsPerWind = 4,
@@ -1032,7 +1039,8 @@ class MenuScreen(
                     costs = defaultCosts
                 ),
                 shuffleConfig = ShuffleConfig(enabled = cfgShuffleCheating),
-                tileMarkConfig = TileMarkConfig(enabled = true)
+                tileMarkConfig = TileMarkConfig(enabled = true),
+                sleeveBloomConfig = SleeveBloomConfig(enabled = true)
             )
             statusMessage = "正在创建房间..."
             val gen = ++requestGeneration

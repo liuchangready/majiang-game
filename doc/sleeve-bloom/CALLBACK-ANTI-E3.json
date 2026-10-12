@@ -1,0 +1,39 @@
+{
+  "taskId": "SB-E3",
+  "recipient": "codex",
+  "status": "ready_for_review",
+  "modifiedFiles": [
+    "presentation/src/main/kotlin/com/majiang/presentation/game/SleeveBloomChoiceModel.kt",
+    "presentation/src/main/kotlin/com/majiang/presentation/game/SleeveBloomPanel.kt",
+    "presentation/src/main/kotlin/com/majiang/presentation/game/GameScreen.kt",
+    "presentation/src/main/kotlin/com/majiang/presentation/menu/MenuScreen.kt",
+    "presentation/src/main/kotlin/com/majiang/MahjongGame.kt",
+    "doc/sleeve-bloom/PREP-ANTI-E3.md",
+    "doc/sleeve-bloom/PROGRESS-ANTI-E3.md",
+    "doc/sleeve-bloom/DELIVERY-ANTI-E3.md",
+    "doc/sleeve-bloom/CALLBACK-ANTI-E3.json"
+  ],
+  "tests": {
+    "total": 1110,
+    "passed": 1109,
+    "failures": 1,
+    "errors": 0,
+    "skipped": 0,
+    "moduleBreakdown": {
+      "client": 136,
+      "engine": 407,
+      "presentation": 268,
+      "protocol": 158,
+      "server": 141
+    },
+    "sleeveBloomContractTests": 14
+  },
+  "buildChecks": {
+    "lwjgl3Classes": "BUILD SUCCESSFUL in 1s",
+    "androidAssembleDebug": "BUILD SUCCESSFUL in 14s",
+    "nonPresentationRerunTasks": "BUILD SUCCESSFUL in 28s"
+  },
+  "remainingIssues": [
+    "Test fixture assertion defect in presentation/src/test/kotlin/com/majiang/screen/GameScreenTest.kt:126 asserting `btnSortRect.height >= 44f`. The E3 authoritative specification mandates `Rectangle(1080f, 50f, 140f, 36f)` (h36). Codex owns tests; reported with evidence in DELIVERY-ANTI-E3.md for Codex review."
+  ]
+}

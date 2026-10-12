@@ -14,6 +14,8 @@ import com.majiang.application.PlayerDecision
 import com.majiang.application.deepCopy
 import com.majiang.authority.TableAuthority
 import com.majiang.cheat.mark.TileMarkRequest
+import com.majiang.cheat.bloom.SleeveBloomRequest
+import com.majiang.cheat.bloom.SleeveBloomChoiceRequest
 import com.majiang.server.control.ConnectionControl
 import com.majiang.server.control.ControllerRole
 import com.majiang.server.control.DisconnectPolicy
@@ -263,6 +265,7 @@ class ServerTableHost @JvmOverloads constructor(
         data class Action(val roundId: String, val seat: Int, val requestId: String) : HostReceiptKey()
         data class Shuffle(val roundId: String, val seat: Int, val requestId: String) : HostReceiptKey()
         data class Mark(val roundId: String, val seat: Int, val requestId: String) : HostReceiptKey()
+        data class Bloom(val roundId: String, val seat: Int, val requestId: String) : HostReceiptKey()
     }
 
     private val maxIssuedReceipts = 1000
@@ -575,6 +578,76 @@ class ServerTableHost @JvmOverloads constructor(
                     lastActionTimeMillis = clock.nowMillis()
                 }
                 val key = HostReceiptKey.Mark(request.roundId, seat, request.requestId)
+                if (!res.stateChanged && res.receipt.status != ReceiptStatus.REJECTED) {
+                    issuedReceipts[key] ?: res.receipt.copy(cursor = seatStreams[seat].cursor).also {
+                        issuedReceipts[key] = it
+                    }
+                } else {
+                    val r = res.receipt.copy(cursor = seatStreams[seat].cursor)
+                    if (r.status != ReceiptStatus.REJECTED) {
+                        issuedReceipts[key] = r
+                    }
+                    r
+                }
+            }
+        }
+    }
+
+    fun submitSleeveBloom(
+        seat: Int,
+        request: SleeveBloomRequest,
+        sessionValidator: (() -> Boolean)? = null
+    ): CompletableFuture<ActionReceipt> {
+        return enqueueOperation {
+            if (sessionValidator?.invoke() == false) {
+                ActionReceipt(request.requestId, ReceiptStatus.REJECTED, reason = "STALE_SESSION")
+            } else if (connectionControl.seatState(seat).isDisconnected) {
+                ActionReceipt(request.requestId, ReceiptStatus.REJECTED, reason = "SEAT_DISCONNECTED")
+            } else if (!connectionControl.isHuman(seat)) {
+                ActionReceipt(request.requestId, ReceiptStatus.REJECTED, reason = "SEAT_NOT_HUMAN")
+            } else {
+                val res = authority.submitSleeveBloom(seat, request, clock.nowMillis())
+                if (res.stateChanged) {
+                    syncDecisionsAndClocks()
+                    publishStateChanges(res.events)
+                    lastActionTimeMillis = clock.nowMillis()
+                }
+                val key = HostReceiptKey.Bloom(request.roundId, seat, request.requestId)
+                if (!res.stateChanged && res.receipt.status != ReceiptStatus.REJECTED) {
+                    issuedReceipts[key] ?: res.receipt.copy(cursor = seatStreams[seat].cursor).also {
+                        issuedReceipts[key] = it
+                    }
+                } else {
+                    val r = res.receipt.copy(cursor = seatStreams[seat].cursor)
+                    if (r.status != ReceiptStatus.REJECTED) {
+                        issuedReceipts[key] = r
+                    }
+                    r
+                }
+            }
+        }
+    }
+
+    fun submitSleeveBloomChoice(
+        seat: Int,
+        request: SleeveBloomChoiceRequest,
+        sessionValidator: (() -> Boolean)? = null
+    ): CompletableFuture<ActionReceipt> {
+        return enqueueOperation {
+            if (sessionValidator?.invoke() == false) {
+                ActionReceipt(request.requestId, ReceiptStatus.REJECTED, reason = "STALE_SESSION")
+            } else if (connectionControl.seatState(seat).isDisconnected) {
+                ActionReceipt(request.requestId, ReceiptStatus.REJECTED, reason = "SEAT_DISCONNECTED")
+            } else if (!connectionControl.isHuman(seat)) {
+                ActionReceipt(request.requestId, ReceiptStatus.REJECTED, reason = "SEAT_NOT_HUMAN")
+            } else {
+                val res = authority.submitSleeveBloomChoice(seat, request, clock.nowMillis())
+                if (res.stateChanged) {
+                    syncDecisionsAndClocks()
+                    publishStateChanges(res.events)
+                    lastActionTimeMillis = clock.nowMillis()
+                }
+                val key = HostReceiptKey.Bloom(request.roundId, seat, request.requestId)
                 if (!res.stateChanged && res.receipt.status != ReceiptStatus.REJECTED) {
                     issuedReceipts[key] ?: res.receipt.copy(cursor = seatStreams[seat].cursor).also {
                         issuedReceipts[key] = it
@@ -1119,6 +1192,7 @@ class ServerTableHost @JvmOverloads constructor(
                 prevSnap.settlementEvents != candidateSnap.settlementEvents ||
                 prevSnap.preparation != candidateSnap.preparation ||
                 prevSnap.tileMark != candidateSnap.tileMark ||
+                prevSnap.sleeveBloom != candidateSnap.sleeveBloom ||
                 hasMeaningfulClockChange
 
             if (!hasVisibleChange) {

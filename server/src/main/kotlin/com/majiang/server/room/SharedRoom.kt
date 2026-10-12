@@ -9,6 +9,8 @@ import com.majiang.application.ActionChoice
 import com.majiang.application.PlayerDecision
 import com.majiang.event.GameEvent
 import com.majiang.cheat.mark.TileMarkRequest
+import com.majiang.cheat.bloom.SleeveBloomRequest
+import com.majiang.cheat.bloom.SleeveBloomChoiceRequest
 import com.majiang.match.SessionLifecycle
 import com.majiang.server.api.ApiProtocol
 import com.majiang.server.api.PublicCheckpoint
@@ -901,6 +903,20 @@ class SharedRoom @JvmOverloads constructor(
         sessionValidator: (() -> Boolean)? = null
     ): CompletableFuture<ActionReceipt> =
         tableHost.submitTileMark(seat, request, sessionValidator)
+
+    fun submitSleeveBloom(
+        seat: Int,
+        request: SleeveBloomRequest,
+        sessionValidator: (() -> Boolean)? = null
+    ): CompletableFuture<ActionReceipt> =
+        tableHost.submitSleeveBloom(seat, request, sessionValidator)
+
+    fun submitSleeveBloomChoice(
+        seat: Int,
+        request: SleeveBloomChoiceRequest,
+        sessionValidator: (() -> Boolean)? = null
+    ): CompletableFuture<ActionReceipt> =
+        tableHost.submitSleeveBloomChoice(seat, request, sessionValidator)
 
     fun claimControl(seat: Int, sessionValidator: (() -> Boolean)? = null): CompletableFuture<ActionReceipt> =
         tableHost.claimControl(seat, sessionValidator)

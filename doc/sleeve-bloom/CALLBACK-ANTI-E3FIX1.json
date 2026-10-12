@@ -1,0 +1,38 @@
+{
+  "taskId": "SB-E3FIX1",
+  "recipient": "codex",
+  "status": "ready_for_review",
+  "modifiedFiles": [
+    "presentation/src/main/kotlin/com/majiang/presentation/game/GameScreen.kt",
+    "presentation/src/main/kotlin/com/majiang/presentation/game/TileMarkPanel.kt",
+    "presentation/src/main/kotlin/com/majiang/presentation/game/SleeveBloomPanel.kt",
+    "presentation/src/main/kotlin/com/majiang/presentation/menu/MenuScreen.kt",
+    "doc/sleeve-bloom/PROGRESS-ANTI-E3FIX1.md",
+    "doc/sleeve-bloom/DELIVERY-ANTI-E3FIX1.md",
+    "doc/sleeve-bloom/CALLBACK-ANTI-E3FIX1.json"
+  ],
+  "tests": {
+    "total": 1110,
+    "passed": 1110,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0,
+    "moduleBreakdown": {
+      "client": 136,
+      "engine": 407,
+      "presentation": 268,
+      "protocol": 158,
+      "server": 141
+    },
+    "sleeveBloomContractTests": 14
+  },
+  "buildChecks": {
+    "presentationTest": "268 passed, 0 failures, 0 errors, 0 skipped",
+    "fullTestRerunTasks": "1110 passed, 0 failures, 0 errors, 0 skipped",
+    "lwjgl3Classes": "BUILD SUCCESSFUL",
+    "androidAssembleDebug": "BUILD SUCCESSFUL",
+    "sleeveBloomSmoke1280": "SLEEVE_BLOOM_GL_PASS choices=2 fee=20 frames=564",
+    "sleeveBloomSmoke960": "SLEEVE_BLOOM_GL_PASS choices=2 fee=20 frames=583"
+  },
+  "remainingIssues": []
+}

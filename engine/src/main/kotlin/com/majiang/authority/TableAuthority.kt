@@ -13,6 +13,7 @@ import com.majiang.application.ActionChoice
 import com.majiang.application.ApplicationCoordinator
 import com.majiang.application.PlayerDecision
 import com.majiang.application.deepCopy
+import com.majiang.cheat.bloom.*
 import com.majiang.cheat.mark.TileMarkConfig
 import com.majiang.cheat.mark.TileMarkProjectionFactory
 import com.majiang.cheat.mark.TileMarkRequest
@@ -122,7 +123,9 @@ class TableAuthority @JvmOverloads constructor(
             autoPlayAi = false,
             autoRiichiDiscard = false,
             deferAutomaticActions = true,
-            shuffleConfig = this.config.shuffleConfig
+            shuffleConfig = this.config.shuffleConfig,
+            cheatEconomyConfig = this.config.cheatEconomy,
+            sleeveBloomConfig = this.config.sleeveBloomConfig
         )
         if (!coord.hasControllerConfiguration) {
             coord.initializeMatch(this._controllers)
@@ -139,7 +142,7 @@ class TableAuthority @JvmOverloads constructor(
 
     // 幂等请求与回执存储
     private data class ReceiptKey(val seat: Int, val requestId: String)
-    private enum class SubmissionKind { CHOICE, TILE_MARK }
+    private enum class SubmissionKind { CHOICE, TILE_MARK, SLEEVE_BLOOM, SLEEVE_BLOOM_CHOICE }
     private data class NormalizedTileMarkPayload(
         val sessionId: String,
         val roundId: String,
@@ -147,11 +150,27 @@ class TableAuthority @JvmOverloads constructor(
         val controlEpoch: Long,
         val normalizedTileIds: List<Int>
     )
+    private data class NormalizedSleeveBloomPayload(
+        val sessionId: String,
+        val roundId: String,
+        val decisionId: String,
+        val controlEpoch: Long
+    )
+    private data class NormalizedSleeveBloomChoicePayload(
+        val sessionId: String,
+        val roundId: String,
+        val decisionId: String,
+        val controlEpoch: Long,
+        val offerId: String,
+        val keep: SleeveBloomKeep
+    )
     private data class StoredSubmission(
         val kind: SubmissionKind,
         val receipt: ActionReceipt,
         val choice: ActionChoice? = null,
-        val tileMarkPayload: NormalizedTileMarkPayload? = null
+        val tileMarkPayload: NormalizedTileMarkPayload? = null,
+        val sleeveBloomPayload: NormalizedSleeveBloomPayload? = null,
+        val sleeveBloomChoicePayload: NormalizedSleeveBloomChoicePayload? = null
     )
     private val storedReceipts = ConcurrentHashMap<ReceiptKey, StoredSubmission>()
 
@@ -793,6 +812,11 @@ class TableAuthority @JvmOverloads constructor(
             storedReceipts[receiptKey] = StoredSubmission(SubmissionKind.TILE_MARK, rejected, tileMarkPayload = currentPayload)
             return MutationResult(rejected, emptyList(), false)
         }
+        if (candidateState.sleeveBloomOffer != null && candidateState.sleeveBloomOffer?.seat == seat) {
+            val rejected = ActionReceipt(request.requestId, ReceiptStatus.REJECTED, reason = "SLEEVE_BLOOM_CHOICE_PENDING")
+            storedReceipts[receiptKey] = StoredSubmission(SubmissionKind.TILE_MARK, rejected, tileMarkPayload = currentPayload)
+            return MutationResult(rejected, emptyList(), false)
+        }
         if (candidateState.phase !in setOf(GamePhase.CHEAT_WINDOW, GamePhase.DISCARD) || round.responseWindow != null) {
             val rejected = ActionReceipt(request.requestId, ReceiptStatus.REJECTED, reason = "WRONG_PHASE")
             storedReceipts[receiptKey] = StoredSubmission(SubmissionKind.TILE_MARK, rejected, tileMarkPayload = currentPayload)
@@ -857,6 +881,382 @@ class TableAuthority @JvmOverloads constructor(
             val newKey = DecisionKey(round.roundId, seat, newDecision.decisionId)
             decisionClock.rekey(timing.key, newKey)
             storedReceipts[receiptKey] = StoredSubmission(SubmissionKind.TILE_MARK, receipt, tileMarkPayload = currentPayload)
+            recordSettlementEvents(coordResult.events)
+        }
+
+        return MutationResult(receipt, coordResult.events, true)
+    }
+
+    /**
+     * 提交袖里藏花激活请求
+     */
+    @Synchronized
+    fun submitSleeveBloom(seat: Int, request: SleeveBloomRequest, now: Long): MutationResult {
+        if (seat !in 0..3) {
+            return MutationResult(ActionReceipt(request.requestId, ReceiptStatus.REJECTED, reason = "INVALID_SEAT"), emptyList(), false)
+        }
+        if (request.sessionId != coordinator.session.sessionId) {
+            return MutationResult(ActionReceipt(request.requestId, ReceiptStatus.REJECTED, reason = "DECISION_MISMATCH"), emptyList(), false)
+        }
+
+        // 1. 幂等与冲突校验
+        val currentPayload = NormalizedSleeveBloomPayload(
+            sessionId = request.sessionId,
+            roundId = request.roundId,
+            decisionId = request.decisionId,
+            controlEpoch = request.controlEpoch
+        )
+        val receiptKey = ReceiptKey(seat, request.requestId)
+        val stored = storedReceipts[receiptKey]
+        if (stored != null) {
+            if (stored.kind == SubmissionKind.SLEEVE_BLOOM && stored.sleeveBloomPayload == currentPayload) {
+                return MutationResult(stored.receipt, emptyList(), false)
+            } else {
+                val rejected = ActionReceipt(request.requestId, ReceiptStatus.REJECTED, reason = "REQUEST_ID_CONFLICT")
+                return MutationResult(rejected, emptyList(), false)
+            }
+        }
+        if (storedShufflePlans.any { it.key.seat == seat && it.key.requestId == request.requestId }) {
+            val rejected = ActionReceipt(request.requestId, ReceiptStatus.REJECTED, reason = "REQUEST_ID_CONFLICT")
+            return MutationResult(rejected, emptyList(), false)
+        }
+
+        // 首次请求门禁校验
+        if (!config.sleeveBloomConfig.enabled || !config.cheatEconomy.enabled || config.cheatEconomy.costs["SLEEVE_BLOOM"] != 10) {
+            val rejected = ActionReceipt(request.requestId, ReceiptStatus.REJECTED, reason = "SLEEVE_BLOOM_DISABLED")
+            storedReceipts[receiptKey] = StoredSubmission(SubmissionKind.SLEEVE_BLOOM, rejected, sleeveBloomPayload = currentPayload)
+            return MutationResult(rejected, emptyList(), false)
+        }
+        if (isClosed || coordinator.session.lifecycle == SessionLifecycle.CLOSED) {
+            val rejected = ActionReceipt(request.requestId, ReceiptStatus.REJECTED, reason = "SESSION_CLOSED")
+            storedReceipts[receiptKey] = StoredSubmission(SubmissionKind.SLEEVE_BLOOM, rejected, sleeveBloomPayload = currentPayload)
+            return MutationResult(rejected, emptyList(), false)
+        }
+        if (decisionClock.isPausedState) {
+            val rejected = ActionReceipt(request.requestId, ReceiptStatus.REJECTED, reason = "HOST_PAUSED")
+            storedReceipts[receiptKey] = StoredSubmission(SubmissionKind.SLEEVE_BLOOM, rejected, sleeveBloomPayload = currentPayload)
+            return MutationResult(rejected, emptyList(), false)
+        }
+
+        if (isPreparationActive()) {
+            val rejected = ActionReceipt(request.requestId, ReceiptStatus.REJECTED, reason = "WRONG_PHASE")
+            storedReceipts[receiptKey] = StoredSubmission(SubmissionKind.SLEEVE_BLOOM, rejected, sleeveBloomPayload = currentPayload)
+            return MutationResult(rejected, emptyList(), false)
+        }
+
+        // 2. 当前有效局与代次/决策标识校验
+        val round = coordinator.activeRound
+        if (round == null || round.state.phase == GamePhase.ROUND_END || request.roundId != round.roundId) {
+            val rejected = ActionReceipt(request.requestId, ReceiptStatus.REJECTED, reason = "DECISION_MISMATCH")
+            storedReceipts[receiptKey] = StoredSubmission(SubmissionKind.SLEEVE_BLOOM, rejected, sleeveBloomPayload = currentPayload)
+            return MutationResult(rejected, emptyList(), false)
+        }
+
+        val currentDecision = coordinator.queryDecision(seat)
+        if (request.controlEpoch != currentDecision.controlEpoch) {
+            val rejected = ActionReceipt(request.requestId, ReceiptStatus.REJECTED, reason = "STALE_CONTROL_EPOCH")
+            storedReceipts[receiptKey] = StoredSubmission(SubmissionKind.SLEEVE_BLOOM, rejected, sleeveBloomPayload = currentPayload)
+            return MutationResult(rejected, emptyList(), false)
+        }
+        if (request.decisionId != currentDecision.decisionId) {
+            val rejected = ActionReceipt(request.requestId, ReceiptStatus.REJECTED, reason = "DECISION_MISMATCH")
+            storedReceipts[receiptKey] = StoredSubmission(SubmissionKind.SLEEVE_BLOOM, rejected, sleeveBloomPayload = currentPayload)
+            return MutationResult(rejected, emptyList(), false)
+        }
+
+        val controller = coordinator.controllerFor(seat)
+        if (controller !is SeatController.LocalHuman && controller !is SeatController.RemoteHuman) {
+            val rejected = ActionReceipt(request.requestId, ReceiptStatus.REJECTED, reason = "ACTION_NOT_AVAILABLE")
+            storedReceipts[receiptKey] = StoredSubmission(SubmissionKind.SLEEVE_BLOOM, rejected, sleeveBloomPayload = currentPayload)
+            return MutationResult(rejected, emptyList(), false)
+        }
+
+        // 3. 权威截止时间校验
+        val timing = decisionClock.timing(seat)
+        val decisionKey = DecisionKey(round.roundId, seat, request.decisionId)
+        if (timing == null || timing.key != decisionKey) {
+            val rejected = ActionReceipt(request.requestId, ReceiptStatus.REJECTED, reason = "NO_ACTIVE_DECISION")
+            storedReceipts[receiptKey] = StoredSubmission(SubmissionKind.SLEEVE_BLOOM, rejected, sleeveBloomPayload = currentPayload)
+            return MutationResult(rejected, emptyList(), false)
+        }
+        if (now >= timing.deadlineMillis) {
+            val rejected = ActionReceipt(request.requestId, ReceiptStatus.REJECTED, reason = "DEADLINE_EXPIRED")
+            storedReceipts[receiptKey] = StoredSubmission(SubmissionKind.SLEEVE_BLOOM, rejected, sleeveBloomPayload = currentPayload)
+            return MutationResult(rejected, emptyList(), false)
+        }
+
+        // 4. 阶段与回合校验
+        val candidateState = round.readState()
+        if (candidateState.currentPlayer != seat) {
+            val rejected = ActionReceipt(request.requestId, ReceiptStatus.REJECTED, reason = "NOT_YOUR_TURN")
+            storedReceipts[receiptKey] = StoredSubmission(SubmissionKind.SLEEVE_BLOOM, rejected, sleeveBloomPayload = currentPayload)
+            return MutationResult(rejected, emptyList(), false)
+        }
+        if (candidateState.phase != GamePhase.CHEAT_WINDOW || round.responseWindow != null) {
+            val rejected = ActionReceipt(request.requestId, ReceiptStatus.REJECTED, reason = "WRONG_PHASE")
+            storedReceipts[receiptKey] = StoredSubmission(SubmissionKind.SLEEVE_BLOOM, rejected, sleeveBloomPayload = currentPayload)
+            return MutationResult(rejected, emptyList(), false)
+        }
+        val drawnTile = candidateState.players[seat].drawnTile
+        if (drawnTile == null || candidateState.tilePool.getLocation(drawnTile) != com.majiang.model.TileLocation.hand(seat)) {
+            val rejected = ActionReceipt(request.requestId, ReceiptStatus.REJECTED, reason = "SLEEVE_BLOOM_NO_DRAWN_TILE")
+            storedReceipts[receiptKey] = StoredSubmission(SubmissionKind.SLEEVE_BLOOM, rejected, sleeveBloomPayload = currentPayload)
+            return MutationResult(rejected, emptyList(), false)
+        }
+        if (candidateState.riichiDeclared[seat]) {
+            val rejected = ActionReceipt(request.requestId, ReceiptStatus.REJECTED, reason = "SLEEVE_BLOOM_RIICHI_LOCKED")
+            storedReceipts[receiptKey] = StoredSubmission(SubmissionKind.SLEEVE_BLOOM, rejected, sleeveBloomPayload = currentPayload)
+            return MutationResult(rejected, emptyList(), false)
+        }
+        if (candidateState.lastDrawKind == SleeveBloomDrawKind.DEAL_EXTRA) {
+            val rejected = ActionReceipt(request.requestId, ReceiptStatus.REJECTED, reason = "SLEEVE_BLOOM_DEALER_EXTRA_EXCLUDED")
+            storedReceipts[receiptKey] = StoredSubmission(SubmissionKind.SLEEVE_BLOOM, rejected, sleeveBloomPayload = currentPayload)
+            return MutationResult(rejected, emptyList(), false)
+        }
+        if (candidateState.sleeveBloomOffer != null) {
+            val rejected = ActionReceipt(request.requestId, ReceiptStatus.REJECTED, reason = "SLEEVE_BLOOM_ALREADY_PENDING")
+            storedReceipts[receiptKey] = StoredSubmission(SubmissionKind.SLEEVE_BLOOM, rejected, sleeveBloomPayload = currentPayload)
+            return MutationResult(rejected, emptyList(), false)
+        }
+        if (candidateState.sleeveBloomUsedOnTurn == candidateState.turnNumber) {
+            val rejected = ActionReceipt(request.requestId, ReceiptStatus.REJECTED, reason = "SLEEVE_BLOOM_ALREADY_USED_THIS_DRAW")
+            storedReceipts[receiptKey] = StoredSubmission(SubmissionKind.SLEEVE_BLOOM, rejected, sleeveBloomPayload = currentPayload)
+            return MutationResult(rejected, emptyList(), false)
+        }
+        if (candidateState.lastDrawKind == SleeveBloomDrawKind.NORMAL) {
+            val nextTile = candidateState.wall.getOrNull(candidateState.wallPointer)
+            if (candidateState.wallRemaining < 1 ||
+                candidateState.wallPointer >= candidateState.wallEndExclusive ||
+                nextTile == null ||
+                candidateState.tilePool.getLocation(nextTile) != com.majiang.model.TileLocation.WALL
+            ) {
+                val rejected = ActionReceipt(request.requestId, ReceiptStatus.REJECTED, reason = "SLEEVE_BLOOM_WALL_EMPTY")
+                storedReceipts[receiptKey] = StoredSubmission(SubmissionKind.SLEEVE_BLOOM, rejected, sleeveBloomPayload = currentPayload)
+                return MutationResult(rejected, emptyList(), false)
+            }
+        } else if (candidateState.lastDrawKind == SleeveBloomDrawKind.RINSHAN) {
+            val rinshanValid = candidateState.rinshanPointer in 1..4 &&
+                candidateState.deadWall.getOrNull(candidateState.rinshanPointer - 1) == drawnTile &&
+                candidateState.deadWallReplacements.isNotEmpty() &&
+                candidateState.tilePool.getLocation(candidateState.deadWallReplacements.last()) == com.majiang.model.TileLocation.DEAD_WALL
+            if (!rinshanValid) {
+                val rejected = ActionReceipt(request.requestId, ReceiptStatus.REJECTED, reason = "SLEEVE_BLOOM_WALL_EMPTY")
+                storedReceipts[receiptKey] = StoredSubmission(SubmissionKind.SLEEVE_BLOOM, rejected, sleeveBloomPayload = currentPayload)
+                return MutationResult(rejected, emptyList(), false)
+            }
+        } else {
+            val rejected = ActionReceipt(request.requestId, ReceiptStatus.REJECTED, reason = "ACTION_NOT_AVAILABLE")
+            storedReceipts[receiptKey] = StoredSubmission(SubmissionKind.SLEEVE_BLOOM, rejected, sleeveBloomPayload = currentPayload)
+            return MutationResult(rejected, emptyList(), false)
+        }
+
+        // 5. 费用校验
+        val cost = config.cheatEconomy.costs["SLEEVE_BLOOM"] ?: 10
+        if (candidateState.cheatPoints[seat] < cost) {
+            val rejected = ActionReceipt(request.requestId, ReceiptStatus.REJECTED, reason = "INSUFFICIENT_FUNDS")
+            storedReceipts[receiptKey] = StoredSubmission(SubmissionKind.SLEEVE_BLOOM, rejected, sleeveBloomPayload = currentPayload)
+            return MutationResult(rejected, emptyList(), false)
+        }
+
+        // 6. 执行原子扣费与安装 offer
+        val coordResult = coordinator.submitSleeveBloom(seat, request, now)
+        if (coordResult !is ActionResult.Accepted) {
+            val reasonStr = when (coordResult) {
+                is ActionResult.Rejected -> coordResult.reason.name
+                else -> "REJECTED"
+            }
+            val rejected = ActionReceipt(request.requestId, ReceiptStatus.REJECTED, reason = reasonStr)
+            storedReceipts[receiptKey] = StoredSubmission(SubmissionKind.SLEEVE_BLOOM, rejected, sleeveBloomPayload = currentPayload)
+            return MutationResult(rejected, emptyList(), false)
+        }
+
+        // 7. 计时 rekey 延续（保留截止时间与储备）
+        val receipt = ActionReceipt(request.requestId, ReceiptStatus.APPLIED)
+        if (!isClosed && coordinator.session.lifecycle != SessionLifecycle.CLOSED) {
+            val newDecision = coordinator.queryDecision(seat)
+            val newKey = DecisionKey(round.roundId, seat, newDecision.decisionId)
+            decisionClock.rekey(timing.key, newKey)
+            storedReceipts[receiptKey] = StoredSubmission(SubmissionKind.SLEEVE_BLOOM, receipt, sleeveBloomPayload = currentPayload)
+            recordSettlementEvents(coordResult.events)
+        }
+
+        return MutationResult(receipt, coordResult.events, true)
+    }
+
+    /**
+     * 提交袖里藏花二选一决策请求
+     */
+    @Synchronized
+    fun submitSleeveBloomChoice(seat: Int, request: SleeveBloomChoiceRequest, now: Long): MutationResult {
+        if (seat !in 0..3) {
+            return MutationResult(ActionReceipt(request.requestId, ReceiptStatus.REJECTED, reason = "INVALID_SEAT"), emptyList(), false)
+        }
+        if (request.sessionId != coordinator.session.sessionId) {
+            return MutationResult(ActionReceipt(request.requestId, ReceiptStatus.REJECTED, reason = "DECISION_MISMATCH"), emptyList(), false)
+        }
+
+        // 1. 幂等与冲突校验
+        val currentPayload = NormalizedSleeveBloomChoicePayload(
+            sessionId = request.sessionId,
+            roundId = request.roundId,
+            decisionId = request.decisionId,
+            controlEpoch = request.controlEpoch,
+            offerId = request.offerId,
+            keep = request.keep
+        )
+        val receiptKey = ReceiptKey(seat, request.requestId)
+        val stored = storedReceipts[receiptKey]
+        if (stored != null) {
+            if (stored.kind == SubmissionKind.SLEEVE_BLOOM_CHOICE && stored.sleeveBloomChoicePayload == currentPayload) {
+                return MutationResult(stored.receipt, emptyList(), false)
+            } else {
+                val rejected = ActionReceipt(request.requestId, ReceiptStatus.REJECTED, reason = "REQUEST_ID_CONFLICT")
+                return MutationResult(rejected, emptyList(), false)
+            }
+        }
+        if (storedShufflePlans.any { it.key.seat == seat && it.key.requestId == request.requestId }) {
+            val rejected = ActionReceipt(request.requestId, ReceiptStatus.REJECTED, reason = "REQUEST_ID_CONFLICT")
+            return MutationResult(rejected, emptyList(), false)
+        }
+
+        // 首次请求门禁校验
+        if (!config.sleeveBloomConfig.enabled || !config.cheatEconomy.enabled || config.cheatEconomy.costs["SLEEVE_BLOOM"] != 10) {
+            val rejected = ActionReceipt(request.requestId, ReceiptStatus.REJECTED, reason = "SLEEVE_BLOOM_DISABLED")
+            storedReceipts[receiptKey] = StoredSubmission(SubmissionKind.SLEEVE_BLOOM_CHOICE, rejected, sleeveBloomChoicePayload = currentPayload)
+            return MutationResult(rejected, emptyList(), false)
+        }
+        if (isClosed || coordinator.session.lifecycle == SessionLifecycle.CLOSED) {
+            val rejected = ActionReceipt(request.requestId, ReceiptStatus.REJECTED, reason = "SESSION_CLOSED")
+            storedReceipts[receiptKey] = StoredSubmission(SubmissionKind.SLEEVE_BLOOM_CHOICE, rejected, sleeveBloomChoicePayload = currentPayload)
+            return MutationResult(rejected, emptyList(), false)
+        }
+        if (decisionClock.isPausedState) {
+            val rejected = ActionReceipt(request.requestId, ReceiptStatus.REJECTED, reason = "HOST_PAUSED")
+            storedReceipts[receiptKey] = StoredSubmission(SubmissionKind.SLEEVE_BLOOM_CHOICE, rejected, sleeveBloomChoicePayload = currentPayload)
+            return MutationResult(rejected, emptyList(), false)
+        }
+
+        if (isPreparationActive()) {
+            val rejected = ActionReceipt(request.requestId, ReceiptStatus.REJECTED, reason = "WRONG_PHASE")
+            storedReceipts[receiptKey] = StoredSubmission(SubmissionKind.SLEEVE_BLOOM_CHOICE, rejected, sleeveBloomChoicePayload = currentPayload)
+            return MutationResult(rejected, emptyList(), false)
+        }
+
+        // 2. 当前有效局与代次/决策标识校验
+        val round = coordinator.activeRound
+        if (round == null || round.state.phase == GamePhase.ROUND_END || request.roundId != round.roundId) {
+            val rejected = ActionReceipt(request.requestId, ReceiptStatus.REJECTED, reason = "DECISION_MISMATCH")
+            storedReceipts[receiptKey] = StoredSubmission(SubmissionKind.SLEEVE_BLOOM_CHOICE, rejected, sleeveBloomChoicePayload = currentPayload)
+            return MutationResult(rejected, emptyList(), false)
+        }
+
+        val currentDecision = coordinator.queryDecision(seat)
+        if (request.controlEpoch != currentDecision.controlEpoch) {
+            val rejected = ActionReceipt(request.requestId, ReceiptStatus.REJECTED, reason = "STALE_CONTROL_EPOCH")
+            storedReceipts[receiptKey] = StoredSubmission(SubmissionKind.SLEEVE_BLOOM_CHOICE, rejected, sleeveBloomChoicePayload = currentPayload)
+            return MutationResult(rejected, emptyList(), false)
+        }
+        if (request.decisionId != currentDecision.decisionId) {
+            val rejected = ActionReceipt(request.requestId, ReceiptStatus.REJECTED, reason = "DECISION_MISMATCH")
+            storedReceipts[receiptKey] = StoredSubmission(SubmissionKind.SLEEVE_BLOOM_CHOICE, rejected, sleeveBloomChoicePayload = currentPayload)
+            return MutationResult(rejected, emptyList(), false)
+        }
+
+        val controller = coordinator.controllerFor(seat)
+        if (controller !is SeatController.LocalHuman && controller !is SeatController.RemoteHuman) {
+            val rejected = ActionReceipt(request.requestId, ReceiptStatus.REJECTED, reason = "ACTION_NOT_AVAILABLE")
+            storedReceipts[receiptKey] = StoredSubmission(SubmissionKind.SLEEVE_BLOOM_CHOICE, rejected, sleeveBloomChoicePayload = currentPayload)
+            return MutationResult(rejected, emptyList(), false)
+        }
+
+        // 3. 权威截止时间校验
+        val timing = decisionClock.timing(seat)
+        val decisionKey = DecisionKey(round.roundId, seat, request.decisionId)
+        if (timing == null || timing.key != decisionKey) {
+            val rejected = ActionReceipt(request.requestId, ReceiptStatus.REJECTED, reason = "NO_ACTIVE_DECISION")
+            storedReceipts[receiptKey] = StoredSubmission(SubmissionKind.SLEEVE_BLOOM_CHOICE, rejected, sleeveBloomChoicePayload = currentPayload)
+            return MutationResult(rejected, emptyList(), false)
+        }
+        if (now >= timing.deadlineMillis) {
+            val rejected = ActionReceipt(request.requestId, ReceiptStatus.REJECTED, reason = "DEADLINE_EXPIRED")
+            storedReceipts[receiptKey] = StoredSubmission(SubmissionKind.SLEEVE_BLOOM_CHOICE, rejected, sleeveBloomChoicePayload = currentPayload)
+            return MutationResult(rejected, emptyList(), false)
+        }
+
+        // 4. 阶段与回合校验
+        val candidateState = round.readState()
+        if (candidateState.currentPlayer != seat) {
+            val rejected = ActionReceipt(request.requestId, ReceiptStatus.REJECTED, reason = "NOT_YOUR_TURN")
+            storedReceipts[receiptKey] = StoredSubmission(SubmissionKind.SLEEVE_BLOOM_CHOICE, rejected, sleeveBloomChoicePayload = currentPayload)
+            return MutationResult(rejected, emptyList(), false)
+        }
+        if (candidateState.phase != GamePhase.CHEAT_WINDOW || round.responseWindow != null) {
+            val rejected = ActionReceipt(request.requestId, ReceiptStatus.REJECTED, reason = "WRONG_PHASE")
+            storedReceipts[receiptKey] = StoredSubmission(SubmissionKind.SLEEVE_BLOOM_CHOICE, rejected, sleeveBloomChoicePayload = currentPayload)
+            return MutationResult(rejected, emptyList(), false)
+        }
+
+        // 5. 挂起 offer 匹配与局面一致性
+        val offer = candidateState.sleeveBloomOffer
+        if (offer == null || offer.seat != seat) {
+            val rejected = ActionReceipt(request.requestId, ReceiptStatus.REJECTED, reason = "SLEEVE_BLOOM_NO_PENDING_OFFER")
+            storedReceipts[receiptKey] = StoredSubmission(SubmissionKind.SLEEVE_BLOOM_CHOICE, rejected, sleeveBloomChoicePayload = currentPayload)
+            return MutationResult(rejected, emptyList(), false)
+        }
+        if (offer.offerId != request.offerId) {
+            val rejected = ActionReceipt(request.requestId, ReceiptStatus.REJECTED, reason = "SLEEVE_BLOOM_OFFER_MISMATCH")
+            storedReceipts[receiptKey] = StoredSubmission(SubmissionKind.SLEEVE_BLOOM_CHOICE, rejected, sleeveBloomChoicePayload = currentPayload)
+            return MutationResult(rejected, emptyList(), false)
+        }
+
+        val isConsistent = candidateState.turnNumber == offer.createdTurnNumber &&
+                candidateState.players[seat].drawnTile == offer.firstTile &&
+                candidateState.tilePool.getLocation(offer.firstTile) == com.majiang.model.TileLocation.hand(seat) &&
+                when (offer.drawKind) {
+                    SleeveBloomDrawKind.NORMAL -> {
+                        candidateState.wallPointer < candidateState.wallEndExclusive &&
+                                candidateState.wall.getOrNull(candidateState.wallPointer) == offer.secondTile &&
+                                candidateState.tilePool.getLocation(offer.secondTile) == com.majiang.model.TileLocation.WALL
+                    }
+                    SleeveBloomDrawKind.RINSHAN -> {
+                        candidateState.rinshanPointer in 1..4 &&
+                                candidateState.deadWall.getOrNull(candidateState.rinshanPointer - 1) == offer.firstTile &&
+                                candidateState.deadWallReplacements.isNotEmpty() &&
+                                candidateState.deadWallReplacements.lastOrNull() == offer.secondTile &&
+                                candidateState.tilePool.getLocation(offer.secondTile) == com.majiang.model.TileLocation.DEAD_WALL
+                    }
+                    SleeveBloomDrawKind.DEAL_EXTRA -> false
+                }
+
+        if (!isConsistent) {
+            coordinator.cleanStaleSleeveBloomOffer(seat)
+            val rejected = ActionReceipt(request.requestId, ReceiptStatus.REJECTED, reason = "SLEEVE_BLOOM_STALE_OFFER")
+            storedReceipts[receiptKey] = StoredSubmission(SubmissionKind.SLEEVE_BLOOM_CHOICE, rejected, sleeveBloomChoicePayload = currentPayload)
+            val newDecision = coordinator.queryDecision(seat)
+            val newKey = DecisionKey(round.roundId, seat, newDecision.decisionId)
+            decisionClock.rekey(timing.key, newKey)
+            return MutationResult(rejected, emptyList(), true)
+        }
+
+        // 6. 执行选择决策
+        val coordResult = coordinator.submitSleeveBloomChoice(seat, request)
+        if (coordResult !is ActionResult.Accepted) {
+            val reasonStr = when (coordResult) {
+                is ActionResult.Rejected -> coordResult.reason.name
+                else -> "REJECTED"
+            }
+            val rejected = ActionReceipt(request.requestId, ReceiptStatus.REJECTED, reason = reasonStr)
+            storedReceipts[receiptKey] = StoredSubmission(SubmissionKind.SLEEVE_BLOOM_CHOICE, rejected, sleeveBloomChoicePayload = currentPayload)
+            return MutationResult(rejected, emptyList(), false)
+        }
+
+        // 7. 计时 rekey 延续（保留截止时间与储备）
+        val receipt = ActionReceipt(request.requestId, ReceiptStatus.APPLIED)
+        if (!isClosed && coordinator.session.lifecycle != SessionLifecycle.CLOSED) {
+            val newDecision = coordinator.queryDecision(seat)
+            val newKey = DecisionKey(round.roundId, seat, newDecision.decisionId)
+            decisionClock.rekey(timing.key, newKey)
+            storedReceipts[receiptKey] = StoredSubmission(SubmissionKind.SLEEVE_BLOOM_CHOICE, receipt, sleeveBloomChoicePayload = currentPayload)
             recordSettlementEvents(coordResult.events)
         }
 
@@ -987,9 +1387,19 @@ class TableAuthority @JvmOverloads constructor(
         if (expiredTimings.isNotEmpty()) {
             val timing = expiredTimings.first()
             val seat = timing.key.seat
+
+            var effectiveTimingKey = timing.key
+            if (coordinator.activeRound?.state?.sleeveBloomOffer?.seat == seat) {
+                coordinator.resolveSleeveBloomKeepFirst(seat)
+                val newDecision = coordinator.queryDecision(seat)
+                val newKey = DecisionKey(timing.key.roundId, seat, newDecision.decisionId)
+                decisionClock.rekey(timing.key, newKey)
+                effectiveTimingKey = newKey
+            }
+
             val decision = coordinator.queryDecision(seat)
 
-            if (decision.decisionId == timing.key.decisionId && decision.options.isNotEmpty()) {
+            if (decision.decisionId == effectiveTimingKey.decisionId && decision.options.isNotEmpty()) {
                 val options = decision.options.map { it.action }
                 val view = coordinator.queryView(seat)
                 val defaultAction = TimeoutPolicy.choose(view, options)
@@ -997,7 +1407,7 @@ class TableAuthority @JvmOverloads constructor(
                 if (defaultAction != null) {
                     val actionResult = coordinator.handleAction(defaultAction)
                     if (actionResult is ActionResult.Accepted) {
-                        decisionClock.expire(timing.key, timing.generation)
+                        decisionClock.expire(effectiveTimingKey, timing.generation, now)
                         val activeRound = coordinator.activeRound
                         val win = activeRound?.responseWindow
                         if (activeRound != null && win == null) {
@@ -1079,6 +1489,15 @@ class TableAuthority @JvmOverloads constructor(
                 round.state.riichiDeclared[currPlayer] &&
                 round.state.players[currPlayer].drawnTile != null
             ) {
+                if (round.state.sleeveBloomOffer?.seat == currPlayer) {
+                    coordinator.resolveSleeveBloomKeepFirst(currPlayer)
+                    val oldTiming = decisionClock.timing(currPlayer)
+                    if (oldTiming != null) {
+                        val newDecision = coordinator.queryDecision(currPlayer)
+                        val newKey = DecisionKey(round.roundId, currPlayer, newDecision.decisionId)
+                        decisionClock.rekey(oldTiming.key, newKey)
+                    }
+                }
                 val actions = coordinator.legalActions(currPlayer)
                 val hasTsumo = actions.any { it is GameAction.DeclareTsumo }
                 val hasKan = actions.any { it is GameAction.DeclareKan }
@@ -1138,7 +1557,7 @@ class TableAuthority @JvmOverloads constructor(
                     decisionClock.open(key, now)
                 }
 
-                if (s in automatedSeats) {
+                if (s in automatedSeats && round?.state?.sleeveBloomOffer?.seat != s) {
                     val epoch = decision.controlEpoch
                     val view = coordinator.queryView(s).deepCopy()
                     val legals = decision.options.map { it.action.deepCopy() }
@@ -1471,6 +1890,23 @@ class TableAuthority @JvmOverloads constructor(
             null
         }
 
+        val sleeveBloomView = if (config.sleeveBloomConfig.enabled) {
+            SleeveBloomProjectionFactory.create(
+                observerSeat = seat,
+                activeRound = coordinator.activeRound,
+                view = view,
+                decision = decision,
+                controls = controls,
+                timing = decisionClock.timing(seat),
+                nowMillis = if (decisionClock.isPausedState && pausedAuthorityTimeMillis != null) pausedAuthorityTimeMillis!! else clock.nowMillis(),
+                isPaused = paused,
+                config = config.sleeveBloomConfig,
+                economyConfig = config.cheatEconomy
+            )
+        } else {
+            null
+        }
+
         return PlayerSnapshot(
             sessionId = coordinator.session.sessionId,
             roundId = snapshotRoundId,
@@ -1489,7 +1925,8 @@ class TableAuthority @JvmOverloads constructor(
             settlementEvents = settlementEvents,
             preparation = prepView,
             presentationPreview = presentationPreview,
-            tileMark = tileMarkView
+            tileMark = tileMarkView,
+            sleeveBloom = sleeveBloomView
         )
     }
 
@@ -1628,7 +2065,8 @@ class TableAuthority @JvmOverloads constructor(
                     costs = HashMap(effectiveCheatEconomy.costs)
                 ),
                 shuffleConfig = config.shuffleConfig.copy(),
-                tileMarkConfig = config.tileMarkConfig.copy()
+                tileMarkConfig = config.tileMarkConfig.copy(),
+                sleeveBloomConfig = config.sleeveBloomConfig.copy()
             )
         }
     }

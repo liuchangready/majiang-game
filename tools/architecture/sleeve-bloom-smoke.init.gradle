@@ -1,0 +1,23 @@
+gradle.projectsEvaluated {
+    def p = gradle.rootProject.project(':lwjgl3')
+    def out = gradle.rootProject.layout.buildDirectory.dir('sleeve-bloom/smoke-classes')
+    def compile = p.tasks.register('compileSleeveBloomSmoke', JavaCompile) {
+        dependsOn p.tasks.named('classes')
+        source gradle.rootProject.file('tools/architecture/SleeveBloomRenderSmoke.java')
+        classpath = p.sourceSets.main.runtimeClasspath
+        destinationDirectory.set(out)
+        options.release = 17
+        options.encoding = 'UTF-8'
+    }
+    p.tasks.register('sleeveBloomSmoke', JavaExec) {
+        dependsOn compile
+        classpath = p.files(out) + p.sourceSets.main.runtimeClasspath
+        mainClass = 'SleeveBloomRenderSmoke'
+        workingDir = gradle.rootProject.file('assets')
+        def width = gradle.rootProject.findProperty('smokeWidth') ?: '1280'
+        def disconnect = gradle.rootProject.findProperty('smokeDisconnect') == 'true'
+        systemProperty 'smoke.width', width
+        systemProperty 'smoke.disconnect', disconnect.toString()
+        systemProperty 'smoke.output', gradle.rootProject.file("build/sleeve-bloom/screenshots-${width}${disconnect ? '-disconnect' : ''}").absolutePath
+    }
+}

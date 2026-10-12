@@ -31,6 +31,8 @@ import com.majiang.transport.api.ProtocolRoomInfo
 import com.majiang.transport.api.ProtocolRoomLifecycle
 import com.majiang.transport.api.ProtocolShufflePlan
 import com.majiang.transport.api.ProtocolTileMarkRequest
+import com.majiang.transport.api.ProtocolSleeveBloomRequest
+import com.majiang.transport.api.ProtocolSleeveBloomChoiceRequest
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.atomic.AtomicBoolean
@@ -820,7 +822,8 @@ class InProcessBinding(
                 remoteTransport = false,
                 persistence = false,
                 resumption = true,
-                tileMarkSupported = true
+                tileMarkSupported = true,
+                sleeveBloomSupported = true
             )
         )
     }
@@ -930,6 +933,52 @@ class InProcessBinding(
         if (room != null) {
             val engineRequest = EngineProtocolMapper.toEngineTileMarkRequest(request)
             return room.submitTileMark(viewerSeat, engineRequest, makeValidator(room)).thenApply { receipt ->
+                EngineProtocolMapper.toProtocolReceipt(receipt)
+            }
+        }
+        return CompletableFuture.completedFuture(
+            ProtocolActionReceipt(request.requestId, ProtocolReceiptStatus.REJECTED, reason = "NOT_IN_ROOM")
+        )
+    }
+
+    override fun submitSleeveBloom(request: ProtocolSleeveBloomRequest): CompletableFuture<ProtocolActionReceipt> {
+        if (closed) {
+            return CompletableFuture.completedFuture(
+                ProtocolActionReceipt(request.requestId, ProtocolReceiptStatus.REJECTED, reason = "SESSION_CLOSED")
+            )
+        }
+        if (role == InProcessRole.SPECTATOR) {
+            return CompletableFuture.completedFuture(
+                ProtocolActionReceipt(request.requestId, ProtocolReceiptStatus.REJECTED, reason = "SPECTATOR_READ_ONLY")
+            )
+        }
+        val room = currentRoom
+        if (room != null) {
+            val engineRequest = EngineProtocolMapper.toEngineSleeveBloomRequest(request)
+            return room.submitSleeveBloom(viewerSeat, engineRequest, makeValidator(room)).thenApply { receipt ->
+                EngineProtocolMapper.toProtocolReceipt(receipt)
+            }
+        }
+        return CompletableFuture.completedFuture(
+            ProtocolActionReceipt(request.requestId, ProtocolReceiptStatus.REJECTED, reason = "NOT_IN_ROOM")
+        )
+    }
+
+    override fun submitSleeveBloomChoice(request: ProtocolSleeveBloomChoiceRequest): CompletableFuture<ProtocolActionReceipt> {
+        if (closed) {
+            return CompletableFuture.completedFuture(
+                ProtocolActionReceipt(request.requestId, ProtocolReceiptStatus.REJECTED, reason = "SESSION_CLOSED")
+            )
+        }
+        if (role == InProcessRole.SPECTATOR) {
+            return CompletableFuture.completedFuture(
+                ProtocolActionReceipt(request.requestId, ProtocolReceiptStatus.REJECTED, reason = "SPECTATOR_READ_ONLY")
+            )
+        }
+        val room = currentRoom
+        if (room != null) {
+            val engineRequest = EngineProtocolMapper.toEngineSleeveBloomChoiceRequest(request)
+            return room.submitSleeveBloomChoice(viewerSeat, engineRequest, makeValidator(room)).thenApply { receipt ->
                 EngineProtocolMapper.toProtocolReceipt(receipt)
             }
         }

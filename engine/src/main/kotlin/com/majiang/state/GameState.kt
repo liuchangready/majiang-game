@@ -129,6 +129,16 @@ class GameState {
     /** 本局已入账的出千流水记录 */
     val cheatEntries: MutableList<CheatLedgerEntry> = mutableListOf()
 
+    // === 袖里藏花 ===
+    /** 当前挂起的二选一；null 表示无 */
+    var sleeveBloomOffer: com.majiang.cheat.bloom.SleeveBloomOffer? = null
+
+    /** 已使用的摸牌序号（turnNumber）；每次摸牌限一次，-1 表示当前摸牌未施术 */
+    var sleeveBloomUsedOnTurn: Int = -1
+
+    /** 最近一次摸牌来源 */
+    var lastDrawKind: com.majiang.cheat.bloom.SleeveBloomDrawKind = com.majiang.cheat.bloom.SleeveBloomDrawKind.DEAL_EXTRA
+
     // === 辅助方法 ===
     
     /** 牌山剩余可摸牌数：活牌山开区间长度 */
@@ -182,6 +192,9 @@ class GameState {
         playerKanCounts.fill(0)
         sleeveTiles.forEach { it.clear() }
         cheatEntries.clear()
+        sleeveBloomOffer = null
+        sleeveBloomUsedOnTurn = -1
+        lastDrawKind = com.majiang.cheat.bloom.SleeveBloomDrawKind.DEAL_EXTRA
         turnNumber = 0
         phase = GamePhase.STACKING
         tilePool.initializeAll(Zone.UNASSIGNED)
@@ -259,6 +272,10 @@ class GameState {
         this.isFirstUninterruptedGo = other.isFirstUninterruptedGo
         this.isRinshanDraw = other.isRinshanDraw
         this.totalKanCount = other.totalKanCount
+
+        this.sleeveBloomOffer = other.sleeveBloomOffer?.copy()
+        this.sleeveBloomUsedOnTurn = other.sleeveBloomUsedOnTurn
+        this.lastDrawKind = other.lastDrawKind
 
         // 深度复制 tilePool
         this.tilePool.copyFrom(other.tilePool)

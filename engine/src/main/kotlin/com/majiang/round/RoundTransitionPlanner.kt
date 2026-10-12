@@ -152,6 +152,7 @@ class RoundTransitionPlanner(
 
                     // 庄家第 14 张牌放入 drawnTile
                     val extraTile = TileMovement.dealExtra(candidate, candidate.dealerIndex)
+                    candidate.lastDrawKind = com.majiang.cheat.bloom.SleeveBloomDrawKind.DEAL_EXTRA
                     stepEvents.add(GameEvent.TileDealt(candidate.turnNumber, candidate.dealerIndex, extraTile))
 
                     stepEvents.add(GameEvent.DealingComplete(candidate.turnNumber))
@@ -166,6 +167,7 @@ class RoundTransitionPlanner(
                     candidate.turnNumber++
                     candidate.sameTurnFuriten[action.player] = false
                     candidate.isRinshanDraw = false
+                    candidate.lastDrawKind = com.majiang.cheat.bloom.SleeveBloomDrawKind.NORMAL
                     stepEvents.add(GameEvent.TileDrawn(candidate.turnNumber, action.player, tile, candidate.wallRemaining))
                     candidate.phase = GamePhase.CHEAT_WINDOW
                     newWindow = null
@@ -225,6 +227,7 @@ class RoundTransitionPlanner(
                 }
 
                 is GameAction.DeclareKan -> {
+                    require(candidate.totalKanCount < 4) { "Cannot declare 5th kan" }
                     when (action.kanType) {
                         MeldType.CLOSED_KAN -> {
                             val meld = TileMovement.closedKan(candidate, action.player, action.tiles)
@@ -241,6 +244,7 @@ class RoundTransitionPlanner(
                             candidate.phase = GamePhase.KAN_DRAW
                             val rinshanTile = TileMovement.drawRinshan(candidate, action.player)
                             candidate.isRinshanDraw = true
+                            candidate.lastDrawKind = com.majiang.cheat.bloom.SleeveBloomDrawKind.RINSHAN
                             candidate.turnNumber++
                             candidate.sameTurnFuriten[action.player] = false
                             stepEvents.add(GameEvent.RinshanDraw(candidate.turnNumber, action.player, rinshanTile))
@@ -372,6 +376,7 @@ class RoundTransitionPlanner(
         candidate.turnNumber++
         candidate.sameTurnFuriten[nextPlayer] = false
         candidate.isRinshanDraw = false
+        candidate.lastDrawKind = com.majiang.cheat.bloom.SleeveBloomDrawKind.NORMAL
         events.add(GameEvent.TileDrawn(candidate.turnNumber, nextPlayer, tile, candidate.wallRemaining))
         candidate.phase = GamePhase.CHEAT_WINDOW
         return null
@@ -640,6 +645,7 @@ class RoundTransitionPlanner(
         tiles: List<Tile>,
         events: MutableList<GameEvent>
     ) {
+        require(candidate.totalKanCount < 4) { "Cannot declare 5th kan" }
         val handTiles = tiles.filter { it != calledTile }
         val meld = TileMovement.openKan(candidate, player, calledTile, fromPlayer, handTiles)
         candidate.totalKanCount++
@@ -656,6 +662,7 @@ class RoundTransitionPlanner(
         candidate.phase = GamePhase.KAN_DRAW
         val rinshan = TileMovement.drawRinshan(candidate, player)
         candidate.isRinshanDraw = true
+        candidate.lastDrawKind = com.majiang.cheat.bloom.SleeveBloomDrawKind.RINSHAN
         candidate.turnNumber++
         candidate.sameTurnFuriten[player] = false
         events.add(GameEvent.RinshanDraw(candidate.turnNumber, player, rinshan))
@@ -668,6 +675,7 @@ class RoundTransitionPlanner(
         addedTile: Tile,
         events: MutableList<GameEvent>
     ) {
+        require(candidate.totalKanCount < 4) { "Cannot declare 5th kan" }
         val meld = TileMovement.addedKan(candidate, player, addedTile)
         candidate.totalKanCount++
         candidate.playerKanCounts[player]++
@@ -682,6 +690,7 @@ class RoundTransitionPlanner(
         candidate.phase = GamePhase.KAN_DRAW
         val rinshan = TileMovement.drawRinshan(candidate, player)
         candidate.isRinshanDraw = true
+        candidate.lastDrawKind = com.majiang.cheat.bloom.SleeveBloomDrawKind.RINSHAN
         candidate.turnNumber++
         candidate.sameTurnFuriten[player] = false
         events.add(GameEvent.RinshanDraw(candidate.turnNumber, player, rinshan))
@@ -703,6 +712,7 @@ class RoundTransitionPlanner(
         outcome: RoundOutcome,
         stepEvents: List<GameEvent>
     ): RoundResult {
+        candidate.sleeveBloomOffer = null
         val startingScores = round.startingScores.toList()
         val finalScores = candidate.scores.toList()
         val totalDeltas = (0 until 4).map { finalScores[it] - startingScores[it] }

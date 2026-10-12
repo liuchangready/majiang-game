@@ -1,6 +1,6 @@
 # 🀄 Server ↔ Client 接口与协议规范 (V4)
 
-本文档说明当前 V4 的服务端接口、协议 DTO、客户端门面与可靠 UDP 传输。2026-10-07 已按当前源码校对，见 [本次验收](v4-migration/ACCEPTANCE-CONNECTION-OWNERSHIP.md)。
+本文档说明当前 V4 的服务端接口、协议 DTO、客户端门面与可靠 UDP 传输。连接控制见 [2026-10-07 验收](v4-migration/ACCEPTANCE-CONNECTION-OWNERSHIP.md)；2026-10-12 补充袖里藏花接口，见 [E2 独立验收](sleeve-bloom/ACCEPTANCE-E2.md)。
 
 ---
 
@@ -95,6 +95,8 @@ interface SessionApi {
     fun submit(choice: ProtocolActionChoice): CompletableFuture<ProtocolActionReceipt>
     fun submitShufflePlan(plan: ProtocolShufflePlan): CompletableFuture<ProtocolActionReceipt>
     fun submitTileMark(request: ProtocolTileMarkRequest): CompletableFuture<ProtocolActionReceipt>
+    fun submitSleeveBloom(request: ProtocolSleeveBloomRequest): CompletableFuture<ProtocolActionReceipt>
+    fun submitSleeveBloomChoice(request: ProtocolSleeveBloomChoiceRequest): CompletableFuture<ProtocolActionReceipt>
     fun start(): CompletableFuture<ProtocolActionReceipt>
     fun nextRound(): CompletableFuture<ProtocolActionReceipt>
     fun resume(cursor: Long): CompletableFuture<ProtocolPlayerSnapshot>
@@ -151,7 +153,7 @@ interface PushChannel {
 
 ### 3.4 落汗：`submitTileMark`
 
-`ApiTags.SUBMIT_TILE_MARK` 的线路值为 `submitTileMark`，载荷放在 `ApiRequest.tileMark`，包含 `requestId`、`sessionId`、`roundId`、`decisionId`、`controlEpoch` 与 `tileIds`。信封和载荷的请求 ID 必须一致，不能混入 `choice` 或 `shufflePlan`。座位由绑定身份确定，请求不能指定所有者、费用或有效期。
+`ApiTags.SUBMIT_TILE_MARK` 的线路值为 `SUBMIT_TILE_MARK`，门面方法为 `submitTileMark`。载荷放在 `ApiRequest.tileMark`，包含 `requestId`、`sessionId`、`roundId`、`decisionId`、`controlEpoch` 与 `tileIds`。信封和载荷的请求 ID 必须一致，不能混入其他动作载荷。座位由绑定身份确定，请求不能指定所有者、费用或有效期。
 
 房间需显式启用 `tileMarkConfig.enabled`，同时开启经济并配置 `TILE_MARK=10`；模型默认关闭。新服务端的 `tileMarkSupported=true` 表示实现支持该接口，不代表每个房间都已启用；缺失能力字段按 false 处理。进程内及 UDP 请求统一进入 `ServerTableHost` 串行队列执行身份校验与权威裁决。
 
@@ -163,13 +165,23 @@ interface PushChannel {
 
 ---
 
+### 3.5 袖里藏花：激活与二选一
+
+线路标签分别为 `SUBMIT_SLEEVE_BLOOM` 和 `SUBMIT_SLEEVE_BLOOM_CHOICE`，门面方法为 `submitSleeveBloom` 和 `submitSleeveBloomChoice`。激活载荷 `ApiRequest.sleeveBloom` 包含 `requestId/sessionId/roundId/decisionId/controlEpoch`；选择载荷 `ApiRequest.sleeveBloomChoice` 在此基础上增加 `offerId` 与 `keep`（`FIRST` 或 `SECOND`）。两类载荷与其他动作载荷互斥，信封请求ID必须与载荷一致；拒绝未知字段、非法代次及客户端指定座位、候选、费用等权威字段。
+
+`sleeveBloomConfig.enabled` 默认关闭；启用须同时开启经济、显式配置 `SLEEVE_BLOOM=10`。能力字段 `sleeveBloomSupported` 缺失按false处理；true只表示服务端实现支持。激活在本人正常或岭上摸牌后的千术窗口原子扣10，庄家起手第14张及立直后禁止；选择不再扣费。每次摸牌最多施术一次，原deadline不变；挂起时其他普通动作与落汗拒绝，取消保留第一张后继续决策，超时保留第一张再默认摸切。
+
+`ProtocolPlayerSnapshot.sleeveBloom` 仅向获准的本人私有流投影。`pendingOffer` 包含两张实体候选、来源、offerId、权威deadline及当前决策/控制代次，不写入公开或观战快照。选择没有领域事件时也推送完整私有状态；客户端必须用新快照替换旧offer，不能等待事件才关闭面板。恢复通过完整快照保留未结束的offer；托管重连须先显式收回控制，使用新决策身份提交。
+
+进程内与UDP统一入每桌串行队列，先校验可信会话绑定，再由领域核对幂等与当前身份/权限/截止。相同请求重放不重复扣费或交换；激活与选择共用领域去重命名空间，改载荷或跨这两类API撞ID返回 `REQUEST_ID_CONFLICT`。观战写入在本地返回 `SPECTATOR_READ_ONLY`，UDP返回 `UNAUTHENTICATED_SESSION`。完整物理语义、失败码和阶段进度见 [袖里藏花设计](sleeve-bloom/DESIGN.md)。
+
 ## 4. 客户端门面模型 (client.api)
 
 `client` 模块对外暴露完全解耦的门面与纯数据视图，表现层仅与以下接口交互：
 
 ### 4.1 门面抽象
 - **`LobbySession`**：大厅交互（建房、加房、准备、配置修改、房间广播监听）；
-- **`GameSession`**：对局交互（拉取快照 `snapshot()`、提交决策 `submit()`、码牌计划 `submitShufflePlan()`、落汗 `submitTileMark()`、开赛 `start()`、下一局 `nextRound()`、收回控制 `claimControl()`、交出托管 `releaseControl()`、推送监听 `onUpdate()`）；
+- **`GameSession`**：对局交互（拉取快照 `snapshot()`、提交决策 `submit()`、码牌计划 `submitShufflePlan()`、落汗 `submitTileMark()`、袖里藏花 `submitSleeveBloom()` / `submitSleeveBloomChoice()`、开赛 `start()`、下一局 `nextRound()`、收回控制 `claimControl()`、交出托管 `releaseControl()`、推送监听 `onUpdate()`）；
 - **`SpectatorSession`**：观战交互（拉取公开快照 `publicSnapshot()`、对账恢复 `resumePublic()`、公开更新监听 `onPublicUpdate()`）；
 - **`ServerConnectionSession`**：统一组合门面（位于 `client.session`），管理底层连接生命周期、自动重连与绑定切换。
 
@@ -181,6 +193,7 @@ interface PushChannel {
 - `Receipt`：包含 `requestId`、`ReceiptStatus (APPLIED / RECORDED / REJECTED)`、`cursor` 与 `reason`；
 - `ActionChoice`：提交决策的幂等载荷（包含 `requestId`、`roundId`、`decisionId`、`controlEpoch`、`optionId`）。
 - `TileMarkRequest` / `TileMarkView` / `RiverPositionView`：独立客户端落汗请求、私有追踪视图与当前牌河位置；`GameSnapshotView.tileMark` 可空。集合防御复制且只读，提交沿用 `isPending` 和连接/房间代次，回执不乐观改变费用或标记。
+- `SleeveBloomRequest` / `SleeveBloomChoiceRequest` / `SleeveBloomView`：独立客户端激活、选择与私有候选模型；`GameSnapshotView.sleeveBloom` 可空。两类提交与普通动作共用在途锁；失败、取消或绑定切换只释放对应请求的锁，旧回执不能覆盖新身份状态。回执不乐观扣费、换牌或创建offer。
 
 ---
 

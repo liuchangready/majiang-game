@@ -89,7 +89,8 @@ class TileMarkPanel(
         riichiSelecting: Boolean,
         meldSelecting: Boolean,
         tileSkin: TileSkin? = null,
-        tileDrawBuffer: TileDrawBuffer? = null
+        tileDrawBuffer: TileDrawBuffer? = null,
+        sleeveBloomChoosing: Boolean = false
     ) {
         if (snapshot == null) return
         val mark = snapshot.tileMark ?: return
@@ -105,7 +106,8 @@ class TileMarkPanel(
                 !session.isPending &&
                 !isSubmitting &&
                 !riichiSelecting &&
-                !meldSelecting
+                !meldSelecting &&
+                !sleeveBloomChoosing
 
             shape.begin(ShapeRenderer.ShapeType.Filled)
             shape.color = if (canOpen) Color(0.85f, 0.45f, 0.15f, 1f) else Color(0.25f, 0.25f, 0.25f, 0.7f)

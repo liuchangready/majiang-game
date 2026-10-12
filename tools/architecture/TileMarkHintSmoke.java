@@ -58,7 +58,7 @@ public final class TileMarkHintSmoke extends ApplicationAdapter {
         var options = V4SmokeSession.options(action);
         session.publishSnapshot(new GameSnapshotView("hint-session","hint-round","hint-epoch",++cursor,
             1L,1L,builder.build(),new DecisionView("hint-round","hint-decision",0,List.of(action),options),
-            List.of(),List.of(90,100,100,100),null,List.of(),false,null,List.of(),null,null,null,mark),List.of());
+            List.of(),List.of(90,100,100,100),null,List.of(),false,null,List.of(),null,null,null,mark,null),List.of());
     }
     private void check(boolean condition,String message) { if(!condition) throw new AssertionError(message); }
     private Object panel() {
