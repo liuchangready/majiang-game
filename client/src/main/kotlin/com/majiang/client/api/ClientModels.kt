@@ -182,7 +182,8 @@ class MatchConfig(
     val cheatEconomy: CheatEconomyConfig = CheatEconomyConfig(),
     val shuffleConfig: ShuffleConfig = ShuffleConfig(),
     val tileMarkConfig: TileMarkConfig = TileMarkConfig(),
-    val sleeveBloomConfig: SleeveBloomConfig = SleeveBloomConfig()
+    val sleeveBloomConfig: SleeveBloomConfig = SleeveBloomConfig(),
+    val beamSwapConfig: BeamSwapConfig = BeamSwapConfig()
 ) {
     val winds: List<Int> = Collections.unmodifiableList(ArrayList(winds))
     val startingScores: List<Int> = Collections.unmodifiableList(ArrayList(startingScores))
@@ -203,6 +204,7 @@ class MatchConfig(
     operator fun component13(): ShuffleConfig = shuffleConfig
     operator fun component14(): TileMarkConfig = tileMarkConfig
     operator fun component15(): SleeveBloomConfig = sleeveBloomConfig
+    operator fun component16(): BeamSwapConfig = beamSwapConfig
 
     fun copy(
         playerCount: Int = this.playerCount,
@@ -219,13 +221,14 @@ class MatchConfig(
         cheatEconomy: CheatEconomyConfig = this.cheatEconomy,
         shuffleConfig: ShuffleConfig = this.shuffleConfig,
         tileMarkConfig: TileMarkConfig = this.tileMarkConfig,
-        sleeveBloomConfig: SleeveBloomConfig = this.sleeveBloomConfig
+        sleeveBloomConfig: SleeveBloomConfig = this.sleeveBloomConfig,
+        beamSwapConfig: BeamSwapConfig = this.beamSwapConfig
     ): MatchConfig = MatchConfig(
         playerCount, handsPerWind, winds, startingScores,
         allowExtension, allowAgariYame, bankruptcyEnabled,
         bankruptcyThreshold, bankruptcyInclusive, targetScore,
         tieBreakSeats, cheatEconomy, shuffleConfig, tileMarkConfig,
-        sleeveBloomConfig
+        sleeveBloomConfig, beamSwapConfig
     )
 
     fun deepCopy(): MatchConfig = copy(
@@ -251,7 +254,8 @@ class MatchConfig(
             cheatEconomy == other.cheatEconomy &&
             shuffleConfig == other.shuffleConfig &&
             tileMarkConfig == other.tileMarkConfig &&
-            sleeveBloomConfig == other.sleeveBloomConfig
+            sleeveBloomConfig == other.sleeveBloomConfig &&
+            beamSwapConfig == other.beamSwapConfig
     }
 
     override fun hashCode(): Int {
@@ -270,11 +274,12 @@ class MatchConfig(
         result = 31 * result + shuffleConfig.hashCode()
         result = 31 * result + tileMarkConfig.hashCode()
         result = 31 * result + sleeveBloomConfig.hashCode()
+        result = 31 * result + beamSwapConfig.hashCode()
         return result
     }
 
     override fun toString(): String =
-        "MatchConfig(playerCount=$playerCount, handsPerWind=$handsPerWind, winds=$winds, startingScores=$startingScores, allowExtension=$allowExtension, allowAgariYame=$allowAgariYame, bankruptcyEnabled=$bankruptcyEnabled, bankruptcyThreshold=$bankruptcyThreshold, bankruptcyInclusive=$bankruptcyInclusive, targetScore=$targetScore, tieBreakSeats=$tieBreakSeats, cheatEconomy=$cheatEconomy, shuffleConfig=$shuffleConfig, tileMarkConfig=$tileMarkConfig, sleeveBloomConfig=$sleeveBloomConfig)"
+        "MatchConfig(playerCount=$playerCount, handsPerWind=$handsPerWind, winds=$winds, startingScores=$startingScores, allowExtension=$allowExtension, allowAgariYame=$allowAgariYame, bankruptcyEnabled=$bankruptcyEnabled, bankruptcyThreshold=$bankruptcyThreshold, bankruptcyInclusive=$bankruptcyInclusive, targetScore=$targetScore, tieBreakSeats=$tieBreakSeats, cheatEconomy=$cheatEconomy, shuffleConfig=$shuffleConfig, tileMarkConfig=$tileMarkConfig, sleeveBloomConfig=$sleeveBloomConfig, beamSwapConfig=$beamSwapConfig)"
 }
 
 /**
@@ -287,7 +292,8 @@ class Capabilities(
     val persistence: Boolean = false,
     val resumption: Boolean = true,
     val tileMarkSupported: Boolean = false,
-    val sleeveBloomSupported: Boolean = false
+    val sleeveBloomSupported: Boolean = false,
+    val beamSwapSupported: Boolean = false
 ) {
     val supportedPlayerCounts: Set<Int> = Collections.unmodifiableSet(LinkedHashSet(supportedPlayerCounts))
 
@@ -298,6 +304,7 @@ class Capabilities(
     operator fun component5(): Boolean = resumption
     operator fun component6(): Boolean = tileMarkSupported
     operator fun component7(): Boolean = sleeveBloomSupported
+    operator fun component8(): Boolean = beamSwapSupported
 
     fun copy(
         protocolVersion: Int = this.protocolVersion,
@@ -306,9 +313,10 @@ class Capabilities(
         persistence: Boolean = this.persistence,
         resumption: Boolean = this.resumption,
         tileMarkSupported: Boolean = this.tileMarkSupported,
-        sleeveBloomSupported: Boolean = this.sleeveBloomSupported
+        sleeveBloomSupported: Boolean = this.sleeveBloomSupported,
+        beamSwapSupported: Boolean = this.beamSwapSupported
     ): Capabilities = Capabilities(
-        protocolVersion, supportedPlayerCounts, remoteTransport, persistence, resumption, tileMarkSupported, sleeveBloomSupported
+        protocolVersion, supportedPlayerCounts, remoteTransport, persistence, resumption, tileMarkSupported, sleeveBloomSupported, beamSwapSupported
     )
 
     override fun equals(other: Any?): Boolean {
@@ -320,7 +328,8 @@ class Capabilities(
             persistence == other.persistence &&
             resumption == other.resumption &&
             tileMarkSupported == other.tileMarkSupported &&
-            sleeveBloomSupported == other.sleeveBloomSupported
+            sleeveBloomSupported == other.sleeveBloomSupported &&
+            beamSwapSupported == other.beamSwapSupported
     }
 
     override fun hashCode(): Int {
@@ -331,11 +340,12 @@ class Capabilities(
         result = 31 * result + resumption.hashCode()
         result = 31 * result + tileMarkSupported.hashCode()
         result = 31 * result + sleeveBloomSupported.hashCode()
+        result = 31 * result + beamSwapSupported.hashCode()
         return result
     }
 
     override fun toString(): String =
-        "Capabilities(protocolVersion=$protocolVersion, supportedPlayerCounts=$supportedPlayerCounts, remoteTransport=$remoteTransport, persistence=$persistence, resumption=$resumption, tileMarkSupported=$tileMarkSupported)"
+        "Capabilities(protocolVersion=$protocolVersion, supportedPlayerCounts=$supportedPlayerCounts, remoteTransport=$remoteTransport, persistence=$persistence, resumption=$resumption, tileMarkSupported=$tileMarkSupported, sleeveBloomSupported=$sleeveBloomSupported, beamSwapSupported=$beamSwapSupported)"
 }
 
 /**

@@ -468,9 +468,9 @@ object SleeveBloomProjectionFactory {
         if (isPaused) {
             canApply = false
             disabledReason = "HOST_PAUSED"
-        } else if (pendingOffer != null) {
+        } else if (pendingOffer != null || state.beamSwapOffer != null) {
             canApply = false
-            disabledReason = "SLEEVE_BLOOM_ALREADY_PENDING"
+            disabledReason = if (pendingOffer != null) "SLEEVE_BLOOM_ALREADY_PENDING" else "BEAM_SWAP_ALREADY_PENDING"
         } else if (!isHuman) {
             canApply = false
             disabledReason = "ACTION_NOT_AVAILABLE"
@@ -489,7 +489,7 @@ object SleeveBloomProjectionFactory {
         } else if (state.lastDrawKind == SleeveBloomDrawKind.DEAL_EXTRA) {
             canApply = false
             disabledReason = "SLEEVE_BLOOM_DEALER_EXTRA_EXCLUDED"
-        } else if (state.sleeveBloomUsedOnTurn == state.turnNumber) {
+        } else if (state.sleeveBloomUsedOnTurn == state.turnNumber || state.beamSwapUsedOnTurn == state.turnNumber) {
             canApply = false
             disabledReason = "SLEEVE_BLOOM_ALREADY_USED_THIS_DRAW"
         } else if (state.lastDrawKind == SleeveBloomDrawKind.NORMAL && !normalValid) {

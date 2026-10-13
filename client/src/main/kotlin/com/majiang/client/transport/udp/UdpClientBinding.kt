@@ -33,6 +33,8 @@ import com.majiang.transport.api.ProtocolShufflePlan
 import com.majiang.transport.api.ProtocolTileMarkRequest
 import com.majiang.transport.api.ProtocolSleeveBloomRequest
 import com.majiang.transport.api.ProtocolSleeveBloomChoiceRequest
+import com.majiang.transport.api.ProtocolBeamSwapRequest
+import com.majiang.transport.api.ProtocolBeamSwapChoiceRequest
 import com.majiang.transport.udp.Fragmenter
 import com.majiang.transport.udp.HeartbeatPacer
 import com.majiang.transport.udp.PushOfferResult
@@ -1248,6 +1250,36 @@ class UdpClientBinding(
             api = ApiTags.SUBMIT_SLEEVE_BLOOM_CHOICE,
             requestId = request.requestId,
             sleeveBloomChoice = request
+        )
+        return sendRequest(apiReq) { rsp, _ ->
+            rsp.receipt ?: ProtocolActionReceipt(
+                requestId = request.requestId,
+                status = ProtocolReceiptStatus.REJECTED,
+                reason = rsp.error ?: ApiErrors.INTERNAL_ERROR
+            )
+        }
+    }
+
+    override fun submitBeamSwap(request: ProtocolBeamSwapRequest): CompletableFuture<ProtocolActionReceipt> {
+        val apiReq = ApiRequest(
+            api = ApiTags.SUBMIT_BEAM_SWAP,
+            requestId = request.requestId,
+            beamSwap = request
+        )
+        return sendRequest(apiReq) { rsp, _ ->
+            rsp.receipt ?: ProtocolActionReceipt(
+                requestId = request.requestId,
+                status = ProtocolReceiptStatus.REJECTED,
+                reason = rsp.error ?: ApiErrors.INTERNAL_ERROR
+            )
+        }
+    }
+
+    override fun submitBeamSwapChoice(request: ProtocolBeamSwapChoiceRequest): CompletableFuture<ProtocolActionReceipt> {
+        val apiReq = ApiRequest(
+            api = ApiTags.SUBMIT_BEAM_SWAP_CHOICE,
+            requestId = request.requestId,
+            beamSwapChoice = request
         )
         return sendRequest(apiReq) { rsp, _ ->
             rsp.receipt ?: ProtocolActionReceipt(

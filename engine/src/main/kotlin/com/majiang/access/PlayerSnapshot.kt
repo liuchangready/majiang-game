@@ -82,7 +82,8 @@ data class PlayerSnapshot(
     val preparation: ShufflePreparationView? = null,
     val presentationPreview: PlayerPresentationPreview? = null,
     val tileMark: com.majiang.cheat.mark.TileMarkView? = null,
-    val sleeveBloom: com.majiang.cheat.bloom.SleeveBloomView? = null
+    val sleeveBloom: com.majiang.cheat.bloom.SleeveBloomView? = null,
+    val beamSwap: com.majiang.cheat.beam.BeamSwapView? = null
 ) {
     /** 观察者座位快捷属性，代理至 view.viewerSeat */
     val viewerSeat: Int get() = view.viewerSeat
@@ -157,6 +158,36 @@ data class PlayerSnapshot(
                 }
             }
         }
+        if (beamSwap != null) {
+            require(beamSwap.cost == 10) { "beamSwap cost must be 10, got: ${beamSwap.cost}" }
+            require(beamSwap.controlEpoch >= 0L) { "beamSwap controlEpoch must be >= 0: ${beamSwap.controlEpoch}" }
+            require(beamSwap.stateVersion >= 0L) { "beamSwap stateVersion must be >= 0: ${beamSwap.stateVersion}" }
+            val pendingOffer = beamSwap.pendingOffer
+            if (pendingOffer != null) {
+                require(view.phase == com.majiang.state.GamePhase.CHEAT_WINDOW) {
+                    "pendingOffer requires CHEAT_WINDOW phase, got: ${view.phase}"
+                }
+                require(view.currentTurnPlayer == view.viewerSeat) {
+                    "pendingOffer requires current turn player to be viewer, current: ${view.currentTurnPlayer}, viewer: ${view.viewerSeat}"
+                }
+                require(view.myDrawnTile != null) {
+                    "pendingOffer requires view.myDrawnTile to exist"
+                }
+                require(pendingOffer.decisionId == decision.decisionId) {
+                    "pendingOffer decisionId (${pendingOffer.decisionId}) must match decision.decisionId (${decision.decisionId})"
+                }
+                require(pendingOffer.controlEpoch == decision.controlEpoch) {
+                    "pendingOffer controlEpoch (${pendingOffer.controlEpoch}) must match decision.controlEpoch (${decision.controlEpoch})"
+                }
+                val allowedHandTileIds = view.myClosedTiles.map { it.tileId }.toSet()
+                require(pendingOffer.selectableHandTileIds.all { it in allowedHandTileIds }) {
+                    "pendingOffer selectableHandTileIds (${pendingOffer.selectableHandTileIds}) must all be in view.myClosedTiles ($allowedHandTileIds)"
+                }
+                require(!pendingOffer.selectableHandTileIds.contains(view.myDrawnTile.tileId)) {
+                    "pendingOffer selectableHandTileIds cannot contain view.myDrawnTile"
+                }
+            }
+        }
     }
 
     fun deepCopy(): PlayerSnapshot = PlayerSnapshot(
@@ -178,7 +209,8 @@ data class PlayerSnapshot(
         preparation = preparation?.deepCopy(),
         presentationPreview = presentationPreview?.deepCopy(),
         tileMark = tileMark?.deepCopy(),
-        sleeveBloom = sleeveBloom?.deepCopy()
+        sleeveBloom = sleeveBloom?.deepCopy(),
+        beamSwap = beamSwap?.deepCopy()
     )
 }
 

@@ -1,0 +1,69 @@
+{
+  "taskId": "SB-KAN-DORA",
+  "recipient": "codex",
+  "status": "ready_for_review",
+  "revision": 2,
+  "feedbackHandled": "doc/sleeve-bloom/FEEDBACK-KAN-DORA-REVIEW1.md",
+  "feedbackActions": [
+    "更新 doc/RIICHI_RULES_DESIGN.md 3.1 节 Mermaid 流程图，反映暗杠立即翻宝、加杠抢杠裁决、明杠/加杠登记待翻及弃牌响应前翻待翻的真实时序",
+    "更新 doc/sleeve-bloom/DESIGN.md 首段区分历史验收，并在 SB-KAN-DORA 章节及规则 11.3 明确限定立直和牌才有里宝",
+    "更新 doc/sleeve-bloom/STATUS.md 为工作区改动和真实验证状态（不称提交），列全 Codex 新增测试与分工，保留第四杠禁用及岭上候选限定说明",
+    "恢复 RoundTransitionPlanner.kt 流局 when 中的 else -> DrawReason.EXHAUSTIVE 保持差异精简",
+    "更新 doc/sleeve-bloom/DELIVERY-ANTI-KAN-DORA.md 链接为相对路径，限定立直才有里宝，删除先于检视的绝对验收结论"
+  ],
+  "modifiedFiles": [
+    "engine/src/main/kotlin/com/majiang/state/GameState.kt",
+    "engine/src/main/kotlin/com/majiang/state/StateInvariants.kt",
+    "engine/src/main/kotlin/com/majiang/round/RoundTransitionPlanner.kt",
+    "doc/RIICHI_RULES_DESIGN.md",
+    "doc/sleeve-bloom/DESIGN.md",
+    "doc/sleeve-bloom/STATUS.md",
+    "doc/sleeve-bloom/DELIVERY-ANTI-KAN-DORA.md",
+    "doc/sleeve-bloom/CALLBACK-ANTI-KAN-DORA.json"
+  ],
+  "tests": {
+    "total": 1131,
+    "passed": 1131,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0,
+    "moduleBreakdown": {
+      "client": 136,
+      "engine": 427,
+      "presentation": 268,
+      "protocol": 158,
+      "server": 142
+    },
+    "sleeveBloomTests": {
+      "total": 50,
+      "contract": 21,
+      "kanDora": 15,
+      "wallAndRules": 14
+    }
+  },
+  "buildChecks": {
+    "testCommand": "./gradlew test :lwjgl3:classes :android:assembleDebug --rerun-tasks --no-build-cache",
+    "fullTestRerunTasks": "1131 passed, 0 failures, 0 errors, 0 skipped across all 5 modules",
+    "lwjgl3Classes": "BUILD SUCCESSFUL",
+    "androidAssembleDebug": "BUILD SUCCESSFUL",
+    "sleeveBloomSmoke1280": "SLEEVE_BLOOM_GL_PASS choices=2 fee=20 frames=583",
+    "sleeveBloomSmoke960": "SLEEVE_BLOOM_GL_PASS choices=2 fee=20 frames=568"
+  },
+  "ruleContractsImplemented": [
+    "暗杠成立后立即翻开本次杠宝牌，再摸岭上牌；自摸计入新杠宝牌（若立直和牌，翻开对应里宝；非立直和牌无里宝）",
+    "大明杠/加杠成立后先补牌，本次杠宝牌延迟到弃牌时翻开；弃牌响应/荣和算分前已翻开生效",
+    "大明杠/加杠后直接岭上自摸，本次未翻杠宝不计入；若立直和牌，里宝数量严格仅对应已翻表宝",
+    "加杠先完成抢杠裁决，被抢杠的这次杠不增加杠宝牌、不补牌",
+    "连续杠时，前一次已成立明杠待翻指示牌在后一次杠成立、下一次岭上摸牌前翻开；后一次若为暗杠立即再翻本次，若为明杠/加杠则留下本次待翻",
+    "后续加杠被抢时不得提前揭示前一次仍待翻的指示牌",
+    "最多五张表宝，终局清除待翻状态但不补翻，新局复位",
+    "待翻状态 pendingKanDoraCount 归属 GameState，完整深拷贝/恢复/事务回滚，StateInvariants 范围与守恒审计",
+    "sleeve-bloom 激活/选择/取消/拒绝/快照均不翻宝，超时保持 FIRST 后弃牌正常触发翻宝，选择 SECOND 岭上和牌用已翻宝牌计算",
+    "服务端权威状态、私有/公开快照、可见事件、客户端与 UI 同步真实翻开时点"
+  ],
+  "unverifiedBoundaries": [
+    "Android 实体机物理触控输入",
+    "非标准高 DPI 桌面环境物理屏幕截图"
+  ],
+  "remainingIssues": []
+}

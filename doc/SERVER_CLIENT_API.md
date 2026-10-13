@@ -1,6 +1,6 @@
 # 🀄 Server ↔ Client 接口与协议规范 (V4)
 
-本文档说明当前 V4 的服务端接口、协议 DTO、客户端门面与可靠 UDP 传输。连接控制见 [2026-10-07 验收](v4-migration/ACCEPTANCE-CONNECTION-OWNERSHIP.md)；2026-10-12 补充袖里藏花接口，见 [E2 独立验收](sleeve-bloom/ACCEPTANCE-E2.md)。
+本文档说明当前 V4 的服务端接口、协议 DTO、客户端门面与可靠 UDP 传输。连接控制见 [2026-10-07 验收](v4-migration/ACCEPTANCE-CONNECTION-OWNERSHIP.md)；袖里藏花接口见 [E2 独立验收](sleeve-bloom/ACCEPTANCE-E2.md)；2026-10-13补充偷梁换柱接口，见[线路独立验收](beam-swap/ACCEPTANCE-E2.md)。
 
 ---
 
@@ -175,13 +175,23 @@ interface PushChannel {
 
 进程内与UDP统一入每桌串行队列，先校验可信会话绑定，再由领域核对幂等与当前身份/权限/截止。相同请求重放不重复扣费或交换；激活与选择共用领域去重命名空间，改载荷或跨这两类API撞ID返回 `REQUEST_ID_CONFLICT`。观战写入在本地返回 `SPECTATOR_READ_ONLY`，UDP返回 `UNAUTHENTICATED_SESSION`。完整物理语义、失败码和阶段进度见 [袖里藏花设计](sleeve-bloom/DESIGN.md)。
 
+### 3.6 偷梁换柱：激活与暗手牌／槽位双选
+
+线路标签为 `SUBMIT_BEAM_SWAP` / `SUBMIT_BEAM_SWAP_CHOICE`，门面为 `submitBeamSwap` / `submitBeamSwapChoice`。激活载荷 `ApiRequest.beamSwap` 包含 `requestId/sessionId/roundId/decisionId/controlEpoch`；选择载荷 `ApiRequest.beamSwapChoice` 另含 `offerId/action`。`SWAP` 必含 `handTileId` 与 `targetSlot`；`KEEP_ORIGINAL` 必须省略二者，显式null也拒绝。槽位为 `{kind: WALL|DEAD_WALL|REPLACEMENT, index: 非负整数}`，index是容器绝对索引，不是画面相对序号。信封ID必须一致，载荷互斥，未知字段与目标实体ID注入拒绝。
+
+`beamSwapConfig.enabled` 与能力 `beamSwapSupported` 默认false；启用须开启经济并显式配置 `BEAM_SWAP=10`。本人摸牌后千术窗口激活原子扣10，选择不再扣费，保持原样和超时不退款，原deadline不延长。仅原有暗手牌能换出，当前摸牌／杠补牌及所有副露均不可交换。普通窗口可选活牌山接下来的至多8槽；杠后可选有效死山暗槽和替补，已取岭上槽及已翻宝牌排除。与袖里藏花同一次实际取牌互斥，第四杠仅禁止袖里藏花，偷梁换柱仍按有效窗口裁决。
+
+`ProtocolPlayerSnapshot.beamSwap` / `GameSnapshotView.beamSwap` 是可空私有视图。`pendingOffer` 给出可选原有暗手牌ID、候选槽位、deadline与决策代次；未标记候选只含slot/marked，只有本人有效落汗命中才含tile。其他座位及公开流不含施术者offer。无领域事件的选择和清理仍推送完整状态；客户端据快照更新，不乐观换牌或扣费。
+
+请求复用全部动作的共享在途锁；断线、关闭、重绑定会终结旧future。宿主在串行队列内先校验绑定，再进行领域幂等裁决；重复请求保留首次完整回执及cursor，包含权威拒绝；不同载荷返回 `REQUEST_ID_CONFLICT`，不能覆盖原回执。观战本地返回 `SPECTATOR_READ_ONLY`，UDP返回 `UNAUTHENTICATED_SESSION`。详细规则和失败码见[设计](beam-swap/DESIGN.md)，分层类型见[接口](beam-swap/INTERFACES.md)。
+
 ## 4. 客户端门面模型 (client.api)
 
 `client` 模块对外暴露完全解耦的门面与纯数据视图，表现层仅与以下接口交互：
 
 ### 4.1 门面抽象
 - **`LobbySession`**：大厅交互（建房、加房、准备、配置修改、房间广播监听）；
-- **`GameSession`**：对局交互（拉取快照 `snapshot()`、提交决策 `submit()`、码牌计划 `submitShufflePlan()`、落汗 `submitTileMark()`、袖里藏花 `submitSleeveBloom()` / `submitSleeveBloomChoice()`、开赛 `start()`、下一局 `nextRound()`、收回控制 `claimControl()`、交出托管 `releaseControl()`、推送监听 `onUpdate()`）；
+- **`GameSession`**：对局交互（拉取快照 `snapshot()`、提交决策 `submit()`、码牌计划 `submitShufflePlan()`、落汗 `submitTileMark()`、袖里藏花 `submitSleeveBloom()` / `submitSleeveBloomChoice()`、偷梁换柱 `submitBeamSwap()` / `submitBeamSwapChoice()`、开赛 `start()`、下一局 `nextRound()`、收回控制 `claimControl()`、交出托管 `releaseControl()`、推送监听 `onUpdate()`）；
 - **`SpectatorSession`**：观战交互（拉取公开快照 `publicSnapshot()`、对账恢复 `resumePublic()`、公开更新监听 `onPublicUpdate()`）；
 - **`ServerConnectionSession`**：统一组合门面（位于 `client.session`），管理底层连接生命周期、自动重连与绑定切换。
 

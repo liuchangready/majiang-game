@@ -189,6 +189,7 @@ class RoundTransitionPlanner(
                         isRiichiDiscard = isRiichiDiscard,
                         isTsumogiri = isTsumogiri
                     ))
+                    revealPendingKanDora(candidate, stepEvents)
                     candidate.phase = GamePhase.RESPONSE_WINDOW
                     val openResult = openResponseWindow(round, candidate, isChankan = false, pendingKan = null, stepEvents)
                     newWindow = openResult.window
@@ -220,6 +221,7 @@ class RoundTransitionPlanner(
                         isRiichiDiscard = true,
                         isTsumogiri = isTsumogiri
                     ))
+                    revealPendingKanDora(candidate, stepEvents)
                     candidate.phase = GamePhase.RESPONSE_WINDOW
                     val openResult = openResponseWindow(round, candidate, isChankan = false, pendingKan = null, stepEvents)
                     newWindow = openResult.window
@@ -238,6 +240,7 @@ class RoundTransitionPlanner(
                                 candidate.players[i].ippatsu = false
                             }
                             candidate.isFirstUninterruptedGo = false
+                            revealPendingKanDora(candidate, stepEvents)
                             revealNewDoraOnCandidate(candidate, stepEvents)
                             stepEvents.add(GameEvent.KanDeclared(candidate.turnNumber, action.player, meld, MeldType.CLOSED_KAN))
 
@@ -655,7 +658,8 @@ class RoundTransitionPlanner(
             candidate.players[i].ippatsu = false
         }
         candidate.isFirstUninterruptedGo = false
-        revealNewDoraOnCandidate(candidate, events)
+        revealPendingKanDora(candidate, events)
+        candidate.pendingKanDoraCount++
         events.add(GameEvent.KanDeclared(candidate.turnNumber, player, meld, MeldType.OPEN_KAN))
 
         candidate.currentPlayer = player
@@ -684,7 +688,8 @@ class RoundTransitionPlanner(
             candidate.players[i].ippatsu = false
         }
         candidate.isFirstUninterruptedGo = false
-        revealNewDoraOnCandidate(candidate, events)
+        revealPendingKanDora(candidate, events)
+        candidate.pendingKanDoraCount++
         events.add(GameEvent.KanDeclared(candidate.turnNumber, player, meld, MeldType.ADDED_KAN))
 
         candidate.phase = GamePhase.KAN_DRAW
@@ -698,11 +703,19 @@ class RoundTransitionPlanner(
     }
 
     private fun revealNewDoraOnCandidate(candidate: GameState, events: MutableList<GameEvent>) {
+        if (candidate.doraIndicators.size >= 5) return
         val nextDoraIndex = 4 + candidate.doraIndicators.size * 2
         if (nextDoraIndex < candidate.deadWall.size) {
             val indicator = candidate.deadWall[nextDoraIndex]
             candidate.doraIndicators.add(indicator)
             events.add(GameEvent.DoraRevealed(candidate.turnNumber, indicator, false))
+        }
+    }
+
+    private fun revealPendingKanDora(candidate: GameState, events: MutableList<GameEvent>) {
+        while (candidate.pendingKanDoraCount > 0) {
+            revealNewDoraOnCandidate(candidate, events)
+            candidate.pendingKanDoraCount--
         }
     }
 
@@ -713,6 +726,8 @@ class RoundTransitionPlanner(
         stepEvents: List<GameEvent>
     ): RoundResult {
         candidate.sleeveBloomOffer = null
+        candidate.beamSwapOffer = null
+        candidate.pendingKanDoraCount = 0
         val startingScores = round.startingScores.toList()
         val finalScores = candidate.scores.toList()
         val totalDeltas = (0 until 4).map { finalScores[it] - startingScores[it] }

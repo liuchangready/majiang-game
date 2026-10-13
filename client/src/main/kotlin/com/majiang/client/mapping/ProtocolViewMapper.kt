@@ -7,6 +7,15 @@ import com.majiang.transport.api.ProtocolAccessCapabilities
 import com.majiang.transport.api.ProtocolActionChoice
 import com.majiang.transport.api.ProtocolActionOption
 import com.majiang.transport.api.ProtocolActionReceipt
+import com.majiang.transport.api.ProtocolBeamSwapAction
+import com.majiang.transport.api.ProtocolBeamSwapCandidateView
+import com.majiang.transport.api.ProtocolBeamSwapChoiceRequest
+import com.majiang.transport.api.ProtocolBeamSwapConfig
+import com.majiang.transport.api.ProtocolBeamSwapOfferView
+import com.majiang.transport.api.ProtocolBeamSwapRequest
+import com.majiang.transport.api.ProtocolBeamSwapSlot
+import com.majiang.transport.api.ProtocolBeamSwapView
+import com.majiang.transport.api.ProtocolBeamSwapWindow
 import com.majiang.transport.api.ProtocolCheatEconomyConfig
 import com.majiang.transport.api.ProtocolCheatTechnique
 import com.majiang.transport.api.ProtocolClock
@@ -671,7 +680,8 @@ object ProtocolViewMapper {
         preparation = snap.preparation?.let { mapShufflePreparation(it) },
         presentationPreview = snap.presentationPreview?.let { mapPresentationPreview(it) },
         tileMark = snap.tileMark?.let { mapTileMark(it) },
-        sleeveBloom = snap.sleeveBloom?.let { mapSleeveBloom(it) }
+        sleeveBloom = snap.sleeveBloom?.let { mapSleeveBloom(it) },
+        beamSwap = snap.beamSwap?.let { mapBeamSwap(it) }
     )
 
     fun mapUpdate(update: ProtocolPlayerUpdate): GameUpdateView = GameUpdateView(
@@ -792,7 +802,8 @@ object ProtocolViewMapper {
         cheatEconomy = mapCheatEconomyConfig(config.cheatEconomy),
         shuffleConfig = mapShuffleConfig(config.shuffleConfig),
         tileMarkConfig = mapTileMarkConfig(config.tileMarkConfig),
-        sleeveBloomConfig = mapSleeveBloomConfig(config.sleeveBloomConfig)
+        sleeveBloomConfig = mapSleeveBloomConfig(config.sleeveBloomConfig),
+        beamSwapConfig = mapBeamSwapConfig(config.beamSwapConfig)
     )
 
     fun toProtocolMatchConfig(config: MatchConfig): ProtocolMatchConfig = ProtocolMatchConfig(
@@ -810,7 +821,8 @@ object ProtocolViewMapper {
         cheatEconomy = toProtocolCheatEconomyConfig(config.cheatEconomy),
         shuffleConfig = toProtocolShuffleConfig(config.shuffleConfig),
         tileMarkConfig = toProtocolTileMarkConfig(config.tileMarkConfig),
-        sleeveBloomConfig = toProtocolSleeveBloomConfig(config.sleeveBloomConfig)
+        sleeveBloomConfig = toProtocolSleeveBloomConfig(config.sleeveBloomConfig),
+        beamSwapConfig = toProtocolBeamSwapConfig(config.beamSwapConfig)
     )
 
     fun mapCapabilities(caps: ProtocolAccessCapabilities): Capabilities = Capabilities(
@@ -820,7 +832,8 @@ object ProtocolViewMapper {
         persistence = caps.persistence,
         resumption = caps.resumption,
         tileMarkSupported = caps.tileMarkSupported,
-        sleeveBloomSupported = caps.sleeveBloomSupported
+        sleeveBloomSupported = caps.sleeveBloomSupported,
+        beamSwapSupported = caps.beamSwapSupported
     )
 
     fun toProtocolCapabilities(caps: Capabilities): ProtocolAccessCapabilities = ProtocolAccessCapabilities(
@@ -830,7 +843,8 @@ object ProtocolViewMapper {
         persistence = caps.persistence,
         resumption = caps.resumption,
         tileMarkSupported = caps.tileMarkSupported,
-        sleeveBloomSupported = caps.sleeveBloomSupported
+        sleeveBloomSupported = caps.sleeveBloomSupported,
+        beamSwapSupported = caps.beamSwapSupported
     )
 
     fun mapRoomSummary(room: RoomSummary): RoomSummaryView = RoomSummaryView(
@@ -1429,5 +1443,119 @@ object ProtocolViewMapper {
         controlEpoch = view.controlEpoch,
         stateVersion = view.stateVersion,
         pendingOffer = view.pendingOffer?.let { toProtocolSleeveBloomOfferView(it) }
+    )
+
+    fun mapBeamSwapConfig(config: ProtocolBeamSwapConfig): BeamSwapConfig = BeamSwapConfig(
+        enabled = config.enabled
+    )
+
+    fun toProtocolBeamSwapConfig(config: BeamSwapConfig): ProtocolBeamSwapConfig = ProtocolBeamSwapConfig(
+        enabled = config.enabled
+    )
+
+    fun mapBeamSwapWindow(window: ProtocolBeamSwapWindow): BeamSwapWindow = when (window) {
+        ProtocolBeamSwapWindow.WALL -> BeamSwapWindow.WALL
+        ProtocolBeamSwapWindow.DEAD_WALL -> BeamSwapWindow.DEAD_WALL
+    }
+
+    fun toProtocolBeamSwapWindow(window: BeamSwapWindow): ProtocolBeamSwapWindow = when (window) {
+        BeamSwapWindow.WALL -> ProtocolBeamSwapWindow.WALL
+        BeamSwapWindow.DEAD_WALL -> ProtocolBeamSwapWindow.DEAD_WALL
+    }
+
+    fun mapBeamSwapAction(action: ProtocolBeamSwapAction): BeamSwapAction = when (action) {
+        ProtocolBeamSwapAction.SWAP -> BeamSwapAction.SWAP
+        ProtocolBeamSwapAction.KEEP_ORIGINAL -> BeamSwapAction.KEEP_ORIGINAL
+    }
+
+    fun toProtocolBeamSwapAction(action: BeamSwapAction): ProtocolBeamSwapAction = when (action) {
+        BeamSwapAction.SWAP -> ProtocolBeamSwapAction.SWAP
+        BeamSwapAction.KEEP_ORIGINAL -> ProtocolBeamSwapAction.KEEP_ORIGINAL
+    }
+
+    fun mapBeamSwapSlot(slot: ProtocolBeamSwapSlot): BeamSwapSlot = when (slot) {
+        is ProtocolBeamSwapSlot.WallSlot -> BeamSwapSlot.WallSlot(slot.index)
+        is ProtocolBeamSwapSlot.DeadWallSlot -> BeamSwapSlot.DeadWallSlot(slot.index)
+        is ProtocolBeamSwapSlot.ReplacementSlot -> BeamSwapSlot.ReplacementSlot(slot.index)
+    }
+
+    fun toProtocolBeamSwapSlot(slot: BeamSwapSlot): ProtocolBeamSwapSlot = when (slot) {
+        is BeamSwapSlot.WallSlot -> ProtocolBeamSwapSlot.WallSlot(slot.index)
+        is BeamSwapSlot.DeadWallSlot -> ProtocolBeamSwapSlot.DeadWallSlot(slot.index)
+        is BeamSwapSlot.ReplacementSlot -> ProtocolBeamSwapSlot.ReplacementSlot(slot.index)
+    }
+
+    fun mapBeamSwapCandidateView(view: ProtocolBeamSwapCandidateView): BeamSwapCandidateView = BeamSwapCandidateView(
+        slot = mapBeamSwapSlot(view.slot),
+        marked = view.marked,
+        tile = view.tile?.let { mapTile(it) }
+    )
+
+    fun toProtocolBeamSwapCandidateView(view: BeamSwapCandidateView): ProtocolBeamSwapCandidateView = ProtocolBeamSwapCandidateView(
+        slot = toProtocolBeamSwapSlot(view.slot),
+        marked = view.marked,
+        tile = view.tile?.let { toProtocolTile(it) }
+    )
+
+    fun toProtocolBeamSwapRequest(request: BeamSwapRequest): ProtocolBeamSwapRequest = ProtocolBeamSwapRequest(
+        requestId = request.requestId,
+        sessionId = request.sessionId,
+        roundId = request.roundId,
+        decisionId = request.decisionId,
+        controlEpoch = request.controlEpoch
+    )
+
+    fun toProtocolBeamSwapChoiceRequest(request: BeamSwapChoiceRequest): ProtocolBeamSwapChoiceRequest = ProtocolBeamSwapChoiceRequest(
+        requestId = request.requestId,
+        sessionId = request.sessionId,
+        roundId = request.roundId,
+        decisionId = request.decisionId,
+        controlEpoch = request.controlEpoch,
+        offerId = request.offerId,
+        action = toProtocolBeamSwapAction(request.action),
+        handTileId = request.handTileId,
+        targetSlot = request.targetSlot?.let { toProtocolBeamSwapSlot(it) }
+    )
+
+    fun mapBeamSwapOfferView(view: ProtocolBeamSwapOfferView): BeamSwapOfferView = BeamSwapOfferView(
+        offerId = view.offerId,
+        window = mapBeamSwapWindow(view.window),
+        candidates = view.candidates.map { mapBeamSwapCandidateView(it) },
+        selectableHandTileIds = view.selectableHandTileIds,
+        deadlineMillis = view.deadlineMillis,
+        decisionId = view.decisionId,
+        controlEpoch = view.controlEpoch
+    )
+
+    fun toProtocolBeamSwapOfferView(view: BeamSwapOfferView): ProtocolBeamSwapOfferView = ProtocolBeamSwapOfferView(
+        offerId = view.offerId,
+        window = toProtocolBeamSwapWindow(view.window),
+        candidates = view.candidates.map { toProtocolBeamSwapCandidateView(it) },
+        selectableHandTileIds = view.selectableHandTileIds,
+        deadlineMillis = view.deadlineMillis,
+        decisionId = view.decisionId,
+        controlEpoch = view.controlEpoch
+    )
+
+    fun mapBeamSwap(view: ProtocolBeamSwapView): BeamSwapView = BeamSwapView(
+        canApply = view.canApply,
+        disabledReason = view.disabledReason,
+        cost = view.cost,
+        window = view.window?.let { mapBeamSwapWindow(it) },
+        decisionId = view.decisionId,
+        controlEpoch = view.controlEpoch,
+        stateVersion = view.stateVersion,
+        pendingOffer = view.pendingOffer?.let { mapBeamSwapOfferView(it) }
+    )
+
+    fun toProtocolBeamSwap(view: BeamSwapView): ProtocolBeamSwapView = ProtocolBeamSwapView(
+        canApply = view.canApply,
+        disabledReason = view.disabledReason,
+        cost = view.cost,
+        window = view.window?.let { toProtocolBeamSwapWindow(it) },
+        decisionId = view.decisionId,
+        controlEpoch = view.controlEpoch,
+        stateVersion = view.stateVersion,
+        pendingOffer = view.pendingOffer?.let { toProtocolBeamSwapOfferView(it) }
     )
 }

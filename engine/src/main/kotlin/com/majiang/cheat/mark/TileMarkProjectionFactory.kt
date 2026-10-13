@@ -181,6 +181,12 @@ object TileMarkProjectionFactory {
         } else if (roundState.currentPlayer != observerSeat) {
             canApply = false
             disabledReason = "NOT_YOUR_TURN"
+        } else if (roundState.sleeveBloomOffer != null && roundState.sleeveBloomOffer?.seat == observerSeat) {
+            canApply = false
+            disabledReason = "SLEEVE_BLOOM_CHOICE_PENDING"
+        } else if (roundState.beamSwapOffer != null && roundState.beamSwapOffer?.seat == observerSeat) {
+            canApply = false
+            disabledReason = "BEAM_SWAP_CHOICE_PENDING"
         } else if (roundState.phase !in setOf(GamePhase.CHEAT_WINDOW, GamePhase.DISCARD) || activeRound.responseWindow != null) {
             canApply = false
             disabledReason = "WRONG_PHASE"

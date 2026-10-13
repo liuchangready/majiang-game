@@ -16,6 +16,7 @@ import com.majiang.client.session.ServerConnectionSession
 import com.majiang.client.api.SpectatorSession
 import com.majiang.client.api.ShuffleConfig
 import com.majiang.client.api.SleeveBloomConfig
+import com.majiang.client.api.BeamSwapConfig
 import com.majiang.client.api.TileMarkConfig
 import com.majiang.presentation.common.TableNavigation
 import com.majiang.presentation.common.UiAssets
@@ -284,7 +285,8 @@ class MahjongGame(
         lobbyFuture.thenCompose { lobby ->
             val defaultCosts = mapOf(
                 "TILE_MARK" to 10,
-                "SLEEVE_BLOOM" to 10
+                "SLEEVE_BLOOM" to 10,
+                "BEAM_SWAP" to 10
             )
             lobby.createRoom(playerName = "玩家", config = MatchConfig(
                 cheatEconomy = CheatEconomyConfig(
@@ -294,7 +296,8 @@ class MahjongGame(
                 ),
                 shuffleConfig = ShuffleConfig(enabled = true),
                 tileMarkConfig = TileMarkConfig(enabled = true),
-                sleeveBloomConfig = SleeveBloomConfig(enabled = true)
+                sleeveBloomConfig = SleeveBloomConfig(enabled = true),
+                beamSwapConfig = BeamSwapConfig(enabled = true)
             )).thenCompose {
                 lobby.start()
             }

@@ -1274,7 +1274,8 @@ class UdpTableServer @JvmOverloads constructor(
                     persistence = false,
                     resumption = true,
                     tileMarkSupported = true,
-                    sleeveBloomSupported = true
+                    sleeveBloomSupported = true,
+                    beamSwapSupported = true
                 )
                 completeLobby(0, ApiResponse(requestId = request.requestId, success = true, capabilities = caps))
             }
@@ -1367,6 +1368,8 @@ class UdpTableServer @JvmOverloads constructor(
             ApiTags.SUBMIT_TILE_MARK,
             ApiTags.SUBMIT_SLEEVE_BLOOM,
             ApiTags.SUBMIT_SLEEVE_BLOOM_CHOICE,
+            ApiTags.SUBMIT_BEAM_SWAP,
+            ApiTags.SUBMIT_BEAM_SWAP_CHOICE,
             ApiTags.START_MATCH,
             ApiTags.NEXT_ROUND,
             ApiTags.RESUME_CURSOR,
@@ -1600,7 +1603,8 @@ class UdpTableServer @JvmOverloads constructor(
                     persistence = false,
                     resumption = true,
                     tileMarkSupported = true,
-                    sleeveBloomSupported = true
+                    sleeveBloomSupported = true,
+                    beamSwapSupported = true
                 )
                 replySession(ApiResponse(requestId = request.requestId, success = true, capabilities = caps))
             }
@@ -1663,6 +1667,22 @@ class UdpTableServer @JvmOverloads constructor(
                     return
                 }
                 respondReceipt(room.submitSleeveBloomChoice(session, choice))
+            }
+            ApiTags.SUBMIT_BEAM_SWAP -> {
+                val beam = request.beamSwap
+                if (beam == null) {
+                    replySession(ApiResponse(requestId = request.requestId, success = false, error = ApiErrors.MALFORMED_REQUEST))
+                    return
+                }
+                respondReceipt(room.submitBeamSwap(session, beam))
+            }
+            ApiTags.SUBMIT_BEAM_SWAP_CHOICE -> {
+                val choice = request.beamSwapChoice
+                if (choice == null) {
+                    replySession(ApiResponse(requestId = request.requestId, success = false, error = ApiErrors.MALFORMED_REQUEST))
+                    return
+                }
+                respondReceipt(room.submitBeamSwapChoice(session, choice))
             }
             ApiTags.START_MATCH -> {
                 respondReceipt(room.startMatch(session))

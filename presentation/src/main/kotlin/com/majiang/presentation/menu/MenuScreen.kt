@@ -24,6 +24,7 @@ import com.majiang.client.api.RoomLifecycle
 import com.majiang.client.api.RoomSummaryView
 import com.majiang.client.api.ShuffleConfig
 import com.majiang.client.api.SleeveBloomConfig
+import com.majiang.client.api.BeamSwapConfig
 import com.majiang.client.api.TileMarkConfig
 import com.majiang.presentation.common.TableNavigation
 import com.majiang.presentation.common.UiAssets
@@ -663,20 +664,21 @@ class MenuScreen(
 
         font.data.setScale(1.8f)
         font.color = Color(1.0f, 0.85f, 0.35f, 1f)
-        drawCenteredText(batch, font, "-- 雀圣千术绝技秘籍 --", modalRect.x + modalRect.width / 2f, modalRect.y + 460f)
+        drawCenteredText(batch, font, "-- 雀圣千术绝技秘籍 --", modalRect.x + modalRect.width / 2f, modalRect.y + 465f)
 
-        font.data.setScale(1.0f)
+        font.data.setScale(0.92f)
         font.color = Color.WHITE
-        font.draw(batch, "1. 落汗绝技: 摸牌/出牌决策时，选择手牌中 4 张不同实体牌进行微痕标记。", modalRect.x + 50f, modalRect.y + 405f)
-        font.draw(batch, "2. 千术消耗: 每次落汗消耗 10 额度点数，每名玩家最多同时维持 12 张标记牌。", modalRect.x + 50f, modalRect.y + 365f)
-        font.draw(batch, "3. 有效期限: 当局立即生效，另持续后续 3 局；思考超时仅禁止新施术。", modalRect.x + 50f, modalRect.y + 325f)
-        font.draw(batch, "4. 洞察识别: 标记牌进入对手手牌时可识别牌面，打入牌河时精准定位标识。", modalRect.x + 50f, modalRect.y + 285f)
-        font.draw(batch, "5. 袖里藏花: 摸牌后出牌前消耗 10 额度，翻看第二候选牌二选一保留；", modalRect.x + 50f, modalRect.y + 245f)
-        font.draw(batch, "   第二候选为牌山次张或岭上次张；第四杠不可用；", modalRect.x + 50f, modalRect.y + 219f)
-        font.draw(batch, "   未选牌留在或退回原位；超时保留原牌并摸切，费用不退。", modalRect.x + 50f, modalRect.y + 193f)
+        font.draw(batch, "1. 落汗绝技: 摸牌/出牌决策时，选择手牌中 4 张不同实体牌进行微痕标记。", modalRect.x + 40f, modalRect.y + 425f)
+        font.draw(batch, "2. 千术消耗: 每次落汗消耗 10 额度点数，每名玩家最多同时维持 12 张标记牌。", modalRect.x + 40f, modalRect.y + 395f)
+        font.draw(batch, "3. 有效期限: 当局立即生效，另持续后续 3 局；思考超时仅禁止新施术。", modalRect.x + 40f, modalRect.y + 365f)
+        font.draw(batch, "4. 洞察识别: 标记牌进入对手手牌时可识别牌面，打入牌河时精准定位标识。", modalRect.x + 40f, modalRect.y + 335f)
+        font.draw(batch, "5. 袖里藏花: 摸牌后出牌前消耗 10 额度，翻看第二候选牌二选一保留；", modalRect.x + 40f, modalRect.y + 305f)
+        font.draw(batch, "   第二候选为牌山次张或岭上次张；第四杠不可用；超时保留原牌。", modalRect.x + 40f, modalRect.y + 280f)
+        font.draw(batch, "6. 偷梁换柱: 摸牌后出牌前消耗 10 额度，从牌山/王牌暗槽中选目标与原有暗手牌互换；", modalRect.x + 40f, modalRect.y + 250f)
+        font.draw(batch, "   候选暗槽不露牌面，落汗命中亮面；可保持原样；超时摸切费用不退。", modalRect.x + 40f, modalRect.y + 225f)
 
         font.color = Color(0.95f, 0.45f, 0.45f, 1f)
-        font.draw(batch, "注意: 立直后、非本人回合或思考超时禁止施展落汗与袖里藏花，请选准时机！", modalRect.x + 50f, modalRect.y + 150f)
+        font.draw(batch, "注意: 立直后、非本人回合或思考超时禁止施展千术，请选准时机！", modalRect.x + 40f, modalRect.y + 195f)
 
         font.color = Color.WHITE
         drawCenteredText(batch, font, "关闭 [X]", btnModalClose.x + btnModalClose.width / 2f, btnModalClose.y + 26f)
@@ -826,7 +828,8 @@ class MenuScreen(
                 attachLobby(lobby)
                 val defaultCosts = mapOf(
                     "TILE_MARK" to 10,
-                    "SLEEVE_BLOOM" to 10
+                    "SLEEVE_BLOOM" to 10,
+                    "BEAM_SWAP" to 10
                 )
                 lobby.createRoom(playerName = "玩家", config = MatchConfig(
                     cheatEconomy = CheatEconomyConfig(
@@ -836,7 +839,8 @@ class MenuScreen(
                     ),
                     shuffleConfig = ShuffleConfig(enabled = true),
                     tileMarkConfig = TileMarkConfig(enabled = true),
-                    sleeveBloomConfig = SleeveBloomConfig(enabled = true)
+                    sleeveBloomConfig = SleeveBloomConfig(enabled = true),
+                    beamSwapConfig = BeamSwapConfig(enabled = true)
                 ))
             }.thenCompose { snap ->
                 myViewerSeat = snap.viewerSeat
@@ -1028,7 +1032,8 @@ class MenuScreen(
             val lobby = activeLobby ?: return
             val defaultCosts = mapOf(
                 "TILE_MARK" to 10,
-                "SLEEVE_BLOOM" to 10
+                "SLEEVE_BLOOM" to 10,
+                "BEAM_SWAP" to 10
             )
             val config = MatchConfig(
                 handsPerWind = 4,
@@ -1040,7 +1045,8 @@ class MenuScreen(
                 ),
                 shuffleConfig = ShuffleConfig(enabled = cfgShuffleCheating),
                 tileMarkConfig = TileMarkConfig(enabled = true),
-                sleeveBloomConfig = SleeveBloomConfig(enabled = true)
+                sleeveBloomConfig = SleeveBloomConfig(enabled = true),
+                beamSwapConfig = BeamSwapConfig(enabled = true)
             )
             statusMessage = "正在创建房间..."
             val gen = ++requestGeneration

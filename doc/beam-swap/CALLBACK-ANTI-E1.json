@@ -1,0 +1,59 @@
+{
+  "taskId": "BS-E1",
+  "recipient": "codex",
+  "status": "ready_for_review",
+  "modifiedFiles": [
+    "engine/src/main/kotlin/com/majiang/cheat/beam/BeamSwapModels.kt",
+    "engine/src/main/kotlin/com/majiang/cheat/beam/BeamSwapProjectionFactory.kt",
+    "engine/src/main/kotlin/com/majiang/model/TileMovement.kt",
+    "engine/src/main/kotlin/com/majiang/state/GameState.kt",
+    "engine/src/main/kotlin/com/majiang/state/ActionResult.kt",
+    "engine/src/main/kotlin/com/majiang/state/StateInvariants.kt",
+    "engine/src/main/kotlin/com/majiang/match/MatchConfig.kt",
+    "engine/src/main/kotlin/com/majiang/access/PlayerSnapshot.kt",
+    "engine/src/main/kotlin/com/majiang/round/RoundTransitionPlanner.kt",
+    "engine/src/main/kotlin/com/majiang/cheat/bloom/SleeveBloomModels.kt",
+    "engine/src/main/kotlin/com/majiang/cheat/mark/TileMarkProjectionFactory.kt",
+    "engine/src/main/kotlin/com/majiang/application/ApplicationCoordinator.kt",
+    "engine/src/main/kotlin/com/majiang/authority/TableAuthority.kt",
+    "doc/beam-swap/DELIVERY-ANTI-E1.md",
+    "doc/beam-swap/CALLBACK-ANTI-E1.json"
+  ],
+  "interfaces": {
+    "models": "com.majiang.cheat.beam.BeamSwapConfig / BeamSwapWindow / BeamSwapAction / BeamSwapSlot / BeamSwapRequest / BeamSwapChoiceRequest / BeamSwapCandidate / BeamSwapOffer / BeamSwapCandidateView / BeamSwapOfferView / BeamSwapView",
+    "projection": "com.majiang.cheat.beam.BeamSwapProjectionFactory.create",
+    "authority": "TableAuthority.submitBeamSwap / TableAuthority.submitBeamSwapChoice",
+    "coordinator": "ApplicationCoordinator.submitBeamSwap / ApplicationCoordinator.submitBeamSwapChoice / resolveBeamSwapKeepOriginal / cleanStaleBeamSwapOffer",
+    "movement": "TileMovement.swapHandWithDeadWall"
+  },
+  "tests": {
+    "targeted": {
+      "command": "./gradlew :engine:test --tests '*BeamSwap*' --tests '*SleeveBloom*' --tests '*TileMark*'",
+      "exitCode": 0,
+      "tests": 131,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    "engineFull": {
+      "command": "./gradlew :engine:test",
+      "exitCode": 0,
+      "tests": 471,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    "classes": {
+      "command": "./gradlew classes",
+      "exitCode": 0
+    }
+  },
+  "unverifiedBoundaries": [
+    "BS-E2 network protocol DTO encoding and decoding (ProtocolBeamSwap*, ApiTags, TypeAdapters)",
+    "BS-E2 client SessionApi facade and in-flight request lock",
+    "BS-E2 server table host serial dispatch and UDP message distribution",
+    "BS-E3 presentation screens and tile face rendering overlay",
+    "Public matchmaking, persistence, or network accounts (out of scope per AGENTS.md)"
+  ],
+  "remainingIssues": []
+}

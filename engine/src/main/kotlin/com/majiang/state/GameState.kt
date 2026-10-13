@@ -85,6 +85,9 @@ class GameState {
     /** 里Dora指示牌列表 */
     val uraDoraIndicators: MutableList<Tile> = mutableListOf()
 
+    /** 待翻杠宝牌数量（大明杠/加杠成立后补牌、延迟到弃牌或后续杠成立时翻开） */
+    var pendingKanDoraCount: Int = 0
+
     // === 最后动作记录 ===
     /** 最后被打出的牌 */
     var lastDiscard: Tile? = null
@@ -139,6 +142,13 @@ class GameState {
     /** 最近一次摸牌来源 */
     var lastDrawKind: com.majiang.cheat.bloom.SleeveBloomDrawKind = com.majiang.cheat.bloom.SleeveBloomDrawKind.DEAL_EXTRA
 
+    // === 偷梁换柱 ===
+    /** 当前挂起的偷梁换柱选择；null 表示无 */
+    var beamSwapOffer: com.majiang.cheat.beam.BeamSwapOffer? = null
+
+    /** 已使用的摸牌序号（turnNumber）；每次摸牌与袖里藏花二选一，-1 表示当前摸牌未施术 */
+    var beamSwapUsedOnTurn: Int = -1
+
     // === 辅助方法 ===
     
     /** 牌山剩余可摸牌数：活牌山开区间长度 */
@@ -184,6 +194,7 @@ class GameState {
         riichiFuriten.fill(false)
         doraIndicators.clear()
         uraDoraIndicators.clear()
+        pendingKanDoraCount = 0
         lastDiscard = null
         lastDiscardPlayer = -1
         isFirstUninterruptedGo = true
@@ -194,6 +205,8 @@ class GameState {
         cheatEntries.clear()
         sleeveBloomOffer = null
         sleeveBloomUsedOnTurn = -1
+        beamSwapOffer = null
+        beamSwapUsedOnTurn = -1
         lastDrawKind = com.majiang.cheat.bloom.SleeveBloomDrawKind.DEAL_EXTRA
         turnNumber = 0
         phase = GamePhase.STACKING
@@ -267,6 +280,7 @@ class GameState {
         this.doraIndicators.addAll(other.doraIndicators)
         this.uraDoraIndicators.clear()
         this.uraDoraIndicators.addAll(other.uraDoraIndicators)
+        this.pendingKanDoraCount = other.pendingKanDoraCount
         this.lastDiscard = other.lastDiscard
         this.lastDiscardPlayer = other.lastDiscardPlayer
         this.isFirstUninterruptedGo = other.isFirstUninterruptedGo
@@ -275,6 +289,8 @@ class GameState {
 
         this.sleeveBloomOffer = other.sleeveBloomOffer?.copy()
         this.sleeveBloomUsedOnTurn = other.sleeveBloomUsedOnTurn
+        this.beamSwapOffer = other.beamSwapOffer?.copy()
+        this.beamSwapUsedOnTurn = other.beamSwapUsedOnTurn
         this.lastDrawKind = other.lastDrawKind
 
         // 深度复制 tilePool

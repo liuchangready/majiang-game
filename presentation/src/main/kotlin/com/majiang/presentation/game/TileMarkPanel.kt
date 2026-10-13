@@ -30,7 +30,8 @@ class TileMarkPanel(
 ) : Disposable {
 
     /** 几何包围盒契约 (1280x720 虚拟相机坐标系) */
-    val btnOpenRect = Rectangle(1080f, 150f, 140f, 44f)
+    val btnOpenRect: Rectangle
+        get() = RightActionColumnLayout.tileMarkRect()
     val btnConfirmRect = Rectangle(670f, 145f, 140f, 44f)
     val btnCancelRect = Rectangle(1030f, 145f, 170f, 44f)
 
@@ -90,7 +91,8 @@ class TileMarkPanel(
         meldSelecting: Boolean,
         tileSkin: TileSkin? = null,
         tileDrawBuffer: TileDrawBuffer? = null,
-        sleeveBloomChoosing: Boolean = false
+        sleeveBloomChoosing: Boolean = false,
+        beamSwapChoosing: Boolean = false
     ) {
         if (snapshot == null) return
         val mark = snapshot.tileMark ?: return
@@ -107,7 +109,8 @@ class TileMarkPanel(
                 !isSubmitting &&
                 !riichiSelecting &&
                 !meldSelecting &&
-                !sleeveBloomChoosing
+                !sleeveBloomChoosing &&
+                !beamSwapChoosing
 
             shape.begin(ShapeRenderer.ShapeType.Filled)
             shape.color = if (canOpen) Color(0.85f, 0.45f, 0.15f, 1f) else Color(0.25f, 0.25f, 0.25f, 0.7f)

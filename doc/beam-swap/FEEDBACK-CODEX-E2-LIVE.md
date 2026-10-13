@@ -1,0 +1,14 @@
+# Codex E2 开发中检视
+
+ProtocolBeamSwap适配器初审发现：
+
+1. OfferViewAdapter候选循环直接context.deserialize(elem, CandidateView)，Gson遇到JsonNull会直接返回null、跳过自定义adapter；当前OfferView只复制列表，因而`candidates:[null]`可能进入非空类型列表并在mapping/deepCopy触发NPE。请在反序列化前拒绝空元素和非对象元素。
+2. CandidateViewAdapter的必填slot若为null，context.deserialize返回null，adapter内会触发Kotlin非空异常。复核后确认decodeResponse外层已经将该异常包装为JsonParseException，不属于公共解码入口泄漏NPE；仍建议在必填嵌套对象处显式检查非null/对象类型。新增测试保留这条格式拒绝契约，实际必须修复的接受漏洞是第1项候选数组null元素。
+
+Codex已要求测试作者补充真实response解码负例；不得修改测试降低断言。其余已审模型、请求载荷互斥、严格SWAP/KEEP和未知字段校验暂未见缺陷；未实现部分不在这里记作问题。
+
+3. ServerTableHost新beam入口只缓存非REJECTED回执。真实流程：激活→以drawn作为source的非法选择得到拒绝及cursor A→合法KEEP推进到cursor B→重放原非法选择；authority虽返回原拒绝，host却重写cursor B，整条回执不再一致。DESIGN要求首次拒绝重放一致，请保留首次权威拒绝回执（包括STALE清理后的拒绝）且不要让不同payload的REQUEST_ID_CONFLICT覆盖或命中原回执。宿主绑定校验仍应先于回执重放。Codex补宿主回归，仅要求修正新beam路径，不借此扩大旧动作范围。
+
+4. 首轮真实UDP测试在capabilities().beamSwapSupported断言失败。EngineProtocolMapper已声明支持，但UdpTableServer两处CAPABILITIES响应（当前1277/1605附近）及InProcessBinding未绑定房间时的能力响应（828附近）仍只开启sleeveBloomSupported。请把实际支持beam的这些生产入口补全，不能把模型默认false改true来掩盖遗漏；旧服务缺失字段必须仍为false。
+
+5. Codex已修正Host测试自身的费用事件订阅夹具：PublicProjectionFactory本来就排除CheatPointsChanged，错误订阅public流导致fee.await超时。现在改为owner subscribeSeat(0)计数GameEvent，仍独立校验public不含beam私密字段。此项无需放宽生产公开投影，重新运行测试即可；首轮另外两项失败仍是上述真实生产问题。

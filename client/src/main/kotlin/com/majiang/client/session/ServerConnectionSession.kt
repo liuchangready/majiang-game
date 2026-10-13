@@ -2335,6 +2335,122 @@ class ServerConnectionSession(
         return resultFuture
     }
 
+    override fun submitBeamSwap(request: BeamSwapRequest): CompletableFuture<Receipt> {
+        val resultFuture = CompletableFuture<Receipt>()
+        if (closed) {
+            dispatch { resultFuture.completeExceptionally(IOException("Session closed")) }
+            return resultFuture
+        }
+        if (currentSpectatorBinding != null) {
+            dispatch { resultFuture.completeExceptionally(IllegalStateException("Cannot call player API while in SPECTATOR mode")) }
+            return resultFuture
+        }
+        if (!pendingState.compareAndSet(false, true)) {
+            val rejected = Receipt(
+                requestId = request.requestId,
+                status = ReceiptStatus.REJECTED,
+                reason = "ACTION_IN_FLIGHT"
+            )
+            dispatch { resultFuture.complete(rejected) }
+            return resultFuture
+        }
+
+        val actionId = actionSubmissionSeq.incrementAndGet()
+        activeActionId.set(actionId)
+
+        val epoch = currentEpoch.get()
+        val roomEpoch = currentRoomEpoch.get()
+        trackFuture(resultFuture, epoch)
+        trackRoomFuture(resultFuture, roomEpoch)
+        resultFuture.whenComplete { _, _ ->
+            if (activeActionId.compareAndSet(actionId, 0L)) {
+                pendingState.set(false)
+            }
+        }
+
+        try {
+            val protoRequest = ProtocolViewMapper.toProtocolBeamSwapRequest(request)
+            currentConnection.submitBeamSwap(protoRequest).whenComplete { protoReceipt, err ->
+                dispatch {
+                    if (closed || epoch != currentEpoch.get() || roomEpoch != currentRoomEpoch.get()) {
+                        resultFuture.completeExceptionally(IOException("Session closed or generation changed"))
+                        return@dispatch
+                    }
+                    if (err != null || protoReceipt == null) {
+                        resultFuture.completeExceptionally(err ?: IOException("Submit beam swap failed"))
+                    } else {
+                        try {
+                            resultFuture.complete(ProtocolViewMapper.mapReceipt(protoReceipt))
+                        } catch (t: Throwable) {
+                            resultFuture.completeExceptionally(t)
+                        }
+                    }
+                }
+            }
+        } catch (e: Throwable) {
+            resultFuture.completeExceptionally(e)
+        }
+        return resultFuture
+    }
+
+    override fun submitBeamSwapChoice(request: BeamSwapChoiceRequest): CompletableFuture<Receipt> {
+        val resultFuture = CompletableFuture<Receipt>()
+        if (closed) {
+            dispatch { resultFuture.completeExceptionally(IOException("Session closed")) }
+            return resultFuture
+        }
+        if (currentSpectatorBinding != null) {
+            dispatch { resultFuture.completeExceptionally(IllegalStateException("Cannot call player API while in SPECTATOR mode")) }
+            return resultFuture
+        }
+        if (!pendingState.compareAndSet(false, true)) {
+            val rejected = Receipt(
+                requestId = request.requestId,
+                status = ReceiptStatus.REJECTED,
+                reason = "ACTION_IN_FLIGHT"
+            )
+            dispatch { resultFuture.complete(rejected) }
+            return resultFuture
+        }
+
+        val actionId = actionSubmissionSeq.incrementAndGet()
+        activeActionId.set(actionId)
+
+        val epoch = currentEpoch.get()
+        val roomEpoch = currentRoomEpoch.get()
+        trackFuture(resultFuture, epoch)
+        trackRoomFuture(resultFuture, roomEpoch)
+        resultFuture.whenComplete { _, _ ->
+            if (activeActionId.compareAndSet(actionId, 0L)) {
+                pendingState.set(false)
+            }
+        }
+
+        try {
+            val protoRequest = ProtocolViewMapper.toProtocolBeamSwapChoiceRequest(request)
+            currentConnection.submitBeamSwapChoice(protoRequest).whenComplete { protoReceipt, err ->
+                dispatch {
+                    if (closed || epoch != currentEpoch.get() || roomEpoch != currentRoomEpoch.get()) {
+                        resultFuture.completeExceptionally(IOException("Session closed or generation changed"))
+                        return@dispatch
+                    }
+                    if (err != null || protoReceipt == null) {
+                        resultFuture.completeExceptionally(err ?: IOException("Submit beam swap choice failed"))
+                    } else {
+                        try {
+                            resultFuture.complete(ProtocolViewMapper.mapReceipt(protoReceipt))
+                        } catch (t: Throwable) {
+                            resultFuture.completeExceptionally(t)
+                        }
+                    }
+                }
+            }
+        } catch (e: Throwable) {
+            resultFuture.completeExceptionally(e)
+        }
+        return resultFuture
+    }
+
     override fun start(): CompletableFuture<Receipt> {
         val resultFuture = CompletableFuture<Receipt>()
         if (closed) {

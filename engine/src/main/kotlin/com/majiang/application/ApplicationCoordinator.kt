@@ -50,7 +50,8 @@ class ApplicationCoordinator(
     val deferAutomaticActions: Boolean = false,
     shuffleConfig: ShuffleConfig = ShuffleConfig(),
     cheatEconomyConfig: CheatEconomyConfig = CheatEconomyConfig(),
-    sleeveBloomConfig: SleeveBloomConfig = SleeveBloomConfig()
+    sleeveBloomConfig: SleeveBloomConfig = SleeveBloomConfig(),
+    beamSwapConfig: com.majiang.cheat.beam.BeamSwapConfig = com.majiang.cheat.beam.BeamSwapConfig()
 ) {
     var matchProgression: MatchProgression = matchProgression
         private set
@@ -62,6 +63,9 @@ class ApplicationCoordinator(
         private set
 
     var sleeveBloomConfig: SleeveBloomConfig = sleeveBloomConfig
+        private set
+
+    var beamSwapConfig: com.majiang.cheat.beam.BeamSwapConfig = beamSwapConfig
         private set
 
     val roundCommandProcessor: RoundCommandProcessor = RoundCommandProcessor(
@@ -276,6 +280,7 @@ class ApplicationCoordinator(
             this.shuffleConfig = newConfig.shuffleConfig.copy()
             this.cheatEconomyConfig = newConfig.cheatEconomy.copy()
             this.sleeveBloomConfig = newConfig.sleeveBloomConfig.copy()
+            this.beamSwapConfig = newConfig.beamSwapConfig.copy()
             round.updateLobbyConfig(newConfig)
 
             decisionRegistry.invalidateAll()
@@ -487,6 +492,9 @@ class ApplicationCoordinator(
             }
             if (activeRound?.state?.sleeveBloomOffer?.seat == seat) {
                 return ActionResult.Rejected(RejectionReason.SLEEVE_BLOOM_CHOICE_PENDING)
+            }
+            if (activeRound?.state?.beamSwapOffer?.seat == seat) {
+                return ActionResult.Rejected(RejectionReason.BEAM_SWAP_CHOICE_PENDING)
             }
 
             // 1. 请求幂等与回放校验（按座位去重，相同返回原回执，不同载荷冲突拒绝）
@@ -989,6 +997,9 @@ class ApplicationCoordinator(
             if (candidateState.sleeveBloomOffer != null && candidateState.sleeveBloomOffer?.seat == seat) {
                 return ActionResult.Rejected(RejectionReason.SLEEVE_BLOOM_CHOICE_PENDING)
             }
+            if (candidateState.beamSwapOffer != null && candidateState.beamSwapOffer?.seat == seat) {
+                return ActionResult.Rejected(RejectionReason.BEAM_SWAP_CHOICE_PENDING)
+            }
             if (candidateState.currentPlayer != seat) {
                 return ActionResult.Rejected(RejectionReason.NOT_YOUR_TURN)
             }
@@ -1179,10 +1190,10 @@ class ApplicationCoordinator(
             if (candidateState.lastDrawKind == SleeveBloomDrawKind.DEAL_EXTRA) {
                 return ActionResult.Rejected(RejectionReason.ACTION_NOT_AVAILABLE)
             }
-            if (candidateState.sleeveBloomOffer != null) {
+            if (candidateState.sleeveBloomOffer != null || candidateState.beamSwapOffer != null) {
                 return ActionResult.Rejected(RejectionReason.ACTION_NOT_AVAILABLE)
             }
-            if (candidateState.sleeveBloomUsedOnTurn == candidateState.turnNumber) {
+            if (candidateState.sleeveBloomUsedOnTurn == candidateState.turnNumber || candidateState.beamSwapUsedOnTurn == candidateState.turnNumber) {
                 return ActionResult.Rejected(RejectionReason.ACTION_NOT_AVAILABLE)
             }
 
@@ -1519,6 +1530,501 @@ class ApplicationCoordinator(
         }
     }
 
+    /**
+     * 提交偷梁换柱激活请求
+     */
+    fun submitBeamSwap(seat: Int, request: com.majiang.cheat.beam.BeamSwapRequest, now: Long): ActionResult {
+        if (currentExecutingThread.get() == Thread.currentThread()) {
+            return ActionResult.Rejected(RejectionReason.ACTION_NOT_AVAILABLE)
+        }
+        if (!rwLock.writeLock().tryLock()) {
+            return ActionResult.Rejected(RejectionReason.ACTION_NOT_AVAILABLE)
+        }
+        if (!isProcessingAction.compareAndSet(false, true)) {
+            rwLock.writeLock().unlock()
+            return ActionResult.Rejected(RejectionReason.ACTION_NOT_AVAILABLE)
+        }
+        currentExecutingThread.set(Thread.currentThread())
+
+        val allEvents = mutableListOf<GameEvent>()
+        var acceptedResultToReturn: ActionResult? = null
+        try {
+            if (session.lifecycle == SessionLifecycle.FINISHED || session.lifecycle == SessionLifecycle.CLOSED) {
+                return ActionResult.Rejected(RejectionReason.MATCH_FINISHED)
+            }
+            val round = activeRound ?: return ActionResult.Rejected(RejectionReason.WRONG_PHASE)
+            if (round.roundId != request.roundId) {
+                return ActionResult.Rejected(RejectionReason.WRONG_PHASE)
+            }
+            if (session.sessionId != request.sessionId) {
+                return ActionResult.Rejected(RejectionReason.WRONG_PHASE)
+            }
+            if (seat !in 0..3) {
+                return ActionResult.Rejected(RejectionReason.INVALID_PLAYER)
+            }
+            if (request.requestId.isBlank()) {
+                return ActionResult.Rejected(RejectionReason.ACTION_NOT_AVAILABLE)
+            }
+
+            if (!beamSwapConfig.enabled || !cheatEconomyConfig.enabled) {
+                return ActionResult.Rejected(RejectionReason.ACTION_NOT_AVAILABLE)
+            }
+            val cost = cheatEconomyConfig.costs["BEAM_SWAP"]
+                ?: return ActionResult.Rejected(RejectionReason.ACTION_NOT_AVAILABLE)
+            if (cost != 10) {
+                return ActionResult.Rejected(RejectionReason.ACTION_NOT_AVAILABLE)
+            }
+
+            val controller = controllerRegistry.getController(seat)
+            if (controller !is SeatController.LocalHuman && controller !is SeatController.RemoteHuman) {
+                return ActionResult.Rejected(RejectionReason.ACTION_NOT_AVAILABLE)
+            }
+            if (request.controlEpoch != controllerRegistry.getEpoch(seat)) {
+                return ActionResult.Rejected(RejectionReason.ACTION_NOT_AVAILABLE)
+            }
+
+            val candidateState = round.readState()
+            if (candidateState.currentPlayer != seat) {
+                return ActionResult.Rejected(RejectionReason.NOT_YOUR_TURN)
+            }
+            if (candidateState.phase != GamePhase.CHEAT_WINDOW || round.responseWindow != null) {
+                return ActionResult.Rejected(RejectionReason.WRONG_PHASE)
+            }
+            if (candidateState.riichiDeclared[seat]) {
+                return ActionResult.Rejected(RejectionReason.ACTION_NOT_AVAILABLE)
+            }
+
+            val drawnTile = candidateState.players[seat].drawnTile
+                ?: return ActionResult.Rejected(RejectionReason.ACTION_NOT_AVAILABLE)
+            if (candidateState.tilePool.getLocation(drawnTile) != TileLocation.hand(seat)) {
+                return ActionResult.Rejected(RejectionReason.ACTION_NOT_AVAILABLE)
+            }
+
+            val eligibleHandTileIds = candidateState.players[seat].closedTiles.filter {
+                it != drawnTile && candidateState.tilePool.getLocation(it) == TileLocation.hand(seat)
+            }.map { it.tileId }
+            if (eligibleHandTileIds.isEmpty()) {
+                return ActionResult.Rejected(RejectionReason.ACTION_NOT_AVAILABLE)
+            }
+
+            if (candidateState.lastDrawKind == SleeveBloomDrawKind.DEAL_EXTRA) {
+                return ActionResult.Rejected(RejectionReason.ACTION_NOT_AVAILABLE)
+            }
+            if (candidateState.beamSwapOffer != null || candidateState.sleeveBloomOffer != null) {
+                return ActionResult.Rejected(RejectionReason.ACTION_NOT_AVAILABLE)
+            }
+            if (candidateState.beamSwapUsedOnTurn == candidateState.turnNumber || candidateState.sleeveBloomUsedOnTurn == candidateState.turnNumber) {
+                return ActionResult.Rejected(RejectionReason.ACTION_NOT_AVAILABLE)
+            }
+
+            val window = if (candidateState.lastDrawKind == SleeveBloomDrawKind.NORMAL) {
+                com.majiang.cheat.beam.BeamSwapWindow.WALL
+            } else {
+                com.majiang.cheat.beam.BeamSwapWindow.DEAD_WALL
+            }
+
+            val candidates = mutableListOf<com.majiang.cheat.beam.BeamSwapCandidate>()
+            when (window) {
+                com.majiang.cheat.beam.BeamSwapWindow.WALL -> {
+                    if (candidateState.wallRemaining < 1 || candidateState.wallPointer >= candidateState.wallEndExclusive) {
+                        return ActionResult.Rejected(RejectionReason.ACTION_NOT_AVAILABLE)
+                    }
+                    val endIdx = minOf(candidateState.wallPointer + 8, candidateState.wallEndExclusive)
+                    for (i in candidateState.wallPointer until endIdx) {
+                        val t = candidateState.wall.getOrNull(i)
+                            ?: return ActionResult.Rejected(RejectionReason.ACTION_NOT_AVAILABLE)
+                        if (candidateState.tilePool.getLocation(t) != TileLocation.WALL) {
+                            return ActionResult.Rejected(RejectionReason.ACTION_NOT_AVAILABLE)
+                        }
+                        candidates.add(com.majiang.cheat.beam.BeamSwapCandidate(tileId = t.tileId, slot = com.majiang.cheat.beam.BeamSwapSlot.WallSlot(i)))
+                    }
+                }
+                com.majiang.cheat.beam.BeamSwapWindow.DEAD_WALL -> {
+                    for (i in candidateState.rinshanPointer..3) {
+                        val t = candidateState.deadWall.getOrNull(i)
+                            ?: return ActionResult.Rejected(RejectionReason.ACTION_NOT_AVAILABLE)
+                        if (candidateState.tilePool.getLocation(t) == TileLocation.DEAD_WALL) {
+                            candidates.add(com.majiang.cheat.beam.BeamSwapCandidate(tileId = t.tileId, slot = com.majiang.cheat.beam.BeamSwapSlot.DeadWallSlot(i)))
+                        }
+                    }
+                    for (i in 4..13) {
+                        val t = candidateState.deadWall.getOrNull(i)
+                            ?: return ActionResult.Rejected(RejectionReason.ACTION_NOT_AVAILABLE)
+                        if (candidateState.tilePool.getLocation(t) == TileLocation.DEAD_WALL && !candidateState.doraIndicators.contains(t)) {
+                            candidates.add(com.majiang.cheat.beam.BeamSwapCandidate(tileId = t.tileId, slot = com.majiang.cheat.beam.BeamSwapSlot.DeadWallSlot(i)))
+                        }
+                    }
+                    for (i in 0 until candidateState.deadWallReplacements.size) {
+                        val t = candidateState.deadWallReplacements.getOrNull(i)
+                            ?: return ActionResult.Rejected(RejectionReason.ACTION_NOT_AVAILABLE)
+                        if (candidateState.tilePool.getLocation(t) == TileLocation.DEAD_WALL) {
+                            candidates.add(com.majiang.cheat.beam.BeamSwapCandidate(tileId = t.tileId, slot = com.majiang.cheat.beam.BeamSwapSlot.ReplacementSlot(i)))
+                        }
+                    }
+                }
+            }
+
+            if (candidates.isEmpty()) {
+                return ActionResult.Rejected(RejectionReason.ACTION_NOT_AVAILABLE)
+            }
+
+            if (candidateState.cheatPoints[seat] < cost) {
+                return ActionResult.Rejected(RejectionReason.ACTION_NOT_AVAILABLE)
+            }
+
+            val ledgerConfig = cheatEconomyConfig.copy(
+                enabled = true,
+                initialPoints = round.frozenStartingCheatPoints
+            )
+            val ledgerSnapshot = CheatLedgerSnapshot(
+                balances = candidateState.cheatPoints.toList(),
+                entries = candidateState.cheatEntries.toList()
+            )
+            val ledger = CheatLedger.fromSnapshot(ledgerConfig, ledgerSnapshot)
+            val entryId = "beam-$seat-${request.requestId}"
+            val appliedEntry = try {
+                ledger.apply(entryId, seat, -cost, "BEAM_SWAP")
+            } catch (e: Exception) {
+                return ActionResult.Rejected(RejectionReason.ACTION_NOT_AVAILABLE)
+            }
+
+            candidateState.cheatPoints[seat] = appliedEntry.balanceAfter
+            candidateState.cheatEntries.add(appliedEntry.copy())
+
+            candidateState.beamSwapUsedOnTurn = candidateState.turnNumber
+            candidateState.beamSwapOffer = com.majiang.cheat.beam.BeamSwapOffer(
+                offerId = "beam-$seat-${request.requestId}",
+                seat = seat,
+                window = window,
+                candidates = candidates,
+                eligibleHandTileIds = eligibleHandTileIds,
+                drawnTileId = drawnTile.tileId,
+                createdTurnNumber = candidateState.turnNumber
+            )
+
+            val event = GameEvent.CheatPointsChanged(
+                turnNumber = candidateState.turnNumber,
+                seat = seat,
+                amount = -cost,
+                newBalance = appliedEntry.balanceAfter
+            )
+            val roundChange = RoundChange(
+                roundId = round.roundId,
+                sourceVersion = round.version,
+                state = candidateState,
+                responseWindow = round.responseWindow,
+                result = round.result,
+                events = listOf(event)
+            )
+
+            StateInvariants.assertValid(candidateState)
+            round.install(roundChange)
+
+            val snap = snapshotGameEvent(event)
+            allEvents.add(snap)
+            eventBus.publish(snap)
+
+            decisionRegistry.invalidateAll()
+
+            val acceptedResult = ActionResult.Accepted(allEvents.map { snapshotGameEvent(it) })
+            acceptedResultToReturn = acceptedResult
+            return acceptedResult
+        } finally {
+            currentExecutingThread.set(null)
+            if (acceptedResultToReturn != null) {
+                rwLock.readLock().lock()
+                rwLock.writeLock().unlock()
+                try {
+                    broadcastEvents(allEvents)
+                } finally {
+                    rwLock.readLock().unlock()
+                    finalizeActionExecution()
+                }
+            } else {
+                finalizeActionExecutionWithoutReadLock()
+            }
+        }
+    }
+
+    /**
+     * 提交偷梁换柱选择请求
+     */
+    fun submitBeamSwapChoice(seat: Int, request: com.majiang.cheat.beam.BeamSwapChoiceRequest): ActionResult {
+        if (currentExecutingThread.get() == Thread.currentThread()) {
+            return ActionResult.Rejected(RejectionReason.ACTION_NOT_AVAILABLE)
+        }
+        if (!rwLock.writeLock().tryLock()) {
+            return ActionResult.Rejected(RejectionReason.ACTION_NOT_AVAILABLE)
+        }
+        if (!isProcessingAction.compareAndSet(false, true)) {
+            rwLock.writeLock().unlock()
+            return ActionResult.Rejected(RejectionReason.ACTION_NOT_AVAILABLE)
+        }
+        currentExecutingThread.set(Thread.currentThread())
+
+        val allEvents = mutableListOf<GameEvent>()
+        var acceptedResultToReturn: ActionResult? = null
+        try {
+            if (session.lifecycle == SessionLifecycle.FINISHED || session.lifecycle == SessionLifecycle.CLOSED) {
+                return ActionResult.Rejected(RejectionReason.MATCH_FINISHED)
+            }
+            val round = activeRound ?: return ActionResult.Rejected(RejectionReason.WRONG_PHASE)
+            if (round.roundId != request.roundId) {
+                return ActionResult.Rejected(RejectionReason.WRONG_PHASE)
+            }
+            if (session.sessionId != request.sessionId) {
+                return ActionResult.Rejected(RejectionReason.WRONG_PHASE)
+            }
+            if (seat !in 0..3) {
+                return ActionResult.Rejected(RejectionReason.INVALID_PLAYER)
+            }
+            if (request.requestId.isBlank()) {
+                return ActionResult.Rejected(RejectionReason.ACTION_NOT_AVAILABLE)
+            }
+
+            if (!beamSwapConfig.enabled || !cheatEconomyConfig.enabled) {
+                return ActionResult.Rejected(RejectionReason.ACTION_NOT_AVAILABLE)
+            }
+
+            val controller = controllerRegistry.getController(seat)
+            if (controller !is SeatController.LocalHuman && controller !is SeatController.RemoteHuman) {
+                return ActionResult.Rejected(RejectionReason.ACTION_NOT_AVAILABLE)
+            }
+            if (request.controlEpoch != controllerRegistry.getEpoch(seat)) {
+                return ActionResult.Rejected(RejectionReason.ACTION_NOT_AVAILABLE)
+            }
+
+            val candidateState = round.readState()
+            if (candidateState.currentPlayer != seat) {
+                return ActionResult.Rejected(RejectionReason.NOT_YOUR_TURN)
+            }
+            if (candidateState.phase != GamePhase.CHEAT_WINDOW || round.responseWindow != null) {
+                return ActionResult.Rejected(RejectionReason.WRONG_PHASE)
+            }
+
+            val offer = candidateState.beamSwapOffer
+                ?: return ActionResult.Rejected(RejectionReason.ACTION_NOT_AVAILABLE)
+            if (offer.seat != seat || offer.offerId != request.offerId) {
+                return ActionResult.Rejected(RejectionReason.ACTION_NOT_AVAILABLE)
+            }
+            if (offer.createdTurnNumber != candidateState.turnNumber) {
+                return ActionResult.Rejected(RejectionReason.ACTION_NOT_AVAILABLE)
+            }
+
+            val drawnTile = candidateState.players[seat].drawnTile
+                ?: return ActionResult.Rejected(RejectionReason.ACTION_NOT_AVAILABLE)
+            val isDrawKindConsistent = when (offer.window) {
+                com.majiang.cheat.beam.BeamSwapWindow.WALL -> candidateState.lastDrawKind == SleeveBloomDrawKind.NORMAL
+                com.majiang.cheat.beam.BeamSwapWindow.DEAD_WALL -> candidateState.lastDrawKind == SleeveBloomDrawKind.RINSHAN
+            }
+            val currentEligibleHandIds = candidateState.players[seat].closedTiles.filter {
+                it != drawnTile && candidateState.tilePool.getLocation(it) == TileLocation.hand(seat)
+            }.map { it.tileId }.toSet()
+            val handConsistent = currentEligibleHandIds == offer.eligibleHandTileIds.toSet()
+
+            val candidatesConsistent = offer.candidates.all { cand ->
+                when (val slot = cand.slot) {
+                    is com.majiang.cheat.beam.BeamSwapSlot.WallSlot -> {
+                        candidateState.wallPointer <= slot.index && slot.index < candidateState.wallEndExclusive &&
+                            candidateState.wall.getOrNull(slot.index)?.tileId == cand.tileId &&
+                            candidateState.wall.getOrNull(slot.index)?.let { candidateState.tilePool.getLocation(it) == TileLocation.WALL } == true
+                    }
+                    is com.majiang.cheat.beam.BeamSwapSlot.DeadWallSlot -> {
+                        val tile = candidateState.deadWall.getOrNull(slot.index)
+                        tile != null && tile.tileId == cand.tileId &&
+                            candidateState.tilePool.getLocation(tile) == TileLocation.DEAD_WALL &&
+                            !candidateState.doraIndicators.contains(tile) &&
+                            (slot.index in candidateState.rinshanPointer..3 || slot.index in 4..13)
+                    }
+                    is com.majiang.cheat.beam.BeamSwapSlot.ReplacementSlot -> {
+                        val tile = candidateState.deadWallReplacements.getOrNull(slot.index)
+                        tile != null && tile.tileId == cand.tileId &&
+                            candidateState.tilePool.getLocation(tile) == TileLocation.DEAD_WALL
+                    }
+                }
+            }
+
+            if (!isDrawKindConsistent || !handConsistent || !candidatesConsistent) {
+                candidateState.beamSwapOffer = null
+                StateInvariants.assertValid(candidateState)
+                val roundChange = RoundChange(
+                    roundId = round.roundId,
+                    sourceVersion = round.version,
+                    state = candidateState,
+                    responseWindow = round.responseWindow,
+                    result = round.result,
+                    events = emptyList()
+                )
+                round.install(roundChange)
+                decisionRegistry.invalidateAll()
+                return ActionResult.Rejected(RejectionReason.ACTION_NOT_AVAILABLE)
+            }
+
+            if (request.action == com.majiang.cheat.beam.BeamSwapAction.SWAP) {
+                val handTileId = request.handTileId
+                    ?: return ActionResult.Rejected(RejectionReason.ACTION_NOT_AVAILABLE)
+                val targetSlot = request.targetSlot
+                    ?: return ActionResult.Rejected(RejectionReason.ACTION_NOT_AVAILABLE)
+
+                if (handTileId !in offer.eligibleHandTileIds) {
+                    return ActionResult.Rejected(RejectionReason.ACTION_NOT_AVAILABLE)
+                }
+                val candidateObj = offer.candidates.find { it.slot == targetSlot }
+                    ?: return ActionResult.Rejected(RejectionReason.ACTION_NOT_AVAILABLE)
+
+                val handTile = candidateState.players[seat].closedTiles.find { it.tileId == handTileId }
+                    ?: return ActionResult.Rejected(RejectionReason.ACTION_NOT_AVAILABLE)
+                if (handTile == drawnTile || candidateState.tilePool.getLocation(handTile) != TileLocation.hand(seat)) {
+                    return ActionResult.Rejected(RejectionReason.ACTION_NOT_AVAILABLE)
+                }
+
+                when (offer.window) {
+                    com.majiang.cheat.beam.BeamSwapWindow.WALL -> {
+                        if (targetSlot !is com.majiang.cheat.beam.BeamSwapSlot.WallSlot) {
+                            return ActionResult.Rejected(RejectionReason.ACTION_NOT_AVAILABLE)
+                        }
+                        if (targetSlot.index !in candidateState.wallPointer until candidateState.wallEndExclusive) {
+                            return ActionResult.Rejected(RejectionReason.ACTION_NOT_AVAILABLE)
+                        }
+                        val wallTile = candidateState.wall.getOrNull(targetSlot.index)
+                            ?: return ActionResult.Rejected(RejectionReason.ACTION_NOT_AVAILABLE)
+                        if (wallTile.tileId != candidateObj.tileId || candidateState.tilePool.getLocation(wallTile) != TileLocation.WALL) {
+                            return ActionResult.Rejected(RejectionReason.ACTION_NOT_AVAILABLE)
+                        }
+                        TileMovement.swapHandWithWall(
+                            candidateState,
+                            seat,
+                            handTile = handTile,
+                            wallIndex = targetSlot.index
+                        )
+                    }
+                    com.majiang.cheat.beam.BeamSwapWindow.DEAD_WALL -> {
+                        TileMovement.swapHandWithDeadWall(
+                            candidateState,
+                            seat,
+                            handTile = handTile,
+                            targetSlot = targetSlot,
+                            expectedTileId = candidateObj.tileId
+                        )
+                    }
+                }
+            }
+
+            candidateState.beamSwapOffer = null
+            StateInvariants.assertValid(candidateState)
+
+            val roundChange = RoundChange(
+                roundId = round.roundId,
+                sourceVersion = round.version,
+                state = candidateState,
+                responseWindow = round.responseWindow,
+                result = round.result,
+                events = emptyList()
+            )
+            round.install(roundChange)
+            decisionRegistry.invalidateAll()
+
+            val acceptedResult = ActionResult.Accepted(emptyList())
+            acceptedResultToReturn = acceptedResult
+            return acceptedResult
+        } finally {
+            currentExecutingThread.set(null)
+            if (acceptedResultToReturn != null) {
+                rwLock.readLock().lock()
+                rwLock.writeLock().unlock()
+                try {
+                    broadcastEvents(allEvents)
+                } finally {
+                    rwLock.readLock().unlock()
+                    finalizeActionExecution()
+                }
+            } else {
+                finalizeActionExecutionWithoutReadLock()
+            }
+        }
+    }
+
+    /**
+     * 超时/清理兜底：保持原样并清除 offer
+     */
+    internal fun resolveBeamSwapKeepOriginal(seat: Int): List<GameEvent> {
+        if (currentExecutingThread.get() == Thread.currentThread()) {
+            return emptyList()
+        }
+        if (!rwLock.writeLock().tryLock()) {
+            return emptyList()
+        }
+        if (!isProcessingAction.compareAndSet(false, true)) {
+            rwLock.writeLock().unlock()
+            return emptyList()
+        }
+        currentExecutingThread.set(Thread.currentThread())
+
+        try {
+            val round = activeRound ?: return emptyList()
+            val candidateState = round.readState()
+            if (candidateState.beamSwapOffer?.seat != seat) {
+                return emptyList()
+            }
+            candidateState.beamSwapOffer = null
+            StateInvariants.assertValid(candidateState)
+            val roundChange = RoundChange(
+                roundId = round.roundId,
+                sourceVersion = round.version,
+                state = candidateState,
+                responseWindow = round.responseWindow,
+                result = round.result,
+                events = emptyList()
+            )
+            round.install(roundChange)
+            decisionRegistry.invalidateAll()
+            return emptyList()
+        } finally {
+            currentExecutingThread.set(null)
+            finalizeActionExecutionWithoutReadLock()
+        }
+    }
+
+    /**
+     * 清理失效 offer（不退款、不交换、不摸切）
+     */
+    internal fun cleanStaleBeamSwapOffer(seat: Int) {
+        if (currentExecutingThread.get() == Thread.currentThread()) {
+            return
+        }
+        if (!rwLock.writeLock().tryLock()) {
+            return
+        }
+        if (!isProcessingAction.compareAndSet(false, true)) {
+            rwLock.writeLock().unlock()
+            return
+        }
+        currentExecutingThread.set(Thread.currentThread())
+
+        try {
+            val round = activeRound ?: return
+            val candidateState = round.readState()
+            if (candidateState.beamSwapOffer?.seat != seat) {
+                return
+            }
+            candidateState.beamSwapOffer = null
+            StateInvariants.assertValid(candidateState)
+            val roundChange = RoundChange(
+                roundId = round.roundId,
+                sourceVersion = round.version,
+                state = candidateState,
+                responseWindow = round.responseWindow,
+                result = round.result,
+                events = emptyList()
+            )
+            round.install(roundChange)
+            decisionRegistry.invalidateAll()
+        } finally {
+            currentExecutingThread.set(null)
+            finalizeActionExecutionWithoutReadLock()
+        }
+    }
+
     fun close() {
         if (rwLock.readHoldCount > 0) {
             // 在事件广播回调中持有读锁，不能升级写锁，否则永久死锁。
@@ -1665,6 +2171,9 @@ class ApplicationCoordinator(
         val player = getActionPlayer(action)
         if (round.state.sleeveBloomOffer != null && round.state.sleeveBloomOffer?.seat == player) {
             return ActionResult.Rejected(RejectionReason.SLEEVE_BLOOM_CHOICE_PENDING)
+        }
+        if (round.state.beamSwapOffer != null && round.state.beamSwapOffer?.seat == player) {
+            return ActionResult.Rejected(RejectionReason.BEAM_SWAP_CHOICE_PENDING)
         }
 
         val prep = roundCommandProcessor.prepare(round, action)

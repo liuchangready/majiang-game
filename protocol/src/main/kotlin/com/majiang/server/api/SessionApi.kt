@@ -3,6 +3,8 @@ package com.majiang.server.api
 import com.majiang.transport.api.ProtocolAccessCapabilities
 import com.majiang.transport.api.ProtocolActionChoice
 import com.majiang.transport.api.ProtocolActionReceipt
+import com.majiang.transport.api.ProtocolBeamSwapChoiceRequest
+import com.majiang.transport.api.ProtocolBeamSwapRequest
 import com.majiang.transport.api.ProtocolGameEvent
 import com.majiang.transport.api.ProtocolPlayerDecision
 import com.majiang.transport.api.ProtocolPlayerSnapshot
@@ -132,4 +134,16 @@ interface SessionApi {
      */
     fun submitSleeveBloomChoice(request: ProtocolSleeveBloomChoiceRequest): CompletableFuture<ProtocolActionReceipt> =
         CompletableFuture.failedFuture(UnsupportedOperationException("submitSleeveBloomChoice not implemented"))
+
+    /**
+     * 提交偷梁换柱激活请求
+     */
+    fun submitBeamSwap(request: ProtocolBeamSwapRequest): CompletableFuture<ProtocolActionReceipt> =
+        CompletableFuture.failedFuture(UnsupportedOperationException("submitBeamSwap not implemented"))
+
+    /**
+     * 提交偷梁换柱选择决策请求
+     */
+    fun submitBeamSwapChoice(request: ProtocolBeamSwapChoiceRequest): CompletableFuture<ProtocolActionReceipt> =
+        CompletableFuture.failedFuture(UnsupportedOperationException("submitBeamSwapChoice not implemented"))
 }

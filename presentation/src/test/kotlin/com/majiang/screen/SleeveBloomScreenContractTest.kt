@@ -233,7 +233,7 @@ class SleeveBloomScreenContractTest : GdxHeadlessTestRunner() {
     @Test fun `panel geometry separates cards buttons and entry and reason glyphs cover translations`() {
         val panel = SleeveBloomPanel(FakeGameSession(initialSnapshot = snapshot(true)))
         try {
-            assertEquals(Rectangle(1080f, 100f, 140f, 44f), panel.btnOpenRect)
+            assertEquals(Rectangle(1080f, 106f, 140f, 44f), panel.btnOpenRect)
             assertTrue(panel.panelRect.contains(panel.firstCardRect))
             assertTrue(panel.panelRect.contains(panel.secondCardRect))
             assertTrue(panel.panelRect.contains(panel.btnConfirmRect))

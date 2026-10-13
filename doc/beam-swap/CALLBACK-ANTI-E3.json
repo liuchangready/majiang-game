@@ -1,0 +1,118 @@
+{
+  "taskId": "BS-E3",
+  "reviewRound": 1,
+  "recipient": "codex",
+  "status": "ready_for_review",
+  "modifiedFiles": [
+    "presentation/src/main/kotlin/com/majiang/presentation/game/RightActionColumnLayout.kt",
+    "presentation/src/main/kotlin/com/majiang/presentation/game/BeamSwapChoiceModel.kt",
+    "presentation/src/main/kotlin/com/majiang/presentation/game/BeamSwapPanel.kt",
+    "presentation/src/main/kotlin/com/majiang/presentation/game/GameScreen.kt",
+    "presentation/src/main/kotlin/com/majiang/presentation/game/SleeveBloomPanel.kt",
+    "presentation/src/main/kotlin/com/majiang/presentation/game/TileMarkPanel.kt",
+    "presentation/src/main/kotlin/com/majiang/presentation/menu/MenuScreen.kt",
+    "presentation/src/main/kotlin/com/majiang/MahjongGame.kt",
+    "doc/beam-swap/STATUS.md",
+    "doc/beam-swap/DELIVERY-ANTI-E3.md",
+    "doc/beam-swap/CALLBACK-ANTI-E3.json"
+  ],
+  "review1Fixes": [
+    "Fixed default monotonicClock in BeamSwapChoiceModel to System.nanoTime() / 1_000_000L",
+    "Fixed ordinary WallSlot labels in BeamSwapPanel to display sequential '下1'..'下8' via wallOrder++ while keeping absolute slot keys",
+    "Fixed sweat marker '汗' z-order in BeamSwapPanel: flushed tileDrawBuffer before drawing candidate borders, labels, and sweat markers",
+    "Centralized shared 5-button right action column geometry in RightActionColumnLayout with defensive copies (takeover=6, sort=56, sleeveBloom=106, beamSwap=156, tileMark=206)",
+    "Scoped asynchronous failure error toasts in GameScreen to originating sessionId, roundId, and syncEpoch"
+  ],
+  "interfaces": {
+    "rightColumn": "RightActionColumnLayout.takeoverRect / sortRect / sleeveBloomRect / beamSwapRect / tileMarkRect",
+    "choiceModel": "BeamSwapChoiceModel.update(snapshot, connected, isPending, nowMillis) / canActivate / isChoosing / canConfirm / selectedHandTileId / selectedTargetSlot / remainingMillis / selectHand / selectTarget / buildActivateRequest / buildChoiceRequest",
+    "panel": "BeamSwapPanel.btnOpenRect / btnKeepRect / btnConfirmRect / handCardRects / targetCardRects / translateServerReason / BEAM_SWAP_CHARS / render / update / dispose",
+    "screen": "GameScreen.submitBeamSwapAsync / GameScreen.submitBeamSwapChoiceAsync / isModalActive registration / keyDown ESC keep-original / uniform 5-button column geometry via RightActionColumnLayout"
+  },
+  "tests": {
+    "targetedPresentation": {
+      "command": "./gradlew :presentation:test --tests '*BeamSwap*' --tests '*SleeveBloom*' --tests '*TileMark*'",
+      "exitCode": 0,
+      "tests": 76,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "breakdown": {
+        "BeamSwapChoiceModelContractTest": 13,
+        "BeamSwapScreenContractTest": 4,
+        "SleeveBloomChoiceModelContractTest": 10,
+        "SleeveBloomScreenContractTest": 5,
+        "SleeveBloomVisualModelsContractTest": 16,
+        "TileMarkScreenContractTest": 5,
+        "TileMarkSelectionModelContractTest": 8,
+        "TileMarkVisualModelsContractTest": 15
+      }
+    },
+    "allModulesFull": {
+      "command": "./gradlew test",
+      "exitCode": 0,
+      "tests": 1225,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "breakdown": {
+        "engine": 471,
+        "presentation": 285,
+        "protocol": 172,
+        "server": 151,
+        "client": 146
+      }
+    },
+    "desktopBuild": {
+      "command": "./gradlew :lwjgl3:classes",
+      "exitCode": 0,
+      "status": "BUILD SUCCESSFUL"
+    },
+    "androidBuild": {
+      "command": "./gradlew :android:assembleDebug",
+      "exitCode": 0,
+      "status": "BUILD SUCCESSFUL"
+    },
+    "glSmoke1280": {
+      "command": "./gradlew -I tools/architecture/beam-swap-smoke.init.gradle beamSwapSmoke beamSwapLayoutSmoke --no-parallel",
+      "exitCode": 0,
+      "beamSwapSmoke": "BEAM_SWAP_GL_PASS choices=2 timeouts=1 fee=30 frames=1374",
+      "beamSwapLayoutSmoke": "BEAM_SWAP_LAYOUT_GL_PASS candidates=13 hand=13 marked=1 frames=6",
+      "screenshots": [
+        "build/beam-swap/screenshots-1280/offer-0.png",
+        "build/beam-swap/screenshots-1280/offer-1.png",
+        "build/beam-swap/screenshots-1280/kept-0.png",
+        "build/beam-swap/screenshots-1280/kept-1.png",
+        "build/beam-swap/screenshots-1280/timeout-waiting.png",
+        "build/beam-swap/screenshots-1280/timeout-cleared.png",
+        "build/beam-swap/screenshots-1280/other-modal.png",
+        "build/beam-swap/screenshots-1280/technique-rules.png",
+        "build/beam-swap/layout-screenshots-1280/maximum-unselected.png",
+        "build/beam-swap/layout-screenshots-1280/maximum-selected.png"
+      ]
+    },
+    "glSmoke960": {
+      "command": "./gradlew -I tools/architecture/beam-swap-smoke.init.gradle beamSwapSmoke beamSwapLayoutSmoke -PsmokeWidth=960 --no-parallel",
+      "exitCode": 0,
+      "beamSwapSmoke": "BEAM_SWAP_GL_PASS choices=2 timeouts=1 fee=30 frames=1384",
+      "beamSwapLayoutSmoke": "BEAM_SWAP_LAYOUT_GL_PASS candidates=13 hand=13 marked=1 frames=6",
+      "screenshots": [
+        "build/beam-swap/screenshots-960/offer-0.png",
+        "build/beam-swap/screenshots-960/offer-1.png",
+        "build/beam-swap/screenshots-960/kept-0.png",
+        "build/beam-swap/screenshots-960/kept-1.png",
+        "build/beam-swap/screenshots-960/timeout-waiting.png",
+        "build/beam-swap/screenshots-960/timeout-cleared.png",
+        "build/beam-swap/screenshots-960/other-modal.png",
+        "build/beam-swap/screenshots-960/technique-rules.png",
+        "build/beam-swap/layout-screenshots-960/maximum-unselected.png",
+        "build/beam-swap/layout-screenshots-960/maximum-selected.png"
+      ]
+    }
+  },
+  "unverifiedBoundaries": [
+    "Android physical hardware touch input verification was not executed on a real device (debug APK built successfully with Gradle)",
+    "Public matchmaking, persistence, or network accounts (out of scope per AGENTS.md)"
+  ],
+  "remainingIssues": []
+}

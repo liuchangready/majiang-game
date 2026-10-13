@@ -1,0 +1,15 @@
+# Codex E1 开发中检视
+
+测试ready marker已就绪。以下是已落盘实现的确定性边界，不是要求提前完成未接线模块。
+
+1. BeamSwapProjectionFactory在判断phase前无条件访问deadWall[4..13]；正常STACKING/尚未码牌局的死山列表为空，会导致准备阶段快照异常。请在实际DEAD_WALL合法窗口才枚举，或安全按真实容器索引判断；不能使启用beam的新房间启动失败。Codex会增加准备阶段快照回归。
+
+E2/E3任务文件只是后续准备，当前仍仅执行E1，完成测试后回调。
+
+2. BeamSwapChoiceRequest构造器须保证SWAP必含两个选择字段、KEEP不得包含选择字段；当前coordinator KEEP分支未校验载荷，直接请求可带字段被接受。已有Codex分支结构测试。
+3. 选择锁内应复核整个offer基线：所有候选槽实体、eligible原暗手集合、drawn、turn及window。当前coordinator只检查被选中的一个槽，KEEP完全绕过候选复核；实际变更未选候选或未选暗手后可错误接受。非法request选择先拒绝保留有效offer，真正整体基线漂移清offer；请共用辅助校验避免authority/coordinator逻辑不一致。新增回归会覆盖未选候选漂移与KEEP。
+4. ApplicationCoordinator.executeActionInternal的共用普通动作入口仅有sleeveBloom guard，新增beam guard目前只在submitChoice，直接handleAction/submitPlayerAction仍可绕过（弃牌抛Invariant错误，自摸可能直接成功）。请在共用动作入口加BEAM_SWAP_CHOICE_PENDING拒绝；已有Codex直接GameAction路径测试。
+5. authority新落盘的整体漂移检查未比较lastDrawKind与offer.window，与第3项相同。新增changed draw source测试，正常激活后来源漂移为RINSHAN时，无论SWAP还是KEEP都应STALE清offer。请读取本文件全部反馈，不仅修当前首轮报告中的三项失败。
+6. authority choice在验证offer前直接按phase/currentPlayer拒绝，会残留真实过期offer。对有效身份/时钟/本人的offerId及合法分支，phase从CHEAT_WINDOW漂移到DISCARD也应作为STALE清offer，不强制弃牌。新增changed phase测试。错误身份、错误offer或非法选择仍只拒绝保留。
+
+第3项已有coordinator lock repeats full baseline validation回归：直接调用协调器模拟authority预检查后到写锁间的状态变化，不能只修外层检查。未选候选漂移，SWAP/KEEP都应拒绝并清理真实过期offer；不要删除此测试。

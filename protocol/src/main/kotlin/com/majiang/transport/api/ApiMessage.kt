@@ -49,6 +49,8 @@ object ApiTags {
     const val SUBMIT_TILE_MARK = "SUBMIT_TILE_MARK"
     const val SUBMIT_SLEEVE_BLOOM = "SUBMIT_SLEEVE_BLOOM"
     const val SUBMIT_SLEEVE_BLOOM_CHOICE = "SUBMIT_SLEEVE_BLOOM_CHOICE"
+    const val SUBMIT_BEAM_SWAP = "SUBMIT_BEAM_SWAP"
+    const val SUBMIT_BEAM_SWAP_CHOICE = "SUBMIT_BEAM_SWAP_CHOICE"
     const val START_MATCH = "START_MATCH"
     const val NEXT_ROUND = "NEXT_ROUND"
     const val RESUME_CURSOR = "RESUME_CURSOR"
@@ -69,6 +71,7 @@ object ApiTags {
         GET_ROOM_INFO, SET_READY, UPDATE_CONFIG,
         CAPABILITIES, SNAPSHOT, DECISION, SUBMIT_CHOICE, SUBMIT_SHUFFLE_PLAN, SUBMIT_TILE_MARK,
         SUBMIT_SLEEVE_BLOOM, SUBMIT_SLEEVE_BLOOM_CHOICE,
+        SUBMIT_BEAM_SWAP, SUBMIT_BEAM_SWAP_CHOICE,
         START_MATCH, NEXT_ROUND, RESUME_CURSOR, CLAIM_CONTROL, RELEASE_CONTROL,
         QUERY_ROUND_RESULT,
         JOIN_SPECTATOR, RESUME_SPECTATOR, PUBLIC_SNAPSHOT, RESUME_PUBLIC, QUERY_PUBLIC_ROUND_RESULT
@@ -98,7 +101,9 @@ data class ApiRequest(
     val publicCheckpoint: PublicCheckpoint? = null,
     val tileMark: ProtocolTileMarkRequest? = null,
     val sleeveBloom: ProtocolSleeveBloomRequest? = null,
-    val sleeveBloomChoice: ProtocolSleeveBloomChoiceRequest? = null
+    val sleeveBloomChoice: ProtocolSleeveBloomChoiceRequest? = null,
+    val beamSwap: ProtocolBeamSwapRequest? = null,
+    val beamSwapChoice: ProtocolBeamSwapChoiceRequest? = null
 ) {
     init {
         require(api.isNotBlank()) { "api cannot be blank" }
@@ -959,7 +964,7 @@ private class ProtocolMatchConfigAdapter : JsonDeserializer<ProtocolMatchConfig>
                 "playerCount", "handsPerWind", "winds", "startingScores", "allowExtension",
                 "allowAgariYame", "bankruptcyEnabled", "bankruptcyThreshold", "bankruptcyInclusive",
                 "targetScore", "tieBreakSeats", "cheatEconomy", "shuffleConfig", "tileMarkConfig",
-                "sleeveBloomConfig"
+                "sleeveBloomConfig", "beamSwapConfig"
             ),
             "ProtocolMatchConfig"
         )
@@ -1008,6 +1013,9 @@ private class ProtocolMatchConfigAdapter : JsonDeserializer<ProtocolMatchConfig>
         val sleeveBloomConfig: ProtocolSleeveBloomConfig = if (obj.has("sleeveBloomConfig") && !obj.get("sleeveBloomConfig").isJsonNull) {
             context.deserialize(obj.get("sleeveBloomConfig"), ProtocolSleeveBloomConfig::class.java)
         } else ProtocolSleeveBloomConfig()
+        val beamSwapConfig: ProtocolBeamSwapConfig = if (obj.has("beamSwapConfig") && !obj.get("beamSwapConfig").isJsonNull) {
+            context.deserialize(obj.get("beamSwapConfig"), ProtocolBeamSwapConfig::class.java)
+        } else ProtocolBeamSwapConfig()
 
         return try {
             ProtocolMatchConfig(
@@ -1025,7 +1033,8 @@ private class ProtocolMatchConfigAdapter : JsonDeserializer<ProtocolMatchConfig>
                 cheatEconomy = cheatEconomy,
                 shuffleConfig = shuffleConfig,
                 tileMarkConfig = tileMarkConfig,
-                sleeveBloomConfig = sleeveBloomConfig
+                sleeveBloomConfig = sleeveBloomConfig,
+                beamSwapConfig = beamSwapConfig
             )
         } catch (e: IllegalArgumentException) {
             throw JsonParseException(e.message, e)
@@ -1496,7 +1505,7 @@ private class ProtocolAccessCapabilitiesAdapter : JsonDeserializer<ProtocolAcces
     override fun deserialize(json: JsonElement, typeOfT: Type, context: JsonDeserializationContext): ProtocolAccessCapabilities {
         if (!json.isJsonObject) throw JsonParseException("ProtocolAccessCapabilities must be a JSON object")
         val obj = json.asJsonObject
-        checkUnknownFields(obj, setOf("protocolVersion", "supportedPlayerCounts", "remoteTransport", "persistence", "resumption", "tileMarkSupported", "sleeveBloomSupported"), "ProtocolAccessCapabilities")
+        checkUnknownFields(obj, setOf("protocolVersion", "supportedPlayerCounts", "remoteTransport", "persistence", "resumption", "tileMarkSupported", "sleeveBloomSupported", "beamSwapSupported"), "ProtocolAccessCapabilities")
         val pv = if (obj.has("protocolVersion") && !obj.get("protocolVersion").isJsonNull) {
             val v = validateStrictInt(obj.get("protocolVersion"), "ProtocolAccessCapabilities.protocolVersion")
             if (v < 1) throw JsonParseException("protocolVersion must be >= 1: $v")
@@ -1522,7 +1531,10 @@ private class ProtocolAccessCapabilitiesAdapter : JsonDeserializer<ProtocolAcces
         val sleeveBloomSupported = if (obj.has("sleeveBloomSupported") && !obj.get("sleeveBloomSupported").isJsonNull) {
             validateStrictBoolean(obj.get("sleeveBloomSupported"), "ProtocolAccessCapabilities.sleeveBloomSupported")
         } else false
-        return ProtocolAccessCapabilities(pv, counts, remote, persist, resume, tileMarkSupported, sleeveBloomSupported)
+        val beamSwapSupported = if (obj.has("beamSwapSupported") && !obj.get("beamSwapSupported").isJsonNull) {
+            validateStrictBoolean(obj.get("beamSwapSupported"), "ProtocolAccessCapabilities.beamSwapSupported")
+        } else false
+        return ProtocolAccessCapabilities(pv, counts, remote, persist, resume, tileMarkSupported, sleeveBloomSupported, beamSwapSupported)
     }
 }
 
@@ -1706,7 +1718,7 @@ private class ApiRequestAdapter : JsonDeserializer<ApiRequest> {
         val obj = json.asJsonObject
         checkUnknownFields(
             obj,
-            setOf("api", "requestId", "roomId", "token", "playerName", "preferSeat", "config", "choice", "shufflePlan", "cursor", "roundId", "protocolVersion", "ready", "roomConfig", "spectatorId", "spectatorName", "publicCheckpoint", "tileMark", "sleeveBloom", "sleeveBloomChoice"),
+            setOf("api", "requestId", "roomId", "token", "playerName", "preferSeat", "config", "choice", "shufflePlan", "cursor", "roundId", "protocolVersion", "ready", "roomConfig", "spectatorId", "spectatorName", "publicCheckpoint", "tileMark", "sleeveBloom", "sleeveBloomChoice", "beamSwap", "beamSwapChoice"),
             "ApiRequest"
         )
         val api = validateStrictString(obj.get("api") ?: throw JsonParseException("missing or blank api"), "api")
@@ -1740,6 +1752,12 @@ private class ApiRequestAdapter : JsonDeserializer<ApiRequest> {
             }
             if (obj.has("sleeveBloomChoice")) {
                 throw JsonParseException("Spectator request cannot contain player authority field 'sleeveBloomChoice'")
+            }
+            if (obj.has("beamSwap")) {
+                throw JsonParseException("Spectator request cannot contain player authority field 'beamSwap'")
+            }
+            if (obj.has("beamSwapChoice")) {
+                throw JsonParseException("Spectator request cannot contain player authority field 'beamSwapChoice'")
             }
             when (api) {
                 ApiTags.JOIN_SPECTATOR -> {
@@ -1843,6 +1861,12 @@ private class ApiRequestAdapter : JsonDeserializer<ApiRequest> {
         val sleeveBloomChoice = if (obj.has("sleeveBloomChoice") && !obj.get("sleeveBloomChoice").isJsonNull) {
             context.deserialize<ProtocolSleeveBloomChoiceRequest>(obj.get("sleeveBloomChoice"), ProtocolSleeveBloomChoiceRequest::class.java)
         } else null
+        val beamSwap = if (obj.has("beamSwap") && !obj.get("beamSwap").isJsonNull) {
+            context.deserialize<ProtocolBeamSwapRequest>(obj.get("beamSwap"), ProtocolBeamSwapRequest::class.java)
+        } else null
+        val beamSwapChoice = if (obj.has("beamSwapChoice") && !obj.get("beamSwapChoice").isJsonNull) {
+            context.deserialize<ProtocolBeamSwapChoiceRequest>(obj.get("beamSwapChoice"), ProtocolBeamSwapChoiceRequest::class.java)
+        } else null
 
         if (api == ApiTags.SUBMIT_TILE_MARK) {
             if (tileMark == null) {
@@ -1862,6 +1886,12 @@ private class ApiRequestAdapter : JsonDeserializer<ApiRequest> {
             }
             if (sleeveBloomChoice != null || obj.has("sleeveBloomChoice")) {
                 throw JsonParseException("SUBMIT_TILE_MARK cannot contain sleeveBloomChoice payload")
+            }
+            if (beamSwap != null || obj.has("beamSwap")) {
+                throw JsonParseException("SUBMIT_TILE_MARK cannot contain beamSwap payload")
+            }
+            if (beamSwapChoice != null || obj.has("beamSwapChoice")) {
+                throw JsonParseException("SUBMIT_TILE_MARK cannot contain beamSwapChoice payload")
             }
         } else {
             if (tileMark != null || obj.has("tileMark")) {
@@ -1888,6 +1918,12 @@ private class ApiRequestAdapter : JsonDeserializer<ApiRequest> {
             if (sleeveBloomChoice != null || obj.has("sleeveBloomChoice")) {
                 throw JsonParseException("SUBMIT_SLEEVE_BLOOM cannot contain sleeveBloomChoice payload")
             }
+            if (beamSwap != null || obj.has("beamSwap")) {
+                throw JsonParseException("SUBMIT_SLEEVE_BLOOM cannot contain beamSwap payload")
+            }
+            if (beamSwapChoice != null || obj.has("beamSwapChoice")) {
+                throw JsonParseException("SUBMIT_SLEEVE_BLOOM cannot contain beamSwapChoice payload")
+            }
         } else {
             if (sleeveBloom != null || obj.has("sleeveBloom")) {
                 throw JsonParseException("sleeveBloom payload is only allowed for SUBMIT_SLEEVE_BLOOM")
@@ -1913,13 +1949,81 @@ private class ApiRequestAdapter : JsonDeserializer<ApiRequest> {
             if (sleeveBloom != null || obj.has("sleeveBloom")) {
                 throw JsonParseException("SUBMIT_SLEEVE_BLOOM_CHOICE cannot contain sleeveBloom payload")
             }
+            if (beamSwap != null || obj.has("beamSwap")) {
+                throw JsonParseException("SUBMIT_SLEEVE_BLOOM_CHOICE cannot contain beamSwap payload")
+            }
+            if (beamSwapChoice != null || obj.has("beamSwapChoice")) {
+                throw JsonParseException("SUBMIT_SLEEVE_BLOOM_CHOICE cannot contain beamSwapChoice payload")
+            }
         } else {
             if (sleeveBloomChoice != null || obj.has("sleeveBloomChoice")) {
                 throw JsonParseException("sleeveBloomChoice payload is only allowed for SUBMIT_SLEEVE_BLOOM_CHOICE")
             }
         }
 
-        return ApiRequest(api, requestId, roomId, token, playerName, preferSeat, config, choice, shufflePlan, cursor, roundId, protocolVersion, ready, roomConfig, spectatorId, spectatorName, publicCheckpoint, tileMark, sleeveBloom, sleeveBloomChoice)
+        if (api == ApiTags.SUBMIT_BEAM_SWAP) {
+            if (beamSwap == null) {
+                throw JsonParseException("Missing beamSwap payload in SUBMIT_BEAM_SWAP request")
+            }
+            if (beamSwap.requestId != requestId) {
+                throw JsonParseException("requestId mismatch between envelope ($requestId) and beamSwap (${beamSwap.requestId})")
+            }
+            if (choice != null || obj.has("choice")) {
+                throw JsonParseException("SUBMIT_BEAM_SWAP cannot contain choice payload")
+            }
+            if (shufflePlan != null || obj.has("shufflePlan")) {
+                throw JsonParseException("SUBMIT_BEAM_SWAP cannot contain shufflePlan payload")
+            }
+            if (tileMark != null || obj.has("tileMark")) {
+                throw JsonParseException("SUBMIT_BEAM_SWAP cannot contain tileMark payload")
+            }
+            if (sleeveBloom != null || obj.has("sleeveBloom")) {
+                throw JsonParseException("SUBMIT_BEAM_SWAP cannot contain sleeveBloom payload")
+            }
+            if (sleeveBloomChoice != null || obj.has("sleeveBloomChoice")) {
+                throw JsonParseException("SUBMIT_BEAM_SWAP cannot contain sleeveBloomChoice payload")
+            }
+            if (beamSwapChoice != null || obj.has("beamSwapChoice")) {
+                throw JsonParseException("SUBMIT_BEAM_SWAP cannot contain beamSwapChoice payload")
+            }
+        } else {
+            if (beamSwap != null || obj.has("beamSwap")) {
+                throw JsonParseException("beamSwap payload is only allowed for SUBMIT_BEAM_SWAP")
+            }
+        }
+
+        if (api == ApiTags.SUBMIT_BEAM_SWAP_CHOICE) {
+            if (beamSwapChoice == null) {
+                throw JsonParseException("Missing beamSwapChoice payload in SUBMIT_BEAM_SWAP_CHOICE request")
+            }
+            if (beamSwapChoice.requestId != requestId) {
+                throw JsonParseException("requestId mismatch between envelope ($requestId) and beamSwapChoice (${beamSwapChoice.requestId})")
+            }
+            if (choice != null || obj.has("choice")) {
+                throw JsonParseException("SUBMIT_BEAM_SWAP_CHOICE cannot contain choice payload")
+            }
+            if (shufflePlan != null || obj.has("shufflePlan")) {
+                throw JsonParseException("SUBMIT_BEAM_SWAP_CHOICE cannot contain shufflePlan payload")
+            }
+            if (tileMark != null || obj.has("tileMark")) {
+                throw JsonParseException("SUBMIT_BEAM_SWAP_CHOICE cannot contain tileMark payload")
+            }
+            if (sleeveBloom != null || obj.has("sleeveBloom")) {
+                throw JsonParseException("SUBMIT_BEAM_SWAP_CHOICE cannot contain sleeveBloom payload")
+            }
+            if (sleeveBloomChoice != null || obj.has("sleeveBloomChoice")) {
+                throw JsonParseException("SUBMIT_BEAM_SWAP_CHOICE cannot contain sleeveBloomChoice payload")
+            }
+            if (beamSwap != null || obj.has("beamSwap")) {
+                throw JsonParseException("SUBMIT_BEAM_SWAP_CHOICE cannot contain beamSwap payload")
+            }
+        } else {
+            if (beamSwapChoice != null || obj.has("beamSwapChoice")) {
+                throw JsonParseException("beamSwapChoice payload is only allowed for SUBMIT_BEAM_SWAP_CHOICE")
+            }
+        }
+
+        return ApiRequest(api, requestId, roomId, token, playerName, preferSeat, config, choice, shufflePlan, cursor, roundId, protocolVersion, ready, roomConfig, spectatorId, spectatorName, publicCheckpoint, tileMark, sleeveBloom, sleeveBloomChoice, beamSwap, beamSwapChoice)
     }
 }
 
@@ -2290,7 +2394,7 @@ private class ProtocolPlayerSnapshotAdapter : JsonDeserializer<ProtocolPlayerSna
                 "sessionId", "roundId", "syncEpoch", "cursor", "sessionVersion", "roundVersion",
                 "view", "decision", "clocks", "cheatPoints", "session", "controls",
                 "paused", "settlementRoundId", "settlementEvents", "preparation", "presentationPreview",
-                "tileMark", "sleeveBloom"
+                "tileMark", "sleeveBloom", "beamSwap"
             ),
             "ProtocolPlayerSnapshot"
         )
@@ -2432,6 +2536,10 @@ private class ProtocolPlayerSnapshotAdapter : JsonDeserializer<ProtocolPlayerSna
             context.deserialize(obj.get("sleeveBloom"), ProtocolSleeveBloomView::class.java)
         } else null
 
+        val beamSwap: ProtocolBeamSwapView? = if (obj.has("beamSwap") && !obj.get("beamSwap").isJsonNull) {
+            context.deserialize(obj.get("beamSwap"), ProtocolBeamSwapView::class.java)
+        } else null
+
         return try {
             ProtocolPlayerSnapshot(
                 sessionId = sessionId,
@@ -2452,7 +2560,8 @@ private class ProtocolPlayerSnapshotAdapter : JsonDeserializer<ProtocolPlayerSna
                 preparation = preparation,
                 presentationPreview = presentationPreview,
                 tileMark = tileMark,
-                sleeveBloom = sleeveBloom
+                sleeveBloom = sleeveBloom,
+                beamSwap = beamSwap
             )
         } catch (e: IllegalArgumentException) {
             throw JsonParseException(e.message, e)
@@ -3932,6 +4041,358 @@ private class ProtocolSleeveBloomViewAdapter : JsonSerializer<ProtocolSleeveBloo
 }
 
 /**
+ * ProtocolBeamSwapSlot TypeAdapter
+ */
+private class ProtocolBeamSwapSlotAdapter : JsonSerializer<ProtocolBeamSwapSlot>, JsonDeserializer<ProtocolBeamSwapSlot> {
+    override fun serialize(src: ProtocolBeamSwapSlot, typeOfSrc: Type, context: JsonSerializationContext): JsonElement {
+        val obj = JsonObject()
+        val kind = when (src) {
+            is ProtocolBeamSwapSlot.WallSlot -> "WALL"
+            is ProtocolBeamSwapSlot.DeadWallSlot -> "DEAD_WALL"
+            is ProtocolBeamSwapSlot.ReplacementSlot -> "REPLACEMENT"
+        }
+        obj.addProperty("kind", kind)
+        obj.addProperty("index", src.index)
+        return obj
+    }
+
+    override fun deserialize(json: JsonElement, typeOfT: Type, context: JsonDeserializationContext): ProtocolBeamSwapSlot {
+        if (!json.isJsonObject) throw JsonParseException("ProtocolBeamSwapSlot must be a JSON object: $json")
+        val obj = json.asJsonObject
+        checkUnknownFields(obj, setOf("kind", "index"), "ProtocolBeamSwapSlot")
+        val kindElem = obj.get("kind") ?: throw JsonParseException("Missing kind in ProtocolBeamSwapSlot")
+        val kindStr = validateStrictString(kindElem, "ProtocolBeamSwapSlot.kind")
+        val indexElem = obj.get("index") ?: throw JsonParseException("Missing index in ProtocolBeamSwapSlot")
+        val index = validateStrictInt(indexElem, "ProtocolBeamSwapSlot.index")
+        if (index < 0) throw JsonParseException("index must be non-negative: $index")
+        return when (kindStr) {
+            "WALL" -> ProtocolBeamSwapSlot.WallSlot(index)
+            "DEAD_WALL" -> ProtocolBeamSwapSlot.DeadWallSlot(index)
+            "REPLACEMENT" -> ProtocolBeamSwapSlot.ReplacementSlot(index)
+            else -> throw JsonParseException("Invalid kind in ProtocolBeamSwapSlot: $kindStr")
+        }
+    }
+}
+
+/**
+ * ProtocolBeamSwapConfig TypeAdapter
+ */
+private class ProtocolBeamSwapConfigAdapter : JsonSerializer<ProtocolBeamSwapConfig>, JsonDeserializer<ProtocolBeamSwapConfig> {
+    override fun serialize(src: ProtocolBeamSwapConfig, typeOfSrc: Type, context: JsonSerializationContext): JsonElement {
+        val obj = JsonObject()
+        obj.addProperty("enabled", src.enabled)
+        return obj
+    }
+
+    override fun deserialize(json: JsonElement, typeOfT: Type, context: JsonDeserializationContext): ProtocolBeamSwapConfig {
+        if (!json.isJsonObject) throw JsonParseException("ProtocolBeamSwapConfig must be a JSON object: $json")
+        val obj = json.asJsonObject
+        checkUnknownFields(obj, setOf("enabled"), "ProtocolBeamSwapConfig")
+        val enabled = if (obj.has("enabled") && !obj.get("enabled").isJsonNull) {
+            validateStrictBoolean(obj.get("enabled"), "ProtocolBeamSwapConfig.enabled")
+        } else false
+        return ProtocolBeamSwapConfig(enabled)
+    }
+}
+
+/**
+ * ProtocolBeamSwapRequest TypeAdapter
+ */
+private class ProtocolBeamSwapRequestAdapter : JsonSerializer<ProtocolBeamSwapRequest>, JsonDeserializer<ProtocolBeamSwapRequest> {
+    override fun serialize(src: ProtocolBeamSwapRequest, typeOfSrc: Type, context: JsonSerializationContext): JsonElement {
+        val obj = JsonObject()
+        obj.addProperty("requestId", src.requestId)
+        obj.addProperty("sessionId", src.sessionId)
+        obj.addProperty("roundId", src.roundId)
+        obj.addProperty("decisionId", src.decisionId)
+        obj.addProperty("controlEpoch", src.controlEpoch)
+        return obj
+    }
+
+    override fun deserialize(json: JsonElement, typeOfT: Type, context: JsonDeserializationContext): ProtocolBeamSwapRequest {
+        if (!json.isJsonObject) throw JsonParseException("ProtocolBeamSwapRequest must be a JSON object: $json")
+        val obj = json.asJsonObject
+        checkUnknownFields(
+            obj,
+            setOf("requestId", "sessionId", "roundId", "decisionId", "controlEpoch"),
+            "ProtocolBeamSwapRequest"
+        )
+        val requestId = validateStrictString(obj.get("requestId") ?: throw JsonParseException("Missing requestId in ProtocolBeamSwapRequest"), "requestId")
+        if (requestId.isBlank()) throw JsonParseException("requestId cannot be blank")
+        val sessionId = validateStrictString(obj.get("sessionId") ?: throw JsonParseException("Missing sessionId in ProtocolBeamSwapRequest"), "sessionId")
+        if (sessionId.isBlank()) throw JsonParseException("sessionId cannot be blank")
+        val roundId = validateStrictString(obj.get("roundId") ?: throw JsonParseException("Missing roundId in ProtocolBeamSwapRequest"), "roundId")
+        if (roundId.isBlank()) throw JsonParseException("roundId cannot be blank")
+        val decisionId = validateStrictString(obj.get("decisionId") ?: throw JsonParseException("Missing decisionId in ProtocolBeamSwapRequest"), "decisionId")
+        if (decisionId.isBlank()) throw JsonParseException("decisionId cannot be blank")
+        val controlEpochElem = obj.get("controlEpoch") ?: throw JsonParseException("Missing controlEpoch in ProtocolBeamSwapRequest")
+        ApiMessageCodec.validateControlEpochElement(controlEpochElem, "controlEpoch")
+        val controlEpoch = validateStrictLong(controlEpochElem, "controlEpoch")
+        if (controlEpoch < 0L) throw JsonParseException("controlEpoch must be non-negative: $controlEpoch")
+        return try {
+            ProtocolBeamSwapRequest(requestId, sessionId, roundId, decisionId, controlEpoch)
+        } catch (e: IllegalArgumentException) {
+            throw JsonParseException("Invalid ProtocolBeamSwapRequest: ${e.message}", e)
+        }
+    }
+}
+
+/**
+ * ProtocolBeamSwapChoiceRequest TypeAdapter
+ */
+private class ProtocolBeamSwapChoiceRequestAdapter : JsonSerializer<ProtocolBeamSwapChoiceRequest>, JsonDeserializer<ProtocolBeamSwapChoiceRequest> {
+    override fun serialize(src: ProtocolBeamSwapChoiceRequest, typeOfSrc: Type, context: JsonSerializationContext): JsonElement {
+        val obj = JsonObject()
+        obj.addProperty("requestId", src.requestId)
+        obj.addProperty("sessionId", src.sessionId)
+        obj.addProperty("roundId", src.roundId)
+        obj.addProperty("decisionId", src.decisionId)
+        obj.addProperty("controlEpoch", src.controlEpoch)
+        obj.addProperty("offerId", src.offerId)
+        obj.addProperty("action", src.action.name)
+        if (src.action == ProtocolBeamSwapAction.SWAP) {
+            src.handTileId?.let { obj.addProperty("handTileId", it) }
+            src.targetSlot?.let { obj.add("targetSlot", context.serialize(it, ProtocolBeamSwapSlot::class.java)) }
+        }
+        return obj
+    }
+
+    override fun deserialize(json: JsonElement, typeOfT: Type, context: JsonDeserializationContext): ProtocolBeamSwapChoiceRequest {
+        if (!json.isJsonObject) throw JsonParseException("ProtocolBeamSwapChoiceRequest must be a JSON object: $json")
+        val obj = json.asJsonObject
+        checkUnknownFields(
+            obj,
+            setOf("requestId", "sessionId", "roundId", "decisionId", "controlEpoch", "offerId", "action", "handTileId", "targetSlot"),
+            "ProtocolBeamSwapChoiceRequest"
+        )
+        val requestId = validateStrictString(obj.get("requestId") ?: throw JsonParseException("Missing requestId in ProtocolBeamSwapChoiceRequest"), "requestId")
+        if (requestId.isBlank()) throw JsonParseException("requestId cannot be blank")
+        val sessionId = validateStrictString(obj.get("sessionId") ?: throw JsonParseException("Missing sessionId in ProtocolBeamSwapChoiceRequest"), "sessionId")
+        if (sessionId.isBlank()) throw JsonParseException("sessionId cannot be blank")
+        val roundId = validateStrictString(obj.get("roundId") ?: throw JsonParseException("Missing roundId in ProtocolBeamSwapChoiceRequest"), "roundId")
+        if (roundId.isBlank()) throw JsonParseException("roundId cannot be blank")
+        val decisionId = validateStrictString(obj.get("decisionId") ?: throw JsonParseException("Missing decisionId in ProtocolBeamSwapChoiceRequest"), "decisionId")
+        if (decisionId.isBlank()) throw JsonParseException("decisionId cannot be blank")
+        val controlEpochElem = obj.get("controlEpoch") ?: throw JsonParseException("Missing controlEpoch in ProtocolBeamSwapChoiceRequest")
+        ApiMessageCodec.validateControlEpochElement(controlEpochElem, "controlEpoch")
+        val controlEpoch = validateStrictLong(controlEpochElem, "controlEpoch")
+        if (controlEpoch < 0L) throw JsonParseException("controlEpoch must be non-negative: $controlEpoch")
+        val offerId = validateStrictString(obj.get("offerId") ?: throw JsonParseException("Missing offerId in ProtocolBeamSwapChoiceRequest"), "offerId")
+        if (offerId.isBlank()) throw JsonParseException("offerId cannot be blank")
+        val actionElem = obj.get("action") ?: throw JsonParseException("Missing action in ProtocolBeamSwapChoiceRequest")
+        val actionStr = validateStrictString(actionElem, "action")
+        val action = try {
+            ProtocolBeamSwapAction.valueOf(actionStr)
+        } catch (e: Exception) {
+            throw JsonParseException("Invalid action in ProtocolBeamSwapChoiceRequest: $actionStr", e)
+        }
+        val handTileId: Int?
+        val targetSlot: ProtocolBeamSwapSlot?
+        when (action) {
+            ProtocolBeamSwapAction.KEEP_ORIGINAL -> {
+                if (obj.has("handTileId")) {
+                    throw JsonParseException("handTileId must be omitted when action is KEEP_ORIGINAL")
+                }
+                if (obj.has("targetSlot")) {
+                    throw JsonParseException("targetSlot must be omitted when action is KEEP_ORIGINAL")
+                }
+                handTileId = null
+                targetSlot = null
+            }
+            ProtocolBeamSwapAction.SWAP -> {
+                val handElem = obj.get("handTileId") ?: throw JsonParseException("Missing handTileId in ProtocolBeamSwapChoiceRequest for SWAP")
+                handTileId = validateStrictInt(handElem, "handTileId")
+                if (handTileId !in 0..135) {
+                    throw JsonParseException("handTileId must be in 0..135: $handTileId")
+                }
+                val slotElem = obj.get("targetSlot") ?: throw JsonParseException("Missing targetSlot in ProtocolBeamSwapChoiceRequest for SWAP")
+                if (slotElem.isJsonNull || !slotElem.isJsonObject) {
+                    throw JsonParseException("targetSlot must be a non-null JSON object")
+                }
+                targetSlot = context.deserialize(slotElem, ProtocolBeamSwapSlot::class.java)
+            }
+        }
+        return try {
+            ProtocolBeamSwapChoiceRequest(requestId, sessionId, roundId, decisionId, controlEpoch, offerId, action, handTileId, targetSlot)
+        } catch (e: IllegalArgumentException) {
+            throw JsonParseException("Invalid ProtocolBeamSwapChoiceRequest: ${e.message}", e)
+        }
+    }
+}
+
+/**
+ * ProtocolBeamSwapCandidateView TypeAdapter
+ */
+private class ProtocolBeamSwapCandidateViewAdapter : JsonSerializer<ProtocolBeamSwapCandidateView>, JsonDeserializer<ProtocolBeamSwapCandidateView> {
+    override fun serialize(src: ProtocolBeamSwapCandidateView, typeOfSrc: Type, context: JsonSerializationContext): JsonElement {
+        val obj = JsonObject()
+        obj.add("slot", context.serialize(src.slot, ProtocolBeamSwapSlot::class.java))
+        obj.addProperty("marked", src.marked)
+        if (src.marked && src.tile != null) {
+            obj.add("tile", context.serialize(src.tile, ProtocolTile::class.java))
+        }
+        return obj
+    }
+
+    override fun deserialize(json: JsonElement, typeOfT: Type, context: JsonDeserializationContext): ProtocolBeamSwapCandidateView {
+        if (!json.isJsonObject) throw JsonParseException("ProtocolBeamSwapCandidateView must be a JSON object: $json")
+        val obj = json.asJsonObject
+        checkUnknownFields(obj, setOf("slot", "marked", "tile"), "ProtocolBeamSwapCandidateView")
+        val slotElem = obj.get("slot") ?: throw JsonParseException("Missing slot in ProtocolBeamSwapCandidateView")
+        if (slotElem.isJsonNull || !slotElem.isJsonObject) {
+            throw JsonParseException("slot must be a non-null JSON object")
+        }
+        val slot: ProtocolBeamSwapSlot = context.deserialize(slotElem, ProtocolBeamSwapSlot::class.java)
+            ?: throw JsonParseException("slot cannot deserialize to null")
+        val markedElem = obj.get("marked") ?: throw JsonParseException("Missing marked in ProtocolBeamSwapCandidateView")
+        val marked = validateStrictBoolean(markedElem, "ProtocolBeamSwapCandidateView.marked")
+        val tile: ProtocolTile? = if (obj.has("tile") && !obj.get("tile").isJsonNull) {
+            val tileElem = obj.get("tile")
+            if (!tileElem.isJsonObject) throw JsonParseException("tile must be a non-null JSON object")
+            context.deserialize(tileElem, ProtocolTile::class.java)
+        } else null
+        if (!marked && obj.has("tile")) {
+            throw JsonParseException("Unmarked candidate cannot contain tile field")
+        }
+        if (marked && tile == null) {
+            throw JsonParseException("Marked candidate must contain non-null tile")
+        }
+        return try {
+            ProtocolBeamSwapCandidateView(slot, marked, tile)
+        } catch (e: IllegalArgumentException) {
+            throw JsonParseException("Invalid ProtocolBeamSwapCandidateView: ${e.message}", e)
+        }
+    }
+}
+
+/**
+ * ProtocolBeamSwapOfferView TypeAdapter
+ */
+private class ProtocolBeamSwapOfferViewAdapter : JsonSerializer<ProtocolBeamSwapOfferView>, JsonDeserializer<ProtocolBeamSwapOfferView> {
+    override fun serialize(src: ProtocolBeamSwapOfferView, typeOfSrc: Type, context: JsonSerializationContext): JsonElement {
+        val obj = JsonObject()
+        obj.addProperty("offerId", src.offerId)
+        obj.addProperty("window", src.window.name)
+        val candArr = com.google.gson.JsonArray()
+        for (c in src.candidates) candArr.add(context.serialize(c, ProtocolBeamSwapCandidateView::class.java))
+        obj.add("candidates", candArr)
+        val handArr = com.google.gson.JsonArray()
+        for (h in src.selectableHandTileIds) handArr.add(h)
+        obj.add("selectableHandTileIds", handArr)
+        obj.addProperty("deadlineMillis", src.deadlineMillis)
+        obj.addProperty("decisionId", src.decisionId)
+        obj.addProperty("controlEpoch", src.controlEpoch)
+        return obj
+    }
+
+    override fun deserialize(json: JsonElement, typeOfT: Type, context: JsonDeserializationContext): ProtocolBeamSwapOfferView {
+        if (!json.isJsonObject) throw JsonParseException("ProtocolBeamSwapOfferView must be a JSON object: $json")
+        val obj = json.asJsonObject
+        checkUnknownFields(
+            obj,
+            setOf("offerId", "window", "candidates", "selectableHandTileIds", "deadlineMillis", "decisionId", "controlEpoch"),
+            "ProtocolBeamSwapOfferView"
+        )
+        val offerId = validateStrictString(obj.get("offerId") ?: throw JsonParseException("Missing offerId in ProtocolBeamSwapOfferView"), "offerId")
+        if (offerId.isBlank()) throw JsonParseException("offerId cannot be blank")
+        val windowElem = obj.get("window") ?: throw JsonParseException("Missing window in ProtocolBeamSwapOfferView")
+        val windowStr = validateStrictString(windowElem, "window")
+        val window = try {
+            ProtocolBeamSwapWindow.valueOf(windowStr)
+        } catch (e: Exception) {
+            throw JsonParseException("Invalid window in ProtocolBeamSwapOfferView: $windowStr", e)
+        }
+        val candElem = obj.get("candidates") ?: throw JsonParseException("Missing candidates in ProtocolBeamSwapOfferView")
+        if (!candElem.isJsonArray) throw JsonParseException("candidates must be a JSON array")
+        val candArr = candElem.asJsonArray
+        val candidates = ArrayList<ProtocolBeamSwapCandidateView>(candArr.size())
+        for (elem in candArr) {
+            if (elem == null || elem.isJsonNull || !elem.isJsonObject) {
+                throw JsonParseException("Candidate element must be a non-null JSON object: $elem")
+            }
+            val candidate: ProtocolBeamSwapCandidateView = context.deserialize(elem, ProtocolBeamSwapCandidateView::class.java)
+                ?: throw JsonParseException("Candidate element cannot deserialize to null")
+            candidates.add(candidate)
+        }
+        val handElem = obj.get("selectableHandTileIds") ?: throw JsonParseException("Missing selectableHandTileIds in ProtocolBeamSwapOfferView")
+        val selectableHandTileIds = validateStrictIntList(handElem, "selectableHandTileIds")
+        for (h in selectableHandTileIds) {
+            if (h !in 0..135) throw JsonParseException("selectableHandTileIds element out of range 0..135: $h")
+        }
+        val deadlineMillisElem = obj.get("deadlineMillis") ?: throw JsonParseException("Missing deadlineMillis in ProtocolBeamSwapOfferView")
+        val deadlineMillis = validateStrictLong(deadlineMillisElem, "deadlineMillis")
+        if (deadlineMillis < 0L) throw JsonParseException("deadlineMillis must be non-negative: $deadlineMillis")
+        val decisionId = validateStrictString(obj.get("decisionId") ?: throw JsonParseException("Missing decisionId in ProtocolBeamSwapOfferView"), "decisionId")
+        if (decisionId.isBlank()) throw JsonParseException("decisionId cannot be blank")
+        val controlEpochElem = obj.get("controlEpoch") ?: throw JsonParseException("Missing controlEpoch in ProtocolBeamSwapOfferView")
+        ApiMessageCodec.validateControlEpochElement(controlEpochElem, "controlEpoch")
+        val controlEpoch = validateStrictLong(controlEpochElem, "controlEpoch")
+        if (controlEpoch < 0L) throw JsonParseException("controlEpoch must be non-negative: $controlEpoch")
+        return try {
+            ProtocolBeamSwapOfferView(offerId, window, candidates, selectableHandTileIds, deadlineMillis, decisionId, controlEpoch)
+        } catch (e: IllegalArgumentException) {
+            throw JsonParseException("Invalid ProtocolBeamSwapOfferView: ${e.message}", e)
+        }
+    }
+}
+
+/**
+ * ProtocolBeamSwapView TypeAdapter
+ */
+private class ProtocolBeamSwapViewAdapter : JsonSerializer<ProtocolBeamSwapView>, JsonDeserializer<ProtocolBeamSwapView> {
+    override fun serialize(src: ProtocolBeamSwapView, typeOfSrc: Type, context: JsonSerializationContext): JsonElement {
+        val obj = JsonObject()
+        obj.addProperty("canApply", src.canApply)
+        if (src.disabledReason != null) obj.addProperty("disabledReason", src.disabledReason)
+        obj.addProperty("cost", src.cost)
+        if (src.window != null) obj.addProperty("window", src.window.name)
+        obj.addProperty("decisionId", src.decisionId)
+        obj.addProperty("controlEpoch", src.controlEpoch)
+        obj.addProperty("stateVersion", src.stateVersion)
+        if (src.pendingOffer != null) {
+            obj.add("pendingOffer", context.serialize(src.pendingOffer, ProtocolBeamSwapOfferView::class.java))
+        }
+        return obj
+    }
+
+    override fun deserialize(json: JsonElement, typeOfT: Type, context: JsonDeserializationContext): ProtocolBeamSwapView {
+        if (!json.isJsonObject) throw JsonParseException("ProtocolBeamSwapView must be a JSON object: $json")
+        val obj = json.asJsonObject
+        checkUnknownFields(
+            obj,
+            setOf("canApply", "disabledReason", "cost", "window", "decisionId", "controlEpoch", "stateVersion", "pendingOffer"),
+            "ProtocolBeamSwapView"
+        )
+        val canApply = validateStrictBoolean(obj.get("canApply") ?: throw JsonParseException("Missing canApply in ProtocolBeamSwapView"), "canApply")
+        val disabledReason = validateStrictOptionalString(obj.get("disabledReason"), "disabledReason")
+        val cost = validateStrictInt(obj.get("cost") ?: throw JsonParseException("Missing cost in ProtocolBeamSwapView"), "cost")
+        if (cost != 10) throw JsonParseException("cost must be 10, got: $cost")
+        val window = if (obj.has("window") && !obj.get("window").isJsonNull) {
+            val windowStr = validateStrictString(obj.get("window"), "window")
+            try {
+                ProtocolBeamSwapWindow.valueOf(windowStr)
+            } catch (e: Exception) {
+                throw JsonParseException("Invalid window in ProtocolBeamSwapView: $windowStr", e)
+            }
+        } else null
+        val decisionId = validateStrictString(obj.get("decisionId") ?: throw JsonParseException("Missing decisionId in ProtocolBeamSwapView"), "decisionId")
+        if (decisionId.isBlank()) throw JsonParseException("decisionId cannot be blank")
+        val controlEpoch = validateStrictLong(obj.get("controlEpoch") ?: throw JsonParseException("Missing controlEpoch in ProtocolBeamSwapView"), "controlEpoch")
+        if (controlEpoch < 0L) throw JsonParseException("controlEpoch must be non-negative: $controlEpoch")
+        val stateVersion = validateStrictLong(obj.get("stateVersion") ?: throw JsonParseException("Missing stateVersion in ProtocolBeamSwapView"), "stateVersion")
+        if (stateVersion < 0L) throw JsonParseException("stateVersion must be non-negative: $stateVersion")
+        val pendingOffer: ProtocolBeamSwapOfferView? = if (obj.has("pendingOffer") && !obj.get("pendingOffer").isJsonNull) {
+            context.deserialize(obj.get("pendingOffer"), ProtocolBeamSwapOfferView::class.java)
+        } else null
+        return try {
+            ProtocolBeamSwapView(canApply, disabledReason, cost, window, decisionId, controlEpoch, stateVersion, pendingOffer)
+        } catch (e: IllegalArgumentException) {
+            throw JsonParseException("Invalid ProtocolBeamSwapView: ${e.message}", e)
+        }
+    }
+}
+
+/**
  * V4 消息编解码器 (ApiMessageCodec)
  *
  * 采用独立 Gson 实例，不 import engine，对多态类型进行显式标签编解码和严格输入边界校验。
@@ -4004,6 +4465,14 @@ object ApiMessageCodec {
         .registerTypeAdapter(ProtocolSleeveBloomChoiceRequest::class.java, ProtocolSleeveBloomChoiceRequestAdapter())
         .registerTypeAdapter(ProtocolSleeveBloomOfferView::class.java, ProtocolSleeveBloomOfferViewAdapter())
         .registerTypeAdapter(ProtocolSleeveBloomView::class.java, ProtocolSleeveBloomViewAdapter())
+        .registerTypeAdapter(ProtocolBeamSwapSlot::class.java, ProtocolBeamSwapSlotAdapter())
+        .registerTypeHierarchyAdapter(ProtocolBeamSwapSlot::class.java, ProtocolBeamSwapSlotAdapter())
+        .registerTypeAdapter(ProtocolBeamSwapConfig::class.java, ProtocolBeamSwapConfigAdapter())
+        .registerTypeAdapter(ProtocolBeamSwapRequest::class.java, ProtocolBeamSwapRequestAdapter())
+        .registerTypeAdapter(ProtocolBeamSwapChoiceRequest::class.java, ProtocolBeamSwapChoiceRequestAdapter())
+        .registerTypeAdapter(ProtocolBeamSwapCandidateView::class.java, ProtocolBeamSwapCandidateViewAdapter())
+        .registerTypeAdapter(ProtocolBeamSwapOfferView::class.java, ProtocolBeamSwapOfferViewAdapter())
+        .registerTypeAdapter(ProtocolBeamSwapView::class.java, ProtocolBeamSwapViewAdapter())
         .create()
 
     fun validateControlEpochElement(epochElem: JsonElement, context: String) {

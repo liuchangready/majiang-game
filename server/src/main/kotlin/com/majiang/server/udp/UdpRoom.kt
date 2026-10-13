@@ -25,6 +25,8 @@ import com.majiang.transport.api.ProtocolShufflePlan
 import com.majiang.transport.api.ProtocolTileMarkRequest
 import com.majiang.transport.api.ProtocolSleeveBloomRequest
 import com.majiang.transport.api.ProtocolSleeveBloomChoiceRequest
+import com.majiang.transport.api.ProtocolBeamSwapRequest
+import com.majiang.transport.api.ProtocolBeamSwapChoiceRequest
 import com.majiang.transport.udp.ResendResponse
 import com.majiang.transport.udp.UdpClock
 import java.net.SocketAddress
@@ -893,6 +895,26 @@ class UdpRoom(
             )
         val engineRequest = EngineProtocolMapper.toEngineSleeveBloomChoiceRequest(request)
         return sharedRoom.submitSleeveBloomChoice(session.seat, engineRequest, sessionValidator(session))
+            .thenApply { EngineProtocolMapper.toProtocolReceipt(it) }
+    }
+
+    fun submitBeamSwap(session: UdpClientSession, request: ProtocolBeamSwapRequest): CompletableFuture<ProtocolActionReceipt> {
+        commandTarget(session)
+            ?: return CompletableFuture.completedFuture(
+                ProtocolActionReceipt(request.requestId, ProtocolReceiptStatus.REJECTED, reason = "STALE_SESSION")
+            )
+        val engineRequest = EngineProtocolMapper.toEngineBeamSwapRequest(request)
+        return sharedRoom.submitBeamSwap(session.seat, engineRequest, sessionValidator(session))
+            .thenApply { EngineProtocolMapper.toProtocolReceipt(it) }
+    }
+
+    fun submitBeamSwapChoice(session: UdpClientSession, request: ProtocolBeamSwapChoiceRequest): CompletableFuture<ProtocolActionReceipt> {
+        commandTarget(session)
+            ?: return CompletableFuture.completedFuture(
+                ProtocolActionReceipt(request.requestId, ProtocolReceiptStatus.REJECTED, reason = "STALE_SESSION")
+            )
+        val engineRequest = EngineProtocolMapper.toEngineBeamSwapChoiceRequest(request)
+        return sharedRoom.submitBeamSwapChoice(session.seat, engineRequest, sessionValidator(session))
             .thenApply { EngineProtocolMapper.toProtocolReceipt(it) }
     }
 

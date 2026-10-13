@@ -1,0 +1,67 @@
+{
+  "taskId": "BS-E2",
+  "recipient": "codex",
+  "status": "ready_for_review",
+  "modifiedFiles": [
+    "protocol/src/main/kotlin/com/majiang/transport/api/ProtocolBeamSwapModels.kt",
+    "protocol/src/main/kotlin/com/majiang/transport/api/ProtocolModels.kt",
+    "protocol/src/main/kotlin/com/majiang/transport/api/ApiMessage.kt",
+    "protocol/src/main/kotlin/com/majiang/server/api/SessionApi.kt",
+    "server/src/main/kotlin/com/majiang/server/mapping/EngineProtocolMapper.kt",
+    "server/src/main/kotlin/com/majiang/server/host/ServerTableHost.kt",
+    "server/src/main/kotlin/com/majiang/server/inprocess/InProcessBinding.kt",
+    "server/src/main/kotlin/com/majiang/server/room/SharedRoom.kt",
+    "server/src/main/kotlin/com/majiang/server/udp/UdpRoom.kt",
+    "server/src/main/kotlin/com/majiang/server/udp/UdpTableServer.kt",
+    "client/src/main/kotlin/com/majiang/client/api/BeamSwapModels.kt",
+    "client/src/main/kotlin/com/majiang/client/api/ClientModels.kt",
+    "client/src/main/kotlin/com/majiang/client/api/ViewModels.kt",
+    "client/src/main/kotlin/com/majiang/client/api/GameSession.kt",
+    "client/src/main/kotlin/com/majiang/client/mapping/ProtocolViewMapper.kt",
+    "client/src/main/kotlin/com/majiang/client/session/ServerConnectionSession.kt",
+    "client/src/main/kotlin/com/majiang/client/transport/udp/UdpClientBinding.kt",
+    "doc/beam-swap/DELIVERY-ANTI-E2.md",
+    "doc/beam-swap/CALLBACK-ANTI-E2.json"
+  ],
+  "interfaces": {
+    "protocol": "ProtocolBeamSwapConfig / ProtocolBeamSwapWindow / ProtocolBeamSwapAction / ProtocolBeamSwapSlot / ProtocolBeamSwapRequest / ProtocolBeamSwapChoiceRequest / ProtocolBeamSwapCandidateView / ProtocolBeamSwapOfferView / ProtocolBeamSwapView / ApiTags.SUBMIT_BEAM_SWAP / ApiTags.SUBMIT_BEAM_SWAP_CHOICE / SessionApi.submitBeamSwap / SessionApi.submitBeamSwapChoice",
+    "server": "EngineProtocolMapper.toProtocolBeamSwap* / ServerTableHost.submitBeamSwap / ServerTableHost.submitBeamSwapChoice / InProcessBinding.submitBeamSwap / InProcessBinding.submitBeamSwapChoice / UdpTableServer UDP request dispatch / Capabilities.beamSwapSupported",
+    "client": "BeamSwapConfig / BeamSwapWindow / BeamSwapAction / BeamSwapSlot / BeamSwapRequest / BeamSwapChoiceRequest / BeamSwapCandidateView / BeamSwapOfferView / BeamSwapView / GameSession.submitBeamSwap / GameSession.submitBeamSwapChoice / ProtocolViewMapper / ServerConnectionSession / UdpClientBinding"
+  },
+  "tests": {
+    "codexTargetedE2": {
+      "command": "./gradlew :protocol:test --tests '*BeamSwap*' :client:test --tests '*BeamSwap*' :server:test --tests '*BeamSwap*' --rerun-tasks",
+      "exitCode": 0,
+      "tests": 33,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "breakdown": {
+        "ProtocolBeamSwapContractTest": 14,
+        "BeamSwapClientContractTest": 10,
+        "BeamSwapHostContractTest": 7,
+        "BeamSwapClientUdpIntegrationTest": 1,
+        "BeamSwapUdpPrivacyTest": 1
+      }
+    },
+    "fourModuleFull": {
+      "command": "./gradlew :protocol:test :client:test :server:test :engine:test --no-build-cache",
+      "exitCode": 0,
+      "tests": 940,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "breakdown": {
+        "engine": 471,
+        "protocol": 172,
+        "server": 151,
+        "client": 146
+      }
+    }
+  },
+  "unverifiedBoundaries": [
+    "BS-E3 presentation layer (UI screen, choice model, dialog, overlay rendering)",
+    "Public matchmaking, persistence, or network accounts (out of scope per AGENTS.md)"
+  ],
+  "remainingIssues": []
+}

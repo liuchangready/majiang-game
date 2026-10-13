@@ -576,4 +576,85 @@ object TileMovement {
 
         return nextRinshan
     }
+
+    /**
+     * 偷梁换柱杠后原语：将原有暗手牌与有效死山未展示槽位原地对调
+     *
+     * @param state 单局状态
+     * @param player 施术者席位 (0..3)
+     * @param handTile 原有暗手牌（必须在 closedTiles 中且不等于 drawnTile）
+     * @param targetSlot 目标槽位（DeadWallSlot 或 ReplacementSlot）
+     * @param expectedTileId 目标槽位期望的实体牌标识
+     * @return 换入手牌的原死山实体牌
+     */
+    fun swapHandWithDeadWall(
+        state: GameState,
+        player: Int,
+        handTile: Tile,
+        targetSlot: com.majiang.cheat.beam.BeamSwapSlot,
+        expectedTileId: Int
+    ): Tile {
+        require(player in 0..3) { "Invalid player: $player" }
+        val hand = state.players[player]
+        require(hand.closedTiles.contains(handTile)) {
+            "Player $player does not hold tile $handTile in closedTiles"
+        }
+        require(hand.drawnTile != handTile) {
+            "handTile $handTile cannot be drawnTile"
+        }
+        require(state.tilePool.getLocation(handTile) == TileLocation.hand(player)) {
+            "handTile $handTile not in hand of player $player, was: ${state.tilePool.getLocation(handTile)}"
+        }
+
+        val targetTile = when (targetSlot) {
+            is com.majiang.cheat.beam.BeamSwapSlot.DeadWallSlot -> {
+                val idx = targetSlot.index
+                require(idx in 0..13) { "DeadWallSlot index out of bounds: $idx" }
+                require(idx in state.rinshanPointer..3 || (idx in 4..13 && !state.doraIndicators.contains(state.deadWall[idx]))) {
+                    "DeadWallSlot index $idx is not an eligible unrevealed dead wall slot"
+                }
+                state.deadWall[idx]
+            }
+            is com.majiang.cheat.beam.BeamSwapSlot.ReplacementSlot -> {
+                val idx = targetSlot.index
+                require(idx in 0 until state.deadWallReplacements.size) {
+                    "ReplacementSlot index out of bounds: $idx (replacements size: ${state.deadWallReplacements.size})"
+                }
+                state.deadWallReplacements[idx]
+            }
+            is com.majiang.cheat.beam.BeamSwapSlot.WallSlot -> {
+                throw IllegalArgumentException("WallSlot cannot be used with swapHandWithDeadWall")
+            }
+        }
+
+        require(targetTile.tileId == expectedTileId) {
+            "Target tile id at $targetSlot is ${targetTile.tileId}, expected $expectedTileId"
+        }
+        require(state.tilePool.getLocation(targetTile) == TileLocation.DEAD_WALL) {
+            "Target tile $targetTile at $targetSlot not in DEAD_WALL, was: ${state.tilePool.getLocation(targetTile)}"
+        }
+        require(!state.doraIndicators.contains(targetTile)) {
+            "Target tile $targetTile at $targetSlot is a revealed dora indicator"
+        }
+
+        // 执行原地对调
+        when (targetSlot) {
+            is com.majiang.cheat.beam.BeamSwapSlot.DeadWallSlot -> {
+                state.deadWall[targetSlot.index] = handTile
+            }
+            is com.majiang.cheat.beam.BeamSwapSlot.ReplacementSlot -> {
+                state.deadWallReplacements[targetSlot.index] = handTile
+            }
+            is com.majiang.cheat.beam.BeamSwapSlot.WallSlot -> {}
+        }
+
+        hand.closedTiles.remove(handTile)
+        hand.closedTiles.add(targetTile)
+        hand.closedTiles.sort()
+
+        state.tilePool.transfer(handTile, TileLocation.hand(player), TileLocation.DEAD_WALL)
+        state.tilePool.transfer(targetTile, TileLocation.DEAD_WALL, TileLocation.hand(player))
+
+        return targetTile
+    }
 }

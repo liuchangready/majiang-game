@@ -50,7 +50,7 @@ object StateInvariants {
             require(entry.entryId.isNotBlank()) { "CheatLedgerEntry entryId cannot be blank" }
         }
 
-        // 1.2 杠计数不变量校验
+        // 1.2 杠计数与待翻杠宝牌不变量校验
         require(state.totalKanCount in 0..4) {
             "totalKanCount must be in 0..4, was ${state.totalKanCount}"
         }
@@ -64,6 +64,18 @@ object StateInvariants {
         }
         require(state.playerKanCounts.sum() == state.totalKanCount) {
             "playerKanCounts sum (${state.playerKanCounts.sum()}) must equal totalKanCount (${state.totalKanCount})"
+        }
+        require(state.pendingKanDoraCount in 0..4) {
+            "pendingKanDoraCount must be in 0..4, was ${state.pendingKanDoraCount}"
+        }
+        require(state.pendingKanDoraCount <= state.totalKanCount) {
+            "pendingKanDoraCount (${state.pendingKanDoraCount}) cannot exceed totalKanCount (${state.totalKanCount})"
+        }
+        require(state.doraIndicators.size in 0..5) {
+            "doraIndicators size must be in 0..5, was ${state.doraIndicators.size}"
+        }
+        require(state.doraIndicators.size + state.pendingKanDoraCount <= 5) {
+            "Total dora indicators (revealed=${state.doraIndicators.size} + pending=${state.pendingKanDoraCount}) must be <= 5"
         }
 
         // 1.3 袖里藏花挂起二选一校验
@@ -80,6 +92,28 @@ object StateInvariants {
             require(hand.drawnTile == offer.firstTile) {
                 "sleeveBloomOffer firstTile (${offer.firstTile}) must match player drawnTile (${hand.drawnTile})"
             }
+        }
+
+        // 1.4 偷梁换柱挂起选择校验
+        state.beamSwapOffer?.let { offer ->
+            require(offer.seat in 0..3) { "beamSwapOffer seat out of bounds: ${offer.seat}" }
+            require(offer.offerId.isNotBlank()) { "beamSwapOffer offerId cannot be blank" }
+            require(offer.seat == state.currentPlayer) {
+                "beamSwapOffer seat (${offer.seat}) must match currentPlayer (${state.currentPlayer})"
+            }
+            require(state.phase == GamePhase.CHEAT_WINDOW) {
+                "beamSwapOffer can only exist in CHEAT_WINDOW phase, was ${state.phase}"
+            }
+            val hand = state.players[offer.seat]
+            require(hand.drawnTile != null && hand.drawnTile!!.tileId == offer.drawnTileId) {
+                "beamSwapOffer drawnTileId (${offer.drawnTileId}) must match player drawnTile (${hand.drawnTile})"
+            }
+            require(offer.candidates.isNotEmpty()) { "beamSwapOffer candidates cannot be empty" }
+            require(offer.eligibleHandTileIds.isNotEmpty()) { "beamSwapOffer eligibleHandTileIds cannot be empty" }
+        }
+
+        if (state.sleeveBloomOffer != null && state.beamSwapOffer != null) {
+            throw IllegalStateException("Cannot have both sleeveBloomOffer and beamSwapOffer pending simultaneously")
         }
 
         // 2. 检查尚未开局时的全 UNASSIGNED 特殊状态

@@ -105,6 +105,24 @@ interface GameSession : AutoCloseable {
         CompletableFuture.failedFuture(UnsupportedOperationException("submitSleeveBloomChoice is not supported"))
 
     /**
+     * 提交偷梁换柱千术激活请求
+     *
+     * @param request 客户端激活请求
+     * @return 操作回执
+     */
+    fun submitBeamSwap(request: BeamSwapRequest): CompletableFuture<Receipt> =
+        CompletableFuture.failedFuture(UnsupportedOperationException("submitBeamSwap is not supported"))
+
+    /**
+     * 提交偷梁换柱分支选择请求
+     *
+     * @param request 客户端选择请求
+     * @return 操作回执
+     */
+    fun submitBeamSwapChoice(request: BeamSwapChoiceRequest): CompletableFuture<Receipt> =
+        CompletableFuture.failedFuture(UnsupportedOperationException("submitBeamSwapChoice is not supported"))
+
+    /**
      * 开始比赛（房主席位专属）
      */
     fun start(): CompletableFuture<Receipt>

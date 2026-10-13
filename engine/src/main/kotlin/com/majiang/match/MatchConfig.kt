@@ -50,7 +50,8 @@ data class MatchConfig @JvmOverloads constructor(
     val cheatEconomy: CheatEconomyConfig = CheatEconomyConfig(),
     val shuffleConfig: ShuffleConfig = ShuffleConfig(),
     val tileMarkConfig: com.majiang.cheat.mark.TileMarkConfig = com.majiang.cheat.mark.TileMarkConfig(),
-    val sleeveBloomConfig: com.majiang.cheat.bloom.SleeveBloomConfig = com.majiang.cheat.bloom.SleeveBloomConfig()
+    val sleeveBloomConfig: com.majiang.cheat.bloom.SleeveBloomConfig = com.majiang.cheat.bloom.SleeveBloomConfig(),
+    val beamSwapConfig: com.majiang.cheat.beam.BeamSwapConfig = com.majiang.cheat.beam.BeamSwapConfig()
 ) {
     /**
      * 校验当前配置是否被引擎支持
@@ -115,6 +116,14 @@ data class MatchConfig @JvmOverloads constructor(
             }
             require(cheatEconomy.costs["SLEEVE_BLOOM"] == 10) {
                 "sleeveBloomConfig requires cheatEconomy.costs['SLEEVE_BLOOM'] == 10, got: ${cheatEconomy.costs["SLEEVE_BLOOM"]}"
+            }
+        }
+        if (beamSwapConfig.enabled) {
+            require(cheatEconomy.enabled) {
+                "beamSwapConfig requires cheatEconomy to be enabled"
+            }
+            require(cheatEconomy.costs["BEAM_SWAP"] == 10) {
+                "beamSwapConfig requires cheatEconomy.costs['BEAM_SWAP'] == 10, got: ${cheatEconomy.costs["BEAM_SWAP"]}"
             }
         }
         return this

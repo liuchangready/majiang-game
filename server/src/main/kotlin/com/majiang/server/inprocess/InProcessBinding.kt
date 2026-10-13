@@ -33,6 +33,8 @@ import com.majiang.transport.api.ProtocolShufflePlan
 import com.majiang.transport.api.ProtocolTileMarkRequest
 import com.majiang.transport.api.ProtocolSleeveBloomRequest
 import com.majiang.transport.api.ProtocolSleeveBloomChoiceRequest
+import com.majiang.transport.api.ProtocolBeamSwapRequest
+import com.majiang.transport.api.ProtocolBeamSwapChoiceRequest
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.atomic.AtomicBoolean
@@ -823,7 +825,8 @@ class InProcessBinding(
                 persistence = false,
                 resumption = true,
                 tileMarkSupported = true,
-                sleeveBloomSupported = true
+                sleeveBloomSupported = true,
+                beamSwapSupported = true
             )
         )
     }
@@ -979,6 +982,52 @@ class InProcessBinding(
         if (room != null) {
             val engineRequest = EngineProtocolMapper.toEngineSleeveBloomChoiceRequest(request)
             return room.submitSleeveBloomChoice(viewerSeat, engineRequest, makeValidator(room)).thenApply { receipt ->
+                EngineProtocolMapper.toProtocolReceipt(receipt)
+            }
+        }
+        return CompletableFuture.completedFuture(
+            ProtocolActionReceipt(request.requestId, ProtocolReceiptStatus.REJECTED, reason = "NOT_IN_ROOM")
+        )
+    }
+
+    override fun submitBeamSwap(request: ProtocolBeamSwapRequest): CompletableFuture<ProtocolActionReceipt> {
+        if (closed) {
+            return CompletableFuture.completedFuture(
+                ProtocolActionReceipt(request.requestId, ProtocolReceiptStatus.REJECTED, reason = "SESSION_CLOSED")
+            )
+        }
+        if (role == InProcessRole.SPECTATOR) {
+            return CompletableFuture.completedFuture(
+                ProtocolActionReceipt(request.requestId, ProtocolReceiptStatus.REJECTED, reason = "SPECTATOR_READ_ONLY")
+            )
+        }
+        val room = currentRoom
+        if (room != null) {
+            val engineRequest = EngineProtocolMapper.toEngineBeamSwapRequest(request)
+            return room.submitBeamSwap(viewerSeat, engineRequest, makeValidator(room)).thenApply { receipt ->
+                EngineProtocolMapper.toProtocolReceipt(receipt)
+            }
+        }
+        return CompletableFuture.completedFuture(
+            ProtocolActionReceipt(request.requestId, ProtocolReceiptStatus.REJECTED, reason = "NOT_IN_ROOM")
+        )
+    }
+
+    override fun submitBeamSwapChoice(request: ProtocolBeamSwapChoiceRequest): CompletableFuture<ProtocolActionReceipt> {
+        if (closed) {
+            return CompletableFuture.completedFuture(
+                ProtocolActionReceipt(request.requestId, ProtocolReceiptStatus.REJECTED, reason = "SESSION_CLOSED")
+            )
+        }
+        if (role == InProcessRole.SPECTATOR) {
+            return CompletableFuture.completedFuture(
+                ProtocolActionReceipt(request.requestId, ProtocolReceiptStatus.REJECTED, reason = "SPECTATOR_READ_ONLY")
+            )
+        }
+        val room = currentRoom
+        if (room != null) {
+            val engineRequest = EngineProtocolMapper.toEngineBeamSwapChoiceRequest(request)
+            return room.submitBeamSwapChoice(viewerSeat, engineRequest, makeValidator(room)).thenApply { receipt ->
                 EngineProtocolMapper.toProtocolReceipt(receipt)
             }
         }

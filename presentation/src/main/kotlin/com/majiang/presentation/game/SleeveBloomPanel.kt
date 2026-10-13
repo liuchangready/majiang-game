@@ -29,7 +29,8 @@ class SleeveBloomPanel(
 ) : Disposable {
 
     /** 几何包围盒契约 (1280x720 虚拟相机坐标系) */
-    val btnOpenRect = Rectangle(1080f, 100f, 140f, 44f)
+    val btnOpenRect: Rectangle
+        get() = RightActionColumnLayout.sleeveBloomRect()
     val panelRect = Rectangle(390f, 210f, 500f, 300f)
     val firstCardRect = Rectangle(460f, 290f, 90f, 126f)
     val secondCardRect = Rectangle(730f, 290f, 90f, 126f)
@@ -67,7 +68,8 @@ class SleeveBloomPanel(
         meldSelecting: Boolean,
         tileSkin: TileSkin? = null,
         tileDrawBuffer: TileDrawBuffer? = null,
-        tileMarkSelecting: Boolean = false
+        tileMarkSelecting: Boolean = false,
+        beamSwapChoosing: Boolean = false
     ) {
         if (snapshot == null) return
         val bloom = snapshot.sleeveBloom ?: return
@@ -84,7 +86,8 @@ class SleeveBloomPanel(
                 !isSubmitting &&
                 !riichiSelecting &&
                 !meldSelecting &&
-                !tileMarkSelecting
+                !tileMarkSelecting &&
+                !beamSwapChoosing
 
             shape.begin(ShapeRenderer.ShapeType.Filled)
             shape.color = if (canOpen) Color(0.85f, 0.45f, 0.15f, 1f) else Color(0.25f, 0.25f, 0.25f, 0.7f)

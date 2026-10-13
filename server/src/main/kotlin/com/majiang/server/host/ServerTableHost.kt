@@ -16,6 +16,8 @@ import com.majiang.authority.TableAuthority
 import com.majiang.cheat.mark.TileMarkRequest
 import com.majiang.cheat.bloom.SleeveBloomRequest
 import com.majiang.cheat.bloom.SleeveBloomChoiceRequest
+import com.majiang.cheat.beam.BeamSwapRequest
+import com.majiang.cheat.beam.BeamSwapChoiceRequest
 import com.majiang.server.control.ConnectionControl
 import com.majiang.server.control.ControllerRole
 import com.majiang.server.control.DisconnectPolicy
@@ -266,6 +268,8 @@ class ServerTableHost @JvmOverloads constructor(
         data class Shuffle(val roundId: String, val seat: Int, val requestId: String) : HostReceiptKey()
         data class Mark(val roundId: String, val seat: Int, val requestId: String) : HostReceiptKey()
         data class Bloom(val roundId: String, val seat: Int, val requestId: String) : HostReceiptKey()
+        data class BeamSwap(val roundId: String, val seat: Int, val requestId: String) : HostReceiptKey()
+        data class BeamSwapChoice(val roundId: String, val seat: Int, val requestId: String) : HostReceiptKey()
     }
 
     private val maxIssuedReceipts = 1000
@@ -657,6 +661,76 @@ class ServerTableHost @JvmOverloads constructor(
                     if (r.status != ReceiptStatus.REJECTED) {
                         issuedReceipts[key] = r
                     }
+                    r
+                }
+            }
+        }
+    }
+
+    fun submitBeamSwap(
+        seat: Int,
+        request: BeamSwapRequest,
+        sessionValidator: (() -> Boolean)? = null
+    ): CompletableFuture<ActionReceipt> {
+        return enqueueOperation {
+            if (sessionValidator?.invoke() == false) {
+                ActionReceipt(request.requestId, ReceiptStatus.REJECTED, reason = "STALE_SESSION")
+            } else if (connectionControl.seatState(seat).isDisconnected) {
+                ActionReceipt(request.requestId, ReceiptStatus.REJECTED, reason = "SEAT_DISCONNECTED")
+            } else if (!connectionControl.isHuman(seat)) {
+                ActionReceipt(request.requestId, ReceiptStatus.REJECTED, reason = "SEAT_NOT_HUMAN")
+            } else {
+                val res = authority.submitBeamSwap(seat, request, clock.nowMillis())
+                if (res.stateChanged) {
+                    syncDecisionsAndClocks()
+                    publishStateChanges(res.events)
+                    lastActionTimeMillis = clock.nowMillis()
+                }
+                val key = HostReceiptKey.BeamSwap(request.roundId, seat, request.requestId)
+                if (res.receipt.reason == "REQUEST_ID_CONFLICT") {
+                    res.receipt.copy(cursor = seatStreams[seat].cursor)
+                } else if (!res.stateChanged) {
+                    issuedReceipts[key] ?: res.receipt.copy(cursor = seatStreams[seat].cursor).also {
+                        issuedReceipts[key] = it
+                    }
+                } else {
+                    val r = res.receipt.copy(cursor = seatStreams[seat].cursor)
+                    issuedReceipts[key] = r
+                    r
+                }
+            }
+        }
+    }
+
+    fun submitBeamSwapChoice(
+        seat: Int,
+        request: BeamSwapChoiceRequest,
+        sessionValidator: (() -> Boolean)? = null
+    ): CompletableFuture<ActionReceipt> {
+        return enqueueOperation {
+            if (sessionValidator?.invoke() == false) {
+                ActionReceipt(request.requestId, ReceiptStatus.REJECTED, reason = "STALE_SESSION")
+            } else if (connectionControl.seatState(seat).isDisconnected) {
+                ActionReceipt(request.requestId, ReceiptStatus.REJECTED, reason = "SEAT_DISCONNECTED")
+            } else if (!connectionControl.isHuman(seat)) {
+                ActionReceipt(request.requestId, ReceiptStatus.REJECTED, reason = "SEAT_NOT_HUMAN")
+            } else {
+                val res = authority.submitBeamSwapChoice(seat, request, clock.nowMillis())
+                if (res.stateChanged) {
+                    syncDecisionsAndClocks()
+                    publishStateChanges(res.events)
+                    lastActionTimeMillis = clock.nowMillis()
+                }
+                val key = HostReceiptKey.BeamSwapChoice(request.roundId, seat, request.requestId)
+                if (res.receipt.reason == "REQUEST_ID_CONFLICT") {
+                    res.receipt.copy(cursor = seatStreams[seat].cursor)
+                } else if (!res.stateChanged) {
+                    issuedReceipts[key] ?: res.receipt.copy(cursor = seatStreams[seat].cursor).also {
+                        issuedReceipts[key] = it
+                    }
+                } else {
+                    val r = res.receipt.copy(cursor = seatStreams[seat].cursor)
+                    issuedReceipts[key] = r
                     r
                 }
             }
@@ -1193,6 +1267,7 @@ class ServerTableHost @JvmOverloads constructor(
                 prevSnap.preparation != candidateSnap.preparation ||
                 prevSnap.tileMark != candidateSnap.tileMark ||
                 prevSnap.sleeveBloom != candidateSnap.sleeveBloom ||
+                prevSnap.beamSwap != candidateSnap.beamSwap ||
                 hasMeaningfulClockChange
 
             if (!hasVisibleChange) {

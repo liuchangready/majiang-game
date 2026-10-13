@@ -420,7 +420,8 @@ class ProtocolAccessCapabilities(
     val persistence: Boolean = false,
     val resumption: Boolean = true,
     val tileMarkSupported: Boolean = false,
-    val sleeveBloomSupported: Boolean = false
+    val sleeveBloomSupported: Boolean = false,
+    val beamSwapSupported: Boolean = false
 ) {
     val supportedPlayerCounts: Set<Int> = Collections.unmodifiableSet(LinkedHashSet(supportedPlayerCounts))
 
@@ -436,6 +437,7 @@ class ProtocolAccessCapabilities(
     operator fun component5(): Boolean = resumption
     operator fun component6(): Boolean = tileMarkSupported
     operator fun component7(): Boolean = sleeveBloomSupported
+    operator fun component8(): Boolean = beamSwapSupported
 
     fun copy(
         protocolVersion: Int = this.protocolVersion,
@@ -444,9 +446,10 @@ class ProtocolAccessCapabilities(
         persistence: Boolean = this.persistence,
         resumption: Boolean = this.resumption,
         tileMarkSupported: Boolean = this.tileMarkSupported,
-        sleeveBloomSupported: Boolean = this.sleeveBloomSupported
+        sleeveBloomSupported: Boolean = this.sleeveBloomSupported,
+        beamSwapSupported: Boolean = this.beamSwapSupported
     ): ProtocolAccessCapabilities = ProtocolAccessCapabilities(
-        protocolVersion, supportedPlayerCounts, remoteTransport, persistence, resumption, tileMarkSupported, sleeveBloomSupported
+        protocolVersion, supportedPlayerCounts, remoteTransport, persistence, resumption, tileMarkSupported, sleeveBloomSupported, beamSwapSupported
     )
 
     override fun equals(other: Any?): Boolean {
@@ -458,7 +461,8 @@ class ProtocolAccessCapabilities(
             persistence == other.persistence &&
             resumption == other.resumption &&
             tileMarkSupported == other.tileMarkSupported &&
-            sleeveBloomSupported == other.sleeveBloomSupported
+            sleeveBloomSupported == other.sleeveBloomSupported &&
+            beamSwapSupported == other.beamSwapSupported
     }
 
     override fun hashCode(): Int {
@@ -469,11 +473,12 @@ class ProtocolAccessCapabilities(
         result = 31 * result + resumption.hashCode()
         result = 31 * result + tileMarkSupported.hashCode()
         result = 31 * result + sleeveBloomSupported.hashCode()
+        result = 31 * result + beamSwapSupported.hashCode()
         return result
     }
 
     override fun toString(): String =
-        "ProtocolAccessCapabilities(protocolVersion=$protocolVersion, supportedPlayerCounts=$supportedPlayerCounts, remoteTransport=$remoteTransport, persistence=$persistence, resumption=$resumption, tileMarkSupported=$tileMarkSupported, sleeveBloomSupported=$sleeveBloomSupported)"
+        "ProtocolAccessCapabilities(protocolVersion=$protocolVersion, supportedPlayerCounts=$supportedPlayerCounts, remoteTransport=$remoteTransport, persistence=$persistence, resumption=$resumption, tileMarkSupported=$tileMarkSupported, sleeveBloomSupported=$sleeveBloomSupported, beamSwapSupported=$beamSwapSupported)"
 }
 
 /**
@@ -667,7 +672,8 @@ class ProtocolMatchConfig(
     val cheatEconomy: ProtocolCheatEconomyConfig = ProtocolCheatEconomyConfig(),
     val shuffleConfig: ProtocolShuffleConfig = ProtocolShuffleConfig(),
     val tileMarkConfig: ProtocolTileMarkConfig = ProtocolTileMarkConfig(),
-    val sleeveBloomConfig: ProtocolSleeveBloomConfig = ProtocolSleeveBloomConfig()
+    val sleeveBloomConfig: ProtocolSleeveBloomConfig = ProtocolSleeveBloomConfig(),
+    val beamSwapConfig: ProtocolBeamSwapConfig = ProtocolBeamSwapConfig()
 ) {
     val winds: List<Int> = Collections.unmodifiableList(ArrayList(winds))
     val startingScores: List<Int> = Collections.unmodifiableList(ArrayList(startingScores))
@@ -694,6 +700,12 @@ class ProtocolMatchConfig(
                 "SLEEVE_BLOOM cost must be explicitly 10 when sleeveBloomConfig is enabled, got: ${cheatEconomy.costs["SLEEVE_BLOOM"]}"
             }
         }
+        if (beamSwapConfig.enabled) {
+            require(cheatEconomy.enabled) { "cheatEconomy must be enabled when beamSwapConfig is enabled" }
+            require(cheatEconomy.costs["BEAM_SWAP"] == 10) {
+                "BEAM_SWAP cost must be explicitly 10 when beamSwapConfig is enabled, got: ${cheatEconomy.costs["BEAM_SWAP"]}"
+            }
+        }
     }
 
     operator fun component1(): Int = playerCount
@@ -711,6 +723,7 @@ class ProtocolMatchConfig(
     operator fun component13(): ProtocolShuffleConfig = shuffleConfig
     operator fun component14(): ProtocolTileMarkConfig = tileMarkConfig
     operator fun component15(): ProtocolSleeveBloomConfig = sleeveBloomConfig
+    operator fun component16(): ProtocolBeamSwapConfig = beamSwapConfig
 
     fun copy(
         playerCount: Int = this.playerCount,
@@ -727,11 +740,12 @@ class ProtocolMatchConfig(
         cheatEconomy: ProtocolCheatEconomyConfig = this.cheatEconomy,
         shuffleConfig: ProtocolShuffleConfig = this.shuffleConfig,
         tileMarkConfig: ProtocolTileMarkConfig = this.tileMarkConfig,
-        sleeveBloomConfig: ProtocolSleeveBloomConfig = this.sleeveBloomConfig
+        sleeveBloomConfig: ProtocolSleeveBloomConfig = this.sleeveBloomConfig,
+        beamSwapConfig: ProtocolBeamSwapConfig = this.beamSwapConfig
     ): ProtocolMatchConfig = ProtocolMatchConfig(
         playerCount, handsPerWind, winds, startingScores,
         allowExtension, allowAgariYame, bankruptcyEnabled, bankruptcyThreshold,
-        bankruptcyInclusive, targetScore, tieBreakSeats, cheatEconomy, shuffleConfig, tileMarkConfig, sleeveBloomConfig
+        bankruptcyInclusive, targetScore, tieBreakSeats, cheatEconomy, shuffleConfig, tileMarkConfig, sleeveBloomConfig, beamSwapConfig
     )
 
     fun deepCopy(): ProtocolMatchConfig = copy(
@@ -757,7 +771,8 @@ class ProtocolMatchConfig(
             cheatEconomy == other.cheatEconomy &&
             shuffleConfig == other.shuffleConfig &&
             tileMarkConfig == other.tileMarkConfig &&
-            sleeveBloomConfig == other.sleeveBloomConfig
+            sleeveBloomConfig == other.sleeveBloomConfig &&
+            beamSwapConfig == other.beamSwapConfig
     }
 
     override fun hashCode(): Int {
@@ -776,11 +791,12 @@ class ProtocolMatchConfig(
         result = 31 * result + shuffleConfig.hashCode()
         result = 31 * result + tileMarkConfig.hashCode()
         result = 31 * result + sleeveBloomConfig.hashCode()
+        result = 31 * result + beamSwapConfig.hashCode()
         return result
     }
 
     override fun toString(): String =
-        "ProtocolMatchConfig(playerCount=$playerCount, handsPerWind=$handsPerWind, winds=$winds, startingScores=$startingScores, allowExtension=$allowExtension, allowAgariYame=$allowAgariYame, bankruptcyEnabled=$bankruptcyEnabled, bankruptcyThreshold=$bankruptcyThreshold, bankruptcyInclusive=$bankruptcyInclusive, targetScore=$targetScore, tieBreakSeats=$tieBreakSeats, cheatEconomy=$cheatEconomy, shuffleConfig=$shuffleConfig, tileMarkConfig=$tileMarkConfig, sleeveBloomConfig=$sleeveBloomConfig)"
+        "ProtocolMatchConfig(playerCount=$playerCount, handsPerWind=$handsPerWind, winds=$winds, startingScores=$startingScores, allowExtension=$allowExtension, allowAgariYame=$allowAgariYame, bankruptcyEnabled=$bankruptcyEnabled, bankruptcyThreshold=$bankruptcyThreshold, bankruptcyInclusive=$bankruptcyInclusive, targetScore=$targetScore, tieBreakSeats=$tieBreakSeats, cheatEconomy=$cheatEconomy, shuffleConfig=$shuffleConfig, tileMarkConfig=$tileMarkConfig, sleeveBloomConfig=$sleeveBloomConfig, beamSwapConfig=$beamSwapConfig)"
 }
 
 /**
@@ -1646,7 +1662,8 @@ class ProtocolPlayerSnapshot(
     val preparation: ProtocolShufflePreparation? = null,
     val presentationPreview: ProtocolPlayerPresentationPreview? = null,
     val tileMark: ProtocolTileMarkView? = null,
-    val sleeveBloom: ProtocolSleeveBloomView? = null
+    val sleeveBloom: ProtocolSleeveBloomView? = null,
+    val beamSwap: ProtocolBeamSwapView? = null
 ) {
     val viewerSeat: Int get() = view.viewerSeat
     val clocks: List<ProtocolClock> = Collections.unmodifiableList(ArrayList(clocks))
@@ -1748,6 +1765,40 @@ class ProtocolPlayerSnapshot(
                 }
             }
         }
+        if (beamSwap != null) {
+            require(beamSwap.cost == 10) { "beamSwap cost must be 10, got: ${beamSwap.cost}" }
+            require(beamSwap.controlEpoch >= 0L) { "beamSwap controlEpoch must be >= 0: ${beamSwap.controlEpoch}" }
+            require(beamSwap.stateVersion >= 0L) { "beamSwap stateVersion must be >= 0: ${beamSwap.stateVersion}" }
+            val pendingOffer = beamSwap.pendingOffer
+            if (pendingOffer != null) {
+                require(view.phase == ProtocolGamePhase.CHEAT_WINDOW) {
+                    "pendingOffer requires CHEAT_WINDOW phase, got: ${view.phase}"
+                }
+                require(view.currentTurnPlayer == view.viewerSeat) {
+                    "pendingOffer requires current turn player to be viewer, current: ${view.currentTurnPlayer}, viewer: ${view.viewerSeat}"
+                }
+                require(view.myDrawnTile != null) {
+                    "pendingOffer requires view.myDrawnTile to exist"
+                }
+                require(pendingOffer.decisionId == decision.decisionId) {
+                    "pendingOffer decisionId (${pendingOffer.decisionId}) must match decision.decisionId (${decision.decisionId})"
+                }
+                require(pendingOffer.controlEpoch == decision.controlEpoch) {
+                    "pendingOffer controlEpoch (${pendingOffer.controlEpoch}) must match decision.controlEpoch (${decision.controlEpoch})"
+                }
+                val allowedHandTileIds = view.myClosedTiles.map { it.tileId }.toSet()
+                require(pendingOffer.selectableHandTileIds.all { it in allowedHandTileIds }) {
+                    "pendingOffer selectableHandTileIds (${pendingOffer.selectableHandTileIds}) must all be in view.myClosedTiles ($allowedHandTileIds)"
+                }
+                require(!pendingOffer.selectableHandTileIds.contains(view.myDrawnTile.tileId)) {
+                    "pendingOffer selectableHandTileIds cannot contain view.myDrawnTile"
+                }
+                val meldTileIds = view.melds.flatten().flatMap { it.tiles }.map { it.tileId }.toSet()
+                require(pendingOffer.selectableHandTileIds.none { it in meldTileIds }) {
+                    "pendingOffer selectableHandTileIds cannot contain meld tiles"
+                }
+            }
+        }
     }
 
     operator fun component1(): String = sessionId
@@ -1769,6 +1820,7 @@ class ProtocolPlayerSnapshot(
     operator fun component17(): ProtocolPlayerPresentationPreview? = presentationPreview
     operator fun component18(): ProtocolTileMarkView? = tileMark
     operator fun component19(): ProtocolSleeveBloomView? = sleeveBloom
+    operator fun component20(): ProtocolBeamSwapView? = beamSwap
 
     fun copy(
         sessionId: String = this.sessionId,
@@ -1789,11 +1841,12 @@ class ProtocolPlayerSnapshot(
         preparation: ProtocolShufflePreparation? = this.preparation,
         presentationPreview: ProtocolPlayerPresentationPreview? = this.presentationPreview,
         tileMark: ProtocolTileMarkView? = this.tileMark,
-        sleeveBloom: ProtocolSleeveBloomView? = this.sleeveBloom
+        sleeveBloom: ProtocolSleeveBloomView? = this.sleeveBloom,
+        beamSwap: ProtocolBeamSwapView? = this.beamSwap
     ): ProtocolPlayerSnapshot = ProtocolPlayerSnapshot(
         sessionId, roundId, syncEpoch, cursor, sessionVersion, roundVersion,
         view, decision, clocks, cheatPoints, session, controls, paused,
-        settlementRoundId, settlementEvents, preparation, presentationPreview, tileMark, sleeveBloom
+        settlementRoundId, settlementEvents, preparation, presentationPreview, tileMark, sleeveBloom, beamSwap
     )
 
     override fun equals(other: Any?): Boolean {
@@ -1809,7 +1862,8 @@ class ProtocolPlayerSnapshot(
             settlementEvents == other.settlementEvents && preparation == other.preparation &&
             presentationPreview == other.presentationPreview &&
             tileMark == other.tileMark &&
-            sleeveBloom == other.sleeveBloom
+            sleeveBloom == other.sleeveBloom &&
+            beamSwap == other.beamSwap
     }
 
     override fun hashCode(): Int {
@@ -1832,6 +1886,7 @@ class ProtocolPlayerSnapshot(
         result = 31 * result + (presentationPreview?.hashCode() ?: 0)
         result = 31 * result + (tileMark?.hashCode() ?: 0)
         result = 31 * result + (sleeveBloom?.hashCode() ?: 0)
+        result = 31 * result + (beamSwap?.hashCode() ?: 0)
         return result
     }
 

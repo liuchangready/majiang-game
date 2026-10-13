@@ -1383,7 +1383,8 @@ class GameSnapshotView(
     val preparation: ShufflePreparationView? = null,
     val presentationPreview: PlayerPresentationPreviewView? = null,
     val tileMark: TileMarkView? = null,
-    val sleeveBloom: SleeveBloomView? = null
+    val sleeveBloom: SleeveBloomView? = null,
+    val beamSwap: BeamSwapView? = null
 ) {
     val clocks: List<ClockInfo> = Collections.unmodifiableList(ArrayList(clocks))
     val cheatPoints: List<Int> = Collections.unmodifiableList(ArrayList(cheatPoints))
@@ -1479,6 +1480,41 @@ class GameSnapshotView(
                 "pendingOffer controlEpoch (${offer.controlEpoch}) does not match decision.controlEpoch (${decision.controlEpoch})"
             }
         }
+        if (beamSwap != null) {
+            require(beamSwap.cost == 10) { "beamSwap cost must be 10, got: ${beamSwap.cost}" }
+            require(beamSwap.controlEpoch >= 0L) { "beamSwap controlEpoch must be >= 0: ${beamSwap.controlEpoch}" }
+            require(beamSwap.stateVersion >= 0L) { "beamSwap stateVersion must be >= 0: ${beamSwap.stateVersion}" }
+            val pendingOffer = beamSwap.pendingOffer
+            if (pendingOffer != null) {
+                require(roundId != null) { "pendingOffer cannot be present when roundId is null" }
+                require(view.phase == GamePhaseView.CHEAT_WINDOW) {
+                    "pendingOffer requires phase == CHEAT_WINDOW, got: ${view.phase}"
+                }
+                require(view.currentTurnPlayer == view.viewerSeat) {
+                    "pendingOffer requires currentTurnPlayer (${view.currentTurnPlayer}) == viewerSeat (${view.viewerSeat})"
+                }
+                require(view.myDrawnTile != null) {
+                    "pendingOffer requires view.myDrawnTile to exist"
+                }
+                require(pendingOffer.decisionId == decision.decisionId) {
+                    "pendingOffer decisionId (${pendingOffer.decisionId}) must match decision.decisionId (${decision.decisionId})"
+                }
+                require(pendingOffer.controlEpoch == decision.controlEpoch) {
+                    "pendingOffer controlEpoch (${pendingOffer.controlEpoch}) must match decision.controlEpoch (${decision.controlEpoch})"
+                }
+                val allowedHandTileIds = view.myClosedTiles.map { it.tileId }.toSet()
+                require(pendingOffer.selectableHandTileIds.all { it in allowedHandTileIds }) {
+                    "pendingOffer selectableHandTileIds (${pendingOffer.selectableHandTileIds}) must all be in view.myClosedTiles ($allowedHandTileIds)"
+                }
+                require(!pendingOffer.selectableHandTileIds.contains(view.myDrawnTile.tileId)) {
+                    "pendingOffer selectableHandTileIds cannot contain view.myDrawnTile"
+                }
+                val meldTileIds = view.melds.flatten().flatMap { it.tiles }.map { it.tileId }.toSet()
+                require(pendingOffer.selectableHandTileIds.none { it in meldTileIds }) {
+                    "pendingOffer selectableHandTileIds cannot contain meld tiles"
+                }
+            }
+        }
     }
 
     fun copy(
@@ -1501,12 +1537,13 @@ class GameSnapshotView(
         preparation: ShufflePreparationView? = this.preparation,
         presentationPreview: PlayerPresentationPreviewView? = this.presentationPreview,
         tileMark: TileMarkView? = this.tileMark,
-        sleeveBloom: SleeveBloomView? = this.sleeveBloom
+        sleeveBloom: SleeveBloomView? = this.sleeveBloom,
+        beamSwap: BeamSwapView? = this.beamSwap
     ): GameSnapshotView = GameSnapshotView(
         sessionId, roundId, syncEpoch, cursor, sessionVersion, roundVersion,
         view, decision, clocks, cheatPoints, session, controls, paused,
         settlementRoundId, settlementEvents, settlementDetail, preparation, presentationPreview,
-        tileMark, sleeveBloom
+        tileMark, sleeveBloom, beamSwap
     )
 
     fun deepCopy(): GameSnapshotView = copy(
@@ -1515,7 +1552,8 @@ class GameSnapshotView(
         controls = ArrayList(controls),
         settlementEvents = ArrayList(settlementEvents),
         tileMark = tileMark?.deepCopy(),
-        sleeveBloom = sleeveBloom?.deepCopy()
+        sleeveBloom = sleeveBloom?.deepCopy(),
+        beamSwap = beamSwap?.deepCopy()
     )
 
     override fun equals(other: Any?): Boolean = other is GameSnapshotView &&
@@ -1528,7 +1566,8 @@ class GameSnapshotView(
         paused == other.paused && settlementRoundId == other.settlementRoundId &&
         settlementEvents == other.settlementEvents && settlementDetail == other.settlementDetail &&
         preparation == other.preparation && presentationPreview == other.presentationPreview &&
-        tileMark == other.tileMark && sleeveBloom == other.sleeveBloom
+        tileMark == other.tileMark && sleeveBloom == other.sleeveBloom &&
+        beamSwap == other.beamSwap
 
     override fun hashCode(): Int {
         var r = sessionId.hashCode()
@@ -1551,11 +1590,12 @@ class GameSnapshotView(
         r = 31 * r + (presentationPreview?.hashCode() ?: 0)
         r = 31 * r + (tileMark?.hashCode() ?: 0)
         r = 31 * r + (sleeveBloom?.hashCode() ?: 0)
+        r = 31 * r + (beamSwap?.hashCode() ?: 0)
         return r
     }
 
     override fun toString(): String =
-        "GameSnapshotView(sessionId=$sessionId, roundId=$roundId, cursor=$cursor, sessionVersion=$sessionVersion, view=$view, decision=$decision, tileMark=$tileMark, sleeveBloom=$sleeveBloom)"
+        "GameSnapshotView(sessionId=$sessionId, roundId=$roundId, cursor=$cursor, sessionVersion=$sessionVersion, view=$view, decision=$decision, tileMark=$tileMark, sleeveBloom=$sleeveBloom, beamSwap=$beamSwap)"
 }
 
 /**
