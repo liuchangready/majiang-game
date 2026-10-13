@@ -191,7 +191,7 @@ class SleeveBloomPanel(
         font.data.setScale(0.9f)
         font.color = Color(0.80f, 0.85f, 0.85f, 1f)
         font.draw(batch, "已摸到", firstCardRect.x + 20f, 286f)
-        val secondLabel = if (offer.drawKind == SleeveBloomDrawKind.RINSHAN) "王牌替补" else "牌山次张"
+        val secondLabel = if (offer.drawKind == SleeveBloomDrawKind.RINSHAN) "岭上次张" else "牌山次张"
         font.draw(batch, secondLabel, secondCardRect.x + 10f, 286f)
         batch.end()
 
@@ -241,7 +241,7 @@ class SleeveBloomPanel(
             "SLEEVE_BLOOM_NO_DRAWN_TILE" -> "当前无刚摸的牌"
             "SLEEVE_BLOOM_ALREADY_PENDING" -> "二选一进行中"
             "SLEEVE_BLOOM_ALREADY_USED_THIS_DRAW" -> "本次摸牌已施展过"
-            "SLEEVE_BLOOM_WALL_EMPTY" -> "牌山已摸完，无第二候选"
+            "SLEEVE_BLOOM_WALL_EMPTY" -> "候选不足（牌山摸完或第四杠不可用）"
             "SLEEVE_BLOOM_NO_PENDING_OFFER" -> "没有进行中的二选一"
             "SLEEVE_BLOOM_OFFER_MISMATCH" -> "选择已过期"
             "SLEEVE_BLOOM_STALE_OFFER" -> "局面已变化，选择失效"
@@ -269,7 +269,7 @@ class SleeveBloomPanel(
             append(" !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~")
             append("·：；？！“”‘’—，。（）[]【】《》/、")
             // 核心契约可见文本全集
-            append("袖里藏花 二选一 10 额度 已消耗 保留所选 保留第一张 已摸到 牌山次张 王牌替补 倒计时 秒 确认 取消")
+            append("袖里藏花 二选一 10 额度 已消耗 保留所选 保留第一张 已摸到 牌山次张 岭上次张 王牌替补 倒计时 秒 确认 取消")
             // 拒绝原因翻译文本用字集
             val reasons = listOf(
                 "SLEEVE_BLOOM_DISABLED", "SLEEVE_BLOOM_RIICHI_LOCKED", "SLEEVE_BLOOM_DEALER_EXTRA_EXCLUDED",
@@ -284,7 +284,7 @@ class SleeveBloomPanel(
                 append(translateServerReason(r))
             }
             // 秘籍弹窗文案
-            append("摸牌后出牌前消耗翻看第二候选留在退回对应位置默认原摸牌摸切费用不退")
+            append("摸牌后出牌前消耗翻看第二候选留在退回对应位置原位默认原摸牌摸切费用不退牌山次张杠后岭上次张第四杠不可用写回原槽注意立直非本人回合思考超时禁止施展落汗请选准时机候选不足已达四杠耗尽")
             // 麻将常用牌面字形
             append("一二三四五六七八九万筒索東南西北白發中副露宝牌指示牌赤")
         }.toSet().joinToString("")

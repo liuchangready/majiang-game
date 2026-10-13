@@ -48,29 +48,37 @@ class SleeveBloomWallAndRulesTest {
         error("Response window stuck")
     }
 
-    @Test fun `rinshan swap restores exact slot and preserves all counts and other order`() {
+    @Test fun `rinshan swap only exchanges next slot without touching wall replacements or pointers`() {
         val s = TestTableBuilder.create(phase = GamePhase.KAN_DRAW)
         val first = TileMovement.drawRinshan(s, 0)
         s.phase = GamePhase.CHEAT_WINDOW
-        val replacement = s.deadWallReplacements.last()
+        val next = s.deadWall[s.rinshanPointer]
         val liveWall = s.wall.toList()
+        val deadWall = s.deadWall.toList()
+        val replacements = s.deadWallReplacements.toList()
         val end = s.wallEndExclusive
         val pointer = s.wallPointer
-        assertEquals(replacement, TileMovement.swapDrawnWithRinshanReplacement(s, 0))
-        assertEquals(replacement, s.players[0].drawnTile)
-        assertEquals(0, s.rinshanPointer)
-        assertEquals(first, s.deadWall[s.rinshanPointer])
+        assertEquals(next, TileMovement.swapDrawnWithNextRinshan(s, 0))
+        assertEquals(next, s.players[0].drawnTile)
+        assertEquals(1, s.rinshanPointer)
+        assertEquals(first, s.deadWall[1])
+        assertEquals(deadWall.filterIndexed { i, _ -> i != 1 }, s.deadWall.filterIndexed { i, _ -> i != 1 })
         assertEquals(TileLocation.DEAD_WALL, s.tilePool.getLocation(first))
-        assertEquals(TileLocation.hand(0), s.tilePool.getLocation(replacement))
-        assertTrue(s.deadWallReplacements.isEmpty())
+        assertEquals(TileLocation.hand(0), s.tilePool.getLocation(next))
+        assertEquals(replacements, s.deadWallReplacements)
         assertEquals(liveWall, s.wall)
         assertEquals(pointer, s.wallPointer)
         assertEquals(end, s.wallEndExclusive)
         TestTableBuilder.assertPhysical(s)
         StateInvariants.assertValid(s)
         val before = TestTableBuilder.actualTiles(s).toList()
-        assertThrows<IllegalArgumentException> { TileMovement.swapDrawnWithRinshanReplacement(s, 0) }
+        assertThrows<IllegalArgumentException> { TileMovement.swapDrawnWithNextRinshan(s, 0) }
         assertEquals(before, TestTableBuilder.actualTiles(s), "Rejected second physical swap mutated containers")
+        TileMovement.discard(s, 0, next)
+        assertEquals(first, TileMovement.drawRinshan(s, 0), "Next real kan must draw the unselected original rinshan")
+        assertEquals(2, s.rinshanPointer)
+        StateInvariants.assertValid(s)
+        TestTableBuilder.assertPhysical(s)
     }
 
     @Test fun `rinshan source with mismatched original slot rejects before charging`() {
@@ -97,8 +105,8 @@ class SleeveBloomWallAndRulesTest {
         }
     }
 
-    @Test fun `all three actual kan paths offer their own replacement and retain actual kan count`() {
-        for (kind in listOf(MeldType.CLOSED_KAN, MeldType.ADDED_KAN, MeldType.OPEN_KAN)) {
+    @Test fun `all three actual kan paths offer next rinshan and retain counts with either choice`() {
+        for (kind in listOf(MeldType.CLOSED_KAN, MeldType.ADDED_KAN, MeldType.OPEN_KAN)) for (keep in SleeveBloomKeep.entries) {
             val copies = (0..3).map { Tile(Suit.SOU, 8, it) }
             val pon = Meld(MeldType.PON, copies.take(3), 3, copies[0])
             val s = when (kind) {
@@ -120,12 +128,16 @@ class SleeveBloomWallAndRulesTest {
                 assertEquals(SleeveBloomDrawKind.RINSHAN, before.lastDrawKind)
                 assertEquals(1, before.totalKanCount)
                 val original = before.players[0].drawnTile!!
-                val replacement = before.deadWallReplacements.last()
-                bloom(a, SleeveBloomKeep.SECOND)
+                val next = before.deadWall[before.rinshanPointer]
+                bloom(a, keep)
                 val after = state(a)
-                assertEquals(replacement, after.players[0].drawnTile)
-                assertEquals(original, after.deadWall[after.rinshanPointer])
-                assertEquals(before.rinshanPointer - 1, after.rinshanPointer)
+                assertEquals(if (keep == SleeveBloomKeep.SECOND) next else original, after.players[0].drawnTile)
+                assertEquals(if (keep == SleeveBloomKeep.SECOND) original else next, after.deadWall[after.rinshanPointer])
+                assertEquals(before.rinshanPointer, after.rinshanPointer)
+                assertEquals(before.deadWallReplacements, after.deadWallReplacements)
+                assertEquals(before.wall, after.wall)
+                assertEquals(before.wallPointer, after.wallPointer)
+                assertEquals(before.wallEndExclusive, after.wallEndExclusive)
                 assertEquals(before.totalKanCount, after.totalKanCount)
                 assertEquals(before.playerKanCounts.toList(), after.playerKanCounts.toList())
                 assertEquals(before.doraIndicators, after.doraIndicators)
@@ -146,7 +158,7 @@ class SleeveBloomWallAndRulesTest {
         s.totalKanCount = 4
         s.playerKanCounts[0] = 4
         s.lastDrawKind = SleeveBloomDrawKind.NORMAL
-        // Pointer zero is reachable after each previous kan's bloom kept its replacement.
+        // The actual kan cap remains authoritative even if supplied a stale pointer.
         assertEquals(0, s.rinshanPointer)
         table(s).use { a ->
             assertTrue(a.queryDecision(1, false).options.none { it.action is GameAction.DeclareKan })
@@ -156,28 +168,45 @@ class SleeveBloomWallAndRulesTest {
         }
     }
 
-    @Test fun `four consecutive real kans each allow bloom and fourth pointer rollback preserves cap`() {
+    @Test fun `consecutive kans preserve next rinshan order and fourth kan rejects bloom without charge`() {
         val triples = (1..4).flatMap { rank -> (0..2).map { Tile(Suit.MAN, rank, it) } }
         val s = TestTableBuilder.create(hands = mapOf(0 to (triples + Tile(Suit.PIN, 5, 0))),
             drawn = 0 to Tile(Suit.MAN, 1, 3), phase = GamePhase.CHEAT_WINDOW,
             deadWallPrefix = listOf(Tile(Suit.MAN, 2, 3), Tile(Suit.MAN, 3, 3), Tile(Suit.MAN, 4, 3), Tile(Suit.PIN, 5, 1)))
         s.lastDrawKind = SleeveBloomDrawKind.NORMAL
         table(s).use { a ->
-            for (rank in 1..4) {
+            for ((index, rank) in listOf(1, 3, 2, 4).withIndex()) {
                 val kan = a.queryDecision(0, false).options.map { it.action }.filterIsInstance<GameAction.DeclareKan>()
                     .first { it.kanType == MeldType.CLOSED_KAN && it.tiles.first().suit == Suit.MAN && it.tiles.first().rank == rank }
                 assertTrue(a.coordinator.handleAction(kan) is ActionResult.Accepted)
                 val before = state(a)
-                assertEquals(rank, before.totalKanCount)
-                assertEquals(rank, before.rinshanPointer)
-                bloom(a, if (rank == 4) SleeveBloomKeep.SECOND else SleeveBloomKeep.FIRST, id = "kan-$rank")
+                assertEquals(index + 1, before.totalKanCount)
+                assertEquals(index + 1, before.rinshanPointer)
+                if (index < 3) {
+                    bloom(a, if (index == 0) SleeveBloomKeep.SECOND else SleeveBloomKeep.FIRST, id = "kan-$rank")
+                } else {
+                    a.syncDecisionsAndClocks(1_000, emptySet())
+                    val snapshot = snap(a)
+                    assertFalse(snapshot.sleeveBloom!!.canApply)
+                    assertEquals("SLEEVE_BLOOM_WALL_EMPTY", snapshot.sleeveBloom!!.disabledReason)
+                    val request = SleeveBloomRequest("fourth", snapshot.sessionId, snapshot.roundId!!,
+                        snapshot.decision.decisionId, snapshot.decision.controlEpoch)
+                    val result = a.submitSleeveBloom(0, request, 1_000)
+                    assertEquals("SLEEVE_BLOOM_WALL_EMPTY", result.receipt.reason)
+                    assertFalse(result.stateChanged)
+                    assertEquals(result.receipt, a.submitSleeveBloom(0, request, 1_000).receipt)
+                    assertEquals(before.players[0].drawnTile, state(a).players[0].drawnTile)
+                    assertEquals(before.deadWall, state(a).deadWall)
+                    assertEquals(before.deadWallReplacements, state(a).deadWallReplacements)
+                    assertNull(state(a).sleeveBloomOffer)
+                }
                 assertEquals(before.turnNumber, state(a).turnNumber)
                 TestTableBuilder.assertPhysical(state(a))
             }
             assertEquals(4, state(a).totalKanCount)
             assertEquals(4, state(a).playerKanCounts[0])
-            assertEquals(3, state(a).rinshanPointer)
-            assertEquals(60, state(a).cheatPoints[0])
+            assertEquals(4, state(a).rinshanPointer)
+            assertEquals(70, state(a).cheatPoints[0])
             assertTrue(a.queryDecision(0, false).options.none { it.action is GameAction.DeclareKan })
             StateInvariants.assertValid(state(a))
         }
@@ -224,7 +253,7 @@ class SleeveBloomWallAndRulesTest {
         }
     }
 
-    @Test fun `rinshan replacement win and first nondealer draw retain their scoring context`() {
+    @Test fun `next rinshan win and first nondealer draw retain their scoring context`() {
         val hand = listOf(
             Tile(Suit.MAN, 1, 0), Tile(Suit.MAN, 2, 0), Tile(Suit.MAN, 3, 0),
             Tile(Suit.PIN, 1, 0), Tile(Suit.PIN, 2, 0), Tile(Suit.PIN, 3, 0),
@@ -234,12 +263,8 @@ class SleeveBloomWallAndRulesTest {
         for (rinshan in listOf(true, false)) {
             val seat = if (rinshan) 0 else 1
             val s = if (rinshan) {
-                TestTableBuilder.create(hands = mapOf(seat to hand), wallPrefix = listOf(win),
-                    deadWallPrefix = listOf(Tile(Suit.MAN, 9, 3)), phase = GamePhase.KAN_DRAW).also {
-                    val last = it.wall.lastIndex
-                    val other = it.wall[last]
-                    it.wall[last] = win
-                    it.wall[0] = other
+                TestTableBuilder.create(hands = mapOf(seat to hand),
+                    deadWallPrefix = listOf(Tile(Suit.MAN, 9, 3), win), phase = GamePhase.KAN_DRAW).also {
                     TileMovement.drawRinshan(it, seat)
                     it.phase = GamePhase.CHEAT_WINDOW
                     it.lastDrawKind = SleeveBloomDrawKind.RINSHAN
@@ -263,6 +288,156 @@ class SleeveBloomWallAndRulesTest {
                 assertNull(finishedRound.readState().sleeveBloomOffer)
                 StateInvariants.assertValid(finishedRound.readState())
             }
+        }
+    }
+
+    private fun rinshanState(): GameState = TestTableBuilder.create(phase = GamePhase.KAN_DRAW).also {
+        TileMovement.drawRinshan(it, 0)
+        it.phase = GamePhase.CHEAT_WINDOW
+        it.lastDrawKind = SleeveBloomDrawKind.RINSHAN
+        it.isRinshanDraw = true
+        it.totalKanCount = 1
+        it.playerKanCounts[0] = 1
+    }
+
+    @Test fun `rinshan offer reveals only next rinshan and timeout keeps original without moving wall`() {
+        table(rinshanState()).use { a ->
+            val before = state(a)
+            val snapshot = snap(a)
+            val deadline = a.decisionClock.timing(0)!!.deadlineMillis
+            val request = SleeveBloomRequest("rinshan-offer", snapshot.sessionId, snapshot.roundId!!,
+                snapshot.decision.decisionId, snapshot.decision.controlEpoch)
+            val receipt = a.submitSleeveBloom(0, request, 1_000).receipt
+            assertEquals(ReceiptStatus.APPLIED, receipt.status)
+            val offered = state(a)
+            val offer = snap(a).sleeveBloom!!.pendingOffer!!
+            assertEquals(before.players[0].drawnTile, offer.firstTile)
+            assertEquals(before.deadWall[before.rinshanPointer], offer.secondTile)
+            assertNotEquals(before.deadWallReplacements.last(), offer.secondTile)
+            assertNotEquals(before.wall[before.wallPointer], offer.secondTile)
+            assertEquals(SleeveBloomDrawKind.RINSHAN, offer.drawKind)
+            assertEquals(before.deadWall, offered.deadWall)
+            assertEquals(before.deadWallReplacements, offered.deadWallReplacements)
+            assertEquals(before.wall, offered.wall)
+            assertEquals(TestTableBuilder.actualTiles(before), TestTableBuilder.actualTiles(offered))
+            assertEquals(90, offered.cheatPoints[0])
+            assertEquals(receipt, a.submitSleeveBloom(0, request, 1_000).receipt)
+            for (seat in 1..3) assertNull(snap(a, seat).sleeveBloom?.pendingOffer)
+            assertEquals(deadline, a.decisionClock.timing(0)!!.deadlineMillis)
+            assertNotNull(a.checkTimeout(deadline))
+            val after = state(a)
+            assertNull(after.sleeveBloomOffer)
+            assertEquals(offer.firstTile, after.players[0].discards.last())
+            assertEquals(before.deadWall, after.deadWall)
+            assertEquals(before.deadWallReplacements, after.deadWallReplacements)
+            assertEquals(before.rinshanPointer, after.rinshanPointer)
+            assertEquals(90, after.cheatPoints[0])
+            TestTableBuilder.assertPhysical(after)
+        }
+    }
+
+    @Test fun `changed next rinshan rejects stale choice and never falls back to replacement`() {
+        table(rinshanState()).use { a ->
+            val snapshot = snap(a)
+            assertEquals(ReceiptStatus.APPLIED, a.submitSleeveBloom(0,
+                SleeveBloomRequest("stale-start", snapshot.sessionId, snapshot.roundId!!,
+                    snapshot.decision.decisionId, snapshot.decision.controlEpoch), 1_000).receipt.status)
+            val offered = snap(a)
+            val request = SleeveBloomChoiceRequest("stale-choice", offered.sessionId, offered.roundId!!,
+                offered.decision.decisionId, offered.decision.controlEpoch,
+                offered.sleeveBloom!!.pendingOffer!!.offerId, SleeveBloomKeep.SECOND)
+            val live = a.coordinator.activeRound!!.state
+            val nextIndex = live.rinshanPointer
+            val oldNext = live.deadWall[nextIndex]
+            live.deadWall[nextIndex] = live.deadWall[nextIndex + 1]
+            live.deadWall[nextIndex + 1] = oldNext
+            val before = state(a)
+            val deadline = a.decisionClock.timing(0)!!.deadlineMillis
+            val result = a.submitSleeveBloomChoice(0, request, 1_000)
+            assertEquals("SLEEVE_BLOOM_STALE_OFFER", result.receipt.reason)
+            assertTrue(result.stateChanged)
+            assertNull(state(a).sleeveBloomOffer)
+            assertEquals(TestTableBuilder.actualTiles(before), TestTableBuilder.actualTiles(state(a)))
+            assertEquals(before.deadWall, state(a).deadWall)
+            assertEquals(deadline, a.decisionClock.timing(0)!!.deadlineMillis)
+            assertEquals(90, state(a).cheatPoints[0])
+            TestTableBuilder.assertPhysical(state(a))
+        }
+    }
+
+    @Test fun `remaining live wall is irrelevant when next rinshan exists`() {
+        val s = rinshanState()
+        for (tile in s.wall.subList(s.wallPointer, s.wallEndExclusive).toList()) {
+            s.players[2].discards.add(tile)
+            s.players[2].discardHistory.add(tile)
+            s.tilePool.transfer(tile, TileLocation.WALL, TileLocation.discard(2))
+        }
+        s.wallPointer = s.wallEndExclusive
+        StateInvariants.assertValid(s)
+        table(s).use { a ->
+            val next = s.deadWall[s.rinshanPointer]
+            assertTrue(snap(a).sleeveBloom!!.canApply)
+            bloom(a, SleeveBloomKeep.SECOND)
+            assertEquals(next, state(a).players[0].drawnTile)
+            assertEquals(0, state(a).wallRemaining)
+            assertEquals(s.deadWallReplacements, state(a).deadWallReplacements)
+            TestTableBuilder.assertPhysical(state(a))
+        }
+    }
+
+    @Test fun `fourth kan rejects even with stale remaining rinshan pointer and preserves receipt`() {
+        val s = rinshanState().also { it.totalKanCount = 4; it.playerKanCounts[0] = 4 }
+        val physical = TestTableBuilder.actualTiles(s)
+        assertThrows<IllegalArgumentException> { TileMovement.swapDrawnWithNextRinshan(s, 0) }
+        assertEquals(physical, TestTableBuilder.actualTiles(s))
+        table(s).use { a ->
+            val snapshot = snap(a)
+            assertFalse(snapshot.sleeveBloom!!.canApply)
+            val request = SleeveBloomRequest("fourth-stale-pointer", snapshot.sessionId, snapshot.roundId!!,
+                snapshot.decision.decisionId, snapshot.decision.controlEpoch)
+            val before = state(a)
+            assertTrue(a.coordinator.submitSleeveBloom(0, request, 1_000) is ActionResult.Rejected)
+            val receipt = a.submitSleeveBloom(0, request, 1_000)
+            assertEquals("SLEEVE_BLOOM_WALL_EMPTY", receipt.receipt.reason)
+            assertFalse(receipt.stateChanged)
+            assertEquals(receipt.receipt, a.submitSleeveBloom(0, request, 1_000).receipt)
+            assertEquals(100, state(a).cheatPoints[0])
+            assertEquals(TestTableBuilder.actualTiles(before), TestTableBuilder.actualTiles(state(a)))
+            assertEquals(before.deadWall, state(a).deadWall)
+            assertNull(state(a).sleeveBloomOffer)
+            TestTableBuilder.assertPhysical(state(a))
+        }
+    }
+
+    @Test fun `third kan may choose fourth rinshan but never dora and fourth rejects physical swap`() {
+        val s = rinshanState()
+        repeat(2) {
+            TileMovement.discard(s, 0, s.players[0].drawnTile!!)
+            TileMovement.drawRinshan(s, 0)
+        }
+        s.totalKanCount = 3
+        s.playerKanCounts[0] = 3
+        val original = s.players[0].drawnTile!!
+        val fourth = s.deadWall[3]
+        val indicatorSlots = s.deadWall.drop(4)
+        table(s).use { a ->
+            bloom(a, SleeveBloomKeep.SECOND)
+            val after = state(a)
+            assertEquals(fourth, after.players[0].drawnTile)
+            assertEquals(original, after.deadWall[3])
+            assertEquals(3, after.rinshanPointer)
+            assertEquals(indicatorSlots, after.deadWall.drop(4))
+            assertEquals(s.deadWallReplacements, after.deadWallReplacements)
+            TileMovement.discard(after, 0, fourth)
+            assertEquals(original, TileMovement.drawRinshan(after, 0))
+            after.totalKanCount = 4
+            after.playerKanCounts[0] = 4
+            val physical = TestTableBuilder.actualTiles(after)
+            assertThrows<IllegalArgumentException> { TileMovement.swapDrawnWithNextRinshan(after, 0) }
+            assertEquals(physical, TestTableBuilder.actualTiles(after))
+            assertEquals(indicatorSlots, after.deadWall.drop(4))
+            StateInvariants.assertValid(after)
+            TestTableBuilder.assertPhysical(after)
         }
     }
 

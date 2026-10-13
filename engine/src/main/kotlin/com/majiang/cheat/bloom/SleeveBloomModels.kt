@@ -454,11 +454,13 @@ object SleeveBloomProjectionFactory {
             state.wallPointer < state.wallEndExclusive &&
             drawnInHand &&
             state.wall.getOrNull(state.wallPointer)?.let { state.tilePool.getLocation(it) == TileLocation.WALL } == true
-        val rinshanValid = state.rinshanPointer in 1..4 &&
+        val rinshanValid = state.rinshanPointer in 1..3 &&
+            state.totalKanCount < 4 &&
             drawnInHand &&
             state.deadWall.getOrNull(state.rinshanPointer - 1) == drawn &&
-            state.deadWallReplacements.isNotEmpty() &&
-            state.tilePool.getLocation(state.deadWallReplacements.last()) == TileLocation.DEAD_WALL
+            state.deadWall.getOrNull(state.rinshanPointer)?.let {
+                state.tilePool.getLocation(it) == TileLocation.DEAD_WALL
+            } == true
 
         val canApply: Boolean
         val disabledReason: String?

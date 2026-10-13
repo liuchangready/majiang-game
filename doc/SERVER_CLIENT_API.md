@@ -169,7 +169,7 @@ interface PushChannel {
 
 线路标签分别为 `SUBMIT_SLEEVE_BLOOM` 和 `SUBMIT_SLEEVE_BLOOM_CHOICE`，门面方法为 `submitSleeveBloom` 和 `submitSleeveBloomChoice`。激活载荷 `ApiRequest.sleeveBloom` 包含 `requestId/sessionId/roundId/decisionId/controlEpoch`；选择载荷 `ApiRequest.sleeveBloomChoice` 在此基础上增加 `offerId` 与 `keep`（`FIRST` 或 `SECOND`）。两类载荷与其他动作载荷互斥，信封请求ID必须与载荷一致；拒绝未知字段、非法代次及客户端指定座位、候选、费用等权威字段。
 
-`sleeveBloomConfig.enabled` 默认关闭；启用须同时开启经济、显式配置 `SLEEVE_BLOOM=10`。能力字段 `sleeveBloomSupported` 缺失按false处理；true只表示服务端实现支持。激活在本人正常或岭上摸牌后的千术窗口原子扣10，庄家起手第14张及立直后禁止；选择不再扣费。每次摸牌最多施术一次，原deadline不变；挂起时其他普通动作与落汗拒绝，取消保留第一张后继续决策，超时保留第一张再默认摸切。
+`sleeveBloomConfig.enabled` 默认关闭；启用须同时开启经济、显式配置 `SLEEVE_BLOOM=10`。能力字段 `sleeveBloomSupported` 缺失按false处理；true只表示服务端实现支持。激活在本人正常或岭上摸牌后的千术窗口原子扣10，庄家起手第14张、立直后及第四次杠的补牌窗口禁止施术；选择不再扣费。正常摸牌第二候选为牌山次张，杠后第二候选仅限下一张未取岭上牌（岭上次张，需 `rinshanPointer in 1..3` 且 `totalKanCount < 4`，第四杠后禁止施术不扣费）；保留第二张时将下一岭上牌移入手牌、原摸牌写回下一岭上槽，普通牌山两端指针与王牌替补列表不动。每次摸牌最多施术一次，原deadline不变；挂起时其他普通动作与落汗拒绝，取消保留第一张后继续决策，超时保留第一张再默认摸切。
 
 `ProtocolPlayerSnapshot.sleeveBloom` 仅向获准的本人私有流投影。`pendingOffer` 包含两张实体候选、来源、offerId、权威deadline及当前决策/控制代次，不写入公开或观战快照。选择没有领域事件时也推送完整私有状态；客户端必须用新快照替换旧offer，不能等待事件才关闭面板。恢复通过完整快照保留未结束的offer；托管重连须先显式收回控制，使用新决策身份提交。
 

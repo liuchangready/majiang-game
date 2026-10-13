@@ -1035,10 +1035,12 @@ class TableAuthority @JvmOverloads constructor(
                 return MutationResult(rejected, emptyList(), false)
             }
         } else if (candidateState.lastDrawKind == SleeveBloomDrawKind.RINSHAN) {
-            val rinshanValid = candidateState.rinshanPointer in 1..4 &&
+            val rinshanValid = candidateState.rinshanPointer in 1..3 &&
+                candidateState.totalKanCount < 4 &&
                 candidateState.deadWall.getOrNull(candidateState.rinshanPointer - 1) == drawnTile &&
-                candidateState.deadWallReplacements.isNotEmpty() &&
-                candidateState.tilePool.getLocation(candidateState.deadWallReplacements.last()) == com.majiang.model.TileLocation.DEAD_WALL
+                candidateState.deadWall.getOrNull(candidateState.rinshanPointer)?.let {
+                    candidateState.tilePool.getLocation(it) == com.majiang.model.TileLocation.DEAD_WALL
+                } == true
             if (!rinshanValid) {
                 val rejected = ActionReceipt(request.requestId, ReceiptStatus.REJECTED, reason = "SLEEVE_BLOOM_WALL_EMPTY")
                 storedReceipts[receiptKey] = StoredSubmission(SubmissionKind.SLEEVE_BLOOM, rejected, sleeveBloomPayload = currentPayload)
@@ -1219,10 +1221,10 @@ class TableAuthority @JvmOverloads constructor(
                                 candidateState.tilePool.getLocation(offer.secondTile) == com.majiang.model.TileLocation.WALL
                     }
                     SleeveBloomDrawKind.RINSHAN -> {
-                        candidateState.rinshanPointer in 1..4 &&
+                        candidateState.rinshanPointer in 1..3 &&
+                                candidateState.totalKanCount < 4 &&
                                 candidateState.deadWall.getOrNull(candidateState.rinshanPointer - 1) == offer.firstTile &&
-                                candidateState.deadWallReplacements.isNotEmpty() &&
-                                candidateState.deadWallReplacements.lastOrNull() == offer.secondTile &&
+                                candidateState.deadWall.getOrNull(candidateState.rinshanPointer) == offer.secondTile &&
                                 candidateState.tilePool.getLocation(offer.secondTile) == com.majiang.model.TileLocation.DEAD_WALL
                     }
                     SleeveBloomDrawKind.DEAL_EXTRA -> false

@@ -1,6 +1,6 @@
 # 袖里藏花图形设计
 
-日期：2026-10-12。状态：已实施并通过[Codex最终独立验收](ACCEPTANCE.md)，包含1280/960实际GL和真实断线场景；Android真机触控未验证。本文承接[袖里藏花规则](DESIGN.md)（每次 10 额度、摸牌后出牌前施术、二选一保留、未选退回指定位置、超时保留第一张），规定图形展示与交互契约。Anti 实现，Codex 编写测试并独立检视验收。
+日期：2026-10-13。本文随[岭上候选规则修订](ACCEPTANCE-RINSHAN.md)更新，当前验证状态见[执行状态](STATUS.md)。[初版GL验收](ACCEPTANCE.md)保留历史记录。Android真机触控未验证。每次10额度、摸牌后出牌前施术、二选一保留、超时保留第一张；杠后仅可多选下一岭上牌，第四次杠补牌窗口禁用。Anti实现，Codex编写测试并独立检视。
 
 袖里藏花的展示由两部分组成：右列常驻入口按钮（仅在权威 `canApply` 时可用），以及激活成功后由私有快照 `sleeveBloom.pendingOffer` 驱动的**二选一模态面板**——两张候选牌并排展示、点击选中、确认保留或取消（取消即保留第一张）。选择结束后不展示未保留牌的退回去向。整体交互沿用落汗的「选牌 + 确认/取消」两步防误触范式。
 
@@ -8,7 +8,7 @@
 
 | 内容 | 口径 |
 |---|---|
-| 两张候选牌 | 激活后必须同时可见，并标注各自来源（已摸到的 / 牌山次张 / 王牌替补），玩家先选后确认 |
+| 两张候选牌 | 激活后必须同时可见，并标注各自来源（已摸到的 / 牌山次张 / 岭上次张），玩家先选后确认 |
 | 未保留的牌 | 选择前两张候选均可见；选择后牌墙无图形、牌山剩余数不变、无退回动画或位置提示 |
 | 超时 | 面板随权威结算（保留第一张）自动关闭，不退款提示需表达「额度已消耗」 |
 | 其他玩家 | 不出现任何新增全局动画、音效或提示，不展示私有候选；既有余额变化与各自获准的落汗投影照常更新，不能宣称完全无感知 |
@@ -41,7 +41,7 @@ E3 准备及 Codex 复核发现：既有 `GameScreen.btnTakeoverRect = (1080,108
 | 费用标注 | 标题下方，文字基线 y=455 | 「已消耗 10 额度」，面板可见时恒显示；权威超时关闭时以 toast 提示已保留第一张、额度不退 |
 | 倒计时 | 面板右上角 | 权威决策剩余时间（与座位时钟同一 deadline），最后 3 秒变红 |
 | 第一候选牌卡 | `(460, 290, 90, 126)` | 大尺寸牌面（大于手牌 54×76 以示强调），下方标注「已摸到」 |
-| 第二候选牌卡 | `(730, 290, 90, 126)` | 下方标注按 `drawKind`：杠后为「王牌替补」，正常摸牌为「牌山次张」 |
+| 第二候选牌卡 | `(730, 290, 90, 126)` | 下方标注按 `drawKind`：杠后为「岭上次张」，正常摸牌为「牌山次张」 |
 | 选中框 | 牌卡描边 | 点击牌卡选中（青色描边），再点切换；默认未选中 |
 | 确认按钮 | `(450, 225, 180, 44)` | 位于牌卡下方；「保留所选」，未选中时灰色不可点，选中后橙色 |
 | 取消按钮 | `(650, 225, 180, 44)` | 「保留第一张」；暗红，无需选牌即可点；提交中或身份/计时失效时同样禁用 |
@@ -99,9 +99,9 @@ class SleeveBloomPanel(session: GameSession, model: SleeveBloomChoiceModel) {
 
 `SleeveBloomChoiceModel` 承担纯逻辑（可用性判定、选中状态、请求构造、deadline 推估、身份失效清空），可无头测试；`SleeveBloomPanel` 持有模型、绘制几何与渲染。`GameScreen` 负责输入分发和异步提交：字段持有、`isModalActive()` 注册、快照/每帧更新、渲染步骤、`touchDown` 模态优先分支、激活/选择各自的防重入标志与 toast、Esc 处理及 `dispose`。`cancel()` 仅清理本地模型；用户 Esc 必须提交 FIRST 选择，不能用本地cancel代替权威结算。
 
-原因码中文表（`translateServerReason`）：`SLEEVE_BLOOM_DISABLED`→「袖里藏花未启用」、`SLEEVE_BLOOM_RIICHI_LOCKED`→「立直后禁止施展」、`SLEEVE_BLOOM_DEALER_EXTRA_EXCLUDED`→「庄家起手第 14 张不可施展」、`SLEEVE_BLOOM_NO_DRAWN_TILE`→「当前无刚摸的牌」、`SLEEVE_BLOOM_ALREADY_PENDING`→「二选一进行中」、`SLEEVE_BLOOM_ALREADY_USED_THIS_DRAW`→「本次摸牌已施展过」、`SLEEVE_BLOOM_WALL_EMPTY`→「牌山已摸完，无第二候选」、`SLEEVE_BLOOM_NO_PENDING_OFFER`→「没有进行中的二选一」、`SLEEVE_BLOOM_OFFER_MISMATCH`→「选择已过期」、`SLEEVE_BLOOM_STALE_OFFER`→「局面已变化，选择失效」、`SLEEVE_BLOOM_CHOICE_PENDING`→「请先完成袖里藏花二选一」；余额不足、超时、代次不符等沿用落汗面板既有翻译。面板借用UiAssets统一拥有的FreeType/NotoSansSC中文字体（按需生成字形），不自行重复加载或释放共享字体，不依赖系统字体。`SLEEVE_BLOOM_CHARS`枚举可见文案与原因翻译，供字形覆盖契约检查。
+原因码中文表（`translateServerReason`）：`SLEEVE_BLOOM_DISABLED`→「袖里藏花未启用」、`SLEEVE_BLOOM_RIICHI_LOCKED`→「立直后禁止施展」、`SLEEVE_BLOOM_DEALER_EXTRA_EXCLUDED`→「庄家起手第 14 张不可施展」、`SLEEVE_BLOOM_NO_DRAWN_TILE`→「当前无刚摸的牌」、`SLEEVE_BLOOM_ALREADY_PENDING`→「二选一进行中」、`SLEEVE_BLOOM_ALREADY_USED_THIS_DRAW`→「本次摸牌已施展过」、`SLEEVE_BLOOM_WALL_EMPTY`→「候选不足（牌山摸完或第四杠不可用）」、`SLEEVE_BLOOM_NO_PENDING_OFFER`→「没有进行中的二选一」、`SLEEVE_BLOOM_OFFER_MISMATCH`→「选择已过期」、`SLEEVE_BLOOM_STALE_OFFER`→「局面已变化，选择失效」、`SLEEVE_BLOOM_CHOICE_PENDING`→「请先完成袖里藏花二选一」；余额不足、超时、代次不符等沿用落汗面板既有翻译。第二候选标签根据来源分为「牌山次张」与「岭上次张」。面板借用UiAssets统一拥有的FreeType/NotoSansSC中文字体（按需生成字形），不自行重复加载或释放共享字体，不依赖系统字体。`SLEEVE_BLOOM_CHARS`枚举可见文案与原因翻译，供字形覆盖契约检查。
 
-主菜单「雀圣千术绝技秘籍」弹窗追加条目：「袖里藏花：摸牌后出牌前消耗 10 额度，同时翻看第二候选牌（牌山次张或杠后王牌替补），二选一保留，未选的留在或退回对应位置；超时默认保留原摸牌并摸切，费用不退。」产品组装（`MahjongGame.launchGame`）配置 `costs = {"TILE_MARK" to 10, "SLEEVE_BLOOM" to 10}`；当前单机与建房入口随落汗一起显式设置 `SleeveBloomConfig(enabled = true)`；领域及协议模型缺省仍为关闭。
+主菜单「雀圣千术绝技秘籍」弹窗追加条目：「袖里藏花：摸牌后出牌前消耗 10 额度，同时翻看第二候选牌（牌山次张或杠后岭上次张，第四杠不可用），二选一保留，未选的留在或退回对应位置；超时默认保留原摸牌并摸切，费用不退。」产品组装（`MahjongGame.launchGame`）配置 `costs = {"TILE_MARK" to 10, "SLEEVE_BLOOM" to 10}`；当前单机与建房入口随落汗一起显式设置 `SleeveBloomConfig(enabled = true)`；领域及协议模型缺省仍为关闭。
 
 ## 实施顺序与验收
 

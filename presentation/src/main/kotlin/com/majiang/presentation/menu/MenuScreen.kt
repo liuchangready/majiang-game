@@ -672,8 +672,8 @@ class MenuScreen(
         font.draw(batch, "3. 有效期限: 当局立即生效，另持续后续 3 局；思考超时仅禁止新施术。", modalRect.x + 50f, modalRect.y + 325f)
         font.draw(batch, "4. 洞察识别: 标记牌进入对手手牌时可识别牌面，打入牌河时精准定位标识。", modalRect.x + 50f, modalRect.y + 285f)
         font.draw(batch, "5. 袖里藏花: 摸牌后出牌前消耗 10 额度，翻看第二候选牌二选一保留；", modalRect.x + 50f, modalRect.y + 245f)
-        font.draw(batch, "   第二候选为牌山次张或杠后王牌替补；未选牌留在或退回对应位置；", modalRect.x + 50f, modalRect.y + 219f)
-        font.draw(batch, "   超时保留原摸牌并摸切，费用不退。", modalRect.x + 50f, modalRect.y + 193f)
+        font.draw(batch, "   第二候选为牌山次张或岭上次张；第四杠不可用；", modalRect.x + 50f, modalRect.y + 219f)
+        font.draw(batch, "   未选牌留在或退回原位；超时保留原牌并摸切，费用不退。", modalRect.x + 50f, modalRect.y + 193f)
 
         font.color = Color(0.95f, 0.45f, 0.45f, 1f)
         font.draw(batch, "注意: 立直后、非本人回合或思考超时禁止施展落汗与袖里藏花，请选准时机！", modalRect.x + 50f, modalRect.y + 150f)

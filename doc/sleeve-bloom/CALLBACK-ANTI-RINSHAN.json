@@ -1,0 +1,49 @@
+{
+  "taskId": "SB-RINSHAN",
+  "recipient": "codex",
+  "status": "ready_for_review",
+  "modifiedFiles": [
+    "engine/src/main/kotlin/com/majiang/model/TileMovement.kt",
+    "engine/src/main/kotlin/com/majiang/cheat/bloom/SleeveBloomModels.kt",
+    "engine/src/main/kotlin/com/majiang/authority/TableAuthority.kt",
+    "engine/src/main/kotlin/com/majiang/application/ApplicationCoordinator.kt",
+    "presentation/src/main/kotlin/com/majiang/presentation/game/SleeveBloomPanel.kt",
+    "presentation/src/main/kotlin/com/majiang/presentation/menu/MenuScreen.kt",
+    "doc/sleeve-bloom/DELIVERY-ANTI-RINSHAN.md",
+    "doc/sleeve-bloom/CALLBACK-ANTI-RINSHAN.json"
+  ],
+  "tests": {
+    "total": 1115,
+    "passed": 1115,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0,
+    "moduleBreakdown": {
+      "client": 136,
+      "engine": 412,
+      "presentation": 268,
+      "protocol": 158,
+      "server": 141
+    },
+    "sleeveBloomTests": 35,
+    "sleeveBloomWallAndRulesTests": 14
+  },
+  "buildChecks": {
+    "fullTestRerunTasks": "1115 passed, 0 failures, 0 errors, 0 skipped",
+    "lwjgl3Classes": "BUILD SUCCESSFUL",
+    "androidAssembleDebug": "BUILD SUCCESSFUL",
+    "sleeveBloomSmoke1280": "SLEEVE_BLOOM_GL_PASS choices=2 fee=20 frames=575",
+    "sleeveBloomSmoke960": "SLEEVE_BLOOM_GL_PASS choices=2 fee=20 frames=562"
+  },
+  "visualInspections": {
+    "techniqueRules1280": "Verified no text overflow, margin > 40px",
+    "techniqueRules960": "Verified no text overflow, fits neatly within modal",
+    "candidateLabel": "岭上次张 (RINSHAN) / 牌山次张 (WALL)",
+    "rejectReason": "SLEEVE_BLOOM_WALL_EMPTY -> 候选不足（牌山摸完或第四杠不可用）"
+  },
+  "unverifiedBoundaries": [
+    "Android physical touchscreen real device tap interaction",
+    "Non-standard desktop DPI scale (e.g. 125%/150%) physical monitor rendering"
+  ],
+  "remainingIssues": []
+}

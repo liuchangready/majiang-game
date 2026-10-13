@@ -541,42 +541,39 @@ object TileMovement {
     }
 
     /**
-     * 袖里藏花杠后原语：将刚补到的岭上牌与王牌区最新替补牌交换
+     * 袖里藏花杠后原语：将刚补到的岭上牌与下一张未取岭上牌交换
      */
-    fun swapDrawnWithRinshanReplacement(state: GameState, player: Int): Tile {
+    fun swapDrawnWithNextRinshan(state: GameState, player: Int): Tile {
         require(player in 0..3) { "Invalid player: $player" }
         val hand = state.players[player]
         val currentDrawn = hand.drawnTile
-            ?: throw IllegalStateException("Cannot swap rinshan replacement: player $player has no drawnTile")
+            ?: throw IllegalArgumentException("Cannot swap rinshan: player $player has no drawnTile")
         require(state.tilePool.getLocation(currentDrawn) == TileLocation.hand(player)) {
             "drawnTile $currentDrawn not in hand of player $player"
         }
-        require(state.rinshanPointer in 1..4) {
-            "rinshanPointer must be in 1..4 to rollback, was ${state.rinshanPointer}"
+        require(state.rinshanPointer in 1..3) {
+            "rinshanPointer must be in 1..3, was ${state.rinshanPointer}"
+        }
+        require(state.totalKanCount < 4) {
+            "totalKanCount must be < 4, was ${state.totalKanCount}"
         }
         val originalRinshan = state.deadWall[state.rinshanPointer - 1]
         require(originalRinshan == currentDrawn) {
             "Original rinshan tile mismatch: deadWall[${state.rinshanPointer - 1}] is $originalRinshan but drawnTile is $currentDrawn"
         }
-        require(state.deadWallReplacements.isNotEmpty()) {
-            "deadWallReplacements is empty, cannot swap"
-        }
-        val replacementTile = state.deadWallReplacements.last()
-        require(state.tilePool.getLocation(replacementTile) == TileLocation.DEAD_WALL) {
-            "replacementTile $replacementTile not in DEAD_WALL"
+        val nextRinshan = state.deadWall[state.rinshanPointer]
+        require(state.tilePool.getLocation(nextRinshan) == TileLocation.DEAD_WALL) {
+            "nextRinshan $nextRinshan not in DEAD_WALL"
         }
 
-        // 移除替补与回退岭上指针
-        state.deadWallReplacements.removeAt(state.deadWallReplacements.lastIndex)
-        state.rinshanPointer--
-
-        // 置换 drawnTile
-        hand.drawnTile = replacementTile
+        // 置换 drawnTile 与 deadWall[rinshanPointer]
+        state.deadWall[state.rinshanPointer] = currentDrawn
+        hand.drawnTile = nextRinshan
 
         // 账本记账
         state.tilePool.transfer(currentDrawn, TileLocation.hand(player), TileLocation.DEAD_WALL)
-        state.tilePool.transfer(replacementTile, TileLocation.DEAD_WALL, TileLocation.hand(player))
+        state.tilePool.transfer(nextRinshan, TileLocation.DEAD_WALL, TileLocation.hand(player))
 
-        return replacementTile
+        return nextRinshan
     }
 }

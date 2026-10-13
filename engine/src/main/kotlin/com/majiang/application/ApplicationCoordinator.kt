@@ -1201,20 +1201,21 @@ class ApplicationCoordinator(
                     nextTile
                 }
                 SleeveBloomDrawKind.RINSHAN -> {
-                    if (candidateState.rinshanPointer !in 1..4) {
+                    if (candidateState.rinshanPointer !in 1..3) {
+                        return ActionResult.Rejected(RejectionReason.ACTION_NOT_AVAILABLE)
+                    }
+                    if (candidateState.totalKanCount >= 4) {
                         return ActionResult.Rejected(RejectionReason.ACTION_NOT_AVAILABLE)
                     }
                     if (candidateState.deadWall.getOrNull(candidateState.rinshanPointer - 1) != drawnTile) {
                         return ActionResult.Rejected(RejectionReason.ACTION_NOT_AVAILABLE)
                     }
-                    if (candidateState.deadWallReplacements.isEmpty()) {
+                    val nextTile = candidateState.deadWall.getOrNull(candidateState.rinshanPointer)
+                        ?: return ActionResult.Rejected(RejectionReason.ACTION_NOT_AVAILABLE)
+                    if (candidateState.tilePool.getLocation(nextTile) != TileLocation.DEAD_WALL) {
                         return ActionResult.Rejected(RejectionReason.ACTION_NOT_AVAILABLE)
                     }
-                    val repl = candidateState.deadWallReplacements.last()
-                    if (candidateState.tilePool.getLocation(repl) != TileLocation.DEAD_WALL) {
-                        return ActionResult.Rejected(RejectionReason.ACTION_NOT_AVAILABLE)
-                    }
-                    repl
+                    nextTile
                 }
                 SleeveBloomDrawKind.DEAL_EXTRA -> {
                     return ActionResult.Rejected(RejectionReason.ACTION_NOT_AVAILABLE)
@@ -1387,15 +1388,15 @@ class ApplicationCoordinator(
                         )
                     }
                     SleeveBloomDrawKind.RINSHAN -> {
-                        if (candidateState.rinshanPointer !in 1..4 ||
+                        if (candidateState.rinshanPointer !in 1..3 ||
+                            candidateState.totalKanCount >= 4 ||
                             candidateState.deadWall.getOrNull(candidateState.rinshanPointer - 1) != offer.firstTile ||
-                            candidateState.deadWallReplacements.isEmpty() ||
-                            candidateState.deadWallReplacements.last() != offer.secondTile ||
+                            candidateState.deadWall.getOrNull(candidateState.rinshanPointer) != offer.secondTile ||
                             candidateState.tilePool.getLocation(offer.secondTile) != TileLocation.DEAD_WALL
                         ) {
                             return ActionResult.Rejected(RejectionReason.ACTION_NOT_AVAILABLE)
                         }
-                        TileMovement.swapDrawnWithRinshanReplacement(candidateState, seat)
+                        TileMovement.swapDrawnWithNextRinshan(candidateState, seat)
                     }
                     SleeveBloomDrawKind.DEAL_EXTRA -> {
                         return ActionResult.Rejected(RejectionReason.ACTION_NOT_AVAILABLE)
