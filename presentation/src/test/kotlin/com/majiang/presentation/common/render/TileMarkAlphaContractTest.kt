@@ -6,9 +6,9 @@ import com.badlogic.gdx.graphics.Texture
 import com.badlogic.gdx.graphics.g2d.BitmapFont
 import com.badlogic.gdx.graphics.g2d.SpriteBatch
 import com.badlogic.gdx.graphics.glutils.ShapeRenderer
-import com.majiang.GdxHeadlessTestRunner
+import com.majiang.presentation.GdxHeadlessTestRunner
 import com.majiang.client.api.SuitView
-import com.majiang.testing.TestViewBuilder
+import com.majiang.presentation.testing.TestViewBuilder
 import org.junit.jupiter.api.Assertions.*
 import org.junit.jupiter.api.Test
 

@@ -1,6 +1,6 @@
 package com.majiang.presentation.common.render
 
-import com.majiang.GdxHeadlessTestRunner
+import com.majiang.presentation.GdxHeadlessTestRunner
 import org.junit.jupiter.api.Assertions.*
 import org.junit.jupiter.api.Test
 

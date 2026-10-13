@@ -1,7 +1,7 @@
 package com.majiang.presentation.common.render
 
 import com.badlogic.gdx.Gdx
-import com.majiang.GdxHeadlessTestRunner
+import com.majiang.presentation.GdxHeadlessTestRunner
 import com.majiang.client.api.SuitView
 import com.majiang.client.api.TileView
 import org.junit.jupiter.api.Assertions.*

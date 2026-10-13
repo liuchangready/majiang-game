@@ -342,6 +342,8 @@ class MahjongGame(
         val server = inProcessServer
         if (server != null && !server.closed) {
             val busy = (screen as? GameScreen)?.isDiscardPlaybackBusy ?: false
+            // 单机模式下权威 tick 由 GL 渲染循环驱动；busy 表示 GameScreen 打牌动画回放中，
+            // tick(busy) 让本地宿主在回放期间暂停推进，是单机 UX 决策；远端模式权威节奏不受此影响。
             server.tick(busy)
         }
         super.render()

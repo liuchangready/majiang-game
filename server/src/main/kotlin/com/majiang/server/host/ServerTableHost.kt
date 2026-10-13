@@ -22,7 +22,7 @@ import com.majiang.server.control.ConnectionControl
 import com.majiang.server.control.ControllerRole
 import com.majiang.server.control.DisconnectPolicy
 import com.majiang.event.GameEvent
-import com.majiang.host.ai.TsumogiriAIStrategy
+import com.majiang.ai.TsumogiriAIStrategy
 import com.majiang.match.MatchConfig
 import com.majiang.session.SessionUpdate
 import com.majiang.stacking.ShufflePlanRequest

@@ -1,5 +1,7 @@
 # V4 迁移状态
 
+**2026-10-13 架构清理已验收：** 依当日架构检视结论执行卫生清理：presentation 测试包名全部对齐 `com.majiang.presentation.*`（含 screen/v3 旧包与 testing 同名包重叠消除，engine testFixtures 不动）、TsumogiriAIStrategy 迁入 `com.majiang.ai`、删除 client 重复 gson 依赖、MahjongGame tick 注释、ArchitectureBoundaryContractTest 新增表现层边界源码扫描测试；全部空目录骨架清除。Anti 开发、Codex 检视；归一化 diff 纪律检查、残留扫描、全量 1054 项测试、桌面编译与 Android APK 均通过，无测试削弱。详见 [ACCEPTANCE-ARCH-CLEANUP.md](ACCEPTANCE-ARCH-CLEANUP.md)；遗留的 protocol 包名重叠与 presentation 测试 engine 解耦列为后续事项。
+
 **2026-10-07 连接控制归属收尾已验收：** Anti 将连接生命周期实现迁至 `server/control`，Codex 完成引用审查、旧文件删除、独立测试和文档终审。当前全量 928 项、独立审查 189 项，失败/错误/跳过均为 0；桌面与 Android 构建、真实 GL 冒烟、13 张 Mermaid 图语法检查通过。当前基线已在此前提交中清理重复渲染测试，因此本次计数与历史 R6 不同。详见 [本次验收](ACCEPTANCE-CONNECTION-OWNERSHIP.md)。下方 R1–R6 计数和未提交状态是历史记录。
 
 **2026-10-07 18:37 最新：R1–R6 全部完成并验收，默认入口已切 V4，无用 V3 运行链已清理。** R6 最终不筛选测试 **978/978**、独立审查 **188/188**，均零失败/错误/跳过；桌面编译、Android 调试 APK、11 组真实 GL 冒烟和菜单真实 UDP 开赛/离房通过。保留全部有效规则、136 张物理守恒、算分、资源与时钟断言；具体删除替代和日志见 [R6 验收](ACCEPTANCE-R6.md)。下方各阶段“未完成”、额度和自动接续描述均为历史记录；已核对旧自动续接 PID 不存在，无本任务写入进程。当前改动在工作区，未提交 Git。

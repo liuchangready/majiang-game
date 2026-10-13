@@ -1,7 +1,7 @@
 package com.majiang.presentation.common
 
 import com.badlogic.gdx.graphics.g2d.BitmapFont
-import com.majiang.GdxHeadlessTestRunner
+import com.majiang.presentation.GdxHeadlessTestRunner
 import org.junit.jupiter.api.Assertions.*
 import org.junit.jupiter.api.Test
 

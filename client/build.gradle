@@ -3,7 +3,6 @@ apply plugin: 'org.jetbrains.kotlin.jvm'
 
 dependencies {
     api project(':protocol')
-    api "com.google.code.gson:gson:2.11.0"
     implementation "org.jetbrains.kotlin:kotlin-stdlib:$kotlinVersion"
 
     testImplementation "org.junit.jupiter:junit-jupiter:5.10.2"

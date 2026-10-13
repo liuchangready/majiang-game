@@ -10,9 +10,9 @@ import com.badlogic.gdx.utils.ScreenUtils;
 import com.majiang.MahjongGame;
 import com.majiang.client.api.*;
 import com.majiang.presentation.game.GameScreen;
-import com.majiang.screen.BeamSwapScreenContractTest;
-import com.majiang.testing.FakeGameSession;
-import com.majiang.testing.FakeTableNavigation;
+import com.majiang.presentation.game.BeamSwapScreenContractTest;
+import com.majiang.presentation.testing.FakeGameSession;
+import com.majiang.presentation.testing.FakeTableNavigation;
 import java.io.File;
 import java.util.concurrent.CompletableFuture;
 

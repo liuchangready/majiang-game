@@ -1,12 +1,12 @@
 package com.majiang.presentation.game
 
 import com.badlogic.gdx.Input
-import com.majiang.GdxHeadlessTestRunner
+import com.majiang.presentation.GdxHeadlessTestRunner
 import com.majiang.client.api.*
-import com.majiang.testing.FakeSpectatorSession
-import com.majiang.testing.FakeTableNavigation
-import com.majiang.testing.TestUiAssets
-import com.majiang.testing.TestViewBuilder
+import com.majiang.presentation.testing.FakeSpectatorSession
+import com.majiang.presentation.testing.FakeTableNavigation
+import com.majiang.presentation.testing.TestUiAssets
+import com.majiang.presentation.testing.TestViewBuilder
 import org.junit.jupiter.api.Assertions.*
 import org.junit.jupiter.api.Test
 
