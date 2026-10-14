@@ -405,58 +405,6 @@ private class ProtocolTileAdapter : JsonSerializer<ProtocolTile>, JsonDeserializ
 }
 
 /**
- * ProtocolParamValue 多态 TypeAdapter
- * 严格结构化类型反序列化，禁止降级回退或宽松类型隐式转换。
- */
-private class ProtocolParamValueAdapter : JsonSerializer<ProtocolParamValue>, JsonDeserializer<ProtocolParamValue> {
-    override fun serialize(src: ProtocolParamValue, typeOfSrc: Type, context: JsonSerializationContext): JsonElement {
-        val obj = JsonObject()
-        when (src) {
-            is ProtocolParamValue.IntValue -> {
-                obj.addProperty("type", "INT")
-                obj.addProperty("value", src.value)
-            }
-            is ProtocolParamValue.LongValue -> {
-                obj.addProperty("type", "LONG")
-                obj.addProperty("value", src.value)
-            }
-            is ProtocolParamValue.DoubleValue -> {
-                obj.addProperty("type", "DOUBLE")
-                obj.addProperty("value", src.value)
-            }
-            is ProtocolParamValue.StringValue -> {
-                obj.addProperty("type", "STRING")
-                obj.addProperty("value", src.value)
-            }
-            is ProtocolParamValue.BooleanValue -> {
-                obj.addProperty("type", "BOOLEAN")
-                obj.addProperty("value", src.value)
-            }
-        }
-        return obj
-    }
-
-    override fun deserialize(json: JsonElement, typeOfT: Type, context: JsonDeserializationContext): ProtocolParamValue {
-        if (!json.isJsonObject) {
-            throw JsonParseException("ProtocolParamValue must be a JSON object with type and value: $json")
-        }
-        val obj = json.asJsonObject
-        checkUnknownFields(obj, setOf("type", "value"), "ProtocolParamValue")
-        val typeElem = obj.get("type") ?: throw JsonParseException("Missing type in ProtocolParamValue")
-        val type = validateStrictString(typeElem, "ProtocolParamValue.type")
-        val valElem = obj.get("value") ?: throw JsonParseException("Missing value in ProtocolParamValue")
-        return when (type) {
-            "INT" -> ProtocolParamValue.IntValue(validateStrictInt(valElem, "ProtocolParamValue.value"))
-            "LONG" -> ProtocolParamValue.LongValue(validateStrictLong(valElem, "ProtocolParamValue.value"))
-            "DOUBLE" -> ProtocolParamValue.DoubleValue(validateStrictDouble(valElem, "ProtocolParamValue.value"))
-            "STRING" -> ProtocolParamValue.StringValue(validateStrictString(valElem, "ProtocolParamValue.value"))
-            "BOOLEAN" -> ProtocolParamValue.BooleanValue(validateStrictBoolean(valElem, "ProtocolParamValue.value"))
-            else -> throw JsonParseException("Unknown ProtocolParamValue type: $type")
-        }
-    }
-}
-
-/**
  * ProtocolLegalAction 多态 TypeAdapter
  */
 private class ProtocolLegalActionAdapter : JsonSerializer<ProtocolLegalAction>, JsonDeserializer<ProtocolLegalAction> {
@@ -4340,7 +4288,6 @@ private class ProtocolBeamSwapViewAdapter : JsonSerializer<ProtocolBeamSwapView>
 object ApiMessageCodec {
     val gson: Gson = GsonBuilder()
         .registerTypeAdapter(ProtocolTile::class.java, ProtocolTileAdapter())
-        .registerTypeAdapter(ProtocolParamValue::class.java, ProtocolParamValueAdapter())
         .registerTypeAdapter(ProtocolLegalAction::class.java, ProtocolLegalActionAdapter())
         .registerTypeAdapter(ProtocolGameEvent::class.java, ProtocolGameEventAdapter())
         .registerTypeAdapter(ProtocolMeld::class.java, ProtocolMeldAdapter())

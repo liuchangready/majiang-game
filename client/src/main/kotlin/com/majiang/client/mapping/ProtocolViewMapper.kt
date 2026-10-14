@@ -31,7 +31,6 @@ import com.majiang.transport.api.ProtocolMatchConfig
 import com.majiang.transport.api.ProtocolMeld
 import com.majiang.transport.api.ProtocolMeldPreviewOption
 import com.majiang.transport.api.ProtocolMeldType
-import com.majiang.transport.api.ProtocolParamValue
 import com.majiang.transport.api.ProtocolPlayerDecision
 import com.majiang.transport.api.ProtocolPlayerPresentationPreview
 import com.majiang.transport.api.ProtocolPlayerSnapshot
@@ -219,22 +218,6 @@ object ProtocolViewMapper {
         temporary = f.temporary,
         riichi = f.riichi
     )
-
-    fun mapParamValue(param: ProtocolParamValue): ClientParamValue = when (param) {
-        is ProtocolParamValue.IntValue -> ClientParamValue.IntValue(param.value)
-        is ProtocolParamValue.LongValue -> ClientParamValue.LongValue(param.value)
-        is ProtocolParamValue.DoubleValue -> ClientParamValue.DoubleValue(param.value)
-        is ProtocolParamValue.StringValue -> ClientParamValue.StringValue(param.value)
-        is ProtocolParamValue.BooleanValue -> ClientParamValue.BooleanValue(param.value)
-    }
-
-    fun toProtocolParamValue(param: ClientParamValue): ProtocolParamValue = when (param) {
-        is ClientParamValue.IntValue -> ProtocolParamValue.IntValue(param.value)
-        is ClientParamValue.LongValue -> ProtocolParamValue.LongValue(param.value)
-        is ClientParamValue.DoubleValue -> ProtocolParamValue.DoubleValue(param.value)
-        is ClientParamValue.StringValue -> ProtocolParamValue.StringValue(param.value)
-        is ClientParamValue.BooleanValue -> ProtocolParamValue.BooleanValue(param.value)
-    }
 
     fun mapLegalAction(action: ProtocolLegalAction): LegalActionView = when (action) {
         is ProtocolLegalAction.StartStacking -> LegalActionView.StartStacking(action.stackingPlans)

@@ -222,47 +222,6 @@ class MeldView(
 }
 
 /**
- * 客户端千术参数强类型值 (ClientParamValue)
- *
- * 表现层/客户端专用的千术动作参数强类型封装，不暴露 protocol、engine 或 Any。
- */
-sealed class ClientParamValue {
-    data class IntValue(val value: Int) : ClientParamValue() {
-        override fun toString(): String = value.toString()
-    }
-
-    data class LongValue(val value: Long) : ClientParamValue() {
-        override fun toString(): String = value.toString()
-    }
-
-    data class DoubleValue(val value: Double) : ClientParamValue() {
-        override fun toString(): String = value.toString()
-    }
-
-    data class StringValue(val value: String) : ClientParamValue() {
-        override fun toString(): String = value
-    }
-
-    data class BooleanValue(val value: Boolean) : ClientParamValue() {
-        override fun toString(): String = value.toString()
-    }
-
-    fun asInt(): Int? = (this as? IntValue)?.value
-    fun asLong(): Long? = (this as? LongValue)?.value ?: (this as? IntValue)?.value?.toLong()
-    fun asDouble(): Double? = (this as? DoubleValue)?.value ?: (this as? IntValue)?.value?.toDouble() ?: (this as? LongValue)?.value?.toDouble()
-    fun asString(): String? = (this as? StringValue)?.value
-    fun asBoolean(): Boolean? = (this as? BooleanValue)?.value
-
-    companion object {
-        fun of(value: Int): ClientParamValue = IntValue(value)
-        fun of(value: Long): ClientParamValue = LongValue(value)
-        fun of(value: Double): ClientParamValue = DoubleValue(value)
-        fun of(value: String): ClientParamValue = StringValue(value)
-        fun of(value: Boolean): ClientParamValue = BooleanValue(value)
-    }
-}
-
-/**
  * 合法动作视图模型 (LegalActionView)
  *
  * 密封接口，完全对应 engine [com.majiang.state.GameAction] 的 14 种变体。

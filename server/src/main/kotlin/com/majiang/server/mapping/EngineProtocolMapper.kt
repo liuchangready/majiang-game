@@ -85,7 +85,6 @@ import com.majiang.transport.api.ProtocolMatchConfig
 import com.majiang.transport.api.ProtocolMeld
 import com.majiang.transport.api.ProtocolMeldPreviewOption
 import com.majiang.transport.api.ProtocolMeldType
-import com.majiang.transport.api.ProtocolParamValue
 import com.majiang.transport.api.ProtocolPlayerDecision
 import com.majiang.transport.api.ProtocolPlayerPresentationPreview
 import com.majiang.transport.api.ProtocolPlayerSnapshot
@@ -272,32 +271,6 @@ object EngineProtocolMapper {
         temporary = f.temporary,
         riichi = f.riichi
     )
-
-    // === GameAction -> ProtocolLegalAction ===
-
-    // === ParamValue Mapping ===
-
-    fun toProtocolParamValue(raw: Any?): ProtocolParamValue = when (raw) {
-        null -> throw IllegalArgumentException("Null cheat parameter value is unsupported")
-        is Int -> ProtocolParamValue.IntValue(raw)
-        is Long -> ProtocolParamValue.LongValue(raw)
-        is Double -> ProtocolParamValue.DoubleValue(raw)
-        is Float -> ProtocolParamValue.DoubleValue(raw.toDouble())
-        is Short -> ProtocolParamValue.IntValue(raw.toInt())
-        is Byte -> ProtocolParamValue.IntValue(raw.toInt())
-        is String -> ProtocolParamValue.StringValue(raw)
-        is Boolean -> ProtocolParamValue.BooleanValue(raw)
-        is ProtocolParamValue -> raw
-        else -> throw IllegalArgumentException("Unsupported cheat parameter type: ${raw.javaClass.name} ($raw)")
-    }
-
-    fun toEngineParamValue(param: ProtocolParamValue): Any = when (param) {
-        is ProtocolParamValue.IntValue -> param.value
-        is ProtocolParamValue.LongValue -> param.value
-        is ProtocolParamValue.DoubleValue -> param.value
-        is ProtocolParamValue.StringValue -> param.value
-        is ProtocolParamValue.BooleanValue -> param.value
-    }
 
     // === GameAction -> ProtocolLegalAction ===
 

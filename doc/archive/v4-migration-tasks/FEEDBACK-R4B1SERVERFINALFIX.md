@@ -1,9 +1,0 @@
-# 2026-10-06 11:48 最新实测
-
-R4B1-FINAL-full-checks.log：server101项97通过4失败，client109项108通过1失败（另交runtime），桌面编译与APK任务成功，整体构建因测试失败。以下均需解决：
-
-1. UdpRoomTest.testRoomUpdateRetransmitAndAckClearing:343 entry为null；testConcurrentInterleavedRoomUpdatesDoNotOverwriteNewerVersion:395 expected2 actualnull。新实现要求sessionsByConnectionId实际注册，旧两测试未迁移，补真实registerSession前提，保留全部ACK/重发/版本断言，不放宽生产存活校验。
-2. testRoomUpdateCancellationAndNoOrphanRetryOnClose:585 scheduler pending expected0 actual1。close先sendKick注册重试，而inFlightKicks.clear并未取消每个kick的Cancellable；不要只把期望改成1。退出后所有自身定时任务应取消，即使传入外部scheduler也不能关闭整个外部scheduler。保留有界停服ACK linger及终端送达语义，检查future完成和迟注册竞态。
-3. testLeaveRoomRejectedPreservesActiveBindingAndSession:673 cachedReject为null。handleFrame的业务是异步，不能立即读cache。用线程安全、有界完成条件观察真正回执，并检查断言使用ProtocolReceiptStatus而非领域同名enum。保留合法guest仍可读、拒绝不损坏真实席位、合法leave最终注销的全部验证；伪造stale session不是“有效绑定”，不要为通过测试放宽generation授权。最终确保测试实际覆盖server拒绝回执路径，而非仅旁观另一连接。
-
-模块源和日志均落盘。独立114项已全通过，日志R4B1-FINAL-review.log。模块失败仍须修复，不改reviewer。

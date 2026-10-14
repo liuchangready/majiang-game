@@ -85,24 +85,6 @@ enum class ProtocolReceiptStatus {
 }
 
 /**
- * 传输层独立千术参数类型安全包装 (ProtocolParamValue)
- * 保真支持 Int, Long, Double, String, Boolean，禁止 Any 或裸 JSON 逃逸。
- */
-sealed class ProtocolParamValue {
-    data class IntValue(val value: Int) : ProtocolParamValue()
-    data class LongValue(val value: Long) : ProtocolParamValue()
-    data class DoubleValue(val value: Double) : ProtocolParamValue()
-    data class StringValue(val value: String) : ProtocolParamValue()
-    data class BooleanValue(val value: Boolean) : ProtocolParamValue()
-
-    fun asInt(): Int? = (this as? IntValue)?.value
-    fun asLong(): Long? = (this as? LongValue)?.value
-    fun asDouble(): Double? = (this as? DoubleValue)?.value
-    fun asString(): String? = (this as? StringValue)?.value
-    fun asBoolean(): Boolean? = (this as? BooleanValue)?.value
-}
-
-/**
  * 传输层独立协议麻将牌 DTO (ProtocolTile)
  * 0..135 全局唯一物理编号，自洽校验物理花色、数字与赤五。
  */

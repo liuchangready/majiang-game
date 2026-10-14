@@ -1,3 +1,0 @@
-# GLM-T: TCP and rooms
-
-Own ONLY client/src/main/kotlin/com/majiang/network/*.kt (exclude protocol/**), server/src/main/**. Implement TASK-N3.md. Source migration already complete; engine APIs in engine/src/main. P owns protocol, H engine, U UI. Read server/src/test/kotlin/com/majiang/v3/NetworkAcceptanceTest.kt. Preserve external factories and asynchronous SessionAccess. Fix real APIs/imports, socket writes off caller thread, room/host deadlock, connection generation validation and endpoint tracking, connection loss reporting, failure completion. P adds NetworkRequest.protocolVersion default3, existing factories source-compatible. NetworkSessionAccess.closed already exists; expose accurate closure for UI. No tests/build modifications. Report delivery-GLM-T.md.

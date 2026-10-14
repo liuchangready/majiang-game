@@ -157,10 +157,10 @@ class V4ModelAcceptanceTest {
         }
     }
 
-    @Test fun typedIntegerParameterRejectsFractionAndOverflow() {
+    @Test fun strictIntValidationRejectsFractionAndOverflow() {
         for (value in listOf("1.25", "2147483648", "\"1\"")) {
             assertFailsWith<JsonParseException>("Invalid INT value $value must be rejected") {
-                ApiMessageCodec.gson.fromJson("""{"type":"INT","value":$value}""", ProtocolParamValue::class.java)
+                validateStrictInt(com.google.gson.JsonParser.parseString(value), "value")
             }
         }
     }

@@ -1,9 +1,0 @@
-# N2: Protocol compile correctness and lossless DTO codec
-
-Own client/src/main/kotlin/com/majiang/network/protocol/** only, no server/transport/UI/Gradle/tests. N3 owns server/transport. Domain code currently core/src/main but will move engine/src/main, use whichever exists. Read actual ActionDecisionDto.kt, GameEvent.kt, PlayerView.kt, model/FuritenStatus definition, rules/ScoreBreakdown.kt. Do not invent APIs.
-
-Fix concrete static defects in ProtocolJson: DecisionOption does not exist (actual ActionOption); FuritenStatus package must match actual declaration. Actual enum/event field names and constructor order must match source. All GameEvent sealed variants including new CheatPointsChanged must compile and round-trip. TsumoWin/RonWin currently DROP ScoreBreakdown entirely; preserve all yaku/dora/ura/red/fu/payment/calculation detail through codec. Do not replace unsupported events with StackingStarted or silently skip required fields.
-
-Use explicit registered whitelist adapters or fixed compile-time type mapping; no Class.forName or arbitrary type tags. Can use Gson for known fixed concrete nested value types if complete, but constructor non-null and structural validation must be explicit for untrusted requests. Requests need protocolVersion=3 (default in DTO for factories, WRITE actual field, READ required and reject unsupported). Validate mandatory fields by request type, requestId length/blank, bounded names/room/token/choice IDs, seat/ranges in decoded state/tiles. Reject trailing junk / malformed/wrong typed fields rather than inventing defaults. Keep external APIs from N stable. NetworkRequest cannot accept raw GameAction/GameState from client.
-
-Protocol tests will check complete event+snapshot+physical tile identity roundtrip, settlement details, malformed requests/unknown types/unsupported version. Codex tests after module move; deliver N2 no false compile claim.
