@@ -14,6 +14,9 @@ import com.majiang.transport.udp.ResendResponse
 import com.majiang.transport.udp.UdpClock
 import com.majiang.transport.udp.UdpProtocol
 import java.net.SocketAddress
+import java.util.HashMap
+import java.util.LinkedHashMap
+import java.util.PriorityQueue
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
@@ -108,7 +111,8 @@ class UdpClientSession(
         val timestamp: Long = 0L
     )
 
-    private val idempotentCache = ConcurrentHashMap<String, CachedSessionEntry>()
+    private val idempotentLock = Any()
+    private val idempotentCache = LinkedHashMap<String, CachedSessionEntry>()
     private val _lastInboundTime = AtomicLong(clock.currentTimeMillis())
 
     private val _isDisplaced = AtomicBoolean(false)
@@ -148,12 +152,14 @@ class UdpClientSession(
      * 查询指定 requestId 的历史回执（幂等基石）
      */
     fun getCachedEntry(requestId: String): CachedSessionEntry? {
-        val entry = idempotentCache[requestId] ?: return null
-        if (clock.currentTimeMillis() - entry.timestamp > 60000L) {
-            idempotentCache.remove(requestId)
-            return null
+        synchronized(idempotentLock) {
+            val entry = idempotentCache[requestId] ?: return null
+            if (clock.currentTimeMillis() - entry.timestamp > 60000L) {
+                idempotentCache.remove(requestId)
+                return null
+            }
+            return entry
         }
-        return entry
     }
     fun getCachedResponse(requestId: String): ApiResponse? = getCachedEntry(requestId)?.response
 
@@ -168,60 +174,101 @@ class UdpClientSession(
         request: ApiRequest? = null
     ) {
         val now = clock.currentTimeMillis()
-        if (idempotentCache.size >= MAX_IDEMPOTENT_CACHE_ENTRIES) {
-            val it = idempotentCache.entries.iterator()
+        synchronized(idempotentLock) {
+            val it = idempotentCache.values.iterator()
             while (it.hasNext()) {
                 val item = it.next()
-                if (now - item.value.timestamp > 60000L) {
+                if (now - item.timestamp > 60000L) {
                     it.remove()
                 }
             }
-            if (idempotentCache.size >= MAX_IDEMPOTENT_CACHE_ENTRIES) {
-                val it2 = idempotentCache.keys.iterator()
-                if (it2.hasNext()) {
-                    idempotentCache.remove(it2.next())
+            val existing = idempotentCache[requestId]
+            if (existing != null) {
+                // 重复写同 ID 更新回执内容但保留原插入顺序与 60s 锚点（不延长窗口）
+                idempotentCache[requestId] = CachedSessionEntry(
+                    response = response,
+                    api = api,
+                    rawPayload = rawPayload,
+                    request = request,
+                    timestamp = existing.timestamp
+                )
+            } else {
+                while (idempotentCache.size >= MAX_IDEMPOTENT_CACHE_ENTRIES) {
+                    val oldestKey = idempotentCache.keys.firstOrNull() ?: break
+                    idempotentCache.remove(oldestKey)
                 }
-            }
-        }
-        idempotentCache[requestId] = CachedSessionEntry(
-            response = response,
-            api = api,
-            rawPayload = rawPayload,
-            request = request,
-            timestamp = now
-        )
-    }
-
-    private val inFlightRequests = ConcurrentHashMap<String, InFlightSessionEntry>()
-    fun getInFlightEntry(requestId: String): InFlightSessionEntry? = inFlightRequests[requestId]
-    fun getInFlight(requestId: String): CompletableFuture<ApiResponse>? = inFlightRequests[requestId]?.future
-
-    fun putInFlightEntry(requestId: String, entry: InFlightSessionEntry): InFlightSessionEntry? {
-        val now = clock.currentTimeMillis()
-        val it = inFlightRequests.entries.iterator()
-        while (it.hasNext()) {
-            val item = it.next()
-            if (now - item.value.timestamp > 15000L) {
-                it.remove()
-                item.value.future.completeExceptionally(
-                    IllegalStateException("In-flight request timed out")
+                idempotentCache[requestId] = CachedSessionEntry(
+                    response = response,
+                    api = api,
+                    rawPayload = rawPayload,
+                    request = request,
+                    timestamp = now
                 )
             }
         }
+    }
 
-        val existing = inFlightRequests[requestId]
-        if (existing != null) {
-            return existing
+    private class InFlightTimeoutNode(
+        val requestId: String,
+        val entry: InFlightSessionEntry,
+        val deadline: Long
+    )
+
+    private val inFlightLock = Any()
+    private val inFlightRequests = HashMap<String, InFlightSessionEntry>()
+    private val inFlightTimeoutQueue = PriorityQueue<InFlightTimeoutNode>(compareBy { it.deadline })
+
+    fun getInFlightEntry(requestId: String): InFlightSessionEntry? {
+        synchronized(inFlightLock) {
+            return inFlightRequests[requestId]
+        }
+    }
+    fun getInFlight(requestId: String): CompletableFuture<ApiResponse>? = getInFlightEntry(requestId)?.future
+
+    fun putInFlightEntry(requestId: String, entry: InFlightSessionEntry): InFlightSessionEntry? {
+        var busyFutureToComplete: CompletableFuture<ApiResponse>? = null
+        val toFail = mutableListOf<CompletableFuture<ApiResponse>>()
+        val result: InFlightSessionEntry?
+
+        synchronized(inFlightLock) {
+            val now = clock.currentTimeMillis()
+            while (inFlightTimeoutQueue.isNotEmpty()) {
+                val head = inFlightTimeoutQueue.peek()
+                if (now >= head.deadline) {
+                    inFlightTimeoutQueue.poll()
+                    if (inFlightRequests[head.requestId] === head.entry) {
+                        inFlightRequests.remove(head.requestId)
+                        toFail.add(head.entry.future)
+                    }
+                } else {
+                    break
+                }
+            }
+
+            val existing = inFlightRequests[requestId]
+            if (existing != null) {
+                result = existing
+            } else if (inFlightRequests.size >= MAX_IN_FLIGHT_ENTRIES) {
+                busyFutureToComplete = entry.future
+                result = entry
+            } else {
+                inFlightRequests[requestId] = entry
+                inFlightTimeoutQueue.add(InFlightTimeoutNode(requestId, entry, entry.timestamp + 15000L))
+                result = null
+            }
         }
 
-        if (inFlightRequests.size >= MAX_IN_FLIGHT_ENTRIES) {
-            entry.future.complete(
-                ApiResponse(requestId = requestId, success = false, error = ApiErrors.SERVER_BUSY)
+        // 所有 Future 完成放在缓存锁外执行
+        for (f in toFail) {
+            f.completeExceptionally(
+                IllegalStateException("In-flight request timed out")
             )
-            return entry
         }
+        busyFutureToComplete?.complete(
+            ApiResponse(requestId = requestId, success = false, error = ApiErrors.SERVER_BUSY)
+        )
 
-        return inFlightRequests.putIfAbsent(requestId, entry)
+        return result
     }
 
     fun putInFlight(
@@ -236,7 +283,21 @@ class UdpClientSession(
         return existingOrRejected?.future
     }
 
-    fun removeInFlight(requestId: String): CompletableFuture<ApiResponse>? = inFlightRequests.remove(requestId)?.future
+    fun removeInFlightEntry(requestId: String, entry: InFlightSessionEntry): Boolean {
+        synchronized(inFlightLock) {
+            if (inFlightRequests[requestId] === entry) {
+                inFlightRequests.remove(requestId)
+                return true
+            }
+            return false
+        }
+    }
+
+    fun removeInFlight(requestId: String): CompletableFuture<ApiResponse>? {
+        synchronized(inFlightLock) {
+            return inFlightRequests.remove(requestId)?.future
+        }
+    }
 
     /**
      * 记录一条已派发的推送更新到重传窗口
@@ -284,11 +345,16 @@ class UdpClientSession(
         if (_isClosed.compareAndSet(false, true)) {
             pushWindow.removeConnection(connectionId)
             publicWindow.removeConnection(connectionId)
-            val it = inFlightRequests.entries.iterator()
-            while (it.hasNext()) {
-                val item = it.next()
-                it.remove()
-                item.value.future.completeExceptionally(
+            val toFail = mutableListOf<CompletableFuture<ApiResponse>>()
+            synchronized(inFlightLock) {
+                for ((_, entry) in inFlightRequests) {
+                    toFail.add(entry.future)
+                }
+                inFlightRequests.clear()
+                inFlightTimeoutQueue.clear()
+            }
+            for (f in toFail) {
+                f.completeExceptionally(
                     IllegalStateException("Session closed")
                 )
             }

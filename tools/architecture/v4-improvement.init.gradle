@@ -2,7 +2,7 @@
 // Run serially after Anti releases the Gradle build lease:
 // gradlew -I tools/architecture/v4-improvement.init.gradle :client:test --tests 'com.majiang.review.*'
 gradle.projectsEvaluated {
-    ['client', 'protocol'].each { moduleName ->
+    ['client', 'protocol', 'server'].each { moduleName ->
         def p = gradle.rootProject.project(":${moduleName}")
         p.layout.buildDirectory.set(p.file("../build/v4-improvement/${moduleName}"))
         p.extensions.getByName('kotlin').sourceSets.getByName('test').kotlin.setSrcDirs([

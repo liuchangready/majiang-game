@@ -28,7 +28,9 @@ class ReliableRequestor(
     private val initialRtoMillis: Long = UdpProtocol.INITIAL_RTO_MILLIS,
     private val rtoBackoffFactor: Double = UdpProtocol.RTO_BACKOFF_FACTOR,
     private val maxRtoMillis: Long = UdpProtocol.MAX_RTO_MILLIS,
-    private val maxAttempts: Int = UdpProtocol.MAX_REQUEST_ATTEMPTS
+    private val maxAttempts: Int = UdpProtocol.MAX_REQUEST_ATTEMPTS,
+    private val completedCapacity: Int = 256,
+    private val completedRetentionMillis: Long = 60_000L
 ) : AutoCloseable {
 
     companion object {
@@ -46,10 +48,17 @@ class ReliableRequestor(
         var timerHandle: Cancellable? = null
     )
 
+    private class CompletedRecord(
+        val requestId: String,
+        val rspSeq: Int,
+        val completedAt: Long
+    )
+
     private val pendingByRequestId = ConcurrentHashMap<String, PendingRequest>()
     private val pendingBySeq = ConcurrentHashMap<Int, PendingRequest>()
-    private val completedRspSeqs = ConcurrentHashMap<Int, Long>()
-    private val completedRequestIds = ConcurrentHashMap<String, Int>()
+    private val completedLock = Any()
+    private val completedRecords = LinkedHashMap<String, CompletedRecord>()
+    private val rspSeqIndex = HashMap<Int, String>()
     private val closed = AtomicBoolean(false)
 
     /**
@@ -113,6 +122,18 @@ class ReliableRequestor(
         return future
     }
 
+    private fun pruneExpiredCompletedLocked(now: Long) {
+        val expireCutoff = now - completedRetentionMillis
+        val it = completedRecords.values.iterator()
+        while (it.hasNext()) {
+            val rec = it.next()
+            if (rec.completedAt <= expireCutoff) {
+                it.remove()
+                rspSeqIndex.remove(rec.rspSeq)
+            }
+        }
+    }
+
     /**
      * 收到对端数据包时的响应处理钩子
      *
@@ -132,9 +153,29 @@ class ReliableRequestor(
         }
 
         if (pending == null) {
-            val wasCompleted = (requestId != null && completedRequestIds.containsKey(requestId)) ||
-                    completedRspSeqs.containsKey(rspFrame.seq)
-            if (wasCompleted) {
+            var hit = false
+            synchronized(completedLock) {
+                val now = clock.currentTimeMillis()
+                pruneExpiredCompletedLocked(now)
+
+                var record: CompletedRecord? = null
+                if (requestId != null) {
+                    record = completedRecords[requestId]
+                }
+                if (record == null) {
+                    val mappedId = rspSeqIndex[rspFrame.seq]
+                    if (mappedId != null) {
+                        record = completedRecords[mappedId]
+                    }
+                }
+
+                if (record != null) {
+                    hit = true
+                }
+            }
+
+            if (hit) {
+                // 重复命中不重写记录、不延长保留锚点（锚点=首次完成时间）
                 val ackFrame = UdpFrame(
                     packetType = UdpPacketType.ACK,
                     connectionId = connectionIdSupplier(),
@@ -148,36 +189,48 @@ class ReliableRequestor(
             return false
         }
 
+        val toComplete: CompletableFuture<UdpFrame>
         synchronized(pending) {
             if (pending.future.isDone) return false
             pending.timerHandle?.cancel()
             pendingByRequestId.remove(pending.requestId)
             pendingBySeq.remove(pending.seq)
-
-            if (completedRspSeqs.size >= 256) {
-                val it = completedRspSeqs.keys.iterator()
-                if (it.hasNext()) completedRspSeqs.remove(it.next())
-            }
-            if (completedRequestIds.size >= 256) {
-                val it = completedRequestIds.keys.iterator()
-                if (it.hasNext()) completedRequestIds.remove(it.next())
-            }
-            completedRspSeqs[rspFrame.seq] = clock.currentTimeMillis()
-            completedRequestIds[pending.requestId] = rspFrame.seq
-
-            // 自动向对端回发确认包 ACK(seq = nextSeq, ackSeq = rsp.seq)
-            val ackFrame = UdpFrame(
-                packetType = UdpPacketType.ACK,
-                connectionId = connectionIdSupplier(),
-                seq = seqSupplier(),
-                ackSeq = rspFrame.seq
-            )
-            val ackTarget = ackSender ?: sender
-            ackTarget(ackFrame)
-
-            pending.future.complete(rspFrame)
-            return true
+            toComplete = pending.future
         }
+
+        val now = clock.currentTimeMillis()
+        synchronized(completedLock) {
+            pruneExpiredCompletedLocked(now)
+            val old = completedRecords.remove(pending.requestId)
+            if (old != null) {
+                rspSeqIndex.remove(old.rspSeq)
+            }
+            while (completedCapacity > 0 && completedRecords.size >= completedCapacity) {
+                val oldestKey = completedRecords.keys.firstOrNull() ?: break
+                val evicted = completedRecords.remove(oldestKey)
+                if (evicted != null) {
+                    rspSeqIndex.remove(evicted.rspSeq)
+                }
+            }
+            if (completedCapacity > 0) {
+                val record = CompletedRecord(pending.requestId, rspFrame.seq, now)
+                completedRecords[pending.requestId] = record
+                rspSeqIndex[rspFrame.seq] = pending.requestId
+            }
+        }
+
+        // 自动向对端回发确认包 ACK(seq = nextSeq, ackSeq = rsp.seq)
+        val ackFrame = UdpFrame(
+            packetType = UdpPacketType.ACK,
+            connectionId = connectionIdSupplier(),
+            seq = seqSupplier(),
+            ackSeq = rspFrame.seq
+        )
+        val ackTarget = ackSender ?: sender
+        ackTarget(ackFrame)
+
+        toComplete.complete(rspFrame)
+        return true
     }
 
     private fun scheduleTimeout(pending: PendingRequest) {
@@ -242,14 +295,22 @@ class ReliableRequestor(
     override fun close() {
         if (closed.compareAndSet(false, true)) {
             val ex = IOException("ReliableRequestor has been closed")
+            val toCancel = mutableListOf<PendingRequest>()
             for ((_, pending) in pendingByRequestId) {
+                toCancel.add(pending)
+            }
+            pendingByRequestId.clear()
+            pendingBySeq.clear()
+            for (pending in toCancel) {
                 synchronized(pending) {
                     pending.timerHandle?.cancel()
                     pending.future.completeExceptionally(ex)
                 }
             }
-            pendingByRequestId.clear()
-            pendingBySeq.clear()
+            synchronized(completedLock) {
+                completedRecords.clear()
+                rspSeqIndex.clear()
+            }
         }
     }
 }

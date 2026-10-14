@@ -37,6 +37,9 @@ import java.net.InetSocketAddress
 import java.net.SocketAddress
 import java.net.SocketException
 import java.security.SecureRandom
+import java.util.HashMap
+import java.util.LinkedHashMap
+import java.util.PriorityQueue
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.ConcurrentSkipListMap
@@ -65,13 +68,26 @@ import java.util.concurrent.atomic.AtomicBoolean
  * 4. 10s 入站超时检测判死，异步通过 [teardownExecutor] 清理并触发宿主掉线 AI 托管；
  * 5. 房间上限 100，已关闭房间回收，[close] 幂等释放。
  */
+/**
+ * 大厅与全局缓存配置 (LobbyCacheConfig)
+ */
+data class LobbyCacheConfig(
+    val sideEffectCompletedCapacity: Int = 1024,
+    val queryCompletedCapacity: Int = 1024,
+    val terminatedSessionCapacity: Int = 1024,
+    val inFlightCapacity: Int = 256,
+    val completedRetentionMillis: Long = 60_000L,
+    val inFlightRetentionMillis: Long = 15_000L
+)
+
 class UdpTableServer @JvmOverloads constructor(
     val bindHost: String = "127.0.0.1",
     val port: Int = 0,
     val timeControl: TimeControlConfig = TimeControlConfig(),
     val disconnectPolicy: DisconnectPolicy = DisconnectPolicy(),
     val clock: UdpClock = UdpClock.SYSTEM,
-    scheduler: UdpScheduler? = null
+    scheduler: UdpScheduler? = null,
+    val lobbyCache: LobbyCacheConfig = LobbyCacheConfig()
 ) : AutoCloseable {
 
     private val isClosing = AtomicBoolean(false)
@@ -89,7 +105,8 @@ class UdpTableServer @JvmOverloads constructor(
         val session: UdpClientSession,
         val timestamp: Long
     )
-    private val terminatedSessions = ConcurrentHashMap<Int, TerminatedSessionEntry>()
+    private val terminatedSessionsLock = Any()
+    private val terminatedSessions = LinkedHashMap<Int, TerminatedSessionEntry>()
     private val unattachedOutboundSeq = java.util.concurrent.atomic.AtomicInteger(1)
     private val random = SecureRandom()
 
@@ -110,10 +127,23 @@ class UdpTableServer @JvmOverloads constructor(
         val rawPayload: String,
         val api: String,
         val request: ApiRequest,
-        val timestamp: Long = 0L
+        val timestamp: Long = 0L,
+        val deadline: Long = 0L,
+        val isSideEffect: Boolean = false,
+        val reservationConsumed: java.util.concurrent.atomic.AtomicBoolean = java.util.concurrent.atomic.AtomicBoolean(false),
+        val asyncHandoff: java.util.concurrent.atomic.AtomicBoolean = java.util.concurrent.atomic.AtomicBoolean(false)
     )
-    private val lobbyCompletedRequests = ConcurrentHashMap<LobbyKey, CompletedLobbyEntry>()
-    private val lobbyInFlightRequests = ConcurrentHashMap<LobbyKey, InFlightLobbyEntry>()
+    private class InFlightLobbyTimeoutNode(
+        val key: LobbyKey,
+        val entry: InFlightLobbyEntry,
+        val deadline: Long
+    )
+    private val lobbyLock = Any()
+    private val sideEffectCompletedRequests = LinkedHashMap<LobbyKey, CompletedLobbyEntry>()
+    private val queryCompletedRequests = LinkedHashMap<LobbyKey, CompletedLobbyEntry>()
+    private var sideEffectReserved: Int = 0
+    private val lobbyInFlightRequests = HashMap<LobbyKey, InFlightLobbyEntry>()
+    private val lobbyInFlightTimeoutQueue = java.util.PriorityQueue<InFlightLobbyTimeoutNode>(compareBy { it.deadline })
 
     data class InFlightKick(
         val connectionId: Int,
@@ -467,42 +497,39 @@ class UdpTableServer @JvmOverloads constructor(
         }
     }
 
-    private fun recordLobbyCompleted(key: LobbyKey, entry: CompletedLobbyEntry) {
-        val now = clock.currentTimeMillis()
-        if (lobbyCompletedRequests.size >= 1024) {
-            val it = lobbyCompletedRequests.entries.iterator()
-            while (it.hasNext()) {
-                val item = it.next()
-                if (now - item.value.timestamp > 60000L) {
-                    it.remove()
-                }
-            }
-            if (lobbyCompletedRequests.size >= 1024) {
-                val it2 = lobbyCompletedRequests.keys.iterator()
-                if (it2.hasNext()) {
-                    lobbyCompletedRequests.remove(it2.next())
-                }
-            }
-        }
-        lobbyCompletedRequests[key] = entry
-    }
-
     private fun recordTerminatedSession(connectionId: Int, session: UdpClientSession) {
         val now = clock.currentTimeMillis()
-        val it = terminatedSessions.entries.iterator()
-        while (it.hasNext()) {
-            val item = it.next()
-            if (now - item.value.timestamp > 60000L) {
-                it.remove()
+        synchronized(terminatedSessionsLock) {
+            val cutoff = now - lobbyCache.completedRetentionMillis
+            val it = terminatedSessions.values.iterator()
+            while (it.hasNext()) {
+                val item = it.next()
+                if (item.timestamp <= cutoff) {
+                    it.remove()
+                } else {
+                    break
+                }
+            }
+            while (lobbyCache.terminatedSessionCapacity > 0 && terminatedSessions.size >= lobbyCache.terminatedSessionCapacity) {
+                val oldestKey = terminatedSessions.keys.firstOrNull() ?: break
+                terminatedSessions.remove(oldestKey)
+            }
+            if (lobbyCache.terminatedSessionCapacity > 0) {
+                terminatedSessions[connectionId] = TerminatedSessionEntry(session, now)
             }
         }
-        if (terminatedSessions.size >= 1024) {
-            val it2 = terminatedSessions.keys.iterator()
-            if (it2.hasNext()) {
-                terminatedSessions.remove(it2.next())
+    }
+
+    private fun hasTerminatedSession(connectionId: Int): Boolean {
+        val now = clock.currentTimeMillis()
+        synchronized(terminatedSessionsLock) {
+            val entry = terminatedSessions[connectionId] ?: return false
+            if (now - entry.timestamp > lobbyCache.completedRetentionMillis) {
+                terminatedSessions.remove(connectionId)
+                return false
             }
+            return true
         }
-        terminatedSessions[connectionId] = TerminatedSessionEntry(session, now)
     }
 
     private val ticker: ScheduledExecutorService = Executors.newSingleThreadScheduledExecutor(
@@ -832,7 +859,7 @@ class UdpTableServer @JvmOverloads constructor(
     }
 
     private fun handleReq(frame: UdpFrame, remoteAddress: SocketAddress) {
-        if (frame.connectionId != 0 && !sessionsByConnectionId.containsKey(frame.connectionId) && !terminatedSessions.containsKey(frame.connectionId)) {
+        if (frame.connectionId != 0 && !sessionsByConnectionId.containsKey(frame.connectionId) && !hasTerminatedSession(frame.connectionId)) {
             // connectionId 校验失败静默丢弃 (防放大反射攻击)
             return
         }
@@ -883,46 +910,151 @@ class UdpTableServer @JvmOverloads constructor(
         return match.groupValues.getOrNull(1)?.takeIf { it.isNotBlank() && it.length <= 128 }
     }
 
+    private fun isSideEffectApi(api: String): Boolean = when (api) {
+        ApiTags.CREATE_ROOM,
+        ApiTags.JOIN_ROOM,
+        ApiTags.JOIN_SPECTATOR,
+        ApiTags.RESUME_SPECTATOR,
+        ApiTags.RESUME_SESSION -> true
+        else -> false
+    }
+
     private fun handleLobbyReq(frame: UdpFrame, request: ApiRequest, remoteAddress: SocketAddress, rawPayload: String) {
         val lobbyKey = LobbyKey(remoteAddress, request.requestId)
+        val isSideEffect = isSideEffectApi(request.api)
+        val now = clock.currentTimeMillis()
 
-        // 1. 幂等命中重放已完成的建房/加房/重连/查房与冲突检测
-        val completed = lobbyCompletedRequests[lobbyKey]
-        if (completed != null) {
-            if (completed.api != request.api || (completed.rawPayload.isNotEmpty() && rawPayload.isNotEmpty() && completed.rawPayload != rawPayload) || completed.request != request) {
-                sendRsp(
-                    connectionId = 0,
-                    seq = 1,
-                    ackSeq = frame.seq,
-                    response = ApiResponse(requestId = request.requestId, success = false, error = ApiErrors.CONFLICT),
-                    remoteAddress = remoteAddress
-                )
-                return
+        var replayToSend: Pair<Int, ApiResponse>? = null
+        var conflictToSend = false
+        var busyToSend = false
+        var waitingFuture: CompletableFuture<Pair<Int, ApiResponse>>? = null
+        val inFlightToFail = mutableListOf<CompletableFuture<Pair<Int, ApiResponse>>>()
+
+        var acceptedEntry: InFlightLobbyEntry? = null
+
+        synchronized(lobbyLock) {
+            val cutoff = now - lobbyCache.completedRetentionMillis
+
+            // 1. 清理两池过期条目
+            val sideIt = sideEffectCompletedRequests.values.iterator()
+            while (sideIt.hasNext()) {
+                val item = sideIt.next()
+                if (item.timestamp <= cutoff) {
+                    sideIt.remove()
+                } else {
+                    break
+                }
             }
+            val queryIt = queryCompletedRequests.values.iterator()
+            while (queryIt.hasNext()) {
+                val item = queryIt.next()
+                if (item.timestamp <= cutoff) {
+                    queryIt.remove()
+                } else {
+                    break
+                }
+            }
+
+            // 2. 跨池与在途统一去重与冲突检查
+            val completed = sideEffectCompletedRequests[lobbyKey] ?: queryCompletedRequests[lobbyKey]
+            if (completed != null) {
+                if (completed.api != request.api ||
+                    (completed.rawPayload.isNotEmpty() && rawPayload.isNotEmpty() && completed.rawPayload != rawPayload) ||
+                    completed.request != request
+                ) {
+                    conflictToSend = true
+                } else {
+                    replayToSend = completed.connectionId to completed.response
+                }
+            } else {
+                val inFlight = lobbyInFlightRequests[lobbyKey]
+                if (inFlight != null) {
+                    if (inFlight.api != request.api ||
+                        (inFlight.rawPayload.isNotEmpty() && rawPayload.isNotEmpty() && inFlight.rawPayload != rawPayload) ||
+                        inFlight.request != request
+                    ) {
+                        conflictToSend = true
+                    } else {
+                        waitingFuture = inFlight.future
+                    }
+                } else {
+                    // 3. 有界清理超时在途队列
+                    while (lobbyInFlightTimeoutQueue.isNotEmpty()) {
+                        val head = lobbyInFlightTimeoutQueue.peek()
+                        if (now >= head.deadline) {
+                            lobbyInFlightTimeoutQueue.poll()
+                            val cur = lobbyInFlightRequests[head.key]
+                            if (cur === head.entry) {
+                                inFlightToFail.add(head.entry.future)
+                                if (!head.entry.isSideEffect) {
+                                    // 查询 API 在途条目随清扫移除
+                                    lobbyInFlightRequests.remove(head.key, head.entry)
+                                }
+                                // 副作用 API 的在途身份保留到真实完成（completeLobby 比较删除）或服务 close
+                            }
+                        } else {
+                            break
+                        }
+                    }
+
+                    // 4. 容量检查
+                    if (lobbyInFlightRequests.size >= lobbyCache.inFlightCapacity) {
+                        busyToSend = true
+                    } else if (isSideEffect && (sideEffectCompletedRequests.size + sideEffectReserved >= lobbyCache.sideEffectCompletedCapacity)) {
+                        busyToSend = true
+                    } else {
+                        // 5. 受理新请求并预留副作用池容量
+                        if (isSideEffect) {
+                            sideEffectReserved++
+                        }
+                        val promise = CompletableFuture<Pair<Int, ApiResponse>>()
+                        val entry = InFlightLobbyEntry(
+                            future = promise,
+                            rawPayload = rawPayload,
+                            api = request.api,
+                            request = request,
+                            timestamp = now,
+                            deadline = now + lobbyCache.inFlightRetentionMillis,
+                            isSideEffect = isSideEffect
+                        )
+                        lobbyInFlightRequests[lobbyKey] = entry
+                        lobbyInFlightTimeoutQueue.add(InFlightLobbyTimeoutNode(lobbyKey, entry, entry.deadline))
+                        acceptedEntry = entry
+                    }
+                }
+            }
+        }
+
+        // 锁外完成超时的在途 Future
+        for (f in inFlightToFail) {
+            f.completeExceptionally(IllegalStateException("Lobby in-flight request timed out"))
+        }
+
+        if (conflictToSend) {
             sendRsp(
-                connectionId = completed.connectionId,
+                connectionId = 0,
                 seq = 1,
                 ackSeq = frame.seq,
-                response = completed.response,
+                response = ApiResponse(requestId = request.requestId, success = false, error = ApiErrors.CONFLICT),
                 remoteAddress = remoteAddress
             )
             return
         }
 
-        // 2. 并发去重：若当前同一请求已在执行中，等待其完成后附带回包
-        val inFlight = lobbyInFlightRequests[lobbyKey]
-        if (inFlight != null) {
-            if (inFlight.api != request.api || (inFlight.rawPayload.isNotEmpty() && rawPayload.isNotEmpty() && inFlight.rawPayload != rawPayload) || inFlight.request != request) {
-                sendRsp(
-                    connectionId = 0,
-                    seq = 1,
-                    ackSeq = frame.seq,
-                    response = ApiResponse(requestId = request.requestId, success = false, error = ApiErrors.CONFLICT),
-                    remoteAddress = remoteAddress
-                )
-                return
-            }
-            inFlight.future.whenComplete { result, err ->
+        if (replayToSend != null) {
+            val (connId, resp) = replayToSend
+            sendRsp(
+                connectionId = connId,
+                seq = 1,
+                ackSeq = frame.seq,
+                response = resp,
+                remoteAddress = remoteAddress
+            )
+            return
+        }
+
+        if (waitingFuture != null) {
+            waitingFuture.whenComplete { result, err ->
                 if (result != null) {
                     val (connId, resp) = result
                     sendRsp(connId, 1, frame.seq, resp, remoteAddress)
@@ -939,18 +1071,7 @@ class UdpTableServer @JvmOverloads constructor(
             return
         }
 
-        val now = clock.currentTimeMillis()
-        val lobbyIt = lobbyInFlightRequests.entries.iterator()
-        while (lobbyIt.hasNext()) {
-            val item = lobbyIt.next()
-            if (now - item.value.timestamp > 15000L) {
-                lobbyIt.remove()
-                item.value.future.completeExceptionally(
-                    IllegalStateException("Lobby in-flight request timed out")
-                )
-            }
-        }
-        if (lobbyInFlightRequests.size >= 256) {
+        if (busyToSend) {
             sendRsp(
                 connectionId = 0,
                 seq = 1,
@@ -961,50 +1082,99 @@ class UdpTableServer @JvmOverloads constructor(
             return
         }
 
-        val promise = CompletableFuture<Pair<Int, ApiResponse>>()
-        val inFlightEntry = InFlightLobbyEntry(
-            future = promise,
-            rawPayload = rawPayload,
-            api = request.api,
-            request = request,
-            timestamp = now
-        )
-        val prev = lobbyInFlightRequests.putIfAbsent(lobbyKey, inFlightEntry)
-        if (prev != null) {
-            if (prev.api != request.api || (prev.rawPayload.isNotEmpty() && rawPayload.isNotEmpty() && prev.rawPayload != rawPayload) || prev.request != request) {
-                sendRsp(
-                    connectionId = 0,
-                    seq = 1,
-                    ackSeq = frame.seq,
-                    response = ApiResponse(requestId = request.requestId, success = false, error = ApiErrors.CONFLICT),
-                    remoteAddress = remoteAddress
-                )
-                return
-            }
-            prev.future.whenComplete { result, err ->
-                if (result != null) {
-                    val (connId, resp) = result
-                    sendRsp(connId, 1, frame.seq, resp, remoteAddress)
-                } else if (err != null) {
-                    sendRsp(
-                        0,
-                        1,
-                        frame.seq,
-                        ApiResponse(requestId = request.requestId, success = false, error = ApiErrors.INTERNAL_ERROR),
-                        remoteAddress
-                    )
-                }
-            }
-            return
-        }
+        val currentEntry = acceptedEntry ?: return
+        val promise = currentEntry.future
 
         fun completeLobby(connId: Int, resp: ApiResponse, session: UdpClientSession? = null) {
-            recordLobbyCompleted(lobbyKey, CompletedLobbyEntry(connId, resp, rawPayload, request.api, request, clock.currentTimeMillis()))
-            lobbyInFlightRequests.remove(lobbyKey)
+            val completedNow = clock.currentTimeMillis()
+            synchronized(lobbyLock) {
+                // 1. 消耗预留（每个已受理请求恰一次）
+                if (currentEntry.isSideEffect && currentEntry.reservationConsumed.compareAndSet(false, true)) {
+                    if (sideEffectReserved > 0) {
+                        sideEffectReserved--
+                    }
+                }
+
+                // 2. 比较删除在途条目
+                lobbyInFlightRequests.remove(lobbyKey, currentEntry)
+
+                // 3. 记录已完成回执
+                val cutoff = completedNow - lobbyCache.completedRetentionMillis
+                if (currentEntry.isSideEffect) {
+                    val sIt = sideEffectCompletedRequests.values.iterator()
+                    while (sIt.hasNext()) {
+                        val item = sIt.next()
+                        if (item.timestamp <= cutoff) {
+                            sIt.remove()
+                        } else {
+                            break
+                        }
+                    }
+                    val existing = sideEffectCompletedRequests[lobbyKey]
+                    if (existing != null) {
+                        sideEffectCompletedRequests[lobbyKey] = CompletedLobbyEntry(
+                            connectionId = connId,
+                            response = resp,
+                            rawPayload = rawPayload,
+                            api = request.api,
+                            request = request,
+                            timestamp = existing.timestamp
+                        )
+                    } else {
+                        sideEffectCompletedRequests[lobbyKey] = CompletedLobbyEntry(
+                            connectionId = connId,
+                            response = resp,
+                            rawPayload = rawPayload,
+                            api = request.api,
+                            request = request,
+                            timestamp = completedNow
+                        )
+                    }
+                } else {
+                    val qIt = queryCompletedRequests.values.iterator()
+                    while (qIt.hasNext()) {
+                        val item = qIt.next()
+                        if (item.timestamp <= cutoff) {
+                            qIt.remove()
+                        } else {
+                            break
+                        }
+                    }
+                    val existing = queryCompletedRequests[lobbyKey]
+                    if (existing != null) {
+                        queryCompletedRequests[lobbyKey] = CompletedLobbyEntry(
+                            connectionId = connId,
+                            response = resp,
+                            rawPayload = rawPayload,
+                            api = request.api,
+                            request = request,
+                            timestamp = existing.timestamp
+                        )
+                    } else {
+                        while (lobbyCache.queryCompletedCapacity > 0 && queryCompletedRequests.size >= lobbyCache.queryCompletedCapacity) {
+                            val oldestKey = queryCompletedRequests.keys.firstOrNull() ?: break
+                            queryCompletedRequests.remove(oldestKey)
+                        }
+                        if (lobbyCache.queryCompletedCapacity > 0) {
+                            queryCompletedRequests[lobbyKey] = CompletedLobbyEntry(
+                                connectionId = connId,
+                                response = resp,
+                                rawPayload = rawPayload,
+                                api = request.api,
+                                request = request,
+                                timestamp = completedNow
+                            )
+                        }
+                    }
+                }
+            }
+
+            // 锁外执行 Future 完成与网络发送，确保所有等待方回调与 socket I/O 绝不持 lobbyLock
+            val outboundSeq = if (session != null) session.nextOutboundSeq() else 1
             promise.complete(connId to resp)
             sendRsp(
                 connectionId = connId,
-                seq = if (session != null) session.nextOutboundSeq() else 1,
+                seq = outboundSeq,
                 ackSeq = frame.seq,
                 response = resp,
                 remoteAddress = remoteAddress,
@@ -1059,6 +1229,8 @@ class UdpTableServer @JvmOverloads constructor(
                         completeLobby(session.connectionId, resp, session)
                     }
                 }
+                currentEntry.asyncHandoff.set(true)
+                return
             }
             ApiTags.JOIN_ROOM -> {
                 val roomId = request.roomId
@@ -1092,6 +1264,8 @@ class UdpTableServer @JvmOverloads constructor(
                         completeLobby(session.connectionId, resp, session)
                     }
                 }
+                currentEntry.asyncHandoff.set(true)
+                return
             }
             ApiTags.JOIN_SPECTATOR -> {
                 if (request.protocolVersion != ApiProtocol.PROTOCOL_VERSION) {
@@ -1145,6 +1319,8 @@ class UdpTableServer @JvmOverloads constructor(
                         completeLobby(session.connectionId, resp, session)
                     }
                 }
+                currentEntry.asyncHandoff.set(true)
+                return
             }
             ApiTags.RESUME_SPECTATOR -> {
                 val roomId = request.roomId
@@ -1192,6 +1368,8 @@ class UdpTableServer @JvmOverloads constructor(
                         completeLobby(session.connectionId, resp, session)
                     }
                 }
+                currentEntry.asyncHandoff.set(true)
+                return
             }
             ApiTags.LIST_ROOMS -> {
                 rooms.entries.removeIf { it.value.closed }
@@ -1231,6 +1409,8 @@ class UdpTableServer @JvmOverloads constructor(
                         completeLobby(session.connectionId, resp, session)
                     }
                 }
+                currentEntry.asyncHandoff.set(true)
+                return
             }
             ApiTags.GET_ROOM_INFO -> {
                 val roomId = request.roomId
@@ -1252,6 +1432,8 @@ class UdpTableServer @JvmOverloads constructor(
                     }
                     completeLobby(0, resp)
                 }
+                currentEntry.asyncHandoff.set(true)
+                return
             }
             ApiTags.CAPABILITIES -> {
                 val caps = ProtocolAccessCapabilities(
@@ -1277,22 +1459,35 @@ class UdpTableServer @JvmOverloads constructor(
         }
     } catch (t: Throwable) {
         completeLobby(0, ApiResponse(requestId = request.requestId, success = false, error = ApiErrors.INTERNAL_ERROR))
+    } finally {
+        if (currentEntry.isSideEffect && !currentEntry.asyncHandoff.get() && currentEntry.reservationConsumed.compareAndSet(false, true)) {
+            synchronized(lobbyLock) {
+                if (sideEffectReserved > 0) {
+                    sideEffectReserved--
+                }
+                lobbyInFlightRequests.remove(lobbyKey, currentEntry)
+            }
+            promise.completeExceptionally(IllegalStateException("Lobby request execution failed without response"))
+        }
     }
 }
 
     private fun handleSessionReq(frame: UdpFrame, request: ApiRequest, remoteAddress: SocketAddress, rawPayload: String) {
         val session = sessionsByConnectionId[frame.connectionId]
         if (session == null) {
-            val termEntry = terminatedSessions[frame.connectionId]
-            val termSession = if (termEntry != null) {
-                if (clock.currentTimeMillis() - termEntry.timestamp > 60000L) {
-                    terminatedSessions.remove(frame.connectionId)
-                    null
+            val now = clock.currentTimeMillis()
+            val termSession = synchronized(terminatedSessionsLock) {
+                val termEntry = terminatedSessions[frame.connectionId]
+                if (termEntry != null) {
+                    if (now - termEntry.timestamp > lobbyCache.completedRetentionMillis) {
+                        terminatedSessions.remove(frame.connectionId)
+                        null
+                    } else {
+                        termEntry.session
+                    }
                 } else {
-                    termEntry.session
+                    null
                 }
-            } else {
-                null
             }
             if (termSession != null) {
                 // 如果是已正常终止的会话，且是 LEAVE_ROOM 重试请求，且命中了缓存的响应，则重发缓存
@@ -1478,7 +1673,7 @@ class UdpTableServer @JvmOverloads constructor(
 
         fun replySession(resp: ApiResponse) {
             session.cacheResponse(request.requestId, resp, request.api, rawPayload, request)
-            session.removeInFlight(request.requestId)
+            session.removeInFlightEntry(request.requestId, newEntry)
             inFlightPromise.complete(resp)
             sendRsp(session.connectionId, session.nextOutboundSeq(), frame.seq, resp, remoteAddress, session)
         }
@@ -2074,6 +2269,24 @@ class UdpTableServer @JvmOverloads constructor(
         }
         inFlightPublicPushes.clear()
         highestSentPublicCursor.clear()
+
+        val lobbyInFlightToFail = mutableListOf<CompletableFuture<Pair<Int, ApiResponse>>>()
+        synchronized(lobbyLock) {
+            for ((_, entry) in lobbyInFlightRequests) {
+                lobbyInFlightToFail.add(entry.future)
+            }
+            lobbyInFlightRequests.clear()
+            lobbyInFlightTimeoutQueue.clear()
+            sideEffectReserved = 0
+            sideEffectCompletedRequests.clear()
+            queryCompletedRequests.clear()
+        }
+        for (f in lobbyInFlightToFail) {
+            f.completeExceptionally(IllegalStateException("Server closed"))
+        }
+        synchronized(terminatedSessionsLock) {
+            terminatedSessions.clear()
+        }
 
         // 3. 关闭 UDP socket 和接收线程 (防止接收线程自加入死锁)
         val s = socket
