@@ -1,6 +1,5 @@
 package com.majiang.v4models
 
-import com.majiang.event.CheatTechnique
 import com.majiang.economy.CheatEconomyConfig
 import com.majiang.match.MatchConfig
 import com.majiang.model.Tile
@@ -65,12 +64,6 @@ class V4ModelAcceptanceTest {
         input.clear()
         assertEquals(listOf("pass"), decision.options.map { it.optionId })
         assertFails { (decision.options as MutableList<ProtocolActionOption>).clear() }
-    }
-
-    @Test fun actionRoundTripPreservesCheatParameterTypes() {
-        val action = GameAction.UseCheatTechnique(0, CheatTechnique.SLEEVE_SWAP, mapOf("card" to 1))
-        val restored = EngineProtocolMapper.toEngineAction(EngineProtocolMapper.toProtocolAction(action))
-        assertEquals(action, restored, "Numeric parameters must not silently become strings")
     }
 
     @Test fun completeNondefaultMatchConfigurationSurvivesRoundTrip() {

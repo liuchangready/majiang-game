@@ -100,13 +100,11 @@ object PublicProjectionFactory {
      * - 允许：流程 (StackingStarted, WallBuilt, DealingComplete)、公开弃牌 (TileDiscarded)、
      *         副露 (ChiDeclared, PonDeclared, KanDeclared)、立直 (RiichiDeclared)、
      *         和牌 (TsumoWin, RonWin)、流局 (DrawGame)、计分结算 (ScoreSettled)、
-     *         终局 (RoundEnded, MatchEnded)、表宝牌 (DoraRevealed with isUraDora=false)、
-     *         公开抓包 (BustedEvent)。
+     *         终局 (RoundEnded, MatchEnded)、表宝牌 (DoraRevealed with isUraDora=false)。
      * - 里宝牌 (DoraRevealed with isUraDora=true)：仅在调用方明确传入 revealSettlementUra=true 时保留，
-     *   其他情况（即使事件列表包含普通 RoundEnded 或 DIVINE_SIGHT）一律过滤丢弃。
+     *   其他情况（即使事件列表包含普通 RoundEnded）一律过滤丢弃。
      * - 丢弃：发牌 (TileDealt)、摸牌 (TileDrawn)、岭上摸牌 (RinshanDraw)、
-     *         千术尝试 (CheatAttempted)、怀疑度变化 (SuspicionChanged)、
-     *         视线转移 (GazeShifted)、出千点数流水 (CheatPointsChanged) 及其他私密事件。
+     *         出千点数流水 (CheatPointsChanged) 及其他私密事件。
      */
     fun publicEvents(
         events: List<GameEvent>,
@@ -141,7 +139,6 @@ object PublicProjectionFactory {
                     null
                 }
             }
-            is GameEvent.BustedEvent -> snap
             is GameEvent.DrawGame -> snap
             is GameEvent.ScoreSettled -> snap
             is GameEvent.RoundEnded -> snap
@@ -151,9 +148,6 @@ object PublicProjectionFactory {
             is GameEvent.TileDealt -> null
             is GameEvent.TileDrawn -> null
             is GameEvent.RinshanDraw -> null
-            is GameEvent.CheatAttempted -> null
-            is GameEvent.SuspicionChanged -> null
-            is GameEvent.GazeShifted -> null
             is GameEvent.CheatPointsChanged -> null
             else -> null
         }

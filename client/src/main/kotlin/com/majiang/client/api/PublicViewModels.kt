@@ -451,7 +451,6 @@ fun validatePublicGameEventView(event: GameEventView): GameEventView {
         is GameEventView.TsumoWin,
         is GameEventView.RonWin,
         is GameEventView.DoraRevealed,
-        is GameEventView.BustedEvent,
         is GameEventView.DrawGame,
         is GameEventView.ScoreSettled,
         is GameEventView.RoundEnded,
@@ -460,9 +459,6 @@ fun validatePublicGameEventView(event: GameEventView): GameEventView {
         is GameEventView.TileDealt,
         is GameEventView.TileDrawn,
         is GameEventView.RinshanDraw,
-        is GameEventView.CheatAttempted,
-        is GameEventView.SuspicionChanged,
-        is GameEventView.GazeShifted,
         is GameEventView.CheatPointsChanged -> {
             throw IllegalArgumentException("Private event '${event::class.simpleName}' is forbidden in PUBLIC context")
         }

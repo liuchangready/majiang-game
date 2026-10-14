@@ -14,7 +14,6 @@ import com.majiang.application.ActionChoice
 import com.majiang.application.ActionOption
 import com.majiang.application.PlayerDecision
 import com.majiang.economy.CheatEconomyConfig
-import com.majiang.event.CheatTechnique
 import com.majiang.event.DrawReason
 import com.majiang.event.GameEvent
 import com.majiang.match.MatchConfig
@@ -127,7 +126,7 @@ class EngineProtocolMapperTest {
     }
 
     @Test
-    fun `test all 14 legal action types mapping`() {
+    fun `test all 13 legal action types mapping`() {
         val t0 = Tile.fromTileId(0)
         val t1 = Tile.fromTileId(4)
         val t2 = Tile.fromTileId(8)
@@ -144,7 +143,6 @@ class EngineProtocolMapperTest {
             GameAction.DeclareRiichi(0, t0),
             GameAction.DeclareTsumo(0),
             GameAction.DeclareRon(0),
-            GameAction.UseCheatTechnique(0, CheatTechnique.SLEEVE_SWAP, mapOf("card" to 1)),
             GameAction.Pass(0),
             GameAction.DeclareAbortiveDraw(0),
             GameAction.DeclareAgariYame(0)
@@ -169,11 +167,6 @@ class EngineProtocolMapperTest {
                 is GameAction.DeclareRiichi -> assertTrue(protocolAction is ProtocolLegalAction.DeclareRiichi)
                 is GameAction.DeclareTsumo -> assertTrue(protocolAction is ProtocolLegalAction.DeclareTsumo)
                 is GameAction.DeclareRon -> assertTrue(protocolAction is ProtocolLegalAction.DeclareRon)
-                is GameAction.UseCheatTechnique -> {
-                    assertTrue(protocolAction is ProtocolLegalAction.UseCheatTechnique)
-                    val back = EngineProtocolMapper.toEngineAction(protocolAction)
-                    assertEquals(action, back)
-                }
                 is GameAction.Pass -> assertTrue(protocolAction is ProtocolLegalAction.Pass)
                 is GameAction.DeclareAbortiveDraw -> assertTrue(protocolAction is ProtocolLegalAction.DeclareAbortiveDraw)
                 is GameAction.DeclareAgariYame -> assertTrue(protocolAction is ProtocolLegalAction.DeclareAgariYame)
@@ -326,7 +319,7 @@ class EngineProtocolMapperTest {
     }
 
     @Test
-    fun `test all 23 game event types mapped correctly to protocol`() {
+    fun `test all 19 game event types mapped correctly to protocol`() {
         val t0 = Tile.fromTileId(0)
         val meld = Meld(MeldType.PON, listOf(t0, Tile.fromTileId(1), Tile.fromTileId(2)), 1, t0)
 
@@ -345,10 +338,6 @@ class EngineProtocolMapperTest {
             GameEvent.TsumoWin(0, 0, t0, listOf("Riichi"), 1, 30, 1000, null),
             GameEvent.RonWin(0, 0, 1, t0, listOf("Riichi"), 1, 30, 1000, null),
             GameEvent.DoraRevealed(0, t0, false),
-            GameEvent.CheatAttempted(0, 0, CheatTechnique.SLEEVE_SWAP, true),
-            GameEvent.SuspicionChanged(0, 0, 1, 0f, 10f),
-            GameEvent.BustedEvent(0, 0, 1, CheatTechnique.SLEEVE_SWAP),
-            GameEvent.GazeShifted(0, 0, 1, null),
             GameEvent.CheatPointsChanged(0, 0, 10, 20),
             GameEvent.DrawGame(0, DrawReason.EXHAUSTIVE, listOf(0)),
             GameEvent.ScoreSettled(0, mapOf(1 to 1000), intArrayOf(26000, 24000, 25000, 25000)),
@@ -356,7 +345,7 @@ class EngineProtocolMapperTest {
             GameEvent.MatchEnded(0, intArrayOf(30000, 25000, 25000, 20000), 0)
         )
 
-        assertEquals(23, events.size)
+        assertEquals(19, events.size)
         for (event in events) {
             val protocolEvent = EngineProtocolMapper.toProtocolEvent(event)
             assertNotNull(protocolEvent)

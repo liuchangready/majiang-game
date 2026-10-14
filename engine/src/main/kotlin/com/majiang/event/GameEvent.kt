@@ -2,14 +2,6 @@ package com.majiang.event
 
 import com.majiang.model.*
 
-/** 千术绝技类型 */
-enum class CheatTechnique {
-    SLEEVE_SWAP,     // 袖里乾坤
-    WALL_STEAL,      // 移花接木
-    DIVINE_SIGHT,    // 神仙透视
-    DIVERSION        // 声东击西
-}
-
 /**
  * 所有游戏事件的密封类层级
  * 
@@ -92,18 +84,6 @@ sealed class GameEvent {
     data class DoraRevealed(override val turnNumber: Int, val indicator: Tile, val isUraDora: Boolean = false) : GameEvent()
     
     // === 千术事件 ===
-    
-    /** 千术尝试（成功或失败） */
-    data class CheatAttempted(override val turnNumber: Int, val player: Int, val technique: CheatTechnique, val success: Boolean) : GameEvent()
-    
-    /** 怀疑度变化 */
-    data class SuspicionChanged(override val turnNumber: Int, val target: Int, val observer: Int, val oldValue: Float, val newValue: Float) : GameEvent()
-    
-    /** 被抓包！ */
-    data class BustedEvent(override val turnNumber: Int, val player: Int, val caughtBy: Int, val technique: CheatTechnique) : GameEvent()
-    
-    /** AI视线转移 */
-    data class GazeShifted(override val turnNumber: Int, val observer: Int, val newTarget: Int?, val oldTarget: Int?) : GameEvent()
     
     /** 出千点数变更（仅记录变动席位、变动量与新余额，不泄露私密扣减原因） */
     data class CheatPointsChanged(

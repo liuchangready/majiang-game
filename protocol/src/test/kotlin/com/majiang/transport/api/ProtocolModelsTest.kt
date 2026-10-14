@@ -60,20 +60,6 @@ class ProtocolModelsTest {
     }
 
     @Test
-    fun `protocol param value preserves types in json codec`() {
-        val action = ProtocolLegalAction.UseCheatTechnique(
-            player = 0,
-            technique = ProtocolCheatTechnique.SLEEVE_SWAP,
-            params = mapOf("card" to ProtocolParamValue.IntValue(1), "name" to ProtocolParamValue.StringValue("test"))
-        )
-        val json = ApiMessageCodec.gson.toJson(action)
-        val restored = ApiMessageCodec.gson.fromJson(json, ProtocolLegalAction::class.java) as ProtocolLegalAction.UseCheatTechnique
-        assertEquals(ProtocolParamValue.IntValue(1), restored.params["card"])
-        assertEquals(1, (restored.params["card"] as ProtocolParamValue.IntValue).value)
-        assertEquals("test", (restored.params["name"] as ProtocolParamValue.StringValue).value)
-    }
-
-    @Test
     fun `wire decoding rejects incomplete snapshot`() {
         assertThrows<JsonParseException> {
             ApiMessageCodec.decodeResponse("""{"requestId":"snapshot","success":true,"snapshot":{}}""")

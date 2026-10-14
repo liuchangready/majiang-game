@@ -102,8 +102,7 @@ class V4SpectatorBindingAcceptanceTest {
         assertPublicEvents(snapshot.settlementEvents)
     }
     private fun assertPublicEvents(events: List<ProtocolGameEvent>) {
-        val privateTypes = setOf("TileDealt", "TileDrawn", "RinshanDraw", "CheatAttempted",
-            "CheatPointsChanged", "SuspicionChanged", "GazeShifted")
+        val privateTypes = setOf("TileDealt", "TileDrawn", "RinshanDraw", "CheatPointsChanged")
         events.forEach { assertFalse(it.javaClass.simpleName in privateTypes,
             "Private event ${it.javaClass.simpleName} escaped spectator transport") }
     }

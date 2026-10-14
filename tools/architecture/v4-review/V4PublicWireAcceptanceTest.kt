@@ -310,9 +310,7 @@ class V4PublicWireAcceptanceTest {
     private fun privateEvents(): List<ProtocolGameEvent> = listOf(
         ProtocolGameEvent.TileDealt(1, 0, redFive), ProtocolGameEvent.TileDrawn(1, 0, redFive, 20),
         ProtocolGameEvent.RinshanDraw(1, 0, redFive),
-        ProtocolGameEvent.CheatAttempted(1, 0, ProtocolCheatTechnique.DIVINE_SIGHT, true),
-        ProtocolGameEvent.SuspicionChanged(1, 0, 1, 1f, 2f),
-        ProtocolGameEvent.GazeShifted(1, 1, 0, 2), ProtocolGameEvent.CheatPointsChanged(1, 0, -5, 15))
+        ProtocolGameEvent.CheatPointsChanged(1, 0, -5, 15))
 
     @Test fun publicEventsWhitelistAppliesToSnapshotUpdateAndStandaloneResultResponse() {
         val good = snapshot()

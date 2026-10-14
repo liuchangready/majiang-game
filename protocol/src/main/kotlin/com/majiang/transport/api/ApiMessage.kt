@@ -563,29 +563,6 @@ private class ProtocolLegalActionAdapter : JsonSerializer<ProtocolLegalAction>, 
                 if (p !in 0..3) throw JsonParseException("player must be in 0..3: $p")
                 ProtocolLegalAction.DeclareRon(p)
             }
-            "UseCheatTechnique" -> {
-                checkUnknownFields(obj, setOf("actionType", "player", "technique", "params"), "UseCheatTechnique")
-                val pElem = obj.get("player") ?: throw JsonParseException("Missing player in UseCheatTechnique")
-                val p = validateStrictInt(pElem, "UseCheatTechnique.player")
-                if (p !in 0..3) throw JsonParseException("player must be in 0..3: $p")
-                val techElem = obj.get("technique") ?: throw JsonParseException("Missing technique in UseCheatTechnique")
-                val techStr = validateStrictString(techElem, "UseCheatTechnique.technique")
-                val technique = try {
-                    ProtocolCheatTechnique.valueOf(techStr)
-                } catch (e: Exception) {
-                    throw JsonParseException("Invalid technique in UseCheatTechnique: $techStr", e)
-                }
-                val params: Map<String, ProtocolParamValue> = if (obj.has("params") && !obj.get("params").isJsonNull) {
-                    val pElem = obj.get("params")
-                    if (!pElem.isJsonObject) throw JsonParseException("params must be an object")
-                    val pMap = LinkedHashMap<String, ProtocolParamValue>()
-                    for ((k, v) in pElem.asJsonObject.entrySet()) {
-                        pMap[k] = context.deserialize(v, ProtocolParamValue::class.java)
-                    }
-                    Collections.unmodifiableMap(pMap)
-                } else emptyMap()
-                ProtocolLegalAction.UseCheatTechnique(p, technique, params)
-            }
             "Pass" -> {
                 checkUnknownFields(obj, setOf("actionType", "player"), "Pass")
                 val pElem = obj.get("player") ?: throw JsonParseException("Missing player in Pass")
@@ -763,43 +740,6 @@ private class ProtocolGameEventAdapter : JsonSerializer<ProtocolGameEvent>, Json
                     validateStrictBoolean(obj.get("isUraDora"), "isUraDora")
                 } else false
                 ProtocolGameEvent.DoraRevealed(turn, indicator, isUraDora)
-            }
-            "CheatAttempted" -> {
-                checkUnknownFields(obj, setOf("eventType", "turnNumber", "player", "technique", "success"), "CheatAttempted")
-                val turn = requireTurnNumber(obj, "CheatAttempted")
-                val player = validateSeat(validateStrictInt(obj.get("player") ?: throw JsonParseException("Missing player in CheatAttempted"), "CheatAttempted.player"), "CheatAttempted.player")
-                val technique = context.deserialize<ProtocolCheatTechnique>(obj.get("technique") ?: throw JsonParseException("Missing technique in CheatAttempted"), ProtocolCheatTechnique::class.java)
-                val success = validateStrictBoolean(obj.get("success") ?: throw JsonParseException("Missing success in CheatAttempted"), "CheatAttempted.success")
-                ProtocolGameEvent.CheatAttempted(turn, player, technique, success)
-            }
-            "SuspicionChanged" -> {
-                checkUnknownFields(obj, setOf("eventType", "turnNumber", "target", "observer", "oldValue", "newValue"), "SuspicionChanged")
-                val turn = requireTurnNumber(obj, "SuspicionChanged")
-                val target = validateSeat(validateStrictInt(obj.get("target") ?: throw JsonParseException("Missing target in SuspicionChanged"), "SuspicionChanged.target"), "SuspicionChanged.target")
-                val observer = validateSeat(validateStrictInt(obj.get("observer") ?: throw JsonParseException("Missing observer in SuspicionChanged"), "SuspicionChanged.observer"), "SuspicionChanged.observer")
-                val oldValue = validateStrictDouble(obj.get("oldValue") ?: throw JsonParseException("Missing oldValue in SuspicionChanged"), "SuspicionChanged.oldValue").toFloat()
-                val newValue = validateStrictDouble(obj.get("newValue") ?: throw JsonParseException("Missing newValue in SuspicionChanged"), "SuspicionChanged.newValue").toFloat()
-                ProtocolGameEvent.SuspicionChanged(turn, target, observer, oldValue, newValue)
-            }
-            "BustedEvent" -> {
-                checkUnknownFields(obj, setOf("eventType", "turnNumber", "player", "caughtBy", "technique"), "BustedEvent")
-                val turn = requireTurnNumber(obj, "BustedEvent")
-                val player = validateSeat(validateStrictInt(obj.get("player") ?: throw JsonParseException("Missing player in BustedEvent"), "BustedEvent.player"), "BustedEvent.player")
-                val caughtBy = validateSeat(validateStrictInt(obj.get("caughtBy") ?: throw JsonParseException("Missing caughtBy in BustedEvent"), "BustedEvent.caughtBy"), "BustedEvent.caughtBy")
-                val technique = context.deserialize<ProtocolCheatTechnique>(obj.get("technique") ?: throw JsonParseException("Missing technique in BustedEvent"), ProtocolCheatTechnique::class.java)
-                ProtocolGameEvent.BustedEvent(turn, player, caughtBy, technique)
-            }
-            "GazeShifted" -> {
-                checkUnknownFields(obj, setOf("eventType", "turnNumber", "observer", "newTarget", "oldTarget"), "GazeShifted")
-                val turn = requireTurnNumber(obj, "GazeShifted")
-                val observer = validateSeat(validateStrictInt(obj.get("observer") ?: throw JsonParseException("Missing observer in GazeShifted"), "GazeShifted.observer"), "GazeShifted.observer")
-                val newTarget = if (obj.has("newTarget") && !obj.get("newTarget").isJsonNull) {
-                    validateSeat(validateStrictInt(obj.get("newTarget"), "newTarget"), "newTarget")
-                } else null
-                val oldTarget = if (obj.has("oldTarget") && !obj.get("oldTarget").isJsonNull) {
-                    validateSeat(validateStrictInt(obj.get("oldTarget"), "oldTarget"), "oldTarget")
-                } else null
-                ProtocolGameEvent.GazeShifted(turn, observer, newTarget, oldTarget)
             }
             "CheatPointsChanged" -> {
                 checkUnknownFields(obj, setOf("eventType", "turnNumber", "seat", "amount", "newBalance"), "CheatPointsChanged")

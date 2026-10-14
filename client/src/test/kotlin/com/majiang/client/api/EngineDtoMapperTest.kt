@@ -9,7 +9,6 @@ import com.majiang.transport.api.ProtocolSeatControl as SeatControlView
 import com.majiang.transport.api.ProtocolSessionView as SessionView
 import com.majiang.transport.api.ProtocolActionOption as ActionOption
 import com.majiang.transport.api.ProtocolPlayerDecision as PlayerDecision
-import com.majiang.transport.api.ProtocolCheatTechnique as CheatTechnique
 import com.majiang.transport.api.ProtocolDrawReason as DrawReason
 import com.majiang.transport.api.ProtocolGameEvent as GameEvent
 import com.majiang.transport.api.ProtocolMeld as Meld
@@ -121,14 +120,13 @@ class ProtocolViewMappingRegressionTest {
             GameAction.DeclareRiichi(1, t),
             GameAction.DeclareTsumo(2),
             GameAction.DeclareRon(3),
-            GameAction.UseCheatTechnique(0, CheatTechnique.SLEEVE_SWAP, mapOf("card" to com.majiang.transport.api.ProtocolParamValue.IntValue(1))),
             GameAction.Pass(1),
             GameAction.DeclareAbortiveDraw(2),
             GameAction.DeclareAgariYame(3)
         )
 
         val mapped = actions.map { ProtocolViewMapper.mapLegalAction(it) }
-        assertEquals(14, mapped.size)
+        assertEquals(13, mapped.size)
         assertTrue(mapped[0] is LegalActionView.StartStacking)
         assertTrue(mapped[1] is LegalActionView.DealComplete)
         assertTrue(mapped[2] is LegalActionView.DrawTile)
@@ -139,17 +137,12 @@ class ProtocolViewMappingRegressionTest {
         assertTrue(mapped[7] is LegalActionView.DeclareRiichi)
         assertTrue(mapped[8] is LegalActionView.DeclareTsumo)
         assertTrue(mapped[9] is LegalActionView.DeclareRon)
-        assertTrue(mapped[10] is LegalActionView.UseCheatTechnique)
-        assertTrue(mapped[11] is LegalActionView.Pass)
-        assertTrue(mapped[12] is LegalActionView.DeclareAbortiveDraw)
-        assertTrue(mapped[13] is LegalActionView.DeclareAgariYame)
+        assertTrue(mapped[10] is LegalActionView.Pass)
+        assertTrue(mapped[11] is LegalActionView.DeclareAbortiveDraw)
+        assertTrue(mapped[12] is LegalActionView.DeclareAgariYame)
 
         val kanView = mapped[6] as LegalActionView.DeclareKan
         assertEquals(MeldTypeView.OPEN_KAN, kanView.kanType)
-
-        val cheatView = mapped[10] as LegalActionView.UseCheatTechnique
-        assertEquals(CheatTechniqueView.SLEEVE_SWAP, cheatView.technique)
-        assertEquals(1, (cheatView.params["card"] as ClientParamValue.IntValue).value)
     }
 
     @Test

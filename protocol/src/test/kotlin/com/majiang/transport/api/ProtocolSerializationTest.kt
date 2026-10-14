@@ -43,7 +43,7 @@ class ProtocolSerializationTest {
     }
 
     @Test
-    fun `all 14 legal action variants serialize and deserialize with polymorphic tag`() {
+    fun `all 13 legal action variants serialize and deserialize with polymorphic tag`() {
         val t1 = ProtocolTile.fromTileId(0)
         val t2 = ProtocolTile.fromTileId(1)
         val t3 = ProtocolTile.fromTileId(2)
@@ -61,13 +61,12 @@ class ProtocolSerializationTest {
             ProtocolLegalAction.DeclareRiichi(0, t1),
             ProtocolLegalAction.DeclareTsumo(0),
             ProtocolLegalAction.DeclareRon(0),
-            ProtocolLegalAction.UseCheatTechnique(0, ProtocolCheatTechnique.SLEEVE_SWAP, mapOf("tile" to ProtocolParamValue.StringValue("0"))),
             ProtocolLegalAction.Pass(0),
             ProtocolLegalAction.DeclareAbortiveDraw(0),
             ProtocolLegalAction.DeclareAgariYame(0)
         )
 
-        assertEquals(14, actions.size)
+        assertEquals(13, actions.size)
 
         for (action in actions) {
             val json = gson.toJson(action, ProtocolLegalAction::class.java)
@@ -79,7 +78,7 @@ class ProtocolSerializationTest {
     }
 
     @Test
-    fun `all 23 game event variants serialize and deserialize with polymorphic tag`() {
+    fun `all 19 game event variants serialize and deserialize with polymorphic tag`() {
         val t1 = ProtocolTile.fromTileId(0)
         val t2 = ProtocolTile.fromTileId(1)
         val t3 = ProtocolTile.fromTileId(2)
@@ -101,10 +100,6 @@ class ProtocolSerializationTest {
             ProtocolGameEvent.TsumoWin(12, 0, t1, listOf("Riichi", "Tsumo"), 2, 30, 2000),
             ProtocolGameEvent.RonWin(13, 0, 1, t1, listOf("Riichi", "Dora 1"), 2, 40, 2600),
             ProtocolGameEvent.DoraRevealed(14, t1, isUraDora = false),
-            ProtocolGameEvent.CheatAttempted(15, 0, ProtocolCheatTechnique.WALL_STEAL, success = true),
-            ProtocolGameEvent.SuspicionChanged(16, 0, 1, 0.0f, 0.35f),
-            ProtocolGameEvent.BustedEvent(17, 0, 1, ProtocolCheatTechnique.SLEEVE_SWAP),
-            ProtocolGameEvent.GazeShifted(18, 1, 0, 2),
             ProtocolGameEvent.CheatPointsChanged(19, 0, -40, 60),
             ProtocolGameEvent.DrawGame(20, ProtocolDrawReason.EXHAUSTIVE, listOf(0, 2)),
             ProtocolGameEvent.ScoreSettled(21, mapOf(1 to -2600, 0 to 2600), listOf(27600, 22400, 25000, 25000)),
@@ -112,7 +107,7 @@ class ProtocolSerializationTest {
             ProtocolGameEvent.MatchEnded(23, listOf(35000, 25000, 22000, 18000), 0)
         )
 
-        assertEquals(23, events.size)
+        assertEquals(19, events.size)
 
         for (event in events) {
             val json = gson.toJson(event, ProtocolGameEvent::class.java)

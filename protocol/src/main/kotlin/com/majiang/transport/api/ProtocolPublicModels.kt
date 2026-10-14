@@ -432,7 +432,6 @@ fun validatePublicGameEvent(event: ProtocolGameEvent): ProtocolGameEvent {
         is ProtocolGameEvent.TsumoWin,
         is ProtocolGameEvent.RonWin,
         is ProtocolGameEvent.DoraRevealed,
-        is ProtocolGameEvent.BustedEvent,
         is ProtocolGameEvent.DrawGame,
         is ProtocolGameEvent.ScoreSettled,
         is ProtocolGameEvent.RoundEnded,
@@ -441,9 +440,6 @@ fun validatePublicGameEvent(event: ProtocolGameEvent): ProtocolGameEvent {
         is ProtocolGameEvent.TileDealt,
         is ProtocolGameEvent.TileDrawn,
         is ProtocolGameEvent.RinshanDraw,
-        is ProtocolGameEvent.CheatAttempted,
-        is ProtocolGameEvent.SuspicionChanged,
-        is ProtocolGameEvent.GazeShifted,
         is ProtocolGameEvent.CheatPointsChanged -> {
             throw IllegalArgumentException("Private event '${event.eventType}' is forbidden in PUBLIC context")
         }

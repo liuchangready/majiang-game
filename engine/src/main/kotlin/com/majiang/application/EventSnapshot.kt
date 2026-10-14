@@ -19,7 +19,6 @@ fun GameAction.deepCopy(): GameAction = when (this) {
     is GameAction.DeclareRiichi -> this.copy(discardTile = this.discardTile.copy())
     is GameAction.DeclareTsumo -> this.copy()
     is GameAction.DeclareRon -> this.copy()
-    is GameAction.UseCheatTechnique -> this.copy(params = this.params.toMap())
     is GameAction.Pass -> this.copy()
     is GameAction.DeclareAbortiveDraw -> this.copy()
     is GameAction.DeclareAgariYame -> this.copy()

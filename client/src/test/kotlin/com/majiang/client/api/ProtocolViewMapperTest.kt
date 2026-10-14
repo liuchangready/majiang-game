@@ -6,7 +6,6 @@ import com.majiang.transport.api.ProtocolActionChoice
 import com.majiang.transport.api.ProtocolActionOption
 import com.majiang.transport.api.ProtocolActionReceipt
 import com.majiang.transport.api.ProtocolCheatEconomyConfig
-import com.majiang.transport.api.ProtocolCheatTechnique
 import com.majiang.transport.api.ProtocolClock
 import com.majiang.transport.api.ProtocolDoraBreakdown
 import com.majiang.transport.api.ProtocolDoraIndicatorHit
@@ -136,7 +135,6 @@ class ProtocolViewMapperTest {
             ProtocolLegalAction.DeclareRiichi(0, t0),
             ProtocolLegalAction.DeclareTsumo(0),
             ProtocolLegalAction.DeclareRon(0),
-            ProtocolLegalAction.UseCheatTechnique(0, ProtocolCheatTechnique.SLEEVE_SWAP),
             ProtocolLegalAction.Pass(0),
             ProtocolLegalAction.DeclareAbortiveDraw(0),
             ProtocolLegalAction.DeclareAgariYame(0)
@@ -156,7 +154,6 @@ class ProtocolViewMapperTest {
                 is ProtocolLegalAction.DeclareRiichi -> assertTrue(view is LegalActionView.DeclareRiichi)
                 is ProtocolLegalAction.DeclareTsumo -> assertTrue(view is LegalActionView.DeclareTsumo)
                 is ProtocolLegalAction.DeclareRon -> assertTrue(view is LegalActionView.DeclareRon)
-                is ProtocolLegalAction.UseCheatTechnique -> assertTrue(view is LegalActionView.UseCheatTechnique)
                 is ProtocolLegalAction.Pass -> assertTrue(view is LegalActionView.Pass)
                 is ProtocolLegalAction.DeclareAbortiveDraw -> assertTrue(view is LegalActionView.DeclareAbortiveDraw)
                 is ProtocolLegalAction.DeclareAgariYame -> assertTrue(view is LegalActionView.DeclareAgariYame)
@@ -584,7 +581,6 @@ class ProtocolViewMapperTest {
             GameEventView.TsumoWin(1, 0, t0, emptyList(), 1, 30, 1000, null),
             GameEventView.RonWin(1, 0, 1, t0, emptyList(), 1, 30, 1000, null),
             GameEventView.DoraRevealed(1, t0, false),
-            GameEventView.BustedEvent(1, 0, 1, CheatTechniqueView.SLEEVE_SWAP),
             GameEventView.DrawGame(1, DrawReasonView.EXHAUSTIVE, emptyList()),
             GameEventView.ScoreSettled(1, emptyMap(), listOf(25000, 25000, 25000, 25000)),
             GameEventView.RoundEnded(1, 1, 1),
@@ -601,9 +597,6 @@ class ProtocolViewMapperTest {
             GameEventView.TileDealt(1, 0, t0),
             GameEventView.TileDrawn(1, 0, t0, 69),
             GameEventView.RinshanDraw(1, 0, t0),
-            GameEventView.CheatAttempted(1, 0, CheatTechniqueView.SLEEVE_SWAP, true),
-            GameEventView.SuspicionChanged(1, 0, 1, 0.0f, 0.5f),
-            GameEventView.GazeShifted(1, 0, 1, null),
             GameEventView.CheatPointsChanged(1, 0, -10, 90)
         )
 

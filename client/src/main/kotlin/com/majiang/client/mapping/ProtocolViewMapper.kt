@@ -17,7 +17,6 @@ import com.majiang.transport.api.ProtocolBeamSwapSlot
 import com.majiang.transport.api.ProtocolBeamSwapView
 import com.majiang.transport.api.ProtocolBeamSwapWindow
 import com.majiang.transport.api.ProtocolCheatEconomyConfig
-import com.majiang.transport.api.ProtocolCheatTechnique
 import com.majiang.transport.api.ProtocolClock
 import com.majiang.transport.api.ProtocolDoraBreakdown
 import com.majiang.transport.api.ProtocolDoraIndicatorHit
@@ -157,20 +156,6 @@ object ProtocolViewMapper {
         GamePhaseView.MATCH_END -> ProtocolGamePhase.MATCH_END
     }
 
-    fun mapCheatTechnique(tech: ProtocolCheatTechnique): CheatTechniqueView = when (tech) {
-        ProtocolCheatTechnique.SLEEVE_SWAP -> CheatTechniqueView.SLEEVE_SWAP
-        ProtocolCheatTechnique.WALL_STEAL -> CheatTechniqueView.WALL_STEAL
-        ProtocolCheatTechnique.DIVINE_SIGHT -> CheatTechniqueView.DIVINE_SIGHT
-        ProtocolCheatTechnique.DIVERSION -> CheatTechniqueView.DIVERSION
-    }
-
-    fun toProtocolCheatTechnique(tech: CheatTechniqueView): ProtocolCheatTechnique = when (tech) {
-        CheatTechniqueView.SLEEVE_SWAP -> ProtocolCheatTechnique.SLEEVE_SWAP
-        CheatTechniqueView.WALL_STEAL -> ProtocolCheatTechnique.WALL_STEAL
-        CheatTechniqueView.DIVINE_SIGHT -> ProtocolCheatTechnique.DIVINE_SIGHT
-        CheatTechniqueView.DIVERSION -> ProtocolCheatTechnique.DIVERSION
-    }
-
     fun mapDrawReason(reason: ProtocolDrawReason): DrawReasonView = when (reason) {
         ProtocolDrawReason.EXHAUSTIVE -> DrawReasonView.EXHAUSTIVE
         ProtocolDrawReason.FOUR_WINDS -> DrawReasonView.FOUR_WINDS
@@ -262,11 +247,6 @@ object ProtocolViewMapper {
         is ProtocolLegalAction.DeclareRiichi -> LegalActionView.DeclareRiichi(action.player, mapTile(action.discardTile))
         is ProtocolLegalAction.DeclareTsumo -> LegalActionView.DeclareTsumo(action.player)
         is ProtocolLegalAction.DeclareRon -> LegalActionView.DeclareRon(action.player)
-        is ProtocolLegalAction.UseCheatTechnique -> LegalActionView.UseCheatTechnique(
-            player = action.player,
-            technique = mapCheatTechnique(action.technique),
-            params = Collections.unmodifiableMap(action.params.mapValues { mapParamValue(it.value) })
-        )
         is ProtocolLegalAction.Pass -> LegalActionView.Pass(action.player)
         is ProtocolLegalAction.DeclareAbortiveDraw -> LegalActionView.DeclareAbortiveDraw(action.player)
         is ProtocolLegalAction.DeclareAgariYame -> LegalActionView.DeclareAgariYame(action.player)
@@ -286,11 +266,6 @@ object ProtocolViewMapper {
         is LegalActionView.DeclareRiichi -> ProtocolLegalAction.DeclareRiichi(action.player, toProtocolTile(action.discardTile))
         is LegalActionView.DeclareTsumo -> ProtocolLegalAction.DeclareTsumo(action.player)
         is LegalActionView.DeclareRon -> ProtocolLegalAction.DeclareRon(action.player)
-        is LegalActionView.UseCheatTechnique -> ProtocolLegalAction.UseCheatTechnique(
-            player = action.player,
-            technique = toProtocolCheatTechnique(action.technique),
-            params = Collections.unmodifiableMap(action.params.mapValues { toProtocolParamValue(it.value) })
-        )
         is LegalActionView.Pass -> ProtocolLegalAction.Pass(action.player)
         is LegalActionView.DeclareAbortiveDraw -> ProtocolLegalAction.DeclareAbortiveDraw(action.player)
         is LegalActionView.DeclareAgariYame -> ProtocolLegalAction.DeclareAgariYame(action.player)
@@ -445,10 +420,6 @@ object ProtocolViewMapper {
             event.han, event.fu, event.score, event.breakdown?.let { mapScoreBreakdown(it) }
         )
         is ProtocolGameEvent.DoraRevealed -> GameEventView.DoraRevealed(event.turnNumber, mapTile(event.indicator), event.isUraDora)
-        is ProtocolGameEvent.CheatAttempted -> GameEventView.CheatAttempted(event.turnNumber, event.player, mapCheatTechnique(event.technique), event.success)
-        is ProtocolGameEvent.SuspicionChanged -> GameEventView.SuspicionChanged(event.turnNumber, event.target, event.observer, event.oldValue, event.newValue)
-        is ProtocolGameEvent.BustedEvent -> GameEventView.BustedEvent(event.turnNumber, event.player, event.caughtBy, mapCheatTechnique(event.technique))
-        is ProtocolGameEvent.GazeShifted -> GameEventView.GazeShifted(event.turnNumber, event.observer, event.newTarget, event.oldTarget)
         is ProtocolGameEvent.CheatPointsChanged -> GameEventView.CheatPointsChanged(event.turnNumber, event.seat, event.amount, event.newBalance)
         is ProtocolGameEvent.DrawGame -> GameEventView.DrawGame(event.turnNumber, mapDrawReason(event.reason), Collections.unmodifiableList(ArrayList(event.tenpaiPlayers)))
         is ProtocolGameEvent.ScoreSettled -> GameEventView.ScoreSettled(
@@ -1040,10 +1011,6 @@ object ProtocolViewMapper {
             view.han, view.fu, view.score, view.breakdown?.let { toProtocolScoreBreakdown(it) }
         )
         is GameEventView.DoraRevealed -> ProtocolGameEvent.DoraRevealed(view.turnNumber, toProtocolTile(view.indicator), view.isUraDora)
-        is GameEventView.CheatAttempted -> ProtocolGameEvent.CheatAttempted(view.turnNumber, view.player, toProtocolCheatTechnique(view.technique), view.success)
-        is GameEventView.SuspicionChanged -> ProtocolGameEvent.SuspicionChanged(view.turnNumber, view.target, view.observer, view.oldValue, view.newValue)
-        is GameEventView.BustedEvent -> ProtocolGameEvent.BustedEvent(view.turnNumber, view.player, view.caughtBy, toProtocolCheatTechnique(view.technique))
-        is GameEventView.GazeShifted -> ProtocolGameEvent.GazeShifted(view.turnNumber, view.observer, view.newTarget, view.oldTarget)
         is GameEventView.CheatPointsChanged -> ProtocolGameEvent.CheatPointsChanged(view.turnNumber, view.seat, view.amount, view.newBalance)
         is GameEventView.DrawGame -> ProtocolGameEvent.DrawGame(view.turnNumber, toProtocolDrawReason(view.reason), Collections.unmodifiableList(ArrayList(view.tenpaiPlayers)))
         is GameEventView.ScoreSettled -> ProtocolGameEvent.ScoreSettled(

@@ -44,8 +44,7 @@ class UnifiedActionAcceptanceTest {
             { GameAction.DeclareTsumo(1) },
             { GameAction.DeclareAbortiveDraw(1) },
             { s -> GameAction.DeclareKan(1, listOf(s.players[1].drawnTile!!), MeldType.ADDED_KAN) },
-            { GameAction.StartStacking() },
-            { GameAction.UseCheatTechnique(1, CheatTechnique.DIVERSION) }
+            { GameAction.StartStacking() }
         )
         for ((index, bad) in badActions.withIndex()) {
             val draw = Tile(Suit.WIND, 4)

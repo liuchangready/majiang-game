@@ -472,7 +472,7 @@ object TileMovement {
     }
 
     /**
-     * 移花接木：将手牌中的一张牌与活牌山指定槽位（默认当前 wallPointer）等额置换
+     * 将手牌中的一张牌与活牌山指定槽位（默认当前 wallPointer）等额置换（供偷梁换柱/袖里藏花使用）
      */
     fun swapHandWithWall(state: GameState, player: Int, handTile: Tile, wallIndex: Int = state.wallPointer): Tile {
         require(player in 0..3) { "Invalid player: $player" }
@@ -504,40 +504,6 @@ object TileMovement {
         state.tilePool.transfer(wallTile, TileLocation.WALL, TileLocation.hand(player))
 
         return wallTile
-    }
-
-    /**
-     * 袖里乾坤：将手牌中的一张牌与袖中暗藏牌双向置换
-     */
-    fun swapHandWithSleeve(state: GameState, player: Int, handTile: Tile, sleeveTile: Tile) {
-        require(player in 0..3) { "Invalid player: $player" }
-        val hand = state.players[player]
-        val sleeve = state.sleeveTiles[player]
-
-        require(hand.contains(handTile)) { "Player $player does not hold handTile $handTile" }
-        require(sleeve.contains(sleeveTile)) { "Player $player does not hold sleeveTile $sleeveTile in sleeve" }
-
-        require(state.tilePool.getLocation(handTile) == TileLocation.hand(player)) {
-            "handTile $handTile not in hand of player $player"
-        }
-        require(state.tilePool.getLocation(sleeveTile) == TileLocation.sleeve(player)) {
-            "sleeveTile $sleeveTile not in sleeve of player $player"
-        }
-
-        // 执行置换
-        if (hand.drawnTile == handTile) {
-            hand.drawnTile = sleeveTile
-        } else {
-            hand.closedTiles.remove(handTile)
-            hand.closedTiles.add(sleeveTile)
-            hand.closedTiles.sort()
-        }
-
-        sleeve.remove(sleeveTile)
-        sleeve.add(handTile)
-
-        state.tilePool.transfer(handTile, TileLocation.hand(player), TileLocation.sleeve(player))
-        state.tilePool.transfer(sleeveTile, TileLocation.sleeve(player), TileLocation.hand(player))
     }
 
     /**

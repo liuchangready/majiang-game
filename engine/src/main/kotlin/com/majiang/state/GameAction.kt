@@ -44,14 +44,6 @@ sealed class GameAction {
     /** 宣告荣和 */
     data class DeclareRon(val player: Int) : GameAction()
     
-    // --- 千术动作 ---
-    /** 使用千术绝技 */
-    data class UseCheatTechnique(
-        val player: Int,
-        val technique: com.majiang.event.CheatTechnique,
-        val params: Map<String, Any> = emptyMap()
-    ) : GameAction()
-    
     // --- 响应窗口 ---
     /** 跳过/放弃副露机会 */
     data class Pass(val player: Int) : GameAction()

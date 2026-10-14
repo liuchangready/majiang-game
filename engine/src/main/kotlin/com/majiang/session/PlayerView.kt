@@ -136,9 +136,6 @@ data class PlayerView(
                             is GameAction.StartStacking -> action.copy(
                                 stackingPlans = Collections.unmodifiableList(action.stackingPlans.toList())
                             )
-                            is GameAction.UseCheatTechnique -> action.copy(
-                                params = Collections.unmodifiableMap(action.params.toMap())
-                            )
                             else -> action
                         }
                     }

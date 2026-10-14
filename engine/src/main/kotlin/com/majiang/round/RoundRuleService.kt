@@ -79,10 +79,6 @@ class RoundRuleService(
                 return RejectionReason.UNSUPPORTED_ACTION
             }
 
-            is GameAction.UseCheatTechnique -> {
-                return RejectionReason.UNSUPPORTED_ACTION
-            }
-
             else -> {
                 val player = ResponseWindow.getActionPlayer(action)
                 if (player !in 0..3) return RejectionReason.INVALID_PLAYER
