@@ -1,9 +1,0 @@
-# 2026-10-06 11:48 最新实测
-
-R4B1-FINAL-full-checks.log：client109项108通过1失败。失败testDelayedRoomQueryCannotPoisonReplacementRoomCache:1385，expected2 actual99。
-
-当前测试fake.customRoomInfoFuture一直指向delayedQueryReply：完成旧query(v99)后，再调用新session.getRoomInfo仍得到同一个已经完成的v99 Future。对新绑定而言这是一次新的合法查询，并不是旧callback污染。请为旧请求与当前请求提供独立的mock响应，在新查询前设置当前有效房间v2或更低基线，保留旧future异常完成及新cache不被旧回复污染的断言。不要修改正确生产逻辑来拒绝正常最新查询，只为虚假的fixture通过。尽量使用有界get代替新增测试裸join。
-
-继续保留已修旧callback提交点校验。源码审查：observer版本在锁内标记但外部listener在锁外执行，若dispatch允许并发，标记v2后暂停再执行v3可能仍出现实际回调顺序3,2；按真实dispatch契约核对并补真实线程交错回归，不能只凭顺序队列调度测试宣称任意线程保序。若需修复采用有界串行派发且不锁内执行用户回调，不无限增线程。不能编辑reviewer。
-
-独立114项已全部通过，含原确定性提交竞态回归；日志R4B1-FINAL-review.log。模块失败仍须修复，不改reviewer。
