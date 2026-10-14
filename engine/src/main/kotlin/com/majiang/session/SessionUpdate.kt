@@ -1,6 +1,5 @@
 package com.majiang.session
 
-import com.majiang.event.CheatTechnique
 import com.majiang.event.GameEvent
 import com.majiang.event.snapshotGameEvent
 import java.util.Collections
@@ -61,21 +60,15 @@ class SessionUpdate(
          * - 发牌 TileDealt：仅观察者自己的发牌可见，他家发牌过滤隐藏。
          * - 摸牌 TileDrawn：仅观察者自己的摸牌可见具体牌面，他家摸牌隐藏具体牌张（防透视作弊）。
          * - 岭上摸牌 RinshanDraw：同摸牌规则。
-         * - 里宝牌 DoraRevealed(isUraDora=true)：若未公开或未授权，绝不发给其他人；仅在终局结算（和了/流局）或千术神仙透视授权时公开。
-         * - 千术事件 CheatAttempted：仅本人或被识破（失败）的千术可见。
+         * - 里宝牌 DoraRevealed(isUraDora=true)：若未公开或未授权，绝不发给其他人；仅在终局结算（和了/流局）时公开。
          * - 打牌、副露、立直、和了、流局、结算、表宝牌等公开事件：全员可见。
          */
         fun filterVisibleEvents(events: List<GameEvent>, viewerSeat: Int): List<GameEvent> {
-            val isWinSettlement = events.any {
+            val isUraDoraAuthorized = events.any {
                 it is GameEvent.TsumoWin || it is GameEvent.RonWin ||
                         it is GameEvent.ScoreSettled || it is GameEvent.RoundEnded ||
                         it is GameEvent.MatchEnded
             }
-            val hasDivineSight = events.any {
-                it is GameEvent.CheatAttempted && it.player == viewerSeat &&
-                        it.technique == CheatTechnique.DIVINE_SIGHT && it.success
-            }
-            val isUraDoraAuthorized = isWinSettlement || hasDivineSight
 
             return Collections.unmodifiableList(
                 events.mapNotNull { event ->
@@ -93,7 +86,6 @@ class SessionUpdate(
                 is GameEvent.TileDealt -> if (event.player == viewerSeat) event else null
                 is GameEvent.TileDrawn -> if (event.player == viewerSeat) event else null
                 is GameEvent.RinshanDraw -> if (event.player == viewerSeat) event else null
-                is GameEvent.CheatAttempted -> if (event.player == viewerSeat || !event.success) event else null
                 is GameEvent.DoraRevealed -> if (!event.isUraDora || isUraDoraAuthorized) event else null
                 else -> event
             }

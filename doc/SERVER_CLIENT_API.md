@@ -198,7 +198,7 @@ interface PushChannel {
 `ProtocolViewMapper` 位于 `client.mapping`，`client.api` 保留门面与视图契约。
 
 ### 4.2 客户端纯数据视图模型
-- `GameSnapshotView`：包含手牌、牌河、副露、场风、局数、点棒、20+3 权威时钟 (`ClockInfo`)、怀疑度与出千余额；
+- `GameSnapshotView`：包含手牌、牌河、副露、场风、局数、点棒、20+3 权威时钟 (`ClockInfo`) 与出千点余额；
 - `DecisionView` / `ActionOptionView`：当前合法候选动作集合；
 - `Receipt`：包含 `requestId`、`ReceiptStatus (APPLIED / RECORDED / REJECTED)`、`cursor` 与 `reason`；
 - `ActionChoice`：提交决策的幂等载荷（包含 `requestId`、`roundId`、`decisionId`、`controlEpoch`、`optionId`）。

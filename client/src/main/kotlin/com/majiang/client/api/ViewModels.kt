@@ -47,18 +47,6 @@ enum class GamePhaseView {
 }
 
 /**
- * 千术绝技视图模型 (CheatTechniqueView)
- *
- * 表现层专用枚举，禁止直接持有 engine 领域枚举 [com.majiang.event.CheatTechnique]。
- */
-enum class CheatTechniqueView {
-    SLEEVE_SWAP,     // 袖里乾坤
-    WALL_STEAL,      // 移花接木
-    DIVINE_SIGHT,    // 神仙透视
-    DIVERSION        // 声东击西
-}
-
-/**
  * 鸣牌选择类别视图模型 (MeldChoiceKindView)
  */
 enum class MeldChoiceKindView {
@@ -314,20 +302,6 @@ sealed interface LegalActionView {
     data class DeclareRiichi(val player: Int, val discardTile: TileView) : LegalActionView
     data class DeclareTsumo(val player: Int) : LegalActionView
     data class DeclareRon(val player: Int) : LegalActionView
-    class UseCheatTechnique(
-        val player: Int,
-        val technique: CheatTechniqueView,
-        params: Map<String, ClientParamValue> = emptyMap()
-    ) : LegalActionView {
-        val params: Map<String, ClientParamValue> = Collections.unmodifiableMap(LinkedHashMap(params))
-        operator fun component1(): Int = player
-        operator fun component2(): CheatTechniqueView = technique
-        operator fun component3(): Map<String, ClientParamValue> = params
-        fun copy(player: Int = this.player, technique: CheatTechniqueView = this.technique, params: Map<String, ClientParamValue> = this.params): UseCheatTechnique = UseCheatTechnique(player, technique, params)
-        override fun equals(other: Any?): Boolean = other is UseCheatTechnique && player == other.player && technique == other.technique && params == other.params
-        override fun hashCode(): Int = 31 * (31 * player.hashCode() + technique.hashCode()) + params.hashCode()
-        override fun toString(): String = "UseCheatTechnique(player=$player, technique=$technique, params=$params)"
-    }
     data class Pass(val player: Int) : LegalActionView
     data class DeclareAbortiveDraw(val player: Int) : LegalActionView
     data class DeclareAgariYame(val player: Int) : LegalActionView
@@ -1291,26 +1265,6 @@ sealed class GameEventView {
             "RonWin(turnNumber=$turnNumber, winner=$winner, loser=$loser, winTile=$winTile, yakuList=$yakuList, han=$han, fu=$fu, score=$score, breakdown=$breakdown)"
     }
     data class DoraRevealed(override val turnNumber: Int, val indicator: TileView, val isUraDora: Boolean = false) : GameEventView()
-    data class CheatAttempted(
-        override val turnNumber: Int,
-        val player: Int,
-        val technique: CheatTechniqueView,
-        val success: Boolean
-    ) : GameEventView()
-    data class SuspicionChanged(
-        override val turnNumber: Int,
-        val target: Int,
-        val observer: Int,
-        val oldValue: Float,
-        val newValue: Float
-    ) : GameEventView()
-    data class BustedEvent(
-        override val turnNumber: Int,
-        val player: Int,
-        val caughtBy: Int,
-        val technique: CheatTechniqueView
-    ) : GameEventView()
-    data class GazeShifted(override val turnNumber: Int, val observer: Int, val newTarget: Int?, val oldTarget: Int?) : GameEventView()
     data class CheatPointsChanged(override val turnNumber: Int, val seat: Int, val amount: Int, val newBalance: Int) : GameEventView()
     class DrawGame(
         override val turnNumber: Int,

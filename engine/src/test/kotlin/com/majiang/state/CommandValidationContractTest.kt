@@ -1,7 +1,6 @@
 package com.majiang.state
 
 import com.majiang.application.ApplicationCoordinator
-import com.majiang.event.CheatTechnique
 import com.majiang.event.GameEventBus
 import com.majiang.model.TilePool
 import org.junit.jupiter.api.Assertions.*
@@ -79,12 +78,6 @@ class CommandValidationContractTest {
         rejectWithoutMutation(s, bus, fsm, GameAction.DeclareTsumo(1))
         rejectWithoutMutation(s, bus, fsm, GameAction.DeclareRon(1))
         rejectWithoutMutation(s, bus, fsm, GameAction.DeclareAbortiveDraw(1))
-    }
-
-    @Test
-    fun `unsupported cheat is explicitly rejected instead of silent success`() = withFreshTable { s, bus, fsm ->
-        // Complete cheat wiring is deliberately excluded from this delivery.
-        rejectWithoutMutation(s, bus, fsm, GameAction.UseCheatTechnique(0, CheatTechnique.SLEEVE_SWAP))
     }
 
     @Test

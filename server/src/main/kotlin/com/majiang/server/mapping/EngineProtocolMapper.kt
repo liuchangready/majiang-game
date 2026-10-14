@@ -17,7 +17,6 @@ import com.majiang.application.ActionChoice
 import com.majiang.application.ActionOption
 import com.majiang.application.PlayerDecision
 import com.majiang.economy.CheatEconomyConfig
-import com.majiang.event.CheatTechnique
 import com.majiang.event.DrawReason
 import com.majiang.event.GameEvent
 import com.majiang.match.MatchConfig
@@ -71,7 +70,6 @@ import com.majiang.transport.api.ProtocolActionChoice
 import com.majiang.transport.api.ProtocolActionOption
 import com.majiang.transport.api.ProtocolActionReceipt
 import com.majiang.transport.api.ProtocolCheatEconomyConfig
-import com.majiang.transport.api.ProtocolCheatTechnique
 import com.majiang.transport.api.ProtocolClock
 import com.majiang.transport.api.ProtocolDoraBreakdown
 import com.majiang.transport.api.ProtocolDoraIndicatorHit
@@ -241,22 +239,6 @@ object EngineProtocolMapper {
         ProtocolGamePhase.MATCH_END -> GamePhase.MATCH_END
     }
 
-    // === CheatTechnique ===
-
-    fun toProtocolCheatTechnique(tech: CheatTechnique): ProtocolCheatTechnique = when (tech) {
-        CheatTechnique.SLEEVE_SWAP -> ProtocolCheatTechnique.SLEEVE_SWAP
-        CheatTechnique.WALL_STEAL -> ProtocolCheatTechnique.WALL_STEAL
-        CheatTechnique.DIVINE_SIGHT -> ProtocolCheatTechnique.DIVINE_SIGHT
-        CheatTechnique.DIVERSION -> ProtocolCheatTechnique.DIVERSION
-    }
-
-    fun toEngineCheatTechnique(tech: ProtocolCheatTechnique): CheatTechnique = when (tech) {
-        ProtocolCheatTechnique.SLEEVE_SWAP -> CheatTechnique.SLEEVE_SWAP
-        ProtocolCheatTechnique.WALL_STEAL -> CheatTechnique.WALL_STEAL
-        ProtocolCheatTechnique.DIVINE_SIGHT -> CheatTechnique.DIVINE_SIGHT
-        ProtocolCheatTechnique.DIVERSION -> CheatTechnique.DIVERSION
-    }
-
     // === DrawReason ===
 
     fun toProtocolDrawReason(reason: DrawReason): ProtocolDrawReason = when (reason) {
@@ -339,11 +321,6 @@ object EngineProtocolMapper {
         is GameAction.DeclareRiichi -> ProtocolLegalAction.DeclareRiichi(action.player, toProtocolTile(action.discardTile))
         is GameAction.DeclareTsumo -> ProtocolLegalAction.DeclareTsumo(action.player)
         is GameAction.DeclareRon -> ProtocolLegalAction.DeclareRon(action.player)
-        is GameAction.UseCheatTechnique -> ProtocolLegalAction.UseCheatTechnique(
-            player = action.player,
-            technique = toProtocolCheatTechnique(action.technique),
-            params = action.params.mapValues { toProtocolParamValue(it.value) }
-        )
         is GameAction.Pass -> ProtocolLegalAction.Pass(action.player)
         is GameAction.DeclareAbortiveDraw -> ProtocolLegalAction.DeclareAbortiveDraw(action.player)
         is GameAction.DeclareAgariYame -> ProtocolLegalAction.DeclareAgariYame(action.player)
@@ -369,11 +346,6 @@ object EngineProtocolMapper {
         is ProtocolLegalAction.DeclareRiichi -> GameAction.DeclareRiichi(action.player, toEngineTile(action.discardTile))
         is ProtocolLegalAction.DeclareTsumo -> GameAction.DeclareTsumo(action.player)
         is ProtocolLegalAction.DeclareRon -> GameAction.DeclareRon(action.player)
-        is ProtocolLegalAction.UseCheatTechnique -> GameAction.UseCheatTechnique(
-            player = action.player,
-            technique = toEngineCheatTechnique(action.technique),
-            params = action.params.mapValues { toEngineParamValue(it.value) }
-        )
         is ProtocolLegalAction.Pass -> GameAction.Pass(action.player)
         is ProtocolLegalAction.DeclareAbortiveDraw -> GameAction.DeclareAbortiveDraw(action.player)
         is ProtocolLegalAction.DeclareAgariYame -> GameAction.DeclareAgariYame(action.player)
@@ -834,26 +806,6 @@ object EngineProtocolMapper {
             event.breakdown?.let { toProtocolScoreBreakdown(it) }
         )
         is GameEvent.DoraRevealed -> ProtocolGameEvent.DoraRevealed(event.turnNumber, toProtocolTile(event.indicator), event.isUraDora)
-        is GameEvent.CheatAttempted -> ProtocolGameEvent.CheatAttempted(
-            event.turnNumber,
-            event.player,
-            toProtocolCheatTechnique(event.technique),
-            event.success
-        )
-        is GameEvent.SuspicionChanged -> ProtocolGameEvent.SuspicionChanged(
-            event.turnNumber,
-            event.target,
-            event.observer,
-            event.oldValue,
-            event.newValue
-        )
-        is GameEvent.BustedEvent -> ProtocolGameEvent.BustedEvent(
-            event.turnNumber,
-            event.player,
-            event.caughtBy,
-            toProtocolCheatTechnique(event.technique)
-        )
-        is GameEvent.GazeShifted -> ProtocolGameEvent.GazeShifted(event.turnNumber, event.observer, event.newTarget, event.oldTarget)
         is GameEvent.CheatPointsChanged -> ProtocolGameEvent.CheatPointsChanged(event.turnNumber, event.seat, event.amount, event.newBalance)
         is GameEvent.DrawGame -> ProtocolGameEvent.DrawGame(
             event.turnNumber,

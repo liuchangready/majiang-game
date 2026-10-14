@@ -1,7 +1,6 @@
 package com.majiang.projection
 
 import com.majiang.access.ClockView
-import com.majiang.event.CheatTechnique
 import com.majiang.event.DrawReason
 import com.majiang.event.GameEvent
 import com.majiang.match.MatchFinishReason
@@ -314,10 +313,6 @@ class PublicProjectionTest {
             GameEvent.TileDealt(0, 0, sampleTile(1)),
             GameEvent.TileDrawn(1, 0, sampleTile(2), 60),
             GameEvent.RinshanDraw(2, 0, sampleTile(3)),
-            GameEvent.CheatAttempted(3, 0, CheatTechnique.SLEEVE_SWAP, true),
-            GameEvent.CheatAttempted(4, 1, CheatTechnique.WALL_STEAL, false),
-            GameEvent.SuspicionChanged(5, 0, 1, 10f, 20f),
-            GameEvent.GazeShifted(6, 1, 0, null),
             GameEvent.CheatPointsChanged(7, 0, -20, 30)
         )
 
@@ -330,7 +325,6 @@ class PublicProjectionTest {
             GameEvent.PonDeclared(3, 2, Meld(MeldType.PON, listOf(sampleTile(4), sampleTile(4), sampleTile(4)), 1, sampleTile(4)), 1),
             GameEvent.KanDeclared(4, 3, Meld(MeldType.OPEN_KAN, listOf(sampleTile(5), sampleTile(5), sampleTile(5), sampleTile(5)), 2, sampleTile(5)), MeldType.OPEN_KAN),
             GameEvent.RiichiDeclared(5, 0, sampleTile(9)),
-            GameEvent.BustedEvent(6, 0, 1, CheatTechnique.WALL_STEAL),
             GameEvent.DrawGame(7, DrawReason.EXHAUSTIVE, listOf(0, 1)),
             GameEvent.ScoreSettled(8, mapOf(0 to 1000), intArrayOf(26000, 24000, 25000, 25000)),
             GameEvent.RoundEnded(9, 1, 0),

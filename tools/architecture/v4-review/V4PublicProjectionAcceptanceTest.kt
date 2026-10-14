@@ -3,7 +3,6 @@ package com.majiang.v4lobby
 import com.majiang.access.ClockView
 import com.majiang.economy.CheatLedgerEntry
 import com.majiang.economy.CheatLedgerSummary
-import com.majiang.event.CheatTechnique
 import com.majiang.event.DrawReason
 import com.majiang.event.GameEvent
 import com.majiang.match.*
@@ -125,7 +124,7 @@ class V4PublicProjectionAcceptanceTest {
 
     private fun finishedSession(secret: Int = 40): SessionSnapshot {
         val scores = mutableListOf(33000, 17000, 25000, 25000)
-        val privateEntry = CheatLedgerEntry("private-$secret", 0, -5, secret, "sleeve-swap-$secret")
+        val privateEntry = CheatLedgerEntry("private-$secret", 0, -5, secret, "legacy-cost-$secret")
         val records = mutableListOf(RoundRecord("record-1", "result-1", RoundOutcome.Ron(0, 1),
             scores, mutableListOf(8000, -8000, 0, 0), 0,
             List(4) { secret + it }, List(4) { -secret }, listOf(privateEntry)))
@@ -157,7 +156,7 @@ class V4PublicProjectionAcceptanceTest {
         inspect(shape(first))
     }
 
-    @Test fun privateEventTypesAreDeniedAndPublicDiscardMeldScoreAndBustedAreRetained() {
+    @Test fun privateEventTypesAreDeniedAndPublicDiscardMeldScoreAreRetained() {
         val meld = state().players[0].melds.single()
         val allowed = listOf(
             GameEvent.StackingStarted(), GameEvent.WallBuilt(), GameEvent.DealingComplete(),
@@ -165,29 +164,24 @@ class V4PublicProjectionAcceptanceTest {
             GameEvent.PonDeclared(3, 0, meld, 1), GameEvent.KanDeclared(3, 0, meld, MeldType.OPEN_KAN),
             GameEvent.RiichiDeclared(3, 0, visibleTile),
             GameEvent.DoraRevealed(3, visibleTile),
-            GameEvent.BustedEvent(3, 0, 1, CheatTechnique.WALL_STEAL),
             GameEvent.DrawGame(3, DrawReason.EXHAUSTIVE, listOf(0, 2)),
             GameEvent.ScoreSettled(3, mapOf(0 to 1500, 1 to -1500), intArrayOf(26500, 23500, 25000, 25000)),
             GameEvent.RoundEnded(3, 1, 0), GameEvent.MatchEnded(3, intArrayOf(33000, 17000, 25000, 25000), 0))
         val denied = listOf(
             GameEvent.TileDealt(3, 0, hiddenTile), GameEvent.TileDrawn(3, 1, hiddenTile, 20),
             GameEvent.RinshanDraw(3, 2, hiddenTile),
-            GameEvent.CheatAttempted(3, 0, CheatTechnique.SLEEVE_SWAP, true),
-            GameEvent.CheatAttempted(3, 1, CheatTechnique.DIVINE_SIGHT, true),
-            GameEvent.SuspicionChanged(3, 0, 2, 10f, 90f),
-            GameEvent.GazeShifted(3, 1, 2, 0), GameEvent.CheatPointsChanged(3, 0, -7, 33),
+            GameEvent.CheatPointsChanged(3, 0, -7, 33),
             GameEvent.DoraRevealed(3, uraTile, true))
         assertEquals(shape(allowed), shape(PublicProjectionFactory.publicEvents(allowed + denied)))
         assertTrue(PublicProjectionFactory.publicEvents(denied).isEmpty())
     }
 
-    @Test fun roundEndAndDivineSightDoNotAuthorizeUraButExplicitSettlementPermissionDoes() {
+    @Test fun roundEndDoesNotAuthorizeUraWithoutExplicitSettlementPermission() {
         val ura = GameEvent.DoraRevealed(4, uraTile, true)
         val terminal = GameEvent.RoundEnded(4, 1, 0)
-        val sight = GameEvent.CheatAttempted(4, 0, CheatTechnique.DIVINE_SIGHT, true)
-        assertEquals(listOf(terminal), PublicProjectionFactory.publicEvents(listOf(ura, sight, terminal)))
+        assertEquals(listOf(terminal), PublicProjectionFactory.publicEvents(listOf(ura, terminal)))
         assertEquals(listOf(ura, terminal),
-            PublicProjectionFactory.publicEvents(listOf(ura, sight, terminal), revealSettlementUra = true))
+            PublicProjectionFactory.publicEvents(listOf(ura, terminal), revealSettlementUra = true))
         val state = state().apply { phase = GamePhase.ROUND_END }
         val withoutPublishedEvent = project(state, revealUra = true)
         assertTrue(withoutPublishedEvent.settlementEvents.isEmpty(), "Permission cannot invent ura from GameState")

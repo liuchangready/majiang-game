@@ -44,16 +44,6 @@ enum class ProtocolGamePhase {
 }
 
 /**
- * 传输层独立协议千术类型枚举 (ProtocolCheatTechnique)
- */
-enum class ProtocolCheatTechnique {
-    SLEEVE_SWAP,
-    WALL_STEAL,
-    DIVINE_SIGHT,
-    DIVERSION
-}
-
-/**
  * 传输层独立协议流局原因枚举 (ProtocolDrawReason)
  */
 enum class ProtocolDrawReason {
@@ -286,21 +276,6 @@ sealed class ProtocolLegalAction(val actionType: String) {
     }
     data class DeclareRon(val player: Int) : ProtocolLegalAction("DeclareRon") {
         init { require(player in 0..3) { "player must be in 0..3: $player" } }
-    }
-    class UseCheatTechnique(
-        val player: Int,
-        val technique: ProtocolCheatTechnique,
-        params: Map<String, ProtocolParamValue> = emptyMap()
-    ) : ProtocolLegalAction("UseCheatTechnique") {
-        val params: Map<String, ProtocolParamValue> = Collections.unmodifiableMap(LinkedHashMap(params))
-        init { require(player in 0..3) { "player must be in 0..3: $player" } }
-        operator fun component1(): Int = player
-        operator fun component2(): ProtocolCheatTechnique = technique
-        operator fun component3(): Map<String, ProtocolParamValue> = params
-        fun copy(player: Int = this.player, technique: ProtocolCheatTechnique = this.technique, params: Map<String, ProtocolParamValue> = this.params): UseCheatTechnique = UseCheatTechnique(player, technique, params)
-        override fun equals(other: Any?): Boolean = other is UseCheatTechnique && player == other.player && technique == other.technique && params == other.params
-        override fun hashCode(): Int = 31 * (31 * player.hashCode() + technique.hashCode()) + params.hashCode()
-        override fun toString(): String = "UseCheatTechnique(player=$player, technique=$technique, params=$params)"
     }
     data class Pass(val player: Int) : ProtocolLegalAction("Pass") {
         init { require(player in 0..3) { "player must be in 0..3: $player" } }
@@ -1392,26 +1367,6 @@ sealed class ProtocolGameEvent(val eventType: String) {
             "RonWin(turnNumber=$turnNumber, winner=$winner, loser=$loser, winTile=$winTile, yakuList=$yakuList, han=$han, fu=$fu, score=$score, breakdown=$breakdown)"
     }
     data class DoraRevealed(override val turnNumber: Int, val indicator: ProtocolTile, val isUraDora: Boolean = false) : ProtocolGameEvent("DoraRevealed")
-    data class CheatAttempted(
-        override val turnNumber: Int,
-        val player: Int,
-        val technique: ProtocolCheatTechnique,
-        val success: Boolean
-    ) : ProtocolGameEvent("CheatAttempted")
-    data class SuspicionChanged(
-        override val turnNumber: Int,
-        val target: Int,
-        val observer: Int,
-        val oldValue: Float,
-        val newValue: Float
-    ) : ProtocolGameEvent("SuspicionChanged")
-    data class BustedEvent(
-        override val turnNumber: Int,
-        val player: Int,
-        val caughtBy: Int,
-        val technique: ProtocolCheatTechnique
-    ) : ProtocolGameEvent("BustedEvent")
-    data class GazeShifted(override val turnNumber: Int, val observer: Int, val newTarget: Int?, val oldTarget: Int?) : ProtocolGameEvent("GazeShifted")
     data class CheatPointsChanged(override val turnNumber: Int, val seat: Int, val amount: Int, val newBalance: Int) : ProtocolGameEvent("CheatPointsChanged")
     class DrawGame(
         override val turnNumber: Int,

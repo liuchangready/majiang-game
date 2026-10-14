@@ -99,19 +99,13 @@ class TileMovementContractTest {
     }
 
     @Test
-    fun `wall and sleeve swaps preserve ownership and exact physical set`() {
+    fun `wall swap preserves ownership and exact physical set`() {
         val hand = Tile(Suit.MAN, 9, 3)
-        val hidden = Tile(Suit.PIN, 9, 3)
-        val s = TestTableBuilder.create(hands = mapOf(0 to listOf(hand)),
-            sleeves = mapOf(0 to listOf(hidden)), phase = GamePhase.DRAW)
-        TileMovement.swapHandWithSleeve(s, 0, hand, hidden)
-        assertTrue(hand in s.sleeveTiles[0])
-        assertTrue(hidden in s.players[0].closedTiles)
-        verify(s)
+        val s = TestTableBuilder.create(hands = mapOf(0 to listOf(hand)), phase = GamePhase.DRAW)
         val wallTile = s.wall[s.wallPointer]
-        TileMovement.swapHandWithWall(s, 0, hidden)
+        TileMovement.swapHandWithWall(s, 0, hand)
         assertTrue(wallTile in s.players[0].closedTiles)
-        assertEquals(hidden, s.wall[s.wallPointer])
+        assertEquals(hand, s.wall[s.wallPointer])
         verify(s)
     }
 

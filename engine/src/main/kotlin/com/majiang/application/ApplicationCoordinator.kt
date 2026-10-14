@@ -2755,7 +2755,6 @@ class ApplicationCoordinator(
         is GameAction.Pass -> action.player
         is GameAction.DeclareAbortiveDraw -> action.player
         is GameAction.DeclareAgariYame -> action.player
-        is GameAction.UseCheatTechnique -> action.player
         else -> -1
     }
 

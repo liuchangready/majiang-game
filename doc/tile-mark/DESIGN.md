@@ -81,7 +81,7 @@
 |---|---|
 | `TableAuthority` | 对 server 的领域门面；`coordinator` 已为 `internal`，不得重新公开 |
 | `MatchSession`、`SessionChange` | 管理跨局状态并通过 prepare/install 安装，适合保存跨局标记 |
-| `RoundRuleService.validatePreconditions()` | 当前明确拒绝通用 `UseCheatTechnique`，不能只添加一个枚举就宣称落汗可用 |
+| `RoundRuleService` | 早期通用 `UseCheatTechnique` 已移除，落汗走专用强类型请求，不依赖通用千术枚举 |
 | `ActionChoice`、`PlayerDecision` | 当前提交的是权威候选 `optionId`，没有四张自选牌的参数入口 |
 | `DecisionClock.rekey()` | 已支持更换决策键且保留截止时间，可复用资源操作的计时处理 |
 | `PlayerSnapshot` / `PlayerView` | 现有对手暗牌只提供张数，需新增施术者专属的有限可见信息 |

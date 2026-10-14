@@ -90,7 +90,6 @@ data class ResponseWindow(
             is GameAction.DeclareRiichi -> action.copy(discardTile = action.discardTile.copy())
             is GameAction.DeclareTsumo -> action.copy()
             is GameAction.DeclareRon -> action.copy()
-            is GameAction.UseCheatTechnique -> action.copy(params = action.params.toMap())
             is GameAction.Pass -> action.copy()
             is GameAction.DeclareAbortiveDraw -> action.copy()
             is GameAction.DeclareAgariYame -> action.copy()
@@ -108,7 +107,6 @@ data class ResponseWindow(
             is GameAction.Pass -> action.player
             is GameAction.DeclareAbortiveDraw -> action.player
             is GameAction.DeclareAgariYame -> action.player
-            is GameAction.UseCheatTechnique -> action.player
             else -> -1
         }
 

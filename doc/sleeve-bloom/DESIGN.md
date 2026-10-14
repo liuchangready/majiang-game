@@ -4,7 +4,7 @@
 
 袖里藏花是继开局码牌（偷天换日、瞒天过海）与落汗之后第三个接入出千经济的运行时千术：玩家在**本人摸牌之后、出牌之前**的窗口消耗 10 个额度，同时获得两张候选牌——原摸到（或杠后补到）的第一张，以及一张按方位规则确定的第二张——二选一保留；未选中的那张留在或退回指定位置，除两张候选交换外，其余牌序不变，其余流程照常继续。
 
-命名说明：本千术与既有四大绝技概念中的「袖里乾坤」（`SLEEVE_SWAP`，手牌与藏牌互换）与「移花接木」（`WALL_STEAL`，牌山偷摸换牌）仅名称相近，互不依赖。四大绝技仍走休眠的 `UseCheatTechnique` 通用链路；袖里藏花与落汗一样走专用强类型请求，不复活通用链路。正常摸牌路径复用 `TileMovement.swapHandWithWall` 物理原语（该原语最初为移花接木准备），但入口、校验与记账完全独立。
+命名说明：本千术与早期四大绝技概念中的「袖里乾坤」（手牌与藏牌互换）与「移花接木」（牌山偷摸换牌）仅名称相近，互不依赖。早期四大绝技与旧通用链路已全量移除；袖里藏花与落汗一样走专用强类型请求，不依赖旧通用链路。正常摸牌路径复用 `TileMovement.swapHandWithWall` 物理原语（该原语最初为移花接木准备），但入口、校验与记账完全独立。
 
 ## 已确认的玩法
 
@@ -96,7 +96,7 @@
 | 现有代码 | 对本功能的约束 |
 |---|---|
 | `TableAuthority` | 对 server 的领域门面；`coordinator` 为 `internal`，不得重新公开 |
-| `RoundRuleService.validatePreconditions()` | 永久拒绝通用 `UseCheatTechnique`，袖里藏花必须走专用请求，不能只加一个枚举 |
+| `RoundRuleService` | 早期通用 `UseCheatTechnique` 已移除，袖里藏花走专用强类型请求，不依赖通用千术枚举 |
 | `TileMovement.swapHandWithWall()` | 已支持手牌与活牌山任意槽位交换并特判摸牌槽，正常摸牌路径直接复用 |
 | `TileMovement.drawRinshan()` | 杠补照常从活牌山末端拉一张替补入王牌，保持有效王牌14张；该替补不属于袖里藏花候选 |
 | `LegalActionProvider` / `RoundRuleService` / `RoundTransitionPlanner` | 杠次数门禁与岭上指针分离；候选生成、响应及最终提交都禁止第五杠 |
