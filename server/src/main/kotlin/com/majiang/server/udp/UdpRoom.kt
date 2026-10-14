@@ -7,7 +7,9 @@ import com.majiang.server.api.ApiErrors
 import com.majiang.server.api.ApiProtocol
 import com.majiang.server.api.PublicCheckpoint
 import com.majiang.server.api.RoomBinding
+import com.majiang.server.api.ServerApiException
 import com.majiang.server.api.SpectatorBinding
+import com.majiang.transport.udp.UdpFrameException
 import com.majiang.server.mapping.EngineProtocolMapper
 import com.majiang.server.room.SharedRoom
 import com.majiang.transport.api.ApiMessageCodec
@@ -29,6 +31,7 @@ import com.majiang.transport.api.ProtocolBeamSwapRequest
 import com.majiang.transport.api.ProtocolBeamSwapChoiceRequest
 import com.majiang.transport.udp.ResendResponse
 import com.majiang.transport.udp.UdpClock
+import java.io.IOException
 import java.net.SocketAddress
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.ConcurrentHashMap
@@ -366,14 +369,24 @@ class UdpRoom(
     ): CompletableFuture<Pair<UdpClientSession, RoomBinding>> {
         if (closed) {
             val f = CompletableFuture<Pair<UdpClientSession, RoomBinding>>()
-            f.completeExceptionally(IllegalStateException("ROOM_CLOSED"))
+            f.completeExceptionally(ServerApiException(ApiErrors.ROOM_NOT_FOUND, "ROOM_CLOSED"))
             return f
         }
         // 恢复必须使用服务端真实权威状态；客户端请求游标仅作参考，绝不作为输出基线
         return sharedRoom.resumeSession(token).exceptionally { err ->
-            val realErr = if (err is java.util.concurrent.CompletionException && err.cause != null) err.cause!! else err
-            if (realErr.message?.contains("INVALID_RESUME_TOKEN") == true || realErr.message?.contains(ApiErrors.INVALID_TOKEN) == true) {
-                throw IllegalStateException(ApiErrors.INVALID_TOKEN)
+            val realErr = ServerApiException.unwrap(err) ?: err
+            if (realErr is ServerApiException && realErr.code == ApiErrors.INVALID_TOKEN) {
+                throw ServerApiException(ApiErrors.INVALID_TOKEN, ApiErrors.INVALID_TOKEN, realErr)
+            }
+            if (realErr is ServerApiException) {
+                throw realErr
+            }
+            if (realErr is IOException) {
+                throw realErr
+            }
+            val msg = realErr.message?.trim().orEmpty()
+            if (msg == "INVALID_RESUME_TOKEN" || msg == ApiErrors.INVALID_TOKEN || msg == "TOKEN_INVALID") {
+                throw ServerApiException(ApiErrors.INVALID_TOKEN, ApiErrors.INVALID_TOKEN, realErr)
             }
             throw realErr
         }.thenApply { res ->
@@ -387,7 +400,7 @@ class UdpRoom(
             synchronized(seatLocks[seat]) {
                 if (targetGeneration < installedGenerations[seat]) {
                     // 本次恢复已经被更新的代次覆盖（例如并发恢复乱序到达），不得装回旧绑定
-                    throw IllegalStateException("DISPLACED_BY_NEW_CONNECTION")
+                    throw ServerApiException(ApiProtocol.DISPLACED_BY_NEW_CONNECTION, "DISPLACED_BY_NEW_CONNECTION")
                 }
                 installedGenerations[seat] = targetGeneration
 
@@ -563,7 +576,7 @@ class UdpRoom(
     ): CompletableFuture<Pair<UdpClientSession, SpectatorBinding>> {
         if (closed) {
             val f = CompletableFuture<Pair<UdpClientSession, SpectatorBinding>>()
-            f.completeExceptionally(IllegalStateException("ROOM_CLOSED"))
+            f.completeExceptionally(ServerApiException(ApiErrors.ROOM_NOT_FOUND, "ROOM_CLOSED"))
             return f
         }
         return sharedRoom.joinSpectator(spectatorName).thenApply { res ->
@@ -572,7 +585,7 @@ class UdpRoom(
                     sharedRoom.leaveSpectator(res.spectatorId)
                 } catch (_: Throwable) {
                 }
-                throw IllegalStateException("ROOM_CLOSED")
+                throw ServerApiException(ApiErrors.ROOM_NOT_FOUND, "ROOM_CLOSED")
             }
             val session = buildSpectatorSession(connectionId, remoteAddress, res.spectatorId, res.resumeToken, res.generation)
             try {
@@ -609,18 +622,27 @@ class UdpRoom(
     ): CompletableFuture<Pair<UdpClientSession, SpectatorBinding>> {
         if (closed) {
             val f = CompletableFuture<Pair<UdpClientSession, SpectatorBinding>>()
-            f.completeExceptionally(IllegalStateException("ROOM_CLOSED"))
+            f.completeExceptionally(ServerApiException(ApiErrors.ROOM_NOT_FOUND, "ROOM_CLOSED"))
             return f
         }
         // 恢复必须使用服务端真实权威状态；客户端 checkpoint 仅作对账校验，绝不决定输出基线
         return sharedRoom.resumeSpectator(spectatorId, token, checkpoint).exceptionally { err ->
-            val realErr = if (err is java.util.concurrent.CompletionException && err.cause != null) err.cause!! else err
-            when {
-                realErr.message?.contains("INVALID_RESUME_TOKEN") == true ||
-                    realErr.message?.contains(ApiErrors.INVALID_TOKEN) == true ->
-                    throw IllegalStateException(ApiErrors.INVALID_TOKEN)
-                realErr.message?.contains("INVALID_PUBLIC_CHECKPOINT") == true ->
-                    throw IllegalStateException(ApiErrors.INVALID_TOKEN)
+            val realErr = ServerApiException.unwrap(err) ?: err
+            if (realErr is ServerApiException && realErr.code == ApiErrors.INVALID_TOKEN) {
+                throw ServerApiException(ApiErrors.INVALID_TOKEN, ApiErrors.INVALID_TOKEN, realErr)
+            }
+            if (realErr is ServerApiException) {
+                throw realErr
+            }
+            if (realErr is IOException) {
+                throw realErr
+            }
+            val msg = realErr.message?.trim().orEmpty()
+            when (msg) {
+                "INVALID_RESUME_TOKEN", ApiErrors.INVALID_TOKEN, "TOKEN_INVALID" ->
+                    throw ServerApiException(ApiErrors.INVALID_TOKEN, ApiErrors.INVALID_TOKEN, realErr)
+                "INVALID_PUBLIC_CHECKPOINT" ->
+                    throw ServerApiException(ApiErrors.INVALID_TOKEN, "INVALID_PUBLIC_CHECKPOINT", realErr)
                 else -> throw realErr
             }
         }.thenApply { res ->
@@ -628,16 +650,16 @@ class UdpRoom(
             val session: UdpClientSession
             synchronized(spectatorLock) {
                 if (closed) {
-                    throw IllegalStateException("ROOM_CLOSED")
+                    throw ServerApiException(ApiErrors.ROOM_NOT_FOUND, "ROOM_CLOSED")
                 }
                 val mem = sharedRoom.spectators[spectatorId]
                 if (mem == null || mem.generation != res.generation) {
-                    throw IllegalStateException("DISPLACED_BY_NEW_CONNECTION")
+                    throw ServerApiException(ApiProtocol.DISPLACED_BY_NEW_CONNECTION, "DISPLACED_BY_NEW_CONNECTION")
                 }
                 val installed = installedSpectatorGenerations[spectatorId] ?: 0L
                 if (res.generation < installed) {
                     // 并发恢复乱序完成：本次已被更高代次覆盖，不得安装
-                    throw IllegalStateException("DISPLACED_BY_NEW_CONNECTION")
+                    throw ServerApiException(ApiProtocol.DISPLACED_BY_NEW_CONNECTION, "DISPLACED_BY_NEW_CONNECTION")
                 }
                 installedSpectatorGenerations[spectatorId] = res.generation
                 oldSession = spectatorSessions[spectatorId]?.takeIf { it.connectionId != newConnectionId }
@@ -698,7 +720,7 @@ class UdpRoom(
         val validator = bindingValidatorFor(session)
             ?: run {
                 val f = CompletableFuture<ProtocolPublicSnapshot>()
-                f.completeExceptionally(IllegalStateException("STALE_SESSION"))
+                f.completeExceptionally(ServerApiException(ApiErrors.INVALID_TOKEN, "STALE_SESSION"))
                 return f
             }
         return sharedRoom.publicSnapshot(validator)
@@ -712,7 +734,7 @@ class UdpRoom(
         val validator = bindingValidatorFor(session)
             ?: run {
                 val f = CompletableFuture<ProtocolPublicSnapshot>()
-                f.completeExceptionally(IllegalStateException("STALE_SESSION"))
+                f.completeExceptionally(ServerApiException(ApiErrors.INVALID_TOKEN, "STALE_SESSION"))
                 return f
             }
         return sharedRoom.resumePublic(checkpoint, validator)
@@ -842,7 +864,7 @@ class UdpRoom(
         val validator = bindingValidatorFor(session)
             ?: run {
                 val f = CompletableFuture<ProtocolRoomInfo>()
-                f.completeExceptionally(IllegalStateException("STALE_SESSION"))
+                f.completeExceptionally(ServerApiException(ApiErrors.INVALID_TOKEN, "STALE_SESSION"))
                 return f
             }
         return sharedRoom.getRoomInfo(validator)
@@ -931,7 +953,7 @@ class UdpRoom(
         commandTarget(session)
             ?: run {
                 val f = CompletableFuture<ProtocolPlayerSnapshot>()
-                f.completeExceptionally(IllegalStateException("STALE_SESSION"))
+                f.completeExceptionally(ServerApiException(ApiErrors.INVALID_TOKEN, "STALE_SESSION"))
                 return f
             }
         return sharedRoom.snapshot(session.seat, sessionValidator(session))
@@ -942,7 +964,7 @@ class UdpRoom(
         commandTarget(session)
             ?: run {
                 val f = CompletableFuture<ProtocolPlayerDecision>()
-                f.completeExceptionally(IllegalStateException("STALE_SESSION"))
+                f.completeExceptionally(ServerApiException(ApiErrors.INVALID_TOKEN, "STALE_SESSION"))
                 return f
             }
         return sharedRoom.decision(session.seat, sessionValidator(session))
@@ -953,7 +975,7 @@ class UdpRoom(
         commandTarget(session)
             ?: run {
                 val f = CompletableFuture<ProtocolPlayerSnapshot>()
-                f.completeExceptionally(IllegalStateException("STALE_SESSION"))
+                f.completeExceptionally(ServerApiException(ApiErrors.INVALID_TOKEN, "STALE_SESSION"))
                 return f
             }
         return sharedRoom.resume(session.seat, cursor, sessionValidator(session))
@@ -1159,17 +1181,31 @@ class UdpRoom(
         }
 
         /** 将共享房间错误消息映射为稳定传输错误码 */
-        fun mapError(t: Throwable?): String = when {
-            t == null -> ApiErrors.INTERNAL_ERROR
-            t.message?.contains(ApiErrors.INVALID_TOKEN) == true -> ApiErrors.INVALID_TOKEN
-            t.message?.contains("INVALID_RESUME_TOKEN") == true -> ApiErrors.INVALID_TOKEN
-            t.message?.contains("STALE_SESSION") == true -> ApiErrors.INVALID_TOKEN
-            t.message?.contains("INVALID_PUBLIC_CHECKPOINT") == true -> ApiErrors.INVALID_TOKEN
-            t.message?.contains("DISPLACED_BY_NEW_CONNECTION") == true -> ApiErrors.INVALID_TOKEN
-            t.message?.contains("ROOM_FULL") == true -> ApiErrors.ROOM_FULL
-            t.message?.contains("ROOM_CLOSED") == true -> ApiErrors.ROOM_NOT_FOUND
-            t.message?.contains(ApiErrors.SERVER_FULL) == true -> ApiErrors.SERVER_FULL
-            else -> ApiErrors.INTERNAL_ERROR
+        fun mapError(t: Throwable?): String {
+            if (t == null) return ApiErrors.INTERNAL_ERROR
+            val root = ServerApiException.unwrap(t) ?: return ApiErrors.INTERNAL_ERROR
+            if (root is IOException) {
+                return ApiErrors.INTERNAL_ERROR
+            }
+            if (root is ServerApiException) {
+                return root.code
+            }
+            if (root is UdpFrameException) {
+                return root.reasonCode
+            }
+            val msg = root.message?.trim().orEmpty()
+            return when (msg) {
+                ApiErrors.INVALID_TOKEN, "INVALID_RESUME_TOKEN", "TOKEN_INVALID", "STALE_SESSION", "INVALID_PUBLIC_CHECKPOINT", "DISPLACED_BY_NEW_CONNECTION" -> ApiErrors.INVALID_TOKEN
+                ApiErrors.ROOM_NOT_FOUND, "ROOM_CLOSED" -> ApiErrors.ROOM_NOT_FOUND
+                ApiErrors.ROOM_FULL -> ApiErrors.ROOM_FULL
+                ApiErrors.SERVER_FULL -> ApiErrors.SERVER_FULL
+                ApiErrors.CONFLICT -> ApiErrors.CONFLICT
+                "SESSION_TIMEOUT" -> ApiErrors.INTERNAL_ERROR
+                ApiErrors.UNAUTHENTICATED_SESSION, "UNAUTHENTICATED" -> ApiErrors.UNAUTHENTICATED_SESSION
+                ApiErrors.MALFORMED_REQUEST, "MALFORMED" -> ApiErrors.MALFORMED_REQUEST
+                ApiErrors.SERVER_BUSY, "BUSY" -> ApiErrors.SERVER_BUSY
+                else -> ApiErrors.INTERNAL_ERROR
+            }
         }
     }
 }

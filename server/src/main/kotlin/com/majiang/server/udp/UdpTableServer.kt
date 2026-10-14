@@ -1035,14 +1035,14 @@ class UdpTableServer @JvmOverloads constructor(
                 val room = try {
                     createRoom(playerName, config)
                 } catch (t: Throwable) {
-                    val errCode = if (t.message?.contains(ApiErrors.SERVER_FULL) == true) ApiErrors.SERVER_FULL else ApiErrors.INTERNAL_ERROR
+                    val errCode = UdpRoom.mapError(t)
                     completeLobby(0, ApiResponse(requestId = request.requestId, success = false, error = errCode))
                     return
                 }
                 val newConnId = nextConnectionId()
                 room.bindHost(newConnId, remoteAddress, playerName).whenComplete { result, err ->
                     if (err != null || result == null) {
-                        val errCode = if (err?.message?.contains("ROOM_CLOSED") == true) ApiErrors.ROOM_NOT_FOUND else ApiErrors.INTERNAL_ERROR
+                        val errCode = UdpRoom.mapError(err)
                         completeLobby(0, ApiResponse(requestId = request.requestId, success = false, error = errCode))
                     } else {
                         val (session, roomBinding) = result
@@ -1075,12 +1075,7 @@ class UdpTableServer @JvmOverloads constructor(
                 val newConnId = nextConnectionId()
                 room.join(newConnId, remoteAddress, playerName, request.preferSeat).whenComplete { result, err ->
                     if (err != null || result == null) {
-                        val errMsg = err?.cause?.message ?: err?.message ?: ""
-                        val errCode = when {
-                            errMsg.contains("ROOM_FULL") -> ApiErrors.ROOM_FULL
-                            errMsg.contains("ROOM_CLOSED") -> ApiErrors.ROOM_NOT_FOUND
-                            else -> ApiErrors.INTERNAL_ERROR
-                        }
+                        val errCode = UdpRoom.mapError(err)
                         completeLobby(0, ApiResponse(requestId = request.requestId, success = false, error = errCode))
                     } else {
                         val (session, roomBinding) = result
@@ -1219,15 +1214,7 @@ class UdpTableServer @JvmOverloads constructor(
                 val newConnId = nextConnectionId()
                 room.resume(newConnId, remoteAddress, token, request.cursor).whenComplete { result, err ->
                     if (err != null || result == null) {
-                        val errMsg = err?.cause?.message ?: err?.message ?: ""
-                        val errCode = when {
-                            errMsg.contains("INVALID_TOKEN") -> ApiErrors.INVALID_TOKEN
-                            errMsg.contains("INVALID_RESUME_TOKEN") -> ApiErrors.INVALID_TOKEN
-                            errMsg.contains("STALE_SESSION") -> ApiErrors.INVALID_TOKEN
-                            errMsg.contains("DISPLACED_BY_NEW_CONNECTION") -> ApiErrors.INVALID_TOKEN
-                            errMsg.contains("ROOM_CLOSED") -> ApiErrors.ROOM_NOT_FOUND
-                            else -> ApiErrors.INTERNAL_ERROR
-                        }
+                        val errCode = UdpRoom.mapError(err)
                         completeLobby(0, ApiResponse(requestId = request.requestId, success = false, error = errCode))
                     } else {
                         val (session, roomBinding) = result

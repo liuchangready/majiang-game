@@ -30,7 +30,9 @@ import com.majiang.state.ActionResult
 import com.majiang.state.GameAction
 import com.majiang.state.GameState
 import com.majiang.state.SeatController
+import com.majiang.server.api.ApiErrors
 import com.majiang.server.api.PublicCheckpoint
+import com.majiang.server.api.ServerApiException
 import com.majiang.server.mapping.EngineProtocolMapper
 import com.majiang.server.mapping.PublicProtocolMapper
 import com.majiang.timing.MonotonicClock
@@ -790,7 +792,7 @@ class ServerTableHost @JvmOverloads constructor(
     fun snapshot(seat: Int, sessionValidator: (() -> Boolean)? = null): CompletableFuture<PlayerSnapshot> {
         return enqueueOperation {
             if (sessionValidator?.invoke() == false) {
-                throw IllegalStateException("STALE_SESSION")
+                throw ServerApiException(ApiErrors.INVALID_TOKEN, "STALE_SESSION")
             }
             require(seat in 0..3) { "seat must be in 0..3, got $seat" }
             val stream = seatStreams[seat]
@@ -801,7 +803,7 @@ class ServerTableHost @JvmOverloads constructor(
     fun decision(seat: Int, sessionValidator: (() -> Boolean)? = null): CompletableFuture<PlayerDecision> {
         return enqueueOperation {
             if (sessionValidator?.invoke() == false) {
-                throw IllegalStateException("STALE_SESSION")
+                throw ServerApiException(ApiErrors.INVALID_TOKEN, "STALE_SESSION")
             }
             require(seat in 0..3) { "seat must be in 0..3, got $seat" }
             authority.queryDecision(seat, isAutomated = connectionControl.seatState(seat).isAutomated).deepCopy()
@@ -811,7 +813,7 @@ class ServerTableHost @JvmOverloads constructor(
     fun resume(seat: Int, cursor: Long, sessionValidator: (() -> Boolean)? = null): CompletableFuture<PlayerSnapshot> {
         return enqueueOperation {
             if (sessionValidator?.invoke() == false) {
-                throw IllegalStateException("STALE_SESSION")
+                throw ServerApiException(ApiErrors.INVALID_TOKEN, "STALE_SESSION")
             }
             require(seat in 0..3) { "seat must be in 0..3, got $seat" }
             val stream = seatStreams[seat]
@@ -835,7 +837,7 @@ class ServerTableHost @JvmOverloads constructor(
     fun publicSnapshot(sessionValidator: (() -> Boolean)? = null): CompletableFuture<ProtocolPublicSnapshot> {
         return enqueueOperation {
             if (sessionValidator?.invoke() == false) {
-                throw IllegalStateException("STALE_SESSION")
+                throw ServerApiException(ApiErrors.INVALID_TOKEN, "STALE_SESSION")
             }
             performQueryPublicSnapshotOnQueue()
         }
@@ -867,7 +869,7 @@ class ServerTableHost @JvmOverloads constructor(
             checkpoint.cursor > publicStream.cursor ||
             checkpoint.cursor == Long.MAX_VALUE
         ) {
-            throw IllegalStateException("INVALID_PUBLIC_CHECKPOINT")
+            throw ServerApiException(ApiErrors.INVALID_TOKEN, "INVALID_PUBLIC_CHECKPOINT")
         }
     }
 
@@ -882,7 +884,7 @@ class ServerTableHost @JvmOverloads constructor(
     ): CompletableFuture<ProtocolPublicSnapshot> {
         return enqueueOperation {
             if (sessionValidator?.invoke() == false) {
-                throw IllegalStateException("STALE_SESSION")
+                throw ServerApiException(ApiErrors.INVALID_TOKEN, "STALE_SESSION")
             }
             performValidatePublicCheckpointOnQueue(checkpoint)
             performQueryPublicSnapshotOnQueue()
@@ -895,7 +897,7 @@ class ServerTableHost @JvmOverloads constructor(
     ): CompletableFuture<List<ProtocolGameEvent>> {
         return enqueueOperation {
             if (sessionValidator?.invoke() == false) {
-                throw IllegalStateException("STALE_SESSION")
+                throw ServerApiException(ApiErrors.INVALID_TOKEN, "STALE_SESSION")
             }
             val events = authority.queryPublicRoundResultEvents(roundId)
             EngineProtocolMapper.toProtocolEvents(events)
@@ -918,7 +920,7 @@ class ServerTableHost @JvmOverloads constructor(
     ): CompletableFuture<List<GameEvent>> {
         return enqueueOperation {
             if (sessionValidator?.invoke() == false) {
-                throw IllegalStateException("STALE_SESSION")
+                throw ServerApiException(ApiErrors.INVALID_TOKEN, "STALE_SESSION")
             }
             if (seat !in 0..3) emptyList()
             else authority.queryRoundResultEvents(seat, roundId)

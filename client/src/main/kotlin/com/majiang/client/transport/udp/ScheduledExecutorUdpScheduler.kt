@@ -22,6 +22,9 @@ class ScheduledExecutorUdpScheduler(
     }
 ) : UdpScheduler, AutoCloseable {
 
+    val isShutdown: Boolean
+        get() = executor.isShutdown
+
     override fun schedule(delayMillis: Long, task: Runnable): Cancellable {
         val future = executor.schedule(task, delayMillis, TimeUnit.MILLISECONDS)
         return Cancellable {

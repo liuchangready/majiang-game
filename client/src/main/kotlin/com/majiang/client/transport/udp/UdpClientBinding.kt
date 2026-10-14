@@ -10,6 +10,7 @@ import com.majiang.server.api.ResumeRequest
 import com.majiang.server.api.ResumeSpectatorRequest
 import com.majiang.server.api.RoomBinding
 import com.majiang.server.api.RoomSummary
+import com.majiang.server.api.ServerApiException
 import com.majiang.server.api.ServerConnection
 import com.majiang.server.api.SpectatorBinding
 import com.majiang.transport.api.ApiMessageCodec
@@ -1026,7 +1027,7 @@ class UdpClientBinding(
                     if (!response.success && response.receipt == null) {
                         val errorMsg = response.error ?: ApiErrors.INTERNAL_ERROR
                         future.completeExceptionally(
-                            UdpFrameException(errorMsg, "Server rejected request: $errorMsg")
+                            ServerApiException(code = errorMsg, message = "Server rejected request: $errorMsg")
                         )
                     } else {
                         val result = responseMapper(response, rspFrame)

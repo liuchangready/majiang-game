@@ -1,8 +1,10 @@
 package com.majiang.server.inprocess
 
 import com.majiang.access.PlayerUpdate
+import com.majiang.server.api.ApiErrors
 import com.majiang.server.api.ApiProtocol
 import com.majiang.server.api.CreateRoomRequest
+import com.majiang.server.api.ServerApiException
 import com.majiang.server.api.JoinRoomRequest
 import com.majiang.server.api.JoinSpectatorRequest
 import com.majiang.server.api.PublicCheckpoint
@@ -35,6 +37,7 @@ import com.majiang.transport.api.ProtocolSleeveBloomRequest
 import com.majiang.transport.api.ProtocolSleeveBloomChoiceRequest
 import com.majiang.transport.api.ProtocolBeamSwapRequest
 import com.majiang.transport.api.ProtocolBeamSwapChoiceRequest
+import java.io.IOException
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.atomic.AtomicBoolean
@@ -239,21 +242,21 @@ class InProcessBinding(
         synchronized(stateLock) {
             check(!isClosed.get()) { "InProcessBinding is closed" }
             if (bindingGeneration != reqBindingGen) {
-                throw IllegalStateException("DISPLACED_BY_NEW_CONNECTION")
+                throw ServerApiException(ApiProtocol.DISPLACED_BY_NEW_CONNECTION, "DISPLACED_BY_NEW_CONNECTION")
             }
             if (spectatorRequestSeq != reqSeq) {
-                throw IllegalStateException("DISPLACED_BY_NEW_CONNECTION")
+                throw ServerApiException(ApiProtocol.DISPLACED_BY_NEW_CONNECTION, "DISPLACED_BY_NEW_CONNECTION")
             }
             if (role == InProcessRole.PLAYER) {
-                throw IllegalStateException("ALREADY_IN_ROOM: Must leave current room first")
+                throw ServerApiException(ApiErrors.ALREADY_BOUND, "ALREADY_IN_ROOM: Must leave current room first")
             }
             val active = currentRoom
             if (active != null && !active.closed && active !== targetRoom) {
-                throw IllegalStateException("ALREADY_IN_ROOM: Must leave current room first")
+                throw ServerApiException(ApiErrors.ALREADY_BOUND, "ALREADY_IN_ROOM: Must leave current room first")
             }
             val mem = targetRoom.spectators[specId]
             if (mem == null || mem.generation != specGen) {
-                throw IllegalStateException("DISPLACED_BY_NEW_CONNECTION")
+                throw ServerApiException(ApiProtocol.DISPLACED_BY_NEW_CONNECTION, "DISPLACED_BY_NEW_CONNECTION")
             }
 
             val newBindingGen = ++bindingGeneration
@@ -490,18 +493,18 @@ class InProcessBinding(
     override fun createRoom(req: CreateRoomRequest): CompletableFuture<RoomBinding> {
         if (closed) {
             val f = CompletableFuture<RoomBinding>()
-            f.completeExceptionally(IllegalStateException("InProcessBinding is closed"))
+            f.completeExceptionally(ServerApiException(ApiErrors.INTERNAL_ERROR, "InProcessBinding is closed"))
             return f
         }
         if (role == InProcessRole.SPECTATOR) {
             val f = CompletableFuture<RoomBinding>()
-            f.completeExceptionally(IllegalStateException("ALREADY_IN_ROOM: Must leave spectator room first"))
+            f.completeExceptionally(ServerApiException(ApiErrors.ALREADY_BOUND, "ALREADY_IN_ROOM: Must leave spectator room first"))
             return f
         }
         val active = currentRoom
         if (active != null && !active.closed) {
             val f = CompletableFuture<RoomBinding>()
-            f.completeExceptionally(IllegalStateException("ALREADY_IN_ROOM: Must leave current room first"))
+            f.completeExceptionally(ServerApiException(ApiErrors.ALREADY_BOUND, "ALREADY_IN_ROOM: Must leave current room first"))
             return f
         }
 
@@ -540,18 +543,18 @@ class InProcessBinding(
     override fun joinRoom(req: JoinRoomRequest): CompletableFuture<RoomBinding> {
         if (closed) {
             val f = CompletableFuture<RoomBinding>()
-            f.completeExceptionally(IllegalStateException("InProcessBinding is closed"))
+            f.completeExceptionally(ServerApiException(ApiErrors.INTERNAL_ERROR, "InProcessBinding is closed"))
             return f
         }
         if (role == InProcessRole.SPECTATOR) {
             val f = CompletableFuture<RoomBinding>()
-            f.completeExceptionally(IllegalStateException("ALREADY_IN_ROOM: Must leave spectator room first"))
+            f.completeExceptionally(ServerApiException(ApiErrors.ALREADY_BOUND, "ALREADY_IN_ROOM: Must leave spectator room first"))
             return f
         }
         val active = currentRoom
         if (active != null && !active.closed) {
             val f = CompletableFuture<RoomBinding>()
-            f.completeExceptionally(IllegalStateException("ALREADY_IN_ROOM: Must leave current room first"))
+            f.completeExceptionally(ServerApiException(ApiErrors.ALREADY_BOUND, "ALREADY_IN_ROOM: Must leave current room first"))
             return f
         }
 
@@ -559,7 +562,7 @@ class InProcessBinding(
         val targetRoom = s?.registry?.getRoom(req.roomId)
         if (targetRoom == null || targetRoom.closed) {
             val f = CompletableFuture<RoomBinding>()
-            f.completeExceptionally(IllegalStateException("ROOM_NOT_FOUND: ${req.roomId}"))
+            f.completeExceptionally(ServerApiException(ApiErrors.ROOM_NOT_FOUND, "ROOM_NOT_FOUND: ${req.roomId}"))
             return f
         }
 
@@ -596,19 +599,19 @@ class InProcessBinding(
     override fun resumeSession(req: ResumeRequest): CompletableFuture<RoomBinding> {
         if (closed) {
             val f = CompletableFuture<RoomBinding>()
-            f.completeExceptionally(IllegalStateException("InProcessBinding is closed"))
+            f.completeExceptionally(ServerApiException(ApiErrors.INTERNAL_ERROR, "InProcessBinding is closed"))
             return f
         }
         if (role == InProcessRole.SPECTATOR) {
             val f = CompletableFuture<RoomBinding>()
-            f.completeExceptionally(IllegalStateException("ALREADY_IN_ROOM: Must leave spectator room first"))
+            f.completeExceptionally(ServerApiException(ApiErrors.ALREADY_BOUND, "ALREADY_IN_ROOM: Must leave spectator room first"))
             return f
         }
         val s = server
         val targetRoom = if (currentRoom?.roomId == req.roomId) currentRoom else s?.registry?.getRoom(req.roomId)
         if (targetRoom == null || targetRoom.closed) {
             val f = CompletableFuture<RoomBinding>()
-            f.completeExceptionally(IllegalStateException("ROOM_NOT_FOUND: ${req.roomId}"))
+            f.completeExceptionally(ServerApiException(ApiErrors.ROOM_NOT_FOUND, "ROOM_NOT_FOUND: ${req.roomId}"))
             return f
         }
 
@@ -741,7 +744,7 @@ class InProcessBinding(
     override fun getRoomInfo(): CompletableFuture<ProtocolRoomInfo> {
         if (closed) {
             val f = CompletableFuture<ProtocolRoomInfo>()
-            f.completeExceptionally(IllegalStateException("InProcessBinding is closed"))
+            f.completeExceptionally(ServerApiException(ApiErrors.INTERNAL_ERROR, "InProcessBinding is closed"))
             return f
         }
         val room = currentRoom
@@ -749,7 +752,7 @@ class InProcessBinding(
             return room.getRoomInfo(makeValidator(room))
         }
         val f = CompletableFuture<ProtocolRoomInfo>()
-        f.completeExceptionally(IllegalStateException("Not in a room"))
+        f.completeExceptionally(ServerApiException(ApiErrors.UNAUTHENTICATED_SESSION, "Not in a room"))
         return f
     }
 
@@ -814,7 +817,7 @@ class InProcessBinding(
     override fun capabilities(): CompletableFuture<ProtocolAccessCapabilities> {
         if (closed) {
             val f = CompletableFuture<ProtocolAccessCapabilities>()
-            f.completeExceptionally(IllegalStateException("InProcessBinding is closed"))
+            f.completeExceptionally(ServerApiException(ApiErrors.INTERNAL_ERROR, "InProcessBinding is closed"))
             return f
         }
         return CompletableFuture.completedFuture(
@@ -831,47 +834,77 @@ class InProcessBinding(
         )
     }
 
+    private fun <T> CompletableFuture<T>.mapInProcessErrors(): CompletableFuture<T> {
+        val out = CompletableFuture<T>()
+        this.whenComplete { res, err ->
+            if (err != null) {
+                val root = ServerApiException.unwrap(err) ?: err
+                if (root is ServerApiException) {
+                    out.completeExceptionally(root)
+                } else if (root is IOException) {
+                    out.completeExceptionally(root)
+                } else {
+                    val msg = root.message?.trim().orEmpty()
+                    val mappedCode = when (msg) {
+                        "STALE_SESSION", "INVALID_TOKEN", "INVALID_RESUME_TOKEN", "TOKEN_INVALID" -> ApiErrors.INVALID_TOKEN
+                        "ROOM_NOT_FOUND", "ROOM_CLOSED" -> ApiErrors.ROOM_NOT_FOUND
+                        "ROOM_FULL" -> ApiErrors.ROOM_FULL
+                        "DISPLACED_BY_NEW_CONNECTION" -> ApiProtocol.DISPLACED_BY_NEW_CONNECTION
+                        "ALREADY_IN_ROOM: Must leave current room first" -> ApiErrors.ALREADY_BOUND
+                        "UNAUTHENTICATED", "UNAUTHENTICATED_SESSION" -> ApiErrors.UNAUTHENTICATED_SESSION
+                        "MALFORMED", "MALFORMED_REQUEST" -> ApiErrors.MALFORMED_REQUEST
+                        else -> ApiErrors.INTERNAL_ERROR
+                    }
+                    out.completeExceptionally(ServerApiException(mappedCode, msg.ifBlank { mappedCode }, root))
+                }
+            } else {
+                out.complete(res)
+            }
+        }
+        return out
+    }
+
     override fun snapshot(): CompletableFuture<ProtocolPlayerSnapshot> {
         if (closed) {
             val f = CompletableFuture<ProtocolPlayerSnapshot>()
-            f.completeExceptionally(IllegalStateException("InProcessBinding is closed"))
+            f.completeExceptionally(ServerApiException(ApiErrors.INTERNAL_ERROR, "InProcessBinding is closed"))
             return f
         }
         if (role == InProcessRole.SPECTATOR) {
             val f = CompletableFuture<ProtocolPlayerSnapshot>()
-            f.completeExceptionally(IllegalStateException("SPECTATOR_READ_ONLY"))
+            f.completeExceptionally(ServerApiException(ApiErrors.MALFORMED_REQUEST, "SPECTATOR_READ_ONLY"))
             return f
         }
         val room = currentRoom
         if (room != null) {
             return room.snapshot(viewerSeat, makeValidator(room)).thenApply { snap ->
                 EngineProtocolMapper.toProtocolSnapshot(snap)
-            }
+            }.mapInProcessErrors()
         }
         val f = CompletableFuture<ProtocolPlayerSnapshot>()
-        f.completeExceptionally(IllegalStateException("Not in a room"))
+        f.completeExceptionally(ServerApiException(ApiErrors.UNAUTHENTICATED_SESSION, "Not in a room"))
         return f
     }
 
     override fun decision(): CompletableFuture<ProtocolPlayerDecision> {
         if (closed) {
             val f = CompletableFuture<ProtocolPlayerDecision>()
-            f.completeExceptionally(IllegalStateException("InProcessBinding is closed"))
+            f.completeExceptionally(ServerApiException(ApiErrors.INTERNAL_ERROR, "InProcessBinding is closed"))
             return f
         }
         if (role == InProcessRole.SPECTATOR) {
             val f = CompletableFuture<ProtocolPlayerDecision>()
-            f.completeExceptionally(IllegalStateException("SPECTATOR_READ_ONLY"))
+            f.completeExceptionally(ServerApiException(ApiErrors.MALFORMED_REQUEST, "SPECTATOR_READ_ONLY"))
             return f
         }
         val room = currentRoom
         if (room != null) {
             return room.decision(viewerSeat, makeValidator(room)).thenApply { dec ->
                 EngineProtocolMapper.toProtocolDecision(dec)
-            }
+            }.mapInProcessErrors()
         }
         val f = CompletableFuture<ProtocolPlayerDecision>()
-        f.completeExceptionally(IllegalStateException("Not in a room"))
+        f.completeExceptionally(ServerApiException(ApiErrors.UNAUTHENTICATED_SESSION, "Not in a room"))
         return f
     }
 
@@ -1081,22 +1114,22 @@ class InProcessBinding(
     override fun resume(cursor: Long): CompletableFuture<ProtocolPlayerSnapshot> {
         if (closed) {
             val f = CompletableFuture<ProtocolPlayerSnapshot>()
-            f.completeExceptionally(IllegalStateException("InProcessBinding is closed"))
+            f.completeExceptionally(ServerApiException(ApiErrors.INTERNAL_ERROR, "InProcessBinding is closed"))
             return f
         }
         if (role == InProcessRole.SPECTATOR) {
             val f = CompletableFuture<ProtocolPlayerSnapshot>()
-            f.completeExceptionally(IllegalStateException("SPECTATOR_READ_ONLY"))
+            f.completeExceptionally(ServerApiException(ApiErrors.MALFORMED_REQUEST, "SPECTATOR_READ_ONLY"))
             return f
         }
         val room = currentRoom
         if (room != null) {
             return room.resume(viewerSeat, cursor, makeValidator(room)).thenApply { snap ->
                 EngineProtocolMapper.toProtocolSnapshot(snap)
-            }
+            }.mapInProcessErrors()
         }
         val f = CompletableFuture<ProtocolPlayerSnapshot>()
-        f.completeExceptionally(IllegalStateException("Not in a room"))
+        f.completeExceptionally(ServerApiException(ApiErrors.UNAUTHENTICATED_SESSION, "Not in a room"))
         return f
     }
 
@@ -1151,14 +1184,14 @@ class InProcessBinding(
         if (role == InProcessRole.SPECTATOR) {
             // 观战私有查询必须明确拒绝：私有结算事件按座位过滤，观战无权取得任何玩家视图
             val f = CompletableFuture<List<ProtocolGameEvent>>()
-            f.completeExceptionally(IllegalStateException("SPECTATOR_READ_ONLY"))
+            f.completeExceptionally(ServerApiException(ApiErrors.MALFORMED_REQUEST, "SPECTATOR_READ_ONLY"))
             return f
         }
         val room = currentRoom
         if (room != null) {
             return room.queryRoundResultEvents(viewerSeat, roundId, makeValidator(room)).thenApply { events ->
                 EngineProtocolMapper.toProtocolEvents(events)
-            }
+            }.mapInProcessErrors()
         }
         return CompletableFuture.completedFuture(emptyList())
     }
@@ -1173,18 +1206,18 @@ class InProcessBinding(
         synchronized(stateLock) {
             if (isClosed.get()) {
                 val f = CompletableFuture<SpectatorBinding>()
-                f.completeExceptionally(IllegalStateException("InProcessBinding is closed"))
+                f.completeExceptionally(ServerApiException(ApiErrors.INTERNAL_ERROR, "InProcessBinding is closed"))
                 return f
             }
             if (role == InProcessRole.PLAYER) {
                 val f = CompletableFuture<SpectatorBinding>()
-                f.completeExceptionally(IllegalStateException("ALREADY_IN_ROOM: Player cannot join as spectator without leaving"))
+                f.completeExceptionally(ServerApiException(ApiErrors.ALREADY_BOUND, "ALREADY_IN_ROOM: Player cannot join as spectator without leaving"))
                 return f
             }
             val active = currentRoom
             if (active != null && !active.closed) {
                 val f = CompletableFuture<SpectatorBinding>()
-                f.completeExceptionally(IllegalStateException("ALREADY_IN_ROOM: Must leave current room first"))
+                f.completeExceptionally(ServerApiException(ApiErrors.ALREADY_BOUND, "ALREADY_IN_ROOM: Must leave current room first"))
                 return f
             }
             reqSeq = ++spectatorRequestSeq
@@ -1195,7 +1228,7 @@ class InProcessBinding(
         val targetRoom = s?.registry?.getRoom(req.roomId)
         if (targetRoom == null || targetRoom.closed) {
             val f = CompletableFuture<SpectatorBinding>()
-            f.completeExceptionally(IllegalStateException("ROOM_NOT_FOUND: ${req.roomId}"))
+            f.completeExceptionally(ServerApiException(ApiErrors.ROOM_NOT_FOUND, "ROOM_NOT_FOUND: ${req.roomId}"))
             return f
         }
 
@@ -1228,18 +1261,18 @@ class InProcessBinding(
         synchronized(stateLock) {
             if (isClosed.get()) {
                 val f = CompletableFuture<SpectatorBinding>()
-                f.completeExceptionally(IllegalStateException("InProcessBinding is closed"))
+                f.completeExceptionally(ServerApiException(ApiErrors.INTERNAL_ERROR, "InProcessBinding is closed"))
                 return f
             }
             if (role == InProcessRole.PLAYER) {
                 val f = CompletableFuture<SpectatorBinding>()
-                f.completeExceptionally(IllegalStateException("ALREADY_IN_ROOM: Player cannot resume as spectator without leaving"))
+                f.completeExceptionally(ServerApiException(ApiErrors.ALREADY_BOUND, "ALREADY_IN_ROOM: Player cannot resume as spectator without leaving"))
                 return f
             }
             val active = currentRoom
             if (active != null && !active.closed) {
                 val f = CompletableFuture<SpectatorBinding>()
-                f.completeExceptionally(IllegalStateException("ALREADY_IN_ROOM: Must leave current room first"))
+                f.completeExceptionally(ServerApiException(ApiErrors.ALREADY_BOUND, "ALREADY_IN_ROOM: Must leave current room first"))
                 return f
             }
             reqSeq = ++spectatorRequestSeq
@@ -1250,7 +1283,7 @@ class InProcessBinding(
         val targetRoom = if (currentRoom?.roomId == req.roomId) currentRoom else s?.registry?.getRoom(req.roomId)
         if (targetRoom == null || targetRoom.closed) {
             val f = CompletableFuture<SpectatorBinding>()
-            f.completeExceptionally(IllegalStateException("ROOM_NOT_FOUND: ${req.roomId}"))
+            f.completeExceptionally(ServerApiException(ApiErrors.ROOM_NOT_FOUND, "ROOM_NOT_FOUND: ${req.roomId}"))
             return f
         }
 
@@ -1272,40 +1305,40 @@ class InProcessBinding(
     override fun publicSnapshot(): CompletableFuture<ProtocolPublicSnapshot> {
         if (closed) {
             val f = CompletableFuture<ProtocolPublicSnapshot>()
-            f.completeExceptionally(IllegalStateException("InProcessBinding is closed"))
+            f.completeExceptionally(ServerApiException(ApiErrors.INTERNAL_ERROR, "InProcessBinding is closed"))
             return f
         }
         if (role == InProcessRole.PLAYER) {
             val f = CompletableFuture<ProtocolPublicSnapshot>()
-            f.completeExceptionally(IllegalStateException("ROLE_PLAYER: Player cannot call publicSnapshot"))
+            f.completeExceptionally(ServerApiException(ApiErrors.MALFORMED_REQUEST, "ROLE_PLAYER: Player cannot call publicSnapshot"))
             return f
         }
         val room = currentRoom
         if (room != null) {
-            return room.publicSnapshot(makeValidator(room))
+            return room.publicSnapshot(makeValidator(room)).mapInProcessErrors()
         }
         val f = CompletableFuture<ProtocolPublicSnapshot>()
-        f.completeExceptionally(IllegalStateException("Not in a room"))
+        f.completeExceptionally(ServerApiException(ApiErrors.UNAUTHENTICATED_SESSION, "Not in a room"))
         return f
     }
 
     override fun resumePublic(checkpoint: PublicCheckpoint): CompletableFuture<ProtocolPublicSnapshot> {
         if (closed) {
             val f = CompletableFuture<ProtocolPublicSnapshot>()
-            f.completeExceptionally(IllegalStateException("InProcessBinding is closed"))
+            f.completeExceptionally(ServerApiException(ApiErrors.INTERNAL_ERROR, "InProcessBinding is closed"))
             return f
         }
         if (role == InProcessRole.PLAYER) {
             val f = CompletableFuture<ProtocolPublicSnapshot>()
-            f.completeExceptionally(IllegalStateException("ROLE_PLAYER: Player cannot call resumePublic"))
+            f.completeExceptionally(ServerApiException(ApiErrors.MALFORMED_REQUEST, "ROLE_PLAYER: Player cannot call resumePublic"))
             return f
         }
         val room = currentRoom
         if (room != null) {
-            return room.resumePublic(checkpoint, makeValidator(room))
+            return room.resumePublic(checkpoint, makeValidator(room)).mapInProcessErrors()
         }
         val f = CompletableFuture<ProtocolPublicSnapshot>()
-        f.completeExceptionally(IllegalStateException("Not in a room"))
+        f.completeExceptionally(ServerApiException(ApiErrors.UNAUTHENTICATED_SESSION, "Not in a room"))
         return f
     }
 
@@ -1315,12 +1348,12 @@ class InProcessBinding(
         }
         if (role == InProcessRole.PLAYER) {
             val f = CompletableFuture<List<ProtocolGameEvent>>()
-            f.completeExceptionally(IllegalStateException("ROLE_PLAYER: Player cannot call queryPublicRoundResult"))
+            f.completeExceptionally(ServerApiException(ApiErrors.MALFORMED_REQUEST, "ROLE_PLAYER: Player cannot call queryPublicRoundResult"))
             return f
         }
         val room = currentRoom
         if (room != null) {
-            return room.queryPublicRoundResultEvents(roundId, makeValidator(room))
+            return room.queryPublicRoundResultEvents(roundId, makeValidator(room)).mapInProcessErrors()
         }
         return CompletableFuture.completedFuture(emptyList())
     }

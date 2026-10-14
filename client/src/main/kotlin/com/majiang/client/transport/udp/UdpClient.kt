@@ -22,19 +22,62 @@ object UdpClient {
      * @param host 远端服务器主机名或 IP 地址
      * @param port 远端服务器 UDP 监听端口
      * @param clock 注入的协议时钟实现（默认系统时钟）
-     * @param scheduler 注入的异步调度器实现（默认单线程守护调度器）
+     * @param scheduler 注入的异步调度器实现（为空时内部创建 ScheduledExecutorUdpScheduler 并由当前连接拥有与释放）
+     * @param closeSchedulerOnShutdown 仅在注入外部调度器时生效：是否在连接关闭/失败时释放该调度器（默认 false，由调用方保留所有权；显式 true 时转交所有权由连接释放）。内部创建的调度器始终由连接自动释放，不受此参数影响。
      * @return 包含已建立网络监听的 [UdpClientBinding] 异步凭据
      */
     fun connect(
         host: String,
         port: Int,
         clock: UdpClock = UdpClock.SYSTEM,
-        scheduler: UdpScheduler = ScheduledExecutorUdpScheduler(),
+        scheduler: UdpScheduler? = null,
         closeSchedulerOnShutdown: Boolean = false
     ): CompletableFuture<UdpClientBinding> {
+        return connectInternal(
+            host = host,
+            port = port,
+            clock = clock,
+            scheduler = scheduler,
+            closeSchedulerOnShutdown = closeSchedulerOnShutdown,
+            schedulerFactory = { ScheduledExecutorUdpScheduler() }
+        )
+    }
+
+    /**
+     * 内部工厂重载：仅供测试与模块内部在调用级别注入构造调度器的工厂，用于失败路径资源观测，不向公共 API 暴露
+     */
+    internal fun connect(
+        host: String,
+        port: Int,
+        clock: UdpClock = UdpClock.SYSTEM,
+        scheduler: UdpScheduler? = null,
+        closeSchedulerOnShutdown: Boolean = false,
+        schedulerFactory: () -> UdpScheduler
+    ): CompletableFuture<UdpClientBinding> {
+        return connectInternal(
+            host = host,
+            port = port,
+            clock = clock,
+            scheduler = scheduler,
+            closeSchedulerOnShutdown = closeSchedulerOnShutdown,
+            schedulerFactory = schedulerFactory
+        )
+    }
+
+    internal fun connectInternal(
+        host: String,
+        port: Int,
+        clock: UdpClock = UdpClock.SYSTEM,
+        scheduler: UdpScheduler? = null,
+        closeSchedulerOnShutdown: Boolean = false,
+        schedulerFactory: () -> UdpScheduler = { ScheduledExecutorUdpScheduler() }
+    ): CompletableFuture<UdpClientBinding> {
         val future = CompletableFuture<UdpClientBinding>()
+        val shouldCloseScheduler = if (scheduler == null) true else closeSchedulerOnShutdown
+        var effectiveScheduler: UdpScheduler? = scheduler
         var socket: DatagramSocket? = null
         try {
+            val activeScheduler = effectiveScheduler ?: schedulerFactory().also { effectiveScheduler = it }
             val sock = DatagramSocket()
             socket = sock
             if (port !in 1..65535) {
@@ -81,9 +124,10 @@ object UdpClient {
                     try {
                         sock.close()
                     } catch (_: Exception) {}
-                    if (closeSchedulerOnShutdown && scheduler is AutoCloseable) {
+                    val schedulerToClose = activeScheduler
+                    if (shouldCloseScheduler && schedulerToClose is AutoCloseable) {
                         try {
-                            scheduler.close()
+                            schedulerToClose.close()
                         } catch (_: Exception) {}
                     }
                 }
@@ -92,10 +136,10 @@ object UdpClient {
             binding = UdpClientBinding(
                 rawSender = rawSender,
                 clock = clock,
-                scheduler = scheduler,
+                scheduler = activeScheduler,
                 onCloseCallback = {
                     try {
-                        scheduler.schedule(2000L) {
+                        activeScheduler.schedule(2000L) {
                             closeSocket()
                         }
                     } catch (_: Exception) {}
@@ -118,9 +162,10 @@ object UdpClient {
             try {
                 socket?.close()
             } catch (_: Exception) {}
-            if (closeSchedulerOnShutdown && scheduler is AutoCloseable) {
+            val schedulerToClose = effectiveScheduler
+            if (shouldCloseScheduler && schedulerToClose is AutoCloseable) {
                 try {
-                    scheduler.close()
+                    schedulerToClose.close()
                 } catch (_: Exception) {}
             }
             future.completeExceptionally(e)

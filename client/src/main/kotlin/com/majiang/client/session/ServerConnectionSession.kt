@@ -935,6 +935,10 @@ class ServerConnectionSession(
 
     private fun scheduleReconnect(attempt: Int, initialDelay: Long) {
         if (closed || connectionState != ConnectionState.RECONNECTING) return
+        if (attempt >= 10) {
+            terminateSession("RECONNECT_ATTEMPTS_EXHAUSTED")
+            return
+        }
 
         val sched = scheduler
         if (sched == null) {
@@ -995,11 +999,9 @@ class ServerConnectionSession(
                         }
                         if (resumeErr != null || newSpecBinding == null) {
                             newConn.close()
-                            val msg = resumeErr?.message.orEmpty()
-                            val isPermanentErr = msg.contains("NOT_FOUND") || msg.contains("INVALID") ||
-                                msg.contains("CLOSED") || msg.contains("REJECTED") || msg.contains("KICK")
+                            val isPermanentErr = ReconnectErrorClassifier.isPermanent(resumeErr)
                             if (isPermanentErr || attempt >= 10) {
-                                val finalReason = if (msg.isNotEmpty()) msg else "RESUME_FAILED"
+                                val finalReason = ReconnectErrorClassifier.extractReason(resumeErr)
                                 terminateSession(finalReason)
                             } else {
                                 scheduleReconnect(attempt + 1, initialDelay)
@@ -1010,9 +1012,15 @@ class ServerConnectionSession(
                         currentConnection = newConn
                         onSpectatorBindingEstablished(newSpecBinding, newEpoch, null)
                     }
-                } catch (_: Throwable) {
+                } catch (t: Throwable) {
                     newConn.close()
-                    scheduleReconnect(attempt + 1, initialDelay)
+                    val isPermanentErr = ReconnectErrorClassifier.isPermanent(t)
+                    if (isPermanentErr || attempt >= 10) {
+                        val finalReason = ReconnectErrorClassifier.extractReason(t)
+                        terminateSession(finalReason)
+                    } else {
+                        scheduleReconnect(attempt + 1, initialDelay)
+                    }
                 }
                 return@whenComplete
             }
@@ -1041,11 +1049,9 @@ class ServerConnectionSession(
                     }
                     if (resumeErr != null || newBinding == null) {
                         newConn.close()
-                        val msg = resumeErr?.message.orEmpty()
-                        val isPermanentErr = msg.contains("NOT_FOUND") || msg.contains("INVALID") ||
-                            msg.contains("CLOSED") || msg.contains("REJECTED") || msg.contains("KICK")
+                        val isPermanentErr = ReconnectErrorClassifier.isPermanent(resumeErr)
                         if (isPermanentErr || attempt >= 10) {
-                            val finalReason = if (msg.isNotEmpty()) msg else "RESUME_FAILED"
+                            val finalReason = ReconnectErrorClassifier.extractReason(resumeErr)
                             terminateSession(finalReason)
                         } else {
                             scheduleReconnect(attempt + 1, initialDelay)
@@ -1057,9 +1063,15 @@ class ServerConnectionSession(
                     currentConnection = newConn
                     onBindingEstablished(newBinding, newEpoch, null)
                 }
-            } catch (_: Throwable) {
+            } catch (t: Throwable) {
                 newConn.close()
-                scheduleReconnect(attempt + 1, initialDelay)
+                val isPermanentErr = ReconnectErrorClassifier.isPermanent(t)
+                if (isPermanentErr || attempt >= 10) {
+                    val finalReason = ReconnectErrorClassifier.extractReason(t)
+                    terminateSession(finalReason)
+                } else {
+                    scheduleReconnect(attempt + 1, initialDelay)
+                }
             }
         }
     }
