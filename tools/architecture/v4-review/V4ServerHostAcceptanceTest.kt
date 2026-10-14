@@ -126,9 +126,14 @@ class V4ServerHostAcceptanceTest {
             assertEquals(originalPhase, host.authority.queryView(0).phase)
             host.close()
             assertTrue(start.isDone && query.isDone && tick.isDone, "Close must not strand queued futures")
+            assertTrue(start.isCompletedExceptionally && query.isCompletedExceptionally && tick.isCompletedExceptionally,
+                "Unexecuted operations must fail explicitly when their host closes")
             assertFalse(executor.isShutdown, "Injected executor belongs to its caller")
+            // Closing the session may legitimately change its projected phase. The cancelled
+            // queued operations must not change that closed baseline when the executor drains.
+            val closedPhase = host.authority.queryView(0).phase
             executor.runQueued()
-            assertEquals(originalPhase, host.authority.queryView(0).phase, "Cancelled queued work cannot mutate after close")
+            assertEquals(closedPhase, host.authority.queryView(0).phase, "Cancelled queued work cannot mutate after close")
         } finally {
             host.close()
             executor.shutdownNow()
@@ -157,7 +162,7 @@ class V4ServerHostAcceptanceTest {
         }
     }
 
-    @Test fun shuffleAndActionReceiptNamespacesRemainIndependentAfterLaterCommit() {
+    @Test fun shuffleAndActionRequestIdsConflictWithoutOverwritingReceipts() {
         val clock = Clock()
         val host = ServerTableHost(clock = clock,
             config = com.majiang.match.MatchConfig(shuffleConfig = com.majiang.stacking.ShuffleConfig(enabled = true)),
@@ -176,9 +181,21 @@ class V4ServerHostAcceptanceTest {
             val action = com.majiang.application.ActionChoice("same-request", decision.roundId,
                 decision.decisionId, decision.controlEpoch, option.optionId)
             val actionReceipt = host.submitChoice(0, action).await()
-            assertNotEquals(com.majiang.access.ReceiptStatus.REJECTED, actionReceipt.status)
+            assertEquals(com.majiang.access.ReceiptStatus.REJECTED, actionReceipt.status)
+            assertEquals("REQUEST_ID_CONFLICT", actionReceipt.reason)
+            assertEquals(0, host.snapshot(0).await().view.discards[0].size,
+                "Cross-operation request identity conflict must not execute a discard")
+            val validAction = action.copy(requestId = "distinct-action")
+            val validReceipt = host.submitChoice(0, validAction).await()
+            assertNotEquals(com.majiang.access.ReceiptStatus.REJECTED, validReceipt.status)
             assertEquals(planReceipt, host.submitShufflePlan(0, plan).await(), "Later action cannot overwrite a shuffle receipt")
-            assertEquals(actionReceipt, host.submitChoice(0, action).await())
+            val conflictRetry = host.submitChoice(0, action).await()
+            // Conflict replies describe the current stream cursor; they do not replace the
+            // originally accepted shuffle receipt or acquire an independent identity entry.
+            assertEquals(actionReceipt.requestId, conflictRetry.requestId)
+            assertEquals(actionReceipt.status, conflictRetry.status)
+            assertEquals(actionReceipt.reason, conflictRetry.reason)
+            assertEquals(validReceipt, host.submitChoice(0, validAction).await())
             assertEquals(1, host.snapshot(0).await().view.discards[0].size)
         } finally {
             host.close()

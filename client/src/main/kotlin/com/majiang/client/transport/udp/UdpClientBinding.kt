@@ -89,7 +89,21 @@ class UdpClientBinding(
     @Volatile
     private var terminatingConnectionId: Int = initialConnectionId
 
-    private val isHealingSnapshot = AtomicBoolean(false)
+    private data class PlayerHealToken(
+        val epoch: Long,
+        val id: Long
+    )
+    private val playerHealSeq = AtomicLong(0L)
+    private val activePlayerHealToken = AtomicReference<PlayerHealToken?>(null)
+
+    private data class PlayerDispatchItem(
+        val epoch: Long,
+        val roomId: String,
+        val sessionId: String,
+        val syncEpoch: String,
+        val viewerSeat: Int,
+        val update: ProtocolPlayerUpdate
+    )
 
     @Volatile
     var boundRoomId: String? = null
@@ -101,6 +115,14 @@ class UdpClientBinding(
 
     @Volatile
     var resumeToken: String? = null
+        private set
+
+    @Volatile
+    var boundSessionId: String? = null
+        private set
+
+    @Volatile
+    var boundSyncEpoch: String? = null
         private set
 
     @Volatile
@@ -119,7 +141,9 @@ class UdpClientBinding(
     private val updateListeners = CopyOnWriteArrayList<(ProtocolPlayerUpdate) -> Unit>()
     private val roomUpdateListeners = CopyOnWriteArrayList<(ProtocolRoomInfo) -> Unit>()
     private val disconnectListeners = CopyOnWriteArrayList<(reason: String) -> Unit>()
-    private val earlyPushBuffer = ConcurrentLinkedQueue<ProtocolPlayerUpdate>()
+    private val earlyPushBuffer = ConcurrentLinkedQueue<PlayerDispatchItem>()
+    private val earlyPushOverflowed = AtomicBoolean(false)
+    private val earlyPushCapacity = 64
     private val earlyRoomUpdateBuffer = ConcurrentLinkedQueue<ProtocolRoomInfo>()
 
     @Volatile
@@ -548,37 +572,79 @@ class UdpClientBinding(
                     return
                 }
 
-                // 角色与房间校验：非玩家绑定时不消费错角色推送
-                val isPlayer = synchronized(stateLock) {
-                    !closed && boundRoomId != null && boundSeat != null
-                }
-                if (!isPlayer) return
-
                 val update = decoded.update
                 val isFull = decoded.isFullSnapshot
                 val effectiveUpdate = if (update.isFullSnapshot != isFull) update.copy(isFullSnapshot = isFull) else update
-                val result = pushSequencer.offer(
-                    cursor = effectiveUpdate.snapshot.cursor,
-                    fromCursor = effectiveUpdate.fromCursor,
-                    isFullSnapshot = isFull
-                )
+                val snap = effectiveUpdate.snapshot
 
-                when (result) {
-                    is PushOfferResult.Applied -> {
-                        dispatchUpdate(effectiveUpdate)
+                var dispatchItem: PlayerDispatchItem? = null
+                var resendFromCursor: Long? = null
+                var triggerHeal = false
+
+                synchronized(stateLock) {
+                    if (closed || boundRoomId == null || boundSeat == null) {
+                        return
                     }
-                    is PushOfferResult.GapDetected -> {
-                        if (!isFull) {
-                            sendResendRequest(result.missingFromCursor)
+
+                    val curEpoch = bindingEpoch
+                    val curRoom = boundRoomId!!
+                    val curSeat = boundSeat!!
+                    val curSessionId = boundSessionId
+                    val curSyncEpoch = boundSyncEpoch
+
+                    if (snap.view.viewerSeat != curSeat) return
+                    if (curSessionId != null && snap.sessionId != curSessionId) return
+                    if (curSyncEpoch != null && snap.syncEpoch != curSyncEpoch) return
+
+                    val result = pushSequencer.offer(
+                        cursor = snap.cursor,
+                        fromCursor = effectiveUpdate.fromCursor,
+                        isFullSnapshot = isFull
+                    )
+
+                    when (result) {
+                        is PushOfferResult.Applied -> {
+                            if (isFull) {
+                                boundSessionId = snap.sessionId
+                                boundSyncEpoch = snap.syncEpoch
+                                earlyPushOverflowed.set(false)
+                            }
+                            if (earlyPushOverflowed.get() && !isFull) {
+                                triggerHeal = true
+                            } else {
+                                dispatchItem = PlayerDispatchItem(
+                                    epoch = curEpoch,
+                                    roomId = curRoom,
+                                    sessionId = snap.sessionId,
+                                    syncEpoch = snap.syncEpoch,
+                                    viewerSeat = curSeat,
+                                    update = effectiveUpdate
+                                )
+                            }
+                        }
+                        is PushOfferResult.GapDetected -> {
+                            if (earlyPushOverflowed.get()) {
+                                triggerHeal = true
+                            } else if (!isFull) {
+                                resendFromCursor = result.missingFromCursor
+                            }
+                        }
+                        is PushOfferResult.BeyondWindowGap -> {
+                            triggerHeal = true
+                        }
+                        is PushOfferResult.Stale -> {
+                            if (earlyPushOverflowed.get() && !isFull) {
+                                triggerHeal = true
+                            }
                         }
                     }
-                    is PushOfferResult.BeyondWindowGap -> {
-                        triggerFullSnapshotSelfHeal()
-                    }
-                    is PushOfferResult.Stale -> {
-                        // 陈旧包安全丢弃
-                    }
                 }
+
+                if (triggerHeal) {
+                    triggerFullSnapshotSelfHeal()
+                }
+                resendFromCursor?.let { sendResendRequest(it) }
+                dispatchItem?.let { dispatchUpdate(it) }
             }
         }
     }
@@ -621,23 +687,87 @@ class UdpClientBinding(
         sendFrame(resendFrame)
     }
 
-    private fun triggerFullSnapshotSelfHeal() {
-        if (!isHealingSnapshot.compareAndSet(false, true)) {
-            return
+    private fun requestHealingSnapshot(
+        roomId: String?,
+        token: String?
+    ): CompletableFuture<ProtocolPlayerSnapshot> {
+        val apiReq = ApiRequest(
+            api = ApiTags.SNAPSHOT,
+            requestId = UUID.randomUUID().toString(),
+            roomId = roomId,
+            token = token
+        )
+        return sendRequest(apiReq) { rsp, _ ->
+            rsp.snapshot ?: throw IllegalStateException("Missing snapshot in SNAPSHOT response")
         }
-        snapshot().whenComplete { snap, err ->
+    }
+
+    private fun triggerFullSnapshotSelfHeal() {
+        val epochAtRequest: Long
+        val healToken: PlayerHealToken
+        val currentRoomId: String?
+        val currentToken: String?
+        synchronized(stateLock) {
+            if (closed || boundRoomId == null || boundSeat == null) return
+            epochAtRequest = bindingEpoch
+            val inFlightToken = activePlayerHealToken.get()
+            if (inFlightToken != null && inFlightToken.epoch == epochAtRequest) {
+                // 当前绑定代次已有在途自愈请求，去重避免并发洪泛
+                return
+            }
+            val token = PlayerHealToken(epochAtRequest, playerHealSeq.incrementAndGet())
+            activePlayerHealToken.set(token)
+            healToken = token
+            currentRoomId = boundRoomId
+            currentToken = resumeToken
+        }
+
+        requestHealingSnapshot(currentRoomId, currentToken).whenComplete { snap, _ ->
             try {
-                if (snap != null && !closed) {
-                    pushSequencer.adoptFullSnapshot(snap.cursor)
-                    val update = ProtocolPlayerUpdate(
-                        snapshot = snap,
-                        fromCursor = snap.cursor,
-                        visibleEvents = emptyList()
-                    )
-                    dispatchUpdate(update)
+                // 换绑/离房/关闭后迟到的旧自愈响应不写回当前绑定状态
+                if (snap != null) {
+                    val toDispatch = mutableListOf<PlayerDispatchItem>()
+                    synchronized(stateLock) {
+                        if (!closed && bindingEpoch == epochAtRequest && boundRoomId != null && boundSeat != null) {
+                            val currentCursor = pushSequencer.getCurrentCursor()
+                            val curSessionId = boundSessionId
+                            val curSyncEpoch = boundSyncEpoch
+                            val isStale = (curSessionId != null && snap.sessionId != curSessionId) ||
+                                (curSyncEpoch != null && snap.syncEpoch != curSyncEpoch) ||
+                                (snap.view.viewerSeat != boundSeat) ||
+                                (if (earlyPushOverflowed.get()) snap.cursor < currentCursor else snap.cursor <= currentCursor)
+                            if (!isStale) {
+                                pushSequencer.adoptFullSnapshot(snap.cursor)
+                                earlyPushOverflowed.set(false)
+                                boundSessionId = snap.sessionId
+                                boundSyncEpoch = snap.syncEpoch
+                                val update = ProtocolPlayerUpdate(
+                                    snapshot = snap,
+                                    fromCursor = snap.cursor,
+                                    visibleEvents = emptyList(),
+                                    isFullSnapshot = true
+                                )
+                                toDispatch.add(
+                                    PlayerDispatchItem(
+                                        epoch = epochAtRequest,
+                                        roomId = boundRoomId!!,
+                                        sessionId = snap.sessionId,
+                                        syncEpoch = snap.syncEpoch,
+                                        viewerSeat = snap.view.viewerSeat,
+                                        update = update
+                                    )
+                                )
+                            }
+                        }
+                    }
+                    for (item in toDispatch) {
+                        dispatchUpdate(item)
+                    }
                 }
             } finally {
-                isHealingSnapshot.set(false)
+                // 仅当 activePlayerHealToken 仍为本次发起的 healToken 时才释放标志；
+                // 换绑或离房已将其清空或交由新代次，旧请求绝不能清除新代次的恢复标志！
+                activePlayerHealToken.compareAndSet(healToken, null)
             }
         }
     }
@@ -719,15 +849,57 @@ class UdpClientBinding(
         }
     }
 
-    private fun dispatchUpdate(update: ProtocolPlayerUpdate) {
-        if (updateListeners.isEmpty()) {
-            earlyPushBuffer.add(update)
-        } else {
-            for (listener in updateListeners) {
-                try {
-                    listener(update)
-                } catch (_: Exception) {}
+    private fun isPlayerItemValidUnderLock(item: PlayerDispatchItem): Boolean {
+        if (closed || bindingEpoch != item.epoch || boundRoomId != item.roomId || boundSeat == null) {
+            return false
+        }
+        if (boundSeat != item.viewerSeat) {
+            return false
+        }
+        if (boundSessionId != null && item.sessionId != boundSessionId) {
+            return false
+        }
+        if (boundSyncEpoch != null && item.syncEpoch != boundSyncEpoch) {
+            return false
+        }
+        return true
+    }
+
+    private fun dispatchUpdate(item: PlayerDispatchItem) {
+        val listenersToNotify: List<(ProtocolPlayerUpdate) -> Unit>
+        synchronized(stateLock) {
+            if (!isPlayerItemValidUnderLock(item)) {
+                // 绑定已失效（换绑、离房、关闭或身份不匹配）：丢弃旧绑定的推送，不向新绑定或大厅派发
+                return
             }
+            if (updateListeners.isEmpty()) {
+                if (earlyPushBuffer.size < earlyPushCapacity && !earlyPushOverflowed.get()) {
+                    earlyPushBuffer.add(item)
+                } else {
+                    // 早期缓冲溢出：清空部分回放并标记，注册监听器时改用权威全量自愈，绝不静默丢弃
+                    earlyPushBuffer.clear()
+                    earlyPushOverflowed.set(true)
+                }
+                return
+            }
+            // 如果早期缓冲曾溢出且尚未通过全量快照建立新基线，丢弃普通增量更新，绝不伪造连续更新
+            if (earlyPushOverflowed.get() && !item.update.isFullSnapshot) {
+                return
+            }
+            if (item.update.isFullSnapshot) {
+                earlyPushOverflowed.set(false)
+            }
+            listenersToNotify = updateListeners.toList()
+        }
+
+        for (listener in listenersToNotify) {
+            val valid = synchronized(stateLock) {
+                isPlayerItemValidUnderLock(item)
+            }
+            if (!valid) break
+            try {
+                listener(item.update)
+            } catch (_: Exception) {}
         }
     }
 
@@ -870,6 +1042,145 @@ class UdpClientBinding(
     }
 
     // ==========================================
+    // 统一绑定与生命周期状态切换 (必须在 stateLock 内调用)
+    // ==========================================
+
+    private fun applyPlayerBindingState(
+        newBinding: RoomBinding,
+        frameConnectionId: Int,
+        isResume: Boolean
+    ) {
+        if (frameConnectionId != 0 && this.connectionId == 0) {
+            this.connectionId = frameConnectionId
+            this.terminatingConnectionId = frameConnectionId
+        }
+        this.boundRoomId = newBinding.roomId
+        this.boundSeat = newBinding.seat
+        this.resumeToken = newBinding.resumeToken
+        this.boundSessionId = newBinding.snapshot.sessionId
+        this.boundSyncEpoch = newBinding.snapshot.syncEpoch
+        this.bindingEpoch++
+
+        // 清除观战流状态
+        this.boundSpectatorId = null
+        this.boundSpectatorToken = null
+        this.lastPublicSessionId = null
+        this.lastPublicSyncEpoch = null
+        this.lastPublicCursor = 0L
+        this.publicReorderBuffer.clear()
+        this.earlyPublicPushBuffer.clear()
+        this.earlyPublicPushOverflowed.set(false)
+        this.activePublicHealToken.set(null)
+
+        // 清除/重置房间信息与派发队列
+        this.lastRoomInfoVersion = 0L
+        this.latestRoomInfo = null
+        this.earlyRoomUpdateBuffer.clear()
+        this.roomDispatchQueue.clear()
+        this.listenerMaxVersions.clear()
+
+        // 清除/重置玩家早期缓冲与自愈标记
+        this.earlyPushBuffer.clear()
+        this.earlyPushOverflowed.set(false)
+        this.activePlayerHealToken.set(null)
+    }
+
+    private fun applySpectatorBindingState(
+        binding: SpectatorBinding,
+        frameConnectionId: Int,
+        isResume: Boolean
+    ) {
+        if (frameConnectionId != 0 && this.connectionId == 0) {
+            this.connectionId = frameConnectionId
+            this.terminatingConnectionId = frameConnectionId
+        }
+        this.boundRoomId = binding.roomId
+        this.boundSeat = null
+        this.resumeToken = null
+        this.boundSessionId = null
+        this.boundSyncEpoch = null
+        this.boundSpectatorId = binding.spectatorId
+        this.boundSpectatorToken = binding.resumeToken
+        this.bindingEpoch++
+
+        // 清除玩家流状态
+        this.earlyPushBuffer.clear()
+        this.earlyPushOverflowed.set(false)
+        this.activePlayerHealToken.set(null)
+
+        // 清除/重置房间信息与派发队列
+        this.lastRoomInfoVersion = 0L
+        this.latestRoomInfo = null
+        this.earlyRoomUpdateBuffer.clear()
+        this.roomDispatchQueue.clear()
+        this.listenerMaxVersions.clear()
+
+        // 观战流基线与重排状态
+        this.lastPublicSessionId = binding.snapshot.sessionId
+        this.lastPublicSyncEpoch = binding.snapshot.syncEpoch
+        this.lastPublicCursor = binding.snapshot.cursor
+        this.publicReorderBuffer.clear()
+        this.earlyPublicPushBuffer.clear()
+        this.earlyPublicPushOverflowed.set(false)
+        this.activePublicHealToken.set(null)
+    }
+
+    private fun applyLeaveRoomState() {
+        this.connectionId = 0
+        this.boundRoomId = null
+        this.boundSeat = null
+        this.resumeToken = null
+        this.boundSessionId = null
+        this.boundSyncEpoch = null
+        this.boundSpectatorId = null
+        this.boundSpectatorToken = null
+        this.bindingEpoch++
+
+        this.activePlayerHealToken.set(null)
+        this.activePublicHealToken.set(null)
+
+        this.lastRoomInfoVersion = 0L
+        this.latestRoomInfo = null
+        this.lastPublicSessionId = null
+        this.lastPublicSyncEpoch = null
+        this.lastPublicCursor = 0L
+
+        this.publicReorderBuffer.clear()
+        this.earlyPublicPushOverflowed.set(false)
+        this.earlyRoomUpdateBuffer.clear()
+        this.roomDispatchQueue.clear()
+        this.listenerMaxVersions.clear()
+        this.earlyPushBuffer.clear()
+        this.earlyPushOverflowed.set(false)
+        this.earlyPublicPushBuffer.clear()
+    }
+
+    private fun applyCloseState(reason: String): Boolean {
+        if (!closed) {
+            closed = true
+            disconnectReason = reason
+            if (connectionId != 0) {
+                terminatingConnectionId = connectionId
+            }
+            boundSessionId = null
+            boundSyncEpoch = null
+            bindingEpoch++
+            this.activePlayerHealToken.set(null)
+            this.activePublicHealToken.set(null)
+            earlyRoomUpdateBuffer.clear()
+            roomDispatchQueue.clear()
+            listenerMaxVersions.clear()
+            earlyPushBuffer.clear()
+            earlyPushOverflowed.set(false)
+            earlyPublicPushBuffer.clear()
+            earlyPublicPushOverflowed.set(false)
+            publicReorderBuffer.clear()
+            return true
+        }
+        return false
+    }
+
+    // ==========================================
     // LobbyApi 接口实现
     // ==========================================
 
@@ -897,27 +1208,7 @@ class UdpClientBinding(
                 snapshot = rsp.snapshot ?: throw IllegalStateException("Missing snapshot in CREATE_ROOM response")
             )
             synchronized(stateLock) {
-                if (rspFrame.connectionId != 0 && this.connectionId == 0) {
-                    this.connectionId = rspFrame.connectionId
-                    this.terminatingConnectionId = rspFrame.connectionId
-                }
-                this.boundRoomId = newBinding.roomId
-                this.boundSeat = newBinding.seat
-                this.resumeToken = newBinding.resumeToken
-                this.boundSpectatorId = null
-                this.boundSpectatorToken = null
-                this.lastPublicSessionId = null
-                this.lastPublicSyncEpoch = null
-                this.lastPublicCursor = 0L
-                this.publicReorderBuffer.clear()
-                this.earlyPublicPushOverflowed.set(false)
-                this.bindingEpoch++
-                this.lastRoomInfoVersion = 0L
-                this.latestRoomInfo = null
-                this.earlyRoomUpdateBuffer.clear()
-                this.roomDispatchQueue.clear()
-                this.listenerMaxVersions.clear()
-                this.earlyPublicPushBuffer.clear()
+                applyPlayerBindingState(newBinding, rspFrame.connectionId, false)
             }
             replayGuard.reset(0)
             pushSequencer.adoptFullSnapshot(newBinding.snapshot.cursor)
@@ -941,27 +1232,7 @@ class UdpClientBinding(
                 snapshot = rsp.snapshot ?: throw IllegalStateException("Missing snapshot in JOIN_ROOM response")
             )
             synchronized(stateLock) {
-                if (rspFrame.connectionId != 0 && this.connectionId == 0) {
-                    this.connectionId = rspFrame.connectionId
-                    this.terminatingConnectionId = rspFrame.connectionId
-                }
-                this.boundRoomId = newBinding.roomId
-                this.boundSeat = newBinding.seat
-                this.resumeToken = newBinding.resumeToken
-                this.boundSpectatorId = null
-                this.boundSpectatorToken = null
-                this.lastPublicSessionId = null
-                this.lastPublicSyncEpoch = null
-                this.lastPublicCursor = 0L
-                this.publicReorderBuffer.clear()
-                this.earlyPublicPushOverflowed.set(false)
-                this.bindingEpoch++
-                this.lastRoomInfoVersion = 0L
-                this.latestRoomInfo = null
-                this.earlyRoomUpdateBuffer.clear()
-                this.roomDispatchQueue.clear()
-                this.listenerMaxVersions.clear()
-                this.earlyPublicPushBuffer.clear()
+                applyPlayerBindingState(newBinding, rspFrame.connectionId, false)
             }
             replayGuard.reset(0)
             pushSequencer.adoptFullSnapshot(newBinding.snapshot.cursor)
@@ -985,27 +1256,7 @@ class UdpClientBinding(
                 snapshot = rsp.snapshot ?: throw IllegalStateException("Missing snapshot in RESUME_SESSION response")
             )
             synchronized(stateLock) {
-                if (rspFrame.connectionId != 0 && this.connectionId == 0) {
-                    this.connectionId = rspFrame.connectionId
-                    this.terminatingConnectionId = rspFrame.connectionId
-                }
-                this.boundRoomId = newBinding.roomId
-                this.boundSeat = newBinding.seat
-                this.resumeToken = newBinding.resumeToken
-                this.boundSpectatorId = null
-                this.boundSpectatorToken = null
-                this.lastPublicSessionId = null
-                this.lastPublicSyncEpoch = null
-                this.lastPublicCursor = 0L
-                this.publicReorderBuffer.clear()
-                this.earlyPublicPushOverflowed.set(false)
-                this.bindingEpoch++
-                this.lastRoomInfoVersion = 0L
-                this.latestRoomInfo = null
-                this.earlyRoomUpdateBuffer.clear()
-                this.roomDispatchQueue.clear()
-                this.listenerMaxVersions.clear()
-                this.earlyPublicPushBuffer.clear()
+                applyPlayerBindingState(newBinding, rspFrame.connectionId, true)
             }
             replayGuard.reset(0)
             pushSequencer.adoptFullSnapshot(newBinding.snapshot.cursor)
@@ -1030,26 +1281,7 @@ class UdpClientBinding(
             )
             if (receipt.status == ProtocolReceiptStatus.APPLIED) {
                 synchronized(stateLock) {
-                    this.connectionId = 0
-                    this.boundRoomId = null
-                    this.boundSeat = null
-                    this.resumeToken = null
-                    this.boundSpectatorId = null
-                    this.boundSpectatorToken = null
-                    this.bindingEpoch++
-                    this.activePublicHealToken.set(null)
-                    this.lastRoomInfoVersion = 0L
-                    this.latestRoomInfo = null
-                    this.lastPublicSessionId = null
-                    this.lastPublicSyncEpoch = null
-                    this.lastPublicCursor = 0L
-                    this.publicReorderBuffer.clear()
-                    this.earlyPublicPushOverflowed.set(false)
-                    this.earlyRoomUpdateBuffer.clear()
-                    this.roomDispatchQueue.clear()
-                    this.listenerMaxVersions.clear()
-                    this.earlyPushBuffer.clear()
-                    this.earlyPublicPushBuffer.clear()
+                    applyLeaveRoomState()
                 }
                 replayGuard.reset(0)
                 pushSequencer.reset(0L)
@@ -1164,13 +1396,27 @@ class UdpClientBinding(
     }
 
     override fun snapshot(): CompletableFuture<ProtocolPlayerSnapshot> {
+        val (currentRoomId, currentToken, epochAtRequest) = synchronized(stateLock) {
+            Triple(boundRoomId, resumeToken, bindingEpoch)
+        }
         val apiReq = ApiRequest(
             api = ApiTags.SNAPSHOT,
-            requestId = UUID.randomUUID().toString()
+            requestId = UUID.randomUUID().toString(),
+            roomId = currentRoomId,
+            token = currentToken
         )
         return sendRequest(apiReq) { rsp, _ ->
             val snap = rsp.snapshot ?: throw IllegalStateException("Missing snapshot in SNAPSHOT response")
-            pushSequencer.adoptFullSnapshot(snap.cursor)
+            synchronized(stateLock) {
+                if (!closed && bindingEpoch == epochAtRequest && boundRoomId != null && boundSeat != null) {
+                    if ((boundSessionId == null || snap.sessionId == boundSessionId) &&
+                        (boundSyncEpoch == null || snap.syncEpoch == boundSyncEpoch) &&
+                        snap.view.viewerSeat == boundSeat
+                    ) {
+                        pushSequencer.adoptFullSnapshot(snap.cursor)
+                    }
+                }
+            }
             snap
         }
     }
@@ -1319,14 +1565,23 @@ class UdpClientBinding(
     }
 
     override fun resume(cursor: Long): CompletableFuture<ProtocolPlayerSnapshot> {
+        val (currentRoomId, currentToken, epochAtRequest) = synchronized(stateLock) {
+            Triple(boundRoomId, resumeToken, bindingEpoch)
+        }
         val apiReq = ApiRequest(
             api = ApiTags.RESUME_CURSOR,
             requestId = UUID.randomUUID().toString(),
+            roomId = currentRoomId,
+            token = currentToken,
             cursor = cursor
         )
         return sendRequest(apiReq) { rsp, _ ->
             val snap = rsp.snapshot ?: throw IllegalStateException("Missing snapshot in RESUME_CURSOR response")
-            pushSequencer.adoptFullSnapshot(snap.cursor)
+            synchronized(stateLock) {
+                if (!closed && bindingEpoch == epochAtRequest && boundRoomId != null && boundSeat != null) {
+                    pushSequencer.adoptFullSnapshot(snap.cursor)
+                }
+            }
             snap
         }
     }
@@ -1375,13 +1630,43 @@ class UdpClientBinding(
     // ==========================================
 
     override fun onUpdate(listener: (ProtocolPlayerUpdate) -> Unit): AutoCloseable {
-        updateListeners.add(listener)
-        // 早期缓冲按序回放
-        while (true) {
-            val update = earlyPushBuffer.poll() ?: break
-            try {
-                listener(update)
-            } catch (_: Exception) {}
+        val itemsToDeliver = mutableListOf<PlayerDispatchItem>()
+        val needSelfHeal: Boolean
+        synchronized(stateLock) {
+            updateListeners.add(listener)
+            val overflowed = earlyPushOverflowed.get()
+            val curEpoch = bindingEpoch
+            val curRoom = boundRoomId
+            val isPlayer = boundSeat != null && curRoom != null
+            if (overflowed) {
+                earlyPushBuffer.clear()
+                needSelfHeal = isPlayer
+            } else if (isPlayer) {
+                needSelfHeal = false
+                while (true) {
+                    val item = earlyPushBuffer.poll() ?: break
+                    if (isPlayerItemValidUnderLock(item)) {
+                        itemsToDeliver.add(item)
+                    }
+                }
+            } else {
+                needSelfHeal = false
+                earlyPushBuffer.clear()
+            }
+        }
+
+        if (needSelfHeal) {
+            triggerFullSnapshotSelfHeal()
+        } else {
+            for (item in itemsToDeliver) {
+                val valid = synchronized(stateLock) {
+                    isPlayerItemValidUnderLock(item)
+                }
+                if (!valid) break
+                try {
+                    listener(item.update)
+                } catch (_: Exception) {}
+            }
         }
         return AutoCloseable {
             updateListeners.remove(listener)
@@ -1403,29 +1688,7 @@ class UdpClientBinding(
         return sendRequest(apiReq) { rsp, rspFrame ->
             val binding = rsp.spectatorBinding ?: throw IllegalStateException("Missing spectatorBinding in JOIN_SPECTATOR response")
             synchronized(stateLock) {
-                if (rspFrame.connectionId != 0 && this.connectionId == 0) {
-                    this.connectionId = rspFrame.connectionId
-                    this.terminatingConnectionId = rspFrame.connectionId
-                }
-                this.boundRoomId = binding.roomId
-                this.boundSeat = null
-                this.resumeToken = null
-                this.boundSpectatorId = binding.spectatorId
-                this.boundSpectatorToken = binding.resumeToken
-                this.bindingEpoch++
-                this.activePublicHealToken.set(null)
-                this.lastRoomInfoVersion = 0L
-                this.latestRoomInfo = null
-                this.lastPublicSessionId = binding.snapshot.sessionId
-                this.lastPublicSyncEpoch = binding.snapshot.syncEpoch
-                this.lastPublicCursor = binding.snapshot.cursor
-                this.publicReorderBuffer.clear()
-                this.earlyPublicPushOverflowed.set(false)
-                this.earlyRoomUpdateBuffer.clear()
-                this.roomDispatchQueue.clear()
-                this.listenerMaxVersions.clear()
-                this.earlyPushBuffer.clear()
-                this.earlyPublicPushBuffer.clear()
+                applySpectatorBindingState(binding, rspFrame.connectionId, false)
             }
             replayGuard.reset(0)
             pushSequencer.reset(0L)
@@ -1446,29 +1709,7 @@ class UdpClientBinding(
         return sendRequest(apiReq) { rsp, rspFrame ->
             val binding = rsp.spectatorBinding ?: throw IllegalStateException("Missing spectatorBinding in RESUME_SPECTATOR response")
             synchronized(stateLock) {
-                if (rspFrame.connectionId != 0 && this.connectionId == 0) {
-                    this.connectionId = rspFrame.connectionId
-                    this.terminatingConnectionId = rspFrame.connectionId
-                }
-                this.boundRoomId = binding.roomId
-                this.boundSeat = null
-                this.resumeToken = null
-                this.boundSpectatorId = binding.spectatorId
-                this.boundSpectatorToken = binding.resumeToken
-                this.bindingEpoch++
-                this.activePublicHealToken.set(null)
-                this.lastRoomInfoVersion = 0L
-                this.latestRoomInfo = null
-                this.lastPublicSessionId = binding.snapshot.sessionId
-                this.lastPublicSyncEpoch = binding.snapshot.syncEpoch
-                this.lastPublicCursor = binding.snapshot.cursor
-                this.publicReorderBuffer.clear()
-                this.earlyPublicPushOverflowed.set(false)
-                this.earlyRoomUpdateBuffer.clear()
-                this.roomDispatchQueue.clear()
-                this.listenerMaxVersions.clear()
-                this.earlyPushBuffer.clear()
-                this.earlyPublicPushBuffer.clear()
+                applySpectatorBindingState(binding, rspFrame.connectionId, true)
             }
             replayGuard.reset(0)
             pushSequencer.reset(0L)
@@ -1596,25 +1837,7 @@ class UdpClientBinding(
 
     fun close(reason: String) {
         val shouldClose = synchronized(stateLock) {
-            if (!closed) {
-                closed = true
-                disconnectReason = reason
-                if (connectionId != 0) {
-                    terminatingConnectionId = connectionId
-                }
-                bindingEpoch++
-                this.activePublicHealToken.set(null)
-                earlyRoomUpdateBuffer.clear()
-                roomDispatchQueue.clear()
-                listenerMaxVersions.clear()
-                earlyPushBuffer.clear()
-                earlyPublicPushBuffer.clear()
-                earlyPublicPushOverflowed.set(false)
-                publicReorderBuffer.clear()
-                true
-            } else {
-                false
-            }
+            applyCloseState(reason)
         }
         if (shouldClose) {
             reliableRequestor.close()
