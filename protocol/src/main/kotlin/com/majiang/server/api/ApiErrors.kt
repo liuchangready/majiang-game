@@ -59,6 +59,9 @@ object ApiErrors {
     /** 服务端内部未知异常兜底 */
     const val INTERNAL_ERROR = "INTERNAL_ERROR"
 
+    /** 请求作用域已过期 (D3 冻结契约) */
+    const val REQUEST_SCOPE_EXPIRED = "REQUEST_SCOPE_EXPIRED"
+
     /** 全部已知标准错误码集合 */
     val ALL: Set<String> = Collections.unmodifiableSet(
         linkedSetOf(
@@ -77,7 +80,8 @@ object ApiErrors {
             UNKNOWN_REQUEST_TYPE,
             CONFLICT,
             SERVER_BUSY,
-            INTERNAL_ERROR
+            INTERNAL_ERROR,
+            REQUEST_SCOPE_EXPIRED
         )
     )
 }
