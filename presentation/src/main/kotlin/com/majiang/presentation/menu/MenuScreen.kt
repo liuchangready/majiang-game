@@ -34,7 +34,7 @@ import com.majiang.presentation.common.UiAssets
  *
  * 遵循 V4 架构契约与 TASK-ANTI-R5ROOT 规范：
  * 1. 仅依赖 [UiAssets]、[TableNavigation] 与 [LobbySession] 门面接口，严禁 import engine、protocol 或 server 实现；
- * 2. 支持单机对局启动、远端 UDP 地址端口配置与连接；
+ * 2. 支持单机对局启动、远端 TCP 地址端口配置与连接；
  * 3. 大厅期功能完整支持：房间列表拉取与刷新、赛制规则配置、创建房间、加入房间、房间详情与就绪、开赛与观战接入；
  * 4. 菜单开赛直接通过 [LobbySession.start] 发起，不向玩家画面借动作；
  * 5. 全中文展示通过共享 NotoSansSC 字体渲染，无内部组件名泄露；
@@ -72,7 +72,7 @@ class MenuScreen(
     // 状态机
     enum class MenuState {
         MAIN,
-        UDP_CONNECT_DIALOG,
+        TCP_CONNECT_DIALOG,
         CONNECTING,
         LOBBY,
         CREATE_ROOM_DIALOG,
@@ -117,12 +117,12 @@ class MenuScreen(
     private val btnSettings = Rectangle(490f, 160f, 300f, 48f)
     private val btnExit = Rectangle(490f, 95f, 300f, 48f)
 
-    // 按钮交互区域 - UDP 连接弹窗
-    private val rectUdpModal = Rectangle(360f, 180f, 560f, 360f)
+    // 按钮交互区域 - TCP 连接弹窗
+    private val rectTcpModal = Rectangle(360f, 180f, 560f, 360f)
     private val rectHostInput = Rectangle(420f, 390f, 440f, 42f)
     private val rectPortInput = Rectangle(420f, 310f, 440f, 42f)
-    private val btnUdpConnect = Rectangle(420f, 220f, 200f, 44f)
-    private val btnUdpCancel = Rectangle(660f, 220f, 200f, 44f)
+    private val btnTcpConnect = Rectangle(420f, 220f, 200f, 44f)
+    private val btnTcpCancel = Rectangle(660f, 220f, 200f, 44f)
 
     // 按钮交互区域 - 大厅
     private val btnLobbyCreateRoom = Rectangle(80f, 560f, 220f, 46f)
@@ -235,7 +235,7 @@ class MenuScreen(
 
         when (currentState) {
             MenuState.MAIN -> renderMainMenu(shape, batch, font)
-            MenuState.UDP_CONNECT_DIALOG -> renderUdpConnectDialog(shape, batch, font)
+            MenuState.TCP_CONNECT_DIALOG -> renderTcpConnectDialog(shape, batch, font)
             MenuState.CONNECTING -> renderConnectingScreen(shape, batch, font)
             MenuState.LOBBY -> renderLobbyScreen(shape, batch, font)
             MenuState.CREATE_ROOM_DIALOG -> renderCreateRoomDialog(shape, batch, font)
@@ -313,7 +313,7 @@ class MenuScreen(
         font.data.setScale(1.2f)
         font.color = Color.WHITE
         drawCenteredText(batch, font, "单机对局 (快速开赛)", btnPlaySingle.x + btnPlaySingle.width / 2f, btnPlaySingle.y + 32f)
-        drawCenteredText(batch, font, "联机对战 (UDP 大厅)", btnOpenLobby.x + btnOpenLobby.width / 2f, btnOpenLobby.y + 32f)
+        drawCenteredText(batch, font, "联机对战 (TCP 大厅)", btnOpenLobby.x + btnOpenLobby.width / 2f, btnOpenLobby.y + 32f)
         drawCenteredText(batch, font, "牌面皮肤: [ ${assets.skinManager.currentSkinId.name} ]", btnSkin.x + btnSkin.width / 2f, btnSkin.y + 30f)
         drawCenteredText(batch, font, "千术绝技秘籍", btnSecrets.x + btnSecrets.width / 2f, btnSecrets.y + 30f)
         drawCenteredText(batch, font, "游戏设置", btnSettings.x + btnSettings.width / 2f, btnSettings.y + 30f)
@@ -334,24 +334,24 @@ class MenuScreen(
     }
 
     // ==========================================
-    // UDP 连接弹窗渲染
+    // TCP 连接弹窗渲染
     // ==========================================
 
-    private fun renderUdpConnectDialog(shape: ShapeRenderer, batch: SpriteBatch, font: BitmapFont) {
+    private fun renderTcpConnectDialog(shape: ShapeRenderer, batch: SpriteBatch, font: BitmapFont) {
         shape.projectionMatrix = camera.combined
         shape.begin(ShapeRenderer.ShapeType.Filled)
 
         // 弹窗背景
         shape.color = Color(0.08f, 0.16f, 0.12f, 0.98f)
-        shape.rect(rectUdpModal.x, rectUdpModal.y, rectUdpModal.width, rectUdpModal.height)
+        shape.rect(rectTcpModal.x, rectTcpModal.y, rectTcpModal.width, rectTcpModal.height)
 
         // 输入框背景
         drawInputBox(shape, rectHostInput, activeInput == ActiveInput.HOST)
         drawInputBox(shape, rectPortInput, activeInput == ActiveInput.PORT)
 
         // 按钮背景
-        drawButton(shape, btnUdpConnect, isPrimary = true)
-        drawButton(shape, btnUdpCancel, isPrimary = false)
+        drawButton(shape, btnTcpConnect, isPrimary = true)
+        drawButton(shape, btnTcpCancel, isPrimary = false)
 
         shape.end()
 
@@ -360,23 +360,23 @@ class MenuScreen(
 
         font.data.setScale(1.6f)
         font.color = Color(1.0f, 0.85f, 0.35f, 1f)
-        drawCenteredText(batch, font, "连接远程 UDP 服务器", rectUdpModal.x + rectUdpModal.width / 2f, rectUdpModal.y + 320f)
+        drawCenteredText(batch, font, "连接远程 TCP 服务器", rectTcpModal.x + rectTcpModal.width / 2f, rectTcpModal.y + 320f)
 
         font.data.setScale(1.1f)
         font.color = Color.LIGHT_GRAY
         font.draw(batch, "主机地址 (IP / Host):", rectHostInput.x, rectHostInput.y + 60f)
-        font.draw(batch, "UDP 端口 (Port):", rectPortInput.x, rectPortInput.y + 60f)
+        font.draw(batch, "TCP 端口 (Port):", rectPortInput.x, rectPortInput.y + 60f)
 
         font.color = Color.WHITE
         font.draw(batch, inputHost + if (activeInput == ActiveInput.HOST && (animTimer % 1f < 0.5f)) "_" else "", rectHostInput.x + 15f, rectHostInput.y + 28f)
         font.draw(batch, inputPort + if (activeInput == ActiveInput.PORT && (animTimer % 1f < 0.5f)) "_" else "", rectPortInput.x + 15f, rectPortInput.y + 28f)
 
-        drawCenteredText(batch, font, "立即连接", btnUdpConnect.x + btnUdpConnect.width / 2f, btnUdpConnect.y + 28f)
-        drawCenteredText(batch, font, "返回", btnUdpCancel.x + btnUdpCancel.width / 2f, btnUdpCancel.y + 28f)
+        drawCenteredText(batch, font, "立即连接", btnTcpConnect.x + btnTcpConnect.width / 2f, btnTcpConnect.y + 28f)
+        drawCenteredText(batch, font, "返回", btnTcpCancel.x + btnTcpCancel.width / 2f, btnTcpCancel.y + 28f)
 
         errorMessage?.let {
             font.color = Color.RED
-            drawCenteredText(batch, font, it, rectUdpModal.x + rectUdpModal.width / 2f, rectUdpModal.y + 50f)
+            drawCenteredText(batch, font, it, rectTcpModal.x + rectTcpModal.width / 2f, rectTcpModal.y + 50f)
         }
 
         batch.end()
@@ -699,7 +699,7 @@ class MenuScreen(
         font.draw(batch, "牌面皮肤     : [ ${assets.skinManager.currentSkinId.name} (点击切换) ]", modalRect.x + 80f, modalRect.y + 370f)
         font.draw(batch, "操作模式     : PC 鼠标拖拽点击 / 移动端触控手势", modalRect.x + 80f, modalRect.y + 310f)
         font.draw(batch, "对局思考时钟 : 20秒每局储备 + 3秒每次思考缓冲", modalRect.x + 80f, modalRect.y + 250f)
-        font.draw(batch, "网络通信架构 : 本地进程内权威服务 / 远端 UDP 协议", modalRect.x + 80f, modalRect.y + 190f)
+        font.draw(batch, "网络通信架构 : 本地进程权威宿主 / 远端 TCP 协议", modalRect.x + 80f, modalRect.y + 190f)
 
         drawCenteredText(batch, font, "关闭 [X]", btnModalClose.x + btnModalClose.width / 2f, btnModalClose.y + 26f)
 
@@ -805,7 +805,7 @@ class MenuScreen(
 
         when (currentState) {
             MenuState.MAIN -> handleTouchMain(tx, ty)
-            MenuState.UDP_CONNECT_DIALOG -> handleTouchUdpDialog(tx, ty)
+            MenuState.TCP_CONNECT_DIALOG -> handleTouchTcpDialog(tx, ty)
             MenuState.LOBBY -> handleTouchLobby(tx, ty)
             MenuState.CREATE_ROOM_DIALOG -> handleTouchCreateDialog(tx, ty)
             MenuState.JOIN_ROOM_DIALOG -> handleTouchJoinDialog(tx, ty)
@@ -869,7 +869,7 @@ class MenuScreen(
                 currentState = MenuState.LOBBY
                 refreshRoomList()
             } else {
-                currentState = MenuState.UDP_CONNECT_DIALOG
+                currentState = MenuState.TCP_CONNECT_DIALOG
             }
             return
         }
@@ -891,7 +891,7 @@ class MenuScreen(
         }
     }
 
-    private fun handleTouchUdpDialog(tx: Float, ty: Float) {
+    private fun handleTouchTcpDialog(tx: Float, ty: Float) {
         if (rectHostInput.contains(tx, ty)) {
             activeInput = ActiveInput.HOST
             return
@@ -900,7 +900,7 @@ class MenuScreen(
             activeInput = ActiveInput.PORT
             return
         }
-        if (btnUdpConnect.contains(tx, ty)) {
+        if (btnTcpConnect.contains(tx, ty)) {
             val port = inputPort.toIntOrNull() ?: 8080
             currentState = MenuState.CONNECTING
             errorMessage = null
@@ -912,8 +912,8 @@ class MenuScreen(
                         return@Runnable
                     }
                     if (err != null || lobby == null) {
-                        currentState = MenuState.UDP_CONNECT_DIALOG
-                        errorMessage = "UDP 连接失败: ${err?.message ?: "未知错误"}"
+                        currentState = MenuState.TCP_CONNECT_DIALOG
+                        errorMessage = "TCP 连接失败: ${err?.message ?: "未知错误"}"
                     } else {
                         attachLobby(lobby)
                         currentState = MenuState.LOBBY
@@ -925,7 +925,7 @@ class MenuScreen(
             }
             return
         }
-        if (btnUdpCancel.contains(tx, ty)) {
+        if (btnTcpCancel.contains(tx, ty)) {
             requestGeneration++
             currentState = MenuState.MAIN
             return
@@ -1228,10 +1228,10 @@ class MenuScreen(
         if (keycode == Input.Keys.ESCAPE) {
             when (currentState) {
                 MenuState.SECRETS_MODAL, MenuState.SETTINGS_MODAL -> currentState = MenuState.MAIN
-                MenuState.UDP_CONNECT_DIALOG -> currentState = MenuState.MAIN
+                MenuState.TCP_CONNECT_DIALOG -> currentState = MenuState.MAIN
                 MenuState.CONNECTING -> {
                     requestGeneration++
-                    currentState = MenuState.UDP_CONNECT_DIALOG
+                    currentState = MenuState.TCP_CONNECT_DIALOG
                 }
                 MenuState.CREATE_ROOM_DIALOG, MenuState.JOIN_ROOM_DIALOG -> currentState = MenuState.LOBBY
                 MenuState.LOBBY -> currentState = MenuState.MAIN

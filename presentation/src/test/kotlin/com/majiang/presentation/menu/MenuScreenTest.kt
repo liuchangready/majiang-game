@@ -18,8 +18,8 @@ import com.majiang.presentation.common.UiAssets
 import com.majiang.presentation.common.render.SkinId
 import com.majiang.presentation.common.render.SkinManager
 import com.majiang.presentation.game.GameScreen
-import com.majiang.server.inprocess.InProcessServer
-import com.majiang.server.udp.UdpTableServer
+import com.majiang.server.tcp.TcpServerConfig
+import com.majiang.server.tcp.TcpTableServer
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertNotNull
@@ -106,8 +106,8 @@ class MenuScreenTest : GdxHeadlessTestRunner() {
     }
 
     @Test
-    fun testRealUdpLobbyConnectionCanCreateAndListRoom() {
-        val server = UdpTableServer(bindHost = "127.0.0.1", port = 0)
+    fun testRealTcpLobbyConnectionCanCreateAndListRoom() {
+        val server = TcpTableServer(TcpServerConfig(port = 0))
         server.start()
         val game = MahjongGame()
         game.create()
@@ -121,9 +121,9 @@ class MenuScreenTest : GdxHeadlessTestRunner() {
             assertNotNull(created)
             val room = lobby.getRoomInfo().await()
             assertEquals("远端房主", room.members.first().playerName)
-            ServerConnectionSession.connectUdp("127.0.0.1", server.boundPort).await().use { observer ->
+            ServerConnectionSession.connectTcp("127.0.0.1", server.boundPort).await().use { observer ->
                 assertTrue(observer.listRooms().await().any { it.roomId == room.roomId },
-                    "An unbound UDP lobby must see the newly created room")
+                    "An unbound TCP lobby must see the newly created room")
             }
         } finally {
             game.dispose()
@@ -132,8 +132,8 @@ class MenuScreenTest : GdxHeadlessTestRunner() {
     }
 
     @Test
-    fun testRealUdpLobbyStartsPlayerTableAndReturnsToLobby() {
-        val server = UdpTableServer(bindHost = "127.0.0.1", port = 0)
+    fun testRealTcpLobbyStartsPlayerTableAndReturnsToLobby() {
+        val server = TcpTableServer(TcpServerConfig(port = 0))
         server.start()
         val game = MahjongGame()
         game.create()
@@ -143,7 +143,7 @@ class MenuScreenTest : GdxHeadlessTestRunner() {
             host.createRoom(playerName = "远端房主", config = MatchConfig()).await()
             val roomId = host.getRoomInfo().await().roomId
 
-            ServerConnectionSession.connectUdp("127.0.0.1", server.boundPort).await().use { guest ->
+            ServerConnectionSession.connectTcp("127.0.0.1", server.boundPort).await().use { guest ->
                 val guestSnapshot = guest.joinRoom(roomId, playerName = "远端客人", preferSeat = 1).await()
                 assertEquals(1, guestSnapshot.viewerSeat)
                 assertEquals(ReceiptStatus.APPLIED, guest.setReady(true).await().status)
@@ -151,7 +151,7 @@ class MenuScreenTest : GdxHeadlessTestRunner() {
                 assertEquals(ReceiptStatus.APPLIED, host.start().await().status)
 
                 game.showPlayerTable()
-                assertTrue(game.screen is GameScreen, "UDP room must open the real V4 player table")
+                assertTrue(game.screen is GameScreen, "TCP room must open the real V4 player table")
                 assertNotNull(game.currentSession?.currentSnapshot?.roundId)
                 assertNotNull(guest.currentSnapshot?.roundId, "Guest must receive the same started room")
 
@@ -233,9 +233,9 @@ class MenuScreenTest : GdxHeadlessTestRunner() {
         menuScreen.keyDown(Input.Keys.ESCAPE)
         assertEquals(MenuScreen.MenuState.MAIN, menuScreen.currentState)
 
-        // 打开 UDP 连接弹窗
+        // 打开 TCP 连接弹窗
         menuScreen.touchDown(640, 365, 0, 0) // 点击 btnOpenLobby
-        assertEquals(MenuScreen.MenuState.UDP_CONNECT_DIALOG, menuScreen.currentState)
+        assertEquals(MenuScreen.MenuState.TCP_CONNECT_DIALOG, menuScreen.currentState)
 
         // ESC 返回主菜单
         menuScreen.keyDown(Input.Keys.ESCAPE)
@@ -251,7 +251,7 @@ class MenuScreenTest : GdxHeadlessTestRunner() {
         val nav = FakeTableNavigation()
         val menuScreen = MenuScreen(assets, nav, null)
 
-        // 打开 UDP 弹窗并激活 HOST 输入
+        // 打开 TCP 弹窗并激活 HOST 输入
         menuScreen.touchDown(640, 365, 0, 0) // 打开弹窗
         menuScreen.touchDown(500, 330, 0, 0) // 点击 Host 输入框
 
@@ -262,14 +262,14 @@ class MenuScreenTest : GdxHeadlessTestRunner() {
         menuScreen.keyTyped('\b') // 退格删除 '2'
 
         // 点击取消
-        menuScreen.touchDown(760, 500, 0, 0) // btnUdpCancel
+        menuScreen.touchDown(760, 500, 0, 0) // btnTcpCancel
         assertEquals(MenuScreen.MenuState.MAIN, menuScreen.currentState)
 
         assets.dispose()
     }
 
     @Test
-    fun testCancelledUdpConnectionClosesItsLateSession() {
+    fun testCancelledRemoteConnectionClosesItsLateSession() {
         val assets = UiAssets.createDefault(SkinManager())
         val nav = FakeTableNavigation()
         val pending = CompletableFuture<LobbySession>()
@@ -281,12 +281,12 @@ class MenuScreenTest : GdxHeadlessTestRunner() {
             assertEquals(MenuScreen.MenuState.CONNECTING, menu.currentState)
 
             menu.keyDown(Input.Keys.ESCAPE)
-            assertEquals(MenuScreen.MenuState.UDP_CONNECT_DIALOG, menu.currentState)
+            assertEquals(MenuScreen.MenuState.TCP_CONNECT_DIALOG, menu.currentState)
 
             val lateLobby = FakeLobbySession()
             pending.complete(lateLobby)
             assertTrue(lateLobby.closeLatch.await(3, TimeUnit.SECONDS), "Cancelled connection must close a late session")
-            assertEquals(MenuScreen.MenuState.UDP_CONNECT_DIALOG, menu.currentState)
+            assertEquals(MenuScreen.MenuState.TCP_CONNECT_DIALOG, menu.currentState)
             assertNull(menu.activeLobby, "Cancelled connection must not enter the lobby")
         } finally {
             menu.dispose()

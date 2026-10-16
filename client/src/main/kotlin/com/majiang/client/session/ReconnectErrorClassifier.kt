@@ -3,20 +3,20 @@ package com.majiang.client.session
 import com.majiang.server.api.ApiErrors
 import com.majiang.server.api.ApiProtocol
 import com.majiang.server.api.ServerApiException
-import com.majiang.transport.udp.UdpFrameException
+import com.majiang.transport.tcp.TcpProtocolException
 import java.io.IOException
 import java.util.concurrent.CompletionException
 import java.util.concurrent.ExecutionException
 
 /**
- * 重连错误分类器 (MR-02)
+ * 重连错误分类器 (MR-02 / T5)
  *
  * 遵循改进计划与契约要求：
  * 1. 业务失败保留稳定 code 和原 cause；网络 IOException 保留传输故障身份。
  * 2. 逐层解包 CompletionException/ExecutionException，不能按文案 contains 猜永久失败。
  * 3. 永久终止只接受明确契约原因（房间不存在、token 无效、主动关闭/替换等）；
  *    未知异常与临时 IOException 即使文案含 CLOSED/INVALID 也必须有界退避重试。
- * 4. 如映射 UdpFrameException，字段是 reasonCode，不能将所有协议异常都等同永久 token 失败。
+ * 4. 如映射 TcpProtocolException，字段是 reasonCode，不能将所有协议异常都等同永久 token 失败。
  */
 object ReconnectErrorClassifier {
 
@@ -80,8 +80,8 @@ object ReconnectErrorClassifier {
             return root.code in PERMANENT_ERROR_CODES
         }
 
-        // 3. UDP 帧异常：检查 reasonCode 字段，超时等网络层异常绝不判定为永久 token 失败
-        if (root is UdpFrameException) {
+        // 3. TCP 协议异常：检查 reasonCode 字段，超时等网络层异常绝不判定为永久 token 失败
+        if (root is TcpProtocolException) {
             return root.reasonCode in PERMANENT_ERROR_CODES
         }
 
@@ -99,7 +99,7 @@ object ReconnectErrorClassifier {
 
         return when (root) {
             is ServerApiException -> root.code
-            is UdpFrameException -> root.reasonCode
+            is TcpProtocolException -> root.reasonCode
             else -> root.message?.takeIf { it.isNotBlank() } ?: "RESUME_FAILED"
         }
     }

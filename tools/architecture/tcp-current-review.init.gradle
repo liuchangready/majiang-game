@@ -1,0 +1,12 @@
+gradle.projectsEvaluated {
+    def p = gradle.rootProject.project(':client')
+    p.layout.buildDirectory.set(p.file('../build/tcp-current-review/client'))
+    p.extensions.getByName('kotlin').sourceSets.getByName('test').kotlin.setSrcDirs([
+        p.file('../tools/architecture/tcp-current-review/client')
+    ])
+    def serverProject = gradle.rootProject.project(':server')
+    serverProject.layout.buildDirectory.set(serverProject.file('../build/tcp-current-review/server'))
+    serverProject.extensions.getByName('kotlin').sourceSets.getByName('test').kotlin.setSrcDirs([
+        serverProject.file('../tools/architecture/tcp-current-review/server')
+    ])
+}

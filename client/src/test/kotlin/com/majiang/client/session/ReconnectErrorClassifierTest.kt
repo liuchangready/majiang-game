@@ -3,8 +3,7 @@ package com.majiang.client.session
 import com.majiang.server.api.ApiErrors
 import com.majiang.server.api.ApiProtocol
 import com.majiang.server.api.ServerApiException
-import com.majiang.transport.udp.UdpFrameException
-import com.majiang.transport.udp.UdpProtocol
+import com.majiang.transport.tcp.TcpProtocolException
 import org.junit.jupiter.api.Assertions.*
 import org.junit.jupiter.api.Test
 import java.io.IOException
@@ -83,13 +82,13 @@ class ReconnectErrorClassifierTest {
     }
 
     @Test
-    fun testUdpFrameExceptionClassificationReadsReasonCode() {
-        val timeout = UdpFrameException(UdpProtocol.REASON_REQUEST_TIMEOUT, "Request timed out")
-        val frameCorrupt = UdpFrameException("CRC_MISMATCH", "Corrupted frame")
-        val permToken = UdpFrameException(ApiErrors.INVALID_TOKEN, "Token rejected")
-        val permNotFound = UdpFrameException(ApiErrors.ROOM_NOT_FOUND, "Room missing")
+    fun testTcpProtocolExceptionClassificationReadsReasonCode() {
+        val timeout = TcpProtocolException("REQUEST_TIMEOUT", "Request timed out")
+        val frameCorrupt = TcpProtocolException("CRC_MISMATCH", "Corrupted frame")
+        val permToken = TcpProtocolException(ApiErrors.INVALID_TOKEN, "Token rejected")
+        val permNotFound = TcpProtocolException(ApiErrors.ROOM_NOT_FOUND, "Room missing")
 
-        assertFalse(ReconnectErrorClassifier.isPermanent(timeout), "UDP timeout is transient")
+        assertFalse(ReconnectErrorClassifier.isPermanent(timeout), "Timeout is transient")
         assertFalse(ReconnectErrorClassifier.isPermanent(frameCorrupt), "CRC mismatch is transient")
         assertTrue(ReconnectErrorClassifier.isPermanent(permToken), "Explicit INVALID_TOKEN reasonCode is permanent")
         assertTrue(ReconnectErrorClassifier.isPermanent(permNotFound), "Explicit ROOM_NOT_FOUND reasonCode is permanent")
@@ -120,7 +119,7 @@ class ReconnectErrorClassifierTest {
     @Test
     fun testExtractReason() {
         assertEquals("INVALID_TOKEN", ReconnectErrorClassifier.extractReason(ServerApiException(ApiErrors.INVALID_TOKEN)))
-        assertEquals("REQUEST_TIMEOUT", ReconnectErrorClassifier.extractReason(UdpFrameException(UdpProtocol.REASON_REQUEST_TIMEOUT, "Timeout")))
+        assertEquals("REQUEST_TIMEOUT", ReconnectErrorClassifier.extractReason(TcpProtocolException("REQUEST_TIMEOUT", "Timeout")))
         assertEquals("Socket failed", ReconnectErrorClassifier.extractReason(IOException("Socket failed")))
         assertEquals("RESUME_FAILED", ReconnectErrorClassifier.extractReason(null))
         assertEquals("RESUME_FAILED", ReconnectErrorClassifier.extractReason(RuntimeException("   ")))

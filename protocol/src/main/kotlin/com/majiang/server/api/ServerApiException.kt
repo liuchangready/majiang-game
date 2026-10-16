@@ -7,7 +7,7 @@ import java.util.concurrent.ExecutionException
  * 传输与业务共享的服务端 API 业务异常 (MR-02 统一契约)。
  *
  * 携带稳定的业务错误码 [code]（通常对应 [ApiErrors] 或 [ApiProtocol] 常量），
- * 保持进程内与远端传输（UDP）业务失败的一致性与可比较性，同时保留底层原始原因 [cause]。
+ * 保持进程内与远端传输（TCP）业务失败的一致性与可比较性，同时保留底层原始原因 [cause]。
  *
  * 继承 [IllegalStateException] 以保持对现有捕获 [IllegalStateException] 的调用方兼容。
  */

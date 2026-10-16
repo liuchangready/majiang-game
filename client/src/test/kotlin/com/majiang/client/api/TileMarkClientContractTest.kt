@@ -192,8 +192,8 @@ class TileMarkClientContractTest {
 
     @Test
     fun `automatic reconnect restores all groups and old connection completion cannot unlock the new action`() {
-        val clock = ServerConnectionSessionTest.FakeUdpClock()
-        val scheduler = ServerConnectionSessionTest.FakeUdpScheduler(clock)
+        val clock = ServerConnectionSessionTest.FakeTransportClock()
+        val scheduler = ServerConnectionSessionTest.FakeTransportScheduler(clock)
         val first = ServerConnectionSessionTest.FakeServerConnection()
         val second = ServerConnectionSessionTest.FakeServerConnection()
         val restored = snapshot(second, 50, 3)

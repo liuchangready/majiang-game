@@ -1,0 +1,39 @@
+# Anti 开发进度跟踪 (ANTI-PROGRESS.md)
+
+- **状态**: TCP_DOC_STATUS_COMPLETED（已依据 doc/v4-重构/CODEX-TCP-CURRENT-REWORK-REVIEW19.md、TCP-MIGRATION-DESIGN.md §7–§9、AGENTS.md 与 ANTI-TCP-T5-DELIVERY.md 完成文档一致性纠偏与 T4/T5 边界校准：1. 修正 `AGENTS.md` 模块描述中 `protocol` 仍写“UDP 数据报分片/可靠性窗口”及 `server` 仅“本地/UDP”绑定的过时表述，更新为 MJ-TCP/1 契约（12 字节固定帧头）与本地/远端 TCP 双绑定，严格保持七模块边界；2. 修正 `ANTI-TCP-T5-DELIVERY.md` 中的 16 字节 TCP 帧头为 12 字节固定帧头，纠正历史 1,658 项未去重测试口径为当前经核对的 1,275 项标准基线；3. 严格校准 T4 与 T5 定义：T5（删除远端 UDP 运行链及测试）已由 Codex 第 19 轮独立复验确认全仓 `src/main` 与 `src/test` 零 UDP/旧 TCP 引用残留，T5 门槛与引用审计已正式满足并关闭；设计 T4 涵盖跨物理网络长连/弱网、3 次角色中断资源回落、Android 真机/模拟器与桌面 GL 独立验收，其中桌面 GL 上屏冒烟 6 张快照已通过（日志 `build/tcp-current-review19-gl-snapshot.log`），但 Android 设备与模拟器当前均不可用，物理网络与弱网环境仍待补验，绝不以本地回环或双端构建误宣称 T4 整体完成；4. 22 项 Codex 独立探针、1,275 项标准全量用例、双端构建强制重跑 100% 通过。）
+- **当前批次范围**: TCP 迁移文档一致性与 T4/T5 状态校准 (TCP_DOC_STATUS)：
+  - 1. **AGENTS.md 模块与状态纠偏**: 将 protocol 模块纠偏为 MJ-TCP/1 契约与 12 字节固定帧头，server 模块纠偏为本地 InProcess 与远端 TCP（`TcpTableServer`）两种绑定，更新迁移状态至 2026-10-17。
+  - 2. **ANTI-TCP-T5-DELIVERY.md 帧头与用例数校准**: 纠正 16 字节帧头为 12 字节，纠正历史 1,658 项为当前标准 1,275 项。
+  - 3. **T4 与 T5 边界与证据明确**: T5（删除 UDP 运行链）门槛与引用审计已关闭；T4 桌面 GL 6 张快照通过，Android 真机/模拟器与物理网络弱网如实保持待验。
+  - **待验项状态真实声明**: T5 删除阶段门槛已关闭；T4 中仅桌面 GL 冒烟通过，物理网络长连/弱网、3 次角色中断资源回落以及 Android 真机/模拟器建连与后台恢复保持待独立实测，无虚假宣布完成。
+- **当前阶段**: TCP 迁移独立检视统一返修（剩余任务第一批 - 真实 TCP 房间流程超时）：
+  - 生产代码全面修复：
+    - R01: `TcpTableServer` 恢复独立定频 `tickerExecutor` 调度 `room.tableHost.tick()`。
+    - R02: `TcpConnection.notifyRoomDisconnect()` 精确一次通知房间断开席位与观战控制。
+    - R03: `TcpClientBinding` 将远程 EOF / 读异常归为 `HEARTBEAT_TIMEOUT` 临时错误；`ServerConnectionSession` 修复首轮重连工厂并避免临时重连失败关闭复用连接；增加读线程代次门控与 `close()` 调度器强制回收。
+    - R04: 协商超时 `limits.requestTimeoutMillis` 正式生效；请求原子准入 `putIfAbsent` 杜绝重复覆盖；重放未决副作用时重建未完成 Future 与对账通道。
+    - R05: `handleResponseEnvelope` 对 `REQUEST_SCOPE_EXPIRED` 区分普通只读与副作用；副作用严禁换新 scope 自动重做，必须异常完成以供业务对账。
+    - R06: `TcpTableServer` 维护 `issuedLobbyTokens` 注册表，未知 token 判定 `PROTOCOL_VIOLATION`；有效 token 重连继承有效 scope；玩家与观战绑定采用各自角色 principal 分离身份。
+    - R07: 监听器派发异常隔离，避免用户回调异常误报协议违规；读写队列与帧边界隔离。
+    - R08: `TcpClientBinding` 落地服务端 PING 双向回显匹配 nonce 之 PONG；校验 RSP 外层 `requestScope` 必须与在途请求一致；严格校验 WELCOME 版本并拦截重复握手。
+    - R09: 客户端早期队列与派发队列实施 64/128 条与 4 MiB 双重容量上限，溢出时记录状态并触发合并全量恢复；无监听器时未交付消息严禁虚假前移游标；监听器派发过程检查 `closed` 与 `bindingEpoch`。
+    - R10: `TcpOutboundQueue` 纳入当前写出帧到全局与连接预算，写出严格受限于轮转预算；`TcpTableServer` 限制单轮读取帧数并在邮箱出队后释放配额。
+    - R11: `TcpTableServer.close()` 限制 1 秒内安全收尾，下发 `SERVER_SHUTDOWN` 控制帧，安全关闭注册表、停止 ticker 与工作池并等待 I/O 线程退出。
+    - R12: `RequestScopeReceiptStore` 锁内原子提交并比较删除，在 `synchronized` 锁外触发用户 Future 回调，避免全服锁死。
+    - R13: `acquireAdmission` 普通只读查询同样遵守每成员在途上限；`isScopeQueryRateLimited` 落实 1次/秒 限速保护。
+    - R14: `InProcessBinding` 接入 `InProcessServer.receiptStore`，支持 `getRequestScope()` 与 `executeRequest(envelope)`，单机直连与网络传输语义完全对齐。
+    - R15: `ServerTableHost` 与 `SharedRoom` 新增 `snapshotAndSubscribe` / `publicSnapshotAndSubscribe`，在单桌串行执行器上单次原子完成基线捕获与订阅建立。
+    - R16: 文档与状态核对纠偏，明确 12 字节固定帧头、`RequestScopeReceiptStore`、落汗/袖里藏花/偷梁换柱术语对应，说明标准套件 1,214 项统计口径。
+  - 新增正式回归测试（位于标准测试源集中）：
+    - `server/src/test/kotlin/com/majiang/server/tcp/TcpTableServerRegressionTest.kt` (R01, R02, R06, R10, R11, R15)
+    - `server/src/test/kotlin/com/majiang/server/idempotency/ReceiptStoreRegressionTest.kt` (R12, R13)
+    - `server/src/test/kotlin/com/majiang/server/inprocess/InProcessDualTransportTest.kt` (R14)
+    - `client/src/test/kotlin/com/majiang/client/transport/tcp/TcpClientBindingRegressionTest.kt` (R03, R04, R05, R07, R08, R09)
+- **历史阶段记录**:
+  - **MR-01**: 已提交 `35a87c6` 并验收通过（已推送）。
+  - **MR-02**: 已提交 `8a4b59f` 并验收通过（已推送）。
+  - **MR-03**: 已提交 `3a382c6` 并验收通过（未推送）；验收记录 `doc/v4-重构/CLAUDE-MR03-REVIEW.md`。
+  - **TCP-T1**: 开发+一轮返修后验收通过，提交 `1664c60`，见验收记录 `doc/v4-重构/CLAUDE-TCP-T1-REVIEW.md`。
+- **基线SHA**: `1664c60` (分支 `refactor/remove-legacy-cheat-params`)
+- **更新时间**: 2026-10-17（Anti 完成文档一致性纠偏与 T4/T5 状态校准 TCP_DOC_STATUS）
+- **T5 验收方**: Claude Code 主会话（独立检视与运行套件测试）

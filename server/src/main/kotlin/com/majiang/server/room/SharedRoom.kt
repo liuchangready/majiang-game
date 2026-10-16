@@ -955,6 +955,19 @@ class SharedRoom @JvmOverloads constructor(
     fun subscribe(seat: Int, listener: (PlayerUpdate) -> Unit): AutoCloseable =
         tableHost.subscribeSeat(seat, listener)
 
+    fun snapshotAndSubscribe(
+        seat: Int,
+        sessionValidator: (() -> Boolean)? = null,
+        listener: (PlayerUpdate) -> Unit
+    ): CompletableFuture<Pair<PlayerSnapshot, AutoCloseable>> =
+        tableHost.snapshotAndSubscribe(seat, sessionValidator, listener)
+
+    fun publicSnapshotAndSubscribe(
+        sessionValidator: (() -> Boolean)? = null,
+        listener: (ProtocolPublicUpdate) -> Unit
+    ): CompletableFuture<Pair<ProtocolPublicSnapshot, AutoCloseable>> =
+        tableHost.publicSnapshotAndSubscribe(sessionValidator, listener)
+
     fun tick(presentationBusy: Boolean = false): CompletableFuture<Boolean> =
         tableHost.tick(presentationBusy)
 

@@ -38,7 +38,10 @@ sealed class TcpDecodeResult {
  * - 头部解析暂存最多 12 字节（<= 64 KiB scratch limit）。
  * - 载荷缓冲仅在载荷分段实际到达时增量持有，绝不在收到头部时立即为 1 MiB 预分配空缓冲，防止内存放大攻击。
  */
-class TcpFrameDecoder {
+class TcpFrameDecoder(
+    private val reserveBudget: (Long) -> Boolean = { true },
+    private val releaseBudget: (Long) -> Unit = {}
+) {
 
     /** 是否已进入不可恢复终态错误 */
     var isFatalError: Boolean = false
@@ -64,6 +67,9 @@ class TcpFrameDecoder {
 
     /** 当前帧已收到的体字节数 */
     private var receivedPayloadBytes: Int = 0
+
+    /** 当前解码器在全局预算中已实际预留的载荷字节数 */
+    private var reservedPayloadBytes: Long = 0L
 
     /** 当前帧载荷片段收集器（按实际到达的分段存储，杜绝提前预分配 1 MiB） */
     private val payloadChunks: MutableList<ByteArray> = ArrayList()
@@ -160,6 +166,14 @@ class TcpFrameDecoder {
                 val needed = header.payloadLength - receivedPayloadBytes
                 val toRead = Math.min(needed, buffer.remaining())
                 if (toRead > 0) {
+                    if (!reserveBudget(toRead.toLong())) {
+                        markFatal(
+                            TcpCloseReasons.SLOW_CONSUMER,
+                            "Global memory budget exceeded while reading frame payload"
+                        )
+                        break
+                    }
+                    reservedPayloadBytes += toRead.toLong()
                     val chunk = ByteArray(toRead)
                     buffer.get(chunk)
                     payloadChunks.add(chunk)
@@ -168,7 +182,24 @@ class TcpFrameDecoder {
 
                 if (receivedPayloadBytes == header.payloadLength) {
                     // 载荷收集完成，拼接组装
-                    val payload = assemblePayload(payloadChunks, header.payloadLength)
+                    val payload: ByteArray
+                    if (payloadChunks.size == 1) {
+                        payload = payloadChunks[0]
+                    } else {
+                        val assembleBytes = header.payloadLength.toLong()
+                        if (!reserveBudget(assembleBytes)) {
+                            markFatal(
+                                TcpCloseReasons.SLOW_CONSUMER,
+                                "Global memory budget exceeded while assembling frame payload"
+                            )
+                            break
+                        }
+                        try {
+                            payload = assemblePayload(payloadChunks, header.payloadLength)
+                        } finally {
+                            releaseBudget(assembleBytes)
+                        }
+                    }
 
                     // 阶段 3：严格 UTF-8 校验 (REPORT)
                     if (!isStrictUtf8(payload)) {
@@ -188,6 +219,9 @@ class TcpFrameDecoder {
                         )
                     )
 
+                    // 帧载荷预算转移给完成帧集合持有
+                    reservedPayloadBytes -= header.payloadLength.toLong()
+
                     // 重置，准备接收下一帧
                     currentHeader = null
                     receivedPayloadBytes = 0
@@ -197,6 +231,12 @@ class TcpFrameDecoder {
         }
 
         return if (isFatalError) {
+            if (completedFrames.isNotEmpty()) {
+                for (f in completedFrames) {
+                    releaseBudget(f.payload.size.toLong())
+                }
+                completedFrames.clear()
+            }
             TcpDecodeResult.Fatal(
                 fatalReasonCode ?: TcpCloseReasons.PROTOCOL_VIOLATION,
                 fatalMessage ?: "Fatal decoding error",
@@ -310,7 +350,7 @@ class TcpFrameDecoder {
     }
 
     /**
-     * 进入不可恢复终态，清理所有在拼装缓冲
+     * 进入不可恢复终态，清理所有在拼装缓冲并释放已预留预算
      */
     private fun markFatal(
         reasonCode: String,
@@ -321,6 +361,17 @@ class TcpFrameDecoder {
         fatalReasonCode = reasonCode
         fatalMessage = message
         fatalCause = cause
+        clearAndRelease()
+    }
+
+    /**
+     * 清理所有在拼装缓冲并安全释放解码器持有的全局预算
+     */
+    fun clearAndRelease() {
+        if (reservedPayloadBytes > 0L) {
+            releaseBudget(reservedPayloadBytes)
+            reservedPayloadBytes = 0L
+        }
         headerScratch.clear()
         payloadChunks.clear()
         currentHeader = null

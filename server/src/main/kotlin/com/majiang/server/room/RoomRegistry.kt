@@ -147,6 +147,11 @@ class RoomRegistry(
         return rooms.values.filter { !it.closed }.map { it.toSummary() }
     }
 
+    fun activeRooms(): List<SharedRoom> {
+        rooms.entries.removeIf { it.value.closed }
+        return rooms.values.filter { !it.closed }
+    }
+
     fun count(): Int {
         rooms.entries.removeIf { it.value.closed }
         return rooms.size

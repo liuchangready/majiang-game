@@ -37,7 +37,18 @@ import com.majiang.transport.api.ProtocolSleeveBloomRequest
 import com.majiang.transport.api.ProtocolSleeveBloomChoiceRequest
 import com.majiang.transport.api.ProtocolBeamSwapRequest
 import com.majiang.transport.api.ProtocolBeamSwapChoiceRequest
+import com.majiang.server.idempotency.AdmissionResult
+import com.majiang.server.idempotency.IdempotencyKey
+import com.majiang.server.idempotency.InFlightReceipt
+import com.majiang.transport.api.ApiMessageCodec
+import com.majiang.transport.api.ApiRequest
+import com.majiang.transport.api.ApiResponse
+import com.majiang.transport.api.ApiTags
+import com.majiang.transport.tcp.TcpRequestEnvelope
+import com.majiang.transport.tcp.TcpResponseEnvelope
+import com.majiang.transport.tcp.TcpScope
 import java.io.IOException
+import java.util.UUID
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.atomic.AtomicBoolean
@@ -1393,6 +1404,203 @@ class InProcessBinding(
         disconnectListeners.add(listener)
         return AutoCloseable {
             disconnectListeners.remove(listener)
+        }
+    }
+
+    // ========================================
+    // 共享回执与幂等执行 (R14 / F12)
+    // ========================================
+
+    val lobbyToken: String = UUID.randomUUID().toString()
+
+    val logicalPrincipal: String
+        get() {
+            val room = currentRoom
+            return when (role) {
+                InProcessRole.PLAYER -> if (room != null) "player:${room.roomId}:$viewerSeat" else "lobby:$lobbyToken"
+                InProcessRole.SPECTATOR -> if (room != null && spectatorId != null) "spectator:${room.roomId}:$spectatorId" else "lobby:$lobbyToken"
+                InProcessRole.UNBOUND -> "lobby:$lobbyToken"
+            }
+        }
+
+    fun getRequestScope(): CompletableFuture<TcpScope> {
+        val s = server
+        val f = CompletableFuture<TcpScope>()
+        if (s == null) {
+            f.complete(TcpScope(scope = "inprocess-scope", expiresAtMillis = Long.MAX_VALUE))
+            return f
+        }
+        val now = System.currentTimeMillis()
+        val principal = logicalPrincipal
+        if (s.receiptStore.isScopeQueryRateLimited(principal, now)) {
+            f.completeExceptionally(ServerApiException(ApiErrors.SERVER_BUSY, "Rate limited"))
+            return f
+        }
+        val (scope, _) = s.receiptStore.getOrCreateScopeForPrincipal(principal, now)
+        f.complete(scope)
+        return f
+    }
+
+    private fun isSideEffectApi(api: String): Boolean = when (api) {
+        ApiTags.CREATE_ROOM,
+        ApiTags.JOIN_ROOM,
+        ApiTags.JOIN_SPECTATOR,
+        ApiTags.RESUME_SESSION,
+        ApiTags.RESUME_SPECTATOR,
+        ApiTags.LEAVE_ROOM,
+        ApiTags.SET_READY,
+        ApiTags.UPDATE_CONFIG,
+        ApiTags.START_MATCH,
+        ApiTags.NEXT_ROUND,
+        ApiTags.SUBMIT_CHOICE,
+        ApiTags.SUBMIT_SHUFFLE_PLAN,
+        ApiTags.SUBMIT_TILE_MARK,
+        ApiTags.SUBMIT_SLEEVE_BLOOM,
+        ApiTags.SUBMIT_SLEEVE_BLOOM_CHOICE,
+        ApiTags.SUBMIT_BEAM_SWAP,
+        ApiTags.SUBMIT_BEAM_SWAP_CHOICE,
+        ApiTags.CLAIM_CONTROL,
+        ApiTags.RELEASE_CONTROL -> true
+        else -> false
+    }
+
+    fun executeRequest(envelope: TcpRequestEnvelope): CompletableFuture<TcpResponseEnvelope> {
+        envelope.validateRequestIdConsistency()
+        val s = server ?: throw IllegalStateException("InProcessBinding not associated with InProcessServer")
+        val principal = logicalPrincipal
+        val req = envelope.request
+        val api = req.api
+
+        if (api == "GET_REQUEST_SCOPE") {
+            val now = System.currentTimeMillis()
+            if (s.receiptStore.isScopeQueryRateLimited(principal, now)) {
+                val resp = ApiResponse(requestId = envelope.requestId, success = false, error = ApiErrors.SERVER_BUSY)
+                return CompletableFuture.completedFuture(
+                    TcpResponseEnvelope(envelope.requestScope, envelope.requestId, resp)
+                )
+            }
+            val (scope, _) = s.receiptStore.getOrCreateScopeForPrincipal(principal, now)
+            val resp = ApiResponse(requestId = envelope.requestId, success = true)
+            return CompletableFuture.completedFuture(
+                TcpResponseEnvelope(envelope.requestScope, envelope.requestId, resp, grantedScope = scope)
+            )
+        }
+
+        val isSideEffect = isSideEffectApi(api)
+        val isLobby = (role == InProcessRole.UNBOUND)
+        val rawPayload = try {
+            ApiMessageCodec.encodeRequest(req)
+        } catch (_: Throwable) {
+            val resp = ApiResponse(requestId = envelope.requestId, success = false, error = ApiErrors.MALFORMED_REQUEST)
+            return CompletableFuture.completedFuture(
+                TcpResponseEnvelope(envelope.requestScope, envelope.requestId, resp)
+            )
+        }
+
+        val key = IdempotencyKey(principal, envelope.requestScope, envelope.requestId)
+        val admission = s.receiptStore.acquireAdmission(
+            key = key,
+            request = req,
+            rawPayload = rawPayload,
+            isSideEffect = isSideEffect,
+            isLobby = isLobby,
+            nowMillis = System.currentTimeMillis()
+        )
+
+        return when (admission) {
+            is AdmissionResult.Replay -> CompletableFuture.completedFuture(
+                TcpResponseEnvelope(envelope.requestScope, envelope.requestId, admission.completed.response, admission.completed.grantedScope)
+            )
+            is AdmissionResult.WaitInFlight -> admission.inFlight.future.thenApply { resp ->
+                TcpResponseEnvelope(envelope.requestScope, envelope.requestId, resp, admission.inFlight.grantedScope.get())
+            }
+            is AdmissionResult.Conflict -> CompletableFuture.completedFuture(
+                TcpResponseEnvelope(envelope.requestScope, envelope.requestId, ApiResponse(requestId = envelope.requestId, success = false, error = ApiErrors.CONFLICT))
+            )
+            is AdmissionResult.ScopeExpired -> CompletableFuture.completedFuture(
+                TcpResponseEnvelope(envelope.requestScope, envelope.requestId, ApiResponse(requestId = envelope.requestId, success = false, error = ApiErrors.REQUEST_SCOPE_EXPIRED))
+            )
+            is AdmissionResult.ScopeInvalid -> CompletableFuture.completedFuture(
+                TcpResponseEnvelope(envelope.requestScope, envelope.requestId, ApiResponse(requestId = envelope.requestId, success = false, error = ApiErrors.UNAUTHENTICATED_SESSION))
+            )
+            is AdmissionResult.ServerBusy -> CompletableFuture.completedFuture(
+                TcpResponseEnvelope(envelope.requestScope, envelope.requestId, ApiResponse(requestId = envelope.requestId, success = false, error = ApiErrors.SERVER_BUSY))
+            )
+            is AdmissionResult.Admitted -> {
+                val execFuture = executeInternalApi(req)
+                execFuture.whenComplete { resp, err ->
+                    val finalResp = if (err != null || resp == null) {
+                        ApiResponse(requestId = req.requestId, success = false, error = ApiErrors.INTERNAL_ERROR)
+                    } else {
+                        resp
+                    }
+                    s.receiptStore.completeReceipt(key, admission.inFlight, finalResp, isLobby = isLobby)
+                }.thenApply { resp ->
+                    TcpResponseEnvelope(envelope.requestScope, envelope.requestId, resp)
+                }
+            }
+        }
+    }
+
+    private fun executeInternalApi(req: ApiRequest): CompletableFuture<ApiResponse> {
+        val s = server
+        return when (req.api) {
+            ApiTags.LIST_ROOMS -> {
+                val summaries = s?.registry?.listSummaries() ?: emptyList()
+                CompletableFuture.completedFuture(ApiResponse(requestId = req.requestId, success = true, rooms = summaries))
+            }
+            ApiTags.CREATE_ROOM -> {
+                createRoom(CreateRoomRequest(playerName = req.playerName, config = req.config)).thenApply { binding ->
+                    ApiResponse(
+                        requestId = req.requestId,
+                        success = true,
+                        roomId = binding.roomId,
+                        seat = binding.seat,
+                        resumeToken = binding.resumeToken,
+                        snapshot = binding.snapshot
+                    )
+                }.exceptionally { ex ->
+                    val apiEx = ServerApiException.unwrap(ex) as? ServerApiException
+                    ApiResponse(requestId = req.requestId, success = false, error = apiEx?.code ?: ApiErrors.INTERNAL_ERROR)
+                }
+            }
+            ApiTags.JOIN_ROOM -> {
+                val roomId = req.roomId ?: ""
+                joinRoom(JoinRoomRequest(roomId = roomId, playerName = req.playerName, preferSeat = req.preferSeat)).thenApply { binding ->
+                    ApiResponse(
+                        requestId = req.requestId,
+                        success = true,
+                        roomId = binding.roomId,
+                        seat = binding.seat,
+                        resumeToken = binding.resumeToken,
+                        snapshot = binding.snapshot
+                    )
+                }.exceptionally { ex ->
+                    val apiEx = ServerApiException.unwrap(ex) as? ServerApiException
+                    ApiResponse(requestId = req.requestId, success = false, error = apiEx?.code ?: ApiErrors.INTERNAL_ERROR)
+                }
+            }
+            ApiTags.LEAVE_ROOM -> {
+                leaveRoom().thenApply { receipt ->
+                    ApiResponse(requestId = req.requestId, success = receipt.status == ProtocolReceiptStatus.APPLIED, receipt = receipt)
+                }.exceptionally { ex ->
+                    val apiEx = ServerApiException.unwrap(ex) as? ServerApiException
+                    ApiResponse(requestId = req.requestId, success = false, error = apiEx?.code ?: ApiErrors.INTERNAL_ERROR)
+                }
+            }
+            ApiTags.SET_READY -> {
+                setReady(req.ready ?: true).thenApply { receipt ->
+                    ApiResponse(requestId = req.requestId, success = receipt.status == ProtocolReceiptStatus.APPLIED, receipt = receipt)
+                }.exceptionally { ex ->
+                    val apiEx = ServerApiException.unwrap(ex) as? ServerApiException
+                    ApiResponse(requestId = req.requestId, success = false, error = apiEx?.code ?: ApiErrors.INTERNAL_ERROR)
+                }
+            }
+            else -> {
+                CompletableFuture.completedFuture(
+                    ApiResponse(requestId = req.requestId, success = false, error = ApiErrors.UNKNOWN_REQUEST_TYPE)
+                )
+            }
         }
     }
 

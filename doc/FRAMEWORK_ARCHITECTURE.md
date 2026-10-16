@@ -1,5 +1,7 @@
 # 🀄 千术麻将 (Mahjong Cheater) — 整体架构与系统设计文档
 
+> 2026-10-15：远端目标已确定为 TCP，当前实现仍为可靠 UDP；本轮只更新设计。详见 [TCP 迁移设计与删除清单](v4-重构/TCP-MIGRATION-DESIGN.md)。七模块、领域规则、物理守恒与权威队列不变；下文 UDP 组件名属于当前实现，不能解释为 TCP 已开发或需要恢复旧 TCP/V3。
+
 本文档说明当前 V4 的模块职责、136 张牌物理守恒、数据映射、生命周期和权威调度。2026-10-07 已按当前源码刷新，连接控制归 server，见 [本次验收](v4-migration/ACCEPTANCE-CONNECTION-OWNERSHIP.md)。
 
 ---

@@ -66,7 +66,7 @@ import java.util.concurrent.atomic.AtomicLong
  *
  * 遵循 V4 架构契约与 TASK-ANTI-R4A 规范：
  * 1. 围绕纯领域同步 [TableAuthority] 包装，提供每桌独立的串行执行队列 (serialExecutor，支持依赖注入)；
- * 2. 外部调用（本地进程内、网络 UDP、测试）只入队并立即返回 Future，绝不在调用方或接收循环线程上加持领域锁；
+ * 2. 外部调用（本地进程内、网络 TCP、测试）只入队并立即返回 Future，绝不在调用方或接收循环线程上加持领域锁；
  * 3. 权威计算与下游外部 Future 回调解耦：在独立 completion 线程池完成 Future，防止慢回执消费者/网络发送阻塞权威队列；
  * 4. 拥有网络连接生命周期 (ConnectionControl)、席位投影游标与历史缓存、订阅派发解耦；
  * 5. 监听器通知派发 (seatDispatchers) 移出权威突变临界区，单席位单调有序推进；慢监听器绝不阻塞后续查询或命令入队；
@@ -148,7 +148,7 @@ class ServerTableHost @JvmOverloads constructor(
         ThreadFactory { r -> Thread(r, "ServerTableHost-$tableId-Serial").apply { isDaemon = true } }
     )
 
-    // 外部 Future 完成解耦执行器：将领域计算与下游回调（如 UDP 发包、UI 回调）隔离
+    // 外部 Future 完成解耦执行器：将领域计算与下游回调（如 TCP 发包、UI 回调）隔离
     internal val completionExecutor: ExecutorService = Executors.newCachedThreadPool(
         ThreadFactory { r -> Thread(r, "ServerTableHost-$tableId-Completion").apply { isDaemon = true } }
     )
@@ -800,6 +800,34 @@ class ServerTableHost @JvmOverloads constructor(
         }
     }
 
+    fun snapshotAndSubscribe(
+        seat: Int,
+        sessionValidator: (() -> Boolean)? = null,
+        listener: (PlayerUpdate) -> Unit
+    ): CompletableFuture<Pair<PlayerSnapshot, AutoCloseable>> {
+        return enqueueOperation {
+            if (sessionValidator?.invoke() == false) {
+                throw ServerApiException(ApiErrors.INVALID_TOKEN, "STALE_SESSION")
+            }
+            require(seat in 0..3) { "seat must be in 0..3, got $seat" }
+            val stream = seatStreams[seat]
+            val snap = authority.querySnapshot(seat, stream.syncEpoch, stream.cursor, buildSeatControlViews()).deepCopy()
+            val sub = SeatSubscription(subscriptionIdCounter.incrementAndGet(), listener)
+            stream.subscriptions.add(sub)
+            val handle = AutoCloseable {
+                sub.active = false
+                if (!closed) {
+                    try {
+                        serialExecutor.execute {
+                            stream.subscriptions.remove(sub)
+                        }
+                    } catch (_: RejectedExecutionException) {}
+                }
+            }
+            Pair(snap, handle)
+        }
+    }
+
     fun decision(seat: Int, sessionValidator: (() -> Boolean)? = null): CompletableFuture<PlayerDecision> {
         return enqueueOperation {
             if (sessionValidator?.invoke() == false) {
@@ -840,6 +868,31 @@ class ServerTableHost @JvmOverloads constructor(
                 throw ServerApiException(ApiErrors.INVALID_TOKEN, "STALE_SESSION")
             }
             performQueryPublicSnapshotOnQueue()
+        }
+    }
+
+    fun publicSnapshotAndSubscribe(
+        sessionValidator: (() -> Boolean)? = null,
+        listener: (ProtocolPublicUpdate) -> Unit
+    ): CompletableFuture<Pair<ProtocolPublicSnapshot, AutoCloseable>> {
+        return enqueueOperation {
+            if (sessionValidator?.invoke() == false) {
+                throw ServerApiException(ApiErrors.INVALID_TOKEN, "STALE_SESSION")
+            }
+            val snap = performQueryPublicSnapshotOnQueue()
+            val sub = PublicSubscription(subscriptionIdCounter.incrementAndGet(), listener)
+            publicStream.subscriptions.add(sub)
+            val handle = AutoCloseable {
+                sub.active = false
+                if (!closed) {
+                    try {
+                        serialExecutor.execute {
+                            publicStream.subscriptions.remove(sub)
+                        }
+                    } catch (_: RejectedExecutionException) {}
+                }
+            }
+            Pair(snap, handle)
         }
     }
 

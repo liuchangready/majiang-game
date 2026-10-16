@@ -3,8 +3,11 @@ package com.majiang.client.session
 import com.majiang.client.api.*
 import com.majiang.client.mapping.ProtocolViewMapper
 
-import com.majiang.client.transport.udp.ScheduledExecutorUdpScheduler
-import com.majiang.client.transport.udp.UdpClient
+import com.majiang.client.transport.tcp.ScheduledExecutorTransportScheduler
+import com.majiang.client.transport.tcp.TcpClient
+import com.majiang.transport.common.Cancellable
+import com.majiang.transport.common.TransportClock
+import com.majiang.transport.common.TransportScheduler
 import com.majiang.server.api.ApiProtocol
 import com.majiang.server.api.CreateRoomRequest
 import com.majiang.server.api.JoinRoomRequest
@@ -20,9 +23,6 @@ import com.majiang.transport.api.ProtocolPlayerUpdate
 import com.majiang.transport.api.ProtocolPublicSnapshot
 import com.majiang.transport.api.ProtocolPublicUpdate
 import com.majiang.transport.api.ProtocolReceiptStatus
-import com.majiang.transport.udp.Cancellable
-import com.majiang.transport.udp.UdpClock
-import com.majiang.transport.udp.UdpScheduler
 import java.io.IOException
 import java.util.Collections
 import java.util.LinkedHashSet
@@ -38,7 +38,7 @@ import java.util.concurrent.atomic.AtomicReference
 /**
  * 统一服务端连接会话运行时 (ServerConnectionSession)
  *
- * 包装底层 [ServerConnection]（单机进程内绑定或远端 UDP 绑定），同时实现
+ * 包装底层 [ServerConnection]（单机进程内绑定或远端 TCP 绑定），同时实现
  * [LobbySession]、[GameSession] 与 [SpectatorSession] 接口，作为客户端唯一权威运行时。
  *
  * 核心架构与可靠性机制：
@@ -64,8 +64,8 @@ import java.util.concurrent.atomic.AtomicReference
 class ServerConnectionSession(
     initialConnection: ServerConnection,
     private val connectionFactory: (() -> CompletableFuture<ServerConnection>)? = null,
-    val clock: UdpClock = UdpClock.SYSTEM,
-    val scheduler: UdpScheduler? = null,
+    val clock: TransportClock = TransportClock.SYSTEM,
+    val scheduler: TransportScheduler? = null,
     val dispatch: ((() -> Unit) -> Unit) = { it() },
     private val ownsScheduler: Boolean = false
 ) : LobbySession, GameSession, SpectatorSession, AutoCloseable {
@@ -998,8 +998,10 @@ class ServerConnectionSession(
                             return@whenComplete
                         }
                         if (resumeErr != null || newSpecBinding == null) {
-                            newConn.close()
                             val isPermanentErr = ReconnectErrorClassifier.isPermanent(resumeErr)
+                            if (isPermanentErr || attempt >= 10 || newConn !== currentConnection) {
+                                newConn.close()
+                            }
                             if (isPermanentErr || attempt >= 10) {
                                 val finalReason = ReconnectErrorClassifier.extractReason(resumeErr)
                                 terminateSession(finalReason)
@@ -1013,8 +1015,10 @@ class ServerConnectionSession(
                         onSpectatorBindingEstablished(newSpecBinding, newEpoch, null)
                     }
                 } catch (t: Throwable) {
-                    newConn.close()
                     val isPermanentErr = ReconnectErrorClassifier.isPermanent(t)
+                    if (isPermanentErr || attempt >= 10 || newConn !== currentConnection) {
+                        newConn.close()
+                    }
                     if (isPermanentErr || attempt >= 10) {
                         val finalReason = ReconnectErrorClassifier.extractReason(t)
                         terminateSession(finalReason)
@@ -1048,8 +1052,10 @@ class ServerConnectionSession(
                         return@whenComplete
                     }
                     if (resumeErr != null || newBinding == null) {
-                        newConn.close()
                         val isPermanentErr = ReconnectErrorClassifier.isPermanent(resumeErr)
+                        if (isPermanentErr || attempt >= 10 || newConn !== currentConnection) {
+                            newConn.close()
+                        }
                         if (isPermanentErr || attempt >= 10) {
                             val finalReason = ReconnectErrorClassifier.extractReason(resumeErr)
                             terminateSession(finalReason)
@@ -1064,8 +1070,10 @@ class ServerConnectionSession(
                     onBindingEstablished(newBinding, newEpoch, null)
                 }
             } catch (t: Throwable) {
-                newConn.close()
                 val isPermanentErr = ReconnectErrorClassifier.isPermanent(t)
+                if (isPermanentErr || attempt >= 10 || newConn !== currentConnection) {
+                    newConn.close()
+                }
                 if (isPermanentErr || attempt >= 10) {
                     val finalReason = ReconnectErrorClassifier.extractReason(t)
                     terminateSession(finalReason)
@@ -3014,49 +3022,59 @@ class ServerConnectionSession(
 
     companion object {
         /**
-         * 建立远端 UDP 连接并装配统一运行时与自动重连支持
+         * 建立远端 TCP 连接并装配统一运行时与自动重连支持 (T3/T5)
+         *
+         * TcpClientBinding 实例在重连全程复用；factory 闭包首次返回初始绑定，
+         * 后续重连调用同一绑定的 [com.majiang.client.transport.tcp.TcpClientBinding.reconnect]。
          *
          * @param host 远端服务器主机名
          * @param port 远端服务器端口
-         * @param clock 注入的协议时钟实现
-         * @param scheduler 注入的异步调度器实现
+         * @param clock 注入的传输时钟实现
+         * @param scheduler 注入的传输调度器实现（为 null 时内部自建 ScheduledExecutorTransportScheduler）
          * @param dispatch 注入的 UI/主线程派发器
          */
-        fun connectUdp(
+        fun connectTcp(
             host: String,
             port: Int,
-            clock: UdpClock = UdpClock.SYSTEM,
-            scheduler: UdpScheduler? = null,
+            clock: TransportClock = TransportClock.SYSTEM,
+            scheduler: TransportScheduler? = null,
             dispatch: ((() -> Unit) -> Unit) = { it() }
         ): CompletableFuture<ServerConnectionSession> {
-            val resolvedScheduler = scheduler ?: ScheduledExecutorUdpScheduler()
+            val resolvedTcpScheduler = scheduler ?: ScheduledExecutorTransportScheduler()
             val ownsScheduler = (scheduler == null)
-            val factory = {
-                UdpClient.connect(host, port, clock, resolvedScheduler, closeSchedulerOnShutdown = false)
-                    .thenApply { it as ServerConnection }
-            }
+
+            // 首次建连（异步）
             return try {
-                factory().thenApply { initialConn ->
+                TcpClient.connect(
+                    host = host,
+                    port = port,
+                    clock = clock,
+                    scheduler = resolvedTcpScheduler
+                ).thenApply { initialBinding ->
+                    // factory 闭包：重连时建立新 socket 并完成握手（契约3 / R03）
+                    val factory: () -> CompletableFuture<ServerConnection> = {
+                        initialBinding.reconnect().thenApply { it as ServerConnection }
+                    }
                     ServerConnectionSession(
-                        initialConnection = initialConn,
+                        initialConnection = initialBinding,
                         connectionFactory = factory,
                         clock = clock,
-                        scheduler = resolvedScheduler,
+                        scheduler = resolvedTcpScheduler,
                         dispatch = dispatch,
                         ownsScheduler = ownsScheduler
                     )
                 }.whenComplete { _, err ->
-                    if (err != null && ownsScheduler && resolvedScheduler is AutoCloseable) {
+                    if (err != null && ownsScheduler && resolvedTcpScheduler is AutoCloseable) {
                         try {
-                            resolvedScheduler.close()
+                            resolvedTcpScheduler.close()
                         } catch (_: Throwable) {
                         }
                     }
                 }
             } catch (t: Throwable) {
-                if (ownsScheduler && resolvedScheduler is AutoCloseable) {
+                if (ownsScheduler && resolvedTcpScheduler is AutoCloseable) {
                     try {
-                        resolvedScheduler.close()
+                        resolvedTcpScheduler.close()
                     } catch (_: Throwable) {
                     }
                 }

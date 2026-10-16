@@ -4,6 +4,7 @@ import com.majiang.match.MatchConfig
 import com.majiang.server.api.RoomSummary
 import com.majiang.server.api.ServerConnection
 import com.majiang.server.host.ServerTableHost
+import com.majiang.server.idempotency.RequestScopeReceiptStore
 import com.majiang.server.mapping.EngineProtocolMapper
 import com.majiang.server.room.RoomRegistry
 import com.majiang.server.room.SharedRoom
@@ -21,10 +22,12 @@ import java.util.concurrent.atomic.AtomicBoolean
  * 4. 离开房间返回大厅且连接保持活跃 (closed = false)；
  * 5. 跨建房/离房/重置保持单人装配策略 [isSingleplayer]，确保大厅重构桌同样继承单人自动就绪行为；
  * 6. 服务端活跃房间 [currentRoom]、[currentHost] 与 [tick] 自动跟踪大厅创建的活跃房间；
- * 7. 宿主自动操作由外部 tick 驱动，禁止私起后台线程轮询 tick。
+ * 7. 宿主自动操作由外部 tick 驱动，禁止私起后台线程轮询 tick；
+ * 8. 共享业务回执与 RequestScope 存储 [receiptStore] (F12)，对齐联机与单机幂等语义。
  */
 class InProcessServer(
-    val isSingleplayer: Boolean = true
+    val isSingleplayer: Boolean = true,
+    val receiptStore: RequestScopeReceiptStore = RequestScopeReceiptStore()
 ) : AutoCloseable {
 
     private val isClosed = AtomicBoolean(false)

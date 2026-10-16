@@ -1,5 +1,7 @@
 # 🀄 千术麻将游戏方案 V4：菜单/牌桌拆分、Client 桥接与 Server 接口化
 
+> 2026-10-15：本文主体记录当前可运行 UDP 架构；远端目标已调整为 TCP，尚未开发。目标成帧、资源、恢复及删除契约以 [TCP 迁移设计](v4-重构/TCP-MIGRATION-DESIGN.md) 为准。V4 七模块与领域模型保持不变，不恢复旧 TCP/V3。
+
 本文档说明《千术麻将》当前 V4 架构的模块依赖、运行调用链、权威队列、连接控制归属与同步模型。2026-10-07 已完成连接控制迁移和文档校对，见 [本次验收](v4-migration/ACCEPTANCE-CONNECTION-OWNERSHIP.md)；约束以 [最终契约](v4-migration/CONTRACT.md) 为准。
 
 ---
@@ -246,7 +248,7 @@ stateDiagram-v2
 
 ---
 
-## 7. UDP v4 可靠网络协议规范
+## 7. 当前实现：UDP v4 可靠网络协议规范（待 TCP 替代）
 
 远端网络采用无连接、高实时性、带自愈能力的自封装 UDP 协议：
 
@@ -262,7 +264,16 @@ stateDiagram-v2
 | **会话与游标隔离** | 每个玩家席位拥有独立单调递增的游标；公开观战流拥有完全独立的游标序列；强绑定 `(sessionId, syncEpoch)`，代次更迭时重置序列 |
 | **防重放与幂等** | 请求携带 `requestId`，服务端有界缓存回执；重复请求直接重放已生成回执，不重复执行领域逻辑 |
 
-> **实现边界**：系统不使用增量状态模型、512 窗口、单一桌级混合游标、TCP 长连接、Ktor 或 WebSocket。
+> **当前实现边界**：尚未实现 TCP 长连接，不使用增量状态模型、512 窗口、单一桌级混合游标、Ktor 或 WebSocket。上表为迁移前事实，不能据此要求新 TCP 保留 FRAG、ACK 或网络重传窗口。
+
+### 7.1 TCP 目标架构（设计，未实现）
+
+- 保留 `InProcessBinding`；远端改为 `TcpClientBinding → TcpTableServer/TcpServerBinding → SharedRoom → ServerTableHost`，上层继续使用 `ServerConnection` 与 `client.api`。
+- 线路标识 MJ-TCP/1，12 字节头 + UTF-8 JSON，长度/版本校验、有界读写、显式握手；不复用 UDP Version=4 帧头。
+- 删除 UDP 数据报分片、seq/ackSeq、ReplayGuard、ACK/RESEND、重传窗口和补确认定时器；恢复使用完整业务基线，保留私有/公开流隔离及业务幂等。
+- TCP 连接生命周期与房间/整场/单局生命周期继续分离；旧异步回调的绑定代次校验不可删除。
+- 采用 NIO 事件循环与有界工作分发；业务执行仍由每桌串行队列裁决，网络线程不能阻塞权威 deadline。预算、requestScope 回执身份和具体迁移清单见独立设计。
+- MR-04/MR-05 原方案退出实施队列；TCP 通过独立验收后才删除旧运行链及纯传输测试。当前只完成设计文档，不代表双栈或 TCP 已可用。
 
 ---
 

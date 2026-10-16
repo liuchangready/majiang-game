@@ -39,9 +39,9 @@ import com.majiang.transport.api.ProtocolSleeveBloomChoiceRequest
 import com.majiang.transport.api.ProtocolSleeveBloomRequest
 import com.majiang.transport.api.ProtocolTile
 import com.majiang.transport.api.ProtocolTileMarkRequest
-import com.majiang.transport.udp.Cancellable
-import com.majiang.transport.udp.UdpClock
-import com.majiang.transport.udp.UdpScheduler
+import com.majiang.transport.common.Cancellable
+import com.majiang.transport.common.TransportClock
+import com.majiang.transport.common.TransportScheduler
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertTrue
@@ -54,15 +54,15 @@ import java.util.concurrent.ExecutionException
 import java.util.concurrent.atomic.AtomicInteger
 
 /**
- * 客户端连接会话重连异常分类与有界退避集成测试 (MR-02 第二批)
+ * 客户端连接会话重连异常分类与有界退避集成测试 (MR-02 第二批 / T5)
  */
 class ServerConnectionSessionReconnectClassificationTest {
 
-    private class LocalFakeUdpClock(var now: Long = 1000L) : UdpClock {
+    private class LocalFakeClock(var now: Long = 1000L) : TransportClock {
         override fun currentTimeMillis(): Long = now
     }
 
-    private class LocalFakeUdpScheduler(private val clock: LocalFakeUdpClock) : UdpScheduler {
+    private class LocalFakeScheduler(private val clock: LocalFakeClock) : TransportScheduler {
         data class ScheduledTask(val triggerTime: Long, val delayMillis: Long, val task: Runnable, var cancelled: Boolean = false)
         val tasks = mutableListOf<ScheduledTask>()
 
@@ -288,8 +288,8 @@ class ServerConnectionSessionReconnectClassificationTest {
 
     @Test
     fun testTransientClosedTextInIoExceptionRetriesWithoutTerminating() {
-        val clock = LocalFakeUdpClock(1000L)
-        val scheduler = LocalFakeUdpScheduler(clock)
+        val clock = LocalFakeClock(1000L)
+        val scheduler = LocalFakeScheduler(clock)
         val initialConn = LocalFakeServerConnection()
 
         var factoryAttempts = 0
@@ -343,8 +343,8 @@ class ServerConnectionSessionReconnectClassificationTest {
 
     @Test
     fun testTypedInvalidTokenTerminatesImmediatelyWithoutRetrying() {
-        val clock = LocalFakeUdpClock(1000L)
-        val scheduler = LocalFakeUdpScheduler(clock)
+        val clock = LocalFakeClock(1000L)
+        val scheduler = LocalFakeScheduler(clock)
         val initialConn = LocalFakeServerConnection()
 
         var factoryAttempts = 0
@@ -389,8 +389,8 @@ class ServerConnectionSessionReconnectClassificationTest {
 
     @Test
     fun testWrappedPermanentExceptionIsUnwrappedAndTerminatesSession() {
-        val clock = LocalFakeUdpClock(1000L)
-        val scheduler = LocalFakeUdpScheduler(clock)
+        val clock = LocalFakeClock(1000L)
+        val scheduler = LocalFakeScheduler(clock)
         val initialConn = LocalFakeServerConnection()
 
         val factory = {
@@ -431,8 +431,8 @@ class ServerConnectionSessionReconnectClassificationTest {
 
     @Test
     fun testUnknownBusinessErrorRetriesWithBoundedExponentialBackoffUpToCap() {
-        val clock = LocalFakeUdpClock(1000L)
-        val scheduler = LocalFakeUdpScheduler(clock)
+        val clock = LocalFakeClock(1000L)
+        val scheduler = LocalFakeScheduler(clock)
         val initialConn = LocalFakeServerConnection()
 
         val createdConnections = mutableListOf<LocalFakeServerConnection>()

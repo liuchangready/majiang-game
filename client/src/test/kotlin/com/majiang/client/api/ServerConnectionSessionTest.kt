@@ -33,9 +33,9 @@ import com.majiang.transport.api.ProtocolRoomLifecycle
 import com.majiang.transport.api.ProtocolRoomMember
 import com.majiang.transport.api.ProtocolShufflePlan
 import com.majiang.transport.api.ProtocolTile
-import com.majiang.transport.udp.Cancellable
-import com.majiang.transport.udp.UdpClock
-import com.majiang.transport.udp.UdpScheduler
+import com.majiang.transport.common.Cancellable
+import com.majiang.transport.common.TransportClock
+import com.majiang.transport.common.TransportScheduler
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertNotNull
@@ -55,11 +55,11 @@ import com.majiang.client.session.ServerConnectionSession
 
 class ServerConnectionSessionTest {
 
-    internal class FakeUdpClock(var now: Long = 1000L) : UdpClock {
+    internal class FakeTransportClock(var now: Long = 1000L) : TransportClock {
         override fun currentTimeMillis(): Long = now
     }
 
-    internal class FakeUdpScheduler(private val clock: FakeUdpClock) : UdpScheduler {
+    internal class FakeTransportScheduler(private val clock: FakeTransportClock) : TransportScheduler {
         data class ScheduledTask(val triggerTime: Long, val task: Runnable, var cancelled: Boolean = false)
         val tasks = mutableListOf<ScheduledTask>()
 
@@ -841,8 +841,8 @@ class ServerConnectionSessionTest {
 
     @Test
     fun testAutoReconnectWithExponentialBackoff() {
-        val clock = FakeUdpClock(1000L)
-        val scheduler = FakeUdpScheduler(clock)
+        val clock = FakeTransportClock(1000L)
+        val scheduler = FakeTransportScheduler(clock)
 
         val firstConn = FakeServerConnection()
         val secondConn = FakeServerConnection()
@@ -890,8 +890,8 @@ class ServerConnectionSessionTest {
 
     @Test
     fun testPermanentDisconnectDoesNotReconnect() {
-        val clock = FakeUdpClock(1000L)
-        val scheduler = FakeUdpScheduler(clock)
+        val clock = FakeTransportClock(1000L)
+        val scheduler = FakeTransportScheduler(clock)
         val conn = FakeServerConnection()
         var factoryInvocations = 0
 
@@ -1154,8 +1154,8 @@ class ServerConnectionSessionTest {
 
     @Test
     fun testDuplicateDisconnectDoesNotTriggerConcurrentReconnectLoops() {
-        val clock = FakeUdpClock(1000L)
-        val scheduler = FakeUdpScheduler(clock)
+        val clock = FakeTransportClock(1000L)
+        val scheduler = FakeTransportScheduler(clock)
         val firstConn = FakeServerConnection()
         val secondConn = FakeServerConnection()
 
@@ -1181,8 +1181,8 @@ class ServerConnectionSessionTest {
 
     @Test
     fun testLeaveRoomInFlightPreventsReconnectOnDisconnect() {
-        val clock = FakeUdpClock(1000L)
-        val scheduler = FakeUdpScheduler(clock)
+        val clock = FakeTransportClock(1000L)
+        val scheduler = FakeTransportScheduler(clock)
         val conn = FakeServerConnection()
 
         var factoryCount = 0
@@ -1554,8 +1554,8 @@ class ServerConnectionSessionTest {
 
     @Test
     fun testRoomSubscriptionSurvivesReconnectAndRejectsOldTransportCallbacks() {
-        val clock = FakeUdpClock(1000L)
-        val scheduler = FakeUdpScheduler(clock)
+        val clock = FakeTransportClock(1000L)
+        val scheduler = FakeTransportScheduler(clock)
         val firstConn = FakeServerConnection()
         val secondConn = FakeServerConnection()
 
@@ -1974,8 +1974,8 @@ class ServerConnectionSessionTest {
 
     @Test
     fun testSpectatorReconnectOnUnexpectedDisconnect() {
-        val clock = FakeUdpClock(1000L)
-        val scheduler = FakeUdpScheduler(clock)
+        val clock = FakeTransportClock(1000L)
+        val scheduler = FakeTransportScheduler(clock)
         val fake1 = FakeServerConnection()
         val fake2 = FakeServerConnection()
         val factory = {
@@ -2198,8 +2198,8 @@ class ServerConnectionSessionTest {
 
     @Test
     fun testSpectatorSurvivesTwoConsecutiveReconnects() {
-        val clock = FakeUdpClock(1000L)
-        val scheduler = FakeUdpScheduler(clock)
+        val clock = FakeTransportClock(1000L)
+        val scheduler = FakeTransportScheduler(clock)
         val fake1 = FakeServerConnection()
         val fake2 = FakeServerConnection()
         val fake3 = FakeServerConnection()
