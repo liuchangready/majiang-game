@@ -289,7 +289,8 @@ class ApiDtoValidationTest {
             "UNKNOWN_REQUEST_TYPE",
             "INTERNAL_ERROR",
             "CONFLICT",
-            "SERVER_BUSY"
+            "SERVER_BUSY",
+            "REQUEST_SCOPE_EXPIRED"
         )
         assertEquals(expected, ApiErrors.ALL)
     }

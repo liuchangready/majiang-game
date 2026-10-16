@@ -1,6 +1,8 @@
 package com.majiang.server.room
 
+import com.majiang.server.api.ApiErrors
 import com.majiang.server.api.RoomSummary
+import com.majiang.server.api.ServerApiException
 import com.majiang.state.GameState
 import com.majiang.timing.MonotonicClock
 import com.majiang.timing.SystemMonotonicClock
@@ -44,16 +46,16 @@ class RoomRegistry(
         var roomIdToUse: String
         synchronized(lock) {
             if (isClosed.get()) {
-                throw IllegalStateException("RoomRegistry is closed")
+                throw ServerApiException(ApiErrors.INTERNAL_ERROR, "RoomRegistry is closed")
             }
             rooms.entries.removeIf { it.value.closed }
             if (rooms.size >= maxRooms) {
-                throw IllegalStateException("SERVER_FULL: room limit ($maxRooms) reached")
+                throw ServerApiException(ApiErrors.SERVER_FULL, "SERVER_FULL: room limit ($maxRooms) reached")
             }
             if (fixedRoomId != null) {
                 val existing = rooms[fixedRoomId]
                 if (existing != null && !existing.closed) {
-                    throw IllegalStateException("Room already exists: $fixedRoomId")
+                    throw ServerApiException(ApiErrors.CONFLICT, "Room already exists: $fixedRoomId")
                 }
                 roomIdToUse = fixedRoomId
             } else {
@@ -79,11 +81,11 @@ class RoomRegistry(
         try {
             synchronized(lock) {
                 if (isClosed.get()) {
-                    throw IllegalStateException("RoomRegistry is closed")
+                    throw ServerApiException(ApiErrors.INTERNAL_ERROR, "RoomRegistry is closed")
                 }
                 rooms.entries.removeIf { it.value.closed }
                 if (rooms.size >= maxRooms) {
-                    throw IllegalStateException("SERVER_FULL: room limit ($maxRooms) reached")
+                    throw ServerApiException(ApiErrors.SERVER_FULL, "SERVER_FULL: room limit ($maxRooms) reached")
                 }
                 val existing = rooms.putIfAbsent(roomIdToUse, room)
                 if (existing == null || existing.closed) {
@@ -92,7 +94,7 @@ class RoomRegistry(
                     }
                     created = true
                 } else if (fixedRoomId != null) {
-                    throw IllegalStateException("Room already exists: $fixedRoomId")
+                    throw ServerApiException(ApiErrors.CONFLICT, "Room already exists: $fixedRoomId")
                 }
             }
         } finally {
@@ -114,10 +116,10 @@ class RoomRegistry(
     fun registerRoom(room: SharedRoom) {
         var displaced: SharedRoom? = null
         synchronized(lock) {
-            if (isClosed.get()) throw IllegalStateException("RoomRegistry is closed")
+            if (isClosed.get()) throw ServerApiException(ApiErrors.INTERNAL_ERROR, "RoomRegistry is closed")
             rooms.entries.removeIf { it.value.closed }
             if (rooms.size >= maxRooms && !rooms.containsKey(room.roomId)) {
-                throw IllegalStateException("SERVER_FULL: room limit ($maxRooms) reached")
+                throw ServerApiException(ApiErrors.SERVER_FULL, "SERVER_FULL: room limit ($maxRooms) reached")
             }
             displaced = rooms.put(room.roomId, room)
         }
@@ -143,6 +145,11 @@ class RoomRegistry(
     fun listSummaries(): List<RoomSummary> {
         rooms.entries.removeIf { it.value.closed }
         return rooms.values.filter { !it.closed }.map { it.toSummary() }
+    }
+
+    fun activeRooms(): List<SharedRoom> {
+        rooms.entries.removeIf { it.value.closed }
+        return rooms.values.filter { !it.closed }
     }
 
     fun count(): Int {

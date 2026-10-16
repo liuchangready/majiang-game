@@ -28,3 +28,11 @@ run {
     workingDir = file('../assets')
 }
 
+task snapshot(type: JavaExec) {
+    group = "application"
+    description = "Captures snapshots of main menu and game screens into snapshot directory"
+    classpath = sourceSets.main.runtimeClasspath
+    mainClass = 'com.majiang.desktop.SnapshotLauncher'
+    workingDir = file('../assets')
+}
+

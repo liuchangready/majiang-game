@@ -14,9 +14,11 @@ import com.majiang.cheat.bloom.SleeveBloomChoiceRequest
 import com.majiang.cheat.beam.BeamSwapRequest
 import com.majiang.cheat.beam.BeamSwapChoiceRequest
 import com.majiang.match.SessionLifecycle
+import com.majiang.server.api.ApiErrors
 import com.majiang.server.api.ApiProtocol
 import com.majiang.server.api.PublicCheckpoint
 import com.majiang.server.api.RoomSummary
+import com.majiang.server.api.ServerApiException
 import com.majiang.server.host.ServerTableHost
 import com.majiang.server.mapping.EngineProtocolMapper
 import com.majiang.stacking.ShufflePlanRequest
@@ -390,9 +392,9 @@ class SharedRoom @JvmOverloads constructor(
         sessionValidator: (() -> Boolean)? = null
     ): CompletableFuture<Pair<Int, String>> {
         return tableHost.enqueueOperation {
-            if (isClosed.get()) throw IllegalStateException("ROOM_CLOSED")
-            if (sessionValidator?.invoke() == false) throw IllegalStateException("STALE_SESSION")
-            if (lifecycle != ProtocolRoomLifecycle.LOBBY) throw IllegalStateException("ROOM_FULL")
+            if (isClosed.get()) throw ServerApiException(ApiErrors.ROOM_NOT_FOUND, "ROOM_CLOSED")
+            if (sessionValidator?.invoke() == false) throw ServerApiException(ApiErrors.INVALID_TOKEN, "STALE_SESSION")
+            if (lifecycle != ProtocolRoomLifecycle.LOBBY) throw ServerApiException(ApiErrors.ROOM_FULL, "ROOM_FULL")
 
             val targetSeat = if (preferSeat != null && preferSeat in 0..3 && preferSeat != hostSeat && !seatOccupied[preferSeat]) {
                 preferSeat
@@ -400,7 +402,7 @@ class SharedRoom @JvmOverloads constructor(
                 val start = if (preferSeat != null && preferSeat in 0..3) preferSeat + 1 else 0
                 val candidates = (start..3).toList() + (0 until start).toList()
                 candidates.firstOrNull { it != hostSeat && !seatOccupied[it] }
-            } ?: throw IllegalStateException("ROOM_FULL")
+            } ?: throw ServerApiException(ApiErrors.ROOM_FULL, "ROOM_FULL")
 
             seatOccupied[targetSeat] = true
             playerNames[targetSeat] = playerName
@@ -653,11 +655,11 @@ class SharedRoom @JvmOverloads constructor(
         sessionValidator: (() -> Boolean)? = null
     ): CompletableFuture<ResumeSessionResult> {
         return tableHost.enqueueOperation {
-            if (isClosed.get()) throw IllegalStateException("ROOM_CLOSED")
-            if (sessionValidator?.invoke() == false) throw IllegalStateException("STALE_SESSION")
+            if (isClosed.get()) throw ServerApiException(ApiErrors.ROOM_NOT_FOUND, "ROOM_CLOSED")
+            if (sessionValidator?.invoke() == false) throw ServerApiException(ApiErrors.INVALID_TOKEN, "STALE_SESSION")
 
             val seat = (0..3).firstOrNull { seatOccupied[it] && resumeTokens[it] == resumeToken }
-                ?: throw IllegalStateException("INVALID_RESUME_TOKEN")
+                ?: throw ServerApiException(ApiErrors.INVALID_TOKEN, "INVALID_RESUME_TOKEN")
 
             val assignedGeneration = ++bindingGenerations[seat]
             tableHost.performReconnectOnQueue(seat, reclaim = false)
@@ -721,8 +723,8 @@ class SharedRoom @JvmOverloads constructor(
         sessionValidator: (() -> Boolean)? = null
     ): CompletableFuture<JoinSpectatorResult> {
         return tableHost.enqueueOperation {
-            if (isClosed.get()) throw IllegalStateException("ROOM_CLOSED")
-            if (sessionValidator?.invoke() == false) throw IllegalStateException("STALE_SESSION")
+            if (isClosed.get()) throw ServerApiException(ApiErrors.ROOM_NOT_FOUND, "ROOM_CLOSED")
+            if (sessionValidator?.invoke() == false) throw ServerApiException(ApiErrors.INVALID_TOKEN, "STALE_SESSION")
 
             val spectatorId = UUID.randomUUID().toString()
             val token = UUID.randomUUID().toString()
@@ -742,13 +744,13 @@ class SharedRoom @JvmOverloads constructor(
         sessionValidator: (() -> Boolean)? = null
     ): CompletableFuture<ResumeSpectatorResult> {
         return tableHost.enqueueOperation {
-            if (isClosed.get()) throw IllegalStateException("ROOM_CLOSED")
-            if (sessionValidator?.invoke() == false) throw IllegalStateException("STALE_SESSION")
+            if (isClosed.get()) throw ServerApiException(ApiErrors.ROOM_NOT_FOUND, "ROOM_CLOSED")
+            if (sessionValidator?.invoke() == false) throw ServerApiException(ApiErrors.INVALID_TOKEN, "STALE_SESSION")
 
             val member = spectators[spectatorId]
-                ?: throw IllegalStateException("INVALID_RESUME_TOKEN")
+                ?: throw ServerApiException(ApiErrors.INVALID_TOKEN, "INVALID_RESUME_TOKEN")
             if (member.resumeToken != resumeToken) {
-                throw IllegalStateException("INVALID_RESUME_TOKEN")
+                throw ServerApiException(ApiErrors.INVALID_TOKEN, "INVALID_RESUME_TOKEN")
             }
 
             // 完整 PUBLIC checkpoint 先于代次递增校验：错误 checkpoint 不递增成员代次、不替换现有绑定
@@ -818,8 +820,8 @@ class SharedRoom @JvmOverloads constructor(
 
     fun getRoomInfo(sessionValidator: (() -> Boolean)? = null): CompletableFuture<ProtocolRoomInfo> {
         return tableHost.enqueueOperation {
-            if (isClosed.get()) throw IllegalStateException("ROOM_CLOSED")
-            if (sessionValidator?.invoke() == false) throw IllegalStateException("STALE_SESSION")
+            if (isClosed.get()) throw ServerApiException(ApiErrors.ROOM_NOT_FOUND, "ROOM_CLOSED")
+            if (sessionValidator?.invoke() == false) throw ServerApiException(ApiErrors.INVALID_TOKEN, "STALE_SESSION")
             updateLifecycleFromHostOnQueue()
             latestRoomInfo
         }
@@ -952,6 +954,19 @@ class SharedRoom @JvmOverloads constructor(
 
     fun subscribe(seat: Int, listener: (PlayerUpdate) -> Unit): AutoCloseable =
         tableHost.subscribeSeat(seat, listener)
+
+    fun snapshotAndSubscribe(
+        seat: Int,
+        sessionValidator: (() -> Boolean)? = null,
+        listener: (PlayerUpdate) -> Unit
+    ): CompletableFuture<Pair<PlayerSnapshot, AutoCloseable>> =
+        tableHost.snapshotAndSubscribe(seat, sessionValidator, listener)
+
+    fun publicSnapshotAndSubscribe(
+        sessionValidator: (() -> Boolean)? = null,
+        listener: (ProtocolPublicUpdate) -> Unit
+    ): CompletableFuture<Pair<ProtocolPublicSnapshot, AutoCloseable>> =
+        tableHost.publicSnapshotAndSubscribe(sessionValidator, listener)
 
     fun tick(presentationBusy: Boolean = false): CompletableFuture<Boolean> =
         tableHost.tick(presentationBusy)

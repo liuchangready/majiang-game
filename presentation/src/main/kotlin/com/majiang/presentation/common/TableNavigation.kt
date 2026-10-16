@@ -21,10 +21,10 @@ interface TableNavigation {
     fun openLocalLobby(): CompletableFuture<LobbySession>
 
     /**
-     * 建立远端 UDP 连接并打开大厅会话（初始 socket/DNS 必须在后台执行）
+     * 建立远端 TCP 连接并打开大厅会话（初始 socket/DNS 必须在后台执行）
      *
      * @param host 远端服务器主机名或 IP
-     * @param port 远端服务器 UDP 端口
+     * @param port 远端服务器 TCP 端口
      */
     fun openRemoteLobby(host: String, port: Int): CompletableFuture<LobbySession>
 

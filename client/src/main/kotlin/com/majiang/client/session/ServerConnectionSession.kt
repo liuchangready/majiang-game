@@ -3,8 +3,11 @@ package com.majiang.client.session
 import com.majiang.client.api.*
 import com.majiang.client.mapping.ProtocolViewMapper
 
-import com.majiang.client.transport.udp.ScheduledExecutorUdpScheduler
-import com.majiang.client.transport.udp.UdpClient
+import com.majiang.client.transport.tcp.ScheduledExecutorTransportScheduler
+import com.majiang.client.transport.tcp.TcpClient
+import com.majiang.transport.common.Cancellable
+import com.majiang.transport.common.TransportClock
+import com.majiang.transport.common.TransportScheduler
 import com.majiang.server.api.ApiProtocol
 import com.majiang.server.api.CreateRoomRequest
 import com.majiang.server.api.JoinRoomRequest
@@ -20,9 +23,6 @@ import com.majiang.transport.api.ProtocolPlayerUpdate
 import com.majiang.transport.api.ProtocolPublicSnapshot
 import com.majiang.transport.api.ProtocolPublicUpdate
 import com.majiang.transport.api.ProtocolReceiptStatus
-import com.majiang.transport.udp.Cancellable
-import com.majiang.transport.udp.UdpClock
-import com.majiang.transport.udp.UdpScheduler
 import java.io.IOException
 import java.util.Collections
 import java.util.LinkedHashSet
@@ -38,7 +38,7 @@ import java.util.concurrent.atomic.AtomicReference
 /**
  * 统一服务端连接会话运行时 (ServerConnectionSession)
  *
- * 包装底层 [ServerConnection]（单机进程内绑定或远端 UDP 绑定），同时实现
+ * 包装底层 [ServerConnection]（单机进程内绑定或远端 TCP 绑定），同时实现
  * [LobbySession]、[GameSession] 与 [SpectatorSession] 接口，作为客户端唯一权威运行时。
  *
  * 核心架构与可靠性机制：
@@ -64,8 +64,8 @@ import java.util.concurrent.atomic.AtomicReference
 class ServerConnectionSession(
     initialConnection: ServerConnection,
     private val connectionFactory: (() -> CompletableFuture<ServerConnection>)? = null,
-    val clock: UdpClock = UdpClock.SYSTEM,
-    val scheduler: UdpScheduler? = null,
+    val clock: TransportClock = TransportClock.SYSTEM,
+    val scheduler: TransportScheduler? = null,
     val dispatch: ((() -> Unit) -> Unit) = { it() },
     private val ownsScheduler: Boolean = false
 ) : LobbySession, GameSession, SpectatorSession, AutoCloseable {
@@ -118,6 +118,7 @@ class ServerConnectionSession(
     private val isResuming = AtomicBoolean(false)
     private val isBindingInProgress = AtomicBoolean(false)
     private val earlyUpdateBuffer = ConcurrentLinkedQueue<ProtocolPlayerUpdate>()
+    private val earlyUpdateOverflowed = AtomicBoolean(false)
     private val appliedBatchCursors = LinkedHashSet<Long>()
     private val maxAppliedBatchCursors = 256
     private val maxBufferSize = 64
@@ -142,6 +143,54 @@ class ServerConnectionSession(
     private val appliedPublicBatchCursors = LinkedHashSet<Long>()
     private val publicUpdateListeners = CopyOnWriteArrayList<(PublicUpdateView) -> Unit>()
     private var activePublicConnectionSub: AutoCloseable? = null
+
+    /**
+     * 跨玩家与观战流的统一锁顺序辅助入口：始终以 syncLock -> publicSyncLock 顺序加锁，严禁反向嵌套
+     */
+    private inline fun <T> withBothSyncLocks(action: () -> T): T {
+        return synchronized(syncLock) {
+            synchronized(publicSyncLock) {
+                action()
+            }
+        }
+    }
+
+    private fun resetPlayerSyncStateUnderLock(
+        clearEarlyBuffer: Boolean = true,
+        clearSnapshot: Boolean = true
+    ) {
+        if (clearSnapshot) {
+            cachedSnapshot = null
+        }
+        reorderBuffer.clear()
+        appliedBatchCursors.clear()
+        isResuming.set(false)
+        if (clearEarlyBuffer) {
+            earlyUpdateBuffer.clear()
+            earlyUpdateOverflowed.set(false)
+        }
+    }
+
+    private fun resetSpectatorSyncStateUnderLock(
+        clearEarlyBuffer: Boolean = true,
+        clearSnapshot: Boolean = true
+    ) {
+        if (clearSnapshot) {
+            cachedPublicSnapshot = null
+        }
+        publicReorderBuffer.clear()
+        appliedPublicBatchCursors.clear()
+        activePublicRecoveryToken.set(null)
+        if (clearEarlyBuffer) {
+            earlyPublicUpdateBuffer.clear()
+            earlyPublicUpdateOverflowed.set(false)
+        }
+    }
+
+    private fun resetRoomInfoUnderLock() {
+        cachedRoomInfo = null
+        cachedRoomVersion = null
+    }
 
     override val currentPublicSnapshot: PublicSnapshotView?
         get() = synchronized(publicSyncLock) { cachedPublicSnapshot }
@@ -427,8 +476,11 @@ class ServerConnectionSession(
         synchronized(syncLock) {
             // 绑定建立前（建房/加房/重连握手期），新连接推送进入早期缓冲
             if (isBindingInProgress.get()) {
-                if (earlyUpdateBuffer.size < maxBufferSize) {
+                if (earlyUpdateBuffer.size < maxBufferSize && !earlyUpdateOverflowed.get()) {
                     earlyUpdateBuffer.add(protoUpdate)
+                } else {
+                    earlyUpdateBuffer.clear()
+                    earlyUpdateOverflowed.set(true)
                 }
                 return
             }
@@ -487,7 +539,7 @@ class ServerConnectionSession(
         }
 
         if (shouldRecover) {
-            triggerGapRecovery(recoverCursor, epoch)
+            triggerGapRecovery(recoverCursor, epoch, currentRoomEpoch.get())
         }
 
         for (u in updatesToDispatch) {
@@ -522,11 +574,11 @@ class ServerConnectionSession(
         }
     }
 
-    private fun triggerGapRecovery(cursor: Long, epoch: Long) {
+    private fun triggerGapRecovery(cursor: Long, epoch: Long, roomEpoch: Long = currentRoomEpoch.get()) {
         try {
             currentConnection.resume(cursor).whenComplete { protoSnapshot, err ->
                 try {
-                    if (closed || epoch != currentEpoch.get()) {
+                    if (closed || epoch != currentEpoch.get() || roomEpoch != currentRoomEpoch.get()) {
                         isResuming.set(false)
                         return@whenComplete
                     }
@@ -544,7 +596,9 @@ class ServerConnectionSession(
                     synchronized(syncLock) {
                         isResuming.set(false)
                         val current = cachedSnapshot
-                        if (current != null && protoSnapshot.sessionId == current.sessionId &&
+                        if (current != null &&
+                            protoSnapshot.sessionId == current.sessionId &&
+                            protoSnapshot.syncEpoch == current.syncEpoch &&
                             protoSnapshot.view.viewerSeat == current.view.viewerSeat &&
                             protoSnapshot.cursor >= current.cursor
                         ) {
@@ -579,7 +633,7 @@ class ServerConnectionSession(
                     }
 
                     if (shouldTriggerNextRecovery) {
-                        triggerGapRecovery(nextCursor, epoch)
+                        triggerGapRecovery(nextCursor, epoch, roomEpoch)
                     }
                 } catch (_: Throwable) {
                     isResuming.set(false)
@@ -881,6 +935,10 @@ class ServerConnectionSession(
 
     private fun scheduleReconnect(attempt: Int, initialDelay: Long) {
         if (closed || connectionState != ConnectionState.RECONNECTING) return
+        if (attempt >= 10) {
+            terminateSession("RECONNECT_ATTEMPTS_EXHAUSTED")
+            return
+        }
 
         val sched = scheduler
         if (sched == null) {
@@ -926,12 +984,9 @@ class ServerConnectionSession(
                 )
                 val newEpoch = currentEpoch.incrementAndGet()
                 isSpectatorBindingInProgress.set(true)
-                synchronized(publicSyncLock) {
-                    earlyPublicUpdateBuffer.clear()
-                    earlyPublicUpdateOverflowed.set(false)
-                    appliedPublicBatchCursors.clear()
-                    publicReorderBuffer.clear()
-                    activePublicRecoveryToken.set(null)
+                withBothSyncLocks {
+                    resetPlayerSyncStateUnderLock(clearEarlyBuffer = true, clearSnapshot = true)
+                    resetSpectatorSyncStateUnderLock(clearEarlyBuffer = true, clearSnapshot = false)
                 }
                 activeActionId.set(0L)
                 pendingState.set(false)
@@ -943,12 +998,12 @@ class ServerConnectionSession(
                             return@whenComplete
                         }
                         if (resumeErr != null || newSpecBinding == null) {
-                            newConn.close()
-                            val msg = resumeErr?.message.orEmpty()
-                            val isPermanentErr = msg.contains("NOT_FOUND") || msg.contains("INVALID") ||
-                                msg.contains("CLOSED") || msg.contains("REJECTED") || msg.contains("KICK")
+                            val isPermanentErr = ReconnectErrorClassifier.isPermanent(resumeErr)
+                            if (isPermanentErr || attempt >= 10 || newConn !== currentConnection) {
+                                newConn.close()
+                            }
                             if (isPermanentErr || attempt >= 10) {
-                                val finalReason = if (msg.isNotEmpty()) msg else "RESUME_FAILED"
+                                val finalReason = ReconnectErrorClassifier.extractReason(resumeErr)
                                 terminateSession(finalReason)
                             } else {
                                 scheduleReconnect(attempt + 1, initialDelay)
@@ -959,9 +1014,17 @@ class ServerConnectionSession(
                         currentConnection = newConn
                         onSpectatorBindingEstablished(newSpecBinding, newEpoch, null)
                     }
-                } catch (_: Throwable) {
-                    newConn.close()
-                    scheduleReconnect(attempt + 1, initialDelay)
+                } catch (t: Throwable) {
+                    val isPermanentErr = ReconnectErrorClassifier.isPermanent(t)
+                    if (isPermanentErr || attempt >= 10 || newConn !== currentConnection) {
+                        newConn.close()
+                    }
+                    if (isPermanentErr || attempt >= 10) {
+                        val finalReason = ReconnectErrorClassifier.extractReason(t)
+                        terminateSession(finalReason)
+                    } else {
+                        scheduleReconnect(attempt + 1, initialDelay)
+                    }
                 }
                 return@whenComplete
             }
@@ -973,11 +1036,9 @@ class ServerConnectionSession(
 
             // 标记重连绑定进行中，重置旧重排/批次/在途状态
             isBindingInProgress.set(true)
-            synchronized(syncLock) {
-                earlyUpdateBuffer.clear()
-                appliedBatchCursors.clear()
-                reorderBuffer.clear()
-                isResuming.set(false)
+            withBothSyncLocks {
+                resetPlayerSyncStateUnderLock(clearEarlyBuffer = true, clearSnapshot = false)
+                resetSpectatorSyncStateUnderLock(clearEarlyBuffer = true, clearSnapshot = true)
             }
             activeActionId.set(0L)
             pendingState.set(false)
@@ -991,12 +1052,12 @@ class ServerConnectionSession(
                         return@whenComplete
                     }
                     if (resumeErr != null || newBinding == null) {
-                        newConn.close()
-                        val msg = resumeErr?.message.orEmpty()
-                        val isPermanentErr = msg.contains("NOT_FOUND") || msg.contains("INVALID") ||
-                            msg.contains("CLOSED") || msg.contains("REJECTED") || msg.contains("KICK")
+                        val isPermanentErr = ReconnectErrorClassifier.isPermanent(resumeErr)
+                        if (isPermanentErr || attempt >= 10 || newConn !== currentConnection) {
+                            newConn.close()
+                        }
                         if (isPermanentErr || attempt >= 10) {
-                            val finalReason = if (msg.isNotEmpty()) msg else "RESUME_FAILED"
+                            val finalReason = ReconnectErrorClassifier.extractReason(resumeErr)
                             terminateSession(finalReason)
                         } else {
                             scheduleReconnect(attempt + 1, initialDelay)
@@ -1008,9 +1069,17 @@ class ServerConnectionSession(
                     currentConnection = newConn
                     onBindingEstablished(newBinding, newEpoch, null)
                 }
-            } catch (_: Throwable) {
-                newConn.close()
-                scheduleReconnect(attempt + 1, initialDelay)
+            } catch (t: Throwable) {
+                val isPermanentErr = ReconnectErrorClassifier.isPermanent(t)
+                if (isPermanentErr || attempt >= 10 || newConn !== currentConnection) {
+                    newConn.close()
+                }
+                if (isPermanentErr || attempt >= 10) {
+                    val finalReason = ReconnectErrorClassifier.extractReason(t)
+                    terminateSession(finalReason)
+                } else {
+                    scheduleReconnect(attempt + 1, initialDelay)
+                }
             }
         }
     }
@@ -1036,27 +1105,21 @@ class ServerConnectionSession(
 
         if (isNewRoom) {
             synchronized(roomLock) {
-                cachedRoomInfo = null
-                cachedRoomVersion = null
+                resetRoomInfoUnderLock()
             }
         }
 
-        synchronized(syncLock) {
+        val overflowed = withBothSyncLocks {
             if (closed || epoch != currentEpoch.get()) {
                 isBindingInProgress.set(false)
+                false
             } else {
                 currentBinding = binding
                 currentSpectatorBinding = null // 互斥：清除观战绑定
                 isBindingInProgress.set(false)
 
-                // 清除观战缓存与状态
-                synchronized(publicSyncLock) {
-                    cachedPublicSnapshot = null
-                    publicReorderBuffer.clear()
-                    earlyPublicUpdateBuffer.clear()
-                    appliedPublicBatchCursors.clear()
-                    activePublicRecoveryToken.set(null)
-                }
+                // 清除观战缓存与状态（统一复位）
+                resetSpectatorSyncStateUnderLock(clearEarlyBuffer = true)
 
                 val initialSnapshotView = ProtocolViewMapper.mapSnapshot(binding.snapshot)
                 cachedSnapshot = initialSnapshotView
@@ -1065,41 +1128,47 @@ class ServerConnectionSession(
                 appliedBatchCursors.clear()
                 isResuming.set(false)
 
-                // 排水早期缓冲更新
-                val earlyList = mutableListOf<ProtocolPlayerUpdate>()
-                while (true) {
-                    val u = earlyUpdateBuffer.poll() ?: break
-                    earlyList.add(u)
-                }
-                earlyList.sortBy { it.fromCursor }
-
-                for (protoUpdate in earlyList) {
-                    val updateView = ProtocolViewMapper.mapUpdate(protoUpdate)
-                    val updateSnap = updateView.snapshot
-                    val c = cachedSnapshot ?: break
-                    if (updateSnap.sessionId != c.sessionId || updateSnap.view.viewerSeat != c.view.viewerSeat) continue
-                    if (updateSnap.syncEpoch != c.syncEpoch) continue
-
-                    if (updateView.isFullSnapshot) {
-                        if (updateSnap.cursor >= c.cursor) {
-                            cachedSnapshot = updateSnap
-                            currentBestSnap = updateSnap
-                            reorderBuffer.headMap(updateSnap.cursor).clear()
-                            pendingUpdatesToDispatch.add(updateView)
-                        }
-                        continue
+                val hadOverflow = earlyUpdateOverflowed.getAndSet(false)
+                if (hadOverflow) {
+                    earlyUpdateBuffer.clear()
+                } else {
+                    // 排水早期缓冲更新
+                    val earlyList = mutableListOf<ProtocolPlayerUpdate>()
+                    while (true) {
+                        val u = earlyUpdateBuffer.poll() ?: break
+                        earlyList.add(u)
                     }
+                    earlyList.sortBy { it.fromCursor }
 
-                    if (updateSnap.cursor <= c.cursor) continue
-                    if (updateView.fromCursor > c.cursor) {
-                        reorderBuffer.putIfAbsent(updateView.fromCursor, updateView)
-                    } else {
-                        applyUpdateUnderLock(updateView, pendingUpdatesToDispatch)
-                        drainReorderBufferUnderLock(pendingUpdatesToDispatch)
-                        currentBestSnap = cachedSnapshot ?: currentBestSnap
+                    for (protoUpdate in earlyList) {
+                        val updateView = ProtocolViewMapper.mapUpdate(protoUpdate)
+                        val updateSnap = updateView.snapshot
+                        val c = cachedSnapshot ?: break
+                        if (updateSnap.sessionId != c.sessionId || updateSnap.view.viewerSeat != c.view.viewerSeat) continue
+                        if (updateSnap.syncEpoch != c.syncEpoch) continue
+
+                        if (updateView.isFullSnapshot) {
+                            if (updateSnap.cursor >= c.cursor) {
+                                cachedSnapshot = updateSnap
+                                currentBestSnap = updateSnap
+                                reorderBuffer.headMap(updateSnap.cursor).clear()
+                                pendingUpdatesToDispatch.add(updateView)
+                            }
+                            continue
+                        }
+
+                        if (updateSnap.cursor <= c.cursor) continue
+                        if (updateView.fromCursor > c.cursor) {
+                            reorderBuffer.putIfAbsent(updateView.fromCursor, updateView)
+                        } else {
+                            applyUpdateUnderLock(updateView, pendingUpdatesToDispatch)
+                            drainReorderBufferUnderLock(pendingUpdatesToDispatch)
+                            currentBestSnap = cachedSnapshot ?: currentBestSnap
+                        }
                     }
                 }
                 finalSnapshot = currentBestSnap
+                hadOverflow
             }
         }
 
@@ -1153,6 +1222,11 @@ class ServerConnectionSession(
             }
         }
 
+        if (overflowed && !closed && epoch == currentEpoch.get() && roomEpoch == currentRoomEpoch.get()) {
+            val cur = synchronized(syncLock) { cachedSnapshot?.cursor ?: 0L }
+            triggerGapRecovery(cur, epoch, roomEpoch)
+        }
+
         if (resultFuture != null) {
             dispatch {
                 if (closed || epoch != currentEpoch.get()) {
@@ -1181,27 +1255,21 @@ class ServerConnectionSession(
 
         if (isNewRoom) {
             synchronized(roomLock) {
-                cachedRoomInfo = null
-                cachedRoomVersion = null
+                resetRoomInfoUnderLock()
             }
         }
 
-        synchronized(publicSyncLock) {
+        val overflowed = withBothSyncLocks {
             if (closed || epoch != currentEpoch.get()) {
                 isSpectatorBindingInProgress.set(false)
+                false
             } else {
                 currentSpectatorBinding = binding
                 currentBinding = null // 互斥：清除玩家绑定
                 isSpectatorBindingInProgress.set(false)
 
-                // 清除玩家缓存与状态
-                synchronized(syncLock) {
-                    cachedSnapshot = null
-                    reorderBuffer.clear()
-                    earlyUpdateBuffer.clear()
-                    appliedBatchCursors.clear()
-                    isResuming.set(false)
-                }
+                // 清除玩家缓存与状态（统一复位）
+                resetPlayerSyncStateUnderLock(clearEarlyBuffer = true)
 
                 val initialSnapshotView = ProtocolViewMapper.mapPublicSnapshot(binding.snapshot)
                 cachedPublicSnapshot = initialSnapshotView
@@ -1210,7 +1278,8 @@ class ServerConnectionSession(
                 appliedPublicBatchCursors.clear()
                 activePublicRecoveryToken.set(null)
 
-                // 排水早期缓冲更新
+                val hadOverflow = earlyPublicUpdateOverflowed.getAndSet(false)
+                // 排水早期缓冲更新（观战保留前64条合法连续更新，排水后再按当前基线权威恢复）
                 val earlyList = mutableListOf<ProtocolPublicUpdate>()
                 while (true) {
                     val u = earlyPublicUpdateBuffer.poll() ?: break
@@ -1252,6 +1321,7 @@ class ServerConnectionSession(
                 }
 
                 finalSnapshot = currentBestSnap
+                hadOverflow
             }
         }
 
@@ -1310,7 +1380,7 @@ class ServerConnectionSession(
             }
         }
 
-        if (earlyPublicUpdateOverflowed.getAndSet(false)) {
+        if (overflowed) {
             // 早期缓冲曾溢出：按排水后的当前基线立即发起权威对账恢复，绝不静默停留在旧视图
             val overflowCheckpoint = synchronized(publicSyncLock) {
                 cachedPublicSnapshot?.let { PublicCheckpoint(it.sessionId, it.syncEpoch, it.cursor) }
@@ -1381,11 +1451,9 @@ class ServerConnectionSession(
         val epoch = currentEpoch.incrementAndGet()
         trackFuture(resultFuture, epoch)
         isBindingInProgress.set(true)
-        synchronized(syncLock) {
-            earlyUpdateBuffer.clear()
-            appliedBatchCursors.clear()
-            reorderBuffer.clear()
-            isResuming.set(false)
+        withBothSyncLocks {
+            resetPlayerSyncStateUnderLock(clearEarlyBuffer = true)
+            resetSpectatorSyncStateUnderLock(clearEarlyBuffer = true)
         }
         activeActionId.set(0L)
         pendingState.set(false)
@@ -1437,11 +1505,9 @@ class ServerConnectionSession(
         val epoch = currentEpoch.incrementAndGet()
         trackFuture(resultFuture, epoch)
         isBindingInProgress.set(true)
-        synchronized(syncLock) {
-            earlyUpdateBuffer.clear()
-            appliedBatchCursors.clear()
-            reorderBuffer.clear()
-            isResuming.set(false)
+        withBothSyncLocks {
+            resetPlayerSyncStateUnderLock(clearEarlyBuffer = true)
+            resetSpectatorSyncStateUnderLock(clearEarlyBuffer = true)
         }
         activeActionId.set(0L)
         pendingState.set(false)
@@ -1493,11 +1559,9 @@ class ServerConnectionSession(
         val epoch = currentEpoch.incrementAndGet()
         trackFuture(resultFuture, epoch)
         isBindingInProgress.set(true)
-        synchronized(syncLock) {
-            earlyUpdateBuffer.clear()
-            appliedBatchCursors.clear()
-            reorderBuffer.clear()
-            isResuming.set(false)
+        withBothSyncLocks {
+            resetPlayerSyncStateUnderLock(clearEarlyBuffer = true)
+            resetSpectatorSyncStateUnderLock(clearEarlyBuffer = true)
         }
         activeActionId.set(0L)
         pendingState.set(false)
@@ -1544,12 +1608,9 @@ class ServerConnectionSession(
         val epoch = currentEpoch.incrementAndGet()
         trackFuture(resultFuture, epoch)
         isSpectatorBindingInProgress.set(true)
-        synchronized(publicSyncLock) {
-            earlyPublicUpdateBuffer.clear()
-            earlyPublicUpdateOverflowed.set(false)
-            appliedPublicBatchCursors.clear()
-            publicReorderBuffer.clear()
-            activePublicRecoveryToken.set(null)
+        withBothSyncLocks {
+            resetPlayerSyncStateUnderLock(clearEarlyBuffer = true)
+            resetSpectatorSyncStateUnderLock(clearEarlyBuffer = true)
         }
         activeActionId.set(0L)
         pendingState.set(false)
@@ -1602,12 +1663,9 @@ class ServerConnectionSession(
         val epoch = currentEpoch.incrementAndGet()
         trackFuture(resultFuture, epoch)
         isSpectatorBindingInProgress.set(true)
-        synchronized(publicSyncLock) {
-            earlyPublicUpdateBuffer.clear()
-            earlyPublicUpdateOverflowed.set(false)
-            appliedPublicBatchCursors.clear()
-            publicReorderBuffer.clear()
-            activePublicRecoveryToken.set(null)
+        withBothSyncLocks {
+            resetPlayerSyncStateUnderLock(clearEarlyBuffer = true)
+            resetSpectatorSyncStateUnderLock(clearEarlyBuffer = true)
         }
         activeActionId.set(0L)
         pendingState.set(false)
@@ -1684,24 +1742,12 @@ class ServerConnectionSession(
                                 val retiredRoomEpoch = currentRoomEpoch.incrementAndGet()
                                 activeActionId.set(0L)
                                 pendingState.set(false)
-                                synchronized(syncLock) {
-                                    cachedSnapshot = null
-                                    reorderBuffer.clear()
-                                    earlyUpdateBuffer.clear()
-                                    appliedBatchCursors.clear()
-                                    isResuming.set(false)
-                                }
-                                synchronized(publicSyncLock) {
-                                    cachedPublicSnapshot = null
-                                    publicReorderBuffer.clear()
-                                    earlyPublicUpdateBuffer.clear()
-                                    earlyPublicUpdateOverflowed.set(false)
-                                    appliedPublicBatchCursors.clear()
-                                    activePublicRecoveryToken.set(null)
+                                withBothSyncLocks {
+                                    resetPlayerSyncStateUnderLock(clearEarlyBuffer = true)
+                                    resetSpectatorSyncStateUnderLock(clearEarlyBuffer = true)
                                 }
                                 synchronized(roomLock) {
-                                    cachedRoomInfo = null
-                                    cachedRoomVersion = null
+                                    resetRoomInfoUnderLock()
                                 }
                                 val roomFuturesToFail = mutableListOf<CompletableFuture<*>>()
                                 val it = outstandingRoomFutures.entries.iterator()
@@ -2945,8 +2991,7 @@ class ServerConnectionSession(
             }
             roomObservers.clear()
             synchronized(roomLock) {
-                cachedRoomInfo = null
-                cachedRoomVersion = null
+                resetRoomInfoUnderLock()
             }
 
             try {
@@ -2954,18 +2999,9 @@ class ServerConnectionSession(
             } catch (_: Throwable) {
             }
 
-            synchronized(syncLock) {
-                reorderBuffer.clear()
-                earlyUpdateBuffer.clear()
-            }
-
-            synchronized(publicSyncLock) {
-                cachedPublicSnapshot = null
-                publicReorderBuffer.clear()
-                earlyPublicUpdateBuffer.clear()
-                earlyPublicUpdateOverflowed.set(false)
-                appliedPublicBatchCursors.clear()
-                activePublicRecoveryToken.set(null)
+            withBothSyncLocks {
+                resetPlayerSyncStateUnderLock(clearEarlyBuffer = true)
+                resetSpectatorSyncStateUnderLock(clearEarlyBuffer = true)
             }
 
             if (ownsScheduler && scheduler is AutoCloseable) {
@@ -2986,49 +3022,59 @@ class ServerConnectionSession(
 
     companion object {
         /**
-         * 建立远端 UDP 连接并装配统一运行时与自动重连支持
+         * 建立远端 TCP 连接并装配统一运行时与自动重连支持 (T3/T5)
+         *
+         * TcpClientBinding 实例在重连全程复用；factory 闭包首次返回初始绑定，
+         * 后续重连调用同一绑定的 [com.majiang.client.transport.tcp.TcpClientBinding.reconnect]。
          *
          * @param host 远端服务器主机名
          * @param port 远端服务器端口
-         * @param clock 注入的协议时钟实现
-         * @param scheduler 注入的异步调度器实现
+         * @param clock 注入的传输时钟实现
+         * @param scheduler 注入的传输调度器实现（为 null 时内部自建 ScheduledExecutorTransportScheduler）
          * @param dispatch 注入的 UI/主线程派发器
          */
-        fun connectUdp(
+        fun connectTcp(
             host: String,
             port: Int,
-            clock: UdpClock = UdpClock.SYSTEM,
-            scheduler: UdpScheduler? = null,
+            clock: TransportClock = TransportClock.SYSTEM,
+            scheduler: TransportScheduler? = null,
             dispatch: ((() -> Unit) -> Unit) = { it() }
         ): CompletableFuture<ServerConnectionSession> {
-            val resolvedScheduler = scheduler ?: ScheduledExecutorUdpScheduler()
+            val resolvedTcpScheduler = scheduler ?: ScheduledExecutorTransportScheduler()
             val ownsScheduler = (scheduler == null)
-            val factory = {
-                UdpClient.connect(host, port, clock, resolvedScheduler, closeSchedulerOnShutdown = false)
-                    .thenApply { it as ServerConnection }
-            }
+
+            // 首次建连（异步）
             return try {
-                factory().thenApply { initialConn ->
+                TcpClient.connect(
+                    host = host,
+                    port = port,
+                    clock = clock,
+                    scheduler = resolvedTcpScheduler
+                ).thenApply { initialBinding ->
+                    // factory 闭包：重连时建立新 socket 并完成握手（契约3 / R03）
+                    val factory: () -> CompletableFuture<ServerConnection> = {
+                        initialBinding.reconnect().thenApply { it as ServerConnection }
+                    }
                     ServerConnectionSession(
-                        initialConnection = initialConn,
+                        initialConnection = initialBinding,
                         connectionFactory = factory,
                         clock = clock,
-                        scheduler = resolvedScheduler,
+                        scheduler = resolvedTcpScheduler,
                         dispatch = dispatch,
                         ownsScheduler = ownsScheduler
                     )
                 }.whenComplete { _, err ->
-                    if (err != null && ownsScheduler && resolvedScheduler is AutoCloseable) {
+                    if (err != null && ownsScheduler && resolvedTcpScheduler is AutoCloseable) {
                         try {
-                            resolvedScheduler.close()
+                            resolvedTcpScheduler.close()
                         } catch (_: Throwable) {
                         }
                     }
                 }
             } catch (t: Throwable) {
-                if (ownsScheduler && resolvedScheduler is AutoCloseable) {
+                if (ownsScheduler && resolvedTcpScheduler is AutoCloseable) {
                     try {
-                        resolvedScheduler.close()
+                        resolvedTcpScheduler.close()
                     } catch (_: Throwable) {
                     }
                 }

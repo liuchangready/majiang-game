@@ -79,7 +79,7 @@ object ApiTags {
 }
 
 /**
- * V4 统一请求信封（UDP REQ payload）
+ * V4 统一请求信封（TCP / 传输 REQ payload）
  */
 data class ApiRequest(
     val api: String,
@@ -123,7 +123,7 @@ data class ApiRequest(
 }
 
 /**
- * V4 统一响应信封（UDP RSP payload）
+ * V4 统一响应信封（TCP / 传输 RSP payload）
  */
 class ApiResponse @JvmOverloads constructor(
     val requestId: String? = null,

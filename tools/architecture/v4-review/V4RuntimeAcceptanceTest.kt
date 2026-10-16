@@ -363,6 +363,25 @@ class V4RuntimeAcceptanceTest {
         }
     }
 
+    @Test fun reconnectRetainsLastVisibleSnapshotWhileResumeHandshakeIsPending() = fixture { initial ->
+        val fake = FakeConnection(initial)
+        val replacement = FakeConnection(initial)
+        replacement.resumeBindingReply = CompletableFuture()
+        val time = ManualTime()
+        ServerConnectionSession(fake.connection,
+            connectionFactory = { CompletableFuture.completedFuture(replacement.connection) },
+            clock = time, scheduler = time).use { runtime ->
+            runtime.createRoom().await()
+            fake.push(initial.copy(cursor = 1), 0)
+            fake.drop(ApiProtocol.HEARTBEAT_TIMEOUT)
+            time.next()
+            assertEquals(1, replacement.calls["resumeSession"] ?: 0)
+            assertFalse(replacement.resumeBindingReply.isDone)
+            assertEquals(1L, runtime.currentSnapshot?.cursor,
+                "An in-flight reconnect handshake must retain the last visible snapshot")
+        }
+    }
+
     @Test fun reconnectBuffersPushBeforeResumeBindingReply() = fixture { initial ->
         val fake = FakeConnection(initial)
         val restored = initial.copy(syncEpoch = "new-epoch")

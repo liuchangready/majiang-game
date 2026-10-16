@@ -36,7 +36,7 @@ import java.util.concurrent.atomic.AtomicLong
  *
  * 遵循 V4 架构契约与 TASK-ANTI-R5ROOT 规范：
  * 1. 仅作为组合根，装配 InProcessServer(true).createConnection() + ServerConnectionSession 统一大厅；
- * 2. 单机模式经 LobbySession.createRoom() 真实建房，远端 connectUdp 初始 socket/DNS 在后台调用，成功/错误回 GL 线程；
+ * 2. 单机模式经 LobbySession.createRoom() 真实建房，远端 connectTcp 初始 socket/DNS 在后台调用，成功/错误回 GL 线程；
  * 3. 屏幕只收门面，根保存具体 runtime 并负责导航、tick、pause/resume、leave 与 close 语义；
  * 4. 共享中文 NotoSansSC 字体、SkinManager 与纹理资源统一由 UiAssets 管理并由根一次性释放；
  * 5. 实现 TableNavigation 导航契约，绝不暴露 engine 或 protocol 类型给屏幕；
@@ -127,7 +127,7 @@ class MahjongGame(
     }
 
     /**
-     * 建立远端 UDP 连接并打开大厅会话（初始 socket/DNS 在后台执行，成功/错误回 GL 线程）
+     * 建立远端 TCP 连接并打开大厅会话（初始 socket/DNS 在后台执行，成功/错误回 GL 线程）
      */
     override fun openRemoteLobby(host: String, port: Int): CompletableFuture<LobbySession> {
         val token = connectionSequence.incrementAndGet()
@@ -141,7 +141,7 @@ class MahjongGame(
         }
         backgroundExecutor.submit {
             try {
-                ServerConnectionSession.connectUdp(
+                ServerConnectionSession.connectTcp(
                     host = host,
                     port = port,
                     dispatch = { task ->
@@ -160,7 +160,7 @@ class MahjongGame(
                             session?.close()
                             resultFuture.completeExceptionally(IllegalStateException("Connection superseded or game disposed"))
                         } else if (error != null || session == null) {
-                            resultFuture.completeExceptionally(error ?: IOException("UDP connect failed"))
+                            resultFuture.completeExceptionally(error ?: IOException("TCP connect failed"))
                         } else {
                             closeCurrentSession()
                             closeInProcessServer()

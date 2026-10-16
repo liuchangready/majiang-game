@@ -1,5 +1,7 @@
 # 🀄 Server ↔ Client 接口与协议规范 (V4)
 
+> 2026-10-15 设计更新：现有代码仍实现 InProcess + UDP。远端目标改为 TCP，但尚未开发；完整目标契约见 [TCP 迁移设计](v4-重构/TCP-MIGRATION-DESIGN.md)。本文现有 API/DTO 定义继续作为业务基线，UDP 帧细节仅描述待退役实现。
+
 本文档说明当前 V4 的服务端接口、协议 DTO、客户端门面与可靠 UDP 传输。连接控制见 [2026-10-07 验收](v4-migration/ACCEPTANCE-CONNECTION-OWNERSHIP.md)；袖里藏花接口见 [E2 独立验收](sleeve-bloom/ACCEPTANCE-E2.md)；2026-10-13补充偷梁换柱接口，见[线路独立验收](beam-swap/ACCEPTANCE-E2.md)。
 
 ---
@@ -207,7 +209,7 @@ interface PushChannel {
 
 ---
 
-## 5. 可靠 UDP 数据报协议明细
+## 5. 当前 UDP 数据报协议明细（待退役）
 
 ### 5.1 二进制帧头格式 (固定 22 字节)
 所有多字节数值采用**大端序 (Big-Endian)** 编码：
@@ -266,7 +268,24 @@ interface PushChannel {
 
 ---
 
-## 6. 未实现边界声明
+## 6. TCP 目标接口与传输契约（尚未实现）
+
+业务仍通过 `ServerConnection` 的大厅、会话、观战和推送接口访问。新增 TCP 装配替代 `connectUdp`，不改变 UI 直接依赖 `client.api` 的边界。新增纯协议 codec 与握手类型，业务错误继续使用 `ServerApiException`。
+
+| 项目 | 目标决策 |
+|---|---|
+| 线路版本 | MJ-TCP/1，架构仍为 V4；业务版本通过 HELLO/WELCOME 明确协商 |
+| 成帧 | `MJTC` 4B + version 1B + type 1B + flags 2B + payloadLength 4B，大端；严格 JSON/UTF-8，设计载荷上限 1 MiB |
+| 类型 | HELLO/WELCOME、REQ/RSP、PLAYER_UPDATE/PUBLIC_UPDATE/ROOM_UPDATE、PING/PONG、CLOSE；无 ACK/FRAG/RESEND |
+| 请求身份 | 逻辑恢复身份 + 服务端 requestScope + requestId；外层与 ApiRequest.id 一致，跨 API 同键冲突；不能按 TCP 源端口去重 |
+| 请求成功 | 以 RSP/业务 receipt 为准，写入 Socket 或 TCP 确认不等于动作已执行；断线结果未知时不能换 ID 自动重做 |
+| 推送恢复 | 仍为全量快照 + 可见事件；恢复建立明确 full 基线，保留 sessionId/syncEpoch/cursor/roomVersion/controlEpoch |
+| 超时与关闭 | 双向应用心跳，10 秒无完整合法帧判死；CLOSE 尽力发送后有界关闭，不再等待 UDP ACK |
+| 背压 | 设计初值每连接 256 帧/4 MiB 发送上限；溢出断开慢端并以基线恢复，不任意丢回执 |
+
+新握手、requestScope 期限、拟新增错误码与字节预算的完整定义以独立设计第 3–6 节为准；这些不属于当前已存在的线路 API。第 5 节旧 UDP 包序号与分片协议不迁入 TCP；纯传输测试在替代验收后退役，业务幂等与隔离测试继续保留。TCP 本身不提供加密。
+
+## 7. 未实现边界声明
 
 以下功能明确**未实现**，严禁在文档或代码中承诺为已有功能：
 - **公网用户体系与集中鉴权**：无远程用户数据库或自动匹配中心；
