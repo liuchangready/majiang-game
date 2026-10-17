@@ -1,5 +1,12 @@
 package com.majiang.server.tcp
 
+import com.majiang.server.api.ApiErrors
+import com.majiang.server.room.RoomRegistry
+import com.majiang.server.room.RoomRetentionPolicy
+import com.majiang.timing.ManualMonotonicClock
+import com.majiang.transport.api.ApiRequest
+import com.majiang.transport.api.ApiResponse
+import com.majiang.transport.api.ApiTags
 import com.majiang.transport.tcp.TcpClose
 import com.majiang.transport.tcp.TcpCloseReasons
 import com.majiang.transport.tcp.TcpFrame
@@ -8,6 +15,7 @@ import com.majiang.transport.tcp.TcpHello
 import com.majiang.transport.tcp.TcpMessageCodec
 import com.majiang.transport.tcp.TcpNonce
 import com.majiang.transport.tcp.TcpPing
+import com.majiang.transport.tcp.TcpRequestEnvelope
 import com.majiang.transport.tcp.TcpWire
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
@@ -285,6 +293,205 @@ class TcpTableServerCapacityAndLifecycleTest {
                     val pongA = clientA.expectPong(timeoutMillis = 4000L)
                     assertEquals(nonceA, pongA.nonce)
                 }
+            }
+        } finally {
+            server.close()
+        }
+    }
+
+    @Test
+    fun `R06-T10 create room TCP disconnect retry with same requestId replays original or returns ROOM_NOT_FOUND after recycling without recreating room`() {
+        val server = TcpTableServer(TcpServerConfig(port = 0))
+        server.start()
+
+        try {
+            var lobbyToken: String
+            var lobbyScope: String
+            var originalRoomId: String
+            val reqId = "req-c10-01"
+
+            // 1. 客户端握手建房
+            TcpTestClient(port = server.boundPort).use { client1 ->
+                client1.sendFrame(TcpMessageCodec.toFrame(TcpHello(wireVersion = 1, businessVersion = 1)))
+                val welcome1 = client1.expectWelcome()
+                lobbyToken = welcome1.lobbyResumeToken
+                lobbyScope = welcome1.lobbyScope.scope
+
+                val createReq = ApiRequest(
+                    requestId = reqId,
+                    api = ApiTags.CREATE_ROOM,
+                    playerName = "HostP1"
+                )
+                val envelope = TcpRequestEnvelope(
+                    requestScope = lobbyScope,
+                    requestId = reqId,
+                    request = createReq
+                )
+                client1.sendFrame(TcpMessageCodec.toFrame(envelope))
+
+                val respEnv = client1.expectResponse()
+                assertTrue(respEnv.response.success)
+                originalRoomId = respEnv.response.roomId ?: error("Expected roomId in response")
+                assertEquals(1, server.registry.activeRooms().size)
+            }
+
+            // 客户端断开后，以相同 lobby token 重连
+            TcpTestClient(port = server.boundPort).use { client2 ->
+                client2.sendFrame(TcpMessageCodec.toFrame(TcpHello(
+                    wireVersion = 1,
+                    businessVersion = 1,
+                    lobbyResumeToken = lobbyToken
+                )))
+                val welcome2 = client2.expectWelcome()
+                assertEquals(lobbyToken, welcome2.lobbyResumeToken)
+
+                // 2. 在房间未被回收时，携带原 requestId 重试：应该触发 Replay 并返回原成功响应
+                val retryReq = ApiRequest(
+                    requestId = reqId,
+                    api = ApiTags.CREATE_ROOM,
+                    playerName = "HostP1"
+                )
+                val retryEnvelope = TcpRequestEnvelope(
+                    requestScope = welcome2.lobbyScope.scope,
+                    requestId = reqId,
+                    request = retryReq
+                )
+                client2.sendFrame(TcpMessageCodec.toFrame(retryEnvelope))
+
+                val replayRespEnv = client2.expectResponse()
+                assertTrue(replayRespEnv.response.success)
+                assertEquals(originalRoomId, replayRespEnv.response.roomId)
+                assertEquals(1, server.registry.activeRooms().size)
+            }
+
+            // 3. 触发房间回收（显式关闭并从 registry 移除，通知 admission）
+            val room = server.registry.getRoom(originalRoomId)
+            assertNotNull(room)
+            room!!.close()
+            server.registry.removeRoom(originalRoomId)
+            server.roomAdmission.onRoomClosed(originalRoomId)
+            assertEquals(0, server.registry.activeRooms().size)
+
+            // 4. 再次以相同 lobby token 重连并重试该同一 requestId
+            TcpTestClient(port = server.boundPort).use { client3 ->
+                client3.sendFrame(TcpMessageCodec.toFrame(TcpHello(
+                    wireVersion = 1,
+                    businessVersion = 1,
+                    lobbyResumeToken = lobbyToken
+                )))
+                val welcome3 = client3.expectWelcome()
+
+                val retryAfterRecycle = ApiRequest(
+                    requestId = reqId,
+                    api = ApiTags.CREATE_ROOM,
+                    playerName = "HostP1"
+                )
+                val retryEnvAfterRecycle = TcpRequestEnvelope(
+                    requestScope = welcome3.lobbyScope.scope,
+                    requestId = reqId,
+                    request = retryAfterRecycle
+                )
+                client3.sendFrame(TcpMessageCodec.toFrame(retryEnvAfterRecycle))
+
+                val replayAfterRecycleResp = client3.expectResponse()
+                // 根据 MR-03 联动与 MR-06 规范：返回 ROOM_NOT_FOUND 失败
+                assertFalse(replayAfterRecycleResp.response.success)
+                assertEquals(ApiErrors.ROOM_NOT_FOUND, replayAfterRecycleResp.response.error)
+                assertEquals(reqId, replayAfterRecycleResp.requestId)
+
+                // 关键断言：绝不新建房间，registry 数量依然为 0
+                assertEquals(0, server.registry.activeRooms().size)
+            }
+        } finally {
+            server.close()
+        }
+    }
+
+    @Test
+    fun `R5 room recycling end-to-end integration via performRoomPatrol and onRoomRecycled`() {
+        val clock = ManualMonotonicClock(1000L)
+        val registry = RoomRegistry(clock = clock)
+        val policy = RoomRetentionPolicy(unengagedRoomTtlMillis = 60_000L, lobbyIdleTtlMillis = 60_000L)
+        val server = TcpTableServer(
+            config = TcpServerConfig(port = 0, retentionPolicy = policy),
+            registry = registry
+        )
+        server.start()
+
+        try {
+            var lobbyToken: String
+            var lobbyScope: String
+            var roomId: String
+            var hostResumeToken: String
+            val reqId = "req-r5-create"
+
+            // 1. 客户端建连握手建房成功
+            TcpTestClient(port = server.boundPort).use { client1 ->
+                client1.sendFrame(TcpMessageCodec.toFrame(TcpHello(wireVersion = 1, businessVersion = 1)))
+                val welcome1 = client1.expectWelcome()
+                lobbyToken = welcome1.lobbyResumeToken
+                lobbyScope = welcome1.lobbyScope.scope
+
+                val createReq = ApiRequest(
+                    requestId = reqId,
+                    api = ApiTags.CREATE_ROOM,
+                    playerName = "HostP1"
+                )
+                val envelope = TcpRequestEnvelope(
+                    requestScope = lobbyScope,
+                    requestId = reqId,
+                    request = createReq
+                )
+                client1.sendFrame(TcpMessageCodec.toFrame(envelope))
+
+                val respEnv = client1.expectResponse()
+                assertTrue(respEnv.response.success)
+                roomId = respEnv.response.roomId ?: error("Expected roomId")
+                hostResumeToken = respEnv.response.resumeToken ?: error("Expected resumeToken")
+
+                assertEquals(1, server.registry.activeRooms().size)
+                assertEquals(1, server.roomAdmission.committedRoomCount)
+            }
+
+            // 2. 客户端断开连接，等待连接注销完成
+            Thread.sleep(50)
+
+            // 3. 推进 registry 时钟超过 lobby TTL (60s)
+            clock.advance(70_000L)
+
+            // 4. 手动执行 performRoomPatrol()
+            server.performRoomPatrol(clock.nowMillis())
+            Thread.sleep(50)
+
+            // 5. 断言 registry 清空且 roomAdmission 记账归零
+            assertEquals(0, server.registry.activeRooms().size, "Registry must be empty after patrol recycling")
+            assertEquals(0, server.roomAdmission.committedRoomCount, "Admission committed rooms must return to 0")
+
+            // 6. 新连接以旧 token 调用 RESUME_SESSION，必须得到 ROOM_NOT_FOUND
+            TcpTestClient(port = server.boundPort).use { client2 ->
+                client2.sendFrame(TcpMessageCodec.toFrame(TcpHello(
+                    wireVersion = 1,
+                    businessVersion = 1,
+                    lobbyResumeToken = lobbyToken
+                )))
+                val welcome2 = client2.expectWelcome()
+
+                val resumeReq = ApiRequest(
+                    requestId = "req-r5-resume",
+                    api = ApiTags.RESUME_SESSION,
+                    roomId = roomId,
+                    token = hostResumeToken
+                )
+                val resumeEnv = TcpRequestEnvelope(
+                    requestScope = welcome2.lobbyScope.scope,
+                    requestId = "req-r5-resume",
+                    request = resumeReq
+                )
+                client2.sendFrame(TcpMessageCodec.toFrame(resumeEnv))
+
+                val resumeResp = client2.expectResponse()
+                assertFalse(resumeResp.response.success)
+                assertEquals(ApiErrors.ROOM_NOT_FOUND, resumeResp.response.error)
             }
         } finally {
             server.close()

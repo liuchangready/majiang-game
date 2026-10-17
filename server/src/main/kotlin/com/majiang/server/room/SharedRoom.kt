@@ -72,7 +72,8 @@ class SharedRoom @JvmOverloads constructor(
     serialExecutor: ExecutorService? = null,
     controllers: List<SeatController>? = null,
     val hostSeat: Int = 0,
-    initialState: GameState? = null
+    initialState: GameState? = null,
+    val capacityPolicy: RoomCapacityPolicy = RoomCapacityPolicy()
 ) : AutoCloseable {
 
     private val isClosed = AtomicBoolean(false)
@@ -84,17 +85,31 @@ class SharedRoom @JvmOverloads constructor(
     val version: Long get() = roomVersion
 
     val seatOccupied = BooleanArray(4) { false }
+    val seatConnected = BooleanArray(4) { false }
     val playerNames = arrayOfNulls<String>(4)
     val resumeTokens = Array(4) { UUID.randomUUID().toString() }
     val isReady = BooleanArray(4) { false }
     val isHuman = BooleanArray(4) { false }
     val bindingGenerations = LongArray(4) { 1L }
 
+    @Volatile
+    var idleSinceMillis: Long? = null
+        private set
+
+    @Volatile
+    var idleEpoch: Long = 1L
+        private set
+
+    @Volatile
+    var everConnectedHuman: Boolean = false
+        private set
+
     data class SpectatorMember(
         val spectatorId: String,
         val name: String,
         @Volatile var resumeToken: String,
-        @Volatile var generation: Long = 1L
+        @Volatile var generation: Long = 1L,
+        @Volatile var isConnected: Boolean = false
     )
 
     val spectators = ConcurrentHashMap<String, SpectatorMember>()
@@ -166,6 +181,10 @@ class SharedRoom @JvmOverloads constructor(
         isReady[hostSeat] = isSingleplayer
 
         if (isSingleplayer) {
+            seatConnected[hostSeat] = true
+            everConnectedHuman = true
+            idleSinceMillis = null
+            idleEpoch = 1L
             for (s in 0..3) {
                 if (s != hostSeat) {
                     seatOccupied[s] = true
@@ -174,6 +193,11 @@ class SharedRoom @JvmOverloads constructor(
                     isReady[s] = true
                 }
             }
+        } else {
+            seatConnected[hostSeat] = false
+            everConnectedHuman = false
+            idleSinceMillis = clock.nowMillis()
+            idleEpoch = 1L
         }
 
         tableHost = ServerTableHost(
@@ -383,6 +407,102 @@ class SharedRoom @JvmOverloads constructor(
     }
 
     // ==========================================
+    // 连接状态与空闲跟踪（权威队列内）
+    // ==========================================
+
+    fun connectedHumanCount(): Int {
+        var count = 0
+        for (s in 0..3) {
+            if (seatOccupied[s] && isHuman[s] && seatConnected[s]) {
+                count++
+            }
+        }
+        return count
+    }
+
+    fun connectedSpectatorCount(): Int {
+        var count = 0
+        for (m in spectators.values) {
+            if (m.isConnected) {
+                count++
+            }
+        }
+        return count
+    }
+
+    private fun recomputeIdleOnQueue(nowMillis: Long = clock.nowMillis()) {
+        val anyConnected = connectedHumanCount() > 0 || connectedSpectatorCount() > 0
+        if (anyConnected) {
+            idleSinceMillis = null
+        } else {
+            if (idleSinceMillis == null) {
+                idleSinceMillis = nowMillis
+            }
+        }
+        idleEpoch++
+    }
+
+    /**
+     * 传输连接成功绑定席位通知（幂等，在 TableHost 权威队列中串行执行）
+     */
+    fun markSeatConnected(seat: Int, expectedGeneration: Long): CompletableFuture<Unit> {
+        return tableHost.enqueueOperation {
+            if (isClosed.get()) return@enqueueOperation
+            if (seat in 0..3 && seatOccupied[seat] && isHuman[seat] && bindingGenerations[seat] == expectedGeneration) {
+                seatConnected[seat] = true
+                everConnectedHuman = true
+                recomputeIdleOnQueue()
+            }
+        }
+    }
+
+    /**
+     * 传输连接成功绑定观战者通知（幂等，在 TableHost 权威队列中串行执行）
+     */
+    fun markSpectatorConnected(spectatorId: String): CompletableFuture<Unit> {
+        return tableHost.enqueueOperation {
+            if (isClosed.get()) return@enqueueOperation
+            val member = spectators[spectatorId] ?: return@enqueueOperation
+            member.isConnected = true
+            everConnectedHuman = true
+            recomputeIdleOnQueue()
+        }
+    }
+
+    /**
+     * 权威队列内串行对账席位与观战者连接真值 (MR-06 任务 E / R4 兜底)
+     *
+     * 以连接表快照为准，清除无人认领的 seatConnected 与 member.isConnected，并重算空闲。
+     */
+    fun reconcileConnectivityOnQueue(
+        aliveSeats: Map<Int, Long>,
+        aliveSpectatorIds: Set<String>
+    ): CompletableFuture<Unit> {
+        return tableHost.enqueueOperation {
+            if (isClosed.get()) return@enqueueOperation
+            var changed = false
+            for (seat in 0..3) {
+                if (seatConnected[seat]) {
+                    val expectedGen = aliveSeats[seat]
+                    if (expectedGen == null || expectedGen != bindingGenerations[seat]) {
+                        seatConnected[seat] = false
+                        changed = true
+                    }
+                }
+            }
+            for ((specId, member) in spectators) {
+                if (member.isConnected && specId !in aliveSpectatorIds) {
+                    member.isConnected = false
+                    changed = true
+                }
+            }
+            if (changed) {
+                recomputeIdleOnQueue()
+            }
+        }
+    }
+
+    // ==========================================
     // 大厅与房间成员管理（全部串行化在 TableHost 执行队列）
     // ==========================================
 
@@ -391,6 +511,7 @@ class SharedRoom @JvmOverloads constructor(
         preferSeat: Int? = null,
         sessionValidator: (() -> Boolean)? = null
     ): CompletableFuture<Pair<Int, String>> {
+        if (isClosed.get()) return CompletableFuture.failedFuture<Pair<Int, String>>(ServerApiException(ApiErrors.ROOM_NOT_FOUND, "ROOM_CLOSED"))
         return tableHost.enqueueOperation {
             if (isClosed.get()) throw ServerApiException(ApiErrors.ROOM_NOT_FOUND, "ROOM_CLOSED")
             if (sessionValidator?.invoke() == false) throw ServerApiException(ApiErrors.INVALID_TOKEN, "STALE_SESSION")
@@ -408,6 +529,8 @@ class SharedRoom @JvmOverloads constructor(
             playerNames[targetSeat] = playerName
             isHuman[targetSeat] = true
             isReady[targetSeat] = false
+            seatConnected[targetSeat] = true
+            recomputeIdleOnQueue()
             bindingGenerations[targetSeat]++
             roomVersion++
 
@@ -613,6 +736,8 @@ class SharedRoom @JvmOverloads constructor(
                     playerNames[seat] = null
                     isHuman[seat] = false
                     isReady[seat] = false
+                    seatConnected[seat] = false
+                    recomputeIdleOnQueue()
                     roomVersion++
                     val info = buildRoomInfoOnQueue()
                     latestRoomInfo = info
@@ -622,6 +747,8 @@ class SharedRoom @JvmOverloads constructor(
                     // 对局中普通成员退出：转为 AI 托管
                     tableHost.performDisconnectOnQueue(seat)
                     isHuman[seat] = false
+                    seatConnected[seat] = false
+                    recomputeIdleOnQueue()
                     ProtocolActionReceipt("leaveRoom", ProtocolReceiptStatus.APPLIED)
                 }
             }
@@ -649,11 +776,13 @@ class SharedRoom @JvmOverloads constructor(
      * 校验房间是否未关闭、验证会话有效性，并严格比对 resumeToken：
      * 若合法则自增连接代次、重连席位并返回 ResumeSessionResult(seat, snapshot, generation)；
      * 若 token 错误或已被显式离开注销则抛出 IllegalStateException("INVALID_RESUME_TOKEN")。
+     * 房间已关闭或宿主已拆除时统一抛 ROOM_NOT_FOUND。
      */
     fun resumeSession(
         resumeToken: String,
         sessionValidator: (() -> Boolean)? = null
     ): CompletableFuture<ResumeSessionResult> {
+        if (isClosed.get()) return CompletableFuture.failedFuture<ResumeSessionResult>(ServerApiException(ApiErrors.ROOM_NOT_FOUND, "ROOM_CLOSED"))
         return tableHost.enqueueOperation {
             if (isClosed.get()) throw ServerApiException(ApiErrors.ROOM_NOT_FOUND, "ROOM_CLOSED")
             if (sessionValidator?.invoke() == false) throw ServerApiException(ApiErrors.INVALID_TOKEN, "STALE_SESSION")
@@ -663,9 +792,21 @@ class SharedRoom @JvmOverloads constructor(
 
             val assignedGeneration = ++bindingGenerations[seat]
             tableHost.performReconnectOnQueue(seat, reclaim = false)
+            seatConnected[seat] = true
+            recomputeIdleOnQueue()
 
             val snap = tableHost.performQuerySnapshotOnQueue(seat)
             ResumeSessionResult(seat = seat, snapshot = snap, generation = assignedGeneration)
+        }.exceptionally { t ->
+            // 宿主拆除使排队/后续操作以 IllegalStateException 失败时，房间级契约仍须给出 ROOM_NOT_FOUND
+            val unwrapped = (t as? java.util.concurrent.CompletionException)?.cause ?: t
+            if ((isClosed.get() || tableHost.closed) && (t is IllegalStateException || unwrapped is IllegalStateException) && unwrapped !is ServerApiException) {
+                throw ServerApiException(ApiErrors.ROOM_NOT_FOUND, "ROOM_CLOSED")
+            }
+            if (isClosed.get() && t is IllegalStateException && t !is ServerApiException) {
+                throw ServerApiException(ApiErrors.ROOM_NOT_FOUND, "ROOM_CLOSED")
+            }
+            throw t
         }
     }
 
@@ -681,6 +822,7 @@ class SharedRoom @JvmOverloads constructor(
         val opFuture = tableHost.enqueueOperation {
             if (isClosed.get()) return@enqueueOperation
             if (seat in 0..3 && seatOccupied[seat] && bindingGenerations[seat] == expectedSeatGeneration) {
+                seatConnected[seat] = false
                 if (seat == hostSeat && isSingleplayer) {
                     if (isClosed.compareAndSet(false, true)) {
                         lifecycle = ProtocolRoomLifecycle.CLOSED
@@ -695,6 +837,7 @@ class SharedRoom @JvmOverloads constructor(
                     shouldShutdown = true
                 } else {
                     tableHost.performDisconnectOnQueue(seat)
+                    recomputeIdleOnQueue()
                 }
             }
         }
@@ -722,15 +865,20 @@ class SharedRoom @JvmOverloads constructor(
         spectatorName: String? = null,
         sessionValidator: (() -> Boolean)? = null
     ): CompletableFuture<JoinSpectatorResult> {
+        if (isClosed.get()) return CompletableFuture.failedFuture<JoinSpectatorResult>(ServerApiException(ApiErrors.ROOM_NOT_FOUND, "ROOM_CLOSED"))
         return tableHost.enqueueOperation {
             if (isClosed.get()) throw ServerApiException(ApiErrors.ROOM_NOT_FOUND, "ROOM_CLOSED")
             if (sessionValidator?.invoke() == false) throw ServerApiException(ApiErrors.INVALID_TOKEN, "STALE_SESSION")
+            if (spectators.size >= capacityPolicy.maxSpectators) {
+                throw ServerApiException(ApiErrors.ROOM_FULL, "SPECTATOR_LIMIT")
+            }
 
             val spectatorId = UUID.randomUUID().toString()
             val token = UUID.randomUUID().toString()
             val name = spectatorName?.takeIf { it.isNotBlank() } ?: "Spectator"
-            val member = SpectatorMember(spectatorId, name, token, generation = 1L)
+            val member = SpectatorMember(spectatorId, name, token, generation = 1L, isConnected = true)
             spectators[spectatorId] = member
+            recomputeIdleOnQueue()
 
             val snap = tableHost.performQueryPublicSnapshotOnQueue()
             JoinSpectatorResult(spectatorId, token, 1L, snap)
@@ -743,6 +891,7 @@ class SharedRoom @JvmOverloads constructor(
         checkpoint: PublicCheckpoint? = null,
         sessionValidator: (() -> Boolean)? = null
     ): CompletableFuture<ResumeSpectatorResult> {
+        if (isClosed.get()) return CompletableFuture.failedFuture<ResumeSpectatorResult>(ServerApiException(ApiErrors.ROOM_NOT_FOUND, "ROOM_CLOSED"))
         return tableHost.enqueueOperation {
             if (isClosed.get()) throw ServerApiException(ApiErrors.ROOM_NOT_FOUND, "ROOM_CLOSED")
             if (sessionValidator?.invoke() == false) throw ServerApiException(ApiErrors.INVALID_TOKEN, "STALE_SESSION")
@@ -759,8 +908,10 @@ class SharedRoom @JvmOverloads constructor(
             }
 
             member.generation++
+            member.isConnected = true
             val assignedGen = member.generation
             spectators[spectatorId] = member
+            recomputeIdleOnQueue()
             val snap = tableHost.performQueryPublicSnapshotOnQueue()
             ResumeSpectatorResult(spectatorId, assignedGen, snap)
         }.thenApplyAsync({ res ->
@@ -784,8 +935,10 @@ class SharedRoom @JvmOverloads constructor(
             }
             val member = spectators.remove(spectatorId)
                 ?: return@enqueueOperation ProtocolActionReceipt("leaveRoom", ProtocolReceiptStatus.REJECTED, reason = "NOT_MEMBER")
+            member.isConnected = false
             member.resumeToken = UUID.randomUUID().toString()
             member.generation++
+            recomputeIdleOnQueue()
             ProtocolActionReceipt("leaveRoom", ProtocolReceiptStatus.APPLIED)
         }
     }
@@ -795,7 +948,8 @@ class SharedRoom @JvmOverloads constructor(
             if (isClosed.get()) return@enqueueOperation
             val member = spectators[spectatorId] ?: return@enqueueOperation
             if (member.generation == expectedGeneration) {
-                // 意外断开：保留恢复令牌与资格，代次匹配不自增
+                member.isConnected = false
+                recomputeIdleOnQueue()
             }
         }
     }
@@ -971,6 +1125,63 @@ class SharedRoom @JvmOverloads constructor(
     fun tick(presentationBusy: Boolean = false): CompletableFuture<Boolean> =
         tableHost.tick(presentationBusy)
 
+    /**
+     * 在目标房间权威队列中原子裁决空闲回收 (MR-06 任务 E)
+     *
+     * 重新校验：未关闭 && idleSince!=null && idleEpoch==capturedIdleEpoch &&
+     * 已连接人类=0 && 已连接观战=0 && (nowMillis-idleSince >= 按当前 lifecycle 选取的 TTL)；
+     * 全部满足才执行关闭标记（CAS isClosed、lifecycle=CLOSED、roomVersion++、
+     * 派发终态 RoomInfo——复用现有 close 的派发路径语义）并返回 true。
+     * 任一不满足返回 false（下轮巡检再试）。与 resume/join 天然在同一队列串行裁决。
+     */
+    fun closeIfIdleOnQueue(
+        policy: RoomRetentionPolicy,
+        capturedIdleEpoch: Long,
+        nowMillis: Long,
+        creatorActive: Boolean = false
+    ): CompletableFuture<Boolean> {
+        var shouldShutdown = false
+        val opFuture = tableHost.enqueueOperation {
+            if (isClosed.get()) return@enqueueOperation false
+            val idleSince = idleSinceMillis ?: return@enqueueOperation false
+            if (idleEpoch != capturedIdleEpoch) return@enqueueOperation false
+            if (connectedHumanCount() != 0 || connectedSpectatorCount() != 0) return@enqueueOperation false
+
+            val ttl = ttlFor(lifecycle, everConnectedHuman, creatorActive, policy)
+            if (ttl <= 0L || nowMillis - idleSince < ttl) {
+                return@enqueueOperation false
+            }
+
+            if (isClosed.compareAndSet(false, true)) {
+                lifecycle = ProtocolRoomLifecycle.CLOSED
+                roomVersion++
+                val terminalInfo = latestRoomInfo.copy(
+                    lifecycle = ProtocolRoomLifecycle.CLOSED,
+                    version = roomVersion
+                )
+                latestRoomInfo = terminalInfo
+                dispatchRoomUpdate(terminalInfo)
+
+                for (i in 0..3) {
+                    resumeTokens[i] = UUID.randomUUID().toString()
+                    seatConnected[i] = false
+                }
+                spectators.clear()
+                shouldShutdown = true
+                return@enqueueOperation true
+            }
+            false
+        }
+
+        return opFuture.thenApply { closedNow ->
+            if (shouldShutdown) {
+                tableHost.close()
+                deferredShutdown()
+            }
+            closedNow
+        }
+    }
+
     override fun close() {
         if (isClosed.compareAndSet(false, true)) {
             lifecycle = ProtocolRoomLifecycle.CLOSED
@@ -981,6 +1192,10 @@ class SharedRoom @JvmOverloads constructor(
             )
             latestRoomInfo = terminalInfo
             dispatchRoomUpdate(terminalInfo)
+            for (i in 0..3) {
+                resumeTokens[i] = UUID.randomUUID().toString()
+                seatConnected[i] = false
+            }
             spectators.clear()
         }
         // 立即关闭宿主，确保卡住的执行器任务也能立刻让 pendingFutures 异常完成

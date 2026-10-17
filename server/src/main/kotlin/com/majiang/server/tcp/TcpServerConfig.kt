@@ -1,5 +1,7 @@
 package com.majiang.server.tcp
 
+import com.majiang.server.room.RoomCapacityPolicy
+import com.majiang.server.room.RoomRetentionPolicy
 import com.majiang.transport.common.TransportClock
 import com.majiang.transport.common.TransportScheduler
 
@@ -95,8 +97,17 @@ data class TcpServerConfig(
     val clock: TransportClock = TransportClock.SYSTEM,
 
     /** 注入的定时调度器（可空） */
-    val scheduler: TransportScheduler? = null
+    val scheduler: TransportScheduler? = null,
+
+    /** 房间留存与回收策略（拟定默认值，可通过服务端配置调整） */
+    val retentionPolicy: RoomRetentionPolicy = RoomRetentionPolicy(),
+
+    /** 房间与观战容量策略（拟定默认值，可通过服务端配置调整） */
+    val capacityPolicy: RoomCapacityPolicy = RoomCapacityPolicy()
 ) {
+    /** 房间存活巡检周期（毫秒，拟定默认值，可通过服务端配置调整） */
+    val patrolIntervalMillis: Long get() = retentionPolicy.patrolIntervalMillis
+
     init {
         require(globalBudgetBytes > 0L) { "globalBudgetBytes must be > 0" }
         require(maxConnections > 0) { "maxConnections must be > 0" }

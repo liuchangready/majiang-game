@@ -25,7 +25,8 @@ import java.util.concurrent.atomic.AtomicBoolean
  */
 class RoomRegistry(
     val clock: MonotonicClock = SystemMonotonicClock,
-    val maxRooms: Int = 1024
+    val maxRooms: Int = 1024,
+    val capacityPolicy: RoomCapacityPolicy = RoomCapacityPolicy()
 ) : AutoCloseable {
 
     private val isClosed = AtomicBoolean(false)
@@ -74,7 +75,8 @@ class RoomRegistry(
             clock = clock,
             serialExecutor = serialExecutor,
             hostSeat = hostSeat,
-            initialState = initialState
+            initialState = initialState,
+            capacityPolicy = capacityPolicy
         )
 
         var created = false

@@ -22,6 +22,7 @@ import com.majiang.server.idempotency.RequestScopeReceiptStore
 import com.majiang.server.mapping.EngineProtocolMapper
 import com.majiang.server.room.RoomRegistry
 import com.majiang.server.room.SharedRoom
+import com.majiang.server.room.ttlFor
 import com.majiang.transport.api.ApiMessageCodec
 import com.majiang.transport.api.ApiRequest
 import com.majiang.transport.api.ApiResponse
@@ -98,6 +99,11 @@ class TcpTableServer(
 ) : AutoCloseable {
 
     val globalBudget: TcpGlobalBudget = TcpGlobalBudget(config.globalBudgetBytes)
+    val roomAdmission: CreateRoomAdmission = CreateRoomAdmission(
+        registry = registry,
+        capacityPolicy = config.capacityPolicy,
+        clockMillis = { config.clock.currentTimeMillis() }
+    )
 
     private val isRunning = AtomicBoolean(false)
     private val isClosed = AtomicBoolean(false)
@@ -114,6 +120,7 @@ class TcpTableServer(
     private lateinit var ioThread: Thread
     private lateinit var workerPool: ExecutorService
     private var tickerExecutor: ScheduledExecutorService? = null
+    private var patrolExecutor: ScheduledExecutorService? = null
 
     private val readBuffer: ByteBuffer = ByteBuffer.allocateDirect(config.maxBytesPerRotation)
 
@@ -167,6 +174,22 @@ class TcpTableServer(
                 }
             }, config.tickIntervalMillis, config.tickIntervalMillis, TimeUnit.MILLISECONDS)
             tickerExecutor = ticker
+        }
+
+        // 启动独立房间巡检回收调度器 (MR-06 / 任务 E)
+        if (config.retentionPolicy.patrolIntervalMillis > 0L) {
+            val patrol = Executors.newSingleThreadScheduledExecutor { r ->
+                Thread(r, "TcpTableServer-RoomPatrol").apply { isDaemon = true }
+            }
+            patrol.scheduleWithFixedDelay({
+                if (isRunning.get() && !isClosed.get()) {
+                    try {
+                        performRoomPatrol()
+                    } catch (_: Throwable) {
+                    }
+                }
+            }, config.retentionPolicy.patrolIntervalMillis, config.retentionPolicy.patrolIntervalMillis, TimeUnit.MILLISECONDS)
+            patrolExecutor = patrol
         }
 
         ioThread = Thread({ runEventLoop() }, "TcpTableServer-IO")
@@ -692,8 +715,20 @@ class TcpTableServer(
 
         when (admission) {
             is AdmissionResult.Replay -> {
-                // 重放原结果 (UC-R01)
-                sendResponse(conn, envelope.requestScope, envelope.requestId, admission.completed.response, admission.completed.grantedScope)
+                // 重放原结果 (UC-R01 / MR-06 回执新鲜度联动)
+                val originalResp = admission.completed.response
+                val targetRoomId = originalResp.roomId ?: originalResp.spectatorBinding?.roomId
+                val responseToSend = if (originalResp.success && targetRoomId != null) {
+                    val room = registry.getRoom(targetRoomId)
+                    if (room == null || room.closed) {
+                        ApiResponse(requestId = envelope.requestId, success = false, error = ApiErrors.ROOM_NOT_FOUND)
+                    } else {
+                        originalResp
+                    }
+                } else {
+                    originalResp
+                }
+                sendResponse(conn, envelope.requestScope, envelope.requestId, responseToSend, admission.completed.grantedScope)
             }
             is AdmissionResult.WaitInFlight -> {
                 // 关联同一在途 Future (UC-R02)
@@ -1346,7 +1381,7 @@ class TcpTableServer(
     }
 
     /**
-     * 建房处理与原子订阅安装 (UC-S01 / R2)
+     * 建房处理与原子订阅安装 (UC-S01 / R2 / MR-06 任务 D)
      */
     private fun handleCreateRoom(
         conn: TcpConnection,
@@ -1355,6 +1390,28 @@ class TcpTableServer(
         inFlight: InFlightReceipt,
         isLobby: Boolean
     ) {
+        val principal = conn.logicalPrincipal ?: "lobby:${conn.lobbyResumeToken ?: conn.connectionId}"
+        val remoteIp = CreateRoomAdmission.extractRemoteIp(conn.remoteAddress)
+
+        val outcome = roomAdmission.tryReserveOutcome(principal, remoteIp)
+        val reservation = when (outcome) {
+            is CreateRoomAdmission.Outcome.Accepted -> outcome.reservation
+            is CreateRoomAdmission.Outcome.RateLimited -> {
+                val resp = ApiResponse(requestId = req.requestId, success = false, error = ApiErrors.SERVER_BUSY)
+                receiptStore.completeReceipt(key, inFlight, resp, isLobby = isLobby)
+                conn.inFlightRequests.remove(key)
+                sendResponse(conn, key.scope, key.requestId, resp)
+                return
+            }
+            is CreateRoomAdmission.Outcome.QuotaExceeded -> {
+                val resp = ApiResponse(requestId = req.requestId, success = false, error = ApiErrors.SERVER_FULL)
+                receiptStore.completeReceipt(key, inFlight, resp, isLobby = isLobby)
+                conn.inFlightRequests.remove(key)
+                sendResponse(conn, key.scope, key.requestId, resp)
+                return
+            }
+        }
+
         val room = try {
             val effectiveRoomConfig = req.roomConfig ?: (req.config?.let { ProtocolRoomConfig(matchConfig = it) } ?: ProtocolRoomConfig())
             registry.createRoom(
@@ -1364,18 +1421,22 @@ class TcpTableServer(
                 hostSeat = 0
             )
         } catch (ex: ServerApiException) {
+            reservation.release()
             val resp = ApiResponse(requestId = req.requestId, success = false, error = ex.code)
             receiptStore.completeReceipt(key, inFlight, resp, isLobby = isLobby)
             conn.inFlightRequests.remove(key)
             sendResponse(conn, key.scope, key.requestId, resp)
             return
         } catch (t: Throwable) {
+            reservation.release()
             val resp = ApiResponse(requestId = req.requestId, success = false, error = ApiErrors.INTERNAL_ERROR)
             receiptStore.completeReceipt(key, inFlight, resp, isLobby = isLobby)
             conn.inFlightRequests.remove(key)
             sendResponse(conn, key.scope, key.requestId, resp)
             return
         }
+
+        reservation.commit(room.roomId)
         bindPlayerToRoom(conn, room, 0, key, req, inFlight, isLobby)
     }
 
@@ -1494,11 +1555,18 @@ class TcpTableServer(
             }
 
             val (snap, subHandle) = pair
-            if (conn.isClosingOrClosed || conn.currentBindingGeneration != capturedSeatGen) {
+            if (conn.isClosingOrClosed || conn.currentBindingGeneration != capturedSeatGen || room.closed || registry.getRoom(room.roomId) == null) {
                 subHandle.close()
+                val resp = ApiResponse(requestId = req.requestId, success = false, error = ApiErrors.ROOM_NOT_FOUND)
+                receiptStore.completeReceipt(key, inFlight, resp, isLobby = isLobby)
+                conn.inFlightRequests.remove(key)
+                sendResponse(conn, key.scope, key.requestId, resp)
                 return@whenComplete
             }
             conn.seatSubscription = subHandle
+
+            // 通知房间席位已成功连接 (MR-06 任务 B)
+            room.markSeatConnected(seat, capturedSeatGen)
 
             val protoSnap = EngineProtocolMapper.toProtocolSnapshot(snap)
             val resp = ApiResponse(
@@ -1554,7 +1622,7 @@ class TcpTableServer(
                 conn.inFlightRequests.remove(key)
                 sendResponse(conn, key.scope, key.requestId, resp)
             } else {
-                bindSpectatorToRoom(conn, targetRoom, res.spectatorId, res.resumeToken, key, req, inFlight, isLobby)
+                bindSpectatorToRoom(conn, targetRoom, res.spectatorId, res.resumeToken, res.generation, key, req, inFlight, isLobby)
             }
         }
     }
@@ -1588,7 +1656,7 @@ class TcpTableServer(
                 sendResponse(conn, key.scope, key.requestId, resp)
             } else {
                 val specToken = targetRoom.spectators[res.spectatorId]?.resumeToken ?: token
-                bindSpectatorToRoom(conn, targetRoom, res.spectatorId, specToken, key, req, inFlight, isLobby)
+                bindSpectatorToRoom(conn, targetRoom, res.spectatorId, specToken, res.generation, key, req, inFlight, isLobby)
             }
         }
     }
@@ -1601,13 +1669,14 @@ class TcpTableServer(
         room: SharedRoom,
         specId: String,
         specToken: String,
+        generation: Long,
         key: IdempotencyKey,
         req: ApiRequest,
         inFlight: InFlightReceipt,
         isLobby: Boolean
     ) {
         val spectatorPrincipal = "spectator:${room.roomId}:$specId"
-        conn.bindSpectatorRole(room, specId)
+        conn.bindSpectatorRole(room, specId, bindingGeneration = generation)
 
         // 顶号扫描：向持有同房间同观战者身份的旧连接主动发出 CLOSE(DISPLACED_BY_NEW_CONNECTION) (UC-C01 / D4 / R8)
         for (other in connections.values) {
@@ -1636,11 +1705,18 @@ class TcpTableServer(
             }
 
             val (pubSnap, subHandle) = pair
-            if (conn.isClosingOrClosed || conn.currentBindingGeneration != capturedGen) {
+            if (conn.isClosingOrClosed || conn.currentBindingGeneration != capturedGen || room.closed || registry.getRoom(room.roomId) == null) {
                 subHandle.close()
+                val resp = ApiResponse(requestId = req.requestId, success = false, error = ApiErrors.ROOM_NOT_FOUND)
+                receiptStore.completeReceipt(key, inFlight, resp, isLobby = isLobby)
+                conn.inFlightRequests.remove(key)
+                sendResponse(conn, key.scope, key.requestId, resp)
                 return@whenComplete
             }
             conn.publicSubscription = subHandle
+
+            // 通知房间观战者已成功连接 (MR-06 任务 B)
+            room.markSpectatorConnected(specId)
 
             val binding = SpectatorBinding(
                 roomId = room.roomId,
@@ -1738,6 +1814,94 @@ class TcpTableServer(
     }
 
     /**
+     * 执行房间巡检回收循环（单线程 RoomPatrol 定时调度，MR-06 任务 E）
+     */
+    internal fun performRoomPatrol(now: Long = registry.clock.nowMillis()) {
+        // 1. 同步清账与对账 (任务 D)
+        roomAdmission.reconcile(registry)
+
+        // 2. 存活房间快照读取，锁外筛选候选 (只筛选，不做最终裁决)
+        val activeRooms = registry.activeRooms()
+        for (room in activeRooms) {
+            if (room.closed) continue
+
+            // 2.1 对账连接真值：以连接表快照为准，清除无人认领的 seatConnected 与 member.isConnected (R4 兜底)
+            val aliveSeats = mutableMapOf<Int, Long>()
+            val aliveSpectators = mutableSetOf<String>()
+            for (conn in connections.values) {
+                if (!conn.isClosingOrClosed && conn.activeRoom === room) {
+                    if (conn.role == ConnectionRole.PLAYER && conn.viewerSeat in 0..3) {
+                        aliveSeats[conn.viewerSeat] = conn.currentBindingGeneration
+                    } else if (conn.role == ConnectionRole.SPECTATOR && conn.spectatorId != null) {
+                        aliveSpectators.add(conn.spectatorId!!)
+                    }
+                }
+            }
+            room.reconcileConnectivityOnQueue(aliveSeats, aliveSpectators)
+
+            val idleSince = room.idleSinceMillis ?: continue
+            val capturedEpoch = room.idleEpoch
+            val everConnected = room.everConnectedHuman
+            val curLifecycle = room.lifecycle
+
+            val creatorActive = isCreatorActiveForRoom(room.roomId)
+
+            val ttl = ttlFor(curLifecycle, everConnected, creatorActive, config.retentionPolicy)
+            if (ttl <= 0L || now - idleSince < ttl) {
+                continue
+            }
+
+            // 3. 候选命中，进入目标房间权威队列执行最终原子裁决
+            recycleRoomIfIdle(room, capturedEpoch, now, creatorActive)
+        }
+    }
+
+    /**
+     * 查询指定房间创建者的连接是否存活
+     */
+    private fun isCreatorActiveForRoom(roomId: String): Boolean {
+        val creatorPrincipal = roomAdmission.getCreatorPrincipal(roomId) ?: return false
+        return connections.values.any { conn ->
+            !conn.isClosingOrClosed && conn.logicalPrincipal == creatorPrincipal
+        }
+    }
+
+    /**
+     * 在目标房间权威队列提交回收裁决并执行清理
+     */
+    private fun recycleRoomIfIdle(
+        room: SharedRoom,
+        capturedEpoch: Long,
+        now: Long,
+        creatorActive: Boolean
+    ) {
+        room.closeIfIdleOnQueue(config.retentionPolicy, capturedEpoch, now, creatorActive).whenComplete { closed, err ->
+            if (err == null && closed == true) {
+                onRoomRecycled(room)
+            }
+        }
+    }
+
+    /**
+     * 房间回收成功后的服务端资源清理 (任务 E)
+     */
+    private fun onRoomRecycled(room: SharedRoom) {
+        val roomId = room.roomId
+        // 1. 注销
+        registry.removeRoom(roomId)
+
+        // 2. 对关联连接发送 ROOM_CLOSED 关闭
+        for (conn in connections.values) {
+            if (conn.activeRoom === room) {
+                conn.close(TcpCloseReasons.ROOM_CLOSED, "Room recycled (idle TTL)", immediate = false)
+            }
+        }
+
+        // 3. CreateRoomAdmission 清账
+        roomAdmission.onRoomClosed(roomId)
+    }
+
+    /**
      * 停止服务器并释放所有连接与资源 (UC-C04 / R01 / R11)
      */
     override fun close() {
@@ -1751,7 +1915,17 @@ class TcpTableServer(
         } catch (_: Throwable) {
         }
 
-        // 1. 停止权威房间 Ticker 调度器 (R01)
+        // 1. 停止权威房间 Ticker 与 RoomPatrol 调度器 (R01 / MR-06 R11)
+        patrolExecutor?.let { patrol ->
+            try {
+                patrol.shutdown()
+                patrol.awaitTermination(500, TimeUnit.MILLISECONDS)
+                patrol.shutdownNow()
+            } catch (_: Throwable) {
+            }
+        }
+        patrolExecutor = null
+
         tickerExecutor?.let { ticker ->
             try {
                 ticker.shutdown()
