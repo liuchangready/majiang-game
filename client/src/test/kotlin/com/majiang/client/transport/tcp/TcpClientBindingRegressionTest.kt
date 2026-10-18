@@ -35,7 +35,10 @@ import java.nio.ByteBuffer
 @Timeout(15)
 class TcpClientBindingRegressionTest {
 
-    private class MockPeer(val handler: (Socket) -> Unit) : AutoCloseable {
+    private class MockPeer(
+        val requestTimeoutMillis: Long = 2000L,
+        val handler: (Socket) -> Unit
+    ) : AutoCloseable {
         val serverSocket = ServerSocket(0)
         val done = CountDownLatch(1)
         val thread = Thread {
@@ -55,14 +58,14 @@ class TcpClientBindingRegressionTest {
                 assertNotNull(helloFrame)
                 assertEquals(TcpWire.FRAME_TYPE_HELLO, helloFrame?.type)
 
-                // 发 WELCOME (指定协商超时 150ms)
+                // 发 WELCOME (指定协商超时 requestTimeoutMillis)
                 val welcome = TcpWelcome(
                     wireVersion = 1,
                     businessVersion = 1,
                     connectionEpoch = "peer-epoch",
                     lobbyResumeToken = "peer-token",
                     lobbyScope = TcpScope("peer-scope", Long.MAX_VALUE),
-                    limits = TcpLimits(requestTimeoutMillis = 150L, heartbeatIntervalMillis = 3000L)
+                    limits = TcpLimits(requestTimeoutMillis = requestTimeoutMillis, heartbeatIntervalMillis = 3000L)
                 )
                 val welcomeBytes = TcpFrameEncoder.encode(TcpWire.FRAME_TYPE_WELCOME, TcpMessageCodec.toFrame(welcome).payload)
                 s.getOutputStream().write(welcomeBytes)
@@ -83,7 +86,12 @@ class TcpClientBindingRegressionTest {
         }
     }
 
-    private class MultiConnectionPeer(val limits: TcpLimits = TcpLimits(maxInFlightRequests = 64, requestTimeoutMillis = 1500L), val onConnection: (Socket, Int) -> Unit) : AutoCloseable {
+    private class MultiConnectionPeer(
+        val limitsProvider: (Int) -> TcpLimits = { TcpLimits(maxInFlightRequests = 64, requestTimeoutMillis = 1500L) },
+        val onConnection: (Socket, Int) -> Unit
+    ) : AutoCloseable {
+        constructor(limits: TcpLimits, onConnection: (Socket, Int) -> Unit) : this({ limits }, onConnection)
+
         val serverSocket = ServerSocket(0)
         val done = CountDownLatch(1)
         val thread = Thread {
@@ -94,7 +102,7 @@ class TcpClientBindingRegressionTest {
                 } catch (_: Throwable) {
                     break
                 }
-                s.soTimeout = 4000
+                s.soTimeout = 15000
                 try {
                     val decoder = TcpFrameDecoder()
                     val buf = ByteArray(4096)
@@ -106,13 +114,14 @@ class TcpClientBindingRegressionTest {
                         if (frames.isNotEmpty()) helloFrame = frames.first()
                     }
                     if (helloFrame?.type == TcpWire.FRAME_TYPE_HELLO) {
+                        val currentLimits = limitsProvider(connIndex)
                         val welcome = TcpWelcome(
                             wireVersion = 1,
                             businessVersion = 1,
                             connectionEpoch = "peer-epoch-$connIndex",
                             lobbyResumeToken = "peer-token",
                             lobbyScope = TcpScope("peer-scope", Long.MAX_VALUE),
-                            limits = limits
+                            limits = currentLimits
                         )
                         val welcomeBytes = TcpFrameEncoder.encode(TcpWire.FRAME_TYPE_WELCOME, TcpMessageCodec.toFrame(welcome).payload)
                         s.getOutputStream().write(welcomeBytes)
@@ -176,7 +185,7 @@ class TcpClientBindingRegressionTest {
 
     @Test
     fun `R04 request completes by negotiated timeout when response is lost`() {
-        MockPeer { s ->
+        MockPeer(requestTimeoutMillis = 150L) { s ->
             // 只读取请求，故意不回复 RSP
             readClientFrame(s)
         }.use { peer ->
@@ -196,7 +205,7 @@ class TcpClientBindingRegressionTest {
         val capturedEnvelope = CompletableFuture<TcpRequestEnvelope>()
         val sendResponseLatch = CountDownLatch(1)
 
-        MockPeer { s ->
+        MockPeer(requestTimeoutMillis = 150L) { s ->
             val reqFrame = readClientFrame(s)
             val envelope = TcpMessageCodec.parseRequestEnvelope(reqFrame)
             capturedEnvelope.complete(envelope)
@@ -483,17 +492,17 @@ class TcpClientBindingRegressionTest {
             val binding = peer.connect()
             try {
                 // 第 1 批 64 个副作用请求 -> 本地超时 100ms 后全部留在 unconfirmedSideEffects
-                for (i in 0 until 64) {
-                    binding.setReady(true)
+                val batch1 = (0 until 64).map { binding.setReady(true) }
+                batch1.forEach { f ->
+                    try { f.get(5, TimeUnit.SECONDS) } catch (_: Throwable) {}
                 }
-                Thread.sleep(300L)
                 assertEquals(64, binding.unconfirmedSideEffectCount)
 
                 // 第 2 批 64 个副作用请求 -> 本地超时 100ms 后使 unconfirmedSideEffects 达到 128 条硬上限
-                for (i in 0 until 64) {
-                    binding.setReady(true)
+                val batch2 = (0 until 64).map { binding.setReady(true) }
+                batch2.forEach { f ->
+                    try { f.get(5, TimeUnit.SECONDS) } catch (_: Throwable) {}
                 }
-                Thread.sleep(300L)
                 assertEquals(128, binding.unconfirmedSideEffectCount)
 
                 // 此时容量已达 128 上限：直接调用必然被 SERVER_BUSY 拒绝
@@ -552,7 +561,17 @@ class TcpClientBindingRegressionTest {
         val totalReceived = AtomicInteger(0)
         val allReplayedLatch = CountDownLatch(totalExpected)
 
-        MultiConnectionPeer(limits = TcpLimits(maxInFlightRequests = 64, requestTimeoutMillis = 100L)) { s, connIndex ->
+        MultiConnectionPeer(
+            limitsProvider = { connIndex ->
+                if (connIndex == 0) {
+                    // 第一轮连接：协商 100ms 超时，让请求在服务端不应答时快速本地超时并沉淀至 unconfirmedSideEffects
+                    TcpLimits(maxInFlightRequests = 64, requestTimeoutMillis = 100L)
+                } else {
+                    // 第二轮连接：恢复正常协商超时 (5000ms)，确保 70 条记录流水线重放期间绝不因 CPU 调度抖动产生伪超时
+                    TcpLimits(maxInFlightRequests = 64, requestTimeoutMillis = 5000L)
+                }
+            }
+        ) { s, connIndex ->
             if (connIndex == 0) {
                 // 第一轮连接：只收请求不回，让 70 条请求在客户端超时沉淀
                 while (!s.isClosed) {
@@ -593,29 +612,32 @@ class TcpClientBindingRegressionTest {
         }.use { peer ->
             val binding = peer.connect()
             try {
-                // 第一批 64 个请求 -> 100ms 超时后沉淀
-                for (i in 0 until 64) {
-                    binding.setReady(true)
+                // 第一批 64 个请求 -> 确定性等待 100ms 超时沉淀完成
+                val batch1 = (0 until 64).map { binding.setReady(true) }
+                batch1.forEach { f ->
+                    try { f.get(5, TimeUnit.SECONDS) } catch (_: Throwable) {}
                 }
-                Thread.sleep(300L)
                 assertEquals(64, binding.unconfirmedSideEffectCount)
 
-                // 第二批 6 个请求 -> 100ms 超时后沉淀，累计达到 70 条
-                for (i in 0 until 6) {
-                    binding.setReady(true)
+                // 第二批 6 个请求 -> 确定性等待 100ms 超时沉淀完成，累计达到 70 条
+                val batch2 = (0 until 6).map { binding.setReady(true) }
+                batch2.forEach { f ->
+                    try { f.get(5, TimeUnit.SECONDS) } catch (_: Throwable) {}
                 }
-                Thread.sleep(300L)
                 assertEquals(70, binding.unconfirmedSideEffectCount)
 
                 // 重连触发自动重放
-                binding.reconnect().get(3, TimeUnit.SECONDS)
+                binding.reconnect().get(5, TimeUnit.SECONDS)
 
                 // 等待全部 70 条在流水线流控下重放并确认完成
-                assertTrue(allReplayedLatch.await(5, TimeUnit.SECONDS), "All 70 replayed requests must be delivered and processed")
+                assertTrue(allReplayedLatch.await(10, TimeUnit.SECONDS), "All 70 replayed requests must be delivered and processed")
                 assertEquals(totalExpected, totalReceived.get(), "Must receive all 70 requests")
                 assertTrue(maxObservedInFlight.get() <= 64, "In-flight count during replay (${maxObservedInFlight.get()}) must never exceed limits.maxInFlightRequests (64)")
 
-                Thread.sleep(200L)
+                val deadline = System.currentTimeMillis() + 5000L
+                while (System.currentTimeMillis() < deadline && binding.unconfirmedSideEffectCount > 0) {
+                    Thread.sleep(10L)
+                }
                 assertEquals(0, binding.unconfirmedSideEffectCount, "All replayed requests confirmed and cleared from unconfirmed collection")
             } finally {
                 binding.close()
@@ -1197,7 +1219,10 @@ class TcpClientBindingRegressionTest {
                 binding.joinRoom(com.majiang.server.api.JoinRoomRequest("ROOM-1", "Player1")).get(2, TimeUnit.SECONDS)
 
                 // 等待 65 帧到达底层，触发早期缓冲溢出 (64 条限制)
-                Thread.sleep(400L)
+                val deadline = System.currentTimeMillis() + 5000L
+                while (System.currentTimeMillis() < deadline && (binding.earlyRoomBufferSize < 64 || binding.latestRoomInfoVersion < 65L)) {
+                    Thread.sleep(20L)
+                }
                 assertEquals(64, binding.earlyRoomBufferSize, "Early room buffer size must be capped at 64")
                 assertEquals(65L, binding.latestRoomInfoVersion, "latestRoomInfoVersion must track latest 65")
 
@@ -2591,19 +2616,23 @@ class TcpClientBindingRegressionTest {
                 fun fillPool(fieldName: String, count: Int) {
                     val field = TcpClientBinding::class.java.getDeclaredField(fieldName).apply { isAccessible = true }
                     val pool = field.get(binding) as java.util.concurrent.ThreadPoolExecutor
-                    val entered = CountDownLatch(count)
+                    val entered1 = CountDownLatch(1)
                     pool.execute {
-                        entered.countDown()
+                        entered1.countDown()
                         release.await(5, TimeUnit.SECONDS)
                     }
+                    assertTrue(entered1.await(2, TimeUnit.SECONDS), "First worker in $fieldName must enter blocking task")
+
                     repeat(256) { pool.execute {} }
+
                     if (count == 2) {
+                        val entered2 = CountDownLatch(1)
                         pool.execute {
-                            entered.countDown()
+                            entered2.countDown()
                             release.await(5, TimeUnit.SECONDS)
                         }
+                        assertTrue(entered2.await(2, TimeUnit.SECONDS), "Second worker in $fieldName must enter blocking task")
                     }
-                    assertTrue(entered.await(2, TimeUnit.SECONDS), "Workers in $fieldName must enter")
                     assertEquals(256, pool.queue.size, "$fieldName queue must be saturated")
                 }
 

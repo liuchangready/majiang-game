@@ -12,6 +12,18 @@ import com.majiang.model.*
  * - 有效王牌 deadWall[rinshanPointer, size) + deadWallReplacements
  * - sleeve 按座位存储 List(4) { mutableListOf() }
  * - tilePool 与当前 GameState 深度绑定并自动审计
+ *
+ *  立直/一发不变量（MR-09a）：
+ *  INV1 对任意席位 i：riichiDeclared[i] == players[i].riichiDeclared
+ *  INV2 对任意席位 i：riichiTurn[i] == players[i].riichiTurn
+ *  INV3 对任意席位 i：ippatsuActive[i] == players[i].ippatsu
+ *  INV4 riichiDeclared[i] 为真蕴含 riichiTurn[i] >= 0
+ *  INV5 doubleRiichiDeclared[i] 为真蕴含 riichiDeclared[i]
+ *  INV6 ippatsuActive[i] 为真蕴含 riichiDeclared[i]
+ *  生产代码唯一写入口：declareRiichi / setIppatsu / clearAllIppatsu。
+ *  例外（状态复制管线）：copyFrom / resetForNewRound / PlayerHand.clear /
+ *  PlayerHand.deepCopy / WinningScoreEvaluator.prepareEvaluationHand 镜像传播。
+ *  读方清单与治理记录见 doc/v4-重构/ANTI-MR09A-DELIVERY.md。
  */
 class GameState {
     // === 牌山 ===
@@ -77,6 +89,32 @@ class GameState {
     
     /** 本场数（连庄/流局累积） */
     var honbaSticks: Int = 0
+
+    // === 立直/一发唯一写入口（MR-09a） ===
+
+    /** 宣言立直：一次写入桌面数组与席位镜像，并置一发标记。 */
+    fun declareRiichi(seat: Int, turn: Int, isDouble: Boolean) {
+        require(seat in 0..3) { "seat out of range: $seat" }
+        riichiDeclared[seat] = true
+        riichiTurn[seat] = turn
+        doubleRiichiDeclared[seat] = isDouble
+        ippatsuActive[seat] = true
+        players[seat].riichiDeclared = true
+        players[seat].riichiTurn = turn
+        players[seat].ippatsu = true
+    }
+
+    /** 设置或清除单席一发标记（桌面数组与席位镜像同步）。 */
+    fun setIppatsu(seat: Int, active: Boolean) {
+        require(seat in 0..3) { "seat out of range: $seat" }
+        ippatsuActive[seat] = active
+        players[seat].ippatsu = active
+    }
+
+    /** 清除全部四席一发标记（任何鸣牌/杠后调用）。 */
+    fun clearAllIppatsu() {
+        for (i in 0 until 4) setIppatsu(i, false)
+    }
 
     // === Dora ===
     /** Dora指示牌列表 */

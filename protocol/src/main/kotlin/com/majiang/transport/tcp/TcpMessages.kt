@@ -608,7 +608,8 @@ object TcpMessageCodec {
         TcpFrame(TcpWire.FRAME_TYPE_CLOSE, encodeClose(close).toByteArray(Charsets.UTF_8))
 
     fun toPlayerUpdateFrame(update: ProtocolPlayerUpdate, isFullSnapshot: Boolean = false): TcpFrame {
-        val json = ApiMessageCodec.encodePush(update, isFullSnapshot = isFullSnapshot)
+        val full = isFullSnapshot || update.isFullSnapshot || (update.fromCursor >= update.snapshot.cursor)
+        val json = ApiMessageCodec.encodePush(update, isFullSnapshot = full)
         return TcpFrame(TcpWire.FRAME_TYPE_PLAYER_UPDATE, json.toByteArray(Charsets.UTF_8))
     }
 

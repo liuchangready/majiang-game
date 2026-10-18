@@ -400,7 +400,7 @@ private class ProtocolTileAdapter : JsonSerializer<ProtocolTile>, JsonDeserializ
                 throw JsonParseException("Contradictory rank for tileId $tileId: expected $expectedRank, got $rank")
             }
         }
-        return ProtocolTile(tileId, expectedSuit, expectedRank)
+        return ProtocolTile.fromTileId(tileId)
     }
 }
 

@@ -1,39 +1,52 @@
 # Anti 开发进度跟踪 (ANTI-PROGRESS.md)
 
-- **状态**: TCP_DOC_STATUS_COMPLETED（已依据 doc/v4-重构/CODEX-TCP-CURRENT-REWORK-REVIEW19.md、TCP-MIGRATION-DESIGN.md §7–§9、AGENTS.md 与 ANTI-TCP-T5-DELIVERY.md 完成文档一致性纠偏与 T4/T5 边界校准：1. 修正 `AGENTS.md` 模块描述中 `protocol` 仍写“UDP 数据报分片/可靠性窗口”及 `server` 仅“本地/UDP”绑定的过时表述，更新为 MJ-TCP/1 契约（12 字节固定帧头）与本地/远端 TCP 双绑定，严格保持七模块边界；2. 修正 `ANTI-TCP-T5-DELIVERY.md` 中的 16 字节 TCP 帧头为 12 字节固定帧头，纠正历史 1,658 项未去重测试口径为当前经核对的 1,275 项标准基线；3. 严格校准 T4 与 T5 定义：T5（删除远端 UDP 运行链及测试）已由 Codex 第 19 轮独立复验确认全仓 `src/main` 与 `src/test` 零 UDP/旧 TCP 引用残留，T5 门槛与引用审计已正式满足并关闭；设计 T4 涵盖跨物理网络长连/弱网、3 次角色中断资源回落、Android 真机/模拟器与桌面 GL 独立验收，其中桌面 GL 上屏冒烟 6 张快照已通过（日志 `build/tcp-current-review19-gl-snapshot.log`），但 Android 设备与模拟器当前均不可用，物理网络与弱网环境仍待补验，绝不以本地回环或双端构建误宣称 T4 整体完成；4. 22 项 Codex 独立探针、1,275 项标准全量用例、双端构建强制重跑 100% 通过。）
-- **当前批次范围**: TCP 迁移文档一致性与 T4/T5 状态校准 (TCP_DOC_STATUS)：
-  - 1. **AGENTS.md 模块与状态纠偏**: 将 protocol 模块纠偏为 MJ-TCP/1 契约与 12 字节固定帧头，server 模块纠偏为本地 InProcess 与远端 TCP（`TcpTableServer`）两种绑定，更新迁移状态至 2026-10-17。
-  - 2. **ANTI-TCP-T5-DELIVERY.md 帧头与用例数校准**: 纠正 16 字节帧头为 12 字节，纠正历史 1,658 项为当前标准 1,275 项。
-  - 3. **T4 与 T5 边界与证据明确**: T5（删除 UDP 运行链）门槛与引用审计已关闭；T4 桌面 GL 6 张快照通过，Android 真机/模拟器与物理网络弱网如实保持待验。
-  - **待验项状态真实声明**: T5 删除阶段门槛已关闭；T4 中仅桌面 GL 冒烟通过，物理网络长连/弱网、3 次角色中断资源回落以及 Android 真机/模拟器建连与后台恢复保持待独立实测，无虚假宣布完成。
-- **当前阶段**: TCP 迁移独立检视统一返修（剩余任务第一批 - 真实 TCP 房间流程超时）：
-  - 生产代码全面修复：
-    - R01: `TcpTableServer` 恢复独立定频 `tickerExecutor` 调度 `room.tableHost.tick()`。
-    - R02: `TcpConnection.notifyRoomDisconnect()` 精确一次通知房间断开席位与观战控制。
-    - R03: `TcpClientBinding` 将远程 EOF / 读异常归为 `HEARTBEAT_TIMEOUT` 临时错误；`ServerConnectionSession` 修复首轮重连工厂并避免临时重连失败关闭复用连接；增加读线程代次门控与 `close()` 调度器强制回收。
-    - R04: 协商超时 `limits.requestTimeoutMillis` 正式生效；请求原子准入 `putIfAbsent` 杜绝重复覆盖；重放未决副作用时重建未完成 Future 与对账通道。
-    - R05: `handleResponseEnvelope` 对 `REQUEST_SCOPE_EXPIRED` 区分普通只读与副作用；副作用严禁换新 scope 自动重做，必须异常完成以供业务对账。
-    - R06: `TcpTableServer` 维护 `issuedLobbyTokens` 注册表，未知 token 判定 `PROTOCOL_VIOLATION`；有效 token 重连继承有效 scope；玩家与观战绑定采用各自角色 principal 分离身份。
-    - R07: 监听器派发异常隔离，避免用户回调异常误报协议违规；读写队列与帧边界隔离。
-    - R08: `TcpClientBinding` 落地服务端 PING 双向回显匹配 nonce 之 PONG；校验 RSP 外层 `requestScope` 必须与在途请求一致；严格校验 WELCOME 版本并拦截重复握手。
-    - R09: 客户端早期队列与派发队列实施 64/128 条与 4 MiB 双重容量上限，溢出时记录状态并触发合并全量恢复；无监听器时未交付消息严禁虚假前移游标；监听器派发过程检查 `closed` 与 `bindingEpoch`。
-    - R10: `TcpOutboundQueue` 纳入当前写出帧到全局与连接预算，写出严格受限于轮转预算；`TcpTableServer` 限制单轮读取帧数并在邮箱出队后释放配额。
-    - R11: `TcpTableServer.close()` 限制 1 秒内安全收尾，下发 `SERVER_SHUTDOWN` 控制帧，安全关闭注册表、停止 ticker 与工作池并等待 I/O 线程退出。
-    - R12: `RequestScopeReceiptStore` 锁内原子提交并比较删除，在 `synchronized` 锁外触发用户 Future 回调，避免全服锁死。
-    - R13: `acquireAdmission` 普通只读查询同样遵守每成员在途上限；`isScopeQueryRateLimited` 落实 1次/秒 限速保护。
-    - R14: `InProcessBinding` 接入 `InProcessServer.receiptStore`，支持 `getRequestScope()` 与 `executeRequest(envelope)`，单机直连与网络传输语义完全对齐。
-    - R15: `ServerTableHost` 与 `SharedRoom` 新增 `snapshotAndSubscribe` / `publicSnapshotAndSubscribe`，在单桌串行执行器上单次原子完成基线捕获与订阅建立。
-    - R16: 文档与状态核对纠偏，明确 12 字节固定帧头、`RequestScopeReceiptStore`、落汗/袖里藏花/偷梁换柱术语对应，说明标准套件 1,214 项统计口径。
-  - 新增正式回归测试（位于标准测试源集中）：
-    - `server/src/test/kotlin/com/majiang/server/tcp/TcpTableServerRegressionTest.kt` (R01, R02, R06, R10, R11, R15)
-    - `server/src/test/kotlin/com/majiang/server/idempotency/ReceiptStoreRegressionTest.kt` (R12, R13)
-    - `server/src/test/kotlin/com/majiang/server/inprocess/InProcessDualTransportTest.kt` (R14)
-    - `client/src/test/kotlin/com/majiang/client/transport/tcp/TcpClientBindingRegressionTest.kt` (R03, R04, R05, R07, R08, R09)
+- **状态**: MR10_REWORK_COMPLETED / READY_FOR_CODEX_VERIFICATION
+- **当前批次交付文档**: `doc/v4-重构/ANTI-MR10-DELIVERY.md`
+- **基线**: `a36de58` (HEAD)
+- **更新时间**: 2026-10-18（Anti 完成 Codex 检视四项返修：Mapper 矛盾校验防回退、权威局况载荷采样与 136 牌物理守恒验证、实测/核算/推导严格分类、ClassicSkin 委托实现表述修正）
+  - **MR-10 返修实施与验证内容**：
+    1. **Mapper 与 TileView 拒绝语义防回退（已修复并增补回归）**：
+       - `TileView` 构造器增加 `suit == derivedSuit(tileId)` 与 `rank == derivedRank(tileId)` 严格不变量校验。
+       - `ProtocolViewMapper.toProtocolTile` 增加 `toProtocolSuit(tile.suit) == expected.suit && tile.rank == expected.rank` 享元前一致性断言，彻底防止非法或矛盾构造静默通过。
+       - `TileViewFlyweightContractTest` 增补测试：验证 `TileView(0, PIN, 1)` 等矛盾花色/点数严格抛出 `IllegalArgumentException`，保持原有的拒绝语义。
+    2. **zlib 阶段性载荷真实采样与物理牌守恒验证（已修复并重新测量）**：
+       - 彻底废弃手写 JSON 样本，新增 `Mr10PayloadCaptureTest` 通过真实权威 `InProcessServer` / `TableAuthority` 驱动完整四人带千术对局，实时捕获 6 个阶段的真实载荷：`EARLY_GAME` (6,484 B), `MID_GAME` (4,497 B), `LATE_GAME` (8,880 B), `TILE_MARK` (6,396 B), `CANDIDATES` (6,484 B), `SETTLEMENT` (7,330 B)。
+       - `Mr10TileAndZlibMeasurementTest` 接入真实样本，并增加严格物理守恒断言：验证所有台面活动牌（暗手牌 + 摸牌 + 四家打牌河 + 副露 + 宝牌指示牌）100% 满足 0..135 物理区间、花色/点数双向严格映射且台面无任何重复 tileId。
+       - 基于真实采样重新测量 zlib 压缩率（72.8% ~ 81.7%）、压缩耗时（45.27 ~ 76.92 µs）与解压耗时（11.98 ~ 18.77 µs）。
+    3. **实测、核算与理论推导严格分类，移除未测断言（已修正）**：
+       - 严格标记 `[实测数据]`（JVM 堆分配、nanoTime CPU 耗时、压缩尺寸）、`[理论核算]`（38 种牌型显存字节数 38*W*H*4）、`[理论推导与协议规格评估]`（渲染指令队列批次推导、单帧 1 MiB 余量评估）。
+       - 彻底移除未经实机抓包测定的“局域网传输 <0.1 ms”断言与未经验证的 GPU 帧时间断言。
+    4. **ClassicSkin 旋转实现表述修正（已修正）**：
+       - 纠正报告表述：明确 `ClassicSkin` 实现了（继承自 `TileSkin` 默认实现）`appendRotatedTileDraw`，且测试中正常调用；其当前行为是将旋转绘制直接委托给直立的 `appendTileDraw`，忽略角度参数。
+    5. **136 张 TileView / ProtocolTile 享元实施交付**：
+       - `ProtocolModels.kt` 与 `ViewModels.kt` 建立 136 静态享元池，`fromTileId` 与 `fromTypeIndex` 直接返回享元实例。
+       - `ApiMessage.kt` 中 `ProtocolTileAdapter` 严格遵循“反序列化先校验矛盾字段”原则。
+       - 堆分配 100% 消除，映射往返耗时降低 69.3%。
+    6. **快照共享替代深拷贝测量与暂缓 (DEFERRED)**：
+       - 全对象图不可变审计证明跨座位共享存在暗牌泄漏严重漏洞，`deepCopy` 仅占 1.2% 分配，按测量结果记录暂缓。
+    7. **Android 帧时间与硬件缺口**：
+       - 经 `adb devices` 探测确认开发机无连接的 Android 真机或模拟器，明确列为实测缺口，绝不臆测。
+  - **新增与更新测试用例**：
+    - `protocol/src/test/kotlin/com/majiang/transport/api/Mr10TileAndZlibMeasurementTest.kt`（真实载荷验证、守恒断言、zlib 测量、炸弹防御）
+    - `protocol/src/test/resources/mr10-payloads/*.json`（6 个真实权威捕获的阶段性载荷文件）
+    - `server/src/test/kotlin/com/majiang/server/mr10/Mr10PayloadCaptureTest.kt`（权威进程实时采样生成测试）
+    - `protocol/src/test/kotlin/com/majiang/transport/api/ProtocolTileFlyweightContractTest.kt`（ProtocolTile 享元自洽与矛盾字段反序列化阻断）
+    - `client/src/test/kotlin/com/majiang/client/mapping/Mr10TileViewBenchmarkTest.kt`（TileView 享元与 ProtocolViewMapper 映射实测）
+    - `client/src/test/kotlin/com/majiang/client/api/TileViewFlyweightContractTest.kt`（TileView 享元完备性、赤五保真、矛盾构造与映射拒绝回归）
+    - `server/src/test/kotlin/com/majiang/server/mr10/Mr10SnapshotAuditAndHotspotTest.kt`（快照不可变审计与 deepCopy 分配热点测量）
+    - `presentation/src/test/kotlin/com/majiang/presentation/common/render/Mr10ClassicSkinMetricsTest.kt`（ClassicSkin 旋转委托、显存预算与批处理指标）
+  - **测试验证**：
+    - 强制无缓存重编译与重跑（`:client:compileKotlin :protocol:compileKotlin --rerun-tasks`）100% 编译通过，彻底修复 `TileView.derivedSuit` / `TileView.derivedRank` 符号作用域。
+    - 受影响模块强制重跑（`:client:test :protocol:test --rerun-tasks`）13 项任务 100% 通过。
+    - 五模块串行测试（`:protocol:test :client:test :server:test :engine:test :presentation:test`）100% 通过。
+    - 独立 Review 验收套件 100% 通过。
+    - 工作区既有未提交改动（MR-06、MR-07a、MR-09、TCP 迁移）完整保留，零破坏。
+
 - **历史阶段记录**:
   - **MR-01**: 已提交 `35a87c6` 并验收通过（已推送）。
   - **MR-02**: 已提交 `8a4b59f` 并验收通过（已推送）。
   - **MR-03**: 已提交 `3a382c6` 并验收通过（未推送）；验收记录 `doc/v4-重构/CLAUDE-MR03-REVIEW.md`。
   - **TCP-T1**: 开发+一轮返修后验收通过，提交 `1664c60`，见验收记录 `doc/v4-重构/CLAUDE-TCP-T1-REVIEW.md`。
-- **基线SHA**: `1664c60` (分支 `refactor/remove-legacy-cheat-params`)
-- **更新时间**: 2026-10-17（Anti 完成文档一致性纠偏与 T4/T5 状态校准 TCP_DOC_STATUS）
-- **T5 验收方**: Claude Code 主会话（独立检视与运行套件测试）
+  - **MR-06/07/09**: 返修完成，交付报告 `doc/v4-重构/ANTI-MR06-MR09-REWORK-DELIVERY.md`。
+  - **MR-10**: 测量驱动优化完成，交付报告 `doc/v4-重构/ANTI-MR10-DELIVERY.md`。
+- **基线SHA**: `1664c60` / 当前开发基于 `a36de58` (HEAD)

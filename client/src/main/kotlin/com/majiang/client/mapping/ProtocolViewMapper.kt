@@ -178,10 +178,15 @@ object ProtocolViewMapper {
     // ==========================================
 
     fun mapTile(tile: ProtocolTile): TileView =
-        TileView(tileId = tile.tileId, suit = mapSuit(tile.suit), rank = tile.rank)
+        TileView.fromTileId(tile.tileId)
 
-    fun toProtocolTile(tile: TileView): ProtocolTile =
-        ProtocolTile(tileId = tile.tileId, suit = toProtocolSuit(tile.suit), rank = tile.rank)
+    fun toProtocolTile(tile: TileView): ProtocolTile {
+        val expected = ProtocolTile.fromTileId(tile.tileId)
+        require(toProtocolSuit(tile.suit) == expected.suit && tile.rank == expected.rank) {
+            "Contradictory TileView for tileId ${tile.tileId}: suit=${tile.suit}, rank=${tile.rank}, expected suit=${expected.suit}, rank=${expected.rank}"
+        }
+        return expected
+    }
 
     fun mapTiles(tiles: List<ProtocolTile>): List<TileView> =
         Collections.unmodifiableList(tiles.map { mapTile(it) })

@@ -21,13 +21,28 @@ class PlayerHand {
     /** 玩家刚摸到但尚未处理的牌（用于展示，与暗牌分离） */
     var drawnTile: Tile? = null
 
-    /** 是否已宣告立直 */
+    /**
+     * 是否已宣告立直
+     *
+     * 镜像字段（MR-09a）：与 GameState 同名数组保持 INV1~INV3 同步；生产代码只经
+     * GameState.declareRiichi / setIppatsu / clearAllIppatsu 写入，禁止独立赋值。
+     */
     var riichiDeclared: Boolean = false
 
-    /** 宣告立直时的巡目（未宣告则为 -1） */
+    /**
+     * 宣告立直时的巡目（未宣告则为 -1）
+     *
+     * 镜像字段（MR-09a）：与 GameState 同名数组保持 INV1~INV3 同步；生产代码只经
+     * GameState.declareRiichi / setIppatsu / clearAllIppatsu 写入，禁止独立赋值。
+     */
     var riichiTurn: Int = -1
 
-    /** 是否处于一发状态（立直后的一巡内，如果有人鸣牌或自己摸牌后会解除） */
+    /**
+     * 是否处于一发状态（立直后的一巡内，如果有人鸣牌或自己摸牌后会解除）
+     *
+     * 镜像字段（MR-09a）：与 GameState 同名数组保持 INV1~INV3 同步；生产代码只经
+     * GameState.declareRiichi / setIppatsu / clearAllIppatsu 写入，禁止独立赋值。
+     */
     var ippatsu: Boolean = false
 
     /** 门前清状态（只要没有明副露即为门前清，暗杠不算明副露） */

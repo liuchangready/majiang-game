@@ -1868,19 +1868,17 @@ class TcpTableServer(
                 continue
             }
 
-            // 2.1 对账连接真值：以连接表快照为准，清除无人认领的 seatConnected 与 member.isConnected (R4 兜底)
-            val aliveSeats = mutableMapOf<Int, Long>()
-            val aliveSpectators = mutableSetOf<String>()
-            for (conn in connections.values) {
-                if (!conn.isClosingOrClosed && conn.activeRoom === room) {
-                    if (conn.role == ConnectionRole.PLAYER && conn.viewerSeat in 0..3) {
-                        aliveSeats[conn.viewerSeat] = conn.currentBindingGeneration
-                    } else if (conn.role == ConnectionRole.SPECTATOR && conn.spectatorId != null) {
-                        aliveSpectators.add(conn.spectatorId!!)
-                    }
-                }
+            // 2.1 对账连接真值：以连接表为准，清除无人认领的 seatConnected 与 member.isConnected (R4 兜底)
+            val sampledSeatGenerations = mutableMapOf<Int, Long>()
+            for (seat in 0..3) {
+                sampledSeatGenerations[seat] = room.bindingGenerations[seat]
             }
-            room.reconcileConnectivityOnQueue(aliveSeats, aliveSpectators)
+            room.reconcileConnectivityOnQueue(
+                aliveSeats = emptyMap(),
+                aliveSpectatorIds = emptySet(),
+                sampledSeatGenerations = sampledSeatGenerations,
+                connectivitySupplier = { queryLiveConnectivity(room) }
+            )
 
             val idleSince = room.idleSinceMillis ?: continue
             val capturedEpoch = room.idleEpoch
@@ -1897,6 +1895,24 @@ class TcpTableServer(
             // 3. 候选命中，进入目标房间权威队列执行最终原子裁决
             recycleRoomIfIdle(room, capturedEpoch, now, creatorActive)
         }
+    }
+
+    /**
+     * 查询指定房间连接真值快照
+     */
+    private fun queryLiveConnectivity(room: SharedRoom): Pair<Map<Int, Long>, Set<String>> {
+        val aliveSeats = mutableMapOf<Int, Long>()
+        val aliveSpectators = mutableSetOf<String>()
+        for (conn in connections.values) {
+            if (!conn.isClosingOrClosed && conn.activeRoom === room) {
+                if (conn.role == ConnectionRole.PLAYER && conn.viewerSeat in 0..3) {
+                    aliveSeats[conn.viewerSeat] = conn.currentBindingGeneration
+                } else if (conn.role == ConnectionRole.SPECTATOR && conn.spectatorId != null) {
+                    aliveSpectators.add(conn.spectatorId!!)
+                }
+            }
+        }
+        return Pair(aliveSeats, aliveSpectators)
     }
 
     /**
@@ -1918,7 +1934,13 @@ class TcpTableServer(
         now: Long,
         creatorActive: Boolean
     ) {
-        room.closeIfIdleOnQueue(config.retentionPolicy, capturedEpoch, now, creatorActive).whenComplete { closed, err ->
+        room.closeIfIdleOnQueue(
+            policy = config.retentionPolicy,
+            capturedIdleEpoch = capturedEpoch,
+            nowMillis = now,
+            creatorActive = creatorActive,
+            creatorActiveSupplier = { isCreatorActiveForRoom(room.roomId) }
+        ).whenComplete { closed, err ->
             if (err == null && closed == true) {
                 onRoomRecycled(room)
             }

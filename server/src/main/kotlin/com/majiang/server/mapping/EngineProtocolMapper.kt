@@ -1237,7 +1237,8 @@ object EngineProtocolMapper {
     fun toProtocolUpdate(update: PlayerUpdate): ProtocolPlayerUpdate = ProtocolPlayerUpdate(
         snapshot = toProtocolSnapshot(update.snapshot),
         fromCursor = update.fromCursor,
-        visibleEvents = toProtocolEvents(update.visibleEvents)
+        visibleEvents = toProtocolEvents(update.visibleEvents),
+        isFullSnapshot = (update.fromCursor >= update.snapshot.cursor)
     )
 
     // === Public Snapshot ===

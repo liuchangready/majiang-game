@@ -2,8 +2,11 @@ package com.majiang.server.host
 
 import java.util.ArrayDeque
 import java.util.concurrent.ExecutorService
+import java.util.concurrent.Executors
 import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.RejectedExecutionException
+import java.util.concurrent.ScheduledExecutorService
+import java.util.concurrent.ScheduledFuture
 import java.util.concurrent.ThreadFactory
 import java.util.concurrent.ThreadPoolExecutor
 import java.util.concurrent.TimeUnit
@@ -44,8 +47,23 @@ class SerialDispatchChannel<T>(
     drainBatchSize: Int = 16,
     private val byteEstimator: (T) -> Long = { 0L },
     private val isFullSnapshotPredicate: (T) -> Boolean = { false },
+    private val retryScheduler: ScheduledExecutorService? = null,
+    private val maxScheduleRetries: Int = 5,
+    private val retryDelayMillis: Long = 10L,
+    val allowSingleOversized: Boolean = false,
+    var onScheduleFailure: ((channel: SerialDispatchChannel<T>, discardedCount: Int, discardedBytes: Long) -> Unit)? = null,
     private val consumer: (T) -> Unit
 ) : AutoCloseable {
+
+    companion object {
+        private val defaultScheduler: ScheduledExecutorService by lazy {
+            Executors.newSingleThreadScheduledExecutor { r ->
+                Thread(r, "SerialDispatchChannel-RetryScheduler").apply {
+                    isDaemon = true
+                }
+            }
+        }
+    }
 
     private val effectiveMaxItems: Int = if (maxQueuedItems <= 0) Int.MAX_VALUE else maxQueuedItems
     private val effectiveMaxBytes: Long = if (maxQueuedBytes <= 0L) Long.MAX_VALUE else maxQueuedBytes
@@ -58,6 +76,9 @@ class SerialDispatchChannel<T>(
 
     private val _overflowCount = AtomicLong(0L)
     private val _scheduleRejectCount = AtomicLong(0L)
+    private val _scheduleRetryCount = AtomicLong(0L)
+    private val _scheduleFailureCount = AtomicLong(0L)
+    private val _scheduleFailureDiscardedCount = AtomicLong(0L)
     private val _closeDiscardedCount = AtomicLong(0L)
     private val _maxWaitNanos = AtomicLong(0L)
 
@@ -65,10 +86,16 @@ class SerialDispatchChannel<T>(
     private val queue = ArrayDeque<Entry<T>>()
     private var currentBytes: Long = 0L
 
+    private var retryTask: ScheduledFuture<*>? = null
+    private val retryCount = AtomicInteger(0)
+
     val closed: Boolean get() = isClosed.get()
     val needsRecovery: Boolean get() = _needsRecovery.get()
     val overflowCount: Long get() = _overflowCount.get()
     val scheduleRejectCount: Long get() = _scheduleRejectCount.get()
+    val scheduleRetryCount: Long get() = _scheduleRetryCount.get()
+    val scheduleFailureCount: Long get() = _scheduleFailureCount.get()
+    val scheduleFailureDiscardedCount: Long get() = _scheduleFailureDiscardedCount.get()
     val closeDiscardedCount: Long get() = _closeDiscardedCount.get()
     val maxWaitTimeMillis: Double get() = _maxWaitNanos.get() / 1_000_000.0
 
@@ -97,13 +124,20 @@ class SerialDispatchChannel<T>(
             if (isClosed.get()) {
                 return false
             }
-            if (queue.size >= effectiveMaxItems || (currentBytes + bytes > effectiveMaxBytes && queue.isNotEmpty())) {
+            val wouldOverflow = currentBytes > Long.MAX_VALUE - bytes
+            val nextBytes = if (wouldOverflow) Long.MAX_VALUE else currentBytes + bytes
+            val exceedsCapacity = if (allowSingleOversized) {
+                queue.size >= effectiveMaxItems || (nextBytes > effectiveMaxBytes && queue.isNotEmpty())
+            } else {
+                queue.size >= effectiveMaxItems || (nextBytes > effectiveMaxBytes)
+            }
+            if (exceedsCapacity) {
                 _overflowCount.incrementAndGet()
                 _needsRecovery.set(true)
                 return false
             }
             queue.addLast(Entry(item, bytes, nowNanos))
-            currentBytes += bytes
+            currentBytes = nextBytes
 
             if (!drainWip.get()) {
                 drainWip.set(true)
@@ -120,11 +154,71 @@ class SerialDispatchChannel<T>(
     private fun scheduleDrain() {
         try {
             executor.execute(drainRunnable)
+            retryCount.set(0)
         } catch (_: RejectedExecutionException) {
-            synchronized(lock) {
-                drainWip.set(false)
-            }
             _scheduleRejectCount.incrementAndGet()
+            scheduleRetryDrain()
+        }
+    }
+
+    private fun scheduleRetryDrain() {
+        val currentRetries = retryCount.incrementAndGet()
+        if (currentRetries > maxScheduleRetries) {
+            handleScheduleFailure()
+            return
+        }
+        val scheduler = retryScheduler ?: defaultScheduler
+        try {
+            synchronized(lock) {
+                if (isClosed.get() || queue.isEmpty()) {
+                    drainWip.set(false)
+                    retryCount.set(0)
+                    return
+                }
+                retryTask = scheduler.schedule({
+                    var shouldExecute = false
+                    synchronized(lock) {
+                        if (!isClosed.get() && queue.isNotEmpty()) {
+                            shouldExecute = true
+                        } else {
+                            drainWip.set(false)
+                            retryCount.set(0)
+                        }
+                    }
+                    if (shouldExecute) {
+                        _scheduleRetryCount.incrementAndGet()
+                        try {
+                            executor.execute(drainRunnable)
+                            retryCount.set(0)
+                        } catch (_: RejectedExecutionException) {
+                            _scheduleRejectCount.incrementAndGet()
+                            scheduleRetryDrain()
+                        }
+                    }
+                }, retryDelayMillis, TimeUnit.MILLISECONDS)
+            }
+        } catch (_: RejectedExecutionException) {
+            handleScheduleFailure()
+        }
+    }
+
+    private fun handleScheduleFailure() {
+        val discarded: Int
+        val bytes: Long
+        synchronized(lock) {
+            discarded = queue.size
+            bytes = currentBytes
+            queue.clear()
+            currentBytes = 0L
+            drainWip.set(false)
+            retryCount.set(0)
+            _scheduleFailureCount.incrementAndGet()
+            _scheduleFailureDiscardedCount.addAndGet(discarded.toLong())
+            _needsRecovery.set(true)
+        }
+        try {
+            onScheduleFailure?.invoke(this, discarded, bytes)
+        } catch (_: Throwable) {
         }
     }
 
@@ -134,9 +228,12 @@ class SerialDispatchChannel<T>(
             var count = 0
             while (count < effectiveBatchSize && queue.isNotEmpty()) {
                 val entry = queue.removeFirst()
-                currentBytes -= entry.bytes
+                currentBytes = (currentBytes - entry.bytes).coerceAtLeast(0L)
                 batch.add(entry)
                 count++
+            }
+            if (queue.isEmpty()) {
+                currentBytes = 0L
             }
         }
 
@@ -158,6 +255,7 @@ class SerialDispatchChannel<T>(
         synchronized(lock) {
             if (isClosed.get() || queue.isEmpty()) {
                 drainWip.set(false)
+                retryCount.set(0)
             } else {
                 shouldContinue = true
             }
@@ -182,11 +280,14 @@ class SerialDispatchChannel<T>(
             if (!isClosed.compareAndSet(false, true)) {
                 return
             }
+            retryTask?.cancel(false)
+            retryTask = null
             discarded = queue.size
             queue.clear()
             currentBytes = 0L
             _closeDiscardedCount.addAndGet(discarded.toLong())
             drainWip.set(false)
+            retryCount.set(0)
         }
     }
 }

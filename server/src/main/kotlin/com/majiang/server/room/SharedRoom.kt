@@ -530,23 +530,50 @@ class SharedRoom @JvmOverloads constructor(
      */
     fun reconcileConnectivityOnQueue(
         aliveSeats: Map<Int, Long>,
-        aliveSpectatorIds: Set<String>
+        aliveSpectatorIds: Set<String>,
+        sampledSeatGenerations: Map<Int, Long>? = null,
+        connectivitySupplier: (() -> Pair<Map<Int, Long>, Set<String>>)? = null
     ): CompletableFuture<Unit> {
         return tableHost.enqueueOperation {
             if (isClosed.get()) return@enqueueOperation
+            val (effectiveSeats, effectiveSpectators) = if (connectivitySupplier != null) {
+                connectivitySupplier()
+            } else {
+                Pair(aliveSeats, aliveSpectatorIds)
+            }
             var changed = false
             for (seat in 0..3) {
+                val currentGen = bindingGenerations[seat]
+                val sampledGen = sampledSeatGenerations?.get(seat)
+                // 若提供了采样时代次且当前代次已推进，说明在采样后有新绑定/重连，该旧采样对该席位失效
+                if (sampledGen != null && currentGen > sampledGen) {
+                    continue
+                }
+                val expectedGen = effectiveSeats[seat]
+                // 若期望代次低于当前代次，说明此条记录来自陈旧代次，不可将当前更新的连接置为断开
+                if (expectedGen != null && expectedGen < currentGen) {
+                    continue
+                }
                 if (seatConnected[seat]) {
-                    val expectedGen = aliveSeats[seat]
-                    if (expectedGen == null || expectedGen != bindingGenerations[seat]) {
+                    if (expectedGen == null || expectedGen != currentGen) {
                         seatConnected[seat] = false
+                        changed = true
+                    }
+                } else {
+                    // 只清不补 -> 补：若席位当前被人类占用，且存在匹配当前代次的存活连接，则补回连接状态
+                    if (expectedGen != null && expectedGen == currentGen && seatOccupied[seat] && isHuman[seat]) {
+                        seatConnected[seat] = true
                         changed = true
                     }
                 }
             }
             for ((specId, member) in spectators) {
-                if (member.isConnected && specId !in aliveSpectatorIds) {
+                val isAlive = specId in effectiveSpectators
+                if (member.isConnected && !isAlive) {
                     member.isConnected = false
+                    changed = true
+                } else if (!member.isConnected && isAlive) {
+                    member.isConnected = true
                     changed = true
                 }
             }
@@ -1194,7 +1221,8 @@ class SharedRoom @JvmOverloads constructor(
         policy: RoomRetentionPolicy,
         capturedIdleEpoch: Long,
         nowMillis: Long,
-        creatorActive: Boolean = false
+        creatorActive: Boolean = false,
+        creatorActiveSupplier: (() -> Boolean)? = null
     ): CompletableFuture<Boolean> {
         var shouldShutdown = false
         val opFuture = tableHost.enqueueOperation {
@@ -1203,7 +1231,8 @@ class SharedRoom @JvmOverloads constructor(
             if (idleEpoch != capturedIdleEpoch) return@enqueueOperation false
             if (connectedHumanCount() != 0 || connectedSpectatorCount() != 0) return@enqueueOperation false
 
-            val ttl = ttlFor(lifecycle, everConnectedHuman, creatorActive, policy)
+            val isCreatorAlive = creatorActiveSupplier?.invoke() ?: creatorActive
+            val ttl = ttlFor(lifecycle, everConnectedHuman, isCreatorAlive, policy)
             if (ttl <= 0L || nowMillis - idleSince < ttl) {
                 return@enqueueOperation false
             }

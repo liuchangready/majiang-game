@@ -21,6 +21,53 @@ import java.util.Collections
  */
 object PlayerPresentationPreviewProvider {
 
+    /** MR-09b 预览调用测量（内部只读指标；有界防泄漏） */
+    private val previewCallCount = java.util.concurrent.atomic.LongAdder()
+    private val previewNullRoundCount = java.util.concurrent.atomic.LongAdder()
+    private val seenDecisionIdentities = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+    private var previewIdentityFrozen = false
+    private const val PREVIEW_IDENTITY_CAP = 8192
+
+    /** MR-09b 预览测量快照 */
+    data class PreviewCallMetrics(
+        val callCount: Long,
+        val nullRoundCount: Long,
+        val distinctDecisions: Int,
+        val identityFrozen: Boolean,
+        val duplicateCalls: Long
+    )
+
+    internal fun previewCallMetrics(): PreviewCallMetrics = PreviewCallMetrics(
+        callCount = previewCallCount.sum(),
+        nullRoundCount = previewNullRoundCount.sum(),
+        distinctDecisions = seenDecisionIdentities.size,
+        identityFrozen = previewIdentityFrozen,
+        duplicateCalls = previewCallCount.sum() - previewNullRoundCount.sum() -
+            (if (previewIdentityFrozen) 0L else seenDecisionIdentities.size.toLong())
+    )
+
+    /** 仅测试隔离用：清零全部指标。 */
+    internal fun resetPreviewCallMetrics() {
+        previewCallCount.reset()
+        previewNullRoundCount.reset()
+        seenDecisionIdentities.clear()
+        previewIdentityFrozen = false
+    }
+
+    private fun recordPreviewCall(roundId: String?, decisionId: String, controlEpoch: Long) {
+        previewCallCount.increment()
+        if (roundId == null) {
+            previewNullRoundCount.increment()
+            return
+        }
+        if (previewIdentityFrozen) return
+        val identity = "$roundId|$decisionId|$controlEpoch"
+        seenDecisionIdentities.add(identity)
+        if (seenDecisionIdentities.size >= PREVIEW_IDENTITY_CAP) {
+            previewIdentityFrozen = true   // 冻结后 duplicateCalls 不再可靠，快照带标志
+        }
+    }
+
     /**
      * 根据当前观察者座位的只读视图与权威决策生成私有展示预览。
      *
@@ -29,6 +76,7 @@ object PlayerPresentationPreviewProvider {
      * @return 展示预览聚合根；若无活动局则返回 null
      */
     fun createPreview(view: PlayerView, decision: PlayerDecision): PlayerPresentationPreview? {
+        recordPreviewCall(decision.roundId, decision.decisionId, decision.controlEpoch)
         val roundId = decision.roundId ?: return null
         if (view.viewerSeat !in 0..3) return null
 

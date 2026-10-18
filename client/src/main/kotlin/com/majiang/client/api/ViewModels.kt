@@ -84,10 +84,13 @@ data class TileView(
 
     init {
         require(tileId in 0..135) { "tileId must be in 0..135, got $tileId" }
-        when (suit) {
-            SuitView.MAN, SuitView.PIN, SuitView.SOU -> require(rank in 1..9) { "$suit rank must be 1..9, got $rank" }
-            SuitView.WIND -> require(rank in 1..4) { "WIND rank must be 1..4, got $rank" }
-            SuitView.DRAGON -> require(rank in 1..3) { "DRAGON rank must be 1..3, got $rank" }
+        val expectedSuit = TileView.derivedSuit(tileId)
+        val expectedRank = TileView.derivedRank(tileId)
+        require(suit == expectedSuit) {
+            "Contradictory suit for tileId $tileId: expected $expectedSuit, got $suit"
+        }
+        require(rank == expectedRank) {
+            "Contradictory rank for tileId $tileId: expected $expectedRank, got $rank"
         }
     }
 
@@ -139,30 +142,43 @@ data class TileView(
         compareValuesBy(this, other, { it.suit }, { it.rank }, { it.copyIndex })
 
     companion object {
+        fun derivedSuit(tileId: Int): SuitView = when (tileId / 4) {
+            in 0..8 -> SuitView.MAN
+            in 9..17 -> SuitView.SOU
+            in 18..26 -> SuitView.PIN
+            in 27..30 -> SuitView.WIND
+            in 31..33 -> SuitView.DRAGON
+            else -> throw IllegalArgumentException("Invalid tileId: $tileId")
+        }
+
+        fun derivedRank(tileId: Int): Int = when (val t = tileId / 4) {
+            in 0..8 -> t + 1
+            in 9..17 -> t - 9 + 1
+            in 18..26 -> t - 18 + 1
+            in 27..30 -> t - 27 + 1
+            in 31..33 -> t - 31 + 1
+            else -> throw IllegalArgumentException("Invalid tileId: $tileId")
+        }
+
+        private val POOL: Array<TileView> = Array(136) { id ->
+            TileView(tileId = id, suit = derivedSuit(id), rank = derivedRank(id))
+        }
+
         /**
-         * 根据 34 维 typeIndex (0..33) 与 copyIndex (0..3) 构造物理 TileView
+         * 根据 34 维 typeIndex (0..33) 与 copyIndex (0..3) 获取物理 TileView 享元
          */
         fun fromTypeIndex(index: Int, copyIndex: Int = 0): TileView {
             require(index in 0..33) { "Invalid typeIndex: $index" }
             require(copyIndex in 0..3) { "Invalid copyIndex: $copyIndex" }
-            val (suit, rank) = when {
-                index in 0..8 -> Pair(SuitView.MAN, index + 1)
-                index in 9..17 -> Pair(SuitView.SOU, index - 9 + 1)
-                index in 18..26 -> Pair(SuitView.PIN, index - 18 + 1)
-                index in 27..30 -> Pair(SuitView.WIND, index - 27 + 1)
-                index in 31..33 -> Pair(SuitView.DRAGON, index - 31 + 1)
-                else -> throw IllegalArgumentException("Invalid typeIndex: $index")
-            }
-            val tileId = index * 4 + copyIndex
-            return TileView(tileId = tileId, suit = suit, rank = rank)
+            return POOL[index * 4 + copyIndex]
         }
 
         /**
-         * 根据 0..135 唯一整数标识构造物理 TileView
+         * 根据 0..135 唯一整数标识获取物理 TileView 享元
          */
         fun fromTileId(tileId: Int): TileView {
             require(tileId in 0..135) { "tileId must be 0..135, got $tileId" }
-            return fromTypeIndex(tileId / 4, tileId % 4)
+            return POOL[tileId]
         }
     }
 }

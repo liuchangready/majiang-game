@@ -90,14 +90,14 @@ enum class ProtocolReceiptStatus {
  */
 data class ProtocolTile(
     val tileId: Int,
-    val suit: ProtocolSuit = derivedSuit(tileId),
-    val rank: Int = derivedRank(tileId)
+    val suit: ProtocolSuit = ProtocolTile.derivedSuit(tileId),
+    val rank: Int = ProtocolTile.derivedRank(tileId)
 ) : Comparable<ProtocolTile> {
 
     init {
         require(tileId in 0..135) { "tileId must be in 0..135: $tileId" }
-        val expectedSuit = derivedSuit(tileId)
-        val expectedRank = derivedRank(tileId)
+        val expectedSuit = ProtocolTile.derivedSuit(tileId)
+        val expectedRank = ProtocolTile.derivedRank(tileId)
         require(suit == expectedSuit) {
             "Contradictory suit for tileId $tileId: expected $expectedSuit, got $suit"
         }
@@ -136,13 +136,20 @@ data class ProtocolTile(
             else -> throw IllegalArgumentException("Invalid tileId: $tileId")
         }
 
+        private val POOL: Array<ProtocolTile> = Array(136) { id ->
+            ProtocolTile(id, derivedSuit(id), derivedRank(id))
+        }
+
         fun fromTypeIndex(index: Int, copyIndex: Int = 0): ProtocolTile {
             require(index in 0..33) { "Invalid typeIndex: $index" }
             require(copyIndex in 0..3) { "Invalid copyIndex: $copyIndex" }
-            return ProtocolTile(index * 4 + copyIndex)
+            return POOL[index * 4 + copyIndex]
         }
 
-        fun fromTileId(tileId: Int): ProtocolTile = ProtocolTile(tileId)
+        fun fromTileId(tileId: Int): ProtocolTile {
+            require(tileId in 0..135) { "tileId must be in 0..135: $tileId" }
+            return POOL[tileId]
+        }
     }
 }
 

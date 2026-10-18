@@ -237,10 +237,48 @@ class SharedRoomTest {
 
             CompletableFuture.allOf(f1, f2, f3).await()
 
-            // 权威状态自洽无崩溃
+            // 1. 验证并发提交在权威队列上严格串行化：状态自洽、成员与席位分配正确无碰撞
+            assertEquals(ProtocolReceiptStatus.APPLIED, f1.await().status)
+            assertEquals(1, f2.await().first)
+            assertEquals(ProtocolReceiptStatus.APPLIED, f3.await().status)
+
             val info = room.getRoomInfo().await()
             assertEquals(2, info.members.size)
-            assertFalse(info.members.first { it.seat == 0 }.isReady) // 被配置更新重置为 false
+            assertEquals("HostPlayer", info.members.first { it.seat == 0 }.playerName)
+            assertEquals("Guest1", info.members.first { it.seat == 1 }.playerName)
+            assertFalse(info.members.first { it.seat == 1 }.isReady, "New joined guest must initialize as unready")
+
+            // 2. 验证串行化最终就绪状态自洽性：
+            // 若 updateConfig 先于 setReady 入队执行，则房主 ready 最终被 setReady 设为 true；
+            // 若 setReady 先于 updateConfig 入队执行，则房主 ready 被 updateConfig 重置为 false。
+            // 无论并发调度先后，权威队列均能确定性执行后续状态流转，且配置更新必须确定性重置 ready
+            val hostReady = info.members.first { it.seat == 0 }.isReady
+            if (hostReady) {
+                // updateConfig 先于 setReady 入队：显式再次更新配置，验证 ready 被权威确定性重置为 false
+                val resetReceipt = room.updateConfig(0, ProtocolRoomConfig()).await()
+                assertEquals(ProtocolReceiptStatus.APPLIED, resetReceipt.status)
+                assertFalse(room.getRoomInfo().await().members.first { it.seat == 0 }.isReady, "Config update must reset ready to false")
+            } else {
+                // setReady 先于 updateConfig 入队：ready 已被配置更新重置为 false，验证重新 setReady 后再更新配置依然重置
+                val readyReceipt = room.setReady(0, true).await()
+                assertEquals(ProtocolReceiptStatus.APPLIED, readyReceipt.status)
+                assertTrue(room.getRoomInfo().await().members.first { it.seat == 0 }.isReady)
+                val resetReceipt = room.updateConfig(0, ProtocolRoomConfig()).await()
+                assertEquals(ProtocolReceiptStatus.APPLIED, resetReceipt.status)
+                assertFalse(room.getRoomInfo().await().members.first { it.seat == 0 }.isReady, "Config update must reset ready to false")
+            }
+
+            // 3. 验证 startMatch 在未齐备就绪状态下的权威串行裁决：必须返回 NOT_READY 拒绝
+            val unreadyStart = room.startMatch(0).await()
+            assertEquals(ProtocolReceiptStatus.REJECTED, unreadyStart.status)
+            assertEquals("NOT_READY", unreadyStart.reason)
+
+            // 4. 验证 leave 操作在权威队列上的原子性与串行化：成员离开后席位释放
+            val leaveReceipt = room.leave(1).await()
+            assertEquals(ProtocolReceiptStatus.APPLIED, leaveReceipt.status)
+            val infoAfterLeave = room.getRoomInfo().await()
+            assertEquals(1, infoAfterLeave.members.size)
+            assertEquals(0, infoAfterLeave.members.first().seat)
         } finally {
             callers.shutdownNow()
             room.close()
