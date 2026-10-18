@@ -20,12 +20,20 @@ class ShufflePreparationUiAcceptanceTest {
         availablePoints = balance
     )
 
-    @Test fun `Chinese font subset covers player labels and translated errors`() {
-        val required = "多选为混合倾向，不保证同时成牌 吃碰杠会改变预期摸牌 清一色（万条筒） 大三元 国士无双 大四喜 洗牌千术 偷天换日 瞒天过海 确认出千 不使用千术 已启用 未启用 已确认千术，等待开局发牌... 正在提交计划 牌山生成中" +
-            listOf("UNSUPPORTED", "TIMEOUT", "INSUFFICIENT", "NOT_AVAILABLE", "STALE", "ROUND", "CLOSED", "ALREADY", "INVALID", "PAUSED", "EXPIRED", "ERROR")
-                .joinToString("") { ShufflePreparationPanel.translateServerReason(it) }
-        val missing = required.toSet() - ShufflePreparationPanel.SHUFFLE_PANEL_CHARS.toSet()
-        assertTrue(missing.isEmpty(), "Missing visible font glyphs: $missing")
+    @Test fun `server error translation covers standard server reasons and invalid reason fallbacks`() {
+        val requiredReasons = listOf(
+            "UNSUPPORTED", "TIMEOUT", "TIMED_OUT", "INSUFFICIENT", "NOT_AVAILABLE",
+            "STALE", "ROUND", "DISCONNECTED", "CLOSED", "ALREADY", "ILLEGAL",
+            "INVALID", "REJECT", "PAUSED", "EXPIRED", "ERROR", "网络异常", "断开连接"
+        )
+        for (reason in requiredReasons) {
+            val translated = ShufflePreparationPanel.translateServerReason(reason)
+            assertTrue(translated.isNotBlank(), "Translation for $reason must not be blank")
+            assertFalse(translated.contains("?"), "Translation for $reason must not contain placeholder")
+        }
+        assertEquals("请求被拒绝", ShufflePreparationPanel.translateServerReason(null))
+        assertEquals("请求被拒绝", ShufflePreparationPanel.translateServerReason(""))
+        assertEquals("请求被拒绝", ShufflePreparationPanel.translateServerReason("   "))
     }
 
     @Test fun `two techniques cost per technique with mixed targets and insufficient balance`() {
@@ -142,5 +150,27 @@ class ShufflePreparationUiAcceptanceTest {
             completion.complete(Receipt(session.submittedPlans.single().requestId, ReceiptStatus.RECORDED))
             assertTrue(panel.model.isLocked)
         } finally { panel.dispose() }
+    }
+
+    @Test fun `panel borrows 17px font from UiAssets and headless safe without GL`() {
+        val session = FakeGameSession()
+        val headlessPanel = ShufflePreparationPanel(session)
+        assertNull(headlessPanel.getOrInitChineseFont(), "Headless without GL/assets must safely return null")
+        headlessPanel.dispose()
+        assertTrue(headlessPanel.isDisposed)
+
+        val font17 = com.badlogic.gdx.graphics.g2d.BitmapFont()
+        val font18 = com.badlogic.gdx.graphics.g2d.BitmapFont()
+        val assets = com.majiang.presentation.testing.TestUiAssets.createWithFonts(
+            chineseFont = font18,
+            chineseFont17 = font17
+        )
+        val panel = ShufflePreparationPanel(session, assets)
+        assertSame(font17, panel.getOrInitChineseFont(), "Must borrow 17px font from UiAssets")
+        panel.dispose()
+        assertTrue(panel.isDisposed)
+        // Ensure shared font is not destroyed by panel.dispose()
+        assertEquals(1.0f, font17.data.scaleX)
+        assets.dispose()
     }
 }

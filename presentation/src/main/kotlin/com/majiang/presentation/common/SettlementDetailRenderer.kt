@@ -6,8 +6,6 @@ import com.badlogic.gdx.graphics.OrthographicCamera
 import com.badlogic.gdx.graphics.g2d.BitmapFont
 import com.badlogic.gdx.graphics.g2d.GlyphLayout
 import com.badlogic.gdx.graphics.g2d.SpriteBatch
-import com.badlogic.gdx.graphics.g2d.freetype.FreeTypeFontGenerator
-import com.badlogic.gdx.graphics.g2d.freetype.FreeTypeFontGenerator.FreeTypeFontParameter
 import com.badlogic.gdx.graphics.glutils.ShapeRenderer
 import com.badlogic.gdx.math.Rectangle
 import com.badlogic.gdx.utils.Disposable
@@ -45,53 +43,20 @@ object SettlementModalGeometry {
  * 3. 负责和牌结算详情弹窗 (180, 95, 920, 540) 的三标签页、6行明细（文字测量换行与麻将牌面）、翻页控制与底部得分展示。
  * 4. 纯粹基于 client.api 视图模型 (SettlementDetailView, ScoreBreakdownView, TileView)，无 engine/protocol/server 依赖。
  */
-class SettlementDetailRenderer : Disposable {
+class SettlementDetailRenderer @JvmOverloads constructor(
+    private val assets: UiAssets? = null
+) : Disposable {
 
-    private var chineseFont: BitmapFont? = null
-    private var fontGenerator: FreeTypeFontGenerator? = null
-    private var fontInitAttempted = false
-    private var fontLoadError: String? = null
     private val layout = GlyphLayout()
 
     /**
-     * 按需安全获取中文字体。若在 headless 或无 GL 环境中则返回 null，不引发 GL 崩溃。
-     * 加载失败记录错误并释放资源，不再每帧重复尝试泄漏生成器。
+     * 按需安全获取中文字体（借用 UiAssets 管理的 18px 共享字体）。
+     * 若在 headless 或无 GL 环境中则返回 null，不引发 GL 崩溃。
+     * 组件自身不创建或销毁共享生成器。
      */
     fun getOrInitChineseFont(): BitmapFont? {
-        if (chineseFont != null) return chineseFont
-        if (fontInitAttempted) return null
-        if (Gdx.gl == null || Gdx.graphics == null || Gdx.files == null) return null
-
-        fontInitAttempted = true
-        var generator: FreeTypeFontGenerator? = null
-        try {
-            val fontHandle = Gdx.files.internal("fonts/NotoSansSC-Regular.ttf")
-            if (!fontHandle.exists()) {
-                val msg = "Font file not found: fonts/NotoSansSC-Regular.ttf"
-                Gdx.app?.error("SettlementDetailRenderer", msg)
-                fontLoadError = msg
-                return null
-            }
-            generator = FreeTypeFontGenerator(fontHandle)
-            val param = FreeTypeFontParameter().apply {
-                size = 18
-                incremental = true
-                characters = FreeTypeFontGenerator.DEFAULT_CHARS
-            }
-            val font = generator.generateFont(param)
-            fontGenerator = generator
-            chineseFont = font
-            return font
-        } catch (t: Throwable) {
-            val msg = "Failed to initialize NotoSansSC font: ${t.message}"
-            Gdx.app?.error("SettlementDetailRenderer", msg, t)
-            fontLoadError = msg
-            generator?.dispose()
-            fontGenerator = null
-            chineseFont?.dispose()
-            chineseFont = null
-            return null
-        }
+        val uiAssets = assets ?: UiAssets.activeInstance
+        return uiAssets?.chineseFont
     }
 
     /**
@@ -424,9 +389,10 @@ class SettlementDetailRenderer : Disposable {
         } finally {
             textFont.data.setScale(origScaleX, origScaleY)
             textFont.color = origColor
+            if (batch.isDrawing) {
+                batch.end()
+            }
         }
-
-        batch.end()
     }
 
     /**
@@ -552,11 +518,6 @@ class SettlementDetailRenderer : Disposable {
     }
 
     override fun dispose() {
-        chineseFont?.dispose()
-        chineseFont = null
-        fontGenerator?.dispose()
-        fontGenerator = null
-        fontInitAttempted = false
-        fontLoadError = null
+        // 借用 UiAssets 管理的字体与生命周期，组件不自行释放共享生成器与共享字体
     }
 }

@@ -24,26 +24,54 @@ class UiAssets(
     val shapeRenderer: ShapeRenderer,
     val font: BitmapFont,
     val chineseFont: BitmapFont? = null,
+    val chineseFont17: BitmapFont? = null,
     val skinManager: SkinManager = SkinManager(),
     private val fontGenerator: FreeTypeFontGenerator? = null
 ) : Disposable {
 
     /**
-     * 最佳可用字体：优先使用支持中文的 NotoSansSC 字体；若无头测试或环境不支持则安全降级回内置默认字体。
+     * 最佳可用 18px 字体：优先使用支持中文的 NotoSansSC 字体 (18px)；若无头测试或环境不支持则安全降级回内置默认字体。
      */
     val effectiveFont: BitmapFont
         get() = chineseFont ?: font
 
+    /**
+     * 最佳可用 17px 字体：优先使用支持中文的 NotoSansSC 字体 (17px)；若无头测试或环境不支持则安全降级回 effectiveFont / font。
+     */
+    val effectiveFont17: BitmapFont
+        get() = chineseFont17 ?: effectiveFont
+
+    /**
+     * 18px 中文字体别名（与结算及全界面规格保持一致）。
+     */
+    val chineseFont18: BitmapFont?
+        get() = chineseFont
+
+    var isDisposed: Boolean = false
+        private set
+
     override fun dispose() {
+        if (isDisposed) return
+        isDisposed = true
+        if (activeInstance === this) {
+            activeInstance = null
+        }
         try {
             chineseFont?.dispose()
         } catch (_: Throwable) {}
+        if (chineseFont17 !== chineseFont) {
+            try {
+                chineseFont17?.dispose()
+            } catch (_: Throwable) {}
+        }
         try {
             fontGenerator?.dispose()
         } catch (_: Throwable) {}
-        try {
-            font.dispose()
-        } catch (_: Throwable) {}
+        if (font !== chineseFont && font !== chineseFont17) {
+            try {
+                font.dispose()
+            } catch (_: Throwable) {}
+        }
         try {
             batch.dispose()
         } catch (_: Throwable) {}
@@ -59,11 +87,16 @@ class UiAssets(
     }
 
     companion object {
+        @Volatile
+        var activeInstance: UiAssets? = null
+            internal set
+
         fun createDefault(skinManager: SkinManager = SkinManager()): UiAssets {
             val batch = SpriteBatch()
             val shapeRenderer = ShapeRenderer()
             val font = BitmapFont()
             var chineseFont: BitmapFont? = null
+            var chineseFont17: BitmapFont? = null
             var fontGenerator: FreeTypeFontGenerator? = null
 
             if (Gdx.files != null && Gdx.gl != null && Gdx.graphics != null && Gdx.graphics.width > 0) {
@@ -73,12 +106,20 @@ class UiAssets(
                     if (fontHandle.exists()) {
                         val generator = FreeTypeFontGenerator(fontHandle)
                         localGenerator = generator
-                        val param = FreeTypeFontGenerator.FreeTypeFontParameter().apply {
+                        val param18 = FreeTypeFontGenerator.FreeTypeFontParameter().apply {
                             size = 18
                             incremental = true
                             characters = FreeTypeFontGenerator.DEFAULT_CHARS
                         }
-                        chineseFont = generator.generateFont(param)
+                        chineseFont = generator.generateFont(param18)
+
+                        val param17 = FreeTypeFontGenerator.FreeTypeFontParameter().apply {
+                            size = 17
+                            incremental = true
+                            characters = FreeTypeFontGenerator.DEFAULT_CHARS
+                        }
+                        chineseFont17 = generator.generateFont(param17)
+
                         fontGenerator = generator
                         localGenerator = null
                     }
@@ -87,25 +128,36 @@ class UiAssets(
                     try {
                         localGenerator?.dispose()
                     } catch (_: Throwable) {}
-                    try {
-                        fontGenerator?.dispose()
-                    } catch (_: Throwable) {}
+                    if (fontGenerator !== localGenerator) {
+                        try {
+                            fontGenerator?.dispose()
+                        } catch (_: Throwable) {}
+                    }
                     try {
                         chineseFont?.dispose()
                     } catch (_: Throwable) {}
+                    if (chineseFont17 !== chineseFont) {
+                        try {
+                            chineseFont17?.dispose()
+                        } catch (_: Throwable) {}
+                    }
                     fontGenerator = null
                     chineseFont = null
+                    chineseFont17 = null
                 }
             }
 
-            return UiAssets(
+            val assets = UiAssets(
                 batch = batch,
                 shapeRenderer = shapeRenderer,
                 font = font,
                 chineseFont = chineseFont,
+                chineseFont17 = chineseFont17,
                 skinManager = skinManager,
                 fontGenerator = fontGenerator
             )
+            activeInstance = assets
+            return assets
         }
     }
 }

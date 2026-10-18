@@ -50,4 +50,23 @@ class SettlementDetailRendererTest : GdxHeadlessTestRunner() {
         assertEquals(220f, SettlementModalGeometry.BTN_PREV_PAGE_RECT.x)
         assertEquals(940f, SettlementModalGeometry.BTN_NEXT_PAGE_RECT.x)
     }
+
+    @Test
+    fun `getOrInitChineseFont returns null safely in headless environment without assets`() {
+        val renderer = SettlementDetailRenderer()
+        assertNull(renderer.getOrInitChineseFont(), "Must return null safely when no GL/assets")
+        renderer.dispose() // must not throw
+    }
+
+    @Test
+    fun `getOrInitChineseFont borrows 18px font from UiAssets and dispose does not destroy it`() {
+        val font18 = BitmapFont()
+        val assets = com.majiang.presentation.testing.TestUiAssets.createWithFonts(chineseFont = font18)
+        val renderer = SettlementDetailRenderer(assets)
+        assertSame(font18, renderer.getOrInitChineseFont(), "Must borrow 18px font from UiAssets")
+        renderer.dispose()
+        // Font must not be destroyed by renderer.dispose()
+        assertEquals(1.0f, font18.data.scaleX)
+        assets.dispose()
+    }
 }

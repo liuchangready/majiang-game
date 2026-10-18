@@ -21,7 +21,7 @@ import com.majiang.presentation.common.render.TileSkin
  * 3. 施术确认调用 [GameSession.submitTileMark]，立即执行防双击保护；
  * 4. 追踪栏展示最多三组各四张牌的牌面与图形寿命区，1280x720 视口下点击翻页可查全部 12 张；
  * 5. 对手区域完整对手手牌展示；
- * 6. 集中管理 [translateServerReason] 与 [TILE_MARK_CHARS] 字体子集；
+ * 6. 集中管理 [translateServerReason] 服务端原因翻译；
  * 7. 资源生命周期严格自闭环 (Disposable)。
  */
 class TileMarkPanel(
@@ -345,30 +345,5 @@ class TileMarkPanel(
             "NO_ACTIVE_DECISION" -> "当前无有效决策"
             else -> reason
         }
-
-        /**
-         * 涵盖所有落汗相关文案、状态、拒绝原因及牌面描述的中文字形全集。
-         */
-        val TILE_MARK_CHARS: String = buildString {
-            // 基础 ASCII 及标点
-            append(" !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~")
-            append("·：；？！“”‘’—，。（）[]【】《》/、")
-            // 核心契约用字集（包含可见文案全集）
-            append("落汗 标记四张牌 请选择 4 张 10 额度 最多 12 张 确认 取消 牌河提示 东南西北")
-            append("自己手中 下家手中 对家手中 上家手中 牌河第 13 张 当前不可见 另余 3 局 本局最后有效 落汗识别")
-            // 拒绝原因翻译文本用字集
-            val reasons = listOf(
-                "TILE_MARK_DISABLED", "TILE_MARK_CAPACITY_EXCEEDED", "INSUFFICIENT_FUNDS",
-                "DEADLINE_EXPIRED", "DECISION_MISMATCH", "NOT_YOUR_TURN", "SEAT_NOT_HUMAN",
-                "ACTION_IN_FLIGHT", "SESSION_CLOSED", "TILE_MARK_RIICHI_LOCKED",
-                "TILE_MARK_INVALID_SELECTION", "TILE_MARK_TILE_NOT_OWNED", "TILE_MARK_ALREADY_MARKED",
-                "STALE_CONTROL_EPOCH", "WRONG_PHASE", "NO_ACTIVE_DECISION"
-            )
-            for (r in reasons) {
-                append(translateServerReason(r))
-            }
-            // 麻将常用牌面字形
-            append("一二三四五六七八九万筒索東南西北白發中副露宝牌指示牌追踪组已生效还需打出赤期限")
-        }.toSet().joinToString("")
     }
 }

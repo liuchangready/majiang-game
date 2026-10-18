@@ -231,7 +231,7 @@ class SleeveBloomScreenContractTest : GdxHeadlessTestRunner() {
         }
     }
 
-    @Test fun `panel geometry separates cards buttons and entry and reason glyphs cover translations`() {
+    @Test fun `panel geometry separates cards buttons and entry and actual server rejection codes have Chinese explanations`() {
         val panel = SleeveBloomPanel(FakeGameSession(initialSnapshot = snapshot(true)))
         try {
             assertEquals(Rectangle(1080f, 106f, 140f, 44f), panel.btnOpenRect)
@@ -244,11 +244,19 @@ class SleeveBloomScreenContractTest : GdxHeadlessTestRunner() {
                 assertFalse(card.overlaps(panel.btnConfirmRect))
                 assertFalse(card.overlaps(panel.btnCancelRect))
             }
-            for (reason in listOf("SLEEVE_BLOOM_DISABLED", "SLEEVE_BLOOM_DEALER_EXTRA_EXCLUDED", "SLEEVE_BLOOM_STALE_OFFER",
-                "SLEEVE_BLOOM_CHOICE_PENDING", "INSUFFICIENT_FUNDS", "DEADLINE_EXPIRED", "STALE_CONTROL_EPOCH")) {
+            val reasons = listOf(
+                "SLEEVE_BLOOM_DISABLED", "SLEEVE_BLOOM_RIICHI_LOCKED", "SLEEVE_BLOOM_DEALER_EXTRA_EXCLUDED",
+                "SLEEVE_BLOOM_NO_DRAWN_TILE", "SLEEVE_BLOOM_ALREADY_PENDING", "SLEEVE_BLOOM_ALREADY_USED_THIS_DRAW",
+                "SLEEVE_BLOOM_WALL_EMPTY", "SLEEVE_BLOOM_NO_PENDING_OFFER", "SLEEVE_BLOOM_OFFER_MISMATCH",
+                "SLEEVE_BLOOM_STALE_OFFER", "SLEEVE_BLOOM_CHOICE_PENDING", "INSUFFICIENT_FUNDS",
+                "DEADLINE_EXPIRED", "DECISION_MISMATCH", "NOT_YOUR_TURN", "SEAT_NOT_HUMAN",
+                "ACTION_IN_FLIGHT", "SESSION_CLOSED", "STALE_CONTROL_EPOCH", "WRONG_PHASE",
+                "NO_ACTIVE_DECISION", "HOST_PAUSED", "REQUEST_ID_CONFLICT"
+            )
+            for (reason in reasons) {
                 val text = SleeveBloomPanel.translateServerReason(reason)
                 assertNotEquals(reason, text)
-                assertTrue(text.filter { it.code > 127 }.all { it in SleeveBloomPanel.SLEEVE_BLOOM_CHARS }, text)
+                assertTrue(text.any { it.code > 127 }, "Missing Chinese explanation: $reason")
             }
         } finally { panel.dispose() }
     }
