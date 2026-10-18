@@ -15,6 +15,7 @@ import com.majiang.server.api.RoomBinding
 import com.majiang.server.api.RoomSummary
 import com.majiang.server.api.ServerApiException
 import com.majiang.server.api.SpectatorBinding
+import com.majiang.server.host.HostDispatchPools
 import com.majiang.server.idempotency.AdmissionResult
 import com.majiang.server.idempotency.IdempotencyKey
 import com.majiang.server.idempotency.InFlightReceipt
@@ -132,6 +133,12 @@ class TcpTableServer(
             config.port
         }
 
+    private var hostDispatchPools: HostDispatchPools? = null
+    internal var lastCloseRemainingTasks: Int = 0
+
+    /** 获取宿主共享派发与完成线程池组引用（供测试与度量读取） */
+    fun getDispatchPools(): HostDispatchPools? = hostDispatchPools
+
     val closed: Boolean get() = isClosed.get()
 
     /**
@@ -141,6 +148,20 @@ class TcpTableServer(
         if (!isRunning.compareAndSet(false, true)) {
             return
         }
+
+        // 初始化共享派发与完成线程池组 (MR-07a)
+        hostDispatchPools = HostDispatchPools(
+            dispatchThreads = config.dispatchPoolThreads,
+            dispatchQueueCapacity = config.dispatchPoolQueueCapacity,
+            completionThreads = config.completionPoolThreads,
+            completionQueueCapacity = config.completionPoolQueueCapacity,
+            closeDeadlineMillis = config.sharedPoolsCloseDeadlineMillis,
+            seatChannelCapacityItems = config.seatChannelCapacityItems,
+            seatChannelCapacityBytes = config.seatChannelCapacityBytes,
+            publicChannelCapacityItems = config.publicChannelCapacityItems,
+            publicChannelCapacityBytes = config.publicChannelCapacityBytes,
+            channelDrainBatchSize = config.channelDrainBatchSize
+        )
 
         selector = Selector.open()
         serverChannel = ServerSocketChannel.open()
@@ -1418,7 +1439,8 @@ class TcpTableServer(
                 hostPlayerName = req.playerName ?: "Host",
                 initialConfig = effectiveRoomConfig,
                 isSingleplayer = false,
-                hostSeat = 0
+                hostSeat = 0,
+                hostDispatch = hostDispatchPools
             )
         } catch (ex: ServerApiException) {
             reservation.release()
@@ -1967,6 +1989,15 @@ class TcpTableServer(
         } catch (_: Throwable) {
         }
 
+        // 4.5 关闭共享派发与完成线程池 (MR-07a)
+        hostDispatchPools?.let { pools ->
+            try {
+                lastCloseRemainingTasks = pools.close(config.sharedPoolsCloseDeadlineMillis)
+            } catch (_: Throwable) {
+            }
+        }
+        hostDispatchPools = null
+
         // 5. 关闭网络通道与 Selector
         try {
             if (::selector.isInitialized && selector.isOpen) {
@@ -1996,5 +2027,59 @@ class TcpTableServer(
         // 8. 重置全局预算与未握手计数
         globalBudget.reset()
         unhandshakedCount.set(0)
+    }
+
+    /**
+     * 通道指标聚合快照（MR-07a 任务 D/F 供测试与测量工具读取）
+     */
+    data class ChannelMetricsAggregate(
+        val activeRooms: Int,
+        val totalQueuedItems: Int,
+        val totalQueuedBytes: Long,
+        val totalOverflowCount: Long,
+        val totalScheduleRejectCount: Long,
+        val anyNeedsRecovery: Boolean,
+        val maxWaitTimeMillis: Double
+    )
+
+    /**
+     * 聚合当前所有存活房间的席位与公开派发通道指标
+     */
+    fun aggregateChannelMetrics(): ChannelMetricsAggregate {
+        var totalItems = 0
+        var totalBytes = 0L
+        var totalOverflow = 0L
+        var totalReject = 0L
+        var anyRecovery = false
+        var maxWait = 0.0
+        val rooms = registry.activeRooms()
+        for (room in rooms) {
+            val host = room.tableHost
+            for (seat in 0..3) {
+                val ch = host.getSeatChannel(seat) ?: continue
+                totalItems += ch.queuedItems
+                totalBytes += ch.queuedBytes
+                totalOverflow += ch.overflowCount
+                totalReject += ch.scheduleRejectCount
+                if (ch.needsRecovery) anyRecovery = true
+                if (ch.maxWaitTimeMillis > maxWait) maxWait = ch.maxWaitTimeMillis
+            }
+            val pubCh = host.getPublicDispatchChannel()
+            totalItems += pubCh.queuedItems
+            totalBytes += pubCh.queuedBytes
+            totalOverflow += pubCh.overflowCount
+            totalReject += pubCh.scheduleRejectCount
+            if (pubCh.needsRecovery) anyRecovery = true
+            if (pubCh.maxWaitTimeMillis > maxWait) maxWait = pubCh.maxWaitTimeMillis
+        }
+        return ChannelMetricsAggregate(
+            activeRooms = rooms.size,
+            totalQueuedItems = totalItems,
+            totalQueuedBytes = totalBytes,
+            totalOverflowCount = totalOverflow,
+            totalScheduleRejectCount = totalReject,
+            anyNeedsRecovery = anyRecovery,
+            maxWaitTimeMillis = maxWait
+        )
     }
 }

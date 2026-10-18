@@ -3,6 +3,7 @@ package com.majiang.server.room
 import com.majiang.server.api.ApiErrors
 import com.majiang.server.api.RoomSummary
 import com.majiang.server.api.ServerApiException
+import com.majiang.server.host.HostDispatchPools
 import com.majiang.state.GameState
 import com.majiang.timing.MonotonicClock
 import com.majiang.timing.SystemMonotonicClock
@@ -42,7 +43,8 @@ class RoomRegistry(
         fixedRoomId: String? = null,
         serialExecutor: ExecutorService? = null,
         hostSeat: Int = 0,
-        initialState: GameState? = null
+        initialState: GameState? = null,
+        hostDispatch: HostDispatchPools? = null
     ): SharedRoom {
         var roomIdToUse: String
         synchronized(lock) {
@@ -76,7 +78,8 @@ class RoomRegistry(
             serialExecutor = serialExecutor,
             hostSeat = hostSeat,
             initialState = initialState,
-            capacityPolicy = capacityPolicy
+            capacityPolicy = capacityPolicy,
+            hostDispatch = hostDispatch
         )
 
         var created = false
@@ -109,7 +112,7 @@ class RoomRegistry(
         }
 
         if (!created) {
-            return createRoom(hostPlayerName, initialConfig, isSingleplayer, fixedRoomId, serialExecutor, hostSeat, initialState)
+            return createRoom(hostPlayerName, initialConfig, isSingleplayer, fixedRoomId, serialExecutor, hostSeat, initialState, hostDispatch)
         }
 
         return room

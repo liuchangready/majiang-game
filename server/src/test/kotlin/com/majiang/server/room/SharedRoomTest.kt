@@ -528,4 +528,37 @@ class SharedRoomTest {
         room.close()
         assertTrue(room.closed)
     }
+
+    @Test
+    fun `shared room with injected host dispatch preserves pools on room close`() {
+        val pools = com.majiang.server.host.HostDispatchPools(
+            dispatchThreads = 2,
+            dispatchQueueCapacity = 16,
+            completionThreads = 2,
+            completionQueueCapacity = 16
+        )
+        try {
+            val room = SharedRoom(
+                roomId = "SHARED_POOL_TEST",
+                hostPlayerName = "Host",
+                initialConfig = ProtocolRoomConfig(),
+                isSingleplayer = true,
+                hostDispatch = pools
+            )
+            assertFalse(room.closed)
+            val info = room.getRoomInfo().await()
+            assertEquals("SHARED_POOL_TEST", info.roomId)
+
+            // 关闭房间
+            room.close()
+            assertTrue(room.closed)
+
+            // 共享池绝不被房间关闭
+            assertFalse(pools.dispatchExecutor.isShutdown, "Dispatch executor must remain active after room close")
+            assertFalse(pools.completionExecutor.isShutdown, "Completion executor must remain active after room close")
+        } finally {
+            pools.close(1000L)
+        }
+    }
 }
+

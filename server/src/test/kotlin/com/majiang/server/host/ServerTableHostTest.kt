@@ -318,4 +318,38 @@ class ServerTableHostTest {
             host.close()
         }
     }
+
+    @Test
+    fun `default mode channels maintain unbounded capacity and zero drops during operations`() {
+        val host = ServerTableHost(
+            config = MatchConfig(shuffleConfig = ShuffleConfig(enabled = false)),
+            adminSeat = 0
+        )
+        try {
+            val seatChannel = host.getSeatChannel(0)
+            val publicChannel = host.getPublicDispatchChannel()
+            assertNotNull(seatChannel)
+            assertNotNull(publicChannel)
+            val nonNullSeatChannel = seatChannel!!
+            assertEquals(Int.MAX_VALUE, nonNullSeatChannel.capacityItems)
+            assertEquals(Long.MAX_VALUE, nonNullSeatChannel.capacityBytes)
+            assertEquals(Int.MAX_VALUE, publicChannel.capacityItems)
+            assertEquals(Long.MAX_VALUE, publicChannel.capacityBytes)
+
+            val initialDrops = nonNullSeatChannel.overflowCount
+            val initialRejects = nonNullSeatChannel.scheduleRejectCount
+
+            // 触发一次启动
+            val receipt = host.start(0).get(3, TimeUnit.SECONDS)
+            assertEquals(ReceiptStatus.APPLIED, receipt.status)
+
+            // 默认模式下通道无界且无丢弃无拒绝
+            assertEquals(initialDrops, nonNullSeatChannel.overflowCount)
+            assertEquals(initialRejects, nonNullSeatChannel.scheduleRejectCount)
+            assertFalse(nonNullSeatChannel.needsRecovery)
+        } finally {
+            host.close()
+        }
+    }
 }
+

@@ -103,7 +103,37 @@ data class TcpServerConfig(
     val retentionPolicy: RoomRetentionPolicy = RoomRetentionPolicy(),
 
     /** 房间与观战容量策略（拟定默认值，可通过服务端配置调整） */
-    val capacityPolicy: RoomCapacityPolicy = RoomCapacityPolicy()
+    val capacityPolicy: RoomCapacityPolicy = RoomCapacityPolicy(),
+
+    /** 共享派发线程池固定线程数（拟定默认值，可通过服务端配置调整） */
+    val dispatchPoolThreads: Int = 8,
+
+    /** 共享派发线程池有界阻塞队列容量（拟定默认值，可通过服务端配置调整） */
+    val dispatchPoolQueueCapacity: Int = 1024,
+
+    /** 共享 Future 完成线程池固定线程数（拟定默认值，可通过服务端配置调整） */
+    val completionPoolThreads: Int = 4,
+
+    /** 共享 Future 完成线程池有界阻塞队列容量（拟定默认值，可通过服务端配置调整） */
+    val completionPoolQueueCapacity: Int = 1024,
+
+    /** 每席位串行派发通道队列条目容量（拟定默认值，可通过服务端配置调整） */
+    val seatChannelCapacityItems: Int = 64,
+
+    /** 每席位串行派发通道队列估算字节容量（拟定默认值，可通过服务端配置调整） */
+    val seatChannelCapacityBytes: Long = 1024L * 1024L,
+
+    /** 公开流串行派发通道队列条目容量（拟定默认值，可通过服务端配置调整） */
+    val publicChannelCapacityItems: Int = 64,
+
+    /** 公开流串行派发通道队列估算字节容量（拟定默认值，可通过服务端配置调整） */
+    val publicChannelCapacityBytes: Long = 1024L * 1024L,
+
+    /** 串行通道单轮排空最大条目数（拟定默认值，可通过服务端配置调整） */
+    val channelDrainBatchSize: Int = 16,
+
+    /** 共享线程池组关闭最大等待截止时间（毫秒，拟定默认值，可通过服务端配置调整） */
+    val sharedPoolsCloseDeadlineMillis: Long = 1000L
 ) {
     /** 房间存活巡检周期（毫秒，拟定默认值，可通过服务端配置调整） */
     val patrolIntervalMillis: Long get() = retentionPolicy.patrolIntervalMillis
@@ -119,5 +149,15 @@ data class TcpServerConfig(
         require(maxMailboxFrames > 0) { "maxMailboxFrames must be > 0" }
         require(maxMailboxBytes > 0L) { "maxMailboxBytes must be > 0" }
         require(workerThreadPoolSize > 0) { "workerThreadPoolSize must be > 0" }
+        require(dispatchPoolThreads > 0) { "dispatchPoolThreads must be > 0" }
+        require(dispatchPoolQueueCapacity > 0) { "dispatchPoolQueueCapacity must be > 0" }
+        require(completionPoolThreads > 0) { "completionPoolThreads must be > 0" }
+        require(completionPoolQueueCapacity > 0) { "completionPoolQueueCapacity must be > 0" }
+        require(seatChannelCapacityItems > 0) { "seatChannelCapacityItems must be > 0" }
+        require(seatChannelCapacityBytes > 0L) { "seatChannelCapacityBytes must be > 0" }
+        require(publicChannelCapacityItems > 0) { "publicChannelCapacityItems must be > 0" }
+        require(publicChannelCapacityBytes > 0L) { "publicChannelCapacityBytes must be > 0" }
+        require(channelDrainBatchSize > 0) { "channelDrainBatchSize must be > 0" }
+        require(sharedPoolsCloseDeadlineMillis > 0L) { "sharedPoolsCloseDeadlineMillis must be > 0" }
     }
 }

@@ -64,15 +64,27 @@ import java.util.concurrent.atomic.AtomicLong
 /**
  * 服务端权威单桌异步宿主 (ServerTableHost)
  *
- * 遵循 V4 架构契约与 TASK-ANTI-R4A 规范：
+ * 遵循 V4 架构契约与 MR-07a 规范：
  * 1. 围绕纯领域同步 [TableAuthority] 包装，提供每桌独立的串行执行队列 (serialExecutor，支持依赖注入)；
  * 2. 外部调用（本地进程内、网络 TCP、测试）只入队并立即返回 Future，绝不在调用方或接收循环线程上加持领域锁；
  * 3. 权威计算与下游外部 Future 回调解耦：在独立 completion 线程池完成 Future，防止慢回执消费者/网络发送阻塞权威队列；
  * 4. 拥有网络连接生命周期 (ConnectionControl)、席位投影游标与历史缓存、订阅派发解耦；
- * 5. 监听器通知派发 (seatDispatchers) 移出权威突变临界区，单席位单调有序推进；慢监听器绝不阻塞后续查询或命令入队；
+ * 5. 两种运行模式与线程预算归属：
+ *    - 默认模式 (sharedDispatch == null)：行为与现状逐点等价，为 4 个席位与 1 个公开流分别创建专属单线程执行器，
+ *      通道容量无界，保证向后兼容与既有测试零回归；
+ *    - 共享模式 (sharedDispatch != null)：席位与公开流改用共享有界线程池上的 [SerialDispatchChannel]，
+ *      通道具有独立的条目与估算字节容量限制；线程预算由服务器统一分配（与房间数 N 无关），杜绝随房间数线性增长的线程开销；
  * 6. 拥有后台 AI 线程池，在突变队列之外推理并在提交时二次验证 roundId、decisionId 与 controlEpoch；
  * 7. 权威超时事实具备优先裁决权，不受展示忙 (presentationBusy) 或玩家操作饥饿策略推迟；
- * 8. 确定性生命周期：close 立即拒绝并完成所有排队中的 Future，零挂起，零调用方阻塞等待。
+ * 8. 确定性生命周期：close 立即拒绝并完成所有排队中的 Future，关闭自身拥有的资源，共享池绝不越权关闭。
+ *
+ * @param sharedDispatch 注入的共享派发执行器（null 表示默认模式，创建专属执行器）
+ * @param sharedCompletion 注入的共享 Future 完成执行器（null 表示默认模式，创建专属 Cached 池）
+ * @param seatChannelCapacityItems 席位通道队列条目容量（拟定默认值 0 表示无界，可通过服务端配置调整）
+ * @param seatChannelCapacityBytes 席位通道队列估算字节容量（拟定默认值 0 表示无界，可通过服务端配置调整）
+ * @param publicChannelCapacityItems 公开通道队列条目容量（拟定默认值 0 表示无界，可通过服务端配置调整）
+ * @param publicChannelCapacityBytes 公开通道队列估算字节容量（拟定默认值 0 表示无界，可通过服务端配置调整）
+ * @param channelDrainBatchSize 通道单轮排空批次大小（拟定默认值 16，可通过服务端配置调整）
  */
 class ServerTableHost @JvmOverloads constructor(
     config: MatchConfig = MatchConfig(),
@@ -90,7 +102,14 @@ class ServerTableHost @JvmOverloads constructor(
     aiProfiles: Map<String, () -> AIStrategy> = emptyMap(),
     aiExecutor: ExecutorService? = null,
     val rhythmIntervalMillis: Long = 150L,
-    serialExecutor: ExecutorService? = null
+    serialExecutor: ExecutorService? = null,
+    sharedDispatch: ExecutorService? = null,
+    sharedCompletion: ExecutorService? = null,
+    seatChannelCapacityItems: Int = 0,
+    seatChannelCapacityBytes: Long = 0L,
+    publicChannelCapacityItems: Int = 0,
+    publicChannelCapacityBytes: Long = 0L,
+    channelDrainBatchSize: Int = 16
 ) : AutoCloseable {
 
     private val tableId: String = UUID.randomUUID().toString()
@@ -149,9 +168,26 @@ class ServerTableHost @JvmOverloads constructor(
     )
 
     // 外部 Future 完成解耦执行器：将领域计算与下游回调（如 TCP 发包、UI 回调）隔离
-    internal val completionExecutor: ExecutorService = Executors.newCachedThreadPool(
+    private val ownsCompletionExecutor: Boolean = (sharedCompletion == null)
+    internal val completionExecutor: ExecutorService = sharedCompletion ?: Executors.newCachedThreadPool(
         ThreadFactory { r -> Thread(r, "ServerTableHost-$tableId-Completion").apply { isDaemon = true } }
     )
+
+    // 默认模式下的专属单线程派发器（仅当未注入 sharedDispatch 时创建）
+    private val ownsDispatchExecutors: Boolean = (sharedDispatch == null)
+    private val defaultSeatDispatchers: Array<ExecutorService>? = if (ownsDispatchExecutors) {
+        Array(4) { s ->
+            Executors.newSingleThreadExecutor(
+                ThreadFactory { r -> Thread(r, "ServerTableHost-$tableId-Seat-$s-Dispatcher").apply { isDaemon = true } }
+            )
+        }
+    } else null
+
+    private val defaultPublicDispatcher: ExecutorService? = if (ownsDispatchExecutors) {
+        Executors.newSingleThreadExecutor(
+            ThreadFactory { r -> Thread(r, "ServerTableHost-$tableId-Public-Dispatcher").apply { isDaemon = true } }
+        )
+    } else null
 
     // 权威状态提交回调（在 serialExecutor 队列上触发，供 SharedRoom 同步生命周期）
     internal var onStateCommitted: (() -> Unit)? = null
@@ -159,11 +195,38 @@ class ServerTableHost @JvmOverloads constructor(
     // 跟踪所有未决的外部 Future，以便 close 时确定性拒绝并完成
     private val pendingFutures = ConcurrentHashMap.newKeySet<CompletableFuture<*>>()
 
-    // 每席位独立的单线程派发器（保证按席位单调有序派发，且外部慢监听器完全不阻塞 serialExecutor）
-    private val seatDispatchers: Array<ExecutorService> = Array(4) { s ->
-        Executors.newSingleThreadExecutor(
-            ThreadFactory { r -> Thread(r, "ServerTableHost-$tableId-Seat-$s-Dispatcher").apply { isDaemon = true } }
-        )
+    // 席位派发条目封装
+    internal sealed class SeatDispatchItem {
+        abstract val update: PlayerUpdate
+        abstract val isFullSnapshot: Boolean
+
+        data class Broadcast(
+            override val update: PlayerUpdate,
+            override val isFullSnapshot: Boolean = false
+        ) : SeatDispatchItem()
+
+        data class TargetSubscriber(
+            val subscription: SeatSubscription,
+            override val update: PlayerUpdate,
+            override val isFullSnapshot: Boolean = true
+        ) : SeatDispatchItem()
+    }
+
+    // 公开流派发条目封装
+    internal sealed class PublicDispatchItem {
+        abstract val update: ProtocolPublicUpdate
+        abstract val isFullSnapshot: Boolean
+
+        data class Broadcast(
+            override val update: ProtocolPublicUpdate,
+            override val isFullSnapshot: Boolean = false
+        ) : PublicDispatchItem()
+
+        data class TargetSubscriber(
+            val subscription: PublicSubscription,
+            override val update: ProtocolPublicUpdate,
+            override val isFullSnapshot: Boolean = true
+        ) : PublicDispatchItem()
     }
 
     // 席位订阅凭证
@@ -235,9 +298,79 @@ class ServerTableHost @JvmOverloads constructor(
         syncEpoch = "${authority.sessionId}-public"
     )
 
-    // 独立单线程公开流派发器（保证单调有序派发，且慢消费者完全不阻塞 serialExecutor）
-    private val publicDispatcher: ExecutorService = Executors.newSingleThreadExecutor(
-        ThreadFactory { r -> Thread(r, "ServerTableHost-$tableId-Public-Dispatcher").apply { isDaemon = true } }
+    // 4 个席位串行派发通道
+    internal val seatChannels: Array<SerialDispatchChannel<SeatDispatchItem>> = Array(4) { s ->
+        val exec = sharedDispatch ?: defaultSeatDispatchers!![s]
+        SerialDispatchChannel(
+            name = "ServerTableHost-$tableId-Seat-$s",
+            executor = exec,
+            maxQueuedItems = seatChannelCapacityItems,
+            maxQueuedBytes = seatChannelCapacityBytes,
+            drainBatchSize = channelDrainBatchSize,
+            byteEstimator = { item ->
+                512L + item.update.visibleEvents.size * 128L
+            },
+            isFullSnapshotPredicate = { it.isFullSnapshot },
+            consumer = { item ->
+                when (item) {
+                    is SeatDispatchItem.Broadcast -> {
+                        val activeSubs = ArrayList(seatStreams[s].subscriptions)
+                        for (sub in activeSubs) {
+                            if (!sub.active || closed) continue
+                            val copy = item.update.deepCopy()
+                            try {
+                                sub.listener(copy)
+                            } catch (_: Throwable) {
+                            }
+                        }
+                    }
+                    is SeatDispatchItem.TargetSubscriber -> {
+                        if (item.subscription.active && !closed) {
+                            val copy = item.update.deepCopy()
+                            try {
+                                item.subscription.listener(copy)
+                            } catch (_: Throwable) {
+                            }
+                        }
+                    }
+                }
+            }
+        )
+    }
+
+    // 独立公开流串行派发通道
+    internal val publicChannel: SerialDispatchChannel<PublicDispatchItem> = SerialDispatchChannel(
+        name = "ServerTableHost-$tableId-Public",
+        executor = sharedDispatch ?: defaultPublicDispatcher!!,
+        maxQueuedItems = publicChannelCapacityItems,
+        maxQueuedBytes = publicChannelCapacityBytes,
+        drainBatchSize = channelDrainBatchSize,
+        byteEstimator = { item ->
+            512L + item.update.visibleEvents.size * 128L
+        },
+        isFullSnapshotPredicate = { it.isFullSnapshot },
+        consumer = { item ->
+            when (item) {
+                is PublicDispatchItem.Broadcast -> {
+                    val activeSubs = ArrayList(publicStream.subscriptions)
+                    for (sub in activeSubs) {
+                        if (!sub.active || closed) continue
+                        try {
+                            sub.listener(item.update)
+                        } catch (_: Throwable) {
+                        }
+                    }
+                }
+                is PublicDispatchItem.TargetSubscriber -> {
+                    if (item.subscription.active && !closed) {
+                        try {
+                            item.subscription.listener(item.update)
+                        } catch (_: Throwable) {
+                        }
+                    }
+                }
+            }
+        }
     )
 
     // AI 后台计算线程池
@@ -1062,15 +1195,9 @@ class ServerTableHost @JvmOverloads constructor(
                     fromCursor = stream.cursor,
                     visibleEvents = emptyList()
                 )
-                try {
-                    seatDispatchers[seat].execute {
-                        if (!closed && sub.active) {
-                            try {
-                                sub.listener(baseline.deepCopy())
-                            } catch (_: Throwable) {}
-                        }
-                    }
-                } catch (_: RejectedExecutionException) {}
+                seatChannels[seat].enqueue(
+                    SeatDispatchItem.TargetSubscriber(sub, baseline, isFullSnapshot = true)
+                )
             }
         } catch (e: RejectedExecutionException) {
             if (closed) throw IllegalStateException("ServerTableHost is closed", e)
@@ -1091,7 +1218,7 @@ class ServerTableHost @JvmOverloads constructor(
     /**
      * 订阅公开流更新：
      * 1. 注册与基线快照提取在 serialExecutor 内串行化执行；
-     * 2. 派发给外部监听器在独立的 publicDispatcher 线程，慢消费者完全不影响 serialExecutor 与玩家；
+     * 2. 派发给外部监听器经独立串行通道 publicChannel 派发，慢消费者完全不影响 serialExecutor 与玩家；
      * 3. 初始基线以 isFullSnapshot = true 下发。
      */
     fun subscribePublic(listener: (ProtocolPublicUpdate) -> Unit): AutoCloseable {
@@ -1110,15 +1237,9 @@ class ServerTableHost @JvmOverloads constructor(
                     visibleEvents = emptyList(),
                     isFullSnapshot = true
                 )
-                try {
-                    publicDispatcher.execute {
-                        if (!closed && sub.active) {
-                            try {
-                                sub.listener(baseline)
-                            } catch (_: Throwable) {}
-                        }
-                    }
-                } catch (_: RejectedExecutionException) {}
+                publicChannel.enqueue(
+                    PublicDispatchItem.TargetSubscriber(sub, baseline, isFullSnapshot = true)
+                )
             }
         } catch (e: RejectedExecutionException) {
             if (closed) throw IllegalStateException("ServerTableHost is closed", e)
@@ -1342,20 +1463,7 @@ class ServerTableHost @JvmOverloads constructor(
             )
             stream.addHistory(update)
 
-            val activeSubs = ArrayList(stream.subscriptions)
-            for (sub in activeSubs) {
-                if (!sub.active) continue
-                val copy = update.deepCopy()
-                try {
-                    seatDispatchers[s].execute {
-                        if (!closed && sub.active) {
-                            try {
-                                sub.listener(copy)
-                            } catch (_: Throwable) {}
-                        }
-                    }
-                } catch (_: RejectedExecutionException) {}
-            }
+            seatChannels[s].enqueue(SeatDispatchItem.Broadcast(update, isFullSnapshot = false))
         }
         publishPublicChanges(events)
         onStateCommitted?.invoke()
@@ -1398,19 +1506,7 @@ class ServerTableHost @JvmOverloads constructor(
         )
         publicStream.addHistory(update)
 
-        val activeSubs = ArrayList(publicStream.subscriptions)
-        for (sub in activeSubs) {
-            if (!sub.active) continue
-            try {
-                publicDispatcher.execute {
-                    if (!closed && sub.active) {
-                        try {
-                            sub.listener(update)
-                        } catch (_: Throwable) {}
-                    }
-                }
-            } catch (_: RejectedExecutionException) {}
-        }
+        publicChannel.enqueue(PublicDispatchItem.Broadcast(update, isFullSnapshot = false))
     }
 
     private fun hasMeaningfulClockDifference(oldClocks: List<ClockView>, newClocks: List<ClockView>): Boolean {
@@ -1470,11 +1566,22 @@ class ServerTableHost @JvmOverloads constructor(
             if (ownsAiExecutor) {
                 internalAiExecutor.shutdownNow()
             }
-            for (disp in seatDispatchers) {
-                disp.shutdownNow()
+            // 关闭所有派发通道（清空队列、后续入队直接返回 false，绝不阻塞在途任务）
+            for (ch in seatChannels) {
+                ch.close()
             }
-            publicDispatcher.shutdownNow()
-            completionExecutor.shutdownNow()
+            publicChannel.close()
+
+            // 仅在拥有专属派发执行器时才 shutdown，注入的共享池绝不关闭
+            if (ownsDispatchExecutors) {
+                defaultSeatDispatchers?.forEach { it.shutdownNow() }
+                defaultPublicDispatcher?.shutdownNow()
+            }
+
+            // 仅在拥有专属 completion 执行器时才 shutdown，注入的共享池绝不关闭
+            if (ownsCompletionExecutor) {
+                completionExecutor.shutdownNow()
+            }
 
             for (stream in seatStreams) {
                 stream.subscriptions.clear()
@@ -1488,4 +1595,10 @@ class ServerTableHost @JvmOverloads constructor(
             pendingAiResults.clear()
         }
     }
+
+    /** 获取席位派发通道只读引用（供测试与测量工具读取指标） */
+    fun getSeatChannel(seat: Int): SerialDispatchChannel<*>? = seatChannels.getOrNull(seat)
+
+    /** 获取公开流派发通道只读引用（供测试与测量工具读取指标） */
+    fun getPublicDispatchChannel(): SerialDispatchChannel<*> = publicChannel
 }

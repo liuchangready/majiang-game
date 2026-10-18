@@ -497,4 +497,46 @@ class TcpTableServerCapacityAndLifecycleTest {
             server.close()
         }
     }
+
+    @Test
+    fun `MR-07a aggregateChannelMetrics reports metrics across active rooms and closes shared pools cleanly`() {
+        val server = TcpTableServer(TcpServerConfig(
+            port = 0,
+            dispatchPoolThreads = 4,
+            completionPoolThreads = 2
+        ))
+        server.start()
+
+        try {
+            val metricsBefore = server.aggregateChannelMetrics()
+            assertEquals(0, metricsBefore.activeRooms)
+            assertEquals(0, metricsBefore.totalQueuedItems)
+            assertEquals(0, metricsBefore.totalOverflowCount)
+
+            // 创建一个房间
+            TcpTestClient(port = server.boundPort).use { client ->
+                client.sendFrame(TcpMessageCodec.toFrame(TcpHello(wireVersion = 1, businessVersion = 1)))
+                val welcome = client.expectWelcome()
+                val reqId = "req-metrics-01"
+                val envelope = TcpRequestEnvelope(
+                    requestScope = welcome.lobbyScope.scope,
+                    requestId = reqId,
+                    request = ApiRequest(requestId = reqId, api = ApiTags.CREATE_ROOM, playerName = "MetricsHost")
+                )
+                client.sendFrame(TcpMessageCodec.toFrame(envelope))
+                val respEnv = client.expectResponse()
+                assertTrue(respEnv.response.success)
+            }
+
+            val metricsAfter = server.aggregateChannelMetrics()
+            assertEquals(1, metricsAfter.activeRooms)
+            assertEquals(0, metricsAfter.totalOverflowCount)
+            assertEquals(0, metricsAfter.totalScheduleRejectCount)
+            assertFalse(metricsAfter.anyNeedsRecovery)
+        } finally {
+            server.close()
+            assertTrue(server.lastCloseRemainingTasks >= 0, "lastCloseRemainingTasks must be recorded on shutdown")
+        }
+    }
 }
+

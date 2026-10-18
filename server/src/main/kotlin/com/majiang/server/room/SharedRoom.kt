@@ -19,6 +19,7 @@ import com.majiang.server.api.ApiProtocol
 import com.majiang.server.api.PublicCheckpoint
 import com.majiang.server.api.RoomSummary
 import com.majiang.server.api.ServerApiException
+import com.majiang.server.host.HostDispatchPools
 import com.majiang.server.host.ServerTableHost
 import com.majiang.server.mapping.EngineProtocolMapper
 import com.majiang.stacking.ShufflePlanRequest
@@ -45,6 +46,7 @@ import java.util.concurrent.Executors
 import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.ThreadFactory
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicLong
 
 /**
  * 传输中立的权威共享房间服务 (SharedRoom)
@@ -73,7 +75,8 @@ class SharedRoom @JvmOverloads constructor(
     controllers: List<SeatController>? = null,
     val hostSeat: Int = 0,
     initialState: GameState? = null,
-    val capacityPolicy: RoomCapacityPolicy = RoomCapacityPolicy()
+    val capacityPolicy: RoomCapacityPolicy = RoomCapacityPolicy(),
+    val hostDispatch: HostDispatchPools? = null
 ) : AutoCloseable {
 
     private val isClosed = AtomicBoolean(false)
@@ -149,11 +152,18 @@ class SharedRoom @JvmOverloads constructor(
     var latestRoomInfo: ProtocolRoomInfo
         private set
 
-    private val roomNotificationExecutor: ExecutorService = Executors.newCachedThreadPool(
-        ThreadFactory { r -> Thread(r, "SharedRoom-$roomId-Notification").apply { isDaemon = true } }
-    )
+    private val ownsNotificationExecutor: Boolean = (hostDispatch == null)
+    private val defaultNotificationExecutor: ExecutorService? = if (ownsNotificationExecutor) {
+        Executors.newCachedThreadPool(
+            ThreadFactory { r -> Thread(r, "SharedRoom-$roomId-Notification").apply { isDaemon = true } }
+        )
+    } else null
+
+    internal val roomNotificationExecutor: ExecutorService = hostDispatch?.dispatchExecutor ?: defaultNotificationExecutor!!
 
     private val roomSubscribers = CopyOnWriteArrayList<RoomSubscriber>()
+    private val subscriberRejectCounter = AtomicLong(0L)
+    val roomSubscriberRejectCount: Long get() = subscriberRejectCounter.get()
 
     val tableHost: ServerTableHost
 
@@ -207,7 +217,14 @@ class SharedRoom @JvmOverloads constructor(
             controllers = resolvedControllers,
             adminSeat = hostSeat,
             serialExecutor = serialExecutor,
-            initialState = initialState
+            initialState = initialState,
+            sharedDispatch = hostDispatch?.dispatchExecutor,
+            sharedCompletion = hostDispatch?.completionExecutor,
+            seatChannelCapacityItems = hostDispatch?.seatChannelCapacityItems ?: 0,
+            seatChannelCapacityBytes = hostDispatch?.seatChannelCapacityBytes ?: 0L,
+            publicChannelCapacityItems = hostDispatch?.publicChannelCapacityItems ?: 0,
+            publicChannelCapacityBytes = hostDispatch?.publicChannelCapacityBytes ?: 0L,
+            channelDrainBatchSize = hostDispatch?.channelDrainBatchSize ?: 16
         )
 
         tableHost.onStateCommitted = {
@@ -238,7 +255,8 @@ class SharedRoom @JvmOverloads constructor(
 
     private class RoomSubscriber(
         private val listener: (ProtocolRoomInfo) -> Unit,
-        private val executor: ExecutorService
+        private val executor: ExecutorService,
+        private val onReject: () -> Unit = {}
     ) {
         @Volatile
         private var unregistered = false
@@ -249,23 +267,38 @@ class SharedRoom @JvmOverloads constructor(
         private var isRunning = false
 
         fun enqueue(info: ProtocolRoomInfo) {
+            val shouldDrain: Boolean
             synchronized(lock) {
                 if (unregistered) return
-                // 终结状态为最终态，后续任何事件直接丢弃
-                if (terminal != null) return
-                if (info.lifecycle == ProtocolRoomLifecycle.CLOSED) {
-                    terminal = info
-                    pending = null
+                if (terminal != null) {
+                    // terminal 已经是终结状态，不再接受任何新数据；若此前执行器拒绝导致未运行，重新拉起 drain
+                    if (!isRunning) {
+                        isRunning = true
+                        shouldDrain = true
+                    } else {
+                        shouldDrain = false
+                    }
                 } else {
-                    // 防乱序防御：仅接受单调递增的新版本，拒绝过时或相同版本覆盖
-                    if (info.version <= highestVersion) return
-                    highestVersion = info.version
-                    pending = info
+                    if (info.lifecycle == ProtocolRoomLifecycle.CLOSED) {
+                        terminal = info
+                        pending = null
+                    } else {
+                        // 防乱序防御：仅接受单调递增的新版本，拒绝过时或相同版本覆盖
+                        if (info.version <= highestVersion) return
+                        highestVersion = info.version
+                        pending = info
+                    }
+                    if (!isRunning) {
+                        isRunning = true
+                        shouldDrain = true
+                    } else {
+                        shouldDrain = false
+                    }
                 }
-                if (isRunning) return
-                isRunning = true
             }
-            drain()
+            if (shouldDrain) {
+                drain()
+            }
         }
 
         private fun drain() {
@@ -314,9 +347,8 @@ class SharedRoom @JvmOverloads constructor(
             } catch (_: RejectedExecutionException) {
                 synchronized(lock) {
                     isRunning = false
-                    pending = null
-                    terminal = null
                 }
+                onReject()
             }
         }
 
@@ -393,14 +425,36 @@ class SharedRoom @JvmOverloads constructor(
         }
     }
 
+    /**
+     * 延后释放房间底层宿主资源 (deferredShutdown)
+     *
+     * 架构设计说明 (MR-07a 返修 C3)：
+     * - 共享模式下 (ownsNotificationExecutor == false)，若将 tableHost.close() 提交到共享 dispatch 池，
+     *   在慢监听器占满 8 个派发线程时，leave() 路径的宿主关闭会被无限延迟，导致 pendingFutures 无法及时异常完成、
+     *   serial 线程残留。因此在共享模式下直接同步内联执行（tableHost.close()/authority.close() 全程非阻塞，安全）；
+     * - 默认模式下 (ownsNotificationExecutor == true)，保持向自有独立 Cached 线程池异步提交并最终关闭该池。
+     */
     private fun deferredShutdown() {
         if (isShutdownDone.compareAndSet(false, true)) {
-            roomNotificationExecutor.execute {
+            val shutdownAction = {
                 try {
                     tableHost.close()
                 } catch (_: Throwable) {
                 } finally {
-                    roomNotificationExecutor.shutdown()
+                    if (ownsNotificationExecutor) {
+                        defaultNotificationExecutor?.shutdown()
+                    }
+                }
+            }
+            if (!ownsNotificationExecutor) {
+                // 共享模式：同步内联执行，防止共享 dispatch 池饱和时 leave() 延迟关闭宿主
+                shutdownAction()
+            } else {
+                // 默认模式：提交至专属通知池异步执行
+                try {
+                    roomNotificationExecutor.execute(shutdownAction)
+                } catch (_: RejectedExecutionException) {
+                    shutdownAction()
                 }
             }
         }
@@ -984,7 +1038,9 @@ class SharedRoom @JvmOverloads constructor(
     fun getRoomInfoSnapshot(): ProtocolRoomInfo = latestRoomInfo
 
     fun onRoomUpdate(listener: (ProtocolRoomInfo) -> Unit): AutoCloseable {
-        val subscriber = RoomSubscriber(listener, roomNotificationExecutor)
+        val subscriber = RoomSubscriber(listener, roomNotificationExecutor) {
+            subscriberRejectCounter.incrementAndGet()
+        }
         roomSubscribers.add(subscriber)
         // 初始基线以严格相同的有序队列参与派发
         subscriber.enqueue(latestRoomInfo)
