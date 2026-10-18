@@ -1,0 +1,144 @@
+================================================================
+ANTI 任务简报：MR-07b 公开载荷编码复用（广播编码一次）
+================================================================
+
+0. 总则（必读）
+----------------------------------------------------------------
+- 基线 SHA：fe5e359（分支 feat/mj-tcp-migration，工作区对已跟踪文件干净；
+  MR-07a 已合入：SerialDispatchChannel/HostDispatchPools 已存在并可用）。
+  你的全部改动以 git diff 对照该基线验收；不要提交 git，不要创建分支。
+- 你只用文件工具（读/写/改文件），严禁运行任何命令、构建或测试。
+- 禁止删除或削弱任何现有测试；禁止通过放松断言让构建通过。
+- 改动集中在 server 模块 tcp 包；禁止改 engine/、client/、presentation/、
+  protocol/、server/inprocess/、gradle、其余测试。
+- 所有新增默认值都是"拟定默认值"，KDoc 标注"拟定默认值，可通过服务端配置调整"。
+- 需求来源：doc/v4-重构/IMPROVEMENT-PLAN.md 第 4 节 MR-07 广播部分（07b）。
+- 完成后写 doc/v4-重构/ANTI-MR07B-DELIVERY.md（含预算/容量表，格式参考
+  ANTI-MR07-DELIVERY.md）。禁止代写验收方的 CLAUDE-MR07B-REVIEW.md。
+
+1. 现状与问题（已核实的代码事实，基线 fe5e359）
+----------------------------------------------------------------
+- server/tcp/TcpTableServer.kt bindSpectatorToRoom（约 1730-1760 行）：
+  每个观战连接的订阅回调查询到达时各自执行
+  `TcpMessageCodec.toPublicUpdateFrame(pubUpdate).toByteArray()` 再
+  `conn.sendNormalFrame(...)`——同一房间的同一条公开更新被重复 JSON 编码 N 次
+  （N=观战者数；T0 实测 PUBLIC_UPDATE 最大约 3.9KB，32 观战者=32 次编码）。
+- TcpOutboundQueue.enqueueNormal（server/tcp/TcpOutboundQueue.kt）每次调用
+  `ByteBuffer.wrap(frameBytes)`——各连接的 ByteBuffer position/limit 本就独立，
+  共享同一不可变 ByteArray 是安全的（writeToChannel 只读写各自 buffer 的
+  position/limit，不改字节数组内容）。
+- 公开流内容按 V4 契约 4 不含任何私密数据（玩家私有流/暗牌/牌山/私人账本/
+  未授权里宝牌均被 PublicProtocolMapper 过滤）——只有公开流允许进入共享编码，
+  席位（私有）流更新绝不经过共享缓存。
+- 房间关闭路径：TcpTableServer.onRoomRecycled（回收）、close()（停服）、
+  registry 清扫——缓存需要在这些时机按会话释放。
+
+2. 任务 A：新建 PublicUpdateFrameCache
+----------------------------------------------------------------
+新建 server/src/main/kotlin/com/majiang/server/tcp/PublicUpdateFrameCache.kt：
+- class PublicUpdateFrameCache(
+    maxEntries: Int,        // 拟定默认 64
+    maxMaxBytes: Long       // 拟定默认 1 MiB
+  )
+- 缓存键 data class 含全部五元组：sessionId、syncEpoch、cursor、fromCursor、
+  isFullSnapshot（来源：ProtocolPublicUpdate.snapshot.sessionId/syncEpoch/cursor
+  与 update.fromCursor、update.isFullSnapshot——先读 protocol 的
+  ProtocolModels.kt 核对真实字段名，禁止臆造字段）。
+- fun frameBytesFor(update: ProtocolPublicUpdate): ByteArray：
+  * 锁内查键：命中返回同一不可变 ByteArray（编码次数 0）；
+  * 未命中：锁内编码一次（TcpMessageCodec.toPublicUpdateFrame(update)
+    .toByteArray()，经 server.tcp 的 toByteArray 扩展），encodeCount++，
+    计入字节容量，FIFO 淘汰最旧条目直至满足条目/字节双上限，返回。
+  * 编码必须在锁内完成恰好一次（多房间并发查询同一更新也不得重复编码——
+    注意：不同房间的更新天然不同键，并发主要来自同房间多次查询与淘汰竞争）。
+- fun releaseSession(sessionId: String)：移除该会话全部条目（房间关闭时释放）。
+- 指标：encodeCount、entryCount、cachedBytes、hitCount、missCount。
+- KDoc：只缓存公开流帧；完整快照基线不含历史事件；字节数组编码后不可变，
+  各连接以独立 ByteBuffer 视图引用；不保留 seq/ACK/重传索引（TCP 无重传语义）。
+
+3. 任务 B：TcpTableServer 接线
+----------------------------------------------------------------
+- TcpServerConfig 新增：publicFrameCacheMaxEntries = 64、
+  publicFrameCacheMaxBytes = 1 MiB（拟定默认值，init 校验 > 0）。
+- TcpTableServer.start() 创建 publicFrameCache（服务器拥有）；
+  暴露 internal fun getPublicUpdateFrameCache() 供测试读取指标。
+- bindSpectatorToRoom 的公开更新订阅回调改为：
+  val frameBytes = publicFrameCache.frameBytesFor(pubUpdate)
+  conn.sendNormalFrame(frameBytes)
+  （sendNormalFrame 内部按连接独立 wrap ByteBuffer，语义不变。）
+- 释放时机（三处都要接）：
+  1) onRoomRecycled(room) 追加 publicFrameCache.releaseSession(该房 sessionId)；
+  2) TcpTableServer.close() 停服清理（直接清空或逐会话释放）；
+  3) handleLeaveRoom 观战离房不需要释放（会话仍在），但房间从注册表注销的
+     其它路径（如 close/registry.removeRoom 后房间 closed）若存在则同样释放——
+     以"房间 closed 即释放"为原则排查所有路径并在交付说明列表。
+  sessionId 获取方式：房间存活时经一次公开快照查询或 SharedRoom/tableHost
+  暴露只读 sessionId（优先复用已有公开访问器，避免新增可变状态；若需在
+  ServerTableHost 增加 internal val publicSessionId 只读透传，允许，
+  但必须权威侧既有值，不得新建生成逻辑）。
+
+4. 任务 C：测试
+----------------------------------------------------------------
+新建 server/src/test/kotlin/com/majiang/server/tcp/PublicUpdateFrameCacheTest.kt：
+- 单元：同键 N 次（模拟 32 观战者）只编码 1 次、返回同一字节内容；
+  不同 sessionId/syncEpoch/cursor/fromCursor/isFullSnapshot 任一不同即不同键
+  （全量与连续消息不串缓存）；容量与字节双上限 FIFO 淘汰；releaseSession 后
+  entryCount/cachedBytes 归零；淘汰不影响被持有引用的正确性（已返回的字节
+  数组内容不变）。
+新建 server/src/test/kotlin/com/majiang/server/tcp/PublicBroadcastEquivalenceTest.kt
+（真实 TCP 集成，复用 TcpTestClient 既有写法）：
+- 1/8/32 观战者加入同一房间，触发一次公开状态变更（如玩家 join 或开赛），
+  断言：全部观战者收到的 PUBLIC_UPDATE 帧字节数组完全一致（逐字节比较），
+  且 getPublicUpdateFrameCache().encodeCount 对该条更新只 +1；
+- 观战者中途断开不影响其他观战者继续收到一致内容；
+- 房间回收后（或 server.close 后）缓存 entryCount 归零（会话释放）；
+- 回归：既有观战相关测试（TcpTableServerRoutingAndSubscriptionTest 等）零回归。
+
+5. 文件所有权（只允许改/建以下文件）
+----------------------------------------------------------------
+允许新建：
+  server/src/main/kotlin/com/majiang/server/tcp/PublicUpdateFrameCache.kt
+  server/src/test/kotlin/com/majiang/server/tcp/PublicUpdateFrameCacheTest.kt
+  server/src/test/kotlin/com/majiang/server/tcp/PublicBroadcastEquivalenceTest.kt
+  doc/v4-重构/ANTI-MR07B-DELIVERY.md
+允许修改：
+  server/src/main/kotlin/com/majiang/server/tcp/TcpTableServer.kt
+  server/src/main/kotlin/com/majiang/server/tcp/TcpServerConfig.kt
+  server/src/main/kotlin/com/majiang/server/host/ServerTableHost.kt（仅当需要
+    internal 只读 sessionId 透传；保持最小改动）
+  server/src/test/kotlin/com/majiang/server/tcp/TcpTableServerCapacityAndLifecycleTest.kt（只允许追加用例）
+禁止改动：其余一切。
+
+6. 陷阱清单（逐条自查）
+----------------------------------------------------------------
+1) 先读 protocol/src/main/kotlin/com/majiang/transport/api/ProtocolModels.kt
+   核对 ProtocolPublicUpdate/ProtocolPublicSnapshot 的真实字段名再写键类——
+   上一个 MR 你因臆造字段/参数名返修多轮。
+2) tools/ 目录外的常规测试你无法编译验证；所有 import 对照同包既有文件
+   （如 TcpTableServerRoutingAndSubscriptionTest）逐行核对包路径。
+3) 缓存键五元组缺一不可；全量快照与增量更新不得互相命中。
+4) 编码恰好一次：命中路径绝不编码；淘汰在插入同一锁内完成。
+5) 只缓存公开流；席位流、RSP（含 requestId）、RoomInfo 帧一律不进缓存。
+6) 释放以"房间 closed"为准覆盖全部路径；服务器 close 后缓存不得残留条目。
+7) 不改变 MR-07a 通道/池/合并语义；不引入新的执行器或线程。
+8) 测试禁止真实 sleep 驱动；用既有 TcpTestClient 轮询/超时范式。
+9) 拟定默认值 KDoc 标注可配置。
+10) 交付前逐字回读全部改动文件（import、字段名、括号、KDoc 中不得出现 */
+    序列），把回读结论写进交付说明。
+
+7. 验收标准（R07b-T1～T6）
+----------------------------------------------------------------
+R07b-T1 等价性：1/8/32 观战者收到逐字节一致的公开更新；断线观战者不影响他者。
+R07b-T2 编码次数：同一条更新无论多少观战者，encodeCount 恰好 +1（N 降至 1）。
+R07b-T3 键完整性：sessionId/syncEpoch/cursor/fromCursor/isFullSnapshot 任一
+   不同不串缓存；全量与连续消息互不命中。
+R07b-T4 容量边界：条目与字节双上限 FIFO 淘汰；淘汰后已返回字节不受影响。
+R07b-T5 会话释放：房间回收/停服后 entryCount/cachedBytes 归零。
+R07b-T6 回归：既有 201 项 server 测试零回归（含观战路由/订阅/隔离）。
+
+8. 交付说明要求（ANTI-MR07B-DELIVERY.md）
+----------------------------------------------------------------
+- 改动文件清单+意图；容量配置表（拟定默认值/上限/实测值留空）；
+- 缓存键与释放路径说明；R07b-T1～T6 对照（实现位置+测试名）；
+- 陷阱清单逐条自查结论（含逐字回读）；
+- 列出需验收方运行的部分（编译/测试）。
