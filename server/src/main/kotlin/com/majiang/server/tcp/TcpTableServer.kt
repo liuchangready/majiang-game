@@ -139,6 +139,14 @@ class TcpTableServer(
     /** 获取宿主共享派发与完成线程池组引用（供测试与度量读取） */
     fun getDispatchPools(): HostDispatchPools? = hostDispatchPools
 
+    private val publicFrameCache: PublicUpdateFrameCache = PublicUpdateFrameCache(
+        maxEntries = config.publicFrameCacheMaxEntries,
+        maxBytes = config.publicFrameCacheMaxBytes
+    )
+
+    /** 获取公开流更新帧编码缓存（供测试与度量读取，MR-07b） */
+    internal fun getPublicUpdateFrameCache(): PublicUpdateFrameCache = publicFrameCache
+
     val closed: Boolean get() = isClosed.get()
 
     /**
@@ -1714,8 +1722,8 @@ class TcpTableServer(
         val capturedGen = conn.currentBindingGeneration
         room.publicSnapshotAndSubscribe({ !conn.isClosed }) { pubUpdate ->
             if (!conn.isClosingOrClosed && conn.currentBindingGeneration == capturedGen) {
-                val frame = TcpMessageCodec.toPublicUpdateFrame(pubUpdate)
-                conn.sendNormalFrame(frame.toByteArray())
+                val frameBytes = publicFrameCache.frameBytesFor(pubUpdate)
+                conn.sendNormalFrame(frameBytes)
             }
         }.whenComplete { pair, snapErr ->
             if (snapErr != null || pair == null) {
@@ -1797,6 +1805,13 @@ class TcpTableServer(
 
         leaveFuture.whenComplete { receipt, err ->
             conn.unbindToLobbyRole()
+            if (room.closed) {
+                try {
+                    val sessionId = room.tableHost.publicSessionId
+                    publicFrameCache.releaseSession(sessionId)
+                } catch (_: Throwable) {
+                }
+            }
 
             val resp = if (err != null || receipt == null) {
                 ApiResponse(requestId = req.requestId, success = false, error = ApiErrors.INTERNAL_ERROR)
@@ -1845,7 +1860,13 @@ class TcpTableServer(
         // 2. 存活房间快照读取，锁外筛选候选 (只筛选，不做最终裁决)
         val activeRooms = registry.activeRooms()
         for (room in activeRooms) {
-            if (room.closed) continue
+            if (room.closed) {
+                try {
+                    publicFrameCache.releaseSession(room.tableHost.publicSessionId)
+                } catch (_: Throwable) {
+                }
+                continue
+            }
 
             // 2.1 对账连接真值：以连接表快照为准，清除无人认领的 seatConnected 与 member.isConnected (R4 兜底)
             val aliveSeats = mutableMapOf<Int, Long>()
@@ -1909,6 +1930,13 @@ class TcpTableServer(
      */
     private fun onRoomRecycled(room: SharedRoom) {
         val roomId = room.roomId
+        // 0. 释放该会话全部公开更新帧缓存条目 (MR-07b)
+        try {
+            val sessionId = room.tableHost.publicSessionId
+            publicFrameCache.releaseSession(sessionId)
+        } catch (_: Throwable) {
+        }
+
         // 1. 注销
         registry.removeRoom(roomId)
 
@@ -1988,6 +2016,9 @@ class TcpTableServer(
             registry.close()
         } catch (_: Throwable) {
         }
+
+        // 4.1 清空公开更新帧编码缓存 (MR-07b)
+        publicFrameCache.clear()
 
         // 4.5 关闭共享派发与完成线程池 (MR-07a)
         hostDispatchPools?.let { pools ->

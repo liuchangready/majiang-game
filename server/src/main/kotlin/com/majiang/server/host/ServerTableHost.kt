@@ -147,6 +147,10 @@ class ServerTableHost @JvmOverloads constructor(
         adminSeat = adminSeat
     )
 
+    /** 公开会话 ID 只读透传（MR-07b 供公开帧缓存按会话管理与释放） */
+    internal val publicSessionId: String
+        get() = authority.sessionId
+
     // 连接与控制权控制器
     val connectionControl: ConnectionControl = ConnectionControl(
         policy = disconnectPolicy,

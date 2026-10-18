@@ -133,7 +133,13 @@ data class TcpServerConfig(
     val channelDrainBatchSize: Int = 16,
 
     /** 共享线程池组关闭最大等待截止时间（毫秒，拟定默认值，可通过服务端配置调整） */
-    val sharedPoolsCloseDeadlineMillis: Long = 1000L
+    val sharedPoolsCloseDeadlineMillis: Long = 1000L,
+
+    /** 公开更新帧缓存最大条目数（拟定默认值，可通过服务端配置调整） */
+    val publicFrameCacheMaxEntries: Int = 64,
+
+    /** 公开更新帧缓存最大字节数（拟定默认值，可通过服务端配置调整） */
+    val publicFrameCacheMaxBytes: Long = 1024L * 1024L
 ) {
     /** 房间存活巡检周期（毫秒，拟定默认值，可通过服务端配置调整） */
     val patrolIntervalMillis: Long get() = retentionPolicy.patrolIntervalMillis
@@ -159,5 +165,7 @@ data class TcpServerConfig(
         require(publicChannelCapacityBytes > 0L) { "publicChannelCapacityBytes must be > 0" }
         require(channelDrainBatchSize > 0) { "channelDrainBatchSize must be > 0" }
         require(sharedPoolsCloseDeadlineMillis > 0L) { "sharedPoolsCloseDeadlineMillis must be > 0" }
+        require(publicFrameCacheMaxEntries > 0) { "publicFrameCacheMaxEntries must be > 0" }
+        require(publicFrameCacheMaxBytes > 0L) { "publicFrameCacheMaxBytes must be > 0" }
     }
 }

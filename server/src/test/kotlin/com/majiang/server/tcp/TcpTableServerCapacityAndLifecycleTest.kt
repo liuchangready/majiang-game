@@ -538,5 +538,27 @@ class TcpTableServerCapacityAndLifecycleTest {
             assertTrue(server.lastCloseRemainingTasks >= 0, "lastCloseRemainingTasks must be recorded on shutdown")
         }
     }
+
+    @Test
+    fun `MR-07b public update frame cache initializes from config and clears on shutdown`() {
+        val server = TcpTableServer(TcpServerConfig(
+            port = 0,
+            publicFrameCacheMaxEntries = 32,
+            publicFrameCacheMaxBytes = 512L * 1024L
+        ))
+        server.start()
+
+        try {
+            val cache = server.getPublicUpdateFrameCache()
+            assertEquals(32, cache.maxEntries)
+            assertEquals(512L * 1024L, cache.maxBytes)
+            assertEquals(0, cache.entryCount)
+            assertEquals(0L, cache.cachedBytes)
+        } finally {
+            server.close()
+            assertEquals(0, server.getPublicUpdateFrameCache().entryCount)
+            assertEquals(0L, server.getPublicUpdateFrameCache().cachedBytes)
+        }
+    }
 }
 
