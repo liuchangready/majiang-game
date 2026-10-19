@@ -15,6 +15,7 @@ import com.majiang.transport.api.ProtocolRoomLifecycle
 import com.majiang.transport.tcp.TcpHello
 import com.majiang.transport.tcp.TcpMessageCodec
 import com.majiang.transport.tcp.TcpRequestEnvelope
+import com.majiang.transport.tcp.TcpWire
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertNotNull
@@ -481,7 +482,7 @@ class RoomRecyclingTest {
             var spectatorId: String
             var resumeToken: String
             TcpTestClient(port = server.boundPort).use { client1 ->
-                client1.sendFrame(TcpMessageCodec.toFrame(TcpHello(wireVersion = 1, businessVersion = 1)))
+                client1.sendFrame(TcpMessageCodec.toFrame(TcpHello(wireVersion = 1, businessVersion = TcpWire.BUSINESS_VERSION)))
                 val welcome1 = client1.expectWelcome()
 
                 val joinReq = ApiRequest(
@@ -512,7 +513,7 @@ class RoomRecyclingTest {
 
             // 2. 观战者通过 TCP 客户端 2 恢复观战 (RESUME_SPECTATOR, generation = 2)
             TcpTestClient(port = server.boundPort).use { client2 ->
-                client2.sendFrame(TcpMessageCodec.toFrame(TcpHello(wireVersion = 1, businessVersion = 1)))
+                client2.sendFrame(TcpMessageCodec.toFrame(TcpHello(wireVersion = 1, businessVersion = TcpWire.BUSINESS_VERSION)))
                 val welcome2 = client2.expectWelcome()
 
                 val resumeReq = ApiRequest(

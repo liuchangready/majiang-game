@@ -90,8 +90,13 @@ object ApiErrors {
  * 协议版本与连接终结原因常量
  */
 object ApiProtocol {
-    /** 权威协议版本号 (V4 基线) */
-    const val PROTOCOL_VERSION = 4
+    /**
+     * 权威业务协议版本号（v5：结构化算分线路）。
+     *
+     * v4 已撤回：v5 双端不再接受 v4 HELLO/WELCOME，旧端收到 VERSION_MISMATCH。
+     * MJ-TCP/1 12 字节帧格式与 `TcpWire.WIRE_VERSION = 1` 保持不变。
+     */
+    const val PROTOCOL_VERSION = 5
 
     // === 连接终结 / KICK 原因码 ===
 

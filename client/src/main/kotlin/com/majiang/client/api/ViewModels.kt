@@ -639,6 +639,99 @@ class DoraBreakdownView(
 }
 
 /**
+ * 结构化役种行视图 (YakuEntryView)
+ *
+ * [code] 是线路稳定码；未知码已由服务端契约允许，展示时必须回退 [displayName]，
+ * 绝不因未知码丢弃整条结算。
+ */
+data class YakuEntryView(
+    val code: String,
+    val displayName: String,
+    val han: Int
+)
+
+/** 结构化支付稳定码常量（与 protocol `ProtocolScoreCodes` 一致，由契约测试守卫）。 */
+object ScorePaymentCodesView {
+    const val DEALER_TSUMO = "DEALER_TSUMO"
+    const val NON_DEALER_TSUMO = "NON_DEALER_TSUMO"
+    const val DEALER_RON = "DEALER_RON"
+    const val NON_DEALER_RON = "NON_DEALER_RON"
+
+    const val DEALER = "DEALER"
+    const val NON_DEALER = "NON_DEALER"
+    const val DISCARDER = "DISCARDER"
+
+    val PAYMENT_KINDS: Set<String> = setOf(
+        DEALER_TSUMO, NON_DEALER_TSUMO, DEALER_RON, NON_DEALER_RON
+    )
+    val PAYER_ROLES: Set<String> = setOf(DEALER, NON_DEALER, DISCARDER)
+}
+
+/** 结构化支付中的单付款方分组视图。 */
+data class PaymentComponentView(
+    val payerRole: String,
+    val amount: Int,
+    val count: Int
+)
+
+/**
+ * 基础支付计划视图 (PaymentPlanView)。
+ *
+ * 只描述基础支付，不含本场棒/立直棒。客户端映射器只把“结构一致且码可解释”的计划
+ * 放入视图；未知 kind / payerRole 或总额不守恒时视图为 null，展示层回退旧
+ * `paymentLines`。
+ */
+class PaymentPlanView(
+    val kind: String,
+    components: List<PaymentComponentView>,
+    val total: Int
+) {
+    val components: List<PaymentComponentView> =
+        Collections.unmodifiableList(ArrayList(components))
+
+    init {
+        require(kind.isNotBlank()) { "PaymentPlanView.kind cannot be blank" }
+        require(this.components.isNotEmpty()) { "PaymentPlanView.components cannot be empty" }
+        require(total >= 0) { "PaymentPlanView.total cannot be negative: $total" }
+        require(total.toLong() == this.components.sumOf { it.amount.toLong() * it.count.toLong() }) {
+            "PaymentPlanView.total must equal component subtotals"
+        }
+    }
+
+    fun amountOf(payerRole: String): Int? =
+        components.firstOrNull { it.payerRole == payerRole }?.amount
+
+    fun countOf(payerRole: String): Int? =
+        components.firstOrNull { it.payerRole == payerRole }?.count
+
+    operator fun component1(): String = kind
+    operator fun component2(): List<PaymentComponentView> = components
+    operator fun component3(): Int = total
+
+    fun copy(
+        kind: String = this.kind,
+        components: List<PaymentComponentView> = this.components,
+        total: Int = this.total
+    ): PaymentPlanView = PaymentPlanView(kind, components, total)
+
+    override fun equals(other: Any?): Boolean {
+        if (this === other) return true
+        if (other !is PaymentPlanView) return false
+        return kind == other.kind && components == other.components && total == other.total
+    }
+
+    override fun hashCode(): Int {
+        var result = kind.hashCode()
+        result = 31 * result + components.hashCode()
+        result = 31 * result + total
+        return result
+    }
+
+    override fun toString(): String =
+        "PaymentPlanView(kind=$kind, components=$components, total=$total)"
+}
+
+/**
  * 算分结果明细视图 (ScoreResultView)
  */
 data class ScoreResultView(
@@ -651,7 +744,8 @@ data class ScoreResultView(
     val rawBasePoints: Int,
     val capReason: String? = null,
     val formulaText: String = "",
-    val rawBasePointsExact: String = rawBasePoints.toString()
+    val rawBasePointsExact: String = rawBasePoints.toString(),
+    val capCode: String? = null
 )
 
 /**
@@ -669,10 +763,13 @@ class ScoreBreakdownView(
     val totalPoints: Int,
     val uraEligible: Boolean,
     val isDealer: Boolean,
-    val isTsumo: Boolean
+    val isTsumo: Boolean,
+    yakuEntries: List<YakuEntryView> = emptyList(),
+    val paymentPlan: PaymentPlanView? = null
 ) {
     val yakuLines: List<Pair<String, Int>> = Collections.unmodifiableList(ArrayList(yakuLines))
     val paymentLines: List<String> = Collections.unmodifiableList(ArrayList(paymentLines))
+    val yakuEntries: List<YakuEntryView> = Collections.unmodifiableList(ArrayList(yakuEntries))
 
     operator fun component1(): List<Pair<String, Int>> = yakuLines
     operator fun component2(): Int = yakumanCount
@@ -686,6 +783,8 @@ class ScoreBreakdownView(
     operator fun component10(): Boolean = uraEligible
     operator fun component11(): Boolean = isDealer
     operator fun component12(): Boolean = isTsumo
+    operator fun component13(): List<YakuEntryView> = yakuEntries
+    operator fun component14(): PaymentPlanView? = paymentPlan
 
     fun copy(
         yakuLines: List<Pair<String, Int>> = this.yakuLines,
@@ -699,10 +798,13 @@ class ScoreBreakdownView(
         totalPoints: Int = this.totalPoints,
         uraEligible: Boolean = this.uraEligible,
         isDealer: Boolean = this.isDealer,
-        isTsumo: Boolean = this.isTsumo
+        isTsumo: Boolean = this.isTsumo,
+        yakuEntries: List<YakuEntryView> = this.yakuEntries,
+        paymentPlan: PaymentPlanView? = this.paymentPlan
     ): ScoreBreakdownView = ScoreBreakdownView(
         yakuLines, yakumanCount, dora, fu, score, paymentLines,
-        honbaAddition, riichiAddition, totalPoints, uraEligible, isDealer, isTsumo
+        honbaAddition, riichiAddition, totalPoints, uraEligible, isDealer, isTsumo,
+        yakuEntries, paymentPlan
     )
 
     override fun equals(other: Any?): Boolean = other is ScoreBreakdownView &&
@@ -710,7 +812,9 @@ class ScoreBreakdownView(
         dora == other.dora && fu == other.fu && score == other.score &&
         paymentLines == other.paymentLines && honbaAddition == other.honbaAddition &&
         riichiAddition == other.riichiAddition && totalPoints == other.totalPoints &&
-        uraEligible == other.uraEligible && isDealer == other.isDealer && isTsumo == other.isTsumo
+        uraEligible == other.uraEligible && isDealer == other.isDealer &&
+        isTsumo == other.isTsumo && yakuEntries == other.yakuEntries &&
+        paymentPlan == other.paymentPlan
 
     override fun hashCode(): Int {
         var r = yakuLines.hashCode()
@@ -725,11 +829,13 @@ class ScoreBreakdownView(
         r = 31 * r + uraEligible.hashCode()
         r = 31 * r + isDealer.hashCode()
         r = 31 * r + isTsumo.hashCode()
+        r = 31 * r + yakuEntries.hashCode()
+        r = 31 * r + (paymentPlan?.hashCode() ?: 0)
         return r
     }
 
     override fun toString(): String =
-        "ScoreBreakdownView(yakuLines=$yakuLines, yakumanCount=$yakumanCount, dora=$dora, fu=$fu, score=$score, paymentLines=$paymentLines, totalPoints=$totalPoints)"
+        "ScoreBreakdownView(yakuLines=$yakuLines, yakumanCount=$yakumanCount, dora=$dora, fu=$fu, score=$score, paymentLines=$paymentLines, totalPoints=$totalPoints, yakuEntries=$yakuEntries, paymentPlan=$paymentPlan)"
 }
 
 /**

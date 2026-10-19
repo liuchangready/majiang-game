@@ -7,6 +7,8 @@ import com.majiang.transport.api.ProtocolScoreBreakdown
 import com.majiang.transport.api.ProtocolScoreResult
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
+import org.junit.jupiter.api.Assertions.assertNull
+import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 
 /**
@@ -88,7 +90,10 @@ class ScoreLegacyViewContractTest {
         assertEquals(proto.isDealer, view.isDealer)
         assertEquals(proto.isTsumo, view.isTsumo)
 
-        // 客户端没有稳定码字段，不能凭展示名猜码或改写字串。
+        // 客户端没有结构化字段时，不能凭展示名猜码或改写字串。
         assertFalse(view.yakuLines.any { it.first == "RIICHI" })
+        assertTrue(view.yakuEntries.isEmpty())
+        assertNull(view.paymentPlan)
+        assertNull(view.score.capCode)
     }
 }

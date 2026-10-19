@@ -23,7 +23,7 @@ data class YakuEntry(
  * 支付场景稳定码
  *
  * 与 [ScoreCalculator.ScoreResult] 的四个支付函数一一对应。该码只描述支付结构，
- * 不参与当前 MJ-TCP/1 线路序列化。
+ * v5 起通过 `paymentPlan` 进入线路；旧 `paymentLines` 继续保留用于回退。
  */
 enum class PaymentKind(val code: String) {
     /** 庄家自摸：三家闲家各付 */

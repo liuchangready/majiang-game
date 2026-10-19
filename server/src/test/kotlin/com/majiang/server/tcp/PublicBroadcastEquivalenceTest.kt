@@ -34,7 +34,7 @@ class PublicBroadcastEquivalenceTest {
     }
 
     private fun createRoomWithHost(client: TcpTestClient): Pair<String, String> {
-        client.sendFrame(TcpMessageCodec.toFrame(TcpHello(wireVersion = 1, businessVersion = 1)))
+        client.sendFrame(TcpMessageCodec.toFrame(TcpHello(wireVersion = 1, businessVersion = TcpWire.BUSINESS_VERSION)))
         val welcome = client.expectWelcome()
         val reqId = "req-create-${UUID.randomUUID()}"
         val envelope = TcpRequestEnvelope(
@@ -54,7 +54,7 @@ class PublicBroadcastEquivalenceTest {
     }
 
     private fun joinSpectatorClient(client: TcpTestClient, roomId: String, spectatorName: String): String {
-        client.sendFrame(TcpMessageCodec.toFrame(TcpHello(wireVersion = 1, businessVersion = 1)))
+        client.sendFrame(TcpMessageCodec.toFrame(TcpHello(wireVersion = 1, businessVersion = TcpWire.BUSINESS_VERSION)))
         val welcome = client.expectWelcome()
         val reqId = "req-spec-${UUID.randomUUID()}"
         val envelope = TcpRequestEnvelope(

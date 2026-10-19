@@ -1,5 +1,6 @@
 package com.majiang.server.tcp
 
+import com.majiang.server.api.ApiProtocol
 import com.majiang.transport.api.ApiRequest
 import com.majiang.transport.tcp.TcpCloseReasons
 import com.majiang.transport.tcp.TcpFrame
@@ -32,12 +33,14 @@ class TcpTableServerHandshakeTest {
 
         try {
             TcpTestClient(port = server.boundPort).use { client ->
-                val hello = TcpHello(wireVersion = 1, businessVersion = 1)
+                val hello = TcpHello(wireVersion = 1, businessVersion = TcpWire.BUSINESS_VERSION)
                 client.sendFrame(TcpMessageCodec.toFrame(hello))
 
                 val welcome = client.expectWelcome()
                 assertEquals(1, welcome.wireVersion)
-                assertEquals(1, welcome.businessVersion)
+                assertEquals(TcpWire.BUSINESS_VERSION, welcome.businessVersion)
+                assertEquals(2, welcome.businessVersion)
+                assertEquals(5, ApiProtocol.PROTOCOL_VERSION)
                 assertTrue(welcome.connectionEpoch.isNotBlank())
                 assertTrue(welcome.lobbyResumeToken.startsWith("lbt-"))
                 assertTrue(welcome.lobbyScope.scope.startsWith("scope-"))
@@ -59,7 +62,7 @@ class TcpTableServerHandshakeTest {
 
         try {
             TcpTestClient(port = server.boundPort).use { client ->
-                val hello = TcpHello(wireVersion = 1, businessVersion = 1)
+                val hello = TcpHello(wireVersion = 1, businessVersion = TcpWire.BUSINESS_VERSION)
                 client.sendFrame(TcpMessageCodec.toFrame(hello))
                 val welcome = client.expectWelcome()
                 assertNotNull(welcome)
@@ -122,9 +125,34 @@ class TcpTableServerHandshakeTest {
 
         try {
             TcpTestClient(port = server.boundPort).use { client ->
-                // businessVersion = 2 不符合
-                val helloBadBiz = TcpHello(wireVersion = 1, businessVersion = 2)
+                // v5 升版后，旧业务版本 1 必须被明确拒绝；活动房间不做热迁移。
+                val helloBadBiz = TcpHello(
+                    wireVersion = TcpWire.WIRE_VERSION,
+                    businessVersion = TcpWire.BUSINESS_VERSION - 1
+                )
+                assertEquals(1, helloBadBiz.businessVersion)
                 client.sendFrame(TcpMessageCodec.toFrame(helloBadBiz))
+
+                val closeMsg = client.expectClose()
+                assertEquals(TcpCloseReasons.VERSION_MISMATCH, closeMsg.reason)
+            }
+        } finally {
+            server.close()
+        }
+    }
+
+    @Test
+    fun `UC-H05b future business version is rejected with VERSION_MISMATCH`() {
+        val server = TcpTableServer(TcpServerConfig(port = 0))
+        server.start()
+
+        try {
+            TcpTestClient(port = server.boundPort).use { client ->
+                val helloFuture = TcpHello(
+                    wireVersion = TcpWire.WIRE_VERSION,
+                    businessVersion = TcpWire.BUSINESS_VERSION + 1
+                )
+                client.sendFrame(TcpMessageCodec.toFrame(helloFuture))
 
                 val closeMsg = client.expectClose()
                 assertEquals(TcpCloseReasons.VERSION_MISMATCH, closeMsg.reason)
@@ -143,14 +171,14 @@ class TcpTableServerHandshakeTest {
             val token: String
             // 首次连接取得 token
             TcpTestClient(port = server.boundPort).use { client1 ->
-                client1.sendFrame(TcpMessageCodec.toFrame(TcpHello(wireVersion = 1, businessVersion = 1)))
+                client1.sendFrame(TcpMessageCodec.toFrame(TcpHello(wireVersion = 1, businessVersion = TcpWire.BUSINESS_VERSION)))
                 val welcome1 = client1.expectWelcome()
                 token = welcome1.lobbyResumeToken
             }
 
             // 二次连接携带 token
             TcpTestClient(port = server.boundPort).use { client2 ->
-                client2.sendFrame(TcpMessageCodec.toFrame(TcpHello(wireVersion = 1, businessVersion = 1, lobbyResumeToken = token)))
+                client2.sendFrame(TcpMessageCodec.toFrame(TcpHello(wireVersion = 1, businessVersion = TcpWire.BUSINESS_VERSION, lobbyResumeToken = token)))
                 val welcome2 = client2.expectWelcome()
                 assertEquals(token, welcome2.lobbyResumeToken)
                 assertTrue(welcome2.lobbyScope.scope.startsWith("scope-"))
@@ -169,7 +197,7 @@ class TcpTableServerHandshakeTest {
             val epochs = mutableSetOf<String>()
             for (i in 0 until 5) {
                 TcpTestClient(port = server.boundPort).use { client ->
-                    client.sendFrame(TcpMessageCodec.toFrame(TcpHello(wireVersion = 1, businessVersion = 1)))
+                    client.sendFrame(TcpMessageCodec.toFrame(TcpHello(wireVersion = 1, businessVersion = TcpWire.BUSINESS_VERSION)))
                     val welcome = client.expectWelcome()
                     assertTrue(welcome.connectionEpoch.isNotBlank())
                     epochs.add(welcome.connectionEpoch)
@@ -253,7 +281,7 @@ class TcpTableServerHandshakeTest {
 
             // 第 11 条连接建立并正常握手，必须成功收到 WELCOME，证明桶未泄漏
             TcpTestClient(port = server.boundPort).use { client ->
-                val hello = TcpHello(wireVersion = 1, businessVersion = 1)
+                val hello = TcpHello(wireVersion = 1, businessVersion = TcpWire.BUSINESS_VERSION)
                 client.sendFrame(TcpMessageCodec.toFrame(hello))
                 val welcome = client.expectWelcome()
                 assertNotNull(welcome)

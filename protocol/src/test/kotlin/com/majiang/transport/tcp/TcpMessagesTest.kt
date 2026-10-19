@@ -29,17 +29,18 @@ class TcpMessagesTest {
     @Test
     fun `UC-H01 test initial HELLO and WELCOME encode-decode roundtrip`() {
         // 首次握手（无 token）
-        val hello = TcpHello(wireVersion = 1, businessVersion = 1, lobbyResumeToken = null)
+        val hello = TcpHello(wireVersion = 1, businessVersion = TcpWire.BUSINESS_VERSION, lobbyResumeToken = null)
         val helloFrame = TcpMessageCodec.toFrame(hello)
         assertEquals(TcpWire.FRAME_TYPE_HELLO, helloFrame.type)
 
         val parsedHello = TcpMessageCodec.parseHello(helloFrame)
         assertEquals(1, parsedHello.wireVersion)
-        assertEquals(1, parsedHello.businessVersion)
+        assertEquals(TcpWire.BUSINESS_VERSION, parsedHello.businessVersion)
+        assertEquals(2, parsedHello.businessVersion)
         assertNull(parsedHello.lobbyResumeToken)
 
         // 恢复握手（携 token）
-        val resumeHello = TcpHello(wireVersion = 1, businessVersion = 1, lobbyResumeToken = "tok-1234567890abcdef")
+        val resumeHello = TcpHello(wireVersion = 1, businessVersion = TcpWire.BUSINESS_VERSION, lobbyResumeToken = "tok-1234567890abcdef")
         val resumeFrame = TcpMessageCodec.toFrame(resumeHello)
         val parsedResume = TcpMessageCodec.parseHello(resumeFrame)
         assertEquals("tok-1234567890abcdef", parsedResume.lobbyResumeToken)
@@ -47,7 +48,7 @@ class TcpMessagesTest {
         // WELCOME 应答 (D6 冻结字段)
         val welcome = TcpWelcome(
             wireVersion = 1,
-            businessVersion = 1,
+            businessVersion = TcpWire.BUSINESS_VERSION,
             connectionEpoch = "epoch-server-abc-123",
             lobbyResumeToken = "tok-server-lobby-xyz",
             lobbyScope = TcpScope(scope = "scope-lobby-001", expiresAtMillis = 1_800_000_000_000L),
@@ -63,7 +64,8 @@ class TcpMessagesTest {
 
         val parsedWelcome = TcpMessageCodec.parseWelcome(welcomeFrame)
         assertEquals(1, parsedWelcome.wireVersion)
-        assertEquals(1, parsedWelcome.businessVersion)
+        assertEquals(TcpWire.BUSINESS_VERSION, parsedWelcome.businessVersion)
+        assertEquals(2, parsedWelcome.businessVersion)
         assertEquals("epoch-server-abc-123", parsedWelcome.connectionEpoch)
         assertEquals("tok-server-lobby-xyz", parsedWelcome.lobbyResumeToken)
         assertEquals("scope-lobby-001", parsedWelcome.lobbyScope.scope)
@@ -272,7 +274,7 @@ class TcpMessagesTest {
         val jsonWithUnknown = """
             {
                 "wireVersion": 1,
-                "businessVersion": 1,
+                "businessVersion": 2,
                 "extraMaliciousField": "evil"
             }
         """.trimIndent()
@@ -320,7 +322,7 @@ class TcpMessagesTest {
         val missingFieldJson = """
             {
                 "wireVersion": 1,
-                "businessVersion": 1,
+                "businessVersion": 2,
                 "connectionEpoch": "epoch-1",
                 "lobbyScope": {"scope":"s1", "expiresAtMillis": 1000},
                 "limits": {"maxInFlightRequests":64, "requestTimeoutMillis":10000, "heartbeatIntervalMillis":3000, "idleDeadMillis":10000}

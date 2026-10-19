@@ -40,8 +40,13 @@ import com.majiang.transport.api.ProtocolPublicRoundRecord
 import com.majiang.transport.api.ProtocolPublicSessionResult
 import com.majiang.transport.api.ProtocolReceiptStatus
 import com.majiang.transport.api.ProtocolRiichiPreviewOption
+import com.majiang.transport.api.ProtocolPaymentComponent
+import com.majiang.transport.api.ProtocolPaymentPlan
+import com.majiang.transport.api.ProtocolPaymentPlanValidator
 import com.majiang.transport.api.ProtocolScoreBreakdown
+import com.majiang.transport.api.ProtocolScoreCodes
 import com.majiang.transport.api.ProtocolScoreResult
+import com.majiang.transport.api.ProtocolYakuEntry
 import com.majiang.transport.api.ProtocolRoomConfig
 import com.majiang.transport.api.ProtocolRoomInfo
 import com.majiang.transport.api.ProtocolRoomLifecycle
@@ -363,8 +368,54 @@ object ProtocolViewMapper {
         rawBasePoints = score.rawBasePoints,
         capReason = score.capReason,
         formulaText = score.formulaText,
-        rawBasePointsExact = score.rawBasePointsExact
+        rawBasePointsExact = score.rawBasePointsExact,
+        // 未知封顶码不进入视图，展示层自然回退 capReason -> title。
+        capCode = score.capCode?.takeIf { ProtocolScoreCodes.isKnownCapCode(it) }
     )
+
+    /**
+     * 只把与所有权威字段一致的支付计划放进视图。
+     *
+     * 必须同时满足：已知 kind/payerRole、四种冻结节形态、角色/人数、
+     * 金额与 basePoints 的取整公式、`totalPoints = total + honba + riichi`，
+     * 以及与旧 `paymentLines` 的逐字金额一致。任何不一致返回 null，
+     * 展示层回退旧 `paymentLines`；未知可扩展码不被当作整条快照损坏。
+     */
+    fun mapPaymentPlan(
+        plan: ProtocolPaymentPlan,
+        score: ProtocolScoreResult,
+        paymentLines: List<String>,
+        honbaAddition: Int,
+        riichiAddition: Int,
+        totalPoints: Int,
+        isDealer: Boolean,
+        isTsumo: Boolean
+    ): PaymentPlanView? {
+        if (!ProtocolPaymentPlanValidator.isConsistent(
+                plan = plan,
+                score = score,
+                paymentLines = paymentLines,
+                honbaAddition = honbaAddition,
+                riichiAddition = riichiAddition,
+                totalPoints = totalPoints,
+                isDealer = isDealer,
+                isTsumo = isTsumo
+            )
+        ) {
+            return null
+        }
+        val components = ArrayList<PaymentComponentView>(plan.components.size)
+        for (component in plan.components) {
+            components.add(
+                PaymentComponentView(
+                    payerRole = component.payerRole,
+                    amount = component.amount,
+                    count = component.count
+                )
+            )
+        }
+        return PaymentPlanView(plan.kind, components, plan.total)
+    }
 
     fun mapScoreBreakdown(sb: ProtocolScoreBreakdown): ScoreBreakdownView = ScoreBreakdownView(
         yakuLines = Collections.unmodifiableList(ArrayList(sb.yakuLines)),
@@ -378,7 +429,22 @@ object ProtocolViewMapper {
         totalPoints = sb.totalPoints,
         uraEligible = sb.uraEligible,
         isDealer = sb.isDealer,
-        isTsumo = sb.isTsumo
+        isTsumo = sb.isTsumo,
+        yakuEntries = Collections.unmodifiableList(
+            sb.yakuEntries.map { YakuEntryView(it.code, it.displayName, it.han) }
+        ),
+        paymentPlan = sb.paymentPlan?.let {
+            mapPaymentPlan(
+                plan = it,
+                score = sb.score,
+                paymentLines = sb.paymentLines,
+                honbaAddition = sb.honbaAddition,
+                riichiAddition = sb.riichiAddition,
+                totalPoints = sb.totalPoints,
+                isDealer = sb.isDealer,
+                isTsumo = sb.isTsumo
+            )
+        }
     )
 
     // ==========================================
@@ -792,7 +858,8 @@ object ProtocolViewMapper {
         resumption = caps.resumption,
         tileMarkSupported = caps.tileMarkSupported,
         sleeveBloomSupported = caps.sleeveBloomSupported,
-        beamSwapSupported = caps.beamSwapSupported
+        beamSwapSupported = caps.beamSwapSupported,
+        scoreDetailVersion = caps.scoreDetailVersion
     )
 
     fun toProtocolCapabilities(caps: Capabilities): ProtocolAccessCapabilities = ProtocolAccessCapabilities(
@@ -803,7 +870,8 @@ object ProtocolViewMapper {
         resumption = caps.resumption,
         tileMarkSupported = caps.tileMarkSupported,
         sleeveBloomSupported = caps.sleeveBloomSupported,
-        beamSwapSupported = caps.beamSwapSupported
+        beamSwapSupported = caps.beamSwapSupported,
+        scoreDetailVersion = caps.scoreDetailVersion
     )
 
     fun mapRoomSummary(room: RoomSummary): RoomSummaryView = RoomSummaryView(
@@ -958,7 +1026,18 @@ object ProtocolViewMapper {
         rawBasePoints = score.rawBasePoints,
         capReason = score.capReason,
         formulaText = score.formulaText,
-        rawBasePointsExact = score.rawBasePointsExact
+        rawBasePointsExact = score.rawBasePointsExact,
+        capCode = score.capCode
+    )
+
+    fun toProtocolPaymentPlan(plan: PaymentPlanView): ProtocolPaymentPlan = ProtocolPaymentPlan(
+        kind = plan.kind,
+        components = Collections.unmodifiableList(
+            plan.components.map {
+                ProtocolPaymentComponent(it.payerRole, it.amount, it.count)
+            }
+        ),
+        total = plan.total
     )
 
     fun toProtocolScoreBreakdown(sb: ScoreBreakdownView): ProtocolScoreBreakdown = ProtocolScoreBreakdown(
@@ -973,7 +1052,11 @@ object ProtocolViewMapper {
         totalPoints = sb.totalPoints,
         uraEligible = sb.uraEligible,
         isDealer = sb.isDealer,
-        isTsumo = sb.isTsumo
+        isTsumo = sb.isTsumo,
+        yakuEntries = Collections.unmodifiableList(
+            sb.yakuEntries.map { ProtocolYakuEntry(it.code, it.displayName, it.han) }
+        ),
+        paymentPlan = sb.paymentPlan?.let { toProtocolPaymentPlan(it) }
     )
 
     fun toProtocolGameEvent(view: GameEventView): ProtocolGameEvent = when (view) {

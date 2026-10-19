@@ -54,7 +54,7 @@ data class DoraBreakdown(
  * @property uraEligible 是否具备里宝牌资格（仅立直和牌为 true）
  * @property isDealer 是否庄家（结算时上下文）
  * @property isTsumo 是否自摸（结算时上下文）
- * @property yakuEntries 结构化役种行（稳定码 + 既有展示名 + 番数）；当前不进入线路
+ * @property yakuEntries 结构化役种行（稳定码 + 既有展示名 + 番数）；v5 起进入线路
  * @property paymentPlan 基础支付结构（由 score/isDealer/isTsumo 派生，不含本场棒与供托）
  */
 data class ScoreBreakdown(

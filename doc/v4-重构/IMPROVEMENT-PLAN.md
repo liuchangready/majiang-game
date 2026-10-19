@@ -398,7 +398,7 @@ MR-01/MR-02/MR-03 保留提交与验收记录。用户要求“先不开发”�
 
 **D-06：领域状态拆分。** 依赖 MR-09 对重复立直/一发状态的治理。先列每个字段的写入者、读取者、复制/reset 行为和物理实体归属，再按 BoardState、SeatState 与明确类型的千术状态逐块搬迁。第一阶段可保留既有受控可变模型；所有修改仍通过既有领域操作，不能让拆出的子状态成为绕过权威的新写入口。不以删除 copyFrom 或减少类行数验收，而以 136 守恒、快照隔离、终态固定、新局无残留、役种算分和出千行为等价验收。
 
-**D-07：算分格式化边界。** 当前 WinningScoreEvaluator 构造 yakuLines/paymentLines，ScoreCalculator 生成 capReason/formulaText，且文本已进入协议与客户端模型。先单独提取纯 Formatter，保持现有字段和显示结果；再为真正需要本地化/结构化消费的项目设计稳定码与数值字段。是否保留旧字段、如何处理未知码、何时切换线路契约需独立决定；不能直接删除字符串后声称只是重构。数值计算与支付结果必须逐项相等，展示迁移覆盖役满、累计役满、封顶、本场棒、立直棒和里宝牌可见性。
+**D-07：算分格式化边界。** 当前 WinningScoreEvaluator 构造 yakuLines/paymentLines，ScoreCalculator 生成 capReason/formulaText，且文本已进入协议与客户端模型。先单独提取纯 Formatter，保持现有字段和显示结果；再为真正需要本地化/结构化消费的项目设计稳定码与数值字段。是否保留旧字段、如何处理未知码、何时切换线路契约需独立决定；不能直接删除字符串后声称只是重构。数值计算与支付结果必须逐项相等，展示迁移覆盖役满、累计役满、封顶、本场棒、立直棒和里宝牌可见性。**（2026-10-19 更新：格式化职责、engine 稳定码/支付结构已完成并提交 `3f71257`；v5 线路迁移已实施：`PROTOCOL_VERSION=5`、`BUSINESS_VERSION=2`，`capCode`/`yakuEntries`/`paymentPlan`/`scoreDetailVersion` 全链贯通，v4 HELLO/WELCOME 明确拒绝；兼容/回退矩阵与验收见 `ANTI-D07-DELIVERY.md` §12。）**
 
 **D-08：TCP 请求路由与业务回执管理。** 并入 T2/T3：TcpTableServer 管理 listener/selector/资源；路由使用明确的连接与逻辑身份上下文，通过 SharedRoom/ServerTableHost 提交业务。继承 MR-03 的 FIFO、准入、跨 API 冲突和在途所有权；按 TCP 设计管理跨连接回执。取消 UDP 可靠发送追踪、ACK、seq、分片对象的拆分类任务；MR-06/07 在新边界接入。
 

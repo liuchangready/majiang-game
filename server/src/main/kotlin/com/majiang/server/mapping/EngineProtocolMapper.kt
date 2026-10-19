@@ -95,8 +95,12 @@ import com.majiang.transport.api.ProtocolRiverPosition
 import com.majiang.transport.api.ProtocolPublicRoundRecord
 import com.majiang.transport.api.ProtocolPublicSessionResult
 import com.majiang.transport.api.ProtocolReceiptStatus
+import com.majiang.transport.api.ProtocolPaymentComponent
+import com.majiang.transport.api.ProtocolPaymentPlan
 import com.majiang.transport.api.ProtocolScoreBreakdown
+import com.majiang.transport.api.ProtocolScoreCodes
 import com.majiang.transport.api.ProtocolScoreResult
+import com.majiang.transport.api.ProtocolYakuEntry
 import com.majiang.transport.api.ProtocolSeatControl
 import com.majiang.transport.api.ProtocolSessionView
 import com.majiang.transport.api.ProtocolShuffleConfig
@@ -394,7 +398,8 @@ object EngineProtocolMapper {
         resumption = caps.resumption,
         tileMarkSupported = true,
         sleeveBloomSupported = true,
-        beamSwapSupported = true
+        beamSwapSupported = true,
+        scoreDetailVersion = ProtocolScoreCodes.CONTRACT_VERSION
     )
 
     // === ClockView / SeatControlView ===
@@ -642,7 +647,27 @@ object EngineProtocolMapper {
         rawBasePoints = score.rawBasePoints,
         capReason = score.capReason,
         formulaText = score.formulaText,
-        rawBasePointsExact = score.rawBasePointsExact
+        rawBasePointsExact = score.rawBasePointsExact,
+        capCode = score.capCode
+    )
+
+    fun toProtocolYakuEntry(entry: com.majiang.rules.YakuEntry): ProtocolYakuEntry = ProtocolYakuEntry(
+        code = entry.code,
+        displayName = entry.displayName,
+        han = entry.han
+    )
+
+    fun toProtocolPaymentComponent(component: com.majiang.rules.PaymentComponent): ProtocolPaymentComponent =
+        ProtocolPaymentComponent(
+            payerRole = component.payerRole.code,
+            amount = component.amount,
+            count = component.count
+        )
+
+    fun toProtocolPaymentPlan(plan: com.majiang.rules.PaymentPlan): ProtocolPaymentPlan = ProtocolPaymentPlan(
+        kind = plan.kind.code,
+        components = Collections.unmodifiableList(plan.components.map { toProtocolPaymentComponent(it) }),
+        total = plan.total
     )
 
     fun toProtocolScoreBreakdown(breakdown: ScoreBreakdown): ProtocolScoreBreakdown = ProtocolScoreBreakdown(
@@ -657,7 +682,9 @@ object EngineProtocolMapper {
         totalPoints = breakdown.totalPoints,
         uraEligible = breakdown.uraEligible,
         isDealer = breakdown.isDealer,
-        isTsumo = breakdown.isTsumo
+        isTsumo = breakdown.isTsumo,
+        yakuEntries = Collections.unmodifiableList(breakdown.yakuEntries.map { toProtocolYakuEntry(it) }),
+        paymentPlan = toProtocolPaymentPlan(breakdown.paymentPlan)
     )
 
     // === PublicRoundRecord / PublicSessionResult / SessionView ===

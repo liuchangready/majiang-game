@@ -193,7 +193,7 @@ class TcpExecutorBudgetMeasurementTest {
         }
 
         fun handshake(): TcpWelcome {
-            sendFrame(TcpMessageCodec.toFrame(TcpHello(wireVersion = 1, businessVersion = 1)))
+            sendFrame(TcpMessageCodec.toFrame(TcpHello(wireVersion = 1, businessVersion = TcpWire.BUSINESS_VERSION)))
             val frame = receiveFrame()
             check(frame.type == TcpWire.FRAME_TYPE_WELCOME) { "Expected WELCOME, got ${frame.type}" }
             return TcpMessageCodec.parseWelcome(frame)

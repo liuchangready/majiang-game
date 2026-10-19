@@ -1081,7 +1081,15 @@ private class ProtocolScoreBreakdownAdapter : JsonDeserializer<ProtocolScoreBrea
     override fun deserialize(json: JsonElement, typeOfT: Type, context: JsonDeserializationContext): ProtocolScoreBreakdown {
         if (!json.isJsonObject) throw JsonParseException("ProtocolScoreBreakdown must be a JSON object")
         val obj = json.asJsonObject
-        checkUnknownFields(obj, setOf("yakuLines", "yakumanCount", "dora", "fu", "score", "paymentLines", "honbaAddition", "riichiAddition", "totalPoints", "uraEligible", "isDealer", "isTsumo"), "ProtocolScoreBreakdown")
+        checkUnknownFields(
+            obj,
+            setOf(
+                "yakuLines", "yakumanCount", "dora", "fu", "score", "paymentLines",
+                "honbaAddition", "riichiAddition", "totalPoints", "uraEligible", "isDealer", "isTsumo",
+                ProtocolScoreCodes.FIELD_YAKU_ENTRIES, ProtocolScoreCodes.FIELD_PAYMENT_PLAN
+            ),
+            "ProtocolScoreBreakdown"
+        )
         val yakuLinesElem = obj.get("yakuLines") ?: throw JsonParseException("Missing yakuLines in ProtocolScoreBreakdown")
         if (!yakuLinesElem.isJsonArray) throw JsonParseException("yakuLines must be an array in ProtocolScoreBreakdown")
         val arr = yakuLinesElem.asJsonArray
@@ -1095,6 +1103,47 @@ private class ProtocolScoreBreakdownAdapter : JsonDeserializer<ProtocolScoreBrea
             list.add(Pair(name, han))
         }
         val yakuLines = Collections.unmodifiableList(list)
+
+        // v5 结构化役种行：类型/上限严格；未知 code 允许。与旧 yakuLines 不一致时
+        // 丢弃结构化列表并回退旧文本，而不是拒绝整条快照。
+        val decodedYakuEntries: List<ProtocolYakuEntry> =
+            if (obj.has(ProtocolScoreCodes.FIELD_YAKU_ENTRIES) &&
+                !obj.get(ProtocolScoreCodes.FIELD_YAKU_ENTRIES).isJsonNull
+            ) {
+                val entriesElem = obj.get(ProtocolScoreCodes.FIELD_YAKU_ENTRIES)
+                if (!entriesElem.isJsonArray) {
+                    throw JsonParseException("ProtocolScoreBreakdown.yakuEntries must be an array")
+                }
+                val entriesArr = entriesElem.asJsonArray
+                if (entriesArr.size() > ProtocolScoreCodes.MAX_YAKU_ENTRIES) {
+                    throw JsonParseException(
+                        "ProtocolScoreBreakdown.yakuEntries too many: ${entriesArr.size()}"
+                    )
+                }
+                val entries = ArrayList<ProtocolYakuEntry>(entriesArr.size())
+                for (i in 0 until entriesArr.size()) {
+                    entries.add(
+                        context.deserialize<ProtocolYakuEntry>(
+                            entriesArr.get(i),
+                            ProtocolYakuEntry::class.java
+                        )
+                    )
+                }
+                Collections.unmodifiableList(entries)
+            } else {
+                emptyList()
+            }
+        val yakuEntries = if (
+            decodedYakuEntries.size == yakuLines.size &&
+            decodedYakuEntries.indices.all { i ->
+                decodedYakuEntries[i].displayName == yakuLines[i].first &&
+                    decodedYakuEntries[i].han == yakuLines[i].second
+            }
+        ) {
+            decodedYakuEntries
+        } else {
+            emptyList()
+        }
 
         val yakumanCount = validateStrictInt(obj.get("yakumanCount") ?: throw JsonParseException("Missing yakumanCount in ProtocolScoreBreakdown"), "yakumanCount")
         val doraElem = obj.get("dora") ?: throw JsonParseException("Missing dora in ProtocolScoreBreakdown")
@@ -1113,7 +1162,47 @@ private class ProtocolScoreBreakdownAdapter : JsonDeserializer<ProtocolScoreBrea
         val uraEligible = validateStrictBoolean(obj.get("uraEligible") ?: throw JsonParseException("Missing uraEligible in ProtocolScoreBreakdown"), "uraEligible")
         val isDealer = validateStrictBoolean(obj.get("isDealer") ?: throw JsonParseException("Missing isDealer in ProtocolScoreBreakdown"), "isDealer")
         val isTsumo = validateStrictBoolean(obj.get("isTsumo") ?: throw JsonParseException("Missing isTsumo in ProtocolScoreBreakdown"), "isTsumo")
-        return ProtocolScoreBreakdown(yakuLines, yakumanCount, dora, fu, score, paymentLines, honbaAddition, riichiAddition, totalPoints, uraEligible, isDealer, isTsumo)
+
+        // v5 基础支付计划：类型/上限严格。已知 kind 必须与旧权威字段
+        // （isDealer/isTsumo、角色/人数、basePoints 取整、totalPoints、paymentLines）
+        // 全部一致，否则只降级 paymentPlan，客户端回退 paymentLines，不拒绝整条快照。
+        // 未知 kind 保留原值供向前兼容审计；客户端映射会将其安全回退。
+        val decodedPaymentPlan: ProtocolPaymentPlan? =
+            if (obj.has(ProtocolScoreCodes.FIELD_PAYMENT_PLAN) &&
+                !obj.get(ProtocolScoreCodes.FIELD_PAYMENT_PLAN).isJsonNull
+            ) {
+                context.deserialize<ProtocolPaymentPlan>(
+                    obj.get(ProtocolScoreCodes.FIELD_PAYMENT_PLAN),
+                    ProtocolPaymentPlan::class.java
+                )
+            } else {
+                null
+            }
+        val paymentPlan = decodedPaymentPlan?.takeIf { plan ->
+            if (!plan.isStructurallyConsistent()) {
+                false
+            } else if (!ProtocolScoreCodes.isKnownPaymentKind(plan.kind)) {
+                // 未知可扩展码不视为损坏；保留供客户端显式回退。
+                true
+            } else {
+                ProtocolPaymentPlanValidator.isConsistent(
+                    plan = plan,
+                    score = score,
+                    paymentLines = paymentLines,
+                    honbaAddition = honbaAddition,
+                    riichiAddition = riichiAddition,
+                    totalPoints = totalPoints,
+                    isDealer = isDealer,
+                    isTsumo = isTsumo
+                )
+            }
+        }
+
+        return ProtocolScoreBreakdown(
+            yakuLines, yakumanCount, dora, fu, score, paymentLines,
+            honbaAddition, riichiAddition, totalPoints, uraEligible, isDealer, isTsumo,
+            yakuEntries, paymentPlan
+        )
     }
 }
 
@@ -1561,6 +1650,9 @@ object ApiMessageCodec {
         .registerTypeAdapter(ProtocolDoraIndicatorHit::class.java, ProtocolDoraIndicatorHitAdapter())
         .registerTypeAdapter(ProtocolDoraBreakdown::class.java, ProtocolDoraBreakdownAdapter())
         .registerTypeAdapter(ProtocolScoreBreakdown::class.java, ProtocolScoreBreakdownAdapter())
+        .registerTypeAdapter(ProtocolYakuEntry::class.java, ProtocolYakuEntryAdapter())
+        .registerTypeAdapter(ProtocolPaymentComponent::class.java, ProtocolPaymentComponentAdapter())
+        .registerTypeAdapter(ProtocolPaymentPlan::class.java, ProtocolPaymentPlanAdapter())
         .registerTypeAdapter(ProtocolPublicRoundRecord::class.java, ProtocolPublicRoundRecordAdapter())
         .registerTypeAdapter(ProtocolPublicSessionResult::class.java, ProtocolPublicSessionResultAdapter())
         .registerTypeAdapter(ProtocolSessionView::class.java, ProtocolSessionViewAdapter())

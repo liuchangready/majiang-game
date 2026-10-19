@@ -21,7 +21,7 @@ class TcpBudgetReviewTest {
             server.start()
             Socket("127.0.0.1", server.boundPort).use { socket ->
                 socket.soTimeout = 3000
-                val hello = TcpMessageCodec.toFrame(TcpHello(wireVersion = 1, businessVersion = 1))
+                val hello = TcpMessageCodec.toFrame(TcpHello(wireVersion = 1, businessVersion = TcpWire.BUSINESS_VERSION))
                 socket.getOutputStream().write(TcpFrameEncoder.encode(hello.type, hello.payload, hello.flags))
                 val decoder = TcpFrameDecoder()
                 val read = ByteArray(4096)

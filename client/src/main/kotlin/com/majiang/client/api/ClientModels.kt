@@ -286,16 +286,21 @@ class MatchConfig(
  * 客户端连接能力描述 (Capabilities)
  */
 class Capabilities(
-    val protocolVersion: Int = 4,
+    val protocolVersion: Int = 5,
     supportedPlayerCounts: Set<Int> = setOf(4),
     val remoteTransport: Boolean = false,
     val persistence: Boolean = false,
     val resumption: Boolean = true,
     val tileMarkSupported: Boolean = false,
     val sleeveBloomSupported: Boolean = false,
-    val beamSwapSupported: Boolean = false
+    val beamSwapSupported: Boolean = false,
+    val scoreDetailVersion: Int = 0
 ) {
     val supportedPlayerCounts: Set<Int> = Collections.unmodifiableSet(LinkedHashSet(supportedPlayerCounts))
+
+    init {
+        require(scoreDetailVersion >= 0) { "scoreDetailVersion cannot be negative: $scoreDetailVersion" }
+    }
 
     operator fun component1(): Int = protocolVersion
     operator fun component2(): Set<Int> = supportedPlayerCounts
@@ -305,6 +310,7 @@ class Capabilities(
     operator fun component6(): Boolean = tileMarkSupported
     operator fun component7(): Boolean = sleeveBloomSupported
     operator fun component8(): Boolean = beamSwapSupported
+    operator fun component9(): Int = scoreDetailVersion
 
     fun copy(
         protocolVersion: Int = this.protocolVersion,
@@ -314,9 +320,11 @@ class Capabilities(
         resumption: Boolean = this.resumption,
         tileMarkSupported: Boolean = this.tileMarkSupported,
         sleeveBloomSupported: Boolean = this.sleeveBloomSupported,
-        beamSwapSupported: Boolean = this.beamSwapSupported
+        beamSwapSupported: Boolean = this.beamSwapSupported,
+        scoreDetailVersion: Int = this.scoreDetailVersion
     ): Capabilities = Capabilities(
-        protocolVersion, supportedPlayerCounts, remoteTransport, persistence, resumption, tileMarkSupported, sleeveBloomSupported, beamSwapSupported
+        protocolVersion, supportedPlayerCounts, remoteTransport, persistence, resumption,
+        tileMarkSupported, sleeveBloomSupported, beamSwapSupported, scoreDetailVersion
     )
 
     override fun equals(other: Any?): Boolean {
@@ -329,7 +337,8 @@ class Capabilities(
             resumption == other.resumption &&
             tileMarkSupported == other.tileMarkSupported &&
             sleeveBloomSupported == other.sleeveBloomSupported &&
-            beamSwapSupported == other.beamSwapSupported
+            beamSwapSupported == other.beamSwapSupported &&
+            scoreDetailVersion == other.scoreDetailVersion
     }
 
     override fun hashCode(): Int {
@@ -341,11 +350,12 @@ class Capabilities(
         result = 31 * result + tileMarkSupported.hashCode()
         result = 31 * result + sleeveBloomSupported.hashCode()
         result = 31 * result + beamSwapSupported.hashCode()
+        result = 31 * result + scoreDetailVersion.hashCode()
         return result
     }
 
     override fun toString(): String =
-        "Capabilities(protocolVersion=$protocolVersion, supportedPlayerCounts=$supportedPlayerCounts, remoteTransport=$remoteTransport, persistence=$persistence, resumption=$resumption, tileMarkSupported=$tileMarkSupported, sleeveBloomSupported=$sleeveBloomSupported, beamSwapSupported=$beamSwapSupported)"
+        "Capabilities(protocolVersion=$protocolVersion, supportedPlayerCounts=$supportedPlayerCounts, remoteTransport=$remoteTransport, persistence=$persistence, resumption=$resumption, tileMarkSupported=$tileMarkSupported, sleeveBloomSupported=$sleeveBloomSupported, beamSwapSupported=$beamSwapSupported, scoreDetailVersion=$scoreDetailVersion)"
 }
 
 /**

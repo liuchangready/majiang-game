@@ -1,5 +1,7 @@
 package com.majiang.server.mapping
 
+import com.majiang.access.AccessCapabilities
+import com.majiang.client.mapping.ProtocolViewMapper
 import com.google.gson.JsonObject
 import com.majiang.model.PlayerHand
 import com.majiang.model.Suit
@@ -21,10 +23,10 @@ import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 
 /**
- * D-07 engine → server → protocol 契约守卫。
+ * D-07 engine → server → protocol 契约守卫（v5 结构化算分线路）。
  *
  * - engine 稳定码必须与 protocol 冻结码表逐项一致；
- * - 当前 v4 mapper 不得把 engine 新增的结构化字段带进线路；
+ * - server mapper 必须在 v5 输出 `capCode` / `yakuEntries` / `paymentPlan`；
  * - 既有字符串与数值字段仍逐项相等。
  */
 class ScoreCodeContractTest {
@@ -82,35 +84,87 @@ class ScoreCodeContractTest {
     }
 
     @Test
-    fun `v4 mapper emits exactly the legacy score field sets and no structured field`() {
+    fun `every cap and yakuman code survives engine server protocol and client mapping`() {
+        val calculator = ScoreCalculator.INSTANCE
+        val scores = listOf(
+            calculator.calculate(30, 2),   // uncapped
+            calculator.calculate(30, 5),   // MANGAN
+            calculator.calculate(30, 6),   // HANEMAN
+            calculator.calculate(30, 8),   // BAIMAN
+            calculator.calculate(30, 11),  // SANBAIMAN
+            calculator.calculate(30, 13),  // KAZOE_YAKUMAN
+            calculator.calculate(30, 0, 1), // YAKUMAN
+            calculator.calculate(25, 0, 2)  // double yakuman
+        )
+        for (score in scores) {
+            val proto = EngineProtocolMapper.toProtocolScoreResult(score)
+            val decoded = ApiMessageCodec.gson.fromJson(
+                ApiMessageCodec.gson.toJson(proto),
+                com.majiang.transport.api.ProtocolScoreResult::class.java
+            )
+            val view = ProtocolViewMapper.mapScoreResult(decoded)
+            assertEquals(score.capCode, view.capCode, "cap code lost for ${score.title}")
+            assertEquals(score.capReason, view.capReason)
+            assertEquals(score.title, view.title)
+            assertEquals(score.basePoints, view.basePoints)
+            assertEquals(score.isYakuman, view.isYakuman)
+            assertEquals(score.yakumanMultiplier, view.yakumanMultiplier)
+        }
+    }
+
+    @Test
+    fun `server capabilities advertise the frozen structured score detail version`() {
+        val protocol = EngineProtocolMapper.toProtocolCapabilities(
+            AccessCapabilities(protocolVersion = 5, remoteTransport = true)
+        )
+        assertEquals(5, protocol.protocolVersion)
+        assertEquals(ProtocolScoreCodes.CONTRACT_VERSION, protocol.scoreDetailVersion)
+        assertEquals(1, protocol.scoreDetailVersion)
+    }
+
+    @Test
+    fun `v5 mapper emits exactly the structured score field sets`() {
         val domain = breakdown()
         val protoScore = EngineProtocolMapper.toProtocolScoreResult(domain.score)
         val scoreJson = ApiMessageCodec.gson.toJsonTree(protoScore).asJsonObject
-        val legacyScoreKeys = setOf(
+        val v5ScoreKeys = setOf(
             "fu", "han", "basePoints", "title", "isYakuman", "yakumanMultiplier",
-            "rawBasePoints", "capReason", "formulaText", "rawBasePointsExact"
+            "rawBasePoints", "capReason", "formulaText", "rawBasePointsExact", "capCode"
         )
-        assertTrue(
-            legacyScoreKeys.containsAll(scoreJson.keySet()),
-            "v4 score result must not grow even though engine has capCode: ${scoreJson.keySet()}"
-        )
-        // Gson 默认省略 null 的 capReason；未封顶 fixture 的其余全部既有字段必须存在。
-        assertEquals(legacyScoreKeys - setOf("capReason"), scoreJson.keySet())
-        assertFalse(scoreJson.has(ProtocolScoreCodes.FIELD_CAP_CODE))
+        // 未封顶 fixture 的 capCode/capReason 为 null，Gson 省略 null；其余字段必须齐全。
+        assertEquals(v5ScoreKeys - setOf("capReason", "capCode"), scoreJson.keySet())
         assertNull(domain.score.capCode)
+
+        val capped = ScoreCalculator.INSTANCE.calculate(30, 5)
+        val cappedProto = EngineProtocolMapper.toProtocolScoreResult(capped)
+        assertEquals("MANGAN", cappedProto.capCode)
 
         val protoBreakdown = EngineProtocolMapper.toProtocolScoreBreakdown(domain)
         val breakdownJson = ApiMessageCodec.gson.toJsonTree(protoBreakdown).asJsonObject
         assertEquals(
             setOf(
                 "yakuLines", "yakumanCount", "dora", "fu", "score", "paymentLines",
-                "honbaAddition", "riichiAddition", "totalPoints", "uraEligible", "isDealer", "isTsumo"
+                "honbaAddition", "riichiAddition", "totalPoints", "uraEligible",
+                "isDealer", "isTsumo", "yakuEntries", "paymentPlan"
             ),
             breakdownJson.keySet(),
-            "v4 breakdown must not grow even though engine has yakuEntries/paymentPlan"
+            "v5 breakdown must carry the frozen structured fields"
         )
-        assertFalse(breakdownJson.has(ProtocolScoreCodes.FIELD_YAKU_ENTRIES))
-        assertFalse(breakdownJson.has(ProtocolScoreCodes.FIELD_PAYMENT_PLAN))
+        assertEquals(
+            domain.yakuEntries.map { Triple(it.code, it.displayName, it.han) },
+            protoBreakdown.yakuEntries.map { Triple(it.code, it.displayName, it.han) }
+        )
+        assertEquals(domain.paymentPlan.kind.code, protoBreakdown.paymentPlan!!.kind)
+        assertEquals(domain.paymentPlan.total, protoBreakdown.paymentPlan!!.total)
+        assertEquals(
+            domain.paymentPlan.components.map { Triple(it.payerRole.code, it.amount, it.count) },
+            protoBreakdown.paymentPlan!!.components.map { Triple(it.payerRole, it.amount, it.count) }
+        )
+        assertEquals(
+            domain.paymentPlan.components.sumOf { it.amount * it.count },
+            protoBreakdown.paymentPlan!!.components.sumOf { it.amount * it.count }
+        )
+        assertEquals(domain.paymentLines, protoBreakdown.paymentLines)
     }
 
     @Test
@@ -135,9 +189,19 @@ class ScoreCodeContractTest {
         assertEquals(domain.isDealer, proto.isDealer)
         assertEquals(domain.isTsumo, proto.isTsumo)
 
-        // 新增结构化字段只在 engine 内部可用，且必须与旧字符串一致。
+        // 新增结构化字段必须与旧字符串一致。
         assertEquals(domain.yakuEntries.map { it.displayName to it.han }, domain.yakuLines)
+        assertEquals(
+            domain.yakuEntries.map { Triple(it.code, it.displayName, it.han) },
+            proto.yakuEntries.map { Triple(it.code, it.displayName, it.han) }
+        )
         assertEquals(PaymentKind.NON_DEALER_RON, domain.paymentPlan.kind)
         assertEquals(domain.paymentPlan.total, domain.totalPoints - domain.honbaAddition - domain.riichiAddition)
+        assertEquals(domain.paymentPlan.kind.code, proto.paymentPlan!!.kind)
+        assertEquals(domain.paymentPlan.total, proto.paymentPlan!!.total)
+        assertEquals(
+            domain.paymentPlan.total,
+            proto.paymentPlan!!.components.sumOf { it.amount * it.count }
+        )
     }
 }

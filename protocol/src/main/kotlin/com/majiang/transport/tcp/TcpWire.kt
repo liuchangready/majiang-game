@@ -34,8 +34,15 @@ object TcpWire {
     /** 传输线路版本 (MJ-TCP/1) */
     const val WIRE_VERSION: Int = 1
 
-    /** 业务契约版本 */
-    const val BUSINESS_VERSION: Int = 1
+    /**
+     * 业务契约版本。
+     *
+     * v2 起携带 D-07 结构化算分字段（capCode / yakuEntries / paymentPlan /
+     * scoreDetailVersion）。双端对 HELLO/WELCOME 做硬相等校验，v1 旧业务版本
+     * 明确以 VERSION_MISMATCH 拒绝；不提供同进程 v1/v2 混发或热迁移。
+     * 传输帧格式仍为 MJ-TCP/1（[WIRE_VERSION] = 1，12 字节帧头），不因业务升版改变。
+     */
+    const val BUSINESS_VERSION: Int = 2
 
     // === 帧类型常量 (1..10) ===
 

@@ -1,6 +1,7 @@
 package com.majiang.presentation.common
 
 import com.majiang.client.api.ScoreBreakdownView
+import com.majiang.client.api.ScorePaymentCodesView
 import com.majiang.client.api.TileView
 
 /**
@@ -64,11 +65,12 @@ object SettlementDetailPresenter {
     private fun buildYakuRows(b: ScoreBreakdownView): List<SettlementDetailRow> {
         val list = mutableListOf<SettlementDetailRow>()
         val isYakuman = (b.yakumanCount > 0 || b.score.isYakuman)
+        val yakuRows = yakuDisplayRows(b)
 
         if (isYakuman) {
             val mult = if (b.yakumanCount > 0) b.yakumanCount else maxOf(1, b.score.yakumanMultiplier)
-            if (b.yakuLines.isNotEmpty()) {
-                for ((name, han) in b.yakuLines) {
+            if (yakuRows.isNotEmpty()) {
+                for ((name, han) in yakuRows) {
                     val label = if (han > 1) "$name 役满 ($han 倍)" else "$name 役满"
                     list.add(SettlementDetailRow(label))
                 }
@@ -82,11 +84,11 @@ object SettlementDetailPresenter {
                 list.add(SettlementDetailRow("宝牌提示：命中宝牌 ${b.dora.totalHan} 次 (役满达成，常规加番规则不适用，命中但不计番)"))
             }
         } else {
-            for ((name, han) in b.yakuLines) {
+            for ((name, han) in yakuRows) {
                 list.add(SettlementDetailRow("$name $han 番"))
             }
             list.add(SettlementDetailRow("【拆解说明】已选最高得点拆解方案"))
-            val yakuSubtotal = b.yakuLines.sumOf { it.second }
+            val yakuSubtotal = yakuRows.sumOf { it.second }
             list.add(SettlementDetailRow("役种番数小计：$yakuSubtotal 番"))
             list.add(
                 SettlementDetailRow(
@@ -187,6 +189,7 @@ object SettlementDetailPresenter {
         val isDealer = b.isDealer
         val isTsumo = b.isTsumo
         val rawExact = b.score.rawBasePointsExact
+        val plan = b.paymentPlan
 
         if (isYakuman) {
             val mult = if (b.yakumanCount > 0) b.yakumanCount else maxOf(1, b.score.yakumanMultiplier)
@@ -197,28 +200,31 @@ object SettlementDetailPresenter {
 
             when {
                 isDealer && isTsumo -> {
-                    val each = base * 2
+                    val each = plan?.amountOf(ScorePaymentCodesView.NON_DEALER) ?: (base * 2)
+                    val subtotal = plan?.total ?: (each * 3)
                     list.add(SettlementDetailRow("【支付倍率】庄家自摸：三家闲家各付 基本点×2 = $each 点 (向上取整至百位)"))
-                    list.add(SettlementDetailRow("基础支付合计：三家闲家各付 $each 点，基础支付小计 ${each * 3} 点"))
+                    list.add(SettlementDetailRow("基础支付合计：三家闲家各付 $each 点，基础支付小计 $subtotal 点"))
                 }
                 isDealer && !isTsumo -> {
-                    val total = base * 6
+                    val total = plan?.amountOf(ScorePaymentCodesView.DISCARDER) ?: (base * 6)
                     list.add(SettlementDetailRow("【支付倍率】庄家荣和：放铳者独付 基本点×6 = $total 点 (向上取整至百位)"))
                 }
                 !isDealer && isTsumo -> {
-                    val dealerPay = base * 2
-                    val nonDealerPay = base * 1
+                    val dealerPay = plan?.amountOf(ScorePaymentCodesView.DEALER) ?: (base * 2)
+                    val nonDealerPay = plan?.amountOf(ScorePaymentCodesView.NON_DEALER) ?: (base * 1)
+                    val subtotal = plan?.total ?: (dealerPay + nonDealerPay * 2)
                     list.add(SettlementDetailRow("【支付倍率(庄家)】闲家自摸：庄家付 基本点×2 = $dealerPay 点 (向上取整至百位)"))
                     list.add(SettlementDetailRow("【支付倍率(闲家)】闲家自摸：两闲家各付 基本点×1 = $nonDealerPay 点 (两家各付)"))
-                    list.add(SettlementDetailRow("基础支付合计：庄家 $dealerPay 点 + 闲家 $nonDealerPay × 2 点 = ${dealerPay + nonDealerPay * 2} 点"))
+                    list.add(SettlementDetailRow("基础支付合计：庄家 $dealerPay 点 + 闲家 $nonDealerPay × 2 点 = $subtotal 点"))
                 }
                 else -> {
-                    val total = base * 4
+                    val total = plan?.amountOf(ScorePaymentCodesView.DISCARDER) ?: (base * 4)
                     list.add(SettlementDetailRow("【支付倍率】闲家荣和：放铳者独付 基本点×4 = $total 点 (向上取整至百位)"))
                 }
             }
         } else {
-            val yakuSubtotal = b.yakuLines.sumOf { it.second }
+            val yakuRows = yakuDisplayRows(b)
+            val yakuSubtotal = yakuRows.sumOf { it.second }
             list.add(SettlementDetailRow("【总番组成】役种 $yakuSubtotal 番 + 宝牌 ${b.dora.totalHan} 番 = 合计 ${b.score.han} 番"))
 
             // 符数明细：Fu 逐项独立行；特例明确直接定符
@@ -264,8 +270,9 @@ object SettlementDetailPresenter {
             list.add(SettlementDetailRow("基本点计算：${b.score.fu} 符 × 2^(2 + ${b.score.han} 番)"))
             list.add(SettlementDetailRow("原始基本点：$rawExact 点"))
 
-            if (b.score.capReason != null) {
-                list.add(SettlementDetailRow("上限封顶规则：达到【${b.score.capReason}】封顶，基本点调整为 ${b.score.basePoints} 点"))
+            val capLabel = capDisplayLabel(b)
+            if (capLabel != null) {
+                list.add(SettlementDetailRow("上限封顶规则：达到【$capLabel】封顶，基本点调整为 ${b.score.basePoints} 点"))
             } else {
                 list.add(SettlementDetailRow("上限封顶规则：未达到满贯封顶线，基本点维持 ${b.score.basePoints} 点"))
             }
@@ -274,17 +281,18 @@ object SettlementDetailPresenter {
             when {
                 isDealer && isTsumo -> {
                     val rawPay = base * 2
-                    val roundPay = roundUp100(rawPay)
+                    val roundPay = plan?.amountOf(ScorePaymentCodesView.NON_DEALER) ?: roundUp100(rawPay)
+                    val subtotal = plan?.total ?: (roundPay * 3)
                     list.add(SettlementDetailRow("【支付倍率】庄家自摸：三家闲家各付 基本点×2"))
                     list.add(
                         SettlementDetailRow(
-                            "闲家支付计算：${base} × 2 = $rawPay 点 → 向上取整至百位：$roundPay 点 (三人合计 ${roundPay * 3} 点)"
+                            "闲家支付计算：${base} × 2 = $rawPay 点 → 向上取整至百位：$roundPay 点 (三人合计 $subtotal 点)"
                         )
                     )
                 }
                 isDealer && !isTsumo -> {
                     val rawPay = base * 6
-                    val roundPay = roundUp100(rawPay)
+                    val roundPay = plan?.amountOf(ScorePaymentCodesView.DISCARDER) ?: roundUp100(rawPay)
                     list.add(SettlementDetailRow("【支付倍率】庄家荣和：放铳者独付 基本点×6"))
                     list.add(
                         SettlementDetailRow(
@@ -294,20 +302,21 @@ object SettlementDetailPresenter {
                 }
                 !isDealer && isTsumo -> {
                     val rawDealer = base * 2
-                    val roundDealer = roundUp100(rawDealer)
+                    val roundDealer = plan?.amountOf(ScorePaymentCodesView.DEALER) ?: roundUp100(rawDealer)
                     val rawNonDealer = base * 1
-                    val roundNonDealer = roundUp100(rawNonDealer)
+                    val roundNonDealer = plan?.amountOf(ScorePaymentCodesView.NON_DEALER) ?: roundUp100(rawNonDealer)
+                    val subtotal = plan?.total ?: (roundDealer + roundNonDealer * 2)
                     list.add(SettlementDetailRow("【支付倍率(庄家)】庄家付 基本点×2 = $rawDealer 点 → 向上取整至百位：$roundDealer 点"))
                     list.add(SettlementDetailRow("【支付倍率(闲家)】两闲家各付 基本点×1 = $rawNonDealer 点 → 向上取整至百位：$roundNonDealer 点 (两家各付)"))
                     list.add(
                         SettlementDetailRow(
-                            "基础支付小计：庄家 $roundDealer 点 + 闲家 $roundNonDealer × 2 点 = ${roundDealer + roundNonDealer * 2} 点"
+                            "基础支付小计：庄家 $roundDealer 点 + 闲家 $roundNonDealer × 2 点 = $subtotal 点"
                         )
                     )
                 }
                 else -> {
                     val rawPay = base * 4
-                    val roundPay = roundUp100(rawPay)
+                    val roundPay = plan?.amountOf(ScorePaymentCodesView.DISCARDER) ?: roundUp100(rawPay)
                     list.add(SettlementDetailRow("【支付倍率】闲家荣和：放铳者独付 基本点×4"))
                     list.add(
                         SettlementDetailRow(
@@ -318,7 +327,18 @@ object SettlementDetailPresenter {
             }
         }
 
-        if (b.paymentLines.isNotEmpty()) {
+        if (plan != null) {
+            // v5 结构化支付：直接使用服务端下发的逐付款方金额与总额，不在展示层重算。
+            val details = plan.components.joinToString("; ") { component ->
+                val label = paymentRoleLabel(component.payerRole)
+                if (component.count > 1) {
+                    "$label 各付 ${component.amount} 点 × ${component.count} = ${component.amount * component.count} 点"
+                } else {
+                    "$label 支付 ${component.amount} 点"
+                }
+            }
+            list.add(SettlementDetailRow("基础支付分配：$details (计划合计 ${plan.total} 点)"))
+        } else if (b.paymentLines.isNotEmpty()) {
             list.add(SettlementDetailRow("基础支付分配：${b.paymentLines.joinToString("; ")}"))
         }
 
@@ -354,6 +374,43 @@ object SettlementDetailPresenter {
     // ==========================================
     // 4. 辅助工具
     // ==========================================
+
+    /**
+     * 优先使用 v5 结构化役种行；缺失时回退旧 `yakuLines`。
+     * 未知役种码的 `displayName` 已由客户端映射保留，这里只消费展示名/番数。
+     */
+    private fun yakuDisplayRows(b: ScoreBreakdownView): List<Pair<String, Int>> =
+        if (b.yakuEntries.isNotEmpty()) {
+            b.yakuEntries.map { it.displayName to it.han }
+        } else {
+            b.yakuLines
+        }
+
+    /**
+     * 优先使用 v5 封顶稳定码；未知/缺失码回退旧 `capReason`，再回退 `title`。
+     * 基本点始终读取数值字段，绝不由码推导。
+     */
+    private fun capDisplayLabel(b: ScoreBreakdownView): String? {
+        val fallback = b.score.capReason
+        return when (b.score.capCode) {
+            "MANGAN" -> "満貫封頂"
+            "HANEMAN" -> "跳満"
+            "BAIMAN" -> "倍満"
+            "SANBAIMAN" -> "三倍満"
+            "KAZOE_YAKUMAN" -> "数え役満"
+            "YAKUMAN" -> b.score.title
+            null -> fallback
+            else -> fallback ?: b.score.title
+        }
+    }
+
+    private fun paymentRoleLabel(payerRole: String): String = when (payerRole) {
+        ScorePaymentCodesView.DEALER -> "庄家"
+        ScorePaymentCodesView.NON_DEALER -> "闲家"
+        ScorePaymentCodesView.DISCARDER -> "放铳者"
+        else -> payerRole
+    }
+
     private fun roundUp100(value: Int): Int = (value + 99) / 100 * 100
 
     private fun tileName(tile: TileView): String =

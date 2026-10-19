@@ -20,6 +20,7 @@ import com.majiang.transport.tcp.TcpHello
 import com.majiang.transport.tcp.TcpMessageCodec
 import com.majiang.transport.tcp.TcpRequestEnvelope
 import com.majiang.transport.tcp.TcpScope
+import com.majiang.transport.tcp.TcpWire
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertNotEquals
@@ -1084,7 +1085,7 @@ class TcpRequestRouterAndReceiptTest {
 
             // 1. Client 1 握手建房
             TcpTestClient(port = server.boundPort).use { client1 ->
-                client1.sendFrame(TcpMessageCodec.toFrame(TcpHello(wireVersion = 1, businessVersion = 1)))
+                client1.sendFrame(TcpMessageCodec.toFrame(TcpHello(wireVersion = 1, businessVersion = TcpWire.BUSINESS_VERSION)))
                 val welcome1 = client1.expectWelcome()
                 token = welcome1.lobbyResumeToken
 
@@ -1110,7 +1111,7 @@ class TcpRequestRouterAndReceiptTest {
 
             // 2. Client 2 建立全新物理连接，使用相同 resumeToken 恢复逻辑身份
             TcpTestClient(port = server.boundPort).use { client2 ->
-                client2.sendFrame(TcpMessageCodec.toFrame(TcpHello(wireVersion = 1, businessVersion = 1, lobbyResumeToken = token)))
+                client2.sendFrame(TcpMessageCodec.toFrame(TcpHello(wireVersion = 1, businessVersion = TcpWire.BUSINESS_VERSION, lobbyResumeToken = token)))
                 val welcome2 = client2.expectWelcome()
                 assertEquals(token, welcome2.lobbyResumeToken)
 
@@ -1148,7 +1149,7 @@ class TcpRequestRouterAndReceiptTest {
 
         try {
             TcpTestClient(port = server.boundPort).use { client ->
-                client.sendFrame(TcpMessageCodec.toFrame(TcpHello(wireVersion = 1, businessVersion = 1)))
+                client.sendFrame(TcpMessageCodec.toFrame(TcpHello(wireVersion = 1, businessVersion = TcpWire.BUSINESS_VERSION)))
                 val welcome = client.expectWelcome()
 
                 // 1. 发送建房请求并获得 roleScope
@@ -1205,7 +1206,7 @@ class TcpRequestRouterAndReceiptTest {
             // 1. Host 客户端建房
             var targetRoomId: String
             TcpTestClient(port = server.boundPort).use { hostClient ->
-                hostClient.sendFrame(TcpMessageCodec.toFrame(TcpHello(wireVersion = 1, businessVersion = 1)))
+                hostClient.sendFrame(TcpMessageCodec.toFrame(TcpHello(wireVersion = 1, businessVersion = TcpWire.BUSINESS_VERSION)))
                 val welcome = hostClient.expectWelcome()
 
                 val createEnv = TcpRequestEnvelope(
@@ -1220,7 +1221,7 @@ class TcpRequestRouterAndReceiptTest {
 
                 // 2. Spectator 客户端以观战身份加入
                 TcpTestClient(port = server.boundPort).use { spectatorClient ->
-                    spectatorClient.sendFrame(TcpMessageCodec.toFrame(TcpHello(wireVersion = 1, businessVersion = 1)))
+                    spectatorClient.sendFrame(TcpMessageCodec.toFrame(TcpHello(wireVersion = 1, businessVersion = TcpWire.BUSINESS_VERSION)))
                     val specWelcome = spectatorClient.expectWelcome()
 
                     val joinSpecEnv = TcpRequestEnvelope(
@@ -1264,7 +1265,7 @@ class TcpRequestRouterAndReceiptTest {
 
         try {
             TcpTestClient(port = server.boundPort).use { client ->
-                client.sendFrame(TcpMessageCodec.toFrame(TcpHello(wireVersion = 1, businessVersion = 1)))
+                client.sendFrame(TcpMessageCodec.toFrame(TcpHello(wireVersion = 1, businessVersion = TcpWire.BUSINESS_VERSION)))
                 val welcome = client.expectWelcome()
                 val lobbyScope = welcome.lobbyScope.scope
 
@@ -1295,7 +1296,7 @@ class TcpRequestRouterAndReceiptTest {
 
             // 1. Host (seat 0) 建房
             TcpTestClient(port = server.boundPort).use { hostClient ->
-                hostClient.sendFrame(TcpMessageCodec.toFrame(TcpHello(wireVersion = 1, businessVersion = 1)))
+                hostClient.sendFrame(TcpMessageCodec.toFrame(TcpHello(wireVersion = 1, businessVersion = TcpWire.BUSINESS_VERSION)))
                 val welcome = hostClient.expectWelcome()
 
                 val createEnv = TcpRequestEnvelope(
@@ -1310,7 +1311,7 @@ class TcpRequestRouterAndReceiptTest {
 
                 // 2. 玩家 2 加入房间 (seat 1)
                 TcpTestClient(port = server.boundPort).use { p2Client ->
-                    p2Client.sendFrame(TcpMessageCodec.toFrame(TcpHello(wireVersion = 1, businessVersion = 1)))
+                    p2Client.sendFrame(TcpMessageCodec.toFrame(TcpHello(wireVersion = 1, businessVersion = TcpWire.BUSINESS_VERSION)))
                     val p2Welcome = p2Client.expectWelcome()
 
                     val joinEnv = TcpRequestEnvelope(
@@ -1350,7 +1351,7 @@ class TcpRequestRouterAndReceiptTest {
 
         try {
             TcpTestClient(port = server.boundPort).use { client ->
-                client.sendFrame(TcpMessageCodec.toFrame(TcpHello(wireVersion = 1, businessVersion = 1)))
+                client.sendFrame(TcpMessageCodec.toFrame(TcpHello(wireVersion = 1, businessVersion = TcpWire.BUSINESS_VERSION)))
                 client.expectWelcome()
 
                 // 使用未向服务端注册过的伪造 scope 发送业务请求
@@ -1400,7 +1401,7 @@ class TcpRequestRouterAndReceiptTest {
         server.start()
 
         TcpTestClient(port = server.boundPort).use { client ->
-            client.sendFrame(TcpMessageCodec.toFrame(TcpHello(wireVersion = 1, businessVersion = 1)))
+            client.sendFrame(TcpMessageCodec.toFrame(TcpHello(wireVersion = 1, businessVersion = TcpWire.BUSINESS_VERSION)))
             val welcome = client.expectWelcome()
             assertNotNull(welcome)
 
@@ -1421,7 +1422,7 @@ class TcpRequestRouterAndReceiptTest {
         try {
             TcpTestClient(port = server.boundPort).use { client ->
                 // 1. 握手获取大厅 scope
-                client.sendFrame(TcpMessageCodec.toFrame(TcpHello(wireVersion = 1, businessVersion = 1)))
+                client.sendFrame(TcpMessageCodec.toFrame(TcpHello(wireVersion = 1, businessVersion = TcpWire.BUSINESS_VERSION)))
                 val welcome = client.expectWelcome()
                 val oldLobbyScope = welcome.lobbyScope.scope
 
@@ -1477,7 +1478,7 @@ class TcpRequestRouterAndReceiptTest {
 
             // 1. Host 客户端建房
             TcpTestClient(port = server.boundPort).use { hostClient ->
-                hostClient.sendFrame(TcpMessageCodec.toFrame(TcpHello(wireVersion = 1, businessVersion = 1)))
+                hostClient.sendFrame(TcpMessageCodec.toFrame(TcpHello(wireVersion = 1, businessVersion = TcpWire.BUSINESS_VERSION)))
                 val hostWelcome = hostClient.expectWelcome()
 
                 val createReq = ApiRequest(
@@ -1493,7 +1494,7 @@ class TcpRequestRouterAndReceiptTest {
 
                 // 2. Member 客户端加入房间 (获得 seat 1 及 playerScope)
                 TcpTestClient(port = server.boundPort).use { memberClient ->
-                    memberClient.sendFrame(TcpMessageCodec.toFrame(TcpHello(wireVersion = 1, businessVersion = 1)))
+                    memberClient.sendFrame(TcpMessageCodec.toFrame(TcpHello(wireVersion = 1, businessVersion = TcpWire.BUSINESS_VERSION)))
                     val memberWelcome = memberClient.expectWelcome()
 
                     val joinReq = ApiRequest(

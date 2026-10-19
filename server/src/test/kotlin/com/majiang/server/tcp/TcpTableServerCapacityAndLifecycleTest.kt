@@ -58,7 +58,7 @@ class TcpTableServerCapacityAndLifecycleTest {
         try {
             TcpTestClient(port = server.boundPort).use { client ->
                 // 完成握手
-                client.sendFrame(TcpMessageCodec.toFrame(TcpHello(wireVersion = 1, businessVersion = 1)))
+                client.sendFrame(TcpMessageCodec.toFrame(TcpHello(wireVersion = 1, businessVersion = TcpWire.BUSINESS_VERSION)))
                 val welcome = client.expectWelcome()
                 assertNotNull(welcome)
 
@@ -117,7 +117,7 @@ class TcpTableServerCapacityAndLifecycleTest {
 
         try {
             TcpTestClient(port = server.boundPort).use { client ->
-                client.sendFrame(TcpMessageCodec.toFrame(TcpHello(wireVersion = 1, businessVersion = 1)))
+                client.sendFrame(TcpMessageCodec.toFrame(TcpHello(wireVersion = 1, businessVersion = TcpWire.BUSINESS_VERSION)))
                 val welcome = client.expectWelcome()
                 assertNotNull(welcome)
 
@@ -176,7 +176,7 @@ class TcpTableServerCapacityAndLifecycleTest {
             // 连上并完成握手 2 条
             for (i in 1..2) {
                 val c = TcpTestClient(port = server.boundPort)
-                c.sendFrame(TcpMessageCodec.toFrame(TcpHello(wireVersion = 1, businessVersion = 1)))
+                c.sendFrame(TcpMessageCodec.toFrame(TcpHello(wireVersion = 1, businessVersion = TcpWire.BUSINESS_VERSION)))
                 assertNotNull(c.expectWelcome())
                 clients.add(c)
             }
@@ -221,7 +221,7 @@ class TcpTableServerCapacityAndLifecycleTest {
         server.start()
 
         TcpTestClient(port = server.boundPort).use { client ->
-            client.sendFrame(TcpMessageCodec.toFrame(TcpHello(wireVersion = 1, businessVersion = 1)))
+            client.sendFrame(TcpMessageCodec.toFrame(TcpHello(wireVersion = 1, businessVersion = TcpWire.BUSINESS_VERSION)))
             val welcome = client.expectWelcome()
             assertNotNull(welcome)
 
@@ -242,7 +242,7 @@ class TcpTableServerCapacityAndLifecycleTest {
 
         try {
             TcpTestClient(port = server.boundPort).use { client ->
-                client.sendFrame(TcpMessageCodec.toFrame(TcpHello(wireVersion = 1, businessVersion = 1)))
+                client.sendFrame(TcpMessageCodec.toFrame(TcpHello(wireVersion = 1, businessVersion = TcpWire.BUSINESS_VERSION)))
                 val welcome = client.expectWelcome()
                 assertNotNull(welcome)
 
@@ -272,10 +272,10 @@ class TcpTableServerCapacityAndLifecycleTest {
             TcpTestClient(port = server.boundPort).use { clientA ->
                 TcpTestClient(port = server.boundPort).use { clientB ->
                     // A 和 B 分别握手
-                    clientA.sendFrame(TcpMessageCodec.toFrame(TcpHello(wireVersion = 1, businessVersion = 1)))
+                    clientA.sendFrame(TcpMessageCodec.toFrame(TcpHello(wireVersion = 1, businessVersion = TcpWire.BUSINESS_VERSION)))
                     assertNotNull(clientA.expectWelcome())
 
-                    clientB.sendFrame(TcpMessageCodec.toFrame(TcpHello(wireVersion = 1, businessVersion = 1)))
+                    clientB.sendFrame(TcpMessageCodec.toFrame(TcpHello(wireVersion = 1, businessVersion = TcpWire.BUSINESS_VERSION)))
                     assertNotNull(clientB.expectWelcome())
 
                     // A 发送一个稍大的 PING
@@ -312,7 +312,7 @@ class TcpTableServerCapacityAndLifecycleTest {
 
             // 1. 客户端握手建房
             TcpTestClient(port = server.boundPort).use { client1 ->
-                client1.sendFrame(TcpMessageCodec.toFrame(TcpHello(wireVersion = 1, businessVersion = 1)))
+                client1.sendFrame(TcpMessageCodec.toFrame(TcpHello(wireVersion = 1, businessVersion = TcpWire.BUSINESS_VERSION)))
                 val welcome1 = client1.expectWelcome()
                 lobbyToken = welcome1.lobbyResumeToken
                 lobbyScope = welcome1.lobbyScope.scope
@@ -339,7 +339,7 @@ class TcpTableServerCapacityAndLifecycleTest {
             TcpTestClient(port = server.boundPort).use { client2 ->
                 client2.sendFrame(TcpMessageCodec.toFrame(TcpHello(
                     wireVersion = 1,
-                    businessVersion = 1,
+                    businessVersion = TcpWire.BUSINESS_VERSION,
                     lobbyResumeToken = lobbyToken
                 )))
                 val welcome2 = client2.expectWelcome()
@@ -376,7 +376,7 @@ class TcpTableServerCapacityAndLifecycleTest {
             TcpTestClient(port = server.boundPort).use { client3 ->
                 client3.sendFrame(TcpMessageCodec.toFrame(TcpHello(
                     wireVersion = 1,
-                    businessVersion = 1,
+                    businessVersion = TcpWire.BUSINESS_VERSION,
                     lobbyResumeToken = lobbyToken
                 )))
                 val welcome3 = client3.expectWelcome()
@@ -427,7 +427,7 @@ class TcpTableServerCapacityAndLifecycleTest {
 
             // 1. 客户端建连握手建房成功
             TcpTestClient(port = server.boundPort).use { client1 ->
-                client1.sendFrame(TcpMessageCodec.toFrame(TcpHello(wireVersion = 1, businessVersion = 1)))
+                client1.sendFrame(TcpMessageCodec.toFrame(TcpHello(wireVersion = 1, businessVersion = TcpWire.BUSINESS_VERSION)))
                 val welcome1 = client1.expectWelcome()
                 lobbyToken = welcome1.lobbyResumeToken
                 lobbyScope = welcome1.lobbyScope.scope
@@ -471,7 +471,7 @@ class TcpTableServerCapacityAndLifecycleTest {
             TcpTestClient(port = server.boundPort).use { client2 ->
                 client2.sendFrame(TcpMessageCodec.toFrame(TcpHello(
                     wireVersion = 1,
-                    businessVersion = 1,
+                    businessVersion = TcpWire.BUSINESS_VERSION,
                     lobbyResumeToken = lobbyToken
                 )))
                 val welcome2 = client2.expectWelcome()
@@ -515,7 +515,7 @@ class TcpTableServerCapacityAndLifecycleTest {
 
             // 创建一个房间
             TcpTestClient(port = server.boundPort).use { client ->
-                client.sendFrame(TcpMessageCodec.toFrame(TcpHello(wireVersion = 1, businessVersion = 1)))
+                client.sendFrame(TcpMessageCodec.toFrame(TcpHello(wireVersion = 1, businessVersion = TcpWire.BUSINESS_VERSION)))
                 val welcome = client.expectWelcome()
                 val reqId = "req-metrics-01"
                 val envelope = TcpRequestEnvelope(
@@ -571,7 +571,7 @@ class TcpTableServerCapacityAndLifecycleTest {
 
         try {
             TcpTestClient(port = server.boundPort).use { client ->
-                client.sendFrame(TcpMessageCodec.toFrame(TcpHello(wireVersion = 1, businessVersion = 1)))
+                client.sendFrame(TcpMessageCodec.toFrame(TcpHello(wireVersion = 1, businessVersion = TcpWire.BUSINESS_VERSION)))
                 val welcome = client.expectWelcome()
                 assertNotNull(welcome)
 
@@ -616,7 +616,7 @@ class TcpTableServerCapacityAndLifecycleTest {
 
         try {
             TcpTestClient(port = server.boundPort).use { client ->
-                client.sendFrame(TcpMessageCodec.toFrame(TcpHello(wireVersion = 1, businessVersion = 1)))
+                client.sendFrame(TcpMessageCodec.toFrame(TcpHello(wireVersion = 1, businessVersion = TcpWire.BUSINESS_VERSION)))
                 val welcome = client.expectWelcome()
                 assertNotNull(welcome)
 

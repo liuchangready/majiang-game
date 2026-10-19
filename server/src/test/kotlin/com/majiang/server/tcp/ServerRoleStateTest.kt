@@ -15,6 +15,7 @@ import com.majiang.transport.tcp.TcpHello
 import com.majiang.transport.tcp.TcpMessageCodec
 import com.majiang.transport.tcp.TcpRequestEnvelope
 import com.majiang.transport.tcp.TcpScope
+import com.majiang.transport.tcp.TcpWire
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertNotNull
@@ -367,7 +368,7 @@ class ServerRoleStateTest {
 
             // Client 1: 建房并占座 0
             TcpTestClient(port = server.boundPort).use { client1 ->
-                client1.sendFrame(TcpMessageCodec.toFrame(TcpHello(wireVersion = 1, businessVersion = 1)))
+                client1.sendFrame(TcpMessageCodec.toFrame(TcpHello(wireVersion = 1, businessVersion = TcpWire.BUSINESS_VERSION)))
                 val welcome1 = client1.expectWelcome()
 
                 val createReq = ApiRequest(
@@ -384,7 +385,7 @@ class ServerRoleStateTest {
 
                 // Client 2: 通过 resumeToken 顶号重连 seat 0
                 TcpTestClient(port = server.boundPort).use { client2 ->
-                    client2.sendFrame(TcpMessageCodec.toFrame(TcpHello(wireVersion = 1, businessVersion = 1)))
+                    client2.sendFrame(TcpMessageCodec.toFrame(TcpHello(wireVersion = 1, businessVersion = TcpWire.BUSINESS_VERSION)))
                     val welcome2 = client2.expectWelcome()
 
                     val resumeReq = ApiRequest(
@@ -431,7 +432,7 @@ class ServerRoleStateTest {
 
             // 1. 玩家 1 建房
             TcpTestClient(port = server.boundPort).use { hostClient ->
-                hostClient.sendFrame(TcpMessageCodec.toFrame(TcpHello(wireVersion = 1, businessVersion = 1)))
+                hostClient.sendFrame(TcpMessageCodec.toFrame(TcpHello(wireVersion = 1, businessVersion = TcpWire.BUSINESS_VERSION)))
                 val welcome = hostClient.expectWelcome()
 
                 val createReq = ApiRequest(
@@ -447,7 +448,7 @@ class ServerRoleStateTest {
 
                 // 2. 观战者连入观战
                 TcpTestClient(port = server.boundPort).use { spectatorClient ->
-                    spectatorClient.sendFrame(TcpMessageCodec.toFrame(TcpHello(wireVersion = 1, businessVersion = 1)))
+                    spectatorClient.sendFrame(TcpMessageCodec.toFrame(TcpHello(wireVersion = 1, businessVersion = TcpWire.BUSINESS_VERSION)))
                     val specWelcome = spectatorClient.expectWelcome()
 
                     val joinSpecReq = ApiRequest(
@@ -503,7 +504,7 @@ class ServerRoleStateTest {
 
             // 1. 连接 1 建房并准备
             TcpTestClient(port = server.boundPort).use { client1 ->
-                client1.sendFrame(TcpMessageCodec.toFrame(TcpHello(wireVersion = 1, businessVersion = 1)))
+                client1.sendFrame(TcpMessageCodec.toFrame(TcpHello(wireVersion = 1, businessVersion = TcpWire.BUSINESS_VERSION)))
                 val welcome1 = client1.expectWelcome()
 
                 val createReq = ApiRequest(
@@ -532,7 +533,7 @@ class ServerRoleStateTest {
 
             // 2. 连接 2 恢复席位并重发相同的 requestId
             TcpTestClient(port = server.boundPort).use { client2 ->
-                client2.sendFrame(TcpMessageCodec.toFrame(TcpHello(wireVersion = 1, businessVersion = 1)))
+                client2.sendFrame(TcpMessageCodec.toFrame(TcpHello(wireVersion = 1, businessVersion = TcpWire.BUSINESS_VERSION)))
                 val welcome2 = client2.expectWelcome()
 
                 val resumeReq = ApiRequest(
@@ -642,7 +643,7 @@ class ServerRoleStateTest {
 
             // 1. Host 连入并建房
             TcpTestClient(port = server.boundPort).use { hostClient ->
-                hostClient.sendFrame(TcpMessageCodec.toFrame(TcpHello(wireVersion = 1, businessVersion = 1)))
+                hostClient.sendFrame(TcpMessageCodec.toFrame(TcpHello(wireVersion = 1, businessVersion = TcpWire.BUSINESS_VERSION)))
                 val hostWelcome = hostClient.expectWelcome()
 
                 val createReq = ApiRequest(
@@ -658,7 +659,7 @@ class ServerRoleStateTest {
 
                 // 2. Client 1 连入并加入观战 (代次 = 1L)
                 TcpTestClient(port = server.boundPort).use { client1 ->
-                    client1.sendFrame(TcpMessageCodec.toFrame(TcpHello(wireVersion = 1, businessVersion = 1)))
+                    client1.sendFrame(TcpMessageCodec.toFrame(TcpHello(wireVersion = 1, businessVersion = TcpWire.BUSINESS_VERSION)))
                     val welcome1 = client1.expectWelcome()
 
                     val joinReq = ApiRequest(
@@ -679,7 +680,7 @@ class ServerRoleStateTest {
 
                     // 3. Client 2 连入并执行 RESUME_SPECTATOR 顶号 (使代次递增至 2L)
                     TcpTestClient(port = server.boundPort).use { client2 ->
-                    client2.sendFrame(TcpMessageCodec.toFrame(TcpHello(wireVersion = 1, businessVersion = 1)))
+                    client2.sendFrame(TcpMessageCodec.toFrame(TcpHello(wireVersion = 1, businessVersion = TcpWire.BUSINESS_VERSION)))
                     val welcome2 = client2.expectWelcome()
 
                     val resumeReq = ApiRequest(
@@ -783,7 +784,7 @@ class ServerRoleStateTest {
             var specToken: String
 
             TcpTestClient(port = server.boundPort).use { hostClient ->
-                hostClient.sendFrame(TcpMessageCodec.toFrame(TcpHello(wireVersion = 1, businessVersion = 1)))
+                hostClient.sendFrame(TcpMessageCodec.toFrame(TcpHello(wireVersion = 1, businessVersion = TcpWire.BUSINESS_VERSION)))
                 val hostWelcome = hostClient.expectWelcome()
 
                 val createReq = ApiRequest(
@@ -798,7 +799,7 @@ class ServerRoleStateTest {
                 roomId = createRsp.response.roomId!!
 
                 TcpTestClient(port = server.boundPort).use { client1 ->
-                    client1.sendFrame(TcpMessageCodec.toFrame(TcpHello(wireVersion = 1, businessVersion = 1)))
+                    client1.sendFrame(TcpMessageCodec.toFrame(TcpHello(wireVersion = 1, businessVersion = TcpWire.BUSINESS_VERSION)))
                     val welcome1 = client1.expectWelcome()
 
                     val joinReq = ApiRequest(
@@ -814,7 +815,7 @@ class ServerRoleStateTest {
                     specToken = joinRsp.response.spectatorBinding!!.resumeToken
 
                     TcpTestClient(port = server.boundPort).use { client2 ->
-                        client2.sendFrame(TcpMessageCodec.toFrame(TcpHello(wireVersion = 1, businessVersion = 1)))
+                        client2.sendFrame(TcpMessageCodec.toFrame(TcpHello(wireVersion = 1, businessVersion = TcpWire.BUSINESS_VERSION)))
                         val welcome2 = client2.expectWelcome()
 
                         val resumeReq2 = ApiRequest(
@@ -1085,7 +1086,7 @@ class ServerRoleStateTest {
 
             // 1. Host 建房 (多人员房间)
             TcpTestClient(port = server.boundPort).use { hostClient ->
-                hostClient.sendFrame(TcpMessageCodec.toFrame(TcpHello(wireVersion = 1, businessVersion = 1)))
+                hostClient.sendFrame(TcpMessageCodec.toFrame(TcpHello(wireVersion = 1, businessVersion = TcpWire.BUSINESS_VERSION)))
                 val hostWelcome = hostClient.expectWelcome()
 
                 val createReq = ApiRequest(
@@ -1101,7 +1102,7 @@ class ServerRoleStateTest {
 
                 // 2. Client 2 连入并发送 JOIN_ROOM，随后立即强关底层 Socket
                 TcpTestClient(port = server.boundPort).use { client2 ->
-                    client2.sendFrame(TcpMessageCodec.toFrame(TcpHello(wireVersion = 1, businessVersion = 1)))
+                    client2.sendFrame(TcpMessageCodec.toFrame(TcpHello(wireVersion = 1, businessVersion = TcpWire.BUSINESS_VERSION)))
                     val welcome2 = client2.expectWelcome()
 
                     val joinReq = ApiRequest(
@@ -1271,7 +1272,7 @@ class ServerRoleStateTest {
 
             // 1. Host 建房
             TcpTestClient(port = server.boundPort).use { hostClient ->
-                hostClient.sendFrame(TcpMessageCodec.toFrame(TcpHello(wireVersion = 1, businessVersion = 1)))
+                hostClient.sendFrame(TcpMessageCodec.toFrame(TcpHello(wireVersion = 1, businessVersion = TcpWire.BUSINESS_VERSION)))
                 val hostWelcome = hostClient.expectWelcome()
 
                 val createReq = ApiRequest(
@@ -1287,7 +1288,7 @@ class ServerRoleStateTest {
 
                 // 2. Spectator client 连入并发送 JOIN_SPECTATOR，随后立即强关底层 Socket
                 TcpTestClient(port = server.boundPort).use { specClient ->
-                    specClient.sendFrame(TcpMessageCodec.toFrame(TcpHello(wireVersion = 1, businessVersion = 1)))
+                    specClient.sendFrame(TcpMessageCodec.toFrame(TcpHello(wireVersion = 1, businessVersion = TcpWire.BUSINESS_VERSION)))
                     val welcomeSpec = specClient.expectWelcome()
 
                     val joinSpecReq = ApiRequest(
