@@ -4,216 +4,56 @@ import com.majiang.economy.CheatLedgerEntry
 import com.majiang.model.*
 
 /**
- * 完整的游戏状态快照 — 纯数据容器
+ * 桌面公共状态与局况 — 纯数据容器
  *
- * 所有字段均为可变的，由权威状态机（RoundStateMachine / ApplicationCoordinator）及 TileMovement 修改。
- * 遵循 DESIGN.md 3.1：
+ * 遵循 DESIGN.md 3.1 & 3.2：
  * - 活牌山范围 [wallPointer, wallEndExclusive)
  * - 有效王牌 deadWall[rinshanPointer, size) + deadWallReplacements
- * - sleeve 按座位存储 List(4) { mutableListOf() }
- * - tilePool 与当前 GameState 深度绑定并自动审计
- *
- *  立直/一发不变量（MR-09a）：
- *  INV1 对任意席位 i：riichiDeclared[i] == players[i].riichiDeclared
- *  INV2 对任意席位 i：riichiTurn[i] == players[i].riichiTurn
- *  INV3 对任意席位 i：ippatsuActive[i] == players[i].ippatsu
- *  INV4 riichiDeclared[i] 为真蕴含 riichiTurn[i] >= 0
- *  INV5 doubleRiichiDeclared[i] 为真蕴含 riichiDeclared[i]
- *  INV6 ippatsuActive[i] 为真蕴含 riichiDeclared[i]
- *  生产代码唯一写入口：declareRiichi / setIppatsu / clearAllIppatsu。
- *  例外（状态复制管线）：copyFrom / resetForNewRound / PlayerHand.clear /
- *  PlayerHand.deepCopy / WinningScoreEvaluator.prepareEvaluationHand 镜像传播。
- *  读方清单与治理记录见 doc/v4-重构/ANTI-MR09A-DELIVERY.md。
+ * - Dora 指示牌与待翻杠 Dora 计数
+ * - 场风、局数、庄家、当前出牌玩家、巡目、阶段
+ * - 桌面供托（立直棒）与本场棒
+ * - 桌面最近动作（lastDiscard, lastDiscardPlayer, isFirstUninterruptedGo, isRinshanDraw, totalKanCount）
  */
-class GameState {
+internal class BoardState {
     // === 牌山 ===
-    /** 牌山容器（初始化或码牌后装填） */
     val wall: MutableList<Tile> = mutableListOf()
-    
-    /** 王牌区（14张：岭上牌 + Dora指示牌等） */
     val deadWall: MutableList<Tile> = mutableListOf()
-
-    /** 岭上摸牌后从活牌山末端补入王牌区的替补牌 */
     val deadWallReplacements: MutableList<Tile> = mutableListOf()
-    
-    /** 牌山摸牌指针（下一张可摸牌的位置） */
     var wallPointer: Int = 0
-    
-    /** 活牌山有效结束索引（开区间） */
     var wallEndExclusive: Int = 0
-
-    /** 岭上牌指针（0..deadWall.size） */
     var rinshanPointer: Int = 0
 
-    // === 玩家 ===
-    /** 四位玩家的手牌状态 */
-    val players: List<PlayerHand> = List(4) { PlayerHand() }
-    
-    /** 四位玩家的分数（初始25000点） */
-    val scores: IntArray = IntArray(4) { 25000 }
-
-    // === 对局信息 ===
-    /** 场风: 1=東, 2=南, 3=西, 4=北 */
+    // === 场况与局信息 ===
     var roundWind: Int = 1
-    
-    /** 局数: 0=東一局, 1=東二局, ... */
     var roundNumber: Int = 0
-    
-    /** 庄家座位 (0~3) */
     var dealerIndex: Int = 0
-    
-    /** 当前行动玩家 (0~3) */
     var currentPlayer: Int = 0
-    
-    /** 当前巡目 */
     var turnNumber: Int = 0
-    
-    /** 当前阶段 */
     var phase: GamePhase = GamePhase.STACKING
 
-    // === 立直 ===
-    /** 各玩家是否已宣言立直 */
-    val riichiDeclared: BooleanArray = BooleanArray(4) { false }
-    
-    /** 各玩家是否宣告了两立直 (Double Riichi) */
-    val doubleRiichiDeclared: BooleanArray = BooleanArray(4) { false }
-    
-    /** 各玩家宣言立直的巡目（-1=未宣言） */
-    val riichiTurn: IntArray = IntArray(4) { -1 }
-    
-    /** 一发标记 */
-    val ippatsuActive: BooleanArray = BooleanArray(4) { false }
-    
-    /** 场上立直棒数 */
+    // === 桌面供托与场棒 ===
     var riichiSticks: Int = 0
-    
-    /** 本场数（连庄/流局累积） */
     var honbaSticks: Int = 0
 
-    // === 立直/一发唯一写入口（MR-09a） ===
-
-    /** 宣言立直：一次写入桌面数组与席位镜像，并置一发标记。 */
-    fun declareRiichi(seat: Int, turn: Int, isDouble: Boolean) {
-        require(seat in 0..3) { "seat out of range: $seat" }
-        riichiDeclared[seat] = true
-        riichiTurn[seat] = turn
-        doubleRiichiDeclared[seat] = isDouble
-        ippatsuActive[seat] = true
-        players[seat].riichiDeclared = true
-        players[seat].riichiTurn = turn
-        players[seat].ippatsu = true
-    }
-
-    /** 设置或清除单席一发标记（桌面数组与席位镜像同步）。 */
-    fun setIppatsu(seat: Int, active: Boolean) {
-        require(seat in 0..3) { "seat out of range: $seat" }
-        ippatsuActive[seat] = active
-        players[seat].ippatsu = active
-    }
-
-    /** 清除全部四席一发标记（任何鸣牌/杠后调用）。 */
-    fun clearAllIppatsu() {
-        for (i in 0 until 4) setIppatsu(i, false)
-    }
-
     // === Dora ===
-    /** Dora指示牌列表 */
     val doraIndicators: MutableList<Tile> = mutableListOf()
-    
-    /** 里Dora指示牌列表 */
     val uraDoraIndicators: MutableList<Tile> = mutableListOf()
-
-    /** 待翻杠宝牌数量（大明杠/加杠成立后补牌、延迟到弃牌或后续杠成立时翻开） */
     var pendingKanDoraCount: Int = 0
 
-    // === 最后动作记录 ===
-    /** 最后被打出的牌 */
+    // === 桌面动作记录 ===
     var lastDiscard: Tile? = null
-    
-    /** 最后打牌的玩家 */
     var lastDiscardPlayer: Int = -1
-    
-    /** 是否为第一巡（用于天和/地和/两立直判定） */
     var isFirstUninterruptedGo: Boolean = true
-    
-    /** 当前是否为岭上摸牌后的和牌窗口 */
     var isRinshanDraw: Boolean = false
-    
-    /** 杠的总数（四杠散了判定） */
     var totalKanCount: Int = 0
-    
-    /** 各玩家杠的数量 */
-    val playerKanCounts: IntArray = IntArray(4) { 0 }
 
-    // === 振听状态 ===
-    /** 同巡振听标记（放弃荣和后本巡振听，在本人下次摸牌后清除） */
-    val sameTurnFuriten: BooleanArray = BooleanArray(4) { false }
-
-    /** 立直振听标记（立直后放弃任何荣和机会，终局前持续振听） */
-    val riichiFuriten: BooleanArray = BooleanArray(4) { false }
-
-    // === 物理牌池 ===
-    /** 全局物理守恒牌池 */
-    val tilePool: TilePool = TilePool()
-
-    init {
-        tilePool.gameState = this
-    }
-
-    // === 千术相关 ===
-    /** 各玩家袖中暗藏牌（出千专用），按座位存储 (0..3) */
-    val sleeveTiles: List<MutableList<Tile>> = List(4) { mutableListOf() }
-
-    /** 四位玩家的出千点数余额（初始各0点；整场归属、跨局结转，不随单局重置清零） */
-    val cheatPoints: IntArray = IntArray(4) { 0 }
-
-    /** 本局已入账的出千流水记录 */
-    val cheatEntries: MutableList<CheatLedgerEntry> = mutableListOf()
-
-    // === 袖里藏花 ===
-    /** 当前挂起的二选一；null 表示无 */
-    var sleeveBloomOffer: com.majiang.cheat.bloom.SleeveBloomOffer? = null
-
-    /** 已使用的摸牌序号（turnNumber）；每次摸牌限一次，-1 表示当前摸牌未施术 */
-    var sleeveBloomUsedOnTurn: Int = -1
-
-    /** 最近一次摸牌来源 */
-    var lastDrawKind: com.majiang.cheat.bloom.SleeveBloomDrawKind = com.majiang.cheat.bloom.SleeveBloomDrawKind.DEAL_EXTRA
-
-    // === 偷梁换柱 ===
-    /** 当前挂起的偷梁换柱选择；null 表示无 */
-    var beamSwapOffer: com.majiang.cheat.beam.BeamSwapOffer? = null
-
-    /** 已使用的摸牌序号（turnNumber）；每次摸牌与袖里藏花二选一，-1 表示当前摸牌未施术 */
-    var beamSwapUsedOnTurn: Int = -1
-
-    // === 辅助方法 ===
-    
-    /** 牌山剩余可摸牌数：活牌山开区间长度 */
     val wallRemaining: Int get() = maxOf(0, wallEndExclusive - wallPointer)
-    
-    /** 获取下一位玩家（逆时针 0→1→2→3→0） */
+
     fun nextPlayer(current: Int = currentPlayer): Int = (current + 1) % 4
-    
-    /** 获取上家 */
     fun prevPlayer(current: Int = currentPlayer): Int = (current + 3) % 4
-    
-    /** 获取对家 */
     fun acrossPlayer(current: Int = currentPlayer): Int = (current + 2) % 4
-    
-    /** 获取玩家的自风 (1=東, 2=南, 3=西, 4=北) */
     fun seatWind(player: Int): Int = ((player - dealerIndex + 4) % 4) + 1
 
-    /** 获取指定座位的袖中牌（便利方法） */
-    fun getSleeve(player: Int): MutableList<Tile> = sleeveTiles[player]
-
-    /**
-     * 重置为新一局。
-     *
-     * 保留整场归属的账本字段（scores / riichiSticks / honbaSticks / cheatPoints）：
-     * 出千点数余额由 MatchSession.betweenRoundCheatPoints 在局间交接并写入新局，
-     * 不得随单局重置清零；仅本局流水 cheatEntries 与物理状态（牌山/手牌/袖牌）按局清空。
-     */
     fun resetForNewRound() {
         wall.clear()
         deadWall.clear()
@@ -221,15 +61,6 @@ class GameState {
         wallPointer = 0
         wallEndExclusive = 0
         rinshanPointer = 0
-        for (hand in players) {
-            hand.clear()
-        }
-        riichiDeclared.fill(false)
-        doubleRiichiDeclared.fill(false)
-        riichiTurn.fill(-1)
-        ippatsuActive.fill(false)
-        sameTurnFuriten.fill(false)
-        riichiFuriten.fill(false)
         doraIndicators.clear()
         uraDoraIndicators.clear()
         pendingKanDoraCount = 0
@@ -238,32 +69,12 @@ class GameState {
         isFirstUninterruptedGo = true
         isRinshanDraw = false
         totalKanCount = 0
-        playerKanCounts.fill(0)
-        sleeveTiles.forEach { it.clear() }
-        cheatEntries.clear()
-        sleeveBloomOffer = null
-        sleeveBloomUsedOnTurn = -1
-        beamSwapOffer = null
-        beamSwapUsedOnTurn = -1
-        lastDrawKind = com.majiang.cheat.bloom.SleeveBloomDrawKind.DEAL_EXTRA
         turnNumber = 0
         phase = GamePhase.STACKING
-        tilePool.initializeAll(Zone.UNASSIGNED)
+        // roundWind, roundNumber, dealerIndex, currentPlayer, riichiSticks, honbaSticks are PRESERVED!
     }
 
-    /**
-     * 完整深拷贝，供事务执行、状态审计与无副作用探测
-     */
-    fun deepCopy(): GameState {
-        val copy = GameState()
-        copy.copyFrom(this)
-        return copy
-    }
-
-    /**
-     * 从另一个 GameState 完整拷贝状态数据到当前对象中，保持当前对象的引用不变
-     */
-    fun copyFrom(other: GameState) {
+    fun copyFrom(other: BoardState) {
         this.wall.clear()
         this.wall.addAll(other.wall)
         this.deadWall.clear()
@@ -273,36 +84,6 @@ class GameState {
         this.wallPointer = other.wallPointer
         this.wallEndExclusive = other.wallEndExclusive
         this.rinshanPointer = other.rinshanPointer
-
-        for (i in 0 until 4) {
-            val srcHand = other.players[i]
-            val dstHand = this.players[i]
-            dstHand.clear()
-            dstHand.closedTiles.addAll(srcHand.closedTiles)
-            dstHand.melds.addAll(srcHand.melds.map { it.copy(tiles = it.tiles.toList()) })
-            dstHand.discards.addAll(srcHand.discards)
-            dstHand.discardHistory.addAll(srcHand.discardHistory)
-            dstHand.drawnTile = srcHand.drawnTile
-            dstHand.riichiDeclared = srcHand.riichiDeclared
-            dstHand.riichiTurn = srcHand.riichiTurn
-            dstHand.ippatsu = srcHand.ippatsu
-
-            this.scores[i] = other.scores[i]
-            this.riichiDeclared[i] = other.riichiDeclared[i]
-            this.doubleRiichiDeclared[i] = other.doubleRiichiDeclared[i]
-            this.riichiTurn[i] = other.riichiTurn[i]
-            this.ippatsuActive[i] = other.ippatsuActive[i]
-            this.playerKanCounts[i] = other.playerKanCounts[i]
-            this.sameTurnFuriten[i] = other.sameTurnFuriten[i]
-            this.riichiFuriten[i] = other.riichiFuriten[i]
-
-            this.sleeveTiles[i].clear()
-            this.sleeveTiles[i].addAll(other.sleeveTiles[i])
-            this.cheatPoints[i] = other.cheatPoints[i]
-        }
-
-        this.cheatEntries.clear()
-        this.cheatEntries.addAll(other.cheatEntries.map { it.copy() })
 
         this.roundWind = other.roundWind
         this.roundNumber = other.roundNumber
@@ -324,28 +105,413 @@ class GameState {
         this.isFirstUninterruptedGo = other.isFirstUninterruptedGo
         this.isRinshanDraw = other.isRinshanDraw
         this.totalKanCount = other.totalKanCount
+    }
 
-        this.sleeveBloomOffer = other.sleeveBloomOffer?.copy()
-        this.sleeveBloomUsedOnTurn = other.sleeveBloomUsedOnTurn
-        this.beamSwapOffer = other.beamSwapOffer?.copy()
-        this.beamSwapUsedOnTurn = other.beamSwapUsedOnTurn
+    fun deepCopy(): BoardState {
+        val copy = BoardState()
+        copy.copyFrom(this)
+        return copy
+    }
+}
+
+/**
+ * 单席位专属状态容器
+ *
+ * 封装四位玩家各席位 (0..3) 的私有与席位级状态：
+ * - hand: PlayerHand（手牌、摸牌、副露、弃牌、弃牌历史）
+ * - score: 玩家分数（初始 25000 点，整场保留）
+ * - riichiDeclared, doubleRiichiDeclared, riichiTurn, ippatsuActive（立直与一发状态）
+ * - sameTurnFuriten, riichiFuriten（振听状态）
+ * - kanCount: 席位开杠计数
+ *
+ * 立直/一发镜像不变量（MR-09a）：
+ * 宣言立直与一发变更通过 declareRiichi / setIppatsu 入口同步写入 SeatState 与 PlayerHand。
+ */
+internal class SeatState(
+    val seat: Int,
+    private val scoresRef: IntArray = IntArray(4) { 25000 },
+    private val riichiDeclaredRef: BooleanArray = BooleanArray(4) { false },
+    private val doubleRiichiDeclaredRef: BooleanArray = BooleanArray(4) { false },
+    private val riichiTurnRef: IntArray = IntArray(4) { -1 },
+    private val ippatsuActiveRef: BooleanArray = BooleanArray(4) { false },
+    private val playerKanCountsRef: IntArray = IntArray(4) { 0 },
+    private val sameTurnFuritenRef: BooleanArray = BooleanArray(4) { false },
+    private val riichiFuritenRef: BooleanArray = BooleanArray(4) { false }
+) {
+    val hand: PlayerHand = PlayerHand()
+
+    var score: Int
+        get() = scoresRef[seat]
+        set(value) { scoresRef[seat] = value }
+
+    // 立直与一发状态：禁止外部直接写，强制经由 declareRiichi 与 setIppatsu 入口
+    val riichiDeclared: Boolean
+        get() = riichiDeclaredRef[seat]
+
+    val doubleRiichiDeclared: Boolean
+        get() = doubleRiichiDeclaredRef[seat]
+
+    val riichiTurn: Int
+        get() = riichiTurnRef[seat]
+
+    val ippatsuActive: Boolean
+        get() = ippatsuActiveRef[seat]
+
+    var kanCount: Int
+        get() = playerKanCountsRef[seat]
+        set(value) { playerKanCountsRef[seat] = value }
+
+    var sameTurnFuriten: Boolean
+        get() = sameTurnFuritenRef[seat]
+        set(value) { sameTurnFuritenRef[seat] = value }
+
+    var riichiFuriten: Boolean
+        get() = riichiFuritenRef[seat]
+        set(value) { riichiFuritenRef[seat] = value }
+
+    fun declareRiichi(turn: Int, isDouble: Boolean) {
+        riichiDeclaredRef[seat] = true
+        riichiTurnRef[seat] = turn
+        doubleRiichiDeclaredRef[seat] = isDouble
+        ippatsuActiveRef[seat] = true
+        hand.riichiDeclared = true
+        hand.riichiTurn = turn
+        hand.ippatsu = true
+    }
+
+    fun setIppatsu(active: Boolean) {
+        ippatsuActiveRef[seat] = active
+        hand.ippatsu = active
+    }
+
+    fun resetForNewRound() {
+        hand.clear()
+        riichiDeclaredRef[seat] = false
+        doubleRiichiDeclaredRef[seat] = false
+        riichiTurnRef[seat] = -1
+        ippatsuActiveRef[seat] = false
+        sameTurnFuritenRef[seat] = false
+        riichiFuritenRef[seat] = false
+        playerKanCountsRef[seat] = 0
+        // score is PRESERVED!
+    }
+
+    fun copyFrom(other: SeatState) {
+        hand.clear()
+        hand.closedTiles.addAll(other.hand.closedTiles)
+        hand.melds.addAll(other.hand.melds.map { it.copy(tiles = it.tiles.toList()) })
+        hand.discards.addAll(other.hand.discards)
+        hand.discardHistory.addAll(other.hand.discardHistory)
+        hand.drawnTile = other.hand.drawnTile
+        hand.riichiDeclared = other.hand.riichiDeclared
+        hand.riichiTurn = other.hand.riichiTurn
+        hand.ippatsu = other.hand.ippatsu
+
+        this.score = other.score
+        this.riichiDeclaredRef[seat] = other.riichiDeclared
+        this.doubleRiichiDeclaredRef[seat] = other.doubleRiichiDeclared
+        this.riichiTurnRef[seat] = other.riichiTurn
+        this.ippatsuActiveRef[seat] = other.ippatsuActive
+        this.sameTurnFuriten = other.sameTurnFuriten
+        this.riichiFuriten = other.riichiFuriten
+        this.kanCount = other.kanCount
+    }
+
+    fun deepCopy(): SeatState {
+        val copy = SeatState(seat)
+        copy.copyFrom(this)
+        return copy
+    }
+}
+
+/**
+ * 袖里藏花挂起状态
+ */
+internal class SleeveBloomState {
+    var offer: com.majiang.cheat.bloom.SleeveBloomOffer? = null
+    var usedOnTurn: Int = -1
+    var lastDrawKind: com.majiang.cheat.bloom.SleeveBloomDrawKind = com.majiang.cheat.bloom.SleeveBloomDrawKind.DEAL_EXTRA
+
+    fun resetForNewRound() {
+        offer = null
+        usedOnTurn = -1
+        lastDrawKind = com.majiang.cheat.bloom.SleeveBloomDrawKind.DEAL_EXTRA
+    }
+
+    fun copyFrom(other: SleeveBloomState) {
+        this.offer = other.offer?.copy()
+        this.usedOnTurn = other.usedOnTurn
         this.lastDrawKind = other.lastDrawKind
+    }
 
-        // 深度复制 tilePool
+    fun deepCopy(): SleeveBloomState {
+        val copy = SleeveBloomState()
+        copy.copyFrom(this)
+        return copy
+    }
+}
+
+/**
+ * 偷梁换柱挂起状态
+ */
+internal class BeamSwapState {
+    var offer: com.majiang.cheat.beam.BeamSwapOffer? = null
+    var usedOnTurn: Int = -1
+
+    fun resetForNewRound() {
+        offer = null
+        usedOnTurn = -1
+    }
+
+    fun copyFrom(other: BeamSwapState) {
+        this.offer = other.offer?.copy()
+        this.usedOnTurn = other.usedOnTurn
+    }
+
+    fun deepCopy(): BeamSwapState {
+        val copy = BeamSwapState()
+        copy.copyFrom(this)
+        return copy
+    }
+}
+
+/**
+ * 出千体系状态容器
+ *
+ * 遵循三大绝技与出千账本规范：
+ * - sleeveTiles: 各席位袖中暗藏牌 (0..3)，物理守恒由 TilePool 追踪
+ * - cheatPoints: 四位玩家出千点数余额（整场保留，跨局结转）
+ * - cheatEntries: 本局已入账的出千流水记录
+ * - sleeveBloom: 袖里藏花状态
+ * - beamSwap: 偷梁换柱状态
+ */
+internal class CheatState {
+    val sleeveTiles: List<MutableList<Tile>> = List(4) { mutableListOf() }
+    val cheatPoints: IntArray = IntArray(4) { 0 }
+    val cheatEntries: MutableList<CheatLedgerEntry> = mutableListOf()
+    val sleeveBloom: SleeveBloomState = SleeveBloomState()
+    val beamSwap: BeamSwapState = BeamSwapState()
+
+    var sleeveBloomOffer: com.majiang.cheat.bloom.SleeveBloomOffer?
+        get() = sleeveBloom.offer
+        set(value) { sleeveBloom.offer = value }
+
+    var sleeveBloomUsedOnTurn: Int
+        get() = sleeveBloom.usedOnTurn
+        set(value) { sleeveBloom.usedOnTurn = value }
+
+    var lastDrawKind: com.majiang.cheat.bloom.SleeveBloomDrawKind
+        get() = sleeveBloom.lastDrawKind
+        set(value) { sleeveBloom.lastDrawKind = value }
+
+    var beamSwapOffer: com.majiang.cheat.beam.BeamSwapOffer?
+        get() = beamSwap.offer
+        set(value) { beamSwap.offer = value }
+
+    var beamSwapUsedOnTurn: Int
+        get() = beamSwap.usedOnTurn
+        set(value) { beamSwap.usedOnTurn = value }
+
+    fun getSleeve(player: Int): MutableList<Tile> = sleeveTiles[player]
+
+    fun resetForNewRound() {
+        sleeveTiles.forEach { it.clear() }
+        cheatEntries.clear()
+        sleeveBloom.resetForNewRound()
+        beamSwap.resetForNewRound()
+        // cheatPoints is PRESERVED!
+    }
+
+    fun copyFrom(other: CheatState) {
+        for (i in 0 until 4) {
+            this.sleeveTiles[i].clear()
+            this.sleeveTiles[i].addAll(other.sleeveTiles[i])
+            this.cheatPoints[i] = other.cheatPoints[i]
+        }
+        this.cheatEntries.clear()
+        this.cheatEntries.addAll(other.cheatEntries.map { it.copy() })
+        this.sleeveBloom.copyFrom(other.sleeveBloom)
+        this.beamSwap.copyFrom(other.beamSwap)
+    }
+
+    fun deepCopy(): CheatState {
+        val copy = CheatState()
+        copy.copyFrom(this)
+        return copy
+    }
+}
+
+/**
+ * 完整的游戏状态聚合根 — 组合 BoardState、SeatState、CheatState 与 TilePool
+ *
+ * 遵循 V4 架构领域规范与 D-06 状态拆分设计：
+ * - 明确状态拥有者：board 拥有牌山/王牌/指示牌/局况/供托；seats 拥有四席手牌/点数/立直/振听/开杠；cheat 拥有袖牌/点数/流水/绝技挂起；tilePool 拥有 136 张牌全局守恒位置。
+ * - 保持 MR-09a 镜像不变量 (INV1~INV6)。
+ * - 所有修改经既有领域操作与权威流程执行，不向外部暴露无监管可变子状态。
+ * - 显式维护 copyFrom、deepCopy 与 resetForNewRound 治理。
+ */
+class GameState() {
+    private val board: BoardState = BoardState()
+    val scores: IntArray = IntArray(4) { 25000 }
+    val riichiDeclared: BooleanArray = BooleanArray(4) { false }
+    val doubleRiichiDeclared: BooleanArray = BooleanArray(4) { false }
+    val riichiTurn: IntArray = IntArray(4) { -1 }
+    val ippatsuActive: BooleanArray = BooleanArray(4) { false }
+    val playerKanCounts: IntArray = IntArray(4) { 0 }
+    val sameTurnFuriten: BooleanArray = BooleanArray(4) { false }
+    val riichiFuriten: BooleanArray = BooleanArray(4) { false }
+    private val seats: List<SeatState> = List(4) {
+        SeatState(it, scores, riichiDeclared, doubleRiichiDeclared, riichiTurn, ippatsuActive, playerKanCounts, sameTurnFuriten, riichiFuriten)
+    }
+    private val cheat: CheatState = CheatState()
+
+    // === 物理牌池 ===
+    val tilePool: TilePool = TilePool()
+
+    init {
+        tilePool.gameState = this
+    }
+
+    // === 席位视图代理与便利访问 ===
+    val players: List<PlayerHand> = List(4) { seats[it].hand }
+
+    // === 牌山与局况 (BoardState 委托) ===
+    val wall: MutableList<Tile> get() = board.wall
+    val deadWall: MutableList<Tile> get() = board.deadWall
+    val deadWallReplacements: MutableList<Tile> get() = board.deadWallReplacements
+    var wallPointer: Int
+        get() = board.wallPointer
+        set(value) { board.wallPointer = value }
+    var wallEndExclusive: Int
+        get() = board.wallEndExclusive
+        set(value) { board.wallEndExclusive = value }
+    var rinshanPointer: Int
+        get() = board.rinshanPointer
+        set(value) { board.rinshanPointer = value }
+
+    var roundWind: Int
+        get() = board.roundWind
+        set(value) { board.roundWind = value }
+    var roundNumber: Int
+        get() = board.roundNumber
+        set(value) { board.roundNumber = value }
+    var dealerIndex: Int
+        get() = board.dealerIndex
+        set(value) { board.dealerIndex = value }
+    var currentPlayer: Int
+        get() = board.currentPlayer
+        set(value) { board.currentPlayer = value }
+    var turnNumber: Int
+        get() = board.turnNumber
+        set(value) { board.turnNumber = value }
+    var phase: GamePhase
+        get() = board.phase
+        set(value) { board.phase = value }
+
+    var riichiSticks: Int
+        get() = board.riichiSticks
+        set(value) { board.riichiSticks = value }
+    var honbaSticks: Int
+        get() = board.honbaSticks
+        set(value) { board.honbaSticks = value }
+
+    val doraIndicators: MutableList<Tile> get() = board.doraIndicators
+    val uraDoraIndicators: MutableList<Tile> get() = board.uraDoraIndicators
+    var pendingKanDoraCount: Int
+        get() = board.pendingKanDoraCount
+        set(value) { board.pendingKanDoraCount = value }
+
+    var lastDiscard: Tile?
+        get() = board.lastDiscard
+        set(value) { board.lastDiscard = value }
+    var lastDiscardPlayer: Int
+        get() = board.lastDiscardPlayer
+        set(value) { board.lastDiscardPlayer = value }
+    var isFirstUninterruptedGo: Boolean
+        get() = board.isFirstUninterruptedGo
+        set(value) { board.isFirstUninterruptedGo = value }
+    var isRinshanDraw: Boolean
+        get() = board.isRinshanDraw
+        set(value) { board.isRinshanDraw = value }
+    var totalKanCount: Int
+        get() = board.totalKanCount
+        set(value) { board.totalKanCount = value }
+
+    val wallRemaining: Int get() = board.wallRemaining
+
+    fun nextPlayer(current: Int = currentPlayer): Int = board.nextPlayer(current)
+    fun prevPlayer(current: Int = currentPlayer): Int = board.prevPlayer(current)
+    fun acrossPlayer(current: Int = currentPlayer): Int = board.acrossPlayer(current)
+    fun seatWind(player: Int): Int = board.seatWind(player)
+
+    // === 出千系统 (CheatState 委托) ===
+    val sleeveTiles: List<MutableList<Tile>> get() = cheat.sleeveTiles
+    val cheatPoints: IntArray get() = cheat.cheatPoints
+    val cheatEntries: MutableList<CheatLedgerEntry> get() = cheat.cheatEntries
+
+    var sleeveBloomOffer: com.majiang.cheat.bloom.SleeveBloomOffer?
+        get() = cheat.sleeveBloomOffer
+        set(value) { cheat.sleeveBloomOffer = value }
+    var sleeveBloomUsedOnTurn: Int
+        get() = cheat.sleeveBloomUsedOnTurn
+        set(value) { cheat.sleeveBloomUsedOnTurn = value }
+    var lastDrawKind: com.majiang.cheat.bloom.SleeveBloomDrawKind
+        get() = cheat.lastDrawKind
+        set(value) { cheat.lastDrawKind = value }
+
+    var beamSwapOffer: com.majiang.cheat.beam.BeamSwapOffer?
+        get() = cheat.beamSwapOffer
+        set(value) { cheat.beamSwapOffer = value }
+    var beamSwapUsedOnTurn: Int
+        get() = cheat.beamSwapUsedOnTurn
+        set(value) { cheat.beamSwapUsedOnTurn = value }
+
+    fun getSleeve(player: Int): MutableList<Tile> = cheat.getSleeve(player)
+
+    // === 立直/一发唯一写入口（MR-09a） ===
+    fun declareRiichi(seat: Int, turn: Int, isDouble: Boolean) {
+        require(seat in 0..3) { "seat out of range: $seat" }
+        seats[seat].declareRiichi(turn, isDouble)
+    }
+
+    fun setIppatsu(seat: Int, active: Boolean) {
+        require(seat in 0..3) { "seat out of range: $seat" }
+        seats[seat].setIppatsu(active)
+    }
+
+    fun clearAllIppatsu() {
+        for (i in 0 until 4) seats[i].setIppatsu(false)
+    }
+
+    fun resetForNewRound() {
+        board.resetForNewRound()
+        for (seat in seats) {
+            seat.resetForNewRound()
+        }
+        cheat.resetForNewRound()
+        tilePool.initializeAll(Zone.UNASSIGNED)
+    }
+
+    fun copyFrom(other: GameState) {
+        this.board.copyFrom(other.board)
+        for (i in 0 until 4) {
+            this.seats[i].copyFrom(other.seats[i])
+        }
+        this.cheat.copyFrom(other.cheat)
         this.tilePool.copyFrom(other.tilePool)
         this.tilePool.gameState = this
     }
 
-    /**
-     * 将当前状态拷贝到目标 state 对象中
-     */
+    fun deepCopy(): GameState {
+        val copy = GameState()
+        copy.copyFrom(this)
+        return copy
+    }
+
     fun copyInto(target: GameState) {
         target.copyFrom(this)
     }
 
-    /**
-     * 从快照完整恢复当前状态
-     */
     fun restore(snapshot: GameState) {
         copyFrom(snapshot)
     }
