@@ -60,7 +60,7 @@ class SettlementDetailRenderer @JvmOverloads constructor(
     }
 
     /**
-     * 渲染新版和牌详情模态弹窗
+     * 渲染新版和牌详情模态弹窗（玩家私有结算径路，保持既有行为）。
      */
     fun renderDetailModal(
         camera: OrthographicCamera,
@@ -81,9 +81,115 @@ class SettlementDetailRenderer @JvmOverloads constructor(
         btnNextRoundSplitRect: Rectangle,
         btnAgariYameRect: Rectangle
     ) {
+        renderDetailModalInternal(
+            camera = camera,
+            shape = shape,
+            batch = batch,
+            fallbackFont = fallbackFont,
+            tileSkin = tileSkin,
+            tileDrawBuffer = tileDrawBuffer,
+            settlement = settlement,
+            breakdown = breakdown,
+            section = section,
+            page = page,
+            viewerSeat = viewerSeat,
+            currentScores = currentScores,
+            canAgariYame = canAgariYame,
+            isMatchEnd = isMatchEnd,
+            btnNextRoundRect = btnNextRoundRect,
+            btnNextRoundSplitRect = btnNextRoundSplitRect,
+            btnAgariYameRect = btnAgariYameRect,
+            isSpectator = false
+        )
+    }
+
+    /**
+     * 渲染观战公开结算模态弹窗。
+     *
+     * 复用同一套标签页/分页/牌面/文本绘制组件，但：
+     * 1. 只读取调用方从 PublicSnapshotView.settlementEvents 投影出的公开 [SettlementDetailView]；
+     * 2. 不绘制任何下一局/续庄/AGARI-YAME 操作按钮，观战只能翻页与切换公开标签；
+     * 3. 无 breakdown 的旧公开事件使用公开役种/流局摘要分页，绝不臆造账本数据。
+     */
+    fun renderPublicDetailModal(
+        camera: OrthographicCamera,
+        shape: ShapeRenderer,
+        batch: SpriteBatch,
+        fallbackFont: BitmapFont,
+        tileSkin: TileSkin,
+        tileDrawBuffer: TileDrawBuffer,
+        settlement: SettlementDetailView,
+        section: SettlementSection,
+        page: Int,
+        currentScores: List<Int>
+    ) {
+        renderDetailModalInternal(
+            camera = camera,
+            shape = shape,
+            batch = batch,
+            fallbackFont = fallbackFont,
+            tileSkin = tileSkin,
+            tileDrawBuffer = tileDrawBuffer,
+            settlement = settlement,
+            breakdown = settlement.breakdown,
+            section = section,
+            page = page,
+            viewerSeat = -1,
+            currentScores = currentScores,
+            canAgariYame = false,
+            isMatchEnd = false,
+            btnNextRoundRect = Rectangle(0f, 0f, 0f, 0f),
+            btnNextRoundSplitRect = Rectangle(0f, 0f, 0f, 0f),
+            btnAgariYameRect = Rectangle(0f, 0f, 0f, 0f),
+            isSpectator = true
+        )
+    }
+
+    private fun renderDetailModalInternal(
+        camera: OrthographicCamera,
+        shape: ShapeRenderer,
+        batch: SpriteBatch,
+        fallbackFont: BitmapFont,
+        tileSkin: TileSkin,
+        tileDrawBuffer: TileDrawBuffer,
+        settlement: SettlementDetailView,
+        breakdown: ScoreBreakdownView?,
+        section: SettlementSection,
+        page: Int,
+        viewerSeat: Int,
+        currentScores: List<Int>,
+        canAgariYame: Boolean,
+        isMatchEnd: Boolean,
+        btnNextRoundRect: Rectangle,
+        btnNextRoundSplitRect: Rectangle,
+        btnAgariYameRect: Rectangle,
+        isSpectator: Boolean
+    ) {
         val modalRect = SettlementModalGeometry.MODAL_RECT
-        val pageCount = SettlementDetailPresenter.pageCount(breakdown, section)
-        val visibleRows = SettlementDetailPresenter.page(breakdown, section, page)
+        val textFont = getOrInitChineseFont() ?: fallbackFont
+        val hasBreakdown = breakdown != null
+        val pageCount = if (hasBreakdown) {
+            SettlementDetailPresenter.pageCount(breakdown, section)
+        } else {
+            val total = legacyRows(settlement, textFont).size
+            if (total == 0) 1 else (total + SettlementDetailPresenter.ROWS_PER_PAGE - 1) /
+                SettlementDetailPresenter.ROWS_PER_PAGE
+        }
+        val visibleRows = if (hasBreakdown) {
+            SettlementDetailPresenter.page(breakdown, section, page)
+        } else {
+            val all = legacyRows(settlement, textFont)
+            val fromIndex = page * SettlementDetailPresenter.ROWS_PER_PAGE
+            if (page < 0 || fromIndex >= all.size) {
+                emptyList()
+            } else {
+                all.subList(fromIndex, minOf(fromIndex + SettlementDetailPresenter.ROWS_PER_PAGE, all.size))
+            }
+        }
+        val playerLabel: (Int) -> String = { seat ->
+            if (isSpectator) "P$seat"
+            else if (seat == viewerSeat) "P$seat [YOU]" else "P$seat [AI $seat]"
+        }
 
         // 1. 绘制几何底色与边框 (ShapeRenderer)
         shape.projectionMatrix = camera.combined
@@ -98,9 +204,13 @@ class SettlementDetailRenderer @JvmOverloads constructor(
         shape.rect(modalRect.x, modalRect.y, modalRect.width, modalRect.height)
 
         // 标签栏背景
-        drawTabFill(shape, SettlementModalGeometry.TAB_YAKU_RECT, section == SettlementSection.YAKU)
-        drawTabFill(shape, SettlementModalGeometry.TAB_DORA_RECT, section == SettlementSection.DORA)
-        drawTabFill(shape, SettlementModalGeometry.TAB_CALC_RECT, section == SettlementSection.CALC)
+        if (hasBreakdown) {
+            drawTabFill(shape, SettlementModalGeometry.TAB_YAKU_RECT, section == SettlementSection.YAKU)
+            drawTabFill(shape, SettlementModalGeometry.TAB_DORA_RECT, section == SettlementSection.DORA)
+            drawTabFill(shape, SettlementModalGeometry.TAB_CALC_RECT, section == SettlementSection.CALC)
+        } else if (isSpectator) {
+            drawTabFill(shape, SettlementModalGeometry.TAB_YAKU_RECT, true)
+        }
 
         // 翻页按钮底色
         val canPrev = page > 0
@@ -131,15 +241,17 @@ class SettlementDetailRenderer @JvmOverloads constructor(
             }
         }
 
-        // 下一局 / 续庄 / 终局按钮底色
-        if (canAgariYame) {
-            shape.color = Color(0.20f, 0.55f, 0.85f, 1f)
-            shape.rect(btnNextRoundSplitRect.x, btnNextRoundSplitRect.y, btnNextRoundSplitRect.width, btnNextRoundSplitRect.height)
-            shape.color = Color(0.85f, 0.45f, 0.15f, 1f)
-            shape.rect(btnAgariYameRect.x, btnAgariYameRect.y, btnAgariYameRect.width, btnAgariYameRect.height)
-        } else {
-            shape.color = if (isMatchEnd) Color(0.20f, 0.50f, 0.75f, 1f) else Color(0.85f, 0.65f, 0.15f, 1f)
-            shape.rect(btnNextRoundRect.x, btnNextRoundRect.y, btnNextRoundRect.width, btnNextRoundRect.height)
+        // 下一局 / 续庄 / 终局按钮底色（观战不绘制任何操作按钮）
+        if (!isSpectator) {
+            if (canAgariYame) {
+                shape.color = Color(0.20f, 0.55f, 0.85f, 1f)
+                shape.rect(btnNextRoundSplitRect.x, btnNextRoundSplitRect.y, btnNextRoundSplitRect.width, btnNextRoundSplitRect.height)
+                shape.color = Color(0.85f, 0.45f, 0.15f, 1f)
+                shape.rect(btnAgariYameRect.x, btnAgariYameRect.y, btnAgariYameRect.width, btnAgariYameRect.height)
+            } else {
+                shape.color = if (isMatchEnd) Color(0.20f, 0.50f, 0.75f, 1f) else Color(0.85f, 0.65f, 0.15f, 1f)
+                shape.rect(btnNextRoundRect.x, btnNextRoundRect.y, btnNextRoundRect.width, btnNextRoundRect.height)
+            }
         }
         shape.end()
 
@@ -148,9 +260,13 @@ class SettlementDetailRenderer @JvmOverloads constructor(
         shape.color = Color(0.95f, 0.85f, 0.4f, 1f)
         shape.rect(modalRect.x, modalRect.y, modalRect.width, modalRect.height)
 
-        drawTabBorder(shape, SettlementModalGeometry.TAB_YAKU_RECT, section == SettlementSection.YAKU)
-        drawTabBorder(shape, SettlementModalGeometry.TAB_DORA_RECT, section == SettlementSection.DORA)
-        drawTabBorder(shape, SettlementModalGeometry.TAB_CALC_RECT, section == SettlementSection.CALC)
+        if (hasBreakdown) {
+            drawTabBorder(shape, SettlementModalGeometry.TAB_YAKU_RECT, section == SettlementSection.YAKU)
+            drawTabBorder(shape, SettlementModalGeometry.TAB_DORA_RECT, section == SettlementSection.DORA)
+            drawTabBorder(shape, SettlementModalGeometry.TAB_CALC_RECT, section == SettlementSection.CALC)
+        } else if (isSpectator) {
+            drawTabBorder(shape, SettlementModalGeometry.TAB_YAKU_RECT, true)
+        }
 
         shape.color = if (canPrev) Color.WHITE else Color(0.45f, 0.45f, 0.45f, 0.5f)
         shape.rect(
@@ -169,11 +285,13 @@ class SettlementDetailRenderer @JvmOverloads constructor(
         )
 
         shape.color = Color.WHITE
-        if (canAgariYame) {
-            shape.rect(btnNextRoundSplitRect.x, btnNextRoundSplitRect.y, btnNextRoundSplitRect.width, btnNextRoundSplitRect.height)
-            shape.rect(btnAgariYameRect.x, btnAgariYameRect.y, btnAgariYameRect.width, btnAgariYameRect.height)
-        } else {
-            shape.rect(btnNextRoundRect.x, btnNextRoundRect.y, btnNextRoundRect.width, btnNextRoundRect.height)
+        if (!isSpectator) {
+            if (canAgariYame) {
+                shape.rect(btnNextRoundSplitRect.x, btnNextRoundSplitRect.y, btnNextRoundSplitRect.width, btnNextRoundSplitRect.height)
+                shape.rect(btnAgariYameRect.x, btnAgariYameRect.y, btnAgariYameRect.width, btnAgariYameRect.height)
+            } else {
+                shape.rect(btnNextRoundRect.x, btnNextRoundRect.y, btnNextRoundRect.width, btnNextRoundRect.height)
+            }
         }
         shape.end()
 
@@ -238,7 +356,6 @@ class SettlementDetailRenderer @JvmOverloads constructor(
         tileDrawBuffer.flush(batch, shape, fallbackFont)
 
         // 3. 绘制文字内容 (使用 NotoSansSC 中文字体，若无则回退默认字体)
-        val textFont = getOrInitChineseFont() ?: fallbackFont
         val isCustomFont = (textFont !== fallbackFont)
 
         batch.projectionMatrix = camera.combined
@@ -250,35 +367,37 @@ class SettlementDetailRenderer @JvmOverloads constructor(
 
         try {
             // 3.1 弹窗大标题与和牌概览
-            val winnerName = if (settlement.winner == viewerSeat) {
-                "P${settlement.winner} [YOU]"
-            } else {
-                "P${settlement.winner} [AI ${settlement.winner}]"
-            }
-            val loserName = if (settlement.loser != null) {
-                if (settlement.loser == viewerSeat) "P${settlement.loser} [YOU]" else "P${settlement.loser} [AI ${settlement.loser}]"
-            } else null
+            val winnerName = settlement.winner?.let(playerLabel)
+            val loserName = settlement.loser?.let(playerLabel)
 
             if (!isCustomFont) textFont.data.setScale(1.4f)
             textFont.color = Color(1.0f, 0.85f, 0.35f, 1f)
-            textFont.draw(batch, settlement.title, modalRect.x + 40f, modalRect.y + 515f)
+            val title = if (isSpectator) "【观战】${settlement.title}" else settlement.title
+            textFont.draw(batch, title, modalRect.x + 40f, modalRect.y + 515f)
 
             if (!isCustomFont) textFont.data.setScale(1.0f)
             textFont.color = Color.WHITE
 
-            val isYakuman = (breakdown.yakumanCount > 0 || breakdown.score.isYakuman)
-            val mult = if (breakdown.yakumanCount > 0) breakdown.yakumanCount else maxOf(1, breakdown.score.yakumanMultiplier)
-            val scoreDesc = if (isYakuman) {
-                val label = if (mult > 1) "${mult}倍役满" else "役满"
-                "$label → ${breakdown.totalPoints}点"
+            val scoreDesc = if (breakdown != null) {
+                val isYakuman = (breakdown.yakumanCount > 0 || breakdown.score.isYakuman)
+                val mult = if (breakdown.yakumanCount > 0) breakdown.yakumanCount else maxOf(1, breakdown.score.yakumanMultiplier)
+                if (isYakuman) {
+                    val label = if (mult > 1) "${mult}倍役满" else "役满"
+                    "$label → ${breakdown.totalPoints}点"
+                } else {
+                    "${breakdown.score.han}番 ${breakdown.score.fu}符 → ${breakdown.totalPoints}点"
+                }
+            } else if (settlement.isDraw) {
+                if (settlement.drawReason.isBlank()) "流局" else "流局：${settlement.drawReason}"
             } else {
-                "${breakdown.score.han}番 ${breakdown.score.fu}符 → ${breakdown.totalPoints}点"
+                "${settlement.han}番 ${settlement.fu}符 → ${settlement.score}点"
             }
 
-            val overview = if (loserName != null) {
-                "Winner: $winnerName   From: $loserName   ($scoreDesc)"
-            } else {
-                "Winner: $winnerName   (自摸 $scoreDesc)"
+            val overview = when {
+                settlement.isDraw -> "公开结算 · $scoreDesc"
+                loserName != null -> "Winner: $winnerName   From: $loserName   ($scoreDesc)"
+                winnerName != null -> "Winner: $winnerName   (自摸 $scoreDesc)"
+                else -> "公开结算 · $scoreDesc"
             }
             textFont.draw(batch, overview, modalRect.x + 40f, modalRect.y + 482f)
 
@@ -288,10 +407,14 @@ class SettlementDetailRenderer @JvmOverloads constructor(
                 textFont.draw(batch, "和了牌", 975f, modalRect.y + 494f)
             }
 
-            // 3.2 标签按钮文字
-            drawTabTitle(batch, textFont, isCustomFont, "役种明细", SettlementModalGeometry.TAB_YAKU_RECT, section == SettlementSection.YAKU)
-            drawTabTitle(batch, textFont, isCustomFont, "宝牌明细", SettlementModalGeometry.TAB_DORA_RECT, section == SettlementSection.DORA)
-            drawTabTitle(batch, textFont, isCustomFont, "计算推导", SettlementModalGeometry.TAB_CALC_RECT, section == SettlementSection.CALC)
+            // 3.2 标签按钮文字（无 breakdown 的公开旧事件只保留公开役种/流局摘要页）
+            if (hasBreakdown) {
+                drawTabTitle(batch, textFont, isCustomFont, "役种明细", SettlementModalGeometry.TAB_YAKU_RECT, section == SettlementSection.YAKU)
+                drawTabTitle(batch, textFont, isCustomFont, "宝牌明细", SettlementModalGeometry.TAB_DORA_RECT, section == SettlementSection.DORA)
+                drawTabTitle(batch, textFont, isCustomFont, "计算推导", SettlementModalGeometry.TAB_CALC_RECT, section == SettlementSection.CALC)
+            } else if (isSpectator) {
+                drawTabTitle(batch, textFont, isCustomFont, "公开结算", SettlementModalGeometry.TAB_YAKU_RECT, true)
+            }
 
             // 3.3 6行明细文字（测量排版与最多2行换行）
             for ((idx, row) in visibleRows.withIndex()) {
@@ -361,7 +484,7 @@ class SettlementDetailRenderer @JvmOverloads constructor(
                 } else {
                     0
                 }
-                val pName = if (i == viewerSeat) "P$i [YOU]" else "P$i [AI $i]"
+                val pName = playerLabel(i)
                 val line = "$pName: $scoreNow pts ($deltaStr)"
                 val col = i % 2
                 val row = i / 2
@@ -370,21 +493,23 @@ class SettlementDetailRenderer @JvmOverloads constructor(
                 textFont.draw(batch, line, posX, posY)
             }
 
-            // 3.6 下一局 / 续庄 / 终局按钮文字
-            if (!isCustomFont) textFont.data.setScale(1.2f)
-            if (canAgariYame) {
-                textFont.color = Color.WHITE
-                textFont.draw(batch, "CONTINUE", btnNextRoundSplitRect.x + 60f, btnNextRoundSplitRect.y + 30f)
-                textFont.draw(batch, "AGARI-YAME", btnAgariYameRect.x + 50f, btnAgariYameRect.y + 30f)
-            } else if (isMatchEnd) {
-                textFont.color = Color.WHITE
-                val label = if (isCustomFont) "查看总成绩" else "MATCH ENDED"
-                layout.setText(textFont, label)
-                val textX = btnNextRoundRect.x + (btnNextRoundRect.width - layout.width) / 2f
-                textFont.draw(batch, label, textX, btnNextRoundRect.y + 32f)
-            } else {
-                textFont.color = Color.BLACK
-                textFont.draw(batch, "NEXT ROUND >", btnNextRoundRect.x + 40f, btnNextRoundRect.y + 32f)
+            // 3.6 下一局 / 续庄 / 终局按钮文字（观战为只读，不绘制任何操作）
+            if (!isSpectator) {
+                if (!isCustomFont) textFont.data.setScale(1.2f)
+                if (canAgariYame) {
+                    textFont.color = Color.WHITE
+                    textFont.draw(batch, "CONTINUE", btnNextRoundSplitRect.x + 60f, btnNextRoundSplitRect.y + 30f)
+                    textFont.draw(batch, "AGARI-YAME", btnAgariYameRect.x + 50f, btnAgariYameRect.y + 30f)
+                } else if (isMatchEnd) {
+                    textFont.color = Color.WHITE
+                    val label = if (isCustomFont) "查看总成绩" else "MATCH ENDED"
+                    layout.setText(textFont, label)
+                    val textX = btnNextRoundRect.x + (btnNextRoundRect.width - layout.width) / 2f
+                    textFont.draw(batch, label, textX, btnNextRoundRect.y + 32f)
+                } else {
+                    textFont.color = Color.BLACK
+                    textFont.draw(batch, "NEXT ROUND >", btnNextRoundRect.x + 40f, btnNextRoundRect.y + 32f)
+                }
             }
         } finally {
             textFont.data.setScale(origScaleX, origScaleY)
@@ -392,6 +517,20 @@ class SettlementDetailRenderer @JvmOverloads constructor(
             if (batch.isDrawing) {
                 batch.end()
             }
+        }
+    }
+
+    /**
+     * 无 breakdown 的公开旧事件回退行：仅使用 SettlementDetailView 中已公开的役种/流局原因。
+     */
+    private fun legacyRows(settlement: SettlementDetailView, font: BitmapFont): List<SettlementDetailRow> {
+        val source = when {
+            settlement.isDraw -> listOf(if (settlement.drawReason.isBlank()) "流局" else "流局：${settlement.drawReason}")
+            settlement.yakuList.isEmpty() -> listOf("无役")
+            else -> settlement.yakuList
+        }
+        return source.flatMap { line ->
+            wrapRowText(font, line, 800f).map { SettlementDetailRow(it) }
         }
     }
 

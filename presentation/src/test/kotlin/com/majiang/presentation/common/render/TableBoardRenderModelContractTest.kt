@@ -170,6 +170,77 @@ class TableBoardRenderModelContractTest : GdxHeadlessTestRunner() {
     }
 
     @Test
+    fun `four relative seat layouts preserve red five discards and melds for both views`() {
+        val redFive = TestViewBuilder.tile(SuitView.MAN, 5, copyIndex = 3)
+        assertTrue(redFive.isRedFive)
+        val meld = TestViewBuilder.meld(
+            MeldTypeView.CHI,
+            listOf(
+                TestViewBuilder.tile(SuitView.PIN, 2),
+                TestViewBuilder.tile(SuitView.PIN, 3),
+                TestViewBuilder.tile(SuitView.PIN, 4)
+            ),
+            fromPlayer = 1
+        )
+
+        for (viewer in 0..3) {
+            val discards = MutableList(4) { emptyList<TileView>() }
+            discards[(viewer + 2) % 4] = listOf(redFive)
+            val melds = MutableList(4) { emptyList<MeldView>() }
+            melds[(viewer + 1) % 4] = listOf(meld)
+
+            val view = TestViewBuilder.playerView(
+                viewerSeat = viewer,
+                discards = discards,
+                melds = melds,
+                handTileCounts = listOf(13, 13, 13, 13)
+            )
+            val snapshot = GameSnapshotView(
+                sessionId = "session-relative-$viewer",
+                roundId = "round-relative",
+                syncEpoch = "epoch-relative",
+                cursor = 1L,
+                sessionVersion = 1L,
+                roundVersion = 1L,
+                view = view,
+                decision = DecisionView("round-relative", "decision-relative", 1L)
+            )
+
+            val playerModel = TableBoardRenderModel.fromPlayerSnapshot(snapshot)
+            assertEquals(viewer, playerModel.viewerSeat)
+            assertEquals(redFive, playerModel.discards[(viewer + 2) % 4].single())
+            assertTrue(playerModel.discards[(viewer + 2) % 4].single().isRedFive)
+            assertEquals(listOf(meld), playerModel.melds[(viewer + 1) % 4])
+        }
+
+        val publicDiscards = listOf(
+            listOf(redFive),
+            emptyList(),
+            emptyList(),
+            emptyList()
+        )
+        val publicMelds = listOf(
+            emptyList(),
+            listOf(meld),
+            emptyList(),
+            emptyList()
+        )
+        val publicBoard = TestViewBuilder.publicBoardView(
+            discards = publicDiscards,
+            melds = publicMelds,
+            handTileCounts = listOf(13, 13, 14, 13)
+        )
+        val publicModel = TableBoardRenderModel.fromPublicSnapshot(
+            TestViewBuilder.publicSnapshotView(board = publicBoard)
+        )
+        assertEquals(redFive, publicModel.discards[0].single())
+        assertTrue(publicModel.discards[0].single().isRedFive)
+        assertEquals(listOf(meld), publicModel.melds[1])
+        assertTrue(publicModel.riverMarkedTileKeys.isEmpty())
+        assertTrue(publicModel.markedMeldTileIds.isEmpty())
+    }
+
+    @Test
     fun `source scan verification - TableBoardRenderModel and TableBoardRenderer do not reference forbidden types`() {
         val forbiddenTypeNames = listOf(
             "GameSnapshotView",

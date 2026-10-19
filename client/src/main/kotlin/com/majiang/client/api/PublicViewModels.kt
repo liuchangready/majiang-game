@@ -466,6 +466,104 @@ fun validatePublicGameEventView(event: GameEventView): GameEventView {
 }
 
 /**
+ * 公开结算详情投影 (PublicSettlementDetailProjection)。
+ *
+ * 仅消费已经通过公共白名单校验的 [GameEventView] 列表：
+ * 1. TsumoWin / RonWin 携带的 breakdown 只在服务端明确授权公开时才存在；
+ * 2. ScoreSettled 只包含公开支付与四家新点数；
+ * 3. 不读取 PlayerView、私有手牌、千术账本或任何未经授权的里宝数据。
+ *
+ * 该投影与玩家私有结算投影共享同一个 [SettlementDetailView] 展示模型，
+ * 但输入始终是公开事件流，调用方不得传入私有事件。
+ */
+internal object PublicSettlementDetailProjection {
+
+    fun from(
+        events: List<GameEventView>,
+        requirePublicWhitelist: Boolean = false
+    ): SettlementDetailView? {
+        // 公开流必须再次确认事件仍在白名单内；玩家私有结算径路允许
+        // CheatPointsChanged 等已按座位可见性筛选的结算事件存在，但不会进入展示字段。
+        if (requirePublicWhitelist) {
+            for (event in events) {
+                validatePublicGameEventView(event)
+            }
+        }
+        val tsumo = events.filterIsInstance<GameEventView.TsumoWin>().firstOrNull()
+        val ron = events.filterIsInstance<GameEventView.RonWin>().firstOrNull()
+        val draw = events.filterIsInstance<GameEventView.DrawGame>().firstOrNull()
+        val settled = events.filterIsInstance<GameEventView.ScoreSettled>().firstOrNull()
+
+        if (tsumo == null && ron == null && draw == null && settled == null) {
+            return null
+        }
+
+        return when {
+            tsumo != null -> SettlementDetailView(
+                title = "TSUMO WIN!",
+                winner = tsumo.player,
+                loser = null,
+                winTile = tsumo.winTile,
+                yakuList = tsumo.yakuList,
+                han = tsumo.han,
+                fu = tsumo.fu,
+                score = tsumo.score,
+                isDraw = false,
+                drawReason = "",
+                payments = settled?.payments ?: emptyMap(),
+                newScores = settled?.newScores ?: emptyList(),
+                breakdown = tsumo.breakdown
+            )
+            ron != null -> SettlementDetailView(
+                title = "RON WIN!",
+                winner = ron.winner,
+                loser = ron.loser,
+                winTile = ron.winTile,
+                yakuList = ron.yakuList,
+                han = ron.han,
+                fu = ron.fu,
+                score = ron.score,
+                isDraw = false,
+                drawReason = "",
+                payments = settled?.payments ?: emptyMap(),
+                newScores = settled?.newScores ?: emptyList(),
+                breakdown = ron.breakdown
+            )
+            draw != null -> SettlementDetailView(
+                title = "DRAW GAME",
+                winner = null,
+                loser = null,
+                winTile = null,
+                yakuList = emptyList(),
+                han = 0,
+                fu = 0,
+                score = 0,
+                isDraw = true,
+                drawReason = draw.reason.name,
+                payments = settled?.payments ?: emptyMap(),
+                newScores = settled?.newScores ?: emptyList(),
+                breakdown = null
+            )
+            else -> SettlementDetailView(
+                title = "SETTLEMENT",
+                winner = null,
+                loser = null,
+                winTile = null,
+                yakuList = emptyList(),
+                han = 0,
+                fu = 0,
+                score = 0,
+                isDraw = false,
+                drawReason = "",
+                payments = settled?.payments ?: emptyMap(),
+                newScores = settled?.newScores ?: emptyList(),
+                breakdown = null
+            )
+        }
+    }
+}
+
+/**
  * 客户端公开快照视图模型 (PublicSnapshotView)
  *
  * 面向独立观战流与全量基线同步，绝不包含特定玩家席位、手牌、决策或千术凭据。
@@ -486,6 +584,16 @@ class PublicSnapshotView @JvmOverloads constructor(
 ) {
     val clocks: List<ClockInfo> = Collections.unmodifiableList(ArrayList(clocks))
     val settlementEvents: List<GameEventView> = Collections.unmodifiableList(ArrayList(settlementEvents))
+
+    /**
+     * 由公开 settlementEvents 推导的只读结算详情。
+     *
+     * 不是独立构造函数字段，不参与网络编解码；仅复用 [SettlementDetailView] 展示契约。
+     * breakdown 的存在与否完全由公开事件本身决定（服务端已按可见性边界筛选）。
+     */
+    val settlementDetail: SettlementDetailView? by lazy(LazyThreadSafetyMode.PUBLICATION) {
+        PublicSettlementDetailProjection.from(settlementEvents, requirePublicWhitelist = true)
+    }
 
     init {
         require(sessionId.isNotBlank()) { "sessionId cannot be blank" }

@@ -61,6 +61,8 @@ import com.majiang.presentation.common.render.TileSkin
 import com.majiang.presentation.common.render.TableBoardRenderModel
 import com.majiang.presentation.common.render.TableBoardRenderer
 import com.majiang.presentation.common.render.TableBoardRenderOptions
+import com.majiang.presentation.common.render.TableBoardSyncTracker
+import com.majiang.presentation.common.render.TableBoardViewIdentity
 import com.majiang.presentation.common.render.fromPlayerSnapshot
 import java.util.ArrayDeque
 import java.util.UUID
@@ -108,10 +110,12 @@ class GameScreen(
     val currentView: PlayerView
         get() = currentSnapshot?.view ?: defaultEmptyPlayerView(0)
     var isLoading: Boolean = (currentSnapshot == null)
-    private var lastSyncEpoch: String? = currentSnapshot?.syncEpoch
-    private var lastRoundId: String? = currentSnapshot?.roundId
-    private var lastCursor: Long? = currentSnapshot?.cursor
-    private var lastSessionId: String? = currentSnapshot?.sessionId
+    /** 本屏独立的同步游标/代次/换局状态；绝不与其他屏幕共享。 */
+    private val syncTracker = TableBoardSyncTracker(
+        currentSnapshot?.let {
+            TableBoardViewIdentity(it.sessionId, it.syncEpoch, it.roundId, it.cursor)
+        }
+    )
     private var lastClockUpdateLocalMillis: Long = System.currentTimeMillis()
     private var activeSettlementRoundId: String? = null
 
@@ -377,7 +381,7 @@ class GameScreen(
             gameStarted = true
         }
 
-        riichiSelectionModel.update(currentSnapshot?.presentationPreview)
+        refreshRiichiSelection(currentSnapshot)
         meldSelectionModel.update(currentSnapshot?.presentationPreview)
 
         updateSubscription = session.onUpdate { update ->
@@ -413,29 +417,35 @@ class GameScreen(
     }
 
     fun onUpdateView(update: GameUpdateView) {
-        onSnapshotAndEvents(update.snapshot, update.visibleEvents)
+        onSnapshotAndEvents(update.snapshot, update.visibleEvents, update.isFullSnapshot)
     }
 
-    fun onSnapshotAndEvents(snap: GameSnapshotView, events: List<GameEventView>) {
+    fun onSnapshotAndEvents(
+        snap: GameSnapshotView,
+        events: List<GameEventView>,
+        isFullSnapshot: Boolean = false
+    ) {
         isLoading = false
-        val epochChanged = (lastSyncEpoch != null && snap.syncEpoch != lastSyncEpoch)
-        val roundChanged = (lastRoundId != null && snap.roundId != lastRoundId)
-        val cursorJumped = (lastCursor != null && snap.cursor > lastCursor!! + 1L)
-        val sessionChanged = (lastSessionId != null && snap.sessionId != lastSessionId)
+        val transition = syncTracker.observe(
+            TableBoardViewIdentity(snap.sessionId, snap.syncEpoch, snap.roundId, snap.cursor),
+            isFullSnapshot = isFullSnapshot
+        )
+        val epochChanged = transition.epochChanged
+        val roundChanged = transition.roundChanged
+        val sessionChanged = transition.sessionChanged
 
-        if (epochChanged || roundChanged || cursorJumped || sessionChanged) {
-            fastForwardDiscardAnimations()
+        // 本地径路（含断线恢复）与显式全量快照都按“重建基线”处理：清空旧动画
+        // 与旧基准，绝不把重建快照里的历史牌当成新打出的牌重播。
+        if (transition.requiresRebuild) {
             riichiSelectionModel.cancel()
             meldSelectionModel.cancel()
-            lastDiscards = (0..3).map { snap.view.discards.getOrNull(it) ?: emptyList() }
         }
-        lastSyncEpoch = snap.syncEpoch
-        lastRoundId = snap.roundId
-        lastCursor = snap.cursor
-        lastSessionId = snap.sessionId
         lastClockUpdateLocalMillis = System.currentTimeMillis()
 
         currentSnapshot = snap
+        if (transition.requiresRebuild) {
+            discardAnimationController.resetBaseline(snap.view.discards)
+        }
         shufflePreparationPanel.update(snap)
         val isConnected = (session.connectionState == ConnectionState.CONNECTED) && !session.closed
         tileMarkPanel.update(
@@ -484,7 +494,7 @@ class GameScreen(
             gameStarted = true
         }
 
-        riichiSelectionModel.update(snap.presentationPreview)
+        refreshRiichiSelection(snap)
         meldSelectionModel.update(snap.presentationPreview)
 
         val isConn = (session.connectionState == ConnectionState.CONNECTED) && !session.closed
@@ -927,8 +937,24 @@ class GameScreen(
         }
     }
 
+    /**
+     * 立直预览与当前权威 legal options 必须一致。
+     *
+     * 断线恢复/全量快照可能带来“预览仍停留在旧选项、decision 已撤销立直”的
+     * 不一致夹具或陈旧投影；此时清空预览选项，避免旧选牌重新打开或提交。
+     */
+    private fun refreshRiichiSelection(snapshot: GameSnapshotView?) {
+        riichiSelectionModel.update(snapshot?.presentationPreview)
+        val hasAuthorizedRiichi = snapshot != null &&
+            snapshot.decision.options.any { it.action is LegalActionView.DeclareRiichi } &&
+            snapshot.view.legalActions.any { it is LegalActionView.DeclareRiichi }
+        if (!hasAuthorizedRiichi) {
+            riichiSelectionModel.update(emptyList())
+        }
+    }
+
     private fun refreshLocalSelectionModels() {
-        riichiSelectionModel.update(currentSnapshot?.presentationPreview)
+        refreshRiichiSelection(currentSnapshot)
         meldSelectionModel.update(currentSnapshot?.presentationPreview)
     }
 

@@ -220,6 +220,37 @@ class DiscardAnimationIntegrationTest : GdxHeadlessTestRunner() {
     }
 
     @Test
+    fun `全量恢复快照立即清空玩家旧动画并以新牌河重建基线`() {
+        val (screen, session) = createGameScreen()
+        val oldTile = TestViewBuilder.tile(SuitView.MAN, 4, 0)
+        val withOld = session.snapshot.view.discards.map { it.toMutableList() }
+        withOld[0].add(oldTile)
+        session.update(session.snapshot.view.copy(discards = withOld), listOf(GameEventView.TileDiscarded(1, 0, oldTile)))
+        screen.updateDiscardAnimation(0.02f)
+        assertTrue(screen.isDiscardPlaybackBusy)
+
+        val recoveredTile = TestViewBuilder.tile(SuitView.PIN, 8, 0)
+        val recoveredDiscards = List(4) { emptyList<TileView>() }
+            .toMutableList()
+        recoveredDiscards[0] = listOf(recoveredTile)
+        val recoveredView = session.snapshot.view.copy(discards = recoveredDiscards)
+        val recovered = session.snapshot.copy(
+            cursor = session.snapshot.cursor + 1,
+            view = recoveredView
+        )
+        session.publish(recovered)
+
+        assertFalse(screen.isDiscardPlaybackBusy, "Full recovery must clear in-flight and queued player animations")
+        assertEquals(recoveredDiscards, screen.lastDiscards)
+        assertTrue(
+            screen.discardAnimationController.isTileVisibleInRiver(0, recoveredTile, 0),
+            "Recovered river tile must be visible immediately"
+        )
+
+        screen.dispose()
+    }
+
+    @Test
     fun `边界情况：开启理牌开关时打牌即时重排手牌`() {
         val (screen, session) = createGameScreen()
         screen.isAutoSort = true

@@ -527,79 +527,8 @@ object ProtocolViewMapper {
     // 玩家视图与快照聚合根映射
     // ==========================================
 
-    fun projectSettlementDetail(events: List<ProtocolGameEvent>): SettlementDetailView? {
-        val tsumo = events.filterIsInstance<ProtocolGameEvent.TsumoWin>().firstOrNull()
-        val ron = events.filterIsInstance<ProtocolGameEvent.RonWin>().firstOrNull()
-        val draw = events.filterIsInstance<ProtocolGameEvent.DrawGame>().firstOrNull()
-        val settled = events.filterIsInstance<ProtocolGameEvent.ScoreSettled>().firstOrNull()
-
-        if (tsumo == null && ron == null && draw == null && settled == null) {
-            return null
-        }
-
-        return when {
-            tsumo != null -> SettlementDetailView(
-                title = "TSUMO WIN!",
-                winner = tsumo.player,
-                loser = null,
-                winTile = mapTile(tsumo.winTile),
-                yakuList = Collections.unmodifiableList(ArrayList(tsumo.yakuList)),
-                han = tsumo.han,
-                fu = tsumo.fu,
-                score = tsumo.score,
-                isDraw = false,
-                drawReason = "",
-                payments = Collections.unmodifiableMap(LinkedHashMap(settled?.payments ?: emptyMap())),
-                newScores = Collections.unmodifiableList(ArrayList(settled?.newScores ?: emptyList())),
-                breakdown = tsumo.breakdown?.let { mapScoreBreakdown(it) }
-            )
-            ron != null -> SettlementDetailView(
-                title = "RON WIN!",
-                winner = ron.winner,
-                loser = ron.loser,
-                winTile = mapTile(ron.winTile),
-                yakuList = Collections.unmodifiableList(ArrayList(ron.yakuList)),
-                han = ron.han,
-                fu = ron.fu,
-                score = ron.score,
-                isDraw = false,
-                drawReason = "",
-                payments = Collections.unmodifiableMap(LinkedHashMap(settled?.payments ?: emptyMap())),
-                newScores = Collections.unmodifiableList(ArrayList(settled?.newScores ?: emptyList())),
-                breakdown = ron.breakdown?.let { mapScoreBreakdown(it) }
-            )
-            draw != null -> SettlementDetailView(
-                title = "DRAW GAME",
-                winner = null,
-                loser = null,
-                winTile = null,
-                yakuList = emptyList(),
-                han = 0,
-                fu = 0,
-                score = 0,
-                isDraw = true,
-                drawReason = draw.reason.name,
-                payments = Collections.unmodifiableMap(LinkedHashMap(settled?.payments ?: emptyMap())),
-                newScores = Collections.unmodifiableList(ArrayList(settled?.newScores ?: emptyList())),
-                breakdown = null
-            )
-            else -> SettlementDetailView(
-                title = "SETTLEMENT",
-                winner = null,
-                loser = null,
-                winTile = null,
-                yakuList = emptyList(),
-                han = 0,
-                fu = 0,
-                score = 0,
-                isDraw = false,
-                drawReason = "",
-                payments = Collections.unmodifiableMap(LinkedHashMap(settled?.payments ?: emptyMap())),
-                newScores = Collections.unmodifiableList(ArrayList(settled?.newScores ?: emptyList())),
-                breakdown = null
-            )
-        }
-    }
+    fun projectSettlementDetail(events: List<ProtocolGameEvent>): SettlementDetailView? =
+        PublicSettlementDetailProjection.from(events.map { mapGameEvent(it) })
 
     fun mapPlayerView(view: ProtocolPlayerView): PlayerView = PlayerView(
         viewerSeat = view.viewerSeat,
