@@ -26,5 +26,19 @@ subprojects {
             options.release = Integer.parseInt(project.property('javaVersion') as String)
         }
     }
+
+    // 强制重编译时 Kotlin 编译产物、归档与测试结果不应从 build cache 恢复。
+    // 本工作区的 Gradle 9.7.1 在 --rerun-tasks 与 cache/parallel 组合下曾出现
+    // test-results 的 in-progress 文件被并发清理（worker EOF）以及跨模块编译
+    // classpath 竞态；保留其他任务的缓存，只对高风险任务禁用缓存。
+    tasks.withType(org.jetbrains.kotlin.gradle.tasks.KotlinCompile).configureEach {
+        outputs.cacheIf { false }
+    }
+    tasks.withType(org.gradle.api.tasks.bundling.Jar).configureEach {
+        outputs.cacheIf { false }
+    }
+    tasks.withType(org.gradle.api.tasks.testing.Test).configureEach {
+        outputs.cacheIf { false }
+    }
 }
 
