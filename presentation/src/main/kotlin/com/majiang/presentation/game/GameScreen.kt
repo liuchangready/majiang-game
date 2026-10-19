@@ -58,6 +58,10 @@ import com.majiang.presentation.common.render.MeldDisplayLayout
 import com.majiang.presentation.common.render.TileArranger
 import com.majiang.presentation.common.render.TileDrawBuffer
 import com.majiang.presentation.common.render.TileSkin
+import com.majiang.presentation.common.render.TableBoardRenderModel
+import com.majiang.presentation.common.render.TableBoardRenderer
+import com.majiang.presentation.common.render.TableBoardRenderOptions
+import com.majiang.presentation.common.render.fromPlayerSnapshot
 import java.util.ArrayDeque
 import java.util.UUID
 
@@ -668,28 +672,11 @@ class GameScreen(
         return slots
     }
 
-    fun getDiscardStart(seat: Int): Pair<Float, Float> = when ((seat - currentView.viewerSeat + 4) % 4) {
-        0 -> Pair(640f, 100f)
-        1 -> Pair(1180f, 360f)
-        2 -> Pair(640f, 620f)
-        3 -> Pair(100f, 360f)
-        else -> Pair(640f, 100f)
-    }
+    fun getDiscardStart(seat: Int): Pair<Float, Float> =
+        TableBoardRenderer.computeDiscardStart(seat, currentView.viewerSeat)
 
-    fun getDiscardSlotPosition(seat: Int, slotIndex: Int): Pair<Float, Float> {
-        val col = slotIndex % 6
-        val row = slotIndex / 6
-        val tileW = 38f
-        val tileH = 52f
-
-        return when ((seat - currentView.viewerSeat + 4) % 4) {
-            0 -> Pair(480f + col * (tileW + 2f), 240f - row * (tileH + 4f))
-            1 -> Pair(750f + row * (tileH + 4f), 440f - col * (tileW + 2f))
-            2 -> Pair(460f + col * (tileW + 2f), 530f - row * (tileH + 4f))
-            3 -> Pair(420f - row * (tileH + 4f), 440f - col * (tileW + 2f))
-            else -> Pair(480f, 240f)
-        }
-    }
+    fun getDiscardSlotPosition(seat: Int, slotIndex: Int): Pair<Float, Float> =
+        TableBoardRenderer.computeDiscardSlotPosition(seat, slotIndex, currentView.viewerSeat)
 
     fun canHumanRon(): Boolean =
         !isDiscardPlaybackBusy && !isPaused && !isSubmitting && !session.isPending &&
@@ -1024,18 +1011,86 @@ class GameScreen(
         val font = assets.font
         val chineseFont = assets.chineseFont
 
+        val snapshot = currentSnapshot
+        val tableModel = snapshot?.let { TableBoardRenderModel.fromPlayerSnapshot(it) }
+        val tableOptions = TableBoardRenderOptions(
+            isTileVisibleInRiver = { seat, tile, index ->
+                discardAnimationController.isTileVisibleInRiver(seat, tile, index)
+            },
+            highlightTileId = riverHintPanel.selectedTileId,
+            clockElapsedMillis = System.currentTimeMillis() - lastClockUpdateLocalMillis
+        )
+
         // 1. 桌面中心与四家基本信息
-        renderTableCenter(batch, font, chineseFont)
-        renderSeatsInfo(batch, shape, font)
+        if (tableModel != null) {
+            TableBoardRenderer.renderTableCenter(
+                model = tableModel,
+                projectionMatrix = tableCamera.combined,
+                batch = batch,
+                shape = shape,
+                font = font,
+                chineseFont = chineseFont,
+                tileSkin = tileSkin,
+                tileDrawBuffer = tileDrawBuffer,
+                options = tableOptions
+            )
+            TableBoardRenderer.renderSeatsInfo(
+                model = tableModel,
+                projectionMatrix = tableCamera.combined,
+                batch = batch,
+                shape = shape,
+                font = font,
+                chineseFont = chineseFont,
+                tileSkin = tileSkin,
+                tileDrawBuffer = tileDrawBuffer,
+                options = tableOptions
+            )
+        }
 
         // 1.5 三名对手的完整暗手牌行 (普通牌背 + 有效落汗半透明牌面)
-        renderOpponentHands(batch, shape, font)
+        if (tableModel != null && gameStarted) {
+            TableBoardRenderer.renderHandAreas(
+                model = tableModel,
+                projectionMatrix = tableCamera.combined,
+                batch = batch,
+                shape = shape,
+                font = font,
+                chineseFont = chineseFont,
+                tileSkin = tileSkin,
+                tileDrawBuffer = tileDrawBuffer,
+                options = tableOptions
+            )
+        }
 
         // 2. 牌河
-        renderDiscards(batch, shape, font)
+        if (tableModel != null) {
+            TableBoardRenderer.renderDiscards(
+                model = tableModel,
+                projectionMatrix = tableCamera.combined,
+                batch = batch,
+                shape = shape,
+                font = font,
+                chineseFont = chineseFont,
+                tileSkin = tileSkin,
+                tileDrawBuffer = tileDrawBuffer,
+                options = tableOptions
+            )
+        }
 
         // 3. 副露
-        renderMelds(batch, shape, font)
+        if (tableModel != null) {
+            TableBoardRenderer.renderMelds(
+                model = tableModel,
+                projectionMatrix = tableCamera.combined,
+                batch = batch,
+                shape = shape,
+                font = font,
+                chineseFont = chineseFont,
+                tileSkin = tileSkin,
+                tileDrawBuffer = tileDrawBuffer,
+                options = tableOptions
+            )
+        }
 
         // 4. 手牌
         renderPlayerHands(batch, font)
@@ -1195,323 +1250,6 @@ class GameScreen(
         renderToast(batch, font)
     }
 
-    private fun renderTableCenter(batch: SpriteBatch, font: BitmapFont, chineseFont: BitmapFont?) {
-        batch.projectionMatrix = tableCamera.combined
-        batch.begin()
-        val textFont = chineseFont ?: font
-        val origColor = Color(textFont.color)
-        val origScaleX = textFont.data.scaleX
-        val origScaleY = textFont.data.scaleY
-
-        try {
-            textFont.data.setScale(1.1f)
-            textFont.color = Color(1.0f, 0.85f, 0.35f, 1f)
-
-            val roundWindName = listOf("東", "南", "西", "北").getOrElse(currentView.roundWind - 1) { "東" }
-            val roundInfo = "$roundWindName${currentView.roundNumber + 1}局  本场:${currentView.honbaSticks}  供托:${currentView.riichiSticks}"
-            textFont.draw(batch, roundInfo, 540f, 400f)
-
-            textFont.color = Color(0.9f, 0.9f, 0.9f, 1f)
-            textFont.draw(batch, "牌山剩余: ${currentView.wallRemaining}", 570f, 370f)
-
-            // 宝牌指示牌
-            textFont.color = Color(1.0f, 0.6f, 0.2f, 1f)
-            textFont.draw(batch, "宝牌指示牌:", 520f, 340f)
-        } finally {
-            textFont.data.setScale(origScaleX, origScaleY)
-            textFont.color = origColor
-        }
-        batch.end()
-
-        // 渲染宝牌指示牌
-        val doras = currentView.doraIndicators
-        val exposedIndicators = currentSnapshot?.tileMark?.activeGroups?.flatMap { it.tiles }
-            ?.filter { it.area == TileMarkArea.EXPOSED_INDICATOR } ?: emptyList()
-        val indicatorIds = exposedIndicators.map { it.tileId }.toSet()
-
-        for (i in doras.indices) {
-            val tile = doras[i]
-            val alpha = if (tile.tileId in indicatorIds) 0.55f else 1.0f
-            tileSkin.appendTileDraw(
-                buf = tileDrawBuffer,
-                tile = tile,
-                x = 640f + i * 32f,
-                y = 315f,
-                width = 28f,
-                height = 38f,
-                isHover = false,
-                isDrawn = false,
-                alpha = alpha
-            )
-        }
-        assets.shapeRenderer.projectionMatrix = tableCamera.combined
-        batch.projectionMatrix = tableCamera.combined
-        tileDrawBuffer.flush(batch, assets.shapeRenderer, font)
-    }
-
-    private fun renderSeatsInfo(batch: SpriteBatch, shape: ShapeRenderer, font: BitmapFont) {
-        val viewer = currentSnapshot?.viewerSeat ?: 0
-        val clocks = currentSnapshot?.clocks ?: emptyList()
-        val elapsed = System.currentTimeMillis() - lastClockUpdateLocalMillis
-
-        for (seat in 0..3) {
-            val clock = clocks.firstOrNull { it.seat == seat }
-            val formattedClock = ClockDisplay.format(clock, elapsed)
-            val score = currentView.scores.getOrElse(seat) { 25000 }
-            val isRiichi = currentView.riichiStatus.getOrElse(seat) { false }
-            val isCurrent = (currentView.currentTurnPlayer == seat)
-
-            val (x, y) = when ((seat - viewer + 4) % 4) {
-                0 -> Pair(40f, 80f)
-                1 -> Pair(1150f, 400f)
-                2 -> Pair(320f, 675f)
-                3 -> Pair(40f, 400f)
-                else -> Pair(40f, 80f)
-            }
-
-            batch.projectionMatrix = tableCamera.combined
-            batch.begin()
-            font.data.setScale(0.95f)
-            font.color = if (isCurrent) Color(1.0f, 0.95f, 0.4f, 1f) else Color.WHITE
-            val label = if (seat == viewer) "P$seat [YOU]" else "P$seat"
-            font.draw(batch, "$label: $score", x, y)
-            font.color = if (formattedClock.isUrgent) Color.RED else Color(0.7f, 1.0f, 0.8f, 1f)
-            font.draw(batch, formattedClock.displayText, x, y - 18f)
-
-            if (isRiichi) {
-                font.color = Color(1.0f, 0.4f, 0.4f, 1f)
-                font.draw(batch, "[RIICHI]", x, y - 36f)
-            }
-            batch.end()
-        }
-    }
-
-    private fun renderOpponentHands(batch: SpriteBatch, shape: ShapeRenderer, font: BitmapFont) {
-        val snapshot = currentSnapshot ?: return
-        if (!gameStarted) return
-        val rows = OpponentHandPresentation.build(snapshot)
-        if (rows.isEmpty()) return
-
-        val viewer = snapshot.viewerSeat
-        val selected = riverHintPanel.selectedTileId
-        val highlighted = mutableListOf<Rectangle>()
-
-        for (row in rows) {
-            val seat = row.seat
-            when ((seat - viewer + 4) % 4) {
-                1 -> renderRightOpponentHand(row, selected, highlighted)
-                2 -> renderTopOpponentHand(row, selected, highlighted)
-                3 -> renderLeftOpponentHand(row, selected, highlighted)
-            }
-        }
-        shape.projectionMatrix = tableCamera.combined
-        batch.projectionMatrix = tableCamera.combined
-        tileDrawBuffer.flush(batch, shape, font)
-
-        if (highlighted.isNotEmpty()) {
-            shape.projectionMatrix = tableCamera.combined
-            shape.begin(ShapeRenderer.ShapeType.Line)
-            shape.color = Color(0.20f, 1.0f, 0.85f, 1.0f)
-            for (r in highlighted) {
-                shape.rect(r.x - 2f, r.y - 2f, r.width + 4f, r.height + 4f)
-            }
-            shape.end()
-        }
-    }
-
-    private fun renderTopOpponentHand(
-        row: OpponentHandRow,
-        selectedId: Int?,
-        highlighted: MutableList<Rectangle>
-    ) {
-        val count = row.slots.size
-        if (count == 0) return
-        val tileW = 28f
-        val tileH = 38f
-        val stepX = 30f
-        val totalW = (count - 1) * stepX + tileW
-        val startX = 640f - totalW / 2f
-        val y = 665f
-
-        for (i in row.slots.indices) {
-            val slot = row.slots[i]
-            val x = startX + i * stepX
-            if (slot.tile == null) {
-                tileSkin.appendTileBackDraw(tileDrawBuffer, x, y, tileW, tileH)
-            } else {
-                tileSkin.appendTileDraw(
-                    buf = tileDrawBuffer,
-                    tile = slot.tile,
-                    x = x,
-                    y = y,
-                    width = tileW,
-                    height = tileH,
-                    isHover = false,
-                    isDrawn = false,
-                    alpha = 0.55f
-                )
-                if (selectedId != null && slot.tile.tileId == selectedId) {
-                    highlighted.add(Rectangle(x, y, tileW, tileH))
-                }
-            }
-        }
-    }
-
-    private fun renderLeftOpponentHand(
-        row: OpponentHandRow,
-        selectedId: Int?,
-        highlighted: MutableList<Rectangle>
-    ) {
-        val count = row.slots.size
-        if (count == 0) return
-        val tileW = 34f
-        val tileH = 24f
-        val stepY = 26f
-        val totalH = (count - 1) * stepY + tileH
-        val startY = 350f - totalH / 2f
-        val x = 245f
-
-        for (i in row.slots.indices) {
-            val slot = row.slots[i]
-            val y = startY + (count - 1 - i) * stepY
-            if (slot.tile == null) {
-                tileSkin.appendTileBackDraw(tileDrawBuffer, x, y, tileW, tileH)
-            } else {
-                tileSkin.appendRotatedTileDraw(
-                    buf = tileDrawBuffer,
-                    tile = slot.tile,
-                    x = x,
-                    y = y,
-                    width = tileW,
-                    height = tileH,
-                    isHover = false,
-                    isDrawn = false,
-                    alpha = 0.55f,
-                    rotationDeg = -90f
-                )
-                if (selectedId != null && slot.tile.tileId == selectedId) {
-                    highlighted.add(Rectangle(x, y, tileW, tileH))
-                }
-            }
-        }
-    }
-
-    private fun renderRightOpponentHand(
-        row: OpponentHandRow,
-        selectedId: Int?,
-        highlighted: MutableList<Rectangle>
-    ) {
-        val count = row.slots.size
-        if (count == 0) return
-        val tileW = 34f
-        val tileH = 24f
-        val stepY = 26f
-        val totalH = (count - 1) * stepY + tileH
-        val startY = 350f - totalH / 2f
-        val x = 990f
-
-        for (i in row.slots.indices) {
-            val slot = row.slots[i]
-            val y = startY + i * stepY
-            if (slot.tile == null) {
-                tileSkin.appendTileBackDraw(tileDrawBuffer, x, y, tileW, tileH)
-            } else {
-                tileSkin.appendRotatedTileDraw(
-                    buf = tileDrawBuffer,
-                    tile = slot.tile,
-                    x = x,
-                    y = y,
-                    width = tileW,
-                    height = tileH,
-                    isHover = false,
-                    isDrawn = false,
-                    alpha = 0.55f,
-                    rotationDeg = 90f
-                )
-                if (selectedId != null && slot.tile.tileId == selectedId) {
-                    highlighted.add(Rectangle(x, y, tileW, tileH))
-                }
-            }
-        }
-    }
-
-    private fun renderDiscards(batch: SpriteBatch, shape: ShapeRenderer, font: BitmapFont) {
-        val viewer = currentSnapshot?.viewerSeat ?: 0
-        val anim = currentDiscardAnim
-        val riverMarks = TileMarkPresentation.riverMarks(currentSnapshot)
-        val selected = riverHintPanel.selectedTileId
-        val highlightedPositions = mutableListOf<Pair<Float, Float>>()
-
-        for (seat in 0..3) {
-            val discards = currentView.discards.getOrElse(seat) { emptyList() }
-            for (i in discards.indices) {
-                val tile = discards[i]
-
-                if (!discardAnimationController.isTileVisibleInRiver(seat, tile, i)) continue
-
-                val pos = getDiscardSlotPosition(seat, i)
-                val isMarked = riverMarks.any { it.seat == seat && it.riverPosition?.discardIndex == i && it.tileId == tile.tileId }
-                val alpha = if (isMarked) 0.55f else 1.0f
-
-                if (selected != null && tile.tileId == selected) {
-                    highlightedPositions.add(pos)
-                }
-
-                tileSkin.appendTileDraw(
-                    buf = tileDrawBuffer,
-                    tile = tile,
-                    x = pos.first,
-                    y = pos.second,
-                    width = 38f,
-                    height = 52f,
-                    isHover = false,
-                    isDrawn = false,
-                    alpha = alpha
-                )
-            }
-        }
-        shape.projectionMatrix = tableCamera.combined
-        batch.projectionMatrix = tableCamera.combined
-        tileDrawBuffer.flush(batch, shape, font)
-
-        if (highlightedPositions.isNotEmpty()) {
-            shape.projectionMatrix = tableCamera.combined
-            shape.begin(ShapeRenderer.ShapeType.Line)
-            shape.color = Color(0.20f, 1.0f, 0.85f, 1.0f)
-            for (pos in highlightedPositions) {
-                shape.rect(pos.first - 2f, pos.second - 2f, 42f, 56f)
-            }
-            shape.end()
-        }
-    }
-
-    private fun renderMelds(batch: SpriteBatch, shape: ShapeRenderer, font: BitmapFont) {
-        val groups = MeldDisplayLayout.layoutAll(currentView)
-        if (groups.isEmpty()) return
-        val exposedMarks = currentSnapshot?.tileMark?.activeGroups?.flatMap { it.tiles }
-            ?.filter { it.area == TileMarkArea.EXPOSED_MELD } ?: emptyList()
-        val markedIds = exposedMarks.map { it.tileId }.toSet()
-
-        MeldDisplayRenderer.append(tileDrawBuffer, tileSkin, groups, markedTileIds = markedIds)
-        shape.projectionMatrix = tableCamera.combined
-        batch.projectionMatrix = tableCamera.combined
-        tileDrawBuffer.flush(batch, shape, font)
-
-        val selected = riverHintPanel.selectedTileId
-        if (selected != null) {
-            shape.projectionMatrix = tableCamera.combined
-            shape.begin(ShapeRenderer.ShapeType.Line)
-            shape.color = Color(0.20f, 1.0f, 0.85f, 1.0f)
-            for (group in groups) {
-                for (dt in group.tiles) {
-                    if (dt.tile.tileId == selected) {
-                        shape.rect(dt.x - 2f, dt.y - 2f, dt.width + 4f, dt.height + 4f)
-                    }
-                }
-            }
-            shape.end()
-        }
-    }
 
     private fun renderPlayerHands(batch: SpriteBatch, font: BitmapFont) {
         if (!gameStarted) return
