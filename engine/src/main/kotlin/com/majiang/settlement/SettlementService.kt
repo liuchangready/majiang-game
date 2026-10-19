@@ -1,6 +1,7 @@
 package com.majiang.settlement
 
 import com.majiang.rules.ScoreCalculator
+import com.majiang.rules.ScoreTextFormatter
 
 /**
  * 结算输入参数
@@ -199,7 +200,10 @@ class SettlementService {
     }
 
     /**
-     * 格式化支付行说明文本
+     * 格式化支付行说明文本（兼容入口）
+     *
+     * 文本构造已统一收敛到 [ScoreTextFormatter.paymentLines]，本方法保持原有签名与逐字输出，
+     * 仅做委托，避免出现第二套文案实现。
      *
      * 与 ScoreResult 各支付函数 dealerTsumoPayment / nonDealerTsumoPayment / dealerRonPayment / nonDealerRonPayment 完全一致
      */
@@ -208,20 +212,12 @@ class SettlementService {
         isDealer: Boolean,
         isTsumo: Boolean,
         loser: Int? = null
-    ): List<String> {
-        return if (isTsumo) {
-            if (isDealer) {
-                listOf("自摸：闲家各付 ${score.dealerTsumoPayment()}")
-            } else {
-                val (dealerPay, otherPay) = score.nonDealerTsumoPayment()
-                listOf("自摸：庄家付 ${dealerPay}、闲家各付 ${otherPay}")
-            }
-        } else {
-            val pay = if (isDealer) score.dealerRonPayment() else score.nonDealerRonPayment()
-            val target = if (loser != null) "P$loser" else "放铳者"
-            listOf("荣和：$target 支付 $pay")
-        }
-    }
+    ): List<String> = ScoreTextFormatter.paymentLines(
+        score = score,
+        isDealer = isDealer,
+        isTsumo = isTsumo,
+        loser = loser
+    )
 
     private fun validateInput(input: SettlementInput) {
         require(input.scores.size == 4) { "Scores must contain exactly 4 entries, got ${input.scores.size}" }

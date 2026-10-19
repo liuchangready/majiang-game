@@ -38,7 +38,12 @@ class ScoreCalculator {
         val rawBasePoints: Int = basePoints,
         val capReason: String? = null,
         val formulaText: String = "",
-        val rawBasePointsExact: String = rawBasePoints.toString()
+        val rawBasePointsExact: String = rawBasePoints.toString(),
+        /**
+         * 稳定封顶原因码：未封顶为 null，役满为 `YAKUMAN`，其余见 [ScoreCap.code]。
+         * 仅供 engine 领域与未来结构化线路使用，当前 MJ-TCP/1 不序列化。
+         */
+        val capCode: String? = null
     ) {
         /**
          * 计算庄家自摸时每位闲家应付的点数
@@ -63,17 +68,55 @@ class ScoreCalculator {
         fun nonDealerRonPayment(): Int = roundUpTo100(basePoints * 4)
 
         /**
-         * 获取总得点（含本场棒加算前）
+         * 基础支付结构（不含本场棒与供托立直棒）
+         *
+         * 金额完全复用四个既有支付函数，不在这里另写乘数或取整规则。
          */
-        fun totalPoints(isDealer: Boolean, isTsumo: Boolean): Int = when {
-            isTsumo && isDealer -> dealerTsumoPayment() * 3
-            isTsumo && !isDealer -> {
-                val (dealerPay, otherPay) = nonDealerTsumoPayment()
-                dealerPay + otherPay * 2
+        fun paymentPlan(isDealer: Boolean, isTsumo: Boolean): PaymentPlan = when {
+            isTsumo && isDealer -> {
+                val each = dealerTsumoPayment()
+                PaymentPlan(
+                    kind = PaymentKind.DEALER_TSUMO,
+                    components = listOf(PaymentComponent(PayerRole.NON_DEALER, each, 3)),
+                    total = each * 3
+                )
             }
-            !isTsumo && isDealer -> dealerRonPayment()
-            else -> nonDealerRonPayment()
+            isTsumo -> {
+                val (dealerPay, otherPay) = nonDealerTsumoPayment()
+                PaymentPlan(
+                    kind = PaymentKind.NON_DEALER_TSUMO,
+                    components = listOf(
+                        PaymentComponent(PayerRole.DEALER, dealerPay, 1),
+                        PaymentComponent(PayerRole.NON_DEALER, otherPay, 2)
+                    ),
+                    total = dealerPay + otherPay * 2
+                )
+            }
+            isDealer -> {
+                val pay = dealerRonPayment()
+                PaymentPlan(
+                    kind = PaymentKind.DEALER_RON,
+                    components = listOf(PaymentComponent(PayerRole.DISCARDER, pay, 1)),
+                    total = pay
+                )
+            }
+            else -> {
+                val pay = nonDealerRonPayment()
+                PaymentPlan(
+                    kind = PaymentKind.NON_DEALER_RON,
+                    components = listOf(PaymentComponent(PayerRole.DISCARDER, pay, 1)),
+                    total = pay
+                )
+            }
         }
+
+        /**
+         * 获取总得点（含本场棒加算前）
+         *
+         * 与 [paymentPlan] 的 total 使用同一结构，避免两套支付汇总规则漂移。
+         */
+        fun totalPoints(isDealer: Boolean, isTsumo: Boolean): Int =
+            paymentPlan(isDealer = isDealer, isTsumo = isTsumo).total
     }
 
     /**
@@ -86,92 +129,78 @@ class ScoreCalculator {
     fun calculate(fu: Int, han: Int, yakumanCount: Int = 0): ScoreResult {
         if (yakumanCount > 0) {
             val basePoints = 8000 * yakumanCount
-            val title = when (yakumanCount) {
-                1 -> "役満"
-                2 -> "ダブル役満"
-                else -> "${yakumanCount}倍役満"
-            }
+            val text = ScoreTextFormatter.yakumanText(yakumanCount, basePoints)
             return ScoreResult(
                 fu = fu,
                 han = 0,
                 basePoints = basePoints,
-                title = title,
+                title = text.title,
                 isYakuman = true,
                 yakumanMultiplier = yakumanCount,
                 rawBasePoints = basePoints,
-                capReason = title,
-                formulaText = "$title 基本点 $basePoints",
-                rawBasePointsExact = basePoints.toString()
+                capReason = text.capReason,
+                formulaText = text.formulaText,
+                rawBasePointsExact = basePoints.toString(),
+                capCode = text.capCode
             )
         }
 
-        val basePoints: Int
-        val title: String
         val rawExact = BigInteger.valueOf(fu.toLong()).multiply(BigInteger.valueOf(2).pow(2 + han))
         val rawBasePointsExact = rawExact.toString()
         val maxInt = BigInteger.valueOf(Int.MAX_VALUE.toLong())
         // 旧 rawBasePoints:Int 保持类型和小数值语义，超界可饱和 Int.MAX_VALUE 并注释，不用于公式展示/支付计算
         val rawBasePoints: Int = if (rawExact <= maxInt) rawExact.toInt() else Int.MAX_VALUE
-        val capReason: String?
+        val basePoints: Int
+        val cap: ScoreCap?
 
         when {
             han >= 13 -> {
                 basePoints = 8000
-                title = "数え役満"
-                capReason = "数え役満"
+                cap = ScoreCap.KAZOE_YAKUMAN
             }
             han >= 11 -> {
                 basePoints = 6000
-                title = "三倍満"
-                capReason = "三倍満"
+                cap = ScoreCap.SANBAIMAN
             }
             han >= 8 -> {
                 basePoints = 4000
-                title = "倍満"
-                capReason = "倍満"
+                cap = ScoreCap.BAIMAN
             }
             han >= 6 -> {
                 basePoints = 3000
-                title = "跳満"
-                capReason = "跳満"
+                cap = ScoreCap.HANEMAN
             }
             han == 5 || (han == 4 && fu >= 40) || (han == 3 && fu >= 70) -> {
                 basePoints = 2000
-                title = "満貫"
-                capReason = "満貫封頂"
+                cap = ScoreCap.MANGAN
             }
             else -> {
                 // 基本点 = 符 × 2^(2+翻)
                 // 封顶满贯
                 if (rawExact > BigInteger.valueOf(2000)) {
                     basePoints = 2000
-                    title = "満貫"
-                    capReason = "満貫封頂"
+                    cap = ScoreCap.MANGAN
                 } else {
                     basePoints = rawBasePoints
-                    title = "${han}翻${fu}符"
-                    capReason = null
+                    cap = null
                 }
             }
         }
 
-        val formulaText = if (capReason != null) {
-            "${fu}符 × 2^(2+${han}) = $rawBasePointsExact → $capReason $basePoints"
-        } else {
-            "${fu}符 × 2^(2+${han}) = $rawBasePointsExact"
-        }
+        val text = ScoreTextFormatter.normalText(fu, han, rawBasePointsExact, cap, basePoints)
 
         return ScoreResult(
             fu = fu,
             han = han,
             basePoints = basePoints,
-            title = title,
+            title = text.title,
             isYakuman = false,
             yakumanMultiplier = 0,
             rawBasePoints = rawBasePoints,
-            capReason = capReason,
-            formulaText = formulaText,
-            rawBasePointsExact = rawBasePointsExact
+            capReason = text.capReason,
+            formulaText = text.formulaText,
+            rawBasePointsExact = rawBasePointsExact,
+            capCode = text.capCode
         )
     }
 

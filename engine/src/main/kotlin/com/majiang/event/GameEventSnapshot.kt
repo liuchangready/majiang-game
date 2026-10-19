@@ -40,6 +40,7 @@ fun snapshotScoreBreakdown(breakdown: ScoreBreakdown?): ScoreBreakdown? {
     )
     return breakdown.copy(
         yakuLines = Collections.unmodifiableList(ArrayList(breakdown.yakuLines)),
+        yakuEntries = Collections.unmodifiableList(ArrayList(breakdown.yakuEntries)),
         paymentLines = Collections.unmodifiableList(ArrayList(breakdown.paymentLines)),
         dora = safeDora,
         fu = safeFu

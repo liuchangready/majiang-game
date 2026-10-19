@@ -371,7 +371,8 @@ class EngineProtocolMapperTest {
             while (type != null && type != Any::class.java) {
                 for (field in type.declaredFields) {
                     if (field.isSynthetic || java.lang.reflect.Modifier.isStatic(field.modifiers) ||
-                        field.name in setOf("eventType", "actionType") || fields.containsKey(field.name)) continue
+                        // D-07 engine-only structured fields are not part of the v4 wire contract.
+                        field.name in setOf("eventType", "actionType", "capCode", "yakuEntries") || fields.containsKey(field.name)) continue
                     field.isAccessible = true
                     fields[field.name] = normalizedFields(field.get(value))
                 }
