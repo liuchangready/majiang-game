@@ -8,7 +8,6 @@ import com.badlogic.gdx.graphics.Color
 import com.badlogic.gdx.graphics.GL20
 import com.badlogic.gdx.graphics.OrthographicCamera
 import com.badlogic.gdx.graphics.g2d.BitmapFont
-import com.badlogic.gdx.graphics.g2d.GlyphLayout
 import com.badlogic.gdx.graphics.g2d.SpriteBatch
 import com.badlogic.gdx.graphics.glutils.ShapeRenderer
 import com.badlogic.gdx.math.MathUtils
@@ -32,13 +31,13 @@ import com.majiang.presentation.common.UiAssets
 /**
  * 千术麻将主菜单与大厅场景 (MenuScreen)。
  *
- * 遵循 V4 架构契约与 TASK-ANTI-R5ROOT 规范：
+ * 遵循 V4 架构契约与 D-04 模块拆分规范：
  * 1. 仅依赖 [UiAssets]、[TableNavigation] 与 [LobbySession] 门面接口，严禁 import engine、protocol 或 server 实现；
- * 2. 支持单机对局启动、远端 TCP 地址端口配置与连接；
- * 3. 大厅期功能完整支持：房间列表拉取与刷新、赛制规则配置、创建房间、加入房间、房间详情与就绪、开赛与观战接入；
- * 4. 菜单开赛直接通过 [LobbySession.start] 发起，不向玩家画面借动作；
- * 5. 全中文展示通过共享 NotoSansSC 字体渲染，无内部组件名泄露；
- * 6. 支持键盘与触控多端输入，画面退出时幂等注销监听器。
+ * 2. 状态机、会话生命周期、异步业务编排与一次性导航守卫归父层 [MenuScreen] 唯一所有；
+ * 3. 拆离子视图 [MainMenuView]、[LobbyListView]、[RoomPreparationView]、
+ *    [ConnectDialogView]、[CreateRoomDialogView]、[JoinRoomDialogView] 以及绘制辅助 [MenuViewDraw]；
+ * 4. 子视图均为纯展示组件，不持有网络与业务状态，通过明确的回调意图上报父层；
+ * 5. 全中文展示通过共享 NotoSansSC 字体渲染，布局坐标与基线严格逐像素一致。
  */
 class MenuScreen(
     val assets: UiAssets,
@@ -51,7 +50,6 @@ class MenuScreen(
     }
 
     private val unprojectVec = Vector3()
-    private val glyphLayout = GlyphLayout()
 
     // 屏幕生命周期与请求代次守卫
     @Volatile private var isDisposed = false
@@ -97,62 +95,7 @@ class MenuScreen(
     private var isMyReady: Boolean = false
     private var isHost: Boolean = false
 
-    // 输入框状态
-    private enum class ActiveInput { NONE, HOST, PORT, ROOM_ID }
-    private var activeInput: ActiveInput = ActiveInput.NONE
-    private var inputHost: String = "127.0.0.1"
-    private var inputPort: String = "8080"
-    private var inputRoomId: String = ""
-
-    // 建房规则配置
-    private var cfgIsHanchan: Boolean = true
-    private var cfgRedFive: Boolean = true
-    private var cfgShuffleCheating: Boolean = true
-
-    // 按钮交互区域 - 主菜单
-    private val btnPlaySingle = Rectangle(490f, 420f, 300f, 50f)
-    private val btnOpenLobby = Rectangle(490f, 355f, 300f, 50f)
-    private val btnSkin = Rectangle(490f, 290f, 300f, 48f)
-    private val btnSecrets = Rectangle(490f, 225f, 300f, 48f)
-    private val btnSettings = Rectangle(490f, 160f, 300f, 48f)
-    private val btnExit = Rectangle(490f, 95f, 300f, 48f)
-
-    // 按钮交互区域 - TCP 连接弹窗
-    private val rectTcpModal = Rectangle(360f, 180f, 560f, 360f)
-    private val rectHostInput = Rectangle(420f, 390f, 440f, 42f)
-    private val rectPortInput = Rectangle(420f, 310f, 440f, 42f)
-    private val btnTcpConnect = Rectangle(420f, 220f, 200f, 44f)
-    private val btnTcpCancel = Rectangle(660f, 220f, 200f, 44f)
-
-    // 按钮交互区域 - 大厅
-    private val btnLobbyCreateRoom = Rectangle(80f, 560f, 220f, 46f)
-    private val btnLobbyJoinById = Rectangle(80f, 495f, 220f, 46f)
-    private val btnLobbyRefresh = Rectangle(80f, 430f, 220f, 46f)
-    private val btnLobbyBack = Rectangle(80f, 120f, 220f, 46f)
-    private val rectRoomListPanel = Rectangle(330f, 180f, 870f, 440f)
-    private val btnJoinSelected = Rectangle(770f, 110f, 200f, 46f)
-    private val btnSpectateSelected = Rectangle(1000f, 110f, 200f, 46f)
-
-    // 按钮交互区域 - 建房弹窗
-    private val rectCreateModal = Rectangle(320f, 140f, 640f, 460f)
-    private val btnCfgWind = Rectangle(380f, 430f, 520f, 42f)
-    private val btnCfgRedFive = Rectangle(380f, 365f, 520f, 42f)
-    private val btnCfgShuffle = Rectangle(380f, 300f, 520f, 42f)
-    private val btnCreateConfirm = Rectangle(380f, 190f, 240f, 46f)
-    private val btnCreateCancel = Rectangle(660f, 190f, 240f, 46f)
-
-    // 按钮交互区域 - 输码加入弹窗
-    private val rectJoinModal = Rectangle(380f, 220f, 520f, 300f)
-    private val rectJoinRoomInput = Rectangle(440f, 360f, 400f, 44f)
-    private val btnJoinConfirm = Rectangle(440f, 270f, 180f, 44f)
-    private val btnJoinCancel = Rectangle(660f, 270f, 180f, 44f)
-
-    // 按钮交互区域 - 房间等待
-    private val btnRoomReadyToggle = Rectangle(100f, 130f, 240f, 46f)
-    private val btnRoomStart = Rectangle(370f, 130f, 240f, 46f)
-    private val btnRoomLeave = Rectangle(640f, 130f, 240f, 46f)
-
-    // 按钮交互区域 - 通用弹窗
+    // 通用弹窗区域常量 (保留在父层)
     private val modalRect = Rectangle(260f, 110f, 760f, 500f)
     private val btnModalClose = Rectangle(570f, 135f, 140f, 42f)
 
@@ -167,6 +110,55 @@ class MenuScreen(
             alpha = MathUtils.random(0.2f, 0.7f)
         )
     }
+
+    // 拆分的子视图组件 (父层长期持有，在同一 MenuScreen 生命周期内保留各自输入/翻转状态)
+    val mainMenuView = MainMenuView(
+        onPlaySingle = ::startSinglePlay,
+        onOpenLobby = ::openLobbyFlow,
+        onToggleSkin = { assets.skinManager.toggleSkin() },
+        onSecrets = { currentState = MenuState.SECRETS_MODAL },
+        onSettings = { currentState = MenuState.SETTINGS_MODAL },
+        onExit = { navigation.exitGame() }
+    )
+
+    val connectDialogView = ConnectDialogView(
+        onConnect = ::connectRemoteLobby,
+        onCancel = {
+            requestGeneration++
+            currentState = MenuState.MAIN
+        }
+    )
+
+    val lobbyListView = LobbyListView(
+        onCreateRoom = { currentState = MenuState.CREATE_ROOM_DIALOG },
+        onJoinById = {
+            joinRoomDialogView.resetInput()
+            currentState = MenuState.JOIN_ROOM_DIALOG
+        },
+        onRefresh = ::refreshRoomList,
+        onBack = ::disconnectLobbyAndReturn,
+        onRoomRowSelected = { index ->
+            selectedRoom = roomList.getOrNull(index)
+        },
+        onJoinSelected = ::joinSelectedRoom,
+        onSpectateSelected = ::spectateSelectedRoom
+    )
+
+    val createRoomDialogView = CreateRoomDialogView(
+        onConfirm = ::createRoomWithConfig,
+        onCancel = { currentState = MenuState.LOBBY }
+    )
+
+    val joinRoomDialogView = JoinRoomDialogView(
+        onConfirm = ::joinRoomById,
+        onCancel = { currentState = MenuState.LOBBY }
+    )
+
+    val roomPreparationView = RoomPreparationView(
+        onToggleReady = ::toggleReadyState,
+        onStart = ::startRoomMatch,
+        onLeave = ::leaveCurrentRoom
+    )
 
     init {
         initialLobby?.let { attachLobby(it) }
@@ -234,13 +226,35 @@ class MenuScreen(
         renderBackground(shape)
 
         when (currentState) {
-            MenuState.MAIN -> renderMainMenu(shape, batch, font)
-            MenuState.TCP_CONNECT_DIALOG -> renderTcpConnectDialog(shape, batch, font)
+            MenuState.MAIN -> mainMenuView.render(
+                camera, shape, batch, font,
+                assets.skinManager.currentSkinId.name,
+                statusMessage, errorMessage
+            )
+            MenuState.TCP_CONNECT_DIALOG -> connectDialogView.render(
+                camera, shape, batch, font,
+                animTimer, errorMessage
+            )
             MenuState.CONNECTING -> renderConnectingScreen(shape, batch, font)
-            MenuState.LOBBY -> renderLobbyScreen(shape, batch, font)
-            MenuState.CREATE_ROOM_DIALOG -> renderCreateRoomDialog(shape, batch, font)
-            MenuState.JOIN_ROOM_DIALOG -> renderJoinRoomDialog(shape, batch, font)
-            MenuState.ROOM -> renderRoomScreen(shape, batch, font)
+            MenuState.LOBBY -> lobbyListView.render(
+                camera, shape, batch, font,
+                activeLobby?.connectionState ?: ConnectionState.CLOSED,
+                roomList, selectedRoom,
+                statusMessage, errorMessage
+            )
+            MenuState.CREATE_ROOM_DIALOG -> createRoomDialogView.render(
+                camera, shape, batch, font
+            )
+            MenuState.JOIN_ROOM_DIALOG -> joinRoomDialogView.render(
+                camera, shape, batch, font,
+                animTimer, errorMessage
+            )
+            MenuState.ROOM -> roomPreparationView.render(
+                camera, shape, batch, font,
+                currentRoomInfo, joinRoomDialogView.inputRoomId,
+                isMyReady, isHost,
+                statusMessage, errorMessage
+            )
             MenuState.SECRETS_MODAL -> renderSecretsModal(shape, batch, font)
             MenuState.SETTINGS_MODAL -> renderSettingsModal(shape, batch, font)
         }
@@ -280,382 +294,17 @@ class MenuScreen(
         shape.end()
     }
 
-    // ==========================================
-    // 主菜单视图渲染
-    // ==========================================
-
-    private fun renderMainMenu(shape: ShapeRenderer, batch: SpriteBatch, font: BitmapFont) {
-        shape.projectionMatrix = camera.combined
-        shape.begin(ShapeRenderer.ShapeType.Filled)
-
-        drawButton(shape, btnPlaySingle, isPrimary = true)
-        drawButton(shape, btnOpenLobby, isPrimary = true)
-        drawButton(shape, btnSkin, isPrimary = false)
-        drawButton(shape, btnSecrets, isPrimary = false)
-        drawButton(shape, btnSettings, isPrimary = false)
-        drawButton(shape, btnExit, isPrimary = false)
-
-        shape.end()
-
-        batch.projectionMatrix = camera.combined
-        batch.begin()
-
-        // 标题
-        font.data.setScale(2.4f)
-        font.color = Color(1.0f, 0.84f, 0.28f, 1f)
-        drawCenteredText(batch, font, "千术麻将", 640f, 620f)
-
-        font.data.setScale(1.1f)
-        font.color = Color(0.78f, 0.88f, 0.80f, 0.85f)
-        drawCenteredText(batch, font, "MAHJONG CHEATER - 雀圣心战与防抓包博弈", 640f, 560f)
-
-        // 按钮文字
-        font.data.setScale(1.2f)
-        font.color = Color.WHITE
-        drawCenteredText(batch, font, "单机对局 (快速开赛)", btnPlaySingle.x + btnPlaySingle.width / 2f, btnPlaySingle.y + 32f)
-        drawCenteredText(batch, font, "联机对战 (TCP 大厅)", btnOpenLobby.x + btnOpenLobby.width / 2f, btnOpenLobby.y + 32f)
-        drawCenteredText(batch, font, "牌面皮肤: [ ${assets.skinManager.currentSkinId.name} ]", btnSkin.x + btnSkin.width / 2f, btnSkin.y + 30f)
-        drawCenteredText(batch, font, "千术绝技秘籍", btnSecrets.x + btnSecrets.width / 2f, btnSecrets.y + 30f)
-        drawCenteredText(batch, font, "游戏设置", btnSettings.x + btnSettings.width / 2f, btnSettings.y + 30f)
-        drawCenteredText(batch, font, "退出游戏", btnExit.x + btnExit.width / 2f, btnExit.y + 30f)
-
-        statusMessage?.let {
-            font.data.setScale(1.0f)
-            font.color = Color(0.9f, 0.9f, 0.4f, 1f)
-            drawCenteredText(batch, font, it, 640f, 480f)
-        }
-        errorMessage?.let {
-            font.data.setScale(1.0f)
-            font.color = Color(1f, 0.4f, 0.4f, 1f)
-            drawCenteredText(batch, font, it, 640f, 480f)
-        }
-
-        batch.end()
-    }
-
-    // ==========================================
-    // TCP 连接弹窗渲染
-    // ==========================================
-
-    private fun renderTcpConnectDialog(shape: ShapeRenderer, batch: SpriteBatch, font: BitmapFont) {
-        shape.projectionMatrix = camera.combined
-        shape.begin(ShapeRenderer.ShapeType.Filled)
-
-        // 弹窗背景
-        shape.color = Color(0.08f, 0.16f, 0.12f, 0.98f)
-        shape.rect(rectTcpModal.x, rectTcpModal.y, rectTcpModal.width, rectTcpModal.height)
-
-        // 输入框背景
-        drawInputBox(shape, rectHostInput, activeInput == ActiveInput.HOST)
-        drawInputBox(shape, rectPortInput, activeInput == ActiveInput.PORT)
-
-        // 按钮背景
-        drawButton(shape, btnTcpConnect, isPrimary = true)
-        drawButton(shape, btnTcpCancel, isPrimary = false)
-
-        shape.end()
-
-        batch.projectionMatrix = camera.combined
-        batch.begin()
-
-        font.data.setScale(1.6f)
-        font.color = Color(1.0f, 0.85f, 0.35f, 1f)
-        drawCenteredText(batch, font, "连接远程 TCP 服务器", rectTcpModal.x + rectTcpModal.width / 2f, rectTcpModal.y + 320f)
-
-        font.data.setScale(1.1f)
-        font.color = Color.LIGHT_GRAY
-        font.draw(batch, "主机地址 (IP / Host):", rectHostInput.x, rectHostInput.y + 60f)
-        font.draw(batch, "TCP 端口 (Port):", rectPortInput.x, rectPortInput.y + 60f)
-
-        font.color = Color.WHITE
-        font.draw(batch, inputHost + if (activeInput == ActiveInput.HOST && (animTimer % 1f < 0.5f)) "_" else "", rectHostInput.x + 15f, rectHostInput.y + 28f)
-        font.draw(batch, inputPort + if (activeInput == ActiveInput.PORT && (animTimer % 1f < 0.5f)) "_" else "", rectPortInput.x + 15f, rectPortInput.y + 28f)
-
-        drawCenteredText(batch, font, "立即连接", btnTcpConnect.x + btnTcpConnect.width / 2f, btnTcpConnect.y + 28f)
-        drawCenteredText(batch, font, "返回", btnTcpCancel.x + btnTcpCancel.width / 2f, btnTcpCancel.y + 28f)
-
-        errorMessage?.let {
-            font.color = Color.RED
-            drawCenteredText(batch, font, it, rectTcpModal.x + rectTcpModal.width / 2f, rectTcpModal.y + 50f)
-        }
-
-        batch.end()
-    }
-
     private fun renderConnectingScreen(shape: ShapeRenderer, batch: SpriteBatch, font: BitmapFont) {
         batch.projectionMatrix = camera.combined
         batch.begin()
         font.data.setScale(1.5f)
         font.color = Color(1.0f, 0.85f, 0.35f, 1f)
-        drawCenteredText(batch, font, "正在连接到 $inputHost:$inputPort ...", 640f, 380f)
+        MenuViewDraw.drawCenteredText(batch, font, "正在连接到 ${connectDialogView.inputHost}:${connectDialogView.inputPort} ...", 640f, 380f)
         batch.end()
     }
 
     // ==========================================
-    // 大厅视图渲染
-    // ==========================================
-
-    private fun renderLobbyScreen(shape: ShapeRenderer, batch: SpriteBatch, font: BitmapFont) {
-        shape.projectionMatrix = camera.combined
-        shape.begin(ShapeRenderer.ShapeType.Filled)
-
-        // 按钮栏
-        drawButton(shape, btnLobbyCreateRoom, isPrimary = true)
-        drawButton(shape, btnLobbyJoinById, isPrimary = false)
-        drawButton(shape, btnLobbyRefresh, isPrimary = false)
-        drawButton(shape, btnLobbyBack, isPrimary = false)
-
-        // 房间列表面板背景
-        shape.color = Color(0.06f, 0.12f, 0.09f, 0.95f)
-        shape.rect(rectRoomListPanel.x, rectRoomListPanel.y, rectRoomListPanel.width, rectRoomListPanel.height)
-
-        // 若有选中项，高亮操作按钮
-        if (selectedRoom != null) {
-            drawButton(shape, btnJoinSelected, isPrimary = true)
-            drawButton(shape, btnSpectateSelected, isPrimary = false)
-        }
-
-        shape.end()
-
-        batch.projectionMatrix = camera.combined
-        batch.begin()
-
-        // 顶栏状态
-        font.data.setScale(1.6f)
-        font.color = Color(1.0f, 0.85f, 0.35f, 1f)
-        font.draw(batch, "雀圣联机大厅", 80f, 680f)
-
-        font.data.setScale(1.1f)
-        font.color = Color.LIGHT_GRAY
-        val connState = activeLobby?.connectionState ?: ConnectionState.CLOSED
-        val connText = when (connState) {
-            ConnectionState.CONNECTED -> "已连接"
-            ConnectionState.CONNECTING -> "正在连接..."
-            ConnectionState.RECONNECTING -> "正在重连..."
-            ConnectionState.CLOSED -> "未连接"
-        }
-        font.draw(batch, "连接状态: $connText ($connState)", 330f, 680f)
-
-        // 左侧操作按钮文本
-        font.color = Color.WHITE
-        drawCenteredText(batch, font, "创建房间", btnLobbyCreateRoom.x + btnLobbyCreateRoom.width / 2f, btnLobbyCreateRoom.y + 28f)
-        drawCenteredText(batch, font, "输入房号加入", btnLobbyJoinById.x + btnLobbyJoinById.width / 2f, btnLobbyJoinById.y + 28f)
-        drawCenteredText(batch, font, "刷新列表", btnLobbyRefresh.x + btnLobbyRefresh.width / 2f, btnLobbyRefresh.y + 28f)
-        drawCenteredText(batch, font, "断开返回", btnLobbyBack.x + btnLobbyBack.width / 2f, btnLobbyBack.y + 28f)
-
-        // 房间列表表头
-        var listY = rectRoomListPanel.y + rectRoomListPanel.height - 30f
-        font.color = Color(0.8f, 0.8f, 0.5f, 1f)
-        font.draw(batch, "房号", rectRoomListPanel.x + 30f, listY)
-        font.draw(batch, "房主", rectRoomListPanel.x + 180f, listY)
-        font.draw(batch, "人数", rectRoomListPanel.x + 380f, listY)
-        font.draw(batch, "状态", rectRoomListPanel.x + 520f, listY)
-        font.draw(batch, "赛制规则", rectRoomListPanel.x + 660f, listY)
-
-        listY -= 35f
-        font.color = Color.WHITE
-        if (roomList.isEmpty()) {
-            font.color = Color.GRAY
-            font.draw(batch, "暂无活跃房间，请点击“创建房间”发起对战", rectRoomListPanel.x + 180f, listY - 50f)
-        } else {
-            for (room in roomList.take(8)) {
-                val isSelected = selectedRoom?.roomId == room.roomId
-                if (isSelected) {
-                    font.color = Color(1.0f, 0.9f, 0.4f, 1f)
-                    font.draw(batch, "▶", rectRoomListPanel.x + 10f, listY)
-                } else {
-                    font.color = Color.WHITE
-                }
-                font.draw(batch, room.roomId, rectRoomListPanel.x + 30f, listY)
-                font.draw(batch, room.hostPlayerName, rectRoomListPanel.x + 180f, listY)
-                font.draw(batch, "${room.playerCount} / 4", rectRoomListPanel.x + 380f, listY)
-                font.draw(batch, if (room.matchStarted) "对局中" else "招募中", rectRoomListPanel.x + 520f, listY)
-                font.draw(batch, if (room.configSummary.isNotBlank()) room.configSummary else "半庄/赤五/码牌", rectRoomListPanel.x + 660f, listY)
-                listY -= 40f
-            }
-        }
-
-        if (selectedRoom != null) {
-            font.color = Color.WHITE
-            drawCenteredText(batch, font, "加入该房 (${selectedRoom?.roomId})", btnJoinSelected.x + btnJoinSelected.width / 2f, btnJoinSelected.y + 28f)
-            drawCenteredText(batch, font, "观战", btnSpectateSelected.x + btnSpectateSelected.width / 2f, btnSpectateSelected.y + 28f)
-        }
-
-        statusMessage?.let {
-            font.color = Color.YELLOW
-            drawCenteredText(batch, font, it, 640f, 80f)
-        }
-        errorMessage?.let {
-            font.color = Color.RED
-            drawCenteredText(batch, font, it, 640f, 80f)
-        }
-
-        batch.end()
-    }
-
-    // ==========================================
-    // 创建房间规则配置弹窗渲染
-    // ==========================================
-
-    private fun renderCreateRoomDialog(shape: ShapeRenderer, batch: SpriteBatch, font: BitmapFont) {
-        shape.projectionMatrix = camera.combined
-        shape.begin(ShapeRenderer.ShapeType.Filled)
-
-        shape.color = Color(0.08f, 0.16f, 0.12f, 0.98f)
-        shape.rect(rectCreateModal.x, rectCreateModal.y, rectCreateModal.width, rectCreateModal.height)
-
-        drawButton(shape, btnCfgWind, isPrimary = false)
-        drawButton(shape, btnCfgRedFive, isPrimary = false)
-        drawButton(shape, btnCfgShuffle, isPrimary = false)
-        drawButton(shape, btnCreateConfirm, isPrimary = true)
-        drawButton(shape, btnCreateCancel, isPrimary = false)
-
-        shape.end()
-
-        batch.projectionMatrix = camera.combined
-        batch.begin()
-
-        font.data.setScale(1.6f)
-        font.color = Color(1.0f, 0.85f, 0.35f, 1f)
-        drawCenteredText(batch, font, "创建比赛房间规则配置", rectCreateModal.x + rectCreateModal.width / 2f, rectCreateModal.y + 420f)
-
-        font.data.setScale(1.2f)
-        font.color = Color.WHITE
-        drawCenteredText(batch, font, "对局长度: ${if (cfgIsHanchan) "半庄战 (东南战)" else "东风战 (东场战)"}  [点击切换]", btnCfgWind.x + btnCfgWind.width / 2f, btnCfgWind.y + 27f)
-        drawCenteredText(batch, font, "赤宝牌规则: 权威默认固定开启 (3张赤五标准)", btnCfgRedFive.x + btnCfgRedFive.width / 2f, btnCfgRedFive.y + 27f)
-        drawCenteredText(batch, font, "千术绝技码牌: ${if (cfgShuffleCheating) "开启 (做牌准备阶段)" else "关闭"}  [点击切换]", btnCfgShuffle.x + btnCfgShuffle.width / 2f, btnCfgShuffle.y + 27f)
-
-        drawCenteredText(batch, font, "确认创建房间", btnCreateConfirm.x + btnCreateConfirm.width / 2f, btnCreateConfirm.y + 28f)
-        drawCenteredText(batch, font, "取消", btnCreateCancel.x + btnCreateCancel.width / 2f, btnCreateCancel.y + 28f)
-
-        batch.end()
-    }
-
-    // ==========================================
-    // 输码加入弹窗渲染
-    // ==========================================
-
-    private fun renderJoinRoomDialog(shape: ShapeRenderer, batch: SpriteBatch, font: BitmapFont) {
-        shape.projectionMatrix = camera.combined
-        shape.begin(ShapeRenderer.ShapeType.Filled)
-
-        shape.color = Color(0.08f, 0.16f, 0.12f, 0.98f)
-        shape.rect(rectJoinModal.x, rectJoinModal.y, rectJoinModal.width, rectJoinModal.height)
-
-        drawInputBox(shape, rectJoinRoomInput, activeInput == ActiveInput.ROOM_ID)
-        drawButton(shape, btnJoinConfirm, isPrimary = true)
-        drawButton(shape, btnJoinCancel, isPrimary = false)
-
-        shape.end()
-
-        batch.projectionMatrix = camera.combined
-        batch.begin()
-
-        font.data.setScale(1.6f)
-        font.color = Color(1.0f, 0.85f, 0.35f, 1f)
-        drawCenteredText(batch, font, "输入房间号加入", rectJoinModal.x + rectJoinModal.width / 2f, rectJoinModal.y + 250f)
-
-        font.data.setScale(1.2f)
-        font.color = Color.WHITE
-        font.draw(batch, inputRoomId + if (activeInput == ActiveInput.ROOM_ID && (animTimer % 1f < 0.5f)) "_" else "", rectJoinRoomInput.x + 15f, rectJoinRoomInput.y + 30f)
-
-        drawCenteredText(batch, font, "加入", btnJoinConfirm.x + btnJoinConfirm.width / 2f, btnJoinConfirm.y + 28f)
-        drawCenteredText(batch, font, "取消", btnJoinCancel.x + btnJoinCancel.width / 2f, btnJoinCancel.y + 28f)
-
-        errorMessage?.let {
-            font.color = Color.RED
-            drawCenteredText(batch, font, it, rectJoinModal.x + rectJoinModal.width / 2f, rectJoinModal.y + 40f)
-        }
-
-        batch.end()
-    }
-
-    // ==========================================
-    // 房间等待视图渲染
-    // ==========================================
-
-    private fun renderRoomScreen(shape: ShapeRenderer, batch: SpriteBatch, font: BitmapFont) {
-        shape.projectionMatrix = camera.combined
-        shape.begin(ShapeRenderer.ShapeType.Filled)
-
-        // 按钮
-        drawButton(shape, btnRoomReadyToggle, isPrimary = true)
-        if (isHost) {
-            drawButton(shape, btnRoomStart, isPrimary = true)
-        }
-        drawButton(shape, btnRoomLeave, isPrimary = false)
-
-        // 席位面板底色
-        shape.color = Color(0.06f, 0.12f, 0.09f, 0.95f)
-        shape.rect(100f, 220f, 1080f, 380f)
-
-        shape.end()
-
-        batch.projectionMatrix = camera.combined
-        batch.begin()
-
-        val info = currentRoomInfo
-        val roomId = info?.roomId ?: inputRoomId
-        val lifecycle = info?.lifecycle ?: RoomLifecycle.LOBBY
-
-        font.data.setScale(1.8f)
-        font.color = Color(1.0f, 0.85f, 0.35f, 1f)
-        font.draw(batch, "房间: $roomId", 100f, 680f)
-
-        font.data.setScale(1.2f)
-        font.color = Color.LIGHT_GRAY
-        font.draw(batch, "状态: $lifecycle", 400f, 680f)
-
-        val members = info?.members ?: emptyList()
-        var seatY = 540f
-        font.data.setScale(1.3f)
-        for (seat in 0..3) {
-            val member = members.firstOrNull { it.seat == seat }
-            val seatLabel = when (seat) {
-                0 -> "东家 (Seat 0): "
-                1 -> "南家 (Seat 1): "
-                2 -> "西家 (Seat 2): "
-                else -> "北家 (Seat 3): "
-            }
-
-            if (member != null) {
-                font.color = Color.WHITE
-                val hostTag = if (member.isHost) "[房主] " else ""
-                val readyTag = if (member.isReady) " [已准备就绪]" else " [等待准备]"
-                val readyColor = if (member.isReady) Color.GREEN else Color.YELLOW
-                font.draw(batch, seatLabel + hostTag + member.playerName, 140f, seatY)
-
-                font.color = readyColor
-                font.draw(batch, readyTag, 650f, seatY)
-            } else {
-                font.color = Color.GRAY
-                font.draw(batch, seatLabel + "[等待玩家加入 / 电脑补位...]", 140f, seatY)
-            }
-            seatY -= 75f
-        }
-
-        // 底部按钮文本
-        font.color = Color.WHITE
-        drawCenteredText(batch, font, if (isMyReady) "取消就绪" else "准备就绪", btnRoomReadyToggle.x + btnRoomReadyToggle.width / 2f, btnRoomReadyToggle.y + 28f)
-        if (isHost) {
-            drawCenteredText(batch, font, "开始对局", btnRoomStart.x + btnRoomStart.width / 2f, btnRoomStart.y + 28f)
-        }
-        drawCenteredText(batch, font, "离开房间", btnRoomLeave.x + btnRoomLeave.width / 2f, btnRoomLeave.y + 28f)
-
-        statusMessage?.let {
-            font.color = Color.YELLOW
-            drawCenteredText(batch, font, it, 640f, 80f)
-        }
-        errorMessage?.let {
-            font.color = Color.RED
-            drawCenteredText(batch, font, it, 640f, 80f)
-        }
-
-        batch.end()
-    }
-
-    // ==========================================
-    // 千术秘籍与设置弹窗
+    // 千术秘籍与设置弹窗 (保留在 MenuScreen)
     // ==========================================
 
     private fun renderSecretsModal(shape: ShapeRenderer, batch: SpriteBatch, font: BitmapFont) {
@@ -664,7 +313,7 @@ class MenuScreen(
 
         font.data.setScale(1.8f)
         font.color = Color(1.0f, 0.85f, 0.35f, 1f)
-        drawCenteredText(batch, font, "-- 雀圣千术绝技秘籍 --", modalRect.x + modalRect.width / 2f, modalRect.y + 465f)
+        MenuViewDraw.drawCenteredText(batch, font, "-- 雀圣千术绝技秘籍 --", modalRect.x + modalRect.width / 2f, modalRect.y + 465f)
 
         font.data.setScale(0.92f)
         font.color = Color.WHITE
@@ -681,7 +330,7 @@ class MenuScreen(
         font.draw(batch, "注意: 立直后、非本人回合或思考超时禁止施展千术，请选准时机！", modalRect.x + 40f, modalRect.y + 195f)
 
         font.color = Color.WHITE
-        drawCenteredText(batch, font, "关闭 [X]", btnModalClose.x + btnModalClose.width / 2f, btnModalClose.y + 26f)
+        MenuViewDraw.drawCenteredText(batch, font, "关闭 [X]", btnModalClose.x + btnModalClose.width / 2f, btnModalClose.y + 26f)
 
         batch.end()
     }
@@ -692,7 +341,7 @@ class MenuScreen(
 
         font.data.setScale(1.8f)
         font.color = Color(1.0f, 0.85f, 0.35f, 1f)
-        drawCenteredText(batch, font, "-- 游戏设置 --", modalRect.x + modalRect.width / 2f, modalRect.y + 450f)
+        MenuViewDraw.drawCenteredText(batch, font, "-- 游戏设置 --", modalRect.x + modalRect.width / 2f, modalRect.y + 450f)
 
         font.data.setScale(1.2f)
         font.color = Color.WHITE
@@ -701,7 +350,7 @@ class MenuScreen(
         font.draw(batch, "对局思考时钟 : 20秒每局储备 + 3秒每次思考缓冲", modalRect.x + 80f, modalRect.y + 250f)
         font.draw(batch, "网络通信架构 : 本地进程权威宿主 / 远端 TCP 协议", modalRect.x + 80f, modalRect.y + 190f)
 
-        drawCenteredText(batch, font, "关闭 [X]", btnModalClose.x + btnModalClose.width / 2f, btnModalClose.y + 26f)
+        MenuViewDraw.drawCenteredText(batch, font, "关闭 [X]", btnModalClose.x + btnModalClose.width / 2f, btnModalClose.y + 26f)
 
         batch.end()
     }
@@ -716,37 +365,272 @@ class MenuScreen(
         shape.color = Color(0.08f, 0.16f, 0.12f, 0.98f)
         shape.rect(modalRect.x, modalRect.y, modalRect.width, modalRect.height)
 
-        drawButton(shape, btnModalClose, isPrimary = false)
+        MenuViewDraw.drawButton(shape, btnModalClose, isPrimary = false)
 
         shape.end()
     }
 
     // ==========================================
-    // 渲染辅助函数
+    // 业务流与大厅交互 (MenuScreen 唯一拥有)
     // ==========================================
 
-    private fun drawButton(shape: ShapeRenderer, rect: Rectangle, isPrimary: Boolean) {
-        if (isPrimary) {
-            shape.color = Color(0.82f, 0.22f, 0.15f, 1f)
-        } else {
-            shape.color = Color(0.12f, 0.24f, 0.18f, 1f)
+    private fun startSinglePlay() {
+        statusMessage = "正在初始化单机对局..."
+        errorMessage = null
+        val gen = ++requestGeneration
+        var targetLobby: LobbySession? = null
+        navigation.openLocalLobby().thenCompose { lobby ->
+            targetLobby = lobby
+            attachLobby(lobby)
+            val defaultCosts = mapOf(
+                "TILE_MARK" to 10,
+                "SLEEVE_BLOOM" to 10,
+                "BEAM_SWAP" to 10
+            )
+            lobby.createRoom(playerName = "玩家", config = MatchConfig(
+                cheatEconomy = CheatEconomyConfig(
+                    enabled = true,
+                    initialPoints = List(4) { 100 },
+                    costs = defaultCosts
+                ),
+                shuffleConfig = ShuffleConfig(enabled = true),
+                tileMarkConfig = TileMarkConfig(enabled = true),
+                sleeveBloomConfig = SleeveBloomConfig(enabled = true),
+                beamSwapConfig = BeamSwapConfig(enabled = true)
+            ))
+        }.thenCompose { snap ->
+            myViewerSeat = snap.viewerSeat
+            myRole = ClientRole.PLAYER
+            hasNavigatedToTable = false
+            targetLobby!!.start()
+        }.whenComplete { receipt, err ->
+            runOnUi(gen) {
+                statusMessage = null
+                if (err != null) {
+                    errorMessage = "单机启动失败: ${err.message}"
+                } else if (receipt?.status == ReceiptStatus.APPLIED) {
+                    if (!hasNavigatedToTable) {
+                        hasNavigatedToTable = true
+                        navigation.showPlayerTable()
+                    }
+                } else {
+                    errorMessage = "单机开赛被拒绝: ${receipt?.reason ?: receipt?.status}"
+                }
+            }
         }
-        shape.rect(rect.x, rect.y, rect.width, rect.height)
     }
 
-    private fun drawInputBox(shape: ShapeRenderer, rect: Rectangle, isActive: Boolean) {
-        shape.color = if (isActive) Color(0.15f, 0.35f, 0.25f, 1f) else Color(0.08f, 0.18f, 0.12f, 1f)
-        shape.rect(rect.x, rect.y, rect.width, rect.height)
+    private fun openLobbyFlow() {
+        if (activeLobby != null) {
+            currentState = MenuState.LOBBY
+            refreshRoomList()
+        } else {
+            currentState = MenuState.TCP_CONNECT_DIALOG
+        }
     }
 
-    private fun drawCenteredText(batch: SpriteBatch, font: BitmapFont, text: String, cx: Float, cy: Float) {
-        glyphLayout.setText(font, text)
-        font.draw(batch, text, cx - glyphLayout.width / 2f, cy)
+    private fun connectRemoteLobby(host: String, port: Int) {
+        currentState = MenuState.CONNECTING
+        errorMessage = null
+        val gen = ++requestGeneration
+        navigation.openRemoteLobby(host, port).whenComplete { lobby, err ->
+            val task = Runnable {
+                if (isDisposed || gen != requestGeneration) {
+                    lobby?.close()
+                    return@Runnable
+                }
+                if (err != null || lobby == null) {
+                    currentState = MenuState.TCP_CONNECT_DIALOG
+                    errorMessage = "TCP 连接失败: ${err?.message ?: "未知错误"}"
+                } else {
+                    attachLobby(lobby)
+                    currentState = MenuState.LOBBY
+                    refreshRoomList()
+                }
+            }
+            val app = Gdx.app
+            if (app != null) app.postRunnable(task) else task.run()
+        }
     }
 
-    // ==========================================
-    // 业务流与大厅交互
-    // ==========================================
+    private fun disconnectLobbyAndReturn() {
+        statusMessage = "正在断开大厅连接..."
+        errorMessage = null
+        val lobbyToClose = activeLobby
+        detachLobby()
+        lobbyToClose?.close()
+        navigation.leaveToMenu().whenComplete { _, _ ->
+            runOnUi {
+                statusMessage = null
+                currentState = MenuState.MAIN
+            }
+        }
+    }
+
+    private fun joinSelectedRoom() {
+        val room = selectedRoom ?: return
+        val lobby = activeLobby ?: return
+        statusMessage = "正在加入房间 ${room.roomId}..."
+        val gen = ++requestGeneration
+        lobby.joinRoom(room.roomId, playerName = "玩家").whenComplete { snap, err ->
+            runOnUi(gen) {
+                statusMessage = null
+                if (err != null) {
+                    errorMessage = "加入失败: ${err.message}"
+                } else if (snap != null) {
+                    myViewerSeat = snap.viewerSeat
+                    myRole = ClientRole.PLAYER
+                    hasNavigatedToTable = false
+                    currentState = MenuState.ROOM
+                    fetchRoomInfo()
+                }
+            }
+        }
+    }
+
+    private fun spectateSelectedRoom() {
+        val room = selectedRoom ?: return
+        val lobby = activeLobby ?: return
+        statusMessage = "正在加入观战 ${room.roomId}..."
+        val gen = ++requestGeneration
+        lobby.joinSpectator(room.roomId, spectatorName = "观战者").whenComplete { _, err ->
+            runOnUi(gen) {
+                statusMessage = null
+                if (err != null) {
+                    errorMessage = "观战加入失败: ${err.message}"
+                } else {
+                    myViewerSeat = null
+                    myRole = ClientRole.SPECTATOR
+                    hasNavigatedToTable = true
+                    navigation.showSpectatorTable()
+                }
+            }
+        }
+    }
+
+    private fun createRoomWithConfig(isHanchan: Boolean, shuffleEnabled: Boolean) {
+        val lobby = activeLobby ?: return
+        val defaultCosts = mapOf(
+            "TILE_MARK" to 10,
+            "SLEEVE_BLOOM" to 10,
+            "BEAM_SWAP" to 10
+        )
+        val config = MatchConfig(
+            handsPerWind = 4,
+            winds = if (isHanchan) listOf(1, 2) else listOf(1),
+            cheatEconomy = CheatEconomyConfig(
+                enabled = true,
+                initialPoints = List(4) { 100 },
+                costs = defaultCosts
+            ),
+            shuffleConfig = ShuffleConfig(enabled = shuffleEnabled),
+            tileMarkConfig = TileMarkConfig(enabled = true),
+            sleeveBloomConfig = SleeveBloomConfig(enabled = true),
+            beamSwapConfig = BeamSwapConfig(enabled = true)
+        )
+        statusMessage = "正在创建房间..."
+        val gen = ++requestGeneration
+        lobby.createRoom(playerName = "房主", config = config).whenComplete { snap, err ->
+            runOnUi(gen) {
+                statusMessage = null
+                if (err != null) {
+                    errorMessage = "创建房间失败: ${err.message}"
+                } else if (snap != null) {
+                    myViewerSeat = snap.viewerSeat
+                    myRole = ClientRole.PLAYER
+                    isHost = true
+                    hasNavigatedToTable = false
+                    currentState = MenuState.ROOM
+                    fetchRoomInfo()
+                }
+            }
+        }
+    }
+
+    private fun joinRoomById(roomId: String) {
+        val lobby = activeLobby ?: return
+        if (roomId.isBlank()) {
+            errorMessage = "请输入房间号"
+            return
+        }
+        statusMessage = "正在加入房间 $roomId..."
+        val gen = ++requestGeneration
+        lobby.joinRoom(roomId, playerName = "玩家").whenComplete { snap, err ->
+            runOnUi(gen) {
+                statusMessage = null
+                if (err != null) {
+                    errorMessage = "加入失败: ${err.message}"
+                } else if (snap != null) {
+                    myViewerSeat = snap.viewerSeat
+                    myRole = ClientRole.PLAYER
+                    hasNavigatedToTable = false
+                    currentState = MenuState.ROOM
+                    fetchRoomInfo()
+                }
+            }
+        }
+    }
+
+    private fun toggleReadyState() {
+        val lobby = activeLobby ?: return
+        val nextReady = !isMyReady
+        val gen = ++requestGeneration
+        lobby.setReady(nextReady).whenComplete { receipt, err ->
+            runOnUi(gen) {
+                if (err == null && receipt.status == ReceiptStatus.APPLIED) {
+                    isMyReady = nextReady
+                }
+            }
+        }
+    }
+
+    private fun startRoomMatch() {
+        val lobby = activeLobby ?: return
+        if (!isHost) return
+        statusMessage = "正在开始比赛..."
+        val gen = ++requestGeneration
+        lobby.start().whenComplete { receipt, err ->
+            runOnUi(gen) {
+                statusMessage = null
+                if (err != null) {
+                    errorMessage = "开赛失败: ${err.message}"
+                } else if (receipt.status == ReceiptStatus.APPLIED) {
+                    if (myRole == ClientRole.PLAYER && !hasNavigatedToTable) {
+                        hasNavigatedToTable = true
+                        navigation.showPlayerTable()
+                    }
+                } else {
+                    errorMessage = "开赛被拒绝: ${receipt.reason ?: "所有玩家尚未准备"}"
+                }
+            }
+        }
+    }
+
+    private fun leaveCurrentRoom() {
+        val lobby = activeLobby ?: return
+        statusMessage = "正在离开房间..."
+        errorMessage = null
+        val gen = ++requestGeneration
+        lobby.leaveRoom().whenComplete { receipt, err ->
+            runOnUi(gen) {
+                statusMessage = null
+                if (err != null) {
+                    errorMessage = "离开房间失败: ${err.message}"
+                } else if (receipt?.status == ReceiptStatus.APPLIED) {
+                    currentRoomInfo = null
+                    myViewerSeat = null
+                    myRole = ClientRole.NONE
+                    isMyReady = false
+                    isHost = false
+                    hasNavigatedToTable = false
+                    currentState = MenuState.LOBBY
+                    refreshRoomList()
+                } else {
+                    errorMessage = "离开房间被拒绝: ${receipt?.reason ?: receipt?.status}"
+                }
+            }
+        }
+    }
 
     private fun refreshRoomList() {
         val lobby = activeLobby ?: return
@@ -786,6 +670,16 @@ class MenuScreen(
         }
     }
 
+    private fun fetchRoomInfo() {
+        activeLobby?.getRoomInfo()?.whenComplete { info, _ ->
+            Gdx.app?.postRunnable {
+                if (info != null) {
+                    onRoomInfoUpdated(info)
+                }
+            }
+        }
+    }
+
     // ==========================================
     // 交互输入事件响应
     // ==========================================
@@ -804,370 +698,16 @@ class MenuScreen(
         }
 
         when (currentState) {
-            MenuState.MAIN -> handleTouchMain(tx, ty)
-            MenuState.TCP_CONNECT_DIALOG -> handleTouchTcpDialog(tx, ty)
-            MenuState.LOBBY -> handleTouchLobby(tx, ty)
-            MenuState.CREATE_ROOM_DIALOG -> handleTouchCreateDialog(tx, ty)
-            MenuState.JOIN_ROOM_DIALOG -> handleTouchJoinDialog(tx, ty)
-            MenuState.ROOM -> handleTouchRoom(tx, ty)
+            MenuState.MAIN -> mainMenuView.handleTouch(tx, ty)
+            MenuState.TCP_CONNECT_DIALOG -> connectDialogView.handleTouch(tx, ty)
+            MenuState.LOBBY -> lobbyListView.handleTouch(tx, ty, roomList, selectedRoom != null)
+            MenuState.CREATE_ROOM_DIALOG -> createRoomDialogView.handleTouch(tx, ty)
+            MenuState.JOIN_ROOM_DIALOG -> joinRoomDialogView.handleTouch(tx, ty)
+            MenuState.ROOM -> roomPreparationView.handleTouch(tx, ty, isHost)
             MenuState.SECRETS_MODAL, MenuState.SETTINGS_MODAL -> handleTouchModal(tx, ty)
             else -> {}
         }
         return true
-    }
-
-    private fun handleTouchMain(tx: Float, ty: Float) {
-        if (btnPlaySingle.contains(tx, ty)) {
-            // 单机快速建房并进入牌桌
-            statusMessage = "正在初始化单机对局..."
-            errorMessage = null
-            val gen = ++requestGeneration
-            var targetLobby: LobbySession? = null
-            navigation.openLocalLobby().thenCompose { lobby ->
-                targetLobby = lobby
-                attachLobby(lobby)
-                val defaultCosts = mapOf(
-                    "TILE_MARK" to 10,
-                    "SLEEVE_BLOOM" to 10,
-                    "BEAM_SWAP" to 10
-                )
-                lobby.createRoom(playerName = "玩家", config = MatchConfig(
-                    cheatEconomy = CheatEconomyConfig(
-                        enabled = true,
-                        initialPoints = List(4) { 100 },
-                        costs = defaultCosts
-                    ),
-                    shuffleConfig = ShuffleConfig(enabled = true),
-                    tileMarkConfig = TileMarkConfig(enabled = true),
-                    sleeveBloomConfig = SleeveBloomConfig(enabled = true),
-                    beamSwapConfig = BeamSwapConfig(enabled = true)
-                ))
-            }.thenCompose { snap ->
-                myViewerSeat = snap.viewerSeat
-                myRole = ClientRole.PLAYER
-                hasNavigatedToTable = false
-                targetLobby!!.start()
-            }.whenComplete { receipt, err ->
-                runOnUi(gen) {
-                    statusMessage = null
-                    if (err != null) {
-                        errorMessage = "单机启动失败: ${err.message}"
-                    } else if (receipt?.status == ReceiptStatus.APPLIED) {
-                        if (!hasNavigatedToTable) {
-                            hasNavigatedToTable = true
-                            navigation.showPlayerTable()
-                        }
-                    } else {
-                        errorMessage = "单机开赛被拒绝: ${receipt?.reason ?: receipt?.status}"
-                    }
-                }
-            }
-            return
-        }
-        if (btnOpenLobby.contains(tx, ty)) {
-            if (activeLobby != null) {
-                currentState = MenuState.LOBBY
-                refreshRoomList()
-            } else {
-                currentState = MenuState.TCP_CONNECT_DIALOG
-            }
-            return
-        }
-        if (btnSkin.contains(tx, ty)) {
-            assets.skinManager.toggleSkin()
-            return
-        }
-        if (btnSecrets.contains(tx, ty)) {
-            currentState = MenuState.SECRETS_MODAL
-            return
-        }
-        if (btnSettings.contains(tx, ty)) {
-            currentState = MenuState.SETTINGS_MODAL
-            return
-        }
-        if (btnExit.contains(tx, ty)) {
-            navigation.exitGame()
-            return
-        }
-    }
-
-    private fun handleTouchTcpDialog(tx: Float, ty: Float) {
-        if (rectHostInput.contains(tx, ty)) {
-            activeInput = ActiveInput.HOST
-            return
-        }
-        if (rectPortInput.contains(tx, ty)) {
-            activeInput = ActiveInput.PORT
-            return
-        }
-        if (btnTcpConnect.contains(tx, ty)) {
-            val port = inputPort.toIntOrNull() ?: 8080
-            currentState = MenuState.CONNECTING
-            errorMessage = null
-            val gen = ++requestGeneration
-            navigation.openRemoteLobby(inputHost, port).whenComplete { lobby, err ->
-                val task = Runnable {
-                    if (isDisposed || gen != requestGeneration) {
-                        lobby?.close()
-                        return@Runnable
-                    }
-                    if (err != null || lobby == null) {
-                        currentState = MenuState.TCP_CONNECT_DIALOG
-                        errorMessage = "TCP 连接失败: ${err?.message ?: "未知错误"}"
-                    } else {
-                        attachLobby(lobby)
-                        currentState = MenuState.LOBBY
-                        refreshRoomList()
-                    }
-                }
-                val app = Gdx.app
-                if (app != null) app.postRunnable(task) else task.run()
-            }
-            return
-        }
-        if (btnTcpCancel.contains(tx, ty)) {
-            requestGeneration++
-            currentState = MenuState.MAIN
-            return
-        }
-        activeInput = ActiveInput.NONE
-    }
-
-    private fun handleTouchLobby(tx: Float, ty: Float) {
-        if (btnLobbyCreateRoom.contains(tx, ty)) {
-            currentState = MenuState.CREATE_ROOM_DIALOG
-            return
-        }
-        if (btnLobbyJoinById.contains(tx, ty)) {
-            inputRoomId = ""
-            activeInput = ActiveInput.ROOM_ID
-            currentState = MenuState.JOIN_ROOM_DIALOG
-            return
-        }
-        if (btnLobbyRefresh.contains(tx, ty)) {
-            refreshRoomList()
-            return
-        }
-        if (btnLobbyBack.contains(tx, ty)) {
-            statusMessage = "正在断开大厅连接..."
-            errorMessage = null
-            val lobbyToClose = activeLobby
-            detachLobby()
-            lobbyToClose?.close()
-            navigation.leaveToMenu().whenComplete { _, _ ->
-                runOnUi {
-                    statusMessage = null
-                    currentState = MenuState.MAIN
-                }
-            }
-            return
-        }
-
-        // 房间列表项点击
-        if (rectRoomListPanel.contains(tx, ty)) {
-            var rowY = rectRoomListPanel.y + rectRoomListPanel.height - 65f
-            for (room in roomList.take(8)) {
-                if (ty in (rowY - 20f)..(rowY + 20f)) {
-                    selectedRoom = room
-                    return
-                }
-                rowY -= 40f
-            }
-        }
-
-        val room = selectedRoom
-        if (room != null) {
-            if (btnJoinSelected.contains(tx, ty)) {
-                val lobby = activeLobby ?: return
-                statusMessage = "正在加入房间 ${room.roomId}..."
-                val gen = ++requestGeneration
-                lobby.joinRoom(room.roomId, playerName = "玩家").whenComplete { snap, err ->
-                    runOnUi(gen) {
-                        statusMessage = null
-                        if (err != null) {
-                            errorMessage = "加入失败: ${err.message}"
-                        } else if (snap != null) {
-                            myViewerSeat = snap.viewerSeat
-                            myRole = ClientRole.PLAYER
-                            hasNavigatedToTable = false
-                            currentState = MenuState.ROOM
-                            fetchRoomInfo()
-                        }
-                    }
-                }
-                return
-            }
-            if (btnSpectateSelected.contains(tx, ty)) {
-                val lobby = activeLobby ?: return
-                statusMessage = "正在加入观战 ${room.roomId}..."
-                val gen = ++requestGeneration
-                lobby.joinSpectator(room.roomId, spectatorName = "观战者").whenComplete { _, err ->
-                    runOnUi(gen) {
-                        statusMessage = null
-                        if (err != null) {
-                            errorMessage = "观战加入失败: ${err.message}"
-                        } else {
-                            myViewerSeat = null
-                            myRole = ClientRole.SPECTATOR
-                            hasNavigatedToTable = true
-                            navigation.showSpectatorTable()
-                        }
-                    }
-                }
-                return
-            }
-        }
-    }
-
-    private fun handleTouchCreateDialog(tx: Float, ty: Float) {
-        if (btnCfgWind.contains(tx, ty)) {
-            cfgIsHanchan = !cfgIsHanchan
-            return
-        }
-        if (btnCfgShuffle.contains(tx, ty)) {
-            cfgShuffleCheating = !cfgShuffleCheating
-            return
-        }
-        if (btnCreateConfirm.contains(tx, ty)) {
-            val lobby = activeLobby ?: return
-            val defaultCosts = mapOf(
-                "TILE_MARK" to 10,
-                "SLEEVE_BLOOM" to 10,
-                "BEAM_SWAP" to 10
-            )
-            val config = MatchConfig(
-                handsPerWind = 4,
-                winds = if (cfgIsHanchan) listOf(1, 2) else listOf(1),
-                cheatEconomy = CheatEconomyConfig(
-                    enabled = true,
-                    initialPoints = List(4) { 100 },
-                    costs = defaultCosts
-                ),
-                shuffleConfig = ShuffleConfig(enabled = cfgShuffleCheating),
-                tileMarkConfig = TileMarkConfig(enabled = true),
-                sleeveBloomConfig = SleeveBloomConfig(enabled = true),
-                beamSwapConfig = BeamSwapConfig(enabled = true)
-            )
-            statusMessage = "正在创建房间..."
-            val gen = ++requestGeneration
-            lobby.createRoom(playerName = "房主", config = config).whenComplete { snap, err ->
-                runOnUi(gen) {
-                    statusMessage = null
-                    if (err != null) {
-                        errorMessage = "创建房间失败: ${err.message}"
-                    } else if (snap != null) {
-                        myViewerSeat = snap.viewerSeat
-                        myRole = ClientRole.PLAYER
-                        isHost = true
-                        hasNavigatedToTable = false
-                        currentState = MenuState.ROOM
-                        fetchRoomInfo()
-                    }
-                }
-            }
-            return
-        }
-        if (btnCreateCancel.contains(tx, ty)) {
-            currentState = MenuState.LOBBY
-            return
-        }
-    }
-
-    private fun handleTouchJoinDialog(tx: Float, ty: Float) {
-        if (rectJoinRoomInput.contains(tx, ty)) {
-            activeInput = ActiveInput.ROOM_ID
-            return
-        }
-        if (btnJoinConfirm.contains(tx, ty)) {
-            val lobby = activeLobby ?: return
-            if (inputRoomId.isBlank()) {
-                errorMessage = "请输入房间号"
-                return
-            }
-            statusMessage = "正在加入房间 $inputRoomId..."
-            val gen = ++requestGeneration
-            lobby.joinRoom(inputRoomId, playerName = "玩家").whenComplete { snap, err ->
-                runOnUi(gen) {
-                    statusMessage = null
-                    if (err != null) {
-                        errorMessage = "加入失败: ${err.message}"
-                    } else if (snap != null) {
-                        myViewerSeat = snap.viewerSeat
-                        myRole = ClientRole.PLAYER
-                        hasNavigatedToTable = false
-                        currentState = MenuState.ROOM
-                        fetchRoomInfo()
-                    }
-                }
-            }
-            return
-        }
-        if (btnJoinCancel.contains(tx, ty)) {
-            currentState = MenuState.LOBBY
-            return
-        }
-        activeInput = ActiveInput.NONE
-    }
-
-    private fun handleTouchRoom(tx: Float, ty: Float) {
-        val lobby = activeLobby ?: return
-        if (btnRoomReadyToggle.contains(tx, ty)) {
-            val nextReady = !isMyReady
-            val gen = ++requestGeneration
-            lobby.setReady(nextReady).whenComplete { receipt, err ->
-                runOnUi(gen) {
-                    if (err == null && receipt.status == ReceiptStatus.APPLIED) {
-                        isMyReady = nextReady
-                    }
-                }
-            }
-            return
-        }
-        if (isHost && btnRoomStart.contains(tx, ty)) {
-            statusMessage = "正在开始比赛..."
-            val gen = ++requestGeneration
-            lobby.start().whenComplete { receipt, err ->
-                runOnUi(gen) {
-                    statusMessage = null
-                    if (err != null) {
-                        errorMessage = "开赛失败: ${err.message}"
-                    } else if (receipt.status == ReceiptStatus.APPLIED) {
-                        if (myRole == ClientRole.PLAYER && !hasNavigatedToTable) {
-                            hasNavigatedToTable = true
-                            navigation.showPlayerTable()
-                        }
-                    } else {
-                        errorMessage = "开赛被拒绝: ${receipt.reason ?: "所有玩家尚未准备"}"
-                    }
-                }
-            }
-            return
-        }
-        if (btnRoomLeave.contains(tx, ty)) {
-            statusMessage = "正在离开房间..."
-            errorMessage = null
-            val gen = ++requestGeneration
-            lobby.leaveRoom().whenComplete { receipt, err ->
-                runOnUi(gen) {
-                    statusMessage = null
-                    if (err != null) {
-                        errorMessage = "离开房间失败: ${err.message}"
-                    } else if (receipt?.status == ReceiptStatus.APPLIED) {
-                        currentRoomInfo = null
-                        myViewerSeat = null
-                        myRole = ClientRole.NONE
-                        isMyReady = false
-                        isHost = false
-                        hasNavigatedToTable = false
-                        currentState = MenuState.LOBBY
-                        refreshRoomList()
-                    } else {
-                        errorMessage = "离开房间被拒绝: ${receipt?.reason ?: receipt?.status}"
-                    }
-                }
-            }
-            return
-        }
     }
 
     private fun handleTouchModal(tx: Float, ty: Float) {
@@ -1183,45 +723,12 @@ class MenuScreen(
         }
     }
 
-    private fun fetchRoomInfo() {
-        activeLobby?.getRoomInfo()?.whenComplete { info, _ ->
-            Gdx.app?.postRunnable {
-                if (info != null) {
-                    onRoomInfoUpdated(info)
-                }
-            }
-        }
-    }
-
     override fun keyTyped(character: Char): Boolean {
-        when (activeInput) {
-            ActiveInput.HOST -> {
-                if (character == '\b') {
-                    if (inputHost.isNotEmpty()) inputHost = inputHost.dropLast(1)
-                } else if (character in 'a'..'z' || character in 'A'..'Z' || character in '0'..'9' || character == '.' || character == '-') {
-                    inputHost += character
-                }
-                return true
-            }
-            ActiveInput.PORT -> {
-                if (character == '\b') {
-                    if (inputPort.isNotEmpty()) inputPort = inputPort.dropLast(1)
-                } else if (character in '0'..'9') {
-                    if (inputPort.length < 5) inputPort += character
-                }
-                return true
-            }
-            ActiveInput.ROOM_ID -> {
-                if (character == '\b') {
-                    if (inputRoomId.isNotEmpty()) inputRoomId = inputRoomId.dropLast(1)
-                } else if (character.isLetterOrDigit()) {
-                    if (inputRoomId.length < 12) inputRoomId += character
-                }
-                return true
-            }
-            ActiveInput.NONE -> {}
+        return when (currentState) {
+            MenuState.TCP_CONNECT_DIALOG -> connectDialogView.keyTyped(character)
+            MenuState.JOIN_ROOM_DIALOG -> joinRoomDialogView.keyTyped(character)
+            else -> false
         }
-        return false
     }
 
     override fun keyDown(keycode: Int): Boolean {
