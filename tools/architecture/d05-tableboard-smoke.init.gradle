@@ -1,0 +1,20 @@
+// D-05 shared table board / spectator animation / public settlement real-GL smoke.
+gradle.projectsEvaluated {
+    def p = gradle.rootProject.project(':lwjgl3')
+    def out = gradle.rootProject.layout.buildDirectory.dir('d05-tableboard-smoke/classes')
+    def compile = p.tasks.register('compileD05TableBoardSmoke', JavaCompile) {
+        dependsOn p.tasks.named('classes')
+        source gradle.rootProject.files('tools/architecture/D05TableBoardSmoke.java')
+        classpath = p.sourceSets.main.runtimeClasspath
+        destinationDirectory.set(out)
+        options.release = 17
+        options.encoding = 'UTF-8'
+    }
+    p.tasks.register('d05TableBoardSmoke', JavaExec) {
+        dependsOn compile
+        classpath = p.files(out) + p.sourceSets.main.runtimeClasspath
+        mainClass = 'D05TableBoardSmoke'
+        workingDir = gradle.rootProject.file('assets')
+        systemProperty 'smoke.output', gradle.rootProject.file('build/d05-tableboard-smoke').absolutePath
+    }
+}

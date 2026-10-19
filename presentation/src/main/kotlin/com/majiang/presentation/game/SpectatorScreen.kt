@@ -18,15 +18,26 @@ import com.majiang.client.api.PublicBoardView
 import com.majiang.client.api.PublicSnapshotView
 import com.majiang.client.api.PublicSessionResultView
 import com.majiang.client.api.PublicUpdateView
+import com.majiang.client.api.SettlementDetailView
 import com.majiang.client.api.SpectatorSession
-import com.majiang.presentation.common.ClockDisplay
 import com.majiang.presentation.common.FinalResultRenderer
+import com.majiang.presentation.common.SettlementDetailPresenter
+import com.majiang.presentation.common.SettlementDetailRenderer
+import com.majiang.presentation.common.SettlementDetailRow
+import com.majiang.presentation.common.SettlementModalGeometry
+import com.majiang.presentation.common.SettlementSection
 import com.majiang.presentation.common.TableNavigation
 import com.majiang.presentation.common.UiAssets
-import com.majiang.presentation.common.render.MeldDisplayRenderer
-import com.majiang.presentation.common.render.MeldDisplayLayout
+import com.majiang.presentation.common.render.DiscardPhase
+import com.majiang.presentation.common.render.TableBoardRenderModel
+import com.majiang.presentation.common.render.TableBoardRenderer
+import com.majiang.presentation.common.render.TableBoardRenderOptions
+import com.majiang.presentation.common.render.TableBoardSyncTracker
+import com.majiang.presentation.common.render.TableBoardSyncTransition
+import com.majiang.presentation.common.render.TableBoardViewIdentity
 import com.majiang.presentation.common.render.TileDrawBuffer
 import com.majiang.presentation.common.render.TileSkin
+import com.majiang.presentation.common.render.fromPublicSnapshot
 
 /**
  * 独立观战牌桌场景 (V4 presentation.game)。
@@ -36,8 +47,9 @@ import com.majiang.presentation.common.render.TileSkin
  * 2. 独立只读公开流：仅消费 [PublicSnapshotView] 与 [PublicUpdateView]，绝不伪造或依赖私有玩家快照；
  * 3. 严格私密隔离：手牌完全按 [PublicBoardView.handTileCounts] 渲染为牌背，绝无手牌明面；
  * 4. 纯只读界面：完全不渲染吃碰杠、立直、自摸、荣和、过牌、托管、开赛、理牌或千术按钮；
- * 5. 结算与终局：仅展示公开结算事件与比赛排名总成绩，提供返回菜单导航；
- * 6. 零 engine、protocol、server 依赖。
+ * 5. 每屏独立弃牌动画/游标/重建状态：全量快照、漏包、换局/换代次只重建基线，不重播历史；
+ * 6. 结算只消费公开 settlementEvents 中已授权的公开字段与 breakdown，绝不泄漏里宝/暗牌/账本/千术；
+ * 7. 零 engine、protocol、server 依赖。
  */
 class SpectatorScreen(
     val assets: UiAssets,
@@ -63,9 +75,205 @@ class SpectatorScreen(
     var isLoading: Boolean = (currentSnapshot == null)
     private var lastClockUpdateLocalMillis: Long = System.currentTimeMillis()
 
-    @Volatile
-    var isDisposed: Boolean = false
+    /** 本屏独立的同步游标/代次/换局状态；与玩家屏或任何其他观战屏绝不共享。 */
+    private val syncTracker = TableBoardSyncTracker(
+        currentSnapshot?.let {
+            TableBoardViewIdentity(it.sessionId, it.syncEpoch, it.roundId, it.cursor)
+        }
+    )
+
+    /**
+     * 本屏独立的弃牌动画控制器。
+     *
+     * 观战始终以 viewerSeat=0 的公开相对布局绘制；起点/落点与玩家屏共用
+     * [TableBoardRenderer] 的纯几何常量，但不共享任何动画或基准状态。
+     */
+    val discardAnimationController = DiscardAnimationController(
+        startPositionProvider = { seat -> TableBoardRenderer.computeDiscardStart(seat, 0) },
+        slotPositionProvider = { seat, slotIndex ->
+            TableBoardRenderer.computeDiscardSlotPosition(seat, slotIndex, 0)
+        },
+        initialDiscards = currentSnapshot?.board?.discards ?: List(4) { emptyList() }
+    )
+
+    val isDiscardPlaybackBusy: Boolean
+        get() = discardAnimationController.isDiscardPlaybackBusy
+
+    /** 观战公开结算状态（独立于玩家屏的 currentSettlement）。 */
+    private var showSettlement = false
+    var currentSettlement: SettlementDetailView? = null
         private set
+    private var activeSettlementRoundId: String? = null
+    var settlementSection: SettlementSection = SettlementSection.YAKU
+        private set
+    var settlementPage: Int = 0
+        private set
+
+    private val finalResultRenderer = FinalResultRenderer()
+    private val settlementDetailRenderer = SettlementDetailRenderer(assets)
+
+    val isSettlementShown: Boolean get() = showSettlement
+
+    val isMatchFinished: Boolean
+        get() = currentBoard?.phase == GamePhaseView.MATCH_END ||
+            currentSnapshot?.session?.finalResult != null
+
+    val settlementPageCount: Int
+        get() {
+            val s = currentSettlement ?: return 0
+            val bd = s.breakdown
+            if (bd != null) return SettlementDetailPresenter.pageCount(bd, settlementSection)
+            val rows = legacySettlementRows(s)
+            return if (rows.isEmpty()) 1 else (rows.size + SettlementDetailPresenter.ROWS_PER_PAGE - 1) /
+                SettlementDetailPresenter.ROWS_PER_PAGE
+        }
+
+    fun visibleSettlementRows(): List<SettlementDetailRow> {
+        val s = currentSettlement ?: return emptyList()
+        val bd = s.breakdown
+        if (bd != null) {
+            return SettlementDetailPresenter.page(bd, settlementSection, settlementPage)
+        }
+        val rows = legacySettlementRows(s)
+        val fromIndex = settlementPage * SettlementDetailPresenter.ROWS_PER_PAGE
+        if (settlementPage < 0 || fromIndex >= rows.size) return emptyList()
+        val toIndex = minOf(fromIndex + SettlementDetailPresenter.ROWS_PER_PAGE, rows.size)
+        return rows.subList(fromIndex, toIndex)
+    }
+
+    private fun legacySettlementRows(s: SettlementDetailView): List<SettlementDetailRow> {
+        val font = assets.chineseFont ?: assets.font
+        val source = when {
+            s.isDraw -> listOf(if (s.drawReason.isBlank()) "流局" else "流局：${s.drawReason}")
+            s.yakuList.isEmpty() -> listOf("无役")
+            else -> s.yakuList
+        }
+        return source.flatMap { line ->
+            SettlementDetailRenderer.wrapRowText(font, line, 800f).map { SettlementDetailRow(it) }
+        }
+    }
+
+    private val unprojectVec = Vector3()
+    private var previousCatchBack = false
+    private var ownsBackCatch = false
+
+    init {
+        updateSubscription = session.onPublicUpdate { update ->
+            runOnUi {
+                onPublicUpdate(update)
+            }
+        }
+
+        disconnectSubscription = session.onDisconnect { _ ->
+            // Disconnect notification
+        }
+
+        val snap = session.currentPublicSnapshot
+        if (snap != null) {
+            currentSnapshot = snap
+            isLoading = false
+            refreshSettlement(snap, emptyList())
+        } else {
+            isLoading = true
+            session.publicSnapshot().whenComplete { s, _ ->
+                runOnUi {
+                    isLoading = false
+                    if (s != null) {
+                        applyPublicSnapshot(s, emptyList(), isFullSnapshot = true)
+                    }
+                }
+            }
+        }
+    }
+
+    fun onPublicUpdate(update: PublicUpdateView) {
+        applyPublicSnapshot(
+            snapshot = update.snapshot,
+            events = update.visibleEvents,
+            isFullSnapshot = update.isFullSnapshot
+        )
+    }
+
+    /**
+     * 应用一份公开快照。
+     *
+     * 事件顺序契约：
+     * 1. 普通连续更新（fromCursor == 上一 cursor）：仅按 visibleEvents 的权威顺序为新增弃牌入队；
+     * 2. 显式全量快照 / 首次基线 / 游标跳号 / 换会话 / 换 syncEpoch / 换局：立即清空旧动画并
+     *    以新牌河重建基线，不重播历史牌，避免旧动画掩盖新牌；
+     * 3. 重复投递（同身份同 cursor）不重复入队，避免重复执行动画动作。
+     */
+    private fun applyPublicSnapshot(
+        snapshot: PublicSnapshotView,
+        events: List<GameEventView>,
+        isFullSnapshot: Boolean
+    ) {
+        val transition = syncTracker.observe(
+            TableBoardViewIdentity(
+                snapshot.sessionId,
+                snapshot.syncEpoch,
+                snapshot.roundId,
+                snapshot.cursor
+            ),
+            isFullSnapshot = isFullSnapshot
+        )
+        val discards = snapshot.board?.discards ?: List(4) { emptyList() }
+
+        if (transition.requiresRebuild) {
+            discardAnimationController.resetBaseline(discards)
+        } else if (!transition.duplicate) {
+            discardAnimationController.checkDiscardsDiff(discards, events)
+        }
+
+        currentSnapshot = snapshot
+        lastClockUpdateLocalMillis = System.currentTimeMillis()
+        isLoading = false
+
+        refreshSettlement(snapshot, events, transition)
+    }
+
+    private fun refreshSettlement(
+        snapshot: PublicSnapshotView,
+        events: List<GameEventView>,
+        transition: TableBoardSyncTransition? = null
+    ) {
+        val stackingStarted = events.any { it is GameEventView.StackingStarted }
+        if (stackingStarted || transition?.sessionChanged == true ||
+            transition?.epochChanged == true || transition?.roundChanged == true
+        ) {
+            hideSettlement()
+        }
+
+        val target = snapshot.settlementRoundId
+        if (target != null) {
+            if (!showSettlement || activeSettlementRoundId != target) {
+                val detail = snapshot.settlementDetail
+                if (detail != null) {
+                    // 结算到达时立即收掉尚未播完的弃牌动画，避免结算遮罩下残留旧牌。
+                    discardAnimationController.fastForward(
+                        snapshot.board?.discards ?: List(4) { emptyList() }
+                    )
+                    currentSettlement = detail
+                    showSettlement = true
+                    activeSettlementRoundId = target
+                    settlementSection = SettlementSection.YAKU
+                    settlementPage = 0
+                } else {
+                    hideSettlement()
+                }
+            }
+        } else if (showSettlement && !isMatchFinished) {
+            hideSettlement()
+        }
+    }
+
+    private fun hideSettlement() {
+        showSettlement = false
+        currentSettlement = null
+        activeSettlementRoundId = null
+        settlementSection = SettlementSection.YAKU
+        settlementPage = 0
+    }
 
     private fun runOnUi(action: () -> Unit) {
         if (isDisposed) return
@@ -86,46 +294,9 @@ class SpectatorScreen(
     val backButtonRect = Rectangle(30f, 655f, 140f, 42f)
     val btnReturnToMenuRect = Rectangle(520f, 145f, 240f, 46f)
 
-    private val unprojectVec = Vector3()
-    private var previousCatchBack = false
-    private var ownsBackCatch = false
-
-    private val finalResultRenderer = FinalResultRenderer()
-
-    init {
-        updateSubscription = session.onPublicUpdate { update ->
-            runOnUi {
-                onPublicUpdate(update)
-            }
-        }
-
-        disconnectSubscription = session.onDisconnect { _ ->
-            // Disconnect notification
-        }
-
-        val snap = session.currentPublicSnapshot
-        if (snap != null) {
-            currentSnapshot = snap
-            isLoading = false
-        } else {
-            isLoading = true
-            session.publicSnapshot().whenComplete { s, _ ->
-                runOnUi {
-                    isLoading = false
-                    if (s != null) {
-                        currentSnapshot = s
-                        lastClockUpdateLocalMillis = System.currentTimeMillis()
-                    }
-                }
-            }
-        }
-    }
-
-    fun onPublicUpdate(update: PublicUpdateView) {
-        currentSnapshot = update.snapshot
-        lastClockUpdateLocalMillis = System.currentTimeMillis()
-        isLoading = false
-    }
+    @Volatile
+    var isDisposed: Boolean = false
+        private set
 
     override fun show() {
         Gdx.input?.let { input ->
@@ -137,6 +308,7 @@ class SpectatorScreen(
     }
 
     override fun hide() {
+        discardAnimationController.fastForward(currentBoard?.discards ?: List(4) { emptyList() })
         Gdx.input?.let { input ->
             if (ownsBackCatch) {
                 input.setCatchKey(Input.Keys.BACK, previousCatchBack)
@@ -149,6 +321,8 @@ class SpectatorScreen(
     }
 
     override fun render(delta: Float) {
+        discardAnimationController.update(delta)
+
         camera.update()
         Gdx.gl.glClearColor(0.06f, 0.16f, 0.12f, 1f)
         Gdx.gl.glClear(GL20.GL_COLOR_BUFFER_BIT)
@@ -161,22 +335,103 @@ class SpectatorScreen(
         // 1. 顶部返回菜单按钮
         renderBackButton(shape, batch, font)
 
-        // 2. 桌面中心信息（风局、牌山、宝牌等）
-        renderTableCenter(batch, font, chineseFont)
+        val snap = currentSnapshot
+        if (snap?.board != null) {
+            val model = TableBoardRenderModel.fromPublicSnapshot(snap)
+            val options = TableBoardRenderOptions(
+                isTileVisibleInRiver = { seat, tile, index ->
+                    discardAnimationController.isTileVisibleInRiver(seat, tile, index)
+                },
+                highlightTileId = null,
+                clockElapsedMillis = System.currentTimeMillis() - lastClockUpdateLocalMillis
+            )
 
-        // 3. 四家席位信息（分数、时钟、立直等）
-        renderSeatsInfo(batch, font)
+            // 2. 桌面中心信息（风局、牌山、宝牌等）
+            TableBoardRenderer.renderTableCenter(
+                model = model,
+                projectionMatrix = camera.combined,
+                batch = batch,
+                shape = shape,
+                font = font,
+                chineseFont = chineseFont,
+                tileSkin = tileSkin,
+                tileDrawBuffer = tileDrawBuffer,
+                options = options
+            )
 
-        // 4. 四家手牌（严格纯牌背！）
-        renderHandTileBacks(batch, shape, font)
+            // 3. 四家席位信息（分数、时钟、立直等）
+            TableBoardRenderer.renderSeatsInfo(
+                model = model,
+                projectionMatrix = camera.combined,
+                batch = batch,
+                shape = shape,
+                font = font,
+                chineseFont = chineseFont,
+                tileSkin = tileSkin,
+                tileDrawBuffer = tileDrawBuffer,
+                options = options
+            )
 
-        // 5. 四家弃牌河
-        renderDiscards(batch, shape, font)
+            // 4. 四家手牌（严格纯牌背！）
+            TableBoardRenderer.renderHandAreas(
+                model = model,
+                projectionMatrix = camera.combined,
+                batch = batch,
+                shape = shape,
+                font = font,
+                chineseFont = chineseFont,
+                tileSkin = tileSkin,
+                tileDrawBuffer = tileDrawBuffer,
+                options = options
+            )
 
-        // 6. 四家副露
-        renderMelds(batch, shape, font)
+            // 5. 四家弃牌河
+            TableBoardRenderer.renderDiscards(
+                model = model,
+                projectionMatrix = camera.combined,
+                batch = batch,
+                shape = shape,
+                font = font,
+                chineseFont = chineseFont,
+                tileSkin = tileSkin,
+                tileDrawBuffer = tileDrawBuffer,
+                options = options
+            )
 
-        // 7. 终局总成绩弹窗（比赛结束时展示）
+            // 6. 四家副露
+            TableBoardRenderer.renderMelds(
+                model = model,
+                projectionMatrix = camera.combined,
+                batch = batch,
+                shape = shape,
+                font = font,
+                chineseFont = chineseFont,
+                tileSkin = tileSkin,
+                tileDrawBuffer = tileDrawBuffer,
+                options = options
+            )
+
+            // 7. 正在飞行的弃牌（仅使用本屏独立控制器）
+            renderFlyingDiscard(batch, shape, font)
+        }
+
+        // 8. 公开结算详情
+        if (showSettlement && currentSettlement != null) {
+            settlementDetailRenderer.renderPublicDetailModal(
+                camera = camera,
+                shape = shape,
+                batch = batch,
+                fallbackFont = font,
+                tileSkin = tileSkin,
+                tileDrawBuffer = tileDrawBuffer,
+                settlement = currentSettlement!!,
+                section = settlementSection,
+                page = settlementPage,
+                currentScores = currentBoard?.scores ?: emptyList()
+            )
+        }
+
+        // 9. 终局总成绩弹窗（比赛结束时展示）
         val finalResult = currentSnapshot?.session?.finalResult
         if (finalResult != null || currentBoard?.phase == GamePhaseView.MATCH_END) {
             val board = currentBoard
@@ -200,6 +455,32 @@ class SpectatorScreen(
         }
     }
 
+    private fun renderFlyingDiscard(batch: SpriteBatch, shape: ShapeRenderer, font: BitmapFont) {
+        val anim = discardAnimationController.currentDiscardAnim ?: return
+        val pose = discardAnimationController.currentPose() ?: return
+        if (pose.phase == DiscardPhase.DONE) return
+
+        val tileW = 44f * pose.scaleX
+        val tileH = 62f * pose.scaleY
+
+        // 观战没有落汗授权，飞牌始终保持公开牌面不透明；绝不读取玩家私有标记。
+        tileSkin.appendFlyingTileDraw(
+            buf = tileDrawBuffer,
+            tile = anim.tile,
+            x = pose.x - tileW / 2f,
+            y = pose.y - tileH / 2f,
+            width = tileW,
+            height = tileH,
+            scaleX = 1f,
+            scaleY = 1f,
+            rotationDeg = 0f,
+            alpha = 1.0f
+        )
+        shape.projectionMatrix = camera.combined
+        batch.projectionMatrix = camera.combined
+        tileDrawBuffer.flush(batch, shape, font)
+    }
+
     private fun renderBackButton(shape: ShapeRenderer, batch: SpriteBatch, font: BitmapFont) {
         shape.projectionMatrix = camera.combined
         shape.begin(ShapeRenderer.ShapeType.Filled)
@@ -215,219 +496,17 @@ class SpectatorScreen(
         batch.projectionMatrix = camera.combined
         batch.begin()
         val textFont = assets.chineseFont ?: font
-        textFont.data.setScale(1.0f)
-        textFont.color = Color.WHITE
-        textFont.draw(batch, "返回大厅", backButtonRect.x + 28f, backButtonRect.y + 27f)
-        batch.end()
-    }
-
-    private fun renderTableCenter(batch: SpriteBatch, font: BitmapFont, chineseFont: BitmapFont?) {
-        val board = currentBoard ?: return
-        batch.projectionMatrix = camera.combined
-        batch.begin()
-        val textFont = chineseFont ?: font
-        val origColor = Color(textFont.color)
         val origScaleX = textFont.data.scaleX
         val origScaleY = textFont.data.scaleY
-
+        val origColor = Color(textFont.color)
         try {
-            textFont.data.setScale(1.1f)
-            textFont.color = Color(1.0f, 0.85f, 0.35f, 1f)
-            val roundWindName = listOf("東", "南", "西", "北").getOrElse(board.roundWind - 1) { "東" }
-            val roundInfo = "【观战】 $roundWindName${board.roundNumber + 1}局  本场:${board.honbaSticks}  供托:${board.riichiSticks}"
-            textFont.draw(batch, roundInfo, 510f, 400f)
-
-            textFont.color = Color(0.9f, 0.9f, 0.9f, 1f)
-            textFont.draw(batch, "牌山剩余: ${board.wallRemaining}", 570f, 370f)
-
-            textFont.color = Color(1.0f, 0.6f, 0.2f, 1f)
-            textFont.draw(batch, "宝牌指示牌:", 520f, 340f)
+            textFont.data.setScale(1.0f)
+            textFont.color = Color.WHITE
+            textFont.draw(batch, "返回大厅", backButtonRect.x + 28f, backButtonRect.y + 27f)
         } finally {
             textFont.data.setScale(origScaleX, origScaleY)
             textFont.color = origColor
-        }
-        batch.end()
-
-        for (i in board.doraIndicators.indices) {
-            val tile = board.doraIndicators[i]
-            tileSkin.appendTileDraw(
-                buf = tileDrawBuffer,
-                tile = tile,
-                x = 640f + i * 32f,
-                y = 315f,
-                width = 28f,
-                height = 38f,
-                isHover = false,
-                isDrawn = false
-            )
-        }
-        assets.shapeRenderer.projectionMatrix = camera.combined
-        batch.projectionMatrix = camera.combined
-        tileDrawBuffer.flush(batch, assets.shapeRenderer, font)
-    }
-
-    private fun renderSeatsInfo(batch: SpriteBatch, font: BitmapFont) {
-        val board = currentBoard ?: return
-        val clocks = currentSnapshot?.clocks ?: emptyList()
-        val elapsed = System.currentTimeMillis() - lastClockUpdateLocalMillis
-
-        for (seat in 0..3) {
-            val clock = clocks.firstOrNull { it.seat == seat }
-            val formattedClock = ClockDisplay.format(clock, elapsed)
-            val score = board.scores.getOrElse(seat) { 25000 }
-            val isRiichi = board.riichiStatus.getOrElse(seat) { false }
-            val isCurrent = (board.currentTurnPlayer == seat)
-
-            val (x, y) = when (seat) {
-                0 -> Pair(40f, 80f)
-                1 -> Pair(1150f, 400f)
-                2 -> Pair(640f, 670f)
-                3 -> Pair(40f, 400f)
-                else -> Pair(40f, 80f)
-            }
-
-            batch.projectionMatrix = camera.combined
-            batch.begin()
-            font.data.setScale(0.95f)
-            font.color = if (isCurrent) Color(1.0f, 0.95f, 0.4f, 1f) else Color.WHITE
-            font.draw(batch, "P$seat: $score", x, y)
-            font.color = if (formattedClock.isUrgent) Color.RED else Color(0.7f, 1.0f, 0.8f, 1f)
-            font.draw(batch, formattedClock.displayText, x, y - 18f)
-
-            if (isRiichi) {
-                font.color = Color(1.0f, 0.4f, 0.4f, 1f)
-                font.draw(batch, "[RIICHI]", x, y - 36f)
-            }
             batch.end()
-        }
-    }
-
-    private fun renderHandTileBacks(batch: SpriteBatch, shape: ShapeRenderer, font: BitmapFont) {
-        val board = currentBoard ?: return
-
-        for (seat in 0..3) {
-            val count = board.handTileCounts.getOrElse(seat) { 13 }
-            if (count <= 0) continue
-
-            when (seat) {
-                0 -> {
-                    // 底端席位手牌背面
-                    val startX = 260f
-                    val y = 40f
-                    val tileW = 44f
-                    val tileH = 62f
-                    for (i in 0 until count) {
-                        tileSkin.appendTileBackDraw(
-                            buf = tileDrawBuffer,
-                            x = startX + i * 48f,
-                            y = y,
-                            width = tileW,
-                            height = tileH
-                        )
-                    }
-                }
-                1 -> {
-                    // 右侧席位手牌背面
-                    val x = 1190f
-                    val startY = 220f
-                    val tileW = 42f
-                    val tileH = 26f
-                    for (i in 0 until count) {
-                        tileSkin.appendTileBackDraw(
-                            buf = tileDrawBuffer,
-                            x = x,
-                            y = startY + i * 28f,
-                            width = tileW,
-                            height = tileH
-                        )
-                    }
-                }
-                2 -> {
-                    // 顶端席位手牌背面
-                    val startX = 860f
-                    val y = 620f
-                    val tileW = 44f
-                    val tileH = 62f
-                    for (i in 0 until count) {
-                        tileSkin.appendTileBackDraw(
-                            buf = tileDrawBuffer,
-                            x = startX - i * 48f,
-                            y = y,
-                            width = tileW,
-                            height = tileH
-                        )
-                    }
-                }
-                3 -> {
-                    // 左侧席位手牌背面
-                    val x = 50f
-                    val startY = 480f
-                    val tileW = 42f
-                    val tileH = 26f
-                    for (i in 0 until count) {
-                        tileSkin.appendTileBackDraw(
-                            buf = tileDrawBuffer,
-                            x = x,
-                            y = startY - i * 28f,
-                            width = tileW,
-                            height = tileH
-                        )
-                    }
-                }
-            }
-        }
-
-        shape.projectionMatrix = camera.combined
-        batch.projectionMatrix = camera.combined
-        tileDrawBuffer.flush(batch, shape, font)
-    }
-
-    private fun renderDiscards(batch: SpriteBatch, shape: ShapeRenderer, font: BitmapFont) {
-        val board = currentBoard ?: return
-        for (seat in 0..3) {
-            val discards = board.discards.getOrElse(seat) { emptyList() }
-            for (i in discards.indices) {
-                val tile = discards[i]
-                val pos = getDiscardSlotPosition(seat, i)
-                tileSkin.appendTileDraw(
-                    buf = tileDrawBuffer,
-                    tile = tile,
-                    x = pos.first,
-                    y = pos.second,
-                    width = 38f,
-                    height = 52f,
-                    isHover = false,
-                    isDrawn = false
-                )
-            }
-        }
-        shape.projectionMatrix = camera.combined
-        batch.projectionMatrix = camera.combined
-        tileDrawBuffer.flush(batch, shape, font)
-    }
-
-    private fun renderMelds(batch: SpriteBatch, shape: ShapeRenderer, font: BitmapFont) {
-        val board = currentBoard ?: return
-        val groups = MeldDisplayLayout.layoutAll(board.melds, viewerSeat = 0)
-        if (groups.isEmpty()) return
-        MeldDisplayRenderer.append(tileDrawBuffer, tileSkin, groups)
-        shape.projectionMatrix = camera.combined
-        batch.projectionMatrix = camera.combined
-        tileDrawBuffer.flush(batch, shape, font)
-    }
-
-    private fun getDiscardSlotPosition(seat: Int, slotIndex: Int): Pair<Float, Float> {
-        val col = slotIndex % 6
-        val row = slotIndex / 6
-        val tileW = 38f
-        val tileH = 52f
-
-        return when (seat % 4) {
-            0 -> Pair(480f + col * (tileW + 2f), 240f - row * (tileH + 4f))
-            1 -> Pair(780f + row * (tileH + 4f), 280f + col * (tileW + 2f))
-            2 -> Pair(700f - col * (tileW + 2f), 480f + row * (tileH + 4f))
-            3 -> Pair(420f - row * (tileH + 4f), 440f - col * (tileW + 2f))
-            else -> Pair(480f, 240f)
         }
     }
 
@@ -457,6 +536,11 @@ class SpectatorScreen(
             return true
         }
 
+        if (showSettlement && currentSettlement != null) {
+            handleSettlementTouch(tx, ty)
+            return true
+        }
+
         val isFinished = (currentSnapshot?.session?.finalResult != null || currentBoard?.phase == GamePhaseView.MATCH_END)
         if (isFinished && btnReturnToMenuRect.contains(tx, ty)) {
             leaveToMenu()
@@ -464,6 +548,37 @@ class SpectatorScreen(
         }
 
         return true // 观战拦截所有其他点击，防止任何非预期操作
+    }
+
+    /**
+     * 公开结算只允许在公开页面/标签间导航，绝不提交任何游戏动作。
+     */
+    private fun handleSettlementTouch(tx: Float, ty: Float) {
+        val breakdown = currentSettlement?.breakdown
+        if (breakdown != null) {
+            if (SettlementModalGeometry.TAB_YAKU_RECT.contains(tx, ty)) {
+                settlementSection = SettlementSection.YAKU
+                settlementPage = 0
+                return
+            }
+            if (SettlementModalGeometry.TAB_DORA_RECT.contains(tx, ty)) {
+                settlementSection = SettlementSection.DORA
+                settlementPage = 0
+                return
+            }
+            if (SettlementModalGeometry.TAB_CALC_RECT.contains(tx, ty)) {
+                settlementSection = SettlementSection.CALC
+                settlementPage = 0
+                return
+            }
+        }
+        if (SettlementModalGeometry.BTN_PREV_PAGE_RECT.contains(tx, ty)) {
+            if (settlementPage > 0) settlementPage--
+            return
+        }
+        if (SettlementModalGeometry.BTN_NEXT_PAGE_RECT.contains(tx, ty)) {
+            if (settlementPage < settlementPageCount - 1) settlementPage++
+        }
     }
 
     private fun leaveToMenu() {
@@ -481,6 +596,8 @@ class SpectatorScreen(
         updateSubscription = null
         disconnectSubscription?.close()
         disconnectSubscription = null
+        discardAnimationController.fastForward()
+        settlementDetailRenderer.dispose()
         Gdx.input?.let { input ->
             if (ownsBackCatch) {
                 input.setCatchKey(Input.Keys.BACK, previousCatchBack)

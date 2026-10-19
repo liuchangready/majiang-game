@@ -68,6 +68,25 @@ object OpponentHandPresentation {
         return Collections.unmodifiableList(rows)
     }
 
+    /**
+     * 针对纯计数公开数据构造对手暗手牌行（供观战等无私有授权快照的场景使用）。
+     * 对 seat=(0+i)%4 (即 seat 1..3) 构造，STACKING 阶段 0 张，其余均为 HandDisplaySlot(null)。
+     */
+    fun rowsFromCounts(handTileCounts: List<Int>, phase: GamePhaseView): List<OpponentHandRow> {
+        val rows = ArrayList<OpponentHandRow>(3)
+        for (i in 1..3) {
+            val seat = i
+            val count = if (phase == GamePhaseView.STACKING) 0 else (handTileCounts.getOrNull(seat) ?: 0)
+            val slots = if (count <= 0) {
+                Collections.emptyList()
+            } else {
+                Collections.unmodifiableList(List(count) { HandDisplaySlot(null) })
+            }
+            rows.add(OpponentHandRow(seat, slots))
+        }
+        return Collections.unmodifiableList(rows)
+    }
+
     internal fun buildSlotsForSeat(
         snapshot: GameSnapshotView,
         seat: Int,
