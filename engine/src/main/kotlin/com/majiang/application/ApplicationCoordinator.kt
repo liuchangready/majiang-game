@@ -1,6 +1,8 @@
 package com.majiang.application
 
 import com.majiang.ai.AIPlayer
+import com.majiang.application.cheat.CheatEffectFactory
+import com.majiang.application.cheat.CheatLedgerCharge
 import com.majiang.ai.BasicAIStrategy
 import com.majiang.cheat.bloom.*
 import com.majiang.cheat.mark.TileMarkGroup
@@ -897,20 +899,19 @@ class ApplicationCoordinator(
                 enabled = true,
                 initialPoints = round.frozenStartingCheatPoints
             )
-            val ledgerSnapshot = CheatLedgerSnapshot(
+            val charge = CheatLedgerCharge.apply(
+                config = config,
                 balances = candidateState.cheatPoints.toList(),
-                entries = candidateState.cheatEntries.toList()
-            )
-            val ledger = CheatLedger.fromSnapshot(config, ledgerSnapshot)
-            val appliedEntry = try {
-                ledger.apply(entryId, seat, amount, reason)
-            } catch (e: Exception) {
-                return ActionResult.Rejected(RejectionReason.ACTION_NOT_AVAILABLE)
-            }
+                entries = candidateState.cheatEntries.toList(),
+                entryId = entryId,
+                seat = seat,
+                amount = amount,
+                reason = reason
+            ) ?: return ActionResult.Rejected(RejectionReason.ACTION_NOT_AVAILABLE)
 
             // 4. 更新候选状态
-            candidateState.cheatPoints[seat] = appliedEntry.balanceAfter
-            candidateState.cheatEntries.add(appliedEntry.copy())
+            candidateState.cheatPoints[seat] = charge.balanceAfter
+            candidateState.cheatEntries.add(charge.entry)
 
             // 5. 外部强不变量审计（物理牌守恒、手牌副露、非负出千点数等）
             StateInvariants.assertValid(candidateState)
@@ -920,7 +921,7 @@ class ApplicationCoordinator(
                 turnNumber = candidateState.turnNumber,
                 seat = seat,
                 amount = amount,
-                newBalance = appliedEntry.balanceAfter
+                newBalance = charge.balanceAfter
             )
             val change = RoundChange(
                 roundId = round.roundId,
@@ -1041,29 +1042,27 @@ class ApplicationCoordinator(
                 enabled = true,
                 initialPoints = round.frozenStartingCheatPoints
             )
-            val ledgerSnapshot = CheatLedgerSnapshot(
-                balances = candidateState.cheatPoints.toList(),
-                entries = candidateState.cheatEntries.toList()
-            )
-            val ledger = CheatLedger.fromSnapshot(ledgerConfig, ledgerSnapshot)
             val entryId = "mark-$seat-${request.requestId}"
-            val appliedEntry = try {
-                ledger.apply(entryId, seat, -cost, "TILE_MARK")
-            } catch (e: Exception) {
-                return ActionResult.Rejected(RejectionReason.ACTION_NOT_AVAILABLE)
-            }
+            val charge = CheatLedgerCharge.apply(
+                config = ledgerConfig,
+                balances = candidateState.cheatPoints.toList(),
+                entries = candidateState.cheatEntries.toList(),
+                entryId = entryId,
+                seat = seat,
+                amount = -cost,
+                reason = "TILE_MARK"
+            ) ?: return ActionResult.Rejected(RejectionReason.ACTION_NOT_AVAILABLE)
 
-            candidateState.cheatPoints[seat] = appliedEntry.balanceAfter
-            candidateState.cheatEntries.add(appliedEntry.copy())
+            candidateState.cheatPoints[seat] = charge.balanceAfter
+            candidateState.cheatEntries.add(charge.entry)
 
             // 创建 TileMarkGroup
-            val group = TileMarkGroup(
-                groupId = "mark-$seat-${request.requestId}",
-                ownerSeat = seat,
+            val group = CheatEffectFactory.tileMarkGroup(
+                seat = seat,
+                requestId = request.requestId,
                 tileIds = request.tileIds,
-                createdRoundId = round.roundId,
-                createdRoundOrdinal = session.tileMarkState.dealtRoundOrdinal,
-                expiresAfterRoundOrdinal = session.tileMarkState.dealtRoundOrdinal + 3
+                roundId = round.roundId,
+                dealtRoundOrdinal = session.tileMarkState.dealtRoundOrdinal
             )
 
             val sessionStep = ApprovedSessionStep.ApplyTileMark(group)
@@ -1073,7 +1072,7 @@ class ApplicationCoordinator(
                 turnNumber = candidateState.turnNumber,
                 seat = seat,
                 amount = -cost,
-                newBalance = appliedEntry.balanceAfter
+                newBalance = charge.balanceAfter
             )
             val roundChange = RoundChange(
                 roundId = round.roundId,
@@ -1241,36 +1240,35 @@ class ApplicationCoordinator(
                 enabled = true,
                 initialPoints = round.frozenStartingCheatPoints
             )
-            val ledgerSnapshot = CheatLedgerSnapshot(
-                balances = candidateState.cheatPoints.toList(),
-                entries = candidateState.cheatEntries.toList()
-            )
-            val ledger = CheatLedger.fromSnapshot(ledgerConfig, ledgerSnapshot)
             val entryId = "bloom-$seat-${request.requestId}"
-            val appliedEntry = try {
-                ledger.apply(entryId, seat, -cost, "SLEEVE_BLOOM")
-            } catch (e: Exception) {
-                return ActionResult.Rejected(RejectionReason.ACTION_NOT_AVAILABLE)
-            }
+            val charge = CheatLedgerCharge.apply(
+                config = ledgerConfig,
+                balances = candidateState.cheatPoints.toList(),
+                entries = candidateState.cheatEntries.toList(),
+                entryId = entryId,
+                seat = seat,
+                amount = -cost,
+                reason = "SLEEVE_BLOOM"
+            ) ?: return ActionResult.Rejected(RejectionReason.ACTION_NOT_AVAILABLE)
 
-            candidateState.cheatPoints[seat] = appliedEntry.balanceAfter
-            candidateState.cheatEntries.add(appliedEntry.copy())
+            candidateState.cheatPoints[seat] = charge.balanceAfter
+            candidateState.cheatEntries.add(charge.entry)
 
             candidateState.sleeveBloomUsedOnTurn = candidateState.turnNumber
-            candidateState.sleeveBloomOffer = SleeveBloomOffer(
-                offerId = "bloom-$seat-${request.requestId}",
+            candidateState.sleeveBloomOffer = CheatEffectFactory.sleeveBloomOffer(
                 seat = seat,
+                requestId = request.requestId,
                 drawKind = candidateState.lastDrawKind,
                 firstTile = drawnTile,
                 secondTile = secondTile,
-                createdTurnNumber = candidateState.turnNumber
+                turnNumber = candidateState.turnNumber
             )
 
             val event = GameEvent.CheatPointsChanged(
                 turnNumber = candidateState.turnNumber,
                 seat = seat,
                 amount = -cost,
-                newBalance = appliedEntry.balanceAfter
+                newBalance = charge.balanceAfter
             )
             val roundChange = RoundChange(
                 roundId = round.roundId,
@@ -1676,37 +1674,36 @@ class ApplicationCoordinator(
                 enabled = true,
                 initialPoints = round.frozenStartingCheatPoints
             )
-            val ledgerSnapshot = CheatLedgerSnapshot(
-                balances = candidateState.cheatPoints.toList(),
-                entries = candidateState.cheatEntries.toList()
-            )
-            val ledger = CheatLedger.fromSnapshot(ledgerConfig, ledgerSnapshot)
             val entryId = "beam-$seat-${request.requestId}"
-            val appliedEntry = try {
-                ledger.apply(entryId, seat, -cost, "BEAM_SWAP")
-            } catch (e: Exception) {
-                return ActionResult.Rejected(RejectionReason.ACTION_NOT_AVAILABLE)
-            }
+            val charge = CheatLedgerCharge.apply(
+                config = ledgerConfig,
+                balances = candidateState.cheatPoints.toList(),
+                entries = candidateState.cheatEntries.toList(),
+                entryId = entryId,
+                seat = seat,
+                amount = -cost,
+                reason = "BEAM_SWAP"
+            ) ?: return ActionResult.Rejected(RejectionReason.ACTION_NOT_AVAILABLE)
 
-            candidateState.cheatPoints[seat] = appliedEntry.balanceAfter
-            candidateState.cheatEntries.add(appliedEntry.copy())
+            candidateState.cheatPoints[seat] = charge.balanceAfter
+            candidateState.cheatEntries.add(charge.entry)
 
             candidateState.beamSwapUsedOnTurn = candidateState.turnNumber
-            candidateState.beamSwapOffer = com.majiang.cheat.beam.BeamSwapOffer(
-                offerId = "beam-$seat-${request.requestId}",
+            candidateState.beamSwapOffer = CheatEffectFactory.beamSwapOffer(
                 seat = seat,
+                requestId = request.requestId,
                 window = window,
                 candidates = candidates,
                 eligibleHandTileIds = eligibleHandTileIds,
                 drawnTileId = drawnTile.tileId,
-                createdTurnNumber = candidateState.turnNumber
+                turnNumber = candidateState.turnNumber
             )
 
             val event = GameEvent.CheatPointsChanged(
                 turnNumber = candidateState.turnNumber,
                 seat = seat,
                 amount = -cost,
-                newBalance = appliedEntry.balanceAfter
+                newBalance = charge.balanceAfter
             )
             val roundChange = RoundChange(
                 roundId = round.roundId,
@@ -2430,30 +2427,29 @@ class ApplicationCoordinator(
                 enabled = true,
                 initialPoints = round.frozenStartingCheatPoints
             )
-            val currentLedgerSnapshot = CheatLedgerSnapshot(
-                balances = candidate.cheatPoints.toList(),
-                entries = candidate.cheatEntries.toList()
-            )
-            val ledger = CheatLedger.fromSnapshot(ledgerConfig, currentLedgerSnapshot)
 
             for (seat in 0 until 4) {
                 val cost = cheatCosts[seat] ?: 0
                 if (cost > 0) {
                     val reason = costReasons[seat] ?: "shuffle_plan"
                     val entryId = "shuffle-$roundId-$seat"
-                    val appliedEntry = try {
-                        ledger.apply(entryId, seat, -cost, reason)
-                    } catch (e: Exception) {
-                        return ActionResult.Rejected(RejectionReason.ACTION_NOT_AVAILABLE)
-                    }
-                    candidate.cheatPoints[seat] = appliedEntry.balanceAfter
-                    candidate.cheatEntries.add(appliedEntry.copy())
+                    val charge = CheatLedgerCharge.apply(
+                        config = ledgerConfig,
+                        balances = candidate.cheatPoints.toList(),
+                        entries = candidate.cheatEntries.toList(),
+                        entryId = entryId,
+                        seat = seat,
+                        amount = -cost,
+                        reason = reason
+                    ) ?: return ActionResult.Rejected(RejectionReason.ACTION_NOT_AVAILABLE)
+                    candidate.cheatPoints[seat] = charge.balanceAfter
+                    candidate.cheatEntries.add(charge.entry)
 
                     val cheatEvent = GameEvent.CheatPointsChanged(
                         turnNumber = 0,
                         seat = seat,
                         amount = -cost,
-                        newBalance = appliedEntry.balanceAfter
+                        newBalance = charge.balanceAfter
                     )
                     stepEvents.add(cheatEvent)
                 }
