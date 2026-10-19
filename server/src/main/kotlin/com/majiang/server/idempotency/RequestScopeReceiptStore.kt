@@ -27,7 +27,7 @@ import java.util.concurrent.atomic.AtomicInteger
  * 6. 比较删除与闭环：在途条目采用原子比较删除，防止迟到完成删除新条目；完成时精准扣减预留容量；
  * 7. InProcessServer 共享等价入口：单机与联机复用同一套存储与幂等逻辑，避免双轨实现。
  */
-class RequestScopeReceiptStore(
+open class RequestScopeReceiptStore(
     val clock: TransportClock = TransportClock.SYSTEM,
     val maxInFlightPerMember: Int = 64,
     val maxCompletedPerMember: Int = 512,
@@ -286,7 +286,8 @@ class RequestScopeReceiptStore(
                 rawPayload = rawPayload,
                 request = request,
                 timestamp = nowMillis,
-                isSideEffect = isSideEffect
+                isSideEffect = isSideEffect,
+                isLobby = isLobby
             )
             inFlightRequests[key] = entry
             return AdmissionResult.Admitted(entry)
@@ -296,20 +297,38 @@ class RequestScopeReceiptStore(
     /**
      * 业务执行完成，归档回执并释放/消耗在途与预留容量
      */
-    fun completeReceipt(
+    open fun completeReceipt(
         key: IdempotencyKey,
         inFlight: InFlightReceipt,
         response: ApiResponse,
         grantedScope: TcpScope? = null,
         isLobby: Boolean = false,
         nowMillis: Long = clock.currentTimeMillis()
-    ) {
+    ): Boolean = completeReceipt(
+        key = key,
+        inFlight = inFlight,
+        response = response,
+        grantedScope = grantedScope,
+        isLobby = isLobby,
+        nowMillis = nowMillis,
+        completeFuture = true
+    )
+
+    open fun completeReceipt(
+        key: IdempotencyKey,
+        inFlight: InFlightReceipt,
+        response: ApiResponse,
+        grantedScope: TcpScope?,
+        isLobby: Boolean,
+        nowMillis: Long,
+        completeFuture: Boolean
+    ): Boolean {
         val shouldComplete: Boolean
         synchronized(stateLock) {
             // 1. 原子比较删除在途条目 (MR-03 / R12: 仅在成功删除时推进状态)
             val removed = inFlightRequests.remove(key, inFlight)
             if (!removed) {
-                return
+                return false
             }
             shouldComplete = true
 
@@ -317,9 +336,10 @@ class RequestScopeReceiptStore(
             memberInFlightCounters[key.principal]?.decrementAndGet()
 
             // 3. 消耗预留容量（仅扣减一次）
+            val effectiveIsLobby = isLobby || inFlight.isLobby
             if (inFlight.isSideEffect && inFlight.reservationConsumed.compareAndSet(false, true)) {
                 memberReservedCounters[key.principal]?.decrementAndGet()
-                if (isLobby) {
+                if (effectiveIsLobby) {
                     lobbySideEffectReserved.decrementAndGet()
                 }
             }
@@ -352,41 +372,58 @@ class RequestScopeReceiptStore(
         }
 
         // 5. 锁外完成在途 Future (R12: 绝不在共享锁内执行外部用户/系统回调)
-        if (shouldComplete) {
+        if (shouldComplete && completeFuture) {
             inFlight.future.complete(response)
         }
+        return shouldComplete
     }
 
     /**
      * 在途请求异常失败（例如权威超时或内部故障）
      */
-    fun failInFlight(
+    open fun failInFlight(
         key: IdempotencyKey,
         inFlight: InFlightReceipt,
         throwable: Throwable,
         isLobby: Boolean = false
-    ) {
+    ): Boolean = failInFlight(
+        key = key,
+        inFlight = inFlight,
+        throwable = throwable,
+        isLobby = isLobby,
+        completeFuture = true
+    )
+
+    open fun failInFlight(
+        key: IdempotencyKey,
+        inFlight: InFlightReceipt,
+        throwable: Throwable,
+        isLobby: Boolean,
+        completeFuture: Boolean
+    ): Boolean {
         val shouldFail: Boolean
         synchronized(stateLock) {
             val removed = inFlightRequests.remove(key, inFlight)
             if (!removed) {
-                return
+                return false
             }
             shouldFail = true
 
             memberInFlightCounters[key.principal]?.decrementAndGet()
 
+            val effectiveIsLobby = isLobby || inFlight.isLobby
             if (inFlight.isSideEffect && inFlight.reservationConsumed.compareAndSet(false, true)) {
                 memberReservedCounters[key.principal]?.decrementAndGet()
-                if (isLobby) {
+                if (effectiveIsLobby) {
                     lobbySideEffectReserved.decrementAndGet()
                 }
             }
         }
 
-        if (shouldFail) {
+        if (shouldFail && completeFuture) {
             inFlight.future.completeExceptionally(throwable)
         }
+        return shouldFail
     }
 
     /**
@@ -470,6 +507,8 @@ class RequestScopeReceiptStore(
 
     internal fun getCompletedSideEffectCount(principal: String): Int =
         synchronized(stateLock) { memberCompletedSideEffectCounts.getOrDefault(principal, 0) }
+
+    internal fun getLobbySideEffectReserved(): Int = lobbySideEffectReserved.get()
 
     internal fun hasPrincipalState(principal: String): Boolean =
         synchronized(stateLock) {

@@ -338,6 +338,35 @@ class SharedRoomTest {
     }
 
     @Test
+    fun `stale queued spectator leave rejected by session validator`() {
+        val room = SharedRoom(
+            roomId = "SPEC_STALE1",
+            hostPlayerName = "HostPlayer",
+            initialConfig = ProtocolRoomConfig(),
+            isSingleplayer = false
+        )
+        try {
+            val (specId, _) = room.joinSpectator("SpecUser").await()
+            assertTrue(room.spectators.containsKey(specId))
+
+            val staleValidator: () -> Boolean = { false }
+            val staleReceipt = room.leaveSpectator(specId, sessionValidator = staleValidator).await()
+            assertEquals(ProtocolReceiptStatus.REJECTED, staleReceipt.status)
+            assertEquals("STALE_SESSION", staleReceipt.reason)
+
+            // 确认观战者依然在房未被移出 (无副作用)
+            assertTrue(room.spectators.containsKey(specId))
+
+            // 有效验证器或无验证器正常移出
+            val okReceipt = room.leaveSpectator(specId).await()
+            assertEquals(ProtocolReceiptStatus.APPLIED, okReceipt.status)
+            assertFalse(room.spectators.containsKey(specId))
+        } finally {
+            room.close()
+        }
+    }
+
+    @Test
     fun `close terminates pending futures and resolves room`() {
         val pausedExecutor = Executors.newSingleThreadExecutor()
         val pauseLatch = CountDownLatch(1)
@@ -410,7 +439,7 @@ class SharedRoomTest {
             val joinPair = room.join("Guest1").await()
             val guestSeat = joinPair.first
             val originalToken = joinPair.second
-            val originalGen = room.bindingGenerations[guestSeat]
+            val originalGen = room.seatMemberGeneration(guestSeat)
 
             // 1. 大厅期退出
             val leaveReceipt = room.leave(guestSeat).await()
@@ -418,7 +447,7 @@ class SharedRoomTest {
 
             assertFalse(room.seatOccupied[guestSeat])
             val rotatedToken = room.resumeTokens[guestSeat]
-            val incrementedGen = room.bindingGenerations[guestSeat]
+            val incrementedGen = room.seatMemberGeneration(guestSeat)
             assertTrue(rotatedToken != originalToken, "Resume token must be rotated upon leave")
             assertTrue(incrementedGen > originalGen, "Binding generation must increment upon leave")
         } finally {

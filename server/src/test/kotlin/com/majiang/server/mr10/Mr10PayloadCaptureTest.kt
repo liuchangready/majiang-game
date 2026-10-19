@@ -14,11 +14,15 @@ class Mr10PayloadCaptureTest {
 
     private fun <T> CompletableFuture<T>.await(): T = get(10, TimeUnit.SECONDS)
 
-    private fun primaryOption(snap: ProtocolPlayerSnapshot): ProtocolActionOption? {
+    private fun primaryOption(snap: ProtocolPlayerSnapshot, allowWin: Boolean = true): ProtocolActionOption? {
         val opts = snap.decision.options
-        return opts.firstOrNull { it.action is ProtocolLegalAction.DeclareTsumo || it.action is ProtocolLegalAction.DeclareRon }
-            ?: opts.firstOrNull { it.action is ProtocolLegalAction.DeclareRiichi }
-            ?: opts.firstOrNull { it.action is ProtocolLegalAction.DiscardTile }
+        if (allowWin) {
+            val winOpt = opts.firstOrNull { it.action is ProtocolLegalAction.DeclareTsumo || it.action is ProtocolLegalAction.DeclareRon }
+            if (winOpt != null) return winOpt
+            val riichiOpt = opts.firstOrNull { it.action is ProtocolLegalAction.DeclareRiichi }
+            if (riichiOpt != null) return riichiOpt
+        }
+        return opts.firstOrNull { it.action is ProtocolLegalAction.DiscardTile }
             ?: opts.firstOrNull { it.action is ProtocolLegalAction.Pass }
             ?: opts.firstOrNull()
     }
@@ -88,11 +92,17 @@ class Mr10PayloadCaptureTest {
                         continue
                     }
                     if (snap.settlementRoundId != null) {
-                        settled = true
                         if (settlementUpdate == null) {
                             settlementUpdate = ProtocolPlayerUpdate(snap, snap.cursor, emptyList(), true)
                         }
-                        break
+                        if (lateGameUpdate != null) {
+                            settled = true
+                            break
+                        }
+                    }
+
+                    if (lateGameUpdate == null && seat == 0 && snap.view.wallRemaining in 5..25) {
+                        lateGameUpdate = ProtocolPlayerUpdate(snap, snap.cursor, emptyList(), true)
                     }
 
                     // 1. 码牌准备阶段
@@ -177,7 +187,7 @@ class Mr10PayloadCaptureTest {
                     }
 
                     // 4. 常规打牌动作
-                    val opt = primaryOption(snap) ?: continue
+                    val opt = primaryOption(snap, allowWin = (lateGameUpdate != null)) ?: continue
                     val choice = ProtocolActionChoice(
                         requestId = "act-$moves-$seat",
                         roundId = snap.roundId,

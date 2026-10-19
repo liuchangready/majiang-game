@@ -560,5 +560,94 @@ class TcpTableServerCapacityAndLifecycleTest {
             assertEquals(0L, server.getPublicUpdateFrameCache().cachedBytes)
         }
     }
+
+    @Test
+    fun `UC-C05 close when control queue saturated immediately force-closes without entering CLOSING`() {
+        val server = TcpTableServer(TcpServerConfig(
+            port = 0,
+            maxControlQueueFrames = 3
+        ))
+        server.start()
+
+        try {
+            TcpTestClient(port = server.boundPort).use { client ->
+                client.sendFrame(TcpMessageCodec.toFrame(TcpHello(wireVersion = 1, businessVersion = 1)))
+                val welcome = client.expectWelcome()
+                assertNotNull(welcome)
+
+                val conn = server.connections.values.first()
+                assertEquals(ConnectionState.HANDSHAKED, conn.state.get())
+
+                // 填满控制队列至上限 (3 帧)
+                val pingFrame = TcpMessageCodec.toFrame(TcpPing("0123456789abcdef")).toByteArray()
+                assertTrue(conn.outboundQueue.enqueueControl(pingFrame))
+                assertTrue(conn.outboundQueue.enqueueControl(pingFrame))
+                assertTrue(conn.outboundQueue.enqueueControl(pingFrame))
+                assertEquals(3, conn.outboundQueue.controlQueueSize)
+
+                // 此时控制队列已满，再次调用 conn.close(immediate = false)
+                // 必须触发 false 分支：不进入 CLOSING，立即 forceCloseChannel()，清理资源
+                conn.close(TcpCloseReasons.SERVER_OVERLOADED, "Control saturated", immediate = false)
+
+                // 核心断言：
+                // 1. 状态直接进入 CLOSED，绝对不处于 CLOSING
+                assertEquals(ConnectionState.CLOSED, conn.state.get())
+                assertTrue(conn.isClosed)
+
+                // 2. 底层 channel 已经关闭
+                assertFalse(conn.channel.isOpen)
+
+                // 3. 出站队列已被清空且预算被归还（forceCloseChannel 执行了 outboundQueue.clear）
+                assertEquals(0, conn.outboundQueue.totalQueuedFrames)
+                assertEquals(0, conn.outboundQueue.controlQueueSize)
+
+                // 4. 断开原因被正确记录
+                assertEquals(TcpCloseReasons.SERVER_OVERLOADED, conn.disconnectReason)
+            }
+        } finally {
+            server.close()
+        }
+    }
+
+    @Test
+    fun `UC-C05 close when global budget exhausted immediately force-closes without entering CLOSING`() {
+        val server = TcpTableServer(TcpServerConfig(port = 0))
+        server.start()
+
+        try {
+            TcpTestClient(port = server.boundPort).use { client ->
+                client.sendFrame(TcpMessageCodec.toFrame(TcpHello(wireVersion = 1, businessVersion = 1)))
+                val welcome = client.expectWelcome()
+                assertNotNull(welcome)
+
+                val conn = server.connections.values.first()
+                assertEquals(ConnectionState.HANDSHAKED, conn.state.get())
+
+                // 人工将全局预算耗尽至仅剩 0 字节可用
+                val remainingBudget = server.globalBudget.maxBytes - server.globalBudget.currentAllocatedBytes
+                assertTrue(server.globalBudget.reserve(remainingBudget))
+                assertEquals(server.globalBudget.maxBytes, server.globalBudget.currentAllocatedBytes)
+
+                // 此时任何控制帧均无法申请预算，调用 conn.close(immediate = false)
+                conn.close(TcpCloseReasons.SERVER_OVERLOADED, "Budget exhausted", immediate = false)
+
+                // 核心断言：
+                // 1. 状态直接变为 CLOSED，绝对不假装进入 CLOSING
+                assertEquals(ConnectionState.CLOSED, conn.state.get())
+                assertTrue(conn.isClosed)
+
+                // 2. 底层 channel 已经关闭
+                assertFalse(conn.channel.isOpen)
+
+                // 3. 记录的断连原因为目标原因
+                assertEquals(TcpCloseReasons.SERVER_OVERLOADED, conn.disconnectReason)
+
+                // 归还测试占用的预算以便 server 正常关机
+                server.globalBudget.release(remainingBudget)
+            }
+        } finally {
+            server.close()
+        }
+    }
 }
 

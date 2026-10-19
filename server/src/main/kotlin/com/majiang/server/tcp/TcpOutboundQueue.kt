@@ -50,6 +50,18 @@ class TcpOutboundQueue(
             (currentBuffer?.remaining()?.toLong() ?: 0L) + queuedNormalBytes + queuedControlBytes
         }
 
+    /** 控制队列中等待发出的总帧数 (含当前控制半帧) */
+    val controlQueueSize: Int
+        get() = synchronized(queueLock) {
+            (if (currentBuffer != null && currentBufferIsControl) 1 else 0) + controlQueue.size
+        }
+
+    /** 控制队列中等待发出的总字节数 (含当前控制半帧剩余字节) */
+    val controlQueueBytes: Long
+        get() = synchronized(queueLock) {
+            (if (currentBuffer != null && currentBufferIsControl) currentBufferBytes.toLong() else 0L) + queuedControlBytes
+        }
+
     /** 是否有待写出数据 */
     val hasPendingData: Boolean
         get() = synchronized(queueLock) {

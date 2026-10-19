@@ -1683,6 +1683,55 @@ class ServerConnectionSessionTest {
     }
 
     @Test
+    fun testRebindingInterleavingRejectsOldRoomUpdateBlockedOnRoomLock() {
+        val fake = FakeServerConnection()
+        val session = ServerConnectionSession(fake)
+        session.createRoom("Host", null).join() // bound to "ROOM1234"
+
+        val roomCallback = fake.roomListeners.single()
+        val field = ServerConnectionSession::class.java.getDeclaredField("roomLock")
+        field.isAccessible = true
+        val cacheLock = field.get(session)
+        val failure = java.util.concurrent.atomic.AtomicReference<Throwable?>()
+
+        // 线程启动并尝试提交旧房间的高版本更新 (version = 99L)，由于 cacheLock 被主线程持有而阻塞
+        val worker = Thread({
+            try {
+                roomCallback(fake.defaultRoomInfo.copy(roomId = "ROOM1234", version = 99L))
+            } catch (t: Throwable) {
+                failure.set(t)
+            }
+        }, "unit-test-old-room-update-interleaved").also { it.isDaemon = true }
+
+        try {
+            synchronized(cacheLock) {
+                worker.start()
+                val deadline = System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(2)
+                while (worker.state != Thread.State.BLOCKED && worker.isAlive && System.nanoTime() < deadline) {
+                    Thread.yield()
+                }
+                assertEquals(Thread.State.BLOCKED, worker.state, "Callback never reached roomLock commit")
+
+                // 在 worker 阻塞等待锁期间，会话直接换绑到新房间 "ROOM9999"
+                session.joinRoom("ROOM9999", "Player", null).join()
+            }
+        } finally {
+            worker.join(2000)
+        }
+
+        assertFalse(worker.isAlive, "Worker failed to finish")
+        failure.get()?.let { throw AssertionError("Callback failed unexpectedly", it) }
+
+        // 验证：旧房间的高版本更新在锁内重新核对当前绑定房间后被拦截丢弃，未写入新代次缓存
+        fake.defaultRoomInfo = fake.defaultRoomInfo.copy(roomId = "ROOM9999", version = 1L)
+        fake.roomListeners.toList().forEach { it(fake.defaultRoomInfo) }
+
+        val currentInfo = session.getRoomInfo().join()
+        assertEquals("ROOM9999", currentInfo.roomId, "Room ID must match replacement room")
+        assertEquals(1L, currentInfo.version, "Old room version 99L poisoned replacement room cache")
+    }
+
+    @Test
     fun testRoomNotificationDispatchPreservesVersionMonotonicity() {
         val fake = FakeServerConnection()
         val queue = mutableListOf<() -> Unit>()

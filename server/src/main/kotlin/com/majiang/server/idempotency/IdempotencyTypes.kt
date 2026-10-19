@@ -77,6 +77,7 @@ class InFlightReceipt(
     val request: ApiRequest?,
     val timestamp: Long,
     val isSideEffect: Boolean,
+    val isLobby: Boolean = false,
     val grantedScope: AtomicReference<TcpScope?> = AtomicReference(null)
 ) {
     val reservationConsumed: AtomicBoolean = AtomicBoolean(false)

@@ -87,13 +87,13 @@ class RoomRecyclingTest {
         val lobbyRoom = SharedRoom(roomId = "LOBBY_ROOM", clock = clock)
         try {
             // 房主连接建立
-            lobbyRoom.markSeatConnected(0, lobbyRoom.bindingGenerations[0]).await()
+            lobbyRoom.markSeatConnected(0, lobbyRoom.seatMemberGeneration(0)).await()
             assertTrue(lobbyRoom.everConnectedHuman)
             assertNull(lobbyRoom.idleSinceMillis)
 
             // 房主断开连接
             clock.advance(10_000L)
-            lobbyRoom.disconnectSeat(0, lobbyRoom.bindingGenerations[0]).await()
+            lobbyRoom.disconnectSeat(0, lobbyRoom.seatMemberGeneration(0)).await()
             assertNotNull(lobbyRoom.idleSinceMillis)
             val lobbyIdleStart = lobbyRoom.idleSinceMillis!!
 
@@ -121,10 +121,10 @@ class RoomRecyclingTest {
         // 3. 进行中阶段 (PLAYING) 全员断线回收 (30 分钟)
         val playRoom = SharedRoom(roomId = "PLAY_ROOM", clock = clock)
         try {
-            playRoom.markSeatConnected(0, playRoom.bindingGenerations[0]).await()
+            playRoom.markSeatConnected(0, playRoom.seatMemberGeneration(0)).await()
             for (s in 1..3) {
                 val pair = playRoom.join("P$s").await()
-                playRoom.markSeatConnected(pair.first, playRoom.bindingGenerations[pair.first]).await()
+                playRoom.markSeatConnected(pair.first, playRoom.seatMemberGeneration(pair.first)).await()
                 playRoom.setReady(pair.first, true).await()
             }
             playRoom.setReady(0, true).await()
@@ -135,7 +135,7 @@ class RoomRecyclingTest {
             // 全员断开
             clock.advance(5_000L)
             for (s in 0..3) {
-                playRoom.disconnectSeat(s, playRoom.bindingGenerations[s]).await()
+                playRoom.disconnectSeat(s, playRoom.seatMemberGeneration(s)).await()
             }
             assertNotNull(playRoom.idleSinceMillis)
             val playIdleStart = playRoom.idleSinceMillis!!
@@ -180,8 +180,8 @@ class RoomRecyclingTest {
         // Case A: resumeSession 先入队 -> 恢复连接并清除空闲起点，后续 closeIfIdleOnQueue 失败
         val roomA = SharedRoom(roomId = "RACE_A", clock = clock)
         try {
-            roomA.markSeatConnected(0, roomA.bindingGenerations[0]).await()
-            roomA.disconnectSeat(0, roomA.bindingGenerations[0]).await()
+            roomA.markSeatConnected(0, roomA.seatMemberGeneration(0)).await()
+            roomA.disconnectSeat(0, roomA.seatMemberGeneration(0)).await()
             val token = roomA.resumeTokens[0]
             val capturedEpoch = roomA.idleEpoch
 
@@ -205,8 +205,8 @@ class RoomRecyclingTest {
         // Case B: closeIfIdleOnQueue 先入队 -> 成功回收，后续 resumeSession 抛 ROOM_NOT_FOUND (ROOM_CLOSED)
         val roomB = SharedRoom(roomId = "RACE_B", clock = clock)
         try {
-            roomB.markSeatConnected(0, roomB.bindingGenerations[0]).await()
-            roomB.disconnectSeat(0, roomB.bindingGenerations[0]).await()
+            roomB.markSeatConnected(0, roomB.seatMemberGeneration(0)).await()
+            roomB.disconnectSeat(0, roomB.seatMemberGeneration(0)).await()
             val token = roomB.resumeTokens[0]
             val capturedEpoch = roomB.idleEpoch
 
@@ -239,15 +239,15 @@ class RoomRecyclingTest {
 
         try {
             // 真人房主连接
-            room.markSeatConnected(0, room.bindingGenerations[0]).await()
+            room.markSeatConnected(0, room.seatMemberGeneration(0)).await()
 
             // 观战者加入并标记连接
             val specResult = room.joinSpectator("Spectator-1").await()
-            room.markSpectatorConnected(specResult.spectatorId).await()
+            room.markSpectatorConnected(specResult.spectatorId, specResult.generation).await()
             assertEquals(1, room.connectedSpectatorCount())
 
             // 真人房主断开
-            room.disconnectSeat(0, room.bindingGenerations[0]).await()
+            room.disconnectSeat(0, room.seatMemberGeneration(0)).await()
             assertEquals(0, room.connectedHumanCount())
             // 依然有已连接观战者 -> 不进入空闲
             assertNull(room.idleSinceMillis, "Room must NOT be idle while connected spectator remains")
@@ -281,10 +281,10 @@ class RoomRecyclingTest {
         val room = SharedRoom(roomId = "AI_NO_EXTEND", clock = clock)
 
         try {
-            room.markSeatConnected(0, room.bindingGenerations[0]).await()
+            room.markSeatConnected(0, room.seatMemberGeneration(0)).await()
             for (s in 1..3) {
                 val pair = room.join("P$s").await()
-                room.markSeatConnected(pair.first, room.bindingGenerations[pair.first]).await()
+                room.markSeatConnected(pair.first, room.seatMemberGeneration(pair.first)).await()
                 room.setReady(pair.first, true).await()
             }
             room.setReady(0, true).await()
@@ -292,7 +292,7 @@ class RoomRecyclingTest {
 
             // 所有真人玩家断开，转由 AI 托管
             for (s in 0..3) {
-                room.disconnectSeat(s, room.bindingGenerations[s]).await()
+                room.disconnectSeat(s, room.seatMemberGeneration(s)).await()
             }
             val initialIdleSince = room.idleSinceMillis
             assertNotNull(initialIdleSince)
@@ -375,9 +375,9 @@ class RoomRecyclingTest {
         val room = SharedRoom(roomId = "RESURRECT_TEST", clock = clock)
 
         try {
-            room.markSeatConnected(0, room.bindingGenerations[0]).await()
+            room.markSeatConnected(0, room.seatMemberGeneration(0)).await()
             val oldHostToken = room.resumeTokens[0]
-            room.disconnectSeat(0, room.bindingGenerations[0]).await()
+            room.disconnectSeat(0, room.seatMemberGeneration(0)).await()
 
             clock.advance(10_000L)
             val recycled = room.closeIfIdleOnQueue(policy, room.idleEpoch, clock.nowMillis()).await()

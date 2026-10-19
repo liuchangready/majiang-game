@@ -26,12 +26,12 @@ class Mr06PatrolInterleavingTest {
         try {
             // 房主先断开连接进入离线
             val hostToken = room.resumeTokens[0]
-            room.disconnectSeat(0, room.bindingGenerations[0]).await()
+            room.disconnectSeat(0, room.seatMemberGeneration(0)).await()
             assertFalse(room.seatConnected[0])
             assertNotNull(room.idleSinceMillis)
 
             // 1. 取样旧连接（此时席位 0 离线，代次为 1L）
-            val sampledGens = mapOf(0 to room.bindingGenerations[0])
+            val sampledGens = mapOf(0 to room.seatMemberGeneration(0))
             val oldAliveSeats = emptyMap<Int, Long>()
 
             // 2. 新绑定/重连成功（resumeSession 递增代次至 2L 并恢复 seatConnected）
@@ -63,12 +63,12 @@ class Mr06PatrolInterleavingTest {
         val room = SharedRoom(roomId = "COMPENSATE_ROOM", clock = clock)
         try {
             // 房主连接曾被置为 false
-            room.disconnectSeat(0, room.bindingGenerations[0]).await()
+            room.disconnectSeat(0, room.seatMemberGeneration(0)).await()
             assertFalse(room.seatConnected[0])
             assertNotNull(room.idleSinceMillis)
 
             // 后续巡检发现当前代次的存活连接，执行对账"补"回状态
-            val currentGens = mapOf(0 to room.bindingGenerations[0])
+            val currentGens = mapOf(0 to room.seatMemberGeneration(0))
             room.reconcileConnectivityOnQueue(
                 aliveSeats = currentGens,
                 aliveSpectatorIds = emptySet(),

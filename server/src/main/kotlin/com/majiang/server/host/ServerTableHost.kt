@@ -216,6 +216,7 @@ class ServerTableHost @JvmOverloads constructor(
 
     // 跟踪所有未决的外部 Future，以便 close 时确定性拒绝并完成
     private val pendingFutures = ConcurrentHashMap.newKeySet<CompletableFuture<*>>()
+    val queuedOperationsCount: Int get() = pendingFutures.size
 
     // 席位派发条目封装
     internal sealed class SeatDispatchItem {
