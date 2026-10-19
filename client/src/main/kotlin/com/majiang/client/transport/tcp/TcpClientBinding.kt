@@ -626,6 +626,10 @@ class TcpClientBinding(
             welcomeFuture.get(5000L, TimeUnit.MILLISECONDS)
         } catch (e: Exception) {
             closeSocketQuietly(failInFlight = true)
+            // 握手阶段已分类的协议错误（如 VERSION_MISMATCH）必须原样上抛，
+            // 不能降级成笼统的“握手超时/失败”，否则调用方无法区分旧版本拒绝。
+            val cause = (e as? java.util.concurrent.ExecutionException)?.cause ?: e
+            if (cause is TcpProtocolException) throw cause
             throw IOException("Handshake failed or timed out", e)
         }
 

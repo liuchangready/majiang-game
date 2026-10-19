@@ -8,55 +8,77 @@ import com.majiang.model.Meld
 
 /**
  * 麻将役种定义
+ *
+ * [code] 是与展示文案解耦的稳定役种码，供未来线路结构化字段和本地化使用。
+ * 该码一经发布不得随 Kotlin 枚举名或 [displayName] 改动而变化；新增役种必须追加新码。
  */
-enum class Yaku(val displayName: String, val hanClosed: Int, val hanOpen: Int, val isYakuman: Boolean = false) {
+enum class Yaku(
+    val code: String,
+    val displayName: String,
+    val hanClosed: Int,
+    val hanOpen: Int,
+    val isYakuman: Boolean = false
+) {
     // 1翻
-    RIICHI("立直", 1, 0),
-    IPPATSU("一发", 1, 0),
-    MENZEN_TSUMO("门前清自摸和", 1, 0),
-    TANYAO("断幺九", 1, 1),
-    PINFU("平和", 1, 0),
-    IIPEIKO("一杯口", 1, 0),
-    YAKUHAI_HAKU("役牌 白", 1, 1),
-    YAKUHAI_HATSU("役牌 发", 1, 1),
-    YAKUHAI_CHUN("役牌 中", 1, 1),
-    YAKUHAI_BAKAZE("场风牌", 1, 1),
-    YAKUHAI_JIKAZE("自风牌", 1, 1),
-    HAITEI("海底摸月", 1, 1),
-    HOUTEI("河底捞鱼", 1, 1),
-    RINSHAN("岭上开花", 1, 1),
-    CHANKAN("抢杠", 1, 1),
+    RIICHI("RIICHI", "立直", 1, 0),
+    IPPATSU("IPPATSU", "一发", 1, 0),
+    MENZEN_TSUMO("MENZEN_TSUMO", "门前清自摸和", 1, 0),
+    TANYAO("TANYAO", "断幺九", 1, 1),
+    PINFU("PINFU", "平和", 1, 0),
+    IIPEIKO("IIPEIKO", "一杯口", 1, 0),
+    YAKUHAI_HAKU("YAKUHAI_HAKU", "役牌 白", 1, 1),
+    YAKUHAI_HATSU("YAKUHAI_HATSU", "役牌 发", 1, 1),
+    YAKUHAI_CHUN("YAKUHAI_CHUN", "役牌 中", 1, 1),
+    YAKUHAI_BAKAZE("YAKUHAI_BAKAZE", "场风牌", 1, 1),
+    YAKUHAI_JIKAZE("YAKUHAI_JIKAZE", "自风牌", 1, 1),
+    HAITEI("HAITEI", "海底摸月", 1, 1),
+    HOUTEI("HOUTEI", "河底捞鱼", 1, 1),
+    RINSHAN("RINSHAN", "岭上开花", 1, 1),
+    CHANKAN("CHANKAN", "抢杠", 1, 1),
     // 2翻
-    DOUBLE_RIICHI("两立直", 2, 0),
-    CHANTA("混全带幺九", 2, 1),
-    ITTSU("一气通贯", 2, 1),
-    SAN_SHOKU_DOUJUN("三色同顺", 2, 1),
-    SAN_SHOKU_DOUKOU("三色同刻", 2, 2),
-    TOITOI("对对和", 2, 2),
-    SAN_ANKOU("三暗刻", 2, 2),
-    SAN_KANTSU("三杠子", 2, 2),
-    SHOUSANGEN("小三元", 2, 2),
-    HONROUTOU("混老头", 2, 2),
-    CHIITOITSU("七对子", 2, 0),
+    DOUBLE_RIICHI("DOUBLE_RIICHI", "两立直", 2, 0),
+    CHANTA("CHANTA", "混全带幺九", 2, 1),
+    ITTSU("ITTSU", "一气通贯", 2, 1),
+    SAN_SHOKU_DOUJUN("SAN_SHOKU_DOUJUN", "三色同顺", 2, 1),
+    SAN_SHOKU_DOUKOU("SAN_SHOKU_DOUKOU", "三色同刻", 2, 2),
+    TOITOI("TOITOI", "对对和", 2, 2),
+    SAN_ANKOU("SAN_ANKOU", "三暗刻", 2, 2),
+    SAN_KANTSU("SAN_KANTSU", "三杠子", 2, 2),
+    SHOUSANGEN("SHOUSANGEN", "小三元", 2, 2),
+    HONROUTOU("HONROUTOU", "混老头", 2, 2),
+    CHIITOITSU("CHIITOITSU", "七对子", 2, 0),
     // 3翻
-    HONITSU("混一色", 3, 2),
-    JUNCHAN("纯全带幺九", 3, 2),
-    RYANPEIKOU("两杯口", 3, 0),
+    HONITSU("HONITSU", "混一色", 3, 2),
+    JUNCHAN("JUNCHAN", "纯全带幺九", 3, 2),
+    RYANPEIKOU("RYANPEIKOU", "两杯口", 3, 0),
     // 6翻
-    CHINITSU("清一色", 6, 5),
+    CHINITSU("CHINITSU", "清一色", 6, 5),
     // 役满
-    KOKUSHI("国士无双", 0, 0, true),
-    SUUANKOU("四暗刻", 0, 0, true),
-    DAISANGEN("大三元", 0, 0, true),
-    SHOUSUUSHII("小四喜", 0, 0, true),
-    DAISUUSHII("大四喜", 0, 0, true),
-    TSUUIISOU("字一色", 0, 0, true),
-    RYUUIISOU("绿一色", 0, 0, true),
-    CHINROUTOU("清老头", 0, 0, true),
-    CHURENPOUTOU("九莲宝灯", 0, 0, true),
-    SUUKANTSU("四杠子", 0, 0, true),
-    TENHOU("天和", 0, 0, true),
-    CHIIHOU("地和", 0, 0, true)
+    KOKUSHI("KOKUSHI", "国士无双", 0, 0, true),
+    SUUANKOU("SUUANKOU", "四暗刻", 0, 0, true),
+    DAISANGEN("DAISANGEN", "大三元", 0, 0, true),
+    SHOUSUUSHII("SHOUSUUSHII", "小四喜", 0, 0, true),
+    DAISUUSHII("DAISUUSHII", "大四喜", 0, 0, true),
+    TSUUIISOU("TSUUIISOU", "字一色", 0, 0, true),
+    RYUUIISOU("RYUUIISOU", "绿一色", 0, 0, true),
+    CHINROUTOU("CHINROUTOU", "清老头", 0, 0, true),
+    CHURENPOUTOU("CHURENPOUTOU", "九莲宝灯", 0, 0, true),
+    SUUKANTSU("SUUKANTSU", "四杠子", 0, 0, true),
+    TENHOU("TENHOU", "天和", 0, 0, true),
+    CHIIHOU("CHIIHOU", "地和", 0, 0, true);
+
+    companion object {
+        private val BY_CODE: Map<String, Yaku> = values().associateBy { it.code }
+        private val BY_DISPLAY_NAME: Map<String, Yaku> = values().associateBy { it.displayName }
+
+        /** 按稳定码查找；未知码返回 null，由展示层回退到旧文案。 */
+        fun fromCode(code: String): Yaku? = BY_CODE[code]
+
+        /** 按旧展示名反查，仅用于兼容既有字符串数据的迁移桥。 */
+        fun fromDisplayName(displayName: String): Yaku? = BY_DISPLAY_NAME[displayName]
+
+        fun isKnownCode(code: String): Boolean = BY_CODE.containsKey(code)
+    }
 }
 
 /**

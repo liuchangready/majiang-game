@@ -25,6 +25,7 @@ import com.majiang.transport.api.ApiResponse
 import com.majiang.transport.api.ApiTags
 import com.majiang.transport.api.ProtocolActionReceipt
 import com.majiang.transport.api.ProtocolAccessCapabilities
+import com.majiang.transport.api.ProtocolScoreCodes
 import com.majiang.transport.api.ProtocolReceiptStatus
 import com.majiang.transport.api.ProtocolRoomConfig
 import com.majiang.transport.tcp.TcpCloseReasons
@@ -621,7 +622,8 @@ class TcpRequestRouter(
                     resumption = true,
                     tileMarkSupported = true,
                     sleeveBloomSupported = true,
-                    beamSwapSupported = true
+                    beamSwapSupported = true,
+                    scoreDetailVersion = ProtocolScoreCodes.CONTRACT_VERSION
                 )
                 val resp = ApiResponse(requestId = req.requestId, success = true, capabilities = caps)
                 receiptManager.completeReceipt(key, inFlight, resp, isLobby = isLobby)

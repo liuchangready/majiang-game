@@ -7,6 +7,7 @@ import com.majiang.transport.tcp.TcpFrame
 import com.majiang.transport.tcp.TcpHello
 import com.majiang.transport.tcp.TcpMessageCodec
 import com.majiang.transport.tcp.TcpRequestEnvelope
+import com.majiang.transport.tcp.TcpWire
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertNotNull
 import org.junit.jupiter.api.Assertions.assertTrue
@@ -32,7 +33,7 @@ class TcpTableServerRoutingAndSubscriptionTest {
 
         try {
             TcpTestClient(port = server.boundPort).use { client ->
-                client.sendFrame(TcpMessageCodec.toFrame(TcpHello(wireVersion = 1, businessVersion = 1)))
+                client.sendFrame(TcpMessageCodec.toFrame(TcpHello(wireVersion = 1, businessVersion = TcpWire.BUSINESS_VERSION)))
                 val welcome = client.expectWelcome()
 
                 // 外层 requestId = "out-123", 内层 request.requestId = "inner-456" 伪造冲突
@@ -55,7 +56,7 @@ class TcpTableServerRoutingAndSubscriptionTest {
 
         try {
             TcpTestClient(port = server.boundPort).use { client ->
-                client.sendFrame(TcpMessageCodec.toFrame(TcpHello(wireVersion = 1, businessVersion = 1)))
+                client.sendFrame(TcpMessageCodec.toFrame(TcpHello(wireVersion = 1, businessVersion = TcpWire.BUSINESS_VERSION)))
                 val welcome = client.expectWelcome()
 
                 val queryEnv = TcpRequestEnvelope(
@@ -84,7 +85,7 @@ class TcpTableServerRoutingAndSubscriptionTest {
         try {
             TcpTestClient(port = server.boundPort).use { client ->
                 // 1. 握手
-                client.sendFrame(TcpMessageCodec.toFrame(TcpHello(wireVersion = 1, businessVersion = 1)))
+                client.sendFrame(TcpMessageCodec.toFrame(TcpHello(wireVersion = 1, businessVersion = TcpWire.BUSINESS_VERSION)))
                 val welcome = client.expectWelcome()
                 val lobbyScope = welcome.lobbyScope.scope
 
@@ -159,7 +160,7 @@ class TcpTableServerRoutingAndSubscriptionTest {
         try {
             // 1. Client 1 连入并建房，绑定到 seat 0
             TcpTestClient(port = server.boundPort).use { client1 ->
-                client1.sendFrame(TcpMessageCodec.toFrame(TcpHello(wireVersion = 1, businessVersion = 1)))
+                client1.sendFrame(TcpMessageCodec.toFrame(TcpHello(wireVersion = 1, businessVersion = TcpWire.BUSINESS_VERSION)))
                 val welcome1 = client1.expectWelcome()
 
                 val createEnv = TcpRequestEnvelope(
@@ -180,7 +181,7 @@ class TcpTableServerRoutingAndSubscriptionTest {
 
                 // 2. Client 2 连入并通过 resumeToken 恢复该席位 (顶号)
                 TcpTestClient(port = server.boundPort).use { client2 ->
-                    client2.sendFrame(TcpMessageCodec.toFrame(TcpHello(wireVersion = 1, businessVersion = 1)))
+                    client2.sendFrame(TcpMessageCodec.toFrame(TcpHello(wireVersion = 1, businessVersion = TcpWire.BUSINESS_VERSION)))
                     val welcome2 = client2.expectWelcome()
 
                     val resumeEnv = TcpRequestEnvelope(

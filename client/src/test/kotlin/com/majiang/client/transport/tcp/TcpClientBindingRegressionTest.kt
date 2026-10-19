@@ -61,7 +61,7 @@ class TcpClientBindingRegressionTest {
                 // 发 WELCOME (指定协商超时 requestTimeoutMillis)
                 val welcome = TcpWelcome(
                     wireVersion = 1,
-                    businessVersion = 1,
+                    businessVersion = TcpWire.BUSINESS_VERSION,
                     connectionEpoch = "peer-epoch",
                     lobbyResumeToken = "peer-token",
                     lobbyScope = TcpScope("peer-scope", Long.MAX_VALUE),
@@ -117,7 +117,7 @@ class TcpClientBindingRegressionTest {
                         val currentLimits = limitsProvider(connIndex)
                         val welcome = TcpWelcome(
                             wireVersion = 1,
-                            businessVersion = 1,
+                            businessVersion = TcpWire.BUSINESS_VERSION,
                             connectionEpoch = "peer-epoch-$connIndex",
                             lobbyResumeToken = "peer-token",
                             lobbyScope = TcpScope("peer-scope", Long.MAX_VALUE),
@@ -2681,7 +2681,7 @@ class TcpClientBindingRegressionTest {
                 assertNotNull(helloFrame)
                 val welcome = TcpWelcome(
                     wireVersion = 1,
-                    businessVersion = 1,
+                    businessVersion = TcpWire.BUSINESS_VERSION,
                     connectionEpoch = "test-epoch-1",
                     lobbyResumeToken = "test-token-1",
                     lobbyScope = TcpScope("scope-1", Long.MAX_VALUE)

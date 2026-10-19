@@ -19,6 +19,7 @@ import com.majiang.server.host.ServerTableHost
 import com.majiang.server.mapping.EngineProtocolMapper
 import com.majiang.server.room.SharedRoom
 import com.majiang.transport.api.ProtocolAccessCapabilities
+import com.majiang.transport.api.ProtocolScoreCodes
 import com.majiang.transport.api.ProtocolActionChoice
 import com.majiang.transport.api.ProtocolActionReceipt
 import com.majiang.transport.api.ProtocolGameEvent
@@ -923,7 +924,8 @@ class InProcessBinding(
                 resumption = true,
                 tileMarkSupported = true,
                 sleeveBloomSupported = true,
-                beamSwapSupported = true
+                beamSwapSupported = true,
+                scoreDetailVersion = ProtocolScoreCodes.CONTRACT_VERSION
             )
         )
     }

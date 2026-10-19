@@ -2,7 +2,6 @@ package com.majiang.rules
 
 import com.majiang.model.PlayerHand
 import com.majiang.model.Tile
-import com.majiang.settlement.SettlementService
 
 /**
  * 宝牌指示牌命中记录
@@ -55,6 +54,8 @@ data class DoraBreakdown(
  * @property uraEligible 是否具备里宝牌资格（仅立直和牌为 true）
  * @property isDealer 是否庄家（结算时上下文）
  * @property isTsumo 是否自摸（结算时上下文）
+ * @property yakuEntries 结构化役种行（稳定码 + 既有展示名 + 番数）；v5 起进入线路
+ * @property paymentPlan 基础支付结构（由 score/isDealer/isTsumo 派生，不含本场棒与供托）
  */
 data class ScoreBreakdown(
     val yakuLines: List<Pair<String, Int>>,
@@ -68,8 +69,33 @@ data class ScoreBreakdown(
     val totalPoints: Int,
     val uraEligible: Boolean = false,
     val isDealer: Boolean = false,
-    val isTsumo: Boolean = false
-)
+    val isTsumo: Boolean = false,
+    /**
+     * 结构化役种行（稳定码 + 展示名 + 番数）。
+     *
+     * 默认由 [yakuLines] 的旧展示名反查生成，保证既有构造点无需改动即可得到稳定码；
+     * [WinningScoreEvaluator] 会显式传入由 [Yaku] 直接生成的条目。该字段不进入当前
+     * MJ-TCP/1 线路，既有 yakuLines 字符串仍是唯一线路字段。
+     */
+    val yakuEntries: List<YakuEntry> = ScoreTextFormatter.yakuEntriesFromLegacy(yakuLines)
+) {
+    init {
+        require(yakuEntries.size == yakuLines.size) {
+            "yakuEntries.size (${yakuEntries.size}) must match yakuLines.size (${yakuLines.size})"
+        }
+        for (i in yakuLines.indices) {
+            val entry = yakuEntries[i]
+            val line = yakuLines[i]
+            require(entry.displayName == line.first && entry.han == line.second) {
+                "yakuEntries[$i] does not match yakuLines[$i]: $entry vs $line"
+            }
+        }
+    }
+
+    /** 基础支付结构（不含本场棒与供托立直棒）。 */
+    val paymentPlan: PaymentPlan
+        get() = score.paymentPlan(isDealer = isDealer, isTsumo = isTsumo)
+}
 
 class WinningScoreEvaluator(
     private val decomposer: HandDecomposer = HandDecomposer.INSTANCE,
@@ -282,8 +308,9 @@ class WinningScoreEvaluator(
             openMelds = evalHand.melds
         )
 
-        val yakuLines = candidate.yakuResult.yakuList.map { Pair(it.first.displayName, it.second) }
-        val paymentLines = SettlementService.INSTANCE.formatPaymentLines(
+        val yakuEntries = ScoreTextFormatter.yakuEntries(candidate.yakuResult.yakuList)
+        val yakuLines = yakuEntries.map { Pair(it.displayName, it.han) }
+        val paymentLines = ScoreTextFormatter.paymentLines(
             score = candidate.scoreResult,
             isDealer = isDealer,
             isTsumo = context.isTsumo,
@@ -305,7 +332,8 @@ class WinningScoreEvaluator(
             totalPoints = totalPoints,
             uraEligible = context.isRiichi,
             isDealer = isDealer,
-            isTsumo = context.isTsumo
+            isTsumo = context.isTsumo,
+            yakuEntries = yakuEntries
         )
     }
 

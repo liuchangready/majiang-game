@@ -98,7 +98,11 @@ internal class ProtocolScoreResultAdapter : JsonDeserializer<ProtocolScoreResult
         val obj = json.asJsonObject
         checkUnknownFields(
             obj,
-            setOf("fu", "han", "basePoints", "title", "isYakuman", "yakumanMultiplier", "rawBasePoints", "capReason", "formulaText", "rawBasePointsExact"),
+            setOf(
+                "fu", "han", "basePoints", "title", "isYakuman", "yakumanMultiplier",
+                "rawBasePoints", "capReason", "formulaText", "rawBasePointsExact",
+                ProtocolScoreCodes.FIELD_CAP_CODE
+            ),
             "ProtocolScoreResult"
         )
         val fu = validateStrictInt(obj.get("fu") ?: throw JsonParseException("Missing fu in ProtocolScoreResult"), "ProtocolScoreResult.fu")
@@ -117,7 +121,21 @@ internal class ProtocolScoreResultAdapter : JsonDeserializer<ProtocolScoreResult
         val rawBasePointsExact = if (obj.has("rawBasePointsExact") && !obj.get("rawBasePointsExact").isJsonNull) {
             validateStrictString(obj.get("rawBasePointsExact"), "ProtocolScoreResult.rawBasePointsExact")
         } else rawBasePoints.toString()
-        return ProtocolScoreResult(fu, han, basePoints, title, isYakuman, yakumanMultiplier, rawBasePoints, capReason, formulaText, rawBasePointsExact)
+        val capCode = if (obj.has(ProtocolScoreCodes.FIELD_CAP_CODE) && !obj.get(ProtocolScoreCodes.FIELD_CAP_CODE).isJsonNull) {
+            val code = validateStrictString(
+                obj.get(ProtocolScoreCodes.FIELD_CAP_CODE),
+                "ProtocolScoreResult.capCode"
+            )
+            if (code.isBlank()) throw JsonParseException("ProtocolScoreResult.capCode cannot be blank")
+            if (code.length > ProtocolScoreCodes.MAX_CODE_LENGTH) {
+                throw JsonParseException("ProtocolScoreResult.capCode too long: ${code.length}")
+            }
+            code
+        } else null
+        return ProtocolScoreResult(
+            fu, han, basePoints, title, isYakuman, yakumanMultiplier,
+            rawBasePoints, capReason, formulaText, rawBasePointsExact, capCode
+        )
     }
 }
 
@@ -189,12 +207,20 @@ internal class ProtocolAccessCapabilitiesAdapter : JsonDeserializer<ProtocolAcce
     override fun deserialize(json: JsonElement, typeOfT: Type, context: JsonDeserializationContext): ProtocolAccessCapabilities {
         if (!json.isJsonObject) throw JsonParseException("ProtocolAccessCapabilities must be a JSON object")
         val obj = json.asJsonObject
-        checkUnknownFields(obj, setOf("protocolVersion", "supportedPlayerCounts", "remoteTransport", "persistence", "resumption", "tileMarkSupported", "sleeveBloomSupported", "beamSwapSupported"), "ProtocolAccessCapabilities")
+        checkUnknownFields(
+            obj,
+            setOf(
+                "protocolVersion", "supportedPlayerCounts", "remoteTransport", "persistence",
+                "resumption", "tileMarkSupported", "sleeveBloomSupported", "beamSwapSupported",
+                ProtocolScoreCodes.FIELD_SCORE_DETAIL_VERSION
+            ),
+            "ProtocolAccessCapabilities"
+        )
         val pv = if (obj.has("protocolVersion") && !obj.get("protocolVersion").isJsonNull) {
             val v = validateStrictInt(obj.get("protocolVersion"), "ProtocolAccessCapabilities.protocolVersion")
             if (v < 1) throw JsonParseException("protocolVersion must be >= 1: $v")
             v
-        } else 4
+        } else 5
         val counts: Set<Int> = if (obj.has("supportedPlayerCounts") && !obj.get("supportedPlayerCounts").isJsonNull) {
             val list = validateStrictIntList(obj.get("supportedPlayerCounts"), "ProtocolAccessCapabilities.supportedPlayerCounts")
             if (list.isEmpty()) throw JsonParseException("supportedPlayerCounts cannot be empty")
@@ -218,7 +244,22 @@ internal class ProtocolAccessCapabilitiesAdapter : JsonDeserializer<ProtocolAcce
         val beamSwapSupported = if (obj.has("beamSwapSupported") && !obj.get("beamSwapSupported").isJsonNull) {
             validateStrictBoolean(obj.get("beamSwapSupported"), "ProtocolAccessCapabilities.beamSwapSupported")
         } else false
-        return ProtocolAccessCapabilities(pv, counts, remote, persist, resume, tileMarkSupported, sleeveBloomSupported, beamSwapSupported)
+        val scoreDetailVersion = if (obj.has(ProtocolScoreCodes.FIELD_SCORE_DETAIL_VERSION) &&
+            !obj.get(ProtocolScoreCodes.FIELD_SCORE_DETAIL_VERSION).isJsonNull
+        ) {
+            val v = validateStrictInt(
+                obj.get(ProtocolScoreCodes.FIELD_SCORE_DETAIL_VERSION),
+                "ProtocolAccessCapabilities.scoreDetailVersion"
+            )
+            if (v !in 0..ProtocolScoreCodes.MAX_SCORE_DETAIL_VERSION) {
+                throw JsonParseException("scoreDetailVersion out of range: $v")
+            }
+            v
+        } else 0
+        return ProtocolAccessCapabilities(
+            pv, counts, remote, persist, resume,
+            tileMarkSupported, sleeveBloomSupported, beamSwapSupported, scoreDetailVersion
+        )
     }
 }
 

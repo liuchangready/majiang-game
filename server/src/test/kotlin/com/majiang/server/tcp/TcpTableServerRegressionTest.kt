@@ -49,7 +49,7 @@ class TcpTableServerRegressionTest {
     }
 
     private fun handshake(s: Socket, token: String? = null): TcpWelcome {
-        val hello = TcpHello(wireVersion = 1, businessVersion = 1, lobbyResumeToken = token)
+        val hello = TcpHello(wireVersion = 1, businessVersion = TcpWire.BUSINESS_VERSION, lobbyResumeToken = token)
         sendFrame(s, TcpMessageCodec.toFrame(hello))
         val frame = readFrame(s)
         assertEquals(TcpWire.FRAME_TYPE_WELCOME, frame.type)
@@ -110,7 +110,7 @@ class TcpTableServerRegressionTest {
 
             // 1. 未知 token 被拒绝
             Socket("127.0.0.1", server.boundPort).use { s ->
-                val hello = TcpHello(wireVersion = 1, businessVersion = 1, lobbyResumeToken = "unknown-token-12345")
+                val hello = TcpHello(wireVersion = 1, businessVersion = TcpWire.BUSINESS_VERSION, lobbyResumeToken = "unknown-token-12345")
                 sendFrame(s, TcpMessageCodec.toFrame(hello))
                 val frame = readFrame(s)
                 assertEquals(TcpWire.FRAME_TYPE_CLOSE, frame.type)

@@ -274,7 +274,8 @@ interface PushChannel {
 
 | 项目 | 目标决策 |
 |---|---|
-| 线路版本 | MJ-TCP/1，架构仍为 V4；业务版本通过 HELLO/WELCOME 明确协商 |
+| 线路版本 | MJ-TCP/1（wireVersion=1，12 字节帧头）；业务版本通过 HELLO/WELCOME 硬相等协商：v5 对应 businessVersion=2，旧 v1 明确 VERSION_MISMATCH |
+| 结构化算分 | v5 `ProtocolScoreResult.capCode`、`ProtocolScoreBreakdown.yakuEntries`/`paymentPlan`、`ProtocolAccessCapabilities.scoreDetailVersion=1`；旧 `title`/`capReason`/`formulaText`/`yakuLines`/`paymentLines` 与全部数值字段保留用于安全回退 |
 | 成帧 | `MJTC` 4B + version 1B + type 1B + flags 2B + payloadLength 4B，大端；严格 JSON/UTF-8，设计载荷上限 1 MiB |
 | 类型 | HELLO/WELCOME、REQ/RSP、PLAYER_UPDATE/PUBLIC_UPDATE/ROOM_UPDATE、PING/PONG、CLOSE；无 ACK/FRAG/RESEND |
 | 请求身份 | 逻辑恢复身份 + 服务端 requestScope + requestId；外层与 ApiRequest.id 一致，跨 API 同键冲突；不能按 TCP 源端口去重 |

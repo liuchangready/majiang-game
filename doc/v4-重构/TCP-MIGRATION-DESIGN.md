@@ -30,7 +30,7 @@ I/O 循环仅做有界读写、帧校验、排队，不执行 JSON 大对象映�
 
 ## 3. 新线路成帧与握手
 
-架构仍称 V4；新的线路标识命名为 **MJ-TCP/1**，与旧 UDP Version=4 分离。不会静默改变 `ApiProtocol.PROTOCOL_VERSION=4` 的旧端含义；实施时把传输版本与业务契约版本分开，旧常量随引用审计迁移。
+架构仍称 V4；新的线路标识命名为 **MJ-TCP/1**，与旧 UDP Version=4 分离。实施时把传输版本与业务契约版本分开；`ApiProtocol.PROTOCOL_VERSION` 已随 D-07 v5 从 4 升到 5，旧常量不保留兼容含义（见本节版本语义）。
 
 每帧固定 12 字节头，全部多字节整数大端序：
 
@@ -47,7 +47,7 @@ I/O 循环仅做有界读写、帧校验、排队，不执行 JSON 大对象映�
 
 | type | 消息 | 方向及载荷 |
 |---:|---|---|
-| 1 | HELLO | C→S：wireVersion、businessVersion=1、可选 lobbyResumeToken；每连接只能一次 |
+| 1 | HELLO | C→S：wireVersion=1、businessVersion=2、可选 lobbyResumeToken；每连接只能一次 |
 | 2 | WELCOME | S→C：版本、connectionEpoch（不重复的服务器生成字符串）、lobbyResumeToken、大厅 requestScope 与 expiresAt、预算与期限 |
 | 3 | REQ | C→S：requestScope、requestId、现有 ApiRequest；外层与现有 id 必须一致 |
 | 4 | RSP | S→C：相同 requestScope/requestId、现有 ApiResponse |
@@ -58,6 +58,8 @@ I/O 循环仅做有界读写、帧校验、排队，不执行 JSON 大对象映�
 | 10 | CLOSE | S→C：稳定 reason code；关闭通知为尽力而为，不等 ACK |
 
 HELLO/WELCOME 完成前不处理业务；5 秒内未完成则断开。业务版本不匹配明确拒绝，不自动降级 UDP。TCP listener 与旧 UDP listener 不能自动协议探测互通；客户端必须更新。`connectionEpoch` 仅标识这次传输，不能用作跨连接业务去重键，也不替代 syncEpoch/controlEpoch。
+
+**版本语义（D-07 v5）**：`TcpWire.WIRE_VERSION` 仍为 1，12 字节 MJ-TCP/1 帧格式、心跳、作用域/幂等、全量快照与重连语义不变；`TcpWire.BUSINESS_VERSION` 升为 2、`ApiProtocol.PROTOCOL_VERSION` 升为 5，承载结构化算分字段 `capCode`/`yakuEntries`/`paymentPlan` 与 capability `scoreDetailVersion`。双端对 HELLO/WELCOME 的 wire/business 版本做硬相等校验；旧 businessVersion=1 明确回 `VERSION_MISMATCH`，无同进程 v1/v2 混发、无活动房间热迁移。旧 v4 payload 只作为历史解码 fixture 存在于测试中，不构成旧端兼容承诺。
 
 ## 4. 容量、超时与慢客户端
 

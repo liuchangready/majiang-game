@@ -378,20 +378,24 @@ data class ProtocolActionReceipt(
  * 传输层独立协议访问能力声明 DTO (ProtocolAccessCapabilities)
  */
 class ProtocolAccessCapabilities(
-    val protocolVersion: Int = 4,
+    val protocolVersion: Int = 5,
     supportedPlayerCounts: Set<Int> = setOf(4),
     val remoteTransport: Boolean = false,
     val persistence: Boolean = false,
     val resumption: Boolean = true,
     val tileMarkSupported: Boolean = false,
     val sleeveBloomSupported: Boolean = false,
-    val beamSwapSupported: Boolean = false
+    val beamSwapSupported: Boolean = false,
+    val scoreDetailVersion: Int = 0
 ) {
     val supportedPlayerCounts: Set<Int> = Collections.unmodifiableSet(LinkedHashSet(supportedPlayerCounts))
 
     init {
         require(protocolVersion >= 1) { "protocolVersion must be >= 1: $protocolVersion" }
         require(this.supportedPlayerCounts.isNotEmpty()) { "supportedPlayerCounts cannot be empty" }
+        require(scoreDetailVersion in 0..ProtocolScoreCodes.MAX_SCORE_DETAIL_VERSION) {
+            "scoreDetailVersion must be in 0..${ProtocolScoreCodes.MAX_SCORE_DETAIL_VERSION}: $scoreDetailVersion"
+        }
     }
 
     operator fun component1(): Int = protocolVersion
@@ -402,6 +406,7 @@ class ProtocolAccessCapabilities(
     operator fun component6(): Boolean = tileMarkSupported
     operator fun component7(): Boolean = sleeveBloomSupported
     operator fun component8(): Boolean = beamSwapSupported
+    operator fun component9(): Int = scoreDetailVersion
 
     fun copy(
         protocolVersion: Int = this.protocolVersion,
@@ -411,9 +416,11 @@ class ProtocolAccessCapabilities(
         resumption: Boolean = this.resumption,
         tileMarkSupported: Boolean = this.tileMarkSupported,
         sleeveBloomSupported: Boolean = this.sleeveBloomSupported,
-        beamSwapSupported: Boolean = this.beamSwapSupported
+        beamSwapSupported: Boolean = this.beamSwapSupported,
+        scoreDetailVersion: Int = this.scoreDetailVersion
     ): ProtocolAccessCapabilities = ProtocolAccessCapabilities(
-        protocolVersion, supportedPlayerCounts, remoteTransport, persistence, resumption, tileMarkSupported, sleeveBloomSupported, beamSwapSupported
+        protocolVersion, supportedPlayerCounts, remoteTransport, persistence, resumption,
+        tileMarkSupported, sleeveBloomSupported, beamSwapSupported, scoreDetailVersion
     )
 
     override fun equals(other: Any?): Boolean {
@@ -426,7 +433,8 @@ class ProtocolAccessCapabilities(
             resumption == other.resumption &&
             tileMarkSupported == other.tileMarkSupported &&
             sleeveBloomSupported == other.sleeveBloomSupported &&
-            beamSwapSupported == other.beamSwapSupported
+            beamSwapSupported == other.beamSwapSupported &&
+            scoreDetailVersion == other.scoreDetailVersion
     }
 
     override fun hashCode(): Int {
@@ -438,11 +446,12 @@ class ProtocolAccessCapabilities(
         result = 31 * result + tileMarkSupported.hashCode()
         result = 31 * result + sleeveBloomSupported.hashCode()
         result = 31 * result + beamSwapSupported.hashCode()
+        result = 31 * result + scoreDetailVersion.hashCode()
         return result
     }
 
     override fun toString(): String =
-        "ProtocolAccessCapabilities(protocolVersion=$protocolVersion, supportedPlayerCounts=$supportedPlayerCounts, remoteTransport=$remoteTransport, persistence=$persistence, resumption=$resumption, tileMarkSupported=$tileMarkSupported, sleeveBloomSupported=$sleeveBloomSupported, beamSwapSupported=$beamSwapSupported)"
+        "ProtocolAccessCapabilities(protocolVersion=$protocolVersion, supportedPlayerCounts=$supportedPlayerCounts, remoteTransport=$remoteTransport, persistence=$persistence, resumption=$resumption, tileMarkSupported=$tileMarkSupported, sleeveBloomSupported=$sleeveBloomSupported, beamSwapSupported=$beamSwapSupported, scoreDetailVersion=$scoreDetailVersion)"
 }
 
 /**
@@ -931,6 +940,123 @@ class ProtocolDoraBreakdown(
 }
 
 /**
+ * 传输层独立协议结构化役种行 DTO (ProtocolYakuEntry, v5)
+ *
+ * @property code 稳定役种码。允许未知扩展码；客户端展示时回退 [displayName]。
+ * @property displayName 既有展示名，与 v4 `yakuLines.first` 逐字一致。
+ * @property han 该役种实际计番（役满条目可为 0）。
+ */
+data class ProtocolYakuEntry(
+    val code: String,
+    val displayName: String,
+    val han: Int
+) {
+    init {
+        require(code.isNotBlank()) { "ProtocolYakuEntry.code cannot be blank" }
+        require(code.length <= ProtocolScoreCodes.MAX_CODE_LENGTH) {
+            "ProtocolYakuEntry.code too long: ${code.length}"
+        }
+        require(displayName.isNotBlank()) { "ProtocolYakuEntry.displayName cannot be blank" }
+        require(displayName.length <= ProtocolScoreCodes.MAX_DISPLAY_NAME_LENGTH) {
+            "ProtocolYakuEntry.displayName too long: ${displayName.length}"
+        }
+        require(han in 0..ProtocolScoreCodes.MAX_YAKU_HAN) {
+            "ProtocolYakuEntry.han out of range: $han"
+        }
+    }
+}
+
+/**
+ * 传输层独立协议单付款方金额 DTO (ProtocolPaymentComponent, v5)
+ *
+ * 允许未知 `payerRole` 扩展码；解析不因此失败，客户端在无法解释时回退
+ * `paymentLines`，而不是丢弃整条结算快照。
+ */
+data class ProtocolPaymentComponent(
+    val payerRole: String,
+    val amount: Int,
+    val count: Int
+) {
+    init {
+        require(payerRole.isNotBlank()) { "ProtocolPaymentComponent.payerRole cannot be blank" }
+        require(payerRole.length <= ProtocolScoreCodes.MAX_CODE_LENGTH) {
+            "ProtocolPaymentComponent.payerRole too long: ${payerRole.length}"
+        }
+        require(amount in 0..ProtocolScoreCodes.MAX_PAYMENT_AMOUNT) {
+            "ProtocolPaymentComponent.amount out of range: $amount"
+        }
+        require(count in 1..ProtocolScoreCodes.MAX_PAYMENT_COUNT) {
+            "ProtocolPaymentComponent.count out of range: $count"
+        }
+    }
+
+    /** 该分组小计（Long 计算以避免恶意/损坏载荷制造 Int 溢出）。 */
+    fun subtotalLong(): Long = amount.toLong() * count.toLong()
+}
+
+/**
+ * 传输层独立协议基础支付计划 DTO (ProtocolPaymentPlan, v5)
+ *
+ * 只描述基础支付，不含本场棒与供托立直棒。`kind` 是向前兼容的稳定码：
+ * 未知 kind 允许解码，由客户端决定回退到 `paymentLines`。
+ */
+class ProtocolPaymentPlan(
+    val kind: String,
+    components: List<ProtocolPaymentComponent>,
+    val total: Int
+) {
+    val components: List<ProtocolPaymentComponent> =
+        Collections.unmodifiableList(ArrayList(components))
+
+    init {
+        require(kind.isNotBlank()) { "ProtocolPaymentPlan.kind cannot be blank" }
+        require(kind.length <= ProtocolScoreCodes.MAX_CODE_LENGTH) {
+            "ProtocolPaymentPlan.kind too long: ${kind.length}"
+        }
+        require(this.components.size <= ProtocolScoreCodes.MAX_PAYMENT_COMPONENTS) {
+            "ProtocolPaymentPlan.components too many: ${this.components.size}"
+        }
+        require(total in 0..ProtocolScoreCodes.MAX_PAYMENT_TOTAL) {
+            "ProtocolPaymentPlan.total out of range: $total"
+        }
+    }
+
+    /** 结构不变量：components 非空且 total == Σ(amount × count)。 */
+    fun isStructurallyConsistent(): Boolean {
+        if (components.isEmpty()) return false
+        var sum = 0L
+        for (component in components) sum += component.subtotalLong()
+        return sum == total.toLong()
+    }
+
+    operator fun component1(): String = kind
+    operator fun component2(): List<ProtocolPaymentComponent> = components
+    operator fun component3(): Int = total
+
+    fun copy(
+        kind: String = this.kind,
+        components: List<ProtocolPaymentComponent> = this.components,
+        total: Int = this.total
+    ): ProtocolPaymentPlan = ProtocolPaymentPlan(kind, components, total)
+
+    override fun equals(other: Any?): Boolean {
+        if (this === other) return true
+        if (other !is ProtocolPaymentPlan) return false
+        return kind == other.kind && components == other.components && total == other.total
+    }
+
+    override fun hashCode(): Int {
+        var result = kind.hashCode()
+        result = 31 * result + components.hashCode()
+        result = 31 * result + total
+        return result
+    }
+
+    override fun toString(): String =
+        "ProtocolPaymentPlan(kind=$kind, components=$components, total=$total)"
+}
+
+/**
  * 传输层独立协议算分结果 DTO (ProtocolScoreResult)
  */
 data class ProtocolScoreResult(
@@ -943,8 +1069,18 @@ data class ProtocolScoreResult(
     val rawBasePoints: Int = basePoints,
     val capReason: String? = null,
     val formulaText: String = "",
-    val rawBasePointsExact: String = rawBasePoints.toString()
-)
+    val rawBasePointsExact: String = rawBasePoints.toString(),
+    val capCode: String? = null
+) {
+    init {
+        if (capCode != null) {
+            require(capCode.isNotBlank()) { "ProtocolScoreResult.capCode cannot be blank" }
+            require(capCode.length <= ProtocolScoreCodes.MAX_CODE_LENGTH) {
+                "ProtocolScoreResult.capCode too long: ${capCode.length}"
+            }
+        }
+    }
+}
 
 /**
  * 传输层独立协议完整结算推导明细 DTO (ProtocolScoreBreakdown)
@@ -961,10 +1097,13 @@ class ProtocolScoreBreakdown(
     val totalPoints: Int,
     val uraEligible: Boolean,
     val isDealer: Boolean,
-    val isTsumo: Boolean
+    val isTsumo: Boolean,
+    yakuEntries: List<ProtocolYakuEntry> = emptyList(),
+    val paymentPlan: ProtocolPaymentPlan? = null
 ) {
     val yakuLines: List<Pair<String, Int>> = Collections.unmodifiableList(ArrayList(yakuLines))
     val paymentLines: List<String> = Collections.unmodifiableList(ArrayList(paymentLines))
+    val yakuEntries: List<ProtocolYakuEntry> = Collections.unmodifiableList(ArrayList(yakuEntries))
 
     operator fun component1(): List<Pair<String, Int>> = yakuLines
     operator fun component2(): Int = yakumanCount
@@ -978,6 +1117,8 @@ class ProtocolScoreBreakdown(
     operator fun component10(): Boolean = uraEligible
     operator fun component11(): Boolean = isDealer
     operator fun component12(): Boolean = isTsumo
+    operator fun component13(): List<ProtocolYakuEntry> = yakuEntries
+    operator fun component14(): ProtocolPaymentPlan? = paymentPlan
 
     fun copy(
         yakuLines: List<Pair<String, Int>> = this.yakuLines,
@@ -991,10 +1132,13 @@ class ProtocolScoreBreakdown(
         totalPoints: Int = this.totalPoints,
         uraEligible: Boolean = this.uraEligible,
         isDealer: Boolean = this.isDealer,
-        isTsumo: Boolean = this.isTsumo
+        isTsumo: Boolean = this.isTsumo,
+        yakuEntries: List<ProtocolYakuEntry> = this.yakuEntries,
+        paymentPlan: ProtocolPaymentPlan? = this.paymentPlan
     ): ProtocolScoreBreakdown = ProtocolScoreBreakdown(
         yakuLines, yakumanCount, dora, fu, score, paymentLines,
-        honbaAddition, riichiAddition, totalPoints, uraEligible, isDealer, isTsumo
+        honbaAddition, riichiAddition, totalPoints, uraEligible, isDealer, isTsumo,
+        yakuEntries, paymentPlan
     )
 
     override fun equals(other: Any?): Boolean {
@@ -1011,7 +1155,9 @@ class ProtocolScoreBreakdown(
             totalPoints == other.totalPoints &&
             uraEligible == other.uraEligible &&
             isDealer == other.isDealer &&
-            isTsumo == other.isTsumo
+            isTsumo == other.isTsumo &&
+            yakuEntries == other.yakuEntries &&
+            paymentPlan == other.paymentPlan
     }
 
     override fun hashCode(): Int {
@@ -1027,11 +1173,13 @@ class ProtocolScoreBreakdown(
         result = 31 * result + uraEligible.hashCode()
         result = 31 * result + isDealer.hashCode()
         result = 31 * result + isTsumo.hashCode()
+        result = 31 * result + yakuEntries.hashCode()
+        result = 31 * result + (paymentPlan?.hashCode() ?: 0)
         return result
     }
 
     override fun toString(): String =
-        "ProtocolScoreBreakdown(yakuLines=$yakuLines, yakumanCount=$yakumanCount, dora=$dora, fu=$fu, score=$score, paymentLines=$paymentLines, honbaAddition=$honbaAddition, riichiAddition=$riichiAddition, totalPoints=$totalPoints, uraEligible=$uraEligible, isDealer=$isDealer, isTsumo=$isTsumo)"
+        "ProtocolScoreBreakdown(yakuLines=$yakuLines, yakumanCount=$yakumanCount, dora=$dora, fu=$fu, score=$score, paymentLines=$paymentLines, honbaAddition=$honbaAddition, riichiAddition=$riichiAddition, totalPoints=$totalPoints, uraEligible=$uraEligible, isDealer=$isDealer, isTsumo=$isTsumo, yakuEntries=$yakuEntries, paymentPlan=$paymentPlan)"
 }
 
 /**
