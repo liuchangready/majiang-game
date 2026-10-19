@@ -1,8 +1,8 @@
 # Anti 开发进度跟踪 (ANTI-PROGRESS.md)
 
-- **状态**: D03_D08_INTEGRATED / CODEX_VERIFIED_ALL_GREEN（未提交）
+- **状态**: D03_D08_INTEGRATED / CODEX_VERIFIED_ALL_GREEN（已提交并推送）
 - **当前批次交付文档**: `doc/v4-重构/ANTI-D03-DELIVERY.md`、`doc/v4-重构/ANTI-D08-DELIVERY.md`；主工作区整合见 `doc/v4-重构/CODEX-D03-D08-INTEGRATION.md`
-- **Codex 整合复验（2026-10-19）**: D-08 隔离工作树成果已并入主工作区；D-03/D-08 专项和无缓存全量通过（server 330、client 217、protocol 174，共 721 项），TCP 独立探针通过。D-04～D-07、D-09 与 T4 环境实测仍待完成。
+- **Codex 整合复验（2026-10-19）**: D-08 隔离工作树成果已并入主工作区；D-03/D-08 专项和无缓存全量通过（server 330、client 217、protocol 174，共 721 项），TCP 独立探针通过。代码提交 `e500ce1` 已推送至 `origin/feat/mj-tcp-migration`。D-04～D-07、D-09 与 T4 环境实测仍待完成。
 - **基线**: `cca271a0b5c2a257ad7b3affda6bb14eed221ebd` (HEAD)
 - **更新时间**: 2026-10-19（Anti 完成 D-03 服务端统一绑定规则第7轮返修：1) 将 `SharedRoom.kt` 中 `SpectatorMember` 的可变代次、令牌及映射写权限彻底收回内部，封装为私有 `InternalSpectatorMember` 与 `spectatorsMap`；对外暴露无任何公共可变字段且彻底剥离 `resumeToken` 的不可变视图 `SpectatorMemberView` 以及 `Collections.unmodifiableMap`；提供强类型只读访问器 `spectatorMemberGeneration`、`isSpectatorConnected`、`spectatorLastDisconnectedGeneration` 等；2) 审计并封装席位令牌与断开代次，`resumeTokens` 与 `seatDisconnectedGenerations` 统一返回防御性副本，提供 `seatResumeToken(seat)` 与 `seatDisconnectedGeneration(seat)`，使用篡改 token 恢复必定被权威拦截（`INVALID_RESUME_TOKEN`）；3) 调整使用方（`InProcessBinding.kt`、`TcpTableServer.kt`、`ServerRoleStateTest.kt`），彻底移除测试中对房间成员的直接越权赋值篡改，一律通过真实准入与恢复接口驱动；4) 扩展防篡改与真实顶号代次失效测试（`DualTransportBindingScenarioParameterizedTest`）；无缓存串行全量通过：双传输参数化 27/27 项全绿；`:server:test` 300/300 项全绿；`:client:test` 217/217 项全绿；Codex 独立探针通过；物理守恒 136 张保持不变，未动 UDP/V3 与 D-08 隔离工作树，无 commit/push）
   - **D-03 返修与交付核心内容**：
