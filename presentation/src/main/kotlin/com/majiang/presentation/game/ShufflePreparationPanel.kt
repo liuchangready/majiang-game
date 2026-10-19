@@ -7,7 +7,6 @@ import com.badlogic.gdx.graphics.OrthographicCamera
 import com.badlogic.gdx.graphics.g2d.BitmapFont
 import com.badlogic.gdx.graphics.g2d.GlyphLayout
 import com.badlogic.gdx.graphics.g2d.SpriteBatch
-import com.badlogic.gdx.graphics.g2d.freetype.FreeTypeFontGenerator
 import com.badlogic.gdx.graphics.glutils.ShapeRenderer
 import com.badlogic.gdx.math.Rectangle
 import com.badlogic.gdx.utils.Disposable
@@ -17,6 +16,7 @@ import com.majiang.client.api.ReceiptStatus
 import com.majiang.client.api.ShufflePreparationStatusView
 import com.majiang.client.api.ShufflePreparationView
 import com.majiang.client.api.ShuffleTarget
+import com.majiang.presentation.common.UiAssets
 
 /**
  * 洗牌千术准备阶段展示面板 (V4 presentation.game)。
@@ -31,8 +31,9 @@ import com.majiang.client.api.ShuffleTarget
  * 7. 倒计时到期与暂停时阻断误点击；
  * 8. 资源生命周期严格自闭环 (Disposable)。
  */
-class ShufflePreparationPanel(
-    val session: GameSession
+class ShufflePreparationPanel @JvmOverloads constructor(
+    val session: GameSession,
+    private val assets: UiAssets? = null
 ) : Disposable {
 
     /** 纯表现层状态模型（供无头测试与展示共享） */
@@ -82,82 +83,10 @@ class ShufflePreparationPanel(
     var isSkipHovered: Boolean = false
         private set
 
-    // 中文字体与字形管理
-    private var chineseFont: BitmapFont? = null
-    private var fontGenerator: FreeTypeFontGenerator? = null
-    private var fontInitAttempted = false
+    // 中文字体与字形管理（借用 UiAssets 管理的 17px 共享字体与生命周期）
     private val glyphLayout = GlyphLayout()
 
     companion object {
-        private const val ASCII_AND_PUNCTUATION =
-            " !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~" +
-            "※【】、（）√…·：；？！“”‘’—，|[]"
-
-        val UI_STRINGS: List<String> = listOf(
-            "洗牌千术",
-            "可用点数: 点",
-            "预计消耗: 点 (剩余: 点)",
-            "调控起手配牌（13张手牌与开门摸牌）",
-            "调控前8次顺位预计摸牌",
-            "【偷天换日】 40点",
-            "【瞒天过海】 20点",
-            "[已启用 40点]",
-            "[已启用 20点]",
-            "[未启用 0点]",
-            "清一色（万）",
-            "清一色（条）",
-            "清一色（筒）",
-            "清一色（万条筒）",
-            "大三元",
-            "国士无双",
-            "大四喜",
-            "多选为混合倾向，不保证同时成牌",
-            "吃碰杠会改变预期摸牌",
-            "【已确认千术，等待开局发牌...】",
-            "【正在提交计划...】",
-            "【牌山生成中...】",
-            "【对局已暂停】",
-            "【准备时间已到】",
-            "【网络未连接】",
-            "【点数不足，无法确认】",
-            "暂停",
-            "生成中",
-            "不使用千术",
-            "确认出千",
-            "已确认",
-            "提交中...",
-            "洗牌中...",
-            "已暂停",
-            "已截止",
-            "未连接",
-            "点数不足",
-            "当前不支持该操作",
-            "请求已超时",
-            "操作不可用",
-            "代次过期",
-            "对局已变更",
-            "连接已断开",
-            "千术方案已确认",
-            "请求不合法",
-            "请求被拒绝",
-            "网络连接异常",
-            "请求被拒绝或异常",
-            "提交异常",
-            "洗牌千术偷天换日瞒天过海点数可用剩余预计消耗" +
-            "清一色万条筒大三元国士无双四喜" +
-            "多选为混合倾向不保证同时成牌吃碰杠会改变预期摸起手配顺前次张与开门调控" +
-            "确认使用已锁定生成中不足无法秒等待倒计跳过拒绝异常成功计划" +
-            "启未正在提交局发山被求出暂停错代次整过期操作连网络断服响变格" +
-            "到超时对开备立直自荣和流庄听" +
-            "字牌役满番符雀魂当前不支持合法" +
-            "请该更接方案或准间截止"
-        )
-
-        @JvmField
-        val SHUFFLE_PANEL_CHARS: String = (
-            ASCII_AND_PUNCTUATION + UI_STRINGS.joinToString("")
-        ).toSet().joinToString("")
-
         fun translateServerReason(reason: String?): String {
             if (reason.isNullOrBlank()) return "请求被拒绝"
             val trimmed = reason.trim()
@@ -182,36 +111,8 @@ class ShufflePreparationPanel(
     }
 
     fun getOrInitChineseFont(): BitmapFont? {
-        if (chineseFont != null) return chineseFont
-        if (fontInitAttempted) return null
-        fontInitAttempted = true
-
-        if (Gdx.files == null || Gdx.gl == null || Gdx.graphics == null || Gdx.graphics.width == 0) {
-            return null
-        }
-
-        try {
-            val fontHandle = Gdx.files.internal("fonts/NotoSansSC-Regular.ttf")
-            if (!fontHandle.exists()) {
-                return null
-            }
-            val generator = FreeTypeFontGenerator(fontHandle)
-            val param = FreeTypeFontGenerator.FreeTypeFontParameter().apply {
-                size = 17
-                characters = SHUFFLE_PANEL_CHARS
-                incremental = false
-            }
-            chineseFont = generator.generateFont(param)
-            fontGenerator = generator
-            return chineseFont
-        } catch (_: Throwable) {
-            try {
-                fontGenerator?.dispose()
-            } catch (_: Throwable) {}
-            fontGenerator = null
-            chineseFont = null
-            return null
-        }
+        val uiAssets = assets ?: UiAssets.activeInstance
+        return uiAssets?.chineseFont17 ?: uiAssets?.chineseFont
     }
 
     fun update(snapshot: GameSnapshotView) {
@@ -517,9 +418,10 @@ class ShufflePreparationPanel(
         } finally {
             textFont.data.setScale(origScaleX, origScaleY)
             textFont.color = origColor
+            if (batch.isDrawing) {
+                batch.end()
+            }
         }
-
-        batch.end()
     }
 
     private fun targetDisplayName(target: ShuffleTarget): String = when (target) {
@@ -534,13 +436,6 @@ class ShufflePreparationPanel(
     override fun dispose() {
         if (isDisposed) return
         isDisposed = true
-        try {
-            chineseFont?.dispose()
-        } catch (_: Throwable) {}
-        try {
-            fontGenerator?.dispose()
-        } catch (_: Throwable) {}
-        chineseFont = null
-        fontGenerator = null
+        // 借用 UiAssets 管理的字体与生命周期，组件不自行释放共享生成器与共享字体
     }
 }

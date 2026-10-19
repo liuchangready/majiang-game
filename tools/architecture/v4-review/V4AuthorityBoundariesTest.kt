@@ -25,8 +25,16 @@ class V4AuthorityBoundariesTest {
     }
 
     @Test fun bothV4BindingsHaveStoppedImportingLegacyDomainHostAndAccess() {
-        val files = sourceFiles("server/src/main/kotlin/com/majiang/server/inprocess") +
-            sourceFiles("server/src/main/kotlin/com/majiang/server/udp")
+        // T5 删除 UDP 绑定目录后仅剩两种绑定；扫描现存目录，目录整体消失不再是豁免理由
+        val bindingDirs = listOf(
+            "server/src/main/kotlin/com/majiang/server/inprocess",
+            "server/src/main/kotlin/com/majiang/server/tcp"
+        )
+        val files = bindingDirs.flatMap { dir ->
+            if (Files.exists(root.resolve(dir))) sourceFiles(dir)
+            else throw AssertionError("Expected binding directory is missing: $dir")
+        }
+        assertTrue(files.isNotEmpty(), "No binding sources found under $bindingDirs")
         val forbidden = Regex("(?m)^\\s*import\\s+com\\.majiang\\.(?:host\\.TableHost|access\\.SessionAccess|access\\.local\\.LocalSession)\\b")
         val violations = files.filter { forbidden.containsMatchIn(Files.readString(it)) }
         assertTrue(violations.isEmpty(), "V4 bindings still execute the V3 domain host: $violations")

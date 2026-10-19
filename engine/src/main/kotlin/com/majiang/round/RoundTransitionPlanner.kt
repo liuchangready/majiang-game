@@ -177,8 +177,7 @@ class RoundTransitionPlanner(
                 is GameAction.DiscardTile -> {
                     val isTsumogiri = candidate.players[action.player].drawnTile == action.tile
                     val discarded = TileMovement.discard(candidate, action.player, action.tile)
-                    candidate.ippatsuActive[action.player] = false
-                    candidate.players[action.player].ippatsu = false
+                    candidate.setIppatsu(action.player, false)
                     candidate.isRinshanDraw = false
 
                     val isRiichiDiscard = candidate.riichiDeclared[action.player] &&
@@ -197,24 +196,17 @@ class RoundTransitionPlanner(
                 }
 
                 is GameAction.DeclareRiichi -> {
-                    candidate.riichiDeclared[action.player] = true
-                    candidate.riichiTurn[action.player] = candidate.turnNumber
-                    candidate.ippatsuActive[action.player] = true
-                    candidate.players[action.player].riichiDeclared = true
-                    candidate.players[action.player].riichiTurn = candidate.turnNumber
-                    candidate.players[action.player].ippatsu = true
+                    val isDoubleRiichi = candidate.isFirstUninterruptedGo && candidate.players[action.player].discards.isEmpty()
+                    candidate.declareRiichi(action.player, candidate.turnNumber, isDoubleRiichi)
                     candidate.scores[action.player] -= 1000
                     candidate.riichiSticks++
                     candidate.isRinshanDraw = false
-
-                    val isDoubleRiichi = candidate.isFirstUninterruptedGo && candidate.players[action.player].discards.isEmpty()
-                    candidate.doubleRiichiDeclared[action.player] = isDoubleRiichi
 
                     stepEvents.add(GameEvent.RiichiDeclared(candidate.turnNumber, action.player, action.discardTile, isDoubleRiichi))
 
                     val isTsumogiri = candidate.players[action.player].drawnTile == action.discardTile
                     val discarded = TileMovement.discard(candidate, action.player, action.discardTile)
-                    candidate.ippatsuActive[action.player] = true
+                    candidate.setIppatsu(action.player, true)
 
                     stepEvents.add(GameEvent.TileDiscarded(
                         candidate.turnNumber, action.player, discarded,
@@ -235,10 +227,7 @@ class RoundTransitionPlanner(
                             val meld = TileMovement.closedKan(candidate, action.player, action.tiles)
                             candidate.totalKanCount++
                             candidate.playerKanCounts[action.player]++
-                            for (i in 0 until 4) {
-                                candidate.ippatsuActive[i] = false
-                                candidate.players[i].ippatsu = false
-                            }
+                            candidate.clearAllIppatsu()
                             candidate.isFirstUninterruptedGo = false
                             revealPendingKanDora(candidate, stepEvents)
                             revealNewDoraOnCandidate(candidate, stepEvents)
@@ -610,10 +599,7 @@ class RoundTransitionPlanner(
         events: MutableList<GameEvent>
     ) {
         val meld = TileMovement.pon(candidate, player, calledTile, fromPlayer, tiles)
-        for (i in 0 until 4) {
-            candidate.ippatsuActive[i] = false
-            candidate.players[i].ippatsu = false
-        }
+        candidate.clearAllIppatsu()
         candidate.isFirstUninterruptedGo = false
         candidate.currentPlayer = player
         candidate.phase = GamePhase.DISCARD
@@ -630,10 +616,7 @@ class RoundTransitionPlanner(
     ) {
         val handTiles = meld.tiles.filter { it != calledTile }
         val created = TileMovement.chi(candidate, player, calledTile, fromPlayer, handTiles)
-        for (i in 0 until 4) {
-            candidate.ippatsuActive[i] = false
-            candidate.players[i].ippatsu = false
-        }
+        candidate.clearAllIppatsu()
         candidate.isFirstUninterruptedGo = false
         candidate.currentPlayer = player
         candidate.phase = GamePhase.DISCARD
@@ -653,10 +636,7 @@ class RoundTransitionPlanner(
         val meld = TileMovement.openKan(candidate, player, calledTile, fromPlayer, handTiles)
         candidate.totalKanCount++
         candidate.playerKanCounts[player]++
-        for (i in 0 until 4) {
-            candidate.ippatsuActive[i] = false
-            candidate.players[i].ippatsu = false
-        }
+        candidate.clearAllIppatsu()
         candidate.isFirstUninterruptedGo = false
         revealPendingKanDora(candidate, events)
         candidate.pendingKanDoraCount++
@@ -683,10 +663,7 @@ class RoundTransitionPlanner(
         val meld = TileMovement.addedKan(candidate, player, addedTile)
         candidate.totalKanCount++
         candidate.playerKanCounts[player]++
-        for (i in 0 until 4) {
-            candidate.ippatsuActive[i] = false
-            candidate.players[i].ippatsu = false
-        }
+        candidate.clearAllIppatsu()
         candidate.isFirstUninterruptedGo = false
         revealPendingKanDora(candidate, events)
         candidate.pendingKanDoraCount++

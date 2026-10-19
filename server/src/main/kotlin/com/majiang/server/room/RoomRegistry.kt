@@ -3,6 +3,7 @@ package com.majiang.server.room
 import com.majiang.server.api.ApiErrors
 import com.majiang.server.api.RoomSummary
 import com.majiang.server.api.ServerApiException
+import com.majiang.server.host.HostDispatchPools
 import com.majiang.state.GameState
 import com.majiang.timing.MonotonicClock
 import com.majiang.timing.SystemMonotonicClock
@@ -25,7 +26,8 @@ import java.util.concurrent.atomic.AtomicBoolean
  */
 class RoomRegistry(
     val clock: MonotonicClock = SystemMonotonicClock,
-    val maxRooms: Int = 1024
+    val maxRooms: Int = 1024,
+    val capacityPolicy: RoomCapacityPolicy = RoomCapacityPolicy()
 ) : AutoCloseable {
 
     private val isClosed = AtomicBoolean(false)
@@ -41,7 +43,8 @@ class RoomRegistry(
         fixedRoomId: String? = null,
         serialExecutor: ExecutorService? = null,
         hostSeat: Int = 0,
-        initialState: GameState? = null
+        initialState: GameState? = null,
+        hostDispatch: HostDispatchPools? = null
     ): SharedRoom {
         var roomIdToUse: String
         synchronized(lock) {
@@ -74,7 +77,9 @@ class RoomRegistry(
             clock = clock,
             serialExecutor = serialExecutor,
             hostSeat = hostSeat,
-            initialState = initialState
+            initialState = initialState,
+            capacityPolicy = capacityPolicy,
+            hostDispatch = hostDispatch
         )
 
         var created = false
@@ -107,7 +112,7 @@ class RoomRegistry(
         }
 
         if (!created) {
-            return createRoom(hostPlayerName, initialConfig, isSingleplayer, fixedRoomId, serialExecutor, hostSeat, initialState)
+            return createRoom(hostPlayerName, initialConfig, isSingleplayer, fixedRoomId, serialExecutor, hostSeat, initialState, hostDispatch)
         }
 
         return room

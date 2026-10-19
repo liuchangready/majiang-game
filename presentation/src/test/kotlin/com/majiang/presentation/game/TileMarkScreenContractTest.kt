@@ -255,11 +255,18 @@ class TileMarkScreenContractTest : GdxHeadlessTestRunner() {
     }
 
     @Test
-    fun `font subset covers technique selection graphical hint directions and translated refusals`() {
-        val visible = "落汗 标记四张牌 请选择 4 张 10 额度 最多 12 张 确认 取消 牌河提示 东南西北" +
-            listOf("TILE_MARK_DISABLED", "TILE_MARK_CAPACITY_EXCEEDED", "INSUFFICIENT_FUNDS", "DEADLINE_EXPIRED", "DECISION_MISMATCH", "NOT_YOUR_TURN", "SEAT_NOT_HUMAN", "ACTION_IN_FLIGHT", "SESSION_CLOSED", "TILE_MARK_RIICHI_LOCKED", "TILE_MARK_INVALID_SELECTION", "TILE_MARK_TILE_NOT_OWNED", "TILE_MARK_ALREADY_MARKED", "STALE_CONTROL_EPOCH", "WRONG_PHASE", "NO_ACTIVE_DECISION")
-                .joinToString("") { TileMarkPanel.translateServerReason(it) }
-        val missing = visible.toSet() - TileMarkPanel.TILE_MARK_CHARS.toSet()
-        assertTrue(missing.isEmpty(), "Missing Chinese glyphs: $missing")
+    fun `actual server rejection codes have Chinese explanations`() {
+        val reasons = listOf(
+            "TILE_MARK_DISABLED", "TILE_MARK_CAPACITY_EXCEEDED", "INSUFFICIENT_FUNDS",
+            "DEADLINE_EXPIRED", "DECISION_MISMATCH", "NOT_YOUR_TURN", "SEAT_NOT_HUMAN",
+            "ACTION_IN_FLIGHT", "SESSION_CLOSED", "TILE_MARK_RIICHI_LOCKED",
+            "TILE_MARK_INVALID_SELECTION", "TILE_MARK_TILE_NOT_OWNED", "TILE_MARK_ALREADY_MARKED",
+            "STALE_CONTROL_EPOCH", "WRONG_PHASE", "NO_ACTIVE_DECISION"
+        )
+        for (reason in reasons) {
+            val text = TileMarkPanel.translateServerReason(reason)
+            assertNotEquals(reason, text)
+            assertTrue(text.any { it.code > 127 }, "Missing Chinese explanation: $reason")
+        }
     }
 }

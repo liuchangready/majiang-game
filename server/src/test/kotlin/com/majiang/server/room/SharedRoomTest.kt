@@ -237,10 +237,48 @@ class SharedRoomTest {
 
             CompletableFuture.allOf(f1, f2, f3).await()
 
-            // 权威状态自洽无崩溃
+            // 1. 验证并发提交在权威队列上严格串行化：状态自洽、成员与席位分配正确无碰撞
+            assertEquals(ProtocolReceiptStatus.APPLIED, f1.await().status)
+            assertEquals(1, f2.await().first)
+            assertEquals(ProtocolReceiptStatus.APPLIED, f3.await().status)
+
             val info = room.getRoomInfo().await()
             assertEquals(2, info.members.size)
-            assertFalse(info.members.first { it.seat == 0 }.isReady) // 被配置更新重置为 false
+            assertEquals("HostPlayer", info.members.first { it.seat == 0 }.playerName)
+            assertEquals("Guest1", info.members.first { it.seat == 1 }.playerName)
+            assertFalse(info.members.first { it.seat == 1 }.isReady, "New joined guest must initialize as unready")
+
+            // 2. 验证串行化最终就绪状态自洽性：
+            // 若 updateConfig 先于 setReady 入队执行，则房主 ready 最终被 setReady 设为 true；
+            // 若 setReady 先于 updateConfig 入队执行，则房主 ready 被 updateConfig 重置为 false。
+            // 无论并发调度先后，权威队列均能确定性执行后续状态流转，且配置更新必须确定性重置 ready
+            val hostReady = info.members.first { it.seat == 0 }.isReady
+            if (hostReady) {
+                // updateConfig 先于 setReady 入队：显式再次更新配置，验证 ready 被权威确定性重置为 false
+                val resetReceipt = room.updateConfig(0, ProtocolRoomConfig()).await()
+                assertEquals(ProtocolReceiptStatus.APPLIED, resetReceipt.status)
+                assertFalse(room.getRoomInfo().await().members.first { it.seat == 0 }.isReady, "Config update must reset ready to false")
+            } else {
+                // setReady 先于 updateConfig 入队：ready 已被配置更新重置为 false，验证重新 setReady 后再更新配置依然重置
+                val readyReceipt = room.setReady(0, true).await()
+                assertEquals(ProtocolReceiptStatus.APPLIED, readyReceipt.status)
+                assertTrue(room.getRoomInfo().await().members.first { it.seat == 0 }.isReady)
+                val resetReceipt = room.updateConfig(0, ProtocolRoomConfig()).await()
+                assertEquals(ProtocolReceiptStatus.APPLIED, resetReceipt.status)
+                assertFalse(room.getRoomInfo().await().members.first { it.seat == 0 }.isReady, "Config update must reset ready to false")
+            }
+
+            // 3. 验证 startMatch 在未齐备就绪状态下的权威串行裁决：必须返回 NOT_READY 拒绝
+            val unreadyStart = room.startMatch(0).await()
+            assertEquals(ProtocolReceiptStatus.REJECTED, unreadyStart.status)
+            assertEquals("NOT_READY", unreadyStart.reason)
+
+            // 4. 验证 leave 操作在权威队列上的原子性与串行化：成员离开后席位释放
+            val leaveReceipt = room.leave(1).await()
+            assertEquals(ProtocolReceiptStatus.APPLIED, leaveReceipt.status)
+            val infoAfterLeave = room.getRoomInfo().await()
+            assertEquals(1, infoAfterLeave.members.size)
+            assertEquals(0, infoAfterLeave.members.first().seat)
         } finally {
             callers.shutdownNow()
             room.close()
@@ -294,6 +332,35 @@ class SharedRoomTest {
             }
             assertTrue(infoEx.cause is IllegalStateException)
             assertEquals("STALE_SESSION", infoEx.cause?.message)
+        } finally {
+            room.close()
+        }
+    }
+
+    @Test
+    fun `stale queued spectator leave rejected by session validator`() {
+        val room = SharedRoom(
+            roomId = "SPEC_STALE1",
+            hostPlayerName = "HostPlayer",
+            initialConfig = ProtocolRoomConfig(),
+            isSingleplayer = false
+        )
+        try {
+            val (specId, _) = room.joinSpectator("SpecUser").await()
+            assertTrue(room.spectators.containsKey(specId))
+
+            val staleValidator: () -> Boolean = { false }
+            val staleReceipt = room.leaveSpectator(specId, sessionValidator = staleValidator).await()
+            assertEquals(ProtocolReceiptStatus.REJECTED, staleReceipt.status)
+            assertEquals("STALE_SESSION", staleReceipt.reason)
+
+            // 确认观战者依然在房未被移出 (无副作用)
+            assertTrue(room.spectators.containsKey(specId))
+
+            // 有效验证器或无验证器正常移出
+            val okReceipt = room.leaveSpectator(specId).await()
+            assertEquals(ProtocolReceiptStatus.APPLIED, okReceipt.status)
+            assertFalse(room.spectators.containsKey(specId))
         } finally {
             room.close()
         }
@@ -372,7 +439,7 @@ class SharedRoomTest {
             val joinPair = room.join("Guest1").await()
             val guestSeat = joinPair.first
             val originalToken = joinPair.second
-            val originalGen = room.bindingGenerations[guestSeat]
+            val originalGen = room.seatMemberGeneration(guestSeat)
 
             // 1. 大厅期退出
             val leaveReceipt = room.leave(guestSeat).await()
@@ -380,7 +447,7 @@ class SharedRoomTest {
 
             assertFalse(room.seatOccupied[guestSeat])
             val rotatedToken = room.resumeTokens[guestSeat]
-            val incrementedGen = room.bindingGenerations[guestSeat]
+            val incrementedGen = room.seatMemberGeneration(guestSeat)
             assertTrue(rotatedToken != originalToken, "Resume token must be rotated upon leave")
             assertTrue(incrementedGen > originalGen, "Binding generation must increment upon leave")
         } finally {
@@ -528,4 +595,37 @@ class SharedRoomTest {
         room.close()
         assertTrue(room.closed)
     }
+
+    @Test
+    fun `shared room with injected host dispatch preserves pools on room close`() {
+        val pools = com.majiang.server.host.HostDispatchPools(
+            dispatchThreads = 2,
+            dispatchQueueCapacity = 16,
+            completionThreads = 2,
+            completionQueueCapacity = 16
+        )
+        try {
+            val room = SharedRoom(
+                roomId = "SHARED_POOL_TEST",
+                hostPlayerName = "Host",
+                initialConfig = ProtocolRoomConfig(),
+                isSingleplayer = true,
+                hostDispatch = pools
+            )
+            assertFalse(room.closed)
+            val info = room.getRoomInfo().await()
+            assertEquals("SHARED_POOL_TEST", info.roomId)
+
+            // 关闭房间
+            room.close()
+            assertTrue(room.closed)
+
+            // 共享池绝不被房间关闭
+            assertFalse(pools.dispatchExecutor.isShutdown, "Dispatch executor must remain active after room close")
+            assertFalse(pools.completionExecutor.isShutdown, "Completion executor must remain active after room close")
+        } finally {
+            pools.close(1000L)
+        }
+    }
 }
+

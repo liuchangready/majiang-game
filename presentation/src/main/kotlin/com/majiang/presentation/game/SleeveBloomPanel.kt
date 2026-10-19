@@ -20,7 +20,7 @@ import com.majiang.presentation.common.render.TileSkin
  * 核心契约：
  * 1. 独立表现层组件，拥有并暴露只读 [model] 与公共几何包围盒供单元测试与输入判定；
  * 2. 暴露公共真实绘制/命中矩形：[btnOpenRect]、[panelRect]、[firstCardRect]、[secondCardRect]、[btnConfirmRect]、[btnCancelRect]；
- * 3. 伴生对象集中提供标准服务端原因翻译 [translateServerReason] 与中文字体字形全集 [SLEEVE_BLOOM_CHARS]；
+ * 3. 伴生对象集中提供标准服务端原因翻译 [translateServerReason]；
  * 4. 资源生命周期严格自闭环 (Disposable)。
  */
 class SleeveBloomPanel(
@@ -263,33 +263,5 @@ class SleeveBloomPanel(
             "REQUEST_ID_CONFLICT" -> "请求标识冲突"
             else -> reason
         }
-
-        /**
-         * 涵盖所有袖里藏花相关可见文案、状态、拒绝原因及秘籍描述的中文字形全集。
-         */
-        val SLEEVE_BLOOM_CHARS: String = buildString {
-            // 基础 ASCII 及标点
-            append(" !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~")
-            append("·：；？！“”‘’—，。（）[]【】《》/、")
-            // 核心契约可见文本全集
-            append("袖里藏花 二选一 10 额度 已消耗 保留所选 保留第一张 已摸到 牌山次张 岭上次张 王牌替补 倒计时 秒 确认 取消")
-            // 拒绝原因翻译文本用字集
-            val reasons = listOf(
-                "SLEEVE_BLOOM_DISABLED", "SLEEVE_BLOOM_RIICHI_LOCKED", "SLEEVE_BLOOM_DEALER_EXTRA_EXCLUDED",
-                "SLEEVE_BLOOM_NO_DRAWN_TILE", "SLEEVE_BLOOM_ALREADY_PENDING", "SLEEVE_BLOOM_ALREADY_USED_THIS_DRAW",
-                "SLEEVE_BLOOM_WALL_EMPTY", "SLEEVE_BLOOM_NO_PENDING_OFFER", "SLEEVE_BLOOM_OFFER_MISMATCH",
-                "SLEEVE_BLOOM_STALE_OFFER", "SLEEVE_BLOOM_CHOICE_PENDING", "INSUFFICIENT_FUNDS",
-                "DEADLINE_EXPIRED", "DECISION_MISMATCH", "NOT_YOUR_TURN", "SEAT_NOT_HUMAN",
-                "ACTION_IN_FLIGHT", "SESSION_CLOSED", "STALE_CONTROL_EPOCH", "WRONG_PHASE",
-                "NO_ACTIVE_DECISION", "HOST_PAUSED", "REQUEST_ID_CONFLICT"
-            )
-            for (r in reasons) {
-                append(translateServerReason(r))
-            }
-            // 秘籍弹窗文案
-            append("摸牌后出牌前消耗翻看第二候选留在退回对应位置原位默认原摸牌摸切费用不退牌山次张杠后岭上次张第四杠不可用写回原槽注意立直非本人回合思考超时禁止施展落汗请选准时机候选不足已达四杠耗尽")
-            // 麻将常用牌面字形
-            append("一二三四五六七八九万筒索東南西北白發中副露宝牌指示牌赤")
-        }.toSet().joinToString("")
     }
 }

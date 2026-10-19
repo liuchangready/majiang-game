@@ -1,0 +1,296 @@
+================================================================
+ANTI 任务简报：MR-09b storedReceipts 与预览重复计算测量探针
+================================================================
+
+0. 总则（必读）
+----------------------------------------------------------------
+- 基线：工作区当前状态（MR-09a 已验收未提交的改动之上；本任务与 09a
+  文件零重叠，验收按文件隔离 diff）。不要提交 git，不要创建分支。
+- 你只用文件工具（读/写/改文件），严禁运行任何命令、构建或测试。
+- 需求来源：doc/v4-重构/IMPROVEMENT-PLAN.md 第 4 节 MR-09 后三条：
+  3) storedReceipts 不直接增加 LRU——先测量每场真实条目数、拒绝请求
+     占比和保留字节数；
+  5) 预览缓存仅在证明重复计算后引入。
+  本任务只交付测量仪器与测量用例，【严禁】实现任何 LRU、准入配额、
+  预览缓存或淘汰逻辑——配额/缓存决策由验收方依据测量数据另行裁定。
+- 生产代码只允许加"内部只读指标"，不得有任何行为变更；不改 public API，
+  不加任何依赖，不改 build 脚本。
+- 禁止删除或削弱任何现有测试；不修改 MR-09a 交付的任何文件
+  （GameState.kt / PlayerHand.kt / RoundTransitionPlanner.kt /
+  RiichiMirrorInvariantTest.kt / GameStateFieldChecklistTest.kt /
+  Mr09RiichiWriteFunnelScanTest.kt）。
+- 完成后写 doc/v4-重构/ANTI-MR09B-DELIVERY.md。禁止代写验收方的
+  CLAUDE-MR09B-REVIEW.md。
+
+1. 现状与问题（已核实的代码事实，行号以实读为准）
+----------------------------------------------------------------
+A) storedReceipts（engine/src/main/kotlin/com/majiang/authority/TableAuthority.kt）：
+- L146 data class ReceiptKey(val seat: Int, val requestId: String)
+- L185-194 data class StoredSubmission(kind, receipt: ActionReceipt,
+  choice/tileMarkPayload/sleeveBloomPayload/sleeveBloomChoicePayload/
+  beamSwapPayload/beamSwapChoicePayload 各可空)
+- L195 private val storedReceipts = ConcurrentHashMap<ReceiptKey, StoredSubmission>()
+- 6 个 submit* 入口（submitChoice L479、submitTileMark L744、
+  submitSleeveBloom L919、submitSleeveBloomChoice L1122、submitBeamSwap
+  L1302、submitBeamSwapChoice L1512）的每条路径（含全部拒绝早退）都会
+  storedReceipts[receiptKey] = StoredSubmission(...)——即被拒绝的请求同样
+  占用条目；条目只在 close()（L2477）清空，无任何淘汰。
+- 后果（待量化）：条目数随"唯一 (seat, requestId)"线性增长，无准入上限；
+  正常对局的真实量级、拒绝占比与保留字节当前无数据。
+- 回执结构（access/ActionReceipt.kt）：data class ActionReceipt(
+  requestId: String, status: ReceiptStatus, reason: String? = null,
+  cursor: Long? = null)；ReceiptStatus ∈ {REJECTED, RECORDED, APPLIED}
+  （access/ReceiptStatus.kt）。
+B) 预览重复计算（engine/src/main/kotlin/com/majiang/session/
+   PlayerPresentationPreviewProvider.kt）：
+- createPreview(view, decision) 是 object 中的纯函数，唯一生产调用点在
+  TableAuthority.querySnapshot L2335-2336（snapshotRoundId == decision.roundId
+  时执行）；每次 querySnapshot 对该席位执行完整 Tenpai/Riichi/Meld 三组
+  候选推导。
+- server/src/main/kotlin/com/majiang/server/host/ServerTableHost.kt 有 8 处
+  querySnapshot 拉取（init 基线 L431、恢复/订阅 L590/936/951/985/993/1196、
+  更新构建 L1431）——同一 decision 在多次拉取间会被重复推导，重复率无数据。
+C) 测试驱动范式（已核实可用的引擎内驱动方式）：
+- TableAuthorityTest.kt L28-95：TableAuthority(config, clock=ManualClock,
+  controllers=LocalHuman+3×Computer, adminSeat=0)；authority.start(0, now)；
+  authority.queryDecision(seat, isAutomated) 返回 options（含 optionId/
+  action）；authority.submitChoice(seat, ActionChoice(requestId, roundId,
+  decisionId, controlEpoch, optionId), now)；authority.querySnapshot(seat,
+  syncEpoch, cursor, controls)。
+- 注意：TableAuthority 内部 autoPlayAi=false（构造 L121-126），AI 席不会
+  自动走子，测试必须对四席统一驱动。
+- HeadlessGameLoopTest.kt：GameEventBus 订阅 RoundEnded 等事件的范式。
+- MR-09a 教训（RiichiMirrorInvariantTest 返修记录）：断言必须基于
+  动作后重新查询的数据（querySnapshot/readState），不得引用旧对象。
+
+2. 任务 A：TableAuthority 回执库只读指标（唯一生产改动之一）
+----------------------------------------------------------------
+在 engine/src/main/kotlin/com/majiang/authority/TableAuthority.kt 中，
+紧接 storedReceipts 声明（L195）之后新增（逐字使用）：
+
+    /** MR-09b 回执库只读测量指标（近似估算，仅用于量级对比） */
+    data class ReceiptStoreMetrics(
+        val currentEntries: Int,
+        val rejectedEntries: Int,
+        val recordedEntries: Int,
+        val appliedEntries: Int,
+        val perSeatEntryCounts: List<Int>,
+        val approxRetainedBytes: Long
+    )
+
+    /**
+     * MR-09b 测量入口：只读遍历 storedReceipts，统计条目构成与近似保留字节。
+     * 估算口径（粗粒度，不作绝对内存承诺）：对象头 16B；int/long/引用按
+     * 4/8/8B；字符串 24B + 2×length；枚举/可空字段按引用计；载荷对象按
+     * 其字段同法累加，不计共享驻留与 JVM 压缩。线程安全：ConcurrentHashMap
+     * 弱一致遍历，仅用于权威线程外的诊断读取。
+     */
+    internal fun receiptStoreMetrics(): ReceiptStoreMetrics {
+        var rejected = 0
+        var recorded = 0
+        var applied = 0
+        val perSeat = IntArray(4)
+        var bytes = 0L
+        for ((key, value) in storedReceipts) {
+            perSeat[key.seat]++
+            when (value.receipt.status) {
+                ReceiptStatus.REJECTED -> rejected++
+                ReceiptStatus.RECORDED -> recorded++
+                ReceiptStatus.APPLIED -> applied++
+            }
+            bytes += approxReceiptEntryBytes(key, value)
+        }
+        return ReceiptStoreMetrics(
+            currentEntries = storedReceipts.size,
+            rejectedEntries = rejected,
+            recordedEntries = recorded,
+            appliedEntries = applied,
+            perSeatEntryCounts = perSeat.toList(),
+            approxRetainedBytes = bytes
+        )
+    }
+
+    private fun approxReceiptEntryBytes(key: ReceiptKey, value: StoredSubmission): Long {
+        var bytes = 16L + 4L + 8L                       // ReceiptKey 头+seat+引用
+        bytes += 24L + 2L * key.requestId.length        // requestId 字符串
+        bytes += 16L + 8L * 3                           // StoredSubmission 头+固定引用
+        val receipt = value.receipt
+        bytes += 16L + 8L + 4L + 8L + 8L                // ActionReceipt 头+四字段
+        bytes += 24L + 2L * receipt.requestId.length
+        receipt.reason?.let { bytes += 24L + 2L * it.length }
+        value.choice?.let { bytes += 16L + 8L * 3 + 24L + 2L * it.requestId.length }
+        value.tileMarkPayload?.let { bytes += 16L + 8L * 3 + 24L + 2L * it.sessionId.length }
+        value.sleeveBloomPayload?.let { bytes += 16L + 8L * 3 }
+        value.sleeveBloomChoicePayload?.let { bytes += 16L + 8L * 5 + 24L + 2L * it.offerId.length }
+        value.beamSwapPayload?.let { bytes += 16L + 8L * 3 }
+        value.beamSwapChoicePayload?.let { bytes += 16L + 8L * 5 + 24L + 2L * it.offerId.length }
+        return bytes
+    }
+注意：核对 NormalizedXxxPayload 的真实字段（本文件 L148-184 已给出，
+sessionId/roundId/decisionId/offerId 均为 String）后再定稿；ReceiptStatus
+需要 import com.majiang.access.ReceiptStatus（对照本文件既有 import，若已
+存在则不重复）。除此之外 TableAuthority.kt 不得有任何其它改动。
+
+3. 任务 B：预览提供器调用指标（另一处生产改动）
+----------------------------------------------------------------
+在 engine/src/main/kotlin/com/majiang/session/
+PlayerPresentationPreviewProvider.kt 的 object 内新增（逐字使用）：
+
+    /** MR-09b 预览调用测量（内部只读指标；有界防泄漏） */
+    private val previewCallCount = java.util.concurrent.atomic.LongAdder()
+    private val previewNullRoundCount = java.util.concurrent.atomic.LongAdder()
+    private val seenDecisionIdentities = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+    private var previewIdentityFrozen = false
+    private const val PREVIEW_IDENTITY_CAP = 8192   // 若 const 不允许放此位置则改为 private val
+
+    /** MR-09b 预览测量快照 */
+    data class PreviewCallMetrics(
+        val callCount: Long,
+        val nullRoundCount: Long,
+        val distinctDecisions: Int,
+        val identityFrozen: Boolean,
+        val duplicateCalls: Long
+    )
+
+    internal fun previewCallMetrics(): PreviewCallMetrics = PreviewCallMetrics(
+        callCount = previewCallCount.sum(),
+        nullRoundCount = previewNullRoundCount.sum(),
+        distinctDecisions = seenDecisionIdentities.size,
+        identityFrozen = previewIdentityFrozen,
+        duplicateCalls = previewCallCount.sum() - previewNullRoundCount.sum() -
+            (if (previewIdentityFrozen) 0L else seenDecisionIdentities.size.toLong())
+    )
+
+    /** 仅测试隔离用：清零全部指标。 */
+    internal fun resetPreviewCallMetrics() {
+        previewCallCount.reset()
+        previewNullRoundCount.reset()
+        seenDecisionIdentities.clear()
+        previewIdentityFrozen = false
+    }
+
+    private fun recordPreviewCall(roundId: String?, decisionId: String, controlEpoch: Long) {
+        previewCallCount.increment()
+        if (roundId == null) {
+            previewNullRoundCount.increment()
+            return
+        }
+        if (previewIdentityFrozen) return
+        val identity = "$roundId|$decisionId|$controlEpoch"
+        if (!seenDecisionIdentities.add(identity) ) { /* 重复即重复计算证据 */ }
+        if (seenDecisionIdentities.size >= PREVIEW_IDENTITY_CAP) {
+            previewIdentityFrozen = true   // 冻结后 duplicateCalls 不再可靠，快照带标志
+        }
+    }
+并在 createPreview 函数体第一行（val roundId = decision.roundId ?: return null
+之前）插入：
+        recordPreviewCall(decision.roundId, decision.decisionId, decision.controlEpoch)
+注意：data class 与 fun 不能用 const 修饰局部位置——若 PREVIEW_IDENTITY_CAP
+写法编译可疑，改为 `private val PREVIEW_IDENTITY_CAP = 8192`（object 内合法）。
+decision.roundId/decisionId/controlEpoch 字段名以实读
+com.majiang.application.PlayerDecision 为准（先读该文件核对）。除此之外
+该文件不得有任何其它改动；createPreview 的既有逻辑一行不动。
+
+4. 任务 C：测量用例（新建一个测试文件，三个用例）
+----------------------------------------------------------------
+新建 engine/src/test/kotlin/com/majiang/authority/Mr09ReceiptAndPreviewMeasurementTest.kt：
+- @Timeout(180)；先读 TableAuthorityTest.kt L28-95 与
+  RiichiMirrorInvariantTest.kt，照抄 ManualClock、controls、构造器与 import
+  范式（禁止臆造 API）。GameEventBus 订阅范式照抄 HeadlessGameLoopTest.kt。
+- 公共驱动函数 drive(seat, authority, requestIdSeq, pollsPerDecision): 订阅
+  RoundEnded 事件计数；循环（上限 20000 次防挂起）：
+  1) 对 seat 0..3 依次 queryDecision(seat, isAutomated = seat != 0)；
+  2) 若 options 非空：按策略选 option——优先 action 为 GameAction.DiscardTile
+     且 tile == 该席 drawnTile 的摸切；其次 GameAction.Pass（如存在）；其次
+     首个 DiscardTile；否则首个 option；
+  3) submitChoice(seat, ActionChoice(requestId = "mr09-meas-<n>", roundId =
+     decision.roundId, decisionId, controlEpoch, optionId), clock.nowMillis())；
+     n 每次自增保证唯一；
+  4) 提交后对每个席位调用 querySnapshot(s, 0L, 0L, controls) 共
+     pollsPerDecision 次（模拟服务端/客户端拉取）；
+  5) 循环结束条件：authority.sessionLifecycle == FINISHED（引用方式先实读
+     TableAuthority L221-222 的 sessionLifecycle 访问器）或达迭代上限。
+- 用例 1 `per match receipt store and single poll preview baseline`：
+  MatchConfig(winds = listOf(1), shuffleConfig = ShuffleConfig(enabled = false))
+  （构造范式照抄 TableAuthorityTest L42-52），pollsPerDecision = 1；
+  结束后 receiptStoreMetrics() 与 previewCallMetrics()，宽松 sanity 断言
+  （currentEntries > 0；applied+recorded+rejected == currentEntries；
+  callCount > 0），并用统一前缀 println 每行一个指标：
+  MR09-MEAS match1 entries=<currentEntries> rejected=<..> rejectedShare=<百分比>
+  recorded=<..> applied=<..> perSeat=<..> approxBytes=<..> bytesPerEntry=<..>
+  roundEnded=<事件数> lifecycle=<最终生命周期> iterations=<循环次数>
+  MR09-MEAS match1 preview calls=<callCount> distinct=<distinctDecisions>
+  duplicates=<duplicateCalls> nullRound=<nullRoundCount> frozen=<identityFrozen>
+- 用例 2 `reconnect style polling measures preview recompute duplication`：
+  同上但 pollsPerDecision = 3（模拟断线重连/多次拉取同一决策）；断言
+  duplicateCalls > 0（k>1 时同决策重复拉取必然重复推导）；同样打印
+  MR09-MEAS match2 ... 行。用例开始前 resetPreviewCallMetrics()。
+- 用例 3 `unique requestId spam documents linear unbounded growth`：
+  新建 authority（同构造），start 后不驱动对局，直接对 seat 0 连续提交
+  M=500 个唯一 requestId 的非法 ActionChoice（decisionId = "bogus-decision"
+  使其在校验早期被拒绝并存储回执；先读 submitChoice L479-560 确认
+  未知 decisionId 的拒绝路径确实存储回执，把结论写进交付说明）：
+  断言 receiptStoreMetrics().currentEntries >= M（线性增长证据）；
+  打印 MR09-MEAS spam entries=<..> approxBytes=<..> bytesPerEntry=<..>；
+  authority.close() 后再取一次指标断言 currentEntries == 0。
+- 所有用例结束 authority.close()（use/finally 保证）。
+- 禁止把具体测量数值写成硬断言（spam 用例的 >= M 与 close 归零除外）。
+
+5. 文件所有权（只允许改/建以下文件）
+----------------------------------------------------------------
+允许修改：
+  engine/src/main/kotlin/com/majiang/authority/TableAuthority.kt（仅第 2 节内容）
+  engine/src/main/kotlin/com/majiang/session/PlayerPresentationPreviewProvider.kt
+  （仅第 3 节内容）
+允许新建：
+  engine/src/test/kotlin/com/majiang/authority/Mr09ReceiptAndPreviewMeasurementTest.kt
+  doc/v4-重构/ANTI-MR09B-DELIVERY.md
+禁止改动：其余一切（尤其 MR-09a 的 6 个文件、TableAuthority 的
+submit*/query* 逻辑、build 脚本、既有测试）。
+
+6. 陷阱清单（逐条自查）
+----------------------------------------------------------------
+1) 动笔前先逐字读：TableAuthority.kt L60-260 与 L479-620 与 L2277-2340 与
+   L2460-2479、access/ActionReceipt.kt、access/ReceiptStatus.kt、
+   application/PlayerDecision.kt（核对字段名）、
+   PlayerPresentationPreviewProvider.kt 全文、TableAuthorityTest.kt、
+   HeadlessGameLoopTest.kt、RiichiMirrorInvariantTest.kt。
+2) submitChoice 的拒绝路径是否全部存储回执——以实读为准，不确定就在交付
+   说明中写明依据的行号，不要猜。
+3) 新增代码只用 JDK 自带（LongAdder/ConcurrentHashMap），不加依赖。
+4) recordPreviewCall 必须在 createPreview 第一行，早于一切 early return。
+5) 指标快照函数只读，不修改任何状态；data class 放在 object 内合法。
+6) 测试断言一律基于动作后重新查询的返回值（MR-09a 的 readState 教训）；
+   数值类指标只 println 不硬断言。
+7) 驱动循环必须有迭代上限 + @Timeout；禁止真实 sleep。
+8) GameAction.Pass 的真实类名以 state/GameAction.kt 实读为准（可能是
+   PassResponse 之类；匹配不上就只按摸切/首弃牌/首选项三级策略，并把
+   实际策略写进交付说明）。
+9) Kotlin 语法自查：object 内 private const val 合法；data class 内不能有
+   const；String 模板中 | 字符无需转义。
+10) 交付前逐字回读全部改动文件（import、字段名、括号），回读结论写进
+    交付说明；KDoc 不得出现 "*/" 序列。
+
+7. 验收标准（R09b-T1～T6）
+----------------------------------------------------------------
+R09b-T1 零行为变更：生产 diff 仅两处内部指标；:engine:test 全量零回归
+   （含 MR-09a 的 480 项）。
+R09b-T2 真实对局测量：用例 1 完整跑通（FINISHED 或有界推进 + RoundEnded
+   事件计数），MR09-MEAS 行输出条目数/构成/近似字节。
+R09b-T3 重复计算证据：用例 2 在多次拉取模型下 duplicateCalls > 0 且可
+   量化；与用例 1 基线对照。
+R09b-T4 增长风险量化：用例 3 实测唯一 requestId 线性增长（>=M）与
+   close() 归零。
+R09b-T5 守护不破坏：-I v4-review 套件（含 Mr09RiichiWriteFunnelScanTest）
+   仍全部通过；本次改动不含任何镜像直写。
+R09b-T6 零外溢：除所有权清单外对 MR-09a 之后工作区的增量 diff 为空。
+
+8. 交付说明要求（ANTI-MR09B-DELIVERY.md）
+----------------------------------------------------------------
+- 改动文件清单+意图；指标口径说明（估算公式与局限）；
+- submitChoice 拒绝路径存储回执的行号依据；GameAction.Pass 实际类名与
+  最终选择策略；
+- 测量留空表（验收方填写）：每场条目数/拒绝占比/近似字节/预览调用与
+  重复率——三用例各一行；
+- R09b-T1～T6 对照（实现位置+测试名）；陷阱清单逐条自查结论（含逐字回读）；
+- 明确声明：未实现任何 LRU/配额/缓存，决策待测量数据。

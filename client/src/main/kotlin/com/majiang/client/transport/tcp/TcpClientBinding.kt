@@ -198,6 +198,8 @@ class TcpClientBinding(
     // 生命周期状态
     private val isClosed = AtomicBoolean(false)
     private val disconnectReasonRef = AtomicReference<String?>(null)
+    @Volatile
+    private var eofSeen: Boolean = false
 
     override val closed: Boolean
         get() = isClosed.get()
@@ -571,6 +573,7 @@ class TcpClientBinding(
             this.lastInboundValidTime.set(now)
             this.isClosed.set(false)
             this.disconnectReasonRef.set(null)
+            this.eofSeen = false
             this.lastWriteProgressTimeMillis.set(now)
         }
 
@@ -836,7 +839,10 @@ class TcpClientBinding(
             sc.read(readBuffer)
         } catch (e: Exception) {
             if (!closed && socketChannel === sc && socketGeneration == connGen) {
-                handleFailure(TcpCloseReasons.HEARTBEAT_TIMEOUT, "Read failure: ${e.message}")
+                val currentReason = disconnectReasonRef.get()
+                if (currentReason == null || currentReason == TcpCloseReasons.HEARTBEAT_TIMEOUT) {
+                    handleFailure(TcpCloseReasons.HEARTBEAT_TIMEOUT, "Read failure: ${e.message}")
+                }
             }
             return
         }
@@ -849,7 +855,18 @@ class TcpClientBinding(
                     handleFailure(e.reasonCode, e.message)
                     return
                 }
-                handleFailure(TcpCloseReasons.HEARTBEAT_TIMEOUT, "Server EOF")
+                val hasPending = synchronized(inboundMailboxLock) {
+                    inboundMailbox.isNotEmpty() || currentDispatchFrame != null
+                }
+                if (hasPending) {
+                    eofSeen = true
+                    triggerInboundMailboxProcessing(connGen)
+                    return
+                }
+                val currentReason = disconnectReasonRef.get()
+                if (currentReason == null || currentReason == TcpCloseReasons.HEARTBEAT_TIMEOUT) {
+                    handleFailure(TcpCloseReasons.HEARTBEAT_TIMEOUT, "Server EOF")
+                }
             }
             return
         }
@@ -888,6 +905,16 @@ class TcpClientBinding(
                         writeRawFrame(TcpMessageCodec.toFrame(pong))
                     } catch (_: Throwable) {
                     }
+                } else if (frame.type == TcpWire.FRAME_TYPE_CLOSE) {
+                    // CLOSE 帧立即在 I/O 线程处理，避免在入站邮箱排队期间因对端 half-close/EOF 被 HEARTBEAT_TIMEOUT 覆盖
+                    val closeMsg = try {
+                        TcpMessageCodec.parseClose(frame)
+                    } catch (e: Throwable) {
+                        handleFailure(TcpCloseReasons.PROTOCOL_VIOLATION, "Malformed CLOSE: ${e.message}")
+                        return
+                    }
+                    handleFailure(closeMsg.reason, closeMsg.message)
+                    return
                 } else {
                     framesToDispatch.add(frame)
                 }
@@ -959,6 +986,7 @@ class TcpClientBinding(
                         if (inboundMailboxBytes < 0L) inboundMailboxBytes = 0L
                         currentDispatchFrame = null
                     }
+                    pumpReplayQueue()
                 }
             }
         } finally {
@@ -966,6 +994,11 @@ class TcpClientBinding(
             val hasMore = synchronized(inboundMailboxLock) { inboundMailbox.isNotEmpty() }
             if (hasMore && !closed && socketGeneration == connGen) {
                 triggerInboundMailboxProcessing(connGen)
+            } else if (eofSeen && !closed && socketGeneration == connGen) {
+                val currentReason = disconnectReasonRef.get()
+                if (currentReason == null || currentReason == TcpCloseReasons.HEARTBEAT_TIMEOUT) {
+                    handleFailure(TcpCloseReasons.HEARTBEAT_TIMEOUT, "Server EOF")
+                }
             }
         }
     }
@@ -1107,7 +1140,6 @@ class TcpClientBinding(
                 pending.reconciliationFuture.completeExceptionally(ex)
             }
             // R04: 错误 requestScope 的非法 RSP 绝不擦除未知副作用身份与记录，原 (scope, requestId, payload) 完整保留供对账
-            pumpReplayQueue()
             return
         }
 
@@ -1133,7 +1165,6 @@ class TcpClientBinding(
             val ex = ServerApiException(code = ApiErrors.REQUEST_SCOPE_EXPIRED, message = "Scope expired for side-effect request; reconciliation required")
             pending.future.completeExceptionally(ex)
             pending.reconciliationFuture.completeExceptionally(ex)
-            pumpReplayQueue()
             return
         }
 
@@ -1159,7 +1190,6 @@ class TcpClientBinding(
                 pending.reconciliationFuture.completeExceptionally(ex)
             }
         }
-        pumpReplayQueue()
     }
 
     /**
@@ -1839,10 +1869,10 @@ class TcpClientBinding(
         }
     }
 
-    /**
-     * 内部发送低级请求 (带超时关联与 inFlightRequests 登记，R04 / R08)
-     */
-    private fun sendRawRequest(request: ApiRequest): CompletableFuture<TcpResponseEnvelope> {
+    /** 开放测试与底层调用入口 */
+    fun executeRawRequest(request: ApiRequest): CompletableFuture<TcpResponseEnvelope> = sendRawRequest(request)
+
+    internal fun sendRawRequest(request: ApiRequest): CompletableFuture<TcpResponseEnvelope> {
         val future = CompletableFuture<TcpResponseEnvelope>()
         if (closed) {
             future.completeExceptionally(IOException("TcpClientBinding is closed: $disconnectReason"))
@@ -1987,8 +2017,24 @@ class TcpClientBinding(
      * 连接异常或收到服务端断连通知处理
      */
     private fun handleFailure(reason: String, message: String? = null) {
-        if (!disconnectReasonRef.compareAndSet(null, reason)) {
-            // 已设置断连原因，避免重复处理与重复触发断连通知
+        val isPermanent = when (reason) {
+            TcpCloseReasons.VERSION_MISMATCH,
+            TcpCloseReasons.PROTOCOL_VIOLATION,
+            TcpCloseReasons.DISPLACED_BY_NEW_CONNECTION,
+            TcpCloseReasons.ROOM_CLOSED,
+            TcpCloseReasons.SERVER_SHUTDOWN,
+            TcpCloseReasons.LOCAL_CLOSED,
+            ApiProtocol.DISPLACED_BY_NEW_CONNECTION,
+            ApiProtocol.ROOM_CLOSED,
+            ApiProtocol.SERVER_SHUTDOWN,
+            ApiProtocol.LOCAL_CLOSED -> true
+            else -> false
+        }
+
+        val updated = disconnectReasonRef.compareAndSet(null, reason) ||
+            (isPermanent && disconnectReasonRef.compareAndSet(TcpCloseReasons.HEARTBEAT_TIMEOUT, reason))
+        if (!updated) {
+            // 已设置断连原因且不可被当前原因升级覆盖，避免重复处理与重复触发断连通知
             return
         }
 
@@ -2010,21 +2056,7 @@ class TcpClientBinding(
         // 2. 安静关闭当前 socket
         closeSocketQuietly(failInFlight = false)
 
-        // 3. 检查是否属于永久错误
-        val isPermanent = when (reason) {
-            TcpCloseReasons.VERSION_MISMATCH,
-            TcpCloseReasons.PROTOCOL_VIOLATION,
-            TcpCloseReasons.DISPLACED_BY_NEW_CONNECTION,
-            TcpCloseReasons.ROOM_CLOSED,
-            TcpCloseReasons.SERVER_SHUTDOWN,
-            TcpCloseReasons.LOCAL_CLOSED,
-            ApiProtocol.DISPLACED_BY_NEW_CONNECTION,
-            ApiProtocol.ROOM_CLOSED,
-            ApiProtocol.SERVER_SHUTDOWN,
-            ApiProtocol.LOCAL_CLOSED -> true
-            else -> false
-        }
-
+        // 3. 检查是否属于永久错误 (isPermanent 已在进入 handleFailure 时确定)
         val sideEffectsList = if (isPermanent) {
             isClosed.set(true)
             synchronized(unconfirmedSideEffectsLock) {
@@ -2430,7 +2462,7 @@ class TcpClientBinding(
             roomId = currentRoom,
             token = token
         )
-        return sendRequest(apiReq) { rsp, _ ->
+        return sendRequest(apiReq) { rsp, env ->
             val receipt = rsp.receipt ?: ProtocolActionReceipt(
                 requestId = apiReq.requestId,
                 status = ProtocolReceiptStatus.APPLIED
@@ -2439,6 +2471,9 @@ class TcpClientBinding(
                 synchronized(stateLock) {
                     applyLeaveRoomState()
                 }
+            }
+            if (env.grantedScope != null) {
+                currentScope = env.grantedScope
             }
             receipt
         }

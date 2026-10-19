@@ -95,10 +95,7 @@ class GameScreen(
         setToOrtho(false, 1280f, 720f)
     }
 
-    fun isModalActive(): Boolean =
-        showFinalResult || showSettlement || shufflePreparationPanel.isActive ||
-        tileMarkPanel.model.isSelecting || riichiSelectionModel.isSelecting || meldSelectionModel.isSelecting ||
-        sleeveBloomPanel.model.isChoosing || beamSwapPanel.model.isChoosing
+    fun isModalActive(): Boolean = modalCoordinator.isModalActive
 
     // 会话订阅与快照
     private var updateSubscription: AutoCloseable? = null
@@ -150,7 +147,7 @@ class GameScreen(
     // 选牌模型与准备面板
     val riichiSelectionModel = RiichiSelectionModel()
     val meldSelectionModel = MeldSelectionModel()
-    val shufflePreparationPanel = ShufflePreparationPanel(session)
+    val shufflePreparationPanel = ShufflePreparationPanel(session, assets)
     val tileMarkPanel = TileMarkPanel(session)
     val sleeveBloomPanel = SleeveBloomPanel(session)
     val beamSwapPanel = BeamSwapPanel(session)
@@ -191,12 +188,25 @@ class GameScreen(
             return false
         }
 
+    val modalCoordinator = ModalPriorityCoordinator(
+        isFinalResultActive = { showFinalResult },
+        isSettlementActive = { showSettlement },
+        isShufflePreparationActive = { shufflePreparationPanel.isActive },
+        isTileMarkActive = { tileMarkPanel.model.isSelecting },
+        isSleeveBloomActive = { sleeveBloomPanel.model.isChoosing },
+        isBeamSwapActive = { beamSwapPanel.model.isChoosing },
+        isRiichiActive = { riichiSelectionModel.isSelecting },
+        isMeldActive = { meldSelectionModel.isSelecting },
+        isRiverHintOpen = { riverHintPanel.isOpen },
+        isMatchFinished = { isMatchFinished }
+    )
+
     val tenpaiWaits: List<TileView>
         get() = currentSnapshot?.presentationPreview?.waits ?: emptyList()
 
     private val finalResultRenderer = FinalResultRenderer()
     private val tenpaiPanelRenderer = TenpaiPanelRenderer()
-    private val settlementDetailRenderer = SettlementDetailRenderer()
+    private val settlementDetailRenderer = SettlementDetailRenderer(assets)
 
     val btnReturnToMenuRect: Rectangle get() = btnNextRoundRect
     val btnRoundDetailsRect = Rectangle(250f, 145f, 240f, 46f)
@@ -324,13 +334,31 @@ class GameScreen(
         val end: Pair<Float, Float>
     )
 
-    val discardQueue = ArrayDeque<QueuedDiscard>()
-    var currentDiscardAnim: QueuedDiscard? = null
-    var discardAnimElapsed: Float = 0f
-    private var lastDiscards: List<List<TileView>> = (0..3).map { currentView.discards.getOrNull(it) ?: emptyList() }
+    /** 弃牌飞行动画状态控制器 */
+    val discardAnimationController = DiscardAnimationController(
+        startPositionProvider = { seat -> getDiscardStart(seat) },
+        slotPositionProvider = { seat, slotIndex -> getDiscardSlotPosition(seat, slotIndex) },
+        initialDiscards = (0..3).map { currentView.discards.getOrNull(it) ?: emptyList() },
+        onPlaybackBusyChanged = { busy -> if (busy) clearGameplayHover() }
+    )
+
+    val discardQueue: ArrayDeque<QueuedDiscard>
+        get() = discardAnimationController.discardQueue
+
+    var currentDiscardAnim: QueuedDiscard?
+        get() = discardAnimationController.currentDiscardAnim
+        set(value) { discardAnimationController.currentDiscardAnim = value }
+
+    var discardAnimElapsed: Float
+        get() = discardAnimationController.discardAnimElapsed
+        set(value) { discardAnimationController.discardAnimElapsed = value }
+
+    var lastDiscards: List<List<TileView>>
+        get() = discardAnimationController.lastDiscards
+        set(value) { discardAnimationController.lastDiscards = value }
 
     val isDiscardPlaybackBusy: Boolean
-        get() = currentDiscardAnim != null || discardQueue.isNotEmpty()
+        get() = discardAnimationController.isDiscardPlaybackBusy
 
     private fun clearGameplayHover() {
         isSortHovered = false
@@ -563,80 +591,16 @@ class GameScreen(
     }
 
     fun checkDiscardsDiff(events: List<GameEventView> = emptyList()) {
-        val view = currentView
-        val currentDiscards = view.discards
-
-        // 1. 副露抢牌检测：若当前正在飞行的牌从牌河中消失，说明已被副露移走，快进置空
-        val activeAnim = currentDiscardAnim
-        if (activeAnim != null) {
-            val river = currentDiscards.getOrNull(activeAnim.seat) ?: emptyList()
-            if (!river.contains(activeAnim.tile)) {
-                currentDiscardAnim = null
-                discardAnimElapsed = 0f
-            }
-        }
-
-        // 队列中若有已被移走的牌同样清除
-        if (discardQueue.isNotEmpty()) {
-            val iter = discardQueue.iterator()
-            while (iter.hasNext()) {
-                val queued = iter.next()
-                val river = currentDiscards.getOrNull(queued.seat) ?: emptyList()
-                if (!river.contains(queued.tile)) {
-                    iter.remove()
-                }
-            }
-        }
-
-        // Match newly visible physical tiles against the event stream so a batched
-        // update plays discards in chronological order, even across seat changes.
-        val pending = linkedMapOf<Pair<Int, TileView>, Int>()
-        for (seat in 0..3) {
-            val oldList = lastDiscards.getOrNull(seat) ?: emptyList()
-            val newList = currentDiscards.getOrNull(seat) ?: emptyList()
-            for ((index, tile) in newList.withIndex()) {
-                if (tile !in oldList) pending[seat to tile] = index
-            }
-        }
-        fun enqueue(seat: Int, tile: TileView, index: Int) {
-            discardQueue.add(QueuedDiscard(seat, tile, index, getDiscardStart(seat), getDiscardSlotPosition(seat, index)))
-        }
-        for (event in events) {
-            if (event is GameEventView.TileDiscarded) {
-                val index = pending.remove(event.player to event.tile) ?: continue
-                enqueue(event.player, event.tile, index)
-            }
-        }
-        for ((key, index) in pending) enqueue(key.first, key.second, index)
-        if (isDiscardPlaybackBusy) clearGameplayHover()
-
-        lastDiscards = (0..3).map { currentDiscards.getOrNull(it) ?: emptyList() }
+        val busy = discardAnimationController.checkDiscardsDiff(currentView.discards, events)
+        if (busy) clearGameplayHover()
     }
 
     fun updateDiscardAnimation(delta: Float) {
-        if (currentDiscardAnim == null && discardQueue.isNotEmpty()) {
-            currentDiscardAnim = discardQueue.poll()
-            discardAnimElapsed = 0f
-        }
-
-        val anim = currentDiscardAnim
-        if (anim != null) {
-            discardAnimElapsed += delta
-            if (discardAnimElapsed >= DiscardAnimation.TOTAL_DURATION) {
-                currentDiscardAnim = null
-                discardAnimElapsed = 0f
-                if (discardQueue.isNotEmpty()) {
-                    currentDiscardAnim = discardQueue.poll()
-                }
-            }
-        }
+        discardAnimationController.update(delta)
     }
 
     fun fastForwardDiscardAnimations() {
-        currentDiscardAnim = null
-        discardQueue.clear()
-        discardAnimElapsed = 0f
-        lastDiscards = (0..3).map { currentView.discards.getOrNull(it) ?: emptyList() }
+        discardAnimationController.fastForward(currentView.discards)
     }
 
     fun computeHandSlots(): List<HandTileSlot> {
@@ -1171,20 +1135,7 @@ class GameScreen(
                 tileSkin = tileSkin,
                 tileDrawBuffer = tileDrawBuffer,
                 isTileVisibleInRiver = { seat, tile, index ->
-                    val anim = currentDiscardAnim
-                    val suppressed = anim != null && DiscardAnimation.shouldSuppressDiscard(
-                        pondSeat = seat,
-                        tile = tile,
-                        tileIndex = index,
-                        animatingSeat = anim.seat,
-                        animatingTile = anim.tile,
-                        animatingIndex = anim.targetIndex,
-                        phase = DiscardAnimation.poseAt(discardAnimElapsed, anim.start, anim.end, anim.seat).phase
-                    )
-                    val queued = discardQueue.any { q ->
-                        DiscardAnimation.isQueuedRiverTile(seat, tile, index, q.seat, q.tile, q.targetIndex)
-                    }
-                    !suppressed && !queued
+                    discardAnimationController.isTileVisibleInRiver(seat, tile, index)
                 }
             )
             riverHintPanel.renderToggleButton(shape, batch, chineseFont ?: font)
@@ -1496,22 +1447,7 @@ class GameScreen(
             for (i in discards.indices) {
                 val tile = discards[i]
 
-                val isSuppressed = anim != null && DiscardAnimation.shouldSuppressDiscard(
-                    pondSeat = seat,
-                    tile = tile,
-                    tileIndex = i,
-                    animatingSeat = anim.seat,
-                    animatingTile = anim.tile,
-                    animatingIndex = anim.targetIndex,
-                    phase = DiscardAnimation.poseAt(discardAnimElapsed, anim.start, anim.end, anim.seat).phase
-                )
-
-                if (isSuppressed) continue
-
-                val isQueued = discardQueue.any { q ->
-                    DiscardAnimation.isQueuedRiverTile(seat, tile, i, q.seat, q.tile, q.targetIndex)
-                }
-                if (isQueued) continue
+                if (!discardAnimationController.isTileVisibleInRiver(seat, tile, i)) continue
 
                 val pos = getDiscardSlotPosition(seat, i)
                 val isMarked = riverMarks.any { it.seat == seat && it.riverPosition?.discardIndex == i && it.tileId == tile.tileId }
@@ -1620,8 +1556,8 @@ class GameScreen(
     }
 
     private fun renderFlyingDiscard(batch: SpriteBatch, shape: ShapeRenderer, font: BitmapFont) {
-        val anim = currentDiscardAnim ?: return
-        val pose = DiscardAnimation.poseAt(discardAnimElapsed, anim.start, anim.end, anim.seat)
+        val anim = discardAnimationController.currentDiscardAnim ?: return
+        val pose = discardAnimationController.currentPose() ?: return
         if (pose.phase == DiscardPhase.DONE) return
 
         val tileW = 44f * pose.scaleX
@@ -1970,37 +1906,21 @@ class GameScreen(
 
     override fun keyDown(keycode: Int): Boolean {
         if (keycode == Input.Keys.ESCAPE || keycode == Input.Keys.BACK) {
-            if (beamSwapPanel.model.isChoosing) {
-                submitBeamSwapChoiceAsync(BeamSwapAction.KEEP_ORIGINAL)
-                return true
-            }
-            if (sleeveBloomPanel.model.isChoosing) {
-                submitSleeveBloomChoiceAsync(SleeveBloomKeep.FIRST)
-                return true
-            }
-            if (riverHintPanel.isOpen) {
-                riverHintPanel.close()
-                return true
-            }
-            if (tileMarkPanel.model.isSelecting) {
-                tileMarkPanel.model.cancel()
-                return true
-            }
-            if (meldSelectionModel.isSelecting) {
-                meldSelectionModel.cancel()
-                return true
-            }
-            if (riichiSelectionModel.isSelecting) {
-                riichiSelectionModel.cancel()
-                return true
-            }
-            if (showSettlement && isMatchFinished) {
-                showSettlement = false
-                showFinalResult = true
-                return true
-            }
-            exitToMenu()
-            return true
+            return modalCoordinator.handleEscapeOrBack(
+                ModalEscapeRoutes(
+                    onDismissBeamSwap = { submitBeamSwapChoiceAsync(BeamSwapAction.KEEP_ORIGINAL) },
+                    onDismissSleeveBloom = { submitSleeveBloomChoiceAsync(SleeveBloomKeep.FIRST) },
+                    onDismissRiverHint = { riverHintPanel.close() },
+                    onDismissTileMark = { tileMarkPanel.model.cancel() },
+                    onDismissMeld = { meldSelectionModel.cancel() },
+                    onDismissRiichi = { riichiSelectionModel.cancel() },
+                    onDismissSettlementToFinalResult = {
+                        showSettlement = false
+                        showFinalResult = true
+                    },
+                    onExitToMenu = { exitToMenu() }
+                )
+            )
         }
         return false
     }
@@ -2020,11 +1940,7 @@ class GameScreen(
         lastMouseX = uiTx
         lastMouseY = uiTy
 
-        val wasMeldSelecting = meldSelectionModel.isSelecting
-        val wasRiichiSelecting = riichiSelectionModel.isSelecting
-        val wasTileMarkSelecting = tileMarkPanel.model.isSelecting
-        val wasSleeveBloomChoosing = sleeveBloomPanel.model.isChoosing
-        val wasBeamSwapChoosing = beamSwapPanel.model.isChoosing
+        val beforeTouchSnapshot = modalCoordinator.captureSnapshot()
 
         val isConnected = (session.connectionState == ConnectionState.CONNECTED) && !session.closed
         tileMarkPanel.update(
@@ -2047,181 +1963,179 @@ class GameScreen(
         )
 
         // 0. 弹窗模态优先级最高：在模态展示期间，拦截所有输入并禁止与底层提示/牌桌交互
-        if (showFinalResult) {
-            if (btnReturnToMenuRect.contains(uiTx, uiTy)) {
-                exitToMenu()
+        when (modalCoordinator.activeModal()) {
+            ModalKind.FINAL_RESULT -> {
+                if (btnReturnToMenuRect.contains(uiTx, uiTy)) {
+                    exitToMenu()
+                    return true
+                }
+                if (currentSettlement != null && btnRoundDetailsRect.contains(uiTx, uiTy)) {
+                    showFinalResult = false
+                    showSettlement = true
+                    return true
+                }
                 return true
             }
-            if (currentSettlement != null && btnRoundDetailsRect.contains(uiTx, uiTy)) {
-                showFinalResult = false
-                showSettlement = true
-                return true
-            }
-            return true
-        }
+            ModalKind.SETTLEMENT -> {
+                val bd = currentSettlement?.breakdown
+                if (bd != null) {
+                    if (tabYakuRect.contains(uiTx, uiTy)) {
+                        settlementSection = SettlementSection.YAKU
+                        settlementPage = 0
+                        return true
+                    }
+                    if (tabDoraRect.contains(uiTx, uiTy)) {
+                        settlementSection = SettlementSection.DORA
+                        settlementPage = 0
+                        return true
+                    }
+                    if (tabCalcRect.contains(uiTx, uiTy)) {
+                        settlementSection = SettlementSection.CALC
+                        settlementPage = 0
+                        return true
+                    }
+                    if (btnPrevPageRect.contains(uiTx, uiTy)) {
+                        if (settlementPage > 0) settlementPage--
+                        return true
+                    }
+                    if (btnNextPageRect.contains(uiTx, uiTy)) {
+                        if (settlementPage < settlementPageCount - 1) settlementPage++
+                        return true
+                    }
+                } else {
+                    if (btnLegacyPrevPageRect.contains(uiTx, uiTy)) {
+                        if (settlementPage > 0) settlementPage--
+                        return true
+                    }
+                    if (btnLegacyNextPageRect.contains(uiTx, uiTy)) {
+                        if (settlementPage < settlementPageCount - 1) settlementPage++
+                        return true
+                    }
+                }
 
-        if (showSettlement) {
-            val bd = currentSettlement?.breakdown
-            if (bd != null) {
-                if (tabYakuRect.contains(uiTx, uiTy)) {
-                    settlementSection = SettlementSection.YAKU
-                    settlementPage = 0
-                    return true
-                }
-                if (tabDoraRect.contains(uiTx, uiTy)) {
-                    settlementSection = SettlementSection.DORA
-                    settlementPage = 0
-                    return true
-                }
-                if (tabCalcRect.contains(uiTx, uiTy)) {
-                    settlementSection = SettlementSection.CALC
-                    settlementPage = 0
-                    return true
-                }
-                if (btnPrevPageRect.contains(uiTx, uiTy)) {
-                    if (settlementPage > 0) settlementPage--
-                    return true
-                }
-                if (btnNextPageRect.contains(uiTx, uiTy)) {
-                    if (settlementPage < settlementPageCount - 1) settlementPage++
-                    return true
-                }
-            } else {
-                if (btnLegacyPrevPageRect.contains(uiTx, uiTy)) {
-                    if (settlementPage > 0) settlementPage--
-                    return true
-                }
-                if (btnLegacyNextPageRect.contains(uiTx, uiTy)) {
-                    if (settlementPage < settlementPageCount - 1) settlementPage++
-                    return true
-                }
-            }
-
-            if (canHumanAgariYame()) {
-                if (btnAgariYameRect.contains(uiTx, uiTy)) {
-                    val opt = currentSnapshot?.decision?.options?.firstOrNull { it.action is LegalActionView.DeclareAgariYame }
-                    if (opt != null) {
-                        submitChoiceAsync(
-                            ActionChoice(
-                                requestId = UUID.randomUUID().toString(),
-                                roundId = currentSnapshot?.roundId,
-                                decisionId = currentSnapshot?.decision?.decisionId ?: "",
-                                controlEpoch = currentSnapshot?.decision?.controlEpoch ?: 0L,
-                                optionId = opt.optionId
+                if (canHumanAgariYame()) {
+                    if (btnAgariYameRect.contains(uiTx, uiTy)) {
+                        val opt = currentSnapshot?.decision?.options?.firstOrNull { it.action is LegalActionView.DeclareAgariYame }
+                        if (opt != null) {
+                            submitChoiceAsync(
+                                ActionChoice(
+                                    requestId = UUID.randomUUID().toString(),
+                                    roundId = currentSnapshot?.roundId,
+                                    decisionId = currentSnapshot?.decision?.decisionId ?: "",
+                                    controlEpoch = currentSnapshot?.decision?.controlEpoch ?: 0L,
+                                    optionId = opt.optionId
+                                )
                             )
-                        )
-                    }
-                    return true
-                }
-                if (btnNextRoundSplitRect.contains(uiTx, uiTy)) {
-                    if (isNextRoundSubmitting || isSubmitting || session.isPending) return true
-                    isNextRoundSubmitting = true
-                    session.nextRound().whenComplete { receipt, error ->
-                        runOnUi {
-                            isNextRoundSubmitting = false
-                            if (error != null) showToast("Next round failed: ${error.message}")
-                            else if (receipt.status == ReceiptStatus.REJECTED) showToast("Next round rejected: ${receipt.reason}")
                         }
+                        return true
                     }
-                    return true
-                }
-            } else if (isMatchFinished) {
-                if (btnNextRoundRect.contains(uiTx, uiTy)) {
-                    showSettlement = false
-                    showFinalResult = true
-                    riichiSelectionModel.cancel()
-                    meldSelectionModel.cancel()
-                    return true
-                }
-            } else {
-                if (btnNextRoundRect.contains(uiTx, uiTy)) {
-                    if (isNextRoundSubmitting || isSubmitting || session.isPending) return true
-                    isNextRoundSubmitting = true
-                    session.nextRound().whenComplete { receipt, error ->
-                        runOnUi {
-                            isNextRoundSubmitting = false
-                            if (error != null) showToast("Next round failed: ${error.message}")
-                            else if (receipt.status == ReceiptStatus.REJECTED) showToast("Next round rejected: ${receipt.reason}")
+                    if (btnNextRoundSplitRect.contains(uiTx, uiTy)) {
+                        if (isNextRoundSubmitting || isSubmitting || session.isPending) return true
+                        isNextRoundSubmitting = true
+                        session.nextRound().whenComplete { receipt, error ->
+                            runOnUi {
+                                isNextRoundSubmitting = false
+                                if (error != null) showToast("Next round failed: ${error.message}")
+                                else if (receipt.status == ReceiptStatus.REJECTED) showToast("Next round rejected: ${receipt.reason}")
+                            }
                         }
+                        return true
+                    }
+                } else if (isMatchFinished) {
+                    if (btnNextRoundRect.contains(uiTx, uiTy)) {
+                        showSettlement = false
+                        showFinalResult = true
+                        riichiSelectionModel.cancel()
+                        meldSelectionModel.cancel()
+                        return true
+                    }
+                } else {
+                    if (btnNextRoundRect.contains(uiTx, uiTy)) {
+                        if (isNextRoundSubmitting || isSubmitting || session.isPending) return true
+                        isNextRoundSubmitting = true
+                        session.nextRound().whenComplete { receipt, error ->
+                            runOnUi {
+                                isNextRoundSubmitting = false
+                                if (error != null) showToast("Next round failed: ${error.message}")
+                                else if (receipt.status == ReceiptStatus.REJECTED) showToast("Next round rejected: ${receipt.reason}")
+                            }
+                        }
+                        return true
+                    }
+                }
+                return true
+            }
+            ModalKind.SHUFFLE_PREPARATION -> {
+                shufflePreparationPanel.touchDown(uiTx, uiTy)
+                return true
+            }
+            ModalKind.TILE_MARK -> {
+                if (tileMarkPanel.btnCancelRect.contains(uiTx, uiTy)) {
+                    tileMarkPanel.model.cancel()
+                    return true
+                }
+                if (tileMarkPanel.btnConfirmRect.contains(uiTx, uiTy)) {
+                    submitTileMarkAsync()
+                    return true
+                }
+                val slots = refreshHandTileRects()
+                for (slot in slots) {
+                    val hitRect = Rectangle(slot.rect.x, 40f, slot.rect.width, 94f)
+                    if (hitRect.contains(uiTx, uiTy) || slot.rect.contains(uiTx, uiTy)) {
+                        tileMarkPanel.model.toggle(slot.tile.tileId)
+                        return true
+                    }
+                }
+                return true
+            }
+            ModalKind.SLEEVE_BLOOM -> {
+                if (sleeveBloomPanel.btnConfirmRect.contains(uiTx, uiTy)) {
+                    val sel = sleeveBloomPanel.model.selected
+                    if (sel != null) {
+                        submitSleeveBloomChoiceAsync(sel)
                     }
                     return true
                 }
-            }
-            return true
-        }
-
-        if (shufflePreparationPanel.isActive) {
-            shufflePreparationPanel.touchDown(uiTx, uiTy)
-            return true
-        }
-
-        if (tileMarkPanel.model.isSelecting) {
-            if (tileMarkPanel.btnCancelRect.contains(uiTx, uiTy)) {
-                tileMarkPanel.model.cancel()
-                return true
-            }
-            if (tileMarkPanel.btnConfirmRect.contains(uiTx, uiTy)) {
-                submitTileMarkAsync()
-                return true
-            }
-            val slots = refreshHandTileRects()
-            for (slot in slots) {
-                val hitRect = Rectangle(slot.rect.x, 40f, slot.rect.width, 94f)
-                if (hitRect.contains(uiTx, uiTy) || slot.rect.contains(uiTx, uiTy)) {
-                    tileMarkPanel.model.toggle(slot.tile.tileId)
+                if (sleeveBloomPanel.btnCancelRect.contains(uiTx, uiTy)) {
+                    submitSleeveBloomChoiceAsync(SleeveBloomKeep.FIRST)
                     return true
                 }
-            }
-            return true
-        }
-
-        if (sleeveBloomPanel.model.isChoosing) {
-            if (sleeveBloomPanel.btnConfirmRect.contains(uiTx, uiTy)) {
-                val sel = sleeveBloomPanel.model.selected
-                if (sel != null) {
-                    submitSleeveBloomChoiceAsync(sel)
-                }
-                return true
-            }
-            if (sleeveBloomPanel.btnCancelRect.contains(uiTx, uiTy)) {
-                submitSleeveBloomChoiceAsync(SleeveBloomKeep.FIRST)
-                return true
-            }
-            if (sleeveBloomPanel.firstCardRect.contains(uiTx, uiTy)) {
-                sleeveBloomPanel.model.select(SleeveBloomKeep.FIRST)
-                return true
-            }
-            if (sleeveBloomPanel.secondCardRect.contains(uiTx, uiTy)) {
-                sleeveBloomPanel.model.select(SleeveBloomKeep.SECOND)
-                return true
-            }
-            return true
-        }
-
-        if (beamSwapPanel.model.isChoosing) {
-            if (beamSwapPanel.btnConfirmRect.contains(uiTx, uiTy)) {
-                if (beamSwapPanel.model.canConfirm) {
-                    submitBeamSwapChoiceAsync(BeamSwapAction.SWAP)
-                }
-                return true
-            }
-            if (beamSwapPanel.btnKeepRect.contains(uiTx, uiTy)) {
-                submitBeamSwapChoiceAsync(BeamSwapAction.KEEP_ORIGINAL)
-                return true
-            }
-            for ((slot, rect) in beamSwapPanel.targetCardRects) {
-                if (rect.contains(uiTx, uiTy)) {
-                    beamSwapPanel.model.selectTarget(slot)
+                if (sleeveBloomPanel.firstCardRect.contains(uiTx, uiTy)) {
+                    sleeveBloomPanel.model.select(SleeveBloomKeep.FIRST)
                     return true
                 }
-            }
-            for ((tileId, rect) in beamSwapPanel.handCardRects) {
-                if (rect.contains(uiTx, uiTy)) {
-                    beamSwapPanel.model.selectHand(tileId)
+                if (sleeveBloomPanel.secondCardRect.contains(uiTx, uiTy)) {
+                    sleeveBloomPanel.model.select(SleeveBloomKeep.SECOND)
                     return true
                 }
+                return true
             }
-            return true
+            ModalKind.BEAM_SWAP -> {
+                if (beamSwapPanel.btnConfirmRect.contains(uiTx, uiTy)) {
+                    if (beamSwapPanel.model.canConfirm) {
+                        submitBeamSwapChoiceAsync(BeamSwapAction.SWAP)
+                    }
+                    return true
+                }
+                if (beamSwapPanel.btnKeepRect.contains(uiTx, uiTy)) {
+                    submitBeamSwapChoiceAsync(BeamSwapAction.KEEP_ORIGINAL)
+                    return true
+                }
+                for ((slot, rect) in beamSwapPanel.targetCardRects) {
+                    if (rect.contains(uiTx, uiTy)) {
+                        beamSwapPanel.model.selectTarget(slot)
+                        return true
+                    }
+                }
+                for ((tileId, rect) in beamSwapPanel.handCardRects) {
+                    if (rect.contains(uiTx, uiTy)) {
+                        beamSwapPanel.model.selectHand(tileId)
+                        return true
+                    }
+                }
+                return true
+            }
+            else -> Unit
         }
 
         // 1. 牌河提示面板切换按钮与展开面板内交互 (非模态下可用)
@@ -2240,12 +2154,7 @@ class GameScreen(
             return true
         }
 
-        val modalInvalidatedByRefresh = (wasMeldSelecting && !meldSelectionModel.isSelecting) ||
-                (wasRiichiSelecting && !riichiSelectionModel.isSelecting) ||
-                (wasTileMarkSelecting && !tileMarkPanel.model.isSelecting) ||
-                (wasSleeveBloomChoosing && !sleeveBloomPanel.model.isChoosing) ||
-                (wasBeamSwapChoosing && !beamSwapPanel.model.isChoosing)
-        if (modalInvalidatedByRefresh) {
+        if (modalCoordinator.wasModalInvalidated(beforeTouchSnapshot)) {
             return true
         }
 
@@ -2271,11 +2180,7 @@ class GameScreen(
                 !isSubmittingBloomChoice &&
                 !isSubmittingBeamSwap &&
                 !isSubmittingBeamSwapChoice &&
-                !riichiSelectionModel.isSelecting &&
-                !meldSelectionModel.isSelecting &&
-                !tileMarkPanel.model.isSelecting &&
-                !sleeveBloomPanel.model.isChoosing &&
-                !beamSwapPanel.model.isChoosing
+                modalCoordinator.canOpen(ModalKind.SLEEVE_BLOOM)
             if (canOpenBloom) {
                 submitSleeveBloomAsync()
             } else {
@@ -2306,11 +2211,7 @@ class GameScreen(
                 !isSubmittingBloomChoice &&
                 !isSubmittingBeamSwap &&
                 !isSubmittingBeamSwapChoice &&
-                !riichiSelectionModel.isSelecting &&
-                !meldSelectionModel.isSelecting &&
-                !tileMarkPanel.model.isSelecting &&
-                !sleeveBloomPanel.model.isChoosing &&
-                !beamSwapPanel.model.isChoosing
+                modalCoordinator.canOpen(ModalKind.BEAM_SWAP)
             if (canOpenBeam) {
                 submitBeamSwapAsync()
             } else {
@@ -2372,7 +2273,7 @@ class GameScreen(
         }
 
         // 立直选牌
-        if (riichiSelectionModel.isSelecting) {
+        if (modalCoordinator.hasModal(ModalKind.RIICHI)) {
             if (btnCancelRiichiRect.contains(tableTx, tableTy)) {
                 riichiSelectionModel.cancel()
                 return true
@@ -2410,7 +2311,7 @@ class GameScreen(
         }
 
         // 副露选牌
-        if (meldSelectionModel.isSelecting) {
+        if (modalCoordinator.hasModal(ModalKind.MELD)) {
             if (btnMeldCancelRect.contains(tableTx, tableTy)) {
                 meldSelectionModel.cancel()
                 return true
@@ -2521,10 +2422,7 @@ class GameScreen(
             !isSubmittingBloomChoice &&
             !isSubmittingBeamSwap &&
             !isSubmittingBeamSwapChoice &&
-            !riichiSelectionModel.isSelecting &&
-            !meldSelectionModel.isSelecting &&
-            !sleeveBloomPanel.model.isChoosing &&
-            !beamSwapPanel.model.isChoosing
+            modalCoordinator.canOpen(ModalKind.TILE_MARK)
         if (tileMarkPanel.btnOpenRect.contains(tableTx, tableTy)) {
             if (canOpenTileMark) {
                 tileMarkPanel.model.begin()

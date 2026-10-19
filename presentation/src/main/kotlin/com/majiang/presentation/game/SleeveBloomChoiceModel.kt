@@ -16,10 +16,17 @@ import com.majiang.client.api.SleeveBloomRequest
  * 5. 身份、决策、代次或候选变化清空本地选中，但有效 offer 继续保持面板开启；
  * 6. 暂停、断线、托管使二选一即时隐藏并清空选中，恢复后按最新权威快照恢复未选中状态；
  * 7. 倒计时归零后阻止确认与选择输入，但面板保持 isChoosing 持续占有模态，直到权威快照清除 offer。
+ * 8. 委托 AuthorityCountdownTracker 治理权威时钟采样与本地流逝推算，委托 DecisionIdentityGuard 追踪快照代次与决策身份。
  */
 class SleeveBloomChoiceModel(
     val monotonicClock: () -> Long = { System.nanoTime() / 1_000_000L }
 ) {
+    /** 权威倒计时追踪器委托 */
+    val countdownTracker = AuthorityCountdownTracker(monotonicClock)
+
+    /** 决策身份守卫委托 */
+    val identityGuard = DecisionIdentityGuard()
+
     /** 是否处于二选一模态展示状态 */
     var isChoosing: Boolean = false
         private set
@@ -33,32 +40,15 @@ class SleeveBloomChoiceModel(
     private var isPending: Boolean = false
     private var isConnected: Boolean = true
 
-    // 时钟权威采样
-    private var sampledLocalMillis: Long? = null
-    private var sampledServerNow: Long = 0L
-    private var cachedDeadline: Long = 0L
-
-    // 快照代次与候选特征
-    private var lastSessionId: String? = null
-    private var lastSyncEpoch: String? = null
-    private var lastRoundId: String? = null
-    private var lastDecisionId: String? = null
-    private var lastControlEpoch: Long? = null
-    private var lastOfferId: String? = null
+    // 本模型专属候选牌特征追踪
     private var lastFirstTileId: Int? = null
     private var lastSecondTileId: Int? = null
-    private var lastCursor: Long? = null
 
     /** 剩余决策时间（毫秒，权威采样推估；暂停时返回 0） */
     val remainingMillis: Long
         get() {
             val snap = currentSnapshot ?: return 0L
-            if (snap.paused) return 0L
-            val sample = sampledLocalMillis ?: return 0L
-            val now = monotonicClock()
-            val elapsed = maxOf(0L, now - sample)
-            val estimatedServerNow = sampledServerNow + elapsed
-            return maxOf(0L, cachedDeadline - estimatedServerNow)
+            return countdownTracker.remainingMillis(isPaused = snap.paused)
         }
 
     /** 是否满足入口激活条件 */
@@ -103,7 +93,7 @@ class SleeveBloomChoiceModel(
         if (snapshot == null || !connected) {
             cancel()
             currentSnapshot = null
-            sampledLocalMillis = null
+            countdownTracker.clear()
             return
         }
 
@@ -111,15 +101,12 @@ class SleeveBloomChoiceModel(
         val offer = bloom?.pendingOffer
 
         // 检查身份代次与候选牌实体是否变更
-        val identityChanged = lastSessionId != null && (
-            snapshot.sessionId != lastSessionId ||
-            snapshot.syncEpoch != lastSyncEpoch ||
-            snapshot.roundId != lastRoundId ||
-            snapshot.decision.decisionId != lastDecisionId ||
-            snapshot.decision.controlEpoch != lastControlEpoch ||
-            offer?.offerId != lastOfferId ||
+        val candidateChanged = offer?.offerId != identityGuard.lastExtraToken ||
             offer?.firstTile?.tileId != lastFirstTileId ||
             offer?.secondTile?.tileId != lastSecondTileId
+
+        val identityChanged = identityGuard.hasIdentity && (
+            identityGuard.hasDecisionChanged(snapshot) || candidateChanged
         )
 
         if (identityChanged) {
@@ -140,38 +127,25 @@ class SleeveBloomChoiceModel(
         }
 
         // 权威时钟采样：仅在全新快照代次或采样为空时初始化采样，重复刷新同一快照不重置采样
-        val isSameSnapshotIdentity = (
-            lastSessionId == snapshot.sessionId &&
-            lastSyncEpoch == snapshot.syncEpoch &&
-            lastRoundId == snapshot.roundId &&
-            lastDecisionId == snapshot.decision.decisionId &&
-            lastControlEpoch == snapshot.decision.controlEpoch &&
-            lastCursor == snapshot.cursor &&
-            lastOfferId == offer?.offerId
-        )
+        val isSameSnapshotIdentity = identityGuard.isSameSnapshot(snapshot, extraToken = offer?.offerId)
 
         val viewerClock = snapshot.clocks.find { it.seat == viewerSeat }
         if (viewerClock != null && offer != null && !snapshot.paused) {
-            if (!isSameSnapshotIdentity || sampledLocalMillis == null) {
-                sampledLocalMillis = nowMillis
-                sampledServerNow = viewerClock.serverNow
-                cachedDeadline = offer.deadlineMillis
-            }
+            countdownTracker.updateSample(
+                serverNow = viewerClock.serverNow,
+                deadline = offer.deadlineMillis,
+                isSameIdentity = isSameSnapshotIdentity,
+                isPaused = snapshot.paused,
+                nowMillis = nowMillis
+            )
         } else {
-            sampledLocalMillis = null
-            cachedDeadline = 0L
+            countdownTracker.clear()
         }
 
         this.currentSnapshot = snapshot
-        this.lastSessionId = snapshot.sessionId
-        this.lastSyncEpoch = snapshot.syncEpoch
-        this.lastRoundId = snapshot.roundId
-        this.lastDecisionId = snapshot.decision.decisionId
-        this.lastControlEpoch = snapshot.decision.controlEpoch
-        this.lastOfferId = offer?.offerId
+        this.identityGuard.record(snapshot, extraToken = offer?.offerId)
         this.lastFirstTileId = offer?.firstTile?.tileId
         this.lastSecondTileId = offer?.secondTile?.tileId
-        this.lastCursor = snapshot.cursor
     }
 
     /**
@@ -238,7 +212,6 @@ class SleeveBloomChoiceModel(
     fun cancel() {
         isChoosing = false
         selected = null
-        sampledLocalMillis = null
-        cachedDeadline = 0L
+        countdownTracker.clear()
     }
 }

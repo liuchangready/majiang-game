@@ -111,37 +111,34 @@ class ServerConnectionSession(
     override val isPending: Boolean
         get() = pendingState.get()
 
-    // 玩家快照与同步重排状态
-    private val syncLock = Any()
-    private var cachedSnapshot: GameSnapshotView? = null
-    private val reorderBuffer = TreeMap<Long, GameUpdateView>()
-    private val isResuming = AtomicBoolean(false)
-    private val isBindingInProgress = AtomicBoolean(false)
-    private val earlyUpdateBuffer = ConcurrentLinkedQueue<ProtocolPlayerUpdate>()
-    private val earlyUpdateOverflowed = AtomicBoolean(false)
-    private val appliedBatchCursors = LinkedHashSet<Long>()
     private val maxAppliedBatchCursors = 256
     private val maxBufferSize = 64
 
-    override val currentSnapshot: GameSnapshotView?
-        get() = synchronized(syncLock) { cachedSnapshot }
+    // 玩家流同步引擎 (D-01: 提取自 ServerConnectionSession)
+    private val playerStreamEngine = PlayerStreamEngine(maxBufferSize, maxAppliedBatchCursors)
+    private val syncLock: Any = playerStreamEngine.syncLock
+    private val isBindingInProgress: Boolean get() = playerStreamEngine.bindingInProgress
+    private val isResuming: AtomicBoolean get() = playerStreamEngine.isResuming
+    private val earlyUpdateOverflowed: AtomicBoolean get() = playerStreamEngine.earlyUpdateOverflowed
+    private val cachedSnapshot: GameSnapshotView?
+        get() = playerStreamEngine.cachedSnapshot
 
-    // 观战快照与同步重排状态
-    private val publicSyncLock = Any()
-    private var cachedPublicSnapshot: PublicSnapshotView? = null
-    private val publicReorderBuffer = TreeMap<Long, PublicUpdateView>()
-    private data class PublicRecoveryToken(
-        val connectionEpoch: Long,
-        val roomEpoch: Long,
-        val id: Long
-    )
-    private val publicRecoverySeq = AtomicLong(0L)
-    private val activePublicRecoveryToken = AtomicReference<PublicRecoveryToken?>(null)
-    private val isSpectatorBindingInProgress = AtomicBoolean(false)
-    private val earlyPublicUpdateBuffer = ConcurrentLinkedQueue<ProtocolPublicUpdate>()
-    private val earlyPublicUpdateOverflowed = AtomicBoolean(false)
-    private val appliedPublicBatchCursors = LinkedHashSet<Long>()
-    private val publicUpdateListeners = CopyOnWriteArrayList<(PublicUpdateView) -> Unit>()
+    override val currentSnapshot: GameSnapshotView?
+        get() = playerStreamEngine.cachedSnapshot
+
+    // 观战流同步引擎 (D-01: 提取自 ServerConnectionSession)
+    private val spectatorStreamEngine = SpectatorStreamEngine(maxBufferSize)
+    private val publicSyncLock: Any = spectatorStreamEngine.publicSyncLock
+    private val isSpectatorBindingInProgress: Boolean get() = spectatorStreamEngine.spectatorBindingInProgress
+    private val activePublicRecoveryToken get() = spectatorStreamEngine.activePublicRecoveryToken
+    private val earlyPublicUpdateOverflowed get() = spectatorStreamEngine.earlyPublicUpdateOverflowed
+    private var cachedPublicSnapshot: PublicSnapshotView?
+        get() = spectatorStreamEngine.cachedPublicSnapshot
+        set(_) {}
+
+    override val currentPublicSnapshot: PublicSnapshotView?
+        get() = spectatorStreamEngine.cachedPublicSnapshot
+
     private var activePublicConnectionSub: AutoCloseable? = null
 
     /**
@@ -159,65 +156,27 @@ class ServerConnectionSession(
         clearEarlyBuffer: Boolean = true,
         clearSnapshot: Boolean = true
     ) {
-        if (clearSnapshot) {
-            cachedSnapshot = null
-        }
-        reorderBuffer.clear()
-        appliedBatchCursors.clear()
-        isResuming.set(false)
-        if (clearEarlyBuffer) {
-            earlyUpdateBuffer.clear()
-            earlyUpdateOverflowed.set(false)
-        }
+        playerStreamEngine.resetSyncStateUnderLock(clearEarlyBuffer, clearSnapshot)
     }
 
     private fun resetSpectatorSyncStateUnderLock(
         clearEarlyBuffer: Boolean = true,
         clearSnapshot: Boolean = true
     ) {
-        if (clearSnapshot) {
-            cachedPublicSnapshot = null
-        }
-        publicReorderBuffer.clear()
-        appliedPublicBatchCursors.clear()
-        activePublicRecoveryToken.set(null)
-        if (clearEarlyBuffer) {
-            earlyPublicUpdateBuffer.clear()
-            earlyPublicUpdateOverflowed.set(false)
-        }
+        spectatorStreamEngine.resetSyncStateUnderLock(clearEarlyBuffer, clearSnapshot)
     }
 
-    private fun resetRoomInfoUnderLock() {
-        cachedRoomInfo = null
-        cachedRoomVersion = null
-    }
-
-    override val currentPublicSnapshot: PublicSnapshotView?
-        get() = synchronized(publicSyncLock) { cachedPublicSnapshot }
-
-    // 房间版本与信息缓存
-    private val roomLock = Any()
-    private var cachedRoomInfo: RoomInfo? = null
-    private var cachedRoomVersion: Long? = null
-    private val currentRoomEpoch = AtomicLong(0L)
-
-    private class RoomObserver(val listener: (RoomInfo) -> Unit) {
-        @Volatile
-        var active: Boolean = true
-        val listenerLock = Any()
-        var lastDeliveredRoomEpoch: Long = -1L
-        var lastDeliveredVersion: Long = -1L
-    }
+    // 房间同步引擎 (D-01: 提取自 ServerConnectionSession)
+    private val roomSyncEngine = RoomSyncEngine()
+    private val roomLock: Any = roomSyncEngine.roomLock
+    private val currentRoomEpoch: AtomicLong get() = roomSyncEngine.roomEpochRef
 
     // 监听器集合
-    private val updateListeners = CopyOnWriteArrayList<(GameUpdateView) -> Unit>()
     private val disconnectListeners = CopyOnWriteArrayList<(String) -> Unit>()
     private val stateListeners = CopyOnWriteArrayList<(ConnectionState) -> Unit>()
-    private val roomObservers = CopyOnWriteArrayList<RoomObserver>()
 
     // 在途操作 Future 追踪（保证关闭与换绑时全量以异常完成）
     private val outstandingFutures = ConcurrentHashMap<CompletableFuture<*>, Long>()
-    private val outstandingRoomFutures = ConcurrentHashMap<CompletableFuture<*>, Long>()
     private var activeConnectionSub: AutoCloseable? = null
     private var activeDisconnectSub: AutoCloseable? = null
     private var activeRoomSub: AutoCloseable? = null
@@ -256,11 +215,7 @@ class ServerConnectionSession(
     }
 
     private fun <T> trackRoomFuture(future: CompletableFuture<T>, roomEpoch: Long): CompletableFuture<T> {
-        outstandingRoomFutures[future] = roomEpoch
-        future.whenComplete { _, _ ->
-            outstandingRoomFutures.remove(future)
-        }
-        return future
+        return roomSyncEngine.trackRoomFuture(future, roomEpoch)
     }
 
     // ==========================================
@@ -268,10 +223,7 @@ class ServerConnectionSession(
     // ==========================================
 
     override fun onUpdate(listener: (GameUpdateView) -> Unit): AutoCloseable {
-        updateListeners.add(listener)
-        return AutoCloseable {
-            updateListeners.remove(listener)
-        }
+        return playerStreamEngine.onUpdate(listener)
     }
 
     override fun onDisconnect(listener: (String) -> Unit): AutoCloseable {
@@ -311,17 +263,8 @@ class ServerConnectionSession(
 
     private fun notifyUpdateListeners(update: GameUpdateView) {
         val epoch = currentEpoch.get()
-        for (listener in updateListeners) {
-            dispatch {
-                if (!updateListeners.contains(listener)) return@dispatch
-                if (!closed && epoch == currentEpoch.get()) {
-                    try {
-                        listener(update)
-                    } catch (_: Throwable) {
-                        // 隔离监听器异常
-                    }
-                }
-            }
+        dispatch {
+            playerStreamEngine.notifyUpdateListeners(update) { !closed && epoch == currentEpoch.get() }
         }
     }
 
@@ -380,83 +323,27 @@ class ServerConnectionSession(
 
     private fun handleInboundRoomUpdate(protoRoomInfo: com.majiang.transport.api.ProtocolRoomInfo, epoch: Long) {
         if (closed || isLeavingRoom.get() || epoch != currentEpoch.get()) return
-        val currentRoom = currentBinding?.roomId ?: currentSpectatorBinding?.roomId ?: return
-        if (protoRoomInfo.roomId != currentRoom) {
-            return
-        }
-        val mapped = try {
-            ProtocolViewMapper.mapRoomInfo(protoRoomInfo)
-        } catch (_: Throwable) {
-            return
-        }
-        val roomEpoch = currentRoomEpoch.get()
-        val shouldNotify = synchronized(roomLock) {
-            if (closed || isLeavingRoom.get() || epoch != currentEpoch.get() || roomEpoch != currentRoomEpoch.get()) {
-                return@synchronized false
-            }
-            // 当前房间身份判定统一为合法玩家绑定或观战绑定，观战同样允许接收 ROOM 更新
-            val curRoomId = currentBinding?.roomId ?: currentSpectatorBinding?.roomId
-                ?: return@synchronized false
-            if (protoRoomInfo.roomId != curRoomId) {
-                return@synchronized false
-            }
-            val curVer = cachedRoomVersion
-            if (curVer == null || mapped.version > curVer) {
-                cachedRoomVersion = mapped.version
-                cachedRoomInfo = mapped
-                true
-            } else {
-                false
-            }
-        }
-        if (shouldNotify) {
-            notifyRoomUpdateListeners(mapped, epoch, roomEpoch)
-        }
-    }
-
-    private fun notifyRoomUpdateListeners(info: RoomInfo, epoch: Long, roomEpoch: Long) {
-        for (observer in roomObservers) {
-            dispatch {
-                if (!observer.active || !roomObservers.contains(observer)) return@dispatch
-                if (closed) return@dispatch
-                if (epoch != currentEpoch.get() || roomEpoch != currentRoomEpoch.get()) return@dispatch
-                val outerRoomId = currentBinding?.roomId ?: currentSpectatorBinding?.roomId
-                if (outerRoomId == null || outerRoomId != info.roomId) return@dispatch
-
-                synchronized(observer.listenerLock) {
-                    if (!observer.active || !roomObservers.contains(observer)) return@dispatch
-                    if (closed) return@dispatch
-                    if (epoch != currentEpoch.get() || roomEpoch != currentRoomEpoch.get()) return@dispatch
-                    val innerRoomId = currentBinding?.roomId ?: currentSpectatorBinding?.roomId
-                    if (innerRoomId == null || innerRoomId != info.roomId) return@dispatch
-
-                    val isStale = synchronized(roomLock) {
-                        if (closed || epoch != currentEpoch.get() || roomEpoch != currentRoomEpoch.get()) {
-                            true
-                        } else {
-                            val staleRoomId = currentBinding?.roomId ?: currentSpectatorBinding?.roomId
-                            if (staleRoomId == null || staleRoomId != info.roomId) {
-                                true
-                            } else {
-                                val curVer = cachedRoomVersion
-                                curVer != null && info.version < curVer
-                            }
+        val effect = roomSyncEngine.handleInboundRoomUpdate(
+            protoRoomInfo = protoRoomInfo,
+            connectionEpoch = epoch,
+            currentBoundRoomId = { currentBinding?.roomId ?: currentSpectatorBinding?.roomId },
+            isSessionValid = { !closed && !isLeavingRoom.get() && epoch == currentEpoch.get() }
+        )
+        if (effect is RoomUpdateEffect.Notify) {
+            for (observer in effect.observers) {
+                dispatch {
+                    roomSyncEngine.notifyObserver(
+                        observer = observer,
+                        info = effect.roomInfo,
+                        connectionEpoch = effect.connectionEpoch,
+                        roomEpoch = effect.roomEpoch,
+                        isSessionValidAndMatchingRoom = {
+                            !closed && !isLeavingRoom.get() &&
+                                epoch == currentEpoch.get() &&
+                                effect.roomEpoch == currentRoomEpoch.get() &&
+                                (currentBinding?.roomId ?: currentSpectatorBinding?.roomId) == effect.roomInfo.roomId
                         }
-                    }
-                    if (isStale) return@dispatch
-
-                    if (observer.lastDeliveredRoomEpoch == roomEpoch && info.version <= observer.lastDeliveredVersion) {
-                        return@dispatch
-                    }
-
-                    observer.lastDeliveredRoomEpoch = roomEpoch
-                    observer.lastDeliveredVersion = info.version
-
-                    try {
-                        observer.listener(info)
-                    } catch (_: Throwable) {
-                        // 隔离监听器异常
-                    }
+                    )
                 }
             }
         }
@@ -468,109 +355,24 @@ class ServerConnectionSession(
 
     private fun handleInboundUpdate(protoUpdate: ProtocolPlayerUpdate, epoch: Long) {
         if (closed || epoch != currentEpoch.get()) return
-
-        val updatesToDispatch = mutableListOf<GameUpdateView>()
-        var shouldRecover = false
-        var recoverCursor = 0L
-
-        synchronized(syncLock) {
-            // 绑定建立前（建房/加房/重连握手期），新连接推送进入早期缓冲
-            if (isBindingInProgress.get()) {
-                if (earlyUpdateBuffer.size < maxBufferSize && !earlyUpdateOverflowed.get()) {
-                    earlyUpdateBuffer.add(protoUpdate)
-                } else {
-                    earlyUpdateBuffer.clear()
-                    earlyUpdateOverflowed.set(true)
-                }
-                return
+        val roomEpoch = currentRoomEpoch.get()
+        val effect = playerStreamEngine.handleInboundUpdate(
+            protoUpdate = protoUpdate,
+            epoch = epoch,
+            roomEpoch = roomEpoch,
+            isSessionValid = { !closed && epoch == currentEpoch.get() && roomEpoch == currentRoomEpoch.get() },
+            isMatchingBinding = { viewerSeat, sessionId ->
+                val b = currentBinding
+                b == null || (b.seat == viewerSeat && b.snapshot.sessionId == sessionId)
             }
-
-            val current = cachedSnapshot ?: return
-
-            val updateView = ProtocolViewMapper.mapUpdate(protoUpdate)
-            val updateSnap = updateView.snapshot
-
-            // 1. 验证会话 ID 与观察者席位
-            if (updateSnap.sessionId != current.sessionId ||
-                updateSnap.view.viewerSeat != current.view.viewerSeat
-            ) {
-                return
+        )
+        if (effect is PlayerUpdateEffect.Dispatch) {
+            if (effect.shouldRecover) {
+                triggerGapRecovery(effect.recoverCursor, epoch, roomEpoch)
             }
-
-            // 2. 旧/异 epoch PUSH 永远不能自行替换当前绑定（不同 epoch 只能由有效绑定/恢复响应建立）
-            if (updateSnap.syncEpoch != current.syncEpoch) {
-                return
+            for (u in effect.updates) {
+                notifyUpdateListeners(u)
             }
-
-            // 3. 检查是否具备显式全量标记
-            if (updateView.isFullSnapshot) {
-                if (updateSnap.cursor >= current.cursor) {
-                    cachedSnapshot = updateSnap
-                    reorderBuffer.headMap(updateSnap.cursor).clear()
-                    isResuming.set(false)
-                    updatesToDispatch.add(updateView)
-                }
-            } else if (updateSnap.cursor <= current.cursor) {
-                // 游标已落后或重复，安全丢弃
-                return
-            } else if (updateView.fromCursor > current.cursor) {
-                // 发现 GAP：暂存乱序缓冲，拦截未来决策
-                if (reorderBuffer.size < maxBufferSize) {
-                    reorderBuffer.putIfAbsent(updateView.fromCursor, updateView)
-                }
-                if (isResuming.compareAndSet(false, true)) {
-                    shouldRecover = true
-                    recoverCursor = current.cursor
-                }
-            } else {
-                // 连续到达或重叠向前推进
-                applyUpdateUnderLock(updateView, updatesToDispatch)
-                drainReorderBufferUnderLock(updatesToDispatch)
-
-                // 检查排水后是否仍有后续缺口需要继续触发恢复
-                val curAfterDrain = cachedSnapshot?.cursor ?: 0L
-                if (reorderBuffer.isNotEmpty() && reorderBuffer.firstKey() > curAfterDrain) {
-                    if (isResuming.compareAndSet(false, true)) {
-                        shouldRecover = true
-                        recoverCursor = curAfterDrain
-                    }
-                }
-            }
-        }
-
-        if (shouldRecover) {
-            triggerGapRecovery(recoverCursor, epoch, currentRoomEpoch.get())
-        }
-
-        for (u in updatesToDispatch) {
-            notifyUpdateListeners(u)
-        }
-    }
-
-    private fun applyUpdateUnderLock(
-        update: GameUpdateView,
-        outList: MutableList<GameUpdateView>
-    ) {
-        val cursor = update.snapshot.cursor
-        if (!appliedBatchCursors.add(cursor)) {
-            return
-        }
-        if (appliedBatchCursors.size > maxAppliedBatchCursors) {
-            val it = appliedBatchCursors.iterator()
-            if (it.hasNext()) {
-                it.next()
-                it.remove()
-            }
-        }
-        cachedSnapshot = update.snapshot
-        outList.add(update)
-    }
-
-    private fun drainReorderBufferUnderLock(outList: MutableList<GameUpdateView>) {
-        while (true) {
-            val cur = cachedSnapshot ?: break
-            val next = reorderBuffer.remove(cur.cursor) ?: break
-            applyUpdateUnderLock(next, outList)
         }
     }
 
@@ -578,69 +380,32 @@ class ServerConnectionSession(
         try {
             currentConnection.resume(cursor).whenComplete { protoSnapshot, err ->
                 try {
-                    if (closed || epoch != currentEpoch.get() || roomEpoch != currentRoomEpoch.get()) {
-                        isResuming.set(false)
-                        return@whenComplete
-                    }
-                    if (err != null || protoSnapshot == null) {
-                        // 恢复失败释放标记，后续收包可继续重试，杜绝挂死
-                        isResuming.set(false)
-                        return@whenComplete
-                    }
-
-                    var updateToDispatch: GameUpdateView? = null
-                    val subsequentUpdates = mutableListOf<GameUpdateView>()
-                    var shouldTriggerNextRecovery = false
-                    var nextCursor = 0L
-
-                    synchronized(syncLock) {
-                        isResuming.set(false)
-                        val current = cachedSnapshot
-                        if (current != null &&
-                            protoSnapshot.sessionId == current.sessionId &&
-                            protoSnapshot.syncEpoch == current.syncEpoch &&
-                            protoSnapshot.view.viewerSeat == current.view.viewerSeat &&
-                            protoSnapshot.cursor >= current.cursor
-                        ) {
-                            val initialCursor = current.cursor
-                            val restored = ProtocolViewMapper.mapSnapshot(protoSnapshot)
-
-                            val snapshotAdvanced = restored.cursor > initialCursor
-                            if (snapshotAdvanced) {
-                                cachedSnapshot = restored
-                                reorderBuffer.headMap(restored.cursor).clear()
-                                updateToDispatch = GameUpdateView(restored, restored.cursor, emptyList(), isFullSnapshot = true)
-                            }
-
-                            drainReorderBufferUnderLock(subsequentUpdates)
-
-                            val curAfterDrain = cachedSnapshot?.cursor ?: initialCursor
-                            val madeProgress = curAfterDrain > initialCursor
-
-                            // 仅当本次恢复取得了实际进展，且排水后仍有后续未解决缺口时，才继续触发下一次恢复
-                            if (madeProgress && reorderBuffer.isNotEmpty() && reorderBuffer.firstKey() > curAfterDrain) {
-                                if (isResuming.compareAndSet(false, true)) {
-                                    shouldTriggerNextRecovery = true
-                                    nextCursor = curAfterDrain
-                                }
-                            }
+                    val effect = playerStreamEngine.handleResumeResponse(
+                        protoSnapshot = protoSnapshot,
+                        err = err,
+                        epoch = epoch,
+                        roomEpoch = roomEpoch,
+                        isSessionValid = { !closed && epoch == currentEpoch.get() && roomEpoch == currentRoomEpoch.get() },
+                        isMatchingBinding = { viewerSeat, sessionId ->
+                            val b = currentBinding
+                            b == null || (b.seat == viewerSeat && b.snapshot.sessionId == sessionId)
+                        }
+                    )
+                    if (effect is PlayerResumeEffect.Dispatch) {
+                        effect.updateToDispatch?.let { notifyUpdateListeners(it) }
+                        for (u in effect.subsequentUpdates) {
+                            notifyUpdateListeners(u)
+                        }
+                        if (effect.shouldTriggerNextRecovery) {
+                            triggerGapRecovery(effect.nextCursor, epoch, roomEpoch)
                         }
                     }
-
-                    updateToDispatch?.let { notifyUpdateListeners(it) }
-                    for (u in subsequentUpdates) {
-                        notifyUpdateListeners(u)
-                    }
-
-                    if (shouldTriggerNextRecovery) {
-                        triggerGapRecovery(nextCursor, epoch, roomEpoch)
-                    }
                 } catch (_: Throwable) {
-                    isResuming.set(false)
+                    playerStreamEngine.isResuming.set(false)
                 }
             }
         } catch (_: Throwable) {
-            isResuming.set(false)
+            playerStreamEngine.isResuming.set(false)
         }
     }
 
@@ -648,121 +413,27 @@ class ServerConnectionSession(
     // 观战入站更新同步裁决与乱序重排处理
     // ==========================================
 
+    // ==========================================
+    // 观战入站更新同步裁决与乱序重排处理
+    // ==========================================
+
     private fun handleInboundPublicUpdate(protoUpdate: ProtocolPublicUpdate, epoch: Long) {
         if (closed || epoch != currentEpoch.get()) return
-
-        val updatesToDispatch = mutableListOf<PublicUpdateView>()
-        var shouldRecover = false
-        var checkpointToRecover: PublicCheckpoint? = null
-        var recoveryToken: PublicRecoveryToken? = null
         val roomEpoch = currentRoomEpoch.get()
-        val boundRoomId: String
-
-        synchronized(publicSyncLock) {
-            if (closed || epoch != currentEpoch.get() || roomEpoch != currentRoomEpoch.get()) {
-                return
+        val effect = spectatorStreamEngine.handleInboundPublicUpdate(
+            protoUpdate = protoUpdate,
+            epoch = epoch,
+            roomEpoch = roomEpoch,
+            boundRoomIdProvider = { currentSpectatorBinding?.roomId },
+            isSessionValid = { !closed && epoch == currentEpoch.get() && roomEpoch == currentRoomEpoch.get() }
+        )
+        if (effect is SpectatorUpdateEffect.Dispatch) {
+            if (effect.shouldRecover && effect.checkpoint != null && effect.token != null) {
+                triggerPublicGapRecovery(effect.checkpoint, effect.token, effect.boundRoomId)
             }
-
-            // 绑定建立前（观战加入/恢复握手期），新连接推送进入早期缓冲
-            if (isSpectatorBindingInProgress.get()) {
-                if (earlyPublicUpdateBuffer.size < maxBufferSize) {
-                    earlyPublicUpdateBuffer.add(protoUpdate)
-                } else {
-                    // 有界缓冲溢出：标记后由绑定确立流程发起权威对账恢复，绝不静默丢弃最后一次变化
-                    earlyPublicUpdateOverflowed.set(true)
-                }
-                return
+            for (u in effect.updates) {
+                notifyPublicUpdateListeners(u, epoch, roomEpoch, effect.boundRoomId)
             }
-
-            val current = cachedPublicSnapshot ?: return
-            // 观战绑定已失效（离房/换角色后）的迟到公开推送不消费，也不污染新缓存
-            val curBinding = currentSpectatorBinding ?: return
-            boundRoomId = curBinding.roomId
-
-            val updateView = ProtocolViewMapper.mapPublicUpdate(protoUpdate)
-            val updateSnap = updateView.snapshot
-
-            // 1. 验证会话 ID 与 syncEpoch 代次
-            if (updateSnap.sessionId != current.sessionId || updateSnap.syncEpoch != current.syncEpoch) {
-                return
-            }
-
-            // 2. 检查是否具备显式全量标记
-            if (updateView.isFullSnapshot) {
-                // full 仅当前流且不回退；旧 full / 同游标重复 full 是合法重复，仅更新/清理重排缓冲，不重复派发
-                if (updateSnap.cursor > current.cursor) {
-                    cachedPublicSnapshot = updateSnap
-                    publicReorderBuffer.headMap(updateSnap.cursor).clear()
-                    activePublicRecoveryToken.set(null)
-                    updatesToDispatch.add(updateView)
-                    drainPublicReorderBufferUnderLock(updatesToDispatch)
-                } else {
-                    publicReorderBuffer.headMap(updateSnap.cursor).clear()
-                }
-            } else if (updateSnap.cursor <= current.cursor) {
-                // 游标已落后或重复，安全丢弃
-                return
-            } else if (updateView.fromCursor != current.cursor) {
-                // 严格公开顺序：普通更新的 fromCursor 必须严格等于当前基线 cursor
-                if (updateView.fromCursor > current.cursor) {
-                    if (publicReorderBuffer.size < maxBufferSize) {
-                        publicReorderBuffer.putIfAbsent(updateView.fromCursor, updateView)
-                    }
-                    val curToken = activePublicRecoveryToken.get()
-                    if (curToken == null || curToken.connectionEpoch != epoch || curToken.roomEpoch != roomEpoch) {
-                        val token = PublicRecoveryToken(epoch, roomEpoch, publicRecoverySeq.incrementAndGet())
-                        activePublicRecoveryToken.set(token)
-                        recoveryToken = token
-                        shouldRecover = true
-                        checkpointToRecover = PublicCheckpoint(current.sessionId, current.syncEpoch, current.cursor)
-                    }
-                }
-            } else {
-                // updateView.fromCursor == current.cursor 严格连续到达
-                applyPublicUpdateUnderLock(updateView, updatesToDispatch)
-                drainPublicReorderBufferUnderLock(updatesToDispatch)
-
-                val curAfterDrain = cachedPublicSnapshot?.cursor ?: 0L
-                if (publicReorderBuffer.isNotEmpty() && publicReorderBuffer.firstKey() > curAfterDrain) {
-                    val curToken = activePublicRecoveryToken.get()
-                    if (curToken == null || curToken.connectionEpoch != epoch || curToken.roomEpoch != roomEpoch) {
-                        val token = PublicRecoveryToken(epoch, roomEpoch, publicRecoverySeq.incrementAndGet())
-                        activePublicRecoveryToken.set(token)
-                        recoveryToken = token
-                        shouldRecover = true
-                        checkpointToRecover = PublicCheckpoint(current.sessionId, current.syncEpoch, curAfterDrain)
-                    }
-                }
-            }
-        }
-
-        if (shouldRecover && checkpointToRecover != null && recoveryToken != null) {
-            triggerPublicGapRecovery(checkpointToRecover, recoveryToken, boundRoomId)
-        }
-
-        for (u in updatesToDispatch) {
-            notifyPublicUpdateListeners(u, epoch, roomEpoch, boundRoomId)
-        }
-    }
-
-    private fun applyPublicUpdateUnderLock(
-        update: PublicUpdateView,
-        outList: MutableList<PublicUpdateView>
-    ) {
-        val current = cachedPublicSnapshot ?: return
-        if (update.fromCursor != current.cursor) return
-        if (update.snapshot.cursor <= current.cursor) return
-
-        cachedPublicSnapshot = update.snapshot
-        outList.add(update)
-    }
-
-    private fun drainPublicReorderBufferUnderLock(outList: MutableList<PublicUpdateView>) {
-        while (true) {
-            val current = cachedPublicSnapshot ?: break
-            val nextUpdate = publicReorderBuffer[current.cursor] ?: break
-            publicReorderBuffer.remove(current.cursor)
-            applyPublicUpdateUnderLock(nextUpdate, outList)
         }
     }
 
@@ -784,83 +455,30 @@ class ServerConnectionSession(
         )
         try {
             conn.resumePublic(protoCheckpoint).whenComplete { protoSnapshot, err ->
-                if (closed || epoch != currentEpoch.get() || roomEpoch != currentRoomEpoch.get()) {
-                    // 旧连接/旧房间代次的迟到恢复响应：不写回缓存，也不清除新代次的恢复在途标记
-                    return@whenComplete
-                }
-                if (err != null || protoSnapshot == null) {
-                    // 恢复失败：仅当当前 activePublicRecoveryToken 仍为本次 token 时释放标记
-                    activePublicRecoveryToken.compareAndSet(token, null)
-                    return@whenComplete
-                }
                 try {
-                    var updateToDispatch: PublicUpdateView? = null
-                    val subsequentUpdates = mutableListOf<PublicUpdateView>()
-                    var shouldTriggerNextRecovery = false
-                    var nextCheckpoint: PublicCheckpoint? = null
-                    var nextToken: PublicRecoveryToken? = null
-
-                    synchronized(publicSyncLock) {
-                        if (closed || epoch != currentEpoch.get() || roomEpoch != currentRoomEpoch.get()) {
-                            return@synchronized
+                    val effect = spectatorStreamEngine.handleResumePublicResponse(
+                        protoSnapshot = protoSnapshot,
+                        err = err,
+                        token = token,
+                        roomId = roomId,
+                        boundRoomIdProvider = { currentSpectatorBinding?.roomId },
+                        isSessionValid = { !closed && epoch == currentEpoch.get() && roomEpoch == currentRoomEpoch.get() }
+                    )
+                    if (effect is SpectatorResumeEffect.Dispatch) {
+                        effect.updateToDispatch?.let { notifyPublicUpdateListeners(it, epoch, roomEpoch, roomId) }
+                        for (u in effect.subsequentUpdates) {
+                            notifyPublicUpdateListeners(u, epoch, roomEpoch, roomId)
                         }
-                        val curSpec = currentSpectatorBinding
-                        if (curSpec == null || curSpec.roomId != roomId) {
-                            return@synchronized
+                        if (effect.shouldTriggerNextRecovery && effect.nextCheckpoint != null && effect.nextToken != null) {
+                            triggerPublicGapRecovery(effect.nextCheckpoint, effect.nextToken, roomId)
                         }
-                        if (!activePublicRecoveryToken.compareAndSet(token, null)) {
-                            return@synchronized
-                        }
-                        val current = cachedPublicSnapshot
-                        if (current != null &&
-                            protoSnapshot.sessionId == current.sessionId &&
-                            protoSnapshot.syncEpoch == current.syncEpoch &&
-                            protoSnapshot.cursor >= current.cursor
-                        ) {
-                            val initialCursor = current.cursor
-                            val restored = ProtocolViewMapper.mapPublicSnapshot(protoSnapshot)
-
-                            val snapshotAdvanced = restored.cursor > initialCursor
-                            if (snapshotAdvanced) {
-                                cachedPublicSnapshot = restored
-                                publicReorderBuffer.headMap(restored.cursor).clear()
-                                updateToDispatch = PublicUpdateView(
-                                    snapshot = restored,
-                                    fromCursor = restored.cursor,
-                                    visibleEvents = emptyList(),
-                                    isFullSnapshot = true
-                                )
-                            }
-
-                            drainPublicReorderBufferUnderLock(subsequentUpdates)
-
-                            val curAfterDrain = cachedPublicSnapshot?.cursor ?: initialCursor
-                            val madeProgress = curAfterDrain > initialCursor
-
-                            if (madeProgress && publicReorderBuffer.isNotEmpty() && publicReorderBuffer.firstKey() > curAfterDrain) {
-                                val nToken = PublicRecoveryToken(epoch, roomEpoch, publicRecoverySeq.incrementAndGet())
-                                activePublicRecoveryToken.set(nToken)
-                                nextToken = nToken
-                                shouldTriggerNextRecovery = true
-                                nextCheckpoint = PublicCheckpoint(current.sessionId, current.syncEpoch, curAfterDrain)
-                            }
-                        }
-                    }
-
-                    updateToDispatch?.let { notifyPublicUpdateListeners(it, epoch, roomEpoch, roomId) }
-                    for (u in subsequentUpdates) {
-                        notifyPublicUpdateListeners(u, epoch, roomEpoch, roomId)
-                    }
-
-                    if (shouldTriggerNextRecovery && nextCheckpoint != null && nextToken != null) {
-                        triggerPublicGapRecovery(nextCheckpoint, nextToken, roomId)
                     }
                 } catch (_: Throwable) {
-                    activePublicRecoveryToken.compareAndSet(token, null)
+                    spectatorStreamEngine.activePublicRecoveryToken.compareAndSet(token, null)
                 }
             }
         } catch (_: Throwable) {
-            activePublicRecoveryToken.compareAndSet(token, null)
+            spectatorStreamEngine.activePublicRecoveryToken.compareAndSet(token, null)
         }
     }
 
@@ -871,17 +489,11 @@ class ServerConnectionSession(
         roomId: String
     ) {
         dispatch {
-            for (listener in publicUpdateListeners) {
-                if (closed) break
-                if (epoch != currentEpoch.get() || roomEpoch != currentRoomEpoch.get()) break
-                val currentSpec = currentSpectatorBinding
-                if (currentSpec == null || currentSpec.roomId != roomId) break
-                if (cachedPublicSnapshot == null) break
-                try {
-                    listener(update)
-                } catch (_: Throwable) {
-                    // 隔离监听器异常
-                }
+            spectatorStreamEngine.notifyPublicUpdateListeners(update) {
+                !closed && epoch == currentEpoch.get() &&
+                    roomEpoch == currentRoomEpoch.get() &&
+                    currentSpectatorBinding?.roomId == roomId &&
+                    spectatorStreamEngine.cachedPublicSnapshot != null
             }
         }
     }
@@ -983,10 +595,9 @@ class ServerConnectionSession(
                     checkpoint = curCp
                 )
                 val newEpoch = currentEpoch.incrementAndGet()
-                isSpectatorBindingInProgress.set(true)
                 withBothSyncLocks {
                     resetPlayerSyncStateUnderLock(clearEarlyBuffer = true, clearSnapshot = true)
-                    resetSpectatorSyncStateUnderLock(clearEarlyBuffer = true, clearSnapshot = false)
+                    spectatorStreamEngine.beginBindingUnderLock(clearEarlyBuffer = true, clearSnapshot = false)
                 }
                 activeActionId.set(0L)
                 pendingState.set(false)
@@ -994,10 +605,12 @@ class ServerConnectionSession(
                 try {
                     newConn.resumeSpectator(resumeReq).whenComplete { newSpecBinding, resumeErr ->
                         if (closed || connectionState != ConnectionState.RECONNECTING || newEpoch != currentEpoch.get()) {
+                            withBothSyncLocks { spectatorStreamEngine.cancelBindingUnderLock() }
                             newConn.close()
                             return@whenComplete
                         }
                         if (resumeErr != null || newSpecBinding == null) {
+                            withBothSyncLocks { spectatorStreamEngine.cancelBindingUnderLock() }
                             val isPermanentErr = ReconnectErrorClassifier.isPermanent(resumeErr)
                             if (isPermanentErr || attempt >= 10 || newConn !== currentConnection) {
                                 newConn.close()
@@ -1015,6 +628,7 @@ class ServerConnectionSession(
                         onSpectatorBindingEstablished(newSpecBinding, newEpoch, null)
                     }
                 } catch (t: Throwable) {
+                    withBothSyncLocks { spectatorStreamEngine.cancelBindingUnderLock() }
                     val isPermanentErr = ReconnectErrorClassifier.isPermanent(t)
                     if (isPermanentErr || attempt >= 10 || newConn !== currentConnection) {
                         newConn.close()
@@ -1035,9 +649,8 @@ class ServerConnectionSession(
             val newEpoch = currentEpoch.incrementAndGet()
 
             // 标记重连绑定进行中，重置旧重排/批次/在途状态
-            isBindingInProgress.set(true)
             withBothSyncLocks {
-                resetPlayerSyncStateUnderLock(clearEarlyBuffer = true, clearSnapshot = false)
+                playerStreamEngine.beginBindingUnderLock(clearEarlyBuffer = true, clearSnapshot = false)
                 resetSpectatorSyncStateUnderLock(clearEarlyBuffer = true, clearSnapshot = true)
             }
             activeActionId.set(0L)
@@ -1048,10 +661,12 @@ class ServerConnectionSession(
             try {
                 newConn.resumeSession(resumeReq).whenComplete { newBinding, resumeErr ->
                     if (closed || connectionState != ConnectionState.RECONNECTING || newEpoch != currentEpoch.get()) {
+                        withBothSyncLocks { playerStreamEngine.cancelBindingUnderLock() }
                         newConn.close()
                         return@whenComplete
                     }
                     if (resumeErr != null || newBinding == null) {
+                        withBothSyncLocks { playerStreamEngine.cancelBindingUnderLock() }
                         val isPermanentErr = ReconnectErrorClassifier.isPermanent(resumeErr)
                         if (isPermanentErr || attempt >= 10 || newConn !== currentConnection) {
                             newConn.close()
@@ -1070,6 +685,7 @@ class ServerConnectionSession(
                     onBindingEstablished(newBinding, newEpoch, null)
                 }
             } catch (t: Throwable) {
+                withBothSyncLocks { playerStreamEngine.cancelBindingUnderLock() }
                 val isPermanentErr = ReconnectErrorClassifier.isPermanent(t)
                 if (isPermanentErr || attempt >= 10 || newConn !== currentConnection) {
                     newConn.close()
@@ -1097,78 +713,28 @@ class ServerConnectionSession(
         val pendingUpdatesToDispatch = mutableListOf<GameUpdateView>()
 
         val isNewRoom = (resultFuture != null)
-        val roomEpoch = if (isNewRoom) {
-            currentRoomEpoch.incrementAndGet()
-        } else {
-            currentRoomEpoch.get()
-        }
-
-        if (isNewRoom) {
-            synchronized(roomLock) {
-                resetRoomInfoUnderLock()
-            }
-        }
+        var roomEpoch = roomSyncEngine.currentRoomEpoch
 
         val overflowed = withBothSyncLocks {
             if (closed || epoch != currentEpoch.get()) {
-                isBindingInProgress.set(false)
+                playerStreamEngine.cancelBindingUnderLock()
                 false
             } else {
                 currentBinding = binding
                 currentSpectatorBinding = null // 互斥：清除观战绑定
-                isBindingInProgress.set(false)
+                if (isNewRoom) {
+                    roomEpoch = roomSyncEngine.advanceRoomEpoch()
+                    roomSyncEngine.resetRoomInfo()
+                }
 
                 // 清除观战缓存与状态（统一复位）
                 resetSpectatorSyncStateUnderLock(clearEarlyBuffer = true)
 
                 val initialSnapshotView = ProtocolViewMapper.mapSnapshot(binding.snapshot)
-                cachedSnapshot = initialSnapshotView
-                var currentBestSnap = initialSnapshotView
-                reorderBuffer.clear()
-                appliedBatchCursors.clear()
-                isResuming.set(false)
-
-                val hadOverflow = earlyUpdateOverflowed.getAndSet(false)
-                if (hadOverflow) {
-                    earlyUpdateBuffer.clear()
-                } else {
-                    // 排水早期缓冲更新
-                    val earlyList = mutableListOf<ProtocolPlayerUpdate>()
-                    while (true) {
-                        val u = earlyUpdateBuffer.poll() ?: break
-                        earlyList.add(u)
-                    }
-                    earlyList.sortBy { it.fromCursor }
-
-                    for (protoUpdate in earlyList) {
-                        val updateView = ProtocolViewMapper.mapUpdate(protoUpdate)
-                        val updateSnap = updateView.snapshot
-                        val c = cachedSnapshot ?: break
-                        if (updateSnap.sessionId != c.sessionId || updateSnap.view.viewerSeat != c.view.viewerSeat) continue
-                        if (updateSnap.syncEpoch != c.syncEpoch) continue
-
-                        if (updateView.isFullSnapshot) {
-                            if (updateSnap.cursor >= c.cursor) {
-                                cachedSnapshot = updateSnap
-                                currentBestSnap = updateSnap
-                                reorderBuffer.headMap(updateSnap.cursor).clear()
-                                pendingUpdatesToDispatch.add(updateView)
-                            }
-                            continue
-                        }
-
-                        if (updateSnap.cursor <= c.cursor) continue
-                        if (updateView.fromCursor > c.cursor) {
-                            reorderBuffer.putIfAbsent(updateView.fromCursor, updateView)
-                        } else {
-                            applyUpdateUnderLock(updateView, pendingUpdatesToDispatch)
-                            drainReorderBufferUnderLock(pendingUpdatesToDispatch)
-                            currentBestSnap = cachedSnapshot ?: currentBestSnap
-                        }
-                    }
-                }
-                finalSnapshot = currentBestSnap
-                hadOverflow
+                val installResult = playerStreamEngine.installInitialSnapshotUnderLock(initialSnapshotView)
+                pendingUpdatesToDispatch.addAll(installResult.pendingUpdates)
+                finalSnapshot = playerStreamEngine.cachedSnapshot
+                installResult.hadOverflow
             }
         }
 
@@ -1188,18 +754,15 @@ class ServerConnectionSession(
             .map { it.key }
         for (f in oldFutures) {
             outstandingFutures.remove(f)
-            outstandingRoomFutures.remove(f)
+            roomSyncEngine.untrackRoomFuture(f)
             dispatch {
                 f.completeExceptionally(IOException("Generation changed: new binding established"))
             }
         }
         if (isNewRoom) {
-            val oldRoomFutures = outstandingRoomFutures.entries
-                .filter { it.value < roomEpoch }
-                .map { it.key }
+            val oldRoomFutures = roomSyncEngine.pruneFuturesOlderThan(roomEpoch)
             for (f in oldRoomFutures) {
                 outstandingFutures.remove(f)
-                outstandingRoomFutures.remove(f)
                 dispatch {
                     f.completeExceptionally(IOException("Generation changed: new room binding established"))
                 }
@@ -1247,81 +810,28 @@ class ServerConnectionSession(
         val pendingUpdatesToDispatch = mutableListOf<PublicUpdateView>()
 
         val isNewRoom = (resultFuture != null)
-        val roomEpoch = if (isNewRoom) {
-            currentRoomEpoch.incrementAndGet()
-        } else {
-            currentRoomEpoch.get()
-        }
-
-        if (isNewRoom) {
-            synchronized(roomLock) {
-                resetRoomInfoUnderLock()
-            }
-        }
+        var roomEpoch = roomSyncEngine.currentRoomEpoch
 
         val overflowed = withBothSyncLocks {
             if (closed || epoch != currentEpoch.get()) {
-                isSpectatorBindingInProgress.set(false)
+                spectatorStreamEngine.cancelBindingUnderLock()
                 false
             } else {
                 currentSpectatorBinding = binding
                 currentBinding = null // 互斥：清除玩家绑定
-                isSpectatorBindingInProgress.set(false)
+                if (isNewRoom) {
+                    roomEpoch = roomSyncEngine.advanceRoomEpoch()
+                    roomSyncEngine.resetRoomInfo()
+                }
 
                 // 清除玩家缓存与状态（统一复位）
                 resetPlayerSyncStateUnderLock(clearEarlyBuffer = true)
 
                 val initialSnapshotView = ProtocolViewMapper.mapPublicSnapshot(binding.snapshot)
-                cachedPublicSnapshot = initialSnapshotView
-                var currentBestSnap = initialSnapshotView
-                publicReorderBuffer.clear()
-                appliedPublicBatchCursors.clear()
-                activePublicRecoveryToken.set(null)
-
-                val hadOverflow = earlyPublicUpdateOverflowed.getAndSet(false)
-                // 排水早期缓冲更新（观战保留前64条合法连续更新，排水后再按当前基线权威恢复）
-                val earlyList = mutableListOf<ProtocolPublicUpdate>()
-                while (true) {
-                    val u = earlyPublicUpdateBuffer.poll() ?: break
-                    earlyList.add(u)
-                }
-
-                for (protoUpdate in earlyList) {
-                    val updateView = ProtocolViewMapper.mapPublicUpdate(protoUpdate)
-                    val updateSnap = updateView.snapshot
-
-                    if (updateSnap.sessionId != currentBestSnap.sessionId ||
-                        updateSnap.syncEpoch != currentBestSnap.syncEpoch
-                    ) {
-                        continue
-                    }
-
-                    if (updateView.isFullSnapshot) {
-                        if (updateSnap.cursor > currentBestSnap.cursor) {
-                            cachedPublicSnapshot = updateSnap
-                            currentBestSnap = updateSnap
-                            publicReorderBuffer.headMap(updateSnap.cursor).clear()
-                            pendingUpdatesToDispatch.add(updateView)
-                            drainPublicReorderBufferUnderLock(pendingUpdatesToDispatch)
-                            cachedPublicSnapshot?.let { currentBestSnap = it }
-                        }
-                    } else if (updateSnap.cursor <= currentBestSnap.cursor) {
-                        continue
-                    } else if (updateView.fromCursor != currentBestSnap.cursor) {
-                        if (updateView.fromCursor > currentBestSnap.cursor) {
-                            if (publicReorderBuffer.size < maxBufferSize) {
-                                publicReorderBuffer.putIfAbsent(updateView.fromCursor, updateView)
-                            }
-                        }
-                    } else {
-                        applyPublicUpdateUnderLock(updateView, pendingUpdatesToDispatch)
-                        drainPublicReorderBufferUnderLock(pendingUpdatesToDispatch)
-                        cachedPublicSnapshot?.let { currentBestSnap = it }
-                    }
-                }
-
-                finalSnapshot = currentBestSnap
-                hadOverflow
+                val installResult = spectatorStreamEngine.installInitialSnapshotUnderLock(initialSnapshotView)
+                pendingUpdatesToDispatch.addAll(installResult.pendingUpdates)
+                finalSnapshot = spectatorStreamEngine.cachedPublicSnapshot
+                installResult.hadOverflow
             }
         }
 
@@ -1341,18 +851,15 @@ class ServerConnectionSession(
             .map { it.key }
         for (f in oldFutures) {
             outstandingFutures.remove(f)
-            outstandingRoomFutures.remove(f)
+            roomSyncEngine.untrackRoomFuture(f)
             dispatch {
                 f.completeExceptionally(IOException("Generation changed: new spectator binding established"))
             }
         }
         if (isNewRoom) {
-            val oldRoomFutures = outstandingRoomFutures.entries
-                .filter { it.value < roomEpoch }
-                .map { it.key }
+            val oldRoomFutures = roomSyncEngine.pruneFuturesOlderThan(roomEpoch)
             for (f in oldRoomFutures) {
                 outstandingFutures.remove(f)
-                outstandingRoomFutures.remove(f)
                 dispatch {
                     f.completeExceptionally(IOException("Generation changed: new room binding established"))
                 }
@@ -1386,7 +893,7 @@ class ServerConnectionSession(
                 cachedPublicSnapshot?.let { PublicCheckpoint(it.sessionId, it.syncEpoch, it.cursor) }
             }
             if (overflowCheckpoint != null && !closed && epoch == currentEpoch.get() && roomEpoch == currentRoomEpoch.get()) {
-                val token = PublicRecoveryToken(epoch, roomEpoch, publicRecoverySeq.incrementAndGet())
+                val token = spectatorStreamEngine.allocateRecoveryToken(epoch, roomEpoch)
                 if (activePublicRecoveryToken.compareAndSet(null, token)) {
                     triggerPublicGapRecovery(overflowCheckpoint, token, binding.roomId)
                 }
@@ -1450,10 +957,9 @@ class ServerConnectionSession(
         }
         val epoch = currentEpoch.incrementAndGet()
         trackFuture(resultFuture, epoch)
-        isBindingInProgress.set(true)
         withBothSyncLocks {
-            resetPlayerSyncStateUnderLock(clearEarlyBuffer = true)
-            resetSpectatorSyncStateUnderLock(clearEarlyBuffer = true)
+            playerStreamEngine.beginBindingUnderLock(clearEarlyBuffer = true, clearSnapshot = true)
+            resetSpectatorSyncStateUnderLock(clearEarlyBuffer = true, clearSnapshot = true)
         }
         activeActionId.set(0L)
         pendingState.set(false)
@@ -1469,11 +975,12 @@ class ServerConnectionSession(
         try {
             currentConnection.createRoom(req).whenComplete { binding, err ->
                 if (closed || epoch != currentEpoch.get()) {
+                    withBothSyncLocks { playerStreamEngine.cancelBindingUnderLock() }
                     dispatch { resultFuture.completeExceptionally(IOException("Session closed or generation changed")) }
                     return@whenComplete
                 }
                 if (err != null || binding == null) {
-                    isBindingInProgress.set(false)
+                    withBothSyncLocks { playerStreamEngine.cancelBindingUnderLock() }
                     dispatch {
                         if (closed || epoch != currentEpoch.get()) {
                             resultFuture.completeExceptionally(IOException("Session closed or generation changed"))
@@ -1486,7 +993,7 @@ class ServerConnectionSession(
                 }
             }
         } catch (t: Throwable) {
-            isBindingInProgress.set(false)
+            withBothSyncLocks { playerStreamEngine.cancelBindingUnderLock() }
             dispatch { resultFuture.completeExceptionally(t) }
         }
         return resultFuture
@@ -1504,10 +1011,9 @@ class ServerConnectionSession(
         }
         val epoch = currentEpoch.incrementAndGet()
         trackFuture(resultFuture, epoch)
-        isBindingInProgress.set(true)
         withBothSyncLocks {
-            resetPlayerSyncStateUnderLock(clearEarlyBuffer = true)
-            resetSpectatorSyncStateUnderLock(clearEarlyBuffer = true)
+            playerStreamEngine.beginBindingUnderLock(clearEarlyBuffer = true, clearSnapshot = true)
+            resetSpectatorSyncStateUnderLock(clearEarlyBuffer = true, clearSnapshot = true)
         }
         activeActionId.set(0L)
         pendingState.set(false)
@@ -1523,11 +1029,12 @@ class ServerConnectionSession(
         try {
             currentConnection.joinRoom(req).whenComplete { binding, err ->
                 if (closed || epoch != currentEpoch.get()) {
+                    withBothSyncLocks { playerStreamEngine.cancelBindingUnderLock() }
                     dispatch { resultFuture.completeExceptionally(IOException("Session closed or generation changed")) }
                     return@whenComplete
                 }
                 if (err != null || binding == null) {
-                    isBindingInProgress.set(false)
+                    withBothSyncLocks { playerStreamEngine.cancelBindingUnderLock() }
                     dispatch {
                         if (closed || epoch != currentEpoch.get()) {
                             resultFuture.completeExceptionally(IOException("Session closed or generation changed"))
@@ -1540,7 +1047,7 @@ class ServerConnectionSession(
                 }
             }
         } catch (t: Throwable) {
-            isBindingInProgress.set(false)
+            withBothSyncLocks { playerStreamEngine.cancelBindingUnderLock() }
             dispatch { resultFuture.completeExceptionally(t) }
         }
         return resultFuture
@@ -1558,10 +1065,9 @@ class ServerConnectionSession(
         }
         val epoch = currentEpoch.incrementAndGet()
         trackFuture(resultFuture, epoch)
-        isBindingInProgress.set(true)
         withBothSyncLocks {
-            resetPlayerSyncStateUnderLock(clearEarlyBuffer = true)
-            resetSpectatorSyncStateUnderLock(clearEarlyBuffer = true)
+            playerStreamEngine.beginBindingUnderLock(clearEarlyBuffer = true, clearSnapshot = false)
+            resetSpectatorSyncStateUnderLock(clearEarlyBuffer = true, clearSnapshot = true)
         }
         activeActionId.set(0L)
         pendingState.set(false)
@@ -1573,11 +1079,12 @@ class ServerConnectionSession(
         try {
             currentConnection.resumeSession(req).whenComplete { binding, err ->
                 if (closed || epoch != currentEpoch.get()) {
+                    withBothSyncLocks { playerStreamEngine.cancelBindingUnderLock() }
                     dispatch { resultFuture.completeExceptionally(IOException("Session closed or generation changed")) }
                     return@whenComplete
                 }
                 if (err != null || binding == null) {
-                    isBindingInProgress.set(false)
+                    withBothSyncLocks { playerStreamEngine.cancelBindingUnderLock() }
                     dispatch {
                         if (closed || epoch != currentEpoch.get()) {
                             resultFuture.completeExceptionally(IOException("Session closed or generation changed"))
@@ -1590,7 +1097,7 @@ class ServerConnectionSession(
                 }
             }
         } catch (t: Throwable) {
-            isBindingInProgress.set(false)
+            withBothSyncLocks { playerStreamEngine.cancelBindingUnderLock() }
             dispatch { resultFuture.completeExceptionally(t) }
         }
         return resultFuture
@@ -1607,10 +1114,9 @@ class ServerConnectionSession(
         }
         val epoch = currentEpoch.incrementAndGet()
         trackFuture(resultFuture, epoch)
-        isSpectatorBindingInProgress.set(true)
         withBothSyncLocks {
-            resetPlayerSyncStateUnderLock(clearEarlyBuffer = true)
-            resetSpectatorSyncStateUnderLock(clearEarlyBuffer = true)
+            resetPlayerSyncStateUnderLock(clearEarlyBuffer = true, clearSnapshot = true)
+            spectatorStreamEngine.beginBindingUnderLock(clearEarlyBuffer = true, clearSnapshot = true)
         }
         activeActionId.set(0L)
         pendingState.set(false)
@@ -1626,11 +1132,12 @@ class ServerConnectionSession(
         try {
             currentConnection.joinSpectator(req).whenComplete { binding, err ->
                 if (closed || epoch != currentEpoch.get()) {
+                    withBothSyncLocks { spectatorStreamEngine.cancelBindingUnderLock() }
                     dispatch { resultFuture.completeExceptionally(IOException("Session closed or generation changed")) }
                     return@whenComplete
                 }
                 if (err != null || binding == null) {
-                    isSpectatorBindingInProgress.set(false)
+                    withBothSyncLocks { spectatorStreamEngine.cancelBindingUnderLock() }
                     dispatch {
                         if (closed || epoch != currentEpoch.get()) {
                             resultFuture.completeExceptionally(IOException("Session closed or generation changed"))
@@ -1643,7 +1150,7 @@ class ServerConnectionSession(
                 }
             }
         } catch (t: Throwable) {
-            isSpectatorBindingInProgress.set(false)
+            withBothSyncLocks { spectatorStreamEngine.cancelBindingUnderLock() }
             dispatch { resultFuture.completeExceptionally(t) }
         }
         return resultFuture
@@ -1662,10 +1169,9 @@ class ServerConnectionSession(
         }
         val epoch = currentEpoch.incrementAndGet()
         trackFuture(resultFuture, epoch)
-        isSpectatorBindingInProgress.set(true)
         withBothSyncLocks {
-            resetPlayerSyncStateUnderLock(clearEarlyBuffer = true)
-            resetSpectatorSyncStateUnderLock(clearEarlyBuffer = true)
+            resetPlayerSyncStateUnderLock(clearEarlyBuffer = true, clearSnapshot = true)
+            spectatorStreamEngine.beginBindingUnderLock(clearEarlyBuffer = true, clearSnapshot = false)
         }
         activeActionId.set(0L)
         pendingState.set(false)
@@ -1686,11 +1192,12 @@ class ServerConnectionSession(
         try {
             currentConnection.resumeSpectator(req).whenComplete { binding, err ->
                 if (closed || epoch != currentEpoch.get()) {
+                    withBothSyncLocks { spectatorStreamEngine.cancelBindingUnderLock() }
                     dispatch { resultFuture.completeExceptionally(IOException("Session closed or generation changed")) }
                     return@whenComplete
                 }
                 if (err != null || binding == null) {
-                    isSpectatorBindingInProgress.set(false)
+                    withBothSyncLocks { spectatorStreamEngine.cancelBindingUnderLock() }
                     dispatch {
                         if (closed || epoch != currentEpoch.get()) {
                             resultFuture.completeExceptionally(IOException("Session closed or generation changed"))
@@ -1703,7 +1210,7 @@ class ServerConnectionSession(
                 }
             }
         } catch (t: Throwable) {
-            isSpectatorBindingInProgress.set(false)
+            withBothSyncLocks { spectatorStreamEngine.cancelBindingUnderLock() }
             dispatch { resultFuture.completeExceptionally(t) }
         }
         return resultFuture
@@ -1739,27 +1246,15 @@ class ServerConnectionSession(
                                 isLeavingRoom.set(false)
                                 currentBinding = null
                                 currentSpectatorBinding = null
-                                val retiredRoomEpoch = currentRoomEpoch.incrementAndGet()
                                 activeActionId.set(0L)
                                 pendingState.set(false)
                                 withBothSyncLocks {
                                     resetPlayerSyncStateUnderLock(clearEarlyBuffer = true)
                                     resetSpectatorSyncStateUnderLock(clearEarlyBuffer = true)
                                 }
-                                synchronized(roomLock) {
-                                    resetRoomInfoUnderLock()
-                                }
-                                val roomFuturesToFail = mutableListOf<CompletableFuture<*>>()
-                                val it = outstandingRoomFutures.entries.iterator()
-                                while (it.hasNext()) {
-                                    val entry = it.next()
-                                    if (entry.value <= retiredRoomEpoch) {
-                                        it.remove()
-                                        outstandingFutures.remove(entry.key)
-                                        roomFuturesToFail.add(entry.key)
-                                    }
-                                }
+                                val roomFuturesToFail = roomSyncEngine.retireRoom()
                                 for (fut in roomFuturesToFail) {
+                                    outstandingFutures.remove(fut)
                                     fut.completeExceptionally(IOException("Room left: binding retired"))
                                 }
                             } else {
@@ -1790,7 +1285,7 @@ class ServerConnectionSession(
         val epoch = currentEpoch.get()
         val roomEpoch = currentRoomEpoch.get()
         trackFuture(resultFuture, epoch)
-        trackRoomFuture(resultFuture, roomEpoch)
+        roomSyncEngine.trackRoomFuture(resultFuture, roomEpoch)
 
         try {
             currentConnection.getRoomInfo().whenComplete { protoInfo, err ->
@@ -1805,26 +1300,16 @@ class ServerConnectionSession(
                         }
                     } else {
                         try {
-                            val mapped = ProtocolViewMapper.mapRoomInfo(protoInfo)
-                            val finalInfo = synchronized(roomLock) {
-                                if (closed || epoch != currentEpoch.get() || roomEpoch != currentRoomEpoch.get()) {
-                                    null
-                                } else {
-                                    val curBindingRoomId = currentBinding?.roomId ?: currentSpectatorBinding?.roomId
-                                    if (curBindingRoomId == null || curBindingRoomId != mapped.roomId) {
-                                        null
-                                    } else {
-                                        val cur = cachedRoomInfo
-                                        if (cur != null && cur.roomId == mapped.roomId && cur.version >= mapped.version) {
-                                            cur
-                                        } else {
-                                            cachedRoomInfo = mapped
-                                            cachedRoomVersion = mapped.version
-                                            mapped
-                                        }
-                                    }
+                            val finalInfo = roomSyncEngine.adoptAuthoritativeRoomInfo(
+                                protoInfo = protoInfo,
+                                currentBoundRoomId = { currentBinding?.roomId ?: currentSpectatorBinding?.roomId },
+                                requestRoomEpoch = roomEpoch,
+                                isSessionValid = {
+                                    !closed && !isLeavingRoom.get() &&
+                                        epoch == currentEpoch.get() &&
+                                        roomEpoch == currentRoomEpoch.get()
                                 }
-                            }
+                            )
                             if (finalInfo == null) {
                                 if (!resultFuture.isDone) {
                                     resultFuture.completeExceptionally(IOException("Session closed or generation changed"))
@@ -1924,12 +1409,7 @@ class ServerConnectionSession(
     }
 
     override fun onRoomUpdate(listener: (RoomInfo) -> Unit): AutoCloseable {
-        val observer = RoomObserver(listener)
-        roomObservers.add(observer)
-        return AutoCloseable {
-            observer.active = false
-            roomObservers.remove(observer)
-        }
+        return roomSyncEngine.onRoomUpdate(listener)
     }
 
     // ==========================================
@@ -1970,16 +1450,7 @@ class ServerConnectionSession(
                     var mapError: Throwable? = null
                     synchronized(syncLock) {
                         try {
-                            val mapped = ProtocolViewMapper.mapSnapshot(protoSnap)
-                            val cur = cachedSnapshot
-                            if (cur == null || cur.sessionId != mapped.sessionId ||
-                                mapped.syncEpoch != cur.syncEpoch || mapped.cursor >= cur.cursor
-                            ) {
-                                cachedSnapshot = mapped
-                                finalSnap = mapped
-                            } else {
-                                finalSnap = cur
-                            }
+                            finalSnap = playerStreamEngine.adoptQuerySnapshotUnderLock(protoSnap)
                         } catch (t: Throwable) {
                             mapError = t
                         }
@@ -2023,7 +1494,7 @@ class ServerConnectionSession(
 
         // 若当前处于缺口修复中，绝不暴露未来决策
         val earlyDecision = synchronized(syncLock) {
-            if (reorderBuffer.isNotEmpty() && cachedSnapshot != null) {
+            if (playerStreamEngine.reorderBufferNotEmpty && cachedSnapshot != null) {
                 cachedSnapshot!!.decision
             } else {
                 null
@@ -2605,17 +2076,7 @@ class ServerConnectionSession(
                     var mapError: Throwable? = null
                     synchronized(syncLock) {
                         try {
-                            val mapped = ProtocolViewMapper.mapSnapshot(protoSnap)
-                            val cur = cachedSnapshot
-                            if (cur == null || cur.sessionId != mapped.sessionId ||
-                                mapped.syncEpoch != cur.syncEpoch || mapped.cursor >= cur.cursor
-                            ) {
-                                cachedSnapshot = mapped
-                                reorderBuffer.headMap(mapped.cursor).clear()
-                                finalSnap = mapped
-                            } else {
-                                finalSnap = cur
-                            }
+                            finalSnap = playerStreamEngine.adoptQuerySnapshotUnderLock(protoSnap)
                         } catch (t: Throwable) {
                             mapError = t
                         }
@@ -2825,28 +2286,14 @@ class ServerConnectionSession(
         roomEpoch: Long,
         roomId: String
     ): Boolean {
-        synchronized(publicSyncLock) {
-            if (closed || epoch != currentEpoch.get() || roomEpoch != currentRoomEpoch.get()) {
-                return false
-            }
-            val curSpec = currentSpectatorBinding
-            if (curSpec == null || curSpec.roomId != roomId) {
-                return false
-            }
-            val cur = cachedPublicSnapshot
-            if (cur == null || cur.sessionId != view.sessionId || cur.syncEpoch != view.syncEpoch) {
-                cachedPublicSnapshot = view
-                publicReorderBuffer.clear()
-                return true
-            } else if (view.cursor > cur.cursor) {
-                cachedPublicSnapshot = view
-                publicReorderBuffer.headMap(view.cursor).clear()
-                return true
-            } else if (view.cursor == cur.cursor) {
-                return true
-            }
-            return false
-        }
+        return spectatorStreamEngine.adoptAuthoritativePublicSnapshotUnderLock(
+            view = view,
+            epoch = epoch,
+            roomEpoch = roomEpoch,
+            roomId = roomId,
+            boundRoomIdProvider = { currentSpectatorBinding?.roomId },
+            isSessionValid = { !closed && epoch == currentEpoch.get() && roomEpoch == currentRoomEpoch.get() }
+        )
     }
 
     override fun resumePublic(checkpoint: PublicCheckpoint): CompletableFuture<PublicSnapshotView> {
@@ -2952,10 +2399,7 @@ class ServerConnectionSession(
     }
 
     override fun onPublicUpdate(listener: (PublicUpdateView) -> Unit): AutoCloseable {
-        publicUpdateListeners.add(listener)
-        return AutoCloseable {
-            publicUpdateListeners.remove(listener)
-        }
+        return spectatorStreamEngine.onPublicUpdate(listener)
     }
 
     private fun terminateSession(reason: String) {
@@ -2971,8 +2415,16 @@ class ServerConnectionSession(
             // 全量在途 Future 均通过 dispatch 派发异常终结
             val futuresToFail = outstandingFutures.keys.toList()
             outstandingFutures.clear()
-            outstandingRoomFutures.clear()
+            val roomFuturesToFail = roomSyncEngine.close()
+            for (fut in roomFuturesToFail) {
+                outstandingFutures.remove(fut)
+            }
             for (fut in futuresToFail) {
+                dispatch {
+                    fut.completeExceptionally(IOException("Session closed: $reason"))
+                }
+            }
+            for (fut in roomFuturesToFail) {
                 dispatch {
                     fut.completeExceptionally(IOException("Session closed: $reason"))
                 }
@@ -2986,23 +2438,14 @@ class ServerConnectionSession(
             activeRoomSub = null
             activePublicConnectionSub?.close()
             activePublicConnectionSub = null
-            for (obs in roomObservers) {
-                obs.active = false
-            }
-            roomObservers.clear()
-            synchronized(roomLock) {
-                resetRoomInfoUnderLock()
-            }
 
             try {
                 currentConnection.close()
             } catch (_: Throwable) {
             }
 
-            withBothSyncLocks {
-                resetPlayerSyncStateUnderLock(clearEarlyBuffer = true)
-                resetSpectatorSyncStateUnderLock(clearEarlyBuffer = true)
-            }
+            playerStreamEngine.close()
+            spectatorStreamEngine.close()
 
             if (ownsScheduler && scheduler is AutoCloseable) {
                 try {

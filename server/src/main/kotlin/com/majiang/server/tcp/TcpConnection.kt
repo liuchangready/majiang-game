@@ -1,9 +1,7 @@
 package com.majiang.server.tcp
 
-import com.majiang.server.api.ApiErrors
 import com.majiang.server.idempotency.IdempotencyKey
 import com.majiang.server.room.SharedRoom
-import com.majiang.transport.api.ApiRequest
 import com.majiang.transport.api.ApiResponse
 import com.majiang.transport.tcp.TcpClose
 import com.majiang.transport.tcp.TcpCloseReasons
@@ -12,6 +10,7 @@ import com.majiang.transport.tcp.TcpFrameDecoder
 import com.majiang.transport.tcp.TcpMessageCodec
 import java.io.IOException
 import java.net.SocketAddress
+import java.nio.ByteBuffer
 import java.nio.channels.SelectionKey
 import java.nio.channels.SocketChannel
 import java.util.ArrayDeque
@@ -41,26 +40,27 @@ enum class ConnectionState {
 }
 
 /**
- * 服务端 TCP 客户端连接对象 (TcpConnection, 契约 1 / 契约 2 / 契约 3 / 契约 5)
+ * 服务端 TCP 客户端物理传输连接对象 (TcpConnection, 契约 1 / 契约 2 / 契约 3 / 契约 5 / D-02)
  *
  * 核心设计：
- * 1. 资源拥有权：持有底层 [SocketChannel]、[SelectionKey]、独立有状态 [TcpFrameDecoder]、出站队列 [outboundQueue] 与串行接收邮箱；
+ * 1. 物理传输资源拥有权：持有底层 [SocketChannel]、[SelectionKey]、独立有状态 [TcpFrameDecoder]、出站队列 [outboundQueue] 与串行接收邮箱；
  * 2. 状态机与原子关闭：AWAITING_HELLO -> HANDSHAKED -> CLOSING -> CLOSED；关闭原子幂等，保证资源安全释放；
- * 3. 严格时钟与超时监测：
+ * 3. 角色状态解耦 (D-02)：物理连接资源与逻辑角色状态 (PlayerState/SpectatorState) 分开，业务回执与作用域归属于已验证逻辑身份；
+ * 4. 严格时钟与超时监测：
  *    - 握手超时 (5 秒，HANDSHAKE_TIMEOUT)；
  *    - 入站判死 (10 秒无完整合法入站帧，HEARTBEAT_TIMEOUT；零散字节不刷新计时，UC-L07)；
  *    - 不完整帧硬截止 (首字节起 10 秒硬截止，UC-L08)；
  *    - 停滞写入监测 (连续 10 秒写零进展，SLOW_CONSUMER，UC-L09)；
  *    - 终态通知收尾 (最多 1 秒排出 CLOSE 帧后强制关闭 channel，UC-L11)；
- * 4. 串行接收邮箱：有界 64 帧 / 4 MiB，计入全局预算，背压读或慢端断开 (UC-L02)；
- * 5. 安全脱敏：toString 彻底脱敏，绝不输出 token 与敏感业务信息。
+ * 5. 串行接收邮箱：有界 64 帧 / 4 MiB，计入全局预算，背压读或慢端断开 (UC-L02)；
+ * 6. 安全脱敏：toString 彻底脱敏，绝不输出 token 与敏感业务信息。
  */
 class TcpConnection(
-    val connectionId: Long,
+    override val connectionId: Long,
     val channel: SocketChannel,
     val config: TcpServerConfig,
     val globalBudget: TcpGlobalBudget
-) : AutoCloseable {
+) : TransportConnection, AutoCloseable {
 
     @Volatile
     var selectionKey: SelectionKey? = null
@@ -80,7 +80,7 @@ class TcpConnection(
 
     val state: AtomicReference<ConnectionState> = AtomicReference(ConnectionState.AWAITING_HELLO)
 
-    val remoteAddress: SocketAddress = try {
+    override val remoteAddress: SocketAddress = try {
         channel.remoteAddress
     } catch (_: Throwable) {
         object : SocketAddress() {
@@ -98,33 +98,23 @@ class TcpConnection(
         private set
 
     @Volatile
-    var connectionEpoch: String = ""
+    override var connectionEpoch: String = ""
         private set
 
+    // 逻辑角色状态引用 (D-02: 物理连接不直接维护业务角色内部状态，委托给 ServerRoleState)
     @Volatile
-    var role: ConnectionRole = ConnectionRole.UNBOUND_LOBBY
+    var roleState: ServerRoleState = UnauthenticatedRoleState
+        private set
 
-    @Volatile
-    var activeRoom: SharedRoom? = null
-
-    @Volatile
-    var viewerSeat: Int = -1
-
-    @Volatile
-    var spectatorId: String? = null
-
-    @Volatile
-    var currentBindingGeneration: Long = 1L
-
-    // 房间订阅句柄
-    @Volatile
-    var seatSubscription: AutoCloseable? = null
-
-    @Volatile
-    var publicSubscription: AutoCloseable? = null
-
-    @Volatile
-    var roomSubscription: AutoCloseable? = null
+    // 角色只读投影访问器 (只读派生，严禁外部直接修改角色内部状态)
+    val role: ConnectionRole get() = roleState.role
+    val playerState: PlayerState? get() = roleState as? PlayerState
+    val spectatorState: SpectatorState? get() = roleState as? SpectatorState
+    val lobbyState: LobbyRoleState? get() = roleState as? LobbyRoleState
+    val activeRoom: SharedRoom? get() = (roleState as? RoomRoleState)?.room
+    val viewerSeat: Int get() = playerState?.seat ?: -1
+    val spectatorId: String? get() = spectatorState?.spectatorId
+    val currentBindingGeneration: Long get() = (roleState as? RoomRoleState)?.bindingGeneration ?: 1L
 
     // 接收串行邮箱 (Mailbox: max 64 frames / 4 MiB, UC-L02)
     private val mailboxLock = Any()
@@ -163,17 +153,14 @@ class TcpConnection(
     // 未握手桶计数归还标志 (保证精确一次归还，R3)
     val unhandshakedReturned: AtomicBoolean = AtomicBoolean(false)
 
-    // 断开通知房间连接控制标志 (保证精确一次通知，R02)
-    val disconnectNotified: AtomicBoolean = AtomicBoolean(false)
-
     /** 尝试认领归还未握手桶计数，仅首次返回 true (R3) */
     fun markUnhandshakedReturned(): Boolean = unhandshakedReturned.compareAndSet(false, true)
 
     /** 连接是否已经处于关闭态 */
-    val isClosed: Boolean get() = state.get() == ConnectionState.CLOSED
+    override val isClosed: Boolean get() = state.get() == ConnectionState.CLOSED
 
     /** 连接是否处于正在收尾或已关闭态 */
-    val isClosingOrClosed: Boolean
+    override val isClosingOrClosed: Boolean
         get() = state.get().let { it == ConnectionState.CLOSING || it == ConnectionState.CLOSED }
 
     /** 连接是否已完成握手 */
@@ -194,7 +181,7 @@ class TcpConnection(
     }
 
     /**
-     * 设置握手完成身份
+     * 设置握手完成身份并安装 LobbyRoleState
      */
     fun setHandshakedIdentity(
         principal: String,
@@ -205,60 +192,126 @@ class TcpConnection(
         require(token.isNotBlank()) { "token cannot be blank" }
         require(epoch.isNotBlank()) { "epoch cannot be blank" }
 
-        this.logicalPrincipal = principal
-        this.lobbyResumeToken = token
-        this.connectionEpoch = epoch
-        this.state.set(ConnectionState.HANDSHAKED)
+        val lobbyRole = LobbyRoleState(token)
+        val oldRole = synchronized(this) {
+            if (isClosingOrClosed) {
+                return
+            }
+            this.lobbyResumeToken = token
+            this.connectionEpoch = epoch
+            this.state.set(ConnectionState.HANDSHAKED)
+            val old = roleState
+            roleState = lobbyRole
+            logicalPrincipal = lobbyRole.logicalPrincipal
+            old
+        }
+        if (oldRole !== lobbyRole) {
+            oldRole.detach()
+        }
     }
 
     /**
-     * 迁移至经过认证绑定的玩家角色身份 (R06)
+     * 在安装锁边界内原子读取当前已验证的逻辑身份与角色快照 (D-08 / §9.2)
+     *
+     * 保持与 installPlayerRole / installSpectatorRole / unbindToLobbyRole / setHandshakedIdentity
+     * 处于同一个 synchronized(this) 原子锁边界：
+     * 1. 处于握手完成态 (HANDSHAKED) 且非关闭态；
+     * 2. roleState 绝不能是 UnauthenticatedRoleState；
+     * 3. logicalPrincipal 严格非空且必须与 roleState.logicalPrincipal 完全一致；
+     * 4. 彻底杜绝任何“旧 principal + 新角色”或“新 principal + 旧角色”的交错瞬态泄露。
+     */
+    fun snapshotLogicalIdentity(): Pair<String, ServerRoleState>? {
+        return synchronized(this) {
+            if (!isHandshaked || isClosingOrClosed) return null
+            val role = roleState
+            if (role is UnauthenticatedRoleState) return null
+            val principal = logicalPrincipal ?: return null
+            if (principal.isBlank() || principal != role.logicalPrincipal) return null
+            Pair(principal, role)
+        }
+    }
+
+    /**
+     * 原子安装玩家角色状态 (D-02 / §9.2)
+     * 若连接处于 CLOSING 或 CLOSED 状态，拒绝安装并返回 false
+     */
+    fun installPlayerRole(newPlayerState: PlayerState): Boolean {
+        val oldRole = synchronized(this) {
+            if (isClosingOrClosed) {
+                return false
+            }
+            val old = roleState
+            roleState = newPlayerState
+            logicalPrincipal = newPlayerState.logicalPrincipal
+            old
+        }
+        if (oldRole !== newPlayerState) {
+            oldRole.detach()
+        }
+        return true
+    }
+
+    /**
+     * 原子安装观战者角色状态 (D-02 / §9.2)
+     * 若连接处于 CLOSING 或 CLOSED 状态，拒绝安装并返回 false
+     */
+    fun installSpectatorRole(newSpectatorState: SpectatorState): Boolean {
+        val oldRole = synchronized(this) {
+            if (isClosingOrClosed) {
+                return false
+            }
+            val old = roleState
+            roleState = newSpectatorState
+            logicalPrincipal = newSpectatorState.logicalPrincipal
+            old
+        }
+        if (oldRole !== newSpectatorState) {
+            oldRole.detach()
+        }
+        return true
+    }
+
+    /**
+     * 迁移至经过认证绑定的玩家角色身份 (兼容便捷方法)
      */
     fun bindPlayerRole(
         room: SharedRoom,
         seat: Int,
-        bindingGeneration: Long = room.bindingGenerations[seat]
-    ) {
-        require(seat in 0..3) { "seat must be in 0..3, got $seat" }
-        detachSubscriptions()
-        this.activeRoom = room
-        this.viewerSeat = seat
-        this.spectatorId = null
-        this.role = ConnectionRole.PLAYER
-        this.currentBindingGeneration = bindingGeneration
-        this.logicalPrincipal = "player:${room.roomId}:$seat"
+        bindingGeneration: Long = room.seatMemberGeneration(seat)
+    ): Boolean {
+        val player = PlayerState.fromRoom(room, seat, bindingGeneration)
+        return installPlayerRole(player)
     }
 
     /**
-     * 迁移至经过认证绑定的观战者角色身份 (R06)
+     * 迁移至经过认证绑定的观战者角色身份 (兼容便捷方法)
      */
     fun bindSpectatorRole(
         room: SharedRoom,
         spectatorId: String,
         bindingGeneration: Long = 1L
-    ) {
-        require(spectatorId.isNotBlank()) { "spectatorId cannot be blank" }
-        detachSubscriptions()
-        this.activeRoom = room
-        this.spectatorId = spectatorId
-        this.viewerSeat = -1
-        this.role = ConnectionRole.SPECTATOR
-        this.currentBindingGeneration = bindingGeneration
-        this.logicalPrincipal = "spectator:${room.roomId}:$spectatorId"
+    ): Boolean {
+        val spectator = SpectatorState.fromRoom(room, spectatorId, bindingGeneration)
+        return installSpectatorRole(spectator)
     }
 
     /**
-     * 角色解绑并回退至大厅身份 (R06)
+     * 角色解绑并回退至大厅身份 (R06 / D-02)
      */
     fun unbindToLobbyRole() {
-        detachSubscriptions()
-        this.activeRoom = null
-        this.viewerSeat = -1
-        this.spectatorId = null
-        this.role = ConnectionRole.UNBOUND_LOBBY
         val token = this.lobbyResumeToken
-        if (token != null) {
-            this.logicalPrincipal = "lobby:$token"
+        val newRole = if (token != null) LobbyRoleState(token) else UnauthenticatedRoleState
+        val oldRole = synchronized(this) {
+            if (isClosingOrClosed) {
+                return
+            }
+            val old = roleState
+            roleState = newRole
+            logicalPrincipal = newRole.logicalPrincipal
+            old
+        }
+        if (oldRole !== newRole) {
+            oldRole.detach()
         }
     }
 
@@ -313,7 +366,7 @@ class TcpConnection(
     /**
      * 发送业务普通帧 (RSP / UPDATE)
      */
-    fun sendNormalFrame(frameBytes: ByteArray): Boolean {
+    override fun sendNormalFrame(frameBytes: ByteArray): Boolean {
         if (isClosingOrClosed) return false
         val ok = outboundQueue.enqueueNormal(frameBytes)
         if (!ok) {
@@ -328,7 +381,7 @@ class TcpConnection(
     /**
      * 发送控制优先级帧 (PING / PONG / CLOSE)
      */
-    fun sendControlFrame(frameBytes: ByteArray): Boolean {
+    override fun sendControlFrame(frameBytes: ByteArray): Boolean {
         val ok = outboundQueue.enqueueControl(frameBytes)
         if (!ok) {
             // 连控制帧都无法入队 -> 直接断开 (UC-C05)
@@ -346,7 +399,7 @@ class TcpConnection(
         val key = selectionKey
         if (key != null && key.isValid) {
             try {
-                key.interestOps(key.interestOps() or SelectionKey.OP_WRITE)
+                key.interestOpsOr(SelectionKey.OP_WRITE)
                 key.selector().wakeup()
             } catch (_: Throwable) {
             }
@@ -360,10 +413,10 @@ class TcpConnection(
      * @param message 可选描述
      * @param immediate 是否跳过收尾立即强切 channel
      */
-    fun close(
+    override fun close(
         reason: String,
-        message: String? = null,
-        immediate: Boolean = false
+        message: String?,
+        immediate: Boolean
     ) {
         if (disconnectReason == null) {
             disconnectReason = reason
@@ -375,19 +428,42 @@ class TcpConnection(
             return
         }
 
-        // 尝试优雅进入 CLOSING 态
-        if (state.compareAndSet(ConnectionState.AWAITING_HELLO, ConnectionState.CLOSING) ||
-            state.compareAndSet(ConnectionState.HANDSHAKED, ConnectionState.CLOSING)) {
-            closingStartTimeMillis = config.clock.currentTimeMillis()
-            // 尽力排入 CLOSE 控制帧
-            try {
-                val closeFrame = TcpMessageCodec.toFrame(TcpClose(reason = reason, message = message))
-                outboundQueue.enqueueControl(closeFrame.toByteArray())
+        var shouldForceClose = false
+        val enteredClosing = synchronized(this) {
+            val cur = state.get()
+            if (cur == ConnectionState.AWAITING_HELLO || cur == ConnectionState.HANDSHAKED) {
+                // 关键防线：必须在变更状态为 CLOSING 前将 CLOSE 控制帧入队并激活写兴趣！
+                // 严防 selector 线程在状态变为 CLOSING 但控制帧尚未入队的微秒级竞态窗口内误判队列已空并提前 shutdownOutput(FIN)！
+                val closeFrameBytes = try {
+                    TcpMessageCodec.toFrame(TcpClose(reason = reason, message = message)).toByteArray()
+                } catch (_: Throwable) {
+                    shouldForceClose = true
+                    return@synchronized false
+                }
+
+                val enqueued = outboundQueue.enqueueControl(closeFrameBytes)
+                if (!enqueued) {
+                    // 控制队列饱和 (8帧/8KiB) 或全局预算耗尽时，enqueueControl 返回 false。
+                    // 依据 UC-C05 契约与资源保护原则，严禁进入 CLOSING 假装入队，必须立即切断连接释放资源。
+                    shouldForceClose = true
+                    return@synchronized false
+                }
+
                 enableWriteInterest()
-            } catch (_: Throwable) {
-                forceCloseChannel()
+                state.set(ConnectionState.CLOSING)
+                closingStartTimeMillis = config.clock.currentTimeMillis()
+                true
+            } else {
+                false
             }
-        } else if (state.get() == ConnectionState.CLOSING) {
+        }
+
+        if (shouldForceClose) {
+            forceCloseChannel()
+            return
+        }
+
+        if (!enteredClosing && state.get() == ConnectionState.CLOSING) {
             // 已在 CLOSING，检查是否超时需要强切
             val start = closingStartTimeMillis ?: 0L
             if (config.clock.currentTimeMillis() - start >= config.terminalFlushTimeoutMillis) {
@@ -400,7 +476,14 @@ class TcpConnection(
      * 强制立即切断底层的 SocketChannel 并彻底释放所有本地与全局资源
      */
     fun forceCloseChannel() {
-        if (state.getAndSet(ConnectionState.CLOSED) == ConnectionState.CLOSED) {
+        val roleToNotify: ServerRoleState? = synchronized(this) {
+            if (state.getAndSet(ConnectionState.CLOSED) == ConnectionState.CLOSED) {
+                null
+            } else {
+                roleState
+            }
+        }
+        if (roleToNotify == null) {
             return
         }
 
@@ -414,9 +497,17 @@ class TcpConnection(
         }
         selectionKey = null
 
-        // 3. 关闭底层 SocketChannel
+        // 3. 关闭底层 SocketChannel (排空接收缓冲残留并关闭输出方向以发出 FIN，防止 RST 抹除 CLOSE 帧)
         try {
             if (channel.isOpen) {
+                try {
+                    val drainBuf = ByteBuffer.allocate(4096)
+                    while (channel.read(drainBuf) > 0) {
+                        drainBuf.clear()
+                    }
+                    channel.shutdownOutput()
+                } catch (_: Throwable) {
+                }
                 channel.close()
             }
         } catch (_: Throwable) {
@@ -450,55 +541,23 @@ class TcpConnection(
             f.completeExceptionally(ex)
         }
 
-        // 7. 精确一次通知房间连接控制 (R02)
-        notifyRoomDisconnect()
+        // 7. 精确一次通知房间连接控制 (R02 / D-02 委托角色自身处理)
+        roleToNotify.onConnectionClosed(this)
     }
 
     /**
-     * 精确一次通知房间连接控制 (R02)
+     * 精确一次通知房间连接控制 (R02 / D-02 委托当前角色自身处理)
      */
     fun notifyRoomDisconnect() {
-        if (disconnectNotified.compareAndSet(false, true)) {
-            val room = activeRoom ?: return
-            val curRole = role
-            val seat = viewerSeat
-            val gen = currentBindingGeneration
-            val specId = spectatorId
-            if (curRole == ConnectionRole.PLAYER && seat in 0..3) {
-                try {
-                    room.disconnectSeat(seat, gen)
-                } catch (_: Throwable) {
-                }
-            } else if (curRole == ConnectionRole.SPECTATOR && specId != null) {
-                try {
-                    room.disconnectSpectator(specId, gen)
-                } catch (_: Throwable) {
-                }
-            }
-        }
+        val role = synchronized(this) { roleState }
+        role.onConnectionClosed(this)
     }
 
     /**
      * 取消房间相关所有订阅
      */
     fun detachSubscriptions() {
-        try {
-            seatSubscription?.close()
-        } catch (_: Throwable) {
-        }
-        seatSubscription = null
-
-        try {
-            publicSubscription?.close()
-        } catch (_: Throwable) {
-        }
-        publicSubscription = null
-
-        try {
-            roomSubscription?.close()
-        } catch (_: Throwable) {
-        }
-        roomSubscription = null
+        roleState.detach()
     }
 
     override fun close() {

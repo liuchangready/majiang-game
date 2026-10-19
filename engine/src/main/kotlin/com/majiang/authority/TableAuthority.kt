@@ -74,7 +74,8 @@ class TableAuthority @JvmOverloads constructor(
     ),
     initialState: GameState? = null,
     val adminSeat: Int = 0,
-    initialCoordinator: ApplicationCoordinator? = null
+    initialCoordinator: ApplicationCoordinator? = null,
+    val maxReceiptsPerSeat: Int = 8192
 ) : AutoCloseable {
 
     // 配置与控制者列表防御性复制
@@ -96,6 +97,7 @@ class TableAuthority @JvmOverloads constructor(
         this.config.validateSupported()
         require(adminSeat in 0..3) { "adminSeat must be in 0..3, got $adminSeat" }
         require(this._controllers.size == 4) { "controllers list must contain exactly 4 items, got ${this._controllers.size}" }
+        require(maxReceiptsPerSeat > 0) { "maxReceiptsPerSeat must be > 0, got $maxReceiptsPerSeat" }
     }
 
     // 内部应用协调器（默认关闭同步 AI 与自动摸切，启用延迟自动动作）
@@ -192,7 +194,81 @@ class TableAuthority @JvmOverloads constructor(
         val beamSwapPayload: NormalizedBeamSwapPayload? = null,
         val beamSwapChoicePayload: NormalizedBeamSwapChoicePayload? = null
     )
-    private val storedReceipts = ConcurrentHashMap<ReceiptKey, StoredSubmission>()
+    private val perSeatReceiptCounts = IntArray(4)
+
+    private val storedReceipts = object : ConcurrentHashMap<ReceiptKey, StoredSubmission>() {
+        override fun put(key: ReceiptKey, value: StoredSubmission): StoredSubmission? {
+            val prev = super.put(key, value)
+            if (prev == null && key.seat in 0..3) {
+                perSeatReceiptCounts[key.seat]++
+            }
+            return prev
+        }
+
+        override fun clear() {
+            super.clear()
+            for (i in 0..3) perSeatReceiptCounts[i] = 0
+        }
+    }
+
+    /** MR-09b 回执库只读测量指标（近似估算，仅用于量级对比） */
+    data class ReceiptStoreMetrics(
+        val currentEntries: Int,
+        val rejectedEntries: Int,
+        val recordedEntries: Int,
+        val appliedEntries: Int,
+        val perSeatEntryCounts: List<Int>,
+        val approxRetainedBytes: Long
+    )
+
+    /**
+     * MR-09b 测量入口：只读遍历 storedReceipts，统计条目构成与近似保留字节。
+     * 估算口径（粗粒度，不作绝对内存承诺）：对象头 16B；int/long/引用按
+     * 4/8/8B；字符串 24B + 2×length；枚举/可空字段按引用计；载荷对象按
+     * 其字段同法累加，不计共享驻留与 JVM 压缩。线程安全：ConcurrentHashMap
+     * 弱一致遍历，仅用于权威线程外的诊断读取。
+     */
+    internal fun receiptStoreMetrics(): ReceiptStoreMetrics {
+        var rejected = 0
+        var recorded = 0
+        var applied = 0
+        val perSeat = IntArray(4)
+        var bytes = 0L
+        for ((key, value) in storedReceipts) {
+            perSeat[key.seat]++
+            when (value.receipt.status) {
+                ReceiptStatus.REJECTED -> rejected++
+                ReceiptStatus.RECORDED -> recorded++
+                ReceiptStatus.APPLIED -> applied++
+            }
+            bytes += approxReceiptEntryBytes(key, value)
+        }
+        return ReceiptStoreMetrics(
+            currentEntries = storedReceipts.size,
+            rejectedEntries = rejected,
+            recordedEntries = recorded,
+            appliedEntries = applied,
+            perSeatEntryCounts = perSeat.toList(),
+            approxRetainedBytes = bytes
+        )
+    }
+
+    private fun approxReceiptEntryBytes(key: ReceiptKey, value: StoredSubmission): Long {
+        var bytes = 16L + 4L + 8L                       // ReceiptKey 头+seat+引用
+        bytes += 24L + 2L * key.requestId.length        // requestId 字符串
+        bytes += 16L + 8L * 3                           // StoredSubmission 头+固定引用
+        val receipt = value.receipt
+        bytes += 16L + 8L + 4L + 8L + 8L                // ActionReceipt 头+四字段
+        bytes += 24L + 2L * receipt.requestId.length
+        receipt.reason?.let { bytes += 24L + 2L * it.length }
+        value.choice?.let { bytes += 16L + 8L * 3 + 24L + 2L * it.requestId.length }
+        value.tileMarkPayload?.let { bytes += 16L + 8L * 3 + 24L + 2L * it.sessionId.length }
+        value.sleeveBloomPayload?.let { bytes += 16L + 8L * 3 }
+        value.sleeveBloomChoicePayload?.let { bytes += 16L + 8L * 5 + 24L + 2L * it.offerId.length }
+        value.beamSwapPayload?.let { bytes += 16L + 8L * 3 }
+        value.beamSwapChoicePayload?.let { bytes += 16L + 8L * 5 + 24L + 2L * it.offerId.length }
+        return bytes
+    }
 
     // 历史单局结算事件记录 (roundId -> visibleEvents)
     private val roundResultEvents = ConcurrentHashMap<String, List<GameEvent>>()
@@ -213,7 +289,35 @@ class TableAuthority @JvmOverloads constructor(
 
     private data class ShuffleReceiptKey(val seat: Int, val roundId: String, val requestId: String)
     private data class StoredShufflePlan(val request: ShufflePlanRequest, val receipt: ActionReceipt)
-    private val storedShufflePlans = ConcurrentHashMap<ShuffleReceiptKey, StoredShufflePlan>()
+    private val perSeatShufflePlanCounts = IntArray(4)
+
+    private val storedShufflePlans = object : ConcurrentHashMap<ShuffleReceiptKey, StoredShufflePlan>() {
+        override fun put(key: ShuffleReceiptKey, value: StoredShufflePlan): StoredShufflePlan? {
+            val prev = super.put(key, value)
+            if (prev == null && key.seat in 0..3) {
+                perSeatShufflePlanCounts[key.seat]++
+            }
+            return prev
+        }
+
+        override fun clear() {
+            super.clear()
+            for (i in 0..3) perSeatShufflePlanCounts[i] = 0
+        }
+    }
+
+    /**
+     * 获取指定席位当前已接纳的回执总数（含 storedReceipts 与 storedShufflePlans）
+     */
+    internal fun getSeatReceiptCount(seat: Int): Int {
+        if (seat !in 0..3) return 0
+        return perSeatReceiptCounts[seat] + perSeatShufflePlanCounts[seat]
+    }
+
+    internal fun isReceiptQuotaExceeded(seat: Int): Boolean {
+        if (seat !in 0..3) return false
+        return getSeatReceiptCount(seat) >= maxReceiptsPerSeat
+    }
 
     private val secureRandom = SecureRandom()
 
@@ -497,8 +601,13 @@ class TableAuthority @JvmOverloads constructor(
                 return MutationResult(rejected, emptyList(), false)
             }
         }
-        if (storedShufflePlans.any { it.key.seat == seat && it.key.requestId == choice.requestId }) {
+        if (storedShufflePlans.keys.any { it.seat == seat && it.requestId == choice.requestId }) {
             val rejected = ActionReceipt(choice.requestId, ReceiptStatus.REJECTED, reason = "REQUEST_ID_CONFLICT")
+            return MutationResult(rejected, emptyList(), false)
+        }
+
+        if (isReceiptQuotaExceeded(seat)) {
+            val rejected = ActionReceipt(choice.requestId, ReceiptStatus.REJECTED, reason = "RECEIPT_QUOTA_EXCEEDED")
             return MutationResult(rejected, emptyList(), false)
         }
 
@@ -599,8 +708,15 @@ class TableAuthority @JvmOverloads constructor(
                 return MutationResult(ActionReceipt(request.requestId, ReceiptStatus.REJECTED, reason = "CONFLICTING_PAYLOAD"), emptyList(), false)
             }
         }
+        if (storedShufflePlans.keys.any { it.seat == seat && it.requestId == request.requestId }) {
+            return MutationResult(ActionReceipt(request.requestId, ReceiptStatus.REJECTED, reason = "REQUEST_ID_CONFLICT"), emptyList(), false)
+        }
         if (storedReceipts.containsKey(ReceiptKey(seat, request.requestId))) {
             return MutationResult(ActionReceipt(request.requestId, ReceiptStatus.REJECTED, reason = "REQUEST_ID_CONFLICT"), emptyList(), false)
+        }
+
+        if (isReceiptQuotaExceeded(seat)) {
+            return MutationResult(ActionReceipt(request.requestId, ReceiptStatus.REJECTED, reason = "RECEIPT_QUOTA_EXCEEDED"), emptyList(), false)
         }
 
         val currentEpoch = coordinator.epochFor(seat)
@@ -773,8 +889,13 @@ class TableAuthority @JvmOverloads constructor(
                 return MutationResult(rejected, emptyList(), false)
             }
         }
-        if (storedShufflePlans.any { it.key.seat == seat && it.key.requestId == request.requestId }) {
+        if (storedShufflePlans.keys.any { it.seat == seat && it.requestId == request.requestId }) {
             val rejected = ActionReceipt(request.requestId, ReceiptStatus.REJECTED, reason = "REQUEST_ID_CONFLICT")
+            return MutationResult(rejected, emptyList(), false)
+        }
+
+        if (isReceiptQuotaExceeded(seat)) {
+            val rejected = ActionReceipt(request.requestId, ReceiptStatus.REJECTED, reason = "RECEIPT_QUOTA_EXCEEDED")
             return MutationResult(rejected, emptyList(), false)
         }
 
@@ -941,8 +1062,13 @@ class TableAuthority @JvmOverloads constructor(
                 return MutationResult(rejected, emptyList(), false)
             }
         }
-        if (storedShufflePlans.any { it.key.seat == seat && it.key.requestId == request.requestId }) {
+        if (storedShufflePlans.keys.any { it.seat == seat && it.requestId == request.requestId }) {
             val rejected = ActionReceipt(request.requestId, ReceiptStatus.REJECTED, reason = "REQUEST_ID_CONFLICT")
+            return MutationResult(rejected, emptyList(), false)
+        }
+
+        if (isReceiptQuotaExceeded(seat)) {
+            val rejected = ActionReceipt(request.requestId, ReceiptStatus.REJECTED, reason = "RECEIPT_QUOTA_EXCEEDED")
             return MutationResult(rejected, emptyList(), false)
         }
 
@@ -1146,8 +1272,13 @@ class TableAuthority @JvmOverloads constructor(
                 return MutationResult(rejected, emptyList(), false)
             }
         }
-        if (storedShufflePlans.any { it.key.seat == seat && it.key.requestId == request.requestId }) {
+        if (storedShufflePlans.keys.any { it.seat == seat && it.requestId == request.requestId }) {
             val rejected = ActionReceipt(request.requestId, ReceiptStatus.REJECTED, reason = "REQUEST_ID_CONFLICT")
+            return MutationResult(rejected, emptyList(), false)
+        }
+
+        if (isReceiptQuotaExceeded(seat)) {
+            val rejected = ActionReceipt(request.requestId, ReceiptStatus.REJECTED, reason = "RECEIPT_QUOTA_EXCEEDED")
             return MutationResult(rejected, emptyList(), false)
         }
 
@@ -1324,8 +1455,13 @@ class TableAuthority @JvmOverloads constructor(
                 return MutationResult(rejected, emptyList(), false)
             }
         }
-        if (storedShufflePlans.any { it.key.seat == seat && it.key.requestId == request.requestId }) {
+        if (storedShufflePlans.keys.any { it.seat == seat && it.requestId == request.requestId }) {
             val rejected = ActionReceipt(request.requestId, ReceiptStatus.REJECTED, reason = "REQUEST_ID_CONFLICT")
+            return MutationResult(rejected, emptyList(), false)
+        }
+
+        if (isReceiptQuotaExceeded(seat)) {
+            val rejected = ActionReceipt(request.requestId, ReceiptStatus.REJECTED, reason = "RECEIPT_QUOTA_EXCEEDED")
             return MutationResult(rejected, emptyList(), false)
         }
 
@@ -1538,8 +1674,13 @@ class TableAuthority @JvmOverloads constructor(
                 return MutationResult(rejected, emptyList(), false)
             }
         }
-        if (storedShufflePlans.any { it.key.seat == seat && it.key.requestId == request.requestId }) {
+        if (storedShufflePlans.keys.any { it.seat == seat && it.requestId == request.requestId }) {
             val rejected = ActionReceipt(request.requestId, ReceiptStatus.REJECTED, reason = "REQUEST_ID_CONFLICT")
+            return MutationResult(rejected, emptyList(), false)
+        }
+
+        if (isReceiptQuotaExceeded(seat)) {
+            val rejected = ActionReceipt(request.requestId, ReceiptStatus.REJECTED, reason = "RECEIPT_QUOTA_EXCEEDED")
             return MutationResult(rejected, emptyList(), false)
         }
 

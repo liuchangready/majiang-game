@@ -17,10 +17,17 @@ import com.majiang.client.api.GameSnapshotView
  * 5. 身份、局、代次、决策、候选牌内容或可选手牌任一变化清空本地双选，但有效 offer 继续保持面板开启；
  * 6. 暂停、断线、托管使选择面板即时隐藏并清空双选，恢复后按最新权威快照恢复未选中状态；
  * 7. 倒计时归零后阻止确认与选择输入，但面板保持 isChoosing 持续占有模态，直到权威快照清除 offer。
+ * 8. 委托 AuthorityCountdownTracker 治理权威时钟采样与本地流逝推算，委托 DecisionIdentityGuard 追踪快照代次与决策身份。
  */
 class BeamSwapChoiceModel(
     val monotonicClock: () -> Long = { System.nanoTime() / 1_000_000L }
 ) {
+    /** 权威倒计时追踪器委托 */
+    val countdownTracker = AuthorityCountdownTracker(monotonicClock)
+
+    /** 决策身份守卫委托 */
+    val identityGuard = DecisionIdentityGuard()
+
     /** 是否处于偷梁换柱模态展示状态 */
     var isChoosing: Boolean = false
         private set
@@ -38,23 +45,11 @@ class BeamSwapChoiceModel(
     private var isPending: Boolean = false
     private var isConnected: Boolean = true
 
-    // 时钟权威采样
-    private var sampledLocalMillis: Long? = null
-    private var sampledServerNow: Long = 0L
-    private var cachedDeadline: Long = 0L
-
-    // 快照代次与特征追踪
-    private var lastSessionId: String? = null
-    private var lastSyncEpoch: String? = null
-    private var lastRoundId: String? = null
-    private var lastDecisionId: String? = null
-    private var lastControlEpoch: Long? = null
-    private var lastOfferId: String? = null
+    // 本模型专属候选特征追踪
     private var lastSelectableHandTileIds: List<Int>? = null
     private var lastCandidatesSlots: List<BeamSwapSlot>? = null
     private var lastCandidatesMarks: List<Boolean>? = null
     private var lastCandidatesTileIds: List<Int?>? = null
-    private var lastCursor: Long? = null
     private var lastWasPaused: Boolean = false
     private var lastConnected: Boolean = true
 
@@ -62,12 +57,7 @@ class BeamSwapChoiceModel(
     val remainingMillis: Long
         get() {
             val snap = currentSnapshot ?: return 0L
-            if (snap.paused) return 0L
-            val sample = sampledLocalMillis ?: return 0L
-            val now = monotonicClock()
-            val elapsed = maxOf(0L, now - sample)
-            val estimatedServerNow = sampledServerNow + elapsed
-            return maxOf(0L, cachedDeadline - estimatedServerNow)
+            return countdownTracker.remainingMillis(isPaused = snap.paused)
         }
 
     /** 是否满足入口激活条件 */
@@ -113,10 +103,8 @@ class BeamSwapChoiceModel(
         if (snapshot == null) {
             cancel()
             currentSnapshot = null
-            sampledLocalMillis = null
-            cachedDeadline = 0L
-            lastSessionId = null
-            lastOfferId = null
+            countdownTracker.clear()
+            identityGuard.reset()
             lastConnected = connected
             return
         }
@@ -128,17 +116,14 @@ class BeamSwapChoiceModel(
         val offer = beam?.pendingOffer
 
         // 检查身份代次、决策、候选牌或可选手牌是否变更
-        val identityChanged = lastSessionId != null && (
-            snapshot.sessionId != lastSessionId ||
-            snapshot.syncEpoch != lastSyncEpoch ||
-            snapshot.roundId != lastRoundId ||
-            snapshot.decision.decisionId != lastDecisionId ||
-            snapshot.decision.controlEpoch != lastControlEpoch ||
-            offer?.offerId != lastOfferId ||
+        val candidateChanged = offer?.offerId != identityGuard.lastExtraToken ||
             offer?.selectableHandTileIds != lastSelectableHandTileIds ||
             offer?.candidates?.map { it.slot } != lastCandidatesSlots ||
             offer?.candidates?.map { it.marked } != lastCandidatesMarks ||
             offer?.candidates?.map { it.tile?.tileId } != lastCandidatesTileIds
+
+        val identityChanged = identityGuard.hasIdentity && (
+            identityGuard.hasDecisionChanged(snapshot) || candidateChanged
         )
 
         val viewerSeat = snapshot.viewerSeat
@@ -164,42 +149,29 @@ class BeamSwapChoiceModel(
         lastWasPaused = isPaused
 
         // 权威时钟采样：未暂停且未从暂停恢复时维持采样
-        val isSameSnapshotIdentity = (
-            lastSessionId == snapshot.sessionId &&
-            lastSyncEpoch == snapshot.syncEpoch &&
-            lastRoundId == snapshot.roundId &&
-            lastDecisionId == snapshot.decision.decisionId &&
-            lastControlEpoch == snapshot.decision.controlEpoch &&
-            lastCursor == snapshot.cursor &&
-            lastOfferId == offer?.offerId &&
+        val isSameSnapshotIdentity = identityGuard.isSameSnapshot(snapshot, extraToken = offer?.offerId) &&
             !wasPaused && !isPaused
-        )
 
         val viewerClock = snapshot.clocks.find { it.seat == viewerSeat }
         val targetDeadline = offer?.deadlineMillis ?: viewerClock?.deadline ?: 0L
         if (viewerClock != null && targetDeadline > 0L && !isPaused) {
-            if (!isSameSnapshotIdentity || sampledLocalMillis == null) {
-                sampledLocalMillis = nowMillis
-                sampledServerNow = viewerClock.serverNow
-                cachedDeadline = targetDeadline
-            }
+            countdownTracker.updateSample(
+                serverNow = viewerClock.serverNow,
+                deadline = targetDeadline,
+                isSameIdentity = isSameSnapshotIdentity,
+                isPaused = isPaused,
+                nowMillis = nowMillis
+            )
         } else {
-            sampledLocalMillis = null
-            cachedDeadline = 0L
+            countdownTracker.clear()
         }
 
         this.currentSnapshot = snapshot
-        this.lastSessionId = snapshot.sessionId
-        this.lastSyncEpoch = snapshot.syncEpoch
-        this.lastRoundId = snapshot.roundId
-        this.lastDecisionId = snapshot.decision.decisionId
-        this.lastControlEpoch = snapshot.decision.controlEpoch
-        this.lastOfferId = offer?.offerId
+        this.identityGuard.record(snapshot, extraToken = offer?.offerId)
         this.lastSelectableHandTileIds = offer?.selectableHandTileIds
         this.lastCandidatesSlots = offer?.candidates?.map { it.slot }
         this.lastCandidatesMarks = offer?.candidates?.map { it.marked }
         this.lastCandidatesTileIds = offer?.candidates?.map { it.tile?.tileId }
-        this.lastCursor = snapshot.cursor
     }
 
     /**
@@ -302,7 +274,6 @@ class BeamSwapChoiceModel(
         isChoosing = false
         selectedHandTileId = null
         selectedTargetSlot = null
-        sampledLocalMillis = null
-        cachedDeadline = 0L
+        countdownTracker.clear()
     }
 }

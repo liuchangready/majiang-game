@@ -119,6 +119,15 @@ class InProcessBinding(
     var capturedSeatGeneration: Long = 0L
         private set
 
+    /** 本地连接绑定代次 (Local Binding Generation, D-03) */
+    val localBindingGeneration: Long get() = bindingGeneration
+
+    /** 捕获的 SharedRoom 席位成员代次 (D-03) */
+    val capturedSeatMemberGeneration: Long get() = capturedSeatGeneration
+
+    /** 捕获的 SharedRoom 观战成员代次 (D-03) */
+    val capturedSpectatorMemberGeneration: Long get() = capturedSpectatorGeneration
+
     val host: ServerTableHost? get() = currentRoom?.tableHost
 
     private val isClosed = AtomicBoolean(false)
@@ -170,9 +179,14 @@ class InProcessBinding(
     private var currentSeatSub: AutoCloseable? = null
     private var currentPublicSub: AutoCloseable? = null
     private var currentSpectatorDisplacedSub: AutoCloseable? = null
+    private var currentSeatDisplacedSub: AutoCloseable? = null
     private var internalRoomSub: AutoCloseable? = null
     @Volatile
     private var isExplicitlyLeaving: Boolean = false
+    @Volatile
+    private var inFlightResumes: Int = 0
+    @Volatile
+    private var currentBindingContext: BindingCallbackContext? = null
 
     // 在途离房占位 Future（stateLock 保护）：并发重复 leave 复用一个在途 Future，
     // 其完成时刻保证解绑、标志复位与终局补裁已全部结束；旧完成不得清除新离房的标志。
@@ -184,6 +198,8 @@ class InProcessBinding(
     init {
         initialRoom?.let { bindRoom(it) }
     }
+
+    internal fun makeSessionValidator(expectedRoom: SharedRoom? = currentRoom): () -> Boolean = makeValidator(expectedRoom)
 
     private fun makeValidator(expectedRoom: SharedRoom? = currentRoom): () -> Boolean {
         val localGen = bindingGeneration
@@ -198,8 +214,8 @@ class InProcessBinding(
             bindingGeneration == localGen &&
             (expectedRoom == null || r === expectedRoom) &&
             when (currentRole) {
-                InProcessRole.PLAYER -> (r == null || seat !in 0..3 || r.bindingGenerations[seat] == expectedSeatGen)
-                InProcessRole.SPECTATOR -> (r == null || specId == null || r.spectators[specId]?.generation == expectedSpecGen)
+                InProcessRole.PLAYER -> (r == null || seat !in 0..3 || r.seatMemberGeneration(seat) == expectedSeatGen)
+                InProcessRole.SPECTATOR -> (r == null || specId == null || r.spectatorMemberGeneration(specId) == expectedSpecGen)
                 InProcessRole.UNBOUND -> true
             }
         }
@@ -216,8 +232,9 @@ class InProcessBinding(
                 room = room,
                 role = InProcessRole.PLAYER,
                 seat = seat,
-                seatGeneration = if (seat in 0..3) room.bindingGenerations[seat] else 0L
+                seatGeneration = if (seat in 0..3) room.seatMemberGeneration(seat) else 0L
             )
+            currentBindingContext = ctx
             currentRoom = room
             role = InProcessRole.PLAYER
             spectatorId = null
@@ -234,12 +251,23 @@ class InProcessBinding(
             }
         }
 
+        currentSeatDisplacedSub = room.onSeatDisplaced { displacedSeat, newGeneration ->
+            if (ctx.seat == displacedSeat && newGeneration > ctx.seatGeneration) {
+                if (synchronized(stateLock) { inFlightResumes > 0 }) return@onSeatDisplaced
+                handleDisplacedByNewConnection(ctx)
+            }
+        }
+
         for (observer in roomObservers) {
             observer.attach(this, ctx)
         }
 
         currentSeatSub = room.subscribe(seat) { update ->
             dispatchGatedCallback(ctx) { deliverSeatUpdate(update) }
+        }
+
+        if (seat in 0..3) {
+            room.markSeatConnected(seat, ctx.seatGeneration, makeValidator(room))
         }
     }
 
@@ -265,8 +293,8 @@ class InProcessBinding(
             if (active != null && !active.closed && active !== targetRoom) {
                 throw ServerApiException(ApiErrors.ALREADY_BOUND, "ALREADY_IN_ROOM: Must leave current room first")
             }
-            val mem = targetRoom.spectators[specId]
-            if (mem == null || mem.generation != specGen) {
+            val currentGen = targetRoom.spectatorMemberGeneration(specId)
+            if (currentGen == null || currentGen != specGen) {
                 throw ServerApiException(ApiProtocol.DISPLACED_BY_NEW_CONNECTION, "DISPLACED_BY_NEW_CONNECTION")
             }
 
@@ -278,6 +306,7 @@ class InProcessBinding(
                 spectatorId = specId,
                 spectatorGeneration = specGen
             )
+            currentBindingContext = ctx
             currentRoom = targetRoom
             role = InProcessRole.SPECTATOR
             spectatorId = specId
@@ -307,6 +336,7 @@ class InProcessBinding(
 
         currentSpectatorDisplacedSub = room.onSpectatorDisplaced { displacedId, newGeneration ->
             if (ctx.spectatorId == displacedId && newGeneration > ctx.spectatorGeneration) {
+                if (synchronized(stateLock) { inFlightResumes > 0 }) return@onSpectatorDisplaced
                 handleDisplacedByNewConnection(ctx)
             }
         }
@@ -319,12 +349,16 @@ class InProcessBinding(
             dispatchGatedCallback(ctx) { deliverPublicUpdate(update) }
         }
 
+        if (specId != null) {
+            room.markSpectatorConnected(specId, ctx.spectatorGeneration, makeValidator(room))
+        }
+
         // 订阅安装后门控检查：避免在安装期间发生顶替或关闭通知丢失
-        val currentMem = if (specId != null) room.spectators[specId] else null
+        val currentGen = if (specId != null) room.spectatorMemberGeneration(specId) else null
         if (closed || bindingGeneration != ctx.generation || currentRoom !== room ||
-            currentMem == null || currentMem.generation > ctx.spectatorGeneration) {
+            currentGen == null || currentGen > ctx.spectatorGeneration) {
             detachRoomSubscriptions()
-            if (currentMem != null && currentMem.generation > ctx.spectatorGeneration) {
+            if (currentGen != null && currentGen > ctx.spectatorGeneration) {
                 handleDisplacedByNewConnection(ctx)
             }
         }
@@ -356,6 +390,8 @@ class InProcessBinding(
         currentPublicSub = null
         currentSpectatorDisplacedSub?.close()
         currentSpectatorDisplacedSub = null
+        currentSeatDisplacedSub?.close()
+        currentSeatDisplacedSub = null
         internalRoomSub?.close()
         internalRoomSub = null
         for (observer in roomObservers) {
@@ -372,13 +408,13 @@ class InProcessBinding(
         if (synchronized(stateLock) { isExplicitlyLeaving }) return
         if (closed) return
         if (bindingGeneration != ctx.generation || currentRoom !== ctx.room) return
-        if (ctx.role == InProcessRole.PLAYER && ctx.seat in 0..3 && ctx.room.bindingGenerations[ctx.seat] != ctx.seatGeneration) {
+        if (ctx.role == InProcessRole.PLAYER && ctx.seat in 0..3 && ctx.room.seatMemberGeneration(ctx.seat) != ctx.seatGeneration) {
             handleDisplacedByNewConnection(ctx)
             return
         }
         if (ctx.role == InProcessRole.SPECTATOR && ctx.spectatorId != null) {
-            val mem = ctx.room.spectators[ctx.spectatorId]
-            if (mem == null || mem.generation > ctx.spectatorGeneration) {
+            val specGen = ctx.room.spectatorMemberGeneration(ctx.spectatorId)
+            if (specGen == null || specGen > ctx.spectatorGeneration) {
                 handleDisplacedByNewConnection(ctx)
                 return
             }
@@ -411,11 +447,45 @@ class InProcessBinding(
     /** 席位被新连接顶替：校验（非离房窗口 + 捕获身份 + 共享代次漂移）与关闭认领原子完成。 */
     internal fun handleDisplacedByNewConnection(ctx: BindingCallbackContext) {
         claimClosure(ApiProtocol.DISPLACED_BY_NEW_CONNECTION) {
-            !isExplicitlyLeaving && bindingGeneration == ctx.generation && currentRoom === ctx.room &&
-                ((ctx.role == InProcessRole.PLAYER && ctx.seat in 0..3 && ctx.room.bindingGenerations[ctx.seat] != ctx.seatGeneration) ||
+            !isExplicitlyLeaving && inFlightResumes == 0 && bindingGeneration == ctx.generation && currentRoom === ctx.room &&
+                ((ctx.role == InProcessRole.PLAYER && ctx.seat in 0..3 && ctx.room.seatMemberGeneration(ctx.seat) != ctx.seatGeneration) ||
                  (ctx.role == InProcessRole.SPECTATOR && ctx.spectatorId != null &&
-                     (ctx.room.spectators[ctx.spectatorId]?.let { it.generation > ctx.spectatorGeneration } ?: true)))
+                     (ctx.room.spectatorMemberGeneration(ctx.spectatorId)?.let { it > ctx.spectatorGeneration } ?: true)))
         }?.let { runCloseTeardown(it) }
+    }
+
+    /**
+     * 在恢复请求计数归零或状态变更后，可靠复核当前绑定是否已被权威顶号 (D-03)。
+     * 解决在途恢复期间被其他连接顶号导致通知丢失、连接未能及时关闭的并发缺陷。
+     */
+    private fun checkCurrentBindingDisplacement() {
+        val ctx = synchronized(stateLock) {
+            if (isClosed.get() || isExplicitlyLeaving || inFlightResumes > 0) return
+            currentBindingContext
+        } ?: return
+
+        val room = ctx.room
+        if (room.closed) {
+            handleRoomClosed(ctx)
+            return
+        }
+
+        when (ctx.role) {
+            InProcessRole.PLAYER -> {
+                if (ctx.seat in 0..3 && room.seatMemberGeneration(ctx.seat) != ctx.seatGeneration) {
+                    handleDisplacedByNewConnection(ctx)
+                }
+            }
+            InProcessRole.SPECTATOR -> {
+                if (ctx.spectatorId != null) {
+                    val specGen = room.spectatorMemberGeneration(ctx.spectatorId)
+                    if (specGen == null || specGen > ctx.spectatorGeneration) {
+                        handleDisplacedByNewConnection(ctx)
+                    }
+                }
+            }
+            InProcessRole.UNBOUND -> { /* 未绑定无需检测顶号 */ }
+        }
     }
 
     /** 关闭认领快照：锁内捕获的旧绑定信息，供锁外收尾（席位断开调度）使用。 */
@@ -449,6 +519,7 @@ class InProcessBinding(
             val seatGeneration = capturedSeatGeneration
             val specId = spectatorId
             val specGen = capturedSpectatorGeneration
+            currentBindingContext = null
             currentRoom = null
             role = InProcessRole.UNBOUND
             spectatorId = null
@@ -545,7 +616,7 @@ class InProcessBinding(
             RoomBinding(
                 roomId = newRoom.roomId,
                 seat = viewerSeat,
-                resumeToken = newRoom.resumeTokens[viewerSeat],
+                resumeToken = newRoom.seatResumeToken(viewerSeat),
                 snapshot = EngineProtocolMapper.toProtocolSnapshot(snap)
             )
         }
@@ -610,7 +681,8 @@ class InProcessBinding(
     override fun resumeSession(req: ResumeRequest): CompletableFuture<RoomBinding> {
         if (closed) {
             val f = CompletableFuture<RoomBinding>()
-            f.completeExceptionally(ServerApiException(ApiErrors.INTERNAL_ERROR, "InProcessBinding is closed"))
+            val code = if (disconnectReason == ApiProtocol.ROOM_CLOSED) ApiErrors.ROOM_NOT_FOUND else ApiErrors.INTERNAL_ERROR
+            f.completeExceptionally(ServerApiException(code, "InProcessBinding is closed: $disconnectReason"))
             return f
         }
         if (role == InProcessRole.SPECTATOR) {
@@ -626,6 +698,7 @@ class InProcessBinding(
             return f
         }
 
+        synchronized(stateLock) { inFlightResumes++ }
         val resumeGen = bindingGeneration
         val preResumeValidator = { !closed && bindingGeneration == resumeGen }
 
@@ -643,6 +716,9 @@ class InProcessBinding(
                 resumeToken = req.token,
                 snapshot = EngineProtocolMapper.toProtocolSnapshot(snap)
             )
+        }.whenComplete { _, _ ->
+            synchronized(stateLock) { inFlightResumes = maxOf(0, inFlightResumes - 1) }
+            checkCurrentBindingDisplacement()
         }
     }
 
@@ -687,8 +763,8 @@ class InProcessBinding(
                 false
             } else {
                 when (curRole) {
-                    InProcessRole.PLAYER -> leaveSeat !in 0..3 || r.bindingGenerations[leaveSeat] == leaveSeatGen
-                    InProcessRole.SPECTATOR -> leaveSpecId == null || r.spectators[leaveSpecId]?.generation == leaveSpecGen
+                    InProcessRole.PLAYER -> leaveSeat !in 0..3 || r.seatMemberGeneration(leaveSeat) == leaveSeatGen
+                    InProcessRole.SPECTATOR -> leaveSpecId == null || r.spectatorMemberGeneration(leaveSpecId) == leaveSpecGen
                     InProcessRole.UNBOUND -> true
                 }
             }
@@ -706,6 +782,7 @@ class InProcessBinding(
                 synchronized(stateLock) {
                     // 仅在操作生效且绑定未被关闭认领/换绑取代时解绑（与关闭认领互斥）
                     if (bindingGeneration == leaveGen && currentRoom === room) {
+                        currentBindingContext = null
                         currentRoom = null
                         role = InProcessRole.UNBOUND
                         spectatorId = null
@@ -737,9 +814,9 @@ class InProcessBinding(
             )
             when {
                 room.closed -> handleRoomClosed(leaveCtx)
-                curRole == InProcessRole.PLAYER && leaveSeat in 0..3 && room.bindingGenerations[leaveSeat] != leaveSeatGen ->
+                curRole == InProcessRole.PLAYER && leaveSeat in 0..3 && room.seatMemberGeneration(leaveSeat) != leaveSeatGen ->
                     handleDisplacedByNewConnection(leaveCtx)
-                curRole == InProcessRole.SPECTATOR && leaveSpecId != null && room.spectators[leaveSpecId]?.generation != leaveSpecGen ->
+                curRole == InProcessRole.SPECTATOR && leaveSpecId != null && room.spectatorMemberGeneration(leaveSpecId) != leaveSpecGen ->
                     handleDisplacedByNewConnection(leaveCtx)
             }
             if (error != null) {
@@ -755,11 +832,17 @@ class InProcessBinding(
     override fun getRoomInfo(): CompletableFuture<ProtocolRoomInfo> {
         if (closed) {
             val f = CompletableFuture<ProtocolRoomInfo>()
-            f.completeExceptionally(ServerApiException(ApiErrors.INTERNAL_ERROR, "InProcessBinding is closed"))
+            val code = if (disconnectReason == ApiProtocol.ROOM_CLOSED) ApiErrors.ROOM_NOT_FOUND else ApiErrors.INTERNAL_ERROR
+            f.completeExceptionally(ServerApiException(code, "InProcessBinding is closed: $disconnectReason"))
             return f
         }
         val room = currentRoom
         if (room != null) {
+            if (room.closed) {
+                val f = CompletableFuture<ProtocolRoomInfo>()
+                f.completeExceptionally(ServerApiException(ApiErrors.ROOM_NOT_FOUND, "ROOM_CLOSED"))
+                return f
+            }
             return room.getRoomInfo(makeValidator(room))
         }
         val f = CompletableFuture<ProtocolRoomInfo>()
@@ -1281,7 +1364,7 @@ class InProcessBinding(
                 return f
             }
             val active = currentRoom
-            if (active != null && !active.closed) {
+            if (active != null && !active.closed && (active.roomId != req.roomId || role != InProcessRole.SPECTATOR)) {
                 val f = CompletableFuture<SpectatorBinding>()
                 f.completeExceptionally(ServerApiException(ApiErrors.ALREADY_BOUND, "ALREADY_IN_ROOM: Must leave current room first"))
                 return f
@@ -1298,6 +1381,7 @@ class InProcessBinding(
             return f
         }
 
+        synchronized(stateLock) { inFlightResumes++ }
         val preResumeValidator = { !closed && bindingGeneration == reqBindingGen && spectatorRequestSeq == reqSeq }
 
         return targetRoom.resumeSpectator(req.spectatorId, req.resumeToken, req.checkpoint, preResumeValidator).thenApply { res ->
@@ -1310,6 +1394,9 @@ class InProcessBinding(
                 resumeToken = req.resumeToken,
                 snapshot = res.snapshot
             )
+        }.whenComplete { _, _ ->
+            synchronized(stateLock) { inFlightResumes = maxOf(0, inFlightResumes - 1) }
+            checkCurrentBindingDisplacement()
         }
     }
 
@@ -1432,11 +1519,7 @@ class InProcessBinding(
         }
         val now = System.currentTimeMillis()
         val principal = logicalPrincipal
-        if (s.receiptStore.isScopeQueryRateLimited(principal, now)) {
-            f.completeExceptionally(ServerApiException(ApiErrors.SERVER_BUSY, "Rate limited"))
-            return f
-        }
-        val (scope, _) = s.receiptStore.getOrCreateScopeForPrincipal(principal, now)
+        val (scope, _) = s.receiptStore.getOrCreateScopeForPrincipal(principal, now, recordQueryTime = false)
         f.complete(scope)
         return f
     }

@@ -24,7 +24,7 @@ import com.majiang.presentation.common.render.TileSkin
  * 核心契约：
  * 1. 独立表现层组件，拥有并暴露只读 [model] 与公共几何包围盒供单元测试与输入判定；
  * 2. 暴露公共真实绘制/命中矩形：[btnOpenRect]、[panelRect]、[btnKeepRect]、[btnConfirmRect]、[handCardRects]、[targetCardRects]；
- * 3. 伴生对象集中提供标准服务端原因翻译 [translateServerReason] 与中文字体字形全集 [BEAM_SWAP_CHARS]；
+ * 3. 伴生对象集中提供标准服务端原因翻译 [translateServerReason]；
  * 4. 资源生命周期严格自闭环 (Disposable)。
  */
 class BeamSwapPanel(
@@ -390,29 +390,5 @@ class BeamSwapPanel(
             "REQUEST_ID_CONFLICT" -> "请求标识冲突"
             else -> reason
         }
-
-        /**
-         * 涵盖所有偷梁换柱相关可见文案、状态、拒绝原因及秘籍描述的中文字形全集。
-         */
-        val BEAM_SWAP_CHARS: String = buildString {
-            append("·：；？！“”‘’—，。（）[]【】《》/、")
-            append("偷梁换柱 互换 保持原样 10 额度 已花费 保持原样不退还 原有暗手牌 刚摸／刚补牌及副露不可交换 目标候选槽位 牌山 王牌 倒计时 秒 确认 下 岭上 暗区 替补 汗")
-            val reasons = listOf(
-                "BEAM_SWAP_DISABLED", "BEAM_SWAP_RIICHI_LOCKED", "BEAM_SWAP_DEALER_EXTRA_EXCLUDED",
-                "BEAM_SWAP_NO_DRAWN_TILE", "BEAM_SWAP_NO_HAND_TILES", "BEAM_SWAP_ALREADY_PENDING",
-                "BEAM_SWAP_ALREADY_USED_THIS_DRAW", "BEAM_SWAP_NO_CANDIDATES", "BEAM_SWAP_NO_PENDING_OFFER",
-                "BEAM_SWAP_OFFER_MISMATCH", "BEAM_SWAP_STALE_OFFER", "BEAM_SWAP_CHOICE_PENDING",
-                "BEAM_SWAP_INVALID_CHOICE", "BEAM_SWAP_INVALID_HAND_TILE", "BEAM_SWAP_INVALID_TARGET_SLOT",
-                "SLEEVE_BLOOM_ALREADY_PENDING", "SLEEVE_BLOOM_ALREADY_USED_THIS_DRAW",
-                "INSUFFICIENT_FUNDS", "DEADLINE_EXPIRED", "DECISION_MISMATCH", "NOT_YOUR_TURN",
-                "SEAT_NOT_HUMAN", "ACTION_IN_FLIGHT", "SESSION_CLOSED", "STALE_CONTROL_EPOCH",
-                "WRONG_PHASE", "NO_ACTIVE_DECISION", "HOST_PAUSED", "REQUEST_ID_CONFLICT"
-            )
-            for (r in reasons) {
-                append(translateServerReason(r))
-            }
-            append("摸牌后出牌前消耗从牌山王牌暗槽中选一目标与原有暗手牌互换候选暗槽不露牌面本人有效落汗命中者亮面可放弃互换保持原样超时保持原样并摸切费用不退与袖里藏花同抽互斥注意立直非本人回合思考超时禁止施展落汗请选准时机")
-            append("一二三四五六七八九万筒索東南西北白發中副露宝牌指示牌赤")
-        }.toSet().joinToString("")
     }
 }

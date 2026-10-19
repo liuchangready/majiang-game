@@ -6,6 +6,12 @@ import com.majiang.access.PlayerSnapshot
 import com.majiang.access.PlayerUpdate
 import com.majiang.access.ReceiptStatus
 import com.majiang.access.SeatControlView
+import com.majiang.access.SessionView
+import com.majiang.access.PlayerPresentationPreview
+import com.majiang.cheat.mark.TileMarkView
+import com.majiang.cheat.bloom.SleeveBloomView
+import com.majiang.cheat.beam.BeamSwapView
+import com.majiang.stacking.ShufflePreparationView
 import com.majiang.access.deepCopy
 import com.majiang.ai.AIStrategy
 import com.majiang.ai.BasicAIStrategy
@@ -42,6 +48,7 @@ import com.majiang.transport.api.ProtocolClock
 import com.majiang.transport.api.ProtocolGameEvent
 import com.majiang.transport.api.ProtocolPublicSnapshot
 import com.majiang.transport.api.ProtocolPublicUpdate
+import com.majiang.transport.api.ProtocolRoundOutcome
 import java.util.ArrayDeque
 import java.util.ArrayList
 import java.util.Collections
@@ -55,24 +62,39 @@ import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import java.util.concurrent.RejectedExecutionException
+import java.util.concurrent.ScheduledExecutorService
+import java.util.concurrent.ScheduledFuture
 import java.util.concurrent.ThreadFactory
 import java.util.concurrent.ThreadPoolExecutor
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
+import java.util.concurrent.atomic.AtomicReference
 
 /**
  * 服务端权威单桌异步宿主 (ServerTableHost)
  *
- * 遵循 V4 架构契约与 TASK-ANTI-R4A 规范：
+ * 遵循 V4 架构契约与 MR-07a 规范：
  * 1. 围绕纯领域同步 [TableAuthority] 包装，提供每桌独立的串行执行队列 (serialExecutor，支持依赖注入)；
  * 2. 外部调用（本地进程内、网络 TCP、测试）只入队并立即返回 Future，绝不在调用方或接收循环线程上加持领域锁；
  * 3. 权威计算与下游外部 Future 回调解耦：在独立 completion 线程池完成 Future，防止慢回执消费者/网络发送阻塞权威队列；
  * 4. 拥有网络连接生命周期 (ConnectionControl)、席位投影游标与历史缓存、订阅派发解耦；
- * 5. 监听器通知派发 (seatDispatchers) 移出权威突变临界区，单席位单调有序推进；慢监听器绝不阻塞后续查询或命令入队；
+ * 5. 两种运行模式与线程预算归属：
+ *    - 默认模式 (sharedDispatch == null)：行为与现状逐点等价，为 4 个席位与 1 个公开流分别创建专属单线程执行器，
+ *      通道容量无界，保证向后兼容与既有测试零回归；
+ *    - 共享模式 (sharedDispatch != null)：席位与公开流改用共享有界线程池上的 [SerialDispatchChannel]，
+ *      通道具有独立的条目与估算字节容量限制；线程预算由服务器统一分配（与房间数 N 无关），杜绝随房间数线性增长的线程开销；
  * 6. 拥有后台 AI 线程池，在突变队列之外推理并在提交时二次验证 roundId、decisionId 与 controlEpoch；
  * 7. 权威超时事实具备优先裁决权，不受展示忙 (presentationBusy) 或玩家操作饥饿策略推迟；
- * 8. 确定性生命周期：close 立即拒绝并完成所有排队中的 Future，零挂起，零调用方阻塞等待。
+ * 8. 确定性生命周期：close 立即拒绝并完成所有排队中的 Future，关闭自身拥有的资源，共享池绝不越权关闭。
+ *
+ * @param sharedDispatch 注入的共享派发执行器（null 表示默认模式，创建专属执行器）
+ * @param sharedCompletion 注入的共享 Future 完成执行器（null 表示默认模式，创建专属 Cached 池）
+ * @param seatChannelCapacityItems 席位通道队列条目容量（拟定默认值 0 表示无界，可通过服务端配置调整）
+ * @param seatChannelCapacityBytes 席位通道队列估算字节容量（拟定默认值 0 表示无界，可通过服务端配置调整）
+ * @param publicChannelCapacityItems 公开通道队列条目容量（拟定默认值 0 表示无界，可通过服务端配置调整）
+ * @param publicChannelCapacityBytes 公开通道队列估算字节容量（拟定默认值 0 表示无界，可通过服务端配置调整）
+ * @param channelDrainBatchSize 通道单轮排空批次大小（拟定默认值 16，可通过服务端配置调整）
  */
 class ServerTableHost @JvmOverloads constructor(
     config: MatchConfig = MatchConfig(),
@@ -90,7 +112,15 @@ class ServerTableHost @JvmOverloads constructor(
     aiProfiles: Map<String, () -> AIStrategy> = emptyMap(),
     aiExecutor: ExecutorService? = null,
     val rhythmIntervalMillis: Long = 150L,
-    serialExecutor: ExecutorService? = null
+    serialExecutor: ExecutorService? = null,
+    sharedDispatch: ExecutorService? = null,
+    sharedCompletion: ExecutorService? = null,
+    seatChannelCapacityItems: Int = 0,
+    seatChannelCapacityBytes: Long = 0L,
+    publicChannelCapacityItems: Int = 0,
+    publicChannelCapacityBytes: Long = 0L,
+    channelDrainBatchSize: Int = 16,
+    recoveryScheduler: ScheduledExecutorService? = null
 ) : AutoCloseable {
 
     private val tableId: String = UUID.randomUUID().toString()
@@ -128,6 +158,10 @@ class ServerTableHost @JvmOverloads constructor(
         adminSeat = adminSeat
     )
 
+    /** 公开会话 ID 只读透传（MR-07b 供公开帧缓存按会话管理与释放） */
+    internal val publicSessionId: String
+        get() = authority.sessionId
+
     // 连接与控制权控制器
     val connectionControl: ConnectionControl = ConnectionControl(
         policy = disconnectPolicy,
@@ -149,21 +183,73 @@ class ServerTableHost @JvmOverloads constructor(
     )
 
     // 外部 Future 完成解耦执行器：将领域计算与下游回调（如 TCP 发包、UI 回调）隔离
-    internal val completionExecutor: ExecutorService = Executors.newCachedThreadPool(
+    private val ownsCompletionExecutor: Boolean = (sharedCompletion == null)
+    internal val completionExecutor: ExecutorService = sharedCompletion ?: Executors.newCachedThreadPool(
         ThreadFactory { r -> Thread(r, "ServerTableHost-$tableId-Completion").apply { isDaemon = true } }
     )
+
+    // 默认模式下的专属单线程派发器（仅当未注入 sharedDispatch 时创建）
+    private val ownsDispatchExecutors: Boolean = (sharedDispatch == null)
+    private val defaultSeatDispatchers: Array<ExecutorService>? = if (ownsDispatchExecutors) {
+        Array(4) { s ->
+            Executors.newSingleThreadExecutor(
+                ThreadFactory { r -> Thread(r, "ServerTableHost-$tableId-Seat-$s-Dispatcher").apply { isDaemon = true } }
+            )
+        }
+    } else null
+
+    private val defaultPublicDispatcher: ExecutorService? = if (ownsDispatchExecutors) {
+        Executors.newSingleThreadExecutor(
+            ThreadFactory { r -> Thread(r, "ServerTableHost-$tableId-Public-Dispatcher").apply { isDaemon = true } }
+        )
+    } else null
+
+    // 恢复调度器（用于调度重试耗尽后的受控全量快照恢复）
+    private val ownsRecoveryScheduler: Boolean = (recoveryScheduler == null)
+    internal val recoveryScheduler: ScheduledExecutorService = recoveryScheduler ?: defaultRecoveryScheduler
+    private val pendingRecoveryTasks = ConcurrentHashMap.newKeySet<ScheduledFuture<*>>()
+    private val seatRecoveryPending = Array(4) { AtomicBoolean(false) }
+    private val publicRecoveryPending = AtomicBoolean(false)
 
     // 权威状态提交回调（在 serialExecutor 队列上触发，供 SharedRoom 同步生命周期）
     internal var onStateCommitted: (() -> Unit)? = null
 
     // 跟踪所有未决的外部 Future，以便 close 时确定性拒绝并完成
     private val pendingFutures = ConcurrentHashMap.newKeySet<CompletableFuture<*>>()
+    val queuedOperationsCount: Int get() = pendingFutures.size
 
-    // 每席位独立的单线程派发器（保证按席位单调有序派发，且外部慢监听器完全不阻塞 serialExecutor）
-    private val seatDispatchers: Array<ExecutorService> = Array(4) { s ->
-        Executors.newSingleThreadExecutor(
-            ThreadFactory { r -> Thread(r, "ServerTableHost-$tableId-Seat-$s-Dispatcher").apply { isDaemon = true } }
-        )
+    // 席位派发条目封装
+    internal sealed class SeatDispatchItem {
+        abstract val update: PlayerUpdate
+        abstract val isFullSnapshot: Boolean
+
+        data class Broadcast(
+            override val update: PlayerUpdate,
+            override val isFullSnapshot: Boolean = false
+        ) : SeatDispatchItem()
+
+        data class TargetSubscriber(
+            val subscription: SeatSubscription,
+            override val update: PlayerUpdate,
+            override val isFullSnapshot: Boolean = true
+        ) : SeatDispatchItem()
+    }
+
+    // 公开流派发条目封装
+    internal sealed class PublicDispatchItem {
+        abstract val update: ProtocolPublicUpdate
+        abstract val isFullSnapshot: Boolean
+
+        data class Broadcast(
+            override val update: ProtocolPublicUpdate,
+            override val isFullSnapshot: Boolean = false
+        ) : PublicDispatchItem()
+
+        data class TargetSubscriber(
+            val subscription: PublicSubscription,
+            override val update: ProtocolPublicUpdate,
+            override val isFullSnapshot: Boolean = true
+        ) : PublicDispatchItem()
     }
 
     // 席位订阅凭证
@@ -235,9 +321,85 @@ class ServerTableHost @JvmOverloads constructor(
         syncEpoch = "${authority.sessionId}-public"
     )
 
-    // 独立单线程公开流派发器（保证单调有序派发，且慢消费者完全不阻塞 serialExecutor）
-    private val publicDispatcher: ExecutorService = Executors.newSingleThreadExecutor(
-        ThreadFactory { r -> Thread(r, "ServerTableHost-$tableId-Public-Dispatcher").apply { isDaemon = true } }
+    // 4 个席位串行派发通道
+    internal val seatChannels: Array<SerialDispatchChannel<SeatDispatchItem>> = Array(4) { s ->
+        val exec = sharedDispatch ?: defaultSeatDispatchers!![s]
+        SerialDispatchChannel(
+            name = "ServerTableHost-$tableId-Seat-$s",
+            executor = exec,
+            maxQueuedItems = seatChannelCapacityItems,
+            maxQueuedBytes = seatChannelCapacityBytes,
+            drainBatchSize = channelDrainBatchSize,
+            byteEstimator = { item -> estimateSeatDispatchBytes(item) },
+            isFullSnapshotPredicate = { it.isFullSnapshot },
+            retryScheduler = recoveryScheduler,
+            allowSingleOversized = true,
+            onScheduleFailure = { _, _, _ ->
+                scheduleSeatRecovery(s)
+            },
+            consumer = { item ->
+                when (item) {
+                    is SeatDispatchItem.Broadcast -> {
+                        val activeSubs = ArrayList(seatStreams[s].subscriptions)
+                        for (sub in activeSubs) {
+                            if (!sub.active || closed) continue
+                            val copy = item.update.deepCopy()
+                            try {
+                                sub.listener(copy)
+                            } catch (_: Throwable) {
+                            }
+                        }
+                    }
+                    is SeatDispatchItem.TargetSubscriber -> {
+                        if (item.subscription.active && !closed) {
+                            val copy = item.update.deepCopy()
+                            try {
+                                item.subscription.listener(copy)
+                            } catch (_: Throwable) {
+                            }
+                        }
+                    }
+                }
+            }
+        )
+    }
+
+    // 独立公开流串行派发通道
+    internal val publicChannel: SerialDispatchChannel<PublicDispatchItem> = SerialDispatchChannel(
+        name = "ServerTableHost-$tableId-Public",
+        executor = sharedDispatch ?: defaultPublicDispatcher!!,
+        maxQueuedItems = publicChannelCapacityItems,
+        maxQueuedBytes = publicChannelCapacityBytes,
+        drainBatchSize = channelDrainBatchSize,
+        byteEstimator = { item -> estimatePublicDispatchBytes(item) },
+        isFullSnapshotPredicate = { it.isFullSnapshot },
+        retryScheduler = recoveryScheduler,
+        allowSingleOversized = true,
+        onScheduleFailure = { _, _, _ ->
+            schedulePublicRecovery()
+        },
+        consumer = { item ->
+            when (item) {
+                is PublicDispatchItem.Broadcast -> {
+                    val activeSubs = ArrayList(publicStream.subscriptions)
+                    for (sub in activeSubs) {
+                        if (!sub.active || closed) continue
+                        try {
+                            sub.listener(item.update)
+                        } catch (_: Throwable) {
+                        }
+                    }
+                }
+                is PublicDispatchItem.TargetSubscriber -> {
+                    if (item.subscription.active && !closed) {
+                        try {
+                            item.subscription.listener(item.update)
+                        } catch (_: Throwable) {
+                        }
+                    }
+                }
+            }
+        }
     )
 
     // AI 后台计算线程池
@@ -1062,15 +1224,17 @@ class ServerTableHost @JvmOverloads constructor(
                     fromCursor = stream.cursor,
                     visibleEvents = emptyList()
                 )
-                try {
-                    seatDispatchers[seat].execute {
-                        if (!closed && sub.active) {
-                            try {
-                                sub.listener(baseline.deepCopy())
-                            } catch (_: Throwable) {}
-                        }
+                val enqueued = seatChannels[seat].enqueue(
+                    SeatDispatchItem.TargetSubscriber(sub, baseline, isFullSnapshot = true)
+                )
+                if (!enqueued) {
+                    if (closed) {
+                        sub.active = false
+                        stream.subscriptions.remove(sub)
+                    } else {
+                        scheduleSeatRecovery(seat)
                     }
-                } catch (_: RejectedExecutionException) {}
+                }
             }
         } catch (e: RejectedExecutionException) {
             if (closed) throw IllegalStateException("ServerTableHost is closed", e)
@@ -1091,7 +1255,7 @@ class ServerTableHost @JvmOverloads constructor(
     /**
      * 订阅公开流更新：
      * 1. 注册与基线快照提取在 serialExecutor 内串行化执行；
-     * 2. 派发给外部监听器在独立的 publicDispatcher 线程，慢消费者完全不影响 serialExecutor 与玩家；
+     * 2. 派发给外部监听器经独立串行通道 publicChannel 派发，慢消费者完全不影响 serialExecutor 与玩家；
      * 3. 初始基线以 isFullSnapshot = true 下发。
      */
     fun subscribePublic(listener: (ProtocolPublicUpdate) -> Unit): AutoCloseable {
@@ -1110,15 +1274,17 @@ class ServerTableHost @JvmOverloads constructor(
                     visibleEvents = emptyList(),
                     isFullSnapshot = true
                 )
-                try {
-                    publicDispatcher.execute {
-                        if (!closed && sub.active) {
-                            try {
-                                sub.listener(baseline)
-                            } catch (_: Throwable) {}
-                        }
+                val enqueued = publicChannel.enqueue(
+                    PublicDispatchItem.TargetSubscriber(sub, baseline, isFullSnapshot = true)
+                )
+                if (!enqueued) {
+                    if (closed) {
+                        sub.active = false
+                        publicStream.subscriptions.remove(sub)
+                    } else {
+                        schedulePublicRecovery()
                     }
-                } catch (_: RejectedExecutionException) {}
+                }
             }
         } catch (e: RejectedExecutionException) {
             if (closed) throw IllegalStateException("ServerTableHost is closed", e)
@@ -1133,6 +1299,148 @@ class ServerTableHost @JvmOverloads constructor(
                     }
                 } catch (_: RejectedExecutionException) {}
             }
+        }
+    }
+
+    // ========================================
+    // 调度失败与溢出主动全量恢复机制 (MR-07a)
+    // ========================================
+
+    internal fun scheduleSeatRecovery(seat: Int, delayMillis: Long = 20L) {
+        if (closed || seat !in 0..3) return
+        if (!seatRecoveryPending[seat].compareAndSet(false, true)) {
+            return
+        }
+        val taskRef = AtomicReference<ScheduledFuture<*>?>()
+        val task = try {
+            recoveryScheduler.schedule({
+                val t = taskRef.get()
+                if (t != null) {
+                    pendingRecoveryTasks.remove(t)
+                }
+                if (closed) {
+                    seatRecoveryPending[seat].set(false)
+                    return@schedule
+                }
+                try {
+                    serialExecutor.execute {
+                        seatRecoveryPending[seat].set(false)
+                        if (!closed) {
+                            performSeatRecoveryOnQueue(seat)
+                        }
+                    }
+                } catch (_: RejectedExecutionException) {
+                    seatRecoveryPending[seat].set(false)
+                }
+            }, delayMillis.coerceAtLeast(0L), TimeUnit.MILLISECONDS)
+        } catch (_: RejectedExecutionException) {
+            seatRecoveryPending[seat].set(false)
+            return
+        }
+        taskRef.set(task)
+        if (closed || task.isDone) {
+            pendingRecoveryTasks.remove(task)
+            if (closed) {
+                task.cancel(false)
+            }
+        } else {
+            pendingRecoveryTasks.add(task)
+        }
+    }
+
+    private fun performSeatRecoveryOnQueue(seat: Int) {
+        if (closed || seat !in 0..3) return
+        val stream = seatStreams[seat]
+        val activeSubs = stream.subscriptions.filter { it.active }
+        if (activeSubs.isEmpty()) {
+            return
+        }
+        val channel = seatChannels[seat]
+        if (!channel.needsRecovery && channel.queuedItems > 0) {
+            return
+        }
+
+        val currentSnap = stream.lastEmittedSnapshot
+            ?: authority.querySnapshot(seat, stream.syncEpoch, stream.cursor, buildSeatControlViews())
+        val baseline = PlayerUpdate(
+            snapshot = currentSnap.deepCopy(),
+            fromCursor = currentSnap.cursor,
+            visibleEvents = emptyList()
+        )
+        val enqueued = channel.enqueue(
+            SeatDispatchItem.Broadcast(baseline, isFullSnapshot = true)
+        )
+        if (!enqueued && !closed) {
+            scheduleSeatRecovery(seat, delayMillis = 50L)
+        }
+    }
+
+    internal fun schedulePublicRecovery(delayMillis: Long = 20L) {
+        if (closed) return
+        if (!publicRecoveryPending.compareAndSet(false, true)) {
+            return
+        }
+        val taskRef = AtomicReference<ScheduledFuture<*>?>()
+        val task = try {
+            recoveryScheduler.schedule({
+                val t = taskRef.get()
+                if (t != null) {
+                    pendingRecoveryTasks.remove(t)
+                }
+                if (closed) {
+                    publicRecoveryPending.set(false)
+                    return@schedule
+                }
+                try {
+                    serialExecutor.execute {
+                        publicRecoveryPending.set(false)
+                        if (!closed) {
+                            performPublicRecoveryOnQueue()
+                        }
+                    }
+                } catch (_: RejectedExecutionException) {
+                    publicRecoveryPending.set(false)
+                }
+            }, delayMillis.coerceAtLeast(0L), TimeUnit.MILLISECONDS)
+        } catch (_: RejectedExecutionException) {
+            publicRecoveryPending.set(false)
+            return
+        }
+        taskRef.set(task)
+        if (closed || task.isDone) {
+            pendingRecoveryTasks.remove(task)
+            if (closed) {
+                task.cancel(false)
+            }
+        } else {
+            pendingRecoveryTasks.add(task)
+        }
+    }
+
+    private fun performPublicRecoveryOnQueue() {
+        if (closed) return
+        val activeSubs = publicStream.subscriptions.filter { it.active }
+        if (activeSubs.isEmpty()) {
+            return
+        }
+        val channel = publicChannel
+        if (!channel.needsRecovery && channel.queuedItems > 0) {
+            return
+        }
+
+        val currentSnap = publicStream.lastEmittedSnapshot
+            ?: buildProtocolPublicSnapshot(publicStream.cursor)
+        val baseline = ProtocolPublicUpdate(
+            snapshot = currentSnap,
+            fromCursor = currentSnap.cursor,
+            visibleEvents = emptyList(),
+            isFullSnapshot = true
+        )
+        val enqueued = channel.enqueue(
+            PublicDispatchItem.Broadcast(baseline, isFullSnapshot = true)
+        )
+        if (!enqueued && !closed) {
+            schedulePublicRecovery(delayMillis = 50L)
         }
     }
 
@@ -1342,19 +1650,9 @@ class ServerTableHost @JvmOverloads constructor(
             )
             stream.addHistory(update)
 
-            val activeSubs = ArrayList(stream.subscriptions)
-            for (sub in activeSubs) {
-                if (!sub.active) continue
-                val copy = update.deepCopy()
-                try {
-                    seatDispatchers[s].execute {
-                        if (!closed && sub.active) {
-                            try {
-                                sub.listener(copy)
-                            } catch (_: Throwable) {}
-                        }
-                    }
-                } catch (_: RejectedExecutionException) {}
+            val enqueued = seatChannels[s].enqueue(SeatDispatchItem.Broadcast(update, isFullSnapshot = false))
+            if (!enqueued && !closed) {
+                scheduleSeatRecovery(s)
             }
         }
         publishPublicChanges(events)
@@ -1398,18 +1696,9 @@ class ServerTableHost @JvmOverloads constructor(
         )
         publicStream.addHistory(update)
 
-        val activeSubs = ArrayList(publicStream.subscriptions)
-        for (sub in activeSubs) {
-            if (!sub.active) continue
-            try {
-                publicDispatcher.execute {
-                    if (!closed && sub.active) {
-                        try {
-                            sub.listener(update)
-                        } catch (_: Throwable) {}
-                    }
-                }
-            } catch (_: RejectedExecutionException) {}
+        val enqueued = publicChannel.enqueue(PublicDispatchItem.Broadcast(update, isFullSnapshot = false))
+        if (!enqueued && !closed) {
+            schedulePublicRecovery()
         }
     }
 
@@ -1462,6 +1751,10 @@ class ServerTableHost @JvmOverloads constructor(
             for (f in futuresToCancel) {
                 f.completeExceptionally(cancelEx)
             }
+            for (t in pendingRecoveryTasks) {
+                t.cancel(false)
+            }
+            pendingRecoveryTasks.clear()
 
             authority.close()
             if (ownsSerialExecutor) {
@@ -1470,11 +1763,22 @@ class ServerTableHost @JvmOverloads constructor(
             if (ownsAiExecutor) {
                 internalAiExecutor.shutdownNow()
             }
-            for (disp in seatDispatchers) {
-                disp.shutdownNow()
+            // 关闭所有派发通道（清空队列、后续入队直接返回 false，绝不阻塞在途任务）
+            for (ch in seatChannels) {
+                ch.close()
             }
-            publicDispatcher.shutdownNow()
-            completionExecutor.shutdownNow()
+            publicChannel.close()
+
+            // 仅在拥有专属派发执行器时才 shutdown，注入的共享池绝不关闭
+            if (ownsDispatchExecutors) {
+                defaultSeatDispatchers?.forEach { it.shutdownNow() }
+                defaultPublicDispatcher?.shutdownNow()
+            }
+
+            // 仅在拥有专属 completion 执行器时才 shutdown，注入的共享池绝不关闭
+            if (ownsCompletionExecutor) {
+                completionExecutor.shutdownNow()
+            }
 
             for (stream in seatStreams) {
                 stream.subscriptions.clear()
@@ -1486,6 +1790,335 @@ class ServerTableHost @JvmOverloads constructor(
             issuedReceipts.clear()
             dispatchedAiTasks.clear()
             pendingAiResults.clear()
+        }
+    }
+
+    /** 获取席位派发通道只读引用（供测试与测量工具读取指标） */
+    fun getSeatChannel(seat: Int): SerialDispatchChannel<*>? = seatChannels.getOrNull(seat)
+
+    /** 获取公开流派发通道只读引用（供测试与测量工具读取指标） */
+    fun getPublicDispatchChannel(): SerialDispatchChannel<*> = publicChannel
+
+    companion object {
+        private val defaultRecoveryScheduler: ScheduledExecutorService by lazy {
+            Executors.newSingleThreadScheduledExecutor { r ->
+                Thread(r, "ServerTableHost-RecoveryScheduler").apply {
+                    isDaemon = true
+                }
+            }
+        }
+
+        /**
+         * 计算字符串在 JSON 序列化中的 UTF-8 保守上界字节长度（MR-07a）。
+         *
+         * 纯 CPU 计算，零内存分配，零 JSON 编码调用：
+         * - 单字节 ASCII (非转义)：1 字节；
+         * - 引号 '"' 与反斜杠 '\\'：转义后 2 字节；
+         * - HTML 安全转义字符 ('<', '>', '&', '=', '\'')：Gson 默认 htmlSafe 编码为 \u00XX，计 6 字节；
+         * - 行/段分隔符 (\u2028, \u2029)：Gson 转义为 \u2028 / \u2029，计 6 字节；
+         * - 控制字符 (< 0x20)：\u00XX 转义 6 字节；
+         * - 2 字节 UTF-8：2 字节；
+         * - 3 字节 UTF-8 (汉字/日文假名)：3 字节；
+         * - 4 字节代理对 (Emoji/扩展字符)：4 字节；
+         * - 外层闭合双引号 ""：+2 字节；
+         * - null 值：固定 4 字节 ("null")。
+         */
+        internal fun estimateStringUpperBytes(s: String?): Long {
+            if (s == null) return 4L
+            var len = 2L
+            var i = 0
+            val n = s.length
+            while (i < n) {
+                val c = s[i]
+                when {
+                    c.code < 0x80 -> {
+                        len += when {
+                            c == '"' || c == '\\' -> 2L
+                            c == '<' || c == '>' || c == '&' || c == '=' || c == '\'' -> 6L
+                            c.code < 0x20 -> 6L
+                            else -> 1L
+                        }
+                        i++
+                    }
+                    c == '\u2028' || c == '\u2029' -> {
+                        len += 6L
+                        i++
+                    }
+                    c.code < 0x800 -> {
+                        len += 2L
+                        i++
+                    }
+                    Character.isHighSurrogate(c) && i + 1 < n && Character.isLowSurrogate(s[i + 1]) -> {
+                        len += 4L
+                        i += 2
+                    }
+                    else -> {
+                        len += 3L
+                        i++
+                    }
+                }
+            }
+            return len
+        }
+
+        /**
+         * 单个引擎领域游戏事件保守上界估算（MR-07a）
+         */
+        internal fun estimateGameEventUpperBytes(event: GameEvent): Long {
+            return when (event) {
+                is GameEvent.TsumoWin -> {
+                    var b = 300L + event.yakuList.sumOf { estimateStringUpperBytes(it) + 15L }
+                    event.breakdown?.let { bd ->
+                        b += 450L
+                        b += bd.yakuLines.sumOf { estimateStringUpperBytes(it.first) + 35L }
+                        b += bd.paymentLines.sumOf { estimateStringUpperBytes(it) + 15L }
+                        b += bd.fu.lines.sumOf { estimateStringUpperBytes(it.description) + 30L }
+                        b += estimateStringUpperBytes(bd.fu.specialNote)
+                        b += estimateStringUpperBytes(bd.score.title)
+                        b += estimateStringUpperBytes(bd.score.capReason)
+                        b += estimateStringUpperBytes(bd.score.formulaText)
+                        b += estimateStringUpperBytes(bd.score.rawBasePointsExact)
+                        b += (bd.dora.indicatorTiles.size + bd.dora.uraTiles.size + bd.dora.redTiles.size) * 50L
+                        b += (bd.dora.indicatorHits.size + bd.dora.uraHits.size) * 140L
+                    }
+                    b
+                }
+                is GameEvent.RonWin -> {
+                    var b = 320L + event.yakuList.sumOf { estimateStringUpperBytes(it) + 15L }
+                    event.breakdown?.let { bd ->
+                        b += 450L
+                        b += bd.yakuLines.sumOf { estimateStringUpperBytes(it.first) + 35L }
+                        b += bd.paymentLines.sumOf { estimateStringUpperBytes(it) + 15L }
+                        b += bd.fu.lines.sumOf { estimateStringUpperBytes(it.description) + 30L }
+                        b += estimateStringUpperBytes(bd.fu.specialNote)
+                        b += estimateStringUpperBytes(bd.score.title)
+                        b += estimateStringUpperBytes(bd.score.capReason)
+                        b += estimateStringUpperBytes(bd.score.formulaText)
+                        b += estimateStringUpperBytes(bd.score.rawBasePointsExact)
+                        b += (bd.dora.indicatorTiles.size + bd.dora.uraTiles.size + bd.dora.redTiles.size) * 50L
+                        b += (bd.dora.indicatorHits.size + bd.dora.uraHits.size) * 140L
+                    }
+                    b
+                }
+                is GameEvent.ScoreSettled -> 260L
+                is GameEvent.DrawGame -> 220L + event.tenpaiPlayers.size * 20L
+                is GameEvent.RoundEnded -> 180L
+                is GameEvent.MatchEnded -> 220L
+                is GameEvent.ChiDeclared, is GameEvent.PonDeclared, is GameEvent.KanDeclared -> 300L
+                is GameEvent.RiichiDeclared -> 220L
+                else -> 200L
+            }
+        }
+
+        /**
+         * 单个传输层协议游戏事件保守上界估算（MR-07a）
+         */
+        internal fun estimateProtocolGameEventUpperBytes(event: ProtocolGameEvent): Long {
+            return when (event) {
+                is ProtocolGameEvent.TsumoWin -> {
+                    var b = 300L + event.yakuList.sumOf { estimateStringUpperBytes(it) + 15L }
+                    event.breakdown?.let { bd ->
+                        b += 450L
+                        b += bd.yakuLines.sumOf { estimateStringUpperBytes(it.first) + 35L }
+                        b += bd.paymentLines.sumOf { estimateStringUpperBytes(it) + 15L }
+                        b += bd.fu.lines.sumOf { estimateStringUpperBytes(it.description) + 30L }
+                        b += estimateStringUpperBytes(bd.fu.specialNote)
+                        b += estimateStringUpperBytes(bd.score.title)
+                        b += estimateStringUpperBytes(bd.score.capReason)
+                        b += estimateStringUpperBytes(bd.score.formulaText)
+                        b += estimateStringUpperBytes(bd.score.rawBasePointsExact)
+                        b += (bd.dora.indicatorTiles.size + bd.dora.uraTiles.size + bd.dora.redTiles.size) * 50L
+                        b += (bd.dora.indicatorHits.size + bd.dora.uraHits.size) * 140L
+                    }
+                    b
+                }
+                is ProtocolGameEvent.RonWin -> {
+                    var b = 320L + event.yakuList.sumOf { estimateStringUpperBytes(it) + 15L }
+                    event.breakdown?.let { bd ->
+                        b += 450L
+                        b += bd.yakuLines.sumOf { estimateStringUpperBytes(it.first) + 35L }
+                        b += bd.paymentLines.sumOf { estimateStringUpperBytes(it) + 15L }
+                        b += bd.fu.lines.sumOf { estimateStringUpperBytes(it.description) + 30L }
+                        b += estimateStringUpperBytes(bd.fu.specialNote)
+                        b += estimateStringUpperBytes(bd.score.title)
+                        b += estimateStringUpperBytes(bd.score.capReason)
+                        b += estimateStringUpperBytes(bd.score.formulaText)
+                        b += estimateStringUpperBytes(bd.score.rawBasePointsExact)
+                        b += (bd.dora.indicatorTiles.size + bd.dora.uraTiles.size + bd.dora.redTiles.size) * 50L
+                        b += (bd.dora.indicatorHits.size + bd.dora.uraHits.size) * 140L
+                    }
+                    b
+                }
+                is ProtocolGameEvent.ScoreSettled -> 260L
+                is ProtocolGameEvent.DrawGame -> 220L + event.tenpaiPlayers.size * 20L
+                is ProtocolGameEvent.RoundEnded -> 180L
+                is ProtocolGameEvent.MatchEnded -> 220L
+                is ProtocolGameEvent.ChiDeclared, is ProtocolGameEvent.PonDeclared, is ProtocolGameEvent.KanDeclared -> 300L
+                is ProtocolGameEvent.RiichiDeclared -> 220L
+                else -> 200L
+            }
+        }
+
+        /**
+         * 席位派发条目结构化保守上界估算（MR-07a）
+         *
+         * 规避在权威主线程执行昂贵 JSON 编码；根据快照与更新结构完整覆盖所有字段、内部集合
+         * 以及动态可变长度字符串（sessionId, roundId, decisionId, options, yaku, breakdown 等），
+         * 并以严格大于等于实际 JSON 载荷与对象保留体积的保守系数加权计量。
+         *
+         * 保证：对于任意合法更新，estimateSeatDispatchBytes(item) >= actualWireBytes，
+         * 且紧密贴合实际体积（通常在 1.1x ~ 1.45x 之间），杜绝虚假配额或低估导致缓冲溢出。
+         */
+        internal fun estimateSeatDispatchBytes(item: SeatDispatchItem): Long {
+            val update = item.update
+            var bytes = 268L // 12B TCP 帧头 + 256B Push 信封基础开销
+            bytes += update.visibleEvents.sumOf { estimateGameEventUpperBytes(it) }
+
+            val snap = update.snapshot
+            // 基础结构标量与核心字符串
+            bytes += 250L
+            bytes += estimateStringUpperBytes(snap.sessionId)
+            bytes += estimateStringUpperBytes(snap.roundId)
+            bytes += estimateStringUpperBytes(snap.syncEpoch)
+            bytes += estimateStringUpperBytes(snap.settlementRoundId)
+
+            val view = snap.view
+            bytes += 250L
+            bytes += view.doraIndicators.size * 50L
+            bytes += view.scores.size * 15L
+            bytes += view.riichiStatus.size * 10L
+            bytes += view.handTileCounts.size * 10L
+            bytes += view.discards.sumOf { it.size } * 50L
+            bytes += view.melds.sumOf { it.size } * 180L
+            bytes += view.myClosedTiles.size * 50L
+            if (view.myDrawnTile != null) bytes += 50L
+            if (view.lastDiscard != null) bytes += 50L
+            bytes += view.mySleeveTiles.size * 50L
+            bytes += view.myDiscardHistory.size * 50L
+            bytes += view.legalActions.size * 120L
+
+            // 决策与候选选项（包含动态 decisionId, roundId 与 optionId 字符串）
+            bytes += 100L
+            bytes += estimateStringUpperBytes(snap.decision.decisionId)
+            bytes += estimateStringUpperBytes(snap.decision.roundId)
+            bytes += snap.decision.options.sumOf { 80L + estimateStringUpperBytes(it.optionId) }
+
+            // 时钟、出千点数与席位控制
+            bytes += snap.clocks.size * 100L
+            bytes += snap.cheatPoints.size * 15L
+            bytes += snap.controls.size * 80L
+
+            // 整场赛程记录
+            snap.session?.let { sess ->
+                bytes += 150L
+                bytes += sess.roundRecords.sumOf {
+                    180L + estimateStringUpperBytes(it.roundId) + estimateStringUpperBytes(it.resultId)
+                }
+                sess.finalResult?.let { res ->
+                    bytes += 300L + estimateStringUpperBytes(res.reason)
+                }
+            }
+
+            // 洗牌准备阶段
+            snap.preparation?.let { prep ->
+                bytes += 200L
+                prep.selection?.let { sel ->
+                    bytes += 100L + (sel.initialTargets.size + sel.drawTargets.size) * 35L
+                }
+            }
+
+            // 落汗千术私有透视（含内部标记组与牌集合）
+            snap.tileMark?.let { tm ->
+                bytes += 150L
+                bytes += estimateStringUpperBytes(tm.disabledReason)
+                bytes += estimateStringUpperBytes(tm.decisionId)
+                bytes += tm.selectableTileIds.size * 15L
+                bytes += tm.activeGroups.sumOf { 120L + estimateStringUpperBytes(it.groupId) + it.tiles.size * 140L }
+            }
+
+            // 袖里藏花私有透视（含可选牌与未决方案）
+            snap.sleeveBloom?.let { sb ->
+                bytes += 150L
+                bytes += estimateStringUpperBytes(sb.disabledReason)
+                bytes += estimateStringUpperBytes(sb.decisionId)
+                sb.pendingOffer?.let { offer ->
+                    bytes += 150L + estimateStringUpperBytes(offer.offerId) + estimateStringUpperBytes(offer.decisionId)
+                }
+            }
+
+            // 偷梁换柱私有透视（含可选牌与未决方案）
+            snap.beamSwap?.let { bs ->
+                bytes += 150L
+                bytes += estimateStringUpperBytes(bs.disabledReason)
+                bytes += estimateStringUpperBytes(bs.decisionId)
+                bs.pendingOffer?.let { offer ->
+                    bytes += 150L + estimateStringUpperBytes(offer.offerId) + estimateStringUpperBytes(offer.decisionId) +
+                             offer.selectableHandTileIds.size * 15L + offer.candidates.size * 80L
+                }
+            }
+
+            // 听牌与展示预览
+            snap.presentationPreview?.let { pp ->
+                bytes += 100L
+                bytes += estimateStringUpperBytes(pp.roundId)
+                bytes += estimateStringUpperBytes(pp.decisionId)
+                bytes += pp.waits.size * 50L
+                bytes += pp.riichiOptions.sumOf { 150L + estimateStringUpperBytes(it.optionId) + it.waits.size * 50L }
+                bytes += pp.meldOptions.sumOf { 180L + estimateStringUpperBytes(it.optionId) + it.tiles.size * 50L }
+            }
+
+            // 结算事件（含 ScoreBreakdown 动态字符串）
+            bytes += snap.settlementEvents.sumOf { estimateGameEventUpperBytes(it) }
+            return bytes
+        }
+
+        /**
+         * 公开流派发条目结构化保守上界估算（MR-07a）
+         */
+        internal fun estimatePublicDispatchBytes(item: PublicDispatchItem): Long {
+            val update = item.update
+            var bytes = 268L // 12B TCP 帧头 + 256B Push 信封基础开销
+            bytes += update.visibleEvents.sumOf { estimateProtocolGameEventUpperBytes(it) }
+
+            val snap = update.snapshot
+            bytes += 250L
+            bytes += estimateStringUpperBytes(snap.sessionId)
+            bytes += estimateStringUpperBytes(snap.roundId)
+            bytes += estimateStringUpperBytes(snap.syncEpoch)
+            bytes += estimateStringUpperBytes(snap.settlementRoundId)
+
+            val board = snap.board
+            if (board != null) {
+                bytes += 250L
+                bytes += board.doraIndicators.size * 50L
+                bytes += board.scores.size * 15L
+                bytes += board.riichiStatus.size * 10L
+                bytes += board.handTileCounts.size * 10L
+                bytes += board.discards.sumOf { it.size } * 42L
+                bytes += board.melds.sumOf { it.size } * 180L
+                if (board.lastDiscard != null) bytes += 50L
+            }
+
+            // 公开整场赛程概况（包含局历史记录增长与终局排名）
+            bytes += 150L
+            bytes += snap.session.roundRecords.sumOf { rec ->
+                var recBytes = 180L + estimateStringUpperBytes(rec.roundId) + estimateStringUpperBytes(rec.resultId)
+                val outcome = rec.outcome
+                if (outcome is ProtocolRoundOutcome.AbortiveDraw) {
+                    recBytes += estimateStringUpperBytes(outcome.reason)
+                }
+                recBytes
+            }
+            snap.session.finalResult?.let { res ->
+                bytes += 300L + estimateStringUpperBytes(res.reason)
+            }
+
+            // 权威时钟视图
+            bytes += snap.clocks.size * 100L
+
+            // 结算事件（含 ScoreBreakdown）
+            bytes += snap.settlementEvents.sumOf { estimateProtocolGameEventUpperBytes(it) }
+            return bytes
         }
     }
 }

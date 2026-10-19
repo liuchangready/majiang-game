@@ -1,0 +1,259 @@
+================================================================
+ANTI 任务简报：MR-06 房间回收、观战上限与未绑定建房准入
+================================================================
+
+0. 总则（必读）
+----------------------------------------------------------------
+- 基线 SHA：07d6aae（分支 feat/mj-tcp-migration，工作区对已跟踪文件干净）。
+  你的全部改动将以 git diff 对照该基线验收；不要提交 git，不要创建分支。
+- 你只用文件工具（读/写/改文件），严禁运行任何命令、构建或测试。
+  测试与构建由验收方（Claude Code 主会话）代跑。
+- 禁止删除或削弱任何现有测试；禁止通过放松断言让构建通过。
+- 遵守 CLAUDE.md / AGENTS.md 的模块边界：engine 不依赖 protocol/client/server；
+  本次改动集中在 server 模块（room/tcp 包）与必要的 protocol 错误码。
+- 所有新增默认值都是"拟定默认值"，必须在 KDoc 标注"拟定默认值，可通过服务端配置调整"，
+  并接入 TcpServerConfig（网络侧）或策略构造参数。
+- 需求来源：doc/v4-重构/IMPROVEMENT-PLAN.md 第 4 节 MR-06（验收标准以其为准）。
+- 完成后写交付说明 doc/v4-重构/ANTI-MR06-DELIVERY.md（格式参考同目录 ANTI-MR03-DELIVERY.md）。
+
+1. 现状与问题（已核实的代码事实）
+----------------------------------------------------------------
+- server/room/SharedRoom.kt：
+  * joinSpectator() 无任何人数上限，spectators 映射可无限增长（约 721-738 行）。
+  * disconnectSpectator() 是空操作：保留 token 与资格（约 793-801 行）——
+    这本身是正确契约（断线成员保留恢复身份），但没有任何连接存活状态可查。
+  * 房间没有空闲 TTL：除房主 leave / 单人房主断线 / 停服外永不回收。
+  * 传输绑定（bindPlayerToRoom / bindSpectatorToRoom）不通知房间"该成员已连接"，
+    房间无法区分"断线托管"与"在线真人"。
+- server/room/RoomRegistry.kt：只有 maxRooms=1024 容量与 closed 清扫，无回收策略。
+- server/tcp/TcpTableServer.kt：
+  * handleCreateRoom()（约 1351 行）直接 registry.createRoom(...)，
+    无单 IP 配额、无大厅身份配额、无全局建房速率预算、无在途建房预留。
+  * 房间被回收后（本任务新增），已完成的大厅 CREATE_ROOM/JOIN_ROOM/RESUME_*
+    成功回执在保留期内 Replay 仍会返回旧 roomId/resumeToken（handleRequest 的
+    AdmissionResult.Replay 分支，约 694 行）——违反 MR-03 联动要求。
+  * 握手前 REQ 帧已判 PROTOCOL_VIOLATION 关闭（processFrame 约 532-537 行，
+    UC-H03），"未完成 HELLO/WELCOME 禁止 CREATE_ROOM"已结构性成立；
+    你只需在交付说明中引用该依据，不要重复造门控。
+- server/tcp/TcpConnection.kt：remoteAddress 已可用（约 83 行）；
+  断开时 notifyRoomDisconnect() 精确一次调用 room.disconnectSeat/disconnectSpectator。
+- protocol/.../TcpCloseReasons.kt 已有 ROOM_CLOSED 常量，可直接复用于
+  回收房间时关闭其绑定连接，不要新增关闭理由。
+- ApiErrors 已有 SERVER_FULL / SERVER_BUSY / ROOM_FULL / ROOM_NOT_FOUND /
+  INVALID_TOKEN 等，优先复用；仅当语义确实无法表达时才新增错误码，
+  并在交付说明中论证客户端对未知错误码的安全降级。
+
+2. 任务 A：新增 RoomRetentionPolicy 与 RoomCapacityPolicy
+----------------------------------------------------------------
+新建 server/src/main/kotlin/com/majiang/server/room/RoomPolicies.kt：
+- data class RoomRetentionPolicy：注入单调时钟语义（时间源由使用方注入，策略本身只存时长）：
+  * lobbyIdleTtlMillis        拟定默认 5 分钟（全员人类连接断开后的 LOBBY 房）
+  * inProgressIdleTtlMillis   拟定默认 30 分钟（PREPARING/PLAYING/SETTLED）
+  * finishedIdleTtlMillis     拟定默认 10 分钟（FINISHED）
+  * unengagedRoomTtlMillis    拟定默认 60 秒（"未形成有效参与"房间，见任务 E）
+  * patrolIntervalMillis      拟定默认 5 秒（巡检周期，由 TcpServerConfig 暴露）
+  init 校验全部 > 0。
+- data class RoomCapacityPolicy：
+  * maxSpectators             拟定默认 32
+  * maxUnstartedRoomsPerIp      拟定默认 3（单源 IP 未开局房间配额）
+  * maxUnstartedRoomsPerPrincipal 拟定默认 3（按大厅逻辑身份 lobby:token）
+  * globalCreateRoomRatePerSecond 拟定默认 10（全局建房速率预算）
+  init 校验全部 > 0。
+- 策略对象是纯配置，不持有部署状态；不得把策略塞进麻将规则配置
+  （不得写进 ProtocolRoomConfig / engine）。
+
+3. 任务 B：SharedRoom 连接状态与空闲跟踪（权威队列内）
+----------------------------------------------------------------
+修改 SharedRoom.kt，新增（均在 tableHost.enqueueOperation 内变更）：
+- 每席位与每观战者的"已连接"状态，及房间级：
+  * idleSinceMillis: Long?（进入"无已连接人类且无已连接观战"的时刻；仅状态迁移时写）
+  * idleEpoch: Long（每次成员/连接状态变更自增，供巡检代次校验）
+  * everConnectedHuman: Boolean（是否曾有过任何已连接真人/观战绑定）
+- 新增传输中立的连接通知 API（幂等、入权威队列）：
+  * markSeatConnected(seat, expectedGeneration)：bind 成功后由传输层调用；
+    代次不匹配则忽略。join()/resumeSession() 成功路径内部等效置位。
+  * markSpectatorConnected(spectatorId)：bindSpectator 成功后调用；
+    joinSpectator()/resumeSpectator() 成功路径内部等效置位。
+- 断开路径：disconnectSeat()/disconnectSpectator()/leave()/leaveSpectator()
+  成功后重算：若已连接人类=0 且已连接观战=0 且 idleSince==null，则 idleSince=now；
+  否则 idleSince=null。AI tick 不得触碰这些字段（不得在 tick 路径刷新活跃时间）。
+- 空闲判定语义（写进 KDoc 并测试固化）：
+  * "已连接人类"= 占用席位、isHuman 且传输已 markConnected 且未断开的座位；
+  * "已连接观战"= spectators 中已 markConnected 且未断开的成员
+    （断线保留恢复身份的成员不算已连接，但仍占观战名额，见任务 C）；
+  * FINISHED 但仍有真人连接查看结果的房间不是空闲，不按 TTL 关闭；
+  * 仅角色连接恢复成功（resume/markConnected）重置对应空闲起点。
+- 单人房（isSingleplayer）host 断线即关房的现有行为（disconnectSeat 内）保持不变；
+  InProcess 进程内房间不得因本任务被自动回收（巡检只挂在 TcpTableServer，
+  RoomRegistry/SharedRoom 不自建定时器——SharedRoom 现在没有也不允许新增
+  自有调度线程；roomNotificationExecutor 用途不变）。
+
+4. 任务 C：观战成员上限
+----------------------------------------------------------------
+- SharedRoom 构造新增可选 capacityPolicy: RoomCapacityPolicy = RoomCapacityPolicy()。
+- joinSpectator() 在权威队列内先检查后分配身份：
+  spectators.size >= maxSpectators 时抛 ServerApiException(ROOM_FULL, "SPECTATOR_LIMIT")。
+  计数口径：尚未离开的成员，包括断线但保留恢复身份的成员；
+  同一 spectatorId 的 resume 不额外占位（resumeSpectator 现有语义保持）；
+  显式 leaveSpectator 释放名额。
+- RESUME_SPECTATOR 恢复已有成员不受上限影响（名额仍被该成员占用）。
+- InProcessBinding 走同一 SharedRoom 逻辑，天然获得一致上限，无需改动其代码。
+
+5. 任务 D：未绑定建房准入（原子预留）
+----------------------------------------------------------------
+新建 server/src/main/kotlin/com/majiang/server/tcp/CreateRoomAdmission.kt
+（类名可微调，放 server/tcp 包，TcpTableServer 专用）：
+- tryReserve(principal, remoteIp): Reservation? —— 单锁内原子完成全部检查+预留：
+  1) 全局容量：registry 存活房间数 + 在途预留数 < registry.maxRooms；
+  2) 该 IP 名下"未开局"（LOBBY）房间数 + 在途预留 < maxUnstartedRoomsPerIp；
+  3) 该 principal 名下未开局房间数 + 在途预留 < maxUnstartedRoomsPerPrincipal；
+  4) 全局建房速率预算：滑动窗口或令牌桶（globalCreateRoomRatePerSecond）。
+  任一不满足返回 null，由调用方映射拒绝：
+  容量/配额类 -> SERVER_FULL，速率类 -> SERVER_BUSY（复用现有错误码）。
+- Reservation：
+  * commit(roomId)：建房成功后把预留转为正式记账（记录 roomId -> principal/ip，
+    保留至房间离开 LOBBY 或关闭后释放）；
+  * release()：失败/取消路径释放预留；commit 与 release 恰一次有效。
+- 幂等：同 IdempotencyKey 的重试已被 RequestScopeReceiptStore 的
+  Replay/WaitInFlight 去重，不会走到二次 tryReserve——你只需保证
+  reserve 只在 AdmissionResult.Admitted 分支内调用，且所有失败分支必 release。
+- 记账释放：TTL/host-leave/巡检导致的房间关闭由巡检通道同步清账
+  （对账式：巡检时以 registry.activeRooms() 为准，清理已消失 roomId 的记账，
+  保守方向允许短暂少收名额，禁止超发）；房间进入非 LOBBY 生命周期后
+  该房间不再占 IP/身份的"未开局"名额（同样允许巡检式延迟释放，但额度必须最终释放）。
+- IP 提取：conn.remoteAddress as? InetSocketAddress?.address?.hostAddress，
+  取不到时归入 "unknown" 桶（不因此放行无限建房，也不单独拒绝）。
+- 共享 NAT 语义写进 KDoc：同 IP 多身份各自算 principal 名额，IP 名额共享；
+  TCP 握手不构成用户鉴权，不能据此取消全局预算。
+
+6. 任务 E：巡检与回收执行（TTL + 未形成有效参与）
+----------------------------------------------------------------
+TcpTableServer：
+- start() 新增独立守护调度线程（单线程 ScheduledExecutorService，
+  命名 TcpTableServer-RoomPatrol，close() 按 R11 纪律在期限内停掉），
+  周期 config 暴露的 patrolIntervalMillis。
+- 巡检循环（只筛选候选，不做最终裁决）：
+  对 registry.activeRooms() 快照读取 (closed, idleSinceMillis, idleEpoch,
+  everConnectedHuman, lifecycle, roomId)；锁外筛选出
+  idleSince != null 且 now-idleSince 已达候选 TTL 的房间。
+  TTL 选取按筛选时 lifecycle：LOBBY->lobbyIdleTtl（若 !everConnectedHuman 且
+  创建者连接已失效则用 unengagedRoomTtl——创建者连接状态由
+  CreateRoomAdmission 的记账或 server 侧连接表查询，取不到时按长 TTL 保守处理）；
+  PREPARING/PLAYING/SETTLED->inProgressIdleTtl；FINISHED->finishedIdleTtl。
+- 最终裁决在目标房间权威队列：SharedRoom 新增
+  closeIfIdleOnQueue(policy, capturedIdleEpoch, nowMillis): Boolean
+  （enqueueOperation 内）：
+  重新校验 未关闭 && idleSince!=null && idleEpoch==capturedIdleEpoch &&
+  已连接人类=0 && 已连接观战=0 && (now-idleSince >= 按当前 lifecycle 选取的 TTL)；
+  全部满足才执行关闭标记（CAS isClosed、lifecycle=CLOSED、roomVersion++、
+  派发终态 RoomInfo——复用现有 close 的派发路径语义）并返回 true。
+  任一不满足返回 false（下轮巡检再试）。与 resume/join 天然在同一队列串行裁决。
+- 回收成功后的资源清理（TcpTableServer 侧，closeIfIdle 返回 true 后）：
+  1) registry.removeRoom(roomId)（注销）；
+  2) 对 connections 中 activeRoom===room 的连接：先让房间终态 RoomUpdate
+     有机会入队，再 conn.close(TcpCloseReasons.ROOM_CLOSED, "Room recycled (idle TTL)")；
+  3) CreateRoomAdmission 清账（任务 D）；
+  4) 回执联动（任务 F）。
+  房间侧：回收路径复用/对齐现有 close() 的资源释放
+  （旋转全部 resumeToken 与观战 token、spectators.clear()、
+  tableHost.close()/deferredShutdown()——不能让被回收房的旧 token 复活房间）。
+  全链路可重复调用（幂等）。
+- "未形成有效参与"定义（KDoc 固化）：自创建起从未有任何已连接真人/观战绑定
+  （everConnectedHuman==false）且当前空闲的房间，适用 unengagedRoomTtl 短期限。
+
+7. 任务 F：与 MR-03 回执联动（回收后重试不复活）
+----------------------------------------------------------------
+- TcpTableServer.handleRequest 的 AdmissionResult.Replay 分支增加回执新鲜度校验：
+  若被重放的成功响应引用了 roomId（resp.roomId != null 或
+  resp.spectatorBinding?.roomId != null）且该房间在 registry 中已不存在/已关闭，
+  则不重放原成功响应，改发
+  ApiResponse(success=false, error=ROOM_NOT_FOUND)（requestId 原样带回）。
+  保留原回执记录本身（不得删除/覆盖——删除会导致同 ID 重试重新执行副作用建新房）。
+- 迟到建房完成：bindPlayerToRoom 的 whenComplete 在发送成功响应前校验
+  room.closed / registry 中房间仍存活；已失效则不发成功响应
+  （房间关闭会使 Future 异常完成或订阅句柄关闭，沿用现有失败路径返回错误），
+  绝不重新发布已回收对象。
+- RESUME_SESSION 携带已回收房间的 token：现有 registry.getRoom 判空 ->
+  ROOM_NOT_FOUND 已满足，补测试固化即可。
+
+8. 文件所有权（只允许改/建以下文件）
+----------------------------------------------------------------
+允许新建：
+  server/src/main/kotlin/com/majiang/server/room/RoomPolicies.kt
+  server/src/main/kotlin/com/majiang/server/tcp/CreateRoomAdmission.kt
+  server/src/test/kotlin/com/majiang/server/room/RoomRecyclingTest.kt
+  server/src/test/kotlin/com/majiang/server/tcp/CreateRoomAdmissionTest.kt
+  server/src/test/kotlin/com/majiang/server/tcp/RoomRecyclingTcpTest.kt（端到端可选，
+    若与 RoomRecyclingTest 覆盖重复可不建）
+  doc/v4-重构/ANTI-MR06-DELIVERY.md
+允许修改：
+  server/src/main/kotlin/com/majiang/server/room/SharedRoom.kt
+  server/src/main/kotlin/com/majiang/server/room/RoomRegistry.kt（如需只读辅助，如 maxRooms 已公开则尽量不动）
+  server/src/main/kotlin/com/majiang/server/tcp/TcpTableServer.kt
+  server/src/main/kotlin/com/majiang/server/tcp/TcpServerConfig.kt
+  server/src/test/kotlin/com/majiang/server/room/SharedRoomTest.kt（只允许追加用例）
+  server/src/test/kotlin/com/majiang/server/tcp/TcpTableServerCapacityAndLifecycleTest.kt（只允许追加用例）
+  protocol/src/main/kotlin/com/majiang/server/api/ApiErrors.kt（仅任务 D/C 复用不足时；默认不动）
+禁止改动：engine/、client/、presentation/、server/inprocess/（行为必须不变）、
+  其余现有测试文件、gradle 脚本。
+
+9. 陷阱清单（前几轮 MR 的教训，逐条自查）
+----------------------------------------------------------------
+1) 权威队列纪律：enqueueOperation 内只做判定与状态写回；监听器派发、
+   网络调用、Future 完成回调一律在队列外（参考现有 RoomSubscriber/notifySpectatorDisplaced 模式）。
+2) closeIfIdleOnQueue 不得在队列内等待任何 Future 或锁；巡检线程不得直接改房间字段。
+3) SharedRoom 现有公开可变数组（seatOccupied 等）风格保持，不搞 Atomic 化大改；
+   新状态字段的写入全部收敛在权威队列内，读取用 @Volatile。
+4) 复用现有关闭路径的派发语义（leave 房主分支/disconnectSeat 单人分支/close()），
+   不要新造第三套终态派发。
+5) disconnectSpectator 的"保留 token 与资格"契约不能变（断线观战者仍占名额，
+   但不刷新活跃）；resumeSpectator 的 checkpoint 校验失败不得递增代次/置已连接。
+6) TcpTableServer.close() 的 1 秒收尾纪律（R11）：新 patrol 线程必须可停、
+   不阻塞 close。
+7) handleCreateRoom 现有的幂等完成路径（completeReceipt + conn.inFlightRequests.remove
+   + sendResponse 三件套）不能漏；准入拒绝也要完整走回执（失败响应同样入回执库，
+   保证同 ID 重试得到一致失败直到预留释放后可重试成功——失败响应可被 Replay，
+   这是可接受的，因为无副作用）。
+8) 不要在 SharedRoom/RoomRegistry 里新建定时器线程；巡检唯一归属 TcpTableServer。
+9) 测试用可注入时钟（参考 ManualClock : MonotonicClock /
+   FakeClock : TransportClock 的既有写法），禁止真实 sleep 驱动 TTL。
+10) 拟定默认值一律写明可配置，不写死在逻辑里。
+
+10. 验收标准（对应 IMPROVEMENT-PLAN MR-06 验收段，逐条要测试）
+----------------------------------------------------------------
+R06-T1 TTL 边界：注入时钟推进到 TTL-1 不回收、TTL 到达回收；
+   LOBBY/进行中/FINISHED 三档各自生效。
+R06-T2 竞争：idleSince 达阈值瞬间并发 resume/join，与 closeIfIdle 在权威队列
+   串行裁决——resume 先入队则不回收且 idleSince 清空；回收先入队则 resume 得
+   ROOM_NOT_FOUND。
+R06-T3 仍有观战者（已连接或断线保留恢复身份的均算占位）时房间不被回收；
+   观战者全部离开且无真人后进入空闲计时。
+R06-T4 AI 不延长无人房间寿命：全员 AI 托管的进行中房间到达 inProgress TTL
+   照常回收（tick 持续运行）。
+R06-T5 第 33 个观战者被拒（ROOM_FULL/SPECTATOR_LIMIT），第 32 个正常；
+   断线成员仍占名额；resume 既有成员不受限；显式 leave 释放名额。
+R06-T6 单 IP 配额：同 IP 第 4 个未开局建房被拒（SERVER_FULL）；某房开局或
+   关闭后名额释放。
+R06-T7 多 IP 耗尽全局预算：不同 IP 并发建房到达 registry.maxRooms 边界，
+   超出被拒且不产生半创建房间（注册表数量精确）。
+R06-T8 共享 NAT：同 IP 不同 lobby 身客（不同 principal）各自可建 3 个；
+   IP 名额共享合计 3——两者取更严者生效（即 IP 配额先到 3 即拒）。
+R06-T9 并发预留：N 个并发 tryReserve 只有配额允许的数量成功；
+   reserve 后不 commit 只 release 的路径名额可复用。
+R06-T10 建房执行后 TCP 断线再以原身份（同 lobby token）重试同 requestId：
+   Replay 返回原结果；若房间已被回收，Replay 返回 ROOM_NOT_FOUND 失败，
+   且不新建房间（registry 数量不变）。
+R06-T11 驱逐后重试/无效恢复身份：RESUME_SESSION 携已回收房间 token ->
+   ROOM_NOT_FOUND；旧 resumeToken 不能复活房间。
+R06-T12 循环回收：建房->回收 N 轮后，registry 计数、CreateRoomAdmission 记账、
+   IP/身份名额、房间线程任务残留回到基线（对比可观测计数，不停服）。
+R06-T13 InProcess 回归：InProcessServer 路径现有行为不变（不因无网络连接被回收）。
+R06-T14 速率预算：超频建房得 SERVER_BUSY，窗口滑动后恢复允许。
+
+11. 交付说明要求（ANTI-MR06-DELIVERY.md）
+----------------------------------------------------------------
+- 改动文件清单+每文件意图；新增策略默认值表（标注拟定值）；
+- 权威队列裁决与巡检代次校验的实现说明；
+- MR-03 联动（Replay 新鲜度）实现说明；
+- 自查陷阱清单逐条结论；
+- 明确列出你无法验证、需验收方跑的部分（构建/测试）。
