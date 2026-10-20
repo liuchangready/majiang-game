@@ -51,7 +51,7 @@
 ## 功能设计草案
 
 - [偷梁换柱千术设计](beam-swap/DESIGN.md)：**已实现并独立验收**，见[最终验收](beam-swap/ACCEPTANCE.md)：1225项测试、双端构建与双视口GL通过，Android真机未验证。运行时换牌千术：正常摸牌后可将原有暗手牌中的一张牌与活牌山后续八张互换，杠后补牌可与死山任意未展示牌（岭上槽/宝牌暗区/替补）互换，每次 10 点；候选默认牌背、仅本人落汗标记命中亮面（未标记可盲换），零透视、视觉由落汗供给；两步激活→选择交互，与袖里藏花**同取牌互斥（二选一）**、挂起全局唯一。命名决策：原提案「偷天换日」与开局码牌重名，经用户确认定名「偷梁换柱」，开局码牌命名不动。
-- [袖里藏花千术设计](sleeve-bloom/DESIGN.md)：最新规则为杠后仅在原补牌与下一岭上牌之间二选一，第四次杠补牌窗口禁止施术且不扣费。验证进度见[岭上修订验收](sleeve-bloom/ACCEPTANCE-RINSHAN.md)，[初版验收](sleeve-bloom/ACCEPTANCE.md)保留历史记录。含V4分层、136实体守恒、幂等、时钟、控制权恢复与算分契约。
+- [袖里藏花千术设计](sleeve-bloom/DESIGN.md)：已实现规则为杠后仅在原补牌与下一岭上牌之间二选一，第四次杠补牌窗口禁止施术且不扣费。[立直与他家回合扩展设计](sleeve-bloom/EXTENSION-RIICHI-OFFTURN-DESIGN.md)已补充，**尚未实现或验收**。既有验证见[岭上修订验收](sleeve-bloom/ACCEPTANCE-RINSHAN.md)，[初版验收](sleeve-bloom/ACCEPTANCE.md)保留历史记录。含V4分层、136实体守恒、幂等、时钟、控制权恢复与算分契约。
 - [袖里藏花图形设计](sleeve-bloom/VISUAL-DESIGN.md)：右列入口和二选一模态面板、权威倒计时、重连与控制权恢复；杠后候选标签为“岭上次张”。验证进度见[岭上修订验收](sleeve-bloom/ACCEPTANCE-RINSHAN.md)，Android真机触控未验证。
 - [落汗图形展示与牌河提示设计](tile-mark/VISUAL-DESIGN.md)：Anti 开发、Codex 独立验收通过，1050 项测试、双端构建与两种视口真实 GL，见[展示验收](tile-mark/ACCEPTANCE-VISUAL.md)。完整对手牌背、落汗半透明牌面；提示按东南西北显示暗手牌、牌山剩余可摸总数和可定位牌河，支持滚轮与触摸拖动。Android 真机触摸尚未验证。
 - [落汗千术设计](tile-mark/DESIGN.md)：每次从本人手牌标记 4 张实体牌，消耗 10 个额度；每位玩家最多保留 12 张有效标记，各组当局生效并持续后续 3 局，牌河记录具体位置。Anti 实现，Codex 独立编写测试及检视，已完成全链路验收：1000项测试、双端构建和真实GL通过，详见[最终验收](tile-mark/ACCEPTANCE.md)。Android真机触摸尚未验证。
