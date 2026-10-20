@@ -45,7 +45,8 @@ internal class TileMarkSubmissionHandler {
         val markedTileIds: Set<Int>,
         val existingGroupCount: Int,
         val cheatPoints: Int,
-        val cost: Int
+        val cost: Int,
+        val allowAutomated: Boolean = false
     )
 
     fun normalize(request: TileMarkRequest): NormalizedPayload = NormalizedPayload(
@@ -73,7 +74,7 @@ internal class TileMarkSubmissionHandler {
         if (input.request.decisionId != input.decision.decisionId) return reject("DECISION_MISMATCH")
 
         val controller = input.controller
-        if (controller !is SeatController.LocalHuman && controller !is SeatController.RemoteHuman) {
+        if (!controller.isHumanOrAllowedAutomated(input.allowAutomated)) {
             return reject("ACTION_NOT_AVAILABLE")
         }
 
@@ -111,6 +112,11 @@ internal class TileMarkSubmissionHandler {
         }
         return CheatSubmissionCheck.Allowed
     }
+
+    private fun SeatController.isHumanOrAllowedAutomated(allowAutomated: Boolean): Boolean =
+        this is SeatController.LocalHuman ||
+            this is SeatController.RemoteHuman ||
+            (allowAutomated && (this is SeatController.Computer || this is SeatController.Takeover))
 
     private fun reject(reason: String): CheatSubmissionCheck = CheatSubmissionCheck.Rejected(reason)
 }

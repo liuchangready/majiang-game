@@ -34,6 +34,7 @@ import java.util.Collections
  * @property cheatEconomy 独立出千经济系统配置
  * @property shuffleConfig 洗牌千术准备阶段配置
  * @property tileMarkConfig 落汗千术配置
+ * @property aiCheatPolicy AI 千术策略与预算（默认关闭）
  */
 data class MatchConfig @JvmOverloads constructor(
     val playerCount: Int = 4,
@@ -51,7 +52,12 @@ data class MatchConfig @JvmOverloads constructor(
     val shuffleConfig: ShuffleConfig = ShuffleConfig(),
     val tileMarkConfig: com.majiang.cheat.mark.TileMarkConfig = com.majiang.cheat.mark.TileMarkConfig(),
     val sleeveBloomConfig: com.majiang.cheat.bloom.SleeveBloomConfig = com.majiang.cheat.bloom.SleeveBloomConfig(),
-    val beamSwapConfig: com.majiang.cheat.beam.BeamSwapConfig = com.majiang.cheat.beam.BeamSwapConfig()
+    val beamSwapConfig: com.majiang.cheat.beam.BeamSwapConfig = com.majiang.cheat.beam.BeamSwapConfig(),
+    /**
+     * AI 千术策略与预算。默认关闭，保持既有 AI 不主动出千。
+     * 洗牌准备阶段的旧 `ShuffleConfig.aiMaySpend` 语义仍由权威投影合并保留。
+     */
+    val aiCheatPolicy: com.majiang.ai.AiCheatPolicy = com.majiang.ai.AiCheatPolicy()
 ) {
     /**
      * 校验当前配置是否被引擎支持
@@ -106,8 +112,9 @@ data class MatchConfig @JvmOverloads constructor(
             require(cheatEconomy.enabled) {
                 "tileMarkConfig requires cheatEconomy to be enabled"
             }
-            require(cheatEconomy.costs["TILE_MARK"] == 10) {
-                "tileMarkConfig requires cheatEconomy.costs['TILE_MARK'] == 10, got: ${cheatEconomy.costs["TILE_MARK"]}"
+            val tileMarkCost = cheatEconomy.costs["TILE_MARK"]
+            require(tileMarkCost != null && tileMarkCost > 0) {
+                "tileMarkConfig requires a positive explicit cheatEconomy.costs['TILE_MARK'], got: $tileMarkCost"
             }
         }
         if (sleeveBloomConfig.enabled) {

@@ -78,7 +78,8 @@ internal class BeamSwapSubmissionHandler {
         val doraIndicatorTileIds: Set<Int>,
         val rinshanPointer: Int,
         val cheatPoints: Int,
-        val cost: Int
+        val cost: Int,
+        val allowAutomated: Boolean = false
     )
 
     data class ChoiceInput(
@@ -114,7 +115,8 @@ internal class BeamSwapSubmissionHandler {
         val deadWallReplacements: List<Tile>,
         val deadWallTileIdsInDeadWall: Set<Int>,
         val doraIndicatorTileIds: Set<Int>,
-        val rinshanPointer: Int
+        val rinshanPointer: Int,
+        val allowAutomated: Boolean = false
     )
 
     fun normalizeActivation(request: BeamSwapRequest): NormalizedActivationPayload =
@@ -151,6 +153,7 @@ internal class BeamSwapSubmissionHandler {
             requestRoundId = input.request.roundId,
             decision = input.decision,
             controller = input.controller,
+            allowAutomated = input.allowAutomated,
             timing = input.timing,
             now = input.now,
             seat = input.seat,
@@ -222,6 +225,7 @@ internal class BeamSwapSubmissionHandler {
             requestRoundId = input.request.roundId,
             decision = input.decision,
             controller = input.controller,
+            allowAutomated = input.allowAutomated,
             timing = input.timing,
             now = input.now,
             seat = input.seat,
@@ -311,6 +315,7 @@ internal class BeamSwapSubmissionHandler {
         requestRoundId: String,
         decision: PlayerDecision,
         controller: SeatController,
+        allowAutomated: Boolean,
         timing: DecisionTiming?,
         now: Long,
         seat: Int,
@@ -326,7 +331,7 @@ internal class BeamSwapSubmissionHandler {
         if (requestControlEpoch != decision.controlEpoch) return reject("STALE_CONTROL_EPOCH")
         if (requestDecisionId != decision.decisionId) return reject("DECISION_MISMATCH")
 
-        if (controller !is SeatController.LocalHuman && controller !is SeatController.RemoteHuman) {
+        if (!controller.isHumanOrAllowedAutomated(allowAutomated)) {
             return reject("ACTION_NOT_AVAILABLE")
         }
 
@@ -336,6 +341,11 @@ internal class BeamSwapSubmissionHandler {
         if (now >= timing.deadlineMillis) return reject("DEADLINE_EXPIRED")
         return null
     }
+
+    private fun SeatController.isHumanOrAllowedAutomated(allowAutomated: Boolean): Boolean =
+        this is SeatController.LocalHuman ||
+            this is SeatController.RemoteHuman ||
+            (allowAutomated && (this is SeatController.Computer || this is SeatController.Takeover))
 
     private fun reject(reason: String): CheatSubmissionCheck.Rejected =
         CheatSubmissionCheck.Rejected(reason)

@@ -35,7 +35,7 @@ object TileMarkProjectionFactory {
         val myGroups = session.tileMarkState.groupsForSeat(observerSeat)
         val activeTileCount = myGroups.sumOf { it.tileIds.size }
         val maxActiveTiles = 12
-        val cost = economyConfig.costs["TILE_MARK"] ?: 10
+        val cost = TileMarkCost.of(economyConfig)
         val currentOrdinal = session.tileMarkState.dealtRoundOrdinal
         val stateVersion = session.tileMarkState.version
 

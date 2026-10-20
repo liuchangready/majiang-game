@@ -287,15 +287,21 @@ class TileMarkAuthorityContractTest {
     }
 
     @Test
-    fun `disabled config rejects marking and enabled config requires explicit fee ten`() {
+    fun `disabled config rejects marking and enabled config requires explicit positive fee`() {
         table(enabled = false).use { a ->
             assertNull(snapshot(a).tileMark)
             assertEquals("TILE_MARK_DISABLED", a.submitTileMark(0, request(a), a.clock.nowMillis()).receipt.reason)
         }
-        for (costs in listOf(emptyMap(), mapOf("TILE_MARK" to 0), mapOf("TILE_MARK" to 9), mapOf("TILE_MARK" to 11))) {
+        for (costs in listOf(emptyMap(), mapOf("TILE_MARK" to 0), mapOf("TILE_MARK" to -1))) {
             assertThrows<IllegalArgumentException> {
                 MatchConfig(cheatEconomy = CheatEconomyConfig(true, List(4) { 40 }, costs), tileMarkConfig = TileMarkConfig(true)).validateSupported()
             }
+        }
+        for (cost in listOf(5, 9, 11)) {
+            MatchConfig(
+                cheatEconomy = CheatEconomyConfig(true, List(4) { 40 }, mapOf("TILE_MARK" to cost)),
+                tileMarkConfig = TileMarkConfig(true)
+            ).validateSupported()
         }
         assertThrows<IllegalArgumentException> { MatchConfig(tileMarkConfig = TileMarkConfig(true)).validateSupported() }
     }

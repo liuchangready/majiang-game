@@ -88,7 +88,8 @@ internal class SleeveBloomSubmissionHandler {
         val nextDeadWallTileId: Int?,
         val nextDeadWallInDeadWall: Boolean,
         val cheatPoints: Int,
-        val cost: Int
+        val cost: Int,
+        val allowAutomated: Boolean = false
     )
 
     data class ChoiceInput(
@@ -129,7 +130,8 @@ internal class SleeveBloomSubmissionHandler {
         val totalKanCount: Int,
         val deadWallPreviousTileId: Int?,
         val deadWallSecondTileId: Int?,
-        val deadWallSecondInDeadWall: Boolean
+        val deadWallSecondInDeadWall: Boolean,
+        val allowAutomated: Boolean = false
     )
 
     data class OffTurnActivationInput(
@@ -155,7 +157,8 @@ internal class SleeveBloomSubmissionHandler {
         val beamSwapOfferActive: Boolean,
         val availableWallCount: Int,
         val cheatPoints: Int,
-        val cost: Int
+        val cost: Int,
+        val allowAutomated: Boolean = false
     )
 
     data class OffTurnChoiceInput(
@@ -177,7 +180,8 @@ internal class SleeveBloomSubmissionHandler {
         val offerId: String?,
         val offerDeadlineMillis: Long?,
         val offerFirstInWall: Boolean,
-        val offerSecondInWall: Boolean
+        val offerSecondInWall: Boolean,
+        val allowAutomated: Boolean = false
     )
 
     fun normalizeActivation(request: SleeveBloomRequest): NormalizedActivationPayload =
@@ -232,6 +236,7 @@ internal class SleeveBloomSubmissionHandler {
             requestRoundId = input.request.roundId,
             decision = input.decision,
             controller = input.controller,
+            allowAutomated = input.allowAutomated,
             timing = input.timing,
             now = input.now,
             seat = input.seat,
@@ -293,6 +298,7 @@ internal class SleeveBloomSubmissionHandler {
             requestRoundId = input.request.roundId,
             decision = input.decision,
             controller = input.controller,
+            allowAutomated = input.allowAutomated,
             timing = input.timing,
             now = input.now,
             seat = input.seat,
@@ -354,7 +360,7 @@ internal class SleeveBloomSubmissionHandler {
             return reject("DECISION_MISMATCH")
         }
         if (input.request.controlEpoch != input.controlEpoch) return reject("STALE_CONTROL_EPOCH")
-        if (input.controller !is SeatController.LocalHuman && input.controller !is SeatController.RemoteHuman) {
+        if (!input.controller.isHumanOrAllowedAutomated(input.allowAutomated)) {
             return reject("ACTION_NOT_AVAILABLE")
         }
         if (!input.windowMatches) return reject("SLEEVE_BLOOM_NO_WINDOW")
@@ -388,7 +394,7 @@ internal class SleeveBloomSubmissionHandler {
             return reject("DECISION_MISMATCH")
         }
         if (input.request.controlEpoch != input.controlEpoch) return reject("STALE_CONTROL_EPOCH")
-        if (input.controller !is SeatController.LocalHuman && input.controller !is SeatController.RemoteHuman) {
+        if (!input.controller.isHumanOrAllowedAutomated(input.allowAutomated)) {
             return reject("ACTION_NOT_AVAILABLE")
         }
         if (input.offerSeat == null || input.offerSeat != input.seat) {
@@ -415,6 +421,7 @@ internal class SleeveBloomSubmissionHandler {
         requestRoundId: String,
         decision: PlayerDecision,
         controller: SeatController,
+        allowAutomated: Boolean,
         timing: DecisionTiming?,
         now: Long,
         seat: Int,
@@ -430,7 +437,7 @@ internal class SleeveBloomSubmissionHandler {
         if (requestControlEpoch != decision.controlEpoch) return reject("STALE_CONTROL_EPOCH")
         if (requestDecisionId != decision.decisionId) return reject("DECISION_MISMATCH")
 
-        if (controller !is SeatController.LocalHuman && controller !is SeatController.RemoteHuman) {
+        if (!controller.isHumanOrAllowedAutomated(allowAutomated)) {
             return reject("ACTION_NOT_AVAILABLE")
         }
 
@@ -440,6 +447,11 @@ internal class SleeveBloomSubmissionHandler {
         if (now >= timing.deadlineMillis) return reject("DEADLINE_EXPIRED")
         return null
     }
+
+    private fun SeatController.isHumanOrAllowedAutomated(allowAutomated: Boolean): Boolean =
+        this is SeatController.LocalHuman ||
+            this is SeatController.RemoteHuman ||
+            (allowAutomated && (this is SeatController.Computer || this is SeatController.Takeover))
 
     private fun reject(reason: String): CheatSubmissionCheck.Rejected =
         CheatSubmissionCheck.Rejected(reason)
