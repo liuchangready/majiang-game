@@ -144,7 +144,7 @@ class TileMarkGroupView @JvmOverloads constructor(
  *
  * @property canApply 当前是否允许施术
  * @property disabledReason 禁用原因；允许时为 null
- * @property cost 施术费用（固定 10）
+ * @property cost 施术费用（由 cheatEconomy.costs["TILE_MARK"] 配置，默认 10，必须为正）
  * @property activeTileCount 当前有效标记总数 (0..12)
  * @property maxActiveTiles 最大有效标记总数（固定 12）
  * @property selectableTileIds 当前可选的自身手牌实体列表（排除已标记，仅在可施术时提供）
@@ -169,7 +169,7 @@ class TileMarkView @JvmOverloads constructor(
     val activeGroups: List<TileMarkGroupView> = Collections.unmodifiableList(ArrayList(activeGroups))
 
     init {
-        require(cost == 10) { "cost must be 10, got: $cost" }
+        require(cost > 0) { "cost must be positive, got: $cost" }
         require(maxActiveTiles == 12) { "maxActiveTiles must be 12, got: $maxActiveTiles" }
         require(activeTileCount in 0..12) { "activeTileCount must be in 0..12, got: $activeTileCount" }
         require(controlEpoch >= 0L) { "controlEpoch must be non-negative: $controlEpoch" }

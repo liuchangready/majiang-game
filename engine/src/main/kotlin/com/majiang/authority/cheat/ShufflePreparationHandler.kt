@@ -138,6 +138,14 @@ internal class ShufflePreparationHandler {
         return record(requireNotNull(preparationRoundId) { "Preparation is not active" })
     }
 
+    /**
+     * 推进准备阶段。
+     *
+     * 新 AI 策略路径由 [com.majiang.ai.cheat.ShufflePreparationAiCapability] 在截止前提交，
+     * 策略提交成功即已确认。为保留旧 `ShuffleConfig.aiMaySpend` 的实际效果，当房间未开启
+     * 统一 AI 千术策略时，原生电脑仍按旧点数档位自动确认；该兼容路径不会作用于托管座位。
+     * 截止时仍未确认的座位（包括 AI 与真人）按既有规则默认跳过。
+     */
     fun step(
         now: Long,
         automatedSeats: Set<Int>,
@@ -149,32 +157,26 @@ internal class ShufflePreparationHandler {
     ): Step {
         val prepId = preparationRoundId ?: return Step.Waiting
         var aiUpdated = false
-        for (seat in 0 until 4) {
-            val isNative = seat in nativeAiSeats
-            if (seat in automatedSeats && !confirmed[seat]) {
-                if (isNative && aiMaySpend) {
-                    val currentPoints = points.getOrElse(seat) { 0 }
-                    val selection = when {
-                        currentPoints >= 60 -> ShuffleSelection(
-                            initialTargets = setOf(ShuffleTarget.CHINITSU_MAN),
-                            drawTargets = setOf(ShuffleTarget.DAISANGEN)
-                        )
-                        currentPoints >= 40 -> ShuffleSelection(
-                            initialTargets = setOf(ShuffleTarget.CHINITSU_MAN)
-                        )
-                        currentPoints >= 20 -> ShuffleSelection(
-                            drawTargets = setOf(ShuffleTarget.DAISANGEN)
-                        )
-                        else -> ShuffleSelection()
-                    }
-                    confirmed[seat] = true
-                    selections[seat] = selection
-                    reserved[seat] = selection.cost()
-                } else {
-                    confirmed[seat] = true
-                    selections[seat] = ShuffleSelection()
-                    reserved[seat] = 0
+        if (aiMaySpend) {
+            for (seat in 0 until 4) {
+                if (seat !in automatedSeats || seat !in nativeAiSeats || confirmed[seat]) continue
+                val currentPoints = points.getOrElse(seat) { 0 }
+                val selection = when {
+                    currentPoints >= 60 -> ShuffleSelection(
+                        initialTargets = setOf(ShuffleTarget.CHINITSU_MAN),
+                        drawTargets = setOf(ShuffleTarget.DAISANGEN)
+                    )
+                    currentPoints >= 40 -> ShuffleSelection(
+                        initialTargets = setOf(ShuffleTarget.CHINITSU_MAN)
+                    )
+                    currentPoints >= 20 -> ShuffleSelection(
+                        drawTargets = setOf(ShuffleTarget.DAISANGEN)
+                    )
+                    else -> ShuffleSelection()
                 }
+                confirmed[seat] = true
+                selections[seat] = selection
+                reserved[seat] = selection.cost()
                 aiUpdated = true
             }
         }

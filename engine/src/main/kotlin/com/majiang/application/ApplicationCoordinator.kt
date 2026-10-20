@@ -5,6 +5,7 @@ import com.majiang.application.cheat.CheatEffectFactory
 import com.majiang.application.cheat.CheatLedgerCharge
 import com.majiang.ai.BasicAIStrategy
 import com.majiang.cheat.bloom.*
+import com.majiang.cheat.mark.TileMarkCost
 import com.majiang.cheat.mark.TileMarkGroup
 import com.majiang.cheat.mark.TileMarkRequest
 import com.majiang.economy.*
@@ -1035,9 +1036,9 @@ class ApplicationCoordinator(
                 return ActionResult.Rejected(RejectionReason.ACTION_NOT_AVAILABLE)
             }
 
-            // 费用校验（10点）
-            val cost = 10
-            if (candidateState.cheatPoints[seat] < cost) {
+            // 费用校验（由 cheatEconomy.costs["TILE_MARK"] 配置；缺省保持旧行为 10）
+            val cost = TileMarkCost.of(cheatEconomyConfig)
+            if (cost <= 0 || candidateState.cheatPoints[seat] < cost) {
                 return ActionResult.Rejected(RejectionReason.ACTION_NOT_AVAILABLE)
             }
 
@@ -1123,7 +1124,12 @@ class ApplicationCoordinator(
     /**
      * 提交袖里藏花激活请求
      */
-    fun submitSleeveBloom(seat: Int, request: SleeveBloomRequest, now: Long): ActionResult {
+    fun submitSleeveBloom(
+        seat: Int,
+        request: SleeveBloomRequest,
+        now: Long,
+        allowAutomated: Boolean = false
+    ): ActionResult {
         if (currentExecutingThread.get() == Thread.currentThread()) {
             return ActionResult.Rejected(RejectionReason.ACTION_NOT_AVAILABLE)
         }
@@ -1165,8 +1171,9 @@ class ApplicationCoordinator(
                 return ActionResult.Rejected(RejectionReason.ACTION_NOT_AVAILABLE)
             }
 
-            val controller = controllerRegistry.getController(seat)
-            if (controller !is SeatController.LocalHuman && controller !is SeatController.RemoteHuman) {
+            if (!controllerRegistry.isHuman(seat) &&
+                !(allowAutomated && controllerRegistry.isAutomated(seat))
+            ) {
                 return ActionResult.Rejected(RejectionReason.ACTION_NOT_AVAILABLE)
             }
             if (request.controlEpoch != controllerRegistry.getEpoch(seat)) {
@@ -1335,7 +1342,11 @@ class ApplicationCoordinator(
     /**
      * 提交袖里藏花二选一决策请求
      */
-    fun submitSleeveBloomChoice(seat: Int, request: SleeveBloomChoiceRequest): ActionResult {
+    fun submitSleeveBloomChoice(
+        seat: Int,
+        request: SleeveBloomChoiceRequest,
+        allowAutomated: Boolean = false
+    ): ActionResult {
         if (currentExecutingThread.get() == Thread.currentThread()) {
             return ActionResult.Rejected(RejectionReason.ACTION_NOT_AVAILABLE)
         }
@@ -1372,8 +1383,9 @@ class ApplicationCoordinator(
                 return ActionResult.Rejected(RejectionReason.ACTION_NOT_AVAILABLE)
             }
 
-            val controller = controllerRegistry.getController(seat)
-            if (controller !is SeatController.LocalHuman && controller !is SeatController.RemoteHuman) {
+            if (!controllerRegistry.isHuman(seat) &&
+                !(allowAutomated && controllerRegistry.isAutomated(seat))
+            ) {
                 return ActionResult.Rejected(RejectionReason.ACTION_NOT_AVAILABLE)
             }
             if (request.controlEpoch != controllerRegistry.getEpoch(seat)) {
@@ -1604,7 +1616,12 @@ class ApplicationCoordinator(
      *
      * 该入口不要求本人拥有即时 decisionId；授权以本人弃牌后签发的权威 windowId 为准。
      */
-    fun submitSleeveBloomOffTurn(seat: Int, request: SleeveBloomOffTurnRequest, now: Long): ActionResult {
+    fun submitSleeveBloomOffTurn(
+        seat: Int,
+        request: SleeveBloomOffTurnRequest,
+        now: Long,
+        allowAutomated: Boolean = false
+    ): ActionResult {
         if (currentExecutingThread.get() == Thread.currentThread()) {
             return ActionResult.Rejected(RejectionReason.ACTION_NOT_AVAILABLE)
         }
@@ -1637,8 +1654,9 @@ class ApplicationCoordinator(
                 ?: return ActionResult.Rejected(RejectionReason.ACTION_NOT_AVAILABLE)
             if (cost != 10) return ActionResult.Rejected(RejectionReason.ACTION_NOT_AVAILABLE)
 
-            val controller = controllerRegistry.getController(seat)
-            if (controller !is SeatController.LocalHuman && controller !is SeatController.RemoteHuman) {
+            if (!controllerRegistry.isHuman(seat) &&
+                !(allowAutomated && controllerRegistry.isAutomated(seat))
+            ) {
                 return ActionResult.Rejected(RejectionReason.ACTION_NOT_AVAILABLE)
             }
             if (request.controlEpoch != controllerRegistry.getEpoch(seat)) {
@@ -1774,7 +1792,8 @@ class ApplicationCoordinator(
     fun submitSleeveBloomOffTurnChoice(
         seat: Int,
         request: SleeveBloomOffTurnChoiceRequest,
-        now: Long
+        now: Long,
+        allowAutomated: Boolean = false
     ): ActionResult {
         if (currentExecutingThread.get() == Thread.currentThread()) {
             return ActionResult.Rejected(RejectionReason.ACTION_NOT_AVAILABLE)
@@ -1803,8 +1822,9 @@ class ApplicationCoordinator(
             if (!sleeveBloomConfig.enabled || !cheatEconomyConfig.enabled) {
                 return ActionResult.Rejected(RejectionReason.ACTION_NOT_AVAILABLE)
             }
-            val controller = controllerRegistry.getController(seat)
-            if (controller !is SeatController.LocalHuman && controller !is SeatController.RemoteHuman) {
+            if (!controllerRegistry.isHuman(seat) &&
+                !(allowAutomated && controllerRegistry.isAutomated(seat))
+            ) {
                 return ActionResult.Rejected(RejectionReason.ACTION_NOT_AVAILABLE)
             }
             if (request.controlEpoch != controllerRegistry.getEpoch(seat)) {
@@ -1975,7 +1995,12 @@ class ApplicationCoordinator(
     /**
      * 提交偷梁换柱激活请求
      */
-    fun submitBeamSwap(seat: Int, request: com.majiang.cheat.beam.BeamSwapRequest, now: Long): ActionResult {
+    fun submitBeamSwap(
+        seat: Int,
+        request: com.majiang.cheat.beam.BeamSwapRequest,
+        now: Long,
+        allowAutomated: Boolean = false
+    ): ActionResult {
         if (currentExecutingThread.get() == Thread.currentThread()) {
             return ActionResult.Rejected(RejectionReason.ACTION_NOT_AVAILABLE)
         }
@@ -2017,8 +2042,9 @@ class ApplicationCoordinator(
                 return ActionResult.Rejected(RejectionReason.ACTION_NOT_AVAILABLE)
             }
 
-            val controller = controllerRegistry.getController(seat)
-            if (controller !is SeatController.LocalHuman && controller !is SeatController.RemoteHuman) {
+            if (!controllerRegistry.isHuman(seat) &&
+                !(allowAutomated && controllerRegistry.isAutomated(seat))
+            ) {
                 return ActionResult.Rejected(RejectionReason.ACTION_NOT_AVAILABLE)
             }
             if (request.controlEpoch != controllerRegistry.getEpoch(seat)) {
@@ -2191,7 +2217,11 @@ class ApplicationCoordinator(
     /**
      * 提交偷梁换柱选择请求
      */
-    fun submitBeamSwapChoice(seat: Int, request: com.majiang.cheat.beam.BeamSwapChoiceRequest): ActionResult {
+    fun submitBeamSwapChoice(
+        seat: Int,
+        request: com.majiang.cheat.beam.BeamSwapChoiceRequest,
+        allowAutomated: Boolean = false
+    ): ActionResult {
         if (currentExecutingThread.get() == Thread.currentThread()) {
             return ActionResult.Rejected(RejectionReason.ACTION_NOT_AVAILABLE)
         }
@@ -2228,8 +2258,9 @@ class ApplicationCoordinator(
                 return ActionResult.Rejected(RejectionReason.ACTION_NOT_AVAILABLE)
             }
 
-            val controller = controllerRegistry.getController(seat)
-            if (controller !is SeatController.LocalHuman && controller !is SeatController.RemoteHuman) {
+            if (!controllerRegistry.isHuman(seat) &&
+                !(allowAutomated && controllerRegistry.isAutomated(seat))
+            ) {
                 return ActionResult.Rejected(RejectionReason.ACTION_NOT_AVAILABLE)
             }
             if (request.controlEpoch != controllerRegistry.getEpoch(seat)) {

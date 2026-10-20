@@ -9,6 +9,13 @@ import com.majiang.access.ReceiptStatus
 import com.majiang.access.SeatControlView
 import com.majiang.access.SessionView
 import com.majiang.access.deepCopy
+import com.majiang.ai.AiCandidateLimits
+import com.majiang.ai.AiCheatPolicy
+import com.majiang.ai.AiCheatView
+import com.majiang.ai.AiDecisionStamp
+import com.majiang.ai.AiPhase
+import com.majiang.ai.AiSeatSnapshot
+import com.majiang.ai.cheat.AiCapabilityIds
 import com.majiang.application.ActionChoice
 import com.majiang.application.ApplicationCoordinator
 import com.majiang.application.PlayerDecision
@@ -22,6 +29,7 @@ import com.majiang.authority.cheat.rejectionReason
 import com.majiang.cheat.beam.*
 import com.majiang.cheat.bloom.*
 import com.majiang.cheat.mark.TileMarkConfig
+import com.majiang.cheat.mark.TileMarkCost
 import com.majiang.cheat.mark.TileMarkProjectionFactory
 import com.majiang.cheat.mark.TileMarkRequest
 import com.majiang.cheat.mark.TileMarkView
@@ -49,6 +57,7 @@ import com.majiang.timing.SystemMonotonicClock
 import com.majiang.timing.TimeControlConfig
 import com.majiang.timing.TimeoutPolicy
 import java.util.Collections
+import java.util.LinkedHashSet
 import java.util.concurrent.ConcurrentHashMap
 
 /**
@@ -297,6 +306,7 @@ class TableAuthority @JvmOverloads constructor(
     fun controlEpochFor(seat: Int): Long = coordinator.epochFor(seat)
 
     val currentRoundId: String? get() = coordinator.activeRound?.roundId
+    val currentRoundVersion: Long? get() = coordinator.activeRound?.version
     val isPaused: Boolean get() = decisionClock.isPausedState
     val hasActiveRoundNotEnded: Boolean
         get() {
@@ -783,7 +793,12 @@ class TableAuthority @JvmOverloads constructor(
     }
 
     @Synchronized
-    fun submitTileMark(seat: Int, request: TileMarkRequest, now: Long): MutationResult {
+    fun submitTileMark(
+        seat: Int,
+        request: TileMarkRequest,
+        now: Long,
+        allowAutomated: Boolean = false
+    ): MutationResult {
         if (!config.tileMarkConfig.enabled) {
             return MutationResult(ActionReceipt(request.requestId, ReceiptStatus.REJECTED, reason = "TILE_MARK_DISABLED"), emptyList(), false)
         }
@@ -826,7 +841,7 @@ class TableAuthority @JvmOverloads constructor(
         val candidateState = round?.readState()
         val seatGroups = coordinator.session.tileMarkState.groupsForSeat(seat)
         val seatMarkedIds = seatGroups.flatMap { it.tileIds }.toSet()
-        val cost = config.cheatEconomy.costs["TILE_MARK"] ?: 10
+        val cost = TileMarkCost.of(config.cheatEconomy)
         val handTileIds = candidateState?.players?.getOrNull(seat)?.let { player ->
             (player.closedTiles + listOfNotNull(player.drawnTile)).map { it.tileId }.toSet()
         } ?: emptySet()
@@ -853,7 +868,8 @@ class TableAuthority @JvmOverloads constructor(
                 markedTileIds = seatMarkedIds,
                 existingGroupCount = seatGroups.size,
                 cheatPoints = candidateState?.cheatPoints?.getOrNull(seat) ?: 0,
-                cost = cost
+                cost = cost,
+                allowAutomated = allowAutomated
             )
         )
         val rejection = check.rejectionReason
@@ -894,7 +910,12 @@ class TableAuthority @JvmOverloads constructor(
      * 提交袖里藏花激活请求
      */
     @Synchronized
-    fun submitSleeveBloom(seat: Int, request: SleeveBloomRequest, now: Long): MutationResult {
+    fun submitSleeveBloom(
+        seat: Int,
+        request: SleeveBloomRequest,
+        now: Long,
+        allowAutomated: Boolean = false
+    ): MutationResult {
         if (seat !in 0..3) {
             return MutationResult(ActionReceipt(request.requestId, ReceiptStatus.REJECTED, reason = "INVALID_SEAT"), emptyList(), false)
         }
@@ -978,7 +999,8 @@ class TableAuthority @JvmOverloads constructor(
                 nextDeadWallInDeadWall = nextDeadWallTile != null &&
                         candidateState.tilePool.getLocation(nextDeadWallTile) == com.majiang.model.TileLocation.DEAD_WALL,
                 cheatPoints = candidateState?.cheatPoints?.getOrNull(seat) ?: 0,
-                cost = cost
+                cost = cost,
+                allowAutomated = allowAutomated
             )
         )
         val rejection = check.rejectionReason
@@ -989,7 +1011,7 @@ class TableAuthority @JvmOverloads constructor(
         }
 
         // 6. 执行原子扣费与安装 offer
-        val coordResult = coordinator.submitSleeveBloom(seat, request, now)
+        val coordResult = coordinator.submitSleeveBloom(seat, request, now, allowAutomated)
         if (coordResult !is ActionResult.Accepted) {
             val reasonStr = when (coordResult) {
                 is ActionResult.Rejected -> coordResult.reason.name
@@ -1019,7 +1041,12 @@ class TableAuthority @JvmOverloads constructor(
      * 提交袖里藏花二选一决策请求
      */
     @Synchronized
-    fun submitSleeveBloomChoice(seat: Int, request: SleeveBloomChoiceRequest, now: Long): MutationResult {
+    fun submitSleeveBloomChoice(
+        seat: Int,
+        request: SleeveBloomChoiceRequest,
+        now: Long,
+        allowAutomated: Boolean = false
+    ): MutationResult {
         if (seat !in 0..3) {
             return MutationResult(ActionReceipt(request.requestId, ReceiptStatus.REJECTED, reason = "INVALID_SEAT"), emptyList(), false)
         }
@@ -1104,7 +1131,8 @@ class TableAuthority @JvmOverloads constructor(
                 deadWallPreviousTileId = previousDeadWallTile?.tileId,
                 deadWallSecondTileId = secondDeadWallTile?.tileId,
                 deadWallSecondInDeadWall = secondDeadWallTile != null &&
-                        candidateState.tilePool.getLocation(secondDeadWallTile) == com.majiang.model.TileLocation.DEAD_WALL
+                        candidateState.tilePool.getLocation(secondDeadWallTile) == com.majiang.model.TileLocation.DEAD_WALL,
+                allowAutomated = allowAutomated
             )
         )
         when (check) {
@@ -1128,7 +1156,7 @@ class TableAuthority @JvmOverloads constructor(
         }
 
         // 6. 执行选择决策
-        val coordResult = coordinator.submitSleeveBloomChoice(seat, request)
+        val coordResult = coordinator.submitSleeveBloomChoice(seat, request, allowAutomated)
         if (coordResult !is ActionResult.Accepted) {
             val reasonStr = when (coordResult) {
                 is ActionResult.Rejected -> coordResult.reason.name
@@ -1163,7 +1191,8 @@ class TableAuthority @JvmOverloads constructor(
     fun submitSleeveBloomOffTurn(
         seat: Int,
         request: com.majiang.cheat.bloom.SleeveBloomOffTurnRequest,
-        now: Long
+        now: Long,
+        allowAutomated: Boolean = false
     ): MutationResult {
         if (seat !in 0..3) {
             return MutationResult(ActionReceipt(request.requestId, ReceiptStatus.REJECTED, reason = "INVALID_SEAT"), emptyList(), false)
@@ -1227,7 +1256,8 @@ class TableAuthority @JvmOverloads constructor(
                 beamSwapOfferActive = candidateState?.beamSwapOffer != null,
                 availableWallCount = candidateState?.availableWallTileCount() ?: 0,
                 cheatPoints = candidateState?.cheatPoints?.getOrNull(seat) ?: 0,
-                cost = cost
+                cost = cost,
+                allowAutomated = allowAutomated
             )
         )
         val rejection = check.rejectionReason
@@ -1241,7 +1271,7 @@ class TableAuthority @JvmOverloads constructor(
             return MutationResult(rejected, emptyList(), false)
         }
 
-        val coordResult = coordinator.submitSleeveBloomOffTurn(seat, request, now)
+        val coordResult = coordinator.submitSleeveBloomOffTurn(seat, request, now, allowAutomated)
         if (coordResult !is ActionResult.Accepted) {
             val reasonStr = when (coordResult) {
                 is ActionResult.Rejected -> coordResult.reason.name
@@ -1274,7 +1304,8 @@ class TableAuthority @JvmOverloads constructor(
     fun submitSleeveBloomOffTurnChoice(
         seat: Int,
         request: com.majiang.cheat.bloom.SleeveBloomOffTurnChoiceRequest,
-        now: Long
+        now: Long,
+        allowAutomated: Boolean = false
     ): MutationResult {
         if (seat !in 0..3) {
             return MutationResult(ActionReceipt(request.requestId, ReceiptStatus.REJECTED, reason = "INVALID_SEAT"), emptyList(), false)
@@ -1339,7 +1370,8 @@ class TableAuthority @JvmOverloads constructor(
                 offerId = offer?.offerId,
                 offerDeadlineMillis = offer?.deadlineMillis,
                 offerFirstInWall = firstInWall,
-                offerSecondInWall = secondInWall
+                offerSecondInWall = secondInWall,
+                allowAutomated = allowAutomated
             )
         )
         when (val result = check) {
@@ -1372,7 +1404,7 @@ class TableAuthority @JvmOverloads constructor(
             CheatSubmissionCheck.Allowed -> Unit
         }
 
-        val coordResult = coordinator.submitSleeveBloomOffTurnChoice(seat, request, now)
+        val coordResult = coordinator.submitSleeveBloomOffTurnChoice(seat, request, now, allowAutomated)
         if (coordResult !is ActionResult.Accepted) {
             val reasonStr = when (coordResult) {
                 is ActionResult.Rejected -> coordResult.reason.name
@@ -1401,7 +1433,12 @@ class TableAuthority @JvmOverloads constructor(
      * 提交偷梁换柱激活请求
      */
     @Synchronized
-    fun submitBeamSwap(seat: Int, request: BeamSwapRequest, now: Long): MutationResult {
+    fun submitBeamSwap(
+        seat: Int,
+        request: BeamSwapRequest,
+        now: Long,
+        allowAutomated: Boolean = false
+    ): MutationResult {
         if (seat !in 0..3) {
             return MutationResult(ActionReceipt(request.requestId, ReceiptStatus.REJECTED, reason = "INVALID_SEAT"), emptyList(), false)
         }
@@ -1492,7 +1529,8 @@ class TableAuthority @JvmOverloads constructor(
                 doraIndicatorTileIds = doraIndicatorTileIds,
                 rinshanPointer = candidateState?.rinshanPointer ?: 0,
                 cheatPoints = candidateState?.cheatPoints?.getOrNull(seat) ?: 0,
-                cost = cost
+                cost = cost,
+                allowAutomated = allowAutomated
             )
         )
         val rejection = check.rejectionReason
@@ -1503,7 +1541,7 @@ class TableAuthority @JvmOverloads constructor(
         }
 
         // 6. 执行原子扣费与安装 offer
-        val coordResult = coordinator.submitBeamSwap(seat, request, now)
+        val coordResult = coordinator.submitBeamSwap(seat, request, now, allowAutomated)
         if (coordResult !is ActionResult.Accepted) {
             val reasonStr = when (coordResult) {
                 is ActionResult.Rejected -> coordResult.reason.name
@@ -1533,7 +1571,12 @@ class TableAuthority @JvmOverloads constructor(
      * 提交偷梁换柱选择决策请求
      */
     @Synchronized
-    fun submitBeamSwapChoice(seat: Int, request: BeamSwapChoiceRequest, now: Long): MutationResult {
+    fun submitBeamSwapChoice(
+        seat: Int,
+        request: BeamSwapChoiceRequest,
+        now: Long,
+        allowAutomated: Boolean = false
+    ): MutationResult {
         if (seat !in 0..3) {
             return MutationResult(ActionReceipt(request.requestId, ReceiptStatus.REJECTED, reason = "INVALID_SEAT"), emptyList(), false)
         }
@@ -1623,7 +1666,8 @@ class TableAuthority @JvmOverloads constructor(
                 deadWallReplacements = deadWallReplacements,
                 deadWallTileIdsInDeadWall = deadWallTileIdsInDeadWall,
                 doraIndicatorTileIds = candidateState?.doraIndicators?.map { it.tileId }?.toSet() ?: emptySet(),
-                rinshanPointer = candidateState?.rinshanPointer ?: 0
+                rinshanPointer = candidateState?.rinshanPointer ?: 0,
+                allowAutomated = allowAutomated
             )
         )
         when (check) {
@@ -1647,7 +1691,7 @@ class TableAuthority @JvmOverloads constructor(
         }
 
         // 6. 执行选择决策
-        val coordResult = coordinator.submitBeamSwapChoice(seat, request)
+        val coordResult = coordinator.submitBeamSwapChoice(seat, request, allowAutomated)
         if (coordResult !is ActionResult.Accepted) {
             val reasonStr = when (coordResult) {
                 is ActionResult.Rejected -> coordResult.reason.name
@@ -1688,7 +1732,8 @@ class TableAuthority @JvmOverloads constructor(
             automatedSeats = automatedSeats,
             nativeAiSeats = nativeAiSeats,
             points = round.state.cheatPoints.toList(),
-            aiMaySpend = config.shuffleConfig.aiMaySpend,
+            // 统一 AI 千术策略开启时由能力适配器先提交；旧配置才走兼容的自动确认。
+            aiMaySpend = config.shuffleConfig.aiMaySpend && !config.aiCheatPolicy.enabled,
             dealerSeat = round.state.dealerIndex,
             config = config.shuffleConfig
         )) {
@@ -2227,6 +2272,271 @@ class TableAuthority @JvmOverloads constructor(
         )
     }
 
+    /**
+     * AI 投影专用控制视图：权威层不持有连接状态，仅以领域控制者类型与代次描述。
+     */
+    private fun buildAiControlViews(): List<SeatControlView> {
+        val list = ArrayList<SeatControlView>(4)
+        for (s in 0..3) {
+            val role = when (coordinator.controllerFor(s)) {
+                is SeatController.LocalHuman, is SeatController.RemoteHuman -> "HUMAN"
+                is SeatController.Computer -> "COMPUTER"
+                is SeatController.Takeover -> "TAKEOVER"
+            }
+            list.add(
+                SeatControlView(
+                    seat = s,
+                    connected = true,
+                    role = role,
+                    controlEpoch = coordinator.epochFor(s)
+                )
+            )
+        }
+        return Collections.unmodifiableList(list)
+    }
+
+    /**
+     * 通用 AI 调度器使用的“是否仍存在本座位待决 offer”轻量检查。
+     *
+     * 只读当前领域状态，不生成投影、不暴露他家信息；仅在权威串行队列内调用。
+     */
+    fun hasPendingAiOffer(seat: Int): Boolean {
+        if (seat !in 0..3) return false
+        val state = coordinator.activeRound?.state ?: return false
+        return state.sleeveBloomOffer?.seat == seat ||
+            state.sleeveBloomOffTurnOffer(seat) != null ||
+            state.beamSwapOffer?.seat == seat
+    }
+
+    /**
+     * 轻量检查本座位是否存在“本人弃牌后签发的他家回合袖里藏花预约窗口”。
+     *
+     * 只做门控；真正的可施术判定仍由 [SleeveBloomProjectionFactory] 与权威提交校验负责。
+     */
+    fun hasOffTurnSleeveBloomOpportunity(seat: Int): Boolean {
+        if (seat !in 0..3) return false
+        if (!config.sleeveBloomConfig.enabled || !config.cheatEconomy.enabled) return false
+        if (decisionClock.isPausedState) return false
+        val state = coordinator.activeRound?.state ?: return false
+        if (state.phase !in setOf(
+                GamePhase.DRAW,
+                GamePhase.CHEAT_WINDOW,
+                GamePhase.DISCARD,
+                GamePhase.RESPONSE_WINDOW,
+                GamePhase.CHANKAN_WINDOW
+            )
+        ) {
+            return false
+        }
+        if (state.currentPlayer == seat) return false
+        if (state.sleeveBloomOffer != null ||
+            state.sleeveBloomOffTurnOffer(seat) != null ||
+            state.beamSwapOffer != null
+        ) {
+            return false
+        }
+        if (state.sleeveBloomReservation(seat) != null) return false
+        if (state.sleeveBloomWindowId(seat) == null) return false
+        if (state.availableWallTileCount() < 2) return false
+        val cost = config.cheatEconomy.costs["SLEEVE_BLOOM"] ?: 10
+        if ((state.cheatPoints.getOrNull(seat) ?: 0) < cost) return false
+        return true
+    }
+
+    /**
+     * 按座位一次性构建 AI 专用不可变投影。
+     *
+     * 与 [querySnapshot] 的关键区别：
+     * 1. 使用本座位真实合法决策（自动化座位不清空 options）；
+     * 2. 私有千术投影以本座位作为行动者生成（仅内部 AI 使用，绝不回传客户端）；
+     * 3. 不携带 GameState、牌山顺序或他家暗牌；
+     * 4. 同时冻结 stamp 与预算，供异步线程只读。
+     *
+     * @param strategyPolicy 策略级可选约束，与房间策略取交集
+     * @param spentThisRound 本局该座位已由 AI 花费的点数（预算扣减）
+     * @param registeredCapabilityIds 组合根已显式注册的能力 ID；新增能力由调用方传入即可进入限权集合
+     */
+    fun buildAiSeatSnapshot(
+        seat: Int,
+        now: Long,
+        strategyPolicy: AiCheatPolicy? = null,
+        spentThisRound: Int = 0,
+        registeredCapabilityIds: Set<String> = BUILT_IN_AI_CAPABILITY_ID_SET
+    ): AiSeatSnapshot {
+        require(seat in 0..3) { "seat must be in 0..3, got $seat" }
+        val controller = coordinator.controllerFor(seat)
+        val takeover = controller is SeatController.Takeover
+        val automated = takeover || controller is SeatController.Computer
+
+        val rawDecision = coordinator.queryDecision(seat)
+        val view = coordinator.queryView(seat).deepCopy()
+        val controls = buildAiControlViews()
+        val projectionControls = if (automated) {
+            controls.map { control ->
+                if (control.seat == seat) control.copy(role = "HUMAN", connected = true) else control
+            }
+        } else {
+            controls
+        }
+
+        val round = coordinator.activeRound
+        val timing = decisionClock.timing(seat)
+        val paused = decisionClock.isPausedState
+        val effectiveNow = if (paused && pausedAuthorityTimeMillis != null) {
+            pausedAuthorityTimeMillis!!
+        } else {
+            now
+        }
+        val preparation = buildPreparationViewForSeat(seat)
+
+        val cheatPoints = if (config.cheatEconomy.enabled) {
+            coordinator.queryCheatPoints(seat)
+        } else {
+            0
+        }
+
+        val tileMarkView = if (config.tileMarkConfig.enabled) {
+            TileMarkProjectionFactory.create(
+                observerSeat = seat,
+                session = coordinator.session,
+                activeRound = round,
+                view = view,
+                decision = rawDecision,
+                controls = projectionControls,
+                nowMillis = effectiveNow,
+                timing = timing,
+                isPaused = paused,
+                config = config.tileMarkConfig,
+                economyConfig = config.cheatEconomy
+            )
+        } else {
+            null
+        }
+
+        val sleeveBloomView = if (config.sleeveBloomConfig.enabled) {
+            SleeveBloomProjectionFactory.create(
+                observerSeat = seat,
+                activeRound = round,
+                view = view,
+                decision = rawDecision,
+                controls = projectionControls,
+                timing = timing,
+                nowMillis = effectiveNow,
+                isPaused = paused,
+                config = config.sleeveBloomConfig,
+                economyConfig = config.cheatEconomy
+            )
+        } else {
+            null
+        }
+
+        val beamSwapView = if (config.beamSwapConfig.enabled) {
+            BeamSwapProjectionFactory.create(
+                observerSeat = seat,
+                activeRound = round,
+                view = view,
+                decision = rawDecision,
+                controls = projectionControls,
+                timing = timing,
+                nowMillis = effectiveNow,
+                isPaused = paused,
+                config = config.beamSwapConfig,
+                economyConfig = config.cheatEconomy,
+                session = coordinator.session
+            )
+        } else {
+            null
+        }
+
+        val preparationActive = preparation != null && isPreparationActive() && !preparation.confirmed
+        val bloomOffer = sleeveBloomView?.pendingOffer
+        val beamOffer = beamSwapView?.pendingOffer
+        val phase = when {
+            preparationActive -> AiPhase.SHUFFLE_PREPARATION
+            bloomOffer != null || beamOffer != null -> AiPhase.OFFER_CHOICE
+            rawDecision.options.isNotEmpty() -> AiPhase.ORDINARY_ACTION
+            sleeveBloomView?.canApplyOffTurn == true && sleeveBloomView.offTurnWindowId != null ->
+                AiPhase.ORDINARY_ACTION
+            else -> AiPhase.IDLE
+        }
+        val roundId = if (preparationActive) preparation!!.roundId else round?.roundId
+        val decisionId = when (phase) {
+            AiPhase.SHUFFLE_PREPARATION -> "preparation-$roundId-$seat"
+            else -> rawDecision.decisionId
+        }
+        val deadline = when (phase) {
+            AiPhase.SHUFFLE_PREPARATION -> preparation!!.deadlineMillis
+            AiPhase.OFFER_CHOICE -> bloomOffer?.deadlineMillis ?: beamOffer?.deadlineMillis ?: timing?.deadlineMillis
+            AiPhase.ORDINARY_ACTION -> timing?.deadlineMillis
+            AiPhase.IDLE -> null
+        }
+        val stateVersion = round?.version ?: 0L
+        val stamp = AiDecisionStamp(
+            seat = seat,
+            sessionId = coordinator.session.sessionId,
+            roundId = roundId,
+            decisionId = decisionId,
+            controlEpoch = rawDecision.controlEpoch,
+            phase = phase,
+            stateVersion = stateVersion,
+            offerId = bloomOffer?.offerId ?: beamOffer?.offerId,
+            windowId = bloomOffer?.windowId ?: sleeveBloomView?.offTurnWindowId,
+            deadlineMillis = deadline
+        )
+
+        val policy = config.aiCheatPolicy.restrictWith(strategyPolicy)
+        val enabledCapabilities = LinkedHashSet<String>()
+        val seatMaySpend = automated && (!takeover || policy.takeoverMaySpend)
+        val legacyShuffle = automated && !takeover && config.shuffleConfig.aiMaySpend &&
+            strategyPolicy?.enabled != false &&
+            registeredCapabilityIds.contains(AiCapabilityIds.SHUFFLE_PREPARATION) &&
+            policy.isCapabilityToggled(AiCapabilityIds.SHUFFLE_PREPARATION)
+        val effectiveBudget = when {
+            policy.enabled && seatMaySpend -> policy.maxSpendPerRound
+            legacyShuffle -> 60
+            else -> 0
+        }
+        val remainingBudget = maxOf(0, effectiveBudget - spentThisRound)
+        if (remainingBudget > 0) {
+            if (policy.enabled && seatMaySpend) {
+                for (capabilityId in registeredCapabilityIds) {
+                    if (capabilityId == AiCapabilityIds.MAHJONG) continue
+                    if (policy.isCapabilityToggled(capabilityId)) enabledCapabilities.add(capabilityId)
+                }
+            }
+            if (legacyShuffle) enabledCapabilities.add(AiCapabilityIds.SHUFFLE_PREPARATION)
+        }
+        if (phase == AiPhase.OFFER_CHOICE) {
+            if (bloomOffer != null) enabledCapabilities.add(AiCapabilityIds.SLEEVE_BLOOM)
+            if (beamOffer != null) enabledCapabilities.add(AiCapabilityIds.BEAM_SWAP)
+        }
+
+        val limits = AiCandidateLimits(
+            enabledCapabilityIds = enabledCapabilities,
+            maxSpend = remainingBudget,
+            remainingPoints = cheatPoints,
+            reservePoints = if (legacyShuffle && !policy.enabled) 0 else policy.reservePoints,
+            candidateLimit = policy.candidateLimit,
+            riskTolerance = policy.riskTolerance
+        )
+
+        return AiSeatSnapshot(
+            stamp = stamp,
+            view = view,
+            decision = rawDecision,
+            cheatView = AiCheatView(
+                cheatPoints = cheatPoints,
+                preparation = preparation,
+                tileMark = tileMarkView,
+                sleeveBloom = sleeveBloomView,
+                beamSwap = beamSwapView
+            ),
+            limits = limits,
+            policy = policy,
+            takeover = takeover
+        )
+    }
+
     fun querySnapshot(
         seat: Int,
         syncEpoch: String,
@@ -2476,6 +2786,14 @@ class TableAuthority @JvmOverloads constructor(
     }
 
     companion object {
+        private val BUILT_IN_AI_CAPABILITY_IDS: List<String> = listOf(
+            AiCapabilityIds.SHUFFLE_PREPARATION,
+            AiCapabilityIds.TILE_MARK,
+            AiCapabilityIds.SLEEVE_BLOOM,
+            AiCapabilityIds.BEAM_SWAP
+        )
+        private val BUILT_IN_AI_CAPABILITY_ID_SET: Set<String> = BUILT_IN_AI_CAPABILITY_IDS.toSet()
+
         fun sanitizeConfig(config: MatchConfig): MatchConfig {
             val effectiveCheatEconomy = if (config.shuffleConfig.enabled && !config.cheatEconomy.enabled) {
                 val presetPoints = if (config.winds == listOf(1)) 50 else 100
@@ -2498,7 +2816,10 @@ class TableAuthority @JvmOverloads constructor(
                 shuffleConfig = config.shuffleConfig.copy(),
                 tileMarkConfig = config.tileMarkConfig.copy(),
                 sleeveBloomConfig = config.sleeveBloomConfig.copy(),
-                beamSwapConfig = config.beamSwapConfig.copy()
+                beamSwapConfig = config.beamSwapConfig.copy(),
+                aiCheatPolicy = config.aiCheatPolicy.copy(
+                    capabilityToggles = HashMap(config.aiCheatPolicy.capabilityToggles)
+                )
             )
         }
     }

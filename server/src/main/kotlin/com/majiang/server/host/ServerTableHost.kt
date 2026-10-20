@@ -14,7 +14,24 @@ import com.majiang.cheat.beam.BeamSwapView
 import com.majiang.stacking.ShufflePreparationView
 import com.majiang.access.deepCopy
 import com.majiang.ai.AIStrategy
+import com.majiang.ai.AiCandidate
+import com.majiang.ai.AiCandidateFactory
+import com.majiang.ai.AiCandidateScorer
+import com.majiang.ai.AiDecisionContext
+import com.majiang.ai.AiDecisionStamp
+import com.majiang.ai.AiDecisionStrategy
+import com.majiang.ai.AiPhase
+import com.majiang.ai.AiSeatSnapshot
 import com.majiang.ai.BasicAIStrategy
+import com.majiang.ai.BasicAiDecisionStrategy
+import com.majiang.ai.LegacyAiStrategyAdapter
+import com.majiang.ai.cheat.BeamSwapAiCapability
+import com.majiang.ai.cheat.AiCapabilityIds
+import com.majiang.ai.cheat.CheatAiCapability
+import com.majiang.ai.cheat.CheatAiRegistry
+import com.majiang.ai.cheat.ShufflePreparationAiCapability
+import com.majiang.ai.cheat.SleeveBloomAiCapability
+import com.majiang.ai.cheat.TileMarkAiCapability
 import com.majiang.application.ActionChoice
 import com.majiang.application.PlayerDecision
 import com.majiang.application.deepCopy
@@ -74,6 +91,23 @@ import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
 
 /**
+ * AI 决策审计条目。
+ *
+ * 只记录决策身份、能力 ID、候选摘要、费用与回执状态；不包含他家暗牌、未公开牌山或内部完整状态。
+ */
+data class AiDecisionAudit(
+    val stamp: AiDecisionStamp,
+    val selectedCapabilityId: String?,
+    val selectedOptionId: String?,
+    val candidateCount: Int,
+    val cost: Int,
+    val selectedScore: Double?,
+    val status: String,
+    val reason: String?,
+    val safeFallback: Boolean
+)
+
+/**
  * 服务端权威单桌异步宿主 (ServerTableHost)
  *
  * 遵循 V4 架构契约与 MR-07a 规范：
@@ -112,6 +146,16 @@ class ServerTableHost @JvmOverloads constructor(
     val disconnectPolicy: DisconnectPolicy = DisconnectPolicy(),
     val adminSeat: Int = 0,
     aiProfiles: Map<String, () -> AIStrategy> = emptyMap(),
+    /**
+     * 新增统一 AI 决策策略的显式注册入口。未注册时旧 [AIStrategy] 由兼容包装器接入。
+     */
+    aiDecisionProfiles: Map<String, () -> AiDecisionStrategy> = emptyMap(),
+    /**
+     * 显式追加千术能力适配器的组合根入口。默认装配四个内置能力；
+     * 新增千术只需在此追加一个工厂，通用调度器与策略无需修改。
+     */
+    cheatAiCapabilityFactories: List<(TableAuthority) -> CheatAiCapability> = emptyList(),
+    private val aiDecisionObserver: (AiDecisionAudit) -> Unit = {},
     aiExecutor: ExecutorService? = null,
     val rhythmIntervalMillis: Long = 150L,
     serialExecutor: ExecutorService? = null,
@@ -137,9 +181,15 @@ class ServerTableHost @JvmOverloads constructor(
         "tsumogiri" to { TsumogiriAIStrategy() }
     )
 
+    private val aiDecisionProfileRegistry = mutableMapOf<String, () -> AiDecisionStrategy>()
+    private val aiDecisionStrategyCache = HashMap<String, AiDecisionStrategy>()
+
     init {
         for ((name, factory) in aiProfiles) {
             strategyRegistry[name.lowercase()] = factory
+        }
+        for ((name, factory) in aiDecisionProfiles) {
+            aiDecisionProfileRegistry[name.lowercase()] = factory
         }
         resolveAiStrategy(disconnectPolicy.aiProfileId)
     }
@@ -159,6 +209,27 @@ class ServerTableHost @JvmOverloads constructor(
         initialState = initialState,
         adminSeat = adminSeat
     )
+
+    /**
+     * 显式能力注册表：四个内置适配器 + 组合根追加项。
+     * 注册时校验 ID 唯一、版本、阶段、候选上限与提交入口。
+     */
+    internal val cheatAiRegistry: CheatAiRegistry = CheatAiRegistry(
+        buildList {
+            add(ShufflePreparationAiCapability(authority))
+            add(TileMarkAiCapability(authority))
+            add(SleeveBloomAiCapability(authority))
+            add(BeamSwapAiCapability(authority))
+            for (factory in cheatAiCapabilityFactories) {
+                add(factory(authority))
+            }
+        }
+    )
+
+    /** 当前已注册的 AI 千术能力 ID（稳定顺序，便于观测与测试）。 */
+    fun registeredCheatAiCapabilityIds(): List<String> = cheatAiRegistry.ids
+
+    private val cheatAiCapabilityIds: Set<String> = cheatAiRegistry.ids.toSet()
 
     /** 公开会话 ID 只读透传（MR-07b 供公开帧缓存按会话管理与释放） */
     internal val publicSessionId: String
@@ -414,17 +485,20 @@ class ServerTableHost @JvmOverloads constructor(
         ThreadPoolExecutor.DiscardPolicy()
     )
 
-    private data class AiTaskKey(val seat: Int, val roundId: String, val decisionId: String, val epoch: Long)
-    private val dispatchedAiTasks = ConcurrentHashMap.newKeySet<AiTaskKey>()
-
-    private data class AiResult(
-        val seat: Int,
-        val roundId: String,
-        val decisionId: String,
-        val epoch: Long,
-        val action: GameAction?
+    private data class AiComputationResult(
+        val stamp: AiDecisionStamp,
+        val optionId: String?
     )
-    private val pendingAiResults = ConcurrentLinkedQueue<AiResult>()
+
+    // 同一座位同一 stamp 仅派发一次；结果回到串行队列后重新校验完整 stamp。
+    private val dispatchedAiTasks = ConcurrentHashMap.newKeySet<AiDecisionStamp>()
+    private val pendingAiResults = ConcurrentLinkedQueue<AiComputationResult>()
+
+    // 以下预算/重试/轮次状态只在权威串行队列内读写。
+    private val aiSpentByRound = HashMap<Pair<String, Int>, Int>()
+    private val aiAttempts = HashMap<AiDecisionStamp, Int>()
+    private var aiBudgetRoundId: String? = null
+    private val maxAiAttemptsPerStamp = 2
 
     private var lastActionTimeMillis: Long = clock.nowMillis()
     private val readySeats = Collections.synchronizedSet(mutableSetOf<Int>())
@@ -1241,6 +1315,7 @@ class ServerTableHost @JvmOverloads constructor(
         return enqueueOperation {
             val changed = authority.resume(clock.nowMillis())
             if (changed) {
+                syncDecisionsAndClocks()
                 publishStateChanges(emptyList())
             }
             changed
@@ -1534,8 +1609,12 @@ class ServerTableHost @JvmOverloads constructor(
 
         // 0. 洗牌千术准备阶段
         if (authority.isPreparationActive()) {
+            syncDecisionsAndClocks()
+            if (processPendingAiResults(now)) return true
             val automatedSeats = (0 until 4).filter { connectionControl.seatState(it).isAutomated }.toSet()
-            val nativeAiSeats = (0 until 4).filter { connectionControl.seatState(it).isComputer && initialControllers.getOrNull(it) is SeatController.Computer }.toSet()
+            val nativeAiSeats = (0 until 4).filter {
+                connectionControl.seatState(it).isComputer && initialControllers.getOrNull(it) is SeatController.Computer
+            }.toSet()
             val dealResult = authority.checkPreparationStep(now, automatedSeats, nativeAiSeats)
             if (dealResult != null) {
                 syncDecisionsAndClocks()
@@ -1601,20 +1680,8 @@ class ServerTableHost @JvmOverloads constructor(
         if (presentationBusy) return false
         if (rhythmIntervalMillis > 0L && elapsed in 0 until rhythmIntervalMillis) return false
 
-        // 6. 处理已完成的异步 AI 决策 (至多执行一个)
-        while (true) {
-            val aiResult = pendingAiResults.poll() ?: break
-            val (seat, roundId, decisionId, epoch, action) = aiResult
-            if (connectionControl.seatState(seat).isAutomated && action != null) {
-                val res = authority.submitAiChoice(seat, roundId, decisionId, epoch, action, now)
-                if (res.stateChanged) {
-                    syncDecisionsAndClocks()
-                    publishStateChanges(res.events)
-                    lastActionTimeMillis = now
-                    return true
-                }
-            }
-        }
+        // 6. 处理已完成的异步 AI 决策 (至多提交一个成功动作)
+        if (processPendingAiResults(now)) return true
 
         // 7. 自动立直摸切
         val humanAutoRiichiSeats = (0 until 4).filter { s ->
@@ -1635,31 +1702,323 @@ class ServerTableHost @JvmOverloads constructor(
         return false
     }
 
+    /**
+     * 统一 AI 调度入口。
+     *
+     * 1. 先在串行队列推进决策时钟（保留既有 [TableAuthority.syncDecisionsAndClocks] 语义）；
+     * 2. 洗牌准备阶段为每个自动化座位派发方案决策；
+     * 3. 对存在本座位待决 offer 的座位派发后续选择决策；
+     * 4. 对普通行动请求派发统一策略决策。
+     *
+     * 通用调度器只遍历 [cheatAiRegistry]，不包含任何 `when (千术类型)` 分支。
+     */
     private fun syncDecisionsAndClocks() {
         val now = clock.nowMillis()
         val automatedSeats = (0 until 4).filter { connectionControl.seatState(it).isAutomated }.toSet()
         val requests = authority.syncDecisionsAndClocks(now, automatedSeats)
-        val activeRoundId = authority.currentRoundId
+        refreshAiBudgetRound()
 
-        dispatchedAiTasks.removeIf { it.roundId != (activeRoundId ?: "session") }
-
-        for (req in requests) {
-            val taskKey = AiTaskKey(req.seat, req.roundId, req.decisionId, req.controlEpoch)
-            if (dispatchedAiTasks.add(taskKey)) {
-                val strategy = resolveAiStrategyForSeat(req.seat)
-                try {
-                    internalAiExecutor.submit {
-                        try {
-                            val chosen = strategy.decideAction(req.view, req.legalActions)
-                            if (chosen != null) {
-                                pendingAiResults.add(AiResult(req.seat, req.roundId, req.decisionId, req.controlEpoch, chosen))
-                            }
-                        } catch (_: Throwable) {
-                        }
-                    }
-                } catch (_: RejectedExecutionException) {
+        if (authority.isPreparationActive()) {
+            for (seat in automatedSeats) {
+                maybeScheduleAi(seat, now)
+            }
+        } else {
+            val attempted = HashSet<Int>()
+            for (seat in automatedSeats) {
+                if (authority.hasPendingAiOffer(seat) ||
+                    authority.hasOffTurnSleeveBloomOpportunity(seat)
+                ) {
+                    if (attempted.add(seat)) maybeScheduleAi(seat, now)
                 }
             }
+            for (request in requests) {
+                if (request.seat in automatedSeats && attempted.add(request.seat)) {
+                    maybeScheduleAi(request.seat, now)
+                }
+            }
+        }
+
+        if (dispatchedAiTasks.size > 256) {
+            val currentVersion = authority.currentRoundVersion ?: 0L
+            dispatchedAiTasks.removeIf { it.stateVersion + 8L < currentVersion }
+        }
+    }
+
+    private fun refreshAiBudgetRound() {
+        val roundId = authority.currentRoundId
+        if (roundId != aiBudgetRoundId) {
+            aiBudgetRoundId = roundId
+            aiSpentByRound.clear()
+            aiAttempts.clear()
+            dispatchedAiTasks.removeIf { stamp ->
+                stamp.sessionId != authority.sessionId ||
+                    (roundId != null && stamp.roundId != null && stamp.roundId != roundId)
+            }
+        }
+    }
+
+    private fun maybeScheduleAi(seat: Int, now: Long) {
+        if (authority.isPaused) return
+        val strategy = resolveAiDecisionStrategyForSeat(seat)
+        val roundId = authority.currentRoundId ?: return
+        val spent = aiSpentByRound[roundId to seat] ?: 0
+        val snapshot = authority.buildAiSeatSnapshot(
+            seat,
+            now,
+            strategy.cheatPolicy,
+            spent,
+            cheatAiCapabilityIds
+        )
+        if (snapshot.phase == AiPhase.IDLE) return
+        if (authority.isPreparationActive() && snapshot.phase != AiPhase.SHUFFLE_PREPARATION) return
+        if (snapshot.phase == AiPhase.ORDINARY_ACTION &&
+            snapshot.decision.options.isEmpty() &&
+            !snapshot.limits.allows(AiCapabilityIds.SLEEVE_BLOOM)
+        ) {
+            return
+        }
+        if (snapshot.stamp.deadlineMillis != null && now >= snapshot.stamp.deadlineMillis!!) return
+        // 准备阶段在策略禁用/预算为 0 时无需异步计算：权威截止兜底会默认跳过。
+        if (snapshot.phase == AiPhase.SHUFFLE_PREPARATION &&
+            snapshot.limits.enabledCapabilityIds.isEmpty()
+        ) {
+            return
+        }
+        scheduleAiTask(snapshot, strategy)
+    }
+
+    private fun scheduleAiTask(
+        snapshot: AiSeatSnapshot,
+        strategy: AiDecisionStrategy,
+        excludedOptionIds: Set<String> = emptySet()
+    ) {
+        if (!dispatchedAiTasks.add(snapshot.stamp)) return
+        val frozen = snapshot.deepCopy()
+        try {
+            internalAiExecutor.submit {
+                val chosen = try {
+                    val candidates = AiCandidateFactory.build(frozen, cheatAiRegistry)
+                        .filterNot { it.optionId in excludedOptionIds }
+                    val context = AiDecisionContext(frozen, candidates)
+                    strategy.choose(context)
+                } catch (_: Throwable) {
+                    null
+                }
+                pendingAiResults.add(AiComputationResult(frozen.stamp, chosen))
+            }
+        } catch (_: RejectedExecutionException) {
+            dispatchedAiTasks.remove(snapshot.stamp)
+        }
+    }
+
+    /**
+     * 处理异步 AI 结果：每个 tick 最多提交一个成功动作，超时裁决仍先于 AI 提交。
+     */
+    private fun processPendingAiResults(now: Long): Boolean {
+        while (true) {
+            val result = pendingAiResults.poll() ?: return false
+            if (applyAiResult(result, now)) return true
+        }
+    }
+
+    private fun applyAiResult(result: AiComputationResult, now: Long): Boolean {
+        val stamp = result.stamp
+        val seat = stamp.seat
+        if (!connectionControl.seatState(seat).isAutomated) return false
+        val roundId = authority.currentRoundId ?: return false
+        if (stamp.roundId != roundId) return false
+
+        val strategy = resolveAiDecisionStrategyForSeat(seat)
+        val spent = aiSpentByRound[roundId to seat] ?: 0
+        val fresh = authority.buildAiSeatSnapshot(
+            seat,
+            now,
+            strategy.cheatPolicy,
+            spent,
+            cheatAiCapabilityIds
+        )
+        // 完整 stamp 校验：任一字段变化即丢弃旧结果。
+        if (fresh.stamp != stamp) return false
+        if (fresh.stamp.deadlineMillis != null && now >= fresh.stamp.deadlineMillis!!) return false
+
+        val candidates = try {
+            AiCandidateFactory.build(fresh, cheatAiRegistry)
+        } catch (_: Throwable) {
+            return false
+        }
+        val selected = result.optionId?.let { id -> candidates.firstOrNull { it.optionId == id } }
+        val safe = candidates.firstOrNull {
+            it.isSafeDefault && it.capabilityId != AiCandidateFactory.MAHJONG_CAPABILITY_ID
+        }
+        val fallback = safe ?: if (fresh.phase == AiPhase.ORDINARY_ACTION) {
+            ordinaryTimeoutCandidate(fresh, candidates)
+        } else {
+            null
+        }
+        val chosen = selected ?: fallback ?: return false
+        return submitAiCandidate(fresh, chosen, candidates.size, now, safeFallback = selected == null)
+    }
+
+    private fun ordinaryTimeoutCandidate(
+        fresh: AiSeatSnapshot,
+        candidates: List<AiCandidate>
+    ): AiCandidate? {
+        val action = com.majiang.timing.TimeoutPolicy.choose(
+            fresh.view,
+            fresh.decision.options.map { it.action }
+        ) ?: return null
+        val option = fresh.decision.options.firstOrNull { it.action == action } ?: return null
+        return candidates.firstOrNull {
+            it.capabilityId == AiCandidateFactory.MAHJONG_CAPABILITY_ID && it.optionId == option.optionId
+        }
+    }
+
+    private fun submitAiCandidate(
+        fresh: AiSeatSnapshot,
+        candidate: AiCandidate,
+        candidateCount: Int,
+        now: Long,
+        safeFallback: Boolean
+    ): Boolean {
+        val seat = fresh.seat
+        if (candidate.capabilityId == AiCandidateFactory.MAHJONG_CAPABILITY_ID) {
+            val option = fresh.decision.options.firstOrNull { it.optionId == candidate.optionId }
+                ?: return false
+            val roundId = fresh.stamp.roundId ?: return false
+            val mutation = authority.submitAiChoice(
+                seat,
+                roundId,
+                fresh.decision.decisionId,
+                fresh.stamp.controlEpoch,
+                option.action,
+                now
+            )
+            emitAiAudit(fresh, candidate, candidateCount, mutation.receipt.status, mutation.receipt.reason, safeFallback)
+            if (mutation.receipt.status == ReceiptStatus.REJECTED) {
+                return retryOrFallback(fresh, candidate, now, safeFallback)
+            }
+            if (mutation.stateChanged) {
+                syncDecisionsAndClocks()
+                publishStateChanges(mutation.events)
+                lastActionTimeMillis = now
+                return true
+            }
+            return false
+        }
+
+        val capability = cheatAiRegistry.find(candidate.capabilityId) ?: return false
+        val mutation = try {
+            capability.submit(seat, candidate, fresh.stamp, now)
+        } catch (_: Throwable) {
+            emitAiAudit(
+                fresh,
+                candidate,
+                candidateCount,
+                ReceiptStatus.REJECTED,
+                "CAPABILITY_EXCEPTION",
+                safeFallback
+            )
+            return retryOrFallback(fresh, candidate, now, safeFallback)
+        }
+        emitAiAudit(fresh, candidate, candidateCount, mutation.receipt.status, mutation.receipt.reason, safeFallback)
+        if (mutation.receipt.status == ReceiptStatus.REJECTED) {
+            return retryOrFallback(fresh, candidate, now, safeFallback)
+        }
+        if (mutation.stateChanged) {
+            recordAiSpend(fresh.stamp.roundId, seat, candidate.cost)
+            syncDecisionsAndClocks()
+            publishStateChanges(mutation.events)
+            lastActionTimeMillis = now
+            return true
+        }
+        return false
+    }
+
+    /**
+     * 拒绝后在新快照上重试有限次数；耗尽后执行安全兜底（offer 保留 / 普通动作超时默认）。
+     */
+    private fun retryOrFallback(
+        fresh: AiSeatSnapshot,
+        rejected: AiCandidate,
+        now: Long,
+        wasFallback: Boolean
+    ): Boolean {
+        val attempts = (aiAttempts[fresh.stamp] ?: 0) + 1
+        aiAttempts[fresh.stamp] = attempts
+        if (!wasFallback && attempts < maxAiAttemptsPerStamp) {
+            dispatchedAiTasks.remove(fresh.stamp)
+            val strategy = resolveAiDecisionStrategyForSeat(fresh.seat)
+            scheduleAiTask(fresh.deepCopy(), strategy, excludedOptionIds = setOf(rejected.optionId))
+            return false
+        }
+        if (wasFallback) return false
+
+        val candidates = AiCandidateFactory.build(fresh, cheatAiRegistry)
+        val safe = candidates.firstOrNull {
+            it.isSafeDefault &&
+                it.capabilityId != AiCandidateFactory.MAHJONG_CAPABILITY_ID &&
+                it.optionId != rejected.optionId
+        }
+        if (safe != null) {
+            return submitAiCandidate(fresh, safe, candidates.size, now, safeFallback = true)
+        }
+        if (fresh.phase == AiPhase.ORDINARY_ACTION) {
+            val ordinary = ordinaryTimeoutCandidate(fresh, candidates)
+            if (ordinary != null && ordinary.optionId != rejected.optionId) {
+                return submitAiCandidate(fresh, ordinary, candidates.size, now, safeFallback = true)
+            }
+        }
+        return false
+    }
+
+    private fun recordAiSpend(roundId: String?, seat: Int, cost: Int) {
+        if (roundId == null || cost <= 0) return
+        val key = roundId to seat
+        aiSpentByRound[key] = (aiSpentByRound[key] ?: 0) + cost
+    }
+
+    private fun emitAiAudit(
+        fresh: AiSeatSnapshot,
+        candidate: AiCandidate?,
+        candidateCount: Int,
+        status: ReceiptStatus,
+        reason: String?,
+        safeFallback: Boolean
+    ) {
+        try {
+            aiDecisionObserver(
+                AiDecisionAudit(
+                    stamp = fresh.stamp,
+                    selectedCapabilityId = candidate?.capabilityId,
+                    selectedOptionId = candidate?.optionId,
+                    candidateCount = candidateCount,
+                    cost = candidate?.cost ?: 0,
+                    selectedScore = candidate?.let { AiCandidateScorer.score(it, fresh.limits) },
+                    status = status.name,
+                    reason = reason,
+                    safeFallback = safeFallback
+                )
+            )
+        } catch (_: Throwable) {
+            // 观察者异常不得影响权威队列。
+        }
+    }
+
+    private fun resolveAiDecisionStrategyForSeat(seat: Int): AiDecisionStrategy {
+        val legacy = resolveAiStrategyForSeat(seat)
+        val profileId = connectionControl.seatState(seat).aiProfileId
+            ?: "basic".takeIf { legacy is BasicAIStrategy }
+        val explicit = profileId?.lowercase()?.let { profile ->
+            aiDecisionProfileRegistry[profile]?.let { factory ->
+                aiDecisionStrategyCache.getOrPut(profile) { factory() }
+            }
+        }
+        if (explicit != null) return explicit
+
+        if (legacy is AiDecisionStrategy) return legacy
+        return when (legacy) {
+            is BasicAIStrategy -> BasicAiDecisionStrategy(legacy)
+            else -> LegacyAiStrategyAdapter(legacy, allowCheats = false)
         }
     }
 
@@ -1861,6 +2220,10 @@ class ServerTableHost @JvmOverloads constructor(
             issuedReceipts.clear()
             dispatchedAiTasks.clear()
             pendingAiResults.clear()
+            aiSpentByRound.clear()
+            aiAttempts.clear()
+            aiDecisionStrategyCache.clear()
+            aiBudgetRoundId = null
         }
     }
 
