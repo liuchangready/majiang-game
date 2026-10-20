@@ -91,14 +91,13 @@ object ApiErrors {
  */
 object ApiProtocol {
     /**
-     * 权威业务协议版本号（v7：准备阶段看破 seeThrough、10 点固定费用与私有准备视图）。
+     * 权威业务协议版本号（v8：统一码牌千术，将洗牌方案收敛为单一 target + seeThrough）。
      *
-     * v6 已撤回：v7 双端不再接受 v6 HELLO/WELCOME，旧端收到 VERSION_MISMATCH。
-     * v7 在洗牌方案中新增严格布尔字段 seeThrough；旧端不得把缺失/未知布尔字段误当成
-     * 默认关闭以外的语义，因此必须按业务版本硬拒绝。
+     * v7 及更旧版本不再被双端接受：旧 initialTargets/drawTargets 字段已移除，HELLO/WELCOME
+     * 硬相等校验按 VERSION_MISMATCH 拒绝，不做热迁移。
      * MJ-TCP/1 12 字节帧格式与 `TcpWire.WIRE_VERSION = 1` 保持不变。
      */
-    const val PROTOCOL_VERSION = 7
+    const val PROTOCOL_VERSION = 8
 
     // === 连接终结 / KICK 原因码 ===
 

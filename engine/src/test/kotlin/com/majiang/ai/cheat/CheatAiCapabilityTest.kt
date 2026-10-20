@@ -400,7 +400,7 @@ class CheatAiCapabilityTest {
     }
 
     @Test
-    fun `see through is offered only when enabled and combines within the six candidate budget`() {
+    fun `see through is offered only when enabled and combines inside one unified target`() {
         val clock = Clock()
         val config = MatchConfig(
             cheatEconomy = CheatEconomyConfig(
@@ -430,20 +430,19 @@ class CheatAiCapabilityTest {
 
             val registry = CheatAiRegistry.builtIn(authority)
             val candidates = registry.candidates(snapshot, snapshot.limits)
-            assertEquals(6, candidates.size)
+            assertEquals(4, candidates.size)
             val byId = candidates.associateBy { it.optionId }
             assertTrue(byId.containsKey("${AiCapabilityIds.SHUFFLE_PREPARATION}:see-through"))
             val combined = byId.getValue("${AiCapabilityIds.SHUFFLE_PREPARATION}:combined")
-            assertEquals(70, combined.cost)
+            assertEquals(40, combined.cost)
             assertTrue(combined.parameters.string("seeThrough") == "true")
-            assertTrue(combined.parameters.string("initialTargets")!!.contains("CHINITSU_MAN"))
-            assertTrue(combined.parameters.string("drawTargets")!!.contains("DAISANGEN"))
+            assertEquals("CHINITSU_MAN", combined.parameters.string("target"))
 
             val result = registry.require(AiCapabilityIds.SHUFFLE_PREPARATION)
                 .submit(1, combined, snapshot.stamp, clock.now)
             assertEquals(ReceiptStatus.RECORDED, result.receipt.status, result.receipt.reason)
             val prep = authority.buildPreparationViewForSeat(1)!!
-            assertEquals(70, prep.reservedPoints)
+            assertEquals(40, prep.reservedPoints)
             assertTrue(prep.selection!!.seeThrough)
         }
 
@@ -467,7 +466,7 @@ class CheatAiCapabilityTest {
             val snapshot = authority.buildAiSeatSnapshot(1, clock.now)
             val registry = CheatAiRegistry.builtIn(authority)
             val candidates = registry.candidates(snapshot, snapshot.limits)
-            assertEquals(4, candidates.size, "Disabled see-through must keep the legacy four candidates")
+            assertEquals(2, candidates.size, "Disabled see-through keeps skip + one target candidate")
             assertTrue(candidates.none { it.optionId.endsWith(":see-through") || it.optionId.endsWith(":combined") })
             assertTrue(candidates.none { it.parameters.string("seeThrough") == "true" })
         }

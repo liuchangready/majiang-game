@@ -59,8 +59,7 @@ class D09CheatDelegationAcceptanceTest {
                 "TILE_MARK" to 10,
                 "SLEEVE_BLOOM" to 10,
                 "BEAM_SWAP" to 10,
-                "shuffle_initial" to 40,
-                "shuffle_draw" to 20
+                "shuffle_target" to 30
             )
         ),
         shuffleConfig = ShuffleConfig(enabled = shuffle, selectionMillis = 10_000L),
@@ -267,7 +266,7 @@ class D09CheatDelegationAcceptanceTest {
                 requestId = "prep-1",
                 roundId = roundId,
                 controlEpoch = a.controlEpochFor(0),
-                selection = ShuffleSelection(initialTargets = setOf(ShuffleTarget.CHINITSU_MAN))
+                selection = ShuffleSelection(target = ShuffleTarget.CHINITSU_MAN)
             )
             assertEquals(
                 "STALE_EPOCH",
@@ -275,7 +274,7 @@ class D09CheatDelegationAcceptanceTest {
             )
             val recorded = a.submitShufflePlan(0, plan, clock.now)
             assertEquals(ReceiptStatus.RECORDED, recorded.receipt.status)
-            assertEquals(60, a.buildPreparationViewForSeat(0)!!.availablePoints)
+            assertEquals(70, a.buildPreparationViewForSeat(0)!!.availablePoints)
             assertEquals(recorded.receipt, a.submitShufflePlan(0, plan, clock.now).receipt)
             assertEquals(
                 "ALREADY_CONFIRMED",
@@ -303,7 +302,7 @@ class D09CheatDelegationAcceptanceTest {
             assertNotNull(dealt)
             assertTrue(dealt is TableAuthority.AutoStepResult.PreparationDealt)
             assertFalse(a.isPreparationActive())
-            assertEquals(60, snapshot(a).cheatPoints[0])
+            assertEquals(70, snapshot(a).cheatPoints[0])
             assertEquals(100, snapshot(a).cheatPoints[1])
             assertEquals(1, a.coordinator.session.tileMarkState.dealtRoundOrdinal)
             assertPhysical(a.coordinator.activeRound!!.readState())
@@ -334,7 +333,7 @@ class D09CheatDelegationAcceptanceTest {
             "prep-close",
             prepRoundId,
             authority.controlEpochFor(0),
-            ShuffleSelection(drawTargets = setOf(ShuffleTarget.DAISANGEN))
+            ShuffleSelection(target = ShuffleTarget.DAISANGEN)
         )
         assertEquals(ReceiptStatus.RECORDED, authority.submitShufflePlan(0, plan, clock.now).receipt.status)
         val before = authority.coordinator.activeRound!!.readState().cheatPoints.toList()

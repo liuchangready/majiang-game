@@ -448,14 +448,12 @@ object EngineProtocolMapper {
     }
 
     fun toProtocolShuffleSelection(selection: ShuffleSelection): ProtocolShuffleSelection = ProtocolShuffleSelection(
-        initialTargets = Collections.unmodifiableSet(selection.initialTargets.mapTo(LinkedHashSet()) { toProtocolShuffleTarget(it) }),
-        drawTargets = Collections.unmodifiableSet(selection.drawTargets.mapTo(LinkedHashSet()) { toProtocolShuffleTarget(it) }),
+        target = selection.target?.let { toProtocolShuffleTarget(it) },
         seeThrough = selection.seeThrough
     )
 
     fun toEngineShuffleSelection(selection: ProtocolShuffleSelection): ShuffleSelection = ShuffleSelection(
-        initialTargets = Collections.unmodifiableSet(selection.initialTargets.mapTo(LinkedHashSet()) { toEngineShuffleTarget(it) }),
-        drawTargets = Collections.unmodifiableSet(selection.drawTargets.mapTo(LinkedHashSet()) { toEngineShuffleTarget(it) }),
+        target = selection.target?.let { toEngineShuffleTarget(it) },
         seeThrough = selection.seeThrough
     )
 

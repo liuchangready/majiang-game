@@ -336,13 +336,13 @@ class AiCheatDispatchContractTest {
             assertTrue(host.tick().await())
             val prepared = host.snapshot(1).await()
             assertTrue(prepared.preparation!!.confirmed)
-            assertEquals(40, prepared.preparation!!.reservedPoints)
+            assertEquals(30, prepared.preparation!!.reservedPoints)
             assertEquals(50, prepared.cheatPoints[1])
 
             clock.now = 10_000L
             host.tick().await()
             val dealt = host.snapshot(1).await()
-            assertEquals(10, dealt.cheatPoints[1])
+            assertEquals(20, dealt.cheatPoints[1])
             assertNull(dealt.preparation)
         } finally {
             host.close()

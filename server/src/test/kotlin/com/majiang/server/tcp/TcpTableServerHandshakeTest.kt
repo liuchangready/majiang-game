@@ -39,8 +39,8 @@ class TcpTableServerHandshakeTest {
                 val welcome = client.expectWelcome()
                 assertEquals(1, welcome.wireVersion)
                 assertEquals(TcpWire.BUSINESS_VERSION, welcome.businessVersion)
-                assertEquals(7, welcome.businessVersion)
-                assertEquals(7, ApiProtocol.PROTOCOL_VERSION)
+                assertEquals(8, welcome.businessVersion)
+                assertEquals(8, ApiProtocol.PROTOCOL_VERSION)
                 assertTrue(welcome.connectionEpoch.isNotBlank())
                 assertTrue(welcome.lobbyResumeToken.startsWith("lbt-"))
                 assertTrue(welcome.lobbyScope.scope.startsWith("scope-"))
@@ -125,12 +125,12 @@ class TcpTableServerHandshakeTest {
 
         try {
             TcpTestClient(port = server.boundPort).use { client ->
-                // v7 升版后，旧业务版本 6 必须被明确拒绝；活动房间不做热迁移。
+                // v8 升版后，旧业务版本 7 必须被明确拒绝；活动房间不做热迁移。
                 val helloBadBiz = TcpHello(
                     wireVersion = TcpWire.WIRE_VERSION,
                     businessVersion = TcpWire.BUSINESS_VERSION - 1
                 )
-                assertEquals(6, helloBadBiz.businessVersion)
+                assertEquals(7, helloBadBiz.businessVersion)
                 client.sendFrame(TcpMessageCodec.toFrame(helloBadBiz))
 
                 val closeMsg = client.expectClose()

@@ -959,43 +959,36 @@ enum class ShufflePreparationStatusView {
     GENERATING
 }
 
-/** 洗牌千术预选方案视图模型 */
+/** 洗牌千术预选方案视图模型（统一码牌千术） */
 class ShuffleSelectionView(
-    initialTargets: Set<ShuffleTargetView> = emptySet(),
-    drawTargets: Set<ShuffleTargetView> = emptySet(),
+    val target: ShuffleTargetView? = null,
     val seeThrough: Boolean = false
 ) {
-    val initialTargets: Set<ShuffleTargetView> = Collections.unmodifiableSet(LinkedHashSet(initialTargets))
-    val drawTargets: Set<ShuffleTargetView> = Collections.unmodifiableSet(LinkedHashSet(drawTargets))
-
     fun cost(): Int =
-        (if (initialTargets.isNotEmpty()) 40 else 0) +
-            (if (drawTargets.isNotEmpty()) 20 else 0) +
+        (if (target != null) TARGET_COST else 0) +
             (if (seeThrough) SEE_THROUGH_COST else 0)
-    val isActive: Boolean get() = initialTargets.isNotEmpty() || drawTargets.isNotEmpty() || seeThrough
+    val isActive: Boolean get() = target != null || seeThrough
 
     fun copy(
-        initialTargets: Set<ShuffleTargetView> = this.initialTargets,
-        drawTargets: Set<ShuffleTargetView> = this.drawTargets,
+        target: ShuffleTargetView? = this.target,
         seeThrough: Boolean = this.seeThrough
-    ): ShuffleSelectionView = ShuffleSelectionView(initialTargets, drawTargets, seeThrough)
+    ): ShuffleSelectionView = ShuffleSelectionView(target, seeThrough)
 
     override fun equals(other: Any?): Boolean = other is ShuffleSelectionView &&
-        initialTargets == other.initialTargets &&
-        drawTargets == other.drawTargets &&
+        target == other.target &&
         seeThrough == other.seeThrough
 
     override fun hashCode(): Int {
-        var result = initialTargets.hashCode()
-        result = 31 * result + drawTargets.hashCode()
+        var result = target?.hashCode() ?: 0
         result = 31 * result + seeThrough.hashCode()
         return result
     }
 
     override fun toString(): String =
-        "ShuffleSelectionView(initialTargets=$initialTargets, drawTargets=$drawTargets, seeThrough=$seeThrough)"
+        "ShuffleSelectionView(target=$target, seeThrough=$seeThrough)"
 
     companion object {
+        const val TARGET_COST: Int = 30
         const val SEE_THROUGH_COST: Int = 10
     }
 }

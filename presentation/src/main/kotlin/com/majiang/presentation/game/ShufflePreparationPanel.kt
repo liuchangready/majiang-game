@@ -21,12 +21,12 @@ import com.majiang.presentation.common.UiAssets
 /**
  * 洗牌千术准备阶段展示面板 (V4 presentation.game)。
  *
- * 核心契约：
+ * 核心契约（统一码牌千术）：
  * 1. 独立表现层组件，拥有并暴露纯模型 [model] 与公共几何包围盒供单元测试；
- * 2. 消费统一 [GameSession]，提交 [ShufflePlan] 异步请求；
+ * 2. 消费统一 [GameSession]，提交 [com.majiang.client.api.ShufflePlan] 异步请求；
  * 3. 10 秒倒计时展示（权威 serverNow + 本地单调流逝时间，暂停冻结）；
- * 4. 偷天换日 (40点) 与 瞒天过海 (20点) 两大区域，各 6 个多选目标；
- *    底部看破 (10点) 可与二者组合，合计最高 70 点，仅看破也可确认；
+ * 4. 只显示一个六选一目标区（30 点，同时作用于起手与全部正常预计摸牌槽），
+ *    以及可叠加的看破（10 点），合计最高 40 点；仅看破或跳过也是合法方案；
  * 5. 允许在点数不足时编辑草稿，但禁用确认并清晰提示原因；已确认方案不误报点数不足；
  * 6. 模态输入守卫：阻断下层牌桌点击穿透；断线、关闭、pending 态消费模态并阻断交互；
  * 7. 倒计时到期与暂停时阻断误点击；
@@ -50,25 +50,16 @@ class ShufflePreparationPanel @JvmOverloads constructor(
     // 几何包围盒契约 (1280x720 虚拟相机坐标系)
     val modalRect = Rectangle(180f, 90f, 920f, 540f)
     val countdownBoxRect = Rectangle(960f, 554f, 110f, 50f)
-    val sectionInitialRect = Rectangle(200f, 345f, 880f, 185f)
-    val sectionDrawRect = Rectangle(200f, 155f, 880f, 185f)
+    val sectionTargetRect = Rectangle(200f, 175f, 880f, 355f)
 
-    val btnInitialTargets: Map<ShuffleTarget, Rectangle> = mapOf(
-        ShuffleTarget.CHINITSU_MAN to Rectangle(220f, 435f, 260f, 38f),
-        ShuffleTarget.CHINITSU_SOU to Rectangle(510f, 435f, 260f, 38f),
-        ShuffleTarget.CHINITSU_PIN to Rectangle(800f, 435f, 260f, 38f),
-        ShuffleTarget.DAISANGEN to Rectangle(220f, 385f, 260f, 38f),
-        ShuffleTarget.KOKUSHI to Rectangle(510f, 385f, 260f, 38f),
-        ShuffleTarget.DAISUUSHII to Rectangle(800f, 385f, 260f, 38f)
-    )
-
-    val btnDrawTargets: Map<ShuffleTarget, Rectangle> = mapOf(
-        ShuffleTarget.CHINITSU_MAN to Rectangle(220f, 245f, 260f, 38f),
-        ShuffleTarget.CHINITSU_SOU to Rectangle(510f, 245f, 260f, 38f),
-        ShuffleTarget.CHINITSU_PIN to Rectangle(800f, 245f, 260f, 38f),
-        ShuffleTarget.DAISANGEN to Rectangle(220f, 195f, 260f, 38f),
-        ShuffleTarget.KOKUSHI to Rectangle(510f, 195f, 260f, 38f),
-        ShuffleTarget.DAISUUSHII to Rectangle(800f, 195f, 260f, 38f)
+    /** 六选一统一目标按钮：一次只能选择一个，再次点击取消。 */
+    val btnTargets: Map<ShuffleTarget, Rectangle> = mapOf(
+        ShuffleTarget.CHINITSU_MAN to Rectangle(220f, 465f, 260f, 38f),
+        ShuffleTarget.CHINITSU_SOU to Rectangle(510f, 465f, 260f, 38f),
+        ShuffleTarget.CHINITSU_PIN to Rectangle(800f, 465f, 260f, 38f),
+        ShuffleTarget.DAISANGEN to Rectangle(220f, 410f, 260f, 38f),
+        ShuffleTarget.KOKUSHI to Rectangle(510f, 410f, 260f, 38f),
+        ShuffleTarget.DAISUUSHII to Rectangle(800f, 410f, 260f, 38f)
     )
 
     val btnSeeThroughRect = Rectangle(200f, 102f, 300f, 42f)
@@ -76,9 +67,7 @@ class ShufflePreparationPanel @JvmOverloads constructor(
     val btnConfirmRect = Rectangle(710f, 102f, 180f, 42f)
 
     // 悬停状态
-    var hoveredInitialTarget: ShuffleTarget? = null
-        private set
-    var hoveredDrawTarget: ShuffleTarget? = null
+    var hoveredTarget: ShuffleTarget? = null
         private set
     var isConfirmHovered: Boolean = false
         private set
@@ -139,29 +128,21 @@ class ShufflePreparationPanel @JvmOverloads constructor(
             return true
         }
 
-        // 1. 偷天换日目标点击
-        for ((target, rect) in btnInitialTargets) {
+        // 1. 统一目标单选点击
+        for ((target, rect) in btnTargets) {
             if (rect.contains(x, y)) {
-                model.toggleInitialTarget(target)
+                model.selectTarget(target)
                 return true
             }
         }
 
-        // 2. 瞒天过海目标点击
-        for ((target, rect) in btnDrawTargets) {
-            if (rect.contains(x, y)) {
-                model.toggleDrawTarget(target)
-                return true
-            }
-        }
-
-        // 3. 看破开关（仅启用房间可切换，与两大码牌目标可组合）
+        // 2. 看破开关（仅启用房间可切换，可与统一目标叠加）
         if (btnSeeThroughRect.contains(x, y)) {
             model.toggleSeeThrough()
             return true
         }
 
-        // 4. 确认按钮
+        // 3. 确认按钮
         if (btnConfirmRect.contains(x, y)) {
             if (model.canConfirm) {
                 val req = model.buildPlanRequest()
@@ -183,7 +164,7 @@ class ShufflePreparationPanel @JvmOverloads constructor(
             return true
         }
 
-        // 5. 跳过按钮
+        // 4. 跳过按钮
         if (btnSkipRect.contains(x, y)) {
             if (model.canSkip) {
                 val req = model.buildSkipRequest()
@@ -210,8 +191,7 @@ class ShufflePreparationPanel @JvmOverloads constructor(
 
     fun mouseMoved(x: Float, y: Float) {
         if (!isActive) return
-        hoveredInitialTarget = btnInitialTargets.entries.firstOrNull { it.value.contains(x, y) }?.key
-        hoveredDrawTarget = btnDrawTargets.entries.firstOrNull { it.value.contains(x, y) }?.key
+        hoveredTarget = btnTargets.entries.firstOrNull { it.value.contains(x, y) }?.key
         isConfirmHovered = btnConfirmRect.contains(x, y)
         isSkipHovered = btnSkipRect.contains(x, y)
         isSeeThroughHovered = btnSeeThroughRect.contains(x, y)
@@ -247,27 +227,14 @@ class ShufflePreparationPanel @JvmOverloads constructor(
         shape.color = if (remSec <= 3L && remSec > 0L) Color(0.35f, 0.08f, 0.08f, 0.9f) else Color(0.12f, 0.22f, 0.16f, 0.9f)
         shape.rect(countdownBoxRect.x, countdownBoxRect.y, countdownBoxRect.width, countdownBoxRect.height)
 
-        // 偷天换日与瞒天过海两大分区底色
+        // 统一目标分区底色
         shape.color = Color(0.09f, 0.18f, 0.13f, 0.85f)
-        shape.rect(sectionInitialRect.x, sectionInitialRect.y, sectionInitialRect.width, sectionInitialRect.height)
-        shape.rect(sectionDrawRect.x, sectionDrawRect.y, sectionDrawRect.width, sectionDrawRect.height)
+        shape.rect(sectionTargetRect.x, sectionTargetRect.y, sectionTargetRect.width, sectionTargetRect.height)
 
-        // 六大目标按钮底色（偷天换日）
-        for ((target, rect) in btnInitialTargets) {
-            val isSelected = model.initialTargets.contains(target)
-            val isHover = (hoveredInitialTarget == target)
-            shape.color = when {
-                isSelected -> Color(0.18f, 0.42f, 0.26f, 0.95f)
-                isHover -> Color(0.15f, 0.28f, 0.20f, 0.9f)
-                else -> Color(0.10f, 0.20f, 0.14f, 0.8f)
-            }
-            shape.rect(rect.x, rect.y, rect.width, rect.height)
-        }
-
-        // 六大目标按钮底色（瞒天过海）
-        for ((target, rect) in btnDrawTargets) {
-            val isSelected = model.drawTargets.contains(target)
-            val isHover = (hoveredDrawTarget == target)
+        // 六大统一目标按钮底色
+        for ((target, rect) in btnTargets) {
+            val isSelected = model.target == target
+            val isHover = (hoveredTarget == target)
             shape.color = when {
                 isSelected -> Color(0.18f, 0.42f, 0.26f, 0.95f)
                 isHover -> Color(0.15f, 0.28f, 0.20f, 0.9f)
@@ -313,17 +280,11 @@ class ShufflePreparationPanel @JvmOverloads constructor(
 
         // 分区外框
         shape.color = Color(0.35f, 0.55f, 0.42f, 0.6f)
-        shape.rect(sectionInitialRect.x, sectionInitialRect.y, sectionInitialRect.width, sectionInitialRect.height)
-        shape.rect(sectionDrawRect.x, sectionDrawRect.y, sectionDrawRect.width, sectionDrawRect.height)
+        shape.rect(sectionTargetRect.x, sectionTargetRect.y, sectionTargetRect.width, sectionTargetRect.height)
 
         // 按钮边框
-        for ((target, rect) in btnInitialTargets) {
-            val isSelected = model.initialTargets.contains(target)
-            shape.color = if (isSelected) Color(0.40f, 0.95f, 0.55f, 1f) else Color(0.30f, 0.45f, 0.35f, 0.7f)
-            shape.rect(rect.x, rect.y, rect.width, rect.height)
-        }
-        for ((target, rect) in btnDrawTargets) {
-            val isSelected = model.drawTargets.contains(target)
+        for ((target, rect) in btnTargets) {
+            val isSelected = model.target == target
             shape.color = if (isSelected) Color(0.40f, 0.95f, 0.55f, 1f) else Color(0.30f, 0.45f, 0.35f, 0.7f)
             shape.rect(rect.x, rect.y, rect.width, rect.height)
         }
@@ -359,18 +320,18 @@ class ShufflePreparationPanel @JvmOverloads constructor(
             // 3.1 弹窗大标题与点数预算
             if (!isCustomFont) textFont.data.setScale(1.4f)
             textFont.color = Color(1.0f, 0.85f, 0.35f, 1f)
-            textFont.draw(batch, "洗牌千术", modalRect.x + 24f, modalRect.y + 595f)
+            textFont.draw(batch, "洗牌千术（统一码牌）", modalRect.x + 24f, modalRect.y + 595f)
 
             if (!isCustomFont) textFont.data.setScale(1.0f)
             textFont.color = Color(0.85f, 0.95f, 0.90f, 1f)
             val costText = "可用点数: ${model.availablePoints}点  预计消耗: ${model.totalCost}点 (剩余: ${model.remainingPointsPreview}点)"
-            textFont.draw(batch, costText, modalRect.x + 160f, modalRect.y + 585f)
+            textFont.draw(batch, costText, modalRect.x + 270f, modalRect.y + 585f)
 
-            // 看破规则说明：仅在正确实生效，不暗示抓包或永久封锁。
+            // 看破规则说明：仅正确生效，不暗示抓包或永久封锁。
             textFont.color = Color(0.78f, 0.86f, 0.82f, 1f)
             textFont.draw(
                 batch,
-                "看破10点（合计上限70）：发牌前抵消对手本局偷天换日并清除其既有落汗；不封锁新落汗。",
+                "看破10点（合计上限40）：抵消对手本局全部码牌并清除其既有落汗；双方费用照常支付。",
                 modalRect.x + 20f,
                 modalRect.y + 558f
             )
@@ -391,44 +352,37 @@ class ShufflePreparationPanel @JvmOverloads constructor(
 
             if (!isCustomFont) textFont.data.setScale(1.0f)
 
-            // 3.2 偷天换日区域标题与提示
+            // 3.2 统一目标区域标题与提示
             textFont.color = Color(1.0f, 0.75f, 0.30f, 1f)
-            textFont.draw(batch, "【偷天换日】 40点  调控起手配牌（13张手牌与开门摸牌）", sectionInitialRect.x + 16f, sectionInitialRect.y + 168f)
-
-            // 3.3 瞒天过海区域标题与提示
-            textFont.draw(batch, "【瞒天过海】 20点  调控前8次顺位预计摸牌", sectionDrawRect.x + 16f, sectionDrawRect.y + 168f)
+            textFont.draw(
+                batch,
+                "【统一目标】 30点  起手配牌 + 本座位 17/18 个预计摸牌槽，只能选择一个目标",
+                sectionTargetRect.x + 16f,
+                sectionTargetRect.y + 328f
+            )
 
             // 目标按钮文字
-            for ((target, rect) in btnInitialTargets) {
-                val isSelected = model.initialTargets.contains(target)
+            for ((target, rect) in btnTargets) {
+                val isSelected = model.target == target
                 textFont.color = if (isSelected) Color(0.4f, 1.0f, 0.6f, 1f) else Color.WHITE
                 val name = targetDisplayName(target)
-                val check = if (isSelected) "[√] " else "[ ] "
-                textFont.draw(batch, check + name, rect.x + 12f, rect.y + 25f)
-            }
-
-            for ((target, rect) in btnDrawTargets) {
-                val isSelected = model.drawTargets.contains(target)
-                textFont.color = if (isSelected) Color(0.4f, 1.0f, 0.6f, 1f) else Color.WHITE
-                val name = targetDisplayName(target)
-                val check = if (isSelected) "[√] " else "[ ] "
+                val check = if (isSelected) "[●] " else "[ ] "
                 textFont.draw(batch, check + name, rect.x + 12f, rect.y + 25f)
             }
 
             // 提示文案
-            if (model.hasMixedTargetsNotice) {
-                textFont.color = Color(1.0f, 0.85f, 0.40f, 1f)
-                textFont.draw(batch, "※ 多选为混合倾向，不保证同时成牌", sectionInitialRect.x + 20f, sectionInitialRect.y + 24f)
-            }
-            if (model.hasDrawNotice) {
-                textFont.color = Color(1.0f, 0.85f, 0.40f, 1f)
-                textFont.draw(batch, "※ 吃碰杠会改变预期摸牌", sectionDrawRect.x + 20f, sectionDrawRect.y + 24f)
-            }
+            textFont.color = Color(1.0f, 0.85f, 0.40f, 1f)
+            textFont.draw(
+                batch,
+                "※ 同一目标贯穿起手与摸牌；吃碰杠、杠牌或提前终局会改变预期摸牌，不保证每次摸牌必得目标牌。",
+                sectionTargetRect.x + 20f,
+                sectionTargetRect.y + 40f
+            )
 
             // 看破开关文字
             val seeThroughText = when {
                 !model.seeThroughEnabled -> "看破未启用"
-                model.isSeeThroughSelected -> "[√] 看破 ${model.seeThroughPrice}点"
+                model.isSeeThroughSelected -> "[●] 看破 ${model.seeThroughPrice}点"
                 else -> "[ ] 看破 ${model.seeThroughPrice}点"
             }
             textFont.color = when {

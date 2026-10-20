@@ -252,10 +252,9 @@ class ProtocolSerializationTest {
         mutableScores[0] = 99999
         assertEquals(25000, config.startingScores[0])
 
-        val mutableTargets = mutableSetOf(ProtocolShuffleTarget.CHINITSU_MAN)
-        val selection = ProtocolShuffleSelection(initialTargets = mutableTargets)
-        mutableTargets.add(ProtocolShuffleTarget.DAISANGEN)
-        assertEquals(setOf(ProtocolShuffleTarget.CHINITSU_MAN), selection.initialTargets)
+        val selection = ProtocolShuffleSelection(target = ProtocolShuffleTarget.CHINITSU_MAN)
+        assertEquals(ProtocolShuffleTarget.CHINITSU_MAN, selection.copy().target)
+        assertEquals(selection, selection.copy())
     }
 
     @Test

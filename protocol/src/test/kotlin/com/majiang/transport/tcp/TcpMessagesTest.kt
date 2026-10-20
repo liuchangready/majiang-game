@@ -36,7 +36,7 @@ class TcpMessagesTest {
         val parsedHello = TcpMessageCodec.parseHello(helloFrame)
         assertEquals(1, parsedHello.wireVersion)
         assertEquals(TcpWire.BUSINESS_VERSION, parsedHello.businessVersion)
-        assertEquals(7, parsedHello.businessVersion)
+        assertEquals(8, parsedHello.businessVersion)
         assertNull(parsedHello.lobbyResumeToken)
 
         // 恢复握手（携 token）
@@ -65,7 +65,7 @@ class TcpMessagesTest {
         val parsedWelcome = TcpMessageCodec.parseWelcome(welcomeFrame)
         assertEquals(1, parsedWelcome.wireVersion)
         assertEquals(TcpWire.BUSINESS_VERSION, parsedWelcome.businessVersion)
-        assertEquals(7, parsedWelcome.businessVersion)
+        assertEquals(8, parsedWelcome.businessVersion)
         assertEquals("epoch-server-abc-123", parsedWelcome.connectionEpoch)
         assertEquals("tok-server-lobby-xyz", parsedWelcome.lobbyResumeToken)
         assertEquals("scope-lobby-001", parsedWelcome.lobbyScope.scope)

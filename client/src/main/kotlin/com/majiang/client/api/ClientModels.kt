@@ -52,55 +52,46 @@ enum class ShuffleTarget {
 }
 
 /**
- * 客户端洗牌千术目标选择方案
+ * 客户端洗牌千术目标选择方案（统一码牌千术）
  *
- * @property initialTargets 影响起手牌的目标集合（偷天换日，40点）
- * @property drawTargets 影响后续摸牌流的目标集合（瞒天过海，20点）
+ * @property target 唯一做牌目标；null 表示不做牌
+ * @property seeThrough 本局是否使用看破（10 点）
  */
 class ShuffleSelection(
-    initialTargets: Set<ShuffleTarget> = emptySet(),
-    drawTargets: Set<ShuffleTarget> = emptySet(),
+    val target: ShuffleTarget? = null,
     val seeThrough: Boolean = false
 ) {
-    val initialTargets: Set<ShuffleTarget> = Collections.unmodifiableSet(LinkedHashSet(initialTargets))
-    val drawTargets: Set<ShuffleTarget> = Collections.unmodifiableSet(LinkedHashSet(drawTargets))
-
     fun cost(): Int =
-        (if (initialTargets.isNotEmpty()) 40 else 0) +
-            (if (drawTargets.isNotEmpty()) 20 else 0) +
+        (if (target != null) TARGET_COST else 0) +
             (if (seeThrough) SEE_THROUGH_COST else 0)
 
-    val isActive: Boolean get() = initialTargets.isNotEmpty() || drawTargets.isNotEmpty() || seeThrough
+    val isActive: Boolean get() = target != null || seeThrough
 
-    operator fun component1(): Set<ShuffleTarget> = initialTargets
-    operator fun component2(): Set<ShuffleTarget> = drawTargets
-    operator fun component3(): Boolean = seeThrough
+    operator fun component1(): ShuffleTarget? = target
+    operator fun component2(): Boolean = seeThrough
 
     fun copy(
-        initialTargets: Set<ShuffleTarget> = this.initialTargets,
-        drawTargets: Set<ShuffleTarget> = this.drawTargets,
+        target: ShuffleTarget? = this.target,
         seeThrough: Boolean = this.seeThrough
-    ): ShuffleSelection = ShuffleSelection(initialTargets, drawTargets, seeThrough)
+    ): ShuffleSelection = ShuffleSelection(target, seeThrough)
 
     override fun equals(other: Any?): Boolean {
         if (this === other) return true
         if (other !is ShuffleSelection) return false
-        return initialTargets == other.initialTargets &&
-            drawTargets == other.drawTargets &&
-            seeThrough == other.seeThrough
+        return target == other.target && seeThrough == other.seeThrough
     }
 
     override fun hashCode(): Int {
-        var result = initialTargets.hashCode()
-        result = 31 * result + drawTargets.hashCode()
+        var result = target?.hashCode() ?: 0
         result = 31 * result + seeThrough.hashCode()
         return result
     }
 
     override fun toString(): String =
-        "ShuffleSelection(initialTargets=$initialTargets, drawTargets=$drawTargets, seeThrough=$seeThrough)"
+        "ShuffleSelection(target=$target, seeThrough=$seeThrough)"
 
     companion object {
+        const val TARGET_COST: Int = 30
         const val SEE_THROUGH_COST: Int = 10
     }
 }
@@ -164,7 +155,7 @@ class CheatEconomyConfig(
  *
  * @property enabled 是否启用洗牌阶段千术
  * @property selectionMillis 准备阶段选择时长（毫秒）
- * @property plannedDraws 瞒天过海影响的后续预计摸牌轮数
+ * @property plannedDraws 统一目标影响的后续预计摸牌轮数（默认 18）
  * @property strength 基础做牌强度 [0.0, 1.0]
  * @property interference 冲突干扰衰减系数 lambda >= 0.0
  * @property aiMaySpend AI 玩家是否允许消耗点数出千
@@ -172,7 +163,7 @@ class CheatEconomyConfig(
 data class ShuffleConfig(
     val enabled: Boolean = false,
     val selectionMillis: Long = 10000L,
-    val plannedDraws: Int = 8,
+    val plannedDraws: Int = 18,
     val strength: Double = 0.75,
     val interference: Double = 0.65,
     val aiMaySpend: Boolean = false,
@@ -303,7 +294,7 @@ class MatchConfig(
  * 客户端连接能力描述 (Capabilities)
  */
 class Capabilities(
-    val protocolVersion: Int = 7,
+    val protocolVersion: Int = 8,
     supportedPlayerCounts: Set<Int> = setOf(4),
     val remoteTransport: Boolean = false,
     val persistence: Boolean = false,

@@ -511,8 +511,7 @@ object ProtocolViewMapper {
     }
 
     fun mapShuffleSelectionView(s: ProtocolShuffleSelection): ShuffleSelectionView = ShuffleSelectionView(
-        initialTargets = s.initialTargets.map { mapShuffleTargetView(it) }.toSet(),
-        drawTargets = s.drawTargets.map { mapShuffleTargetView(it) }.toSet(),
+        target = s.target?.let { mapShuffleTargetView(it) },
         seeThrough = s.seeThrough
     )
 
@@ -702,14 +701,12 @@ object ProtocolViewMapper {
     }
 
     fun mapShuffleSelection(selection: ProtocolShuffleSelection): ShuffleSelection = ShuffleSelection(
-        initialTargets = selection.initialTargets.map { mapShuffleTarget(it) }.toSet(),
-        drawTargets = selection.drawTargets.map { mapShuffleTarget(it) }.toSet(),
+        target = selection.target?.let { mapShuffleTarget(it) },
         seeThrough = selection.seeThrough
     )
 
     fun toProtocolShuffleSelection(selection: ShuffleSelection): ProtocolShuffleSelection = ProtocolShuffleSelection(
-        initialTargets = selection.initialTargets.map { toProtocolShuffleTarget(it) }.toSet(),
-        drawTargets = selection.drawTargets.map { toProtocolShuffleTarget(it) }.toSet(),
+        target = selection.target?.let { toProtocolShuffleTarget(it) },
         seeThrough = selection.seeThrough
     )
 

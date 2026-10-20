@@ -107,8 +107,7 @@ class SeeThroughTcpIntegrationTest {
                     roundId = snap.roundId!!,
                     controlEpoch = snap.decision.controlEpoch,
                     selection = ProtocolShuffleSelection(
-                        initialTargets = setOf(ProtocolShuffleTarget.KOKUSHI),
-                        drawTargets = setOf(ProtocolShuffleTarget.DAISANGEN),
+                        target = ProtocolShuffleTarget.KOKUSHI,
                         seeThrough = true
                     )
                 )
@@ -140,8 +139,8 @@ class SeeThroughTcpIntegrationTest {
                     )
                 )
                 val after = client.expectResponse().response.snapshot!!
-                assertEquals(70, after.preparation!!.reservedPoints)
-                assertEquals(30, after.preparation!!.availablePoints)
+                assertEquals(40, after.preparation!!.reservedPoints)
+                assertEquals(60, after.preparation!!.availablePoints)
                 assertTrue(after.preparation!!.selection!!.seeThrough)
             }
         } finally {

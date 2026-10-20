@@ -35,7 +35,7 @@ internal class ShufflePreparationHandler {
             val record: RoundPreparationRecord,
             /** 截止时冻结的原始方案（费用必须按它计算，绝不能被看破改写）。 */
             val plans: List<SeatShufflePlan>,
-            /** 仅供牌山算法使用的有效方案副本：被看破者的 initialTargets 已移除，drawTargets 保留。 */
+            /** 仅供牌山算法使用的有效方案副本：被看破者的统一目标 target 已被移除（整效抵消）。 */
             val effectivePlans: List<SeatShufflePlan>,
             val tiles: List<Tile>?
         ) : Step
@@ -174,16 +174,10 @@ internal class ShufflePreparationHandler {
                 if (seat !in automatedSeats || seat !in nativeAiSeats || confirmed[seat]) continue
                 val currentPoints = points.getOrElse(seat) { 0 }
                 val selection = when {
-                    currentPoints >= 60 -> ShuffleSelection(
-                        initialTargets = setOf(ShuffleTarget.CHINITSU_MAN),
-                        drawTargets = setOf(ShuffleTarget.DAISANGEN)
-                    )
-                    currentPoints >= 40 -> ShuffleSelection(
-                        initialTargets = setOf(ShuffleTarget.CHINITSU_MAN)
-                    )
-                    currentPoints >= 20 -> ShuffleSelection(
-                        drawTargets = setOf(ShuffleTarget.DAISANGEN)
-                    )
+                    seeThroughEnabled && currentPoints >= 40 ->
+                        ShuffleSelection(target = ShuffleTarget.CHINITSU_MAN, seeThrough = true)
+                    currentPoints >= 30 ->
+                        ShuffleSelection(target = ShuffleTarget.CHINITSU_MAN)
                     else -> ShuffleSelection()
                 }
                 confirmed[seat] = true
@@ -218,12 +212,12 @@ internal class ShufflePreparationHandler {
             SeatShufflePlan(seat, record.selections.getOrNull(seat) ?: ShuffleSelection())
         }
 
-        // 原始方案与有效方案严格分离：看破只影响牌山算法副本，
-        // 费用仍由 [plans]（原始选择）计算；drawTargets 不受影响。
+        // 原始方案与有效方案严格分离：看破只影响牌山算法副本（整效抵消 target→null），
+        // 费用仍由 [plans]（原始选择）计算；有效施术人数 n 由 effectivePlans 中 target 非空的席位计数。
         val effectivePlans = plans.map { plan ->
             val suppressed = frozenSeeThroughSeats.any { it != plan.seat }
             val effective = if (suppressed) {
-                plan.selection.deepCopy().copy(initialTargets = emptySet(), seeThrough = false)
+                plan.selection.deepCopy().copy(target = null, seeThrough = false)
             } else {
                 plan.selection.deepCopy().copy(seeThrough = false)
             }

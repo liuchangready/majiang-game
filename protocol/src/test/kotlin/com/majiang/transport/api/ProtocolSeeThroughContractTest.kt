@@ -9,12 +9,11 @@ import org.junit.jupiter.api.Assertions.*
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.assertThrows
 
-/** v7 看破线路契约：严格布尔、费用、私有准备视图与唯一幂等身份。 */
+/** v8 统一码牌 + 看破线路契约：严格布尔/单目标、费用、私有准备视图与唯一幂等身份。 */
 class ProtocolSeeThroughContractTest {
 
     private fun selection(seeThrough: Boolean = true) = ProtocolShuffleSelection(
-        initialTargets = setOf(ProtocolShuffleTarget.KOKUSHI),
-        drawTargets = setOf(ProtocolShuffleTarget.DAISANGEN),
+        target = ProtocolShuffleTarget.KOKUSHI,
         seeThrough = seeThrough
     )
 
@@ -35,11 +34,11 @@ class ProtocolSeeThroughContractTest {
         JsonParser.parseString(ApiMessageCodec.encodeRequest(request)).asJsonObject
 
     @Test
-    fun `selection cost is ten for see through alone and caps at seventy`() {
+    fun `selection cost is ten for see through alone and caps at forty`() {
         assertEquals(10, ProtocolShuffleSelection(seeThrough = true).cost())
         assertTrue(ProtocolShuffleSelection(seeThrough = true).isActive)
-        assertEquals(70, selection().cost())
-        assertEquals(70, ProtocolShuffleSelection.SEE_THROUGH_COST + 40 + 20)
+        assertEquals(40, selection().cost())
+        assertEquals(40, ProtocolShuffleSelection.SEE_THROUGH_COST + ProtocolShuffleSelection.TARGET_COST)
         assertEquals("see-1", plan().copy(selection = selection(false)).requestId)
     }
 
@@ -66,6 +65,15 @@ class ProtocolSeeThroughContractTest {
         val unknown = json(request())
         unknown.getAsJsonObject("shufflePlan").getAsJsonObject("selection").addProperty("forged", true)
         assertThrows<JsonParseException> { ApiMessageCodec.decodeRequest(unknown.toString()) }
+
+        for (legacyField in listOf("initialTargets", "drawTargets")) {
+            val legacy = json(request())
+            legacy.getAsJsonObject("shufflePlan").getAsJsonObject("selection")
+                .add(legacyField, JsonParser.parseString("[\"KOKUSHI\"]"))
+            assertThrows<JsonParseException>(legacyField) {
+                ApiMessageCodec.decodeRequest(legacy.toString())
+            }
+        }
     }
 
     @Test
@@ -131,9 +139,9 @@ class ProtocolSeeThroughContractTest {
         assertTrue(ApiMessageCodec.gson.fromJson(wire, ProtocolAccessCapabilities::class.java).seeThroughSupported)
         wire.remove("seeThroughSupported")
         assertFalse(ApiMessageCodec.gson.fromJson(wire, ProtocolAccessCapabilities::class.java).seeThroughSupported)
-        assertEquals(7, ApiProtocol.PROTOCOL_VERSION)
+        assertEquals(8, ApiProtocol.PROTOCOL_VERSION)
         assertEquals(1, com.majiang.transport.tcp.TcpWire.WIRE_VERSION)
-        assertEquals(7, com.majiang.transport.tcp.TcpWire.BUSINESS_VERSION)
+        assertEquals(8, com.majiang.transport.tcp.TcpWire.BUSINESS_VERSION)
     }
 
     @Test
@@ -146,8 +154,8 @@ class ProtocolSeeThroughContractTest {
             serverNowMillis = 2_000L,
             confirmed = true,
             selection = selection(),
-            reservedPoints = 70,
-            availablePoints = 30,
+            reservedPoints = 40,
+            availablePoints = 60,
             seeThroughEnabled = true,
             seeThroughCost = 10
         )
@@ -164,7 +172,7 @@ class ProtocolSeeThroughContractTest {
             ApiMessageCodec.encodeResponse(ApiResponse(snapshot = snapshot))
         )
         assertEquals(prep, response.snapshot!!.preparation)
-        assertEquals(70, response.snapshot!!.preparation!!.selection!!.cost())
+        assertEquals(40, response.snapshot!!.preparation!!.selection!!.cost())
 
         val push = ApiMessageCodec.decodePushEnvelope(
             ApiMessageCodec.encodePush(

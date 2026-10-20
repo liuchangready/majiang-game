@@ -1746,7 +1746,7 @@ class TableAuthority @JvmOverloads constructor(
                 round.updatePreparationRecord(step.record)
                 val tiles = step.tiles
                 if (tiles != null && tiles.size == 136) {
-                    // 费用严格来自原始方案（被看破者仍支付原 40/20），看破席位集合来自截止时冻结的 K。
+                    // 费用严格来自原始方案（被看破者仍支付原统一目标 30 点），看破席位集合来自截止时冻结的 K。
                     val costs = step.plans.associate { it.seat to it.selection.cost() }
                     val reasons = step.plans.associate { it.seat to "shuffle_plan" }
                     val dealResult = coordinator.executeDealWithPreparation(
@@ -2802,7 +2802,7 @@ class TableAuthority @JvmOverloads constructor(
                 CheatEconomyConfig(
                     enabled = true,
                     initialPoints = List(4) { presetPoints },
-                    costs = mapOf("shuffle_initial" to 40, "shuffle_draw" to 20, "initial" to 40, "draw" to 20)
+                    costs = mapOf("shuffle_target" to 30, "target" to 30)
                 )
             } else {
                 config.cheatEconomy

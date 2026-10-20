@@ -12,20 +12,20 @@ import com.majiang.authority.TableAuthority
 import com.majiang.stacking.ShufflePlanRequest
 import com.majiang.stacking.ShuffleSelection
 import com.majiang.stacking.ShuffleTarget
-import java.util.LinkedHashSet
 
 /**
- * 洗牌准备阶段 AI 适配器。
+ * 洗牌准备阶段 AI 适配器（统一码牌千术）。
  *
  * 候选复用 [ShuffleSelection.cost] 与 [TableAuthority.submitShufflePlan] 的预留/扣费语义；
- * 不直接生成牌山，也不读取任何隐藏牌信息。截止时间前未确认仍由权威层默认跳过。
+ * 不直接生成牌山，也不读取任何隐藏牌信息。AI 自动方案只选一个目标（默认万子清一色），
+ * 遵守预算与看破权限。截止时间前未确认仍由权威层默认跳过。
  */
 class ShufflePreparationAiCapability(
     private val authority: TableAuthority
 ) : CheatAiCapability {
 
     override val id: String = AiCapabilityIds.SHUFFLE_PREPARATION
-    override val version: Int = 1
+    override val version: Int = 2
 
     override fun describe(): AiCapabilityDescriptor = AiCapabilityDescriptor(
         id = id,
@@ -63,32 +63,15 @@ class ShufflePreparationAiCapability(
             }
         }
 
-        val initial = ShuffleSelection(initialTargets = setOf(ShuffleTarget.CHINITSU_MAN))
-        if (limits.canSpend(initial.cost())) {
-            result.add(planCandidate("initial", initial, 22, "initial hand shaping"))
-        }
-        val draw = ShuffleSelection(drawTargets = setOf(ShuffleTarget.DAISANGEN))
-        if (limits.canSpend(draw.cost())) {
-            result.add(planCandidate("draw", draw, 10, "future draw shaping"))
-        }
-        val both = ShuffleSelection(
-            initialTargets = setOf(ShuffleTarget.CHINITSU_MAN),
-            drawTargets = setOf(ShuffleTarget.DAISANGEN)
-        )
-        if (limits.canSpend(both.cost())) {
-            result.add(planCandidate("both", both, 40, "initial and draw shaping"))
+        val target = ShuffleSelection(target = ShuffleTarget.CHINITSU_MAN)
+        if (limits.canSpend(target.cost())) {
+            result.add(planCandidate("target", target, 22, "unified shaping for initial hand and draws"))
         }
 
         if (seeThroughEnabled) {
-            // 保持 6 个候选上限：按预算选择最高档的“自身码牌 + 看破”组合。
-            val combined = when {
-                limits.canSpend(70) -> both.copy(seeThrough = true)
-                limits.canSpend(50) -> initial.copy(seeThrough = true)
-                limits.canSpend(30) -> draw.copy(seeThrough = true)
-                else -> null
-            }
-            if (combined != null) {
-                result.add(planCandidate("combined", combined, 45, "own shaping plus see-through"))
+            val combined = target.copy(seeThrough = true)
+            if (limits.canSpend(combined.cost())) {
+                result.add(planCandidate("combined", combined, 30, "own shaping plus see-through"))
             }
         }
         return result
@@ -108,8 +91,7 @@ class ShufflePreparationAiCapability(
         estimatedEffect = AiEffect(handValue = effect, note = note),
         terminalForWindow = true,
         parameters = AiVisibleParams.of(
-            "initialTargets" to names(selection.initialTargets),
-            "drawTargets" to names(selection.drawTargets),
+            "target" to (selection.target?.name ?: ""),
             "seeThrough" to selection.seeThrough.toString()
         )
     )
@@ -124,8 +106,7 @@ class ShufflePreparationAiCapability(
         require(selected.phase == AiPhase.SHUFFLE_PREPARATION) { "phase mismatch: ${selected.phase}" }
         val roundId = requireNotNull(stamp.roundId) { "shuffle preparation requires roundId" }
         val selection = ShuffleSelection(
-            initialTargets = parseTargets(selected.parameters.string("initialTargets")),
-            drawTargets = parseTargets(selected.parameters.string("drawTargets")),
+            target = parseTarget(selected.parameters.string("target")),
             seeThrough = selected.parameters.string("seeThrough")?.toBooleanStrictOrNull() == true
         )
         val request = ShufflePlanRequest(
@@ -137,18 +118,10 @@ class ShufflePreparationAiCapability(
         return authority.submitShufflePlan(seat, request, now)
     }
 
-    private fun names(targets: Set<ShuffleTarget>): String =
-        targets.joinToString(",") { it.name }
-
-    private fun parseTargets(raw: String?): Set<ShuffleTarget> {
-        if (raw.isNullOrBlank()) return emptySet()
-        val result = LinkedHashSet<ShuffleTarget>()
-        for (part in raw.split(',')) {
-            val name = part.trim()
-            if (name.isEmpty()) continue
-            val target = ShuffleTarget.entries.firstOrNull { it.name == name } ?: continue
-            result.add(target)
-        }
-        return result
+    private fun parseTarget(raw: String?): ShuffleTarget? {
+        if (raw.isNullOrBlank()) return null
+        val name = raw.trim()
+        return ShuffleTarget.entries.firstOrNull { it.name == name }
+            ?: error("unknown shuffle target: $name")
     }
 }

@@ -211,24 +211,19 @@ class EngineProtocolMapperTest {
             requestId = "plan-req-1",
             roundId = "round-999",
             controlEpoch = 2L,
-            selection = ShuffleSelection(
-                initialTargets = setOf(ShuffleTarget.CHINITSU_MAN),
-                drawTargets = setOf(ShuffleTarget.DAISANGEN)
-            )
+            selection = ShuffleSelection(target = ShuffleTarget.CHINITSU_MAN)
         )
         val protoPlan = EngineProtocolMapper.toProtocolShufflePlan(domainPlan)
         assertEquals("plan-req-1", protoPlan.requestId)
         assertEquals("round-999", protoPlan.roundId)
         assertEquals(2L, protoPlan.controlEpoch)
-        assertEquals(1, protoPlan.selection.initialTargets.size)
-        assertEquals(1, protoPlan.selection.drawTargets.size)
+        assertEquals(com.majiang.transport.api.ProtocolShuffleTarget.CHINITSU_MAN, protoPlan.selection.target)
 
         val back = EngineProtocolMapper.toEngineShufflePlan(protoPlan)
         assertEquals(domainPlan.requestId, back.requestId)
         assertEquals(domainPlan.roundId, back.roundId)
         assertEquals(domainPlan.controlEpoch, back.controlEpoch)
-        assertEquals(domainPlan.selection.initialTargets, back.selection.initialTargets)
-        assertEquals(domainPlan.selection.drawTargets, back.selection.drawTargets)
+        assertEquals(domainPlan.selection.target, back.selection.target)
     }
 
     @Test

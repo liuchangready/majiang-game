@@ -21,6 +21,35 @@ test {
     }
 }
 
+/**
+ * 统一码牌千术成对全局模拟入口。
+ * 例：./gradlew :engine:shuffleSimulation -Ppairs=200 -Ptarget=CHINITSU_MAN -Pn=1,2,3,4 -Popper=basic
+ *     ./gradlew :engine:shuffleSimulation -Ppairs=500 -Ptarget=ALL -Pn=1,2,3,4 -Pmix=true -PseedStart=10000
+ */
+tasks.register('shuffleSimulation', JavaExec) {
+    group = 'verification'
+    description = 'Run paired headless Monte Carlo for unified shuffle shaping.'
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.majiang.simulation.ShuffleMonteCarloMainKt'
+    args = [
+        (project.findProperty('pairs') ?: '200').toString(),
+        (project.findProperty('target') ?: 'CHINITSU_MAN').toString(),
+        (project.findProperty('n') ?: '1,2,3,4').toString(),
+        (project.findProperty('opper') ?: project.findProperty('opponent') ?: 'basic').toString(),
+        (project.findProperty('tier1') ?: '').toString(),
+        (project.findProperty('tier2') ?: '').toString(),
+        (project.findProperty('tier3') ?: '').toString(),
+        (project.findProperty('mix') ?: 'false').toString(),
+        (project.findProperty('seedStart') ?: project.findProperty('seedstart') ?: '10000').toString(),
+        (project.findProperty('diversity') ?: '').toString(),
+        (project.findProperty('targetTiers') ?: '').toString(),
+        (project.findProperty('diversityBudgetPenalty') ?: '').toString(),
+        (project.findProperty('diversityBudgetPenaltyTiers') ?: '').toString(),
+        (project.findProperty('mixedTiers') ?: '').toString()
+    ]
+}
+
 java {
     sourceCompatibility = JavaVersion.VERSION_17
     targetCompatibility = JavaVersion.VERSION_17

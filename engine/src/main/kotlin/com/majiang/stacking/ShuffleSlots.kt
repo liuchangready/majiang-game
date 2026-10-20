@@ -57,9 +57,9 @@ object ShuffleSlots {
      *
      * @param dealerSeat 庄家座位 (0..3)
      * @param seat 目标玩家座位 (0..3)
-     * @param count 预计摸牌轮数 (1..18，默认 8)
+     * @param count 预计摸牌轮数 (0..18，默认 18，覆盖本座位全部 17/18 个预计槽)
      */
-    fun draws(dealerSeat: Int, seat: Int, count: Int = 8): List<Int> {
+    fun draws(dealerSeat: Int, seat: Int, count: Int = 18): List<Int> {
         require(dealerSeat in 0..3) { "dealerSeat must be 0..3, got $dealerSeat" }
         require(seat in 0..3) { "seat must be 0..3, got $seat" }
         require(count >= 0) { "count must be non-negative, got $count" }

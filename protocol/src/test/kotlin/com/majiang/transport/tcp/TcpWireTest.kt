@@ -21,10 +21,10 @@ class TcpWireTest {
             "MAGIC_BYTES must match Big-Endian ASCII MJTC"
         )
 
-        // MJ-TCP/1 帧格式不变；业务契约 v7 新增看破，线路版本仍为 1。
+        // MJ-TCP/1 帧格式不变；业务契约 v8 统一码牌目标，线路版本仍为 1。
         assertEquals(1, TcpWire.WIRE_VERSION)
-        assertEquals(7, TcpWire.BUSINESS_VERSION)
-        assertEquals(7, ApiProtocol.PROTOCOL_VERSION)
+        assertEquals(8, TcpWire.BUSINESS_VERSION)
+        assertEquals(8, ApiProtocol.PROTOCOL_VERSION)
 
         assertEquals(1, TcpWire.FRAME_TYPE_HELLO)
         assertEquals(2, TcpWire.FRAME_TYPE_WELCOME)

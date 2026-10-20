@@ -39,27 +39,30 @@ class ShufflePreparationUiAcceptanceTest : GdxHeadlessTestRunner() {
         assertEquals("请求被拒绝", ShufflePreparationPanel.translateServerReason("   "))
     }
 
-    @Test fun `two techniques cost per technique with mixed targets and insufficient balance`() {
+    @Test fun `single unified target costs thirty and replaces rather than stacks`() {
         val m = ShufflePreparationModel { 0L }
         m.update(view(), nowSystemMillis = 0)
-        m.toggleInitialTarget(ShuffleTarget.KOKUSHI)
-        m.toggleInitialTarget(ShuffleTarget.DAISUUSHII)
-        assertEquals(40, m.totalCost)
-        assertEquals(10, m.remainingPointsPreview)
-        assertTrue(m.hasMixedTargetsNotice)
-        m.toggleDrawTarget(ShuffleTarget.DAISANGEN)
-        assertEquals(60, m.totalCost)
-        assertFalse(m.canConfirm)
-        assertNull(m.buildPlanRequest())
-        assertTrue(m.canSkip)
-        assertEquals(0, m.buildSkipRequest()!!.selection.cost())
-        m.toggleInitialTarget(ShuffleTarget.KOKUSHI)
-        m.toggleInitialTarget(ShuffleTarget.DAISUUSHII)
-        assertEquals(20, m.totalCost)
+        assertTrue(m.selectTarget(ShuffleTarget.KOKUSHI))
+        assertEquals(30, m.totalCost)
+        assertEquals(20, m.remainingPointsPreview)
+        assertTrue(m.hasDrawNotice)
+        // 单选：再次选择另一个目标会替换原目标，不会叠加费用。
+        assertTrue(m.selectTarget(ShuffleTarget.DAISANGEN))
+        assertEquals(ShuffleTarget.DAISANGEN, m.target)
+        assertEquals(30, m.totalCost)
+        assertTrue(m.canConfirm)
+        // 再次点击已选目标即取消。
+        assertTrue(m.selectTarget(ShuffleTarget.DAISANGEN))
+        assertNull(m.target)
+        assertEquals(0, m.totalCost)
+        assertEquals(0, m.buildPlanRequest()!!.selection.cost())
+
+        assertTrue(m.selectTarget(ShuffleTarget.DAISUUSHII))
+        assertTrue(m.toggleSeeThrough() == false, "see-through disabled in this room")
         assertTrue(m.canConfirm)
     }
 
-    @Test fun `see through alone is confirmable and combines up to seventy points`() {
+    @Test fun `see through alone is confirmable and combines up to forty points`() {
         val m = ShufflePreparationModel { 0L }
         m.update(view(balance = 100, seeThrough = true), nowSystemMillis = 0)
         assertTrue(m.seeThroughEnabled)
@@ -71,13 +74,12 @@ class ShufflePreparationUiAcceptanceTest : GdxHeadlessTestRunner() {
         assertTrue(m.draftSelection().seeThrough)
         assertTrue(m.draftSelection().isActive)
 
-        m.toggleInitialTarget(ShuffleTarget.KOKUSHI)
-        m.toggleDrawTarget(ShuffleTarget.DAISANGEN)
-        assertEquals(70, m.totalCost)
-        assertEquals(30, m.remainingPointsPreview)
+        m.selectTarget(ShuffleTarget.KOKUSHI)
+        assertEquals(40, m.totalCost)
+        assertEquals(60, m.remainingPointsPreview)
         assertTrue(m.canConfirm)
         val plan = m.buildPlanRequest("all")!!
-        assertEquals(70, plan.selection.cost())
+        assertEquals(40, plan.selection.cost())
         assertTrue(plan.selection.seeThrough)
 
         m.clearDraft()
@@ -121,22 +123,22 @@ class ShufflePreparationUiAcceptanceTest : GdxHeadlessTestRunner() {
     @Test fun `same round preserves draft and fresh round clears it`() {
         val m = ShufflePreparationModel { 0L }
         m.update(view(), epoch = 3, nowSystemMillis = 100)
-        m.toggleInitialTarget(ShuffleTarget.CHINITSU_SOU)
+        m.selectTarget(ShuffleTarget.CHINITSU_SOU)
         m.update(view().copy(serverNowMillis = 1000), epoch = 4, nowSystemMillis = 1100)
-        assertEquals(setOf(ShuffleTarget.CHINITSU_SOU), m.initialTargets)
+        assertEquals(ShuffleTarget.CHINITSU_SOU, m.target)
         assertEquals(4L, m.buildPlanRequest()!!.controlEpoch)
         m.update(view("two"), epoch = 5, nowSystemMillis = 1200)
-        assertTrue(m.initialTargets.isEmpty())
+        assertNull(m.target)
         assertEquals("two", m.buildPlanRequest()!!.roundId)
     }
 
     @Test fun `reconnect restores locked choice without subtracting reservation twice`() {
-        val selection = ShuffleSelectionView(initialTargets = setOf(ShuffleTargetView.KOKUSHI))
+        val selection = ShuffleSelectionView(target = ShuffleTargetView.KOKUSHI)
         val m = ShufflePreparationModel { 0L }
-        m.update(view(balance = 10).copy(confirmed = true, selection = selection, reservedPoints = 40), nowSystemMillis = 0)
-        assertEquals(ShuffleSelection(initialTargets = setOf(ShuffleTarget.KOKUSHI)), m.confirmedSelection)
+        m.update(view(balance = 10).copy(confirmed = true, selection = selection, reservedPoints = 30), nowSystemMillis = 0)
+        assertEquals(ShuffleSelection(target = ShuffleTarget.KOKUSHI), m.confirmedSelection)
         assertTrue(m.isLocked)
-        assertFalse(m.toggleInitialTarget(ShuffleTarget.DAISANGEN))
+        assertFalse(m.selectTarget(ShuffleTarget.DAISANGEN))
         assertEquals(10, m.remainingPointsPreview, "availablePoints already excludes the reserved cost")
     }
 
@@ -154,12 +156,12 @@ class ShufflePreparationUiAcceptanceTest : GdxHeadlessTestRunner() {
     @Test fun `timeout never submits draft and generation locks editing`() {
         val m = ShufflePreparationModel { 0L }
         m.update(view(), nowSystemMillis = 0)
-        m.toggleDrawTarget(ShuffleTarget.DAISANGEN)
+        m.selectTarget(ShuffleTarget.DAISANGEN)
         m.update(view().copy(status = ShufflePreparationStatusView.GENERATING, serverNowMillis = 10000), nowSystemMillis = 10000)
         assertEquals(0L, m.remainingSeconds(10000))
         assertFalse(m.isAuthorityConfirmed)
         assertNull(m.buildPlanRequest())
-        assertFalse(m.toggleDrawTarget(ShuffleTarget.KOKUSHI))
+        assertFalse(m.selectTarget(ShuffleTarget.KOKUSHI))
         m.update(null, nowSystemMillis = 10001)
         assertFalse(m.isActive)
     }
@@ -167,12 +169,12 @@ class ShufflePreparationUiAcceptanceTest : GdxHeadlessTestRunner() {
     @Test fun `skip receipt clears drafted targets and old request cannot unlock current submission`() {
         val m = ShufflePreparationModel { 0L }
         m.update(view(), nowSystemMillis = 0)
-        m.toggleInitialTarget(ShuffleTarget.KOKUSHI)
+        m.selectTarget(ShuffleTarget.KOKUSHI)
         val skip = m.buildSkipRequest("skip")!!
         m.markSubmitting(skip.requestId)
         m.onSubmissionAccepted(skip.requestId, skip.selection)
         assertTrue(m.isLocked)
-        assertTrue(m.initialTargets.isEmpty())
+        assertNull(m.target)
         assertEquals(50, m.remainingPointsPreview)
         m.update(view("next"), nowSystemMillis = 0)
         m.markSubmitting("new")
@@ -192,7 +194,7 @@ class ShufflePreparationUiAcceptanceTest : GdxHeadlessTestRunner() {
         now = 10000
         assertFalse(m.canConfirm)
         assertFalse(m.canSkip)
-        assertFalse(m.toggleInitialTarget(ShuffleTarget.KOKUSHI))
+        assertFalse(m.selectTarget(ShuffleTarget.KOKUSHI))
     }
 
     @Test fun `panel captures outside clicks and pending confirm submits once`() {
@@ -203,12 +205,13 @@ class ShufflePreparationUiAcceptanceTest : GdxHeadlessTestRunner() {
         try {
             panel.model.update(view(), nowSystemMillis = System.nanoTime() / 1_000_000L)
             assertTrue(panel.touchDown(0f, 0f))
-            val target = panel.btnInitialTargets.getValue(ShuffleTarget.KOKUSHI)
+            val target = panel.btnTargets.getValue(ShuffleTarget.KOKUSHI)
             panel.touchDown(target.x + 2, target.y + 2)
             val confirm = panel.btnConfirmRect
             repeat(2) { panel.touchDown(confirm.x + 2, confirm.y + 2) }
             assertEquals(1, session.submittedPlans.size)
-            assertEquals(40, session.submittedPlans.single().selection.cost())
+            assertEquals(30, session.submittedPlans.single().selection.cost())
+            assertEquals(ShuffleTarget.KOKUSHI, session.submittedPlans.single().selection.target)
             completion.complete(Receipt(session.submittedPlans.single().requestId, ReceiptStatus.RECORDED))
             assertTrue(panel.model.isLocked)
         } finally { panel.dispose() }
@@ -245,8 +248,7 @@ class ShufflePreparationUiAcceptanceTest : GdxHeadlessTestRunner() {
             val rects = listOf(
                 panel.modalRect,
                 panel.countdownBoxRect,
-                panel.sectionInitialRect,
-                panel.sectionDrawRect,
+                panel.sectionTargetRect,
                 panel.btnSeeThroughRect,
                 panel.btnSkipRect,
                 panel.btnConfirmRect
