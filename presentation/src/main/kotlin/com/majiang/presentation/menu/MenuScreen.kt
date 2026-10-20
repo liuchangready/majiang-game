@@ -97,7 +97,7 @@ class MenuScreen(
 
     // 通用弹窗区域常量 (保留在父层)
     private val modalRect = Rectangle(260f, 110f, 760f, 500f)
-    private val btnModalClose = Rectangle(570f, 135f, 140f, 42f)
+    private val btnModalClose = Rectangle(570f, 112f, 140f, 42f)
 
     // 装饰粒子与动画计时
     private var animTimer = 0f
@@ -315,19 +315,21 @@ class MenuScreen(
         font.color = Color(1.0f, 0.85f, 0.35f, 1f)
         MenuViewDraw.drawCenteredText(batch, font, "-- 雀圣千术绝技秘籍 --", modalRect.x + modalRect.width / 2f, modalRect.y + 465f)
 
-        font.data.setScale(0.92f)
+        font.data.setScale(0.86f)
         font.color = Color.WHITE
-        font.draw(batch, "1. 落汗绝技: 摸牌/出牌决策时，选择手牌中 4 张不同实体牌进行微痕标记。", modalRect.x + 40f, modalRect.y + 425f)
-        font.draw(batch, "2. 千术消耗: 每次落汗消耗 10 额度点数，每名玩家最多同时维持 12 张标记牌。", modalRect.x + 40f, modalRect.y + 395f)
-        font.draw(batch, "3. 有效期限: 当局立即生效，另持续后续 3 局；思考超时仅禁止新施术。", modalRect.x + 40f, modalRect.y + 365f)
-        font.draw(batch, "4. 洞察识别: 标记牌进入对手手牌时可识别牌面，打入牌河时精准定位标识。", modalRect.x + 40f, modalRect.y + 335f)
-        font.draw(batch, "5. 袖里藏花: 摸牌后或他家回合本人弃牌后消耗 10 额度，二选一保留候选牌；", modalRect.x + 40f, modalRect.y + 305f)
-        font.draw(batch, "   立直可施术；他家回合预定牌待本人下次普通摸牌入手；超时不退费。", modalRect.x + 40f, modalRect.y + 280f)
-        font.draw(batch, "6. 偷梁换柱: 摸牌后出牌前消耗 10 额度，从牌山/王牌暗槽中选目标与原有暗手牌互换；", modalRect.x + 40f, modalRect.y + 250f)
-        font.draw(batch, "   候选暗槽不露牌面，落汗命中亮面；可保持原样；超时摸切费用不退。", modalRect.x + 40f, modalRect.y + 225f)
+        font.draw(batch, "1. 落汗绝技: 摸牌/出牌决策时，选择手牌中 4 张不同实体牌进行微痕标记。", modalRect.x + 40f, modalRect.y + 428f)
+        font.draw(batch, "2. 千术消耗: 每次落汗消耗 10 额度点数，每名玩家最多同时维持 12 张标记牌。", modalRect.x + 40f, modalRect.y + 404f)
+        font.draw(batch, "3. 有效期限: 当局立即生效，另持续后续 3 局；思考超时仅禁止新施术。", modalRect.x + 40f, modalRect.y + 380f)
+        font.draw(batch, "4. 洞察识别: 标记牌进入对手手牌时可识别牌面，打入牌河时精准定位标识。", modalRect.x + 40f, modalRect.y + 356f)
+        font.draw(batch, "5. 袖里藏花: 摸牌后或他家回合本人弃牌后消耗 10 额度，二选一保留候选牌；", modalRect.x + 40f, modalRect.y + 332f)
+        font.draw(batch, "   立直可施术；他家回合预定牌待本人下次普通摸牌入手；超时不退费。", modalRect.x + 40f, modalRect.y + 308f)
+        font.draw(batch, "6. 偷梁换柱: 摸牌后出牌前消耗 10 额度，从牌山/王牌暗槽中选目标与原有暗手牌互换；", modalRect.x + 40f, modalRect.y + 284f)
+        font.draw(batch, "   候选暗槽不露牌面，落汗命中亮面；可保持原样；超时摸切费用不退。", modalRect.x + 40f, modalRect.y + 260f)
+        font.draw(batch, "7. 看破(10点): 仅码牌准备阶段可选，可与偷天换日、瞒天过海组合，合计最高 70 点；", modalRect.x + 40f, modalRect.y + 236f)
+        font.draw(batch, "   发牌前抵消对手本局偷天换日并清除其既有落汗；不封锁发牌后新施放的落汗。", modalRect.x + 40f, modalRect.y + 212f)
 
         font.color = Color(0.95f, 0.45f, 0.45f, 1f)
-        font.draw(batch, "注意: 偷梁换柱立直后禁止；袖里藏花立直可施术；超时或预定后不退款。", modalRect.x + 40f, modalRect.y + 195f)
+        font.draw(batch, "注意: 偷梁换柱立直后禁止；袖里藏花立直可施术；超时或预定后不退款。", modalRect.x + 40f, modalRect.y + 186f)
 
         font.color = Color.WHITE
         MenuViewDraw.drawCenteredText(batch, font, "关闭 [X]", btnModalClose.x + btnModalClose.width / 2f, btnModalClose.y + 26f)
@@ -385,7 +387,8 @@ class MenuScreen(
             val defaultCosts = mapOf(
                 "TILE_MARK" to 10,
                 "SLEEVE_BLOOM" to 10,
-                "BEAM_SWAP" to 10
+                "BEAM_SWAP" to 10,
+                "SEE_THROUGH" to 10
             )
             lobby.createRoom(playerName = "玩家", config = MatchConfig(
                 cheatEconomy = CheatEconomyConfig(
@@ -393,7 +396,7 @@ class MenuScreen(
                     initialPoints = List(4) { 100 },
                     costs = defaultCosts
                 ),
-                shuffleConfig = ShuffleConfig(enabled = true),
+                shuffleConfig = ShuffleConfig(enabled = true, seeThroughEnabled = true),
                 tileMarkConfig = TileMarkConfig(enabled = true),
                 sleeveBloomConfig = SleeveBloomConfig(enabled = true),
                 beamSwapConfig = BeamSwapConfig(enabled = true)
@@ -513,7 +516,8 @@ class MenuScreen(
         val defaultCosts = mapOf(
             "TILE_MARK" to 10,
             "SLEEVE_BLOOM" to 10,
-            "BEAM_SWAP" to 10
+            "BEAM_SWAP" to 10,
+            "SEE_THROUGH" to 10
         )
         val config = MatchConfig(
             handsPerWind = 4,
@@ -523,7 +527,8 @@ class MenuScreen(
                 initialPoints = List(4) { 100 },
                 costs = defaultCosts
             ),
-            shuffleConfig = ShuffleConfig(enabled = shuffleEnabled),
+            // 玩法预设：开启码牌的建房同时启用看破；关闭码牌时看破也保持关闭。
+            shuffleConfig = ShuffleConfig(enabled = shuffleEnabled, seeThroughEnabled = shuffleEnabled),
             tileMarkConfig = TileMarkConfig(enabled = true),
             sleeveBloomConfig = SleeveBloomConfig(enabled = true),
             beamSwapConfig = BeamSwapConfig(enabled = true)

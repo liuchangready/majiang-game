@@ -786,7 +786,7 @@ private class ProtocolShuffleConfigAdapter : JsonDeserializer<ProtocolShuffleCon
     override fun deserialize(json: JsonElement, typeOfT: Type, context: JsonDeserializationContext): ProtocolShuffleConfig {
         if (!json.isJsonObject) throw JsonParseException("ProtocolShuffleConfig must be a JSON object")
         val obj = json.asJsonObject
-        checkUnknownFields(obj, setOf("enabled", "selectionMillis", "plannedDraws", "strength", "interference", "aiMaySpend"), "ProtocolShuffleConfig")
+        checkUnknownFields(obj, setOf("enabled", "selectionMillis", "plannedDraws", "strength", "interference", "aiMaySpend", "seeThroughEnabled"), "ProtocolShuffleConfig")
         val enabled = if (obj.has("enabled") && !obj.get("enabled").isJsonNull) {
             validateStrictBoolean(obj.get("enabled"), "enabled")
         } else false
@@ -813,7 +813,12 @@ private class ProtocolShuffleConfigAdapter : JsonDeserializer<ProtocolShuffleCon
         val aiMaySpend = if (obj.has("aiMaySpend") && !obj.get("aiMaySpend").isJsonNull) {
             validateStrictBoolean(obj.get("aiMaySpend"), "aiMaySpend")
         } else false
-        return ProtocolShuffleConfig(enabled, selectionMillis, plannedDraws, strength, interference, aiMaySpend)
+        val seeThroughEnabled = if (obj.has("seeThroughEnabled")) {
+            val elem = obj.get("seeThroughEnabled")
+            if (elem.isJsonNull) throw JsonParseException("seeThroughEnabled must be a JSON boolean, explicit null is not allowed")
+            validateStrictBoolean(elem, "seeThroughEnabled")
+        } else false
+        return ProtocolShuffleConfig(enabled, selectionMillis, plannedDraws, strength, interference, aiMaySpend, seeThroughEnabled)
     }
 }
 
@@ -915,7 +920,7 @@ private class ProtocolShuffleSelectionAdapter : JsonDeserializer<ProtocolShuffle
     override fun deserialize(json: JsonElement, typeOfT: Type, context: JsonDeserializationContext): ProtocolShuffleSelection {
         if (!json.isJsonObject) throw JsonParseException("ProtocolShuffleSelection must be a JSON object")
         val obj = json.asJsonObject
-        checkUnknownFields(obj, setOf("initialTargets", "drawTargets"), "ProtocolShuffleSelection")
+        checkUnknownFields(obj, setOf("initialTargets", "drawTargets", "seeThrough"), "ProtocolShuffleSelection")
         val initialTargets: Set<ProtocolShuffleTarget> = if (obj.has("initialTargets") && !obj.get("initialTargets").isJsonNull) {
             val arr = obj.getAsJsonArray("initialTargets")
             val set = LinkedHashSet<ProtocolShuffleTarget>()
@@ -932,7 +937,12 @@ private class ProtocolShuffleSelectionAdapter : JsonDeserializer<ProtocolShuffle
             }
             Collections.unmodifiableSet(set)
         } else emptySet()
-        return ProtocolShuffleSelection(initialTargets, drawTargets)
+        val seeThrough = if (obj.has("seeThrough")) {
+            val elem = obj.get("seeThrough")
+            if (elem.isJsonNull) throw JsonParseException("seeThrough must be a JSON boolean, explicit null is not allowed")
+            validateStrictBoolean(elem, "seeThrough")
+        } else false
+        return ProtocolShuffleSelection(initialTargets, drawTargets, seeThrough)
     }
 }
 
@@ -1381,6 +1391,47 @@ private class ApiRequestAdapter : JsonDeserializer<ApiRequest> {
         val beamSwapChoice = if (obj.has("beamSwapChoice") && !obj.get("beamSwapChoice").isJsonNull) {
             context.deserialize<ProtocolBeamSwapChoiceRequest>(obj.get("beamSwapChoice"), ProtocolBeamSwapChoiceRequest::class.java)
         } else null
+
+        if (api == ApiTags.SUBMIT_SHUFFLE_PLAN) {
+            if (shufflePlan == null) {
+                throw JsonParseException("Missing shufflePlan payload in SUBMIT_SHUFFLE_PLAN request")
+            }
+            // 唯一幂等身份：信封 requestId 必须与专有载荷一致；可选信封 roundId 也不得另指一局。
+            if (shufflePlan.requestId != requestId) {
+                throw JsonParseException("requestId mismatch between envelope ($requestId) and shufflePlan (${shufflePlan.requestId})")
+            }
+            if (roundId != null && roundId != shufflePlan.roundId) {
+                throw JsonParseException("roundId mismatch between envelope ($roundId) and shufflePlan (${shufflePlan.roundId})")
+            }
+            if (choice != null || obj.has("choice")) {
+                throw JsonParseException("SUBMIT_SHUFFLE_PLAN cannot contain choice payload")
+            }
+            if (tileMark != null || obj.has("tileMark")) {
+                throw JsonParseException("SUBMIT_SHUFFLE_PLAN cannot contain tileMark payload")
+            }
+            if (sleeveBloom != null || obj.has("sleeveBloom")) {
+                throw JsonParseException("SUBMIT_SHUFFLE_PLAN cannot contain sleeveBloom payload")
+            }
+            if (sleeveBloomChoice != null || obj.has("sleeveBloomChoice")) {
+                throw JsonParseException("SUBMIT_SHUFFLE_PLAN cannot contain sleeveBloomChoice payload")
+            }
+            if (sleeveBloomOffTurn != null || obj.has("sleeveBloomOffTurn")) {
+                throw JsonParseException("SUBMIT_SHUFFLE_PLAN cannot contain sleeveBloomOffTurn payload")
+            }
+            if (sleeveBloomOffTurnChoice != null || obj.has("sleeveBloomOffTurnChoice")) {
+                throw JsonParseException("SUBMIT_SHUFFLE_PLAN cannot contain sleeveBloomOffTurnChoice payload")
+            }
+            if (beamSwap != null || obj.has("beamSwap")) {
+                throw JsonParseException("SUBMIT_SHUFFLE_PLAN cannot contain beamSwap payload")
+            }
+            if (beamSwapChoice != null || obj.has("beamSwapChoice")) {
+                throw JsonParseException("SUBMIT_SHUFFLE_PLAN cannot contain beamSwapChoice payload")
+            }
+        } else {
+            if (shufflePlan != null || obj.has("shufflePlan")) {
+                throw JsonParseException("shufflePlan payload is only allowed for SUBMIT_SHUFFLE_PLAN")
+            }
+        }
 
         if (api == ApiTags.SUBMIT_TILE_MARK) {
             if (tileMark == null) {

@@ -400,6 +400,80 @@ class CheatAiCapabilityTest {
     }
 
     @Test
+    fun `see through is offered only when enabled and combines within the six candidate budget`() {
+        val clock = Clock()
+        val config = MatchConfig(
+            cheatEconomy = CheatEconomyConfig(
+                enabled = true,
+                initialPoints = List(4) { 100 },
+                costs = mapOf("SEE_THROUGH" to 10)
+            ),
+            shuffleConfig = ShuffleConfig(enabled = true, seeThroughEnabled = true),
+            aiCheatPolicy = AiCheatPolicy(enabled = true, maxSpendPerRound = 70)
+        )
+        TableAuthority(
+            config = config,
+            clock = clock,
+            controllers = listOf(
+                SeatController.RemoteHuman(false),
+                SeatController.Computer(),
+                SeatController.RemoteHuman(false),
+                SeatController.RemoteHuman(false)
+            ),
+            initialState = com.majiang.state.GameState().apply { cheatPoints.fill(100) }
+        ).use { authority ->
+            assertEquals(ReceiptStatus.APPLIED, authority.start(0, clock.now).receipt.status)
+            val snapshot = authority.buildAiSeatSnapshot(1, clock.now)
+            assertEquals(AiPhase.SHUFFLE_PREPARATION, snapshot.phase)
+            assertTrue(snapshot.cheatView.preparation!!.seeThroughEnabled)
+            assertEquals(10, snapshot.cheatView.preparation!!.seeThroughCost)
+
+            val registry = CheatAiRegistry.builtIn(authority)
+            val candidates = registry.candidates(snapshot, snapshot.limits)
+            assertEquals(6, candidates.size)
+            val byId = candidates.associateBy { it.optionId }
+            assertTrue(byId.containsKey("${AiCapabilityIds.SHUFFLE_PREPARATION}:see-through"))
+            val combined = byId.getValue("${AiCapabilityIds.SHUFFLE_PREPARATION}:combined")
+            assertEquals(70, combined.cost)
+            assertTrue(combined.parameters.string("seeThrough") == "true")
+            assertTrue(combined.parameters.string("initialTargets")!!.contains("CHINITSU_MAN"))
+            assertTrue(combined.parameters.string("drawTargets")!!.contains("DAISANGEN"))
+
+            val result = registry.require(AiCapabilityIds.SHUFFLE_PREPARATION)
+                .submit(1, combined, snapshot.stamp, clock.now)
+            assertEquals(ReceiptStatus.RECORDED, result.receipt.status, result.receipt.reason)
+            val prep = authority.buildPreparationViewForSeat(1)!!
+            assertEquals(70, prep.reservedPoints)
+            assertTrue(prep.selection!!.seeThrough)
+        }
+
+        val disabled = MatchConfig(
+            cheatEconomy = CheatEconomyConfig(enabled = true, initialPoints = List(4) { 100 }),
+            shuffleConfig = ShuffleConfig(enabled = true, seeThroughEnabled = false),
+            aiCheatPolicy = AiCheatPolicy(enabled = true, maxSpendPerRound = 70)
+        )
+        TableAuthority(
+            config = disabled,
+            clock = clock,
+            controllers = listOf(
+                SeatController.RemoteHuman(false),
+                SeatController.Computer(),
+                SeatController.RemoteHuman(false),
+                SeatController.RemoteHuman(false)
+            ),
+            initialState = com.majiang.state.GameState().apply { cheatPoints.fill(100) }
+        ).use { authority ->
+            authority.start(0, clock.now)
+            val snapshot = authority.buildAiSeatSnapshot(1, clock.now)
+            val registry = CheatAiRegistry.builtIn(authority)
+            val candidates = registry.candidates(snapshot, snapshot.limits)
+            assertEquals(4, candidates.size, "Disabled see-through must keep the legacy four candidates")
+            assertTrue(candidates.none { it.optionId.endsWith(":see-through") || it.optionId.endsWith(":combined") })
+            assertTrue(candidates.none { it.parameters.string("seeThrough") == "true" })
+        }
+    }
+
+    @Test
     fun `new capability is discovered and selected without dispatcher changes`() {
         val clock = Clock()
         table(activeState(), baseConfig(mark = false), clock = clock).use { authority ->

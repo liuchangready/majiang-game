@@ -663,7 +663,8 @@ class TcpRequestRouter(
                     tileMarkSupported = true,
                     sleeveBloomSupported = true,
                     beamSwapSupported = true,
-                    scoreDetailVersion = ProtocolScoreCodes.CONTRACT_VERSION
+                    scoreDetailVersion = ProtocolScoreCodes.CONTRACT_VERSION,
+                    seeThroughSupported = true
                 )
                 val resp = ApiResponse(requestId = req.requestId, success = true, capabilities = caps)
                 receiptManager.completeReceipt(key, inFlight, resp, isLobby = isLobby)

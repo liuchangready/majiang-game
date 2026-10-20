@@ -37,13 +37,12 @@ object TcpWire {
     /**
      * 业务契约版本。
      *
-     * v2 起携带 D-07 结构化算分字段（capCode / yakuEntries / paymentPlan /
-     * scoreDetailVersion）。v3 起携带袖里藏花他家回合 OFF_TURN_OFFER/RESERVED
-     * 私有快照与 windowId 请求语义。双端对 HELLO/WELCOME 做硬相等校验，
-     * 旧业务版本明确以 VERSION_MISMATCH 拒绝；不提供同进程旧/新版本混发或热迁移。
+     * 业务版本与 [com.majiang.server.api.ApiProtocol.PROTOCOL_VERSION] 同步：v7 新增
+     * 准备阶段看破（seeThrough）严格布尔字段、私有准备视图开关与能力声明；v6 及更旧
+     * 业务版本由双端 HELLO/WELCOME 硬相等校验以 VERSION_MISMATCH 拒绝，不做热迁移。
      * 传输帧格式仍为 MJ-TCP/1（[WIRE_VERSION] = 1，12 字节帧头），不因业务升版改变。
      */
-    const val BUSINESS_VERSION: Int = 3
+    const val BUSINESS_VERSION: Int = 7
 
     // === 帧类型常量 (1..10) ===
 

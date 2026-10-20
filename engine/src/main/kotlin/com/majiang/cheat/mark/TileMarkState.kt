@@ -165,6 +165,33 @@ class TileMarkState private constructor(
     }
 
     /**
+     * 清除除保留席位外所有座位的标记组（看破结算）。
+     *
+     * 仅保留 ownerSeat 属于 [keepSeats] 的组；席位非法拒绝。
+     * 保留集合为空表示清除全部组；无任何组被删除时返回原实例，
+     * 因此多名看破者同时结算只产生一次确定性的状态变更。
+     */
+    fun clearMarkGroupsExcept(keepSeats: Set<Int>): TileMarkState {
+        require(keepSeats.all { it in 0..3 }) {
+            "keepSeats must be within 0..3, got: $keepSeats"
+        }
+        val remaining = groups.filter { it.ownerSeat in keepSeats }
+        if (remaining.size == groups.size) {
+            return this
+        }
+        if (remaining.isEmpty()) {
+            return clearAll()
+        }
+        return TileMarkState(
+            version = version + 1L,
+            dealtRoundOrdinal = dealtRoundOrdinal,
+            dealtRoundIds = dealtRoundIds,
+            settledRoundIds = settledRoundIds,
+            groups = remaining
+        )
+    }
+
+    /**
      * 清除全部标记组，保留局次与历史。
      *
      * 空组时无变化返回原实例。

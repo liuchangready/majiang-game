@@ -60,7 +60,7 @@ class CreateRoomDialogView(
         font.color = Color.WHITE
         MenuViewDraw.drawCenteredText(batch, font, "对局长度: ${if (cfgIsHanchan) "半庄战 (东南战)" else "东风战 (东场战)"}  [点击切换]", btnCfgWind.x + btnCfgWind.width / 2f, btnCfgWind.y + 27f)
         MenuViewDraw.drawCenteredText(batch, font, "赤宝牌规则: 权威默认固定开启 (3张赤五标准)", btnCfgRedFive.x + btnCfgRedFive.width / 2f, btnCfgRedFive.y + 27f)
-        MenuViewDraw.drawCenteredText(batch, font, "千术绝技码牌: ${if (cfgShuffleCheating) "开启 (做牌准备阶段)" else "关闭"}  [点击切换]", btnCfgShuffle.x + btnCfgShuffle.width / 2f, btnCfgShuffle.y + 27f)
+        MenuViewDraw.drawCenteredText(batch, font, "千术绝技码牌: ${if (cfgShuffleCheating) "开启 (含看破10点)" else "关闭"}  [点击切换]", btnCfgShuffle.x + btnCfgShuffle.width / 2f, btnCfgShuffle.y + 27f)
 
         MenuViewDraw.drawCenteredText(batch, font, "确认创建房间", btnCreateConfirm.x + btnCreateConfirm.width / 2f, btnCreateConfirm.y + 28f)
         MenuViewDraw.drawCenteredText(batch, font, "取消", btnCreateCancel.x + btnCreateCancel.width / 2f, btnCreateCancel.y + 28f)

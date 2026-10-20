@@ -91,14 +91,14 @@ object ApiErrors {
  */
 object ApiProtocol {
     /**
-     * 权威业务协议版本号（v6：袖里藏花他家回合 windowId/offer 与预留快照）。
+     * 权威业务协议版本号（v7：准备阶段看破 seeThrough、10 点固定费用与私有准备视图）。
      *
-     * v4 已撤回：v5 双端不再接受 v4 HELLO/WELCOME，旧端收到 VERSION_MISMATCH。
-     * v6 新增袖里藏花 OFF_TURN_OFFER/RESERVED 私有快照语义；旧端必须按版本拒绝，
-     * 不得把未知 offer mode 误当成可操作即时 offer。
+     * v6 已撤回：v7 双端不再接受 v6 HELLO/WELCOME，旧端收到 VERSION_MISMATCH。
+     * v7 在洗牌方案中新增严格布尔字段 seeThrough；旧端不得把缺失/未知布尔字段误当成
+     * 默认关闭以外的语义，因此必须按业务版本硬拒绝。
      * MJ-TCP/1 12 字节帧格式与 `TcpWire.WIRE_VERSION = 1` 保持不变。
      */
-    const val PROTOCOL_VERSION = 6
+    const val PROTOCOL_VERSION = 7
 
     // === 连接终结 / KICK 原因码 ===
 

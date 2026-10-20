@@ -59,34 +59,50 @@ enum class ShuffleTarget {
  */
 class ShuffleSelection(
     initialTargets: Set<ShuffleTarget> = emptySet(),
-    drawTargets: Set<ShuffleTarget> = emptySet()
+    drawTargets: Set<ShuffleTarget> = emptySet(),
+    val seeThrough: Boolean = false
 ) {
     val initialTargets: Set<ShuffleTarget> = Collections.unmodifiableSet(LinkedHashSet(initialTargets))
     val drawTargets: Set<ShuffleTarget> = Collections.unmodifiableSet(LinkedHashSet(drawTargets))
 
     fun cost(): Int =
-        (if (initialTargets.isNotEmpty()) 40 else 0) + (if (drawTargets.isNotEmpty()) 20 else 0)
+        (if (initialTargets.isNotEmpty()) 40 else 0) +
+            (if (drawTargets.isNotEmpty()) 20 else 0) +
+            (if (seeThrough) SEE_THROUGH_COST else 0)
 
-    val isActive: Boolean get() = initialTargets.isNotEmpty() || drawTargets.isNotEmpty()
+    val isActive: Boolean get() = initialTargets.isNotEmpty() || drawTargets.isNotEmpty() || seeThrough
 
     operator fun component1(): Set<ShuffleTarget> = initialTargets
     operator fun component2(): Set<ShuffleTarget> = drawTargets
+    operator fun component3(): Boolean = seeThrough
 
     fun copy(
         initialTargets: Set<ShuffleTarget> = this.initialTargets,
-        drawTargets: Set<ShuffleTarget> = this.drawTargets
-    ): ShuffleSelection = ShuffleSelection(initialTargets, drawTargets)
+        drawTargets: Set<ShuffleTarget> = this.drawTargets,
+        seeThrough: Boolean = this.seeThrough
+    ): ShuffleSelection = ShuffleSelection(initialTargets, drawTargets, seeThrough)
 
     override fun equals(other: Any?): Boolean {
         if (this === other) return true
         if (other !is ShuffleSelection) return false
-        return initialTargets == other.initialTargets && drawTargets == other.drawTargets
+        return initialTargets == other.initialTargets &&
+            drawTargets == other.drawTargets &&
+            seeThrough == other.seeThrough
     }
 
-    override fun hashCode(): Int = 31 * initialTargets.hashCode() + drawTargets.hashCode()
+    override fun hashCode(): Int {
+        var result = initialTargets.hashCode()
+        result = 31 * result + drawTargets.hashCode()
+        result = 31 * result + seeThrough.hashCode()
+        return result
+    }
 
     override fun toString(): String =
-        "ShuffleSelection(initialTargets=$initialTargets, drawTargets=$drawTargets)"
+        "ShuffleSelection(initialTargets=$initialTargets, drawTargets=$drawTargets, seeThrough=$seeThrough)"
+
+    companion object {
+        const val SEE_THROUGH_COST: Int = 10
+    }
 }
 
 /**
@@ -159,7 +175,8 @@ data class ShuffleConfig(
     val plannedDraws: Int = 8,
     val strength: Double = 0.75,
     val interference: Double = 0.65,
-    val aiMaySpend: Boolean = false
+    val aiMaySpend: Boolean = false,
+    val seeThroughEnabled: Boolean = false
 )
 
 /**
@@ -286,7 +303,7 @@ class MatchConfig(
  * 客户端连接能力描述 (Capabilities)
  */
 class Capabilities(
-    val protocolVersion: Int = 6,
+    val protocolVersion: Int = 7,
     supportedPlayerCounts: Set<Int> = setOf(4),
     val remoteTransport: Boolean = false,
     val persistence: Boolean = false,
@@ -294,7 +311,8 @@ class Capabilities(
     val tileMarkSupported: Boolean = false,
     val sleeveBloomSupported: Boolean = false,
     val beamSwapSupported: Boolean = false,
-    val scoreDetailVersion: Int = 0
+    val scoreDetailVersion: Int = 0,
+    val seeThroughSupported: Boolean = false
 ) {
     val supportedPlayerCounts: Set<Int> = Collections.unmodifiableSet(LinkedHashSet(supportedPlayerCounts))
 
@@ -311,6 +329,7 @@ class Capabilities(
     operator fun component7(): Boolean = sleeveBloomSupported
     operator fun component8(): Boolean = beamSwapSupported
     operator fun component9(): Int = scoreDetailVersion
+    operator fun component10(): Boolean = seeThroughSupported
 
     fun copy(
         protocolVersion: Int = this.protocolVersion,
@@ -321,10 +340,11 @@ class Capabilities(
         tileMarkSupported: Boolean = this.tileMarkSupported,
         sleeveBloomSupported: Boolean = this.sleeveBloomSupported,
         beamSwapSupported: Boolean = this.beamSwapSupported,
-        scoreDetailVersion: Int = this.scoreDetailVersion
+        scoreDetailVersion: Int = this.scoreDetailVersion,
+        seeThroughSupported: Boolean = this.seeThroughSupported
     ): Capabilities = Capabilities(
         protocolVersion, supportedPlayerCounts, remoteTransport, persistence, resumption,
-        tileMarkSupported, sleeveBloomSupported, beamSwapSupported, scoreDetailVersion
+        tileMarkSupported, sleeveBloomSupported, beamSwapSupported, scoreDetailVersion, seeThroughSupported
     )
 
     override fun equals(other: Any?): Boolean {
@@ -338,7 +358,8 @@ class Capabilities(
             tileMarkSupported == other.tileMarkSupported &&
             sleeveBloomSupported == other.sleeveBloomSupported &&
             beamSwapSupported == other.beamSwapSupported &&
-            scoreDetailVersion == other.scoreDetailVersion
+            scoreDetailVersion == other.scoreDetailVersion &&
+            seeThroughSupported == other.seeThroughSupported
     }
 
     override fun hashCode(): Int {
@@ -351,11 +372,12 @@ class Capabilities(
         result = 31 * result + sleeveBloomSupported.hashCode()
         result = 31 * result + beamSwapSupported.hashCode()
         result = 31 * result + scoreDetailVersion.hashCode()
+        result = 31 * result + seeThroughSupported.hashCode()
         return result
     }
 
     override fun toString(): String =
-        "Capabilities(protocolVersion=$protocolVersion, supportedPlayerCounts=$supportedPlayerCounts, remoteTransport=$remoteTransport, persistence=$persistence, resumption=$resumption, tileMarkSupported=$tileMarkSupported, sleeveBloomSupported=$sleeveBloomSupported, beamSwapSupported=$beamSwapSupported, scoreDetailVersion=$scoreDetailVersion)"
+        "Capabilities(protocolVersion=$protocolVersion, supportedPlayerCounts=$supportedPlayerCounts, remoteTransport=$remoteTransport, persistence=$persistence, resumption=$resumption, tileMarkSupported=$tileMarkSupported, sleeveBloomSupported=$sleeveBloomSupported, beamSwapSupported=$beamSwapSupported, scoreDetailVersion=$scoreDetailVersion, seeThroughSupported=$seeThroughSupported)"
 }
 
 /**

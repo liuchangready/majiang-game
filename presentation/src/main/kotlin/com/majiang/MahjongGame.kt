@@ -286,7 +286,8 @@ class MahjongGame(
             val defaultCosts = mapOf(
                 "TILE_MARK" to 10,
                 "SLEEVE_BLOOM" to 10,
-                "BEAM_SWAP" to 10
+                "BEAM_SWAP" to 10,
+                "SEE_THROUGH" to 10
             )
             lobby.createRoom(playerName = "玩家", config = MatchConfig(
                 cheatEconomy = CheatEconomyConfig(
@@ -294,7 +295,7 @@ class MahjongGame(
                     initialPoints = List(4) { 100 },
                     costs = defaultCosts
                 ),
-                shuffleConfig = ShuffleConfig(enabled = true),
+                shuffleConfig = ShuffleConfig(enabled = true, seeThroughEnabled = true),
                 tileMarkConfig = TileMarkConfig(enabled = true),
                 sleeveBloomConfig = SleeveBloomConfig(enabled = true),
                 beamSwapConfig = BeamSwapConfig(enabled = true)

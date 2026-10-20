@@ -663,6 +663,57 @@ class ServerTableHostCoverageTest {
     }
 
     @Test
+    fun `see through reserves ten privately and charges original plans while hiding the choice`() {
+        val clock = TestClock(0L)
+        ServerTableHost(
+            config = MatchConfig(
+                winds = listOf(1),
+                cheatEconomy = CheatEconomyConfig(
+                    enabled = true,
+                    initialPoints = List(4) { 100 },
+                    costs = mapOf("SEE_THROUGH" to 10)
+                ),
+                shuffleConfig = ShuffleConfig(enabled = true, seeThroughEnabled = true)
+            ),
+            clock = clock,
+            controllers = humans()
+        ).use { h ->
+            val a = TestSeat(0, h)
+            val b = TestSeat(1, h)
+            a.start().await()
+            b.start().await()
+            assertTrue(a.snapshot().await().preparation!!.seeThroughEnabled)
+            assertEquals(10, a.snapshot().await().preparation!!.seeThroughCost)
+
+            val seeOnly = ShuffleSelection(seeThrough = true)
+            val opponent = ShuffleSelection(
+                initialTargets = setOf(ShuffleTarget.KOKUSHI),
+                drawTargets = setOf(ShuffleTarget.DAISANGEN)
+            )
+            assertEquals(ReceiptStatus.RECORDED, a.submitShufflePlan(request(a, "see", seeOnly)).await().status)
+
+            val aView = a.snapshot().await()
+            val bBefore = b.snapshot().await()
+            assertEquals(10, aView.preparation!!.reservedPoints)
+            assertEquals(90, aView.preparation!!.availablePoints)
+            assertTrue(aView.preparation!!.selection!!.seeThrough)
+            // 截止前每个座位只看到自己的私有选择，无法推断 a 已看破。
+            assertNull(bBefore.preparation!!.selection)
+            assertFalse(bBefore.preparation!!.confirmed)
+
+            assertEquals(ReceiptStatus.RECORDED, b.submitShufflePlan(request(b, "opp", opponent)).await().status)
+            assertEquals(opponent, b.snapshot().await().preparation!!.selection)
+
+            clock.now = 10000
+            h.tick().await()
+            val points = a.snapshot().await().cheatPoints
+            assertEquals(90, points[0], "See-through itself costs exactly ten")
+            assertEquals(40, points[1], "Countered original 40+20 plan is still charged in full")
+            assertNull(a.snapshot().await().preparation)
+        }
+    }
+
+    @Test
     fun `trusted ledger debit publishes private balance without refreshing deadline or advancing on retry`() {
         val clock = TestClock(0L)
         ServerTableHost(
