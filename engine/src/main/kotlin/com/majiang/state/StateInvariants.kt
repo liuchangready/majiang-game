@@ -82,6 +82,10 @@ object StateInvariants {
         state.sleeveBloomOffer?.let { offer ->
             require(offer.seat in 0..3) { "sleeveBloomOffer seat out of bounds: ${offer.seat}" }
             require(offer.offerId.isNotBlank()) { "sleeveBloomOffer offerId cannot be blank" }
+            require(offer.mode == com.majiang.cheat.bloom.SleeveBloomOfferMode.IMMEDIATE) {
+                "sleeveBloomOffer must be an IMMEDIATE offer, was ${offer.mode}"
+            }
+            require(offer.windowId == null) { "immediate sleeveBloomOffer cannot have windowId" }
             require(offer.seat == state.currentPlayer) {
                 "sleeveBloomOffer seat (${offer.seat}) must match currentPlayer (${state.currentPlayer})"
             }
@@ -91,6 +95,90 @@ object StateInvariants {
             val hand = state.players[offer.seat]
             require(hand.drawnTile == offer.firstTile) {
                 "sleeveBloomOffer firstTile (${offer.firstTile}) must match player drawnTile (${hand.drawnTile})"
+            }
+            when (offer.drawKind) {
+                com.majiang.cheat.bloom.SleeveBloomDrawKind.NORMAL -> {
+                    require(state.tilePool.getLocation(offer.secondTile) == TileLocation.WALL) {
+                        "sleeveBloomOffer secondTile (${offer.secondTile}) must remain in WALL"
+                    }
+                    val index = state.wallTileIndex(offer.secondTile)
+                    require(index in 0 until state.wallEndExclusive) {
+                        "sleeveBloomOffer secondTile (${offer.secondTile}) must be inside wall list"
+                    }
+                    require(index == state.nextAvailableWallIndex()) {
+                        "sleeveBloomOffer secondTile (${offer.secondTile}) must be the next available wall slot"
+                    }
+                }
+                com.majiang.cheat.bloom.SleeveBloomDrawKind.RINSHAN -> {
+                    require(state.tilePool.getLocation(offer.secondTile) == TileLocation.DEAD_WALL) {
+                        "rinshan sleeveBloomOffer secondTile (${offer.secondTile}) must remain in DEAD_WALL"
+                    }
+                    require(state.rinshanPointer in 1..3 && state.totalKanCount < 4) {
+                        "rinshan sleeveBloomOffer requires an available next rinshan slot"
+                    }
+                    require(state.deadWall.getOrNull(state.rinshanPointer) == offer.secondTile) {
+                        "rinshan sleeveBloomOffer secondTile (${offer.secondTile}) must match deadWall[rinshanPointer]"
+                    }
+                }
+                com.majiang.cheat.bloom.SleeveBloomDrawKind.DEAL_EXTRA -> {
+                    throw IllegalStateException("sleeveBloomOffer cannot use DEAL_EXTRA draw kind")
+                }
+            }
+        }
+
+        // 1.3.1 他家回合 offer / 预留 / 窗口与锁定集合校验
+        val protectedSources = mutableMapOf<Tile, String>()
+        fun registerProtected(tile: Tile, source: String) {
+            val existing = protectedSources.put(tile, source)
+            require(existing == null) {
+                "Sleeve bloom tile $tile is protected by both $existing and $source"
+            }
+            require(state.tilePool.getLocation(tile) == TileLocation.WALL) {
+                "Sleeve bloom protected tile $tile is not physically in WALL: ${state.tilePool.getLocation(tile)}"
+            }
+            require(state.wallTileIndex(tile) >= 0) {
+                "Sleeve bloom protected tile $tile is not present in wall list"
+            }
+        }
+
+        for ((seat, offer) in state.sleeveBloomOffTurnOffers) {
+            require(seat in 0..3) { "off-turn offer seat out of bounds: $seat" }
+            require(offer.seat == seat) {
+                "off-turn offer map seat $seat does not match offer seat ${offer.seat}"
+            }
+            require(offer.mode == com.majiang.cheat.bloom.SleeveBloomOfferMode.OFF_TURN) {
+                "off-turn offer map must only contain OFF_TURN offers, was ${offer.mode}"
+            }
+            require(!offer.windowId.isNullOrBlank()) { "off-turn offer requires a windowId" }
+            require(offer.deadlineMillis > 0L) { "off-turn offer requires a positive choice deadline" }
+            require(offer.firstTile != offer.secondTile) {
+                "off-turn offer candidates must be distinct"
+            }
+            require(state.sleeveBloomReservation(seat) == null) {
+                "seat $seat cannot hold both an off-turn offer and a reservation"
+            }
+            require(state.sleeveBloomOffer?.seat != seat) {
+                "seat $seat cannot hold both an immediate and an off-turn offer"
+            }
+            registerProtected(offer.firstTile, "offTurnOffer[$seat].firstTile")
+            registerProtected(offer.secondTile, "offTurnOffer[$seat].secondTile")
+        }
+
+        for ((seat, reservation) in state.sleeveBloomReservations) {
+            require(seat in 0..3) { "reservation seat out of bounds: $seat" }
+            require(reservation.seat == seat) {
+                "reservation map seat $seat does not match reservation seat ${reservation.seat}"
+            }
+            require(state.sleeveBloomOffTurnOffer(seat) == null) {
+                "seat $seat cannot hold both an off-turn offer and a reservation"
+            }
+            registerProtected(reservation.tile, "reservation[$seat]")
+        }
+
+        for (seat in 0..3) {
+            val windowId = state.sleeveBloomWindowId(seat)
+            require(windowId == null || windowId.isNotBlank()) {
+                "sleeve bloom window id for seat $seat cannot be blank"
             }
         }
 
@@ -148,9 +236,21 @@ object StateInvariants {
             }
         }
 
-        // 3.1 活牌山容器: [wallPointer, wallEndExclusive)
+        // 3.1 活牌山容器: [wallPointer, wallEndExclusive)；旧槽位若已摸走则不再是 WALL，
+        // 由所入手牌/牌河容器记录，不能重复算作当前牌山实体。
         for (i in state.wallPointer until state.wallEndExclusive) {
-            record(state.wall[i], TileLocation(Zone.WALL, -1), "wall[$i]")
+            if (state.tilePool.getLocation(state.wall[i]) == TileLocation.WALL) {
+                record(state.wall[i], TileLocation(Zone.WALL, -1), "wall[$i]")
+            }
+        }
+        // 3.1.1 已越过 wallPointer 的洞（锁定/预留或解锁后待重新摸出）仍属物理活牌山。
+        // 已摸走的旧槽位在 TilePool 中不再是 WALL，会被过滤，不能重复计数。
+        for (i in state.wall.indices) {
+            if (i in state.wallPointer until state.wallEndExclusive) continue
+            val tile = state.wall[i]
+            if (state.tilePool.getLocation(tile) == TileLocation.WALL) {
+                record(tile, TileLocation(Zone.WALL, -1), "wall[$i] (skipped hole)")
+            }
         }
 
         // 3.2 当前有效王牌容器: [rinshanPointer, deadWall.size) + deadWallReplacements

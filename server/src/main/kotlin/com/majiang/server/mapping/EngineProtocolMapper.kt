@@ -50,6 +50,9 @@ import com.majiang.cheat.mark.TileMarkView
 import com.majiang.cheat.bloom.SleeveBloomConfig
 import com.majiang.cheat.bloom.SleeveBloomDrawKind
 import com.majiang.cheat.bloom.SleeveBloomKeep
+import com.majiang.cheat.bloom.SleeveBloomOfferMode
+import com.majiang.cheat.bloom.SleeveBloomOffTurnRequest
+import com.majiang.cheat.bloom.SleeveBloomOffTurnChoiceRequest
 import com.majiang.cheat.bloom.SleeveBloomOfferView
 import com.majiang.cheat.bloom.SleeveBloomRequest
 import com.majiang.cheat.bloom.SleeveBloomChoiceRequest
@@ -120,8 +123,12 @@ import com.majiang.transport.api.ProtocolTimeControlConfig
 import com.majiang.transport.api.ProtocolSleeveBloomConfig
 import com.majiang.transport.api.ProtocolSleeveBloomDrawKind
 import com.majiang.transport.api.ProtocolSleeveBloomKeep
+import com.majiang.transport.api.ProtocolSleeveBloomOfferMode
+import com.majiang.transport.api.ProtocolSleeveBloomOffTurnRequest
+import com.majiang.transport.api.ProtocolSleeveBloomOffTurnChoiceRequest
 import com.majiang.transport.api.ProtocolSleeveBloomOfferView
 import com.majiang.transport.api.ProtocolSleeveBloomRequest
+import com.majiang.transport.api.ProtocolSleeveBloomReservationView
 import com.majiang.transport.api.ProtocolSleeveBloomChoiceRequest
 import com.majiang.transport.api.ProtocolSleeveBloomView
 import com.majiang.transport.api.ProtocolBeamSwapAction
@@ -523,10 +530,11 @@ object EngineProtocolMapper {
     // === SleeveBloomConfig ===
 
     fun toProtocolSleeveBloomConfig(config: SleeveBloomConfig): ProtocolSleeveBloomConfig =
-        ProtocolSleeveBloomConfig(enabled = config.enabled)
+        ProtocolSleeveBloomConfig(enabled = config.enabled, offTurnChoiceMillis = config.offTurnChoiceMillis)
 
     fun toEngineSleeveBloomConfig(config: ProtocolSleeveBloomConfig?): SleeveBloomConfig =
-        if (config == null) SleeveBloomConfig() else SleeveBloomConfig(enabled = config.enabled)
+        if (config == null) SleeveBloomConfig()
+        else SleeveBloomConfig(enabled = config.enabled, offTurnChoiceMillis = config.offTurnChoiceMillis)
 
     // === BeamSwapConfig ===
 
@@ -1028,6 +1036,58 @@ object EngineProtocolMapper {
         ProtocolSleeveBloomKeep.SECOND -> SleeveBloomKeep.SECOND
     }
 
+    fun toProtocolSleeveBloomOfferMode(mode: SleeveBloomOfferMode): ProtocolSleeveBloomOfferMode = when (mode) {
+        SleeveBloomOfferMode.IMMEDIATE -> ProtocolSleeveBloomOfferMode.IMMEDIATE
+        SleeveBloomOfferMode.OFF_TURN -> ProtocolSleeveBloomOfferMode.OFF_TURN
+    }
+
+    fun toEngineSleeveBloomOfferMode(mode: ProtocolSleeveBloomOfferMode): SleeveBloomOfferMode = when (mode) {
+        ProtocolSleeveBloomOfferMode.IMMEDIATE -> SleeveBloomOfferMode.IMMEDIATE
+        ProtocolSleeveBloomOfferMode.OFF_TURN -> SleeveBloomOfferMode.OFF_TURN
+    }
+
+    fun toEngineSleeveBloomOffTurnRequest(
+        request: ProtocolSleeveBloomOffTurnRequest
+    ): SleeveBloomOffTurnRequest = SleeveBloomOffTurnRequest(
+        requestId = request.requestId,
+        sessionId = request.sessionId,
+        roundId = request.roundId,
+        windowId = request.windowId,
+        controlEpoch = request.controlEpoch
+    )
+
+    fun toProtocolSleeveBloomOffTurnRequest(
+        request: SleeveBloomOffTurnRequest
+    ): ProtocolSleeveBloomOffTurnRequest = ProtocolSleeveBloomOffTurnRequest(
+        requestId = request.requestId,
+        sessionId = request.sessionId,
+        roundId = request.roundId,
+        windowId = request.windowId,
+        controlEpoch = request.controlEpoch
+    )
+
+    fun toEngineSleeveBloomOffTurnChoiceRequest(
+        request: ProtocolSleeveBloomOffTurnChoiceRequest
+    ): SleeveBloomOffTurnChoiceRequest = SleeveBloomOffTurnChoiceRequest(
+        requestId = request.requestId,
+        sessionId = request.sessionId,
+        roundId = request.roundId,
+        controlEpoch = request.controlEpoch,
+        offerId = request.offerId,
+        keep = toEngineSleeveBloomKeep(request.keep)
+    )
+
+    fun toProtocolSleeveBloomOffTurnChoiceRequest(
+        request: SleeveBloomOffTurnChoiceRequest
+    ): ProtocolSleeveBloomOffTurnChoiceRequest = ProtocolSleeveBloomOffTurnChoiceRequest(
+        requestId = request.requestId,
+        sessionId = request.sessionId,
+        roundId = request.roundId,
+        controlEpoch = request.controlEpoch,
+        offerId = request.offerId,
+        keep = toProtocolSleeveBloomKeep(request.keep)
+    )
+
     fun toEngineSleeveBloomRequest(request: ProtocolSleeveBloomRequest): SleeveBloomRequest = SleeveBloomRequest(
         requestId = request.requestId,
         sessionId = request.sessionId,
@@ -1071,7 +1131,13 @@ object EngineProtocolMapper {
         drawKind = toProtocolSleeveBloomDrawKind(view.drawKind),
         deadlineMillis = view.deadlineMillis,
         decisionId = view.decisionId,
-        controlEpoch = view.controlEpoch
+        controlEpoch = view.controlEpoch,
+        mode = toProtocolSleeveBloomOfferMode(view.mode),
+        windowId = view.windowId,
+        firstCanTsumo = view.firstCanTsumo,
+        secondCanTsumo = view.secondCanTsumo,
+        firstCanKan = view.firstCanKan,
+        secondCanKan = view.secondCanKan
     )
 
     fun toEngineSleeveBloomOfferView(proto: ProtocolSleeveBloomOfferView): SleeveBloomOfferView = SleeveBloomOfferView(
@@ -1081,8 +1147,31 @@ object EngineProtocolMapper {
         drawKind = toEngineSleeveBloomDrawKind(proto.drawKind),
         deadlineMillis = proto.deadlineMillis,
         decisionId = proto.decisionId,
-        controlEpoch = proto.controlEpoch
+        controlEpoch = proto.controlEpoch,
+        mode = toEngineSleeveBloomOfferMode(proto.mode),
+        windowId = proto.windowId,
+        firstCanTsumo = proto.firstCanTsumo,
+        secondCanTsumo = proto.secondCanTsumo,
+        firstCanKan = proto.firstCanKan,
+        secondCanKan = proto.secondCanKan
     )
+
+    fun toProtocolSleeveBloomReservationView(
+        view: com.majiang.cheat.bloom.SleeveBloomReservationView
+    ): ProtocolSleeveBloomReservationView = ProtocolSleeveBloomReservationView(
+        tile = toProtocolTile(view.tile),
+        offerId = view.offerId,
+        windowId = view.windowId
+    )
+
+    fun toEngineSleeveBloomReservationView(
+        proto: ProtocolSleeveBloomReservationView
+    ): com.majiang.cheat.bloom.SleeveBloomReservationView =
+        com.majiang.cheat.bloom.SleeveBloomReservationView(
+            tile = toEngineTile(proto.tile),
+            offerId = proto.offerId,
+            windowId = proto.windowId
+        )
 
     fun toProtocolSleeveBloomView(view: SleeveBloomView): ProtocolSleeveBloomView = ProtocolSleeveBloomView(
         canApply = view.canApply,
@@ -1092,7 +1181,11 @@ object EngineProtocolMapper {
         decisionId = view.decisionId,
         controlEpoch = view.controlEpoch,
         stateVersion = view.stateVersion,
-        pendingOffer = view.pendingOffer?.let { toProtocolSleeveBloomOfferView(it) }
+        pendingOffer = view.pendingOffer?.let { toProtocolSleeveBloomOfferView(it) },
+        canApplyOffTurn = view.canApplyOffTurn,
+        offTurnDisabledReason = view.offTurnDisabledReason,
+        offTurnWindowId = view.offTurnWindowId,
+        reservation = view.reservation?.let { toProtocolSleeveBloomReservationView(it) }
     )
 
     fun toEngineSleeveBloomView(proto: ProtocolSleeveBloomView): SleeveBloomView = SleeveBloomView(
@@ -1103,7 +1196,11 @@ object EngineProtocolMapper {
         decisionId = proto.decisionId,
         controlEpoch = proto.controlEpoch,
         stateVersion = proto.stateVersion,
-        pendingOffer = proto.pendingOffer?.let { toEngineSleeveBloomOfferView(it) }
+        pendingOffer = proto.pendingOffer?.let { toEngineSleeveBloomOfferView(it) },
+        canApplyOffTurn = proto.canApplyOffTurn,
+        offTurnDisabledReason = proto.offTurnDisabledReason,
+        offTurnWindowId = proto.offTurnWindowId,
+        reservation = proto.reservation?.let { toEngineSleeveBloomReservationView(it) }
     )
 
     // === BeamSwap ===

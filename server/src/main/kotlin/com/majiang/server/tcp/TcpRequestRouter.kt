@@ -451,6 +451,46 @@ class TcpRequestRouter(
                     }
                 }
             }
+            ApiTags.SUBMIT_SLEEVE_BLOOM_OFF_TURN -> withPlayer(connection, identity, key, req, inFlight, isLobby) { player ->
+                val bloom = req.sleeveBloomOffTurn
+                if (bloom == null) {
+                    val resp = ApiResponse(requestId = req.requestId, success = false, error = ApiErrors.MALFORMED_REQUEST)
+                    receiptManager.completeReceipt(key, inFlight, resp, isLobby = isLobby)
+                    sendResponse(connection, key.scope, key.requestId, resp)
+                } else {
+                    val engineReq = EngineProtocolMapper.toEngineSleeveBloomOffTurnRequest(bloom)
+                    player.room.submitSleeveBloomOffTurn(player.seat, engineReq, player.makeSessionValidator(connection)).whenComplete { receipt, err ->
+                        val resp = if (err != null || receipt == null) {
+                            ApiResponse(requestId = req.requestId, success = false, error = ApiErrors.INTERNAL_ERROR)
+                        } else {
+                            val protoReceipt = EngineProtocolMapper.toProtocolReceipt(receipt)
+                            ApiResponse(requestId = req.requestId, success = protoReceipt.status != ProtocolReceiptStatus.REJECTED, receipt = protoReceipt)
+                        }
+                        receiptManager.completeReceipt(key, inFlight, resp, isLobby = isLobby)
+                        sendResponse(connection, key.scope, key.requestId, resp)
+                    }
+                }
+            }
+            ApiTags.SUBMIT_SLEEVE_BLOOM_OFF_TURN_CHOICE -> withPlayer(connection, identity, key, req, inFlight, isLobby) { player ->
+                val choice = req.sleeveBloomOffTurnChoice
+                if (choice == null) {
+                    val resp = ApiResponse(requestId = req.requestId, success = false, error = ApiErrors.MALFORMED_REQUEST)
+                    receiptManager.completeReceipt(key, inFlight, resp, isLobby = isLobby)
+                    sendResponse(connection, key.scope, key.requestId, resp)
+                } else {
+                    val engineReq = EngineProtocolMapper.toEngineSleeveBloomOffTurnChoiceRequest(choice)
+                    player.room.submitSleeveBloomOffTurnChoice(player.seat, engineReq, player.makeSessionValidator(connection)).whenComplete { receipt, err ->
+                        val resp = if (err != null || receipt == null) {
+                            ApiResponse(requestId = req.requestId, success = false, error = ApiErrors.INTERNAL_ERROR)
+                        } else {
+                            val protoReceipt = EngineProtocolMapper.toProtocolReceipt(receipt)
+                            ApiResponse(requestId = req.requestId, success = protoReceipt.status != ProtocolReceiptStatus.REJECTED, receipt = protoReceipt)
+                        }
+                        receiptManager.completeReceipt(key, inFlight, resp, isLobby = isLobby)
+                        sendResponse(connection, key.scope, key.requestId, resp)
+                    }
+                }
+            }
             ApiTags.SUBMIT_BEAM_SWAP -> withPlayer(connection, identity, key, req, inFlight, isLobby) { player ->
                 val swap = req.beamSwap
                 if (swap == null) {
@@ -1206,6 +1246,8 @@ class TcpRequestRouter(
         ApiTags.SUBMIT_TILE_MARK,
         ApiTags.SUBMIT_SLEEVE_BLOOM,
         ApiTags.SUBMIT_SLEEVE_BLOOM_CHOICE,
+        ApiTags.SUBMIT_SLEEVE_BLOOM_OFF_TURN,
+        ApiTags.SUBMIT_SLEEVE_BLOOM_OFF_TURN_CHOICE,
         ApiTags.SUBMIT_BEAM_SWAP,
         ApiTags.SUBMIT_BEAM_SWAP_CHOICE,
         ApiTags.CLAIM_CONTROL,

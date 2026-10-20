@@ -105,7 +105,7 @@ object BeamSwapProjectionFactory {
             emptyList()
         }
 
-        val normalCandidatesExist = state.wallRemaining >= 1 && state.wallPointer < state.wallEndExclusive
+        val normalCandidatesExist = state.nextAvailableWallTile() != null
         val deadWallCandidatesExist = (if (state.rinshanPointer in 0..4) (4 - state.rinshanPointer) else 0) +
                 (4..13).count { idx ->
                     val t = state.deadWall.getOrNull(idx)

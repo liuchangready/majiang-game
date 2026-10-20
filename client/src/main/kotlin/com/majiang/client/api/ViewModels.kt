@@ -1499,20 +1499,29 @@ class GameSnapshotView(
         if (sleeveBloom?.pendingOffer != null) {
             val offer = sleeveBloom.pendingOffer
             require(roundId != null) { "pendingOffer cannot be present when roundId is null" }
-            require(view.phase == GamePhaseView.CHEAT_WINDOW) {
-                "pendingOffer requires phase == CHEAT_WINDOW, got: ${view.phase}"
-            }
-            require(view.currentTurnPlayer == view.viewerSeat) {
-                "pendingOffer requires currentTurnPlayer (${view.currentTurnPlayer}) == viewerSeat (${view.viewerSeat})"
-            }
-            require(view.myDrawnTile != null && view.myDrawnTile.tileId == offer.firstTile.tileId) {
-                "pendingOffer firstTile (${offer.firstTile.tileId}) does not match myDrawnTile (${view.myDrawnTile?.tileId})"
+            if (offer.mode == SleeveBloomOfferMode.IMMEDIATE) {
+                require(view.phase == GamePhaseView.CHEAT_WINDOW) {
+                    "pendingOffer requires phase == CHEAT_WINDOW, got: ${view.phase}"
+                }
+                require(view.currentTurnPlayer == view.viewerSeat) {
+                    "pendingOffer requires currentTurnPlayer (${view.currentTurnPlayer}) == viewerSeat (${view.viewerSeat})"
+                }
+                require(view.myDrawnTile != null && view.myDrawnTile.tileId == offer.firstTile.tileId) {
+                    "pendingOffer firstTile (${offer.firstTile.tileId}) does not match myDrawnTile (${view.myDrawnTile?.tileId})"
+                }
+            } else {
+                require(!offer.windowId.isNullOrBlank()) { "off-turn pendingOffer requires windowId" }
             }
             require(offer.decisionId == decision.decisionId) {
                 "pendingOffer decisionId (${offer.decisionId}) does not match decision.decisionId (${decision.decisionId})"
             }
             require(offer.controlEpoch == decision.controlEpoch) {
                 "pendingOffer controlEpoch (${offer.controlEpoch}) does not match decision.controlEpoch (${decision.controlEpoch})"
+            }
+        }
+        sleeveBloom?.reservation?.let { reservation ->
+            require(view.myClosedTiles.none { it.tileId == reservation.tile.tileId }) {
+                "reserved tile cannot already be in the observer's closed hand"
             }
         }
         if (beamSwap != null) {

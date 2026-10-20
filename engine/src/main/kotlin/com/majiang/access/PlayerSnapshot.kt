@@ -141,20 +141,31 @@ data class PlayerSnapshot(
             require(sleeveBloom.stateVersion >= 0L) { "sleeveBloom stateVersion must be >= 0: ${sleeveBloom.stateVersion}" }
             val pendingOffer = sleeveBloom.pendingOffer
             if (pendingOffer != null) {
-                require(view.phase == com.majiang.state.GamePhase.CHEAT_WINDOW) {
-                    "pendingOffer requires CHEAT_WINDOW phase, got: ${view.phase}"
-                }
-                require(view.currentTurnPlayer == view.viewerSeat) {
-                    "pendingOffer requires current turn player to be viewer, current: ${view.currentTurnPlayer}, viewer: ${view.viewerSeat}"
-                }
-                require(view.myDrawnTile != null && view.myDrawnTile.tileId == pendingOffer.firstTile.tileId) {
-                    "pendingOffer firstTile (${pendingOffer.firstTile}) must match view.myDrawnTile (${view.myDrawnTile})"
+                if (pendingOffer.mode == com.majiang.cheat.bloom.SleeveBloomOfferMode.IMMEDIATE) {
+                    require(view.phase == com.majiang.state.GamePhase.CHEAT_WINDOW) {
+                        "pendingOffer requires CHEAT_WINDOW phase, got: ${view.phase}"
+                    }
+                    require(view.currentTurnPlayer == view.viewerSeat) {
+                        "pendingOffer requires current turn player to be viewer, current: ${view.currentTurnPlayer}, viewer: ${view.viewerSeat}"
+                    }
+                    require(view.myDrawnTile != null && view.myDrawnTile.tileId == pendingOffer.firstTile.tileId) {
+                        "pendingOffer firstTile (${pendingOffer.firstTile}) must match view.myDrawnTile (${view.myDrawnTile})"
+                    }
+                } else {
+                    require(pendingOffer.windowId != null) {
+                        "off-turn pendingOffer requires windowId"
+                    }
                 }
                 require(pendingOffer.decisionId == decision.decisionId) {
                     "pendingOffer decisionId (${pendingOffer.decisionId}) must match decision.decisionId (${decision.decisionId})"
                 }
                 require(pendingOffer.controlEpoch == decision.controlEpoch) {
                     "pendingOffer controlEpoch (${pendingOffer.controlEpoch}) must match decision.controlEpoch (${decision.controlEpoch})"
+                }
+            }
+            sleeveBloom.reservation?.let { reservation ->
+                require(view.myClosedTiles.none { it.tileId == reservation.tile.tileId }) {
+                    "reserved tile cannot already be in the observer's closed hand"
                 }
             }
         }

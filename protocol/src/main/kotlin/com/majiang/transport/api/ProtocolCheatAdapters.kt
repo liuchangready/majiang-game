@@ -345,17 +345,24 @@ internal class ProtocolSleeveBloomConfigAdapter : JsonSerializer<ProtocolSleeveB
     override fun serialize(src: ProtocolSleeveBloomConfig, typeOfSrc: Type, context: JsonSerializationContext): JsonElement {
         val obj = JsonObject()
         obj.addProperty("enabled", src.enabled)
+        obj.addProperty("offTurnChoiceMillis", src.offTurnChoiceMillis)
         return obj
     }
 
     override fun deserialize(json: JsonElement, typeOfT: Type, context: JsonDeserializationContext): ProtocolSleeveBloomConfig {
         if (!json.isJsonObject) throw JsonParseException("ProtocolSleeveBloomConfig must be a JSON object: $json")
         val obj = json.asJsonObject
-        checkUnknownFields(obj, setOf("enabled"), "ProtocolSleeveBloomConfig")
+        checkUnknownFields(obj, setOf("enabled", "offTurnChoiceMillis"), "ProtocolSleeveBloomConfig")
         val enabled = if (obj.has("enabled") && !obj.get("enabled").isJsonNull) {
             validateStrictBoolean(obj.get("enabled"), "ProtocolSleeveBloomConfig.enabled")
         } else false
-        return ProtocolSleeveBloomConfig(enabled)
+        val offTurnChoiceMillis = if (obj.has("offTurnChoiceMillis") && !obj.get("offTurnChoiceMillis").isJsonNull) {
+            validateStrictLong(obj.get("offTurnChoiceMillis"), "ProtocolSleeveBloomConfig.offTurnChoiceMillis")
+        } else 10_000L
+        if (offTurnChoiceMillis <= 0L) {
+            throw JsonParseException("offTurnChoiceMillis must be positive: $offTurnChoiceMillis")
+        }
+        return ProtocolSleeveBloomConfig(enabled, offTurnChoiceMillis)
     }
 }
 
@@ -455,6 +462,87 @@ internal class ProtocolSleeveBloomChoiceRequestAdapter : JsonSerializer<Protocol
 }
 
 /**
+ * ProtocolSleeveBloomOffTurnRequest TypeAdapter
+ */
+internal class ProtocolSleeveBloomOffTurnRequestAdapter : JsonSerializer<ProtocolSleeveBloomOffTurnRequest>, JsonDeserializer<ProtocolSleeveBloomOffTurnRequest> {
+    override fun serialize(src: ProtocolSleeveBloomOffTurnRequest, typeOfSrc: Type, context: JsonSerializationContext): JsonElement {
+        val obj = JsonObject()
+        obj.addProperty("requestId", src.requestId)
+        obj.addProperty("sessionId", src.sessionId)
+        obj.addProperty("roundId", src.roundId)
+        obj.addProperty("windowId", src.windowId)
+        obj.addProperty("controlEpoch", src.controlEpoch)
+        return obj
+    }
+
+    override fun deserialize(json: JsonElement, typeOfT: Type, context: JsonDeserializationContext): ProtocolSleeveBloomOffTurnRequest {
+        if (!json.isJsonObject) throw JsonParseException("ProtocolSleeveBloomOffTurnRequest must be a JSON object: $json")
+        val obj = json.asJsonObject
+        checkUnknownFields(
+            obj,
+            setOf("requestId", "sessionId", "roundId", "windowId", "controlEpoch"),
+            "ProtocolSleeveBloomOffTurnRequest"
+        )
+        val requestId = validateStrictString(obj.get("requestId") ?: throw JsonParseException("Missing requestId"), "requestId")
+        val sessionId = validateStrictString(obj.get("sessionId") ?: throw JsonParseException("Missing sessionId"), "sessionId")
+        val roundId = validateStrictString(obj.get("roundId") ?: throw JsonParseException("Missing roundId"), "roundId")
+        val windowId = validateStrictString(obj.get("windowId") ?: throw JsonParseException("Missing windowId"), "windowId")
+        val controlEpochElem = obj.get("controlEpoch") ?: throw JsonParseException("Missing controlEpoch")
+        ApiMessageCodec.validateControlEpochElement(controlEpochElem, "controlEpoch")
+        val controlEpoch = validateStrictLong(controlEpochElem, "controlEpoch")
+        return try {
+            ProtocolSleeveBloomOffTurnRequest(requestId, sessionId, roundId, windowId, controlEpoch)
+        } catch (e: IllegalArgumentException) {
+            throw JsonParseException("Invalid ProtocolSleeveBloomOffTurnRequest: ${e.message}", e)
+        }
+    }
+}
+
+/**
+ * ProtocolSleeveBloomOffTurnChoiceRequest TypeAdapter
+ */
+internal class ProtocolSleeveBloomOffTurnChoiceRequestAdapter : JsonSerializer<ProtocolSleeveBloomOffTurnChoiceRequest>, JsonDeserializer<ProtocolSleeveBloomOffTurnChoiceRequest> {
+    override fun serialize(src: ProtocolSleeveBloomOffTurnChoiceRequest, typeOfSrc: Type, context: JsonSerializationContext): JsonElement {
+        val obj = JsonObject()
+        obj.addProperty("requestId", src.requestId)
+        obj.addProperty("sessionId", src.sessionId)
+        obj.addProperty("roundId", src.roundId)
+        obj.addProperty("controlEpoch", src.controlEpoch)
+        obj.addProperty("offerId", src.offerId)
+        obj.addProperty("keep", src.keep.name)
+        return obj
+    }
+
+    override fun deserialize(json: JsonElement, typeOfT: Type, context: JsonDeserializationContext): ProtocolSleeveBloomOffTurnChoiceRequest {
+        if (!json.isJsonObject) throw JsonParseException("ProtocolSleeveBloomOffTurnChoiceRequest must be a JSON object: $json")
+        val obj = json.asJsonObject
+        checkUnknownFields(
+            obj,
+            setOf("requestId", "sessionId", "roundId", "controlEpoch", "offerId", "keep"),
+            "ProtocolSleeveBloomOffTurnChoiceRequest"
+        )
+        val requestId = validateStrictString(obj.get("requestId") ?: throw JsonParseException("Missing requestId"), "requestId")
+        val sessionId = validateStrictString(obj.get("sessionId") ?: throw JsonParseException("Missing sessionId"), "sessionId")
+        val roundId = validateStrictString(obj.get("roundId") ?: throw JsonParseException("Missing roundId"), "roundId")
+        val controlEpochElem = obj.get("controlEpoch") ?: throw JsonParseException("Missing controlEpoch")
+        ApiMessageCodec.validateControlEpochElement(controlEpochElem, "controlEpoch")
+        val controlEpoch = validateStrictLong(controlEpochElem, "controlEpoch")
+        val offerId = validateStrictString(obj.get("offerId") ?: throw JsonParseException("Missing offerId"), "offerId")
+        val keepStr = validateStrictString(obj.get("keep") ?: throw JsonParseException("Missing keep"), "keep")
+        val keep = try {
+            ProtocolSleeveBloomKeep.valueOf(keepStr)
+        } catch (e: Exception) {
+            throw JsonParseException("Invalid keep: $keepStr", e)
+        }
+        return try {
+            ProtocolSleeveBloomOffTurnChoiceRequest(requestId, sessionId, roundId, controlEpoch, offerId, keep)
+        } catch (e: IllegalArgumentException) {
+            throw JsonParseException("Invalid ProtocolSleeveBloomOffTurnChoiceRequest: ${e.message}", e)
+        }
+    }
+}
+
+/**
  * ProtocolSleeveBloomOfferView TypeAdapter
  */
 internal class ProtocolSleeveBloomOfferViewAdapter : JsonSerializer<ProtocolSleeveBloomOfferView>, JsonDeserializer<ProtocolSleeveBloomOfferView> {
@@ -467,6 +555,12 @@ internal class ProtocolSleeveBloomOfferViewAdapter : JsonSerializer<ProtocolSlee
         obj.addProperty("deadlineMillis", src.deadlineMillis)
         obj.addProperty("decisionId", src.decisionId)
         obj.addProperty("controlEpoch", src.controlEpoch)
+        obj.addProperty("mode", src.mode.name)
+        if (src.windowId != null) obj.addProperty("windowId", src.windowId)
+        obj.addProperty("firstCanTsumo", src.firstCanTsumo)
+        obj.addProperty("secondCanTsumo", src.secondCanTsumo)
+        obj.addProperty("firstCanKan", src.firstCanKan)
+        obj.addProperty("secondCanKan", src.secondCanKan)
         return obj
     }
 
@@ -475,7 +569,8 @@ internal class ProtocolSleeveBloomOfferViewAdapter : JsonSerializer<ProtocolSlee
         val obj = json.asJsonObject
         checkUnknownFields(
             obj,
-            setOf("offerId", "firstTile", "secondTile", "drawKind", "deadlineMillis", "decisionId", "controlEpoch"),
+            setOf("offerId", "firstTile", "secondTile", "drawKind", "deadlineMillis", "decisionId", "controlEpoch", "mode", "windowId",
+                "firstCanTsumo", "secondCanTsumo", "firstCanKan", "secondCanKan"),
             "ProtocolSleeveBloomOfferView"
         )
         val offerId = validateStrictString(obj.get("offerId") ?: throw JsonParseException("Missing offerId in ProtocolSleeveBloomOfferView"), "offerId")
@@ -497,8 +592,27 @@ internal class ProtocolSleeveBloomOfferViewAdapter : JsonSerializer<ProtocolSlee
         if (decisionId.isBlank()) throw JsonParseException("decisionId cannot be blank")
         val controlEpoch = validateStrictLong(obj.get("controlEpoch") ?: throw JsonParseException("Missing controlEpoch in ProtocolSleeveBloomOfferView"), "controlEpoch")
         if (controlEpoch < 0L) throw JsonParseException("controlEpoch must be non-negative: $controlEpoch")
+        val mode = if (obj.has("mode") && !obj.get("mode").isJsonNull) {
+            val modeStr = validateStrictString(obj.get("mode"), "mode")
+            try {
+                ProtocolSleeveBloomOfferMode.valueOf(modeStr)
+            } catch (e: Exception) {
+                throw JsonParseException("Invalid mode in ProtocolSleeveBloomOfferView: $modeStr", e)
+            }
+        } else ProtocolSleeveBloomOfferMode.IMMEDIATE
+        val windowId = validateStrictOptionalString(obj.get("windowId"), "windowId")
+        fun optionalBoolean(name: String): Boolean =
+            if (obj.has(name) && !obj.get(name).isJsonNull) {
+                validateStrictBoolean(obj.get(name), "ProtocolSleeveBloomOfferView.$name")
+            } else false
         return try {
-            ProtocolSleeveBloomOfferView(offerId, firstTile, secondTile, drawKind, deadlineMillis, decisionId, controlEpoch)
+            ProtocolSleeveBloomOfferView(
+                offerId, firstTile, secondTile, drawKind, deadlineMillis, decisionId, controlEpoch, mode, windowId,
+                firstCanTsumo = optionalBoolean("firstCanTsumo"),
+                secondCanTsumo = optionalBoolean("secondCanTsumo"),
+                firstCanKan = optionalBoolean("firstCanKan"),
+                secondCanKan = optionalBoolean("secondCanKan")
+            )
         } catch (e: IllegalArgumentException) {
             throw JsonParseException("Invalid ProtocolSleeveBloomOfferView: ${e.message}", e)
         }
@@ -518,8 +632,18 @@ internal class ProtocolSleeveBloomViewAdapter : JsonSerializer<ProtocolSleeveBlo
         obj.addProperty("decisionId", src.decisionId)
         obj.addProperty("controlEpoch", src.controlEpoch)
         obj.addProperty("stateVersion", src.stateVersion)
+        obj.addProperty("canApplyOffTurn", src.canApplyOffTurn)
+        if (src.offTurnDisabledReason != null) obj.addProperty("offTurnDisabledReason", src.offTurnDisabledReason)
+        if (src.offTurnWindowId != null) obj.addProperty("offTurnWindowId", src.offTurnWindowId)
         if (src.pendingOffer != null) {
             obj.add("pendingOffer", context.serialize(src.pendingOffer, ProtocolSleeveBloomOfferView::class.java))
+        }
+        if (src.reservation != null) {
+            val resObj = JsonObject()
+            resObj.add("tile", context.serialize(src.reservation.tile, ProtocolTile::class.java))
+            resObj.addProperty("offerId", src.reservation.offerId)
+            if (src.reservation.windowId != null) resObj.addProperty("windowId", src.reservation.windowId)
+            obj.add("reservation", resObj)
         }
         return obj
     }
@@ -529,7 +653,10 @@ internal class ProtocolSleeveBloomViewAdapter : JsonSerializer<ProtocolSleeveBlo
         val obj = json.asJsonObject
         checkUnknownFields(
             obj,
-            setOf("canApply", "disabledReason", "cost", "drawKind", "decisionId", "controlEpoch", "stateVersion", "pendingOffer"),
+            setOf(
+                "canApply", "disabledReason", "cost", "drawKind", "decisionId", "controlEpoch", "stateVersion",
+                "pendingOffer", "canApplyOffTurn", "offTurnDisabledReason", "offTurnWindowId", "reservation"
+            ),
             "ProtocolSleeveBloomView"
         )
         val canApply = validateStrictBoolean(obj.get("canApply") ?: throw JsonParseException("Missing canApply in ProtocolSleeveBloomView"), "canApply")
@@ -553,8 +680,27 @@ internal class ProtocolSleeveBloomViewAdapter : JsonSerializer<ProtocolSleeveBlo
         val pendingOffer: ProtocolSleeveBloomOfferView? = if (obj.has("pendingOffer") && !obj.get("pendingOffer").isJsonNull) {
             context.deserialize(obj.get("pendingOffer"), ProtocolSleeveBloomOfferView::class.java)
         } else null
+        val canApplyOffTurn = if (obj.has("canApplyOffTurn") && !obj.get("canApplyOffTurn").isJsonNull) {
+            validateStrictBoolean(obj.get("canApplyOffTurn"), "canApplyOffTurn")
+        } else false
+        val offTurnDisabledReason = validateStrictOptionalString(obj.get("offTurnDisabledReason"), "offTurnDisabledReason")
+        val offTurnWindowId = validateStrictOptionalString(obj.get("offTurnWindowId"), "offTurnWindowId")
+        val reservation: ProtocolSleeveBloomReservationView? = if (obj.has("reservation") && !obj.get("reservation").isJsonNull) {
+            val resElem = obj.get("reservation")
+            if (!resElem.isJsonObject) throw JsonParseException("ProtocolSleeveBloomView.reservation must be an object")
+            val resObj = resElem.asJsonObject
+            checkUnknownFields(resObj, setOf("tile", "offerId", "windowId"), "ProtocolSleeveBloomReservationView")
+            val tileElem = resObj.get("tile") ?: throw JsonParseException("Missing reservation.tile")
+            val tile: ProtocolTile = context.deserialize(tileElem, ProtocolTile::class.java)
+            val offerId = validateStrictString(resObj.get("offerId") ?: throw JsonParseException("Missing reservation.offerId"), "reservation.offerId")
+            val windowId = validateStrictOptionalString(resObj.get("windowId"), "reservation.windowId")
+            ProtocolSleeveBloomReservationView(tile, offerId, windowId)
+        } else null
         return try {
-            ProtocolSleeveBloomView(canApply, disabledReason, cost, drawKind, decisionId, controlEpoch, stateVersion, pendingOffer)
+            ProtocolSleeveBloomView(
+                canApply, disabledReason, cost, drawKind, decisionId, controlEpoch, stateVersion, pendingOffer,
+                canApplyOffTurn, offTurnDisabledReason, offTurnWindowId, reservation
+            )
         } catch (e: IllegalArgumentException) {
             throw JsonParseException("Invalid ProtocolSleeveBloomView: ${e.message}", e)
         }

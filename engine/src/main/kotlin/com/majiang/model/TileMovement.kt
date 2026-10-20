@@ -14,21 +14,29 @@ import com.majiang.state.GameState
  */
 object TileMovement {
 
+    /** 一次正常摸牌的结果与来源 */
+    data class NormalDraw(
+        val tile: Tile,
+        /** 是否交付了本人预定的袖里藏花预留牌 */
+        val fromReservation: Boolean,
+        /** 实际取牌槽位（交付预留时为预留牌原槽位） */
+        val wallIndex: Int
+    )
+
     /**
      * 发一张牌入指定玩家手牌（暗牌）
      */
     fun deal(state: GameState, player: Int): Tile {
         require(player in 0..3) { "Invalid player: $player" }
-        require(state.wallPointer < state.wallEndExclusive) {
-            "Wall is empty (pointer=${state.wallPointer}, end=${state.wallEndExclusive})"
-        }
-        val tile = state.wall[state.wallPointer]
+        val index = state.nextAvailableWallIndex()
+            ?: throw IllegalStateException("No drawable live wall tile for deal")
+        val tile = state.wall[index]
         val expectedLoc = TileLocation.WALL
         require(state.tilePool.getLocation(tile) == expectedLoc) {
             "Tile $tile in wall has unexpected pool location: ${state.tilePool.getLocation(tile)}"
         }
 
-        state.wallPointer++
+        if (index >= state.wallPointer) state.wallPointer = index + 1
         state.players[player].closedTiles.add(tile)
         state.players[player].closedTiles.sort()
         state.tilePool.transfer(tile, expectedLoc, TileLocation.hand(player))
@@ -40,48 +48,74 @@ object TileMovement {
      */
     fun dealExtra(state: GameState, player: Int): Tile {
         require(player in 0..3) { "Invalid player: $player" }
-        require(state.wallPointer < state.wallEndExclusive) {
-            "Wall is empty for extra deal (pointer=${state.wallPointer}, end=${state.wallEndExclusive})"
-        }
         val hand = state.players[player]
         require(hand.drawnTile == null) { "Player $player already has drawnTile ${hand.drawnTile}" }
 
-        val tile = state.wall[state.wallPointer]
+        val index = state.nextAvailableWallIndex()
+            ?: throw IllegalStateException("No drawable live wall tile for extra deal")
+        val tile = state.wall[index]
         val expectedLoc = TileLocation.WALL
         require(state.tilePool.getLocation(tile) == expectedLoc) {
             "Tile $tile in wall has unexpected pool location: ${state.tilePool.getLocation(tile)}"
         }
 
-        state.wallPointer++
+        if (index >= state.wallPointer) state.wallPointer = index + 1
         hand.drawnTile = tile
         state.tilePool.transfer(tile, expectedLoc, TileLocation.hand(player))
         return tile
     }
 
     /**
-     * 正常摸牌：从活牌山顶端摸一张牌置入玩家 drawnTile
+     * 正常摸牌（含本人预定预留牌的交付）。
+     *
+     * 交付路径：预留牌仍是活牌山中的实体，直到本次摸牌才从牌山移入手牌，
+     * 因此主动减少 wallEndExclusive/必要时回退 wallPointer，normal draw 只发生一次。
      */
-    fun draw(state: GameState, player: Int): Tile {
+    fun drawNormal(state: GameState, player: Int): NormalDraw {
         require(player in 0..3) { "Invalid player: $player" }
-        require(state.wallPointer < state.wallEndExclusive) {
-            "Live wall is exhausted (pointer=${state.wallPointer}, end=${state.wallEndExclusive})"
-        }
         val hand = state.players[player]
         require(hand.drawnTile == null) {
             "Player $player already holds an unhandled drawnTile: ${hand.drawnTile}"
         }
+        state.clearSleeveBloomWindow(player)
 
-        val tile = state.wall[state.wallPointer]
-        val expectedLoc = TileLocation.WALL
-        require(state.tilePool.getLocation(tile) == expectedLoc) {
-            "Tile $tile at wallPointer=${state.wallPointer} has unexpected location ${state.tilePool.getLocation(tile)}"
+        val reservation = state.sleeveBloomReservation(player)
+        if (reservation != null) {
+            val index = state.wallTileIndex(reservation.tile)
+            require(index in 0 until state.wallEndExclusive) {
+                "Reserved tile ${reservation.tile} is not inside live wall"
+            }
+            require(state.tilePool.getLocation(reservation.tile) == TileLocation.WALL) {
+                "Reserved tile ${reservation.tile} is not physically in WALL"
+            }
+            state.wall.removeAt(index)
+            if (index < state.wallPointer) state.wallPointer--
+            state.wallEndExclusive--
+            state.removeSleeveBloomReservation(player)
+            hand.drawnTile = reservation.tile
+            state.tilePool.transfer(reservation.tile, TileLocation.WALL, TileLocation.hand(player))
+            return NormalDraw(reservation.tile, fromReservation = true, wallIndex = index)
         }
 
-        state.wallPointer++
+        val index = state.nextAvailableWallIndex()
+            ?: throw IllegalStateException("No drawable live wall tile for player $player")
+        val tile = state.wall[index]
+        val expectedLoc = TileLocation.WALL
+        require(state.tilePool.getLocation(tile) == expectedLoc) {
+            "Tile $tile at wallIndex=$index has unexpected location ${state.tilePool.getLocation(tile)}"
+        }
+
+        // 洞（index < wallPointer）重新摸出时不能把指针回退；物理剩余由 hole count 自然减少。
+        if (index >= state.wallPointer) state.wallPointer = index + 1
         hand.drawnTile = tile
         state.tilePool.transfer(tile, expectedLoc, TileLocation.hand(player))
-        return tile
+        return NormalDraw(tile, fromReservation = false, wallIndex = index)
     }
+
+    /**
+     * 正常摸牌：从活牌山顶端摸一张牌置入玩家 drawnTile
+     */
+    fun draw(state: GameState, player: Int): Tile = drawNormal(state, player).tile
 
     /**
      * 打牌：将玩家手中的一张牌移入物理牌河与舍牌历史
@@ -444,8 +478,9 @@ object TileMovement {
         require(state.deadWall.size == 14) {
             "Dead wall must have exactly 14 tiles, got ${state.deadWall.size}"
         }
-        require(state.wallPointer < state.wallEndExclusive) {
-            "Live wall exhausted, cannot replenish dead wall"
+        val availableIndices = state.availableWallIndices()
+        require(availableIndices.isNotEmpty()) {
+            "No non-reserved live wall tile available for dead wall replacement"
         }
 
         val rinshanTile = state.deadWall[state.rinshanPointer]
@@ -453,11 +488,17 @@ object TileMovement {
             "Rinshan tile $rinshanTile not in DEAD_WALL"
         }
 
-        val replIndex = state.wallEndExclusive - 1
+        val replIndex = availableIndices.last()
         val replacementTile = state.wall[replIndex]
         require(state.tilePool.getLocation(replacementTile) == TileLocation.WALL) {
             "Replacement tile $replacementTile not in WALL"
         }
+
+        // 从可用槽位移除替补实体；尾端可能有锁定/预留牌，不能直接覆盖尾部。
+        // removeAt 会保持其余实体（含锁定/预留牌）在活牌山连续区间内，
+        // 且不会把尾端的预留牌当作替补偷走。
+        state.wall.removeAt(replIndex)
+        if (replIndex < state.wallPointer) state.wallPointer--
 
         // 推进指针与补入
         state.rinshanPointer++
@@ -472,17 +513,26 @@ object TileMovement {
     }
 
     /**
-     * 将手牌中的一张牌与活牌山指定槽位（默认当前 wallPointer）等额置换（供偷梁换柱/袖里藏花使用）
+     * 将手牌中的一张牌与活牌山指定槽位（默认下一张可用牌）等额置换（供偷梁换柱/袖里藏花使用）
      */
-    fun swapHandWithWall(state: GameState, player: Int, handTile: Tile, wallIndex: Int = state.wallPointer): Tile {
+    fun swapHandWithWall(state: GameState, player: Int, handTile: Tile, wallIndex: Int = -1): Tile {
         require(player in 0..3) { "Invalid player: $player" }
-        require(wallIndex in state.wallPointer until state.wallEndExclusive) {
-            "wallIndex $wallIndex out of live wall range [${state.wallPointer}, ${state.wallEndExclusive})"
+        val resolvedIndex = if (wallIndex < 0) {
+            state.nextAvailableWallIndex()
+                ?: throw IllegalArgumentException("No available live wall slot for swap")
+        } else {
+            wallIndex
+        }
+        require(resolvedIndex in 0 until state.wallEndExclusive) {
+            "wallIndex $resolvedIndex out of wall range [0, ${state.wallEndExclusive})"
         }
         val hand = state.players[player]
         require(hand.contains(handTile)) { "Player $player does not hold tile $handTile" }
 
-        val wallTile = state.wall[wallIndex]
+        val wallTile = state.wall[resolvedIndex]
+        require(!state.isProtectedSleeveBloomTile(wallTile)) {
+            "wallTile $wallTile is locked or reserved by sleeve bloom"
+        }
         require(state.tilePool.getLocation(handTile) == TileLocation.hand(player)) {
             "handTile $handTile not in hand of player $player"
         }
@@ -490,8 +540,13 @@ object TileMovement {
             "wallTile $wallTile not in live wall"
         }
 
-        // 执行置换
-        state.wall[wallIndex] = handTile
+        // 执行置换。手牌牌在 wall 列表中可能仍留有摸走前的旧槽位；
+        // 该槽位不能继续以 WALL 身份出现，否则会与新槽位重复计数。
+        val oldIndex = state.wall.indexOf(handTile)
+        if (oldIndex >= 0 && oldIndex != resolvedIndex) {
+            state.wall[oldIndex] = wallTile
+        }
+        state.wall[resolvedIndex] = handTile
         if (hand.drawnTile == handTile) {
             hand.drawnTile = wallTile
         } else {

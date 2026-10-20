@@ -37,6 +37,8 @@ import com.majiang.transport.api.ProtocolRoomInfo
 import com.majiang.transport.api.ProtocolShufflePlan
 import com.majiang.transport.api.ProtocolSleeveBloomChoiceRequest
 import com.majiang.transport.api.ProtocolSleeveBloomRequest
+import com.majiang.transport.api.ProtocolSleeveBloomOffTurnChoiceRequest
+import com.majiang.transport.api.ProtocolSleeveBloomOffTurnRequest
 import com.majiang.transport.api.ProtocolTileMarkRequest
 import com.majiang.transport.common.Cancellable
 import com.majiang.transport.common.TransportClock
@@ -2687,8 +2689,37 @@ class TcpClientBinding(
         }
     }
 
-    override fun submitBeamSwap(request: ProtocolBeamSwapRequest): CompletableFuture<ProtocolActionReceipt> {
+    override fun submitSleeveBloomOffTurn(request: ProtocolSleeveBloomOffTurnRequest): CompletableFuture<ProtocolActionReceipt> {
         val apiReq = ApiRequest(
+            api = ApiTags.SUBMIT_SLEEVE_BLOOM_OFF_TURN,
+            requestId = request.requestId,
+            sleeveBloomOffTurn = request
+        )
+        return sendRequest(apiReq) { rsp, _ ->
+            rsp.receipt ?: ProtocolActionReceipt(
+                requestId = request.requestId,
+                status = ProtocolReceiptStatus.REJECTED,
+                reason = rsp.error ?: ApiErrors.INTERNAL_ERROR
+            )
+        }
+    }
+
+    override fun submitSleeveBloomOffTurnChoice(request: ProtocolSleeveBloomOffTurnChoiceRequest): CompletableFuture<ProtocolActionReceipt> {
+        val apiReq = ApiRequest(
+            api = ApiTags.SUBMIT_SLEEVE_BLOOM_OFF_TURN_CHOICE,
+            requestId = request.requestId,
+            sleeveBloomOffTurnChoice = request
+        )
+        return sendRequest(apiReq) { rsp, _ ->
+            rsp.receipt ?: ProtocolActionReceipt(
+                requestId = request.requestId,
+                status = ProtocolReceiptStatus.REJECTED,
+                reason = rsp.error ?: ApiErrors.INTERNAL_ERROR
+            )
+        }
+    }
+
+    override fun submitBeamSwap(request: ProtocolBeamSwapRequest): CompletableFuture<ProtocolActionReceipt> {        val apiReq = ApiRequest(
             api = ApiTags.SUBMIT_BEAM_SWAP,
             requestId = request.requestId,
             beamSwap = request

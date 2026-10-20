@@ -378,7 +378,8 @@ data class ProtocolActionReceipt(
  * 传输层独立协议访问能力声明 DTO (ProtocolAccessCapabilities)
  */
 class ProtocolAccessCapabilities(
-    val protocolVersion: Int = 5,
+    // Must track ApiProtocol.PROTOCOL_VERSION (v6 adds off-turn sleeve bloom semantics).
+    val protocolVersion: Int = 6,
     supportedPlayerCounts: Set<Int> = setOf(4),
     val remoteTransport: Boolean = false,
     val persistence: Boolean = false,
@@ -1840,20 +1841,31 @@ class ProtocolPlayerSnapshot(
             require(sleeveBloom.stateVersion >= 0L) { "sleeveBloom stateVersion must be >= 0: ${sleeveBloom.stateVersion}" }
             val pendingOffer = sleeveBloom.pendingOffer
             if (pendingOffer != null) {
-                require(view.phase == ProtocolGamePhase.CHEAT_WINDOW) {
-                    "pendingOffer requires CHEAT_WINDOW phase, got: ${view.phase}"
-                }
-                require(view.currentTurnPlayer == view.viewerSeat) {
-                    "pendingOffer requires current turn player to be viewer, current: ${view.currentTurnPlayer}, viewer: ${view.viewerSeat}"
-                }
-                require(view.myDrawnTile != null && view.myDrawnTile.tileId == pendingOffer.firstTile.tileId) {
-                    "pendingOffer firstTile (${pendingOffer.firstTile}) must match view.myDrawnTile (${view.myDrawnTile})"
+                if (pendingOffer.mode == ProtocolSleeveBloomOfferMode.IMMEDIATE) {
+                    require(view.phase == ProtocolGamePhase.CHEAT_WINDOW) {
+                        "pendingOffer requires CHEAT_WINDOW phase, got: ${view.phase}"
+                    }
+                    require(view.currentTurnPlayer == view.viewerSeat) {
+                        "pendingOffer requires current turn player to be viewer, current: ${view.currentTurnPlayer}, viewer: ${view.viewerSeat}"
+                    }
+                    require(view.myDrawnTile != null && view.myDrawnTile.tileId == pendingOffer.firstTile.tileId) {
+                        "pendingOffer firstTile (${pendingOffer.firstTile}) must match view.myDrawnTile (${view.myDrawnTile})"
+                    }
+                } else {
+                    require(!pendingOffer.windowId.isNullOrBlank()) {
+                        "off-turn pendingOffer requires windowId"
+                    }
                 }
                 require(pendingOffer.decisionId == decision.decisionId) {
                     "pendingOffer decisionId (${pendingOffer.decisionId}) must match decision.decisionId (${decision.decisionId})"
                 }
                 require(pendingOffer.controlEpoch == decision.controlEpoch) {
                     "pendingOffer controlEpoch (${pendingOffer.controlEpoch}) must match decision.controlEpoch (${decision.controlEpoch})"
+                }
+            }
+            sleeveBloom.reservation?.let { reservation ->
+                require(view.myClosedTiles.none { it.tileId == reservation.tile.tileId }) {
+                    "reserved tile cannot already be in the observer's closed hand"
                 }
             }
         }

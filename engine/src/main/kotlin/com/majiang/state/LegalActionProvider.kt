@@ -53,7 +53,7 @@ object LegalActionProvider {
             GamePhase.DRAW -> {
                 if (player != state.currentPlayer) return emptyList()
                 val hand = state.players[player]
-                if (hand.drawnTile == null && state.wallRemaining > 0) {
+                if (hand.drawnTile == null && state.availableWallTileCountFor(player) > 0) {
                     listOf(GameAction.DrawTile(player))
                 } else {
                     emptyList()
@@ -91,10 +91,11 @@ object LegalActionProvider {
 
                 // 3. 杠判定（暗杠与加杠）
                 // 规范要求（WRC 2022 §8.9.1 & INTEGRATION.md item 5 & Review Item 5）：
-                // - 仅在活牌山有牌且岭上槽位未耗尽且总杠次数未达4次 (wallRemaining > 0 && rinshanPointer < 4 && totalKanCount < 4) 时提供杠
+                // - 仅在活牌山有可用替补牌且岭上槽位未耗尽且总杠次数未达4次
+                //   (availableWallTileCount > 0 && rinshanPointer < 4 && totalKanCount < 4) 时提供杠
                 // - 未立直玩家全量开放（暗杠与加杠）
                 // - 立直后仅允许暗杠（CLOSED_KAN），且需通过 RiichiKanValidator 严格校验（摸牌参与且待牌/结构不变）
-                if (state.wallRemaining > 0 && state.rinshanPointer < 4 && state.totalKanCount < 4) {
+                if (state.availableWallTileCount() > 0 && state.rinshanPointer < 4 && state.totalKanCount < 4) {
                     if (!state.riichiDeclared[player]) {
                         val kanOptions = ruleEngine.getKanOptions(hand, currentDrawn)
                         for (opt in kanOptions) {
@@ -112,7 +113,7 @@ object LegalActionProvider {
                 }
 
                 // 4. 立直宣言判定（门前清、未立直、点数>=1000、牌山>=4张、打出某张牌后听牌）
-                if (!state.riichiDeclared[player] && hand.isClosed && state.scores[player] >= 1000 && state.wallRemaining >= 4) {
+                if (!state.riichiDeclared[player] && hand.isClosed && state.scores[player] >= 1000 && state.availableWallTileCount() >= 4) {
                     val riichiDiscards = ruleEngine.canRiichi(hand, state, player)
                     for (tile in riichiDiscards) {
                         actions.add(GameAction.DeclareRiichi(player, tile))
@@ -200,8 +201,8 @@ object LegalActionProvider {
                     }
                 }
 
-                // 3. 大明杠判定（活牌山有牌、岭上槽位未耗尽且总杠次数未达4次）
-                if (state.wallRemaining > 0 && state.rinshanPointer < 4 && state.totalKanCount < 4 && ruleEngine.canOpenKan(hand, targetTile)) {
+                // 3. 大明杠判定（活牌山有可用替补牌、岭上槽位未耗尽且总杠次数未达4次）
+                if (state.availableWallTileCount() > 0 && state.rinshanPointer < 4 && state.totalKanCount < 4 && ruleEngine.canOpenKan(hand, targetTile)) {
                     val matching = hand.closedTiles.filter { it.sameType(targetTile) }
                     if (matching.size >= 3) {
                         actions.add(GameAction.DeclareKan(seat, matching.take(3), MeldType.OPEN_KAN))

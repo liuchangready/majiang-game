@@ -297,7 +297,7 @@ class ApiDtoValidationTest {
 
     @Test
     fun `ApiProtocol declares expected protocol version and kick reasons`() {
-        assertEquals(5, ApiProtocol.PROTOCOL_VERSION)
+        assertEquals(6, ApiProtocol.PROTOCOL_VERSION)
         assertEquals("DISPLACED_BY_NEW_CONNECTION", ApiProtocol.DISPLACED_BY_NEW_CONNECTION)
         assertEquals("DISCONNECTED_BY_NEW_CONNECTION", ApiProtocol.DISCONNECTED_BY_NEW_CONNECTION)
         assertEquals("ROOM_CLOSED", ApiProtocol.ROOM_CLOSED)

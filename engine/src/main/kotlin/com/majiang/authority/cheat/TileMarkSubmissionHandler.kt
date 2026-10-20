@@ -39,6 +39,7 @@ internal class TileMarkSubmissionHandler {
         val now: Long,
         val riichiDeclared: Boolean,
         val sleeveBloomOfferSeat: Int?,
+        val sleeveBloomOffTurnOfferSeat: Int?,
         val beamSwapOfferSeat: Int?,
         val handTileIds: Set<Int>,
         val markedTileIds: Set<Int>,
@@ -84,6 +85,7 @@ internal class TileMarkSubmissionHandler {
 
         if (input.currentPlayer != input.seat) return reject("NOT_YOUR_TURN")
         if (input.sleeveBloomOfferSeat == input.seat) return reject("SLEEVE_BLOOM_CHOICE_PENDING")
+        if (input.sleeveBloomOffTurnOfferSeat == input.seat) return reject("SLEEVE_BLOOM_CHOICE_PENDING")
         if (input.beamSwapOfferSeat == input.seat) return reject("BEAM_SWAP_CHOICE_PENDING")
 
         if (input.phase !in setOf(GamePhase.CHEAT_WINDOW, GamePhase.DISCARD) || input.responseWindowActive) {

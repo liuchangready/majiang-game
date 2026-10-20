@@ -105,6 +105,18 @@ interface GameSession : AutoCloseable {
         CompletableFuture.failedFuture(UnsupportedOperationException("submitSleeveBloomChoice is not supported"))
 
     /**
+     * 提交他家回合预定袖里藏花激活请求（绑定 windowId，不依赖他人 decisionId）
+     */
+    fun submitSleeveBloomOffTurn(request: SleeveBloomOffTurnRequest): CompletableFuture<Receipt> =
+        CompletableFuture.failedFuture(UnsupportedOperationException("submitSleeveBloomOffTurn is not supported"))
+
+    /**
+     * 提交他家回合预定二选一（FIRST / SECOND）
+     */
+    fun submitSleeveBloomOffTurnChoice(request: SleeveBloomOffTurnChoiceRequest): CompletableFuture<Receipt> =
+        CompletableFuture.failedFuture(UnsupportedOperationException("submitSleeveBloomOffTurnChoice is not supported"))
+
+    /**
      * 提交偷梁换柱千术激活请求
      *
      * @param request 客户端激活请求

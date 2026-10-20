@@ -49,6 +49,8 @@ object ApiTags {
     const val SUBMIT_TILE_MARK = "SUBMIT_TILE_MARK"
     const val SUBMIT_SLEEVE_BLOOM = "SUBMIT_SLEEVE_BLOOM"
     const val SUBMIT_SLEEVE_BLOOM_CHOICE = "SUBMIT_SLEEVE_BLOOM_CHOICE"
+    const val SUBMIT_SLEEVE_BLOOM_OFF_TURN = "SUBMIT_SLEEVE_BLOOM_OFF_TURN"
+    const val SUBMIT_SLEEVE_BLOOM_OFF_TURN_CHOICE = "SUBMIT_SLEEVE_BLOOM_OFF_TURN_CHOICE"
     const val SUBMIT_BEAM_SWAP = "SUBMIT_BEAM_SWAP"
     const val SUBMIT_BEAM_SWAP_CHOICE = "SUBMIT_BEAM_SWAP_CHOICE"
     const val START_MATCH = "START_MATCH"
@@ -71,6 +73,7 @@ object ApiTags {
         GET_ROOM_INFO, SET_READY, UPDATE_CONFIG,
         CAPABILITIES, SNAPSHOT, DECISION, SUBMIT_CHOICE, SUBMIT_SHUFFLE_PLAN, SUBMIT_TILE_MARK,
         SUBMIT_SLEEVE_BLOOM, SUBMIT_SLEEVE_BLOOM_CHOICE,
+        SUBMIT_SLEEVE_BLOOM_OFF_TURN, SUBMIT_SLEEVE_BLOOM_OFF_TURN_CHOICE,
         SUBMIT_BEAM_SWAP, SUBMIT_BEAM_SWAP_CHOICE,
         START_MATCH, NEXT_ROUND, RESUME_CURSOR, CLAIM_CONTROL, RELEASE_CONTROL,
         QUERY_ROUND_RESULT,
@@ -102,6 +105,8 @@ data class ApiRequest(
     val tileMark: ProtocolTileMarkRequest? = null,
     val sleeveBloom: ProtocolSleeveBloomRequest? = null,
     val sleeveBloomChoice: ProtocolSleeveBloomChoiceRequest? = null,
+    val sleeveBloomOffTurn: ProtocolSleeveBloomOffTurnRequest? = null,
+    val sleeveBloomOffTurnChoice: ProtocolSleeveBloomOffTurnChoiceRequest? = null,
     val beamSwap: ProtocolBeamSwapRequest? = null,
     val beamSwapChoice: ProtocolBeamSwapChoiceRequest? = null
 ) {
@@ -1215,7 +1220,7 @@ private class ApiRequestAdapter : JsonDeserializer<ApiRequest> {
         val obj = json.asJsonObject
         checkUnknownFields(
             obj,
-            setOf("api", "requestId", "roomId", "token", "playerName", "preferSeat", "config", "choice", "shufflePlan", "cursor", "roundId", "protocolVersion", "ready", "roomConfig", "spectatorId", "spectatorName", "publicCheckpoint", "tileMark", "sleeveBloom", "sleeveBloomChoice", "beamSwap", "beamSwapChoice"),
+            setOf("api", "requestId", "roomId", "token", "playerName", "preferSeat", "config", "choice", "shufflePlan", "cursor", "roundId", "protocolVersion", "ready", "roomConfig", "spectatorId", "spectatorName", "publicCheckpoint", "tileMark", "sleeveBloom", "sleeveBloomChoice", "sleeveBloomOffTurn", "sleeveBloomOffTurnChoice", "beamSwap", "beamSwapChoice"),
             "ApiRequest"
         )
         val api = validateStrictString(obj.get("api") ?: throw JsonParseException("missing or blank api"), "api")
@@ -1249,6 +1254,12 @@ private class ApiRequestAdapter : JsonDeserializer<ApiRequest> {
             }
             if (obj.has("sleeveBloomChoice")) {
                 throw JsonParseException("Spectator request cannot contain player authority field 'sleeveBloomChoice'")
+            }
+            if (obj.has("sleeveBloomOffTurn")) {
+                throw JsonParseException("Spectator request cannot contain player authority field 'sleeveBloomOffTurn'")
+            }
+            if (obj.has("sleeveBloomOffTurnChoice")) {
+                throw JsonParseException("Spectator request cannot contain player authority field 'sleeveBloomOffTurnChoice'")
             }
             if (obj.has("beamSwap")) {
                 throw JsonParseException("Spectator request cannot contain player authority field 'beamSwap'")
@@ -1358,6 +1369,12 @@ private class ApiRequestAdapter : JsonDeserializer<ApiRequest> {
         val sleeveBloomChoice = if (obj.has("sleeveBloomChoice") && !obj.get("sleeveBloomChoice").isJsonNull) {
             context.deserialize<ProtocolSleeveBloomChoiceRequest>(obj.get("sleeveBloomChoice"), ProtocolSleeveBloomChoiceRequest::class.java)
         } else null
+        val sleeveBloomOffTurn = if (obj.has("sleeveBloomOffTurn") && !obj.get("sleeveBloomOffTurn").isJsonNull) {
+            context.deserialize<ProtocolSleeveBloomOffTurnRequest>(obj.get("sleeveBloomOffTurn"), ProtocolSleeveBloomOffTurnRequest::class.java)
+        } else null
+        val sleeveBloomOffTurnChoice = if (obj.has("sleeveBloomOffTurnChoice") && !obj.get("sleeveBloomOffTurnChoice").isJsonNull) {
+            context.deserialize<ProtocolSleeveBloomOffTurnChoiceRequest>(obj.get("sleeveBloomOffTurnChoice"), ProtocolSleeveBloomOffTurnChoiceRequest::class.java)
+        } else null
         val beamSwap = if (obj.has("beamSwap") && !obj.get("beamSwap").isJsonNull) {
             context.deserialize<ProtocolBeamSwapRequest>(obj.get("beamSwap"), ProtocolBeamSwapRequest::class.java)
         } else null
@@ -1458,6 +1475,73 @@ private class ApiRequestAdapter : JsonDeserializer<ApiRequest> {
             }
         }
 
+        if (api == ApiTags.SUBMIT_SLEEVE_BLOOM_OFF_TURN) {
+            if (sleeveBloomOffTurn == null) {
+                throw JsonParseException("Missing sleeveBloomOffTurn payload in SUBMIT_SLEEVE_BLOOM_OFF_TURN request")
+            }
+            if (sleeveBloomOffTurn.requestId != requestId) {
+                throw JsonParseException("requestId mismatch between envelope ($requestId) and sleeveBloomOffTurn (${sleeveBloomOffTurn.requestId})")
+            }
+            if (choice != null || obj.has("choice")) {
+                throw JsonParseException("SUBMIT_SLEEVE_BLOOM_OFF_TURN cannot contain choice payload")
+            }
+            if (shufflePlan != null || obj.has("shufflePlan")) {
+                throw JsonParseException("SUBMIT_SLEEVE_BLOOM_OFF_TURN cannot contain shufflePlan payload")
+            }
+            if (tileMark != null || obj.has("tileMark")) {
+                throw JsonParseException("SUBMIT_SLEEVE_BLOOM_OFF_TURN cannot contain tileMark payload")
+            }
+            if (sleeveBloom != null || obj.has("sleeveBloom")) {
+                throw JsonParseException("SUBMIT_SLEEVE_BLOOM_OFF_TURN cannot contain sleeveBloom payload")
+            }
+            if (sleeveBloomChoice != null || obj.has("sleeveBloomChoice")) {
+                throw JsonParseException("SUBMIT_SLEEVE_BLOOM_OFF_TURN cannot contain sleeveBloomChoice payload")
+            }
+            if (beamSwap != null || obj.has("beamSwap")) {
+                throw JsonParseException("SUBMIT_SLEEVE_BLOOM_OFF_TURN cannot contain beamSwap payload")
+            }
+            if (beamSwapChoice != null || obj.has("beamSwapChoice")) {
+                throw JsonParseException("SUBMIT_SLEEVE_BLOOM_OFF_TURN cannot contain beamSwapChoice payload")
+            }
+        }
+
+        if (api == ApiTags.SUBMIT_SLEEVE_BLOOM_OFF_TURN_CHOICE) {
+            if (sleeveBloomOffTurnChoice == null) {
+                throw JsonParseException("Missing sleeveBloomOffTurnChoice payload in SUBMIT_SLEEVE_BLOOM_OFF_TURN_CHOICE request")
+            }
+            if (sleeveBloomOffTurnChoice.requestId != requestId) {
+                throw JsonParseException("requestId mismatch between envelope ($requestId) and sleeveBloomOffTurnChoice (${sleeveBloomOffTurnChoice.requestId})")
+            }
+            if (choice != null || obj.has("choice")) {
+                throw JsonParseException("SUBMIT_SLEEVE_BLOOM_OFF_TURN_CHOICE cannot contain choice payload")
+            }
+            if (shufflePlan != null || obj.has("shufflePlan")) {
+                throw JsonParseException("SUBMIT_SLEEVE_BLOOM_OFF_TURN_CHOICE cannot contain shufflePlan payload")
+            }
+            if (tileMark != null || obj.has("tileMark")) {
+                throw JsonParseException("SUBMIT_SLEEVE_BLOOM_OFF_TURN_CHOICE cannot contain tileMark payload")
+            }
+            if (sleeveBloom != null || obj.has("sleeveBloom")) {
+                throw JsonParseException("SUBMIT_SLEEVE_BLOOM_OFF_TURN_CHOICE cannot contain sleeveBloom payload")
+            }
+            if (sleeveBloomChoice != null || obj.has("sleeveBloomChoice")) {
+                throw JsonParseException("SUBMIT_SLEEVE_BLOOM_OFF_TURN_CHOICE cannot contain sleeveBloomChoice payload")
+            }
+            if (beamSwap != null || obj.has("beamSwap")) {
+                throw JsonParseException("SUBMIT_SLEEVE_BLOOM_OFF_TURN_CHOICE cannot contain beamSwap payload")
+            }
+            if (beamSwapChoice != null || obj.has("beamSwapChoice")) {
+                throw JsonParseException("SUBMIT_SLEEVE_BLOOM_OFF_TURN_CHOICE cannot contain beamSwapChoice payload")
+            }
+        }
+
+        if (api != ApiTags.SUBMIT_SLEEVE_BLOOM_OFF_TURN && (sleeveBloomOffTurn != null || obj.has("sleeveBloomOffTurn"))) {
+            throw JsonParseException("sleeveBloomOffTurn payload is only allowed for SUBMIT_SLEEVE_BLOOM_OFF_TURN")
+        }
+        if (api != ApiTags.SUBMIT_SLEEVE_BLOOM_OFF_TURN_CHOICE && (sleeveBloomOffTurnChoice != null || obj.has("sleeveBloomOffTurnChoice"))) {
+            throw JsonParseException("sleeveBloomOffTurnChoice payload is only allowed for SUBMIT_SLEEVE_BLOOM_OFF_TURN_CHOICE")
+        }
+
         if (api == ApiTags.SUBMIT_BEAM_SWAP) {
             if (beamSwap == null) {
                 throw JsonParseException("Missing beamSwap payload in SUBMIT_BEAM_SWAP request")
@@ -1520,7 +1604,7 @@ private class ApiRequestAdapter : JsonDeserializer<ApiRequest> {
             }
         }
 
-        return ApiRequest(api, requestId, roomId, token, playerName, preferSeat, config, choice, shufflePlan, cursor, roundId, protocolVersion, ready, roomConfig, spectatorId, spectatorName, publicCheckpoint, tileMark, sleeveBloom, sleeveBloomChoice, beamSwap, beamSwapChoice)
+        return ApiRequest(api, requestId, roomId, token, playerName, preferSeat, config, choice, shufflePlan, cursor, roundId, protocolVersion, ready, roomConfig, spectatorId, spectatorName, publicCheckpoint, tileMark, sleeveBloom, sleeveBloomChoice, sleeveBloomOffTurn, sleeveBloomOffTurnChoice, beamSwap, beamSwapChoice)
     }
 }
 
@@ -1704,6 +1788,8 @@ object ApiMessageCodec {
         .registerTypeAdapter(ProtocolSleeveBloomConfig::class.java, ProtocolSleeveBloomConfigAdapter())
         .registerTypeAdapter(ProtocolSleeveBloomRequest::class.java, ProtocolSleeveBloomRequestAdapter())
         .registerTypeAdapter(ProtocolSleeveBloomChoiceRequest::class.java, ProtocolSleeveBloomChoiceRequestAdapter())
+        .registerTypeAdapter(ProtocolSleeveBloomOffTurnRequest::class.java, ProtocolSleeveBloomOffTurnRequestAdapter())
+        .registerTypeAdapter(ProtocolSleeveBloomOffTurnChoiceRequest::class.java, ProtocolSleeveBloomOffTurnChoiceRequestAdapter())
         .registerTypeAdapter(ProtocolSleeveBloomOfferView::class.java, ProtocolSleeveBloomOfferViewAdapter())
         .registerTypeAdapter(ProtocolSleeveBloomView::class.java, ProtocolSleeveBloomViewAdapter())
         .registerTypeAdapter(ProtocolBeamSwapSlot::class.java, ProtocolBeamSwapSlotAdapter())
@@ -1833,6 +1919,12 @@ object ApiMessageCodec {
             }
             if (rootObj.has("sleeveBloomChoice")) {
                 throw JsonParseException("Spectator request cannot contain player authority field 'sleeveBloomChoice'")
+            }
+            if (rootObj.has("sleeveBloomOffTurn")) {
+                throw JsonParseException("Spectator request cannot contain player authority field 'sleeveBloomOffTurn'")
+            }
+            if (rootObj.has("sleeveBloomOffTurnChoice")) {
+                throw JsonParseException("Spectator request cannot contain player authority field 'sleeveBloomOffTurnChoice'")
             }
             when (apiStr) {
                 ApiTags.JOIN_SPECTATOR -> {
@@ -2010,6 +2102,50 @@ object ApiMessageCodec {
                 }
             } else if (!elem.isJsonNull) {
                 throw JsonParseException("sleeveBloomChoice must be a JSON object")
+            }
+        }
+
+        // 严格线路上校验 sleeveBloomOffTurn 边界
+        if (rootObj.has("sleeveBloomOffTurn")) {
+            val elem = rootObj.get("sleeveBloomOffTurn")
+            if (elem.isJsonObject) {
+                val obj = elem.asJsonObject
+                if (!obj.has("controlEpoch")) {
+                    throw JsonParseException("sleeveBloomOffTurn requires controlEpoch at wire boundary")
+                }
+                validateControlEpochElement(obj.get("controlEpoch"), "sleeveBloomOffTurn")
+                val roundIdElem = obj.get("roundId")
+                if (roundIdElem == null || !roundIdElem.isJsonPrimitive || roundIdElem.asString.isBlank()) {
+                    throw JsonParseException("sleeveBloomOffTurn requires roundId at wire boundary")
+                }
+                val windowElem = obj.get("windowId")
+                if (windowElem == null || !windowElem.isJsonPrimitive || windowElem.asString.isBlank()) {
+                    throw JsonParseException("sleeveBloomOffTurn requires windowId at wire boundary")
+                }
+            } else if (!elem.isJsonNull) {
+                throw JsonParseException("sleeveBloomOffTurn must be a JSON object")
+            }
+        }
+
+        // 严格线路上校验 sleeveBloomOffTurnChoice 边界
+        if (rootObj.has("sleeveBloomOffTurnChoice")) {
+            val elem = rootObj.get("sleeveBloomOffTurnChoice")
+            if (elem.isJsonObject) {
+                val obj = elem.asJsonObject
+                if (!obj.has("controlEpoch")) {
+                    throw JsonParseException("sleeveBloomOffTurnChoice requires controlEpoch at wire boundary")
+                }
+                validateControlEpochElement(obj.get("controlEpoch"), "sleeveBloomOffTurnChoice")
+                val roundIdElem = obj.get("roundId")
+                if (roundIdElem == null || !roundIdElem.isJsonPrimitive || roundIdElem.asString.isBlank()) {
+                    throw JsonParseException("sleeveBloomOffTurnChoice requires roundId at wire boundary")
+                }
+                val offerElem = obj.get("offerId")
+                if (offerElem == null || !offerElem.isJsonPrimitive || offerElem.asString.isBlank()) {
+                    throw JsonParseException("sleeveBloomOffTurnChoice requires offerId at wire boundary")
+                }
+            } else if (!elem.isJsonNull) {
+                throw JsonParseException("sleeveBloomOffTurnChoice must be a JSON object")
             }
         }
 

@@ -10,6 +10,8 @@ import com.majiang.transport.api.ProtocolPlayerDecision
 import com.majiang.transport.api.ProtocolPlayerSnapshot
 import com.majiang.transport.api.ProtocolShufflePlan
 import com.majiang.transport.api.ProtocolSleeveBloomChoiceRequest
+import com.majiang.transport.api.ProtocolSleeveBloomOffTurnChoiceRequest
+import com.majiang.transport.api.ProtocolSleeveBloomOffTurnRequest
 import com.majiang.transport.api.ProtocolSleeveBloomRequest
 import com.majiang.transport.api.ProtocolTileMarkRequest
 import java.util.concurrent.CompletableFuture
@@ -134,6 +136,18 @@ interface SessionApi {
      */
     fun submitSleeveBloomChoice(request: ProtocolSleeveBloomChoiceRequest): CompletableFuture<ProtocolActionReceipt> =
         CompletableFuture.failedFuture(UnsupportedOperationException("submitSleeveBloomChoice not implemented"))
+
+    /**
+     * 提交他家回合预定袖里藏花激活请求（绑定本人弃牌后签发的 windowId）
+     */
+    fun submitSleeveBloomOffTurn(request: ProtocolSleeveBloomOffTurnRequest): CompletableFuture<ProtocolActionReceipt> =
+        CompletableFuture.failedFuture(UnsupportedOperationException("submitSleeveBloomOffTurn not implemented"))
+
+    /**
+     * 提交他家回合预定二选一（FIRST / SECOND）
+     */
+    fun submitSleeveBloomOffTurnChoice(request: ProtocolSleeveBloomOffTurnChoiceRequest): CompletableFuture<ProtocolActionReceipt> =
+        CompletableFuture.failedFuture(UnsupportedOperationException("submitSleeveBloomOffTurnChoice not implemented"))
 
     /**
      * 提交偷梁换柱激活请求

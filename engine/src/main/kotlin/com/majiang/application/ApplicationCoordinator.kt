@@ -492,7 +492,9 @@ class ApplicationCoordinator(
             if (seat !in 0..3) {
                 return ActionResult.Rejected(RejectionReason.INVALID_PLAYER)
             }
-            if (activeRound?.state?.sleeveBloomOffer?.seat == seat) {
+            if (activeRound?.state?.sleeveBloomOffer?.seat == seat ||
+                activeRound?.state?.sleeveBloomOffTurnOffer(seat) != null
+            ) {
                 return ActionResult.Rejected(RejectionReason.SLEEVE_BLOOM_CHOICE_PENDING)
             }
             if (activeRound?.state?.beamSwapOffer?.seat == seat) {
@@ -995,7 +997,9 @@ class ApplicationCoordinator(
             }
 
             val candidateState = round.readState()
-            if (candidateState.sleeveBloomOffer != null && candidateState.sleeveBloomOffer?.seat == seat) {
+            if (candidateState.sleeveBloomOffer?.seat == seat ||
+                candidateState.sleeveBloomOffTurnOffer(seat) != null
+            ) {
                 return ActionResult.Rejected(RejectionReason.SLEEVE_BLOOM_CHOICE_PENDING)
             }
             if (candidateState.beamSwapOffer != null && candidateState.beamSwapOffer?.seat == seat) {
@@ -1176,9 +1180,6 @@ class ApplicationCoordinator(
             if (candidateState.phase != GamePhase.CHEAT_WINDOW || round.responseWindow != null) {
                 return ActionResult.Rejected(RejectionReason.WRONG_PHASE)
             }
-            if (candidateState.riichiDeclared[seat]) {
-                return ActionResult.Rejected(RejectionReason.ACTION_NOT_AVAILABLE)
-            }
 
             val drawnTile = candidateState.players[seat].drawnTile
                 ?: return ActionResult.Rejected(RejectionReason.ACTION_NOT_AVAILABLE)
@@ -1189,21 +1190,23 @@ class ApplicationCoordinator(
             if (candidateState.lastDrawKind == SleeveBloomDrawKind.DEAL_EXTRA) {
                 return ActionResult.Rejected(RejectionReason.ACTION_NOT_AVAILABLE)
             }
-            if (candidateState.sleeveBloomOffer != null || candidateState.beamSwapOffer != null) {
+            if (candidateState.sleeveBloomOffer != null ||
+                candidateState.sleeveBloomOffTurnOffer(seat) != null ||
+                candidateState.beamSwapOffer != null
+            ) {
                 return ActionResult.Rejected(RejectionReason.ACTION_NOT_AVAILABLE)
             }
             if (candidateState.sleeveBloomUsedOnTurn == candidateState.turnNumber || candidateState.beamSwapUsedOnTurn == candidateState.turnNumber) {
                 return ActionResult.Rejected(RejectionReason.ACTION_NOT_AVAILABLE)
             }
 
+            val secondWallIndex = candidateState.nextAvailableWallIndex()
             val secondTile = when (candidateState.lastDrawKind) {
                 SleeveBloomDrawKind.NORMAL -> {
-                    if (candidateState.wallRemaining < 1 ||
-                        candidateState.wallPointer >= candidateState.wallEndExclusive
-                    ) {
+                    if (secondWallIndex == null) {
                         return ActionResult.Rejected(RejectionReason.ACTION_NOT_AVAILABLE)
                     }
-                    val nextTile = candidateState.wall.getOrNull(candidateState.wallPointer)
+                    val nextTile = candidateState.wall.getOrNull(secondWallIndex)
                         ?: return ActionResult.Rejected(RejectionReason.ACTION_NOT_AVAILABLE)
                     if (candidateState.tilePool.getLocation(nextTile) != TileLocation.WALL) {
                         return ActionResult.Rejected(RejectionReason.ACTION_NOT_AVAILABLE)
@@ -1254,6 +1257,22 @@ class ApplicationCoordinator(
             candidateState.cheatPoints[seat] = charge.balanceAfter
             candidateState.cheatEntries.add(charge.entry)
 
+            val firstActions = LegalActionProvider.legalActions(
+                state = candidateState,
+                player = seat,
+                responseWindow = null,
+                ruleEngine = ruleEngine,
+                winningScoreEvaluator = winningScoreEvaluator
+            )
+            val firstCanTsumo = firstActions.any { it is GameAction.DeclareTsumo }
+            val firstCanKan = firstActions.any { it is GameAction.DeclareKan }
+            val (secondCanTsumo, secondCanKan) = previewSleeveBloomCandidate(
+                state = candidateState,
+                seat = seat,
+                drawKind = candidateState.lastDrawKind,
+                secondWallIndex = secondWallIndex
+            )
+
             candidateState.sleeveBloomUsedOnTurn = candidateState.turnNumber
             candidateState.sleeveBloomOffer = CheatEffectFactory.sleeveBloomOffer(
                 seat = seat,
@@ -1261,7 +1280,12 @@ class ApplicationCoordinator(
                 drawKind = candidateState.lastDrawKind,
                 firstTile = drawnTile,
                 secondTile = secondTile,
-                turnNumber = candidateState.turnNumber
+                turnNumber = candidateState.turnNumber,
+                mode = com.majiang.cheat.bloom.SleeveBloomOfferMode.IMMEDIATE,
+                firstCanTsumo = firstCanTsumo,
+                secondCanTsumo = secondCanTsumo,
+                firstCanKan = firstCanKan,
+                secondCanKan = secondCanKan
             )
 
             val event = GameEvent.CheatPointsChanged(
@@ -1366,6 +1390,9 @@ class ApplicationCoordinator(
 
             val offer = candidateState.sleeveBloomOffer
                 ?: return ActionResult.Rejected(RejectionReason.ACTION_NOT_AVAILABLE)
+            if (offer.mode != com.majiang.cheat.bloom.SleeveBloomOfferMode.IMMEDIATE) {
+                return ActionResult.Rejected(RejectionReason.ACTION_NOT_AVAILABLE)
+            }
             if (offer.seat != seat || offer.offerId != request.offerId) {
                 return ActionResult.Rejected(RejectionReason.ACTION_NOT_AVAILABLE)
             }
@@ -1382,10 +1409,11 @@ class ApplicationCoordinator(
             if (request.keep == SleeveBloomKeep.SECOND) {
                 when (offer.drawKind) {
                     SleeveBloomDrawKind.NORMAL -> {
-                        if (candidateState.wallRemaining < 1 ||
-                            candidateState.wallPointer >= candidateState.wallEndExclusive ||
-                            candidateState.wall.getOrNull(candidateState.wallPointer) != offer.secondTile ||
-                            candidateState.tilePool.getLocation(offer.secondTile) != TileLocation.WALL
+                        val candidateIndex = candidateState.wallTileIndex(offer.secondTile)
+                        if (candidateIndex !in 0 until candidateState.wallEndExclusive ||
+                            candidateState.wall.getOrNull(candidateIndex) != offer.secondTile ||
+                            candidateState.tilePool.getLocation(offer.secondTile) != TileLocation.WALL ||
+                            candidateIndex != candidateState.nextAvailableWallIndex()
                         ) {
                             return ActionResult.Rejected(RejectionReason.ACTION_NOT_AVAILABLE)
                         }
@@ -1393,7 +1421,7 @@ class ApplicationCoordinator(
                             candidateState,
                             seat,
                             handTile = drawnTile,
-                            wallIndex = candidateState.wallPointer
+                            wallIndex = candidateIndex
                         )
                     }
                     SleeveBloomDrawKind.RINSHAN -> {
@@ -1529,6 +1557,422 @@ class ApplicationCoordinator(
     }
 
     /**
+     * 清理失效的他家回合 offer（不退款、不生成预留、不摸切）。
+     *
+     * @return 是否实际安装了新状态
+     */
+    internal fun cleanStaleSleeveBloomOffTurnOffer(seat: Int): Boolean {
+        if (currentExecutingThread.get() == Thread.currentThread()) {
+            return false
+        }
+        if (!rwLock.writeLock().tryLock()) {
+            return false
+        }
+        if (!isProcessingAction.compareAndSet(false, true)) {
+            rwLock.writeLock().unlock()
+            return false
+        }
+        currentExecutingThread.set(Thread.currentThread())
+
+        try {
+            val round = activeRound ?: return false
+            val candidateState = round.readState()
+            if (candidateState.sleeveBloomOffTurnOffer(seat) == null) {
+                return false
+            }
+            candidateState.removeSleeveBloomOffTurnOffer(seat)
+            StateInvariants.assertValid(candidateState)
+            val roundChange = RoundChange(
+                roundId = round.roundId,
+                sourceVersion = round.version,
+                state = candidateState,
+                responseWindow = round.responseWindow,
+                result = round.result,
+                events = emptyList()
+            )
+            round.install(roundChange)
+            decisionRegistry.invalidateAll()
+            return true
+        } finally {
+            currentExecutingThread.set(null)
+            finalizeActionExecutionWithoutReadLock()
+        }
+    }
+
+    /**
+     * 提交他家回合预定袖里藏花激活请求。
+     *
+     * 该入口不要求本人拥有即时 decisionId；授权以本人弃牌后签发的权威 windowId 为准。
+     */
+    fun submitSleeveBloomOffTurn(seat: Int, request: SleeveBloomOffTurnRequest, now: Long): ActionResult {
+        if (currentExecutingThread.get() == Thread.currentThread()) {
+            return ActionResult.Rejected(RejectionReason.ACTION_NOT_AVAILABLE)
+        }
+        if (!rwLock.writeLock().tryLock()) {
+            return ActionResult.Rejected(RejectionReason.ACTION_NOT_AVAILABLE)
+        }
+        if (!isProcessingAction.compareAndSet(false, true)) {
+            rwLock.writeLock().unlock()
+            return ActionResult.Rejected(RejectionReason.ACTION_NOT_AVAILABLE)
+        }
+        currentExecutingThread.set(Thread.currentThread())
+
+        val allEvents = mutableListOf<GameEvent>()
+        var acceptedResultToReturn: ActionResult? = null
+        try {
+            if (session.lifecycle == SessionLifecycle.FINISHED || session.lifecycle == SessionLifecycle.CLOSED) {
+                return ActionResult.Rejected(RejectionReason.MATCH_FINISHED)
+            }
+            val round = activeRound ?: return ActionResult.Rejected(RejectionReason.WRONG_PHASE)
+            if (round.roundId != request.roundId) return ActionResult.Rejected(RejectionReason.WRONG_PHASE)
+            if (session.sessionId != request.sessionId) return ActionResult.Rejected(RejectionReason.WRONG_PHASE)
+            if (seat !in 0..3) return ActionResult.Rejected(RejectionReason.INVALID_PLAYER)
+            if (request.requestId.isBlank() || request.windowId.isBlank()) {
+                return ActionResult.Rejected(RejectionReason.ACTION_NOT_AVAILABLE)
+            }
+            if (!sleeveBloomConfig.enabled || !cheatEconomyConfig.enabled) {
+                return ActionResult.Rejected(RejectionReason.ACTION_NOT_AVAILABLE)
+            }
+            val cost = cheatEconomyConfig.costs["SLEEVE_BLOOM"]
+                ?: return ActionResult.Rejected(RejectionReason.ACTION_NOT_AVAILABLE)
+            if (cost != 10) return ActionResult.Rejected(RejectionReason.ACTION_NOT_AVAILABLE)
+
+            val controller = controllerRegistry.getController(seat)
+            if (controller !is SeatController.LocalHuman && controller !is SeatController.RemoteHuman) {
+                return ActionResult.Rejected(RejectionReason.ACTION_NOT_AVAILABLE)
+            }
+            if (request.controlEpoch != controllerRegistry.getEpoch(seat)) {
+                return ActionResult.Rejected(RejectionReason.STALE_CONTROL_EPOCH)
+            }
+
+            val candidateState = round.readState()
+            if (candidateState.phase == GamePhase.ROUND_END) {
+                return ActionResult.Rejected(RejectionReason.WRONG_PHASE)
+            }
+            if (candidateState.phase !in setOf(
+                    GamePhase.DRAW,
+                    GamePhase.CHEAT_WINDOW,
+                    GamePhase.DISCARD,
+                    GamePhase.RESPONSE_WINDOW,
+                    GamePhase.CHANKAN_WINDOW
+                )
+            ) {
+                return ActionResult.Rejected(RejectionReason.WRONG_PHASE)
+            }
+            if (candidateState.sleeveBloomWindowId(seat) != request.windowId) {
+                return ActionResult.Rejected(RejectionReason.SLEEVE_BLOOM_NO_WINDOW)
+            }
+            if (candidateState.currentPlayer == seat) {
+                return ActionResult.Rejected(RejectionReason.NOT_YOUR_TURN)
+            }
+            if (candidateState.sleeveBloomOffer != null ||
+                candidateState.sleeveBloomOffTurnOffer(seat) != null
+            ) {
+                return ActionResult.Rejected(RejectionReason.SLEEVE_BLOOM_ALREADY_PENDING)
+            }
+            if (candidateState.sleeveBloomReservation(seat) != null) {
+                return ActionResult.Rejected(RejectionReason.SLEEVE_BLOOM_RESERVED_PENDING)
+            }
+            if (candidateState.beamSwapOffer != null) {
+                return ActionResult.Rejected(RejectionReason.BEAM_SWAP_ALREADY_PENDING)
+            }
+
+            val available = candidateState.availableWallIndices()
+            if (available.size < 2) {
+                return ActionResult.Rejected(RejectionReason.SLEEVE_BLOOM_WALL_EMPTY)
+            }
+            val firstTile = candidateState.wall[available[0]]
+            val secondTile = candidateState.wall[available[1]]
+            if (firstTile == secondTile ||
+                candidateState.tilePool.getLocation(firstTile) != TileLocation.WALL ||
+                candidateState.tilePool.getLocation(secondTile) != TileLocation.WALL
+            ) {
+                return ActionResult.Rejected(RejectionReason.SLEEVE_BLOOM_WALL_EMPTY)
+            }
+            if (candidateState.cheatPoints[seat] < cost) {
+                return ActionResult.Rejected(RejectionReason.INSUFFICIENT_FUNDS)
+            }
+
+            val ledgerConfig = cheatEconomyConfig.copy(
+                enabled = true,
+                initialPoints = round.frozenStartingCheatPoints
+            )
+            val entryId = "bloom-offturn-$seat-${request.requestId}"
+            val charge = CheatLedgerCharge.apply(
+                config = ledgerConfig,
+                balances = candidateState.cheatPoints.toList(),
+                entries = candidateState.cheatEntries.toList(),
+                entryId = entryId,
+                seat = seat,
+                amount = -cost,
+                reason = "SLEEVE_BLOOM"
+            ) ?: return ActionResult.Rejected(RejectionReason.INSUFFICIENT_FUNDS)
+
+            candidateState.cheatPoints[seat] = charge.balanceAfter
+            candidateState.cheatEntries.add(charge.entry)
+            candidateState.putSleeveBloomOffTurnOffer(
+                com.majiang.cheat.bloom.SleeveBloomOffer(
+                    offerId = "bloom-offturn-$seat-${request.requestId}",
+                    seat = seat,
+                    drawKind = SleeveBloomDrawKind.NORMAL,
+                    firstTile = firstTile,
+                    secondTile = secondTile,
+                    createdTurnNumber = candidateState.turnNumber,
+                    mode = com.majiang.cheat.bloom.SleeveBloomOfferMode.OFF_TURN,
+                    windowId = request.windowId,
+                    deadlineMillis = now + sleeveBloomConfig.offTurnChoiceMillis,
+                    createdAtMillis = now
+                )
+            )
+
+            val event = GameEvent.CheatPointsChanged(
+                turnNumber = candidateState.turnNumber,
+                seat = seat,
+                amount = -cost,
+                newBalance = charge.balanceAfter
+            )
+            val roundChange = RoundChange(
+                roundId = round.roundId,
+                sourceVersion = round.version,
+                state = candidateState,
+                responseWindow = round.responseWindow,
+                result = round.result,
+                events = listOf(event)
+            )
+
+            StateInvariants.assertValid(candidateState)
+            round.install(roundChange)
+
+            val snap = snapshotGameEvent(event)
+            allEvents.add(snap)
+            eventBus.publish(snap)
+            decisionRegistry.invalidateAll()
+
+            val acceptedResult = ActionResult.Accepted(allEvents.map { snapshotGameEvent(it) })
+            acceptedResultToReturn = acceptedResult
+            return acceptedResult
+        } finally {
+            currentExecutingThread.set(null)
+            if (acceptedResultToReturn != null) {
+                rwLock.readLock().lock()
+                rwLock.writeLock().unlock()
+                try {
+                    broadcastEvents(allEvents)
+                } finally {
+                    rwLock.readLock().unlock()
+                    finalizeActionExecution()
+                }
+            } else {
+                finalizeActionExecutionWithoutReadLock()
+            }
+        }
+    }
+
+    /**
+     * 提交他家回合预定二选一（FIRST / SECOND），不重复扣费。
+     */
+    fun submitSleeveBloomOffTurnChoice(
+        seat: Int,
+        request: SleeveBloomOffTurnChoiceRequest,
+        now: Long
+    ): ActionResult {
+        if (currentExecutingThread.get() == Thread.currentThread()) {
+            return ActionResult.Rejected(RejectionReason.ACTION_NOT_AVAILABLE)
+        }
+        if (!rwLock.writeLock().tryLock()) {
+            return ActionResult.Rejected(RejectionReason.ACTION_NOT_AVAILABLE)
+        }
+        if (!isProcessingAction.compareAndSet(false, true)) {
+            rwLock.writeLock().unlock()
+            return ActionResult.Rejected(RejectionReason.ACTION_NOT_AVAILABLE)
+        }
+        currentExecutingThread.set(Thread.currentThread())
+
+        var acceptedResultToReturn: ActionResult? = null
+        try {
+            if (session.lifecycle == SessionLifecycle.FINISHED || session.lifecycle == SessionLifecycle.CLOSED) {
+                return ActionResult.Rejected(RejectionReason.MATCH_FINISHED)
+            }
+            val round = activeRound ?: return ActionResult.Rejected(RejectionReason.WRONG_PHASE)
+            if (round.roundId != request.roundId) return ActionResult.Rejected(RejectionReason.WRONG_PHASE)
+            if (session.sessionId != request.sessionId) return ActionResult.Rejected(RejectionReason.WRONG_PHASE)
+            if (seat !in 0..3) return ActionResult.Rejected(RejectionReason.INVALID_PLAYER)
+            if (request.requestId.isBlank() || request.offerId.isBlank()) {
+                return ActionResult.Rejected(RejectionReason.ACTION_NOT_AVAILABLE)
+            }
+            if (!sleeveBloomConfig.enabled || !cheatEconomyConfig.enabled) {
+                return ActionResult.Rejected(RejectionReason.ACTION_NOT_AVAILABLE)
+            }
+            val controller = controllerRegistry.getController(seat)
+            if (controller !is SeatController.LocalHuman && controller !is SeatController.RemoteHuman) {
+                return ActionResult.Rejected(RejectionReason.ACTION_NOT_AVAILABLE)
+            }
+            if (request.controlEpoch != controllerRegistry.getEpoch(seat)) {
+                return ActionResult.Rejected(RejectionReason.STALE_CONTROL_EPOCH)
+            }
+
+            val candidateState = round.readState()
+            val offer = candidateState.sleeveBloomOffTurnOffer(seat)
+                ?: return ActionResult.Rejected(RejectionReason.SLEEVE_BLOOM_NO_PENDING_OFFER)
+            if (offer.offerId != request.offerId) {
+                return ActionResult.Rejected(RejectionReason.SLEEVE_BLOOM_OFFER_MISMATCH)
+            }
+            if (now >= offer.deadlineMillis) {
+                // 权威截止已过：立即按 FIRST 结算，避免退款或第二笔费用。
+                candidateState.resolveSleeveBloomOffTurnOffer(seat, SleeveBloomKeep.FIRST)
+                StateInvariants.assertValid(candidateState)
+                round.install(
+                    RoundChange(
+                        roundId = round.roundId,
+                        sourceVersion = round.version,
+                        state = candidateState,
+                        responseWindow = round.responseWindow,
+                        result = round.result,
+                        events = emptyList()
+                    )
+                )
+                decisionRegistry.invalidateAll()
+                return ActionResult.Rejected(RejectionReason.DEADLINE_EXPIRED)
+            }
+
+            val firstIndex = candidateState.wallTileIndex(offer.firstTile)
+            val secondIndex = candidateState.wallTileIndex(offer.secondTile)
+            if (firstIndex < 0 || secondIndex < 0 ||
+                candidateState.tilePool.getLocation(offer.firstTile) != TileLocation.WALL ||
+                candidateState.tilePool.getLocation(offer.secondTile) != TileLocation.WALL
+            ) {
+                candidateState.removeSleeveBloomOffTurnOffer(seat)
+                StateInvariants.assertValid(candidateState)
+                round.install(
+                    RoundChange(
+                        roundId = round.roundId,
+                        sourceVersion = round.version,
+                        state = candidateState,
+                        responseWindow = round.responseWindow,
+                        result = round.result,
+                        events = emptyList()
+                    )
+                )
+                decisionRegistry.invalidateAll()
+                return ActionResult.Rejected(RejectionReason.SLEEVE_BLOOM_STALE_OFFER)
+            }
+
+            candidateState.resolveSleeveBloomOffTurnOffer(seat, request.keep)
+            StateInvariants.assertValid(candidateState)
+            round.install(
+                RoundChange(
+                    roundId = round.roundId,
+                    sourceVersion = round.version,
+                    state = candidateState,
+                    responseWindow = round.responseWindow,
+                    result = round.result,
+                    events = emptyList()
+                )
+            )
+            decisionRegistry.invalidateAll()
+
+            val acceptedResult = ActionResult.Accepted(emptyList())
+            acceptedResultToReturn = acceptedResult
+            return acceptedResult
+        } finally {
+            currentExecutingThread.set(null)
+            if (acceptedResultToReturn != null) {
+                rwLock.readLock().lock()
+                rwLock.writeLock().unlock()
+                try {
+                    broadcastEvents(emptyList())
+                } finally {
+                    rwLock.readLock().unlock()
+                    finalizeActionExecution()
+                }
+            } else {
+                finalizeActionExecutionWithoutReadLock()
+            }
+        }
+    }
+
+    /**
+     * 权威截止扫描：把所有已到期的他家回合 offer 按 FIRST 结算为预留。
+     *
+     * @return 被结算的座位列表
+     */
+    internal fun resolveExpiredSleeveBloomOffTurnOffers(now: Long): List<Int> {
+        if (currentExecutingThread.get() == Thread.currentThread()) return emptyList()
+        if (!rwLock.writeLock().tryLock()) return emptyList()
+        if (!isProcessingAction.compareAndSet(false, true)) {
+            rwLock.writeLock().unlock()
+            return emptyList()
+        }
+        currentExecutingThread.set(Thread.currentThread())
+        try {
+            val round = activeRound ?: return emptyList()
+            val candidateState = round.readState()
+            val expired = candidateState.sleeveBloomOffTurnOffers.values
+                .filter { now >= it.deadlineMillis }
+                .map { it.seat }
+            if (expired.isEmpty()) return emptyList()
+            for (seat in expired) {
+                candidateState.resolveSleeveBloomOffTurnOffer(seat, SleeveBloomKeep.FIRST)
+            }
+            StateInvariants.assertValid(candidateState)
+            round.install(
+                RoundChange(
+                    roundId = round.roundId,
+                    sourceVersion = round.version,
+                    state = candidateState,
+                    responseWindow = round.responseWindow,
+                    result = round.result,
+                    events = emptyList()
+                )
+            )
+            decisionRegistry.invalidateAll()
+            return expired
+        } finally {
+            currentExecutingThread.set(null)
+            finalizeActionExecutionWithoutReadLock()
+        }
+    }
+
+    /**
+     * 暂停恢复后顺延他家回合选择截止，保持剩余预算不被暂停消耗。
+     */
+    internal fun shiftSleeveBloomOffTurnDeadlines(deltaMillis: Long) {
+        if (deltaMillis <= 0L) return
+        if (currentExecutingThread.get() == Thread.currentThread()) return
+        if (!rwLock.writeLock().tryLock()) return
+        if (!isProcessingAction.compareAndSet(false, true)) {
+            rwLock.writeLock().unlock()
+            return
+        }
+        currentExecutingThread.set(Thread.currentThread())
+        try {
+            val round = activeRound ?: return
+            val candidateState = round.readState()
+            if (candidateState.sleeveBloomOffTurnOffers.isEmpty()) return
+            for ((seat, offer) in candidateState.sleeveBloomOffTurnOffers.toMap()) {
+                candidateState.putSleeveBloomOffTurnOffer(
+                    offer.copy(deadlineMillis = offer.deadlineMillis + deltaMillis)
+                )
+            }
+            StateInvariants.assertValid(candidateState)
+            round.install(
+                RoundChange(
+                    roundId = round.roundId,
+                    sourceVersion = round.version,
+                    state = candidateState,
+                    responseWindow = round.responseWindow,
+                    result = round.result,
+                    events = emptyList()
+                )
+            )
+            decisionRegistry.invalidateAll()
+        } finally {
+            currentExecutingThread.set(null)
+            finalizeActionExecutionWithoutReadLock()
+        }
+    }
+
+    /**
      * 提交偷梁换柱激活请求
      */
     fun submitBeamSwap(seat: Int, request: com.majiang.cheat.beam.BeamSwapRequest, now: Long): ActionResult {
@@ -1631,6 +2075,7 @@ class ApplicationCoordinator(
                     for (i in candidateState.wallPointer until endIdx) {
                         val t = candidateState.wall.getOrNull(i)
                             ?: return ActionResult.Rejected(RejectionReason.ACTION_NOT_AVAILABLE)
+                        if (candidateState.isProtectedSleeveBloomTile(t)) continue
                         if (candidateState.tilePool.getLocation(t) != TileLocation.WALL) {
                             return ActionResult.Rejected(RejectionReason.ACTION_NOT_AVAILABLE)
                         }
@@ -2167,6 +2612,9 @@ class ApplicationCoordinator(
 
         val player = getActionPlayer(action)
         if (round.state.sleeveBloomOffer != null && round.state.sleeveBloomOffer?.seat == player) {
+            return ActionResult.Rejected(RejectionReason.SLEEVE_BLOOM_CHOICE_PENDING)
+        }
+        if (round.state.sleeveBloomOffTurnOffer(player) != null) {
             return ActionResult.Rejected(RejectionReason.SLEEVE_BLOOM_CHOICE_PENDING)
         }
         if (round.state.beamSwapOffer != null && round.state.beamSwapOffer?.seat == player) {
@@ -2752,6 +3200,42 @@ class ApplicationCoordinator(
         is GameAction.DeclareAbortiveDraw -> action.player
         is GameAction.DeclareAgariYame -> action.player
         else -> -1
+    }
+
+    /**
+     * 即时 offer 的私有可胡/可杠预览：分别假设候选成为实际 drawnTile 后走同一合法动作路径。
+     * 预览只读副本，不改变权威状态；off-turn 路径不计算预览。
+     */
+    private fun previewSleeveBloomCandidate(
+        state: GameState,
+        seat: Int,
+        drawKind: SleeveBloomDrawKind,
+        secondWallIndex: Int?
+    ): Pair<Boolean, Boolean> {
+        val probe = state.deepCopy()
+        when (drawKind) {
+            SleeveBloomDrawKind.NORMAL -> {
+                val drawn = probe.players[seat].drawnTile ?: return false to false
+                val index = secondWallIndex ?: return false to false
+                TileMovement.swapHandWithWall(probe, seat, handTile = drawn, wallIndex = index)
+            }
+            SleeveBloomDrawKind.RINSHAN -> {
+                if (probe.rinshanPointer !in 1..3 || probe.totalKanCount >= 4) return false to false
+                TileMovement.swapDrawnWithNextRinshan(probe, seat)
+            }
+            SleeveBloomDrawKind.DEAL_EXTRA -> return false to false
+        }
+        probe.phase = GamePhase.CHEAT_WINDOW
+        probe.sleeveBloomOffer = null
+        probe.beamSwapOffer = null
+        val actions = LegalActionProvider.legalActions(
+            state = probe,
+            player = seat,
+            responseWindow = null,
+            ruleEngine = ruleEngine,
+            winningScoreEvaluator = winningScoreEvaluator
+        )
+        return actions.any { it is GameAction.DeclareTsumo } to actions.any { it is GameAction.DeclareKan }
     }
 
     companion object {

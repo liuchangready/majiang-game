@@ -286,7 +286,7 @@ class MatchConfig(
  * 客户端连接能力描述 (Capabilities)
  */
 class Capabilities(
-    val protocolVersion: Int = 5,
+    val protocolVersion: Int = 6,
     supportedPlayerCounts: Set<Int> = setOf(4),
     val remoteTransport: Boolean = false,
     val persistence: Boolean = false,

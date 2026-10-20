@@ -1,5 +1,8 @@
 package com.majiang.state
 
+import com.majiang.cheat.bloom.SleeveBloomOffer
+import com.majiang.cheat.bloom.SleeveBloomOfferMode
+import com.majiang.cheat.bloom.SleeveBloomReservation
 import com.majiang.economy.CheatLedgerEntry
 import com.majiang.model.*
 
@@ -228,20 +231,44 @@ internal class SeatState(
  * 袖里藏花挂起状态
  */
 internal class SleeveBloomState {
-    var offer: com.majiang.cheat.bloom.SleeveBloomOffer? = null
+    var offer: SleeveBloomOffer? = null
     var usedOnTurn: Int = -1
     var lastDrawKind: com.majiang.cheat.bloom.SleeveBloomDrawKind = com.majiang.cheat.bloom.SleeveBloomDrawKind.DEAL_EXTRA
+
+    /** 各座他家回合待选择 offer（每座最多一个） */
+    val offTurnOffers: MutableMap<Int, SleeveBloomOffer> = mutableMapOf()
+
+    /** 各座已选中的活牌山预留实体（每座最多一个） */
+    val reservations: MutableMap<Int, SleeveBloomReservation> = mutableMapOf()
+
+    /** 各座本人弃牌后签发的他家回合窗口标识，本人下一次普通摸牌/局终失效 */
+    val windowIds: Array<String?> = arrayOfNulls(4)
+
+    /** 窗口标识单调序号，避免同一巡内重发产生重复 ID */
+    var windowSeq: Int = 0
 
     fun resetForNewRound() {
         offer = null
         usedOnTurn = -1
         lastDrawKind = com.majiang.cheat.bloom.SleeveBloomDrawKind.DEAL_EXTRA
+        offTurnOffers.clear()
+        reservations.clear()
+        windowIds.fill(null)
+        windowSeq = 0
     }
 
     fun copyFrom(other: SleeveBloomState) {
         this.offer = other.offer?.copy()
         this.usedOnTurn = other.usedOnTurn
         this.lastDrawKind = other.lastDrawKind
+        this.offTurnOffers.clear()
+        this.offTurnOffers.putAll(other.offTurnOffers.mapValues { it.value.copy() })
+        this.reservations.clear()
+        this.reservations.putAll(other.reservations.mapValues { it.value.copy() })
+        for (seat in 0..3) {
+            this.windowIds[seat] = other.windowIds[seat]
+        }
+        this.windowSeq = other.windowSeq
     }
 
     fun deepCopy(): SleeveBloomState {
@@ -437,7 +464,11 @@ class GameState() {
         get() = board.totalKanCount
         set(value) { board.totalKanCount = value }
 
-    val wallRemaining: Int get() = board.wallRemaining
+    /**
+     * 活牌山尚未真正取出的普通牌总数，含已锁定/已预留但仍留在牌山中的实体。
+     * 对当前抽取者可用的张数另见 availableWallTileCount/For。
+     */
+    val wallRemaining: Int get() = board.wallRemaining + sleeveBloomHoleCount()
 
     fun nextPlayer(current: Int = currentPlayer): Int = board.nextPlayer(current)
     fun prevPlayer(current: Int = currentPlayer): Int = board.prevPlayer(current)
@@ -465,6 +496,164 @@ class GameState() {
     var beamSwapUsedOnTurn: Int
         get() = cheat.beamSwapUsedOnTurn
         set(value) { cheat.beamSwapUsedOnTurn = value }
+
+    /** 各座他家回合待选择 offer */
+    val sleeveBloomOffTurnOffers: Map<Int, SleeveBloomOffer> get() = cheat.sleeveBloom.offTurnOffers
+
+    /** 各座已选中的活牌山预留实体 */
+    val sleeveBloomReservations: Map<Int, SleeveBloomReservation> get() = cheat.sleeveBloom.reservations
+
+    fun sleeveBloomOffTurnOffer(seat: Int): SleeveBloomOffer? = cheat.sleeveBloom.offTurnOffers[seat]
+
+    fun putSleeveBloomOffTurnOffer(offer: SleeveBloomOffer) {
+        cheat.sleeveBloom.offTurnOffers[offer.seat] = offer
+    }
+
+    fun removeSleeveBloomOffTurnOffer(seat: Int) {
+        cheat.sleeveBloom.offTurnOffers.remove(seat)
+    }
+
+    fun putSleeveBloomReservation(reservation: SleeveBloomReservation) {
+        cheat.sleeveBloom.reservations[reservation.seat] = reservation
+    }
+
+    fun sleeveBloomReservation(seat: Int): SleeveBloomReservation? = cheat.sleeveBloom.reservations[seat]
+
+    fun sleeveBloomWindowId(seat: Int): String? =
+        if (seat in 0..3) cheat.sleeveBloom.windowIds[seat] else null
+
+    /** 本人在弃牌后签发他家回合窗口；重复签发会覆盖旧窗口，旧 windowId 随即失效。 */
+    fun openSleeveBloomWindow(seat: Int): String {
+        require(seat in 0..3) { "seat out of range: $seat" }
+        val id = "bloom-window-$seat-${turnNumber}-${cheat.sleeveBloom.windowSeq++}"
+        cheat.sleeveBloom.windowIds[seat] = id
+        return id
+    }
+
+    fun clearSleeveBloomWindow(seat: Int) {
+        if (seat in 0..3) cheat.sleeveBloom.windowIds[seat] = null
+    }
+
+    /** 活牌山上被某座临时锁定（待选择 offer 候选）或已选预留的全部实体。 */
+    fun protectedSleeveBloomTiles(): Set<Tile> {
+        val result = mutableSetOf<Tile>()
+        cheat.sleeveBloom.offTurnOffers.values.forEach {
+            result.add(it.firstTile)
+            result.add(it.secondTile)
+        }
+        cheat.sleeveBloom.reservations.values.forEach { result.add(it.tile) }
+        return result
+    }
+
+    fun isProtectedSleeveBloomTile(tile: Tile): Boolean {
+        if (cheat.sleeveBloom.reservations.values.any { it.tile == tile }) return true
+        return cheat.sleeveBloom.offTurnOffers.values.any { it.firstTile == tile || it.secondTile == tile }
+    }
+
+    /** 返回牌在 wall 列表中的索引，不存在时返回 -1。 */
+    fun wallTileIndex(tile: Tile): Int = wall.indexOf(tile)
+
+    /**
+     * 已越过 wallPointer、但仍物理留在活牌山中的牌数量。
+     *
+     * 这既包括锁定/预留牌，也包括锁定解除后重新可摸的“洞”。它们都尚未真正取出，
+     * 因此 wallRemaining 必须计入；一旦被摸走，TilePool 位置离开 WALL，计数自然减少。
+     */
+    fun sleeveBloomHoleCount(): Int {
+        var count = 0
+        for (i in 0 until minOf(wallPointer, wall.size)) {
+            if (tilePool.getLocation(wall[i]) == TileLocation.WALL) count++
+        }
+        return count
+    }
+
+    /**
+     * 活牌山中当前可被任意正常摸牌/尾端替补取走的槽位下标（跳过锁定与预留）。
+     *
+     * 从 0 扫描而不是从 wallPointer 开始：被跳跃过的洞在解锁后仍须按原索引顺序
+     * 重新进入可摸队列。已被摸走的旧槽位其 TilePool 位置不再是 WALL，会被过滤。
+     */
+    fun availableWallIndices(): List<Int> {
+        if (cheat.sleeveBloom.offTurnOffers.isEmpty() && cheat.sleeveBloom.reservations.isEmpty() &&
+            sleeveBloomHoleCount() == 0
+        ) {
+            return (wallPointer until minOf(wallEndExclusive, wall.size))
+                .filter { tilePool.getLocation(wall[it]) == TileLocation.WALL }
+        }
+        val protected = protectedSleeveBloomTiles()
+        val result = ArrayList<Int>(maxOf(0, wallEndExclusive))
+        for (i in 0 until minOf(wallEndExclusive, wall.size)) {
+            val tile = wall[i]
+            if (tile in protected) continue
+            if (tilePool.getLocation(tile) != TileLocation.WALL) continue
+            result.add(i)
+        }
+        return result
+    }
+
+    /** 对任意抽取者都可用的活牌山张数。 */
+    fun availableWallTileCount(): Int = availableWallIndices().size
+
+    /** 对指定座位可用的活牌山张数（含该座自己的预留牌，交付时直接取出）。 */
+    fun availableWallTileCountFor(seat: Int): Int {
+        var count = availableWallIndices().size
+        val ownReservation = sleeveBloomReservation(seat)?.tile
+        // 本人预留牌被 availableWallIndices 视为锁定；交付路径会直接取出，故对本座仍计数。
+        if (ownReservation != null && wallTileIndex(ownReservation) >= 0 &&
+            tilePool.getLocation(ownReservation) == TileLocation.WALL
+        ) {
+            count++
+        }
+        return count
+    }
+
+    fun nextAvailableWallIndex(): Int? = availableWallIndices().firstOrNull()
+
+    fun nextAvailableWallTile(): Tile? = nextAvailableWallIndex()?.let { wall.getOrNull(it) }
+
+    /**
+     * 在本人下一次正常摸牌之前，若存在他家回合待选择 offer，按 FIRST 立即结算为预留。
+     * 不扣费、不重复扣费；返回是否发生了结算。
+     */
+    fun settleSleeveBloomOfferForDraw(seat: Int): Boolean {
+        val offer = sleeveBloomOffTurnOffer(seat) ?: return false
+        cheat.sleeveBloom.offTurnOffers.remove(seat)
+        cheat.sleeveBloom.reservations[seat] = SleeveBloomReservation(
+            seat = seat,
+            offerId = offer.offerId,
+            tile = offer.firstTile,
+            windowId = offer.windowId,
+            createdAtMillis = offer.createdAtMillis
+        )
+        return true
+    }
+
+    fun removeSleeveBloomReservation(seat: Int) {
+        cheat.sleeveBloom.reservations.remove(seat)
+    }
+
+    /** 预定二选一结算：保留 keep 指定的候选，另一张解除锁定并留在原位。 */    fun resolveSleeveBloomOffTurnOffer(seat: Int, keep: com.majiang.cheat.bloom.SleeveBloomKeep): SleeveBloomReservation? {
+        val offer = cheat.sleeveBloom.offTurnOffers[seat] ?: return null
+        val chosen = if (keep == com.majiang.cheat.bloom.SleeveBloomKeep.FIRST) offer.firstTile else offer.secondTile
+        cheat.sleeveBloom.offTurnOffers.remove(seat)
+        val reservation = SleeveBloomReservation(
+            seat = seat,
+            offerId = offer.offerId,
+            tile = chosen,
+            windowId = offer.windowId,
+            createdAtMillis = offer.createdAtMillis
+        )
+        cheat.sleeveBloom.reservations[seat] = reservation
+        return reservation
+    }
+
+    /** 终局清理：释放所有锁定/预留与窗口，不退款。牌面留在原牌山区域。 */
+    fun clearAllSleeveBloomState() {
+        cheat.sleeveBloom.offer = null
+        cheat.sleeveBloom.offTurnOffers.clear()
+        cheat.sleeveBloom.reservations.clear()
+        cheat.sleeveBloom.windowIds.fill(null)
+    }
 
     fun getSleeve(player: Int): MutableList<Tile> = cheat.getSleeve(player)
 

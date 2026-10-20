@@ -36,7 +36,7 @@ class TcpMessagesTest {
         val parsedHello = TcpMessageCodec.parseHello(helloFrame)
         assertEquals(1, parsedHello.wireVersion)
         assertEquals(TcpWire.BUSINESS_VERSION, parsedHello.businessVersion)
-        assertEquals(2, parsedHello.businessVersion)
+        assertEquals(3, parsedHello.businessVersion)
         assertNull(parsedHello.lobbyResumeToken)
 
         // 恢复握手（携 token）
@@ -65,7 +65,7 @@ class TcpMessagesTest {
         val parsedWelcome = TcpMessageCodec.parseWelcome(welcomeFrame)
         assertEquals(1, parsedWelcome.wireVersion)
         assertEquals(TcpWire.BUSINESS_VERSION, parsedWelcome.businessVersion)
-        assertEquals(2, parsedWelcome.businessVersion)
+        assertEquals(3, parsedWelcome.businessVersion)
         assertEquals("epoch-server-abc-123", parsedWelcome.connectionEpoch)
         assertEquals("tok-server-lobby-xyz", parsedWelcome.lobbyResumeToken)
         assertEquals("scope-lobby-001", parsedWelcome.lobbyScope.scope)
@@ -274,7 +274,7 @@ class TcpMessagesTest {
         val jsonWithUnknown = """
             {
                 "wireVersion": 1,
-                "businessVersion": 2,
+                "businessVersion": 3,
                 "extraMaliciousField": "evil"
             }
         """.trimIndent()
@@ -322,7 +322,7 @@ class TcpMessagesTest {
         val missingFieldJson = """
             {
                 "wireVersion": 1,
-                "businessVersion": 2,
+                "businessVersion": 3,
                 "connectionEpoch": "epoch-1",
                 "lobbyScope": {"scope":"s1", "expiresAtMillis": 1000},
                 "limits": {"maxInFlightRequests":64, "requestTimeoutMillis":10000, "heartbeatIntervalMillis":3000, "idleDeadMillis":10000}

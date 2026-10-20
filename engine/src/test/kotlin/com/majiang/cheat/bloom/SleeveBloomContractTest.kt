@@ -301,7 +301,6 @@ class SleeveBloomContractTest {
     @Test fun `dealer extra riichi no draw wrong phase and wrong seat reject activation`() {
         val cases = listOf(
             normal().also { it.lastDrawKind = SleeveBloomDrawKind.DEAL_EXTRA; it.turnNumber = 0 } to "SLEEVE_BLOOM_DEALER_EXTRA_EXCLUDED",
-            normal().also { it.riichiDeclared[0] = true } to "SLEEVE_BLOOM_RIICHI_LOCKED",
             TestTableBuilder.create(phase = GamePhase.CHEAT_WINDOW).also { it.lastDrawKind = SleeveBloomDrawKind.NORMAL } to "SLEEVE_BLOOM_NO_DRAWN_TILE",
             normal().also { it.phase = GamePhase.DISCARD } to "WRONG_PHASE"
         )
@@ -309,6 +308,13 @@ class SleeveBloomContractTest {
             assertEquals(reason, a.submitSleeveBloom(0, req(a), a.clock.nowMillis()).receipt.reason)
             assertNull(state(a).sleeveBloomOffer)
             assertEquals(40, state(a).cheatPoints[0])
+        }
+        // 扩展规则：立直后仍可即时施术（不再返回 SLEEVE_BLOOM_RIICHI_LOCKED）。
+        table(normal().also { it.riichiDeclared[0] = true }).use { a ->
+            val receipt = a.submitSleeveBloom(0, req(a), a.clock.nowMillis()).receipt
+            assertEquals(ReceiptStatus.APPLIED, receipt.status, receipt.reason)
+            assertNotNull(state(a).sleeveBloomOffer)
+            assertEquals(30, state(a).cheatPoints[0])
         }
         table().use { a ->
             assertEquals(ReceiptStatus.REJECTED, a.submitSleeveBloom(1, req(a, seat = 1), a.clock.nowMillis()).receipt.status)

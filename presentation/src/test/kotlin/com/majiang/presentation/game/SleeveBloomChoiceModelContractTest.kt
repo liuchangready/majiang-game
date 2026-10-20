@@ -149,4 +149,70 @@ class SleeveBloomChoiceModelContractTest {
         assertNull(model.selected)
         assertNull(model.buildChoiceRequest("gone", SleeveBloomKeep.SECOND))
     }
+
+    @Test
+    fun `off-turn window builds strong request and reservation status without touching own turn`() {
+        val base = snapshot(false)
+        val window = base.copy(
+            view = base.view.copy(phase = GamePhaseView.DRAW, currentTurnPlayer = 1, myDrawnTile = null),
+            sleeveBloom = SleeveBloomView(
+                canApply = false,
+                disabledReason = "NOT_YOUR_TURN",
+                cost = 10,
+                drawKind = null,
+                decisionId = base.decision.decisionId,
+                controlEpoch = base.decision.controlEpoch,
+                stateVersion = 5,
+                pendingOffer = null,
+                canApplyOffTurn = true,
+                offTurnDisabledReason = null,
+                offTurnWindowId = "window-0",
+                reservation = null
+            )
+        )
+        val model = SleeveBloomChoiceModel { 100_000L }
+        model.update(window)
+        assertTrue(model.canActivateOffTurn)
+        assertFalse(model.isChoosing)
+        assertEquals(
+            SleeveBloomOffTurnRequest("off", "session", "round", "window-0", 3),
+            model.buildOffTurnActivateRequest("off")
+        )
+
+        val first = TestViewBuilder.tile(13)
+        val second = TestViewBuilder.tile(135)
+        val offered = window.copy(
+            view = window.view.copy(phase = GamePhaseView.DISCARD),
+            sleeveBloom = window.sleeveBloom!!.copy(
+                canApplyOffTurn = false,
+                pendingOffer = SleeveBloomOfferView(
+                    "off-offer", first, second, SleeveBloomDrawKind.NORMAL, 24_000,
+                    base.decision.decisionId, base.decision.controlEpoch,
+                    mode = SleeveBloomOfferMode.OFF_TURN, windowId = "window-0"
+                )
+            )
+        )
+        model.update(offered)
+        assertTrue(model.isChoosing)
+        assertTrue(model.isOffTurnChoice)
+        assertNull(model.buildChoiceRequest("wrong-kind", SleeveBloomKeep.FIRST))
+        assertNotNull(model.buildOffTurnChoiceRequest("cancel", SleeveBloomKeep.FIRST))
+        assertTrue(model.select(SleeveBloomKeep.SECOND))
+        assertEquals(
+            SleeveBloomOffTurnChoiceRequest("pick", "session", "round", 3, "off-offer", SleeveBloomKeep.SECOND),
+            model.buildOffTurnChoiceRequest("pick", SleeveBloomKeep.SECOND)
+        )
+
+        val reserved = offered.copy(
+            sleeveBloom = offered.sleeveBloom!!.copy(
+                pendingOffer = null,
+                reservation = SleeveBloomReservationView(second, "off-offer", "window-0")
+            )
+        )
+        model.update(reserved)
+        assertFalse(model.isChoosing)
+        assertTrue(model.isReserved)
+        assertEquals(second, model.reservedTile)
+        assertFalse(model.canActivateOffTurn)
+    }
 }

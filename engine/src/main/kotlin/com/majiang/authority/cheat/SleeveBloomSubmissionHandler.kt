@@ -33,6 +33,21 @@ internal class SleeveBloomSubmissionHandler {
         val keep: com.majiang.cheat.bloom.SleeveBloomKeep
     )
 
+    data class NormalizedOffTurnActivationPayload(
+        val sessionId: String,
+        val roundId: String,
+        val windowId: String,
+        val controlEpoch: Long
+    )
+
+    data class NormalizedOffTurnChoicePayload(
+        val sessionId: String,
+        val roundId: String,
+        val controlEpoch: Long,
+        val offerId: String,
+        val keep: com.majiang.cheat.bloom.SleeveBloomKeep
+    )
+
     data class ActivationInput(
         val seat: Int,
         val request: SleeveBloomRequest,
@@ -57,6 +72,7 @@ internal class SleeveBloomSubmissionHandler {
         val lastDrawKind: SleeveBloomDrawKind,
         val riichiDeclared: Boolean,
         val sleeveBloomOfferActive: Boolean,
+        val offTurnOfferActive: Boolean,
         val beamSwapOfferActive: Boolean,
         val sleeveBloomUsedOnTurn: Int,
         val beamSwapUsedOnTurn: Int,
@@ -99,19 +115,69 @@ internal class SleeveBloomSubmissionHandler {
         val drawnTileInHand: Boolean,
         val offerSeat: Int?,
         val offerId: String?,
+        val offerMode: com.majiang.cheat.bloom.SleeveBloomOfferMode?,
         val offerCreatedTurnNumber: Int?,
         val offerFirstTileId: Int?,
         val offerSecondTileId: Int?,
         val offerDrawKind: SleeveBloomDrawKind?,
+        val offerSecondWallIndex: Int?,
+        val nextAvailableWallIndex: Int?,
         val wallPointer: Int,
         val wallEndExclusive: Int,
-        val wallTileAtPointerId: Int?,
-        val wallTileInWall: Boolean,
+        val wallTileAtOfferIndexInWall: Boolean,
         val rinshanPointer: Int,
         val totalKanCount: Int,
         val deadWallPreviousTileId: Int?,
         val deadWallSecondTileId: Int?,
         val deadWallSecondInDeadWall: Boolean
+    )
+
+    data class OffTurnActivationInput(
+        val seat: Int,
+        val request: com.majiang.cheat.bloom.SleeveBloomOffTurnRequest,
+        val featureEnabled: Boolean,
+        val economyEnabled: Boolean,
+        val configuredCost: Int?,
+        val closed: Boolean,
+        val sessionClosed: Boolean,
+        val paused: Boolean,
+        val preparationActive: Boolean,
+        val roundId: String?,
+        val roundEnded: Boolean,
+        val controller: SeatController,
+        val controlEpoch: Long,
+        val currentPlayer: Int?,
+        val phase: GamePhase?,
+        val windowMatches: Boolean,
+        val immediateOfferActive: Boolean,
+        val offTurnOfferActive: Boolean,
+        val reservationActive: Boolean,
+        val beamSwapOfferActive: Boolean,
+        val availableWallCount: Int,
+        val cheatPoints: Int,
+        val cost: Int
+    )
+
+    data class OffTurnChoiceInput(
+        val seat: Int,
+        val request: com.majiang.cheat.bloom.SleeveBloomOffTurnChoiceRequest,
+        val featureEnabled: Boolean,
+        val economyEnabled: Boolean,
+        val configuredCost: Int?,
+        val closed: Boolean,
+        val sessionClosed: Boolean,
+        val paused: Boolean,
+        val preparationActive: Boolean,
+        val roundId: String?,
+        val roundEnded: Boolean,
+        val controller: SeatController,
+        val controlEpoch: Long,
+        val now: Long,
+        val offerSeat: Int?,
+        val offerId: String?,
+        val offerDeadlineMillis: Long?,
+        val offerFirstInWall: Boolean,
+        val offerSecondInWall: Boolean
     )
 
     fun normalizeActivation(request: SleeveBloomRequest): NormalizedActivationPayload =
@@ -131,6 +197,25 @@ internal class SleeveBloomSubmissionHandler {
             offerId = request.offerId,
             keep = request.keep
         )
+
+    fun normalizeOffTurnActivation(
+        request: com.majiang.cheat.bloom.SleeveBloomOffTurnRequest
+    ): NormalizedOffTurnActivationPayload = NormalizedOffTurnActivationPayload(
+        sessionId = request.sessionId,
+        roundId = request.roundId,
+        windowId = request.windowId,
+        controlEpoch = request.controlEpoch
+    )
+
+    fun normalizeOffTurnChoice(
+        request: com.majiang.cheat.bloom.SleeveBloomOffTurnChoiceRequest
+    ): NormalizedOffTurnChoicePayload = NormalizedOffTurnChoicePayload(
+        sessionId = request.sessionId,
+        roundId = request.roundId,
+        controlEpoch = request.controlEpoch,
+        offerId = request.offerId,
+        keep = request.keep
+    )
 
     fun validateActivation(input: ActivationInput): CheatSubmissionCheck {
         val gate = checkGate(
@@ -160,11 +245,11 @@ internal class SleeveBloomSubmissionHandler {
 
         val drawnTileId = input.drawnTileId
         if (drawnTileId == null || !input.drawnTileInHand) return reject("SLEEVE_BLOOM_NO_DRAWN_TILE")
-        if (input.riichiDeclared) return reject("SLEEVE_BLOOM_RIICHI_LOCKED")
         if (input.lastDrawKind == SleeveBloomDrawKind.DEAL_EXTRA) {
             return reject("SLEEVE_BLOOM_DEALER_EXTRA_EXCLUDED")
         }
         if (input.sleeveBloomOfferActive) return reject("SLEEVE_BLOOM_ALREADY_PENDING")
+        if (input.offTurnOfferActive) return reject("SLEEVE_BLOOM_ALREADY_PENDING")
         if (input.beamSwapOfferActive) return reject("BEAM_SWAP_ALREADY_PENDING")
         if (input.sleeveBloomUsedOnTurn == input.turnNumber || input.beamSwapUsedOnTurn == input.turnNumber) {
             return reject("SLEEVE_BLOOM_ALREADY_USED_THIS_DRAW")
@@ -172,11 +257,9 @@ internal class SleeveBloomSubmissionHandler {
 
         when (input.lastDrawKind) {
             SleeveBloomDrawKind.NORMAL -> {
-                if (input.wallRemaining < 1 ||
-                    input.wallPointer >= input.wallEndExclusive ||
-                    input.nextWallTileId == null ||
-                    !input.nextWallTileInWall
-                ) {
+                // 第二候选是“下一个可用槽位”，可能位于 wallPointer 之前的解锁洞；
+                // 不能再用连续区间/指针判断候选是否存在。
+                if (input.nextWallTileId == null || !input.nextWallTileInWall) {
                     return reject("SLEEVE_BLOOM_WALL_EMPTY")
                 }
             }
@@ -225,6 +308,9 @@ internal class SleeveBloomSubmissionHandler {
         if (offerSeat == null || offerSeat != input.seat) {
             return reject("SLEEVE_BLOOM_NO_PENDING_OFFER")
         }
+        if (input.offerMode != com.majiang.cheat.bloom.SleeveBloomOfferMode.IMMEDIATE) {
+            return reject("SLEEVE_BLOOM_NO_PENDING_OFFER")
+        }
         if (input.offerId != input.request.offerId) {
             return reject("SLEEVE_BLOOM_OFFER_MISMATCH")
         }
@@ -234,9 +320,11 @@ internal class SleeveBloomSubmissionHandler {
                 input.drawnTileInHand &&
                 when (input.offerDrawKind) {
                     SleeveBloomDrawKind.NORMAL -> {
-                        input.wallPointer < input.wallEndExclusive &&
-                                input.wallTileAtPointerId == input.offerSecondTileId &&
-                                input.wallTileInWall
+                        val index = input.offerSecondWallIndex
+                        index != null &&
+                                index == input.nextAvailableWallIndex &&
+                                index in 0 until input.wallEndExclusive &&
+                                input.wallTileAtOfferIndexInWall
                     }
                     SleeveBloomDrawKind.RINSHAN -> {
                         input.rinshanPointer in 1..3 &&
@@ -253,6 +341,64 @@ internal class SleeveBloomSubmissionHandler {
         } else {
             CheatSubmissionCheck.StaleOffer("SLEEVE_BLOOM_STALE_OFFER")
         }
+    }
+
+    fun validateOffTurnActivation(input: OffTurnActivationInput): CheatSubmissionCheck {
+        if (!input.featureEnabled || !input.economyEnabled || input.configuredCost != 10) {
+            return reject("SLEEVE_BLOOM_DISABLED")
+        }
+        if (input.closed || input.sessionClosed) return reject("SESSION_CLOSED")
+        if (input.paused) return reject("HOST_PAUSED")
+        if (input.preparationActive) return reject("WRONG_PHASE")
+        if (input.roundId == null || input.roundEnded || input.request.roundId != input.roundId) {
+            return reject("DECISION_MISMATCH")
+        }
+        if (input.request.controlEpoch != input.controlEpoch) return reject("STALE_CONTROL_EPOCH")
+        if (input.controller !is SeatController.LocalHuman && input.controller !is SeatController.RemoteHuman) {
+            return reject("ACTION_NOT_AVAILABLE")
+        }
+        if (!input.windowMatches) return reject("SLEEVE_BLOOM_NO_WINDOW")
+        if (input.currentPlayer == input.seat) return reject("NOT_YOUR_TURN")
+        if (input.phase !in setOf(
+                GamePhase.DRAW,
+                GamePhase.CHEAT_WINDOW,
+                GamePhase.DISCARD,
+                GamePhase.RESPONSE_WINDOW,
+                GamePhase.CHANKAN_WINDOW
+            )
+        ) {
+            return reject("WRONG_PHASE")
+        }
+        if (input.immediateOfferActive || input.offTurnOfferActive) return reject("SLEEVE_BLOOM_ALREADY_PENDING")
+        if (input.reservationActive) return reject("SLEEVE_BLOOM_RESERVED_PENDING")
+        if (input.beamSwapOfferActive) return reject("BEAM_SWAP_ALREADY_PENDING")
+        if (input.availableWallCount < 2) return reject("SLEEVE_BLOOM_WALL_EMPTY")
+        if (input.cheatPoints < input.cost) return reject("INSUFFICIENT_FUNDS")
+        return CheatSubmissionCheck.Allowed
+    }
+
+    fun validateOffTurnChoice(input: OffTurnChoiceInput): CheatSubmissionCheck {
+        if (!input.featureEnabled || !input.economyEnabled || input.configuredCost != 10) {
+            return reject("SLEEVE_BLOOM_DISABLED")
+        }
+        if (input.closed || input.sessionClosed) return reject("SESSION_CLOSED")
+        if (input.paused) return reject("HOST_PAUSED")
+        if (input.preparationActive) return reject("WRONG_PHASE")
+        if (input.roundId == null || input.roundEnded || input.request.roundId != input.roundId) {
+            return reject("DECISION_MISMATCH")
+        }
+        if (input.request.controlEpoch != input.controlEpoch) return reject("STALE_CONTROL_EPOCH")
+        if (input.controller !is SeatController.LocalHuman && input.controller !is SeatController.RemoteHuman) {
+            return reject("ACTION_NOT_AVAILABLE")
+        }
+        if (input.offerSeat == null || input.offerSeat != input.seat) {
+            return reject("SLEEVE_BLOOM_NO_PENDING_OFFER")
+        }
+        if (input.offerId != input.request.offerId) return reject("SLEEVE_BLOOM_OFFER_MISMATCH")
+        val deadline = input.offerDeadlineMillis ?: return reject("SLEEVE_BLOOM_NO_PENDING_OFFER")
+        if (input.now >= deadline) return reject("DEADLINE_EXPIRED")
+        if (!input.offerFirstInWall || !input.offerSecondInWall) return reject("SLEEVE_BLOOM_STALE_OFFER")
+        return CheatSubmissionCheck.Allowed
     }
 
     private fun checkGate(

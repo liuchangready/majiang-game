@@ -34,7 +34,9 @@ import com.majiang.client.api.BeamSwapChoiceRequest
 import com.majiang.client.api.BeamSwapRequest
 import com.majiang.client.api.SleeveBloomChoiceRequest
 import com.majiang.client.api.SleeveBloomKeep
+import com.majiang.client.api.SleeveBloomOfferMode
 import com.majiang.client.api.SleeveBloomOfferView
+import com.majiang.client.api.SleeveBloomOffTurnChoiceRequest
 import com.majiang.client.api.SleeveBloomRequest
 import com.majiang.client.api.TileMarkArea
 import com.majiang.client.api.TileMarkRequest
@@ -201,7 +203,9 @@ class GameScreen(
         isSettlementActive = { showSettlement },
         isShufflePreparationActive = { shufflePreparationPanel.isActive },
         isTileMarkActive = { tileMarkPanel.model.isSelecting },
-        isSleeveBloomActive = { sleeveBloomPanel.model.isChoosing },
+        isSleeveBloomActive = {
+            sleeveBloomPanel.model.isChoosing && sleeveBloomPanel.model.isImmediateChoice
+        },
         isBeamSwapActive = { beamSwapPanel.model.isChoosing },
         isRiichiActive = { riichiSelectionModel.isSelecting },
         isMeldActive = { meldSelectionModel.isSelecting },
@@ -471,7 +475,7 @@ class GameScreen(
             val myControl = snap.controls.firstOrNull { it.seat == snap.viewerSeat }
             val isTakeover = (myControl?.role == "TAKEOVER")
             val isTimeout = (latestServerNow >= oldOffer.deadlineMillis && oldOffer.deadlineMillis > 0L) &&
-                firstTileDiscarded &&
+                (oldOffer.mode == SleeveBloomOfferMode.OFF_TURN || firstTileDiscarded) &&
                 !isTakeover
             if (isTimeout && !bloomChoiceSubmitted && !roundChanged && !epochChanged && !sessionChanged &&
                 snap.view.phase != GamePhaseView.ROUND_END && snap.view.phase != GamePhaseView.MATCH_END) {
@@ -822,25 +826,42 @@ class GameScreen(
         if (isSubmittingBloom || isSubmitting || session.isPending) return
         val current = currentSnapshot ?: return
         val bloom = current.sleeveBloom ?: return
-        if (!sleeveBloomPanel.model.canActivate) return
+        val requestId = UUID.randomUUID().toString()
 
-        val roundId = current.roundId ?: return
+        if (sleeveBloomPanel.model.canActivate) {
+            isSubmittingBloom = true
+            val req = sleeveBloomPanel.model.buildActivateRequest(requestId) ?: run {
+                isSubmittingBloom = false
+                return
+            }
+            session.submitSleeveBloom(req).whenComplete { receipt, err ->
+                runOnUi {
+                    isSubmittingBloom = false
+                    if (err != null) {
+                        showToast("袖里藏花提交失败: ${err.message ?: err.javaClass.simpleName}")
+                    } else if (receipt?.status == ReceiptStatus.REJECTED) {
+                        val reason = SleeveBloomPanel.translateServerReason(receipt.reason ?: "UNKNOWN")
+                        showToast("袖里藏花失败: $reason")
+                    }
+                }
+            }
+            return
+        }
+
+        if (!sleeveBloomPanel.model.canActivateOffTurn) return
         isSubmittingBloom = true
-        val req = SleeveBloomRequest(
-            requestId = UUID.randomUUID().toString(),
-            sessionId = current.sessionId,
-            roundId = roundId,
-            decisionId = bloom.decisionId,
-            controlEpoch = bloom.controlEpoch
-        )
-        session.submitSleeveBloom(req).whenComplete { receipt, err ->
+        val offTurnReq = sleeveBloomPanel.model.buildOffTurnActivateRequest(requestId) ?: run {
+            isSubmittingBloom = false
+            return
+        }
+        session.submitSleeveBloomOffTurn(offTurnReq).whenComplete { receipt, err ->
             runOnUi {
                 isSubmittingBloom = false
                 if (err != null) {
-                    showToast("袖里藏花提交失败: ${err.message ?: err.javaClass.simpleName}")
+                    showToast("袖里藏花预定失败: ${err.message ?: err.javaClass.simpleName}")
                 } else if (receipt?.status == ReceiptStatus.REJECTED) {
                     val reason = SleeveBloomPanel.translateServerReason(receipt.reason ?: "UNKNOWN")
-                    showToast("袖里藏花失败: $reason")
+                    showToast("袖里藏花预定失败: $reason")
                 }
             }
         }
@@ -852,11 +873,35 @@ class GameScreen(
         val bloom = current.sleeveBloom ?: return
         val offer = bloom.pendingOffer ?: return
 
-        val roundId = current.roundId ?: return
         isSubmittingBloomChoice = true
         bloomChoiceSubmitted = true
+        val requestId = UUID.randomUUID().toString()
+
+        if (offer.mode == SleeveBloomOfferMode.OFF_TURN) {
+            val req = sleeveBloomPanel.model.buildOffTurnChoiceRequest(requestId, keep) ?: run {
+                isSubmittingBloomChoice = false
+                return
+            }
+            session.submitSleeveBloomOffTurnChoice(req).whenComplete { receipt, err ->
+                runOnUi {
+                    isSubmittingBloomChoice = false
+                    if (err != null) {
+                        showToast("选择提交失败: ${err.message ?: err.javaClass.simpleName}")
+                    } else if (receipt?.status == ReceiptStatus.REJECTED) {
+                        val reason = SleeveBloomPanel.translateServerReason(receipt.reason ?: "UNKNOWN")
+                        showToast("选择失败: $reason")
+                    }
+                }
+            }
+            return
+        }
+
+        val roundId = current.roundId ?: run {
+            isSubmittingBloomChoice = false
+            return
+        }
         val req = SleeveBloomChoiceRequest(
-            requestId = UUID.randomUUID().toString(),
+            requestId = requestId,
             sessionId = current.sessionId,
             roundId = roundId,
             decisionId = current.decision.decisionId,
@@ -1689,6 +1734,31 @@ class GameScreen(
         return false
     }
 
+    /**
+     * 处理袖里藏花面板自身的输入。返回 true 表示点击已由面板消费。
+     * 他家回合 offer 不作为全局模态，因此面板外点击继续交给牌桌/响应按钮。
+     */
+    private fun handleSleeveBloomPanelClick(uiTx: Float, uiTy: Float): Boolean {
+        if (sleeveBloomPanel.btnConfirmRect.contains(uiTx, uiTy)) {
+            val sel = sleeveBloomPanel.model.selected
+            if (sel != null) submitSleeveBloomChoiceAsync(sel)
+            return true
+        }
+        if (sleeveBloomPanel.btnCancelRect.contains(uiTx, uiTy)) {
+            submitSleeveBloomChoiceAsync(SleeveBloomKeep.FIRST)
+            return true
+        }
+        if (sleeveBloomPanel.firstCardRect.contains(uiTx, uiTy)) {
+            sleeveBloomPanel.model.select(SleeveBloomKeep.FIRST)
+            return true
+        }
+        if (sleeveBloomPanel.secondCardRect.contains(uiTx, uiTy)) {
+            sleeveBloomPanel.model.select(SleeveBloomKeep.SECOND)
+            return true
+        }
+        return sleeveBloomPanel.panelRect.contains(uiTx, uiTy)
+    }
+
     override fun touchDown(screenX: Int, screenY: Int, pointer: Int, button: Int): Boolean {
         val uiTx: Float
         val uiTy: Float
@@ -1725,6 +1795,11 @@ class GameScreen(
             connected = isConnected,
             nowMillis = beamSwapPanel.model.monotonicClock()
         )
+
+        // 他家回合 offer 只锁本人技能选择：面板内点击由面板消费，面板外继续交给响应/牌桌输入。
+        if (sleeveBloomPanel.model.isChoosing && sleeveBloomPanel.model.isOffTurnChoice) {
+            if (handleSleeveBloomPanelClick(uiTx, uiTy)) return true
+        }
 
         // 0. 弹窗模态优先级最高：在模态展示期间，拦截所有输入并禁止与底层提示/牌桌交互
         when (modalCoordinator.activeModal()) {
@@ -1853,25 +1928,7 @@ class GameScreen(
                 return true
             }
             ModalKind.SLEEVE_BLOOM -> {
-                if (sleeveBloomPanel.btnConfirmRect.contains(uiTx, uiTy)) {
-                    val sel = sleeveBloomPanel.model.selected
-                    if (sel != null) {
-                        submitSleeveBloomChoiceAsync(sel)
-                    }
-                    return true
-                }
-                if (sleeveBloomPanel.btnCancelRect.contains(uiTx, uiTy)) {
-                    submitSleeveBloomChoiceAsync(SleeveBloomKeep.FIRST)
-                    return true
-                }
-                if (sleeveBloomPanel.firstCardRect.contains(uiTx, uiTy)) {
-                    sleeveBloomPanel.model.select(SleeveBloomKeep.FIRST)
-                    return true
-                }
-                if (sleeveBloomPanel.secondCardRect.contains(uiTx, uiTy)) {
-                    sleeveBloomPanel.model.select(SleeveBloomKeep.SECOND)
-                    return true
-                }
+                handleSleeveBloomPanelClick(uiTx, uiTy)
                 return true
             }
             ModalKind.BEAM_SWAP -> {
@@ -1934,8 +1991,9 @@ class GameScreen(
 
         // 1.8 袖里藏花入口 (防止穿透)
         if (!isModalActive() && sleeveBloomPanel.btnOpenRect.contains(tableTx, tableTy)) {
-            val canOpenBloom = sleeveBloomPanel.model.canActivate &&
-                !isDiscardPlaybackBusy &&
+            val model = sleeveBloomPanel.model
+            val canOpenBloom = (model.canActivate || model.canActivateOffTurn) &&
+                (!isDiscardPlaybackBusy || model.canActivateOffTurn) &&
                 !isPaused &&
                 !session.isPending &&
                 !isSubmitting &&
@@ -1951,7 +2009,11 @@ class GameScreen(
                 val bloom = currentSnapshot?.sleeveBloom
                 val viewerSeat = currentSnapshot?.viewerSeat ?: 0
                 val pts = currentSnapshot?.cheatPoints?.getOrNull(viewerSeat) ?: 0
-                val disReason = bloom?.disabledReason
+                val disReason = if (currentSnapshot?.view?.currentTurnPlayer == viewerSeat) {
+                    bloom?.disabledReason
+                } else {
+                    bloom?.offTurnDisabledReason
+                }
                 val reasonText = when {
                     disReason != null -> SleeveBloomPanel.translateServerReason(disReason)
                     pts < (bloom?.cost ?: 10) -> "千术点不足"

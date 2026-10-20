@@ -163,12 +163,16 @@ class RoundTransitionPlanner(
                 }
 
                 is GameAction.DrawTile -> {
-                    val tile = TileMovement.draw(candidate, action.player)
+                    candidate.settleSleeveBloomOfferForDraw(action.player)
+                    val drawn = TileMovement.drawNormal(candidate, action.player)
                     candidate.turnNumber++
+                    if (drawn.fromReservation) {
+                        candidate.sleeveBloomUsedOnTurn = candidate.turnNumber
+                    }
                     candidate.sameTurnFuriten[action.player] = false
                     candidate.isRinshanDraw = false
                     candidate.lastDrawKind = com.majiang.cheat.bloom.SleeveBloomDrawKind.NORMAL
-                    stepEvents.add(GameEvent.TileDrawn(candidate.turnNumber, action.player, tile, candidate.wallRemaining))
+                    stepEvents.add(GameEvent.TileDrawn(candidate.turnNumber, action.player, drawn.tile, candidate.wallRemaining))
                     candidate.phase = GamePhase.CHEAT_WINDOW
                     newWindow = null
                     roundResult = null
@@ -179,6 +183,7 @@ class RoundTransitionPlanner(
                     val discarded = TileMovement.discard(candidate, action.player, action.tile)
                     candidate.setIppatsu(action.player, false)
                     candidate.isRinshanDraw = false
+                    candidate.openSleeveBloomWindow(action.player)
 
                     val isRiichiDiscard = candidate.riichiDeclared[action.player] &&
                             candidate.riichiTurn[action.player] == candidate.turnNumber
@@ -206,6 +211,7 @@ class RoundTransitionPlanner(
 
                     val isTsumogiri = candidate.players[action.player].drawnTile == action.discardTile
                     val discarded = TileMovement.discard(candidate, action.player, action.discardTile)
+                    candidate.openSleeveBloomWindow(action.player)
                     candidate.setIppatsu(action.player, true)
 
                     stepEvents.add(GameEvent.TileDiscarded(
@@ -362,14 +368,23 @@ class RoundTransitionPlanner(
         }
 
         val nextPlayer = candidate.nextPlayer(candidate.lastDiscardPlayer)
+        // 若本人存在他家回合待选择 offer，先按 FIRST 结算并立即交付该预留牌
+        candidate.settleSleeveBloomOfferForDraw(nextPlayer)
+        if (candidate.availableWallTileCountFor(nextPlayer) <= 0) {
+            return handleDrawGame(round, candidate, RiichiRuleEngine.AbortiveDrawType.EXHAUSTIVE, events)
+        }
+
         candidate.currentPlayer = nextPlayer
         candidate.phase = GamePhase.DRAW
-        val tile = TileMovement.draw(candidate, nextPlayer)
+        val drawn = TileMovement.drawNormal(candidate, nextPlayer)
         candidate.turnNumber++
+        if (drawn.fromReservation) {
+            candidate.sleeveBloomUsedOnTurn = candidate.turnNumber
+        }
         candidate.sameTurnFuriten[nextPlayer] = false
         candidate.isRinshanDraw = false
         candidate.lastDrawKind = com.majiang.cheat.bloom.SleeveBloomDrawKind.NORMAL
-        events.add(GameEvent.TileDrawn(candidate.turnNumber, nextPlayer, tile, candidate.wallRemaining))
+        events.add(GameEvent.TileDrawn(candidate.turnNumber, nextPlayer, drawn.tile, candidate.wallRemaining))
         candidate.phase = GamePhase.CHEAT_WINDOW
         return null
     }
@@ -702,7 +717,7 @@ class RoundTransitionPlanner(
         outcome: RoundOutcome,
         stepEvents: List<GameEvent>
     ): RoundResult {
-        candidate.sleeveBloomOffer = null
+        candidate.clearAllSleeveBloomState()
         candidate.beamSwapOffer = null
         candidate.pendingKanDoraCount = 0
         val startingScores = round.startingScores.toList()

@@ -47,7 +47,7 @@ class TcpBusinessVersionHandshakeTest {
                 }
                 assertNotNull(hello)
                 assertEquals(TcpWire.BUSINESS_VERSION, hello!!.businessVersion)
-                assertEquals(2, hello!!.businessVersion)
+                assertEquals(3, hello!!.businessVersion)
 
                 val legacyWelcome = TcpWelcome(
                     wireVersion = TcpWire.WIRE_VERSION,

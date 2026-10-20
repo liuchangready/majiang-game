@@ -276,8 +276,8 @@ class RiichiRuleEngine {
         // 条件 3：点数 >= 1000（需要支付 1000 点立直棒）
         if (state.scores[player] < 1000) return emptyList()
 
-        // 条件 4：牌山剩余 >= 4 张（需要至少能再摸一圈）
-        if (state.wallRemaining < 4) return emptyList()
+        // 条件 4：牌山可抽取剩余 >= 4 张（预留牌不属于可抽取数）
+        if (state.availableWallTileCount() < 4) return emptyList()
 
         // 条件 5：打出某张牌后能听牌
         val allClosed = hand.allClosedTiles

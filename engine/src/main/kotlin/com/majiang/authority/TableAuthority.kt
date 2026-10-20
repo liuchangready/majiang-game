@@ -145,7 +145,16 @@ class TableAuthority @JvmOverloads constructor(
 
     // 幂等请求与回执存储
     private data class ReceiptKey(val seat: Int, val requestId: String)
-    private enum class SubmissionKind { CHOICE, TILE_MARK, SLEEVE_BLOOM, SLEEVE_BLOOM_CHOICE, BEAM_SWAP, BEAM_SWAP_CHOICE }
+    private enum class SubmissionKind {
+        CHOICE,
+        TILE_MARK,
+        SLEEVE_BLOOM,
+        SLEEVE_BLOOM_CHOICE,
+        SLEEVE_BLOOM_OFF_TURN,
+        SLEEVE_BLOOM_OFF_TURN_CHOICE,
+        BEAM_SWAP,
+        BEAM_SWAP_CHOICE
+    }
     private data class StoredSubmission(
         val kind: SubmissionKind,
         val receipt: ActionReceipt,
@@ -153,6 +162,8 @@ class TableAuthority @JvmOverloads constructor(
         val tileMarkPayload: TileMarkSubmissionHandler.NormalizedPayload? = null,
         val sleeveBloomPayload: SleeveBloomSubmissionHandler.NormalizedActivationPayload? = null,
         val sleeveBloomChoicePayload: SleeveBloomSubmissionHandler.NormalizedChoicePayload? = null,
+        val sleeveBloomOffTurnPayload: SleeveBloomSubmissionHandler.NormalizedOffTurnActivationPayload? = null,
+        val sleeveBloomOffTurnChoicePayload: SleeveBloomSubmissionHandler.NormalizedOffTurnChoicePayload? = null,
         val beamSwapPayload: BeamSwapSubmissionHandler.NormalizedActivationPayload? = null,
         val beamSwapChoicePayload: BeamSwapSubmissionHandler.NormalizedChoicePayload? = null
     )
@@ -227,6 +238,8 @@ class TableAuthority @JvmOverloads constructor(
         value.tileMarkPayload?.let { bytes += 16L + 8L * 3 + 24L + 2L * it.sessionId.length }
         value.sleeveBloomPayload?.let { bytes += 16L + 8L * 3 }
         value.sleeveBloomChoicePayload?.let { bytes += 16L + 8L * 5 + 24L + 2L * it.offerId.length }
+        value.sleeveBloomOffTurnPayload?.let { bytes += 16L + 8L * 3 + 24L + 2L * it.windowId.length }
+        value.sleeveBloomOffTurnChoicePayload?.let { bytes += 16L + 8L * 4 + 24L + 2L * it.offerId.length }
         value.beamSwapPayload?.let { bytes += 16L + 8L * 3 }
         value.beamSwapChoicePayload?.let { bytes += 16L + 8L * 5 + 24L + 2L * it.offerId.length }
         return bytes
@@ -332,6 +345,7 @@ class TableAuthority @JvmOverloads constructor(
         data class DealerChoiceTaken(val dealer: Int, val action: GameAction, val events: List<GameEvent>) : AutoStepResult()
         data class NextRoundStarted(val events: List<GameEvent>) : AutoStepResult()
         data class RiichiAutoDiscarded(val seat: Int, val action: GameAction, val events: List<GameEvent>) : AutoStepResult()
+        data class SleeveBloomOffTurnExpired(val seats: List<Int>, val events: List<GameEvent>) : AutoStepResult()
 
         val allEvents: List<GameEvent> get() = when (this) {
             is PreparationDealt -> events
@@ -339,6 +353,7 @@ class TableAuthority @JvmOverloads constructor(
             is DealerChoiceTaken -> events
             is NextRoundStarted -> events
             is RiichiAutoDiscarded -> events
+            is SleeveBloomOffTurnExpired -> events
         }
     }
 
@@ -832,6 +847,7 @@ class TableAuthority @JvmOverloads constructor(
                 now = now,
                 riichiDeclared = candidateState?.riichiDeclared?.getOrNull(seat) ?: false,
                 sleeveBloomOfferSeat = candidateState?.sleeveBloomOffer?.seat,
+                sleeveBloomOffTurnOfferSeat = candidateState?.sleeveBloomOffTurnOffer(seat)?.seat,
                 beamSwapOfferSeat = candidateState?.beamSwapOffer?.seat,
                 handTileIds = handTileIds,
                 markedTileIds = seatMarkedIds,
@@ -915,7 +931,7 @@ class TableAuthority @JvmOverloads constructor(
         val candidateState = round?.readState()
         val drawnTile = candidateState?.players?.getOrNull(seat)?.drawnTile
         val rinshanPointer = candidateState?.rinshanPointer ?: 0
-        val nextTile = candidateState?.wall?.getOrNull(candidateState.wallPointer)
+        val nextTile = candidateState?.nextAvailableWallTile()
         val previousDeadWallTile = candidateState?.deadWall?.getOrNull(rinshanPointer - 1)
         val nextDeadWallTile = candidateState?.deadWall?.getOrNull(rinshanPointer)
         val cost = config.cheatEconomy.costs["SLEEVE_BLOOM"] ?: 10
@@ -945,6 +961,7 @@ class TableAuthority @JvmOverloads constructor(
                 lastDrawKind = candidateState?.lastDrawKind ?: SleeveBloomDrawKind.DEAL_EXTRA,
                 riichiDeclared = candidateState?.riichiDeclared?.getOrNull(seat) ?: false,
                 sleeveBloomOfferActive = candidateState?.sleeveBloomOffer != null,
+                offTurnOfferActive = candidateState?.sleeveBloomOffTurnOffer(seat) != null,
                 beamSwapOfferActive = candidateState?.beamSwapOffer != null,
                 sleeveBloomUsedOnTurn = candidateState?.sleeveBloomUsedOnTurn ?: -1,
                 beamSwapUsedOnTurn = candidateState?.beamSwapUsedOnTurn ?: -1,
@@ -955,8 +972,7 @@ class TableAuthority @JvmOverloads constructor(
                 nextWallTileId = nextTile?.tileId,
                 nextWallTileInWall = nextTile != null &&
                         candidateState.tilePool.getLocation(nextTile) == com.majiang.model.TileLocation.WALL,
-                rinshanPointer = rinshanPointer,
-                totalKanCount = candidateState?.totalKanCount ?: 0,
+                rinshanPointer = rinshanPointer,                totalKanCount = candidateState?.totalKanCount ?: 0,
                 deadWallPreviousTileId = previousDeadWallTile?.tileId,
                 nextDeadWallTileId = nextDeadWallTile?.tileId,
                 nextDeadWallInDeadWall = nextDeadWallTile != null &&
@@ -1041,7 +1057,9 @@ class TableAuthority @JvmOverloads constructor(
         val offer = candidateState?.sleeveBloomOffer
         val drawnTile = candidateState?.players?.getOrNull(seat)?.drawnTile
         val rinshanPointer = candidateState?.rinshanPointer ?: 0
-        val wallTileAtPointer = candidateState?.wall?.getOrNull(candidateState.wallPointer)
+        val offerSecondWallIndex = offer?.let { candidateState?.wallTileIndex(it.secondTile) }
+            ?.takeIf { it >= 0 }
+        val offerSecondTile = offerSecondWallIndex?.let { candidateState?.wall?.getOrNull(it) }
         val previousDeadWallTile = candidateState?.deadWall?.getOrNull(rinshanPointer - 1)
         val secondDeadWallTile = candidateState?.deadWall?.getOrNull(rinshanPointer)
         val check = sleeveBloomHandler.validateChoice(
@@ -1070,15 +1088,17 @@ class TableAuthority @JvmOverloads constructor(
                         candidateState.tilePool.getLocation(drawnTile) == com.majiang.model.TileLocation.hand(seat),
                 offerSeat = offer?.seat,
                 offerId = offer?.offerId,
+                offerMode = offer?.mode,
                 offerCreatedTurnNumber = offer?.createdTurnNumber,
                 offerFirstTileId = offer?.firstTile?.tileId,
                 offerSecondTileId = offer?.secondTile?.tileId,
                 offerDrawKind = offer?.drawKind,
+                offerSecondWallIndex = offerSecondWallIndex,
+                nextAvailableWallIndex = candidateState?.nextAvailableWallIndex(),
                 wallPointer = candidateState?.wallPointer ?: 0,
                 wallEndExclusive = candidateState?.wallEndExclusive ?: 0,
-                wallTileAtPointerId = wallTileAtPointer?.tileId,
-                wallTileInWall = wallTileAtPointer != null &&
-                        candidateState.tilePool.getLocation(wallTileAtPointer) == com.majiang.model.TileLocation.WALL,
+                wallTileAtOfferIndexInWall = offerSecondTile != null &&
+                        candidateState?.tilePool?.getLocation(offerSecondTile) == com.majiang.model.TileLocation.WALL,
                 rinshanPointer = rinshanPointer,
                 totalKanCount = candidateState?.totalKanCount ?: 0,
                 deadWallPreviousTileId = previousDeadWallTile?.tileId,
@@ -1131,6 +1151,249 @@ class TableAuthority @JvmOverloads constructor(
             recordSettlementEvents(coordResult.events)
         }
 
+        return MutationResult(receipt, coordResult.events, true)
+    }
+
+    /**
+     * 提交他家回合预定袖里藏花激活请求。
+     *
+     * 该请求不依赖任何即时 decisionId，以本人弃牌后签发的 windowId 与控制代次授权。
+     */
+    @Synchronized
+    fun submitSleeveBloomOffTurn(
+        seat: Int,
+        request: com.majiang.cheat.bloom.SleeveBloomOffTurnRequest,
+        now: Long
+    ): MutationResult {
+        if (seat !in 0..3) {
+            return MutationResult(ActionReceipt(request.requestId, ReceiptStatus.REJECTED, reason = "INVALID_SEAT"), emptyList(), false)
+        }
+        if (request.sessionId != coordinator.session.sessionId) {
+            return MutationResult(ActionReceipt(request.requestId, ReceiptStatus.REJECTED, reason = "DECISION_MISMATCH"), emptyList(), false)
+        }
+        val currentPayload = sleeveBloomHandler.normalizeOffTurnActivation(request)
+        val receiptKey = ReceiptKey(seat, request.requestId)
+        val stored = storedReceipts[receiptKey]
+        if (stored != null) {
+            if (stored.kind == SubmissionKind.SLEEVE_BLOOM_OFF_TURN &&
+                stored.sleeveBloomOffTurnPayload == currentPayload
+            ) {
+                return MutationResult(stored.receipt, emptyList(), false)
+            } else {
+                val rejected = ActionReceipt(request.requestId, ReceiptStatus.REJECTED, reason = "REQUEST_ID_CONFLICT")
+                return MutationResult(rejected, emptyList(), false)
+            }
+        }
+        if (storedShufflePlans.keys.any { it.seat == seat && it.requestId == request.requestId }) {
+            return MutationResult(
+                ActionReceipt(request.requestId, ReceiptStatus.REJECTED, reason = "REQUEST_ID_CONFLICT"),
+                emptyList(),
+                false
+            )
+        }
+        if (isReceiptQuotaExceeded(seat)) {
+            return MutationResult(
+                ActionReceipt(request.requestId, ReceiptStatus.REJECTED, reason = "RECEIPT_QUOTA_EXCEEDED"),
+                emptyList(),
+                false
+            )
+        }
+
+        val round = coordinator.activeRound
+        val controller = coordinator.controllerFor(seat)
+        val candidateState = round?.readState()
+        val cost = config.cheatEconomy.costs["SLEEVE_BLOOM"] ?: 10
+        val check = sleeveBloomHandler.validateOffTurnActivation(
+            SleeveBloomSubmissionHandler.OffTurnActivationInput(
+                seat = seat,
+                request = request,
+                featureEnabled = config.sleeveBloomConfig.enabled,
+                economyEnabled = config.cheatEconomy.enabled,
+                configuredCost = config.cheatEconomy.costs["SLEEVE_BLOOM"],
+                closed = isClosed,
+                sessionClosed = coordinator.session.lifecycle == SessionLifecycle.CLOSED,
+                paused = decisionClock.isPausedState,
+                preparationActive = isPreparationActive(),
+                roundId = round?.roundId,
+                roundEnded = candidateState?.phase == GamePhase.ROUND_END,
+                controller = controller,
+                controlEpoch = coordinator.epochFor(seat),
+                currentPlayer = candidateState?.currentPlayer,
+                phase = candidateState?.phase,
+                windowMatches = candidateState?.sleeveBloomWindowId(seat) == request.windowId,
+                immediateOfferActive = candidateState?.sleeveBloomOffer != null,
+                offTurnOfferActive = candidateState?.sleeveBloomOffTurnOffer(seat) != null,
+                reservationActive = candidateState?.sleeveBloomReservation(seat) != null,
+                beamSwapOfferActive = candidateState?.beamSwapOffer != null,
+                availableWallCount = candidateState?.availableWallTileCount() ?: 0,
+                cheatPoints = candidateState?.cheatPoints?.getOrNull(seat) ?: 0,
+                cost = cost
+            )
+        )
+        val rejection = check.rejectionReason
+        if (rejection != null) {
+            val rejected = ActionReceipt(request.requestId, ReceiptStatus.REJECTED, reason = rejection)
+            storedReceipts[receiptKey] = StoredSubmission(
+                SubmissionKind.SLEEVE_BLOOM_OFF_TURN,
+                rejected,
+                sleeveBloomOffTurnPayload = currentPayload
+            )
+            return MutationResult(rejected, emptyList(), false)
+        }
+
+        val coordResult = coordinator.submitSleeveBloomOffTurn(seat, request, now)
+        if (coordResult !is ActionResult.Accepted) {
+            val reasonStr = when (coordResult) {
+                is ActionResult.Rejected -> coordResult.reason.name
+                else -> "REJECTED"
+            }
+            val rejected = ActionReceipt(request.requestId, ReceiptStatus.REJECTED, reason = reasonStr)
+            storedReceipts[receiptKey] = StoredSubmission(
+                SubmissionKind.SLEEVE_BLOOM_OFF_TURN,
+                rejected,
+                sleeveBloomOffTurnPayload = currentPayload
+            )
+            return MutationResult(rejected, emptyList(), false)
+        }
+
+        val receipt = ActionReceipt(request.requestId, ReceiptStatus.APPLIED)
+        storedReceipts[receiptKey] = StoredSubmission(
+            SubmissionKind.SLEEVE_BLOOM_OFF_TURN,
+            receipt,
+            sleeveBloomOffTurnPayload = currentPayload
+        )
+        recordSettlementEvents(coordResult.events)
+        rekeyActiveTimingsPreservingDeadline()
+        return MutationResult(receipt, coordResult.events, true)
+    }
+
+    /**
+     * 提交他家回合预定二选一（FIRST / SECOND）。
+     */
+    @Synchronized
+    fun submitSleeveBloomOffTurnChoice(
+        seat: Int,
+        request: com.majiang.cheat.bloom.SleeveBloomOffTurnChoiceRequest,
+        now: Long
+    ): MutationResult {
+        if (seat !in 0..3) {
+            return MutationResult(ActionReceipt(request.requestId, ReceiptStatus.REJECTED, reason = "INVALID_SEAT"), emptyList(), false)
+        }
+        if (request.sessionId != coordinator.session.sessionId) {
+            return MutationResult(ActionReceipt(request.requestId, ReceiptStatus.REJECTED, reason = "DECISION_MISMATCH"), emptyList(), false)
+        }
+        val currentPayload = sleeveBloomHandler.normalizeOffTurnChoice(request)
+        val receiptKey = ReceiptKey(seat, request.requestId)
+        val stored = storedReceipts[receiptKey]
+        if (stored != null) {
+            if (stored.kind == SubmissionKind.SLEEVE_BLOOM_OFF_TURN_CHOICE &&
+                stored.sleeveBloomOffTurnChoicePayload == currentPayload
+            ) {
+                return MutationResult(stored.receipt, emptyList(), false)
+            } else {
+                val rejected = ActionReceipt(request.requestId, ReceiptStatus.REJECTED, reason = "REQUEST_ID_CONFLICT")
+                return MutationResult(rejected, emptyList(), false)
+            }
+        }
+        if (storedShufflePlans.keys.any { it.seat == seat && it.requestId == request.requestId }) {
+            return MutationResult(
+                ActionReceipt(request.requestId, ReceiptStatus.REJECTED, reason = "REQUEST_ID_CONFLICT"),
+                emptyList(),
+                false
+            )
+        }
+        if (isReceiptQuotaExceeded(seat)) {
+            return MutationResult(
+                ActionReceipt(request.requestId, ReceiptStatus.REJECTED, reason = "RECEIPT_QUOTA_EXCEEDED"),
+                emptyList(),
+                false
+            )
+        }
+
+        val round = coordinator.activeRound
+        val controller = coordinator.controllerFor(seat)
+        val candidateState = round?.readState()
+        val offer = candidateState?.sleeveBloomOffTurnOffer(seat)
+        val firstInWall = offer != null &&
+            candidateState.tilePool.getLocation(offer.firstTile) == com.majiang.model.TileLocation.WALL
+        val secondInWall = offer != null &&
+            candidateState.tilePool.getLocation(offer.secondTile) == com.majiang.model.TileLocation.WALL
+        val cost = config.cheatEconomy.costs["SLEEVE_BLOOM"] ?: 10
+        val check = sleeveBloomHandler.validateOffTurnChoice(
+            SleeveBloomSubmissionHandler.OffTurnChoiceInput(
+                seat = seat,
+                request = request,
+                featureEnabled = config.sleeveBloomConfig.enabled,
+                economyEnabled = config.cheatEconomy.enabled,
+                configuredCost = config.cheatEconomy.costs["SLEEVE_BLOOM"],
+                closed = isClosed,
+                sessionClosed = coordinator.session.lifecycle == SessionLifecycle.CLOSED,
+                paused = decisionClock.isPausedState,
+                preparationActive = isPreparationActive(),
+                roundId = round?.roundId,
+                roundEnded = candidateState?.phase == GamePhase.ROUND_END,
+                controller = controller,
+                controlEpoch = coordinator.epochFor(seat),
+                now = now,
+                offerSeat = offer?.seat,
+                offerId = offer?.offerId,
+                offerDeadlineMillis = offer?.deadlineMillis,
+                offerFirstInWall = firstInWall,
+                offerSecondInWall = secondInWall
+            )
+        )
+        when (val result = check) {
+            is CheatSubmissionCheck.Rejected -> {
+                val rejected = ActionReceipt(request.requestId, ReceiptStatus.REJECTED, reason = result.reason)
+                storedReceipts[receiptKey] = StoredSubmission(
+                    SubmissionKind.SLEEVE_BLOOM_OFF_TURN_CHOICE,
+                    rejected,
+                    sleeveBloomOffTurnChoicePayload = currentPayload
+                )
+                if (result.reason == "DEADLINE_EXPIRED") {
+                    // 迟到选择不生效；权威按 FIRST 结算已付款 offer，保留选择结果而非退款。
+                    coordinator.resolveExpiredSleeveBloomOffTurnOffers(now)
+                    rekeyActiveTimingsPreservingDeadline()
+                    return MutationResult(rejected, emptyList(), true)
+                }
+                return MutationResult(rejected, emptyList(), false)
+            }
+            is CheatSubmissionCheck.StaleOffer -> {
+                coordinator.cleanStaleSleeveBloomOffTurnOffer(seat)
+                rekeyActiveTimingsPreservingDeadline()
+                val rejected = ActionReceipt(request.requestId, ReceiptStatus.REJECTED, reason = result.reason)
+                storedReceipts[receiptKey] = StoredSubmission(
+                    SubmissionKind.SLEEVE_BLOOM_OFF_TURN_CHOICE,
+                    rejected,
+                    sleeveBloomOffTurnChoicePayload = currentPayload
+                )
+                return MutationResult(rejected, emptyList(), true)
+            }
+            CheatSubmissionCheck.Allowed -> Unit
+        }
+
+        val coordResult = coordinator.submitSleeveBloomOffTurnChoice(seat, request, now)
+        if (coordResult !is ActionResult.Accepted) {
+            val reasonStr = when (coordResult) {
+                is ActionResult.Rejected -> coordResult.reason.name
+                else -> "REJECTED"
+            }
+            val rejected = ActionReceipt(request.requestId, ReceiptStatus.REJECTED, reason = reasonStr)
+            storedReceipts[receiptKey] = StoredSubmission(
+                SubmissionKind.SLEEVE_BLOOM_OFF_TURN_CHOICE,
+                rejected,
+                sleeveBloomOffTurnChoicePayload = currentPayload
+            )
+            return MutationResult(rejected, emptyList(), false)
+        }
+
+        val receipt = ActionReceipt(request.requestId, ReceiptStatus.APPLIED)
+        storedReceipts[receiptKey] = StoredSubmission(
+            SubmissionKind.SLEEVE_BLOOM_OFF_TURN_CHOICE,
+            receipt,
+            sleeveBloomOffTurnChoicePayload = currentPayload
+        )
+        rekeyActiveTimingsPreservingDeadline()
         return MutationResult(receipt, coordResult.events, true)
     }
 
@@ -1459,9 +1722,32 @@ class TableAuthority @JvmOverloads constructor(
         }
     }
 
+    /**
+     * 他家回合 offer/预留只改变牌山私有状态，不得因 round.version 变化重置当下玩家的决策截止。
+     * 将仍活跃的计时键重键到当前决策身份，完整保留 opensAt/deadline/储备。
+     */
+    private fun rekeyActiveTimingsPreservingDeadline() {
+        val roundId = coordinator.activeRound?.roundId ?: return
+        for (seat in 0..3) {
+            val timing = decisionClock.timing(seat) ?: continue
+            if (timing.key.roundId != roundId) continue
+            val decision = coordinator.queryDecision(seat)
+            if (decision.roundId != roundId || decision.decisionId == timing.key.decisionId) continue
+            decisionClock.rekey(timing.key, DecisionKey(roundId, seat, decision.decisionId))
+        }
+    }
+
     @Synchronized
     fun checkTimeout(now: Long): AutoStepResult? {
         if (isClosed || coordinator.session.lifecycle == SessionLifecycle.CLOSED) return null
+        if (!decisionClock.isPausedState) {
+            // 他家回合预定的独立 10 秒选择截止先于任何即时决策超时结算。
+            val expiredOffers = coordinator.resolveExpiredSleeveBloomOffTurnOffers(now)
+            if (expiredOffers.isNotEmpty()) {
+                rekeyActiveTimingsPreservingDeadline()
+                return AutoStepResult.SleeveBloomOffTurnExpired(expiredOffers, emptyList())
+            }
+        }
         val expiredTimings = decisionClock.expired(now)
         if (expiredTimings.isNotEmpty()) {
             val timing = expiredTimings.first()
@@ -1567,8 +1853,7 @@ class TableAuthority @JvmOverloads constructor(
     }
 
     @Synchronized
-    fun checkRiichiAutoDiscard(now: Long, humanAutoRiichiSeats: Set<Int>): AutoStepResult? {
-        val round = coordinator.activeRound
+    fun checkRiichiAutoDiscard(now: Long, humanAutoRiichiSeats: Set<Int>): AutoStepResult? {        val round = coordinator.activeRound
         if (round != null && round.state.phase in setOf(GamePhase.CHEAT_WINDOW, GamePhase.DISCARD)) {
             val currPlayer = round.state.currentPlayer
             if (currPlayer in humanAutoRiichiSeats &&
@@ -1576,13 +1861,9 @@ class TableAuthority @JvmOverloads constructor(
                 round.state.players[currPlayer].drawnTile != null
             ) {
                 if (round.state.sleeveBloomOffer?.seat == currPlayer) {
-                    coordinator.resolveSleeveBloomKeepFirst(currPlayer)
-                    val oldTiming = decisionClock.timing(currPlayer)
-                    if (oldTiming != null) {
-                        val newDecision = coordinator.queryDecision(currPlayer)
-                        val newKey = DecisionKey(round.roundId, currPlayer, newDecision.decisionId)
-                        decisionClock.rekey(oldTiming.key, newKey)
-                    }
+                    // 立直玩家已付费进入二选一：不得自动保留 FIRST 并抢在其选择之前摸切。
+                    // 由该座 DecisionClock 截止后的 checkTimeout 先结算 FIRST 再执行默认动作。
+                    return null
                 }
                 if (round.state.beamSwapOffer?.seat == currPlayer) {
                     coordinator.resolveBeamSwapKeepOriginal(currPlayer)
@@ -1596,7 +1877,7 @@ class TableAuthority @JvmOverloads constructor(
                 val actions = coordinator.legalActions(currPlayer)
                 val hasTsumo = actions.any { it is GameAction.DeclareTsumo }
                 val hasKan = actions.any { it is GameAction.DeclareKan }
-                if (!hasTsumo && !hasKan) {
+                if (!hasTsumo && !hasKan && !hasSleeveBloomActivation(round.state, currPlayer)) {
                     val drawnTile = round.state.players[currPlayer].drawnTile!!
                     val discardAction = GameAction.DiscardTile(currPlayer, drawnTile)
                     val timing = decisionClock.timing(currPlayer)
@@ -1612,6 +1893,41 @@ class TableAuthority @JvmOverloads constructor(
             }
         }
         return null
+    }
+
+    /**
+     * 立直自动摸切前的技能让位判定：存在可付费即时施术的候选时，权威时钟未到不得抢先摸切。
+     */
+    private fun hasSleeveBloomActivation(state: GameState, seat: Int): Boolean {
+        if (!config.sleeveBloomConfig.enabled || !config.cheatEconomy.enabled) return false
+        val cost = config.cheatEconomy.costs["SLEEVE_BLOOM"] ?: return false
+        if (cost != 10) return false
+        if (state.cheatPoints[seat] < cost) return false
+        if (state.currentPlayer != seat || state.phase != GamePhase.CHEAT_WINDOW) return false
+        if (state.lastDrawKind == SleeveBloomDrawKind.DEAL_EXTRA) return false
+        if (state.sleeveBloomOffer != null ||
+            state.sleeveBloomOffTurnOffer(seat) != null ||
+            state.beamSwapOffer != null
+        ) {
+            return false
+        }
+        if (state.sleeveBloomUsedOnTurn == state.turnNumber || state.beamSwapUsedOnTurn == state.turnNumber) {
+            return false
+        }
+        val hand = state.players[seat]
+        val drawn = hand.drawnTile ?: return false
+        if (state.tilePool.getLocation(drawn) != com.majiang.model.TileLocation.hand(seat)) return false
+        return when (state.lastDrawKind) {
+            SleeveBloomDrawKind.NORMAL -> state.nextAvailableWallTile()
+                ?.let { state.tilePool.getLocation(it) == com.majiang.model.TileLocation.WALL } == true
+            SleeveBloomDrawKind.RINSHAN ->
+                state.rinshanPointer in 1..3 &&
+                    state.totalKanCount < 4 &&
+                    state.deadWall.getOrNull(state.rinshanPointer - 1) == drawn &&
+                    state.deadWall.getOrNull(state.rinshanPointer)
+                        ?.let { state.tilePool.getLocation(it) == com.majiang.model.TileLocation.DEAD_WALL } == true
+            SleeveBloomDrawKind.DEAL_EXTRA -> false
+        }
     }
 
     @Synchronized
@@ -1652,7 +1968,11 @@ class TableAuthority @JvmOverloads constructor(
                     decisionClock.open(key, now)
                 }
 
-                if (s in automatedSeats && round?.state?.sleeveBloomOffer?.seat != s && round?.state?.beamSwapOffer?.seat != s) {
+                if (s in automatedSeats &&
+                    round?.state?.sleeveBloomOffer?.seat != s &&
+                    round?.state?.sleeveBloomOffTurnOffer(s) == null &&
+                    round?.state?.beamSwapOffer?.seat != s
+                ) {
                     val epoch = decision.controlEpoch
                     val view = coordinator.queryView(s).deepCopy()
                     val legals = decision.options.map { it.action.deepCopy() }
@@ -1709,9 +2029,13 @@ class TableAuthority @JvmOverloads constructor(
         decisionClock.resume(now)
         if (wasPaused) {
             val pausedAt = pausedAuthorityTimeMillis
+            val pauseDuration = if (pausedAt != null) maxOf(0L, now - pausedAt) else 0L
             if (pausedAt != null && isPreparationActive()) {
-                val pauseDuration = maxOf(0L, now - pausedAt)
                 shufflePreparationHandler.shiftForPause(pauseDuration)
+            }
+            if (pauseDuration > 0L) {
+                coordinator.shiftSleeveBloomOffTurnDeadlines(pauseDuration)
+                rekeyActiveTimingsPreservingDeadline()
             }
             pausedAuthorityTimeMillis = null
             return true

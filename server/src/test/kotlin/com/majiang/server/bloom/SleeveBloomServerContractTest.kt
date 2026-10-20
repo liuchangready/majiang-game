@@ -65,8 +65,82 @@ class SleeveBloomServerContractTest {
         }
     }
 
-    @Test fun `binding validity and deadline are evaluated at queued execution`() {
+    @Test fun `off-turn host wiring keeps private offer reservation and reconnection snapshot`() {
         val clock = Clock()
+        val state = TestTableBuilder.create(
+            discards = mapOf(0 to listOf(Tile(Suit.MAN, 1, 0))),
+            phase = GamePhase.DRAW,
+            currentPlayer = 1
+        ).also {
+            it.cheatPoints.fill(20)
+            it.openSleeveBloomWindow(0)
+        }
+        ServerTableHost(config(), clock = clock, controllers = List(4) { SeatController.RemoteHuman(false) }, initialState = state).use { host ->
+            val before = host.snapshot(0).await()
+            assertTrue(before.sleeveBloom!!.canApplyOffTurn)
+            assertEquals(state.sleeveBloomWindowId(0), before.sleeveBloom!!.offTurnWindowId)
+            val request = SleeveBloomOffTurnRequest(
+                "off-turn", before.sessionId, before.roundId!!,
+                before.sleeveBloom!!.offTurnWindowId!!, before.sleeveBloom!!.controlEpoch
+            )
+            val applied = host.submitSleeveBloomOffTurn(0, request).await()
+            assertEquals(ReceiptStatus.APPLIED, applied.status, applied.reason)
+            val offered = host.snapshot(0).await()
+            val offer = offered.sleeveBloom!!.pendingOffer!!
+            assertEquals(ProtocolSleeveBloomOfferMode.OFF_TURN, EngineProtocolMapper.toProtocolSnapshot(offered).sleeveBloom!!.pendingOffer!!.mode)
+            for (seat in 1..3) assertNull(host.snapshot(seat).await().sleeveBloom!!.pendingOffer)
+            val wire = EngineProtocolMapper.toProtocolSnapshot(offered)
+            val decoded = ApiMessageCodec.decodeResponse(ApiMessageCodec.encodeResponse(ApiResponse(snapshot = wire))).snapshot!!
+            assertEquals(wire.sleeveBloom, decoded.sleeveBloom)
+
+            val choice = SleeveBloomOffTurnChoiceRequest(
+                "off-choice", offered.sessionId, offered.roundId!!,
+                offered.sleeveBloom!!.controlEpoch, offer.offerId, SleeveBloomKeep.SECOND
+            )
+            assertEquals(ReceiptStatus.APPLIED, host.submitSleeveBloomOffTurnChoice(0, choice).await().status)
+            val reserved = host.snapshot(0).await()
+            assertNull(reserved.sleeveBloom!!.pendingOffer)
+            assertEquals(offer.secondTile, reserved.sleeveBloom!!.reservation!!.tile)
+            assertEquals(10, reserved.cheatPoints[0])
+            assertEquals(applied, host.submitSleeveBloomOffTurn(0, request).await())
+            assertEquals("REQUEST_ID_CONFLICT",
+                host.submitSleeveBloomOffTurnChoice(0, choice.copy(keep = SleeveBloomKeep.FIRST)).await().reason)
+            // Reconnect/resume always receives the complete private reservation, not a delta guess.
+            val resumed = host.snapshot(0).await()
+            assertEquals(reserved.sleeveBloom!!.reservation!!.tile, resumed.sleeveBloom!!.reservation!!.tile)
+            assertEquals(reserved.sleeveBloom!!.reservation!!.offerId, resumed.sleeveBloom!!.reservation!!.offerId)
+            assertTrue(resumed.cursor >= reserved.cursor)
+        }
+    }
+
+    @Test fun `off-turn authority deadline settles first through host tick without refund`() {
+        val clock = Clock()
+        val state = TestTableBuilder.create(
+            discards = mapOf(0 to listOf(Tile(Suit.MAN, 1, 0))),
+            phase = GamePhase.DRAW,
+            currentPlayer = 1
+        ).also {
+            it.cheatPoints.fill(20)
+            it.openSleeveBloomWindow(0)
+        }
+        ServerTableHost(config(), clock = clock, controllers = List(4) { SeatController.RemoteHuman(false) }, initialState = state).use { host ->
+            val before = host.snapshot(0).await()
+            val request = SleeveBloomOffTurnRequest(
+                "off-timeout", before.sessionId, before.roundId!!,
+                before.sleeveBloom!!.offTurnWindowId!!, before.sleeveBloom!!.controlEpoch
+            )
+            assertEquals(ReceiptStatus.APPLIED, host.submitSleeveBloomOffTurn(0, request).await().status)
+            val offer = host.snapshot(0).await().sleeveBloom!!.pendingOffer!!
+            clock.now = offer.deadlineMillis
+            assertTrue(host.tick().await())
+            val after = host.snapshot(0).await()
+            assertNull(after.sleeveBloom!!.pendingOffer)
+            assertEquals(offer.firstTile, after.sleeveBloom!!.reservation!!.tile)
+            assertEquals(10, after.cheatPoints[0])
+        }
+    }
+
+    @Test fun `binding validity and deadline are evaluated at queued execution`() {        val clock = Clock()
         val executor = Executors.newSingleThreadExecutor()
         val release = CountDownLatch(1)
         val host = ServerTableHost(config(), clock = clock, controllers = List(4) { SeatController.RemoteHuman(false) },

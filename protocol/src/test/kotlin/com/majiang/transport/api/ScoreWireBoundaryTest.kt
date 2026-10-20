@@ -224,7 +224,7 @@ class ScoreWireBoundaryTest {
 
         val ex = assertThrows(com.majiang.transport.tcp.TcpProtocolException::class.java) {
             TcpMessageCodec.decodeHello(
-                """{"wireVersion":1,"businessVersion":2,"futureScoreDetailVersion":1}"""
+                """{"wireVersion":1,"businessVersion":3,"futureScoreDetailVersion":1}"""
             )
         }
         val text = (ex.message.orEmpty() + " " + (ex.cause?.message.orEmpty()))
@@ -232,13 +232,13 @@ class ScoreWireBoundaryTest {
     }
 
     @Test
-    fun `v5 business version satisfies the structured-score gate while MJ-TCP 1 framing is unchanged`() {
-        assertEquals(5, ApiProtocol.PROTOCOL_VERSION)
+    fun `v6 business version satisfies the structured-score gate while MJ-TCP 1 framing is unchanged`() {
+        assertEquals(6, ApiProtocol.PROTOCOL_VERSION)
         assertTrue(
             ApiProtocol.PROTOCOL_VERSION >= ProtocolScoreCodes.STRUCTURED_SCORE_MIN_PROTOCOL_VERSION,
             "structured score fields require protocol version >= 5"
         )
-        assertEquals(2, TcpWire.BUSINESS_VERSION)
+        assertEquals(3, TcpWire.BUSINESS_VERSION)
         assertEquals(1, TcpWire.WIRE_VERSION)
         assertEquals(12, TcpWire.HEADER_SIZE)
         assertEquals("MJTC", TcpWire.MAGIC_ASCII)

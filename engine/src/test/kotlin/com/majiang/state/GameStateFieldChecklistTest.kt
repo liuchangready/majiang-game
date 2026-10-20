@@ -87,7 +87,8 @@ class GameStateFieldChecklistTest {
         )
 
         val SLEEVE_BLOOM_RESET_FIELDS: Set<String> = setOf(
-            "offer", "usedOnTurn", "lastDrawKind"
+            "offer", "usedOnTurn", "lastDrawKind",
+            "offTurnOffers", "reservations", "windowIds", "windowSeq"
         )
 
         val BEAM_SWAP_RESET_FIELDS: Set<String> = setOf(

@@ -1,6 +1,6 @@
 # 袖里藏花千术设计
 
-**新增设计（尚未实现）**：立直后施术、本人弃牌后在他家回合预览并预定下次普通摸牌、合法暗杠后再次付费施术，见[立直与他家回合扩展设计](EXTENSION-RIICHI-OFFTURN-DESIGN.md)。下文保留已实现版本的规则与验收背景；与扩展目标冲突的立直锁定、使用窗口和单一 offer 描述，不代表新设计已上线。
+**扩展已实现（2026-10-20）**：立直后施术、本人弃牌后在他家回合预览并预定下次普通摸牌、合法暗杠后再次付费施术，见[立直与他家回合扩展设计](EXTENSION-RIICHI-OFFTURN-DESIGN.md)与[扩展验收](ACCEPTANCE-RIICHI-OFFTURN.md)。下文保留即时普通/岭上路径的已实现规则与验收背景；与扩展目标冲突的立直锁定、使用窗口和单一 offer 描述已由扩展设计取代。
 
 日期：2026-10-13。本文按最新规则修订：杠后第二候选仅限下一张岭上牌，第四次杠的补牌窗口禁止施术；并包含 SB-KAN-DORA 雀魂式杠宝牌翻开时机契约。当前独立验证见[SB-KAN-DORA 验收](ACCEPTANCE-KAN-DORA.md)，开发交付见[交付文档](DELIVERY-ANTI-KAN-DORA.md)及[执行状态](STATUS.md)；[岭上规则修订验收](ACCEPTANCE-RINSHAN.md)与[初版验收](ACCEPTANCE.md)保留为历史验收记录。图形展示见[图形设计](VISUAL-DESIGN.md)。Android真机触控未验证。
 

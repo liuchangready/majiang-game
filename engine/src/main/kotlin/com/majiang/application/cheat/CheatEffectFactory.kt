@@ -37,14 +37,31 @@ internal object CheatEffectFactory {
         drawKind: SleeveBloomDrawKind,
         firstTile: Tile,
         secondTile: Tile,
-        turnNumber: Int
+        turnNumber: Int,
+        mode: com.majiang.cheat.bloom.SleeveBloomOfferMode =
+            com.majiang.cheat.bloom.SleeveBloomOfferMode.IMMEDIATE,
+        windowId: String? = null,
+        deadlineMillis: Long = 0L,
+        createdAtMillis: Long = 0L,
+        firstCanTsumo: Boolean = false,
+        secondCanTsumo: Boolean = false,
+        firstCanKan: Boolean = false,
+        secondCanKan: Boolean = false
     ): SleeveBloomOffer = SleeveBloomOffer(
         offerId = "bloom-$seat-$requestId",
         seat = seat,
         drawKind = drawKind,
         firstTile = firstTile,
         secondTile = secondTile,
-        createdTurnNumber = turnNumber
+        createdTurnNumber = turnNumber,
+        mode = mode,
+        windowId = windowId,
+        deadlineMillis = deadlineMillis,
+        createdAtMillis = createdAtMillis,
+        firstCanTsumo = firstCanTsumo,
+        secondCanTsumo = secondCanTsumo,
+        firstCanKan = firstCanKan,
+        secondCanKan = secondCanKan
     )
 
     fun beamSwapOffer(

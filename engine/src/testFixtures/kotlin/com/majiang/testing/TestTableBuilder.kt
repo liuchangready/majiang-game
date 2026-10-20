@@ -77,7 +77,9 @@ object TestTableBuilder {
 
     /** Independent of TilePool and StateInvariants: catches a shared production audit mistake. */
     fun actualTiles(s: GameState): List<Tile> = buildList {
-        addAll(s.wall.subList(s.wallPointer, s.wallEndExclusive))
+        // 活牌山可能包含 wallPointer 之后被跳过、解锁后重新可摸的“洞”。
+        // 以 TilePool 的 WALL 归属为准，避免把已摸走的旧槽位重复计入。
+        addAll(s.wall.filter { s.tilePool.getLocation(it) == TileLocation.WALL })
         addAll(s.deadWall.drop(s.rinshanPointer))
         addAll(s.deadWallReplacements)
         addAll(s.sleeveTiles.flatten())

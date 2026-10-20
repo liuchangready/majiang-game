@@ -80,9 +80,13 @@ import com.majiang.transport.api.ProtocolTileMarkView
 import com.majiang.transport.api.ProtocolSleeveBloomConfig
 import com.majiang.transport.api.ProtocolSleeveBloomDrawKind
 import com.majiang.transport.api.ProtocolSleeveBloomKeep
+import com.majiang.transport.api.ProtocolSleeveBloomOfferMode
 import com.majiang.transport.api.ProtocolSleeveBloomOfferView
 import com.majiang.transport.api.ProtocolSleeveBloomRequest
 import com.majiang.transport.api.ProtocolSleeveBloomChoiceRequest
+import com.majiang.transport.api.ProtocolSleeveBloomOffTurnRequest
+import com.majiang.transport.api.ProtocolSleeveBloomOffTurnChoiceRequest
+import com.majiang.transport.api.ProtocolSleeveBloomReservationView
 import com.majiang.transport.api.ProtocolSleeveBloomView
 import com.majiang.transport.api.validatePublicGameEvent
 import java.util.Collections
@@ -1323,11 +1327,13 @@ object ProtocolViewMapper {
     // === 袖里藏花 (SleeveBloom) 模型映射 ===
 
     fun mapSleeveBloomConfig(config: ProtocolSleeveBloomConfig): SleeveBloomConfig = SleeveBloomConfig(
-        enabled = config.enabled
+        enabled = config.enabled,
+        offTurnChoiceMillis = config.offTurnChoiceMillis
     )
 
     fun toProtocolSleeveBloomConfig(config: SleeveBloomConfig): ProtocolSleeveBloomConfig = ProtocolSleeveBloomConfig(
-        enabled = config.enabled
+        enabled = config.enabled,
+        offTurnChoiceMillis = config.offTurnChoiceMillis
     )
 
     fun mapSleeveBloomDrawKind(kind: ProtocolSleeveBloomDrawKind): SleeveBloomDrawKind = when (kind) {
@@ -1351,6 +1357,36 @@ object ProtocolViewMapper {
         SleeveBloomKeep.FIRST -> ProtocolSleeveBloomKeep.FIRST
         SleeveBloomKeep.SECOND -> ProtocolSleeveBloomKeep.SECOND
     }
+
+    fun mapSleeveBloomOfferMode(mode: ProtocolSleeveBloomOfferMode): SleeveBloomOfferMode = when (mode) {
+        ProtocolSleeveBloomOfferMode.IMMEDIATE -> SleeveBloomOfferMode.IMMEDIATE
+        ProtocolSleeveBloomOfferMode.OFF_TURN -> SleeveBloomOfferMode.OFF_TURN
+    }
+
+    fun toProtocolSleeveBloomOfferMode(mode: SleeveBloomOfferMode): ProtocolSleeveBloomOfferMode = when (mode) {
+        SleeveBloomOfferMode.IMMEDIATE -> ProtocolSleeveBloomOfferMode.IMMEDIATE
+        SleeveBloomOfferMode.OFF_TURN -> ProtocolSleeveBloomOfferMode.OFF_TURN
+    }
+
+    fun toProtocolSleeveBloomOffTurnRequest(request: SleeveBloomOffTurnRequest): ProtocolSleeveBloomOffTurnRequest =
+        ProtocolSleeveBloomOffTurnRequest(
+            requestId = request.requestId,
+            sessionId = request.sessionId,
+            roundId = request.roundId,
+            windowId = request.windowId,
+            controlEpoch = request.controlEpoch
+        )
+
+    fun toProtocolSleeveBloomOffTurnChoiceRequest(
+        request: SleeveBloomOffTurnChoiceRequest
+    ): ProtocolSleeveBloomOffTurnChoiceRequest = ProtocolSleeveBloomOffTurnChoiceRequest(
+        requestId = request.requestId,
+        sessionId = request.sessionId,
+        roundId = request.roundId,
+        controlEpoch = request.controlEpoch,
+        offerId = request.offerId,
+        keep = toProtocolSleeveBloomKeep(request.keep)
+    )
 
     fun toProtocolSleeveBloomRequest(request: SleeveBloomRequest): ProtocolSleeveBloomRequest = ProtocolSleeveBloomRequest(
         requestId = request.requestId,
@@ -1377,7 +1413,13 @@ object ProtocolViewMapper {
         drawKind = mapSleeveBloomDrawKind(view.drawKind),
         deadlineMillis = view.deadlineMillis,
         decisionId = view.decisionId,
-        controlEpoch = view.controlEpoch
+        controlEpoch = view.controlEpoch,
+        mode = mapSleeveBloomOfferMode(view.mode),
+        windowId = view.windowId,
+        firstCanTsumo = view.firstCanTsumo,
+        secondCanTsumo = view.secondCanTsumo,
+        firstCanKan = view.firstCanKan,
+        secondCanKan = view.secondCanKan
     )
 
     fun toProtocolSleeveBloomOfferView(view: SleeveBloomOfferView): ProtocolSleeveBloomOfferView = ProtocolSleeveBloomOfferView(
@@ -1387,7 +1429,29 @@ object ProtocolViewMapper {
         drawKind = toProtocolSleeveBloomDrawKind(view.drawKind),
         deadlineMillis = view.deadlineMillis,
         decisionId = view.decisionId,
-        controlEpoch = view.controlEpoch
+        controlEpoch = view.controlEpoch,
+        mode = toProtocolSleeveBloomOfferMode(view.mode),
+        windowId = view.windowId,
+        firstCanTsumo = view.firstCanTsumo,
+        secondCanTsumo = view.secondCanTsumo,
+        firstCanKan = view.firstCanKan,
+        secondCanKan = view.secondCanKan
+    )
+
+    fun mapSleeveBloomReservationView(
+        view: ProtocolSleeveBloomReservationView
+    ): SleeveBloomReservationView = SleeveBloomReservationView(
+        tile = mapTile(view.tile),
+        offerId = view.offerId,
+        windowId = view.windowId
+    )
+
+    fun toProtocolSleeveBloomReservationView(
+        view: SleeveBloomReservationView
+    ): ProtocolSleeveBloomReservationView = ProtocolSleeveBloomReservationView(
+        tile = toProtocolTile(view.tile),
+        offerId = view.offerId,
+        windowId = view.windowId
     )
 
     fun mapSleeveBloom(view: ProtocolSleeveBloomView): SleeveBloomView = SleeveBloomView(
@@ -1398,7 +1462,11 @@ object ProtocolViewMapper {
         decisionId = view.decisionId,
         controlEpoch = view.controlEpoch,
         stateVersion = view.stateVersion,
-        pendingOffer = view.pendingOffer?.let { mapSleeveBloomOfferView(it) }
+        pendingOffer = view.pendingOffer?.let { mapSleeveBloomOfferView(it) },
+        canApplyOffTurn = view.canApplyOffTurn,
+        offTurnDisabledReason = view.offTurnDisabledReason,
+        offTurnWindowId = view.offTurnWindowId,
+        reservation = view.reservation?.let { mapSleeveBloomReservationView(it) }
     )
 
     fun toProtocolSleeveBloom(view: SleeveBloomView): ProtocolSleeveBloomView = ProtocolSleeveBloomView(
@@ -1409,7 +1477,11 @@ object ProtocolViewMapper {
         decisionId = view.decisionId,
         controlEpoch = view.controlEpoch,
         stateVersion = view.stateVersion,
-        pendingOffer = view.pendingOffer?.let { toProtocolSleeveBloomOfferView(it) }
+        pendingOffer = view.pendingOffer?.let { toProtocolSleeveBloomOfferView(it) },
+        canApplyOffTurn = view.canApplyOffTurn,
+        offTurnDisabledReason = view.offTurnDisabledReason,
+        offTurnWindowId = view.offTurnWindowId,
+        reservation = view.reservation?.let { toProtocolSleeveBloomReservationView(it) }
     )
 
     fun mapBeamSwapConfig(config: ProtocolBeamSwapConfig): BeamSwapConfig = BeamSwapConfig(

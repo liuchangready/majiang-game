@@ -11,6 +11,8 @@ import com.majiang.event.GameEvent
 import com.majiang.cheat.mark.TileMarkRequest
 import com.majiang.cheat.bloom.SleeveBloomRequest
 import com.majiang.cheat.bloom.SleeveBloomChoiceRequest
+import com.majiang.cheat.bloom.SleeveBloomOffTurnChoiceRequest
+import com.majiang.cheat.bloom.SleeveBloomOffTurnRequest
 import com.majiang.cheat.beam.BeamSwapRequest
 import com.majiang.cheat.beam.BeamSwapChoiceRequest
 import com.majiang.match.SessionLifecycle
@@ -1307,6 +1309,20 @@ class SharedRoom @JvmOverloads constructor(
         sessionValidator: (() -> Boolean)? = null
     ): CompletableFuture<ActionReceipt> =
         tableHost.submitSleeveBloomChoice(seat, request, sessionValidator)
+
+    fun submitSleeveBloomOffTurn(
+        seat: Int,
+        request: SleeveBloomOffTurnRequest,
+        sessionValidator: (() -> Boolean)? = null
+    ): CompletableFuture<ActionReceipt> =
+        tableHost.submitSleeveBloomOffTurn(seat, request, sessionValidator)
+
+    fun submitSleeveBloomOffTurnChoice(
+        seat: Int,
+        request: SleeveBloomOffTurnChoiceRequest,
+        sessionValidator: (() -> Boolean)? = null
+    ): CompletableFuture<ActionReceipt> =
+        tableHost.submitSleeveBloomOffTurnChoice(seat, request, sessionValidator)
 
     fun submitBeamSwap(
         seat: Int,

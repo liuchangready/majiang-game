@@ -23,8 +23,8 @@ class TcpWireTest {
 
         // MJ-TCP/1 帧格式不变；业务契约 v5 升版到 2。
         assertEquals(1, TcpWire.WIRE_VERSION)
-        assertEquals(2, TcpWire.BUSINESS_VERSION)
-        assertEquals(5, ApiProtocol.PROTOCOL_VERSION)
+        assertEquals(3, TcpWire.BUSINESS_VERSION)
+        assertEquals(6, ApiProtocol.PROTOCOL_VERSION)
 
         assertEquals(1, TcpWire.FRAME_TYPE_HELLO)
         assertEquals(2, TcpWire.FRAME_TYPE_WELCOME)

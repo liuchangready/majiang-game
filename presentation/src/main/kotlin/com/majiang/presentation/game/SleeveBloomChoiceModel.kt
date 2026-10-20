@@ -3,6 +3,9 @@ package com.majiang.presentation.game
 import com.majiang.client.api.GameSnapshotView
 import com.majiang.client.api.SleeveBloomChoiceRequest
 import com.majiang.client.api.SleeveBloomKeep
+import com.majiang.client.api.SleeveBloomOfferMode
+import com.majiang.client.api.SleeveBloomOffTurnChoiceRequest
+import com.majiang.client.api.SleeveBloomOffTurnRequest
 import com.majiang.client.api.SleeveBloomRequest
 
 /**
@@ -64,6 +67,36 @@ class SleeveBloomChoiceModel(
             if (points < bloom.cost) return false
             return bloom.canApply && bloom.pendingOffer == null
         }
+
+    /** 是否满足他家回合预定入口条件 */
+    val canActivateOffTurn: Boolean
+        get() {
+            val snap = currentSnapshot ?: return false
+            val bloom = snap.sleeveBloom ?: return false
+            if (isChoosing || isPending || !isConnected || snap.paused) return false
+            val viewerSeat = snap.viewerSeat
+            val role = snap.controls.find { it.seat == viewerSeat }?.role
+            if (role != null && role != "HUMAN") return false
+            val points = snap.cheatPoints.getOrNull(viewerSeat) ?: 0
+            if (points < bloom.cost) return false
+            return bloom.canApplyOffTurn && !bloom.offTurnWindowId.isNullOrBlank() && bloom.pendingOffer == null
+        }
+
+    /** 是否已选中预留牌、等待本人下次普通摸牌 */
+    val isReserved: Boolean
+        get() = currentSnapshot?.sleeveBloom?.reservation != null && !isChoosing
+
+    /** 当前预留牌视图（无则 null） */
+    val reservedTile
+        get() = currentSnapshot?.sleeveBloom?.reservation?.tile
+
+    /** 当前二选一是否为立直玩家刚摸牌后的即时窗口 */
+    val isImmediateChoice: Boolean
+        get() = currentSnapshot?.sleeveBloom?.pendingOffer?.mode == SleeveBloomOfferMode.IMMEDIATE
+
+    /** 当前二选一是否为他家回合预定 */
+    val isOffTurnChoice: Boolean
+        get() = currentSnapshot?.sleeveBloom?.pendingOffer?.mode == SleeveBloomOfferMode.OFF_TURN
 
     /** 是否满足提交确认条件（保留所选牌卡） */
     val canConfirm: Boolean
@@ -130,6 +163,7 @@ class SleeveBloomChoiceModel(
         val isSameSnapshotIdentity = identityGuard.isSameSnapshot(snapshot, extraToken = offer?.offerId)
 
         val viewerClock = snapshot.clocks.find { it.seat == viewerSeat }
+            ?: snapshot.clocks.maxByOrNull { it.serverNow }
         if (viewerClock != null && offer != null && !snapshot.paused) {
             countdownTracker.updateSample(
                 serverNow = viewerClock.serverNow,
@@ -179,10 +213,55 @@ class SleeveBloomChoiceModel(
     }
 
     /**
+     * 构造他家回合预定激活请求（只读，若不可预定则返回 null）。
+     */
+    fun buildOffTurnActivateRequest(requestId: String): SleeveBloomOffTurnRequest? {
+        if (!canActivateOffTurn) return null
+        val snap = currentSnapshot ?: return null
+        val bloom = snap.sleeveBloom ?: return null
+        val roundId = snap.roundId ?: return null
+        val windowId = bloom.offTurnWindowId ?: return null
+
+        return SleeveBloomOffTurnRequest(
+            requestId = requestId,
+            sessionId = snap.sessionId,
+            roundId = roundId,
+            windowId = windowId,
+            controlEpoch = bloom.controlEpoch
+        )
+    }
+
+    /**
+     * 构造他家回合预定二选一请求（只读，若不可提交则返回 null）。
+     */
+    fun buildOffTurnChoiceRequest(requestId: String, keep: SleeveBloomKeep): SleeveBloomOffTurnChoiceRequest? {
+        if (!isChoosing || !isOffTurnChoice) return null
+        if (isPending || !isConnected) return null
+        val snap = currentSnapshot ?: return null
+        if (snap.paused) return null
+        val role = snap.controls.find { it.seat == snap.viewerSeat }?.role
+        if (role != null && role != "HUMAN") return null
+        if (remainingMillis <= 0L) return null
+        val bloom = snap.sleeveBloom ?: return null
+        val offer = bloom.pendingOffer ?: return null
+        if (keep == SleeveBloomKeep.SECOND && selected != SleeveBloomKeep.SECOND) return null
+        val roundId = snap.roundId ?: return null
+
+        return SleeveBloomOffTurnChoiceRequest(
+            requestId = requestId,
+            sessionId = snap.sessionId,
+            roundId = roundId,
+            controlEpoch = bloom.controlEpoch,
+            offerId = offer.offerId,
+            keep = keep
+        )
+    }
+
+    /**
      * 构造二选一请求（只读，若不可提交则返回 null）。
      */
     fun buildChoiceRequest(requestId: String, keep: SleeveBloomKeep): SleeveBloomChoiceRequest? {
-        if (!isChoosing) return null
+        if (!isChoosing || !isImmediateChoice) return null
         if (isPending || !isConnected) return null
         val snap = currentSnapshot ?: return null
         if (snap.paused) return null
