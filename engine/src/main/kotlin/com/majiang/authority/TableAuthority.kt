@@ -1746,13 +1746,15 @@ class TableAuthority @JvmOverloads constructor(
                 round.updatePreparationRecord(step.record)
                 val tiles = step.tiles
                 if (tiles != null && tiles.size == 136) {
+                    // 费用严格来自原始方案（被看破者仍支付原 40/20），看破席位集合来自截止时冻结的 K。
                     val costs = step.plans.associate { it.seat to it.selection.cost() }
                     val reasons = step.plans.associate { it.seat to "shuffle_plan" }
                     val dealResult = coordinator.executeDealWithPreparation(
                         roundId = step.roundId,
                         wallTiles = tiles,
                         cheatCosts = costs,
-                        costReasons = reasons
+                        costReasons = reasons,
+                        seeThroughSeats = step.record.seeThroughSeats
                     )
                     if (dealResult is ActionResult.Accepted) {
                         shufflePreparationHandler.completeDeal()

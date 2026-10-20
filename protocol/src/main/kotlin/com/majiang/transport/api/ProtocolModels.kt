@@ -378,8 +378,8 @@ data class ProtocolActionReceipt(
  * 传输层独立协议访问能力声明 DTO (ProtocolAccessCapabilities)
  */
 class ProtocolAccessCapabilities(
-    // Must track ApiProtocol.PROTOCOL_VERSION (v6 adds off-turn sleeve bloom semantics).
-    val protocolVersion: Int = 6,
+    // Must track ApiProtocol.PROTOCOL_VERSION (v7 adds see-through in shuffle preparation).
+    val protocolVersion: Int = 7,
     supportedPlayerCounts: Set<Int> = setOf(4),
     val remoteTransport: Boolean = false,
     val persistence: Boolean = false,
@@ -387,7 +387,8 @@ class ProtocolAccessCapabilities(
     val tileMarkSupported: Boolean = false,
     val sleeveBloomSupported: Boolean = false,
     val beamSwapSupported: Boolean = false,
-    val scoreDetailVersion: Int = 0
+    val scoreDetailVersion: Int = 0,
+    val seeThroughSupported: Boolean = false
 ) {
     val supportedPlayerCounts: Set<Int> = Collections.unmodifiableSet(LinkedHashSet(supportedPlayerCounts))
 
@@ -408,6 +409,7 @@ class ProtocolAccessCapabilities(
     operator fun component7(): Boolean = sleeveBloomSupported
     operator fun component8(): Boolean = beamSwapSupported
     operator fun component9(): Int = scoreDetailVersion
+    operator fun component10(): Boolean = seeThroughSupported
 
     fun copy(
         protocolVersion: Int = this.protocolVersion,
@@ -418,10 +420,11 @@ class ProtocolAccessCapabilities(
         tileMarkSupported: Boolean = this.tileMarkSupported,
         sleeveBloomSupported: Boolean = this.sleeveBloomSupported,
         beamSwapSupported: Boolean = this.beamSwapSupported,
-        scoreDetailVersion: Int = this.scoreDetailVersion
+        scoreDetailVersion: Int = this.scoreDetailVersion,
+        seeThroughSupported: Boolean = this.seeThroughSupported
     ): ProtocolAccessCapabilities = ProtocolAccessCapabilities(
         protocolVersion, supportedPlayerCounts, remoteTransport, persistence, resumption,
-        tileMarkSupported, sleeveBloomSupported, beamSwapSupported, scoreDetailVersion
+        tileMarkSupported, sleeveBloomSupported, beamSwapSupported, scoreDetailVersion, seeThroughSupported
     )
 
     override fun equals(other: Any?): Boolean {
@@ -435,7 +438,8 @@ class ProtocolAccessCapabilities(
             tileMarkSupported == other.tileMarkSupported &&
             sleeveBloomSupported == other.sleeveBloomSupported &&
             beamSwapSupported == other.beamSwapSupported &&
-            scoreDetailVersion == other.scoreDetailVersion
+            scoreDetailVersion == other.scoreDetailVersion &&
+            seeThroughSupported == other.seeThroughSupported
     }
 
     override fun hashCode(): Int {
@@ -448,11 +452,12 @@ class ProtocolAccessCapabilities(
         result = 31 * result + sleeveBloomSupported.hashCode()
         result = 31 * result + beamSwapSupported.hashCode()
         result = 31 * result + scoreDetailVersion.hashCode()
+        result = 31 * result + seeThroughSupported.hashCode()
         return result
     }
 
     override fun toString(): String =
-        "ProtocolAccessCapabilities(protocolVersion=$protocolVersion, supportedPlayerCounts=$supportedPlayerCounts, remoteTransport=$remoteTransport, persistence=$persistence, resumption=$resumption, tileMarkSupported=$tileMarkSupported, sleeveBloomSupported=$sleeveBloomSupported, beamSwapSupported=$beamSwapSupported, scoreDetailVersion=$scoreDetailVersion)"
+        "ProtocolAccessCapabilities(protocolVersion=$protocolVersion, supportedPlayerCounts=$supportedPlayerCounts, remoteTransport=$remoteTransport, persistence=$persistence, resumption=$resumption, tileMarkSupported=$tileMarkSupported, sleeveBloomSupported=$sleeveBloomSupported, beamSwapSupported=$beamSwapSupported, scoreDetailVersion=$scoreDetailVersion, seeThroughSupported=$seeThroughSupported)"
 }
 
 /**
@@ -497,32 +502,50 @@ data class ProtocolSeatControl(
  */
 class ProtocolShuffleSelection(
     initialTargets: Set<ProtocolShuffleTarget> = emptySet(),
-    drawTargets: Set<ProtocolShuffleTarget> = emptySet()
+    drawTargets: Set<ProtocolShuffleTarget> = emptySet(),
+    val seeThrough: Boolean = false
 ) {
     val initialTargets: Set<ProtocolShuffleTarget> = Collections.unmodifiableSet(LinkedHashSet(initialTargets))
     val drawTargets: Set<ProtocolShuffleTarget> = Collections.unmodifiableSet(LinkedHashSet(drawTargets))
 
-    fun cost(): Int = (if (initialTargets.isNotEmpty()) 40 else 0) + (if (drawTargets.isNotEmpty()) 20 else 0)
-    val isActive: Boolean get() = initialTargets.isNotEmpty() || drawTargets.isNotEmpty()
+    fun cost(): Int =
+        (if (initialTargets.isNotEmpty()) 40 else 0) +
+            (if (drawTargets.isNotEmpty()) 20 else 0) +
+            (if (seeThrough) SEE_THROUGH_COST else 0)
+    val isActive: Boolean get() = initialTargets.isNotEmpty() || drawTargets.isNotEmpty() || seeThrough
 
     operator fun component1(): Set<ProtocolShuffleTarget> = initialTargets
     operator fun component2(): Set<ProtocolShuffleTarget> = drawTargets
+    operator fun component3(): Boolean = seeThrough
 
     fun copy(
         initialTargets: Set<ProtocolShuffleTarget> = this.initialTargets,
-        drawTargets: Set<ProtocolShuffleTarget> = this.drawTargets
-    ): ProtocolShuffleSelection = ProtocolShuffleSelection(initialTargets, drawTargets)
+        drawTargets: Set<ProtocolShuffleTarget> = this.drawTargets,
+        seeThrough: Boolean = this.seeThrough
+    ): ProtocolShuffleSelection = ProtocolShuffleSelection(initialTargets, drawTargets, seeThrough)
 
     override fun equals(other: Any?): Boolean {
         if (this === other) return true
         if (other !is ProtocolShuffleSelection) return false
-        return initialTargets == other.initialTargets && drawTargets == other.drawTargets
+        return initialTargets == other.initialTargets &&
+            drawTargets == other.drawTargets &&
+            seeThrough == other.seeThrough
     }
 
-    override fun hashCode(): Int = 31 * initialTargets.hashCode() + drawTargets.hashCode()
+    override fun hashCode(): Int {
+        var result = initialTargets.hashCode()
+        result = 31 * result + drawTargets.hashCode()
+        result = 31 * result + seeThrough.hashCode()
+        return result
+    }
 
     override fun toString(): String =
-        "ProtocolShuffleSelection(initialTargets=$initialTargets, drawTargets=$drawTargets)"
+        "ProtocolShuffleSelection(initialTargets=$initialTargets, drawTargets=$drawTargets, seeThrough=$seeThrough)"
+
+    companion object {
+        /** 看破固定费用；权威 engine 仍以自己的常量复核，本常量仅用于线路一致性。 */
+        const val SEE_THROUGH_COST: Int = 10
+    }
 }
 
 /**
@@ -537,11 +560,19 @@ data class ProtocolShufflePreparation(
     val confirmed: Boolean,
     val selection: ProtocolShuffleSelection?,
     val reservedPoints: Int,
-    val availablePoints: Int
+    val availablePoints: Int,
+    val seeThroughEnabled: Boolean = false,
+    val seeThroughCost: Int = ProtocolShuffleSelection.SEE_THROUGH_COST
 ) {
     init {
         require(roundId.isNotBlank()) { "roundId cannot be blank" }
         require(deadlineMillis >= opensAtMillis) { "deadline must be >= opensAt" }
+        require(seeThroughCost == ProtocolShuffleSelection.SEE_THROUGH_COST) {
+            "seeThroughCost must be ${ProtocolShuffleSelection.SEE_THROUGH_COST}, got $seeThroughCost"
+        }
+        require(selection?.seeThrough != true || seeThroughEnabled) {
+            "selection.seeThrough requires seeThroughEnabled"
+        }
     }
 }
 
@@ -615,7 +646,8 @@ data class ProtocolShuffleConfig(
     val plannedDraws: Int = 8,
     val strength: Double = 0.75,
     val interference: Double = 0.65,
-    val aiMaySpend: Boolean = false
+    val aiMaySpend: Boolean = false,
+    val seeThroughEnabled: Boolean = false
 ) {
     init {
         require(selectionMillis > 0L) { "selectionMillis must be positive: $selectionMillis" }
@@ -623,6 +655,9 @@ data class ProtocolShuffleConfig(
         require(!strength.isNaN() && strength in 0.0..1.0) { "strength must be in 0.0..1.0: $strength" }
         require(!interference.isNaN() && !interference.isInfinite() && interference >= 0.0) {
             "interference must be finite and >= 0.0: $interference"
+        }
+        require(!seeThroughEnabled || enabled) {
+            "seeThroughEnabled requires shuffle enabled"
         }
     }
 }
@@ -678,6 +713,12 @@ class ProtocolMatchConfig(
             require(cheatEconomy.enabled) { "cheatEconomy must be enabled when beamSwapConfig is enabled" }
             require(cheatEconomy.costs["BEAM_SWAP"] == 10) {
                 "BEAM_SWAP cost must be explicitly 10 when beamSwapConfig is enabled, got: ${cheatEconomy.costs["BEAM_SWAP"]}"
+            }
+        }
+        if (shuffleConfig.seeThroughEnabled) {
+            require(cheatEconomy.enabled) { "cheatEconomy must be enabled when seeThroughEnabled" }
+            require(cheatEconomy.costs["SEE_THROUGH"] == 10) {
+                "SEE_THROUGH cost must be explicitly 10 when seeThroughEnabled, got: ${cheatEconomy.costs["SEE_THROUGH"]}"
             }
         }
     }

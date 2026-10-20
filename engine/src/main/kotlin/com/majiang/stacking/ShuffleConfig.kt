@@ -9,6 +9,7 @@ package com.majiang.stacking
  * @property strength 基础做牌强度 [0.0, 1.0]（默认 0.75）
  * @property interference 冲突干扰衰减系数 lambda >= 0.0（默认 0.65）
  * @property aiMaySpend AI 玩家是否允许消耗点数出千（默认 false）
+ * @property seeThroughEnabled 是否允许准备阶段选用看破（默认 false；启用需洗牌与经济配置及固定 SEE_THROUGH=10）
  */
 data class ShuffleConfig(
     val enabled: Boolean = false,
@@ -16,7 +17,8 @@ data class ShuffleConfig(
     val plannedDraws: Int = 8,
     val strength: Double = 0.75,
     val interference: Double = 0.65,
-    val aiMaySpend: Boolean = false
+    val aiMaySpend: Boolean = false,
+    val seeThroughEnabled: Boolean = false
 ) {
     init {
         require(selectionMillis > 0L) { "selectionMillis must be positive, got $selectionMillis" }

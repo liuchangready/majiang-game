@@ -406,7 +406,8 @@ object EngineProtocolMapper {
         tileMarkSupported = true,
         sleeveBloomSupported = true,
         beamSwapSupported = true,
-        scoreDetailVersion = ProtocolScoreCodes.CONTRACT_VERSION
+        scoreDetailVersion = ProtocolScoreCodes.CONTRACT_VERSION,
+        seeThroughSupported = true
     )
 
     // === ClockView / SeatControlView ===
@@ -448,12 +449,14 @@ object EngineProtocolMapper {
 
     fun toProtocolShuffleSelection(selection: ShuffleSelection): ProtocolShuffleSelection = ProtocolShuffleSelection(
         initialTargets = Collections.unmodifiableSet(selection.initialTargets.mapTo(LinkedHashSet()) { toProtocolShuffleTarget(it) }),
-        drawTargets = Collections.unmodifiableSet(selection.drawTargets.mapTo(LinkedHashSet()) { toProtocolShuffleTarget(it) })
+        drawTargets = Collections.unmodifiableSet(selection.drawTargets.mapTo(LinkedHashSet()) { toProtocolShuffleTarget(it) }),
+        seeThrough = selection.seeThrough
     )
 
     fun toEngineShuffleSelection(selection: ProtocolShuffleSelection): ShuffleSelection = ShuffleSelection(
         initialTargets = Collections.unmodifiableSet(selection.initialTargets.mapTo(LinkedHashSet()) { toEngineShuffleTarget(it) }),
-        drawTargets = Collections.unmodifiableSet(selection.drawTargets.mapTo(LinkedHashSet()) { toEngineShuffleTarget(it) })
+        drawTargets = Collections.unmodifiableSet(selection.drawTargets.mapTo(LinkedHashSet()) { toEngineShuffleTarget(it) }),
+        seeThrough = selection.seeThrough
     )
 
     fun toProtocolShufflePreparationStatus(status: ShufflePreparationStatus): ProtocolShufflePreparationStatus = when (status) {
@@ -470,7 +473,9 @@ object EngineProtocolMapper {
         confirmed = prep.confirmed,
         selection = prep.selection?.let { toProtocolShuffleSelection(it) },
         reservedPoints = prep.reservedPoints,
-        availablePoints = prep.availablePoints
+        availablePoints = prep.availablePoints,
+        seeThroughEnabled = prep.seeThroughEnabled,
+        seeThroughCost = prep.seeThroughCost
     )
 
     fun toEngineShufflePlan(plan: ProtocolShufflePlan): ShufflePlanRequest = ShufflePlanRequest(
@@ -507,7 +512,8 @@ object EngineProtocolMapper {
         plannedDraws = config.plannedDraws,
         strength = config.strength,
         interference = config.interference,
-        aiMaySpend = config.aiMaySpend
+        aiMaySpend = config.aiMaySpend,
+        seeThroughEnabled = config.seeThroughEnabled
     )
 
     fun toEngineShuffleConfig(config: ProtocolShuffleConfig): ShuffleConfig = ShuffleConfig(
@@ -516,7 +522,8 @@ object EngineProtocolMapper {
         plannedDraws = config.plannedDraws,
         strength = config.strength,
         interference = config.interference,
-        aiMaySpend = config.aiMaySpend
+        aiMaySpend = config.aiMaySpend,
+        seeThroughEnabled = config.seeThroughEnabled
     )
 
     // === TileMarkConfig ===

@@ -26,6 +26,7 @@ import com.majiang.presentation.common.UiAssets
  * 2. 消费统一 [GameSession]，提交 [ShufflePlan] 异步请求；
  * 3. 10 秒倒计时展示（权威 serverNow + 本地单调流逝时间，暂停冻结）；
  * 4. 偷天换日 (40点) 与 瞒天过海 (20点) 两大区域，各 6 个多选目标；
+ *    底部看破 (10点) 可与二者组合，合计最高 70 点，仅看破也可确认；
  * 5. 允许在点数不足时编辑草稿，但禁用确认并清晰提示原因；已确认方案不误报点数不足；
  * 6. 模态输入守卫：阻断下层牌桌点击穿透；断线、关闭、pending 态消费模态并阻断交互；
  * 7. 倒计时到期与暂停时阻断误点击；
@@ -70,8 +71,9 @@ class ShufflePreparationPanel @JvmOverloads constructor(
         ShuffleTarget.DAISUUSHII to Rectangle(800f, 195f, 260f, 38f)
     )
 
-    val btnSkipRect = Rectangle(680f, 102f, 180f, 42f)
-    val btnConfirmRect = Rectangle(880f, 102f, 180f, 42f)
+    val btnSeeThroughRect = Rectangle(200f, 102f, 300f, 42f)
+    val btnSkipRect = Rectangle(520f, 102f, 170f, 42f)
+    val btnConfirmRect = Rectangle(710f, 102f, 180f, 42f)
 
     // 悬停状态
     var hoveredInitialTarget: ShuffleTarget? = null
@@ -81,6 +83,8 @@ class ShufflePreparationPanel @JvmOverloads constructor(
     var isConfirmHovered: Boolean = false
         private set
     var isSkipHovered: Boolean = false
+        private set
+    var isSeeThroughHovered: Boolean = false
         private set
 
     // 中文字体与字形管理（借用 UiAssets 管理的 17px 共享字体与生命周期）
@@ -151,7 +155,13 @@ class ShufflePreparationPanel @JvmOverloads constructor(
             }
         }
 
-        // 3. 确认按钮
+        // 3. 看破开关（仅启用房间可切换，与两大码牌目标可组合）
+        if (btnSeeThroughRect.contains(x, y)) {
+            model.toggleSeeThrough()
+            return true
+        }
+
+        // 4. 确认按钮
         if (btnConfirmRect.contains(x, y)) {
             if (model.canConfirm) {
                 val req = model.buildPlanRequest()
@@ -173,7 +183,7 @@ class ShufflePreparationPanel @JvmOverloads constructor(
             return true
         }
 
-        // 4. 跳过按钮
+        // 5. 跳过按钮
         if (btnSkipRect.contains(x, y)) {
             if (model.canSkip) {
                 val req = model.buildSkipRequest()
@@ -204,6 +214,7 @@ class ShufflePreparationPanel @JvmOverloads constructor(
         hoveredDrawTarget = btnDrawTargets.entries.firstOrNull { it.value.contains(x, y) }?.key
         isConfirmHovered = btnConfirmRect.contains(x, y)
         isSkipHovered = btnSkipRect.contains(x, y)
+        isSeeThroughHovered = btnSeeThroughRect.contains(x, y)
     }
 
     fun render(
@@ -265,6 +276,15 @@ class ShufflePreparationPanel @JvmOverloads constructor(
             shape.rect(rect.x, rect.y, rect.width, rect.height)
         }
 
+        // 看破开关底色（禁用房间灰显，选中绿色）
+        shape.color = when {
+            !model.seeThroughEnabled -> Color(0.12f, 0.14f, 0.13f, 0.55f)
+            model.isSeeThroughSelected -> Color(0.20f, 0.48f, 0.30f, 0.98f)
+            isSeeThroughHovered && model.canEditDraft -> Color(0.16f, 0.30f, 0.22f, 0.95f)
+            else -> Color(0.10f, 0.20f, 0.14f, 0.9f)
+        }
+        shape.rect(btnSeeThroughRect.x, btnSeeThroughRect.y, btnSeeThroughRect.width, btnSeeThroughRect.height)
+
         // 底部按钮底色 (跳过 / 确认)
         shape.color = if (model.canSkip) {
             if (isSkipHovered) Color(0.30f, 0.35f, 0.32f, 1f) else Color(0.22f, 0.26f, 0.24f, 1f)
@@ -308,6 +328,13 @@ class ShufflePreparationPanel @JvmOverloads constructor(
             shape.rect(rect.x, rect.y, rect.width, rect.height)
         }
 
+        shape.color = when {
+            !model.seeThroughEnabled -> Color(0.30f, 0.32f, 0.30f, 0.55f)
+            model.isSeeThroughSelected -> Color(0.45f, 0.95f, 0.60f, 1f)
+            else -> Color(0.34f, 0.52f, 0.40f, 0.85f)
+        }
+        shape.rect(btnSeeThroughRect.x, btnSeeThroughRect.y, btnSeeThroughRect.width, btnSeeThroughRect.height)
+
         shape.color = if (model.canSkip) Color.LIGHT_GRAY else Color(0.4f, 0.4f, 0.4f, 0.4f)
         shape.rect(btnSkipRect.x, btnSkipRect.y, btnSkipRect.width, btnSkipRect.height)
 
@@ -338,6 +365,15 @@ class ShufflePreparationPanel @JvmOverloads constructor(
             textFont.color = Color(0.85f, 0.95f, 0.90f, 1f)
             val costText = "可用点数: ${model.availablePoints}点  预计消耗: ${model.totalCost}点 (剩余: ${model.remainingPointsPreview}点)"
             textFont.draw(batch, costText, modalRect.x + 160f, modalRect.y + 585f)
+
+            // 看破规则说明：仅在正确实生效，不暗示抓包或永久封锁。
+            textFont.color = Color(0.78f, 0.86f, 0.82f, 1f)
+            textFont.draw(
+                batch,
+                "看破10点（合计上限70）：发牌前抵消对手本局偷天换日并清除其既有落汗；不封锁新落汗。",
+                modalRect.x + 20f,
+                modalRect.y + 558f
+            )
 
             // 倒计时文字
             val timerText = when {
@@ -389,6 +425,19 @@ class ShufflePreparationPanel @JvmOverloads constructor(
                 textFont.draw(batch, "※ 吃碰杠会改变预期摸牌", sectionDrawRect.x + 20f, sectionDrawRect.y + 24f)
             }
 
+            // 看破开关文字
+            val seeThroughText = when {
+                !model.seeThroughEnabled -> "看破未启用"
+                model.isSeeThroughSelected -> "[√] 看破 ${model.seeThroughPrice}点"
+                else -> "[ ] 看破 ${model.seeThroughPrice}点"
+            }
+            textFont.color = when {
+                !model.seeThroughEnabled -> Color(0.48f, 0.50f, 0.48f, 1f)
+                model.isSeeThroughSelected -> Color(0.55f, 1.0f, 0.68f, 1f)
+                else -> Color.WHITE
+            }
+            textFont.draw(batch, seeThroughText, btnSeeThroughRect.x + 12f, btnSeeThroughRect.y + 27f)
+
             // 底部按钮文字
             textFont.color = if (model.canSkip) Color.WHITE else Color(0.5f, 0.5f, 0.5f, 1f)
             textFont.draw(batch, "不使用千术", btnSkipRect.x + 40f, btnSkipRect.y + 27f)
@@ -409,11 +458,11 @@ class ShufflePreparationPanel @JvmOverloads constructor(
             val cx = btnConfirmRect.x + (btnConfirmRect.width - glyphLayout.width) / 2f
             textFont.draw(batch, confirmText, cx, btnConfirmRect.y + 27f)
 
-            // 错误/拒绝提示
+            // 错误/拒绝提示（覆盖规则提示行，避免与底部按钮重叠）
             val err = model.errorMessage
             if (err != null) {
                 textFont.color = Color(1.0f, 0.35f, 0.35f, 1f)
-                textFont.draw(batch, err, modalRect.x + 20f, btnConfirmRect.y + 27f)
+                textFont.draw(batch, err, modalRect.x + 20f, modalRect.y + 558f)
             }
         } finally {
             textFont.data.setScale(origScaleX, origScaleY)

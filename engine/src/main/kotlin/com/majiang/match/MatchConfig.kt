@@ -108,6 +108,17 @@ data class MatchConfig @JvmOverloads constructor(
                 "shuffleConfig.interference must be non-negative and finite, got ${shuffleConfig.interference}"
             }
         }
+        if (shuffleConfig.seeThroughEnabled) {
+            require(shuffleConfig.enabled) {
+                "shuffleConfig.seeThroughEnabled requires shuffleConfig.enabled"
+            }
+            require(cheatEconomy.enabled) {
+                "shuffleConfig.seeThroughEnabled requires cheatEconomy to be enabled"
+            }
+            require(cheatEconomy.costs["SEE_THROUGH"] == 10) {
+                "shuffleConfig.seeThroughEnabled requires cheatEconomy.costs['SEE_THROUGH'] == 10, got: ${cheatEconomy.costs["SEE_THROUGH"]}"
+            }
+        }
         if (tileMarkConfig.enabled) {
             require(cheatEconomy.enabled) {
                 "tileMarkConfig requires cheatEconomy to be enabled"

@@ -12,6 +12,8 @@ package com.majiang.stacking
  * @property selection 本人当前方案（未选择时为空）
  * @property reservedPoints 为本方案预留的点数
  * @property availablePoints 本人当前可用出千点数
+ * @property seeThroughEnabled 当前房间是否允许在准备阶段选择看破
+ * @property seeThroughCost 看破固定费用（始终为 10，供 UI 展示）
  */
 data class ShufflePreparationView(
     val roundId: String,
@@ -22,7 +24,9 @@ data class ShufflePreparationView(
     val confirmed: Boolean,
     val selection: ShuffleSelection?,
     val reservedPoints: Int,
-    val availablePoints: Int
+    val availablePoints: Int,
+    val seeThroughEnabled: Boolean = false,
+    val seeThroughCost: Int = ShuffleSelection.SEE_THROUGH_COST
 ) {
     init {
         require(roundId.isNotBlank()) { "roundId cannot be blank" }
@@ -32,6 +36,9 @@ data class ShufflePreparationView(
         }
         require(reservedPoints >= 0) { "reservedPoints must be non-negative, got $reservedPoints" }
         require(availablePoints >= 0) { "availablePoints must be non-negative, got $availablePoints" }
+        require(seeThroughCost == ShuffleSelection.SEE_THROUGH_COST) {
+            "seeThroughCost must be ${ShuffleSelection.SEE_THROUGH_COST}, got $seeThroughCost"
+        }
     }
 
     fun deepCopy(): ShufflePreparationView = copy(selection = selection?.deepCopy())

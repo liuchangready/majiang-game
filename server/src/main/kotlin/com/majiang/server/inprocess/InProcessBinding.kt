@@ -927,7 +927,8 @@ class InProcessBinding(
                 tileMarkSupported = true,
                 sleeveBloomSupported = true,
                 beamSwapSupported = true,
-                scoreDetailVersion = ProtocolScoreCodes.CONTRACT_VERSION
+                scoreDetailVersion = ProtocolScoreCodes.CONTRACT_VERSION,
+                seeThroughSupported = true
             )
         )
     }

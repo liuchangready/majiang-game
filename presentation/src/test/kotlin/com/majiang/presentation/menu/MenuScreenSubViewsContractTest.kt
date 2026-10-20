@@ -164,6 +164,28 @@ class MenuScreenSubViewsContractTest : GdxHeadlessTestRunner() {
             assertNotNull(captured, "lobby.createRoom should have received MatchConfig")
             assertEquals(listOf(1), captured!!.winds, "Winds should be East-only [1] when not Hanchan")
             assertFalse(captured.shuffleConfig.enabled, "Shuffle cheating config should be disabled")
+            assertFalse(captured.shuffleConfig.seeThroughEnabled, "See-through must follow the shuffle preset")
+        } finally {
+            menu.dispose()
+            assets.dispose()
+        }
+    }
+
+    @Test
+    fun testDefaultRoomPresetEnablesSeeThroughWithFixedTenPointCost() {
+        val assets = UiAssets.createDefault(SkinManager())
+        val nav = FakeContractNavigation()
+        val lobby = FakeContractLobbySession()
+        val menu = MenuScreen(assets, nav, lobby)
+        try {
+            menu.touchDown(190, 160, 0, 0)
+            assertEquals(MenuScreen.MenuState.CREATE_ROOM_DIALOG, menu.currentState)
+            menu.touchDown(400, 530, 0, 0)
+            val captured = lobby.lastCreatedConfig
+            assertNotNull(captured)
+            assertTrue(captured!!.shuffleConfig.enabled)
+            assertTrue(captured.shuffleConfig.seeThroughEnabled, "Room preset must turn see-through on with shuffle")
+            assertEquals(10, captured.cheatEconomy.costs["SEE_THROUGH"])
         } finally {
             menu.dispose()
             assets.dispose()

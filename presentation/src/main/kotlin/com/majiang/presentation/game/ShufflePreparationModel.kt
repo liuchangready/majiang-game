@@ -14,8 +14,8 @@ import java.util.UUID
  * 遵循契约与纯客户端模型规范：
  * 1. 严格使用 client.api 视图模型 (ShufflePreparationView, ShuffleSelection, ShufflePlan, ShuffleTarget)；
  * 2. 独立于图形引擎与权威宿主，支持无头单元测试；
- * 3. 维护草稿选择（偷天换日 initialTargets，瞒天过海 drawTargets）；
- * 4. 实时计算费用（偷天换日 40，瞒天过海 20，共选 60，均不选 0）；
+ * 3. 维护草稿选择（偷天换日 initialTargets，瞒天过海 drawTargets，看破 seeThrough）；
+ * 4. 实时计算费用（偷天换日 40，瞒天过海 20，看破 10，合计最高 70，均不选 0）；
  * 5. 区分草稿预测扣费与权威预留：权威确认后 availablePoints 已扣除预留，不重复二次扣减；
  * 6. 校验预算超支（允许编辑超支草稿，但禁用确认并提供原因）；
  * 7. 单局生命周期与跨局重置：新局完全重置草稿与本地/权威确认状态；同局快照保留草稿；
@@ -68,6 +68,18 @@ class ShufflePreparationModel(
     /** 瞒天过海草稿目标集合（影响前 8 次摸牌顺位，非空消耗 20 点） */
     val drawTargets: MutableSet<ShuffleTarget> = LinkedHashSet()
 
+    /** 当前房间是否允许看破；禁用房间不显示可提交入口 */
+    var seeThroughEnabled: Boolean = false
+        private set
+
+    /** 看破固定价格（权威准备视图下发，正常恒为 10） */
+    var seeThroughPrice: Int = 10
+        private set
+
+    /** 草稿是否勾选看破 */
+    var isSeeThroughSelected: Boolean = false
+        private set
+
     /** 错误或拒绝提示信息 */
     var errorMessage: String? = null
 
@@ -89,8 +101,11 @@ class ShufflePreparationModel(
     /** 瞒天过海消耗点数（非空 20 点，空 0 点） */
     val drawCost: Int get() = if (drawTargets.isNotEmpty()) 20 else 0
 
-    /** 总消耗点数 (0, 20, 40, 60) */
-    val totalCost: Int get() = initialCost + drawCost
+    /** 看破消耗点数（勾选 10 点，未勾选 0 点） */
+    val seeThroughCost: Int get() = if (isSeeThroughSelected) seeThroughPrice else 0
+
+    /** 总消耗点数 (0..70) */
+    val totalCost: Int get() = initialCost + drawCost + seeThroughCost
 
     /**
      * 剩余点数预览：
@@ -173,6 +188,10 @@ class ShufflePreparationModel(
     val hasDrawNotice: Boolean
         get() = drawTargets.isNotEmpty()
 
+    /** 是否展示看破说明（仅启用房间） */
+    val hasSeeThroughNotice: Boolean
+        get() = seeThroughEnabled
+
     /** 切换偷天换日目标 */
     fun toggleInitialTarget(target: ShuffleTarget): Boolean {
         if (!canEditDraft) return false
@@ -197,18 +216,28 @@ class ShufflePreparationModel(
         return true
     }
 
-    /** 清空草稿目标 */
+    /** 切换看破草稿（禁用房间或不可编辑时拒绝） */
+    fun toggleSeeThrough(): Boolean {
+        if (!canEditDraft || !seeThroughEnabled) return false
+        isSeeThroughSelected = !isSeeThroughSelected
+        errorMessage = null
+        return true
+    }
+
+    /** 清空草稿目标与看破勾选 */
     fun clearDraft() {
         if (!canEditDraft) return
         initialTargets.clear()
         drawTargets.clear()
+        isSeeThroughSelected = false
         errorMessage = null
     }
 
-    /** 当前草稿方案 */
+    /** 当前草稿方案（仅看破也是合法非空方案） */
     fun draftSelection(): ShuffleSelection = ShuffleSelection(
         initialTargets = LinkedHashSet(initialTargets),
-        drawTargets = LinkedHashSet(drawTargets)
+        drawTargets = LinkedHashSet(drawTargets),
+        seeThrough = isSeeThroughSelected
     )
 
     /** 标记提交中 */
@@ -247,6 +276,7 @@ class ShufflePreparationModel(
         initialTargets.addAll(selection.initialTargets)
         drawTargets.clear()
         drawTargets.addAll(selection.drawTargets)
+        isSeeThroughSelected = selection.seeThrough
         errorMessage = null
     }
 
@@ -303,6 +333,8 @@ class ShufflePreparationModel(
             errorMessage = null
             initialTargets.clear()
             drawTargets.clear()
+            isSeeThroughSelected = false
+            seeThroughEnabled = false
             return
         }
 
@@ -311,6 +343,7 @@ class ShufflePreparationModel(
             roundId = prep.roundId
             initialTargets.clear()
             drawTargets.clear()
+            isSeeThroughSelected = false
             isSubmitting = false
             submittingRequestId = null
             isAuthorityConfirmed = false
@@ -323,6 +356,12 @@ class ShufflePreparationModel(
         status = prep.status
         availablePoints = prep.availablePoints
         opensAtMillis = prep.opensAtMillis
+        seeThroughEnabled = prep.seeThroughEnabled
+        seeThroughPrice = prep.seeThroughCost
+        if (!seeThroughEnabled) {
+            // 禁用房间的旧草稿不得携带看破；重连到禁用房间同样清除。
+            isSeeThroughSelected = false
+        }
 
         val isAuthoritySampleChanged = isNewRound ||
                 prep.serverNowMillis != serverNowMillis ||
@@ -349,12 +388,13 @@ class ShufflePreparationModel(
                 val drawMapped = selected.drawTargets.mapNotNull {
                     try { ShuffleTarget.valueOf(it.name) } catch (_: Throwable) { null }
                 }.toSet()
-                val clientSelection = ShuffleSelection(initialMapped, drawMapped)
+                val clientSelection = ShuffleSelection(initialMapped, drawMapped, selected.seeThrough)
                 confirmedSelection = clientSelection
                 initialTargets.clear()
                 initialTargets.addAll(initialMapped)
                 drawTargets.clear()
                 drawTargets.addAll(drawMapped)
+                isSeeThroughSelected = selected.seeThrough
             }
         } else {
             isAuthorityConfirmed = false

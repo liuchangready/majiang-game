@@ -962,27 +962,42 @@ enum class ShufflePreparationStatusView {
 /** 洗牌千术预选方案视图模型 */
 class ShuffleSelectionView(
     initialTargets: Set<ShuffleTargetView> = emptySet(),
-    drawTargets: Set<ShuffleTargetView> = emptySet()
+    drawTargets: Set<ShuffleTargetView> = emptySet(),
+    val seeThrough: Boolean = false
 ) {
     val initialTargets: Set<ShuffleTargetView> = Collections.unmodifiableSet(LinkedHashSet(initialTargets))
     val drawTargets: Set<ShuffleTargetView> = Collections.unmodifiableSet(LinkedHashSet(drawTargets))
 
     fun cost(): Int =
-        (if (initialTargets.isNotEmpty()) 40 else 0) + (if (drawTargets.isNotEmpty()) 20 else 0)
-    val isActive: Boolean get() = initialTargets.isNotEmpty() || drawTargets.isNotEmpty()
+        (if (initialTargets.isNotEmpty()) 40 else 0) +
+            (if (drawTargets.isNotEmpty()) 20 else 0) +
+            (if (seeThrough) SEE_THROUGH_COST else 0)
+    val isActive: Boolean get() = initialTargets.isNotEmpty() || drawTargets.isNotEmpty() || seeThrough
 
     fun copy(
         initialTargets: Set<ShuffleTargetView> = this.initialTargets,
-        drawTargets: Set<ShuffleTargetView> = this.drawTargets
-    ): ShuffleSelectionView = ShuffleSelectionView(initialTargets, drawTargets)
+        drawTargets: Set<ShuffleTargetView> = this.drawTargets,
+        seeThrough: Boolean = this.seeThrough
+    ): ShuffleSelectionView = ShuffleSelectionView(initialTargets, drawTargets, seeThrough)
 
     override fun equals(other: Any?): Boolean = other is ShuffleSelectionView &&
-        initialTargets == other.initialTargets && drawTargets == other.drawTargets
+        initialTargets == other.initialTargets &&
+        drawTargets == other.drawTargets &&
+        seeThrough == other.seeThrough
 
-    override fun hashCode(): Int = 31 * initialTargets.hashCode() + drawTargets.hashCode()
+    override fun hashCode(): Int {
+        var result = initialTargets.hashCode()
+        result = 31 * result + drawTargets.hashCode()
+        result = 31 * result + seeThrough.hashCode()
+        return result
+    }
 
     override fun toString(): String =
-        "ShuffleSelectionView(initialTargets=$initialTargets, drawTargets=$drawTargets)"
+        "ShuffleSelectionView(initialTargets=$initialTargets, drawTargets=$drawTargets, seeThrough=$seeThrough)"
+
+    companion object {
+        const val SEE_THROUGH_COST: Int = 10
+    }
 }
 
 /** 洗牌千术准备阶段视图模型 */
@@ -995,8 +1010,16 @@ data class ShufflePreparationView(
     val confirmed: Boolean,
     val selection: ShuffleSelectionView?,
     val reservedPoints: Int,
-    val availablePoints: Int
-)
+    val availablePoints: Int,
+    val seeThroughEnabled: Boolean = false,
+    val seeThroughCost: Int = ShuffleSelectionView.SEE_THROUGH_COST
+) {
+    init {
+        require(seeThroughCost == ShuffleSelectionView.SEE_THROUGH_COST) {
+            "seeThroughCost must be ${ShuffleSelectionView.SEE_THROUGH_COST}, got $seeThroughCost"
+        }
+    }
+}
 
 /** 决策动作选项视图模型 */
 data class ActionOptionView(

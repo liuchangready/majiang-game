@@ -1,14 +1,15 @@
 package com.majiang.presentation.game
 
 import com.majiang.client.api.*
+import com.majiang.presentation.GdxHeadlessTestRunner
 import com.majiang.presentation.testing.FakeGameSession
 import org.junit.jupiter.api.Assertions.*
 import org.junit.jupiter.api.Test
 import java.util.concurrent.CompletableFuture
 
-class ShufflePreparationUiAcceptanceTest {
+class ShufflePreparationUiAcceptanceTest : GdxHeadlessTestRunner() {
 
-    private fun view(round: String = "one", balance: Int = 50) = ShufflePreparationView(
+    private fun view(round: String = "one", balance: Int = 50, seeThrough: Boolean = false) = ShufflePreparationView(
         roundId = round,
         status = ShufflePreparationStatusView.SELECTING,
         opensAtMillis = 0,
@@ -17,7 +18,9 @@ class ShufflePreparationUiAcceptanceTest {
         confirmed = false,
         selection = null,
         reservedPoints = 0,
-        availablePoints = balance
+        availablePoints = balance,
+        seeThroughEnabled = seeThrough,
+        seeThroughCost = 10
     )
 
     @Test fun `server error translation covers standard server reasons and invalid reason fallbacks`() {
@@ -54,6 +57,65 @@ class ShufflePreparationUiAcceptanceTest {
         m.toggleInitialTarget(ShuffleTarget.DAISUUSHII)
         assertEquals(20, m.totalCost)
         assertTrue(m.canConfirm)
+    }
+
+    @Test fun `see through alone is confirmable and combines up to seventy points`() {
+        val m = ShufflePreparationModel { 0L }
+        m.update(view(balance = 100, seeThrough = true), nowSystemMillis = 0)
+        assertTrue(m.seeThroughEnabled)
+        assertEquals(10, m.seeThroughPrice)
+        assertTrue(m.toggleSeeThrough())
+        assertEquals(10, m.totalCost)
+        assertEquals(90, m.remainingPointsPreview)
+        assertTrue(m.canConfirm)
+        assertTrue(m.draftSelection().seeThrough)
+        assertTrue(m.draftSelection().isActive)
+
+        m.toggleInitialTarget(ShuffleTarget.KOKUSHI)
+        m.toggleDrawTarget(ShuffleTarget.DAISANGEN)
+        assertEquals(70, m.totalCost)
+        assertEquals(30, m.remainingPointsPreview)
+        assertTrue(m.canConfirm)
+        val plan = m.buildPlanRequest("all")!!
+        assertEquals(70, plan.selection.cost())
+        assertTrue(plan.selection.seeThrough)
+
+        m.clearDraft()
+        assertEquals(0, m.totalCost)
+        assertFalse(m.isSeeThroughSelected)
+        assertFalse(m.draftSelection().isActive)
+    }
+
+    @Test fun `disabled see through cannot be toggled or smuggled into a plan`() {
+        val m = ShufflePreparationModel { 0L }
+        m.update(view(balance = 100), nowSystemMillis = 0)
+        assertFalse(m.seeThroughEnabled)
+        assertFalse(m.toggleSeeThrough())
+        assertFalse(m.isSeeThroughSelected)
+        assertFalse(m.buildPlanRequest("plain")!!.selection.seeThrough)
+        assertEquals(0, m.totalCost)
+    }
+
+    @Test fun `authority confirmation restores see through and a fresh round cannot inherit it`() {
+        val selection = ShuffleSelectionView(seeThrough = true)
+        val m = ShufflePreparationModel { 0L }
+        m.update(
+            view(balance = 90, seeThrough = true).copy(
+                confirmed = true,
+                selection = selection,
+                reservedPoints = 10
+            ),
+            nowSystemMillis = 0
+        )
+        assertTrue(m.isLocked)
+        assertTrue(m.confirmedSelection!!.seeThrough)
+        assertEquals(10, m.confirmedSelection!!.cost())
+        assertEquals(90, m.remainingPointsPreview)
+
+        m.update(view("next", balance = 100, seeThrough = true), nowSystemMillis = 0)
+        assertFalse(m.isSeeThroughSelected)
+        assertNull(m.confirmedSelection)
+        assertTrue(m.canEditDraft)
     }
 
     @Test fun `same round preserves draft and fresh round clears it`() {
@@ -149,6 +211,54 @@ class ShufflePreparationUiAcceptanceTest {
             assertEquals(40, session.submittedPlans.single().selection.cost())
             completion.complete(Receipt(session.submittedPlans.single().requestId, ReceiptStatus.RECORDED))
             assertTrue(panel.model.isLocked)
+        } finally { panel.dispose() }
+    }
+
+    @Test fun `panel see through rectangle toggles and submits only see through`() {
+        val completion = CompletableFuture<Receipt>()
+        val session = FakeGameSession()
+        session.submitResult = completion
+        val panel = ShufflePreparationPanel(session)
+        try {
+            panel.model.update(
+                view(balance = 100, seeThrough = true),
+                nowSystemMillis = System.nanoTime() / 1_000_000L
+            )
+            assertTrue(panel.model.canEditDraft)
+            val toggle = panel.btnSeeThroughRect
+            assertTrue(toggle.width > 0f && toggle.height > 0f)
+            assertTrue(panel.touchDown(toggle.x + 2f, toggle.y + 2f))
+            assertTrue(panel.model.isSeeThroughSelected)
+            assertEquals(10, panel.model.totalCost)
+            repeat(2) { panel.touchDown(panel.btnConfirmRect.x + 2f, panel.btnConfirmRect.y + 2f) }
+            assertEquals(1, session.submittedPlans.size)
+            assertTrue(session.submittedPlans.single().selection.seeThrough)
+            assertEquals(10, session.submittedPlans.single().selection.cost())
+            completion.complete(Receipt(session.submittedPlans.single().requestId, ReceiptStatus.RECORDED))
+            assertTrue(panel.model.isLocked)
+        } finally { panel.dispose() }
+    }
+
+    @Test fun `panel controls stay inside the virtual viewport and do not overlap`() {
+        val panel = ShufflePreparationPanel(FakeGameSession())
+        try {
+            val rects = listOf(
+                panel.modalRect,
+                panel.countdownBoxRect,
+                panel.sectionInitialRect,
+                panel.sectionDrawRect,
+                panel.btnSeeThroughRect,
+                panel.btnSkipRect,
+                panel.btnConfirmRect
+            )
+            for (r in rects) {
+                assertTrue(r.x >= 0f && r.y >= 0f && r.x + r.width <= 1280f && r.y + r.height <= 720f, "Out of viewport: $r")
+            }
+            assertFalse(panel.btnSeeThroughRect.overlaps(panel.btnSkipRect))
+            assertFalse(panel.btnSkipRect.overlaps(panel.btnConfirmRect))
+            assertTrue(panel.modalRect.contains(panel.btnSeeThroughRect))
+            assertTrue(panel.modalRect.contains(panel.btnConfirmRect))
+            assertEquals(10, panel.model.seeThroughPrice)
         } finally { panel.dispose() }
     }
 

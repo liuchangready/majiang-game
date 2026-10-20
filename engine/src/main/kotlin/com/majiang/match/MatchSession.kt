@@ -85,7 +85,17 @@ sealed interface ApprovedSessionStep {
     object Resume : ApprovedSessionStep
     object Close : ApprovedSessionStep
     data class ApplyTileMark(val group: TileMarkGroup) : ApprovedSessionStep
-    data class RegisterDealtRound(val roundId: String) : ApprovedSessionStep
+
+    /**
+     * 成功发牌时登记局次。
+     *
+     * @property clearMarkKeepSeats 非 null 时表示本局看破结算：只保留这些席位拥有的既有落汗组，
+     *   其余席位的组在同一次 Session 变更中永久清除。null 表示无看破，落汗状态不变。
+     */
+    data class RegisterDealtRound(
+        val roundId: String,
+        val clearMarkKeepSeats: Set<Int>? = null
+    ) : ApprovedSessionStep
 }
 
 /**
@@ -675,6 +685,11 @@ class MatchSession @JvmOverloads constructor(
             }
 
             is ApprovedSessionStep.RegisterDealtRound -> {
+                // 看破清标与发牌局次登记必须是同一次原子 Session 变更：
+                // 只有整套发牌被协调器接受后才安装本变更，失败时不会留下清标或登记痕迹。
+                val marksAfterSeeThrough = step.clearMarkKeepSeats?.let { keepSeats ->
+                    tileMarkState.clearMarkGroupsExcept(keepSeats)
+                } ?: tileMarkState
                 SessionChange(
                     sessionId = sessionId,
                     sourceVersion = version,
@@ -691,7 +706,7 @@ class MatchSession @JvmOverloads constructor(
                     targetResult = result,
                     events = emptyList(),
                     targetCheatPoints = Collections.unmodifiableList(betweenRoundCheatPoints.toList()),
-                    targetTileMarkState = tileMarkState.registerDealtRound(step.roundId)
+                    targetTileMarkState = marksAfterSeeThrough.registerDealtRound(step.roundId)
                 )
             }
         }

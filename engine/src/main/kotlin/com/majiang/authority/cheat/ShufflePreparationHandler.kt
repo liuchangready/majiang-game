@@ -33,7 +33,10 @@ internal class ShufflePreparationHandler {
         data class Ready(
             val roundId: String,
             val record: RoundPreparationRecord,
+            /** 截止时冻结的原始方案（费用必须按它计算，绝不能被看破改写）。 */
             val plans: List<SeatShufflePlan>,
+            /** 仅供牌山算法使用的有效方案副本：被看破者的 initialTargets 已移除，drawTargets 保留。 */
+            val effectivePlans: List<SeatShufflePlan>,
             val tiles: List<Tile>?
         ) : Step
     }
@@ -43,6 +46,8 @@ internal class ShufflePreparationHandler {
     private var opensAtMillis: Long = 0L
     private var deadlineMillis: Long = 0L
     private var roundSeed: Long = 0L
+    private var seeThroughEnabled: Boolean = false
+    private var frozenSeeThroughSeats: Set<Int> = emptySet()
     private val confirmed = BooleanArray(4) { false }
     private val selections = arrayOfNulls<ShuffleSelection>(4)
     private val reserved = IntArray(4) { 0 }
@@ -62,6 +67,8 @@ internal class ShufflePreparationHandler {
         opensAtMillis = now
         deadlineMillis = opensAtMillis + config.selectionMillis
         roundSeed = secureRandom.nextLong()
+        seeThroughEnabled = config.seeThroughEnabled
+        frozenSeeThroughSeats = emptySet()
         confirmed.fill(false)
         selections.fill(null)
         reserved.fill(0)
@@ -100,7 +107,9 @@ internal class ShufflePreparationHandler {
             confirmed = confirmedValue,
             selection = selection?.deepCopy(),
             reservedPoints = reservedValue,
-            availablePoints = available
+            availablePoints = available,
+            seeThroughEnabled = seeThroughEnabled,
+            seeThroughCost = ShuffleSelection.SEE_THROUGH_COST
         )
     }
 
@@ -125,8 +134,11 @@ internal class ShufflePreparationHandler {
         if (confirmed[seat]) return PlanCheck.Rejected("ALREADY_CONFIRMED")
 
         val safeSelection = request.selection.deepCopy()
+        if (safeSelection.seeThrough && !seeThroughEnabled) {
+            return PlanCheck.Rejected("SEE_THROUGH_DISABLED")
+        }
         val cost = safeSelection.cost()
-        if (cost !in 0..60) return PlanCheck.Rejected("INVALID_COST")
+        if (cost !in 0..ShuffleSelection.MAX_COST) return PlanCheck.Rejected("INVALID_COST")
         if (currentPoints < cost) return PlanCheck.Rejected("INSUFFICIENT_FUNDS")
         return PlanCheck.Accepted(cost, safeSelection)
     }
@@ -194,21 +206,41 @@ internal class ShufflePreparationHandler {
             }
         }
 
+        // 准备截止时冻结看破席位集合 K：之后请求顺序、AI 完成顺序或断线都不再影响结算。
+        frozenSeeThroughSeats = if (seeThroughEnabled) {
+            (0 until 4).filter { seat -> selections[seat]?.seeThrough == true }.toSet()
+        } else {
+            emptySet()
+        }
+
         val record = record(prepId)
         val plans = (0 until 4).map { seat ->
             SeatShufflePlan(seat, record.selections.getOrNull(seat) ?: ShuffleSelection())
         }
+
+        // 原始方案与有效方案严格分离：看破只影响牌山算法副本，
+        // 费用仍由 [plans]（原始选择）计算；drawTargets 不受影响。
+        val effectivePlans = plans.map { plan ->
+            val suppressed = frozenSeeThroughSeats.any { it != plan.seat }
+            val effective = if (suppressed) {
+                plan.selection.deepCopy().copy(initialTargets = emptySet(), seeThrough = false)
+            } else {
+                plan.selection.deepCopy().copy(seeThrough = false)
+            }
+            SeatShufflePlan(plan.seat, effective)
+        }
+
         val tiles = try {
             ShuffleWallGenerator().generate(
                 seed = record.seed,
                 dealerSeat = dealerSeat,
-                plans = plans,
+                plans = effectivePlans,
                 config = config
             ).takeIf { it.size == 136 }
         } catch (t: Throwable) {
             null
         }
-        return Step.Ready(prepId, record, plans, tiles)
+        return Step.Ready(prepId, record, plans, effectivePlans, tiles)
     }
 
     fun shiftForPause(pauseDuration: Long) {
@@ -228,6 +260,8 @@ internal class ShufflePreparationHandler {
         opensAtMillis = 0L
         deadlineMillis = 0L
         roundSeed = 0L
+        seeThroughEnabled = false
+        frozenSeeThroughSeats = emptySet()
         confirmed.fill(false)
         selections.fill(null)
         reserved.fill(0)
@@ -238,6 +272,7 @@ internal class ShufflePreparationHandler {
         seed = roundSeed,
         selections = selections.map { it?.deepCopy() },
         confirmed = confirmed.toList(),
-        reserved = reserved.toList()
+        reserved = reserved.toList(),
+        seeThroughSeats = frozenSeeThroughSeats
     )
 }

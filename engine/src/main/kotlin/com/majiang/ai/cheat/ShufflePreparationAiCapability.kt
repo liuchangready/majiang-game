@@ -55,6 +55,14 @@ class ShufflePreparationAiCapability(
             )
         )
 
+        val seeThroughEnabled = preparation.seeThroughEnabled
+        if (seeThroughEnabled) {
+            val seeOnly = ShuffleSelection(seeThrough = true)
+            if (limits.canSpend(seeOnly.cost())) {
+                result.add(planCandidate("see-through", seeOnly, 8, "counter opponent shuffle shaping"))
+            }
+        }
+
         val initial = ShuffleSelection(initialTargets = setOf(ShuffleTarget.CHINITSU_MAN))
         if (limits.canSpend(initial.cost())) {
             result.add(planCandidate("initial", initial, 22, "initial hand shaping"))
@@ -69,6 +77,19 @@ class ShufflePreparationAiCapability(
         )
         if (limits.canSpend(both.cost())) {
             result.add(planCandidate("both", both, 40, "initial and draw shaping"))
+        }
+
+        if (seeThroughEnabled) {
+            // 保持 6 个候选上限：按预算选择最高档的“自身码牌 + 看破”组合。
+            val combined = when {
+                limits.canSpend(70) -> both.copy(seeThrough = true)
+                limits.canSpend(50) -> initial.copy(seeThrough = true)
+                limits.canSpend(30) -> draw.copy(seeThrough = true)
+                else -> null
+            }
+            if (combined != null) {
+                result.add(planCandidate("combined", combined, 45, "own shaping plus see-through"))
+            }
         }
         return result
     }
@@ -88,7 +109,8 @@ class ShufflePreparationAiCapability(
         terminalForWindow = true,
         parameters = AiVisibleParams.of(
             "initialTargets" to names(selection.initialTargets),
-            "drawTargets" to names(selection.drawTargets)
+            "drawTargets" to names(selection.drawTargets),
+            "seeThrough" to selection.seeThrough.toString()
         )
     )
 
@@ -103,7 +125,8 @@ class ShufflePreparationAiCapability(
         val roundId = requireNotNull(stamp.roundId) { "shuffle preparation requires roundId" }
         val selection = ShuffleSelection(
             initialTargets = parseTargets(selected.parameters.string("initialTargets")),
-            drawTargets = parseTargets(selected.parameters.string("drawTargets"))
+            drawTargets = parseTargets(selected.parameters.string("drawTargets")),
+            seeThrough = selected.parameters.string("seeThrough")?.toBooleanStrictOrNull() == true
         )
         val request = ShufflePlanRequest(
             requestId = AiRequestId.of(id, stamp, selected.optionId),

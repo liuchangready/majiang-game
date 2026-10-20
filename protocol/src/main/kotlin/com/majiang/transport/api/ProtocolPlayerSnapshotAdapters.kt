@@ -212,7 +212,7 @@ internal class ProtocolAccessCapabilitiesAdapter : JsonDeserializer<ProtocolAcce
             setOf(
                 "protocolVersion", "supportedPlayerCounts", "remoteTransport", "persistence",
                 "resumption", "tileMarkSupported", "sleeveBloomSupported", "beamSwapSupported",
-                ProtocolScoreCodes.FIELD_SCORE_DETAIL_VERSION
+                ProtocolScoreCodes.FIELD_SCORE_DETAIL_VERSION, "seeThroughSupported"
             ),
             "ProtocolAccessCapabilities"
         )
@@ -220,7 +220,7 @@ internal class ProtocolAccessCapabilitiesAdapter : JsonDeserializer<ProtocolAcce
             val v = validateStrictInt(obj.get("protocolVersion"), "ProtocolAccessCapabilities.protocolVersion")
             if (v < 1) throw JsonParseException("protocolVersion must be >= 1: $v")
             v
-        } else 5
+        } else com.majiang.server.api.ApiProtocol.PROTOCOL_VERSION
         val counts: Set<Int> = if (obj.has("supportedPlayerCounts") && !obj.get("supportedPlayerCounts").isJsonNull) {
             val list = validateStrictIntList(obj.get("supportedPlayerCounts"), "ProtocolAccessCapabilities.supportedPlayerCounts")
             if (list.isEmpty()) throw JsonParseException("supportedPlayerCounts cannot be empty")
@@ -256,9 +256,14 @@ internal class ProtocolAccessCapabilitiesAdapter : JsonDeserializer<ProtocolAcce
             }
             v
         } else 0
+        val seeThroughSupported = if (obj.has("seeThroughSupported")) {
+            val elem = obj.get("seeThroughSupported")
+            if (elem.isJsonNull) throw JsonParseException("seeThroughSupported must be a JSON boolean")
+            validateStrictBoolean(elem, "ProtocolAccessCapabilities.seeThroughSupported")
+        } else false
         return ProtocolAccessCapabilities(
             pv, counts, remote, persist, resume,
-            tileMarkSupported, sleeveBloomSupported, beamSwapSupported, scoreDetailVersion
+            tileMarkSupported, sleeveBloomSupported, beamSwapSupported, scoreDetailVersion, seeThroughSupported
         )
     }
 }
@@ -288,7 +293,11 @@ internal class ProtocolShufflePreparationAdapter : JsonDeserializer<ProtocolShuf
         val obj = json.asJsonObject
         checkUnknownFields(
             obj,
-            setOf("roundId", "status", "opensAtMillis", "deadlineMillis", "serverNowMillis", "confirmed", "selection", "reservedPoints", "availablePoints"),
+            setOf(
+                "roundId", "status", "opensAtMillis", "deadlineMillis", "serverNowMillis",
+                "confirmed", "selection", "reservedPoints", "availablePoints",
+                "seeThroughEnabled", "seeThroughCost"
+            ),
             "ProtocolShufflePreparation"
         )
         val roundId = validateStrictString(obj.get("roundId") ?: throw JsonParseException("Missing roundId in ProtocolShufflePreparation"), "ProtocolShufflePreparation.roundId")
@@ -309,7 +318,24 @@ internal class ProtocolShufflePreparationAdapter : JsonDeserializer<ProtocolShuf
         } else null
         val reserved = validateStrictInt(obj.get("reservedPoints") ?: throw JsonParseException("Missing reservedPoints in ProtocolShufflePreparation"), "ProtocolShufflePreparation.reservedPoints")
         val available = validateStrictInt(obj.get("availablePoints") ?: throw JsonParseException("Missing availablePoints in ProtocolShufflePreparation"), "ProtocolShufflePreparation.availablePoints")
-        return ProtocolShufflePreparation(roundId, status, opensAt, deadline, serverNow, confirmed, selection, reserved, available)
+        val seeThroughEnabled = if (obj.has("seeThroughEnabled")) {
+            val elem = obj.get("seeThroughEnabled")
+            if (elem.isJsonNull) throw JsonParseException("seeThroughEnabled must be a JSON boolean in ProtocolShufflePreparation")
+            validateStrictBoolean(elem, "ProtocolShufflePreparation.seeThroughEnabled")
+        } else false
+        val seeThroughCost = if (obj.has("seeThroughCost")) {
+            val elem = obj.get("seeThroughCost")
+            if (elem.isJsonNull) throw JsonParseException("seeThroughCost must be a JSON number in ProtocolShufflePreparation")
+            val v = validateStrictInt(elem, "ProtocolShufflePreparation.seeThroughCost")
+            if (v != ProtocolShuffleSelection.SEE_THROUGH_COST) {
+                throw JsonParseException("seeThroughCost must be ${ProtocolShuffleSelection.SEE_THROUGH_COST}: $v")
+            }
+            v
+        } else ProtocolShuffleSelection.SEE_THROUGH_COST
+        return ProtocolShufflePreparation(
+            roundId, status, opensAt, deadline, serverNow, confirmed, selection, reserved, available,
+            seeThroughEnabled, seeThroughCost
+        )
     }
 }
 

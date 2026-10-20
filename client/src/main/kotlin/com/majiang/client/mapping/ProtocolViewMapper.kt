@@ -512,7 +512,8 @@ object ProtocolViewMapper {
 
     fun mapShuffleSelectionView(s: ProtocolShuffleSelection): ShuffleSelectionView = ShuffleSelectionView(
         initialTargets = s.initialTargets.map { mapShuffleTargetView(it) }.toSet(),
-        drawTargets = s.drawTargets.map { mapShuffleTargetView(it) }.toSet()
+        drawTargets = s.drawTargets.map { mapShuffleTargetView(it) }.toSet(),
+        seeThrough = s.seeThrough
     )
 
     fun mapShufflePreparation(prep: ProtocolShufflePreparation): ShufflePreparationView = ShufflePreparationView(
@@ -524,7 +525,9 @@ object ProtocolViewMapper {
         confirmed = prep.confirmed,
         selection = prep.selection?.let { mapShuffleSelectionView(it) },
         reservedPoints = prep.reservedPoints,
-        availablePoints = prep.availablePoints
+        availablePoints = prep.availablePoints,
+        seeThroughEnabled = prep.seeThroughEnabled,
+        seeThroughCost = prep.seeThroughCost
     )
 
     // ==========================================
@@ -700,12 +703,14 @@ object ProtocolViewMapper {
 
     fun mapShuffleSelection(selection: ProtocolShuffleSelection): ShuffleSelection = ShuffleSelection(
         initialTargets = selection.initialTargets.map { mapShuffleTarget(it) }.toSet(),
-        drawTargets = selection.drawTargets.map { mapShuffleTarget(it) }.toSet()
+        drawTargets = selection.drawTargets.map { mapShuffleTarget(it) }.toSet(),
+        seeThrough = selection.seeThrough
     )
 
     fun toProtocolShuffleSelection(selection: ShuffleSelection): ProtocolShuffleSelection = ProtocolShuffleSelection(
         initialTargets = selection.initialTargets.map { toProtocolShuffleTarget(it) }.toSet(),
-        drawTargets = selection.drawTargets.map { toProtocolShuffleTarget(it) }.toSet()
+        drawTargets = selection.drawTargets.map { toProtocolShuffleTarget(it) }.toSet(),
+        seeThrough = selection.seeThrough
     )
 
     fun toProtocolShufflePlan(plan: ShufflePlan): ProtocolShufflePlan = ProtocolShufflePlan(
@@ -733,7 +738,8 @@ object ProtocolViewMapper {
         plannedDraws = config.plannedDraws,
         strength = config.strength,
         interference = config.interference,
-        aiMaySpend = config.aiMaySpend
+        aiMaySpend = config.aiMaySpend,
+        seeThroughEnabled = config.seeThroughEnabled
     )
 
     fun toProtocolShuffleConfig(config: ShuffleConfig): ProtocolShuffleConfig = ProtocolShuffleConfig(
@@ -742,7 +748,8 @@ object ProtocolViewMapper {
         plannedDraws = config.plannedDraws,
         strength = config.strength,
         interference = config.interference,
-        aiMaySpend = config.aiMaySpend
+        aiMaySpend = config.aiMaySpend,
+        seeThroughEnabled = config.seeThroughEnabled
     )
 
     fun mapMatchConfig(config: ProtocolMatchConfig): MatchConfig = MatchConfig(
@@ -792,7 +799,8 @@ object ProtocolViewMapper {
         tileMarkSupported = caps.tileMarkSupported,
         sleeveBloomSupported = caps.sleeveBloomSupported,
         beamSwapSupported = caps.beamSwapSupported,
-        scoreDetailVersion = caps.scoreDetailVersion
+        scoreDetailVersion = caps.scoreDetailVersion,
+        seeThroughSupported = caps.seeThroughSupported
     )
 
     fun toProtocolCapabilities(caps: Capabilities): ProtocolAccessCapabilities = ProtocolAccessCapabilities(
@@ -804,7 +812,8 @@ object ProtocolViewMapper {
         tileMarkSupported = caps.tileMarkSupported,
         sleeveBloomSupported = caps.sleeveBloomSupported,
         beamSwapSupported = caps.beamSwapSupported,
-        scoreDetailVersion = caps.scoreDetailVersion
+        scoreDetailVersion = caps.scoreDetailVersion,
+        seeThroughSupported = caps.seeThroughSupported
     )
 
     fun mapRoomSummary(room: RoomSummary): RoomSummaryView = RoomSummaryView(

@@ -2844,7 +2844,8 @@ class ApplicationCoordinator(
         roundId: String,
         wallTiles: List<Tile>,
         cheatCosts: Map<Int, Int> = emptyMap(),
-        costReasons: Map<Int, String> = emptyMap()
+        costReasons: Map<Int, String> = emptyMap(),
+        seeThroughSeats: Set<Int> = emptySet()
     ): ActionResult {
         if (currentExecutingThread.get() == Thread.currentThread()) {
             return ActionResult.Rejected(RejectionReason.ACTION_NOT_AVAILABLE)
@@ -2860,6 +2861,7 @@ class ApplicationCoordinator(
 
         val allEvents = mutableListOf<GameEvent>()
         var acceptedResultToReturn: ActionResult? = null
+        var committed = false
         try {
             if (session.lifecycle == SessionLifecycle.FINISHED) {
                 return ActionResult.Rejected(RejectionReason.MATCH_FINISHED)
@@ -2870,6 +2872,12 @@ class ApplicationCoordinator(
             }
             if (round.state.phase != GamePhase.STACKING || round.state.wall.isNotEmpty()) {
                 return ActionResult.Rejected(RejectionReason.WRONG_PHASE)
+            }
+            if (seeThroughSeats.any { it !in 0..3 }) {
+                return ActionResult.Rejected(RejectionReason.INVALID_PLAYER)
+            }
+            if (seeThroughSeats.isNotEmpty() && !shuffleConfig.seeThroughEnabled) {
+                return ActionResult.Rejected(RejectionReason.ACTION_NOT_AVAILABLE)
             }
 
             // 1. 严格核验 136 张物理牌完整性
@@ -2987,10 +2995,23 @@ class ApplicationCoordinator(
             // 4. 强不变量审计（物理守恒、非负点数等）
             StateInvariants.assertValid(candidate)
 
-            // 5. 原子安装单局变更与发牌局次登记
-            val sessionStep = ApprovedSessionStep.RegisterDealtRound(round.roundId)
+            // 5. 一次性准备“发牌局次登记 + 看破清标”的同一 Session 变更。
+            // 先 prepare（纯函数，不修改权威状态），候选局状态通过审计后才安装；
+            // 无看破时 clearMarkKeepSeats 为 null，落汗状态完全不变。
+            //
+            // 保留席位按“是否被其他看破者针对”推导：单人看破时自己的组保留；
+            // 两人及以上互相看破时，每名看破者的组都被另一名看破者清除，
+            // 因此任何看破者的组都不能保留。非看破者的既有组始终被清除。
+            val markKeepSeats = when {
+                seeThroughSeats.isEmpty() -> null
+                seeThroughSeats.size == 1 -> seeThroughSeats
+                else -> emptySet()
+            }
+            val sessionStep = ApprovedSessionStep.RegisterDealtRound(
+                roundId = round.roundId,
+                clearMarkKeepSeats = markKeepSeats
+            )
             val sessionChange = session.prepare(sessionStep)
-            session.install(sessionChange)
 
             val change = RoundChange(
                 roundId = round.roundId,
@@ -3000,7 +3021,16 @@ class ApplicationCoordinator(
                 result = null,
                 events = stepEvents
             )
+
+            // 6. 安装前确认两个权威对象仍停留在 prepare 时的版本；持有写锁期间没有并发写者，
+            // 因此后续两次 install 不会因版本漂移而半提交。
+            if (session.version != sessionChange.sourceVersion || round.version != change.sourceVersion) {
+                return ActionResult.Rejected(RejectionReason.ACTION_NOT_AVAILABLE)
+            }
+            // 原子安装 Session 变更与单局发牌变更
+            session.install(sessionChange)
             round.install(change)
+            committed = true
 
             for (e in stepEvents) {
                 val snap = snapshotGameEvent(e)
@@ -3016,6 +3046,12 @@ class ApplicationCoordinator(
             acceptedResultToReturn = acceptedResult
             return acceptedResult
         } catch (t: Throwable) {
+            if (committed) {
+                // 状态已提交后不得再报告“拒绝且无副作用”；如实返回已提交结果。
+                val accepted = ActionResult.Accepted(allEvents.map { snapshotGameEvent(it) })
+                acceptedResultToReturn = accepted
+                return accepted
+            }
             return ActionResult.Rejected(RejectionReason.UNSUPPORTED_ACTION)
         } finally {
             currentExecutingThread.set(null)

@@ -13,18 +13,22 @@ import java.util.UUID
  * 洗牌千术准备阶段单局不可变记录 (RoundPreparationRecord)
  *
  * 归属于 RoundStateMachine 的防御记录，跟踪各席位方案、确认状态与资金预留。
+ *
+ * @property seeThroughSeats 准备截止时冻结的本局看破席位集合（K），结算后不可更改
  */
 data class RoundPreparationRecord(
     val roundId: String,
     val seed: Long,
     val selections: List<ShuffleSelection?> = List(4) { null },
     val confirmed: List<Boolean> = List(4) { false },
-    val reserved: List<Int> = List(4) { 0 }
+    val reserved: List<Int> = List(4) { 0 },
+    val seeThroughSeats: Set<Int> = emptySet()
 ) {
     fun deepCopy(): RoundPreparationRecord = copy(
         selections = selections.map { it?.deepCopy() },
         confirmed = confirmed.toList(),
-        reserved = reserved.toList()
+        reserved = reserved.toList(),
+        seeThroughSeats = java.util.Collections.unmodifiableSet(java.util.LinkedHashSet(seeThroughSeats))
     )
 }
 
