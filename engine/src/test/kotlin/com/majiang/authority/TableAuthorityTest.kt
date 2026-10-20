@@ -159,7 +159,7 @@ class TableAuthorityTest {
         val planRequest = ShufflePlanRequest(
             roundId = prepView.roundId,
             controlEpoch = epoch,
-            selection = ShuffleSelection(initialTargets = setOf(ShuffleTarget.CHINITSU_MAN)),
+            selection = ShuffleSelection(target = ShuffleTarget.CHINITSU_MAN),
             requestId = "prep-req-1"
         )
         val planResult = authority.submitShufflePlan(0, planRequest, clock.nowMillis())

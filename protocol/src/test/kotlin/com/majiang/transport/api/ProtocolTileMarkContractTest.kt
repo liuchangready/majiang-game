@@ -46,7 +46,7 @@ class ProtocolTileMarkContractTest {
             { it.remove("tileMark") },
             { it.addProperty("api", ApiTags.SNAPSHOT) },
             { it.add("choice", JsonParser.parseString("""{"requestId":"mark-1","roundId":"round-1","decisionId":"decision-0","controlEpoch":1,"optionId":"opt-1"}""")) },
-            { it.add("shufflePlan", JsonParser.parseString("""{"requestId":"mark-1","roundId":"round-1","controlEpoch":1,"selection":{"initialTargets":[],"drawTargets":[]}}""")) }
+            { it.add("shufflePlan", JsonParser.parseString("""{"requestId":"mark-1","roundId":"round-1","controlEpoch":1,"selection":{"target":null}}""")) }
         )
         variants.forEach { mutate ->
             val json = goodJson().also(mutate)

@@ -149,7 +149,7 @@ class ApiMessageCodecTest {
             ApiMessageCodec.decodeRequest(ApiMessageCodec.encodeRequest(create)).config?.shuffleConfig)
 
         val plan = ProtocolShufflePlan("shuffle-plan", "round", 7L,
-            ProtocolShuffleSelection(initialTargets = setOf(ProtocolShuffleTarget.KOKUSHI)))
+            ProtocolShuffleSelection(target = ProtocolShuffleTarget.KOKUSHI))
         val submit = ApiRequest(api = ApiTags.SUBMIT_SHUFFLE_PLAN, requestId = plan.requestId,
             shufflePlan = plan)
         assertEquals(plan, ApiMessageCodec.decodeRequest(ApiMessageCodec.encodeRequest(submit)).shufflePlan)
@@ -158,7 +158,7 @@ class ApiMessageCodecTest {
     @Test
     fun `shuffle wire rejects forged fields targets and fractional or overflowing epochs`() {
         val plan = ProtocolShufflePlan("shuffle-plan", "round", 7L,
-            ProtocolShuffleSelection(initialTargets = setOf(ProtocolShuffleTarget.KOKUSHI)))
+            ProtocolShuffleSelection(target = ProtocolShuffleTarget.KOKUSHI))
         val good = ApiMessageCodec.encodeRequest(ApiRequest(api = ApiTags.SUBMIT_SHUFFLE_PLAN,
             requestId = plan.requestId, shufflePlan = plan))
         val malformed = listOf(
@@ -167,7 +167,7 @@ class ApiMessageCodecTest {
             good.replace("\"controlEpoch\":7", "\"controlEpoch\":\"7\""),
             good.replace("\"KOKUSHI\"", "7"),
             good.replace("\"KOKUSHI\"", "\"INVALID\""),
-            good.replace("\"initialTargets\":", "\"cost\":0,\"initialTargets\":"),
+            good.replace("\"target\":", "\"cost\":0,\"target\":"),
             good.replace("\"controlEpoch\":7", "\"seat\":1,\"controlEpoch\":7")
         )
         for (json in malformed) {
@@ -178,7 +178,7 @@ class ApiMessageCodecTest {
 
     @Test
     fun `snapshot wire retains private preparation and rejects unknown target`() {
-        val selection = ProtocolShuffleSelection(initialTargets = setOf(ProtocolShuffleTarget.KOKUSHI))
+        val selection = ProtocolShuffleSelection(target = ProtocolShuffleTarget.KOKUSHI)
         val snapshot = FakeServerConnection.createDefaultSnapshot().copy(
             preparation = ProtocolShufflePreparation(
                 roundId = "round-1", status = ProtocolShufflePreparationStatus.SELECTING,

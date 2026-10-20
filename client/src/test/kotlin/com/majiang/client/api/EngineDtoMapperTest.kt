@@ -264,8 +264,8 @@ class ProtocolViewMappingRegressionTest {
             deadlineMillis = 5000L,
             serverNowMillis = 2000L,
             confirmed = false,
-            selection = EngineShuffleSelection(setOf(ShuffleTarget.DAISANGEN), emptySet()),
-            reservedPoints = 40,
+            selection = EngineShuffleSelection(ShuffleTarget.DAISANGEN),
+            reservedPoints = 30,
             availablePoints = 100
         )
 
@@ -315,7 +315,7 @@ class ProtocolViewMappingRegressionTest {
         assertEquals(1, viewSnap.controls.size)
         assertEquals("HUMAN", viewSnap.controls[0].role)
         assertNotNull(viewSnap.preparation)
-        assertEquals(ShuffleTargetView.DAISANGEN, viewSnap.preparation!!.selection!!.initialTargets.first())
+        assertEquals(ShuffleTargetView.DAISANGEN, viewSnap.preparation!!.selection!!.target)
 
         // 验证 settlementDetail 被正确推导
         assertNotNull(viewSnap.settlementDetail)

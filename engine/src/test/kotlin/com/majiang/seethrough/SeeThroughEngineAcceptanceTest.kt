@@ -112,24 +112,18 @@ class SeeThroughEngineAcceptanceTest {
     // ------------------------------------------------------------------
 
     @Test
-    fun `cost model charges ten for see-through alone and caps a combined plan at seventy`() {
+    fun `cost model charges ten for see-through alone and caps a combined plan at forty`() {
         val solo = ShuffleSelection(seeThrough = true)
         assertEquals(10, solo.cost())
         assertTrue(solo.isActive)
 
-        val initialOnly = ShuffleSelection(initialTargets = setOf(ShuffleTarget.CHINITSU_MAN))
-        val drawOnly = ShuffleSelection(drawTargets = setOf(ShuffleTarget.DAISANGEN))
-        assertEquals(40, initialOnly.cost())
-        assertEquals(20, drawOnly.cost())
+        val targetOnly = ShuffleSelection(target = ShuffleTarget.CHINITSU_MAN)
+        assertEquals(30, targetOnly.cost())
 
-        val full = ShuffleSelection(
-            initialTargets = setOf(ShuffleTarget.KOKUSHI),
-            drawTargets = setOf(ShuffleTarget.DAISANGEN),
-            seeThrough = true
-        )
-        assertEquals(70, full.cost())
+        val full = ShuffleSelection(target = ShuffleTarget.KOKUSHI, seeThrough = true)
+        assertEquals(40, full.cost())
         assertEquals(ShuffleSelection.MAX_COST, full.cost())
-        assertEquals(70, ShuffleSelection.MAX_COST)
+        assertEquals(40, ShuffleSelection.MAX_COST)
 
         assertTrue(ShuffleSelection().cost() == 0)
         assertFalse(ShuffleSelection().isActive)
@@ -170,27 +164,27 @@ class SeeThroughEngineAcceptanceTest {
     // ------------------------------------------------------------------
 
     @Test
-    fun `deadline freezes see-through seats and suppresses only opponents initial targets`() {
+    fun `deadline freezes see-through seats and suppresses every opponent unified target`() {
         val config = ShuffleConfig(enabled = true, selectionMillis = 1_000L, seeThroughEnabled = true)
         val handler = ShufflePreparationHandler()
         val startedAt = 5_000L
         handler.start("round-1", startedAt, config)
 
-        // 0 号看破并保留自己的起手目标；1 号偷天换日+瞒天过海；2 号仅偷天换日；3 号跳过。
+        // 0 号看破并保留自己的统一目标；1 号统一目标；2 号统一目标；3 号跳过。
         handler.recordPlan(
             0,
-            ShuffleSelection(initialTargets = setOf(ShuffleTarget.CHINITSU_PIN), seeThrough = true),
-            50
+            ShuffleSelection(target = ShuffleTarget.CHINITSU_PIN, seeThrough = true),
+            40
         )
         handler.recordPlan(
             1,
-            ShuffleSelection(initialTargets = setOf(ShuffleTarget.CHINITSU_MAN), drawTargets = setOf(ShuffleTarget.DAISANGEN)),
-            60
+            ShuffleSelection(target = ShuffleTarget.CHINITSU_MAN),
+            30
         )
         handler.recordPlan(
             2,
-            ShuffleSelection(initialTargets = setOf(ShuffleTarget.KOKUSHI)),
-            40
+            ShuffleSelection(target = ShuffleTarget.KOKUSHI),
+            30
         )
 
         val step = handler.step(
@@ -207,16 +201,15 @@ class SeeThroughEngineAcceptanceTest {
         assertTrue(step.record.selections[0]!!.seeThrough)
 
         // 原始方案与费用完全保留
-        assertEquals(setOf(ShuffleTarget.CHINITSU_PIN), step.plans.first { it.seat == 0 }.selection.initialTargets)
-        assertEquals(setOf(ShuffleTarget.CHINITSU_MAN), step.plans.first { it.seat == 1 }.selection.initialTargets)
-        assertEquals(60, step.plans.first { it.seat == 1 }.selection.cost())
-        assertEquals(50, step.plans.first { it.seat == 0 }.selection.cost())
+        assertEquals(ShuffleTarget.CHINITSU_PIN, step.plans.first { it.seat == 0 }.selection.target)
+        assertEquals(ShuffleTarget.CHINITSU_MAN, step.plans.first { it.seat == 1 }.selection.target)
+        assertEquals(30, step.plans.first { it.seat == 1 }.selection.cost())
+        assertEquals(40, step.plans.first { it.seat == 0 }.selection.cost())
 
-        // 有效方案：对手起手优化移除，drawTargets 保留，看破不进入洗牌算法
-        assertTrue(step.effectivePlans.first { it.seat == 0 }.selection.initialTargets.contains(ShuffleTarget.CHINITSU_PIN))
-        assertTrue(step.effectivePlans.first { it.seat == 1 }.selection.initialTargets.isEmpty())
-        assertEquals(setOf(ShuffleTarget.DAISANGEN), step.effectivePlans.first { it.seat == 1 }.selection.drawTargets)
-        assertTrue(step.effectivePlans.first { it.seat == 2 }.selection.initialTargets.isEmpty())
+        // 有效方案：被看破者的整个统一目标移除；看破不进入洗牌算法。
+        assertEquals(ShuffleTarget.CHINITSU_PIN, step.effectivePlans.first { it.seat == 0 }.selection.target)
+        assertNull(step.effectivePlans.first { it.seat == 1 }.selection.target)
+        assertNull(step.effectivePlans.first { it.seat == 2 }.selection.target)
         assertTrue(step.effectivePlans.none { it.selection.seeThrough })
 
         val expected = ShuffleWallGenerator().generate(
@@ -239,9 +232,9 @@ class SeeThroughEngineAcceptanceTest {
             val startedAt = 9_000L
             handler.start("round-multi", startedAt, config)
             val plans = listOf(
-                0 to ShuffleSelection(initialTargets = setOf(ShuffleTarget.CHINITSU_MAN), seeThrough = true),
-                1 to ShuffleSelection(initialTargets = setOf(ShuffleTarget.KOKUSHI), drawTargets = setOf(ShuffleTarget.DAISANGEN), seeThrough = true),
-                2 to ShuffleSelection(initialTargets = setOf(ShuffleTarget.CHINITSU_SOU))
+                0 to ShuffleSelection(target = ShuffleTarget.CHINITSU_MAN, seeThrough = true),
+                1 to ShuffleSelection(target = ShuffleTarget.KOKUSHI, seeThrough = true),
+                2 to ShuffleSelection(target = ShuffleTarget.CHINITSU_SOU)
             )
             for ((seat, selection) in if (reverse) plans.reversed() else plans) {
                 handler.recordPlan(seat, selection, selection.cost())
@@ -261,12 +254,16 @@ class SeeThroughEngineAcceptanceTest {
         val backward = run(reverse = true)
         for (step in listOf(forward, backward)) {
             assertEquals(setOf(0, 1), step.record.seeThroughSeats)
-            assertTrue(step.effectivePlans.first { it.seat == 0 }.selection.initialTargets.isEmpty())
-            assertTrue(step.effectivePlans.first { it.seat == 1 }.selection.initialTargets.isEmpty())
-            assertEquals(setOf(ShuffleTarget.DAISANGEN), step.effectivePlans.first { it.seat == 1 }.selection.drawTargets)
-            assertTrue(step.effectivePlans.first { it.seat == 2 }.selection.initialTargets.isEmpty())
-            assertEquals(70, step.plans.first { it.seat == 1 }.selection.cost(), "Original cost includes see-through and is unchanged by mutual counter")
+            assertNull(step.effectivePlans.first { it.seat == 0 }.selection.target)
+            assertNull(step.effectivePlans.first { it.seat == 1 }.selection.target)
+            assertNull(step.effectivePlans.first { it.seat == 2 }.selection.target)
+            assertEquals(40, step.plans.first { it.seat == 1 }.selection.cost(), "Original cost includes see-through and is unchanged by mutual counter")
             assertEquals(136, step.tiles!!.size)
+            // 看破抵消后有效施术人数 n=0：牌山必须与同种子基础洗牌逐张相同。
+            assertEquals(
+                ShuffleWallGenerator().generate(step.record.seed, 0, emptyList(), config),
+                step.tiles
+            )
         }
     }
 
@@ -276,7 +273,7 @@ class SeeThroughEngineAcceptanceTest {
         val handler = ShufflePreparationHandler()
         val startedAt = 12_000L
         handler.start("round-solo", startedAt, config)
-        val own = ShuffleSelection(initialTargets = setOf(ShuffleTarget.CHINITSU_MAN), seeThrough = true)
+        val own = ShuffleSelection(target = ShuffleTarget.CHINITSU_MAN, seeThrough = true)
         handler.recordPlan(0, own, own.cost())
         val step = handler.step(
             now = startedAt + config.selectionMillis,
@@ -289,8 +286,8 @@ class SeeThroughEngineAcceptanceTest {
         ) as ShufflePreparationHandler.Step.Ready
 
         assertEquals(setOf(0), step.record.seeThroughSeats)
-        // 没有其他看破者，自己的起手目标保留。
-        assertEquals(own.initialTargets, step.effectivePlans.first { it.seat == 0 }.selection.initialTargets)
+        // 没有其他看破者，自己的统一目标保留。
+        assertEquals(own.target, step.effectivePlans.first { it.seat == 0 }.selection.target)
         assertEquals(
             ShuffleWallGenerator().generate(step.record.seed, 1, step.plans, config),
             step.tiles,
@@ -299,8 +296,8 @@ class SeeThroughEngineAcceptanceTest {
 
         // 直接比较 seeThrough 标志对生成器无影响（同种子逐张一致）。
         val basePlans = listOf(
-            SeatShufflePlan(0, ShuffleSelection(initialTargets = setOf(ShuffleTarget.KOKUSHI))),
-            SeatShufflePlan(1, ShuffleSelection(drawTargets = setOf(ShuffleTarget.DAISANGEN)))
+            SeatShufflePlan(0, ShuffleSelection(target = ShuffleTarget.KOKUSHI)),
+            SeatShufflePlan(1, ShuffleSelection(target = ShuffleTarget.DAISANGEN))
         )
         val flagged = basePlans.map { it.copy(selection = it.selection.copy(seeThrough = true)) }
         for (seed in 0L..31L) {
@@ -347,7 +344,7 @@ class SeeThroughEngineAcceptanceTest {
             val seeThroughPlan = planRequest(a, 0, "see-0", ShuffleSelection(seeThrough = true), clock.now)
             val opponentPlan = planRequest(
                 a, 1, "opp-1",
-                ShuffleSelection(initialTargets = setOf(ShuffleTarget.CHINITSU_MAN), drawTargets = setOf(ShuffleTarget.DAISANGEN)),
+                ShuffleSelection(target = ShuffleTarget.CHINITSU_MAN),
                 clock.now
             )
             assertEquals(ReceiptStatus.RECORDED, a.submitShufflePlan(0, seeThroughPlan, clock.now).receipt.status)
@@ -372,7 +369,7 @@ class SeeThroughEngineAcceptanceTest {
 
             val points = a.coordinator.queryCheatPoints()
             assertEquals(90, points[0], "See-through fee is exactly 10")
-            assertEquals(40, points[1], "Countered initial + draw still costs the original 60")
+            assertEquals(70, points[1], "Countered unified target still costs the original 30")
             assertEquals(100, points[2])
             assertEquals(100, points[3])
 
@@ -407,7 +404,7 @@ class SeeThroughEngineAcceptanceTest {
                 2,
                 planRequest(
                     a, 2, "plain-2",
-                    ShuffleSelection(initialTargets = setOf(ShuffleTarget.CHINITSU_SOU)),
+                    ShuffleSelection(target = ShuffleTarget.CHINITSU_SOU),
                     clock.now
                 ),
                 clock.now
@@ -421,7 +418,7 @@ class SeeThroughEngineAcceptanceTest {
             val points = a.coordinator.queryCheatPoints()
             assertEquals(90, points[0])
             assertEquals(90, points[1])
-            assertEquals(60, points[2], "Non see-through plan keeps its original 40 point charge")
+            assertEquals(70, points[2], "Non see-through plan keeps its original 30 point charge")
             assertEquals(100, points[3])
 
             // 发牌后重复提交同一 requestId 仍只回放原回执，不再扣费。
@@ -432,7 +429,7 @@ class SeeThroughEngineAcceptanceTest {
     }
 
     @Test
-    fun `exact ten and seventy point balances are accepted and charged once`() {
+    fun `exact ten and forty point balances are accepted and charged once`() {
         val tenClock = ManualClock(1_700L)
         authority(tenClock, points = 10).use { a ->
             a.start(0, tenClock.now)
@@ -453,11 +450,7 @@ class SeeThroughEngineAcceptanceTest {
         authority(fullClock, points = 100).use { a ->
             a.start(0, fullClock.now)
             val view0 = a.buildPreparationViewForSeat(0)!!
-            val full = ShuffleSelection(
-                initialTargets = setOf(ShuffleTarget.KOKUSHI),
-                drawTargets = setOf(ShuffleTarget.DAISANGEN),
-                seeThrough = true
-            )
+            val full = ShuffleSelection(target = ShuffleTarget.KOKUSHI, seeThrough = true)
             a.submitShufflePlan(
                 0,
                 planRequest(a, 0, "full-0", ShuffleSelection(seeThrough = true), fullClock.now),
@@ -468,14 +461,14 @@ class SeeThroughEngineAcceptanceTest {
                 planRequest(a, 1, "full-1", full, fullClock.now),
                 fullClock.now
             )
-            assertEquals(70, a.buildPreparationViewForSeat(1)!!.reservedPoints)
-            assertEquals(30, a.buildPreparationViewForSeat(1)!!.availablePoints)
+            assertEquals(40, a.buildPreparationViewForSeat(1)!!.reservedPoints)
+            assertEquals(60, a.buildPreparationViewForSeat(1)!!.availablePoints)
             fullClock.now = view0.deadlineMillis
             assertTrue(a.checkPreparationStep(fullClock.now, emptySet(), emptySet()) is TableAuthority.AutoStepResult.PreparationDealt)
             val points = a.coordinator.queryCheatPoints()
             assertEquals(90, points[0])
-            // 被 0 号看破取消起手优化，但原始 40+20+10 费用照扣。
-            assertEquals(30, points[1])
+            // 被 0 号看破取消整局统一目标，但原始 30+10 费用照扣。
+            assertEquals(60, points[1])
         }
     }
 

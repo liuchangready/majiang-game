@@ -90,15 +90,15 @@ abstract class V4LocalRenderSmoke extends ApplicationAdapter {
         if (!leaving && panel.isActive()) {
             if (!shuffleSelected) {
                 capture("shuffle-selection");
-                Rectangle target = panel.getBtnInitialTargets().get(ShuffleTarget.KOKUSHI);
+                Rectangle target = panel.getBtnTargets().get(ShuffleTarget.KOKUSHI);
                 if (target == null) throw new AssertionError("KOKUSHI selection unavailable");
                 click(screen, target);
                 click(screen, panel.getBtnConfirmRect());
                 shuffleSelected = true;
                 commands += 2;
             } else if (panel.getModel().isAuthorityConfirmed() && !shuffleConfirmed) {
-                if (panel.getModel().getRemainingPointsPreview() != 60)
-                    throw new AssertionError("100-point default must reserve the 40-point shuffle fee exactly once");
+                if (panel.getModel().getRemainingPointsPreview() != 70)
+                    throw new AssertionError("100-point default must reserve the 30-point unified shuffle fee exactly once");
                 capture("shuffle-confirmed");
                 shuffleConfirmed = true;
             }
@@ -115,7 +115,7 @@ abstract class V4LocalRenderSmoke extends ApplicationAdapter {
             if (requireShuffleFee) {
                 if (!shuffleSelected || !shuffleConfirmed)
                     throw new AssertionError("Shuffle panel flow was bypassed");
-                if (snapshot.getCheatPoints().get(0) != 60)
+                if (snapshot.getCheatPoints().get(0) != 70)
                     throw new AssertionError("Shuffle fee was not applied to authority snapshot");
             }
             for (GameScreen.HandTileSlot slot : screen.refreshHandTileRects()) {

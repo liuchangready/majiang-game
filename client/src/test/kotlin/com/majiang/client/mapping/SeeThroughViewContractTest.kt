@@ -12,12 +12,11 @@ import com.majiang.transport.api.ProtocolShuffleTarget
 import org.junit.jupiter.api.Assertions.*
 import org.junit.jupiter.api.Test
 
-/** v7 看破在客户端私有视图与请求映射中的完整往返。 */
+/** v8 统一码牌 + 看破在客户端私有视图与请求映射中的完整往返。 */
 class SeeThroughViewContractTest {
 
     private val selection = ProtocolShuffleSelection(
-        initialTargets = setOf(ProtocolShuffleTarget.CHINITSU_MAN),
-        drawTargets = setOf(ProtocolShuffleTarget.DAISANGEN),
+        target = ProtocolShuffleTarget.CHINITSU_MAN,
         seeThrough = true
     )
 
@@ -25,7 +24,7 @@ class SeeThroughViewContractTest {
     fun `selection mapping keeps see through cost and equality`() {
         val view = ProtocolViewMapper.mapShuffleSelection(selection)
         assertTrue(view.seeThrough)
-        assertEquals(70, view.cost())
+        assertEquals(40, view.cost())
         assertEquals(selection, ProtocolViewMapper.toProtocolShuffleSelection(view))
 
         val plain = ShuffleSelection()
@@ -42,14 +41,13 @@ class SeeThroughViewContractTest {
             roundId = "round-7",
             controlEpoch = 2,
             selection = ShuffleSelection(
-                initialTargets = setOf(ShuffleTarget.KOKUSHI),
-                drawTargets = setOf(ShuffleTarget.DAISANGEN),
+                target = ShuffleTarget.KOKUSHI,
                 seeThrough = true
             )
         )
         val proto = ProtocolViewMapper.toProtocolShufflePlan(plan)
         assertEquals("see-plan", proto.requestId)
-        assertEquals(70, proto.selection.cost())
+        assertEquals(40, proto.selection.cost())
         assertTrue(proto.selection.seeThrough)
         assertEquals(plan.requestId, proto.requestId)
         assertEquals(plan.roundId, proto.roundId)
@@ -87,7 +85,7 @@ class SeeThroughViewContractTest {
         assertEquals(config, ProtocolViewMapper.toProtocolShuffleConfig(view))
 
         val caps = ProtocolAccessCapabilities(
-            protocolVersion = 7,
+            protocolVersion = 8,
             tileMarkSupported = true,
             sleeveBloomSupported = true,
             beamSwapSupported = true,
@@ -95,14 +93,14 @@ class SeeThroughViewContractTest {
         )
         val client = ProtocolViewMapper.mapCapabilities(caps)
         assertTrue(client.seeThroughSupported)
-        assertEquals(7, client.protocolVersion)
+        assertEquals(8, client.protocolVersion)
         assertEquals(caps, ProtocolViewMapper.toProtocolCapabilities(client))
     }
 
     @Test
     fun `client capability defaults advertise current business version and disable see through`() {
         val caps = ProtocolAccessCapabilities()
-        assertEquals(7, caps.protocolVersion)
+        assertEquals(8, caps.protocolVersion)
         assertFalse(caps.seeThroughSupported)
         assertFalse(ProtocolViewMapper.mapCapabilities(caps).seeThroughSupported)
     }

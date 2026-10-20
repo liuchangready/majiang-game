@@ -799,7 +799,7 @@ private class ProtocolShuffleConfigAdapter : JsonDeserializer<ProtocolShuffleCon
             val v = validateStrictInt(obj.get("plannedDraws"), "plannedDraws")
             if (v !in 0..18) throw JsonParseException("plannedDraws must be in 0..18: $v")
             v
-        } else 8
+        } else 18
         val strength = if (obj.has("strength") && !obj.get("strength").isJsonNull) {
             val v = validateStrictDouble(obj.get("strength"), "strength")
             if (v !in 0.0..1.0) throw JsonParseException("strength must be in 0.0..1.0: $v")
@@ -920,29 +920,17 @@ private class ProtocolShuffleSelectionAdapter : JsonDeserializer<ProtocolShuffle
     override fun deserialize(json: JsonElement, typeOfT: Type, context: JsonDeserializationContext): ProtocolShuffleSelection {
         if (!json.isJsonObject) throw JsonParseException("ProtocolShuffleSelection must be a JSON object")
         val obj = json.asJsonObject
-        checkUnknownFields(obj, setOf("initialTargets", "drawTargets", "seeThrough"), "ProtocolShuffleSelection")
-        val initialTargets: Set<ProtocolShuffleTarget> = if (obj.has("initialTargets") && !obj.get("initialTargets").isJsonNull) {
-            val arr = obj.getAsJsonArray("initialTargets")
-            val set = LinkedHashSet<ProtocolShuffleTarget>()
-            for (elem in arr) {
-                set.add(ProtocolShuffleTarget.valueOf(validateStrictString(elem, "initialTargets")))
-            }
-            Collections.unmodifiableSet(set)
-        } else emptySet()
-        val drawTargets: Set<ProtocolShuffleTarget> = if (obj.has("drawTargets") && !obj.get("drawTargets").isJsonNull) {
-            val arr = obj.getAsJsonArray("drawTargets")
-            val set = LinkedHashSet<ProtocolShuffleTarget>()
-            for (elem in arr) {
-                set.add(ProtocolShuffleTarget.valueOf(validateStrictString(elem, "drawTargets")))
-            }
-            Collections.unmodifiableSet(set)
-        } else emptySet()
+        // 严格拒绝旧生产字段：initialTargets/drawTargets 属于 v7 及更旧的叠加入口，v8 不再接受。
+        checkUnknownFields(obj, setOf("target", "seeThrough"), "ProtocolShuffleSelection")
+        val target: ProtocolShuffleTarget? = if (obj.has("target") && !obj.get("target").isJsonNull) {
+            ProtocolShuffleTarget.valueOf(validateStrictString(obj.get("target"), "target"))
+        } else null
         val seeThrough = if (obj.has("seeThrough")) {
             val elem = obj.get("seeThrough")
             if (elem.isJsonNull) throw JsonParseException("seeThrough must be a JSON boolean, explicit null is not allowed")
             validateStrictBoolean(elem, "seeThrough")
         } else false
-        return ProtocolShuffleSelection(initialTargets, drawTargets, seeThrough)
+        return ProtocolShuffleSelection(target, seeThrough)
     }
 }
 

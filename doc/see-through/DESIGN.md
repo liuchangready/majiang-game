@@ -2,6 +2,12 @@
 
 状态：已实现并通过 Codex 独立验收（2026-10-20）。
 
+> **v8 语义更新（2026-10-21）**：统一码牌千术把 `initialTargets`/`drawTargets` 合并为单一 `target` 后，
+> 看破由“仅取消对手起手优化”扩展为“取消对手本局整个统一目标效果（起手 + 预计摸牌）”，费用仍按原始方案支付。
+> 本文中 40/20/70 点与旧字段的描述属于 v7 历史设计；当前实现与验收以
+> [统一码牌设计](../shuffle-unification/DESIGN.md)、[任务契约](../shuffle-unification/TASK-DEEPSEEK.md)
+> 和 [模拟结果](../shuffle-unification/SIMULATION-RESULTS.md) 为准。
+
 > 验收记录（2026-10-20）：E1 权威规则与原子发牌、A2 协议 v7/私有映射、U3 菜单/准备面板/AI 候选均已完成。Codex 独立强制重跑五模块测试，共 1710 项、0 失败；`:android:assembleDebug` 通过，桌面 GL 冒烟 `RENDER_SMOKE_PASS frames=367 commands=4`。任务线程 `thread_20261020_211310_1351` 已归档。Android 真机与跨物理网络仍未实测。
 
 ## 目标与规则

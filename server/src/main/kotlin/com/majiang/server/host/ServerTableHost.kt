@@ -2457,7 +2457,7 @@ class ServerTableHost @JvmOverloads constructor(
             snap.preparation?.let { prep ->
                 bytes += 200L
                 prep.selection?.let { sel ->
-                    bytes += 100L + (sel.initialTargets.size + sel.drawTargets.size) * 35L
+                    bytes += 100L + (if (sel.target != null) 35L else 0L) + (if (sel.seeThrough) 8L else 0L)
                 }
             }
 

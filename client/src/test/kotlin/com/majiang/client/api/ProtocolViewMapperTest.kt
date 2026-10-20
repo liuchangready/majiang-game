@@ -178,17 +178,13 @@ class ProtocolViewMapperTest {
             requestId = "plan-1",
             roundId = "round-1",
             controlEpoch = 1L,
-            selection = ShuffleSelection(
-                initialTargets = setOf(ShuffleTarget.CHINITSU_MAN),
-                drawTargets = setOf(ShuffleTarget.DAISANGEN)
-            )
+            selection = ShuffleSelection(target = ShuffleTarget.CHINITSU_MAN)
         )
         val proto = ProtocolViewMapper.toProtocolShufflePlan(clientPlan)
         assertEquals("plan-1", proto.requestId)
         assertEquals("round-1", proto.roundId)
         assertEquals(1L, proto.controlEpoch)
-        assertEquals(setOf(ProtocolShuffleTarget.CHINITSU_MAN), proto.selection.initialTargets)
-        assertEquals(setOf(ProtocolShuffleTarget.DAISANGEN), proto.selection.drawTargets)
+        assertEquals(ProtocolShuffleTarget.CHINITSU_MAN, proto.selection.target)
     }
 
     @Test

@@ -589,8 +589,7 @@ class ServerTableHostCoverageTest {
     // 5. 洗牌千术准备阶段 (ShufflePreparation 对应 7 项)
     // ========================================
 
-    private val initial = ShuffleSelection(initialTargets = setOf(ShuffleTarget.KOKUSHI))
-    private val both = ShuffleSelection(setOf(ShuffleTarget.CHINITSU_MAN), setOf(ShuffleTarget.DAISANGEN))
+    private val initial = ShuffleSelection(target = ShuffleTarget.KOKUSHI)
 
     @Test
     fun `ten second selection is fixed independent of ordinary reserve and does not reveal hands`() {
@@ -647,8 +646,8 @@ class ServerTableHostCoverageTest {
             assertEquals(receipt, a.submitShufflePlan(req).await())
             val reserved = a.snapshot().await()
             assertEquals(50, reserved.cheatPoints[0])
-            assertEquals(40, reserved.preparation!!.reservedPoints)
-            assertEquals(10, reserved.preparation!!.availablePoints)
+            assertEquals(30, reserved.preparation!!.reservedPoints)
+            assertEquals(20, reserved.preparation!!.availablePoints)
             assertEquals(initial, reserved.preparation!!.selection)
             assertFalse(b.snapshot().await().preparation!!.confirmed)
             assertNull(b.snapshot().await().preparation!!.selection)
@@ -656,9 +655,9 @@ class ServerTableHostCoverageTest {
             assertEquals(ReceiptStatus.REJECTED, a.submitShufflePlan(req.copy(requestId = "replace")).await().status)
             clock.now = 10000
             h.tick().await()
-            assertEquals(10, a.snapshot().await().cheatPoints[0])
+            assertEquals(20, a.snapshot().await().cheatPoints[0])
             assertEquals(receipt, a.submitShufflePlan(req).await())
-            assertEquals(10, a.snapshot().await().cheatPoints[0])
+            assertEquals(20, a.snapshot().await().cheatPoints[0])
         }
     }
 
@@ -686,10 +685,7 @@ class ServerTableHostCoverageTest {
             assertEquals(10, a.snapshot().await().preparation!!.seeThroughCost)
 
             val seeOnly = ShuffleSelection(seeThrough = true)
-            val opponent = ShuffleSelection(
-                initialTargets = setOf(ShuffleTarget.KOKUSHI),
-                drawTargets = setOf(ShuffleTarget.DAISANGEN)
-            )
+            val opponent = ShuffleSelection(target = ShuffleTarget.KOKUSHI)
             assertEquals(ReceiptStatus.RECORDED, a.submitShufflePlan(request(a, "see", seeOnly)).await().status)
 
             val aView = a.snapshot().await()
@@ -708,7 +704,7 @@ class ServerTableHostCoverageTest {
             h.tick().await()
             val points = a.snapshot().await().cheatPoints
             assertEquals(90, points[0], "See-through itself costs exactly ten")
-            assertEquals(40, points[1], "Countered original 40+20 plan is still charged in full")
+            assertEquals(70, points[1], "Countered original 30 point unified plan is still charged in full")
             assertNull(a.snapshot().await().preparation)
         }
     }
@@ -779,22 +775,29 @@ class ServerTableHostCoverageTest {
     }
 
     @Test
-    fun `insufficient funds rejects whole request while half game can buy both`() {
-        for (south in listOf(false, true)) {
+    fun `insufficient funds rejects whole unified target without partial reservation`() {
+        for (balance in listOf(20, 30)) {
             val clock = TestClock(0L)
             ServerTableHost(
-                config = MatchConfig(winds = if (south) listOf(1, 2) else listOf(1), shuffleConfig = ShuffleConfig(enabled = true)),
+                config = MatchConfig(
+                    winds = listOf(1),
+                    cheatEconomy = CheatEconomyConfig(enabled = true, initialPoints = List(4) { balance }),
+                    shuffleConfig = ShuffleConfig(enabled = true)
+                ),
                 clock = clock,
                 controllers = humans()
             ).use { h ->
                 val a = TestSeat(0, h)
                 a.start().await()
-                val reply = a.submitShufflePlan(request(a, "both", both)).await()
-                assertEquals(if (south) ReceiptStatus.RECORDED else ReceiptStatus.REJECTED, reply.status)
-                assertEquals(south, a.snapshot().await().preparation!!.confirmed)
+                val reply = a.submitShufflePlan(request(a, "single", initial)).await()
+                assertEquals(
+                    if (balance >= 30) ReceiptStatus.RECORDED else ReceiptStatus.REJECTED,
+                    reply.status
+                )
+                assertEquals(balance >= 30, a.snapshot().await().preparation!!.confirmed)
                 clock.now = 10000
                 h.tick().await()
-                assertEquals(if (south) 40 else 50, a.snapshot().await().cheatPoints[0])
+                assertEquals(if (balance >= 30) 0 else balance, a.snapshot().await().cheatPoints[0])
             }
         }
     }
@@ -912,8 +915,8 @@ class ServerTableHostCoverageTest {
                 assertTrue(progressed, "Round stalled before result")
             }
             assertEquals(1, a.queryRoundRecords().await().size)
-            assertEquals(10, a.queryRoundRecords().await().single().finalCheatPoints[0])
-            assertEquals(-40, a.queryRoundRecords().await().single().cheatDeltas[0])
+            assertEquals(20, a.queryRoundRecords().await().single().finalCheatPoints[0])
+            assertEquals(-30, a.queryRoundRecords().await().single().cheatDeltas[0])
             // All four controllers are human: preserve the existing all-ready gate.
             // A single RECORDED ready signal must NOT start the next round.
             for (seat in seats) {
@@ -922,7 +925,7 @@ class ServerTableHostCoverageTest {
             val next = a.snapshot().await()
             assertNotEquals(oldRound, next.roundId)
             assertNotNull(next.preparation)
-            assertEquals(10, next.preparation!!.availablePoints)
+            assertEquals(20, next.preparation!!.availablePoints)
             assertFalse(next.preparation!!.confirmed)
             assertTrue(next.view.myAllClosedTiles.isEmpty())
         }

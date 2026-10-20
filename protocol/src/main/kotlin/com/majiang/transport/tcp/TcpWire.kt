@@ -37,12 +37,12 @@ object TcpWire {
     /**
      * 业务契约版本。
      *
-     * 业务版本与 [com.majiang.server.api.ApiProtocol.PROTOCOL_VERSION] 同步：v7 新增
-     * 准备阶段看破（seeThrough）严格布尔字段、私有准备视图开关与能力声明；v6 及更旧
-     * 业务版本由双端 HELLO/WELCOME 硬相等校验以 VERSION_MISMATCH 拒绝，不做热迁移。
+     * 业务版本与 [com.majiang.server.api.ApiProtocol.PROTOCOL_VERSION] 同步：v8 将洗牌方案
+     * 收敛为单一 target + seeThrough（统一码牌千术）；v7 及更旧业务版本由双端 HELLO/WELCOME
+     * 硬相等校验以 VERSION_MISMATCH 拒绝，不做热迁移。
      * 传输帧格式仍为 MJ-TCP/1（[WIRE_VERSION] = 1，12 字节帧头），不因业务升版改变。
      */
-    const val BUSINESS_VERSION: Int = 7
+    const val BUSINESS_VERSION: Int = 8
 
     // === 帧类型常量 (1..10) ===
 

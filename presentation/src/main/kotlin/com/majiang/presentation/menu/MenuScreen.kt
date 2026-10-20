@@ -325,8 +325,8 @@ class MenuScreen(
         font.draw(batch, "   立直可施术；他家回合预定牌待本人下次普通摸牌入手；超时不退费。", modalRect.x + 40f, modalRect.y + 308f)
         font.draw(batch, "6. 偷梁换柱: 摸牌后出牌前消耗 10 额度，从牌山/王牌暗槽中选目标与原有暗手牌互换；", modalRect.x + 40f, modalRect.y + 284f)
         font.draw(batch, "   候选暗槽不露牌面，落汗命中亮面；可保持原样；超时摸切费用不退。", modalRect.x + 40f, modalRect.y + 260f)
-        font.draw(batch, "7. 看破(10点): 仅码牌准备阶段可选，可与偷天换日、瞒天过海组合，合计最高 70 点；", modalRect.x + 40f, modalRect.y + 236f)
-        font.draw(batch, "   发牌前抵消对手本局偷天换日并清除其既有落汗；不封锁发牌后新施放的落汗。", modalRect.x + 40f, modalRect.y + 212f)
+        font.draw(batch, "7. 统一码牌(30点): 准备阶段六选一目标，同时作用于起手与本局全部正常预计摸牌槽；", modalRect.x + 40f, modalRect.y + 236f)
+        font.draw(batch, "   看破(10点)可叠加，合计最高 40 点；看破抵消对手整局码牌并清除其落汗，双方费用照付。", modalRect.x + 40f, modalRect.y + 212f)
 
         font.color = Color(0.95f, 0.45f, 0.45f, 1f)
         font.draw(batch, "注意: 偷梁换柱立直后禁止；袖里藏花立直可施术；超时或预定后不退款。", modalRect.x + 40f, modalRect.y + 186f)

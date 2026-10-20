@@ -9,13 +9,13 @@ import com.majiang.client.api.ShuffleTarget
 import java.util.UUID
 
 /**
- * 洗牌千术准备阶段纯表现层状态模型 (V4 presentation.game)。
+ * 洗牌千术准备阶段纯表现层状态模型 (V4 presentation.game) —— 统一码牌千术。
  *
  * 遵循契约与纯客户端模型规范：
  * 1. 严格使用 client.api 视图模型 (ShufflePreparationView, ShuffleSelection, ShufflePlan, ShuffleTarget)；
  * 2. 独立于图形引擎与权威宿主，支持无头单元测试；
- * 3. 维护草稿选择（偷天换日 initialTargets，瞒天过海 drawTargets，看破 seeThrough）；
- * 4. 实时计算费用（偷天换日 40，瞒天过海 20，看破 10，合计最高 70，均不选 0）；
+ * 3. 维护草稿选择（唯一目标 target 与看破 seeThrough）；
+ * 4. 实时计算费用（统一目标 30，看破 10，合计最高 40，均不选 0）；
  * 5. 区分草稿预测扣费与权威预留：权威确认后 availablePoints 已扣除预留，不重复二次扣减；
  * 6. 校验预算超支（允许编辑超支草稿，但禁用确认并提供原因）；
  * 7. 单局生命周期与跨局重置：新局完全重置草稿与本地/权威确认状态；同局快照保留草稿；
@@ -62,11 +62,9 @@ class ShufflePreparationModel(
     var confirmedSelection: ShuffleSelection? = null
         private set
 
-    /** 偷天换日草稿目标集合（影响起手配牌，非空消耗 40 点） */
-    val initialTargets: MutableSet<ShuffleTarget> = LinkedHashSet()
-
-    /** 瞒天过海草稿目标集合（影响前 8 次摸牌顺位，非空消耗 20 点） */
-    val drawTargets: MutableSet<ShuffleTarget> = LinkedHashSet()
+    /** 统一码牌目标草稿（null 表示不做牌；单选） */
+    var target: ShuffleTarget? = null
+        private set
 
     /** 当前房间是否允许看破；禁用房间不显示可提交入口 */
     var seeThroughEnabled: Boolean = false
@@ -95,17 +93,14 @@ class ShufflePreparationModel(
     var isPaused: Boolean = false
         private set
 
-    /** 偷天换日消耗点数（非空 40 点，空 0 点） */
-    val initialCost: Int get() = if (initialTargets.isNotEmpty()) 40 else 0
-
-    /** 瞒天过海消耗点数（非空 20 点，空 0 点） */
-    val drawCost: Int get() = if (drawTargets.isNotEmpty()) 20 else 0
+    /** 统一目标消耗点数（非空 30 点，空 0 点） */
+    val targetCost: Int get() = if (target != null) ShuffleSelection.TARGET_COST else 0
 
     /** 看破消耗点数（勾选 10 点，未勾选 0 点） */
     val seeThroughCost: Int get() = if (isSeeThroughSelected) seeThroughPrice else 0
 
-    /** 总消耗点数 (0..70) */
-    val totalCost: Int get() = initialCost + drawCost + seeThroughCost
+    /** 总消耗点数 (0..40) */
+    val totalCost: Int get() = targetCost + seeThroughCost
 
     /**
      * 剩余点数预览：
@@ -180,38 +175,18 @@ class ShufflePreparationModel(
             else -> null
         }
 
-    /** 是否展示混合倾向提示：“多选为混合倾向，不保证同时成牌” */
-    val hasMixedTargetsNotice: Boolean
-        get() = initialTargets.size > 1 || drawTargets.size > 1
-
-    /** 是否展示摸牌顺位提示：“吃碰杠会改变预期摸牌” */
+    /** 是否展示摸牌顺位提示：“吃碰杠/提前终局会改变预期摸牌”（已选统一目标即作用于起手+摸牌） */
     val hasDrawNotice: Boolean
-        get() = drawTargets.isNotEmpty()
+        get() = target != null
 
     /** 是否展示看破说明（仅启用房间） */
     val hasSeeThroughNotice: Boolean
         get() = seeThroughEnabled
 
-    /** 切换偷天换日目标 */
-    fun toggleInitialTarget(target: ShuffleTarget): Boolean {
+    /** 选择/取消唯一目标（单选；再次点击已选目标即取消） */
+    fun selectTarget(newTarget: ShuffleTarget): Boolean {
         if (!canEditDraft) return false
-        if (initialTargets.contains(target)) {
-            initialTargets.remove(target)
-        } else {
-            initialTargets.add(target)
-        }
-        errorMessage = null
-        return true
-    }
-
-    /** 切换瞒天过海目标 */
-    fun toggleDrawTarget(target: ShuffleTarget): Boolean {
-        if (!canEditDraft) return false
-        if (drawTargets.contains(target)) {
-            drawTargets.remove(target)
-        } else {
-            drawTargets.add(target)
-        }
+        target = if (target == newTarget) null else newTarget
         errorMessage = null
         return true
     }
@@ -227,16 +202,14 @@ class ShufflePreparationModel(
     /** 清空草稿目标与看破勾选 */
     fun clearDraft() {
         if (!canEditDraft) return
-        initialTargets.clear()
-        drawTargets.clear()
+        target = null
         isSeeThroughSelected = false
         errorMessage = null
     }
 
     /** 当前草稿方案（仅看破也是合法非空方案） */
     fun draftSelection(): ShuffleSelection = ShuffleSelection(
-        initialTargets = LinkedHashSet(initialTargets),
-        drawTargets = LinkedHashSet(drawTargets),
+        target = target,
         seeThrough = isSeeThroughSelected
     )
 
@@ -272,10 +245,7 @@ class ShufflePreparationModel(
         submittingRequestId = null
         isLocallyConfirmed = true
         confirmedSelection = selection
-        initialTargets.clear()
-        initialTargets.addAll(selection.initialTargets)
-        drawTargets.clear()
-        drawTargets.addAll(selection.drawTargets)
+        target = selection.target
         isSeeThroughSelected = selection.seeThrough
         errorMessage = null
     }
@@ -300,7 +270,7 @@ class ShufflePreparationModel(
             requestId = requestId,
             roundId = currentRound,
             controlEpoch = controlEpoch,
-            selection = ShuffleSelection(emptySet(), emptySet())
+            selection = ShuffleSelection()
         )
     }
 
@@ -331,8 +301,7 @@ class ShufflePreparationModel(
             isSubmitting = false
             submittingRequestId = null
             errorMessage = null
-            initialTargets.clear()
-            drawTargets.clear()
+            target = null
             isSeeThroughSelected = false
             seeThroughEnabled = false
             return
@@ -341,8 +310,7 @@ class ShufflePreparationModel(
         val isNewRound = (roundId != prep.roundId)
         if (isNewRound) {
             roundId = prep.roundId
-            initialTargets.clear()
-            drawTargets.clear()
+            target = null
             isSeeThroughSelected = false
             isSubmitting = false
             submittingRequestId = null
@@ -382,18 +350,11 @@ class ShufflePreparationModel(
             submittingRequestId = null
             val selected = prep.selection
             if (selected != null) {
-                val initialMapped = selected.initialTargets.mapNotNull {
+                val mapped = selected.target?.let {
                     try { ShuffleTarget.valueOf(it.name) } catch (_: Throwable) { null }
-                }.toSet()
-                val drawMapped = selected.drawTargets.mapNotNull {
-                    try { ShuffleTarget.valueOf(it.name) } catch (_: Throwable) { null }
-                }.toSet()
-                val clientSelection = ShuffleSelection(initialMapped, drawMapped, selected.seeThrough)
-                confirmedSelection = clientSelection
-                initialTargets.clear()
-                initialTargets.addAll(initialMapped)
-                drawTargets.clear()
-                drawTargets.addAll(drawMapped)
+                }
+                confirmedSelection = ShuffleSelection(mapped, selected.seeThrough)
+                target = mapped
                 isSeeThroughSelected = selected.seeThrough
             }
         } else {
