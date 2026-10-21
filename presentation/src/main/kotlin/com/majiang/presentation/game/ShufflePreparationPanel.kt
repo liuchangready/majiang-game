@@ -397,13 +397,14 @@ class ShufflePreparationPanel @JvmOverloads constructor(
             textFont.draw(batch, "不使用千术", btnSkipRect.x + 40f, btnSkipRect.y + 27f)
 
             val confirmText = when {
-                model.isAuthorityConfirmed || model.isLocallyConfirmed -> "已确认"
+                model.status == ShufflePreparationStatusView.GENERATING -> "正在发牌..."
                 model.isSubmitting -> "提交中..."
-                model.status == ShufflePreparationStatusView.GENERATING -> "洗牌中..."
+                model.isAuthorityConfirmed || model.isLocallyConfirmed -> "等待其他玩家"
                 !model.isAffordable -> "点数不足"
                 else -> "确认出千"
             }
             textFont.color = when {
+                model.status == ShufflePreparationStatusView.GENERATING -> Color(0.55f, 1.0f, 0.68f, 1f)
                 model.isAuthorityConfirmed || model.isLocallyConfirmed -> Color(0.4f, 1.0f, 0.6f, 1f)
                 model.canConfirm -> Color.WHITE
                 else -> Color(0.55f, 0.55f, 0.55f, 1f)
@@ -411,6 +412,16 @@ class ShufflePreparationPanel @JvmOverloads constructor(
             glyphLayout.setText(textFont, confirmText)
             val cx = btnConfirmRect.x + (btnConfirmRect.width - glyphLayout.width) / 2f
             textFont.draw(batch, confirmText, cx, btnConfirmRect.y + 27f)
+
+            // 已确认后的准确阶段反馈：等待其他玩家 / 正在发牌；遮罩只随权威快照解除。
+            model.confirmedFeedbackText?.let { feedback ->
+                textFont.color = if (model.status == ShufflePreparationStatusView.GENERATING) {
+                    Color(0.55f, 1.0f, 0.68f, 1f)
+                } else {
+                    Color(1.0f, 0.85f, 0.40f, 1f)
+                }
+                textFont.draw(batch, feedback, modalRect.x + 20f, modalRect.y + 76f)
+            }
 
             // 错误/拒绝提示（覆盖规则提示行，避免与底部按钮重叠）
             val err = model.errorMessage

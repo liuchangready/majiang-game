@@ -189,7 +189,7 @@ public final class MainMenuRenderSmoke {
                     screen.keyDown(Input.Keys.ENTER);
                     check(screen.getCurrentState() == MenuScreen.MenuState.SECRETS_MODAL,
                         "secrets overlay must open from keyboard");
-                    renderNow();
+                    settleTargetSlide();
                     capture("06_secrets_overlay.png");
                     assertOverlayBaseVisible("06_secrets_overlay.png");
                     int localWhileOverlay = nav.localLobbyCalls;
@@ -207,7 +207,7 @@ public final class MainMenuRenderSmoke {
                     screen.keyDown(Input.Keys.ENTER);
                     check(screen.getCurrentState() == MenuScreen.MenuState.SETTINGS_MODAL,
                         "settings overlay must open");
-                    renderNow();
+                    settleTargetSlide();
                     capture("07_settings_overlay.png");
                     assertOverlayBaseVisible("07_settings_overlay.png");
                     screen.keyDown(Input.Keys.ESCAPE);
@@ -272,7 +272,7 @@ public final class MainMenuRenderSmoke {
                         tapItem(MainMenuItemId.SETTINGS);
                         check(screen.getCurrentState() == MenuScreen.MenuState.SETTINGS_MODAL,
                             "ultrawide input must align with drawing");
-                        renderNow();
+                        settleTargetSlide();
                         capture("12_ultrawide_settings.png");
                         assertBackgroundVisible("12_ultrawide_settings.png", 236, 450, 100, 100, 8.0, 80);
                         assertBackgroundVisible("12_ultrawide_settings.png", 1230, 200, 90, 80, 8.0, 20);
@@ -319,6 +319,16 @@ public final class MainMenuRenderSmoke {
 
         private void renderNow() {
             screen.render(1f / 60f);
+        }
+
+        /**
+         * 目标弹窗现在是 280ms 轻滑入：先渲染第一帧启动动画，再推进虚拟时钟到终态，
+         * 保持既有“稳定底图 + 覆盖弹窗”像素断言针对落位后的弹窗。
+         */
+        private void settleTargetSlide() {
+            renderNow();
+            clock.addAndGet(300L);
+            renderNow();
         }
 
         private void tapWorld(float worldX, float worldY) {

@@ -183,6 +183,20 @@ class ShufflePreparationModel(
     val hasSeeThroughNotice: Boolean
         get() = seeThroughEnabled
 
+    /**
+     * 自己已确认后的准确阶段反馈。
+     *
+     * 本地受理不代表发牌完成：确认后必须继续显示“等待其他玩家”或“正在发牌”，
+     * 由权威 preparation 结束快照解除遮罩，不能本地关闭并假设已经发牌。
+     */
+    val confirmedFeedbackText: String?
+        get() = when {
+            status == ShufflePreparationStatusView.GENERATING -> "正在发牌，请稍候…"
+            isSubmitting -> "已提交，等待权威确认…"
+            isAuthorityConfirmed || isLocallyConfirmed -> "已确认，等待其他玩家…"
+            else -> null
+        }
+
     /** 选择/取消唯一目标（单选；再次点击已选目标即取消） */
     fun selectTarget(newTarget: ShuffleTarget): Boolean {
         if (!canEditDraft) return false

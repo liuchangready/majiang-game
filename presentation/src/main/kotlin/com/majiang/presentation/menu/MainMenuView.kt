@@ -70,6 +70,14 @@ class MainMenuView(
     private var pointerY = Float.NaN
     private var disabledItems: Set<MainMenuItemId> = emptySet()
 
+    // 激活反馈：点击/键盘确认后至少保留一小段高亮，避免“按下即抬起”时整帧看不到 pressed。
+    // 该反馈只影响绘制，不延迟任何业务回调。
+    private var activationFlashId: MainMenuItemId? = null
+    private var activationFlashUntilMs = 0L
+
+    /** 仅供测试/诊断读取的当前激活高亮项。 */
+    internal val activationFlashItemId: MainMenuItemId? get() = activationFlashId
+
     /** 仅供测试/诊断读取的入场重播计数。 */
     var entryPlayCount: Int = 0
         private set
@@ -101,6 +109,7 @@ class MainMenuView(
         focusIndex = -1
         hoveredId = null
         pressedId = null
+        activationFlashId = null
         if (motionEnabled) {
             entryActive = true
             applyElapsed(0L)
@@ -140,6 +149,9 @@ class MainMenuView(
     }
 
     fun update(nowMs: Long = clock()) {
+        if (activationFlashId != null && nowMs >= activationFlashUntilMs) {
+            activationFlashId = null
+        }
         val elapsed = entryStartMs?.let { (nowMs - it).coerceAtLeast(0L) }
             ?: MainMenuLayout.TOTAL_ENTRY_MS
         applyElapsed(elapsed)
@@ -217,6 +229,9 @@ class MainMenuView(
         update()
         val item = frame.item(id) ?: return false
         if (!item.settled || !isItemEnabled(id)) return false
+        // 先给出本地即时反馈，再同步触发原业务回调；动画/高亮不等待网络或建桌。
+        activationFlashId = id
+        activationFlashUntilMs = clock() + ACTIVATION_FLASH_MS
         when (id) {
             MainMenuItemId.SOLO -> onPlaySingle()
             MainMenuItemId.ONLINE -> onOpenLobby()
@@ -446,7 +461,7 @@ class MainMenuView(
             if (item.alpha <= 0f) continue
             val rect = item.rect
             val enabled = isItemEnabled(item.id)
-            val pressed = pressedId == item.id
+            val pressed = pressedId == item.id || activationFlashId == item.id
             val hovered = hoveredId == item.id
             val focused = focusedItemId == item.id
             val alpha = item.alpha * if (enabled) 1f else 0.55f
@@ -577,6 +592,9 @@ class MainMenuView(
     )
 
     companion object {
+        /** 激活高亮最短可见时长，只影响绘制。 */
+        const val ACTIVATION_FLASH_MS = 140L
+
         private val backdropCamera = OrthographicCamera()
 
         /**

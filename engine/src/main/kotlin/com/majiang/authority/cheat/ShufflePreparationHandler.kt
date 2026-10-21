@@ -157,6 +157,9 @@ internal class ShufflePreparationHandler {
      * 策略提交成功即已确认。为保留旧 `ShuffleConfig.aiMaySpend` 的实际效果，当房间未开启
      * 统一 AI 千术策略时，原生电脑仍按旧点数档位自动确认；该兼容路径不会作用于托管座位。
      * 截止时仍未确认的座位（包括 AI 与真人）按既有规则默认跳过。
+     *
+     * 早结束仅要求“四个座位都已确认”，不会把某个真人的跳过扩散到其他真人；
+     * 所有已确认方案与看破集合在进入 GENERATING 的同一刻冻结，费用仍按原始方案计算。
      */
     fun step(
         now: Long,
@@ -188,7 +191,11 @@ internal class ShufflePreparationHandler {
         }
 
         if (now < deadlineMillis) {
-            return if (aiUpdated) Step.RecordUpdated(record(prepId)) else Step.Waiting
+            // 所有席位都已明确确认（真人提交或权威零费用 skip）时，没有理由继续空等倒计时：
+            // 立即冻结方案并进入发牌。仍有任一真人未确认时保持等待，原 deadline 仍是安全兜底。
+            if (!confirmed.all { it }) {
+                return if (aiUpdated) Step.RecordUpdated(record(prepId)) else Step.Waiting
+            }
         }
 
         status = ShufflePreparationStatus.GENERATING

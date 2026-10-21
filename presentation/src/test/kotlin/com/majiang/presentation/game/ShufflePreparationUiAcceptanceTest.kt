@@ -242,6 +242,45 @@ class ShufflePreparationUiAcceptanceTest : GdxHeadlessTestRunner() {
         } finally { panel.dispose() }
     }
 
+    @Test fun `confirmed feedback waits for others then dealing and only authority end clears it`() {
+        val m = ShufflePreparationModel { 0L }
+        m.update(view(), nowSystemMillis = 0)
+        val skip = m.buildSkipRequest("skip-feedback")!!
+        m.markSubmitting(skip.requestId)
+        assertEquals("已提交，等待权威确认…", m.confirmedFeedbackText)
+
+        m.onSubmissionAccepted(skip.requestId, skip.selection)
+        assertEquals("已确认，等待其他玩家…", m.confirmedFeedbackText)
+        assertTrue(m.isActive, "local acceptance must not locally close the preparation panel")
+        assertFalse(m.canSkip)
+        assertFalse(m.canConfirm)
+
+        m.update(
+            view().copy(status = ShufflePreparationStatusView.GENERATING, confirmed = true),
+            nowSystemMillis = 100
+        )
+        assertEquals("正在发牌，请稍候…", m.confirmedFeedbackText)
+        assertTrue(m.isActive, "generation status still keeps the mask until authority ends preparation")
+
+        m.update(null, nowSystemMillis = 200)
+        assertFalse(m.isActive)
+        assertNull(m.confirmedFeedbackText)
+        assertFalse(m.isLocallyConfirmed)
+    }
+
+    @Test fun `rejected receipt restores edit and submission controls`() {
+        val m = ShufflePreparationModel { 0L }
+        m.update(view(), nowSystemMillis = 0)
+        m.markSubmitting("recover")
+        assertFalse(m.canConfirm)
+        assertFalse(m.canSkip)
+        m.onSubmissionRejected("recover", "点数不足")
+        assertFalse(m.isSubmitting)
+        assertTrue(m.canConfirm, "failure must restore the confirm entry")
+        assertTrue(m.canSkip, "failure must restore the skip entry")
+        assertEquals("点数不足", m.errorMessage)
+    }
+
     @Test fun `panel controls stay inside the virtual viewport and do not overlap`() {
         val panel = ShufflePreparationPanel(FakeGameSession())
         try {

@@ -1,0 +1,21 @@
+create: window=1280x720
+SHOT D:\majiang\snapshot\menu-click-preparation-smoke\tcp_connect_00ms.png (1280x720, 21676 bytes)
+SHOT D:\majiang\snapshot\menu-click-preparation-smoke\tcp_connect_80ms.png (1280x720, 21724 bytes)
+SHOT D:\majiang\snapshot\menu-click-preparation-smoke\tcp_connect_280ms.png (1280x720, 21727 bytes)
+SLIDE tcp_connect targetOffsetsPx 0ms=220 80ms=80 280ms=0 backgroundDrift=0.00
+SHOT D:\majiang\snapshot\menu-click-preparation-smoke\secrets_00ms.png (1280x720, 811545 bytes)
+SHOT D:\majiang\snapshot\menu-click-preparation-smoke\secrets_80ms.png (1280x720, 755298 bytes)
+SHOT D:\majiang\snapshot\menu-click-preparation-smoke\secrets_280ms.png (1280x720, 709743 bytes)
+SLIDE secrets targetOffsetsPx 0ms=220 80ms=80 280ms=0 backgroundDrift=0.00
+SHOT D:\majiang\snapshot\menu-click-preparation-smoke\settings_00ms.png (1280x720, 745664 bytes)
+SHOT D:\majiang\snapshot\menu-click-preparation-smoke\settings_80ms.png (1280x720, 689769 bytes)
+SHOT D:\majiang\snapshot\menu-click-preparation-smoke\settings_280ms.png (1280x720, 644023 bytes)
+SLIDE settings targetOffsetsPx 0ms=220 80ms=80 280ms=0 backgroundDrift=0.00
+real MahjongGame created for single-player path
+clicked SOLO on the real app menu
+SHOT D:\majiang\snapshot\menu-click-preparation-smoke\prep_before_skip.png (1280x720, 76883 bytes)
+clicked skip button at epochMillis=1792603447611 round=b6dbb110-c181-4cbf-9f78-f0ac69a39bf7
+SHOT D:\majiang\snapshot\menu-click-preparation-smoke\prep_after_skip.png (1280x720, 51039 bytes)
+PREP skip-to-table wallClockMs=145.91
+PREP preparation=null, panelActive=false, cheatPoints[0]=100, handTiles=14
+PASS: menu slide displacement and real single-player early deal verified
