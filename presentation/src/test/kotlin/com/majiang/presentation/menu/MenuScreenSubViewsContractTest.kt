@@ -30,6 +30,19 @@ import java.util.concurrent.CompletableFuture
  */
 class MenuScreenSubViewsContractTest : GdxHeadlessTestRunner() {
 
+    private fun tapMainItem(screen: MenuScreen, id: MainMenuItemId) {
+        val rect = screen.mainMenuView.itemRect(id) ?: screen.mainMenuView.rectFor(id)
+        val point = screen.screenPoint(rect.x + rect.width / 2f, rect.y + rect.height / 2f)
+        screen.touchDown(point.x.toInt(), point.y.toInt(), 0, 0)
+        screen.touchUp(point.x.toInt(), point.y.toInt(), 0, 0)
+    }
+
+    private fun tapScreen(screen: MenuScreen, screenX: Int, screenY: Int) {
+        val point = screen.screenPoint(screenX.toFloat(), 720f - screenY)
+        screen.touchDown(point.x.toInt(), point.y.toInt(), 0, 0)
+        screen.touchUp(point.x.toInt(), point.y.toInt(), 0, 0)
+    }
+
     @Test
     fun testSubViewsArePurePresentationComponentsWithoutSessionOrNavigation() {
         val subViewClasses = listOf(
@@ -88,12 +101,12 @@ class MenuScreenSubViewsContractTest : GdxHeadlessTestRunner() {
         try {
             assertEquals(MenuScreen.MenuState.MAIN, menu.currentState)
 
-            // 打开 TCP 连接弹窗 (点击 btnOpenLobby: y=355f, 720 - 365 = 355)
-            menu.touchDown(640, 365, 0, 0)
+            // 打开 TCP 连接弹窗 (点击 btnOpenLobby)
+            tapMainItem(menu, MainMenuItemId.ONLINE)
             assertEquals(MenuScreen.MenuState.TCP_CONNECT_DIALOG, menu.currentState)
 
             // 点击 Host 输入框 (rectHostInput: y=390f, 720 - 330 = 390)
-            menu.touchDown(500, 330, 0, 0)
+            tapScreen(menu, 500, 330)
             assertEquals(ConnectDialogView.ActiveInput.HOST, menu.connectDialogView.activeInput)
 
             // 输入自定义 host 后缀
@@ -104,11 +117,11 @@ class MenuScreenSubViewsContractTest : GdxHeadlessTestRunner() {
             assertEquals(expectedHost, menu.connectDialogView.inputHost)
 
             // 点击返回 (btnTcpCancel: y=220f, 720 - 500 = 220)
-            menu.touchDown(760, 500, 0, 0)
+            tapScreen(menu, 760, 500)
             assertEquals(MenuScreen.MenuState.MAIN, menu.currentState)
 
             // 再次打开 TCP 弹窗
-            menu.touchDown(640, 365, 0, 0)
+            tapMainItem(menu, MainMenuItemId.ONLINE)
             assertEquals(MenuScreen.MenuState.TCP_CONNECT_DIALOG, menu.currentState)
 
             // 验证输入内容在同一 MenuScreen 生命周期内保留
@@ -129,7 +142,7 @@ class MenuScreenSubViewsContractTest : GdxHeadlessTestRunner() {
             assertEquals(MenuScreen.MenuState.LOBBY, menu.currentState)
 
             // 进入建房弹窗 (btnLobbyCreateRoom: y=560f, 720 - 160 = 560)
-            menu.touchDown(190, 160, 0, 0)
+            tapScreen(menu, 190, 160)
             assertEquals(MenuScreen.MenuState.CREATE_ROOM_DIALOG, menu.currentState)
 
             // 初始值检查
@@ -137,19 +150,19 @@ class MenuScreenSubViewsContractTest : GdxHeadlessTestRunner() {
             assertTrue(menu.createRoomDialogView.cfgShuffleCheating, "Default shuffle cheating should be enabled")
 
             // 点击切换半庄/东风 (btnCfgWind: y=430..472, screenY = 720 - 451 = 269)
-            menu.touchDown(400, 269, 0, 0)
+            tapScreen(menu, 400, 269)
             assertFalse(menu.createRoomDialogView.cfgIsHanchan, "Should switch to Tonpuusen (East only)")
 
             // 点击切换码牌开关 (btnCfgShuffle: y=300..342, screenY = 720 - 321 = 399)
-            menu.touchDown(400, 399, 0, 0)
+            tapScreen(menu, 400, 399)
             assertFalse(menu.createRoomDialogView.cfgShuffleCheating, "Should disable shuffle cheating")
 
             // 取消建房返回大厅 (btnCreateCancel: y=190..236, screenY = 720 - 190 = 530)
-            menu.touchDown(780, 530, 0, 0)
+            tapScreen(menu, 780, 530)
             assertEquals(MenuScreen.MenuState.LOBBY, menu.currentState)
 
             // 再次进入建房弹窗
-            menu.touchDown(190, 160, 0, 0)
+            tapScreen(menu, 190, 160)
             assertEquals(MenuScreen.MenuState.CREATE_ROOM_DIALOG, menu.currentState)
 
             // 验证状态在同一 MenuScreen 生命周期内保留
@@ -157,7 +170,7 @@ class MenuScreenSubViewsContractTest : GdxHeadlessTestRunner() {
             assertFalse(menu.createRoomDialogView.cfgShuffleCheating, "Persisted cfgShuffleCheating should still be false")
 
             // 点击确认创建房间 (btnCreateConfirm: y=190..236, screenX=400, screenY=530)
-            menu.touchDown(400, 530, 0, 0)
+            tapScreen(menu, 400, 530)
 
             // 验证 Fake 捕获的 MatchConfig 规则
             val captured = lobby.lastCreatedConfig
@@ -178,9 +191,9 @@ class MenuScreenSubViewsContractTest : GdxHeadlessTestRunner() {
         val lobby = FakeContractLobbySession()
         val menu = MenuScreen(assets, nav, lobby)
         try {
-            menu.touchDown(190, 160, 0, 0)
+            tapScreen(menu, 190, 160)
             assertEquals(MenuScreen.MenuState.CREATE_ROOM_DIALOG, menu.currentState)
-            menu.touchDown(400, 530, 0, 0)
+            tapScreen(menu, 400, 530)
             val captured = lobby.lastCreatedConfig
             assertNotNull(captured)
             assertTrue(captured!!.shuffleConfig.enabled)
@@ -202,7 +215,7 @@ class MenuScreenSubViewsContractTest : GdxHeadlessTestRunner() {
             assertEquals(MenuScreen.MenuState.LOBBY, menu.currentState)
 
             // 点击“输入房号加入” (btnLobbyJoinById: y=495f, screenY = 720 - 510 = 210)
-            menu.touchDown(190, 210, 0, 0)
+            tapScreen(menu, 190, 210)
             assertEquals(MenuScreen.MenuState.JOIN_ROOM_DIALOG, menu.currentState)
             assertTrue(menu.joinRoomDialogView.isInputActive)
 
@@ -213,11 +226,11 @@ class MenuScreenSubViewsContractTest : GdxHeadlessTestRunner() {
             assertEquals("888", menu.joinRoomDialogView.inputRoomId)
 
             // 取消返回大厅 (btnJoinCancel: y=270..314, screenY = 720 - 290 = 430)
-            menu.touchDown(700, 430, 0, 0)
+            tapScreen(menu, 700, 430)
             assertEquals(MenuScreen.MenuState.LOBBY, menu.currentState)
 
             // 再次点击“输入房号加入”
-            menu.touchDown(190, 210, 0, 0)
+            tapScreen(menu, 190, 210)
             assertEquals(MenuScreen.MenuState.JOIN_ROOM_DIALOG, menu.currentState)
 
             // 验证原代码语义：从大厅重新点击加入时清空 inputRoomId 并激活输入

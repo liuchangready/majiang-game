@@ -1,0 +1,48 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="980" viewBox="0 0 1280 980">
+  <title>正式 APP 主菜单：1280×720 图层与坐标</title>
+  <desc>原点为 libGDX 左下角；图上以常规屏幕向下坐标显示。左侧标题和章鱼，右侧六个菜单从右移入。</desc>
+  <defs>
+    <pattern id="grid" width="64" height="60" patternUnits="userSpaceOnUse"><path d="M64 0H0V60" fill="none" stroke="#f0cb7918"/></pattern>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10" fill="#ffdc8a"/></marker>
+  </defs>
+  <rect width="1280" height="980" fill="#071c1a"/>
+  <rect width="1280" height="720" fill="url(#grid)" stroke="#f0cb79"/>
+  <rect x="64" y="32" width="1128" height="630" rx="8" fill="none" stroke="#81bfa2" stroke-dasharray="9 5"/>
+  <g font-family="Noto Sans SC,Microsoft YaHei,sans-serif" fill="#fff2d5">
+    <rect x="64" y="32" width="620" height="76" rx="8" fill="#8c2d23" stroke="#f0cb79"/>
+    <text x="84" y="80" font-size="37">疯狂动物麻将</text>
+    <text x="72" y="137" font-size="19">L4 副标：三大千术 · 牌桌心战</text>
+    <rect x="96" y="150" width="530" height="506" rx="16" fill="#264b42" stroke="#e7bd74"/>
+    <text x="126" y="360" font-size="27">L3 透明章鱼吉祥物</text>
+    <text x="126" y="399" font-size="18">(96,64,530,506) · 等比 contain</text>
+    <text x="126" y="434" font-size="18">仅装饰，不代表已选动物角色</text>
+    <text x="126" y="469" font-size="18">L0 场景 → L1 遮罩 → L2 柔光</text>
+    <rect x="752" y="160" width="440" height="80" rx="12" fill="#9e3428" stroke="#f0cb79" stroke-width="2"/>
+    <rect x="752" y="252" width="440" height="80" rx="12" fill="#9e3428" stroke="#f0cb79" stroke-width="2"/>
+    <g fill="#17483d" stroke="#f0cb79">
+      <rect x="752" y="344" width="440" height="58" rx="10"/>
+      <rect x="752" y="414" width="440" height="58" rx="10"/>
+      <rect x="752" y="484" width="440" height="58" rx="10"/>
+      <rect x="752" y="554" width="440" height="58" rx="10"/>
+    </g>
+    <g font-size="24">
+      <text x="776" y="207">单机对局 · 120ms</text>
+      <text x="776" y="299">联机对战 · 200ms</text>
+      <text x="776" y="382">牌面皮肤 · 280ms</text>
+      <text x="776" y="452">千术秘籍 · 360ms</text>
+      <text x="776" y="522">游戏设置 · 440ms</text>
+      <text x="776" y="592">退出游戏 · 520ms</text>
+    </g>
+    <rect x="752" y="624" width="440" height="38" rx="5" fill="#142c28" stroke="#91a89a" stroke-dasharray="5 4"/>
+    <text x="770" y="650" font-size="17">L6 动态状态/错误提示 · 不作菜单入口</text>
+    <path d="M1242 198H1206" stroke="#ffdc8a" stroke-width="3" marker-end="url(#arrow)"/>
+    <text x="1130" y="127" font-size="18" fill="#ffdc8a">L5 从右移入 96px</text>
+    <text x="68" y="705" font-size="16" fill="#a8c1b4">安全内容区：x=64..1192 · 底图可扩展至超宽屏边缘</text>
+    <path d="M0 720H1280" stroke="#f0cb79"/>
+    <text x="48" y="763" font-size="25" fill="#f0cb79">绘制层序与动效</text>
+    <text x="48" y="802" font-size="19">L0 场景 → L1 遮罩 → L2 光 → L3 吉祥物 → L4 标题 → L5 菜单 → L6 状态 → L7 弹窗</text>
+    <text x="48" y="841" font-size="19">每项：延迟后 420ms easeOutCubic，x=baseX+96×(1-ease)，落位后独立启用。</text>
+    <text x="48" y="880" font-size="19">绘制和命中共用同帧矩形；关闭弹窗不重播；返回 MAIN 重播；减少动态效果直接显示终态。</text>
+    <text x="48" y="930" font-size="17" fill="#a8c1b4">精确坐标为 libGDX 左下角原点，见 assets/ui/main-menu/manifest.json。本图为方案，不是运行截图。</text>
+  </g>
+</svg>

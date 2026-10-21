@@ -1,0 +1,42 @@
+create: window=1280x720
+SHOT D:\majiang\snapshot\main-menu-smoke\01_entry_000ms.png (1280x720, 1701598 bytes)
+PIXEL 01_entry_000ms.png background region (690,500,55x120) avgLuma=87.7 uniqueColors=1475
+0ms: solo drawX=848.0
+SHOT D:\majiang\snapshot\main-menu-smoke\02_entry_240ms.png (1280x720, 1704619 bytes)
+PIXEL 02_entry_240ms.png background region (690,500,55x120) avgLuma=87.7 uniqueColors=1475
+240ms: click at final solo center correctly ignored
+SHOT D:\majiang\snapshot\main-menu-smoke\03_entry_540ms.png (1280x720, 1653606 bytes)
+PIXEL 03_entry_540ms.png background region (690,500,55x120) avgLuma=87.7 uniqueColors=1475
+540ms: solo independent enable verified; online still gated
+SHOT D:\majiang\snapshot\main-menu-smoke\04_entry_940ms.png (1280x720, 1523190 bytes)
+PIXEL 04_entry_940ms.png background region (690,500,55x120) avgLuma=87.7 uniqueColors=1475
+PIXEL 04_entry_940ms.png glow raw-color pixels green=0 gold=0
+SHOT D:\majiang\snapshot\main-menu-smoke\05_focus_online.png (1280x720, 1523617 bytes)
+PIXEL 05_focus_online.png background region (690,500,55x120) avgLuma=87.7 uniqueColors=1475
+SHOT D:\majiang\snapshot\main-menu-smoke\08_skin_updated_1280.png (1280x720, 1523344 bytes)
+PIXEL 08_skin_updated_1280.png background region (690,500,55x120) avgLuma=87.7 uniqueColors=1475
+SHOT D:\majiang\snapshot\main-menu-smoke\06_secrets_overlay.png (1280x720, 711988 bytes)
+PIXEL 06_secrets_overlay.png background region (150,450,100x100) avgLuma=28.3 uniqueColors=1481
+PIXEL 06_secrets_overlay.png background region (1090,200,90x80) avgLuma=18.6 uniqueColors=136
+SHOT D:\majiang\snapshot\main-menu-smoke\07_settings_overlay.png (1280x720, 645828 bytes)
+PIXEL 07_settings_overlay.png background region (150,450,100x100) avgLuma=28.3 uniqueColors=1481
+PIXEL 07_settings_overlay.png background region (1090,200,90x80) avgLuma=18.6 uniqueColors=136
+six entry callbacks exercised: solo/online/skin/secrets/settings/exit
+SHOT D:\majiang\snapshot\main-menu-smoke\13_reentry_240ms.png (1280x720, 1706783 bytes)
+PIXEL 13_reentry_240ms.png background region (690,500,55x120) avgLuma=87.7 uniqueColors=1475
+SHOT D:\majiang\snapshot\main-menu-smoke\09_960x540.png (960x540, 943510 bytes)
+PIXEL 09_960x540.png background region (520,380,35x80) avgLuma=85.8 uniqueColors=669
+SHOT D:\majiang\snapshot\main-menu-smoke\10_960x540_skin_updated.png (960x540, 943413 bytes)
+PIXEL 10_960x540_skin_updated.png background region (520,380,35x80) avgLuma=85.8 uniqueColors=669
+960x540: skin click aligned after resize; viewport=960x540
+SHOT D:\majiang\snapshot\main-menu-smoke\11_ultrawide_1560x720.png (1560x720, 1840797 bytes)
+PIXEL 11_ultrawide_1560x720.png background region (830,500,55x120) avgLuma=52.3 uniqueColors=1070
+PIXEL 11_ultrawide_1560x720.png background region (30,250,80x200) avgLuma=40.0 uniqueColors=3055
+SHOT D:\majiang\snapshot\main-menu-smoke\12_ultrawide_settings.png (1560x720, 1009982 bytes)
+PIXEL 12_ultrawide_settings.png background region (236,450,100x100) avgLuma=21.4 uniqueColors=1492
+PIXEL 12_ultrawide_settings.png background region (1230,200,90x80) avgLuma=18.6 uniqueColors=80
+ultrawide: viewport=1280x720 centered at x=140, input aligned
+SHOT D:\majiang\snapshot\main-menu-smoke\14_reduced_motion.png (1560x720, 1837988 bytes)
+PIXEL 14_reduced_motion.png background region (830,500,55x120) avgLuma=52.3 uniqueColors=1070
+reduced motion: immediate final state and click verified
+PASS: all MainMenuRenderSmoke checks completed

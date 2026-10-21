@@ -1,6 +1,7 @@
 package com.majiang.presentation.common
 
 import com.badlogic.gdx.Gdx
+import com.badlogic.gdx.graphics.Texture
 import com.badlogic.gdx.graphics.g2d.BitmapFont
 import com.badlogic.gdx.graphics.g2d.SpriteBatch
 import com.badlogic.gdx.graphics.g2d.freetype.FreeTypeFontGenerator
@@ -8,6 +9,7 @@ import com.badlogic.gdx.graphics.glutils.ShapeRenderer
 import com.badlogic.gdx.utils.Disposable
 import com.majiang.presentation.common.render.GhostHandTexture
 import com.majiang.presentation.common.render.SkinManager
+import com.majiang.presentation.menu.MainMenuAssets
 
 /**
  * 表现层统一共享资产容器 (UiAssets)。
@@ -26,7 +28,15 @@ class UiAssets(
     val chineseFont: BitmapFont? = null,
     val chineseFont17: BitmapFont? = null,
     val skinManager: SkinManager = SkinManager(),
-    private val fontGenerator: FreeTypeFontGenerator? = null
+    private val fontGenerator: FreeTypeFontGenerator? = null,
+    /** 主菜单专用 64px 标题字库，禁止用 18px 字体直接放大冒充。 */
+    val mainMenuTitleFont: BitmapFont? = null,
+    /** 主菜单主文案 24px 动态中文字库。 */
+    val mainMenuFont24: BitmapFont? = null,
+    /** 主菜单次文案 21px 动态中文字库。 */
+    val mainMenuFont21: BitmapFont? = null,
+    /** 主菜单状态/皮肤值 16px 动态中文字库。 */
+    val mainMenuFont16: BitmapFont? = null
 ) : Disposable {
 
     /**
@@ -47,6 +57,49 @@ class UiAssets(
     val chineseFont18: BitmapFont?
         get() = chineseFont
 
+    /** 主菜单标题字体：专用 64px 字库，缺失时安全降级。 */
+    val effectiveMainMenuTitleFont: BitmapFont
+        get() = mainMenuTitleFont ?: chineseFont ?: font
+
+    /** 主菜单主入口 24px 字体。 */
+    val effectiveMainMenuFont24: BitmapFont
+        get() = mainMenuFont24 ?: effectiveFont
+
+    /** 主菜单次入口 21px 字体。 */
+    val effectiveMainMenuFont21: BitmapFont
+        get() = mainMenuFont21 ?: effectiveFont
+
+    /** 主菜单状态与辅助信息 16px 字体。 */
+    val effectiveMainMenuFont16: BitmapFont
+        get() = mainMenuFont16 ?: effectiveFont17
+
+    /**
+     * 主菜单资源根所有权：仅在首次真正渲染 MAIN 时延迟创建一次。
+     * 无头测试或缺失 GL 时返回 null，不强制创建纹理；失败后不每帧重试。
+     */
+    var mainMenuAssets: MainMenuAssets? = null
+        private set
+
+    private var mainMenuAssetsAttempted = false
+
+    fun obtainMainMenuAssets(): MainMenuAssets? {
+        if (isDisposed) return null
+        menuAssetsOrNull()?.let { return it }
+        if (mainMenuAssetsAttempted) return null
+        if (Gdx.gl == null || Gdx.files == null || Gdx.graphics == null || Gdx.graphics.width <= 0) {
+            return null
+        }
+        mainMenuAssetsAttempted = true
+        return try {
+            MainMenuAssets.load().also { mainMenuAssets = it }
+        } catch (t: Throwable) {
+            Gdx.app?.error("UiAssets", "Failed to load main-menu assets: ${t.message}")
+            null
+        }
+    }
+
+    private fun menuAssetsOrNull(): MainMenuAssets? = mainMenuAssets?.takeUnless { it.isDisposed }
+
     var isDisposed: Boolean = false
         private set
 
@@ -57,21 +110,29 @@ class UiAssets(
             activeInstance = null
         }
         try {
-            chineseFont?.dispose()
+            mainMenuAssets?.dispose()
         } catch (_: Throwable) {}
-        if (chineseFont17 !== chineseFont) {
+        mainMenuAssets = null
+        val disposedFonts = java.util.Collections.newSetFromMap(
+            java.util.IdentityHashMap<BitmapFont, Boolean>()
+        )
+        fun disposeFont(fontToDispose: BitmapFont?) {
+            if (fontToDispose == null) return
+            if (!disposedFonts.add(fontToDispose)) return
             try {
-                chineseFont17?.dispose()
+                fontToDispose.dispose()
             } catch (_: Throwable) {}
         }
+        disposeFont(chineseFont)
+        disposeFont(chineseFont17)
+        disposeFont(mainMenuTitleFont)
+        disposeFont(mainMenuFont24)
+        disposeFont(mainMenuFont21)
+        disposeFont(mainMenuFont16)
+        disposeFont(font)
         try {
             fontGenerator?.dispose()
         } catch (_: Throwable) {}
-        if (font !== chineseFont && font !== chineseFont17) {
-            try {
-                font.dispose()
-            } catch (_: Throwable) {}
-        }
         try {
             batch.dispose()
         } catch (_: Throwable) {}
@@ -97,6 +158,10 @@ class UiAssets(
             val font = BitmapFont()
             var chineseFont: BitmapFont? = null
             var chineseFont17: BitmapFont? = null
+            var mainMenuTitleFont: BitmapFont? = null
+            var mainMenuFont24: BitmapFont? = null
+            var mainMenuFont21: BitmapFont? = null
+            var mainMenuFont16: BitmapFont? = null
             var fontGenerator: FreeTypeFontGenerator? = null
 
             if (Gdx.files != null && Gdx.gl != null && Gdx.graphics != null && Gdx.graphics.width > 0) {
@@ -120,6 +185,21 @@ class UiAssets(
                         }
                         chineseFont17 = generator.generateFont(param17)
 
+                        fun menuFont(sizePx: Int): BitmapFont {
+                            val parameter = FreeTypeFontGenerator.FreeTypeFontParameter().apply {
+                                size = sizePx
+                                incremental = true
+                                characters = FreeTypeFontGenerator.DEFAULT_CHARS
+                                minFilter = Texture.TextureFilter.Linear
+                                magFilter = Texture.TextureFilter.Linear
+                            }
+                            return generator.generateFont(parameter)
+                        }
+                        mainMenuTitleFont = menuFont(64)
+                        mainMenuFont24 = menuFont(24)
+                        mainMenuFont21 = menuFont(21)
+                        mainMenuFont16 = menuFont(16)
+
                         fontGenerator = generator
                         localGenerator = null
                     }
@@ -133,17 +213,21 @@ class UiAssets(
                             fontGenerator?.dispose()
                         } catch (_: Throwable) {}
                     }
-                    try {
-                        chineseFont?.dispose()
-                    } catch (_: Throwable) {}
-                    if (chineseFont17 !== chineseFont) {
+                    listOf(
+                        chineseFont, chineseFont17, mainMenuTitleFont, mainMenuFont24,
+                        mainMenuFont21, mainMenuFont16
+                    ).forEach { fontToDispose ->
                         try {
-                            chineseFont17?.dispose()
+                            fontToDispose?.dispose()
                         } catch (_: Throwable) {}
                     }
                     fontGenerator = null
                     chineseFont = null
                     chineseFont17 = null
+                    mainMenuTitleFont = null
+                    mainMenuFont24 = null
+                    mainMenuFont21 = null
+                    mainMenuFont16 = null
                 }
             }
 
@@ -154,6 +238,10 @@ class UiAssets(
                 chineseFont = chineseFont,
                 chineseFont17 = chineseFont17,
                 skinManager = skinManager,
+                mainMenuTitleFont = mainMenuTitleFont,
+                mainMenuFont24 = mainMenuFont24,
+                mainMenuFont21 = mainMenuFont21,
+                mainMenuFont16 = mainMenuFont16,
                 fontGenerator = fontGenerator
             )
             activeInstance = assets

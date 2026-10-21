@@ -34,6 +34,20 @@ class MenuScreenTest : GdxHeadlessTestRunner() {
 
     private fun <T> CompletableFuture<T>.await(): T = get(4, TimeUnit.SECONDS)
 
+    private fun tapMainItem(screen: MenuScreen, id: MainMenuItemId) {
+        val rect = screen.mainMenuView.itemRect(id) ?: screen.mainMenuView.rectFor(id)
+        val point = screen.screenPoint(rect.x + rect.width / 2f, rect.y + rect.height / 2f)
+        screen.touchDown(point.x.toInt(), point.y.toInt(), 0, 0)
+        screen.touchUp(point.x.toInt(), point.y.toInt(), 0, 0)
+    }
+
+    /** 旧测试以 1280x720 屏幕坐标表达点击；这里统一转换到当前视口。 */
+    private fun tapScreen(screen: MenuScreen, screenX: Int, screenY: Int) {
+        val point = screen.screenPoint(screenX.toFloat(), 720f - screenY)
+        screen.touchDown(point.x.toInt(), point.y.toInt(), 0, 0)
+        screen.touchUp(point.x.toInt(), point.y.toInt(), 0, 0)
+    }
+
     @Test
     fun testMahjongGameInstanceCreation() {
         val game = MahjongGame()
@@ -214,11 +228,13 @@ class MenuScreenTest : GdxHeadlessTestRunner() {
         val game = MahjongGame()
         game.create()
         val menuScreen = game.screen as MenuScreen
+        // 测试只验证菜单状态机；将入场时钟归零让六项立即落位，动画时序由专门用例覆盖。
+        menuScreen.mainMenuView.beginEntry(0L)
 
         assertEquals(MenuScreen.MenuState.MAIN, menuScreen.currentState)
 
         // 打开秘籍弹窗
-        menuScreen.touchDown(640, 495, 0, 0) // 点击 btnSecrets
+        tapMainItem(menuScreen, MainMenuItemId.SECRETS)
         assertEquals(MenuScreen.MenuState.SECRETS_MODAL, menuScreen.currentState)
 
         // ESC 关闭弹窗
@@ -226,7 +242,7 @@ class MenuScreenTest : GdxHeadlessTestRunner() {
         assertEquals(MenuScreen.MenuState.MAIN, menuScreen.currentState)
 
         // 打开设置弹窗
-        menuScreen.touchDown(640, 560, 0, 0) // 点击 btnSettings
+        tapMainItem(menuScreen, MainMenuItemId.SETTINGS)
         assertEquals(MenuScreen.MenuState.SETTINGS_MODAL, menuScreen.currentState)
 
         // ESC 关闭设置弹窗
@@ -234,7 +250,7 @@ class MenuScreenTest : GdxHeadlessTestRunner() {
         assertEquals(MenuScreen.MenuState.MAIN, menuScreen.currentState)
 
         // 打开 TCP 连接弹窗
-        menuScreen.touchDown(640, 365, 0, 0) // 点击 btnOpenLobby
+        tapMainItem(menuScreen, MainMenuItemId.ONLINE)
         assertEquals(MenuScreen.MenuState.TCP_CONNECT_DIALOG, menuScreen.currentState)
 
         // ESC 返回主菜单
@@ -252,8 +268,8 @@ class MenuScreenTest : GdxHeadlessTestRunner() {
         val menuScreen = MenuScreen(assets, nav, null)
 
         // 打开 TCP 弹窗并激活 HOST 输入
-        menuScreen.touchDown(640, 365, 0, 0) // 打开弹窗
-        menuScreen.touchDown(500, 330, 0, 0) // 点击 Host 输入框
+        tapMainItem(menuScreen, MainMenuItemId.ONLINE)
+        tapScreen(menuScreen, 500, 330) // 点击 Host 输入框
 
         // 输入测试字符
         menuScreen.keyTyped('1')
@@ -262,7 +278,7 @@ class MenuScreenTest : GdxHeadlessTestRunner() {
         menuScreen.keyTyped('\b') // 退格删除 '2'
 
         // 点击取消
-        menuScreen.touchDown(760, 500, 0, 0) // btnTcpCancel
+        tapScreen(menuScreen, 760, 500) // btnTcpCancel
         assertEquals(MenuScreen.MenuState.MAIN, menuScreen.currentState)
 
         assets.dispose()
@@ -276,8 +292,8 @@ class MenuScreenTest : GdxHeadlessTestRunner() {
         nav.remoteLobbyFuture = pending
         val menu = MenuScreen(assets, nav, null)
         try {
-            menu.touchDown(640, 365, 0, 0)
-            menu.touchDown(520, 478, 0, 0)
+            tapMainItem(menu, MainMenuItemId.ONLINE)
+            tapScreen(menu, 520, 478)
             assertEquals(MenuScreen.MenuState.CONNECTING, menu.currentState)
 
             menu.keyDown(Input.Keys.ESCAPE)
@@ -300,7 +316,7 @@ class MenuScreenTest : GdxHeadlessTestRunner() {
         val lobby = FakeLobbySession()
         val menu = MenuScreen(assets, FakeTableNavigation(), lobby)
         try {
-            menu.touchDown(190, 290, 0, 0)
+            tapScreen(menu, 190, 290)
             lobby.emitState(ConnectionState.CLOSED)
             val processed = CountDownLatch(1)
             Gdx.app.postRunnable { processed.countDown() }
@@ -324,14 +340,14 @@ class MenuScreenTest : GdxHeadlessTestRunner() {
         assertEquals(MenuScreen.MenuState.LOBBY, menuScreen.currentState)
 
         // 刷新房间
-        menuScreen.touchDown(190, 290, 0, 0) // 点击 btnLobbyRefresh
+        tapScreen(menuScreen, 190, 290) // 点击 btnLobbyRefresh
 
         // 切换到建房规则弹窗
-        menuScreen.touchDown(190, 160, 0, 0) // 点击 btnLobbyCreateRoom
+        tapScreen(menuScreen, 190, 160) // 点击 btnLobbyCreateRoom
         assertEquals(MenuScreen.MenuState.CREATE_ROOM_DIALOG, menuScreen.currentState)
 
         // 取消建房回到大厅
-        menuScreen.touchDown(780, 530, 0, 0) // 点击 btnCreateCancel
+        tapScreen(menuScreen, 780, 530) // 点击 btnCreateCancel
         assertEquals(MenuScreen.MenuState.LOBBY, menuScreen.currentState)
 
         menuScreen.dispose()
@@ -349,7 +365,7 @@ class MenuScreenTest : GdxHeadlessTestRunner() {
         assertEquals(MenuScreen.MenuState.LOBBY, menuScreen.currentState)
 
         // 点击 btnLobbyBack (x=190, y=720 - 143 = 577)
-        menuScreen.touchDown(190, 577, 0, 0)
+        tapScreen(menuScreen, 190, 577)
         val uiProcessed = CountDownLatch(1)
         Gdx.app.postRunnable { uiProcessed.countDown() }
         assertTrue(uiProcessed.await(3, TimeUnit.SECONDS))

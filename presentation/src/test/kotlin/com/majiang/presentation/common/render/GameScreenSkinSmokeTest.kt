@@ -5,6 +5,7 @@ import com.majiang.presentation.GdxHeadlessTestRunner
 import com.majiang.client.api.*
 import com.majiang.presentation.common.UiAssets
 import com.majiang.presentation.game.GameScreen
+import com.majiang.presentation.menu.MainMenuItemId
 import com.majiang.presentation.menu.MenuScreen
 import com.majiang.presentation.testing.FakeGameSession
 import com.majiang.presentation.testing.FakeTableNavigation
@@ -79,9 +80,13 @@ class GameScreenSkinSmokeTest : GdxHeadlessTestRunner() {
         val menu = MenuScreen(assets, FakeTableNavigation())
         try {
             assertEquals(SkinId.WIKIPEDIA, manager.currentSkinId)
-            assertTrue(menu.touchDown(550, 405, 0, 0))
+            val skin = menu.mainMenuView.rectFor(MainMenuItemId.SKIN)
+            val point = menu.screenPoint(skin.x + skin.width / 2f, skin.y + skin.height / 2f)
+            assertTrue(menu.touchDown(point.x.toInt(), point.y.toInt(), 0, 0))
+            menu.touchUp(point.x.toInt(), point.y.toInt(), 0, 0)
             assertEquals(SkinId.CLASSIC, manager.currentSkinId)
-            assertTrue(menu.touchDown(550, 405, 0, 0))
+            assertTrue(menu.touchDown(point.x.toInt(), point.y.toInt(), 0, 0))
+            menu.touchUp(point.x.toInt(), point.y.toInt(), 0, 0)
             assertEquals(SkinId.WIKIPEDIA, manager.currentSkinId)
             assertDoesNotThrow { menu.dispose() }
             assertEquals(SkinId.WIKIPEDIA, manager.currentSkin.id)

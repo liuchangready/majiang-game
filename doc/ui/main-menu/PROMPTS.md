@@ -1,0 +1,9 @@
+# 正式菜单图像生成记录
+
+模式：内置 imagegen。主菜单预期图为新生成的 UI 美术稿，背景与章鱼为已生成美术的独立复制。控件/图标使用仓库 PowerShell 绘图脚本，不经过模型编辑。
+
+本次预期图的最终提示词（两张输入仅作风格/身份参考，分别为透明章鱼和无文字场景背景）：
+
+> Use case: ui-mockup. Asset type: finished high-fidelity 16:9 MAIN MENU design for the REAL libGDX desktop/Android app 《疯狂动物麻将》. Reference image 1 is the actual red octopus mascot art; reference image 2 is the atmospheric club background. Use them only as style/identity references and create a clean cohesive new full-screen app UI. This is a production APP menu design, not a web dashboard: NO browser frame, top web navigation, demo watermark, account, shop, character selection, currency, stats or animal abilities. Art direction: premium theatrical Chinese animal mahjong club, deep jade felt, lacquer vermilion, warm restrained gold, moonlit architecture, expressive octopus mascot. Layout: left half has large exact Chinese title “疯狂动物麻将” upper left and short subtitle “三大千术 · 牌桌心战”, then a LARGE red octopus cutout mascot in the lower-left area; right half has a single clear vertical menu list of exactly SIX distinct buttons, first two larger than last four. Exact labels in order: “单机对局”, “联机对战”, “牌面皮肤”, “千术秘籍”, “游戏设置”, “退出游戏”. Rich jade/red button panels with thin carved gold borders, intuitive small icons; every menu option legible with generous spacing and touch targets. Bottom right reserve a slim empty status band, no fake messages. Bottom left may show three very small skill motif icons but no interactive ability or role-selection controls. Keep text as crisp as possible. Show final settled menu state; the design will later animate the menu items from the RIGHT into their positions. Avoid oversaturated halos, thick square portrait frames, dense technical badges, invented mechanics, and placeholder text. Landscape 16:9 flat screenshot of the app UI, no watermarks.
+
+生成图中的图标、按钮颜色和小装饰只作风格参考；精确位置、六个实际入口和状态语义以 DESIGN.md / manifest.json 为准。

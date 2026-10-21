@@ -12,7 +12,7 @@ object DesktopLauncher {
     @JvmStatic
     fun main(args: Array<String>) {
         val config = Lwjgl3ApplicationConfiguration().apply {
-            setTitle("千术麻将 (Mahjong Cheater)")
+            setTitle("疯狂动物麻将 (Crazy Animal Mahjong)")
             setWindowedMode(1280, 720)
             setForegroundFPS(60)
             useVsync(true)
