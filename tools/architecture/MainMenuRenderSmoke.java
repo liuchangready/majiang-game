@@ -322,7 +322,8 @@ public final class MainMenuRenderSmoke {
         }
 
         /**
-         * 目标弹窗现在是 280ms 轻滑入：先渲染第一帧启动动画，再推进虚拟时钟到终态，
+         * 覆盖弹层现在只做固定位置的淡入（不再有任何横移）：
+         * 先渲染第一帧启动淡入，再推进虚拟时钟到终态，
          * 保持既有“稳定底图 + 覆盖弹窗”像素断言针对落位后的弹窗。
          */
         private void settleTargetSlide() {

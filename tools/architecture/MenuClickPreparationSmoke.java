@@ -26,15 +26,16 @@ import java.io.File;
 import java.io.FileWriter;
 import java.io.IOException;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
- * 正式 APP 菜单点击滑入 + 单机准备早开局的真实 GL 冒烟。
+ * 正式 APP 菜单点击反馈 + 单机准备早开局的真实 GL 冒烟。
  *
  * 不修改生产入口，不依赖无头状态断言冒充真实路径：
- * 1. 真实窗口/纹理下打开联机连接框、秘籍、设置，截点击后 0 / 80 / 280ms 图，
- *    用模板匹配测量目标内容相对终态底图的像素位移，并检查背景区域没有整屏移动；
+ * 1. 真实窗口/纹理下打开联机连接框、秘籍、设置，截点击后 0 / 80 / 300ms 图，
+ *    断言目标弹层固定位置、相机位置与投影矩阵逐元素不变（不再有任何目标层横移）；
  * 2. 真实 MahjongGame 单机启动（点击“单机对局”），进入准备面板后点击“不使用千术”，
  *    用墙钟记录从点击到权威 preparation 结束、遮罩消失、牌桌可见的实际耗时。
  *
@@ -122,36 +123,33 @@ public final class MenuClickPreparationSmoke {
                 switch (phase) {
                     case 0:
                         if (Gdx.graphics.getWidth() == 1280 && Gdx.graphics.getHeight() == 720 && frame >= 2) {
-                            runSlideTarget(
+                            runFixedTarget(
                                 "tcp_connect",
                                 MainMenuItemId.ONLINE,
                                 MenuScreen.MenuState.TCP_CONNECT_DIALOG,
                                 new Rectangle(360f, 180f, 560f, 360f),
-                                1_000L,
-                                false
+                                1_000L
                             );
                             phase = 1;
                         }
                         break;
                     case 1:
-                        runSlideTarget(
+                        runFixedTarget(
                             "secrets",
                             MainMenuItemId.SECRETS,
                             MenuScreen.MenuState.SECRETS_MODAL,
                             new Rectangle(260f, 110f, 760f, 500f),
-                            2_400L,
-                            true
+                            2_400L
                         );
                         phase = 2;
                         break;
                     case 2:
-                        runSlideTarget(
+                        runFixedTarget(
                             "settings",
                             MainMenuItemId.SETTINGS,
                             MenuScreen.MenuState.SETTINGS_MODAL,
                             new Rectangle(260f, 110f, 760f, 500f),
-                            3_800L,
-                            true
+                            3_800L
                         );
                         phase = 3;
                         break;
@@ -217,7 +215,7 @@ public final class MenuClickPreparationSmoke {
                         }
                         break;
                     case 7:
-                        log("PASS: menu slide displacement and real single-player early deal verified");
+                        log("PASS: menu target stays fixed (no camera shift) and real single-player early deal verified");
                         writeLog();
                         if (game != null) {
                             game.dispose();
@@ -234,16 +232,21 @@ public final class MenuClickPreparationSmoke {
         }
 
         /**
-         * 打开目标内容，在 0/80/280ms 各渲染并截图，然后用目标终态图做模板匹配测量位移。
+         * 打开目标内容，在 0/80/300ms 各渲染并截图。
+         *
+         * 2026-10-22 用户更正后的语义：点击时向右滑的是**被点的按钮本身**，
+         * 目标弹层固定位置、相机与投影不横移。因此这里断言：
+         * 1. 相机位置与投影矩阵逐元素完全一致（任何横移都会让绘制整体平移）；
+         * 2. 目标面板在三帧之间亮度一致（若整体平移 220px，面板内容会立刻变成背景）。
          */
-        private void runSlideTarget(
+        private void runFixedTarget(
             String name,
             MainMenuItemId menuItem,
             MenuScreen.MenuState expectedState,
             Rectangle finalPanelWorldRect,
-            long startClockMs,
-            boolean useDiffBoundary
+            long startClockMs
         ) {
+            float[] cameraBefore = menu.cameraStateForDiagnostics();
             menu.getMainMenuView().restoreFocus(menuItem);
             menu.keyDown(Input.Keys.ENTER);
             check(menu.getCurrentState() == expectedState,
@@ -257,40 +260,35 @@ public final class MenuClickPreparationSmoke {
             menu.render(1f / 60f);
             String shotMid = name + "_80ms.png";
             capture(shotMid);
-            clock.set(startClockMs + 280L);
+            clock.set(startClockMs + 300L);
             menu.render(1f / 60f);
-            String shotFinal = name + "_280ms.png";
+            String shotFinal = name + "_300ms.png";
             capture(shotFinal);
+
+            float[] cameraAfter = menu.cameraStateForDiagnostics();
+            check(Arrays.equals(cameraBefore, cameraAfter),
+                name + " camera position/projection must not shift when a target opens");
+            log("FIXED " + name + " cameraShift=false (position+projection identical)");
 
             BufferedImage img0 = readScreenshot(shot0);
             BufferedImage imgMid = readScreenshot(shotMid);
             BufferedImage imgFinal = readScreenshot(shotFinal);
 
-            // 目标终态面板内侧区域：0ms 时面板整体右移 220px，仍完全覆盖该区域。
-            int x0 = Math.round(finalPanelWorldRect.x + 240f);
-            int x1 = Math.round(finalPanelWorldRect.x + finalPanelWorldRect.width - 20f);
-            int y0 = 260;
-            int y1 = 440;
-            int off0 = useDiffBoundary
-                ? estimateOffsetByDiff(img0, imgFinal, Math.round(finalPanelWorldRect.x + finalPanelWorldRect.width))
-                : estimateOffset(img0, imgFinal, x0, x1, y0, y1, 240);
-            int offMid = useDiffBoundary
-                ? estimateOffsetByDiff(imgMid, imgFinal, Math.round(finalPanelWorldRect.x + finalPanelWorldRect.width))
-                : estimateOffset(imgMid, imgFinal, x0, x1, y0, y1, 240);
-            int offFinal = useDiffBoundary
-                ? estimateOffsetByDiff(imgFinal, imgFinal, Math.round(finalPanelWorldRect.x + finalPanelWorldRect.width))
-                : estimateOffset(imgFinal, imgFinal, x0, x1, y0, y1, 240);
-            double bgDrift = meanAbsDiff(img0, imgFinal, 80, 200, 260, 440);
-
-            log("SLIDE " + name + " targetOffsetsPx 0ms=" + off0 + " 80ms=" + offMid + " 280ms=" + offFinal
-                + " backgroundDrift=" + String.format("%.2f", bgDrift));
-            check(Math.abs(off0 - 220) <= 4,
-                name + " 0ms target must start +220px, measured " + off0);
-            check(offMid > 40 && offMid < 200,
-                name + " 80ms target must be mid-flight, measured " + offMid);
-            check(offFinal <= 1, name + " 280ms target must land, measured " + offFinal);
-            check(bgDrift < 45.0,
-                name + " background must not move with the target, drift=" + bgDrift);
+            // 目标面板固定位置：面板内部亮度在三帧之间必须一致。
+            int px0 = Math.round(finalPanelWorldRect.x + 40f);
+            int px1 = Math.round(finalPanelWorldRect.x + finalPanelWorldRect.width - 40f);
+            int py0 = 260;
+            int py1 = 440;
+            double luma0 = meanLuma(img0, px0, px1, py0, py1);
+            double lumaMid = meanLuma(imgMid, px0, px1, py0, py1);
+            double lumaFinal = meanLuma(imgFinal, px0, px1, py0, py1);
+            log("FIXED " + name + " panelLuma 0ms=" + luma0 + " 80ms=" + lumaMid + " 300ms=" + lumaFinal);
+            check(Math.abs(luma0 - lumaFinal) < 4.0,
+                name + " target panel must stay at a fixed position, luma drift="
+                    + Math.abs(luma0 - lumaFinal));
+            check(Math.abs(lumaMid - lumaFinal) < 4.0,
+                name + " target panel must stay at a fixed position, luma drift="
+                    + Math.abs(lumaMid - lumaFinal));
 
             menu.keyDown(Input.Keys.ESCAPE);
             check(menu.getCurrentState() == MenuScreen.MenuState.MAIN,
@@ -298,78 +296,15 @@ public final class MenuClickPreparationSmoke {
             menu.render(1f / 60f);
         }
 
-        /**
-         * 对不透明弹窗用“差异带右边界 - 终态右边界”求位移。
-         *
-         * 终态面板 [left,right]；滑入 offset 后 test 面板为 [left+offset,right+offset]。
-         * 两帧在 (right, right+offset] 一为面板、一为背景，差异带的最右 x 即 right+offset-1。
-         * 对 TCP 连接框这种底色与牌桌接近的目标，改用面板内部模板匹配。
-         */
-        private int estimateOffsetByDiff(BufferedImage test, BufferedImage reference, int finalRight) {
-            int lastDiff = -1;
-            for (int y = 260; y <= 440; y += 20) {
-                for (int x = 0; x < test.getWidth(); x++) {
-                    int a = test.getRGB(x, y);
-                    int b = reference.getRGB(x, y);
-                    int delta = Math.abs(((a >> 16) & 0xFF) - ((b >> 16) & 0xFF))
-                        + Math.abs(((a >> 8) & 0xFF) - ((b >> 8) & 0xFF))
-                        + Math.abs((a & 0xFF) - (b & 0xFF));
-                    if (delta > 60) {
-                        lastDiff = Math.max(lastDiff, x);
-                    }
-                }
-            }
-            if (lastDiff < 0) return 0;
-            return Math.max(0, lastDiff - (finalRight - 1));
-        }
-
-        /**
-         * 在 test 图中寻找 dx，使 test(x) ≈ reference(x-dx)。参考图为无位移终态。
-         */
-        private int estimateOffset(
-            BufferedImage test, BufferedImage reference,
-            int x0, int x1, int y0, int y1, int maxDx
-        ) {
-            double bestError = Double.MAX_VALUE;
-            int bestDx = -1;
-            for (int dx = 0; dx <= maxDx; dx++) {
-                double error = 0.0;
-                int samples = 0;
-                for (int y = y0; y <= y1; y += 3) {
-                    for (int x = x0; x <= x1; x += 3) {
-                        int sx = x - dx;
-                        if (sx < 0 || sx >= reference.getWidth()) continue;
-                        int a = test.getRGB(x, y);
-                        int b = reference.getRGB(sx, y);
-                        error += Math.abs(((a >> 16) & 0xFF) - ((b >> 16) & 0xFF));
-                        error += Math.abs(((a >> 8) & 0xFF) - ((b >> 8) & 0xFF));
-                        error += Math.abs((a & 0xFF) - (b & 0xFF));
-                        samples++;
-                    }
-                }
-                if (samples == 0) continue;
-                double average = error / samples;
-                if (average < bestError) {
-                    bestError = average;
-                    bestDx = dx;
-                }
-            }
-            return bestDx;
-        }
-
-        private double meanAbsDiff(
-            BufferedImage a, BufferedImage b,
-            int x0, int x1, int y0, int y1
-        ) {
+        private double meanLuma(BufferedImage image, int x0, int x1, int y0, int y1) {
             double sum = 0.0;
             int samples = 0;
-            for (int y = y0; y <= y1; y += 4) {
-                for (int x = x0; x <= x1; x += 4) {
-                    int pa = a.getRGB(x, y);
-                    int pb = b.getRGB(x, y);
-                    sum += Math.abs(((pa >> 16) & 0xFF) - ((pb >> 16) & 0xFF));
-                    sum += Math.abs(((pa >> 8) & 0xFF) - ((pb >> 8) & 0xFF));
-                    sum += Math.abs((pa & 0xFF) - (pb & 0xFF));
+            for (int y = y0; y < y1; y += 2) {
+                for (int x = x0; x < x1; x += 2) {
+                    int rgb = image.getRGB(x, y);
+                    sum += 0.299 * ((rgb >> 16) & 0xFF)
+                        + 0.587 * ((rgb >> 8) & 0xFF)
+                        + 0.114 * (rgb & 0xFF);
                     samples++;
                 }
             }

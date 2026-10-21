@@ -104,24 +104,12 @@ class MenuScreen(
         private set
 
     /**
-     * 只有“点击入口后出现的目标内容”使用滑入；完整大厅/房间页保持既有整屏切换，
-     * 避免主场景被整体拖动。MAIN 自身的六项入场仍由 [MainMenuView] 负责。
+     * 只有“点击入口后出现的目标内容”使用**淡入**（固定位置，不做任何平移）；
+     * 完整大厅/房间页保持既有整屏切换，避免主场景被整体拖动。
+     * MAIN 自身的六项入场由 [MainMenuView] 负责，点击反馈位移由 [MainMenuButtonMotion] 负责。
      */
-    private val slidingTargetStates = setOf(
-        MenuState.TCP_CONNECT_DIALOG,
-        MenuState.CREATE_ROOM_DIALOG,
-        MenuState.JOIN_ROOM_DIALOG,
-        MenuState.SECRETS_MODAL,
-        MenuState.SETTINGS_MODAL
-    )
-
-    private val contentMotion = MenuContentMotion(motionEnabled = motionEnabled, clock = clock)
-    private var contentMotionState: MenuState = currentState
-
-    internal val contentMotionOffsetX: Float
-        get() = if (currentState in slidingTargetStates) contentMotion.offsetX else 0f
-    internal val isContentMotionActive: Boolean
-        get() = currentState in slidingTargetStates && contentMotion.isActive
+    private val overlayReveal = MenuOverlayReveal(motionEnabled = motionEnabled, clock = clock)
+    private var overlayRevealState: MenuState = currentState
 
     // 状态提示与错误信息
     private var statusMessage: String? = null
@@ -293,9 +281,8 @@ class MenuScreen(
         // 统一内容视口：绘制与 unproject 使用同一 viewport。
         viewport.apply()
         camera.update()
-        // 动画只在渲染帧启动/推进；输入在 offset 非 0 时门控，落位后坐标严格为终态。
-        syncContentMotion(clock())
-        val slideOffset = contentMotionOffsetX
+        // 动画只在渲染帧启动/推进；输入不因视觉反馈被门控，业务回调永远即时。
+        syncOverlayReveal(clock())
 
         val shape = assets.shapeRenderer
         val batch = assets.batch
@@ -307,12 +294,10 @@ class MenuScreen(
 
         when (currentState) {
             MenuState.MAIN -> renderMainMenuContent(shape, batch, font)
-            MenuState.TCP_CONNECT_DIALOG -> withContentSlide(slideOffset) {
-                connectDialogView.render(
-                    camera, shape, batch, font,
-                    animTimer, errorMessage
-                )
-            }
+            MenuState.TCP_CONNECT_DIALOG -> connectDialogView.render(
+                camera, shape, batch, font,
+                animTimer, errorMessage
+            )
             MenuState.CONNECTING -> renderConnectingScreen(shape, batch, font)
             MenuState.LOBBY -> lobbyListView.render(
                 camera, shape, batch, font,
@@ -320,15 +305,11 @@ class MenuScreen(
                 roomList, selectedRoom,
                 statusMessage, errorMessage
             )
-            MenuState.CREATE_ROOM_DIALOG -> withContentSlide(slideOffset) {
-                createRoomDialogView.render(camera, shape, batch, font)
-            }
-            MenuState.JOIN_ROOM_DIALOG -> withContentSlide(slideOffset) {
-                joinRoomDialogView.render(
-                    camera, shape, batch, font,
-                    animTimer, errorMessage
-                )
-            }
+            MenuState.CREATE_ROOM_DIALOG -> createRoomDialogView.render(camera, shape, batch, font)
+            MenuState.JOIN_ROOM_DIALOG -> joinRoomDialogView.render(
+                camera, shape, batch, font,
+                animTimer, errorMessage
+            )
             MenuState.ROOM -> roomPreparationView.render(
                 camera, shape, batch, font,
                 currentRoomInfo, joinRoomDialogView.inputRoomId,
@@ -336,60 +317,55 @@ class MenuScreen(
                 statusMessage, errorMessage
             )
             MenuState.SECRETS_MODAL -> {
-                // 菜单底图与全屏遮罩保持稳定，只让目标弹窗轻滑入。
+                // 菜单底图与全屏遮罩保持稳定，只让目标弹窗原位淡入。
                 renderMainMenuContent(shape, batch, font)
                 renderModalDimmer(shape)
-                withContentSlide(slideOffset) {
-                    renderSecretsModal(shape, batch, font)
-                }
+                renderSecretsModal(shape, batch, font)
             }
             MenuState.SETTINGS_MODAL -> {
                 renderMainMenuContent(shape, batch, font)
                 renderModalDimmer(shape)
-                withContentSlide(slideOffset) {
-                    renderSettingsModal(shape, batch, font)
-                }
+                renderSettingsModal(shape, batch, font)
             }
         }
     }
 
     /**
-     * 检测目标状态切换并推进滑入。仅在渲染帧调用；状态切换后的第一帧从 +220 开始。
-     * 返回 MAIN 或进入非目标状态时立即终态，主菜单不产生任何整屏位移。
+     * 检测覆盖层状态切换并推进淡入。目标弹窗始终固定在原位，只改 alpha；
+     * 相机位置与投影在菜单生命周期内从不因点击而改变。
      */
-    internal fun syncContentMotion(nowMs: Long = clock()) {
-        if (currentState != contentMotionState) {
-            contentMotionState = currentState
-            if (currentState in slidingTargetStates) {
-                contentMotion.start(nowMs)
+    internal fun syncOverlayReveal(nowMs: Long = clock()) {
+        if (currentState != overlayRevealState) {
+            overlayRevealState = currentState
+            if (currentState == MenuState.SECRETS_MODAL || currentState == MenuState.SETTINGS_MODAL) {
+                overlayReveal.start(nowMs)
             } else {
-                contentMotion.snap()
+                overlayReveal.snap()
             }
             return
         }
-        if (contentMotion.isActive) {
-            contentMotion.update(nowMs)
+        if (overlayReveal.isActive) {
+            overlayReveal.update(nowMs)
         }
     }
 
     /**
-     * 只平移目标内容（弹窗/连接框），底图、主菜单六项、全屏遮罩不移动。
-     * 输入在滑入期间被门控；落位后 offset=0，绘制与命中重新使用同一终态坐标。
+     * 仅供 GL 冒烟与诊断：当前覆盖层遮罩的 alpha（0..1）。
+     * 遮罩只做淡入，不移动任何像素；冒烟用它对帧做亮度归一化后比较按钮位移。
      */
-    private inline fun withContentSlide(offsetX: Float, block: () -> Unit) {
-        if (offsetX == 0f) {
-            block()
-            return
-        }
-        val priorX = camera.position.x
-        camera.position.x = priorX - offsetX
-        camera.update()
-        try {
-            block()
-        } finally {
-            camera.position.x = priorX
-            camera.update()
-        }
+    val overlayRevealAlpha: Float get() = overlayReveal.alpha
+
+    /**
+     * 仅供 GL 冒烟与诊断：返回相机状态快照（位置 + 投影矩阵元素）。
+     * 用于证明菜单点击与弹窗打开都不会让相机或投影横移。
+     */
+    fun cameraStateForDiagnostics(): FloatArray {
+        val projection = camera.combined.getValues()
+        val state = FloatArray(2 + projection.size)
+        state[0] = camera.position.x
+        state[1] = camera.position.y
+        System.arraycopy(projection, 0, state, 2, projection.size)
+        return state
     }
 
     private fun renderMainMenuContent(shape: ShapeRenderer, batch: SpriteBatch, font: BitmapFont) {
@@ -425,6 +401,8 @@ class MenuScreen(
     private fun closeOverlay() {
         if (currentState != MenuState.SECRETS_MODAL && currentState != MenuState.SETTINGS_MODAL) return
         currentState = MenuState.MAIN
+        // 关闭覆盖层后不允许残留任何点击位移。
+        mainMenuView.resetButtonMotion()
         mainMenuView.restoreFocus(overlayReturnFocus)
         overlayReturnFocus = null
     }
@@ -537,14 +515,16 @@ class MenuScreen(
     }
 
     /**
-     * 全屏遮罩单独绘制：它属于稳定底图，不随目标弹窗滑入而移动。
+     * 全屏遮罩单独绘制：它属于稳定底图，不随任何内容平移，只做短促淡入。
      */
     private fun renderModalDimmer(shape: ShapeRenderer) {
+        val alpha = overlayReveal.alpha
+        if (alpha <= 0f) return
         enableMenuAlphaBlending()
         shape.projectionMatrix = camera.combined
         shape.begin(ShapeRenderer.ShapeType.Filled)
         try {
-            shape.color = Color(0f, 0f, 0f, 0.75f)
+            shape.color = Color(0f, 0f, 0f, 0.75f * alpha)
             shape.rect(0f, 0f, 1280f, 720f)
         } finally {
             shape.end()
@@ -557,7 +537,8 @@ class MenuScreen(
         shape.projectionMatrix = camera.combined
         shape.begin(ShapeRenderer.ShapeType.Filled)
 
-        shape.color = Color(0.08f, 0.16f, 0.12f, 0.98f)
+        // 面板固定在原位且完全不透明：覆盖层出现时目标层没有任何横向位移。
+        shape.color = Color(0.08f, 0.16f, 0.12f, 1f)
         shape.rect(modalRect.x, modalRect.y, modalRect.width, modalRect.height)
 
         MenuViewDraw.drawButton(shape, btnModalClose, isPrimary = false)
@@ -997,9 +978,6 @@ class MenuScreen(
         val tx = world.x
         val ty = world.y
 
-        // 目标内容滑入期间只门控目标输入；主菜单激活仍即时上报业务回调。
-        if (isContentMotionActive) return true
-
         when (currentState) {
             MenuState.MAIN -> mainMenuView.pointerDown(tx, ty)
             MenuState.TCP_CONNECT_DIALOG -> connectDialogView.handleTouch(tx, ty)
@@ -1014,14 +992,14 @@ class MenuScreen(
     }
 
     override fun touchUp(screenX: Int, screenY: Int, pointer: Int, button: Int): Boolean {
-        if (currentState != MenuState.MAIN) return isContentMotionActive
+        if (currentState != MenuState.MAIN) return false
         val world = screenToWorld(screenX, screenY)
         mainMenuView.pointerUp(world.x, world.y)
         return true
     }
 
     override fun touchDragged(screenX: Int, screenY: Int, pointer: Int): Boolean {
-        if (currentState != MenuState.MAIN) return isContentMotionActive
+        if (currentState != MenuState.MAIN) return false
         val world = screenToWorld(screenX, screenY)
         mainMenuView.pointerDragged(world.x, world.y)
         return true
@@ -1066,7 +1044,6 @@ class MenuScreen(
     }
 
     override fun keyTyped(character: Char): Boolean {
-        if (isContentMotionActive) return true
         return when (currentState) {
             MenuState.TCP_CONNECT_DIALOG -> connectDialogView.keyTyped(character)
             MenuState.JOIN_ROOM_DIALOG -> joinRoomDialogView.keyTyped(character)
@@ -1154,6 +1131,8 @@ class MenuScreen(
 
     override fun hide() {
         mainMenuView.cancelPress()
+        // 隐藏后不允许残留任何点击位移或焦点状态。
+        mainMenuView.resetButtonMotion()
     }
 
     override fun dispose() {

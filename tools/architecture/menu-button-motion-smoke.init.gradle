@@ -1,0 +1,28 @@
+// 正式 APP 菜单“点击时按钮自身向右滑、背景稳定”的真实 GL 冒烟。
+// Usage:
+//   .\gradlew.bat -I tools/architecture/menu-button-motion-smoke.init.gradle :lwjgl3:menuButtonMotionSmoke
+//
+// 仅编译 tools/architecture 下的冒烟类，不修改生产入口或 SnapshotLauncher。
+gradle.projectsEvaluated {
+    def p = gradle.rootProject.project(':lwjgl3')
+    def out = gradle.rootProject.layout.buildDirectory.dir('architecture-v2/menu-button-motion-smoke-classes')
+    def compile = p.tasks.register('compileMenuButtonMotionSmoke', JavaCompile) {
+        dependsOn p.tasks.named('classes')
+        source gradle.rootProject.files('tools/architecture/MenuButtonMotionSmoke.java')
+        classpath = p.sourceSets.main.runtimeClasspath
+        destinationDirectory.set(out)
+        options.release = 17
+        options.encoding = 'UTF-8'
+    }
+    p.tasks.register('menuButtonMotionSmoke', JavaExec) {
+        group = 'verification'
+        description = 'Runs the real GL menu button motion smoke (button slides right, background fixed)'
+        dependsOn compile
+        classpath = p.files(out) + p.sourceSets.main.runtimeClasspath
+        mainClass = 'MenuButtonMotionSmoke'
+        workingDir = gradle.rootProject.file('assets')
+        systemProperty 'majiang.smoke.out',
+            gradle.rootProject.file('snapshot/menu-button-motion-smoke').absolutePath
+        jvmArgs '--enable-native-access=ALL-UNNAMED'
+    }
+}

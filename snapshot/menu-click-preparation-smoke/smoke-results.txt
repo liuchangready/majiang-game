@@ -1,21 +1,24 @@
 create: window=1280x720
-SHOT D:\majiang\snapshot\menu-click-preparation-smoke\tcp_connect_00ms.png (1280x720, 21676 bytes)
-SHOT D:\majiang\snapshot\menu-click-preparation-smoke\tcp_connect_80ms.png (1280x720, 21724 bytes)
-SHOT D:\majiang\snapshot\menu-click-preparation-smoke\tcp_connect_280ms.png (1280x720, 21727 bytes)
-SLIDE tcp_connect targetOffsetsPx 0ms=220 80ms=80 280ms=0 backgroundDrift=0.00
-SHOT D:\majiang\snapshot\menu-click-preparation-smoke\secrets_00ms.png (1280x720, 811545 bytes)
-SHOT D:\majiang\snapshot\menu-click-preparation-smoke\secrets_80ms.png (1280x720, 755298 bytes)
-SHOT D:\majiang\snapshot\menu-click-preparation-smoke\secrets_280ms.png (1280x720, 709743 bytes)
-SLIDE secrets targetOffsetsPx 0ms=220 80ms=80 280ms=0 backgroundDrift=0.00
-SHOT D:\majiang\snapshot\menu-click-preparation-smoke\settings_00ms.png (1280x720, 745664 bytes)
-SHOT D:\majiang\snapshot\menu-click-preparation-smoke\settings_80ms.png (1280x720, 689769 bytes)
-SHOT D:\majiang\snapshot\menu-click-preparation-smoke\settings_280ms.png (1280x720, 644023 bytes)
-SLIDE settings targetOffsetsPx 0ms=220 80ms=80 280ms=0 backgroundDrift=0.00
+SHOT D:\majiang\snapshot\menu-click-preparation-smoke\tcp_connect_00ms.png (1280x720, 21701 bytes)
+SHOT D:\majiang\snapshot\menu-click-preparation-smoke\tcp_connect_80ms.png (1280x720, 21719 bytes)
+SHOT D:\majiang\snapshot\menu-click-preparation-smoke\tcp_connect_300ms.png (1280x720, 21809 bytes)
+FIXED tcp_connect cameraShift=false (position+projection identical)
+FIXED tcp_connect panelLuma 0ms=36.33475532406777 80ms=36.334585972215926 300ms=36.33415995369741
+SHOT D:\majiang\snapshot\menu-click-preparation-smoke\secrets_00ms.png (1280x720, 982650 bytes)
+SHOT D:\majiang\snapshot\menu-click-preparation-smoke\secrets_80ms.png (1280x720, 830018 bytes)
+SHOT D:\majiang\snapshot\menu-click-preparation-smoke\secrets_300ms.png (1280x720, 639643 bytes)
+FIXED secrets cameraShift=false (position+projection identical)
+FIXED secrets panelLuma 0ms=48.82251617644066 80ms=48.82251617644066 300ms=48.82251617644066
+SHOT D:\majiang\snapshot\menu-click-preparation-smoke\settings_00ms.png (1280x720, 920587 bytes)
+SHOT D:\majiang\snapshot\menu-click-preparation-smoke\settings_80ms.png (1280x720, 768578 bytes)
+SHOT D:\majiang\snapshot\menu-click-preparation-smoke\settings_300ms.png (1280x720, 578751 bytes)
+FIXED settings cameraShift=false (position+projection identical)
+FIXED settings panelLuma 0ms=41.40052281044812 80ms=41.40052281044812 300ms=41.40052281044812
 real MahjongGame created for single-player path
 clicked SOLO on the real app menu
-SHOT D:\majiang\snapshot\menu-click-preparation-smoke\prep_before_skip.png (1280x720, 76883 bytes)
-clicked skip button at epochMillis=1792603447611 round=b6dbb110-c181-4cbf-9f78-f0ac69a39bf7
-SHOT D:\majiang\snapshot\menu-click-preparation-smoke\prep_after_skip.png (1280x720, 51039 bytes)
-PREP skip-to-table wallClockMs=145.91
+SHOT D:\majiang\snapshot\menu-click-preparation-smoke\prep_before_skip.png (1280x720, 314317 bytes)
+clicked skip button at epochMillis=1792613972725 round=2e1c9660-3f87-4c70-b8c7-772c693fa88a
+SHOT D:\majiang\snapshot\menu-click-preparation-smoke\prep_after_skip.png (1280x720, 60717 bytes)
+PREP skip-to-table wallClockMs=155.56
 PREP preparation=null, panelActive=false, cheatPoints[0]=100, handTiles=14
-PASS: menu slide displacement and real single-player early deal verified
+PASS: menu target stays fixed (no camera shift) and real single-player early deal verified
