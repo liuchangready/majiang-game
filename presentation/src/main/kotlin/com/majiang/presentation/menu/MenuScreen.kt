@@ -12,11 +12,16 @@ import com.badlogic.gdx.graphics.g2d.SpriteBatch
 import com.badlogic.gdx.graphics.glutils.ShapeRenderer
 import com.badlogic.gdx.math.MathUtils
 import com.badlogic.gdx.math.Rectangle
+import com.badlogic.gdx.math.Vector2
 import com.badlogic.gdx.math.Vector3
+import com.badlogic.gdx.utils.TimeUtils
+import com.badlogic.gdx.utils.viewport.FitViewport
+import com.badlogic.gdx.utils.viewport.Viewport
 import com.majiang.client.api.ConnectionState
 import com.majiang.client.api.CheatEconomyConfig
 import com.majiang.client.api.LobbySession
 import com.majiang.client.api.MatchConfig
+import com.majiang.client.api.Receipt
 import com.majiang.client.api.ReceiptStatus
 import com.majiang.client.api.RoomInfo
 import com.majiang.client.api.RoomLifecycle
@@ -27,6 +32,8 @@ import com.majiang.client.api.BeamSwapConfig
 import com.majiang.client.api.TileMarkConfig
 import com.majiang.presentation.common.TableNavigation
 import com.majiang.presentation.common.UiAssets
+import java.util.concurrent.CompletableFuture
+import java.util.concurrent.atomic.AtomicReference
 
 /**
  * 千术麻将主菜单与大厅场景 (MenuScreen)。
@@ -42,18 +49,26 @@ import com.majiang.presentation.common.UiAssets
 class MenuScreen(
     val assets: UiAssets,
     val navigation: TableNavigation,
-    initialLobby: LobbySession? = null
+    initialLobby: LobbySession? = null,
+    val motionEnabled: Boolean = true,
+    private val clock: () -> Long = { TimeUtils.millis() }
 ) : Screen, InputAdapter() {
 
-    private val camera = OrthographicCamera().apply {
-        setToOrtho(false, 1280f, 720f)
-    }
+    private val camera = OrthographicCamera()
+    val viewport: Viewport = FitViewport(MainMenuLayout.DESIGN_WIDTH, MainMenuLayout.DESIGN_HEIGHT, camera)
 
     private val unprojectVec = Vector3()
 
     // 屏幕生命周期与请求代次守卫
     @Volatile private var isDisposed = false
-    private var requestGeneration = 0L
+    @Volatile private var requestGeneration = 0L
+    @Volatile private var singleStartInFlight = false
+    @Volatile private var singleStartLobby: LobbySession? = null
+    private val singleStartLock = Any()
+    private var lobbyExitInFlight = false
+
+    // 覆盖弹窗关闭后恢复原焦点，不重播入场
+    private var overlayReturnFocus: MainMenuItemId? = null
 
     // 席位与角色跟踪
     private enum class ClientRole { NONE, PLAYER, SPECTATOR }
@@ -61,7 +76,12 @@ class MenuScreen(
     private var myViewerSeat: Int? = null
     private var hasNavigatedToTable: Boolean = false
 
+    internal val roleNameForTest: String get() = myRole.name
+    internal val viewerSeatForTest: Int? get() = myViewerSeat
+    internal val navigatedToTableForTest: Boolean get() = hasNavigatedToTable
+
     // 活跃大厅会话引用与订阅
+    @Volatile
     var activeLobby: LobbySession? = initialLobby
         private set
     private var lobbyStateSub: AutoCloseable? = null
@@ -116,9 +136,12 @@ class MenuScreen(
         onPlaySingle = ::startSinglePlay,
         onOpenLobby = ::openLobbyFlow,
         onToggleSkin = { assets.skinManager.toggleSkin() },
-        onSecrets = { currentState = MenuState.SECRETS_MODAL },
-        onSettings = { currentState = MenuState.SETTINGS_MODAL },
-        onExit = { navigation.exitGame() }
+        onSecrets = { openOverlay(MenuState.SECRETS_MODAL) },
+        onSettings = { openOverlay(MenuState.SETTINGS_MODAL) },
+        onExit = { navigation.exitGame() },
+        motionEnabled = motionEnabled,
+        clock = clock,
+        assetsProvider = { assets.obtainMainMenuAssets() }
     )
 
     val connectDialogView = ConnectDialogView(
@@ -162,6 +185,12 @@ class MenuScreen(
 
     init {
         initialLobby?.let { attachLobby(it) }
+        val graphics = Gdx.graphics
+        if (graphics != null && graphics.width > 0 && graphics.height > 0) {
+            resize(graphics.width, graphics.height)
+        } else {
+            viewport.update(1280, 720, true)
+        }
     }
 
     private fun runOnUi(expectedGen: Long? = null, action: () -> Unit) {
@@ -209,28 +238,52 @@ class MenuScreen(
 
     override fun show() {
         Gdx.input.inputProcessor = this
+        if (currentState == MenuState.MAIN) {
+            mainMenuView.beginEntryIfNeeded(clock())
+        }
     }
 
     override fun render(delta: Float) {
         animTimer += delta
         updateParticles(delta)
 
-        camera.update()
-        Gdx.gl.glClearColor(0.04f, 0.08f, 0.06f, 1f)
+        Gdx.gl.glClearColor(0.02f, 0.05f, 0.04f, 1f)
         Gdx.gl.glClear(GL20.GL_COLOR_BUFFER_BIT)
+        // ShapeRenderer 不自动开启混合；九宫格/章鱼/渐暗层都依赖标准 alpha 混合。
+        enableMenuAlphaBlending()
+
+        val menuLikeState = currentState == MenuState.MAIN ||
+            currentState == MenuState.SECRETS_MODAL ||
+            currentState == MenuState.SETTINGS_MODAL
+        val menuAssets = if (menuLikeState) assets.obtainMainMenuAssets() else null
+
+        // L0：底图独立按真实屏幕 cover，超宽区域由场景填充；内容随后由 FitViewport 限制。
+        if (menuAssets != null) {
+            Gdx.gl.glViewport(0, 0, Gdx.graphics.width, Gdx.graphics.height)
+            MainMenuView.renderBackdrop(
+                assets.batch,
+                menuAssets,
+                Gdx.graphics.width.toFloat(),
+                Gdx.graphics.height.toFloat()
+            )
+            // SpriteBatch.end() 会关闭混合；后续 ShapeRenderer 的 L1/L2/L7 必须重新开启。
+            enableMenuAlphaBlending()
+        }
+
+        // 统一内容视口：绘制与 unproject 使用同一 viewport。
+        viewport.apply()
+        camera.update()
 
         val shape = assets.shapeRenderer
         val batch = assets.batch
         val font = assets.effectiveFont
 
-        renderBackground(shape)
+        if (menuAssets == null) {
+            renderBackground(shape)
+        }
 
         when (currentState) {
-            MenuState.MAIN -> mainMenuView.render(
-                camera, shape, batch, font,
-                assets.skinManager.currentSkinId.name,
-                statusMessage, errorMessage
-            )
+            MenuState.MAIN -> renderMainMenuContent(shape, batch, font)
             MenuState.TCP_CONNECT_DIALOG -> connectDialogView.render(
                 camera, shape, batch, font,
                 animTimer, errorMessage
@@ -255,10 +308,63 @@ class MenuScreen(
                 isMyReady, isHost,
                 statusMessage, errorMessage
             )
-            MenuState.SECRETS_MODAL -> renderSecretsModal(shape, batch, font)
-            MenuState.SETTINGS_MODAL -> renderSettingsModal(shape, batch, font)
+            MenuState.SECRETS_MODAL -> {
+                // 稳定菜单底图 + 覆盖弹窗；不重播入场，输入由父层状态独占。
+                renderMainMenuContent(shape, batch, font)
+                renderSecretsModal(shape, batch, font)
+            }
+            MenuState.SETTINGS_MODAL -> {
+                renderMainMenuContent(shape, batch, font)
+                renderSettingsModal(shape, batch, font)
+            }
         }
     }
+
+    private fun renderMainMenuContent(shape: ShapeRenderer, batch: SpriteBatch, font: BitmapFont) {
+        mainMenuView.render(
+            camera = camera,
+            shape = shape,
+            batch = batch,
+            font = font,
+            currentSkinName = assets.skinManager.currentSkinId.name,
+            statusMessage = statusMessage,
+            errorMessage = errorMessage,
+            titleFont = assets.effectiveMainMenuTitleFont,
+            primaryFont = assets.effectiveMainMenuFont24,
+            secondaryFont = assets.effectiveMainMenuFont21,
+            statusFont = assets.effectiveMainMenuFont16,
+            disabledItems = menuDisabledItems()
+        )
+    }
+
+    private fun menuDisabledItems(): Set<MainMenuItemId> {
+        if (!singleStartInFlight) return emptySet()
+        return setOf(MainMenuItemId.SOLO, MainMenuItemId.ONLINE)
+    }
+
+    private fun openOverlay(state: MenuState) {
+        if (currentState != MenuState.MAIN) return
+        if (state != MenuState.SECRETS_MODAL && state != MenuState.SETTINGS_MODAL) return
+        overlayReturnFocus = mainMenuView.focusedItemId
+        mainMenuView.cancelPress()
+        currentState = state
+    }
+
+    private fun closeOverlay() {
+        if (currentState != MenuState.SECRETS_MODAL && currentState != MenuState.SETTINGS_MODAL) return
+        currentState = MenuState.MAIN
+        mainMenuView.restoreFocus(overlayReturnFocus)
+        overlayReturnFocus = null
+    }
+
+    private fun enterMain(replayEntry: Boolean) {
+        val wasMain = currentState == MenuState.MAIN
+        currentState = MenuState.MAIN
+        if (replayEntry && !wasMain) {
+            mainMenuView.beginEntry(clock())
+        }
+    }
+
 
     private fun updateParticles(delta: Float) {
         for (p in particles) {
@@ -271,6 +377,7 @@ class MenuScreen(
     }
 
     private fun renderBackground(shape: ShapeRenderer) {
+        enableMenuAlphaBlending()
         shape.projectionMatrix = camera.combined
         shape.begin(ShapeRenderer.ShapeType.Filled)
 
@@ -358,6 +465,8 @@ class MenuScreen(
     }
 
     private fun renderModalBase(shape: ShapeRenderer, batch: SpriteBatch, font: BitmapFont) {
+        // 菜单底图刚结束 SpriteBatch，GL_BLEND 已被关闭；遮罩必须重新开启混合。
+        enableMenuAlphaBlending()
         shape.projectionMatrix = camera.combined
         shape.begin(ShapeRenderer.ShapeType.Filled)
 
@@ -377,19 +486,42 @@ class MenuScreen(
     // ==========================================
 
     private fun startSinglePlay() {
+        // 入口门禁：同一启动流程完成/失败前不接受第二次单机启动。
+        if (isDisposed || singleStartInFlight) return
+        singleStartInFlight = true
+        mainMenuView.setDisabledItems(menuDisabledItems())
         statusMessage = "正在初始化单机对局..."
         errorMessage = null
         val gen = ++requestGeneration
-        var targetLobby: LobbySession? = null
-        navigation.openLocalLobby().thenCompose { lobby ->
-            targetLobby = lobby
-            attachLobby(lobby)
-            val defaultCosts = mapOf(
-                "TILE_MARK" to 10,
-                "SLEEVE_BLOOM" to 10,
-                "BEAM_SWAP" to 10,
-                "SEE_THROUGH" to 10
-            )
+        val targetLobbyRef = AtomicReference<LobbySession?>(null)
+        val defaultCosts = mapOf(
+            "TILE_MARK" to 10,
+            "SLEEVE_BLOOM" to 10,
+            "BEAM_SWAP" to 10,
+            "SEE_THROUGH" to 10
+        )
+        val startFuture: CompletableFuture<LobbySession> = try {
+            navigation.openLocalLobby()
+        } catch (t: Throwable) {
+            CompletableFuture.failedFuture(t)
+        }
+        startFuture.thenCompose { lobby ->
+            // 存活检查、所有权发布、attach 与 dispose 回收共用同一临界区，
+            // 避免“检查通过后被 dispose，再 attach 已废弃 screen”的竞态。
+            synchronized(singleStartLock) {
+                if (isDisposed || gen != requestGeneration) {
+                    closeLobbyQuietly(lobby)
+                    throw IllegalStateException("单机启动已过期")
+                }
+                targetLobbyRef.set(lobby)
+                singleStartLobby = lobby
+                attachLobby(lobby)
+                if (isDisposed) {
+                    // attach 期间（例如回调触发 dispose）已失效：撤销订阅并关闭。
+                    detachLobby()
+                    throw IllegalStateException("单机启动在 attach 期间被丢弃")
+                }
+            }
             lobby.createRoom(playerName = "玩家", config = MatchConfig(
                 cheatEconomy = CheatEconomyConfig(
                     enabled = true,
@@ -402,28 +534,112 @@ class MenuScreen(
                 beamSwapConfig = BeamSwapConfig(enabled = true)
             ))
         }.thenCompose { snap ->
-            myViewerSeat = snap.viewerSeat
-            myRole = ClientRole.PLAYER
-            hasNavigatedToTable = false
-            targetLobby!!.start()
-        }.whenComplete { receipt, err ->
-            runOnUi(gen) {
-                statusMessage = null
-                if (err != null) {
-                    errorMessage = "单机启动失败: ${err.message}"
-                } else if (receipt?.status == ReceiptStatus.APPLIED) {
-                    if (!hasNavigatedToTable) {
-                        hasNavigatedToTable = true
-                        navigation.showPlayerTable()
-                    }
-                } else {
-                    errorMessage = "单机开赛被拒绝: ${receipt?.reason ?: receipt?.status}"
+            synchronized(singleStartLock) {
+                if (isDisposed || gen != requestGeneration) {
+                    throw IllegalStateException("单机启动已过期")
                 }
+                myViewerSeat = snap.viewerSeat
+                myRole = ClientRole.PLAYER
+                hasNavigatedToTable = false
+                targetLobbyRef.get()!!.start()
+            }
+        }.whenComplete { receipt, err ->
+            val failedLobby = targetLobbyRef.get()
+            // 不按 gen 过滤清理：迟到失败也必须关闭自己创建的会话；但不会触碰已替换的 activeLobby。
+            runOnUi {
+                finishSingleStart(gen, failedLobby, receipt, err)
             }
         }
     }
 
+    private fun finishSingleStart(
+        gen: Long,
+        lobby: LobbySession?,
+        receipt: Receipt?,
+        err: Throwable?
+    ) {
+        var current = false
+        var failed = false
+        synchronized(singleStartLock) {
+            current = gen == requestGeneration
+            failed = err != null || receipt?.status != ReceiptStatus.APPLIED
+            if (current) {
+                singleStartInFlight = false
+                if (failed) {
+                    cleanupSingleStartLobby(lobby)
+                    if (lobby == null && activeLobby == null) {
+                        resetSingleStartState()
+                    }
+                } else if (singleStartLobby === lobby) {
+                    // 成功路径保留 activeLobby 供牌桌使用；只清除“待清理”标记。
+                    singleStartLobby = null
+                }
+            } else {
+                // 旧代次完成：只清理自己创建的会话，绝不触碰替换后的 activeLobby。
+                if (failed) {
+                    cleanupSingleStartLobby(lobby)
+                } else if (activeLobby === lobby || singleStartLobby === lobby) {
+                    cleanupSingleStartLobby(lobby)
+                }
+            }
+        }
+
+        if (!current) return
+
+        mainMenuView.setDisabledItems(menuDisabledItems())
+        statusMessage = null
+        if (failed) {
+            errorMessage = if (err != null) {
+                "单机启动失败: ${err.message}"
+            } else {
+                "单机开赛被拒绝: ${receipt?.reason ?: receipt?.status}"
+            }
+        } else if (!hasNavigatedToTable) {
+            hasNavigatedToTable = true
+            navigation.showPlayerTable()
+        }
+    }
+
+    /**
+     * 只清理本流程自己的 lobby，绝不按 activeLobby 盲关：
+     * - 若它仍是当前 activeLobby，先 detach 再 close，并恢复角色/席位/导航；
+     * - 若已被新会话替换，只 close 旧对象，不触碰新 activeLobby。
+     */
+    private fun cleanupSingleStartLobby(lobby: LobbySession?) {
+        if (lobby == null) return
+        val wasActive = activeLobby === lobby
+        if (wasActive) {
+            detachLobby()
+        }
+        closeLobbyQuietly(lobby)
+        if (singleStartLobby === lobby) {
+            singleStartLobby = null
+        }
+        if (wasActive) {
+            resetSingleStartState()
+        }
+    }
+
+    private fun resetSingleStartState() {
+        myRole = ClientRole.NONE
+        myViewerSeat = null
+        hasNavigatedToTable = false
+        currentRoomInfo = null
+        isMyReady = false
+        isHost = false
+    }
+
+    private fun closeLobbyQuietly(lobby: LobbySession?) {
+        if (lobby == null) return
+        try {
+            lobby.close()
+        } catch (_: Throwable) {
+        }
+    }
+
     private fun openLobbyFlow() {
+        if (singleStartInFlight) return
+        if (currentState != MenuState.MAIN) return
         if (activeLobby != null) {
             currentState = MenuState.LOBBY
             refreshRoomList()
@@ -457,6 +673,8 @@ class MenuScreen(
     }
 
     private fun disconnectLobbyAndReturn() {
+        if (lobbyExitInFlight) return
+        lobbyExitInFlight = true
         statusMessage = "正在断开大厅连接..."
         errorMessage = null
         val lobbyToClose = activeLobby
@@ -464,8 +682,9 @@ class MenuScreen(
         lobbyToClose?.close()
         navigation.leaveToMenu().whenComplete { _, _ ->
             runOnUi {
+                lobbyExitInFlight = false
                 statusMessage = null
-                currentState = MenuState.MAIN
+                enterMain(replayEntry = true)
             }
         }
     }
@@ -690,20 +909,12 @@ class MenuScreen(
     // ==========================================
 
     override fun touchDown(screenX: Int, screenY: Int, pointer: Int, button: Int): Boolean {
-        val tx: Float
-        val ty: Float
-        if (Gdx.graphics == null || Gdx.graphics.width == 0) {
-            tx = screenX.toFloat()
-            ty = 720f - screenY
-        } else {
-            unprojectVec.set(screenX.toFloat(), screenY.toFloat(), 0f)
-            camera.unproject(unprojectVec)
-            tx = unprojectVec.x
-            ty = unprojectVec.y
-        }
+        val world = screenToWorld(screenX, screenY)
+        val tx = world.x
+        val ty = world.y
 
         when (currentState) {
-            MenuState.MAIN -> mainMenuView.handleTouch(tx, ty)
+            MenuState.MAIN -> mainMenuView.pointerDown(tx, ty)
             MenuState.TCP_CONNECT_DIALOG -> connectDialogView.handleTouch(tx, ty)
             MenuState.LOBBY -> lobbyListView.handleTouch(tx, ty, roomList, selectedRoom != null)
             MenuState.CREATE_ROOM_DIALOG -> createRoomDialogView.handleTouch(tx, ty)
@@ -715,9 +926,48 @@ class MenuScreen(
         return true
     }
 
+    override fun touchUp(screenX: Int, screenY: Int, pointer: Int, button: Int): Boolean {
+        if (currentState != MenuState.MAIN) return false
+        val world = screenToWorld(screenX, screenY)
+        mainMenuView.pointerUp(world.x, world.y)
+        return true
+    }
+
+    override fun touchDragged(screenX: Int, screenY: Int, pointer: Int): Boolean {
+        if (currentState != MenuState.MAIN) return false
+        val world = screenToWorld(screenX, screenY)
+        mainMenuView.pointerDragged(world.x, world.y)
+        return true
+    }
+
+    override fun mouseMoved(screenX: Int, screenY: Int): Boolean {
+        if (currentState != MenuState.MAIN) return false
+        val world = screenToWorld(screenX, screenY)
+        mainMenuView.pointerMoved(world.x, world.y)
+        return true
+    }
+
+    /** 供自动化/测试把世界坐标转换成 libGDX 屏幕坐标（y 向下）。 */
+    fun screenPoint(worldX: Float, worldY: Float): Vector2 {
+        val point = Vector2(worldX, worldY)
+        viewport.project(point)
+        val screenHeight = if (Gdx.graphics != null) Gdx.graphics.height.toFloat() else viewport.screenHeight.toFloat()
+        point.y = screenHeight - point.y
+        return point
+    }
+
+    private fun screenToWorld(screenX: Int, screenY: Int): Vector2 {
+        if (Gdx.graphics == null) {
+            return Vector2(screenX.toFloat(), MainMenuLayout.DESIGN_HEIGHT - screenY)
+        }
+        unprojectVec.set(screenX.toFloat(), screenY.toFloat(), 0f)
+        viewport.unproject(unprojectVec)
+        return Vector2(unprojectVec.x, unprojectVec.y)
+    }
+
     private fun handleTouchModal(tx: Float, ty: Float) {
         if (btnModalClose.contains(tx, ty)) {
-            currentState = MenuState.MAIN
+            closeOverlay()
             return
         }
         if (currentState == MenuState.SETTINGS_MODAL) {
@@ -739,31 +989,95 @@ class MenuScreen(
     override fun keyDown(keycode: Int): Boolean {
         if (keycode == Input.Keys.ESCAPE) {
             when (currentState) {
-                MenuState.SECRETS_MODAL, MenuState.SETTINGS_MODAL -> currentState = MenuState.MAIN
+                MenuState.SECRETS_MODAL, MenuState.SETTINGS_MODAL -> closeOverlay()
                 MenuState.TCP_CONNECT_DIALOG -> currentState = MenuState.MAIN
                 MenuState.CONNECTING -> {
                     requestGeneration++
                     currentState = MenuState.TCP_CONNECT_DIALOG
                 }
                 MenuState.CREATE_ROOM_DIALOG, MenuState.JOIN_ROOM_DIALOG -> currentState = MenuState.LOBBY
-                MenuState.LOBBY -> currentState = MenuState.MAIN
+                MenuState.LOBBY -> enterMain(replayEntry = true)
                 MenuState.MAIN -> navigation.exitGame()
                 else -> {}
             }
             return true
         }
+        if (currentState == MenuState.MAIN) {
+            when (keycode) {
+                Input.Keys.TAB, Input.Keys.DOWN -> {
+                    mainMenuView.focusNext()
+                    return true
+                }
+                Input.Keys.UP -> {
+                    mainMenuView.focusPrevious()
+                    return true
+                }
+                Input.Keys.ENTER, Input.Keys.SPACE -> {
+                    mainMenuView.activateFocused()
+                    return true
+                }
+            }
+        }
         return false
     }
 
-    override fun resize(width: Int, height: Int) {}
-    override fun pause() {}
-    override fun resume() {}
-    override fun hide() {}
+    override fun resize(width: Int, height: Int) {
+        if (width <= 0 || height <= 0) {
+            // 无头测试/窗口最小化时保持设计视口，避免输入坐标系退化。
+            viewport.update(
+                MainMenuLayout.DESIGN_WIDTH.toInt(),
+                MainMenuLayout.DESIGN_HEIGHT.toInt(),
+                true
+            )
+            return
+        }
+        val graphics = Gdx.graphics
+        val left = safeInset { graphics.safeInsetLeft }
+        val right = safeInset { graphics.safeInsetRight }
+        val top = safeInset { graphics.safeInsetTop }
+        val bottom = safeInset { graphics.safeInsetBottom }
+        val usableWidth = (width - left - right).coerceAtLeast(1)
+        val usableHeight = (height - top - bottom).coerceAtLeast(1)
+        viewport.update(usableWidth, usableHeight, true)
+        // FitViewport 的屏幕矩形从 0 开始，安全边距通过平移 viewport 实现；
+        // 内容仍保持等比，不会因刘海/导航栏拉伸。
+        viewport.setScreenBounds(
+            viewport.screenX + left,
+            viewport.screenY + bottom,
+            viewport.screenWidth,
+            viewport.screenHeight
+        )
+    }
+
+    private inline fun safeInset(block: () -> Int): Int = try {
+        block().coerceAtLeast(0)
+    } catch (_: Throwable) {
+        0
+    }
+
+    override fun pause() {
+        mainMenuView.onPause(clock())
+    }
+
+    override fun resume() {
+        // 后台恢复不重播入场；只把暂停期间的时间平移掉，保持当前进度。
+        mainMenuView.onResume(clock())
+    }
+
+    override fun hide() {
+        mainMenuView.cancelPress()
+    }
 
     override fun dispose() {
-        isDisposed = true
-        requestGeneration++
-        detachLobby()
+        val pendingSingleStart = synchronized(singleStartLock) {
+            isDisposed = true
+            requestGeneration++
+            val pending = singleStartLobby
+            singleStartLobby = null
+            detachLobby()
+            pending
+        }
+        closeLobbyQuietly(pendingSingleStart)
     }
 
     private class FloatingParticle(

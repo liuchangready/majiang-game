@@ -6,7 +6,7 @@
 
     <application
         android:allowBackup="true"
-        android:label="千术麻将">
+        android:label="疯狂动物麻将">
 
         <activity
             android:name="com.majiang.android.AndroidLauncher"

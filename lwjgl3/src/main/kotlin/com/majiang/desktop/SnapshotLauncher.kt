@@ -23,7 +23,7 @@ object SnapshotLauncher {
         println("[SnapshotLauncher] 输出快照目标目录: ${snapshotDir.absolutePath}")
 
         val config = Lwjgl3ApplicationConfiguration().apply {
-            setTitle("千术麻将 (Mahjong Cheater) - 快照捕获")
+            setTitle("疯狂动物麻将 (Crazy Animal Mahjong) - 快照捕获")
             setWindowedMode(1280, 720)
             setForegroundFPS(60)
             useVsync(true)

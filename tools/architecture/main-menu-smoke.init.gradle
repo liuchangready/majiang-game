@@ -1,0 +1,29 @@
+// Independent formal main-menu GL screenshot smoke.
+// Usage:
+//   .\gradlew.bat -I tools/architecture/main-menu-smoke.init.gradle :lwjgl3:mainMenuRenderSmoke
+//
+// Compiles the smoke class outside production sources and does not touch
+// SnapshotLauncher or its business snapshot phase order.
+gradle.projectsEvaluated {
+    def p = gradle.rootProject.project(':lwjgl3')
+    def out = gradle.rootProject.layout.buildDirectory.dir('architecture-v2/main-menu-smoke-classes')
+    def compile = p.tasks.register('compileMainMenuRenderSmoke', JavaCompile) {
+        dependsOn p.tasks.named('classes')
+        source gradle.rootProject.files('tools/architecture/MainMenuRenderSmoke.java')
+        classpath = p.sourceSets.main.runtimeClasspath
+        destinationDirectory.set(out)
+        options.release = 17
+        options.encoding = 'UTF-8'
+    }
+    p.tasks.register('mainMenuRenderSmoke', JavaExec) {
+        group = 'verification'
+        description = 'Runs the independent formal main-menu GL screenshot smoke'
+        dependsOn compile
+        classpath = p.files(out) + p.sourceSets.main.runtimeClasspath
+        mainClass = 'MainMenuRenderSmoke'
+        workingDir = gradle.rootProject.file('assets')
+        systemProperty 'majiang.smoke.out',
+            gradle.rootProject.file('snapshot/main-menu-smoke').absolutePath
+        jvmArgs '--enable-native-access=ALL-UNNAMED'
+    }
+}

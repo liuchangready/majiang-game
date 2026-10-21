@@ -1,0 +1,43 @@
+{
+  "schemaVersion": 1,
+  "status": "implemented-runtime-desktop-gl-verified-android-device-unverified",
+  "coordinateSystem": "libGDX-bottom-left",
+  "logicalViewport": { "width": 1280, "height": 720 },
+  "textureSampling": { "min": "Linear", "mag": "Linear", "wrap": "ClampToEdge", "mipmaps": false },
+  "background": { "file": "club-background.png", "width": 1672, "height": 941, "fit": "cover" },
+  "mascot": { "file": "octopus-hero.png", "width": 1284, "height": 1225, "alpha": true, "rect": [96, 64, 530, 506], "interactive": false },
+  "panels": {
+    "primary": "button-primary.png",
+    "secondary": "button-secondary.png",
+    "focusOverlay": "button-focus.png",
+    "textureSize": [96, 96],
+    "ninePatchSplits": { "left": 18, "right": 18, "top": 18, "bottom": 18 }
+  },
+  "icons": {
+    "file": "menu-icons.png",
+    "width": 384,
+    "height": 64,
+    "regions": {
+      "solo": [0, 0, 64, 64],
+      "online": [64, 0, 64, 64],
+      "skin": [128, 0, 64, 64],
+      "secrets": [192, 0, 64, 64],
+      "settings": [256, 0, 64, 64],
+      "exit": [320, 0, 64, 64]
+    }
+  },
+  "textAreas": {
+    "title": { "text": "疯狂动物麻将", "rect": [64, 612, 620, 76] },
+    "subtitle": { "text": "三大千术 · 牌桌心战", "rect": [72, 574, 600, 26] },
+    "status": { "rect": [752, 58, 440, 38] }
+  },
+  "items": [
+    { "id": "solo", "label": "单机对局", "callback": "onPlaySingle", "rect": [752, 480, 440, 80], "style": "primary", "delayMs": 120 },
+    { "id": "online", "label": "联机对战", "callback": "onOpenLobby", "rect": [752, 388, 440, 80], "style": "primary", "delayMs": 200 },
+    { "id": "skin", "label": "牌面皮肤", "callback": "onToggleSkin", "rect": [752, 318, 440, 58], "style": "secondary", "delayMs": 280 },
+    { "id": "secrets", "label": "千术秘籍", "callback": "onSecrets", "rect": [752, 248, 440, 58], "style": "secondary", "delayMs": 360 },
+    { "id": "settings", "label": "游戏设置", "callback": "onSettings", "rect": [752, 178, 440, 58], "style": "secondary", "delayMs": 440 },
+    { "id": "exit", "label": "退出游戏", "callback": "onExit", "rect": [752, 108, 440, 58], "style": "secondary", "delayMs": 520 }
+  ],
+  "entryMotion": { "durationMs": 420, "offsetX": 96, "easing": "1-(1-p)^3", "inputEnabledAt": "settled", "reducedMotion": "immediate-final-state" }
+}
