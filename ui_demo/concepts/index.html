@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>疯狂动物麻将 · UI 视觉图集</title>
+  <style>
+    :root{color-scheme:dark;font-family:system-ui,"Microsoft YaHei",sans-serif;background:#081c1c;color:#f7edda}
+    *{box-sizing:border-box}body{margin:0;background:radial-gradient(circle at 50% 0,#21453e,#081c1c 55%);min-height:100vh}
+    header{padding:42px clamp(20px,5vw,72px) 24px;border-bottom:1px solid #a78857}
+    h1{font-size:clamp(28px,4vw,48px);margin:0 0 12px;color:#f4cf83}p{line-height:1.65;max-width:900px;margin:0}
+    nav{display:flex;gap:12px;flex-wrap:wrap;margin-top:18px}a{color:#f8d894}
+    nav a{border:1px solid #b99561;padding:9px 14px;border-radius:8px;text-decoration:none}
+    nav a:hover,nav a:focus-visible{background:#7d2823;outline:2px solid #f6d689;outline-offset:2px}
+    main{padding:28px clamp(20px,5vw,72px) 70px;display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,470px),1fr));gap:26px}
+    figure{margin:0;background:#0f302c;border:1px solid #9f7948;box-shadow:0 14px 35px #0007;border-radius:14px;overflow:hidden}
+    figure a{display:block;padding:0;border:0;border-radius:0}img{display:block;width:100%;aspect-ratio:1672/941;object-fit:cover}
+    figcaption{padding:15px 18px 18px;display:flex;justify-content:space-between;gap:14px;align-items:baseline}
+    strong{font-size:19px}.muted{color:#b7c5b8;font-size:14px}footer{padding:0 clamp(20px,5vw,72px) 44px;color:#bac8bc;line-height:1.65}
+  </style>
+</head>
+<body>
+  <header>
+    <h1>疯狂动物麻将 · UI 视觉图集</h1>
+    <p>12 张完整页面和千术弹层提案。点击图片查看原图；图片负责美术方向，精确文案与交互见设计规范。</p>
+    <nav aria-label="相关文档"><a href="../index.html">打开可点击原型</a><a href="../design/INTERACTION_DESIGN.md">交互设计</a><a href="README.md">图片目录</a></nav>
+  </header>
+  <main>
+    <figure><a href="01-main-menu.png"><img src="01-main-menu.png" alt="主菜单视觉图" loading="lazy"></a><figcaption><strong>01 主菜单</strong><span class="muted">导航与角色焦点</span></figcaption></figure>
+    <figure><a href="05-mode-select.png"><img src="05-mode-select.png" alt="模式选择视觉图" loading="lazy"></a><figcaption><strong>02 模式选择</strong><span class="muted">单机 / 联机房间</span></figcaption></figure>
+    <figure><a href="02-character-select.png"><img src="02-character-select.png" alt="动物选角视觉图" loading="lazy"></a><figcaption><strong>03 动物选角</strong><span class="muted">角色卡与能力</span></figcaption></figure>
+    <figure><a href="06-lobby.png"><img src="06-lobby.png" alt="联机大厅视觉图" loading="lazy"></a><figcaption><strong>04 联机大厅</strong><span class="muted">房间列表</span></figcaption></figure>
+    <figure><a href="07-room-ready.png"><img src="07-room-ready.png" alt="房间准备视觉图" loading="lazy"></a><figcaption><strong>05 房间准备</strong><span class="muted">四席与开赛</span></figcaption></figure>
+    <figure><a href="03-table.png"><img src="03-table.png" alt="对局牌桌视觉图" loading="lazy"></a><figcaption><strong>06 对局牌桌</strong><span class="muted">四人麻将桌</span></figcaption></figure>
+    <figure><a href="11-tile-mark.png"><img src="11-tile-mark.png" alt="落汗弹层视觉图" loading="lazy"></a><figcaption><strong>07 落汗弹层</strong><span class="muted">选实体牌</span></figcaption></figure>
+    <figure><a href="04-octopus-sleeve-bloom.png"><img src="04-octopus-sleeve-bloom.png" alt="袖里藏花弹层视觉图" loading="lazy"></a><figcaption><strong>08 袖里藏花弹层</strong><span class="muted">章鱼三选一</span></figcaption></figure>
+    <figure><a href="12-beam-swap.png"><img src="12-beam-swap.png" alt="偷梁换柱弹层视觉图" loading="lazy"></a><figcaption><strong>09 偷梁换柱弹层</strong><span class="muted">等额互换</span></figcaption></figure>
+    <figure><a href="08-codex.png"><img src="08-codex.png" alt="千术秘籍视觉图" loading="lazy"></a><figcaption><strong>10 千术秘籍 / 图鉴</strong><span class="muted">三招与动物</span></figcaption></figure>
+    <figure><a href="09-settings.png"><img src="09-settings.png" alt="设置视觉图" loading="lazy"></a><figcaption><strong>11 设置</strong><span class="muted">皮肤与动效</span></figcaption></figure>
+    <figure><a href="10-settlement.png"><img src="10-settlement.png" alt="结算视觉图" loading="lazy"></a><figcaption><strong>12 局末结算</strong><span class="muted">分数与账本</span></figcaption></figure>
+  </main>
+  <footer>视觉图中的数字与小字可能不符合实际规则。正式页面必须由 HTML/JS 绘制真实可交互状态。</footer>
+</body>
+</html>
