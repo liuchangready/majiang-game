@@ -7,6 +7,13 @@ import org.junit.jupiter.api.Assertions.*
 import org.junit.jupiter.api.Test
 import java.util.concurrent.CompletableFuture
 
+/**
+ * 洗牌千术准备阶段验收测试 (ShufflePreparationUiAcceptanceTest)。
+ *
+ * 本文件按正式 UI 契约（见 [doc/ui/round-preparation/DESIGN.md](file:///D:/majiang/doc/ui/round-preparation/DESIGN.md)）更新：
+ * 默认进入的是右侧紧凑「本局准备」栏而不是六选一弹窗；费用、失败、过期、模态守卫等功能断言全部保留并强化。
+ * 新增的流程 / 布局覆盖见 [RoundPreparationFlowTest] 与 [RoundPreparationLayoutTest]。
+ */
 class ShufflePreparationUiAcceptanceTest : GdxHeadlessTestRunner() {
 
     private fun view(round: String = "one", balance: Int = 50, seeThrough: Boolean = false) = ShufflePreparationView(
@@ -197,21 +204,19 @@ class ShufflePreparationUiAcceptanceTest : GdxHeadlessTestRunner() {
         assertFalse(m.selectTarget(ShuffleTarget.KOKUSHI))
     }
 
-    @Test fun `panel captures outside clicks and pending confirm submits once`() {
+    @Test fun `panel captures outside clicks and the zero cost start submits once`() {
         val completion = CompletableFuture<Receipt>()
         val session = FakeGameSession()
         session.submitResult = completion
         val panel = ShufflePreparationPanel(session)
         try {
-            panel.model.update(view(), nowSystemMillis = System.nanoTime() / 1_000_000L)
+            panel.update(view(), paused = false, epoch = 0L)
             assertTrue(panel.touchDown(0f, 0f))
-            val target = panel.btnTargets.getValue(ShuffleTarget.KOKUSHI)
-            panel.touchDown(target.x + 2, target.y + 2)
-            val confirm = panel.btnConfirmRect
-            repeat(2) { panel.touchDown(confirm.x + 2, confirm.y + 2) }
+            assertTrue(panel.touchDown(panel.btnPrimaryRect.x + 2, panel.btnPrimaryRect.y + 2))
             assertEquals(1, session.submittedPlans.size)
-            assertEquals(30, session.submittedPlans.single().selection.cost())
-            assertEquals(ShuffleTarget.KOKUSHI, session.submittedPlans.single().selection.target)
+            assertEquals(0, session.submittedPlans.single().selection.cost())
+            assertNull(session.submittedPlans.single().selection.target)
+            assertFalse(session.submittedPlans.single().selection.seeThrough)
             completion.complete(Receipt(session.submittedPlans.single().requestId, ReceiptStatus.RECORDED))
             assertTrue(panel.model.isLocked)
         } finally { panel.dispose() }
@@ -223,17 +228,15 @@ class ShufflePreparationUiAcceptanceTest : GdxHeadlessTestRunner() {
         session.submitResult = completion
         val panel = ShufflePreparationPanel(session)
         try {
-            panel.model.update(
-                view(balance = 100, seeThrough = true),
-                nowSystemMillis = System.nanoTime() / 1_000_000L
-            )
+            panel.update(view(balance = 100, seeThrough = true), paused = false, epoch = 0L)
             assertTrue(panel.model.canEditDraft)
             val toggle = panel.btnSeeThroughRect
             assertTrue(toggle.width > 0f && toggle.height > 0f)
             assertTrue(panel.touchDown(toggle.x + 2f, toggle.y + 2f))
             assertTrue(panel.model.isSeeThroughSelected)
             assertEquals(10, panel.model.totalCost)
-            repeat(2) { panel.touchDown(panel.btnConfirmRect.x + 2f, panel.btnConfirmRect.y + 2f) }
+            assertTrue(panel.touchDown(panel.btnPrimaryRect.x + 2f, panel.btnPrimaryRect.y + 2f))
+            assertTrue(panel.touchDown(panel.btnPrimaryRect.x + 2f, panel.btnPrimaryRect.y + 2f))
             assertEquals(1, session.submittedPlans.size)
             assertTrue(session.submittedPlans.single().selection.seeThrough)
             assertEquals(10, session.submittedPlans.single().selection.cost())
@@ -247,10 +250,10 @@ class ShufflePreparationUiAcceptanceTest : GdxHeadlessTestRunner() {
         m.update(view(), nowSystemMillis = 0)
         val skip = m.buildSkipRequest("skip-feedback")!!
         m.markSubmitting(skip.requestId)
-        assertEquals("已提交，等待权威确认…", m.confirmedFeedbackText)
+        assertEquals("正在确认方案…", m.confirmedFeedbackText)
 
         m.onSubmissionAccepted(skip.requestId, skip.selection)
-        assertEquals("已确认，等待其他玩家…", m.confirmedFeedbackText)
+        assertEquals("等待其他玩家完成准备", m.confirmedFeedbackText)
         assertTrue(m.isActive, "local acceptance must not locally close the preparation panel")
         assertFalse(m.canSkip)
         assertFalse(m.canConfirm)
@@ -259,7 +262,7 @@ class ShufflePreparationUiAcceptanceTest : GdxHeadlessTestRunner() {
             view().copy(status = ShufflePreparationStatusView.GENERATING, confirmed = true),
             nowSystemMillis = 100
         )
-        assertEquals("正在发牌，请稍候…", m.confirmedFeedbackText)
+        assertEquals("正在发牌…", m.confirmedFeedbackText)
         assertTrue(m.isActive, "generation status still keeps the mask until authority ends preparation")
 
         m.update(null, nowSystemMillis = 200)
@@ -284,21 +287,26 @@ class ShufflePreparationUiAcceptanceTest : GdxHeadlessTestRunner() {
     @Test fun `panel controls stay inside the virtual viewport and do not overlap`() {
         val panel = ShufflePreparationPanel(FakeGameSession())
         try {
+            val layout = panel.layout
             val rects = listOf(
-                panel.modalRect,
-                panel.countdownBoxRect,
-                panel.sectionTargetRect,
-                panel.btnSeeThroughRect,
-                panel.btnSkipRect,
-                panel.btnConfirmRect
-            )
+                layout.panelRect,
+                layout.countdownRect,
+                layout.openTargetRect,
+                layout.seeThroughRect,
+                layout.primaryActionRect,
+                layout.drawerBackRect,
+                layout.drawerSeeThroughRect,
+                layout.drawerSkipRect,
+                layout.drawerConfirmRect
+            ) + layout.targetCardRects.values
             for (r in rects) {
                 assertTrue(r.x >= 0f && r.y >= 0f && r.x + r.width <= 1280f && r.y + r.height <= 720f, "Out of viewport: $r")
             }
-            assertFalse(panel.btnSeeThroughRect.overlaps(panel.btnSkipRect))
-            assertFalse(panel.btnSkipRect.overlaps(panel.btnConfirmRect))
-            assertTrue(panel.modalRect.contains(panel.btnSeeThroughRect))
-            assertTrue(panel.modalRect.contains(panel.btnConfirmRect))
+            assertFalse(layout.openTargetRect.overlaps(layout.seeThroughRect))
+            assertFalse(layout.seeThroughRect.overlaps(layout.primaryActionRect))
+            assertFalse(layout.drawerSkipRect.overlaps(layout.drawerConfirmRect))
+            assertTrue(layout.panelRect.contains(layout.seeThroughRect))
+            assertTrue(layout.panelRect.contains(layout.primaryActionRect))
             assertEquals(10, panel.model.seeThroughPrice)
         } finally { panel.dispose() }
     }

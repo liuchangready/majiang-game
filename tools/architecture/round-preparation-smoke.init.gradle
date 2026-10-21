@@ -1,0 +1,29 @@
+gradle.projectsEvaluated {
+    def p = gradle.rootProject.project(':lwjgl3')
+    def out = gradle.rootProject.layout.buildDirectory.dir('round-preparation/smoke-classes')
+    def compile = p.tasks.register('compileRoundPreparationSmoke', JavaCompile) {
+        dependsOn p.tasks.named('classes')
+        source gradle.rootProject.file('tools/architecture/RoundPreparationRenderSmoke.java')
+        classpath = p.sourceSets.main.runtimeClasspath
+        destinationDirectory.set(out)
+        options.release = 17
+        options.encoding = 'UTF-8'
+    }
+    p.tasks.register('roundPreparationSmoke', JavaExec) {
+        dependsOn compile
+        classpath = p.files(out) + p.sourceSets.main.runtimeClasspath
+        mainClass = 'RoundPreparationRenderSmoke'
+        workingDir = gradle.rootProject.file('assets')
+        def mode = gradle.rootProject.findProperty('smokeMode') ?: 'target'
+        systemProperty 'smoke.mode', mode
+        systemProperty 'smoke.output', gradle.rootProject.file("build/round-preparation/screenshots-${mode}").absolutePath
+    }
+    p.tasks.register('roundPreparationSmokeZero', JavaExec) {
+        dependsOn compile
+        classpath = p.files(out) + p.sourceSets.main.runtimeClasspath
+        mainClass = 'RoundPreparationRenderSmoke'
+        workingDir = gradle.rootProject.file('assets')
+        systemProperty 'smoke.mode', 'zero'
+        systemProperty 'smoke.output', gradle.rootProject.file('build/round-preparation/screenshots-zero').absolutePath
+    }
+}

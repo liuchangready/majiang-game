@@ -57,6 +57,7 @@ import com.majiang.presentation.common.render.DoraSparkle
 import com.majiang.presentation.common.render.GhostHandTexture
 import com.majiang.presentation.common.render.MeldDisplayRenderer
 import com.majiang.presentation.common.render.MeldDisplayLayout
+import com.majiang.presentation.common.render.PreparationTableRenderer
 import com.majiang.presentation.common.render.TileArranger
 import com.majiang.presentation.common.render.TileDrawBuffer
 import com.majiang.presentation.common.render.TileSkin
@@ -443,6 +444,10 @@ class GameScreen(
         if (transition.requiresRebuild) {
             riichiSelectionModel.cancel()
             meldSelectionModel.cancel()
+        }
+        // 重连（换同步代次 / 换会话）回到默认准备栏：已确认显示锁定回执，未确认不拼接旧选择。
+        if (transition.epochChanged || transition.sessionChanged) {
+            shufflePreparationPanel.onReconnect()
         }
         lastClockUpdateLocalMillis = System.currentTimeMillis()
 
@@ -1092,8 +1097,33 @@ class GameScreen(
             clockElapsedMillis = System.currentTimeMillis() - lastClockUpdateLocalMillis
         )
 
+        // 0. 准备阶段：先入牌桌（背景 + 公开四席 + 局次），手牌/牌河/真实牌山一律留空。
+        val isPreparing = shufflePreparationPanel.isActive
+        if (isPreparing) {
+            val visibleBounds = RoundPreparationLayout.visibleWorldRect(
+                camera,
+                Gdx.graphics?.width ?: 0,
+                Gdx.graphics?.height ?: 0
+            )
+            shufflePreparationPanel.setVisibleBounds(visibleBounds)
+            val drawerVisible = shufflePreparationPanel.model.page ==
+                ShufflePreparationModel.PreparationPage.DRAWER
+            val safeArea = shufflePreparationPanel.layout.safeTableRect(drawerVisible)
+            PreparationTableRenderer.render(
+                view = currentView,
+                visible = visibleBounds,
+                safeArea = safeArea,
+                projection = camera.combined,
+                batch = batch,
+                shape = shape,
+                font = font,
+                chineseFont = chineseFont,
+                backdrop = assets.obtainTableBackdrop()
+            )
+        }
+
         // 1. 桌面中心与四家基本信息
-        if (tableModel != null) {
+        if (tableModel != null && !isPreparing) {
             TableBoardRenderer.renderTableCenter(
                 model = tableModel,
                 projectionMatrix = tableCamera.combined,
@@ -1119,7 +1149,7 @@ class GameScreen(
         }
 
         // 1.5 三名对手的完整暗手牌行 (普通牌背 + 有效落汗半透明牌面)
-        if (tableModel != null && gameStarted) {
+        if (tableModel != null && gameStarted && !isPreparing) {
             TableBoardRenderer.renderHandAreas(
                 model = tableModel,
                 projectionMatrix = tableCamera.combined,
@@ -1134,7 +1164,7 @@ class GameScreen(
         }
 
         // 2. 牌河
-        if (tableModel != null) {
+        if (tableModel != null && !isPreparing) {
             TableBoardRenderer.renderDiscards(
                 model = tableModel,
                 projectionMatrix = tableCamera.combined,
@@ -1149,7 +1179,7 @@ class GameScreen(
         }
 
         // 3. 副露
-        if (tableModel != null) {
+        if (tableModel != null && !isPreparing) {
             TableBoardRenderer.renderMelds(
                 model = tableModel,
                 projectionMatrix = tableCamera.combined,
@@ -1163,11 +1193,15 @@ class GameScreen(
             )
         }
 
-        // 4. 手牌
-        renderPlayerHands(batch, font)
+        // 4. 手牌（准备阶段保持空白，发牌后才出现真实手牌）
+        if (!isPreparing) {
+            renderPlayerHands(batch, font)
+        }
 
         // 5. 正在飞行的打牌动画
-        renderFlyingDiscard(batch, shape, font)
+        if (!isPreparing) {
+            renderFlyingDiscard(batch, shape, font)
+        }
 
         // 6. 立直选牌遮罩 / 副露选牌面板 / 待牌预览
         if (riichiSelectionModel.isSelecting) {
@@ -1193,8 +1227,10 @@ class GameScreen(
             )
         }
 
-        // 8. 操作按钮
-        renderActionButtons(shape, batch, font)
+        // 8. 操作按钮（准备阶段只保留右侧准备栏，牌局操作按钮暂不开放）
+        if (!isPreparing) {
+            renderActionButtons(shape, batch, font)
+        }
 
         // 8.5 落汗表现层面板
         tileMarkPanel.render(
@@ -1267,8 +1303,8 @@ class GameScreen(
             riverHintPanel.renderToggleButton(shape, batch, chineseFont ?: font)
         }
 
-        // 9. 洗牌千术准备弹窗
-        if (shufflePreparationPanel.isActive) {
+        // 9. 洗牌千术准备栏（权威准备阶段结束后，回执仍短暂保留并淡出）
+        if (shufflePreparationPanel.isVisible) {
             shufflePreparationPanel.render(camera, shape, batch, font)
         }
 
@@ -1714,6 +1750,29 @@ class GameScreen(
     }
 
     override fun keyDown(keycode: Int): Boolean {
+        // 准备阶段独占键盘：Esc 回栏、Enter/Space 确认、Tab/方向键移动焦点；
+        // 其余按键不得穿透到牌局动作。
+        if (shufflePreparationPanel.isActive) {
+            when (keycode) {
+                Input.Keys.ESCAPE, Input.Keys.BACK -> {
+                    shufflePreparationPanel.handleEscape()
+                    return true
+                }
+                Input.Keys.ENTER, Input.Keys.NUMPAD_ENTER, Input.Keys.SPACE -> {
+                    shufflePreparationPanel.handleConfirmKey()
+                    return true
+                }
+                Input.Keys.TAB, Input.Keys.DPAD_DOWN, Input.Keys.DPAD_RIGHT -> {
+                    shufflePreparationPanel.moveFocus(1)
+                    return true
+                }
+                Input.Keys.DPAD_UP, Input.Keys.DPAD_LEFT, Input.Keys.SHIFT_LEFT, Input.Keys.SHIFT_RIGHT -> {
+                    shufflePreparationPanel.moveFocus(-1)
+                    return true
+                }
+            }
+            return true
+        }
         if (keycode == Input.Keys.ESCAPE || keycode == Input.Keys.BACK) {
             return modalCoordinator.handleEscapeOrBack(
                 ModalEscapeRoutes(
@@ -1775,6 +1834,12 @@ class GameScreen(
         lastMouseY = uiTy
 
         val beforeTouchSnapshot = modalCoordinator.captureSnapshot()
+
+        // 准备阶段：背景可见但不可穿透做牌局动作，只保留“返回主菜单”这类导航出口。
+        if (shufflePreparationPanel.isActive && backButtonRect.contains(uiTx, uiTy)) {
+            exitToMenu()
+            return true
+        }
 
         val isConnected = (session.connectionState == ConnectionState.CONNECTED) && !session.closed
         tileMarkPanel.update(
@@ -1905,7 +1970,7 @@ class GameScreen(
                 return true
             }
             ModalKind.SHUFFLE_PREPARATION -> {
-                shufflePreparationPanel.touchDown(uiTx, uiTy)
+                shufflePreparationPanel.pressDown(uiTx, uiTy)
                 return true
             }
             ModalKind.TILE_MARK -> {
@@ -2357,6 +2422,12 @@ class GameScreen(
         lastMouseX = uiTx
         lastMouseY = uiTy
 
+        if (shufflePreparationPanel.isActive) {
+            // 拖出按钮即取消按下（准备阶段的局部输入不穿透牌桌）。
+            shufflePreparationPanel.pressDragged(uiTx, uiTy)
+            return true
+        }
+
         if (!isModalActive() && riverHintPanel.isOpen) {
             return riverHintPanel.touchDragged(uiTx, uiTy)
         }
@@ -2377,6 +2448,12 @@ class GameScreen(
         }
         lastMouseX = uiTx
         lastMouseY = uiTy
+
+        if (shufflePreparationPanel.isActive) {
+            // 按下与松开位置一致才确认。
+            shufflePreparationPanel.pressUp(uiTx, uiTy)
+            return true
+        }
 
         if (!isModalActive() && riverHintPanel.isOpen) {
             return riverHintPanel.touchUp(uiTx, uiTy)

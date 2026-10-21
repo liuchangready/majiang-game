@@ -3,7 +3,9 @@ package com.majiang.presentation.common
 import com.badlogic.gdx.Gdx
 import com.badlogic.gdx.graphics.Texture
 import com.badlogic.gdx.graphics.g2d.BitmapFont
+import com.badlogic.gdx.graphics.g2d.NinePatch
 import com.badlogic.gdx.graphics.g2d.SpriteBatch
+import com.badlogic.gdx.graphics.g2d.TextureRegion
 import com.badlogic.gdx.graphics.g2d.freetype.FreeTypeFontGenerator
 import com.badlogic.gdx.graphics.glutils.ShapeRenderer
 import com.badlogic.gdx.utils.Disposable
@@ -99,6 +101,38 @@ class UiAssets(
     }
 
     private fun menuAssetsOrNull(): MainMenuAssets? = mainMenuAssets?.takeUnless { it.isDisposed }
+
+    /**
+     * 正式 APP 桌边场景（开局准备阶段）复用的麻将馆环境底图。
+     *
+     * 与主菜单共用同一份纹理实例：纹理由 [MainMenuAssets] 持有、由本容器在 [dispose] 统一释放，
+     * 调用方只借用，禁止自行释放或每帧重新加载。
+     */
+    fun obtainTableBackdrop(): TextureRegion? = obtainMainMenuAssets()?.background
+
+    /**
+     * 开局准备阶段复用的九宫格按钮底板（朱红主按钮 / 翡翠次按钮 / 暖金焦点框）。
+     *
+     * 同样复用 [MainMenuAssets] 已持有的九宫格资源，避免为同一张 PNG 再建一份纹理。
+     */
+    fun obtainPreparationButtonPatches(): PreparationButtonPatches? {
+        val assets = obtainMainMenuAssets() ?: return null
+        if (assets.isDisposed) return null
+        return PreparationButtonPatches(
+            primary = assets.primaryPatch,
+            secondary = assets.secondaryPatch,
+            focus = assets.focusPatch
+        )
+    }
+
+    /**
+     * 准备阶段按钮底板集合（只读借用，不拥有纹理生命周期）。
+     */
+    class PreparationButtonPatches(
+        val primary: NinePatch,
+        val secondary: NinePatch,
+        val focus: NinePatch
+    )
 
     var isDisposed: Boolean = false
         private set
