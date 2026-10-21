@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="zh-CN" data-theme="classic" data-motion="full" data-textsize="md">
+<html lang="zh-CN" data-theme="classic" data-motion="auto" data-textsize="md">
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
@@ -11,22 +11,36 @@
 <body>
 <a class="skip-link" href="#stage">跳到主要内容</a>
 
+<!-- ============ 场景层（纯装饰，aria-hidden） ============ -->
+<div class="scene" aria-hidden="true">
+  <div class="scene__photo"></div>
+  <div class="scene__wash"></div>
+  <div class="scene__glow"></div>
+  <div class="scene__lantern scene__lantern--left"></div>
+  <div class="scene__lantern scene__lantern--right"></div>
+  <div class="scene__beam"></div>
+  <div class="scene__grain"></div>
+</div>
+
 <div class="app">
   <!-- ============ 顶栏 ============ -->
   <header class="topbar">
     <div class="brand">
       <span class="brand__mark" aria-hidden="true">
         <svg viewBox="0 0 48 48" focusable="false">
-          <rect x="3" y="3" width="42" height="42" rx="9" fill="url(#bgMark)" stroke="#f0d79a" stroke-width="1.6"/>
-          <circle cx="17" cy="17" r="4.2" fill="#f4efe2"/>
-          <circle cx="31" cy="17" r="4.2" fill="#f4efe2"/>
-          <circle cx="17" cy="31" r="4.2" fill="#f4efe2"/>
-          <circle cx="31" cy="31" r="4.2" fill="#f4efe2"/>
           <defs>
             <linearGradient id="bgMark" x1="0" y1="0" x2="1" y2="1">
-              <stop offset="0" stop-color="#2b7a5f"/><stop offset="1" stop-color="#123a2c"/>
+              <stop offset="0" stop-color="#d4492c"/><stop offset="1" stop-color="#7d2418"/>
+            </linearGradient>
+            <linearGradient id="bgMarkGold" x1="0" y1="0" x2="1" y2="1">
+              <stop offset="0" stop-color="#ffe9b8"/><stop offset="1" stop-color="#b8863f"/>
             </linearGradient>
           </defs>
+          <rect x="3" y="3" width="42" height="42" rx="10" fill="url(#bgMark)" stroke="url(#bgMarkGold)" stroke-width="2"/>
+          <rect x="8" y="8" width="32" height="32" rx="6" fill="none" stroke="#f5cb78" stroke-opacity=".45" stroke-width="1"/>
+          <circle cx="17" cy="17" r="3.4" fill="#fff3d8"/><circle cx="31" cy="17" r="3.4" fill="#fff3d8"/>
+          <circle cx="17" cy="31" r="3.4" fill="#fff3d8"/><circle cx="31" cy="31" r="3.4" fill="#fff3d8"/>
+          <circle cx="24" cy="24" r="3.2" fill="#f5cb78"/>
         </svg>
       </span>
       <span class="brand__text">
@@ -47,7 +61,7 @@
       <span class="chip chip--demo" title="本原型为纯前端演示，未连接后端">演示原型 · 无后端</span>
       <button type="button" class="icon-btn" data-action="open-settings" aria-label="打开设置">
         <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-          <path fill="currentColor" d="M12 15.5A3.5 3.5 0 1 1 12 8.5a3.5 3.5 0 0 1 0 7Zm8.9-2.6.02-.9-.02-.9 1.9-1.45-1.9-3.3-2.24.9a7.9 7.9 0 0 0-1.55-.9L16.8 4h-3.8l-.31 2.35c-.56.22-1.08.52-1.55.9l-2.24-.9-1.9 3.3 1.9 1.45-.02.9.02.9-1.9 1.45 1.9 3.3 2.24-.9c.47.38.99.68 1.55.9L13 20h3.8l.31-2.35c.56-.22 1.08-.52 1.55-.9l2.24.9 1.9-3.3-1.9-1.45Z"/>
+          <path fill="currentColor" d="M12 15.5A3.5 3.5 0 1 1 12 8.5a3.5 3.5 0 0 1 0 7Zm8.9-2.6.02-.9-.02-.9 1.9-1.45-1.9-3.3-2.24.9a7.9 7.9 0 0 0-1.55-.9L16.8 4h-3.8l-.31 2.35c-.56.22-1.08.52-1.55.9l-2.24-.9-1.9 3.3 1.9 1.45-.02.9.02.9-1.9 1.45-1.9 3.3 2.24-.9c.47.38.99.68 1.55.9L13 20h3.8l.31-2.35c.56-.22 1.08-.52 1.55-.9l2.24.9 1.9-3.3-1.9-1.45Z"/>
         </svg>
       </button>
     </div>
@@ -59,9 +73,10 @@
     <!-- ---------- 主菜单 ---------- -->
     <section class="screen screen--menu is-active" id="screen-menu" data-screen="menu" aria-labelledby="menu-title">
       <div class="menu-wrap">
-        <div class="menu-hero">
-          <p class="eyebrow">MAHJONG CHEATER · INTERACTIVE UI PROTOTYPE</p>
-          <h1 class="title" id="menu-title" tabindex="-1">疯狂动物麻将</h1>
+        <div class="menu-copy">
+          <p class="eyebrow">MAHJONG CHEATER · 动物出千博弈</p>
+          <h1 class="title" id="menu-title" tabindex="-1">疯狂动物麻将</h2>
+          <div class="cloud-rule cloud-rule--hero" aria-hidden="true"></div>
           <p class="lede">
             雀圣心战 · 三绝技出千博弈。选择你的动物角色，用
             <b>落汗</b>、<b>袖里藏花</b>、<b>偷梁换柱</b> 在日式麻将牌桌上布置心理战。
@@ -75,49 +90,51 @@
           <p class="menu-continuation" id="menu-continuation" hidden></p>
         </div>
 
-        <nav class="menu-actions" aria-label="主菜单入口">
-          <button type="button" class="mbtn mbtn--primary" data-action="goto-mode">
-            <span class="mbtn__icon" aria-hidden="true">▶</span>
-            <span class="mbtn__label">开始游戏</span>
-            <span class="mbtn__sub">选择单机或联机</span>
-          </button>
-          <button type="button" class="mbtn" data-action="solo-quick">
-            <span class="mbtn__icon" aria-hidden="true">⚡</span>
-            <span class="mbtn__label">单机快速开局</span>
-            <span class="mbtn__sub">选角 → 备房 → 直接开桌</span>
-          </button>
-          <button type="button" class="mbtn" data-action="goto-lobby">
-            <span class="mbtn__icon" aria-hidden="true">⌂</span>
-            <span class="mbtn__label">联机大厅</span>
-            <span class="mbtn__sub">演示模拟数据</span>
-          </button>
-          <button type="button" class="mbtn" data-action="goto-characters">
-            <span class="mbtn__icon" aria-hidden="true">☗</span>
-            <span class="mbtn__label">动物角色选择</span>
-            <span class="mbtn__sub">8 位角色 · 技能确认与锁定</span>
-          </button>
-          <button type="button" class="mbtn" data-action="goto-codex">
-            <span class="mbtn__icon" aria-hidden="true">✦</span>
-            <span class="mbtn__label">千术秘籍 / 角色图鉴</span>
-            <span class="mbtn__sub">规则与角色总览</span>
-          </button>
-          <button type="button" class="mbtn" data-action="open-settings">
-            <span class="mbtn__icon" aria-hidden="true">⚙</span>
-            <span class="mbtn__label">游戏设置</span>
-            <span class="mbtn__sub">皮肤 · 动效 · 字号</span>
-          </button>
-        </nav>
+        <figure class="menu-hero" id="menu-now"></figure>
 
-        <aside class="menu-side" aria-label="原型说明">
-          <h2 class="side__title">原型边界</h2>
-          <ul class="side__list">
-            <li><span class="dot dot--warn" aria-hidden="true"></span>纯 HTML / CSS / 原生 JS，无构建步骤与外部资源。</li>
-            <li><span class="dot dot--warn" aria-hidden="true"></span>房间、牌局、角色、结算全部为<b>演示模拟数据</b>。</li>
-            <li><span class="dot dot--warn" aria-hidden="true"></span>未连接后端；不含账户、自动匹配、TLS 等未实现功能。</li>
-          </ul>
-          <h2 class="side__title">当前状态</h2>
-          <dl class="side__stats" id="menu-stats"></dl>
-        </aside>
+        <nav class="menu-actions" aria-label="主菜单入口">
+          <button type="button" class="mcard mcard--primary" data-action="goto-mode">
+            <span class="mcard__icon" aria-hidden="true">▶</span>
+            <span class="mcard__body">
+              <span class="mcard__label">开始游戏</span>
+              <span class="mcard__sub">选择单机或联机</span>
+            </span>
+            <span class="mcard__arrow" aria-hidden="true">›</span>
+          </button>
+          <button type="button" class="mcard" data-action="goto-lobby">
+            <span class="mcard__icon" aria-hidden="true">⌂</span>
+            <span class="mcard__body">
+              <span class="mcard__label">联机大厅</span>
+              <span class="mcard__sub">建房 / 加房 / 观战（演示数据）</span>
+            </span>
+            <span class="mcard__arrow" aria-hidden="true">›</span>
+          </button>
+          <button type="button" class="mcard" data-action="goto-characters">
+            <span class="mcard__icon" aria-hidden="true">☗</span>
+            <span class="mcard__body">
+              <span class="mcard__label">动物角色选择</span>
+              <span class="mcard__sub">8 位角色 · 技能确认与锁定</span>
+            </span>
+            <span class="mcard__arrow" aria-hidden="true">›</span>
+          </button>
+          <div class="menu-actions__minor">
+            <button type="button" class="mbtn" data-action="solo-quick">
+              <span class="mbtn__icon" aria-hidden="true">⚡</span>
+              <span class="mbtn__label">单机快速开局</span>
+              <span class="mbtn__sub">选角 → 备房 → 开桌</span>
+            </button>
+            <button type="button" class="mbtn" data-action="goto-codex">
+              <span class="mbtn__icon" aria-hidden="true">✦</span>
+              <span class="mbtn__label">千术秘籍</span>
+              <span class="mbtn__sub">规则与图鉴</span>
+            </button>
+            <button type="button" class="mbtn" data-action="open-settings">
+              <span class="mbtn__icon" aria-hidden="true">⚙</span>
+              <span class="mbtn__label">游戏设置</span>
+              <span class="mbtn__sub">皮肤 · 动效 · 字号</span>
+            </button>
+          </div>
+        </nav>
       </div>
     </section>
 
@@ -127,8 +144,12 @@
         <button type="button" class="btn btn--ghost" data-action="back">← 返回</button>
         <h2 class="page-title" id="mode-title" tabindex="-1">选择模式</h2>
       </div>
+      <div class="cloud-rule" aria-hidden="true"></div>
       <div class="mode-grid">
         <article class="mode-card">
+          <div class="mode-card__emblem" aria-hidden="true">
+            <span class="mode-card__glyph">單</span>
+          </div>
           <h3 class="mode-card__title">单机对局</h3>
           <p class="mode-card__desc">本地进程内权威对局，演示中直接进入备房与牌桌。</p>
           <ul class="mode-card__list">
@@ -139,6 +160,9 @@
           <button type="button" class="btn btn--primary" data-action="mode-solo">进入单机流程</button>
         </article>
         <article class="mode-card">
+          <div class="mode-card__emblem" aria-hidden="true">
+            <span class="mode-card__glyph">聯</span>
+          </div>
           <h3 class="mode-card__title">联机对战</h3>
           <p class="mode-card__desc">
             <span class="tag tag--warn">演示模拟数据</span>
@@ -161,6 +185,7 @@
         <h2 class="page-title" id="char-title" tabindex="-1">动物角色选择</h2>
         <p class="page-note">角色只<b>加强三大绝技</b>或<b>改变费用</b>，不会获得任何独立新技能。</p>
       </div>
+      <div class="cloud-rule" aria-hidden="true"></div>
       <div class="char-layout">
         <ul class="char-grid" id="char-grid" aria-label="动物角色列表"></ul>
         <div class="char-detail" id="char-detail" aria-live="polite"></div>
@@ -178,6 +203,7 @@
         <h2 class="page-title" id="lobby-title" tabindex="-1">联机大厅</h2>
         <p class="page-note"><span class="tag tag--warn">演示模拟数据</span>以下房间由本地脚本生成，不代表任何真实服务。</p>
       </div>
+      <div class="cloud-rule" aria-hidden="true"></div>
       <div class="lobby-layout">
         <div class="lobby-main">
           <div class="toolbar" role="group" aria-label="大厅操作">
@@ -211,8 +237,9 @@
         <h2 class="page-title" id="room-title" tabindex="-1">房间准备</h2>
         <p class="page-note" id="room-mode-note"></p>
       </div>
+      <div class="cloud-rule" aria-hidden="true"></div>
       <div class="room-layout">
-        <section class="panel" aria-labelledby="seat-title">
+        <section class="panel panel--seats" aria-labelledby="seat-title">
           <h3 class="panel__title" id="seat-title">席位</h3>
           <ul class="seat-list" id="seat-list"></ul>
           <div class="room-actions">
@@ -223,7 +250,7 @@
           <p class="inline-reason" id="room-reason" role="status"></p>
         </section>
 
-        <section class="panel" aria-labelledby="stack-title">
+        <section class="panel panel--stack" aria-labelledby="stack-title">
           <h3 class="panel__title" id="stack-title">码牌 <span class="panel__sub">统一码牌 · 消耗 30 点</span></h3>
           <p class="panel__hint">准备阶段六选一：选定一张牌作为目标，作用于起手与本局预计摸牌槽位。</p>
           <ul class="stack-grid" id="stack-grid"></ul>
@@ -258,14 +285,39 @@
         <div class="table-center">
           <div class="table-meta" id="table-meta"></div>
 
-          <div class="melds-row" id="my-melds" aria-label="副露区"></div>
+          <div class="felt">
+            <div class="felt__corners" aria-hidden="true">
+              <span class="felt__corner felt__corner--tl"></span>
+              <span class="felt__corner felt__corner--tr"></span>
+              <span class="felt__corner felt__corner--bl"></span>
+              <span class="felt__corner felt__corner--br"></span>
+            </div>
 
-          <div class="river-wrap">
-            <div class="river-label">牌河</div>
-            <div class="river" id="river" aria-label="牌河"></div>
+            <div class="gold-fret gold-fret--v felt__band felt__band--left" aria-hidden="true"></div>
+            <div class="gold-fret gold-fret--v felt__band felt__band--right" aria-hidden="true"></div>
+
+            <div class="gold-fret gold-fret--top" aria-hidden="true"></div>
+
+            <div class="felt__row felt__row--top">
+              <div class="seat-plaque seat-plaque--top" id="seat-top"></div>
+            </div>
+
+            <div class="melds-row" id="my-melds" aria-label="副露区"></div>
+
+            <div class="wall-row" id="wall-row"></div>
+
+            <div class="felt__main">
+              <div class="wall-stack" id="wall-left" aria-hidden="true"></div>
+              <div class="river-wrap">
+                <div class="river-label">牌河</div>
+                <div class="river" id="river" aria-label="牌河"></div>
+              </div>
+              <div class="table-anchor" id="table-anchor" aria-label="局次与方位"></div>
+              <div class="wall-stack" id="wall-right" aria-hidden="true"></div>
+            </div>
+
+            <div class="gold-fret gold-fret--bottom" aria-hidden="true"></div>
           </div>
-
-          <div class="wall-row" id="wall-row"></div>
 
           <div class="hand-zone">
             <div class="hand-head" id="hand-head"></div>
@@ -276,6 +328,7 @@
 
         <!-- 右栏：绝技与操作 -->
         <aside class="table-col table-col--right" aria-label="出千绝技与操作">
+          <div class="seat-plaque seat-plaque--right" id="seat-right"></div>
           <div class="cheat-stack" id="cheat-stack"></div>
           <div class="action-stack" id="action-stack"></div>
         </aside>
@@ -288,6 +341,7 @@
         <button type="button" class="btn btn--ghost" data-action="back">← 返回</button>
         <h2 class="page-title" id="codex-title" tabindex="-1">千术秘籍 / 角色图鉴</h2>
       </div>
+      <div class="cloud-rule" aria-hidden="true"></div>
       <div class="tabs" role="tablist" aria-label="图鉴分区">
         <button type="button" class="tab is-active" role="tab" id="tab-cheats" aria-selected="true" aria-controls="panel-cheats" data-action="tab" data-tab="cheats">千术绝技秘籍</button>
         <button type="button" class="tab" role="tab" id="tab-characters" aria-selected="false" aria-controls="panel-characters" data-action="tab" data-tab="characters">动物角色图鉴</button>
@@ -304,6 +358,7 @@
         <button type="button" class="btn btn--ghost" data-action="back">← 返回</button>
         <h2 class="page-title" id="settings-title" tabindex="-1">游戏设置</h2>
       </div>
+      <div class="cloud-rule" aria-hidden="true"></div>
       <div class="settings-layout">
         <section class="panel">
           <h3 class="panel__title">牌面皮肤</h3>
@@ -335,6 +390,7 @@
         <button type="button" class="btn btn--ghost" data-action="goto-menu">← 主菜单</button>
         <h2 class="page-title" id="settle-title" tabindex="-1">局末结算</h2>
       </div>
+      <div class="cloud-rule" aria-hidden="true"></div>
       <div id="settlement-body" class="settlement-body"></div>
       <div class="settle-actions">
         <button type="button" class="btn btn--primary" data-action="replay-round">再来一局（重进牌桌）</button>
@@ -348,8 +404,8 @@
   <!-- ============ 页脚 ============ -->
   <footer class="appfoot">
     <p>
-      <span class="tag tag--warn">纯前端 UI 原型</span>
-      房间、牌局、角色与结算均为<b>演示模拟数据</b>；未连接任何后端服务，未实现用户账户、自动撮合匹配与 TLS/加密信道。
+      <span class="tag tag--warn">演示数据</span>
+      房间、牌局与结算均为本地模拟，未连接后端，也未实现账户、自动撮合与 TLS。
     </p>
     <p class="appfoot__meta">
       <kbd>Esc</kbd> 返回上一级 · <kbd>Enter</kbd> 确认选中牌 · 全部交互支持键盘与焦点态

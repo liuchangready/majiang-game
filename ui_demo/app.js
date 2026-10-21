@@ -1,7 +1,11 @@
 /* ============================================================
    疯狂动物麻将 · 千术麻将 UI 原型
    ------------------------------------------------------------
-   纯原生 JavaScript，无任何外部依赖（无 CDN / 无构建 / 无图片）。
+   纯原生 JavaScript，无 CDN / 无构建 / 无网络请求。
+   美术素材（本地 PNG，仅作装饰层与角色肖像）：
+     assets/club-background.png  麻将馆场景（无文字）
+     assets/animal-roster.png     3×2 肖像：章鱼/喜鹊/狐狸 · 猴子/企鹅/熊猫
+     assets/animal-extra.png     2×1 肖像：老虎/乌鸦
    全部房间、牌局、角色与结算数据均为「演示模拟数据」，
    本脚本不发起任何网络请求，也不代表真实游戏已实现该功能。
    ============================================================ */
@@ -126,146 +130,62 @@
      1. 动物角色（只加强三大绝技或改变费用，无独立新技能）
      ========================================================== */
 
-  const OCTOPUS_SVG =
-    '<svg viewBox="0 0 64 64" aria-hidden="true" focusable="false">' +
-    '<g stroke="#7a68d6" stroke-width="6" stroke-linecap="round" fill="none">' +
-    '<path d="M17 36c-6 6-7 13-3 17"/><path d="M25 40c-3 7-2 12 2 15"/>' +
-    '<path d="M39 40c3 7 2 12-2 15"/><path d="M47 36c6 6 7 13 3 17"/></g>' +
-    '<ellipse cx="32" cy="28" rx="19" ry="17" fill="#8a78e0"/>' +
-    '<ellipse cx="25" cy="26" rx="5" ry="5.5" fill="#fff"/>' +
-    '<ellipse cx="39" cy="26" rx="5" ry="5.5" fill="#fff"/>' +
-    '<circle cx="25.8" cy="26.6" r="2.4" fill="#241d40"/>' +
-    '<circle cx="39.8" cy="26.6" r="2.4" fill="#241d40"/>' +
-    '<circle cx="26.8" cy="25.4" r=".9" fill="#fff"/><circle cx="40.8" cy="25.4" r=".9" fill="#fff"/>' +
-    '</svg>';
+  /* 角色肖像来源（本地 PNG 精灵图，由 CSS 裁切显示）：
+     roster: 3 列 × 2 行 —— 章鱼 喜鹊 狐狸 / 猴子 企鹅 熊猫
+     extra:  2 列 × 1 行 —— 老虎 乌鸦
+     肖像只作视觉层，角色的名称、绝技与特性全部由 DOM 文本提供。 */
+  const PORTRAIT_SHEET = {
+    octopus: 'roster', magpie: 'roster', fox: 'roster',
+    monkey: 'roster', penguin: 'roster', panda: 'roster',
+    tiger: 'extra', crow: 'extra'
+  };
 
-  const MAGPIE_SVG =
-    '<svg viewBox="0 0 64 64" aria-hidden="true" focusable="false">' +
-    '<ellipse cx="33" cy="36" rx="17" ry="16" fill="#22262f"/>' +
-    '<path d="M16 39c0 11 8 18 17 18s17-7 17-18z" fill="#f2f4f8"/>' +
-    '<path d="M46 30c6-2 10-1 13 3-4 3-9 4-14 2z" fill="#39404f"/>' +
-    '<circle cx="17" cy="25" r="12" fill="#22262f"/>' +
-    '<path d="M7 23l-9 4 9 5z" fill="#e0a53f"/>' +
-    '<circle cx="14" cy="22" r="3.4" fill="#fff"/>' +
-    '<circle cx="13.4" cy="22.4" r="1.8" fill="#15181f"/>' +
-    '<circle cx="15" cy="21.2" r=".7" fill="#fff"/>' +
-    '</svg>';
-
-  const FOX_SVG =
-    '<svg viewBox="0 0 64 64" aria-hidden="true" focusable="false">' +
-    '<path d="M12 17l12 8-10 7z" fill="#e0762f"/><path d="M52 17l-12 8 10 7z" fill="#e0762f"/>' +
-    '<path d="M16 22l5 4-4 3z" fill="#3b2417"/><path d="M48 22l-5 4 4 3z" fill="#3b2417"/>' +
-    '<path d="M32 12c13 0 21 9 21 20 0 12-9 22-21 22S11 44 11 32 19 12 32 12z" fill="#f0913f"/>' +
-    '<path d="M32 34c6 0 11 4 12 9-3 5-7 7-12 7s-9-2-12-7c1-5 6-9 12-9z" fill="#fff3e4"/>' +
-    '<circle cx="24" cy="29" r="3.4" fill="#2b1a10"/><circle cx="40" cy="29" r="3.4" fill="#2b1a10"/>' +
-    '<circle cx="25" cy="28" r="1.1" fill="#fff"/><circle cx="41" cy="28" r="1.1" fill="#fff"/>' +
-    '<path d="M29 37h6l-3 4z" fill="#2b1a10"/>' +
-    '</svg>';
-
-  const MONKEY_SVG =
-    '<svg viewBox="0 0 64 64" aria-hidden="true" focusable="false">' +
-    '<circle cx="13" cy="31" r="9" fill="#c98f5c"/><circle cx="51" cy="31" r="9" fill="#c98f5c"/>' +
-    '<circle cx="13" cy="31" r="5" fill="#e8b98a"/><circle cx="51" cy="31" r="5" fill="#e8b98a"/>' +
-    '<ellipse cx="32" cy="30" rx="19" ry="18" fill="#c98f5c"/>' +
-    '<ellipse cx="32" cy="38" rx="14" ry="12" fill="#e8b98a"/>' +
-    '<ellipse cx="32" cy="37" rx="6.5" ry="4.6" fill="#d59a6c"/>' +
-    '<circle cx="25" cy="26" r="3.6" fill="#2b1a10"/><circle cx="39" cy="26" r="3.6" fill="#2b1a10"/>' +
-    '<circle cx="26" cy="25" r="1.2" fill="#fff"/><circle cx="40" cy="25" r="1.2" fill="#fff"/>' +
-    '</svg>';
-
-  const PENGUIN_SVG =
-    '<svg viewBox="0 0 64 64" aria-hidden="true" focusable="false">' +
-    '<ellipse cx="32" cy="36" rx="17" ry="21" fill="#232830"/>' +
-    '<ellipse cx="32" cy="41" rx="12" ry="15" fill="#f5f7fa"/>' +
-    '<circle cx="32" cy="18" r="13" fill="#232830"/>' +
-    '<ellipse cx="32" cy="22" rx="9" ry="8" fill="#f5f7fa"/>' +
-    '<path d="M27 20h10l-5 5z" fill="#f0a93c"/>' +
-    '<circle cx="27" cy="16" r="2.6" fill="#fff"/><circle cx="37" cy="16" r="2.6" fill="#fff"/>' +
-    '<circle cx="27.3" cy="16.4" r="1.4" fill="#141820"/><circle cx="37.3" cy="16.4" r="1.4" fill="#141820"/>' +
-    '<path d="M20 55c-3 2-6 1-7-2 4-1 6 0 7 2z" fill="#f0a93c"/>' +
-    '<path d="M44 55c3 2 6 1 7-2-4-1-6 0-7 2z" fill="#f0a93c"/>' +
-    '</svg>';
-
-  const PANDA_SVG =
-    '<svg viewBox="0 0 64 64" aria-hidden="true" focusable="false">' +
-    '<circle cx="15" cy="17" r="8" fill="#2a2a2e"/><circle cx="49" cy="17" r="8" fill="#2a2a2e"/>' +
-    '<ellipse cx="32" cy="30" rx="19" ry="19" fill="#f3f1ec"/>' +
-    '<ellipse cx="24" cy="28" rx="7" ry="8" fill="#2a2a2e" transform="rotate(-18 24 28)"/>' +
-    '<ellipse cx="40" cy="28" rx="7" ry="8" fill="#2a2a2e" transform="rotate(18 40 28)"/>' +
-    '<circle cx="24" cy="27" r="3" fill="#fff"/><circle cx="40" cy="27" r="3" fill="#fff"/>' +
-    '<circle cx="24.4" cy="27.4" r="1.7" fill="#14141a"/><circle cx="40.4" cy="27.4" r="1.7" fill="#14141a"/>' +
-    '<ellipse cx="32" cy="39" rx="5" ry="3.6" fill="#2a2a2e"/>' +
-    '<path d="M32 42c0 3-3 4-6 3M32 42c0 3 3 4 6 3" stroke="#2a2a2e" stroke-width="2" fill="none" stroke-linecap="round"/>' +
-    '</svg>';
-
-  const TIGER_SVG =
-    '<svg viewBox="0 0 64 64" aria-hidden="true" focusable="false">' +
-    '<circle cx="15" cy="18" r="7.5" fill="#e08a3c"/><circle cx="49" cy="18" r="7.5" fill="#e08a3c"/>' +
-    '<ellipse cx="32" cy="31" rx="19" ry="18" fill="#f2a447"/>' +
-    '<path d="M32 13v7M22 15l2 6M42 15l-2 6" stroke="#5a3218" stroke-width="2.6" stroke-linecap="round"/>' +
-    '<ellipse cx="32" cy="39" rx="12" ry="9" fill="#ffeccd"/>' +
-    '<circle cx="24" cy="29" r="3.6" fill="#241509"/><circle cx="40" cy="29" r="3.6" fill="#241509"/>' +
-    '<circle cx="25" cy="28" r="1.2" fill="#fff"/><circle cx="41" cy="28" r="1.2" fill="#fff"/>' +
-    '<path d="M29 37h6l-3 3z" fill="#241509"/>' +
-    '<path d="M26 41c2 2 4 2 6 1M38 41c-2 2-4 2-6 1" stroke="#241509" stroke-width="2" fill="none" stroke-linecap="round"/>' +
-    '</svg>';
-
-  const CROW_SVG =
-    '<svg viewBox="0 0 64 64" aria-hidden="true" focusable="false">' +
-    '<ellipse cx="34" cy="38" rx="16" ry="18" fill="#2a2733"/>' +
-    '<path d="M46 26c7-4 12-3 15 1-5 4-10 5-15 3z" fill="#3b3648"/>' +
-    '<circle cx="24" cy="22" r="12" fill="#2a2733"/>' +
-    '<path d="M13 20L3 25l10 4z" fill="#6b6580"/>' +
-    '<circle cx="21" cy="20" r="3.4" fill="#e8e2f5"/>' +
-    '<circle cx="21.5" cy="20.4" r="1.8" fill="#1b1922"/>' +
-    '<path d="M26 12c3-3 7-3 9 0-3 2-6 2-9 0z" fill="#4a4459"/>' +
-    '</svg>';
 
   const CHARACTERS = [
     {
-      id: 'octopus', name: '章鱼', en: 'OCTOPUS', trait: '三腕藏花', svg: OCTOPUS_SVG,
+      id: 'octopus', name: '章鱼', en: 'OCTOPUS', trait: '三腕藏花',
       desc: '使用袖里藏花时，有 20% 概率看到三张候选牌；但最终仍然只保留一张，其余物理牌严格守恒。',
       affects: '袖里藏花 · 20% 概率候选变为三张（仍然 3 选 1）',
       notes: ['不增加手牌数量，未选中的候选返回牌山', '只在袖里藏花生效，其余两招不受影响']
     },
     {
-      id: 'magpie', name: '喜鹊', en: 'MAGPIE', trait: '第一滴汗', svg: MAGPIE_SVG,
+      id: 'magpie', name: '喜鹊', en: 'MAGPIE', trait: '第一滴汗',
       desc: '每局第一次使用落汗时，出千点费用减少 4 点。',
       affects: '落汗 · 每局首次施术 10 → 6 点',
       notes: ['每局仅一次，第二次起恢复 10 点', '不改变落汗的标记张数与效果']
     },
     {
-      id: 'fox', name: '狐狸', en: 'FOX', trait: '偷看一眼', svg: FOX_SVG,
+      id: 'fox', name: '狐狸', en: 'FOX', trait: '偷看一眼',
       desc: '偷梁换柱时可以额外预览一个合法候选槽位，看到槽位中暗置的牌面。',
       affects: '偷梁换柱 · 候选槽位 3 → 4（额外预览 1 个）',
       notes: ['只增加可选槽位，不增加交换数量', '交换仍为双方各一张，物理守恒']
     },
     {
-      id: 'monkey', name: '猴子', en: 'MONKEY', trait: '换手', svg: MONKEY_SVG,
+      id: 'monkey', name: '猴子', en: 'MONKEY', trait: '换手',
       desc: '同一局中第一次使用「与上一招不同」的绝技时，出千点费用减少 3 点。',
       affects: '落汗 / 袖里藏花 / 偷梁换柱 · 同局第二种不同绝技 -3 点',
       notes: ['同一种绝技重复施术不再减免', '每局最多触发一次']
     },
     {
-      id: 'penguin', name: '企鹅', en: 'PENGUIN', trait: '留一手', svg: PENGUIN_SVG,
+      id: 'penguin', name: '企鹅', en: 'PENGUIN', trait: '留一手',
       desc: '袖里藏花时若选择保留原来的那张摸牌，返还 3 点出千点。',
       affects: '袖里藏花 · 保留原摸牌时返还 3 点',
       notes: ['只在选择保留原摸牌时返还', '不影响候选数量与守恒规则']
     },
     {
-      id: 'panda', name: '熊猫', en: 'PANDA', trait: '一好一坏', svg: PANDA_SVG,
+      id: 'panda', name: '熊猫', en: 'PANDA', trait: '一好一坏',
       desc: '当局第一招绝技费用减半，当局第二招绝技费用增加 3 点。',
       affects: '三大绝技 · 当局第一招半价，第二招 +3 点',
       notes: ['按当局施术顺序计算，与绝技种类无关', '第一招之后每招都 +3 点']
     },
     {
-      id: 'tiger', name: '老虎', en: 'TIGER', trait: '额外一组', svg: TIGER_SVG,
+      id: 'tiger', name: '老虎', en: 'TIGER', trait: '额外一组',
       desc: '落汗每局可维持的标记上限增加一组（4 张）。',
       affects: '落汗 · 标记上限 12 → 16 张',
       notes: ['只提高标记张数上限', '每张仍消耗 1 个标记位，不影响费用']
     },
     {
-      id: 'crow', name: '乌鸦', en: 'CROW', trait: '折价', svg: CROW_SVG,
+      id: 'crow', name: '乌鸦', en: 'CROW', trait: '折价',
       desc: '偷梁换柱的出千点费用减少 2 点。',
       affects: '偷梁换柱 · 10 → 8 点',
       notes: ['固定减价，不随其它折扣叠加计算', '不影响候选数量']
@@ -274,6 +194,20 @@
 
   const CHAR_BY_ID = {};
   CHARACTERS.forEach(function (c) { CHAR_BY_ID[c.id] = c; });
+
+  // 角色关联的绝技（只用于卡片上的图标与标签，不改变任何规则）
+  const CHAR_CHEAT = {
+    octopus: 'sleeveBloom', magpie: 'tileMark', fox: 'beamSwap',
+    monkey: 'tileMark', penguin: 'sleeveBloom', panda: 'beamSwap',
+    tiger: 'tileMark', crow: 'beamSwap'
+  };
+
+  function charCheatLabel(charId) {
+    if (charId === 'monkey' || charId === 'panda') return { glyph: '术', name: '三绝技' };
+    const id = CHAR_CHEAT[charId];
+    const c = id ? CHEAT_BY_ID[id] : null;
+    return c ? { glyph: c.glyph, name: c.name } : { glyph: '术', name: '三绝技' };
+  }
 
   /* ==========================================================
      2. 三大绝技定义
@@ -308,6 +242,13 @@
     { id: 'beast', name: '兽纹墨玉' }
   ];
 
+  // 动效强度：auto = 跟随系统 prefers-reduced-motion；full / reduced = 用户显式指定
+  const MOTION_MODES = [
+    { id: 'auto', name: '跟随系统' },
+    { id: 'full', name: '完整动效' },
+    { id: 'reduced', name: '减弱动效' }
+  ];
+
   const DEMO_ROOMS = [
     { id: 'MJ-7K2Q', mode: '东风战', players: 3, cap: 4, host: '月读', state: '等待中' },
     { id: 'MJ-3D8X', mode: '半庄战', players: 2, cap: 4, host: '狸猫', state: '等待中' },
@@ -323,7 +264,7 @@
      3. 全局状态与本地存档
      ========================================================== */
 
-  const STORAGE_KEY = 'mj-animal-demo/session-v1';
+  const STORAGE_KEY = 'mj-animal-demo/session-v2';
 
   const state = {
     screen: 'menu',
@@ -331,7 +272,7 @@
     mode: null,
     characterId: 'octopus',
     locked: {},
-    settings: { theme: 'classic', motion: 'full', textsize: 'md', octopusDemo: false },
+    settings: { theme: 'classic', motion: 'auto', textsize: 'md', octopusDemo: false },
     room: null,
     round: null,
     ledger: []
@@ -408,12 +349,61 @@
     }, 3000);
   }
 
+  /**
+   * 角色肖像：使用本地 PNG 精灵图（assets/animal-roster.png / animal-extra.png），
+   * 由 CSS 背景定位裁切。默认使用「头部特写」裁切（portrait--face），
+   * 该裁切已逐角色验证不会越出各自的图格；完整立绘用 portrait--full。
+   * 肖像只作装饰层，名称 / 绝技 / 特性一律由 DOM 文本提供。
+   */
+  function portraitHTML(charId, opts) {
+    opts = opts || {};
+    const c = CHAR_BY_ID[charId];
+    if (!c) return '';
+    const face = opts.face === false ? '' : ' portrait--face';
+    const extra = opts.cls ? ' ' + opts.cls : '';
+    const a11y = opts.label
+      ? ' role="img" aria-label="' + esc(opts.label) + '"'
+      : ' aria-hidden="true"';
+    return '<span class="portrait portrait--' + c.id + face + extra + '"' + a11y + '></span>';
+  }
+
+  /**
+   * 费用预览条。
+   * 只有费用真的发生变化（角色折扣）时才显示「原价 → 实付」；
+   * 没有变化时只显示一次金额，避免出现「10  10 点」这种重复读数。
+   * 企鹅返还等额外说明以附注形式给出。
+   */
+  function costPreviewHTML(priced, opts) {
+    opts = opts || {};
+    const refund = opts.refund || 0;
+    const net = Math.max(0, priced.cost - refund);
+    const changed = priced.cost !== priced.base;
+    let html = '<div class="cost-preview"><span class="cost-preview__label">本次费用</span>';
+    if (changed) {
+      html += '<span class="cost-preview__base">原价 ' + priced.base + ' 点</span>' +
+        '<span class="cost-preview__arrow" aria-hidden="true">→</span>' +
+        '<span class="cost-preview__now">实付 ' + net + ' 点</span>';
+    } else {
+      html += '<span class="cost-preview__now">' + priced.cost + ' 点</span>';
+      if (refund) {
+        html += '<span class="cost-preview__note">· 企鹅保留原摸牌返还 ' + refund + ' 点，实付 ' + net + ' 点</span>';
+      }
+    }
+    if (priced.notes && priced.notes.length) {
+      html += '<span class="cost-preview__notes">' + priced.notes.map(function (n) {
+        return '<span class="cost-preview__note">· ' + esc(n) + '</span>';
+      }).join('') + '</span>';
+    }
+    if (opts.extra) html += '<span class="cost-preview__extra">' + opts.extra + '</span>';
+    return html + '</div>';
+  }
+
   function showBanner(charId, text) {
     const c = CHAR_BY_ID[charId];
     if (!c) return;
     const banner = document.createElement('div');
     banner.className = 'trait-banner';
-    banner.innerHTML = '<span class="avatar avatar--sm">' + c.svg + '</span>' +
+    banner.innerHTML = '<span class="avatar avatar--sm">' + portraitHTML(charId) + '</span>' +
       '<span class="trait-banner__name">' + esc(c.name) + '</span>' +
       '<span class="trait-banner__text">' + esc(text) + '</span>';
     document.body.appendChild(banner);
@@ -425,7 +415,7 @@
   function avatarHTML(charId, cls) {
     const c = CHAR_BY_ID[charId];
     if (!c) return '';
-    return '<span class="avatar ' + (cls || '') + '" aria-hidden="true">' + c.svg + '</span>';
+    return '<span class="avatar ' + (cls || '') + '">' + portraitHTML(charId) + '</span>';
   }
 
   function tileHTML(code, opts) {
@@ -699,18 +689,27 @@
 
   /* ---------- 主菜单 ---------- */
   RENDERERS.menu = function () {
-    const stats = $('#menu-stats');
-    if (stats) {
+    // 主菜单把「当前角色」做成主视觉：大幅肖像 + 金框漆木台座；
+    // 工程技术边界不在此占据视觉中心（完整说明见「千术秘籍 / 图鉴 → 原型边界说明」）。
+    const now = $('#menu-now');
+    if (now) {
       const c = currentChar();
-      const rows = [
-        ['当前角色', c.name + ' · ' + c.trait],
-        ['已锁定角色', Object.keys(state.locked).filter(function (k) { return state.locked[k]; }).length + ' 位'],
-        ['牌面皮肤', (THEMES.filter(function (t) { return t.id === state.settings.theme; })[0] || THEMES[0]).name],
-        ['动效', state.settings.motion === 'reduced' ? '减弱动效' : '完整动效']
-      ];
-      stats.innerHTML = rows.map(function (r) {
-        return '<dt>' + esc(r[0]) + '</dt><dd>' + esc(r[1]) + '</dd>';
-      }).join('');
+      const themeName = (THEMES.filter(function (t) { return t.id === state.settings.theme; })[0] || THEMES[0]).name;
+      const lockedCount = Object.keys(state.locked).filter(function (k) { return state.locked[k]; }).length;
+      now.innerHTML =
+        '<span class="menu-hero__glow" aria-hidden="true"></span>' +
+        '<span class="menu-hero__ring" aria-hidden="true"></span>' +
+        '<span class="menu-hero__frame">' + portraitHTML(c.id, { face: false }) + '</span>' +
+        '<span class="menu-hero__seal" aria-hidden="true"><span>雀</span></span>' +
+        '<figcaption class="menu-hero__plate">' +
+        '<span class="gold-fret" aria-hidden="true"></span>' +
+        '<span class="menu-hero__kicker">当前角色 · CURRENT</span>' +
+        '<span class="menu-hero__name">' + esc(c.name) + '<i>·</i>' + esc(c.trait) + '</span>' +
+        '<span class="menu-hero__trait">' + esc(c.affects) + '</span>' +
+        '<span class="menu-hero__meta">皮肤 ' + esc(themeName) + ' · ' +
+        (effectiveMotion() === 'reduced' ? '已关闭动画' : '完整动效') +
+        ' · 已锁定 ' + lockedCount + ' 位</span>' +
+        '</figcaption>';
     }
     const cont = $('#menu-continuation');
     if (cont) {
@@ -737,15 +736,20 @@
       grid.innerHTML = CHARACTERS.map(function (c) {
         const locked = !!state.locked[c.id];
         const selected = state.characterId === c.id;
+        const cheat = charCheatLabel(c.id);
         return '<li class="char-item">' +
           '<div class="char-card' + (selected ? ' is-selected' : '') + (locked ? ' is-locked' : '') + '">' +
           '<button type="button" class="char-card__select" data-action="select-character" data-id="' + c.id + '"' +
           ' aria-pressed="' + (selected ? 'true' : 'false') + '"' +
-          ' aria-label="' + esc(c.name + '，' + c.trait + (locked ? '，已锁定' : '')) + '">' +
-          '<span class="char-card__top">' + avatarHTML(c.id, 'avatar--sm') +
-          '<span><span class="char-card__name">' + esc(c.name) + '</span><br>' +
-          '<span class="char-card__en">' + esc(c.en) + '</span></span></span>' +
+          ' aria-label="' + esc(c.name + '，' + c.trait + '，关联绝技 ' + cheat.name + (locked ? '，已锁定' : '')) + '">' +
+          '<span class="char-card__figure">' + portraitHTML(c.id, { face: false }) + '</span>' +
+          '<span class="char-card__top">' +
+          '<span class="char-card__name">' + esc(c.name) + '</span>' +
+          '<span class="char-card__en">' + esc(c.en) + '</span>' +
+          '</span>' +
           '<span class="char-card__trait">' + esc(c.trait) + '</span>' +
+          '<span class="char-card__skill"><span class="char-card__glyph" aria-hidden="true">' + esc(cheat.glyph) + '</span>' +
+          esc(cheat.name) + '</span>' +
           '</button>' +
           '<button type="button" class="char-card__lock" data-action="toggle-lock" data-id="' + c.id + '"' +
           ' aria-pressed="' + (locked ? 'true' : 'false') + '"' +
@@ -762,7 +766,8 @@
     const locked = !!state.locked[c.id];
     if (detail) {
       detail.innerHTML =
-        '<div class="char-detail__head">' + avatarHTML(c.id, 'avatar--lg') +
+        '<div class="gold-fret" aria-hidden="true"></div>' +
+        '<div class="char-detail__head"><span class="char-detail__figure">' + portraitHTML(c.id, { face: false }) + '</span>' +
         '<div><div class="char-detail__name">' + esc(c.name) + '</div>' +
         '<div class="char-detail__en">' + esc(c.en) + '</div></div></div>' +
         '<div class="char-detail__trait">' + esc(c.trait) + '</div>' +
@@ -893,6 +898,7 @@
     if (!round) return;
     renderOpponents();
     renderTableMeta();
+    renderTableAnchor();
     renderRiver();
     renderWall();
     renderHand();
@@ -903,25 +909,86 @@
     updatePointsChip();
   };
 
-  function renderOpponents() {
-    const box = $('#opponent-list');
+  /**
+   * 牌桌中央的方位 / 局次视觉锚点（呼应概念图 03 的桌面构图）：
+   * 罗盘圆牌显示 prevailing 风向与局数，四周标注四方位席风，
+   * 右侧列出牌山剩余与宝牌。全部为 DOM 文本，不遮挡牌河与点击区。
+   */
+  function renderTableAnchor() {
+    const box = $('#table-anchor');
     if (!box || !state.round) return;
     const round = state.round;
-    const html = round.seats.filter(function (s) { return !s.isMe; }).map(function (s) {
-      let backs = '';
-      for (let i = 0; i < s.hand.length; i++) backs += backTileHTML();
-      const last = round.discards.filter(function (d) { return d.seat === s.seat; }).pop();
-      return '<div class="seat-mini' + (round.turnSeat === s.seat ? ' is-turn' : '') + '">' +
-        avatarHTML(s.charId, 'avatar--sm') +
-        '<div><div class="seat-mini__name">' + esc(s.name) +
-        (round.turnSeat === s.seat ? ' <span class="tag tag--gold">思考中</span>' : '') + '</div>' +
-        '<div class="seat-mini__meta"><span>手牌 ' + s.hand.length + '</span>' +
-        '<span class="seat-mini__points">出千点 ' + s.points + '</span></div>' +
-        '<div class="seat-mini__hand" aria-hidden="true">' + backs + '</div>' +
-        (last ? '<div class="seat-mini__meta"><span>打出 ' + esc(tileInfo(last.inst.c).name) + '</span></div>' : '') +
-        '</div></div>';
-    }).join('');
-    box.innerHTML = html;
+    const winds = ['東', '南', '西', '北'];
+    const prevailing = winds[(round.index - 1) % 4];
+    const remaining = round.wall.length;
+    const dora = round.dora ? tileInfo(round.dora).name : '—';
+    box.innerHTML =
+      '<div class="anchor__dial">' +
+        '<div class="anchor__compass">' +
+          '<span class="anchor__rose" aria-hidden="true"></span>' +
+          '<span class="anchor__ring" aria-hidden="true"></span>' +
+          '<span class="anchor__center"><b>' + round.index + '</b><i>局</i></span>' +
+        '</div>' +
+        '<div class="anchor__marks" aria-hidden="true">' +
+          '<span class="anchor__mark anchor__mark--n">北</span>' +
+          '<span class="anchor__mark anchor__mark--e">東</span>' +
+          '<span class="anchor__mark anchor__mark--s">南</span>' +
+          '<span class="anchor__mark anchor__mark--w">西</span>' +
+        '</div>' +
+      '</div>' +
+      '<dl class="anchor__info">' +
+        '<div class="anchor__row"><dt>圈风</dt><dd>' + prevailing + '</dd></div>' +
+        '<div class="anchor__row"><dt>牌山</dt><dd>剩余 ' + remaining + ' 张</dd></div>' +
+        '<div class="anchor__row"><dt>宝牌</dt><dd>' + esc(dora) + '</dd></div>' +
+      '</dl>';
+  }
+
+  function opponentBacks(count) {
+    let backs = '';
+    for (let i = 0; i < count; i++) backs += backTileHTML();
+    return backs;
+  }
+
+  // 左席：紧凑信息卡（含牌背）
+  function seatMiniHTML(s) {
+    const round = state.round;
+    const last = round.discards.filter(function (d) { return d.seat === s.seat; }).pop();
+    return '<div class="seat-mini' + (round.turnSeat === s.seat ? ' is-turn' : '') + '">' +
+      avatarHTML(s.charId, 'avatar--md') +
+      '<div><div class="seat-mini__name">' + esc(s.name) +
+      (round.turnSeat === s.seat ? ' <span class="tag tag--gold">思考中</span>' : '') + '</div>' +
+      '<div class="seat-mini__meta"><span>手牌 ' + s.hand.length + '</span>' +
+      '<span class="seat-mini__points">出千点 ' + s.points + '</span></div>' +
+      '<div class="seat-mini__hand" aria-hidden="true">' + opponentBacks(s.hand.length) + '</div>' +
+      (last ? '<div class="seat-mini__meta"><span>打出 ' + esc(tileInfo(last.inst.c).name) + '</span></div>' : '') +
+      '</div></div>';
+  }
+
+  // 上席 / 右席：肖像铭牌（呼应概念图的三边布局）
+  function seatPlaqueHTML(s) {
+    const round = state.round;
+    const last = round.discards.filter(function (d) { return d.seat === s.seat; }).pop();
+    return '<span class="seat-plaque__figure">' + portraitHTML(s.charId) + '</span>' +
+      '<span class="seat-plaque__text">' +
+      '<span class="seat-plaque__name">' + esc(s.name) +
+      (round.turnSeat === s.seat ? ' <span class="tag tag--gold">思考中</span>' : '') + '</span>' +
+      '<span class="seat-plaque__meta"><span>手牌 ' + s.hand.length + '</span>' +
+      '<span class="seat-plaque__points">出千点 ' + s.points + '</span>' +
+      (last ? '<span>打出 ' + esc(tileInfo(last.inst.c).name) + '</span>' : '') + '</span>' +
+      '<span class="seat-plaque__hand" aria-hidden="true">' + opponentBacks(Math.min(s.hand.length, 14)) + '</span>' +
+      '</span>';
+  }
+
+  function renderOpponents() {
+    const list = $('#opponent-list');
+    const top = $('#seat-top');
+    const right = $('#seat-right');
+    if (!state.round) return;
+    const opp = state.round.seats.filter(function (s) { return !s.isMe; });
+    // 三边布局：左席在左栏，上席在牌桌顶端，右席在右侧操作栏顶部
+    if (list) list.innerHTML = opp.slice(0, 1).map(seatMiniHTML).join('');
+    if (top) top.innerHTML = opp.slice(1, 2).map(seatPlaqueHTML).join('');
+    if (right) right.innerHTML = opp.slice(2, 3).map(seatPlaqueHTML).join('');
   }
 
   function renderTableMeta() {
@@ -970,6 +1037,16 @@
     box.innerHTML = '<span class="wall-row__label">牌山</span>' +
       '<span class="wall-strip" aria-hidden="true">' + strip.join('') + '</span>' +
       '<span class="meta-pill">剩余 <strong>' + state.round.wall.length + '</strong> 张</span>';
+    // 左右两侧的牌山立柱（概念图 03 的桌面构图，纯装饰）
+    const stack = function (n) {
+      let s = '';
+      for (let i = 0; i < n; i++) s += backTileHTML('tile--stack');
+      return s;
+    };
+    const left = $('#wall-left');
+    const right = $('#wall-right');
+    if (left) left.innerHTML = stack(6);
+    if (right) right.innerHTML = stack(6);
   }
 
   function renderHand() {
@@ -991,17 +1068,21 @@
 
     list.innerHTML = round.hand.map(function (inst) {
       const marked = round.marks.indexOf(inst.u) >= 0;
+      const pulsing = round.markPulse && round.markPulse.indexOf(inst.u) >= 0;
       return '<li>' + tileHTML(inst.c, {
-        button: true, action: 'select-tile', uid: inst.u, marked: marked,
+        button: true, action: 'select-tile', uid: inst.u, marked: marked, cast: pulsing,
         selected: round.selected === inst.u,
         title: marked ? tileInfo(inst.c).name + '（已落汗标记）' : tileInfo(inst.c).name
       }) + '</li>';
     }).join('') +
-      (round.drawn ? '<li>' + tileHTML(round.drawn.c, {
-        button: true, action: 'select-tile', uid: round.drawn.u,
-        selected: round.selected === round.drawn.u,
-        title: tileInfo(round.drawn.c).name + '（刚摸到的牌）'
-      }) + '</li>' : '');
+      (round.drawn
+        ? '<li class="hand__sep" aria-hidden="true"></li>' +
+          '<li class="hand__drawn-wrap">' + tileHTML(round.drawn.c, {
+            button: true, action: 'select-tile', uid: round.drawn.u,
+            selected: round.selected === round.drawn.u,
+            title: tileInfo(round.drawn.c).name + '（刚摸到的牌）'
+          }) + '<span class="hand__drawn-label">摸牌</span></li>'
+        : '');
 
     if (melds) {
       melds.innerHTML = round.melds.length
@@ -1183,7 +1264,8 @@
     if (boundary) {
       boundary.innerHTML = '<div class="panel"><h3 class="panel__title">原型与真实游戏的边界</h3>' +
         '<ul class="boundary-list">' +
-        '<li>本页面是<b>纯前端 UI 原型</b>：HTML + CSS + 原生 JS，无构建步骤、无 CDN、无外部字体与图片。</li>' +
+        '<li>本页面是<b>纯前端 UI 原型</b>：HTML + CSS + 原生 JS，无构建步骤、无 CDN、无网络请求；' +
+        '本地 PNG 只作场景层与角色肖像，<b>所有文字、牌面、状态与按钮均由 HTML/CSS/JS 绘制</b>。</li>' +
         '<li>房间、牌局、角色、结算数据全部由本地脚本生成，属于<b>演示模拟数据</b>，不来自任何服务器。</li>' +
         '<li>原型<b>不会发起任何网络请求</b>，也不包含用户账户、全自动撮合匹配、TLS/加密信道等未实现功能。</li>' +
         '<li>动物角色为<b>原型提出的可选角色</b>，只加强三大绝技或改变费用，<b>尚未在真实游戏中落地</b>。</li>' +
@@ -1204,11 +1286,10 @@
     }
     const motionBox = $('#motion-choice');
     if (motionBox) {
-      motionBox.innerHTML =
-        '<button type="button" class="choice" role="radio" data-action="set-motion" data-value="full" aria-checked="' +
-        (state.settings.motion === 'full' ? 'true' : 'false') + '">完整动效</button>' +
-        '<button type="button" class="choice" role="radio" data-action="set-motion" data-value="reduced" aria-checked="' +
-        (state.settings.motion === 'reduced' ? 'true' : 'false') + '">减弱动效</button>';
+      motionBox.innerHTML = MOTION_MODES.map(function (m) {
+        return '<button type="button" class="choice" role="radio" data-action="set-motion" data-value="' + m.id + '" aria-checked="' +
+          (state.settings.motion === m.id ? 'true' : 'false') + '">' + esc(m.name) + '</button>';
+      }).join('');
     }
     const sizeBox = $('#textsize-choice');
     if (sizeBox) {
@@ -1226,7 +1307,8 @@
       const rows = [
         ['当前角色', c.name + ' · ' + c.trait],
         ['牌面皮肤', (THEMES.filter(function (t) { return t.id === state.settings.theme; })[0] || THEMES[0]).name],
-        ['动效强度', state.settings.motion === 'reduced' ? '减弱' : '完整'],
+        ['动效强度', (MOTION_MODES.filter(function (m) { return m.id === state.settings.motion; })[0] || MOTION_MODES[0]).name +
+          '（当前：' + (effectiveMotion() === 'reduced' ? '已关闭动画' : '完整动画') + '）'],
         ['界面字号', { sm: '小', md: '标准', lg: '大' }[state.settings.textsize]],
         ['已锁定角色', Object.keys(state.locked).filter(function (k) { return state.locked[k]; }).length + ' 位'],
         ['本地存档', '浏览器 localStorage（' + STORAGE_KEY + '）']
@@ -1279,7 +1361,11 @@
       '<div class="settle-hero__sub">东风战 第 ' + (round ? round.index : 1) + ' 局 · ' +
       esc(winner.yaku) + ' · ' + esc(winner.score) + ' 点</div></div>' +
       '<div><span class="tag tag--gold">演示模拟数据</span>' +
-      '<div class="settle-hero__sub">角色特性结算：' + esc(traitText) + '</div></div></div>' +
+      '<div class="settle-hero__sub">角色特性结算：' + esc(traitText) + '</div></div>' +
+      '<div class="settle-confetti" aria-hidden="true">' +
+      '<i style="--i:0"></i><i style="--i:1"></i><i style="--i:2"></i><i style="--i:3"></i>' +
+      '<i style="--i:4"></i><i style="--i:5"></i><i style="--i:6"></i><i style="--i:7"></i>' +
+      '</div></div>' +
       '<div class="rank-list">' + rankHTML + '</div>' +
       '<div class="ledger"><h3 class="panel__title">出千账本 <span class="panel__sub">本局 ' + esc(char.name) +
       ' 的绝技使用与费用</span></h3>' +
@@ -1411,15 +1497,13 @@
       }).join('');
 
       body.innerHTML =
-        '<div class="cost-preview"><span>本次费用</span>' +
-        '<span class="cost-preview__base">' + priced.base + '</span><span class="cost-preview__now">' + priced.cost + ' 点</span>' +
-        '<span class="cost-preview__notes">' + priced.notes.map(function (n) {
-          return '<span class="cost-preview__note">· ' + esc(n) + '</span>';
-        }).join('') + '</span>' +
-        '<span>已选 ' + selected.length + ' / 4</span></div>' +
+        '<div class="cast-legend"><span class="cast-legend__glyph" aria-hidden="true">汗</span>' +
+        '<span>落汗 · 从手牌中选 <strong>4 张</strong>实体牌留下微痕标记；标记上限 ' + maxMarks() +
+        ' 张（当前 ' + round.marks.length + ' 张）。</span></div>' +
+        costPreviewHTML(priced, { extra: '已选 ' + selected.length + ' / 4' }) +
         '<p class="note">从手牌中选择 <strong>4 张</strong>实体牌留下微痕标记。标记牌进入对手手牌时可识别牌面，打入牌河时精准定位。' +
         '标记上限 <strong>' + maxMarks() + '</strong> 张（当前 ' + round.marks.length + ' 张）。</p>' +
-        '<div class="pick-grid">' + picks + '</div>' +
+        '<div class="pick-grid pick-grid--mark">' + picks + '</div>' +
         '<p class="note note--warn">演示提示：真实游戏中标记在当局立即生效并持续后续 3 局；思考超时仅禁止新施术，费用不退。</p>';
       const confirmBtn = $('[data-action="confirm-tile-mark"]', foot);
       if (confirmBtn) confirmBtn.disabled = selected.length !== 4;
@@ -1469,6 +1553,8 @@
     round.usedCheats.push('tileMark');
     round.markCount += 1;
     selected.forEach(function (uid) { if (round.marks.indexOf(uid) < 0) round.marks.push(uid); });
+    // 落汗落点动画：水滴落在刚标记的实体牌上（降低动态效果时自动退化为静态标记）
+    round.markPulse = selected.slice();
     round.ledger = round.ledger || [];
     round.ledger.push({ tech: '落汗', cost: priced.cost, trait: priced.notes.join('；') || '—' });
     round.traitLog = round.traitLog || [];
@@ -1489,6 +1575,7 @@
     }).join('、') + '，消耗 ' + priced.cost + ' 点。', 'cheat');
     closeModal();
     renderTable();
+    later(function () { if (state.round) { state.round.markPulse = null; } }, 720);
     saveSession();
     announce('落汗成功，消耗 ' + priced.cost + ' 出千点，剩余 ' + round.points + ' 点。');
     toast('落汗成功：已标记 4 张牌（-' + priced.cost + ' 点）。', 'cheat');
@@ -1531,15 +1618,18 @@
 
     function candidateList() {
       const list = [];
+      const octoTrigger = pending.triggered && pending.candidates.length >= 3;
       list.push('<button type="button" class="pick pick--tile is-original" role="radio" aria-checked="' +
         (pending.picked === 'original' ? 'true' : 'false') + '" data-action="pick-bloom" data-pick="original">' +
         (pending.original ? tileHTML(pending.original.c, { selected: pending.picked === 'original' }) : '') +
         '<span class="pick__label">原摸牌' + (char.id === 'penguin' ? '（企鹅：返还 3 点）' : '') + '</span></button>');
       pending.candidates.forEach(function (inst, i) {
-        list.push('<button type="button" class="pick pick--tile" role="radio" aria-checked="' +
+        // 章鱼特性触发时，多出来的第 3 张候选会被明确标出（20% 触发 · 三选一）
+        const extra = octoTrigger && i === pending.candidates.length - 1;
+        list.push('<button type="button" class="pick pick--tile' + (extra ? ' pick--octopus' : '') + '" role="radio" aria-checked="' +
           (pending.picked === 'c' + i ? 'true' : 'false') + '" data-action="pick-bloom" data-pick="c' + i + '">' +
           tileHTML(inst.c, { selected: pending.picked === 'c' + i }) +
-          '<span class="pick__label">候选 ' + (i + 1) + '</span></button>');
+          '<span class="pick__label">' + (extra ? '候选 ' + (i + 1) + ' · 20% 触发' : '候选 ' + (i + 1)) + '</span></button>');
       });
       return list.join('');
     }
@@ -1548,15 +1638,12 @@
       const priced = resolveCost('sleeveBloom');
       let refund = 0;
       if (char.id === 'penguin' && pending.picked === 'original') refund = 3;
-      const net = Math.max(0, priced.cost - refund);
       body.innerHTML =
-        '<div class="cost-preview"><span>本次费用</span>' +
-        '<span class="cost-preview__base">' + priced.base + '</span><span class="cost-preview__now">' + priced.cost + ' 点</span>' +
-        (refund ? '<span class="cost-preview__note">· 企鹅保留原摸牌返还 3 点，本次实付 ' + net + ' 点</span>' : '') +
-        '<span class="cost-preview__notes">' + priced.notes.map(function (n) {
-          return '<span class="cost-preview__note">· ' + esc(n) + '</span>';
-        }).join('') + '</span></div>' +
-        '<div class="pick-grid">' + candidateList() + '</div>' +
+        '<div class="cast-legend"><span class="cast-legend__glyph" aria-hidden="true">花</span>' +
+        '<span>袖里藏花 · 摸牌后保留一张，其余候选返回牌山' +
+        (pending.triggered ? '（本次触发三候选，仍只保留一张）' : '（默认二选一）') + '。</span></div>' +
+        costPreviewHTML(priced, { refund: refund }) +
+        '<div class="pick-grid pick-grid--bloom">' + candidateList() + '</div>' +
         (isOctopus
           ? '<p class="note note--jade">章鱼特性：使用袖里藏花时 <strong>20% 概率</strong>看到三张候选，但<strong>只保留一张</strong>。' +
             '当前' + (pending.triggered ? '已' : '未') + '触发' + (pending.triggered ? '（本次演示为三选一）' : '（本次为二选一）') + '。' +
@@ -1568,8 +1655,9 @@
       if (confirmBtn) confirmBtn.disabled = pending.picked === null;
       const forceBtn = $('[data-action="force-octopus"]', foot);
       if (forceBtn) {
-        forceBtn.textContent = pending.forceDemo ? '演示：撤销强制触发' : '演示：强制触发三候选';
-        forceBtn.setAttribute('aria-pressed', pending.forceDemo ? 'true' : 'false');
+        const isThree = pending.candidates.length >= 3;
+        forceBtn.textContent = isThree ? '演示：回到二选一' : '演示：强制触发三候选';
+        forceBtn.setAttribute('aria-pressed', isThree ? 'true' : 'false');
       }
     }
 
@@ -1596,26 +1684,29 @@
     foot.addEventListener('click', function (e) {
       const btn = e.target.closest('[data-action="force-octopus"]');
       if (!btn) return;
-      const on = !pending.forceDemo;
-      pending.forceDemo = on;
-      if (on) {
-        if (pending.candidates.length < 3 && round.wall.length >= 3) {
-          pending.candidates = previewWall(3);
-          pending.triggered = true;
-          pending.forced = true;
-          toast('演示：已强制触发章鱼三候选（概率文案仍为 20%）。', 'trait');
-          logLine('演示：强制触发章鱼三候选（仍只保留一张）。', 'trait');
-        }
-      } else if (pending.forced) {
-        // 撤销强制触发：回到二候选，界面与待确认状态同步回落
+      // 演示开关：在「二选一」与「三选一」之间切换。
+      // 无论三候选来自 20% 概率还是强制触发，回落时都统一回到二候选，
+      // 并同步清掉界面上已失效的选择。
+      if (pending.candidates.length >= 3) {
         pending.candidates = previewWall(2);
         pending.triggered = false;
         pending.forced = false;
+        pending.forceDemo = false;
         if (pending.picked && pending.picked !== 'original' &&
           parseInt(pending.picked.slice(1), 10) >= pending.candidates.length) {
           pending.picked = null;   // 已选中的第 3 张不再存在，需重新选择
         }
-        toast('演示：已撤销强制触发，回到二选一。', 'warn');
+        toast('演示：已回到二选一。', 'warn');
+        logLine('演示：撤销三候选，回到二选一。', 'trait');
+      } else if (round.wall.length >= 3) {
+        pending.candidates = previewWall(3);
+        pending.triggered = true;
+        pending.forced = true;
+        pending.forceDemo = true;
+        toast('演示：已强制触发章鱼三候选（概率文案仍为 20%）。', 'trait');
+        logLine('演示：强制触发章鱼三候选（仍只保留一张）。', 'trait');
+      } else {
+        toast('牌山不足 3 张，无法演示三候选。', 'warn');
       }
       renderBody();
     });
@@ -1742,20 +1833,20 @@
       const pickedHandTile = pending.pickedHand === null ? null : findTileByUid(round, pending.pickedHand);
 
       body.innerHTML =
-        '<div class="cost-preview"><span>本次费用</span>' +
-        '<span class="cost-preview__base">' + priced.base + '</span><span class="cost-preview__now">' + priced.cost + ' 点</span>' +
-        '<span class="cost-preview__notes">' + priced.notes.map(function (n) {
-          return '<span class="cost-preview__note">· ' + esc(n) + '</span>';
-        }).join('') + '</span></div>' +
-        '<p class="note">第 1 步：选择一张<b>手牌</b>。第 2 步：选择牌山上的一个<b>暗槽</b>与其交换。' +
-        '交换后双方各一张，牌总数严格守恒。暗槽在确认之前只是<b>预览</b>，不会移动任何实体，' +
-        '因此取消或关闭不会丢牌。</p>' +
+        '<div class="cast-legend"><span class="cast-legend__glyph" aria-hidden="true">换</span>' +
+        '<span>偷梁换柱 · 手牌一张 ⇄ 牌山暗槽一张，双方各一张，牌总数严格守恒。</span></div>' +
+        costPreviewHTML(priced) +
+        '<p class="note">第 1 步选一张<b>手牌</b>，第 2 步选牌山上的一个<b>暗槽</b>。' +
+        '双方各一张，牌总数严格守恒；暗槽在确认之前只是<b>预览</b>，取消或关闭不会丢牌。</p>' +
         '<div class="hand-head"><span class="hand-head__title">第 1 步 · 选择手牌</span>' +
         '<span>' + (pickedHandTile ? '已选 ' + esc(tileInfo(pickedHandTile.c).name) : '未选择') + '</span></div>' +
-        '<div class="pick-grid">' + handPicks + '</div>' +
+        '<div class="pick-grid pick-grid--swap">' + handPicks + '</div>' +
+        '<div class="swap-flow" aria-hidden="true"><span class="swap-flow__arrow"></span>' +
+        '<span class="swap-flow__label">一换一 · 等额互换</span>' +
+        '<span class="swap-flow__arrow"></span></div>' +
         '<div class="hand-head"><span class="hand-head__title">第 2 步 · 选择牌山暗槽</span>' +
         '<span>' + (pending.pickedSlot !== null ? '已选 候选 ' + (pending.pickedSlot + 1) : '未选择') + '</span></div>' +
-        '<div class="pick-grid">' + slotPicks + '</div>' +
+        '<div class="pick-grid pick-grid--swap">' + slotPicks + '</div>' +
         (hasFox
           ? '<p class="note note--jade">狐狸特性：偷梁换柱可<b>额外预览一个合法候选</b>（第 ' + slotCount + ' 个槽位已亮出牌面），' +
             '但交换数量仍然是一换一，物理守恒不变。</p>'
@@ -2161,6 +2252,7 @@
         round.trust = !round.trust;
         renderActionStack();
         renderTableMeta();
+        renderCheatStack();   // 托管会影响可用性判断（如施术窗口），同步刷新按钮与禁用原因
         logLine(round.trust ? '已开启托管，出牌将自动进行。' : '已取消托管。', round.trust ? 'warn' : '');
         announce(round.trust ? '托管已开启。' : '托管已关闭。');
         break;
@@ -2223,7 +2315,9 @@
         applySettings();
         RENDERERS.settings();
         saveSession();
-        announce(state.settings.motion === 'reduced' ? '已切换为减弱动效。' : '已切换为完整动效。');
+        announce(state.settings.motion === 'reduced' ? '已关闭动画。'
+          : state.settings.motion === 'full' ? '已恢复完整动效。'
+            : '动效强度改为跟随系统偏好。');
         break;
       }
       case 'set-textsize': {
@@ -2302,8 +2396,41 @@
   function applySettings() {
     const html = document.documentElement;
     html.setAttribute('data-theme', state.settings.theme);
-    html.setAttribute('data-motion', state.settings.motion);
+    html.setAttribute('data-motion', effectiveMotion());
     html.setAttribute('data-textsize', state.settings.textsize);
+  }
+
+  /** 系统是否要求降低动态效果。 */
+  function systemPrefersReducedMotion() {
+    try {
+      return !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
+    } catch (err) { return false; }
+  }
+
+  /**
+   * 实际生效的动效强度：
+   * auto → 跟随系统 prefers-reduced-motion；full / reduced → 用户显式指定优先。
+   */
+  function effectiveMotion() {
+    if (state.settings.motion === 'reduced') return 'reduced';
+    if (state.settings.motion === 'full') return 'full';
+    return systemPrefersReducedMotion() ? 'reduced' : 'full';
+  }
+
+  /** 监听系统动效偏好变化：处于「跟随系统」时立即生效。 */
+  function watchMotionPreference() {
+    try {
+      if (!window.matchMedia) return;
+      const mq = window.matchMedia('(prefers-reduced-motion: reduce)');
+      const onChange = function () {
+        if (state.settings.motion !== 'auto') return;
+        applySettings();
+        RENDERERS.settings();
+        announce(systemPrefersReducedMotion() ? '已跟随系统偏好关闭动效。' : '已跟随系统偏好恢复动效。');
+      };
+      if (mq.addEventListener) mq.addEventListener('change', onChange);
+      else if (mq.addListener) mq.addListener(onChange);
+    } catch (err) { /* 忽略不支持的环境 */ }
   }
 
   /* ---------- 全局事件委托 ---------- */
@@ -2365,6 +2492,7 @@
   function init() {
     loadSession();
     applySettings();
+    watchMotionPreference();
     RENDERERS.menu();
     RENDERERS.settings();
     RENDERERS.codex();
