@@ -698,42 +698,60 @@ kbd {
   background-repeat: repeat-y;
 }
 
-/* ========================= 6. 主菜单 ========================= */
-.menu-wrap {
+/* ========================= 6. 主菜单（L3–L5 分层 + 入场动效） =========================
+   分层方案见 design/MAIN_MENU_LAYER_PLAN.md。
+   L0 场景底图 / L1 光影 / L2 环境点缀 仍由全局 .scene 承载（不改全局，避免影响牌桌）。
+   本节只负责：L3 标题说明、L4 六个入口、L5 角色主视觉，以及 L6 在顶栏的全局状态。
+   -------------------------------------------------------------------------- */
+
+/* ---- 舞台网格：左（标题 + 入口） / 右（角色主视觉） ---- */
+.menu-stage {
+  position: relative;
   display: grid;
-  grid-template-columns: minmax(280px, 1fr) 340px 312px;
-  gap: 26px;
-  align-items: center;
+  grid-template-columns: minmax(0, 1fr) 540px;
+  grid-template-rows: auto 1fr;
+  grid-template-areas:
+    "intro  hero"
+    "actions hero";
+  column-gap: 26px;
+  row-gap: 14px;
+  align-items: start;
   width: 100%;
-  max-width: 1240px;
+  max-width: 1224px;
   margin: 0 auto;
-  padding: 6px 4px 10px;
+  padding: 2px 4px 10px 36px;
 }
 
-.menu-copy { position: relative; padding-left: 30px; }
-/* 文字压暗的柔光底，保证正文在场景图上仍然清晰 */
-.menu-copy::after {
+/* ---- L3 标题与一行玩法说明 ---- */
+.menu-intro {
+  position: relative;
+  grid-area: intro;
+  padding-left: 26px;
+}
+/* 左侧阅读渐暗层：保证标题与正文在场景图上仍然清晰 */
+.menu-intro::after {
   content: "";
   position: absolute;
-  inset: -26px -30px -26px -34px;
+  inset: -34px -70px -30px -40px;
   z-index: -1;
-  background: radial-gradient(120% 96% at 18% 42%, rgba(4, 16, 14, .8), rgba(4, 16, 14, .42) 58%, transparent 100%);
+  background: radial-gradient(110% 92% at 14% 40%, rgba(4, 16, 14, .88), rgba(4, 16, 14, .52) 56%, transparent 100%);
   pointer-events: none;
 }
-.menu-copy::before {
+/* 竖向回纹导轨 */
+.menu-intro::before {
   content: "";
   position: absolute;
   left: 0; top: 4px; bottom: 4px;
-  width: 9px;
+  width: 8px;
   border-radius: 3px;
   background-image:
     repeating-linear-gradient(180deg, transparent 0 6px, rgba(245, 203, 120, .5) 6px 12px, transparent 12px 14px),
     repeating-linear-gradient(180deg, transparent 0 2px, rgba(245, 203, 120, .3) 2px 6px, transparent 6px 14px),
-    linear-gradient(180deg, rgba(172, 42, 36, .8), rgba(74, 22, 16, .8));
+    linear-gradient(180deg, rgba(172, 42, 36, .82), rgba(74, 22, 16, .82));
   background-position: 0 0, 5px 0, 0 0;
   background-size: 5px 14px, 5px 14px, 100% 100%;
   background-repeat: repeat-y, repeat-y, no-repeat;
-  box-shadow: 0 0 14px rgba(229, 191, 134, .35);
+  box-shadow: 0 0 14px rgba(229, 191, 134, .32);
 }
 
 .eyebrow {
@@ -761,82 +779,109 @@ kbd {
 
 .lede { font-size: .95rem; color: var(--text-dim); max-width: 40ch; line-height: 1.75; }
 .lede b { color: var(--gold-200); font-weight: 600; }
-
-.hero-badges { display: flex; flex-wrap: wrap; gap: 8px; margin: 18px 0 0; padding: 0; list-style: none; }
+/* 主菜单说明只留一行：中文按 em 计宽 */
+.menu-intro .lede { max-width: 40em; font-size: .92rem; line-height: 1.7; }
 
 .menu-continuation {
   display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
-  margin-top: 18px;
+  margin-top: 14px;
   font-size: .8rem;
   color: var(--text-dim);
 }
 
-/* ---- 主视觉：角色肖像（大幅金框漆木牌位） ---- */
+/* ---- L5 主视觉：右侧角色肖像 + 金框光环 + 当前角色信息牌 ---- */
 .menu-hero {
   position: relative;
+  grid-area: hero;
   margin: 0;
+  align-self: center;
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 14px;
-  animation: heroFloat 7s ease-in-out infinite;
+  gap: 10px;
+  /* 整个主视觉区域不拦截点击，绝不会盖住 L4 的命中区 */
+  pointer-events: none;
 }
-.menu-hero__glow {
+.menu-hero__stage {
+  position: relative;
+  width: 100%;
+  height: 450px;
+}
+.menu-hero__halo {
   position: absolute;
-  left: 50%; top: 42%;
-  width: 430px; height: 430px;
+  left: 50%; top: 48%;
+  width: 470px; height: 470px;
   transform: translate(-50%, -50%);
   border-radius: 50%;
-  background: radial-gradient(circle, rgba(255, 208, 142, .30), rgba(206, 92, 48, .14) 44%, transparent 70%);
+  background: radial-gradient(circle, rgba(255, 208, 142, .30), rgba(206, 92, 48, .13) 46%, transparent 71%);
   filter: blur(4px);
   pointer-events: none;
-  animation: lanternFlicker 7s ease-in-out infinite;
 }
 .menu-hero__ring {
   position: absolute;
-  left: 50%; top: 150px;
-  width: 332px; height: 332px;
+  left: 50%; top: 48%;
+  width: 420px; height: 420px;
   transform: translate(-50%, -50%);
   border-radius: 50%;
-  border: 1px solid rgba(245, 203, 120, .38);
-  box-shadow: 0 0 46px rgba(229, 191, 134, .18), inset 0 0 46px rgba(0, 0, 0, .35);
+  border: 1px solid rgba(245, 203, 120, .40);
+  box-shadow: 0 0 52px rgba(229, 191, 134, .20), inset 0 0 52px rgba(0, 0, 0, .38);
   pointer-events: none;
 }
-.menu-hero__frame {
-  position: relative;
-  width: 300px; height: 300px;
-  border-radius: 22px;
-  overflow: hidden;
-  border: 10px solid rgba(245, 203, 120, .82);
-  box-shadow:
-    0 0 0 1px rgba(8, 26, 23, .85),
-    0 24px 52px rgba(0, 0, 0, .62),
-    0 0 46px rgba(229, 191, 134, .26),
-    inset 0 0 44px rgba(0, 0, 0, .48);
-  background:
-    radial-gradient(58% 50% at 50% 26%, rgba(255, 214, 150, .30), transparent 72%),
-    linear-gradient(180deg, #14453d 0%, #0a2b26 60%, #051816 100%);
+.menu-hero__ring::after {
+  content: "";
+  position: absolute;
+  inset: 12px;
+  border-radius: 50%;
+  border: 1px dashed rgba(245, 203, 120, .18);
 }
-.menu-hero__frame .portrait {
+.menu-hero__art {
   position: absolute;
   inset: 0;
-  filter: saturate(1.02) brightness(1.02);
+  z-index: 2;
+  pointer-events: none;
+  /* 进场完成后只保留极慢的轻呼吸 */
+  animation: heroBreath 7s ease-in-out infinite;
+}
+/* 章鱼大图：object-fit:contain 的等价写法（绝对定位 + auto 外边距居中），
+   保证整幅立绘完整可见，不会溢出色板区。 */
+.menu-hero__photo {
+  position: absolute;
+  inset: 0;
+  margin: auto;
+  display: block;
+  width: auto;
+  height: auto;
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+  filter: drop-shadow(0 18px 34px rgba(0, 0, 0, .62)) saturate(1.03);
+}
+.menu-hero__portrait {
+  position: absolute;
+  left: 50%; top: 50%;
+  transform: translate(-50%, -50%);
+  width: 430px;
+  height: 430px;
+  background-color: transparent;
+  filter: drop-shadow(0 16px 30px rgba(0, 0, 0, .55)) saturate(1.03);
 }
 .menu-hero__seal {
   position: absolute;
-  right: 14px;
-  top: 210px;
-  width: 56px; height: 56px;
+  right: 18px;
+  top: 34px;
+  width: 54px; height: 54px;
   display: grid; place-items: center;
   border-radius: 12px;
   transform: rotate(-7deg);
   border: 2px solid rgba(245, 203, 120, .85);
   background: linear-gradient(150deg, rgba(167, 42, 36, .95), rgba(103, 28, 19, .96));
   box-shadow: 0 10px 24px rgba(0, 0, 0, .6), inset 0 0 0 1px rgba(255, 233, 184, .45);
+  pointer-events: none;
+  z-index: 3;
 }
 .menu-hero__seal span {
   font-family: var(--font-serif);
-  font-size: 1.8rem;
+  font-size: 1.7rem;
   line-height: 1;
   color: var(--gold-100);
   text-shadow: 0 1px 3px rgba(60, 12, 8, .85);
@@ -844,45 +889,58 @@ kbd {
 .menu-hero__plate {
   position: relative;
   width: 100%;
-  max-width: 336px;
-  padding: 12px 16px 13px;
+  max-width: 470px;
+  padding: 9px 18px 10px;
   border-radius: var(--radius);
   border: 1px solid rgba(245, 203, 120, .55);
   background:
     var(--rail) left top / calc(100% - 28px) 2px no-repeat,
-    linear-gradient(180deg, rgba(134, 38, 26, .92), rgba(10, 34, 30, .95));
+    linear-gradient(180deg, rgba(134, 38, 26, .93), rgba(10, 34, 30, .96));
   box-shadow: var(--shadow-2), inset 0 1px 0 rgba(255, 233, 184, .22);
   text-align: center;
+  pointer-events: auto;
 }
 .menu-hero__kicker { display: block; font-size: .66rem; letter-spacing: .2em; color: var(--gold-400); }
 .menu-hero__name {
   display: block;
   font-family: var(--font-serif);
-  font-size: 1.28rem;
+  font-size: 1.26rem;
   color: var(--gold-100);
   letter-spacing: .08em;
-  margin: 2px 0 3px;
+  margin: 1px 0 2px;
 }
 .menu-hero__name i { font-style: normal; color: var(--gold-400); margin: 0 6px; }
-.menu-hero__trait { display: block; font-size: .76rem; color: var(--text-dim); line-height: 1.5; }
-.menu-hero__meta { display: block; font-size: .68rem; color: var(--text-faint); margin-top: 5px; }
+.menu-hero__cheat { display: block; font-size: .74rem; color: var(--gold-300); }
+.menu-hero__trait { display: block; font-size: .76rem; color: var(--text-dim); line-height: 1.5; margin-top: 3px; }
+.menu-hero__meta { display: block; font-size: .68rem; color: var(--text-faint); margin-top: 4px; }
+
+/* ---- L4 入口：三张大入口卡 + 三枚紧凑次入口 ---- */
+.menu-actions { grid-area: actions; display: flex; flex-direction: column; gap: 14px; }
+.menu-actions__list { display: flex; flex-direction: column; gap: 12px; }
+.menu-actions__minor {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+
+/* 入口容器：只承载「从右移入」的进场动画，
+   按钮自身的 hover 位移在内部按钮上，两者互不覆盖。 */
+.menu-entry { position: relative; }
 
 /* ---- 入口：漆木大卡 + 次级入口 ---- */
-.menu-actions { display: flex; flex-direction: column; gap: 12px; }
-
 .mcard {
   position: relative;
   display: grid;
-  grid-template-columns: 50px 1fr 16px;
-  gap: 14px;
+  grid-template-columns: 52px minmax(0, 1fr);
+  gap: 15px;
   align-items: center;
   width: 100%;
-  padding: 14px 14px 14px 22px;
-  min-height: 82px;
+  padding: 12px 96px 12px 22px;
+  min-height: 78px;
   text-align: left;
   font: inherit;
   color: var(--text);
-  border-radius: var(--radius);
+  border-radius: 14px;
   border: 1px solid rgba(245, 203, 120, .42);
   background:
     var(--rail) left top / calc(100% - 28px) 2px no-repeat,
@@ -890,7 +948,8 @@ kbd {
   box-shadow: inset 0 1px 0 rgba(255, 233, 184, .2), var(--shadow-2);
   cursor: pointer;
   overflow: hidden;
-  transition: transform var(--dur) var(--ease), border-color var(--dur) var(--ease), box-shadow var(--dur) var(--ease);
+  transition: transform var(--dur) var(--ease), border-color var(--dur) var(--ease),
+              box-shadow var(--dur) var(--ease), background var(--dur) var(--ease);
 }
 /* 漆木卡左侧的描金回纹 */
 .mcard::before {
@@ -917,7 +976,7 @@ kbd {
   transition: transform var(--dur-slow) var(--ease);
 }
 .mcard:hover {
-  transform: translateX(6px);
+  transform: translateX(4px);
   border-color: var(--gold-200);
   box-shadow: inset 0 1px 0 rgba(255, 233, 184, .28), 0 14px 30px rgba(0, 0, 0, .58), 0 0 26px rgba(229, 191, 134, .22);
 }
@@ -934,67 +993,100 @@ kbd {
   box-shadow: inset 0 1px 0 rgba(255, 233, 184, .24), 0 0 14px rgba(229, 191, 134, .18);
 }
 .mcard__body { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
-.mcard__label { font-family: var(--font-serif); font-weight: 700; font-size: 1.06rem; letter-spacing: .08em; color: var(--gold-100); }
+.mcard__label { font-family: var(--font-serif); font-weight: 700; font-size: 1.12rem; letter-spacing: .08em; color: var(--gold-100); }
 .mcard__sub { font-size: .74rem; color: rgba(255, 226, 190, .66); }
-.mcard__arrow { font-size: 1.3rem; color: var(--gold-400); opacity: .5; transition: transform var(--dur) var(--ease), opacity var(--dur) var(--ease); }
-.mcard:hover .mcard__arrow { transform: translateX(4px); opacity: 1; }
-.mcard--primary {
+/* 右缘裁入的动物肖像局部（纯装饰，不承载信息） */
+.mcard__art {
+  position: absolute;
+  right: -18px; top: 50%;
+  width: 134px; height: 134px;
+  transform: translateY(-50%);
+  border-radius: 50%;
+  overflow: hidden;
+  opacity: .34;
+  pointer-events: none;
+  -webkit-mask-image: linear-gradient(90deg, transparent 0%, rgba(0, 0, 0, .55) 26%, #000 52%);
+  mask-image: linear-gradient(90deg, transparent 0%, rgba(0, 0, 0, .55) 26%, #000 52%);
+  transition: opacity var(--dur) var(--ease), transform var(--dur-slow) var(--ease);
+}
+.mcard__art .portrait {
+  position: absolute;
+  inset: 0;
+  background-color: transparent;
+  filter: saturate(1.04) brightness(1.04);
+}
+.mcard:hover .mcard__art { opacity: .52; transform: translateY(-50%) scale(1.06); }
+.mcard__arrow {
+  position: absolute;
+  right: 16px; top: 50%;
+  transform: translateY(-50%);
+  z-index: 2;
+  font-size: 1.35rem;
+  color: var(--gold-400);
+  opacity: .55;
+  text-shadow: 0 2px 6px rgba(0, 0, 0, .85);
+  transition: transform var(--dur) var(--ease), opacity var(--dur) var(--ease);
+}
+.mcard:hover .mcard__arrow { transform: translateY(-50%) translateX(4px); opacity: 1; }
+
+/* 三张大入口卡：绿 / 朱红 / 深蓝 */
+.mcard--solo {
   background:
     var(--rail) left top / calc(100% - 28px) 2px no-repeat,
-    linear-gradient(100deg, #c23a29 0%, #8c2d1d 48%, #6d2418 100%);
-  border-color: rgba(255, 214, 150, .6);
-  box-shadow: inset 0 1px 0 rgba(255, 224, 176, .34), 0 12px 28px rgba(120, 26, 16, .5);
+    linear-gradient(100deg, rgba(23, 81, 74, .97) 0%, rgba(12, 54, 48, .95) 54%, rgba(5, 28, 25, .96) 100%);
+  border-color: rgba(255, 214, 150, .68);
+  box-shadow: inset 0 1px 0 rgba(255, 233, 184, .3), 0 12px 30px rgba(0, 0, 0, .52), 0 0 30px rgba(229, 191, 134, .18);
 }
-.mcard--primary .mcard__icon {
+.mcard--solo .mcard__icon {
   color: #33140c;
   background: linear-gradient(180deg, #ffe9b8, #d6a75c);
   border-color: rgba(255, 240, 210, .85);
 }
-.mcard--primary:hover {
+.mcard--solo:hover {
   background:
     var(--rail) left top / calc(100% - 28px) 2px no-repeat,
-    linear-gradient(100deg, #d2452f 0%, #a0301d 48%, #7d2418 100%);
+    linear-gradient(100deg, rgba(30, 100, 90, .97) 0%, rgba(16, 66, 58, .95) 54%, rgba(7, 34, 30, .96) 100%);
 }
-
-.menu-actions__minor { display: flex; flex-direction: column; gap: 8px; margin-top: 2px; }
-.menu-actions__minor .mbtn {
-  grid-template-columns: 28px 1fr;
-  grid-template-rows: auto auto;
-  gap: 0 10px;
-  min-height: 46px;
-  padding: 6px 12px 6px 8px;
-  border-radius: 10px;
-  border-color: rgba(245, 203, 120, .28);
+.mcard--lobby {
   background:
-    var(--rail) left top / calc(100% - 24px) 2px no-repeat,
-    linear-gradient(100deg, rgba(18, 52, 47, .9), rgba(6, 24, 21, .92));
+    var(--rail) left top / calc(100% - 28px) 2px no-repeat,
+    linear-gradient(100deg, rgba(167, 42, 36, .95) 0%, rgba(109, 36, 24, .93) 48%, rgba(58, 20, 14, .95) 100%);
 }
-.menu-actions__minor .mbtn__icon {
-  grid-row: 1 / span 2;
-  width: 28px; height: 28px;
-  font-size: .92rem;
+.mcard--lobby:hover {
+  background:
+    var(--rail) left top / calc(100% - 28px) 2px no-repeat,
+    linear-gradient(100deg, rgba(196, 58, 41, .96) 0%, rgba(134, 43, 28, .94) 48%, rgba(72, 24, 16, .95) 100%);
 }
-.menu-actions__minor .mbtn__label { font-size: .88rem; }
-.menu-actions__minor .mbtn__sub { font-size: .68rem; }
+.mcard--codex {
+  background:
+    var(--rail) left top / calc(100% - 28px) 2px no-repeat,
+    linear-gradient(100deg, rgba(26, 56, 92, .95) 0%, rgba(17, 38, 64, .94) 50%, rgba(9, 19, 34, .96) 100%);
+}
+.mcard--codex:hover {
+  background:
+    var(--rail) left top / calc(100% - 28px) 2px no-repeat,
+    linear-gradient(100deg, rgba(36, 72, 116, .96) 0%, rgba(24, 50, 82, .95) 50%, rgba(12, 24, 42, .96) 100%);
+}
 
-/* ---- 次级入口按钮（通用） ---- */
+/* ---- 次级入口按钮（主菜单三枚紧凑次入口） ---- */
 .mbtn {
   position: relative;
   display: grid;
-  grid-template-columns: 46px 1fr;
+  grid-template-columns: 30px minmax(0, 1fr);
   grid-template-rows: auto auto;
   align-items: center;
-  gap: 2px 14px;
+  gap: 0 10px;
   text-align: left;
   font: inherit;
   color: var(--text);
-  padding: 12px 18px 12px 14px;
-  min-height: 62px;
-  border-radius: var(--radius);
+  padding: 7px 12px 7px 9px;
+  min-height: 52px;
+  border-radius: 11px;
   border: 1px solid rgba(229, 191, 134, .3);
   background:
-    linear-gradient(100deg, rgba(124, 36, 25, .92) 0%, rgba(96, 28, 20, .9) 40%, rgba(16, 54, 48, .95) 100%);
-  box-shadow: inset 0 1px 0 rgba(255, 233, 184, .18), var(--shadow-2);
+    var(--rail) left top / calc(100% - 24px) 2px no-repeat,
+    linear-gradient(100deg, rgba(18, 52, 47, .92), rgba(6, 24, 21, .94));
+  box-shadow: inset 0 1px 0 rgba(255, 233, 184, .18), var(--shadow-1);
   cursor: pointer;
   overflow: hidden;
   transition: transform var(--dur) var(--ease), border-color var(--dur) var(--ease),
@@ -1010,7 +1102,7 @@ kbd {
   transition: transform var(--dur-slow) var(--ease);
 }
 .mbtn:hover {
-  transform: translateX(5px);
+  transform: translateX(4px);
   border-color: var(--line-strong);
   box-shadow: inset 0 1px 0 rgba(255, 233, 184, .2), 0 12px 26px rgba(0, 0, 0, .55), 0 0 22px rgba(229, 191, 134, .16);
 }
@@ -1018,17 +1110,58 @@ kbd {
 .mbtn:focus-visible { outline: 2px solid var(--gold-200); outline-offset: 2px; }
 .mbtn__icon {
   grid-row: 1 / span 2;
-  width: 44px; height: 44px;
+  width: 30px; height: 30px;
   display: grid; place-items: center;
   border-radius: 50%;
-  font-size: 1.16rem;
+  font-size: .95rem;
   color: var(--gold-200);
   background: radial-gradient(circle at 35% 28%, rgba(255, 226, 176, .24), rgba(8, 30, 26, .9) 70%);
   border: 1px solid rgba(229, 191, 134, .45);
   box-shadow: inset 0 1px 0 rgba(255, 233, 184, .22);
 }
-.mbtn__label { font-family: var(--font-serif); font-weight: 700; font-size: 1.04rem; letter-spacing: .06em; color: var(--gold-100); }
-.mbtn__sub { font-size: .76rem; color: var(--text-faint); }
+.mbtn__label { font-family: var(--font-serif); font-weight: 700; font-size: .96rem; letter-spacing: .06em; color: var(--gold-100); }
+.mbtn__sub { font-size: .7rem; color: var(--text-faint); }
+
+/* ============================================================
+   主菜单入场动效：从右侧依次移入
+   ------------------------------------------------------------------
+   入口容器的 transform 由本节负责；按钮的 hover 位移写在按钮自身，
+   两者作用于不同元素，互不覆盖。动画只改 transform / opacity。
+   ============================================================ */
+.menu-actions__list > .menu-entry:nth-child(1) { --dx: 84px; --ed: 520ms; --dl: 180ms; }
+.menu-actions__list > .menu-entry:nth-child(2) { --dx: 84px; --ed: 520ms; --dl: 270ms; }
+.menu-actions__list > .menu-entry:nth-child(3) { --dx: 84px; --ed: 520ms; --dl: 360ms; }
+.menu-actions__minor > .menu-entry:nth-child(1) { --dx: 48px; --ed: 380ms; --dl: 450ms; }
+.menu-actions__minor > .menu-entry:nth-child(2) { --dx: 48px; --ed: 380ms; --dl: 510ms; }
+.menu-actions__minor > .menu-entry:nth-child(3) { --dx: 48px; --ed: 380ms; --dl: 570ms; }
+
+.screen--menu.is-entering .menu-entry {
+  animation: menuEntryIn var(--ed, 520ms) cubic-bezier(.16, 1, .3, 1) var(--dl, 0ms) both;
+}
+.screen--menu.is-entering .menu-intro {
+  animation: menuIntroIn 360ms cubic-bezier(.16, 1, .3, 1) 0ms both;
+}
+.screen--menu.is-entering .menu-hero {
+  animation: menuHeroIn 600ms cubic-bezier(.16, 1, .3, 1) 100ms both;
+}
+
+@keyframes menuEntryIn {
+  from { opacity: 0; transform: translateX(var(--dx, 84px)); }
+  to   { opacity: 1; transform: translateX(0); }
+}
+@keyframes menuIntroIn {
+  from { opacity: 0; transform: translateY(10px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+@keyframes menuHeroIn {
+  from { opacity: 0; transform: translateX(32px) scale(.97); }
+  to   { opacity: 1; transform: translateX(0) scale(1); }
+}
+/* 主视觉进场后的极慢轻呼吸 */
+@keyframes heroBreath {
+  0%, 100% { transform: translateY(0) scale(1); }
+  50%      { transform: translateY(-7px) scale(1.012); }
+}
 
 /* ========================= 7. 模式选择 ========================= */
 .mode-grid {
@@ -2380,10 +2513,6 @@ button.tile:focus-visible { outline: 2px solid var(--gold-200); outline-offset: 
   45% { opacity: .62; }
   70% { opacity: .46; }
 }
-@keyframes heroFloat {
-  0%, 100% { transform: translateY(0); }
-  50% { transform: translateY(-7px); }
-}
 @keyframes anchorSpin {
   from { transform: rotate(0deg); }
   to { transform: rotate(360deg); }
@@ -2449,12 +2578,13 @@ html[data-theme="beast"] .felt {
 /* ========================= 20. 响应式 ========================= */
 @media (max-width: 1180px) {
   .table-layout { grid-template-columns: 206px minmax(0, 1fr) 234px; }
-  .menu-wrap { grid-template-columns: minmax(210px, 1fr) 300px 280px; gap: 18px; }
-  .menu-hero__frame { width: 252px; height: 252px; }
-  .menu-hero__ring { width: 282px; height: 282px; top: 126px; }
-  .menu-hero__glow { width: 360px; height: 360px; }
-  .menu-hero__seal { top: 176px; right: 6px; width: 50px; height: 50px; }
-  .menu-hero__seal span { font-size: 1.6rem; }
+  .menu-stage { grid-template-columns: minmax(0, 1fr) 430px; column-gap: 20px; padding-left: 20px; }
+  .menu-hero__stage { height: 392px; }
+  .menu-hero__halo { width: 400px; height: 400px; }
+  .menu-hero__ring { width: 358px; height: 358px; }
+  .menu-hero__portrait { width: 366px; height: 366px; }
+  .menu-hero__seal { top: 18px; right: 8px; width: 46px; height: 46px; }
+  .menu-hero__seal span { font-size: 1.45rem; }
   .felt__main { grid-template-columns: minmax(0, 1fr) 166px; }
   .anchor__dial { width: 126px; height: 126px; }
   .anchor__compass { width: 98px; height: 98px; }
@@ -2462,10 +2592,13 @@ html[data-theme="beast"] .felt {
 }
 
 @media (max-width: 1040px) {
-  .menu-wrap { grid-template-columns: minmax(0, 1fr); gap: 22px; align-items: start; }
-  .menu-hero { order: -1; max-width: 420px; margin: 0 auto; }
-  .menu-copy { padding-left: 20px; }
-  .menu-actions { max-width: 520px; margin: 0 auto; width: 100%; }
+  .menu-stage { grid-template-columns: minmax(0, 1fr) 360px; column-gap: 16px; padding-left: 14px; }
+  .menu-hero__stage { height: 318px; }
+  .menu-hero__halo { width: 330px; height: 330px; }
+  .menu-hero__ring { width: 292px; height: 292px; }
+  .menu-hero__portrait { width: 300px; height: 300px; }
+  .menu-hero__plate { max-width: 100%; }
+  .menu-hero__seal { display: none; }
   .char-layout { grid-template-columns: 1fr; }
   .lobby-layout { grid-template-columns: 1fr; }
   .room-layout { grid-template-columns: 1fr; }
@@ -2483,15 +2616,37 @@ html[data-theme="beast"] .felt {
   .hand .tile { width: 38px; height: 52px; }
 }
 
+/* 窄屏：标题 → 角色 → 主入口 → 次入口 的纵向流 */
+@media (max-width: 900px) {
+  .menu-stage {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto auto auto;
+    grid-template-areas:
+      "intro"
+      "hero"
+      "actions";
+    row-gap: 18px;
+    padding: 2px 4px 12px 22px;
+  }
+  .menu-hero { align-self: start; }
+  .menu-hero__stage { height: 330px; }
+  .menu-hero__halo { width: 344px; height: 344px; }
+  .menu-hero__ring { width: 306px; height: 306px; }
+  .menu-hero__portrait { width: 312px; height: 312px; }
+  .menu-actions { width: 100%; }
+}
+
 @media (max-width: 720px) {
   .stage { padding: 12px 12px 6px; }
   .topbar { padding: 6px 12px; gap: 10px; }
   .brand__sub { display: none; }
-  .menu-hero__frame { width: 220px; height: 220px; }
-  .menu-hero__ring { width: 248px; height: 248px; top: 110px; }
-  .menu-hero__glow { width: 320px; height: 320px; }
-  .menu-hero__seal { top: 152px; right: 2px; width: 44px; height: 44px; }
-  .menu-hero__seal span { font-size: 1.4rem; }
+  .menu-actions__minor { grid-template-columns: minmax(0, 1fr); }
+  .menu-hero__stage { height: 262px; }
+  .menu-hero__halo { width: 274px; height: 274px; }
+  .menu-hero__ring { width: 244px; height: 244px; }
+  .menu-hero__portrait { width: 248px; height: 248px; }
+  .mcard { padding: 12px 84px 12px 18px; }
+  .mcard__art { width: 112px; height: 112px; }
   .char-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .settings-layout { grid-template-columns: 1fr; }
   .mode-grid { grid-template-columns: 1fr; }
@@ -2504,16 +2659,20 @@ html[data-theme="beast"] .felt {
   .appfoot { font-size: .68rem; }
 }
 
-@media (max-height: 620px) {
+/* 矮屏（960×540 等）：压缩主菜单高度，保证六个入口不被裁切 */
+@media (max-height: 640px) {
   .title { font-size: 2.3rem; }
   .lede { font-size: .84rem; }
-  .hero-badges { margin-top: 10px; }
-  .menu-hero__frame { width: 216px; height: 216px; }
-  .menu-hero__ring { width: 244px; height: 244px; top: 108px; }
-  .menu-hero__glow { width: 300px; height: 300px; }
-  .mcard { min-height: 66px; padding: 10px 12px 10px 10px; }
+  .menu-intro .lede { max-width: 34em; }
+  .menu-stage { row-gap: 10px; }
+  .menu-hero__stage { height: 330px; }
+  .menu-hero__halo { width: 344px; height: 344px; }
+  .menu-hero__ring { width: 306px; height: 306px; }
+  .menu-hero__portrait { width: 312px; height: 312px; }
+  .mcard { min-height: 66px; padding: 10px 92px 10px 18px; }
   .mcard__icon { width: 42px; height: 42px; }
-  .mbtn { min-height: 52px; padding: 8px 14px; }
+  .mcard__label { font-size: 1.02rem; }
+  .mbtn { min-height: 46px; }
 }
 
 /* ========================= 21. 降低动态效果 ========================= */
@@ -2538,3 +2697,36 @@ html[data-motion="reduced"] *::after {
 }
 
 html[data-motion="reduced"] .scene__lantern { opacity: .42; }
+
+/* 主菜单入场动效在「关闭动画」时必须立即显示终态：
+   上面的通用规则只压缩了 animation-duration，延迟仍会保留，
+   因此这里显式取消主菜单的入场动画与延迟，直接呈现最终布局。 */
+html[data-motion="reduced"] .menu-entry,
+html[data-motion="reduced"] .menu-intro,
+html[data-motion="reduced"] .menu-hero,
+html[data-motion="reduced"] .menu-hero__art {
+  animation: none !important;
+  opacity: 1 !important;
+  transform: none !important;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html:not([data-motion="full"]) .menu-entry,
+  html:not([data-motion="full"]) .menu-intro,
+  html:not([data-motion="full"]) .menu-hero,
+  html:not([data-motion="full"]) .menu-hero__art {
+    animation: none !important;
+    opacity: 1 !important;
+    transform: none !important;
+  }
+}
+
+/* ========================= 22. 主菜单全局状态（L6） ========================= */
+/* 主菜单隐藏冗余面包屑，顶栏改为左右分布 */
+body[data-screen="menu"] .crumbs { display: none; }
+body[data-screen="menu"] .topbar { justify-content: space-between; }
+
+/* 页脚在主菜单只保留一句简短说明，避免主画面堆技术说明 */
+.appfoot__note--short { display: none; }
+body[data-screen="menu"] .appfoot__note--long { display: none; }
+body[data-screen="menu"] .appfoot__note--short { display: inline; }

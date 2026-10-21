@@ -58,7 +58,7 @@
         <span class="chip__label">出千点</span>
         <span class="chip__value" id="points-value">0</span>
       </span>
-      <span class="chip chip--demo" title="本原型为纯前端演示，未连接后端">演示原型 · 无后端</span>
+      <span class="chip chip--demo" title="本原型为纯前端演示，未连接后端；房间、牌局与结算均为本地模拟数据">演示数据</span>
       <button type="button" class="icon-btn" data-action="open-settings" aria-label="打开设置">
         <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
           <path fill="currentColor" d="M12 15.5A3.5 3.5 0 1 1 12 8.5a3.5 3.5 0 0 1 0 7Zm8.9-2.6.02-.9-.02-.9 1.9-1.45-1.9-3.3-2.24.9a7.9 7.9 0 0 0-1.55-.9L16.8 4h-3.8l-.31 2.35c-.56.22-1.08.52-1.55.9l-2.24-.9-1.9 3.3 1.9 1.45-.02.9.02.9-1.9 1.45-1.9 3.3 2.24-.9c.47.38.99.68 1.55.9L13 20h3.8l.31-2.35c.56-.22 1.08-.52 1.55-.9l2.24.9 1.9-3.3-1.9-1.45Z"/>
@@ -70,71 +70,89 @@
   <!-- ============ 舞台 ============ -->
   <main class="stage" id="stage" tabindex="-1">
 
-    <!-- ---------- 主菜单 ---------- -->
+    <!-- ---------- 主菜单 ----------
+         分层方案见 design/MAIN_MENU_LAYER_PLAN.md：
+         L0 场景底图 / L1 光影 / L2 环境点缀 由全局 .scene 承载；
+         本段负责 L3 标题说明、L4 六个入口、L5 角色主视觉；
+         L6 全局状态在顶栏（演示标识 / 设置），L7 弹层在 #overlay-root。 -->
     <section class="screen screen--menu is-active" id="screen-menu" data-screen="menu" aria-labelledby="menu-title">
-      <div class="menu-wrap">
-        <div class="menu-copy">
+      <div class="menu-stage">
+        <div class="menu-intro">
           <p class="eyebrow">MAHJONG CHEATER · 动物出千博弈</p>
-          <h1 class="title" id="menu-title" tabindex="-1">疯狂动物麻将</h2>
+          <h1 class="title" id="menu-title" tabindex="-1">疯狂动物麻将</h1>
           <div class="cloud-rule cloud-rule--hero" aria-hidden="true"></div>
           <p class="lede">
-            雀圣心战 · 三绝技出千博弈。选择你的动物角色，用
-            <b>落汗</b>、<b>袖里藏花</b>、<b>偷梁换柱</b> 在日式麻将牌桌上布置心理战。
+            三绝技出千博弈：选好动物角色，用 <b>落汗</b>、<b>袖里藏花</b>、<b>偷梁换柱</b> 赢下牌局。
           </p>
-          <ul class="hero-badges" aria-label="游戏要点">
-            <li class="tag tag--gold">三大绝技</li>
-            <li class="tag tag--jade">物理守恒 136 张</li>
-            <li class="tag tag--violet">8 位动物角色</li>
-            <li class="tag tag--azure">41 种役种</li>
-          </ul>
           <p class="menu-continuation" id="menu-continuation" hidden></p>
         </div>
 
-        <figure class="menu-hero" id="menu-now"></figure>
-
+        <!-- ===== L4 导航选择：三张大入口卡 + 三枚紧凑次入口 ===== -->
         <nav class="menu-actions" aria-label="主菜单入口">
-          <button type="button" class="mcard mcard--primary" data-action="goto-mode">
-            <span class="mcard__icon" aria-hidden="true">▶</span>
-            <span class="mcard__body">
-              <span class="mcard__label">开始游戏</span>
-              <span class="mcard__sub">选择单机或联机</span>
-            </span>
-            <span class="mcard__arrow" aria-hidden="true">›</span>
-          </button>
-          <button type="button" class="mcard" data-action="goto-lobby">
-            <span class="mcard__icon" aria-hidden="true">⌂</span>
-            <span class="mcard__body">
-              <span class="mcard__label">联机大厅</span>
-              <span class="mcard__sub">建房 / 加房 / 观战（演示数据）</span>
-            </span>
-            <span class="mcard__arrow" aria-hidden="true">›</span>
-          </button>
-          <button type="button" class="mcard" data-action="goto-characters">
-            <span class="mcard__icon" aria-hidden="true">☗</span>
-            <span class="mcard__body">
-              <span class="mcard__label">动物角色选择</span>
-              <span class="mcard__sub">8 位角色 · 技能确认与锁定</span>
-            </span>
-            <span class="mcard__arrow" aria-hidden="true">›</span>
-          </button>
+          <div class="menu-actions__list">
+            <div class="menu-entry">
+              <button type="button" class="mcard mcard--solo" data-action="solo-quick">
+                <span class="mcard__icon" aria-hidden="true">⚡</span>
+                <span class="mcard__body">
+                  <span class="mcard__label">单机开局</span>
+                  <span class="mcard__sub">选角 → 备房 → 开桌</span>
+                </span>
+                <span class="mcard__art" aria-hidden="true"><span class="portrait portrait--panda portrait--face"></span></span>
+                <span class="mcard__arrow" aria-hidden="true">›</span>
+              </button>
+            </div>
+            <div class="menu-entry">
+              <button type="button" class="mcard mcard--lobby" data-action="goto-lobby">
+                <span class="mcard__icon" aria-hidden="true">⌂</span>
+                <span class="mcard__body">
+                  <span class="mcard__label">联机大厅</span>
+                  <span class="mcard__sub">建房 / 加房 / 观战（演示数据）</span>
+                </span>
+                <span class="mcard__art" aria-hidden="true"><span class="portrait portrait--fox portrait--face"></span></span>
+                <span class="mcard__arrow" aria-hidden="true">›</span>
+              </button>
+            </div>
+            <div class="menu-entry">
+              <button type="button" class="mcard mcard--codex" data-action="goto-characters">
+                <span class="mcard__icon" aria-hidden="true">☗</span>
+                <span class="mcard__body">
+                  <span class="mcard__label">动物图鉴</span>
+                  <span class="mcard__sub">8 位角色 · 绝技与特性</span>
+                </span>
+                <span class="mcard__art" aria-hidden="true"><span class="portrait portrait--magpie portrait--face"></span></span>
+                <span class="mcard__arrow" aria-hidden="true">›</span>
+              </button>
+            </div>
+          </div>
+
           <div class="menu-actions__minor">
-            <button type="button" class="mbtn" data-action="solo-quick">
-              <span class="mbtn__icon" aria-hidden="true">⚡</span>
-              <span class="mbtn__label">单机快速开局</span>
-              <span class="mbtn__sub">选角 → 备房 → 开桌</span>
-            </button>
-            <button type="button" class="mbtn" data-action="goto-codex">
-              <span class="mbtn__icon" aria-hidden="true">✦</span>
-              <span class="mbtn__label">千术秘籍</span>
-              <span class="mbtn__sub">规则与图鉴</span>
-            </button>
-            <button type="button" class="mbtn" data-action="open-settings">
-              <span class="mbtn__icon" aria-hidden="true">⚙</span>
-              <span class="mbtn__label">游戏设置</span>
-              <span class="mbtn__sub">皮肤 · 动效 · 字号</span>
-            </button>
+            <div class="menu-entry">
+              <button type="button" class="mbtn" data-action="goto-mode">
+                <span class="mbtn__icon" aria-hidden="true">◈</span>
+                <span class="mbtn__label">选择模式</span>
+                <span class="mbtn__sub">单机 / 联机</span>
+              </button>
+            </div>
+            <div class="menu-entry">
+              <button type="button" class="mbtn" data-action="goto-codex">
+                <span class="mbtn__icon" aria-hidden="true">✦</span>
+                <span class="mbtn__label">千术秘籍</span>
+                <span class="mbtn__sub">绝技与图鉴</span>
+              </button>
+            </div>
+            <div class="menu-entry">
+              <button type="button" class="mbtn" data-action="open-settings">
+                <span class="mbtn__icon" aria-hidden="true">⚙</span>
+                <span class="mbtn__label">设置</span>
+                <span class="mbtn__sub">皮肤 · 动效 · 字号</span>
+              </button>
+            </div>
           </div>
         </nav>
+
+        <!-- ===== L5 角色主视觉（右侧，由脚本按当前角色渲染） ===== -->
+        <figure class="menu-hero" id="menu-now"></figure>
+
       </div>
     </section>
 
@@ -405,7 +423,8 @@
   <footer class="appfoot">
     <p>
       <span class="tag tag--warn">演示数据</span>
-      房间、牌局与结算均为本地模拟，未连接后端，也未实现账户、自动撮合与 TLS。
+      <span class="appfoot__note--long">房间、牌局与结算均为本地模拟，未连接后端，也未实现账户、自动撮合与 TLS。</span>
+      <span class="appfoot__note--short">房间、牌局与结算均为本地模拟。</span>
     </p>
     <p class="appfoot__meta">
       <kbd>Esc</kbd> 返回上一级 · <kbd>Enter</kbd> 确认选中牌 · 全部交互支持键盘与焦点态

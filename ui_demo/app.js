@@ -487,6 +487,7 @@
 
     const crumb = $('#crumb');
     if (crumb) crumb.textContent = SCREEN_TITLE[screen] || screen;
+    document.body.setAttribute('data-screen', screen);
     document.title = (SCREEN_TITLE[screen] ? SCREEN_TITLE[screen] + ' · ' : '') + '疯狂动物麻将 UI 原型';
 
     veil();
@@ -689,27 +690,43 @@
 
   /* ---------- 主菜单 ---------- */
   RENDERERS.menu = function () {
-    // 主菜单把「当前角色」做成主视觉：大幅肖像 + 金框漆木台座；
-    // 工程技术边界不在此占据视觉中心（完整说明见「千术秘籍 / 图鉴 → 原型边界说明」）。
+    // 主菜单把「当前角色」做成右侧主视觉（L5）：
+    // 章鱼用专用大幅透明立绘，其余角色改用对应肖像图集，保证图文一致，
+    // 绝不出现「画面是章鱼、文字却写别的角色」的情况。
     const now = $('#menu-now');
     if (now) {
       const c = currentChar();
       const themeName = (THEMES.filter(function (t) { return t.id === state.settings.theme; })[0] || THEMES[0]).name;
       const lockedCount = Object.keys(state.locked).filter(function (k) { return state.locked[k]; }).length;
+      const cheat = charCheatLabel(c.id);
+      const art = c.id === 'octopus'
+        ? '<img class="menu-hero__photo" src="assets/menu-octopus-hero.png" alt="" decoding="async">'
+        : portraitHTML(c.id, { face: false, cls: 'menu-hero__portrait' });
       now.innerHTML =
-        '<span class="menu-hero__glow" aria-hidden="true"></span>' +
+        '<div class="menu-hero__stage">' +
+        '<span class="menu-hero__halo" aria-hidden="true"></span>' +
         '<span class="menu-hero__ring" aria-hidden="true"></span>' +
-        '<span class="menu-hero__frame">' + portraitHTML(c.id, { face: false }) + '</span>' +
+        '<span class="menu-hero__art">' + art + '</span>' +
         '<span class="menu-hero__seal" aria-hidden="true"><span>雀</span></span>' +
+        '</div>' +
         '<figcaption class="menu-hero__plate">' +
         '<span class="gold-fret" aria-hidden="true"></span>' +
         '<span class="menu-hero__kicker">当前角色 · CURRENT</span>' +
         '<span class="menu-hero__name">' + esc(c.name) + '<i>·</i>' + esc(c.trait) + '</span>' +
+        '<span class="menu-hero__cheat">关联绝技 · ' + esc(cheat.name) + '</span>' +
         '<span class="menu-hero__trait">' + esc(c.affects) + '</span>' +
-        '<span class="menu-hero__meta">皮肤 ' + esc(themeName) + ' · ' +
-        (effectiveMotion() === 'reduced' ? '已关闭动画' : '完整动效') +
-        ' · 已锁定 ' + lockedCount + ' 位</span>' +
+        '<span class="menu-hero__meta">皮肤 ' + esc(themeName) + ' · 已锁定 ' + lockedCount + ' 位</span>' +
         '</figcaption>';
+
+      // 章鱼大图若加载失败，回退到角色图集里的章鱼肖像，避免主视觉开天窗。
+      const photo = now.querySelector('.menu-hero__photo');
+      if (photo) {
+        photo.addEventListener('error', function () {
+          const holder = photo.parentNode;
+          if (!holder) return;
+          holder.innerHTML = portraitHTML('octopus', { face: false, cls: 'menu-hero__portrait' });
+        });
+      }
     }
     const cont = $('#menu-continuation');
     if (cont) {
@@ -724,7 +741,22 @@
         cont.innerHTML = '';
       }
     }
+    replayMenuEntrance();
   };
+
+  /**
+   * 重放主菜单入场动效。
+   * 菜单每次进入（含从其他页面返回）时，六个入口都要从右侧依次移入；
+   * 做法是移除并重新加上 .is-entering，中间强制一次重排以重启 CSS 动画。
+   * 「关闭动画」或 prefers-reduced-motion 下该动画被 CSS 取消，页面直接显示终态。
+   */
+  function replayMenuEntrance() {
+    const sec = $('#screen-menu');
+    if (!sec) return;
+    sec.classList.remove('is-entering');
+    void sec.offsetWidth;
+    sec.classList.add('is-entering');
+  }
 
   /* ---------- 模式选择 ---------- */
   RENDERERS.mode = function () { /* 静态内容即可 */ };
@@ -2493,6 +2525,7 @@
     loadSession();
     applySettings();
     watchMotionPreference();
+    document.body.setAttribute('data-screen', 'menu');
     RENDERERS.menu();
     RENDERERS.settings();
     RENDERERS.codex();
