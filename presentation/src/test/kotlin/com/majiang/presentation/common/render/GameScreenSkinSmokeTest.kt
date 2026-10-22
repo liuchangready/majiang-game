@@ -5,6 +5,7 @@ import com.majiang.presentation.GdxHeadlessTestRunner
 import com.majiang.client.api.*
 import com.majiang.presentation.common.UiAssets
 import com.majiang.presentation.game.GameScreen
+import com.majiang.presentation.menu.MainMenuButtonMotion
 import com.majiang.presentation.menu.MainMenuItemId
 import com.majiang.presentation.menu.MenuScreen
 import com.majiang.presentation.testing.FakeGameSession
@@ -85,6 +86,9 @@ class GameScreenSkinSmokeTest : GdxHeadlessTestRunner() {
             assertTrue(menu.touchDown(point.x.toInt(), point.y.toInt(), 0, 0))
             menu.touchUp(point.x.toInt(), point.y.toInt(), 0, 0)
             assertEquals(SkinId.CLASSIC, manager.currentSkinId)
+            // 点击反馈位移期间该入口禁止再次激活（防重复触发）：
+            // 推进时间轴到位移结束后再点一次，验证第二个方向同样生效。
+            menu.mainMenuView.update(System.currentTimeMillis() + MainMenuButtonMotion.TOTAL_MS + 50L)
             assertTrue(menu.touchDown(point.x.toInt(), point.y.toInt(), 0, 0))
             menu.touchUp(point.x.toInt(), point.y.toInt(), 0, 0)
             assertEquals(SkinId.WIKIPEDIA, manager.currentSkinId)

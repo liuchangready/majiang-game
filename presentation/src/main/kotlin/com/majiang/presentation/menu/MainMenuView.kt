@@ -70,6 +70,27 @@ class MainMenuView(
     private var pointerY = Float.NaN
     private var disabledItems: Set<MainMenuItemId> = emptySet()
 
+    // 激活反馈：点击/键盘确认后至少保留一小段高亮，避免“按下即抬起”时整帧看不到 pressed。
+    // 该反馈只影响绘制，不延迟任何业务回调。
+    private var activationFlashId: MainMenuItemId? = null
+    private var activationFlashUntilMs = 0L
+
+    // 点击反馈位移：被点中的那一个按钮自身向右滑出再收回，背景/标题/吉祥物/其余按钮不动。
+    // 鼠标、触控与键盘确认共用这一份状态。
+    private val buttonMotion = MainMenuButtonMotion(motionEnabled = motionEnabled, clock = clock)
+
+    /** 仅供测试/诊断读取的当前激活高亮项。 */
+    internal val activationFlashItemId: MainMenuItemId? get() = activationFlashId
+
+    /** 仅供诊断与 GL 冒烟读取：被点项当前的正 X 位移（逻辑像素）。 */
+    val buttonMotionOffsetX: Float get() = buttonMotion.offsetX
+
+    /** 仅供诊断与 GL 冒烟读取：当前位移作用项（不在位移中时为 null）。 */
+    val buttonMotionItemId: MainMenuItemId? get() = buttonMotion.activeItemId
+
+    /** 仅供诊断与 GL 冒烟读取：位移是否进行中（进行中该项禁止再次激活）。 */
+    val isButtonMotionActive: Boolean get() = buttonMotion.isAnimating
+
     /** 仅供测试/诊断读取的入场重播计数。 */
     var entryPlayCount: Int = 0
         private set
@@ -101,6 +122,9 @@ class MainMenuView(
         focusIndex = -1
         hoveredId = null
         pressedId = null
+        activationFlashId = null
+        // 重新入场时不允许残留任何点击位移。
+        buttonMotion.reset()
         if (motionEnabled) {
             entryActive = true
             applyElapsed(0L)
@@ -130,9 +154,12 @@ class MainMenuView(
 
     fun onPause(nowMs: Long = clock()) {
         if (entryActive) pausedAtMs = nowMs
+        buttonMotion.pause(nowMs)
     }
 
     fun onResume(nowMs: Long = clock()) {
+        // 后台恢复不重播入场；只把暂停期间的时间平移掉，保持当前进度。
+        buttonMotion.resume(nowMs)
         val pausedAt = pausedAtMs ?: return
         pausedAtMs = null
         val start = entryStartMs ?: return
@@ -140,18 +167,41 @@ class MainMenuView(
     }
 
     fun update(nowMs: Long = clock()) {
+        if (activationFlashId != null && nowMs >= activationFlashUntilMs) {
+            activationFlashId = null
+        }
+        buttonMotion.update(nowMs)
         val elapsed = entryStartMs?.let { (nowMs - it).coerceAtLeast(0L) }
             ?: MainMenuLayout.TOTAL_ENTRY_MS
         applyElapsed(elapsed)
     }
 
     private fun applyElapsed(elapsedMs: Long) {
-        frame = MainMenuLayout.frame(elapsedMs, motionEnabled)
+        frame = MainMenuLayout.frame(elapsedMs, motionEnabled, buttonOffsetState())
         entryActive = motionEnabled && elapsedMs < MainMenuLayout.TOTAL_ENTRY_MS
         if (!entryActive && focusIndex < 0 && frame.allSettled) {
             focusFirstEnabled()
         }
         refreshHover()
+    }
+
+    /**
+     * 当前点击反馈位移状态。绘制矩形与命中矩形共用它，
+     * 保证按钮移动时不会出现“命中终点空白”或重复触发。
+     */
+    private fun buttonOffsetState(): MainMenuButtonOffset {
+        if (!buttonMotion.isAnimating) return MainMenuButtonOffset.NONE
+        return MainMenuButtonOffset(
+            itemId = buttonMotion.activeItemId,
+            offsetX = buttonMotion.offsetX,
+            blocking = true
+        )
+    }
+
+    /** 立即清除任何点击位移（关闭覆盖层、返回主菜单、隐藏时调用）。 */
+    fun resetButtonMotion() {
+        buttonMotion.reset()
+        update()
     }
 
     private fun refreshHover() {
@@ -217,6 +267,13 @@ class MainMenuView(
         update()
         val item = frame.item(id) ?: return false
         if (!item.settled || !isItemEnabled(id)) return false
+        // 该项正在做点击反馈位移：禁止重复激活（避免重复提交与命中终点空白）。
+        if (item.motionActive) return false
+        // 先给出本地即时反馈，再同步触发原业务回调；动画/高亮不等待网络或建桌。
+        activationFlashId = id
+        activationFlashUntilMs = clock() + ACTIVATION_FLASH_MS
+        // 被点中的按钮自身向右滑出再收回；背景与其余按钮保持屏幕坐标稳定。
+        buttonMotion.start(id, clock())
         when (id) {
             MainMenuItemId.SOLO -> onPlaySingle()
             MainMenuItemId.ONLINE -> onOpenLobby()
@@ -268,16 +325,6 @@ class MainMenuView(
 
     fun cancelPress() {
         pressedId = null
-    }
-
-    /**
-     * 兼容旧调用：按下即激活。新输入路径使用 [pointerDown]/[pointerUp]，
-     * 二者共享同一帧矩形与落位门禁。
-     */
-    fun handleTouch(tx: Float, ty: Float): Boolean {
-        update()
-        val hit = frame.hitTest(tx, ty) ?: return false
-        return activate(hit)
     }
 
     fun setDisabledItems(ids: Set<MainMenuItemId>) {
@@ -446,7 +493,7 @@ class MainMenuView(
             if (item.alpha <= 0f) continue
             val rect = item.rect
             val enabled = isItemEnabled(item.id)
-            val pressed = pressedId == item.id
+            val pressed = pressedId == item.id || activationFlashId == item.id
             val hovered = hoveredId == item.id
             val focused = focusedItemId == item.id
             val alpha = item.alpha * if (enabled) 1f else 0.55f
@@ -577,6 +624,9 @@ class MainMenuView(
     )
 
     companion object {
+        /** 激活高亮最短可见时长，只影响绘制。 */
+        const val ACTIVATION_FLASH_MS = 140L
+
         private val backdropCamera = OrthographicCamera()
 
         /**

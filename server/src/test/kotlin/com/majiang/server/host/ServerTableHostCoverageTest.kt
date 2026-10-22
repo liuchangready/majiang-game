@@ -601,7 +601,7 @@ class ServerTableHostCoverageTest {
         ).use { h ->
             val seats = (0..3).map { TestSeat(it, h) }
             assertNotEquals(ReceiptStatus.REJECTED, seats[0].start().await().status)
-            for (a in seats) {
+            for (a in seats.take(3)) {
                 val s = a.snapshot().await()
                 assertNotNull(s.preparation)
                 assertEquals(10000L, s.preparation!!.deadlineMillis)
@@ -612,11 +612,20 @@ class ServerTableHostCoverageTest {
                 assertTrue(s.clocks.none { it.deadline > it.opensAt })
                 assertEquals(ReceiptStatus.RECORDED, a.submitShufflePlan(request(a, "skip-${a.seat}", ShuffleSelection())).await().status)
             }
+            // 仍有第 4 个真人未确认：deadline 保持固定，且不得提前发牌。
             clock.now = 9999
             h.tick().await()
             seats[0].start().await()
             assertEquals(10000L, seats[0].snapshot().await().preparation!!.deadlineMillis)
             assertTrue(seats[0].snapshot().await().view.myAllClosedTiles.isEmpty())
+            assertFalse(seats[3].snapshot().await().preparation!!.confirmed)
+
+            // 最后一个真人确认后，在 deadline 前正常 tick 立即发牌。
+            assertEquals(
+                ReceiptStatus.RECORDED,
+                seats[3].submitShufflePlan(request(seats[3], "skip-3", ShuffleSelection())).await().status
+            )
+            h.tick().await()
             clock.now = 10000
             h.tick().await()
             val all = seats.map { it.snapshot().await() }
@@ -625,7 +634,7 @@ class ServerTableHostCoverageTest {
             assertEquals(53, all.flatMap { it.view.myAllClosedTiles }.toSet().size)
             val timer = all[0].clocks.first { it.seat == 0 }
             assertEquals(20000L, timer.reserve)
-            assertEquals(33000L, timer.deadline)
+            assertEquals(23000L, timer.deadline - timer.opensAt, "full 20s reserve plus 3s first decision")
         }
     }
 

@@ -1,0 +1,1 @@
+java.lang.AssertionError: Window size not honored: 3440x1440 actual 3124x1440

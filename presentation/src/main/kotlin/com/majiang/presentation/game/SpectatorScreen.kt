@@ -11,7 +11,7 @@ import com.badlogic.gdx.graphics.g2d.BitmapFont
 import com.badlogic.gdx.graphics.g2d.SpriteBatch
 import com.badlogic.gdx.graphics.glutils.ShapeRenderer
 import com.badlogic.gdx.math.Rectangle
-import com.badlogic.gdx.math.Vector3
+import com.badlogic.gdx.math.Vector2
 import com.majiang.client.api.GameEventView
 import com.majiang.client.api.GamePhaseView
 import com.majiang.client.api.PublicBoardView
@@ -35,6 +35,11 @@ import com.majiang.presentation.common.render.TableBoardRenderOptions
 import com.majiang.presentation.common.render.TableBoardSyncTracker
 import com.majiang.presentation.common.render.TableBoardSyncTransition
 import com.majiang.presentation.common.render.TableBoardViewIdentity
+import com.majiang.presentation.common.render.TableHudView
+import com.majiang.presentation.common.render.TableStageFonts
+import com.majiang.presentation.common.render.TableStageLayout
+import com.majiang.presentation.common.render.TableStageRenderer
+import com.majiang.presentation.common.render.TableStageViewport
 import com.majiang.presentation.common.render.TileDrawBuffer
 import com.majiang.presentation.common.render.TileSkin
 import com.majiang.presentation.common.render.fromPublicSnapshot
@@ -153,9 +158,19 @@ class SpectatorScreen(
         }
     }
 
-    private val unprojectVec = Vector3()
+    private val uiPoint = Vector2()
+    private val usesHeadlessStageInput: Boolean =
+        Gdx.graphics == null || Gdx.graphics.width <= 0 || Gdx.graphics.height <= 0
     private var previousCatchBack = false
     private var ownsBackCatch = false
+    private var stageViewport: TableStageViewport = spectatorInitialStageViewport()
+    private var stageFonts: TableStageFonts = TableStageFonts.create(assets, 1f, 1f)
+    private var stageFontsKey: Pair<Float, Float>? = null
+
+    fun getStageViewport(): TableStageViewport = stageViewport
+    @JvmOverloads
+    fun screenToStage(screenX: Int, screenY: Int, out: Vector2 = Vector2()): Vector2? =
+        stageViewport.toStage(screenX.toFloat(), screenY.toFloat(), out)
 
     init {
         updateSubscription = session.onPublicUpdate { update ->
@@ -320,23 +335,120 @@ class SpectatorScreen(
         }
     }
 
+    /** 与玩家牌桌相同的 16:9 舞台：环境 cover 窗口，交互内容固定 1280×720 fit。 */
+    private fun updateStageForWindow() {
+        val graphics = Gdx.graphics ?: return
+        val w = graphics.width
+        val h = graphics.height
+        stageViewport = if (w <= 0 || h <= 0) {
+            TableStageViewport.EMPTY
+        } else {
+            TableStageViewport.compute(
+                windowWidth = w,
+                windowHeight = h,
+                framebufferWidth = graphics.backBufferWidth.coerceAtLeast(1),
+                framebufferHeight = graphics.backBufferHeight.coerceAtLeast(1)
+            )
+        }
+        camera.setToOrtho(false, TableStageLayout.DESIGN_WIDTH, TableStageLayout.DESIGN_HEIGHT)
+        camera.position.set(TableStageLayout.DESIGN_WIDTH / 2f, TableStageLayout.DESIGN_HEIGHT / 2f, 0f)
+        camera.update()
+        if (stageViewport.drawable) {
+            val key = stageViewport.scale to stageViewport.framebufferRatio
+            if (stageFontsKey != key) {
+                stageFonts = TableStageFonts.create(assets, stageViewport.scale, stageViewport.framebufferRatio)
+                stageFontsKey = key
+            }
+        }
+    }
+
+    private fun applyStageGlViewport() {
+        val v = stageViewport
+        if (!v.drawable) return
+        Gdx.gl.glViewport(
+            v.framebufferStageX,
+            v.framebufferStageY,
+            v.framebufferStageWidth,
+            v.framebufferStageHeight
+        )
+        Gdx.gl.glEnable(GL20.GL_SCISSOR_TEST)
+        Gdx.gl.glScissor(
+            v.framebufferStageX,
+            v.framebufferStageY,
+            v.framebufferStageWidth,
+            v.framebufferStageHeight
+        )
+    }
+
+    private fun resetGlViewportToWindow() {
+        val g = Gdx.graphics ?: return
+        Gdx.gl.glDisable(GL20.GL_SCISSOR_TEST)
+        Gdx.gl.glViewport(0, 0, g.backBufferWidth.coerceAtLeast(1), g.backBufferHeight.coerceAtLeast(1))
+    }
+
     override fun render(delta: Float) {
         discardAnimationController.update(delta)
+        updateStageForWindow()
 
-        camera.update()
-        Gdx.gl.glClearColor(0.06f, 0.16f, 0.12f, 1f)
+        resetGlViewportToWindow()
+        Gdx.gl.glClearColor(0.015f, 0.035f, 0.025f, 1f)
         Gdx.gl.glClear(GL20.GL_COLOR_BUFFER_BIT)
 
         val batch = assets.batch
         val shape = assets.shapeRenderer
         val font = assets.font
         val chineseFont = assets.chineseFont
-
-        // 1. 顶部返回菜单按钮
-        renderBackButton(shape, batch, font)
+        if (!stageViewport.drawable) {
+            resetGlViewportToWindow()
+            return
+        }
 
         val snap = currentSnapshot
-        if (snap?.board != null) {
+        val boardSnapshot = snap?.board
+        val visuals = assets.obtainTableVisualAssets()
+        val visibleBounds = RoundPreparationLayout.DEFAULT_VISIBLE
+        visuals?.let { TableStageRenderer.renderEnvironment(it, stageViewport, batch) }
+        applyStageGlViewport()
+        try {
+            if (visuals != null) {
+                TableStageRenderer.renderBoard(visuals, camera.combined, batch)
+                if (boardSnapshot != null) {
+                    val hudView = TableHudView.fromPublicBoard(boardSnapshot)
+                    TableStageRenderer.renderCompass(
+                        visuals = visuals,
+                        rect = TableStageLayout.PLAY_COMPASS,
+                        view = hudView,
+                        isPreparation = false,
+                        projection = camera.combined,
+                        batch = batch,
+                        fonts = stageFonts
+                    )
+                    TableStageRenderer.renderHud(
+                        visuals = visuals,
+                        isPreparation = false,
+                        drawerProgress = 0f,
+                        view = hudView,
+                        clocks = snap.clocks,
+                        clockElapsedMillis = System.currentTimeMillis() - lastClockUpdateLocalMillis,
+                        projection = camera.combined,
+                        batch = batch,
+                        shape = shape,
+                        fonts = stageFonts
+                    )
+                    TableStageRenderer.renderPlayingTrays(visuals, camera.combined, batch)
+                }
+            } else {
+                TableStageRenderer.renderFallback(
+                    visible = visibleBounds,
+                    projection = camera.combined,
+                    shape = shape
+                )
+            }
+
+            // 顶部返回菜单按钮覆盖在场景之上。
+            renderBackButton(shape, batch, font)
+
+        if (snap != null && boardSnapshot != null) {
             val model = TableBoardRenderModel.fromPublicSnapshot(snap)
             val options = TableBoardRenderOptions(
                 isTileVisibleInRiver = { seat, tile, index ->
@@ -356,23 +468,11 @@ class SpectatorScreen(
                 chineseFont = chineseFont,
                 tileSkin = tileSkin,
                 tileDrawBuffer = tileDrawBuffer,
-                options = options
+                options = options,
+                stageFonts = stageFonts
             )
 
-            // 3. 四家席位信息（分数、时钟、立直等）
-            TableBoardRenderer.renderSeatsInfo(
-                model = model,
-                projectionMatrix = camera.combined,
-                batch = batch,
-                shape = shape,
-                font = font,
-                chineseFont = chineseFont,
-                tileSkin = tileSkin,
-                tileDrawBuffer = tileDrawBuffer,
-                options = options
-            )
-
-            // 4. 四家手牌（严格纯牌背！）
+            // 3. 四家手牌（严格纯牌背！）
             TableBoardRenderer.renderHandAreas(
                 model = model,
                 projectionMatrix = camera.combined,
@@ -453,6 +553,9 @@ class SpectatorScreen(
                 btnRoundDetailsRect = Rectangle(0f, 0f, 0f, 0f)
             )
         }
+        } finally {
+            resetGlViewportToWindow()
+        }
     }
 
     private fun renderFlyingDiscard(batch: SpriteBatch, shape: ShapeRenderer, font: BitmapFont) {
@@ -518,18 +621,23 @@ class SpectatorScreen(
         return false
     }
 
-    override fun touchDown(screenX: Int, screenY: Int, pointer: Int, button: Int): Boolean {
-        val tx: Float
-        val ty: Float
-        if (Gdx.graphics == null || Gdx.graphics.width == 0) {
-            tx = screenX.toFloat()
-            ty = screenY.toFloat()
-        } else {
-            unprojectVec.set(screenX.toFloat(), screenY.toFloat(), 0f)
-            camera.unproject(unprojectVec)
-            tx = unprojectVec.x
-            ty = unprojectVec.y
+    private fun screenToUi(screenX: Int, screenY: Int): Vector2? {
+        if (usesHeadlessStageInput) {
+            if (screenX < 0 || screenY < 0 ||
+                screenX > TableStageLayout.DESIGN_WIDTH.toInt() ||
+                screenY > TableStageLayout.DESIGN_HEIGHT.toInt()
+            ) {
+                return null
+            }
+            return uiPoint.set(screenX.toFloat(), screenY.toFloat())
         }
+        return stageViewport.toStage(screenX.toFloat(), screenY.toFloat(), uiPoint)
+    }
+
+    override fun touchDown(screenX: Int, screenY: Int, pointer: Int, button: Int): Boolean {
+        val ui = screenToUi(screenX, screenY) ?: return false
+        val tx = ui.x
+        val ty = ui.y
 
         if (backButtonRect.contains(tx, ty)) {
             leaveToMenu()
@@ -585,7 +693,13 @@ class SpectatorScreen(
         navigation.leaveToMenu()
     }
 
-    override fun resize(width: Int, height: Int) {}
+    override fun resize(width: Int, height: Int) {
+        if (width <= 0 || height <= 0) {
+            stageViewport = TableStageViewport.EMPTY
+            return
+        }
+        updateStageForWindow()
+    }
     override fun pause() {}
     override fun resume() {}
 
@@ -608,4 +722,17 @@ class SpectatorScreen(
             }
         }
     }
+}
+
+private fun spectatorInitialStageViewport(): TableStageViewport {
+    val g = Gdx.graphics
+    if (g == null || g.width <= 0 || g.height <= 0) {
+        return TableStageViewport.compute(1280, 720)
+    }
+    return TableStageViewport.compute(
+        windowWidth = g.width,
+        windowHeight = g.height,
+        framebufferWidth = g.backBufferWidth.coerceAtLeast(1),
+        framebufferHeight = g.backBufferHeight.coerceAtLeast(1)
+    )
 }

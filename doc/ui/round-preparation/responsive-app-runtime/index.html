@@ -1,0 +1,235 @@
+<!doctype html>
+<html lang="zh-Hans">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Responsive APP runtime captures</title>
+<style>
+:root { color-scheme: dark; }
+body { margin: 0; background: #07110d; color: #f1e8cf; font: 14px/1.5 "Segoe UI", "Microsoft YaHei", sans-serif; }
+header { padding: 28px clamp(18px,4vw,56px) 10px; }
+h1 { font-size: clamp(22px,3vw,36px); margin: 0 0 8px; color: #e9c56f; letter-spacing: .04em; }
+p { max-width: 1100px; color: #c7c1ad; }
+code { color: #9fe0b5; }
+.grid { display: grid; grid-template-columns: repeat(auto-fill,minmax(320px,1fr)); gap: 18px; padding: 18px clamp(18px,4vw,56px) 56px; }
+.card { margin: 0; background: #0d1c15; border: 1px solid #2b4a39; border-radius: 10px; overflow: hidden; box-shadow: 0 10px 28px #0006; }
+.card img { display: block; width: 100%; height: auto; background: #000; }
+figcaption { padding: 10px 12px 12px; font-size: 12.5px; color: #cfc7ae; }
+figcaption strong { color: #f0d792; font-size: 13.5px; }
+.state { color: #85cfa3; word-break: break-all; }
+</style>
+</head>
+<body>
+<header>
+<h1>正式 APP 响应式运行截图</h1>
+<p>全部来自生产链 <code>MahjongGame → 主菜单 SOLO → GameScreen → 权威准备/发牌</code> 的真实帧缓冲，
+不是设计样例渲染器。每张图的窗口、帧缓冲和 stage 矩形见下方；按 16:9 fit，stage 外只显示环境且不接牌桌输入。</p>
+<p>参考设计图保留在 <a href="../responsive-validation/index.html">responsive-validation</a>，本目录不被设计测试覆盖。</p>
+</header>
+<main class="grid">
+<figure class="card">
+  <a href="app-01-entry-1280x720.png"><img loading="lazy" src="app-01-entry-1280x720.png" alt="app-01-entry-1280x720"></a>
+  <figcaption><strong>app-01-entry-1280x720</strong><br>
+  window 1280×720 · fb 1280×720<br>
+  stage 0.00,0.00 1280.00×720.00 · scale 1.000000<br>
+  <span class="state">prep:PANEL:target=null:cost=0:see=false</span></figcaption>
+</figure>
+<figure class="card">
+  <a href="app-02-drawer-mid-1280x720.png"><img loading="lazy" src="app-02-drawer-mid-1280x720.png" alt="app-02-drawer-mid-1280x720"></a>
+  <figcaption><strong>app-02-drawer-mid-1280x720</strong><br>
+  window 1280×720 · fb 1280×720<br>
+  stage 0.00,0.00 1280.00×720.00 · scale 1.000000<br>
+  <span class="state">prep:DRAWER:target=null:cost=0:see=false</span></figcaption>
+</figure>
+<figure class="card">
+  <a href="app-03-drawer-unselected-1280x720.png"><img loading="lazy" src="app-03-drawer-unselected-1280x720.png" alt="app-03-drawer-unselected-1280x720"></a>
+  <figcaption><strong>app-03-drawer-unselected-1280x720</strong><br>
+  window 1280×720 · fb 1280×720<br>
+  stage 0.00,0.00 1280.00×720.00 · scale 1.000000<br>
+  <span class="state">prep:DRAWER:target=null:cost=0:see=false</span></figcaption>
+</figure>
+<figure class="card">
+  <a href="app-04-target-selected-1280x720.png"><img loading="lazy" src="app-04-target-selected-1280x720.png" alt="app-04-target-selected-1280x720"></a>
+  <figcaption><strong>app-04-target-selected-1280x720</strong><br>
+  window 1280×720 · fb 1280×720<br>
+  stage 0.00,0.00 1280.00×720.00 · scale 1.000000<br>
+  <span class="state">prep:DRAWER:target=KOKUSHI:cost=30:see=false</span></figcaption>
+</figure>
+<figure class="card">
+  <a href="app-05-cost40-1280x720.png"><img loading="lazy" src="app-05-cost40-1280x720.png" alt="app-05-cost40-1280x720"></a>
+  <figcaption><strong>app-05-cost40-1280x720</strong><br>
+  window 1280×720 · fb 1280×720<br>
+  stage 0.00,0.00 1280.00×720.00 · scale 1.000000<br>
+  <span class="state">prep:DRAWER:target=KOKUSHI:cost=40:see=true</span></figcaption>
+</figure>
+<figure class="card">
+  <a href="app-resize-00-1280x720.png"><img loading="lazy" src="app-resize-00-1280x720.png" alt="app-resize-00-1280x720"></a>
+  <figcaption><strong>app-resize-00-1280x720</strong><br>
+  window 1280×720 · fb 1280×720<br>
+  stage 0.00,0.00 1280.00×720.00 · scale 1.000000<br>
+  <span class="state">prep:DRAWER:target=KOKUSHI:cost=40:see=true</span></figcaption>
+</figure>
+<figure class="card">
+  <a href="app-resize-01-1160x700.png"><img loading="lazy" src="app-resize-01-1160x700.png" alt="app-resize-01-1160x700"></a>
+  <figcaption><strong>app-resize-01-1160x700</strong><br>
+  window 1160×700 · fb 1160×700<br>
+  stage 0.00,23.75 1160.00×652.50 · scale 0.906250<br>
+  <span class="state">prep:DRAWER:target=KOKUSHI:cost=40:see=true</span></figcaption>
+</figure>
+<figure class="card">
+  <a href="app-resize-02-1024x768.png"><img loading="lazy" src="app-resize-02-1024x768.png" alt="app-resize-02-1024x768"></a>
+  <figcaption><strong>app-resize-02-1024x768</strong><br>
+  window 1024×768 · fb 1024×768<br>
+  stage 0.00,96.00 1024.00×576.00 · scale 0.800000<br>
+  <span class="state">prep:DRAWER:target=KOKUSHI:cost=40:see=true</span></figcaption>
+</figure>
+<figure class="card">
+  <a href="app-resize-03-960x540.png"><img loading="lazy" src="app-resize-03-960x540.png" alt="app-resize-03-960x540"></a>
+  <figcaption><strong>app-resize-03-960x540</strong><br>
+  window 960×540 · fb 960×540<br>
+  stage 0.00,0.00 960.00×540.00 · scale 0.750000<br>
+  <span class="state">prep:DRAWER:target=KOKUSHI:cost=40:see=true</span></figcaption>
+</figure>
+<figure class="card">
+  <a href="app-resize-04-1440x810.png"><img loading="lazy" src="app-resize-04-1440x810.png" alt="app-resize-04-1440x810"></a>
+  <figcaption><strong>app-resize-04-1440x810</strong><br>
+  window 1440×810 · fb 1440×810<br>
+  stage 0.00,0.00 1440.00×810.00 · scale 1.125000<br>
+  <span class="state">prep:DRAWER:target=KOKUSHI:cost=40:see=true</span></figcaption>
+</figure>
+<figure class="card">
+  <a href="app-resize-05-1600x600.png"><img loading="lazy" src="app-resize-05-1600x600.png" alt="app-resize-05-1600x600"></a>
+  <figcaption><strong>app-resize-05-1600x600</strong><br>
+  window 1600×600 · fb 1600×600<br>
+  stage 266.67,0.00 1066.67×600.00 · scale 0.833333<br>
+  <span class="state">prep:DRAWER:target=KOKUSHI:cost=40:see=true</span></figcaption>
+</figure>
+<figure class="card">
+  <a href="app-resize-06-1280x720.png"><img loading="lazy" src="app-resize-06-1280x720.png" alt="app-resize-06-1280x720"></a>
+  <figcaption><strong>app-resize-06-1280x720</strong><br>
+  window 1280×720 · fb 1280×720<br>
+  stage 0.00,0.00 1280.00×720.00 · scale 1.000000<br>
+  <span class="state">prep:DRAWER:target=KOKUSHI:cost=40:see=true</span></figcaption>
+</figure>
+<figure class="card">
+  <a href="app-10-receipt-1280x720.png"><img loading="lazy" src="app-10-receipt-1280x720.png" alt="app-10-receipt-1280x720"></a>
+  <figcaption><strong>app-10-receipt-1280x720</strong><br>
+  window 1280×720 · fb 1280×720<br>
+  stage 0.00,0.00 1280.00×720.00 · scale 1.000000<br>
+  <span class="state">prep:PANEL:target=KOKUSHI:cost=40:see=true</span></figcaption>
+</figure>
+<figure class="card">
+  <a href="app-11-dealt-1280x720.png"><img loading="lazy" src="app-11-dealt-1280x720.png" alt="app-11-dealt-1280x720"></a>
+  <figcaption><strong>app-11-dealt-1280x720</strong><br>
+  window 1280×720 · fb 1280×720<br>
+  stage 0.00,0.00 1280.00×720.00 · scale 1.000000<br>
+  <span class="state">playing:hand=53:wall=69</span></figcaption>
+</figure>
+<figure class="card">
+  <a href="app-12-playing-1280x720.png"><img loading="lazy" src="app-12-playing-1280x720.png" alt="app-12-playing-1280x720"></a>
+  <figcaption><strong>app-12-playing-1280x720</strong><br>
+  window 1280×720 · fb 1280×720<br>
+  stage 0.00,0.00 1280.00×720.00 · scale 1.000000<br>
+  <span class="state">playing:hand=53:wall=69</span></figcaption>
+</figure>
+<figure class="card">
+  <a href="app-13-animation-mid-1280x720.png"><img loading="lazy" src="app-13-animation-mid-1280x720.png" alt="app-13-animation-mid-1280x720"></a>
+  <figcaption><strong>app-13-animation-mid-1280x720</strong><br>
+  window 1280×720 · fb 1280×720<br>
+  stage 0.00,0.00 1280.00×720.00 · scale 1.000000<br>
+  <span class="state">playing</span></figcaption>
+</figure>
+<figure class="card">
+  <a href="app-14-river-hint-1280x720.png"><img loading="lazy" src="app-14-river-hint-1280x720.png" alt="app-14-river-hint-1280x720"></a>
+  <figcaption><strong>app-14-river-hint-1280x720</strong><br>
+  window 1280×720 · fb 1280×720<br>
+  stage 0.00,0.00 1280.00×720.00 · scale 1.000000<br>
+  <span class="state">playing</span></figcaption>
+</figure>
+<figure class="card">
+  <a href="app-06-drawer-960x540.png"><img loading="lazy" src="app-06-drawer-960x540.png" alt="app-06-drawer-960x540"></a>
+  <figcaption><strong>app-06-drawer-960x540</strong><br>
+  window 960×540 · fb 960×540<br>
+  stage 0.00,0.00 960.00×540.00 · scale 0.750000<br>
+  <span class="state">prep:DRAWER:target=KOKUSHI:cost=40:see=true</span></figcaption>
+</figure>
+<figure class="card">
+  <a href="app-12-playing-960x540.png"><img loading="lazy" src="app-12-playing-960x540.png" alt="app-12-playing-960x540"></a>
+  <figcaption><strong>app-12-playing-960x540</strong><br>
+  window 960×540 · fb 960×540<br>
+  stage 0.00,0.00 960.00×540.00 · scale 0.750000<br>
+  <span class="state">playing:hand=53:wall=69</span></figcaption>
+</figure>
+<figure class="card">
+  <a href="app-06-drawer-1024x768.png"><img loading="lazy" src="app-06-drawer-1024x768.png" alt="app-06-drawer-1024x768"></a>
+  <figcaption><strong>app-06-drawer-1024x768</strong><br>
+  window 1024×768 · fb 1024×768<br>
+  stage 0.00,96.00 1024.00×576.00 · scale 0.800000<br>
+  <span class="state">prep:DRAWER:target=KOKUSHI:cost=40:see=true</span></figcaption>
+</figure>
+<figure class="card">
+  <a href="app-12-playing-1024x768.png"><img loading="lazy" src="app-12-playing-1024x768.png" alt="app-12-playing-1024x768"></a>
+  <figcaption><strong>app-12-playing-1024x768</strong><br>
+  window 1024×768 · fb 1024×768<br>
+  stage 0.00,96.00 1024.00×576.00 · scale 0.800000<br>
+  <span class="state">playing:hand=53:wall=69</span></figcaption>
+</figure>
+<figure class="card">
+  <a href="app-06-drawer-1280x800.png"><img loading="lazy" src="app-06-drawer-1280x800.png" alt="app-06-drawer-1280x800"></a>
+  <figcaption><strong>app-06-drawer-1280x800</strong><br>
+  window 1280×800 · fb 1280×800<br>
+  stage 0.00,40.00 1280.00×720.00 · scale 1.000000<br>
+  <span class="state">prep:DRAWER:target=KOKUSHI:cost=40:see=true</span></figcaption>
+</figure>
+<figure class="card">
+  <a href="app-12-playing-1280x800.png"><img loading="lazy" src="app-12-playing-1280x800.png" alt="app-12-playing-1280x800"></a>
+  <figcaption><strong>app-12-playing-1280x800</strong><br>
+  window 1280×800 · fb 1280×800<br>
+  stage 0.00,40.00 1280.00×720.00 · scale 1.000000<br>
+  <span class="state">playing:hand=53:wall=69</span></figcaption>
+</figure>
+<figure class="card">
+  <a href="app-06-drawer-1600x600.png"><img loading="lazy" src="app-06-drawer-1600x600.png" alt="app-06-drawer-1600x600"></a>
+  <figcaption><strong>app-06-drawer-1600x600</strong><br>
+  window 1600×600 · fb 1600×600<br>
+  stage 266.67,0.00 1066.67×600.00 · scale 0.833333<br>
+  <span class="state">prep:DRAWER:target=KOKUSHI:cost=40:see=true</span></figcaption>
+</figure>
+<figure class="card">
+  <a href="app-12-playing-1600x600.png"><img loading="lazy" src="app-12-playing-1600x600.png" alt="app-12-playing-1600x600"></a>
+  <figcaption><strong>app-12-playing-1600x600</strong><br>
+  window 1600×600 · fb 1600×600<br>
+  stage 266.67,0.00 1066.67×600.00 · scale 0.833333<br>
+  <span class="state">playing:hand=53:wall=69</span></figcaption>
+</figure>
+<figure class="card">
+  <a href="app-06-drawer-1920x1080.png"><img loading="lazy" src="app-06-drawer-1920x1080.png" alt="app-06-drawer-1920x1080"></a>
+  <figcaption><strong>app-06-drawer-1920x1080</strong><br>
+  window 1920×1080 · fb 1920×1080<br>
+  stage 0.00,0.00 1920.00×1080.00 · scale 1.500000<br>
+  <span class="state">prep:DRAWER:target=KOKUSHI:cost=40:see=true</span></figcaption>
+</figure>
+<figure class="card">
+  <a href="app-12-playing-1920x1080.png"><img loading="lazy" src="app-12-playing-1920x1080.png" alt="app-12-playing-1920x1080"></a>
+  <figcaption><strong>app-12-playing-1920x1080</strong><br>
+  window 1920×1080 · fb 1920×1080<br>
+  stage 0.00,0.00 1920.00×1080.00 · scale 1.500000<br>
+  <span class="state">playing:hand=53:wall=69</span></figcaption>
+</figure>
+<figure class="card">
+  <a href="app-06-drawer-2560x1080.png"><img loading="lazy" src="app-06-drawer-2560x1080.png" alt="app-06-drawer-2560x1080"></a>
+  <figcaption><strong>app-06-drawer-2560x1080</strong><br>
+  window 2560×1080 · fb 2560×1080<br>
+  stage 320.00,0.00 1920.00×1080.00 · scale 1.500000<br>
+  <span class="state">prep:DRAWER:target=KOKUSHI:cost=40:see=true</span></figcaption>
+</figure>
+<figure class="card">
+  <a href="app-12-playing-2560x1080.png"><img loading="lazy" src="app-12-playing-2560x1080.png" alt="app-12-playing-2560x1080"></a>
+  <figcaption><strong>app-12-playing-2560x1080</strong><br>
+  window 2560×1080 · fb 2560×1080<br>
+  stage 320.00,0.00 1920.00×1080.00 · scale 1.500000<br>
+  <span class="state">playing:hand=53:wall=69</span></figcaption>
+</figure>
+</main>
+</body>
+</html>

@@ -1,0 +1,606 @@
+{
+  "version": 1,
+  "designSize": [
+    1280,
+    720
+  ],
+  "origin": "top-left",
+  "runtimeY": "720 - y - height",
+  "texture": {
+    "filter": "Linear",
+    "wrap": "ClampToEdge",
+    "mipmaps": false,
+    "alpha": "straight; SRC_ALPHA, ONE_MINUS_SRC_ALPHA"
+  },
+  "files": {
+    "environment": {
+      "file": "club-environment.png",
+      "draw": "cover; centered; no pan",
+      "size": [
+        1672,
+        941
+      ],
+      "sha256": "32f05e536b4cb79da989811620242d242a5afd1805effebf122480f41400983f"
+    },
+    "board": {
+      "file": "jade-table-board.png",
+      "draw": "fixed destination; do not resize for drawer",
+      "size": [
+        1536,
+        1024
+      ],
+      "sha256": "610878722c40b31c50dd2ca27304980ac4787b74003c691fe27954a06061b42d"
+    },
+    "panel": {
+      "file": "jade-panel-skin.png",
+      "split": [
+        340,
+        340,
+        340,
+        340
+      ],
+      "destinationBorders": [
+        44,
+        44,
+        44,
+        44
+      ],
+      "size": [
+        1254,
+        1254
+      ],
+      "sha256": "4dda0d8a74a46218039fbc7a62cacb49e38ba43c70501ad7df3a9c158b09557b"
+    },
+    "buttons": {
+      "file": "button-skins.png",
+      "regions": {
+        "primary": [
+          40,
+          96,
+          1456,
+          384
+        ],
+        "secondary": [
+          40,
+          544,
+          1456,
+          384
+        ]
+      },
+      "split": [
+        248,
+        248,
+        120,
+        120
+      ],
+      "destinationBorders": [
+        32,
+        32,
+        18,
+        18
+      ],
+      "size": [
+        1536,
+        1024
+      ],
+      "sha256": "ce49322ed2b56449fce48cf5f9fce1dc833ad2fecf5583e21f31c4133b70653f"
+    },
+    "portraits": {
+      "file": "animal-medallions.png",
+      "regions": {
+        "octopus": [
+          0,
+          0,
+          627,
+          627
+        ],
+        "fox": [
+          627,
+          0,
+          627,
+          627
+        ],
+        "panda": [
+          0,
+          627,
+          627,
+          627
+        ],
+        "magpie": [
+          627,
+          627,
+          627,
+          627
+        ]
+      },
+      "absoluteSeatMap": [
+        "octopus",
+        "magpie",
+        "panda",
+        "fox"
+      ],
+      "size": [
+        1254,
+        1254
+      ],
+      "sha256": "c457e074ba4fb7431d75559dcaecba471cfa516f99360427149a3fe36b1e9149"
+    },
+    "targets": {
+      "file": "target-card-scenes.png",
+      "regions": {
+        "CHINITSU_MAN": [
+          16,
+          8,
+          744,
+          324
+        ],
+        "CHINITSU_SOU": [
+          776,
+          8,
+          744,
+          324
+        ],
+        "CHINITSU_PIN": [
+          16,
+          340,
+          744,
+          324
+        ],
+        "DAISANGEN": [
+          776,
+          340,
+          744,
+          324
+        ],
+        "KOKUSHI": [
+          16,
+          672,
+          744,
+          324
+        ],
+        "DAISUUSHII": [
+          776,
+          672,
+          744,
+          324
+        ]
+      },
+      "size": [
+        1536,
+        1024
+      ],
+      "sha256": "0000aaec911e09c9ed4aedc787deeb382045a421b30da09891ac1fba69062c37"
+    },
+    "compass": {
+      "file": "round-compass.png",
+      "windCenters": [
+        [
+          0.5,
+          0.175
+        ],
+        [
+          0.86,
+          0.48
+        ],
+        [
+          0.5,
+          0.805
+        ],
+        [
+          0.14,
+          0.48
+        ]
+      ],
+      "size": [
+        1254,
+        1254
+      ],
+      "sha256": "b34c8db1bf00d0c6f687ffbbcd2bdcd3d8393cbe81f05b7d32c43546f656ea7f"
+    }
+  },
+  "layers": [
+    {
+      "z": 0,
+      "name": "environment",
+      "rect": [
+        0,
+        0,
+        1280,
+        720
+      ],
+      "shared": true
+    },
+    {
+      "z": 10,
+      "name": "board",
+      "rect": [
+        32,
+        76,
+        1216,
+        620
+      ],
+      "shared": true
+    },
+    {
+      "z": 20,
+      "name": "compass",
+      "prep": [
+        344,
+        250,
+        220,
+        220
+      ],
+      "playing": [
+        546,
+        261,
+        188,
+        188
+      ]
+    },
+    {
+      "z": 30,
+      "name": "public seats",
+      "description": "actual public names, scores, wind and clocks; artwork is decoration"
+    },
+    {
+      "z": 40,
+      "name": "real tiles",
+      "description": "dealt snapshots only; no fake hands before deal"
+    },
+    {
+      "z": 50,
+      "name": "preparation dock / drawer / receipt",
+      "description": "local panel translation only"
+    },
+    {
+      "z": 60,
+      "name": "selection and focus",
+      "description": "gold outline + check, never color alone"
+    },
+    {
+      "z": 70,
+      "name": "text, cost, countdown, errors",
+      "description": "render dynamically, do not bake into art"
+    },
+    {
+      "z": 100,
+      "name": "existing system dialogs",
+      "description": "preserve modal priority"
+    }
+  ],
+  "preparation": {
+    "panel": [
+      936,
+      48,
+      312,
+      624
+    ],
+    "countdown": [
+      960,
+      124,
+      264,
+      40
+    ],
+    "openTarget": [
+      956,
+      188,
+      272,
+      156
+    ],
+    "seeThrough": [
+      956,
+      360,
+      272,
+      64
+    ],
+    "summary": [
+      956,
+      464,
+      272,
+      66
+    ],
+    "primary": [
+      956,
+      552,
+      272,
+      76
+    ],
+    "balance": [
+      956,
+      638,
+      272,
+      20
+    ],
+    "compass": [
+      344,
+      250,
+      220,
+      220
+    ],
+    "hint": [
+      228,
+      622,
+      552,
+      54
+    ],
+    "seats": {
+      "self": {
+        "portrait": [
+          16,
+          490,
+          144,
+          144
+        ],
+        "plate": [
+          20,
+          622,
+          140,
+          50
+        ]
+      },
+      "left": {
+        "portrait": [
+          16,
+          184,
+          144,
+          144
+        ],
+        "plate": [
+          20,
+          316,
+          140,
+          50
+        ]
+      },
+      "top": {
+        "portrait": [
+          368,
+          8,
+          120,
+          120
+        ],
+        "plate": [
+          488,
+          30,
+          160,
+          54
+        ]
+      },
+      "right": {
+        "portrait": [
+          800,
+          178,
+          128,
+          128
+        ],
+        "plate": [
+          804,
+          300,
+          124,
+          50
+        ]
+      }
+    },
+    "drawerRightSeat": {
+      "portrait": [
+        536,
+        172,
+        124,
+        124
+      ],
+      "plate": [
+        538,
+        292,
+        124,
+        50
+      ]
+    }
+  },
+  "drawer": {
+    "panel": [
+      688,
+      40,
+      560,
+      640
+    ],
+    "back": [
+      1140,
+      60,
+      88,
+      40
+    ],
+    "hint": [
+      708,
+      112,
+      520,
+      24
+    ],
+    "cards": [
+      [
+        708,
+        154,
+        252,
+        114
+      ],
+      [
+        976,
+        154,
+        252,
+        114
+      ],
+      [
+        708,
+        284,
+        252,
+        114
+      ],
+      [
+        976,
+        284,
+        252,
+        114
+      ],
+      [
+        708,
+        414,
+        252,
+        114
+      ],
+      [
+        976,
+        414,
+        252,
+        114
+      ]
+    ],
+    "seeThrough": [
+      708,
+      544,
+      252,
+      58
+    ],
+    "cost": [
+      976,
+      544,
+      252,
+      58
+    ],
+    "skip": [
+      708,
+      616,
+      252,
+      48
+    ],
+    "confirm": [
+      976,
+      616,
+      252,
+      48
+    ]
+  },
+  "receipt": {
+    "panel": [
+      944,
+      160,
+      304,
+      260
+    ]
+  },
+  "playing": {
+    "compass": [
+      546,
+      261,
+      188,
+      188
+    ],
+    "seats": {
+      "self": {
+        "portrait": [
+          16,
+          564,
+          112,
+          112
+        ],
+        "plate": [
+          128,
+          614,
+          80,
+          48
+        ]
+      },
+      "left": {
+        "portrait": [
+          16,
+          228,
+          112,
+          112
+        ],
+        "plate": [
+          16,
+          340,
+          112,
+          58
+        ]
+      },
+      "top": {
+        "portrait": [
+          308,
+          4,
+          112,
+          112
+        ],
+        "plate": [
+          164,
+          22,
+          148,
+          54
+        ]
+      },
+      "right": {
+        "portrait": [
+          1148,
+          228,
+          112,
+          112
+        ],
+        "plate": [
+          1148,
+          340,
+          112,
+          58
+        ]
+      }
+    },
+    "handTray": [
+      208,
+      596,
+      852,
+      110
+    ],
+    "topTray": [
+      436,
+      8,
+      408,
+      54
+    ],
+    "actionsX": 1078
+  },
+  "type": {
+    "title": 34,
+    "drawerTitle": 28,
+    "cardLabel": 21,
+    "primary": 25,
+    "body": 19,
+    "small": 16,
+    "score": 21,
+    "ink": "#f8e6aa",
+    "muted": "#d3c9a8",
+    "gold": "#e7b953",
+    "jade": "#95dea6",
+    "danger": "#ff9b83"
+  },
+  "motion": {
+    "dock": {
+      "fromX": 72,
+      "durationMs": 220
+    },
+    "drawer": {
+      "fromX": 160,
+      "durationMs": 280,
+      "easing": "easeOutCubic"
+    },
+    "selection": {
+      "liftY": 4,
+      "durationMs": 120
+    },
+    "receipt": {
+      "fadeMs": 150,
+      "blocksDealing": false
+    },
+    "background": {
+      "translation": 0,
+      "scaleChange": 0
+    }
+  },
+  "estimatedTextureBytes": 44037968
+}

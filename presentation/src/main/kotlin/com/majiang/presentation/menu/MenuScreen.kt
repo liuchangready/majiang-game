@@ -103,6 +103,14 @@ class MenuScreen(
     var currentState: MenuState = if (initialLobby != null) MenuState.LOBBY else MenuState.MAIN
         private set
 
+    /**
+     * 只有“点击入口后出现的目标内容”使用**淡入**（固定位置，不做任何平移）；
+     * 完整大厅/房间页保持既有整屏切换，避免主场景被整体拖动。
+     * MAIN 自身的六项入场由 [MainMenuView] 负责，点击反馈位移由 [MainMenuButtonMotion] 负责。
+     */
+    private val overlayReveal = MenuOverlayReveal(motionEnabled = motionEnabled, clock = clock)
+    private var overlayRevealState: MenuState = currentState
+
     // 状态提示与错误信息
     private var statusMessage: String? = null
     var errorMessage: String? = null
@@ -273,6 +281,8 @@ class MenuScreen(
         // 统一内容视口：绘制与 unproject 使用同一 viewport。
         viewport.apply()
         camera.update()
+        // 动画只在渲染帧启动/推进；输入不因视觉反馈被门控，业务回调永远即时。
+        syncOverlayReveal(clock())
 
         val shape = assets.shapeRenderer
         val batch = assets.batch
@@ -295,9 +305,7 @@ class MenuScreen(
                 roomList, selectedRoom,
                 statusMessage, errorMessage
             )
-            MenuState.CREATE_ROOM_DIALOG -> createRoomDialogView.render(
-                camera, shape, batch, font
-            )
+            MenuState.CREATE_ROOM_DIALOG -> createRoomDialogView.render(camera, shape, batch, font)
             MenuState.JOIN_ROOM_DIALOG -> joinRoomDialogView.render(
                 camera, shape, batch, font,
                 animTimer, errorMessage
@@ -309,15 +317,55 @@ class MenuScreen(
                 statusMessage, errorMessage
             )
             MenuState.SECRETS_MODAL -> {
-                // 稳定菜单底图 + 覆盖弹窗；不重播入场，输入由父层状态独占。
+                // 菜单底图与全屏遮罩保持稳定，只让目标弹窗原位淡入。
                 renderMainMenuContent(shape, batch, font)
+                renderModalDimmer(shape)
                 renderSecretsModal(shape, batch, font)
             }
             MenuState.SETTINGS_MODAL -> {
                 renderMainMenuContent(shape, batch, font)
+                renderModalDimmer(shape)
                 renderSettingsModal(shape, batch, font)
             }
         }
+    }
+
+    /**
+     * 检测覆盖层状态切换并推进淡入。目标弹窗始终固定在原位，只改 alpha；
+     * 相机位置与投影在菜单生命周期内从不因点击而改变。
+     */
+    internal fun syncOverlayReveal(nowMs: Long = clock()) {
+        if (currentState != overlayRevealState) {
+            overlayRevealState = currentState
+            if (currentState == MenuState.SECRETS_MODAL || currentState == MenuState.SETTINGS_MODAL) {
+                overlayReveal.start(nowMs)
+            } else {
+                overlayReveal.snap()
+            }
+            return
+        }
+        if (overlayReveal.isActive) {
+            overlayReveal.update(nowMs)
+        }
+    }
+
+    /**
+     * 仅供 GL 冒烟与诊断：当前覆盖层遮罩的 alpha（0..1）。
+     * 遮罩只做淡入，不移动任何像素；冒烟用它对帧做亮度归一化后比较按钮位移。
+     */
+    val overlayRevealAlpha: Float get() = overlayReveal.alpha
+
+    /**
+     * 仅供 GL 冒烟与诊断：返回相机状态快照（位置 + 投影矩阵元素）。
+     * 用于证明菜单点击与弹窗打开都不会让相机或投影横移。
+     */
+    fun cameraStateForDiagnostics(): FloatArray {
+        val projection = camera.combined.getValues()
+        val state = FloatArray(2 + projection.size)
+        state[0] = camera.position.x
+        state[1] = camera.position.y
+        System.arraycopy(projection, 0, state, 2, projection.size)
+        return state
     }
 
     private fun renderMainMenuContent(shape: ShapeRenderer, batch: SpriteBatch, font: BitmapFont) {
@@ -353,6 +401,8 @@ class MenuScreen(
     private fun closeOverlay() {
         if (currentState != MenuState.SECRETS_MODAL && currentState != MenuState.SETTINGS_MODAL) return
         currentState = MenuState.MAIN
+        // 关闭覆盖层后不允许残留任何点击位移。
+        mainMenuView.resetButtonMotion()
         mainMenuView.restoreFocus(overlayReturnFocus)
         overlayReturnFocus = null
     }
@@ -464,16 +514,31 @@ class MenuScreen(
         batch.end()
     }
 
+    /**
+     * 全屏遮罩单独绘制：它属于稳定底图，不随任何内容平移，只做短促淡入。
+     */
+    private fun renderModalDimmer(shape: ShapeRenderer) {
+        val alpha = overlayReveal.alpha
+        if (alpha <= 0f) return
+        enableMenuAlphaBlending()
+        shape.projectionMatrix = camera.combined
+        shape.begin(ShapeRenderer.ShapeType.Filled)
+        try {
+            shape.color = Color(0f, 0f, 0f, 0.75f * alpha)
+            shape.rect(0f, 0f, 1280f, 720f)
+        } finally {
+            shape.end()
+        }
+    }
+
     private fun renderModalBase(shape: ShapeRenderer, batch: SpriteBatch, font: BitmapFont) {
-        // 菜单底图刚结束 SpriteBatch，GL_BLEND 已被关闭；遮罩必须重新开启混合。
+        // 菜单底图刚结束 SpriteBatch，GL_BLEND 已被关闭；弹窗面板必须重新开启混合。
         enableMenuAlphaBlending()
         shape.projectionMatrix = camera.combined
         shape.begin(ShapeRenderer.ShapeType.Filled)
 
-        shape.color = Color(0f, 0f, 0f, 0.75f)
-        shape.rect(0f, 0f, 1280f, 720f)
-
-        shape.color = Color(0.08f, 0.16f, 0.12f, 0.98f)
+        // 面板固定在原位且完全不透明：覆盖层出现时目标层没有任何横向位移。
+        shape.color = Color(0.08f, 0.16f, 0.12f, 1f)
         shape.rect(modalRect.x, modalRect.y, modalRect.width, modalRect.height)
 
         MenuViewDraw.drawButton(shape, btnModalClose, isPrimary = false)
@@ -1066,6 +1131,8 @@ class MenuScreen(
 
     override fun hide() {
         mainMenuView.cancelPress()
+        // 隐藏后不允许残留任何点击位移或焦点状态。
+        mainMenuView.resetButtonMotion()
     }
 
     override fun dispose() {

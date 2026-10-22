@@ -1,0 +1,21 @@
+create: window=1280x720
+SHOT D:\majiang\snapshot\menu-button-motion-smoke\01_skin_settled_reference.png (1280x720, 1521143 bytes)
+SHOT D:\majiang\snapshot\menu-button-motion-smoke\02_skin_click_000ms.png (1280x720, 1521104 bytes)
+SHOT D:\majiang\snapshot\menu-button-motion-smoke\03_skin_click_080ms.png (1280x720, 1520224 bytes)
+SHOT D:\majiang\snapshot\menu-button-motion-smoke\04_skin_click_160ms.png (1280x720, 1520302 bytes)
+SHOT D:\majiang\snapshot\menu-button-motion-smoke\05_skin_click_300ms.png (1280x720, 1521147 bytes)
+MOTION skin plate/icon shiftPx 0ms=0 80ms=49 160ms=56 300ms=0
+STATIC 80ms drift title=0.00 subtitle=0.00 mascot=0.00 neighbour=0.00 background=0.00
+STATIC 80ms button region drift=193.93
+CAMERA click: position+projection unchanged (18 floats)
+SHOT D:\majiang\snapshot\menu-button-motion-smoke\06_settings_open_000ms.png (1280x720, 920025 bytes)
+SHOT D:\majiang\snapshot\menu-button-motion-smoke\07_settings_open_080ms.png (1280x720, 763648 bytes)
+SHOT D:\majiang\snapshot\menu-button-motion-smoke\08_settings_settled.png (1280x720, 578255 bytes)
+CAMERA overlay: position+projection unchanged (18 floats)
+OVERLAY panel maxAbsDiff 0ms=0.0 80ms=0.0
+OVERLAY dimmer region meanAbsDiff=125.62 revealAlpha 0ms=0.0 80ms=0.606414
+OVERLAY settings focus-ring shiftPx=49 (dimmerFactor=0.55, scale=1.83)
+SHOT D:\majiang\snapshot\menu-button-motion-smoke\09_resized_960x540.png (1280x720, 1627581 bytes)
+SHOT D:\majiang\snapshot\menu-button-motion-smoke\10_resized_960x540_moved.png (1280x720, 1271980 bytes)
+RESIZE 960x540: click aligned, motion offset=49.0
+PASS: menu button motion verified (button slides right, background stays, camera never shifts)

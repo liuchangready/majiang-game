@@ -341,10 +341,12 @@ class MainMenuScreenContractTest : GdxHeadlessTestRunner() {
             assertTrue(screen.mainMenuView.isItemEnabled(MainMenuItemId.ONLINE))
             assertTrue(screen.errorMessage?.contains("单机启动失败") == true)
 
+            // 点击反馈位移期间该入口禁止再次激活：先把时间轴推进到位移结束再重试。
+            clock.nowMs += MainMenuButtonMotion.TOTAL_MS
+            screen.mainMenuView.update(clock.nowMs)
             tapItem(screen, MainMenuItemId.SOLO)
             assertEquals(2, nav.localLobbyCalls, "failure must allow a clean retry")
-            drainUi()
-        } finally {
+            drainUi()        } finally {
             screen.dispose()
             assets.dispose()
         }
