@@ -1,0 +1,13 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <AssemblyName>Mahjong.Domain</AssemblyName>
+    <RootNamespace>Mahjong.Domain</RootNamespace>
+  </PropertyGroup>
+
+  <!--
+    V5-1 territory: tile entities, 41 yaku scoring, 136-tile conservation, round/match
+    state machines, cheats and ledger. No Unity, protocol, socket, database or wall clock.
+  -->
+
+</Project>

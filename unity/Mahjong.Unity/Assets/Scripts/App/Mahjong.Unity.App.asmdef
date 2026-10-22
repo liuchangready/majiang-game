@@ -1,0 +1,19 @@
+{
+  "name": "Mahjong.Unity.App",
+  "rootNamespace": "Mahjong.Unity.App",
+  "references": [
+    "Mahjong.Unity.UI",
+    "Mahjong.Unity.Table",
+    "Mahjong.Unity.Spectator",
+    "Mahjong.Unity.Platform"
+  ],
+  "includePlatforms": [],
+  "excludePlatforms": [],
+  "allowUnsafeCode": false,
+  "overrideReferences": false,
+  "precompiledReferences": [],
+  "autoReferenced": true,
+  "defineConstraints": [],
+  "versionDefines": [],
+  "noEngineReferences": false
+}

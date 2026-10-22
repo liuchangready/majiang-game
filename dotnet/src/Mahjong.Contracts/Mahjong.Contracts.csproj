@@ -1,0 +1,10 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <AssemblyName>Mahjong.Contracts</AssemblyName>
+    <RootNamespace>Mahjong.Contracts</RootNamespace>
+  </PropertyGroup>
+
+  <!-- Wire DTOs, version constants, error codes and client-visible views. No domain state objects. -->
+
+</Project>

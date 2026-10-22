@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <AssemblyName>Mahjong.TableRuntime</AssemblyName>
+    <RootNamespace>Mahjong.TableRuntime</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Mahjong.Domain\Mahjong.Domain.csproj" />
+    <ProjectReference Include="..\Mahjong.Contracts\Mahjong.Contracts.csproj" />
+  </ItemGroup>
+
+  <!-- Per-table command handling, projection, serial scheduling, control epochs and snapshot semantics. -->
+
+</Project>

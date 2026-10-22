@@ -1,0 +1,14 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <AssemblyName>Mahjong.Client</AssemblyName>
+    <RootNamespace>Mahjong.Client</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Mahjong.Contracts\Mahjong.Contracts.csproj" />
+  </ItemGroup>
+
+  <!-- Session facades, local/remote bindings, receipt tracking, buffering, reconnect, view cache. -->
+
+</Project>

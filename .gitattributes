@@ -1,0 +1,19 @@
+# Unity 工程使用 YAML 文本序列化，统一 LF 以减少跨平台 diff 噪声。
+*.unity text eol=lf
+*.prefab text eol=lf
+*.asset text eol=lf
+*.mat text eol=lf
+*.anim text eol=lf
+*.controller text eol=lf
+*.overrideController text eol=lf
+*.meta text eol=lf
+*.asmdef text eol=lf
+*.asmref text eol=lf
+*.shader text eol=lf
+*.compute text eol=lf
+*.hlsl text eol=lf
+*.cginc text eol=lf
+
+*.cs text diff=csharp
+*.sln text eol=crlf
+*.csproj text eol=crlf
