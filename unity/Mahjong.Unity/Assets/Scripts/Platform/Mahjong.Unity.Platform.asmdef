@@ -1,0 +1,14 @@
+{
+  "name": "Mahjong.Unity.Platform",
+  "rootNamespace": "Mahjong.Unity.Platform",
+  "references": [],
+  "includePlatforms": [],
+  "excludePlatforms": [],
+  "allowUnsafeCode": false,
+  "overrideReferences": false,
+  "precompiledReferences": [],
+  "autoReferenced": true,
+  "defineConstraints": [],
+  "versionDefines": [],
+  "noEngineReferences": false
+}

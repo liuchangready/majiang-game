@@ -1,0 +1,55 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.0.31903.59
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "src", "src", "{C0969CA1-0C4C-4763-B55E-E7D54DF59C9D}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Mahjong.Client", "src\Mahjong.Client\Mahjong.Client.csproj", "{901A066E-48A8-49FE-AA9C-1862BB73F301}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Mahjong.Contracts", "src\Mahjong.Contracts\Mahjong.Contracts.csproj", "{43D8A467-351C-4A9C-A74D-08D7C5B15349}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Mahjong.Domain", "src\Mahjong.Domain\Mahjong.Domain.csproj", "{FE4298E2-863B-485F-B592-4268E5A03119}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Mahjong.LocalHost", "src\Mahjong.LocalHost\Mahjong.LocalHost.csproj", "{CDD65AF7-AFAB-47F0-8CB2-474CEDDBDF0F}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Mahjong.TableRuntime", "src\Mahjong.TableRuntime\Mahjong.TableRuntime.csproj", "{20926663-AF70-4164-A030-4958F60803DB}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{901A066E-48A8-49FE-AA9C-1862BB73F301}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{901A066E-48A8-49FE-AA9C-1862BB73F301}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{901A066E-48A8-49FE-AA9C-1862BB73F301}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{901A066E-48A8-49FE-AA9C-1862BB73F301}.Release|Any CPU.Build.0 = Release|Any CPU
+		{43D8A467-351C-4A9C-A74D-08D7C5B15349}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{43D8A467-351C-4A9C-A74D-08D7C5B15349}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{43D8A467-351C-4A9C-A74D-08D7C5B15349}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{43D8A467-351C-4A9C-A74D-08D7C5B15349}.Release|Any CPU.Build.0 = Release|Any CPU
+		{FE4298E2-863B-485F-B592-4268E5A03119}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{FE4298E2-863B-485F-B592-4268E5A03119}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{FE4298E2-863B-485F-B592-4268E5A03119}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{FE4298E2-863B-485F-B592-4268E5A03119}.Release|Any CPU.Build.0 = Release|Any CPU
+		{CDD65AF7-AFAB-47F0-8CB2-474CEDDBDF0F}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{CDD65AF7-AFAB-47F0-8CB2-474CEDDBDF0F}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{CDD65AF7-AFAB-47F0-8CB2-474CEDDBDF0F}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{CDD65AF7-AFAB-47F0-8CB2-474CEDDBDF0F}.Release|Any CPU.Build.0 = Release|Any CPU
+		{20926663-AF70-4164-A030-4958F60803DB}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{20926663-AF70-4164-A030-4958F60803DB}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{20926663-AF70-4164-A030-4958F60803DB}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{20926663-AF70-4164-A030-4958F60803DB}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(NestedProjects) = preSolution
+		{901A066E-48A8-49FE-AA9C-1862BB73F301} = {C0969CA1-0C4C-4763-B55E-E7D54DF59C9D}
+		{43D8A467-351C-4A9C-A74D-08D7C5B15349} = {C0969CA1-0C4C-4763-B55E-E7D54DF59C9D}
+		{FE4298E2-863B-485F-B592-4268E5A03119} = {C0969CA1-0C4C-4763-B55E-E7D54DF59C9D}
+		{CDD65AF7-AFAB-47F0-8CB2-474CEDDBDF0F} = {C0969CA1-0C4C-4763-B55E-E7D54DF59C9D}
+		{20926663-AF70-4164-A030-4958F60803DB} = {C0969CA1-0C4C-4763-B55E-E7D54DF59C9D}
+	EndGlobalSection
+EndGlobal

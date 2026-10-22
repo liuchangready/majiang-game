@@ -1,0 +1,14 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <AssemblyName>Mahjong.LocalHost</AssemblyName>
+    <RootNamespace>Mahjong.LocalHost</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Mahjong.TableRuntime\Mahjong.TableRuntime.csproj" />
+  </ItemGroup>
+
+  <!-- In-process table host with injectable clock and local save. Used by Unity offline play. -->
+
+</Project>

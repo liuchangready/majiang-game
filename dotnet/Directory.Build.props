@@ -1,0 +1,21 @@
+<Project>
+
+  <!--
+    Shared settings for every Mahjong .NET project that must also load inside Unity.
+
+    Unity 6 compiles user scripts against .NET Standard 2.1 with C# 9, so the shared
+    libraries are held to that same floor. Anything newer belongs in the server-only
+    projects (Mahjong.LobbyService / Mahjong.TableService), never in a shared assembly.
+  -->
+  <PropertyGroup>
+    <TargetFramework>netstandard2.1</TargetFramework>
+    <LangVersion>9.0</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <Deterministic>true</Deterministic>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <DebugType>portable</DebugType>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+  </PropertyGroup>
+
+</Project>

@@ -1,0 +1,14 @@
+{
+  "name": "Mahjong.Unity.Table",
+  "rootNamespace": "Mahjong.Unity.Table",
+  "references": [],
+  "includePlatforms": [],
+  "excludePlatforms": [],
+  "allowUnsafeCode": false,
+  "overrideReferences": false,
+  "precompiledReferences": [],
+  "autoReferenced": true,
+  "defineConstraints": [],
+  "versionDefines": [],
+  "noEngineReferences": false
+}

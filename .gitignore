@@ -25,3 +25,37 @@ snapshot/*edge*/
 # OS
 Thumbs.db
 .DS_Store
+
+# ---------------------------------------------------------------------------
+# Unity (V5 客户端工程位于 unity/Mahjong.Unity)
+# 只忽略生成物；Assets/ 下的源码、场景、.meta 与 ProjectSettings 必须入库。
+# ---------------------------------------------------------------------------
+unity/**/[Ll]ibrary/
+unity/**/[Tt]emp/
+unity/**/[Oo]bj/
+unity/**/[Bb]uild/
+unity/**/[Bb]uilds/
+unity/**/[Ll]ogs/
+unity/**/[Uu]ser[Ss]ettings/
+unity/**/[Mm]emoryCaptures/
+unity/**/[Rr]ecordings/
+unity/**/.vs/
+unity/**/.idea/
+unity/**/*.csproj
+unity/**/*.sln
+unity/**/*.suo
+unity/**/*.user
+unity/**/*.userprefs
+unity/**/*.pidb
+unity/**/*.booproj
+unity/**/*.svd
+unity/**/*.opendb
+unity/**/*.VC.db
+unity/**/*.unityproj
+unity/**/*.pdb.meta
+unity/**/*.mdb.meta
+unity/**/crashlytics-build.properties
+
+# .NET 共享程序集构建输出
+dotnet/**/bin/
+dotnet/**/obj/
