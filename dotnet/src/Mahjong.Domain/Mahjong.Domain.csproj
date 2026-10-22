@@ -3,10 +3,12 @@
   <PropertyGroup>
     <AssemblyName>Mahjong.Domain</AssemblyName>
     <RootNamespace>Mahjong.Domain</RootNamespace>
+    <TargetFramework>netstandard2.1</TargetFramework>
+    <LangVersion>9.0</LangVersion>
   </PropertyGroup>
 
   <!--
-    V5-1 territory: tile entities, 41 yaku scoring, 136-tile conservation, round/match
+    V5-1 territory: tile entities, 42 yaku scoring, 136-tile conservation, round/match
     state machines, cheats and ledger. No Unity, protocol, socket, database or wall clock.
   -->
 
