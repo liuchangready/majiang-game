@@ -1,0 +1,24 @@
+// Standalone, retained design reference. No change to production APP entry points.
+gradle.projectsEvaluated {
+    def desktop = gradle.rootProject.project(':lwjgl3')
+    def classes = gradle.rootProject.layout.buildDirectory.dir('responsive-design/classes')
+    def compile = desktop.tasks.register('compileResponsiveDesign', JavaCompile) {
+        dependsOn desktop.tasks.named('classes')
+        source gradle.rootProject.fileTree('tools/ui-layout') { include '*.java' }
+        classpath = desktop.sourceSets.main.runtimeClasspath
+        destinationDirectory.set(classes)
+        options.release = 17
+        options.encoding = 'UTF-8'
+    }
+    desktop.tasks.register('responsiveDesign', JavaExec) {
+        group = 'verification'
+        description = 'Actually draws the responsive design in LWJGL, resizes the window, saves PNGs and tests GPU positions.'
+        dependsOn compile
+        classpath = desktop.files(classes) + desktop.sourceSets.main.runtimeClasspath
+        mainClass = 'ResponsiveTableDesignTest'
+        workingDir = gradle.rootProject.file('assets')
+        systemProperty 'design.out', gradle.rootProject.file('doc/ui/round-preparation/responsive-validation').absolutePath
+        systemProperty 'design.visible', gradle.rootProject.findProperty('designVisible') ?: 'false'
+        maxHeapSize = '1536m'
+    }
+}

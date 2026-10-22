@@ -16,7 +16,9 @@ gradle.projectsEvaluated {
         workingDir = gradle.rootProject.file('assets')
         def mode = gradle.rootProject.findProperty('smokeMode') ?: 'target'
         systemProperty 'smoke.mode', mode
-        systemProperty 'smoke.output', gradle.rootProject.file("build/round-preparation/screenshots-${mode}").absolutePath
+        def output = gradle.rootProject.findProperty('smokeOutput')
+            ?: "doc/ui/round-preparation/visual-runtime"
+        systemProperty 'smoke.output', gradle.rootProject.file(output).absolutePath
     }
     p.tasks.register('roundPreparationSmokeZero', JavaExec) {
         dependsOn compile

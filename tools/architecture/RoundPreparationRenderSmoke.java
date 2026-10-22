@@ -42,7 +42,7 @@ import java.util.List;
  */
 public final class RoundPreparationRenderSmoke implements ApplicationListener {
 
-    private static final String DEFAULT_OUT = "D:/majiang/snapshot/round-preparation-smoke";
+    private static final String DEFAULT_OUT = "D:/majiang/doc/ui/round-preparation/visual-runtime";
     private static final long OVERALL_TIMEOUT_MS = 60_000L;
     private static final int WIDTH = 1280;
     private static final int HEIGHT = 720;
@@ -51,13 +51,18 @@ public final class RoundPreparationRenderSmoke implements ApplicationListener {
     private static final int WIDE_WIDTH = 1600;
     private static final int WIDE_HEIGHT = 600;
 
-    /** 回执标题「方案已确认」在 1280×720 帧缓冲中的位置（PNG 坐标，左上角原点）。 */
-    private static final int RECEIPT_TITLE_X0 = 950;
-    private static final int RECEIPT_TITLE_X1 = 1080;
-    private static final int RECEIPT_TITLE_Y0 = 104;
-    private static final int RECEIPT_TITLE_Y1 = 128;
+    /**
+     * 回执标题「方案已确认」在 1280×720 帧缓冲中的位置（PNG 坐标，左上角原点）。
+     *
+     * 新回执卡为 `(944,300,304,260)`，34px 暖金标题顶部在卡内 y+190
+     * （世界坐标），PNG 区域覆盖完整字形。
+     */
+    private static final int RECEIPT_TITLE_X0 = 990;
+    private static final int RECEIPT_TITLE_X1 = 1200;
+    private static final int RECEIPT_TITLE_Y0 = 188;
+    private static final int RECEIPT_TITLE_Y1 = 250;
 
-    /** 回执标题至少要有这么多亮绿色像素，才算「可读」而不是淡出中段。 */
+    /** 回执标题至少要有这么多暖金色像素，才算「可读」而不是淡出中段。 */
     private static final int RECEIPT_TITLE_MIN_PIXELS = 40;
 
     private final String mode = System.getProperty("smoke.mode", "target");
@@ -132,6 +137,7 @@ public final class RoundPreparationRenderSmoke implements ApplicationListener {
     private void fail(String phase, Throwable t) {
         failed = true;
         log("FAIL phase=" + phase + " : " + t);
+        t.printStackTrace(System.out);
         for (Throwable c = t.getCause(); c != null; c = c.getCause()) {
             log("  caused by: " + c);
         }
@@ -212,7 +218,7 @@ public final class RoundPreparationRenderSmoke implements ApplicationListener {
                     int r = (rgb >>> 16) & 255;
                     int g = (rgb >>> 8) & 255;
                     int b = rgb & 255;
-                    if (g > 180 && r > 60 && b > 90) count++;
+                    if (r > 170 && g > 115 && b < 150 && r + g > 300) count++;
                 }
             }
             return count;
@@ -222,8 +228,14 @@ public final class RoundPreparationRenderSmoke implements ApplicationListener {
     }
 
     private void clickPanel(GameScreen screen, Rectangle rect) {
-        int screenX = (int) ((rect.x + rect.width / 2f) * Gdx.graphics.getWidth() / 1280f);
-        int screenY = (int) ((720f - rect.y - rect.height / 2f) * Gdx.graphics.getHeight() / 720f);
+        clickWorld(screen, rect.x + rect.width / 2f, rect.y + rect.height / 2f);
+    }
+
+    /** Click a 1280×720 design coordinate through the same stage transform used for drawing. */
+    private void clickWorld(GameScreen screen, float worldX, float worldY) {
+        com.badlogic.gdx.math.Vector2 point = screen.stageToScreen(worldX, worldY);
+        int screenX = Math.round(point.x);
+        int screenY = Math.round(point.y);
         screen.touchDown(screenX, screenY, 0, 0);
         screen.touchUp(screenX, screenY, 0, 0);
     }
@@ -282,17 +294,17 @@ public final class RoundPreparationRenderSmoke implements ApplicationListener {
                     if (panel.getMotion().getPanelOffsetX() > 0.01f) {
                         return;
                     }
-                    capture("01-entry-default");
+                    capture("visual-runtime-01-entry-1280");
 
                     // The table must stay visible: the left area is not a full-screen black mask.
                     // PNG coordinates are top-left based, so world (x, y) maps to (x, 720 - y).
-                    int[] felt = samplePng("01-entry-default", 320, 360);
+                    int[] felt = samplePng("visual-runtime-01-entry-1280", 320, 360);
                     log("table pixel rgb=" + felt[0] + "," + felt[1] + "," + felt[2]);
                     check(felt[1] > felt[0] && felt[1] > felt[2] && (felt[0] + felt[1] + felt[2]) > 30,
                         "the table must stay visible behind the preparation panel, rgb="
                             + felt[0] + "," + felt[1] + "," + felt[2]);
                     // The preparation panel itself must be painted on the right side.
-                    int[] panelPixel = samplePng("01-entry-default", 1000, 220);
+                    int[] panelPixel = samplePng("visual-runtime-01-entry-1280", 1000, 220);
                     log("panel pixel rgb=" + panelPixel[0] + "," + panelPixel[1] + "," + panelPixel[2]);
                     check(panelPixel[0] + panelPixel[1] + panelPixel[2] > 20,
                         "the compact preparation panel must be painted, rgb="
@@ -319,10 +331,13 @@ public final class RoundPreparationRenderSmoke implements ApplicationListener {
                 case 3: {
                     GameScreen screen = (GameScreen) game.getScreen();
                     ShufflePreparationPanel panel = screen.getShufflePreparationPanel();
-                    if (frame % 2 == 0) {
-                        capture("02-drawer-mid");
-                        phase = 4;
+                    // 280ms easeOutCubic 的中段：等抽屉真正滑到约一半再截，而不是点击后第一帧。
+                    float offset = panel.getMotion().getDrawerOffsetX();
+                    if (offset > 100f) {
+                        return;
                     }
+                    capture("visual-runtime-02-drawer-mid-1280");
+                    phase = 4;
                     return;
                 }
                 case 4: {
@@ -332,37 +347,42 @@ public final class RoundPreparationRenderSmoke implements ApplicationListener {
                     if (panel.getMotion().getDrawerOffsetX() > 0.01f) {
                         return;
                     }
-                    capture("03-drawer");
-                    // Remember the unselected card marker colour so the selection can be proven visible.
-                    cardPixelBefore = samplePng("03-drawer", 938, 406);
+                    capture("visual-runtime-03-targets-unselected-1280");
+                    // Remember the unselected card checkmark area so selection can be proven visible.
+                    cardPixelBefore = samplePng("visual-runtime-03-targets-unselected-1280", 928, 430);
                     check(panel.getModel().getPage()
                             == ShufflePreparationModel.PreparationPage.DRAWER,
                         "the drawer must stay open");
                     check(panel.getBtnTargets().size() == 6, "the drawer must expose exactly six targets");
 
-                    // 3. Target + see-through = 40 points.
+                    // 3. Select a target first (30 points), then stack see-through (40 points).
                     clickPanel(screen, panel.getBtnTargets().get(ShuffleTarget.KOKUSHI));
+                    check(panel.getModel().getTarget() == ShuffleTarget.KOKUSHI,
+                        "the chosen target must be kept");
+                    phase = 11;
+                    return;
+                }
+                case 11: {
+                    capture("visual-runtime-04-target-selected-1280");
+                    int[] selectedPixel = samplePng("visual-runtime-04-target-selected-1280", 928, 430);
+                    log("kokushi selection pixel rgb before=" + cardPixelBefore[0] + ","
+                        + cardPixelBefore[1] + "," + cardPixelBefore[2] + " after=" + selectedPixel[0] + ","
+                        + selectedPixel[1] + "," + selectedPixel[2]);
+                    check(cardPixelBefore == null
+                            || selectedPixel[0] != cardPixelBefore[0]
+                            || selectedPixel[1] != cardPixelBefore[1]
+                            || selectedPixel[2] != cardPixelBefore[2],
+                        "the selected target card must be visibly highlighted");
+                    GameScreen screen = (GameScreen) game.getScreen();
+                    ShufflePreparationPanel panel = screen.getShufflePreparationPanel();
                     clickPanel(screen, panel.getBtnDrawerSeeThroughRect());
                     check(panel.getModel().getTotalCost() == 40,
                         "target + see-through must cost 40 points, got " + panel.getModel().getTotalCost());
-                    check(panel.getModel().getTarget() == ShuffleTarget.KOKUSHI,
-                        "the chosen target must be kept");
-                    // The framebuffer still shows the pre-click state: capture on a later frame.
                     phase = 10;
                     return;
                 }
                 case 10: {
-                    capture("04-cost40");
-                    // The selected card must actually be painted differently in the captured frame.
-                    int[] cardPixelAfter = samplePng("04-cost40", 938, 406);
-                    log("kokushi card marker rgb before=" + cardPixelBefore[0] + "," + cardPixelBefore[1] + ","
-                        + cardPixelBefore[2] + " after=" + cardPixelAfter[0] + "," + cardPixelAfter[1] + ","
-                        + cardPixelAfter[2]);
-                    check(cardPixelBefore == null
-                            || cardPixelAfter[0] != cardPixelBefore[0]
-                            || cardPixelAfter[1] != cardPixelBefore[1]
-                            || cardPixelAfter[2] != cardPixelBefore[2],
-                        "the selected target card must be visibly highlighted");
+                    capture("visual-runtime-05-cost40-1280");
                     // 4. 960x540 and ultra wide safe areas.
                     Gdx.graphics.setWindowedMode(SMALL_WIDTH, SMALL_HEIGHT);
                     phase = 5;
@@ -372,16 +392,28 @@ public final class RoundPreparationRenderSmoke implements ApplicationListener {
                     if (Gdx.graphics.getWidth() != SMALL_WIDTH || Gdx.graphics.getHeight() != SMALL_HEIGHT) {
                         return;
                     }
-                    capture("05-960");
+                    capture("visual-runtime-06-960x540");
                     Gdx.graphics.setWindowedMode(WIDE_WIDTH, WIDE_HEIGHT);
                     phase = 6;
                     return;
                 }
                 case 6: {
+                    GameScreen screen = (GameScreen) game.getScreen();
+                    ShufflePreparationPanel panel = screen.getShufflePreparationPanel();
                     if (Gdx.graphics.getWidth() != WIDE_WIDTH || Gdx.graphics.getHeight() != WIDE_HEIGHT) {
                         return;
                     }
-                    capture("06-wide");
+                    capture("visual-runtime-07-1600x600");
+
+                    // 宽屏相机扩展后，命中矩形必须仍与画面一致：实际点一张卡再切回。
+                    Rectangle wideCard = panel.getBtnTargets().get(ShuffleTarget.DAISANGEN);
+                    clickWorld(screen, wideCard.x + wideCard.width / 2f, wideCard.y + wideCard.height / 2f);
+                    check(panel.getModel().getTarget() == ShuffleTarget.DAISANGEN,
+                        "1600x600 target card hit must follow the extended stage camera");
+                    Rectangle back = panel.getBtnTargets().get(ShuffleTarget.KOKUSHI);
+                    clickWorld(screen, back.x + back.width / 2f, back.y + back.height / 2f);
+                    check(panel.getModel().getTarget() == ShuffleTarget.KOKUSHI,
+                        "1600x600 target card hit must return to the selected KOKUSHI");
                     Gdx.graphics.setWindowedMode(WIDTH, HEIGHT);
                     phase = 7;
                     return;
@@ -422,8 +454,8 @@ public final class RoundPreparationRenderSmoke implements ApplicationListener {
                             return;
                         }
                         receiptAttempted = true;
-                        capture("07-receipt");
-                        int bright = countReceiptTitlePixels("07-receipt");
+                        capture("visual-runtime-08-receipt-1280");
+                        int bright = countReceiptTitlePixels("visual-runtime-08-receipt-1280");
                         log("receipt: page=" + panel.getModel().getPage()
                             + " drawerOffsetX=" + panel.getMotion().getDrawerOffsetX()
                             + " alpha=" + panel.getReceiptAlpha()
@@ -481,7 +513,7 @@ public final class RoundPreparationRenderSmoke implements ApplicationListener {
                     check(hands + wall + deadWall == 136,
                         "136 physical tiles must be conserved, hands=" + hands
                             + " wall=" + wall + " deadWall=" + deadWall);
-                    capture("08-dealt");
+                    capture("visual-runtime-09-dealt-1280");
                     log("PASS: round preparation GL smoke mode=" + mode
                         + " confirmToDealMs=" + String.format("%.2f", confirmToDealMs));
                     writeLog();

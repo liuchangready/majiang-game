@@ -1,0 +1,22 @@
+gradle.projectsEvaluated {
+    def p = gradle.rootProject.project(':lwjgl3')
+    def out = gradle.rootProject.layout.buildDirectory.dir('responsive-app/smoke-classes')
+    def compile = p.tasks.register('compileResponsiveAppSmoke', JavaCompile) {
+        dependsOn p.tasks.named('classes')
+        source gradle.rootProject.file('tools/architecture/ResponsiveAppRenderSmoke.java')
+        classpath = p.sourceSets.main.runtimeClasspath
+        destinationDirectory.set(out)
+        options.release = 17
+        options.encoding = 'UTF-8'
+    }
+    p.tasks.register('responsiveAppSmoke', JavaExec) {
+        dependsOn compile
+        classpath = p.files(out) + p.sourceSets.main.runtimeClasspath
+        mainClass = 'ResponsiveAppRenderSmoke'
+        workingDir = gradle.rootProject.file('assets')
+        systemProperty 'smoke.output', gradle.rootProject.file(
+            gradle.rootProject.findProperty('smokeOutput')
+                ?: 'doc/ui/round-preparation/responsive-app-runtime'
+        ).absolutePath
+    }
+}

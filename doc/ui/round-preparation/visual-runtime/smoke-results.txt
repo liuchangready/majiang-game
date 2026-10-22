@@ -1,0 +1,20 @@
+create: window=1280x720 mode=target
+clicked solo menu entry
+captured visual-runtime-01-entry-1280.png
+table pixel rgb=5,72,61
+panel pixel rgb=4,12,9
+captured visual-runtime-02-drawer-mid-1280.png
+captured visual-runtime-03-targets-unselected-1280.png
+captured visual-runtime-04-target-selected-1280.png
+kokushi selection pixel rgb before=31,48,63 after=231,184,82
+captured visual-runtime-05-cost40-1280.png
+captured visual-runtime-06-960x540.png
+captured visual-runtime-07-1600x600.png
+mode=target: submitting the confirmed cheat plan
+captured visual-runtime-08-receipt-1280.png
+receipt: page=PANEL drawerOffsetX=160.0 alpha=1.0 titlePixels=956 panelActive=true
+confirm-to-deal wallClockMs=453.47
+receipt-linger-after-deal ms=148.66
+after deal: handTiles=53 wallRemaining=69 deadWall=14 cheatPoints=[60, 100, 100, 100]
+captured visual-runtime-09-dealt-1280.png
+PASS: round preparation GL smoke mode=target confirmToDealMs=453.47

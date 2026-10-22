@@ -12,7 +12,7 @@ import com.badlogic.gdx.graphics.g2d.GlyphLayout
 import com.badlogic.gdx.graphics.g2d.SpriteBatch
 import com.badlogic.gdx.graphics.glutils.ShapeRenderer
 import com.badlogic.gdx.math.Rectangle
-import com.badlogic.gdx.math.Vector3
+import com.badlogic.gdx.math.Vector2
 import com.majiang.client.api.ActionChoice
 import com.majiang.client.api.ClockInfo
 import com.majiang.client.api.ConnectionState
@@ -57,15 +57,20 @@ import com.majiang.presentation.common.render.DoraSparkle
 import com.majiang.presentation.common.render.GhostHandTexture
 import com.majiang.presentation.common.render.MeldDisplayRenderer
 import com.majiang.presentation.common.render.MeldDisplayLayout
-import com.majiang.presentation.common.render.PreparationTableRenderer
-import com.majiang.presentation.common.render.TileArranger
-import com.majiang.presentation.common.render.TileDrawBuffer
-import com.majiang.presentation.common.render.TileSkin
 import com.majiang.presentation.common.render.TableBoardRenderModel
 import com.majiang.presentation.common.render.TableBoardRenderer
 import com.majiang.presentation.common.render.TableBoardRenderOptions
 import com.majiang.presentation.common.render.TableBoardSyncTracker
 import com.majiang.presentation.common.render.TableBoardViewIdentity
+import com.majiang.presentation.common.render.TableHudView
+import com.majiang.presentation.common.render.TableLocalZoom
+import com.majiang.presentation.common.render.TableStageFonts
+import com.majiang.presentation.common.render.TableStageLayout
+import com.majiang.presentation.common.render.TableStageRenderer
+import com.majiang.presentation.common.render.TableStageViewport
+import com.majiang.presentation.common.render.TileArranger
+import com.majiang.presentation.common.render.TileDrawBuffer
+import com.majiang.presentation.common.render.TileSkin
 import com.majiang.presentation.common.render.fromPlayerSnapshot
 import java.util.ArrayDeque
 import java.util.UUID
@@ -127,6 +132,36 @@ class GameScreen(
     @Volatile
     var isDisposed: Boolean = false
         private set
+
+    /**
+     * 正式 APP 唯一输入反变换：窗口逻辑坐标 → 1280×720 stage 局部坐标。
+     * 舞台外返回 null；不得再对 camera 做默认全窗口 unproject。
+     */
+    @JvmOverloads
+    fun screenToStage(screenX: Int, screenY: Int, out: Vector2 = Vector2()): Vector2? =
+        stageViewport.toStage(screenX.toFloat(), screenY.toFloat(), out)
+
+    /** 测试/点击驱动使用的 stage → 窗口正向变换。 */
+    @JvmOverloads
+    fun stageToScreen(localX: Float, localY: Float, out: Vector2 = Vector2()): Vector2 =
+        stageViewport.toWindow(localX, localY, out)
+
+    fun getStageViewport(): TableStageViewport = stageViewport
+
+    fun getStageFonts(): TableStageFonts = stageFonts
+
+    private fun screenToUi(screenX: Int, screenY: Int): Vector2? {
+        if (usesHeadlessStageInput) {
+            if (screenX < 0 || screenY < 0 ||
+                screenX > TableStageLayout.DESIGN_WIDTH.toInt() ||
+                screenY > TableStageLayout.DESIGN_HEIGHT.toInt()
+            ) {
+                return null
+            }
+            return uiPoint.set(screenX.toFloat(), screenY.toFloat())
+        }
+        return stageViewport.toStage(screenX.toFloat(), screenY.toFloat(), uiPoint)
+    }
 
     private fun runOnUi(action: () -> Unit) {
         if (isDisposed) return
@@ -331,7 +366,17 @@ class GameScreen(
 
     val handTileRects = mutableListOf<Pair<Rectangle, TileView>>()
 
-    private val unprojectVec = Vector3()
+    private var stageViewport: TableStageViewport = initialStageViewport()
+    private var stageFonts: TableStageFonts = TableStageFonts.create(assets, 1f, 1f)
+    private var stageFontsKey: Triple<Float, Float, Float>? = null
+    private val uiPoint = Vector2()
+    private val tablePoint = Vector2()
+    /**
+     * 无头单元测试没有窗口帧与 unproject；历史测试直接把 1280×720 世界坐标传给
+     * touchDown。该标志只在构建时 Gdx 窗口为零时启用，正式最小化不会走此分支。
+     */
+    private val usesHeadlessStageInput: Boolean =
+        Gdx.graphics == null || Gdx.graphics.width <= 0 || Gdx.graphics.height <= 0
     private var isBackHovered = false
     private var isSortHovered = false
     private var hoveredTile: TileView? = null
@@ -1032,8 +1077,73 @@ class GameScreen(
         }
     }
 
+    /**
+     * 只重算 view / stage / 字体档位，不重置任何对局或准备草稿。
+     * 相机永远保持 1280×720，由 GL viewport 和 scissor 把内容放进 stage。
+     */
+    private fun updateStageForWindow() {
+        val graphics = Gdx.graphics ?: return
+        val w = graphics.width
+        val h = graphics.height
+        val next = if (w <= 0 || h <= 0) {
+            TableStageViewport.EMPTY
+        } else {
+            TableStageViewport.compute(
+                windowWidth = w,
+                windowHeight = h,
+                framebufferWidth = graphics.backBufferWidth.coerceAtLeast(1),
+                framebufferHeight = graphics.backBufferHeight.coerceAtLeast(1)
+            )
+        }
+        stageViewport = next
+        camera.setToOrtho(false, TableStageLayout.DESIGN_WIDTH, TableStageLayout.DESIGN_HEIGHT)
+        camera.position.set(TableStageLayout.DESIGN_WIDTH / 2f, TableStageLayout.DESIGN_HEIGHT / 2f, 0f)
+        camera.update()
+        tableCamera.setToOrtho(false, TableStageLayout.DESIGN_WIDTH, TableStageLayout.DESIGN_HEIGHT)
+        tableCamera.position.set(
+            TableStageLayout.DESIGN_WIDTH / 2f,
+            TableStageLayout.DESIGN_HEIGHT / 2f,
+            0f
+        )
+        tableCamera.update()
+        if (next.drawable) {
+            // 只有 stageScale 或帧缓冲比例真正变化时才换角色集合；字形本身由
+            // UiAssets 的有界 LRU 复用，连续拖动不会无限新建字体纹理。
+            val fontKey = Triple(next.scale, next.framebufferRatio, 0f)
+            if (stageFontsKey != fontKey) {
+                stageFonts = TableStageFonts.create(assets, next.scale, next.framebufferRatio)
+                stageFontsKey = fontKey
+            }
+        }
+    }
+
+    private fun applyStageGlViewport() {
+        val v = stageViewport
+        if (!v.drawable) return
+        Gdx.gl.glViewport(
+            v.framebufferStageX,
+            v.framebufferStageY,
+            v.framebufferStageWidth,
+            v.framebufferStageHeight
+        )
+        Gdx.gl.glEnable(GL20.GL_SCISSOR_TEST)
+        Gdx.gl.glScissor(
+            v.framebufferStageX,
+            v.framebufferStageY,
+            v.framebufferStageWidth,
+            v.framebufferStageHeight
+        )
+    }
+
+    private fun resetGlViewportToWindow() {
+        val g = Gdx.graphics ?: return
+        Gdx.gl.glDisable(GL20.GL_SCISSOR_TEST)
+        Gdx.gl.glViewport(0, 0, g.backBufferWidth.coerceAtLeast(1), g.backBufferHeight.coerceAtLeast(1))
+    }
+
     override fun render(delta: Float) {
         stateTime += delta
+        updateStageForWindow()
         if (toastTimer > 0f) {
             toastTimer -= delta
             if (toastTimer <= 0f) toastMessage = null
@@ -1069,23 +1179,23 @@ class GameScreen(
 
         camera.update()
         if (riverHintPanel.isOpen) {
-            val scale = 840f / 1280f
-            val offsetX = 10f
-            val offsetY = (720f - 720f * scale) / 2f
-            tableCamera.combined.set(camera.combined)
-                .translate(offsetX, offsetY, 0f)
-                .scale(scale, scale, 1f)
+            TableLocalZoom.combine(camera.combined, tableCamera.combined)
         } else {
             tableCamera.combined.set(camera.combined)
         }
 
-        Gdx.gl.glClearColor(0.08f, 0.22f, 0.14f, 1f)
+        resetGlViewportToWindow()
+        Gdx.gl.glClearColor(0.015f, 0.035f, 0.025f, 1f)
         Gdx.gl.glClear(GL20.GL_COLOR_BUFFER_BIT)
 
         val batch = assets.batch
         val shape = assets.shapeRenderer
         val font = assets.font
         val chineseFont = assets.chineseFont
+        if (!stageViewport.drawable) {
+            resetGlViewportToWindow()
+            return
+        }
 
         val snapshot = currentSnapshot
         val tableModel = snapshot?.let { TableBoardRenderModel.fromPlayerSnapshot(it) }
@@ -1097,54 +1207,69 @@ class GameScreen(
             clockElapsedMillis = System.currentTimeMillis() - lastClockUpdateLocalMillis
         )
 
-        // 0. 准备阶段：先入牌桌（背景 + 公开四席 + 局次），手牌/牌河/真实牌山一律留空。
         val isPreparing = shufflePreparationPanel.isActive
+        val hudView = TableHudView.fromPlayerView(currentView)
+        val visibleBounds = RoundPreparationLayout.DEFAULT_VISIBLE
+        val visuals = assets.obtainTableVisualAssets()
         if (isPreparing) {
-            val visibleBounds = RoundPreparationLayout.visibleWorldRect(
-                camera,
-                Gdx.graphics?.width ?: 0,
-                Gdx.graphics?.height ?: 0
-            )
             shufflePreparationPanel.setVisibleBounds(visibleBounds)
-            val drawerVisible = shufflePreparationPanel.model.page ==
-                ShufflePreparationModel.PreparationPage.DRAWER
-            val safeArea = shufflePreparationPanel.layout.safeTableRect(drawerVisible)
-            PreparationTableRenderer.render(
-                view = currentView,
-                visible = visibleBounds,
-                safeArea = safeArea,
-                projection = camera.combined,
-                batch = batch,
-                shape = shape,
-                font = font,
-                chineseFont = chineseFont,
-                backdrop = assets.obtainTableBackdrop()
-            )
+            shufflePreparationPanel.syncGeometry()
         }
 
-        // 1. 桌面中心与四家基本信息
+        // Z0 环境先以 screen 空间 cover 整个窗口；随后切到 stage viewport/scissor。
+        visuals?.let { TableStageRenderer.renderEnvironment(it, stageViewport, batch) }
+        applyStageGlViewport()
+        try {
+            if (visuals != null) {
+                TableStageRenderer.renderBoard(visuals, camera.combined, batch)
+                TableStageRenderer.renderCompass(
+                    visuals = visuals,
+                    rect = if (isPreparing) TableStageLayout.PREP_COMPASS else TableStageLayout.PLAY_COMPASS,
+                    view = hudView,
+                    isPreparation = isPreparing,
+                    projection = camera.combined,
+                    batch = batch,
+                    fonts = stageFonts
+                )
+                TableStageRenderer.renderHud(
+                    visuals = visuals,
+                    isPreparation = isPreparing,
+                    drawerProgress = if (isPreparing) shufflePreparationPanel.drawerProgress else 0f,
+                    view = hudView,
+                    clocks = snapshot?.clocks ?: emptyList(),
+                    clockElapsedMillis = System.currentTimeMillis() - lastClockUpdateLocalMillis,
+                    projection = camera.combined,
+                    batch = batch,
+                    shape = shape,
+                    fonts = stageFonts
+                )
+                if (isPreparing) {
+                    TableStageRenderer.renderPreparationHint(
+                        visuals = visuals,
+                        projection = camera.combined,
+                        batch = batch,
+                        fonts = stageFonts
+                    )
+                } else {
+                    TableStageRenderer.renderPlayingTrays(visuals, camera.combined, batch)
+                }
+            } else {
+                TableStageRenderer.renderFallback(visibleBounds, camera.combined, shape)
+            }
+
+        // 1. 发牌后中心罗盘数据/宝牌与真实牌层。
         if (tableModel != null && !isPreparing) {
             TableBoardRenderer.renderTableCenter(
                 model = tableModel,
-                projectionMatrix = tableCamera.combined,
+                projectionMatrix = camera.combined,
                 batch = batch,
                 shape = shape,
                 font = font,
                 chineseFont = chineseFont,
                 tileSkin = tileSkin,
                 tileDrawBuffer = tileDrawBuffer,
-                options = tableOptions
-            )
-            TableBoardRenderer.renderSeatsInfo(
-                model = tableModel,
-                projectionMatrix = tableCamera.combined,
-                batch = batch,
-                shape = shape,
-                font = font,
-                chineseFont = chineseFont,
-                tileSkin = tileSkin,
-                tileDrawBuffer = tileDrawBuffer,
-                options = tableOptions
+                options = tableOptions,
+                stageFonts = stageFonts
             )
         }
 
@@ -1229,83 +1354,95 @@ class GameScreen(
 
         // 8. 操作按钮（准备阶段只保留右侧准备栏，牌局操作按钮暂不开放）
         if (!isPreparing) {
-            renderActionButtons(shape, batch, font)
+            // 五个技能入口和理牌/托管都使用 button-skins 金边按钮，不再额外铺一块
+            // 会与按钮金线重叠的操作底板。
+            renderActionButtons(shape, batch, font, visuals, stageFonts)
         }
 
-        // 8.5 落汗表现层面板
-        tileMarkPanel.render(
-            camera = tableCamera,
-            shape = shape,
-            batch = batch,
-            font = chineseFont ?: font,
-            snapshot = currentSnapshot,
-            isDiscardPlaybackBusy = isDiscardPlaybackBusy,
-            isPaused = isPaused,
-            isSubmitting = isSubmitting || isSubmittingMark,
-            riichiSelecting = riichiSelectionModel.isSelecting,
-            meldSelecting = meldSelectionModel.isSelecting,
-            tileSkin = tileSkin,
-            tileDrawBuffer = tileDrawBuffer,
-            sleeveBloomChoosing = sleeveBloomPanel.model.isChoosing,
-            beamSwapChoosing = beamSwapPanel.model.isChoosing
-        )
-
-        // 8.55 袖里藏花表现层面板
-        sleeveBloomPanel.render(
-            camera = tableCamera,
-            shape = shape,
-            batch = batch,
-            font = chineseFont ?: font,
-            snapshot = currentSnapshot,
-            isDiscardPlaybackBusy = isDiscardPlaybackBusy,
-            isPaused = isPaused,
-            isSubmitting = isSubmitting || isSubmittingBloom || isSubmittingBloomChoice,
-            riichiSelecting = riichiSelectionModel.isSelecting,
-            meldSelecting = meldSelectionModel.isSelecting,
-            tileSkin = tileSkin,
-            tileDrawBuffer = tileDrawBuffer,
-            tileMarkSelecting = tileMarkPanel.model.isSelecting,
-            beamSwapChoosing = beamSwapPanel.model.isChoosing
-        )
-
-        // 8.56 偷梁换柱表现层面板
-        beamSwapPanel.render(
-            camera = tableCamera,
-            shape = shape,
-            batch = batch,
-            font = chineseFont ?: font,
-            snapshot = currentSnapshot,
-            isDiscardPlaybackBusy = isDiscardPlaybackBusy,
-            isPaused = isPaused,
-            isSubmitting = isSubmitting || isSubmittingBeamSwap || isSubmittingBeamSwapChoice,
-            riichiSelecting = riichiSelectionModel.isSelecting,
-            meldSelecting = meldSelectionModel.isSelecting,
-            tileSkin = tileSkin,
-            tileDrawBuffer = tileDrawBuffer,
-            tileMarkSelecting = tileMarkPanel.model.isSelecting,
-            sleeveBloomChoosing = sleeveBloomPanel.model.isChoosing
-        )
-
-        // 8.6 牌河提示面板与切换按钮 (先画展开面板，再画切换按钮使其置顶)
-        if (!isModalActive()) {
-            riverHintPanel.render(
-                camera = camera,
+        // 8.5 落汗 / 袖里藏花 / 偷梁换柱与牌河提示只在真实牌局出现。
+        if (!isPreparing) {
+            tileMarkPanel.render(
+                camera = tableCamera,
                 shape = shape,
                 batch = batch,
-                font = chineseFont ?: font,
+                font = assets.chineseFont ?: font,
                 snapshot = currentSnapshot,
+                isDiscardPlaybackBusy = isDiscardPlaybackBusy,
+                isPaused = isPaused,
+                isSubmitting = isSubmitting || isSubmittingMark,
+                riichiSelecting = riichiSelectionModel.isSelecting,
+                meldSelecting = meldSelectionModel.isSelecting,
                 tileSkin = tileSkin,
                 tileDrawBuffer = tileDrawBuffer,
-                isTileVisibleInRiver = { seat, tile, index ->
-                    discardAnimationController.isTileVisibleInRiver(seat, tile, index)
-                }
+                sleeveBloomChoosing = sleeveBloomPanel.model.isChoosing,
+                beamSwapChoosing = beamSwapPanel.model.isChoosing,
+                entryPatch = visuals?.buttonPrimary,
+                labelBand = visuals?.labelBand,
+                stageFonts = stageFonts
             )
-            riverHintPanel.renderToggleButton(shape, batch, chineseFont ?: font)
+
+            sleeveBloomPanel.render(
+                camera = tableCamera,
+                shape = shape,
+                batch = batch,
+                font = assets.chineseFont ?: font,
+                snapshot = currentSnapshot,
+                isDiscardPlaybackBusy = isDiscardPlaybackBusy,
+                isPaused = isPaused,
+                isSubmitting = isSubmitting || isSubmittingBloom || isSubmittingBloomChoice,
+                riichiSelecting = riichiSelectionModel.isSelecting,
+                meldSelecting = meldSelectionModel.isSelecting,
+                tileSkin = tileSkin,
+                tileDrawBuffer = tileDrawBuffer,
+                tileMarkSelecting = tileMarkPanel.model.isSelecting,
+                beamSwapChoosing = beamSwapPanel.model.isChoosing,
+                entryPatch = visuals?.buttonPrimary,
+                labelBand = visuals?.labelBand,
+                stageFonts = stageFonts
+            )
+
+            beamSwapPanel.render(
+                camera = tableCamera,
+                shape = shape,
+                batch = batch,
+                font = assets.chineseFont ?: font,
+                snapshot = currentSnapshot,
+                isDiscardPlaybackBusy = isDiscardPlaybackBusy,
+                isPaused = isPaused,
+                isSubmitting = isSubmitting || isSubmittingBeamSwap || isSubmittingBeamSwapChoice,
+                riichiSelecting = riichiSelectionModel.isSelecting,
+                meldSelecting = meldSelectionModel.isSelecting,
+                tileSkin = tileSkin,
+                tileDrawBuffer = tileDrawBuffer,
+                tileMarkSelecting = tileMarkPanel.model.isSelecting,
+                sleeveBloomChoosing = sleeveBloomPanel.model.isChoosing,
+                entryPatch = visuals?.buttonPrimary,
+                labelBand = visuals?.labelBand,
+                stageFonts = stageFonts
+            )
+
+            if (!isModalActive()) {
+                riverHintPanel.visualAssets = visuals
+                riverHintPanel.stageFonts = stageFonts
+                riverHintPanel.render(
+                    camera = camera,
+                    shape = shape,
+                    batch = batch,
+                    font = assets.chineseFont ?: font,
+                    snapshot = currentSnapshot,
+                    tileSkin = tileSkin,
+                    tileDrawBuffer = tileDrawBuffer,
+                    isTileVisibleInRiver = { seat, tile, index ->
+                        discardAnimationController.isTileVisibleInRiver(seat, tile, index)
+                    }
+                )
+                riverHintPanel.renderToggleButton(shape, batch, chineseFont ?: font)
+            }
         }
 
         // 9. 洗牌千术准备栏（权威准备阶段结束后，回执仍短暂保留并淡出）
         if (shufflePreparationPanel.isVisible) {
-            shufflePreparationPanel.render(camera, shape, batch, font)
+            shufflePreparationPanel.render(camera, shape, batch, font, tileSkin, stageFonts)
         }
 
         // 10. 结算详情弹窗
@@ -1353,8 +1490,11 @@ class GameScreen(
             )
         }
 
-        // 12. Toast 提示
-        renderToast(batch, font)
+            // 12. Toast 提示
+            renderToast(batch, font)
+        } finally {
+            resetGlViewportToWindow()
+        }
     }
 
 
@@ -1621,7 +1761,13 @@ class GameScreen(
         batch.end()
     }
 
-    private fun renderActionButtons(shape: ShapeRenderer, batch: SpriteBatch, font: BitmapFont) {
+    private fun renderActionButtons(
+        shape: ShapeRenderer,
+        batch: SpriteBatch,
+        font: BitmapFont,
+        visuals: com.majiang.presentation.common.render.TableVisualAssets?,
+        stageFonts: TableStageFonts
+    ) {
         if (!gameStarted && !shufflePreparationPanel.isActive) {
             shape.projectionMatrix = tableCamera.combined
             shape.begin(ShapeRenderer.ShapeType.Filled)
@@ -1639,58 +1785,79 @@ class GameScreen(
             return
         }
 
-        // 理牌开关
-        shape.projectionMatrix = tableCamera.combined
-        shape.begin(ShapeRenderer.ShapeType.Filled)
-        shape.color = if (isAutoSort) Color(0.20f, 0.50f, 0.35f, 1f) else Color(0.35f, 0.35f, 0.35f, 1f)
-        shape.rect(btnSortRect.x, btnSortRect.y, btnSortRect.width, btnSortRect.height)
-        shape.end()
-
-        batch.projectionMatrix = tableCamera.combined
-        batch.begin()
         val textFont = assets.chineseFont ?: font
-        textFont.data.setScale(1.0f)
-        textFont.color = Color.WHITE
-        textFont.draw(batch, if (isAutoSort) "理牌: 开" else "理牌: 关", btnSortRect.x + 30f, btnSortRect.y + 28f)
-        batch.end()
 
-        // 托管/收回按钮
         val controls = currentSnapshot?.controls ?: emptyList()
         val myControl = controls.firstOrNull { it.seat == (currentSnapshot?.viewerSeat ?: 0) }
         val isTakeover = (myControl?.role == "TAKEOVER")
-        shape.projectionMatrix = tableCamera.combined
-        shape.begin(ShapeRenderer.ShapeType.Filled)
-        shape.color = if (isTakeover) Color(0.85f, 0.40f, 0.20f, 1f) else Color(0.25f, 0.35f, 0.45f, 1f)
-        shape.rect(btnTakeoverRect.x, btnTakeoverRect.y, btnTakeoverRect.width, btnTakeoverRect.height)
-        shape.end()
-
-        batch.projectionMatrix = tableCamera.combined
-        batch.begin()
-        textFont.data.setScale(1.0f)
-        textFont.color = Color.WHITE
-        val takeoverText = if (isTakeover) "收回控制" else "托管"
-        textFont.draw(batch, takeoverText, btnTakeoverRect.x + if (isTakeover) 30f else 50f, btnTakeoverRect.y + 24f)
-        batch.end()
+        if (visuals != null) {
+            drawArtAction(
+                batch,
+                visuals,
+                stageFonts,
+                btnSortRect,
+                if (isAutoSort) "理牌 · 开" else "理牌 · 关",
+                enabled = true,
+                highlighted = isAutoSort
+            )
+            drawArtAction(
+                batch,
+                visuals,
+                stageFonts,
+                btnTakeoverRect,
+                if (isTakeover) "收回控制" else "托管",
+                enabled = true,
+                highlighted = isTakeover
+            )
+        } else {
+            drawActionSurface(
+                shape,
+                batch,
+                textFont,
+                btnSortRect,
+                if (isAutoSort) Color(0.20f, 0.60f, 0.40f, 1f) else Color(0.45f, 0.45f, 0.45f, 1f),
+                if (isAutoSort) "理牌: 开" else "理牌: 关",
+                true,
+                30f,
+                1.10f
+            )
+            drawActionSurface(
+                shape,
+                batch,
+                textFont,
+                btnTakeoverRect,
+                if (isTakeover) Color(0.85f, 0.40f, 0.20f, 1f) else Color(0.25f, 0.45f, 0.65f, 1f),
+                if (isTakeover) "收回控制" else "托管",
+                true,
+                if (isTakeover) 30f else 50f,
+                1.10f
+            )
+        }
 
         if (isDiscardPlaybackBusy || isPaused || session.isPending || isSubmitting) return
 
         if (riichiSelectionModel.isSelecting) {
             val hasSelection = riichiSelectionModel.selectedTile != null
-            shape.projectionMatrix = tableCamera.combined
-            shape.begin(ShapeRenderer.ShapeType.Filled)
-            shape.color = if (hasSelection) Color(0.85f, 0.45f, 0.15f, 1f) else Color(0.30f, 0.30f, 0.30f, 0.7f)
-            shape.rect(btnRiichiRect.x, btnRiichiRect.y, btnRiichiRect.width, btnRiichiRect.height)
-            shape.color = Color(0.45f, 0.20f, 0.20f, 1f)
-            shape.rect(btnCancelRiichiRect.x, btnCancelRiichiRect.y, btnCancelRiichiRect.width, btnCancelRiichiRect.height)
-            shape.end()
-
-            batch.projectionMatrix = tableCamera.combined
-            batch.begin()
-            textFont.color = if (hasSelection) Color.WHITE else Color(0.65f, 0.65f, 0.65f, 1f)
-            textFont.draw(batch, "确认立直", btnRiichiRect.x + 28f, btnRiichiRect.y + 28f)
-            textFont.color = Color.WHITE
-            textFont.draw(batch, "取消", btnCancelRiichiRect.x + 60f, btnCancelRiichiRect.y + 29f)
-            batch.end()
+            drawActionSurface(
+                shape,
+                batch,
+                textFont,
+                btnRiichiRect,
+                Color(0.85f, 0.45f, 0.15f, 1f),
+                "确认立直",
+                hasSelection,
+                28f
+            )
+            drawActionSurface(
+                shape,
+                batch,
+                textFont,
+                btnCancelRiichiRect,
+                Color(0.55f, 0.22f, 0.20f, 1f),
+                "取消",
+                true,
+                60f
+            )
             return
         }
 
@@ -1723,19 +1890,102 @@ class GameScreen(
         }
     }
 
+    /**
+     * 右侧操作列的纹理按钮。复用 button-skins 图集，保留红底/绿底金边，
+     * 不再用纯色矩形冒充技能/系统按钮；文字仍走当前 stage 原生字号。
+     */
+    private fun drawArtAction(
+        batch: SpriteBatch,
+        visuals: com.majiang.presentation.common.render.TableVisualAssets,
+        fonts: TableStageFonts,
+        rect: Rectangle,
+        text: String,
+        enabled: Boolean,
+        highlighted: Boolean
+    ) {
+        batch.projectionMatrix = camera.combined
+        batch.begin()
+        val patch = if (highlighted) visuals.buttonPrimary else visuals.buttonSecondary
+        batch.color = if (enabled) Color.WHITE else Color(0.58f, 0.58f, 0.58f, 0.9f)
+        patch.draw(batch, rect.x, rect.y, rect.width, rect.height)
+        batch.color = Color.WHITE
+        batch.end()
+        batch.begin()
+        fonts.body.drawCentered(
+            batch,
+            text,
+            rect.x + rect.width / 2f,
+            rect.y + 31f,
+            if (enabled) Color(0.97f, 0.90f, 0.67f, 1f) else Color(0.72f, 0.72f, 0.68f, 1f),
+            outline = true
+        )
+        batch.end()
+    }
+
     private fun drawButton(shape: ShapeRenderer, batch: SpriteBatch, font: BitmapFont, rect: Rectangle, color: Color, text: String) {
-        shape.projectionMatrix = tableCamera.combined
-        shape.begin(ShapeRenderer.ShapeType.Filled)
-        shape.color = color
-        shape.rect(rect.x, rect.y, rect.width, rect.height)
-        shape.end()
+        drawActionSurface(shape, batch, font, rect, color, text, true, 12f)
+    }
+
+    private fun drawActionSurface(
+        shape: ShapeRenderer,
+        batch: SpriteBatch,
+        font: BitmapFont,
+        rect: Rectangle,
+        accent: Color,
+        text: String,
+        enabled: Boolean,
+        textOffsetX: Float,
+        textScale: Float = 1f
+    ) {
+        val visuals = assets.obtainTableVisualAssets()
+        if (visuals == null) {
+            shape.projectionMatrix = tableCamera.combined
+            shape.begin(ShapeRenderer.ShapeType.Filled)
+            shape.color = if (enabled) accent else Color(0.25f, 0.25f, 0.25f, 0.7f)
+            shape.rect(rect.x, rect.y, rect.width, rect.height)
+            shape.end()
+            batch.projectionMatrix = tableCamera.combined
+            batch.begin()
+            font.data.setScale(textScale, textScale)
+            font.color = if (enabled) Color.WHITE else Color(0.72f, 0.72f, 0.68f, 1f)
+            font.draw(batch, text, rect.x + textOffsetX, rect.y + 24f - (textScale - 1f) * 9f)
+            batch.end()
+            return
+        }
 
         batch.projectionMatrix = tableCamera.combined
         batch.begin()
-        font.data.setScale(1.1f)
-        font.color = Color.WHITE
-        font.draw(batch, text, rect.x + 12f, rect.y + 29f)
+        batch.color = if (enabled) Color.WHITE else Color(0.52f, 0.52f, 0.52f, 0.96f)
+        visuals.buttonPrimary.draw(batch, rect.x, rect.y, rect.width, rect.height)
+        // 金漆花纹上压一条深色字带，保留外圈红/金，保证 1280 下标签稳定可读。
+        batch.color = Color(0.01f, 0.015f, 0.01f, 0.62f)
+        batch.draw(
+            visuals.labelBand,
+            rect.x + 4f,
+            rect.y + 4f,
+            rect.width - 8f,
+            rect.height - 8f
+        )
+        batch.color = Color.WHITE
+        val textTop = rect.y + 24f - (textScale - 1f) * 9f
+        font.data.setScale(textScale, textScale)
+        font.color = Color(0.02f, 0.02f, 0.01f, 0.98f)
+        font.draw(batch, text, rect.x + textOffsetX + 2f, textTop - 1f)
+        font.draw(batch, text, rect.x + textOffsetX + 1f, textTop)
+        font.color = if (enabled) Color(0.99f, 0.96f, 0.86f, 1f) else Color(0.86f, 0.83f, 0.74f, 1f)
+        font.draw(batch, text, rect.x + textOffsetX, textTop)
         batch.end()
+
+        shape.projectionMatrix = tableCamera.combined
+        shape.begin(ShapeRenderer.ShapeType.Filled)
+        shape.color = Color(accent.r, accent.g, accent.b, if (enabled) 0.95f else 0.45f)
+        shape.rect(rect.x + 2f, rect.y + 10f, 3f, rect.height - 20f)
+        shape.end()
+
+        shape.begin(ShapeRenderer.ShapeType.Line)
+        shape.color = Color(0.91f, 0.73f, 0.33f, if (enabled) 0.92f else 0.48f)
+        shape.rect(rect.x + 1f, rect.y + 1f, rect.width - 2f, rect.height - 2f)
+        shape.end()
     }
 
     private fun renderToast(batch: SpriteBatch, font: BitmapFont) {
@@ -1819,17 +2069,12 @@ class GameScreen(
     }
 
     override fun touchDown(screenX: Int, screenY: Int, pointer: Int, button: Int): Boolean {
-        val uiTx: Float
-        val uiTy: Float
-        if (Gdx.graphics == null || Gdx.graphics.width == 0) {
-            uiTx = screenX.toFloat()
-            uiTy = screenY.toFloat()
-        } else {
-            unprojectVec.set(screenX.toFloat(), screenY.toFloat(), 0f)
-            camera.unproject(unprojectVec)
-            uiTx = unprojectVec.x
-            uiTy = unprojectVec.y
+        val ui = screenToUi(screenX, screenY) ?: run {
+            shufflePreparationPanel.pressCancel()
+            return false
         }
+        val uiTx = ui.x
+        val uiTy = ui.y
         lastMouseX = uiTx
         lastMouseY = uiTy
 
@@ -1970,6 +2215,13 @@ class GameScreen(
                 return true
             }
             ModalKind.SHUFFLE_PREPARATION -> {
+                // 抽屉入场未完成时只绘制/裁切，不接收点击；避免压着移动中的按钮提交。
+                if (shufflePreparationPanel.model.page == ShufflePreparationModel.PreparationPage.DRAWER &&
+                    shufflePreparationPanel.motion.isAnimating
+                ) {
+                    shufflePreparationPanel.pressCancel()
+                    return true
+                }
                 shufflePreparationPanel.pressDown(uiTx, uiTy)
                 return true
             }
@@ -2044,15 +2296,14 @@ class GameScreen(
             return true
         }
 
-        // 2. 将 UI 坐标逆变换为主牌桌坐标
-        val (tableTx, tableTy) = if (riverHintPanel.isOpen) {
-            val scale = 840f / 1280f
-            val offsetX = 10f
-            val offsetY = (720f - 720f * scale) / 2f
-            Pair((uiTx - offsetX) / scale, (uiTy - offsetY) / scale)
+        // 2. 将 UI 坐标逆变换为主牌桌坐标；牌河提示打开时叠加同一个局部缩放。
+        val tablePoint = if (riverHintPanel.isOpen) {
+            TableLocalZoom.toTable(uiTx, uiTy, this.tablePoint)
         } else {
-            Pair(uiTx, uiTy)
+            this.tablePoint.set(uiTx, uiTy)
         }
+        val tableTx = tablePoint.x
+        val tableTy = tablePoint.y
 
         // 1.8 袖里藏花入口 (防止穿透)
         if (!isModalActive() && sleeveBloomPanel.btnOpenRect.contains(tableTx, tableTy)) {
@@ -2357,28 +2608,25 @@ class GameScreen(
     }
 
     override fun mouseMoved(screenX: Int, screenY: Int): Boolean {
-        val uiTx: Float
-        val uiTy: Float
-        if (Gdx.graphics == null || Gdx.graphics.width == 0) {
-            uiTx = screenX.toFloat()
-            uiTy = screenY.toFloat()
-        } else {
-            unprojectVec.set(screenX.toFloat(), screenY.toFloat(), 0f)
-            camera.unproject(unprojectVec)
-            uiTx = unprojectVec.x
-            uiTy = unprojectVec.y
+        val ui = screenToUi(screenX, screenY)
+        if (ui == null) {
+            clearGameplayHover()
+            hoveredTile = null
+            hoveredTileIndex = -1
+            return false
         }
+        val uiTx = ui.x
+        val uiTy = ui.y
         lastMouseX = uiTx
         lastMouseY = uiTy
 
-        val (tableTx, tableTy) = if (riverHintPanel.isOpen) {
-            val scale = 840f / 1280f
-            val offsetX = 10f
-            val offsetY = (720f - 720f * scale) / 2f
-            Pair((uiTx - offsetX) / scale, (uiTy - offsetY) / scale)
+        val tablePoint = if (riverHintPanel.isOpen) {
+            TableLocalZoom.toTable(uiTx, uiTy, this.tablePoint)
         } else {
-            Pair(uiTx, uiTy)
+            this.tablePoint.set(uiTx, uiTy)
         }
+        val tableTx = tablePoint.x
+        val tableTy = tablePoint.y
 
         if (isDiscardPlaybackBusy) {
             hoveredTile = null
@@ -2408,17 +2656,12 @@ class GameScreen(
     }
 
     override fun touchDragged(screenX: Int, screenY: Int, pointer: Int): Boolean {
-        val uiTx: Float
-        val uiTy: Float
-        if (Gdx.graphics == null || Gdx.graphics.width == 0) {
-            uiTx = screenX.toFloat()
-            uiTy = screenY.toFloat()
-        } else {
-            unprojectVec.set(screenX.toFloat(), screenY.toFloat(), 0f)
-            camera.unproject(unprojectVec)
-            uiTx = unprojectVec.x
-            uiTy = unprojectVec.y
+        val ui = screenToUi(screenX, screenY) ?: run {
+            shufflePreparationPanel.pressCancel()
+            return true
         }
+        val uiTx = ui.x
+        val uiTy = ui.y
         lastMouseX = uiTx
         lastMouseY = uiTy
 
@@ -2435,17 +2678,12 @@ class GameScreen(
     }
 
     override fun touchUp(screenX: Int, screenY: Int, pointer: Int, button: Int): Boolean {
-        val uiTx: Float
-        val uiTy: Float
-        if (Gdx.graphics == null || Gdx.graphics.width == 0) {
-            uiTx = screenX.toFloat()
-            uiTy = screenY.toFloat()
-        } else {
-            unprojectVec.set(screenX.toFloat(), screenY.toFloat(), 0f)
-            camera.unproject(unprojectVec)
-            uiTx = unprojectVec.x
-            uiTy = unprojectVec.y
+        val ui = screenToUi(screenX, screenY) ?: run {
+            shufflePreparationPanel.pressCancel()
+            return false
         }
+        val uiTx = ui.x
+        val uiTy = ui.y
         lastMouseX = uiTx
         lastMouseY = uiTy
 
@@ -2471,7 +2709,17 @@ class GameScreen(
         return false
     }
 
-    override fun resize(width: Int, height: Int) {}
+    override fun resize(width: Int, height: Int) {
+        // 先更新视图几何，再处理后续输入；resize 只取消已按住的控件，不清草稿、
+        // 看破、费用、权威截止、回执或动画进度。零宽高时相机保持不可绘制，恢复后重算。
+        if (width <= 0 || height <= 0) {
+            stageViewport = TableStageViewport.EMPTY
+            shufflePreparationPanel.pressCancel()
+            return
+        }
+        updateStageForWindow()
+        shufflePreparationPanel.pressCancel()
+    }
     override fun pause() {}
     override fun resume() {}
 
@@ -2499,6 +2747,24 @@ class GameScreen(
         shufflePreparationPanel.dispose()
         settlementDetailRenderer.dispose()
     }
+}
+
+/**
+ * 无头测试的 Gdx.graphics 可能没有有效窗口尺寸；此时用 1280×720 设计视口作为
+ * 输入命中的初始值。真实桌面/Android 在首帧 resize/render 之前也有窗口尺寸，
+ * 正式零尺寸会在 resize 中显式切成不可绘制，不会落到这里。
+ */
+private fun initialStageViewport(): TableStageViewport {
+    val g = Gdx.graphics
+    if (g == null || g.width <= 0 || g.height <= 0) {
+        return TableStageViewport.compute(1280, 720)
+    }
+    return TableStageViewport.compute(
+        windowWidth = g.width,
+        windowHeight = g.height,
+        framebufferWidth = g.backBufferWidth.coerceAtLeast(1),
+        framebufferHeight = g.backBufferHeight.coerceAtLeast(1)
+    )
 }
 
 private fun defaultEmptyPlayerView(viewerSeat: Int): PlayerView = PlayerView(

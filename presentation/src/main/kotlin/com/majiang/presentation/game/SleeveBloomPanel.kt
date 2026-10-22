@@ -3,7 +3,9 @@ package com.majiang.presentation.game
 import com.badlogic.gdx.graphics.Color
 import com.badlogic.gdx.graphics.OrthographicCamera
 import com.badlogic.gdx.graphics.g2d.BitmapFont
+import com.badlogic.gdx.graphics.g2d.NinePatch
 import com.badlogic.gdx.graphics.g2d.SpriteBatch
+import com.badlogic.gdx.graphics.g2d.TextureRegion
 import com.badlogic.gdx.graphics.glutils.ShapeRenderer
 import com.badlogic.gdx.math.Rectangle
 import com.badlogic.gdx.utils.Disposable
@@ -11,6 +13,7 @@ import com.majiang.client.api.GameSession
 import com.majiang.client.api.GameSnapshotView
 import com.majiang.client.api.SleeveBloomDrawKind
 import com.majiang.client.api.SleeveBloomKeep
+import com.majiang.presentation.common.render.TableStageFonts
 import com.majiang.presentation.common.render.TileDrawBuffer
 import com.majiang.presentation.common.render.TileSkin
 
@@ -69,7 +72,10 @@ class SleeveBloomPanel(
         tileSkin: TileSkin? = null,
         tileDrawBuffer: TileDrawBuffer? = null,
         tileMarkSelecting: Boolean = false,
-        beamSwapChoosing: Boolean = false
+        beamSwapChoosing: Boolean = false,
+        entryPatch: NinePatch? = null,
+        labelBand: TextureRegion? = null,
+        stageFonts: TableStageFonts? = null
     ) {
         if (snapshot == null) return
         val bloom = snapshot.sleeveBloom ?: return
@@ -89,26 +95,64 @@ class SleeveBloomPanel(
                 !tileMarkSelecting &&
                 !beamSwapChoosing
 
-            shape.begin(ShapeRenderer.ShapeType.Filled)
-            shape.color = if (canOpen) Color(0.85f, 0.45f, 0.15f, 1f) else Color(0.25f, 0.25f, 0.25f, 0.7f)
-            shape.rect(btnOpenRect.x, btnOpenRect.y, btnOpenRect.width, btnOpenRect.height)
-            shape.end()
+            if (entryPatch == null) {
+                shape.begin(ShapeRenderer.ShapeType.Filled)
+                shape.color = if (canOpen) Color(0.85f, 0.45f, 0.15f, 1f) else Color(0.25f, 0.25f, 0.25f, 0.7f)
+                shape.rect(btnOpenRect.x, btnOpenRect.y, btnOpenRect.width, btnOpenRect.height)
+                shape.end()
 
-            shape.begin(ShapeRenderer.ShapeType.Line)
-            shape.color = if (canOpen) Color(1.0f, 0.75f, 0.35f, 1f) else Color(0.40f, 0.40f, 0.40f, 0.8f)
-            shape.rect(btnOpenRect.x, btnOpenRect.y, btnOpenRect.width, btnOpenRect.height)
-            shape.end()
+                shape.begin(ShapeRenderer.ShapeType.Line)
+                shape.color = if (canOpen) Color(1.0f, 0.75f, 0.35f, 1f) else Color(0.40f, 0.40f, 0.40f, 0.8f)
+                shape.rect(btnOpenRect.x, btnOpenRect.y, btnOpenRect.width, btnOpenRect.height)
+                shape.end()
+            }
 
+            if (entryPatch != null) {
+                batch.begin()
+                batch.color = if (canOpen) Color.WHITE else Color(0.58f, 0.58f, 0.58f, 0.95f)
+                entryPatch.draw(batch, btnOpenRect.x, btnOpenRect.y, btnOpenRect.width, btnOpenRect.height)
+                batch.color = Color.WHITE
+                batch.end()
+
+                // 保留金边与红底，只在中央压一条窄暗带提升技能名对比度。
+                shape.begin(ShapeRenderer.ShapeType.Filled)
+                shape.color = Color(0.012f, 0.018f, 0.012f, 0.52f)
+                shape.rect(
+                    btnOpenRect.x + 5f,
+                    btnOpenRect.y + 7f,
+                    btnOpenRect.width - 10f,
+                    22f
+                )
+                shape.end()
+            }
             batch.begin()
-            font.data.setScale(1.0f)
-            font.color = if (canOpen) Color.WHITE else Color(0.65f, 0.65f, 0.65f, 1f)
-            font.draw(batch, "袖里藏花 · 10", btnOpenRect.x + 10f, btnOpenRect.y + 28f)
+            if (stageFonts != null) {
+                stageFonts.body.drawCentered(
+                    batch,
+                    "袖里藏花 10",
+                    btnOpenRect.x + btnOpenRect.width / 2f,
+                    btnOpenRect.y + 29f,
+                    if (canOpen) Color.WHITE else Color(0.86f, 0.83f, 0.74f, 1f),
+                    outline = true
+                )
+            } else {
+                font.data.setScale(1.15f, 1.15f)
+                font.color = Color(0.01f, 0.01f, 0.008f, 0.98f)
+                font.draw(batch, "袖里藏花 10", btnOpenRect.x + 11f, btnOpenRect.y + 22f)
+                font.color = if (canOpen) Color.WHITE else Color(0.86f, 0.83f, 0.74f, 1f)
+                font.draw(batch, "袖里藏花 10", btnOpenRect.x + 10f, btnOpenRect.y + 23f)
+            }
             if (model.isReserved) {
                 font.data.setScale(0.78f)
                 font.color = Color(0.55f, 0.90f, 0.85f, 1f)
                 font.draw(batch, "已选牌，待本人下次普通摸牌", btnOpenRect.x - 48f, btnOpenRect.y - 8f)
             }
             batch.end()
+
+            shape.begin(ShapeRenderer.ShapeType.Line)
+            shape.color = Color(0.91f, 0.73f, 0.33f, if (canOpen) 0.92f else 0.48f)
+            shape.rect(btnOpenRect.x + 1f, btnOpenRect.y + 1f, btnOpenRect.width - 2f, btnOpenRect.height - 2f)
+            shape.end()
             return
         }
 

@@ -1,0 +1,145 @@
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="1280" height="720" viewBox="0 0 1280 720"><title>正式 APP 素材拼接设计：entry（设计稿，非运行截图）</title><defs>
+<image id="environment" href="../../../assets/ui/table/club-environment.png" width="1672" height="941"/>
+<image id="board" href="../../../assets/ui/table/jade-table-board.png" width="1536" height="1024"/>
+<image id="panel" href="../../../assets/ui/table/jade-panel-skin.png" width="1254" height="1254"/>
+<image id="buttons" href="../../../assets/ui/table/button-skins.png" width="1536" height="1024"/>
+<image id="portraits" href="../../../assets/ui/table/animal-medallions.png" width="1254" height="1254"/>
+<image id="targets" href="../../../assets/ui/table/target-card-scenes.png" width="1536" height="1024"/>
+<image id="compass" href="../../../assets/ui/table/round-compass.png" width="1254" height="1254"/>
+</defs><g font-family="Noto Sans SC,Microsoft YaHei,sans-serif">
+<svg x="0" y="0" width="1280" height="720" viewBox="0 0 1672 941" preserveAspectRatio="none" overflow="hidden"><use href="#environment"/></svg>
+<svg x="32" y="76" width="1216" height="620" viewBox="0 0 1536 1024" preserveAspectRatio="none" overflow="hidden"><use href="#board"/></svg>
+<svg x="344" y="250" width="220" height="220" viewBox="0 0 1254 1254" preserveAspectRatio="none" overflow="hidden"><use href="#compass"/></svg>
+<text x="454" y="355.6" font-size="25" fill="#ffe6a0" text-anchor="middle" font-weight="600">东一局</text>
+<text x="454" y="379.79999999999995" font-size="18" fill="#ffe6a0" text-anchor="middle" font-weight="400">准备开局</text>
+<text x="454" y="295.5" font-size="21" fill="#ffe6a0" text-anchor="middle" font-weight="600">西</text>
+<text x="533.2" y="362.6" font-size="21" fill="#ffe6a0" text-anchor="middle" font-weight="600">南</text>
+<text x="454" y="434.1" font-size="21" fill="#ffe6a0" text-anchor="middle" font-weight="600">东</text>
+<text x="374.8" y="362.6" font-size="21" fill="#ffe6a0" text-anchor="middle" font-weight="600">北</text>
+<svg x="16" y="490" width="144" height="144" viewBox="0 0 627 627" preserveAspectRatio="none" overflow="hidden"><use href="#portraits"/></svg>
+<svg x="20" y="622" width="12" height="12" viewBox="0 0 340 340" preserveAspectRatio="none" overflow="hidden"><use href="#panel"/></svg>
+<svg x="32" y="622" width="116" height="12" viewBox="340 0 574 340" preserveAspectRatio="none" overflow="hidden"><use href="#panel"/></svg>
+<svg x="148" y="622" width="12" height="12" viewBox="914 0 340 340" preserveAspectRatio="none" overflow="hidden"><use href="#panel"/></svg>
+<svg x="20" y="634" width="12" height="26" viewBox="0 340 340 574" preserveAspectRatio="none" overflow="hidden"><use href="#panel"/></svg>
+<svg x="32" y="634" width="116" height="26" viewBox="340 340 574 574" preserveAspectRatio="none" overflow="hidden"><use href="#panel"/></svg>
+<svg x="148" y="634" width="12" height="26" viewBox="914 340 340 574" preserveAspectRatio="none" overflow="hidden"><use href="#panel"/></svg>
+<svg x="20" y="660" width="12" height="12" viewBox="0 914 340 340" preserveAspectRatio="none" overflow="hidden"><use href="#panel"/></svg>
+<svg x="32" y="660" width="116" height="12" viewBox="340 914 574 340" preserveAspectRatio="none" overflow="hidden"><use href="#panel"/></svg>
+<svg x="148" y="660" width="12" height="12" viewBox="914 914 340 340" preserveAspectRatio="none" overflow="hidden"><use href="#panel"/></svg>
+<text x="90" y="643" font-size="17" fill="#ffe9a7" text-anchor="middle" font-weight="400">玩家0 · 东家</text>
+<text x="90" y="664" font-size="20" fill="#fff3d1" text-anchor="middle" font-weight="400">25000</text>
+<svg x="16" y="184" width="144" height="144" viewBox="627 0 627 627" preserveAspectRatio="none" overflow="hidden"><use href="#portraits"/></svg>
+<svg x="20" y="316" width="12" height="12" viewBox="0 0 340 340" preserveAspectRatio="none" overflow="hidden"><use href="#panel"/></svg>
+<svg x="32" y="316" width="116" height="12" viewBox="340 0 574 340" preserveAspectRatio="none" overflow="hidden"><use href="#panel"/></svg>
+<svg x="148" y="316" width="12" height="12" viewBox="914 0 340 340" preserveAspectRatio="none" overflow="hidden"><use href="#panel"/></svg>
+<svg x="20" y="328" width="12" height="26" viewBox="0 340 340 574" preserveAspectRatio="none" overflow="hidden"><use href="#panel"/></svg>
+<svg x="32" y="328" width="116" height="26" viewBox="340 340 574 574" preserveAspectRatio="none" overflow="hidden"><use href="#panel"/></svg>
+<svg x="148" y="328" width="12" height="26" viewBox="914 340 340 574" preserveAspectRatio="none" overflow="hidden"><use href="#panel"/></svg>
+<svg x="20" y="354" width="12" height="12" viewBox="0 914 340 340" preserveAspectRatio="none" overflow="hidden"><use href="#panel"/></svg>
+<svg x="32" y="354" width="116" height="12" viewBox="340 914 574 340" preserveAspectRatio="none" overflow="hidden"><use href="#panel"/></svg>
+<svg x="148" y="354" width="12" height="12" viewBox="914 914 340 340" preserveAspectRatio="none" overflow="hidden"><use href="#panel"/></svg>
+<text x="90" y="337" font-size="17" fill="#ffe9a7" text-anchor="middle" font-weight="400">玩家3 · 北家</text>
+<text x="90" y="358" font-size="20" fill="#fff3d1" text-anchor="middle" font-weight="400">25000</text>
+<svg x="368" y="8" width="120" height="120" viewBox="0 627 627 627" preserveAspectRatio="none" overflow="hidden"><use href="#portraits"/></svg>
+<svg x="488" y="30" width="12" height="12" viewBox="0 0 340 340" preserveAspectRatio="none" overflow="hidden"><use href="#panel"/></svg>
+<svg x="500" y="30" width="136" height="12" viewBox="340 0 574 340" preserveAspectRatio="none" overflow="hidden"><use href="#panel"/></svg>
+<svg x="636" y="30" width="12" height="12" viewBox="914 0 340 340" preserveAspectRatio="none" overflow="hidden"><use href="#panel"/></svg>
+<svg x="488" y="42" width="12" height="30" viewBox="0 340 340 574" preserveAspectRatio="none" overflow="hidden"><use href="#panel"/></svg>
+<svg x="500" y="42" width="136" height="30" viewBox="340 340 574 574" preserveAspectRatio="none" overflow="hidden"><use href="#panel"/></svg>
+<svg x="636" y="42" width="12" height="30" viewBox="914 340 340 574" preserveAspectRatio="none" overflow="hidden"><use href="#panel"/></svg>
+<svg x="488" y="72" width="12" height="12" viewBox="0 914 340 340" preserveAspectRatio="none" overflow="hidden"><use href="#panel"/></svg>
+<svg x="500" y="72" width="136" height="12" viewBox="340 914 574 340" preserveAspectRatio="none" overflow="hidden"><use href="#panel"/></svg>
+<svg x="636" y="72" width="12" height="12" viewBox="914 914 340 340" preserveAspectRatio="none" overflow="hidden"><use href="#panel"/></svg>
+<text x="568" y="51" font-size="17" fill="#ffe9a7" text-anchor="middle" font-weight="400">玩家2 · 西家</text>
+<text x="568" y="72" font-size="20" fill="#fff3d1" text-anchor="middle" font-weight="400">25000</text>
+<svg x="800" y="178" width="128" height="128" viewBox="627 627 627 627" preserveAspectRatio="none" overflow="hidden"><use href="#portraits"/></svg>
+<svg x="804" y="300" width="12" height="12" viewBox="0 0 340 340" preserveAspectRatio="none" overflow="hidden"><use href="#panel"/></svg>
+<svg x="816" y="300" width="100" height="12" viewBox="340 0 574 340" preserveAspectRatio="none" overflow="hidden"><use href="#panel"/></svg>
+<svg x="916" y="300" width="12" height="12" viewBox="914 0 340 340" preserveAspectRatio="none" overflow="hidden"><use href="#panel"/></svg>
+<svg x="804" y="312" width="12" height="26" viewBox="0 340 340 574" preserveAspectRatio="none" overflow="hidden"><use href="#panel"/></svg>
+<svg x="816" y="312" width="100" height="26" viewBox="340 340 574 574" preserveAspectRatio="none" overflow="hidden"><use href="#panel"/></svg>
+<svg x="916" y="312" width="12" height="26" viewBox="914 340 340 574" preserveAspectRatio="none" overflow="hidden"><use href="#panel"/></svg>
+<svg x="804" y="338" width="12" height="12" viewBox="0 914 340 340" preserveAspectRatio="none" overflow="hidden"><use href="#panel"/></svg>
+<svg x="816" y="338" width="100" height="12" viewBox="340 914 574 340" preserveAspectRatio="none" overflow="hidden"><use href="#panel"/></svg>
+<svg x="916" y="338" width="12" height="12" viewBox="914 914 340 340" preserveAspectRatio="none" overflow="hidden"><use href="#panel"/></svg>
+<text x="866" y="321" font-size="17" fill="#ffe9a7" text-anchor="middle" font-weight="400">玩家1 · 南家</text>
+<text x="866" y="342" font-size="20" fill="#fff3d1" text-anchor="middle" font-weight="400">25000</text>
+<svg x="228" y="622" width="18" height="18" viewBox="0 0 340 340" preserveAspectRatio="none" overflow="hidden"><use href="#panel"/></svg>
+<svg x="246" y="622" width="516" height="18" viewBox="340 0 574 340" preserveAspectRatio="none" overflow="hidden"><use href="#panel"/></svg>
+<svg x="762" y="622" width="18" height="18" viewBox="914 0 340 340" preserveAspectRatio="none" overflow="hidden"><use href="#panel"/></svg>
+<svg x="228" y="640" width="18" height="18" viewBox="0 340 340 574" preserveAspectRatio="none" overflow="hidden"><use href="#panel"/></svg>
+<svg x="246" y="640" width="516" height="18" viewBox="340 340 574 574" preserveAspectRatio="none" overflow="hidden"><use href="#panel"/></svg>
+<svg x="762" y="640" width="18" height="18" viewBox="914 340 340 574" preserveAspectRatio="none" overflow="hidden"><use href="#panel"/></svg>
+<svg x="228" y="658" width="18" height="18" viewBox="0 914 340 340" preserveAspectRatio="none" overflow="hidden"><use href="#panel"/></svg>
+<svg x="246" y="658" width="516" height="18" viewBox="340 914 574 340" preserveAspectRatio="none" overflow="hidden"><use href="#panel"/></svg>
+<svg x="762" y="658" width="18" height="18" viewBox="914 914 340 340" preserveAspectRatio="none" overflow="hidden"><use href="#panel"/></svg>
+<text x="504" y="657" font-size="24" fill="#ffe7a4" text-anchor="middle" font-weight="400">◆  准备完成后发牌  ◆</text>
+<svg x="936" y="48" width="44" height="44" viewBox="0 0 340 340" preserveAspectRatio="none" overflow="hidden"><use href="#panel"/></svg>
+<svg x="980" y="48" width="224" height="44" viewBox="340 0 574 340" preserveAspectRatio="none" overflow="hidden"><use href="#panel"/></svg>
+<svg x="1204" y="48" width="44" height="44" viewBox="914 0 340 340" preserveAspectRatio="none" overflow="hidden"><use href="#panel"/></svg>
+<svg x="936" y="92" width="44" height="536" viewBox="0 340 340 574" preserveAspectRatio="none" overflow="hidden"><use href="#panel"/></svg>
+<svg x="980" y="92" width="224" height="536" viewBox="340 340 574 574" preserveAspectRatio="none" overflow="hidden"><use href="#panel"/></svg>
+<svg x="1204" y="92" width="44" height="536" viewBox="914 340 340 574" preserveAspectRatio="none" overflow="hidden"><use href="#panel"/></svg>
+<svg x="936" y="628" width="44" height="44" viewBox="0 914 340 340" preserveAspectRatio="none" overflow="hidden"><use href="#panel"/></svg>
+<svg x="980" y="628" width="224" height="44" viewBox="340 914 574 340" preserveAspectRatio="none" overflow="hidden"><use href="#panel"/></svg>
+<svg x="1204" y="628" width="44" height="44" viewBox="914 914 340 340" preserveAspectRatio="none" overflow="hidden"><use href="#panel"/></svg>
+<text x="1092" y="105" font-size="34" fill="#ffe6a0" text-anchor="middle" font-weight="600">本局准备</text>
+<svg x="960" y="124" width="16" height="16" viewBox="0 0 340 340" preserveAspectRatio="none" overflow="hidden"><use href="#panel"/></svg>
+<svg x="976" y="124" width="232" height="16" viewBox="340 0 574 340" preserveAspectRatio="none" overflow="hidden"><use href="#panel"/></svg>
+<svg x="1208" y="124" width="16" height="16" viewBox="914 0 340 340" preserveAspectRatio="none" overflow="hidden"><use href="#panel"/></svg>
+<svg x="960" y="140" width="16" height="8" viewBox="0 340 340 574" preserveAspectRatio="none" overflow="hidden"><use href="#panel"/></svg>
+<svg x="976" y="140" width="232" height="8" viewBox="340 340 574 574" preserveAspectRatio="none" overflow="hidden"><use href="#panel"/></svg>
+<svg x="1208" y="140" width="16" height="8" viewBox="914 340 340 574" preserveAspectRatio="none" overflow="hidden"><use href="#panel"/></svg>
+<svg x="960" y="148" width="16" height="16" viewBox="0 914 340 340" preserveAspectRatio="none" overflow="hidden"><use href="#panel"/></svg>
+<svg x="976" y="148" width="232" height="16" viewBox="340 914 574 340" preserveAspectRatio="none" overflow="hidden"><use href="#panel"/></svg>
+<svg x="1208" y="148" width="16" height="16" viewBox="914 914 340 340" preserveAspectRatio="none" overflow="hidden"><use href="#panel"/></svg>
+<text x="1092" y="151" font-size="21" fill="#ffe6a0" text-anchor="middle" font-weight="400">剩余时间   10 秒</text>
+<svg x="956" y="188" width="22" height="22" viewBox="0 0 340 340" preserveAspectRatio="none" overflow="hidden"><use href="#panel"/></svg>
+<svg x="978" y="188" width="228" height="22" viewBox="340 0 574 340" preserveAspectRatio="none" overflow="hidden"><use href="#panel"/></svg>
+<svg x="1206" y="188" width="22" height="22" viewBox="914 0 340 340" preserveAspectRatio="none" overflow="hidden"><use href="#panel"/></svg>
+<svg x="956" y="210" width="22" height="112" viewBox="0 340 340 574" preserveAspectRatio="none" overflow="hidden"><use href="#panel"/></svg>
+<svg x="978" y="210" width="228" height="112" viewBox="340 340 574 574" preserveAspectRatio="none" overflow="hidden"><use href="#panel"/></svg>
+<svg x="1206" y="210" width="22" height="112" viewBox="914 340 340 574" preserveAspectRatio="none" overflow="hidden"><use href="#panel"/></svg>
+<svg x="956" y="322" width="22" height="22" viewBox="0 914 340 340" preserveAspectRatio="none" overflow="hidden"><use href="#panel"/></svg>
+<svg x="978" y="322" width="228" height="22" viewBox="340 914 574 340" preserveAspectRatio="none" overflow="hidden"><use href="#panel"/></svg>
+<svg x="1206" y="322" width="22" height="22" viewBox="914 914 340 340" preserveAspectRatio="none" overflow="hidden"><use href="#panel"/></svg>
+<g transform="rotate(-12 1007 263)"><image href="../../../assets/skins/wikipedia/pin3.png" x="976" y="222" width="62" height="82" preserveAspectRatio="xMidYMid meet"/></g>
+<text x="1131" y="229" font-size="27" fill="#ffe6a0" text-anchor="middle" font-weight="600">偷天换日</text>
+<text x="1130" y="274" font-size="23" fill="#f4ce73" text-anchor="middle" font-weight="400">◉ 30 点</text>
+<text x="1092" y="325" font-size="17" fill="#d3c9a8" text-anchor="middle" font-weight="400">选择后再挑牌型</text>
+<svg x="956" y="360" width="18" height="18" viewBox="0 0 340 340" preserveAspectRatio="none" overflow="hidden"><use href="#panel"/></svg>
+<svg x="974" y="360" width="236" height="18" viewBox="340 0 574 340" preserveAspectRatio="none" overflow="hidden"><use href="#panel"/></svg>
+<svg x="1210" y="360" width="18" height="18" viewBox="914 0 340 340" preserveAspectRatio="none" overflow="hidden"><use href="#panel"/></svg>
+<svg x="956" y="378" width="18" height="28" viewBox="0 340 340 574" preserveAspectRatio="none" overflow="hidden"><use href="#panel"/></svg>
+<svg x="974" y="378" width="236" height="28" viewBox="340 340 574 574" preserveAspectRatio="none" overflow="hidden"><use href="#panel"/></svg>
+<svg x="1210" y="378" width="18" height="28" viewBox="914 340 340 574" preserveAspectRatio="none" overflow="hidden"><use href="#panel"/></svg>
+<svg x="956" y="406" width="18" height="18" viewBox="0 914 340 340" preserveAspectRatio="none" overflow="hidden"><use href="#panel"/></svg>
+<svg x="974" y="406" width="236" height="18" viewBox="340 914 574 340" preserveAspectRatio="none" overflow="hidden"><use href="#panel"/></svg>
+<svg x="1210" y="406" width="18" height="18" viewBox="914 914 340 340" preserveAspectRatio="none" overflow="hidden"><use href="#panel"/></svg>
+<path d="M 968 392 Q 984 373 1000 392 Q 984 411 968 392 Z" stroke="#e7b953" stroke-width="3" fill="none"/><circle cx="984" cy="392" r="5" fill="#e7b953"/>
+<text x="1078" y="399" font-size="21" fill="#fff0b9" text-anchor="middle" font-weight="400">看破 · 10点</text>
+<rect x="1188" y="379" width="25" height="25" fill="#0b211c" stroke="#dfb65e" stroke-width="1.7" rx="3"/>
+<rect x="960" y="447" width="264" height="1" fill="#c6953f" stroke="none" stroke-width="1" rx="0"/>
+<svg x="956" y="464" width="17" height="17" viewBox="0 0 340 340" preserveAspectRatio="none" overflow="hidden"><use href="#panel"/></svg>
+<svg x="973" y="464" width="238" height="17" viewBox="340 0 574 340" preserveAspectRatio="none" overflow="hidden"><use href="#panel"/></svg>
+<svg x="1211" y="464" width="17" height="17" viewBox="914 0 340 340" preserveAspectRatio="none" overflow="hidden"><use href="#panel"/></svg>
+<svg x="956" y="481" width="17" height="32" viewBox="0 340 340 574" preserveAspectRatio="none" overflow="hidden"><use href="#panel"/></svg>
+<svg x="973" y="481" width="238" height="32" viewBox="340 340 574 574" preserveAspectRatio="none" overflow="hidden"><use href="#panel"/></svg>
+<svg x="1211" y="481" width="17" height="32" viewBox="914 340 340 574" preserveAspectRatio="none" overflow="hidden"><use href="#panel"/></svg>
+<svg x="956" y="513" width="17" height="17" viewBox="0 914 340 340" preserveAspectRatio="none" overflow="hidden"><use href="#panel"/></svg>
+<svg x="973" y="513" width="238" height="17" viewBox="340 914 574 340" preserveAspectRatio="none" overflow="hidden"><use href="#panel"/></svg>
+<svg x="1211" y="513" width="17" height="17" viewBox="914 914 340 340" preserveAspectRatio="none" overflow="hidden"><use href="#panel"/></svg>
+<text x="1092" y="492" font-size="19" fill="#a4e5ac" text-anchor="middle" font-weight="400">当前方案：不使用千术</text>
+<text x="1092" y="517" font-size="17" fill="#edcf89" text-anchor="middle" font-weight="400">预计消耗 0点</text>
+<svg x="956" y="552" width="32" height="18" viewBox="40 96 248 120" preserveAspectRatio="none" overflow="hidden"><use href="#buttons"/></svg>
+<svg x="988" y="552" width="208" height="18" viewBox="288 96 960 120" preserveAspectRatio="none" overflow="hidden"><use href="#buttons"/></svg>
+<svg x="1196" y="552" width="32" height="18" viewBox="1248 96 248 120" preserveAspectRatio="none" overflow="hidden"><use href="#buttons"/></svg>
+<svg x="956" y="570" width="32" height="40" viewBox="40 216 248 144" preserveAspectRatio="none" overflow="hidden"><use href="#buttons"/></svg>
+<svg x="988" y="570" width="208" height="40" viewBox="288 216 960 144" preserveAspectRatio="none" overflow="hidden"><use href="#buttons"/></svg>
+<svg x="1196" y="570" width="32" height="40" viewBox="1248 216 248 144" preserveAspectRatio="none" overflow="hidden"><use href="#buttons"/></svg>
+<svg x="956" y="610" width="32" height="18" viewBox="40 360 248 120" preserveAspectRatio="none" overflow="hidden"><use href="#buttons"/></svg>
+<svg x="988" y="610" width="208" height="18" viewBox="288 360 960 120" preserveAspectRatio="none" overflow="hidden"><use href="#buttons"/></svg>
+<svg x="1196" y="610" width="32" height="18" viewBox="1248 360 248 120" preserveAspectRatio="none" overflow="hidden"><use href="#buttons"/></svg>
+<text x="1092" y="598.75" font-size="25" fill="#fff1bb" text-anchor="middle" font-weight="600">开始本局 · 0点</text>
+<text x="1092" y="653" font-size="16" fill="#d3c9a8" text-anchor="middle" font-weight="400">剩余出千点 100点</text>
+</g></svg>

@@ -593,6 +593,37 @@ class RoundPreparationFlowTest : GdxHeadlessTestRunner() {
     }
 
     @Test
+    fun `keyboard focus traverses the stage controls and Enter selects the focused card`() {
+        val session = FakeGameSession()
+        val panel = ShufflePreparationPanel(session)
+        try {
+            panel.update(view(), paused = false, epoch = 0L)
+            panel.syncGeometry()
+            assertEquals(panel.btnPrimaryRect, panel.focusedRect(), "默认焦点应为开始本局")
+
+            press(panel, panel.btnOpenTargetRect)
+            panel.syncGeometry()
+            assertEquals(
+                panel.btnTargets.getValue(ShuffleTarget.CHINITSU_MAN),
+                panel.focusedRect(),
+                "抽屉打开后焦点应落到第一张目标卡"
+            )
+
+            assertTrue(panel.handleConfirmKey())
+            assertEquals(ShuffleTarget.CHINITSU_MAN, panel.model.target)
+            assertTrue(session.submittedPlans.isEmpty(), "Enter 选择目标不得直接提交")
+
+            repeat(8) { panel.moveFocus(1) }
+            assertEquals(panel.btnDrawerConfirmRect, panel.focusedRect())
+            assertTrue(panel.handleConfirmKey())
+            assertEquals(1, session.submittedPlans.size, "焦点确认只提交一次")
+            assertEquals(30, session.submittedPlans.single().selection.cost())
+        } finally {
+            panel.dispose()
+        }
+    }
+
+    @Test
     fun `animated hit rectangles follow the drawn position`() {
         val panel = ShufflePreparationPanel(FakeGameSession())
         try {
@@ -760,6 +791,35 @@ class RoundPreparationFlowTest : GdxHeadlessTestRunner() {
             assertTrue(panel.model.isSeeThroughSelected, "失败必须恢复看破草稿")
             assertEquals(40, panel.model.totalCost)
             assertNotNull(panel.model.errorMessage)
+        } finally { panel.dispose() }
+    }
+
+    @Test
+    fun `resize cancels an in-flight press without losing the 40 point draft`() {
+        val session = FakeGameSession()
+        val panel = ShufflePreparationPanel(session)
+        try {
+            panel.update(view(seeThrough = true), paused = false, epoch = 0L)
+            press(panel, panel.btnOpenTargetRect)
+            press(panel, panel.btnTargets.getValue(ShuffleTarget.KOKUSHI))
+            press(panel, panel.btnDrawerSeeThroughRect)
+            assertEquals(40, panel.model.totalCost)
+            val deadline = panel.model.deadlineMillis
+
+            val x = panel.btnDrawerConfirmRect.x + panel.btnDrawerConfirmRect.width / 2f
+            val y = panel.btnDrawerConfirmRect.y + panel.btnDrawerConfirmRect.height / 2f
+            panel.pressDown(x, y)
+            // GameScreen.resize invokes this exact cancellation before handling new input.
+            panel.pressCancel()
+            panel.pressUp(x, y)
+
+            assertEquals(0, session.submittedPlans.size, "resize 后松开不得误提交")
+            assertFalse(panel.model.isSubmitting)
+            assertFalse(panel.model.isPlanConfirmed)
+            assertEquals(ShuffleTarget.KOKUSHI, panel.model.target)
+            assertTrue(panel.model.isSeeThroughSelected)
+            assertEquals(40, panel.model.totalCost)
+            assertEquals(deadline, panel.model.deadlineMillis, "权威截止不能被 resize 重置")
         } finally { panel.dispose() }
     }
 }

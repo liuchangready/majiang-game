@@ -10,6 +10,8 @@ import com.badlogic.gdx.utils.Disposable
 import com.majiang.client.api.GameSnapshotView
 import com.majiang.client.api.TileMarkArea
 import com.majiang.client.api.TileView
+import com.majiang.presentation.common.render.TableStageFonts
+import com.majiang.presentation.common.render.TableVisualAssets
 import com.majiang.presentation.common.render.TileDrawBuffer
 import com.majiang.presentation.common.render.TileSkin
 
@@ -27,11 +29,15 @@ import com.majiang.presentation.common.render.TileSkin
  */
 class RiverHintPanel : Disposable {
 
-    /** 切换开关按钮矩形包围盒 (1280x720 坐标系) */
-    val btnToggleRect: Rectangle = Rectangle(1100f, 660f, 150f, 42f)
+    /** 切换开关按钮矩形包围盒：设计 `(1098,18,154,48)`，左下角 y=654。 */
+    val btnToggleRect: Rectangle = Rectangle(1098f, 654f, 154f, 48f)
 
     /** 侧边面板整体几何包围盒 */
     val panelRect: Rectangle = Rectangle(860f, 10f, 410f, 700f)
+
+    /** 借用 UiAssets 根持有的牌桌纹理与字号；Screen 不转移所有权。 */
+    var visualAssets: TableVisualAssets? = null
+    var stageFonts: TableStageFonts? = null
 
     /** 面板当前开关状态 */
     var isOpen: Boolean = false
@@ -238,25 +244,46 @@ class RiverHintPanel : Disposable {
         batch: SpriteBatch,
         font: BitmapFont
     ) {
-        shape.begin(ShapeRenderer.ShapeType.Filled)
-        shape.color = if (isOpen) Color(0.20f, 0.65f, 0.85f, 0.95f) else Color(0.12f, 0.32f, 0.42f, 0.90f)
-        shape.rect(btnToggleRect.x, btnToggleRect.y, btnToggleRect.width, btnToggleRect.height)
-        shape.end()
-
-        shape.begin(ShapeRenderer.ShapeType.Line)
-        shape.color = if (isOpen) Color(0.60f, 0.95f, 1.0f, 1.0f) else Color(0.35f, 0.75f, 0.95f, 0.90f)
-        shape.rect(btnToggleRect.x, btnToggleRect.y, btnToggleRect.width, btnToggleRect.height)
-        shape.end()
-
-        batch.begin()
-        val origScaleX = font.data.scaleX
-        val origScaleY = font.data.scaleY
-        font.data.setScale(1.0f)
-        font.color = Color.WHITE
+        val patch = visualAssets?.buttonSecondary
         val label = if (isOpen) "关闭提示" else "牌河提示"
-        font.draw(batch, label, btnToggleRect.x + 28f, btnToggleRect.y + 28f)
-        font.data.setScale(origScaleX, origScaleY)
-        batch.end()
+        if (patch != null) {
+            batch.begin()
+            batch.color = if (isOpen) Color(0.92f, 1f, 0.94f, 1f) else Color.WHITE
+            patch.draw(batch, btnToggleRect.x, btnToggleRect.y, btnToggleRect.width, btnToggleRect.height)
+            batch.color = Color.WHITE
+            batch.end()
+        } else {
+            shape.begin(ShapeRenderer.ShapeType.Filled)
+            shape.color = Color(0.05f, 0.16f, 0.12f, 0.96f)
+            shape.rect(btnToggleRect.x, btnToggleRect.y, btnToggleRect.width, btnToggleRect.height)
+            shape.end()
+            shape.begin(ShapeRenderer.ShapeType.Line)
+            shape.color = Color(0.91f, 0.73f, 0.33f, 0.9f)
+            shape.rect(btnToggleRect.x, btnToggleRect.y, btnToggleRect.width, btnToggleRect.height)
+            shape.end()
+        }
+
+        val stage = stageFonts?.small
+        if (stage != null) {
+            batch.begin()
+            stage.drawCentered(
+                batch,
+                label,
+                btnToggleRect.x + btnToggleRect.width / 2f,
+                btnToggleRect.y + 31f,
+                if (isOpen) Color(0.72f, 0.95f, 0.80f, 1f) else Color(0.97f, 0.90f, 0.67f, 1f)
+            )
+            batch.end()
+        } else {
+            batch.begin()
+            val origScaleX = font.data.scaleX
+            val origScaleY = font.data.scaleY
+            font.data.setScale(1.0f)
+            font.color = Color.WHITE
+            font.draw(batch, label, btnToggleRect.x + 28f, btnToggleRect.y + 30f)
+            font.data.setScale(origScaleX, origScaleY)
+            batch.end()
+        }
     }
 
     /**
@@ -281,33 +308,62 @@ class RiverHintPanel : Disposable {
         shape.projectionMatrix = camera.combined
         batch.projectionMatrix = camera.combined
 
-        // 1. 面板主体背景与边框
-        shape.begin(ShapeRenderer.ShapeType.Filled)
-        shape.color = Color(0.05f, 0.08f, 0.10f, 0.96f)
-        shape.rect(panelRect.x, panelRect.y, panelRect.width, panelRect.height)
-        shape.end()
-
-        shape.begin(ShapeRenderer.ShapeType.Line)
-        shape.color = Color(0.22f, 0.58f, 0.72f, 0.95f)
-        shape.rect(panelRect.x, panelRect.y, panelRect.width, panelRect.height)
-        shape.end()
+        // 1. 面板主体使用同一套翡翠锦纹九宫格，绝不画旧版蓝灰矩形。
+        val panelPatch = visualAssets?.panelMain
+        if (panelPatch != null) {
+            batch.begin()
+            batch.color = Color(1f, 1f, 1f, 0.98f)
+            panelPatch.draw(batch, panelRect.x, panelRect.y, panelRect.width, panelRect.height)
+            batch.color = Color.WHITE
+            batch.end()
+        } else {
+            shape.begin(ShapeRenderer.ShapeType.Filled)
+            shape.color = Color(0.04f, 0.10f, 0.07f, 0.96f)
+            shape.rect(panelRect.x, panelRect.y, panelRect.width, panelRect.height)
+            shape.end()
+            shape.begin(ShapeRenderer.ShapeType.Line)
+            shape.color = Color(0.91f, 0.73f, 0.33f, 0.88f)
+            shape.rect(panelRect.x, panelRect.y, panelRect.width, panelRect.height)
+            shape.end()
+        }
 
         val hint = RiverHintPresentation.build(snapshot)
 
         // 2. 顶部牌山剩余可摸总数
-        batch.begin()
+        val remainingText = hint.wallRemaining?.toString() ?: "—"
+        val titleText = "牌山剩余: $remainingText 张"
+        val stageSmall = stageFonts?.small
         val origScaleX = font.data.scaleX
         val origScaleY = font.data.scaleY
-        font.data.setScale(1.15f)
-        font.color = Color(1.0f, 0.88f, 0.45f, 1.0f)
-        val remainingText = hint.wallRemaining?.toString() ?: "—"
-        font.draw(batch, "牌山剩余: $remainingText 张", panelRect.x + 20f, panelRect.y + panelRect.height - 24f)
-
-        font.data.setScale(0.95f)
-        font.color = Color(0.75f, 0.90f, 0.95f, 0.9f)
-        font.draw(batch, "四方暗手牌", panelRect.x + 20f, panelRect.y + panelRect.height - 52f)
-        font.data.setScale(origScaleX, origScaleY)
-        batch.end()
+        if (stageSmall != null) {
+            batch.begin()
+            stageSmall.draw(
+                batch,
+                titleText,
+                panelRect.x + 20f,
+                panelRect.y + panelRect.height - 18f,
+                Color(1.0f, 0.88f, 0.45f, 1.0f),
+                embolden = true
+            )
+            stageSmall.draw(
+                batch,
+                "四方暗手牌",
+                panelRect.x + 20f,
+                panelRect.y + panelRect.height - 46f,
+                Color(0.86f, 0.95f, 0.83f, 0.96f)
+            )
+            batch.end()
+        } else {
+            batch.begin()
+            font.data.setScale(1.15f)
+            font.color = Color(1.0f, 0.88f, 0.45f, 1.0f)
+            font.draw(batch, titleText, panelRect.x + 20f, panelRect.y + panelRect.height - 24f)
+            font.data.setScale(0.95f)
+            font.color = Color(0.75f, 0.90f, 0.78f, 0.9f)
+            font.draw(batch, "四方暗手牌", panelRect.x + 20f, panelRect.y + panelRect.height - 52f)
+            font.data.setScale(origScaleX, origScaleY)
+            batch.end()
+        }
 
         // 3. 东南西北四行暗手牌展示
         val windNames = listOf("東", "南", "西", "北")
@@ -358,16 +414,29 @@ class RiverHintPanel : Disposable {
         // 4. 下部分割线与四方牌河缩略网格
         val riverAreaTop = handsBaseY - 4 * rowHeight - 8f
         shape.begin(ShapeRenderer.ShapeType.Line)
-        shape.color = Color(0.20f, 0.45f, 0.55f, 0.8f)
+        shape.color = Color(0.72f, 0.58f, 0.28f, 0.75f)
         shape.line(panelRect.x + 12f, riverAreaTop, panelRect.x + panelRect.width - 12f, riverAreaTop)
         shape.end()
 
-        batch.begin()
-        font.data.setScale(0.95f)
-        font.color = Color(0.85f, 0.95f, 1.0f, 1.0f)
-        font.draw(batch, "四方牌河", panelRect.x + 16f, riverAreaTop - 12f)
-        font.data.setScale(origScaleX, origScaleY)
-        batch.end()
+        if (stageSmall != null) {
+            batch.begin()
+            stageSmall.draw(
+                batch,
+                "四方牌河",
+                panelRect.x + 16f,
+                riverAreaTop - 8f,
+                Color(0.92f, 0.84f, 0.63f, 1f),
+                outline = true
+            )
+            batch.end()
+        } else {
+            batch.begin()
+            font.data.setScale(0.95f)
+            font.color = Color(0.85f, 0.95f, 1.0f, 1.0f)
+            font.draw(batch, "四方牌河", panelRect.x + 16f, riverAreaTop - 12f)
+            font.data.setScale(origScaleX, origScaleY)
+            batch.end()
+        }
 
         val riverContentTop = riverAreaTop - 36f
         val riverContentBottom = panelRect.y + 10f

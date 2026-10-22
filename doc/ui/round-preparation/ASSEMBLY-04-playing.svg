@@ -1,0 +1,196 @@
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="1280" height="720" viewBox="0 0 1280 720"><title>正式 APP 素材拼接设计：playing（设计稿，非运行截图）</title><defs>
+<image id="environment" href="../../../assets/ui/table/club-environment.png" width="1672" height="941"/>
+<image id="board" href="../../../assets/ui/table/jade-table-board.png" width="1536" height="1024"/>
+<image id="panel" href="../../../assets/ui/table/jade-panel-skin.png" width="1254" height="1254"/>
+<image id="buttons" href="../../../assets/ui/table/button-skins.png" width="1536" height="1024"/>
+<image id="portraits" href="../../../assets/ui/table/animal-medallions.png" width="1254" height="1254"/>
+<image id="targets" href="../../../assets/ui/table/target-card-scenes.png" width="1536" height="1024"/>
+<image id="compass" href="../../../assets/ui/table/round-compass.png" width="1254" height="1254"/>
+</defs><g font-family="Noto Sans SC,Microsoft YaHei,sans-serif">
+<svg x="0" y="0" width="1280" height="720" viewBox="0 0 1672 941" preserveAspectRatio="none" overflow="hidden"><use href="#environment"/></svg>
+<svg x="32" y="76" width="1216" height="620" viewBox="0 0 1536 1024" preserveAspectRatio="none" overflow="hidden"><use href="#board"/></svg>
+<svg x="16" y="564" width="112" height="112" viewBox="0 0 627 627" preserveAspectRatio="none" overflow="hidden"><use href="#portraits"/></svg>
+<svg x="128" y="614" width="12" height="12" viewBox="0 0 340 340" preserveAspectRatio="none" overflow="hidden"><use href="#panel"/></svg>
+<svg x="140" y="614" width="56" height="12" viewBox="340 0 574 340" preserveAspectRatio="none" overflow="hidden"><use href="#panel"/></svg>
+<svg x="196" y="614" width="12" height="12" viewBox="914 0 340 340" preserveAspectRatio="none" overflow="hidden"><use href="#panel"/></svg>
+<svg x="128" y="626" width="12" height="24" viewBox="0 340 340 574" preserveAspectRatio="none" overflow="hidden"><use href="#panel"/></svg>
+<svg x="140" y="626" width="56" height="24" viewBox="340 340 574 574" preserveAspectRatio="none" overflow="hidden"><use href="#panel"/></svg>
+<svg x="196" y="626" width="12" height="24" viewBox="914 340 340 574" preserveAspectRatio="none" overflow="hidden"><use href="#panel"/></svg>
+<svg x="128" y="650" width="12" height="12" viewBox="0 914 340 340" preserveAspectRatio="none" overflow="hidden"><use href="#panel"/></svg>
+<svg x="140" y="650" width="56" height="12" viewBox="340 914 574 340" preserveAspectRatio="none" overflow="hidden"><use href="#panel"/></svg>
+<svg x="196" y="650" width="12" height="12" viewBox="914 914 340 340" preserveAspectRatio="none" overflow="hidden"><use href="#panel"/></svg>
+<text x="168" y="635" font-size="17" fill="#ffe9a7" text-anchor="middle" font-weight="400">玩家0</text>
+<text x="168" y="656" font-size="20" fill="#fff3d1" text-anchor="middle" font-weight="400">25000</text>
+<svg x="16" y="228" width="112" height="112" viewBox="627 0 627 627" preserveAspectRatio="none" overflow="hidden"><use href="#portraits"/></svg>
+<svg x="16" y="340" width="12" height="12" viewBox="0 0 340 340" preserveAspectRatio="none" overflow="hidden"><use href="#panel"/></svg>
+<svg x="28" y="340" width="88" height="12" viewBox="340 0 574 340" preserveAspectRatio="none" overflow="hidden"><use href="#panel"/></svg>
+<svg x="116" y="340" width="12" height="12" viewBox="914 0 340 340" preserveAspectRatio="none" overflow="hidden"><use href="#panel"/></svg>
+<svg x="16" y="352" width="12" height="34" viewBox="0 340 340 574" preserveAspectRatio="none" overflow="hidden"><use href="#panel"/></svg>
+<svg x="28" y="352" width="88" height="34" viewBox="340 340 574 574" preserveAspectRatio="none" overflow="hidden"><use href="#panel"/></svg>
+<svg x="116" y="352" width="12" height="34" viewBox="914 340 340 574" preserveAspectRatio="none" overflow="hidden"><use href="#panel"/></svg>
+<svg x="16" y="386" width="12" height="12" viewBox="0 914 340 340" preserveAspectRatio="none" overflow="hidden"><use href="#panel"/></svg>
+<svg x="28" y="386" width="88" height="12" viewBox="340 914 574 340" preserveAspectRatio="none" overflow="hidden"><use href="#panel"/></svg>
+<svg x="116" y="386" width="12" height="12" viewBox="914 914 340 340" preserveAspectRatio="none" overflow="hidden"><use href="#panel"/></svg>
+<text x="72" y="361" font-size="17" fill="#ffe9a7" text-anchor="middle" font-weight="400">玩家3 · 北家</text>
+<text x="72" y="382" font-size="20" fill="#fff3d1" text-anchor="middle" font-weight="400">25000</text>
+<svg x="308" y="4" width="112" height="112" viewBox="0 627 627 627" preserveAspectRatio="none" overflow="hidden"><use href="#portraits"/></svg>
+<svg x="164" y="22" width="12" height="12" viewBox="0 0 340 340" preserveAspectRatio="none" overflow="hidden"><use href="#panel"/></svg>
+<svg x="176" y="22" width="124" height="12" viewBox="340 0 574 340" preserveAspectRatio="none" overflow="hidden"><use href="#panel"/></svg>
+<svg x="300" y="22" width="12" height="12" viewBox="914 0 340 340" preserveAspectRatio="none" overflow="hidden"><use href="#panel"/></svg>
+<svg x="164" y="34" width="12" height="30" viewBox="0 340 340 574" preserveAspectRatio="none" overflow="hidden"><use href="#panel"/></svg>
+<svg x="176" y="34" width="124" height="30" viewBox="340 340 574 574" preserveAspectRatio="none" overflow="hidden"><use href="#panel"/></svg>
+<svg x="300" y="34" width="12" height="30" viewBox="914 340 340 574" preserveAspectRatio="none" overflow="hidden"><use href="#panel"/></svg>
+<svg x="164" y="64" width="12" height="12" viewBox="0 914 340 340" preserveAspectRatio="none" overflow="hidden"><use href="#panel"/></svg>
+<svg x="176" y="64" width="124" height="12" viewBox="340 914 574 340" preserveAspectRatio="none" overflow="hidden"><use href="#panel"/></svg>
+<svg x="300" y="64" width="12" height="12" viewBox="914 914 340 340" preserveAspectRatio="none" overflow="hidden"><use href="#panel"/></svg>
+<text x="238" y="43" font-size="17" fill="#ffe9a7" text-anchor="middle" font-weight="400">玩家2 · 西家</text>
+<text x="238" y="64" font-size="20" fill="#fff3d1" text-anchor="middle" font-weight="400">25000</text>
+<svg x="1148" y="228" width="112" height="112" viewBox="627 627 627 627" preserveAspectRatio="none" overflow="hidden"><use href="#portraits"/></svg>
+<svg x="1148" y="340" width="12" height="12" viewBox="0 0 340 340" preserveAspectRatio="none" overflow="hidden"><use href="#panel"/></svg>
+<svg x="1160" y="340" width="88" height="12" viewBox="340 0 574 340" preserveAspectRatio="none" overflow="hidden"><use href="#panel"/></svg>
+<svg x="1248" y="340" width="12" height="12" viewBox="914 0 340 340" preserveAspectRatio="none" overflow="hidden"><use href="#panel"/></svg>
+<svg x="1148" y="352" width="12" height="34" viewBox="0 340 340 574" preserveAspectRatio="none" overflow="hidden"><use href="#panel"/></svg>
+<svg x="1160" y="352" width="88" height="34" viewBox="340 340 574 574" preserveAspectRatio="none" overflow="hidden"><use href="#panel"/></svg>
+<svg x="1248" y="352" width="12" height="34" viewBox="914 340 340 574" preserveAspectRatio="none" overflow="hidden"><use href="#panel"/></svg>
+<svg x="1148" y="386" width="12" height="12" viewBox="0 914 340 340" preserveAspectRatio="none" overflow="hidden"><use href="#panel"/></svg>
+<svg x="1160" y="386" width="88" height="12" viewBox="340 914 574 340" preserveAspectRatio="none" overflow="hidden"><use href="#panel"/></svg>
+<svg x="1248" y="386" width="12" height="12" viewBox="914 914 340 340" preserveAspectRatio="none" overflow="hidden"><use href="#panel"/></svg>
+<text x="1204" y="361" font-size="17" fill="#ffe9a7" text-anchor="middle" font-weight="400">玩家1 · 南家</text>
+<text x="1204" y="382" font-size="20" fill="#fff3d1" text-anchor="middle" font-weight="400">25000</text>
+<svg x="546" y="261" width="188" height="188" viewBox="0 0 1254 1254" preserveAspectRatio="none" overflow="hidden"><use href="#compass"/></svg>
+<text x="640" y="342" font-size="23" fill="#ffe6a0" text-anchor="middle" font-weight="600">东一局</text>
+<text x="640" y="365" font-size="15" fill="#ffe6a0" text-anchor="middle" font-weight="400">本场0 · 供托0</text>
+<text x="640" y="387" font-size="16" fill="#d3c9a8" text-anchor="middle" font-weight="400">牌山剩余 69</text>
+<g transform="rotate(0 640 410)"><image href="../../../assets/skins/wikipedia/sou3.png" x="628" y="394" width="24" height="32" preserveAspectRatio="xMidYMid meet"/></g>
+<svg x="208" y="596" width="20" height="20" viewBox="0 0 340 340" preserveAspectRatio="none" overflow="hidden"><use href="#panel"/></svg>
+<svg x="228" y="596" width="812" height="20" viewBox="340 0 574 340" preserveAspectRatio="none" overflow="hidden"><use href="#panel"/></svg>
+<svg x="1040" y="596" width="20" height="20" viewBox="914 0 340 340" preserveAspectRatio="none" overflow="hidden"><use href="#panel"/></svg>
+<svg x="208" y="616" width="20" height="70" viewBox="0 340 340 574" preserveAspectRatio="none" overflow="hidden"><use href="#panel"/></svg>
+<svg x="228" y="616" width="812" height="70" viewBox="340 340 574 574" preserveAspectRatio="none" overflow="hidden"><use href="#panel"/></svg>
+<svg x="1040" y="616" width="20" height="70" viewBox="914 340 340 574" preserveAspectRatio="none" overflow="hidden"><use href="#panel"/></svg>
+<svg x="208" y="686" width="20" height="20" viewBox="0 914 340 340" preserveAspectRatio="none" overflow="hidden"><use href="#panel"/></svg>
+<svg x="228" y="686" width="812" height="20" viewBox="340 914 574 340" preserveAspectRatio="none" overflow="hidden"><use href="#panel"/></svg>
+<svg x="1040" y="686" width="20" height="20" viewBox="914 914 340 340" preserveAspectRatio="none" overflow="hidden"><use href="#panel"/></svg>
+<svg x="436" y="8" width="12" height="12" viewBox="0 0 340 340" preserveAspectRatio="none" overflow="hidden"><use href="#panel"/></svg>
+<svg x="448" y="8" width="384" height="12" viewBox="340 0 574 340" preserveAspectRatio="none" overflow="hidden"><use href="#panel"/></svg>
+<svg x="832" y="8" width="12" height="12" viewBox="914 0 340 340" preserveAspectRatio="none" overflow="hidden"><use href="#panel"/></svg>
+<svg x="436" y="20" width="12" height="30" viewBox="0 340 340 574" preserveAspectRatio="none" overflow="hidden"><use href="#panel"/></svg>
+<svg x="448" y="20" width="384" height="30" viewBox="340 340 574 574" preserveAspectRatio="none" overflow="hidden"><use href="#panel"/></svg>
+<svg x="832" y="20" width="12" height="30" viewBox="914 340 340 574" preserveAspectRatio="none" overflow="hidden"><use href="#panel"/></svg>
+<svg x="436" y="50" width="12" height="12" viewBox="0 914 340 340" preserveAspectRatio="none" overflow="hidden"><use href="#panel"/></svg>
+<svg x="448" y="50" width="384" height="12" viewBox="340 914 574 340" preserveAspectRatio="none" overflow="hidden"><use href="#panel"/></svg>
+<svg x="832" y="50" width="12" height="12" viewBox="914 914 340 340" preserveAspectRatio="none" overflow="hidden"><use href="#panel"/></svg>
+<g transform="rotate(0 246 642)"><image href="../../../assets/skins/wikipedia/man1.png" x="220" y="610" width="52" height="64" preserveAspectRatio="xMidYMid meet"/></g>
+<g transform="rotate(0 304 642)"><image href="../../../assets/skins/wikipedia/man2.png" x="278" y="610" width="52" height="64" preserveAspectRatio="xMidYMid meet"/></g>
+<g transform="rotate(0 362 642)"><image href="../../../assets/skins/wikipedia/man3.png" x="336" y="610" width="52" height="64" preserveAspectRatio="xMidYMid meet"/></g>
+<g transform="rotate(0 420 642)"><image href="../../../assets/skins/wikipedia/pin3.png" x="394" y="610" width="52" height="64" preserveAspectRatio="xMidYMid meet"/></g>
+<g transform="rotate(0 478 642)"><image href="../../../assets/skins/wikipedia/pin4.png" x="452" y="610" width="52" height="64" preserveAspectRatio="xMidYMid meet"/></g>
+<g transform="rotate(0 536 642)"><image href="../../../assets/skins/wikipedia/pin5.png" x="510" y="610" width="52" height="64" preserveAspectRatio="xMidYMid meet"/></g>
+<g transform="rotate(0 594 642)"><image href="../../../assets/skins/wikipedia/sou2.png" x="568" y="610" width="52" height="64" preserveAspectRatio="xMidYMid meet"/></g>
+<g transform="rotate(0 652 642)"><image href="../../../assets/skins/wikipedia/sou3.png" x="626" y="610" width="52" height="64" preserveAspectRatio="xMidYMid meet"/></g>
+<g transform="rotate(0 710 642)"><image href="../../../assets/skins/wikipedia/sou4.png" x="684" y="610" width="52" height="64" preserveAspectRatio="xMidYMid meet"/></g>
+<g transform="rotate(0 768 642)"><image href="../../../assets/skins/wikipedia/dragon1.png" x="742" y="610" width="52" height="64" preserveAspectRatio="xMidYMid meet"/></g>
+<g transform="rotate(0 826 642)"><image href="../../../assets/skins/wikipedia/wind1.png" x="800" y="610" width="52" height="64" preserveAspectRatio="xMidYMid meet"/></g>
+<g transform="rotate(0 884 642)"><image href="../../../assets/skins/wikipedia/wind1.png" x="858" y="610" width="52" height="64" preserveAspectRatio="xMidYMid meet"/></g>
+<g transform="rotate(0 942 642)"><image href="../../../assets/skins/wikipedia/wind2.png" x="916" y="610" width="52" height="64" preserveAspectRatio="xMidYMid meet"/></g>
+<g transform="rotate(0 1000 642)"><image href="../../../assets/skins/wikipedia/wind3.png" x="974" y="610" width="52" height="64" preserveAspectRatio="xMidYMid meet"/></g>
+<rect x="446" y="18" width="26" height="36" fill="#0d5844" stroke="#e0bd68" stroke-width="1" rx="3"/>
+<rect x="246" y="203" width="31" height="22" fill="#0d5844" stroke="#e0bd68" stroke-width="1" rx="3"/>
+<rect x="990" y="203" width="31" height="22" fill="#0d5844" stroke="#e0bd68" stroke-width="1" rx="3"/>
+<rect x="476" y="18" width="26" height="36" fill="#0d5844" stroke="#e0bd68" stroke-width="1" rx="3"/>
+<rect x="246" y="229" width="31" height="22" fill="#0d5844" stroke="#e0bd68" stroke-width="1" rx="3"/>
+<rect x="990" y="229" width="31" height="22" fill="#0d5844" stroke="#e0bd68" stroke-width="1" rx="3"/>
+<rect x="506" y="18" width="26" height="36" fill="#0d5844" stroke="#e0bd68" stroke-width="1" rx="3"/>
+<rect x="246" y="255" width="31" height="22" fill="#0d5844" stroke="#e0bd68" stroke-width="1" rx="3"/>
+<rect x="990" y="255" width="31" height="22" fill="#0d5844" stroke="#e0bd68" stroke-width="1" rx="3"/>
+<rect x="536" y="18" width="26" height="36" fill="#0d5844" stroke="#e0bd68" stroke-width="1" rx="3"/>
+<rect x="246" y="281" width="31" height="22" fill="#0d5844" stroke="#e0bd68" stroke-width="1" rx="3"/>
+<rect x="990" y="281" width="31" height="22" fill="#0d5844" stroke="#e0bd68" stroke-width="1" rx="3"/>
+<rect x="566" y="18" width="26" height="36" fill="#0d5844" stroke="#e0bd68" stroke-width="1" rx="3"/>
+<rect x="246" y="307" width="31" height="22" fill="#0d5844" stroke="#e0bd68" stroke-width="1" rx="3"/>
+<rect x="990" y="307" width="31" height="22" fill="#0d5844" stroke="#e0bd68" stroke-width="1" rx="3"/>
+<rect x="596" y="18" width="26" height="36" fill="#0d5844" stroke="#e0bd68" stroke-width="1" rx="3"/>
+<rect x="246" y="333" width="31" height="22" fill="#0d5844" stroke="#e0bd68" stroke-width="1" rx="3"/>
+<rect x="990" y="333" width="31" height="22" fill="#0d5844" stroke="#e0bd68" stroke-width="1" rx="3"/>
+<rect x="626" y="18" width="26" height="36" fill="#0d5844" stroke="#e0bd68" stroke-width="1" rx="3"/>
+<rect x="246" y="359" width="31" height="22" fill="#0d5844" stroke="#e0bd68" stroke-width="1" rx="3"/>
+<rect x="990" y="359" width="31" height="22" fill="#0d5844" stroke="#e0bd68" stroke-width="1" rx="3"/>
+<rect x="656" y="18" width="26" height="36" fill="#0d5844" stroke="#e0bd68" stroke-width="1" rx="3"/>
+<rect x="246" y="385" width="31" height="22" fill="#0d5844" stroke="#e0bd68" stroke-width="1" rx="3"/>
+<rect x="990" y="385" width="31" height="22" fill="#0d5844" stroke="#e0bd68" stroke-width="1" rx="3"/>
+<rect x="686" y="18" width="26" height="36" fill="#0d5844" stroke="#e0bd68" stroke-width="1" rx="3"/>
+<rect x="246" y="411" width="31" height="22" fill="#0d5844" stroke="#e0bd68" stroke-width="1" rx="3"/>
+<rect x="990" y="411" width="31" height="22" fill="#0d5844" stroke="#e0bd68" stroke-width="1" rx="3"/>
+<rect x="716" y="18" width="26" height="36" fill="#0d5844" stroke="#e0bd68" stroke-width="1" rx="3"/>
+<rect x="246" y="437" width="31" height="22" fill="#0d5844" stroke="#e0bd68" stroke-width="1" rx="3"/>
+<rect x="990" y="437" width="31" height="22" fill="#0d5844" stroke="#e0bd68" stroke-width="1" rx="3"/>
+<rect x="746" y="18" width="26" height="36" fill="#0d5844" stroke="#e0bd68" stroke-width="1" rx="3"/>
+<rect x="246" y="463" width="31" height="22" fill="#0d5844" stroke="#e0bd68" stroke-width="1" rx="3"/>
+<rect x="990" y="463" width="31" height="22" fill="#0d5844" stroke="#e0bd68" stroke-width="1" rx="3"/>
+<rect x="776" y="18" width="26" height="36" fill="#0d5844" stroke="#e0bd68" stroke-width="1" rx="3"/>
+<rect x="246" y="489" width="31" height="22" fill="#0d5844" stroke="#e0bd68" stroke-width="1" rx="3"/>
+<rect x="990" y="489" width="31" height="22" fill="#0d5844" stroke="#e0bd68" stroke-width="1" rx="3"/>
+<rect x="806" y="18" width="26" height="36" fill="#0d5844" stroke="#e0bd68" stroke-width="1" rx="3"/>
+<rect x="246" y="515" width="31" height="22" fill="#0d5844" stroke="#e0bd68" stroke-width="1" rx="3"/>
+<rect x="990" y="515" width="31" height="22" fill="#0d5844" stroke="#e0bd68" stroke-width="1" rx="3"/>
+<svg x="1098" y="18" width="32" height="18" viewBox="40 544 248 120" preserveAspectRatio="none" overflow="hidden"><use href="#buttons"/></svg>
+<svg x="1130" y="18" width="90" height="18" viewBox="288 544 960 120" preserveAspectRatio="none" overflow="hidden"><use href="#buttons"/></svg>
+<svg x="1220" y="18" width="32" height="18" viewBox="1248 544 248 120" preserveAspectRatio="none" overflow="hidden"><use href="#buttons"/></svg>
+<svg x="1098" y="36" width="32" height="6" viewBox="40 664 248 144" preserveAspectRatio="none" overflow="hidden"><use href="#buttons"/></svg>
+<svg x="1130" y="36" width="90" height="6" viewBox="288 664 960 144" preserveAspectRatio="none" overflow="hidden"><use href="#buttons"/></svg>
+<svg x="1220" y="36" width="32" height="6" viewBox="1248 664 248 144" preserveAspectRatio="none" overflow="hidden"><use href="#buttons"/></svg>
+<svg x="1098" y="42" width="32" height="18" viewBox="40 808 248 120" preserveAspectRatio="none" overflow="hidden"><use href="#buttons"/></svg>
+<svg x="1130" y="42" width="90" height="18" viewBox="288 808 960 120" preserveAspectRatio="none" overflow="hidden"><use href="#buttons"/></svg>
+<svg x="1220" y="42" width="32" height="18" viewBox="1248 808 248 120" preserveAspectRatio="none" overflow="hidden"><use href="#buttons"/></svg>
+<text x="1175" y="46" font-size="20" fill="#fff1bb" text-anchor="middle" font-weight="600">牌河提示</text>
+<svg x="1078" y="469" width="32" height="18" viewBox="40 96 248 120" preserveAspectRatio="none" overflow="hidden"><use href="#buttons"/></svg>
+<svg x="1110" y="469" width="86" height="18" viewBox="288 96 960 120" preserveAspectRatio="none" overflow="hidden"><use href="#buttons"/></svg>
+<svg x="1196" y="469" width="32" height="18" viewBox="1248 96 248 120" preserveAspectRatio="none" overflow="hidden"><use href="#buttons"/></svg>
+<svg x="1078" y="487" width="32" height="7" viewBox="40 216 248 144" preserveAspectRatio="none" overflow="hidden"><use href="#buttons"/></svg>
+<svg x="1110" y="487" width="86" height="7" viewBox="288 216 960 144" preserveAspectRatio="none" overflow="hidden"><use href="#buttons"/></svg>
+<svg x="1196" y="487" width="32" height="7" viewBox="1248 216 248 144" preserveAspectRatio="none" overflow="hidden"><use href="#buttons"/></svg>
+<svg x="1078" y="494" width="32" height="18" viewBox="40 360 248 120" preserveAspectRatio="none" overflow="hidden"><use href="#buttons"/></svg>
+<svg x="1110" y="494" width="86" height="18" viewBox="288 360 960 120" preserveAspectRatio="none" overflow="hidden"><use href="#buttons"/></svg>
+<svg x="1196" y="494" width="32" height="18" viewBox="1248 360 248 120" preserveAspectRatio="none" overflow="hidden"><use href="#buttons"/></svg>
+<text x="1153" y="496.8" font-size="18" fill="#fff1bb" text-anchor="middle" font-weight="600">落汗 · 10</text>
+<svg x="1078" y="517" width="32" height="18" viewBox="40 544 248 120" preserveAspectRatio="none" overflow="hidden"><use href="#buttons"/></svg>
+<svg x="1110" y="517" width="86" height="18" viewBox="288 544 960 120" preserveAspectRatio="none" overflow="hidden"><use href="#buttons"/></svg>
+<svg x="1196" y="517" width="32" height="18" viewBox="1248 544 248 120" preserveAspectRatio="none" overflow="hidden"><use href="#buttons"/></svg>
+<svg x="1078" y="535" width="32" height="7" viewBox="40 664 248 144" preserveAspectRatio="none" overflow="hidden"><use href="#buttons"/></svg>
+<svg x="1110" y="535" width="86" height="7" viewBox="288 664 960 144" preserveAspectRatio="none" overflow="hidden"><use href="#buttons"/></svg>
+<svg x="1196" y="535" width="32" height="7" viewBox="1248 664 248 144" preserveAspectRatio="none" overflow="hidden"><use href="#buttons"/></svg>
+<svg x="1078" y="542" width="32" height="18" viewBox="40 808 248 120" preserveAspectRatio="none" overflow="hidden"><use href="#buttons"/></svg>
+<svg x="1110" y="542" width="86" height="18" viewBox="288 808 960 120" preserveAspectRatio="none" overflow="hidden"><use href="#buttons"/></svg>
+<svg x="1196" y="542" width="32" height="18" viewBox="1248 808 248 120" preserveAspectRatio="none" overflow="hidden"><use href="#buttons"/></svg>
+<text x="1153" y="544.8" font-size="18" fill="#fff1bb" text-anchor="middle" font-weight="600">偷梁换柱 · 10</text>
+<svg x="1078" y="565" width="32" height="18" viewBox="40 544 248 120" preserveAspectRatio="none" overflow="hidden"><use href="#buttons"/></svg>
+<svg x="1110" y="565" width="86" height="18" viewBox="288 544 960 120" preserveAspectRatio="none" overflow="hidden"><use href="#buttons"/></svg>
+<svg x="1196" y="565" width="32" height="18" viewBox="1248 544 248 120" preserveAspectRatio="none" overflow="hidden"><use href="#buttons"/></svg>
+<svg x="1078" y="583" width="32" height="7" viewBox="40 664 248 144" preserveAspectRatio="none" overflow="hidden"><use href="#buttons"/></svg>
+<svg x="1110" y="583" width="86" height="7" viewBox="288 664 960 144" preserveAspectRatio="none" overflow="hidden"><use href="#buttons"/></svg>
+<svg x="1196" y="583" width="32" height="7" viewBox="1248 664 248 144" preserveAspectRatio="none" overflow="hidden"><use href="#buttons"/></svg>
+<svg x="1078" y="590" width="32" height="18" viewBox="40 808 248 120" preserveAspectRatio="none" overflow="hidden"><use href="#buttons"/></svg>
+<svg x="1110" y="590" width="86" height="18" viewBox="288 808 960 120" preserveAspectRatio="none" overflow="hidden"><use href="#buttons"/></svg>
+<svg x="1196" y="590" width="32" height="18" viewBox="1248 808 248 120" preserveAspectRatio="none" overflow="hidden"><use href="#buttons"/></svg>
+<text x="1153" y="592.8" font-size="18" fill="#fff1bb" text-anchor="middle" font-weight="600">袖里藏花 · 10</text>
+<svg x="1078" y="613" width="32" height="18" viewBox="40 544 248 120" preserveAspectRatio="none" overflow="hidden"><use href="#buttons"/></svg>
+<svg x="1110" y="613" width="86" height="18" viewBox="288 544 960 120" preserveAspectRatio="none" overflow="hidden"><use href="#buttons"/></svg>
+<svg x="1196" y="613" width="32" height="18" viewBox="1248 544 248 120" preserveAspectRatio="none" overflow="hidden"><use href="#buttons"/></svg>
+<svg x="1078" y="631" width="32" height="7" viewBox="40 664 248 144" preserveAspectRatio="none" overflow="hidden"><use href="#buttons"/></svg>
+<svg x="1110" y="631" width="86" height="7" viewBox="288 664 960 144" preserveAspectRatio="none" overflow="hidden"><use href="#buttons"/></svg>
+<svg x="1196" y="631" width="32" height="7" viewBox="1248 664 248 144" preserveAspectRatio="none" overflow="hidden"><use href="#buttons"/></svg>
+<svg x="1078" y="638" width="32" height="18" viewBox="40 808 248 120" preserveAspectRatio="none" overflow="hidden"><use href="#buttons"/></svg>
+<svg x="1110" y="638" width="86" height="18" viewBox="288 808 960 120" preserveAspectRatio="none" overflow="hidden"><use href="#buttons"/></svg>
+<svg x="1196" y="638" width="32" height="18" viewBox="1248 808 248 120" preserveAspectRatio="none" overflow="hidden"><use href="#buttons"/></svg>
+<text x="1153" y="640.8" font-size="18" fill="#fff1bb" text-anchor="middle" font-weight="600">理牌：关</text>
+<svg x="1078" y="661" width="32" height="18" viewBox="40 544 248 120" preserveAspectRatio="none" overflow="hidden"><use href="#buttons"/></svg>
+<svg x="1110" y="661" width="86" height="18" viewBox="288 544 960 120" preserveAspectRatio="none" overflow="hidden"><use href="#buttons"/></svg>
+<svg x="1196" y="661" width="32" height="18" viewBox="1248 544 248 120" preserveAspectRatio="none" overflow="hidden"><use href="#buttons"/></svg>
+<svg x="1078" y="679" width="32" height="7" viewBox="40 664 248 144" preserveAspectRatio="none" overflow="hidden"><use href="#buttons"/></svg>
+<svg x="1110" y="679" width="86" height="7" viewBox="288 664 960 144" preserveAspectRatio="none" overflow="hidden"><use href="#buttons"/></svg>
+<svg x="1196" y="679" width="32" height="7" viewBox="1248 664 248 144" preserveAspectRatio="none" overflow="hidden"><use href="#buttons"/></svg>
+<svg x="1078" y="686" width="32" height="18" viewBox="40 808 248 120" preserveAspectRatio="none" overflow="hidden"><use href="#buttons"/></svg>
+<svg x="1110" y="686" width="86" height="18" viewBox="288 808 960 120" preserveAspectRatio="none" overflow="hidden"><use href="#buttons"/></svg>
+<svg x="1196" y="686" width="32" height="18" viewBox="1248 808 248 120" preserveAspectRatio="none" overflow="hidden"><use href="#buttons"/></svg>
+<text x="1153" y="688.8" font-size="18" fill="#fff1bb" text-anchor="middle" font-weight="600">托管</text>
+</g></svg>

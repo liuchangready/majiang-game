@@ -2,24 +2,24 @@ package com.majiang.presentation.game
 
 import com.majiang.client.api.ShuffleTarget
 import com.badlogic.gdx.math.Rectangle
-import com.majiang.presentation.common.render.PreparationTableRenderer
+import com.majiang.presentation.common.render.TableStageLayout
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 
 /**
- * 开局准备阶段几何布局契约测试 (RoundPreparationLayoutTest)。
+ * 正式牌桌与准备阶段几何契约测试。
  *
- * 断言 DESIGN §6 的建议坐标在 1280×720 下逐项成立，并保证超宽 / 窄屏时
- * 准备栏与抽屉始终锚定在可见右缘、公开席位不会落在准备栏或抽屉之下。
+ * 以 RESPONSIVE-DESIGN.md / responsive-spec.json 的左上角设计坐标为唯一来源，
+ * 逐项验证 libGDX 转换后的坐标、目标卡、准备栏、抽屉、回执和持续 HUD。
  */
 class RoundPreparationLayoutTest {
 
     private val layout = RoundPreparationLayout.DEFAULT
 
     @Test
-    fun `panel and drawer match the design coordinates`() {
+    fun `panel and drawer match the responsive design`() {
         assertEquals(936f, layout.panelRect.x, 0.01f)
         assertEquals(48f, layout.panelRect.y, 0.01f)
         assertEquals(312f, layout.panelRect.width, 0.01f)
@@ -32,23 +32,25 @@ class RoundPreparationLayoutTest {
     }
 
     @Test
-    fun `primary action matches the design coordinates`() {
-        assertEquals(956f, layout.primaryActionRect.x, 0.01f)
-        assertEquals(162f, layout.primaryActionRect.y, 0.01f)
-        assertEquals(272f, layout.primaryActionRect.width, 0.01f)
-        assertEquals(64f, layout.primaryActionRect.height, 0.01f)
+    fun `preparation entries use the new vertical rhythm`() {
+        assertEquals(Rectangle(960f, 556f, 264f, 40f), layout.countdownRect)
+        assertEquals(Rectangle(956f, 376f, 272f, 156f), layout.openTargetRect)
+        assertEquals(Rectangle(956f, 296f, 272f, 64f), layout.seeThroughRect)
+        assertEquals(Rectangle(956f, 190f, 272f, 66f), layout.summaryRect)
+        assertEquals(Rectangle(956f, 92f, 272f, 76f), layout.primaryActionRect)
+        assertEquals(Rectangle(956f, 62f, 272f, 20f), layout.balanceRect)
         assertTrue(layout.panelRect.contains(layout.primaryActionRect))
     }
 
     @Test
-    fun `six target cards use the two column three row design grid`() {
+    fun `six target cards use the 252 by 114 illustration grid`() {
         val expected = mapOf(
-            ShuffleTarget.CHINITSU_MAN to Rectangle(708f, 462f, 252f, 94f),
-            ShuffleTarget.CHINITSU_SOU to Rectangle(976f, 462f, 252f, 94f),
-            ShuffleTarget.CHINITSU_PIN to Rectangle(708f, 352f, 252f, 94f),
-            ShuffleTarget.DAISANGEN to Rectangle(976f, 352f, 252f, 94f),
-            ShuffleTarget.KOKUSHI to Rectangle(708f, 242f, 252f, 94f),
-            ShuffleTarget.DAISUUSHII to Rectangle(976f, 242f, 252f, 94f)
+            ShuffleTarget.CHINITSU_MAN to Rectangle(708f, 452f, 252f, 114f),
+            ShuffleTarget.CHINITSU_SOU to Rectangle(976f, 452f, 252f, 114f),
+            ShuffleTarget.CHINITSU_PIN to Rectangle(708f, 322f, 252f, 114f),
+            ShuffleTarget.DAISANGEN to Rectangle(976f, 322f, 252f, 114f),
+            ShuffleTarget.KOKUSHI to Rectangle(708f, 192f, 252f, 114f),
+            ShuffleTarget.DAISUUSHII to Rectangle(976f, 192f, 252f, 114f)
         )
         assertEquals(6, layout.targetCardRects.size)
         for ((target, rect) in expected) {
@@ -62,30 +64,77 @@ class RoundPreparationLayoutTest {
     }
 
     @Test
-    fun `drawer bottom actions match the design coordinates`() {
-        assertEquals(708f, layout.drawerSkipRect.x, 0.01f)
-        assertEquals(976f, layout.drawerConfirmRect.x, 0.01f)
-        assertEquals(64f, layout.drawerSkipRect.y, 0.01f)
-        assertEquals(252f, layout.drawerSkipRect.width, 0.01f)
-        assertEquals(54f, layout.drawerSkipRect.height, 0.01f)
-        assertFalse(layout.drawerSkipRect.overlaps(layout.drawerConfirmRect))
-        assertTrue(layout.drawerRect.contains(layout.drawerSkipRect))
-        assertTrue(layout.drawerRect.contains(layout.drawerConfirmRect))
+    fun `drawer footer and back button match the responsive design`() {
+        assertEquals(Rectangle(1132f, 616f, 96f, 44f), layout.drawerBackRect)
+        assertEquals(Rectangle(708f, 118f, 252f, 58f), layout.drawerSeeThroughRect)
+        assertEquals(Rectangle(976f, 118f, 252f, 58f), layout.drawerCostRect)
+        assertEquals(Rectangle(708f, 56f, 252f, 48f), layout.drawerSkipRect)
+        assertEquals(Rectangle(976f, 56f, 252f, 48f), layout.drawerConfirmRect)
     }
 
     @Test
-    fun `every interactive rectangle stays inside the reference viewport`() {
+    fun `receipt is upper right and independent of the old green card`() {
+        assertEquals(Rectangle(944f, 300f, 304f, 260f), layout.receiptRect)
+        assertTrue(layout.receiptRect.x > 900f)
+        assertTrue(layout.receiptRect.y + layout.receiptRect.height < 600f)
+    }
+
+    @Test
+    fun `scene background board and compass never depend on safe table area`() {
+        assertEquals(Rectangle(0f, 0f, 1280f, 720f), TableStageLayout.ENVIRONMENT)
+        assertEquals(Rectangle(32f, 24f, 1216f, 620f), TableStageLayout.BOARD)
+        assertEquals(Rectangle(328f, 262f, 204f, 204f), TableStageLayout.PREP_COMPASS)
+        assertEquals(Rectangle(546f, 271f, 188f, 188f), TableStageLayout.PLAY_COMPASS)
+        assertEquals(Rectangle(208f, 14f, 852f, 110f), TableStageLayout.HAND_TRAY)
+        assertEquals(Rectangle(436f, 658f, 408f, 54f), TableStageLayout.TOP_TRAY)
+        assertEquals(Rectangle(208f, 44f, 448f, 50f), TableStageLayout.PREP_HINT)
+    }
+
+    @Test
+    fun `four absolute seats map to new portrait and independent plate positions`() {
+        assertEquals(0, TableStageLayout.absoluteSeat(0, TableStageLayout.SeatSlot.SELF))
+        assertEquals(1, TableStageLayout.absoluteSeat(0, TableStageLayout.SeatSlot.RIGHT))
+        assertEquals(2, TableStageLayout.absoluteSeat(0, TableStageLayout.SeatSlot.TOP))
+        assertEquals(3, TableStageLayout.absoluteSeat(0, TableStageLayout.SeatSlot.LEFT))
+        assertEquals(2, TableStageLayout.absoluteSeat(1, TableStageLayout.SeatSlot.RIGHT))
+
+        assertEquals(Rectangle(16f, 106f, 144f, 144f), TableStageLayout.preparationHud(TableStageLayout.SeatSlot.SELF).portrait)
+        assertEquals(Rectangle(16f, 38f, 176f, 60f), TableStageLayout.preparationHud(TableStageLayout.SeatSlot.SELF).plate)
+        assertEquals(Rectangle(16f, 56f, 112f, 112f), TableStageLayout.playingHud(TableStageLayout.SeatSlot.SELF).portrait)
+        assertEquals(Rectangle(16f, 4f, 176f, 52f), TableStageLayout.playingHud(TableStageLayout.SeatSlot.SELF).plate)
+        assertEquals(Rectangle(1084f, 316f, 184f, 60f), TableStageLayout.playingHud(TableStageLayout.SeatSlot.RIGHT).plate)
+        assertEquals(Rectangle(132f, 638f, 176f, 60f), TableStageLayout.playingHud(TableStageLayout.SeatSlot.TOP).plate)
+        assertEquals(Rectangle(12f, 316f, 176f, 60f), TableStageLayout.playingHud(TableStageLayout.SeatSlot.LEFT).plate)
+    }
+
+    @Test
+    fun `drawer progress moves only the right hud`() {
+        val closed = TableStageLayout.drawerRightHud(0f)
+        val open = TableStageLayout.drawerRightHud(1f)
+        assertEquals(800f, closed.portrait.x, 0.01f)
+        assertEquals(544f, open.portrait.x, 0.01f)
+        assertEquals(536f, open.plate.x, 0.01f)
+        assertEquals(536f + 140f, open.plate.x + open.plate.width, 0.01f)
+        assertTrue(open.plate.x + open.plate.width <= layout.drawerRect.x - 12f + 0.01f)
+    }
+
+    @Test
+    fun `every interactive rectangle stays inside the design stage`() {
         val rects = listOf(
             layout.panelRect,
             layout.drawerRect,
             layout.countdownRect,
             layout.openTargetRect,
             layout.seeThroughRect,
+            layout.summaryRect,
             layout.primaryActionRect,
+            layout.balanceRect,
             layout.drawerBackRect,
             layout.drawerSeeThroughRect,
+            layout.drawerCostRect,
             layout.drawerSkipRect,
-            layout.drawerConfirmRect
+            layout.drawerConfirmRect,
+            layout.receiptRect
         ) + layout.targetCardRects.values
         for (rect in rects) {
             assertTrue(rect.x >= 0f && rect.y >= 0f, "$rect 越出左下边界")
@@ -97,15 +146,18 @@ class RoundPreparationLayoutTest {
     @Test
     fun `panel controls never overlap each other`() {
         assertFalse(layout.openTargetRect.overlaps(layout.seeThroughRect))
-        assertFalse(layout.seeThroughRect.overlaps(layout.primaryActionRect))
+        assertFalse(layout.seeThroughRect.overlaps(layout.summaryRect))
+        assertFalse(layout.summaryRect.overlaps(layout.primaryActionRect))
+        assertFalse(layout.primaryActionRect.overlaps(layout.balanceRect))
         assertFalse(layout.primaryActionRect.overlaps(layout.countdownRect))
         assertTrue(layout.panelRect.contains(layout.openTargetRect))
         assertTrue(layout.panelRect.contains(layout.seeThroughRect))
+        assertTrue(layout.panelRect.contains(layout.summaryRect))
         assertTrue(layout.panelRect.contains(layout.countdownRect))
     }
 
     @Test
-    fun `safe table area never reaches under the panel or the drawer`() {
+    fun `safe table area never reaches under the fixed design panel or drawer`() {
         val panelSafe = layout.safeTableRect(drawerVisible = false)
         assertTrue(panelSafe.x + panelSafe.width <= layout.panelRect.x + 0.01f)
         assertTrue(panelSafe.x >= 0f)
@@ -117,89 +169,11 @@ class RoundPreparationLayoutTest {
     }
 
     @Test
-    fun `ultra wide viewport keeps the panel anchored to the visible right edge`() {
-        val visible = Rectangle(0f, 0f, 1920f, 720f)
-        val wide = RoundPreparationLayout(visible)
-        assertEquals(1920f - 32f - 312f, wide.panelRect.x, 0.01f)
-        assertEquals(1920f - 32f - 560f, wide.drawerRect.x, 0.01f)
-        assertTrue(wide.panelRect.x + wide.panelRect.width <= visible.x + visible.width)
-        assertTrue(wide.drawerRect.x + wide.drawerRect.width <= visible.x + visible.width)
-        assertTrue(wide.safeTableRect(drawerVisible = true).x + wide.safeTableRect(true).width <= wide.drawerRect.x + 0.01f)
-    }
-
-    @Test
-    fun `narrow viewport shifts the panel but keeps it fully visible`() {
-        val visible = Rectangle(-740f, 0f, 1280f, 720f)
-        val narrow = RoundPreparationLayout(visible)
-        assertTrue(narrow.panelRect.x >= visible.x - 0.01f)
-        assertTrue(narrow.panelRect.x + narrow.panelRect.width <= visible.x + visible.width + 0.01f)
-        assertTrue(narrow.drawerRect.x >= visible.x - 0.01f)
-        assertTrue(narrow.drawerRect.x + narrow.drawerRect.width <= visible.x + visible.width + 0.01f)
-    }
-
-    // ------------------------------------------------------------------
-    // 准备阶段占位文案与四席铭牌不得碰撞（1280 抽屉 / 1280 准备栏 / 960×540）
-    // ------------------------------------------------------------------
-
-    private fun assertPlaceholderTextAvoidsSeats(safeArea: Rectangle, caseName: String) {
-        val band = PreparationTableRenderer.centralTextRect(safeArea)
-        val plates = PreparationTableRenderer.seatPlates(safeArea)
-        for (plate in plates) {
-            assertFalse(
-                band.overlaps(plate),
-                "$caseName: 占位文字区 $band 与席位铭牌 $plate 碰撞"
-            )
-        }
-
-        val titleWidth = PreparationTableRenderer.TITLE_TEXT.length *
-            PreparationTableRenderer.CHINESE_FONT_SIZE * PreparationTableRenderer.TITLE_FONT_SCALE
-        assertTrue(
-            titleWidth <= band.width + 0.01f,
-            "$caseName: 标题放不下（需要 $titleWidth，中央文字区 ${band.width}）"
-        )
-        for (line in PreparationTableRenderer.PLACEHOLDER_LINES) {
-            val lineWidth = line.length *
-                PreparationTableRenderer.CHINESE_FONT_SIZE * PreparationTableRenderer.PLACEHOLDER_FONT_SCALE
-            assertTrue(
-                lineWidth <= band.width + 0.01f,
-                "$caseName: 占位说明「$line」放不下（需要 $lineWidth，中央文字区 ${band.width}）"
-            )
-        }
-    }
-
-    @Test
-    fun `placeholder text never overlaps the seat plates at 1280 with the drawer open`() {
-        val layout = RoundPreparationLayout(Rectangle(0f, 0f, 1280f, 720f))
-        assertPlaceholderTextAvoidsSeats(layout.safeTableRect(drawerVisible = true), "1280 抽屉展开")
-    }
-
-    @Test
-    fun `placeholder text never overlaps the seat plates at 1280 with the panel only`() {
-        val layout = RoundPreparationLayout(Rectangle(0f, 0f, 1280f, 720f))
-        assertPlaceholderTextAvoidsSeats(layout.safeTableRect(drawerVisible = false), "1280 准备栏")
-    }
-
-    @Test
-    fun `placeholder text stays inside the band and readable at 960 by 540`() {
-        val layout = RoundPreparationLayout(Rectangle(0f, 0f, 1280f, 720f))
-        for (drawerVisible in listOf(false, true)) {
-            val safeArea = layout.safeTableRect(drawerVisible)
-            assertPlaceholderTextAvoidsSeats(safeArea, "960×540 视口")
-
-            // 960×540 只是把 1280×720 的世界整体缩到 0.75，文字仍必须可读。
-            val scale = 960f / 1280f
-            val onScreen = PreparationTableRenderer.PLACEHOLDER_FONT_SCALE *
-                PreparationTableRenderer.CHINESE_FONT_SIZE * scale
-            assertTrue(
-                onScreen >= 12f,
-                "960×540 下占位说明只有 $onScreen 像素高，必须至少 12 像素才可读"
-            )
-            val titleOnScreen = PreparationTableRenderer.TITLE_FONT_SCALE *
-                PreparationTableRenderer.CHINESE_FONT_SIZE * scale
-            assertTrue(
-                titleOnScreen >= 12f,
-                "960×540 下占位标题只有 $titleOnScreen 像素高，必须至少 12 像素才可读"
-            )
-        }
+    fun `right action column matches the new 174 by 46 design`() {
+        assertEquals(Rectangle(1078f, 208f, 174f, 46f), RightActionColumnLayout.tileMarkRect())
+        assertEquals(Rectangle(1078f, 159f, 174f, 46f), RightActionColumnLayout.beamSwapRect())
+        assertEquals(Rectangle(1078f, 110f, 174f, 46f), RightActionColumnLayout.sleeveBloomRect())
+        assertEquals(Rectangle(1078f, 61f, 174f, 46f), RightActionColumnLayout.sortRect())
+        assertEquals(Rectangle(1078f, 12f, 174f, 46f), RightActionColumnLayout.takeoverRect())
     }
 }
