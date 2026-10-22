@@ -1222,28 +1222,9 @@ class GameScreen(
         try {
             if (visuals != null) {
                 TableStageRenderer.renderBoard(visuals, camera.combined, batch)
-                TableStageRenderer.renderCompass(
-                    visuals = visuals,
-                    rect = if (isPreparing) TableStageLayout.PREP_COMPASS else TableStageLayout.PLAY_COMPASS,
-                    view = hudView,
-                    isPreparation = isPreparing,
-                    projection = camera.combined,
-                    batch = batch,
-                    fonts = stageFonts
-                )
-                TableStageRenderer.renderHud(
-                    visuals = visuals,
-                    isPreparation = isPreparing,
-                    drawerProgress = if (isPreparing) shufflePreparationPanel.drawerProgress else 0f,
-                    view = hudView,
-                    clocks = snapshot?.clocks ?: emptyList(),
-                    clockElapsedMillis = System.currentTimeMillis() - lastClockUpdateLocalMillis,
-                    projection = camera.combined,
-                    batch = batch,
-                    shape = shape,
-                    fonts = stageFonts
-                )
                 if (isPreparing) {
+                    // 开局千术选择阶段只保留桌面与右侧准备栏：不绘制四席动物头像/名牌分数，
+                    // 也不绘制中央东南西北罗盘与局次、本场、供托文字。
                     TableStageRenderer.renderPreparationHint(
                         visuals = visuals,
                         projection = camera.combined,
@@ -1251,6 +1232,27 @@ class GameScreen(
                         fonts = stageFonts
                     )
                 } else {
+                    TableStageRenderer.renderCompass(
+                        visuals = visuals,
+                        rect = TableStageLayout.PLAY_COMPASS,
+                        view = hudView,
+                        isPreparation = false,
+                        projection = camera.combined,
+                        batch = batch,
+                        fonts = stageFonts
+                    )
+                    TableStageRenderer.renderHud(
+                        visuals = visuals,
+                        isPreparation = false,
+                        drawerProgress = 0f,
+                        view = hudView,
+                        clocks = snapshot?.clocks ?: emptyList(),
+                        clockElapsedMillis = System.currentTimeMillis() - lastClockUpdateLocalMillis,
+                        projection = camera.combined,
+                        batch = batch,
+                        shape = shape,
+                        fonts = stageFonts
+                    )
                     TableStageRenderer.renderPlayingTrays(visuals, camera.combined, batch)
                 }
             } else {
