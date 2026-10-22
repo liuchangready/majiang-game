@@ -1,0 +1,1031 @@
+syntax = "proto3";
+
+// Mahjong V5 wire schema, protocol major 1.
+//
+// FROZEN CONTRACT (P2.1). Field numbers are append-only: never renumber, never
+// reuse a removed number, never change a field's wire type or meaning. Removed
+// fields/dead numbers stay in `reserved` forever. V4 (MJ-TCP/1, "MJTC", JSON,
+// business version 8) is a different wire format and is never negotiated here.
+//
+// Encoding notes:
+//   * No map, Any, Timestamp, Duration, float or double is used. Authority
+//     values are integer milliseconds, integer versions and bounded strings.
+//   * The canonical business-payload digest is NOT the Protobuf serialization.
+//     `Command.canonical_payload` carries the exact original canonical bytes;
+//     see Mahjong.Contracts.CanonicalPayloadDigest.
+//   * `PublicSnapshot` is a whitelist DTO. It has no hand, wall order, seed,
+//     private ledger or cheat state fields. Events carry a visibility enum and
+//     are filtered server-side before they enter a public stream.
+//   * Unknown enum values and unknown fields are preserved by Protobuf but are
+//     never promoted to a domain fact. Unknown events require a full baseline.
+
+package mahjong.v1;
+
+option csharp_namespace = "Mahjong.Contracts.Wire";
+option optimize_for = SPEED;
+
+// ---------------------------------------------------------------------------
+// Envelope-level enums
+// ---------------------------------------------------------------------------
+
+enum MessageType {
+  MESSAGE_TYPE_UNSPECIFIED = 0;
+  MESSAGE_TYPE_HELLO = 1;
+  MESSAGE_TYPE_WELCOME = 2;
+  MESSAGE_TYPE_COMMAND = 3;
+  MESSAGE_TYPE_RECEIPT = 4;
+  MESSAGE_TYPE_PLAYER_SNAPSHOT = 5;
+  MESSAGE_TYPE_PUBLIC_SNAPSHOT = 6;
+  MESSAGE_TYPE_ROOM_UPDATE = 7;
+  MESSAGE_TYPE_SYNC_REQUEST = 8;
+  MESSAGE_TYPE_SYNC_RESPONSE = 9;
+  MESSAGE_TYPE_RECEIPT_QUERY = 10;
+  MESSAGE_TYPE_RECEIPT_LOOKUP = 11;
+  MESSAGE_TYPE_HEARTBEAT = 12;
+  MESSAGE_TYPE_ERROR = 13;
+  MESSAGE_TYPE_CLOSE = 14;
+  MESSAGE_TYPE_PLAYER_UPDATE = 15;
+  MESSAGE_TYPE_PUBLIC_UPDATE = 16;
+  MESSAGE_TYPE_PLAYER_SNAPSHOT_QUERY = 17;
+  MESSAGE_TYPE_PUBLIC_SNAPSHOT_QUERY = 18;
+  reserved 19 to 31;
+}
+
+enum Role {
+  ROLE_UNSPECIFIED = 0;
+  ROLE_PLAYER = 1;
+  ROLE_SPECTATOR = 2;
+  ROLE_LOBBY = 3;
+  reserved 4 to 9;
+}
+
+// `stream_version` and `projection_seq` are deliberately separate. A stream's
+// version is the table state_version observed when that stream last emitted a
+// projection (it may lag and may repeat); the projection sequence is the
+// per-stream emission counter and increases on every emitted baseline/push.
+message StreamCursor {
+  uint64 stream_version = 1;
+  uint64 projection_seq = 2;
+  reserved 3 to 7;
+}
+
+// Server-issued capability. It is NOT an epoch and NOT a request id. It binds
+// account + role + room + lifetime. `control_epoch`, `binding_epoch` and
+// `owner_epoch` are separate fields with separate authority.
+message RequestScope {
+  string scope_id = 1;
+  string account_id = 2;
+  Role role = 3;
+  string room_id = 4;
+  uint64 issued_at_ms = 5;
+  uint64 expires_at_ms = 6;
+  reserved 7 to 12;
+  reserved "control_epoch", "binding_epoch", "owner_epoch";
+}
+
+// ---------------------------------------------------------------------------
+// Envelope
+// ---------------------------------------------------------------------------
+
+message Envelope {
+  uint32 protocol_major = 1;
+  uint32 protocol_minor = 2;
+  uint32 ruleset_version = 3;
+  uint32 projection_version = 4;
+  MessageType message_type = 5;
+  string correlation_id = 6;
+  string request_id = 7;
+
+  // Server-issued scope. Required for every command with a side effect;
+  // optional for queries and never used as the idempotency key on its own.
+  RequestScope scope = 8;
+
+  string room_id = 9;
+  string session_id = 10;
+
+  // 0..3 for a seated player, -1 for spectator/unassigned. Never a default 0
+  // sentinel for "unknown seat".
+  int32 seat_id = 11;
+
+  // Client-local binding generation. Used only to discard stale client
+  // callbacks; it is NOT server-side authorization.
+  uint64 binding_epoch = 12;
+
+  // Seat controller generation. This is the only epoch used for seat action
+  // authorization. Older values are rejected.
+  uint64 control_epoch = 13;
+
+  // Table lease generation used for the single-writer fence together with
+  // Command.expected_state_version. It is not a seat control epoch.
+  uint64 owner_epoch = 14;
+
+  StreamCursor cursor = 15;
+  StreamCursor from_cursor = 16;
+
+  oneof body {
+    Hello hello = 40;
+    Welcome welcome = 41;
+    Command command = 42;
+    Receipt receipt = 43;
+    PlayerSnapshot player_snapshot = 44;
+    PlayerSnapshotQuery player_snapshot_query = 45;
+    PublicSnapshot public_snapshot = 46;
+    PublicSnapshotQuery public_snapshot_query = 47;
+    RoomUpdate room_update = 48;
+    SyncRequest sync_request = 49;
+    SyncResponse sync_response = 50;
+    ReceiptQuery receipt_query = 51;
+    ReceiptLookup receipt_lookup = 52;
+    Heartbeat heartbeat = 53;
+    ProtocolError error = 54;
+    Close close = 55;
+    PlayerUpdate player_update = 56;
+    PublicUpdate public_update = 57;
+  }
+
+  reserved 17 to 39;
+  reserved 58 to 79;
+  reserved "wire_version", "business_version", "payload", "payload_type";
+}
+
+// ---------------------------------------------------------------------------
+// Handshake and connection identity
+// ---------------------------------------------------------------------------
+
+message Hello {
+  // Short-lived table ticket. Secrets must never be written to logs.
+  string ticket = 1;
+  uint32 protocol_major = 2;
+  uint32 protocol_minor = 3;
+  uint32 ruleset_version = 4;
+  uint32 projection_version = 5;
+  string client_build = 6;
+  bool resume_requested = 7;
+  string resume_session_id = 8;
+  reserved 9 to 15;
+  reserved "wire_version", "business_version";
+}
+
+message StreamBaseline {
+  uint64 state_version = 1;
+  uint64 event_seq = 2;
+  StreamCursor cursor = 3;
+  reserved 4 to 8;
+}
+
+message ServerLimits {
+  uint32 max_inbound_message_bytes = 1;
+  uint32 max_command_payload_bytes = 2;
+  uint32 max_snapshot_bytes = 3;
+  uint32 max_in_flight_requests = 4;
+  uint32 heartbeat_interval_ms = 5;
+  uint32 idle_dead_ms = 6;
+  uint32 max_early_buffer_items = 7;
+  uint64 max_early_buffer_bytes = 8;
+  reserved 9 to 16;
+}
+
+message Welcome {
+  string session_id = 1;
+  string room_id = 2;
+  string table_id = 3;
+  Role role = 4;
+  int32 seat_id = 5;
+
+  // Connection identity only. Never used as seat authorization.
+  uint64 connection_epoch = 6;
+
+  // Current table lease generation and the client-local binding generation.
+  uint64 owner_epoch = 7;
+  uint64 binding_epoch = 8;
+
+  StreamBaseline baseline = 9;
+  RequestScope scope = 10;
+  ServerLimits limits = 11;
+  uint32 protocol_major = 12;
+  uint32 protocol_minor = 13;
+  uint32 ruleset_version = 14;
+  uint32 projection_version = 15;
+  reserved 16 to 24;
+}
+
+// ---------------------------------------------------------------------------
+// Command and receipt
+// ---------------------------------------------------------------------------
+
+enum CommandType {
+  COMMAND_TYPE_UNSPECIFIED = 0;
+  COMMAND_TYPE_CREATE_ROOM = 1;
+  COMMAND_TYPE_JOIN_ROOM = 2;
+  COMMAND_TYPE_LIST_ROOMS = 3;
+  COMMAND_TYPE_RESUME_SESSION = 4;
+  COMMAND_TYPE_LEAVE_ROOM = 5;
+  COMMAND_TYPE_GET_ROOM_INFO = 6;
+  COMMAND_TYPE_SET_READY = 7;
+  COMMAND_TYPE_UPDATE_CONFIG = 8;
+  COMMAND_TYPE_START_MATCH = 9;
+  COMMAND_TYPE_SUBMIT_ACTION = 10;
+  COMMAND_TYPE_SUBMIT_SHUFFLE_PLAN = 11;
+  COMMAND_TYPE_SUBMIT_TILE_MARK = 12;
+  COMMAND_TYPE_SUBMIT_SLEEVE_BLOOM = 13;
+  COMMAND_TYPE_SUBMIT_SLEEVE_BLOOM_CHOICE = 14;
+  COMMAND_TYPE_SUBMIT_SLEEVE_BLOOM_OFF_TURN = 15;
+  COMMAND_TYPE_SUBMIT_SLEEVE_BLOOM_OFF_TURN_CHOICE = 16;
+  COMMAND_TYPE_SUBMIT_BEAM_SWAP = 17;
+  COMMAND_TYPE_SUBMIT_BEAM_SWAP_CHOICE = 18;
+  COMMAND_TYPE_NEXT_ROUND = 19;
+  COMMAND_TYPE_CLAIM_CONTROL = 20;
+  COMMAND_TYPE_RELEASE_CONTROL = 21;
+  COMMAND_TYPE_QUERY_ROUND_RESULT = 22;
+  COMMAND_TYPE_QUERY_PUBLIC_ROUND_RESULT = 23;
+  COMMAND_TYPE_JOIN_SPECTATOR = 24;
+  COMMAND_TYPE_RESUME_SPECTATOR = 25;
+  COMMAND_TYPE_RESUME_PUBLIC = 26;
+  COMMAND_TYPE_RESUME_CURSOR = 27;
+  reserved 28 to 39;
+}
+
+message Command {
+  CommandType type = 1;
+
+  // Exact original canonical business bytes. Retries MUST resend these bytes
+  // unchanged. The idempotency digest is computed over this field, never over
+  // a Protobuf re-serialization of the envelope or command.
+  bytes canonical_payload = 2;
+  uint32 payload_schema_version = 3;
+
+  // Paired with Envelope.owner_epoch for the persistent double fence.
+  uint64 expected_state_version = 4;
+
+  string expected_round_id = 5;
+  string expected_decision_id = 6;
+  reserved 7 to 15;
+  reserved "payload_sha256", "protobuf_bytes", "state_version", "event_seq";
+}
+
+enum ReceiptStatus {
+  RECEIPT_STATUS_UNSPECIFIED = 0;
+  RECEIPT_STATUS_APPLIED = 1;
+  RECEIPT_STATUS_RECORDED = 2;
+  RECEIPT_STATUS_REJECTED = 3;
+
+  // Client/transport/query-side uncertainty only. It is never a persisted
+  // definitive business receipt and never proves that state did not change.
+  RECEIPT_STATUS_UNKNOWN = 4;
+  reserved 5 to 9;
+}
+
+message Receipt {
+  ReceiptStatus status = 1;
+  string reason_code = 2;
+  uint64 evaluated_state_version = 3;
+
+  // Present for APPLIED/RECORDED; absent for REJECTED/UNKNOWN.
+  optional uint64 command_version = 4;
+
+  // Last event sequence of the original command. Present for APPLIED/RECORDED.
+  optional uint64 event_seq = 5;
+
+  optional uint64 committed_at_ms = 6;
+
+  // True when this is an exact idempotent replay. Original receipt fields are
+  // returned unchanged; the flag describes this delivery, not a new command.
+  bool replayed = 7;
+
+  // Lowercase hex SHA-256 of the canonical business payload.
+  string canonical_payload_sha256 = 8;
+  reserved 9 to 15;
+  reserved "state_version", "business_payload", "snapshot";
+}
+
+message ReceiptQuery {
+  string request_scope_id = 1;
+  string request_id = 2;
+  reserved 3 to 7;
+}
+
+enum LookupStatus {
+  LOOKUP_STATUS_UNSPECIFIED = 0;
+  LOOKUP_STATUS_FOUND = 1;
+  LOOKUP_STATUS_UNKNOWN = 2;
+  LOOKUP_STATUS_NOT_FOUND = 3;
+  reserved 4 to 9;
+}
+
+message ReceiptLookup {
+  LookupStatus status = 1;
+  optional Receipt receipt = 2;
+  string canonical_payload_sha256 = 3;
+  reserved 4 to 9;
+  reserved "proves_not_committed";
+}
+
+// ---------------------------------------------------------------------------
+// Heartbeat, errors and close
+// ---------------------------------------------------------------------------
+
+message Ping {
+  // Exactly 16 lowercase hexadecimal characters.
+  string nonce = 1;
+  reserved 2 to 4;
+}
+
+message Pong {
+  // Echo of the Ping nonce, unchanged.
+  string nonce = 1;
+  reserved 2 to 4;
+}
+
+message Heartbeat {
+  oneof beat {
+    Ping ping = 1;
+    Pong pong = 2;
+  }
+  reserved 3 to 7;
+}
+
+message ProtocolError {
+  // Stable uppercase ASCII code. Unknown codes are handled generically by the
+  // client; they are never interpreted as a business receipt.
+  string code = 1;
+  bool retryable = 2;
+  string field_path = 3;
+  string detail_code = 4;
+  optional uint64 retry_after_ms = 5;
+  reserved 6 to 12;
+}
+
+message Close {
+  string code = 1;
+  bool permanent = 2;
+  uint32 websocket_close_code = 3;
+  reserved 4 to 10;
+  reserved "reason", "token";
+}
+
+// ---------------------------------------------------------------------------
+// Snapshot building blocks (public whitelist only)
+// ---------------------------------------------------------------------------
+
+enum GamePhase {
+  GAME_PHASE_UNSPECIFIED = 0;
+  GAME_PHASE_STACKING = 1;
+  GAME_PHASE_DEALING = 2;
+  GAME_PHASE_DRAW = 3;
+  GAME_PHASE_CHEAT_WINDOW = 4;
+  GAME_PHASE_DISCARD = 5;
+  GAME_PHASE_RESPONSE_WINDOW = 6;
+  GAME_PHASE_CHANKAN_WINDOW = 7;
+  GAME_PHASE_KAN_DRAW = 8;
+  GAME_PHASE_ROUND_END = 9;
+  GAME_PHASE_MATCH_END = 10;
+  reserved 11 to 19;
+}
+
+enum MeldType {
+  MELD_TYPE_UNSPECIFIED = 0;
+  MELD_TYPE_CHI = 1;
+  MELD_TYPE_PON = 2;
+  MELD_TYPE_OPEN_KAN = 3;
+  MELD_TYPE_CLOSED_KAN = 4;
+  MELD_TYPE_ADDED_KAN = 5;
+  reserved 6 to 11;
+}
+
+message MeldView {
+  MeldType type = 1;
+  repeated uint32 tile_ids = 2 [packed = true];
+  optional uint32 called_tile_id = 3;
+  int32 from_seat = 4;
+  reserved 5 to 10;
+}
+
+message DiscardView {
+  uint32 tile_id = 1;
+  uint32 turn_number = 2;
+  bool riichi_discard = 3;
+  bool tsumogiri = 4;
+  reserved 5 to 9;
+}
+
+message PlayerPublicView {
+  int32 seat = 1;
+
+  // Count only. Opponent tile faces are never present in this message.
+  uint32 hand_count = 2;
+  repeated MeldView melds = 3;
+  repeated DiscardView discards = 4;
+  bool riichi = 5;
+  reserved 6 to 12;
+  reserved "closed_tiles", "drawn_tile", "hand";
+}
+
+message ScoreView {
+  int32 seat = 1;
+  sint64 score = 2;
+  reserved 3 to 7;
+}
+
+message ClockView {
+  int64 server_time_ms = 1;
+  int64 deadline_remaining_ms = 2;
+  int64 reserve_remaining_ms = 3;
+  int32 decision_seat = 4;
+  reserved 5 to 9;
+}
+
+message PublicBoardView {
+  GamePhase phase = 1;
+  uint32 round_wind = 2;
+  uint32 round_number = 3;
+  uint32 honba = 4;
+  uint32 riichi_sticks = 5;
+  int32 dealer_seat = 6;
+  int32 current_seat = 7;
+
+  // Only a count; wall order is never a public field.
+  uint32 wall_remaining = 8;
+  repeated uint32 dora_indicators = 9 [packed = true];
+  repeated ScoreView scores = 10;
+  repeated PlayerPublicView players = 11;
+  optional DiscardView last_discard = 12;
+  bool paused = 13;
+  reserved 14 to 20;
+  reserved "wall", "dead_wall", "seed", "ura_dora";
+}
+
+message PublicSessionSummary {
+  bool finished = 1;
+  string finish_reason = 2;
+  repeated ScoreView final_scores = 3;
+  repeated int32 rankings = 4 [packed = true];
+  reserved 5 to 10;
+  reserved "cheat_points", "cheat_entries", "final_cheat_points";
+}
+
+// Public board/session data shared by the player public part and the public
+// spectator snapshot. It never contains private seat data.
+message PublicMatchView {
+  PublicBoardView board = 1;
+  PublicSessionSummary session = 2;
+  repeated ClockView clocks = 3;
+  bool paused = 4;
+  string settlement_round_id = 5;
+  repeated PublicEventEnvelope settlement_events = 6;
+  reserved 7 to 12;
+}
+
+message PublicSnapshot {
+  string session_id = 1;
+  string round_id = 2;
+
+  // Public stream cursor: independent of every player stream.
+  StreamCursor cursor = 3;
+
+  // Table state version at which this projection was built. This is NOT the
+  // stream cursor version and NOT an event count.
+  uint64 state_version = 4;
+  uint64 event_seq = 5;
+  PublicMatchView view = 6;
+
+  // Domain versions kept for diagnostics only; never used for sync/fencing.
+  uint64 session_version = 7;
+  uint64 round_version = 8;
+  reserved 9 to 15;
+  reserved "cheat_points", "cheat_entries", "controls", "preparation", "tile_mark", "sleeve_bloom", "beam_swap";
+}
+
+message PlayerSnapshotQuery {
+  string session_id = 1;
+  reserved 2 to 6;
+}
+
+message PublicSnapshotQuery {
+  string session_id = 1;
+  reserved 2 to 6;
+}
+
+message PlayerSnapshot {
+  string session_id = 1;
+  string round_id = 2;
+  StreamCursor cursor = 3;
+  uint64 state_version = 4;
+  uint64 event_seq = 5;
+
+  // Public part shared with spectators. The private part below belongs only to
+  // `private_view.seat` and is projected by the server for that seat alone.
+  PublicMatchView public_view = 6;
+  PlayerPrivateView private_view = 7;
+  uint64 session_version = 8;
+  uint64 round_version = 9;
+  reserved 10 to 16;
+  reserved "opponents_private", "all_hands", "seed";
+}
+
+message LegalActionView {
+  uint32 action_type = 1;
+  optional string option_id = 2;
+  repeated uint32 tile_ids = 3 [packed = true];
+  reserved 4 to 8;
+}
+
+message DecisionView {
+  string decision_id = 1;
+  uint64 control_epoch = 2;
+  int64 deadline_remaining_ms = 3;
+  repeated LegalActionView actions = 4;
+  reserved 5 to 9;
+}
+
+message CheatEntryView {
+  string entry_id = 1;
+  sint64 amount = 2;
+  sint64 balance_after = 3;
+  string reason_code = 4;
+  reserved 5 to 9;
+}
+
+message TileMarkGroupView {
+  string group_id = 1;
+  repeated MarkedTileView tiles = 2;
+  reserved 3 to 7;
+}
+
+message MarkedTileView {
+  uint32 tile_id = 1;
+  string area = 2;
+  int32 seat = 3;
+  uint32 river_position = 4;
+  reserved 5 to 9;
+}
+
+message TileMarkView {
+  repeated uint32 selectable_tile_ids = 1 [packed = true];
+  repeated TileMarkGroupView groups = 2;
+  reserved 3 to 8;
+}
+
+message SleeveBloomView {
+  string offer_id = 1;
+  string mode = 2;
+  optional uint32 first_tile_id = 3;
+  optional uint32 second_tile_id = 4;
+  int64 deadline_remaining_ms = 5;
+  string window_id = 6;
+  optional uint32 reserved_tile_id = 7;
+  reserved 8 to 14;
+}
+
+message BeamSwapCandidateView {
+  uint32 slot = 1;
+  optional uint32 tile_id = 2;
+  reserved 3 to 7;
+}
+
+message BeamSwapView {
+  string offer_id = 1;
+  repeated BeamSwapCandidateView candidates = 2;
+  repeated uint32 selectable_hand_tile_ids = 3 [packed = true];
+  int64 deadline_remaining_ms = 4;
+  optional uint32 drawn_tile_id = 5;
+  reserved 6 to 12;
+}
+
+message ShufflePreparationView {
+  uint32 target = 1;
+  bool see_through = 2;
+  bool confirmed = 3;
+  uint32 reserved_points = 4;
+  uint32 available_points = 5;
+  bool see_through_enabled = 6;
+  uint32 see_through_cost = 7;
+  int64 deadline_remaining_ms = 8;
+  reserved 9 to 15;
+}
+
+// Owner-only private state. This message is never reachable from
+// PublicSnapshot or PublicMatchView.
+message PrivateCheatView {
+  sint64 cheat_points = 1;
+  repeated CheatEntryView ledger_entries = 2;
+  optional TileMarkView tile_mark = 3;
+  optional SleeveBloomView sleeve_bloom = 4;
+  optional BeamSwapView beam_swap = 5;
+  optional ShufflePreparationView preparation = 6;
+  reserved 7 to 12;
+  reserved "other_seats_cheat_points", "all_ledgers";
+}
+
+message PlayerPrivateView {
+  int32 seat = 1;
+  repeated uint32 closed_tiles = 2 [packed = true];
+  optional uint32 drawn_tile_id = 3;
+  repeated LegalActionView legal_actions = 4;
+  bool furiten = 5;
+  repeated uint32 discard_history = 6 [packed = true];
+  DecisionView decision = 7;
+  PrivateCheatView cheat = 8;
+  reserved 9 to 15;
+  reserved "other_seats_hands", "opponent_closed_tiles", "wall", "seed";
+}
+
+// ---------------------------------------------------------------------------
+// Events
+// ---------------------------------------------------------------------------
+
+enum EventVisibility {
+  // Unspecified is treated as PRIVATE. New events are private by default.
+  EVENT_VISIBILITY_UNSPECIFIED = 0;
+  EVENT_VISIBILITY_PRIVATE = 1;
+  EVENT_VISIBILITY_PUBLIC = 2;
+  EVENT_VISIBILITY_SETTLEMENT_PUBLIC = 3;
+  reserved 4 to 9;
+}
+
+enum EventType {
+  EVENT_TYPE_UNSPECIFIED = 0;
+  EVENT_TYPE_STACKING_STARTED = 1;
+  EVENT_TYPE_WALL_BUILT = 2;
+  EVENT_TYPE_TILE_DEALT = 3;
+  EVENT_TYPE_DEALING_COMPLETE = 4;
+  EVENT_TYPE_TILE_DRAWN = 5;
+  EVENT_TYPE_TILE_DISCARDED = 6;
+  EVENT_TYPE_CHI_DECLARED = 7;
+  EVENT_TYPE_PON_DECLARED = 8;
+  EVENT_TYPE_KAN_DECLARED = 9;
+  EVENT_TYPE_RINSHAN_DRAW = 10;
+  EVENT_TYPE_RIICHI_DECLARED = 11;
+  EVENT_TYPE_TSUMO_WIN = 12;
+  EVENT_TYPE_RON_WIN = 13;
+  EVENT_TYPE_DORA_REVEALED = 14;
+  EVENT_TYPE_CHEAT_POINTS_CHANGED = 15;
+  EVENT_TYPE_DRAW_GAME = 16;
+  EVENT_TYPE_SCORE_SETTLED = 17;
+  EVENT_TYPE_ROUND_ENDED = 18;
+  EVENT_TYPE_MATCH_ENDED = 19;
+
+  // V5 new private events replacing V4's eventless sleeve/beam resolutions.
+  EVENT_TYPE_SLEEVE_BLOOM_RESOLVED = 20;
+  EVENT_TYPE_BEAM_SWAP_RESOLVED = 21;
+  reserved 22 to 39;
+}
+
+enum KanType {
+  KAN_TYPE_UNSPECIFIED = 0;
+  KAN_TYPE_CLOSED = 1;
+  KAN_TYPE_ADDED = 2;
+  KAN_TYPE_OPEN = 3;
+  reserved 4 to 9;
+}
+
+message EventEnvelope {
+  uint32 event_schema_version = 1;
+  uint64 event_seq = 2;
+  uint64 command_version = 3;
+  uint32 event_ordinal = 4;
+  EventType event_type = 5;
+  EventVisibility visibility = 6;
+
+  // Raw bytes preserved only when event_type is unknown to this schema. The
+  // decoder must not interpret it as a domain fact and must request a full
+  // baseline instead.
+  optional bytes unknown_payload = 7;
+
+  oneof event {
+    StackingStarted stacking_started = 20;
+    WallBuilt wall_built = 21;
+    TileDealt tile_dealt = 22;
+    DealingComplete dealing_complete = 23;
+    TileDrawn tile_drawn = 24;
+    TileDiscarded tile_discarded = 25;
+    ChiDeclared chi_declared = 26;
+    PonDeclared pon_declared = 27;
+    KanDeclared kan_declared = 28;
+    RinshanDraw rinshan_draw = 29;
+    RiichiDeclared riichi_declared = 30;
+    TsumoWin tsumo_win = 31;
+    RonWin ron_win = 32;
+    DoraRevealed dora_revealed = 33;
+    CheatPointsChanged cheat_points_changed = 34;
+    DrawGame draw_game = 35;
+    ScoreSettled score_settled = 36;
+    RoundEnded round_ended = 37;
+    MatchEnded match_ended = 38;
+    SleeveBloomResolved sleeve_bloom_resolved = 39;
+    BeamSwapResolved beam_swap_resolved = 40;
+  }
+
+  reserved 8 to 19;
+  reserved 41 to 59;
+  reserved "payload", "payload_type", "protobuf_bytes";
+}
+
+message YakuView {
+  string code = 1;
+  uint32 han = 2;
+  reserved 3 to 7;
+}
+
+message ScoreBreakdownView {
+  uint32 han = 1;
+  uint32 fu = 2;
+  sint64 total_points = 3;
+  repeated YakuView yaku = 4;
+  uint32 dora_count = 5;
+  uint32 ura_count = 6;
+  repeated uint32 ura_tiles = 7 [packed = true];
+  repeated uint32 ura_hits = 8 [packed = true];
+  bool ura_authorized = 9;
+  reserved 10 to 14;
+}
+
+message PaymentView {
+  int32 from_seat = 1;
+  int32 to_seat = 2;
+  sint64 amount = 3;
+  reserved 4 to 8;
+}
+
+message StackingStarted {
+  uint32 turn_number = 1;
+  reserved 2 to 6;
+}
+
+message WallBuilt {
+  uint32 turn_number = 1;
+  uint32 wall_size = 2;
+  reserved 3 to 7;
+}
+
+message TileDealt {
+  uint32 turn_number = 1;
+  int32 player = 2;
+  uint32 tile_id = 3;
+  reserved 4 to 8;
+}
+
+message DealingComplete {
+  uint32 turn_number = 1;
+  reserved 2 to 6;
+}
+
+message TileDrawn {
+  uint32 turn_number = 1;
+  int32 player = 2;
+  uint32 tile_id = 3;
+  uint32 wall_remaining = 4;
+  reserved 5 to 9;
+}
+
+message TileDiscarded {
+  uint32 turn_number = 1;
+  int32 player = 2;
+  uint32 tile_id = 3;
+  bool riichi_discard = 4;
+  bool tsumogiri = 5;
+  reserved 6 to 10;
+}
+
+message ChiDeclared {
+  uint32 turn_number = 1;
+  int32 player = 2;
+  MeldView meld = 3;
+  int32 from_player = 4;
+  reserved 5 to 9;
+}
+
+message PonDeclared {
+  uint32 turn_number = 1;
+  int32 player = 2;
+  MeldView meld = 3;
+  int32 from_player = 4;
+  reserved 5 to 9;
+}
+
+message KanDeclared {
+  uint32 turn_number = 1;
+  int32 player = 2;
+  MeldView meld = 3;
+  KanType kan_type = 4;
+  reserved 5 to 9;
+}
+
+message RinshanDraw {
+  uint32 turn_number = 1;
+  int32 player = 2;
+  uint32 tile_id = 3;
+  reserved 4 to 8;
+}
+
+message RiichiDeclared {
+  uint32 turn_number = 1;
+  int32 player = 2;
+  uint32 discard_tile_id = 3;
+  bool double_riichi = 4;
+  reserved 5 to 9;
+}
+
+message TsumoWin {
+  uint32 turn_number = 1;
+  int32 player = 2;
+  uint32 win_tile_id = 3;
+  repeated YakuView yaku = 4;
+  uint32 han = 5;
+  uint32 fu = 6;
+  sint64 score = 7;
+  ScoreBreakdownView breakdown = 8;
+  reserved 9 to 14;
+}
+
+message RonWin {
+  uint32 turn_number = 1;
+  int32 winner = 2;
+  int32 loser = 3;
+  uint32 win_tile_id = 4;
+  repeated YakuView yaku = 5;
+  uint32 han = 6;
+  uint32 fu = 7;
+  sint64 score = 8;
+  ScoreBreakdownView breakdown = 9;
+  reserved 10 to 15;
+}
+
+message DoraRevealed {
+  uint32 turn_number = 1;
+  uint32 indicator_tile_id = 2;
+  bool is_ura_dora = 3;
+  bool ura_authorized = 4;
+  reserved 5 to 8;
+}
+
+message CheatPointsChanged {
+  uint32 turn_number = 1;
+  int32 seat = 2;
+  sint64 amount = 3;
+  sint64 new_balance = 4;
+  reserved 5 to 9;
+}
+
+message DrawGame {
+  uint32 turn_number = 1;
+  string reason = 2;
+  repeated int32 tenpai_players = 3 [packed = true];
+  reserved 4 to 8;
+}
+
+message ScoreSettled {
+  uint32 turn_number = 1;
+  repeated PaymentView payments = 2;
+  repeated ScoreView new_scores = 3;
+  reserved 4 to 8;
+}
+
+message RoundEnded {
+  uint32 turn_number = 1;
+  uint32 round_wind = 2;
+  uint32 round_number = 3;
+  reserved 4 to 8;
+}
+
+message MatchEnded {
+  uint32 turn_number = 1;
+  repeated ScoreView final_scores = 2;
+  int32 winner = 3;
+  reserved 4 to 8;
+}
+
+message SleeveBloomResolved {
+  string offer_id = 1;
+  bool kept_first = 2;
+  optional uint32 result_tile_id = 3;
+  reserved 4 to 8;
+}
+
+message BeamSwapResolved {
+  string offer_id = 1;
+  string action = 2;
+  optional uint32 hand_tile_id = 3;
+  optional uint32 target_slot = 4;
+  reserved 5 to 9;
+}
+
+// Public-only event envelope. Private event variants (tile dealt/drawn,
+// rinshan draw, cheat points, sleeve/beam resolutions) do not exist in this
+// message at all, so a public snapshot cannot carry them even by mistake.
+message PublicEventEnvelope {
+  uint32 event_schema_version = 1;
+  uint64 event_seq = 2;
+  uint64 command_version = 3;
+  uint32 event_ordinal = 4;
+  EventType event_type = 5;
+  EventVisibility visibility = 6;
+
+  // Present only for a future public event this build does not know; it is
+  // preserved but never interpreted as a domain fact and requires a baseline.
+  optional bytes unknown_payload = 7;
+
+  oneof event {
+    StackingStarted stacking_started = 20;
+    WallBuilt wall_built = 21;
+    DealingComplete dealing_complete = 22;
+    TileDiscarded tile_discarded = 23;
+    ChiDeclared chi_declared = 24;
+    PonDeclared pon_declared = 25;
+    KanDeclared kan_declared = 26;
+    RiichiDeclared riichi_declared = 27;
+    TsumoWin tsumo_win = 28;
+    RonWin ron_win = 29;
+    DoraRevealed dora_revealed = 30;
+    DrawGame draw_game = 31;
+    ScoreSettled score_settled = 32;
+    RoundEnded round_ended = 33;
+    MatchEnded match_ended = 34;
+  }
+
+  reserved 8 to 19;
+  reserved 35 to 59;
+  reserved "payload", "payload_type", "tile_dealt", "tile_drawn", "rinshan_draw", "cheat_points_changed";
+}
+
+// ---------------------------------------------------------------------------
+// Stream updates, sync and room metadata
+// ---------------------------------------------------------------------------
+
+message PlayerUpdate {
+  PlayerSnapshot snapshot = 1;
+  StreamCursor from_cursor = 2;
+  StreamCursor cursor = 3;
+  bool is_full_snapshot = 4;
+  repeated EventEnvelope visible_events = 5;
+  reserved 6 to 10;
+}
+
+message PublicUpdate {
+  PublicSnapshot snapshot = 1;
+  StreamCursor from_cursor = 2;
+  StreamCursor cursor = 3;
+  bool is_full_snapshot = 4;
+  repeated PublicEventEnvelope visible_events = 5;
+  reserved 6 to 10;
+}
+
+enum SyncTarget {
+  SYNC_TARGET_UNSPECIFIED = 0;
+  SYNC_TARGET_PLAYER_STREAM = 1;
+  SYNC_TARGET_PUBLIC_STREAM = 2;
+  SYNC_TARGET_ROOM = 3;
+  reserved 4 to 9;
+}
+
+message SyncRequest {
+  SyncTarget target = 1;
+  StreamCursor known_cursor = 2;
+  string reason_code = 3;
+  bool request_full_baseline = 4;
+  reserved 5 to 10;
+}
+
+message SyncResponse {
+  SyncTarget target = 1;
+  bool is_full_snapshot = 2;
+  oneof baseline {
+    PlayerSnapshot player = 3;
+    PublicSnapshot public = 4;
+    RoomUpdate room = 5;
+  }
+  uint64 state_version = 6;
+  uint64 event_seq = 7;
+  reserved 8 to 14;
+}
+
+enum RoomLifecycle {
+  ROOM_LIFECYCLE_UNSPECIFIED = 0;
+  ROOM_LIFECYCLE_LOBBY = 1;
+  ROOM_LIFECYCLE_PREPARING = 2;
+  ROOM_LIFECYCLE_PLAYING = 3;
+  ROOM_LIFECYCLE_SETTLED = 4;
+  ROOM_LIFECYCLE_FINISHED = 5;
+  ROOM_LIFECYCLE_CLOSED = 6;
+  reserved 7 to 12;
+}
+
+message RoomMemberView {
+  int32 seat = 1;
+  string display_name = 2;
+  bool ready = 3;
+  bool connected = 4;
+  Role role = 5;
+  reserved 6 to 10;
+  reserved "control_epoch", "binding_epoch";
+}
+
+message RoomUpdate {
+  string room_id = 1;
+  string session_id = 2;
+  uint64 room_version = 3;
+  RoomLifecycle lifecycle = 4;
+  repeated RoomMemberView members = 5;
+  uint32 capacity = 6;
+  reserved 7 to 12;
+  reserved "cheat_points", "wall", "seed";
+}
