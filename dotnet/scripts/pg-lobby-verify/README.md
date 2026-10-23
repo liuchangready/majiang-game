@@ -37,40 +37,49 @@ baseline.
 ```powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File `
   dotnet\scripts\pg-lobby-verify\verify-all.ps1 `
-  -Root D:\majiang-pg-tmp\p53-pg-r1fix `
-  -Port 55432 `
+  -Root D:\majiang-pg-tmp\p53-pg-r3 `
+  -Port 55442 `
   -DbName mahjong_lobby_test `
   -ZipPath D:\majiang-pg-tmp\cache\postgresql-16.10-1-windows-x64-binaries.zip
 ```
 
 Omit `-ZipPath` to download the pinned official archive. `verify-all.ps1` runs:
-start -> migration twice -> build -> full suite -> restart-write -> immediate
-crash restart -> restart-read -> durable snapshot -> archive evidence -> delete
-the owned cluster. It exits non-zero on any failure, any unexpected skip, or a
-cleanup failure.
+start -> migration twice -> build test project + probe -> full suite (zero
+skips) -> restart-write probe -> immediate crash restart -> restart-read probe ->
+durable snapshot -> archive evidence -> delete the owned cluster. It exits
+non-zero on any failure, any test skip, or a cleanup failure.
+
+The ordinary Lobby test assembly contains **no phase-only tests**. The
+cross-process restart path is a separate console helper
+(`Mahjong.LobbyService.PostgresProbe`, not in `Mahjong.sln`, not a test project)
+invoked explicitly by `verify-all.ps1`. Its build and process phases are not
+counted as xUnit test cases.
 
 ## Individual steps
 
 ```powershell
 start-postgres.ps1  -Root <root> -Port 55432 -DbName mahjong_lobby_test [-ZipPath <zip>]
 migrate.ps1         -Root <root> -Port 55432 -DbName mahjong_lobby_test -Times 2
-run-tests.ps1       -Mode full|write|read|class -Root <root> -Port 55432 -DbName mahjong_lobby_test
+run-tests.ps1       -Mode full|class -Root <root> -Port 55432 -DbName mahjong_lobby_test
+run-probe.ps1       -Phase write|read -Root <root> -Port 55432 -DbName mahjong_lobby_test
 restart-postgres.ps1 -Mode immediate|fast|smart -Root <root> -Port 55432 -DbName mahjong_lobby_test
 cleanup-postgres.ps1 -Root <root> -Port 55432 -DbName mahjong_lobby_test [-WhatIf]
 ```
 
-`run-tests.ps1` sets the connection, evidence, handoff, root and data-directory
-values only in the child-process environment. It fails on any skip unless
-`-AllowSkips` is explicitly passed (the full-suite step uses this for the two
-restart phases, which are then executed separately in steps 5 and 7).
+`run-tests.ps1` sets the connection, evidence, root and data-directory values
+only in the child-process environment. It always fails on any skip; there is no
+skip bypass. `run-probe.ps1` runs one write/read phase of the standalone console
+probe and fails unless the child exits 0 and prints its PASS sentinel. The
+runner itself is what writes the handoff and performs a real immediate restart
+between the two probe processes.
 
 ## Negative verification
 
 ```powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File `
   dotnet\scripts\pg-lobby-verify\negative-checks.ps1 `
-  -Root D:\majiang-pg-tmp\p53-pg-negative-r1fix `
-  -PortA 55436 `
+  -Root D:\majiang-pg-tmp\p53-pg-negative-r3 `
+  -PortA 55444 `
   -DbA mahjong_lobby_test_neg_a -DbB mahjong_lobby_test_neg_b `
   -ZipPath D:\majiang-pg-tmp\cache\postgresql-16.10-1-windows-x64-binaries.zip
 ```
@@ -82,7 +91,16 @@ port marker is valid and the refusal must come from the server data-directory
 check. It re-checks A's postmaster start time, PID, database list and marker, and
 B's marker/PG_VERSION hashes after every refusal; it then checks that
 `cleanup -WhatIf` leaves an active A's postmaster, PID, port and files intact
-before the normal cleanup. Exit code 0 means all negative checks passed.
+before the normal cleanup. Exit code 0 means all 13 negative checks passed.
+
+## Unified gate
+
+With the disposable PG and all three environment variables configured, the
+existing `tools/verify-v5.ps1 -Configuration Release -RunnerMode dotnetTest`
+must report `Mahjong.LobbyService.Tests` as **89 total / 0 failed / 0 skipped**
+and overall PASS. The console probe is auto-discovered as a build-only helper
+and contributes no test cases. Do not modify `tools/verify-v5.ps1` or the
+workflow to accommodate this harness.
 
 ## Environment variables (set by the runner)
 
@@ -90,8 +108,7 @@ before the normal cleanup. Exit code 0 means all negative checks passed.
 |---|---|
 | `MAHJONG_LOBBY_TEST_POSTGRES` | Loopback test connection string |
 | `MAHJONG_LOBBY_PG_EVIDENCE` | Append-only JSONL evidence path |
-| `MAHJONG_LOBBY_PG_HANDOFF` | Cross-process restart handoff file |
-| `MAHJONG_LOBBY_PG_RESTART_PHASE` | `write` or `read` restart phase |
+| `MAHJONG_LOBBY_PG_HANDOFF` | Cross-process restart handoff file (console probe only) |
 | `MAHJONG_LOBBY_PG_ROOT` | Expected disposable cluster root, checked against `lobby_verify.meta` |
 | `MAHJONG_LOBBY_PG_DATA` | Expected server `data_directory` (must equal `<root>\data`) |
 

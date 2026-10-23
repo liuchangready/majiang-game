@@ -29,8 +29,6 @@ namespace Mahjong.LobbyService.Tests
     {
         internal const string ConnectionVariable = "MAHJONG_LOBBY_TEST_POSTGRES";
         internal const string EvidenceVariable = "MAHJONG_LOBBY_PG_EVIDENCE";
-        internal const string HandoffVariable = "MAHJONG_LOBBY_PG_HANDOFF";
-        internal const string RestartPhaseVariable = "MAHJONG_LOBBY_PG_RESTART_PHASE";
         internal const string RootVariable = "MAHJONG_LOBBY_PG_ROOT";
         internal const string DataDirectoryVariable = "MAHJONG_LOBBY_PG_DATA";
         internal const string ExpectedOwner = "mahjong-p53-pg";
@@ -42,8 +40,6 @@ namespace Mahjong.LobbyService.Tests
         private static bool _schemaReady;
         private static string? _connectionString;
         private static string? _serverIdentity;
-
-        internal static string ServerIdentity => _serverIdentity ?? "unknown";
 
         internal static LobbyOptions CreateOptions(bool autoMigrate)
         {

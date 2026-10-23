@@ -1,13 +1,14 @@
 #requires -Version 5.1
 <#
 .SYNOPSIS
-    Runs the lobby test suite (or one restart phase) against the disposable
-    PostgreSQL instance. The connection string, evidence path and restart
-    handoff path are passed only through the child process environment.
+    Runs the ordinary lobby test suite (full or one class) against the
+    disposable PostgreSQL instance. Cross-process restart phases are handled by
+    the separate console probe (run-probe.ps1), so this runner never accepts or
+    skips a phase-only test.
 #>
 [CmdletBinding()]
 param(
-    [ValidateSet('full', 'write', 'read', 'class')]
+    [ValidateSet('full', 'class')]
     [string]$Mode = 'full',
     [string]$Root = (Join-Path $env:TEMP 'mahjong-p53-pg'),
     [int]$Port = 55432,
@@ -16,9 +17,7 @@ param(
     [string]$Method,
     [string]$Dotnet = 'D:\Unity\dotnet\dotnet.exe',
     [string]$LogPath,
-    [string]$EvidencePath,
-    [string]$HandoffPath,
-    [switch]$AllowSkips
+    [string]$EvidencePath
 )
 
 $ErrorActionPreference = 'Stop'
@@ -47,35 +46,16 @@ if (-not $LogPath) {
 if (-not $EvidencePath) {
     $EvidencePath = Join-Path $context.EvidenceDir 'postgres-evidence.jsonl'
 }
-if (-not $HandoffPath) {
-    $HandoffPath = Join-Path $context.EvidenceDir 'restart-handoff.json'
-}
 
 $env:MAHJONG_LOBBY_TEST_POSTGRES = $context.Connection
 $env:MAHJONG_LOBBY_PG_EVIDENCE = $EvidencePath
-$env:MAHJONG_LOBBY_PG_HANDOFF = $HandoffPath
 $env:MAHJONG_LOBBY_PG_ROOT = $context.Root
 $env:MAHJONG_LOBBY_PG_DATA = $context.DataDir
-if ($Mode -eq 'write' -or $Mode -eq 'read') {
-    $env:MAHJONG_LOBBY_PG_RESTART_PHASE = $Mode
-} else {
-    Remove-Item Env:\MAHJONG_LOBBY_PG_RESTART_PHASE -ErrorAction SilentlyContinue
-}
 
 $arguments = @()
 switch ($Mode) {
     'full' {
         $arguments = @('test', $context.TestProject, '-c', 'Release', '--nologo', '--no-build')
-    }
-    'write' {
-        $methodName = 'Mahjong.LobbyService.Tests.PostgresRestartPersistenceTests.WritePhasePersistsConsumedTicketAndReplayableReceipts'
-        $arguments = @($context.TestAssembly, '-class', 'Mahjong.LobbyService.Tests.PostgresRestartPersistenceTests',
-            '-method', $methodName, '-noColor', '-noLogo')
-    }
-    'read' {
-        $methodName = 'Mahjong.LobbyService.Tests.PostgresRestartPersistenceTests.ReadPhaseAfterRealProcessRestartReplaysReceiptsAndSeesConsumption'
-        $arguments = @($context.TestAssembly, '-class', 'Mahjong.LobbyService.Tests.PostgresRestartPersistenceTests',
-            '-method', $methodName, '-noColor', '-noLogo')
     }
     'class' {
         $arguments = @($context.TestAssembly, '-class', $Class, '-noColor', '-noLogo')
@@ -132,7 +112,7 @@ if ($match.Success) {
     $summary.skipped = [int]$match.Groups[4].Value
     $summary.passed = $summary.total - $summary.errors - $summary.failed - $summary.skipped
 } else {
-    # VSTest / dotnet test: Passed! - Failed: 0, Passed: 89, Skipped: 2, Total: 91
+    # VSTest / dotnet test: Passed! - Failed: 0, Passed: 89, Skipped: 0, Total: 89
     $match = [regex]::Match(
         $summaryText,
         'Failed:\s*(\d+),\s*Passed:\s*(\d+),\s*Skipped:\s*(\d+),\s*Total:\s*(\d+)')
@@ -143,7 +123,7 @@ if ($match.Success) {
         $summary.total = [int]$match.Groups[4].Value
         $summary.errors = 0
     } else {
-        # zh-CN: 失败: 0，通过: 89，已跳过: 2，总计: 91
+        # zh-CN: 失败: 0，通过: 89，已跳过: 0，总计: 89
         $match = [regex]::Match(
             $summaryText,
             '失败:\s*(\d+)[，,]\s*通过:\s*(\d+)[，,]\s*已跳过:\s*(\d+)[，,]\s*总计:\s*(\d+)')
@@ -169,6 +149,6 @@ if ($exitCode -ne 0) {
 if ($null -eq $summary.total) {
     throw "Could not parse the xUnit summary from $LogPath."
 }
-if (-not $AllowSkips -and $summary.skipped -gt 0) {
+if ($summary.skipped -gt 0) {
     throw "Unexpected skipped tests ($($summary.skipped)) in mode $Mode. Raw log: $LogPath"
 }
