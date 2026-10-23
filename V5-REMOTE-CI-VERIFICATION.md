@@ -349,3 +349,10 @@ gh run download <new-run-id> -R liuchangready/majiang-game -n v5-verify-logs -D 
 - 独立 SDK 诊断失败探针返回预期 exit 2，未进入构建。证据：`artifacts/codex-remote-ci-review/round2-diag-fail/sdk-diagnostic.log`。
 - 复核时远端集成分支已推进到已验收 P1.4 提交 `d833348d0bbad23a140602d56859e8a33480ba0f`。上文的 `a056b45` 是原始 CI 运行基线，并非当前 PR head。caller 沿用 PR #19，将此远端已提交基线合入当前工作树后再次运行统一验证；其他任务未提交内容不纳入。
 - 本节记录本地独立证据；新 SHA 的远端结果仍待后续记录，不能据本地 PASS 推定远端 PASS。
+
+### 18.1 合入当前已验收集成基线后的验证
+
+- 合并提交 `9768fba3000b7e81eb88cda14986835387ceb625` 包含本轮修复与远端已验收 P1.4 提交，合并无冲突。
+- 完整 Release 统一入口：SDK `8.0.426`；构建 0 警告 / 0 错误；Domain 313、Contracts 82、Ai 14、Client 132，共 **541 / 0 / 0**，均为 `dotnet test`；CrashWorker 仅构建；插件复制 **12 DLL PASS**；`OVERALL: PASS` exit 0。
+- 证据：`artifacts/codex-remote-ci-review/round2-integrated/`。未纳入其他工作树未提交改动，未修改 tracked Unity 资源。
+- 本文件是 caller 推送前的验收快照。推送将使用现有 `origin/feat/v5-1-integration` 和唯一集成 PR [#19](https://github.com/liuchangready/majiang-game/pull/19)；其后的 exact SHA 远端 run、artifact 核验结果与最终结论由 caller 写入该 PR 的验证说明及同一任务账本，不通过额外报告提交重复触发 CI。
