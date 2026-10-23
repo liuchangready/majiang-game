@@ -100,6 +100,45 @@ namespace Mahjong.TableRuntime
             new TaskCompletionSource<TableOperationResult>(TaskCreationOptions.RunContinuationsAsynchronously);
     }
 
+    internal sealed class SubscribeStreamMailboxMessage : TableMailboxMessage
+    {
+        public SubscribeStreamMailboxMessage(TableStreamSubscribeRequest request)
+        {
+            Request = request ?? throw new ArgumentNullException(nameof(request));
+        }
+
+        public TableStreamSubscribeRequest Request { get; }
+
+        public TaskCompletionSource<TableStreamControlResult> Completion { get; } =
+            new TaskCompletionSource<TableStreamControlResult>(TaskCreationOptions.RunContinuationsAsynchronously);
+    }
+
+    internal sealed class UnsubscribeStreamMailboxMessage : TableMailboxMessage
+    {
+        public UnsubscribeStreamMailboxMessage(TableStreamHandle handle)
+        {
+            Handle = handle ?? throw new ArgumentNullException(nameof(handle));
+        }
+
+        public TableStreamHandle Handle { get; }
+
+        public TaskCompletionSource<TableStreamControlResult> Completion { get; } =
+            new TaskCompletionSource<TableStreamControlResult>(TaskCreationOptions.RunContinuationsAsynchronously);
+    }
+
+    internal sealed class SyncStreamMailboxMessage : TableMailboxMessage
+    {
+        public SyncStreamMailboxMessage(TableStreamSyncRequest request)
+        {
+            Request = request ?? throw new ArgumentNullException(nameof(request));
+        }
+
+        public TableStreamSyncRequest Request { get; }
+
+        public TaskCompletionSource<TableStreamControlResult> Completion { get; } =
+            new TaskCompletionSource<TableStreamControlResult>(TaskCreationOptions.RunContinuationsAsynchronously);
+    }
+
     internal sealed class SnapshotMailboxMessage : TableMailboxMessage
     {
         public TaskCompletionSource<TableSnapshot> Completion { get; } =

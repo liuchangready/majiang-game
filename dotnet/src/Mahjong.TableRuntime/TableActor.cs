@@ -54,6 +54,13 @@ namespace Mahjong.TableRuntime
         private readonly ConditionalWeakTable<AiObservation, ObservationGeneration> _aiObservationGenerations =
             new ConditionalWeakTable<AiObservation, ObservationGeneration>();
         private readonly List<TableEventRecord> _recentEvents = new List<TableEventRecord>();
+        private readonly ITableProjectionContextSource? _projectionContextSource;
+        private readonly TableStreamOptions _streamOptions;
+        private readonly Dictionary<ulong, TableStreamRegistration> _streams =
+            new Dictionary<ulong, TableStreamRegistration>();
+        private readonly Dictionary<string, TableStreamIdentityState> _streamIdentities =
+            new Dictionary<string, TableStreamIdentityState>(StringComparer.Ordinal);
+        private ulong _nextStreamHandle;
 
         private RoundStateMachine _round;
         private StateVersion _stateVersion = new StateVersion(0);
@@ -75,7 +82,7 @@ namespace Mahjong.TableRuntime
             ITableCommitPort commitPort,
             ITableClock clock,
             ITablePublicationSink? publicationSink = null)
-            : this(options, initialRound, commitPort, clock, publicationSink, null)
+            : this(options, initialRound, commitPort, clock, publicationSink, null, null, null)
         {
         }
 
@@ -86,6 +93,19 @@ namespace Mahjong.TableRuntime
             ITableClock clock,
             ITablePublicationSink? publicationSink,
             ITableControlCommitPort? controlCommitPort)
+            : this(options, initialRound, commitPort, clock, publicationSink, controlCommitPort, null, null)
+        {
+        }
+
+        public TableActor(
+            TableActorOptions options,
+            RoundStateMachine initialRound,
+            ITableCommitPort commitPort,
+            ITableClock clock,
+            ITablePublicationSink? publicationSink,
+            ITableControlCommitPort? controlCommitPort,
+            ITableProjectionContextSource? projectionContextSource,
+            TableStreamOptions? streamOptions)
         {
             _options = options ?? throw new ArgumentNullException(nameof(options));
             _options.Validate();
@@ -94,6 +114,9 @@ namespace Mahjong.TableRuntime
             _clockPort = clock ?? throw new ArgumentNullException(nameof(clock));
             _publicationSink = publicationSink;
             _controlCommitPort = controlCommitPort;
+            _projectionContextSource = projectionContextSource;
+            _streamOptions = streamOptions ?? new TableStreamOptions();
+            _streamOptions.Validate();
             _ownerEpoch = options.InitialOwnerEpoch;
             _mailbox = new TableMailbox(options.MailboxCapacity, options.ControlReserve);
             _control = new ControlRegistry(options.DisconnectPolicy, CopyControllers(options.InitialControllers));
@@ -459,6 +482,84 @@ namespace Mahjong.TableRuntime
         }
 
         /// <summary>
+        /// Registers one trusted stream and queues its first full baseline in the same consumer
+        /// turn. No public snapshot is read outside the actor and no subscription becomes
+        /// visible after the baseline, so a commit can never land between "read state" and
+        /// "register".
+        /// </summary>
+        public ValueTask<TableStreamControlResult> SubscribeStreamAsync(
+            TableStreamSubscribeRequest request,
+            CancellationToken cancellationToken = default)
+        {
+            if (request == null)
+            {
+                throw new ArgumentNullException(nameof(request));
+            }
+
+            cancellationToken.ThrowIfCancellationRequested();
+            var message = new SubscribeStreamMailboxMessage(request);
+            TableMailboxEnqueueStatus enqueue = _mailbox.TryEnqueueControl(message);
+            if (enqueue != TableMailboxEnqueueStatus.Enqueued)
+            {
+                return new ValueTask<TableStreamControlResult>(StreamAdmissionFailure(enqueue));
+            }
+
+            EnsurePump();
+            return new ValueTask<TableStreamControlResult>(message.Completion.Task);
+        }
+
+        /// <summary>
+        /// Removes exactly the current registration for a handle. A stale handle is rejected and
+        /// can neither stop a newer binding nor expose the new stream's private content.
+        /// </summary>
+        public ValueTask<TableStreamControlResult> UnsubscribeStreamAsync(
+            TableStreamHandle handle,
+            CancellationToken cancellationToken = default)
+        {
+            if (handle == null)
+            {
+                throw new ArgumentNullException(nameof(handle));
+            }
+
+            cancellationToken.ThrowIfCancellationRequested();
+            var message = new UnsubscribeStreamMailboxMessage(handle);
+            TableMailboxEnqueueStatus enqueue = _mailbox.TryEnqueueControl(message);
+            if (enqueue != TableMailboxEnqueueStatus.Enqueued)
+            {
+                return new ValueTask<TableStreamControlResult>(StreamAdmissionFailure(enqueue));
+            }
+
+            EnsurePump();
+            return new ValueTask<TableStreamControlResult>(message.Completion.Task);
+        }
+
+        /// <summary>
+        /// Reconciles a stream cursor. A gap/future cursor, a stale round or a recovery-generation
+        /// change gets a fresh full baseline; a stale binding/sync identity or owner is rejected
+        /// instead of being silently rebound.
+        /// </summary>
+        public ValueTask<TableStreamControlResult> SyncStreamAsync(
+            TableStreamSyncRequest request,
+            CancellationToken cancellationToken = default)
+        {
+            if (request == null)
+            {
+                throw new ArgumentNullException(nameof(request));
+            }
+
+            cancellationToken.ThrowIfCancellationRequested();
+            var message = new SyncStreamMailboxMessage(request);
+            TableMailboxEnqueueStatus enqueue = _mailbox.TryEnqueueControl(message);
+            if (enqueue != TableMailboxEnqueueStatus.Enqueued)
+            {
+                return new ValueTask<TableStreamControlResult>(StreamAdmissionFailure(enqueue));
+            }
+
+            EnsurePump();
+            return new ValueTask<TableStreamControlResult>(message.Completion.Task);
+        }
+
+        /// <summary>
         /// Gracefully closes the actor. New business/control submissions are refused immediately;
         /// previously admitted messages are ahead of the close marker and are still processed.
         /// </summary>
@@ -611,9 +712,19 @@ namespace Mahjong.TableRuntime
                     case SnapshotMailboxMessage snapshot:
                         snapshot.Completion.TrySetResult(BuildSnapshot());
                         break;
+                    case SubscribeStreamMailboxMessage subscribe:
+                        subscribe.Completion.TrySetResult(ProcessSubscribeStream(subscribe.Request));
+                        break;
+                    case UnsubscribeStreamMailboxMessage unsubscribe:
+                        unsubscribe.Completion.TrySetResult(ProcessUnsubscribeStream(unsubscribe.Handle));
+                        break;
+                    case SyncStreamMailboxMessage sync:
+                        sync.Completion.TrySetResult(ProcessSyncStream(sync.Request));
+                        break;
                     case CloseMailboxMessage close:
                         _pending.Clear();
                         _decisionClock.Reset();
+                        CloseAllStreams(TableStreamTerminationKind.ActorClosed, ProtocolErrorCode.LocalClosed, "actor closed");
                         _lifecycle = TableActorLifecycle.Closed;
                         _lifecycleReason = "actor closed";
                         close.Completion.TrySetResult(true);
@@ -3316,6 +3427,1413 @@ namespace Mahjong.TableRuntime
             return new RequestId(id);
         }
 
+        private TableStreamControlResult StreamAdmissionFailure(TableMailboxEnqueueStatus enqueue)
+        {
+            // The caller thread must not read pump-owned state. 0 is the explicit "not
+            // evaluated" sentinel for an operation that never entered the mailbox.
+            var notEvaluated = new StateVersion(0);
+            return enqueue == TableMailboxEnqueueStatus.Full
+                ? TableStreamControlResult.Failure(
+                    TableStreamControlStatus.MailboxFull,
+                    ProtocolErrorCode.ServerBusy,
+                    "The table mailbox is full; the stream operation was not admitted.",
+                    null,
+                    notEvaluated,
+                    0L)
+                : TableStreamControlResult.Failure(
+                    TableStreamControlStatus.Closed,
+                    ProtocolErrorCode.LocalClosed,
+                    "The table actor is closing/closed; the stream operation was not admitted.",
+                    null,
+                    notEvaluated,
+                    0L);
+        }
+
+        private TableStreamControlResult? GuardStreamControl()
+        {
+            switch (_lifecycle)
+            {
+                case TableActorLifecycle.Serving:
+                    return null;
+                case TableActorLifecycle.Recovering:
+                    return TableStreamControlResult.Failure(
+                        TableStreamControlStatus.Rejected,
+                        ProtocolErrorCode.ServerBusy,
+                        "The table is recovering; streams are gated until the full baseline is installed.",
+                        null,
+                        _stateVersion,
+                        _controlVersion);
+                case TableActorLifecycle.LeaseLost:
+                    return TableStreamControlResult.Failure(
+                        TableStreamControlStatus.Closed,
+                        ProtocolErrorCode.LeaseLost,
+                        "The table lease was lost; the stream is closed.",
+                        null,
+                        _stateVersion,
+                        _controlVersion);
+                case TableActorLifecycle.Closed:
+                    return TableStreamControlResult.Failure(
+                        TableStreamControlStatus.Closed,
+                        ProtocolErrorCode.LocalClosed,
+                        "The table actor is closed.",
+                        null,
+                        _stateVersion,
+                        _controlVersion);
+                default:
+                    return TableStreamControlResult.Failure(
+                        TableStreamControlStatus.Failed,
+                        ProtocolErrorCode.InternalError,
+                        _lifecycleReason,
+                        null,
+                        _stateVersion,
+                        _controlVersion);
+            }
+        }
+
+        private TableStreamControlResult ProcessSubscribeStream(TableStreamSubscribeRequest request)
+        {
+            TableStreamControlResult? guard = GuardStreamControl();
+            if (guard != null)
+            {
+                return guard;
+            }
+
+            if (request.OwnerEpoch != _ownerEpoch)
+            {
+                return TableStreamControlResult.Failure(
+                    TableStreamControlStatus.Rejected,
+                    TableRuntimeReasonCode.StaleOwnerEpoch,
+                    "Stream owner epoch " + request.OwnerEpoch + " is not the table lease epoch " + _ownerEpoch + ".",
+                    null,
+                    _stateVersion,
+                    _controlVersion);
+            }
+
+            if (request.RecoveryGeneration != _recoveryGeneration)
+            {
+                return TableStreamControlResult.Failure(
+                    TableStreamControlStatus.Rejected,
+                    TableRuntimeReasonCode.StaleRecoveryGeneration,
+                    "Stream recovery generation " + request.RecoveryGeneration +
+                    " is not current generation " + _recoveryGeneration + ".",
+                    null,
+                    _stateVersion,
+                    _controlVersion);
+            }
+
+            if (request.ExpectedRoundId.HasValue &&
+                !string.Equals(request.ExpectedRoundId.Value.Value, _round.RoundId, StringComparison.Ordinal))
+            {
+                return TableStreamControlResult.Failure(
+                    TableStreamControlStatus.Rejected,
+                    TableRuntimeReasonCode.RoundMismatch,
+                    "Stream expected round '" + request.ExpectedRoundId.Value.Value +
+                    "' but the table is in '" + _round.RoundId + "'.",
+                    null,
+                    _stateVersion,
+                    _controlVersion);
+            }
+
+            TableStreamIdentity identity = request.Identity;
+            ControlEpoch? boundControl = null;
+            if (identity.Audience.IsSeat)
+            {
+                long controlEpoch = _control.GetEpoch(identity.Audience.Seat);
+                if (request.ExpectedControlEpoch.HasValue)
+                {
+                    if (!TryToDomainEpoch(request.ExpectedControlEpoch.Value, out long expected) ||
+                        expected != controlEpoch)
+                    {
+                        return TableStreamControlResult.Failure(
+                            TableStreamControlStatus.Rejected,
+                            TableRuntimeReasonCode.StaleControlEpoch,
+                            "Stream controller epoch is not current for seat " + identity.Audience.Seat + ".",
+                            null,
+                            _stateVersion,
+                            _controlVersion);
+                    }
+                }
+
+                boundControl = new ControlEpoch(unchecked((ulong)controlEpoch));
+            }
+            else if (request.ExpectedControlEpoch.HasValue)
+            {
+                return TableStreamControlResult.Failure(
+                    TableStreamControlStatus.Rejected,
+                    ProtocolErrorCode.MalformedMessage,
+                    "A spectator stream cannot claim a seat controller epoch.",
+                    null,
+                    _stateVersion,
+                    _controlVersion);
+            }
+
+            _streamIdentities.TryGetValue(identity.Key, out TableStreamIdentityState? state);
+            bool isNewIdentity = state == null;
+            state ??= new TableStreamIdentityState(identity);
+            if (isNewIdentity && _streams.Count >= _streamOptions.MaxStreams)
+            {
+                return TableStreamControlResult.Failure(
+                    TableStreamControlStatus.Rejected,
+                    ProtocolErrorCode.ServerFull,
+                    "The table stream limit of " + _streamOptions.MaxStreams + " was reached.",
+                    null,
+                    _stateVersion,
+                    _controlVersion);
+            }
+
+            ulong binding = identity.BindingEpoch.Value;
+            ulong sync = identity.SyncEpoch.Value;
+            if (binding < state.HighestBindingEpoch)
+            {
+                return TableStreamControlResult.Failure(
+                    TableStreamControlStatus.Rejected,
+                    ProtocolErrorCode.StaleStreamVersion,
+                    "Binding epoch " + binding + " is older than the accepted binding epoch " +
+                    state.HighestBindingEpoch + ".",
+                    null,
+                    _stateVersion,
+                    _controlVersion);
+            }
+
+            if (sync < state.HighestSyncEpoch)
+            {
+                return TableStreamControlResult.Failure(
+                    TableStreamControlStatus.Rejected,
+                    ProtocolErrorCode.StaleStreamVersion,
+                    "Sync epoch " + sync + " is older than the accepted sync epoch " +
+                    state.HighestSyncEpoch + ".",
+                    null,
+                    _stateVersion,
+                    _controlVersion);
+            }
+
+            TableStreamRegistration? previous = null;
+            if (state.CurrentHandleToken.HasValue)
+            {
+                _streams.TryGetValue(state.CurrentHandleToken.Value, out previous);
+                if (previous != null)
+                {
+                    if (binding < previous.Identity.BindingEpoch.Value)
+                    {
+                        return TableStreamControlResult.Failure(
+                            TableStreamControlStatus.Rejected,
+                            ProtocolErrorCode.StaleStreamVersion,
+                            "Binding epoch " + binding + " is older than the active binding epoch " +
+                            previous.Identity.BindingEpoch.Value + ".",
+                            null,
+                            _stateVersion,
+                            _controlVersion);
+                    }
+
+                    if (binding == previous.Identity.BindingEpoch.Value &&
+                        sync == previous.Identity.SyncEpoch.Value)
+                    {
+                        return TableStreamControlResult.Failure(
+                            TableStreamControlStatus.Rejected,
+                            ProtocolErrorCode.AlreadyBound,
+                            "This stream identity already has an active registration.",
+                            null,
+                            _stateVersion,
+                            _controlVersion);
+                    }
+
+                    if (sync < previous.Identity.SyncEpoch.Value)
+                    {
+                        return TableStreamControlResult.Failure(
+                            TableStreamControlStatus.Rejected,
+                            ProtocolErrorCode.StaleStreamVersion,
+                            "Sync epoch " + sync + " is older than the active sync epoch " +
+                            previous.Identity.SyncEpoch.Value + ".",
+                            null,
+                            _stateVersion,
+                            _controlVersion);
+                    }
+                }
+            }
+
+            if (previous == null && _streams.Count >= _streamOptions.MaxStreams)
+            {
+                return TableStreamControlResult.Failure(
+                    TableStreamControlStatus.Rejected,
+                    ProtocolErrorCode.ServerFull,
+                    "The table stream limit of " + _streamOptions.MaxStreams + " was reached.",
+                    null,
+                    _stateVersion,
+                    _controlVersion);
+            }
+
+            bool resetProjection = sync > state.HighestSyncEpoch;
+            ProjectionSeq baseSeq = resetProjection ? new ProjectionSeq(0) : state.ProjectionSeq;
+            ProjectionSeq nextSeq;
+            try
+            {
+                nextSeq = baseSeq.Next();
+            }
+            catch (OverflowException exception)
+            {
+                return TableStreamControlResult.Failure(
+                    TableStreamControlStatus.Failed,
+                    ProtocolErrorCode.InternalError,
+                    "Projection sequence overflow: " + exception.Message,
+                    null,
+                    _stateVersion,
+                    _controlVersion);
+            }
+
+            TableStreamHandle? handle = null;
+            TableStreamChannel? channel = null;
+            try
+            {
+                handle = CreateStreamHandle(identity);
+                StreamProjectionCapture capture = CaptureStreamProjection();
+                var cursor = new StreamCursor(new StreamVersion(_stateVersion.Value), nextSeq);
+                TableStreamFrame frame = BuildStreamFrame(handle, capture, true, cursor, null);
+                channel = CreateStreamChannel(handle, request.Sink);
+                TableStreamEnqueueStatus enqueue = channel.TryEnqueue(frame);
+                if (enqueue != TableStreamEnqueueStatus.Enqueued)
+                {
+                    return TableStreamControlResult.Failure(
+                        TableStreamControlStatus.Overflow,
+                        ProtocolErrorCode.SlowConsumer,
+                        "The stream baseline could not be queued without exceeding its bound.",
+                        null,
+                        _stateVersion,
+                        _controlVersion);
+                }
+
+                if (previous != null)
+                {
+                    RemoveRegistration(previous);
+                    previous.Channel.Close(
+                        TableStreamTerminationKind.Displaced,
+                        ProtocolErrorCode.DisplacedByNewConnection,
+                        "A newer trusted binding replaced this stream.");
+                }
+
+                state.HighestBindingEpoch = binding;
+                state.HighestSyncEpoch = sync;
+                state.ProjectionSeq = nextSeq;
+                state.Cursor = cursor;
+                state.CurrentHandleToken = handle.Token;
+                _streamIdentities[identity.Key] = state;
+                _streams.Add(handle.Token, new TableStreamRegistration(
+                    handle,
+                    state,
+                    channel,
+                    _ownerEpoch,
+                    boundControl,
+                    _recoveryGeneration,
+                    _round.RoundId,
+                    _controlVersion));
+                return TableStreamControlResult.Subscribed(handle, cursor, _stateVersion, _controlVersion);
+            }
+            catch (StreamFrameException exception)
+            {
+                channel?.Close(exception.Kind, exception.ReasonCode, exception.Message);
+                return TableStreamControlResult.Failure(
+                    TableStreamControlStatus.Failed,
+                    exception.ReasonCode,
+                    exception.Message,
+                    null,
+                    _stateVersion,
+                    _controlVersion);
+            }
+            catch (Exception exception) when (
+                exception is TableProjectionException ||
+                exception is ArgumentException ||
+                exception is InvalidOperationException)
+            {
+                channel?.Close(
+                    TableStreamTerminationKind.ProjectionFailed,
+                    ProtocolErrorCode.InternalError,
+                    exception.GetType().Name + ": " + exception.Message);
+                return TableStreamControlResult.Failure(
+                    TableStreamControlStatus.Failed,
+                    ProtocolErrorCode.InternalError,
+                    exception.GetType().Name + ": " + exception.Message,
+                    null,
+                    _stateVersion,
+                    _controlVersion);
+            }
+        }
+
+        private TableStreamControlResult ProcessUnsubscribeStream(TableStreamHandle handle)
+        {
+            if (_lifecycle == TableActorLifecycle.Closed)
+            {
+                return TableStreamControlResult.Failure(
+                    TableStreamControlStatus.Closed,
+                    ProtocolErrorCode.LocalClosed,
+                    "The table actor is closed.",
+                    handle,
+                    _stateVersion,
+                    _controlVersion);
+            }
+
+            if (_lifecycle == TableActorLifecycle.Faulted)
+            {
+                return TableStreamControlResult.Failure(
+                    TableStreamControlStatus.Failed,
+                    ProtocolErrorCode.InternalError,
+                    _lifecycleReason,
+                    handle,
+                    _stateVersion,
+                    _controlVersion);
+            }
+
+            TableStreamRegistration? registration = FindCurrentRegistration(handle);
+            if (registration == null)
+            {
+                return TableStreamControlResult.Failure(
+                    TableStreamControlStatus.Rejected,
+                    ProtocolErrorCode.StaleStreamVersion,
+                    "The stream handle is not the current registration for its identity.",
+                    handle,
+                    _stateVersion,
+                    _controlVersion);
+            }
+
+            bool wasClosed = registration.Channel.IsClosed;
+            RemoveRegistration(registration);
+            registration.Channel.Close(
+                TableStreamTerminationKind.Unsubscribed,
+                string.Empty,
+                "The trusted host unsubscribed the stream.");
+            return TableStreamControlResult.Unsubscribed(
+                handle,
+                registration.State.Cursor,
+                _stateVersion,
+                _controlVersion,
+                wasClosed ? "The stream had already closed." : "The stream was unsubscribed.");
+        }
+
+        private TableStreamControlResult ProcessSyncStream(TableStreamSyncRequest request)
+        {
+            TableStreamControlResult? guard = GuardStreamControl();
+            if (guard != null)
+            {
+                return guard;
+            }
+
+            TableStreamHandle handle = request.Handle;
+            TableStreamRegistration? registration = FindCurrentRegistration(handle);
+            if (registration == null)
+            {
+                return TableStreamControlResult.Failure(
+                    TableStreamControlStatus.Rejected,
+                    ProtocolErrorCode.StaleStreamVersion,
+                    "The stream handle is not the current registration for its identity.",
+                    handle,
+                    _stateVersion,
+                    _controlVersion);
+            }
+
+            TableStreamIdentity identity = handle.Identity;
+            if (request.ExpectedSyncEpoch.HasValue &&
+                request.ExpectedSyncEpoch.Value != identity.SyncEpoch)
+            {
+                return TableStreamControlResult.Failure(
+                    TableStreamControlStatus.Rejected,
+                    ProtocolErrorCode.StaleStreamVersion,
+                    "The sync epoch does not match the registered stream identity.",
+                    handle,
+                    _stateVersion,
+                    _controlVersion);
+            }
+
+            if (request.ExpectedBindingEpoch.HasValue &&
+                request.ExpectedBindingEpoch.Value != identity.BindingEpoch)
+            {
+                return TableStreamControlResult.Failure(
+                    TableStreamControlStatus.Rejected,
+                    ProtocolErrorCode.StaleStreamVersion,
+                    "The binding epoch does not match the registered stream identity.",
+                    handle,
+                    _stateVersion,
+                    _controlVersion);
+            }
+
+            if (request.ExpectedOwnerEpoch.HasValue &&
+                request.ExpectedOwnerEpoch.Value != _ownerEpoch)
+            {
+                CloseStream(registration, TableStreamTerminationKind.StaleOwner, ProtocolErrorCode.LeaseLost,
+                    "The stream belongs to an older table owner epoch.");
+                return TableStreamControlResult.Failure(
+                    TableStreamControlStatus.Closed,
+                    ProtocolErrorCode.LeaseLost,
+                    "The stream belongs to an older table owner epoch.",
+                    handle,
+                    _stateVersion,
+                    _controlVersion);
+            }
+
+            if (registration.OwnerEpoch != _ownerEpoch)
+            {
+                CloseStream(registration, TableStreamTerminationKind.StaleOwner, ProtocolErrorCode.LeaseLost,
+                    "The stream belongs to an older table owner epoch.");
+                return TableStreamControlResult.Failure(
+                    TableStreamControlStatus.Closed,
+                    ProtocolErrorCode.LeaseLost,
+                    "The stream belongs to an older table owner epoch.",
+                    handle,
+                    _stateVersion,
+                    _controlVersion);
+            }
+
+            if (request.ExpectedRecoveryGeneration.HasValue &&
+                request.ExpectedRecoveryGeneration.Value != registration.RecoveryGeneration)
+            {
+                return TableStreamControlResult.Failure(
+                    TableStreamControlStatus.Rejected,
+                    TableRuntimeReasonCode.StaleRecoveryGeneration,
+                    "The sync request belongs to an older recovery generation.",
+                    handle,
+                    _stateVersion,
+                    _controlVersion);
+            }
+
+            if (registration.Channel.IsClosed)
+            {
+                TableStreamTermination? closed = registration.Channel.Termination;
+                RemoveRegistration(registration);
+                return TableStreamControlResult.Failure(
+                    TableStreamControlStatus.Closed,
+                    closed == null || string.IsNullOrEmpty(closed.ReasonCode)
+                        ? ProtocolErrorCode.SlowConsumer
+                        : closed.ReasonCode,
+                    closed == null || string.IsNullOrEmpty(closed.Detail)
+                        ? "The stream channel is closed; a new subscription is required."
+                        : closed.Detail,
+                    handle,
+                    _stateVersion,
+                    _controlVersion);
+            }
+
+            if (identity.Audience.IsSeat)
+            {
+                long currentControlEpoch = _control.GetEpoch(identity.Audience.Seat);
+                if (!registration.BoundControlEpoch.HasValue ||
+                    registration.BoundControlEpoch.Value.Value != unchecked((ulong)currentControlEpoch))
+                {
+                    CloseStream(registration, TableStreamTerminationKind.StaleControlEpoch,
+                        TableRuntimeReasonCode.StaleControlEpoch,
+                        "The seat controller changed; the private stream must be registered again.");
+                    return TableStreamControlResult.Failure(
+                        TableStreamControlStatus.Closed,
+                        TableRuntimeReasonCode.StaleControlEpoch,
+                        "The seat controller changed; the private stream must be registered again.",
+                        handle,
+                        _stateVersion,
+                        _controlVersion);
+                }
+            }
+
+            bool roundMismatch = !string.Equals(registration.RoundId, _round.RoundId, StringComparison.Ordinal) ||
+                                 (request.ExpectedRoundId.HasValue &&
+                                  !string.Equals(request.ExpectedRoundId.Value.Value, _round.RoundId, StringComparison.Ordinal));
+            bool cursorMismatch = request.Cursor != registration.State.Cursor ||
+                                  registration.State.Cursor.StreamVersion.Value != _stateVersion.Value;
+            bool recoveryMismatch = registration.RecoveryGeneration != _recoveryGeneration;
+            bool controlMismatch = registration.ControlVersion != _controlVersion;
+            if (!registration.NeedsSync &&
+                !roundMismatch &&
+                !cursorMismatch &&
+                !recoveryMismatch &&
+                !controlMismatch)
+            {
+                return TableStreamControlResult.InSync(handle, registration.State.Cursor, _stateVersion, _controlVersion);
+            }
+
+            ProjectionSeq nextSeq;
+            try
+            {
+                nextSeq = registration.State.ProjectionSeq.Next();
+            }
+            catch (OverflowException exception)
+            {
+                CloseStream(registration, TableStreamTerminationKind.ProjectionFailed,
+                    ProtocolErrorCode.InternalError, "Projection sequence overflow: " + exception.Message);
+                return TableStreamControlResult.Failure(
+                    TableStreamControlStatus.Failed,
+                    ProtocolErrorCode.InternalError,
+                    "Projection sequence overflow: " + exception.Message,
+                    handle,
+                    _stateVersion,
+                    _controlVersion);
+            }
+
+            try
+            {
+                StreamProjectionCapture capture = CaptureStreamProjection();
+                var cursor = new StreamCursor(new StreamVersion(_stateVersion.Value), nextSeq);
+                TableStreamFrame frame = BuildStreamFrame(handle, capture, true, cursor, null);
+                TableStreamEnqueueStatus enqueue = registration.Channel.TryEnqueue(frame);
+                if (enqueue != TableStreamEnqueueStatus.Enqueued)
+                {
+                    RemoveRegistration(registration);
+                    return TableStreamControlResult.Failure(
+                        TableStreamControlStatus.Overflow,
+                        ProtocolErrorCode.SlowConsumer,
+                        "The full baseline could not be queued without exceeding the stream bound.",
+                        handle,
+                        _stateVersion,
+                        _controlVersion);
+                }
+
+                registration.State.ProjectionSeq = nextSeq;
+                registration.State.Cursor = cursor;
+                registration.RecoveryGeneration = _recoveryGeneration;
+                registration.RoundId = _round.RoundId;
+                registration.ControlVersion = _controlVersion;
+                registration.NeedsSync = false;
+                return TableStreamControlResult.BaselineQueued(
+                    handle,
+                    cursor,
+                    _stateVersion,
+                    _controlVersion,
+                    ProtocolErrorCode.StreamGap,
+                    recoveryMismatch
+                        ? "The recovery generation changed; a full baseline was queued."
+                        : roundMismatch
+                            ? "The stream is on another round; a full baseline was queued."
+                            : "The stream cursor is not current; a full baseline was queued.");
+            }
+            catch (StreamFrameException exception)
+            {
+                CloseStream(registration, exception.Kind, exception.ReasonCode, exception.Message);
+                return TableStreamControlResult.Failure(
+                    TableStreamControlStatus.Failed,
+                    exception.ReasonCode,
+                    exception.Message,
+                    handle,
+                    _stateVersion,
+                    _controlVersion);
+            }
+            catch (Exception exception) when (
+                exception is TableProjectionException ||
+                exception is ArgumentException ||
+                exception is InvalidOperationException)
+            {
+                CloseStream(registration, TableStreamTerminationKind.ProjectionFailed,
+                    ProtocolErrorCode.InternalError,
+                    exception.GetType().Name + ": " + exception.Message);
+                return TableStreamControlResult.Failure(
+                    TableStreamControlStatus.Failed,
+                    ProtocolErrorCode.InternalError,
+                    exception.GetType().Name + ": " + exception.Message,
+                    handle,
+                    _stateVersion,
+                    _controlVersion);
+            }
+        }
+
+        private TableStreamHandle CreateStreamHandle(TableStreamIdentity identity)
+        {
+            ulong token;
+            try
+            {
+                token = checked(_nextStreamHandle + 1UL);
+            }
+            catch (OverflowException exception)
+            {
+                throw new InvalidOperationException("Stream handle overflow.", exception);
+            }
+
+            _nextStreamHandle = token;
+            return new TableStreamHandle(token, identity);
+        }
+
+        private TableStreamChannel CreateStreamChannel(TableStreamHandle handle, ITableStreamSink sink)
+        {
+            return new TableStreamChannel(
+                handle,
+                sink,
+                _streamOptions.MaxQueuedFrames,
+                _streamOptions.MaxQueuedBytes,
+                _streamOptions.Encoder != null,
+                _streamOptions.TerminationSink);
+        }
+
+        private TableStreamRegistration? FindCurrentRegistration(TableStreamHandle handle)
+        {
+            if (!_streams.TryGetValue(handle.Token, out TableStreamRegistration? registration))
+            {
+                return null;
+            }
+
+            if (!registration.State.CurrentHandleToken.HasValue ||
+                registration.State.CurrentHandleToken.Value != handle.Token)
+            {
+                return null;
+            }
+
+            return registration;
+        }
+
+        private void RemoveRegistration(TableStreamRegistration registration)
+        {
+            if (_streams.TryGetValue(registration.Handle.Token, out TableStreamRegistration? current) &&
+                ReferenceEquals(current, registration))
+            {
+                _streams.Remove(registration.Handle.Token);
+            }
+
+            if (registration.State.CurrentHandleToken.HasValue &&
+                registration.State.CurrentHandleToken.Value == registration.Handle.Token)
+            {
+                registration.State.CurrentHandleToken = null;
+            }
+        }
+
+        private void CloseStream(
+            TableStreamRegistration registration,
+            TableStreamTerminationKind kind,
+            string reasonCode,
+            string detail)
+        {
+            RemoveRegistration(registration);
+            registration.Channel.Close(kind, reasonCode, detail);
+        }
+
+        private void CloseAllStreams(TableStreamTerminationKind kind, string reasonCode, string detail)
+        {
+            if (_streams.Count == 0)
+            {
+                return;
+            }
+
+            var registrations = new List<TableStreamRegistration>(_streams.Values);
+            _streams.Clear();
+            for (int i = 0; i < registrations.Count; i++)
+            {
+                registrations[i].State.CurrentHandleToken = null;
+                registrations[i].Channel.Close(kind, reasonCode, detail);
+            }
+        }
+
+        private StreamProjectionCapture CaptureStreamProjection()
+        {
+            if (_projectionContextSource == null)
+            {
+                throw new TableProjectionException(
+                    TableProjectionErrorCode.InvalidContext,
+                    "No trusted projection context source is configured for this table.");
+            }
+
+            if (!TryReadClock(out long now, out long utc, out string clockFailure))
+            {
+                throw new TableProjectionException(
+                    TableProjectionErrorCode.InvalidContext,
+                    "The projection clock is not safe: " + clockFailure);
+            }
+
+            var request = new TableProjectionContextRequest(
+                _options.RoomId,
+                _round,
+                _stateVersion,
+                _lastEventSeq,
+                _ownerEpoch,
+                _controlVersion,
+                _recoveryGeneration,
+                now,
+                utc);
+            TableProjectionContextData data = _projectionContextSource.Capture(request) ??
+                throw new TableProjectionException(
+                    TableProjectionErrorCode.InvalidContext,
+                    "The projection context source returned no data.");
+            if (!string.Equals(data.RoundId, _round.RoundId, StringComparison.Ordinal))
+            {
+                throw new TableProjectionException(
+                    TableProjectionErrorCode.RoundIdMismatch,
+                    "Projection context round '" + data.RoundId + "' is not the committed round '" + _round.RoundId + "'.");
+            }
+
+            if (data.StateVersion != _stateVersion)
+            {
+                throw new TableProjectionException(
+                    TableProjectionErrorCode.StaleStateVersion,
+                    "Projection context version " + data.StateVersion + " is not the committed version " + _stateVersion + ".");
+            }
+
+            var eventInputs = new List<TableEventProjectionInput>(Math.Min(_recentEvents.Count, 4096));
+            int start = Math.Max(0, _recentEvents.Count - 4096);
+            for (int i = start; i < _recentEvents.Count; i++)
+            {
+                TableEventProjectionInput? input = TableEventProjection.FromRoundEvent(_recentEvents[i]);
+                if (input != null)
+                {
+                    eventInputs.Add(input);
+                }
+            }
+
+            return new StreamProjectionCapture(
+                data,
+                BuildStreamClocks(now, utc),
+                BuildStreamDecisions(now),
+                eventInputs);
+        }
+
+        private IReadOnlyList<ClockView> BuildStreamClocks(long now, long utc)
+        {
+            var clocks = new List<ClockView>(4);
+            for (int seat = 0; seat < 4; seat++)
+            {
+                DecisionTiming? timing = _decisionClock.Timing(seat);
+                long remaining = 0L;
+                int decisionSeat = ProtocolConstants.NoSeat;
+                if (timing != null)
+                {
+                    remaining = Math.Max(0L, timing.DeadlineMillis - now);
+                    decisionSeat = seat;
+                }
+
+                clocks.Add(new ClockView(utc, remaining, _decisionClock.RemainingReserve(seat), decisionSeat));
+            }
+
+            return clocks;
+        }
+
+        private IReadOnlyList<TableSeatDecision> BuildStreamDecisions(long now)
+        {
+            var decisions = new List<TableSeatDecision>(_pending.Count);
+            foreach (KeyValuePair<int, PendingDecision> entry in _pending)
+            {
+                PendingDecision pending = entry.Value;
+                DecisionTiming? timing = _decisionClock.Timing(entry.Key);
+                if (timing == null || now >= timing.DeadlineMillis)
+                {
+                    continue;
+                }
+
+                var actions = new List<LegalActionView>(pending.Candidates.Count);
+                for (int i = 0; i < pending.Candidates.Count; i++)
+                {
+                    LegalActionOption candidate = pending.Candidates[i];
+                    ProtocolActionType actionType = MapProtocolAction(candidate.Kind);
+                    if (actionType == ProtocolActionType.Unspecified)
+                    {
+                        // The frozen Contracts action vocabulary has no value for this future
+                        // P1.4/P3.3 action. Do not invent one; P3.2c must extend the mapping.
+                        continue;
+                    }
+
+                    uint[] tiles = candidate.Tile.HasValue
+                        ? new[] { unchecked((uint)candidate.Tile.Value.Value) }
+                        : Array.Empty<uint>();
+                    actions.Add(new LegalActionView(
+                        actionType,
+                        candidate.OptionId ?? string.Empty,
+                        tiles));
+                }
+
+                long remaining = Math.Max(0L, timing.DeadlineMillis - now);
+                decisions.Add(new TableSeatDecision(
+                    entry.Key,
+                    new DecisionView(
+                        new DecisionId(pending.Key.DecisionId),
+                        new ControlEpoch(unchecked((ulong)pending.ControlEpoch)),
+                        remaining,
+                        actions)));
+            }
+
+            return decisions;
+        }
+
+        private static ProtocolActionType MapProtocolAction(LegalActionKind kind)
+        {
+            switch (kind)
+            {
+                case LegalActionKind.Pass:
+                    return ProtocolActionType.Pass;
+                case LegalActionKind.Discard:
+                    return ProtocolActionType.DiscardTile;
+                case LegalActionKind.Tsumo:
+                    return ProtocolActionType.DeclareTsumo;
+                case LegalActionKind.Ron:
+                    return ProtocolActionType.DeclareRon;
+                case LegalActionKind.Chi:
+                    return ProtocolActionType.DeclareChi;
+                case LegalActionKind.Pon:
+                    return ProtocolActionType.DeclarePon;
+                case LegalActionKind.Kan:
+                    return ProtocolActionType.DeclareKan;
+                case LegalActionKind.Riichi:
+                    return ProtocolActionType.DeclareRiichi;
+                default:
+                    return ProtocolActionType.Unspecified;
+            }
+        }
+
+        private TableStreamFrame BuildStreamFrame(
+            TableStreamHandle handle,
+            StreamProjectionCapture capture,
+            bool isFullSnapshot,
+            StreamCursor cursor,
+            IReadOnlyList<TableEventRecord>? committedEvents)
+        {
+            TableStreamIdentity identity = handle.Identity;
+            TableProjectionContextData data = capture.Data;
+            var context = new TableProjectionContext(
+                new TableProjectionIdentity(
+                    identity.SessionId,
+                    new RoundId(_round.RoundId),
+                    _stateVersion,
+                    _lastEventSeq,
+                    cursor,
+                    new SessionVersion(data.SessionVersion)),
+                data.Policy,
+                capture.Clocks,
+                data.PublicFacts,
+                data.PrivateFacts,
+                capture.Decisions,
+                capture.EventInputs,
+                data.Session);
+
+            IReadOnlyList<TableProjectedEvent> events = committedEvents == null
+                ? Array.Empty<TableProjectedEvent>()
+                : ProjectStreamEvents(committedEvents, identity.Audience, data.Policy);
+
+            TableStreamFrame frame;
+            if (identity.Audience.IsSpectator)
+            {
+                PublicSnapshotView publicView = TableVisibilityProjection.ProjectPublicSnapshot(_round, context);
+                frame = new TableStreamFrame(
+                    handle,
+                    isFullSnapshot,
+                    cursor,
+                    _stateVersion,
+                    _lastEventSeq,
+                    _ownerEpoch,
+                    _controlVersion,
+                    _recoveryGeneration,
+                    _round.RoundId,
+                    publicView,
+                    null,
+                    null,
+                    events);
+            }
+            else
+            {
+                if (data.Cheat == null)
+                {
+                    throw new TableProjectionException(
+                        TableProjectionErrorCode.InvalidContext,
+                        "A seat stream requires a trusted cheat projection context.");
+                }
+
+                PlayerSnapshotView player = TableVisibilityProjection.ProjectPlayerSnapshot(
+                    _round,
+                    data.Cheat,
+                    identity.Audience.Seat,
+                    context);
+                TableOwnerPrivateView owner = TableVisibilityProjection.ProjectOwnerPrivate(
+                    _round,
+                    data.Cheat,
+                    identity.Audience.Seat,
+                    context);
+                frame = new TableStreamFrame(
+                    handle,
+                    isFullSnapshot,
+                    cursor,
+                    _stateVersion,
+                    _lastEventSeq,
+                    _ownerEpoch,
+                    _controlVersion,
+                    _recoveryGeneration,
+                    _round.RoundId,
+                    null,
+                    player,
+                    owner,
+                    events);
+            }
+
+            EncodeStreamFrame(frame);
+            return frame;
+        }
+
+        private IReadOnlyList<TableProjectedEvent> ProjectStreamEvents(
+            IReadOnlyList<TableEventRecord> records,
+            TableStreamAudience audience,
+            TableProjectionPolicy policy)
+        {
+            TableProjectionAudience projectionAudience = audience.IsSpectator
+                ? TableProjectionAudience.Spectator
+                : TableProjectionAudience.ForSeat(audience.Seat);
+            var events = new List<TableProjectedEvent>(records.Count);
+            for (int i = 0; i < records.Count; i++)
+            {
+                TableEventProjectionInput? input = TableEventProjection.FromRoundEvent(records[i]);
+                if (input == null)
+                {
+                    continue;
+                }
+
+                TableProjectedEvent? visible = TableEventProjection.Project(input, projectionAudience, policy);
+                if (visible != null)
+                {
+                    events.Add(visible);
+                }
+            }
+
+            return events;
+        }
+
+        private void EncodeStreamFrame(TableStreamFrame frame)
+        {
+            ITableStreamFrameEncoder? encoder = _streamOptions.Encoder;
+            if (encoder == null)
+            {
+                if (frame.Public == null && frame.Player == null && frame.OwnerPrivate == null && frame.Events.Count == 0)
+                {
+                    throw new StreamFrameException(
+                        TableStreamTerminationKind.ProjectionFailed,
+                        ProtocolErrorCode.InternalError,
+                        "A stream frame cannot have an empty payload.");
+                }
+
+                return;
+            }
+
+            TableEncodedFrame encoded;
+            try
+            {
+                encoded = encoder.Encode(frame);
+            }
+            catch (Exception exception)
+            {
+                throw new StreamFrameException(
+                    TableStreamTerminationKind.EncoderFailed,
+                    ProtocolErrorCode.InternalError,
+                    "The stream encoder failed: " + exception.GetType().Name + ": " + exception.Message);
+            }
+
+            if (encoded.Length == 0)
+            {
+                throw new StreamFrameException(
+                    TableStreamTerminationKind.EncoderFailed,
+                    ProtocolErrorCode.MalformedMessage,
+                    "The stream encoder returned an empty payload.");
+            }
+
+            if (encoded.DeclaredSize != encoded.Length)
+            {
+                throw new StreamFrameException(
+                    TableStreamTerminationKind.EncoderFailed,
+                    ProtocolErrorCode.MalformedMessage,
+                    "The stream encoder declared " + encoded.DeclaredSize +
+                    " bytes but produced " + encoded.Length + ".");
+            }
+
+            if (encoded.Length > _streamOptions.MaxQueuedBytes)
+            {
+                throw new StreamFrameException(
+                    TableStreamTerminationKind.MessageTooLarge,
+                    ProtocolErrorCode.MessageTooLarge,
+                    "The encoded stream frame is " + encoded.Length +
+                    " bytes, above the configured " + _streamOptions.MaxQueuedBytes + " byte limit.");
+            }
+
+            frame.AttachEncodedPayload(encoded.CopyBytes());
+        }
+
+        private void PublishToStreams(TablePublication publication)
+        {
+            if (_streams.Count == 0)
+            {
+                return;
+            }
+
+            try
+            {
+                switch (publication.Kind)
+                {
+                    case TablePublicationKind.Applied:
+                        PublishAppliedToStreams(publication);
+                        break;
+                    case TablePublicationKind.ControlChanged:
+                        PublishControlToStreams(publication);
+                        break;
+                    case TablePublicationKind.Recovered:
+                        RebaselineStreams();
+                        break;
+                    case TablePublicationKind.LeaseLost:
+                        CloseAllStreams(
+                            TableStreamTerminationKind.LeaseLost,
+                            ProtocolErrorCode.LeaseLost,
+                            "The table lease was lost; no stream content is published.");
+                        break;
+                }
+            }
+            catch (Exception exception)
+            {
+                _publicationFault = exception.GetType().Name + ": " + exception.Message;
+                CloseAllStreams(
+                    TableStreamTerminationKind.ProjectionFailed,
+                    ProtocolErrorCode.InternalError,
+                    _publicationFault);
+            }
+        }
+
+        private void PublishAppliedToStreams(TablePublication publication)
+        {
+            RemoveFaultedStreams();
+            if (_streams.Count == 0)
+            {
+                return;
+            }
+
+            StreamProjectionCapture capture;
+            try
+            {
+                capture = CaptureStreamProjection();
+            }
+            catch (Exception exception)
+            {
+                _publicationFault = exception.GetType().Name + ": " + exception.Message;
+                CloseAllStreams(
+                    TableStreamTerminationKind.ProjectionFailed,
+                    ProtocolErrorCode.InternalError,
+                    _publicationFault);
+                return;
+            }
+
+            var registrations = new List<TableStreamRegistration>(_streams.Values);
+            for (int i = 0; i < registrations.Count; i++)
+            {
+                TableStreamRegistration registration = registrations[i];
+                if (registration.Channel.IsClosed)
+                {
+                    RemoveRegistration(registration);
+                    continue;
+                }
+
+                if (registration.NeedsSync)
+                {
+                    // Recovery baseline is installed but not acknowledged; withhold increments
+                    // so Sync must rebuild a current full baseline before updates resume.
+                    continue;
+                }
+
+                ProjectionSeq nextSeq;
+                try
+                {
+                    nextSeq = registration.State.ProjectionSeq.Next();
+                }
+                catch (OverflowException exception)
+                {
+                    CloseStream(registration, TableStreamTerminationKind.ProjectionFailed,
+                        ProtocolErrorCode.InternalError, "Projection sequence overflow: " + exception.Message);
+                    continue;
+                }
+
+                var cursor = new StreamCursor(new StreamVersion(_stateVersion.Value), nextSeq);
+                TableStreamFrame frame;
+                try
+                {
+                    frame = BuildStreamFrame(registration.Handle, capture, false, cursor, publication.Events);
+                }
+                catch (StreamFrameException exception)
+                {
+                    CloseStream(registration, exception.Kind, exception.ReasonCode, exception.Message);
+                    continue;
+                }
+                catch (Exception exception) when (
+                    exception is TableProjectionException ||
+                    exception is ArgumentException ||
+                    exception is InvalidOperationException)
+                {
+                    _publicationFault = exception.GetType().Name + ": " + exception.Message;
+                    CloseStream(registration, TableStreamTerminationKind.ProjectionFailed,
+                        ProtocolErrorCode.InternalError, _publicationFault);
+                    continue;
+                }
+
+                TableStreamEnqueueStatus enqueue = registration.Channel.TryEnqueue(frame);
+                if (enqueue != TableStreamEnqueueStatus.Enqueued)
+                {
+                    RemoveRegistration(registration);
+                    continue;
+                }
+
+                registration.State.ProjectionSeq = nextSeq;
+                registration.State.Cursor = cursor;
+                registration.ControlVersion = _controlVersion;
+            }
+        }
+
+        private void PublishControlToStreams(TablePublication publication)
+        {
+            RemoveFaultedStreams();
+            if (_streams.Count == 0)
+            {
+                return;
+            }
+
+            var changedEpochs = new Dictionary<int, long>();
+            for (int i = 0; i < publication.ControlEvents.Count; i++)
+            {
+                TableControlEvent change = publication.ControlEvents[i];
+                if (change.Seat >= 0 && change.Seat <= 3 && change.NewEpoch.HasValue)
+                {
+                    changedEpochs[change.Seat] = change.NewEpoch.Value;
+                }
+            }
+
+            var registrations = new List<TableStreamRegistration>(_streams.Values);
+            for (int i = 0; i < registrations.Count; i++)
+            {
+                TableStreamRegistration registration = registrations[i];
+                if (registration.Handle.Identity.Audience.IsSeat &&
+                    changedEpochs.TryGetValue(registration.Handle.Identity.Audience.Seat, out long newEpoch))
+                {
+                    if (!registration.BoundControlEpoch.HasValue ||
+                        registration.BoundControlEpoch.Value.Value != unchecked((ulong)newEpoch))
+                    {
+                        CloseStream(registration, TableStreamTerminationKind.StaleControlEpoch,
+                            TableRuntimeReasonCode.StaleControlEpoch,
+                            "The seat controller changed; the old private stream was closed.");
+                        continue;
+                    }
+                }
+            }
+
+            RemoveFaultedStreams();
+            if (_streams.Count == 0)
+            {
+                return;
+            }
+
+            StreamProjectionCapture capture;
+            try
+            {
+                capture = CaptureStreamProjection();
+            }
+            catch (Exception exception)
+            {
+                _publicationFault = exception.GetType().Name + ": " + exception.Message;
+                CloseAllStreams(
+                    TableStreamTerminationKind.ProjectionFailed,
+                    ProtocolErrorCode.InternalError,
+                    _publicationFault);
+                return;
+            }
+
+            var remaining = new List<TableStreamRegistration>(_streams.Values);
+            for (int i = 0; i < remaining.Count; i++)
+            {
+                TableStreamRegistration registration = remaining[i];
+                if (registration.Channel.IsClosed)
+                {
+                    RemoveRegistration(registration);
+                    continue;
+                }
+
+                if (registration.NeedsSync)
+                {
+                    // The recovery baseline is still awaiting an explicit Sync. A later Sync
+                    // sees the changed control version and queues a fresh full baseline.
+                    continue;
+                }
+
+                ProjectionSeq nextSeq;
+                try
+                {
+                    nextSeq = registration.State.ProjectionSeq.Next();
+                }
+                catch (OverflowException exception)
+                {
+                    CloseStream(registration, TableStreamTerminationKind.ProjectionFailed,
+                        ProtocolErrorCode.InternalError, "Projection sequence overflow: " + exception.Message);
+                    continue;
+                }
+
+                var cursor = new StreamCursor(new StreamVersion(_stateVersion.Value), nextSeq);
+                TableStreamFrame frame;
+                try
+                {
+                    frame = BuildStreamFrame(registration.Handle, capture, false, cursor, null);
+                }
+                catch (StreamFrameException exception)
+                {
+                    CloseStream(registration, exception.Kind, exception.ReasonCode, exception.Message);
+                    continue;
+                }
+                catch (Exception exception) when (
+                    exception is TableProjectionException ||
+                    exception is ArgumentException ||
+                    exception is InvalidOperationException)
+                {
+                    _publicationFault = exception.GetType().Name + ": " + exception.Message;
+                    CloseStream(registration, TableStreamTerminationKind.ProjectionFailed,
+                        ProtocolErrorCode.InternalError, _publicationFault);
+                    continue;
+                }
+
+                TableStreamEnqueueStatus enqueue = registration.Channel.TryEnqueue(frame);
+                if (enqueue != TableStreamEnqueueStatus.Enqueued)
+                {
+                    RemoveRegistration(registration);
+                    continue;
+                }
+
+                registration.State.ProjectionSeq = nextSeq;
+                registration.State.Cursor = cursor;
+                registration.ControlVersion = _controlVersion;
+            }
+        }
+
+        private void RebaselineStreams()
+        {
+            RemoveFaultedStreams();
+            if (_streams.Count == 0)
+            {
+                return;
+            }
+
+            StreamProjectionCapture capture;
+            try
+            {
+                capture = CaptureStreamProjection();
+            }
+            catch (Exception exception)
+            {
+                _publicationFault = exception.GetType().Name + ": " + exception.Message;
+                CloseAllStreams(
+                    TableStreamTerminationKind.ProjectionFailed,
+                    ProtocolErrorCode.InternalError,
+                    _publicationFault);
+                return;
+            }
+
+            var registrations = new List<TableStreamRegistration>(_streams.Values);
+            for (int i = 0; i < registrations.Count; i++)
+            {
+                TableStreamRegistration registration = registrations[i];
+                if (registration.OwnerEpoch != _ownerEpoch)
+                {
+                    CloseStream(registration, TableStreamTerminationKind.StaleOwner,
+                        ProtocolErrorCode.LeaseLost,
+                        "The recovery baseline belongs to a newer table owner epoch.");
+                    continue;
+                }
+
+                if (registration.Handle.Identity.Audience.IsSeat)
+                {
+                    long currentControlEpoch = _control.GetEpoch(registration.Handle.Identity.Audience.Seat);
+                    if (!registration.BoundControlEpoch.HasValue ||
+                        registration.BoundControlEpoch.Value.Value != unchecked((ulong)currentControlEpoch))
+                    {
+                        CloseStream(registration, TableStreamTerminationKind.StaleControlEpoch,
+                            TableRuntimeReasonCode.StaleControlEpoch,
+                            "The recovered controller changed; the old private stream was closed.");
+                        continue;
+                    }
+                }
+
+                ProjectionSeq nextSeq;
+                try
+                {
+                    nextSeq = registration.State.ProjectionSeq.Next();
+                }
+                catch (OverflowException exception)
+                {
+                    CloseStream(registration, TableStreamTerminationKind.ProjectionFailed,
+                        ProtocolErrorCode.InternalError, "Projection sequence overflow: " + exception.Message);
+                    continue;
+                }
+
+                var cursor = new StreamCursor(new StreamVersion(_stateVersion.Value), nextSeq);
+                TableStreamFrame frame;
+                try
+                {
+                    frame = BuildStreamFrame(registration.Handle, capture, true, cursor, null);
+                }
+                catch (StreamFrameException exception)
+                {
+                    CloseStream(registration, exception.Kind, exception.ReasonCode, exception.Message);
+                    continue;
+                }
+                catch (Exception exception) when (
+                    exception is TableProjectionException ||
+                    exception is ArgumentException ||
+                    exception is InvalidOperationException)
+                {
+                    _publicationFault = exception.GetType().Name + ": " + exception.Message;
+                    CloseStream(registration, TableStreamTerminationKind.ProjectionFailed,
+                        ProtocolErrorCode.InternalError, _publicationFault);
+                    continue;
+                }
+
+                TableStreamEnqueueStatus enqueue = registration.Channel.TryEnqueue(frame);
+                if (enqueue != TableStreamEnqueueStatus.Enqueued)
+                {
+                    RemoveRegistration(registration);
+                    continue;
+                }
+
+                registration.State.ProjectionSeq = nextSeq;
+                registration.State.Cursor = cursor;
+                registration.RecoveryGeneration = _recoveryGeneration;
+                registration.RoundId = _round.RoundId;
+                registration.ControlVersion = _controlVersion;
+                registration.NeedsSync = true;
+            }
+        }
+
+        private void RemoveFaultedStreams()
+        {
+            if (_streams.Count == 0)
+            {
+                return;
+            }
+
+            var registrations = new List<TableStreamRegistration>(_streams.Values);
+            for (int i = 0; i < registrations.Count; i++)
+            {
+                if (registrations[i].Channel.IsClosed)
+                {
+                    RemoveRegistration(registrations[i]);
+                }
+            }
+        }
+
+        private sealed class StreamProjectionCapture
+        {
+            public StreamProjectionCapture(
+                TableProjectionContextData data,
+                IReadOnlyList<ClockView> clocks,
+                IReadOnlyList<TableSeatDecision> decisions,
+                IReadOnlyList<TableEventProjectionInput> eventInputs)
+            {
+                Data = data;
+                Clocks = clocks;
+                Decisions = decisions;
+                EventInputs = eventInputs;
+            }
+
+            public TableProjectionContextData Data { get; }
+
+            public IReadOnlyList<ClockView> Clocks { get; }
+
+            public IReadOnlyList<TableSeatDecision> Decisions { get; }
+
+            public IReadOnlyList<TableEventProjectionInput> EventInputs { get; }
+        }
+
+        private sealed class StreamFrameException : Exception
+        {
+            public StreamFrameException(TableStreamTerminationKind kind, string reasonCode, string detail)
+                : base(detail)
+            {
+                Kind = kind;
+                ReasonCode = reasonCode;
+            }
+
+            public TableStreamTerminationKind Kind { get; }
+
+            public string ReasonCode { get; }
+        }
+
         private void AppendRecent(IReadOnlyList<TableEventRecord> records)
         {
             for (int i = 0; i < records.Count; i++)
@@ -3336,6 +4854,10 @@ namespace Mahjong.TableRuntime
 
         private void Publish(TablePublication publication)
         {
+            // Streams are enqueued first and never await a sink here. The legacy publication
+            // sink is still synchronous for P3.1 compatibility, but a slow stream consumer
+            // cannot delay the actor or the other streams.
+            PublishToStreams(publication);
             if (_publicationSink == null)
             {
                 return;
@@ -3419,6 +4941,10 @@ namespace Mahjong.TableRuntime
                 _lifecycleReason = exception.GetType().Name + ": " + exception.Message;
             }
 
+            CloseAllStreams(
+                TableStreamTerminationKind.ActorFaulted,
+                ProtocolErrorCode.InternalError,
+                exception.GetType().Name + ": " + exception.Message);
             _mailbox.StopAccepting();
         }
 
@@ -3540,6 +5066,33 @@ namespace Mahjong.TableRuntime
                         _stateVersion,
                         TableRuntimeReasonCode.InternalError,
                         detail));
+                    break;
+                case SubscribeStreamMailboxMessage subscribe:
+                    subscribe.Completion.TrySetResult(TableStreamControlResult.Failure(
+                        TableStreamControlStatus.Failed,
+                        TableRuntimeReasonCode.InternalError,
+                        detail,
+                        null,
+                        _stateVersion,
+                        _controlVersion));
+                    break;
+                case UnsubscribeStreamMailboxMessage unsubscribe:
+                    unsubscribe.Completion.TrySetResult(TableStreamControlResult.Failure(
+                        TableStreamControlStatus.Failed,
+                        TableRuntimeReasonCode.InternalError,
+                        detail,
+                        unsubscribe.Handle,
+                        _stateVersion,
+                        _controlVersion));
+                    break;
+                case SyncStreamMailboxMessage sync:
+                    sync.Completion.TrySetResult(TableStreamControlResult.Failure(
+                        TableStreamControlStatus.Failed,
+                        TableRuntimeReasonCode.InternalError,
+                        detail,
+                        sync.Request.Handle,
+                        _stateVersion,
+                        _controlVersion));
                     break;
                 case SnapshotMailboxMessage snapshot:
                     snapshot.Completion.TrySetException(exception);
