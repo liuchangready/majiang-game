@@ -675,7 +675,7 @@ namespace Mahjong.Client.Tests
             (TableSession session, FakeTableChannel channel, _) = await TestSession.ConnectedAsync();
             Envelope push = TestWire.PlayerPush(11, 5, 10, 6, 11);
             push.PlayerUpdate.Snapshot.PrivateView.Seat = 1;
-            channel.Enqueue(push);
+            channel.EnqueueCompatibility(push);
             await session.PumpOnceAsync(CancellationToken.None);
 
             Assert.Equal(10ul, session.ConfirmedCursor!.Value.ProjectionSeq.Value);

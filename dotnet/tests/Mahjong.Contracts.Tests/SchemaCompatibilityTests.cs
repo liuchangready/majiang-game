@@ -17,7 +17,7 @@ namespace Mahjong.Protocol.Tests
 {
     public sealed class SchemaCompatibilityTests
     {
-        private const string ExpectedSchemaFingerprint = "c957a0b071e04dd0f1e1433f667bd8a482170410798c1448b155db201facdd0e";
+        private const string ExpectedSchemaFingerprint = "290f46913e43407c57cea9df1de0d23e0a516facfeb7c7a2e9a6867fe9c32430";
 
         [Fact]
         public void EnvelopeFieldNumbersAreStable()
@@ -110,12 +110,62 @@ namespace Mahjong.Protocol.Tests
             AssertFields(PlayerPrivateView.Descriptor, new (int, string)[]
             {
                 (1, "seat"), (2, "closed_tiles"), (3, "drawn_tile_id"), (4, "legal_actions"),
-                (5, "furiten"), (6, "discard_history"), (7, "decision"), (8, "cheat")
+                (5, "furiten"), (6, "discard_history"), (7, "decision"), (8, "cheat"),
+                (16, "sleeve_tiles"), (17, "owner_melds")
             });
             AssertFields(PrivateCheatView.Descriptor, new (int, string)[]
             {
                 (1, "cheat_points"), (2, "ledger_entries"), (3, "tile_mark"), (4, "sleeve_bloom"),
-                (5, "beam_swap"), (6, "preparation")
+                (5, "beam_swap"), (6, "preparation"), (13, "off_turn_sleeve_bloom"),
+                (14, "sleeve_bloom_reservation"), (15, "window_id")
+            });
+            AssertFields(PlayerPublicView.Descriptor, new (int, string)[]
+            {
+                (1, "seat"), (2, "hand_count"), (3, "melds"), (4, "discards"), (5, "riichi"),
+                (13, "concealed_melds")
+            });
+            AssertFields(ConcealedMeldView.Descriptor, new (int, string)[]
+            {
+                (1, "type"), (2, "tile_count"), (3, "from_seat")
+            });
+            AssertFields(SleeveBloomView.Descriptor, new (int, string)[]
+            {
+                (1, "offer_id"), (2, "mode"), (3, "first_tile_id"), (4, "second_tile_id"),
+                (5, "deadline_remaining_ms"), (6, "window_id"), (7, "reserved_tile_id"),
+                (15, "created_turn_number"), (16, "draw_kind"), (17, "has_deadline")
+            });
+            AssertFields(SleeveBloomReservationView.Descriptor, new (int, string)[]
+            {
+                (1, "offer_id"), (2, "tile_id"), (3, "window_id")
+            });
+            AssertFields(TileMarkGroupView.Descriptor, new (int, string)[]
+            {
+                (1, "group_id"), (2, "tiles"), (8, "created_round_id"),
+                (9, "created_round_ordinal"), (10, "expires_after_round_ordinal")
+            });
+            AssertFields(BeamSwapCandidateView.Descriptor, new (int, string)[]
+            {
+                (1, "slot"), (2, "tile_id"), (8, "slot_kind"), (9, "slot_index")
+            });
+            AssertFields(BeamSwapView.Descriptor, new (int, string)[]
+            {
+                (1, "offer_id"), (2, "candidates"), (3, "selectable_hand_tile_ids"),
+                (4, "deadline_remaining_ms"), (5, "drawn_tile_id"), (13, "has_deadline")
+            });
+            AssertFields(RonWin.Descriptor, new (int, string)[]
+            {
+                (1, "turn_number"), (2, "winner"), (3, "loser"), (4, "win_tile_id"),
+                (5, "yaku"), (6, "han"), (7, "fu"), (8, "score"), (9, "breakdown"),
+                (16, "is_chankan")
+            });
+            AssertFields(SleeveBloomResolved.Descriptor, new (int, string)[]
+            {
+                (1, "offer_id"), (2, "kept_first"), (3, "result_tile_id"), (9, "owner_seat")
+            });
+            AssertFields(BeamSwapResolved.Descriptor, new (int, string)[]
+            {
+                (1, "offer_id"), (2, "action"), (3, "hand_tile_id"), (4, "target_slot"),
+                (10, "owner_seat")
             });
             AssertFields(PublicUpdate.Descriptor, new (int, string)[]
             {

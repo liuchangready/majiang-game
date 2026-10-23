@@ -109,6 +109,16 @@ namespace Mahjong.Client.Tests
             Inbound.Enqueue(WireCodec.Encode(envelope));
         }
 
+        /// <summary>
+        /// Injects a compatibility-path frame that intentionally violates the private owner
+        /// binding, so the client-side rejection path can still be exercised after Encode
+        /// became owner-strict.
+        /// </summary>
+        public void EnqueueCompatibility(Envelope envelope)
+        {
+            Inbound.Enqueue(WireCodec.EncodeCompatibility(envelope));
+        }
+
         public IReadOnlyList<Envelope> SentEnvelopes()
         {
             var result = new List<Envelope>(Sent.Count);
