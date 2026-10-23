@@ -31,12 +31,19 @@
          exit code verbatim (0/1/2, or any code from -VerifyScript test stubs).
       4. finally: archives the cluster's logs/evidence/ownership marker, runs the
          accepted cleanup-postgres.ps1 (marker-guarded; refuses foreign roots),
-         restores the four environment variables to their pre-call values, and
+         restores the four environment variables to their pre-call state, and
          writes every phase log plus wrapper-summary.json and a SHA-256 manifest
          under <LogDir>\pg\. A cleanup failure fails the run but never masks the
          original verifier exit code; no temp database content or secret is
          copied into the evidence (trust-auth connection strings carry no
          password; restored env values are recorded as SHA-256 hashes only).
+         Restoration distinguishes absent / present-empty / present-nonempty
+         and is proven against a FRESH child process's own environment
+         readback: the parent's GetEnvironmentVariable is not evidence on every
+         runtime (PowerShell 7.6/.NET 10, the windows-2025 CI image, reads a
+         just-deleted variable as '' and its SetEnvironmentVariable(name, $null)
+         leaves a `NAME=` empty block entry, while the env: provider removes it
+         on every measured runtime). See V5-CI-ENV-RESTORE-FOLLOWUP.md.
 
     -VerifyScript exists ONLY for the isolated self-test
     (tools\tests\VerifyV5PostgresCi.Tests.ps1) to prove exit-code propagation
@@ -245,49 +252,198 @@ function Test-WrapperTcpPortOpen {
     finally { $client.Dispose() }
 }
 
+function Get-WrapperEnvValueState([object]$Value) {
+    # Three-state classification of a value as observed by
+    # [Environment]::GetEnvironmentVariable. 'absent' and 'present-empty' are
+    # deliberately distinct: silently merging them is exactly what the old
+    # verification could not see across runtimes (measured on the windows-2025
+    # CI image's PowerShell 7.6.6/.NET 10, a deleted variable reads back as ''
+    # in the parent, while Windows PowerShell 5.1 reads null). See
+    # V5-CI-ENV-RESTORE-FOLLOWUP.md for the full measured matrix.
+    if ($null -eq $Value) { return 'absent' }
+    if ("$Value" -eq '') { return 'present-empty' }
+    return 'present-nonempty'
+}
+
+function Test-WrapperChildEnvState {
+    # Ground-truth probe: spawn a FRESH child of the host runtime and let IT
+    # read the variable. A fresh child's view starts from the inherited block,
+    # so it distinguishes truly-absent (null -> exit 0) from a `NAME=`-style
+    # empty residue (empty -> exit 102) and from a nonempty residue (exit 101).
+    # The parent's own GetEnvironmentVariable CANNOT make that distinction on
+    # every runtime: on .NET 10 (PowerShell 7.6.6, the windows-2025 CI image)
+    # SetEnvironmentVariable(name, $null) leaves a `NAME=` empty entry in the
+    # block and the parent then reads ''. The child never prints any value;
+    # only its exit code is consumed, so no environment value can leak.
+    param([string]$Name)
+    try {
+        $psi = New-Object System.Diagnostics.ProcessStartInfo
+        $psi.FileName = $script:HostExecutable
+        $psi.Arguments = '-NoProfile -NonInteractive -Command "$v=[Environment]::GetEnvironmentVariable(''' + $Name + '''); if ($null -eq $v) { exit 0 } elseif ($v -eq '''') { exit 102 } else { exit 101 }"'
+        $psi.UseShellExecute = $false
+        $psi.CreateNoWindow = $true
+        $child = [System.Diagnostics.Process]::Start($psi)
+        if (-not $child.WaitForExit(20000)) {
+            try { $child.Kill() } catch { }
+            return 'unknown'
+        }
+        switch ($child.ExitCode) {
+            0 { return 'absent' }
+            102 { return 'empty' }
+            101 { return 'defined' }
+            default { return 'unknown' }
+        }
+    }
+    catch { return 'unknown' }
+}
+
+function Remove-WrapperProcessEnvVariable {
+    # Deletes a PROCESS-target variable. The mechanism matters: measured on
+    # .NET 10 (PowerShell 7.6.6) the method [Environment]::SetEnvironmentVariable(name,
+    # $null) leaves a `NAME=` empty entry in the process block that a fresh
+    # child still reads as '', while the env: provider Set-Item removal deletes
+    # the entry on every measured runtime (.NET Framework 5.1.19041 and
+    # .NET 10.0.12). Machine/User targets are never touched: the Env:\ drive is
+    # process-scoped by definition. The method call stays as a fallback; the
+    # caller proves the outcome either way.
+    param([string]$Name)
+    try {
+        Set-Item -LiteralPath ('Env:\' + $Name) -Value $null
+        return 'provider-set-item-null'
+    }
+    catch {
+        [Environment]::SetEnvironmentVariable($name, $null)
+        return 'method-set-null'
+    }
+}
+
 function Save-PgEnvironmentSnapshot {
     # Records the pre-call state of the four PG variables so the finally block
-    # can restore them exactly, including "was unset".
+    # can restore them exactly - including the distinction between "was unset"
+    # and "was present but empty", and (only for the ambiguous empty case) how
+    # a fresh child observed the block, since that determines whether
+    # present-empty is even representable on this runtime.
     $snapshot = @{}
     foreach ($name in $envVariableNames) {
         $value = [Environment]::GetEnvironmentVariable($name)
-        $snapshot[$name] = @{ WasSet = ($null -ne $value); Value = $value }
+        $state = Get-WrapperEnvValueState $value
+        $childState = 'not-probed'
+        if ($state -eq 'present-empty') { $childState = Test-WrapperChildEnvState -Name $name }
+        $snapshot[$name] = @{ WasSet = ($state -ne 'absent'); Value = $value; State = $state; ChildStateBefore = $childState }
     }
     return $snapshot
 }
 
 function Restore-PgEnvironmentSnapshot {
-    # Restores the pre-call values (or removes the variables that were unset)
-    # and returns per-variable proof records. Values are NOT recorded - only a
-    # SHA-256 of the post-restore state, so a preset secret can never leak into
-    # the evidence.
+    # Restores the pre-call state of the four variables and returns
+    # per-variable proof records. The three pre-call states are handled
+    # explicitly; none of them may be silently merged with another:
+    #   absent           -> the variable must be GONE again: deleted via the
+    #                       env: provider (true block removal on every measured
+    #                       runtime) and proven by a fresh child's readback -
+    #                       NOT by the parent's own Get, which on .NET 10
+    #                       reports '' for a variable it just deleted.
+    #   present-empty    -> '' is set back. On runtimes that retain it this is
+    #                       an exact restoration (child-verified 'empty'); on
+    #                       runtimes that delete on empty (Windows PowerShell
+    #                       5.1 / .NET Framework) the record states that
+    #                       explicitly instead of pretending success.
+    #   present-nonempty -> exact case-sensitive value match (hash recorded).
+    # Values are NEVER recorded - only SHA-256 proofs and structural states.
     param([hashtable]$Snapshot)
     $records = @()
     foreach ($name in $envVariableNames) {
         $snap = $Snapshot[$name]
         $restored = $false
         $afterSha = '(unset)'
+        $outcome = 'failed-exception'
+        $note = $null
+        $childBefore = $(if ($snap.ChildStateBefore) { [string]$snap.ChildStateBefore } else { 'not-probed' })
+        $childAfter = 'not-probed'
+        $mechanism = 'none'
         try {
-            if ($snap.WasSet) { [Environment]::SetEnvironmentVariable($name, $snap.Value) }
-            else { [Environment]::SetEnvironmentVariable($name, $null) }
-            $after = [Environment]::GetEnvironmentVariable($name)
-            if ($snap.WasSet) {
+            if ($snap.State -eq 'present-nonempty' -or ($snap.WasSet -and "$($snap.Value)" -ne '')) {
+                # present-nonempty: exact value restoration (case-sensitive).
+                [Environment]::SetEnvironmentVariable($name, $snap.Value)
+                $mechanism = 'method-set-value'
+                $after = [Environment]::GetEnvironmentVariable($name)
+                $childAfter = Test-WrapperChildEnvState -Name $name
                 $restored = ($null -ne $after -and $after -ceq $snap.Value)
+                if ($restored) { $outcome = 'restored-exact-value' }
+                else { $outcome = 'failed-residue-remains'; $note = 'parent readback does not case-sensitively match the pre-call value' }
+                if ($null -ne $after) { $afterSha = Get-Sha256Hex $after }
+            }
+            elseif ($snap.State -eq 'present-empty' -or ($snap.WasSet -and "$($snap.Value)" -eq '')) {
+                # present-empty: set '' back; whether the runtime can keep it
+                # is decided by measurement, never assumed.
+                [Environment]::SetEnvironmentVariable($name, '')
+                $mechanism = 'method-set-empty'
+                $after = [Environment]::GetEnvironmentVariable($name)
+                $childAfter = Test-WrapperChildEnvState -Name $name
+                if ($null -ne $after -and "$after" -eq '' -and $childAfter -eq 'empty') {
+                    $restored = $true
+                    $outcome = 'restored-empty-value'
+                }
+                elseif ($null -eq $after) {
+                    $outcome = 'failed-runtime-cannot-represent-empty'
+                    $note = "this runtime deletes the variable on an empty-string set; the pre-call present-empty value is not representable (fresh-child view: $childAfter)"
+                }
+                else {
+                    $outcome = 'failed-residue-remains'
+                    $note = "empty-value set left an unexpected state (parent readback class: $(Get-WrapperEnvValueState $after); fresh-child view: $childAfter)"
+                }
+                if ($null -ne $after) { $afterSha = Get-Sha256Hex $after }
             }
             else {
-                $restored = ($null -eq $after)
+                # absent: delete, then PROVE absence against the child-visible
+                # block. A restored-absent variable is recorded as '(unset)'
+                # regardless of the parent readback (the structural class of
+                # any parent artifact goes to the note instead).
+                $mechanism = Remove-WrapperProcessEnvVariable -Name $name
+                $after = [Environment]::GetEnvironmentVariable($name)
+                $childAfter = Test-WrapperChildEnvState -Name $name
+                if ($childAfter -eq 'absent') {
+                    $restored = $true
+                    $outcome = 'restored-absent'
+                    if ($null -ne $after) {
+                        $note = "fresh-child readback proves absence; the parent readback reported a non-null artifact (class: $(Get-WrapperEnvValueState $after)) on this runtime"
+                    }
+                }
+                elseif ($childAfter -eq 'unknown') {
+                    # Conservative fallback when the probe itself could not
+                    # run: the parent readback decides (measured equivalent to
+                    # child-absence after a provider delete on .NET Framework
+                    # and .NET 10), and the record says the probe was down.
+                    $restored = ($null -eq $after)
+                    if ($restored) { $outcome = 'restored-absent' } else { $outcome = 'failed-residue-remains' }
+                    $note = 'fresh-child probe unavailable; decided by parent readback only'
+                }
+                else {
+                    $restored = $false
+                    $outcome = 'failed-residue-remains'
+                    $note = "variable still visible to a fresh child after deletion (child view: $childAfter)"
+                }
+                if ($restored) { $afterSha = '(unset)' }
+                elseif ($null -ne $after) { $afterSha = Get-Sha256Hex $after }
             }
-            if ($null -ne $after) { $afterSha = Get-Sha256Hex $after }
         }
         catch {
             $afterSha = "restore error: $($_.Exception.Message)"
+            $outcome = 'failed-exception'
+            $note = $_.Exception.Message
         }
         if (-not $restored) { $script:FailedStages.Add("env-restore:$name") }
         $records += [ordered]@{
-            variable        = $name
-            wasSetBeforeRun = [bool]$snap.WasSet
-            restored        = [bool]$restored
-            restoredSha256  = $afterSha
+            variable         = $name
+            wasSetBeforeRun  = [bool]$snap.WasSet
+            restored         = [bool]$restored
+            restoredSha256   = $afterSha
+            preCallState     = [string]$snap.State
+            childStateBefore = $childBefore
+            childStateAfter  = $childAfter
+            mechanism        = $mechanism
+            outcome          = $outcome
+            note             = $note
         }
     }
     return $records
@@ -663,7 +819,7 @@ try {
     $envRestoreRecords = @(Restore-PgEnvironmentSnapshot -Snapshot $envSnapshot)
     $restoredAll = @($envRestoreRecords | Where-Object { -not $_.restored }).Count -eq 0
     Add-Stage -Name 'env-restore' -Status $(if ($restoredAll) { 'PASS' } else { 'FAIL' }) -ExitCode $(if ($restoredAll) { 0 } else { $null }) `
-        -Detail "values recorded as SHA-256 only" -LogName ''
+        -Detail "values recorded as SHA-256 only; restoration proven against the fresh-child block view" -LogName ''
 
     # Flush staging into <LogDir>\pg (created even when the verifier never ran),
     # write the SHA-256 manifest and the wrapper summary. Evidence is never
