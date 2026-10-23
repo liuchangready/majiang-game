@@ -4,14 +4,19 @@
   "generatorVersion": 1,
   "rulesetVersion": 1,
   "v4Commit": "205506f07f6a1ccfef6b32cf97390431e3349f8d",
+  "generatedAtHead": "b49911ca3c2010719715982bfb83b2ad70358a1a",
   "v4TrackedWorkingTreeDirty": true,
   "v4TrackedDirtyPaths": [
-    " M dotnet/tests/Mahjong.Ai.Tests/Mahjong.Ai.Tests.csproj"
+    " M dotnet/tests/Mahjong.Ai.Tests/AiReplayGoldenTests.cs",
+    " M engine/src/test/kotlin/com/majiang/state/V5AiGoldenExporterTest.kt",
+    " M tests/v5-golden/ai-v1.json"
   ],
   "v4ProductionSourceDirty": false,
   "v4ProductionSourceDirtyPaths": [],
   "v4TestOnlyTrackedDirtyPaths": [
-    "dotnet/tests/Mahjong.Ai.Tests/Mahjong.Ai.Tests.csproj"
+    "dotnet/tests/Mahjong.Ai.Tests/AiReplayGoldenTests.cs",
+    "engine/src/test/kotlin/com/majiang/state/V5AiGoldenExporterTest.kt",
+    "tests/v5-golden/ai-v1.json"
   ],
   "v4EngineSourceCommit": "3f5370c30983a4047dade0835bb2c49dacc5ebbf",
   "v4DotnetAiSourceCommit": "a96c195c852e035ff6434584135718bbb8a05d29",
@@ -50,8 +55,8 @@
     },
     {
       "path": "engine/src/test/kotlin/com/majiang/state/V5AiGoldenExporterTest.kt",
-      "sha256": "afb7bcc9745df5cd2c4882c9db1e9c9f39a0a8173e4761a77ac20009a653d1ee",
-      "lastCommit": "unknown"
+      "sha256": "0e4289de81e9bcc31d9d37e1a22d79d63816e807a4619912a70b787e1e3da863",
+      "lastCommit": "b49911ca3c2010719715982bfb83b2ad70358a1a"
     },
     {
       "path": "dotnet/src/Mahjong.Ai/AiDecision.cs",
@@ -116,13 +121,22 @@
   "recordedIntent": {
     "algorithmId": "v4-golden-deterministic",
     "algorithmVersion": 1,
-    "selectedLegalActionRef": "L0"
+    "selectedLegalActionRef": "L0",
+    "selectedOptionId": "opt-0",
+    "selectedAction": {
+      "type": "DiscardTile",
+      "kind": "Discard",
+      "player": 1,
+      "tileId": 0,
+      "optionId": "opt-0",
+      "text": "DiscardTile(player=1, tile=Tile(suit=MAN, rank=1, copyIndex=0))"
+    }
   },
   "v5Observation": {
-    "sessionId": "98653830-2b3d-4d17-a765-eab6298f77b6",
+    "sessionId": "bf338aec-0b7f-4f51-b3ba-52089f9ac389",
     "seat": 1,
-    "roundId": "50ce0292-37a1-4270-a18b-ee2b71699bf4",
-    "decisionId": "turn-50ce0292-37a1-4270-a18b-ee2b71699bf4-0-1",
+    "roundId": "c03f1cb7-256f-4ead-aa3c-b6032415cb62",
+    "decisionId": "turn-c03f1cb7-256f-4ead-aa3c-b6032415cb62-0-1",
     "controlEpoch": 1,
     "stateVersion": 0,
     "deadlineMillis": 24000,
@@ -274,14 +288,17 @@
       "v4Call": {
         "entryPoint": "TableAuthority.submitAiChoice",
         "seat": 1,
-        "roundId": "stale-round-50ce0292-37a1-4270-a18b-ee2b71699bf4",
-        "decisionId": "turn-50ce0292-37a1-4270-a18b-ee2b71699bf4-0-1",
+        "roundId": "stale-round-c03f1cb7-256f-4ead-aa3c-b6032415cb62",
+        "decisionId": "turn-c03f1cb7-256f-4ead-aa3c-b6032415cb62-0-1",
         "controlEpoch": 1,
         "optionId": "opt-0",
         "submittedActionRef": "L0",
         "action": {
           "type": "DiscardTile",
+          "kind": "Discard",
           "player": 1,
+          "tileId": 0,
+          "optionId": "opt-0",
           "text": "DiscardTile(player=1, tile=Tile(suit=MAN, rank=1, copyIndex=0))"
         },
         "nowMillis": 1000,
@@ -295,7 +312,7 @@
         "eventCount": 0,
         "events": [],
         "beforeState": {
-          "roundId": "50ce0292-37a1-4270-a18b-ee2b71699bf4",
+          "roundId": "c03f1cb7-256f-4ead-aa3c-b6032415cb62",
           "roundVersion": 0,
           "phase": "DISCARD",
           "currentPlayer": 1,
@@ -356,7 +373,7 @@
           ]
         },
         "afterState": {
-          "roundId": "50ce0292-37a1-4270-a18b-ee2b71699bf4",
+          "roundId": "c03f1cb7-256f-4ead-aa3c-b6032415cb62",
           "roundVersion": 0,
           "phase": "DISCARD",
           "currentPlayer": 1,
@@ -422,8 +439,8 @@
         "submittedAtMillis": 1000,
         "authority": {
           "seat": 1,
-          "roundId": "stale-round-50ce0292-37a1-4270-a18b-ee2b71699bf4",
-          "currentDecisionId": "turn-50ce0292-37a1-4270-a18b-ee2b71699bf4-0-1",
+          "roundId": "stale-round-c03f1cb7-256f-4ead-aa3c-b6032415cb62",
+          "currentDecisionId": "turn-c03f1cb7-256f-4ead-aa3c-b6032415cb62-0-1",
           "controlEpoch": 1,
           "seatAutomated": true,
           "clockPaused": false,
@@ -444,6 +461,15 @@
             "L12",
             "L13"
           ]
+        },
+        "authorityMapping": {
+          "mode": "stale-round",
+          "derivedFrom": [
+            "v5Observation",
+            "v4Call"
+          ],
+          "isFreshV4Authority": false,
+          "basis": "roundId is replaced by v4Call.roundId; currentDecisionId/epoch/deadline/legal list stay from the frozen observation. This is a relation mapping, not a fresh V4 authority."
         },
         "expected": {
           "accepted": false,
@@ -459,14 +485,17 @@
       "v4Call": {
         "entryPoint": "TableAuthority.submitAiChoice",
         "seat": 1,
-        "roundId": "50ce0292-37a1-4270-a18b-ee2b71699bf4",
-        "decisionId": "stale-decision-turn-50ce0292-37a1-4270-a18b-ee2b71699bf4-0-1",
+        "roundId": "c03f1cb7-256f-4ead-aa3c-b6032415cb62",
+        "decisionId": "stale-decision-turn-c03f1cb7-256f-4ead-aa3c-b6032415cb62-0-1",
         "controlEpoch": 1,
         "optionId": "opt-0",
         "submittedActionRef": "L0",
         "action": {
           "type": "DiscardTile",
+          "kind": "Discard",
           "player": 1,
+          "tileId": 0,
+          "optionId": "opt-0",
           "text": "DiscardTile(player=1, tile=Tile(suit=MAN, rank=1, copyIndex=0))"
         },
         "nowMillis": 1000,
@@ -480,7 +509,7 @@
         "eventCount": 0,
         "events": [],
         "beforeState": {
-          "roundId": "50ce0292-37a1-4270-a18b-ee2b71699bf4",
+          "roundId": "c03f1cb7-256f-4ead-aa3c-b6032415cb62",
           "roundVersion": 0,
           "phase": "DISCARD",
           "currentPlayer": 1,
@@ -541,7 +570,7 @@
           ]
         },
         "afterState": {
-          "roundId": "50ce0292-37a1-4270-a18b-ee2b71699bf4",
+          "roundId": "c03f1cb7-256f-4ead-aa3c-b6032415cb62",
           "roundVersion": 0,
           "phase": "DISCARD",
           "currentPlayer": 1,
@@ -607,8 +636,8 @@
         "submittedAtMillis": 1000,
         "authority": {
           "seat": 1,
-          "roundId": "50ce0292-37a1-4270-a18b-ee2b71699bf4",
-          "currentDecisionId": "stale-decision-turn-50ce0292-37a1-4270-a18b-ee2b71699bf4-0-1",
+          "roundId": "c03f1cb7-256f-4ead-aa3c-b6032415cb62",
+          "currentDecisionId": "stale-decision-turn-c03f1cb7-256f-4ead-aa3c-b6032415cb62-0-1",
           "controlEpoch": 1,
           "seatAutomated": true,
           "clockPaused": false,
@@ -630,6 +659,15 @@
             "L13"
           ]
         },
+        "authorityMapping": {
+          "mode": "stale-decision",
+          "derivedFrom": [
+            "v5Observation",
+            "v4Call"
+          ],
+          "isFreshV4Authority": false,
+          "basis": "currentDecisionId is replaced by v4Call.decisionId; round/epoch/deadline/legal list stay from the frozen observation. This is a relation mapping, not a fresh V4 authority."
+        },
         "expected": {
           "accepted": false,
           "rejectionCode": "StaleDecision",
@@ -640,18 +678,21 @@
     {
       "id": "AI-004-old-epoch",
       "kind": "stale-epoch",
-      "note": "Only the submitted controlEpoch differs from the live V4 decision.",
+      "note": "Submitted true older controlEpoch 0, below the live current epoch 1; this is not a future-epoch mismatch.",
       "v4Call": {
         "entryPoint": "TableAuthority.submitAiChoice",
         "seat": 1,
-        "roundId": "50ce0292-37a1-4270-a18b-ee2b71699bf4",
-        "decisionId": "turn-50ce0292-37a1-4270-a18b-ee2b71699bf4-0-1",
-        "controlEpoch": 2,
+        "roundId": "c03f1cb7-256f-4ead-aa3c-b6032415cb62",
+        "decisionId": "turn-c03f1cb7-256f-4ead-aa3c-b6032415cb62-0-1",
+        "controlEpoch": 0,
         "optionId": "opt-0",
         "submittedActionRef": "L0",
         "action": {
           "type": "DiscardTile",
+          "kind": "Discard",
           "player": 1,
+          "tileId": 0,
+          "optionId": "opt-0",
           "text": "DiscardTile(player=1, tile=Tile(suit=MAN, rank=1, copyIndex=0))"
         },
         "nowMillis": 1000,
@@ -665,7 +706,7 @@
         "eventCount": 0,
         "events": [],
         "beforeState": {
-          "roundId": "50ce0292-37a1-4270-a18b-ee2b71699bf4",
+          "roundId": "c03f1cb7-256f-4ead-aa3c-b6032415cb62",
           "roundVersion": 0,
           "phase": "DISCARD",
           "currentPlayer": 1,
@@ -726,7 +767,7 @@
           ]
         },
         "afterState": {
-          "roundId": "50ce0292-37a1-4270-a18b-ee2b71699bf4",
+          "roundId": "c03f1cb7-256f-4ead-aa3c-b6032415cb62",
           "roundVersion": 0,
           "phase": "DISCARD",
           "currentPlayer": 1,
@@ -792,9 +833,9 @@
         "submittedAtMillis": 1000,
         "authority": {
           "seat": 1,
-          "roundId": "50ce0292-37a1-4270-a18b-ee2b71699bf4",
-          "currentDecisionId": "turn-50ce0292-37a1-4270-a18b-ee2b71699bf4-0-1",
-          "controlEpoch": 2,
+          "roundId": "c03f1cb7-256f-4ead-aa3c-b6032415cb62",
+          "currentDecisionId": "turn-c03f1cb7-256f-4ead-aa3c-b6032415cb62-0-1",
+          "controlEpoch": 0,
           "seatAutomated": true,
           "clockPaused": false,
           "deadlineMillis": 24000,
@@ -815,6 +856,15 @@
             "L13"
           ]
         },
+        "authorityMapping": {
+          "mode": "stale-epoch",
+          "derivedFrom": [
+            "v5Observation",
+            "v4Call"
+          ],
+          "isFreshV4Authority": false,
+          "basis": "controlEpoch is replaced by the true older v4Call.controlEpoch; round/decision/deadline/legal list stay from the frozen observation. This is a relation mapping, not a fresh V4 authority."
+        },
         "expected": {
           "accepted": false,
           "rejectionCode": "StaleEpoch",
@@ -829,14 +879,17 @@
       "v4Call": {
         "entryPoint": "TableAuthority.submitAiChoice",
         "seat": 0,
-        "roundId": "50ce0292-37a1-4270-a18b-ee2b71699bf4",
-        "decisionId": "turn-50ce0292-37a1-4270-a18b-ee2b71699bf4-0-1",
+        "roundId": "c03f1cb7-256f-4ead-aa3c-b6032415cb62",
+        "decisionId": "turn-c03f1cb7-256f-4ead-aa3c-b6032415cb62-0-1",
         "controlEpoch": 1,
         "optionId": "opt-0",
         "submittedActionRef": "L0",
         "action": {
           "type": "DiscardTile",
+          "kind": "Discard",
           "player": 1,
+          "tileId": 0,
+          "optionId": "opt-0",
           "text": "DiscardTile(player=1, tile=Tile(suit=MAN, rank=1, copyIndex=0))"
         },
         "nowMillis": 1000,
@@ -850,7 +903,7 @@
         "eventCount": 0,
         "events": [],
         "beforeState": {
-          "roundId": "50ce0292-37a1-4270-a18b-ee2b71699bf4",
+          "roundId": "c03f1cb7-256f-4ead-aa3c-b6032415cb62",
           "roundVersion": 0,
           "phase": "DISCARD",
           "currentPlayer": 1,
@@ -911,7 +964,7 @@
           ]
         },
         "afterState": {
-          "roundId": "50ce0292-37a1-4270-a18b-ee2b71699bf4",
+          "roundId": "c03f1cb7-256f-4ead-aa3c-b6032415cb62",
           "roundVersion": 0,
           "phase": "DISCARD",
           "currentPlayer": 1,
@@ -977,13 +1030,22 @@
         "submittedAtMillis": 1000,
         "authority": {
           "seat": 0,
-          "roundId": "50ce0292-37a1-4270-a18b-ee2b71699bf4",
-          "currentDecisionId": "turn-50ce0292-37a1-4270-a18b-ee2b71699bf4-0-1",
+          "roundId": "c03f1cb7-256f-4ead-aa3c-b6032415cb62",
+          "currentDecisionId": "turn-c03f1cb7-256f-4ead-aa3c-b6032415cb62-0-1",
           "controlEpoch": 1,
           "seatAutomated": true,
           "clockPaused": false,
           "deadlineMillis": 24000,
           "legalActionRefs": []
+        },
+        "authorityMapping": {
+          "mode": "foreign-seat",
+          "derivedFrom": [
+            "v5Observation",
+            "v4Call"
+          ],
+          "isFreshV4Authority": false,
+          "basis": "seat/currentDecisionId/epoch come from v4Call; the legal list is deliberately empty because a fresh seat-0 V4 authority has no candidate for this decision. This is a relation mapping, not a captured seat-0 authority."
         },
         "expected": {
           "accepted": false,
@@ -999,14 +1061,17 @@
       "v4Call": {
         "entryPoint": "TableAuthority.submitAiChoice",
         "seat": 1,
-        "roundId": "50ce0292-37a1-4270-a18b-ee2b71699bf4",
-        "decisionId": "turn-50ce0292-37a1-4270-a18b-ee2b71699bf4-0-1",
+        "roundId": "c03f1cb7-256f-4ead-aa3c-b6032415cb62",
+        "decisionId": "turn-c03f1cb7-256f-4ead-aa3c-b6032415cb62-0-1",
         "controlEpoch": 1,
         "optionId": null,
         "submittedActionRef": "outside-options",
         "action": {
           "type": "Pass",
+          "kind": "Pass",
           "player": 1,
+          "tileId": null,
+          "optionId": null,
           "text": "Pass(player=1)"
         },
         "nowMillis": 1000,
@@ -1020,7 +1085,7 @@
         "eventCount": 0,
         "events": [],
         "beforeState": {
-          "roundId": "50ce0292-37a1-4270-a18b-ee2b71699bf4",
+          "roundId": "c03f1cb7-256f-4ead-aa3c-b6032415cb62",
           "roundVersion": 0,
           "phase": "DISCARD",
           "currentPlayer": 1,
@@ -1081,7 +1146,7 @@
           ]
         },
         "afterState": {
-          "roundId": "50ce0292-37a1-4270-a18b-ee2b71699bf4",
+          "roundId": "c03f1cb7-256f-4ead-aa3c-b6032415cb62",
           "roundVersion": 0,
           "phase": "DISCARD",
           "currentPlayer": 1,
@@ -1147,8 +1212,8 @@
         "submittedAtMillis": 1000,
         "authority": {
           "seat": 1,
-          "roundId": "50ce0292-37a1-4270-a18b-ee2b71699bf4",
-          "currentDecisionId": "turn-50ce0292-37a1-4270-a18b-ee2b71699bf4-0-1",
+          "roundId": "c03f1cb7-256f-4ead-aa3c-b6032415cb62",
+          "currentDecisionId": "turn-c03f1cb7-256f-4ead-aa3c-b6032415cb62-0-1",
           "controlEpoch": 1,
           "seatAutomated": true,
           "clockPaused": false,
@@ -1169,6 +1234,15 @@
             "L13"
           ]
         },
+        "authorityMapping": {
+          "mode": "candidate-exclusion",
+          "derivedFrom": [
+            "v5Observation",
+            "v4Call"
+          ],
+          "isFreshV4Authority": false,
+          "basis": "seat/round/decision/epoch/deadline come from the frozen observation; the legal list excludes the recorded selected action to exercise the authority-side candidate check. V4 submitted an outside-options Pass, so this construction is explicitly different and is not a fresh V4 authority capture."
+        },
         "expected": {
           "accepted": false,
           "rejectionCode": "IllegalAction",
@@ -1183,14 +1257,17 @@
       "v4Call": {
         "entryPoint": "TableAuthority.submitAiChoice",
         "seat": 1,
-        "roundId": "50ce0292-37a1-4270-a18b-ee2b71699bf4",
-        "decisionId": "turn-50ce0292-37a1-4270-a18b-ee2b71699bf4-0-1",
+        "roundId": "c03f1cb7-256f-4ead-aa3c-b6032415cb62",
+        "decisionId": "turn-c03f1cb7-256f-4ead-aa3c-b6032415cb62-0-1",
         "controlEpoch": 1,
         "optionId": "opt-0",
         "submittedActionRef": "L0",
         "action": {
           "type": "DiscardTile",
+          "kind": "Discard",
           "player": 1,
+          "tileId": 0,
+          "optionId": "opt-0",
           "text": "DiscardTile(player=1, tile=Tile(suit=MAN, rank=1, copyIndex=0))"
         },
         "nowMillis": 24000,
@@ -1204,7 +1281,7 @@
         "eventCount": 0,
         "events": [],
         "beforeState": {
-          "roundId": "50ce0292-37a1-4270-a18b-ee2b71699bf4",
+          "roundId": "c03f1cb7-256f-4ead-aa3c-b6032415cb62",
           "roundVersion": 0,
           "phase": "DISCARD",
           "currentPlayer": 1,
@@ -1265,7 +1342,7 @@
           ]
         },
         "afterState": {
-          "roundId": "50ce0292-37a1-4270-a18b-ee2b71699bf4",
+          "roundId": "c03f1cb7-256f-4ead-aa3c-b6032415cb62",
           "roundVersion": 0,
           "phase": "DISCARD",
           "currentPlayer": 1,
@@ -1331,8 +1408,8 @@
         "submittedAtMillis": 24000,
         "authority": {
           "seat": 1,
-          "roundId": "50ce0292-37a1-4270-a18b-ee2b71699bf4",
-          "currentDecisionId": "turn-50ce0292-37a1-4270-a18b-ee2b71699bf4-0-1",
+          "roundId": "c03f1cb7-256f-4ead-aa3c-b6032415cb62",
+          "currentDecisionId": "turn-c03f1cb7-256f-4ead-aa3c-b6032415cb62-0-1",
           "controlEpoch": 1,
           "seatAutomated": true,
           "clockPaused": false,
@@ -1354,6 +1431,15 @@
             "L13"
           ]
         },
+        "authorityMapping": {
+          "mode": "current",
+          "derivedFrom": [
+            "v5Observation",
+            "v4Call"
+          ],
+          "isFreshV4Authority": false,
+          "basis": "seat/round/currentDecisionId/controlEpoch/deadline and the full legal list come from the frozen observation. This is a relation mapping used to admit the C# replay, not a second V4 authority capture."
+        },
         "expected": {
           "accepted": false,
           "rejectionCode": "DeadlineExpired",
@@ -1368,14 +1454,17 @@
       "v4Call": {
         "entryPoint": "TableAuthority.submitAiChoice",
         "seat": 1,
-        "roundId": "50ce0292-37a1-4270-a18b-ee2b71699bf4",
-        "decisionId": "turn-50ce0292-37a1-4270-a18b-ee2b71699bf4-0-1",
+        "roundId": "c03f1cb7-256f-4ead-aa3c-b6032415cb62",
+        "decisionId": "turn-c03f1cb7-256f-4ead-aa3c-b6032415cb62-0-1",
         "controlEpoch": 1,
         "optionId": "opt-0",
         "submittedActionRef": "L0",
         "action": {
           "type": "DiscardTile",
+          "kind": "Discard",
           "player": 1,
+          "tileId": 0,
+          "optionId": "opt-0",
           "text": "DiscardTile(player=1, tile=Tile(suit=MAN, rank=1, copyIndex=0))"
         },
         "nowMillis": 23999,
@@ -1390,11 +1479,15 @@
         "events": [
           {
             "type": "TileDiscarded",
+            "kind": "Discard",
+            "player": 1,
+            "tileId": 0,
+            "structured": true,
             "text": "TileDiscarded(turnNumber=12, player=1, tile=Tile(suit=MAN, rank=1, copyIndex=0), isRiichiDiscard=false, isTsumogiri=false)"
           }
         ],
         "beforeState": {
-          "roundId": "50ce0292-37a1-4270-a18b-ee2b71699bf4",
+          "roundId": "c03f1cb7-256f-4ead-aa3c-b6032415cb62",
           "roundVersion": 0,
           "phase": "DISCARD",
           "currentPlayer": 1,
@@ -1455,7 +1548,7 @@
           ]
         },
         "afterState": {
-          "roundId": "50ce0292-37a1-4270-a18b-ee2b71699bf4",
+          "roundId": "c03f1cb7-256f-4ead-aa3c-b6032415cb62",
           "roundVersion": 1,
           "phase": "RESPONSE_WINDOW",
           "currentPlayer": 1,
@@ -1521,8 +1614,8 @@
         "submittedAtMillis": 23999,
         "authority": {
           "seat": 1,
-          "roundId": "50ce0292-37a1-4270-a18b-ee2b71699bf4",
-          "currentDecisionId": "turn-50ce0292-37a1-4270-a18b-ee2b71699bf4-0-1",
+          "roundId": "c03f1cb7-256f-4ead-aa3c-b6032415cb62",
+          "currentDecisionId": "turn-c03f1cb7-256f-4ead-aa3c-b6032415cb62-0-1",
           "controlEpoch": 1,
           "seatAutomated": true,
           "clockPaused": false,
@@ -1543,6 +1636,15 @@
             "L12",
             "L13"
           ]
+        },
+        "authorityMapping": {
+          "mode": "current",
+          "derivedFrom": [
+            "v5Observation",
+            "v4Call"
+          ],
+          "isFreshV4Authority": false,
+          "basis": "seat/round/currentDecisionId/controlEpoch/deadline and the full legal list come from the frozen observation. This is a relation mapping used to admit the C# replay, not a second V4 authority capture."
         },
         "expected": {
           "accepted": true,

@@ -52,6 +52,15 @@ import java.util.Locale
  */
 class V5AiGoldenExporterTest {
 
+    private companion object {
+        /**
+         * The reviewed V4/PR19 source baseline this extraction is bound to. This is deliberately
+         * a constant: re-running the exporter from a later local task commit must not silently
+         * relabel the V4 source baseline as that task commit.
+         */
+        const val V4_BASELINE_COMMIT = "205506f07f6a1ccfef6b32cf97390431e3349f8d"
+    }
+
     private class Clock(var now: Long = 1_000L) : MonotonicClock {
         override fun nowMillis(): Long = now
     }
@@ -220,11 +229,13 @@ class V5AiGoldenExporterTest {
             )
             assertRejected(oldDecision, "AI-003-old-decision")
 
+            val previousEpoch = decision.controlEpoch - 1L
+            require(previousEpoch >= 0L) { "fixture requires a non-negative true older control epoch" }
             val oldEpoch = authority.submitAiChoice(
                 seat = 1,
                 roundId = roundId,
                 decisionId = decision.decisionId,
-                controlEpoch = decision.controlEpoch + 1L,
+                controlEpoch = previousEpoch,
                 action = selected,
                 now = now
             )
@@ -235,7 +246,7 @@ class V5AiGoldenExporterTest {
                     submittedSeat = 1,
                     submittedRoundId = roundId,
                     submittedDecisionId = decision.decisionId,
-                    submittedEpoch = decision.controlEpoch + 1L,
+                    submittedEpoch = previousEpoch,
                     submittedAction = selected,
                     submittedOptionId = selectedOption.optionId,
                     submittedActionRef = selectedRef,
@@ -251,7 +262,7 @@ class V5AiGoldenExporterTest {
                         code = "StaleEpoch",
                         basis = "V4 compares controlEpoch with the current decision and collapses the mismatch into STALE_AI_SUBMISSION; V5 reports it as StaleEpoch."
                     ),
-                    note = "Only the submitted controlEpoch differs from the live V4 decision."
+                    note = "Submitted true older controlEpoch $previousEpoch, below the live current epoch ${decision.controlEpoch}; this is not a future-epoch mismatch."
                 )
             )
             assertRejected(oldEpoch, "AI-004-old-epoch")
@@ -423,7 +434,8 @@ class V5AiGoldenExporterTest {
                 "generator" to aj("engine/src/test/kotlin/com/majiang/state/V5AiGoldenExporterTest.kt"),
                 "generatorVersion" to aj(1),
                 "rulesetVersion" to aj(1),
-                "v4Commit" to aj(v4Commit()),
+                "v4Commit" to aj(V4_BASELINE_COMMIT),
+                "generatedAtHead" to aj(currentHead()),
                 "v4TrackedWorkingTreeDirty" to aj(dirtyPaths.isNotEmpty()),
                 "v4TrackedDirtyPaths" to aarr(dirtyPaths.map { aj(it) }),
                 "v4ProductionSourceDirty" to aj(productionDirty.isNotEmpty()),
@@ -501,7 +513,9 @@ class V5AiGoldenExporterTest {
                 "recordedIntent" to aobj(
                     "algorithmId" to aj("v4-golden-deterministic"),
                     "algorithmVersion" to aj(1),
-                    "selectedLegalActionRef" to aj(selectedRef)
+                    "selectedLegalActionRef" to aj(selectedRef),
+                    "selectedOptionId" to aj(selectedOption.optionId),
+                    "selectedAction" to actionJson(selected, selectedOption.optionId)
                 ),
                 "v5Observation" to observation,
                 "cases" to aarr(cases),
@@ -632,6 +646,15 @@ class V5AiGoldenExporterTest {
             "illegal-candidate" -> allLegalRefs.filter { it != intentActionRef }
             else -> allLegalRefs
         }
+        val authorityMode = when (kind) {
+            "stale-round" -> "stale-round"
+            "stale-decision" -> "stale-decision"
+            "stale-epoch" -> "stale-epoch"
+            "non-own-seat" -> "foreign-seat"
+            "illegal-candidate" -> "candidate-exclusion"
+            "legal-intent", "exact-deadline" -> "current"
+            else -> error("unknown case kind for authority mapping: $kind")
+        }
         return aobj(
             "id" to aj(id),
             "kind" to aj(kind),
@@ -644,7 +667,7 @@ class V5AiGoldenExporterTest {
                 "controlEpoch" to aj(submittedEpoch),
                 "optionId" to ajOrNull(submittedOptionId),
                 "submittedActionRef" to aj(submittedActionRef),
-                "action" to actionJson(submittedAction),
+                "action" to actionJson(submittedAction, submittedOptionId),
                 "nowMillis" to aj(now),
                 "deadlineMillis" to aj(deadline),
                 "nowBeforeDeadline" to aj(now < deadline)
@@ -654,7 +677,7 @@ class V5AiGoldenExporterTest {
                 "reason" to ajOrNull(receipt.receipt.reason),
                 "stateChanged" to aj(receipt.stateChanged),
                 "eventCount" to aj(receipt.events.size),
-                "events" to aarr(receipt.events.map { eventSummary(it) }),
+                "events" to aarr(receipt.events.map { eventJson(it) }),
                 "beforeState" to before,
                 "afterState" to after
             ),
@@ -669,6 +692,12 @@ class V5AiGoldenExporterTest {
                     deadline,
                     legalRefs
                 ),
+                "authorityMapping" to aobj(
+                    "mode" to aj(authorityMode),
+                    "derivedFrom" to aarr(listOf(aj("v5Observation"), aj("v4Call"))),
+                    "isFreshV4Authority" to aj(false),
+                    "basis" to aj(authorityMappingBasis(authorityMode))
+                ),
                 "expected" to aobj(
                     "accepted" to aj(expected.accepted),
                     "rejectionCode" to aj(expected.code),
@@ -676,6 +705,16 @@ class V5AiGoldenExporterTest {
                 )
             )
         )
+    }
+
+    private fun authorityMappingBasis(mode: String): String = when (mode) {
+        "current" -> "seat/round/currentDecisionId/controlEpoch/deadline and the full legal list come from the frozen observation. This is a relation mapping used to admit the C# replay, not a second V4 authority capture."
+        "stale-round" -> "roundId is replaced by v4Call.roundId; currentDecisionId/epoch/deadline/legal list stay from the frozen observation. This is a relation mapping, not a fresh V4 authority."
+        "stale-decision" -> "currentDecisionId is replaced by v4Call.decisionId; round/epoch/deadline/legal list stay from the frozen observation. This is a relation mapping, not a fresh V4 authority."
+        "stale-epoch" -> "controlEpoch is replaced by the true older v4Call.controlEpoch; round/decision/deadline/legal list stay from the frozen observation. This is a relation mapping, not a fresh V4 authority."
+        "foreign-seat" -> "seat/currentDecisionId/epoch come from v4Call; the legal list is deliberately empty because a fresh seat-0 V4 authority has no candidate for this decision. This is a relation mapping, not a captured seat-0 authority."
+        "candidate-exclusion" -> "seat/round/decision/epoch/deadline come from the frozen observation; the legal list excludes the recorded selected action to exercise the authority-side candidate check. V4 submitted an outside-options Pass, so this construction is explicitly different and is not a fresh V4 authority capture."
+        else -> error("unknown authority mapping mode: $mode")
     }
 
     private fun authorityJson(
@@ -744,14 +783,33 @@ class V5AiGoldenExporterTest {
         )
     }
 
-    private fun eventSummary(event: GameEvent): J = aobj(
-        "type" to aj(event.javaClass.simpleName),
-        "text" to aj(event.toString())
-    )
+    private fun eventJson(event: GameEvent): J {
+        if (event is GameEvent.TileDiscarded) {
+            return aobj(
+                "type" to aj("TileDiscarded"),
+                "kind" to aj("Discard"),
+                "player" to aj(event.player),
+                "tileId" to aj(event.tile.tileId),
+                "structured" to aj(true),
+                "text" to aj(event.toString())
+            )
+        }
+        return aobj(
+            "type" to aj(event.javaClass.simpleName),
+            "kind" to ajOrNull(null),
+            "player" to ajOrNull(null),
+            "tileId" to nullableInt(null),
+            "structured" to aj(false),
+            "text" to aj(event.toString())
+        )
+    }
 
-    private fun actionJson(action: GameAction): J = aobj(
+    private fun actionJson(action: GameAction, optionId: String?): J = aobj(
         "type" to aj(action.javaClass.simpleName),
+        "kind" to aj(legalKind(action)),
         "player" to aj(action.player()),
+        "tileId" to nullableInt(actionTileId(action)),
+        "optionId" to ajOrNull(optionId),
         "text" to aj(action.toString())
     )
 
@@ -816,7 +874,7 @@ class V5AiGoldenExporterTest {
         }
     }
 
-    private fun v4Commit(): String = git("rev-parse", "HEAD")
+    private fun currentHead(): String = git("rev-parse", "HEAD")
 
     private fun lastCommitFor(relativePath: String): String =
         git("log", "-1", "--format=%H", "--", relativePath).ifEmpty { "unknown" }

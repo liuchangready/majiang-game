@@ -38,6 +38,7 @@ namespace Mahjong.Ai.Tests
             Assert.Equal(1L, Int64(root, "generatorVersion"));
             Assert.Equal(1L, Int64(root, "rulesetVersion"));
             Assert.Equal(BaselineCommit, Text(root, "v4Commit"));
+            Assert.Equal(40, Text(root, "generatedAtHead").Length);
 
             // The exporter deliberately distinguishes V4 production dirt from this task's
             // test-only edits. Only the production half must be empty.
@@ -67,9 +68,13 @@ namespace Mahjong.Ai.Tests
             Assert.False(Bool(root.GetProperty("decisionClock"), "expiredAtDeadlineMinus1"));
             Assert.True(Bool(root.GetProperty("decisionClock"), "expiredAtDeadline"));
 
-            Assert.Equal("v4-golden-deterministic", Text(root.GetProperty("recordedIntent"), "algorithmId"));
-            Assert.Equal(1L, Int64(root.GetProperty("recordedIntent"), "algorithmVersion"));
-            Assert.Equal("L0", Text(root.GetProperty("recordedIntent"), "selectedLegalActionRef"));
+            JsonElement recorded = root.GetProperty("recordedIntent");
+            Assert.Equal("v4-golden-deterministic", Text(recorded, "algorithmId"));
+            Assert.Equal(1L, Int64(recorded, "algorithmVersion"));
+            Assert.Equal("L0", Text(recorded, "selectedLegalActionRef"));
+            Assert.Equal("opt-0", Text(recorded, "selectedOptionId"));
+            LegalActionOption recordedAction = ActionOptionFromJson(recorded.GetProperty("selectedAction"));
+            AssertActionFields(recorded.GetProperty("selectedAction"), recordedAction, "recordedIntent");
 
             JsonElement cases = root.GetProperty("cases");
             Assert.Equal(7, cases.GetArrayLength());
@@ -92,6 +97,22 @@ namespace Mahjong.Ai.Tests
             Assert.Equal(
                 new[] { "StaleRound", "StaleDecision", "StaleEpoch", "StaleDecision", "IllegalAction", "DeadlineExpired", "None" },
                 codes);
+
+            foreach (JsonElement caseElement in cases.EnumerateArray())
+            {
+                string kind = Text(caseElement, "kind");
+                JsonElement mapping = caseElement.GetProperty("v5").GetProperty("authorityMapping");
+                Assert.Equal(ExpectedAuthorityMode(kind), Text(mapping, "mode"));
+                Assert.False(Bool(mapping, "isFreshV4Authority"));
+                Assert.Equal(2, mapping.GetProperty("derivedFrom").GetArrayLength());
+            }
+
+            JsonElement oldEpoch = cases.EnumerateArray()
+                .Single(c => Text(c, "id") == "AI-004-old-epoch");
+            Assert.True(
+                Int64(oldEpoch.GetProperty("v4Call"), "controlEpoch") <
+                Int64(root.GetProperty("v5Observation"), "controlEpoch"),
+                "AI-004 must submit a true older epoch, not a future epoch");
         }
 
         [Fact]
@@ -100,7 +121,10 @@ namespace Mahjong.Ai.Tests
             using JsonDocument document = LoadFixture();
             JsonElement root = document.RootElement;
             JsonElement observationElement = root.GetProperty("v5Observation");
-            AiObservation observation = BuildObservation(observationElement, out Dictionary<string, LegalActionOption> actions);
+            AiObservation observation = BuildObservation(
+                observationElement,
+                out Dictionary<string, LegalActionOption> actions,
+                out List<string> legalRefs);
 
             Assert.Equal(14, observation.LegalActions.Count);
             Assert.Equal(observation.Seat, observationElement.GetProperty("seat").GetInt32());
@@ -115,33 +139,26 @@ namespace Mahjong.Ai.Tests
                 string id = Text(caseElement, "id");
                 JsonElement v5 = caseElement.GetProperty("v5");
                 JsonElement expected = v5.GetProperty("expected");
+                JsonElement v4Call = caseElement.GetProperty("v4Call");
                 JsonElement v4 = caseElement.GetProperty("v4");
                 bool accepted = Bool(expected, "accepted");
                 string code = Text(expected, "rejectionCode");
 
-                // The expected C# outcome must agree with the recorded actual V4 result.
-                Assert.Equal(accepted ? "APPLIED" : "REJECTED", Text(v4, "receiptStatus"));
-                if (accepted)
-                {
-                    Assert.Equal(JsonValueKind.Null, v4.GetProperty("reason").ValueKind);
-                    Assert.True(Bool(v4, "stateChanged"), id + ": V4 accepted call must change state");
-                    Assert.True(Int64(v4, "eventCount") >= 1L, id + ": V4 accepted call must emit events");
-                }
-                else
-                {
-                    Assert.Equal("STALE_AI_SUBMISSION", Text(v4, "reason"));
-                    Assert.False(Bool(v4, "stateChanged"), id + ": V4 rejected call must not change state");
-                    Assert.Equal(0L, Int64(v4, "eventCount"));
-                    Assert.NotEqual("None", code);
-                }
-
-                CommandIntent intent = BuildIntent(root, observation, actions, v5);
+                CommandIntent intent = BuildIntent(root, observation, actions, caseElement);
                 Assert.Equal(observation.RoundId, intent.RoundId);
                 Assert.Equal(observation.Seat, intent.Seat);
                 Assert.Equal(observation.DecisionId, intent.DecisionId);
                 Assert.Equal(observation.ControlEpoch, intent.ControlEpoch);
                 Assert.Equal(observation.StateVersion, intent.ObservationStateVersion);
                 Assert.Equal(64, intent.AuthorityHash.Length);
+
+                AssertV4CallBinding(caseElement, observation, intent);
+                AssertV4Evidence(caseElement, intent, accepted);
+
+                Assert.Equal(Int64(v5, "submittedAtMillis"), Int64(v4Call, "nowMillis"));
+                Assert.Equal(
+                    Bool(v4Call, "nowBeforeDeadline"),
+                    Int64(v4Call, "nowMillis") < Int64(v4Call, "deadlineMillis"));
 
                 // Replay injects the record; it never invokes a heuristic.
                 AiDecision replay = AiDecisionService.Replay(intent, observation);
@@ -150,7 +167,7 @@ namespace Mahjong.Ai.Tests
                 Assert.Equal(intent.AuthorityHash, replay.AuthorityHash);
                 Assert.Same(intent.Action, replay.Intent.Action);
 
-                AiAuthoritySnapshot authority = BuildAuthority(caseElement, actions);
+                AiAuthoritySnapshot authority = BuildAuthority(caseElement, observation, actions, legalRefs, intent);
                 var service = new AiDecisionService(new ThrowingStrategy());
                 long submittedAt = Int64(v5, "submittedAtMillis");
                 AiSubmissionResult result = service.Submit(replay, authority, submittedAt);
@@ -182,14 +199,20 @@ namespace Mahjong.Ai.Tests
             using JsonDocument document = LoadFixture();
             JsonElement root = document.RootElement;
             JsonElement observationElement = root.GetProperty("v5Observation");
-            AiObservation observation = BuildObservation(observationElement, out Dictionary<string, LegalActionOption> actions);
+            AiObservation observation = BuildObservation(
+                observationElement,
+                out Dictionary<string, LegalActionOption> actions,
+                out List<string> legalRefs);
             JsonElement acceptedCase = root.GetProperty("cases").EnumerateArray()
                 .Single(c => Bool(c.GetProperty("v5").GetProperty("expected"), "accepted"));
             JsonElement v5 = acceptedCase.GetProperty("v5");
-            CommandIntent intent = BuildIntent(root, observation, actions, v5);
+            CommandIntent intent = BuildIntent(root, observation, actions, acceptedCase);
             AiDecision replay = AiDecisionService.Replay(intent, observation);
             AiSubmissionResult result = new AiDecisionService(new ThrowingStrategy())
-                .Submit(replay, BuildAuthority(acceptedCase, actions), Int64(v5, "submittedAtMillis"));
+                .Submit(
+                    replay,
+                    BuildAuthority(acceptedCase, observation, actions, legalRefs, intent),
+                    Int64(v5, "submittedAtMillis"));
             Assert.True(result.IsAccepted, result.Detail);
             Assert.NotNull(result.Submission);
 
@@ -247,9 +270,11 @@ namespace Mahjong.Ai.Tests
 
         private static AiObservation BuildObservation(
             JsonElement observation,
-            out Dictionary<string, LegalActionOption> actions)
+            out Dictionary<string, LegalActionOption> actions,
+            out List<string> legalActionRefs)
         {
             actions = new Dictionary<string, LegalActionOption>(StringComparer.Ordinal);
+            legalActionRefs = new List<string>();
             var legalActions = new List<LegalActionOption>();
             foreach (JsonElement action in observation.GetProperty("legalActions").EnumerateArray())
             {
@@ -258,7 +283,9 @@ namespace Mahjong.Ai.Tests
                     action.GetProperty("seat").GetInt32(),
                     TileIdOrNull(action, "tileId"),
                     TextOrNull(action, "optionId"));
-                actions.Add(Text(action, "ref"), option);
+                string actionRef = Text(action, "ref");
+                actions.Add(actionRef, option);
+                legalActionRefs.Add(actionRef);
                 legalActions.Add(option);
             }
 
@@ -342,44 +369,340 @@ namespace Mahjong.Ai.Tests
             JsonElement root,
             AiObservation observation,
             IReadOnlyDictionary<string, LegalActionOption> actions,
-            JsonElement v5)
+            JsonElement caseElement)
         {
             JsonElement recorded = root.GetProperty("recordedIntent");
-            string actionRef = Text(v5, "intentActionRef");
-            Assert.True(actions.ContainsKey(actionRef), "Unknown intent action ref: " + actionRef);
+            JsonElement v5 = caseElement.GetProperty("v5");
+            string id = Text(caseElement, "id");
+            string recordedRef = Text(recorded, "selectedLegalActionRef");
+            string caseRef = Text(v5, "intentActionRef");
+
+            // This binding is deliberate: a case cannot silently replay a different
+            // (even legal) action while claiming to match the recorded V4 intent.
+            Assert.Equal(recordedRef, caseRef);
+            Assert.True(actions.ContainsKey(caseRef), id + ": unknown intent action ref " + caseRef);
+            LegalActionOption action = actions[caseRef];
+            Assert.NotNull(action.OptionId);
+            Assert.Equal(Text(recorded, "selectedOptionId"), action.OptionId!);
+            AssertActionFields(recorded.GetProperty("selectedAction"), action, id + " recordedIntent.selectedAction");
+
             return new CommandIntent(
                 observation,
-                actions[actionRef],
+                action,
                 Text(recorded, "algorithmId"),
                 checked((int)Int64(recorded, "algorithmVersion")));
         }
 
         private static AiAuthoritySnapshot BuildAuthority(
             JsonElement caseElement,
-            IReadOnlyDictionary<string, LegalActionOption> actions)
+            AiObservation observation,
+            IReadOnlyDictionary<string, LegalActionOption> actions,
+            IReadOnlyList<string> allLegalRefs,
+            CommandIntent intent)
         {
-            JsonElement authority = caseElement.GetProperty("v5").GetProperty("authority");
-            int seat = authority.GetProperty("seat").GetInt32();
-            string roundId = Text(authority, "roundId");
-            var currentKey = new DecisionKey(roundId, seat, Text(authority, "currentDecisionId"));
-            var legalActions = new List<LegalActionOption>();
-            foreach (JsonElement reference in authority.GetProperty("legalActionRefs").EnumerateArray())
+            JsonElement v5 = caseElement.GetProperty("v5");
+            JsonElement mapping = v5.GetProperty("authorityMapping");
+            JsonElement v4Call = caseElement.GetProperty("v4Call");
+            string kind = Text(caseElement, "kind");
+            string mode = Text(mapping, "mode");
+            Assert.Equal(ExpectedAuthorityMode(kind), mode);
+            Assert.False(Bool(mapping, "isFreshV4Authority"));
+            Assert.False(string.IsNullOrWhiteSpace(Text(mapping, "basis")));
+            Assert.Contains(
+                mapping.GetProperty("derivedFrom").EnumerateArray().Select(e => e.GetString()),
+                value => value == "v5Observation");
+            Assert.Contains(
+                mapping.GetProperty("derivedFrom").EnumerateArray().Select(e => e.GetString()),
+                value => value == "v4Call");
+
+            int seat = observation.Seat;
+            string roundId = observation.RoundId;
+            string decisionId = observation.DecisionId;
+            long epoch = observation.ControlEpoch;
+            List<string> legalRefs;
+            switch (mode)
             {
-                string actionRef = reference.GetString()!;
-                Assert.True(actions.ContainsKey(actionRef), "Unknown authority action ref: " + actionRef);
-                legalActions.Add(actions[actionRef]);
+                case "current":
+                    legalRefs = allLegalRefs.ToList();
+                    break;
+                case "stale-round":
+                    roundId = Text(v4Call, "roundId");
+                    Assert.NotEqual(observation.RoundId, roundId);
+                    legalRefs = allLegalRefs.ToList();
+                    break;
+                case "stale-decision":
+                    decisionId = Text(v4Call, "decisionId");
+                    Assert.NotEqual(observation.DecisionId, decisionId);
+                    legalRefs = allLegalRefs.ToList();
+                    break;
+                case "stale-epoch":
+                    epoch = Int64(v4Call, "controlEpoch");
+                    Assert.True(
+                        epoch < observation.ControlEpoch,
+                        "stale-epoch must be a true older epoch, got " + epoch +
+                        " against current " + observation.ControlEpoch);
+                    legalRefs = allLegalRefs.ToList();
+                    break;
+                case "foreign-seat":
+                    seat = Int(v4Call, "seat");
+                    roundId = Text(v4Call, "roundId");
+                    decisionId = Text(v4Call, "decisionId");
+                    epoch = Int64(v4Call, "controlEpoch");
+                    Assert.NotEqual(observation.Seat, seat);
+                    legalRefs = new List<string>();
+                    break;
+                case "candidate-exclusion":
+                    string intentRef = Text(v5, "intentActionRef");
+                    legalRefs = allLegalRefs.Where(reference => reference != intentRef).ToList();
+                    Assert.DoesNotContain(intentRef, legalRefs);
+                    break;
+                default:
+                    throw new InvalidOperationException("Unknown authority mapping mode: " + mode);
             }
+
+            long deadline = observation.DecisionDeadlineMillis;
+            JsonElement authority = v5.GetProperty("authority");
+            Assert.Equal(seat, Int(authority, "seat"));
+            Assert.Equal(roundId, Text(authority, "roundId"));
+            Assert.Equal(decisionId, Text(authority, "currentDecisionId"));
+            Assert.Equal(epoch, Int64(authority, "controlEpoch"));
+            Assert.Equal(deadline, Int64(authority, "deadlineMillis"));
+            Assert.True(Bool(authority, "seatAutomated"));
+            Assert.False(Bool(authority, "clockPaused"));
+            string[] recordedRefs = authority.GetProperty("legalActionRefs")
+                .EnumerateArray()
+                .Select(element => element.GetString()!)
+                .ToArray();
+            Assert.Equal(legalRefs.ToArray(), recordedRefs);
+
+            var legalActions = legalRefs.Select(reference =>
+            {
+                Assert.True(actions.ContainsKey(reference), "Unknown authority action ref: " + reference);
+                return actions[reference];
+            }).ToList();
 
             return new AiAuthoritySnapshot(
                 seat,
                 roundId,
-                currentKey,
-                Int64(authority, "controlEpoch"),
-                Bool(authority, "seatAutomated"),
-                Bool(authority, "clockPaused"),
-                Int64(authority, "deadlineMillis"),
+                new DecisionKey(roundId, seat, decisionId),
+                epoch,
+                true,
+                false,
+                deadline,
                 legalActions);
         }
+
+        private static void AssertV4CallBinding(
+            JsonElement caseElement,
+            AiObservation observation,
+            CommandIntent intent)
+        {
+            string id = Text(caseElement, "id");
+            string kind = Text(caseElement, "kind");
+            JsonElement v4Call = caseElement.GetProperty("v4Call");
+            JsonElement v5 = caseElement.GetProperty("v5");
+            int submittedSeat = Int(v4Call, "seat");
+
+            if (kind == "non-own-seat")
+            {
+                Assert.NotEqual(observation.Seat, submittedSeat);
+            }
+            else
+            {
+                Assert.Equal(observation.Seat, submittedSeat);
+            }
+
+            Assert.Equal(observation.DecisionDeadlineMillis, Int64(v4Call, "deadlineMillis"));
+            Assert.Equal(
+                Bool(v4Call, "nowBeforeDeadline"),
+                Int64(v4Call, "nowMillis") < Int64(v4Call, "deadlineMillis"));
+
+            if (kind == "stale-round")
+            {
+                Assert.NotEqual(observation.RoundId, Text(v4Call, "roundId"));
+            }
+            else if (kind == "stale-decision")
+            {
+                Assert.NotEqual(observation.DecisionId, Text(v4Call, "decisionId"));
+            }
+            else if (kind == "stale-epoch")
+            {
+                Assert.True(Int64(v4Call, "controlEpoch") < observation.ControlEpoch);
+            }
+            else if (kind == "current")
+            {
+                Assert.Equal(observation.RoundId, Text(v4Call, "roundId"));
+                Assert.Equal(observation.DecisionId, Text(v4Call, "decisionId"));
+                Assert.Equal(observation.ControlEpoch, Int64(v4Call, "controlEpoch"));
+            }
+
+            if (kind == "illegal-candidate")
+            {
+                Assert.Equal("outside-options", Text(v4Call, "submittedActionRef"));
+                JsonElement outside = v4Call.GetProperty("action");
+                Assert.Equal("Pass", Text(outside, "kind"));
+                Assert.Equal(observation.Seat, Int(outside, "player"));
+                Assert.Null(TileIdOrNull(outside, "tileId"));
+                Assert.Equal(JsonValueKind.Null, v4Call.GetProperty("optionId").ValueKind);
+                Assert.Equal(JsonValueKind.Null, outside.GetProperty("optionId").ValueKind);
+                Assert.NotEqual(intent.Action.Kind.ToString(), Text(outside, "kind"));
+            }
+            else
+            {
+                Assert.Equal(Text(v5, "intentActionRef"), Text(v4Call, "submittedActionRef"));
+                Assert.Equal(intent.Action.OptionId, TextOrNull(v4Call, "optionId"));
+                AssertActionFields(v4Call.GetProperty("action"), intent.Action, id + " v4Call.action");
+            }
+        }
+
+        private static void AssertV4Evidence(
+            JsonElement caseElement,
+            CommandIntent intent,
+            bool accepted)
+        {
+            string id = Text(caseElement, "id");
+            JsonElement v4 = caseElement.GetProperty("v4");
+            JsonElement events = v4.GetProperty("events");
+            JsonElement before = v4.GetProperty("beforeState");
+            JsonElement after = v4.GetProperty("afterState");
+
+            Assert.Equal(accepted ? "APPLIED" : "REJECTED", Text(v4, "receiptStatus"));
+            Assert.Equal(Int64(v4, "eventCount"), events.GetArrayLength());
+            bool statesDiffer = !DeepEquals(before, after);
+            Assert.True(
+                Bool(v4, "stateChanged") == statesDiffer,
+                id + ": stateChanged must match the actual before/after states");
+
+            if (accepted)
+            {
+                Assert.Equal(JsonValueKind.Null, v4.GetProperty("reason").ValueKind);
+                Assert.True(statesDiffer, id + ": accepted state must change");
+                Assert.Equal(1, events.GetArrayLength());
+                JsonElement discarded = events[0];
+                Assert.True(Bool(discarded, "structured"), id + ": accepted event must carry structured fields");
+                Assert.Equal("TileDiscarded", Text(discarded, "type"));
+                Assert.Equal(intent.Action.Kind.ToString(), Text(discarded, "kind"));
+                Assert.Equal(intent.Action.Seat, Int(discarded, "player"));
+                Assert.NotNull(intent.Action.Tile);
+                Assert.Equal(intent.Action.Tile!.Value.Value, Int(discarded, "tileId"));
+
+                Assert.Equal(Text(before, "roundId"), Text(after, "roundId"));
+                Assert.Equal(Int64(before, "roundVersion") + 1L, Int64(after, "roundVersion"));
+                Assert.Equal("RESPONSE_WINDOW", Text(after, "phase"));
+                Assert.Equal((long)intent.Action.Tile!.Value.Value, Int64(after, "lastDiscardTileId"));
+                Assert.Equal((long)intent.Action.Seat, Int64(after, "lastDiscardPlayer"));
+
+                JsonElement beforeSeat = SeatState(before, intent.Action.Seat);
+                JsonElement afterSeat = SeatState(after, intent.Action.Seat);
+                Assert.Equal(Int64(beforeSeat, "closedCount") - 1L, Int64(afterSeat, "closedCount"));
+                Assert.Equal(Int64(beforeSeat, "discardCount") + 1L, Int64(afterSeat, "discardCount"));
+                Assert.Equal(Int64(before, "wallPointer"), Int64(after, "wallPointer"));
+                Assert.Equal(Int64(before, "wallRemaining"), Int64(after, "wallRemaining"));
+            }
+            else
+            {
+                Assert.Equal("STALE_AI_SUBMISSION", Text(v4, "reason"));
+                Assert.Equal(0, events.GetArrayLength());
+                Assert.False(Bool(v4, "stateChanged"));
+                Assert.True(DeepEquals(before, after), id + ": rejected before/after states must be identical");
+            }
+        }
+
+        private static string ExpectedAuthorityMode(string kind) => kind switch
+        {
+            "legal-intent" => "current",
+            "exact-deadline" => "current",
+            "stale-round" => "stale-round",
+            "stale-decision" => "stale-decision",
+            "stale-epoch" => "stale-epoch",
+            "non-own-seat" => "foreign-seat",
+            "illegal-candidate" => "candidate-exclusion",
+            string other => throw new InvalidOperationException("Unknown case kind: " + other)
+        };
+
+        private static void AssertActionFields(JsonElement json, LegalActionOption action, string context)
+        {
+            Assert.True(
+                string.Equals(action.Kind.ToString(), Text(json, "kind"), StringComparison.Ordinal),
+                context + ".kind");
+            Assert.True(action.Seat == Int(json, "player"), context + ".player");
+            Assert.True(Nullable.Equals(action.Tile, TileIdOrNull(json, "tileId")), context + ".tileId");
+            Assert.True(
+                string.Equals(action.OptionId, TextOrNull(json, "optionId"), StringComparison.Ordinal),
+                context + ".optionId");
+        }
+
+        private static LegalActionOption ActionOptionFromJson(JsonElement json) =>
+            new LegalActionOption(
+                Enum.Parse<LegalActionKind>(Text(json, "kind"), ignoreCase: false),
+                Int(json, "player"),
+                TileIdOrNull(json, "tileId"),
+                TextOrNull(json, "optionId"));
+
+        private static JsonElement SeatState(JsonElement state, int seat) =>
+            state.GetProperty("seats").EnumerateArray()
+                .Single(element => element.GetProperty("seat").GetInt32() == seat);
+
+        private static bool DeepEquals(JsonElement left, JsonElement right)
+        {
+            if (left.ValueKind != right.ValueKind)
+            {
+                return false;
+            }
+
+            switch (left.ValueKind)
+            {
+                case JsonValueKind.Object:
+                    Dictionary<string, JsonElement> leftProperties = left.EnumerateObject()
+                        .ToDictionary(property => property.Name, property => property.Value, StringComparer.Ordinal);
+                    Dictionary<string, JsonElement> rightProperties = right.EnumerateObject()
+                        .ToDictionary(property => property.Name, property => property.Value, StringComparer.Ordinal);
+                    if (leftProperties.Count != rightProperties.Count)
+                    {
+                        return false;
+                    }
+
+                    foreach (KeyValuePair<string, JsonElement> property in leftProperties)
+                    {
+                        if (!rightProperties.TryGetValue(property.Key, out JsonElement other) ||
+                            !DeepEquals(property.Value, other))
+                        {
+                            return false;
+                        }
+                    }
+
+                    return true;
+                case JsonValueKind.Array:
+                    JsonElement[] leftItems = left.EnumerateArray().ToArray();
+                    JsonElement[] rightItems = right.EnumerateArray().ToArray();
+                    if (leftItems.Length != rightItems.Length)
+                    {
+                        return false;
+                    }
+
+                    for (int index = 0; index < leftItems.Length; index++)
+                    {
+                        if (!DeepEquals(leftItems[index], rightItems[index]))
+                        {
+                            return false;
+                        }
+                    }
+
+                    return true;
+                case JsonValueKind.String:
+                    return string.Equals(left.GetString(), right.GetString(), StringComparison.Ordinal);
+                case JsonValueKind.Number:
+                    return string.Equals(left.GetRawText(), right.GetRawText(), StringComparison.Ordinal);
+                case JsonValueKind.True:
+                case JsonValueKind.False:
+                case JsonValueKind.Null:
+                    return true;
+                default:
+                    return string.Equals(left.GetRawText(), right.GetRawText(), StringComparison.Ordinal);
+            }
+        }
+
+        private static int Int(JsonElement element, string name) => element.GetProperty(name).GetInt32();
 
         private static TileId? TileIdOrNull(JsonElement element, string name)
         {
