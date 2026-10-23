@@ -148,6 +148,54 @@ function Invoke-ExternalProcess {
     return [pscustomobject]@{ ExitCode = $process.ExitCode; TimedOut = $false; ArgumentLine = $argumentLine }
 }
 
+function Invoke-UnityLinker {
+    param(
+        [Parameter(Mandatory)][string]$FilePath,
+        [Parameter(Mandatory)][string[]]$Arguments,
+        [Parameter(Mandatory)][string]$LogPrefix,
+        [int]$TimeoutSeconds = 300
+    )
+
+    $stdoutPath = "$LogPrefix.stdout.log"
+    $stderrPath = "$LogPrefix.stderr.log"
+    $argumentLine = ($Arguments | ForEach-Object { ConvertTo-NativeArgument $_ }) -join ' '
+
+    # Start-Process leaves ExitCode unset when both output streams are
+    # redirected on this host, so drive the process directly and read the
+    # streams asynchronously to avoid pipe deadlock on large linker output.
+    $startInfo = New-Object System.Diagnostics.ProcessStartInfo
+    $startInfo.FileName = $FilePath
+    $startInfo.Arguments = $argumentLine
+    $startInfo.UseShellExecute = $false
+    $startInfo.CreateNoWindow = $true
+    $startInfo.RedirectStandardOutput = $true
+    $startInfo.RedirectStandardError = $true
+    $process = New-Object System.Diagnostics.Process
+    $process.StartInfo = $startInfo
+    $null = $process.Start()
+    $stdoutTask = $process.StandardOutput.ReadToEndAsync()
+    $stderrTask = $process.StandardError.ReadToEndAsync()
+
+    $timedOut = -not $process.WaitForExit($TimeoutSeconds * 1000)
+    if ($timedOut) {
+        try { $process.Kill() } catch { }
+        $process.WaitForExit()
+    }
+
+    $stdout = $stdoutTask.Result
+    $stderr = $stderrTask.Result
+    Set-Content -LiteralPath $stdoutPath -Value $stdout -Encoding UTF8
+    Set-Content -LiteralPath $stderrPath -Value $stderr -Encoding UTF8
+
+    return [pscustomobject]@{
+        ExitCode = if ($timedOut) { -1 } else { $process.ExitCode }
+        TimedOut = $timedOut
+        Text     = $stdout + "`n" + $stderr
+        Stdout   = $stdoutPath
+        Stderr   = $stderrPath
+    }
+}
+
 function Find-Unity {
     if ($UnityPath) {
         return $UnityPath
@@ -959,6 +1007,164 @@ try {
 }
 catch {
     Add-Result -Name '.NET AOT probe' -Status 'FAIL' -Detail $_.Exception.Message
+}
+
+# ---------------------------------------------------------------------------
+# UnityLinker link.xml descriptor validation (license-free, not an IL2CPP build)
+#
+# link.xml is tracked and ships with the regular project, where only the five
+# production module DLLs exist. The P2.2 probe assemblies are optional, so the
+# descriptor must resolve in both shapes: absent (regular project) and present
+# (generated smoke project). These scenarios invoke the installed UnityLinker
+# directly; they prove descriptor parsing and preserve="all", not IL2CPP
+# code generation, a player build or runtime.
+# ---------------------------------------------------------------------------
+$linkerRoot = Join-Path $runDir 'linker'
+$linkXmlPath = Join-Path $repoRoot 'unity\Mahjong.Unity\Assets\link.xml'
+$linkerPluginDir = Join-Path $repoRoot 'unity\Mahjong.Unity\Assets\Plugins\Mahjong'
+$linkerExe = if ($editorData) { Join-Path $editorData 'il2cpp\build\deploy\UnityLinker.exe' } else { $null }
+$netstandardRef = if ($editorData) { Join-Path $editorData 'NetStandard\ref\2.1.0' } else { $null }
+$linkerCoreDir = if ($editorData) { Join-Path $editorData 'il2cpp\build\deploy' } else { $null }
+
+$linkerMissing = @()
+if (-not ($linkerExe -and (Test-Path $linkerExe))) { $linkerMissing += 'UnityLinker.exe' }
+if (-not ($netstandardRef -and (Test-Path $netstandardRef))) { $linkerMissing += 'NetStandard ref 2.1.0' }
+if (-not ($linkerCoreDir -and (Test-Path $linkerCoreDir))) { $linkerMissing += 'IL2CPP core assemblies' }
+if (-not (Test-Path $linkXmlPath)) { $linkerMissing += 'link.xml' }
+if (-not (Test-Path $linkerPluginDir)) { $linkerMissing += 'Assets/Plugins/Mahjong' }
+if (-not (Test-Path $probeDll)) { $linkerMissing += 'probe assemblies' }
+
+function Invoke-LinkXmlScenario {
+    param(
+        [Parameter(Mandatory)][string]$Name,
+        [Parameter(Mandatory)][string]$SearchDirectory,
+        [Parameter(Mandatory)][string]$OutputDirectory,
+        [string[]]$RequiredLinks = @(),
+        [string[]]$RequiredOutputs = @(),
+        [string[]]$ForbiddenOutputs = @(),
+        [hashtable]$PreservePrefixes = @{},
+        [string[]]$RequiredPreserved = @()
+    )
+
+    New-Item -ItemType Directory -Force -Path $OutputDirectory | Out-Null
+    $logPrefix = Join-Path $linkerRoot (Split-Path -Leaf $OutputDirectory)
+    $arguments = @(
+        "--include-link-xml=$linkXmlPath",
+        "--search-directory=$SearchDirectory",
+        "--search-directory=$netstandardRef",
+        "--search-directory=$linkerCoreDir",
+        "--out=$OutputDirectory",
+        '--dotnetprofile=unityaot-win32',
+        '--dotnetruntime=il2cpp',
+        '--platform=WindowsDesktop',
+        '--architecture=x64',
+        '--enable-report'
+    )
+    $run = Invoke-UnityLinker -FilePath $linkerExe -Arguments $arguments -LogPrefix $logPrefix
+
+    $actionsPath = Join-Path $OutputDirectory 'UnityLinker_Diagnostics\AssemblyActions-BeforeOutput.log'
+    $preservePath = Join-Path $OutputDirectory 'UnityLinker_Diagnostics\TypePreserve-BeforeMark.log'
+    $actions = if (Test-Path $actionsPath) { @(Get-Content $actionsPath) } else { @() }
+    $preserved = if (Test-Path $preservePath) { @(Get-Content $preservePath) } else { @() }
+    $problems = New-Object System.Collections.Generic.List[string]
+
+    if ($run.TimedOut) {
+        $problems.Add('UnityLinker timed out')
+    }
+    elseif ($run.ExitCode -ne 0) {
+        $problems.Add("UnityLinker exit=$($run.ExitCode)")
+    }
+    if ($run.Text -match 'IL1013|XmlResolutionException|Unable to find the file for the assembly') {
+        $problems.Add('descriptor resolution error')
+    }
+    foreach ($link in $RequiredLinks) {
+        if ($actions -notcontains "Link => $link") {
+            $problems.Add("missing Link => $link")
+        }
+    }
+    foreach ($assembly in $RequiredOutputs) {
+        if (-not (Test-Path (Join-Path $OutputDirectory "$assembly.dll"))) {
+            $problems.Add("missing output $assembly.dll")
+        }
+    }
+    foreach ($assembly in $ForbiddenOutputs) {
+        if (Test-Path (Join-Path $OutputDirectory "$assembly.dll")) {
+            $problems.Add("unexpected output $assembly.dll")
+        }
+    }
+
+    $preserveCounts = @()
+    foreach ($assembly in ($PreservePrefixes.Keys | Sort-Object)) {
+        $prefix = $PreservePrefixes[$assembly]
+        $count = @($preserved | Where-Object { $_ -like "All => $prefix*" }).Count
+        $preserveCounts += "$assembly=$count"
+        if ($count -lt 1) {
+            $problems.Add("preserve=all produced no type for $assembly")
+        }
+    }
+    foreach ($type in $RequiredPreserved) {
+        if ($preserved -notcontains "All => $type") {
+            $problems.Add("missing preserved type $type")
+        }
+    }
+
+    if ($problems.Count -gt 0) {
+        Add-Result -Name $Name -Status 'FAIL' -Detail (($problems -join '; ') +
+            "; stdout=$($run.Stdout); stderr=$($run.Stderr); actions=$actionsPath")
+        return
+    }
+
+    $detail = 'exit=0; descriptor resolved'
+    if ($preserveCounts.Count -gt 0) {
+        $detail += '; preserved ' + ($preserveCounts -join ',')
+    }
+    $detail += "; actions=$actionsPath"
+    Add-Result -Name $Name -Status 'PASS' -Detail $detail
+}
+
+if ($SkipUnity) {
+    Add-Result -Name 'Link.xml normal project' -Status 'BLOCKED' -Detail 'skipped by -SkipUnity'
+    Add-Result -Name 'Link.xml smoke project' -Status 'BLOCKED' -Detail 'skipped by -SkipUnity'
+}
+elseif ($linkerMissing.Count -gt 0) {
+    $detail = 'prerequisites missing: ' + ($linkerMissing -join '; ')
+    Add-Result -Name 'Link.xml normal project' -Status 'BLOCKED' -Detail $detail
+    Add-Result -Name 'Link.xml smoke project' -Status 'BLOCKED' -Detail $detail
+}
+else {
+    New-Item -ItemType Directory -Force -Path $linkerRoot | Out-Null
+
+    # Scenario A: the regular Unity project shape. Only the five tracked
+    # production DLLs are searchable; Wire/AotSmoke/Google.Protobuf are absent.
+    Invoke-LinkXmlScenario -Name 'Link.xml normal project' `
+        -SearchDirectory $linkerPluginDir `
+        -OutputDirectory (Join-Path $linkerRoot 'normal-absent') `
+        -RequiredLinks @('Mahjong.Contracts') `
+        -RequiredOutputs @('Mahjong.Contracts') `
+        -ForbiddenOutputs @('Mahjong.Contracts.Wire', 'Mahjong.Contracts.Wire.AotSmoke', 'Google.Protobuf')
+
+    # Scenario B: the generated smoke project shape. All probe assemblies are
+    # present (the temp Unity project copies the same probe output), so
+    # preserve="all" must actually keep their types.
+    $smokeInput = Join-Path $linkerRoot 'smoke-input'
+    New-Item -ItemType Directory -Force -Path $smokeInput | Out-Null
+    Get-ChildItem -LiteralPath $probeBin -Filter '*.dll' -File | Copy-Item -Destination $smokeInput -Force
+    Invoke-LinkXmlScenario -Name 'Link.xml smoke project' `
+        -SearchDirectory $smokeInput `
+        -OutputDirectory (Join-Path $linkerRoot 'smoke-present') `
+        -RequiredLinks @('Mahjong.Contracts', 'Mahjong.Contracts.Wire', 'Mahjong.Contracts.Wire.AotSmoke', 'Google.Protobuf') `
+        -RequiredOutputs @('Mahjong.Contracts.Wire', 'Mahjong.Contracts.Wire.AotSmoke', 'Google.Protobuf') `
+        -PreservePrefixes @{
+            'Mahjong.Contracts.Wire'             = 'Mahjong.Contracts.Wire.'
+            'Mahjong.Contracts.Wire.AotSmoke'    = 'Mahjong.Contracts.Wire.AotSmoke.'
+            'Google.Protobuf'                    = 'Google.Protobuf.'
+        } `
+        -RequiredPreserved @(
+            'Mahjong.Contracts.Wire.Envelope',
+            'Mahjong.Contracts.Wire.Hello',
+            'Mahjong.Contracts.Wire.AotSmoke.WireAotProbe',
+            'Google.Protobuf.MessageParser'
+        )
 }
 
 # ---------------------------------------------------------------------------
