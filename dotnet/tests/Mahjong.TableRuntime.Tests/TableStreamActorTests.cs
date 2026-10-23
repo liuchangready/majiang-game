@@ -297,7 +297,19 @@ namespace Mahjong.TableRuntime.Tests
             Assert.True(transition.IsAccepted);
             RoundStateMachine post = transition.State!;
 
-            await harness.Actor.BeginRecoveryAsync("post-commit", TestContext.Current.CancellationToken);
+            // Delivered-before-recovery ordering: the committed update reaches the sink before
+            // BeginRecovery fences the channel. Waiting for the sink is the deterministic
+            // synchronization seam; the queued-before-fence ordering is covered by
+            // RecoveryDropsQueuedOldUpdateBeforeFenceAndRebaselinesCommittedState below.
+            IReadOnlyList<TableStreamFrame> committed = await sink.WaitForCountAsync(2);
+            StreamAssert.Update(committed[1], 1UL, 2UL);
+            Assert.Single(committed[1].Public!.View.Board!.Players[0].Discards);
+
+            Assert.Equal(
+                TableOperationStatus.Configured,
+                (await harness.Actor.BeginRecoveryAsync(
+                    "post-commit",
+                    TestContext.Current.CancellationToken)).Status);
             TableOperationResult complete = await harness.Actor.CompleteRecoveryAsync(
                 new TableRecoveryBaseline(
                     post,
@@ -312,6 +324,101 @@ namespace Mahjong.TableRuntime.Tests
             StreamAssert.Baseline(recovered, 1UL, 3UL);
             Assert.Single(recovered.Public!.View.Board!.Players[0].Discards);
             Assert.Equal(1L, recovered.RecoveryGeneration);
+            Assert.Equal(new StateVersion(1), recovered.StateVersion);
+            Assert.Equal(new ProjectionSeq(3), recovered.Cursor.ProjectionSeq);
+
+            // The recovered baseline is deliberately gated until the host syncs. The sync
+            // baseline must still carry the final committed state, not an empty update.
+            TableStreamControlResult needsSync = await harness.SyncAsync(subscribed.Handle!, recovered.Cursor);
+            Assert.Equal(TableStreamControlStatus.BaselineQueued, needsSync.Status);
+            IReadOnlyList<TableStreamFrame> synced = await sink.WaitForCountAsync(4);
+            StreamAssert.Baseline(synced[3], 1UL, 4UL);
+            Assert.Single(synced[3].Public!.View.Board!.Players[0].Discards);
+            Assert.Equal(
+                TableStreamControlStatus.InSync,
+                (await harness.SyncAsync(subscribed.Handle!, synced[3].Cursor)).Status);
+        }
+
+        [Fact]
+        public async Task RecoveryDropsQueuedOldUpdateBeforeFenceAndRebaselinesCommittedState()
+        {
+            var release = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            var entered = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            TableStreamChannel? channel = null;
+            int armed = 0;
+            int blocked = 0;
+            var options = new TableStreamOptions
+            {
+                ObservePumpExit = true,
+                ChannelCreated = created => channel ??= created,
+                BeforeDispatchClaim = () =>
+                {
+                    if (Volatile.Read(ref armed) == 1 &&
+                        Interlocked.Exchange(ref blocked, 1) == 0)
+                    {
+                        entered.TrySetResult(true);
+                        release.Task.GetAwaiter().GetResult();
+                    }
+                }
+            };
+            await using StreamHarness harness = StreamHarness.Create(options);
+            var sink = new RecordingStreamSink();
+            TableStreamControlResult subscribed =
+                await harness.SubscribeSpectatorAsync("s1", 1UL, 1UL, sink);
+            Assert.Equal(TableStreamControlStatus.Subscribed, subscribed.Status);
+            IReadOnlyList<TableStreamFrame> initial = await sink.WaitForCountAsync(1);
+            StreamAssert.Baseline(initial[0], 0UL, 1UL);
+
+            try
+            {
+                Volatile.Write(ref armed, 1);
+                IReadOnlyList<TableCommandEnvelope> chain = harness.DiscardChain(1);
+                TableOperationResult applied =
+                    await harness.Actor.SubmitAsync(chain[0], TestContext.Current.CancellationToken);
+                Assert.Equal(TableOperationStatus.Accepted, applied.Status);
+                RoundTransition transition = harness.InitialRound.Execute(chain[0].Command);
+                Assert.True(transition.IsAccepted);
+
+                // The old update has been dequeued but has not been claimed for the sink. Recovery
+                // must fence it so it can never be observed after the new generation baseline.
+                await entered.Task.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
+                Assert.Equal(1, sink.FrameCount);
+                Assert.NotNull(channel);
+                Task pumpExit = channel!.PumpExit;
+                Assert.False(pumpExit.IsCompleted, "The old pump must still be paused before its dispatch claim.");
+
+                Assert.Equal(
+                    TableOperationStatus.Configured,
+                    (await harness.Actor.BeginRecoveryAsync(
+                        "queued update fence",
+                        TestContext.Current.CancellationToken)).Status);
+                Assert.Equal(
+                    TableOperationStatus.Configured,
+                    (await harness.Actor.CompleteRecoveryAsync(
+                        new TableRecoveryBaseline(
+                            transition.State!,
+                            new StateVersion(1),
+                            new EventSeq(unchecked((ulong)transition.Events.Count)),
+                            new OwnerEpoch(1)),
+                        TestContext.Current.CancellationToken)).Status);
+
+                release.TrySetResult(true);
+                // The old pump has now passed TryClaimDispatch (where the fence rejects the
+                // stale update) and exited. Only after that barrier may we assert that the sink
+                // never observed the old frame and observe the recovered baseline.
+                await pumpExit.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
+                IReadOnlyList<TableStreamFrame> frames = await sink.WaitForCountAsync(2);
+                TableStreamFrame recovered = frames[1];
+                StreamAssert.Baseline(recovered, 1UL, 3UL);
+                Assert.Equal(1L, recovered.RecoveryGeneration);
+                Assert.Equal(new StateVersion(1), recovered.StateVersion);
+                Assert.Single(recovered.Public!.View.Board!.Players[0].Discards);
+                Assert.Equal(2, sink.FrameCount);
+            }
+            finally
+            {
+                release.TrySetResult(true);
+            }
         }
 
         [Fact]
@@ -346,13 +453,23 @@ namespace Mahjong.TableRuntime.Tests
             var secondSink = new RecordingStreamSink();
             TableStreamControlResult first =
                 await harness.SubscribeSeatAsync(0, "s1", 1UL, 1UL, firstSink);
+            Assert.Equal(TableStreamControlStatus.Subscribed, first.Status);
+            IReadOnlyList<TableStreamFrame> firstFrames = await firstSink.WaitForCountAsync(1);
+            StreamAssert.Baseline(firstFrames[0], 0UL, 1UL);
+
+            // Delivered-before-replace ordering: the old baseline is already on the first sink,
+            // so the new binding can only displace the identity, never the committed state.
+            // The replace-before-old-send ordering is covered by
+            // NewBindingBeforeOldBaselineDispatchDropsOldFrameAndNewStreamContinues below.
             TableStreamControlResult second =
                 await harness.SubscribeSeatAsync(0, "s1", 2UL, 1UL, secondSink);
-            Assert.Equal(TableStreamControlStatus.Subscribed, first.Status);
             Assert.Equal(TableStreamControlStatus.Subscribed, second.Status);
-            await firstSink.WaitForCountAsync(1);
             IReadOnlyList<TableStreamFrame> secondFrames = await secondSink.WaitForCountAsync(1);
-            Assert.Equal(2UL, secondFrames[0].ProjectionSeq.Value);
+            StreamAssert.Baseline(secondFrames[0], 0UL, 2UL);
+            Assert.Equal(
+                TableStreamControlStatus.InSync,
+                (await harness.SyncAsync(second.Handle!, secondFrames[0].Cursor)).Status);
+            Assert.Equal(1, firstSink.FrameCount);
 
             TableStreamTermination displaced = await harness.Terminations.WaitForAsync(
                 item => item.Kind == TableStreamTerminationKind.Displaced);
@@ -368,10 +485,109 @@ namespace Mahjong.TableRuntime.Tests
             Assert.Equal(TableStreamControlStatus.Rejected, staleBinding.Status);
             Assert.Equal("STALE_STREAM_VERSION", staleBinding.ReasonCode);
 
+            // The old handle was rejected above, so the new stream must still advance and carry
+            // the committed state. A stale handle must never cancel or redirect this stream.
+            IReadOnlyList<TableCommandEnvelope> chain = harness.DiscardChain(1);
+            Assert.Equal(
+                TableOperationStatus.Accepted,
+                (await harness.Actor.SubmitAsync(chain[0], TestContext.Current.CancellationToken)).Status);
+            IReadOnlyList<TableStreamFrame> updates = await secondSink.WaitForCountAsync(2);
+            StreamAssert.Update(updates[1], 1UL, 3UL);
+            Assert.Single(updates[1].Player!.Public.Board!.Players[0].Discards);
+            Assert.Equal(
+                TableStreamControlStatus.InSync,
+                (await harness.SyncAsync(second.Handle!, updates[1].Cursor)).Status);
+            Assert.Equal(1, firstSink.FrameCount);
+
             TableStreamControlResult newUnsubscribe = await harness.UnsubscribeAsync(second.Handle!);
             Assert.Equal(TableStreamControlStatus.Unsubscribed, newUnsubscribe.Status);
             TableStreamControlResult afterUnsubscribe = await harness.SyncAsync(second.Handle!, second.Cursor!.Value);
             Assert.Equal(TableStreamControlStatus.Rejected, afterUnsubscribe.Status);
+        }
+
+        [Fact]
+        public async Task NewBindingBeforeOldBaselineDispatchDropsOldFrameAndNewStreamContinues()
+        {
+            var release = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            var entered = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            TableStreamChannel? oldChannel = null;
+            int armed = 0;
+            int blocked = 0;
+            var options = new TableStreamOptions
+            {
+                ObservePumpExit = true,
+                ChannelCreated = created => oldChannel ??= created,
+                BeforeDispatchClaim = () =>
+                {
+                    if (Volatile.Read(ref armed) == 1 &&
+                        Interlocked.Exchange(ref blocked, 1) == 0)
+                    {
+                        entered.TrySetResult(true);
+                        release.Task.GetAwaiter().GetResult();
+                    }
+                }
+            };
+            await using StreamHarness harness = StreamHarness.Create(options);
+            var firstSink = new RecordingStreamSink();
+            var secondSink = new RecordingStreamSink();
+
+            try
+            {
+                Volatile.Write(ref armed, 1);
+                TableStreamControlResult first =
+                    await harness.SubscribeSeatAsync(0, "s1", 1UL, 1UL, firstSink);
+                Assert.Equal(TableStreamControlStatus.Subscribed, first.Status);
+                await entered.Task.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
+                Assert.Equal(0, firstSink.FrameCount);
+                Assert.NotNull(oldChannel);
+                Task oldPumpExit = oldChannel!.PumpExit;
+                Assert.False(oldPumpExit.IsCompleted, "The old pump must still be paused before its dispatch claim.");
+
+                // The new binding closes the old channel while its baseline is dequeued but
+                // before the dispatch claim. The old frame must be dropped, not delivered after
+                // replacement.
+                TableStreamControlResult second =
+                    await harness.SubscribeSeatAsync(0, "s1", 2UL, 1UL, secondSink);
+                Assert.Equal(TableStreamControlStatus.Subscribed, second.Status);
+
+                release.TrySetResult(true);
+                // Wait until the old pump has passed TryClaimDispatch and exited. Displaced was
+                // raised by Close synchronously and does not prove that the old pump ran.
+                await oldPumpExit.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
+                Assert.Equal(0, firstSink.FrameCount);
+
+                IReadOnlyList<TableStreamFrame> secondFrames = await secondSink.WaitForCountAsync(1);
+                StreamAssert.Baseline(secondFrames[0], 0UL, 2UL);
+                Assert.Equal(
+                    TableStreamControlStatus.InSync,
+                    (await harness.SyncAsync(second.Handle!, secondFrames[0].Cursor)).Status);
+
+                TableStreamTermination displaced = await harness.Terminations.WaitForAsync(
+                    item => item.Kind == TableStreamTerminationKind.Displaced);
+                Assert.Equal(first.Handle, displaced.Handle);
+                Assert.Equal(
+                    TableStreamControlStatus.Rejected,
+                    (await harness.UnsubscribeAsync(first.Handle!)).Status);
+                Assert.Equal(
+                    TableStreamControlStatus.Rejected,
+                    (await harness.SyncAsync(first.Handle!, first.Cursor!.Value)).Status);
+
+                IReadOnlyList<TableCommandEnvelope> chain = harness.DiscardChain(1);
+                Assert.Equal(
+                    TableOperationStatus.Accepted,
+                    (await harness.Actor.SubmitAsync(chain[0], TestContext.Current.CancellationToken)).Status);
+                IReadOnlyList<TableStreamFrame> updates = await secondSink.WaitForCountAsync(2);
+                StreamAssert.Update(updates[1], 1UL, 3UL);
+                Assert.Single(updates[1].Player!.Public.Board!.Players[0].Discards);
+                Assert.Equal(
+                    TableStreamControlStatus.InSync,
+                    (await harness.SyncAsync(second.Handle!, updates[1].Cursor)).Status);
+                Assert.Equal(0, firstSink.FrameCount);
+            }
+            finally
+            {
+                release.TrySetResult(true);
+            }
         }
 
         [Fact]

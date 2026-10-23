@@ -720,6 +720,19 @@ namespace Mahjong.TableRuntime
         /// </summary>
         internal Action? BeforeDispatchClaim { get; set; }
 
+        /// <summary>
+        /// Test-only observation seam: exposes each created channel so the friend test assembly
+        /// can wait for that channel's pump to exit. Production leaves this null.
+        /// </summary>
+        internal Action<TableStreamChannel>? ChannelCreated { get; set; }
+
+        /// <summary>
+        /// Test-only: allocate a completion task per pump invocation so a test can prove the
+        /// old pump passed the dispatch claim before asserting that it emitted no frame.
+        /// Production leaves this false and allocates no observation state.
+        /// </summary>
+        internal bool ObservePumpExit { get; set; }
+
         internal void Validate()
         {
             if (MaxQueuedFrames < 1)

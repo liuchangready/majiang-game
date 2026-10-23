@@ -109,6 +109,7 @@ namespace Mahjong.TableRuntime
         private readonly int _maxFrames;
         private readonly int _maxBytes;
         private readonly bool _enforceBytes;
+        private readonly bool _observePumpExit;
         private readonly CancellationTokenSource _cancellation = new CancellationTokenSource();
 
         private int _queuedBytes;
@@ -118,6 +119,7 @@ namespace Mahjong.TableRuntime
         private int _cancelScheduled;
         private long _allowedGeneration;
         private TableStreamTermination? _termination;
+        private TaskCompletionSource<bool>? _pumpExit;
 
         public TableStreamChannel(
             TableStreamHandle handle,
@@ -127,7 +129,8 @@ namespace Mahjong.TableRuntime
             bool enforceBytes,
             ITableStreamTerminationSink? terminationSink,
             long allowedGeneration,
-            Action? beforeDispatchClaim = null)
+            Action? beforeDispatchClaim = null,
+            bool observePumpExit = false)
         {
             _handle = handle ?? throw new ArgumentNullException(nameof(handle));
             _sink = sink ?? throw new ArgumentNullException(nameof(sink));
@@ -137,6 +140,7 @@ namespace Mahjong.TableRuntime
             _terminationSink = terminationSink;
             _allowedGeneration = allowedGeneration;
             _beforeDispatchClaim = beforeDispatchClaim;
+            _observePumpExit = observePumpExit;
         }
 
         public bool IsClosed
@@ -157,6 +161,22 @@ namespace Mahjong.TableRuntime
                 lock (_gate)
                 {
                     return _termination;
+                }
+            }
+        }
+
+        /// <summary>
+        /// Test-observable completion for the pump invocation that is currently running. It is
+        /// completed in a finally block after the pump has passed its last dispatch claim and is
+        /// about to exit. Production never allocates this state unless a test enables it.
+        /// </summary>
+        internal Task PumpExit
+        {
+            get
+            {
+                lock (_gate)
+                {
+                    return _pumpExit?.Task ?? Task.CompletedTask;
                 }
             }
         }
@@ -209,6 +229,12 @@ namespace Mahjong.TableRuntime
                     if (!_pumping)
                     {
                         _pumping = true;
+                        if (_observePumpExit)
+                        {
+                            _pumpExit = new TaskCompletionSource<bool>(
+                                TaskCreationOptions.RunContinuationsAsynchronously);
+                        }
+
                         start = true;
                     }
 
@@ -298,6 +324,29 @@ namespace Mahjong.TableRuntime
         }
 
         private async Task PumpAsync()
+        {
+            TaskCompletionSource<bool>? pumpExit = null;
+            if (_observePumpExit)
+            {
+                lock (_gate)
+                {
+                    pumpExit = _pumpExit;
+                }
+            }
+
+            try
+            {
+                await PumpLoopAsync().ConfigureAwait(false);
+            }
+            finally
+            {
+                // Observability only: the pump has passed its last TryClaimDispatch and is
+                // leaving. This does not alter close/fence claims, sink calls or exception flow.
+                pumpExit?.TrySetResult(true);
+            }
+        }
+
+        private async Task PumpLoopAsync()
         {
             while (true)
             {

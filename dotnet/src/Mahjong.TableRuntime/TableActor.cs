@@ -4082,7 +4082,7 @@ namespace Mahjong.TableRuntime
 
         private TableStreamChannel CreateStreamChannel(TableStreamHandle handle, ITableStreamSink sink)
         {
-            return new TableStreamChannel(
+            var channel = new TableStreamChannel(
                 handle,
                 sink,
                 _streamOptions.MaxQueuedFrames,
@@ -4090,7 +4090,10 @@ namespace Mahjong.TableRuntime
                 _streamOptions.Encoder != null,
                 _streamOptions.TerminationSink,
                 _recoveryGeneration,
-                _streamOptions.BeforeDispatchClaim);
+                _streamOptions.BeforeDispatchClaim,
+                _streamOptions.ObservePumpExit);
+            _streamOptions.ChannelCreated?.Invoke(channel);
+            return channel;
         }
 
         private TableStreamRegistration? FindCurrentRegistration(TableStreamHandle handle)
