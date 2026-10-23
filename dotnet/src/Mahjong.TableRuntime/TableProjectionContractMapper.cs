@@ -171,6 +171,44 @@ namespace Mahjong.TableRuntime
         public uint? HandTileId { get; }
 
         public uint? TargetSlot { get; }
+
+        /// <summary>
+        /// Returns the same explicit facts without a meld body. The public closed-kan path uses
+        /// this so a trusted owner fact cannot reintroduce the four physical identities into a
+        /// spectator/other-seat payload; the mapper's redaction boundary stays unchanged.
+        /// </summary>
+        public TableProjectionEventFacts WithoutMeld()
+        {
+            return new TableProjectionEventFacts(
+                TurnNumber,
+                WallSize,
+                WallRemaining,
+                null,
+                FromSeat,
+                RiichiDiscard,
+                Tsumogiri,
+                DiscardTileId,
+                DoubleRiichi,
+                LoserSeat,
+                Yaku,
+                Han,
+                Fu,
+                Score,
+                Breakdown,
+                TenpaiPlayers,
+                Payments,
+                NewScores,
+                FinalScores,
+                WinnerSeat,
+                RoundWind,
+                RoundNumber,
+                OfferId,
+                KeptFirst,
+                ResultTileId,
+                BeamSwapResolution,
+                HandTileId,
+                TargetSlot);
+        }
     }
 
     /// <summary>
@@ -308,6 +346,7 @@ namespace Mahjong.TableRuntime
                 throw new ArgumentNullException(nameof(time));
             }
 
+            ValidateOwnerWindow(owner);
             var ledger = new List<CheatLedgerEntryView>(owner.Ledger.Count);
             for (int i = 0; i < owner.Ledger.Count; i++)
             {
@@ -350,6 +389,28 @@ namespace Mahjong.TableRuntime
                 owner.WindowId,
                 beam,
                 null);
+        }
+
+        /// <summary>
+        /// A live off-turn offer or reservation is only meaningful inside the seat's opened
+        /// window. A missing/mismatched window is an explicit trusted-fact failure, not an
+        /// empty string to be fabricated on the wire.
+        /// </summary>
+        private static void ValidateOwnerWindow(TableOwnerCheatView owner)
+        {
+            if (owner.OffTurnOffer != null &&
+                (owner.WindowId.Length == 0 ||
+                 !string.Equals(owner.OffTurnOffer.WindowId, owner.WindowId, StringComparison.Ordinal)))
+            {
+                throw Invalid("An off-turn sleeve offer requires the seat's opened window id.");
+            }
+
+            if (owner.Reservation != null &&
+                (owner.WindowId.Length == 0 ||
+                 !string.Equals(owner.Reservation.WindowId, owner.WindowId, StringComparison.Ordinal)))
+            {
+                throw Invalid("A sleeve reservation requires the seat's opened window id.");
+            }
         }
 
         private static ProjectedEventPayload BuildEventPayload(

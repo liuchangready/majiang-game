@@ -579,6 +579,7 @@ namespace Mahjong.TableRuntime
         internal TableStreamFrame(
             TableStreamHandle handle,
             bool isFullSnapshot,
+            StreamCursor fromCursor,
             StreamCursor cursor,
             StateVersion stateVersion,
             EventSeq eventSeq,
@@ -589,7 +590,8 @@ namespace Mahjong.TableRuntime
             PublicSnapshotView? publicView,
             PlayerSnapshotView? playerView,
             TableOwnerPrivateView? ownerPrivate,
-            IReadOnlyList<TableProjectedEvent>? events)
+            IReadOnlyList<TableProjectedEvent>? events,
+            TableStreamContractFrame? contract)
         {
             Handle = handle ?? throw new ArgumentNullException(nameof(handle));
             if (string.IsNullOrWhiteSpace(roundId))
@@ -628,6 +630,7 @@ namespace Mahjong.TableRuntime
                     ? new List<TableProjectedEvent>()
                     : new List<TableProjectedEvent>(events));
             IsFullSnapshot = isFullSnapshot;
+            FromCursor = fromCursor;
             Cursor = cursor;
             StateVersion = stateVersion;
             EventSeq = eventSeq;
@@ -638,6 +641,7 @@ namespace Mahjong.TableRuntime
             Public = publicView;
             Player = playerView;
             OwnerPrivate = ownerPrivate;
+            Contract = contract;
         }
 
         public TableStreamHandle Handle { get; }
@@ -645,6 +649,9 @@ namespace Mahjong.TableRuntime
         public TableStreamIdentity Identity => Handle.Identity;
 
         public bool IsFullSnapshot { get; }
+
+        /// <summary>Previous cursor for this stream; empty for a newly subscribed baseline.</summary>
+        public StreamCursor FromCursor { get; }
 
         public StreamCursor Cursor { get; }
 
@@ -673,6 +680,12 @@ namespace Mahjong.TableRuntime
 
         /// <summary>Owner-only sleeve/mark/offer extension; never present on a spectator frame.</summary>
         public TableOwnerPrivateView? OwnerPrivate { get; }
+
+        /// <summary>
+        /// Actor-frozen Contracts DTOs for this frame. Present only for a contract-aware encoder;
+        /// null for the memory-only P3.2b path.
+        /// </summary>
+        public TableStreamContractFrame? Contract { get; }
 
         public IReadOnlyList<TableProjectedEvent> Events => _events;
 
@@ -759,6 +772,8 @@ namespace Mahjong.TableRuntime
     /// </summary>
     public sealed class TableProjectionContextRequest
     {
+        private readonly ReadOnlyCollection<TableEventRecord> _committedEvents;
+
         public TableProjectionContextRequest(
             string roomId,
             RoundStateMachine round,
@@ -768,7 +783,8 @@ namespace Mahjong.TableRuntime
             long controlVersion,
             long recoveryGeneration,
             long monotonicMillis,
-            long utcMillis)
+            long utcMillis,
+            IReadOnlyList<TableEventRecord>? committedEvents = null)
         {
             if (string.IsNullOrWhiteSpace(roomId))
             {
@@ -802,6 +818,7 @@ namespace Mahjong.TableRuntime
             RecoveryGeneration = recoveryGeneration;
             MonotonicMillis = monotonicMillis;
             UtcMillis = utcMillis;
+            _committedEvents = CopyEvents(committedEvents);
         }
 
         public string RoomId { get; }
@@ -821,6 +838,29 @@ namespace Mahjong.TableRuntime
         public long MonotonicMillis { get; }
 
         public long UtcMillis { get; }
+
+        /// <summary>
+        /// Frozen committed event window visible to this capture. The source uses it to bind
+        /// explicit fact records to the exact event sequence/version/ordinal; the actor rejects
+        /// any fact that is not in this same snapshot.
+        /// </summary>
+        public IReadOnlyList<TableEventRecord> CommittedEvents => _committedEvents;
+
+        private static ReadOnlyCollection<TableEventRecord> CopyEvents(IReadOnlyList<TableEventRecord>? values)
+        {
+            if (values == null)
+            {
+                return new ReadOnlyCollection<TableEventRecord>(new List<TableEventRecord>());
+            }
+
+            var copy = new List<TableEventRecord>(values.Count);
+            for (int i = 0; i < values.Count; i++)
+            {
+                copy.Add(values[i] ?? throw new ArgumentException("Committed events contain null.", nameof(values)));
+            }
+
+            return new ReadOnlyCollection<TableEventRecord>(copy);
+        }
     }
 
     /// <summary>
@@ -833,6 +873,8 @@ namespace Mahjong.TableRuntime
     {
         private readonly ReadOnlyCollection<TableSeatPublicFacts> _publicFacts;
         private readonly ReadOnlyCollection<TableSeatPrivateFacts> _privateFacts;
+        private readonly ReadOnlyCollection<TableProjectionEventFact> _eventFacts;
+        private readonly ReadOnlyCollection<TablePublicConcealedMeldFact> _concealedMeldFacts;
 
         public TableProjectionContextData(
             string roundId,
@@ -842,7 +884,9 @@ namespace Mahjong.TableRuntime
             IReadOnlyList<TableSeatPublicFacts>? publicFacts,
             IReadOnlyList<TableSeatPrivateFacts>? privateFacts,
             TableSessionProjection? session,
-            TableProjectionPolicy policy)
+            TableProjectionPolicy policy,
+            IReadOnlyList<TableProjectionEventFact>? eventFacts = null,
+            IReadOnlyList<TablePublicConcealedMeldFact>? concealedMeldFacts = null)
         {
             if (string.IsNullOrWhiteSpace(roundId))
             {
@@ -855,6 +899,8 @@ namespace Mahjong.TableRuntime
             Cheat = cheat;
             _publicFacts = Copy(publicFacts, nameof(publicFacts));
             _privateFacts = Copy(privateFacts, nameof(privateFacts));
+            _eventFacts = CopyEventFacts(eventFacts);
+            _concealedMeldFacts = CopyConcealedMelds(concealedMeldFacts);
             Session = session;
             Policy = policy ?? throw new ArgumentNullException(nameof(policy));
         }
@@ -871,6 +917,12 @@ namespace Mahjong.TableRuntime
         public IReadOnlyList<TableSeatPublicFacts> PublicFacts => _publicFacts;
 
         public IReadOnlyList<TableSeatPrivateFacts> PrivateFacts => _privateFacts;
+
+        /// <summary>Explicit authoritative facts bound to committed event identity.</summary>
+        public IReadOnlyList<TableProjectionEventFact> EventFacts => _eventFacts;
+
+        /// <summary>Identity-free public closed-kan placeholders (count only).</summary>
+        public IReadOnlyList<TablePublicConcealedMeldFact> ConcealedMeldFacts => _concealedMeldFacts;
 
         public TableSessionProjection? Session { get; }
 
@@ -910,6 +962,40 @@ namespace Mahjong.TableRuntime
             }
 
             return new ReadOnlyCollection<TableSeatPrivateFacts>(copy);
+        }
+
+        private static ReadOnlyCollection<TableProjectionEventFact> CopyEventFacts(
+            IReadOnlyList<TableProjectionEventFact>? values)
+        {
+            if (values == null)
+            {
+                return new ReadOnlyCollection<TableProjectionEventFact>(new List<TableProjectionEventFact>());
+            }
+
+            var copy = new List<TableProjectionEventFact>(values.Count);
+            for (int i = 0; i < values.Count; i++)
+            {
+                copy.Add(values[i] ?? throw new ArgumentException("eventFacts contains null.", nameof(values)));
+            }
+
+            return new ReadOnlyCollection<TableProjectionEventFact>(copy);
+        }
+
+        private static ReadOnlyCollection<TablePublicConcealedMeldFact> CopyConcealedMelds(
+            IReadOnlyList<TablePublicConcealedMeldFact>? values)
+        {
+            if (values == null)
+            {
+                return new ReadOnlyCollection<TablePublicConcealedMeldFact>(new List<TablePublicConcealedMeldFact>());
+            }
+
+            var copy = new List<TablePublicConcealedMeldFact>(values.Count);
+            for (int i = 0; i < values.Count; i++)
+            {
+                copy.Add(values[i] ?? throw new ArgumentException("concealedMeldFacts contains null.", nameof(values)));
+            }
+
+            return new ReadOnlyCollection<TablePublicConcealedMeldFact>(copy);
         }
     }
 
