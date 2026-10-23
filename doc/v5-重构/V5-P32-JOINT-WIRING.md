@@ -35,8 +35,9 @@
 7. `dotnet/src/Mahjong.TableRuntime/TableStreamContracts.cs`
 8. `dotnet/tests/Mahjong.TableRuntime.Tests/Mahjong.TableRuntime.Tests.csproj`
 9. `dotnet/tests/Mahjong.TableRuntime.Tests/TableStreamTestSupport.cs`
+10. `dotnet/tests/Mahjong.TableRuntime.Tests/TableStreamActorTests.cs`（第 2 轮独立验收返修的慢 sink 用例；本轮明确授权路径）
 
-未修改：`dotnet/src/Mahjong.TableRuntime/Mahjong.TableRuntime.csproj`、`Mahjong.sln`、Contracts/Wire 源码、Domain、Client 生产源码、`tools/dotnet/verify-*`、`.github/workflows/*`、Unity 环境/Resources/Burst、其他 worktree。范围清单与实际 `git status` 一致，无第 10 个已跟踪文件。
+未修改：`dotnet/src/Mahjong.TableRuntime/Mahjong.TableRuntime.csproj`、`Mahjong.sln`、Contracts/Wire 源码、Domain、Client 生产源码、`tools/dotnet/verify-*`、`.github/workflows/*`、Unity 环境/Resources/Burst、其他 worktree。范围清单与实际 `git status` 一致，无表外已跟踪文件。
 
 ### 1.2 依赖边界
 
@@ -272,6 +273,31 @@ SDK：`D:/Unity/dotnet/dotnet.exe`（8.0.426）。全部构建/测试为实际�
 
 非重复 Release 合计：`164 + 104 + 132 + 322 + 17 = 739 passed / 0 failed / 0 skipped`。TableRuntime 的 164 已包含 12 项联合用例，不重复相加。Debug 全量同树另行记录为 **164/0/0**。
 
+### 5.1 第 2 轮独立验收返修（2026-10-24）
+
+独立验收在 `2d57d58` 上复跑 TableRuntime Release 得到 **164 总计 / 163 通过 / 1 失败 / 0 跳过**，失败为 `TableStreamActorTests.SlowSinkDoesNotBlockActorAndOverflowClosesOnlyThatStream`：测试在 `slowSink.BlockNext()` 后连续提交 4 帧，循环结束后才等待 `Entered`；`MaxQueuedFrames=2` 时发送泵可能在进入阻塞点前就被溢出关闭，随后 `Entered` 永远不完成（`TableStreamActorTests.cs:697`，清理栈 709）。
+
+返修（仅测试，不改生产界限）：
+
+- 先在慢 sink 上 `BlockNext()`，提交首帧并等待 `Entered`，确认慢泵已停在首个已认领的 sink 调用内；再逐帧提交，使队列确定达到 2 帧并由第 4 帧触发溢出。
+- fast sink 每提交一帧后等待其精确计数（2/3/4/5），以证明其独立消费进度，不依赖固定延时。
+- 用 `ObservePumpExit` + `ChannelCreated` 捕获慢通道；释放后等待 `PumpExit` 完成屏障，再断言慢 sink 只完成已认领的首帧（1+1=2），队列中的旧帧未发送；保留慢流隔离、溢出关闭、旧队列丢弃全部断言。
+- 删除两处 `Task.Delay(100)` 竞态；未放宽 timeout/重试/verifier/skip。
+
+本轮实际结果：
+
+| 命令 | 结果 | exit |
+|---|---|---:|
+| `dotnet build ...TableRuntime.Tests.csproj -c Release -t:Rebuild --nologo -v:minimal` | 0 warning / 0 error | 0 |
+| 单用例定向重复 20 次（`--filter-method ...SlowSinkDoesNotBlockActorAndOverflowClosesOnlyThatStream`） | **20 × 1 passed / 0 failed / 0 skipped** | 0 |
+| TableRuntime 完整 Release 连续 3 次 | **164 / 0 / 0** 每次 | 0 |
+| `dotnet test ...TableRuntime.Tests.csproj -c Release` | **164 / 0 / 0** | 0 |
+| `dotnet build dotnet/Mahjong.sln -c Release` | 0 warning / 0 error | 0 |
+| Contracts / Client / Domain / AI Release | 104 / 132 / 322 / 17，均 0/0 | 0 |
+| `git diff --check` / `git diff HEAD^ HEAD --check` | PASS | 0 |
+
+本轮日志目录：`%TEMP%/p32-joint-r2-20261024/`，含 `slow-sink-stress-1..20.log`、`tableruntime-full-stress-1..3.log`、`tableruntime-tests-release-full.log`、`solution-build-release.log`、四个模块 `*-tests-release.log` 及 `.exit`。上一轮独立失败没有被改写成通过；返修后上述结果为本轮实际运行。
+
 原始日志目录（未提交，位于临时目录）：
 
 `%TEMP%/p32-joint-final-20261024/`
@@ -309,8 +335,8 @@ SDK：`D:/Unity/dotnet/dotnet.exe`（8.0.426）。全部构建/测试为实际�
 
 | 分类 | 项目 |
 |---|---|
-| **PASS** | Release solution build 0/0；TableRuntime 164/0/0；Wire 联合 12/0/0；Contracts 104/0/0；Client 132/0/0；Domain 322/0/0；AI 17/0/0；`git diff --check` |
-| **FAIL** | 无生产/测试失败；无放行 verifier、无新增 skip、无空通过 |
+| **PASS** | Release solution build 0/0；TableRuntime 164/0/0（连续 3 次）；慢 sink 定向重复 20/20；Wire 联合 12/0/0；Contracts 104/0/0；Client 132/0/0；Domain 322/0/0；AI 17/0/0；`git diff --check` |
+| **FAIL** | 本轮无失败；第 1 轮独立验收的 1 项 `SlowSinkDoesNotBlockActorAndOverflowClosesOnlyThatStream` 超时已由本轮可控门闩返修并重复验证，未把原失败改写为通过 |
 | **BLOCKED** | 不适用（本任务本地实现可运行）；真实 PG、WSS/TCP、Unity/IL2CPP、Android/iOS、跨物理网络未由本任务提供环境 |
 | **NOT_RUN** | 真实 PostgreSQL/统一 PG 入口；真实 WSS/TCP 网络；远端 CI；Unity Editor/IL2CPP；Android/iOS 真机/模拟器；跨物理网络；P3.4；G1/G5；线上 E2E |
 
@@ -339,4 +365,5 @@ V4 仍是唯一生产架构。G1/G5 未通过；本交付不宣称平台、真�
 | `dotnet/tests/Mahjong.TableRuntime.Tests/TableStreamTestSupport.cs` | `3B6037FD70E9733EED5DE02AE6CB3B6D34F1C6AD6214F0466144AFEF19057189` |
 | `dotnet/tests/Mahjong.TableRuntime.Tests/TableStreamWireIntegrationTests.cs` | `2AEAE176CC65FBEEFBABAED8503376948023CE969E15FE61201967CB03015B15` |
 | `dotnet/tests/Mahjong.TableRuntime.Tests/TableStreamWireTestSupport.cs` | `4EA4A88697A31A810776E1A6226406C4A5E224D410EC3FF3A7631A47FC4378B0` |
+| `dotnet/tests/Mahjong.TableRuntime.Tests/TableStreamActorTests.cs` | `DC1897261B2DEBBDF12C296B65C87851AC39809B553C2D1D0FAD72930D611C4D` |
 | `doc/v5-重构/V5-P32-JOINT-WIRING.md` | 本文 SHA256 见提交后最终响应（自引用无法在文件内固定） |
