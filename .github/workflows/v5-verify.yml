@@ -1,20 +1,29 @@
 # Unified V5 .NET verification CI.
 #
-# Calls the same single entry point used locally (tools/verify-v5.ps1) so CI and a
-# local machine produce the same per-project PASS/FAIL evidence with real test
-# counts and raw logs. This workflow deliberately covers the .NET tree only: it
-# makes no Unity/IL2CPP/Android/iOS claim (those need a licensed Unity editor and
+# Calls tools/ci/verify-v5-postgres.ps1, which provisions a real disposable
+# PostgreSQL 16.10 cluster (official EDB binaries, SHA-256-pinned, loopback-only,
+# unique TEMP root, dedicated port) and then invokes the same single entry point
+# used locally (tools/verify-v5.ps1, unmodified) so CI and a local machine
+# produce the same per-project PASS/FAIL evidence with real test counts and raw
+# logs - with the lobby tests actually running against PostgreSQL instead of
+# skipping. This workflow deliberately covers the .NET tree only: it makes no
+# Unity/IL2CPP/Android/iOS claim (those need a licensed Unity editor and
 # platform toolchains and are tracked separately).
 #
 # Local equivalent:
-#   powershell -ExecutionPolicy Bypass -File tools\verify-v5.ps1 -Configuration Release
+#   powershell -ExecutionPolicy Bypass -File tools\ci\verify-v5-postgres.ps1 -Configuration Release
 # Logs land under artifacts\verify-v5\<timestamp>\ (summary.log, run-info.txt,
 # one log per build/test/copy step, per-invocation runs\<project>\<mode>.meta.txt
 # and the raw test-framework failure logs under
 # test-results\<project>\<mode>\<project-relative path>\, kept per runner
-# invocation). The upload below therefore contains everything needed to name a
+# invocation) plus the wrapper's own pg\ subtree (start/migrate/cleanup logs,
+# cluster server logs, ownership marker, wrapper-summary.json, SHA-256
+# manifest). The upload below therefore contains everything needed to name a
 # failing test case: the framework log path quoted by dotnet test failures is
-# collected into that subtree by verify-v5.ps1 before the job ends.
+# collected into that subtree by verify-v5.ps1 before the job ends. No temp
+# database content or secret is uploaded: the disposable cluster uses trust
+# auth (no password) and exists only inside the job's own TEMP root, deleted
+# by the accepted cleanup script before the job ends.
 
 name: v5-verify
 
@@ -36,12 +45,13 @@ jobs:
         with:
           dotnet-version: 8.0.426
 
-      # verify-v5.ps1 resolves dotnet from DOTNET_ROOT/PATH when -DotnetPath is not
-      # given; tools/unity/build-shared.ps1 (invoked by the plugin-copy check) uses
-      # the same resolution chain. D:\Unity\dotnet does not exist on CI runners.
+      # The wrapper resolves dotnet from DOTNET_ROOT/PATH when -DotnetPath is not
+      # given (setup-dotnet sets both); tools/unity/build-shared.ps1 (invoked by
+      # the plugin-copy check) uses the same resolution chain. D:\Unity\dotnet
+      # does not exist on CI runners, and the wrapper never hardcodes it.
       - name: Run unified V5 verification
         shell: pwsh
-        run: ./tools/verify-v5.ps1 -Configuration Release
+        run: ./tools/ci/verify-v5-postgres.ps1 -Configuration Release
 
       # Always uploaded, including on failure / BLOCKED / no parseable summary:
       # a green claim without the artifact is not evidence. The artifact name
