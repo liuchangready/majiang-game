@@ -839,19 +839,41 @@ namespace Mahjong.Client
         {
             while (State == TableConnectionState.Ready && _earlyBuffer.Count > 0)
             {
-                // Drop stale frames and buffered full baselines: the SYNC_RESPONSE
-                // baseline is authoritative and a queued older baseline must not
-                // replace it.
+                // Drop frames that can never become applicable. A full baseline
+                // is not automatically stale: it may legitimately cross a
+                // cursor gap, so it must be judged by the same binding's
+                // cursor/version floors instead of its full flag. Old,
+                // duplicate and malformed baselines are discarded here; a
+                // baseline that is newer in cursor but regresses an
+                // authoritative version is left for the recovery path below,
+                // which refuses to apply it and asks for a fresh correlated
+                // baseline.
                 for (int i = _earlyBuffer.Count - 1; i >= 0; i--)
                 {
                     Envelope buffered = _earlyBuffer.Items[i].Envelope;
-                    if (!TryReadPush(buffered, out _, out ContractCursor bufferedCursor, out bool bufferedFull, out _, out _))
+                    if (!MatchesBinding(buffered) ||
+                        !TryReadPush(buffered, out _, out ContractCursor bufferedCursor, out bool bufferedFull, out _, out _))
                     {
                         _earlyBuffer.RemoveAt(i);
                         continue;
                     }
 
-                    if (bufferedFull || bufferedCursor.ProjectionSeq.Value <= _confirmedCursor!.Value.ProjectionSeq.Value)
+                    if (bufferedFull)
+                    {
+                        // A full snapshot is applicable only when it advances at
+                        // least one cursor component while staying at or above
+                        // the confirmed floors. Equality is a duplicate, not a
+                        // newer baseline.
+                        if (!CursorAtOrAbove(bufferedCursor, CurrentBaselineFloor()) ||
+                            bufferedCursor == _confirmedCursor!.Value)
+                        {
+                            _earlyBuffer.RemoveAt(i);
+                        }
+
+                        continue;
+                    }
+
+                    if (bufferedCursor.ProjectionSeq.Value <= _confirmedCursor!.Value.ProjectionSeq.Value)
                     {
                         _earlyBuffer.RemoveAt(i);
                     }
@@ -872,7 +894,9 @@ namespace Mahjong.Client
                     }
 
                     CursorRelation relation = ContractCursor.Classify(_confirmedCursor!.Value, from, cursor, isFull);
-                    if ((relation == CursorRelation.Advance || relation == CursorRelation.Refresh) &&
+                    if ((relation == CursorRelation.Baseline ||
+                         relation == CursorRelation.Advance ||
+                         relation == CursorRelation.Refresh) &&
                         CursorAtOrAbove(cursor, CurrentBaselineFloor()) &&
                         PushVersionsAtOrAboveFloor(bufferedPlayer, bufferedPublic))
                     {
