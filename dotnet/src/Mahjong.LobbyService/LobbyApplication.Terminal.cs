@@ -39,15 +39,13 @@ namespace Mahjong.LobbyService
                 .ConfigureAwait(false);
             bool terminal = snapshot.Room.State == LobbyRoomState.Closed ||
                             IsTerminalProjection(projection, snapshot.Room.RulesetVersion);
-            // Once terminal, the receipt is keyed by the monotonic fact, not by
-            // the particular projection snapshot: a later missing/old
-            // projection must replay the closed result rather than conflict or
-            // reopen. A non-terminal first call that later becomes terminal is
-            // a different fact and intentionally requires a new request id.
-            string digest = LobbyDigest.Compute(
-                "room.reconcile.v1",
-                id,
-                terminal ? "TERMINAL" : "NON_TERMINAL");
+            // Idempotency digest is derived ONLY from stable client request
+            // semantics (operation + roomId). It must never include a mutable
+            // snapshot/projection/terminal observation: the same successful
+            // request must replay its original committed response even when a
+            // concurrent reconcile has since moved the room to CLOSED. A new
+            // observation is a new request key.
+            string digest = LobbyDigest.Compute("room.reconcile.v1", id);
             var key = new LobbyIdempotencyKey(account.AccountId, requestId);
 
             return await _store.ExecuteIdempotentAsync(

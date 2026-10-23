@@ -53,6 +53,7 @@
 - 同 `rulesetVersion` 的公开投影 `CLOSED`/`FINISHED` 是权威终态信号：先在一个存储事务中把 `lobby.room.state` 单调置为 `CLOSED`、写 `closed_at`，并取消该房所有 `RESERVED|CONFIRMED` assignment，再让准入/票据操作以 `409 ROOM_CLOSED` 拒绝。
 - `JoinRoomAsync`/`SpectateRoomAsync`/`IssueTableTicketAsync`/`ConsumeTableTicketAsync` 在应用端口都执行该检查；已签发旧票据在关闭后消费会被拒绝，且不会写入 `table_ticket_consumption` 或 `table_confirmed_at`。HTTP join 只是其中一层，不是唯一防线。
 - `POST /v1/rooms/{id}/reconcile` 提供显式对账端口；重复调用幂等，终态落库后缺失/失败/旧 `OPEN|PLAYING` 投影不能重新开放房间。`CLOSED`/`FINISHED` 仅在与房间 `rulesetVersion` 相同时生效。
+- 对账幂等摘要只由稳定请求语义（操作名 + roomId）决定，**不包含**投影/终态等可变服务端观察。相同账号/roomId/requestId 的重试始终回放首次已提交响应，即使期间由其他请求完成终态关闭；新的观察必须使用新 requestId。同 key 换房间或换操作仍是 `REQUEST_ID_CONFLICT`。
 - 缺失/读取失败的投影仍是明确的最终一致降级：不关闭房间、不伪造终态，目录/详情标 `projectionStale=true`，准入继续按 lobby 自有状态处理。该边界不是 TableService 强一致保证。
 - 显式对账端点需要 bearer session + `Idempotency-Key`；它只依据公开投影和 lobby 自身状态，不读取 TableService 私有状态。
 - 终态释放后全局 placement 栅栏解除，账号可加入其他房间；`CLOSED` 房间会从公开目录隐藏。
@@ -122,7 +123,7 @@ D:\Unity\dotnet\dotnet.exe test dotnet/tests/Mahjong.LobbyService.Tests/Mahjong.
 
 ## 已覆盖 / 未覆盖
 
-**已覆盖（内存/本地 HTTP 契约测试）**：R1 同 deviceId 无 bootstrap 不能接管、不同 bootstrap 为不同账号、同 requestId 不同 bootstrap 不回放 token、同 bootstrap 合法双开/幂等回放；R2 跨房顺序/并发 join 只有一个 assignment、create-vs-join、match-vs-join 互斥、存储直接插入第二活跃 assignment 被拒；R4 CLOSED/FINISHED 拒绝新 join/spectate、关闭后旧票据消费/新签发拒绝且无确认副作用、显式/重复对账释放账号、旧 OPEN 投影不能重开、同 ruleset 限制与缺失投影降级；并发同键建房、幂等冲突、并发同座位加房、四人匹配/第五人排队、取消/过期竞态、过期释放席位、重复匹配、票据字段/无 ownerEpoch、alg/aud/role/seat/room/assignment/expiry/TTL/重复 claim 拒绝、签名篡改、跨账号签发、并发重复消费、重连新票据、密钥轮换/退休、JWKS 无私钥、公开投影合并/降级、程序集不引用 Domain/TableRuntime。
+**已覆盖（内存/本地 HTTP 契约测试）**：R1 同 deviceId 无 bootstrap 不能接管、不同 bootstrap 为不同账号、同 requestId 不同 bootstrap 不回放 token、同 bootstrap 合法双开/幂等回放；R2 跨房顺序/并发 join 只有一个 assignment、create-vs-join、match-vs-join 互斥、存储直接插入第二活跃 assignment 被拒；R4 CLOSED/FINISHED 拒绝新 join/spectate、关闭后旧票据消费/新签发拒绝且无确认副作用、显式/重复对账释放账号、旧 OPEN 投影不能重开、同 ruleset 限制与缺失投影降级；R5 可控投影等待下并发对账同 key 回放、先 NON_TERMINAL 后终态同 key 回放原响应、新 key 才关闭、同 key 换 room/换操作冲突；并发同键建房、幂等冲突、并发同座位加房、四人匹配/第五人排队、取消/过期竞态、过期释放席位、重复匹配、票据字段/无 ownerEpoch、alg/aud/role/seat/room/assignment/expiry/TTL/重复 claim 拒绝、签名篡改、跨账号签发、并发重复消费、重连新票据、密钥轮换/退休、JWKS 无私钥、公开投影合并/降级、程序集不引用 Domain/TableRuntime。
 
 **NOT_RUN / 未覆盖**：
 

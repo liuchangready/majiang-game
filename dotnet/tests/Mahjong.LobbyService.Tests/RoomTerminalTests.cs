@@ -241,6 +241,188 @@ namespace Mahjong.LobbyService.Tests
             Assert.Equal(room.Room.RoomId, joined.Assignment.RoomId);
         }
 
+        [Fact]
+        public async Task ConcurrentTerminalObservationDoesNotChangeReconcileReceiptDigest()
+        {
+            var projection = new PausingProjectionReader();
+            await using LobbyFixture fixture = LobbyFixture.Create(projections: projection);
+            GuestSessionView host = await fixture.CreateGuestAsync("reconcile-race-host");
+            CreateRoomView room = await fixture.CreateRoomAsync(host);
+            LobbySessionInfo session = await fixture.AuthenticateAsync(host);
+            string key = LobbyFixture.NewRequestId();
+
+            projection.PauseNext = true;
+            Task<LobbyResponse> delayed = fixture.Application.ReconcileRoomAsync(
+                session.Account,
+                room.Room.RoomId,
+                key,
+                default);
+            await projection.Entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            projection.Item = new PublicRoomProjection(
+                room.Room.RoomId,
+                "CLOSED",
+                0,
+                0,
+                1,
+                1,
+                fixture.Clock.UtcNow);
+            await fixture.Application.ReconcileRoomAsync(
+                session.Account,
+                room.Room.RoomId,
+                LobbyFixture.NewRequestId(),
+                default);
+            projection.Resume.TrySetResult();
+
+            LobbyResponse first = await delayed;
+            Assert.Equal(200, first.StatusCode);
+            Assert.Equal("CLOSED", LobbyJson.Deserialize<RoomSummaryView>(first.Json).State);
+
+            LobbyResponse retry = await fixture.Application.ReconcileRoomAsync(
+                session.Account,
+                room.Room.RoomId,
+                key,
+                default);
+            Assert.Equal(200, retry.StatusCode);
+            Assert.True(retry.Replayed);
+            Assert.Equal(first.Json, retry.Json);
+        }
+
+        [Fact]
+        public async Task NonTerminalReconcileThenTerminalSameKeyReplaysTheOriginalResponse()
+        {
+            var projection = new MutableProjectionReader();
+            await using LobbyFixture fixture = LobbyFixture.Create(projections: projection);
+            GuestSessionView host = await fixture.CreateGuestAsync("reconcile-nonterminal-host");
+            CreateRoomView room = await fixture.CreateRoomAsync(host);
+            LobbySessionInfo session = await fixture.AuthenticateAsync(host);
+            string key = LobbyFixture.NewRequestId();
+
+            LobbyResponse first = await fixture.Application.ReconcileRoomAsync(
+                session.Account,
+                room.Room.RoomId,
+                key,
+                default);
+            Assert.Equal(200, first.StatusCode);
+            Assert.False(first.Replayed);
+            Assert.Equal("OPEN", LobbyJson.Deserialize<RoomSummaryView>(first.Json).State);
+
+            projection.Set(room.Room.RoomId, "CLOSED", fixture.Clock.UtcNow.AddSeconds(1));
+            LobbyResponse replay = await fixture.Application.ReconcileRoomAsync(
+                session.Account,
+                room.Room.RoomId,
+                key,
+                default);
+            Assert.True(replay.Replayed);
+            Assert.Equal(first.Json, replay.Json);
+
+            LobbyRoomSnapshot? persisted = await fixture.Application.Store.FindRoomSnapshotAsync(
+                room.Room.RoomId,
+                fixture.Clock.UtcNow,
+                default);
+            Assert.Equal(LobbyRoomState.Open, persisted!.Room.State);
+
+            LobbyResponse newKey = await fixture.Application.ReconcileRoomAsync(
+                session.Account,
+                room.Room.RoomId,
+                LobbyFixture.NewRequestId(),
+                default);
+            Assert.Equal(200, newKey.StatusCode);
+            Assert.Equal("CLOSED", LobbyJson.Deserialize<RoomSummaryView>(newKey.Json).State);
+            persisted = await fixture.Application.Store.FindRoomSnapshotAsync(
+                room.Room.RoomId,
+                fixture.Clock.UtcNow,
+                default);
+            Assert.Equal(LobbyRoomState.Closed, persisted!.Room.State);
+        }
+
+        [Fact]
+        public async Task SameReconcileKeyForDifferentOperationIsARealConflict()
+        {
+            var projection = new MutableProjectionReader();
+            await using LobbyFixture fixture = LobbyFixture.Create(projections: projection);
+            GuestSessionView host = await fixture.CreateGuestAsync("reconcile-op-host");
+            CreateRoomView room = await fixture.CreateRoomAsync(host);
+            GuestSessionView guest = await fixture.CreateGuestAsync("reconcile-op-guest");
+            LobbySessionInfo session = await fixture.AuthenticateAsync(guest);
+            string key = LobbyFixture.NewRequestId();
+
+            LobbyResponse reconcile = await fixture.Application.ReconcileRoomAsync(
+                session.Account,
+                room.Room.RoomId,
+                key,
+                default);
+            Assert.Equal(200, reconcile.StatusCode);
+
+            LobbyException conflict = await Assert.ThrowsAsync<LobbyException>(
+                () => fixture.JoinAsync(
+                    guest,
+                    room.Room.RoomId,
+                    preferSeat: 1,
+                    requestId: key));
+            Assert.Equal(409, conflict.StatusCode);
+            Assert.Equal("REQUEST_ID_CONFLICT", conflict.Code);
+        }
+
+        [Fact]
+        public async Task SameReconcileKeyForDifferentRoomIsARealConflict()
+        {
+            var projection = new MutableProjectionReader();
+            await using LobbyFixture fixture = LobbyFixture.Create(projections: projection);
+            GuestSessionView hostA = await fixture.CreateGuestAsync("reconcile-key-host-a");
+            CreateRoomView roomA = await fixture.CreateRoomAsync(hostA, "A");
+            GuestSessionView hostB = await fixture.CreateGuestAsync("reconcile-key-host-b");
+            CreateRoomView roomB = await fixture.CreateRoomAsync(hostB, "B");
+            LobbySessionInfo session = await fixture.AuthenticateAsync(hostA);
+            string key = LobbyFixture.NewRequestId();
+
+            LobbyResponse first = await fixture.Application.ReconcileRoomAsync(
+                session.Account,
+                roomA.Room.RoomId,
+                key,
+                default);
+            Assert.Equal(200, first.StatusCode);
+
+            LobbyException conflict = await Assert.ThrowsAsync<LobbyException>(
+                () => fixture.Application.ReconcileRoomAsync(
+                    session.Account,
+                    roomB.Room.RoomId,
+                    key,
+                    default));
+            Assert.Equal(409, conflict.StatusCode);
+            Assert.Equal("REQUEST_ID_CONFLICT", conflict.Code);
+        }
+
+        private sealed class PausingProjectionReader : IRoomProjectionReader
+        {
+            public bool PauseNext { get; set; }
+
+            public PublicRoomProjection? Item { get; set; }
+
+            public TaskCompletionSource Entered { get; } =
+                new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+
+            public TaskCompletionSource Resume { get; } =
+                new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+
+            public async Task<PublicRoomProjectionBatch> ReadAsync(
+                IReadOnlyList<string> roomIds,
+                CancellationToken cancellationToken)
+            {
+                PublicRoomProjection? captured = Item;
+                if (PauseNext)
+                {
+                    PauseNext = false;
+                    Entered.TrySetResult();
+                    await Resume.Task.WaitAsync(cancellationToken);
+                }
+
+                return new PublicRoomProjectionBatch(
+                    captured == null
+                        ? Array.Empty<PublicRoomProjection>()
+                        : new[] { captured });
+            }
+        }
+
         private sealed class MutableProjectionReader : IRoomProjectionReader
         {
             private readonly Dictionary<string, PublicRoomProjection> _items =
