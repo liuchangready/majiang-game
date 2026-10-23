@@ -8,8 +8,12 @@
 #
 # Local equivalent:
 #   powershell -ExecutionPolicy Bypass -File tools\verify-v5.ps1 -Configuration Release
-# Logs land under artifacts\verify-v5\<timestamp>\ (summary.log plus one log per
-# build/test/copy step).
+# Logs land under artifacts\verify-v5\<timestamp>\ (summary.log, run-info.txt,
+# one log per build/test/copy step, per-invocation runs\<project>\<mode>.meta.txt
+# and the raw test-framework failure logs under test-results\<project>\).
+# The upload below therefore contains everything needed to name a failing test
+# case: the framework log path quoted by dotnet test failures is collected into
+# test-results\<project>\ by verify-v5.ps1 before the job ends.
 
 name: v5-verify
 
@@ -38,10 +42,14 @@ jobs:
         shell: pwsh
         run: ./tools/verify-v5.ps1 -Configuration Release
 
-      - name: Upload verification logs
+      # Always uploaded, including on failure / BLOCKED / no parseable summary:
+      # a green claim without the artifact is not evidence. The artifact name
+      # carries the run id + attempt so retries never overwrite each other.
+      - name: Upload verification logs and test-framework diagnostics
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: v5-verify-logs
+          name: v5-verify-logs-${{ github.run_id }}-${{ github.run_attempt }}
           path: artifacts/verify-v5/**
-          if-no-files-found: warn
+          if-no-files-found: error
+          retention-days: 30

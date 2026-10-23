@@ -27,6 +27,18 @@
         whose log shows no build errors may fall back to the official in-process
         runner (xunit.v3 / Microsoft.Testing.Platform executable) of the same
         test assembly; the summary states which runner produced the counts
+      - every test execution is attributable: run-info.txt records the exact head
+        SHA / branch / CI run identity, and runs\<project>\<mode>.meta.txt records
+        the exact command line, working directory, exit code, parsed counts and
+        the collected framework-log list of each dotnetTest/direct invocation
+      - raw test-framework failure logs (xunit.v3 / MTP TestResults, e.g.
+        bin\<cfg>\<tfm>\TestResults\<asm>_<tfm>_<arch>.log - the file that names
+        the failing case) are collected under <log dir>\test-results\<project>\
+        with relative paths preserved. Collection is run-exclusive: the project's
+        TestResults directories are removed immediately before each runner
+        invocation, so a log found after the run was produced by THIS run only
+        and stale logs can never be presented as current-run evidence. Collection
+        is best-effort evidence and never changes a gate result or exit code
       - the Unity plugin copy is exercised into a scratch directory under the log
         dir; tracked plugin DLLs and ProjectSettings are never overwritten
 
@@ -34,6 +46,12 @@
       powershell -ExecutionPolicy Bypass -File tools\verify-v5.ps1 [-Configuration Release]
                  [-DotnetPath D:\Unity\dotnet\dotnet.exe] [-RunnerMode auto|dotnetTest|direct]
                  [-ManifestPath <path>] [-LogDir <path>] [-SkipPluginCopyCheck]
+                 [-NoProjectDiscovery]
+
+    -NoProjectDiscovery disables auto-discovery of *.Tests projects under
+    dotnet\tests|src; only manifest projects are verified. Used by the isolated
+    diagnostics self-test (tools\tests\VerifyV5Diagnostics.Tests.ps1) to verify a
+    throwaway fixture project without touching the production tree.
 
     Exit codes: 0 = every row PASS; 1 = at least one row FAIL; 2 = environment
     blocked (manifest/solution/dotnet missing).
@@ -52,7 +70,9 @@ param(
     [ValidateSet('auto', 'dotnetTest', 'direct')]
     [string]$RunnerMode = 'auto',
 
-    [switch]$SkipPluginCopyCheck
+    [switch]$SkipPluginCopyCheck,
+
+    [switch]$NoProjectDiscovery
 )
 
 $ErrorActionPreference = 'Stop'
@@ -65,6 +85,16 @@ if (-not $ManifestPath) { $ManifestPath = Join-Path $PSScriptRoot 'v5-verify.man
 if (-not $LogDir) {
     $timestamp = Get-Date -Format 'yyyyMMdd-HHmmss'
     $LogDir = Join-Path $root "artifacts\verify-v5\$timestamp"
+}
+
+# Each run gets an exclusive log directory - a second run in the same second
+# (or an explicit -LogDir that already exists) never appends into a previous
+# run's evidence.
+$suffix = 0
+$LogDirBase = $LogDir
+while (Test-Path $LogDir) {
+    $suffix++
+    $LogDir = "$LogDirBase-$suffix"
 }
 
 function Write-Step([string]$message) { Write-Host "[verify-v5] $message" }
@@ -88,6 +118,16 @@ function Invoke-Captured {
     $exit = $LASTEXITCODE
     $output | Out-String | Set-Content -Path $LogPath -Encoding UTF8
     return $exit
+}
+
+function Resolve-UnderRoot([string]$Base, [string]$Path) {
+    # Manifest paths are repository-relative; the isolated diagnostics self-test
+    # passes absolute paths into its own TEMP fixture. Join-Path would CONCATENATE
+    # a rooted path on a different drive (Join-Path D:\repo C:\x -> D:\repo\C:\x),
+    # so rooted paths are returned unchanged.
+    $p = $Path -replace '/', '\'
+    if ([IO.Path]::IsPathRooted($p)) { return $p }
+    return Join-Path $Base $p
 }
 
 function Get-CsprojProperty {
@@ -130,7 +170,155 @@ function Get-TestSummaryFromDirectRunner([string]$logPath) {
     }
 }
 
+# --- run identity / diagnostics collection helpers ------------------------------
+# Git failures are recorded verbatim, never fabricated.
+
+function Get-RunHeadInfo {
+    $info = @{ Head = '(unknown)'; Branch = '(unknown)' }
+    try {
+        $head = (& git -C $root rev-parse HEAD 2>$null | Out-String).Trim()
+        if ($head) { $info.Head = $head }
+        $branch = (& git -C $root rev-parse --abbrev-ref HEAD 2>$null | Out-String).Trim()
+        if ($branch) { $info.Branch = $branch }
+    }
+    catch {
+        $info.Head = "git unavailable: $($_.Exception.Message)"
+    }
+    return $info
+}
+
+function Get-CiProvenanceLines {
+    # Only public run-metadata variables. No token/secret values are read.
+    $lines = @()
+    foreach ($name in @('GITHUB_REPOSITORY', 'GITHUB_RUN_ID', 'GITHUB_RUN_ATTEMPT', 'GITHUB_SHA', 'GITHUB_REF', 'GITHUB_REF_NAME', 'RUNNER_OS', 'CI')) {
+        $value = [Environment]::GetEnvironmentVariable($name)
+        if ($value) { $lines += ("{0}={1}" -f $name, $value) }
+    }
+    return $lines
+}
+
+function Write-RunInfoFile {
+    param([string]$Phase, [hashtable]$Head)
+    $scriptHash = '(unavailable)'
+    try { $scriptHash = (Get-FileHash -Path $PSCommandPath -Algorithm SHA256).Hash } catch { }
+    $ciLines = Get-CiProvenanceLines
+    $text = @(
+        "verify-v5 run identity  ($Phase)"
+        "utc          : $((Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ'))"
+        "local        : $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss zzz')"
+        "head         : $($Head.Head)"
+        "branch       : $($Head.Branch)"
+        "config       : $Configuration"
+        "runner mode  : $RunnerMode"
+        "manifest     : $ManifestPath"
+        "log dir      : $LogDir"
+        "script       : $PSCommandPath"
+        "script sha256: $scriptHash"
+        "dotnet       : (resolved later; see sdk-diagnostic.log)"
+        "ci provenance: $(if ($ciLines.Count) { $ciLines -join ' ' } else { '(none - local run)' })"
+    )
+    Set-Content -Path (Join-Path $LogDir 'run-info.txt') -Value ($text -join [Environment]::NewLine) -Encoding UTF8
+}
+
+# Run-exclusive framework-log collection: the project's TestResults directories
+# (bin\<cfg>\<tfm>\TestResults - where xunit.v3/MTP writes its failure log - and
+# the classic project-root TestResults) are removed immediately before each
+# runner invocation, so anything found after the run was produced by THIS run.
+function Get-TestResultsCandidates {
+    param([string]$ProjectDir, [string]$Configuration, [string]$Tfm)
+    return @(
+        (Join-Path $ProjectDir (Join-Path 'bin' (Join-Path $Configuration (Join-Path $Tfm 'TestResults')))),
+        (Join-Path $ProjectDir 'TestResults')
+    )
+}
+
+function Clear-TestResultsDirs {
+    param([string[]]$Dirs)
+    $removed = 0
+    foreach ($dir in $Dirs) {
+        if (-not (Test-Path -LiteralPath $dir)) { continue }
+        try {
+            Remove-Item -LiteralPath $dir -Recurse -Force
+            $removed++
+        }
+        catch {
+            Add-Content -Path (Join-Path $LogDir 'collection-errors.log') -Value ("purge failed for ${dir}: $($_.Exception.Message)") -Encoding UTF8
+        }
+    }
+    return $removed
+}
+
+function Save-TestResults {
+    param([string]$ProjectName, [string[]]$Dirs)
+    $destRoot = Join-Path $LogDir (Join-Path 'test-results' $ProjectName)
+    $collected = @()
+    foreach ($dir in $Dirs) {
+        if (-not (Test-Path -LiteralPath $dir)) { continue }
+        $files = @()
+        try { $files = @(Get-ChildItem -LiteralPath $dir -Recurse -File -ErrorAction Stop) }
+        catch {
+            Add-Content -Path (Join-Path $LogDir 'collection-errors.log') -Value ("enumerate failed for ${dir}: $($_.Exception.Message)") -Encoding UTF8
+            continue
+        }
+        foreach ($file in $files) {
+            $rel = $file.FullName.Substring($dir.Length).TrimStart('\', '/')
+            $dest = Join-Path $destRoot $rel
+            try {
+                $destDir = Split-Path $dest -Parent
+                if (-not (Test-Path -LiteralPath $destDir)) { New-Item -ItemType Directory -Force -Path $destDir | Out-Null }
+                Copy-Item -LiteralPath $file.FullName -Destination $dest -Force
+                $hash = '(unavailable)'
+                try { $hash = (Get-FileHash -LiteralPath $dest -Algorithm SHA256).Hash } catch { }
+                $collected += ("{0}  sha256={1}" -f (Join-Path (Join-Path 'test-results' $ProjectName) $rel), $hash)
+            }
+            catch {
+                Add-Content -Path (Join-Path $LogDir 'collection-errors.log') -Value ("copy failed for $($file.FullName): $($_.Exception.Message)") -Encoding UTF8
+            }
+        }
+    }
+    return $collected
+}
+
+function Write-RunMetaFile {
+    # Per-invocation attribution. The final row result of the project is in
+    # summary.log; this file pins down exactly what was executed and produced.
+    param(
+        [string]$Name, [string]$ProjectPath, [string]$Kind, [string]$Mode,
+        [string]$RunnerTag, [string]$Runner, [string]$Command, [string]$Cwd,
+        [object]$ExitCode, [object]$Total, [object]$Failed, [object]$Skipped,
+        [string[]]$Collected, [int]$PurgedDirs, [hashtable]$Head
+    )
+    $dir = Join-Path $LogDir (Join-Path 'runs' $Name)
+    if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Force -Path $dir | Out-Null }
+    $text = @(
+        "project     : $Name ($ProjectPath)"
+        "kind        : $Kind"
+        "runner mode : $Mode"
+        "runner tag  : $RunnerTag"
+        "runner used : $Runner"
+        "command     : $Command"
+        "cwd         : $Cwd"
+        "exit code   : $ExitCode"
+        "total       : $Total"
+        "failed      : $Failed"
+        "skipped     : $Skipped"
+        "head        : $($Head.Head)"
+        "purged TestResults dirs before this invocation: $PurgedDirs"
+        "collected framework logs:"
+    )
+    if (@($Collected).Count -gt 0) { $text += (@($Collected) | ForEach-Object { "  $_" }) }
+    else { $text += "  (none)" }
+    Set-Content -Path (Join-Path $dir "$RunnerTag.meta.txt") -Value ($text -join [Environment]::NewLine) -Encoding UTF8
+}
+
 # --- 0. environment ------------------------------------------------------------
+# The exclusive log directory and the run identity are established before any
+# BLOCKED exit so even an environment-blocked run leaves evidence of what was
+# attempted (same exit codes as before - only the evidence is new).
+$headInfo = Get-RunHeadInfo
+New-Item -ItemType Directory -Force -Path $LogDir | Out-Null
+Write-RunInfoFile -Phase 'start' -Head $headInfo
+
 if (-not (Test-Path $ManifestPath)) {
     Write-Host "BLOCKED: manifest not found: $ManifestPath"
     exit 2
@@ -138,7 +326,7 @@ if (-not (Test-Path $ManifestPath)) {
 $manifest = Get-Content $ManifestPath -Raw | ConvertFrom-Json
 
 $DotnetPath = Resolve-DotnetPath
-$solution = Join-Path $root ($manifest.solution -replace '/', '\')
+$solution = Resolve-UnderRoot $root $manifest.solution
 if (-not $DotnetPath) {
     Write-Host "BLOCKED: dotnet.exe not found (pass -DotnetPath)"
     exit 2
@@ -147,8 +335,6 @@ if (-not (Test-Path $solution)) {
     Write-Host "BLOCKED: solution not found: $solution"
     exit 2
 }
-
-New-Item -ItemType Directory -Force -Path $LogDir | Out-Null
 
 # --- 0b. SDK diagnostics -------------------------------------------------------
 # Record the SDK actually selected by the dotnet executable used for every build
@@ -211,19 +397,21 @@ foreach ($entry in $manifest.projects) {
 }
 
 $discoveredAny = $false
-foreach ($pattern in @('dotnet\tests\*\*.Tests\*.Tests.csproj', 'dotnet\src\*\*.Tests\*.Tests.csproj', 'dotnet\tests\*\*.csproj')) {
-    foreach ($found in (Get-ChildItem -Path (Join-Path $root $pattern) -File -ErrorAction SilentlyContinue)) {
-        $rel = $found.FullName.Substring($root.Length + 1)
-        if ($projects.ContainsKey($rel)) { continue }
-        $isTest = $found.BaseName -like '*.Tests'
-        $projects[$rel] = @{
-            Path     = $rel
-            Kind     = $(if ($isTest) { 'test' } else { 'helper' })
-            Required = $false
-            Source   = 'discovered'
-            Comment  = $(if ($isTest) { 'auto-discovered *.Tests project' } else { 'auto-discovered non-test project under dotnet/tests; treated as build-only helper' })
+if (-not $NoProjectDiscovery) {
+    foreach ($pattern in @('dotnet\tests\*\*.Tests\*.Tests.csproj', 'dotnet\src\*\*.Tests\*.Tests.csproj', 'dotnet\tests\*\*.csproj')) {
+        foreach ($found in (Get-ChildItem -Path (Join-Path $root $pattern) -File -ErrorAction SilentlyContinue)) {
+            $rel = $found.FullName.Substring($root.Length + 1)
+            if ($projects.ContainsKey($rel)) { continue }
+            $isTest = $found.BaseName -like '*.Tests'
+            $projects[$rel] = @{
+                Path     = $rel
+                Kind     = $(if ($isTest) { 'test' } else { 'helper' })
+                Required = $false
+                Source   = 'discovered'
+                Comment  = $(if ($isTest) { 'auto-discovered *.Tests project' } else { 'auto-discovered non-test project under dotnet/tests; treated as build-only helper' })
+            }
+            $discoveredAny = $true
         }
-        $discoveredAny = $true
     }
 }
 
@@ -242,7 +430,7 @@ Write-Step ("projects  : {0} total ({1} manifest, {2} discovered)" -f $ordered.C
 
 foreach ($project in $ordered) {
     $project.Name = [IO.Path]::GetFileNameWithoutExtension($project.Path)
-    $exists = Test-Path (Join-Path $root $project.Path)
+    $exists = Test-Path (Resolve-UnderRoot $root $project.Path)
     $project.Exists = $exists
     $project.InSln = @($slnMembers | Where-Object { $_ -ieq $project.Path }).Count -gt 0
 
@@ -285,7 +473,7 @@ foreach ($project in $ordered) {
     # Not scheduled in the sln (discovered test or helper), or the solution build
     # failed. Build this project alone so `Built` always reflects a real build of
     # the current source - never a leftover binary from an earlier run.
-    $csproj = Join-Path $root $project.Path
+    $csproj = Resolve-UnderRoot $root $project.Path
     $project.BuildLog = Join-Path $LogDir ("build-{0}.log" -f $project.Name)
     $exit = Invoke-Captured -LogPath $project.BuildLog -Command { & $DotnetPath build $csproj -c $Configuration --nologo }
     $project.Built = ($exit -eq 0)
@@ -304,7 +492,7 @@ foreach ($project in $ordered) {
     if ($project.Result -eq 'FAIL') { continue }
     $name = [IO.Path]::GetFileNameWithoutExtension($project.Path)
     $project.Name = $name
-    $csproj = Join-Path $root $project.Path
+    $csproj = Resolve-UnderRoot $root $project.Path
 
     if ($project.Kind -ne 'test') {
         if ($project.Built) {
@@ -330,7 +518,7 @@ foreach ($project in $ordered) {
     if (-not $tfm) { $tfm = 'netstandard2.1' } # dotnet/Directory.Build.props default
     $assemblyName = Get-CsprojProperty -CsprojPath $csproj -Name 'AssemblyName'
     if (-not $assemblyName) { $assemblyName = $name }
-    $testDll = Join-Path $root (Join-Path (Split-Path $project.Path -Parent) "bin\$Configuration\$tfm\$assemblyName.dll")
+    $testDll = Resolve-UnderRoot $root (Join-Path (Split-Path $project.Path -Parent) "bin\$Configuration\$tfm\$assemblyName.dll")
 
     $project.Runner = 'none'
     $project.Total = 0
@@ -339,9 +527,20 @@ foreach ($project in $ordered) {
 
     if ($RunnerMode -ne 'direct') {
         $project.DotnetTestLog = Join-Path $LogDir ("dotnetTest-{0}.log" -f $name)
+        $projectDir = Resolve-UnderRoot $root (Split-Path $project.Path -Parent)
+        $testResultsDirs = @(Get-TestResultsCandidates -ProjectDir $projectDir -Configuration $Configuration -Tfm $tfm)
+        $purgedDirs = Clear-TestResultsDirs -Dirs $testResultsDirs
         Write-Step "dotnet test : $name"
+        $dotnetTestCommand = "$DotnetPath test $csproj -c $Configuration --nologo"
         $exit = Invoke-Captured -LogPath $project.DotnetTestLog -Command { & $DotnetPath test $csproj -c $Configuration --nologo }
+        $collected = @(Save-TestResults -ProjectName $name -Dirs $testResultsDirs)
         $summary = Get-TestSummaryFromVstest $project.DotnetTestLog
+        Write-RunMetaFile -Name $name -ProjectPath $project.Path -Kind $project.Kind -Mode $RunnerMode `
+            -RunnerTag 'dotnetTest' -Runner 'dotnet test' -Command $dotnetTestCommand -Cwd $cwd -ExitCode $exit `
+            -Total $(if ($summary) { $summary.Total } else { '(no parseable summary)' }) `
+            -Failed $(if ($summary) { $summary.Failed } else { '-' }) `
+            -Skipped $(if ($summary) { $summary.Skipped } else { '-' }) `
+            -Collected $collected -PurgedDirs $purgedDirs -Head $headInfo
         if ($summary) {
             $project.Runner = 'dotnet test'
             $project.Total = $summary.Total
@@ -388,9 +587,21 @@ foreach ($project in $ordered) {
             continue
         }
         $project.DirectLog = Join-Path $LogDir ("direct-{0}.log" -f $name)
+        $directProjectDir = Resolve-UnderRoot $root (Split-Path $project.Path -Parent)
+        $directResultsDirs = @(Get-TestResultsCandidates -ProjectDir $directProjectDir -Configuration $Configuration -Tfm $tfm)
+        $directPurgedDirs = Clear-TestResultsDirs -Dirs $directResultsDirs
         Write-Step "direct run  : $name"
+        $directRunnerArgs = @($manifest.testRunner.directRunnerArgs) -join ' '
+        $directCommand = "$DotnetPath $testDll $directRunnerArgs"
         $exit = Invoke-Captured -LogPath $project.DirectLog -Command { & $DotnetPath $testDll @($manifest.testRunner.directRunnerArgs) }
+        $directCollected = @(Save-TestResults -ProjectName $name -Dirs $directResultsDirs)
         $summary = Get-TestSummaryFromDirectRunner $project.DirectLog
+        Write-RunMetaFile -Name $name -ProjectPath $project.Path -Kind $project.Kind -Mode $RunnerMode `
+            -RunnerTag 'direct' -Runner 'in-process (direct)' -Command $directCommand -Cwd $cwd -ExitCode $exit `
+            -Total $(if ($summary) { $summary.Total } else { '(no parseable summary)' }) `
+            -Failed $(if ($summary) { $summary.Failed } else { '-' }) `
+            -Skipped $(if ($summary) { $summary.Skipped } else { '-' }) `
+            -Collected $directCollected -PurgedDirs $directPurgedDirs -Head $headInfo
         if ($summary) {
             $project.Runner = $(if ($project.Runner -eq 'none') { 'in-process (direct)' } else { $project.Runner })
             $project.Total = $summary.Total
@@ -471,6 +682,10 @@ $summaryPath = Join-Path $LogDir 'summary.log'
 $lines = New-Object System.Collections.Generic.List[string]
 $lines.Add("verify-v5 summary  $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')  config=$Configuration")
 $lines.Add("dotnet SDK     : $sdkVersion  path: $DotnetPath  cwd: $cwd  log: $sdkLog")
+$ciLines = Get-CiProvenanceLines
+$lines.Add("head           : $($headInfo.Head)  branch: $($headInfo.Branch)")
+$lines.Add("ci provenance  : $(if ($ciLines.Count) { $ciLines -join ' ' } else { '(none - local run)' })")
+$lines.Add("run identity   : run-info.txt; per-invocation command/exit/counts: runs\<project>\<mode>.meta.txt; raw framework logs: test-results\<project>\")
 $lines.Add("")
 $lines.Add("solution build : $(if ($buildOk) { "PASS (exit $slnExit)" } else { "FAIL (exit $slnExit)" })  log: $slnBuildLog")
 $lines.Add("plugin copy    : $pluginResult  ($($pluginDetail))$(if ($pluginLog) { "  log: $pluginLog" })")
