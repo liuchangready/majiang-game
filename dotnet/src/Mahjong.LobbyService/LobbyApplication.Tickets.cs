@@ -22,6 +22,38 @@ namespace Mahjong.LobbyService
             string assignmentId = LobbyText.RequireId(command.AssignmentId, "assignmentId");
             string payloadDigest = LobbyDigest.Compute("table.ticket.issue.v1", assignmentId);
             DateTimeOffset now = _clock.UtcNow;
+            LobbyAssignment? preAssignment = await _store.FindAssignmentAsync(assignmentId, cancellationToken)
+                .ConfigureAwait(false);
+            if (preAssignment == null ||
+                !string.Equals(preAssignment.AccountId, account.AccountId, StringComparison.Ordinal))
+            {
+                throw new LobbyException(404, "ASSIGNMENT_NOT_FOUND", "The assignment does not exist for this account.");
+            }
+
+            LobbyRoomSnapshot? preRoom = await _store.FindRoomSnapshotAsync(
+                preAssignment.RoomId,
+                now,
+                cancellationToken).ConfigureAwait(false);
+            if (preRoom == null)
+            {
+                throw new LobbyException(404, "ROOM_NOT_FOUND", "The assignment room does not exist.");
+            }
+
+            if (preRoom.Room.State == LobbyRoomState.Closed)
+            {
+                throw new LobbyException(409, "ROOM_CLOSED", "The room is closed.");
+            }
+
+            bool terminalObserved = await EnsureTerminalRoomReconciledAsync(
+                preAssignment.RoomId,
+                preRoom.Room.RulesetVersion,
+                now,
+                cancellationToken).ConfigureAwait(false);
+            if (terminalObserved)
+            {
+                throw new LobbyException(409, "ROOM_CLOSED", "The room is closed by the authoritative public projection.");
+            }
+
             DateTimeOffset issuedAt = DateTimeOffset.FromUnixTimeSeconds(now.ToUnixTimeSeconds());
             DateTimeOffset expiresAt = issuedAt.AddSeconds(_options.TicketTtlSeconds);
             var key = new LobbyIdempotencyKey(account.AccountId, requestId);
@@ -33,6 +65,18 @@ namespace Mahjong.LobbyService
                 async (tx, ct) =>
                 {
                     await tx.ExpireDueAsync(now, ct).ConfigureAwait(false);
+                    LobbyRoom? room = await tx.FindRoomForUpdateAsync(preAssignment.RoomId, ct)
+                        .ConfigureAwait(false);
+                    if (room == null)
+                    {
+                        throw new LobbyException(404, "ROOM_NOT_FOUND", "The assignment room does not exist.");
+                    }
+
+                    if (room.State != LobbyRoomState.Open)
+                    {
+                        throw new LobbyException(409, "ROOM_CLOSED", "The room is closed.");
+                    }
+
                     LobbyAssignment? assignment = await tx.FindAssignmentForUpdateAsync(
                         assignmentId,
                         ct).ConfigureAwait(false);
@@ -156,15 +200,36 @@ namespace Mahjong.LobbyService
                 throw new LobbyException(status, ex.Code, ex.Message);
             }
 
+            bool terminalObserved = await EnsureTerminalRoomReconciledAsync(
+                claims.RoomId,
+                claims.RulesetVersion,
+                now,
+                cancellationToken).ConfigureAwait(false);
+            if (terminalObserved)
+            {
+                throw new LobbyException(409, "ROOM_CLOSED", "The room is closed by the authoritative public projection.");
+            }
+
             return await _store.ExecuteAsync(
                 now,
                 async (tx, ct) =>
                 {
                     await tx.ExpireDueAsync(now, ct).ConfigureAwait(false);
-                    // Lock order is assignment -> table ticket -> match ticket
-                    // in both issuance and consumption. This keeps the
-                    // consume/issue/reconnect paths from taking locks in
-                    // opposite order under PostgreSQL.
+                    // Lock order is room -> assignment -> table ticket -> match
+                    // ticket. Terminal reconciliation uses the same room-first
+                    // order before this transaction.
+                    LobbyRoom? room = await tx.FindRoomForUpdateAsync(claims.RoomId, ct)
+                        .ConfigureAwait(false);
+                    if (room == null)
+                    {
+                        throw new LobbyException(409, "ROOM_NOT_FOUND", "The ticket room no longer exists.");
+                    }
+
+                    if (room.State != LobbyRoomState.Open)
+                    {
+                        throw new LobbyException(409, "ROOM_CLOSED", "The room is closed.");
+                    }
+
                     LobbyAssignment? assignment = await tx.FindAssignmentForUpdateAsync(
                         claims.AssignmentId,
                         ct).ConfigureAwait(false);

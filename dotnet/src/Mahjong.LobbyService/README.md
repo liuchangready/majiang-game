@@ -22,6 +22,7 @@
 | `POST /v1/rooms` | 建房；`maxPlayers` 固定 4、`rulesetVersion=1` | `Idempotency-Key` |
 | `POST /v1/rooms/{id}/join` | 加房；`preferSeat` 只是偏好 | `Idempotency-Key` |
 | `POST /v1/rooms/{id}/spectate` | 观战；与玩家角色互斥 | `Idempotency-Key` |
+| `POST /v1/rooms/{id}/reconcile` | 观察公开投影并显式落入终态/释放 placement | `Idempotency-Key` |
 | `POST /v1/match/tickets` | 进入 `QUEUED` | `Idempotency-Key` |
 | `GET /v1/match/tickets/{id}` | 查询匹配（仅 owner） | 只读 |
 | `POST /v1/match/tickets/{id}/cancel` | 取消/已终态幂等返回 | `Idempotency-Key` |
@@ -46,6 +47,15 @@
 - 丢失 bootstrap：没有恢复路径；以新 bootstrap 创建新游客身份。P5.3 不实现账号找回，也不把 deviceId 当账户恢复。
 - 同一 requestId + 同一 bootstrap：幂等回放原 session token。
 - 服务端不回显 bootstrapSecret，不写日志。
+
+### 房间终态对账（R4 修复）
+
+- 同 `rulesetVersion` 的公开投影 `CLOSED`/`FINISHED` 是权威终态信号：先在一个存储事务中把 `lobby.room.state` 单调置为 `CLOSED`、写 `closed_at`，并取消该房所有 `RESERVED|CONFIRMED` assignment，再让准入/票据操作以 `409 ROOM_CLOSED` 拒绝。
+- `JoinRoomAsync`/`SpectateRoomAsync`/`IssueTableTicketAsync`/`ConsumeTableTicketAsync` 在应用端口都执行该检查；已签发旧票据在关闭后消费会被拒绝，且不会写入 `table_ticket_consumption` 或 `table_confirmed_at`。HTTP join 只是其中一层，不是唯一防线。
+- `POST /v1/rooms/{id}/reconcile` 提供显式对账端口；重复调用幂等，终态落库后缺失/失败/旧 `OPEN|PLAYING` 投影不能重新开放房间。`CLOSED`/`FINISHED` 仅在与房间 `rulesetVersion` 相同时生效。
+- 缺失/读取失败的投影仍是明确的最终一致降级：不关闭房间、不伪造终态，目录/详情标 `projectionStale=true`，准入继续按 lobby 自有状态处理。该边界不是 TableService 强一致保证。
+- 显式对账端点需要 bearer session + `Idempotency-Key`；它只依据公开投影和 lobby 自身状态，不读取 TableService 私有状态。
+- 终态释放后全局 placement 栅栏解除，账号可加入其他房间；`CLOSED` 房间会从公开目录隐藏。
 
 ## 匹配
 
@@ -112,7 +122,7 @@ D:\Unity\dotnet\dotnet.exe test dotnet/tests/Mahjong.LobbyService.Tests/Mahjong.
 
 ## 已覆盖 / 未覆盖
 
-**已覆盖（内存/本地 HTTP 契约测试）**：R1 同 deviceId 无 bootstrap 不能接管、不同 bootstrap 为不同账号、同 requestId 不同 bootstrap 不回放 token、同 bootstrap 合法双开/幂等回放；R2 跨房顺序/并发 join 只有一个 assignment、create-vs-join、match-vs-join 互斥、存储直接插入第二活跃 assignment 被拒；并发同键建房、幂等冲突、并发同座位加房、四人匹配/第五人排队、取消/过期竞态、过期释放席位、重复匹配、票据字段/无 ownerEpoch、alg/aud/role/seat/room/assignment/expiry/TTL/重复 claim 拒绝、签名篡改、跨账号签发、并发重复消费、重连新票据、密钥轮换/退休、JWKS 无私钥、公开投影合并/降级、程序集不引用 Domain/TableRuntime。
+**已覆盖（内存/本地 HTTP 契约测试）**：R1 同 deviceId 无 bootstrap 不能接管、不同 bootstrap 为不同账号、同 requestId 不同 bootstrap 不回放 token、同 bootstrap 合法双开/幂等回放；R2 跨房顺序/并发 join 只有一个 assignment、create-vs-join、match-vs-join 互斥、存储直接插入第二活跃 assignment 被拒；R4 CLOSED/FINISHED 拒绝新 join/spectate、关闭后旧票据消费/新签发拒绝且无确认副作用、显式/重复对账释放账号、旧 OPEN 投影不能重开、同 ruleset 限制与缺失投影降级；并发同键建房、幂等冲突、并发同座位加房、四人匹配/第五人排队、取消/过期竞态、过期释放席位、重复匹配、票据字段/无 ownerEpoch、alg/aud/role/seat/room/assignment/expiry/TTL/重复 claim 拒绝、签名篡改、跨账号签发、并发重复消费、重连新票据、密钥轮换/退休、JWKS 无私钥、公开投影合并/降级、程序集不引用 Domain/TableRuntime。
 
 **NOT_RUN / 未覆盖**：
 

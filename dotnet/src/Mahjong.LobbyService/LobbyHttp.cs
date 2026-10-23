@@ -189,6 +189,19 @@ namespace Mahjong.LobbyService
                 await WriteResponseAsync(context, response).ConfigureAwait(false);
             });
 
+            app.MapPost("/v1/rooms/{roomId}/reconcile", async context =>
+            {
+                LobbySessionInfo session = await AuthenticateAsync(lobby, context).ConfigureAwait(false);
+                string requestId = RequireIdempotency(context);
+                string roomId = (string)context.Request.RouteValues["roomId"]!;
+                LobbyResponse response = await lobby.ReconcileRoomAsync(
+                    session.Account,
+                    roomId,
+                    requestId,
+                    context.RequestAborted).ConfigureAwait(false);
+                await WriteResponseAsync(context, response).ConfigureAwait(false);
+            });
+
             app.MapPost("/v1/rooms/{roomId}/spectate", async context =>
             {
                 LobbySessionInfo session = await AuthenticateAsync(lobby, context).ConfigureAwait(false);

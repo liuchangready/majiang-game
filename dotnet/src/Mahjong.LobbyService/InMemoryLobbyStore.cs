@@ -142,6 +142,22 @@ namespace Mahjong.LobbyService
             }
         }
 
+        public async Task<LobbyAssignment?> FindAssignmentAsync(
+            string assignmentId,
+            CancellationToken cancellationToken)
+        {
+            await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+            try
+            {
+                _state.Assignments.TryGetValue(assignmentId, out LobbyAssignment? assignment);
+                return assignment;
+            }
+            finally
+            {
+                _gate.Release();
+            }
+        }
+
         public async Task<LobbyMatchTicket?> FindMatchTicketAsync(
             string matchTicketId,
             CancellationToken cancellationToken)
@@ -423,6 +439,73 @@ namespace Mahjong.LobbyService
 
                 _state.Rooms.Add(room.RoomId, room);
                 return Task.CompletedTask;
+            }
+
+            public Task UpdateRoomAsync(LobbyRoom room, CancellationToken cancellationToken)
+            {
+                if (!_state.Rooms.ContainsKey(room.RoomId))
+                {
+                    throw new LobbyException(404, "ROOM_NOT_FOUND", "The room does not exist.");
+                }
+
+                _state.Rooms[room.RoomId] = room;
+                return Task.CompletedTask;
+            }
+
+            public Task<int> CancelActiveAssignmentsForRoomAsync(
+                string roomId,
+                DateTimeOffset now,
+                CancellationToken cancellationToken)
+            {
+                int cancelled = 0;
+                foreach (LobbyAssignment assignment in _state.Assignments.Values.ToList())
+                {
+                    if (!string.Equals(assignment.RoomId, roomId, StringComparison.Ordinal) ||
+                        !IsActive(assignment.Status))
+                    {
+                        continue;
+                    }
+
+                    // Terminal reconciliation releases every seat directly; it
+                    // intentionally bypasses the active-placement uniqueness
+                    // check because it is removing, not adding, placements.
+                    _state.Assignments[assignment.AssignmentId] = assignment with
+                    {
+                        Status = LobbyAssignmentStatus.Cancelled,
+                        UpdatedAt = now,
+                        ExpiresAt = null
+                    };
+
+                    if (assignment.MatchTicketId != null &&
+                        _state.MatchTickets.TryGetValue(assignment.MatchTicketId, out LobbyMatchTicket? matchTicket) &&
+                        matchTicket.Status == LobbyMatchStatus.Reserved)
+                    {
+                        _state.MatchTickets[matchTicket.MatchTicketId] = matchTicket with
+                        {
+                            Status = LobbyMatchStatus.Cancelled,
+                            CancelledAt = now
+                        };
+                    }
+
+                    cancelled++;
+                }
+
+                // Also release match reservations that point at this terminal
+                // room even if an older assignment lost its match_ticket_id.
+                foreach (LobbyMatchTicket matchTicket in _state.MatchTickets.Values.ToList())
+                {
+                    if (string.Equals(matchTicket.RoomId, roomId, StringComparison.Ordinal) &&
+                        matchTicket.Status == LobbyMatchStatus.Reserved)
+                    {
+                        _state.MatchTickets[matchTicket.MatchTicketId] = matchTicket with
+                        {
+                            Status = LobbyMatchStatus.Cancelled,
+                            CancelledAt = now
+                        };
+                    }
+                }
+
+                return Task.FromResult(cancelled);
             }
 
             public Task<LobbyAssignment?> FindAssignmentForUpdateAsync(

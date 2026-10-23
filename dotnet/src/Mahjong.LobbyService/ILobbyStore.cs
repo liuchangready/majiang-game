@@ -27,6 +27,8 @@ namespace Mahjong.LobbyService
 
         Task<LobbyRoomSnapshot?> FindRoomSnapshotAsync(string roomId, DateTimeOffset now, CancellationToken cancellationToken);
 
+        Task<LobbyAssignment?> FindAssignmentAsync(string assignmentId, CancellationToken cancellationToken);
+
         Task<LobbyMatchTicket?> FindMatchTicketAsync(string matchTicketId, CancellationToken cancellationToken);
 
         Task<LobbyResponse> ExecuteIdempotentAsync(
@@ -68,6 +70,13 @@ namespace Mahjong.LobbyService
         Task<LobbyRoom?> FindRoomForUpdateAsync(string roomId, CancellationToken cancellationToken);
 
         Task InsertRoomAsync(LobbyRoom room, CancellationToken cancellationToken);
+
+        Task UpdateRoomAsync(LobbyRoom room, CancellationToken cancellationToken);
+
+        Task<int> CancelActiveAssignmentsForRoomAsync(
+            string roomId,
+            DateTimeOffset now,
+            CancellationToken cancellationToken);
 
         Task<LobbyAssignment?> FindAssignmentForUpdateAsync(string assignmentId, CancellationToken cancellationToken);
 

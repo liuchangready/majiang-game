@@ -217,6 +217,28 @@ WHERE r.room_id = @room_id";
             return new LobbyRoomSnapshot(ReadRoom(reader, 0), reader.GetInt32(11), reader.GetInt32(12));
         }
 
+        public async Task<LobbyAssignment?> FindAssignmentAsync(
+            string assignmentId,
+            CancellationToken cancellationToken)
+        {
+            await using NpgsqlConnection connection = await _dataSource.OpenConnectionAsync(cancellationToken)
+                .ConfigureAwait(false);
+            const string sql = @"
+SELECT assignment_id, room_id, account_id, role, seat_id, status, created_at, updated_at,
+       expires_at, confirmed_at, table_confirmed_at, match_ticket_id
+FROM lobby.assignment WHERE assignment_id = @assignment_id";
+            await using var command = new NpgsqlCommand(sql, connection);
+            Add(command, "assignment_id", assignmentId, NpgsqlDbType.Text);
+            await using NpgsqlDataReader reader = await command.ExecuteReaderAsync(cancellationToken)
+                .ConfigureAwait(false);
+            if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+            {
+                return null;
+            }
+
+            return ReadAssignment(reader, 0);
+        }
+
         public async Task<LobbyMatchTicket?> FindMatchTicketAsync(
             string matchTicketId,
             CancellationToken cancellationToken)
@@ -506,6 +528,32 @@ WHERE principal = @principal AND request_id = @request_id";
                 ReadNullableTimestamp(reader, offset + 10));
         }
 
+        private static LobbyAssignment ReadAssignment(NpgsqlDataReader reader, int offset)
+        {
+            return new LobbyAssignment(
+                reader.GetString(offset),
+                reader.GetString(offset + 1),
+                reader.GetString(offset + 2),
+                string.Equals(reader.GetString(offset + 3), "PLAYER", StringComparison.Ordinal)
+                    ? LobbyRole.Player
+                    : LobbyRole.Spectator,
+                reader.IsDBNull(offset + 4) ? null : reader.GetInt32(offset + 4),
+                reader.GetString(offset + 5) switch
+                {
+                    "RESERVED" => LobbyAssignmentStatus.Reserved,
+                    "CONFIRMED" => LobbyAssignmentStatus.Confirmed,
+                    "CANCELLED" => LobbyAssignmentStatus.Cancelled,
+                    "EXPIRED" => LobbyAssignmentStatus.Expired,
+                    _ => LobbyAssignmentStatus.Unspecified
+                },
+                ReadTimestamp(reader, offset + 6),
+                ReadTimestamp(reader, offset + 7),
+                ReadNullableTimestamp(reader, offset + 8),
+                ReadNullableTimestamp(reader, offset + 9),
+                ReadNullableTimestamp(reader, offset + 10),
+                reader.IsDBNull(offset + 11) ? null : reader.GetString(offset + 11));
+        }
+
         private static LobbyMatchTicket ReadMatchTicket(NpgsqlDataReader reader, int offset)
         {
             return new LobbyMatchTicket(
@@ -680,6 +728,53 @@ VALUES (@room_id, @title, @visibility, @state, @allow_spectators, @max_players, 
                     ("created_at", room.CreatedAt, NpgsqlDbType.TimestampTz),
                     ("updated_at", room.UpdatedAt, NpgsqlDbType.TimestampTz),
                     ("closed_at", room.ClosedAt, NpgsqlDbType.TimestampTz)).ConfigureAwait(false);
+            }
+
+            public async Task UpdateRoomAsync(LobbyRoom room, CancellationToken cancellationToken)
+            {
+                const string sql = @"
+UPDATE lobby.room
+SET state = @state, updated_at = @updated_at, closed_at = @closed_at
+WHERE room_id = @room_id";
+                await ExecuteAsync(sql, cancellationToken,
+                    ("state", room.State == LobbyRoomState.Open ? "OPEN" : "CLOSED", NpgsqlDbType.Text),
+                    ("updated_at", room.UpdatedAt, NpgsqlDbType.TimestampTz),
+                    ("closed_at", room.ClosedAt, NpgsqlDbType.TimestampTz),
+                    ("room_id", room.RoomId, NpgsqlDbType.Text)).ConfigureAwait(false);
+            }
+
+            public async Task<int> CancelActiveAssignmentsForRoomAsync(
+                string roomId,
+                DateTimeOffset now,
+                CancellationToken cancellationToken)
+            {
+                const string sql = @"
+UPDATE lobby.assignment
+SET status = 'CANCELLED', updated_at = @now, expires_at = NULL
+WHERE room_id = @room_id AND status IN ('RESERVED', 'CONFIRMED')";
+                await using var command = new NpgsqlCommand(sql, _connection, _transaction);
+                Add(command, "now", now, NpgsqlDbType.TimestampTz);
+                Add(command, "room_id", roomId, NpgsqlDbType.Text);
+                int cancelled = await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+
+                // A terminal room must also release match reservations whose
+                // assignments were just cancelled; otherwise the global match
+                // placement would still block joining another room.
+                const string cancelMatches = @"
+UPDATE lobby.match_ticket
+SET status = 'CANCELLED', cancelled_at = @now
+WHERE status = 'RESERVED'
+  AND (
+      room_id = @room_id OR
+      assignment_id IN (
+          SELECT assignment_id FROM lobby.assignment WHERE room_id = @room_id
+      )
+  )";
+                await using var matchCommand = new NpgsqlCommand(cancelMatches, _connection, _transaction);
+                Add(matchCommand, "now", now, NpgsqlDbType.TimestampTz);
+                Add(matchCommand, "room_id", roomId, NpgsqlDbType.Text);
+                await matchCommand.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+                return cancelled;
             }
 
             public async Task<LobbyAssignment?> FindAssignmentForUpdateAsync(

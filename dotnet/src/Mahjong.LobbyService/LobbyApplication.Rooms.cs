@@ -143,6 +143,28 @@ namespace Mahjong.LobbyService
                 id,
                 preferredSeat?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? "-");
             DateTimeOffset now = _clock.UtcNow;
+            LobbyRoomSnapshot? preAdmission = await _store.FindRoomSnapshotAsync(id, now, cancellationToken)
+                .ConfigureAwait(false);
+            if (preAdmission == null)
+            {
+                throw new LobbyException(404, "ROOM_NOT_FOUND", "The room does not exist.");
+            }
+
+            if (preAdmission.Room.State == LobbyRoomState.Closed)
+            {
+                throw new LobbyException(409, "ROOM_CLOSED", "The room is closed.");
+            }
+
+            bool terminalObserved = await EnsureTerminalRoomReconciledAsync(
+                id,
+                preAdmission.Room.RulesetVersion,
+                now,
+                cancellationToken).ConfigureAwait(false);
+            if (terminalObserved)
+            {
+                throw new LobbyException(409, "ROOM_CLOSED", "The room is closed by the authoritative public projection.");
+            }
+
             string assignmentId = LobbyIds.NewPrefixed("asg_");
             var key = new LobbyIdempotencyKey(account.AccountId, requestId);
 
@@ -240,6 +262,28 @@ namespace Mahjong.LobbyService
             string id = LobbyText.RequireId(roomId, "roomId");
             string payloadDigest = LobbyDigest.Compute("room.spectate.v1", id);
             DateTimeOffset now = _clock.UtcNow;
+            LobbyRoomSnapshot? preAdmission = await _store.FindRoomSnapshotAsync(id, now, cancellationToken)
+                .ConfigureAwait(false);
+            if (preAdmission == null)
+            {
+                throw new LobbyException(404, "ROOM_NOT_FOUND", "The room does not exist.");
+            }
+
+            if (preAdmission.Room.State == LobbyRoomState.Closed)
+            {
+                throw new LobbyException(409, "ROOM_CLOSED", "The room is closed.");
+            }
+
+            bool terminalObserved = await EnsureTerminalRoomReconciledAsync(
+                id,
+                preAdmission.Room.RulesetVersion,
+                now,
+                cancellationToken).ConfigureAwait(false);
+            if (terminalObserved)
+            {
+                throw new LobbyException(409, "ROOM_CLOSED", "The room is closed by the authoritative public projection.");
+            }
+
             string assignmentId = LobbyIds.NewPrefixed("asg_");
             var key = new LobbyIdempotencyKey(account.AccountId, requestId);
 
