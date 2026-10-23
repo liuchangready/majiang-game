@@ -359,6 +359,87 @@ namespace Mahjong.Domain
             return timing;
         }
 
+        /// <summary>
+        /// Reinstalls one decision from an explicit recovery record. The caller supplies the
+        /// remaining base/reserve budget and the already-elapsed overdue amount; this method
+        /// never derives elapsed time from a persisted UTC instant or from another clock.
+        ///
+        /// The restored deadline is <c>now + max(0, base + reserve - overdue)</c>. If the
+        /// overdue amount consumes the whole remaining budget the decision is due immediately
+        /// and the next authoritative tick must arbitrate its timeout.
+        /// </summary>
+        public DecisionTiming RestoreDecision(
+            DecisionKey key,
+            long nowMillis,
+            long remainingBaseMillis,
+            long remainingReserveMillis,
+            long overdueMillis)
+        {
+            CheckSeat(key.Seat);
+            if (nowMillis < 0)
+            {
+                throw new ArgumentOutOfRangeException(nameof(nowMillis), nowMillis, "Time must be non-negative.");
+            }
+
+            if (remainingBaseMillis < 0)
+            {
+                throw new ArgumentOutOfRangeException(
+                    nameof(remainingBaseMillis),
+                    remainingBaseMillis,
+                    "Remaining base must be non-negative.");
+            }
+
+            if (remainingReserveMillis < 0)
+            {
+                throw new ArgumentOutOfRangeException(
+                    nameof(remainingReserveMillis),
+                    remainingReserveMillis,
+                    "Remaining reserve must be non-negative.");
+            }
+
+            if (overdueMillis < 0)
+            {
+                throw new ArgumentOutOfRangeException(
+                    nameof(overdueMillis),
+                    overdueMillis,
+                    "Overdue time must be non-negative.");
+            }
+
+            if (ActiveRoundId == null)
+            {
+                ActiveRoundId = key.RoundId;
+            }
+            else if (!string.Equals(key.RoundId, ActiveRoundId, StringComparison.Ordinal))
+            {
+                throw new InvalidOperationException(
+                    "Decision roundId '" + key.RoundId + "' does not match active roundId '" + ActiveRoundId + "'.");
+            }
+
+            if (_timings[key.Seat] != null)
+            {
+                throw new InvalidOperationException(
+                    "Seat " + key.Seat + " already has a timing; recovery cannot overwrite it.");
+            }
+
+            long totalBudget = checked(remainingBaseMillis + remainingReserveMillis);
+            long effectiveBudget = totalBudget > overdueMillis ? totalBudget - overdueMillis : 0L;
+            long deadline = checked(nowMillis + effectiveBudget);
+            long effectiveBase = Math.Min(remainingBaseMillis, effectiveBudget);
+            long reserveAtOpen = effectiveBudget - effectiveBase;
+            _generationCounter = checked(_generationCounter + 1L);
+            var timing = new DecisionTiming(
+                key,
+                _generationCounter,
+                nowMillis,
+                deadline,
+                reserveAtOpen,
+                effectiveBase,
+                IsPausedState ? DecisionTimingStatus.Paused : DecisionTimingStatus.Active);
+            _timings[key.Seat] = timing;
+            _reserves[key.Seat] = reserveAtOpen;
+            return timing;
+        }
+
         public DecisionTiming? Timing(int seat)
         {
             CheckSeat(seat);

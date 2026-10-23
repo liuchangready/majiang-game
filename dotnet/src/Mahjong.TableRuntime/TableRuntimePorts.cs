@@ -204,4 +204,140 @@ namespace Mahjong.TableRuntime
             TableCommitRequest request,
             CancellationToken cancellationToken);
     }
+
+    public enum TableControlCommitStatus : byte
+    {
+        Committed = 0,
+        Failed = 1,
+        StaleOwner = 2,
+        StaleControl = 3,
+        Cancelled = 4
+    }
+
+    /// <summary>
+    /// Minimal control-authority journal request. It is intentionally separate from the Domain
+    /// command commit: a control change has its own version and never increments state_version
+    /// or event_seq. P3.3 provides only this port and in-memory fakes; the durable journal,
+    /// lease and checkpoint are P3.4/P5.2.
+    /// </summary>
+    public sealed class TableControlCommitRequest
+    {
+        public TableControlCommitRequest(
+            string roomId,
+            OwnerEpoch ownerEpoch,
+            long expectedControlVersion,
+            long controlVersion,
+            StateVersion stateVersion,
+            string roundId,
+            TableControlEvent change)
+        {
+            if (string.IsNullOrWhiteSpace(roomId))
+            {
+                throw new ArgumentException("RoomId cannot be blank.", nameof(roomId));
+            }
+
+            if (string.IsNullOrWhiteSpace(roundId))
+            {
+                throw new ArgumentException("RoundId cannot be blank.", nameof(roundId));
+            }
+
+            if (expectedControlVersion < 0)
+            {
+                throw new ArgumentOutOfRangeException(
+                    nameof(expectedControlVersion),
+                    expectedControlVersion,
+                    "Expected control version must be non-negative.");
+            }
+
+            if (controlVersion != expectedControlVersion + 1L)
+            {
+                throw new ArgumentException(
+                    "controlVersion must equal expectedControlVersion + 1.",
+                    nameof(controlVersion));
+            }
+
+            if (change == null)
+            {
+                throw new ArgumentNullException(nameof(change));
+            }
+
+            if (change.ControlVersion != controlVersion)
+            {
+                throw new ArgumentException("The control event must carry the new control version.", nameof(change));
+            }
+
+            RoomId = roomId;
+            OwnerEpoch = ownerEpoch;
+            ExpectedControlVersion = expectedControlVersion;
+            ControlVersion = controlVersion;
+            StateVersion = stateVersion;
+            RoundId = roundId;
+            Change = change;
+        }
+
+        public string RoomId { get; }
+
+        public OwnerEpoch OwnerEpoch { get; }
+
+        public long ExpectedControlVersion { get; }
+
+        public long ControlVersion { get; }
+
+        public StateVersion StateVersion { get; }
+
+        public string RoundId { get; }
+
+        public TableControlEvent Change { get; }
+    }
+
+    public sealed class TableControlCommitResult
+    {
+        private TableControlCommitResult(TableControlCommitStatus status, string reasonCode, string detail)
+        {
+            if (status != TableControlCommitStatus.Committed && string.IsNullOrWhiteSpace(reasonCode))
+            {
+                throw new ArgumentException("A failed control commit requires a reason code.", nameof(reasonCode));
+            }
+
+            Status = status;
+            ReasonCode = reasonCode ?? string.Empty;
+            Detail = detail ?? string.Empty;
+        }
+
+        public TableControlCommitStatus Status { get; }
+
+        public string ReasonCode { get; }
+
+        public string Detail { get; }
+
+        public bool IsCommitted => Status == TableControlCommitStatus.Committed;
+
+        public static TableControlCommitResult Committed() =>
+            new TableControlCommitResult(TableControlCommitStatus.Committed, string.Empty, string.Empty);
+
+        public static TableControlCommitResult Failed(string reasonCode, string detail) =>
+            new TableControlCommitResult(TableControlCommitStatus.Failed, reasonCode, detail);
+
+        public static TableControlCommitResult StaleOwner(string detail) =>
+            new TableControlCommitResult(TableControlCommitStatus.StaleOwner, TableRuntimeReasonCode.StaleOwnerEpoch, detail);
+
+        public static TableControlCommitResult StaleControl(string detail) =>
+            new TableControlCommitResult(TableControlCommitStatus.StaleControl, TableRuntimeReasonCode.StaleControlVersion, detail);
+
+        public static TableControlCommitResult Cancelled(string detail) =>
+            new TableControlCommitResult(TableControlCommitStatus.Cancelled, TableRuntimeReasonCode.ControlCommitCancelled, detail);
+    }
+
+    /// <summary>
+    /// Optional control-authority journal. When configured, a control change is installed and
+    /// published only after this port reports committed; a failure leaves the current registry
+    /// untouched and the same message can be retried. When absent, P3.3 keeps the change only
+    /// in memory and the handoff records that P3.4 must add the durable journal.
+    /// </summary>
+    public interface ITableControlCommitPort
+    {
+        ValueTask<TableControlCommitResult> CommitControlAsync(
+            TableControlCommitRequest request,
+            CancellationToken cancellationToken);
+    }
 }

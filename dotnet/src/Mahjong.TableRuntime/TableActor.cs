@@ -45,8 +45,10 @@ namespace Mahjong.TableRuntime
         private readonly ITableCommitPort _commitPort;
         private readonly ITableClock _clockPort;
         private readonly ITablePublicationSink? _publicationSink;
-        private readonly ControlRegistry _control;
-        private readonly DecisionClock _decisionClock;
+        private readonly ITableControlCommitPort? _controlCommitPort;
+        private readonly DecisionClockConfig _decisionClockConfig;
+        private ControlRegistry _control;
+        private DecisionClock _decisionClock;
         private readonly Dictionary<int, PendingDecision> _pending = new Dictionary<int, PendingDecision>();
         private readonly List<TableEventRecord> _recentEvents = new List<TableEventRecord>();
 
@@ -54,6 +56,9 @@ namespace Mahjong.TableRuntime
         private StateVersion _stateVersion = new StateVersion(0);
         private EventSeq _lastEventSeq = new EventSeq(0);
         private OwnerEpoch _ownerEpoch;
+        private long _controlVersion;
+        private long _recoveryGeneration;
+        private long _lastMonotonicMillis;
         private TableActorLifecycle _lifecycle = TableActorLifecycle.Serving;
         private string _lifecycleReason = string.Empty;
         private string _publicationFault = string.Empty;
@@ -66,6 +71,17 @@ namespace Mahjong.TableRuntime
             ITableCommitPort commitPort,
             ITableClock clock,
             ITablePublicationSink? publicationSink = null)
+            : this(options, initialRound, commitPort, clock, publicationSink, null)
+        {
+        }
+
+        public TableActor(
+            TableActorOptions options,
+            RoundStateMachine initialRound,
+            ITableCommitPort commitPort,
+            ITableClock clock,
+            ITablePublicationSink? publicationSink,
+            ITableControlCommitPort? controlCommitPort)
         {
             _options = options ?? throw new ArgumentNullException(nameof(options));
             _options.Validate();
@@ -73,11 +89,27 @@ namespace Mahjong.TableRuntime
             _commitPort = commitPort ?? throw new ArgumentNullException(nameof(commitPort));
             _clockPort = clock ?? throw new ArgumentNullException(nameof(clock));
             _publicationSink = publicationSink;
+            _controlCommitPort = controlCommitPort;
             _ownerEpoch = options.InitialOwnerEpoch;
             _mailbox = new TableMailbox(options.MailboxCapacity, options.ControlReserve);
             _control = new ControlRegistry(options.DisconnectPolicy, CopyControllers(options.InitialControllers));
-            _decisionClock = new DecisionClock(options.DecisionClockConfig);
-            _decisionClock.BeginRound(_round.RoundId, _clockPort.MonotonicMillis);
+            _decisionClockConfig = options.DecisionClockConfig ?? new DecisionClockConfig();
+            _decisionClock = new DecisionClock(_decisionClockConfig);
+
+            long initialMonotonic = _clockPort.MonotonicMillis;
+            long initialUtc = _clockPort.UtcNowMs;
+            if (initialMonotonic < 0)
+            {
+                throw new ArgumentOutOfRangeException(nameof(clock), initialMonotonic, "Monotonic time must be non-negative.");
+            }
+
+            if (initialUtc < 0)
+            {
+                throw new ArgumentOutOfRangeException(nameof(clock), initialUtc, "UTC time must be non-negative.");
+            }
+
+            _lastMonotonicMillis = initialMonotonic;
+            _decisionClock.BeginRound(_round.RoundId, initialMonotonic);
         }
 
         public string PublicationFault => _publicationFault;
@@ -110,8 +142,10 @@ namespace Mahjong.TableRuntime
         }
 
         /// <summary>
-        /// Opens one decision. This is a P3.1 seam for the P3.3 control/timing owner; it does not
-        /// advance state_version and does not publish.
+        /// Opens one decision. This is the P3.3 timing seam: it does not advance state_version,
+        /// event_seq or control_version and does not publish a Domain/control event. Its
+        /// <see cref="TableOperationStatus.Configured"/> result is therefore an in-memory
+        /// authority change, not a durability claim; P3.4 must checkpoint the decision clock.
         /// </summary>
         public ValueTask<TableOperationResult> OpenDecisionAsync(
             PendingDecision decision,
@@ -178,6 +212,164 @@ namespace Mahjong.TableRuntime
 
             EnsurePump();
             return new ValueTask<TableTickResult>(message.Completion.Task);
+        }
+
+        /// <summary>
+        /// Captures an immutable per-seat AI observation inside the authority queue. Reasoning
+        /// must run outside the actor over this value; the actor is never locked during it.
+        /// </summary>
+        public ValueTask<TableAiObservationResult> CaptureAiObservationAsync(
+            int seat,
+            CancellationToken cancellationToken = default)
+        {
+            CheckSeat(seat);
+            cancellationToken.ThrowIfCancellationRequested();
+            var message = new AiObservationMailboxMessage(seat);
+            TableMailboxEnqueueStatus enqueue = _mailbox.TryEnqueueControl(message);
+            if (enqueue != TableMailboxEnqueueStatus.Enqueued)
+            {
+                return new ValueTask<TableAiObservationResult>(AiObservationAdmissionFailure(enqueue));
+            }
+
+            EnsurePump();
+            return new ValueTask<TableAiObservationResult>(message.Completion.Task);
+        }
+
+        /// <summary>
+        /// Disconnect is an authority message: the connection status, grace deadline and any
+        /// immediate takeover are applied on the actor, using the actor monotonic clock.
+        /// </summary>
+        public ValueTask<TableControlResult> DisconnectAsync(
+            int seat,
+            OwnerEpoch ownerEpoch,
+            ControlEpoch expectedControlEpoch,
+            string reason,
+            CancellationToken cancellationToken = default)
+        {
+            CheckSeat(seat);
+            cancellationToken.ThrowIfCancellationRequested();
+            var message = new DisconnectMailboxMessage(seat, ownerEpoch, expectedControlEpoch, reason);
+            return EnqueueControlMessage(message);
+        }
+
+        /// <summary>
+        /// Reconnect only restores transport presence. It never reclaims a seat from takeover;
+        /// <see cref="ReclaimControlAsync"/> is the explicit control-taking step.
+        /// </summary>
+        public ValueTask<TableControlResult> ReconnectAsync(
+            int seat,
+            OwnerEpoch ownerEpoch,
+            ControlEpoch expectedControlEpoch,
+            string reason,
+            CancellationToken cancellationToken = default)
+        {
+            CheckSeat(seat);
+            cancellationToken.ThrowIfCancellationRequested();
+            var message = new ReconnectMailboxMessage(seat, ownerEpoch, expectedControlEpoch, reason);
+            return EnqueueControlMessage(message);
+        }
+
+        /// <summary>
+        /// Late grace-expiry timer callback. The fence must match the current round, owner,
+        /// control epoch, grace deadline and recovery generation or the call has no effect.
+        /// </summary>
+        public ValueTask<TableControlResult> ExpireGraceAsync(
+            TableGraceExpiryFence fence,
+            CancellationToken cancellationToken = default)
+        {
+            if (fence == null)
+            {
+                throw new ArgumentNullException(nameof(fence));
+            }
+
+            CheckSeat(fence.Seat);
+            cancellationToken.ThrowIfCancellationRequested();
+            var message = new GraceExpiryMailboxMessage(fence);
+            return EnqueueControlMessage(message);
+        }
+
+        /// <summary>Explicit takeover request; bumps controlEpoch on success.</summary>
+        public ValueTask<TableControlResult> RequestTakeoverAsync(
+            int seat,
+            OwnerEpoch ownerEpoch,
+            ControlEpoch expectedControlEpoch,
+            string reason,
+            CancellationToken cancellationToken = default)
+        {
+            CheckSeat(seat);
+            cancellationToken.ThrowIfCancellationRequested();
+            var message = new TakeoverMailboxMessage(seat, ownerEpoch, expectedControlEpoch, reason);
+            return EnqueueControlMessage(message);
+        }
+
+        /// <summary>Explicit human reclaim; bumps controlEpoch and invalidates the takeover epoch.</summary>
+        public ValueTask<TableControlResult> ReclaimControlAsync(
+            int seat,
+            OwnerEpoch ownerEpoch,
+            ControlEpoch expectedControlEpoch,
+            string reason,
+            CancellationToken cancellationToken = default)
+        {
+            CheckSeat(seat);
+            cancellationToken.ThrowIfCancellationRequested();
+            var message = new ReclaimMailboxMessage(seat, ownerEpoch, expectedControlEpoch, reason);
+            return EnqueueControlMessage(message);
+        }
+
+        /// <summary>
+        /// Changes only the future-disconnect policy. It is refused while any seat is
+        /// disconnected so an in-flight grace deadline cannot change meaning mid-flight.
+        /// </summary>
+        public ValueTask<TableControlResult> ConfigureControlPolicyAsync(
+            DisconnectPolicy policy,
+            OwnerEpoch ownerEpoch,
+            string reason,
+            CancellationToken cancellationToken = default)
+        {
+            if (policy == null)
+            {
+                throw new ArgumentNullException(nameof(policy));
+            }
+
+            cancellationToken.ThrowIfCancellationRequested();
+            var message = new ConfigurePolicyMailboxMessage(policy, ownerEpoch, reason);
+            return EnqueueControlMessage(message);
+        }
+
+        /// <summary>Read-only control snapshot for P3.2 and transport adapters.</summary>
+        public ValueTask<TableControlSnapshot> GetControlSnapshotAsync(CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var message = new ControlSnapshotMailboxMessage();
+            TableMailboxEnqueueStatus enqueue = _mailbox.TryEnqueueControl(message);
+            if (enqueue != TableMailboxEnqueueStatus.Enqueued)
+            {
+                Exception error = enqueue == TableMailboxEnqueueStatus.Closed
+                    ? new ObjectDisposedException(nameof(TableActor))
+                    : new InvalidOperationException("The table control reserve is full.");
+                return new ValueTask<TableControlSnapshot>(Task.FromException<TableControlSnapshot>(error));
+            }
+
+            EnsurePump();
+            return new ValueTask<TableControlSnapshot>(message.Completion.Task);
+        }
+
+        /// <summary>Read-only rule-deadline/reserve snapshot for P3.2 and recovery verification.</summary>
+        public ValueTask<TableTimingSnapshot> GetTimingSnapshotAsync(CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var message = new TimingSnapshotMailboxMessage();
+            TableMailboxEnqueueStatus enqueue = _mailbox.TryEnqueueControl(message);
+            if (enqueue != TableMailboxEnqueueStatus.Enqueued)
+            {
+                Exception error = enqueue == TableMailboxEnqueueStatus.Closed
+                    ? new ObjectDisposedException(nameof(TableActor))
+                    : new InvalidOperationException("The table control reserve is full.");
+                return new ValueTask<TableTimingSnapshot>(Task.FromException<TableTimingSnapshot>(error));
+            }
+
+            EnsurePump();
+            return new ValueTask<TableTimingSnapshot>(message.Completion.Task);
         }
 
         public ValueTask<TableOperationResult> BeginRecoveryAsync(
@@ -369,6 +561,39 @@ namespace Mahjong.TableRuntime
                         ai.Completion.TrySetResult(
                             await ProcessAiAsync(ai.Decision).ConfigureAwait(false));
                         break;
+                    case DisconnectMailboxMessage disconnect:
+                        disconnect.Completion.TrySetResult(
+                            await ProcessDisconnectAsync(disconnect).ConfigureAwait(false));
+                        break;
+                    case ReconnectMailboxMessage reconnect:
+                        reconnect.Completion.TrySetResult(
+                            await ProcessReconnectAsync(reconnect).ConfigureAwait(false));
+                        break;
+                    case GraceExpiryMailboxMessage grace:
+                        grace.Completion.TrySetResult(
+                            await ProcessGraceExpiryAsync(grace.Fence).ConfigureAwait(false));
+                        break;
+                    case TakeoverMailboxMessage takeover:
+                        takeover.Completion.TrySetResult(
+                            await ProcessTakeoverAsync(takeover).ConfigureAwait(false));
+                        break;
+                    case ReclaimMailboxMessage reclaim:
+                        reclaim.Completion.TrySetResult(
+                            await ProcessReclaimAsync(reclaim).ConfigureAwait(false));
+                        break;
+                    case ConfigurePolicyMailboxMessage policy:
+                        policy.Completion.TrySetResult(
+                            await ProcessConfigurePolicyAsync(policy).ConfigureAwait(false));
+                        break;
+                    case AiObservationMailboxMessage aiObservation:
+                        aiObservation.Completion.TrySetResult(ProcessAiObservation(aiObservation.Seat));
+                        break;
+                    case ControlSnapshotMailboxMessage controlSnapshot:
+                        controlSnapshot.Completion.TrySetResult(BuildControlSnapshot());
+                        break;
+                    case TimingSnapshotMailboxMessage timingSnapshot:
+                        timingSnapshot.Completion.TrySetResult(BuildTimingSnapshot());
+                        break;
                     case BeginRecoveryMailboxMessage begin:
                         begin.Completion.TrySetResult(ProcessBeginRecovery(begin.Reason));
                         break;
@@ -402,11 +627,15 @@ namespace Mahjong.TableRuntime
 
         private async ValueTask<TableOperationResult> ProcessCommandAsync(TableCommandEnvelope command)
         {
-            long now = _clockPort.MonotonicMillis;
             TableOperationResult? guard = GuardServing();
             if (guard != null)
             {
                 return guard;
+            }
+
+            if (!TryReadClock(out long now, out _, out string clockFailure))
+            {
+                return TableOperationResult.Rejected(_stateVersion, clockFailure, "The monotonic clock is not safe for authority.");
             }
 
             if (command.OwnerEpoch != _ownerEpoch)
@@ -525,11 +754,19 @@ namespace Mahjong.TableRuntime
 
         private async ValueTask<TableTickResult> ProcessAiAsync(AiDecision decision)
         {
-            long now = _clockPort.MonotonicMillis;
             TableOperationResult? guard = GuardServing();
             if (guard != null)
             {
                 return TableTickResult.Rejected(guard.Status, guard.ReasonCode, guard.Detail, _stateVersion);
+            }
+
+            if (!TryReadClock(out long now, out _, out string clockFailure))
+            {
+                return TableTickResult.Rejected(
+                    TableOperationStatus.Failed,
+                    clockFailure,
+                    "The monotonic clock is not safe for authority.",
+                    _stateVersion);
             }
 
             AiDecisionSubmission submission;
@@ -552,7 +789,21 @@ namespace Mahjong.TableRuntime
 
         private async ValueTask<TableTickResult> ProcessTickAsync(TableTickRequest request)
         {
-            long now = _clockPort.MonotonicMillis;
+            TableOperationResult? guard = GuardServing();
+            if (guard != null)
+            {
+                return TableTickResult.Rejected(guard.Status, guard.ReasonCode, guard.Detail, _stateVersion);
+            }
+
+            if (!TryReadClock(out long now, out _, out string clockFailure))
+            {
+                return TableTickResult.Rejected(
+                    TableOperationStatus.Failed,
+                    clockFailure,
+                    "The monotonic clock is not safe for authority.",
+                    _stateVersion);
+            }
+
             return await ProcessTickCoreAsync(request, now).ConfigureAwait(false);
         }
 
@@ -1051,11 +1302,15 @@ namespace Mahjong.TableRuntime
 
         private TableOperationResult ProcessOpenDecision(PendingDecision decision)
         {
-            long now = _clockPort.MonotonicMillis;
             TableOperationResult? guard = GuardServing();
             if (guard != null)
             {
                 return guard;
+            }
+
+            if (!TryReadClock(out long now, out _, out string clockFailure))
+            {
+                return TableOperationResult.Failed(_stateVersion, clockFailure, "The monotonic clock is not safe for authority.");
             }
 
             if (!string.Equals(decision.Key.RoundId, _round.RoundId, StringComparison.Ordinal))
@@ -1103,6 +1358,20 @@ namespace Mahjong.TableRuntime
                     TableRuntimeReasonCode.DecisionAlreadyOpen,
                     exception.Message);
             }
+            catch (OverflowException exception)
+            {
+                return TableOperationResult.Failed(
+                    _stateVersion,
+                    TableRuntimeReasonCode.DeadlineOverflow,
+                    exception.Message);
+            }
+            catch (ArgumentOutOfRangeException exception)
+            {
+                return TableOperationResult.Failed(
+                    _stateVersion,
+                    TableRuntimeReasonCode.DeadlineOverflow,
+                    exception.Message);
+            }
 
             _pending[decision.Key.Seat] = decision;
             return TableOperationResult.Configured(
@@ -1124,11 +1393,27 @@ namespace Mahjong.TableRuntime
                     return TableOperationResult.Configured(_stateVersion, "Recovery is already in progress.");
             }
 
+            long nextGeneration;
+            try
+            {
+                nextGeneration = checked(_recoveryGeneration + 1L);
+            }
+            catch (OverflowException exception)
+            {
+                return TableOperationResult.Failed(
+                    _stateVersion,
+                    TableRuntimeReasonCode.RecoveryGenerationOverflow,
+                    exception.Message);
+            }
+
+            _recoveryGeneration = nextGeneration;
             _lifecycle = TableActorLifecycle.Recovering;
             _lifecycleReason = reason ?? string.Empty;
             _pending.Clear();
             _decisionClock.Reset();
-            return TableOperationResult.Configured(_stateVersion, "Recovery started; new state-changing work is refused.");
+            return TableOperationResult.Configured(
+                _stateVersion,
+                "Recovery started; new state-changing and control work is refused.");
         }
 
         private TableOperationResult ProcessCompleteRecovery(TableRecoveryBaseline baseline)
@@ -1165,18 +1450,150 @@ namespace Mahjong.TableRuntime
                     "The recovery baseline event sequence is older than the current event sequence.");
             }
 
-            long now = _clockPort.MonotonicMillis;
+            if (!TryReadClock(out long now, out _, out string clockFailure))
+            {
+                return TableOperationResult.Failed(
+                    _stateVersion,
+                    clockFailure,
+                    "The monotonic clock is not safe for recovery installation.");
+            }
+
+            ControlRegistry candidateControl = _control;
+            long candidateControlVersion = _controlVersion;
+            if (baseline.Control != null)
+            {
+                if (baseline.Control.ControlVersion < _controlVersion)
+                {
+                    return TableOperationResult.Rejected(
+                        _stateVersion,
+                        TableRuntimeReasonCode.StaleControlVersion,
+                        "The recovery control baseline is older than the current control version.");
+                }
+
+                for (int seat = 0; seat < 4; seat++)
+                {
+                    SeatControlState baselineSeat = baseline.Control.State.Seats[seat];
+                    SeatControlState currentSeat = _control.GetState(seat);
+                    if (baselineSeat.ControlEpoch < currentSeat.ControlEpoch)
+                    {
+                        return TableOperationResult.Rejected(
+                            _stateVersion,
+                            TableRuntimeReasonCode.RecoveryControlInvalid,
+                            "Seat " + seat + " control epoch would move backwards during recovery.");
+                    }
+
+                    if (baselineSeat.ControlEpoch == currentSeat.ControlEpoch &&
+                        baselineSeat.Kind != currentSeat.Kind)
+                    {
+                        return TableOperationResult.Rejected(
+                            _stateVersion,
+                            TableRuntimeReasonCode.RecoveryControlInvalid,
+                            "Seat " + seat + " changes controller without advancing controlEpoch.");
+                    }
+                }
+
+                candidateControl = ControlRegistry.Restore(baseline.Control.State);
+                candidateControlVersion = baseline.Control.ControlVersion;
+            }
+
+            if (baseline.Timing.Decisions.Count > 0 && baseline.Control == null)
+            {
+                return TableOperationResult.Rejected(
+                    _stateVersion,
+                    TableRuntimeReasonCode.RecoveryControlRequired,
+                    "Restoring decision timing requires an exact control baseline.");
+            }
+
+            var candidateClock = new DecisionClock(_decisionClockConfig);
+            var candidatePending = new Dictionary<int, PendingDecision>();
+            if (!baseline.Round.IsFinished)
+            {
+                candidateClock.BeginRound(baseline.Round.RoundId, now);
+            }
+
+            for (int i = 0; i < baseline.Timing.Decisions.Count; i++)
+            {
+                TableRecoveredDecision recovered = baseline.Timing.Decisions[i];
+                if (baseline.Round.IsFinished)
+                {
+                    return TableOperationResult.Rejected(
+                        _stateVersion,
+                        TableRuntimeReasonCode.RecoveryTimingInvalid,
+                        "A finished round cannot restore an open decision.");
+                }
+
+                if (!string.Equals(recovered.Key.RoundId, baseline.Round.RoundId, StringComparison.Ordinal))
+                {
+                    return TableOperationResult.Rejected(
+                        _stateVersion,
+                        TableRuntimeReasonCode.RecoveryTimingInvalid,
+                        "A restored decision belongs to another round.");
+                }
+
+                if (candidatePending.ContainsKey(recovered.Key.Seat))
+                {
+                    return TableOperationResult.Rejected(
+                        _stateVersion,
+                        TableRuntimeReasonCode.RecoveryTimingInvalid,
+                        "A seat cannot have more than one restored decision.");
+                }
+
+                if (candidateControl.GetEpoch(recovered.Key.Seat) != recovered.ControlEpoch)
+                {
+                    return TableOperationResult.Rejected(
+                        _stateVersion,
+                        TableRuntimeReasonCode.RecoveryTimingInvalid,
+                        "A restored decision carries a control epoch that the control baseline does not own.");
+                }
+
+                try
+                {
+                    candidateClock.RestoreDecision(
+                        recovered.Key,
+                        now,
+                        recovered.RemainingBaseMillis,
+                        recovered.RemainingReserveMillis,
+                        recovered.OverdueMillis);
+                }
+                catch (OverflowException exception)
+                {
+                    return TableOperationResult.Rejected(
+                        _stateVersion,
+                        TableRuntimeReasonCode.RecoveryTimingInvalid,
+                        "Restored deadline overflows: " + exception.Message);
+                }
+                catch (Exception exception) when (
+                    exception is InvalidOperationException ||
+                    exception is ArgumentOutOfRangeException ||
+                    exception is ArgumentException)
+                {
+                    return TableOperationResult.Rejected(
+                        _stateVersion,
+                        TableRuntimeReasonCode.RecoveryTimingInvalid,
+                        exception.Message);
+                }
+
+                candidatePending[recovered.Key.Seat] = new PendingDecision(
+                    recovered.Key,
+                    recovered.ControlEpoch,
+                    recovered.Candidates,
+                    recovered.DrawnTile);
+            }
+
             _round = baseline.Round;
             _stateVersion = baseline.StateVersion;
             _lastEventSeq = baseline.LastEventSeq;
             _ownerEpoch = baseline.OwnerEpoch;
+            _control = candidateControl;
+            _controlVersion = candidateControlVersion;
+            _decisionClock = candidateClock;
             _pending.Clear();
-            _recentEvents.Clear();
-            _decisionClock.Reset();
-            if (!_round.IsFinished)
+            foreach (KeyValuePair<int, PendingDecision> entry in candidatePending)
             {
-                _decisionClock.BeginRound(_round.RoundId, now);
+                _pending[entry.Key] = entry.Value;
             }
+
+            _recentEvents.Clear();
 
             _lifecycle = TableActorLifecycle.Serving;
             _lifecycleReason = string.Empty;
@@ -1185,7 +1602,9 @@ namespace Mahjong.TableRuntime
                 TablePublicationKind.Recovered,
                 snapshot,
                 Array.Empty<TableEventRecord>(),
-                null));
+                null,
+                BuildControlSnapshot(),
+                Array.Empty<TableControlEvent>()));
             return TableOperationResult.Configured(
                 _stateVersion,
                 "Recovery baseline installed at version " + _stateVersion + ".");
@@ -1227,6 +1646,1009 @@ namespace Mahjong.TableRuntime
                 Array.Empty<TableEventRecord>(),
                 null));
             return TableOperationResult.Configured(_stateVersion, "Lease lost; the actor no longer advances state.");
+        }
+
+        private async ValueTask<TableControlResult> ProcessDisconnectAsync(DisconnectMailboxMessage message)
+        {
+            TableControlResult? guard = GuardControlServing();
+            if (guard != null)
+            {
+                return guard;
+            }
+
+            TableControlResult? owner = GuardControlOwner(message.OwnerEpoch);
+            if (owner != null)
+            {
+                return owner;
+            }
+
+            if (!TryToDomainEpoch(message.ExpectedControlEpoch, out long expectedEpoch))
+            {
+                return ControlRejected(
+                    TableRuntimeReasonCode.StaleControlEpoch,
+                    "The expected control epoch exceeds the Domain range.");
+            }
+
+            if (_control.GetEpoch(message.Seat) != expectedEpoch)
+            {
+                return ControlRejected(
+                    TableRuntimeReasonCode.StaleControlEpoch,
+                    "Expected control epoch " + expectedEpoch + " is not current for seat " + message.Seat + ".");
+            }
+
+            if (!TryReadClock(out long now, out long utc, out string clockFailure))
+            {
+                return ControlFailed(clockFailure, "The monotonic clock is not safe for control.");
+            }
+
+            ControlRegistry candidate = ControlRegistry.Restore(_control.Capture());
+            SeatControlState before = candidate.GetState(message.Seat);
+            SeatControlState after;
+            try
+            {
+                after = candidate.Disconnect(message.Seat, now);
+            }
+            catch (OverflowException exception)
+            {
+                return ControlFailed(TableRuntimeReasonCode.ControlTimeOverflow, exception.Message);
+            }
+
+            if (SameSeatControl(before, after))
+            {
+                return ControlUnchanged("Seat " + message.Seat + " is already disconnected.");
+            }
+
+            long nextVersion;
+            try
+            {
+                nextVersion = checked(_controlVersion + 1L);
+            }
+            catch (OverflowException exception)
+            {
+                return ControlFailed(TableRuntimeReasonCode.ControlVersionOverflow, exception.Message);
+            }
+
+            var change = CreateSeatControlEvent(
+                nextVersion,
+                TableControlChangeKind.Disconnect,
+                message.Seat,
+                before,
+                after,
+                now,
+                utc,
+                message.Reason);
+            return await CommitControlChangeAsync(candidate.Capture(), change).ConfigureAwait(false);
+        }
+
+        private async ValueTask<TableControlResult> ProcessReconnectAsync(ReconnectMailboxMessage message)
+        {
+            TableControlResult? guard = GuardControlServing();
+            if (guard != null)
+            {
+                return guard;
+            }
+
+            TableControlResult? owner = GuardControlOwner(message.OwnerEpoch);
+            if (owner != null)
+            {
+                return owner;
+            }
+
+            if (!TryToDomainEpoch(message.ExpectedControlEpoch, out long expectedEpoch))
+            {
+                return ControlRejected(
+                    TableRuntimeReasonCode.StaleControlEpoch,
+                    "The expected control epoch exceeds the Domain range.");
+            }
+
+            if (_control.GetEpoch(message.Seat) != expectedEpoch)
+            {
+                return ControlRejected(
+                    TableRuntimeReasonCode.StaleControlEpoch,
+                    "Expected control epoch " + expectedEpoch + " is not current for seat " + message.Seat + ".");
+            }
+
+            if (!TryReadClock(out long now, out long utc, out string clockFailure))
+            {
+                return ControlFailed(clockFailure, "The monotonic clock is not safe for control.");
+            }
+
+            ControlRegistry candidate = ControlRegistry.Restore(_control.Capture());
+            SeatControlState before = candidate.GetState(message.Seat);
+            SeatControlState after;
+            try
+            {
+                after = candidate.Reconnect(message.Seat, now, false);
+            }
+            catch (OverflowException exception)
+            {
+                return ControlFailed(TableRuntimeReasonCode.ControlTimeOverflow, exception.Message);
+            }
+
+            if (SameSeatControl(before, after))
+            {
+                return ControlUnchanged("Seat " + message.Seat + " is already connected and control was not reclaimed.");
+            }
+
+            long nextVersion;
+            try
+            {
+                nextVersion = checked(_controlVersion + 1L);
+            }
+            catch (OverflowException exception)
+            {
+                return ControlFailed(TableRuntimeReasonCode.ControlVersionOverflow, exception.Message);
+            }
+
+            var change = CreateSeatControlEvent(
+                nextVersion,
+                TableControlChangeKind.Reconnect,
+                message.Seat,
+                before,
+                after,
+                now,
+                utc,
+                message.Reason);
+            return await CommitControlChangeAsync(candidate.Capture(), change).ConfigureAwait(false);
+        }
+
+        private async ValueTask<TableControlResult> ProcessGraceExpiryAsync(TableGraceExpiryFence fence)
+        {
+            TableControlResult? guard = GuardControlServing();
+            if (guard != null)
+            {
+                return guard;
+            }
+
+            TableControlResult? owner = GuardControlOwner(fence.OwnerEpoch);
+            if (owner != null)
+            {
+                return owner;
+            }
+
+            if (!string.Equals(fence.RoundId, _round.RoundId, StringComparison.Ordinal))
+            {
+                return ControlRejected(
+                    TableRuntimeReasonCode.StaleGrace,
+                    "The grace callback belongs to round '" + fence.RoundId + "', current round is '" + _round.RoundId + "'.");
+            }
+
+            if (fence.ExpectedRecoveryGeneration != _recoveryGeneration)
+            {
+                return ControlRejected(
+                    TableRuntimeReasonCode.StaleGrace,
+                    "The grace callback belongs to recovery generation " + fence.ExpectedRecoveryGeneration +
+                    ", current generation is " + _recoveryGeneration + ".");
+            }
+
+            if (!TryToDomainEpoch(fence.ExpectedControlEpoch, out long expectedEpoch))
+            {
+                return ControlRejected(
+                    TableRuntimeReasonCode.StaleControlEpoch,
+                    "The expected control epoch exceeds the Domain range.");
+            }
+
+            SeatControlState current = _control.GetState(fence.Seat);
+            if (current.ControlEpoch != expectedEpoch)
+            {
+                return ControlRejected(
+                    TableRuntimeReasonCode.StaleControlEpoch,
+                    "The grace callback carries control epoch " + expectedEpoch +
+                    ", current is " + current.ControlEpoch + ".");
+            }
+
+            if (!current.GraceDeadlineMillis.HasValue)
+            {
+                return ControlRejected(
+                    TableRuntimeReasonCode.NoGraceDeadline,
+                    "Seat " + fence.Seat + " has no grace deadline.");
+            }
+
+            if (current.GraceDeadlineMillis.Value != fence.ExpectedGraceDeadlineMillis)
+            {
+                return ControlRejected(
+                    TableRuntimeReasonCode.StaleGrace,
+                    "The grace callback deadline does not match the current grace deadline.");
+            }
+
+            if (!TryReadClock(out long now, out long utc, out string clockFailure))
+            {
+                return ControlFailed(clockFailure, "The monotonic clock is not safe for control.");
+            }
+
+            if (now < current.GraceDeadlineMillis.Value)
+            {
+                return ControlRejected(
+                    TableRuntimeReasonCode.GraceNotDue,
+                    "The grace deadline has not been reached.");
+            }
+
+            ControlRegistry candidate = ControlRegistry.Restore(_control.Capture());
+            SeatControlState before = candidate.GetState(fence.Seat);
+            bool expired;
+            try
+            {
+                expired = candidate.CheckGraceExpiration(fence.Seat, now, expectedEpoch);
+            }
+            catch (OverflowException exception)
+            {
+                return ControlFailed(TableRuntimeReasonCode.ControlEpochOverflow, exception.Message);
+            }
+
+            if (!expired)
+            {
+                return ControlRejected(
+                    TableRuntimeReasonCode.GraceNotApplicable,
+                    "The seat is no longer an eligible disconnected human seat.");
+            }
+
+            SeatControlState after = candidate.GetState(fence.Seat);
+            long nextVersion;
+            try
+            {
+                nextVersion = checked(_controlVersion + 1L);
+            }
+            catch (OverflowException exception)
+            {
+                return ControlFailed(TableRuntimeReasonCode.ControlVersionOverflow, exception.Message);
+            }
+
+            var change = CreateSeatControlEvent(
+                nextVersion,
+                TableControlChangeKind.GraceExpired,
+                fence.Seat,
+                before,
+                after,
+                now,
+                utc,
+                "grace deadline reached");
+            return await CommitControlChangeAsync(candidate.Capture(), change).ConfigureAwait(false);
+        }
+
+        private async ValueTask<TableControlResult> ProcessTakeoverAsync(TakeoverMailboxMessage message)
+        {
+            TableControlResult? guard = GuardControlServing();
+            if (guard != null)
+            {
+                return guard;
+            }
+
+            TableControlResult? owner = GuardControlOwner(message.OwnerEpoch);
+            if (owner != null)
+            {
+                return owner;
+            }
+
+            if (!TryToDomainEpoch(message.ExpectedControlEpoch, out long expectedEpoch))
+            {
+                return ControlRejected(
+                    TableRuntimeReasonCode.StaleControlEpoch,
+                    "The expected control epoch exceeds the Domain range.");
+            }
+
+            if (_control.GetEpoch(message.Seat) != expectedEpoch)
+            {
+                return ControlRejected(
+                    TableRuntimeReasonCode.StaleControlEpoch,
+                    "Expected control epoch " + expectedEpoch + " is not current for seat " + message.Seat + ".");
+            }
+
+            if (!TryReadClock(out long now, out long utc, out string clockFailure))
+            {
+                return ControlFailed(clockFailure, "The monotonic clock is not safe for control.");
+            }
+
+            ControlRegistry candidate = ControlRegistry.Restore(_control.Capture());
+            SeatControlState before = candidate.GetState(message.Seat);
+            SeatControlState after;
+            try
+            {
+                after = candidate.RequestTakeover(message.Seat);
+            }
+            catch (OverflowException exception)
+            {
+                return ControlFailed(TableRuntimeReasonCode.ControlEpochOverflow, exception.Message);
+            }
+
+            if (SameSeatControl(before, after))
+            {
+                return ControlUnchanged("Seat " + message.Seat + " is already under takeover.");
+            }
+
+            long nextVersion;
+            try
+            {
+                nextVersion = checked(_controlVersion + 1L);
+            }
+            catch (OverflowException exception)
+            {
+                return ControlFailed(TableRuntimeReasonCode.ControlVersionOverflow, exception.Message);
+            }
+
+            var change = CreateSeatControlEvent(
+                nextVersion,
+                TableControlChangeKind.ExplicitTakeover,
+                message.Seat,
+                before,
+                after,
+                now,
+                utc,
+                message.Reason);
+            return await CommitControlChangeAsync(candidate.Capture(), change).ConfigureAwait(false);
+        }
+
+        private async ValueTask<TableControlResult> ProcessReclaimAsync(ReclaimMailboxMessage message)
+        {
+            TableControlResult? guard = GuardControlServing();
+            if (guard != null)
+            {
+                return guard;
+            }
+
+            TableControlResult? owner = GuardControlOwner(message.OwnerEpoch);
+            if (owner != null)
+            {
+                return owner;
+            }
+
+            if (!TryToDomainEpoch(message.ExpectedControlEpoch, out long expectedEpoch))
+            {
+                return ControlRejected(
+                    TableRuntimeReasonCode.StaleControlEpoch,
+                    "The expected control epoch exceeds the Domain range.");
+            }
+
+            if (_control.GetEpoch(message.Seat) != expectedEpoch)
+            {
+                return ControlRejected(
+                    TableRuntimeReasonCode.StaleControlEpoch,
+                    "Expected control epoch " + expectedEpoch + " is not current for seat " + message.Seat + ".");
+            }
+
+            if (!TryReadClock(out long now, out long utc, out string clockFailure))
+            {
+                return ControlFailed(clockFailure, "The monotonic clock is not safe for control.");
+            }
+
+            ControlRegistry candidate = ControlRegistry.Restore(_control.Capture());
+            SeatControlState before = candidate.GetState(message.Seat);
+            SeatControlState after;
+            try
+            {
+                after = candidate.ReclaimControl(message.Seat);
+            }
+            catch (OverflowException exception)
+            {
+                return ControlFailed(TableRuntimeReasonCode.ControlEpochOverflow, exception.Message);
+            }
+
+            if (SameSeatControl(before, after))
+            {
+                return ControlUnchanged("Seat " + message.Seat + " is already human-controlled.");
+            }
+
+            long nextVersion;
+            try
+            {
+                nextVersion = checked(_controlVersion + 1L);
+            }
+            catch (OverflowException exception)
+            {
+                return ControlFailed(TableRuntimeReasonCode.ControlVersionOverflow, exception.Message);
+            }
+
+            var change = CreateSeatControlEvent(
+                nextVersion,
+                TableControlChangeKind.Reclaimed,
+                message.Seat,
+                before,
+                after,
+                now,
+                utc,
+                message.Reason);
+            return await CommitControlChangeAsync(candidate.Capture(), change).ConfigureAwait(false);
+        }
+
+        private async ValueTask<TableControlResult> ProcessConfigurePolicyAsync(ConfigurePolicyMailboxMessage message)
+        {
+            TableControlResult? guard = GuardControlServing();
+            if (guard != null)
+            {
+                return guard;
+            }
+
+            TableControlResult? owner = GuardControlOwner(message.OwnerEpoch);
+            if (owner != null)
+            {
+                return owner;
+            }
+
+            if (SamePolicy(_control.Policy, message.Policy))
+            {
+                return ControlUnchanged("The disconnect policy is unchanged.");
+            }
+
+            for (int seat = 0; seat < 4; seat++)
+            {
+                if (_control.GetState(seat).IsDisconnected)
+                {
+                    return ControlRejected(
+                        TableRuntimeReasonCode.ControlPolicyBusy,
+                        "Cannot change the disconnect policy while seat " + seat + " is disconnected.");
+                }
+            }
+
+            if (!TryReadClock(out long now, out long utc, out string clockFailure))
+            {
+                return ControlFailed(clockFailure, "The monotonic clock is not safe for control.");
+            }
+
+            ControlRegistrySnapshot next = _control.Capture().WithPolicy(message.Policy);
+            ControlRegistry candidate = ControlRegistry.Restore(next);
+            long nextVersion;
+            try
+            {
+                nextVersion = checked(_controlVersion + 1L);
+            }
+            catch (OverflowException exception)
+            {
+                return ControlFailed(TableRuntimeReasonCode.ControlVersionOverflow, exception.Message);
+            }
+
+            var change = new TableControlEvent(
+                nextVersion,
+                _round.RoundId,
+                -1,
+                TableControlChangeKind.PolicyConfigured,
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                now,
+                utc,
+                message.Reason,
+                null,
+                null,
+                message.Policy.Mode,
+                message.Policy.GraceMillis,
+                message.Policy.AiProfileId);
+            return await CommitControlChangeAsync(candidate.Capture(), change).ConfigureAwait(false);
+        }
+
+        private async ValueTask<TableControlResult> CommitControlChangeAsync(
+            ControlRegistrySnapshot next,
+            TableControlEvent change)
+        {
+            if (_controlCommitPort != null)
+            {
+                var request = new TableControlCommitRequest(
+                    _options.RoomId,
+                    _ownerEpoch,
+                    _controlVersion,
+                    change.ControlVersion,
+                    _stateVersion,
+                    _round.RoundId,
+                    change);
+                TableControlCommitResult commit;
+                try
+                {
+                    commit = await _controlCommitPort
+                        .CommitControlAsync(request, CancellationToken.None)
+                        .ConfigureAwait(false);
+                }
+                catch (OperationCanceledException exception)
+                {
+                    return ControlFailed(TableRuntimeReasonCode.ControlCommitCancelled, exception.Message);
+                }
+                catch (Exception exception)
+                {
+                    return ControlFailed(
+                        TableRuntimeReasonCode.ControlCommitFailed,
+                        exception.GetType().Name + ": " + exception.Message);
+                }
+
+                if (commit == null)
+                {
+                    return ControlFailed(
+                        TableRuntimeReasonCode.ControlCommitFailed,
+                        "The control commit port returned no result.");
+                }
+
+                if (!commit.IsCommitted)
+                {
+                    return ControlCommitFailure(commit);
+                }
+            }
+
+            _control = ControlRegistry.Restore(next);
+            _controlVersion = change.ControlVersion;
+            UpdatePendingControlEpoch(change.Seat, change.NewEpoch);
+            TableControlSnapshot snapshot = BuildControlSnapshot();
+            Publish(new TablePublication(
+                TablePublicationKind.ControlChanged,
+                BuildSnapshot(),
+                null,
+                null,
+                snapshot,
+                new[] { change }));
+            return TableControlResult.Changed(snapshot, change, _stateVersion);
+        }
+
+        private TableAiObservationResult ProcessAiObservation(int seat)
+        {
+            TableOperationResult? guard = GuardServing();
+            if (guard != null)
+            {
+                return AiObservationRejected(guard.ReasonCode, guard.Detail);
+            }
+
+            if (!TryReadClock(out long now, out _, out string clockFailure))
+            {
+                return AiObservationFailed(clockFailure, "The monotonic clock is not safe for AI capture.");
+            }
+
+            if (!_pending.TryGetValue(seat, out PendingDecision? pending))
+            {
+                return AiObservationRejected(
+                    TableRuntimeReasonCode.StaleDecision,
+                    "Seat " + seat + " has no open decision.");
+            }
+
+            DecisionTiming? timing = _decisionClock.Timing(seat);
+            if (timing == null || timing.Key != pending.Key)
+            {
+                return AiObservationRejected(
+                    TableRuntimeReasonCode.StaleDecision,
+                    "The open decision is not bound to an active timing.");
+            }
+
+            if (now >= timing.DeadlineMillis)
+            {
+                return AiObservationRejected(
+                    TableRuntimeReasonCode.DeadlineExpired,
+                    "The authoritative deadline has already been reached.");
+            }
+
+            ControlValidation control = _control.ValidateAutomatedAction(seat, pending.ControlEpoch);
+            if (!control.IsValid)
+            {
+                return AiObservationRejected(
+                    control.Code == ControlValidationCode.EpochMismatch
+                        ? TableRuntimeReasonCode.StaleControlEpoch
+                        : TableRuntimeReasonCode.SeatNotAutomated,
+                    control.Message);
+            }
+
+            if (pending.Candidates.Count == 0)
+            {
+                return AiObservationRejected(
+                    TableRuntimeReasonCode.AiObservationUnavailable,
+                    "The pending decision has no legal candidate for AI reasoning.");
+            }
+
+            if (_stateVersion.Value > long.MaxValue)
+            {
+                return AiObservationRejected(
+                    TableRuntimeReasonCode.InternalError,
+                    "State version exceeds the AI observation range.");
+            }
+
+            try
+            {
+                var observation = new AiObservation(
+                    _options.RoomId,
+                    pending.Key,
+                    pending.ControlEpoch,
+                    (long)_stateVersion.Value,
+                    timing.DeadlineMillis,
+                    _round.Phase,
+                    _round.DealerSeat,
+                    _round.RoundWind,
+                    _round.RoundNumber,
+                    _round.HonbaSticks,
+                    _round.RiichiSticks,
+                    _round.Tiles.WallRemaining,
+                    _round.Tiles.TilesInZone(TileZone.Hand, seat),
+                    DrawnTileFor(seat),
+                    BuildVisibleMelds(seat),
+                    BuildVisibleMelds(null),
+                    BuildVisibleDiscards(),
+                    _round.Tiles.DoraIndicators,
+                    _round.Scores,
+                    pending.Candidates);
+                return new TableAiObservationResult(
+                    TableAiObservationStatus.Captured,
+                    string.Empty,
+                    string.Empty,
+                    true,
+                    observation);
+            }
+            catch (Exception exception)
+            {
+                return AiObservationFailed(
+                    TableRuntimeReasonCode.InternalError,
+                    exception.GetType().Name + ": " + exception.Message);
+            }
+        }
+
+        private TileId? DrawnTileFor(int seat)
+        {
+            DrawnTileEvidence? evidence = _round.Tiles.DrawnTile;
+            if (evidence.HasValue && evidence.Value.Seat == seat)
+            {
+                return evidence.Value.Tile;
+            }
+
+            return null;
+        }
+
+        private IReadOnlyList<AiVisibleMeld> BuildVisibleMelds(int? onlySeat)
+        {
+            var melds = new List<AiVisibleMeld>();
+            for (int seat = 0; seat < 4; seat++)
+            {
+                if (onlySeat.HasValue && onlySeat.Value != seat)
+                {
+                    continue;
+                }
+
+                IReadOnlyList<TileId> tiles = _round.Tiles.TilesInZone(TileZone.Meld, seat);
+                var groups = new List<TileId>[4];
+                for (int i = 0; i < tiles.Count; i++)
+                {
+                    TileId tile = tiles[i];
+                    int group = _round.Tiles[tile].Index / TilePositionMap.MeldGroupSize;
+                    if (group < 0 || group >= groups.Length)
+                    {
+                        continue;
+                    }
+
+                    groups[group] ??= new List<TileId>();
+                    groups[group].Add(tile);
+                }
+
+                for (int group = 0; group < groups.Length; group++)
+                {
+                    if (groups[group] != null && groups[group].Count >= 3)
+                    {
+                        melds.Add(new AiVisibleMeld(seat, groups[group]));
+                    }
+                }
+            }
+
+            return melds;
+        }
+
+        private IReadOnlyList<AiVisibleDiscard> BuildVisibleDiscards()
+        {
+            var discards = new List<AiVisibleDiscard>();
+            for (int seat = 0; seat < 4; seat++)
+            {
+                IReadOnlyList<TileId> tiles = _round.Tiles.TilesInZone(TileZone.Discard, seat);
+                for (int i = 0; i < tiles.Count; i++)
+                {
+                    discards.Add(new AiVisibleDiscard(seat, tiles[i]));
+                }
+            }
+
+            return discards;
+        }
+
+        private TableControlSnapshot BuildControlSnapshot()
+        {
+            var seats = new TableSeatControlView[4];
+            for (int seat = 0; seat < 4; seat++)
+            {
+                SeatControlState state = _control.GetState(seat);
+                seats[seat] = new TableSeatControlView(
+                    state.Seat,
+                    state.Status,
+                    state.Kind,
+                    state.ControlEpoch,
+                    state.DisconnectedAtMillis,
+                    state.GraceDeadlineMillis,
+                    state.AiProfileId);
+            }
+
+            return new TableControlSnapshot(
+                _options.RoomId,
+                _round.RoundId,
+                _ownerEpoch,
+                _stateVersion,
+                _controlVersion,
+                _recoveryGeneration,
+                _control.Policy,
+                seats);
+        }
+
+        private TableTimingSnapshot BuildTimingSnapshot()
+        {
+            var seats = new TableSeatTimingView[4];
+            for (int seat = 0; seat < 4; seat++)
+            {
+                DecisionKey? pendingKey = null;
+                if (_pending.TryGetValue(seat, out PendingDecision? pending))
+                {
+                    pendingKey = pending.Key;
+                }
+
+                seats[seat] = new TableSeatTimingView(
+                    seat,
+                    _decisionClock.Timing(seat),
+                    _decisionClock.RemainingReserve(seat),
+                    pendingKey);
+            }
+
+            return new TableTimingSnapshot(
+                _options.RoomId,
+                _round.RoundId,
+                _stateVersion,
+                _recoveryGeneration,
+                _decisionClock.IsPausedState,
+                seats);
+        }
+
+        private TableControlEvent CreateSeatControlEvent(
+            long controlVersion,
+            TableControlChangeKind kind,
+            int seat,
+            SeatControlState before,
+            SeatControlState after,
+            long atMonotonicMillis,
+            long atUtcMillis,
+            string reason)
+        {
+            return new TableControlEvent(
+                controlVersion,
+                _round.RoundId,
+                seat,
+                kind,
+                before.ControlEpoch,
+                after.ControlEpoch,
+                before.Kind,
+                after.Kind,
+                before.Status,
+                after.Status,
+                after.GraceDeadlineMillis,
+                atMonotonicMillis,
+                atUtcMillis,
+                reason,
+                after.DisconnectedAtMillis,
+                after.AiProfileId);
+        }
+
+        private void UpdatePendingControlEpoch(int seat, long? newEpoch)
+        {
+            if (seat < 0 || !newEpoch.HasValue)
+            {
+                return;
+            }
+
+            if (!_pending.TryGetValue(seat, out PendingDecision? pending) ||
+                pending.ControlEpoch == newEpoch.Value)
+            {
+                return;
+            }
+
+            _pending[seat] = new PendingDecision(
+                pending.Key,
+                newEpoch.Value,
+                pending.Candidates,
+                pending.DrawnTile);
+        }
+
+        private TableControlResult? GuardControlServing()
+        {
+            switch (_lifecycle)
+            {
+                case TableActorLifecycle.Serving:
+                    return null;
+                case TableActorLifecycle.Recovering:
+                    return ControlRejected(
+                        TableRuntimeReasonCode.Recovering,
+                        "The table is recovering and refuses control side effects.");
+                case TableActorLifecycle.LeaseLost:
+                    return ControlRejected(
+                        TableRuntimeReasonCode.LeaseLost,
+                        "The table lease was lost.");
+                case TableActorLifecycle.Closed:
+                    return ControlRejected(
+                        TableRuntimeReasonCode.ActorClosed,
+                        "The actor is closed.");
+                default:
+                    return ControlFailed(
+                        TableRuntimeReasonCode.InternalError,
+                        _lifecycleReason);
+            }
+        }
+
+        private TableControlResult? GuardControlOwner(OwnerEpoch ownerEpoch)
+        {
+            if (ownerEpoch != _ownerEpoch)
+            {
+                return ControlRejected(
+                    TableRuntimeReasonCode.StaleOwnerEpoch,
+                    "Control owner epoch " + ownerEpoch + " is not the current lease epoch " + _ownerEpoch + ".");
+            }
+
+            return null;
+        }
+
+        private TableControlResult ControlRejected(string reasonCode, string detail)
+        {
+            return TableControlResult.Rejected(
+                _stateVersion,
+                _controlVersion,
+                reasonCode,
+                detail,
+                BuildControlSnapshot());
+        }
+
+        private TableControlResult ControlFailed(string reasonCode, string detail)
+        {
+            return TableControlResult.Failed(
+                _stateVersion,
+                _controlVersion,
+                reasonCode,
+                detail,
+                BuildControlSnapshot());
+        }
+
+        private TableControlResult ControlUnchanged(string detail)
+        {
+            return TableControlResult.Unchanged(BuildControlSnapshot(), _stateVersion, detail);
+        }
+
+        private TableControlResult ControlCommitFailure(TableControlCommitResult commit)
+        {
+            switch (commit.Status)
+            {
+                case TableControlCommitStatus.StaleOwner:
+                    return ControlFailed(TableRuntimeReasonCode.StaleOwnerEpoch, commit.Detail);
+                case TableControlCommitStatus.StaleControl:
+                    return ControlFailed(TableRuntimeReasonCode.StaleControlVersion, commit.Detail);
+                case TableControlCommitStatus.Cancelled:
+                    return ControlFailed(TableRuntimeReasonCode.ControlCommitCancelled, commit.Detail);
+                default:
+                    return ControlFailed(
+                        string.IsNullOrWhiteSpace(commit.ReasonCode)
+                            ? TableRuntimeReasonCode.ControlCommitFailed
+                            : commit.ReasonCode,
+                        commit.Detail);
+            }
+        }
+
+        private static bool SameSeatControl(SeatControlState left, SeatControlState right)
+        {
+            return left.Status == right.Status &&
+                   left.Kind == right.Kind &&
+                   left.ControlEpoch == right.ControlEpoch &&
+                   left.DisconnectedAtMillis == right.DisconnectedAtMillis &&
+                   left.GraceDeadlineMillis == right.GraceDeadlineMillis &&
+                   string.Equals(left.AiProfileId, right.AiProfileId, StringComparison.Ordinal);
+        }
+
+        private static bool SamePolicy(DisconnectPolicy left, DisconnectPolicy right)
+        {
+            return left.Mode == right.Mode &&
+                   left.GraceMillis == right.GraceMillis &&
+                   string.Equals(left.AiProfileId, right.AiProfileId, StringComparison.Ordinal);
+        }
+
+        private bool TryReadClock(out long monotonicMillis, out long utcMillis, out string failure)
+        {
+            long monotonic = _clockPort.MonotonicMillis;
+            long utc = _clockPort.UtcNowMs;
+            if (monotonic < 0 || utc < 0)
+            {
+                monotonicMillis = 0L;
+                utcMillis = 0L;
+                failure = TableRuntimeReasonCode.ClockInvalid;
+                return false;
+            }
+
+            if (monotonic < _lastMonotonicMillis)
+            {
+                monotonicMillis = 0L;
+                utcMillis = 0L;
+                failure = TableRuntimeReasonCode.ClockRegression;
+                return false;
+            }
+
+            _lastMonotonicMillis = monotonic;
+            monotonicMillis = monotonic;
+            utcMillis = utc;
+            failure = string.Empty;
+            return true;
+        }
+
+        private static void CheckSeat(int seat)
+        {
+            if (seat < 0 || seat > 3)
+            {
+                throw new ArgumentOutOfRangeException(nameof(seat), seat, "Seat must be 0..3.");
+            }
+        }
+
+        private TableAiObservationResult AiObservationRejected(string reasonCode, string detail)
+        {
+            return new TableAiObservationResult(
+                TableAiObservationStatus.Rejected,
+                reasonCode,
+                detail,
+                true,
+                null);
+        }
+
+        private TableAiObservationResult AiObservationFailed(string reasonCode, string detail)
+        {
+            return new TableAiObservationResult(
+                TableAiObservationStatus.Failed,
+                reasonCode,
+                detail,
+                true,
+                null);
+        }
+
+        private static TableAiObservationResult AiObservationAdmissionFailure(TableMailboxEnqueueStatus enqueue)
+        {
+            return enqueue == TableMailboxEnqueueStatus.Full
+                ? new TableAiObservationResult(
+                    TableAiObservationStatus.MailboxFull,
+                    TableRuntimeReasonCode.MailboxFull,
+                    "The table mailbox is full; the AI capture was not admitted.",
+                    false,
+                    null)
+                : new TableAiObservationResult(
+                    TableAiObservationStatus.Closed,
+                    TableRuntimeReasonCode.ActorClosed,
+                    "The table actor is closing/closed; the AI capture was not admitted.",
+                    false,
+                    null);
+        }
+
+        private static TableControlResult ControlAdmissionFailure(TableMailboxEnqueueStatus enqueue)
+        {
+            return enqueue == TableMailboxEnqueueStatus.Full
+                ? TableControlResult.AdmissionFailure(
+                    TableControlStatus.MailboxFull,
+                    TableRuntimeReasonCode.MailboxFull,
+                    "The table mailbox is full; the control message was not admitted.")
+                : TableControlResult.AdmissionFailure(
+                    TableControlStatus.Closed,
+                    TableRuntimeReasonCode.ActorClosed,
+                    "The table actor is closing/closed; the control message was not admitted.");
+        }
+
+        private ValueTask<TableControlResult> EnqueueControlMessage(TableMailboxMessage message)
+        {
+            TableMailboxEnqueueStatus enqueue = _mailbox.TryEnqueueControl(message);
+            if (enqueue != TableMailboxEnqueueStatus.Enqueued)
+            {
+                return new ValueTask<TableControlResult>(ControlAdmissionFailure(enqueue));
+            }
+
+            EnsurePump();
+            switch (message)
+            {
+                case DisconnectMailboxMessage disconnect:
+                    return new ValueTask<TableControlResult>(disconnect.Completion.Task);
+                case ReconnectMailboxMessage reconnect:
+                    return new ValueTask<TableControlResult>(reconnect.Completion.Task);
+                case GraceExpiryMailboxMessage grace:
+                    return new ValueTask<TableControlResult>(grace.Completion.Task);
+                case TakeoverMailboxMessage takeover:
+                    return new ValueTask<TableControlResult>(takeover.Completion.Task);
+                case ReclaimMailboxMessage reclaim:
+                    return new ValueTask<TableControlResult>(reclaim.Completion.Task);
+                case ConfigurePolicyMailboxMessage policy:
+                    return new ValueTask<TableControlResult>(policy.Completion.Task);
+                default:
+                    throw new InvalidOperationException("Not a control mailbox message.");
+            }
         }
 
         private TableOperationResult? GuardServing()
@@ -1539,6 +2961,68 @@ namespace Mahjong.TableRuntime
                         TableRuntimeReasonCode.InternalError,
                         detail,
                         _stateVersion));
+                    break;
+                case DisconnectMailboxMessage disconnect:
+                    disconnect.Completion.TrySetResult(TableControlResult.Failed(
+                        _stateVersion,
+                        _controlVersion,
+                        TableRuntimeReasonCode.InternalError,
+                        detail,
+                        BuildControlSnapshot()));
+                    break;
+                case ReconnectMailboxMessage reconnect:
+                    reconnect.Completion.TrySetResult(TableControlResult.Failed(
+                        _stateVersion,
+                        _controlVersion,
+                        TableRuntimeReasonCode.InternalError,
+                        detail,
+                        BuildControlSnapshot()));
+                    break;
+                case GraceExpiryMailboxMessage grace:
+                    grace.Completion.TrySetResult(TableControlResult.Failed(
+                        _stateVersion,
+                        _controlVersion,
+                        TableRuntimeReasonCode.InternalError,
+                        detail,
+                        BuildControlSnapshot()));
+                    break;
+                case TakeoverMailboxMessage takeover:
+                    takeover.Completion.TrySetResult(TableControlResult.Failed(
+                        _stateVersion,
+                        _controlVersion,
+                        TableRuntimeReasonCode.InternalError,
+                        detail,
+                        BuildControlSnapshot()));
+                    break;
+                case ReclaimMailboxMessage reclaim:
+                    reclaim.Completion.TrySetResult(TableControlResult.Failed(
+                        _stateVersion,
+                        _controlVersion,
+                        TableRuntimeReasonCode.InternalError,
+                        detail,
+                        BuildControlSnapshot()));
+                    break;
+                case ConfigurePolicyMailboxMessage policy:
+                    policy.Completion.TrySetResult(TableControlResult.Failed(
+                        _stateVersion,
+                        _controlVersion,
+                        TableRuntimeReasonCode.InternalError,
+                        detail,
+                        BuildControlSnapshot()));
+                    break;
+                case AiObservationMailboxMessage aiObservation:
+                    aiObservation.Completion.TrySetResult(new TableAiObservationResult(
+                        TableAiObservationStatus.Failed,
+                        TableRuntimeReasonCode.InternalError,
+                        detail,
+                        true,
+                        null));
+                    break;
+                case ControlSnapshotMailboxMessage controlSnapshot:
+                    controlSnapshot.Completion.TrySetException(exception);
+                    break;
+                case TimingSnapshotMailboxMessage timingSnapshot:
+                    timingSnapshot.Completion.TrySetException(exception);
                     break;
                 case BeginRecoveryMailboxMessage begin:
                     begin.Completion.TrySetResult(TableOperationResult.Failed(
