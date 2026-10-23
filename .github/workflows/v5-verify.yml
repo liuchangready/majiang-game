@@ -1,0 +1,47 @@
+# Unified V5 .NET verification CI.
+#
+# Calls the same single entry point used locally (tools/verify-v5.ps1) so CI and a
+# local machine produce the same per-project PASS/FAIL evidence with real test
+# counts and raw logs. This workflow deliberately covers the .NET tree only: it
+# makes no Unity/IL2CPP/Android/iOS claim (those need a licensed Unity editor and
+# platform toolchains and are tracked separately).
+#
+# Local equivalent:
+#   powershell -ExecutionPolicy Bypass -File tools\verify-v5.ps1 -Configuration Release
+# Logs land under artifacts\verify-v5\<timestamp>\ (summary.log plus one log per
+# build/test/copy step).
+
+name: v5-verify
+
+on:
+  push:
+    branches: [ '**' ]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  verify:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET 8 SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.426
+
+      # verify-v5.ps1 resolves dotnet from DOTNET_ROOT/PATH when -DotnetPath is not
+      # given; tools/unity/build-shared.ps1 (invoked by the plugin-copy check) uses
+      # the same resolution chain. D:\Unity\dotnet does not exist on CI runners.
+      - name: Run unified V5 verification
+        shell: pwsh
+        run: ./tools/verify-v5.ps1 -Configuration Release
+
+      - name: Upload verification logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v5-verify-logs
+          path: artifacts/verify-v5/**
+          if-no-files-found: warn

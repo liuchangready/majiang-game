@@ -1,0 +1,1679 @@
+{
+  "schema": "v5-cheat-golden-v1",
+  "generator": "engine/src/test/kotlin/com/majiang/v3/V5CheatGoldenExporterTest.kt",
+  "generatorVersion": 1,
+  "v4Commit": "a96c195c852e035ff6434584135718bbb8a05d29",
+  "rulesetVersion": 1,
+  "generatedByCommand": "V5_CHEAT_GOLDEN_EXPORT=1 ./gradlew :engine:test --tests com.majiang.v3.V5CheatGoldenExporterTest --console=plain",
+  "extractionStatus": "exported",
+  "exportedAtNote": "generated from actual V4 economy.CheatLedger / cheat.mark.TileMarkState / authority.cheat handlers / model.TileMovement calls; no expected value is hand-written",
+  "v4RulesSourceNote": "engine/src/main/kotlin/com/majiang/economy, /cheat/mark, /authority/cheat, /model/TileMovement.kt are the V4 production sources; the v4Commit above is the exact tree used",
+  "slotConventionNote": "wall[i] is the V4 live-wall list index; deadWall[i] and replacement[i] are dead-wall region indices; hands are recorded as seat + tile-id sets without container order",
+  "ledger": {
+    "initialPoints": [40,40,40,40],
+    "chargeOnce": {
+      "entryId": "skill-1",
+      "seat": 0,
+      "amount": -7,
+      "reason": "TILE_MARK",
+      "balanceAfter": 33,
+      "balancesAfter": [33,40,40,40],
+      "entryCount": 1
+    },
+    "replaySamePayload": {
+      "returnsOriginalEntry": true,
+      "balanceAfter": 33,
+      "entryCount": 1
+    },
+    "conflictDifferentPayload": {
+      "requested": {
+        "seat": 0,
+        "amount": 6
+      },
+      "outcome": "rejected",
+      "exception": "IllegalArgumentException",
+      "balancesAfter": [33,40,40,40],
+      "entryCount": 1
+    },
+    "insufficientFunds": {
+      "amount": -11,
+      "initialPoints": 10,
+      "outcome": "rejected",
+      "exception": "IllegalStateException"
+    },
+    "overflow": {
+      "amount": 2147483647,
+      "outcome": "rejected",
+      "exception": "ArithmeticException"
+    },
+    "invalidSeat": {
+      "seat": 4,
+      "outcome": "rejected",
+      "exception": "IllegalArgumentException"
+    },
+    "flowSummary": {
+      "spend": {
+        "seat": 0,
+        "amount": -7
+      },
+      "gain": {
+        "seat": 1,
+        "amount": 5
+      },
+      "seat0TotalSpent": 7,
+      "seat1TotalGained": 5,
+      "seat1NetDelta": 5,
+      "finalBalances": [3,15,10,10]
+    },
+    "snapshotRoundTrip": {
+      "balancesEqual": true,
+      "entriesEqual": true
+    }
+  },
+  "tileMarkState": {
+    "registerDealtRound": {
+      "ordinalAfterFirst": 1,
+      "sameIdReplays": true,
+      "versionAfterFirstRegister": 1
+    },
+    "addGroup": {
+      "expiresAfterRoundOrdinal": 4,
+      "sameIdSameContentReplays": true,
+      "sameIdDifferentContentException": "IllegalArgumentException",
+      "seatGroupLimitIsThree": true,
+      "seatGroupLimitException": "IllegalArgumentException",
+      "seatTileLimitIsTwelve": true,
+      "crossSeatSameTilesAllowed": true,
+      "crossSeatGroupCount": 2,
+      "versionTrail": [0,1,2,3]
+    },
+    "expiry": {
+      "createdRoundOrdinal": 1,
+      "groupsAfterCompletingRound3": 1,
+      "groupsAfterCompletingRound4": 0,
+      "settledRoundCount": 4,
+      "versionAfterFirstAdd": 2,
+      "versionAfterCompletingRound3": 7,
+      "versionAfterCompletingRound4": 9
+    }
+  },
+  "tileMarkHandler": [
+    {
+      "caseId": "tm-allowed",
+      "note": "own turn CHEAT_WINDOW 4 owned unmarked tiles",
+      "outcome": "Allowed",
+      "reason": null
+    },
+    {
+      "caseId": "tm-not-your-turn",
+      "note": "actor seat 1 while seat 0 acts",
+      "outcome": "Rejected",
+      "reason": "NOT_YOUR_TURN"
+    },
+    {
+      "caseId": "tm-wrong-phase-preparation",
+      "note": "stacking/preparation active",
+      "outcome": "Rejected",
+      "reason": "WRONG_PHASE"
+    },
+    {
+      "caseId": "tm-wrong-phase-draw",
+      "note": "phase DRAW is neither trick window",
+      "outcome": "Rejected",
+      "reason": "WRONG_PHASE"
+    },
+    {
+      "caseId": "tm-wrong-phase-round-end",
+      "note": "round already ended is reported as decision mismatch",
+      "outcome": "Rejected",
+      "reason": "DECISION_MISMATCH"
+    },
+    {
+      "caseId": "tm-response-window",
+      "note": "response window open",
+      "outcome": "Rejected",
+      "reason": "WRONG_PHASE"
+    },
+    {
+      "caseId": "tm-riichi-locked",
+      "note": "riichi declared this round",
+      "outcome": "Rejected",
+      "reason": "TILE_MARK_RIICHI_LOCKED"
+    },
+    {
+      "caseId": "tm-invalid-selection-three",
+      "note": "only 3 tiles",
+      "outcome": "Rejected",
+      "reason": "TILE_MARK_INVALID_SELECTION"
+    },
+    {
+      "caseId": "tm-invalid-selection-duplicate",
+      "note": "duplicate entity id",
+      "outcome": "Rejected",
+      "reason": "TILE_MARK_INVALID_SELECTION"
+    },
+    {
+      "caseId": "tm-tile-not-owned",
+      "note": "tiles belong to other hands",
+      "outcome": "Rejected",
+      "reason": "TILE_MARK_TILE_NOT_OWNED"
+    },
+    {
+      "caseId": "tm-already-marked",
+      "note": "tiles 8 and 12 already marked",
+      "outcome": "Rejected",
+      "reason": "TILE_MARK_ALREADY_MARKED"
+    },
+    {
+      "caseId": "tm-capacity-groups",
+      "note": "3 existing groups",
+      "outcome": "Rejected",
+      "reason": "TILE_MARK_CAPACITY_EXCEEDED"
+    },
+    {
+      "caseId": "tm-capacity-tiles",
+      "note": "8 marked + 4 > 12",
+      "outcome": "Rejected",
+      "reason": "TILE_MARK_CAPACITY_EXCEEDED"
+    },
+    {
+      "caseId": "tm-insufficient-funds",
+      "note": "5 cheat points < cost 10",
+      "outcome": "Rejected",
+      "reason": "INSUFFICIENT_FUNDS"
+    },
+    {
+      "caseId": "tm-sleeve-pending",
+      "note": "own sleeve offer pending",
+      "outcome": "Rejected",
+      "reason": "SLEEVE_BLOOM_CHOICE_PENDING"
+    },
+    {
+      "caseId": "tm-offturn-sleeve-pending",
+      "note": "own off-turn offer pending",
+      "outcome": "Rejected",
+      "reason": "SLEEVE_BLOOM_CHOICE_PENDING"
+    },
+    {
+      "caseId": "tm-beam-pending",
+      "note": "own beam offer pending",
+      "outcome": "Rejected",
+      "reason": "BEAM_SWAP_CHOICE_PENDING"
+    },
+    {
+      "caseId": "tm-no-active-decision",
+      "note": "no open decision timing",
+      "outcome": "Rejected",
+      "reason": "NO_ACTIVE_DECISION"
+    },
+    {
+      "caseId": "tm-deadline-expired",
+      "note": "now == deadlineMillis",
+      "outcome": "Rejected",
+      "reason": "DEADLINE_EXPIRED"
+    },
+    {
+      "caseId": "tm-decision-mismatch",
+      "note": "no active round",
+      "outcome": "Rejected",
+      "reason": "DECISION_MISMATCH"
+    }
+  ],
+  "sleeveBloomHandler": [
+    {
+      "caseId": "sb-activate-allowed",
+      "note": "own normal draw, next wall tile present",
+      "outcome": "Allowed",
+      "reason": null,
+      "goldenInputs": {
+        "seat": 0,
+        "drawKind": "NORMAL",
+        "drawnTileId": 16,
+        "nextWallTileId": 32,
+        "nextDeadWallTileId": null,
+        "wallPointer": 53,
+        "wallEndExclusive": 113,
+        "rinshanPointer": 0,
+        "cheatPoints": 40,
+        "cost": 10
+      }
+    },
+    {
+      "caseId": "sb-activate-dealer-extra",
+      "note": "dealer 14th tile excluded",
+      "outcome": "Rejected",
+      "reason": "SLEEVE_BLOOM_DEALER_EXTRA_EXCLUDED"
+    },
+    {
+      "caseId": "sb-activate-already-used",
+      "note": "same turn number",
+      "outcome": "Rejected",
+      "reason": "SLEEVE_BLOOM_ALREADY_USED_THIS_DRAW"
+    },
+    {
+      "caseId": "sb-activate-beam-pending",
+      "note": "mutual exclusion",
+      "outcome": "Rejected",
+      "reason": "BEAM_SWAP_ALREADY_PENDING"
+    },
+    {
+      "caseId": "sb-activate-sleeve-pending",
+      "note": "offer already frozen",
+      "outcome": "Rejected",
+      "reason": "SLEEVE_BLOOM_ALREADY_PENDING"
+    },
+    {
+      "caseId": "sb-activate-wall-empty",
+      "note": "no second candidate in wall",
+      "outcome": "Rejected",
+      "reason": "SLEEVE_BLOOM_WALL_EMPTY"
+    },
+    {
+      "caseId": "sb-activate-wall-empty-drift",
+      "note": "candidate left the wall",
+      "outcome": "Rejected",
+      "reason": "SLEEVE_BLOOM_WALL_EMPTY"
+    },
+    {
+      "caseId": "sb-activate-no-drawn-tile",
+      "note": "no tracked draw",
+      "outcome": "Rejected",
+      "reason": "SLEEVE_BLOOM_NO_DRAWN_TILE"
+    },
+    {
+      "caseId": "sb-activate-not-your-turn",
+      "note": "seat 1 on seat 0 turn",
+      "outcome": "Rejected",
+      "reason": "NOT_YOUR_TURN"
+    },
+    {
+      "caseId": "sb-activate-wrong-phase",
+      "note": "only CHEAT_WINDOW hosts it",
+      "outcome": "Rejected",
+      "reason": "WRONG_PHASE"
+    },
+    {
+      "caseId": "sb-activate-response-window",
+      "note": "responses override tricks",
+      "outcome": "Rejected",
+      "reason": "WRONG_PHASE"
+    },
+    {
+      "caseId": "sb-activate-disabled",
+      "note": "cost must be exactly 10",
+      "outcome": "Rejected",
+      "reason": "SLEEVE_BLOOM_DISABLED"
+    },
+    {
+      "caseId": "sb-activate-insufficient",
+      "note": "5 < 10",
+      "outcome": "Rejected",
+      "reason": "INSUFFICIENT_FUNDS"
+    },
+    {
+      "caseId": "sb-activate-rinshan-allowed",
+      "note": "rinshan draw with valid next dead wall tile",
+      "outcome": "Allowed",
+      "reason": null,
+      "goldenInputs": {
+        "seat": 0,
+        "drawKind": "RINSHAN",
+        "drawnTileId": 24,
+        "nextWallTileId": 32,
+        "nextDeadWallTileId": 28,
+        "wallPointer": 53,
+        "wallEndExclusive": 113,
+        "rinshanPointer": 1,
+        "cheatPoints": 40,
+        "cost": 10
+      }
+    },
+    {
+      "caseId": "sb-activate-rinshan-empty",
+      "note": "rinshan exhausted (pointer 4)",
+      "outcome": "Rejected",
+      "reason": "SLEEVE_BLOOM_WALL_EMPTY"
+    },
+    {
+      "caseId": "sb-choose-first",
+      "note": "consistent immediate offer",
+      "outcome": "Allowed",
+      "reason": null,
+      "goldenInputs": {
+        "seat": 0,
+        "keep": "FIRST",
+        "offerId": "bloom-0-req-1",
+        "turnNumber": 12,
+        "offerCreatedTurnNumber": 12,
+        "drawKind": "NORMAL",
+        "drawnTileId": 16,
+        "offerFirstTileId": 16,
+        "offerSecondTileId": 32,
+        "offerSecondWallIndex": 53,
+        "nextAvailableWallIndex": 53,
+        "wallPointer": 53,
+        "wallEndExclusive": 113,
+        "rinshanPointer": 0,
+        "cost": 10
+      }
+    },
+    {
+      "caseId": "sb-choose-second",
+      "note": "consistent immediate offer",
+      "outcome": "Allowed",
+      "reason": null,
+      "goldenInputs": {
+        "seat": 0,
+        "keep": "SECOND",
+        "offerId": "bloom-0-req-1",
+        "turnNumber": 12,
+        "offerCreatedTurnNumber": 12,
+        "drawKind": "NORMAL",
+        "drawnTileId": 16,
+        "offerFirstTileId": 16,
+        "offerSecondTileId": 32,
+        "offerSecondWallIndex": 53,
+        "nextAvailableWallIndex": 53,
+        "wallPointer": 53,
+        "wallEndExclusive": 113,
+        "rinshanPointer": 0,
+        "cost": 10
+      }
+    },
+    {
+      "caseId": "sb-choose-stale-turn",
+      "note": "offer created on turn 12",
+      "outcome": "StaleOffer",
+      "reason": "SLEEVE_BLOOM_STALE_OFFER"
+    },
+    {
+      "caseId": "sb-choose-stale-drawn",
+      "note": "drawn tile drifted",
+      "outcome": "StaleOffer",
+      "reason": "SLEEVE_BLOOM_STALE_OFFER"
+    },
+    {
+      "caseId": "sb-choose-stale-index",
+      "note": "second candidate slot moved",
+      "outcome": "StaleOffer",
+      "reason": "SLEEVE_BLOOM_STALE_OFFER"
+    },
+    {
+      "caseId": "sb-choose-offer-mismatch",
+      "note": "state offer bloom-0-req-1, request carries bloom-0-other",
+      "outcome": "Rejected",
+      "reason": "SLEEVE_BLOOM_OFFER_MISMATCH"
+    },
+    {
+      "caseId": "sb-choose-no-offer",
+      "note": "nothing pending",
+      "outcome": "Rejected",
+      "reason": "SLEEVE_BLOOM_NO_PENDING_OFFER"
+    },
+    {
+      "caseId": "sb-choose-rinshan",
+      "note": "rinshan offer fully consistent",
+      "outcome": "Allowed",
+      "reason": null,
+      "goldenInputs": {
+        "seat": 0,
+        "keep": "SECOND",
+        "offerId": "bloom-0-req-1",
+        "turnNumber": 12,
+        "offerCreatedTurnNumber": 12,
+        "drawKind": "RINSHAN",
+        "drawnTileId": 24,
+        "offerFirstTileId": 24,
+        "offerSecondTileId": 28,
+        "offerSecondWallIndex": null,
+        "nextAvailableWallIndex": 53,
+        "wallPointer": 53,
+        "wallEndExclusive": 113,
+        "rinshanPointer": 1,
+        "cost": 10
+      }
+    },
+    {
+      "caseId": "sbo-activate-allowed",
+      "note": "window open after own discard",
+      "outcome": "Allowed",
+      "reason": null,
+      "goldenInputs": {
+        "seat": 2,
+        "currentPlayer": 0,
+        "phase": "DISCARD",
+        "windowId": "bloom-window-2-1",
+        "availableWallCount": 60,
+        "cheatPoints": 40,
+        "cost": 10
+      }
+    },
+    {
+      "caseId": "sbo-activate-no-window",
+      "note": "window id mismatch",
+      "outcome": "Rejected",
+      "reason": "SLEEVE_BLOOM_NO_WINDOW"
+    },
+    {
+      "caseId": "sbo-activate-reserved",
+      "note": "reservation outstanding",
+      "outcome": "Rejected",
+      "reason": "SLEEVE_BLOOM_RESERVED_PENDING"
+    },
+    {
+      "caseId": "sbo-activate-own-turn",
+      "note": "own turn uses immediate path",
+      "outcome": "Rejected",
+      "reason": "NOT_YOUR_TURN"
+    },
+    {
+      "caseId": "sbo-activate-wall-empty",
+      "note": "fewer than two live tiles",
+      "outcome": "Rejected",
+      "reason": "SLEEVE_BLOOM_WALL_EMPTY"
+    },
+    {
+      "caseId": "sbo-choose-allowed",
+      "note": "before deadline, both candidates in wall",
+      "outcome": "Allowed",
+      "reason": null,
+      "goldenInputs": {
+        "seat": 2,
+        "keep": "SECOND",
+        "offerId": "bloom-offturn-2-req-1",
+        "now": 1000,
+        "deadlineMillis": 11000,
+        "offerFirstInWall": true,
+        "offerSecondInWall": true
+      }
+    },
+    {
+      "caseId": "sbo-choose-expired",
+      "note": "now == deadlineMillis",
+      "outcome": "Rejected",
+      "reason": "DEADLINE_EXPIRED"
+    },
+    {
+      "caseId": "sbo-choose-stale-first",
+      "note": "first candidate drawn away (off-turn drift is a plain rejection)",
+      "outcome": "Rejected",
+      "reason": "SLEEVE_BLOOM_STALE_OFFER"
+    },
+    {
+      "caseId": "sbo-choose-stale-second",
+      "note": "second candidate drawn away (off-turn drift is a plain rejection)",
+      "outcome": "Rejected",
+      "reason": "SLEEVE_BLOOM_STALE_OFFER"
+    }
+  ],
+  "beamSwapHandler": [
+    {
+      "caseId": "bm-activate-allowed",
+      "note": "own normal draw, live wall has candidates",
+      "outcome": "Allowed",
+      "reason": null
+    },
+    {
+      "caseId": "bm-activate-no-candidates",
+      "note": "wall exhausted",
+      "outcome": "Rejected",
+      "reason": "BEAM_SWAP_NO_CANDIDATES"
+    },
+    {
+      "caseId": "bm-activate-dealer-extra",
+      "note": "dealer 14th tile excluded",
+      "outcome": "Rejected",
+      "reason": "BEAM_SWAP_DEALER_EXTRA_EXCLUDED"
+    },
+    {
+      "caseId": "bm-activate-riichi",
+      "note": "riichi declared",
+      "outcome": "Rejected",
+      "reason": "BEAM_SWAP_RIICHI_LOCKED"
+    },
+    {
+      "caseId": "bm-activate-no-drawn",
+      "note": "no tracked draw",
+      "outcome": "Rejected",
+      "reason": "BEAM_SWAP_NO_DRAWN_TILE"
+    },
+    {
+      "caseId": "bm-activate-beam-pending",
+      "note": "offer already frozen",
+      "outcome": "Rejected",
+      "reason": "BEAM_SWAP_ALREADY_PENDING"
+    },
+    {
+      "caseId": "bm-activate-sleeve-pending",
+      "note": "mutual exclusion",
+      "outcome": "Rejected",
+      "reason": "BEAM_SWAP_ALREADY_PENDING"
+    },
+    {
+      "caseId": "bm-activate-already-used",
+      "note": "same turn number",
+      "outcome": "Rejected",
+      "reason": "BEAM_SWAP_ALREADY_USED_THIS_DRAW"
+    },
+    {
+      "caseId": "bm-activate-disabled",
+      "note": "cost must be exactly 10",
+      "outcome": "Rejected",
+      "reason": "BEAM_SWAP_DISABLED"
+    },
+    {
+      "caseId": "bm-activate-insufficient",
+      "note": "5 < 10",
+      "outcome": "Rejected",
+      "reason": "INSUFFICIENT_FUNDS"
+    },
+    {
+      "caseId": "bm-activate-deadwall-allowed",
+      "note": "rinshan window with undrawn rinshan + back half + replacement",
+      "outcome": "Allowed",
+      "reason": null
+    },
+    {
+      "caseId": "bm-activate-deadwall-empty",
+      "note": "everything consumed",
+      "outcome": "Rejected",
+      "reason": "BEAM_SWAP_NO_CANDIDATES"
+    },
+    {
+      "caseId": "bm-activate-deadwall-dora-only",
+      "note": "revealed dora indicator never counts",
+      "outcome": "Rejected",
+      "reason": "BEAM_SWAP_NO_CANDIDATES"
+    },
+    {
+      "caseId": "bm-choose-swap",
+      "note": "wall slot candidate consistent",
+      "outcome": "Allowed",
+      "reason": null
+    },
+    {
+      "caseId": "bm-choose-keep",
+      "note": "keep original takes no arguments",
+      "outcome": "Allowed",
+      "reason": null
+    },
+    {
+      "caseId": "bm-choose-invalid-slot",
+      "note": "slot outside frozen candidates",
+      "outcome": "Rejected",
+      "reason": "BEAM_SWAP_INVALID_CHOICE"
+    },
+    {
+      "caseId": "bm-choose-invalid-foreign-hand",
+      "note": "tile not eligible at freeze time",
+      "outcome": "Rejected",
+      "reason": "BEAM_SWAP_INVALID_CHOICE"
+    },
+    {
+      "caseId": "bm-keep-original-args-forbidden-at-request",
+      "note": "BeamSwapChoiceRequest itself refuses arguments for KEEP_ORIGINAL before the handler runs",
+      "outcome": "Rejected",
+      "reason": "BEAM_SWAP_INVALID_CHOICE",
+      "requestException": "IllegalArgumentException"
+    },
+    {
+      "caseId": "bm-choose-stale-turn",
+      "note": "offer created on turn 12",
+      "outcome": "StaleOffer",
+      "reason": "BEAM_SWAP_STALE_OFFER"
+    },
+    {
+      "caseId": "bm-choose-stale-drawn",
+      "note": "drawn tile drifted",
+      "outcome": "StaleOffer",
+      "reason": "BEAM_SWAP_STALE_OFFER"
+    },
+    {
+      "caseId": "bm-choose-deadwall-allowed",
+      "note": "undrawn rinshan slot candidate consistent",
+      "outcome": "Allowed",
+      "reason": null
+    },
+    {
+      "caseId": "bm-choose-deadwall-dora-stale",
+      "note": "dora indicator slot is never a valid candidate",
+      "outcome": "StaleOffer",
+      "reason": "BEAM_SWAP_STALE_OFFER"
+    },
+    {
+      "caseId": "bm-choose-replacement-allowed",
+      "note": "replacement slot candidate consistent",
+      "outcome": "Allowed",
+      "reason": null
+    }
+  ],
+  "tileMovement": [
+    {
+      "caseId": "mv-swap-hand-with-wall-direct",
+      "note": "closed hand tile swaps with wall[0]; no backfill because the hand tile never lived in the wall",
+      "handTileId": 8,
+      "displacedTileId": 33,
+      "wallIndex": 0,
+      "wallPointerBefore": 0,
+      "wallPointerAfter": 0,
+      "factsBefore": [
+        {
+          "tileId": 8,
+          "container": "hand",
+          "seat": 0,
+          "index": null
+        },
+        {
+          "tileId": 33,
+          "container": "wall",
+          "seat": null,
+          "index": 0
+        }
+      ],
+      "factsAfter": [
+        {
+          "tileId": 8,
+          "container": "wall",
+          "seat": null,
+          "index": 0
+        },
+        {
+          "tileId": 33,
+          "container": "hand",
+          "seat": 0,
+          "index": null
+        }
+      ]
+    },
+    {
+      "caseId": "mv-swap-drawn-with-wall-backfill",
+      "note": "after drawNormal the drawn tile keeps its old wall slot; swapping it backfills that slot with the displaced wall tile",
+      "drawnTileId": 33,
+      "displacedTileId": 29,
+      "resolvedIndex": 1,
+      "backfilledIndex": 0,
+      "backfilledTileId": 29,
+      "wallPointerBeforeDraw": 0,
+      "wallPointerAfterDraw": 1,
+      "wallPointerAfterSwap": 1,
+      "factsAfter": [
+        {
+          "tileId": 33,
+          "container": "wall",
+          "seat": null,
+          "index": 1
+        },
+        {
+          "tileId": 29,
+          "container": "hand",
+          "seat": 0,
+          "index": null
+        }
+      ]
+    },
+    {
+      "caseId": "mv-reservation-delivery",
+      "note": "the reserved tile is pulled out of the live wall by the owner's next normal draw",
+      "reservedTileId": 17,
+      "fromReservation": true,
+      "wallIndex": 1,
+      "wallEndExclusiveBefore": 69,
+      "wallEndExclusiveAfter": 68,
+      "wallPointerBefore": 0,
+      "wallPointerAfter": 0,
+      "factsAfter": [
+        {
+          "tileId": 17,
+          "container": "hand",
+          "seat": 0,
+          "index": null
+        },
+        {
+          "tileId": 16,
+          "container": "discard",
+          "seat": 0,
+          "index": null
+        }
+      ]
+    },
+    {
+      "caseId": "mv-reservation-delivery-then-beam",
+      "note": "after the reservation delivery (removeAt, pointer unmoved) the same draw's CHEAT_WINDOW freezes beam candidates from the unmoved pointer; the wall-front undrawn tile stays in the window, the delivered tile is out of the wall, and the swapped-in hand tile becomes the next normal draw",
+      "reservedTileId": 17,
+      "deliveredTileId": 17,
+      "wallPointerBeforeDelivery": 0,
+      "wallPointerAfterDelivery": 0,
+      "wallEndExclusiveAfterDelivery": 68,
+      "firstUndrawnTileId": 33,
+      "successorTileId": 25,
+      "candidateTileIds": [33,25,70,71,72,73,74,75],
+      "candidateSlots": [0,1,2,3,4,5,6,7],
+      "handTileId": 0,
+      "beamGotTileId": 33,
+      "nextDrawTileId": 0,
+      "inputPlacements": [
+        {
+          "tileId": 0,
+          "container": "hand",
+          "seat": 0,
+          "index": 0
+        },
+        {
+          "tileId": 4,
+          "container": "hand",
+          "seat": 0,
+          "index": 1
+        },
+        {
+          "tileId": 8,
+          "container": "hand",
+          "seat": 0,
+          "index": 2
+        },
+        {
+          "tileId": 12,
+          "container": "hand",
+          "seat": 0,
+          "index": 3
+        },
+        {
+          "tileId": 20,
+          "container": "hand",
+          "seat": 0,
+          "index": 4
+        },
+        {
+          "tileId": 24,
+          "container": "hand",
+          "seat": 0,
+          "index": 5
+        },
+        {
+          "tileId": 28,
+          "container": "hand",
+          "seat": 0,
+          "index": 6
+        },
+        {
+          "tileId": 32,
+          "container": "hand",
+          "seat": 0,
+          "index": 7
+        },
+        {
+          "tileId": 1,
+          "container": "hand",
+          "seat": 0,
+          "index": 8
+        },
+        {
+          "tileId": 5,
+          "container": "hand",
+          "seat": 0,
+          "index": 9
+        },
+        {
+          "tileId": 9,
+          "container": "hand",
+          "seat": 0,
+          "index": 10
+        },
+        {
+          "tileId": 13,
+          "container": "hand",
+          "seat": 0,
+          "index": 11
+        },
+        {
+          "tileId": 2,
+          "container": "hand",
+          "seat": 0,
+          "index": 12
+        },
+        {
+          "tileId": 16,
+          "container": "discard",
+          "seat": 0,
+          "index": 0
+        },
+        {
+          "tileId": 3,
+          "container": "hand",
+          "seat": 1,
+          "index": 0
+        },
+        {
+          "tileId": 6,
+          "container": "hand",
+          "seat": 1,
+          "index": 1
+        },
+        {
+          "tileId": 7,
+          "container": "hand",
+          "seat": 1,
+          "index": 2
+        },
+        {
+          "tileId": 10,
+          "container": "hand",
+          "seat": 1,
+          "index": 3
+        },
+        {
+          "tileId": 11,
+          "container": "hand",
+          "seat": 1,
+          "index": 4
+        },
+        {
+          "tileId": 14,
+          "container": "hand",
+          "seat": 1,
+          "index": 5
+        },
+        {
+          "tileId": 15,
+          "container": "hand",
+          "seat": 1,
+          "index": 6
+        },
+        {
+          "tileId": 18,
+          "container": "hand",
+          "seat": 1,
+          "index": 7
+        },
+        {
+          "tileId": 19,
+          "container": "hand",
+          "seat": 1,
+          "index": 8
+        },
+        {
+          "tileId": 21,
+          "container": "hand",
+          "seat": 1,
+          "index": 9
+        },
+        {
+          "tileId": 22,
+          "container": "hand",
+          "seat": 1,
+          "index": 10
+        },
+        {
+          "tileId": 23,
+          "container": "hand",
+          "seat": 1,
+          "index": 11
+        },
+        {
+          "tileId": 26,
+          "container": "hand",
+          "seat": 1,
+          "index": 12
+        },
+        {
+          "tileId": 27,
+          "container": "hand",
+          "seat": 2,
+          "index": 0
+        },
+        {
+          "tileId": 29,
+          "container": "hand",
+          "seat": 2,
+          "index": 1
+        },
+        {
+          "tileId": 30,
+          "container": "hand",
+          "seat": 2,
+          "index": 2
+        },
+        {
+          "tileId": 31,
+          "container": "hand",
+          "seat": 2,
+          "index": 3
+        },
+        {
+          "tileId": 34,
+          "container": "hand",
+          "seat": 2,
+          "index": 4
+        },
+        {
+          "tileId": 35,
+          "container": "hand",
+          "seat": 2,
+          "index": 5
+        },
+        {
+          "tileId": 36,
+          "container": "hand",
+          "seat": 2,
+          "index": 6
+        },
+        {
+          "tileId": 37,
+          "container": "hand",
+          "seat": 2,
+          "index": 7
+        },
+        {
+          "tileId": 38,
+          "container": "hand",
+          "seat": 2,
+          "index": 8
+        },
+        {
+          "tileId": 39,
+          "container": "hand",
+          "seat": 2,
+          "index": 9
+        },
+        {
+          "tileId": 40,
+          "container": "hand",
+          "seat": 2,
+          "index": 10
+        },
+        {
+          "tileId": 41,
+          "container": "hand",
+          "seat": 2,
+          "index": 11
+        },
+        {
+          "tileId": 42,
+          "container": "hand",
+          "seat": 2,
+          "index": 12
+        },
+        {
+          "tileId": 43,
+          "container": "hand",
+          "seat": 3,
+          "index": 0
+        },
+        {
+          "tileId": 44,
+          "container": "hand",
+          "seat": 3,
+          "index": 1
+        },
+        {
+          "tileId": 45,
+          "container": "hand",
+          "seat": 3,
+          "index": 2
+        },
+        {
+          "tileId": 46,
+          "container": "hand",
+          "seat": 3,
+          "index": 3
+        },
+        {
+          "tileId": 47,
+          "container": "hand",
+          "seat": 3,
+          "index": 4
+        },
+        {
+          "tileId": 48,
+          "container": "hand",
+          "seat": 3,
+          "index": 5
+        },
+        {
+          "tileId": 49,
+          "container": "hand",
+          "seat": 3,
+          "index": 6
+        },
+        {
+          "tileId": 50,
+          "container": "hand",
+          "seat": 3,
+          "index": 7
+        },
+        {
+          "tileId": 51,
+          "container": "hand",
+          "seat": 3,
+          "index": 8
+        },
+        {
+          "tileId": 52,
+          "container": "hand",
+          "seat": 3,
+          "index": 9
+        },
+        {
+          "tileId": 53,
+          "container": "hand",
+          "seat": 3,
+          "index": 10
+        },
+        {
+          "tileId": 54,
+          "container": "hand",
+          "seat": 3,
+          "index": 11
+        },
+        {
+          "tileId": 55,
+          "container": "hand",
+          "seat": 3,
+          "index": 12
+        },
+        {
+          "tileId": 33,
+          "container": "wall",
+          "seat": -1,
+          "index": 0
+        },
+        {
+          "tileId": 17,
+          "container": "wall",
+          "seat": -1,
+          "index": 1
+        },
+        {
+          "tileId": 25,
+          "container": "wall",
+          "seat": -1,
+          "index": 2
+        },
+        {
+          "tileId": 70,
+          "container": "wall",
+          "seat": -1,
+          "index": 3
+        },
+        {
+          "tileId": 71,
+          "container": "wall",
+          "seat": -1,
+          "index": 4
+        },
+        {
+          "tileId": 72,
+          "container": "wall",
+          "seat": -1,
+          "index": 5
+        },
+        {
+          "tileId": 73,
+          "container": "wall",
+          "seat": -1,
+          "index": 6
+        },
+        {
+          "tileId": 74,
+          "container": "wall",
+          "seat": -1,
+          "index": 7
+        },
+        {
+          "tileId": 75,
+          "container": "wall",
+          "seat": -1,
+          "index": 8
+        },
+        {
+          "tileId": 76,
+          "container": "wall",
+          "seat": -1,
+          "index": 9
+        },
+        {
+          "tileId": 77,
+          "container": "wall",
+          "seat": -1,
+          "index": 10
+        },
+        {
+          "tileId": 78,
+          "container": "wall",
+          "seat": -1,
+          "index": 11
+        },
+        {
+          "tileId": 79,
+          "container": "wall",
+          "seat": -1,
+          "index": 12
+        },
+        {
+          "tileId": 80,
+          "container": "wall",
+          "seat": -1,
+          "index": 13
+        },
+        {
+          "tileId": 81,
+          "container": "wall",
+          "seat": -1,
+          "index": 14
+        },
+        {
+          "tileId": 82,
+          "container": "wall",
+          "seat": -1,
+          "index": 15
+        },
+        {
+          "tileId": 83,
+          "container": "wall",
+          "seat": -1,
+          "index": 16
+        },
+        {
+          "tileId": 84,
+          "container": "wall",
+          "seat": -1,
+          "index": 17
+        },
+        {
+          "tileId": 85,
+          "container": "wall",
+          "seat": -1,
+          "index": 18
+        },
+        {
+          "tileId": 86,
+          "container": "wall",
+          "seat": -1,
+          "index": 19
+        },
+        {
+          "tileId": 87,
+          "container": "wall",
+          "seat": -1,
+          "index": 20
+        },
+        {
+          "tileId": 88,
+          "container": "wall",
+          "seat": -1,
+          "index": 21
+        },
+        {
+          "tileId": 89,
+          "container": "wall",
+          "seat": -1,
+          "index": 22
+        },
+        {
+          "tileId": 90,
+          "container": "wall",
+          "seat": -1,
+          "index": 23
+        },
+        {
+          "tileId": 91,
+          "container": "wall",
+          "seat": -1,
+          "index": 24
+        },
+        {
+          "tileId": 92,
+          "container": "wall",
+          "seat": -1,
+          "index": 25
+        },
+        {
+          "tileId": 93,
+          "container": "wall",
+          "seat": -1,
+          "index": 26
+        },
+        {
+          "tileId": 94,
+          "container": "wall",
+          "seat": -1,
+          "index": 27
+        },
+        {
+          "tileId": 95,
+          "container": "wall",
+          "seat": -1,
+          "index": 28
+        },
+        {
+          "tileId": 96,
+          "container": "wall",
+          "seat": -1,
+          "index": 29
+        },
+        {
+          "tileId": 97,
+          "container": "wall",
+          "seat": -1,
+          "index": 30
+        },
+        {
+          "tileId": 98,
+          "container": "wall",
+          "seat": -1,
+          "index": 31
+        },
+        {
+          "tileId": 99,
+          "container": "wall",
+          "seat": -1,
+          "index": 32
+        },
+        {
+          "tileId": 100,
+          "container": "wall",
+          "seat": -1,
+          "index": 33
+        },
+        {
+          "tileId": 101,
+          "container": "wall",
+          "seat": -1,
+          "index": 34
+        },
+        {
+          "tileId": 102,
+          "container": "wall",
+          "seat": -1,
+          "index": 35
+        },
+        {
+          "tileId": 103,
+          "container": "wall",
+          "seat": -1,
+          "index": 36
+        },
+        {
+          "tileId": 104,
+          "container": "wall",
+          "seat": -1,
+          "index": 37
+        },
+        {
+          "tileId": 105,
+          "container": "wall",
+          "seat": -1,
+          "index": 38
+        },
+        {
+          "tileId": 106,
+          "container": "wall",
+          "seat": -1,
+          "index": 39
+        },
+        {
+          "tileId": 107,
+          "container": "wall",
+          "seat": -1,
+          "index": 40
+        },
+        {
+          "tileId": 108,
+          "container": "wall",
+          "seat": -1,
+          "index": 41
+        },
+        {
+          "tileId": 109,
+          "container": "wall",
+          "seat": -1,
+          "index": 42
+        },
+        {
+          "tileId": 110,
+          "container": "wall",
+          "seat": -1,
+          "index": 43
+        },
+        {
+          "tileId": 111,
+          "container": "wall",
+          "seat": -1,
+          "index": 44
+        },
+        {
+          "tileId": 112,
+          "container": "wall",
+          "seat": -1,
+          "index": 45
+        },
+        {
+          "tileId": 113,
+          "container": "wall",
+          "seat": -1,
+          "index": 46
+        },
+        {
+          "tileId": 114,
+          "container": "wall",
+          "seat": -1,
+          "index": 47
+        },
+        {
+          "tileId": 115,
+          "container": "wall",
+          "seat": -1,
+          "index": 48
+        },
+        {
+          "tileId": 116,
+          "container": "wall",
+          "seat": -1,
+          "index": 49
+        },
+        {
+          "tileId": 117,
+          "container": "wall",
+          "seat": -1,
+          "index": 50
+        },
+        {
+          "tileId": 118,
+          "container": "wall",
+          "seat": -1,
+          "index": 51
+        },
+        {
+          "tileId": 119,
+          "container": "wall",
+          "seat": -1,
+          "index": 52
+        },
+        {
+          "tileId": 120,
+          "container": "wall",
+          "seat": -1,
+          "index": 53
+        },
+        {
+          "tileId": 121,
+          "container": "wall",
+          "seat": -1,
+          "index": 54
+        },
+        {
+          "tileId": 122,
+          "container": "wall",
+          "seat": -1,
+          "index": 55
+        },
+        {
+          "tileId": 123,
+          "container": "wall",
+          "seat": -1,
+          "index": 56
+        },
+        {
+          "tileId": 124,
+          "container": "wall",
+          "seat": -1,
+          "index": 57
+        },
+        {
+          "tileId": 125,
+          "container": "wall",
+          "seat": -1,
+          "index": 58
+        },
+        {
+          "tileId": 126,
+          "container": "wall",
+          "seat": -1,
+          "index": 59
+        },
+        {
+          "tileId": 127,
+          "container": "wall",
+          "seat": -1,
+          "index": 60
+        },
+        {
+          "tileId": 128,
+          "container": "wall",
+          "seat": -1,
+          "index": 61
+        },
+        {
+          "tileId": 129,
+          "container": "wall",
+          "seat": -1,
+          "index": 62
+        },
+        {
+          "tileId": 130,
+          "container": "wall",
+          "seat": -1,
+          "index": 63
+        },
+        {
+          "tileId": 131,
+          "container": "wall",
+          "seat": -1,
+          "index": 64
+        },
+        {
+          "tileId": 132,
+          "container": "wall",
+          "seat": -1,
+          "index": 65
+        },
+        {
+          "tileId": 133,
+          "container": "wall",
+          "seat": -1,
+          "index": 66
+        },
+        {
+          "tileId": 134,
+          "container": "wall",
+          "seat": -1,
+          "index": 67
+        },
+        {
+          "tileId": 135,
+          "container": "wall",
+          "seat": -1,
+          "index": 68
+        },
+        {
+          "tileId": 56,
+          "container": "deadWall",
+          "seat": -1,
+          "index": 0
+        },
+        {
+          "tileId": 57,
+          "container": "deadWall",
+          "seat": -1,
+          "index": 1
+        },
+        {
+          "tileId": 58,
+          "container": "deadWall",
+          "seat": -1,
+          "index": 2
+        },
+        {
+          "tileId": 59,
+          "container": "deadWall",
+          "seat": -1,
+          "index": 3
+        },
+        {
+          "tileId": 60,
+          "container": "deadWall",
+          "seat": -1,
+          "index": 4
+        },
+        {
+          "tileId": 61,
+          "container": "deadWall",
+          "seat": -1,
+          "index": 5
+        },
+        {
+          "tileId": 62,
+          "container": "deadWall",
+          "seat": -1,
+          "index": 6
+        },
+        {
+          "tileId": 63,
+          "container": "deadWall",
+          "seat": -1,
+          "index": 7
+        },
+        {
+          "tileId": 64,
+          "container": "deadWall",
+          "seat": -1,
+          "index": 8
+        },
+        {
+          "tileId": 65,
+          "container": "deadWall",
+          "seat": -1,
+          "index": 9
+        },
+        {
+          "tileId": 66,
+          "container": "deadWall",
+          "seat": -1,
+          "index": 10
+        },
+        {
+          "tileId": 67,
+          "container": "deadWall",
+          "seat": -1,
+          "index": 11
+        },
+        {
+          "tileId": 68,
+          "container": "deadWall",
+          "seat": -1,
+          "index": 12
+        },
+        {
+          "tileId": 69,
+          "container": "deadWall",
+          "seat": -1,
+          "index": 13
+        }
+      ],
+      "inputWallPointer": 0,
+      "inputWallEndExclusive": 69,
+      "inputRinshanPointer": 0,
+      "inputSeat": 0,
+      "inputDrawnTileTileId": -1,
+      "inputLastDiscardTileId": 16,
+      "inputLastDiscardSeat": 0,
+      "inputKanCount": 0,
+      "inputDoraIndicatorTileIds": [],
+      "factsAfter": [
+        {
+          "tileId": 17,
+          "container": "hand",
+          "seat": 0,
+          "index": null
+        },
+        {
+          "tileId": 33,
+          "container": "discard",
+          "seat": 0,
+          "index": null
+        },
+        {
+          "tileId": 0,
+          "container": "hand",
+          "seat": 1,
+          "index": null
+        },
+        {
+          "tileId": 33,
+          "container": "discard",
+          "seat": 0,
+          "index": null
+        }
+      ]
+    },
+    {
+      "caseId": "mv-rinshan-and-drawn-swap",
+      "note": "drawRinshan takes deadWall[0] and a wall-end replacement; swapDrawnWithNextRinshan exchanges drawn with deadWall[1] in place",
+      "rinshanTileId": 108,
+      "nextRinshanTileId": 109,
+      "replacementTileId": 135,
+      "rinshanPointerAfterDraw": 1,
+      "wallEndExclusiveBefore": 69,
+      "wallEndExclusiveAfter": 68,
+      "deadWallSlot1AfterSwap": 108,
+      "factsAfter": [
+        {
+          "tileId": 108,
+          "container": "deadWall",
+          "seat": null,
+          "index": 0
+        },
+        {
+          "tileId": 109,
+          "container": "hand",
+          "seat": 0,
+          "index": null
+        },
+        {
+          "tileId": 135,
+          "container": "replacement",
+          "seat": null,
+          "index": 0
+        }
+      ]
+    },
+    {
+      "caseId": "mv-swap-hand-with-dead-wall",
+      "note": "dead-wall swap is in place; revealed dora indicator and wall slots are refused; replacement slots participate",
+      "rinshanTileId": 108,
+      "handTileId": 8,
+      "gotTileId": 109,
+      "deadWallSlot1AfterSwap": 8,
+      "doraSlotIndex": 4,
+      "doraRefusalException": "IllegalArgumentException",
+      "wallSlotRefusalException": "IllegalArgumentException",
+      "replacementTileIdBefore": 135,
+      "replacementSlot0AfterSwap": 4,
+      "factsAfter": [
+        {
+          "tileId": 8,
+          "container": "deadWall",
+          "seat": null,
+          "index": 1
+        },
+        {
+          "tileId": 4,
+          "container": "replacement",
+          "seat": null,
+          "index": 0
+        },
+        {
+          "tileId": 109,
+          "container": "hand",
+          "seat": 0,
+          "index": null
+        },
+        {
+          "tileId": 135,
+          "container": "hand",
+          "seat": 0,
+          "index": null
+        }
+      ]
+    }
+  ]
+}
