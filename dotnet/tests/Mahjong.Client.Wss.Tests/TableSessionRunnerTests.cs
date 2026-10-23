@@ -6,6 +6,9 @@ using System.Threading.Tasks;
 using Mahjong.Contracts;
 using Mahjong.Contracts.Wire;
 using Xunit;
+using WireCursor = Mahjong.Contracts.Wire.StreamCursor;
+using WirePublicMatchView = Mahjong.Contracts.Wire.PublicMatchView;
+using WirePublicSessionSummary = Mahjong.Contracts.Wire.PublicSessionSummary;
 
 namespace Mahjong.Client.Wss.Tests
 {
@@ -509,6 +512,276 @@ namespace Mahjong.Client.Wss.Tests
             Assert.Equal(TableSessionRunStop.Canceled, result.Stop);
             Assert.False(fixture.Channel.IsOpen);
             Assert.NotEqual(TableConnectionState.Ready, fixture.Session.State);
+        }
+
+        [Fact]
+        public async Task DeadlineCrossingBetweenAdmissionChecksDoesNotCommitBaselineCache()
+        {
+            using var channel = new ScriptedTableChannel();
+            var session = new TableSession(channel, new InMemoryOutboxStore());
+            var clock = new CrossingClock();
+            int readyEvents = 0;
+            session.SnapshotChanged += (_, __) =>
+            {
+                if (session.State == TableConnectionState.Ready)
+                {
+                    readyEvents++;
+                }
+            };
+            channel.OnReceive = () =>
+            {
+                if (channel.ReceivedCount == 0)
+                {
+                    clock.Now = 100;
+                }
+                else
+                {
+                    clock.Armed = true;
+                }
+            };
+
+            var runner = new TableSessionRunner(
+                session,
+                new DelegateTableTicketProvider((_, __) => Task.FromResult("probe-ticket")),
+                new TableSessionRunnerOptions
+                {
+                    HandshakeTimeout = TimeSpan.FromMilliseconds(250),
+                    MaxReconnectAttempts = 0
+                },
+                (_, __) => Task.CompletedTask,
+                clock);
+
+            TableSessionRunResult result = await runner
+                .RunAsync(CancellationToken.None)
+                .WaitAsync(TimeSpan.FromSeconds(5));
+
+            Assert.Equal(TableSessionRunStop.ReconnectExhausted, result.Stop);
+            Assert.Equal(ProtocolErrorCode.HandshakeTimeout, result.ReasonCode);
+            Assert.Equal(0, readyEvents);
+            Assert.Null(session.PlayerSnapshot);
+            Assert.Null(session.ConfirmedCursor);
+            Assert.Equal(0, channel.CountSent(MessageType.Command));
+            Assert.Equal(0, channel.CountSent(MessageType.ReceiptQuery));
+        }
+
+        [Fact]
+        public async Task CancellationAtSecondAdmissionCheckDoesNotCommitBaselineCache()
+        {
+            using var channel = new ScriptedTableChannel();
+            var session = new TableSession(channel, new InMemoryOutboxStore());
+            await session.OpenAsync(new TableSessionOpenRequest("ticket", "probe"), CancellationToken.None);
+            await session.PumpOnceAsync(CancellationToken.None);
+
+            using var cts = new CancellationTokenSource();
+            int checks = 0;
+            int readyEvents = 0;
+            session.SnapshotChanged += (_, __) =>
+            {
+                if (session.State == TableConnectionState.Ready)
+                {
+                    readyEvents++;
+                }
+            };
+            session.BaselineAdmissionCheck = token =>
+            {
+                if (++checks == 2)
+                {
+                    cts.Cancel();
+                }
+
+                return !token.IsCancellationRequested;
+            };
+            await session.PumpOnceAsync(cts.Token);
+
+            Assert.NotEqual(TableConnectionState.Ready, session.State);
+            Assert.Equal(0, readyEvents);
+            Assert.Null(session.PlayerSnapshot);
+            Assert.Null(session.ConfirmedCursor);
+            Assert.Equal(0, channel.CountSent(MessageType.Command));
+            Assert.Equal(0, channel.CountSent(MessageType.ReceiptQuery));
+        }
+
+        [Fact]
+        public async Task RejectedResyncPreservesExistingAcceptedPlayerBaseline()
+        {
+            using var channel = new ScriptedTableChannel();
+            var session = new TableSession(channel, new InMemoryOutboxStore());
+            await session.OpenAsync(new TableSessionOpenRequest("ticket", "probe"), CancellationToken.None);
+            await session.PumpOnceAsync(CancellationToken.None);
+            await session.PumpOnceAsync(CancellationToken.None);
+            Assert.Equal(TableConnectionState.Ready, session.State);
+            Assert.Equal(5UL, session.ConfirmedCursor!.Value.StreamVersion.Value);
+
+            channel.AutoHandshake = false;
+            int readyEvents = 0;
+            session.SnapshotChanged += (_, __) =>
+            {
+                if (session.State == TableConnectionState.Ready)
+                {
+                    readyEvents++;
+                }
+            };
+            int checks = 0;
+            session.BaselineAdmissionCheck = _ => ++checks == 1;
+
+            // Force an in-flight resync without applying a new baseline.
+            channel.Enqueue(TestWire.PlayerPush(11, 99, 99, 100, 100));
+            await session.PumpOnceAsync(CancellationToken.None);
+            Envelope request = channel.SentEnvelopes().Last(
+                envelope => envelope.MessageType == MessageType.SyncRequest);
+            channel.Enqueue(TestWire.PlayerSync(
+                11,
+                request.CorrelationId,
+                streamVersion: 6,
+                projection: 11));
+            await session.PumpOnceAsync(CancellationToken.None);
+
+            Assert.NotEqual(TableConnectionState.Ready, session.State);
+            Assert.Equal(0, readyEvents);
+            Assert.Equal(5UL, session.ConfirmedCursor!.Value.StreamVersion.Value);
+            Assert.Equal(5UL, session.PlayerSnapshot!.Cursor.StreamVersion);
+            Assert.Equal(0, channel.CountSent(MessageType.Command));
+            Assert.Equal(0, channel.CountSent(MessageType.ReceiptQuery));
+        }
+
+        [Fact]
+        public async Task RejectedPublicBaselineDoesNotCommitPublicCache()
+        {
+            using var channel = new ScriptedTableChannel
+            {
+                WelcomeFactory = _ => TestWire.Welcome(
+                    bindingEpoch: 11,
+                    seatId: -1,
+                    role: Role.Spectator),
+                SyncFactory = (_, correlation) => PublicSync(11, correlation)
+            };
+            var session = new TableSession(channel, new InMemoryOutboxStore());
+            await session.OpenAsync(new TableSessionOpenRequest("ticket", "probe"), CancellationToken.None);
+            await session.PumpOnceAsync(CancellationToken.None);
+            int readyEvents = 0;
+            session.SnapshotChanged += (_, __) =>
+            {
+                if (session.State == TableConnectionState.Ready)
+                {
+                    readyEvents++;
+                }
+            };
+            session.BaselineAdmissionCheck = _ => false;
+
+            await session.PumpOnceAsync(CancellationToken.None);
+
+            Assert.NotEqual(TableConnectionState.Ready, session.State);
+            Assert.Equal(0, readyEvents);
+            Assert.Null(session.PublicSnapshot);
+            Assert.Null(session.ConfirmedCursor);
+            Assert.Equal(0, channel.CountSent(MessageType.Command));
+            Assert.Equal(0, channel.CountSent(MessageType.ReceiptQuery));
+        }
+
+        [Fact]
+        public async Task RejectedRoomBaselineDoesNotCommitRoomCache()
+        {
+            using var channel = new ScriptedTableChannel
+            {
+                WelcomeFactory = _ => TestWire.Welcome(
+                    bindingEpoch: 11,
+                    seatId: -1,
+                    role: Role.Lobby),
+                SyncFactory = (_, correlation) => RoomSync(11, correlation)
+            };
+            var session = new TableSession(channel, new InMemoryOutboxStore());
+            await session.OpenAsync(new TableSessionOpenRequest("ticket", "probe"), CancellationToken.None);
+            await session.PumpOnceAsync(CancellationToken.None);
+            int readyEvents = 0;
+            session.SnapshotChanged += (_, __) =>
+            {
+                if (session.State == TableConnectionState.Ready)
+                {
+                    readyEvents++;
+                }
+            };
+            session.BaselineAdmissionCheck = _ => false;
+
+            await session.PumpOnceAsync(CancellationToken.None);
+
+            Assert.NotEqual(TableConnectionState.Ready, session.State);
+            Assert.Equal(0, readyEvents);
+            Assert.Null(session.RoomSnapshot);
+            Assert.Null(session.ConfirmedCursor);
+            Assert.Equal(0, channel.CountSent(MessageType.Command));
+            Assert.Equal(0, channel.CountSent(MessageType.ReceiptQuery));
+        }
+
+        private static Envelope PublicSync(int bindingEpoch, string correlationId)
+        {
+            var snapshot = new PublicSnapshot
+            {
+                SessionId = TestWire.SessionId,
+                RoundId = "round-1",
+                Cursor = new WireCursor { StreamVersion = 5, ProjectionSeq = 10 },
+                StateVersion = 5,
+                EventSeq = 105,
+                SessionVersion = 1,
+                RoundVersion = 2
+            };
+            snapshot.View = new WirePublicMatchView
+            {
+                Session = new WirePublicSessionSummary { Finished = false },
+                Paused = false,
+                SettlementRoundId = "round-1"
+            };
+            Envelope envelope = TestWire.Envelope(MessageType.SyncResponse, e => e.SyncResponse = new SyncResponse
+            {
+                Target = SyncTarget.PublicStream,
+                IsFullSnapshot = true,
+                Public = snapshot,
+                StateVersion = 5,
+                EventSeq = 105
+            });
+            envelope.CorrelationId = correlationId;
+            return TestWire.Bound(envelope, bindingEpoch, seatId: -1);
+        }
+
+        private static Envelope RoomSync(int bindingEpoch, string correlationId)
+        {
+            Envelope envelope = TestWire.Envelope(MessageType.SyncResponse, e => e.SyncResponse = new SyncResponse
+            {
+                Target = SyncTarget.Room,
+                IsFullSnapshot = true,
+                Room = new RoomUpdate
+                {
+                    RoomId = TestWire.RoomId,
+                    SessionId = TestWire.SessionId,
+                    RoomVersion = 1,
+                    Capacity = 4
+                }
+            });
+            envelope.CorrelationId = correlationId;
+            return TestWire.Bound(envelope, bindingEpoch, seatId: -1);
+        }
+
+        private sealed class CrossingClock : ITableClientClock
+        {
+            public long Now;
+            public bool Armed;
+            public int GateReads;
+
+            public long MonotonicMilliseconds
+            {
+                get
+                {
+                    if (!Armed)
+                    {
+                        return Now;
+                    }
+
+                    GateReads++;
+                    Now = GateReads == 1 ? 240 : 300;
+                    return Now;
+                }
+            }
+
+            public DateTimeOffset UtcNow => DateTimeOffset.UnixEpoch.AddMilliseconds(Now);
         }
 
         private sealed class RunnerFixture : IDisposable

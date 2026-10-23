@@ -725,10 +725,7 @@ namespace Mahjong.Client
                 }
             }
 
-            // Everything above validated first; only now check whether this
-            // attempt may still publish a baseline. The gate runs before any
-            // cache mutation, Ready transition or SnapshotChanged event, so an
-            // expired/cancelled attempt cannot expose Ready or accept commands.
+            // Everything above validated first; check before doing any work.
             if (BaselineAdmissionCheck != null && !BaselineAdmissionCheck(cancellationToken))
             {
                 _syncInFlight = false;
@@ -736,8 +733,19 @@ namespace Mahjong.Client
                 return;
             }
 
-            // Only now mutate the cache and the cursor, and publish them as one
-            // baseline event.
+            // Build/validate candidates only in locals above; the cache and the
+            // confirmed cursor/version/binding are committed as one unit only
+            // after the final admission check. A second-check rejection must
+            // leave an existing accepted baseline untouched, not clear it.
+            if (BaselineAdmissionCheck != null && !BaselineAdmissionCheck(cancellationToken))
+            {
+                _syncInFlight = false;
+                _activeSyncCorrelationId = null;
+                return;
+            }
+
+            // Final admission passed: commit snapshot, confirmed cursor and
+            // versions together, then publish Ready/SnapshotChanged once.
             if (player != null)
             {
                 _playerSnapshot = player;
@@ -762,16 +770,6 @@ namespace Mahjong.Client
                 _confirmedCursor = cursor;
                 _confirmedBindingEpoch = _binding.BindingEpoch.Value;
                 _confirmedBindingSessionId = _binding.SessionId.Value;
-            }
-
-            // Re-check immediately before publishing Ready/event. This closes
-            // the narrow window where the attempt could cross its deadline
-            // while the validated baseline was being copied into the cache.
-            if (BaselineAdmissionCheck != null && !BaselineAdmissionCheck(cancellationToken))
-            {
-                _syncInFlight = false;
-                _activeSyncCorrelationId = null;
-                return;
             }
 
             _syncInFlight = false;
