@@ -68,6 +68,8 @@ namespace Mahjong.Client
 
         public TableConnectionState State => _connection.State;
 
+        public Func<CancellationToken, bool>? BaselineAdmissionCheck { get; set; }
+
         public TableSessionBinding? Binding => _binding;
 
         public ContractCursor? ConfirmedCursor => _confirmedCursor;
@@ -723,8 +725,27 @@ namespace Mahjong.Client
                 }
             }
 
-            // Everything above validated first; only now mutate the cache and
-            // the cursor, and publish them as one baseline event.
+            // Everything above validated first; check before doing any work.
+            if (BaselineAdmissionCheck != null && !BaselineAdmissionCheck(cancellationToken))
+            {
+                _syncInFlight = false;
+                _activeSyncCorrelationId = null;
+                return;
+            }
+
+            // Build/validate candidates only in locals above; the cache and the
+            // confirmed cursor/version/binding are committed as one unit only
+            // after the final admission check. A second-check rejection must
+            // leave an existing accepted baseline untouched, not clear it.
+            if (BaselineAdmissionCheck != null && !BaselineAdmissionCheck(cancellationToken))
+            {
+                _syncInFlight = false;
+                _activeSyncCorrelationId = null;
+                return;
+            }
+
+            // Final admission passed: commit snapshot, confirmed cursor and
+            // versions together, then publish Ready/SnapshotChanged once.
             if (player != null)
             {
                 _playerSnapshot = player;
