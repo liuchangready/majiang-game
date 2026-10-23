@@ -42,12 +42,17 @@
         so the two invocations of an auto run (dotnetTest and fallback direct)
         and same-named logs from different source roots can never overwrite each
         other. Collection is run-exclusive: the project's TestResults
-        directories are removed immediately before each runner invocation, and a
-        directory that could not be purged (e.g. a locked file) contributes
-        nothing whose before-purge snapshot matches - those files are recorded as
-        excluded stale in the meta file and collection-errors.log instead of
-        posing as current-run evidence. Collection is best-effort evidence and
-        never changes a gate result or exit code
+        directories are removed immediately before each runner invocation, and
+        only provably current files are collected from a directory that could
+        not be purged: a file survives collection exclusion when it matches the
+        before-purge snapshot by unchanged readable hashes; a file whose hash
+        was unreadable at snapshot time (e.g. an exclusively locked file whose
+        lock was released later) is excluded conservatively - a missing hash is
+        never treated as evidence of a content change - and when the snapshot
+        enumeration itself failed, the ENTIRE directory is excluded. Every
+        exclusion is recorded in the meta file and collection-errors.log
+        instead of posing as current-run evidence. Collection is best-effort
+        evidence and never changes a gate result or exit code
       - the Unity plugin copy is exercised into a scratch directory under the log
         dir; tracked plugin DLLs and ProjectSettings are never overwritten
 
@@ -275,6 +280,10 @@ function Get-TestResultsCandidates {
 }
 
 function Get-TestResultsSnapshot {
+    # Files that could not be hashed at snapshot time (e.g. exclusively locked)
+    # get HashOk = $false. A missing hash is NOT evidence the content changed
+    # later: Save-TestResults must treat such entries conservatively (exclude),
+    # because the lock may have been released before the collection re-hash.
     param([string]$Dir)
     $list = @()
     $files = @()
@@ -282,22 +291,24 @@ function Get-TestResultsSnapshot {
     catch { return @{ Files = $list; Error = "snapshot failed: $($_.Exception.Message)" } }
     foreach ($file in $files) {
         $rel = $file.FullName.Substring($Dir.Length).TrimStart('\', '/')
-        $hash = '(hash unavailable)'
+        $hash = $null
         try { $hash = (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash } catch { }
-        $list += @{ Rel = $rel; Sha256 = $hash }
+        $list += @{ Rel = $rel; Sha256 = $hash; HashOk = [bool]$hash }
     }
-    return @{ Files = $list; Error = '' }
+    return @{ Files = $list; Error = $null }
 }
 
 function Clear-TestResultsDirs {
     # Returns one status object per directory:
-    #   @{ Dir; Cleared(bool); Stale = @(@{Rel; Sha256}); Note }
-    # Stale is non-empty only when the directory could NOT be purged; those
-    # files are the ones Save-TestResults must exclude.
+    #   @{ Dir; Cleared(bool); Stale = @(@{Rel; Sha256; HashOk}); SnapshotError; Note }
+    # Stale is non-empty only when the directory could NOT be purged. When the
+    # before-snapshot itself could not enumerate the directory (SnapshotError),
+    # nothing in that directory can be attributed to the current run, so
+    # Save-TestResults excludes the entire directory.
     param([string[]]$Dirs)
     $statuses = @()
     foreach ($dir in $Dirs) {
-        $status = @{ Dir = $dir; Cleared = $true; Stale = @(); Note = '' }
+        $status = @{ Dir = $dir; Cleared = $true; Stale = @(); SnapshotError = $null; Note = '' }
         if (-not (Test-Path -LiteralPath $dir)) {
             $status.Note = 'not present before the run'
             $statuses += $status
@@ -310,8 +321,16 @@ function Clear-TestResultsDirs {
         catch {
             $status.Cleared = $false
             $status.Stale = @($before.Files)
-            $status.Note = "purge failed: $($_.Exception.Message); before-snapshot with $(@($before.Files).Count) file(s) excluded from current-run evidence"
-            Add-Content -Path (Join-Path $LogDir 'collection-errors.log') -Value ("purge failed for ${dir}: $($_.Exception.Message); excluding $(@($before.Files).Count) snapshot file(s) from current-run evidence") -Encoding UTF8
+            $status.SnapshotError = $before.Error
+            if ($before.Error) {
+                $status.Note = "purge failed AND before-snapshot enumeration failed ($($before.Error)); the ENTIRE directory is excluded from current-run evidence"
+                Add-Content -Path (Join-Path $LogDir 'collection-errors.log') -Value ("purge failed for ${dir} and snapshot enumeration failed; the whole directory is excluded from current-run evidence: $($before.Error)") -Encoding UTF8
+            }
+            else {
+                $unreadable = @(@($before.Files) | Where-Object { -not $_.HashOk }).Count
+                $status.Note = "purge failed: $($_.Exception.Message); before-snapshot with $(@($before.Files).Count) file(s) conservatively excluded ($unreadable of them unreadable at snapshot time)"
+                Add-Content -Path (Join-Path $LogDir 'collection-errors.log') -Value ("purge failed for ${dir}: $($_.Exception.Message); excluding $(@($before.Files).Count) snapshot file(s) from current-run evidence ($unreadable unreadable at snapshot time)") -Encoding UTF8
+            }
         }
         $statuses += $status
     }
@@ -352,17 +371,39 @@ function Save-TestResults {
             # Stale-snapshot entries are relative to the DIRECTORY being purged,
             # so the comparison must use the same base (not the project root).
             $relFromDir = $file.FullName.Substring($dir.Length).TrimStart('\', '/')
-            $sourceHash = '(hash unavailable)'
+            $sourceHash = $null
             try { $sourceHash = (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash } catch { }
+            $staleReason = $null
             if ($null -ne $status -and -not $status.Cleared) {
-                $staleHit = $false
-                foreach ($staleFile in $status.Stale) {
-                    if ($staleFile.Rel -eq $relFromDir -and $staleFile.Sha256 -eq $sourceHash) { $staleHit = $true; break }
+                # Only files whose current provenance is PROVABLE are collected.
+                # A hash that was unavailable at snapshot time does not become
+                # evidence of a content change just because it is readable now:
+                # an exclusive lock may simply have been released in between.
+                if ($status.SnapshotError) {
+                    $staleReason = "directory excluded (snapshot enumeration failed: $($status.SnapshotError))"
                 }
-                if ($staleHit) {
-                    $excludedStale += ("{0}  sha256={1}" -f $relFromProject, $sourceHash)
-                    continue
+                else {
+                    $snap = $null
+                    foreach ($staleFile in $status.Stale) {
+                        if ($staleFile.Rel -eq $relFromDir) { $snap = $staleFile; break }
+                    }
+                    if ($null -ne $snap) {
+                        if (-not $snap.HashOk -or -not $sourceHash) {
+                            $staleReason = "conservative exclusion (hash unavailable at snapshot time; content change unprovable)"
+                        }
+                        elseif ($snap.Sha256 -eq $sourceHash) {
+                            $staleReason = "unchanged since the before-snapshot  sha256=$sourceHash"
+                        }
+                        # else: both hashes readable and different -> the file was
+                        # rewritten during this invocation -> provably current.
+                    }
+                    # Not in the snapshot -> did not exist when the dir was
+                    # snapshotted -> produced by this invocation.
                 }
+            }
+            if ($staleReason) {
+                $excludedStale += ("{0}  excluded ({1})" -f $relFromProject, $staleReason)
+                continue
             }
             $dest = Join-Path $destRoot $relFromProject
             try {
@@ -411,7 +452,11 @@ function Write-RunMetaFile {
             "TestResults purge before this invocation:"
         )
         foreach ($status in $PurgeStatuses) {
-            $label = $(if ($status.Cleared) { 'cleared' } else { 'NOT CLEARED (stale excluded by before-snapshot)' })
+            $label = 'cleared'
+            if (-not $status.Cleared) {
+                if ($status.SnapshotError) { $label = 'NOT CLEARED (snapshot enumeration failed; ENTIRE directory excluded from current-run evidence)' }
+                else { $label = 'NOT CLEARED (stale conservatively excluded by before-snapshot)' }
+            }
             if ($status.Note) { $label = "$label - $($status.Note)" }
             $text += "  $($status.Dir) -> $label"
         }

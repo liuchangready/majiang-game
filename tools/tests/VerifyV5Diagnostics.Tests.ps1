@@ -49,6 +49,21 @@
                            directories (no overwrite), and Invoke-Captured
                            persists partial output + the exception and returns
                            $null (never a fake 0) when the command throws.
+      S9 exclusive+PASS  : round-2-review regression. An OLD log locked with
+                           FileShare.None cannot even be HASHED at snapshot time;
+                           the lock is released while the runner executes, so a
+                           naive re-hash then succeeds and could mistake the OLD
+                           file for current. A missing snapshot hash must exclude
+                           conservatively: the run still PASSes and the OLD
+                           content never enters the evidence.
+      S10 exclusive+FAIL : same exclusive-lock-then-mid-run-release with a NEW
+                           failing run: real FAIL counts, current failure content
+                           collected, OLD content still excluded.
+      S11 snapshot-blind : fault-injected (allowed for this scenario, distinct
+                           from real-lock evidence): the before-snapshot
+                           enumeration itself fails while the purge also fails -
+                           the ENTIRE untrusted directory is excluded from
+                           current-run evidence and the gap recorded.
 
     Gate contract under test: diagnostics collection must never change an exit
     code, a count, or a PASS/FAIL verdict - only add evidence.
@@ -278,6 +293,45 @@ function Assert-RowCounts {
     $pattern = 'Probe.Tests\s+\S+\s+\S+\s+\S+\s+' + [regex]::Escape($RunnerColumn) + '\s+' + $Total + '\s+' + $Failed + '\s+' + $Skipped + '\s+(\S+)'
     $match = [regex]::Match($summary, $pattern)
     return $match.Success
+}
+
+function Start-MidRunUnlocker {
+    # S9/S10 mechanic, mirroring the caller review probe: an OLD file is locked
+    # with FileShare.None (so the before-snapshot cannot hash it) and the lock
+    # is released from a second runspace as soon as the before-snapshot is
+    # demonstrably done - proven by the collection-errors.log line the purge
+    # failure writes right after snapshotting, or by the deletion of the
+    # unlocked sentinel. The lock is therefore released while the runner is
+    # still executing, so the collection re-hash succeeds and could mistake the
+    # OLD file for current - exactly the round-2-review leak.
+    param([System.IO.FileStream]$LockStream, [string]$UnlockedSentinel, [string]$PurgeFailureMarker, [hashtable]$ResultBox)
+    $ps = [powershell]::Create()
+    $null = $ps.AddScript({
+        param($Stream, $Sentinel, $Marker, $Box)
+        $deadline = [DateTime]::UtcNow.AddSeconds(180)
+        while ([DateTime]::UtcNow -lt $deadline) {
+            if (-not (Test-Path -LiteralPath $Sentinel)) { $Box.PurgedObserved = $true; break }
+            if (Test-Path -LiteralPath $Marker) { $Box.PurgedObserved = $true; break }
+            Start-Sleep -Milliseconds 200
+        }
+        $Stream.Dispose()
+        $Box.Released = $true
+    })
+    $null = $ps.AddArgument($LockStream).AddArgument($UnlockedSentinel).AddArgument($PurgeFailureMarker).AddArgument($ResultBox)
+    $null = $ps.BeginInvoke()
+    return $ps
+}
+
+function Stop-MidRunUnlocker([powershell]$Unlocker) {
+    if ($null -ne $Unlocker) {
+        try { $Unlocker.Stop() } catch { }
+        $Unlocker.Dispose()
+    }
+}
+
+function Wait-UnlockerReleased([hashtable]$ResultBox) {
+    for ($i = 0; $i -lt 100 -and -not $ResultBox.Released; $i++) { Start-Sleep -Milliseconds 100 }
+    return $ResultBox.Released
 }
 
 $expectedHead = $null
@@ -533,6 +587,138 @@ try {
     $exit3Code8 = Invoke-Captured -LogPath $exit3Log8 -Command { cmd /c exit 3 }
     Assert-True ($exit3Code8 -eq 3) "S8 success path still returns the real exit code (got $exit3Code8)"
     Remove-Variable LogDir -ErrorAction SilentlyContinue
+
+    # --- S9: EXCLUSIVE lock (FileShare.None) released mid-run + current PASS --------
+    # Round-2-review regression: the snapshot cannot hash an exclusively locked
+    # file, but once the lock is released mid-run the collection re-hash succeeds
+    # and a naive hash compare would collect the OLD file as current evidence.
+    Write-Host ""
+    Write-Host "S9: exclusively locked OLD log, lock released mid-run - hash-blind snapshot must exclude conservatively (PASS run)"
+    Set-ProbeSource $passSource
+    Seed-StaleLog
+    $sentinelFile9 = Join-Path $probeDir 'bin\Release\net8.0\TestResults\Stale_UnlockedSentinel.tmp'
+    Write-Utf8File -Path $sentinelFile9 -Content 'unlocked sentinel the purge can delete'
+    $exclusiveStalePath9 = Join-Path $probeDir 'bin\Release\net8.0\TestResults\Stale_OldRun_net8.0_x64.log'
+    $exclusiveStream9 = [IO.File]::Open($exclusiveStalePath9, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::None)
+    $log9 = Join-Path $workspace 'logs-s9'
+    $unlockBox9 = @{ Released = $false; PurgedObserved = $false }
+    $unlocker9 = Start-MidRunUnlocker -LockStream $exclusiveStream9 -UnlockedSentinel $sentinelFile9 -PurgeFailureMarker (Join-Path $log9 'collection-errors.log') -ResultBox $unlockBox9
+    try {
+        $exit9 = Invoke-Verify -RunnerMode 'dotnetTest' -LogDir $log9
+        $null = Wait-UnlockerReleased $unlockBox9
+        $summary9 = Get-Content -LiteralPath (Join-Path $log9 'summary.log') -Raw
+        Assert-True $unlockBox9.PurgedObserved "S9 scenario valid: the purge was observed before the lock was released"
+        Assert-True ($exit9 -eq 0) "S9 exit code is 0 even with the exclusive lock released mid-run (got $exit9)"
+        Assert-True ($summary9 -match 'OVERALL: PASS') "S9 summary reports OVERALL: PASS"
+        Assert-True (Test-Path -LiteralPath (Join-Path $log9 'test-results\Probe.Tests\dotnetTest\bin\Release\net8.0\TestResults\Probe.Tests_net8.0_x64.log')) "S9 current-run framework log still collected"
+        $staleLeaked9 = $false
+        $evidence9 = Join-Path $log9 'test-results'
+        foreach ($file in (Get-ChildItem -LiteralPath $evidence9 -Recurse -File)) {
+            $text = Get-Content -LiteralPath $file.FullName -Raw
+            if ($text -and $text.Contains($staleMarker)) { $staleLeaked9 = $true }
+        }
+        Assert-True (-not $staleLeaked9) "S9 exclusively-locked OLD content appears nowhere in the collected evidence"
+        $meta9Text = Get-Content -LiteralPath (Join-Path $log9 'runs\Probe.Tests\dotnetTest.meta.txt') -Raw
+        Assert-True ($meta9Text -match 'NOT CLEARED') "S9 meta records the purge failure"
+        Assert-True ($meta9Text -match 'hash unavailable at snapshot time') "S9 meta records the conservative exclusion reason"
+    }
+    finally {
+        Stop-MidRunUnlocker $unlocker9
+        $exclusiveStream9.Dispose()
+    }
+
+    # --- S10: EXCLUSIVE lock released mid-run + current FAIL -------------------------
+    Write-Host ""
+    Write-Host "S10: exclusively locked OLD log, lock released mid-run + current failing run"
+    Set-ProbeSource $failSource
+    Seed-StaleLog
+    $sentinelFile10 = Join-Path $probeDir 'bin\Release\net8.0\TestResults\Stale_UnlockedSentinel.tmp'
+    Write-Utf8File -Path $sentinelFile10 -Content 'unlocked sentinel the purge can delete'
+    $exclusiveStream10 = [IO.File]::Open($exclusiveStalePath9, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::None)
+    $log10 = Join-Path $workspace 'logs-s10'
+    $unlockBox10 = @{ Released = $false; PurgedObserved = $false }
+    $unlocker10 = Start-MidRunUnlocker -LockStream $exclusiveStream10 -UnlockedSentinel $sentinelFile10 -PurgeFailureMarker (Join-Path $log10 'collection-errors.log') -ResultBox $unlockBox10
+    try {
+        $exit10 = Invoke-Verify -RunnerMode 'dotnetTest' -LogDir $log10
+        $null = Wait-UnlockerReleased $unlockBox10
+        $summary10 = Get-Content -LiteralPath (Join-Path $log10 'summary.log') -Raw
+        Assert-True $unlockBox10.PurgedObserved "S10 scenario valid: the purge was observed before the lock was released"
+        Assert-True ($exit10 -ne 0) "S10 exit code is non-zero (got $exit10)"
+        Assert-True ($summary10 -match 'OVERALL: FAIL') "S10 summary reports OVERALL: FAIL"
+        Assert-True (Assert-RowCounts -LogDir $log10 -RunnerColumn 'dotnet test' -Total 2 -Failed 1 -Skipped 0) "S10 row keeps real counts 2 total / 1 failed / 0 skipped as FAIL"
+        $currentLog10 = Join-Path $log10 'test-results\Probe.Tests\dotnetTest\bin\Release\net8.0\TestResults\Probe.Tests_net8.0_x64.log'
+        Assert-True (Test-Path -LiteralPath $currentLog10) "S10 current failing run's framework log collected"
+        if (Test-Path -LiteralPath $currentLog10) {
+            $currentText10 = Get-Content -LiteralPath $currentLog10 -Raw
+            Assert-True ($currentText10.Contains($sentinel)) "S10 collected log carries the CURRENT failure content"
+            Assert-True (-not $currentText10.Contains($staleMarker)) "S10 collected log carries no stale marker"
+        }
+        $staleLeaked10 = $false
+        $evidence10 = Join-Path $log10 'test-results'
+        foreach ($file in (Get-ChildItem -LiteralPath $evidence10 -Recurse -File)) {
+            $text = Get-Content -LiteralPath $file.FullName -Raw
+            if ($text -and $text.Contains($staleMarker)) { $staleLeaked10 = $true }
+        }
+        Assert-True (-not $staleLeaked10) "S10 exclusively-locked OLD content appears nowhere in the collected evidence"
+    }
+    finally {
+        Stop-MidRunUnlocker $unlocker10
+        $exclusiveStream10.Dispose()
+    }
+
+    # --- S11: fault-injected snapshot enumeration failure (unit level) ---------------
+    # Distinct from the real-lock evidence above: here the before-snapshot
+    # enumeration itself fails (injected) while the purge also fails (real
+    # FileShare.None lock). The ENTIRE untrusted directory must be excluded.
+    Write-Host ""
+    Write-Host "S11: unit - snapshot enumeration failure excludes the whole untrusted directory"
+    $parseErrors11 = $null
+    $tokens11 = $null
+    $ast11 = [System.Management.Automation.Language.Parser]::ParseFile($verifyScript, [ref]$tokens11, [ref]$parseErrors11)
+    foreach ($fnName11 in @('Get-TestResultsSnapshot', 'Clear-TestResultsDirs', 'Save-TestResults')) {
+        $fnAst11 = $ast11.Find({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq $fnName11 }.GetNewClosure(), $true)
+        if ($null -ne $fnAst11) { Invoke-Expression $fnAst11.Extent.Text }
+        Assert-True ($null -ne $fnAst11) "S11 extracted $fnName11 from the production script AST"
+    }
+
+    $unitLog11 = Join-Path $workspace 'unit-s11'
+    $unitFixture11 = Join-Path $unitLog11 'fixture'
+    $unitResults11 = Join-Path $unitFixture11 'TestResults'
+    New-Item -ItemType Directory -Path $unitResults11 -Force | Out-Null
+    $oldLog11 = Join-Path $unitResults11 'old-run.log'
+    Write-Utf8File -Path $oldLog11 -Content 'OLD-RUN-FAILURE-ONLY-SNAPSHOT-BLIND'
+
+    # Proxy: the FIRST Get-ChildItem call (the before-snapshot inside
+    # Clear-TestResultsDirs) throws; every later call passes through to the real
+    # cmdlet, so Save-TestResults can enumerate what it must refuse to trust.
+    $script:unitGciCalls = 0
+    function Get-ChildItem {
+        $script:unitGciCalls++
+        if ($script:unitGciCalls -eq 1) { throw [System.IO.IOException]::new('injected snapshot enumeration failure') }
+        Microsoft.PowerShell.Management\Get-ChildItem @args
+    }
+    $stream11 = [IO.File]::Open($oldLog11, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::None)
+    try {
+        $LogDir = $unitLog11
+        $purgeStatuses11 = @(Clear-TestResultsDirs -Dirs @($unitResults11))
+    }
+    finally {
+        $stream11.Dispose()
+        Remove-Item -Path 'function:Get-ChildItem' -ErrorAction SilentlyContinue
+    }
+    # The lock is gone and the proxy is gone: Save can read everything, but the
+    # snapshot is proven blind, so NOTHING from this directory may be collected.
+    Write-Utf8File -Path (Join-Path $unitResults11 'new-run.log') -Content 'CURRENT-RUN-OUTPUT'
+    $LogDir = $unitLog11
+    $saved11 = Save-TestResults -ProjectName 'Blind.Tests' -Mode 'dotnetTest' -ProjectDir $unitFixture11 -Dirs @($unitResults11) -PurgeStatuses $purgeStatuses11
+    Assert-True ($purgeStatuses11[0].Cleared -eq $false) "S11 the purge failed as arranged"
+    Assert-True ($purgeStatuses11[0].SnapshotError -and $purgeStatuses11[0].SnapshotError -match 'injected snapshot enumeration failure') "S11 the status carries the snapshot enumeration failure"
+    Assert-True (@($saved11.Collected).Count -eq 0) "S11 a snapshot-blind directory contributes zero collected files"
+    Assert-True (@($saved11.ExcludedStale).Count -eq 2) "S11 both files of the untrusted directory are recorded as excluded"
+    Assert-True (-not (Test-Path -LiteralPath (Join-Path $unitLog11 'test-results\Blind.Tests\dotnetTest\TestResults\old-run.log'))) "S11 the OLD file was not collected"
+    Assert-True (-not (Test-Path -LiteralPath (Join-Path $unitLog11 'test-results\Blind.Tests\dotnetTest\TestResults\new-run.log'))) "S11 even the current-looking file is not claimed without a trustworthy snapshot"
+    $errorsText11 = Get-Content -LiteralPath (Join-Path $unitLog11 'collection-errors.log') -Raw
+    Assert-True ($errorsText11 -match 'snapshot enumeration failed') "S11 collection-errors.log records the snapshot blindness"
 
     # --- run identity ---------------------------------------------------------------
     Write-Host ""
