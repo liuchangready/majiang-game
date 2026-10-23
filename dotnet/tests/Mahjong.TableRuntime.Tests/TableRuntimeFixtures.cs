@@ -16,7 +16,9 @@ namespace Mahjong.TableRuntime.Tests
 
         public long MonotonicMillis => Now;
 
-        public long UtcNowMs => 1700000000000L + Now;
+        public long UtcNowMs => Now > long.MaxValue - 1700000000000L
+            ? long.MaxValue
+            : 1700000000000L + Now;
     }
 
     internal enum CommitBehaviorKind
@@ -270,6 +272,181 @@ namespace Mahjong.TableRuntime.Tests
             new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
     }
 
+    internal enum ControlCommitBehaviorKind
+    {
+        Success = 0,
+        Fail = 1,
+        Cancel = 2,
+        StaleOwner = 3,
+        StaleControl = 4
+    }
+
+    internal sealed class RecordingControlCommitPort : ITableControlCommitPort
+    {
+        private readonly object _gate = new object();
+        private readonly Queue<ControlCommitBehaviorKind> _behaviors = new Queue<ControlCommitBehaviorKind>();
+        private readonly List<TableControlCommitRequest> _requests = new List<TableControlCommitRequest>();
+        private long _version;
+        private int _active;
+        private int _maxConcurrent;
+        private TaskCompletionSource<bool>? _gateSource;
+        private TaskCompletionSource<bool>? _enteredSource;
+
+        public void BlockNext()
+        {
+            lock (_gate)
+            {
+                _gateSource = NewSignal();
+                _enteredSource = NewSignal();
+            }
+        }
+
+        public Task Entered
+        {
+            get
+            {
+                lock (_gate)
+                {
+                    if (_enteredSource == null)
+                    {
+                        throw new InvalidOperationException("No blocked control commit was configured.");
+                    }
+
+                    return _enteredSource.Task;
+                }
+            }
+        }
+
+        public void Release()
+        {
+            TaskCompletionSource<bool>? signal;
+            lock (_gate)
+            {
+                signal = _gateSource;
+                _gateSource = null;
+            }
+
+            signal?.TrySetResult(true);
+        }
+
+        public void FailNext()
+        {
+            lock (_gate)
+            {
+                _behaviors.Enqueue(ControlCommitBehaviorKind.Fail);
+            }
+        }
+
+        public void CancelNext()
+        {
+            lock (_gate)
+            {
+                _behaviors.Enqueue(ControlCommitBehaviorKind.Cancel);
+            }
+        }
+
+        public void StaleControlNext()
+        {
+            lock (_gate)
+            {
+                _behaviors.Enqueue(ControlCommitBehaviorKind.StaleControl);
+            }
+        }
+
+        public IReadOnlyList<TableControlCommitRequest> Requests
+        {
+            get
+            {
+                lock (_gate)
+                {
+                    return _requests.ToArray();
+                }
+            }
+        }
+
+        public int MaxConcurrentCommits
+        {
+            get
+            {
+                lock (_gate)
+                {
+                    return _maxConcurrent;
+                }
+            }
+        }
+
+        public async ValueTask<TableControlCommitResult> CommitControlAsync(
+            TableControlCommitRequest request,
+            CancellationToken cancellationToken)
+        {
+            TaskCompletionSource<bool>? entered;
+            TaskCompletionSource<bool>? gate;
+            lock (_gate)
+            {
+                _active++;
+                if (_active > _maxConcurrent)
+                {
+                    _maxConcurrent = _active;
+                }
+
+                _requests.Add(request);
+                entered = _enteredSource;
+                gate = _gateSource;
+            }
+
+            entered?.TrySetResult(true);
+            try
+            {
+                if (gate != null)
+                {
+                    await gate.Task.ConfigureAwait(false);
+                }
+            }
+            finally
+            {
+                lock (_gate)
+                {
+                    _active--;
+                }
+            }
+
+            ControlCommitBehaviorKind behavior;
+            lock (_gate)
+            {
+                behavior = _behaviors.Count > 0
+                    ? _behaviors.Dequeue()
+                    : ControlCommitBehaviorKind.Success;
+            }
+
+            switch (behavior)
+            {
+                case ControlCommitBehaviorKind.Fail:
+                    return TableControlCommitResult.Failed("CONTROL_COMMIT_FAILED", "injected control commit failure");
+                case ControlCommitBehaviorKind.Cancel:
+                    throw new OperationCanceledException("injected control commit cancellation");
+                case ControlCommitBehaviorKind.StaleOwner:
+                    return TableControlCommitResult.StaleOwner("injected stale owner");
+                case ControlCommitBehaviorKind.StaleControl:
+                    return TableControlCommitResult.StaleControl("injected stale control version");
+            }
+
+            lock (_gate)
+            {
+                if (request.ExpectedControlVersion != _version)
+                {
+                    return TableControlCommitResult.StaleControl(
+                        "expected control version " + request.ExpectedControlVersion + ", actual " + _version);
+                }
+
+                _version = request.ControlVersion;
+                return TableControlCommitResult.Committed();
+            }
+        }
+
+        private static TaskCompletionSource<bool> NewSignal() =>
+            new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+    }
+
     internal sealed class RecordingPublicationSink : ITablePublicationSink
     {
         private readonly object _gate = new object();
@@ -320,13 +497,15 @@ namespace Mahjong.TableRuntime.Tests
             ManualTableClock clock,
             RecordingCommitPort commitPort,
             RecordingPublicationSink sink,
-            RoundStateMachine initialRound)
+            RoundStateMachine initialRound,
+            RecordingControlCommitPort? controlCommitPort = null)
         {
             Actor = actor;
             Clock = clock;
             CommitPort = commitPort;
             Sink = sink;
             InitialRound = initialRound;
+            ControlCommitPort = controlCommitPort;
         }
 
         public TableActor Actor { get; }
@@ -338,6 +517,8 @@ namespace Mahjong.TableRuntime.Tests
         public RecordingPublicationSink Sink { get; }
 
         public RoundStateMachine InitialRound { get; }
+
+        public RecordingControlCommitPort? ControlCommitPort { get; }
 
         public ValueTask<TableOperationResult> SubmitAsync(TableCommandEnvelope command) =>
             Actor.SubmitAsync(command, TestContext.Current.CancellationToken);
@@ -362,6 +543,76 @@ namespace Mahjong.TableRuntime.Tests
 
         public ValueTask<TableSnapshot> GetSnapshotAsync() =>
             Actor.GetSnapshotAsync(TestContext.Current.CancellationToken);
+
+        public ValueTask<TableAiObservationResult> CaptureAiObservationAsync(int seat) =>
+            Actor.CaptureAiObservationAsync(seat, TestContext.Current.CancellationToken);
+
+        public ValueTask<TableControlResult> DisconnectAsync(
+            int seat,
+            ulong expectedEpoch,
+            string reason = "test disconnect",
+            ulong ownerEpoch = 1UL) =>
+            Actor.DisconnectAsync(
+                seat,
+                new OwnerEpoch(ownerEpoch),
+                new ControlEpoch(expectedEpoch),
+                reason,
+                TestContext.Current.CancellationToken);
+
+        public ValueTask<TableControlResult> ReconnectAsync(
+            int seat,
+            ulong expectedEpoch,
+            string reason = "test reconnect",
+            ulong ownerEpoch = 1UL) =>
+            Actor.ReconnectAsync(
+                seat,
+                new OwnerEpoch(ownerEpoch),
+                new ControlEpoch(expectedEpoch),
+                reason,
+                TestContext.Current.CancellationToken);
+
+        public ValueTask<TableControlResult> ExpireGraceAsync(TableGraceExpiryFence fence) =>
+            Actor.ExpireGraceAsync(fence, TestContext.Current.CancellationToken);
+
+        public ValueTask<TableControlResult> RequestTakeoverAsync(
+            int seat,
+            ulong expectedEpoch,
+            string reason = "test takeover",
+            ulong ownerEpoch = 1UL) =>
+            Actor.RequestTakeoverAsync(
+                seat,
+                new OwnerEpoch(ownerEpoch),
+                new ControlEpoch(expectedEpoch),
+                reason,
+                TestContext.Current.CancellationToken);
+
+        public ValueTask<TableControlResult> ReclaimControlAsync(
+            int seat,
+            ulong expectedEpoch,
+            string reason = "test reclaim",
+            ulong ownerEpoch = 1UL) =>
+            Actor.ReclaimControlAsync(
+                seat,
+                new OwnerEpoch(ownerEpoch),
+                new ControlEpoch(expectedEpoch),
+                reason,
+                TestContext.Current.CancellationToken);
+
+        public ValueTask<TableControlResult> ConfigureControlPolicyAsync(
+            DisconnectPolicy policy,
+            string reason = "test policy",
+            ulong ownerEpoch = 1UL) =>
+            Actor.ConfigureControlPolicyAsync(
+                policy,
+                new OwnerEpoch(ownerEpoch),
+                reason,
+                TestContext.Current.CancellationToken);
+
+        public ValueTask<TableControlSnapshot> GetControlSnapshotAsync() =>
+            Actor.GetControlSnapshotAsync(TestContext.Current.CancellationToken);
+
+        public ValueTask<TableTimingSnapshot> GetTimingSnapshotAsync() =>
+            Actor.GetTimingSnapshotAsync(TestContext.Current.CancellationToken);
 
         public ValueTask CloseAsync() =>
             Actor.CloseAsync(TestContext.Current.CancellationToken);
@@ -436,18 +687,23 @@ namespace Mahjong.TableRuntime.Tests
             string roundId = "round-1",
             int mailboxCapacity = 8,
             int controlReserve = 8,
-            DecisionClockConfig? decisionClockConfig = null)
+            DecisionClockConfig? decisionClockConfig = null,
+            IReadOnlyDictionary<int, SeatControllerKind>? controllers = null,
+            DisconnectPolicy? disconnectPolicy = null,
+            RecordingControlCommitPort? controlCommitPort = null,
+            long initialNow = 1000L)
         {
-            var clock = new ManualTableClock { Now = 1000L };
+            var clock = new ManualTableClock { Now = initialNow };
             var commitPort = new RecordingCommitPort();
             var sink = new RecordingPublicationSink(commitPort);
-            var controllers = new Dictionary<int, SeatControllerKind>
-            {
-                [0] = SeatControllerKind.Computer,
-                [1] = SeatControllerKind.Computer,
-                [2] = SeatControllerKind.Computer,
-                [3] = SeatControllerKind.Computer
-            };
+            IReadOnlyDictionary<int, SeatControllerKind> actualControllers =
+                controllers ?? new Dictionary<int, SeatControllerKind>
+                {
+                    [0] = SeatControllerKind.Computer,
+                    [1] = SeatControllerKind.Computer,
+                    [2] = SeatControllerKind.Computer,
+                    [3] = SeatControllerKind.Computer
+                };
             var options = new TableActorOptions
             {
                 RoomId = "room-1",
@@ -455,11 +711,49 @@ namespace Mahjong.TableRuntime.Tests
                 ControlReserve = controlReserve,
                 DecisionClockConfig = decisionClockConfig ??
                     new DecisionClockConfig(1000L, 0L, ReserveScope.Round),
-                InitialControllers = controllers
+                InitialControllers = actualControllers,
+                DisconnectPolicy = disconnectPolicy
             };
             RoundStateMachine round = Dealt(roundId);
-            var actor = new TableActor(options, round, commitPort, clock, sink);
-            return new ActorHarness(actor, clock, commitPort, sink, round);
+            var actor = new TableActor(options, round, commitPort, clock, sink, controlCommitPort);
+            return new ActorHarness(actor, clock, commitPort, sink, round, controlCommitPort);
+        }
+
+        public static IReadOnlyDictionary<int, SeatControllerKind> Controllers(
+            SeatControllerKind seat0,
+            SeatControllerKind seat1 = SeatControllerKind.Computer,
+            SeatControllerKind seat2 = SeatControllerKind.Computer,
+            SeatControllerKind seat3 = SeatControllerKind.Computer)
+        {
+            return new Dictionary<int, SeatControllerKind>
+            {
+                [0] = seat0,
+                [1] = seat1,
+                [2] = seat2,
+                [3] = seat3
+            };
+        }
+
+        public static ControlRegistrySnapshot ControlSnapshot(params SeatControlState[] states)
+        {
+            if (states == null || states.Length != 4)
+            {
+                throw new ArgumentException("Exactly four seat states are required.", nameof(states));
+            }
+
+            var preferred = new[]
+            {
+                SeatControllerKind.LocalHuman,
+                SeatControllerKind.LocalHuman,
+                SeatControllerKind.LocalHuman,
+                SeatControllerKind.LocalHuman
+            };
+            return new ControlRegistrySnapshot(new DisconnectPolicy(), states, preferred);
+        }
+
+        public static SeatControlState Connected(SeatControllerKind kind, long epoch, int seat = 0)
+        {
+            return new SeatControlState(seat, ConnectionStatus.Connected, kind, epoch, null, null, null);
         }
 
         public static TableCommandEnvelope Command(
@@ -468,7 +762,8 @@ namespace Mahjong.TableRuntime.Tests
             string requestId,
             DecisionId? decisionId = null,
             ulong controlEpoch = 0UL,
-            ulong ownerEpoch = 1UL)
+            ulong ownerEpoch = 1UL,
+            long recoveryGeneration = 0L)
         {
             return new TableCommandEnvelope(
                 command,
@@ -476,7 +771,8 @@ namespace Mahjong.TableRuntime.Tests
                 new StateVersion((ulong)expectedStateVersion),
                 new OwnerEpoch(ownerEpoch),
                 new ControlEpoch(controlEpoch),
-                decisionId);
+                decisionId,
+                recoveryGeneration);
         }
 
         public static RoundCommand DiscardCurrent(RoundStateMachine round)

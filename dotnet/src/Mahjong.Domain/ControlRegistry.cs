@@ -51,7 +51,7 @@ namespace Mahjong.Domain
 
     public sealed class SeatControlState
     {
-        internal SeatControlState(
+        public SeatControlState(
             int seat,
             ConnectionStatus status,
             SeatControllerKind kind,
@@ -60,6 +60,70 @@ namespace Mahjong.Domain
             long? graceDeadlineMillis,
             string? aiProfileId)
         {
+            if (seat < 0 || seat > 3)
+            {
+                throw new ArgumentOutOfRangeException(nameof(seat), seat, "Seat must be 0..3.");
+            }
+
+            if (status != ConnectionStatus.Connected && status != ConnectionStatus.Disconnected)
+            {
+                throw new ArgumentOutOfRangeException(nameof(status), status, "Unknown connection status.");
+            }
+
+            if (kind != SeatControllerKind.LocalHuman &&
+                kind != SeatControllerKind.RemoteHuman &&
+                kind != SeatControllerKind.Computer &&
+                kind != SeatControllerKind.Takeover)
+            {
+                throw new ArgumentOutOfRangeException(nameof(kind), kind, "Unknown seat controller.");
+            }
+
+            if (controlEpoch < 0)
+            {
+                throw new ArgumentOutOfRangeException(nameof(controlEpoch), controlEpoch, "controlEpoch must be non-negative.");
+            }
+
+            if (disconnectedAtMillis.HasValue && disconnectedAtMillis.Value < 0)
+            {
+                throw new ArgumentOutOfRangeException(
+                    nameof(disconnectedAtMillis),
+                    disconnectedAtMillis,
+                    "Disconnect time must be non-negative.");
+            }
+
+            if (graceDeadlineMillis.HasValue && graceDeadlineMillis.Value < 0)
+            {
+                throw new ArgumentOutOfRangeException(
+                    nameof(graceDeadlineMillis),
+                    graceDeadlineMillis,
+                    "Grace deadline must be non-negative.");
+            }
+
+            if (status == ConnectionStatus.Connected &&
+                (disconnectedAtMillis.HasValue || graceDeadlineMillis.HasValue))
+            {
+                throw new ArgumentException(
+                    "A connected seat cannot retain disconnect/grace timestamps.",
+                    nameof(status));
+            }
+
+            if (graceDeadlineMillis.HasValue)
+            {
+                if (!disconnectedAtMillis.HasValue)
+                {
+                    throw new ArgumentException(
+                        "A grace deadline requires a disconnect timestamp.",
+                        nameof(graceDeadlineMillis));
+                }
+
+                if (graceDeadlineMillis.Value < disconnectedAtMillis.Value)
+                {
+                    throw new ArgumentException(
+                        "A grace deadline cannot precede the disconnect time.",
+                        nameof(graceDeadlineMillis));
+                }
+            }
+
             Seat = seat;
             Status = status;
             Kind = kind;
@@ -128,6 +192,93 @@ namespace Mahjong.Domain
     }
 
     /// <summary>
+    /// Immutable authority snapshot of one <see cref="ControlRegistry"/>. Recovery may install
+    /// only an exact snapshot: the seat epochs are part of the authority, so reconstructing a
+    /// registry from controller kinds alone would silently reset the stale-result fences.
+    /// </summary>
+    public sealed class ControlRegistrySnapshot
+    {
+        private readonly ReadOnlyCollection<SeatControlState> _seats;
+        private readonly ReadOnlyCollection<SeatControllerKind> _preferredHumanKinds;
+
+        public ControlRegistrySnapshot(
+            DisconnectPolicy policy,
+            IReadOnlyList<SeatControlState> seats,
+            IReadOnlyList<SeatControllerKind> preferredHumanKinds)
+        {
+            if (policy == null)
+            {
+                throw new ArgumentNullException(nameof(policy));
+            }
+
+            if (seats == null)
+            {
+                throw new ArgumentNullException(nameof(seats));
+            }
+
+            if (seats.Count != 4)
+            {
+                throw new ArgumentException("A control snapshot must contain exactly four seats.", nameof(seats));
+            }
+
+            var seatCopy = new SeatControlState[4];
+            for (int seat = 0; seat < 4; seat++)
+            {
+                SeatControlState state = seats[seat] ??
+                    throw new ArgumentException("Seat control state cannot be null.", nameof(seats));
+                if (state.Seat != seat)
+                {
+                    throw new ArgumentException("Seat control states must be ordered 0..3.", nameof(seats));
+                }
+
+                seatCopy[seat] = state;
+            }
+
+            if (preferredHumanKinds == null || preferredHumanKinds.Count != 4)
+            {
+                throw new ArgumentException(
+                    "Preferred human controllers must contain exactly four entries.",
+                    nameof(preferredHumanKinds));
+            }
+
+            var preferredCopy = new SeatControllerKind[4];
+            for (int seat = 0; seat < 4; seat++)
+            {
+                SeatControllerKind kind = preferredHumanKinds[seat];
+                if (kind != SeatControllerKind.LocalHuman && kind != SeatControllerKind.RemoteHuman)
+                {
+                    throw new ArgumentException(
+                        "Preferred human controller must be LocalHuman or RemoteHuman.",
+                        nameof(preferredHumanKinds));
+                }
+
+                preferredCopy[seat] = kind;
+            }
+
+            Policy = policy;
+            _seats = new ReadOnlyCollection<SeatControlState>(seatCopy);
+            _preferredHumanKinds = new ReadOnlyCollection<SeatControllerKind>(preferredCopy);
+        }
+
+        public DisconnectPolicy Policy { get; }
+
+        public IReadOnlyList<SeatControlState> Seats => _seats;
+
+        public IReadOnlyList<SeatControllerKind> PreferredHumanKinds => _preferredHumanKinds;
+
+        /// <summary>Returns a copy with a new future-disconnect policy and otherwise equal authority.</summary>
+        public ControlRegistrySnapshot WithPolicy(DisconnectPolicy policy)
+        {
+            if (policy == null)
+            {
+                throw new ArgumentNullException(nameof(policy));
+            }
+
+            return new ControlRegistrySnapshot(policy, _seats, _preferredHumanKinds);
+        }
+    }
+
+    /// <summary>
     /// Seat controller + connection control authority (V4 <c>ControllerRegistry</c> merged with
     /// the domain-visible half of server <c>ConnectionControl</c>).
     ///
@@ -190,6 +341,34 @@ namespace Mahjong.Domain
             var copy = new SeatControlState[4];
             Array.Copy(_states, copy, 4);
             return new ReadOnlyCollection<SeatControlState>(copy);
+        }
+
+        /// <summary>Captures exact seat epochs/status/grace plus the policy and reclaim preference.</summary>
+        public ControlRegistrySnapshot Capture()
+        {
+            var states = new SeatControlState[4];
+            var preferred = new SeatControllerKind[4];
+            Array.Copy(_states, states, 4);
+            Array.Copy(_preferredHumanKind, preferred, 4);
+            return new ControlRegistrySnapshot(Policy, states, preferred);
+        }
+
+        /// <summary>Rebuilds an independent registry with the exact captured authority.</summary>
+        public static ControlRegistry Restore(ControlRegistrySnapshot snapshot)
+        {
+            if (snapshot == null)
+            {
+                throw new ArgumentNullException(nameof(snapshot));
+            }
+
+            var registry = new ControlRegistry(snapshot.Policy);
+            for (int seat = 0; seat < 4; seat++)
+            {
+                registry._states[seat] = snapshot.Seats[seat];
+                registry._preferredHumanKind[seat] = snapshot.PreferredHumanKinds[seat];
+            }
+
+            return registry;
         }
 
         public SeatControllerKind GetController(int seat)
