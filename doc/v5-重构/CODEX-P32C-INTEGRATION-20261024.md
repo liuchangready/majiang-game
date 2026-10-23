@@ -1,15 +1,15 @@
 # P3.2c integration inspection — 2026-10-24 04:48 UTC+8
 
-Status: **FAIL / integration unpublished**. V4 remains production; G1 is BLOCKED. No G5 completion flag was created.
+Status: **FAIL / independent integrated gate**. Accepted P3.2c was concurrently published by the original caller at `32f645e`; this invocation made no push. V4 remains production; G1 is BLOCKED. No G5 completion flag was created.
 
-The global bridge list was inspected once for this invocation. All V5 component threads were completed; P3.2c `thread_20261024_031743_6c0a` still has its merge-back obligation open. Its recorded component approval is for source `06f809fe74383eb331212256929ae1c1042de403`, not a complete P3.2 or G1 approval. No paused thread was resumed.
+The global bridge list was inspected once for this invocation. All V5 component threads were completed. P3.2c `thread_20261024_031743_6c0a` initially had its merge-back obligation open; a final reservation read confirmed the original caller recorded it at `32f645e`. Its component approval is for source `06f809fe74383eb331212256929ae1c1042de403`, not a complete P3.2 or G1 approval. No paused thread was resumed.
 
 ## Candidate and ownership
 
-- Remote PR #19 remains `feat/v5-1-integration -> v5`, head `8af240d1cd1c958295b2f04d724409bd6077ad75`.
+- Remote PR #19 remains `feat/v5-1-integration -> v5`. Initial head was `8af240d1cd1c958295b2f04d724409bd6077ad75`; final observed head is `32f645ec9b134e9ad261a2df89437416b20b3119`.
 - A new isolated caller tree `D:/majiang-wt/codex-p32c-integration-20261024`, branch `wt/v5-codex-p32c-integration-20261024`, starts at that exact reviewed remote head. The older integration trees and receiver trees were not modified.
 - Local merge candidate `8523d3d3211346358af9b1ab324f454b395ae4c2` merges the accepted P3.2c source without conflict. `git diff --check 8af240d..8523d3d` passes. No in-flight changes were included.
-- The candidate is **not pushed**, and no merge-back completion is recorded for P3.2c, because the integrated gate failed. Preserve this tree and its candidate for the next accepted actor repair; do not blindly reconstruct it from stale caller trees.
+- This invocation did **not push** its candidate or duplicate the original caller's merge-back record. After observing that concurrent published integration, it fetched and merged the remote head normally. `git diff --exit-code origin/feat/v5-1-integration -- dotnet tools unity .github` passes: this tree and published `32f645e` have identical implementation source. Preserve this tree and its evidence for the next accepted repair; no runtime source was changed after the failing check.
 - Main checkout remains at `d833348`, with unrelated artifacts preserved. No Unity environment/Resources/Burst assets changed.
 
 ## Independent checks on the candidate
@@ -60,6 +60,19 @@ The push run names two TableRuntime failures:
 Both remote wrappers report all four originally unset environment variables restored as a present empty string (empty-string SHA256), with `restored=false`. Source uses `SetEnvironmentVariable(name, $null)` and then requires a null readback. The workflow runs `shell: pwsh`; this shell/runtime difference is an investigation lead. Preserve absent-versus-empty semantics and restoration verification; do not force a green result or change the verifier.
 
 ## Evidence and next work
+
+### Final remote state observed during this invocation
+
+The original caller published accepted P3.2c through merge `955c419` and acceptance document `32f645e`, and recorded its existing thread's merge-back. This invocation detected that head change before any push and did not overwrite it. The original caller's local acceptance records 793 / 0 / 0 without a real-PG unified run; that evidence does not supersede the independent 881 / 1 / 0 result above.
+
+The latest two CI bundles were also downloaded, including framework logs, before follow-up:
+
+| Run | Actual checkout | Unified tests / wrapper |
+|---|---|---|
+| [40021452487 push](https://github.com/liuchangready/majiang-game/actions/runs/40021452487) | `32f645ec9b134e9ad261a2df89437416b20b3119` | **882 / 0 / 0 PASS**, verifier exit 0; wrapper exit 1, four env-restore failures |
+| [40021457715 PR](https://github.com/liuchangready/majiang-game/actions/runs/40021457715) | synthetic merge `e2dffe6ca3283e5befc376325269347c0e6fdd62`, PR head `32f645e` | **882 / 0 / 0 PASS**, verifier exit 0; wrapper exit 1, four env-restore failures |
+
+Both have actual PG 89 / 0 / 0, Client 132 / 0 / 0, TableRuntime 150 / 0 / 0, build 0 warnings/errors and 12 DLL PASS. Neither is an overall CI PASS. The earlier preserved stream-test failures and this invocation's exact-source reproduction still require deterministic investigation; later passing schedules are not a fix.
 
 Stable evidence root: `D:/majiang/artifacts/progress-20261024-current/`; its REVIEW.md, full remote bundles, local integrated gate, probe programs/logs and `evidence-sha256.csv` are retained. No PostgreSQL data directory was archived. Full raw local framework logs are also under this tree's `artifacts/codex-p32c-integrated/test-results`.
 
