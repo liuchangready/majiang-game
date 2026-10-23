@@ -171,7 +171,8 @@ namespace Mahjong.Contracts
             StateVersion commandVersion,
             uint eventOrdinal,
             byte[]? wirePayload,
-            bool hasUnknownFields)
+            bool hasUnknownFields,
+            ProjectedEventPayload? projectionPayload)
         {
             Type = type;
             Visibility = visibility;
@@ -181,6 +182,7 @@ namespace Mahjong.Contracts
             EventOrdinal = eventOrdinal;
             _wirePayload = wirePayload;
             HasUnknownFields = hasUnknownFields;
+            ProjectionPayload = projectionPayload;
             Unknown = null;
         }
 
@@ -194,6 +196,7 @@ namespace Mahjong.Contracts
             EventOrdinal = unknown.EventOrdinal;
             _wirePayload = null;
             HasUnknownFields = true;
+            ProjectionPayload = null;
             Unknown = unknown;
         }
 
@@ -215,6 +218,12 @@ namespace Mahjong.Contracts
         public bool HasUnknownFields { get; }
 
         public UnknownEventRecord? Unknown { get; }
+
+        /// <summary>
+        /// Optional typed, already-projected body. A metadata-only record from a decoder has
+        /// no projection body; a producer must never use an empty body as a substitute.
+        /// </summary>
+        public ProjectedEventPayload? ProjectionPayload { get; }
 
         public bool IsKnown => Unknown == null && Type != ProtocolEventType.Unspecified;
 
@@ -264,7 +273,52 @@ namespace Mahjong.Contracts
                 commandVersion,
                 eventOrdinal,
                 copy,
-                hasUnknownFields);
+                hasUnknownFields,
+                null);
+        }
+
+        /// <summary>
+        /// Creates a typed projected event. The body is a wire-independent Contracts payload;
+        /// it is not an internal runtime encoding and not opaque Protobuf bytes. A producer that
+        /// has no typed facts must fail instead of sending an empty body.
+        /// </summary>
+        public static ProtocolEventRecord KnownTyped(
+            ProtocolEventType type,
+            ProtocolEventVisibility visibility,
+            uint eventSchemaVersion,
+            EventSeq eventSeq,
+            StateVersion commandVersion,
+            uint eventOrdinal,
+            ProjectedEventPayload projectionPayload,
+            bool hasUnknownFields = false)
+        {
+            if (type == ProtocolEventType.Unspecified || !ProtocolEventPolicy.IsKnownEventType((uint)type))
+            {
+                throw new ArgumentException("Known event requires a frozen event type.", nameof(type));
+            }
+
+            if (projectionPayload == null)
+            {
+                throw new ArgumentNullException(nameof(projectionPayload));
+            }
+
+            if (projectionPayload.Type != type)
+            {
+                throw new ArgumentException(
+                    "The typed payload belongs to " + projectionPayload.Type + ", not " + type + ".",
+                    nameof(projectionPayload));
+            }
+
+            return new ProtocolEventRecord(
+                type,
+                visibility,
+                eventSchemaVersion,
+                eventSeq,
+                commandVersion,
+                eventOrdinal,
+                Array.Empty<byte>(),
+                hasUnknownFields,
+                projectionPayload);
         }
 
         public static ProtocolEventRecord UnknownEvent(UnknownEventRecord unknown)
@@ -316,6 +370,13 @@ namespace Mahjong.Contracts
                 throw new PublicProjectionException(
                     "Unknown event type cannot enter a public stream; request a full baseline.",
                     ProtocolErrorCode.StreamGap);
+            }
+
+            if (record.ProjectionPayload != null && record.ProjectionPayload.Type != record.Type)
+            {
+                throw new PublicProjectionException(
+                    "Typed event payload type does not match the record type.",
+                    ProtocolErrorCode.MalformedMessage);
             }
 
             if (ProtocolEventPolicy.IsPrivateEventType(record.Type))
@@ -395,9 +456,14 @@ namespace Mahjong.Contracts
             }
 
             var copy = new uint[tileIds.Count];
+            var seen = new HashSet<uint>();
             for (int i = 0; i < tileIds.Count; i++)
             {
                 copy[i] = SnapshotValidation.TileId(tileIds[i], nameof(tileIds));
+                if (!seen.Add(copy[i]))
+                {
+                    throw new ArgumentException("A meld cannot repeat a physical tile id.", nameof(tileIds));
+                }
             }
 
             SnapshotValidation.SeatOrNoSeat(fromSeat, nameof(fromSeat));
@@ -444,6 +510,7 @@ namespace Mahjong.Contracts
     {
         private readonly IReadOnlyList<MeldView> _melds;
         private readonly IReadOnlyList<DiscardView> _discards;
+        private readonly IReadOnlyList<ConcealedMeldView> _concealedMelds;
 
         public PlayerPublicView(
             int seat,
@@ -451,6 +518,17 @@ namespace Mahjong.Contracts
             IReadOnlyList<MeldView> melds,
             IReadOnlyList<DiscardView> discards,
             bool riichi)
+            : this(seat, handCount, melds, discards, riichi, null)
+        {
+        }
+
+        public PlayerPublicView(
+            int seat,
+            uint handCount,
+            IReadOnlyList<MeldView> melds,
+            IReadOnlyList<DiscardView> discards,
+            bool riichi,
+            IReadOnlyList<ConcealedMeldView>? concealedMelds)
         {
             SnapshotValidation.Seat(seat, nameof(seat));
             if (handCount > 14)
@@ -459,7 +537,36 @@ namespace Mahjong.Contracts
             }
 
             _melds = SnapshotValidation.Copy(melds, nameof(melds));
+            for (int i = 0; i < _melds.Count; i++)
+            {
+                if (_melds[i] == null)
+                {
+                    throw new ArgumentException("Melds cannot contain null.", nameof(melds));
+                }
+
+                if (_melds[i].Type == ProtocolMeldType.ClosedKan)
+                {
+                    throw new ArgumentException(
+                        "A public meld must not carry closed-kan tile identities; use ConcealedMelds.",
+                        nameof(melds));
+                }
+            }
+
             _discards = SnapshotValidation.Copy(discards, nameof(discards));
+            _concealedMelds = SnapshotValidation.CopyOptional(concealedMelds, nameof(concealedMelds));
+            for (int i = 0; i < _concealedMelds.Count; i++)
+            {
+                if (_concealedMelds[i] == null)
+                {
+                    throw new ArgumentException("Concealed melds cannot contain null.", nameof(concealedMelds));
+                }
+
+                if (_concealedMelds[i].FromSeat != ProtocolConstants.NoSeat)
+                {
+                    throw new ArgumentException("A concealed meld placeholder has no public source seat.", nameof(concealedMelds));
+                }
+            }
+
             Seat = seat;
             HandCount = handCount;
             Riichi = riichi;
@@ -473,6 +580,12 @@ namespace Mahjong.Contracts
         public IReadOnlyList<MeldView> Melds => _melds;
 
         public IReadOnlyList<DiscardView> Discards => _discards;
+
+        /// <summary>
+        /// Public closed-kan placeholders. They carry only the fact and the tile count, never
+        /// the four physical identities, so a table can account for the meld without seeing it.
+        /// </summary>
+        public IReadOnlyList<ConcealedMeldView> ConcealedMelds => _concealedMelds;
 
         public bool Riichi { get; }
     }
@@ -837,6 +950,37 @@ namespace Mahjong.Contracts
             bool hasSleeveBloom,
             bool hasBeamSwap,
             bool hasPreparation)
+            : this(
+                cheatPoints,
+                ledger,
+                hasTileMark,
+                hasSleeveBloom,
+                hasBeamSwap,
+                hasPreparation,
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                null)
+        {
+        }
+
+        public PrivateCheatView(
+            long cheatPoints,
+            IReadOnlyList<CheatLedgerEntryView> ledger,
+            bool hasTileMark,
+            bool hasSleeveBloom,
+            bool hasBeamSwap,
+            bool hasPreparation,
+            TileMarkView? tileMark,
+            SleeveBloomView? immediateOffer,
+            SleeveBloomView? offTurnOffer,
+            SleeveBloomReservationView? reservation,
+            string? windowId,
+            BeamSwapView? beamSwap,
+            ShufflePreparationView? preparation)
         {
             if (cheatPoints < 0)
             {
@@ -844,11 +988,57 @@ namespace Mahjong.Contracts
             }
 
             _ledger = SnapshotValidation.Copy(ledger, nameof(ledger));
+            for (int i = 0; i < _ledger.Count; i++)
+            {
+                if (_ledger[i] == null)
+                {
+                    throw new ArgumentException("A private ledger cannot contain null.", nameof(ledger));
+                }
+            }
+
+            if (tileMark != null && !hasTileMark)
+            {
+                throw new ArgumentException("A typed tile-mark body requires HasTileMark.", nameof(hasTileMark));
+            }
+
+            if ((immediateOffer != null || offTurnOffer != null || reservation != null || !string.IsNullOrEmpty(windowId)) &&
+                !hasSleeveBloom)
+            {
+                throw new ArgumentException("A typed sleeve-bloom body requires HasSleeveBloom.", nameof(hasSleeveBloom));
+            }
+
+            if (beamSwap != null && !hasBeamSwap)
+            {
+                throw new ArgumentException("A typed beam-swap body requires HasBeamSwap.", nameof(hasBeamSwap));
+            }
+
+            if (preparation != null && !hasPreparation)
+            {
+                throw new ArgumentException("A typed preparation body requires HasPreparation.", nameof(hasPreparation));
+            }
+
+            if (immediateOffer != null && immediateOffer.Mode != ProjectionSleeveBloomMode.Immediate)
+            {
+                throw new ArgumentException("The immediate offer slot requires an immediate offer.", nameof(immediateOffer));
+            }
+
+            if (offTurnOffer != null && offTurnOffer.Mode != ProjectionSleeveBloomMode.OffTurn)
+            {
+                throw new ArgumentException("The off-turn offer slot requires an off-turn offer.", nameof(offTurnOffer));
+            }
+
             CheatPoints = cheatPoints;
             HasTileMark = hasTileMark;
             HasSleeveBloom = hasSleeveBloom;
             HasBeamSwap = hasBeamSwap;
             HasPreparation = hasPreparation;
+            OwnerTileMark = tileMark;
+            ImmediateSleeveOffer = immediateOffer;
+            OffTurnSleeveOffer = offTurnOffer;
+            SleeveReservation = reservation;
+            WindowId = SnapshotValidation.OptionalString(windowId);
+            OwnerBeamSwap = beamSwap;
+            Preparation = preparation;
         }
 
         public long CheatPoints { get; }
@@ -863,12 +1053,32 @@ namespace Mahjong.Contracts
         public bool HasBeamSwap { get; }
 
         public bool HasPreparation { get; }
+
+        /// <summary>Owner-only mark detail; absent when the legacy/projection source had only a flag.</summary>
+        public TileMarkView? OwnerTileMark { get; }
+
+        /// <summary>The owner's own-turn frozen offer, if any.</summary>
+        public SleeveBloomView? ImmediateSleeveOffer { get; }
+
+        /// <summary>The owner's off-turn offer, if any. It is separate from the immediate offer.</summary>
+        public SleeveBloomView? OffTurnSleeveOffer { get; }
+
+        public SleeveBloomReservationView? SleeveReservation { get; }
+
+        public string WindowId { get; }
+
+        public BeamSwapView? OwnerBeamSwap { get; }
+
+        /// <summary>Null when the source projection does not carry preparation detail.</summary>
+        public ShufflePreparationView? Preparation { get; }
     }
 
     public sealed class PrivatePlayerView
     {
         private readonly IReadOnlyList<uint> _closedTiles;
         private readonly IReadOnlyList<uint> _discardHistory;
+        private readonly IReadOnlyList<uint> _sleeveTiles;
+        private readonly IReadOnlyList<MeldView> _ownerMelds;
 
         public PrivatePlayerView(
             int seat,
@@ -878,6 +1088,29 @@ namespace Mahjong.Contracts
             IReadOnlyList<uint> discardHistory,
             DecisionView? decision,
             PrivateCheatView? cheat)
+            : this(
+                seat,
+                closedTiles,
+                drawnTileId,
+                furiten,
+                discardHistory,
+                decision,
+                cheat,
+                Array.Empty<uint>(),
+                Array.Empty<MeldView>())
+        {
+        }
+
+        public PrivatePlayerView(
+            int seat,
+            IReadOnlyList<uint> closedTiles,
+            uint? drawnTileId,
+            bool furiten,
+            IReadOnlyList<uint> discardHistory,
+            DecisionView? decision,
+            PrivateCheatView? cheat,
+            IReadOnlyList<uint>? sleeveTiles,
+            IReadOnlyList<MeldView>? ownerMelds)
         {
             SnapshotValidation.Seat(seat, nameof(seat));
             _closedTiles = SnapshotValidation.CopyTileIds(closedTiles, nameof(closedTiles), 14);
@@ -890,6 +1123,37 @@ namespace Mahjong.Contracts
                     if (_closedTiles[i] == drawnTileId.Value)
                     {
                         throw new ArgumentException("Drawn tile must not duplicate a closed hand tile.", nameof(drawnTileId));
+                    }
+                }
+            }
+
+            _sleeveTiles = SnapshotValidation.CopyTileIds(sleeveTiles ?? Array.Empty<uint>(), nameof(sleeveTiles), 14);
+            for (int i = 0; i < _sleeveTiles.Count; i++)
+            {
+                if (Contains(_closedTiles, _sleeveTiles[i]) ||
+                    (drawnTileId.HasValue && drawnTileId.Value == _sleeveTiles[i]))
+                {
+                    throw new ArgumentException("A sleeve tile cannot also be in the owner's closed hand.", nameof(sleeveTiles));
+                }
+            }
+
+            _ownerMelds = SnapshotValidation.Copy(ownerMelds ?? Array.Empty<MeldView>(), nameof(ownerMelds));
+            var meldTiles = new HashSet<uint>();
+            for (int i = 0; i < _ownerMelds.Count; i++)
+            {
+                MeldView meld = _ownerMelds[i] ?? throw new ArgumentException("Owner melds cannot contain null.", nameof(ownerMelds));
+                for (int t = 0; t < meld.TileIds.Count; t++)
+                {
+                    uint tile = meld.TileIds[t];
+                    if (!meldTiles.Add(tile))
+                    {
+                        throw new ArgumentException("Owner melds repeat a physical tile.", nameof(ownerMelds));
+                    }
+
+                    if (Contains(_closedTiles, tile) || Contains(_sleeveTiles, tile) ||
+                        (drawnTileId.HasValue && drawnTileId.Value == tile))
+                    {
+                        throw new ArgumentException("An owner meld tile cannot also be in the hand or sleeve.", nameof(ownerMelds));
                     }
                 }
             }
@@ -915,6 +1179,28 @@ namespace Mahjong.Contracts
         public DecisionView? Decision { get; }
 
         public PrivateCheatView? Cheat { get; }
+
+        /// <summary>Owner-only sleeve-zone identities; never part of a public board.</summary>
+        public IReadOnlyList<uint> SleeveTiles => _sleeveTiles;
+
+        /// <summary>
+        /// Owner-only melds, including a closed kan's four identities. Public melds use
+        /// PlayerPublicView.Melds plus ConcealedMelds and never reach this list.
+        /// </summary>
+        public IReadOnlyList<MeldView> OwnerMelds => _ownerMelds;
+
+        private static bool Contains(IReadOnlyList<uint> values, uint tile)
+        {
+            for (int i = 0; i < values.Count; i++)
+            {
+                if (values[i] == tile)
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
     }
 
     public sealed class PlayerSnapshotView
@@ -1027,6 +1313,21 @@ namespace Mahjong.Contracts
             }
 
             return Array.AsReadOnly(copy);
+        }
+
+        public static IReadOnlyList<T> CopyOptional<T>(IReadOnlyList<T>? values, string name)
+        {
+            if (values == null)
+            {
+                return Array.Empty<T>();
+            }
+
+            return Copy(values, name);
+        }
+
+        public static string OptionalString(string? value)
+        {
+            return value ?? string.Empty;
         }
 
         public static IReadOnlyList<uint> CopyTileIds(IReadOnlyList<uint>? values, string name, int maxCount)

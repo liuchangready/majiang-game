@@ -416,8 +416,22 @@ message PlayerPublicView {
   repeated MeldView melds = 3;
   repeated DiscardView discards = 4;
   bool riichi = 5;
+
+  // Public closed-kan accounting. It proves the meld exists and how many tiles it
+  // occupies without carrying identities; closed-kan identities never appear in
+  // `melds` on a public stream.
+  repeated ConcealedMeldView concealed_melds = 13;
   reserved 6 to 12;
   reserved "closed_tiles", "drawn_tile", "hand";
+}
+
+// A public, identity-free closed-kan placeholder. It is NOT a MeldView: the four
+// physical tile ids stay on the owner's private stream only.
+message ConcealedMeldView {
+  MeldType type = 1;       // must be MELD_TYPE_CLOSED_KAN
+  uint32 tile_count = 2;   // must be 4
+  int32 from_seat = 3;     // -1; a concealed meld has no public source seat
+  reserved 4 to 8;
 }
 
 message ScoreView {
@@ -548,6 +562,12 @@ message CheatEntryView {
 message TileMarkGroupView {
   string group_id = 1;
   repeated MarkedTileView tiles = 2;
+
+  // Owner-only group generation facts. They are append-only additions; the
+  // original group/tile fields keep their meaning.
+  string created_round_id = 8;
+  int32 created_round_ordinal = 9;
+  int32 expires_after_round_ordinal = 10;
   reserved 3 to 7;
 }
 
@@ -565,6 +585,14 @@ message TileMarkView {
   reserved 3 to 8;
 }
 
+enum SleeveBloomDrawKind {
+  SLEEVE_BLOOM_DRAW_KIND_UNSPECIFIED = 0;
+  SLEEVE_BLOOM_DRAW_KIND_DEAL_EXTRA = 1;
+  SLEEVE_BLOOM_DRAW_KIND_NORMAL = 2;
+  SLEEVE_BLOOM_DRAW_KIND_RINSHAN = 3;
+  reserved 4 to 9;
+}
+
 message SleeveBloomView {
   string offer_id = 1;
   string mode = 2;
@@ -573,13 +601,41 @@ message SleeveBloomView {
   int64 deadline_remaining_ms = 5;
   string window_id = 6;
   optional uint32 reserved_tile_id = 7;
+
+  // Source facts that the frozen V5 owner projection already models. A zero
+  // deadline_remaining_ms is only meaningful when has_deadline is true; an
+  // immediate offer has no deadline at all.
+  uint32 created_turn_number = 15;
+  SleeveBloomDrawKind draw_kind = 16;
+  bool has_deadline = 17;
   reserved 8 to 14;
 }
 
+// An off-turn offer's locked reservation. It is separate from the two offer
+// slots and never replaces either of them.
+message SleeveBloomReservationView {
+  string offer_id = 1;
+  uint32 tile_id = 2;
+  string window_id = 3;
+  reserved 4 to 8;
+}
+
 message BeamSwapCandidateView {
+  // Legacy numeric slot; it carries slot_index. slot_kind disambiguates the
+  // wall/dead-wall/replacement namespace without changing this field's type.
   uint32 slot = 1;
   optional uint32 tile_id = 2;
+  BeamSwapSlotKind slot_kind = 8;
+  uint32 slot_index = 9;
   reserved 3 to 7;
+}
+
+enum BeamSwapSlotKind {
+  BEAM_SWAP_SLOT_KIND_UNSPECIFIED = 0;
+  BEAM_SWAP_SLOT_KIND_WALL = 1;
+  BEAM_SWAP_SLOT_KIND_DEAD_WALL = 2;
+  BEAM_SWAP_SLOT_KIND_REPLACEMENT = 3;
+  reserved 4 to 9;
 }
 
 message BeamSwapView {
@@ -588,6 +644,10 @@ message BeamSwapView {
   repeated uint32 selectable_hand_tile_ids = 3 [packed = true];
   int64 deadline_remaining_ms = 4;
   optional uint32 drawn_tile_id = 5;
+
+  // The Domain beam offer carries no deadline; false keeps the zero value from
+  // masquerading as an expired deadline.
+  bool has_deadline = 13;
   reserved 6 to 12;
 }
 
@@ -609,9 +669,14 @@ message PrivateCheatView {
   sint64 cheat_points = 1;
   repeated CheatEntryView ledger_entries = 2;
   optional TileMarkView tile_mark = 3;
-  optional SleeveBloomView sleeve_bloom = 4;
+  optional SleeveBloomView sleeve_bloom = 4;       // the immediate (own-turn) offer
   optional BeamSwapView beam_swap = 5;
   optional ShufflePreparationView preparation = 6;
+
+  // The off-turn offer and its reservation are separate from the immediate
+  // offer above; both offers may exist at the same time.
+  SleeveBloomView off_turn_sleeve_bloom = 13;
+  SleeveBloomReservationView sleeve_bloom_reservation = 14;
   reserved 7 to 12;
   reserved "other_seats_cheat_points", "all_ledgers";
 }
@@ -625,6 +690,11 @@ message PlayerPrivateView {
   repeated uint32 discard_history = 6 [packed = true];
   DecisionView decision = 7;
   PrivateCheatView cheat = 8;
+
+  // Owner-only sleeve-zone identities and owner-only melds (including a closed
+  // kan's four physical identities). They never exist in a public type.
+  repeated uint32 sleeve_tiles = 16 [packed = true];
+  repeated MeldView owner_melds = 17;
   reserved 9 to 15;
   reserved "other_seats_hands", "opponent_closed_tiles", "wall", "seed";
 }
@@ -847,6 +917,9 @@ message RonWin {
   uint32 fu = 7;
   sint64 score = 8;
   ScoreBreakdownView breakdown = 9;
+
+  // P3.2a projects the CHANKAN fact; it was not representable before.
+  bool is_chankan = 16;
   reserved 10 to 15;
 }
 
