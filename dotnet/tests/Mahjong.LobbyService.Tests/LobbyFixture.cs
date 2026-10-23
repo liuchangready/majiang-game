@@ -85,8 +85,7 @@ namespace Mahjong.LobbyService.Tests
         public static LobbyFixture CreateWithStore(
             ILobbyStore store,
             LobbyOptions options,
-            TestClock clock,
-            IRoomProjectionReader? projections = null)
+            TestClock clock)
         {
             var ring = new TicketKeyRing();
             ring.AddEphemeralSigningKey(clock.UtcNow);
@@ -96,7 +95,7 @@ namespace Mahjong.LobbyService.Tests
                 signer,
                 clock,
                 options,
-                projections ?? new EmptyRoomProjectionReader());
+                new EmptyRoomProjectionReader());
             return new LobbyFixture(store, options, clock, ring, signer, application);
         }
 

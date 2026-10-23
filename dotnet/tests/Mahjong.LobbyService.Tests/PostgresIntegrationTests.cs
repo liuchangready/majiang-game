@@ -5,7 +5,6 @@ using Xunit;
 
 namespace Mahjong.LobbyService.Tests
 {
-    [Collection(PostgresLobbyCollection.Name)]
     public sealed class PostgresIntegrationTests
     {
         [Fact]
@@ -18,9 +17,6 @@ namespace Mahjong.LobbyService.Tests
                     "NOT_RUN: no PostgreSQL test database. Set MAHJONG_LOBBY_TEST_POSTGRES to run the transactional store test.");
                 return;
             }
-
-            // Validate the disposable ownership marker before writing.
-            await PostgresLobbyTestDb.EnsureSchemaAsync();
 
             var options = new LobbyOptions
             {
