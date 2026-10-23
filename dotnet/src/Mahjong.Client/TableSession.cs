@@ -44,6 +44,9 @@ namespace Mahjong.Client
         private RoomUpdate? _roomSnapshot;
         private ServerLimits? _serverLimits;
         private bool _syncInFlight;
+        private string? _activeSyncCorrelationId;
+        private ulong? _confirmedBindingEpoch;
+        private string? _confirmedBindingSessionId;
         private bool _outboxLoaded;
         private ulong _localBindingEpoch;
         private long _syncCounter;
@@ -125,8 +128,12 @@ namespace Mahjong.Client
                 _outboxLoaded = true;
             }
 
-            bool resume = _binding != null;
-            _connection.Fire(resume ? TableConnectionTrigger.BeginReconnect : TableConnectionTrigger.BeginConnect);
+            // A transient failure before the first WELCOME leaves us in
+            // Reconnecting with no binding. Reconnectability must therefore be
+            // derived from the connection state, not from _binding.
+            bool transportReconnect = State == TableConnectionState.Reconnecting;
+            bool resumeIdentity = _binding != null;
+            _connection.Fire(transportReconnect ? TableConnectionTrigger.BeginReconnect : TableConnectionTrigger.BeginConnect);
 
             try
             {
@@ -134,10 +141,21 @@ namespace Mahjong.Client
                     new TableChannelConnectRequest(
                         request.Ticket,
                         request.ClientBuild,
-                        resume && _binding != null ? _binding.SessionId.Value : null),
+                        resumeIdentity && _binding != null ? _binding.SessionId.Value : null),
                     cancellationToken).ConfigureAwait(false);
             }
-            catch (Exception ex) when (!(ex is OperationCanceledException))
+            catch (OperationCanceledException)
+            {
+                // A cancelled attempt must not strand the machine in
+                // Connecting/Reconnecting; the caller may retry OpenAsync.
+                if (State == TableConnectionState.Connecting || State == TableConnectionState.Reconnecting)
+                {
+                    HandleTransportFailure(new TableChannelClosedException(ProtocolErrorCode.LocalClosed, false));
+                }
+
+                throw;
+            }
+            catch (Exception ex)
             {
                 HandleTransportFailure(new TableChannelClosedException(ProtocolErrorCode.InternalError, false, ex));
                 throw;
@@ -145,7 +163,9 @@ namespace Mahjong.Client
 
             _localBindingEpoch = checked(_localBindingEpoch + 1);
             _syncInFlight = false;
+            _activeSyncCorrelationId = null;
             _receiptQueries.Clear();
+            ResetPendingCommandLookups(markUnknownIfHanded: true);
             _earlyBuffer.Clear();
             _earlyBuffer = new EarlyPushBuffer(_options.MaxEarlyBufferItems, _options.MaxEarlyBufferBytes);
             _lastError = null;
@@ -154,8 +174,8 @@ namespace Mahjong.Client
             Envelope hello = ClientWireMapper.NewHello(
                 request.Ticket,
                 request.ClientBuild,
-                resume,
-                resume && _binding != null ? _binding.SessionId.Value : null,
+                resumeIdentity,
+                resumeIdentity && _binding != null ? _binding.SessionId.Value : null,
                 _localBindingEpoch,
                 correlation);
 
@@ -281,6 +301,11 @@ namespace Mahjong.Client
                 throw new InvalidOperationException("A command can be submitted only from a ready, bound session.");
             }
 
+            // Role admission happens before persistence and before anything is
+            // handed to the transport. A spectator must never durably enqueue a
+            // player seat action.
+            EnsureCommandAdmitted(command.Kind);
+
             if (!command.ScopeId.HasValue || command.ScopeId.Value.IsEmpty)
             {
                 throw new ArgumentException("Only scoped side-effecting commands are accepted.", nameof(command));
@@ -347,6 +372,10 @@ namespace Mahjong.Client
                 throw new InvalidOperationException("Outbox key " + key + " is not unresolved.");
             }
 
+            // A player outbox recovered by a spectator session stays queryable
+            // for reconciliation, but its seat action must never be resent.
+            EnsureCommandAdmitted(tracked.Entry.Kind);
+
             if (tracked.QueryInFlight)
             {
                 throw new InvalidOperationException("A receipt lookup is still in flight; wait for its result.");
@@ -384,11 +413,9 @@ namespace Mahjong.Client
 
             _earlyBuffer.Clear();
             _syncInFlight = false;
+            _activeSyncCorrelationId = null;
             _receiptQueries.Clear();
-            foreach (TrackedCommand tracked in _commands.Values)
-            {
-                tracked.QueryInFlight = false;
-            }
+            ResetPendingCommandLookups(markUnknownIfHanded: true);
 
             _connection.Fire(TableConnectionTrigger.Close);
         }
@@ -531,7 +558,11 @@ namespace Mahjong.Client
             _earlyBuffer = CreateEarlyBuffer(_serverLimits);
             _earlyBuffer.Clear();
             _syncInFlight = false;
+            _activeSyncCorrelationId = null;
             _receiptQueries.Clear();
+            // Lookup replies from the previous connection can no longer arrive;
+            // resolve them as unknown and let the new baseline re-query.
+            ResetPendingCommandLookups(markUnknownIfHanded: true);
             _lastError = null;
             _connection.Fire(TableConnectionTrigger.WelcomeAccepted);
             await RequestFullBaselineAsync("CLIENT_INITIAL_BASELINE", force: false, cancellationToken).ConfigureAwait(false);
@@ -539,14 +570,25 @@ namespace Mahjong.Client
 
         private async Task HandleSyncResponseAsync(Envelope envelope, CancellationToken cancellationToken)
         {
-            if (!MatchesBinding(envelope))
+            if (!MatchesBinding(envelope) || _binding == null)
             {
                 return;
             }
 
-            if (State != TableConnectionState.Synchronizing || _binding == null)
+            if (State != TableConnectionState.Synchronizing || !_syncInFlight)
             {
                 // A late duplicate baseline must not jump a newer cursor backwards.
+                return;
+            }
+
+            // A SYNC_RESPONSE is only valid for the request that is currently
+            // in flight. This rejects an old correlation still travelling after
+            // an overflow-forced request replaced it, and it refuses anonymous
+            // responses that cannot be associated with any request at all.
+            if (string.IsNullOrEmpty(envelope.CorrelationId) ||
+                string.IsNullOrEmpty(_activeSyncCorrelationId) ||
+                !string.Equals(envelope.CorrelationId, _activeSyncCorrelationId, StringComparison.Ordinal))
+            {
                 return;
             }
 
@@ -564,7 +606,11 @@ namespace Mahjong.Client
                 return;
             }
 
-            ContractCursor cursor;
+            ContractCursor? cursor = null;
+            PlayerSnapshot? player = null;
+            PublicSnapshot? publicSnapshot = null;
+            RoomUpdate? room = null;
+
             switch (response.BaselineCase)
             {
                 case SyncResponse.BaselineOneofCase.Player:
@@ -574,21 +620,28 @@ namespace Mahjong.Client
                         return;
                     }
 
-                    if (!string.IsNullOrEmpty(response.Player.SessionId) &&
-                        !string.Equals(response.Player.SessionId, _binding.SessionId.Value, StringComparison.Ordinal))
+                    if (!IsPlayerSnapshotConsistent(response.Player, response.Player.Cursor))
                     {
+                        // A different session/seat is another stream's private
+                        // baseline. Drop it and keep waiting for our own reply.
                         return;
                     }
 
-                    if (response.StateVersion != 0 && response.Player.StateVersion != 0 &&
-                        response.StateVersion != response.Player.StateVersion)
+                    ContractCursor playerCursor = ClientWireMapper.ToContract(response.Player.Cursor);
+                    if (!VersionsAgree(response.StateVersion, response.EventSeq, response.Player.StateVersion, response.Player.EventSeq))
                     {
-                        Fault(ProtocolErrorCode.MalformedMessage, "SYNC_RESPONSE state_version disagrees with the player snapshot.");
+                        Fault(ProtocolErrorCode.MalformedMessage, "SYNC_RESPONSE version fields disagree with the player snapshot.");
                         return;
                     }
 
-                    cursor = ClientWireMapper.ToContract(response.Player.Cursor);
-                    _playerSnapshot = response.Player;
+                    if (envelope.Cursor != null && !CursorMatches(envelope.Cursor, playerCursor))
+                    {
+                        Fault(ProtocolErrorCode.MalformedMessage, "SYNC_RESPONSE envelope cursor disagrees with the player snapshot.");
+                        return;
+                    }
+
+                    cursor = playerCursor;
+                    player = response.Player;
                     break;
                 case SyncResponse.BaselineOneofCase.Public:
                     if (response.Public == null || response.Public.Cursor == null)
@@ -597,21 +650,26 @@ namespace Mahjong.Client
                         return;
                     }
 
-                    if (!string.IsNullOrEmpty(response.Public.SessionId) &&
-                        !string.Equals(response.Public.SessionId, _binding.SessionId.Value, StringComparison.Ordinal))
+                    if (!IsPublicSnapshotConsistent(response.Public, response.Public.Cursor))
                     {
                         return;
                     }
 
-                    if (response.StateVersion != 0 && response.Public.StateVersion != 0 &&
-                        response.StateVersion != response.Public.StateVersion)
+                    ContractCursor publicCursor = ClientWireMapper.ToContract(response.Public.Cursor);
+                    if (!VersionsAgree(response.StateVersion, response.EventSeq, response.Public.StateVersion, response.Public.EventSeq))
                     {
-                        Fault(ProtocolErrorCode.MalformedMessage, "SYNC_RESPONSE state_version disagrees with the public snapshot.");
+                        Fault(ProtocolErrorCode.MalformedMessage, "SYNC_RESPONSE version fields disagree with the public snapshot.");
                         return;
                     }
 
-                    cursor = ClientWireMapper.ToContract(response.Public.Cursor);
-                    _publicSnapshot = response.Public;
+                    if (envelope.Cursor != null && !CursorMatches(envelope.Cursor, publicCursor))
+                    {
+                        Fault(ProtocolErrorCode.MalformedMessage, "SYNC_RESPONSE envelope cursor disagrees with the public snapshot.");
+                        return;
+                    }
+
+                    cursor = publicCursor;
+                    publicSnapshot = response.Public;
                     break;
                 case SyncResponse.BaselineOneofCase.Room:
                     if (response.Room == null)
@@ -622,20 +680,61 @@ namespace Mahjong.Client
 
                     // Room updates do not carry a per-stream cursor; they are
                     // not used for table PUSH ordering.
-                    _roomSnapshot = response.Room;
-                    _syncInFlight = false;
-                    _connection.Fire(TableConnectionTrigger.BaselineApplied);
-                    RaiseSnapshotChanged(new ContractCursor(new StreamVersion(0), new ProjectionSeq(0)), true);
-                    return;
+                    room = response.Room;
+                    break;
                 default:
                     Fault(ProtocolErrorCode.MalformedMessage, "SYNC_RESPONSE baseline is missing.");
                     return;
             }
 
-            _confirmedCursor = cursor;
+            if (cursor.HasValue)
+            {
+                // Binding identity for a cursor floor is (session_id,
+                // binding_epoch). A new WELCOME binding may legitimately reset
+                // the stream and advertises the new lower bound; within one
+                // binding a baseline can only move the cursor forward.
+                ContractCursor floor = CurrentBaselineFloor();
+                if (cursor.Value.StreamVersion.Value < floor.StreamVersion.Value ||
+                    cursor.Value.ProjectionSeq.Value < floor.ProjectionSeq.Value)
+                {
+                    return;
+                }
+            }
+
+            // Everything above validated first; only now mutate the cache and
+            // the cursor, and publish them as one baseline event.
+            if (player != null)
+            {
+                _playerSnapshot = player;
+            }
+
+            if (publicSnapshot != null)
+            {
+                _publicSnapshot = publicSnapshot;
+            }
+
+            if (room != null)
+            {
+                _roomSnapshot = room;
+            }
+
+            if (cursor.HasValue)
+            {
+                _confirmedCursor = cursor;
+                _confirmedBindingEpoch = _binding.BindingEpoch.Value;
+                _confirmedBindingSessionId = _binding.SessionId.Value;
+            }
+
             _syncInFlight = false;
+            _activeSyncCorrelationId = null;
             _connection.Fire(TableConnectionTrigger.BaselineApplied);
-            RaiseSnapshotChanged(cursor, true);
+            RaiseSnapshotChanged(cursor ?? ContractCursor.Empty, true);
+
+            if (!cursor.HasValue)
+            {
+                // Lobby/room baselines carry no stream cursor.
+                return;
+            }
 
             await DrainEarlyBufferAsync(cancellationToken).ConfigureAwait(false);
             if (State == TableConnectionState.Ready)
@@ -772,6 +871,12 @@ namespace Mahjong.Client
             }
 
             _confirmedCursor = cursor;
+            if (_binding != null)
+            {
+                _confirmedBindingEpoch = _binding.BindingEpoch.Value;
+                _confirmedBindingSessionId = _binding.SessionId.Value;
+            }
+
             RaiseSnapshotChanged(cursor, isFullSnapshot);
         }
 
@@ -799,8 +904,13 @@ namespace Mahjong.Client
                         return false;
                     }
 
-                    from = update.FromCursor == null ? ContractCursor.Empty : ClientWireMapper.ToContract(update.FromCursor);
                     cursor = ClientWireMapper.ToContract(update.Cursor);
+                    if (!IsPlayerSnapshotConsistent(update.Snapshot, update.Cursor))
+                    {
+                        return false;
+                    }
+
+                    from = update.FromCursor == null ? ContractCursor.Empty : ClientWireMapper.ToContract(update.FromCursor);
                     isFullSnapshot = update.IsFullSnapshot;
                     player = update.Snapshot;
                     break;
@@ -814,8 +924,13 @@ namespace Mahjong.Client
                         return false;
                     }
 
-                    from = update.FromCursor == null ? ContractCursor.Empty : ClientWireMapper.ToContract(update.FromCursor);
                     cursor = ClientWireMapper.ToContract(update.Cursor);
+                    if (!IsPublicSnapshotConsistent(update.Snapshot, update.Cursor))
+                    {
+                        return false;
+                    }
+
+                    from = update.FromCursor == null ? ContractCursor.Empty : ClientWireMapper.ToContract(update.FromCursor);
                     isFullSnapshot = update.IsFullSnapshot;
                     publicSnapshot = update.Snapshot;
                     break;
@@ -825,14 +940,109 @@ namespace Mahjong.Client
                     return false;
             }
 
-            if (envelope.Cursor != null &&
-                (envelope.Cursor.StreamVersion != cursor.StreamVersion.Value ||
-                 envelope.Cursor.ProjectionSeq != cursor.ProjectionSeq.Value))
+            if (envelope.Cursor != null && !CursorMatches(envelope.Cursor, cursor))
             {
                 return false;
             }
 
             return true;
+        }
+
+        /// <summary>
+        /// Cursor-floor contract. A binding identity is exactly
+        /// (session_id, binding_epoch).
+        ///
+        /// 1. A WELCOME creates/refreshes that identity; until a baseline is
+        ///    applied for it, the cursor advertised by WELCOME is the floor.
+        ///    A server may therefore reset a stream only by issuing a new
+        ///    binding (a new session id or binding epoch).
+        /// 2. Inside one identity, a SYNC_RESPONSE baseline whose cursor is
+        ///    below the confirmed cursor is stale and is ignored. It can never
+        ///    roll the cache back.
+        /// 3. A SYNC_RESPONSE also has to match the correlation of the request
+        ///    currently in flight; a response to a superseded request (for
+        ///    example after an early-buffer overflow forced a newer request)
+        ///    is ignored even if its cursor would otherwise be acceptable.
+        /// </summary>
+        private ContractCursor CurrentBaselineFloor()
+        {
+            if (_binding == null)
+            {
+                return ContractCursor.Empty;
+            }
+
+            if (_confirmedCursor.HasValue &&
+                _confirmedBindingEpoch == _binding.BindingEpoch.Value &&
+                string.Equals(_confirmedBindingSessionId, _binding.SessionId.Value, StringComparison.Ordinal))
+            {
+                return _confirmedCursor.Value;
+            }
+
+            return _binding.Baseline.Cursor;
+        }
+
+        private static bool CursorMatches(WireCursor wire, ContractCursor cursor)
+        {
+            return wire.StreamVersion == cursor.StreamVersion.Value &&
+                   wire.ProjectionSeq == cursor.ProjectionSeq.Value;
+        }
+
+        private static bool VersionsAgree(
+            ulong responseStateVersion,
+            ulong responseEventSeq,
+            ulong snapshotStateVersion,
+            ulong snapshotEventSeq)
+        {
+            if (responseStateVersion != 0 && snapshotStateVersion != 0 && responseStateVersion != snapshotStateVersion)
+            {
+                return false;
+            }
+
+            if (responseEventSeq != 0 && snapshotEventSeq != 0 && responseEventSeq != snapshotEventSeq)
+            {
+                return false;
+            }
+
+            return true;
+        }
+
+        private bool IsPlayerSnapshotConsistent(PlayerSnapshot snapshot, WireCursor expectedCursor)
+        {
+            if (_binding == null || snapshot.Cursor == null)
+            {
+                return false;
+            }
+
+            if (string.IsNullOrEmpty(snapshot.SessionId) ||
+                !string.Equals(snapshot.SessionId, _binding.SessionId.Value, StringComparison.Ordinal))
+            {
+                return false;
+            }
+
+            if (!CursorMatches(expectedCursor, ClientWireMapper.ToContract(snapshot.Cursor)))
+            {
+                return false;
+            }
+
+            // Private data is addressed to exactly one seat. A snapshot for a
+            // different seat must never reach this binding's cache.
+            return snapshot.PrivateView != null && snapshot.PrivateView.Seat == _binding.SeatId;
+        }
+
+        private bool IsPublicSnapshotConsistent(PublicSnapshot snapshot, WireCursor expectedCursor)
+        {
+            if (_binding == null || snapshot.Cursor == null)
+            {
+                return false;
+            }
+
+            if (string.IsNullOrEmpty(snapshot.SessionId) ||
+                !string.Equals(snapshot.SessionId, _binding.SessionId.Value, StringComparison.Ordinal))
+            {
+                return false;
+            }
+
+            return CursorMatches(expectedCursor, ClientWireMapper.ToContract(snapshot.Cursor));
         }
 
         private async Task HandleReceiptAsync(Envelope envelope, CancellationToken cancellationToken)
@@ -1036,7 +1246,17 @@ namespace Mahjong.Client
                 }
                 catch (TableChannelClosedException)
                 {
+                    tracked.QueryInFlight = false;
+                    _receiptQueries.Remove(correlation);
                     return;
+                }
+                catch
+                {
+                    // Cancellation or an unexpected transport failure must not
+                    // leave a permanent "lookup in flight" bit behind.
+                    tracked.QueryInFlight = false;
+                    _receiptQueries.Remove(correlation);
+                    throw;
                 }
             }
         }
@@ -1065,6 +1285,7 @@ namespace Mahjong.Client
 
             _syncInFlight = true;
             string correlation = "sync-" + NextCounter(ref _syncCounter);
+            _activeSyncCorrelationId = correlation;
             Envelope envelope = ClientWireMapper.NewEnvelope(MessageType.SyncRequest, correlation);
             envelope.SessionId = _binding.SessionId.Value;
             envelope.RoomId = _binding.RoomId.Value;
@@ -1073,7 +1294,7 @@ namespace Mahjong.Client
             envelope.SyncRequest = new SyncRequest
             {
                 Target = ClientWireMapper.ToSyncTarget(_binding.Role),
-                KnownCursor = ClientWireMapper.ToWire(_confirmedCursor ?? _binding.Baseline.Cursor),
+                KnownCursor = ClientWireMapper.ToWire(CurrentBaselineFloor()),
                 ReasonCode = reasonCode,
                 RequestFullBaseline = true
             };
@@ -1085,6 +1306,13 @@ namespace Mahjong.Client
             catch (TableChannelClosedException)
             {
                 _syncInFlight = false;
+                _activeSyncCorrelationId = null;
+            }
+            catch
+            {
+                _syncInFlight = false;
+                _activeSyncCorrelationId = null;
+                throw;
             }
         }
 
@@ -1231,6 +1459,94 @@ namespace Mahjong.Client
             }
         }
 
+        private void EnsureCommandAdmitted(CommandKind kind)
+        {
+            if (_binding == null)
+            {
+                throw new InvalidOperationException("No binding is established.");
+            }
+
+            if (!IsCommandAdmittedForRole(_binding.Role, kind))
+            {
+                throw new InvalidOperationException(
+                    "Role " + _binding.Role + " is not permitted to submit or retry " + kind + ".");
+            }
+        }
+
+        /// <summary>
+        /// Role admission is deliberately narrower than the wire enum: a
+        /// spectator may use read-only/spectator control commands only, never a
+        /// seat action, cheat action or match mutation. Player bindings keep the
+        /// full command set because scope/epoch/version checks gate each action.
+        /// </summary>
+        private static bool IsCommandAdmittedForRole(ContractRole role, CommandKind kind)
+        {
+            if (role == ContractRole.Player)
+            {
+                return true;
+            }
+
+            if (role == ContractRole.Spectator)
+            {
+                switch (kind)
+                {
+                    case CommandKind.JoinSpectator:
+                    case CommandKind.ResumeSpectator:
+                    case CommandKind.ResumePublic:
+                    case CommandKind.ResumeCursor:
+                    case CommandKind.QueryPublicRoundResult:
+                    case CommandKind.GetRoomInfo:
+                    case CommandKind.ListRooms:
+                        return true;
+                    default:
+                        return false;
+                }
+            }
+
+            if (role == ContractRole.Lobby)
+            {
+                switch (kind)
+                {
+                    case CommandKind.CreateRoom:
+                    case CommandKind.JoinRoom:
+                    case CommandKind.ListRooms:
+                    case CommandKind.ResumeSession:
+                    case CommandKind.LeaveRoom:
+                    case CommandKind.GetRoomInfo:
+                    case CommandKind.JoinSpectator:
+                    case CommandKind.ResumeSpectator:
+                    case CommandKind.ResumePublic:
+                    case CommandKind.ResumeCursor:
+                    case CommandKind.QueryPublicRoundResult:
+                        return true;
+                    default:
+                        return false;
+                }
+            }
+
+            return false;
+        }
+
+        /// <summary>
+        /// Clears lookup state that can no longer receive a reply. The original
+        /// request ids and payload bytes stay untouched; only the transport-bound
+        /// query bookkeeping is reset so the next baseline re-queries.
+        /// </summary>
+        private void ResetPendingCommandLookups(bool markUnknownIfHanded)
+        {
+            foreach (TrackedCommand tracked in _commands.Values)
+            {
+                tracked.QueryInFlight = false;
+                tracked.LastLookup = null;
+                tracked.LastReceipt = null;
+                if (markUnknownIfHanded && tracked.HandedToTransport)
+                {
+                    tracked.NeedsReconciliation = true;
+                    tracked.DeliveryUnknown = true;
+                }
+            }
+        }
+
         private bool MatchesBinding(Envelope envelope)
         {
             if (_binding == null)
@@ -1295,7 +1611,12 @@ namespace Mahjong.Client
             _lastError = string.IsNullOrEmpty(close.Code) ? ProtocolErrorCode.ProtocolViolation : close.Code;
             _earlyBuffer.Clear();
             _syncInFlight = false;
+            _activeSyncCorrelationId = null;
             _receiptQueries.Clear();
+            // A protocol CLOSE is a transport loss exactly like a channel
+            // failure: no lookup reply will arrive, and a sent command's
+            // outcome is unknown until the next baseline re-queries it.
+            ResetPendingCommandLookups(markUnknownIfHanded: true);
             if (State != TableConnectionState.Closed && State != TableConnectionState.Faulted)
             {
                 _connection.Fire(close.Permanent ? TableConnectionTrigger.PermanentFailure : TableConnectionTrigger.TransientFailure);
@@ -1313,6 +1634,11 @@ namespace Mahjong.Client
                          (string.IsNullOrEmpty(error.DetailCode) ? string.Empty : "/" + error.DetailCode);
             if (!error.Retryable && State != TableConnectionState.Closed && State != TableConnectionState.Faulted)
             {
+                _earlyBuffer.Clear();
+                _syncInFlight = false;
+                _activeSyncCorrelationId = null;
+                _receiptQueries.Clear();
+                ResetPendingCommandLookups(markUnknownIfHanded: true);
                 _connection.Fire(TableConnectionTrigger.PermanentFailure);
             }
         }
@@ -1322,19 +1648,9 @@ namespace Mahjong.Client
             _lastError = exception.Code;
             _earlyBuffer.Clear();
             _syncInFlight = false;
+            _activeSyncCorrelationId = null;
             _receiptQueries.Clear();
-
-            foreach (TrackedCommand tracked in _commands.Values)
-            {
-                tracked.QueryInFlight = false;
-                tracked.LastLookup = null;
-                tracked.LastReceipt = null;
-                if (tracked.HandedToTransport)
-                {
-                    tracked.NeedsReconciliation = true;
-                    tracked.DeliveryUnknown = true;
-                }
-            }
+            ResetPendingCommandLookups(markUnknownIfHanded: true);
 
             if (State == TableConnectionState.Closed || State == TableConnectionState.Faulted)
             {
@@ -1349,7 +1665,9 @@ namespace Mahjong.Client
             _lastError = code + ": " + message;
             _earlyBuffer.Clear();
             _syncInFlight = false;
+            _activeSyncCorrelationId = null;
             _receiptQueries.Clear();
+            ResetPendingCommandLookups(markUnknownIfHanded: true);
             if (State != TableConnectionState.Closed && State != TableConnectionState.Faulted)
             {
                 _connection.Fire(TableConnectionTrigger.PermanentFailure);

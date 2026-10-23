@@ -37,12 +37,32 @@ namespace Mahjong.Client.Tests
 
         public TableChannelConnectRequest? LastOpenRequest { get; private set; }
 
+        /// <summary>Makes the next OpenAsync fail once (transport-level).</summary>
+        public bool FailNextOpen { get; set; }
+
+        /// <summary>Makes the next SendAsync fail once (transport-level).</summary>
+        public bool FailNextSend { get; set; }
+
+        /// <summary>Honours a pre-cancelled token so cancellation paths are testable.</summary>
+        public bool HonorCancellation { get; set; }
+
         public List<byte[]> Sent { get; } = new List<byte[]>();
 
         public Queue<byte[]> Inbound { get; } = new Queue<byte[]>();
 
         public Task OpenAsync(TableChannelConnectRequest request, CancellationToken cancellationToken)
         {
+            if (HonorCancellation)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+            }
+
+            if (FailNextOpen)
+            {
+                FailNextOpen = false;
+                throw new TableChannelClosedException("TEST_OPEN_FAILED", false);
+            }
+
             LastOpenRequest = request;
             OpenCount++;
             IsOpen = true;
@@ -54,6 +74,12 @@ namespace Mahjong.Client.Tests
             if (!IsOpen)
             {
                 throw new TableChannelClosedException("TEST_CHANNEL_CLOSED", false);
+            }
+
+            if (FailNextSend)
+            {
+                FailNextSend = false;
+                throw new TableChannelClosedException("TEST_SEND_FAILED", false);
             }
 
             Sent.Add(wireEnvelope.ToArray());
@@ -172,7 +198,7 @@ namespace Mahjong.Client.Tests
             await session.PumpOnceAsync(CancellationToken.None).ConfigureAwait(false);
             Assert.Equal(TableConnectionState.Synchronizing, session.State);
 
-            actualChannel.Enqueue(TestWire.PlayerSync(bindingEpoch, baselineStreamVersion, baselineProjection));
+            actualChannel.Enqueue(TestWire.PlayerSync(actualChannel, bindingEpoch, baselineStreamVersion, baselineProjection));
             await session.PumpOnceAsync(CancellationToken.None).ConfigureAwait(false);
             Assert.Equal(TableConnectionState.Ready, session.State);
             return (session, actualChannel, actualStore);
@@ -222,7 +248,7 @@ namespace Mahjong.Client.Tests
                 seatId: -1,
                 role: WireRole.Spectator));
             await session.PumpOnceAsync(CancellationToken.None).ConfigureAwait(false);
-            actualChannel.Enqueue(TestWire.PublicSync(bindingEpoch, baselineStreamVersion, baselineProjection));
+            actualChannel.Enqueue(TestWire.PublicSync(actualChannel, bindingEpoch, baselineStreamVersion, baselineProjection));
             await session.PumpOnceAsync(CancellationToken.None).ConfigureAwait(false);
             Assert.Equal(TableConnectionState.Ready, session.State);
             return (session, actualChannel, actualStore);
@@ -240,7 +266,7 @@ namespace Mahjong.Client.Tests
             await session.OpenAsync(new TableSessionOpenRequest("ticket-1", "client-build-1"), CancellationToken.None).ConfigureAwait(false);
             channel.Enqueue(TestWire.Welcome(bindingEpoch, scopeId, baselineStreamVersion, baselineProjection));
             await session.PumpOnceAsync(CancellationToken.None).ConfigureAwait(false);
-            channel.Enqueue(TestWire.PlayerSync(bindingEpoch, baselineStreamVersion, baselineProjection));
+            channel.Enqueue(TestWire.PlayerSync(channel, bindingEpoch, baselineStreamVersion, baselineProjection));
             await session.PumpOnceAsync(CancellationToken.None).ConfigureAwait(false);
             Assert.Equal(TableConnectionState.Ready, session.State);
         }
@@ -341,7 +367,28 @@ namespace Mahjong.Client.Tests
             return Bound(envelope, bindingEpoch, seatId);
         }
 
-        public static Envelope PlayerSync(int bindingEpoch, ulong streamVersion, ulong projection, int seatId = 0)
+        /// <summary>
+        /// Builds a legitimately associated player baseline: the correlation is
+        /// echoed from the outstanding SYNC_REQUEST. Tests for stale or
+        /// unassociated responses use the overload without a channel and set an
+        /// obsolete correlation explicitly.
+        /// </summary>
+        public static Envelope PlayerSync(FakeTableChannel channel, int bindingEpoch, ulong streamVersion, ulong projection, int seatId = 0)
+        {
+            return PlayerSync(
+                bindingEpoch,
+                streamVersion,
+                projection,
+                seatId,
+                channel.LastSent(MessageType.SyncRequest).CorrelationId);
+        }
+
+        public static Envelope PlayerSync(
+            int bindingEpoch,
+            ulong streamVersion,
+            ulong projection,
+            int seatId = 0,
+            string? correlationId = null)
         {
             Envelope envelope = Envelope(MessageType.SyncResponse, e => e.SyncResponse = new SyncResponse
             {
@@ -351,6 +398,11 @@ namespace Mahjong.Client.Tests
                 StateVersion = streamVersion,
                 EventSeq = 100 + streamVersion
             });
+            if (!string.IsNullOrEmpty(correlationId))
+            {
+                envelope.CorrelationId = correlationId!;
+            }
+
             return Bound(envelope, bindingEpoch, seatId);
         }
 
@@ -373,7 +425,16 @@ namespace Mahjong.Client.Tests
             return Bound(envelope, bindingEpoch, seatId);
         }
 
-        public static Envelope PublicSync(int bindingEpoch, ulong streamVersion, ulong projection)
+        public static Envelope PublicSync(FakeTableChannel channel, int bindingEpoch, ulong streamVersion, ulong projection)
+        {
+            return PublicSync(
+                bindingEpoch,
+                streamVersion,
+                projection,
+                channel.LastSent(MessageType.SyncRequest).CorrelationId);
+        }
+
+        public static Envelope PublicSync(int bindingEpoch, ulong streamVersion, ulong projection, string? correlationId = null)
         {
             Envelope envelope = Envelope(MessageType.SyncResponse, e => e.SyncResponse = new SyncResponse
             {
@@ -383,6 +444,11 @@ namespace Mahjong.Client.Tests
                 StateVersion = streamVersion,
                 EventSeq = 100 + streamVersion
             });
+            if (!string.IsNullOrEmpty(correlationId))
+            {
+                envelope.CorrelationId = correlationId!;
+            }
+
             return Bound(envelope, bindingEpoch, seatId: -1);
         }
 

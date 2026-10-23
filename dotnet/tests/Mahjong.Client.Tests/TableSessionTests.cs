@@ -82,7 +82,7 @@ namespace Mahjong.Client.Tests
 
             // Baseline at the pre-gap cursor. The drain must find 11 first and
             // then apply 12, even though 12 is stored earlier in the buffer.
-            channel.Enqueue(TestWire.PlayerSync(11, 5, 10));
+            channel.Enqueue(TestWire.PlayerSync(channel, 11, 5, 10));
             await session.PumpOnceAsync(CancellationToken.None);
 
             Assert.Equal(TableConnectionState.Ready, session.State);
@@ -154,7 +154,7 @@ namespace Mahjong.Client.Tests
             Assert.Equal(2, channel.CountSent(MessageType.SyncRequest));
 
             // The overflow recovery baseline must still be able to settle the session.
-            channel.Enqueue(TestWire.PlayerSync(11, 5, 10));
+            channel.Enqueue(TestWire.PlayerSync(channel, 11, 5, 10));
             await session.PumpOnceAsync(CancellationToken.None);
             Assert.Equal(TableConnectionState.Ready, session.State);
             Assert.Equal(10ul, session.ConfirmedCursor!.Value.ProjectionSeq.Value);
@@ -259,7 +259,7 @@ namespace Mahjong.Client.Tests
             Assert.Equal(TableConnectionState.Synchronizing, secondSession.State);
             Assert.Equal(0, secondChannel.CountSent(MessageType.ReceiptQuery));
 
-            secondChannel.Enqueue(TestWire.PlayerSync(22, 8, 20));
+            secondChannel.Enqueue(TestWire.PlayerSync(secondChannel, 22, 8, 20));
             await secondSession.PumpOnceAsync(CancellationToken.None);
 
             Assert.Equal(0, secondChannel.CountSent(MessageType.Command));
@@ -369,7 +369,7 @@ namespace Mahjong.Client.Tests
             Assert.Equal(TableConnectionState.Synchronizing, session.State);
             Assert.Equal(10ul, session.ConfirmedCursor!.Value.ProjectionSeq.Value);
 
-            channel.Enqueue(TestWire.PlayerSync(22, 8, 20));
+            channel.Enqueue(TestWire.PlayerSync(channel, 22, 8, 20));
             await session.PumpOnceAsync(CancellationToken.None);
             Assert.Equal(TableConnectionState.Ready, session.State);
             Assert.Equal(20ul, session.ConfirmedCursor!.Value.ProjectionSeq.Value);
@@ -415,6 +415,334 @@ namespace Mahjong.Client.Tests
             Assert.Equal(11ul, session.ConfirmedCursor!.Value.ProjectionSeq.Value);
             Assert.NotNull(session.PublicSnapshot);
             Assert.Null(session.PlayerSnapshot);
+        }
+
+        [Fact]
+        public async Task SameBindingSyncWithCurrentCorrelationCannotRollBackConfirmedCursor()
+        {
+            (TableSession session, FakeTableChannel channel, _) = await TestSession.ConnectedAsync();
+
+            channel.Enqueue(TestWire.PlayerPush(11, 5, 10, 6, 11));
+            await session.PumpOnceAsync(CancellationToken.None);
+            channel.Enqueue(TestWire.PlayerPush(11, 8, 13, 9, 14));
+            await session.PumpOnceAsync(CancellationToken.None);
+            Assert.Equal(TableConnectionState.Synchronizing, session.State);
+
+            string correlation = channel.LastSent(MessageType.SyncRequest).CorrelationId;
+
+            // The correlation is current, but the baseline is older than the
+            // already confirmed cursor: it must not roll the stream back.
+            channel.Enqueue(TestWire.PlayerSync(11, 4, 9, correlationId: correlation));
+            await session.PumpOnceAsync(CancellationToken.None);
+
+            Assert.Equal(TableConnectionState.Synchronizing, session.State);
+            Assert.Equal(11ul, session.ConfirmedCursor!.Value.ProjectionSeq.Value);
+            Assert.Equal(6ul, session.ConfirmedCursor.Value.StreamVersion.Value);
+            Assert.Equal(6ul, session.PlayerSnapshot!.StateVersion);
+
+            channel.Enqueue(TestWire.PlayerSync(11, 9, 14, correlationId: correlation));
+            await session.PumpOnceAsync(CancellationToken.None);
+
+            Assert.Equal(TableConnectionState.Ready, session.State);
+            Assert.Equal(14ul, session.ConfirmedCursor!.Value.ProjectionSeq.Value);
+            Assert.Equal(9ul, session.PlayerSnapshot!.StateVersion);
+        }
+
+        [Fact]
+        public async Task SupersededSyncResponseCannotApplyAfterOverflowForcedRequest()
+        {
+            var options = new TableSessionOptions
+            {
+                MaxEarlyBufferItems = 2,
+                MaxEarlyBufferBytes = TableSessionOptions.DefaultMaxEarlyBufferBytes
+            };
+            (TableSession session, FakeTableChannel channel, _) = await TestSession.HandshakeAsync(options: options);
+
+            channel.Enqueue(TestWire.PlayerPush(11, 5, 10, 6, 11));
+            await session.PumpOnceAsync(CancellationToken.None);
+            channel.Enqueue(TestWire.PlayerPush(11, 6, 11, 6, 12));
+            await session.PumpOnceAsync(CancellationToken.None);
+            string superseded = channel.LastSent(MessageType.SyncRequest).CorrelationId;
+
+            channel.Enqueue(TestWire.PlayerPush(11, 6, 12, 6, 13));
+            await session.PumpOnceAsync(CancellationToken.None);
+            string active = channel.LastSent(MessageType.SyncRequest).CorrelationId;
+
+            Assert.NotEqual(superseded, active);
+            Assert.Equal(2, channel.CountSent(MessageType.SyncRequest));
+
+            // A newer-looking baseline from the superseded request must be
+            // ignored even though it is above the confirmed cursor.
+            channel.Enqueue(TestWire.PlayerSync(11, 7, 12, correlationId: superseded));
+            await session.PumpOnceAsync(CancellationToken.None);
+            Assert.Equal(TableConnectionState.Synchronizing, session.State);
+            Assert.Null(session.ConfirmedCursor);
+
+            channel.Enqueue(TestWire.PlayerSync(11, 7, 12, correlationId: active));
+            await session.PumpOnceAsync(CancellationToken.None);
+            Assert.Equal(TableConnectionState.Ready, session.State);
+            Assert.Equal(12ul, session.ConfirmedCursor!.Value.ProjectionSeq.Value);
+            Assert.Equal(7ul, session.PlayerSnapshot!.StateVersion);
+        }
+
+        [Fact]
+        public async Task NewBindingCanResetTheStreamAtItsAdvertisedBaseline()
+        {
+            (TableSession session, FakeTableChannel channel, _) = await TestSession.ConnectedAsync(bindingEpoch: 11);
+
+            channel.Enqueue(TestWire.PlayerPush(11, 5, 10, 6, 11));
+            await session.PumpOnceAsync(CancellationToken.None);
+            Assert.Equal(11ul, session.ConfirmedCursor!.Value.ProjectionSeq.Value);
+
+            await session.DisconnectAsync(CancellationToken.None);
+            await session.OpenAsync(new TableSessionOpenRequest("ticket-1", "client-build-1"), CancellationToken.None);
+            channel.Enqueue(TestWire.Welcome(33, "scope-3", 4, 9));
+            await session.PumpOnceAsync(CancellationToken.None);
+            Assert.Equal(TableConnectionState.Synchronizing, session.State);
+
+            string correlation = channel.LastSent(MessageType.SyncRequest).CorrelationId;
+
+            // A binding reset may move the stream backwards only down to the
+            // baseline advertised by that new WELCOME binding.
+            channel.Enqueue(TestWire.PlayerSync(33, 3, 8, correlationId: correlation));
+            await session.PumpOnceAsync(CancellationToken.None);
+            Assert.Equal(TableConnectionState.Synchronizing, session.State);
+            Assert.Equal(11ul, session.ConfirmedCursor!.Value.ProjectionSeq.Value);
+
+            channel.Enqueue(TestWire.PlayerSync(33, 4, 9, correlationId: correlation));
+            await session.PumpOnceAsync(CancellationToken.None);
+            Assert.Equal(TableConnectionState.Ready, session.State);
+            Assert.Equal(9ul, session.ConfirmedCursor!.Value.ProjectionSeq.Value);
+            Assert.Equal(4ul, session.ConfirmedCursor.Value.StreamVersion.Value);
+            Assert.Equal(4ul, session.PlayerSnapshot!.StateVersion);
+        }
+
+        [Fact]
+        public async Task CloseAfterUnknownLookupReissuesQueryAndAllowsExactRetry()
+        {
+            (TableSession session, FakeTableChannel channel, _) = await TestSession.ConnectedAsync();
+            await session.SubmitAsync(TestWire.Command(), CancellationToken.None);
+            await session.ReconcilePendingAsync(CancellationToken.None);
+            Assert.Equal(1, channel.CountSent(MessageType.ReceiptQuery));
+
+            string firstQuery = TestWire.OutboundReceiptQuery(channel, "request-1").CorrelationId;
+            string digest = session.PendingCommands.Single().DigestSha256;
+            channel.Enqueue(TestWire.ReceiptLookup(firstQuery, LookupStatus.Unknown, null, digest));
+            await session.PumpOnceAsync(CancellationToken.None);
+
+            PendingCommandSnapshot pending = session.PendingCommands.Single();
+            Assert.Equal(ReceiptLookupStatus.Unknown, pending.LastLookup);
+            Assert.False(pending.QueryInFlight);
+
+            channel.Enqueue(TestWire.Envelope(MessageType.Close, e => e.Close = new Close
+                { Code = "TEST_TRANSIENT", Permanent = false }));
+            await session.PumpOnceAsync(CancellationToken.None);
+            Assert.Equal(TableConnectionState.Reconnecting, session.State);
+            Assert.Null(session.PendingCommands.Single().LastLookup);
+
+            await session.OpenAsync(new TableSessionOpenRequest("ticket-1", "client-build-1"), CancellationToken.None);
+            channel.Enqueue(TestWire.Welcome(22, "scope-2", 8, 20));
+            await session.PumpOnceAsync(CancellationToken.None);
+            channel.Enqueue(TestWire.PlayerSync(channel, 22, 8, 20));
+            await session.PumpOnceAsync(CancellationToken.None);
+
+            Assert.Equal(TableConnectionState.Ready, session.State);
+            Assert.Equal(2, channel.CountSent(MessageType.ReceiptQuery));
+
+            Envelope secondQuery = TestWire.OutboundReceiptQuery(channel, "request-1");
+            Assert.NotEqual(firstQuery, secondQuery.CorrelationId);
+            PendingCommandSnapshot reissued = session.PendingCommands.Single();
+            Assert.True(reissued.QueryInFlight);
+            Assert.Null(reissued.LastLookup);
+
+            channel.Enqueue(TestWire.ReceiptLookup(secondQuery.CorrelationId, LookupStatus.Unknown, null, digest));
+            await session.PumpOnceAsync(CancellationToken.None);
+            PendingCommandSnapshot reconciled = session.PendingCommands.Single();
+            Assert.False(reconciled.QueryInFlight);
+            Assert.Equal(ReceiptLookupStatus.Unknown, reconciled.LastLookup);
+
+            CommandSubmission retry = await session.RetryPendingAsync(reconciled.Key, CancellationToken.None);
+            Assert.True(retry.Sent);
+            Assert.Equal(2, channel.CountSent(MessageType.Command));
+
+            Envelope resent = channel.LastSent(MessageType.Command);
+            Assert.Equal("request-1", resent.RequestId);
+            Assert.Equal("scope-1", resent.Scope.ScopeId);
+            Assert.Equal(digest, CanonicalPayloadDigest.Compute(resent.Command.CanonicalPayload.Span).ToHex());
+        }
+
+        [Fact]
+        public async Task TransportFailureDuringLookupClearsInFlightAndReissuesAfterReconnect()
+        {
+            (TableSession session, FakeTableChannel channel, _) = await TestSession.ConnectedAsync();
+            await session.SubmitAsync(TestWire.Command(), CancellationToken.None);
+            await session.ReconcilePendingAsync(CancellationToken.None);
+            Assert.Equal(1, channel.CountSent(MessageType.ReceiptQuery));
+            Assert.True(session.PendingCommands.Single().QueryInFlight);
+
+            await session.DisconnectAsync(CancellationToken.None);
+
+            Assert.Equal(TableConnectionState.Reconnecting, session.State);
+            PendingCommandSnapshot pending = session.PendingCommands.Single();
+            Assert.False(pending.QueryInFlight);
+            Assert.Null(pending.LastLookup);
+            Assert.True(pending.DeliveryUnknown);
+            Assert.True(pending.NeedsReconciliation);
+
+            await session.OpenAsync(new TableSessionOpenRequest("ticket-1", "client-build-1"), CancellationToken.None);
+            channel.Enqueue(TestWire.Welcome(22, "scope-2", 8, 20));
+            await session.PumpOnceAsync(CancellationToken.None);
+            channel.Enqueue(TestWire.PlayerSync(channel, 22, 8, 20));
+            await session.PumpOnceAsync(CancellationToken.None);
+
+            Assert.Equal(TableConnectionState.Ready, session.State);
+            Assert.Equal(2, channel.CountSent(MessageType.ReceiptQuery));
+            Assert.Equal(1, channel.CountSent(MessageType.Command));
+        }
+
+        [Fact]
+        public async Task HelloSendFailureBeforeFirstWelcomeRemainsReconnectable()
+        {
+            var channel = new FakeTableChannel();
+            var session = new TableSession(channel, new InMemoryOutboxStore());
+            channel.FailNextSend = true;
+
+            await Assert.ThrowsAsync<TableChannelClosedException>(
+                () => session.OpenAsync(new TableSessionOpenRequest("ticket-1", "client-build-1"), CancellationToken.None));
+
+            Assert.Equal(TableConnectionState.Reconnecting, session.State);
+
+            await session.OpenAsync(new TableSessionOpenRequest("ticket-1", "client-build-1"), CancellationToken.None);
+            Assert.Equal(TableConnectionState.Handshaking, session.State);
+        }
+
+        [Fact]
+        public async Task ChannelOpenFailureBeforeFirstWelcomeRemainsReconnectable()
+        {
+            var channel = new FakeTableChannel { FailNextOpen = true };
+            var session = new TableSession(channel, new InMemoryOutboxStore());
+
+            await Assert.ThrowsAsync<TableChannelClosedException>(
+                () => session.OpenAsync(new TableSessionOpenRequest("ticket-1", "client-build-1"), CancellationToken.None));
+
+            Assert.Equal(TableConnectionState.Reconnecting, session.State);
+
+            await session.OpenAsync(new TableSessionOpenRequest("ticket-1", "client-build-1"), CancellationToken.None);
+            Assert.Equal(TableConnectionState.Handshaking, session.State);
+        }
+
+        [Fact]
+        public async Task CancelledOpenBeforeFirstWelcomeRemainsReconnectable()
+        {
+            // Prime the outbox load and reach Reconnecting first so the
+            // cancellation is observed inside the channel-open attempt rather
+            // than before the state transition.
+            var channel = new FakeTableChannel { HonorCancellation = true, FailNextOpen = true };
+            var session = new TableSession(channel, new InMemoryOutboxStore());
+            await Assert.ThrowsAsync<TableChannelClosedException>(
+                () => session.OpenAsync(new TableSessionOpenRequest("ticket-1", "client-build-1"), CancellationToken.None));
+            Assert.Equal(TableConnectionState.Reconnecting, session.State);
+
+            using (var cts = new CancellationTokenSource())
+            {
+                cts.Cancel();
+                await Assert.ThrowsAnyAsync<OperationCanceledException>(
+                    () => session.OpenAsync(new TableSessionOpenRequest("ticket-1", "client-build-1"), cts.Token));
+            }
+
+            Assert.Equal(TableConnectionState.Reconnecting, session.State);
+
+            await session.OpenAsync(new TableSessionOpenRequest("ticket-1", "client-build-1"), CancellationToken.None);
+            Assert.Equal(TableConnectionState.Handshaking, session.State);
+        }
+
+        [Fact]
+        public async Task PushWithSnapshotCursorMismatchIsRejectedWithoutMutatingCache()
+        {
+            (TableSession session, FakeTableChannel channel, _) = await TestSession.ConnectedAsync();
+            Envelope push = TestWire.PlayerPush(11, 5, 10, 6, 11);
+            push.PlayerUpdate.Snapshot.Cursor.ProjectionSeq = 12;
+            channel.Enqueue(push);
+            await session.PumpOnceAsync(CancellationToken.None);
+
+            Assert.Equal(10ul, session.ConfirmedCursor!.Value.ProjectionSeq.Value);
+            Assert.Equal(5ul, session.PlayerSnapshot!.StateVersion);
+        }
+
+        [Fact]
+        public async Task PushWithDifferentPrivateSeatIsRejectedWithoutMutatingCache()
+        {
+            (TableSession session, FakeTableChannel channel, _) = await TestSession.ConnectedAsync();
+            Envelope push = TestWire.PlayerPush(11, 5, 10, 6, 11);
+            push.PlayerUpdate.Snapshot.PrivateView.Seat = 1;
+            channel.Enqueue(push);
+            await session.PumpOnceAsync(CancellationToken.None);
+
+            Assert.Equal(10ul, session.ConfirmedCursor!.Value.ProjectionSeq.Value);
+            Assert.Equal(5ul, session.PlayerSnapshot!.StateVersion);
+        }
+
+        [Fact]
+        public async Task PublicPushWithDifferentSnapshotSessionIsRejectedWithoutMutatingCache()
+        {
+            (TableSession session, FakeTableChannel channel, _) = await TestSession.ConnectedSpectatorAsync();
+            Envelope push = TestWire.PublicPush(11, 5, 10, 6, 11);
+            push.PublicUpdate.Snapshot.SessionId = "different-session";
+            channel.Enqueue(push);
+            await session.PumpOnceAsync(CancellationToken.None);
+
+            Assert.Equal(10ul, session.ConfirmedCursor!.Value.ProjectionSeq.Value);
+            Assert.Equal(TestSession.SessionId, session.PublicSnapshot!.SessionId);
+        }
+
+        [Fact]
+        public async Task SyncSnapshotSessionMismatchIsIgnoredUntilTheAssociatedBaselineArrives()
+        {
+            (TableSession session, FakeTableChannel channel, _) = await TestSession.HandshakeAsync();
+            string correlation = channel.LastSent(MessageType.SyncRequest).CorrelationId;
+
+            Envelope misrouted = TestWire.PlayerSync(11, 5, 10, correlationId: correlation);
+            misrouted.SyncResponse.Player.SessionId = "different-session";
+            channel.Enqueue(misrouted);
+            await session.PumpOnceAsync(CancellationToken.None);
+            Assert.Equal(TableConnectionState.Synchronizing, session.State);
+            Assert.Null(session.PlayerSnapshot);
+            Assert.Null(session.ConfirmedCursor);
+
+            channel.Enqueue(TestWire.PlayerSync(11, 5, 10, correlationId: correlation));
+            await session.PumpOnceAsync(CancellationToken.None);
+            Assert.Equal(TableConnectionState.Ready, session.State);
+            Assert.Equal(TestSession.SessionId, session.PlayerSnapshot!.SessionId);
+        }
+
+        [Fact]
+        public async Task SpectatorCannotRetryAPlayerOutboxRecoveredFromTheStore()
+        {
+            var store = new RecordingOutboxStore();
+            var playerChannel = new FakeTableChannel();
+            var (playerSession, _, _) = await TestSession.ConnectedAsync(channel: playerChannel, store: store);
+            await playerSession.SubmitAsync(TestWire.Command(), CancellationToken.None);
+            IdempotencyKey key = playerSession.PendingCommands.Single().Key;
+
+            var spectatorChannel = new FakeTableChannel();
+            var spectatorSession = new TableSession(spectatorChannel, store);
+            await spectatorSession.OpenAsync(new TableSessionOpenRequest("ticket-2", "client-build-1"), CancellationToken.None);
+            spectatorChannel.Enqueue(TestWire.Welcome(
+                22,
+                "scope-2",
+                8,
+                20,
+                seatId: -1,
+                role: global::Mahjong.Contracts.Wire.Role.Spectator));
+            await spectatorSession.PumpOnceAsync(CancellationToken.None);
+            spectatorChannel.Enqueue(TestWire.PublicSync(spectatorChannel, 22, 8, 20));
+            await spectatorSession.PumpOnceAsync(CancellationToken.None);
+
+            Assert.Equal(TableConnectionState.Ready, spectatorSession.State);
+            Assert.Single(spectatorSession.PendingCommands);
+            await Assert.ThrowsAsync<InvalidOperationException>(
+                () => spectatorSession.RetryPendingAsync(key, CancellationToken.None));
+            Assert.Equal(0, spectatorChannel.CountSent(MessageType.Command));
         }
 
         [Fact]
