@@ -1,31 +1,55 @@
 # V5-0 黄金样本清单（P0.1）
 
-日期：2026-10-23
-分支/基线：`v5`，`48125ff`
-状态：**样本目录设计 + V4 证据索引；不是已导出样本集，不是 V5 对齐结果。**
+日期：2026-10-23（原始盘点）；2026-10-24（当前事实与逐项核对更新）
+分支/基线：原始盘点 `v5` / `48125ff`；当前核对 PR19 head `205506f07f6a1ccfef6b32cf97390431e3349f8d`
+状态：**历史样本目录设计 + 当前五组已导出 fixture 的机械证据索引；不是 G1/G5 验收，不是全 73 例对齐结果。**
 
-当前事实：
+## 0. 当前事实与历史盘点
 
-- `tests/v5-golden/` 不存在；本次没有创建任何样本文件。
-- **已导出样本 0 个**。因此已导出数为 0、对齐率暂无分母，不能计算百分比，也不能写“V5 已通过”。
-- 所有 V4 行为样本标 `pending` 或 `pending-v4-replay`；只属 V5 的新能力标 `v5-only`，不计入 V4 对齐率。
-- 本清单没有填写任何预期 `stateHash`、`event_hash`、`snapshot_hash`。哈希必须在真实导出时由 V4 运行结果生成；手填哈希视为伪造。
-- V4 源码/测试在 `f8f4543..48125ff` 之间无 diff；本文引用当前 `48125ff` 工作树路径与行号。
+### 0.1 原始盘点（2026-10-23，历史，保留）
+
+以下五条是 2026-10-23 P0.1 设计时的真实状态，保留作为历史证据；它们不再代表 2026-10-24 工作树：
+
+- `tests/v5-golden/` 当时不存在；当时没有创建任何样本文件。
+- **当时已导出样本 0 个**。因此当时已导出数为 0、对齐率暂无分母，不能计算百分比，也不能写“V5 已通过”。
+- 所有 V4 行为样本当时标 `pending` 或 `pending-v4-replay`；只属 V5 的新能力标 `v5-only`，不计入 V4 对齐率。
+- 本清单当时没有填写任何预期 `stateHash`、`event_hash`、`snapshot_hash`。哈希必须在真实导出时由 V4 运行结果生成；手填哈希视为伪造。
+- V4 源码/测试在 `f8f4543..48125ff` 之间无 diff；原始表格引用当时 `48125ff` 工作树路径与行号。
+
+### 0.2 当前事实（2026-10-24，以 `205506f` 五组文件为准）
+
+- `tests/v5-golden/` 现有 **5 个** 已导出的 V4 fixture：`physical-v1.json`、`scoring-v1.json`、`round-v1.json`、`cheat-v1.json`、`shuffle-v1.json`。文件冻结在 PR19 head `205506f07f6a1ccfef6b32cf97390431e3349f8d`；各文件内嵌的 `v4Commit` 是原始导出时的 V4 提交，可能不同于冻结提交。
+- 本任务新增机器可读目录 `tests/v5-golden/catalog-v1.json`，逐文件记录真实 SHA-256、schema、源 V4 commit/exporter 命令、实际样本 ID、分组计数、C# 消费位置/定向命令、G-xxx 锚点。
+- 本任务新增只读校验器 `tools/v5-golden/validate-golden-catalog.ps1` 和 TEMP 自测 `tools/v5-golden/Test-GoldenCatalogValidator.ps1`。校验器从真实 JSON 重算文件/源码哈希、分组计数、ID 唯一性和锚点；损坏 catalog、SHA 变更、重复 ID、未知 schema、缺文件均 exit 1。正常 exit 0；缺工具 exit 2 BLOCKED。
+- 五组 fixture 的真实文件事实：
+
+| fixture | bytes | SHA-256 | schema | 内嵌 V4 commit | 具体 case |
+|---|---:|---|---|---|---:|
+| `physical-v1.json` | 836,369 | `B9384534E826473007511FD34096085C56EFD0E0F49E877978E50F847EDA0995` | `v5-physical-golden-v1` | `32f645e` | 6 |
+| `scoring-v1.json` | 8,315,131 | `53B1811079033E9044E222F7BB1FA263506FD724F09D6B13F84FE9CC2FCCD94E` | `v5-scoring-golden-v1` | `97831c8` | 10,238 |
+| `round-v1.json` | 43,474 | `DF5FC5F8199C039823BAC1C668F911637EEB80E7F8A785C84D011401CF2452B7` | `v5-round-golden-v1` | `21a7d2c` | 25 |
+| `cheat-v1.json` | 42,120 | `A196CBBD97AB8F61BE8679B74C8F17DF2713CB37AEF0922E5F3C9F725B28AB4E` | `v5-cheat-golden-v1` | `a96c195` | 81 |
+| `shuffle-v1.json` | 99,467 | `386061B42691CCF36381E2D87DC4787367958C8E9E96A93BA69D1E3FE5DAC282` | `v5-shuffle-golden-v1` | `37b4dd6` | 32 |
+
+- **73 条 G 目录需求**的当前覆盖：`full` 20、`partial` 17、`none` 33、`v5-only` 3。这里的 `full` 仅表示该 G 条目文档断言的子集已被 fixture/C# 读取覆盖，**不是** G1 对齐率或验收结论；`partial` 单列，不冒充整项完成；`none` 的 33 项仍保留责任任务。
+- **分母彼此独立，不能相加**：73 是 G 目录需求；10,382 是五组 fixture 的具体 JSON case；其中 `scoring-v1` 的 10,000 条 `randomSamples` 是这 10,382 的子集，不是另一个可加分母；42 是 5 个 C# Golden reader 类的 `[Fact]` 数；5 是 fixture 文件数。另有 5 个 V4 exporter 和 5 个 C# reader 类。
+- 五组 fixture 的存在不等于 73 条需求全部导出。33 条 `none`、17 条 `partial` 仍不得写成“已对齐”；G1 仍 `BLOCKED`，G5 未完成，V4 仍是唯一生产基线。
+- 未导出/纯 V5 需求继续按 §8.2 的责任任务保留；本清单没有把在途 G-049 AI 导出或任何兄弟工作树代码写入本目录。
 
 ---
 
-## 0. 状态、字段与禁止事项
+## 0A. 状态、字段与禁止事项（历史定义，保留）
 
-### 0.1 提取状态
+### 0A.1 提取状态
 
 | 状态 | 含义 | 是否计入对齐率 |
 |---|---|---|
 | `pending` | V4 测试/夹具已存在，输入输出可运行；尚未导出为语言中立 JSON | 否 |
 | `pending-v4-replay` | 需要给 V4 增加只读录制点/固定 ID/记录实际随机结果或完整状态，当前公开输出不足 | 否 |
 | `v5-only` | V4 没有对应行为，属于 V5 新能力（协议重写、持久化、租约、Unity 等） | 否（单列） |
-| `exported` | 已写入 `tests/v5-golden/` 并可由命令重放 | 是；本次为 0 |
+| `exported` | 已写入 `tests/v5-golden/` 并可由命令重放 | 是；2026-10-23 原始盘点为 0，当前计数见 §0.2 当前事实与 §8.3.2 |
 
-### 0.2 单例 JSON 目标字段（未导出，仅冻结形状）
+### 0A.2 单例 JSON 目标字段（未导出，仅冻结形状）
 
 ```json
 {
@@ -80,7 +104,7 @@
 4. `hashStatus` 只有 `computed-from-v4-run` 才可填值；本次全部 `pending`。
 5. 任何 `exported` 样本必须能由清单命令重新生成；生成器版本、V4 提交、命令、输入摘要、输出摘要同目录保存。
 
-### 0.3 命令模板
+### 0A.3 命令模板
 
 以下模板在 `D:\majiang` 执行；`CLASS` 为表中“来源/测试类”列的类名。所有命令均使用仓库 wrapper，不依赖全局 `gradle`。
 
@@ -89,7 +113,7 @@
 - `C-S`：`.\gradlew.bat :server:test --tests "CLASS" --console=plain --no-daemon`
 - `C-C`：`.\gradlew.bat :client:test --tests "CLASS" --console=plain --no-daemon`
 
-本次会话已实际运行 **470** 个 V4 定向用例（首轮 366 + 复核补跑 104；0 失败、0 跳过）；命令与分批结果见 `V5-0-TRACEABILITY.md` §1.3。另有审查侧独立全量 V4 回归 1,852/0/0。该运行只证明 V4 测试断言通过，不证明样本已导出，也不证明 V5 对齐。
+（历史口径，2026-10-23）本次会话当时实际运行 **470** 个 V4 定向用例（首轮 366 + 复核补跑 104；0 失败、0 跳过）；命令与分批结果见 `V5-0-TRACEABILITY.md` §1.3。另有审查侧独立全量 V4 回归 1,852/0/0。该运行只证明 V4 测试断言通过，不证明样本已导出，也不证明 V5 对齐。当前五组 fixture 已在后续任务导出；本节数字仍是 V4 证据，不是 V5 测试数。
 
 ---
 
@@ -249,31 +273,125 @@
 
 ### 8.3 对齐率口径
 
-- 本次清单 73 例：`pending` 59、`pending-v4-replay` 11（G-001c、G-002、G-003b、G-009、G-011、G-012、G-019、G-045、G-049、G-056d、G-057d）、`v5-only` 3（G-055、G-058、G-059）、`exported` 0。
-- 分母 = `exported` 的 V4 样本数；本次为 **0**。
-- `pending`/`pending-v4-replay`/`v5-only` 不计入分子或分母。
-- 因此本次不能报告“对齐率 100%”或“黄金样本已建立”；只能报告“清单已设计、证据已索引、导出待做”。
-- V5 实现后，每个 `exported` 样本必须在 C# 差分中逐例通过；未导出样本单列，不参与百分比。
+#### 8.3.1 历史口径（2026-10-23，保留）
 
-### 8.4 未来导出命令（尚未执行）
+- 当时清单 73 例：`pending` 59、`pending-v4-replay` 11（G-001c、G-002、G-003b、G-009、G-011、G-012、G-019、G-045、G-049、G-056d、G-057d）、`v5-only` 3（G-055、G-058、G-059）、`exported` 0。
+- 当时分母 = `exported` 的 V4 样本数；当时为 **0**。
+- 当时 `pending`/`pending-v4-replay`/`v5-only` 不计入分子或分母，因此不能报告“对齐率 100%”或“黄金样本已建立”。
+- 这段是历史盘点，不抹掉；它说明 2026-10-23 的真实起点。
 
-在 `tests/v5-golden/` 建立后，建议：
+#### 8.3.2 当前机械口径（2026-10-24，`catalog-v1.json`）
+
+- 五组 fixture 已存在并被 5 个 C# Golden reader 类读取；但 **73 条 G 需求并未全部导出**。
+- 73 条 G 需求：`full` 20、`partial` 17、`none` 33、`v5-only` 3。`full` 仅指该条目的文档断言子集已被 fixture + C# 覆盖；`partial` 单列；`none` 与 `v5-only` 不进入 V4 对齐分子。
+- 具体 JSON case：**10,382**（physical 6 + scoring 10,238 + round 25 + cheat 81 + shuffle 32）。其中 scoring 的 `randomSamples` **10,000** 条是这 10,382 的子集，不另加；C# `[Fact]` **42**（5 个类）；fixture **5**。这些分母不能相加成一个“完成数”。
+- “fixture 已导出 + C# 测试运行通过”只证明这五组样本可读、可差分，不等于 73/73，也不等于 G1 PASS。当前仍有 33 条 `none`、17 条 `partial`。
+- 逐项状态见 §8.5；机器可读锚点/计数/哈希见 `tests/v5-golden/catalog-v1.json`，并由 `tools/v5-golden/validate-golden-catalog.ps1` 从真实 JSON 重新计算。
+
+### 8.4 复现命令（当前）
 
 ```powershell
-# V4 侧：先跑定向测试，确认测试断言仍绿
-.\gradlew.bat :engine:test --tests "com.majiang...." --console=plain --no-daemon
+# 1) 只读校验五组 fixture + catalog（正常 exit 0；坏 catalog/SHA/重复 ID/未知 schema/缺文件 exit 1）
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/v5-golden/validate-golden-catalog.ps1
 
-# V5 侧：逐例读取 JSON，调用 Domain/TableRuntime，比较事件/状态/投影
-dotnet test dotnet/Mahjong.sln --filter "FullyQualifiedName~Golden"
+# 2) 在独占 TEMP 副本注入坏输入；验证 FAIL 且真实 fixture 不变
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/v5-golden/Test-GoldenCatalogValidator.ps1
+
+# 3) 定向运行 5 个 C# Golden reader 类（42 Facts；不跑 PG）
+D:/Unity/dotnet/dotnet.exe test dotnet/tests/Mahjong.Domain.Tests/Mahjong.Domain.Tests.csproj -c Release --nologo -v:minimal
+D:/Unity/dotnet/dotnet.exe dotnet/tests/Mahjong.Domain.Tests/bin/Release/net8.0/Mahjong.Domain.Tests.dll -class "*GoldenTests" -noColor -noLogo
 ```
 
-V5 的 `dotnet test` 当前不可作为证据：`dotnet/src` 无手写 `.cs` 规则实现（仅有 `obj/` 生成的 `AssemblyInfo.cs`）；运行它不能证明对齐。
+注意：该测试工程是 xUnit v3 Microsoft.Testing.Platform；实测 `dotnet test --filter "FullyQualifiedName~Golden"` 被忽略并运行全部 322 个 Domain 测试，因此定向证据使用 direct runner 的 `-class "*GoldenTests"`（42/0/0）。全量 322/0/0 只能作为 Domain 全量证据，不能替代 42 项定向计数。
+
+### 8.5 逐项当前状态（catalog-v1 机械核对）
+
+> §1–§7 表内的“提取状态”保留 2026-10-23 历史盘点，不改成当前值；本节给出当前 catalog 覆盖。`full`/`partial`/`none`/`v5-only` 的口径见 §8.3.2。锚点格式为 `fixture:group/id`；组级锚点表示整组。
+
+| ID | 历史提取状态（2026-10-23，保留） | 当前 catalog 覆盖 | 当前锚点（fixture:group/id） | 责任任务 | 说明 |
+|---|---|---|---|---|---|
+| G-001a | `pending` | `full` | physical-v1:samples/G-001a | P1.1 | 136 tiles and exactly 3 red fives exported; C# G001a asserts every identity/flag field. |
+| G-001b | `pending` | `full` | physical-v1:samples/G-001b | P1.1 | 34 typeIndex groups and 10 boundary indexes exported; C# G001b replays. |
+| G-001c | `pending-v4-replay` | `full` | physical-v1:samples/G-001c | P1.1 | 0..135 roundtrip plus 4 illegal inputs exported; C# G001c replays semantics (not exception-class equality). |
+| G-002 | `pending-v4-replay` | `full` | physical-v1:samples/G-002 | P1.1 | 20 zone/owner probes exported; C# maps legal positions and illegal-seat semantics; no-seat-zone owner is structurally unconstructible in C#. |
+| G-003a | `pending` | `full` | physical-v1:samples/G-003a | P1.1 | 32 fixed seeds with complete walls and 4352 positions; C# replays explicit walls structurally, not JVM RNG reproduction. |
+| G-003b | `pending-v4-replay` | `partial` | physical-v1:samples/G-003b | P1.1 | Real deletion and ledger-mismatch probes exported; C# covers missing placements and single-ledger invariant. Duplicate-key branch is NOT_CONSTRUCTIBLE in V4 MutableMap. |
+| G-004 | `pending` | `none` | — | P1.1 | No draw/discard TileMovement case in the five fixtures. |
+| G-005 | `pending` | `none` | — | P1.1 | No pon/chi case in the five fixtures. |
+| G-006 | `pending` | `none` | — | P1.1 | No kan case in the five fixtures. |
+| G-007 | `pending` | `none` | — | P1.1 | No duplicate-copy/fifth-rinshan rejection case in the five fixtures. |
+| G-008 | `pending` | `partial` | cheat-v1:tileMovement/mv-swap-hand-with-wall-direct<br>cheat-v1:tileMovement/mv-swap-hand-with-dead-wall | P1.1 | Two hand/wall swap cases exported and replayed; no draw/discard/pon/kan movement cases. |
+| G-009 | `pending-v4-replay` | `none` | — | P1.1 | No hidden-replacement/full-136 audit trace exported. |
+| G-010 | `pending` | `none` | — | P1.1 | No duplicate-physical-wall deal rejection case in the five fixtures. |
+| G-011 | `pending-v4-replay` | `none` | — | P1.1 | No full deal event sequence/state trace exported. |
+| G-012 | `pending-v4-replay` | `none` | — | P1.1 | No post-deal full 136-placement trace exported. |
+| G-013 | `pending` | `partial` | scoring-v1:winSamples | P1.2 | 48 curated win samples cover the evaluator, but the exact 4-han/30-fu/7700 G-013 hand is not separately anchored. |
+| G-014 | `pending` | `partial` | scoring-v1:fuSamples | P1.2 | 9 fu samples cover rounding, but the exact 28->30 G-014 case is absent. |
+| G-015 | `pending` | `partial` | scoring-v1:doraSamples/D-002 | P1.2 | D-002 has indicator=2/red=1/total=3; the single-red-plus-indicator 1/1/2 case is absent. |
+| G-016 | `pending` | `full` | scoring-v1:noWinSamples/N-001 | P1.2 | Open hand with dora but no yaku exported as noWin; C# replays. |
+| G-017 | `pending` | `full` | scoring-v1:scoreSamples | P1.2 | 147 score-table samples include fu/han caps and rawExact; C# ScoreTableSamplesMatchV4 replays every field. |
+| G-018 | `pending` | `full` | scoring-v1:scoreSamples/S-YAKUMAN-1<br>scoring-v1:scoreSamples/S-YAKUMAN-2 | P1.2 | Yakuman 1 and 2 (plus 3/4) and payment plans exported; C# replays. |
+| G-019 | `pending-v4-replay` | `partial` | scoring-v1:winSamples | P1.2 | All 42 distinct yaku codes appear in winSamples and C# asserts 42, but the 41/42 D-01 adjudication is still unresolved. |
+| G-020 | `pending` | `full` | scoring-v1:settlementSamples/ST-001<br>scoring-v1:settlementSamples/ST-002 | P1.2 | Nondealer/dealer ron deltas and conservation exported; C# replays exact deltas. |
+| G-021 | `pending` | `full` | scoring-v1:settlementSamples/ST-003<br>scoring-v1:settlementSamples/ST-004<br>scoring-v1:settlementSamples/ST-007 | P1.2 | Nondealer/dealer tsumo and dealer=3 payer split exported; C# replays exact deltas. |
+| G-022 | `pending` | `full` | scoring-v1:settlementSamples | P1.2 | ST-100..ST-115 cover all 16 tenpai masks; C# replays deltas and stick handling. |
+| G-023 | `pending` | `full` | scoring-v1:settlementSamples/ST-008 | P1.2 | Abortive draw deltas/zero-change exported; C# replays. |
+| G-024 | `pending` | `none` | — | P1.2 | No session-boundary riichi-stick transfer case in the five fixtures. |
+| G-025 | `pending` | `full` | round-v1:matchProgression/RG-003a<br>round-v1:matchProgression/RG-003b<br>round-v1:matchProgression/RG-003c<br>round-v1:matchProgression/RG-003d<br>round-v1:matchProgression/RG-003e | P1.3 | Basic dealer/nondealer tsumo, exhaustive draw and abortive progression rows exported; C# replays all fields. |
+| G-026 | `pending` | `full` | round-v1:matchProgression/RG-003f<br>round-v1:matchProgression/RG-003g<br>round-v1:matchProgression/RG-003h<br>round-v1:matchProgression/RG-003i<br>round-v1:matchProgression/RG-003j<br>round-v1:matchProgression/RG-003p | P1.3 | East-4 dealer rotation, south-4 target, west extension, west-4 finish and tonpuusen finish rows exported; C# replays. |
+| G-027 | `pending` | `full` | round-v1:matchProgression/RG-003m<br>round-v1:matchProgression/RG-003n<br>round-v1:matchProgression/RG-003o | P1.3 | Agari-yame eligibility/declaration and tie transfer exported; C# replays. |
+| G-028a | `pending` | `full` | round-v1:roundTerminal/RG-001 | P1.3 | Single-round terminal state, events, scores and three rejected post-terminal actions exported; C# replays. |
+| G-028b | `pending` | `none` | — | P1.3 | No nextRound/new-roundId trace in the five fixtures. |
+| G-029 | `pending` | `full` | round-v1:chankanRon/RG-002 | P1.3 | CHANKAN_WINDOW state and ron-before-kan atomicity exported; C# replays. |
+| G-030 | `pending` | `none` | — | P1.3 | No double-kan/DoraRevealed/RinshanDraw multi-event trace exported. |
+| G-031 | `pending` | `partial` | cheat-v1:ledger | P1.3 | Ledger rejections prove zero balance/entry side effects; no event-list/version assertion for a no-event command. |
+| G-032 | `pending` | `partial` | cheat-v1:tileMarkHandler/tm-allowed<br>cheat-v1:ledger/chargeOnce | P1.4 | Allowed outcome and ledger charge exported; no single case with full post-state, group tiles, locations and deadline. |
+| G-033 | `pending` | `partial` | cheat-v1:tileMarkHandler/tm-capacity-groups<br>cheat-v1:tileMarkHandler/tm-capacity-tiles<br>cheat-v1:tileMarkState/expiry | P1.4 | Capacity and expiry cases exported; C# replays expiry/cross-seat, capacity cases are reason-covered only. |
+| G-034 | `pending` | `partial` | cheat-v1:tileMarkHandler | P1.4 | 19 rejection cases with stable reasons exported; C# replays a representative subset, not every case. |
+| G-035 | `pending` | `partial` | cheat-v1:sleeveBloomHandler/sb-activate-allowed<br>cheat-v1:sleeveBloomHandler/sb-choose-first | P1.4 | Activation/choice cases and golden inputs exported; C# binds a subset, not the full snapshot. |
+| G-036 | `pending` | `partial` | cheat-v1:sleeveBloomHandler/sbo-activate-allowed<br>cheat-v1:sleeveBloomHandler/sbo-choose-allowed<br>cheat-v1:sleeveBloomHandler/sbo-choose-expired | P1.4 | Off-turn activation/reservation/expiry cases exported; C# binds reservation delivery, not every timing branch. |
+| G-037 | `pending` | `partial` | cheat-v1:sleeveBloomHandler/sb-choose-stale-turn<br>cheat-v1:sleeveBloomHandler/sb-choose-offer-mismatch<br>cheat-v1:sleeveBloomHandler/sbo-activate-no-window | P1.4 | Stale/wrong-window/no-offer reasons exported; C# replays a subset. |
+| G-038 | `pending` | `partial` | cheat-v1:beamSwapHandler/bm-activate-allowed<br>cheat-v1:beamSwapHandler/bm-choose-swap<br>cheat-v1:beamSwapHandler/bm-choose-keep | P1.4 | Activation/swap/keep cases exported; C# binds candidate entities and keep, not the full snapshot. |
+| G-039 | `pending` | `partial` | cheat-v1:beamSwapHandler/bm-choose-invalid-slot<br>cheat-v1:beamSwapHandler/bm-choose-invalid-foreign-hand<br>cheat-v1:beamSwapHandler/bm-choose-stale-turn | P1.4 | Invalid/stale/foreign cases exported; C# replays a subset. |
+| G-040a | `pending` | `none` | — | P1.4 | No owner/other-seat TileMark projection case in the five fixtures. |
+| G-040b | `pending` | `none` | — | P1.4 | No owner/other-seat SleeveBloom projection case in the five fixtures. |
+| G-040c | `pending` | `none` | — | P1.4 | No owner/other-seat BeamSwap projection case in the five fixtures. |
+| G-041 | `pending` | `full` | cheat-v1:ledger | P1.4 | Replay/conflict/overdraw/overflow/invalid-seat/summary/snapshot all exported; C# Ledger_Section replays and asserts zero side effects. |
+| G-042 | `pending` | `full` | shuffle-v1:slotMatrix | P1.5 | 16 dealer/seat slot entries with initial and draw slots exported; C# replays. |
+| G-043 | `pending` | `partial` | shuffle-v1:cases | P1.5 | 32 fixed-seed walls, red fives, dead-wall isolation, 3/4-caster laws exported; illegal seat/config rejection is not exported. |
+| G-044 | `pending` | `none` | — | P1.5 | See-through/anti-target cases are not in the five fixtures. |
+| G-045 | `pending-v4-replay` | `none` | — | P1.5 | ShufflePreparation SecureRandom seed is not exported; D-07 remains. |
+| G-046 | `pending` | `full` | round-v1:decisionClock/RG-004a<br>round-v1:decisionClock/RG-004b<br>round-v1:decisionClock/RG-004c<br>round-v1:decisionClock/RG-004d<br>round-v1:decisionClock/RG-004e<br>round-v1:decisionClock/RG-004f | P1.3 | Six complete clock operation traces (open/complete/cancel/pause/resume/scope reset) exported; C# replays every operation. |
+| G-047 | `pending` | `none` | — | P1.3 | TimeoutPolicy selection is not in the five fixtures. |
+| G-048 | `pending` | `partial` | round-v1:controlEpoch/RG-005 | P1.3 | RG-005 covers engine ControllerRegistry epochs only; server ConnectionControl grace/reclaim is explicitly not exported by the engine-side exporter. |
+| G-049 | `pending-v4-replay` | `none` | — | P1.6 | No AiDecisionRecorded/intent or stale-AI submission fixture. |
+| G-050a | `pending` | `none` | — | P2.1 | No protocol/wire fixture among the five. |
+| G-050b | `pending` | `none` | — | P2.1 | No frame-codec fixture among the five. |
+| G-050c | `pending` | `none` | — | P2.1 | No message-codec fixture among the five. |
+| G-051 | `pending` | `none` | — | P2.1 | No error/close-reason fixture among the five. |
+| G-052 | `pending` | `none` | — | P2.1 | No receipt-quota fixture among the five. |
+| G-053 | `pending` | `none` | — | P2.1 | No request-scope receipt fixture among the five. |
+| G-054 | `pending` | `none` | — | P2.1 | No receipt-store expiry/saturation fixture among the five. |
+| G-055 | `v5-only` | `v5-only` | — | P5.4a | V5-only persistent outbox/RECEIPT_QUERY; no V4 fixture by design. |
+| G-056a | `pending` | `none` | — | P3.2 | No player-stream fixture among the five. |
+| G-056b | `pending` | `none` | — | P3.2 | No spectator-stream fixture among the five. |
+| G-056c | `pending` | `none` | — | P3.2 | No binding early-buffer/unconfirmed-side-effect fixture among the five. |
+| G-056d | `pending-v4-replay` | `none` | — | P3.2 | No 65-item reorder/257-cursor/bindingEpoch-race probe. |
+| G-057a | `pending` | `none` | — | P3.2 | No PlayerView snapshot fixture among the five. |
+| G-057b | `pending` | `none` | — | P3.2 | No SessionUpdate visibility fixture among the five. |
+| G-057c | `pending` | `none` | — | P3.2 | No public-projection fixture among the five. |
+| G-057d | `pending-v4-replay` | `none` | — | P3.2 | No opponent-hidden/ura/wall-order probe. |
+| G-058 | `v5-only` | `v5-only` | — | P3.4 | V5-only ownerEpoch/lease/Postgres contract; no V4 fixture by design. |
+| G-059 | `v5-only` | `v5-only` | — | P2.1/P2.2/P5.1/P5.4 | V5-only Protobuf/WSS/TLS/Unity/IL2CPP behavior; no V4 fixture by design. |
 
 ---
 
 ## 9. 边界声明
 
-- 本清单没有修改 V4 代码/测试，没有新增 `tests/v5-golden/` 文件，没有提交/推送。
-- 本清单没有伪造任何哈希、摘要或“V5 已通过”结论。
-- 本清单没有把 V4 的 1,275 项历史运行数、1,826 个静态测试方法、本次会话 470 个定向用例或审查侧 1,852 全量回归写成 V5 验收结果。
-- G0 仍需 P0.2/P0.3 与 Codex 复核；本清单只是 P0.1 的样本设计/证据索引。
+- 本文件保留 2026-10-23 原始盘点，并在 2026-10-24 增补当前事实、逐项状态和分母；历史数字不被删除或改写。
+- 五组 fixture、五个 V4 exporter、五个 C# Golden reader 类均为只读证据；本任务没有修改它们的预期值、fixture 内容、V4 Domain/Ai/TableRuntime 生产逻辑、CI wrapper 或其他文档。
+- 本任务新增/修改的授权文件：`tests/v5-golden/catalog-v1.json`、`tools/v5-golden/validate-golden-catalog.ps1`、`tools/v5-golden/Test-GoldenCatalogValidator.ps1`、本清单、`doc/v5-重构/V5-P01-GOLDEN-CATALOG.md`。
+- catalog 的 SHA-256、分组计数、ID 唯一性和锚点由校验器从真实 JSON 重新计算；没有手填预期哈希，没有把 `generationResult` 的自述当成“所有样本已比较”。
+- 本任务没有把 V4 的 1,275 项历史运行数、1,826 个静态测试方法、470 个定向用例、1,852 全量回归或本题 42 个 C# Fact 写成 V5 验收结果。
+- G1 仍 `BLOCKED`，G5 未完成；V4 仍是唯一生产基线。Unity/IL2CPP/Android/iOS 真机、真实网络、PG/WSS/CI 未在本任务运行或未通过。
+- 本任务未 push、未创建 PR、未触发远端 CI、未修改机器全局环境/信任；交付为本地 commit，由 caller 独立复核后负责唯一 PR19 与 merge-back。
