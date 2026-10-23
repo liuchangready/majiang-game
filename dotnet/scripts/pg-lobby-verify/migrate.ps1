@@ -17,6 +17,15 @@ $ErrorActionPreference = 'Stop'
 
 $context = New-PgContext -Root $Root -Port $Port -DbName $DbName
 Assert-PgOwned -Context $context | Out-Null
+if (-not (Test-TcpPortOpen -Port $context.Port)) {
+    throw "PostgreSQL is not listening on 127.0.0.1:$($context.Port). Run start-postgres.ps1 first."
+}
+$identity = Get-PgServerIdentity -Context $context -Database 'postgres'
+Assert-PgServerIsOwned -Context $context -Identity $identity | Out-Null
+if (-not (Test-PgDatabaseExists -Context $context)) {
+    throw "Database '$($context.DbName)' does not exist on the verified disposable cluster."
+}
+Assert-PgDatabaseMarker -Context $context | Out-Null
 if (-not (Test-PgReady -Context $context)) {
     throw "PostgreSQL is not ready on 127.0.0.1:$($context.Port). Run start-postgres.ps1 first."
 }

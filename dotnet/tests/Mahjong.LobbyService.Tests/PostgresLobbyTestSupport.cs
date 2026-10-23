@@ -32,6 +32,7 @@ namespace Mahjong.LobbyService.Tests
         internal const string HandoffVariable = "MAHJONG_LOBBY_PG_HANDOFF";
         internal const string RestartPhaseVariable = "MAHJONG_LOBBY_PG_RESTART_PHASE";
         internal const string RootVariable = "MAHJONG_LOBBY_PG_ROOT";
+        internal const string DataDirectoryVariable = "MAHJONG_LOBBY_PG_DATA";
         internal const string ExpectedOwner = "mahjong-p53-pg";
 
         internal static readonly DateTimeOffset FixedNow =
@@ -241,7 +242,9 @@ SELECT version(),
        CASE WHEN to_regclass('lobby_verify.meta') IS NULL THEN ''
             ELSE coalesce((SELECT owner FROM lobby_verify.meta ORDER BY owner LIMIT 1), '') END,
        CASE WHEN to_regclass('lobby_verify.meta') IS NULL THEN ''
-            ELSE coalesce((SELECT root FROM lobby_verify.meta ORDER BY owner LIMIT 1), '') END";
+            ELSE coalesce((SELECT root FROM lobby_verify.meta ORDER BY owner LIMIT 1), '') END,
+       CASE WHEN to_regclass('lobby_verify.meta') IS NULL THEN 0
+            ELSE (SELECT count(*) FROM lobby_verify.meta) END";
             await using var command = new NpgsqlCommand(sql, connection);
             await using NpgsqlDataReader reader = await command.ExecuteReaderAsync(cancellationToken)
                 .ConfigureAwait(false);
@@ -258,6 +261,7 @@ SELECT version(),
             string dataDirectory = reader.GetString(5);
             string markerOwner = reader.GetString(6);
             string markerRoot = reader.GetString(7);
+            long markerRowCount = reader.GetInt64(8);
 
             if (!IsLoopbackHost(address) || port != builder.Port)
             {
@@ -281,17 +285,44 @@ SELECT version(),
                     "': it does not carry the disposable lobby_verify.meta owner marker '" +
                     ExpectedOwner + "'. Use scripts/pg-lobby-verify/start-postgres.ps1.");
             }
+            if (markerRowCount != 1)
+            {
+                throw new InvalidOperationException(
+                    "Refusing to write/truncate database '" + actualDatabase +
+                    "': lobby_verify.meta must contain exactly one row (found " + markerRowCount + ").");
+            }
 
+            string expectedDataDirectory = NormalizePath(dataDirectory);
             string? expectedRoot = Environment.GetEnvironmentVariable(RootVariable);
-            if (!string.IsNullOrWhiteSpace(expectedRoot) &&
+            string? expectedData = Environment.GetEnvironmentVariable(DataDirectoryVariable);
+            if (!string.IsNullOrWhiteSpace(expectedRoot))
+            {
+                string normalizedRoot = NormalizePath(expectedRoot!);
+                if (!string.Equals(normalizedRoot, NormalizePath(markerRoot), StringComparison.OrdinalIgnoreCase))
+                {
+                    throw new InvalidOperationException(
+                        "Refusing to write/truncate database '" + actualDatabase +
+                        "': its ownership marker root does not match " + RootVariable + ".");
+                }
+
+                string dataFromRoot = NormalizePath(Path.Combine(expectedRoot!, "data"));
+                if (!string.Equals(dataFromRoot, expectedDataDirectory, StringComparison.OrdinalIgnoreCase))
+                {
+                    throw new InvalidOperationException(
+                        "Refusing to write/truncate database '" + actualDatabase +
+                        "': server data_directory does not match the disposable root's data directory.");
+                }
+            }
+
+            if (!string.IsNullOrWhiteSpace(expectedData) &&
                 !string.Equals(
-                    NormalizePath(expectedRoot!),
-                    NormalizePath(markerRoot),
+                    NormalizePath(expectedData!),
+                    expectedDataDirectory,
                     StringComparison.OrdinalIgnoreCase))
             {
                 throw new InvalidOperationException(
                     "Refusing to write/truncate database '" + actualDatabase +
-                    "': its ownership marker root does not match " + RootVariable + ".");
+                    "': server data_directory does not match " + DataDirectoryVariable + ".");
             }
 
             if (_serverIdentity == null)

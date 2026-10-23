@@ -249,6 +249,206 @@ function Invoke-NativeText {
     return [pscustomobject]@{ ExitCode = $code; Output = @($output) }
 }
 
+function Normalize-PgPath {
+    param([string]$Path)
+
+    if ([string]::IsNullOrWhiteSpace($Path)) {
+        return ''
+    }
+
+    $native = $Path.Replace('/', [System.IO.Path]::DirectorySeparatorChar)
+    $trimChars = [char[]]@(
+        [System.IO.Path]::DirectorySeparatorChar,
+        [System.IO.Path]::AltDirectorySeparatorChar)
+    return ([System.IO.Path]::GetFullPath($native)).TrimEnd($trimChars)
+}
+
+function Test-PgLoopbackAddress {
+    param([string]$Address)
+
+    if ([string]::IsNullOrWhiteSpace($Address)) {
+        return $false
+    }
+
+    try {
+        $parsed = [System.Net.IPAddress]::Parse($Address)
+        return [System.Net.IPAddress]::IsLoopback($parsed)
+    }
+    catch {
+        return $false
+    }
+}
+
+function Get-PgServerIdentity {
+    param(
+        [Parameter(Mandatory = $true)]$Context,
+        [string]$Database = 'postgres'
+    )
+
+    $sql = @"
+SELECT json_build_object(
+    'dataDirectory', current_setting('data_directory'),
+    'startedAt', pg_postmaster_start_time()::text,
+    'address', coalesce(host(inet_server_addr()), ''),
+    'port', coalesce(inet_server_port(), 0),
+    'database', current_database(),
+    'version', version()
+)::text
+"@
+    $result = Invoke-NativeText -FilePath $Context.Psql -Arguments @(
+        '-h', '127.0.0.1', '-p', "$($Context.Port)", '-U', 'mahjong_pg',
+        '-d', $Database, '-tAc', $sql)
+    if ($result.ExitCode -ne 0) {
+        throw ("Refusing to continue: the listener on 127.0.0.1:$($Context.Port) did not answer a " +
+            "read-only identity query; it cannot be proven to be the disposable cluster. " +
+            "psql output: " + ($result.Output -join ' '))
+    }
+
+    $text = ($result.Output -join '').Trim()
+    if (-not $text) {
+        throw "The PostgreSQL identity query returned no data."
+    }
+
+    try {
+        return ($text | ConvertFrom-Json)
+    }
+    catch {
+        throw "Could not parse the PostgreSQL identity response: $text"
+    }
+}
+
+function Assert-PgServerIsOwned {
+    param(
+        [Parameter(Mandatory = $true)]$Context,
+        [Parameter(Mandatory = $true)]$Identity
+    )
+
+    if (-not (Test-PgLoopbackAddress ([string]$Identity.address))) {
+        throw ("Refusing to use 127.0.0.1:$($Context.Port): server address " +
+            "'$($Identity.address)' is not loopback.")
+    }
+    if ([int]$Identity.port -ne [int]$Context.Port) {
+        throw ("Refusing to use 127.0.0.1:$($Context.Port): server reports port " +
+            "$($Identity.port).")
+    }
+
+    $actual = Normalize-PgPath ([string]$Identity.dataDirectory)
+    $expected = Normalize-PgPath $Context.DataDir
+    if (-not [string]::Equals($actual, $expected, [System.StringComparison]::OrdinalIgnoreCase)) {
+        throw ("Refusing to connect to 127.0.0.1:$($Context.Port): the server data_directory " +
+            "'$actual' is not this disposable cluster '$expected'. The port belongs to another " +
+            "instance; no database write, migration, marker or shutdown was performed.")
+    }
+
+    return $Identity
+}
+
+function Test-PgDatabaseExists {
+    param([Parameter(Mandatory = $true)]$Context)
+
+    $dbLiteral = $Context.DbName.Replace("'", "''")
+    $sql = "SELECT 1 FROM pg_database WHERE datname = '$dbLiteral'"
+    $result = Invoke-NativeText -FilePath $Context.Psql -Arguments @(
+        '-h', '127.0.0.1', '-p', "$($Context.Port)", '-U', 'mahjong_pg',
+        '-d', 'postgres', '-tAc', $sql)
+    if ($result.ExitCode -ne 0) {
+        throw "Could not list databases: $($result.Output -join ' ')"
+    }
+
+    return (($result.Output -join '').Trim() -eq '1')
+}
+
+function Get-PgDatabaseMarker {
+    param([Parameter(Mandatory = $true)]$Context)
+
+    $sql = @"
+SELECT json_build_object(
+    'owner', CASE WHEN to_regclass('lobby_verify.meta') IS NULL THEN ''
+                  ELSE coalesce((SELECT owner FROM lobby_verify.meta ORDER BY owner LIMIT 1), '') END,
+    'root', CASE WHEN to_regclass('lobby_verify.meta') IS NULL THEN ''
+                 ELSE coalesce((SELECT root FROM lobby_verify.meta ORDER BY owner LIMIT 1), '') END,
+    'rowCount', CASE WHEN to_regclass('lobby_verify.meta') IS NULL THEN 0
+                     ELSE (SELECT count(*) FROM lobby_verify.meta) END
+)::text
+"@
+    $result = Invoke-NativeText -FilePath $Context.Psql -Arguments @(
+        '-h', '127.0.0.1', '-p', "$($Context.Port)", '-U', 'mahjong_pg',
+        '-d', $Context.DbName, '-tAc', $sql)
+    if ($result.ExitCode -ne 0) {
+        throw "Could not read the database ownership marker: $($result.Output -join ' ')"
+    }
+
+    $text = ($result.Output -join '').Trim()
+    if (-not $text) {
+        throw "The database ownership marker query returned no data."
+    }
+
+    return ($text | ConvertFrom-Json)
+}
+
+function Assert-PgDatabaseMarker {
+    param([Parameter(Mandatory = $true)]$Context)
+
+    $marker = Get-PgDatabaseMarker -Context $Context
+    if ([string]::IsNullOrWhiteSpace([string]$marker.owner)) {
+        throw ("Refusing to write/truncate database '$($Context.DbName)': it has no " +
+            "lobby_verify.meta ownership marker. Recreate the disposable cluster instead of claiming it.")
+    }
+    if ([int]$marker.rowCount -ne 1) {
+        throw ("Refusing to write/truncate database '$($Context.DbName)': " +
+            "lobby_verify.meta must contain exactly one row (found $($marker.rowCount)).")
+    }
+    if (-not [string]::Equals([string]$marker.owner, $script:PgOwner, [System.StringComparison]::Ordinal)) {
+        throw ("Refusing to write/truncate database '$($Context.DbName)': marker owner " +
+            "'$($marker.owner)' is not '$($script:PgOwner)'.")
+    }
+
+    $actualRoot = Normalize-PgPath ([string]$marker.root)
+    $expectedRoot = Normalize-PgPath $Context.Root
+    if (-not [string]::Equals($actualRoot, $expectedRoot, [System.StringComparison]::OrdinalIgnoreCase)) {
+        throw ("Refusing to write/truncate database '$($Context.DbName)': marker root " +
+            "'$actualRoot' is not '$expectedRoot'.")
+    }
+
+    return $marker
+}
+
+function Initialize-PgDatabaseMarker {
+    param([Parameter(Mandatory = $true)]$Context)
+
+    $rootLiteral = $Context.Root.Replace("'", "''")
+    $ownerLiteral = $script:PgOwner.Replace("'", "''")
+    $sql = @"
+CREATE SCHEMA IF NOT EXISTS lobby_verify;
+CREATE TABLE IF NOT EXISTS lobby_verify.meta (
+    owner text PRIMARY KEY,
+    root text NOT NULL,
+    created_at timestamptz NOT NULL
+);
+INSERT INTO lobby_verify.meta (owner, root, created_at)
+SELECT '$ownerLiteral', '$rootLiteral', now()
+WHERE NOT EXISTS (SELECT 1 FROM lobby_verify.meta);
+"@
+    $result = Invoke-PgPsql -Context $Context -Arguments @('-v', 'ON_ERROR_STOP=1', '-c', $sql)
+    if ($result.ExitCode -ne 0) {
+        throw "Could not write the disposable-database ownership marker."
+    }
+
+    Assert-PgDatabaseMarker -Context $Context | Out-Null
+}
+
+function Get-PgProcessIds {
+    param([Parameter(Mandatory = $true)]$Context)
+
+    $needle = Normalize-PgPath $Context.DataDir
+    return @(Get-CimInstance Win32_Process -Filter "Name = 'postgres.exe'" -ErrorAction SilentlyContinue |
+        Where-Object {
+            $commandLine = if ($_.CommandLine) { $_.CommandLine.Replace('/', '\') } else { '' }
+            $commandLine.IndexOf($needle, [System.StringComparison]::OrdinalIgnoreCase) -ge 0
+        } |
+        ForEach-Object { [int]$_.ProcessId })
+}
+
 function Invoke-PgPsql {
     param(
         [Parameter(Mandatory = $true)]$Context,

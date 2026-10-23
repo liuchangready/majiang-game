@@ -26,6 +26,15 @@ $ErrorActionPreference = 'Stop'
 
 $context = New-PgContext -Root $Root -Port $Port -DbName $DbName
 Assert-PgOwned -Context $context | Out-Null
+if (-not (Test-TcpPortOpen -Port $context.Port)) {
+    throw "PostgreSQL is not listening on 127.0.0.1:$($context.Port). Run start-postgres.ps1 first."
+}
+$identity = Get-PgServerIdentity -Context $context -Database 'postgres'
+Assert-PgServerIsOwned -Context $context -Identity $identity | Out-Null
+if (-not (Test-PgDatabaseExists -Context $context)) {
+    throw "Database '$($context.DbName)' does not exist on the verified disposable cluster."
+}
+Assert-PgDatabaseMarker -Context $context | Out-Null
 if (-not (Test-PgReady -Context $context)) {
     throw "PostgreSQL is not ready on 127.0.0.1:$($context.Port). Run start-postgres.ps1 first."
 }
@@ -46,6 +55,7 @@ $env:MAHJONG_LOBBY_TEST_POSTGRES = $context.Connection
 $env:MAHJONG_LOBBY_PG_EVIDENCE = $EvidencePath
 $env:MAHJONG_LOBBY_PG_HANDOFF = $HandoffPath
 $env:MAHJONG_LOBBY_PG_ROOT = $context.Root
+$env:MAHJONG_LOBBY_PG_DATA = $context.DataDir
 if ($Mode -eq 'write' -or $Mode -eq 'read') {
     $env:MAHJONG_LOBBY_PG_RESTART_PHASE = $Mode
 } else {

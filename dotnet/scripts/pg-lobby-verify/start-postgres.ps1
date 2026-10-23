@@ -5,6 +5,10 @@
     lobby store verification. Downloads the official EDB Windows binaries when
     they are not present, verifies the pinned SHA-256, initializes a dedicated
     data directory and creates the test database.
+
+    Every call first proves that any listener on the port is this exact data
+    directory (read-only data_directory query). A marker is never used to claim
+    an unknown database and is never overwritten.
 #>
 [CmdletBinding()]
 param(
@@ -52,41 +56,60 @@ if (-not (Test-Path -LiteralPath $context.PgCtl)) {
     }
 }
 
-if (-not (Test-Path -LiteralPath (Join-Path $context.DataDir 'PG_VERSION'))) {
-    Assert-PgPortAvailable -Context $context
-    Write-Host "Initializing a dedicated database cluster at $($context.DataDir)"
-    $init = Invoke-NativeText -FilePath $context.InitDb -Arguments @(
-        '-D', $context.DataDir, '-U', 'mahjong_pg',
-        '--auth-local=trust', '--auth-host=trust', '--encoding=UTF8', '--locale=C')
-    $init.Output | ForEach-Object { Write-Host $_ }
-    if ($init.ExitCode -ne 0) {
-        throw "initdb failed with exit code $($init.ExitCode)."
+# Never trust "something answers on host/port". Verify the server's own
+# data_directory before creating a database, schema, marker or stopping it.
+$listenerPresent = Test-TcpPortOpen -Port $context.Port
+$serverWasAlreadyRunning = $false
+$identity = $null
+
+if ($listenerPresent) {
+    Write-Host "Port 127.0.0.1:$($context.Port) is already listening; verifying its data_directory."
+    $waitDeadline = (Get-Date).AddSeconds(30)
+    while (-not (Test-PgReady -Context $context)) {
+        if ((Get-Date) -gt $waitDeadline) {
+            throw "A listener exists on 127.0.0.1:$($context.Port) but PostgreSQL did not become ready; refusing to attach."
+        }
+        Start-Sleep -Milliseconds 250
     }
 
-    # Explicit, reviewable settings. listen_addresses is loopback only and the
-    # port is dedicated; the Unix socket is disabled on Windows.
-    $settings = @(
-        '',
-        '# --- added by dotnet/scripts/pg-lobby-verify (disposable test cluster) ---',
-        "listen_addresses = '127.0.0.1'",
-        "port = $($context.Port)",
-        "unix_socket_directories = ''",
-        'fsync = on',
-        'synchronous_commit = on',
-        'full_page_writes = on',
-        "log_timezone = 'UTC'",
-        "timezone = 'UTC'"
-    ) -join [Environment]::NewLine
-    [System.IO.File]::AppendAllText(
-        (Join-Path $context.DataDir 'postgresql.conf'),
-        $settings + [Environment]::NewLine,
-        (New-Object System.Text.UTF8Encoding($false)))
+    $identity = Get-PgServerIdentity -Context $context -Database 'postgres'
+    Assert-PgServerIsOwned -Context $context -Identity $identity | Out-Null
+    $serverWasAlreadyRunning = $true
+    Write-Host "PostgreSQL is already accepting connections on 127.0.0.1:$($context.Port) and its data_directory is this cluster."
 }
-
-if (Test-PgReady -Context $context) {
-    Write-Host "PostgreSQL is already accepting connections on 127.0.0.1:$($context.Port)."
-} else {
+else {
     Assert-PgPortAvailable -Context $context
+
+    if (-not (Test-Path -LiteralPath (Join-Path $context.DataDir 'PG_VERSION'))) {
+        Write-Host "Initializing a dedicated database cluster at $($context.DataDir)"
+        $init = Invoke-NativeText -FilePath $context.InitDb -Arguments @(
+            '-D', $context.DataDir, '-U', 'mahjong_pg',
+            '--auth-local=trust', '--auth-host=trust', '--encoding=UTF8', '--locale=C')
+        $init.Output | ForEach-Object { Write-Host $_ }
+        if ($init.ExitCode -ne 0) {
+            throw "initdb failed with exit code $($init.ExitCode)."
+        }
+
+        # Explicit, reviewable settings. listen_addresses is loopback only and the
+        # port is dedicated; the Unix socket is disabled on Windows.
+        $settings = @(
+            '',
+            '# --- added by dotnet/scripts/pg-lobby-verify (disposable test cluster) ---',
+            "listen_addresses = '127.0.0.1'",
+            "port = $($context.Port)",
+            "unix_socket_directories = ''",
+            'fsync = on',
+            'synchronous_commit = on',
+            'full_page_writes = on',
+            "log_timezone = 'UTC'",
+            "timezone = 'UTC'"
+        ) -join [Environment]::NewLine
+        [System.IO.File]::AppendAllText(
+            (Join-Path $context.DataDir 'postgresql.conf'),
+            $settings + [Environment]::NewLine,
+            (New-Object System.Text.UTF8Encoding($false)))
+    }
+
     Write-Host "Starting PostgreSQL from $($context.DataDir) on 127.0.0.1:$($context.Port)"
     $startCode = Start-PgServer -Context $context -TimeoutSeconds 60
     if ($startCode -ne 0) {
@@ -96,50 +119,51 @@ if (Test-PgReady -Context $context) {
         }
         throw "pg_ctl start failed with exit code $startCode."
     }
-}
 
-$deadline = (Get-Date).AddSeconds(60)
-while (-not (Test-PgReady -Context $context)) {
-    if ((Get-Date) -gt $deadline) {
-        throw "PostgreSQL did not become ready on 127.0.0.1:$($context.Port)."
+    $deadline = (Get-Date).AddSeconds(60)
+    while (-not (Test-PgReady -Context $context)) {
+        if ((Get-Date) -gt $deadline) {
+            throw "PostgreSQL did not become ready on 127.0.0.1:$($context.Port)."
+        }
+        Start-Sleep -Milliseconds 250
     }
-    Start-Sleep -Milliseconds 250
+
+    $identity = Get-PgServerIdentity -Context $context -Database 'postgres'
+    Assert-PgServerIsOwned -Context $context -Identity $identity | Out-Null
 }
 
-$dbCheck = Invoke-NativeText -FilePath $context.Psql -Arguments @(
-    '-h', '127.0.0.1', '-p', "$($context.Port)", '-U', 'mahjong_pg', '-d', 'postgres', '-tAc',
-    "SELECT 1 FROM pg_database WHERE datname = '$($context.DbName)'")
-$dbExists = ($dbCheck.Output -join '').Trim()
-if ($dbCheck.ExitCode -ne 0) {
-    throw "Could not list databases: $($dbCheck.Output -join ' ')"
-}
-if ($dbExists -ne '1') {
+$databaseExisted = Test-PgDatabaseExists -Context $context
+if (-not $databaseExisted) {
+    if ($serverWasAlreadyRunning) {
+        throw ("Refusing to create database '$($context.DbName)' on an already-running cluster. " +
+            "The disposable root exists but the database is missing; recreate the root rather than claiming it.")
+    }
+
     $create = Invoke-NativeText -FilePath $context.Createdb -Arguments @(
         '-h', '127.0.0.1', '-p', "$($context.Port)", '-U', 'mahjong_pg', $context.DbName)
     if ($create.ExitCode -ne 0) {
         throw "createdb failed with exit code $($create.ExitCode)."
     }
-    Write-Host "Created database $($context.DbName)."
+    Initialize-PgDatabaseMarker -Context $context
+    Write-Host "Created database $($context.DbName) and its ownership marker."
 }
+else {
+    $marker = Get-PgDatabaseMarker -Context $context
+    if ([string]::IsNullOrWhiteSpace([string]$marker.owner)) {
+        if ($serverWasAlreadyRunning) {
+            throw ("Refusing to claim database '$($context.DbName)': it exists on an already-running " +
+                "cluster without a lobby_verify.meta marker. Recreate the disposable root.")
+        }
 
-# Ownership marker inside the database. The test harness refuses to truncate
-# or write a database that does not carry this marker, so a chance collision of
-# host/port/name cannot silently attach to a user-owned database.
-$rootLiteral = $context.Root.Replace("'", "''")
-$markerSql = @"
-CREATE SCHEMA IF NOT EXISTS lobby_verify;
-CREATE TABLE IF NOT EXISTS lobby_verify.meta (
-    owner text PRIMARY KEY,
-    root text NOT NULL,
-    created_at timestamptz NOT NULL
-);
-INSERT INTO lobby_verify.meta (owner, root, created_at)
-VALUES ('$($script:PgOwner)', '$rootLiteral', now())
-ON CONFLICT (owner) DO UPDATE SET root = EXCLUDED.root, created_at = EXCLUDED.created_at;
-"@
-$marker = Invoke-PgPsql -Context $context -Arguments @('-v', 'ON_ERROR_STOP=1', '-c', $markerSql)
-if ($marker.ExitCode -ne 0) {
-    throw "Could not write the disposable-database ownership marker."
+        # Fresh start on this verified data directory: create the missing marker
+        # once, then verify. An existing marker is never overwritten.
+        Initialize-PgDatabaseMarker -Context $context
+        Write-Host "Created the missing ownership marker on a freshly started cluster."
+    }
+    else {
+        Assert-PgDatabaseMarker -Context $context | Out-Null
+        Write-Host "Existing ownership marker verified; not overwritten."
+    }
 }
 
 $versionResult = Invoke-NativeText -FilePath $context.Psql -Arguments @(
@@ -149,6 +173,7 @@ $version = $versionResult.Output
 Write-Section 'PostgreSQL test instance ready'
 Write-Host "Root:            $($context.Root)"
 Write-Host "Data directory:  $($context.DataDir)"
+Write-Host "Server identity: $($identity.dataDirectory) (verified)"
 Write-Host "Listen address:  127.0.0.1:$($context.Port) (loopback only)"
 Write-Host "Database:        $($context.DbName)"
 Write-Host "Server version:  $(($version -join '').Trim())"

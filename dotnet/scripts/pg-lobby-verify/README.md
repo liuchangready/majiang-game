@@ -13,10 +13,20 @@ baseline.
   `pg-owner.json` (absolute path + owner + port). Cleanup refuses any other path.
 - `listen_addresses = '127.0.0.1'` only, a dedicated non-default port (5432 and
   5433 are refused), and a dedicated data directory created by the script.
+- Any listening instance is identified with a read-only
+  `current_setting('data_directory')` query before a database is created,
+  migrated, marked or stopped. The normalized absolute data directory must equal
+  the context's data directory; a port collision with another instance is
+  refused even when a local `data/PG_VERSION` exists. No marker is written to
+  the foreign instance.
 - The database name must start with `mahjong_lobby_test`.
-- The database carries a `lobby_verify.meta` ownership row. The tests refuse to
-  write or truncate a database without that marker and (when
-  `MAHJONG_LOBBY_PG_ROOT` is set by the runner) with a different root path.
+- The database carries exactly one `lobby_verify.meta` ownership row. The tests
+  refuse to write or truncate a database without that marker, with a different
+  owner/root, or with more than one row. Existing markers are validated, never
+  overwritten; a database is created only on a freshly started, verified data
+  directory.
+- `cleanup-postgres.ps1 -WhatIf` performs the read-only checks and returns
+  before either `pg_ctl stop` or deletion.
 - No password is used or printed: host auth is `trust` only for this throwaway
   loopback cluster. If a password is ever put in the connection string, the
   scripts do not log the connection string.
@@ -27,7 +37,7 @@ baseline.
 ```powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File `
   dotnet\scripts\pg-lobby-verify\verify-all.ps1 `
-  -Root D:\majiang-pg-tmp\p53-pg `
+  -Root D:\majiang-pg-tmp\p53-pg-r1fix `
   -Port 55432 `
   -DbName mahjong_lobby_test `
   -ZipPath D:\majiang-pg-tmp\cache\postgresql-16.10-1-windows-x64-binaries.zip
@@ -49,10 +59,30 @@ restart-postgres.ps1 -Mode immediate|fast|smart -Root <root> -Port 55432 -DbName
 cleanup-postgres.ps1 -Root <root> -Port 55432 -DbName mahjong_lobby_test [-WhatIf]
 ```
 
-`run-tests.ps1` sets the connection, evidence, handoff and restart-phase values
-only in the child-process environment. It fails on any skip unless `-AllowSkips`
-is explicitly passed (the full-suite step uses this for the two restart phases,
-which are then executed separately in steps 5 and 7).
+`run-tests.ps1` sets the connection, evidence, handoff, root and data-directory
+values only in the child-process environment. It fails on any skip unless
+`-AllowSkips` is explicitly passed (the full-suite step uses this for the two
+restart phases, which are then executed separately in steps 5 and 7).
+
+## Negative verification
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File `
+  dotnet\scripts\pg-lobby-verify\negative-checks.ps1 `
+  -Root D:\majiang-pg-tmp\p53-pg-negative-r1fix `
+  -PortA 55436 `
+  -DbA mahjong_lobby_test_neg_a -DbB mahjong_lobby_test_neg_b `
+  -ZipPath D:\majiang-pg-tmp\cache\postgresql-16.10-1-windows-x64-binaries.zip
+```
+
+The script creates both clusters itself. B is initialized and stopped first on
+the shared port; A then takes that port. `start`, `migrate`, `run-tests`,
+`restart` and `cleanup` are all invoked with B's root but A's port, so B's local
+port marker is valid and the refusal must come from the server data-directory
+check. It re-checks A's postmaster start time, PID, database list and marker, and
+B's marker/PG_VERSION hashes after every refusal; it then checks that
+`cleanup -WhatIf` leaves an active A's postmaster, PID, port and files intact
+before the normal cleanup. Exit code 0 means all negative checks passed.
 
 ## Environment variables (set by the runner)
 
@@ -63,6 +93,7 @@ which are then executed separately in steps 5 and 7).
 | `MAHJONG_LOBBY_PG_HANDOFF` | Cross-process restart handoff file |
 | `MAHJONG_LOBBY_PG_RESTART_PHASE` | `write` or `read` restart phase |
 | `MAHJONG_LOBBY_PG_ROOT` | Expected disposable cluster root, checked against `lobby_verify.meta` |
+| `MAHJONG_LOBBY_PG_DATA` | Expected server `data_directory` (must equal `<root>\data`) |
 
 ## Evidence
 

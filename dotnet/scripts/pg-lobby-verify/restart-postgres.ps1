@@ -19,13 +19,20 @@ $ErrorActionPreference = 'Stop'
 
 $context = New-PgContext -Root $Root -Port $Port -DbName $DbName
 Assert-PgOwned -Context $context | Out-Null
+if (-not (Test-TcpPortOpen -Port $context.Port)) {
+    throw "PostgreSQL is not listening on 127.0.0.1:$($context.Port); nothing to restart."
+}
+$beforeIdentity = Get-PgServerIdentity -Context $context -Database 'postgres'
+Assert-PgServerIsOwned -Context $context -Identity $beforeIdentity | Out-Null
+if (-not (Test-PgDatabaseExists -Context $context)) {
+    throw "Database '$($context.DbName)' does not exist on the verified disposable cluster."
+}
+Assert-PgDatabaseMarker -Context $context | Out-Null
 if (-not (Test-PgReady -Context $context)) {
     throw "PostgreSQL is not ready on 127.0.0.1:$($context.Port); nothing to restart."
 }
 
-$before = & $context.Psql -h 127.0.0.1 -p $context.Port -U mahjong_pg -d $context.DbName -tAc `
-    'SELECT pg_postmaster_start_time()::text' 2>&1
-$beforeText = ($before -join '').Trim()
+$beforeText = ([string]$beforeIdentity.startedAt).Trim()
 $logOffset = 0
 if (Test-Path -LiteralPath $context.LogFile) {
     $logOffset = (Get-Item -LiteralPath $context.LogFile).Length
@@ -60,15 +67,15 @@ while (-not (Test-PgReady -Context $context)) {
     Start-Sleep -Milliseconds 250
 }
 
-$after = & $context.Psql -h 127.0.0.1 -p $context.Port -U mahjong_pg -d $context.DbName -tAc `
-    'SELECT pg_postmaster_start_time()::text' 2>&1
-$afterText = ($after -join '').Trim()
+$afterIdentity = Get-PgServerIdentity -Context $context -Database 'postgres'
+Assert-PgServerIsOwned -Context $context -Identity $afterIdentity | Out-Null
+Assert-PgDatabaseMarker -Context $context | Out-Null
+$afterText = ([string]$afterIdentity.startedAt).Trim()
 if ($beforeText -eq $afterText) {
     throw "The postmaster start time did not change; the server was not actually restarted."
 }
 
-$topology = & $context.Psql -h 127.0.0.1 -p $context.Port -U mahjong_pg -d $context.DbName -tAc `
-    "SELECT current_setting('listen_addresses') || '|' || current_setting('port') || '|' || current_setting('data_directory')" 2>&1
+$topology = "127.0.0.1|$($afterIdentity.port)|$($afterIdentity.dataDirectory)"
 
 $recoveryLines = @()
 if (Test-Path -LiteralPath $context.LogFile) {
