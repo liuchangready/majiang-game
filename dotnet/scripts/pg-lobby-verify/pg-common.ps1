@@ -83,6 +83,8 @@ function New-PgContext {
         RepoRoot     = $repoRoot
         TestProject  = Join-Path $repoRoot 'dotnet\tests\Mahjong.LobbyService.Tests\Mahjong.LobbyService.Tests.csproj'
         TestAssembly = Join-Path $repoRoot 'dotnet\tests\Mahjong.LobbyService.Tests\bin\Release\net8.0\Mahjong.LobbyService.Tests.dll'
+        ProbeProject = Join-Path $repoRoot 'dotnet\tests\Mahjong.LobbyService.PostgresProbe\Mahjong.LobbyService.PostgresProbe.csproj'
+        ProbeAssembly = Join-Path $repoRoot 'dotnet\tests\Mahjong.LobbyService.PostgresProbe\bin\Release\net8.0\Mahjong.LobbyService.PostgresProbe.dll'
         Migration    = Join-Path $repoRoot 'dotnet\src\Mahjong.LobbyService\Migrations\001_lobby.sql'
         EvidenceDir  = Join-Path $rootFull 'evidence'
     }

@@ -50,6 +50,7 @@ try {
     $startScript = Join-Path $PSScriptRoot 'start-postgres.ps1'
     $migrateScript = Join-Path $PSScriptRoot 'migrate.ps1'
     $runScript = Join-Path $PSScriptRoot 'run-tests.ps1'
+    $probeScript = Join-Path $PSScriptRoot 'run-probe.ps1'
     $restartScript = Join-Path $PSScriptRoot 'restart-postgres.ps1'
     $cleanupScript = Join-Path $PSScriptRoot 'cleanup-postgres.ps1'
 
@@ -63,27 +64,35 @@ try {
     Add-Result -Name 'migrate-x2' -Status 'PASS' `
         -Command "migrate.ps1 -Times 2" -Detail '001_lobby.sql applied twice with exit code 0'
 
-    Write-Section 'Step 3/8: build lobby test project'
-    $buildCommand = "$Dotnet build $($context.TestProject) -c Release --nologo"
-    Write-Host "Command: $buildCommand"
+    Write-Section 'Step 3/8: build lobby test project and restart probe'
+    $testBuildCommand = "$Dotnet build $($context.TestProject) -c Release --nologo"
+    $probeBuildCommand = "$Dotnet build $($context.ProbeProject) -c Release --nologo"
+    Write-Host "Command: $testBuildCommand"
+    Write-Host "Command: $probeBuildCommand"
     $previousErrorAction = $ErrorActionPreference
     try {
         $ErrorActionPreference = 'Continue'
-        & $Dotnet build $context.TestProject -c Release --nologo 2>&1 | Tee-Object -FilePath (Join-Path $context.LogsDir 'build.log')
-        $buildExitCode = $LASTEXITCODE
+        & $Dotnet build $context.TestProject -c Release --nologo 2>&1 | Tee-Object -FilePath (Join-Path $context.LogsDir 'build-test.log')
+        $testBuildExitCode = $LASTEXITCODE
+        & $Dotnet build $context.ProbeProject -c Release --nologo 2>&1 | Tee-Object -FilePath (Join-Path $context.LogsDir 'build-probe.log')
+        $probeBuildExitCode = $LASTEXITCODE
     }
     finally {
         $ErrorActionPreference = $previousErrorAction
     }
-    if ($buildExitCode -ne 0) {
-        throw "The test project build failed with exit code $buildExitCode."
+    if ($testBuildExitCode -ne 0) {
+        throw "The test project build failed with exit code $testBuildExitCode."
     }
-    Add-Result -Name 'build' -Status 'PASS' -Command $buildCommand -Detail '0 warnings, 0 errors expected (see build.log)'
+    if ($probeBuildExitCode -ne 0) {
+        throw "The restart probe build failed with exit code $probeBuildExitCode."
+    }
+    Add-Result -Name 'build' -Status 'PASS' -Command "$testBuildCommand; $probeBuildCommand" `
+        -Detail 'test project + restart probe: 0 warnings, 0 errors expected (see build-test.log/build-probe.log)'
 
     Write-Section 'Step 4/8: full lobby suite against real PostgreSQL'
     $fullLog = Join-Path $context.LogsDir 'full-suite.log'
     & $runScript -Mode full -Root $context.Root -Port $context.Port -DbName $context.DbName `
-        -Dotnet $Dotnet -LogPath $fullLog -AllowSkips
+        -Dotnet $Dotnet -LogPath $fullLog
     $fullSummary = Get-Content -LiteralPath ($fullLog + '.summary.json') -Raw | ConvertFrom-Json
     Add-Result -Name 'full-suite' -Status 'PASS' `
         -Command "$Dotnet test $($context.TestProject) -c Release --nologo --no-build" `
@@ -92,24 +101,21 @@ try {
     if ($fullSummary.failed -ne 0 -or $fullSummary.errors -ne 0 -or $fullSummary.total -lt 1) {
         throw "The full suite did not satisfy the expected outcome."
     }
-    # The only expected skips are the two restart phases, which are NOT passed
-    # in this process: steps 5 and 7 execute them in fresh processes on either
-    # side of a real crash restart. Any other skip fails the gate.
-    if ($fullSummary.skipped -ne 2) {
-        throw "The full suite skipped $($fullSummary.skipped) tests; expected only the two restart phases (write/read)."
+    if ($fullSummary.skipped -ne 0) {
+        throw "The full suite skipped $($fullSummary.skipped) tests; the ordinary Lobby suite must have zero skips."
     }
 
-    Write-Section 'Step 5/8: restart-write phase (persist receipt + consumed ticket)'
-    $writeLog = Join-Path $context.LogsDir 'restart-write.log'
-    & $runScript -Mode write -Root $context.Root -Port $context.Port -DbName $context.DbName `
+    Write-Section 'Step 5/8: restart-write probe (persist receipt + consumed ticket)'
+    $writeLog = Join-Path $context.LogsDir 'restart-write-probe.log'
+    & $probeScript -Phase write -Root $context.Root -Port $context.Port -DbName $context.DbName `
         -Dotnet $Dotnet -LogPath $writeLog
     $writeSummary = Get-Content -LiteralPath ($writeLog + '.summary.json') -Raw | ConvertFrom-Json
-    if ($writeSummary.total -ne 1 -or $writeSummary.passed -ne 1 -or $writeSummary.skipped -ne 0) {
-        throw "The restart-write phase did not execute exactly one passing test."
+    if ($writeSummary.result -ne 'PASS' -or $writeSummary.exitCode -ne 0) {
+        throw "The restart-write probe did not pass."
     }
-    Add-Result -Name 'restart-write' -Status 'PASS' `
-        -Command "$Dotnet <test-dll> -method WritePhasePersistsConsumedTicketAndReplayableReceipts" `
-        -Detail ("Total={0} Passed={1} Skipped={2}" -f $writeSummary.total, $writeSummary.passed, $writeSummary.skipped) `
+    Add-Result -Name 'restart-write-probe' -Status 'PASS' `
+        -Command "$Dotnet $($context.ProbeAssembly) write" `
+        -Detail ("ProbeResult={0} ExitCode={1}" -f $writeSummary.result, $writeSummary.exitCode) `
         -Data $writeSummary
 
     Write-Section 'Step 6/8: crash restart of the real PostgreSQL process'
@@ -120,17 +126,17 @@ try {
         -Detail ("postmaster {0} -> {1}" -f $restartData.before, $restartData.after) `
         -Data $restartData
 
-    Write-Section 'Step 7/8: restart-read phase in a new process after the crash restart'
-    $readLog = Join-Path $context.LogsDir 'restart-read.log'
-    & $runScript -Mode read -Root $context.Root -Port $context.Port -DbName $context.DbName `
+    Write-Section 'Step 7/8: restart-read probe in a new process after the crash restart'
+    $readLog = Join-Path $context.LogsDir 'restart-read-probe.log'
+    & $probeScript -Phase read -Root $context.Root -Port $context.Port -DbName $context.DbName `
         -Dotnet $Dotnet -LogPath $readLog
     $readSummary = Get-Content -LiteralPath ($readLog + '.summary.json') -Raw | ConvertFrom-Json
-    if ($readSummary.total -ne 1 -or $readSummary.passed -ne 1 -or $readSummary.skipped -ne 0) {
-        throw "The restart-read phase did not execute exactly one passing test."
+    if ($readSummary.result -ne 'PASS' -or $readSummary.exitCode -ne 0) {
+        throw "The restart-read probe did not pass."
     }
-    Add-Result -Name 'restart-read' -Status 'PASS' `
-        -Command "$Dotnet <test-dll> -method ReadPhaseAfterRealProcessRestartReplaysReceiptsAndSeesConsumption" `
-        -Detail ("Total={0} Passed={1} Skipped={2}" -f $readSummary.total, $readSummary.passed, $readSummary.skipped) `
+    Add-Result -Name 'restart-read-probe' -Status 'PASS' `
+        -Command "$Dotnet $($context.ProbeAssembly) read" `
+        -Detail ("ProbeResult={0} ExitCode={1}" -f $readSummary.result, $readSummary.exitCode) `
         -Data $readSummary
 
     Write-Section 'Step 8/8: durable row snapshot'
