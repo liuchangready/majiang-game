@@ -159,11 +159,11 @@ exit=198
 
 原始日志与结果：
 
-- `build\p22-aot\20261023-174927\unity-wire-aot.log`
-- `build\p22-aot\20261023-174927\results.txt`
-- `build\p22-aot\20261023-174927\unity-smoke-compile.log`（`exit=0; no diagnostics`）
-- `build\p22-aot\20261023-174927\unity-smoke-player-compile.log`（`exit=0; no diagnostics`）
-- `build\p22-aot\20261023-174927\il2cpp-helper-compile.log`（`exit=0; no diagnostics`）
+- `build\p22-aot\20261023-175124\unity-wire-aot.log`
+- `build\p22-aot\20261023-175124\results.txt`
+- `build\p22-aot\20261023-175124\unity-smoke-compile.log`（`exit=0; no diagnostics`）
+- `build\p22-aot\20261023-175124\unity-smoke-player-compile.log`（`exit=0; no diagnostics`）
+- `build\p22-aot\20261023-175124\il2cpp-helper-compile.log`（`exit=0; no diagnostics`）
 
 ## 5. IL2CPP 平台实测
 

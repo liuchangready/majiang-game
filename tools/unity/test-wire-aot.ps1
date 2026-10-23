@@ -1243,6 +1243,16 @@ foreach ($root in @("$env:ProgramData\Unity\licenses", "$env:LOCALAPPDATA\Unity\
         $licenseFiles += Get-ChildItem $root -Recurse -File -Filter 'Unity*License*' -ErrorAction SilentlyContinue
     }
 }
+$hubPackages = Join-Path $env:LOCALAPPDATA 'Packages'
+if (Test-Path $hubPackages) {
+    Get-ChildItem $hubPackages -Directory -Filter 'UnityTechnologies.UnityHub_*' -ErrorAction SilentlyContinue |
+        ForEach-Object {
+            $hubLicenses = Join-Path $_.FullName 'LocalCache\Local\Unity\licenses'
+            if (Test-Path $hubLicenses) {
+                $licenseFiles += Get-ChildItem $hubLicenses -Recurse -File -Filter 'Unity*License*' -ErrorAction SilentlyContinue
+            }
+        }
+}
 $ulf = @("$env:ProgramData\Unity\Unity_lic.ulf", "$env:LOCALAPPDATA\Unity\Unity_lic.ulf", "$env:APPDATA\Unity\Unity_lic.ulf") |
     Where-Object { Test-Path $_ } |
     Select-Object -First 1
