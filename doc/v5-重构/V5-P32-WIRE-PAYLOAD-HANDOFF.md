@@ -8,6 +8,8 @@
 > 本组件只落实已验收 P3.2a §7 第 8 项与 §8 的真实缺口：P3.2a 的 `ProjectToContract` 只有元数据、`EncodeBody()` 不是 Wire、`TableOwnerPrivateView` 未进 Contracts。未创建 TableService、未接线 actor/mailbox/stream、未做真实 Wire 流、未重做 P3.2a/P3.3 旧线程、未合入 P3.2b 在途源码。
 >
 > **第一轮独立审查 FAIL 返修**：修复公共暗杠 identity 经 `PublicEventEnvelope`/`Encode`/`Decode`/`EnsureStrict` 泄漏、跨座位 private 事件（含 resolved 缺 owner）泄漏、普通 `Encode` 绕过 owner、公共和牌 `PUBLIC` 可见性绕过；新增持久恶意 Wire 回归。
+>
+> **第二轮独立验收 FAIL 返修**：`PrivateCheatView` 增加独立 `window_id = 15`，真实映射 `Contracts.WindowId`；window-only（已开窗、未发 offer/reservation）与 close/更换窗口不再被静默抹掉；新增四席 open/close/replacement、双 offer+reservation、跨席隐私的真实 Wire 回归。
 
 ---
 
@@ -90,6 +92,7 @@ P3.2a 的 `PublicSnapshotView`、`PlayerSnapshotView`、`TableOwnerPrivateView`�
 | `PlayerPrivateView` | `owner_melds = 17` | repeated `MeldView` | 含暗杠四张，仅 owner |
 | `PrivateCheatView` | `off_turn_sleeve_bloom = 13` | `SleeveBloomView` | 与即时 offer 分离，可同时存在 |
 | `PrivateCheatView` | `sleeve_bloom_reservation = 14` | `SleeveBloomReservationView` | reservation 独立 |
+| `PrivateCheatView` | `window_id = 15` | string | 独立已开启窗口；空串表示关闭，不依赖 offer/reservation 存在 |
 | `SleeveBloomView` | `created_turn_number = 15` | uint32 | 来源 turn |
 | `SleeveBloomView` | `draw_kind = 16` | `SleeveBloomDrawKind` | DEAL_EXTRA/NORMAL/RINSHAN |
 | `SleeveBloomView` | `has_deadline = 17` | bool | immediate 无 deadline，避免 0 被误读 |
@@ -164,14 +167,15 @@ P3.2a 的 `PublicSnapshotView`、`PlayerSnapshotView`、`TableOwnerPrivateView`�
 - **公共暗杠只接受“完全没有 meld body”的安全形态**：`KanDeclared{kan_type=CLOSED}` 携带任何 `MeldView`（包括空 `tile_ids`、仅 `called_tile_id`、`from_seat` 旁路）都拒绝；open/added kan 必须匹配非 conceal meld。`PublicEventEnvelope`、public snapshot settlement、public match view、player public 子图、sync 的所有入口走同一校验。
 - **公共 win**：`TsumoWin`/`RonWin` 在 `PublicEventEnvelope` 必须是 `SETTLEMENT_PUBLIC`；`PUBLIC` 被拒绝。ura 独立授权检查保留。
 - 私有 owner：`Encode` 的生产入口强制 `Envelope.seat_id` 为 0..3 且等于 `private_view.seat`；`Decode` 对已知 PlayerSnapshot/PlayerUpdate/Sync player 同样校验 owner，违规返回非 Ok，不再“Ok 后无约束应用”。`PlayerUpdate.VisibleEvents` 在 Encode/Decode/EnsureStrict 三处校验 event owner。
-- `WireCodec.EncodeCompatibility` 是显式兼容路径：只为保留既有 Client“错误 owner 被客户端拒收”测试而跳过 private owner 绑定，public 校验仍全部执行；生产调用必须用 `Encode`。未知 optional 字段在 Decode 路径仍按既有 minor 兼容策略保留，不因 owner 校验被一并拒绝。
+- **window-only**：`PrivateCheatView.window_id = 15` 是独立 owner-only 字段；空串表示关闭。即使没有 immediate/off-turn offer 或 reservation，也精确保留 `WithOpenedWindow` 的值；关闭时为空并产生不同字节。公共可达图没有该字段，其他席不可见。
+- `EncodeCompatibility` 是显式兼容路径：只为保留既有 Client“错误 owner 被客户端拒收”测试而跳过 private owner 绑定，public 校验仍全部执行；生产调用必须用 `Encode`。未知 optional 字段在 Decode 路径仍按既有 minor 兼容策略保留，不因 owner 校验被一并拒绝。
 
 ---
 
 ## 6. 验证记录
 
 全部使用 `D:/Unity/dotnet/dotnet.exe`。原始日志目录：
-`C:/Users/sncdc/AppData/Local/Temp/p32-wire-fix-final2-20261024/`（临时目录，不提交）。
+`C:/Users/sncdc/AppData/Local/Temp/p32-wire-round3-final-20261024/`（临时目录，不提交）。
 框架 TestResults 仍在各测试项目 `bin/<Config>/net8.0/TestResults/`。
 
 ### 6.1 最终命令、计数、exit
@@ -182,20 +186,21 @@ P3.2a 的 `PublicSnapshotView`、`PlayerSnapshotView`、`TableOwnerPrivateView`�
 | 2 | `dotnet build dotnet/tests/Mahjong.TableRuntime.Tests/Mahjong.TableRuntime.Tests.csproj --nologo -v minimal` | 成功 | 0 |
 | 3 | `dotnet build dotnet/tests/Mahjong.Client.Wss.Tests/Mahjong.Client.Wss.Tests.csproj --nologo -v minimal` | 成功 | 0 |
 | 4 | `dotnet build dotnet/tests/Mahjong.LobbyService.Tests/Mahjong.LobbyService.Tests.csproj --nologo -v minimal` | 成功 | 0 |
-| 5 | `dotnet test dotnet/tests/Mahjong.Contracts.Tests/Mahjong.Contracts.Tests.csproj --nologo -v minimal` | **103 passed / 0 failed / 0 skipped**（基线 82 + 21；含 7 项恶意 Wire/mapper 回归） | 0 |
-| 6 | `dotnet test dotnet/tests/Mahjong.TableRuntime.Tests/Mahjong.TableRuntime.Tests.csproj --nologo -v minimal` | **110 passed / 0 failed / 0 skipped**（基线 104 + 6） | 0 |
+| 5 | `dotnet test dotnet/tests/Mahjong.Contracts.Tests/Mahjong.Contracts.Tests.csproj --nologo -v minimal` | **104 passed / 0 failed / 0 skipped**（基线 82 + 22；含恶意 Wire/mapper 与 window-only 回归） | 0 |
+| 6 | `dotnet test dotnet/tests/Mahjong.TableRuntime.Tests/Mahjong.TableRuntime.Tests.csproj --nologo -v minimal` | **111 passed / 0 failed / 0 skipped**（基线 104 + 7） | 0 |
 | 7 | `dotnet test dotnet/tests/Mahjong.Client.Tests/Mahjong.Client.Tests.csproj --nologo -v minimal` | **132 passed / 0 failed / 0 skipped** | 0 |
 | 8 | `dotnet test dotnet/tests/Mahjong.Client.Wss.Tests/Mahjong.Client.Wss.Tests.csproj --nologo -v minimal` | **80 passed / 0 failed / 0 skipped**（单元，不是真实 WSS） | 0 |
 | 9 | `dotnet test dotnet/tests/Mahjong.LobbyService.Tests/Mahjong.LobbyService.Tests.csproj --nologo -v minimal` | 77 passed / 0 failed / **12 skipped**（PG 未配置） | 0 |
-| 10 | `dotnet test ...Contracts.Tests... -c Release --nologo -v minimal` | 103 / 0 / 0 | 0 |
-| 11 | `dotnet test ...TableRuntime.Tests... -c Release --nologo -v minimal` | 110 / 0 / 0 | 0 |
+| 10 | `dotnet test ...Contracts.Tests... -c Release --nologo -v minimal` | 104 / 0 / 0 | 0 |
+| 11 | `dotnet test ...TableRuntime.Tests... -c Release --nologo -v minimal` | 111 / 0 / 0 | 0 |
 | 12 | `dotnet test ...Client.Tests... -c Release --nologo -v minimal` | 132 / 0 / 0 | 0 |
 | 13 | `dotnet build dotnet/Mahjong.sln -c Release --nologo -v minimal` | 成功，0 warning / 0 error | 0 |
 | 14 | `dotnet run --project C:/Users/sncdc/AppData/Local/Temp/codex-p32c-review-20261024/Review.csproj --nologo -v minimal` | 8/8 原恶意探针 REJECTED | 0 |
-| 15 | `git diff --check` | PASS（无空白错误） | 0 |
+| 15 | `dotnet run --project C:/Users/sncdc/AppData/Local/Temp/codex-p32c-round2-window/Review.csproj -v minimal` | 原 window-only 复现：WindowId 精确保留，open/closed 字节不同，exit 0 | 0 |
+| 16 | `git diff --check` | PASS（无空白错误） | 0 |
 
-非重复合计（Debug）：103 + 110 + 132 + 80 + 77 = **502 passed / 0 failed / 12 skipped**。其中 12 skip 全部是 LobbyService 的既有 PG 条件跳过，不代表本轮 PG 通过；不得当作统一入口 PASS。
-Release 定向：103 + 110 + 132 = **345 passed / 0 failed / 0 skipped**。
+非重复合计（Debug）：104 + 111 + 132 + 80 + 77 = **504 passed / 0 failed / 12 skipped**。其中 12 skip 全部是 LobbyService 的既有 PG 条件跳过，不代表本轮 PG 通过；不得当作统一入口 PASS。
+Release 定向：104 + 111 + 132 = **347 passed / 0 failed / 0 skipped**。
 
 ### 6.2 测试覆盖
 
@@ -209,19 +214,20 @@ Release 定向：103 + 110 + 132 = **345 passed / 0 failed / 0 skipped**。
   - 公共 `TsumoWin`/`RonWin` 必须 SETTLEMENT_PUBLIC；`PUBLIC` 在 Encode/Decode/EnsureStrict 全部拒绝。
   - future-minor optional 未知字段在 player snapshot/update 的 Decode 路径仍接受并计数。
 - owner 隐藏信息：四席 player snapshot、sleeve tiles、owner melds（含暗杠四张）、private ledger、mark group、beam 候选/hand、两种 sleeve offer + reservation + window。
+- **window-only 载荷**：四席分别以 `bloom-window-<seat>-7-1` 打开、无 offer/无 reservation；真实 `ProjectionWireMapper -> Encode -> Decode -> 再 encode` 精确保留 `WindowId`，close 为空且 open/closed 字节不同；更换窗口字节不同；跨席 window id 不出现在其他席 payload；既有两 offer+reservation fixture 同时保留各自 window 与独立 `WindowId`。TableRuntime 侧用真实 `WithOpenedWindow` 投影 -> `MapOwnerCheat` 验证四席与 clear。
 - 暗杠：公共 `ConcealedMeldView`（无 identity）与 owner `OwnerMelds`（四张）分离；公共 `MeldView` closed kan 被拒绝；公共/owner `KanDeclared` 红action 边界。
 - 里宝：未授权 ura 被 mapper/Wire 拒绝；settlement-public + authorized 成功；breakdown ura 同样受控。
 - 非法输入：未知事件、oneof mismatch、越界牌 136、重复牌、错误 owner seat、metadata-only settlement、空候选/负 deadline/空必填事实。
 - legacy：major 8 拒绝；future minor optional field decode 仍接受；本 build 仍不能 emit 更高 minor。
-- schema：字段号表、reserved 范围、proto/descriptor 一致、fingerprint、protoc 生成两次字节一致。
+- schema：字段号表、reserved 范围、proto/descriptor 一致、fingerprint=`290f46913e43407c57cea9df1de0d23e0a516facfeb7c7a2e9a6867fe9c32430`、protoc 生成两次字节一致。
 - TableRuntime：真实 P3.2a 投影 -> Contracts mapper；missing fact 拒绝；暗杠公共/owner 边界；resolved owner provenance；单局/整场 session 摘要保持；owner/snapshot 不一致与缺 time context 拒绝。既有 104 项未改且全绿。
 
 ### 6.3 状态
 
 | 项目 | 状态 |
 |---|---|
-| Contracts.Tests | **PASS** 103/0/0（Release 同） |
-| TableRuntime.Tests | **PASS** 110/0/0（Release 同；基线 104 保留） |
+| Contracts.Tests | **PASS** 104/0/0（Release 同） |
+| TableRuntime.Tests | **PASS** 111/0/0（Release 同；基线 104 保留） |
 | Client.Tests | **PASS** 132/0/0（Release 同） |
 | Client.Wss.Tests（单元） | **PASS** 80/0/0（Debug） |
 | LobbyService.Tests（单元） | **PARTIAL/PASS with 12 skipped**：77/0/12，PG 未配置 |
@@ -256,15 +262,15 @@ b96cf57d7e64c55d497543dec791eec13711ab297fcbc5fa490285fc56897c51
 |---|---|
 | `dotnet/src/Mahjong.Contracts/ProtocolProjectionPayload.cs` | `A7C7783613FBF544E1FDFB1CE0507E9987439C08211736A0E5C5E27D82B6850D` |
 | `dotnet/src/Mahjong.Contracts/ProtocolSnapshot.cs` | `141BAD6ACAC40F505863BC26137BD897FA229F673398CDE4FCE688362B10E3FE` |
-| `dotnet/src/Mahjong.Contracts.Wire/mahjong.proto` | `675A1114F35DD7E44F442644B5E3524DCBB3D6FFF2F269668E744A1F222C9D32` |
-| `dotnet/src/Mahjong.Contracts.Wire/ProjectionWireMapper.cs` | `928EF2417F4393825A1E964B190FDC18D57F0DB29D9F208F2F54F247128B37AC` |
-| `dotnet/src/Mahjong.Contracts.Wire/WireCodec.cs` | `49348C06110D5858179AB25DEABFBADB957F8A81C141DBAEDC4AEDA62CFBFD58` |
+| `dotnet/src/Mahjong.Contracts.Wire/mahjong.proto` | `E72F450605A8F793E29EDF48986E3D335285C48AA6FBD44D2865735A729CC664` |
+| `dotnet/src/Mahjong.Contracts.Wire/ProjectionWireMapper.cs` | `6A77D77C433619ADB9FE68740B8C229F5B47484F3816246CE87E11E5E3A39736` |
+| `dotnet/src/Mahjong.Contracts.Wire/WireCodec.cs` | `A23C2F720EC33374E7A44E66C4FB402D577B608194245D3252EBA9A6E7DA9A2C` |
 | `dotnet/src/Mahjong.TableRuntime/TableProjectionContractMapper.cs` | `72DA643F63DCA8C32A3D7A03BC4FB162D7C9D4E9CA1207D5605CA8B68253CFBF` |
-| `dotnet/tests/Mahjong.Contracts.Tests/ProjectionWireMapperTests.cs` | `BD89C56E929DB98C6DF2CE455166388F510428CA153AD6A4DC2E41D0783B4B2E` |
+| `dotnet/tests/Mahjong.Contracts.Tests/ProjectionWireMapperTests.cs` | `0C6214EF6A79253E64ED77409D744DB92BD3D708CBC12885B2779966B289EE65` |
 | `dotnet/tests/Mahjong.Contracts.Tests/WireSecurityBoundaryTests.cs` | `A195A0011625E70DEBEF08B51355D9C0C30359787B85D28ABE5A92E7B1D83966` |
-| `dotnet/tests/Mahjong.Contracts.Tests/SchemaCompatibilityTests.cs` | `CD8BC2B3FF7D0DA135EB308EE9E9CC30CF0C16A99B6C731BAE6A9453177E9901` |
-| `dotnet/tests/Mahjong.Contracts.Tests/WireCodecTests.cs` | `B6F844F753804419FC2E5A640DFD5BE878CE04453813087E899ABD89B2B5D142` |
-| `dotnet/tests/Mahjong.TableRuntime.Tests/TableProjectionContractMapperTests.cs` | `7EA571D7F83EA96B8E0CA84FFC90DC79A044AF10E7EDF122083E7D3D24E42454` |
+| `dotnet/tests/Mahjong.Contracts.Tests/SchemaCompatibilityTests.cs` | `C6965C31CF7E93FC10A33215378D366948B640EA9D2DFFC6DA5A87908CB9169C` |
+| `dotnet/tests/Mahjong.Contracts.Tests/WireCodecTests.cs` | `ECBB8071ECB80A0FF83BFAB6B7AFD2AC38E730BDFDF8E88BD57E514F3BD5D6ED` |
+| `dotnet/tests/Mahjong.TableRuntime.Tests/TableProjectionContractMapperTests.cs` | `191D6BDAC7873F1316F07723189F3752B610E7CCD6F2F1412634BDA3776EB772` |
 | `dotnet/tests/Mahjong.Client.Tests/TestSession.cs` | `4CE954C1AB5860DC969E3FFBB2C7630CB932CEFBD7AE7C3B969F2AFAA44A5069` |
 | `dotnet/tests/Mahjong.Client.Tests/TableSessionTests.cs` | `141CBBE0EF89CD2CF783A5B73FD2EAE232FB5298D51721268E506975CA1F31B4` |
 | 本文 | 见最终交付响应（提交后计算） |

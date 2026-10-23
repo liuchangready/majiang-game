@@ -274,6 +274,41 @@ namespace Mahjong.TableRuntime.Tests
                 TableProjectionContractMapper.MapPlayerSnapshot(seat0, owner0, null!));
         }
 
+        [Fact]
+        public void owner_window_only_projection_is_preserved_for_each_seat_and_closed_window_is_empty()
+        {
+            RoundStateMachine round = P31Fixtures.Dealt("round-1");
+            CheatState state = V32Fixtures.WithRegisteredRound(V32Fixtures.Cheat(), round.RoundId);
+            var windows = new string[4];
+            SleeveBloomState sleeve = state.SleeveBloom;
+            for (int seat = 0; seat < 4; seat++)
+            {
+                string window;
+                sleeve = sleeve.WithOpenedWindow(seat, seat + 1, out window);
+                windows[seat] = window;
+            }
+
+            state = state.WithSleeveBloom(sleeve);
+            TableProjectionContext context = V32Fixtures.Context(round);
+            var time = new TableProjectionTimeContext(1200);
+            for (int seat = 0; seat < 4; seat++)
+            {
+                TableOwnerPrivateView owner = TableVisibilityProjection.ProjectOwnerPrivate(round, state, seat, context);
+                PrivateCheatView cheat = TableProjectionContractMapper.MapOwnerCheat(owner.Cheat, time);
+                Assert.Equal(windows[seat], cheat.WindowId);
+                Assert.True(cheat.HasSleeveBloom);
+                Assert.Null(cheat.ImmediateSleeveOffer);
+                Assert.Null(cheat.OffTurnSleeveOffer);
+                Assert.Null(cheat.SleeveReservation);
+            }
+
+            CheatState closed = state.WithSleeveBloom(state.SleeveBloom.WithClearedWindow(0));
+            TableOwnerPrivateView closedOwner = TableVisibilityProjection.ProjectOwnerPrivate(round, closed, 0, context);
+            PrivateCheatView closedCheat = TableProjectionContractMapper.MapOwnerCheat(closedOwner.Cheat, time);
+            Assert.Equal(string.Empty, closedCheat.WindowId);
+            Assert.False(closedCheat.HasSleeveBloom);
+        }
+
         private static CheatState RichCheat(RoundStateMachine round)
         {
             CheatState state = V32Fixtures.WithRegisteredRound(V32Fixtures.Cheat(), round.RoundId);

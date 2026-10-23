@@ -677,6 +677,11 @@ message PrivateCheatView {
   // offer above; both offers may exist at the same time.
   SleeveBloomView off_turn_sleeve_bloom = 13;
   SleeveBloomReservationView sleeve_bloom_reservation = 14;
+
+  // The independently-opened off-turn window. It exists before any offer or
+  // reservation, and an empty value means the window is closed. It must not be
+  // inferred from an offer/reservation window id.
+  string window_id = 15;
   reserved 7 to 12;
   reserved "other_seats_cheat_points", "all_ledgers";
 }

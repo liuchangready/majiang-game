@@ -1844,6 +1844,11 @@ namespace Mahjong.Contracts.Wire
                 throw StrictError("private cheat points cannot be negative.");
             }
 
+            if (!string.IsNullOrEmpty(cheat.WindowId))
+            {
+                RequireId(cheat.WindowId, "cheat.window_id");
+            }
+
             for (int i = 0; i < cheat.LedgerEntries.Count; i++)
             {
                 CheatEntryView entry = cheat.LedgerEntries[i];

@@ -644,7 +644,8 @@ namespace Mahjong.Contracts.Wire
         {
             var view = new PrivateCheatView
             {
-                CheatPoints = source.CheatPoints
+                CheatPoints = source.CheatPoints,
+                WindowId = RequireOptionalId(source.WindowId, "cheat.window_id")
             };
 
             for (int i = 0; i < source.Ledger.Count; i++)

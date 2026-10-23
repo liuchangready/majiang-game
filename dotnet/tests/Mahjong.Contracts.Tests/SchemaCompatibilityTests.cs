@@ -17,7 +17,7 @@ namespace Mahjong.Protocol.Tests
 {
     public sealed class SchemaCompatibilityTests
     {
-        private const string ExpectedSchemaFingerprint = "5ea85510cdb5ced54bbe7474df3a5a77581d98f127d67e696044f074360dc7c4";
+        private const string ExpectedSchemaFingerprint = "290f46913e43407c57cea9df1de0d23e0a516facfeb7c7a2e9a6867fe9c32430";
 
         [Fact]
         public void EnvelopeFieldNumbersAreStable()
@@ -117,7 +117,7 @@ namespace Mahjong.Protocol.Tests
             {
                 (1, "cheat_points"), (2, "ledger_entries"), (3, "tile_mark"), (4, "sleeve_bloom"),
                 (5, "beam_swap"), (6, "preparation"), (13, "off_turn_sleeve_bloom"),
-                (14, "sleeve_bloom_reservation")
+                (14, "sleeve_bloom_reservation"), (15, "window_id")
             });
             AssertFields(PlayerPublicView.Descriptor, new (int, string)[]
             {

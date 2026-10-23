@@ -78,6 +78,7 @@ namespace Mahjong.Protocol.Tests
                 Assert.Equal(54u, actual.PrivateView.Cheat.BeamSwap.Candidates[0].SlotIndex);
                 Assert.Equal(Wire.BeamSwapSlotKind.Wall, actual.PrivateView.Cheat.BeamSwap.Candidates[0].SlotKind);
                 Assert.False(actual.PrivateView.Cheat.BeamSwap.HasDeadline);
+                Assert.Equal("window-1", actual.PrivateView.Cheat.WindowId);
                 Assert.Equal("ledger-" + seat, actual.PrivateView.Cheat.LedgerEntries[0].EntryId);
                 Assert.Equal(995, actual.PrivateView.Cheat.CheatPoints);
             }
@@ -577,6 +578,108 @@ namespace Mahjong.Protocol.Tests
                 from,
                 false);
             Assert.Equal(4, ownerKan.VisibleEvents[0].KanDeclared.Meld.TileIds.Count);
+        }
+
+        [Fact]
+        public void owner_window_only_state_survives_wire_for_all_seats_open_close_and_replacement()
+        {
+            for (int seat = 0; seat < 4; seat++)
+            {
+                string firstWindow = "bloom-window-" + seat + "-7-1";
+                string secondWindow = "bloom-window-" + seat + "-8-2";
+
+                WindowDecodeResult opened = EncodeAndDecodeWindowOnly(seat, firstWindow);
+                Assert.True(opened.IsOk);
+                Assert.Equal(firstWindow, opened.Envelope!.PlayerSnapshot.PrivateView.Cheat.WindowId);
+                Assert.Null(opened.Envelope.PlayerSnapshot.PrivateView.Cheat.SleeveBloom);
+                Assert.Null(opened.Envelope.PlayerSnapshot.PrivateView.Cheat.OffTurnSleeveBloom);
+                Assert.Null(opened.Envelope.PlayerSnapshot.PrivateView.Cheat.SleeveBloomReservation);
+                Wire.WireCodec.EnsureStrict(opened.Envelope);
+                Assert.Equal(opened.Bytes, Wire.WireCodec.Encode(opened.Envelope!));
+                Assert.DoesNotContain(
+                    "bloom-window-" + ((seat + 1) % 4),
+                    opened.Envelope.PlayerSnapshot.ToString());
+
+                WindowDecodeResult closed = EncodeAndDecodeWindowOnly(seat, string.Empty);
+                Assert.True(closed.IsOk);
+                Assert.Equal(string.Empty, closed.Envelope!.PlayerSnapshot.PrivateView.Cheat.WindowId);
+                Assert.Null(closed.Envelope.PlayerSnapshot.PrivateView.Cheat.SleeveBloom);
+                Assert.Null(closed.Envelope.PlayerSnapshot.PrivateView.Cheat.OffTurnSleeveBloom);
+                Assert.NotEqual(opened.Bytes, closed.Bytes);
+                Assert.Equal(closed.Bytes, Wire.WireCodec.Encode(closed.Envelope!));
+
+                WindowDecodeResult replaced = EncodeAndDecodeWindowOnly(seat, secondWindow);
+                Assert.True(replaced.IsOk);
+                Assert.Equal(secondWindow, replaced.Envelope!.PlayerSnapshot.PrivateView.Cheat.WindowId);
+                Assert.NotEqual(opened.Bytes, replaced.Bytes);
+                Assert.NotEqual(closed.Bytes, replaced.Bytes);
+                Assert.Equal(replaced.Bytes, Wire.WireCodec.Encode(replaced.Envelope!));
+            }
+        }
+
+        private static WindowDecodeResult EncodeAndDecodeWindowOnly(int seat, string windowId)
+        {
+            Contracts.PlayerSnapshotView source = WindowOnlySnapshot(seat, windowId);
+            Wire.Envelope envelope = Envelope(Wire.MessageType.PlayerSnapshot, e =>
+                e.PlayerSnapshot = Wire.ProjectionWireMapper.MapPlayerSnapshot(source));
+            envelope.SeatId = seat;
+            byte[] bytes = Wire.WireCodec.Encode(envelope);
+            return new WindowDecodeResult(Wire.WireCodec.Decode(bytes), bytes);
+        }
+
+        private sealed class WindowDecodeResult
+        {
+            public WindowDecodeResult(Wire.WireDecodeResult result, byte[] bytes)
+            {
+                Result = result;
+                Bytes = bytes;
+            }
+
+            public Wire.WireDecodeResult Result { get; }
+
+            public byte[] Bytes { get; }
+
+            public bool IsOk => Result.IsOk;
+
+            public Wire.Envelope? Envelope => Result.Envelope;
+        }
+
+        private static Contracts.PlayerSnapshotView WindowOnlySnapshot(int seat, string windowId)
+        {
+            Contracts.PublicSnapshotView publicSnapshot = PublicSnapshot(withSettlement: false);
+            var cheat = new Contracts.PrivateCheatView(
+                1000,
+                Array.Empty<Contracts.CheatLedgerEntryView>(),
+                false,
+                windowId.Length > 0,
+                false,
+                false,
+                null,
+                null,
+                null,
+                null,
+                windowId,
+                null,
+                null);
+            var privateView = new Contracts.PrivatePlayerView(
+                seat,
+                Array.Empty<uint>(),
+                null,
+                false,
+                Array.Empty<uint>(),
+                null,
+                cheat);
+            return new Contracts.PlayerSnapshotView(
+                publicSnapshot.SessionId,
+                publicSnapshot.RoundId,
+                seat,
+                publicSnapshot.Cursor,
+                publicSnapshot.StateVersion,
+                publicSnapshot.EventSeq,
+                publicSnapshot.SessionVersion,
+                publicSnapshot.RoundVersion,
+                publicSnapshot.View,
+                privateView);
         }
 
         private static Contracts.PlayerSnapshotView PlayerSnapshot(int seat, Contracts.StreamCursor? cursor = null)

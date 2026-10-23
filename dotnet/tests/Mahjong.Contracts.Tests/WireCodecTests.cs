@@ -418,7 +418,7 @@ namespace Mahjong.Protocol.Tests
             {
                 "closed_tiles", "drawn_tile_id", "discard_history", "legal_actions", "decision",
                 "cheat_points", "ledger_entries", "tile_mark", "sleeve_bloom", "beam_swap",
-                "preparation", "wall", "dead_wall", "seed", "tile_dealt", "tile_drawn",
+                "preparation", "window_id", "wall", "dead_wall", "seed", "tile_dealt", "tile_drawn",
                 "rinshan_draw", "cheat_points_changed", "sleeve_bloom_resolved", "beam_swap_resolved"
             };
 
