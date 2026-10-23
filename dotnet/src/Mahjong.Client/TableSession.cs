@@ -47,6 +47,8 @@ namespace Mahjong.Client
         private string? _activeSyncCorrelationId;
         private ulong? _confirmedBindingEpoch;
         private string? _confirmedBindingSessionId;
+        private ulong? _confirmedStateVersion;
+        private ulong? _confirmedEventSeq;
         private bool _outboxLoaded;
         private ulong _localBindingEpoch;
         private long _syncCounter;
@@ -610,6 +612,8 @@ namespace Mahjong.Client
             PlayerSnapshot? player = null;
             PublicSnapshot? publicSnapshot = null;
             RoomUpdate? room = null;
+            ulong? baselineStateVersion = null;
+            ulong? baselineEventSeq = null;
 
             switch (response.BaselineCase)
             {
@@ -642,6 +646,8 @@ namespace Mahjong.Client
 
                     cursor = playerCursor;
                     player = response.Player;
+                    baselineStateVersion = response.Player.StateVersion;
+                    baselineEventSeq = response.Player.EventSeq;
                     break;
                 case SyncResponse.BaselineOneofCase.Public:
                     if (response.Public == null || response.Public.Cursor == null)
@@ -670,6 +676,8 @@ namespace Mahjong.Client
 
                     cursor = publicCursor;
                     publicSnapshot = response.Public;
+                    baselineStateVersion = response.Public.StateVersion;
+                    baselineEventSeq = response.Public.EventSeq;
                     break;
                 case SyncResponse.BaselineOneofCase.Room:
                     if (response.Room == null)
@@ -689,13 +697,27 @@ namespace Mahjong.Client
 
             if (cursor.HasValue)
             {
-                // Binding identity for a cursor floor is (session_id,
-                // binding_epoch). A new WELCOME binding may legitimately reset
-                // the stream and advertises the new lower bound; within one
-                // binding a baseline can only move the cursor forward.
-                ContractCursor floor = CurrentBaselineFloor();
-                if (cursor.Value.StreamVersion.Value < floor.StreamVersion.Value ||
-                    cursor.Value.ProjectionSeq.Value < floor.ProjectionSeq.Value)
+                // Binding identity for a floor is (session_id, binding_epoch).
+                // A new WELCOME binding may legitimately reset the stream and
+                // advertises the new lower bound; within one binding a baseline
+                // can only move the cursor and the authoritative state/event
+                // versions forward. The two version families are independent:
+                // state_version is not stream_version and event_seq is not a
+                // projection counter, so only like-for-like floors apply.
+                ContractCursor cursorFloor = CurrentBaselineFloor();
+                if (!CursorAtOrAbove(cursor.Value, cursorFloor))
+                {
+                    return;
+                }
+
+                if (!baselineStateVersion.HasValue || !baselineEventSeq.HasValue)
+                {
+                    Fault(ProtocolErrorCode.MalformedMessage, "SYNC_RESPONSE baseline is missing its version fields.");
+                    return;
+                }
+
+                if (baselineStateVersion.Value < CurrentStateVersionFloor() ||
+                    baselineEventSeq.Value < CurrentEventSeqFloor())
                 {
                     return;
                 }
@@ -706,11 +728,15 @@ namespace Mahjong.Client
             if (player != null)
             {
                 _playerSnapshot = player;
+                _confirmedStateVersion = player.StateVersion;
+                _confirmedEventSeq = player.EventSeq;
             }
 
             if (publicSnapshot != null)
             {
                 _publicSnapshot = publicSnapshot;
+                _confirmedStateVersion = publicSnapshot.StateVersion;
+                _confirmedEventSeq = publicSnapshot.EventSeq;
             }
 
             if (room != null)
@@ -776,6 +802,17 @@ namespace Mahjong.Client
                 case CursorRelation.Baseline:
                 case CursorRelation.Advance:
                 case CursorRelation.Refresh:
+                    // A full snapshot flag selects reset semantics inside
+                    // Contracts.StreamCursor.Classify, but it must not bypass
+                    // this binding's monotonic floors. The authoritative
+                    // state/event versions move independently of the cursor,
+                    // so every accepted push has to satisfy both.
+                    if (!CursorAtOrAbove(cursor, CurrentBaselineFloor()) ||
+                        !PushVersionsAtOrAboveFloor(player, publicSnapshot))
+                    {
+                        return;
+                    }
+
                     ApplyPush(cursor, isFullSnapshot, player, publicSnapshot);
                     return;
                 case CursorRelation.Stale:
@@ -835,7 +872,9 @@ namespace Mahjong.Client
                     }
 
                     CursorRelation relation = ContractCursor.Classify(_confirmedCursor!.Value, from, cursor, isFull);
-                    if (relation == CursorRelation.Advance || relation == CursorRelation.Refresh)
+                    if ((relation == CursorRelation.Advance || relation == CursorRelation.Refresh) &&
+                        CursorAtOrAbove(cursor, CurrentBaselineFloor()) &&
+                        PushVersionsAtOrAboveFloor(bufferedPlayer, bufferedPublic))
                     {
                         selected = i;
                         _earlyBuffer.RemoveAt(i);
@@ -863,11 +902,15 @@ namespace Mahjong.Client
             if (player != null)
             {
                 _playerSnapshot = player;
+                _confirmedStateVersion = player.StateVersion;
+                _confirmedEventSeq = player.EventSeq;
             }
 
             if (publicSnapshot != null)
             {
                 _publicSnapshot = publicSnapshot;
+                _confirmedStateVersion = publicSnapshot.StateVersion;
+                _confirmedEventSeq = publicSnapshot.EventSeq;
             }
 
             _confirmedCursor = cursor;
@@ -971,14 +1014,85 @@ namespace Mahjong.Client
                 return ContractCursor.Empty;
             }
 
-            if (_confirmedCursor.HasValue &&
-                _confirmedBindingEpoch == _binding.BindingEpoch.Value &&
-                string.Equals(_confirmedBindingSessionId, _binding.SessionId.Value, StringComparison.Ordinal))
+            if (HasConfirmedBinding())
             {
-                return _confirmedCursor.Value;
+                return _confirmedCursor!.Value;
             }
 
             return _binding.Baseline.Cursor;
+        }
+
+        /// <summary>
+        /// The confirmed binding is exactly (session_id, binding_epoch). The
+        /// authoritative state/event versions are scoped to the same identity:
+        /// a new WELCOME binding may advertise lower counters and thereby
+        /// reset them, but inside one binding they can only advance.
+        /// </summary>
+        private bool HasConfirmedBinding()
+        {
+            return _binding != null &&
+                   _confirmedCursor.HasValue &&
+                   _confirmedBindingEpoch == _binding.BindingEpoch.Value &&
+                   string.Equals(_confirmedBindingSessionId, _binding.SessionId.Value, StringComparison.Ordinal);
+        }
+
+        private ulong CurrentStateVersionFloor()
+        {
+            if (_binding == null)
+            {
+                return 0;
+            }
+
+            if (HasConfirmedBinding() && _confirmedStateVersion.HasValue)
+            {
+                return _confirmedStateVersion.Value;
+            }
+
+            return _binding.Baseline.StateVersion.Value;
+        }
+
+        private ulong CurrentEventSeqFloor()
+        {
+            if (_binding == null)
+            {
+                return 0;
+            }
+
+            if (HasConfirmedBinding() && _confirmedEventSeq.HasValue)
+            {
+                return _confirmedEventSeq.Value;
+            }
+
+            return _binding.Baseline.EventSeq.Value;
+        }
+
+        private static bool CursorAtOrAbove(ContractCursor cursor, ContractCursor floor)
+        {
+            return cursor.StreamVersion.Value >= floor.StreamVersion.Value &&
+                   cursor.ProjectionSeq.Value >= floor.ProjectionSeq.Value;
+        }
+
+        private bool PushVersionsAtOrAboveFloor(PlayerSnapshot? player, PublicSnapshot? publicSnapshot)
+        {
+            ulong stateVersion;
+            ulong eventSeq;
+            if (player != null)
+            {
+                stateVersion = player.StateVersion;
+                eventSeq = player.EventSeq;
+            }
+            else if (publicSnapshot != null)
+            {
+                stateVersion = publicSnapshot.StateVersion;
+                eventSeq = publicSnapshot.EventSeq;
+            }
+            else
+            {
+                return false;
+            }
+
+            return stateVersion >= CurrentStateVersionFloor() &&
+                   eventSeq >= CurrentEventSeqFloor();
         }
 
         private static bool CursorMatches(WireCursor wire, ContractCursor cursor)
@@ -993,17 +1107,11 @@ namespace Mahjong.Client
             ulong snapshotStateVersion,
             ulong snapshotEventSeq)
         {
-            if (responseStateVersion != 0 && snapshotStateVersion != 0 && responseStateVersion != snapshotStateVersion)
-            {
-                return false;
-            }
-
-            if (responseEventSeq != 0 && snapshotEventSeq != 0 && responseEventSeq != snapshotEventSeq)
-            {
-                return false;
-            }
-
-            return true;
+            // The schema declares all four fields as non-optional uint64. Zero
+            // is therefore a real value, not "field omitted": the response and
+            // its authoritative snapshot must carry the same numbers.
+            return responseStateVersion == snapshotStateVersion &&
+                   responseEventSeq == snapshotEventSeq;
         }
 
         private bool IsPlayerSnapshotConsistent(PlayerSnapshot snapshot, WireCursor expectedCursor)
