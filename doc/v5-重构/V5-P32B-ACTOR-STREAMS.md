@@ -1,12 +1,13 @@
 # V5 P3.2b actor 流注册与帧边界交付说明
 
-日期：2026-10-24（第 3 轮返修）
-状态：**P3.2b 组件已针对第 2 轮恢复 completion 阻断返修；不是完整 P3.2、P3.4 或 G1 通过。**
+日期：2026-10-24（第 4 轮返修）
+状态：**P3.2b 组件已针对第 3 轮决策刷新/容量回收阻断返修；不是完整 P3.2、P3.4 或 G1 通过。**
 工作树：`D:/majiang-wt/p32-streams`，分支 `wt/v5-p32-streams`。
 基线：`3e78367538b4f7520a1d414c82ef3155507a5206`（PR #19 已审查 head；已含 P3.2a、P3.3）。
 第 1 轮交付：`ac2f4ab6756024f6e96474ad76109954c5fe1736`，caller FAIL（句柄来源/恢复队列/回调阻塞）。
-第 2 轮交付：`ec8decbe5a65fe92970737118ee1a460260ff554`，caller FAIL（旧 generation 的 sink 失败/取消 completion 会关闭当前出箱）。
-本轮在 `ec8decb` 上返修，并保留 caller 新增的 `CodexP32bReviewProbes.cs`、`CodexP32bRound2ReviewProbes.cs`。
+第 2 轮交付：`ec8decbe5a65fe92970737118ee1a460260ff554`，caller FAIL（旧 generation completion 会关闭当前出箱）。
+第 3 轮交付：`dae514588e5146414173d471c7f1904ca7b73782`，caller FAIL（OpenDecision 不刷新流；关闭 sink 占用 MaxStreams）。
+本轮在 `dae5145` 上返修，并保留 caller 新增的 `CodexP32bReviewProbes.cs`、`CodexP32bRound2ReviewProbes.cs`、`CodexP32bRound3ReviewProbes.cs`。
 范围：TableActor/mailbox 的流接线、流注册、按流投影与发送、恢复/失租/故障生命周期、测试与说明。未改 Contracts/Wire、Domain、P3.2a 投影源/上下文、项目文件（csproj/sln）、Unity 环境/Resources/Burst、CI 或兄弟 P3.2c 文件。
 
 > P3.2a 的纯投影组件已独立验收；本交付只负责把它接到 actor 的提交后时序、流身份、游标、队列和生命周期上。实际 Protobuf/Wire 打包、真实 PG、WSS、Unity/设备与完整 G1 仍未完成，由 caller 在 P3.2c 接入后联合验收。
@@ -22,6 +23,8 @@
 - `TableStreamHandle` 绑定 actor 私有来源对象 + token，`Equals`/`GetHashCode` 均包含来源；`Unsubscribe/Sync` 先校验来源、当前注册对象引用和 token，外 actor 的同号 token 不能命中、更不能借外来席位 handle 生成本地私有帧。
 - `bindingEpoch`、`syncEpoch`、`controlEpoch`、`ownerEpoch`、`recoveryGeneration` 分离校验；`bindingEpoch` 只作为宿主签发的重绑代数/防回退水位，不是出牌授权。出牌仍由 P3.1/P3.3 的 owner/control/round/state 校验。
 - commit 成功并安装新状态后才投影；失败/取消/拒绝的 commit 零发布。投影失败不改回/不回滚已持久状态，关闭受影响的流并记录 `PublicationFault`。
+- `OpenDecisionAsync` 成功进入 `_pending`/`DecisionClock` 后，在同一 actor turn 内对所有已订阅流发一次 same-state refresh：`projectionSeq` 递增，`stateVersion`/`controlVersion` 不变，不伪造 Domain 事件；只有本席 private 得到 `DecisionId`/候选/剩余时间，其他席/观战只得到公开 `Clocks`。无效/重复/拒绝的 OpenDecision 不发布。
+- 每个订阅在容量判断前先回收 `Channel.IsClosed` 的旧 registration；关闭/失败的 consumer 不再永久占用 `MaxStreams`。身份 high-water 保留：旧 handle 无权操作新流，已消费的 binding/sync 精确重放被拒绝，新 session 的合法 binding/sync 可立即恢复服务。
 - 每流 `projectionSeq` / `streamVersion`：只按实际发射递增；`streamVersion` 是观察到已提交的 `stateVersion`，控制变更只增加 `controlVersion` 与 `projectionSeq`，不伪造 stateVersion。事件 `eventSeq` 与流游标分离。
 - 每流独立有界队列和单发送泵；慢 sink 不阻塞 actor；消息数上限始终生效，配置可信编码器时同时按真实编码字节数限流。溢出/编码失败/投影失败/失租/关闭都有明确终止原因。
 - 恢复：`BeginRecovery` 递增 generation 后立即对所有 channel 做 **fence + purge**：清空旧代次排队帧、禁止旧 generation 再入队。发送泵在调用 sink 前通过 `TryClaimDispatch` 在 channel 锁内对当前 `allowedGeneration` 做一次原子认领：fence/close 先发生则丢弃，认领先发生则唯一在途调用不可撤回；不再使用解锁前缓存的 generation。旧 generation 的失败/取消 completion 不会关闭或清空当前 generation 的出箱，当前 generation 的真实 sink 错误仍会断流。
@@ -48,14 +51,16 @@
 |---|---|
 | `dotnet/src/Mahjong.TableRuntime/TableStreamContracts.cs` | 流身份/句柄/请求/结果/帧/编码器/投影上下文端口/流选项 |
 | `dotnet/src/Mahjong.TableRuntime/TableStreamRegistry.cs` | 每身份水位、每订阅注册、有界队列与异步发送泵 |
+| `dotnet/src/Mahjong.TableRuntime/AssemblyInfo.cs` | 仅向测试程序集开放 internal dispatch seam |
 
 改动：
 
 | 文件 | 作用 |
 |---|---|
-| `TableActor.cs` | 流 API、mailbox 处理、提交后投影/发布、恢复/失租/关闭/故障联动 |
+| `TableActor.cs` | 流 API、mailbox 处理、提交后投影/发布、OpenDecision 刷新、容量回收、恢复/失租/关闭/故障联动 |
 | `TableActorMessages.cs` | Subscribe/Unsubscribe/Sync 三类控制消息 |
-| `TableStreamActorTests.cs`、`TableStreamTestSupport.cs` | 20 个 P3.2b 测试与受控 sink/commit/投影源 fixture |
+| `TableStreamActorTests.cs`、`TableStreamTestSupport.cs` | 29 个 P3.2b case 与受控 sink/commit/投影源 fixture |
+| `CodexP32bReviewProbes.cs`、`CodexP32bRound2ReviewProbes.cs`、`CodexP32bRound3ReviewProbes.cs` | caller 第 1/2/3 轮探针，原样保留并纳入交付 |
 | `CodexP32bReviewProbes.cs` | caller 第 1 轮新增的 5 项独立探针，原样保留并纳入交付 |
 
 ### 2.1 actor 入口
@@ -207,6 +212,7 @@ actor 从 `_pending` + `DecisionClock` 生成 `DecisionView`：
 - 订阅后提交：订阅先 baseline（旧状态），提交后 update（新状态 + 事件）。
 - 提交阻塞期间排队的订阅：commit 完成后先发布给已有流，再处理订阅 baseline；新流只收到 post-commit baseline。
 - 控制变更：提交 control port 成功后安装 control、发布 `ControlChanged`；每流收到同一 stateVersion 的刷新帧（新 controlVersion、新 projectionSeq），不增加 stateVersion。
+- OpenDecision：`ProcessOpenDecision` 成功后同一 actor turn 内刷新已订阅流；stateVersion/controlVersion 不变，只有 projectionSeq 前进。订阅在 OpenDecision 之前则先 baseline（无 decision）、再收到刷新；订阅在之后则 baseline 直接包含 decision。`Sync` 用旧 baseline cursor 会因 projectionSeq/stream cursor 变化返回 `BaselineQueued`，不依赖客户端传 `StreamCursor.Empty`。
 - 恢复：安装 baseline 后发布 `Recovered`；仍有效且 owner/controller 匹配的流收到 `IsFullSnapshot=true` 的新 baseline；不匹配的流关闭。该 baseline 同时置 `NeedsSync`：在宿主显式 `Sync` 到达前不再发送增量；期间若提交/控制变更推进，`Sync` 会用当前状态再发 full baseline 并清门控，避免“恢复基线后静默跳过更新”。
 
 ### 4.3 失租/关闭/故障
@@ -267,11 +273,13 @@ actor 从 `_pending` + `DecisionClock` 生成 `DecisionView`：
 
 sink 异常也会关闭该流（`ActorFaulted/INTERNAL_ERROR`），但不会把 actor 生命周期置为 Faulted；actor 不因下游异常回滚已提交状态。termination 与取消回调均为 actor 外的一次性后台派发；`OnStreamTerminated` 阻塞或抛出不会阻塞 `GetSnapshot/Unsubscribe/Close` 等 mailbox 操作。
 
-### 5.5 第 1/2 轮阻断的修复语义
+### 5.5 第 1–3 轮阻断的修复语义
 
 - **句柄来源**：`TableStreamHandle` 增加 actor 私有来源对象；`Equals/GetHashCode` 使用来源 + token。`FindCurrentRegistration` 先拒绝外 actor 来源，再要求 `ReferenceEquals(registration.Handle, handle)`，最后校验当前 token。`Sync` 基线使用 `registration.Handle` 构造帧，不再使用调用方传入的 handle 身份；外 seat handle 不能把本地 spectator 流变成 `Player/OwnerPrivate` 帧。
 - **恢复隔离/原子认领**：`ProcessBeginRecovery` 在递增 generation 后立即对所有 channel `PurgeAndFence`；旧排队帧被清空。泵在出队后、sink 调用前调用 `TryClaimDispatch`：它在 channel 锁内读取**当前** `_allowedGeneration`，fence/close 先发生则丢弃，认领先发生则该次调用不可撤回。不再使用解锁前缓存的 generation 值，因此“摘出后暂停、随后 fence/close、再恢复泵”不会启动新的旧派发。已认领旧 generation 的 sink 抛错/取消时，catch 先比较 frame generation 与当前 fence：旧 completion 只清理自身在途状态，不关闭、不清空当前出箱；当前 generation 的错误仍按 `ActorFaulted/INTERNAL_ERROR` 断流。
 - **回调隔离**：`CloseLocked` 不再同步 `Cancel()`；`Close`/overflow/sink 异常都只生成一次 termination，然后由 `Task.Run` 执行取消和 termination 通知。actor 线程不等待任何下游回调；`BlockingTermination` 与 `BlockingCancellation` 探针证明 `GetSnapshot/Unsubscribe` 仍能在 500ms 内完成。
+- **决策刷新**：`OpenDecisionAsync` 成功返回 `Configured` 后，actor 立即调用 `PublishDecisionRefreshToStreams`；它复用当前 `CaptureStreamProjection` 生成新 `projectionSeq` 的 same-state 帧，`stateVersion` 不变、无 Domain event。`BuildStreamDecisions` 只把决策放进该席 `PlayerSnapshotView.Private.Decision`；其他席/观战的 `PublicMatchView.Clocks` 可看到公开 deadline。失败/重复/拒绝返回不触发刷新。`Sync` 通过已推进的 stream cursor 识别丢失的决策刷新，返回 `BaselineQueued` 并重建 full baseline；`NeedsSync` 期间刷新被扣住，由恢复后的 Sync baseline 补齐。
+- **容量回收**：`ProcessSubscribeStream` 在任何容量判断前调用 `RemoveFaultedStreams`，清理 `Channel.IsClosed` 的 registration；同时保留 identity high-water，旧 handle 继续被拒绝，已消费的精确 binding/sync 重放也被拒绝。新 session 可在旧 consumer 故障后立即获得空出的容量，无需 command/control publication 或 Sync 旧死 handle。
 
 ### 5.4 私有隔离
 
@@ -315,9 +323,10 @@ sink 异常也会关闭该流（`ActorFaulted/INTERNAL_ERROR`），但不会把 
 | 命令 | 结果 | 退出码 |
 |---|---|---|
 | `dotnet build dotnet/src/Mahjong.TableRuntime/Mahjong.TableRuntime.csproj -c Release --nologo -v:minimal` | 成功，0 warning / 0 error | 0 |
-| `dotnet test dotnet/tests/Mahjong.TableRuntime.Tests/Mahjong.TableRuntime.Tests.csproj -c Release --nologo -v:minimal -- --filter-class "Mahjong.TableRuntime.Tests.CodexP32bRound2ReviewProbes"` | **2 passed / 0 failed / 0 skipped**（本轮 caller 探针，false/true） | 0 |
-| `dotnet test dotnet/tests/Mahjong.TableRuntime.Tests/Mahjong.TableRuntime.Tests.csproj -c Release --nologo -v:minimal -- --filter-class "Mahjong.TableRuntime.Tests.CodexP32bReviewProbes"` | **5 passed / 0 failed / 0 skipped**（第 1 轮 caller 探针保留） | 0 |
-| `dotnet test dotnet/tests/Mahjong.TableRuntime.Tests/Mahjong.TableRuntime.Tests.csproj -c Release --nologo -v:minimal` | **135 passed / 0 failed / 0 skipped**（104 基线 + 20 P3.2b 既有 + 5 第 1 轮探针 + 2 第 2 轮探针 + 4 本轮新增 case） | 0 |
+| `dotnet test dotnet/tests/Mahjong.TableRuntime.Tests/Mahjong.TableRuntime.Tests.csproj -c Release --nologo -v:minimal -- --filter-class "Mahjong.TableRuntime.Tests.CodexP32bRound3ReviewProbes"` | **3 passed / 0 failed / 0 skipped**（本轮 caller 探针） | 0 |
+| `dotnet test dotnet/tests/Mahjong.TableRuntime.Tests/Mahjong.TableRuntime.Tests.csproj -c Release --nologo -v:minimal -- --filter-class "Mahjong.TableRuntime.Tests.CodexP32bRound2ReviewProbes"` | **2 passed / 0 failed / 0 skipped** | 0 |
+| `dotnet test dotnet/tests/Mahjong.TableRuntime.Tests/Mahjong.TableRuntime.Tests.csproj -c Release --nologo -v:minimal -- --filter-class "Mahjong.TableRuntime.Tests.CodexP32bReviewProbes"` | **5 passed / 0 failed / 0 skipped** | 0 |
+| `dotnet test dotnet/tests/Mahjong.TableRuntime.Tests/Mahjong.TableRuntime.Tests.csproj -c Release --nologo -v:minimal` | **143 passed / 0 failed / 0 skipped**（104 基线 + 29 TableStreamActorTests case + 5 第 1 轮探针 + 2 第 2 轮探针 + 3 第 3 轮探针） | 0 |
 | `dotnet test dotnet/tests/Mahjong.Contracts.Tests/Mahjong.Contracts.Tests.csproj -c Release --nologo -v:minimal` | **82 passed / 0 failed / 0 skipped** | 0 |
 | `dotnet test dotnet/tests/Mahjong.Domain.Tests/Mahjong.Domain.Tests.csproj -c Release --nologo -v:minimal` | **313 passed / 0 failed / 0 skipped** | 0 |
 | `dotnet build dotnet/Mahjong.sln -c Release --nologo -v:minimal` | 成功，0 warning / 0 error（12 个项目） | 0 |
@@ -326,19 +335,21 @@ sink 异常也会关闭该流（`ActorFaulted/INTERNAL_ERROR`），但不会把 
 原始日志（未提交，位于工作树根）：
 
 - `artifacts-p32b-baseline-tabletests.log`（基线 104）
-- `artifacts-p32b-build-round3.log`（TableRuntime build）
-- `artifacts-p32b-round2-probes-final.log`（本轮 caller 2 项，2 passed）
-- `artifacts-p32b-round1-probes-round3.log`（第 1 轮 caller 5 项，5 passed）
-- `artifacts-p32b-tests-round3-second.log`（最终全量 135）
-- `artifacts-p32b-contracts-tests-round3.log`（82）
-- `artifacts-p32b-domain-tests-round3.log`（313）
-- `artifacts-p32b-solution-build-round3.log`（最终 solution build）
+- `artifacts-p32b-build-round4.log`（TableRuntime build）
+- `artifacts-p32b-round3-probes-final.log`（本轮 caller 3 项，3 passed）
+- `artifacts-p32b-round2-probes-round4.log`（2 passed）
+- `artifacts-p32b-round1-probes-round4.log`（5 passed）
+- `artifacts-p32b-tests-round4-first.log`（最终全量 143）
+- `artifacts-p32b-contracts-tests-round4.log`（82）
+- `artifacts-p32b-domain-tests-round4.log`（313）
+- `artifacts-p32b-solution-build-round4.log`（最终 solution build）
+- `artifacts-p32b-caller-round3-framework-original.log`（caller 第 3 轮原始框架失败日志，保留备查）
 
-> 第 1 轮 121、第 2 轮 129 都是历史结果，分别被 caller 判定 FAIL；本轮不把它们当作通过证据。当前有效结果为 135 与 caller 5+2 项探针。
+> 第 1 轮 121、第 2 轮 129、第 3 轮 135 都是历史结果，分别被 caller 判定 FAIL；本轮不把它们当作通过证据。当前有效结果为 143 与 caller 5+2+3 项探针。
 
 ### 7.3 测试覆盖
 
-`TableStreamActorTests`（原有 20 项 + 本轮新增 3 个方法/4 个 case）：
+`TableStreamActorTests`（29 个 case；含第 1–3 轮修复回归）：
 
 1. 观战 baseline 明确为 full、只含 public、Sync 为 InSync；
 2. 四席 + 两观战：私有手牌/私有事件隔离、观战公开字节一致、无 fingerprint/private 字段；
@@ -360,9 +371,14 @@ sink 异常也会关闭该流（`ActorFaulted/INTERNAL_ERROR`），但不会把 
 18. 外 actor handle 不能 Unsubscribe/Sync；外 seat handle 不能把本地观战流变成私有帧；合法本地 handle 仍可 InSync/继续收 update；
 19. 恢复期间阻塞首 baseline、让旧 update 排队；`BeginRecovery` 后释放 sink，恢复期间只有一次旧调用、无第二个旧发送；`CompleteRecovery` 后首个新发送为 generation 1 full baseline；
 20. termination sink 阻塞时，`ReportLeaseLost` 与随后 `GetSnapshot` 均能在 actor 线程外完成，不被下游回调卡住；
-21. **本轮新增（2 case）**：`BeforeDispatchClaim` 处暂停后，fence 或 close 先完成；释放后旧帧不得调用 sink。fence 场景首新发送为 generation 1 full baseline；close 场景只保留已完成的旧 baseline；
-22. **本轮新增**：旧 generation 0 sink 在 Recovering 期间抛 `IOException`，不关闭出箱；随后 generation 1 baseline 可发送；再做第二次恢复得到 generation 2 baseline；`Sync` 后继续收 generation 2 update；
-23. **本轮新增**：当前 generation 的 sink 抛 `IOException` 仍会明确断流为 `ActorFaulted/INTERNAL_ERROR`，不被旧 completion 逻辑吞掉。
+21. `BeforeDispatchClaim` 处暂停后，fence 或 close 先完成；释放后旧帧不得调用 sink（2 case）；
+22. 旧 generation 0 sink 在 Recovering 期间抛 `IOException`，不关闭出箱；随后 generation 1 baseline 可发送；第二次恢复得到 generation 2 baseline；`Sync` 后继续收 generation 2 update；
+23. 当前 generation 的 sink 抛 `IOException` 仍明确断流为 `ActorFaulted/INTERNAL_ERROR`；
+24. **本轮新增**：OpenDecision 成功刷新已订阅本席，`StateVersion/ControlVersion` 不变、`ProjectionSeq+1`、无 Domain event；本席 private 有 decision id/剩余时间，其他席/观战只有公开 clock；
+25. **本轮新增**：无效 OpenDecision 与重复 OpenDecision 不发布；成功 OpenDecision 后旧 baseline cursor 的 Sync 返回 `BaselineQueued` 并重建含 decision 的 full baseline；
+26. **本轮新增**：恢复 `NeedsSync` 期间 OpenDecision 被扣住，Sync 才建立含 decision 的 full baseline；
+27. **本轮新增**：MaxStreams 真正满时拒绝新身份；Unsubscribe 后同 session 新 binding/sync 可立即订阅；
+28. **本轮新增**：首 baseline sink 失败后，新 session 在无 command/control/Sync 旧死 handle 的情况下立即获得容量；旧 handle 与精确旧 binding/sync 重放被拒绝。
 
 Caller `CodexP32bReviewProbes`（保留并纳入交付，5 项）：
 
@@ -375,6 +391,12 @@ Caller `CodexP32bRound2ReviewProbes`（保留并纳入交付，2 项）：
 
 - `OldGenerationSinkFailureCannotDiscardRecoveredBaseline(false)`（IOException）
 - `OldGenerationSinkFailureCannotDiscardRecoveredBaseline(true)`（OperationCanceledException）
+
+Caller `CodexP32bRound3ReviewProbes`（保留并纳入交付，3 项）：
+
+- `ClosedSinkDoesNotRetainActiveStreamCapacity`
+- `OpenDecisionRefreshesExistingSeatStream`
+- `SyncCannotReportInSyncWithMissingDecision`
 
 ### 7.4 未运行 / 不计入 PASS
 
@@ -397,17 +419,18 @@ Caller `CodexP32bRound2ReviewProbes`（保留并纳入交付，2 项）：
 
 | 文件 | SHA256 |
 |---|---|
-| `dotnet/src/Mahjong.TableRuntime/TableActor.cs` | `CACE0D6FFC66407CDE9DA9BE27DCA1142BB0042C8173A53EA191071A8406A61D` |
+| `dotnet/src/Mahjong.TableRuntime/TableActor.cs` | `2B5159BE615D9872F5BA91ACB58737CA926C5F4CD2571CF692345BC568D0DBF6` |
 | `dotnet/src/Mahjong.TableRuntime/TableActorMessages.cs` | `2A53251BA7B2A55A42AD59E459ADC20B1753BE22ABABC0F837833A5635426C17` |
 | `dotnet/src/Mahjong.TableRuntime/TableStreamContracts.cs` | `99DFFC7EEF68827A565088FCF12146D1A0407C300736990D16E01CD09BA6C7A3` |
 | `dotnet/src/Mahjong.TableRuntime/TableStreamRegistry.cs` | `D0B067820A22C2FFD4D6F10144A1F4C8B8DD167462D183B2A8AFD771C3619B7D` |
 | `dotnet/src/Mahjong.TableRuntime/AssemblyInfo.cs` | `43DD4580E35E6EB27A2DCEFE4D371AF42F2762ECECC5000CFF86AF9FFBA29B4A` |
-| `dotnet/tests/Mahjong.TableRuntime.Tests/TableStreamActorTests.cs` | `BE24FCF7A66C15C83A8655F7C1366C81B66456AFFE3BA5AFF59EB848B67A8071` |
+| `dotnet/tests/Mahjong.TableRuntime.Tests/TableStreamActorTests.cs` | `3D9F88C5E7411A321BB3CD89E6AF32AF8CFE783F2963737751F0660E653C6A11` |
 | `dotnet/tests/Mahjong.TableRuntime.Tests/TableStreamTestSupport.cs` | `37F0183F239381C44C4A5FC08370888791A033D9F3FE30E46F7072D8DDC4B19B` |
 | `dotnet/tests/Mahjong.TableRuntime.Tests/CodexP32bReviewProbes.cs` | `AD9527CBE8E1A0E6E6533D5693FD7D7BBA5B0E28D506F8D8994783E390CF0AAA` |
 | `dotnet/tests/Mahjong.TableRuntime.Tests/CodexP32bRound2ReviewProbes.cs` | `9774C7C0E237F52FFA3231940FE32835D2D0732B106CAA723BA21891B578B05A` |
+| `dotnet/tests/Mahjong.TableRuntime.Tests/CodexP32bRound3ReviewProbes.cs` | `71DD825E8C21BBB8BE53EA542C1D2F303CF07F88050B74B40F24D91BC26CA0B3` |
 
-未修改：Contracts/Wire、Domain、`TableVisibilityContexts.cs`、`TableVisibilityProjection.cs`、`TableEventProjection.cs`、`TableRuntimeContracts.cs`、`TableMailbox.cs`、`Mahjong.sln`、任何 csproj/verifier、Unity 环境/Resources/Burst、兄弟 P3.2c 新增 mapper、CI workflow。caller 新增的 `CodexP32bReviewProbes.cs`、`CodexP32bRound2ReviewProbes.cs` 按授权原样保留并纳入本提交。`AssemblyInfo.cs` 只给测试程序集开放 internal 调度 seam，不改变公开 API。
+未修改：Contracts/Wire、Domain、`TableVisibilityContexts.cs`、`TableVisibilityProjection.cs`、`TableEventProjection.cs`、`TableRuntimeContracts.cs`、`TableMailbox.cs`、`Mahjong.sln`、任何 csproj/verifier、Unity 环境/Resources/Burst、兄弟 P3.2c 新增 mapper、CI workflow。caller 新增的 `CodexP32bReviewProbes.cs`、`CodexP32bRound2ReviewProbes.cs`、`CodexP32bRound3ReviewProbes.cs` 按授权原样保留并纳入本提交。`AssemblyInfo.cs` 只给测试程序集开放 internal 调度 seam，不改变公开 API。
 
 ---
 
@@ -420,4 +443,4 @@ Caller `CodexP32bRound2ReviewProbes`（保留并纳入交付，2 项）：
 - 恢复事件历史（当前 `_recentEvents` 是 P3.1 窗口，P3.4 冷恢复需显式结算/事件基线）；
 - 完整 P3.2 退出标准、G1/G5 和设备/平台证据。
 
-本交付只声明上表实际运行的 **135/5+2/82/313** 与 solution build；不声明 P3.4、真实 PG、真实 Wire、WSS、Unity/设备或 G1 通过。
+本交付只声明上表实际运行的 **143/5+2+3/82/313** 与 solution build；不声明 P3.4、真实 PG、真实 Wire、WSS、Unity/设备或 G1 通过。

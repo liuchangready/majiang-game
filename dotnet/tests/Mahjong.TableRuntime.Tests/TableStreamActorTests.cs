@@ -954,6 +954,231 @@ namespace Mahjong.TableRuntime.Tests
             Assert.Equal(ProtocolErrorCode.InternalError, termination.ReasonCode);
         }
 
+        [Fact]
+        public async Task OpeningDecisionRefreshesSeatPrivatelyAndPublishesOnlyPublicClock()
+        {
+            await using StreamHarness harness = StreamHarness.Create();
+            int ownerSeat = harness.InitialRound.CurrentSeat;
+            int otherSeat = (ownerSeat + 1) % 4;
+            var ownerSink = new RecordingStreamSink();
+            var otherSink = new RecordingStreamSink();
+            var spectatorSink = new RecordingStreamSink();
+            Assert.Equal(
+                TableStreamControlStatus.Subscribed,
+                (await harness.SubscribeSeatAsync(ownerSeat, "owner", 1UL, 1UL, ownerSink)).Status);
+            Assert.Equal(
+                TableStreamControlStatus.Subscribed,
+                (await harness.SubscribeSeatAsync(otherSeat, "other", 1UL, 1UL, otherSink)).Status);
+            Assert.Equal(
+                TableStreamControlStatus.Subscribed,
+                (await harness.SubscribeSpectatorAsync("spectator", 1UL, 1UL, spectatorSink)).Status);
+            await ownerSink.WaitForCountAsync(1);
+            await otherSink.WaitForCountAsync(1);
+            await spectatorSink.WaitForCountAsync(1);
+
+            PendingDecision decision = DecisionForSeat(harness, ownerSeat, "open-decision");
+            Assert.Equal(
+                TableOperationStatus.Configured,
+                (await harness.Actor.OpenDecisionAsync(
+                    decision,
+                    TestContext.Current.CancellationToken)).Status);
+
+            IReadOnlyList<TableStreamFrame> ownerFrames = await ownerSink.WaitForCountAsync(2);
+            IReadOnlyList<TableStreamFrame> otherFrames = await otherSink.WaitForCountAsync(2);
+            IReadOnlyList<TableStreamFrame> spectatorFrames = await spectatorSink.WaitForCountAsync(2);
+
+            TableStreamFrame owner = ownerFrames[1];
+            Assert.False(owner.IsFullSnapshot);
+            Assert.Equal(new StateVersion(0), owner.StateVersion);
+            Assert.Equal(0L, owner.ControlVersion);
+            Assert.Equal(new ProjectionSeq(2), owner.ProjectionSeq);
+            Assert.Empty(owner.Events);
+            Assert.NotNull(owner.Player!.Private.Decision);
+            Assert.Equal("open-decision", owner.Player.Private.Decision!.DecisionId.Value);
+            Assert.True(owner.Player.Private.Decision.DeadlineRemainingMs > 0);
+
+            Assert.Null(otherFrames[1].Player!.Private.Decision);
+            Assert.Contains(otherFrames[1].Player!.Public.Clocks,
+                clock => clock.DecisionSeat == ownerSeat && clock.DeadlineRemainingMs > 0);
+            Assert.Null(spectatorFrames[1].Player);
+            Assert.Contains(spectatorFrames[1].Public!.View.Clocks,
+                clock => clock.DecisionSeat == ownerSeat && clock.DeadlineRemainingMs > 0);
+        }
+
+        [Fact]
+        public async Task RejectedDecisionOpenPublishesNothingAndSyncRebuildsMissingDecision()
+        {
+            await using StreamHarness harness = StreamHarness.Create();
+            int seat = harness.InitialRound.CurrentSeat;
+            var sink = new RecordingStreamSink();
+            TableStreamControlResult subscribed =
+                await harness.SubscribeSeatAsync(seat, "owner", 1UL, 1UL, sink);
+            Assert.Equal(TableStreamControlStatus.Subscribed, subscribed.Status);
+            IReadOnlyList<TableStreamFrame> baseline = await sink.WaitForCountAsync(1);
+
+            PendingDecision invalid = DecisionForSeat(harness, seat, "bad-decision", controlEpoch: 99L);
+            Assert.Equal(
+                TableOperationStatus.Rejected,
+                (await harness.Actor.OpenDecisionAsync(
+                    invalid,
+                    TestContext.Current.CancellationToken)).Status);
+            await Task.Delay(100, TestContext.Current.CancellationToken);
+            Assert.Equal(1, sink.FrameCount);
+
+            PendingDecision valid = DecisionForSeat(harness, seat, "good-decision");
+            Assert.Equal(
+                TableOperationStatus.Configured,
+                (await harness.Actor.OpenDecisionAsync(
+                    valid,
+                    TestContext.Current.CancellationToken)).Status);
+            IReadOnlyList<TableStreamFrame> refreshed = await sink.WaitForCountAsync(2);
+            Assert.NotNull(refreshed[1].Player!.Private.Decision);
+
+            TableStreamControlResult repair = await harness.SyncAsync(
+                subscribed.Handle!,
+                baseline[0].Cursor);
+            Assert.Equal(TableStreamControlStatus.BaselineQueued, repair.Status);
+            IReadOnlyList<TableStreamFrame> repaired = await sink.WaitForCountAsync(3);
+            Assert.True(repaired[2].IsFullSnapshot);
+            Assert.NotNull(repaired[2].Player!.Private.Decision);
+
+            Assert.Equal(
+                TableOperationStatus.Rejected,
+                (await harness.Actor.OpenDecisionAsync(
+                    valid,
+                    TestContext.Current.CancellationToken)).Status);
+            await Task.Delay(100, TestContext.Current.CancellationToken);
+            Assert.Equal(3, sink.FrameCount);
+
+            TableStreamControlResult inSync = await harness.SyncAsync(
+                subscribed.Handle!,
+                repaired[2].Cursor);
+            Assert.Equal(TableStreamControlStatus.InSync, inSync.Status);
+        }
+
+        [Fact]
+        public async Task DecisionOpenedDuringRecoveryNeedsSyncBeforePrivateRefresh()
+        {
+            await using StreamHarness harness = StreamHarness.Create();
+            int seat = harness.InitialRound.CurrentSeat;
+            var sink = new RecordingStreamSink();
+            TableStreamControlResult subscribed =
+                await harness.SubscribeSeatAsync(seat, "owner", 1UL, 1UL, sink);
+            Assert.Equal(TableStreamControlStatus.Subscribed, subscribed.Status);
+            await sink.WaitForCountAsync(1);
+
+            Assert.Equal(
+                TableOperationStatus.Configured,
+                (await harness.Actor.BeginRecoveryAsync(
+                    "decision recovery gate",
+                    TestContext.Current.CancellationToken)).Status);
+            Assert.Equal(
+                TableOperationStatus.Configured,
+                (await harness.Actor.CompleteRecoveryAsync(
+                    new TableRecoveryBaseline(
+                        harness.InitialRound,
+                        new StateVersion(0),
+                        new EventSeq(0),
+                        new OwnerEpoch(1)),
+                    TestContext.Current.CancellationToken)).Status);
+            IReadOnlyList<TableStreamFrame> recovered = await sink.WaitForCountAsync(2);
+            Assert.True(recovered[1].IsFullSnapshot);
+
+            Assert.Equal(
+                TableOperationStatus.Configured,
+                (await harness.Actor.OpenDecisionAsync(
+                    DecisionForSeat(harness, seat, "recovery-decision"),
+                    TestContext.Current.CancellationToken)).Status);
+            await Task.Delay(100, TestContext.Current.CancellationToken);
+            Assert.Equal(2, sink.FrameCount);
+
+            TableStreamControlResult sync = await harness.SyncAsync(
+                subscribed.Handle!,
+                recovered[1].Cursor);
+            Assert.Equal(TableStreamControlStatus.BaselineQueued, sync.Status);
+            IReadOnlyList<TableStreamFrame> afterSync = await sink.WaitForCountAsync(3);
+            Assert.True(afterSync[2].IsFullSnapshot);
+            Assert.NotNull(afterSync[2].Player!.Private.Decision);
+
+            Assert.Equal(
+                TableStreamControlStatus.InSync,
+                (await harness.SyncAsync(subscribed.Handle!, afterSync[2].Cursor)).Status);
+        }
+
+        [Fact]
+        public async Task StreamCapacityRejectsWhenFullAndReclaimsAfterUnsubscribe()
+        {
+            var options = new TableStreamOptions { MaxStreams = 1 };
+            await using StreamHarness harness = StreamHarness.Create(options);
+            var firstSink = new RecordingStreamSink();
+            TableStreamControlResult first = await harness.SubscribeSpectatorAsync(
+                "first", 1UL, 1UL, firstSink);
+            Assert.Equal(TableStreamControlStatus.Subscribed, first.Status);
+            await firstSink.WaitForCountAsync(1);
+
+            TableStreamControlResult full = await harness.SubscribeSpectatorAsync(
+                "second", 1UL, 1UL, new RecordingStreamSink());
+            Assert.Equal(TableStreamControlStatus.Rejected, full.Status);
+            Assert.Equal(ProtocolErrorCode.ServerFull, full.ReasonCode);
+
+            Assert.Equal(
+                TableStreamControlStatus.Unsubscribed,
+                (await harness.UnsubscribeAsync(first.Handle!)).Status);
+            var secondSink = new RecordingStreamSink();
+            TableStreamControlResult second = await harness.SubscribeSpectatorAsync(
+                "second", 1UL, 1UL, secondSink);
+            Assert.Equal(TableStreamControlStatus.Subscribed, second.Status);
+            await secondSink.WaitForCountAsync(1);
+        }
+
+        [Fact]
+        public async Task FailedStreamIsReclaimedBeforeNextSubscribeAndOldIdentityReplayIsRejected()
+        {
+            var options = new TableStreamOptions { MaxStreams = 1 };
+            await using StreamHarness harness = StreamHarness.Create(options);
+            var failed = await harness.SubscribeSpectatorAsync(
+                "failed-session",
+                1UL,
+                1UL,
+                new AlwaysFailingSink());
+            Assert.Equal(TableStreamControlStatus.Subscribed, failed.Status);
+            await harness.Terminations.WaitForAsync(
+                item => item.Identity.SessionId.Value == "failed-session");
+
+            var replacementSink = new RecordingStreamSink();
+            TableStreamControlResult replacement =
+                await harness.SubscribeSpectatorAsync("replacement", 1UL, 1UL, replacementSink);
+            Assert.Equal(TableStreamControlStatus.Subscribed, replacement.Status);
+            await replacementSink.WaitForCountAsync(1);
+
+            Assert.Equal(
+                TableStreamControlStatus.Rejected,
+                (await harness.UnsubscribeAsync(failed.Handle!)).Status);
+            Assert.Equal(
+                TableStreamControlStatus.Rejected,
+                (await harness.SyncAsync(failed.Handle!, StreamCursor.Empty)).Status);
+            Assert.Equal(
+                TableStreamControlStatus.Rejected,
+                (await harness.SubscribeSpectatorAsync(
+                    "failed-session",
+                    1UL,
+                    1UL,
+                    new RecordingStreamSink())).Status);
+        }
+
+        private static PendingDecision DecisionForSeat(
+            StreamHarness harness,
+            int seat,
+            string decisionId,
+            long controlEpoch = 0L)
+        {
+            TileId tile = harness.InitialRound.Tiles.TilesInZone(TileZone.Hand, seat)[0];
+            return new PendingDecision(
+                new DecisionKey(harness.InitialRound.RoundId, seat, decisionId),
+                controlEpoch,
+                new[] { new LegalActionOption(LegalActionKind.Discard, seat, tile) });
+        }
+
         private sealed class BlockingTerminationSink : ITableStreamTerminationSink
         {
             private readonly TaskCompletionSource<bool> _entered;
@@ -1021,6 +1246,14 @@ namespace Mahjong.TableRuntime.Tests
                 }
 
                 throw new IOException("current generation sink failed");
+            }
+        }
+
+        private sealed class AlwaysFailingSink : ITableStreamSink
+        {
+            public ValueTask PublishAsync(TableStreamFrame frame, CancellationToken cancellationToken)
+            {
+                throw new IOException("controlled first-baseline sink failure");
             }
         }
     }

@@ -657,7 +657,16 @@ namespace Mahjong.TableRuntime
                             await ProcessCommandAsync(command.Command).ConfigureAwait(false));
                         break;
                     case OpenDecisionMailboxMessage open:
-                        open.Completion.TrySetResult(ProcessOpenDecision(open.Decision));
+                        TableOperationResult openResult = ProcessOpenDecision(open.Decision);
+                        if (openResult.Status == TableOperationStatus.Configured)
+                        {
+                            // Opening a decision is an authority change even though it is not a
+                            // Domain state transition: emit a same-state refresh so already
+                            // subscribed players learn the decision id/deadline immediately.
+                            PublishDecisionRefreshToStreams();
+                        }
+
+                        open.Completion.TrySetResult(openResult);
                         break;
                     case TickMailboxMessage tick:
                         tick.Completion.TrySetResult(
@@ -3539,6 +3548,10 @@ namespace Mahjong.TableRuntime
                     _controlVersion);
             }
 
+            // A failed/closed consumer must not hold capacity until some unrelated publication
+            // happens. Reap closed registrations inside this actor turn before capacity checks.
+            RemoveFaultedStreams();
+
             TableStreamIdentity identity = request.Identity;
             ControlEpoch? boundControl = null;
             if (identity.Audience.IsSeat)
@@ -3654,6 +3667,21 @@ namespace Mahjong.TableRuntime
                             _controlVersion);
                     }
                 }
+            }
+
+            if (previous == null &&
+                state.HighestBindingEpoch != 0 &&
+                binding == state.HighestBindingEpoch &&
+                sync == state.HighestSyncEpoch)
+            {
+                return TableStreamControlResult.Failure(
+                    TableStreamControlStatus.Rejected,
+                    ProtocolErrorCode.StaleStreamVersion,
+                    "Binding/sync epoch " + binding + "/" + sync +
+                    " was already consumed by this identity; a new host-issued generation is required.",
+                    null,
+                    _stateVersion,
+                    _controlVersion);
             }
 
             if (previous == null && _streams.Count >= _streamOptions.MaxStreams)
@@ -4664,6 +4692,93 @@ namespace Mahjong.TableRuntime
                 {
                     // The recovery baseline is still awaiting an explicit Sync. A later Sync
                     // sees the changed control version and queues a fresh full baseline.
+                    continue;
+                }
+
+                ProjectionSeq nextSeq;
+                try
+                {
+                    nextSeq = registration.State.ProjectionSeq.Next();
+                }
+                catch (OverflowException exception)
+                {
+                    CloseStream(registration, TableStreamTerminationKind.ProjectionFailed,
+                        ProtocolErrorCode.InternalError, "Projection sequence overflow: " + exception.Message);
+                    continue;
+                }
+
+                var cursor = new StreamCursor(new StreamVersion(_stateVersion.Value), nextSeq);
+                TableStreamFrame frame;
+                try
+                {
+                    frame = BuildStreamFrame(registration.Handle, capture, false, cursor, null);
+                }
+                catch (StreamFrameException exception)
+                {
+                    CloseStream(registration, exception.Kind, exception.ReasonCode, exception.Message);
+                    continue;
+                }
+                catch (Exception exception) when (
+                    exception is TableProjectionException ||
+                    exception is ArgumentException ||
+                    exception is InvalidOperationException)
+                {
+                    _publicationFault = exception.GetType().Name + ": " + exception.Message;
+                    CloseStream(registration, TableStreamTerminationKind.ProjectionFailed,
+                        ProtocolErrorCode.InternalError, _publicationFault);
+                    continue;
+                }
+
+                TableStreamEnqueueStatus enqueue = registration.Channel.TryEnqueue(frame);
+                if (enqueue != TableStreamEnqueueStatus.Enqueued)
+                {
+                    RemoveRegistration(registration);
+                    continue;
+                }
+
+                registration.State.ProjectionSeq = nextSeq;
+                registration.State.Cursor = cursor;
+                registration.ControlVersion = _controlVersion;
+            }
+        }
+
+        private void PublishDecisionRefreshToStreams()
+        {
+            RemoveFaultedStreams();
+            if (_streams.Count == 0)
+            {
+                return;
+            }
+
+            StreamProjectionCapture capture;
+            try
+            {
+                capture = CaptureStreamProjection();
+            }
+            catch (Exception exception)
+            {
+                _publicationFault = exception.GetType().Name + ": " + exception.Message;
+                CloseAllStreams(
+                    TableStreamTerminationKind.ProjectionFailed,
+                    ProtocolErrorCode.InternalError,
+                    _publicationFault);
+                return;
+            }
+
+            var registrations = new List<TableStreamRegistration>(_streams.Values);
+            for (int i = 0; i < registrations.Count; i++)
+            {
+                TableStreamRegistration registration = registrations[i];
+                if (registration.Channel.IsClosed)
+                {
+                    RemoveRegistration(registration);
+                    continue;
+                }
+
+                if (registration.NeedsSync)
+                {
+                    // Recovery baseline is not acknowledged yet. Sync will rebuild a current
+                    // full baseline, which includes the newly opened decision.
                     continue;
                 }
 
