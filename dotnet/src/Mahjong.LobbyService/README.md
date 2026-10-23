@@ -56,6 +56,7 @@
 - 对账幂等摘要只由稳定请求语义（操作名 + roomId）决定，**不包含**投影/终态等可变服务端观察。相同账号/roomId/requestId 的重试始终回放首次已提交响应，即使期间由其他请求完成终态关闭；新的观察必须使用新 requestId。同 key 换房间或换操作仍是 `REQUEST_ID_CONFLICT`。
 - 缺失/读取失败的投影仍是明确的最终一致降级：不关闭房间、不伪造终态，目录/详情标 `projectionStale=true`，准入继续按 lobby 自有状态处理。该边界不是 TableService 强一致保证。
 - 显式对账端点需要 bearer session + `Idempotency-Key`；它只依据公开投影和 lobby 自身状态，不读取 TableService 私有状态。
+- **回执优先（R6）**：Join/Spectate/Issue 等有副作用入口先按认证 principal + requestId + 稳定 payload digest 查询 `TryReplayAsync`；已提交回执在读取房间/assignment/投影前直接回放，终态后同 key 仍返回原 201/同 body，HTTP 带 `Idempotent-Replayed: true`。只有首次执行才读取可变状态；新 key 才执行终态拒绝。回放不新建 assignment、不签新 jti、不复活票据；旧票据 Consume 仍返回 `ROOM_CLOSED`。
 - 终态释放后全局 placement 栅栏解除，账号可加入其他房间；`CLOSED` 房间会从公开目录隐藏。
 
 ## 匹配
@@ -123,7 +124,7 @@ D:\Unity\dotnet\dotnet.exe test dotnet/tests/Mahjong.LobbyService.Tests/Mahjong.
 
 ## 已覆盖 / 未覆盖
 
-**已覆盖（内存/本地 HTTP 契约测试）**：R1 同 deviceId 无 bootstrap 不能接管、不同 bootstrap 为不同账号、同 requestId 不同 bootstrap 不回放 token、同 bootstrap 合法双开/幂等回放；R2 跨房顺序/并发 join 只有一个 assignment、create-vs-join、match-vs-join 互斥、存储直接插入第二活跃 assignment 被拒；R4 CLOSED/FINISHED 拒绝新 join/spectate、关闭后旧票据消费/新签发拒绝且无确认副作用、显式/重复对账释放账号、旧 OPEN 投影不能重开、同 ruleset 限制与缺失投影降级；R5 可控投影等待下并发对账同 key 回放、先 NON_TERMINAL 后终态同 key 回放原响应、新 key 才关闭、同 key 换 room/换操作冲突；并发同键建房、幂等冲突、并发同座位加房、四人匹配/第五人排队、取消/过期竞态、过期释放席位、重复匹配、票据字段/无 ownerEpoch、alg/aud/role/seat/room/assignment/expiry/TTL/重复 claim 拒绝、签名篡改、跨账号签发、并发重复消费、重连新票据、密钥轮换/退休、JWKS 无私钥、公开投影合并/降级、程序集不引用 Domain/TableRuntime。
+**已覆盖（内存/本地 HTTP 契约测试）**：R1 同 deviceId 无 bootstrap 不能接管、不同 bootstrap 为不同账号、同 requestId 不同 bootstrap 不回放 token、同 bootstrap 合法双开/幂等回放；R2 跨房顺序/并发 join 只有一个 assignment、create-vs-join、match-vs-join 互斥、存储直接插入第二活跃 assignment 被拒；R4 CLOSED/FINISHED 拒绝新 join/spectate、关闭后旧票据消费/新签发拒绝且无确认副作用、显式/重复对账释放账号、旧 OPEN 投影不能重开、同 ruleset 限制与缺失投影降级；R5 可控投影等待下并发对账同 key 回放、先 NON_TERMINAL 后终态同 key 回放原响应、新 key 才关闭、同 key 换 room/换操作冲突；R6 OPEN 首次成功、CLOSED/FINISHED 后同 key 回放原 201/body、新 key 拒绝、换 room/换 payload/换操作冲突、回放不重建 assignment/不签新 jti、旧票据消费仍拒绝、HTTP 成功回执终态后重试带 `Idempotent-Replayed`；并发同键建房、幂等冲突、并发同座位加房、四人匹配/第五人排队、取消/过期竞态、过期释放席位、重复匹配、票据字段/无 ownerEpoch、alg/aud/role/seat/room/assignment/expiry/TTL/重复 claim 拒绝、签名篡改、跨账号签发、并发重复消费、重连新票据、密钥轮换/退休、JWKS 无私钥、公开投影合并/降级、程序集不引用 Domain/TableRuntime。
 
 **NOT_RUN / 未覆盖**：
 

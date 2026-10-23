@@ -44,6 +44,12 @@ namespace Mahjong.LobbyService
             string roomId = LobbyIds.NewPrefixed("room_");
             string assignmentId = LobbyIds.NewPrefixed("asg_");
             var key = new LobbyIdempotencyKey(account.AccountId, requestId);
+            LobbyResponse? replay = await _store.TryReplayAsync(key, payloadDigest, cancellationToken)
+                .ConfigureAwait(false);
+            if (replay != null)
+            {
+                return replay;
+            }
 
             return await _store.ExecuteIdempotentAsync(
                 key,
@@ -143,32 +149,40 @@ namespace Mahjong.LobbyService
                 id,
                 preferredSeat?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? "-");
             DateTimeOffset now = _clock.UtcNow;
-            LobbyRoomSnapshot? preAdmission = await _store.FindRoomSnapshotAsync(id, now, cancellationToken)
-                .ConfigureAwait(false);
-            if (preAdmission == null)
-            {
-                throw new LobbyException(404, "ROOM_NOT_FOUND", "The room does not exist.");
-            }
-
-            if (preAdmission.Room.State == LobbyRoomState.Closed)
-            {
-                throw new LobbyException(409, "ROOM_CLOSED", "The room is closed.");
-            }
-
-            bool terminalObserved = await EnsureTerminalRoomReconciledAsync(
-                id,
-                preAdmission.Room.RulesetVersion,
-                now,
-                cancellationToken).ConfigureAwait(false);
-            if (terminalObserved)
-            {
-                throw new LobbyException(409, "ROOM_CLOSED", "The room is closed by the authoritative public projection.");
-            }
-
-            string assignmentId = LobbyIds.NewPrefixed("asg_");
             var key = new LobbyIdempotencyKey(account.AccountId, requestId);
+            LobbyResponse? replay = await _store.TryReplayAsync(key, payloadDigest, cancellationToken)
+                .ConfigureAwait(false);
+            if (replay != null)
+            {
+                return replay;
+            }
 
-            return await _store.ExecuteIdempotentAsync(
+            LobbyRoomSnapshot? preAdmission;
+            try
+            {
+                preAdmission = await _store.FindRoomSnapshotAsync(id, now, cancellationToken)
+                    .ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
+            }
+            catch (Exception)
+            {
+                // Receipt-first already proved this is a first execution. Let
+                // the transaction re-read state rather than make a completed
+                // request fail on a preflight read.
+                preAdmission = null;
+            }
+
+            bool terminalObserved = preAdmission != null &&
+                                    preAdmission.Room.State == LobbyRoomState.Open &&
+                                    IsTerminalProjection(
+                                        await ReadProjectionAsync(id, cancellationToken).ConfigureAwait(false),
+                                        preAdmission.Room.RulesetVersion);
+            string assignmentId = LobbyIds.NewPrefixed("asg_");
+
+            LobbyResponse response = await _store.ExecuteIdempotentAsync(
                 key,
                 payloadDigest,
                 now,
@@ -182,9 +196,22 @@ namespace Mahjong.LobbyService
                         throw new LobbyException(404, "ROOM_NOT_FOUND", "The room does not exist.");
                     }
 
+                    if (terminalObserved && room.State == LobbyRoomState.Open)
+                    {
+                        LobbyRoom closed = room with
+                        {
+                            State = LobbyRoomState.Closed,
+                            ClosedAt = now,
+                            UpdatedAt = now
+                        };
+                        await tx.UpdateRoomAsync(closed, ct).ConfigureAwait(false);
+                        await tx.CancelActiveAssignmentsForRoomAsync(id, now, ct).ConfigureAwait(false);
+                        room = closed;
+                    }
+
                     if (room.State != LobbyRoomState.Open)
                     {
-                        throw new LobbyException(409, "ROOM_CLOSED", "The room is closed.");
+                        return RoomClosedResponse();
                     }
 
                     LobbyAssignment? existing = await tx.FindAnyActiveAssignmentForAccountAsync(
@@ -251,6 +278,7 @@ namespace Mahjong.LobbyService
                     return new LobbyResponse(201, LobbyJson.Serialize(new JoinRoomView(ToView(assignment))));
                 },
                 cancellationToken).ConfigureAwait(false);
+            return ThrowIfCommittedRejection(response);
         }
 
         public async Task<LobbyResponse> SpectateRoomAsync(
@@ -262,32 +290,40 @@ namespace Mahjong.LobbyService
             string id = LobbyText.RequireId(roomId, "roomId");
             string payloadDigest = LobbyDigest.Compute("room.spectate.v1", id);
             DateTimeOffset now = _clock.UtcNow;
-            LobbyRoomSnapshot? preAdmission = await _store.FindRoomSnapshotAsync(id, now, cancellationToken)
-                .ConfigureAwait(false);
-            if (preAdmission == null)
-            {
-                throw new LobbyException(404, "ROOM_NOT_FOUND", "The room does not exist.");
-            }
-
-            if (preAdmission.Room.State == LobbyRoomState.Closed)
-            {
-                throw new LobbyException(409, "ROOM_CLOSED", "The room is closed.");
-            }
-
-            bool terminalObserved = await EnsureTerminalRoomReconciledAsync(
-                id,
-                preAdmission.Room.RulesetVersion,
-                now,
-                cancellationToken).ConfigureAwait(false);
-            if (terminalObserved)
-            {
-                throw new LobbyException(409, "ROOM_CLOSED", "The room is closed by the authoritative public projection.");
-            }
-
-            string assignmentId = LobbyIds.NewPrefixed("asg_");
             var key = new LobbyIdempotencyKey(account.AccountId, requestId);
+            LobbyResponse? replay = await _store.TryReplayAsync(key, payloadDigest, cancellationToken)
+                .ConfigureAwait(false);
+            if (replay != null)
+            {
+                return replay;
+            }
 
-            return await _store.ExecuteIdempotentAsync(
+            LobbyRoomSnapshot? preAdmission;
+            try
+            {
+                preAdmission = await _store.FindRoomSnapshotAsync(id, now, cancellationToken)
+                    .ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
+            }
+            catch (Exception)
+            {
+                // Receipt-first already proved this is a first execution. Let
+                // the transaction re-read state rather than make a completed
+                // request fail on a preflight read.
+                preAdmission = null;
+            }
+
+            bool terminalObserved = preAdmission != null &&
+                                    preAdmission.Room.State == LobbyRoomState.Open &&
+                                    IsTerminalProjection(
+                                        await ReadProjectionAsync(id, cancellationToken).ConfigureAwait(false),
+                                        preAdmission.Room.RulesetVersion);
+            string assignmentId = LobbyIds.NewPrefixed("asg_");
+
+            LobbyResponse response = await _store.ExecuteIdempotentAsync(
                 key,
                 payloadDigest,
                 now,
@@ -301,9 +337,22 @@ namespace Mahjong.LobbyService
                         throw new LobbyException(404, "ROOM_NOT_FOUND", "The room does not exist.");
                     }
 
+                    if (terminalObserved && room.State == LobbyRoomState.Open)
+                    {
+                        LobbyRoom closed = room with
+                        {
+                            State = LobbyRoomState.Closed,
+                            ClosedAt = now,
+                            UpdatedAt = now
+                        };
+                        await tx.UpdateRoomAsync(closed, ct).ConfigureAwait(false);
+                        await tx.CancelActiveAssignmentsForRoomAsync(id, now, ct).ConfigureAwait(false);
+                        room = closed;
+                    }
+
                     if (room.State != LobbyRoomState.Open)
                     {
-                        throw new LobbyException(409, "ROOM_CLOSED", "The room is closed.");
+                        return RoomClosedResponse();
                     }
 
                     if (!room.AllowSpectators)
@@ -351,6 +400,7 @@ namespace Mahjong.LobbyService
                     return new LobbyResponse(201, LobbyJson.Serialize(new JoinRoomView(ToView(assignment))));
                 },
                 cancellationToken).ConfigureAwait(false);
+            return ThrowIfCommittedRejection(response);
         }
     }
 }

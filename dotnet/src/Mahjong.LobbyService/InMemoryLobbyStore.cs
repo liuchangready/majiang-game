@@ -174,6 +174,38 @@ namespace Mahjong.LobbyService
             }
         }
 
+        public async Task<LobbyResponse?> TryReplayAsync(
+            LobbyIdempotencyKey key,
+            string payloadDigest,
+            CancellationToken cancellationToken)
+        {
+            await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+            try
+            {
+                var receiptKey = new ReceiptKey(key.Principal, key.RequestId);
+                if (!_state.Receipts.TryGetValue(receiptKey, out LobbyReceiptRecord? existing))
+                {
+                    return null;
+                }
+
+                if (!string.Equals(existing.PayloadDigest, payloadDigest, StringComparison.Ordinal))
+                {
+                    throw new LobbyException(409, "REQUEST_ID_CONFLICT", "The idempotency key was already used with a different payload.");
+                }
+
+                if (!string.Equals(existing.Status, "COMPLETED", StringComparison.Ordinal))
+                {
+                    throw new LobbyException(409, "REQUEST_IN_PROGRESS", "The original request is still in progress.");
+                }
+
+                return new LobbyResponse(existing.HttpStatus, existing.ResultBody, Replayed: true);
+            }
+            finally
+            {
+                _gate.Release();
+            }
+        }
+
         public async Task<LobbyResponse> ExecuteIdempotentAsync(
             LobbyIdempotencyKey key,
             string payloadDigest,

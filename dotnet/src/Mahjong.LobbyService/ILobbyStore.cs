@@ -31,6 +31,18 @@ namespace Mahjong.LobbyService
 
         Task<LobbyMatchTicket?> FindMatchTicketAsync(string matchTicketId, CancellationToken cancellationToken);
 
+        /// <summary>
+        /// Receipt-first lookup for a previously committed request. Returns the
+        /// original response when the same key/payload is already committed,
+        /// null when this is a first execution, and throws a conflict for a
+        /// different payload. It must not inspect mutable room/assignment or
+        /// projection state, so a completed request can always replay.
+        /// </summary>
+        Task<LobbyResponse?> TryReplayAsync(
+            LobbyIdempotencyKey key,
+            string payloadDigest,
+            CancellationToken cancellationToken);
+
         Task<LobbyResponse> ExecuteIdempotentAsync(
             LobbyIdempotencyKey key,
             string payloadDigest,

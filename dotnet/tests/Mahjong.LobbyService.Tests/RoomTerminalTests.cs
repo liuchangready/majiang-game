@@ -241,6 +241,194 @@ namespace Mahjong.LobbyService.Tests
             Assert.Equal(room.Room.RoomId, joined.Assignment.RoomId);
         }
 
+        [Theory]
+        [InlineData("CLOSED")]
+        [InlineData("FINISHED")]
+        public async Task CompletedJoinSpectateAndIssueReceiptsReplayAfterTerminal(string lifecycle)
+        {
+            var projection = new MutableProjectionReader();
+            await using LobbyFixture fixture = LobbyFixture.Create(projections: projection);
+            GuestSessionView host = await fixture.CreateGuestAsync("receipt-host-" + lifecycle);
+            CreateRoomView room = await fixture.CreateRoomAsync(host);
+            GuestSessionView joiner = await fixture.CreateGuestAsync("receipt-joiner-" + lifecycle);
+            GuestSessionView spectator = await fixture.CreateGuestAsync("receipt-spectator-" + lifecycle);
+            LobbySessionInfo joinerSession = await fixture.AuthenticateAsync(joiner);
+            LobbySessionInfo spectatorSession = await fixture.AuthenticateAsync(spectator);
+
+            string joinKey = LobbyFixture.NewRequestId();
+            string spectateKey = LobbyFixture.NewRequestId();
+            string issueKey = LobbyFixture.NewRequestId();
+            var joinCommand = new JoinRoomCommand(1);
+
+            LobbyResponse joinFirst = await fixture.Application.JoinRoomAsync(
+                joinerSession.Account,
+                room.Room.RoomId,
+                joinCommand,
+                joinKey,
+                default);
+            Assert.Equal(201, joinFirst.StatusCode);
+            JoinRoomView joined = LobbyJson.Deserialize<JoinRoomView>(joinFirst.Json);
+
+            LobbyResponse spectateFirst = await fixture.Application.SpectateRoomAsync(
+                spectatorSession.Account,
+                room.Room.RoomId,
+                spectateKey,
+                default);
+            Assert.Equal(201, spectateFirst.StatusCode);
+
+            LobbyResponse issueFirst = await fixture.Application.IssueTableTicketAsync(
+                joinerSession.Account,
+                new IssueTableTicketCommand(joined.Assignment.AssignmentId),
+                issueKey,
+                default);
+            Assert.Equal(201, issueFirst.StatusCode);
+            TableTicketView issued = LobbyJson.Deserialize<TableTicketView>(issueFirst.Json);
+
+            projection.Set(room.Room.RoomId, lifecycle, fixture.Clock.UtcNow.AddSeconds(1));
+            LobbySessionInfo hostSession = await fixture.AuthenticateAsync(host);
+            LobbyResponse closed = await fixture.Application.ReconcileRoomAsync(
+                hostSession.Account,
+                room.Room.RoomId,
+                LobbyFixture.NewRequestId(),
+                default);
+            Assert.Equal("CLOSED", LobbyJson.Deserialize<RoomSummaryView>(closed.Json).State);
+
+            LobbyResponse joinReplay = await fixture.Application.JoinRoomAsync(
+                joinerSession.Account,
+                room.Room.RoomId,
+                joinCommand,
+                joinKey,
+                default);
+            Assert.Equal(201, joinReplay.StatusCode);
+            Assert.True(joinReplay.Replayed);
+            Assert.Equal(joinFirst.Json, joinReplay.Json);
+
+            LobbyResponse spectateReplay = await fixture.Application.SpectateRoomAsync(
+                spectatorSession.Account,
+                room.Room.RoomId,
+                spectateKey,
+                default);
+            Assert.Equal(201, spectateReplay.StatusCode);
+            Assert.True(spectateReplay.Replayed);
+            Assert.Equal(spectateFirst.Json, spectateReplay.Json);
+
+            LobbyResponse issueReplay = await fixture.Application.IssueTableTicketAsync(
+                joinerSession.Account,
+                new IssueTableTicketCommand(joined.Assignment.AssignmentId),
+                issueKey,
+                default);
+            Assert.Equal(201, issueReplay.StatusCode);
+            Assert.True(issueReplay.Replayed);
+            Assert.Equal(issueFirst.Json, issueReplay.Json);
+            Assert.Equal(issued.Jti, LobbyJson.Deserialize<TableTicketView>(issueReplay.Json).Jti);
+
+            IReadOnlyList<LobbyAssignment> active = await fixture.Application.Store.ExecuteAsync(
+                fixture.Clock.UtcNow,
+                (tx, ct) => tx.ListActiveAssignmentsForAccountAsync(joinerSession.Account.AccountId, ct),
+                default);
+            Assert.Empty(active);
+
+            LobbyException consume = await Assert.ThrowsAsync<LobbyException>(
+                () => fixture.ConsumeAsync(issued, joiner.AccountId));
+            Assert.Equal("ROOM_CLOSED", consume.Code);
+
+            LobbyException newJoin = await Assert.ThrowsAsync<LobbyException>(
+                () => fixture.Application.JoinRoomAsync(
+                    joinerSession.Account,
+                    room.Room.RoomId,
+                    joinCommand,
+                    LobbyFixture.NewRequestId(),
+                    default));
+            Assert.Equal("ROOM_CLOSED", newJoin.Code);
+            LobbyException newSpectate = await Assert.ThrowsAsync<LobbyException>(
+                () => fixture.Application.SpectateRoomAsync(
+                    spectatorSession.Account,
+                    room.Room.RoomId,
+                    LobbyFixture.NewRequestId(),
+                    default));
+            Assert.Equal("ROOM_CLOSED", newSpectate.Code);
+            LobbyException newIssue = await Assert.ThrowsAsync<LobbyException>(
+                () => fixture.Application.IssueTableTicketAsync(
+                    joinerSession.Account,
+                    new IssueTableTicketCommand(joined.Assignment.AssignmentId),
+                    LobbyFixture.NewRequestId(),
+                    default));
+            Assert.Equal("ROOM_CLOSED", newIssue.Code);
+        }
+
+        [Fact]
+        public async Task UsedJoinKeyForDifferentRoomConflictsBeforeStateChecks()
+        {
+            var projection = new MutableProjectionReader();
+            await using LobbyFixture fixture = LobbyFixture.Create(projections: projection);
+            GuestSessionView hostA = await fixture.CreateGuestAsync("used-key-host-a");
+            CreateRoomView roomA = await fixture.CreateRoomAsync(hostA, "A");
+            GuestSessionView hostB = await fixture.CreateGuestAsync("used-key-host-b");
+            CreateRoomView roomB = await fixture.CreateRoomAsync(hostB, "B");
+            GuestSessionView guest = await fixture.CreateGuestAsync("used-key-guest");
+            LobbySessionInfo session = await fixture.AuthenticateAsync(guest);
+            string key = LobbyFixture.NewRequestId();
+
+            LobbyResponse first = await fixture.Application.JoinRoomAsync(
+                session.Account,
+                roomA.Room.RoomId,
+                new JoinRoomCommand(1),
+                key,
+                default);
+            Assert.Equal(201, first.StatusCode);
+
+            LobbyException conflict = await Assert.ThrowsAsync<LobbyException>(
+                () => fixture.Application.JoinRoomAsync(
+                    session.Account,
+                    roomB.Room.RoomId,
+                    new JoinRoomCommand(1),
+                    key,
+                    default));
+            Assert.Equal(409, conflict.StatusCode);
+            Assert.Equal("REQUEST_ID_CONFLICT", conflict.Code);
+
+            LobbyException payloadConflict = await Assert.ThrowsAsync<LobbyException>(
+                () => fixture.Application.JoinRoomAsync(
+                    session.Account,
+                    roomA.Room.RoomId,
+                    new JoinRoomCommand(2),
+                    key,
+                    default));
+            Assert.Equal(409, payloadConflict.StatusCode);
+            Assert.Equal("REQUEST_ID_CONFLICT", payloadConflict.Code);
+        }
+
+        [Fact]
+        public async Task UsedIssueKeyForDifferentAssignmentConflictsBeforeStateChecks()
+        {
+            var projection = new MutableProjectionReader();
+            await using LobbyFixture fixture = LobbyFixture.Create(projections: projection);
+            GuestSessionView hostA = await fixture.CreateGuestAsync("used-issue-host-a");
+            CreateRoomView roomA = await fixture.CreateRoomAsync(hostA, "A");
+            GuestSessionView hostB = await fixture.CreateGuestAsync("used-issue-host-b");
+            CreateRoomView roomB = await fixture.CreateRoomAsync(hostB, "B");
+            GuestSessionView guest = await fixture.CreateGuestAsync("used-issue-guest");
+            LobbySessionInfo session = await fixture.AuthenticateAsync(guest);
+            JoinRoomView joined = await fixture.JoinAsync(guest, roomA.Room.RoomId);
+            string key = LobbyFixture.NewRequestId();
+
+            LobbyResponse first = await fixture.Application.IssueTableTicketAsync(
+                session.Account,
+                new IssueTableTicketCommand(joined.Assignment.AssignmentId),
+                key,
+                default);
+            Assert.Equal(201, first.StatusCode);
+
+            LobbyException conflict = await Assert.ThrowsAsync<LobbyException>(
+                () => fixture.Application.IssueTableTicketAsync(
+                    session.Account,
+                    new IssueTableTicketCommand(roomB.Assignment.AssignmentId),
+                    key,
+                    default));
+            Assert.Equal(409, conflict.StatusCode);
+            Assert.Equal("REQUEST_ID_CONFLICT", conflict.Code);
+        }
+
         [Fact]
         public async Task ConcurrentTerminalObservationDoesNotChangeReconcileReceiptDigest()
         {

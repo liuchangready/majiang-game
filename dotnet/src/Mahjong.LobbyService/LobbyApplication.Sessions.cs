@@ -40,6 +40,13 @@ namespace Mahjong.LobbyService
             // The receipt principal includes the bootstrap hash, so knowing
             // only deviceId + requestId cannot replay a victim's bearer token.
             var key = new LobbyIdempotencyKey("bootstrap:" + bootstrapPrincipal, requestId);
+            LobbyResponse? replay = await _store.TryReplayAsync(key, payloadDigest, cancellationToken)
+                .ConfigureAwait(false);
+            if (replay != null)
+            {
+                return replay;
+            }
+
             DateTimeOffset now = _clock.UtcNow;
             string token = LobbyIds.NewToken();
             string tokenHash = LobbyIds.HashToken(token);

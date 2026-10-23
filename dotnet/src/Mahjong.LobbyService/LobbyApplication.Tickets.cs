@@ -22,59 +22,79 @@ namespace Mahjong.LobbyService
             string assignmentId = LobbyText.RequireId(command.AssignmentId, "assignmentId");
             string payloadDigest = LobbyDigest.Compute("table.ticket.issue.v1", assignmentId);
             DateTimeOffset now = _clock.UtcNow;
-            LobbyAssignment? preAssignment = await _store.FindAssignmentAsync(assignmentId, cancellationToken)
+            var key = new LobbyIdempotencyKey(account.AccountId, requestId);
+            LobbyResponse? replay = await _store.TryReplayAsync(key, payloadDigest, cancellationToken)
                 .ConfigureAwait(false);
-            if (preAssignment == null ||
-                !string.Equals(preAssignment.AccountId, account.AccountId, StringComparison.Ordinal))
+            if (replay != null)
             {
-                throw new LobbyException(404, "ASSIGNMENT_NOT_FOUND", "The assignment does not exist for this account.");
+                return replay;
             }
 
-            LobbyRoomSnapshot? preRoom = await _store.FindRoomSnapshotAsync(
-                preAssignment.RoomId,
-                now,
-                cancellationToken).ConfigureAwait(false);
-            if (preRoom == null)
+            LobbyAssignment? preAssignment = null;
+            LobbyRoomSnapshot? preRoom = null;
+            try
             {
-                throw new LobbyException(404, "ROOM_NOT_FOUND", "The assignment room does not exist.");
+                preAssignment = await _store.FindAssignmentAsync(assignmentId, cancellationToken)
+                    .ConfigureAwait(false);
+                if (preAssignment != null &&
+                    string.Equals(preAssignment.AccountId, account.AccountId, StringComparison.Ordinal))
+                {
+                    preRoom = await _store.FindRoomSnapshotAsync(preAssignment.RoomId, now, cancellationToken)
+                        .ConfigureAwait(false);
+                }
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
+            }
+            catch (Exception)
+            {
+                // Receipt-first already proved this is a first execution.
+                preAssignment = null;
+                preRoom = null;
             }
 
-            if (preRoom.Room.State == LobbyRoomState.Closed)
-            {
-                throw new LobbyException(409, "ROOM_CLOSED", "The room is closed.");
-            }
-
-            bool terminalObserved = await EnsureTerminalRoomReconciledAsync(
-                preAssignment.RoomId,
-                preRoom.Room.RulesetVersion,
-                now,
-                cancellationToken).ConfigureAwait(false);
-            if (terminalObserved)
-            {
-                throw new LobbyException(409, "ROOM_CLOSED", "The room is closed by the authoritative public projection.");
-            }
-
+            string? preRoomId = preRoom?.Room.RoomId ?? preAssignment?.RoomId;
+            bool terminalObserved = preRoom != null &&
+                                    preRoom.Room.State == LobbyRoomState.Open &&
+                                    IsTerminalProjection(
+                                        await ReadProjectionAsync(preRoom.Room.RoomId, cancellationToken)
+                                            .ConfigureAwait(false),
+                                        preRoom.Room.RulesetVersion);
             DateTimeOffset issuedAt = DateTimeOffset.FromUnixTimeSeconds(now.ToUnixTimeSeconds());
             DateTimeOffset expiresAt = issuedAt.AddSeconds(_options.TicketTtlSeconds);
-            var key = new LobbyIdempotencyKey(account.AccountId, requestId);
 
-            return await _store.ExecuteIdempotentAsync(
+            LobbyResponse response = await _store.ExecuteIdempotentAsync(
                 key,
                 payloadDigest,
                 now,
                 async (tx, ct) =>
                 {
                     await tx.ExpireDueAsync(now, ct).ConfigureAwait(false);
-                    LobbyRoom? room = await tx.FindRoomForUpdateAsync(preAssignment.RoomId, ct)
-                        .ConfigureAwait(false);
-                    if (room == null)
+                    LobbyRoom? room = preRoomId == null
+                        ? null
+                        : await tx.FindRoomForUpdateAsync(preRoomId, ct).ConfigureAwait(false);
+                    if (preRoomId != null && room == null)
                     {
                         throw new LobbyException(404, "ROOM_NOT_FOUND", "The assignment room does not exist.");
                     }
 
-                    if (room.State != LobbyRoomState.Open)
+                    if (terminalObserved && room != null && room.State == LobbyRoomState.Open)
                     {
-                        throw new LobbyException(409, "ROOM_CLOSED", "The room is closed.");
+                        LobbyRoom closed = room with
+                        {
+                            State = LobbyRoomState.Closed,
+                            ClosedAt = now,
+                            UpdatedAt = now
+                        };
+                        await tx.UpdateRoomAsync(closed, ct).ConfigureAwait(false);
+                        await tx.CancelActiveAssignmentsForRoomAsync(closed.RoomId, now, ct).ConfigureAwait(false);
+                        room = closed;
+                    }
+
+                    if (room != null && room.State != LobbyRoomState.Open)
+                    {
+                        return RoomClosedResponse();
                     }
 
                     LobbyAssignment? assignment = await tx.FindAssignmentForUpdateAsync(
@@ -84,6 +104,20 @@ namespace Mahjong.LobbyService
                         !string.Equals(assignment.AccountId, account.AccountId, StringComparison.Ordinal))
                     {
                         throw new LobbyException(404, "ASSIGNMENT_NOT_FOUND", "The assignment does not exist for this account.");
+                    }
+
+                    if (room == null)
+                    {
+                        room = await tx.FindRoomForUpdateAsync(assignment.RoomId, ct).ConfigureAwait(false);
+                        if (room == null)
+                        {
+                            throw new LobbyException(404, "ROOM_NOT_FOUND", "The assignment room does not exist.");
+                        }
+
+                        if (room.State != LobbyRoomState.Open)
+                        {
+                            return RoomClosedResponse();
+                        }
                     }
 
                     if (assignment.Status != LobbyAssignmentStatus.Reserved &&
@@ -164,6 +198,7 @@ namespace Mahjong.LobbyService
                     return new LobbyResponse(201, LobbyJson.Serialize(view));
                 },
                 cancellationToken).ConfigureAwait(false);
+            return ThrowIfCommittedRejection(response);
         }
 
         /// <summary>

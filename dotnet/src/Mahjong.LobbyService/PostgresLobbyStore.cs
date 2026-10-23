@@ -261,6 +261,44 @@ FROM lobby.match_ticket WHERE match_ticket_id = @id";
             return ReadMatchTicket(reader, 0);
         }
 
+        public async Task<LobbyResponse?> TryReplayAsync(
+            LobbyIdempotencyKey key,
+            string payloadDigest,
+            CancellationToken cancellationToken)
+        {
+            await using NpgsqlConnection connection = await _dataSource.OpenConnectionAsync(cancellationToken)
+                .ConfigureAwait(false);
+            const string sql = @"
+SELECT payload_digest, status, http_status, result_body
+FROM lobby.request_receipt
+WHERE principal = @principal AND request_id = @request_id";
+            await using var command = new NpgsqlCommand(sql, connection);
+            Add(command, "principal", key.Principal, NpgsqlDbType.Text);
+            Add(command, "request_id", key.RequestId, NpgsqlDbType.Text);
+            await using NpgsqlDataReader reader = await command.ExecuteReaderAsync(cancellationToken)
+                .ConfigureAwait(false);
+            if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+            {
+                return null;
+            }
+
+            string existingDigest = reader.GetString(0);
+            string status = reader.GetString(1);
+            int httpStatus = reader.GetInt32(2);
+            string body = reader.GetString(3);
+            if (!string.Equals(existingDigest, payloadDigest, StringComparison.Ordinal))
+            {
+                throw new LobbyException(409, "REQUEST_ID_CONFLICT", "The idempotency key was already used with a different payload.");
+            }
+
+            if (!string.Equals(status, "COMPLETED", StringComparison.Ordinal))
+            {
+                throw new LobbyException(409, "REQUEST_IN_PROGRESS", "The original request is still in progress.");
+            }
+
+            return new LobbyResponse(httpStatus, body, Replayed: true);
+        }
+
         public async Task<LobbyResponse> ExecuteIdempotentAsync(
             LobbyIdempotencyKey key,
             string payloadDigest,

@@ -30,6 +30,22 @@ namespace Mahjong.LobbyService
                 throw new LobbyException(400, "RULESET_VERSION_UNSUPPORTED", "Only rulesetVersion=1 is supported.");
             }
 
+            string region = LobbyText.RequireRegion(command.Region);
+            string payloadDigest = LobbyDigest.Compute(
+                "match.create.v1",
+                command.Mode.ToString(),
+                command.RulesetVersion.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                region);
+            DateTimeOffset now = _clock.UtcNow;
+            string matchTicketId = LobbyIds.NewPrefixed("mt_");
+            var key = new LobbyIdempotencyKey(account.AccountId, requestId);
+            LobbyResponse? replay = await _store.TryReplayAsync(key, payloadDigest, cancellationToken)
+                .ConfigureAwait(false);
+            if (replay != null)
+            {
+                return replay;
+            }
+
             if (command.Mode == LobbyMatchMode.Ranked && !RankedMatchAllowed)
             {
                 throw new LobbyException(
@@ -42,16 +58,6 @@ namespace Mahjong.LobbyService
             {
                 throw new LobbyException(503, "MATCHING_DISABLED", "Matchmaking is temporarily disabled.");
             }
-
-            string region = LobbyText.RequireRegion(command.Region);
-            string payloadDigest = LobbyDigest.Compute(
-                "match.create.v1",
-                command.Mode.ToString(),
-                command.RulesetVersion.ToString(System.Globalization.CultureInfo.InvariantCulture),
-                region);
-            DateTimeOffset now = _clock.UtcNow;
-            string matchTicketId = LobbyIds.NewPrefixed("mt_");
-            var key = new LobbyIdempotencyKey(account.AccountId, requestId);
 
             LobbyResponse response = await _store.ExecuteIdempotentAsync(
                 key,
@@ -142,6 +148,12 @@ namespace Mahjong.LobbyService
             string payloadDigest = LobbyDigest.Compute("match.cancel.v1", id);
             DateTimeOffset now = _clock.UtcNow;
             var key = new LobbyIdempotencyKey(account.AccountId, requestId);
+            LobbyResponse? replay = await _store.TryReplayAsync(key, payloadDigest, cancellationToken)
+                .ConfigureAwait(false);
+            if (replay != null)
+            {
+                return replay;
+            }
 
             return await _store.ExecuteIdempotentAsync(
                 key,

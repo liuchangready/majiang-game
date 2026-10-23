@@ -28,6 +28,21 @@ namespace Mahjong.LobbyService
 
             string id = LobbyText.RequireId(roomId, "roomId");
             DateTimeOffset now = _clock.UtcNow;
+            // Idempotency digest is derived ONLY from stable client request
+            // semantics (operation + roomId). It must never include a mutable
+            // snapshot/projection/terminal observation: the same successful
+            // request must replay its original committed response even when a
+            // concurrent reconcile has since moved the room to CLOSED. A new
+            // observation is a new request key.
+            string digest = LobbyDigest.Compute("room.reconcile.v1", id);
+            var key = new LobbyIdempotencyKey(account.AccountId, requestId);
+            LobbyResponse? replay = await _store.TryReplayAsync(key, digest, cancellationToken)
+                .ConfigureAwait(false);
+            if (replay != null)
+            {
+                return replay;
+            }
+
             LobbyRoomSnapshot? snapshot = await _store.FindRoomSnapshotAsync(id, now, cancellationToken)
                 .ConfigureAwait(false);
             if (snapshot == null)
@@ -39,14 +54,6 @@ namespace Mahjong.LobbyService
                 .ConfigureAwait(false);
             bool terminal = snapshot.Room.State == LobbyRoomState.Closed ||
                             IsTerminalProjection(projection, snapshot.Room.RulesetVersion);
-            // Idempotency digest is derived ONLY from stable client request
-            // semantics (operation + roomId). It must never include a mutable
-            // snapshot/projection/terminal observation: the same successful
-            // request must replay its original committed response even when a
-            // concurrent reconcile has since moved the room to CLOSED. A new
-            // observation is a new request key.
-            string digest = LobbyDigest.Compute("room.reconcile.v1", id);
-            var key = new LobbyIdempotencyKey(account.AccountId, requestId);
 
             return await _store.ExecuteIdempotentAsync(
                 key,
@@ -151,6 +158,30 @@ namespace Mahjong.LobbyService
             return (assignment.Status == LobbyAssignmentStatus.Reserved ||
                     assignment.Status == LobbyAssignmentStatus.Confirmed) &&
                    (!assignment.ExpiresAt.HasValue || assignment.ExpiresAt.Value > now);
+        }
+
+        private static LobbyResponse RoomClosedResponse()
+        {
+            return new LobbyResponse(
+                409,
+                LobbyJson.Serialize(new LobbyErrorView("ROOM_CLOSED", "The room is closed.")));
+        }
+
+        /// <summary>
+        /// A terminal rejection is a committed receipt. The exception is raised
+        /// only after the store transaction committed the receipt and the
+        /// close/release side effects, so a retry can replay the original result
+        /// instead of re-running or losing it.
+        /// </summary>
+        private static LobbyResponse ThrowIfCommittedRejection(LobbyResponse response)
+        {
+            if (response.StatusCode < 400)
+            {
+                return response;
+            }
+
+            LobbyErrorView error = LobbyJson.Deserialize<LobbyErrorView>(response.Json);
+            throw new LobbyException(response.StatusCode, error.Code, error.Message);
         }
     }
 }
