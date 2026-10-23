@@ -282,3 +282,55 @@
 - 未改：V4 七模块 `src/main`/`src/test`、`AGENTS.md`、既有 V4/V5 文档、`dotnet/`、`unity/`、`tools/unity/`。
 - 工作树原有他人未提交项（完整保留，未还原/覆盖）：`doc/v5-重构/UNITY-ENVIRONMENT.md`、`unity/Mahjong.Unity/Assets/Resources/PerformanceTestRunInfo.json` 及其 `.meta`、`PerformanceTestRunSettings.json` 及其 `.meta` 删除、`unity/Mahjong.Unity/ProjectSettings/BurstAotSettings_StandaloneWindows.json` 新增。
 - 未提交、未推送；未生成 `tests/v5-golden/` 文件。
+
+---
+
+## 7. 2026-10-24 实现追踪核对（P0.1 现状复核，基线 437bd53）
+
+**性质与边界**：本章为证据/追踪复核，不构成实现，不判定 G1，不修改任务书与架构文档。§1–§6 的历史日期、口径与结论全部保留，本章只在其上增加当前实现状态边界。核对基线为已审 PR19 实际头 `437bd53ca8771764d62ef75226b73efded2baabd`（独占工作树 `wt/v5-traceability-current`）；accepted 依据仅取自该基线内已复核验收文档、引入提交与实际 C# 源码，飞行中接收树与未推送候选一律不计入。
+
+### 7.1 新增产物
+
+- `doc/v5-重构/implementation-v1.json`（schema `v5-implementation-trace-v1`）：266 个 V4 生产源码文件逐一唯一行，含 V4 符号、计划归属、V5 目标模块、状态、责任任务、依赖、缺口、V5/测试/验收锚点、黄金样本引用。SHA256 `4739d7de1f3b140b53b524e6415deea552424c2df062de64bfe282304272106b`。
+- `tools/traceability/validate-implementation-trace.ps1`：只读机器校验器（PowerShell 5.1 兼容，无安装、无全局改动）。SHA256 `61e29346fe4db5af25c4c0c3aacfe002e04eb89f8860d277ee1b4115907f6568`。
+
+### 7.2 机械核对结果
+
+- 分母核清：§1.3 计划清单 266 条 = `git ls-files` 七模块 `src/main/*.kt` 实际 266 条，对射核验无缺失、无重复。§1.1 的"266 主源码"口径在当前基线仍然成立。
+- 六个 V5 导出器测试（`engine/src/test` 下 `V5*GoldenExporterTest`）为黄金样本提取工具，属测试不属生产，不计入 266 分母——回应"新导出器测试是否在 266 之内"的疑问：不在。
+- 锚点核验：395 个锚点（V5 C# `路径#符号`、V4 测试 `路径#类名`、验收 `文档@提交`）逐一核验文件存在且符号以类型声明存在，0 失败。
+
+### 7.3 现状统计（由行实算，校验器强制与声明一致）
+
+| 状态 | 行数 | 说明 |
+|---|---|---|
+| accepted-component | 21 | 仅组件级：P1.1 物理黄金范围、P1.4 三绝技域/账本/经济、P3.1 串行邮箱、P3.2 投影组件、P3.3 计时/控制、P5.3 大厅、P5.4a 客户端通道等 |
+| partial | 126 | 有 C# 对应物/组件承接但无独立验收或映射未完成 |
+| pending | 98 | C# 未建，全部带责任任务与依赖 |
+| replaced-by-v5-contract | 20 | MJ-TCP/1 链路与进程内回执/outbox 由 Wire v1/持久回执替换，不迁移 |
+| platform-blocked | 1 | Android 真机/IL2CPP（P6.2） |
+
+逐模块：engine 114 / protocol 39 / server 27 / client 20 / presentation 63 / lwjgl3 2 / android 1。
+
+### 7.4 关键诚实边界（逐条）
+
+1. **accepted-component ≠ 等价验收**：仅指对应 V5 组件在冻结基线内有明确验收记录；G1 未验收，不宣称与 V4 全量等价。
+2. **算分/轮次/码牌**：C#（Rules、RoundStateMachine、Stacking）已存在，但无独立验收记录，全部 partial；`tests/v5-golden/` 中 round/scoring/shuffle 样本是导出样本，不构成验收。物理（physical-v1）与三绝技（cheat-v1）、AI（ai-v1）分别对应 P11/P1.4/P1.6 的组件验收。
+3. **AI**：ai-v1 为记录意图回放（`V5-P1.6-AI-GOLDEN.md@b49911c` + 独立复核@437bd53）；不宣称全量策略覆盖。策略集、能力注册、启发式未移植（partial，责任 P1.6）。
+4. **ApplicationCoordinator（3,336 行）与 TableAuthority（2,828 行）**：不做 1:1 搬运；串行化与部分语义由 P3.1/P3.4 组件承接，拆分未完成（partial）。
+5. **规则特况**：立直/副露/振听/双响三响裁决 C# 未建（`RoundActionKind` 经 P0.2 裁决明确排除这些动作，责任归规则层 P1.3）；42 役逐役差分未验收（D-01 口径以 V4 代码 42 项为准）。
+6. **传输**：MJ-TCP/1 是 V4 唯一生产传输；V5 以 WebSocket + Wire v1 替换，`protocol/transport/tcp` 与 `server/tcp` 共 20 行 replaced-by-v5-contract。服务端 WSS 宿主源码不在本基线树内，宿主装配责任 P5.1，G1 仍 BLOCKED（`V5-P31-WSS-INTEGRATION-20261024.md`）。无任何"删除 V4"或"回退旧协议"语义。
+7. **回执/恢复**：V5 单一持久回执替换 V4 进程内回执与在飞表；`ITableStore`/`IReceiptStore` 端口未交付（P3.4/P5.2）。
+8. **本地宿主**：`Mahjong.LocalHost` 为空 csproj（预构建 DLL 与空源码工程不一致、已过期）；进程内宿主与 TableService 装配分别待 P4.1/P5.1。
+9. **平台阻塞保持记录**：Unity Editor 许可证（exit=198）、Windows/Android IL2CPP 缺 MSVC/Windows SDK/NDK、iOS/macOS 与真机弱网未实测（`V5-1-AOT-REVIEW.md@e41a998`）；Unity 表现层 63 行全部 pending（P4.2–P4.4，`unity/` 无 .cs 源，仅预构建 DLL）。
+10. **并行任务边界**：黄金清单 `V5-0-GOLDEN-MANIFEST.md`/`catalog-v1.json` 及其 fixtures/校验器由并行任务冻结，本章未改动；P3.2 联调、CI 环境修复均只作为责任引用，不依赖其未合并产物。
+
+### 7.5 机器校验证据
+
+- 正例（真实仓库，只读）：`validate-implementation-trace.ps1` → `tracked-main-kt=266 rows=266`，`RESULT=PASS`，exit=0（2026-10-24T07:34:25+08:00，`artifacts/traceability-20261024/work/positive-run.log`，SHA256 `c0ec3587bee06a37434060a58a572ec208796a06bc058270c4e741d18817fc8d`）。
+- 负例自测（独占 TEMP 沙箱 git 仓库，本地提交身份，不动全局配置）：1 正例 + 10 负例全部符合预期（负例均 exit=1 且命中预期 FAIL 标记）：缺行、重复源行、未知状态、伪造锚点路径、伪造锚点符号（存在引用但无类型声明）、pending 无 gap/责任、坏 JSON、统计造假（反硬编码全过）、未跟踪多余行、accepted-component 无验收锚点。原始日志 SHA256 `1551b09c69cd07dc347d8d931b7ca99c5479a817e89e34f4a9112fc435c5d755`（`artifacts/traceability-20261024/work/selftest/selftest-raw.log`）。
+- 校验器核验项：真实 tracked 枚举对射（缺行/多余/重复→exit 1）、仅 main+仅 .kt 卫生、受控枚举（模块/状态/责任任务/依赖）、锚点路径与符号声明真实存在、验收提交号格式、golden 样本存在、非 accepted 状态必须有 gap+责任、分母与逐模块/逐状态统计必须与行实算一致。证据明细：`artifacts/traceability-20261024/EVIDENCE.md`。
+
+### 7.6 结论
+
+P0.1 的"矩阵每行有源码/测试证据、V5 归属、状态；无待定而缺责任任务"在当前基线以 `implementation-v1.json` + 校验器方式达成机械可复核形态；同时为 G1 提供不漏项证据：266 个 V4 生产行为面全部有显式状态与未完成责任，无批量"已完成"宣称。本章不改变 §6 的交付边界，也不解除 §5 表中任何未决项。
