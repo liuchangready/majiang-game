@@ -27,6 +27,18 @@
     <ProjectReference Include="..\..\src\Mahjong.Client\Mahjong.Client.csproj" />
     <ProjectReference Include="..\..\src\Mahjong.Contracts\Mahjong.Contracts.csproj" />
     <ProjectReference Include="..\..\src\Mahjong.Contracts.Wire\Mahjong.Contracts.Wire.csproj" />
+    <ProjectReference Include="..\Mahjong.Client.OutboxWorker\Mahjong.Client.OutboxWorker.csproj" ReferenceOutputAssembly="false" />
   </ItemGroup>
+
+  <!-- The worker is a real child process in crash/restart tests; it stays out of Mahjong.sln. -->
+  <Target Name="CopyOutboxWorker" AfterTargets="Build">
+    <ItemGroup>
+      <OutboxWorkerFiles Include="$(MSBuildThisFileDirectory)..\Mahjong.Client.OutboxWorker\bin\$(Configuration)\net8.0\**\*" />
+    </ItemGroup>
+    <Copy
+      SourceFiles="@(OutboxWorkerFiles)"
+      DestinationFiles="@(OutboxWorkerFiles->'$(OutDir)outbox-worker\%(RecursiveDir)%(Filename)%(Extension)')"
+      SkipUnchangedFiles="true" />
+  </Target>
 
 </Project>
