@@ -21,3 +21,11 @@ caller 在交付工作树 `D:/majiang-wt/p32-streams` 独立检查了同一 mail
 验收限于本任务的内存流组件。真实 Protobuf/Wire 编码器、P3.2c 联合接线、真实 WSS/PG 集成、P3.4 持久恢复、Unity/IL2CPP/设备和 G1/G5 本轮均未验证，不计 PASS。生产仍为 V4。现有 PR #19 的 PowerShell 7 PostgreSQL wrapper 环境恢复失败仍是独立的未解决远端 CI 阻断，本组件测试通过不消除此失败。
 
 由 caller 汇总至既有唯一 PR #19（`feat/v5-1-integration` → `v5`）；未交付或未接受的兄弟实现不得因本次验收顺带纳入。合并后的构建/回归与发布 SHA 另行记录。
+
+## PR19 批次集成验证
+
+caller 从远端已发布 `0f08f0b2859965c6415b9b955343699be5315e81` 新建隔离集成树 `D:/majiang-wt/codex-p32b-final-20261024`，合入组件与验收记录 `9b16948`，无冲突。受测合并提交为 `db377254b595a179f740caf4a061a0a85527c3fb`，TableRuntime 源码和测试与受验交付 `177e5aa` 完全一致；没有纳入在途 P3.2c 或其他未验收源码。
+
+同一 SDK、Release 实际执行：`dotnet test dotnet/Mahjong.sln --nologo -v:minimal` 为 **541/0/0**（Domain 313、Contracts 82、Client 132、AI 14），额外执行 TableRuntime 项目为 **143/0/0**，合计 **684 passed / 0 failed / 0 skipped**，均退出 0。解决方案不包含 TableRuntime 测试入口，因此该项目单独执行，未按 solution PASS 推定其通过。`dotnet build dotnet/Mahjong.sln -c Release --nologo -v:minimal` 为 0 warning / 0 error；相对远端基线的 `git diff --check` 通过。
+
+精确命令、原始框架日志与 SHA256 位于集成树 `artifacts/p32b-integration-review/`。本批次没有重跑 PG wrapper、LobbyService/WSS 项目、严格统一入口或平台设备门槛；旧远端 CI 失败仍未解决。历史 814/0/0 是此前受测提交的证据，不能替代本次未运行的 PG/WSS 联合验证。最终发布提交在受测合并提交上只追加本段验收文档。
