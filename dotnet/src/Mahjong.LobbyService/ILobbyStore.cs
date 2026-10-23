@@ -50,11 +50,18 @@ namespace Mahjong.LobbyService
         /// </summary>
         Task LockAccountAsync(string accountId, CancellationToken cancellationToken);
 
-        Task<LobbyAccount?> FindAccountByDeviceAsync(string deviceDigest, CancellationToken cancellationToken);
+        Task<LobbyAccount?> FindAccountByBootstrapAsync(
+            string deviceDigest,
+            string bootstrapHash,
+            CancellationToken cancellationToken);
 
         Task<LobbyAccount?> FindAccountAsync(string accountId, CancellationToken cancellationToken);
 
-        Task InsertAccountAsync(LobbyAccount account, string deviceDigest, CancellationToken cancellationToken);
+        Task InsertAccountAsync(
+            LobbyAccount account,
+            string deviceDigest,
+            string bootstrapHash,
+            CancellationToken cancellationToken);
 
         Task InsertSessionAsync(LobbySession session, CancellationToken cancellationToken);
 
@@ -64,9 +71,11 @@ namespace Mahjong.LobbyService
 
         Task<LobbyAssignment?> FindAssignmentForUpdateAsync(string assignmentId, CancellationToken cancellationToken);
 
-        Task<LobbyAssignment?> FindActiveAssignmentForAccountAsync(string roomId, string accountId, CancellationToken cancellationToken);
-
         Task<LobbyAssignment?> FindAnyActiveAssignmentForAccountAsync(string accountId, CancellationToken cancellationToken);
+
+        Task<IReadOnlyList<LobbyAssignment>> ListActiveAssignmentsForAccountAsync(
+            string accountId,
+            CancellationToken cancellationToken);
 
         Task<IReadOnlyList<LobbyAssignment>> ListAssignmentsAsync(string roomId, CancellationToken cancellationToken);
 

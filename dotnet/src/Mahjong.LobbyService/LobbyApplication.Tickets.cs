@@ -53,6 +53,17 @@ namespace Mahjong.LobbyService
                         throw new LobbyException(409, "ASSIGNMENT_EXPIRED", "The seat reservation has expired.");
                     }
 
+                    IReadOnlyList<LobbyAssignment> activeAssignments =
+                        await tx.ListActiveAssignmentsForAccountAsync(assignment.AccountId, ct).ConfigureAwait(false);
+                    if (activeAssignments.Any(a =>
+                            !string.Equals(a.AssignmentId, assignment.AssignmentId, StringComparison.Ordinal)))
+                    {
+                        throw new LobbyException(
+                            409,
+                            "ACCOUNT_ALREADY_SEATED",
+                            "This account has more than one active assignment; a ticket cannot be issued.");
+                    }
+
                     LobbyTableTicketRecord? previous = await tx.FindActiveTableTicketForAssignmentAsync(
                         assignment.AssignmentId,
                         ct).ConfigureAwait(false);
@@ -208,6 +219,17 @@ namespace Mahjong.LobbyService
                     if (assignment.ExpiresAt.HasValue && assignment.ExpiresAt.Value <= now)
                     {
                         throw new LobbyException(409, "ASSIGNMENT_EXPIRED", "The seat reservation has expired.");
+                    }
+
+                    IReadOnlyList<LobbyAssignment> activeAssignments =
+                        await tx.ListActiveAssignmentsForAccountAsync(assignment.AccountId, ct).ConfigureAwait(false);
+                    if (activeAssignments.Any(a =>
+                            !string.Equals(a.AssignmentId, assignment.AssignmentId, StringComparison.Ordinal)))
+                    {
+                        throw new LobbyException(
+                            409,
+                            "ACCOUNT_ALREADY_SEATED",
+                            "This account has more than one active assignment; ticket consumption is refused.");
                     }
 
                     if (assignment.Role == LobbyRole.Player && assignment.SeatId.HasValue)

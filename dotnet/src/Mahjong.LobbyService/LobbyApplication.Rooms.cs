@@ -165,13 +165,12 @@ namespace Mahjong.LobbyService
                         throw new LobbyException(409, "ROOM_CLOSED", "The room is closed.");
                     }
 
-                    LobbyAssignment? existing = await tx.FindActiveAssignmentForAccountAsync(
-                        id,
+                    LobbyAssignment? existing = await tx.FindAnyActiveAssignmentForAccountAsync(
                         account.AccountId,
                         ct).ConfigureAwait(false);
                     if (existing != null)
                     {
-                        throw new LobbyException(409, "ALREADY_ASSIGNED", "This account already has an active assignment in the room.");
+                        throw new LobbyException(409, "ALREADY_ASSIGNED", "This account already has an active assignment.");
                     }
 
                     LobbyMatchTicket? activeMatch = await tx.FindActiveMatchTicketForAccountAsync(
@@ -268,13 +267,12 @@ namespace Mahjong.LobbyService
                         throw new LobbyException(403, "SPECTATING_DISABLED", "This room does not allow spectators.");
                     }
 
-                    LobbyAssignment? existing = await tx.FindActiveAssignmentForAccountAsync(
-                        id,
+                    LobbyAssignment? existing = await tx.FindAnyActiveAssignmentForAccountAsync(
                         account.AccountId,
                         ct).ConfigureAwait(false);
                     if (existing != null)
                     {
-                        throw new LobbyException(409, "ALREADY_ASSIGNED", "This account already has an active assignment in the room.");
+                        throw new LobbyException(409, "ALREADY_ASSIGNED", "This account already has an active assignment.");
                     }
 
                     LobbyMatchTicket? activeMatch = await tx.FindActiveMatchTicketForAccountAsync(

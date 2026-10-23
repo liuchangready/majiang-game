@@ -17,10 +17,14 @@ CREATE TABLE IF NOT EXISTS lobby.account (
     is_guest boolean NOT NULL,
     display_name text NOT NULL,
     device_digest text NOT NULL,
+    -- SHA-256 of the client-held high-entropy guest bootstrap secret.
+    -- device_digest alone is never an authentication key.
+    bootstrap_hash text NOT NULL,
     created_at timestamptz NOT NULL,
     expires_at timestamptz NOT NULL,
-    CONSTRAINT uq_account_device UNIQUE (device_digest),
+    CONSTRAINT uq_account_bootstrap UNIQUE (device_digest, bootstrap_hash),
     CONSTRAINT ck_account_guest CHECK (is_guest),
+    CONSTRAINT ck_account_bootstrap_hash CHECK (char_length(bootstrap_hash) = 64),
     CONSTRAINT ck_account_display_name CHECK (char_length(display_name) BETWEEN 1 AND 32)
 );
 
@@ -107,8 +111,10 @@ CREATE UNIQUE INDEX IF NOT EXISTS uq_assignment_active_seat
     ON lobby.assignment (room_id, seat_id)
     WHERE role = 'PLAYER' AND status IN ('RESERVED', 'CONFIRMED');
 
+-- One active lobby placement per account, globally. room-level uniqueness was
+-- insufficient: it allowed the same account to hold player seats in two rooms.
 CREATE UNIQUE INDEX IF NOT EXISTS uq_assignment_active_account
-    ON lobby.assignment (room_id, account_id)
+    ON lobby.assignment (account_id)
     WHERE status IN ('RESERVED', 'CONFIRMED');
 
 CREATE UNIQUE INDEX IF NOT EXISTS uq_assignment_match_ticket

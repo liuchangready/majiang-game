@@ -13,7 +13,11 @@ namespace Mahjong.LobbyService.Tests
         {
             string sql = ReadMigration();
             Assert.Contains("CREATE SCHEMA IF NOT EXISTS lobby", sql, StringComparison.Ordinal);
+            Assert.Contains("uq_account_bootstrap", sql, StringComparison.Ordinal);
+            Assert.Contains("bootstrap_hash", sql, StringComparison.Ordinal);
             Assert.Contains("uq_assignment_active_seat", sql, StringComparison.Ordinal);
+            Assert.Contains("ON lobby.assignment (account_id)", sql, StringComparison.Ordinal);
+            Assert.DoesNotContain("ON lobby.assignment (room_id, account_id)", sql, StringComparison.Ordinal);
             Assert.Contains("uq_assignment_active_account", sql, StringComparison.Ordinal);
             Assert.Contains("uq_match_active_account", sql, StringComparison.Ordinal);
             Assert.Contains("uq_table_ticket_active_assignment", sql, StringComparison.Ordinal);

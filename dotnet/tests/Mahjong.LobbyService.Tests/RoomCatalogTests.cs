@@ -131,6 +131,256 @@ namespace Mahjong.LobbyService.Tests
         }
 
         [Fact]
+        public async Task CrossRoomDoubleSeatIsRejectedAndOnlyTheFirstAssignmentIsConsumable()
+        {
+            await using LobbyFixture fixture = LobbyFixture.Create();
+            GuestSessionView hostA = await fixture.CreateGuestAsync("host-cross-a");
+            CreateRoomView roomA = await fixture.CreateRoomAsync(hostA, "A");
+            GuestSessionView hostB = await fixture.CreateGuestAsync("host-cross-b");
+            CreateRoomView roomB = await fixture.CreateRoomAsync(hostB, "B");
+            GuestSessionView guest = await fixture.CreateGuestAsync("guest-cross-room");
+
+            JoinRoomView first = await fixture.JoinAsync(guest, roomA.Room.RoomId, preferSeat: 1);
+            LobbyException second = await Assert.ThrowsAsync<LobbyException>(
+                () => fixture.JoinAsync(guest, roomB.Room.RoomId, preferSeat: 1));
+            Assert.Equal(409, second.StatusCode);
+            Assert.Equal("ALREADY_ASSIGNED", second.Code);
+
+            TableTicketView ticket = await fixture.IssueTicketAsync(guest, first.Assignment.AssignmentId);
+            TicketConsumptionResult consumed = await fixture.ConsumeAsync(ticket, guest.AccountId);
+            Assert.Equal(first.Assignment.AssignmentId, consumed.AssignmentId);
+
+            RoomSummaryView roomBView = LobbyJson.Deserialize<RoomSummaryView>(
+                (await fixture.Application.GetRoomAsync(roomB.Room.RoomId, default)).Json);
+            Assert.Equal(1, roomBView.SeatsTaken);
+        }
+
+        [Fact]
+        public async Task ConcurrentCrossRoomJoinHasExactlyOneAssignment()
+        {
+            await using LobbyFixture fixture = LobbyFixture.Create();
+            GuestSessionView hostA = await fixture.CreateGuestAsync("host-cross-race-a");
+            CreateRoomView roomA = await fixture.CreateRoomAsync(hostA, "A");
+            GuestSessionView hostB = await fixture.CreateGuestAsync("host-cross-race-b");
+            CreateRoomView roomB = await fixture.CreateRoomAsync(hostB, "B");
+            GuestSessionView guest = await fixture.CreateGuestAsync("guest-cross-race");
+
+            Task<JoinRoomView> joinA = fixture.JoinAsync(guest, roomA.Room.RoomId);
+            Task<JoinRoomView> joinB = fixture.JoinAsync(guest, roomB.Room.RoomId);
+            var outcomes = new List<object>();
+            try
+            {
+                outcomes.Add(await joinA);
+            }
+            catch (LobbyException ex)
+            {
+                outcomes.Add(ex);
+            }
+
+            try
+            {
+                outcomes.Add(await joinB);
+            }
+            catch (LobbyException ex)
+            {
+                outcomes.Add(ex);
+            }
+
+            JoinRoomView winner = Assert.Single(outcomes.OfType<JoinRoomView>());
+            LobbyException loser = Assert.Single(outcomes.OfType<LobbyException>());
+            Assert.Equal("ALREADY_ASSIGNED", loser.Code);
+
+            TableTicketView ticket = await fixture.IssueTicketAsync(guest, winner.Assignment.AssignmentId);
+            TicketConsumptionResult consumed = await fixture.ConsumeAsync(ticket, guest.AccountId);
+            Assert.Equal(winner.Assignment.AssignmentId, consumed.AssignmentId);
+        }
+
+        [Fact]
+        public async Task CreateAndJoinAreMutuallyExclusiveForOneAccount()
+        {
+            await using LobbyFixture fixture = LobbyFixture.Create();
+            GuestSessionView host = await fixture.CreateGuestAsync("host-create-join");
+            CreateRoomView room = await fixture.CreateRoomAsync(host);
+
+            GuestSessionView creator = await fixture.CreateGuestAsync("guest-create-join");
+            await fixture.CreateRoomAsync(creator, "Own Room");
+            LobbyException join = await Assert.ThrowsAsync<LobbyException>(
+                () => fixture.JoinAsync(creator, room.Room.RoomId));
+            Assert.Equal("ALREADY_ASSIGNED", join.Code);
+
+            GuestSessionView joiner = await fixture.CreateGuestAsync("guest-join-create");
+            await fixture.JoinAsync(joiner, room.Room.RoomId);
+            LobbyException create = await Assert.ThrowsAsync<LobbyException>(
+                () => fixture.CreateRoomAsync(joiner, "Second Room"));
+            Assert.Equal("ALREADY_ASSIGNED", create.Code);
+        }
+
+        [Fact]
+        public async Task MatchAndRoomAssignmentAreMutuallyExclusiveForOneAccount()
+        {
+            await using LobbyFixture fixture = LobbyFixture.Create();
+            GuestSessionView host = await fixture.CreateGuestAsync("host-match-join");
+            CreateRoomView room = await fixture.CreateRoomAsync(host);
+
+            GuestSessionView queued = await fixture.CreateGuestAsync("guest-match-then-join");
+            await fixture.CreateMatchAsync(queued);
+            LobbyException join = await Assert.ThrowsAsync<LobbyException>(
+                () => fixture.JoinAsync(queued, room.Room.RoomId));
+            Assert.Equal("ALREADY_QUEUED", join.Code);
+
+            GuestSessionView joined = await fixture.CreateGuestAsync("guest-join-then-match");
+            await fixture.JoinAsync(joined, room.Room.RoomId);
+            LobbyException match = await Assert.ThrowsAsync<LobbyException>(
+                () => fixture.CreateMatchAsync(joined));
+            Assert.Equal("ALREADY_ASSIGNED", match.Code);
+        }
+
+        [Fact]
+        public async Task ExpiredAssignmentReleasesTheGlobalPlacementForAnotherRoom()
+        {
+            await using LobbyFixture fixture = LobbyFixture.Create();
+            GuestSessionView hostA = await fixture.CreateGuestAsync("host-release-a");
+            CreateRoomView roomA = await fixture.CreateRoomAsync(hostA, "A");
+            GuestSessionView hostB = await fixture.CreateGuestAsync("host-release-b");
+            CreateRoomView roomB = await fixture.CreateRoomAsync(hostB, "B");
+            GuestSessionView guest = await fixture.CreateGuestAsync("guest-release");
+
+            await fixture.JoinAsync(guest, roomA.Room.RoomId);
+            fixture.Clock.Advance(TimeSpan.FromSeconds(16));
+            await fixture.Application.ExpireOnceAsync(default);
+
+            JoinRoomView rejoin = await fixture.JoinAsync(guest, roomB.Room.RoomId);
+            Assert.Equal(roomB.Room.RoomId, rejoin.Assignment.RoomId);
+            Assert.Equal(1, rejoin.Assignment.SeatId);
+        }
+
+        [Fact]
+        public async Task SpectatorPlacementAlsoBlocksASecondRoomOrPlayerSeat()
+        {
+            await using LobbyFixture fixture = LobbyFixture.Create();
+            GuestSessionView hostA = await fixture.CreateGuestAsync("host-spectate-global-a");
+            CreateRoomView roomA = await fixture.CreateRoomAsync(hostA, "A");
+            GuestSessionView hostB = await fixture.CreateGuestAsync("host-spectate-global-b");
+            CreateRoomView roomB = await fixture.CreateRoomAsync(hostB, "B");
+            GuestSessionView guest = await fixture.CreateGuestAsync("guest-spectate-global");
+
+            await fixture.SpectateAsync(guest, roomA.Room.RoomId);
+            LobbyException secondSpectate = await Assert.ThrowsAsync<LobbyException>(
+                () => fixture.SpectateAsync(guest, roomB.Room.RoomId));
+            Assert.Equal("ALREADY_ASSIGNED", secondSpectate.Code);
+
+            LobbyException join = await Assert.ThrowsAsync<LobbyException>(
+                () => fixture.JoinAsync(guest, roomB.Room.RoomId));
+            Assert.Equal("ALREADY_ASSIGNED", join.Code);
+        }
+
+        [Fact]
+        public async Task ConcurrentCreateVsJoinHasExactlyOnePlacement()
+        {
+            await using LobbyFixture fixture = LobbyFixture.Create();
+            GuestSessionView host = await fixture.CreateGuestAsync("host-concurrent-create-join");
+            CreateRoomView hostRoom = await fixture.CreateRoomAsync(host);
+            GuestSessionView guest = await fixture.CreateGuestAsync("guest-concurrent-create-join");
+
+            Task<CreateRoomView> create = fixture.CreateRoomAsync(guest, "Own Room");
+            Task<JoinRoomView> join = fixture.JoinAsync(guest, hostRoom.Room.RoomId);
+            var outcomes = new List<object>();
+            try
+            {
+                outcomes.Add(await create);
+            }
+            catch (LobbyException ex)
+            {
+                outcomes.Add(ex);
+            }
+
+            try
+            {
+                outcomes.Add(await join);
+            }
+            catch (LobbyException ex)
+            {
+                outcomes.Add(ex);
+            }
+
+            Assert.Single(outcomes, item => item is CreateRoomView || item is JoinRoomView);
+            LobbyException loser = Assert.Single(outcomes.OfType<LobbyException>());
+            Assert.Equal("ALREADY_ASSIGNED", loser.Code);
+        }
+
+        [Fact]
+        public async Task ConcurrentMatchVsJoinHasExactlyOnePlacement()
+        {
+            await using LobbyFixture fixture = LobbyFixture.Create();
+            GuestSessionView host = await fixture.CreateGuestAsync("host-concurrent-match-join");
+            CreateRoomView hostRoom = await fixture.CreateRoomAsync(host);
+            GuestSessionView guest = await fixture.CreateGuestAsync("guest-concurrent-match-join");
+
+            Task<MatchTicketView> match = fixture.CreateMatchAsync(guest);
+            Task<JoinRoomView> join = fixture.JoinAsync(guest, hostRoom.Room.RoomId);
+            var outcomes = new List<object>();
+            try
+            {
+                outcomes.Add(await match);
+            }
+            catch (LobbyException ex)
+            {
+                outcomes.Add(ex);
+            }
+
+            try
+            {
+                outcomes.Add(await join);
+            }
+            catch (LobbyException ex)
+            {
+                outcomes.Add(ex);
+            }
+
+            Assert.Single(outcomes, item => item is MatchTicketView || item is JoinRoomView);
+            LobbyException loser = Assert.Single(outcomes.OfType<LobbyException>());
+            Assert.Contains(loser.Code, new[] { "ALREADY_QUEUED", "ALREADY_ASSIGNED" });
+        }
+
+        [Fact]
+        public async Task StoreRejectsASecondActiveAssignmentEvenByDirectInsert()
+        {
+            await using LobbyFixture fixture = LobbyFixture.Create();
+            GuestSessionView hostA = await fixture.CreateGuestAsync("host-store-a");
+            CreateRoomView roomA = await fixture.CreateRoomAsync(hostA, "A");
+            GuestSessionView hostB = await fixture.CreateGuestAsync("host-store-b");
+            CreateRoomView roomB = await fixture.CreateRoomAsync(hostB, "B");
+            GuestSessionView guest = await fixture.CreateGuestAsync("guest-store-duplicate");
+            await fixture.JoinAsync(guest, roomA.Room.RoomId);
+
+            LobbySessionInfo session = await fixture.AuthenticateAsync(guest);
+            var duplicate = new LobbyAssignment(
+                LobbyIds.NewPrefixed("asg_"),
+                roomB.Room.RoomId,
+                session.Account.AccountId,
+                LobbyRole.Player,
+                1,
+                LobbyAssignmentStatus.Reserved,
+                fixture.Clock.UtcNow,
+                fixture.Clock.UtcNow,
+                fixture.Clock.UtcNow.AddSeconds(15),
+                null,
+                null,
+                null);
+
+            LobbyException error = await Assert.ThrowsAsync<LobbyException>(
+                () => fixture.Application.Store.ExecuteAsync(
+                    fixture.Clock.UtcNow,
+                    async (tx, ct) =>
+                    {
+                        await tx.InsertAssignmentAsync(duplicate, ct);
+                        return duplicate;
+                    },
+                    default));
+            Assert.Equal("ALREADY_ASSIGNED", error.Code);
+        }
+
+        [Fact]
         public async Task FourthPlayerJoinFillsRoomAndFifthIsRejected()
         {
             await using LobbyFixture fixture = LobbyFixture.Create();

@@ -22,10 +22,24 @@ namespace Mahjong.LobbyService
                 throw new LobbyException(400, "MALFORMED_REQUEST", "deviceId is required.");
             }
 
+            // deviceId is a public hint. Possession of the high-entropy
+            // bootstrap secret is what binds a request to the existing guest.
+            string bootstrapSecret = LobbyText.RequireBootstrapSecret(command.BootstrapSecret);
+            string bootstrapHash = LobbyIds.HashBootstrapSecret(bootstrapSecret);
             string displayName = LobbyText.RequireDisplayName(command.DisplayName);
             string deviceDigest = LobbyIds.HashDevice(deviceId);
-            string payloadDigest = LobbyDigest.Compute("auth.session.v1", deviceDigest, displayName);
-            var key = new LobbyIdempotencyKey("device:" + deviceDigest, requestId);
+            string bootstrapPrincipal = LobbyDigest.Compute(
+                "guest.bootstrap.v1",
+                deviceDigest,
+                bootstrapHash);
+            string payloadDigest = LobbyDigest.Compute(
+                "auth.session.v2",
+                deviceDigest,
+                bootstrapHash,
+                displayName);
+            // The receipt principal includes the bootstrap hash, so knowing
+            // only deviceId + requestId cannot replay a victim's bearer token.
+            var key = new LobbyIdempotencyKey("bootstrap:" + bootstrapPrincipal, requestId);
             DateTimeOffset now = _clock.UtcNow;
             string token = LobbyIds.NewToken();
             string tokenHash = LobbyIds.HashToken(token);
@@ -36,7 +50,10 @@ namespace Mahjong.LobbyService
                 now,
                 async (tx, ct) =>
                 {
-                    LobbyAccount? account = await tx.FindAccountByDeviceAsync(deviceDigest, ct).ConfigureAwait(false);
+                    LobbyAccount? account = await tx.FindAccountByBootstrapAsync(
+                        deviceDigest,
+                        bootstrapHash,
+                        ct).ConfigureAwait(false);
                     if (account != null && account.ExpiresAt <= now)
                     {
                         throw new LobbyException(410, "GUEST_ACCOUNT_EXPIRED", "The guest account retention window has ended.");
@@ -44,13 +61,19 @@ namespace Mahjong.LobbyService
 
                     if (account == null)
                     {
-                        account = new LobbyAccount(
+                        var candidate = new LobbyAccount(
                             LobbyIds.NewPrefixed("guest_"),
                             IsGuest: true,
                             displayName,
                             now,
                             now.AddDays(_options.GuestAccountRetentionDays));
-                        await tx.InsertAccountAsync(account, deviceDigest, ct).ConfigureAwait(false);
+                        await tx.InsertAccountAsync(candidate, deviceDigest, bootstrapHash, ct)
+                            .ConfigureAwait(false);
+                        // PostgreSQL uses ON CONFLICT DO NOTHING for a
+                        // concurrent first bootstrap; always read the winner.
+                        account = await tx.FindAccountByBootstrapAsync(deviceDigest, bootstrapHash, ct)
+                                      .ConfigureAwait(false)
+                                  ?? candidate;
                     }
 
                     DateTimeOffset sessionExpiry = now.AddHours(_options.SessionTtlHours);

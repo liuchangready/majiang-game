@@ -173,7 +173,11 @@ namespace Mahjong.LobbyService
             new PublicRoomProjectionBatch(Array.Empty<PublicRoomProjection>());
     }
 
-    public sealed record GuestSessionCommand(string DeviceId, string DisplayName);
+    /// <summary>
+    /// A guest bootstrap is a client-held high-entropy secret. DeviceId is only
+    /// a dedup/display hint; it is never authentication by itself.
+    /// </summary>
+    public sealed record GuestSessionCommand(string DeviceId, string BootstrapSecret, string DisplayName);
 
     public sealed record CreateRoomCommand(
         string Title,

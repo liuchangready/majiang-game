@@ -102,13 +102,23 @@ namespace Mahjong.LobbyService.Tests
         public async Task<GuestSessionView> CreateGuestAsync(
             string deviceId,
             string displayName = "Guest",
+            string? bootstrapSecret = null,
+            string? requestId = null,
             CancellationToken cancellationToken = default)
         {
+            // The default is intentionally fresh per call: a public deviceId
+            // alone must never select an existing account, even in test helpers.
+            string secret = bootstrapSecret ?? ("test-bootstrap-" + Guid.NewGuid().ToString("N"));
             LobbyResponse response = await Application.CreateGuestSessionAsync(
-                new GuestSessionCommand(deviceId, displayName),
-                NewRequestId(),
+                new GuestSessionCommand(deviceId, secret, displayName),
+                requestId ?? NewRequestId(),
                 cancellationToken).ConfigureAwait(false);
             return LobbyJson.Deserialize<GuestSessionView>(response.Json);
+        }
+
+        public static string DefaultBootstrap(string deviceId)
+        {
+            return "test-bootstrap-" + deviceId + "-0123456789abcdef";
         }
 
         public async Task<LobbySessionInfo> AuthenticateAsync(

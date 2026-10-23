@@ -8,7 +8,11 @@ using Microsoft.Extensions.Logging;
 
 namespace Mahjong.LobbyService
 {
-    public sealed record SessionRequest(string? DeviceId, string? DisplayName, string? AuthMode);
+    public sealed record SessionRequest(
+        string? DeviceId,
+        string? DisplayName,
+        string? AuthMode,
+        string? BootstrapSecret);
 
     public static class LobbyHttp
     {
@@ -102,7 +106,10 @@ namespace Mahjong.LobbyService
                         "OIDC accounts are not implemented in P5.3; only restricted guest sessions are available.");
                 }
 
-                var command = new GuestSessionCommand(request.DeviceId ?? string.Empty, request.DisplayName ?? string.Empty);
+                var command = new GuestSessionCommand(
+                    request.DeviceId ?? string.Empty,
+                    request.BootstrapSecret ?? string.Empty,
+                    request.DisplayName ?? string.Empty);
                 LobbyResponse response = await lobby.CreateGuestSessionAsync(
                     command,
                     requestId,

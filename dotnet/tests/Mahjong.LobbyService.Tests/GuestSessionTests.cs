@@ -39,7 +39,10 @@ namespace Mahjong.LobbyService.Tests
         {
             await using LobbyFixture fixture = LobbyFixture.Create();
             string requestId = LobbyFixture.NewRequestId();
-            var command = new GuestSessionCommand("device-race", "Racer");
+            var command = new GuestSessionCommand(
+                "device-race",
+                LobbyFixture.DefaultBootstrap("device-race"),
+                "Racer");
             var tasks = new List<Task<LobbyResponse>>();
             for (int i = 0; i < 8; i++)
             {
@@ -55,6 +58,83 @@ namespace Mahjong.LobbyService.Tests
             Assert.Single(views.Select(view => view.SessionToken).Distinct(StringComparer.Ordinal));
             Assert.All(views, view => Assert.Equal(views[0].AccountId, view.AccountId));
             Assert.Equal(1, responses.Count(response => !response.Replayed));
+        }
+
+        [Fact]
+        public async Task SameDeviceWithoutTheBootstrapSecretCannotTakeOverAVictimAccount()
+        {
+            await using LobbyFixture fixture = LobbyFixture.Create();
+            const string device = "known-victim-device";
+            const string victimBootstrap = "victim-bootstrap-0123456789abcdef0123456789";
+            const string attackerBootstrap = "attacker-bootstrap-0123456789abcdef0123456789";
+            GuestSessionView victim = await fixture.CreateGuestAsync(device, "Victim", victimBootstrap);
+            CreateRoomView room = await fixture.CreateRoomAsync(victim);
+
+            LobbyException missing = await Assert.ThrowsAsync<LobbyException>(
+                () => fixture.Application.CreateGuestSessionAsync(
+                    new GuestSessionCommand(device, string.Empty, "Attacker"),
+                    LobbyFixture.NewRequestId(),
+                    default));
+            Assert.Equal("BOOTSTRAP_SECRET_REQUIRED", missing.Code);
+
+            GuestSessionView attacker = await fixture.CreateGuestAsync(device, "Attacker", attackerBootstrap);
+            Assert.NotEqual(victim.AccountId, attacker.AccountId);
+            Assert.NotEqual(victim.SessionToken, attacker.SessionToken);
+
+            LobbySessionInfo attackerSession = await fixture.AuthenticateAsync(attacker);
+            LobbyException ticket = await Assert.ThrowsAsync<LobbyException>(
+                () => fixture.Application.IssueTableTicketAsync(
+                    attackerSession.Account,
+                    new IssueTableTicketCommand(room.Assignment.AssignmentId),
+                    LobbyFixture.NewRequestId(),
+                    default));
+            Assert.Equal(404, ticket.StatusCode);
+            Assert.Equal("ASSIGNMENT_NOT_FOUND", ticket.Code);
+        }
+
+        [Fact]
+        public async Task SameRequestIdWithDifferentBootstrapCannotReplayTheVictimToken()
+        {
+            await using LobbyFixture fixture = LobbyFixture.Create();
+            const string device = "same-request-device";
+            const string victimBootstrap = "victim-request-bootstrap-0123456789abcdef0123";
+            const string attackerBootstrap = "attacker-request-bootstrap-0123456789abcdef";
+            string requestId = LobbyFixture.NewRequestId();
+
+            GuestSessionView victim = await fixture.CreateGuestAsync(
+                device,
+                "Victim",
+                victimBootstrap,
+                requestId);
+            GuestSessionView attacker = await fixture.CreateGuestAsync(
+                device,
+                "Attacker",
+                attackerBootstrap,
+                requestId);
+
+            Assert.NotEqual(victim.AccountId, attacker.AccountId);
+            Assert.NotEqual(victim.SessionToken, attacker.SessionToken);
+        }
+
+        [Fact]
+        public async Task SameDeviceAndBootstrapIsLegitimateDoubleOpenAndIdempotentReplay()
+        {
+            await using LobbyFixture fixture = LobbyFixture.Create();
+            const string device = "legit-double-device";
+            const string bootstrap = "legit-bootstrap-0123456789abcdef0123456789";
+            GuestSessionView first = await fixture.CreateGuestAsync(device, "Same", bootstrap);
+            GuestSessionView second = await fixture.CreateGuestAsync(device, "Same", bootstrap);
+
+            Assert.Equal(first.AccountId, second.AccountId);
+            Assert.NotEqual(first.SessionToken, second.SessionToken);
+            Assert.NotNull(await fixture.Application.AuthenticateAsync(first.SessionToken, default));
+            Assert.NotNull(await fixture.Application.AuthenticateAsync(second.SessionToken, default));
+
+            string requestId = LobbyFixture.NewRequestId();
+            GuestSessionView replayOne = await fixture.CreateGuestAsync(device, "Same", bootstrap, requestId);
+            GuestSessionView replayTwo = await fixture.CreateGuestAsync(device, "Same", bootstrap, requestId);
+            Assert.Equal(replayOne.SessionToken, replayTwo.SessionToken);
+            Assert.Equal(replayOne.AccountId, replayTwo.AccountId);
         }
 
         [Fact]

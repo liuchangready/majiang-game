@@ -557,15 +557,18 @@ WHERE principal = @principal AND request_id = @request_id";
                 await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
             }
 
-            public async Task<LobbyAccount?> FindAccountByDeviceAsync(
+            public async Task<LobbyAccount?> FindAccountByBootstrapAsync(
                 string deviceDigest,
+                string bootstrapHash,
                 CancellationToken cancellationToken)
             {
                 const string sql = @"
 SELECT account_id, is_guest, display_name, created_at, expires_at
-FROM lobby.account WHERE device_digest = @device_digest";
+FROM lobby.account
+WHERE device_digest = @device_digest AND bootstrap_hash = @bootstrap_hash";
                 await using var command = new NpgsqlCommand(sql, _connection, _transaction);
                 Add(command, "device_digest", deviceDigest, NpgsqlDbType.Text);
+                Add(command, "bootstrap_hash", bootstrapHash, NpgsqlDbType.Text);
                 await using NpgsqlDataReader reader = await command.ExecuteReaderAsync(cancellationToken)
                     .ConfigureAwait(false);
                 if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
@@ -606,16 +609,20 @@ FROM lobby.account WHERE account_id = @account_id";
             public async Task InsertAccountAsync(
                 LobbyAccount account,
                 string deviceDigest,
+                string bootstrapHash,
                 CancellationToken cancellationToken)
             {
                 const string sql = @"
-INSERT INTO lobby.account (account_id, is_guest, display_name, device_digest, created_at, expires_at)
-VALUES (@account_id, @is_guest, @display_name, @device_digest, @created_at, @expires_at)";
+INSERT INTO lobby.account
+    (account_id, is_guest, display_name, device_digest, bootstrap_hash, created_at, expires_at)
+VALUES (@account_id, @is_guest, @display_name, @device_digest, @bootstrap_hash, @created_at, @expires_at)
+ON CONFLICT (device_digest, bootstrap_hash) DO NOTHING";
                 await ExecuteAsync(sql, cancellationToken,
                     ("account_id", account.AccountId, NpgsqlDbType.Text),
                     ("is_guest", account.IsGuest, NpgsqlDbType.Boolean),
                     ("display_name", account.DisplayName, NpgsqlDbType.Text),
                     ("device_digest", deviceDigest, NpgsqlDbType.Text),
+                    ("bootstrap_hash", bootstrapHash, NpgsqlDbType.Text),
                     ("created_at", account.CreatedAt, NpgsqlDbType.TimestampTz),
                     ("expires_at", account.ExpiresAt, NpgsqlDbType.TimestampTz)).ConfigureAwait(false);
             }
@@ -695,31 +702,6 @@ FROM lobby.assignment WHERE assignment_id = @assignment_id FOR UPDATE";
                 return ReadAssignment(reader, 0);
             }
 
-            public async Task<LobbyAssignment?> FindActiveAssignmentForAccountAsync(
-                string roomId,
-                string accountId,
-                CancellationToken cancellationToken)
-            {
-                const string sql = @"
-SELECT assignment_id, room_id, account_id, role, seat_id, status, created_at, updated_at,
-       expires_at, confirmed_at, table_confirmed_at, match_ticket_id
-FROM lobby.assignment
-WHERE room_id = @room_id AND account_id = @account_id
-  AND status IN ('RESERVED', 'CONFIRMED')
-ORDER BY created_at DESC LIMIT 1";
-                await using var command = new NpgsqlCommand(sql, _connection, _transaction);
-                Add(command, "room_id", roomId, NpgsqlDbType.Text);
-                Add(command, "account_id", accountId, NpgsqlDbType.Text);
-                await using NpgsqlDataReader reader = await command.ExecuteReaderAsync(cancellationToken)
-                    .ConfigureAwait(false);
-                if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
-                {
-                    return null;
-                }
-
-                return ReadAssignment(reader, 0);
-            }
-
             public async Task<LobbyAssignment?> FindAnyActiveAssignmentForAccountAsync(
                 string accountId,
                 CancellationToken cancellationToken)
@@ -740,6 +722,29 @@ ORDER BY updated_at DESC LIMIT 1";
                 }
 
                 return ReadAssignment(reader, 0);
+            }
+
+            public async Task<IReadOnlyList<LobbyAssignment>> ListActiveAssignmentsForAccountAsync(
+                string accountId,
+                CancellationToken cancellationToken)
+            {
+                const string sql = @"
+SELECT assignment_id, room_id, account_id, role, seat_id, status, created_at, updated_at,
+       expires_at, confirmed_at, table_confirmed_at, match_ticket_id
+FROM lobby.assignment
+WHERE account_id = @account_id AND status IN ('RESERVED', 'CONFIRMED')
+ORDER BY created_at";
+                await using var command = new NpgsqlCommand(sql, _connection, _transaction);
+                Add(command, "account_id", accountId, NpgsqlDbType.Text);
+                await using NpgsqlDataReader reader = await command.ExecuteReaderAsync(cancellationToken)
+                    .ConfigureAwait(false);
+                var items = new List<LobbyAssignment>();
+                while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+                {
+                    items.Add(ReadAssignment(reader, 0));
+                }
+
+                return items;
             }
 
             public async Task<IReadOnlyList<LobbyAssignment>> ListAssignmentsAsync(

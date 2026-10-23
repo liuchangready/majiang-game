@@ -183,6 +183,46 @@ namespace Mahjong.LobbyService
             return RequireText(value, "deviceId", 256);
         }
 
+        /// <summary>
+        /// A bootstrap secret must be high-entropy client material, not a
+        /// device name. We enforce the transport shape (32-128 URL-safe chars)
+        /// but never claim to verify entropy; clients generate it with a CSPRNG.
+        /// </summary>
+        public static string RequireBootstrapSecret(string? value)
+        {
+            if (string.IsNullOrEmpty(value))
+            {
+                throw new LobbyException(
+                    400,
+                    "BOOTSTRAP_SECRET_REQUIRED",
+                    "A high-entropy bootstrapSecret is required for guest session creation.");
+            }
+
+            if (value.Length < 32 || value.Length > 128)
+            {
+                throw new LobbyException(
+                    400,
+                    "BOOTSTRAP_SECRET_INVALID",
+                    "bootstrapSecret must contain 32..128 URL-safe characters.");
+            }
+
+            for (int i = 0; i < value.Length; i++)
+            {
+                char c = value[i];
+                bool valid = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+                             (c >= '0' && c <= '9') || c == '-' || c == '_';
+                if (!valid)
+                {
+                    throw new LobbyException(
+                        400,
+                        "BOOTSTRAP_SECRET_INVALID",
+                        "bootstrapSecret must be URL-safe base64url/hex material.");
+                }
+            }
+
+            return value;
+        }
+
         public static string RequireText(string? value, string name, int maxChars)
         {
             if (value == null)
@@ -255,6 +295,12 @@ namespace Mahjong.LobbyService
         public static string HashDevice(string deviceId)
         {
             byte[] hash = SHA256.HashData(Encoding.UTF8.GetBytes(deviceId));
+            return Convert.ToHexString(hash).ToLowerInvariant();
+        }
+
+        public static string HashBootstrapSecret(string bootstrapSecret)
+        {
+            byte[] hash = SHA256.HashData(Encoding.UTF8.GetBytes(bootstrapSecret));
             return Convert.ToHexString(hash).ToLowerInvariant();
         }
 

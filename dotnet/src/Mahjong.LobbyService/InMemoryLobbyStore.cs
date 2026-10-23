@@ -264,11 +264,13 @@ namespace Mahjong.LobbyService
 
         private readonly record struct ReceiptKey(string Principal, string RequestId);
 
+        private readonly record struct BootstrapKey(string DeviceDigest, string BootstrapHash);
+
         private sealed class State
         {
             public Dictionary<string, LobbyAccount> Accounts { get; } = new Dictionary<string, LobbyAccount>(StringComparer.Ordinal);
 
-            public Dictionary<string, string> DeviceAccounts { get; } = new Dictionary<string, string>(StringComparer.Ordinal);
+            public Dictionary<BootstrapKey, string> BootstrapAccounts { get; } = new Dictionary<BootstrapKey, string>();
 
             public Dictionary<string, LobbySession> Sessions { get; } = new Dictionary<string, LobbySession>(StringComparer.Ordinal);
 
@@ -292,9 +294,9 @@ namespace Mahjong.LobbyService
                     clone.Accounts.Add(item.Key, item.Value);
                 }
 
-                foreach (KeyValuePair<string, string> item in DeviceAccounts)
+                foreach (KeyValuePair<BootstrapKey, string> item in BootstrapAccounts)
                 {
-                    clone.DeviceAccounts.Add(item.Key, item.Value);
+                    clone.BootstrapAccounts.Add(item.Key, item.Value);
                 }
 
                 foreach (KeyValuePair<string, LobbySession> item in Sessions)
@@ -351,9 +353,14 @@ namespace Mahjong.LobbyService
                 return Task.CompletedTask;
             }
 
-            public Task<LobbyAccount?> FindAccountByDeviceAsync(string deviceDigest, CancellationToken cancellationToken)
+            public Task<LobbyAccount?> FindAccountByBootstrapAsync(
+                string deviceDigest,
+                string bootstrapHash,
+                CancellationToken cancellationToken)
             {
-                if (_state.DeviceAccounts.TryGetValue(deviceDigest, out string? accountId) &&
+                if (_state.BootstrapAccounts.TryGetValue(
+                        new BootstrapKey(deviceDigest, bootstrapHash),
+                        out string? accountId) &&
                     _state.Accounts.TryGetValue(accountId, out LobbyAccount? account))
                 {
                     return Task.FromResult<LobbyAccount?>(account);
@@ -368,11 +375,16 @@ namespace Mahjong.LobbyService
                 return Task.FromResult(account);
             }
 
-            public Task InsertAccountAsync(LobbyAccount account, string deviceDigest, CancellationToken cancellationToken)
+            public Task InsertAccountAsync(
+                LobbyAccount account,
+                string deviceDigest,
+                string bootstrapHash,
+                CancellationToken cancellationToken)
             {
-                if (_state.DeviceAccounts.ContainsKey(deviceDigest))
+                var key = new BootstrapKey(deviceDigest, bootstrapHash);
+                if (_state.BootstrapAccounts.ContainsKey(key))
                 {
-                    throw new LobbyException(409, "DEVICE_ALREADY_BOUND", "This device already has a guest account.");
+                    throw new LobbyException(409, "BOOTSTRAP_ALREADY_BOUND", "This device/bootstrap pair already has a guest account.");
                 }
 
                 if (_state.Accounts.ContainsKey(account.AccountId))
@@ -381,7 +393,7 @@ namespace Mahjong.LobbyService
                 }
 
                 _state.Accounts.Add(account.AccountId, account);
-                _state.DeviceAccounts.Add(deviceDigest, account.AccountId);
+                _state.BootstrapAccounts.Add(key, account.AccountId);
                 return Task.CompletedTask;
             }
 
@@ -421,18 +433,6 @@ namespace Mahjong.LobbyService
                 return Task.FromResult(assignment);
             }
 
-            public Task<LobbyAssignment?> FindActiveAssignmentForAccountAsync(
-                string roomId,
-                string accountId,
-                CancellationToken cancellationToken)
-            {
-                LobbyAssignment? assignment = _state.Assignments.Values.FirstOrDefault(a =>
-                    string.Equals(a.RoomId, roomId, StringComparison.Ordinal) &&
-                    string.Equals(a.AccountId, accountId, StringComparison.Ordinal) &&
-                    IsActive(a.Status));
-                return Task.FromResult(assignment);
-            }
-
             public Task<LobbyAssignment?> FindAnyActiveAssignmentForAccountAsync(
                 string accountId,
                 CancellationToken cancellationToken)
@@ -442,6 +442,17 @@ namespace Mahjong.LobbyService
                     .OrderByDescending(a => a.UpdatedAt)
                     .FirstOrDefault();
                 return Task.FromResult(assignment);
+            }
+
+            public Task<IReadOnlyList<LobbyAssignment>> ListActiveAssignmentsForAccountAsync(
+                string accountId,
+                CancellationToken cancellationToken)
+            {
+                IReadOnlyList<LobbyAssignment> list = _state.Assignments.Values
+                    .Where(a => string.Equals(a.AccountId, accountId, StringComparison.Ordinal) && IsActive(a.Status))
+                    .OrderBy(a => a.CreatedAt)
+                    .ToList();
+                return Task.FromResult(list);
             }
 
             public Task<IReadOnlyList<LobbyAssignment>> ListAssignmentsAsync(
@@ -696,18 +707,20 @@ namespace Mahjong.LobbyService
                         continue;
                     }
 
-                    if (!IsActive(existing.Status) ||
-                        !string.Equals(existing.RoomId, assignment.RoomId, StringComparison.Ordinal))
+                    if (!IsActive(existing.Status))
                     {
                         continue;
                     }
 
+                    // One active lobby placement per account, across all rooms
+                    // and roles. A player seat can never be held twice.
                     if (string.Equals(existing.AccountId, assignment.AccountId, StringComparison.Ordinal))
                     {
-                        throw new LobbyException(409, "ALREADY_ASSIGNED", "This account already has an active assignment in the room.");
+                        throw new LobbyException(409, "ALREADY_ASSIGNED", "This account already has an active assignment.");
                     }
 
-                    if (assignment.Role == LobbyRole.Player &&
+                    if (string.Equals(existing.RoomId, assignment.RoomId, StringComparison.Ordinal) &&
+                        assignment.Role == LobbyRole.Player &&
                         existing.Role == LobbyRole.Player &&
                         existing.SeatId == assignment.SeatId)
                     {

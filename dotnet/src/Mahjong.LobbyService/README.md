@@ -15,7 +15,7 @@
 
 | 方法/路径 | 说明 | 幂等 |
 |---|---|---|
-| `POST /v1/auth/session` | 受限游客会话；`authMode` 只接受 `GUEST`，OIDC 返回 501 | `Idempotency-Key` |
+| `POST /v1/auth/session` | 受限游客会话；必须携带客户端高熵 `bootstrapSecret`；`authMode` 只接受 `GUEST`，OIDC 返回 501 | `Idempotency-Key` |
 | `GET /v1/auth/session` | 当前游客/能力 | 只读 |
 | `GET /v1/rooms?cursor=&limit=` | 公开分页目录（keyset） | 只读 |
 | `GET /v1/rooms/{id}` | 房间公开摘要 | 只读 |
@@ -31,6 +31,22 @@
 
 所有有副作用的 HTTP 命令都要求 `Idempotency-Key`。回执按 `(principal, requestId)` + 规范化载荷摘要持久化；同键同载荷返回原结果（`Idempotent-Replayed: true`），异载荷 `409 REQUEST_ID_CONFLICT`。
 
+### 游客 bootstrap（R1 修复）
+
+`deviceId` 只是公开的去重/显示提示，**不是认证凭据**。`POST /v1/auth/session` 还必须包含客户端用 CSPRNG 生成并本地保存的 `bootstrapSecret`（32–128 个 URL-safe 字符）。服务端只保存其 SHA-256：
+
+```json
+{"deviceId":"install-hint-01","bootstrapSecret":"<32-128 URL-safe random>","displayName":"Guest"}
+```
+
+
+- 同一 `(deviceId, bootstrapSecret)` 的不同 requestId：同一游客账号，可合法双开多个 session。
+- 同一 `deviceId`、不同 bootstrap：不同账号；不知道 Victim bootstrap 的调用者不能取得 Victim 账号、session 或 assignment 票据。
+- 相同 requestId + 不同 bootstrap：receipt principal 不同，不会回放 Victim token。
+- 丢失 bootstrap：没有恢复路径；以新 bootstrap 创建新游客身份。P5.3 不实现账号找回，也不把 deviceId 当账户恢复。
+- 同一 requestId + 同一 bootstrap：幂等回放原 session token。
+- 服务端不回显 bootstrapSecret，不写日志。
+
 ## 匹配
 
 `QUEUED -> RESERVED -> CONFIRMED -> CANCELLED/EXPIRED`。
@@ -38,7 +54,8 @@
 - 临时规则：同 `(mode, rulesetVersion, region)` 按创建时间 FIFO，四人成桌；不宣称段位/延迟/公平策略。
 - `RESERVED` 有 TTL（默认 15s，可配 5–60s），到期释放 assignment/席位并转 `EXPIRED`。
 - 同一账号同一时间只能有一个活跃匹配票据；取消/过期竞态由存储事务串行化，最终只会有 `CANCELLED` 或 `EXPIRED` 之一。
-- 用户已在大厅房间中有活跃 assignment 时不能入队；已有活跃匹配票据时不能加房/观战。
+- 一个账号全局只能有一个活跃 lobby assignment（跨房间、跨玩家/观战角色）；不能同时持有两个房间的玩家席位。已有活跃 assignment 时不能入队/建房；已有活跃匹配票据时不能加房/观战/建房。
+- 取消/过期释放后可以重新加入；历史遗留的双活跃 assignment 在签发/消费票据时以 `ACCOUNT_ALREADY_SEATED` 拒绝，不能继续消费成双席位。
 - 游客排位默认关闭；只有显式 `AllowGuestRankedMatch=true` **且** `ProductDecisionAcknowledged=true` 时才进入临时 FIFO ranked 队列。默认配置下 `RANKED_MATCH_DISABLED`。
 
 ## TableTicket
@@ -95,7 +112,7 @@ D:\Unity\dotnet\dotnet.exe test dotnet/tests/Mahjong.LobbyService.Tests/Mahjong.
 
 ## 已覆盖 / 未覆盖
 
-**已覆盖（内存契约测试）**：游客同设备双开、并发同键建房、幂等冲突、并发同座位加房、同账号双开加房、四人匹配/第五人排队、取消/过期竞态、过期释放席位、重复匹配、票据字段/无 ownerEpoch、alg/aud/role/seat/room/assignment/expiry/TTL/重复 claim 拒绝、签名篡改、跨账号签发、并发重复消费、重连新票据、密钥轮换/退休、JWKS 无私钥、公开投影合并/降级、程序集不引用 Domain/TableRuntime。
+**已覆盖（内存/本地 HTTP 契约测试）**：R1 同 deviceId 无 bootstrap 不能接管、不同 bootstrap 为不同账号、同 requestId 不同 bootstrap 不回放 token、同 bootstrap 合法双开/幂等回放；R2 跨房顺序/并发 join 只有一个 assignment、create-vs-join、match-vs-join 互斥、存储直接插入第二活跃 assignment 被拒；并发同键建房、幂等冲突、并发同座位加房、四人匹配/第五人排队、取消/过期竞态、过期释放席位、重复匹配、票据字段/无 ownerEpoch、alg/aud/role/seat/room/assignment/expiry/TTL/重复 claim 拒绝、签名篡改、跨账号签发、并发重复消费、重连新票据、密钥轮换/退休、JWKS 无私钥、公开投影合并/降级、程序集不引用 Domain/TableRuntime。
 
 **NOT_RUN / 未覆盖**：
 
@@ -104,5 +121,6 @@ D:\Unity\dotnet\dotnet.exe test dotnet/tests/Mahjong.LobbyService.Tests/Mahjong.
 - 真实 TableService WSS 握手/准入/租约/ownerEpoch 校验：P5.1 未完成，未联调。
 - 观战推送/WSS `/v1/lobby`、观战延迟、离线推送：未实现。
 - 会话刷新/登出/删号、账号/资产/OIDC、数据保留清理/导出、限流、审计导出：未实现。
-- 离开房间/角色切换 API：未实现；当前同一房间同一账号只允许一个活跃角色，需等 assignment 过期或房间关闭。
+- 游客 bootstrap 丢失后的恢复/迁移：未实现；以新 bootstrap 创建新身份，不把 deviceId 当恢复凭据。
+- 离开房间/角色切换 API：未实现；当前一个账号全局只允许一个活跃 lobby assignment，需等 assignment 过期或房间关闭。
 - 生产部署、密钥库/证书集成、压测/容量数字：不在本任务内。
