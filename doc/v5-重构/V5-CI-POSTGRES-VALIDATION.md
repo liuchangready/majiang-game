@@ -166,3 +166,33 @@ E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855  root-logs\pg_c
 - 全系统默认且唯一生产架构仍为 V4（TCP MJ-TCP/1）；V5 为迁移中实现。
 - 远端 GitHub Actions 结果以原始测试框架日志为唯一判定依据，本轮未触发任何远端运行。
 - 历史 Client run39970580589 根因仍为未决事项，与本门禁无关。
+
+## 8. Codex 独立验收与批次集成（2026-10-24）
+
+原任务 `thread_20261024_015954_9287` 第二轮交付 `49fea41`（代码 `92ed402`）经调用方独立审查通过，已调用 `approve_task` 归档。调用方沿用原工作区与任务，未转派。
+
+独立复跑：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File tools/tests/VerifyV5PostgresCi.Tests.ps1
+```
+
+在交付 HEAD `49fea41b95b9b6c79830cb42407af45b5a616be4` 上得到 **154 checks / 0 failures，exit 0**。原始控制台为 `artifacts/review-ci-pg-20261024-041433/selftests.log`；场景证据为 `%TEMP%/VerifyV5PostgresCi-20261024-041434-7374829c`。真实 PG fixture 与故障控制场景分别计数，未将桩执行视为真实业务门禁。既有合法 marker、哨兵、别名、外来 listener 保护及半初始化本次资源清理均通过。
+
+随后在同一分支合并 PR #19 已验收基线 `3e78367538b4f7520a1d414c82ef3155507a5206`，得到批次代码 HEAD `b7c52d9bd76b5195f073f93b5a0e742a1a4cf532`，无冲突；新增的 P3.2a/P3.3 测试使统一门禁总数从 735 增至 814。在该 HEAD 执行：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File tools/ci/verify-v5-postgres.ps1 `
+  -Configuration Release -RunnerMode dotnetTest `
+  -DotnetPath D:/Unity/dotnet/dotnet.exe `
+  -PgZipPath D:/majiang-pg-tmp/cache/postgresql-16.10-1-windows-x64-binaries.zip `
+  -Port 55460 -LogDir artifacts/verify-v5/caller-ci-pg-20261024-0417
+```
+
+结果 **814 passed / 0 failed / 0 skipped，exit 0，9 rows PASS，OVERALL: PASS**：Client 132、Domain 313、Ai 14、Lobby 89、Contracts 82、TableRuntime 104、WSS 80；两个 helper 仅构建。solution build 与 scratch 12-DLL 闭包均通过，未改 Unity 资源。包装器与 accepted PG 脚本、验证器保持交付代码，未过滤 skip 或缩减发现范围。
+
+证据目录 `artifacts/verify-v5/caller-ci-pg-20261024-0417/` 包含完整测试日志、`summary.log`、`run-info.txt`、逐次运行元数据与 `pg/`。真实 PostgreSQL 16.10 使用唯一 TEMP 根、loopback 55460 和专用测试库，迁移两次成功，测试写入的 `pg/postgres-evidence.jsonl` 共 14 行。包装器记录 `ownership=owned`、`rootDeleted=true`、`restoredToPreCall=true`、`plannedExit=0`、`failedStages=[]`；调用方逐项核对 `pg/evidence-sha256.txt` 全部匹配，并确认 55460/55461 无 listener。控制台留存于 `artifacts/review-ci-pg-20261024-041433/unified-console.log`，批次 SHA-256 清单为同目录 `review-sha256.txt`。
+
+调用方另行读取 PR #19 上次失败 run `40006967267` 原始日志，确认 Lobby 行为 89 总数、0 failed、12 skipped；日志留存 `artifacts/review-ci-pg-20261024-041433/previous-ci-40006967267.log`。这不解释历史 run39970580589。
+
+本地验收时远端新提交 CI 仍为 **NOT_RUN**；调用方接续统一推送既有 PR #19（`feat/v5-1-integration` → `v5`），远端结论以该提交实际 workflow 日志及任务 MR 记录为准。本节本地 PASS 不代表 G1/G5、Unity/设备或生产部署通过。
