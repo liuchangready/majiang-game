@@ -209,3 +209,42 @@ selftest 终态 SHA-256：`b14bcf0d51aa30677663999dde606c85a47c10e30193bb908d7c8
 
 - 真实 PG 生产路径本轮**无新运行**：§6 的一次全绿仍是唯一真实 PG 运行证据；本轮改动不触碰任何生产脚本。
 - §9.4 的 192/0 是**本工作树自测结果**，在 caller 完整复验通过之前不作为已复验结论；仍不 push、不建 PR，PR19 收口由 caller 在复验通过后进行。
+
+## 10. Caller 第 2 轮独立验收与 PR19 集成
+
+2026-10-24，caller 在原任务 `thread_20261024_045327_0dd4`、当前工作区独立检视交付 `8d1bb9f62bb5a715c17cceaa4847e036e7820192`。`approve_task` 已成功返回 COMPLETED 并归档。§9.1 的历史 FAIL 保留，以下为新的实际运行结果。
+
+| 独立验证 | 结果 | exit |
+|---|---|---|
+| PS 5.1.19041.6456 宿主，dual pwsh 7.6.6，`-BasePort 55510` | 192 checks / 0 failures | 0 |
+| pwsh 7.6.6 / .NET 10.0.12 宿主，dual PS 5.1，同端口对串行 | 192 checks / 0 failures | 0 |
+| 两宿主实际 Save → 覆盖 → Restore 三态探针 | 全 PASS；PS 5.1 空值实际捕获为 absent，PS 7 空值精确恢复 | 各 0 |
+| 两宿主设置后 provider 删除，再 Save → 覆盖 → Restore | child 视图均 absent → absent | 各 0 |
+| 两宿主强制 listener 绑定冲突探针 | 准确记录一项 FAIL、返回 null、保留原 listener，并继续执行 | 各 0（负例探针成功） |
+| 开发真实 PG 档案 SHA-256 独立核对 | 12 文件全部匹配 | 0 |
+| `git diff --check` | PASS | 0 |
+
+全量自测命令（从仓库根目录执行，两条严格串行）：
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/tests/VerifyV5PostgresCi.Tests.ps1 -PwshPath C:/Users/sncdc/AppData/Local/Temp/majiang-env-matrix-20261024/pwsh7/pwsh.exe -BasePort 55510
+C:/Users/sncdc/AppData/Local/Temp/majiang-env-matrix-20261024/pwsh7/pwsh.exe -NoProfile -ExecutionPolicy Bypass -File tools/tests/VerifyV5PostgresCi.Tests.ps1 -PwshPath C:/Windows/System32/WindowsPowerShell/v1.0/powershell.exe -BasePort 55510
+```
+
+独立日志根：`artifacts/codex-env-restore-r2-independent/`（保留本地，未提交构建产物）。`selftest-ps51.log` SHA-256 为 `e6e6c8f7e45079d2f07019928be0e1ae792b53a45ba532956631ce8663e35099`；`selftest-ps7.log` 为 `978f1c9c33c38546924c4a5ccbee4c8532615442cbbcdadb4537991d6a3332c0`。各 `.exit` 文件均为 0。PS 5.1 的 helper 探针首次因调用者漏传 ExecutionPolicy Bypass 而在脚本加载前被策略拒绝；原日志保留，补齐相同自测所用参数后实际负例通过，未修改机器策略。
+
+调用者在本工作区创建集成分支 `wt/v5-ci-env-restore-pr19`，从既有 PR19 的 `437bd53ca8771764d62ef75226b73efded2baabd` 合并已验收交付，生成 `b473c4fc28b425ae513d62e8c6d094a8255d1976`。交付分支 `wt/v5-ci-env-restore` 保持 `8d1bb9f`；四个任务文件与交付完全一致。已发布的 physical/AI golden 与 stream 修复全部保留，未合入仍在开发的 catalog。
+
+在该集成提交执行一次真实 PG 全量入口，预检空闲端口 55514，独占 TEMP 根由 wrapper 创建：
+
+```powershell
+C:/Users/sncdc/AppData/Local/Temp/majiang-env-matrix-20261024/pwsh7/pwsh.exe -NoProfile -ExecutionPolicy Bypass -File tools/ci/verify-v5-postgres.ps1 -Configuration Release -Port 55514 -DotnetPath D:/Unity/dotnet/dotnet.exe -PgZipPath D:/majiang-pg-tmp/cache/postgresql-16.10-1-windows-x64-binaries.zip -LogDir artifacts/codex-env-restore-r2-independent/integrated-gate
+```
+
+- **PASS：896 passed / 0 failed / 0 skipped**。Ai17、Client132、Wss80、Contracts104、Domain322、真实 PG Lobby89、TableRuntime152；两个 helper 仅构建，不计测试。
+- 9 project rows 全 PASS；solution build 0 warnings / 0 errors，scratch plugin copy 12 assemblies PASS；全部通过 `dotnet test`，未使用 fallback、skip 或 verifier 修改。
+- 两次 migration、10 个 wrapper stage、owned cluster cleanup 均 PASS；verifier/wrapper 均 exit 0。
+- 4 条 env 恢复记录均 `preCallState=absent`、`restored=true`、`childStateAfter=absent`、`restoredSha256=(unset)`、`outcome=restored-absent`。
+- 日志 `integrated-gate/summary.log`、`run-info.txt`、逐项目原始日志、`pg/wrapper-summary.json` 与 `pg/evidence-sha256.txt` 完整保留。统一 verifier SHA-256 仍为 `FA8D539BB6E036A7FD002011F001F5D5FDB27BA8B20CD5A9089098E87F3CE307`。
+
+以上均为**本地独立运行**；继承的 `CI=1` 环境标签不构成远端 CI 证据。后续发布仅增加本文验收记录，统一更新既有 [PR19](https://github.com/liuchangready/majiang-game/pull/19)，不创建子任务 PR。远端 CI 结果以该次 push/PR 的真实 run 为准。V4 唯一生产、G1/G5 未过，Unity/IL2CPP/移动真机/跨物理网络缺口保持。
