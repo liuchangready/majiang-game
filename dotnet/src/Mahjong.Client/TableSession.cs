@@ -764,6 +764,16 @@ namespace Mahjong.Client
                 _confirmedBindingSessionId = _binding.SessionId.Value;
             }
 
+            // Re-check immediately before publishing Ready/event. This closes
+            // the narrow window where the attempt could cross its deadline
+            // while the validated baseline was being copied into the cache.
+            if (BaselineAdmissionCheck != null && !BaselineAdmissionCheck(cancellationToken))
+            {
+                _syncInFlight = false;
+                _activeSyncCorrelationId = null;
+                return;
+            }
+
             _syncInFlight = false;
             _activeSyncCorrelationId = null;
             _connection.Fire(TableConnectionTrigger.BaselineApplied);
