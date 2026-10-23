@@ -150,7 +150,45 @@ if (-not (Test-Path $solution)) {
 
 New-Item -ItemType Directory -Force -Path $LogDir | Out-Null
 
-Write-Step "dotnet     : $DotnetPath"
+# --- 0b. SDK diagnostics -------------------------------------------------------
+# Record the SDK actually selected by the dotnet executable used for every build
+# and test below, together with the working directory that decides global.json
+# resolution. A diagnostic failure is an environment block (exit 2), never a PASS.
+$cwd = (Get-Location).Path
+$globalJsonPath = $null
+$probe = $cwd
+while ($probe) {
+    $candidate = Join-Path $probe 'global.json'
+    if (Test-Path $candidate) { $globalJsonPath = $candidate; break }
+    $parent = Split-Path $probe -Parent
+    if (-not $parent -or $parent -eq $probe) { break }
+    $probe = $parent
+}
+$sdkLog = Join-Path $LogDir 'sdk-diagnostic.log'
+$versionOutput = @(& $DotnetPath --version 2>&1)
+$versionExit = $LASTEXITCODE
+$infoOutput = @(& $DotnetPath --info 2>&1)
+$infoExit = $LASTEXITCODE
+$sdkVersion = (($versionOutput | Out-String).Trim())
+$sdkText = @(
+    "cwd        : $cwd"
+    "dotnet     : $DotnetPath"
+    "global.json: $(if ($globalJsonPath) { $globalJsonPath } else { '(none found from cwd)' })"
+    "DOTNET_ROOT: $env:DOTNET_ROOT"
+    "dotnet --version (exit $versionExit):"
+    $sdkVersion
+    ""
+    "dotnet --info (exit $infoExit):"
+    (($infoOutput | Out-String).TrimEnd())
+) -join [Environment]::NewLine
+Set-Content -Path $sdkLog -Value $sdkText -Encoding UTF8
+if ($versionExit -ne 0 -or $infoExit -ne 0 -or [string]::IsNullOrWhiteSpace($sdkVersion)) {
+    Write-Host "BLOCKED: dotnet SDK diagnostic failed (--version exit $versionExit, --info exit $infoExit); see $sdkLog"
+    Write-Host $sdkText
+    exit 2
+}
+
+Write-Step "dotnet     : $DotnetPath (SDK $sdkVersion, cwd $cwd)"
 Write-Step "manifest   : $ManifestPath"
 Write-Step "solution   : $solution"
 Write-Step "config     : $Configuration"
@@ -432,6 +470,7 @@ if (-not $SkipPluginCopyCheck) {
 $summaryPath = Join-Path $LogDir 'summary.log'
 $lines = New-Object System.Collections.Generic.List[string]
 $lines.Add("verify-v5 summary  $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')  config=$Configuration")
+$lines.Add("dotnet SDK     : $sdkVersion  path: $DotnetPath  cwd: $cwd  log: $sdkLog")
 $lines.Add("")
 $lines.Add("solution build : $(if ($buildOk) { "PASS (exit $slnExit)" } else { "FAIL (exit $slnExit)" })  log: $slnBuildLog")
 $lines.Add("plugin copy    : $pluginResult  ($($pluginDetail))$(if ($pluginLog) { "  log: $pluginLog" })")

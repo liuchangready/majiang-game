@@ -29,7 +29,7 @@ jobs:
       - name: Setup .NET 8 SDK
         uses: actions/setup-dotnet@v4
         with:
-          dotnet-version: 8.0.x
+          dotnet-version: 8.0.426
 
       # verify-v5.ps1 resolves dotnet from DOTNET_ROOT/PATH when -DotnetPath is not
       # given; tools/unity/build-shared.ps1 (invoked by the plugin-copy check) uses
