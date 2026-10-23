@@ -1,0 +1,30 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Standalone test project for P1.6. It is intentionally not added to Mahjong.sln in this
+    task (solution files are out of scope); run it directly:
+      dotnet test dotnet/tests/Mahjong.Ai.Tests/Mahjong.Ai.Tests.csproj
+  -->
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <OutputType>Exe</OutputType>
+    <IsPackable>false</IsPackable>
+    <TestingPlatformDotnetTestSupport>true</TestingPlatformDotnetTestSupport>
+    <LangVersion>9.0</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <AssemblyName>Mahjong.Ai.Tests</AssemblyName>
+    <RootNamespace>Mahjong.Ai.Tests</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="xunit.v3" Version="4.0.2" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\Mahjong.Ai\Mahjong.Ai.csproj" />
+    <ProjectReference Include="..\..\src\Mahjong.Domain\Mahjong.Domain.csproj" />
+  </ItemGroup>
+
+</Project>
