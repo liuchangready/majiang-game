@@ -496,5 +496,239 @@ namespace Mahjong.TableRuntime.Tests
             Assert.Equal(11UL, accepted.CommandVersion!.Value.Value);
             Assert.Equal(51UL, accepted.Events[0].Seq.Value);
         }
+
+        [Theory]
+        [InlineData(false)]
+        [InlineData(true)]
+        public async Task FailedAiCommitDoesNotConsumeDecision(bool cancel)
+        {
+            await using ActorHarness harness = P31Fixtures.CreateActor();
+            DiscardDecisionFixture decision = P31Fixtures.BuildDiscardDecision(harness);
+            Assert.Equal(
+                TableOperationStatus.Configured,
+                (await harness.OpenDecisionAsync(decision.Pending)).Status);
+
+            harness.Clock.Now = 1500L;
+            if (cancel)
+            {
+                harness.CommitPort.CancelNext();
+            }
+            else
+            {
+                harness.CommitPort.FailNext();
+            }
+
+            TableTickResult first = await harness.CompleteAiAsync(decision.Ai);
+            Assert.Single(first.Entries);
+            Assert.Equal(TickEntryKind.AiAccepted, first.Entries[0].Kind);
+            Assert.NotNull(first.Entries[0].Transition);
+            Assert.Equal(TableOperationStatus.Failed, first.Entries[0].Transition!.Status);
+            Assert.Equal(0UL, first.FinalStateVersion.Value);
+            Assert.Equal(0UL, (await harness.GetSnapshotAsync()).StateVersion.Value);
+            Assert.Empty(harness.Sink.Publications);
+
+            TableTickResult retry = await harness.CompleteAiAsync(decision.Ai);
+            Assert.Single(retry.Entries);
+            Assert.Equal(TickEntryKind.AiAccepted, retry.Entries[0].Kind);
+            Assert.NotNull(retry.Entries[0].Transition);
+            Assert.Equal(TableOperationStatus.Accepted, retry.Entries[0].Transition!.Status);
+            Assert.Equal(1UL, retry.FinalStateVersion.Value);
+        }
+
+        [Fact]
+        public async Task FailedTimeoutCommitMustRemainDue()
+        {
+            await using ActorHarness harness = P31Fixtures.CreateActor();
+            DiscardDecisionFixture decision = P31Fixtures.BuildDiscardDecision(harness);
+            Assert.Equal(
+                TableOperationStatus.Configured,
+                (await harness.OpenDecisionAsync(decision.Pending)).Status);
+
+            harness.Clock.Now = 2000L;
+            harness.CommitPort.FailNext();
+            TableTickResult first = await harness.TickAsync();
+            Assert.Single(first.Entries);
+            Assert.Equal(TickEntryKind.Timeout, first.Entries[0].Kind);
+            Assert.NotNull(first.Entries[0].Transition);
+            Assert.Equal(TableOperationStatus.Failed, first.Entries[0].Transition!.Status);
+            Assert.Equal(0UL, first.FinalStateVersion.Value);
+            Assert.Equal(0UL, (await harness.GetSnapshotAsync()).StateVersion.Value);
+
+            TableTickResult retry = await harness.TickAsync();
+            Assert.Single(retry.Entries);
+            Assert.Equal(TickEntryKind.Timeout, retry.Entries[0].Kind);
+            Assert.NotNull(retry.Entries[0].Transition);
+            Assert.Equal(TableOperationStatus.Accepted, retry.Entries[0].Transition!.Status);
+            Assert.Equal(1UL, retry.FinalStateVersion.Value);
+        }
+
+        [Fact]
+        public async Task FailedAiCommitKeepsOriginalDeadlineAndReserve()
+        {
+            await using ActorHarness harness = P31Fixtures.CreateActor(
+                decisionClockConfig: new DecisionClockConfig(1000L, 1000L, ReserveScope.Round));
+            DiscardDecisionFixture decision = P31Fixtures.BuildDiscardDecision(harness);
+            Assert.Equal(
+                TableOperationStatus.Configured,
+                (await harness.OpenDecisionAsync(decision.Pending)).Status);
+
+            // d1 opens at 1000, deadline 3000, reserve 1000.
+            harness.Clock.Now = 2500L;
+            harness.CommitPort.FailNext();
+            TableTickResult failed = await harness.CompleteAiAsync(decision.Ai);
+            Assert.Equal(TableOperationStatus.Failed, failed.Entries[0].Transition!.Status);
+            Assert.Equal(0UL, failed.FinalStateVersion.Value);
+
+            // If the failed commit had settled the reserve or re-opened the decision, the
+            // original 3000 deadline would have moved and this tick would accept the AI.
+            harness.Clock.Now = 3000L;
+            TableTickResult boundary = await harness.TickAsync(
+                new TableTickRequest(new[] { decision.Ai.ToDomainSubmission(3000L) }));
+            Assert.Equal(2, boundary.Entries.Count);
+            Assert.Equal(TickEntryKind.Timeout, boundary.Entries[0].Kind);
+            Assert.Equal(TableOperationStatus.Accepted, boundary.Entries[0].Transition!.Status);
+            Assert.Equal(TickEntryKind.AiRejected, boundary.Entries[1].Kind);
+            Assert.Equal(TickRejectionCode.DeadlineExpired, boundary.Entries[1].RejectionCode);
+            Assert.Equal(1UL, boundary.FinalStateVersion.Value);
+        }
+
+        [Fact]
+        public async Task TickKeepsCommittedPrefixAndDoesNotConsumeFailedOrLaterSeats()
+        {
+            await using ActorHarness harness = P31Fixtures.CreateActor();
+            RoundStateMachine round = harness.InitialRound;
+            int discarder = round.CurrentSeat;
+            TileId tile = round.Tiles.TilesInZone(TileZone.Hand, discarder)[0];
+            TableCommandEnvelope openingDiscard = P31Fixtures.Command(
+                RoundCommand.Discard(
+                    round.RoundId,
+                    discarder,
+                    tile,
+                    new[] { 1, 2, 3 }),
+                0,
+                "open-response-window");
+            TableOperationResult openedWindow = await harness.SubmitAsync(openingDiscard);
+            Assert.Equal(TableOperationStatus.Accepted, openedWindow.Status);
+            Assert.Equal(1UL, openedWindow.CommandVersion!.Value.Value);
+            Assert.Equal(RoundPhase.ResponseWindow, (await harness.GetSnapshotAsync()).Phase);
+
+            for (int seat = 1; seat <= 3; seat++)
+            {
+                var pending = new PendingDecision(
+                    new DecisionKey(round.RoundId, seat, "pass-" + seat),
+                    0L,
+                    new[] { new LegalActionOption(LegalActionKind.Pass, seat) });
+                Assert.Equal(
+                    TableOperationStatus.Configured,
+                    (await harness.OpenDecisionAsync(pending)).Status);
+            }
+
+            harness.Clock.Now = 2000L;
+            harness.CommitPort.SucceedNext();
+            harness.CommitPort.FailNext();
+
+            TableTickResult first = await harness.TickAsync();
+            Assert.Equal(3, first.Entries.Count);
+            Assert.Equal(TickEntryKind.Timeout, first.Entries[0].Kind);
+            Assert.Equal(TableOperationStatus.Accepted, first.Entries[0].Transition!.Status);
+            Assert.Equal(2UL, first.Entries[0].Transition!.CommandVersion!.Value.Value);
+            Assert.Equal(TableOperationStatus.Failed, first.Entries[1].Transition!.Status);
+            Assert.Equal(TableOperationStatus.Failed, first.Entries[2].Transition!.Status);
+            Assert.Equal(2UL, first.FinalStateVersion.Value);
+
+            TableTickResult retry = await harness.TickAsync();
+            Assert.Equal(2, retry.Entries.Count);
+            Assert.All(retry.Entries, entry => Assert.Equal(TickEntryKind.Timeout, entry.Kind));
+            Assert.All(
+                retry.Entries,
+                entry => Assert.Equal(TableOperationStatus.Accepted, entry.Transition!.Status));
+            Assert.Equal(4UL, retry.FinalStateVersion.Value);
+        }
+
+        [Fact]
+        public async Task DomainRejectedTimeoutDoesNotConsumeDecision()
+        {
+            await using ActorHarness harness = P31Fixtures.CreateActor();
+            var pending = new PendingDecision(
+                new DecisionKey(harness.InitialRound.RoundId, harness.InitialRound.CurrentSeat, "pass-only"),
+                0L,
+                new[] { new LegalActionOption(LegalActionKind.Pass, harness.InitialRound.CurrentSeat) });
+            Assert.Equal(
+                TableOperationStatus.Configured,
+                (await harness.OpenDecisionAsync(pending)).Status);
+
+            harness.Clock.Now = 2000L;
+            TableTickResult first = await harness.TickAsync();
+            Assert.Single(first.Entries);
+            Assert.Equal(TickEntryKind.Timeout, first.Entries[0].Kind);
+            Assert.NotNull(first.Entries[0].Transition);
+            Assert.Equal(TableOperationStatus.Rejected, first.Entries[0].Transition!.Status);
+            Assert.Equal("NO_RESPONSE_WINDOW", first.Entries[0].Transition!.ReasonCode);
+            Assert.Equal(0UL, first.FinalStateVersion.Value);
+            Assert.Empty(harness.CommitPort.Requests);
+
+            TableTickResult second = await harness.TickAsync();
+            Assert.Single(second.Entries);
+            Assert.Equal(TickEntryKind.Timeout, second.Entries[0].Kind);
+            Assert.Equal(TableOperationStatus.Rejected, second.Entries[0].Transition!.Status);
+            Assert.Equal("NO_RESPONSE_WINDOW", second.Entries[0].Transition!.ReasonCode);
+            Assert.Equal(0UL, second.FinalStateVersion.Value);
+        }
+
+        [Fact]
+        public async Task MissingDefaultActionDoesNotConsumeDecision()
+        {
+            await using ActorHarness harness = P31Fixtures.CreateActor();
+            var pending = new PendingDecision(
+                new DecisionKey(harness.InitialRound.RoundId, harness.InitialRound.CurrentSeat, "no-default"),
+                0L,
+                Array.Empty<LegalActionOption>());
+            Assert.Equal(
+                TableOperationStatus.Configured,
+                (await harness.OpenDecisionAsync(pending)).Status);
+
+            harness.Clock.Now = 2000L;
+            TableTickResult first = await harness.TickAsync();
+            Assert.Single(first.Entries);
+            Assert.Equal(TickEntryKind.Timeout, first.Entries[0].Kind);
+            Assert.Equal(TickRejectionCode.NoDefaultAction, first.Entries[0].RejectionCode);
+            Assert.Equal(TableOperationStatus.Rejected, first.Entries[0].Transition!.Status);
+            Assert.Equal(TableRuntimeReasonCode.NoDefaultAction, first.Entries[0].Transition!.ReasonCode);
+            Assert.Equal(0UL, first.FinalStateVersion.Value);
+
+            TableTickResult second = await harness.TickAsync();
+            Assert.Single(second.Entries);
+            Assert.Equal(TickEntryKind.Timeout, second.Entries[0].Kind);
+            Assert.Equal(TickRejectionCode.NoDefaultAction, second.Entries[0].RejectionCode);
+            Assert.Equal(0UL, second.FinalStateVersion.Value);
+        }
+
+        [Fact]
+        public async Task UnsupportedActionDoesNotConsumeDecision()
+        {
+            await using ActorHarness harness = P31Fixtures.CreateActor();
+            SingleActionDecisionFixture decision = P31Fixtures.BuildSingleActionDecision(
+                harness,
+                LegalActionKind.Tsumo);
+            Assert.Equal(
+                TableOperationStatus.Configured,
+                (await harness.OpenDecisionAsync(decision.Pending)).Status);
+
+            harness.Clock.Now = 1500L;
+            TableTickResult first = await harness.CompleteAiAsync(decision.Ai);
+            Assert.Single(first.Entries);
+            Assert.Equal(TickEntryKind.AiAccepted, first.Entries[0].Kind);
+            Assert.NotNull(first.Entries[0].Transition);
+            Assert.Equal(TableOperationStatus.Rejected, first.Entries[0].Transition!.Status);
+            Assert.Equal(TableRuntimeReasonCode.UnsupportedAction, first.Entries[0].Transition!.ReasonCode);
+            Assert.Equal(0UL, first.FinalStateVersion.Value);
+
+            TableTickResult second = await harness.CompleteAiAsync(decision.Ai);
+            Assert.Single(second.Entries);
+            Assert.Equal(TickEntryKind.AiAccepted, second.Entries[0].Kind);
+            Assert.Equal(TableOperationStatus.Rejected, second.Entries[0].Transition!.Status);
+            Assert.Equal(TableRuntimeReasonCode.UnsupportedAction, second.Entries[0].Transition!.ReasonCode);
+            Assert.Equal(0UL, second.FinalStateVersion.Value);
+        }
     }
 }

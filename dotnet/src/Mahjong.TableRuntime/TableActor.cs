@@ -15,8 +15,10 @@ namespace Mahjong.TableRuntime
     /// Ordering:
     /// - all player commands, deadline ticks, AI completions, recovery and lease-loss messages
     ///   enter one FIFO mailbox and are processed by exactly one drain task at a time;
-    /// - a tick asks the Domain <see cref="DeadlineArbiter"/> for authoritative timeouts first
-    ///   and only then applies same-tick AI results; at/after the deadline the timeout wins;
+    /// - a tick uses a pure candidate plan over the current timing/pending snapshot: timeouts
+    ///   first, then same-tick AI results; at/after the deadline the timeout wins. The real
+    ///   DecisionClock/pending entries are mutated only after the corresponding Domain transition
+    ///   commits, so a failed/cancelled/rejected item cannot consume a decision or reserve;
     /// - AI reasoning happens outside this actor. A completed <see cref="AiDecision"/> is
     ///   re-validated here against roundId, decisionId and controlEpoch (and the current
     ///   candidate list/deadline) before any state is built.
@@ -45,7 +47,6 @@ namespace Mahjong.TableRuntime
         private readonly ITablePublicationSink? _publicationSink;
         private readonly ControlRegistry _control;
         private readonly DecisionClock _decisionClock;
-        private readonly DeadlineArbiter _deadlineArbiter;
         private readonly Dictionary<int, PendingDecision> _pending = new Dictionary<int, PendingDecision>();
         private readonly List<TableEventRecord> _recentEvents = new List<TableEventRecord>();
 
@@ -76,7 +77,6 @@ namespace Mahjong.TableRuntime
             _mailbox = new TableMailbox(options.MailboxCapacity, options.ControlReserve);
             _control = new ControlRegistry(options.DisconnectPolicy, CopyControllers(options.InitialControllers));
             _decisionClock = new DecisionClock(options.DecisionClockConfig);
-            _deadlineArbiter = new DeadlineArbiter(_decisionClock, _control);
             _decisionClock.BeginRound(_round.RoundId, _clockPort.MonotonicMillis);
         }
 
@@ -564,19 +564,10 @@ namespace Mahjong.TableRuntime
                 return TableTickResult.Rejected(guard.Status, guard.ReasonCode, guard.Detail, _stateVersion);
             }
 
-            var pending = new List<PendingDecision>(_pending.Count);
-            foreach (KeyValuePair<int, PendingDecision> pair in _pending)
-            {
-                pending.Add(pair.Value);
-            }
-
-            pending.Sort((left, right) => left.Key.Seat.CompareTo(right.Key.Seat));
-
-            TickResult arbitrated;
+            List<PlannedTickEntry> planned;
             try
             {
-                var input = new TickInput(_round.RoundId, now, pending, request.AiSubmissions);
-                arbitrated = _deadlineArbiter.ProcessTick(input);
+                planned = PlanTick(request, now);
             }
             catch (Exception exception)
             {
@@ -587,12 +578,13 @@ namespace Mahjong.TableRuntime
                     _stateVersion);
             }
 
-            var entries = new List<TableTickEntry>(arbitrated.Entries.Count);
+            var entries = new List<TableTickEntry>(planned.Count);
             bool commitAborted = false;
+            bool roundFinished = false;
 
-            for (int i = 0; i < arbitrated.Entries.Count; i++)
+            for (int i = 0; i < planned.Count; i++)
             {
-                TickEntry entry = arbitrated.Entries[i];
+                PlannedTickEntry entry = planned[i];
                 if (entry.Kind == TickEntryKind.AiRejected)
                 {
                     entries.Add(new TableTickEntry(
@@ -601,13 +593,26 @@ namespace Mahjong.TableRuntime
                         entry.DecisionId,
                         entry.Action,
                         entry.RejectionCode,
-                        entry.Detail ?? string.Empty,
+                        entry.Detail,
                         null));
                     continue;
                 }
 
-                // Timeout and accepted-AI entries consume the decision in the Domain clock.
-                _pending.Remove(entry.Seat);
+                if (roundFinished)
+                {
+                    entries.Add(new TableTickEntry(
+                        entry.Kind,
+                        entry.Seat,
+                        entry.DecisionId,
+                        entry.Action,
+                        entry.RejectionCode,
+                        "Skipped because a previous transition ended the round.",
+                        TableOperationResult.Rejected(
+                            _stateVersion,
+                            "ROUND_FINISHED",
+                            "The round ended before this planned entry could run.")));
+                    continue;
+                }
 
                 if (commitAborted)
                 {
@@ -621,46 +626,49 @@ namespace Mahjong.TableRuntime
                         TableOperationResult.Failed(
                             _stateVersion,
                             TableRuntimeReasonCode.CommitFailed,
-                            "An earlier transition in this tick failed to commit.")));
+                            "An earlier transition in this tick failed to commit; the decision was not consumed.")));
                     continue;
                 }
 
                 if (entry.Action == null)
                 {
+                    // No default action: the decision remains open/due. It is NOT removed.
                     entries.Add(new TableTickEntry(
                         entry.Kind,
                         entry.Seat,
                         entry.DecisionId,
                         null,
                         entry.RejectionCode,
-                        entry.Detail ?? string.Empty,
+                        entry.Detail,
                         TableOperationResult.Rejected(
                             _stateVersion,
                             TableRuntimeReasonCode.NoDefaultAction,
-                            "No legal timeout/AI action was available.")));
+                            "No legal timeout/AI action was available; the decision remains due.")));
                     continue;
                 }
 
                 RoundCommand? command = MapAction(entry.Action);
                 if (command == null)
                 {
+                    // Unsupported action: keep the exact timing/pending state so a later owner
+                    // (or a corrected adapter) can still resolve the same decision.
                     entries.Add(new TableTickEntry(
                         entry.Kind,
                         entry.Seat,
                         entry.DecisionId,
                         entry.Action,
                         entry.RejectionCode,
-                        entry.Detail ?? string.Empty,
+                        entry.Detail,
                         TableOperationResult.Rejected(
                             _stateVersion,
                             TableRuntimeReasonCode.UnsupportedAction,
-                            "P3.1 supports only Pass/Discard timeout and AI actions; scoring actions are P3.2/P3.3.")));
+                            "P3.1 supports only Pass/Discard timeout and AI actions; the decision was not consumed.")));
                     continue;
                 }
 
                 TableOperationResult result = await ApplyInternalCommandAsync(
                     command,
-                    BuildInternalRequestId(entry),
+                    BuildInternalRequestId(entry.Seat, entry.DecisionId),
                     now).ConfigureAwait(false);
 
                 entries.Add(new TableTickEntry(
@@ -669,16 +677,223 @@ namespace Mahjong.TableRuntime
                     entry.DecisionId,
                     entry.Action,
                     entry.RejectionCode,
-                    entry.Detail ?? string.Empty,
+                    entry.Detail,
                     result));
 
-                if (result.Status == TableOperationStatus.Failed)
+                if (result.Status == TableOperationStatus.Accepted)
                 {
+                    if (_round.IsFinished)
+                    {
+                        // CommitAndInstall already cancelled the round's pending/timing state.
+                        roundFinished = true;
+                        continue;
+                    }
+
+                    if (entry.Timing != null)
+                    {
+                        bool closed = entry.Kind == TickEntryKind.Timeout
+                            ? _decisionClock.Expire(entry.Timing.Key, entry.Timing.Generation, now)
+                            : _decisionClock.Complete(entry.Timing.Key, now);
+                        if (!closed)
+                        {
+                            SetFaulted(new InvalidOperationException(
+                                "The decision clock no longer matched the committed transition."));
+                        }
+
+                        _pending.Remove(entry.Seat);
+                    }
+                }
+                else if (result.Status == TableOperationStatus.Failed)
+                {
+                    // Infrastructure/commit failure: nothing was installed. Keep this and every
+                    // later planned decision untouched so a retry can still resolve them.
                     commitAborted = true;
                 }
             }
 
             return TableTickResult.Processed(entries, _stateVersion);
+        }
+
+        /// <summary>
+        /// Builds a pure candidate plan from the current timing/pending snapshot. This method
+        /// never calls DecisionClock.Expire/Complete and never removes a pending decision.
+        /// It mirrors Domain DeadlineArbiter ordering: all due timeouts first, then AI results.
+        /// </summary>
+        private List<PlannedTickEntry> PlanTick(TableTickRequest request, long now)
+        {
+            var pendingBySeat = new PendingDecision?[4];
+            foreach (KeyValuePair<int, PendingDecision> pair in _pending)
+            {
+                pendingBySeat[pair.Key] = pair.Value;
+            }
+
+            var planned = new List<PlannedTickEntry>();
+            var expiredSeats = new bool[4];
+            var consumedSeats = new bool[4];
+            bool clockForThisRound = string.Equals(
+                _decisionClock.ActiveRoundId,
+                _round.RoundId,
+                StringComparison.Ordinal);
+
+            if (clockForThisRound && !_decisionClock.IsPausedState)
+            {
+                for (int seat = 0; seat < 4; seat++)
+                {
+                    DecisionTiming? timing = _decisionClock.Timing(seat);
+                    if (timing == null ||
+                        !string.Equals(timing.RoundId, _round.RoundId, StringComparison.Ordinal) ||
+                        now < timing.DeadlineMillis)
+                    {
+                        continue;
+                    }
+
+                    PendingDecision? pending = pendingBySeat[seat];
+                    LegalActionOption? fallback = pending == null ? null : TimeoutPolicy.Choose(pending);
+                    planned.Add(new PlannedTickEntry(
+                        TickEntryKind.Timeout,
+                        seat,
+                        timing.DecisionId,
+                        fallback,
+                        fallback == null ? TickRejectionCode.NoDefaultAction : TickRejectionCode.None,
+                        fallback == null
+                            ? "No legal timeout default; the decision remains due."
+                            : "Authoritative deadline reached; timeout action planned.",
+                        timing));
+                    expiredSeats[seat] = true;
+                    consumedSeats[seat] = true;
+                }
+            }
+
+            for (int i = 0; i < request.AiSubmissions.Count; i++)
+            {
+                AiDecisionSubmission submission = request.AiSubmissions[i];
+                int seat = submission.Key.Seat;
+
+                if (!string.Equals(submission.Key.RoundId, _round.RoundId, StringComparison.Ordinal) ||
+                    !clockForThisRound)
+                {
+                    planned.Add(RejectAi(submission, TickRejectionCode.StaleRound, "Submission belongs to another round."));
+                    continue;
+                }
+
+                ControlValidation control = _control.ValidateAutomatedAction(seat, submission.ControlEpoch);
+                if (!control.IsValid)
+                {
+                    TickRejectionCode code = control.Code == ControlValidationCode.EpochMismatch
+                        ? TickRejectionCode.StaleEpoch
+                        : TickRejectionCode.SeatNotAutomated;
+                    planned.Add(RejectAi(submission, code, control.Message));
+                    continue;
+                }
+
+                if (_decisionClock.IsPausedState)
+                {
+                    planned.Add(RejectAi(submission, TickRejectionCode.ClockPaused, "Clock is paused."));
+                    continue;
+                }
+
+                if (expiredSeats[seat])
+                {
+                    planned.Add(RejectAi(
+                        submission,
+                        TickRejectionCode.DeadlineExpired,
+                        "The seat's deadline was already expired earlier in this tick."));
+                    continue;
+                }
+
+                DecisionTiming? timing = _decisionClock.Timing(seat);
+                if (consumedSeats[seat] || timing == null || timing.Key != submission.Key)
+                {
+                    planned.Add(RejectAi(
+                        submission,
+                        TickRejectionCode.StaleDecision,
+                        "No matching active decision."));
+                    continue;
+                }
+
+                if (now >= timing.DeadlineMillis)
+                {
+                    planned.Add(RejectAi(
+                        submission,
+                        TickRejectionCode.DeadlineExpired,
+                        "Submission arrived at or after the authoritative deadline."));
+                    continue;
+                }
+
+                PendingDecision? pending = pendingBySeat[seat];
+                if (pending == null ||
+                    pending.Key != submission.Key ||
+                    !pending.Contains(submission.Action))
+                {
+                    planned.Add(RejectAi(
+                        submission,
+                        TickRejectionCode.IllegalAction,
+                        "Submitted action is not a legal candidate."));
+                    continue;
+                }
+
+                planned.Add(new PlannedTickEntry(
+                    TickEntryKind.AiAccepted,
+                    seat,
+                    submission.Key.DecisionId,
+                    submission.Action,
+                    TickRejectionCode.None,
+                    "AI result accepted before its deadline.",
+                    timing));
+                consumedSeats[seat] = true;
+            }
+
+            return planned;
+        }
+
+        private static PlannedTickEntry RejectAi(
+            AiDecisionSubmission submission,
+            TickRejectionCode code,
+            string detail)
+        {
+            return new PlannedTickEntry(
+                TickEntryKind.AiRejected,
+                submission.Key.Seat,
+                submission.Key.DecisionId,
+                submission.Action,
+                code,
+                detail,
+                null);
+        }
+
+        private sealed class PlannedTickEntry
+        {
+            public PlannedTickEntry(
+                TickEntryKind kind,
+                int seat,
+                string decisionId,
+                LegalActionOption? action,
+                TickRejectionCode rejectionCode,
+                string detail,
+                DecisionTiming? timing)
+            {
+                Kind = kind;
+                Seat = seat;
+                DecisionId = decisionId ?? string.Empty;
+                Action = action;
+                RejectionCode = rejectionCode;
+                Detail = detail ?? string.Empty;
+                Timing = timing;
+            }
+
+            public TickEntryKind Kind { get; }
+
+            public int Seat { get; }
+
+            public string DecisionId { get; }
+
+            public LegalActionOption? Action { get; }
+
+            public TickRejectionCode RejectionCode { get; }
+
+            public string Detail { get; }
+
+            public DecisionTiming? Timing { get; }
         }
 
         private async ValueTask<TableOperationResult> ApplyInternalCommandAsync(
@@ -812,13 +1027,20 @@ namespace Mahjong.TableRuntime
                 decisionId.HasValue &&
                 string.Equals(decisionId.Value.Value, pending.Key.DecisionId, StringComparison.Ordinal))
             {
-                _decisionClock.Complete(pending.Key, now);
+                bool closed = _decisionClock.Complete(pending.Key, now);
+                if (!closed)
+                {
+                    SetFaulted(new InvalidOperationException(
+                        "The decision clock could not close the committed player command."));
+                }
+
                 _pending.Remove(pending.Key.Seat);
             }
 
             if (_round.IsFinished)
             {
                 _pending.Clear();
+                _decisionClock.Reset();
             }
 
             AppendRecent(records);
@@ -1164,12 +1386,12 @@ namespace Mahjong.TableRuntime
             }
         }
 
-        private RequestId BuildInternalRequestId(TickEntry entry)
+        private RequestId BuildInternalRequestId(int seat, string decisionId)
         {
             string id = "tick-" +
-                        entry.Seat.ToString(CultureInfo.InvariantCulture) + "-" +
+                        seat.ToString(CultureInfo.InvariantCulture) + "-" +
                         _lastEventSeq.Value.ToString(CultureInfo.InvariantCulture) + "-" +
-                        entry.DecisionId;
+                        decisionId;
             return new RequestId(id);
         }
 

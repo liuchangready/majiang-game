@@ -79,6 +79,14 @@ namespace Mahjong.TableRuntime.Tests
             signal?.TrySetResult(true);
         }
 
+        public void SucceedNext()
+        {
+            lock (_gate)
+            {
+                _behaviors.Enqueue(CommitBehaviorKind.Success);
+            }
+        }
+
         public void FailNext()
         {
             lock (_gate)
@@ -387,6 +395,25 @@ namespace Mahjong.TableRuntime.Tests
         public LegalActionOption Chosen { get; }
     }
 
+    internal sealed class SingleActionDecisionFixture
+    {
+        public SingleActionDecisionFixture(
+            PendingDecision pending,
+            AiDecision ai,
+            LegalActionOption action)
+        {
+            Pending = pending;
+            Ai = ai;
+            Action = action;
+        }
+
+        public PendingDecision Pending { get; }
+
+        public AiDecision Ai { get; }
+
+        public LegalActionOption Action { get; }
+    }
+
     internal static class P31Fixtures
     {
         public static RoundStateMachine Dealt(string roundId, int dealer = 0)
@@ -408,7 +435,8 @@ namespace Mahjong.TableRuntime.Tests
         public static ActorHarness CreateActor(
             string roundId = "round-1",
             int mailboxCapacity = 8,
-            int controlReserve = 8)
+            int controlReserve = 8,
+            DecisionClockConfig? decisionClockConfig = null)
         {
             var clock = new ManualTableClock { Now = 1000L };
             var commitPort = new RecordingCommitPort();
@@ -425,7 +453,8 @@ namespace Mahjong.TableRuntime.Tests
                 RoomId = "room-1",
                 MailboxCapacity = mailboxCapacity,
                 ControlReserve = controlReserve,
-                DecisionClockConfig = new DecisionClockConfig(1000L, 0L, ReserveScope.Round),
+                DecisionClockConfig = decisionClockConfig ??
+                    new DecisionClockConfig(1000L, 0L, ReserveScope.Round),
                 InitialControllers = controllers
             };
             RoundStateMachine round = Dealt(roundId);
@@ -537,6 +566,47 @@ namespace Mahjong.TableRuntime.Tests
             var decision = new AiDecision(observation, intent, 0.5d);
             var pending = new PendingDecision(key, (long)controlEpoch, candidates, round.Tiles.DrawnTile?.Tile);
             return new DiscardDecisionFixture(pending, decision, fallback, chosen);
+        }
+
+        /// <summary>Builds one-candidate (Pass/Tsumo/...) decision used for rejection-path tests.</summary>
+        public static SingleActionDecisionFixture BuildSingleActionDecision(
+            ActorHarness harness,
+            LegalActionKind kind,
+            string decisionId = "d1",
+            int? seat = null,
+            ulong controlEpoch = 0UL)
+        {
+            RoundStateMachine round = harness.InitialRound;
+            int actualSeat = seat ?? round.CurrentSeat;
+            IReadOnlyList<TileId> hand = round.Tiles.TilesInZone(TileZone.Hand, actualSeat);
+            var action = new LegalActionOption(kind, actualSeat);
+            var candidates = new List<LegalActionOption> { action };
+            var key = new DecisionKey(round.RoundId, actualSeat, decisionId);
+            var observation = new AiObservation(
+                "session-1",
+                key,
+                (long)controlEpoch,
+                0L,
+                harness.Clock.Now + 1000L,
+                round.Phase,
+                round.DealerSeat,
+                round.RoundWind,
+                round.RoundNumber,
+                round.HonbaSticks,
+                round.RiichiSticks,
+                round.Tiles.WallRemaining,
+                hand,
+                round.Tiles.DrawnTile?.Tile,
+                Array.Empty<AiVisibleMeld>(),
+                Array.Empty<AiVisibleMeld>(),
+                Array.Empty<AiVisibleDiscard>(),
+                Array.Empty<TileId>(),
+                round.Scores,
+                candidates);
+            var intent = new CommandIntent(observation, action, "test-ai", 1);
+            var decision = new AiDecision(observation, intent, 0.5d);
+            var pending = new PendingDecision(key, (long)controlEpoch, candidates, round.Tiles.DrawnTile?.Tile);
+            return new SingleActionDecisionFixture(pending, decision, action);
         }
     }
 }
