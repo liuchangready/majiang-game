@@ -373,7 +373,7 @@ Write-Host ''
 Write-Host '=== S6: pure function behavior ==='
 try {
     $wrapperAst = [System.Management.Automation.Language.Parser]::ParseFile($wrapperScript, [ref]$null, [ref]$null)
-    foreach ($fnName in @('Save-PgEnvironmentSnapshot', 'Restore-PgEnvironmentSnapshot', 'Resolve-WrapperDotnetPath', 'Test-WrapperTcpPortOpen', 'Get-Sha256Hex')) {
+    foreach ($fnName in @('Save-PgEnvironmentSnapshot', 'Restore-PgEnvironmentSnapshot', 'Resolve-WrapperDotnetPath', 'Test-WrapperTcpPortOpen', 'Get-Sha256Hex', 'Get-WrapperFileSha256', 'Test-WrapperPathExists', 'Test-WrapperClusterOwnership')) {
         $fnAst = $wrapperAst.Find({ param($a) $a -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $a.Name -eq $fnName }, $true)
         Assert-True ($null -ne $fnAst) "S6 wrapper defines $fnName"
         if ($null -ne $fnAst) { Invoke-Expression $fnAst.Extent.Text }
@@ -467,6 +467,49 @@ try {
         Assert-True (Test-WrapperTcpPortOpen -Port 55461) 'S6 TCP probe reports open against a live listener'
     }
     finally { $listener.Stop() }
+
+    # --- pre-existence detection: every on-disk form must be caught --------------
+    $s6pathBase = Join-Path $selfTemp 's6-paths'
+    New-Item -ItemType Directory -Force -Path $s6pathBase | Out-Null
+    $s6existing = Join-Path $s6pathBase 'existing-dir'
+    New-Item -ItemType Directory -Force -Path $s6existing | Out-Null
+    Assert-True (Test-WrapperPathExists -Path $s6existing) 'S6 PathExists sees an existing directory'
+    Assert-True (-not (Test-WrapperPathExists -Path (Join-Path $s6pathBase 'never-created'))) 'S6 PathExists reports false for a free path'
+    Assert-True (Test-WrapperPathExists -Path ($s6existing.ToUpperInvariant())) 'S6 PathExists catches a case-variant alias'
+    Assert-True (Test-WrapperPathExists -Path ($s6existing + [IO.Path]::DirectorySeparatorChar)) 'S6 PathExists catches a trailing-separator alias'
+    # a dangling junction must be refused even though the file system entry is
+    # the only thing left (the marker/sentinel logic must never follow it into
+    # "the path looks free")
+    $s6link = Join-Path $s6pathBase 'dangling-junction'
+    $s6linkTarget = Join-Path $s6pathBase 'junction-target'
+    New-Item -ItemType Directory -Force -Path $s6linkTarget | Out-Null
+    New-Item -ItemType Junction -Path $s6link -Value $s6linkTarget | Out-Null
+    Remove-Item -LiteralPath $s6linkTarget -Recurse -Force
+    Assert-True (Test-WrapperPathExists -Path $s6link) 'S6 PathExists catches a dangling junction/reparse point'
+    Remove-Item -LiteralPath $s6link -Force
+
+    # --- ownership decision: a legal-format marker alone owns NOTHING ------------
+    $s6ownRoot = Join-Path $selfTemp 's6-own-root'
+    New-Item -ItemType Directory -Force -Path $s6ownRoot | Out-Null
+    $s6marker = Join-Path $s6ownRoot 'pg-owner.json'
+    $legalMarker = @{ port = 55460; root = $s6ownRoot; database = 'mahjong_lobby_test'; owner = 'mahjong-p53-pg'; createdUtc = '2026-10-23T00:00:00Z' } | ConvertTo-Json
+    Write-Utf8File -Path $s6marker -Content $legalMarker
+    Assert-True ((Test-WrapperClusterOwnership -Root $s6ownRoot -Port 55460 -Database 'mahjong_lobby_test' -MarkerPath $s6marker -RecordedMarkerSha256 '') -ceq 'owned') 'S6 ownership: matching fields are owned'
+    Assert-True ((Test-WrapperClusterOwnership -Root $s6ownRoot -Port 55461 -Database 'mahjong_lobby_test' -MarkerPath $s6marker -RecordedMarkerSha256 '') -ceq 'foreign') 'S6 ownership: wrong port is foreign'
+    Assert-True ((Test-WrapperClusterOwnership -Root (Join-Path $selfTemp 's6-other-root') -Port 55460 -Database 'mahjong_lobby_test' -MarkerPath $s6marker -RecordedMarkerSha256 '') -ceq 'foreign') 'S6 ownership: wrong root field is foreign'
+    Assert-True ((Test-WrapperClusterOwnership -Root $s6ownRoot -Port 55460 -Database 'mahjong_lobby_test_other' -MarkerPath $s6marker -RecordedMarkerSha256 '') -ceq 'foreign') 'S6 ownership: wrong database is foreign'
+    Assert-True ((Test-WrapperClusterOwnership -Root $s6ownRoot -Port 55460 -Database 'mahjong_lobby_test' -MarkerPath (Join-Path $selfTemp 's6-missing-marker.json') -RecordedMarkerSha256 '') -ceq 'owned-unmarked') 'S6 ownership: missing marker is owned-unmarked (fresh half-initialized root)'
+    Write-Utf8File -Path (Join-Path $selfTemp 's6-corrupt-marker.json') -Content '{ this is not json'
+    Assert-True ((Test-WrapperClusterOwnership -Root $s6ownRoot -Port 55460 -Database 'x' -MarkerPath (Join-Path $selfTemp 's6-corrupt-marker.json') -RecordedMarkerSha256 '') -ceq 'foreign') 'S6 ownership: corrupt marker JSON is foreign, never a delete permit'
+    $s6realSha = Get-WrapperFileSha256 -Path $s6marker
+    Assert-True ((Test-WrapperClusterOwnership -Root $s6ownRoot -Port 55460 -Database 'mahjong_lobby_test' -MarkerPath $s6marker -RecordedMarkerSha256 $s6realSha) -ceq 'owned') 'S6 ownership: recorded marker hash still matching is owned'
+    Assert-True ((Test-WrapperClusterOwnership -Root $s6ownRoot -Port 55460 -Database 'mahjong_lobby_test' -MarkerPath $s6marker -RecordedMarkerSha256 ('0' * 64)) -ceq 'foreign') 'S6 ownership: mid-run marker replacement is foreign'
+    Assert-True ((Get-WrapperFileSha256 -Path $s6marker) -ceq (Get-FileHash -LiteralPath $s6marker -Algorithm SHA256).Hash) 'S6 file SHA-256 helper matches Get-FileHash'
+
+    # clean the S6 disk probes (they are this self-test's own creations)
+    Remove-Item -LiteralPath $s6pathBase -Recurse -Force
+    Remove-Item -LiteralPath $s6ownRoot -Recurse -Force
+    Remove-Item -LiteralPath (Join-Path $selfTemp 's6-corrupt-marker.json') -Force -ErrorAction SilentlyContinue
 }
 catch {
     Write-Host "  ERROR S6: $($_.Exception.Message)"
@@ -584,6 +627,10 @@ try {
         Assert-True (-not [bool]$s2Summary.verifier.ran) 'S2 verifier ran flag false'
         Assert-Equal 'PASS' (Get-StageStatus $s2Summary 'cleanup') 'S2 cleanup still ran and PASSED on the half-initialized root'
         Assert-True ([bool]$s2Summary.cluster.rootDeleted) 'S2 half-initialized root deleted'
+        Assert-Equal 'owned' ([string]$s2Summary.cluster.ownership) 'S2 half-initialized root resolved as OWNED (created by this invocation)'
+        $s2CleanupDetail = ''
+        foreach ($stage in @($s2Summary.stages)) { if ($stage.stage -eq 'cleanup') { $s2CleanupDetail = [string]$stage.detail } }
+        Assert-True ($s2CleanupDetail -like 'owned cluster deleted*') 'S2 cleanup detail proves the ownership-gated deletion'
         Assert-Equal 'PASS' (Get-StageStatus $s2Summary 'env-restore') 'S2 env restore still performed on the failure path'
         Assert-True ($s2Summary.setupError -ne $null) 'S2 setupError recorded'
     }
@@ -617,6 +664,12 @@ try {
 
     $s4Console = Get-Content -LiteralPath (Join-Path $selfTemp 's4-console.log') -Raw
     Assert-True ($s4Console -match 'already in use') 'S4 refusal message names the busy port'
+    $s4Summary = Get-WrapperSummary $s4LogDir
+    Assert-True ($null -ne $s4Summary) 'S4 wrapper-summary.json written'
+    if ($null -ne $s4Summary) {
+        Assert-Equal 'absent' ([string]$s4Summary.cluster.ownership) 'S4 precheck failure resolved ownership as absent'
+        Assert-Equal 'PASS' (Get-StageStatus $s4Summary 'cleanup') 'S4 cleanup skipped-PASS: nothing owned to clean, nothing foreign touched'
+    }
 
     # the foreign listener must be untouched and answering
     $probe = New-Object System.Net.Sockets.TcpClient
@@ -714,6 +767,124 @@ catch {
     if (Test-Path -LiteralPath $s5PidFile) {
         try { Stop-Process -Id (Get-Content -LiteralPath $s5PidFile -Raw) -Force -ErrorAction SilentlyContinue } catch { }
     }
+}
+
+# =====================================================================================
+# S7: PRE-EXISTING root refusal - a legal-format marker proves nothing about
+# WHICH invocation created a root, so any pre-existing path must be refused
+# before a single side effect (the P1 defect this scenario pins).
+# =====================================================================================
+Write-Host ''
+Write-Host '=== S7: pre-existing root (legal marker + sentinel) refused before any side effect ==='
+$s7Foreign = Join-Path $selfTemp 's7-preexisting-root'
+New-Item -ItemType Directory -Force -Path $s7Foreign | Out-Null
+$s7MarkerPath = Join-Path $s7Foreign 'pg-owner.json'
+$s7SentinelPath = Join-Path $s7Foreign 'preexisting-sentinel.txt'
+Write-Utf8File -Path $s7MarkerPath -Content (@{ port = 55460; root = $s7Foreign; database = 'mahjong_lobby_test'; owner = 'mahjong-p53-pg'; createdUtc = '2026-10-23T00:00:00Z' } | ConvertTo-Json)
+Write-Utf8File -Path $s7SentinelPath -Content 'pre-existing data: the wrapper must never delete this'
+$s7MarkerShaBefore = (Get-FileHash -LiteralPath $s7MarkerPath -Algorithm SHA256).Hash
+$s7SentinelShaBefore = (Get-FileHash -LiteralPath $s7SentinelPath -Algorithm SHA256).Hash
+# sentinel env values prove the guard path never touches the environment
+[Environment]::SetEnvironmentVariable('MAHJONG_LOBBY_TEST_POSTGRES', 'sentinel-conn')
+[Environment]::SetEnvironmentVariable('MAHJONG_LOBBY_PG_ROOT', 'sentinel-root')
+[Environment]::SetEnvironmentVariable('MAHJONG_LOBBY_PG_DATA', 'sentinel-data')
+[Environment]::SetEnvironmentVariable('MAHJONG_LOBBY_PG_EVIDENCE', 'sentinel-evidence')
+$s7LogDir = Join-Path $selfTemp 'logs-s7'
+try {
+    $s7Exit = Invoke-WrapperRun -Arguments @{
+        Root       = $s7Foreign
+        Port       = 55460
+        DbName     = 'mahjong_lobby_test_ci_s7'
+        PgZipPath  = (Join-Path $selfTemp 'definitely-not-there.zip')
+        LogDir     = $s7LogDir
+        DotnetPath = $DotnetPath
+    } -ConsoleOutPath (Join-Path $selfTemp 's7-console.log')
+    Assert-Equal '2' ([string]$s7Exit) 'S7 wrapper exits 2 (BLOCKED) for a pre-existing root with a legal marker'
+    $s7Console = Get-Content -LiteralPath (Join-Path $selfTemp 's7-console.log') -Raw
+    Assert-True ($s7Console -match 'BLOCKED: refusing a pre-existing cluster root') 'S7 refusal message names the pre-existing root'
+    Assert-True ($s7Console -like '*s7-preexisting-root*') 'S7 refusal names the exact foreign path'
+    Assert-True (-not (Test-Path -LiteralPath $s7LogDir)) 'S7 nothing created: LogDir never made'
+    Assert-True (Test-Path -LiteralPath $s7SentinelPath) 'S7 sentinel file survives'
+    Assert-True (Test-Path -LiteralPath $s7MarkerPath) 'S7 foreign marker survives'
+    Assert-True ((Get-FileHash -LiteralPath $s7SentinelPath -Algorithm SHA256).Hash -ceq $s7SentinelShaBefore) 'S7 sentinel hash unchanged'
+    Assert-True ((Get-FileHash -LiteralPath $s7MarkerPath -Algorithm SHA256).Hash -ceq $s7MarkerShaBefore) 'S7 foreign marker hash unchanged'
+    Assert-True ([Environment]::GetEnvironmentVariable('MAHJONG_LOBBY_TEST_POSTGRES') -ceq 'sentinel-conn') 'S7 env untouched: TEST_POSTGRES keeps its pre-call value'
+    Assert-True ([Environment]::GetEnvironmentVariable('MAHJONG_LOBBY_PG_ROOT') -ceq 'sentinel-root') 'S7 env untouched: PG_ROOT'
+    Assert-True ([Environment]::GetEnvironmentVariable('MAHJONG_LOBBY_PG_DATA') -ceq 'sentinel-data') 'S7 env untouched: PG_DATA'
+    Assert-True ([Environment]::GetEnvironmentVariable('MAHJONG_LOBBY_PG_EVIDENCE') -ceq 'sentinel-evidence') 'S7 env untouched: PG_EVIDENCE'
+
+    # normalized aliases of the SAME existing directory must refuse identically
+    $s7AliasExit = Invoke-WrapperRun -Arguments @{
+        Root       = ($s7Foreign + [IO.Path]::DirectorySeparatorChar)
+        Port       = 55460
+        DbName     = 'mahjong_lobby_test_ci_s7'
+        PgZipPath  = (Join-Path $selfTemp 'definitely-not-there.zip')
+        LogDir     = (Join-Path $selfTemp 'logs-s7-alias')
+        DotnetPath = $DotnetPath
+    } -ConsoleOutPath (Join-Path $selfTemp 's7-alias-console.log')
+    Assert-Equal '2' ([string]$s7AliasExit) 'S7 trailing-separator alias of the same directory also refused'
+    $s7CaseExit = Invoke-WrapperRun -Arguments @{
+        Root       = $s7Foreign.ToUpperInvariant()
+        Port       = 55460
+        DbName     = 'mahjong_lobby_test_ci_s7'
+        PgZipPath  = (Join-Path $selfTemp 'definitely-not-there.zip')
+        LogDir     = (Join-Path $selfTemp 'logs-s7-case')
+        DotnetPath = $DotnetPath
+    } -ConsoleOutPath (Join-Path $selfTemp 's7-case-console.log')
+    Assert-Equal '2' ([string]$s7CaseExit) 'S7 case-variant alias of the same directory also refused'
+    Assert-True (-not (Test-Path -LiteralPath (Join-Path $selfTemp 'logs-s7-alias'))) 'S7 alias refusals created no log dir (trailing separator)'
+    Assert-True (-not (Test-Path -LiteralPath (Join-Path $selfTemp 'logs-s7-case'))) 'S7 alias refusals created no log dir (case variant)'
+    Assert-True (Test-Path -LiteralPath $s7SentinelPath) 'S7 sentinel still intact after the alias refusals'
+}
+catch {
+    Write-Host "  ERROR S7: $($_.Exception.Message)"
+    $script:failures.Add("S7 threw: $($_.Exception.Message)")
+}
+finally {
+    foreach ($n in @('MAHJONG_LOBBY_TEST_POSTGRES', 'MAHJONG_LOBBY_PG_ROOT', 'MAHJONG_LOBBY_PG_DATA', 'MAHJONG_LOBBY_PG_EVIDENCE')) {
+        [Environment]::SetEnvironmentVariable($n, $null)
+    }
+}
+
+# =====================================================================================
+# S8: existing listener + pre-existing root - the static pre-existence guard
+# fires BEFORE the port precheck; the foreign listener and foreign data are
+# untouched either way.
+# =====================================================================================
+Write-Host ''
+Write-Host '=== S8: existing listener + pre-existing root (refusal precedes precheck) ==='
+$s8LogDir = Join-Path $selfTemp 'logs-s8'
+$s8Listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, 55460)
+$s8Listener.Start()
+try {
+    $s8Exit = Invoke-WrapperRun -Arguments @{
+        Root       = $s7Foreign
+        Port       = 55460
+        DbName     = 'mahjong_lobby_test_ci_s8'
+        PgZipPath  = $ZipPath
+        LogDir     = $s8LogDir
+        DotnetPath = $DotnetPath
+    } -ConsoleOutPath (Join-Path $selfTemp 's8-console.log')
+    Assert-Equal '2' ([string]$s8Exit) 'S8 exits 2 for a pre-existing root even with the port busy'
+    $s8Console = Get-Content -LiteralPath (Join-Path $selfTemp 's8-console.log') -Raw
+    Assert-True ($s8Console -match 'BLOCKED: refusing a pre-existing cluster root') 'S8 refused by the pre-existence guard'
+    Assert-True (-not ($s8Console -match 'already in use')) 'S8 never reached the port precheck (refusal precedes it)'
+    $probe = New-Object System.Net.Sockets.TcpClient
+    $probe.Connect('127.0.0.1', 55460)
+    Assert-True $probe.Connected 'S8 foreign listener survives the refusal'
+    $probe.Dispose()
+    Assert-True (-not (Test-Path -LiteralPath $s8LogDir)) 'S8 nothing created: LogDir never made'
+    Assert-True ((Get-FileHash -LiteralPath $s7MarkerPath -Algorithm SHA256).Hash -ceq $s7MarkerShaBefore) 'S8 foreign marker hash unchanged'
+    Assert-True ((Get-FileHash -LiteralPath $s7SentinelPath -Algorithm SHA256).Hash -ceq $s7SentinelShaBefore) 'S8 sentinel hash unchanged'
+}
+catch {
+    Write-Host "  ERROR S8: $($_.Exception.Message)"
+    $script:failures.Add("S8 threw: $($_.Exception.Message)")
+}
+finally {
+    $s8Listener.Stop()
+    # test hygiene: remove the synthetic foreign root this self-test created
+    Remove-Item -LiteralPath $s7Foreign -Recurse -Force -ErrorAction SilentlyContinue
 }
 
 # =====================================================================================

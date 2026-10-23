@@ -105,6 +105,10 @@ $script:StagedLogs = @{}
 $script:FailedStages = New-Object System.Collections.Generic.List[string]
 $script:VerifierExit = $null          # exact exit code of the unified verifier child
 $script:VerifierRan = $false
+# Set only after start-postgres.ps1 succeeded on a root the pre-existence
+# guard proved absent: the SHA-256 of THIS run's ownership marker. The finally
+# block compares it before trusting the root is still this invocation's.
+$script:OwnedMarkerSha256 = $null
 $script:ChildFileCounter = 0          # names the per-child redirect files in staging
 # OS-native tar.exe/curl.exe live in System32 (see Invoke-ScriptChild).
 $script:System32Dir = $null
@@ -156,6 +160,77 @@ function Get-Sha256Hex([string]$Value) {
     $sha = [System.Security.Cryptography.SHA256]::Create()
     try { return ([System.BitConverter]::ToString($sha.ComputeHash($bytes))).Replace('-', '') }
     finally { $sha.Dispose() }
+}
+
+function Get-WrapperFileSha256([string]$Path) {
+    # Exact byte hash of a file (Get-Sha256Hex hashes a string value and is
+    # used for env-restore proofs; ownership checks must hash file bytes).
+    $sha = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        $stream = [System.IO.File]::OpenRead($Path)
+        try { return ([System.BitConverter]::ToString($sha.ComputeHash($stream))).Replace('-', '') }
+        finally { $stream.Dispose() }
+    }
+    finally { $sha.Dispose() }
+}
+
+function Test-WrapperPathExists {
+    # True when the path exists in ANY on-disk form. Deliberately stronger than
+    # Test-Path, which follows reparse points and returns $false for a DANGLING
+    # junction/symlink even though the link entry itself exists on disk. The
+    # wrapper must refuse every pre-existing root before any side effect, so an
+    # entry that only Directory/File.Exists would miss must still be caught:
+    # - normal directories and files (GetFullPath already normalizes case
+    #   differences, trailing separators, forward slashes and 8.3 short names,
+    #   because the file system resolves those before Exists runs)
+    # - dangling reparse points: detected by a case-insensitive leaf match in
+    #   the canonical parent listing
+    param([string]$Path)
+    if ([string]::IsNullOrWhiteSpace($Path)) { return $false }
+    $full = [System.IO.Path]::GetFullPath($Path)
+    if ([System.IO.Directory]::Exists($full) -or [System.IO.File]::Exists($full)) { return $true }
+    $parent = [System.IO.Path]::GetDirectoryName($full)
+    $leaf = [System.IO.Path]::GetFileName($full)
+    if ($parent -and $leaf -and [System.IO.Directory]::Exists($parent)) {
+        foreach ($entry in [System.IO.Directory]::EnumerateFileSystemEntries($parent)) {
+            if ([string]::Equals([System.IO.Path]::GetFileName($entry), $leaf, [System.StringComparison]::OrdinalIgnoreCase)) { return $true }
+        }
+    }
+    return $false
+}
+
+function Test-WrapperClusterOwnership {
+    # Decides whether an EXISTING cluster root belongs to THIS invocation, for
+    # the finally block's archive/cleanup decision. A marker merely proves the
+    # root was created by the generic pg-lobby-verify scripts (owner is the
+    # constant 'mahjong-p53-pg') - it says NOTHING about which run created it,
+    # so marker presence alone must never authorize a delete. Returns:
+    #   'owned'          marker present and its root/port/database fields match
+    #                    this invocation exactly (and, when this run recorded
+    #                    the marker hash at start time, the hash still matches)
+    #   'owned-unmarked' marker absent - only reachable for a root this
+    #                    invocation created moments ago (the pre-existence
+    #                    guard refused every pre-existing path) but whose
+    #                    start-postgres failed before writing the marker
+    #   'foreign'        marker present but field mismatch, or the recorded
+    #                    hash changed mid-run: NEVER archive, NEVER delete
+    param([string]$Root, [int]$Port, [string]$Database, [string]$MarkerPath, [string]$RecordedMarkerSha256)
+    if (-not (Test-Path -LiteralPath $MarkerPath)) { return 'owned-unmarked' }
+    try {
+        $marker = Get-Content -LiteralPath $MarkerPath -Raw | ConvertFrom-Json
+    }
+    catch { return 'foreign' }
+    $markerRoot = $null
+    try { $markerRoot = [System.IO.Path]::GetFullPath([string]$marker.root) } catch { return 'foreign' }
+    $rootMatches = [string]::Equals($markerRoot, [System.IO.Path]::GetFullPath($Root), [System.StringComparison]::OrdinalIgnoreCase)
+    $portMatches = ("$($marker.port)" -eq "$Port")
+    $dbMatches = [string]::Equals([string]$marker.database, $Database, [System.StringComparison]::Ordinal)
+    if (-not ($rootMatches -and $portMatches -and $dbMatches)) { return 'foreign' }
+    if ($RecordedMarkerSha256) {
+        $current = Get-WrapperFileSha256 -Path $MarkerPath
+        if (-not [string]::Equals($current, $RecordedMarkerSha256, [System.StringComparison]::OrdinalIgnoreCase)) { return 'foreign' }
+    }
+    return 'owned'
 }
 
 function Test-WrapperTcpPortOpen {
@@ -411,6 +486,17 @@ if ($rootFull.StartsWith($script:RepoRoot + [System.IO.Path]::DirectorySeparator
     Write-Host "BLOCKED: refusing a disposable cluster root inside the worktree: $rootFull"
     exit 2
 }
+# OWNERSHIP RULE: this wrapper may only ever archive or delete a root it
+# created during THIS invocation. Any pre-existing path - a historical run's
+# cluster with a perfectly legal marker, an empty directory, a dangling
+# reparse point, or any normalized alias of those - is refused here, before a
+# single byte is written, staged or started. A legal pg-owner.json proves the
+# root was made by the generic pg-lobby-verify scripts, NOT by this call, so
+# it is exactly as much a refusal reason as an empty directory.
+if (Test-WrapperPathExists -Path $rootFull) {
+    Write-Host "BLOCKED: refusing a pre-existing cluster root: $rootFull. This wrapper only ever deletes a root it created during this invocation; pass a fresh (non-existent) -Root or omit it for a unique TEMP root."
+    exit 2
+}
 
 # Staging lives outside the repository and outside the cluster root (which
 # cleanup deletes); it is flushed into <LogDir>\pg in the finally block. It
@@ -472,6 +558,11 @@ try {
         throw "start-postgres.ps1 reported success but the ownership marker is missing: $markerPath"
     }
     Add-Stage -Name 'ownership-marker' -Status 'PASS' -ExitCode 0 -Detail $markerPath -LogName ''
+    # Ownership acquired: the guard proved this root did not exist, this call
+    # handed exactly this canonical path to start-postgres.ps1, and it now
+    # exists with a marker. Remember the marker bytes so the finally block can
+    # detect any mid-run replacement before archiving or deleting.
+    $script:OwnedMarkerSha256 = Get-WrapperFileSha256 -Path $markerPath
 
     # --- stage: environment for the child test run --------------------------------
     [Environment]::SetEnvironmentVariable('MAHJONG_LOBBY_TEST_POSTGRES', "Host=127.0.0.1;Port=$Port;Database=$DbName;Username=mahjong_pg")
@@ -516,31 +607,56 @@ catch {
 
 # --- 2. finally: evidence, cleanup, env restore -----------------------------------
 try {
-    # Archive cluster logs/marker BEFORE cleanup deletes the root.
-    try {
-        $clusterArchive = @(Copy-ClusterEvidenceToStaging -ClusterRoot $rootFull -StagingDir $stagingDir)
-        Add-Stage -Name 'archive-cluster-evidence' -Status 'PASS' -ExitCode 0 -Detail "$(@($clusterArchive).Count) file(s)" -LogName ''
-    }
-    catch {
-        Add-Stage -Name 'archive-cluster-evidence' -Status 'FAIL' -ExitCode $null -Detail $_.Exception.Message -LogName ''
+    # Ownership gate for EVERY side effect on the root (archiving copies data
+    # out; cleanup deletes it). The marker's owner field is the constant
+    # 'mahjong-p53-pg' of the generic pg-lobby-verify scripts, so it can never
+    # distinguish this invocation from a historical one by itself; only the
+    # root/port/database fields plus the marker hash recorded at acquisition
+    # time can. A pre-existing root never reaches this point (refused at
+    # guard), and a root that was never created has nothing owned to clean.
+    $rootOwnership = 'absent'
+    if (Test-Path -LiteralPath $rootFull) {
+        $rootOwnership = Test-WrapperClusterOwnership -Root $rootFull -Port $Port -Database $DbName `
+            -MarkerPath (Join-Path $rootFull 'pg-owner.json') -RecordedMarkerSha256 $script:OwnedMarkerSha256
     }
 
-    # Cleanup ONLY this run's owned cluster (the accepted script re-verifies the
-    # marker, the absolute path and the server data_directory before deleting).
-    # A root that was never created has nothing owned to clean.
-    if (Test-Path -LiteralPath $rootFull) {
-        $cleanup = Invoke-ScriptChild -ScriptPath $cleanupScript -Parameters @{ Root = $rootFull; Port = "$Port"; DbName = $DbName }
-        Add-StagedLog -Name 'cleanup' -Lines $cleanup.Output
-        if ($null -eq $cleanup.ExitCode -or $cleanup.ExitCode -ne 0) {
-            Add-Stage -Name 'cleanup' -Status 'FAIL' -ExitCode $cleanup.ExitCode -Detail "the disposable root may still exist at $rootFull; the original stage failures above are preserved" -LogName 'cleanup.log'
-        }
-        else {
-            Add-Stage -Name 'cleanup' -Status 'PASS' -ExitCode $cleanup.ExitCode -Detail "owned cluster deleted: $rootFull" -LogName 'cleanup.log'
-        }
+    if ($rootOwnership -eq 'foreign') {
+        # Someone else's cluster sits at our path (or the marker was replaced
+        # mid-run). NEVER touch it, NEVER copy out of it; fail the run while
+        # preserving the original stage failures above.
+        Add-StagedLog -Name 'cleanup' -Lines @("(cleanup REFUSED: the root at $rootFull is not owned by this invocation (marker field/hash mismatch) - foreign data left untouched)")
+        Add-Stage -Name 'archive-cluster-evidence' -Status 'FAIL' -ExitCode $null -Detail "refused: root not owned by this invocation" -LogName ''
+        Add-Stage -Name 'cleanup' -Status 'FAIL' -ExitCode $null -Detail "REFUSED: root not owned by this invocation; foreign data left untouched at $rootFull" -LogName 'cleanup.log'
     }
     else {
-        Add-StagedLog -Name 'cleanup' -Lines @('(cleanup skipped: the cluster root was never created - nothing owned to clean)')
-        Add-Stage -Name 'cleanup' -Status 'PASS' -ExitCode 0 -Detail 'root was never created; nothing to clean' -LogName 'cleanup.log'
+        # Archive cluster logs/marker BEFORE cleanup deletes the root.
+        if ($rootOwnership -ne 'absent') {
+            try {
+                $clusterArchive = @(Copy-ClusterEvidenceToStaging -ClusterRoot $rootFull -StagingDir $stagingDir)
+                Add-Stage -Name 'archive-cluster-evidence' -Status 'PASS' -ExitCode 0 -Detail "$(@($clusterArchive).Count) file(s)" -LogName ''
+            }
+            catch {
+                Add-Stage -Name 'archive-cluster-evidence' -Status 'FAIL' -ExitCode $null -Detail $_.Exception.Message -LogName ''
+            }
+        }
+
+        # Cleanup ONLY this run's owned cluster (the accepted script re-verifies
+        # the marker, the absolute path and the server data_directory before
+        # deleting). 'absent' means the root was never created.
+        if ($rootOwnership -ne 'absent') {
+            $cleanup = Invoke-ScriptChild -ScriptPath $cleanupScript -Parameters @{ Root = $rootFull; Port = "$Port"; DbName = $DbName }
+            Add-StagedLog -Name 'cleanup' -Lines $cleanup.Output
+            if ($null -eq $cleanup.ExitCode -or $cleanup.ExitCode -ne 0) {
+                Add-Stage -Name 'cleanup' -Status 'FAIL' -ExitCode $cleanup.ExitCode -Detail "the disposable root may still exist at $rootFull; the original stage failures above are preserved" -LogName 'cleanup.log'
+            }
+            else {
+                Add-Stage -Name 'cleanup' -Status 'PASS' -ExitCode $cleanup.ExitCode -Detail "owned cluster deleted: $rootFull" -LogName 'cleanup.log'
+            }
+        }
+        else {
+            Add-StagedLog -Name 'cleanup' -Lines @('(cleanup skipped: the cluster root was never created - nothing owned to clean)')
+            Add-Stage -Name 'cleanup' -Status 'PASS' -ExitCode 0 -Detail 'root was never created; nothing to clean' -LogName 'cleanup.log'
+        }
     }
 
     # Restore the pre-call environment values.
@@ -620,6 +736,7 @@ try {
                 zipSource     = $(if ($PgZipPath) { $PgZipPath } else { 'official download (SHA-256 pinned by start-postgres.ps1)' })
                 serverIdentity = $identityLine
                 rootDeleted   = (-not (Test-Path -LiteralPath $rootFull))
+                ownership     = $rootOwnership
             }
             # synthesized write-evidence entry (see $summaryStages above)
             stages        = $summaryStages
