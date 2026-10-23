@@ -68,6 +68,8 @@ namespace Mahjong.Client
 
         public TableConnectionState State => _connection.State;
 
+        public Func<CancellationToken, bool>? BaselineAdmissionCheck { get; set; }
+
         public TableSessionBinding? Binding => _binding;
 
         public ContractCursor? ConfirmedCursor => _confirmedCursor;
@@ -723,8 +725,19 @@ namespace Mahjong.Client
                 }
             }
 
-            // Everything above validated first; only now mutate the cache and
-            // the cursor, and publish them as one baseline event.
+            // Everything above validated first; only now check whether this
+            // attempt may still publish a baseline. The gate runs before any
+            // cache mutation, Ready transition or SnapshotChanged event, so an
+            // expired/cancelled attempt cannot expose Ready or accept commands.
+            if (BaselineAdmissionCheck != null && !BaselineAdmissionCheck(cancellationToken))
+            {
+                _syncInFlight = false;
+                _activeSyncCorrelationId = null;
+                return;
+            }
+
+            // Only now mutate the cache and the cursor, and publish them as one
+            // baseline event.
             if (player != null)
             {
                 _playerSnapshot = player;

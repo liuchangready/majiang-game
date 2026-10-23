@@ -109,6 +109,7 @@ namespace Mahjong.Client
         private readonly TableSessionRunnerOptions _options;
         private readonly Func<TimeSpan, CancellationToken, Task> _delay;
         private readonly ITableClientClock _clock;
+        private long? _attemptDeadlineMs;
 
         public TableSessionRunner(
             IGameSession session,
@@ -131,15 +132,27 @@ namespace Mahjong.Client
             _options.Validate();
             _delay = delay ?? ((duration, token) => Task.Delay(duration, token));
             _clock = clock ?? new SystemTableClientClock();
+            _session.BaselineAdmissionCheck = CanApplyAttemptBaseline;
         }
 
         public async Task<TableSessionRunResult> RunAsync(CancellationToken cancellationToken)
+        {
+            try
+            {
+                return await RunAsyncCore(cancellationToken).ConfigureAwait(false);
+            }
+            finally
+            {
+                _attemptDeadlineMs = null;
+            }
+        }
+
+        private async Task<TableSessionRunResult> RunAsyncCore(CancellationToken cancellationToken)
         {
             int failedAttempts = 0;
             int connectionAttempts = 0;
             int retryIndex = 0;
             bool attemptedConnect = false;
-            long? attemptDeadlineMs = null;
             string? lastFailure = null;
 
             while (true)
@@ -233,12 +246,12 @@ namespace Mahjong.Client
                             failedAttempts);
                     }
 
-                    attemptDeadlineMs = NewHandshakeDeadline();
+                    _attemptDeadlineMs = NewHandshakeDeadline();
                     try
                     {
                         using (var openCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken))
                         {
-                            long remainingMs = attemptDeadlineMs.Value - _clock.MonotonicMilliseconds;
+                            long remainingMs = _attemptDeadlineMs.Value - _clock.MonotonicMilliseconds;
                             if (remainingMs <= 0)
                             {
                                 throw new OperationCanceledException(openCts.Token);
@@ -254,7 +267,7 @@ namespace Mahjong.Client
                     }
                     catch (OperationCanceledException)
                     {
-                        attemptDeadlineMs = null;
+                        _attemptDeadlineMs = null;
                         if (cancellationToken.IsCancellationRequested)
                         {
                             await TryDisconnectAsync().ConfigureAwait(false);
@@ -267,7 +280,7 @@ namespace Mahjong.Client
                     }
                     catch (TableChannelClosedException ex)
                     {
-                        attemptDeadlineMs = null;
+                        _attemptDeadlineMs = null;
                         lastFailure = ex.Code;
                         failedAttempts++;
                         if (ex.Permanent || _session.State == TableConnectionState.Faulted)
@@ -279,15 +292,15 @@ namespace Mahjong.Client
                     }
                     catch (Exception ex)
                     {
-                        attemptDeadlineMs = null;
+                        _attemptDeadlineMs = null;
                         return new TableSessionRunResult(TableSessionRunStop.UnexpectedError, ex.GetType().Name, connectionAttempts, failedAttempts);
                     }
 
-                    if (HandshakeDeadlineExpired(attemptDeadlineMs))
+                    if (HandshakeDeadlineExpired(_attemptDeadlineMs))
                     {
                         lastFailure = ProtocolErrorCode.HandshakeTimeout;
                         failedAttempts++;
-                        attemptDeadlineMs = null;
+                        _attemptDeadlineMs = null;
                         await TryDisconnectAsync().ConfigureAwait(false);
                         continue;
                     }
@@ -304,19 +317,19 @@ namespace Mahjong.Client
                     {
                         if (awaitingBaseline)
                         {
-                            if (!attemptDeadlineMs.HasValue)
+                            if (!_attemptDeadlineMs.HasValue)
                             {
                                 // A runner may start against an already-open
                                 // handshaking session; anchor the deadline now.
-                                attemptDeadlineMs = NewHandshakeDeadline();
+                                _attemptDeadlineMs = NewHandshakeDeadline();
                             }
 
-                            long remainingMs = attemptDeadlineMs.Value - _clock.MonotonicMilliseconds;
+                            long remainingMs = _attemptDeadlineMs.Value - _clock.MonotonicMilliseconds;
                             if (remainingMs <= 0)
                             {
                                 lastFailure = ProtocolErrorCode.HandshakeTimeout;
                                 failedAttempts++;
-                                attemptDeadlineMs = null;
+                                _attemptDeadlineMs = null;
                                 await TryDisconnectAsync().ConfigureAwait(false);
                                 continue;
                             }
@@ -338,14 +351,14 @@ namespace Mahjong.Client
                         return new TableSessionRunResult(TableSessionRunStop.Canceled, ProtocolErrorCode.LocalClosed, connectionAttempts, failedAttempts);
                     }
 
-                    if (awaitingBaseline || HandshakeDeadlineExpired(attemptDeadlineMs))
+                    if (awaitingBaseline || HandshakeDeadlineExpired(_attemptDeadlineMs))
                     {
                         // A cancelled/deadline pump during the handshake is
                         // never a successful Ready transition, even if the
                         // session reached Ready just before cancellation.
                         lastFailure = ProtocolErrorCode.HandshakeTimeout;
                         failedAttempts++;
-                        attemptDeadlineMs = null;
+                        _attemptDeadlineMs = null;
                         await TryDisconnectAsync().ConfigureAwait(false);
                         continue;
                     }
@@ -358,7 +371,7 @@ namespace Mahjong.Client
 
                     lastFailure = ProtocolErrorCode.HandshakeTimeout;
                     failedAttempts++;
-                    attemptDeadlineMs = null;
+                    _attemptDeadlineMs = null;
                     await TryDisconnectAsync().ConfigureAwait(false);
                     continue;
                 }
@@ -366,7 +379,7 @@ namespace Mahjong.Client
                 {
                     lastFailure = ex.Code;
                     failedAttempts++;
-                    attemptDeadlineMs = null;
+                    _attemptDeadlineMs = null;
                     if (ex.Permanent || _session.State == TableConnectionState.Faulted)
                     {
                         return new TableSessionRunResult(TableSessionRunStop.Faulted, ex.Code, connectionAttempts, failedAttempts);
@@ -376,13 +389,13 @@ namespace Mahjong.Client
                 }
                 catch (Exception ex)
                 {
-                    attemptDeadlineMs = null;
+                    _attemptDeadlineMs = null;
                     return new TableSessionRunResult(TableSessionRunStop.UnexpectedError, ex.GetType().Name, connectionAttempts, failedAttempts);
                 }
 
                 if (_session.State == TableConnectionState.Faulted)
                 {
-                    attemptDeadlineMs = null;
+                    _attemptDeadlineMs = null;
                     return new TableSessionRunResult(
                         TableSessionRunStop.Faulted,
                         lastFailure ?? _session.LastError ?? ProtocolErrorCode.InternalError,
@@ -394,7 +407,7 @@ namespace Mahjong.Client
                 {
                     lastFailure = _session.LastError ?? WebSocketChannelReason.TransportLost;
                     failedAttempts++;
-                    attemptDeadlineMs = null;
+                    _attemptDeadlineMs = null;
                     continue;
                 }
 
@@ -402,11 +415,11 @@ namespace Mahjong.Client
                 // deadline (for example a slow connect followed by a fast
                 // WELCOME/SYNC). Such a completion is a timeout, not a success:
                 // do not reset the retry budget or leave the session Ready.
-                if (HandshakeDeadlineExpired(attemptDeadlineMs))
+                if (HandshakeDeadlineExpired(_attemptDeadlineMs))
                 {
                     lastFailure = ProtocolErrorCode.HandshakeTimeout;
                     failedAttempts++;
-                    attemptDeadlineMs = null;
+                    _attemptDeadlineMs = null;
                     await TryDisconnectAsync().ConfigureAwait(false);
                     continue;
                 }
@@ -417,9 +430,19 @@ namespace Mahjong.Client
                     // the absolute deadline, is the only successful handshake.
                     failedAttempts = 0;
                     retryIndex = 0;
-                    attemptDeadlineMs = null;
+                    _attemptDeadlineMs = null;
                 }
             }
+        }
+
+        private bool CanApplyAttemptBaseline(CancellationToken cancellationToken)
+        {
+            if (cancellationToken.IsCancellationRequested)
+            {
+                return false;
+            }
+
+            return !HandshakeDeadlineExpired(_attemptDeadlineMs);
         }
 
         private long NewHandshakeDeadline()

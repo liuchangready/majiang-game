@@ -241,6 +241,147 @@ namespace Mahjong.Client.Wss.Tests
                 () => fixture.Channel.ReceiveAsync(CancellationToken.None));
         }
 
+        [Fact]
+        public async Task DuplicateHigherWelcomeCannotRebindControlAwayFromAcceptedSession()
+        {
+            using var inner = new ScriptedTableChannel();
+            using var heartbeat = new HeartbeatTableChannel(
+                inner,
+                new ManualTableClock(),
+                new HeartbeatChannelOptions { AutoTimer = false });
+            var session = new TableSession(heartbeat, new InMemoryOutboxStore());
+            await session.OpenAsync(
+                new TableSessionOpenRequest("ticket", "test"),
+                CancellationToken.None);
+            await session.PumpOnceAsync(CancellationToken.None);
+            await session.PumpOnceAsync(CancellationToken.None);
+            Assert.Equal(TableConnectionState.Ready, session.State);
+            Assert.Equal(11UL, session.Binding!.BindingEpoch.Value);
+
+            inner.Enqueue(TestWire.Welcome(bindingEpoch: 99));
+            await session.PumpOnceAsync(CancellationToken.None);
+            Assert.Equal(11UL, session.Binding!.BindingEpoch.Value);
+
+            inner.Enqueue(TestWire.HeartbeatPing(11, "0123456789abcdef"));
+            inner.Enqueue(TestWire.PlayerPush(11, 5, 10, 6, 11));
+            await session.PumpOnceAsync(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(5));
+
+            Assert.Equal(TableConnectionState.Ready, session.State);
+            Assert.Contains(
+                inner.SentEnvelopes(),
+                envelope => envelope.MessageType == MessageType.Heartbeat && envelope.BindingEpoch == 11);
+        }
+
+        [Fact]
+        public async Task IdentityChangingDuplicateWelcomeIsIgnoredByControl()
+        {
+            var inner = new FakeInnerChannel();
+            using var channel = new HeartbeatTableChannel(
+                inner,
+                new ManualTableClock(),
+                new HeartbeatChannelOptions { AutoTimer = false });
+            await channel.OpenAsync(new TableChannelConnectRequest("ticket-1", "test-build", null), CancellationToken.None);
+            inner.Enqueue(TestWire.Welcome(bindingEpoch: 11));
+            using (var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5)))
+            {
+                await channel.ReceiveAsync(cts.Token);
+            }
+
+            Envelope changed = TestWire.Welcome(bindingEpoch: 12);
+            changed.SessionId = "other-session";
+            changed.RoomId = "other-room";
+            changed.Welcome.SessionId = "other-session";
+            changed.Welcome.RoomId = "other-room";
+            inner.Enqueue(changed);
+            using (var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5)))
+            {
+                await channel.ReceiveAsync(cts.Token);
+            }
+
+            inner.Enqueue(TestWire.HeartbeatPing(11, "0123456789abcdef"));
+            inner.Enqueue(TestWire.PlayerPush(11, 5, 10, 6, 11));
+            using (var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5)))
+            {
+                ReadOnlyMemory<byte> bytes = await channel.ReceiveAsync(cts.Token);
+                Assert.Equal(MessageType.PlayerUpdate, TestWire.Decode(bytes).MessageType);
+            }
+
+            Envelope pong = inner.SentEnvelopes().Last();
+            Assert.Equal(MessageType.Heartbeat, pong.MessageType);
+            Assert.Equal(11UL, pong.BindingEpoch);
+        }
+
+        [Fact]
+        public async Task InvalidWelcomeAfterBindingDoesNotChangeControlIdentity()
+        {
+            var inner = new FakeInnerChannel();
+            using var channel = new HeartbeatTableChannel(
+                inner,
+                new ManualTableClock(),
+                new HeartbeatChannelOptions { AutoTimer = false });
+            await channel.OpenAsync(new TableChannelConnectRequest("ticket-1", "test-build", null), CancellationToken.None);
+            inner.Enqueue(TestWire.Welcome(bindingEpoch: 11));
+            using (var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5)))
+            {
+                await channel.ReceiveAsync(cts.Token);
+            }
+
+            Envelope invalid = TestWire.Welcome(bindingEpoch: 12);
+            invalid.Welcome.SessionId = string.Empty;
+            invalid.SessionId = string.Empty;
+            inner.Enqueue(invalid);
+            using (var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5)))
+            {
+                await channel.ReceiveAsync(cts.Token);
+            }
+
+            inner.Enqueue(TestWire.HeartbeatPing(11, "0123456789abcdef"));
+            inner.Enqueue(TestWire.PlayerPush(11, 5, 10, 6, 11));
+            using (var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5)))
+            {
+                await channel.ReceiveAsync(cts.Token);
+            }
+
+            Envelope pong = inner.SentEnvelopes().Last();
+            Assert.Equal(MessageType.Heartbeat, pong.MessageType);
+            Assert.Equal(11UL, pong.BindingEpoch);
+        }
+
+        [Fact]
+        public async Task RealReopenAcceptsANewBinding()
+        {
+            var inner = new FakeInnerChannel();
+            using var channel = new HeartbeatTableChannel(
+                inner,
+                new ManualTableClock(),
+                new HeartbeatChannelOptions { AutoTimer = false });
+            var request = new TableChannelConnectRequest("ticket-1", "test-build", null);
+            await channel.OpenAsync(request, CancellationToken.None);
+            inner.Enqueue(TestWire.Welcome(bindingEpoch: 11));
+            using (var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5)))
+            {
+                await channel.ReceiveAsync(cts.Token);
+            }
+
+            await channel.OpenAsync(request, CancellationToken.None);
+            inner.Enqueue(TestWire.Welcome(bindingEpoch: 12));
+            using (var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5)))
+            {
+                await channel.ReceiveAsync(cts.Token);
+            }
+
+            inner.Enqueue(TestWire.HeartbeatPing(12, "0123456789abcdef"));
+            inner.Enqueue(TestWire.PlayerPush(12, 5, 10, 6, 11));
+            using (var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5)))
+            {
+                await channel.ReceiveAsync(cts.Token);
+            }
+
+            Envelope pong = inner.SentEnvelopes().Last();
+            Assert.Equal(MessageType.Heartbeat, pong.MessageType);
+            Assert.Equal(12UL, pong.BindingEpoch);
+        }
+
         private static async Task<Fixture> OpenBoundAsync(uint heartbeatIntervalMs = 100, uint idleDeadMs = 300)
         {
             var inner = new FakeInnerChannel();

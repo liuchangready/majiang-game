@@ -246,6 +246,16 @@ namespace Mahjong.Client
     {
         TableConnectionState State { get; }
 
+        /// <summary>
+        /// Optional pre-publish admission gate. It is evaluated immediately
+        /// before a SYNC_RESPONSE baseline mutates the cache or enters Ready.
+        /// Returning false drops that baseline, so it cannot publish a Ready
+        /// snapshot or admit commands. The runner installs a gate that enforces
+        /// the current connection attempt's absolute deadline and cancellation;
+        /// direct/local callers may leave it null.
+        /// </summary>
+        Func<CancellationToken, bool>? BaselineAdmissionCheck { get; set; }
+
         TableSessionBinding? Binding { get; }
 
         /// <summary>Last applied stream cursor; null before the first baseline.</summary>

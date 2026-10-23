@@ -574,10 +574,13 @@ namespace Mahjong.Client
             long now = _clock.MonotonicMilliseconds;
             lock (session.Gate)
             {
-                if (session.Bound && welcome.BindingEpoch <= session.BindingEpoch)
+                if (session.Bound)
                 {
-                    // A duplicate or stale WELCOME must not move control
-                    // traffic onto an older binding.
+                    // One connection has one accepted handshake. TableSession
+                    // ignores every WELCOME after Handshaking; control must do
+                    // the same instead of independently adopting a duplicate
+                    // (even a higher-epoch) WELCOME. A real reconnect creates a
+                    // new HeartbeatSession, which starts unbound.
                     return;
                 }
 

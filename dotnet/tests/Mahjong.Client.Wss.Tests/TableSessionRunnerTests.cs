@@ -283,6 +283,159 @@ namespace Mahjong.Client.Wss.Tests
         }
 
         [Fact]
+        public async Task ExpiredBaselineMustNotPublishReadyOrAdmitCommandFromSynchronousSubscriber()
+        {
+            using var fixture = new RunnerFixture(options =>
+            {
+                options.MaxReconnectAttempts = 0;
+                options.HandshakeTimeout = TimeSpan.FromMilliseconds(250);
+            });
+            long? readyAt = null;
+            Task<CommandSubmission>? submission = null;
+            fixture.Session.SnapshotChanged += (_, __) =>
+            {
+                if (fixture.Session.State == TableConnectionState.Ready)
+                {
+                    readyAt = fixture.Clock.MonotonicMilliseconds;
+                    submission = fixture.Session.SubmitAsync(
+                        TestWire.SubmitActionCommand(),
+                        CancellationToken.None);
+                }
+            };
+            fixture.Channel.OnReceive = () =>
+                fixture.Clock.Advance(fixture.Channel.ReceivedCount == 0 ? 100 : 200);
+
+            TableSessionRunResult result = await fixture.Runner
+                .RunAsync(CancellationToken.None)
+                .WaitAsync(TimeSpan.FromSeconds(5));
+
+            bool sent = submission != null && (await submission).Sent;
+            Assert.Equal(TableSessionRunStop.ReconnectExhausted, result.Stop);
+            Assert.Null(readyAt);
+            Assert.False(sent);
+            Assert.Equal(0, fixture.Channel.CountSent(MessageType.Command));
+            Assert.NotEqual(TableConnectionState.Ready, fixture.Session.State);
+        }
+
+        [Fact]
+        public async Task SynchronousSubscriberCanSubmitOnlyWhenBaselineIsBeforeDeadline()
+        {
+            using var fixture = new RunnerFixture(options =>
+            {
+                options.MaxReconnectAttempts = 0;
+                options.HandshakeTimeout = TimeSpan.FromMilliseconds(250);
+            });
+            var readyEvent = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            long? readyAt = null;
+            Task<CommandSubmission>? submission = null;
+            fixture.Session.SnapshotChanged += (_, __) =>
+            {
+                if (fixture.Session.State == TableConnectionState.Ready)
+                {
+                    readyAt = fixture.Clock.MonotonicMilliseconds;
+                    submission = fixture.Session.SubmitAsync(
+                        TestWire.SubmitActionCommand(),
+                        CancellationToken.None);
+                    readyEvent.TrySetResult(true);
+                }
+            };
+            fixture.Channel.OnReceive = () =>
+                fixture.Clock.Advance(fixture.Channel.ReceivedCount == 0 ? 100 : 140);
+
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+            Task<TableSessionRunResult> run = fixture.Runner.RunAsync(cts.Token);
+            await readyEvent.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+            Assert.Equal(240, readyAt);
+            Assert.NotNull(submission);
+            CommandSubmission actual = await submission!;
+            Assert.True(actual.Sent);
+            Assert.Equal(1, fixture.Channel.CountSent(MessageType.Command));
+
+            cts.Cancel();
+            TableSessionRunResult result = await run.WaitAsync(TimeSpan.FromSeconds(5));
+            Assert.Equal(TableSessionRunStop.Canceled, result.Stop);
+        }
+
+        [Theory]
+        [InlineData(150)]
+        [InlineData(200)]
+        public async Task SynchronousSubscriberSeesNoReadyAtOrAfterDeadline(int baselineAdvanceMs)
+        {
+            using var fixture = new RunnerFixture(options =>
+            {
+                options.MaxReconnectAttempts = 0;
+                options.HandshakeTimeout = TimeSpan.FromMilliseconds(250);
+            });
+            long? readyAt = null;
+            Task<CommandSubmission>? submission = null;
+            fixture.Session.SnapshotChanged += (_, __) =>
+            {
+                if (fixture.Session.State == TableConnectionState.Ready)
+                {
+                    readyAt = fixture.Clock.MonotonicMilliseconds;
+                    submission = fixture.Session.SubmitAsync(
+                        TestWire.SubmitActionCommand(),
+                        CancellationToken.None);
+                }
+            };
+            fixture.Channel.OnReceive = () =>
+                fixture.Clock.Advance(fixture.Channel.ReceivedCount == 0 ? 100 : baselineAdvanceMs);
+
+            TableSessionRunResult result = await fixture.Runner
+                .RunAsync(CancellationToken.None)
+                .WaitAsync(TimeSpan.FromSeconds(5));
+
+            bool sent = submission != null && (await submission).Sent;
+            Assert.Equal(TableSessionRunStop.ReconnectExhausted, result.Stop);
+            Assert.Null(readyAt);
+            Assert.False(sent);
+            Assert.Equal(0, fixture.Channel.CountSent(MessageType.Command));
+            Assert.NotEqual(TableConnectionState.Ready, fixture.Session.State);
+        }
+
+        [Fact]
+        public async Task CancellationDuringBaselinePublishesNoReadyOrCommand()
+        {
+            using var fixture = new RunnerFixture(options =>
+            {
+                options.MaxReconnectAttempts = 0;
+                options.HandshakeTimeout = TimeSpan.FromSeconds(5);
+            });
+            using var cts = new CancellationTokenSource();
+            long? readyAt = null;
+            Task<CommandSubmission>? submission = null;
+            fixture.Session.SnapshotChanged += (_, __) =>
+            {
+                if (fixture.Session.State == TableConnectionState.Ready)
+                {
+                    readyAt = fixture.Clock.MonotonicMilliseconds;
+                    submission = fixture.Session.SubmitAsync(
+                        TestWire.SubmitActionCommand(),
+                        CancellationToken.None);
+                }
+            };
+            fixture.Channel.OnReceive = () =>
+            {
+                if (fixture.Channel.ReceivedCount == 1)
+                {
+                    cts.Cancel();
+                }
+            };
+
+            TableSessionRunResult result = await fixture.Runner
+                .RunAsync(cts.Token)
+                .WaitAsync(TimeSpan.FromSeconds(5));
+
+            bool sent = submission != null && (await submission).Sent;
+            Assert.Equal(TableSessionRunStop.Canceled, result.Stop);
+            Assert.Null(readyAt);
+            Assert.False(sent);
+            Assert.Equal(0, fixture.Channel.CountSent(MessageType.Command));
+            Assert.NotEqual(TableConnectionState.Ready, fixture.Session.State);
+        }
+
+        [Fact]
         public async Task NonBaselineMessagesCannotExtendTheAbsoluteHandshakeDeadline()
         {
             using var fixture = new RunnerFixture(options =>
