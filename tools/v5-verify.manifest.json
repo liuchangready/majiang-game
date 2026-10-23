@@ -1,0 +1,60 @@
+{
+  "schemaVersion": 1,
+  "solution": "dotnet/Mahjong.sln",
+  "description": "Build/verification manifest for the V5 .NET tree. Lists only the projects this task is accountable for; verify-v5.ps1 additionally auto-discovers any *.Tests project under dotnet/tests or dotnet/src so future test projects (e.g. Mahjong.Client.Transport.Tests) are verified as soon as they exist on disk without editing this file.",
+
+  "testRunner": {
+    "directRunnerArgs": [ "-noLogo", "-reporter", "default" ]
+  },
+
+  "projects": [
+    {
+      "path": "dotnet/tests/Mahjong.Domain.Tests/Mahjong.Domain.Tests.csproj",
+      "kind": "test",
+      "required": true
+    },
+    {
+      "path": "dotnet/tests/Mahjong.Contracts.Tests/Mahjong.Contracts.Tests.csproj",
+      "kind": "test",
+      "required": true
+    },
+    {
+      "path": "dotnet/tests/Mahjong.Ai.Tests/Mahjong.Ai.Tests.csproj",
+      "kind": "test",
+      "required": true
+    },
+    {
+      "path": "dotnet/tests/Mahjong.Client.Tests/Mahjong.Client.Tests.csproj",
+      "kind": "test",
+      "required": true
+    },
+    {
+      "path": "dotnet/tests/Mahjong.Outbox.CrashWorker/Mahjong.Outbox.CrashWorker.csproj",
+      "kind": "helper",
+      "required": true,
+      "comment": "Console crash worker spawned as a child process by Mahjong.Client.Tests restart tests. Build-only: it is not a test project and contributes no test cases."
+    }
+  ],
+
+  "pluginCopy": {
+    "script": "tools/unity/build-shared.ps1",
+    "requiredAssemblies": [
+      "Mahjong.Domain.dll",
+      "Mahjong.Contracts.dll",
+      "Mahjong.Contracts.Wire.dll",
+      "Mahjong.TableRuntime.dll",
+      "Mahjong.Client.dll",
+      "Mahjong.LocalHost.dll",
+      "Mahjong.Ai.dll",
+      "Google.Protobuf.dll"
+    ],
+    "forbiddenPatterns": [
+      "xunit*",
+      "Microsoft.Testing*",
+      "Microsoft.ApplicationInsights*",
+      "Grpc*",
+      "Mahjong.*.Tests.*",
+      "Mahjong.Outbox.CrashWorker*"
+    ]
+  }
+}
