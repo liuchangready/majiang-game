@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
+using Mahjong.Ai;
 using Mahjong.Contracts;
 using Mahjong.Domain;
 
@@ -785,16 +786,42 @@ namespace Mahjong.TableRuntime
     public sealed class TableTickRequest
     {
         private readonly ReadOnlyCollection<AiDecisionSubmission> _aiSubmissions;
+        private readonly ReadOnlyCollection<AiDecision> _aiDecisions;
 
         public TableTickRequest(IReadOnlyList<AiDecisionSubmission>? aiSubmissions = null)
+            : this(aiSubmissions, null)
+        {
+        }
+
+        /// <summary>
+        /// Raw <paramref name="aiSubmissions"/> are the P3.1 legacy batch form and are accepted
+        /// only before any recovery generation exists. After a strict recovery, batch AI must
+        /// use <paramref name="aiDecisions"/> so the actor can verify the observation object was
+        /// captured in the current generation.
+        /// </summary>
+        public TableTickRequest(
+            IReadOnlyList<AiDecisionSubmission>? aiSubmissions,
+            IReadOnlyList<AiDecision>? aiDecisions)
         {
             _aiSubmissions = new ReadOnlyCollection<AiDecisionSubmission>(
                 aiSubmissions == null
                     ? new List<AiDecisionSubmission>()
                     : new List<AiDecisionSubmission>(aiSubmissions));
+            _aiDecisions = new ReadOnlyCollection<AiDecision>(
+                aiDecisions == null
+                    ? new List<AiDecision>()
+                    : new List<AiDecision>(aiDecisions));
         }
 
         public IReadOnlyList<AiDecisionSubmission> AiSubmissions => _aiSubmissions;
+
+        /// <summary>Actor-source-checked AI results for batch submission.</summary>
+        public IReadOnlyList<AiDecision> AiDecisions => _aiDecisions;
+
+        public static TableTickRequest WithAiDecisions(IReadOnlyList<AiDecision> decisions)
+        {
+            return new TableTickRequest(null, decisions);
+        }
 
         public static TableTickRequest Empty { get; } = new TableTickRequest();
     }

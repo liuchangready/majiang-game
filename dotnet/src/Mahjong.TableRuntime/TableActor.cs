@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Globalization;
+using System.Runtime.CompilerServices;
 using System.Threading;
 using System.Threading.Tasks;
 using Mahjong.Ai;
@@ -50,8 +51,8 @@ namespace Mahjong.TableRuntime
         private ControlRegistry _control;
         private DecisionClock _decisionClock;
         private readonly Dictionary<int, PendingDecision> _pending = new Dictionary<int, PendingDecision>();
-        private readonly Dictionary<AiObservation, long> _aiObservationGenerations =
-            new Dictionary<AiObservation, long>();
+        private readonly ConditionalWeakTable<AiObservation, ObservationGeneration> _aiObservationGenerations =
+            new ConditionalWeakTable<AiObservation, ObservationGeneration>();
         private readonly List<TableEventRecord> _recentEvents = new List<TableEventRecord>();
 
         private RoundStateMachine _round;
@@ -764,6 +765,17 @@ namespace Mahjong.TableRuntime
                 now).ConfigureAwait(false);
         }
 
+        private bool IsCurrentObservation(AiObservation observation)
+        {
+            if (_recoveryGeneration == 0)
+            {
+                return true;
+            }
+
+            return _aiObservationGenerations.TryGetValue(observation, out ObservationGeneration? holder) &&
+                   holder.Generation == _recoveryGeneration;
+        }
+
         private async ValueTask<TableTickResult> ProcessAiAsync(AiDecision decision)
         {
             TableOperationResult? guard = GuardServing();
@@ -789,8 +801,7 @@ namespace Mahjong.TableRuntime
                     current.Key == key &&
                     current.ControlEpoch == decision.Intent.ControlEpoch;
                 if (addressesCurrentDecision &&
-                    (!_aiObservationGenerations.TryGetValue(decision.Observation, out long observationGeneration) ||
-                     observationGeneration != _recoveryGeneration))
+                    !IsCurrentObservation(decision.Observation))
                 {
                     return TableTickResult.Rejected(
                         TableOperationStatus.Rejected,
@@ -800,21 +811,7 @@ namespace Mahjong.TableRuntime
                 }
             }
 
-            AiDecisionSubmission submission;
-            try
-            {
-                submission = decision.ToDomainSubmission(now);
-            }
-            catch (Exception exception)
-            {
-                return TableTickResult.Rejected(
-                    TableOperationStatus.Rejected,
-                    TableRuntimeReasonCode.InvalidSubmission,
-                    exception.Message,
-                    _stateVersion);
-            }
-
-            var request = new TableTickRequest(new[] { submission });
+            var request = TableTickRequest.WithAiDecisions(new[] { decision });
             return await ProcessTickCoreAsync(request, now).ConfigureAwait(false);
         }
 
@@ -1290,15 +1287,68 @@ namespace Mahjong.TableRuntime
                 }
             }
 
+            var aiInputs = new List<AiPlanInput>(request.AiSubmissions.Count + request.AiDecisions.Count);
             for (int i = 0; i < request.AiSubmissions.Count; i++)
             {
-                AiDecisionSubmission submission = request.AiSubmissions[i];
+                AiDecisionSubmission raw = request.AiSubmissions[i] ??
+                    throw new ArgumentException("AI submission cannot be null.", nameof(request));
+                aiInputs.Add(new AiPlanInput(raw, null));
+            }
+
+            for (int i = 0; i < request.AiDecisions.Count; i++)
+            {
+                AiDecision decision = request.AiDecisions[i] ??
+                    throw new ArgumentException("AI decision cannot be null.", nameof(request));
+                AiDecisionSubmission submission;
+                try
+                {
+                    submission = decision.ToDomainSubmission(now);
+                }
+                catch (Exception exception)
+                {
+                    planned.Add(new PlannedTickEntry(
+                        TickEntryKind.AiRejected,
+                        decision.Intent.DecisionKey.Seat,
+                        decision.Intent.DecisionKey.DecisionId,
+                        decision.Intent.Action,
+                        TickRejectionCode.InvalidSubmission,
+                        exception.Message,
+                        null));
+                    continue;
+                }
+
+                aiInputs.Add(new AiPlanInput(submission, decision));
+            }
+
+            for (int i = 0; i < aiInputs.Count; i++)
+            {
+                AiDecisionSubmission submission = aiInputs[i].Submission;
                 int seat = submission.Key.Seat;
 
                 if (!string.Equals(submission.Key.RoundId, _round.RoundId, StringComparison.Ordinal) ||
                     !clockForThisRound)
                 {
                     planned.Add(RejectAi(submission, TickRejectionCode.StaleRound, "Submission belongs to another round."));
+                    continue;
+                }
+
+                if (_recoveryGeneration > 0 && aiInputs[i].Decision == null)
+                {
+                    planned.Add(RejectAi(
+                        submission,
+                        TickRejectionCode.StaleRecoveryGeneration,
+                        "Raw AI submissions are not accepted after a recovery; submit an actor-captured observation."));
+                    continue;
+                }
+
+                if (_recoveryGeneration > 0 &&
+                    aiInputs[i].Decision != null &&
+                    !IsCurrentObservation(aiInputs[i].Decision!.Observation))
+                {
+                    planned.Add(RejectAi(
+                        submission,
+                        TickRejectionCode.StaleRecoveryGeneration,
+                        "The AI observation was not captured in the current recovery generation."));
                     continue;
                 }
 
@@ -1372,6 +1422,19 @@ namespace Mahjong.TableRuntime
             return planned;
         }
 
+        private sealed class AiPlanInput
+        {
+            public AiPlanInput(AiDecisionSubmission submission, AiDecision? decision)
+            {
+                Submission = submission;
+                Decision = decision;
+            }
+
+            public AiDecisionSubmission Submission { get; }
+
+            public AiDecision? Decision { get; }
+        }
+
         private static PlannedTickEntry RejectAi(
             AiDecisionSubmission submission,
             TickRejectionCode code,
@@ -1385,6 +1448,16 @@ namespace Mahjong.TableRuntime
                 code,
                 detail,
                 null);
+        }
+
+        private sealed class ObservationGeneration
+        {
+            public ObservationGeneration(long generation)
+            {
+                Generation = generation;
+            }
+
+            public long Generation { get; }
         }
 
         private sealed class PlannedTickEntry
@@ -1685,7 +1758,8 @@ namespace Mahjong.TableRuntime
             _lifecycle = TableActorLifecycle.Recovering;
             _lifecycleReason = reason ?? string.Empty;
             _pending.Clear();
-            _aiObservationGenerations.Clear();
+            // Weakly-held observation generations from earlier recovery generations remain
+            // collectible; IsCurrentObservation checks the current generation on submission.
             // Keep the reserve ledger and active round until the baseline proves whether they
             // are still valid. Open timings are removed; tick/AI are refused while recovering.
             _decisionClock.ClearTimings();
@@ -1918,7 +1992,6 @@ namespace Mahjong.TableRuntime
             }
 
             _recentEvents.Clear();
-            _aiObservationGenerations.Clear();
             if (baseline.Control != null)
             {
                 _strictRecoveryFence = true;
@@ -2588,7 +2661,10 @@ namespace Mahjong.TableRuntime
                     _round.Tiles.DoraIndicators,
                     _round.Scores,
                     pending.Candidates);
-                _aiObservationGenerations[observation] = _recoveryGeneration;
+                if (_recoveryGeneration > 0)
+                {
+                    _aiObservationGenerations.Add(observation, new ObservationGeneration(_recoveryGeneration));
+                }
                 return new TableAiObservationResult(
                     TableAiObservationStatus.Captured,
                     string.Empty,

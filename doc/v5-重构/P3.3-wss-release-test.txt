@@ -5,5 +5,5 @@
   Mahjong.Client -> D:\majiang-wt\p33-control\dotnet\src\Mahjong.Client\bin\Release\netstandard2.1\Mahjong.Client.dll
   Mahjong.Client.Wss.Tests -> D:\majiang-wt\p33-control\dotnet\tests\Mahjong.Client.Wss.Tests\bin\Release\net8.0\Mahjong.Client.Wss.Tests.dll
   运行测试:“D:\majiang-wt\p33-control\dotnet\tests\Mahjong.Client.Wss.Tests\bin\Release\net8.0\Mahjong.Client.Wss.Tests.dll”[net8.0|x64]
-  已通过! - 失败: 0，通过: 80，已跳过: 0，总计: 80，持续时间: 2s 173ms - Mahjong.Client.Wss.Tests.dll (net8.0|x64)
+  已通过! - 失败: 0，通过: 80，已跳过: 0，总计: 80，持续时间: 2s 033ms - Mahjong.Client.Wss.Tests.dll (net8.0|x64)
   成功的测试:“D:\majiang-wt\p33-control\dotnet\tests\Mahjong.Client.Wss.Tests\bin\Release\net8.0\Mahjong.Client.Wss.Tests.dll”[net8.0|x64]

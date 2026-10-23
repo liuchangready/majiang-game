@@ -194,7 +194,8 @@ namespace Mahjong.Domain
         SeatNotAutomated = 6,
         NoDefaultAction = 7,
         InvalidSubmission = 8,
-        ClockPaused = 9
+        ClockPaused = 9,
+        StaleRecoveryGeneration = 10
     }
 
     /// <summary>
