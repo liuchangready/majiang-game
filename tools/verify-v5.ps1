@@ -29,16 +29,25 @@
         test assembly; the summary states which runner produced the counts
       - every test execution is attributable: run-info.txt records the exact head
         SHA / branch / CI run identity, and runs\<project>\<mode>.meta.txt records
-        the exact command line, working directory, exit code, parsed counts and
-        the collected framework-log list of each dotnetTest/direct invocation
+        the exact command line, working directory, exit code (or the fact that
+        the invocation threw - never rendered as 0), parsed counts, the collected
+        framework-log list and the purge status of each dotnetTest/direct
+        invocation; a runner invocation that throws still persists every line of
+        console output produced before the throw plus the exception itself into
+        its captured log
       - raw test-framework failure logs (xunit.v3 / MTP TestResults, e.g.
         bin\<cfg>\<tfm>\TestResults\<asm>_<tfm>_<arch>.log - the file that names
-        the failing case) are collected under <log dir>\test-results\<project>\
-        with relative paths preserved. Collection is run-exclusive: the project's
-        TestResults directories are removed immediately before each runner
-        invocation, so a log found after the run was produced by THIS run only
-        and stale logs can never be presented as current-run evidence. Collection
-        is best-effort evidence and never changes a gate result or exit code
+        the failing case) are collected under
+        <log dir>\test-results\<project>\<mode>\<path relative to the project>,
+        so the two invocations of an auto run (dotnetTest and fallback direct)
+        and same-named logs from different source roots can never overwrite each
+        other. Collection is run-exclusive: the project's TestResults
+        directories are removed immediately before each runner invocation, and a
+        directory that could not be purged (e.g. a locked file) contributes
+        nothing whose before-purge snapshot matches - those files are recorded as
+        excluded stale in the meta file and collection-errors.log instead of
+        posing as current-run evidence. Collection is best-effort evidence and
+        never changes a gate result or exit code
       - the Unity plugin copy is exercised into a scratch directory under the log
         dir; tracked plugin DLLs and ProjectSettings are never overwritten
 
@@ -99,6 +108,13 @@ while (Test-Path $LogDir) {
 
 function Write-Step([string]$message) { Write-Host "[verify-v5] $message" }
 
+function Format-ExitCode([object]$Exit) {
+    # A missing exit code means the invocation threw - it must never render as
+    # (or be mistaken for) a successful 0.
+    if ($null -eq $Exit) { 'EXCEPTION' }
+    else { "$Exit" }
+}
+
 function Resolve-DotnetPath {
     if ($DotnetPath) { return $DotnetPath }
     if ($env:DOTNET_ROOT -and (Test-Path (Join-Path $env:DOTNET_ROOT 'dotnet.exe'))) {
@@ -109,14 +125,35 @@ function Resolve-DotnetPath {
 }
 
 # Runs a native command, tees all output into a log file, returns exit code.
+# Output is streamed into the list inside try{}, and the list is flushed to the
+# log in finally{}, so whatever the command produced before a throw is preserved.
+# On a thrown invocation the function returns $null - callers must treat a
+# missing exit code as a failing outcome (never as 0 / success).
 function Invoke-Captured {
     param(
         [string]$LogPath,
         [scriptblock]$Command
     )
-    $output = & $Command 2>&1
-    $exit = $LASTEXITCODE
-    $output | Out-String | Set-Content -Path $LogPath -Encoding UTF8
+    $output = New-Object System.Collections.Generic.List[string]
+    $exit = $null
+    try {
+        & $Command 2>&1 | ForEach-Object {
+            $output.Add([string]$_)
+        }
+        $exit = $LASTEXITCODE
+    }
+    catch {
+        $output.Add("[verify-v5] invocation threw an exception: $($_.Exception.GetType().FullName): $($_.Exception.Message)")
+        if ($_.ScriptStackTrace) { $output.Add($_.ScriptStackTrace) }
+    }
+    finally {
+        $logDir = Split-Path $LogPath -Parent
+        if ($logDir -and -not (Test-Path -LiteralPath $logDir)) {
+            try { New-Item -ItemType Directory -Force -Path $logDir | Out-Null } catch { }
+        }
+        try { ($output | Out-String) | Set-Content -Path $LogPath -Encoding UTF8 }
+        catch { Write-Warning "[verify-v5] could not write captured log ${LogPath}: $($_.Exception.Message)" }
+    }
     return $exit
 }
 
@@ -224,6 +261,11 @@ function Write-RunInfoFile {
 # (bin\<cfg>\<tfm>\TestResults - where xunit.v3/MTP writes its failure log - and
 # the classic project-root TestResults) are removed immediately before each
 # runner invocation, so anything found after the run was produced by THIS run.
+# If a directory cannot be purged (e.g. a file is locked by a crashed process),
+# its before-purge snapshot is kept and files matching that snapshot (same
+# project-relative path AND content hash) are EXCLUDED from the collected
+# evidence and recorded as a gap - a log whose provenance cannot be proven to
+# belong to this run must never pose as current-run evidence.
 function Get-TestResultsCandidates {
     param([string]$ProjectDir, [string]$Configuration, [string]$Tfm)
     return @(
@@ -232,28 +274,73 @@ function Get-TestResultsCandidates {
     )
 }
 
+function Get-TestResultsSnapshot {
+    param([string]$Dir)
+    $list = @()
+    $files = @()
+    try { $files = @(Get-ChildItem -LiteralPath $Dir -Recurse -File -ErrorAction Stop) }
+    catch { return @{ Files = $list; Error = "snapshot failed: $($_.Exception.Message)" } }
+    foreach ($file in $files) {
+        $rel = $file.FullName.Substring($Dir.Length).TrimStart('\', '/')
+        $hash = '(hash unavailable)'
+        try { $hash = (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash } catch { }
+        $list += @{ Rel = $rel; Sha256 = $hash }
+    }
+    return @{ Files = $list; Error = '' }
+}
+
 function Clear-TestResultsDirs {
+    # Returns one status object per directory:
+    #   @{ Dir; Cleared(bool); Stale = @(@{Rel; Sha256}); Note }
+    # Stale is non-empty only when the directory could NOT be purged; those
+    # files are the ones Save-TestResults must exclude.
     param([string[]]$Dirs)
-    $removed = 0
+    $statuses = @()
     foreach ($dir in $Dirs) {
-        if (-not (Test-Path -LiteralPath $dir)) { continue }
+        $status = @{ Dir = $dir; Cleared = $true; Stale = @(); Note = '' }
+        if (-not (Test-Path -LiteralPath $dir)) {
+            $status.Note = 'not present before the run'
+            $statuses += $status
+            continue
+        }
+        $before = Get-TestResultsSnapshot -Dir $dir
         try {
             Remove-Item -LiteralPath $dir -Recurse -Force
-            $removed++
         }
         catch {
-            Add-Content -Path (Join-Path $LogDir 'collection-errors.log') -Value ("purge failed for ${dir}: $($_.Exception.Message)") -Encoding UTF8
+            $status.Cleared = $false
+            $status.Stale = @($before.Files)
+            $status.Note = "purge failed: $($_.Exception.Message); before-snapshot with $(@($before.Files).Count) file(s) excluded from current-run evidence"
+            Add-Content -Path (Join-Path $LogDir 'collection-errors.log') -Value ("purge failed for ${dir}: $($_.Exception.Message); excluding $(@($before.Files).Count) snapshot file(s) from current-run evidence") -Encoding UTF8
         }
+        $statuses += $status
     }
-    return $removed
+    return $statuses
 }
 
 function Save-TestResults {
-    param([string]$ProjectName, [string[]]$Dirs)
-    $destRoot = Join-Path $LogDir (Join-Path 'test-results' $ProjectName)
+    # Copies every file the invocation produced into
+    #   <log dir>\test-results\<project>\<mode>\<path relative to the PROJECT dir>
+    # The mode segment (dotnetTest / direct) keeps the two invocations of an auto
+    # run apart; the project-relative path keeps same-named logs from different
+    # source roots (bin\...\TestResults vs project-root TestResults) apart.
+    # Returns @{ Collected = @(strings with sha256); ExcludedStale = @(strings) }.
+    param(
+        [string]$ProjectName,
+        [string]$Mode,
+        [string]$ProjectDir,
+        [string[]]$Dirs,
+        [object[]]$PurgeStatuses
+    )
+    $destRoot = Join-Path $LogDir (Join-Path 'test-results' (Join-Path $ProjectName $Mode))
     $collected = @()
+    $excludedStale = @()
     foreach ($dir in $Dirs) {
         if (-not (Test-Path -LiteralPath $dir)) { continue }
+        $status = $null
+        foreach ($candidate in $PurgeStatuses) {
+            if ($candidate.Dir -eq $dir) { $status = $candidate; break }
+        }
         $files = @()
         try { $files = @(Get-ChildItem -LiteralPath $dir -Recurse -File -ErrorAction Stop) }
         catch {
@@ -261,54 +348,85 @@ function Save-TestResults {
             continue
         }
         foreach ($file in $files) {
-            $rel = $file.FullName.Substring($dir.Length).TrimStart('\', '/')
-            $dest = Join-Path $destRoot $rel
+            $relFromProject = $file.FullName.Substring($ProjectDir.Length).TrimStart('\', '/')
+            # Stale-snapshot entries are relative to the DIRECTORY being purged,
+            # so the comparison must use the same base (not the project root).
+            $relFromDir = $file.FullName.Substring($dir.Length).TrimStart('\', '/')
+            $sourceHash = '(hash unavailable)'
+            try { $sourceHash = (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash } catch { }
+            if ($null -ne $status -and -not $status.Cleared) {
+                $staleHit = $false
+                foreach ($staleFile in $status.Stale) {
+                    if ($staleFile.Rel -eq $relFromDir -and $staleFile.Sha256 -eq $sourceHash) { $staleHit = $true; break }
+                }
+                if ($staleHit) {
+                    $excludedStale += ("{0}  sha256={1}" -f $relFromProject, $sourceHash)
+                    continue
+                }
+            }
+            $dest = Join-Path $destRoot $relFromProject
             try {
                 $destDir = Split-Path $dest -Parent
                 if (-not (Test-Path -LiteralPath $destDir)) { New-Item -ItemType Directory -Force -Path $destDir | Out-Null }
                 Copy-Item -LiteralPath $file.FullName -Destination $dest -Force
                 $hash = '(unavailable)'
                 try { $hash = (Get-FileHash -LiteralPath $dest -Algorithm SHA256).Hash } catch { }
-                $collected += ("{0}  sha256={1}" -f (Join-Path (Join-Path 'test-results' $ProjectName) $rel), $hash)
+                $collected += ("{0}  sha256={1}" -f (Join-Path (Join-Path (Join-Path 'test-results' $ProjectName) $Mode) $relFromProject), $hash)
             }
             catch {
                 Add-Content -Path (Join-Path $LogDir 'collection-errors.log') -Value ("copy failed for $($file.FullName): $($_.Exception.Message)") -Encoding UTF8
             }
         }
     }
-    return $collected
+    return @{ Collected = $collected; ExcludedStale = $excludedStale }
 }
 
 function Write-RunMetaFile {
     # Per-invocation attribution. The final row result of the project is in
     # summary.log; this file pins down exactly what was executed and produced.
+    # Best-effort: a failure to write it must not crash the run.
     param(
         [string]$Name, [string]$ProjectPath, [string]$Kind, [string]$Mode,
         [string]$RunnerTag, [string]$Runner, [string]$Command, [string]$Cwd,
         [object]$ExitCode, [object]$Total, [object]$Failed, [object]$Skipped,
-        [string[]]$Collected, [int]$PurgedDirs, [hashtable]$Head
+        [string[]]$Collected, [string[]]$ExcludedStale, [object[]]$PurgeStatuses, [hashtable]$Head
     )
-    $dir = Join-Path $LogDir (Join-Path 'runs' $Name)
-    if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Force -Path $dir | Out-Null }
-    $text = @(
-        "project     : $Name ($ProjectPath)"
-        "kind        : $Kind"
-        "runner mode : $Mode"
-        "runner tag  : $RunnerTag"
-        "runner used : $Runner"
-        "command     : $Command"
-        "cwd         : $Cwd"
-        "exit code   : $ExitCode"
-        "total       : $Total"
-        "failed      : $Failed"
-        "skipped     : $Skipped"
-        "head        : $($Head.Head)"
-        "purged TestResults dirs before this invocation: $PurgedDirs"
-        "collected framework logs:"
-    )
-    if (@($Collected).Count -gt 0) { $text += (@($Collected) | ForEach-Object { "  $_" }) }
-    else { $text += "  (none)" }
-    Set-Content -Path (Join-Path $dir "$RunnerTag.meta.txt") -Value ($text -join [Environment]::NewLine) -Encoding UTF8
+    try {
+        $dir = Join-Path $LogDir (Join-Path 'runs' $Name)
+        if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Force -Path $dir | Out-Null }
+        $exitLabel = $(if ($null -ne $ExitCode) { "$ExitCode" } else { '(invocation exception; exit unknown - never treated as 0)' })
+        $text = @(
+            "project     : $Name ($ProjectPath)"
+            "kind        : $Kind"
+            "runner mode : $Mode"
+            "runner tag  : $RunnerTag"
+            "runner used : $Runner"
+            "command     : $Command"
+            "cwd         : $Cwd"
+            "exit code   : $exitLabel"
+            "total       : $Total"
+            "failed      : $Failed"
+            "skipped     : $Skipped"
+            "head        : $($Head.Head)"
+            "TestResults purge before this invocation:"
+        )
+        foreach ($status in $PurgeStatuses) {
+            $label = $(if ($status.Cleared) { 'cleared' } else { 'NOT CLEARED (stale excluded by before-snapshot)' })
+            if ($status.Note) { $label = "$label - $($status.Note)" }
+            $text += "  $($status.Dir) -> $label"
+        }
+        $text += "collected framework logs:"
+        if (@($Collected).Count -gt 0) { $text += (@($Collected) | ForEach-Object { "  $_" }) }
+        else { $text += "  (none)" }
+        if (@($ExcludedStale).Count -gt 0) {
+            $text += "excluded stale files (purge failed; provenance NOT current-run):"
+            $text += (@($ExcludedStale) | ForEach-Object { "  $_" })
+        }
+        Set-Content -Path (Join-Path $dir "$RunnerTag.meta.txt") -Value ($text -join [Environment]::NewLine) -Encoding UTF8
+    }
+    catch {
+        Add-Content -Path (Join-Path $LogDir 'collection-errors.log') -Value ("meta write failed for $Name/${RunnerTag}: $($_.Exception.Message)") -Encoding UTF8
+    }
 }
 
 # --- 0. environment ------------------------------------------------------------
@@ -455,10 +573,10 @@ Write-Step "building solution..."
 $slnExit = Invoke-Captured -LogPath $slnBuildLog -Command { & $DotnetPath build $solution -c $Configuration --nologo }
 $buildOk = ($slnExit -eq 0)
 if ($buildOk) {
-    Write-Step ("solution build: PASS (exit {0})" -f $slnExit)
+    Write-Step ("solution build: PASS (exit {0})" -f (Format-ExitCode $slnExit))
 }
 else {
-    Write-Step ("solution build: FAIL (exit {0}); per-project builds follow for attribution" -f $slnExit)
+    Write-Step ("solution build: FAIL (exit {0}); per-project builds follow for attribution" -f (Format-ExitCode $slnExit))
     $anyFail = $true
 }
 
@@ -529,24 +647,25 @@ foreach ($project in $ordered) {
         $project.DotnetTestLog = Join-Path $LogDir ("dotnetTest-{0}.log" -f $name)
         $projectDir = Resolve-UnderRoot $root (Split-Path $project.Path -Parent)
         $testResultsDirs = @(Get-TestResultsCandidates -ProjectDir $projectDir -Configuration $Configuration -Tfm $tfm)
-        $purgedDirs = Clear-TestResultsDirs -Dirs $testResultsDirs
+        $dotnetTestPurges = @(Clear-TestResultsDirs -Dirs $testResultsDirs)
         Write-Step "dotnet test : $name"
         $dotnetTestCommand = "$DotnetPath test $csproj -c $Configuration --nologo"
         $exit = Invoke-Captured -LogPath $project.DotnetTestLog -Command { & $DotnetPath test $csproj -c $Configuration --nologo }
-        $collected = @(Save-TestResults -ProjectName $name -Dirs $testResultsDirs)
+        $dotnetTestSaved = Save-TestResults -ProjectName $name -Mode 'dotnetTest' -ProjectDir $projectDir -Dirs $testResultsDirs -PurgeStatuses $dotnetTestPurges
         $summary = Get-TestSummaryFromVstest $project.DotnetTestLog
         Write-RunMetaFile -Name $name -ProjectPath $project.Path -Kind $project.Kind -Mode $RunnerMode `
             -RunnerTag 'dotnetTest' -Runner 'dotnet test' -Command $dotnetTestCommand -Cwd $cwd -ExitCode $exit `
             -Total $(if ($summary) { $summary.Total } else { '(no parseable summary)' }) `
             -Failed $(if ($summary) { $summary.Failed } else { '-' }) `
             -Skipped $(if ($summary) { $summary.Skipped } else { '-' }) `
-            -Collected $collected -PurgedDirs $purgedDirs -Head $headInfo
+            -Collected @($dotnetTestSaved.Collected) -ExcludedStale @($dotnetTestSaved.ExcludedStale) `
+            -PurgeStatuses $dotnetTestPurges -Head $headInfo
         if ($summary) {
             $project.Runner = 'dotnet test'
             $project.Total = $summary.Total
             $project.Failed = $summary.Failed
             $project.Skipped = $summary.Skipped
-            $project.ExitCode = $exit
+            $project.ExitCode = $(if ($null -ne $exit) { $exit } else { 'EXCEPTION' })
         }
         else {
             # No parseable summary: inspect the log before any fallback. A build
@@ -564,7 +683,7 @@ foreach ($project in $ordered) {
                 continue
             }
             $project.FallbackReason =
-                "dotnet test produced no parseable test summary (exit $exit) and the log shows no build errors; " +
+                "dotnet test produced no parseable test summary ($(if ($null -ne $exit) { "exit $exit" } else { 'invocation exception' })) and the log shows no build errors; " +
                 "see $($project.DotnetTestLog). The current source built OK in this run, so this is treated as a " +
                 "runner/environment issue and the official in-process runner of the same test assembly decides the result."
         }
@@ -589,25 +708,26 @@ foreach ($project in $ordered) {
         $project.DirectLog = Join-Path $LogDir ("direct-{0}.log" -f $name)
         $directProjectDir = Resolve-UnderRoot $root (Split-Path $project.Path -Parent)
         $directResultsDirs = @(Get-TestResultsCandidates -ProjectDir $directProjectDir -Configuration $Configuration -Tfm $tfm)
-        $directPurgedDirs = Clear-TestResultsDirs -Dirs $directResultsDirs
+        $directPurges = @(Clear-TestResultsDirs -Dirs $directResultsDirs)
         Write-Step "direct run  : $name"
         $directRunnerArgs = @($manifest.testRunner.directRunnerArgs) -join ' '
         $directCommand = "$DotnetPath $testDll $directRunnerArgs"
         $exit = Invoke-Captured -LogPath $project.DirectLog -Command { & $DotnetPath $testDll @($manifest.testRunner.directRunnerArgs) }
-        $directCollected = @(Save-TestResults -ProjectName $name -Dirs $directResultsDirs)
+        $directSaved = Save-TestResults -ProjectName $name -Mode 'direct' -ProjectDir $directProjectDir -Dirs $directResultsDirs -PurgeStatuses $directPurges
         $summary = Get-TestSummaryFromDirectRunner $project.DirectLog
         Write-RunMetaFile -Name $name -ProjectPath $project.Path -Kind $project.Kind -Mode $RunnerMode `
             -RunnerTag 'direct' -Runner 'in-process (direct)' -Command $directCommand -Cwd $cwd -ExitCode $exit `
             -Total $(if ($summary) { $summary.Total } else { '(no parseable summary)' }) `
             -Failed $(if ($summary) { $summary.Failed } else { '-' }) `
             -Skipped $(if ($summary) { $summary.Skipped } else { '-' }) `
-            -Collected $directCollected -PurgedDirs $directPurgedDirs -Head $headInfo
+            -Collected @($directSaved.Collected) -ExcludedStale @($directSaved.ExcludedStale) `
+            -PurgeStatuses $directPurges -Head $headInfo
         if ($summary) {
             $project.Runner = $(if ($project.Runner -eq 'none') { 'in-process (direct)' } else { $project.Runner })
             $project.Total = $summary.Total
             $project.Failed = $summary.Failed
             $project.Skipped = $summary.Skipped
-            $project.ExitCode = $exit
+            $project.ExitCode = $(if ($null -ne $exit) { $exit } else { 'EXCEPTION' })
         }
         else {
             $project.Result = 'BLOCKED'
@@ -658,7 +778,7 @@ if (-not $SkipPluginCopyCheck) {
     }
     if ($pluginExit -ne 0) {
         $pluginResult = 'FAIL'
-        $pluginDetail = "build-shared.ps1 exited $pluginExit"
+        $pluginDetail = "build-shared.ps1 exited $(Format-ExitCode $pluginExit)"
         $anyFail = $true
     }
     elseif ($missing.Count -gt 0) {
@@ -687,7 +807,7 @@ $lines.Add("head           : $($headInfo.Head)  branch: $($headInfo.Branch)")
 $lines.Add("ci provenance  : $(if ($ciLines.Count) { $ciLines -join ' ' } else { '(none - local run)' })")
 $lines.Add("run identity   : run-info.txt; per-invocation command/exit/counts: runs\<project>\<mode>.meta.txt; raw framework logs: test-results\<project>\")
 $lines.Add("")
-$lines.Add("solution build : $(if ($buildOk) { "PASS (exit $slnExit)" } else { "FAIL (exit $slnExit)" })  log: $slnBuildLog")
+$lines.Add("solution build : $(if ($buildOk) { "PASS (exit $(Format-ExitCode $slnExit))" } else { "FAIL (exit $(Format-ExitCode $slnExit))" })  log: $slnBuildLog")
 $lines.Add("plugin copy    : $pluginResult  ($($pluginDetail))$(if ($pluginLog) { "  log: $pluginLog" })")
 $lines.Add("")
 $lines.Add(("{0,-34} {1,-7} {2,-4} {3,-6} {4,-19} {5,6} {6,7} {7,8} {8,-8} {9}" -f @('PROJECT','KIND','REQ','INSLN','RUNNER','TOTAL','FAILED','SKIPPED','RESULT','LOG')))

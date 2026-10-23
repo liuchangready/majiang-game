@@ -10,10 +10,11 @@
 #   powershell -ExecutionPolicy Bypass -File tools\verify-v5.ps1 -Configuration Release
 # Logs land under artifacts\verify-v5\<timestamp>\ (summary.log, run-info.txt,
 # one log per build/test/copy step, per-invocation runs\<project>\<mode>.meta.txt
-# and the raw test-framework failure logs under test-results\<project>\).
-# The upload below therefore contains everything needed to name a failing test
-# case: the framework log path quoted by dotnet test failures is collected into
-# test-results\<project>\ by verify-v5.ps1 before the job ends.
+# and the raw test-framework failure logs under
+# test-results\<project>\<mode>\<project-relative path>\, kept per runner
+# invocation). The upload below therefore contains everything needed to name a
+# failing test case: the framework log path quoted by dotnet test failures is
+# collected into that subtree by verify-v5.ps1 before the job ends.
 
 name: v5-verify
 

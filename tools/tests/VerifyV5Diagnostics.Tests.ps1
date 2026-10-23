@@ -14,9 +14,9 @@
                            failed / 0 skipped) preserved, and the raw framework
                            log - the same TestResults\<asm>_<tfm>_<arch>.log file
                            dotnet test names in its error line - is collected
-                           under <log dir>\test-results\<project>\ (the subtree
-                           the CI workflow uploads) and contains the failing
-                           case name and the assertion message.
+                           under <log dir>\test-results\<project>\dotnetTest\
+                           (the subtree the CI workflow uploads) and contains
+                           the failing case name and the assertion message.
       S2 stale -> PASS   : a fake OLD failure log planted in the project's
                            TestResults directory BEFORE the run cannot leak into
                            the new run: the run PASSes, the collected evidence
@@ -32,6 +32,23 @@
       S4 stale -> PASS   : same purge contract under direct mode.
       S5 zero tests      : the pre-existing zero-test-case gate still fails the
                            run after the diagnostics changes (exit 1, FAIL).
+      S6 locked+PASS     : an OLD log locked so it cannot be deleted makes the
+                           purge fail; the run still PASSes, the locked stale
+                           file is NOT copied into the current evidence
+                           (before-snapshot exclusion), the current-run
+                           framework log still is, and the gap is recorded.
+      S7 locked+FAIL     : same locked stale file with a NEW failing run: FAIL
+                           with real counts, the current failure content is
+                           collected (changed file => proven current), the stale
+                           marker still never appears in the evidence.
+      S8 unit            : the production collection/invocation helpers, extracted
+                           from the script AST like the caller review probe,
+                           keep same-named logs from BOTH source roots apart
+                           (full project-relative path), keep the dotnetTest and
+                           direct invocations of an auto run in separate
+                           directories (no overwrite), and Invoke-Captured
+                           persists partial output + the exception and returns
+                           $null (never a fake 0) when the command throws.
 
     Gate contract under test: diagnostics collection must never change an exit
     code, a count, or a PASS/FAIL verdict - only add evidence.
@@ -242,8 +259,8 @@ function Invoke-Verify {
     return $exit
 }
 
-function Get-CollectedResultsDir([string]$LogDir) {
-    return Join-Path $LogDir 'test-results\Probe.Tests'
+function Get-CollectedResultsDir([string]$LogDir, [string]$Mode) {
+    return Join-Path $LogDir (Join-Path 'test-results' (Join-Path 'Probe.Tests' $Mode))
 }
 
 function Seed-StaleLog {
@@ -290,9 +307,9 @@ try {
         if ($expectedHead) { Assert-True ($meta1Text.Contains($expectedHead)) "S1 meta records the real head SHA" }
     }
 
-    $collected1 = Get-CollectedResultsDir -LogDir $log1
-    $frameworkLog1 = Join-Path $collected1 'Probe.Tests_net8.0_x64.log'
-    Assert-True (Test-Path -LiteralPath $frameworkLog1) "S1 raw framework log collected under <log dir>\test-results\Probe.Tests\ (the subtree CI uploads as artifacts/verify-v5/**)"
+    $collected1 = Get-CollectedResultsDir -LogDir $log1 -Mode 'dotnetTest'
+    $frameworkLog1 = Join-Path $collected1 'bin\Release\net8.0\TestResults\Probe.Tests_net8.0_x64.log'
+    Assert-True (Test-Path -LiteralPath $frameworkLog1) "S1 raw framework log collected under <log dir>\test-results\Probe.Tests\dotnetTest\ with its full project-relative path (the subtree CI uploads as artifacts/verify-v5/**)"
     if (Test-Path -LiteralPath $frameworkLog1) {
         $frameworkText1 = Get-Content -LiteralPath $frameworkLog1 -Raw
         Assert-True ($frameworkText1.Contains($sentinel)) "S1 framework log contains the failing assertion message"
@@ -311,7 +328,7 @@ try {
     Assert-True ($summary2 -match 'OVERALL: PASS') "S2 summary reports OVERALL: PASS"
     Assert-True (Assert-RowCounts -LogDir $log2 -RunnerColumn 'dotnet test' -Total 2 -Failed 0 -Skipped 0) "S2 row keeps real counts 2 total / 0 failed / 0 skipped as PASS"
 
-    $collected2 = Get-CollectedResultsDir -LogDir $log2
+    $collected2 = Join-Path $log2 'test-results'
     $staleLeaked = $false
     if (Test-Path -LiteralPath $collected2) {
         $staleLeaked = $null -ne (Get-ChildItem -LiteralPath $collected2 -Recurse -File | Where-Object { $_.Name -eq 'Stale_OldRun_net8.0_x64.log' })
@@ -352,7 +369,7 @@ try {
     $binResults3 = Join-Path $probeDir 'bin\Release\net8.0\TestResults'
     $mirrored3 = $true
     if (Test-Path -LiteralPath $binResults3) {
-        $collected3 = Get-CollectedResultsDir -LogDir $log3
+        $collected3 = Get-CollectedResultsDir -LogDir $log3 -Mode 'direct'
         foreach ($file in (Get-ChildItem -LiteralPath $binResults3 -Recurse -File)) {
             if (-not (Test-Path -LiteralPath (Join-Path $collected3 $file.Name))) { $mirrored3 = $false }
         }
@@ -369,7 +386,7 @@ try {
     $summary4 = Get-Content -LiteralPath (Join-Path $log4 'summary.log') -Raw
     Assert-True ($exit4 -eq 0) "S4 exit code is 0 with the stale failure log planted beforehand (got $exit4)"
     Assert-True ($summary4 -match 'OVERALL: PASS') "S4 summary reports OVERALL: PASS"
-    $collected4 = Get-CollectedResultsDir -LogDir $log4
+    $collected4 = Join-Path $log4 'test-results'
     $staleLeaked4 = $false
     if (Test-Path -LiteralPath $collected4) {
         foreach ($file in (Get-ChildItem -LiteralPath $collected4 -Recurse -File)) {
@@ -389,6 +406,133 @@ try {
     Assert-True ($exit5 -ne 0) "S5 exit code is non-zero for a zero-test project (got $exit5)"
     Assert-True ($summary5 -match 'OVERALL: FAIL') "S5 summary reports OVERALL: FAIL"
     Assert-True ($summary5 -match 'zero executed test cases') "S5 zero-test gate message present"
+
+    # --- S6: locked OLD log -> purge fails -> current PASS run ----------------------
+    Write-Host ""
+    Write-Host "S6: locked OLD failure log - purge fails, stale content must not enter a PASS run"
+    Set-ProbeSource $passSource
+    Seed-StaleLog
+    $lockedStalePath = Join-Path $probeDir 'bin\Release\net8.0\TestResults\Stale_OldRun_net8.0_x64.log'
+    $lockedHandle6 = [IO.File]::Open($lockedStalePath, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+    try {
+        $log6 = Join-Path $workspace 'logs-s6'
+        $exit6 = Invoke-Verify -RunnerMode 'dotnetTest' -LogDir $log6
+        $summary6 = Get-Content -LiteralPath (Join-Path $log6 'summary.log') -Raw
+        Assert-True ($exit6 -eq 0) "S6 exit code is 0 even though the purge failed (got $exit6)"
+        Assert-True ($summary6 -match 'OVERALL: PASS') "S6 summary reports OVERALL: PASS"
+        Assert-True (Test-Path -LiteralPath (Join-Path $log6 'test-results\Probe.Tests\dotnetTest\bin\Release\net8.0\TestResults\Probe.Tests_net8.0_x64.log')) "S6 current-run framework log still collected despite the purge failure"
+        $staleLeaked6 = $false
+        $evidence6 = Join-Path $log6 'test-results'
+        if (Test-Path -LiteralPath $evidence6) {
+            foreach ($file in (Get-ChildItem -LiteralPath $evidence6 -Recurse -File)) {
+                $text = Get-Content -LiteralPath $file.FullName -Raw
+                if ($text -and $text.Contains($staleMarker)) { $staleLeaked6 = $true }
+            }
+        }
+        Assert-True (-not $staleLeaked6) "S6 locked stale content appears nowhere in the collected evidence"
+        $meta6Text = Get-Content -LiteralPath (Join-Path $log6 'runs\Probe.Tests\dotnetTest.meta.txt') -Raw
+        Assert-True ($meta6Text -match 'NOT CLEARED') "S6 meta records the purge failure"
+        Assert-True ($meta6Text -match 'excluded stale files') "S6 meta records the excluded stale file(s)"
+    }
+    finally { $lockedHandle6.Dispose() }
+
+    # --- S7: locked OLD log + NEW failing run ----------------------------------------
+    Write-Host ""
+    Write-Host "S7: locked OLD failure log + current failing run - real failure detected, stale still excluded"
+    Set-ProbeSource $failSource
+    $lockedHandle7 = [IO.File]::Open($lockedStalePath, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+    try {
+        $log7 = Join-Path $workspace 'logs-s7'
+        $exit7 = Invoke-Verify -RunnerMode 'dotnetTest' -LogDir $log7
+        $summary7 = Get-Content -LiteralPath (Join-Path $log7 'summary.log') -Raw
+        Assert-True ($exit7 -ne 0) "S7 exit code is non-zero (got $exit7)"
+        Assert-True ($summary7 -match 'OVERALL: FAIL') "S7 summary reports OVERALL: FAIL"
+        Assert-True (Assert-RowCounts -LogDir $log7 -RunnerColumn 'dotnet test' -Total 2 -Failed 1 -Skipped 0) "S7 row keeps real counts 2 total / 1 failed / 0 skipped as FAIL"
+        $currentLog7 = Join-Path $log7 'test-results\Probe.Tests\dotnetTest\bin\Release\net8.0\TestResults\Probe.Tests_net8.0_x64.log'
+        Assert-True (Test-Path -LiteralPath $currentLog7) "S7 current failing run's framework log collected"
+        if (Test-Path -LiteralPath $currentLog7) {
+            $currentText7 = Get-Content -LiteralPath $currentLog7 -Raw
+            Assert-True ($currentText7.Contains($sentinel)) "S7 collected log carries the CURRENT failure content"
+            Assert-True (-not $currentText7.Contains($staleMarker)) "S7 collected log carries no stale marker"
+        }
+        $staleLeaked7 = $false
+        $evidence7 = Join-Path $log7 'test-results'
+        foreach ($file in (Get-ChildItem -LiteralPath $evidence7 -Recurse -File)) {
+            $text = Get-Content -LiteralPath $file.FullName -Raw
+            if ($text -and $text.Contains($staleMarker)) { $staleLeaked7 = $true }
+        }
+        Assert-True (-not $staleLeaked7) "S7 stale marker appears nowhere in the collected evidence"
+    }
+    finally { $lockedHandle7.Dispose() }
+
+    # --- S8: unit-level regression on the production helpers (caller-review technique)
+    Write-Host ""
+    Write-Host "S8: unit - source-root collision / dual invocation / runner exception"
+    $parseErrors8 = $null
+    $tokens8 = $null
+    $ast8 = [System.Management.Automation.Language.Parser]::ParseFile($verifyScript, [ref]$tokens8, [ref]$parseErrors8)
+    Assert-True (-not ($parseErrors8 -and $parseErrors8.Count)) "S8 production script parses cleanly"
+    foreach ($fnName8 in @('Get-TestResultsSnapshot', 'Clear-TestResultsDirs', 'Save-TestResults', 'Invoke-Captured')) {
+        $fnAst8 = $ast8.Find({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq $fnName8 }.GetNewClosure(), $true)
+        if ($null -ne $fnAst8) { Invoke-Expression $fnAst8.Extent.Text }
+        Assert-True ($null -ne $fnAst8) "S8 extracted $fnName8 from the production script AST"
+    }
+
+    $unitLog = Join-Path $workspace 'unit-s8'
+    $unitFixture = Join-Path $unitLog 'fixture'
+    $unitBinResults = Join-Path $unitFixture 'bin\Release\net8.0\TestResults'
+    $unitRootResults = Join-Path $unitFixture 'TestResults'
+    New-Item -ItemType Directory -Path $unitBinResults, $unitRootResults -Force | Out-Null
+
+    $LogDir = $unitLog  # the extracted helpers resolve $LogDir dynamically
+    # Production ordering: purge first, then the runner invocation "writes" its
+    # files, then Save-TestResults collects what the invocation produced.
+    $purgeStatuses8 = @(Clear-TestResultsDirs -Dirs @($unitBinResults, $unitRootResults))
+    Write-Utf8File -Path (Join-Path $unitBinResults 'same.log') -Content 'BIN-CURRENT-FAILURE'
+    Write-Utf8File -Path (Join-Path $unitRootResults 'same.log') -Content 'ROOT-CURRENT-FAILURE'
+    $saved8 = Save-TestResults -ProjectName 'Collide.Tests' -Mode 'dotnetTest' -ProjectDir $unitFixture -Dirs @($unitBinResults, $unitRootResults) -PurgeStatuses $purgeStatuses8
+    Assert-True (@($saved8.Collected).Count -eq 2) "S8 collision: 2 source files produce 2 collected records (was the round-1 defect)"
+    $binCopy8 = Join-Path $unitLog 'test-results\Collide.Tests\dotnetTest\bin\Release\net8.0\TestResults\same.log'
+    $rootCopy8 = Join-Path $unitLog 'test-results\Collide.Tests\dotnetTest\TestResults\same.log'
+    Assert-True ((Test-Path -LiteralPath $binCopy8) -and (Test-Path -LiteralPath $rootCopy8)) "S8 collision: both same-named files exist at distinct project-relative paths"
+    if ((Test-Path -LiteralPath $binCopy8) -and (Test-Path -LiteralPath $rootCopy8)) {
+        Assert-True (((Get-Content -LiteralPath $binCopy8 -Raw).Trim()) -eq 'BIN-CURRENT-FAILURE') "S8 collision: bin copy keeps its own content"
+        Assert-True (((Get-Content -LiteralPath $rootCopy8 -Raw).Trim()) -eq 'ROOT-CURRENT-FAILURE') "S8 collision: project-root copy keeps its own content"
+    }
+    $hashMatches8 = $true
+    foreach ($entry8 in $saved8.Collected) {
+        $rel8 = ($entry8 -replace '\s+sha256=.*$', '')
+        $hash8 = ($entry8 -replace '^.*sha256=', '').Trim()
+        $abs8 = Join-Path $unitLog $rel8
+        if (-not (Test-Path -LiteralPath $abs8)) { $hashMatches8 = $false; continue }
+        if ((Get-FileHash -LiteralPath $abs8 -Algorithm SHA256).Hash -ne $hash8) { $hashMatches8 = $false }
+    }
+    Assert-True $hashMatches8 "S8 every collected record's sha256 matches the file actually on disk"
+
+    # Dual invocation (an auto run executes dotnetTest, then possibly direct):
+    # each invocation lands in its own mode directory; neither overwrites the other.
+    $purgeStatuses8b = @(Clear-TestResultsDirs -Dirs @($unitBinResults, $unitRootResults))
+    Write-Utf8File -Path (Join-Path $unitBinResults 'same.log') -Content 'DIRECT-CURRENT'
+    $null = Save-TestResults -ProjectName 'Collide.Tests' -Mode 'direct' -ProjectDir $unitFixture -Dirs @($unitBinResults, $unitRootResults) -PurgeStatuses $purgeStatuses8b
+    $directCopy8 = Join-Path $unitLog 'test-results\Collide.Tests\direct\bin\Release\net8.0\TestResults\same.log'
+    Assert-True ((Test-Path -LiteralPath $directCopy8) -and (((Get-Content -LiteralPath $directCopy8 -Raw).Trim()) -eq 'DIRECT-CURRENT')) "S8 dual invocation: direct invocation lands in its own mode directory"
+    Assert-True (((Get-Content -LiteralPath $binCopy8 -Raw).Trim()) -eq 'BIN-CURRENT-FAILURE') "S8 dual invocation: earlier dotnetTest copy is not overwritten"
+
+    # Invoke-Captured: a throwing invocation keeps partial output + the exception
+    # and returns $null - never a fabricated 0.
+    $exceptionLog8 = Join-Path $unitLog 'exception-console.log'
+    $exceptionExit8 = Invoke-Captured -LogPath $exceptionLog8 -Command { Write-Output 'OUTPUT-BEFORE-EXCEPTION'; throw 'SIMULATED-RUNNER-EXCEPTION' }
+    Assert-True ($null -eq $exceptionExit8) "S8 exception: exit code is $null (never a fake 0)"
+    Assert-True (Test-Path -LiteralPath $exceptionLog8) "S8 exception: captured output file exists"
+    if (Test-Path -LiteralPath $exceptionLog8) {
+        $exceptionText8 = Get-Content -LiteralPath $exceptionLog8 -Raw
+        Assert-True ($exceptionText8.Contains('OUTPUT-BEFORE-EXCEPTION')) "S8 exception: output produced before the throw is preserved"
+        Assert-True ($exceptionText8.Contains('SIMULATED-RUNNER-EXCEPTION')) "S8 exception: the exception itself is recorded in the log"
+    }
+    $exit3Log8 = Join-Path $unitLog 'exit3-console.log'
+    $exit3Code8 = Invoke-Captured -LogPath $exit3Log8 -Command { cmd /c exit 3 }
+    Assert-True ($exit3Code8 -eq 3) "S8 success path still returns the real exit code (got $exit3Code8)"
+    Remove-Variable LogDir -ErrorAction SilentlyContinue
 
     # --- run identity ---------------------------------------------------------------
     Write-Host ""
