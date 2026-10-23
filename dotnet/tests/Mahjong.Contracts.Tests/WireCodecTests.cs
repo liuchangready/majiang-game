@@ -1023,7 +1023,7 @@ namespace Mahjong.Protocol.Tests
                 EventSeq = 101,
                 CommandVersion = 7,
                 EventType = EventType.TsumoWin,
-                Visibility = EventVisibility.Public
+                Visibility = EventVisibility.SettlementPublic
             };
             huge.TsumoWin = new TsumoWin { TurnNumber = 1, Player = 0, WinTileId = 5 };
             for (int i = 0; i < 20; i++)

@@ -17,7 +17,7 @@ namespace Mahjong.Protocol.Tests
 {
     public sealed class SchemaCompatibilityTests
     {
-        private const string ExpectedSchemaFingerprint = "36a8502c898fba44b85953d1db1807a8422fd07b8702612843717f22a8104a3d";
+        private const string ExpectedSchemaFingerprint = "5ea85510cdb5ced54bbe7474df3a5a77581d98f127d67e696044f074360dc7c4";
 
         [Fact]
         public void EnvelopeFieldNumbersAreStable()
@@ -157,6 +157,15 @@ namespace Mahjong.Protocol.Tests
                 (1, "turn_number"), (2, "winner"), (3, "loser"), (4, "win_tile_id"),
                 (5, "yaku"), (6, "han"), (7, "fu"), (8, "score"), (9, "breakdown"),
                 (16, "is_chankan")
+            });
+            AssertFields(SleeveBloomResolved.Descriptor, new (int, string)[]
+            {
+                (1, "offer_id"), (2, "kept_first"), (3, "result_tile_id"), (9, "owner_seat")
+            });
+            AssertFields(BeamSwapResolved.Descriptor, new (int, string)[]
+            {
+                (1, "offer_id"), (2, "action"), (3, "hand_tile_id"), (4, "target_slot"),
+                (10, "owner_seat")
             });
             AssertFields(PublicUpdate.Descriptor, new (int, string)[]
             {

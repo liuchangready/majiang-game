@@ -980,10 +980,12 @@ namespace Mahjong.Contracts
         }
 
         public static ProjectedEventPayload SleeveBloomResolved(
+            int ownerSeat,
             string offerId,
             bool keptFirst,
             uint? resultTileId)
         {
+            ProjectionPayloadValidation.Seat(ownerSeat, nameof(ownerSeat));
             string id = ProtocolText.RequireId(offerId, nameof(offerId));
             if (resultTileId.HasValue)
             {
@@ -993,13 +995,14 @@ namespace Mahjong.Contracts
             return New(
                 ProtocolEventType.SleeveBloomResolved,
                 0,
-                ProtocolConstants.NoSeat,
+                ownerSeat,
                 offerId: id,
                 keptFirst: keptFirst,
                 resultTileId: resultTileId);
         }
 
         public static ProjectedEventPayload BeamSwapResolved(
+            int ownerSeat,
             string offerId,
             ProjectionBeamSwapResolution resolution,
             uint? handTileId,
@@ -1010,6 +1013,7 @@ namespace Mahjong.Contracts
                 throw new ArgumentException("Beam-swap resolution must be explicit.", nameof(resolution));
             }
 
+            ProjectionPayloadValidation.Seat(ownerSeat, nameof(ownerSeat));
             string id = ProtocolText.RequireId(offerId, nameof(offerId));
             if (handTileId.HasValue)
             {
@@ -1019,7 +1023,7 @@ namespace Mahjong.Contracts
             return New(
                 ProtocolEventType.BeamSwapResolved,
                 0,
-                ProtocolConstants.NoSeat,
+                ownerSeat,
                 offerId: id,
                 beamSwapResolution: resolution,
                 handTileId: handTileId,

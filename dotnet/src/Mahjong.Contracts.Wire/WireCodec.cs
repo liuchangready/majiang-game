@@ -137,12 +137,36 @@ namespace Mahjong.Contracts.Wire
             (uint)EventType.BeamSwapResolved
         };
 
+        /// <summary>Production encode path. It binds every private body to Envelope.seat_id.</summary>
         public static byte[] Encode(Envelope envelope)
+        {
+            return EncodeCore(envelope, enforceOwner: true);
+        }
+
+        /// <summary>
+        /// Compatibility-only encode path for legacy fixtures that intentionally deliver a
+        /// malformed owner binding to exercise a downstream consumer. It still enforces all
+        /// version/public-body checks; only the private owner binding is skipped. Production
+        /// callers must use <see cref="Encode"/>.
+        /// </summary>
+        public static byte[] EncodeCompatibility(Envelope envelope)
+        {
+            return EncodeCore(envelope, enforceOwner: false);
+        }
+
+        private static byte[] EncodeCore(Envelope envelope, bool enforceOwner)
         {
             if (envelope == null)
             {
                 throw new ArgumentNullException(nameof(envelope));
             }
+
+            if (envelope.SeatId != ProtocolConstants.NoSeat)
+            {
+                RequireSeat(envelope.SeatId, "envelope.seat_id");
+            }
+
+            int ownerSeat = enforceOwner ? envelope.SeatId : ProtocolConstants.NoSeat;
 
             if (envelope.ProtocolMajor != ProtocolConstants.Major)
             {
@@ -212,8 +236,13 @@ namespace Mahjong.Contracts.Wire
                     throw new WireMalformedException("Player snapshot body is missing.");
                 }
 
+                if (enforceOwner)
+                {
+                    RequireOwnerSeat(envelope.SeatId, "player snapshot");
+                }
+
                 EnsurePlayerPublicView(playerSnapshot.PublicView);
-                ValidatePrivatePlayerView(playerSnapshot.PrivateView, ProtocolConstants.NoSeat);
+                ValidatePrivatePlayerView(playerSnapshot.PrivateView, ownerSeat);
                 EnsureSnapshotSize(playerSnapshot, "player snapshot");
             }
 
@@ -225,11 +254,16 @@ namespace Mahjong.Contracts.Wire
                     throw new WireMalformedException("Player update snapshot is missing.");
                 }
 
+                if (enforceOwner)
+                {
+                    RequireOwnerSeat(envelope.SeatId, "player update");
+                }
+
                 EnsurePlayerPublicView(playerUpdate.Snapshot.PublicView);
-                ValidatePrivatePlayerView(playerUpdate.Snapshot.PrivateView, ProtocolConstants.NoSeat);
+                ValidatePrivatePlayerView(playerUpdate.Snapshot.PrivateView, ownerSeat);
                 for (int i = 0; i < playerUpdate.VisibleEvents.Count; i++)
                 {
-                    ValidateEventStrict(playerUpdate.VisibleEvents[i]);
+                    ValidateEventStrict(playerUpdate.VisibleEvents[i], ownerSeat);
                 }
 
                 EnsureSnapshotSize(playerUpdate.Snapshot, "player update snapshot");
@@ -253,8 +287,13 @@ namespace Mahjong.Contracts.Wire
                         throw new WireMalformedException("Sync player snapshot body is missing.");
                     }
 
+                    if (enforceOwner)
+                    {
+                        RequireOwnerSeat(envelope.SeatId, "sync player snapshot");
+                    }
+
                     EnsurePlayerPublicView(syncPlayer.PublicView);
-                    ValidatePrivatePlayerView(syncPlayer.PrivateView, ProtocolConstants.NoSeat);
+                    ValidatePrivatePlayerView(syncPlayer.PrivateView, ownerSeat);
                     EnsureSnapshotSize(syncPlayer, "sync player snapshot");
                 }
             }
@@ -396,6 +435,7 @@ namespace Mahjong.Contracts.Wire
                 switch (envelope.BodyCase)
                 {
                     case Envelope.BodyOneofCase.PlayerSnapshot:
+                        ValidateDecodedPlayerSnapshot(envelope.PlayerSnapshot, envelope.SeatId, "player snapshot");
                         EnsureSnapshotSize(envelope.PlayerSnapshot, "player snapshot");
                         break;
                     case Envelope.BodyOneofCase.PublicSnapshot:
@@ -403,6 +443,15 @@ namespace Mahjong.Contracts.Wire
                         EnsureSnapshotSize(envelope.PublicSnapshot, "public snapshot");
                         break;
                     case Envelope.BodyOneofCase.PlayerUpdate:
+                        ValidateDecodedPlayerSnapshot(
+                            envelope.PlayerUpdate.Snapshot,
+                            envelope.SeatId,
+                            "player update snapshot");
+                        for (int i = 0; i < envelope.PlayerUpdate.VisibleEvents.Count; i++)
+                        {
+                            ValidateEventStrict(envelope.PlayerUpdate.VisibleEvents[i], envelope.SeatId);
+                        }
+
                         EnsureSnapshotSize(envelope.PlayerUpdate.Snapshot, "player update snapshot");
                         break;
                     case Envelope.BodyOneofCase.PublicUpdate:
@@ -419,6 +468,10 @@ namespace Mahjong.Contracts.Wire
 
                         if (envelope.SyncResponse.BaselineCase == SyncResponse.BaselineOneofCase.Player)
                         {
+                            ValidateDecodedPlayerSnapshot(
+                                envelope.SyncResponse.Player,
+                                envelope.SeatId,
+                                "sync player snapshot");
                             EnsureSnapshotSize(envelope.SyncResponse.Player, "sync player snapshot");
                         }
 
@@ -742,6 +795,14 @@ namespace Mahjong.Contracts.Wire
                     ProtocolErrorCode.PrivateDataInPublicStream);
             }
 
+            if ((wireEvent.EventType == EventType.TsumoWin || wireEvent.EventType == EventType.RonWin) &&
+                wireEvent.Visibility != EventVisibility.SettlementPublic)
+            {
+                throw new PublicProjectionException(
+                    "Win events may enter a public stream only as an explicit settlement batch.",
+                    ProtocolErrorCode.PrivateDataInPublicStream);
+            }
+
             if (wireEvent.EventCase == PublicEventEnvelope.EventOneofCase.DoraRevealed &&
                 wireEvent.DoraRevealed.IsUraDora &&
                 (!wireEvent.DoraRevealed.UraAuthorized || wireEvent.Visibility != EventVisibility.SettlementPublic))
@@ -934,6 +995,7 @@ namespace Mahjong.Contracts.Wire
                     EnsurePublicUpdate(envelope.PublicUpdate);
                     break;
                 case Envelope.BodyOneofCase.PlayerSnapshot:
+                    RequireOwnerSeat(envelope.SeatId, "player snapshot");
                     EnsurePlayerPublicView(envelope.PlayerSnapshot.PublicView);
                     ValidatePrivatePlayerView(envelope.PlayerSnapshot.PrivateView, envelope.SeatId);
                     break;
@@ -943,11 +1005,12 @@ namespace Mahjong.Contracts.Wire
                         throw new WireMalformedException("Player update snapshot is missing.");
                     }
 
+                    RequireOwnerSeat(envelope.SeatId, "player update");
                     EnsurePlayerPublicView(envelope.PlayerUpdate.Snapshot.PublicView);
                     ValidatePrivatePlayerView(envelope.PlayerUpdate.Snapshot.PrivateView, envelope.SeatId);
                     for (int i = 0; i < envelope.PlayerUpdate.VisibleEvents.Count; i++)
                     {
-                        ValidateEventStrict(envelope.PlayerUpdate.VisibleEvents[i]);
+                        ValidateEventStrict(envelope.PlayerUpdate.VisibleEvents[i], envelope.SeatId);
                     }
 
                     break;
@@ -964,6 +1027,7 @@ namespace Mahjong.Contracts.Wire
                             throw new WireMalformedException("Sync player baseline is missing.");
                         }
 
+                        RequireOwnerSeat(envelope.SeatId, "sync player snapshot");
                         EnsurePlayerPublicView(envelope.SyncResponse.Player.PublicView);
                         ValidatePrivatePlayerView(envelope.SyncResponse.Player.PrivateView, envelope.SeatId);
                     }
@@ -972,7 +1036,27 @@ namespace Mahjong.Contracts.Wire
             }
         }
 
+        private static void ValidateDecodedPlayerSnapshot(
+            PlayerSnapshot? snapshot,
+            int ownerSeat,
+            string name)
+        {
+            if (snapshot == null)
+            {
+                throw new WireMalformedException(name + " body is missing.");
+            }
+
+            RequireOwnerSeat(ownerSeat, name);
+            EnsurePublicMatchViewCore(snapshot.PublicView, rejectUnknownFields: false);
+            ValidatePrivatePlayerView(snapshot.PrivateView, ownerSeat);
+        }
+
         public static void ValidateEventStrict(EventEnvelope? wireEvent)
+        {
+            ValidateEventStrict(wireEvent, ProtocolConstants.NoSeat);
+        }
+
+        public static void ValidateEventStrict(EventEnvelope? wireEvent, int ownerSeat)
         {
             if (wireEvent == null)
             {
@@ -1030,7 +1114,109 @@ namespace Mahjong.Contracts.Wire
                     ProtocolErrorCode.PrivateDataInPublicStream);
             }
 
+            if (isPrivate)
+            {
+                if (ownerSeat != ProtocolConstants.NoSeat)
+                {
+                    ValidatePrivateEventOwner(wireEvent, ownerSeat);
+                }
+            }
+            else if (ownerSeat != ProtocolConstants.NoSeat &&
+                     wireEvent.EventCase == EventEnvelope.EventOneofCase.KanDeclared &&
+                     wireEvent.KanDeclared.KanType == KanType.Closed &&
+                     wireEvent.KanDeclared.Meld != null &&
+                     wireEvent.KanDeclared.Meld.TileIds.Count > 0)
+            {
+                if (wireEvent.KanDeclared.Player != ownerSeat)
+                {
+                    throw new PublicProjectionException(
+                        "Closed-kan identities may be delivered only to their owner seat.",
+                        ProtocolErrorCode.PrivateDataInPublicStream);
+                }
+            }
+
             ValidateEventBodies(wireEvent);
+        }
+
+        private static void ValidatePrivateEventOwner(EventEnvelope wireEvent, int ownerSeat)
+        {
+            if (ownerSeat < ProtocolConstants.MinSeat || ownerSeat > ProtocolConstants.MaxSeat)
+            {
+                throw new PublicProjectionException(
+                    "A private event requires a concrete owner seat; unknown owner is rejected.",
+                    ProtocolErrorCode.PrivateDataInPublicStream);
+            }
+
+            switch (wireEvent.EventCase)
+            {
+                case EventEnvelope.EventOneofCase.TileDealt:
+                    if (wireEvent.TileDealt.Player != ownerSeat)
+                    {
+                        throw OwnerMismatch(wireEvent.EventType, wireEvent.TileDealt.Player, ownerSeat);
+                    }
+
+                    break;
+                case EventEnvelope.EventOneofCase.TileDrawn:
+                    if (wireEvent.TileDrawn.Player != ownerSeat)
+                    {
+                        throw OwnerMismatch(wireEvent.EventType, wireEvent.TileDrawn.Player, ownerSeat);
+                    }
+
+                    break;
+                case EventEnvelope.EventOneofCase.RinshanDraw:
+                    if (wireEvent.RinshanDraw.Player != ownerSeat)
+                    {
+                        throw OwnerMismatch(wireEvent.EventType, wireEvent.RinshanDraw.Player, ownerSeat);
+                    }
+
+                    break;
+                case EventEnvelope.EventOneofCase.CheatPointsChanged:
+                    if (wireEvent.CheatPointsChanged.Seat != ownerSeat)
+                    {
+                        throw OwnerMismatch(wireEvent.EventType, wireEvent.CheatPointsChanged.Seat, ownerSeat);
+                    }
+
+                    break;
+                case EventEnvelope.EventOneofCase.SleeveBloomResolved:
+                    if (!wireEvent.SleeveBloomResolved.HasOwnerSeat ||
+                        wireEvent.SleeveBloomResolved.OwnerSeat != ownerSeat)
+                    {
+                        throw OwnerMismatch(
+                            wireEvent.EventType,
+                            wireEvent.SleeveBloomResolved.HasOwnerSeat
+                                ? wireEvent.SleeveBloomResolved.OwnerSeat
+                                : ProtocolConstants.NoSeat,
+                            ownerSeat);
+                    }
+
+                    break;
+                case EventEnvelope.EventOneofCase.BeamSwapResolved:
+                    if (!wireEvent.BeamSwapResolved.HasOwnerSeat ||
+                        wireEvent.BeamSwapResolved.OwnerSeat != ownerSeat)
+                    {
+                        throw OwnerMismatch(
+                            wireEvent.EventType,
+                            wireEvent.BeamSwapResolved.HasOwnerSeat
+                                ? wireEvent.BeamSwapResolved.OwnerSeat
+                                : ProtocolConstants.NoSeat,
+                            ownerSeat);
+                    }
+
+                    break;
+                default:
+                    throw new WireMalformedException("Private event has no owner-bearing body.");
+            }
+        }
+
+        private static PublicProjectionException OwnerMismatch(
+            EventType type,
+            int eventOwner,
+            int receiverOwner)
+        {
+            return new PublicProjectionException(
+                "Private event " + type + " belongs to seat " + eventOwner +
+                ", not receiver seat " + receiverOwner + ".",
+                ProtocolErrorCode.PrivateDataInPublicStream);
         }
 
         private static void ValidatePublicBoard(PublicBoardView? board)
@@ -1223,7 +1409,7 @@ namespace Mahjong.Contracts.Wire
                     break;
                 case PublicEventEnvelope.EventOneofCase.KanDeclared:
                     RequireSeat(wireEvent.KanDeclared.Player, "kan_declared.player");
-                    ValidateKan(wireEvent.KanDeclared.KanType, wireEvent.KanDeclared.Meld);
+                    ValidatePublicKan(wireEvent.KanDeclared.KanType, wireEvent.KanDeclared.Meld);
                     break;
                 case PublicEventEnvelope.EventOneofCase.RiichiDeclared:
                     RequireSeat(wireEvent.RiichiDeclared.Player, "riichi_declared.player");
@@ -1397,6 +1583,12 @@ namespace Mahjong.Contracts.Wire
                     break;
                 case EventEnvelope.EventOneofCase.SleeveBloomResolved:
                     RequireId(wireEvent.SleeveBloomResolved.OfferId, "sleeve_bloom_resolved.offer_id");
+                    if (!wireEvent.SleeveBloomResolved.HasOwnerSeat)
+                    {
+                        throw StrictError("sleeve_bloom_resolved.owner_seat is required provenance.");
+                    }
+
+                    RequireSeat(wireEvent.SleeveBloomResolved.OwnerSeat, "sleeve_bloom_resolved.owner_seat");
                     if (wireEvent.SleeveBloomResolved.HasResultTileId)
                     {
                         RequireTile(wireEvent.SleeveBloomResolved.ResultTileId, "sleeve_bloom_resolved.result_tile_id");
@@ -1405,6 +1597,12 @@ namespace Mahjong.Contracts.Wire
                     break;
                 case EventEnvelope.EventOneofCase.BeamSwapResolved:
                     RequireId(wireEvent.BeamSwapResolved.OfferId, "beam_swap_resolved.offer_id");
+                    if (!wireEvent.BeamSwapResolved.HasOwnerSeat)
+                    {
+                        throw StrictError("beam_swap_resolved.owner_seat is required provenance.");
+                    }
+
+                    RequireSeat(wireEvent.BeamSwapResolved.OwnerSeat, "beam_swap_resolved.owner_seat");
                     if (wireEvent.BeamSwapResolved.Action != "SWAP" &&
                         wireEvent.BeamSwapResolved.Action != "KEEP_ORIGINAL")
                     {
@@ -1420,6 +1618,44 @@ namespace Mahjong.Contracts.Wire
                 default:
                     throw StrictError("Event has no validated oneof body.");
             }
+        }
+
+        private static void ValidatePublicKan(KanType kanType, MeldView? meld)
+        {
+            if (kanType == KanType.Closed)
+            {
+                // The only public closed-kan shape defined by this build is "event with
+                // no meld at all". Any MeldView, even with empty tile_ids or only a
+                // called_tile_id, is rejected so no side channel can carry identities.
+                if (meld != null)
+                {
+                    throw new PublicProjectionException(
+                        "A public closed-kan event must not carry a meld body; identities are owner-only.",
+                        ProtocolErrorCode.PrivateDataInPublicStream);
+                }
+
+                return;
+            }
+
+            if (kanType != KanType.Added && kanType != KanType.Open)
+            {
+                throw StrictError("kan_declared.kan_type must be explicit.");
+            }
+
+            if (meld == null)
+            {
+                throw StrictError("kan_declared.meld is required for a public open/added kan.");
+            }
+
+            MeldType expected = kanType == KanType.Added ? MeldType.AddedKan : MeldType.OpenKan;
+            if (meld.Type != expected || meld.Type == MeldType.ClosedKan)
+            {
+                throw new PublicProjectionException(
+                    "A public open/added kan must carry its matching non-concealed meld.",
+                    ProtocolErrorCode.PrivateDataInPublicStream);
+            }
+
+            ValidateMeld(meld, "kan_declared.meld", allowClosedKan: false);
         }
 
         private static void ValidateKan(KanType kanType, MeldView? meld)
@@ -1440,6 +1676,16 @@ namespace Mahjong.Contracts.Wire
                 if (meld.Type != MeldType.ClosedKan)
                 {
                     throw StrictError("kan_declared.meld type does not match a closed kan.");
+                }
+
+                if (meld.HasCalledTileId)
+                {
+                    throw StrictError("A closed kan must not carry a called_tile_id.");
+                }
+
+                if (meld.FromSeat != ProtocolConstants.NoSeat)
+                {
+                    throw StrictError("A closed kan has no public/claimed source seat.");
                 }
 
                 if (meld.TileIds.Count == 0)
@@ -1788,6 +2034,16 @@ namespace Mahjong.Contracts.Wire
             if (value < ProtocolConstants.MinSeat || value > ProtocolConstants.MaxSeat)
             {
                 throw StrictError(name + " has seat " + value + " outside 0..3.");
+            }
+        }
+
+        private static void RequireOwnerSeat(int value, string name)
+        {
+            if (value < ProtocolConstants.MinSeat || value > ProtocolConstants.MaxSeat)
+            {
+                throw new WireProtocolException(
+                    name + " requires an explicit owner seat 0..3; unknown owner is rejected.",
+                    ProtocolErrorCode.MalformedMessage);
             }
         }
 

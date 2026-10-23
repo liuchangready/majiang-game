@@ -474,11 +474,13 @@ namespace Mahjong.TableRuntime
                         Require(facts?.WinnerSeat, source.Type, "winnerSeat"));
                 case ProtocolEventType.SleeveBloomResolved:
                     return ProjectedEventPayload.SleeveBloomResolved(
+                        RequireOwnerSeat(source),
                         RequireText(facts?.OfferId, source.Type, "offerId"),
                         Require(facts?.KeptFirst, source.Type, "keptFirst"),
                         facts?.ResultTileId);
                 case ProtocolEventType.BeamSwapResolved:
                     return ProjectedEventPayload.BeamSwapResolved(
+                        RequireOwnerSeat(source),
                         RequireText(facts?.OfferId, source.Type, "offerId"),
                         Require(facts?.BeamSwapResolution, source.Type, "beamSwapResolution"),
                         facts?.HandTileId,
@@ -942,6 +944,16 @@ namespace Mahjong.TableRuntime
             if (source.Seat < ProtocolConstants.MinSeat || source.Seat > ProtocolConstants.MaxSeat)
             {
                 throw Invalid(source.Type + " has no owner/player seat.");
+            }
+
+            return source.Seat;
+        }
+
+        private static int RequireOwnerSeat(TableProjectedEvent source)
+        {
+            if (source.Seat < ProtocolConstants.MinSeat || source.Seat > ProtocolConstants.MaxSeat)
+            {
+                throw Missing(source.Type, "ownerSeat");
             }
 
             return source.Seat;

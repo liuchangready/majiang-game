@@ -117,10 +117,49 @@ namespace Mahjong.Contracts.Wire
             };
             for (int i = 0; i < visibleEvents.Count; i++)
             {
+                ValidateEventOwner(visibleEvents[i], snapshot.Seat);
                 update.VisibleEvents.Add(MapEvent(visibleEvents[i]));
             }
 
             return update;
+        }
+
+        private static void ValidateEventOwner(ProtocolEventRecord record, int ownerSeat)
+        {
+            if (ownerSeat < ProtocolConstants.MinSeat || ownerSeat > ProtocolConstants.MaxSeat)
+            {
+                throw Invalid("A player update requires a concrete owner seat.");
+            }
+
+            if (record == null)
+            {
+                throw new ArgumentNullException(nameof(record));
+            }
+
+            ProjectedEventPayload? payload = record.ProjectionPayload;
+            if (payload == null)
+            {
+                return;
+            }
+
+            if (ProtocolEventPolicy.IsPrivateEventType(record.Type) && payload.Seat != ownerSeat)
+            {
+                throw new PublicProjectionException(
+                    "Private event " + record.Type + " belongs to seat " + payload.Seat + ", not receiver seat " + ownerSeat + ".",
+                    ProtocolErrorCode.PrivateDataInPublicStream);
+            }
+
+            if (record.Type == ProtocolEventType.KanDeclared &&
+                payload.KanType == ProtocolMeldType.ClosedKan &&
+                payload.Meld != null &&
+                payload.Meld.TileIds.Count > 0 &&
+                payload.Seat != ownerSeat)
+            {
+                throw new PublicProjectionException(
+                    "Closed-kan identities are owner-only; receiver seat " + ownerSeat +
+                    " cannot receive identities for seat " + payload.Seat + ".",
+                    ProtocolErrorCode.PrivateDataInPublicStream);
+            }
         }
 
         public static EventEnvelope MapEvent(ProtocolEventRecord record)
@@ -987,7 +1026,8 @@ namespace Mahjong.Contracts.Wire
                     envelope.SleeveBloomResolved = new SleeveBloomResolved
                     {
                         OfferId = RequireId(payload.OfferId, "sleeve_bloom_resolved.offer_id"),
-                        KeptFirst = payload.KeptFirst
+                        KeptFirst = payload.KeptFirst,
+                        OwnerSeat = RequireSeat(payload.Seat, "sleeve_bloom_resolved.owner_seat")
                     };
                     if (payload.ResultTileId.HasValue)
                     {
@@ -1010,7 +1050,8 @@ namespace Mahjong.Contracts.Wire
                         OfferId = RequireId(payload.OfferId, "beam_swap_resolved.offer_id"),
                         Action = payload.BeamSwapResolution.Value == ProjectionBeamSwapResolution.Swap
                             ? "SWAP"
-                            : "KEEP_ORIGINAL"
+                            : "KEEP_ORIGINAL",
+                        OwnerSeat = RequireSeat(payload.Seat, "beam_swap_resolved.owner_seat")
                     };
                     if (payload.HandTileId.HasValue)
                     {
@@ -1083,10 +1124,10 @@ namespace Mahjong.Contracts.Wire
                     };
                     if (payload.KanType == ProtocolMeldType.ClosedKan)
                     {
-                        if (payload.Meld != null && payload.Meld.TileIds.Count > 0)
+                        if (payload.Meld != null)
                         {
                             throw new PublicProjectionException(
-                                "A public closed-kan event must not carry tile identities.",
+                                "A public closed-kan event must not carry a meld body; identities are owner-only.",
                                 ProtocolErrorCode.PrivateDataInPublicStream);
                         }
                     }

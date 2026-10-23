@@ -140,6 +140,42 @@ namespace Mahjong.TableRuntime.Tests
         }
 
         [Fact]
+        public void resolved_private_events_keep_an_explicit_auditable_owner_seat()
+        {
+            TableProjectedEvent sleeve = TableEventProjection.Project(
+                V32Fixtures.Event(
+                    ProtocolEventType.SleeveBloomResolved,
+                    2,
+                    seq: 20,
+                    commandVersion: 10),
+                TableProjectionAudience.ForSeat(2),
+                new TableProjectionPolicy())!;
+            ProtocolEventRecord sleeveMapped = TableProjectionContractMapper.MapEvent(
+                sleeve,
+                new TableProjectionEventFacts(offerId: "offer-2", keptFirst: true, resultTileId: 5));
+            Assert.Equal(2, sleeveMapped.ProjectionPayload!.Seat);
+            Assert.Equal(ProtocolEventType.SleeveBloomResolved, sleeveMapped.ProjectionPayload.Type);
+
+            TableProjectedEvent beam = TableEventProjection.Project(
+                V32Fixtures.Event(
+                    ProtocolEventType.BeamSwapResolved,
+                    3,
+                    seq: 21,
+                    commandVersion: 11),
+                TableProjectionAudience.ForSeat(3),
+                new TableProjectionPolicy())!;
+            ProtocolEventRecord beamMapped = TableProjectionContractMapper.MapEvent(
+                beam,
+                new TableProjectionEventFacts(
+                    offerId: "beam-3",
+                    beamSwapResolution: ProjectionBeamSwapResolution.Swap,
+                    handTileId: 6,
+                    targetSlot: 54));
+            Assert.Equal(3, beamMapped.ProjectionPayload!.Seat);
+            Assert.Equal(ProtocolEventType.BeamSwapResolved, beamMapped.ProjectionPayload.Type);
+        }
+
+        [Fact]
         public void public_and_owner_closed_kan_events_use_the_right_redaction_boundary()
         {
             TableProjectedEvent publicKan = TableEventProjection.Project(

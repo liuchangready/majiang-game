@@ -212,7 +212,7 @@ namespace Mahjong.Protocol.Tests
                     new Contracts.MeldView(
                         Contracts.ProtocolMeldType.ClosedKan,
                         new uint[] { 98, 99, 100, 101 },
-                        99,
+                        null,
                         Contracts.ProtocolConstants.NoSeat),
                     Contracts.ProtocolMeldType.ClosedKan));
             Wire.EventEnvelope wirePrivateKan = Wire.ProjectionWireMapper.MapEvent(privateKan);
@@ -530,6 +530,55 @@ namespace Mahjong.Protocol.Tests
                     e => e.PublicSnapshot = wrongPlaceholder)));
         }
 
+        [Fact]
+        public void player_update_mapper_rejects_cross_seat_private_events_and_closed_kan_details()
+        {
+            Contracts.ProtocolEventRecord draw = Typed(
+                Contracts.ProtocolEventType.TileDrawn,
+                Contracts.ProtocolEventVisibility.Private,
+                Contracts.ProjectedEventPayload.TileDrawn(1, 2, 6, 70));
+            Contracts.StreamCursor from = new Contracts.StreamCursor(
+                new Contracts.StreamVersion(0),
+                new Contracts.ProjectionSeq(0));
+            Assert.Throws<Contracts.PublicProjectionException>(() =>
+                Wire.ProjectionWireMapper.MapPlayerUpdate(
+                    PlayerSnapshot(0),
+                    new[] { draw },
+                    from,
+                    false));
+            Wire.PlayerUpdate matching = Wire.ProjectionWireMapper.MapPlayerUpdate(
+                PlayerSnapshot(2),
+                new[] { draw },
+                from,
+                false);
+            Assert.Single(matching.VisibleEvents);
+
+            Contracts.ProtocolEventRecord kan = Typed(
+                Contracts.ProtocolEventType.KanDeclared,
+                Contracts.ProtocolEventVisibility.Public,
+                Contracts.ProjectedEventPayload.KanDeclared(
+                    4,
+                    2,
+                    new Contracts.MeldView(
+                        Contracts.ProtocolMeldType.ClosedKan,
+                        new uint[] { 80, 81, 82, 83 },
+                        null,
+                        Contracts.ProtocolConstants.NoSeat),
+                    Contracts.ProtocolMeldType.ClosedKan));
+            Assert.Throws<Contracts.PublicProjectionException>(() =>
+                Wire.ProjectionWireMapper.MapPlayerUpdate(
+                    PlayerSnapshot(0),
+                    new[] { kan },
+                    from,
+                    false));
+            Wire.PlayerUpdate ownerKan = Wire.ProjectionWireMapper.MapPlayerUpdate(
+                PlayerSnapshot(2),
+                new[] { kan },
+                from,
+                false);
+            Assert.Equal(4, ownerKan.VisibleEvents[0].KanDeclared.Meld.TileIds.Count);
+        }
+
         private static Contracts.PlayerSnapshotView PlayerSnapshot(int seat, Contracts.StreamCursor? cursor = null)
         {
             Contracts.PublicSnapshotView publicSnapshot = PublicSnapshot(withSettlement: false, cursor: cursor);
@@ -616,7 +665,7 @@ namespace Mahjong.Protocol.Tests
                     new Contracts.MeldView(
                         Contracts.ProtocolMeldType.ClosedKan,
                         new uint[] { 98, 99, 100, 101 },
-                        99,
+                        null,
                         Contracts.ProtocolConstants.NoSeat)
                 });
 
@@ -822,9 +871,9 @@ namespace Mahjong.Protocol.Tests
                         },
                         1)),
                 Typed(Contracts.ProtocolEventType.SleeveBloomResolved, Contracts.ProtocolEventVisibility.Private,
-                    Contracts.ProjectedEventPayload.SleeveBloomResolved("offer-1", true, 23)),
+                    Contracts.ProjectedEventPayload.SleeveBloomResolved(1, "offer-1", true, 23)),
                 Typed(Contracts.ProtocolEventType.BeamSwapResolved, Contracts.ProtocolEventVisibility.Private,
-                    Contracts.ProjectedEventPayload.BeamSwapResolved("beam-1", Contracts.ProjectionBeamSwapResolution.Swap, 24, 54))
+                    Contracts.ProjectedEventPayload.BeamSwapResolved(1, "beam-1", Contracts.ProjectionBeamSwapResolution.Swap, 24, 54))
             };
         }
 

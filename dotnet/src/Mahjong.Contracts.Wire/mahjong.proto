@@ -971,6 +971,10 @@ message SleeveBloomResolved {
   string offer_id = 1;
   bool kept_first = 2;
   optional uint32 result_tile_id = 3;
+
+  // Auditable owner provenance. Required for a private event; absence must fail
+  // closed rather than defaulting to seat 0.
+  optional int32 owner_seat = 9;
   reserved 4 to 8;
 }
 
@@ -979,6 +983,10 @@ message BeamSwapResolved {
   string action = 2;
   optional uint32 hand_tile_id = 3;
   optional uint32 target_slot = 4;
+
+  // Auditable owner provenance. Required for a private event; absence must fail
+  // closed rather than defaulting to seat 0.
+  optional int32 owner_seat = 10;
   reserved 5 to 9;
 }
 
