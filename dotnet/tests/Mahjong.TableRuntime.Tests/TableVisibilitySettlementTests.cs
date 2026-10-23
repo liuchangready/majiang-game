@@ -205,5 +205,141 @@ namespace Mahjong.TableRuntime.Tests
                 TableProjectionAudience.Spectator,
                 new TableProjectionPolicy(settlementBatch: false)));
         }
+
+        [Fact]
+        public void round_end_without_match_session_remains_neutral_for_all_streams()
+        {
+            (RoundStateMachine round, long[] scores, IReadOnlyList<TableEventProjectionInput> events) = FinishedRoundFixture();
+            TableProjectionContext context = V32Fixtures.Context(
+                round,
+                settlementBatch: true,
+                events: events);
+
+            AssertSessionForAllStreams(round, context, session =>
+            {
+                Assert.False(session.Finished);
+                Assert.Equal(string.Empty, session.FinishReason);
+                Assert.Empty(session.FinalScores);
+                Assert.Empty(session.Rankings);
+            });
+
+            PublicSnapshotView spectator = TableVisibilityProjection.ProjectPublicSnapshot(round, context);
+            Assert.Equal(scores[0], spectator.View.Board!.Scores[0].Score);
+            Assert.Equal(round.RoundId, spectator.View.SettlementRoundId);
+            Assert.Contains(spectator.View.SettlementEvents, item => item.Type == ProtocolEventType.TsumoWin);
+            Assert.Contains(spectator.View.SettlementEvents, item => item.Type == ProtocolEventType.RoundEnded);
+        }
+
+        [Fact]
+        public void explicit_running_match_session_stays_unfinished_for_all_streams()
+        {
+            (RoundStateMachine round, long[] scores, IReadOnlyList<TableEventProjectionInput> events) = FinishedRoundFixture();
+            var session = new TableSessionProjection(
+                false,
+                string.Empty,
+                null,
+                null,
+                round.RoundId);
+            TableProjectionContext context = V32Fixtures.Context(
+                round,
+                settlementBatch: true,
+                events: events,
+                session: session);
+
+            AssertSessionForAllStreams(round, context, current =>
+            {
+                Assert.False(current.Finished);
+                Assert.Equal(string.Empty, current.FinishReason);
+                Assert.Empty(current.FinalScores);
+                Assert.Empty(current.Rankings);
+            });
+
+            PublicSnapshotView spectator = TableVisibilityProjection.ProjectPublicSnapshot(round, context);
+            Assert.Equal(scores[0], spectator.View.Board!.Scores[0].Score);
+            Assert.Equal(round.RoundId, spectator.View.SettlementRoundId);
+            Assert.Contains(spectator.View.SettlementEvents, item => item.Type == ProtocolEventType.TsumoWin);
+        }
+
+        [Fact]
+        public void explicit_finished_match_session_is_preserved_for_all_streams()
+        {
+            (RoundStateMachine round, long[] scores, IReadOnlyList<TableEventProjectionInput> events) = FinishedRoundFixture();
+            int[] rankings = { 0, 1, 2, 3 };
+            var session = new TableSessionProjection(
+                true,
+                "MATCH_END",
+                scores,
+                rankings,
+                round.RoundId);
+            TableProjectionContext context = V32Fixtures.Context(
+                round,
+                settlementBatch: true,
+                events: events,
+                session: session);
+
+            AssertSessionForAllStreams(round, context, current =>
+            {
+                Assert.True(current.Finished);
+                Assert.Equal("MATCH_END", current.FinishReason);
+                Assert.Equal(scores, current.FinalScores.Select(item => item.Score).ToArray());
+                Assert.Equal(rankings, current.Rankings.ToArray());
+            });
+
+            PublicSnapshotView spectator = TableVisibilityProjection.ProjectPublicSnapshot(round, context);
+            Assert.Equal(round.RoundId, spectator.View.SettlementRoundId);
+            Assert.Contains(spectator.View.SettlementEvents, item => item.Type == ProtocolEventType.RoundEnded);
+        }
+
+        private static void AssertSessionForAllStreams(
+            RoundStateMachine round,
+            TableProjectionContext context,
+            Action<PublicSessionSummary> assertion)
+        {
+            PublicSnapshotView spectator = TableVisibilityProjection.ProjectPublicSnapshot(round, context);
+            assertion(spectator.View.Session);
+
+            CheatState cheat = V32Fixtures.Cheat();
+            for (int seat = 0; seat < 4; seat++)
+            {
+                PlayerSnapshotView player = TableVisibilityProjection.ProjectPlayerSnapshot(
+                    round,
+                    cheat,
+                    seat,
+                    context);
+                assertion(player.Public.Session);
+            }
+        }
+
+        private static (RoundStateMachine Round, long[] Scores, IReadOnlyList<TableEventProjectionInput> Events) FinishedRoundFixture()
+        {
+            long[] scores = { 28000, 24000, 24000, 24000 };
+            RoundStateMachine finished = V32Fixtures.ApplyTsumo(
+                P31Fixtures.Dealt("review-round-1"),
+                0,
+                scores);
+            TileId winTile = finished.Tiles.DrawnTile!.Value.Tile;
+            var tsumoRecord = new TableEventRecord(
+                new EventSeq(1),
+                new StateVersion(1),
+                0,
+                RoundEventType.TsumoWin,
+                0,
+                winTile,
+                null);
+            var endedRecord = new TableEventRecord(
+                new EventSeq(2),
+                new StateVersion(1),
+                1,
+                RoundEventType.RoundEnded,
+                ProtocolConstants.NoSeat,
+                null,
+                "Tsumo");
+            var events = new[]
+            {
+                TableEventProjection.FromRoundEvent(tsumoRecord)!,
+                TableEventProjection.FromRoundEvent(endedRecord)!
+            };
+            return (finished, scores, events);
+        }
     }
 }

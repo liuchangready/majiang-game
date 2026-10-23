@@ -23,6 +23,7 @@
 - 输出集合全部为新建只读集合；投影不返回 Domain 对象、`TilePositionMap`、墙顺序、种子或 `SourceFingerprint`。
 - 事件保留来源 `EventSeq` / `CommandVersion` / `EventOrdinal`；本组件**不分配**流游标。
 - 不同隐藏状态（墙顺序/他家暗牌/私有账本）产生相同公共投影的测试。
+- 整场 `Finished/FinishReason/FinalScores/Rankings` **只**来自显式 `TableSessionProjection`；缺省时返回中性未结束摘要，单局终态不会推导成整场终局。
 - 三绝技成功/拒绝、私有账本、结算、CHANKAN、鸣杠立直等测试。
 
 ### 1.2 明确未实现（P3.2b / 其他 owner）
@@ -62,7 +63,7 @@
 | `View.Board.Players[].Riichi` | `TableSeatPublicFacts.Riichi` | Domain 不建模立直，显式端口 |
 | `View.Board.LastDiscard` | `round.Tiles.LastDiscard` + 公开河事实 | 证据必须能在公开河事实中找到 |
 | `View.Board.Paused` | `TableProjectionPolicy.Paused` | 显式上下文 |
-| `View.Session` | `TableSessionProjection` 或已结束 round 的 result | 无可派生数据时为空摘要，不伪造 |
+| `View.Session` | **仅** `TableSessionProjection` | 缺省返回未结束中性摘要；**绝不从单局 result 推导整场终局** |
 | `View.Clocks` | `TableProjectionContext.Clocks` | P3.3/actor 提供；最多四席 |
 | `View.Paused` | `Policy.Paused` | 显式上下文 |
 | `View.SettlementRoundId` | `Session.SettlementRoundId` 或刚结束 round id | 空串表示无结算展示 |
@@ -114,7 +115,7 @@
 | furiten、完整舍牌历史（含被鸣走） | `TableSeatPrivateFacts` | 原样复制；历史必须覆盖当前河 |
 | preparation/看破/预留 | `TableSeatPrivateFacts.HasPreparation` | 只输出布尔，不伪造明细 |
 | decision/control/deadline/合法候选 | `TableSeatDecision`，P3.3/actor 提供 | 不读取 `DecisionClock`/`ControlRegistry`，不生成候选 |
-| match finished/finish reason/final scores/rankings | `TableSessionProjection` 或 round result | 无 match 数据时 rankings 为空 |
+| match finished/finish reason/final scores/rankings | **仅** `TableSessionProjection` | 无 match 数据时返回 `Finished=false`、空 reason/scores/rankings；单局结果只进 Board/SettlementRoundId/events |
 | clocks | `TableProjectionContext.Clocks`，P3.3/actor 提供 | 原样复制 |
 | 流游标/订阅/恢复 | P3.2b | 本组件只复制 `Cursor` |
 
@@ -291,7 +292,7 @@ foreach (TableEventRecord record in committedEvents)
 2. **暗杠的公开 meld 表达**：`MeldView` 强制 3/4 张实体牌，无法“只公开暗杠事实、不公开 identity”。本任务在公共快照中省略暗杠 meld，在 `KanDeclared` 事件中公开“发生暗杠”但不公开牌；owner 扩展保留四张。若要公共 meld 计数/占位，需要新 Contracts 字段。
 3. **`DecisionView` 无座位字段**：本任务用 `TableSeatDecision.Seat` 包装；actor 必须保证合法候选属于该座位。
 4. **事件 payload**：`ProtocolEventRecord` 在 P3.2a 使用空 payload（仅元数据，可用 `ProjectToContract` 直接取得）；完整投影体在 `TableProjectedEvent`，`EncodeBody()` 明确不是 Wire。P3.2b 必须做 Wire 映射，不能直接把内部体当 Protobuf。
-5. **match/session 数据**：`TableSessionProjection` 由 match 层提供；无数据时只给 round 结果可派生的 finished/final scores，rankings 为空，不伪造名次。
+5. **match/session 数据**：`TableSessionProjection` 由 match 层提供；无数据时 `View.Session` 返回中性未结束摘要（`Finished=false`、空 reason/scores/rankings），不从单局 `RoundResult` 推导整场终局，也不伪造名次。单局结算仍在 `Board.Scores`、`SettlementRoundId` 与 `SettlementEvents`。
 
 ---
 
@@ -313,12 +314,12 @@ foreach (TableEventRecord record in committedEvents)
 | `dotnet build dotnet/tests/Mahjong.TableRuntime.Tests/Mahjong.TableRuntime.Tests.csproj --nologo -v minimal` | 成功，0 warning / 0 error | 0 |
 | `dotnet test ...Mahjong.TableRuntime.Tests.csproj --nologo -v minimal --no-build -- --filter-class "Mahjong.TableRuntime.Tests.TableVisibilityProjectionTests"` | 18 passed / 0 failed / 0 skipped | 0 |
 | `dotnet test ... --no-build -- --filter-class "Mahjong.TableRuntime.Tests.TableVisibilityCheatTests"` | 4 passed / 0 failed / 0 skipped | 0 |
-| `dotnet test ... --no-build -- --filter-class "Mahjong.TableRuntime.Tests.TableVisibilitySettlementTests"` | 4 passed / 0 failed / 0 skipped | 0 |
-| `dotnet test ...Mahjong.TableRuntime.Tests.csproj --nologo -v minimal` | **51 passed / 0 failed / 0 skipped**（既有 25 + 新增 26） | 0 |
+| `dotnet test ... --no-build -- --filter-class "Mahjong.TableRuntime.Tests.TableVisibilitySettlementTests"` | 7 passed / 0 failed / 0 skipped | 0 |
+| `dotnet test ...Mahjong.TableRuntime.Tests.csproj --nologo -v minimal` | **54 passed / 0 failed / 0 skipped**（既有 25 + 新增 29） | 0 |
 | `dotnet test ...Mahjong.Contracts.Tests.csproj --nologo -v minimal --no-build` | 82 passed / 0 failed / 0 skipped | 0 |
 | `dotnet test ...Mahjong.Domain.Tests.csproj --nologo -v minimal --no-build` | 313 passed / 0 failed / 0 skipped | 0 |
 
-说明：`dotnet test --filter "FullyQualifiedName~TableVisibility"` 在 xUnit v3 Microsoft Testing Platform 下未生效，实际跑了全量 51；定向运行改用 `-- --filter-class ...`，上表记录的是真实定向结果。
+说明：`dotnet test --filter "FullyQualifiedName~TableVisibility"` 在 xUnit v3 Microsoft Testing Platform 下未生效，实际跑了全量 54；定向运行改用 `-- --filter-class ...`，上表记录的是真实定向结果。新增的 3 个会话生命周期回归覆盖：session 缺省、显式未结束（连庄/后续仍有局）、显式整场结束；每项均对四席+观战断言，且单局 `Board.Scores`、`SettlementRoundId`、结算事件保持独立。
 
 ### 9.3 未运行 / 不计入 PASS
 
@@ -330,6 +331,13 @@ foreach (TableEventRecord record in committedEvents)
 | G1 / G5 阶段验收 | **未通过/未执行**；本交付不能作为 G1/G5 PASS |
 | 完整 P3.2 退出标准 | **未完成**（P3.2b + Wire/actor 接线缺失） |
 
+### 9.4 独立审查返修（2026-10-24）
+
+- 阻断问题：`BuildSession` 在无显式 session 且单局已结束时，用 `RoundResult.EndReason/FinalScores` 构造 `Finished=true`，把单局终态误当整场结束。
+- 修复：`BuildSession` 只读 `TableProjectionContext.Session`；`Session == null` 时固定返回 `PublicSessionSummary(false, "", empty, empty)`。不再从 `round.Result` 派生整场字段。
+- 单局结算保留：`Board.Scores` 继续用 `round.Result.FinalScores`，`SettlementRoundId` 继续用刚结束 round id，结算事件继续来自 `Context.Events`。
+- 回归：新增 `round_end_without_match_session_remains_neutral_for_all_streams`、`explicit_running_match_session_stays_unfinished_for_all_streams`、`explicit_finished_match_session_is_preserved_for_all_streams`，均覆盖四席+观战。TableRuntime.Tests 由 51 增至 **54**，全绿。
+
 ---
 
 ## 10. 文件与 SHA256
@@ -340,11 +348,11 @@ foreach (TableEventRecord record in committedEvents)
 |---|---|
 | `dotnet/src/Mahjong.TableRuntime/TableVisibilityContexts.cs` | `DE876FA50D4E69C2F8D3E04646FB62671C2625DAE7E93CA255F435B35165DE94` |
 | `dotnet/src/Mahjong.TableRuntime/TableEventProjection.cs` | `FA0F57611338DA79C6B0DA9125B1F4AA489B0FF075562B3C04A68C12D3C62D18` |
-| `dotnet/src/Mahjong.TableRuntime/TableVisibilityProjection.cs` | `E38E550D025BFD5F6A098873DCDBC64F3ADC2EEC3D98E5EFA4AFA0DB4AB823DC` |
+| `dotnet/src/Mahjong.TableRuntime/TableVisibilityProjection.cs` | `D797DB94D69832858394E0E2CB5FE7E817AABEBD6913C6E6496C1626EF028418` |
 | `dotnet/tests/Mahjong.TableRuntime.Tests/TableVisibilityTestSupport.cs` | `60651A4ED0A2C5AB051D515D316A44F41F30B9334EC4F0EF0BF5ECD3C66CDEB5` |
 | `dotnet/tests/Mahjong.TableRuntime.Tests/TableVisibilityProjectionTests.cs` | `1164B6E3CC185E043C62BB22B57D33633EB2F41F3CD1090DD1A7DDCCBFBBDFEE` |
 | `dotnet/tests/Mahjong.TableRuntime.Tests/TableVisibilityCheatTests.cs` | `975A527B15D68A261A985085B18BF92CB3BF4478C2F199ABF9A56FA268E79BD4` |
-| `dotnet/tests/Mahjong.TableRuntime.Tests/TableVisibilitySettlementTests.cs` | `FC25DB4E374FDE9FCBD2464729B7959EDA71C36481E89FD349735F463620F59D` |
+| `dotnet/tests/Mahjong.TableRuntime.Tests/TableVisibilitySettlementTests.cs` | `E132A357CC452DF933DF6A7E2174E7C7677D7BE5E0F19D2AD45161B2624C641B` |
 | `doc/v5-重构/V5-P32A-VISIBILITY-PROJECTION.md` | 本文 |
 
 未修改：`AGENTS.md`、Contracts/Wire、`TableActor.cs`、`TableRuntimeContracts.cs`、`TableRuntimePorts.cs`、`ControlRegistry.cs`、`DecisionClock.cs`、`TableRuntimeFixtures.cs`、`Mahjong.sln`、任何 csproj/verifier/Unity 环境/Resources/Burst。

@@ -671,7 +671,7 @@ namespace Mahjong.TableRuntime
             ContextIndex index)
         {
             PublicBoardView board = BuildBoard(round, context, index);
-            PublicSessionSummary session = BuildSession(round, context);
+            PublicSessionSummary session = BuildSession(context);
             IReadOnlyList<ProtocolEventRecord> settlement = BuildSettlementEvents(context, audience);
             string settlementRoundId = context.Session != null && context.Session.SettlementRoundId.Length > 0
                 ? context.Session.SettlementRoundId
@@ -793,27 +793,22 @@ namespace Mahjong.TableRuntime
                 context.Policy.Paused);
         }
 
-        private static PublicSessionSummary BuildSession(RoundStateMachine round, TableProjectionContext context)
+        private static PublicSessionSummary BuildSession(TableProjectionContext context)
         {
-            if (context.Session != null)
-            {
-                return new PublicSessionSummary(
-                    context.Session.Finished,
-                    context.Session.FinishReason,
-                    ScoreViews(context.Session.FinalScores),
-                    context.Session.Rankings);
-            }
-
-            if (!round.IsFinished || round.Result == null)
+            // Match lifecycle is owned by TableSessionProjection, never by a single round.
+            // A finished round is still just a round: without explicit match context the
+            // summary must remain the neutral "not finished" value. Round final scores are
+            // published on Board, and the round settlement stays in SettlementRoundId/events.
+            if (context.Session == null)
             {
                 return new PublicSessionSummary(false, string.Empty, Array.Empty<ScoreView>(), Array.Empty<int>());
             }
 
             return new PublicSessionSummary(
-                true,
-                ReasonCode(round.Result.EndReason),
-                ScoreViews(round.Result.FinalScores),
-                Array.Empty<int>());
+                context.Session.Finished,
+                context.Session.FinishReason,
+                ScoreViews(context.Session.FinalScores),
+                context.Session.Rankings);
         }
 
         private static IReadOnlyList<ScoreView> ScoreViews(IReadOnlyList<long> scores)
@@ -1121,27 +1116,6 @@ namespace Mahjong.TableRuntime
                     throw new TableProjectionException(
                         TableProjectionErrorCode.InvalidContext,
                         "Unknown round phase " + phase + ".");
-            }
-        }
-
-        private static string ReasonCode(RoundEndReason reason)
-        {
-            switch (reason)
-            {
-                case RoundEndReason.None:
-                    return string.Empty;
-                case RoundEndReason.Tsumo:
-                    return "TSUMO";
-                case RoundEndReason.Ron:
-                    return "RON";
-                case RoundEndReason.ChankanRon:
-                    return "CHANKAN_RON";
-                case RoundEndReason.ExhaustiveDraw:
-                    return "EXHAUSTIVE_DRAW";
-                case RoundEndReason.AbortiveDraw:
-                    return "ABORTIVE_DRAW";
-                default:
-                    return "ROUND_END";
             }
         }
 
