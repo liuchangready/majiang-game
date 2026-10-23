@@ -4061,7 +4061,8 @@ namespace Mahjong.TableRuntime
                 _streamOptions.MaxQueuedBytes,
                 _streamOptions.Encoder != null,
                 _streamOptions.TerminationSink,
-                _recoveryGeneration);
+                _recoveryGeneration,
+                _streamOptions.BeforeDispatchClaim);
         }
 
         private TableStreamRegistration? FindCurrentRegistration(TableStreamHandle handle)

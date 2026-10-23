@@ -105,6 +105,7 @@ namespace Mahjong.TableRuntime
         private readonly TableStreamHandle _handle;
         private readonly ITableStreamSink _sink;
         private readonly ITableStreamTerminationSink? _terminationSink;
+        private readonly Action? _beforeDispatchClaim;
         private readonly int _maxFrames;
         private readonly int _maxBytes;
         private readonly bool _enforceBytes;
@@ -125,7 +126,8 @@ namespace Mahjong.TableRuntime
             int maxBytes,
             bool enforceBytes,
             ITableStreamTerminationSink? terminationSink,
-            long allowedGeneration)
+            long allowedGeneration,
+            Action? beforeDispatchClaim = null)
         {
             _handle = handle ?? throw new ArgumentNullException(nameof(handle));
             _sink = sink ?? throw new ArgumentNullException(nameof(sink));
@@ -134,6 +136,7 @@ namespace Mahjong.TableRuntime
             _enforceBytes = enforceBytes;
             _terminationSink = terminationSink;
             _allowedGeneration = allowedGeneration;
+            _beforeDispatchClaim = beforeDispatchClaim;
         }
 
         public bool IsClosed
@@ -298,8 +301,7 @@ namespace Mahjong.TableRuntime
         {
             while (true)
             {
-                TableStreamFrame? frame = null;
-                long allowedGeneration;
+                TableStreamFrame frame;
                 lock (_gate)
                 {
                     if (_closed || _queue.Count == 0)
@@ -310,13 +312,26 @@ namespace Mahjong.TableRuntime
 
                     frame = _queue.Dequeue();
                     _queuedBytes -= frame.PayloadSize;
-                    allowedGeneration = _allowedGeneration;
                 }
 
-                if (frame.RecoveryGeneration != allowedGeneration)
+                _beforeDispatchClaim?.Invoke();
+
+                DispatchClaimStatus claim = TryClaimDispatch(frame);
+                if (claim == DispatchClaimStatus.Closed)
                 {
-                    // Recovery fenced this frame while it was queued. Drop it without consulting
-                    // the sink; the next call must be the new generation's full baseline.
+                    lock (_gate)
+                    {
+                        _pumping = false;
+                    }
+
+                    return;
+                }
+
+                if (claim == DispatchClaimStatus.StaleGeneration)
+                {
+                    // The fence/close won the linearization race before this dispatch was
+                    // claimed. Do not consult the old sink; the next frame is the current
+                    // generation's full baseline.
                     continue;
                 }
 
@@ -335,26 +350,73 @@ namespace Mahjong.TableRuntime
                 }
                 catch (Exception exception)
                 {
-                    TableStreamTermination? termination;
+                    TableStreamTermination? termination = null;
+                    bool stop = false;
                     lock (_gate)
                     {
                         if (_closed)
                         {
                             _pumping = false;
-                            return;
+                            stop = true;
                         }
-
-                        termination = CloseLocked(
-                            TableStreamTerminationKind.ActorFaulted,
-                            ProtocolErrorCode.InternalError,
-                            exception.GetType().Name + ": " + exception.Message);
+                        else if (frame.RecoveryGeneration != _allowedGeneration)
+                        {
+                            // A completion from an atomically claimed old generation is stale.
+                            // Its failure/cancellation must not close or clear the current
+                            // generation's outbox (which may already hold the new baseline).
+                        }
+                        else
+                        {
+                            termination = CloseLocked(
+                                TableStreamTerminationKind.ActorFaulted,
+                                ProtocolErrorCode.InternalError,
+                                exception.GetType().Name + ": " + exception.Message);
+                            stop = true;
+                        }
                     }
 
-                    ScheduleCancellation();
-                    Notify(termination);
-                    return;
+                    if (termination != null)
+                    {
+                        ScheduleCancellation();
+                        Notify(termination);
+                    }
+
+                    if (stop)
+                    {
+                        return;
+                    }
+
+                    continue;
                 }
             }
+        }
+
+        /// <summary>
+        /// Linearization point for dispatch versus recovery/close. The check and the claim are
+        /// one lock operation against the current fence. A fence before this call drops the
+        /// frame; a fence after it sees one already-claimed in-flight sink call, which cannot
+        /// be recalled without waiting for downstream code on the actor thread.
+        /// </summary>
+        private DispatchClaimStatus TryClaimDispatch(TableStreamFrame frame)
+        {
+            lock (_gate)
+            {
+                if (_closed)
+                {
+                    return DispatchClaimStatus.Closed;
+                }
+
+                return frame.RecoveryGeneration == _allowedGeneration
+                    ? DispatchClaimStatus.Claimed
+                    : DispatchClaimStatus.StaleGeneration;
+            }
+        }
+
+        private enum DispatchClaimStatus : byte
+        {
+            Claimed = 0,
+            StaleGeneration = 1,
+            Closed = 2
         }
 
         private void Notify(TableStreamTermination termination)

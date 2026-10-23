@@ -713,6 +713,13 @@ namespace Mahjong.TableRuntime
 
         public ITableStreamTerminationSink? TerminationSink { get; set; }
 
+        /// <summary>
+        /// Deterministic test seam: invoked after a frame is dequeued but before the channel
+        /// commits its dispatch claim. Production leaves this null. It is internal so only the
+        /// friend test assembly can pause the pump between dequeue and the generation check.
+        /// </summary>
+        internal Action? BeforeDispatchClaim { get; set; }
+
         internal void Validate()
         {
             if (MaxQueuedFrames < 1)
