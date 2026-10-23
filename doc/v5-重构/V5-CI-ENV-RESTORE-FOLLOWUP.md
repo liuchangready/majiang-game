@@ -166,3 +166,46 @@ CI 证据引用（只读）：`D:/majiang/artifacts/progress-20261024-current/la
 - 未主张平台（Unity/IL2CPP/Android/iOS）、真机、真实网络已测；workflow 覆盖面注释原样保留该边界。
 - 未 push、未建 PR、未触发远端 CI；未改 machine/user 持久环境；未改已接受 pg 脚本（start/restart/migrate/cleanup/pg-common）与统一 verifier（其 sha 见 run-info.txt：`FA8D539BB6E036A7FD002011F001F5D5FDB27BA8B20CD5A9089098E87F3CE307`）。
 - CI runner（GitHub windows-2025-vs2026 镜像）上的最终等价验证由 caller 的 PR19 链路完成；本文件的双宿主 192/0 与真实 PG 一次全绿为本地等价证据。
+
+## 9. 第 2 轮：独立复验失败（并发端口碰撞）与自测加固
+
+### 9.1 复验失败事实（caller 独立检视，原样保留）
+
+- 对象：HEAD `099cccb3ad7944d67aeb87d9b920f85abb605f86`，命令 `powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/tests/VerifyV5PostgresCi.Tests.ps1 -PwshPath C:/Users/sncdc/AppData/Local/Temp/majiang-env-matrix-20261024/pwsh7/pwsh.exe`，**exit 1**。
+- 完整日志：`artifacts/codex-env-restore-review/selftest-ps51.log`（树内 untracked 保留，SHA-256 `6498d9c78a4b48c87146e47e5a2b4a46dc2f27507863901d35bdefa32f2ca735`，UTF-16LE）。
+- 经过：S1 真实 PG、S2/S3/S4/S5/S7 全部 PASS；进入 S8 后，`$s8Listener.Start()`（当时位于 try 块外、端口硬编码 55460）抛出：
+
+```
+Exception calling "Start" with "0" argument(s): "Only one usage of each socket
+address (protocol/network address/port) is normally permitted"
++ FullyQualifiedErrorId : SocketException,VerifyV5PostgresCi.Tests.ps1
+```
+
+S9 与最终 verdict 未执行。
+
+### 9.2 归因（检视方提供的事实，未做无证据推断）
+
+启动前 55460/55461 实测空闲；执行期间**另一检视进程**在 `D:/majiang-wt/codex-env-review-20261024` 运行相同自测（PowerShell PID 29396，父 36744），其 S1 真实 PG 集群占用 55460，与本自测 S8 的硬编码监听相撞导致中途抢占；该进程未被杀死，其他工作树未被改动。
+
+**结论：这是自测装置的并发脆弱点，不是生产恢复逻辑缺陷**——检视方独立的 Save→overwrite→Restore 三态探针在两宿主均通过，开发期真实 PG 证据 12 个哈希全部匹配。因此本轮**零改动**生产恢复代码（`tools/ci/verify-v5-postgres.ps1` 与 workflow 未动），仅加固 selftest。
+
+### 9.3 selftest 加固（仅 tools/tests/VerifyV5PostgresCi.Tests.ps1）
+
+1. 新增 `-BasePort` 参数（默认 55460，第二端口恒为 +1，默认值完全兼容历史 55460/55461）；取值超出 1024..65534 时 BLOCKED exit 2。S1 真实 PG 集群、S2/S3/S5 的 wrapper 运行、S4/S8 外来监听、S6 TCP 探针与 ownership 夹具、S7 拒绝路径——**所有运行时端口引用一律经由该端口对**，两个并发自测进程各传不同 `-BasePort` 即可并存。S0 对 wrapper 文档默认端口 `'55460'` 的静态断言保持原样（其断言对象是 wrapper 文件文本，与自测运行端口无关）。
+2. 新增 `Start-ScenarioListener` helper：listener 创建/启动**永不抛出**——绑定失败记为显式 `BLOCKED` FAIL 断言（标明端口与原始异常消息），仅跳过依赖该 listener 的检查，后续场景与最终 verdict 照常执行；不重试、不以 skip 掩盖失败；`finally` 对 null 安全 `Stop()`。S4、S6 探针、S8 三处全部改走该 helper（S8 即 §9.1 崩溃点；S4 与 S6 为同类潜伏点一并加固）。
+
+### 9.4 独占端口串行复跑（结果）
+
+预检 55470/55471 实测 FREE 后，同端口对严格串行：
+
+| run | 命令要点 | 结果 | exit | 日志（SHA-256） |
+|---|---|---|---|---|
+| A | PS 5.1 宿主 + `-PwshPath <TEMP>/pwsh7/pwsh.exe` + `-BasePort 55470` | **192 checks, 0 failures** | 0 | `selftest-ps51-r2.log` = `f0d0d7df86b1bf641eb766418859fc14a1543f5b8c4a71df07e5faf787d8cb26` |
+| B | pwsh 7.6.6 宿主 + `-PwshPath powershell.exe` + `-BasePort 55470` | **192 checks, 0 failures** | 0 | `selftest-pwsh766-r2.log` = `6ec9cb7f666e36ae0618e07098f8ce929cae45e087f107f1d86c9860208f8094` |
+
+selftest 终态 SHA-256：`b14bcf0d51aa30677663999dde606c85a47c10e30193bb908d7c87783beb2b10`（取代 §7 所记 `faee4722…`，即 §1-8 记录的 round-1 提交 099cccb 状态）。
+
+### 9.5 边界声明（本轮）
+
+- 真实 PG 生产路径本轮**无新运行**：§6 的一次全绿仍是唯一真实 PG 运行证据；本轮改动不触碰任何生产脚本。
+- §9.4 的 192/0 是**本工作树自测结果**，在 caller 完整复验通过之前不作为已复验结论；仍不 push、不建 PR，PR19 收口由 caller 在复验通过后进行。

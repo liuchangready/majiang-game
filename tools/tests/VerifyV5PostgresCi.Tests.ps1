@@ -47,10 +47,14 @@
           same cases re-run INSIDE that host as real child-process evidence
           (e.g. a 5.1 self-test with -PwshPath pwsh.exe, or the reverse).
 
-    Ports used: 55460/55461 only (never 55450-55452); every scenario runs
-    sequentially so the two ports are never contended. The disposable zip is
-    reused from the local cache; its SHA-256 is pinned inside the accepted
-    start-postgres.ps1, which the wrapper invokes unmodified.
+    Ports used: the -BasePort pair only (default 55460/55461, never
+    55450-55452); every scenario runs sequentially so the two ports are never
+    contended within one run, and concurrent self-test processes on the same
+    machine pass distinct -BasePort values. A listener bind failure is
+    recorded as an explicit BLOCKED-FAIL assertion (never an unhandled
+    crash) so later scenarios and the final verdict still run. The disposable
+    zip is reused from the local cache; its SHA-256 is pinned inside the
+    accepted start-postgres.ps1, which the wrapper invokes unmodified.
 
     Exit codes: 0 every assertion passed; 1 at least one assertion failed;
     2 the harness itself was blocked or threw.
@@ -61,7 +65,15 @@ param(
     [string]$ZipPath = 'D:\majiang-pg-tmp\cache\postgresql-16.10-1-windows-x64-binaries.zip',
     # Optional second host (e.g. pwsh.exe) for the S9 dual-runtime env-restore
     # evidence. Empty = the dual-host scenario reports NOT_RUN on that leg.
-    [string]$PwshPath = ''
+    [string]$PwshPath = '',
+    # First port of the self-test's dedicated loopback pair (the second is
+    # +1). Default 55460 keeps the historical 55460/55461 pair. Every runtime
+    # port use - the S1 real-PG cluster, S3/S5 stub runs, S4/S8 foreign
+    # listeners, S6/S7 ownership-marker fixtures and every wrapper -Port -
+    # derives from this one knob so two concurrent self-test processes never
+    # fight over a socket (the S8 crash recorded in the followup doc, section
+    # 9, was exactly such a collision).
+    [int]$BasePort = 55460
 )
 
 $ErrorActionPreference = 'Stop'
@@ -85,6 +97,26 @@ function Assert-Equal([string]$Expected, [string]$Actual, [string]$Label) {
     Assert-True ($Expected -ceq $Actual) "$Label (expected '$Expected', actual '$Actual')"
 }
 
+function Start-ScenarioListener([int]$Port, [string]$LabelPrefix) {
+    # Binds a scenario listener WITHOUT ever throwing. A bind failure (a
+    # concurrent process holding the port - the recorded S8 crash of the
+    # independent review round) is recorded as an explicit BLOCKED-FAIL
+    # assertion and returns $null so the caller skips only the dependent
+    # checks while the run, later scenarios and the final verdict continue.
+    # The failure is never retried and never masked as a skip.
+    $listener = $null
+    try {
+        $listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, $Port)
+        $listener.Start()
+        return $listener
+    }
+    catch {
+        Assert-True $false "$LabelPrefix listener could not start on 127.0.0.1:$Port (BLOCKED, a concurrent process likely holds the port): $($_.Exception.Message)"
+        if ($null -ne $listener) { try { $listener.Stop() } catch { } }
+        return $null
+    }
+}
+
 # --- 0. environment --------------------------------------------------------------
 if (-not (Test-Path -LiteralPath $DotnetPath)) {
     Write-Host "BLOCKED: dotnet not found at $DotnetPath"
@@ -102,6 +134,11 @@ if (-not (Test-Path -LiteralPath $ZipPath)) {
     Write-Host "BLOCKED: cached PostgreSQL zip not found at $ZipPath (the wrapper would have to download; this self-test requires the local cache)"
     exit 2
 }
+if ($BasePort -lt 1024 -or $BasePort -gt 65534) {
+    Write-Host "BLOCKED: -BasePort must be in 1024..65534 so the +1 pair port stays valid (got $BasePort)"
+    exit 2
+}
+$Port2 = $BasePort + 1
 
 $selfTemp = Join-Path ([IO.Path]::GetTempPath()) ("VerifyV5PostgresCi-" + (Get-Date -Format 'yyyyMMdd-HHmmss') + "-" + [guid]::NewGuid().ToString('N').Substring(0, 8))
 New-Item -ItemType Directory -Force -Path $selfTemp | Out-Null
@@ -492,13 +529,14 @@ try {
     }
 
     # TCP probe both ways
-    Assert-True (-not (Test-WrapperTcpPortOpen -Port 55460)) 'S6 TCP probe reports closed for a free port'
-    $listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, 55461)
-    $listener.Start()
-    try {
-        Assert-True (Test-WrapperTcpPortOpen -Port 55461) 'S6 TCP probe reports open against a live listener'
+    Assert-True (-not (Test-WrapperTcpPortOpen -Port $BasePort)) 'S6 TCP probe reports closed for a free port'
+    $listener = Start-ScenarioListener -Port $Port2 -LabelPrefix 'S6 probe'
+    if ($null -ne $listener) {
+        try {
+            Assert-True (Test-WrapperTcpPortOpen -Port $Port2) 'S6 TCP probe reports open against a live listener'
+        }
+        finally { $listener.Stop() }
     }
-    finally { $listener.Stop() }
 
     # --- pre-existence detection: every on-disk form must be caught --------------
     $s6pathBase = Join-Path $selfTemp 's6-paths'
@@ -524,18 +562,18 @@ try {
     $s6ownRoot = Join-Path $selfTemp 's6-own-root'
     New-Item -ItemType Directory -Force -Path $s6ownRoot | Out-Null
     $s6marker = Join-Path $s6ownRoot 'pg-owner.json'
-    $legalMarker = @{ port = 55460; root = $s6ownRoot; database = 'mahjong_lobby_test'; owner = 'mahjong-p53-pg'; createdUtc = '2026-10-23T00:00:00Z' } | ConvertTo-Json
+    $legalMarker = @{ port = $BasePort; root = $s6ownRoot; database = 'mahjong_lobby_test'; owner = 'mahjong-p53-pg'; createdUtc = '2026-10-23T00:00:00Z' } | ConvertTo-Json
     Write-Utf8File -Path $s6marker -Content $legalMarker
-    Assert-True ((Test-WrapperClusterOwnership -Root $s6ownRoot -Port 55460 -Database 'mahjong_lobby_test' -MarkerPath $s6marker -RecordedMarkerSha256 '') -ceq 'owned') 'S6 ownership: matching fields are owned'
-    Assert-True ((Test-WrapperClusterOwnership -Root $s6ownRoot -Port 55461 -Database 'mahjong_lobby_test' -MarkerPath $s6marker -RecordedMarkerSha256 '') -ceq 'foreign') 'S6 ownership: wrong port is foreign'
-    Assert-True ((Test-WrapperClusterOwnership -Root (Join-Path $selfTemp 's6-other-root') -Port 55460 -Database 'mahjong_lobby_test' -MarkerPath $s6marker -RecordedMarkerSha256 '') -ceq 'foreign') 'S6 ownership: wrong root field is foreign'
-    Assert-True ((Test-WrapperClusterOwnership -Root $s6ownRoot -Port 55460 -Database 'mahjong_lobby_test_other' -MarkerPath $s6marker -RecordedMarkerSha256 '') -ceq 'foreign') 'S6 ownership: wrong database is foreign'
-    Assert-True ((Test-WrapperClusterOwnership -Root $s6ownRoot -Port 55460 -Database 'mahjong_lobby_test' -MarkerPath (Join-Path $selfTemp 's6-missing-marker.json') -RecordedMarkerSha256 '') -ceq 'owned-unmarked') 'S6 ownership: missing marker is owned-unmarked (fresh half-initialized root)'
+    Assert-True ((Test-WrapperClusterOwnership -Root $s6ownRoot -Port $BasePort -Database 'mahjong_lobby_test' -MarkerPath $s6marker -RecordedMarkerSha256 '') -ceq 'owned') 'S6 ownership: matching fields are owned'
+    Assert-True ((Test-WrapperClusterOwnership -Root $s6ownRoot -Port $Port2 -Database 'mahjong_lobby_test' -MarkerPath $s6marker -RecordedMarkerSha256 '') -ceq 'foreign') 'S6 ownership: wrong port is foreign'
+    Assert-True ((Test-WrapperClusterOwnership -Root (Join-Path $selfTemp 's6-other-root') -Port $BasePort -Database 'mahjong_lobby_test' -MarkerPath $s6marker -RecordedMarkerSha256 '') -ceq 'foreign') 'S6 ownership: wrong root field is foreign'
+    Assert-True ((Test-WrapperClusterOwnership -Root $s6ownRoot -Port $BasePort -Database 'mahjong_lobby_test_other' -MarkerPath $s6marker -RecordedMarkerSha256 '') -ceq 'foreign') 'S6 ownership: wrong database is foreign'
+    Assert-True ((Test-WrapperClusterOwnership -Root $s6ownRoot -Port $BasePort -Database 'mahjong_lobby_test' -MarkerPath (Join-Path $selfTemp 's6-missing-marker.json') -RecordedMarkerSha256 '') -ceq 'owned-unmarked') 'S6 ownership: missing marker is owned-unmarked (fresh half-initialized root)'
     Write-Utf8File -Path (Join-Path $selfTemp 's6-corrupt-marker.json') -Content '{ this is not json'
-    Assert-True ((Test-WrapperClusterOwnership -Root $s6ownRoot -Port 55460 -Database 'x' -MarkerPath (Join-Path $selfTemp 's6-corrupt-marker.json') -RecordedMarkerSha256 '') -ceq 'foreign') 'S6 ownership: corrupt marker JSON is foreign, never a delete permit'
+    Assert-True ((Test-WrapperClusterOwnership -Root $s6ownRoot -Port $BasePort -Database 'x' -MarkerPath (Join-Path $selfTemp 's6-corrupt-marker.json') -RecordedMarkerSha256 '') -ceq 'foreign') 'S6 ownership: corrupt marker JSON is foreign, never a delete permit'
     $s6realSha = Get-WrapperFileSha256 -Path $s6marker
-    Assert-True ((Test-WrapperClusterOwnership -Root $s6ownRoot -Port 55460 -Database 'mahjong_lobby_test' -MarkerPath $s6marker -RecordedMarkerSha256 $s6realSha) -ceq 'owned') 'S6 ownership: recorded marker hash still matching is owned'
-    Assert-True ((Test-WrapperClusterOwnership -Root $s6ownRoot -Port 55460 -Database 'mahjong_lobby_test' -MarkerPath $s6marker -RecordedMarkerSha256 ('0' * 64)) -ceq 'foreign') 'S6 ownership: mid-run marker replacement is foreign'
+    Assert-True ((Test-WrapperClusterOwnership -Root $s6ownRoot -Port $BasePort -Database 'mahjong_lobby_test' -MarkerPath $s6marker -RecordedMarkerSha256 $s6realSha) -ceq 'owned') 'S6 ownership: recorded marker hash still matching is owned'
+    Assert-True ((Test-WrapperClusterOwnership -Root $s6ownRoot -Port $BasePort -Database 'mahjong_lobby_test' -MarkerPath $s6marker -RecordedMarkerSha256 ('0' * 64)) -ceq 'foreign') 'S6 ownership: mid-run marker replacement is foreign'
     Assert-True ((Get-WrapperFileSha256 -Path $s6marker) -ceq (Get-FileHash -LiteralPath $s6marker -Algorithm SHA256).Hash) 'S6 file SHA-256 helper matches Get-FileHash'
 
     # clean the S6 disk probes (they are this self-test's own creations)
@@ -555,11 +593,11 @@ Write-Host ''
 Write-Host '=== S1: real disposable PostgreSQL + real unified gate (fixture) ==='
 $s1Root = Join-Path $selfTemp 'root-s1'
 $s1LogDir = Join-Path $selfTemp 'logs-s1'
-$s1Fixture = New-PgFixtureWorkspace -Port '55460' -DbName 'mahjong_lobby_test_ci_s1'
+$s1Fixture = New-PgFixtureWorkspace -Port "$BasePort" -DbName 'mahjong_lobby_test_ci_s1'
 try {
     $s1Exit = Invoke-WrapperRun -Arguments @{
         Root                 = $s1Root
-        Port                 = 55460
+        Port                 = $BasePort
         DbName               = 'mahjong_lobby_test_ci_s1'
         PgZipPath            = $ZipPath
         LogDir               = $s1LogDir
@@ -643,7 +681,7 @@ $s2LogDir = Join-Path $selfTemp 'logs-s2'
 try {
     $s2Exit = Invoke-WrapperRun -Arguments @{
         Root       = $s2Root
-        Port       = 55460
+        Port       = $BasePort
         DbName     = 'mahjong_lobby_test_ci_s2'
         PgZipPath  = (Join-Path $selfTemp 'definitely-not-there.zip')
         LogDir     = $s2LogDir
@@ -681,39 +719,40 @@ Write-Host ''
 Write-Host '=== S4: real port conflict refusal ==='
 $s4Root = Join-Path $selfTemp 'root-s4'
 $s4LogDir = Join-Path $selfTemp 'logs-s4'
-$s4Listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, 55460)
-$s4Listener.Start()
+$s4Listener = Start-ScenarioListener -Port $BasePort -LabelPrefix 'S4 foreign'
 try {
-    $s4Exit = Invoke-WrapperRun -Arguments @{
-        Root       = $s4Root
-        Port       = 55460
-        DbName     = 'mahjong_lobby_test_ci_s4'
-        LogDir     = $s4LogDir
-        DotnetPath = $DotnetPath
-    } -ConsoleOutPath (Join-Path $selfTemp 's4-console.log')
-    Assert-True ($s4Exit -ne 0) "S4 wrapper exits non-zero when the port is taken (got $s4Exit)"
-    Assert-True (-not (Test-Path -LiteralPath $s4Root)) 'S4 foreign conflict created nothing: explicit root absent'
+    if ($null -ne $s4Listener) {
+        $s4Exit = Invoke-WrapperRun -Arguments @{
+            Root       = $s4Root
+            Port       = $BasePort
+            DbName     = 'mahjong_lobby_test_ci_s4'
+            LogDir     = $s4LogDir
+            DotnetPath = $DotnetPath
+        } -ConsoleOutPath (Join-Path $selfTemp 's4-console.log')
+        Assert-True ($s4Exit -ne 0) "S4 wrapper exits non-zero when the port is taken (got $s4Exit)"
+        Assert-True (-not (Test-Path -LiteralPath $s4Root)) 'S4 foreign conflict created nothing: explicit root absent'
 
-    $s4Console = Get-Content -LiteralPath (Join-Path $selfTemp 's4-console.log') -Raw
-    Assert-True ($s4Console -match 'already in use') 'S4 refusal message names the busy port'
-    $s4Summary = Get-WrapperSummary $s4LogDir
-    Assert-True ($null -ne $s4Summary) 'S4 wrapper-summary.json written'
-    if ($null -ne $s4Summary) {
-        Assert-Equal 'absent' ([string]$s4Summary.cluster.ownership) 'S4 precheck failure resolved ownership as absent'
-        Assert-Equal 'PASS' (Get-StageStatus $s4Summary 'cleanup') 'S4 cleanup skipped-PASS: nothing owned to clean, nothing foreign touched'
+        $s4Console = Get-Content -LiteralPath (Join-Path $selfTemp 's4-console.log') -Raw
+        Assert-True ($s4Console -match 'already in use') 'S4 refusal message names the busy port'
+        $s4Summary = Get-WrapperSummary $s4LogDir
+        Assert-True ($null -ne $s4Summary) 'S4 wrapper-summary.json written'
+        if ($null -ne $s4Summary) {
+            Assert-Equal 'absent' ([string]$s4Summary.cluster.ownership) 'S4 precheck failure resolved ownership as absent'
+            Assert-Equal 'PASS' (Get-StageStatus $s4Summary 'cleanup') 'S4 cleanup skipped-PASS: nothing owned to clean, nothing foreign touched'
+        }
+
+        # the foreign listener must be untouched and answering
+        $probe = New-Object System.Net.Sockets.TcpClient
+        $probe.Connect('127.0.0.1', $BasePort)
+        Assert-True $probe.Connected 'S4 foreign listener survives the refused wrapper run'
+        $probe.Dispose()
     }
-
-    # the foreign listener must be untouched and answering
-    $probe = New-Object System.Net.Sockets.TcpClient
-    $probe.Connect('127.0.0.1', 55460)
-    Assert-True $probe.Connected 'S4 foreign listener survives the refused wrapper run'
-    $probe.Dispose()
 }
 catch {
     Write-Host "  ERROR S4: $($_.Exception.Message)"
     $script:failures.Add("S4 threw: $($_.Exception.Message)")
 }
-finally { $s4Listener.Stop() }
+finally { if ($null -ne $s4Listener) { $s4Listener.Stop() } }
 
 # =====================================================================================
 # S3: runner-failure propagation through a stub verifier (mock = exit-code control)
@@ -726,7 +765,7 @@ $s3Stub = New-StubVerifier -ExitCode 3 -Tag 's3'
 try {
     $s3Exit = Invoke-WrapperRun -Arguments @{
         Root         = $s3Root
-        Port         = 55461
+        Port         = $Port2
         DbName       = 'mahjong_lobby_test_ci_s3'
         PgZipPath    = $ZipPath
         LogDir       = $s3LogDir
@@ -761,7 +800,7 @@ $s5Stub = New-StubVerifier -ExitCode 0 -Tag 's5' -HoldRootLock -PidFile $s5PidFi
 try {
     $s5Exit = Invoke-WrapperRun -Arguments @{
         Root         = $s5Root
-        Port         = 55461
+        Port         = $Port2
         DbName       = 'mahjong_lobby_test_ci_s5'
         PgZipPath    = $ZipPath
         LogDir       = $s5LogDir
@@ -812,7 +851,7 @@ $s7Foreign = Join-Path $selfTemp 's7-preexisting-root'
 New-Item -ItemType Directory -Force -Path $s7Foreign | Out-Null
 $s7MarkerPath = Join-Path $s7Foreign 'pg-owner.json'
 $s7SentinelPath = Join-Path $s7Foreign 'preexisting-sentinel.txt'
-Write-Utf8File -Path $s7MarkerPath -Content (@{ port = 55460; root = $s7Foreign; database = 'mahjong_lobby_test'; owner = 'mahjong-p53-pg'; createdUtc = '2026-10-23T00:00:00Z' } | ConvertTo-Json)
+Write-Utf8File -Path $s7MarkerPath -Content (@{ port = $BasePort; root = $s7Foreign; database = 'mahjong_lobby_test'; owner = 'mahjong-p53-pg'; createdUtc = '2026-10-23T00:00:00Z' } | ConvertTo-Json)
 Write-Utf8File -Path $s7SentinelPath -Content 'pre-existing data: the wrapper must never delete this'
 $s7MarkerShaBefore = (Get-FileHash -LiteralPath $s7MarkerPath -Algorithm SHA256).Hash
 $s7SentinelShaBefore = (Get-FileHash -LiteralPath $s7SentinelPath -Algorithm SHA256).Hash
@@ -825,7 +864,7 @@ $s7LogDir = Join-Path $selfTemp 'logs-s7'
 try {
     $s7Exit = Invoke-WrapperRun -Arguments @{
         Root       = $s7Foreign
-        Port       = 55460
+        Port       = $BasePort
         DbName     = 'mahjong_lobby_test_ci_s7'
         PgZipPath  = (Join-Path $selfTemp 'definitely-not-there.zip')
         LogDir     = $s7LogDir
@@ -848,7 +887,7 @@ try {
     # normalized aliases of the SAME existing directory must refuse identically
     $s7AliasExit = Invoke-WrapperRun -Arguments @{
         Root       = ($s7Foreign + [IO.Path]::DirectorySeparatorChar)
-        Port       = 55460
+        Port       = $BasePort
         DbName     = 'mahjong_lobby_test_ci_s7'
         PgZipPath  = (Join-Path $selfTemp 'definitely-not-there.zip')
         LogDir     = (Join-Path $selfTemp 'logs-s7-alias')
@@ -857,7 +896,7 @@ try {
     Assert-Equal '2' ([string]$s7AliasExit) 'S7 trailing-separator alias of the same directory also refused'
     $s7CaseExit = Invoke-WrapperRun -Arguments @{
         Root       = $s7Foreign.ToUpperInvariant()
-        Port       = 55460
+        Port       = $BasePort
         DbName     = 'mahjong_lobby_test_ci_s7'
         PgZipPath  = (Join-Path $selfTemp 'definitely-not-there.zip')
         LogDir     = (Join-Path $selfTemp 'logs-s7-case')
@@ -886,35 +925,36 @@ finally {
 Write-Host ''
 Write-Host '=== S8: existing listener + pre-existing root (refusal precedes precheck) ==='
 $s8LogDir = Join-Path $selfTemp 'logs-s8'
-$s8Listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, 55460)
-$s8Listener.Start()
+$s8Listener = Start-ScenarioListener -Port $BasePort -LabelPrefix 'S8 foreign'
 try {
-    $s8Exit = Invoke-WrapperRun -Arguments @{
-        Root       = $s7Foreign
-        Port       = 55460
-        DbName     = 'mahjong_lobby_test_ci_s8'
-        PgZipPath  = $ZipPath
-        LogDir     = $s8LogDir
-        DotnetPath = $DotnetPath
-    } -ConsoleOutPath (Join-Path $selfTemp 's8-console.log')
-    Assert-Equal '2' ([string]$s8Exit) 'S8 exits 2 for a pre-existing root even with the port busy'
-    $s8Console = Get-Content -LiteralPath (Join-Path $selfTemp 's8-console.log') -Raw
-    Assert-True ($s8Console -match 'BLOCKED: refusing a pre-existing cluster root') 'S8 refused by the pre-existence guard'
-    Assert-True (-not ($s8Console -match 'already in use')) 'S8 never reached the port precheck (refusal precedes it)'
-    $probe = New-Object System.Net.Sockets.TcpClient
-    $probe.Connect('127.0.0.1', 55460)
-    Assert-True $probe.Connected 'S8 foreign listener survives the refusal'
-    $probe.Dispose()
-    Assert-True (-not (Test-Path -LiteralPath $s8LogDir)) 'S8 nothing created: LogDir never made'
-    Assert-True ((Get-FileHash -LiteralPath $s7MarkerPath -Algorithm SHA256).Hash -ceq $s7MarkerShaBefore) 'S8 foreign marker hash unchanged'
-    Assert-True ((Get-FileHash -LiteralPath $s7SentinelPath -Algorithm SHA256).Hash -ceq $s7SentinelShaBefore) 'S8 sentinel hash unchanged'
+    if ($null -ne $s8Listener) {
+        $s8Exit = Invoke-WrapperRun -Arguments @{
+            Root       = $s7Foreign
+            Port       = $BasePort
+            DbName     = 'mahjong_lobby_test_ci_s8'
+            PgZipPath  = $ZipPath
+            LogDir     = $s8LogDir
+            DotnetPath = $DotnetPath
+        } -ConsoleOutPath (Join-Path $selfTemp 's8-console.log')
+        Assert-Equal '2' ([string]$s8Exit) 'S8 exits 2 for a pre-existing root even with the port busy'
+        $s8Console = Get-Content -LiteralPath (Join-Path $selfTemp 's8-console.log') -Raw
+        Assert-True ($s8Console -match 'BLOCKED: refusing a pre-existing cluster root') 'S8 refused by the pre-existence guard'
+        Assert-True (-not ($s8Console -match 'already in use')) 'S8 never reached the port precheck (refusal precedes it)'
+        $probe = New-Object System.Net.Sockets.TcpClient
+        $probe.Connect('127.0.0.1', $BasePort)
+        Assert-True $probe.Connected 'S8 foreign listener survives the refusal'
+        $probe.Dispose()
+        Assert-True (-not (Test-Path -LiteralPath $s8LogDir)) 'S8 nothing created: LogDir never made'
+        Assert-True ((Get-FileHash -LiteralPath $s7MarkerPath -Algorithm SHA256).Hash -ceq $s7MarkerShaBefore) 'S8 foreign marker hash unchanged'
+        Assert-True ((Get-FileHash -LiteralPath $s7SentinelPath -Algorithm SHA256).Hash -ceq $s7SentinelShaBefore) 'S8 sentinel hash unchanged'
+    }
 }
 catch {
     Write-Host "  ERROR S8: $($_.Exception.Message)"
     $script:failures.Add("S8 threw: $($_.Exception.Message)")
 }
 finally {
-    $s8Listener.Stop()
+    if ($null -ne $s8Listener) { $s8Listener.Stop() }
     # test hygiene: remove the synthetic foreign root this self-test created
     Remove-Item -LiteralPath $s7Foreign -Recurse -Force -ErrorAction SilentlyContinue
 }
