@@ -23,6 +23,7 @@
     <ProjectReference Include="..\..\src\Mahjong.Contracts\Mahjong.Contracts.csproj" />
     <ProjectReference Include="..\..\src\Mahjong.Contracts.Wire\Mahjong.Contracts.Wire.csproj" />
     <ProjectReference Include="..\..\src\Mahjong.Domain\Mahjong.Domain.csproj" />
+    <ProjectReference Include="..\Mahjong.Contracts.Wire.AotSmoke\Mahjong.Contracts.Wire.AotSmoke.csproj" />
   </ItemGroup>
 
   <ItemGroup>

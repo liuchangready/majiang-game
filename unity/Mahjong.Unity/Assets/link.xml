@@ -1,0 +1,14 @@
+<linker>
+  <!--
+    P2.2 AOT/link preservation for the generated Wire codec.
+
+    This is deliberately conservative: the Protobuf codec keeps message
+    descriptors and enum metadata alive and the probe assembly is the direct
+    AOT consumer. It is not a substitute for an actual IL2CPP build; see
+    doc/v5-重构/V5-1-P2.2-AOT-PLATFORM-REPORT.md.
+  -->
+  <assembly fullname="Mahjong.Contracts" preserve="all" />
+  <assembly fullname="Mahjong.Contracts.Wire" preserve="all" />
+  <assembly fullname="Mahjong.Contracts.Wire.AotSmoke" preserve="all" />
+  <assembly fullname="Google.Protobuf" preserve="all" />
+</linker>
