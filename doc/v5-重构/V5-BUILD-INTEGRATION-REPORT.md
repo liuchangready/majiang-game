@@ -3,11 +3,12 @@
 - 分支：`wt/v5-build-integration`（独立 worktree `D:\majiang-wt\build-integration`）
 - 基线：`92f52fe`（docs(v5): record durable outbox round 2 verification）
 - 日期：2026-10-23
+- 修订：r2 —— Codex 独立复验返修：修复"编译失败被旧 DLL 掩盖"假绿（构建阶段逐项目真实构建 + 回退门禁）、发现 helper 未构建即 PASS、插件子进程 `-DotnetPath` 透传；证据见 §5/§6（`artifacts/rework-probes/`）
 - 结论：**本地全部验证 PASS（.NET 侧 461 用例 0 失败）；CI 与 Unity 侧为 NOT_RUN/BLOCKED，未宣称通过**（详见 §6/§7）。
 
 ## 1. 范围与路径台账
 
-本任务仅修改以下 6 个路径（即 expectedFiles），未触碰其他已跟踪文件：
+任务账本 expectedFiles 为：`tools/dotnet/verify-v5.ps1`、`tools/dotnet/verify-projects.json`、`.github/workflows/v5-dotnet.yml`、`doc/v5-重构/V5-BUILD-TEST-INTEGRATION.md`（另两文件与本表同名文件相同）。第一轮实际交付采用了下表 4 个替代路径（内容职责一一对应）。Codex 复验（第 2 轮）已明确认可**沿用当前六个实际交付路径**（避免无意义的文件移动），仅本地 `artifacts/` 探针不入库；**本表即实际变更全集，与原 expectedFiles 路径不一一对应，该替代已在第 2 轮获认可**。除下表外未触碰任何已跟踪文件：
 
 | # | 路径 | 变更 |
 |---|---|---|
@@ -59,9 +60,10 @@ powershell -ExecutionPolicy Bypass -File tools\verify-v5.ps1 [-Configuration Rel
 
 - 清单项目 + 磁盘发现项目（`dotnet/tests/**/*.Tests.csproj` 等 3 种模式）合并为验证清单，标注 `Source=manifest|discovered`；新测试工程落入模式即自动参与验证（Transport.Tests 合并后无需改脚本）。
 - 必需项目缺失（磁盘或 sln）→ FAIL，不静默。
-- 逐项目：sln 构建退出码；测试工程执行 `dotnet test`（英文输出 `DOTNET_CLI_UI_LANGUAGE=en`），解析 vstest 真实用例计数；`dotnet test` 失败时记录原因并回退到同一程序集的官方 in-process runner（xunit.v3 MTP 自宿主直跑），再次解析真实计数；**Total=0 判 FAIL（零用例不报绿）；未运行的测试一律不记通过**。
+- 构建（所有 runner 模式一致，r2 修复）：sln 构建覆盖 sln 内项目；**未入 sln 的发现工程（test 与 helper）一律逐项目独立真实构建**，本次构建失败即 FAIL，绝不运行旧产物；`Built` 只反映本次对当前源码的真实构建结果。
+- 测试执行（r2 收紧回退）：测试工程执行 `dotnet test`（英文输出 `DOTNET_CLI_UI_LANGUAGE=en`），解析 vstest 真实用例计数。无可解析摘要时先查日志：**任何编译/恢复错误（CS/MSB/NETSDK/NU 等）直接 FAIL——即使 bin 中留有上轮旧 DLL 也不得回退**；仅当当前源码在本次运行中真实构建成功且日志无构建错误（即 runner/NamedPipe 类环境错误）时，才回退到同一程序集的官方 in-process runner（xunit.v3 MTP 自宿主直跑），回退原因与计数来源逐行记录。direct 摘要解析兼容 MTP 省略全零后缀的形态（如零用例仅输出 `Total: 0`）。**Total=0 判 FAIL（零用例不报绿）；未运行的测试一律不记通过**。
 - `Mahjong.Outbox.CrashWorker` 按 manifest `kind=helper` 识别为 console helper（Client.Tests 重启测试的子进程），仅验证构建、不计用例。
-- 插件复制检查：以临时目录为 `-PluginOutputDir` 子进程调用 build-shared.ps1，校验必需程序集存在 + 禁止模式不存在；已跟踪 Unity 资产全程不被触碰。
+- 插件复制检查：以临时目录为 `-PluginOutputDir` 子进程调用 build-shared.ps1，并**透传解析后的 `-DotnetPath`**（r2 修复：显式指定 SDK 时子进程不再自行重选另一 SDK）；校验必需程序集存在 + 禁止模式不存在；已跟踪 Unity 资产全程不被触碰。
 - 汇总表 + `summary.log`：每行含 KIND/必需性/是否在 sln/runner/真实 Total/Failed/Skipped/RESULT/日志路径。退出码：0=全 PASS，1=任一 FAIL，2=环境受阻。
 
 ### 3.4 `tools/v5-verify.manifest.json`
@@ -98,6 +100,8 @@ dotnet：`D:\Unity\dotnet\dotnet.exe`（8.0.426）。Release 与 Debug 两次完
 | `tools\verify-v5.ps1 -Configuration Debug` | 0 | OVERALL PASS，计数一致 |
 | `tools\verify-v5.ps1 -Configuration Release -RunnerMode direct` | 0 | OVERALL PASS，计数一致 |
 | `tools\unity\build-shared.ps1 -PluginOutputDir <临时目录>`（经 verify-v5 子进程） | 0 | 12 个 DLL + PDB |
+| `tools\verify-v5.ps1 -Configuration Release`（r2 返修后全量回归，含插件检查） | 0 | OVERALL PASS，461 用例（`artifacts/rework-probes/r6-regression-release`） |
+| `tools\verify-v5.ps1 -Configuration Release -DotnetPath "…\sdk probe\dotnet.exe"`（r2 R7：带空格路径的 SDK junction） | 0 | OVERALL PASS，461 用例；`plugin-copy.log` 首行证实子进程使用同一路径（`artifacts/rework-probes/r7-sdk-spaced`） |
 
 插件目录终态（临时目录，非已跟踪路径；`git diff unity/` 为空）：
 
@@ -125,6 +129,17 @@ dotnet：`D:\Unity\dotnet\dotnet.exe`（8.0.426）。Release 与 Debug 两次完
 | LangVersion 改 12 | throw"exceeds the shared-library C# 9 floor"，exit 1 |
 | 同名 DLL 内容不同（Google.Protobuf 3.28.3 vs 3.27.0 逻辑探针；离线缓存无双版本包，端到端不可触发，故用与 build-shared 完全相同的 Add-Candidate/SHA-256 代码路径验证） | throw"Conflicting copies of assembly 'Google.Protobuf.dll' ... 3.28.3[953AACA8], 3.27.0[18911834]" |
 | 真实树回归（同包同内容多工程贡献） | 静默去重，终版复制 PASS |
+
+r2 返修负向复测（真实端到端，探针工程临时创建、验证后已删除；日志在 `artifacts/rework-probes/`）：
+
+| 场景 | 运行 | 结果 |
+|---|---|---|
+| 发现工程（未入 sln）先用合法源码跑出旧 DLL，再注入非法 C#（CS8803/CS1002）后重跑 auto（即 Codex 复现的假绿场景） | r1→r2 | 构建阶段 FAIL"project build failed (exit 1); stale build outputs were not used"；目录内**无 dotnetTest/direct 日志**——旧 DLL 从未被执行；OVERALL FAIL，exit 1 |
+| 发现 helper（非 `*.Tests`，auto-discovered）带编译错误 | r1/r2/r3 | 构建阶段 FAIL（r1 前的旧版曾"未构建即 PASS"假绿，已修复），exit 1 |
+| direct 模式下新发现且从未构建的测试工程 | r3 | **先独立构建**（`build-ProbeDirect.Tests.log`）**再 direct 执行**（`direct-ProbeDirect.Tests.log`），1 用例 PASS——不依赖历史产物 |
+| dotnet test 阶段编译错误 + 当前源码"已构建" + 旧 DLL 在位（stub-dotnet 逻辑探针；自然触发已被构建阶段前置拦截，故以受控 stub 直击该判定点） | r5 | FAIL"dotnet test hit build/restore errors (first: error CS1002: ; expected); stale outputs were not used"；**无 direct 回退日志**，exit 1 |
+| direct runner 零用例输出形态（MTP 对零用例省略全零后缀，仅 `Total: 0`） | r3→r3b | 解析修复后 FAIL"zero executed test cases (runner: in-process (direct))"（修复前为 BLOCKED——同样不绿但语义不准） |
+| 失败用例传播（1/2 失败）· 零用例 · 缺必需项目 · 插件防护 | r1/r4/r6/r7 | 全部保留：ProbeFail 2/1→FAIL；零用例→FAIL；DoesNotExist→FAIL exit 1；插件 12 DLL/禁止物检查 PASS |
 
 ## 7. 状态口径（PASS / FAIL / BLOCKED / NOT_RUN）
 

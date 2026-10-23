@@ -16,11 +16,17 @@
         reports green when a row did not pass
       - console helpers (e.g. Mahjong.Outbox.CrashWorker) are verified as build
         artifacts only and are never counted as tests
-      - if `dotnet test` cannot produce a parseable summary (e.g. the local
-        NamedPipe/vstest limitation), the failure is recorded verbatim and the
-        same test assembly is re-run through its official in-process runner
-        (xunit.v3 / Microsoft.Testing.Platform executable); the summary states
-        which runner produced the authoritative counts
+      - projects not scheduled in the sln (auto-discovered ones) are always built
+        individually before anything runs - in every runner mode - and a fresh
+        build failure fails the project outright; stale outputs left by an
+        earlier build are never executed
+      - if `dotnet test` cannot produce a parseable summary, the log is checked
+        for build/restore errors first: any compile error fails the project even
+        when an older DLL is sitting in bin. Only a project whose current source
+        verifiably built in this run (solution build or per-project build) and
+        whose log shows no build errors may fall back to the official in-process
+        runner (xunit.v3 / Microsoft.Testing.Platform executable) of the same
+        test assembly; the summary states which runner produced the counts
       - the Unity plugin copy is exercised into a scratch directory under the log
         dir; tracked plugin DLLs and ProjectSettings are never overwritten
 
@@ -106,16 +112,21 @@ function Get-TestSummaryFromVstest([string]$logPath) {
 }
 
 function Get-TestSummaryFromDirectRunner([string]$logPath) {
-    # xunit.v3 / MTP direct summary, e.g.:
-    #   === TEST EXECUTION SUMMARY ===
+    # xunit.v3 / MTP direct summary. The runner omits all-zero suffixes, so both
+    # forms must parse:
     #      Mahjong.Domain.Tests  Total: 233, Errors: 0, Failed: 0, Skipped: 0, Not Run: 0, Time: 3.058s
-    $line = Select-String -Path $logPath -Pattern 'Total:\s*(\d+),\s*Errors:\s*(\d+),\s*Failed:\s*(\d+),\s*Skipped:\s*(\d+),\s*Not Run:\s*(\d+)' |
+    #      ProbeZero.Tests  Total: 0
+    $line = Select-String -Path $logPath -Pattern 'Total:\s*(\d+)(?:,\s*Errors:\s*(\d+))?(?:,\s*Failed:\s*(\d+))?(?:,\s*Skipped:\s*(\d+))?(?:,\s*Not Run:\s*(\d+))?' |
         Select-Object -Last 1
     if (-not $line) { return $null }
+    $errors = $(if ($line.Matches[0].Groups[2].Success) { [int]$line.Matches[0].Groups[2].Value } else { 0 })
+    $failed = $(if ($line.Matches[0].Groups[3].Success) { [int]$line.Matches[0].Groups[3].Value } else { 0 })
+    $skipped = $(if ($line.Matches[0].Groups[4].Success) { [int]$line.Matches[0].Groups[4].Value } else { 0 })
+    $notRun = $(if ($line.Matches[0].Groups[5].Success) { [int]$line.Matches[0].Groups[5].Value } else { 0 })
     return @{
         Total   = [int]$line.Matches[0].Groups[1].Value
-        Failed  = ([int]$line.Matches[0].Groups[2].Value) + ([int]$line.Matches[0].Groups[3].Value)
-        Skipped = ([int]$line.Matches[0].Groups[4].Value) + ([int]$line.Matches[0].Groups[5].Value)
+        Failed  = $errors + $failed
+        Skipped = $skipped + $notRun
     }
 }
 
@@ -227,19 +238,26 @@ else {
 
 foreach ($project in $ordered) {
     if ($project.Result -eq 'FAIL') { continue }
-    if ($buildOk) {
+    if ($project.InSln -and $buildOk) {
+        # Genuinely covered by the solution build in this run.
         $project.Built = $true
         $project.BuildLog = $slnBuildLog
         continue
     }
-    # Attribute the failure: build this project alone.
+    # Not scheduled in the sln (discovered test or helper), or the solution build
+    # failed. Build this project alone so `Built` always reflects a real build of
+    # the current source - never a leftover binary from an earlier run.
     $csproj = Join-Path $root $project.Path
     $project.BuildLog = Join-Path $LogDir ("build-{0}.log" -f $project.Name)
     $exit = Invoke-Captured -LogPath $project.BuildLog -Command { & $DotnetPath build $csproj -c $Configuration --nologo }
     $project.Built = ($exit -eq 0)
     if (-not $project.Built) {
         $project.Result = 'FAIL'
-        $project.Detail = "project build failed (exit $exit)"
+        $project.Detail = "project build failed (exit $exit); stale build outputs were not used"
+        $anyFail = $true
+    }
+    elseif (-not $project.InSln) {
+        $project.BuildNote = 'built individually: not scheduled in the sln'
     }
 }
 
@@ -294,26 +312,40 @@ foreach ($project in $ordered) {
             $project.ExitCode = $exit
         }
         else {
+            # No parseable summary: inspect the log before any fallback. A build
+            # or restore error fails the project even if a previous run left a
+            # valid DLL in bin - the fallback path must never resurrect stale
+            # outputs as a green result.
+            $buildErrors = @()
+            if ($project.DotnetTestLog -and (Test-Path $project.DotnetTestLog)) {
+                $buildErrors = @(Select-String -Path $project.DotnetTestLog -Pattern 'error [A-Z]+[0-9]+' -ErrorAction SilentlyContinue)
+            }
+            if ($buildErrors.Count -gt 0) {
+                $project.Result = 'FAIL'
+                $project.Detail = "dotnet test hit build/restore errors (first: $($buildErrors[0].Line.Trim())); stale outputs were not used; see $($project.DotnetTestLog)"
+                $anyFail = $true
+                continue
+            }
             $project.FallbackReason =
-                "dotnet test produced no parseable test summary (exit $exit); see $($project.DotnetTestLog). " +
-                "Falling back to the official in-process runner of the same test assembly."
+                "dotnet test produced no parseable test summary (exit $exit) and the log shows no build errors; " +
+                "see $($project.DotnetTestLog). The current source built OK in this run, so this is treated as a " +
+                "runner/environment issue and the official in-process runner of the same test assembly decides the result."
         }
     }
 
     if ($project.Runner -eq 'none' -and $RunnerMode -ne 'dotnetTest') {
+        # Defensive guard: the in-process runner may only ever see an assembly the
+        # current source produced in this run (unreachable via the normal flow
+        # because not-built projects are failed in the build phase above).
+        if (-not $project.Built) {
+            $project.Result = 'FAIL'
+            $project.Detail = 'test project was not built in this run; refusing to execute possibly stale outputs'
+            $anyFail = $true
+            continue
+        }
         if (-not (Test-Path $testDll)) {
-            $buildFailed = $false
-            if ($project.DotnetTestLog -and (Test-Path $project.DotnetTestLog)) {
-                $buildFailed = @(Select-String -Path $project.DotnetTestLog -Pattern 'error [A-Z]+[0-9]+' -ErrorAction SilentlyContinue).Count -gt 0
-            }
-            if ($buildFailed) {
-                $project.Result = 'FAIL'
-                $project.Detail = "test project build failed under dotnet test (compile errors); see $($project.DotnetTestLog)"
-            }
-            else {
-                $project.Result = 'BLOCKED'
-                $project.Detail = "built test assembly not found: $testDll"
-            }
+            $project.Result = 'BLOCKED'
+            $project.Detail = "built test assembly not found: $testDll"
             $anyFail = $true
             continue
         }
@@ -363,7 +395,7 @@ if (-not $SkipPluginCopyCheck) {
     Write-Step "plugin copy : scratch dir $pluginDir"
     $hostExe = [System.Diagnostics.Process]::GetCurrentProcess().MainModule.FileName
     $pluginExit = Invoke-Captured -LogPath $pluginLog -Command {
-        & $hostExe -NoProfile -ExecutionPolicy Bypass -File $buildShared -Configuration $Configuration -PluginOutputDir $pluginDir
+        & $hostExe -NoProfile -ExecutionPolicy Bypass -File $buildShared -Configuration $Configuration -DotnetPath $DotnetPath -PluginOutputDir $pluginDir
     }
     $missing = @()
     foreach ($required in $manifest.pluginCopy.requiredAssemblies) {
@@ -428,6 +460,9 @@ foreach ($project in $ordered) {
     }
     if ($project.Detail) {
         $lines.Add("    detail   : $($project.Detail)")
+    }
+    if ($project.BuildNote) {
+        $lines.Add("    build    : $($project.BuildNote)")
     }
     if ($project.Comment) {
         $lines.Add("    note     : $($project.Comment)")
