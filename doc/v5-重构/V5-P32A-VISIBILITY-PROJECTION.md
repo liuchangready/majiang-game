@@ -1,8 +1,8 @@
 # V5 P3.2a 可见性投影交付说明
 
-日期：2026-10-24  
-状态：**P3.2a 可独立实现部分完成；不是完整 P3.2 验收，不是 G1 通过。**  
-基线：`wt/v5-p32-visibility`，`a08629164935af1269e0bc1061f693371aed13ff`。  
+日期：2026-10-24
+状态：**P3.2a 组件已独立验收；不是完整 P3.2 验收，不是 G1 通过。**
+基线：`wt/v5-p32-visibility`，`a08629164935af1269e0bc1061f693371aed13ff`。
 范围：只新增 TableRuntime 投影与测试文件；未改 Contracts/Wire、未改 P3.3 在途文件、未改 solution/csproj/verifier。
 
 > 本拆分只为避开正在执行的 P3.3 共享文件。P3.2b 的原子基线/订阅、binding/sync 流注册、actor 接线、恢复与 Wire 事件映射仍未完成；完整 P3.2 退出标准不因本交付降低。
@@ -337,6 +337,23 @@ foreach (TableEventRecord record in committedEvents)
 - 修复：`BuildSession` 只读 `TableProjectionContext.Session`；`Session == null` 时固定返回 `PublicSessionSummary(false, "", empty, empty)`。不再从 `round.Result` 派生整场字段。
 - 单局结算保留：`Board.Scores` 继续用 `round.Result.FinalScores`，`SettlementRoundId` 继续用刚结束 round id，结算事件继续来自 `Context.Events`。
 - 回归：新增 `round_end_without_match_session_remains_neutral_for_all_streams`、`explicit_running_match_session_stays_unfinished_for_all_streams`、`explicit_finished_match_session_is_preserved_for_all_streams`，均覆盖四席+观战。TableRuntime.Tests 由 51 增至 **54**，全绿。
+
+---
+
+### 9.5 Codex 独立验收（2026-10-24）
+
+- 审查提交：基线交付 `1b1236eca3af03233a3630f6fc769b5cb2750a3a`，返修 `3c16cc9bd839d30963368fa030cbd60abc5edafe`；保留两个提交。
+- 在 `D:/majiang-wt/p32-visibility` 使用 `D:/Unity/dotnet/dotnet.exe` 独立运行以下命令，均重新构建而非使用 `--no-build`：
+
+| 命令 | passed / failed / skipped | exit |
+|---|---|---|
+| `dotnet test dotnet/tests/Mahjong.TableRuntime.Tests/Mahjong.TableRuntime.Tests.csproj --nologo -v minimal` | 54 / 0 / 0 | 0 |
+| `dotnet test dotnet/tests/Mahjong.Contracts.Tests/Mahjong.Contracts.Tests.csproj --nologo -v minimal` | 82 / 0 / 0 | 0 |
+| `dotnet test dotnet/tests/Mahjong.Domain.Tests/Mahjong.Domain.Tests.csproj --nologo -v minimal` | 313 / 0 / 0 | 0 |
+
+- 合计 **449 passed / 0 failed / 0 skipped**。复核四席与观战的事件白名单、私有字段隔离、暗杠实体遮蔽、里宝授权、隐藏状态等价与本轮整场/单局生命周期回归，未发现本组件阻断。
+- 已通过原任务 `thread_20261024_015954_ca78` 的 `approve_task` 归档。由 caller 复用唯一集成 PR #19（`feat/v5-1-integration -> v5`）统一同步；CI PostgreSQL 配置仍在执行、P3.3 仍在返修的提交不纳入本轮。
+- 本轮只验收 **P3.2a**。P3.2b、Wire/actor 接线、G1/G5、远端 CI 及设备/平台均不计入本次 PASS。既有 PostgreSQL 全量证据属于此前记录的提交，不冒充本轮重跑。
 
 ---
 
