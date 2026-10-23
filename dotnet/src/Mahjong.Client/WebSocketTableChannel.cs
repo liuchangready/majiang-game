@@ -117,7 +117,12 @@ namespace Mahjong.Client
 
                 if (previous != null)
                 {
-                    Retire(previous, ProtocolErrorCode.LocalClosed, false);
+                    // Reopen supersedes the old generation immediately, before
+                    // the new socket is created/published. Marking it stale
+                    // here avoids a window where an old sender sees no current
+                    // connection and reports LOCAL_CLOSED instead of
+                    // STALE_CONNECTION.
+                    Retire(previous, WebSocketChannelReason.StaleConnection, false);
                 }
 
                 var connection = new Connection(

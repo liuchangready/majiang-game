@@ -338,9 +338,20 @@ namespace Mahjong.Client
                         return new TableSessionRunResult(TableSessionRunStop.Canceled, ProtocolErrorCode.LocalClosed, connectionAttempts, failedAttempts);
                     }
 
+                    if (awaitingBaseline || HandshakeDeadlineExpired(attemptDeadlineMs))
+                    {
+                        // A cancelled/deadline pump during the handshake is
+                        // never a successful Ready transition, even if the
+                        // session reached Ready just before cancellation.
+                        lastFailure = ProtocolErrorCode.HandshakeTimeout;
+                        failedAttempts++;
+                        attemptDeadlineMs = null;
+                        await TryDisconnectAsync().ConfigureAwait(false);
+                        continue;
+                    }
+
                     if (_session.State == TableConnectionState.Ready)
                     {
-                        attemptDeadlineMs = null;
                         retryIndex = 0;
                         continue;
                     }
@@ -369,21 +380,7 @@ namespace Mahjong.Client
                     return new TableSessionRunResult(TableSessionRunStop.UnexpectedError, ex.GetType().Name, connectionAttempts, failedAttempts);
                 }
 
-                if (_session.State == TableConnectionState.Ready)
-                {
-                    // A full baseline for the current binding is the only point
-                    // at which the reconnect budget and handshake deadline reset.
-                    failedAttempts = 0;
-                    retryIndex = 0;
-                    attemptDeadlineMs = null;
-                }
-                else if (_session.State == TableConnectionState.Reconnecting)
-                {
-                    lastFailure = _session.LastError ?? WebSocketChannelReason.TransportLost;
-                    failedAttempts++;
-                    attemptDeadlineMs = null;
-                }
-                else if (_session.State == TableConnectionState.Faulted)
+                if (_session.State == TableConnectionState.Faulted)
                 {
                     attemptDeadlineMs = null;
                     return new TableSessionRunResult(
@@ -391,6 +388,36 @@ namespace Mahjong.Client
                         lastFailure ?? _session.LastError ?? ProtocolErrorCode.InternalError,
                         connectionAttempts,
                         failedAttempts);
+                }
+
+                if (_session.State == TableConnectionState.Reconnecting)
+                {
+                    lastFailure = _session.LastError ?? WebSocketChannelReason.TransportLost;
+                    failedAttempts++;
+                    attemptDeadlineMs = null;
+                    continue;
+                }
+
+                // The baseline may complete successfully after the absolute
+                // deadline (for example a slow connect followed by a fast
+                // WELCOME/SYNC). Such a completion is a timeout, not a success:
+                // do not reset the retry budget or leave the session Ready.
+                if (HandshakeDeadlineExpired(attemptDeadlineMs))
+                {
+                    lastFailure = ProtocolErrorCode.HandshakeTimeout;
+                    failedAttempts++;
+                    attemptDeadlineMs = null;
+                    await TryDisconnectAsync().ConfigureAwait(false);
+                    continue;
+                }
+
+                if (_session.State == TableConnectionState.Ready)
+                {
+                    // A full baseline for the current binding, completed before
+                    // the absolute deadline, is the only successful handshake.
+                    failedAttempts = 0;
+                    retryIndex = 0;
+                    attemptDeadlineMs = null;
                 }
             }
         }

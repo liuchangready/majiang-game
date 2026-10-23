@@ -12,6 +12,44 @@ namespace Mahjong.Client.Wss.Tests
     public sealed class WebSocketTableChannelGuardTests
     {
         [Fact]
+        public async Task CodexReopenGapMustReportStaleToOldSender()
+        {
+            var factory = new FakeWebSocketConnectionFactory();
+            using var channel = Create(factory, options => options.SendTimeout = TimeSpan.FromSeconds(5));
+            await channel.OpenAsync(Request(), CancellationToken.None);
+            var entered = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            factory.Last.SendHandler = async (buffer, type, end, token) =>
+            {
+                entered.TrySetResult(true);
+                await Task.Delay(Timeout.Infinite, token);
+            };
+            Task oldSend = channel.SendAsync(new byte[] { 1 }, CancellationToken.None);
+            await entered.Task.WaitAsync(TimeSpan.FromSeconds(2));
+            var creating = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            using var releaseCreate = new ManualResetEventSlim(false);
+            factory.Configure = socket =>
+            {
+                creating.TrySetResult(true);
+                if (!releaseCreate.Wait(TimeSpan.FromSeconds(5)))
+                    throw new TimeoutException("review barrier");
+            };
+            Task reopen = Task.Run(() => channel.OpenAsync(Request(), CancellationToken.None));
+            await creating.Task.WaitAsync(TimeSpan.FromSeconds(2));
+            TableChannelClosedException oldError;
+            try
+            {
+                oldError = await Assert.ThrowsAsync<TableChannelClosedException>(() => oldSend);
+            }
+            finally
+            {
+                releaseCreate.Set();
+                await reopen;
+            }
+            Assert.True(channel.IsOpen);
+            Assert.Equal(WebSocketChannelReason.StaleConnection, oldError.Code);
+        }
+
+        [Fact]
         public async Task ConnectTimeoutIsReportedAsTransientHandshakeTimeout()
         {
             var factory = new FakeWebSocketConnectionFactory();

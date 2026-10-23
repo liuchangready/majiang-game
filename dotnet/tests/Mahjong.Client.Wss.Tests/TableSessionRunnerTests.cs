@@ -12,6 +12,29 @@ namespace Mahjong.Client.Wss.Tests
     public sealed class TableSessionRunnerTests
     {
         [Fact]
+        public async Task CodexLateBaselineMustNotClearExpiredHandshakeDeadline()
+        {
+            using var fixture = new RunnerFixture(options =>
+            {
+                options.HandshakeTimeout = TimeSpan.FromMilliseconds(250);
+                options.MaxReconnectAttempts = 0;
+            });
+            fixture.Channel.OnReceive = () =>
+            {
+                if (fixture.Channel.ReceivedCount == 1)
+                {
+                    // WELCOME arrived in time; the complete baseline arrives
+                    // after the absolute deadline, without any wall-clock sleep.
+                    fixture.Clock.Advance(300);
+                }
+            };
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(2));
+            TableSessionRunResult result = await fixture.Runner.RunAsync(cts.Token);
+            Assert.Equal(TableSessionRunStop.ReconnectExhausted, result.Stop);
+            Assert.Equal(ProtocolErrorCode.HandshakeTimeout, result.ReasonCode);
+        }
+
+        [Fact]
         public async Task ReconnectsAfterTransientLossWithANewTicket()
         {
             using var fixture = new RunnerFixture();
@@ -187,6 +210,76 @@ namespace Mahjong.Client.Wss.Tests
             Assert.Equal(TableSessionRunStop.ReconnectExhausted, result.Stop);
             Assert.Equal(2, result.ConnectionAttempts);
             Assert.Equal(ProtocolErrorCode.HandshakeTimeout, result.ReasonCode);
+        }
+
+        [Fact]
+        public async Task FullBaselineBeforeDeadlineReachesReady()
+        {
+            using var fixture = new RunnerFixture(options =>
+            {
+                options.MaxReconnectAttempts = 0;
+                options.HandshakeTimeout = TimeSpan.FromMilliseconds(250);
+            });
+            fixture.Channel.OnReceive = () =>
+                fixture.Clock.Advance(fixture.Channel.ReceivedCount == 0 ? 100 : 140);
+
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+            Task<TableSessionRunResult> run = fixture.Runner.RunAsync(cts.Token);
+            await TestWire.WaitUntilAsync(
+                () => fixture.Session.State == TableConnectionState.Ready,
+                TimeSpan.FromSeconds(5),
+                "baseline before the absolute deadline");
+
+            Assert.Equal(240, fixture.Clock.MonotonicMilliseconds);
+            Assert.Equal(1, fixture.Channel.CountSent(MessageType.SyncRequest));
+
+            cts.Cancel();
+            TableSessionRunResult result = await run.WaitAsync(TimeSpan.FromSeconds(5));
+            Assert.Equal(TableSessionRunStop.Canceled, result.Stop);
+        }
+
+        [Fact]
+        public async Task FullBaselineExactlyAtDeadlineIsHandshakeTimeout()
+        {
+            using var fixture = new RunnerFixture(options =>
+            {
+                options.MaxReconnectAttempts = 0;
+                options.HandshakeTimeout = TimeSpan.FromMilliseconds(250);
+            });
+            fixture.Channel.OnReceive = () =>
+                fixture.Clock.Advance(fixture.Channel.ReceivedCount == 0 ? 100 : 150);
+
+            TableSessionRunResult result = await fixture.Runner
+                .RunAsync(CancellationToken.None)
+                .WaitAsync(TimeSpan.FromSeconds(5));
+
+            Assert.Equal(TableSessionRunStop.ReconnectExhausted, result.Stop);
+            Assert.Equal(ProtocolErrorCode.HandshakeTimeout, result.ReasonCode);
+            Assert.Equal(1, result.ConnectionAttempts);
+            Assert.Equal(250, fixture.Clock.MonotonicMilliseconds);
+            Assert.NotEqual(TableConnectionState.Ready, fixture.Session.State);
+        }
+
+        [Fact]
+        public async Task FullBaselineAfterDeadlineIsHandshakeTimeoutAndDoesNotLeaveReady()
+        {
+            using var fixture = new RunnerFixture(options =>
+            {
+                options.MaxReconnectAttempts = 0;
+                options.HandshakeTimeout = TimeSpan.FromMilliseconds(250);
+            });
+            fixture.Channel.OnReceive = () =>
+                fixture.Clock.Advance(fixture.Channel.ReceivedCount == 0 ? 100 : 200);
+
+            TableSessionRunResult result = await fixture.Runner
+                .RunAsync(CancellationToken.None)
+                .WaitAsync(TimeSpan.FromSeconds(5));
+
+            Assert.Equal(TableSessionRunStop.ReconnectExhausted, result.Stop);
+            Assert.Equal(ProtocolErrorCode.HandshakeTimeout, result.ReasonCode);
+            Assert.Equal(1, result.ConnectionAttempts);
+            Assert.Equal(300, fixture.Clock.MonotonicMilliseconds);
+            Assert.NotEqual(TableConnectionState.Ready, fixture.Session.State);
         }
 
         [Fact]
