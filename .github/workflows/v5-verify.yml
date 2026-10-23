@@ -49,6 +49,13 @@ jobs:
       # given (setup-dotnet sets both); tools/unity/build-shared.ps1 (invoked by
       # the plugin-copy check) uses the same resolution chain. D:\Unity\dotnet
       # does not exist on CI runners, and the wrapper never hardcodes it.
+      # shell: pwsh means PowerShell 7 on the runner image (7.6.x/.NET 10 on
+      # windows-2025). The wrapper's env-restore stage is runtime-adaptive: it
+      # deletes unset variables via the env: provider and proves restoration
+      # against a fresh child process's own environment readback, because the
+      # parent's GetEnvironmentVariable misreads a just-deleted variable as ''
+      # on this runtime. No workflow-side environment handling is needed here.
+      # See doc: V5-CI-ENV-RESTORE-FOLLOWUP.md.
       - name: Run unified V5 verification
         shell: pwsh
         run: ./tools/ci/verify-v5-postgres.ps1 -Configuration Release
