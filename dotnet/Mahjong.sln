@@ -23,10 +23,6 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Mahjong.Contracts.Wire", "s
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Mahjong.Contracts.Tests", "tests\Mahjong.Contracts.Tests\Mahjong.Contracts.Tests.csproj", "{405DE6EA-010C-4293-A0E7-D8E72522B8AE}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Mahjong.Contracts.Wire.AotSmoke", "tests\Mahjong.Contracts.Wire.AotSmoke\Mahjong.Contracts.Wire.AotSmoke.csproj", "{F486F362-3BDB-4F60-A1A0-D7BF28F39E64}"
-EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Mahjong.Wire.AotSmoke.Runner", "tests\Mahjong.Wire.AotSmoke.Runner\Mahjong.Wire.AotSmoke.Runner.csproj", "{AD762D08-9B00-410A-A27B-733825DE7EDA}"
-EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -68,14 +64,6 @@ Global
 		{405DE6EA-010C-4293-A0E7-D8E72522B8AE}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{405DE6EA-010C-4293-A0E7-D8E72522B8AE}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{405DE6EA-010C-4293-A0E7-D8E72522B8AE}.Release|Any CPU.Build.0 = Release|Any CPU
-		{F486F362-3BDB-4F60-A1A0-D7BF28F39E64}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
-		{F486F362-3BDB-4F60-A1A0-D7BF28F39E64}.Debug|Any CPU.Build.0 = Debug|Any CPU
-		{F486F362-3BDB-4F60-A1A0-D7BF28F39E64}.Release|Any CPU.ActiveCfg = Release|Any CPU
-		{F486F362-3BDB-4F60-A1A0-D7BF28F39E64}.Release|Any CPU.Build.0 = Release|Any CPU
-		{AD762D08-9B00-410A-A27B-733825DE7EDA}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
-		{AD762D08-9B00-410A-A27B-733825DE7EDA}.Debug|Any CPU.Build.0 = Debug|Any CPU
-		{AD762D08-9B00-410A-A27B-733825DE7EDA}.Release|Any CPU.ActiveCfg = Release|Any CPU
-		{AD762D08-9B00-410A-A27B-733825DE7EDA}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(NestedProjects) = preSolution
 		{901A066E-48A8-49FE-AA9C-1862BB73F301} = {C0969CA1-0C4C-4763-B55E-E7D54DF59C9D}
@@ -86,7 +74,5 @@ Global
 		{7CFE8F2C-1295-40E9-9750-CB0D53671F8D} = {F2884AF5-A4EA-49C5-B699-99BE342FF3B4}
 		{B3559C2F-50F1-4C14-A477-075E6D75543A} = {C0969CA1-0C4C-4763-B55E-E7D54DF59C9D}
 		{405DE6EA-010C-4293-A0E7-D8E72522B8AE} = {F2884AF5-A4EA-49C5-B699-99BE342FF3B4}
-		{F486F362-3BDB-4F60-A1A0-D7BF28F39E64} = {F2884AF5-A4EA-49C5-B699-99BE342FF3B4}
-		{AD762D08-9B00-410A-A27B-733825DE7EDA} = {F2884AF5-A4EA-49C5-B699-99BE342FF3B4}
 	EndGlobalSection
 EndGlobal
