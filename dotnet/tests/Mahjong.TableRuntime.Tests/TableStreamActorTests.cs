@@ -672,7 +672,13 @@ namespace Mahjong.TableRuntime.Tests
         [Fact]
         public async Task SlowSinkDoesNotBlockActorAndOverflowClosesOnlyThatStream()
         {
-            var options = new TableStreamOptions { MaxQueuedFrames = 2 };
+            var channels = new List<TableStreamChannel>();
+            var options = new TableStreamOptions
+            {
+                MaxQueuedFrames = 2,
+                ObservePumpExit = true,
+                ChannelCreated = channels.Add
+            };
             await using StreamHarness harness = StreamHarness.Create(options);
             var fastSink = new RecordingStreamSink();
             var slowSink = new RecordingStreamSink();
@@ -684,29 +690,50 @@ namespace Mahjong.TableRuntime.Tests
                 (await harness.SubscribeSpectatorAsync("slow", 1UL, 1UL, slowSink)).Status);
             await fastSink.WaitForCountAsync(1);
             await slowSink.WaitForCountAsync(1);
+            Assert.Equal(2, channels.Count);
+            TableStreamChannel slowChannel = channels[1];
 
-            slowSink.BlockNext();
             IReadOnlyList<TableCommandEnvelope> chain = harness.DiscardChain(4);
-            for (int i = 0; i < chain.Count; i++)
-            {
-                TableOperationResult accepted =
-                    await harness.Actor.SubmitAsync(chain[i], TestContext.Current.CancellationToken);
-                Assert.Equal(TableOperationStatus.Accepted, accepted.Status);
-            }
 
+            // Establish the slow sink's blocked dispatch before adding queue pressure. With the
+            // only in-flight frame parked inside the sink, the following submissions deterministically
+            // fill exactly two queued frames and the fourth closes only the slow stream.
+            slowSink.BlockNext();
+            Assert.Equal(
+                TableOperationStatus.Accepted,
+                (await harness.Actor.SubmitAsync(chain[0], TestContext.Current.CancellationToken)).Status);
             await slowSink.Entered.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
-            IReadOnlyList<TableStreamFrame> fastFrames = await fastSink.WaitForCountAsync(5);
-            Assert.Equal(5, fastFrames.Count);
+            Task slowPumpExit = slowChannel.PumpExit;
+            Assert.False(slowPumpExit.IsCompleted, "The slow pump must still be parked inside the sink.");
+            await fastSink.WaitForCountAsync(2);
+
+            Assert.Equal(
+                TableOperationStatus.Accepted,
+                (await harness.Actor.SubmitAsync(chain[1], TestContext.Current.CancellationToken)).Status);
+            await fastSink.WaitForCountAsync(3);
+            Assert.Equal(
+                TableOperationStatus.Accepted,
+                (await harness.Actor.SubmitAsync(chain[2], TestContext.Current.CancellationToken)).Status);
+            await fastSink.WaitForCountAsync(4);
+
+            // Queue is now at its two-frame bound; this submission must overflow the slow stream.
+            Assert.Equal(
+                TableOperationStatus.Accepted,
+                (await harness.Actor.SubmitAsync(chain[3], TestContext.Current.CancellationToken)).Status);
+            await fastSink.WaitForCountAsync(5);
+            Assert.Equal(5, fastSink.FrameCount);
+
             TableStreamTermination termination = await harness.Terminations.WaitForAsync(
                 item => item.Kind == TableStreamTerminationKind.SlowConsumer);
             Assert.Equal(ProtocolErrorCode.SlowConsumer, termination.ReasonCode);
             Assert.Equal(1, slowSink.FrameCount);
 
+            // Release the parked first update. The channel was closed with its queued frames
+            // dropped, so only the already-claimed sink call may complete; the pump must then exit.
             slowSink.Release();
-            await Task.Delay(100, TestContext.Current.CancellationToken);
+            await slowPumpExit.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
             Assert.Equal(2, slowSink.FrameCount);
-            await Task.Delay(100, TestContext.Current.CancellationToken);
-            Assert.Equal(2, slowSink.FrameCount);
+            Assert.Equal(5, fastSink.FrameCount);
         }
 
         [Fact]

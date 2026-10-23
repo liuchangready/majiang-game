@@ -3720,7 +3720,7 @@ namespace Mahjong.TableRuntime
                 handle = CreateStreamHandle(identity);
                 StreamProjectionCapture capture = CaptureStreamProjection();
                 var cursor = new StreamCursor(new StreamVersion(_stateVersion.Value), nextSeq);
-                TableStreamFrame frame = BuildStreamFrame(handle, capture, true, cursor, null);
+                TableStreamFrame frame = BuildStreamFrame(handle, capture, true, StreamCursor.Empty, cursor, null);
                 channel = CreateStreamChannel(handle, request.Sink);
                 TableStreamEnqueueStatus enqueue = channel.TryEnqueue(frame);
                 if (enqueue != TableStreamEnqueueStatus.Enqueued)
@@ -4003,7 +4003,13 @@ namespace Mahjong.TableRuntime
             {
                 StreamProjectionCapture capture = CaptureStreamProjection();
                 var cursor = new StreamCursor(new StreamVersion(_stateVersion.Value), nextSeq);
-                TableStreamFrame frame = BuildStreamFrame(registration.Handle, capture, true, cursor, null);
+                TableStreamFrame frame = BuildStreamFrame(
+                    registration.Handle,
+                    capture,
+                    true,
+                    registration.State.Cursor,
+                    cursor,
+                    null);
                 TableStreamEnqueueStatus enqueue = registration.Channel.TryEnqueue(frame);
                 if (enqueue != TableStreamEnqueueStatus.Enqueued)
                 {
@@ -4190,6 +4196,7 @@ namespace Mahjong.TableRuntime
                     "The projection clock is not safe: " + clockFailure);
             }
 
+            IReadOnlyList<TableEventRecord> committedEvents = CopyRecentEvents();
             var request = new TableProjectionContextRequest(
                 _options.RoomId,
                 _round,
@@ -4199,7 +4206,8 @@ namespace Mahjong.TableRuntime
                 _controlVersion,
                 _recoveryGeneration,
                 now,
-                utc);
+                utc,
+                committedEvents);
             TableProjectionContextData data = _projectionContextSource.Capture(request) ??
                 throw new TableProjectionException(
                     TableProjectionErrorCode.InvalidContext,
@@ -4218,22 +4226,104 @@ namespace Mahjong.TableRuntime
                     "Projection context version " + data.StateVersion + " is not the committed version " + _stateVersion + ".");
             }
 
-            var eventInputs = new List<TableEventProjectionInput>(Math.Min(_recentEvents.Count, 4096));
-            int start = Math.Max(0, _recentEvents.Count - 4096);
-            for (int i = start; i < _recentEvents.Count; i++)
+            var eventInputs = new List<TableEventProjectionInput>(Math.Min(committedEvents.Count, 4096));
+            int start = Math.Max(0, committedEvents.Count - 4096);
+            for (int i = start; i < committedEvents.Count; i++)
             {
-                TableEventProjectionInput? input = TableEventProjection.FromRoundEvent(_recentEvents[i]);
+                TableEventProjectionInput? input = TableEventProjection.FromRoundEvent(committedEvents[i]);
                 if (input != null)
                 {
                     eventInputs.Add(input);
                 }
             }
 
+            IReadOnlyDictionary<ulong, TableProjectionEventFact> factsBySeq = ValidateEventFacts(
+                data.EventFacts,
+                eventInputs,
+                committedEvents);
+
             return new StreamProjectionCapture(
                 data,
                 BuildStreamClocks(now, utc),
                 BuildStreamDecisions(now),
-                eventInputs);
+                eventInputs,
+                factsBySeq,
+                now);
+        }
+
+        private IReadOnlyList<TableEventRecord> CopyRecentEvents()
+        {
+            var copy = new TableEventRecord[_recentEvents.Count];
+            for (int i = 0; i < _recentEvents.Count; i++)
+            {
+                copy[i] = _recentEvents[i];
+            }
+
+            return copy;
+        }
+
+        /// <summary>
+        /// Binds every explicit event fact to the same committed capture. A fact for an event
+        /// that is absent from this capture, a duplicate sequence, or a type/version/ordinal
+        /// mismatch is a projection rejection. Missing facts are left to the Contracts mapper,
+        /// which fails closed only when the event actually needs that fact.
+        /// </summary>
+        private static IReadOnlyDictionary<ulong, TableProjectionEventFact> ValidateEventFacts(
+            IReadOnlyList<TableProjectionEventFact> facts,
+            IReadOnlyList<TableEventProjectionInput> eventInputs,
+            IReadOnlyList<TableEventRecord> committedEvents)
+        {
+            var result = new Dictionary<ulong, TableProjectionEventFact>(facts.Count);
+            if (facts.Count == 0)
+            {
+                return result;
+            }
+
+            var inputs = new Dictionary<ulong, TableEventProjectionInput>(eventInputs.Count);
+            for (int i = 0; i < eventInputs.Count; i++)
+            {
+                inputs[eventInputs[i].EventSeq.Value] = eventInputs[i];
+            }
+
+            for (int i = 0; i < facts.Count; i++)
+            {
+                TableProjectionEventFact fact = facts[i];
+                if (!inputs.TryGetValue(fact.EventSeq.Value, out TableEventProjectionInput? input))
+                {
+                    throw new TableProjectionException(
+                        TableProjectionErrorCode.InvalidContext,
+                        "Event fact " + fact.EventSeq + " does not belong to the committed event capture.");
+                }
+
+                if (input.Type != fact.Type ||
+                    input.CommandVersion != fact.CommandVersion ||
+                    input.EventOrdinal != fact.EventOrdinal)
+                {
+                    throw new TableProjectionException(
+                        TableProjectionErrorCode.EventVersionMismatch,
+                        "Event fact " + fact.EventSeq + " does not match the committed event type/version/ordinal.");
+                }
+
+                if (result.ContainsKey(fact.EventSeq.Value))
+                {
+                    throw new TableProjectionException(
+                        TableProjectionErrorCode.EventOrderMismatch,
+                        "Event facts repeat event_seq " + fact.EventSeq.Value + ".");
+                }
+
+                result.Add(fact.EventSeq.Value, fact);
+            }
+
+            // The provided event window is the only admissible provenance domain; a fact whose
+            // sequence is outside it has already been rejected above.
+            if (committedEvents.Count == 0 && result.Count > 0)
+            {
+                throw new TableProjectionException(
+                    TableProjectionErrorCode.InvalidContext,
+                    "Event facts were supplied without committed events.");
+            }
+
+            return result;
         }
 
         private IReadOnlyList<ClockView> BuildStreamClocks(long now, long utc)
@@ -4331,6 +4421,7 @@ namespace Mahjong.TableRuntime
             TableStreamHandle handle,
             StreamProjectionCapture capture,
             bool isFullSnapshot,
+            StreamCursor fromCursor,
             StreamCursor cursor,
             IReadOnlyList<TableEventRecord>? committedEvents)
         {
@@ -4355,14 +4446,51 @@ namespace Mahjong.TableRuntime
             IReadOnlyList<TableProjectedEvent> events = committedEvents == null
                 ? Array.Empty<TableProjectedEvent>()
                 : ProjectStreamEvents(committedEvents, identity.Audience, data.Policy);
+            bool contractAware = _streamOptions.Encoder is IContractProjectionStreamFrameEncoder;
+            IReadOnlyList<ProtocolEventRecord> typedEvents = contractAware
+                ? MapContractEvents(events, capture)
+                : Array.Empty<ProtocolEventRecord>();
 
             TableStreamFrame frame;
             if (identity.Audience.IsSpectator)
             {
                 PublicSnapshotView publicView = TableVisibilityProjection.ProjectPublicSnapshot(_round, context);
+                TableStreamContractFrame? contract = null;
+                if (contractAware)
+                {
+                    IReadOnlyList<ProtocolEventRecord> typedSettlement = MapContractSettlementEvents(
+                        capture,
+                        publicView.View.SettlementEvents,
+                        TableProjectionAudience.Spectator,
+                        data.Policy);
+                    PublicSnapshotView mapped = TableProjectionContractMapper.MapPublicSnapshot(
+                        publicView,
+                        typedSettlement,
+                        data.ConcealedMeldFacts);
+                    contract = new TableStreamContractFrame(
+                        identity.SessionId,
+                        _options.RoomId,
+                        identity.Audience,
+                        identity.BindingEpoch,
+                        identity.SyncEpoch,
+                        _ownerEpoch,
+                        _recoveryGeneration,
+                        _round.RoundId,
+                        _stateVersion,
+                        _controlVersion,
+                        _lastEventSeq,
+                        fromCursor,
+                        cursor,
+                        isFullSnapshot,
+                        mapped,
+                        null,
+                        typedEvents);
+                }
+
                 frame = new TableStreamFrame(
                     handle,
                     isFullSnapshot,
+                    fromCursor,
                     cursor,
                     _stateVersion,
                     _lastEventSeq,
@@ -4373,7 +4501,8 @@ namespace Mahjong.TableRuntime
                     publicView,
                     null,
                     null,
-                    events);
+                    events,
+                    contract);
             }
             else
             {
@@ -4394,9 +4523,44 @@ namespace Mahjong.TableRuntime
                     data.Cheat,
                     identity.Audience.Seat,
                     context);
+                TableStreamContractFrame? contract = null;
+                if (contractAware)
+                {
+                    IReadOnlyList<ProtocolEventRecord> typedSettlement = MapContractSettlementEvents(
+                        capture,
+                        player.Public.SettlementEvents,
+                        TableProjectionAudience.ForSeat(identity.Audience.Seat),
+                        data.Policy);
+                    PlayerSnapshotView mapped = TableProjectionContractMapper.MapPlayerSnapshot(
+                        player,
+                        owner,
+                        new TableProjectionTimeContext(capture.MonotonicMillis),
+                        typedSettlement,
+                        data.ConcealedMeldFacts);
+                    contract = new TableStreamContractFrame(
+                        identity.SessionId,
+                        _options.RoomId,
+                        identity.Audience,
+                        identity.BindingEpoch,
+                        identity.SyncEpoch,
+                        _ownerEpoch,
+                        _recoveryGeneration,
+                        _round.RoundId,
+                        _stateVersion,
+                        _controlVersion,
+                        _lastEventSeq,
+                        fromCursor,
+                        cursor,
+                        isFullSnapshot,
+                        null,
+                        mapped,
+                        typedEvents);
+                }
+
                 frame = new TableStreamFrame(
                     handle,
                     isFullSnapshot,
+                    fromCursor,
                     cursor,
                     _stateVersion,
                     _lastEventSeq,
@@ -4407,11 +4571,92 @@ namespace Mahjong.TableRuntime
                     null,
                     player,
                     owner,
-                    events);
+                    events,
+                    contract);
             }
 
             EncodeStreamFrame(frame);
             return frame;
+        }
+
+        private IReadOnlyList<ProtocolEventRecord> MapContractEvents(
+            IReadOnlyList<TableProjectedEvent> events,
+            StreamProjectionCapture capture)
+        {
+            if (events.Count == 0)
+            {
+                return Array.Empty<ProtocolEventRecord>();
+            }
+
+            var records = new List<ProtocolEventRecord>(events.Count);
+            for (int i = 0; i < events.Count; i++)
+            {
+                records.Add(MapContractEvent(events[i], capture));
+            }
+
+            return records;
+        }
+
+        private IReadOnlyList<ProtocolEventRecord> MapContractSettlementEvents(
+            StreamProjectionCapture capture,
+            IReadOnlyList<ProtocolEventRecord> settlementEvents,
+            TableProjectionAudience audience,
+            TableProjectionPolicy policy)
+        {
+            if (settlementEvents.Count == 0)
+            {
+                return Array.Empty<ProtocolEventRecord>();
+            }
+
+            var records = new List<ProtocolEventRecord>(settlementEvents.Count);
+            for (int i = 0; i < settlementEvents.Count; i++)
+            {
+                ProtocolEventRecord source = settlementEvents[i];
+                TableEventProjectionInput input = capture.InputFor(source.EventSeq) ??
+                    throw new TableProjectionException(
+                        TableProjectionErrorCode.InvalidContext,
+                        "Settlement event " + source.EventSeq + " is not in the frozen committed capture.");
+                if (input.Type != source.Type ||
+                    input.CommandVersion != source.CommandVersion ||
+                    input.EventOrdinal != source.EventOrdinal)
+                {
+                    throw new TableProjectionException(
+                        TableProjectionErrorCode.EventVersionMismatch,
+                        "Settlement event " + source.EventSeq + " does not match the committed event identity.");
+                }
+
+                TableProjectedEvent projected = TableEventProjection.Project(input, audience, policy) ??
+                    throw new TableProjectionException(
+                        TableProjectionErrorCode.InvalidContext,
+                        "A settlement event in the snapshot is not visible to its own audience.");
+                if (projected.Type != source.Type ||
+                    projected.CommandVersion != source.CommandVersion ||
+                    projected.EventOrdinal != source.EventOrdinal)
+                {
+                    throw new TableProjectionException(
+                        TableProjectionErrorCode.EventVersionMismatch,
+                        "The settlement event projection does not preserve its source identity.");
+                }
+
+                records.Add(MapContractEvent(projected, capture));
+            }
+
+            return records;
+        }
+
+        private static ProtocolEventRecord MapContractEvent(
+            TableProjectedEvent value,
+            StreamProjectionCapture capture)
+        {
+            TableProjectionEventFacts? facts = capture.FactsFor(value);
+            if (value.IsClosedKan && value.TileIds.Count == 0 && facts != null)
+            {
+                // The public closed-kan body is identity-free by policy. Never let a trusted
+                // owner fact reintroduce the four physical tiles into a redacted payload.
+                facts = facts.WithoutMeld();
+            }
+
+            return TableProjectionContractMapper.MapEvent(value, facts);
         }
 
         private IReadOnlyList<TableProjectedEvent> ProjectStreamEvents(
@@ -4593,7 +4838,13 @@ namespace Mahjong.TableRuntime
                 TableStreamFrame frame;
                 try
                 {
-                    frame = BuildStreamFrame(registration.Handle, capture, false, cursor, publication.Events);
+                    frame = BuildStreamFrame(
+                        registration.Handle,
+                        capture,
+                        false,
+                        registration.State.Cursor,
+                        cursor,
+                        publication.Events);
                 }
                 catch (StreamFrameException exception)
                 {
@@ -4714,7 +4965,13 @@ namespace Mahjong.TableRuntime
                 TableStreamFrame frame;
                 try
                 {
-                    frame = BuildStreamFrame(registration.Handle, capture, false, cursor, null);
+                    frame = BuildStreamFrame(
+                        registration.Handle,
+                        capture,
+                        false,
+                        registration.State.Cursor,
+                        cursor,
+                        null);
                 }
                 catch (StreamFrameException exception)
                 {
@@ -4801,7 +5058,13 @@ namespace Mahjong.TableRuntime
                 TableStreamFrame frame;
                 try
                 {
-                    frame = BuildStreamFrame(registration.Handle, capture, false, cursor, null);
+                    frame = BuildStreamFrame(
+                        registration.Handle,
+                        capture,
+                        false,
+                        registration.State.Cursor,
+                        cursor,
+                        null);
                 }
                 catch (StreamFrameException exception)
                 {
@@ -4896,7 +5159,13 @@ namespace Mahjong.TableRuntime
                 TableStreamFrame frame;
                 try
                 {
-                    frame = BuildStreamFrame(registration.Handle, capture, true, cursor, null);
+                    frame = BuildStreamFrame(
+                        registration.Handle,
+                        capture,
+                        true,
+                        registration.State.Cursor,
+                        cursor,
+                        null);
                 }
                 catch (StreamFrameException exception)
                 {
@@ -4949,16 +5218,28 @@ namespace Mahjong.TableRuntime
 
         private sealed class StreamProjectionCapture
         {
+            private readonly Dictionary<ulong, TableEventProjectionInput> _inputs;
+            private readonly IReadOnlyDictionary<ulong, TableProjectionEventFact> _facts;
+
             public StreamProjectionCapture(
                 TableProjectionContextData data,
                 IReadOnlyList<ClockView> clocks,
                 IReadOnlyList<TableSeatDecision> decisions,
-                IReadOnlyList<TableEventProjectionInput> eventInputs)
+                IReadOnlyList<TableEventProjectionInput> eventInputs,
+                IReadOnlyDictionary<ulong, TableProjectionEventFact> facts,
+                long monotonicMillis)
             {
                 Data = data;
                 Clocks = clocks;
                 Decisions = decisions;
                 EventInputs = eventInputs;
+                _facts = facts;
+                MonotonicMillis = monotonicMillis;
+                _inputs = new Dictionary<ulong, TableEventProjectionInput>(eventInputs.Count);
+                for (int i = 0; i < eventInputs.Count; i++)
+                {
+                    _inputs[eventInputs[i].EventSeq.Value] = eventInputs[i];
+                }
             }
 
             public TableProjectionContextData Data { get; }
@@ -4968,6 +5249,32 @@ namespace Mahjong.TableRuntime
             public IReadOnlyList<TableSeatDecision> Decisions { get; }
 
             public IReadOnlyList<TableEventProjectionInput> EventInputs { get; }
+
+            public long MonotonicMillis { get; }
+
+            public TableProjectionEventFacts? FactsFor(TableProjectedEvent value)
+            {
+                if (!_facts.TryGetValue(value.EventSeq.Value, out TableProjectionEventFact? fact))
+                {
+                    return null;
+                }
+
+                if (fact.Type != value.Type ||
+                    fact.CommandVersion != value.CommandVersion ||
+                    fact.EventOrdinal != value.EventOrdinal)
+                {
+                    throw new TableProjectionException(
+                        TableProjectionErrorCode.EventVersionMismatch,
+                        "Event fact " + value.EventSeq + " does not match the projected event identity.");
+                }
+
+                return fact.Facts;
+            }
+
+            public TableEventProjectionInput? InputFor(EventSeq eventSeq)
+            {
+                return _inputs.TryGetValue(eventSeq.Value, out TableEventProjectionInput? input) ? input : null;
+            }
         }
 
         private sealed class StreamFrameException : Exception

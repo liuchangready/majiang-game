@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Text;
 using System.Threading;
@@ -223,6 +223,23 @@ namespace Mahjong.TableRuntime.Tests
         public TableSessionProjection? Session { get; set; } =
             new TableSessionProjection(false, string.Empty, null, null);
 
+        /// <summary>Trusted private cheat aggregate; overrides the default empty wallet.</summary>
+        public CheatState? CheatOverride { get; set; }
+
+        /// <summary>Trusted public meld/discard/riichi facts; defaults to the empty fixture.</summary>
+        public IReadOnlyList<TableSeatPublicFacts>? PublicFactsOverride { get; set; }
+
+        /// <summary>Explicit authoritative event facts bound to the committed event capture.</summary>
+        public IReadOnlyList<TableProjectionEventFact>? EventFacts { get; set; }
+
+        /// <summary>Builds facts from the same frozen request; used by the real Wire joint tests.</summary>
+        public Func<TableProjectionContextRequest, IReadOnlyList<TableProjectionEventFact>>? EventFactsFactory { get; set; }
+
+        /// <summary>Negative control: omit all event facts so the production mapper must fail closed.</summary>
+        public bool OmitEventFacts { get; set; }
+
+        public IReadOnlyList<TablePublicConcealedMeldFact>? ConcealedMeldFacts { get; set; }
+
         public TableProjectionContextData Capture(TableProjectionContextRequest request)
         {
             Calls++;
@@ -231,15 +248,22 @@ namespace Mahjong.TableRuntime.Tests
                 throw new InvalidOperationException("injected projection failure");
             }
 
+            IReadOnlyList<TableProjectionEventFact> facts = OmitEventFacts
+                ? Array.Empty<TableProjectionEventFact>()
+                : EventFactsFactory?.Invoke(request) ??
+                  EventFacts ??
+                  Array.Empty<TableProjectionEventFact>();
             return new TableProjectionContextData(
                 RoundIdOverride ?? request.Round.RoundId,
                 StateVersionOverride ?? request.StateVersion,
                 7UL,
-                IncludeCheat ? V32Fixtures.Cheat() : null,
-                V32Fixtures.BuildPublicFacts(request.Round),
+                CheatOverride ?? (IncludeCheat ? V32Fixtures.Cheat() : null),
+                PublicFactsOverride ?? V32Fixtures.BuildPublicFacts(request.Round),
                 V32Fixtures.BuildPrivateFacts(request.Round),
                 Session,
-                Policy);
+                Policy,
+                facts,
+                ConcealedMeldFacts);
         }
     }
 
@@ -339,7 +363,8 @@ namespace Mahjong.TableRuntime.Tests
             bool withControlCommit = false,
             int mailboxCapacity = 16,
             int controlReserve = 16,
-            string roundId = "round-1")
+            string roundId = "round-1",
+            RoundStateMachine? initialRound = null)
         {
             var clock = new ManualTableClock { Now = 1000L };
             var commitPort = new RecordingCommitPort();
@@ -361,7 +386,7 @@ namespace Mahjong.TableRuntime.Tests
                     SeatControllerKind.RemoteHuman,
                     SeatControllerKind.RemoteHuman)
             };
-            RoundStateMachine round = P31Fixtures.Dealt(roundId);
+            RoundStateMachine round = initialRound ?? P31Fixtures.Dealt(roundId);
             var actor = new TableActor(
                 actorOptions,
                 round,
