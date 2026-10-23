@@ -12,6 +12,7 @@ namespace Mahjong.TableRuntime
         public const string StaleOwnerEpoch = "STALE_OWNER_EPOCH";
         public const string StaleControlEpoch = "STALE_CONTROL_EPOCH";
         public const string DecisionMismatch = "DECISION_MISMATCH";
+        public const string StaleDecision = "STALE_DECISION";
         public const string DeadlineExpired = "DEADLINE_EXPIRED";
         public const string RoundMismatch = "ROUND_MISMATCH";
         public const string MailboxFull = "MAILBOX_FULL";
@@ -29,6 +30,32 @@ namespace Mahjong.TableRuntime
         public const string InvalidSubmission = "INVALID_SUBMISSION";
         public const string NoDefaultAction = "NO_DEFAULT_ACTION";
         public const string InternalError = "INTERNAL_ERROR";
+
+        // P3.3 control/timing additions. Existing codes keep their P3.1 meaning.
+        public const string StaleControlVersion = "STALE_CONTROL_VERSION";
+        public const string ClockRegression = "CLOCK_REGRESSION";
+        public const string ClockInvalid = "CLOCK_INVALID";
+        public const string DeadlineOverflow = "DEADLINE_OVERFLOW";
+        public const string ControlTimeOverflow = "CONTROL_TIME_OVERFLOW";
+        public const string ControlEpochOverflow = "CONTROL_EPOCH_OVERFLOW";
+        public const string ControlVersionOverflow = "CONTROL_VERSION_OVERFLOW";
+        public const string RecoveryGenerationOverflow = "RECOVERY_GENERATION_OVERFLOW";
+        public const string GraceNotDue = "GRACE_NOT_DUE";
+        public const string StaleGrace = "STALE_GRACE";
+        public const string NoGraceDeadline = "NO_GRACE_DEADLINE";
+        public const string GraceNotApplicable = "GRACE_NOT_APPLICABLE";
+        public const string ControlPolicyBusy = "CONTROL_POLICY_BUSY";
+        public const string ControlCommitFailed = "CONTROL_COMMIT_FAILED";
+        public const string ControlCommitCancelled = "CONTROL_COMMIT_CANCELLED";
+        public const string RecoveryControlRequired = "RECOVERY_CONTROL_REQUIRED";
+        public const string RecoveryTimingInvalid = "RECOVERY_TIMING_INVALID";
+        public const string RecoveryControlInvalid = "RECOVERY_CONTROL_INVALID";
+        public const string RecoveryGraceTimingRequired = "RECOVERY_GRACE_TIMING_REQUIRED";
+        public const string RecoveryGraceTimingInvalid = "RECOVERY_GRACE_TIMING_INVALID";
+        public const string StaleRecoveryGeneration = "STALE_RECOVERY_GENERATION";
+        public const string AiObservationUnavailable = "AI_OBSERVATION_UNAVAILABLE";
+        public const string DeadlineNotDue = "DEADLINE_NOT_DUE";
+        public const string SeatNotAutomated = "SEAT_NOT_AUTOMATED";
 
         public static string FromDomain(RoundTransitionErrorCode code)
         {

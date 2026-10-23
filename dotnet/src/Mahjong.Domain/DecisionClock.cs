@@ -359,6 +359,116 @@ namespace Mahjong.Domain
             return timing;
         }
 
+        /// <summary>
+        /// Reinstalls one decision from an explicit recovery record. The caller supplies the
+        /// remaining base/reserve budget and the already-elapsed overdue amount; this method
+        /// never derives elapsed time from a persisted UTC instant or from another clock.
+        ///
+        /// Elapsed time consumes the base allowance first and only then the reserve. The
+        /// restored deadline is <c>now + baseRemaining + reserveRemaining</c>. If the overdue
+        /// amount consumes the whole remaining budget the decision is due immediately and the
+        /// next authoritative tick must arbitrate its timeout.
+        /// </summary>
+        public DecisionTiming RestoreDecision(
+            DecisionKey key,
+            long nowMillis,
+            long remainingBaseMillis,
+            long remainingReserveMillis,
+            long overdueMillis)
+        {
+            CheckSeat(key.Seat);
+            if (nowMillis < 0)
+            {
+                throw new ArgumentOutOfRangeException(nameof(nowMillis), nowMillis, "Time must be non-negative.");
+            }
+
+            if (remainingBaseMillis < 0)
+            {
+                throw new ArgumentOutOfRangeException(
+                    nameof(remainingBaseMillis),
+                    remainingBaseMillis,
+                    "Remaining base must be non-negative.");
+            }
+
+            if (remainingReserveMillis < 0)
+            {
+                throw new ArgumentOutOfRangeException(
+                    nameof(remainingReserveMillis),
+                    remainingReserveMillis,
+                    "Remaining reserve must be non-negative.");
+            }
+
+            if (overdueMillis < 0)
+            {
+                throw new ArgumentOutOfRangeException(
+                    nameof(overdueMillis),
+                    overdueMillis,
+                    "Overdue time must be non-negative.");
+            }
+
+            if (remainingBaseMillis > Config.BaseMillis)
+            {
+                throw new ArgumentOutOfRangeException(
+                    nameof(remainingBaseMillis),
+                    remainingBaseMillis,
+                    "Remaining base cannot exceed the configured base allowance.");
+            }
+
+            if (remainingReserveMillis > Config.ReserveMillis)
+            {
+                throw new ArgumentOutOfRangeException(
+                    nameof(remainingReserveMillis),
+                    remainingReserveMillis,
+                    "Remaining reserve cannot exceed the configured reserve.");
+            }
+
+            if (ActiveRoundId == null)
+            {
+                ActiveRoundId = key.RoundId;
+            }
+            else if (!string.Equals(key.RoundId, ActiveRoundId, StringComparison.Ordinal))
+            {
+                throw new InvalidOperationException(
+                    "Decision roundId '" + key.RoundId + "' does not match active roundId '" + ActiveRoundId + "'.");
+            }
+
+            if (_timings[key.Seat] != null)
+            {
+                throw new InvalidOperationException(
+                    "Seat " + key.Seat + " already has a timing; recovery cannot overwrite it.");
+            }
+
+            // Base is consumed before reserve. Subtracting from the combined budget and then
+            // re-granting part of it as base would hand the seat free base time again.
+            long baseRemaining = remainingBaseMillis > overdueMillis
+                ? remainingBaseMillis - overdueMillis
+                : 0L;
+            long reserveOverdue = overdueMillis > remainingBaseMillis
+                ? overdueMillis - remainingBaseMillis
+                : 0L;
+            long reserveRemaining = remainingReserveMillis > reserveOverdue
+                ? remainingReserveMillis - reserveOverdue
+                : 0L;
+            long deadline = checked(nowMillis + checked(baseRemaining + reserveRemaining));
+            if (deadline < nowMillis)
+            {
+                throw new OverflowException("The restored deadline overflowed Int64.");
+            }
+
+            _generationCounter = checked(_generationCounter + 1L);
+            var timing = new DecisionTiming(
+                key,
+                _generationCounter,
+                nowMillis,
+                deadline,
+                reserveRemaining,
+                baseRemaining,
+                IsPausedState ? DecisionTimingStatus.Paused : DecisionTimingStatus.Active);
+            _timings[key.Seat] = timing;
+            _reserves[key.Seat] = reserveRemaining;
+            return timing;
+        }
+
         public DecisionTiming? Timing(int seat)
         {
             CheckSeat(seat);
@@ -369,6 +479,48 @@ namespace Mahjong.Domain
         {
             CheckSeat(seat);
             return _reserves[seat];
+        }
+
+        /// <summary>Snapshot of all four remaining reserves; recovery must carry these explicitly.</summary>
+        public IReadOnlyList<long> RemainingReserves()
+        {
+            var copy = new long[4];
+            Array.Copy(_reserves, copy, 4);
+            return new ReadOnlyCollection<long>(copy);
+        }
+
+        /// <summary>
+        /// Installs an explicit recovery reserve for one seat without opening a decision. The
+        /// value may not exceed the configured per-round/session reserve.
+        /// </summary>
+        public void RestoreReserve(int seat, long reserveMillis)
+        {
+            CheckSeat(seat);
+            if (reserveMillis < 0 || reserveMillis > Config.ReserveMillis)
+            {
+                throw new ArgumentOutOfRangeException(
+                    nameof(reserveMillis),
+                    reserveMillis,
+                    "A restored reserve must be in 0..configured reserve.");
+            }
+
+            _reserves[seat] = reserveMillis;
+        }
+
+        /// <summary>
+        /// Clears open timings while preserving the reserve ledger and active round id. Used
+        /// when entering recovery; the reserve must survive until the baseline proves whether
+        /// it is still valid.
+        /// </summary>
+        public void ClearTimings()
+        {
+            for (int seat = 0; seat < 4; seat++)
+            {
+                _timings[seat] = null;
+            }
+
+            IsPausedState = false;
+            _pausedAt = null;
         }
 
         /// <summary>Completes strictly before the deadline; exactly at the deadline is late.</summary>

@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
+using Mahjong.Ai;
 using Mahjong.Contracts;
 using Mahjong.Domain;
 
@@ -22,8 +23,10 @@ namespace Mahjong.TableRuntime
     /// business/domain refusal with no state or version change. <see cref="Failed"/> is an
     /// infrastructure failure (commit port, missing event, version mismatch) and also changes
     /// nothing. <see cref="MailboxFull"/> and <see cref="Closed"/> mean the operation was never
-    /// admitted. <see cref="Configured"/> is a non-state-changing control operation such as
-    /// opening a decision or installing a recovery baseline.
+    /// admitted. <see cref="Configured"/> is a non-state-changing in-memory operation such as
+    /// opening a decision or installing a recovery baseline. P3.3 control changes use their
+    /// own <see cref="TableControlStatus"/> and <c>ControlVersion</c>; P3.4 must checkpoint the
+    /// decision clock/recovery baseline, so Configured is not a durability claim.
     /// </summary>
     public enum TableOperationStatus : byte
     {
@@ -39,7 +42,8 @@ namespace Mahjong.TableRuntime
     {
         Applied = 0,
         Recovered = 1,
-        LeaseLost = 2
+        LeaseLost = 2,
+        ControlChanged = 3
     }
 
     /// <summary>
@@ -122,7 +126,8 @@ namespace Mahjong.TableRuntime
             StateVersion expectedStateVersion,
             OwnerEpoch ownerEpoch,
             ControlEpoch controlEpoch,
-            DecisionId? decisionId = null)
+            DecisionId? decisionId = null,
+            long recoveryGeneration = 0L)
         {
             Command = command ?? throw new ArgumentNullException(nameof(command));
             if (requestId.IsEmpty)
@@ -130,11 +135,20 @@ namespace Mahjong.TableRuntime
                 throw new ArgumentException("A table command requires a request id.", nameof(requestId));
             }
 
+            if (recoveryGeneration < 0)
+            {
+                throw new ArgumentOutOfRangeException(
+                    nameof(recoveryGeneration),
+                    recoveryGeneration,
+                    "Recovery generation must be non-negative.");
+            }
+
             RequestId = requestId;
             ExpectedStateVersion = expectedStateVersion;
             OwnerEpoch = ownerEpoch;
             ControlEpoch = controlEpoch;
             DecisionId = decisionId;
+            RecoveryGeneration = recoveryGeneration;
         }
 
         public RoundCommand Command { get; }
@@ -148,6 +162,13 @@ namespace Mahjong.TableRuntime
         public ControlEpoch ControlEpoch { get; }
 
         public DecisionId? DecisionId { get; }
+
+        /// <summary>
+        /// Recovery generation the command was admitted under. After a control-baseline
+        /// recovery the actor requires this to equal its current generation, so a command that
+        /// was already in flight before recovery cannot mutate the new baseline.
+        /// </summary>
+        public long RecoveryGeneration { get; }
     }
 
     /// <summary>
@@ -654,21 +675,43 @@ namespace Mahjong.TableRuntime
     public sealed class TablePublication
     {
         private readonly ReadOnlyCollection<TableEventRecord> _events;
+        private readonly ReadOnlyCollection<TableControlEvent> _controlEvents;
 
         public TablePublication(
             TablePublicationKind kind,
             TableSnapshot snapshot,
             IReadOnlyList<TableEventRecord>? events,
             TableCommandReceipt? receipt)
+            : this(kind, snapshot, events, receipt, null, null)
+        {
+        }
+
+        public TablePublication(
+            TablePublicationKind kind,
+            TableSnapshot snapshot,
+            IReadOnlyList<TableEventRecord>? events,
+            TableCommandReceipt? receipt,
+            TableControlSnapshot? control,
+            IReadOnlyList<TableControlEvent>? controlEvents)
         {
             Kind = kind;
             Snapshot = snapshot ?? throw new ArgumentNullException(nameof(snapshot));
             _events = new ReadOnlyCollection<TableEventRecord>(
                 events == null ? new List<TableEventRecord>() : new List<TableEventRecord>(events));
+            _controlEvents = new ReadOnlyCollection<TableControlEvent>(
+                controlEvents == null ? new List<TableControlEvent>() : new List<TableControlEvent>(controlEvents));
             Receipt = receipt;
+            Control = control;
             if (kind == TablePublicationKind.Applied && (receipt == null || _events.Count == 0))
             {
                 throw new ArgumentException("An APPLIED publication requires a receipt and events.");
+            }
+
+            if (kind == TablePublicationKind.ControlChanged &&
+                (control == null || _controlEvents.Count == 0 || receipt != null || _events.Count != 0))
+            {
+                throw new ArgumentException(
+                    "A CONTROL_CHANGED publication requires control state/events and no Domain receipt/events.");
             }
         }
 
@@ -679,6 +722,11 @@ namespace Mahjong.TableRuntime
         public IReadOnlyList<TableEventRecord> Events => _events;
 
         public TableCommandReceipt? Receipt { get; }
+
+        /// <summary>Control authority at/after this publication. Null on pre-P3.3 call sites.</summary>
+        public TableControlSnapshot? Control { get; }
+
+        public IReadOnlyList<TableControlEvent> ControlEvents => _controlEvents;
     }
 
     /// <summary>
@@ -693,11 +741,30 @@ namespace Mahjong.TableRuntime
             StateVersion stateVersion,
             EventSeq lastEventSeq,
             OwnerEpoch ownerEpoch)
+            : this(round, stateVersion, lastEventSeq, ownerEpoch, null, null)
+        {
+        }
+
+        public TableRecoveryBaseline(
+            RoundStateMachine round,
+            StateVersion stateVersion,
+            EventSeq lastEventSeq,
+            OwnerEpoch ownerEpoch,
+            TableControlRecoveryBaseline? control,
+            TableRecoveryTiming? timing)
         {
             Round = round ?? throw new ArgumentNullException(nameof(round));
             StateVersion = stateVersion;
             LastEventSeq = lastEventSeq;
             OwnerEpoch = ownerEpoch;
+            Control = control;
+            Timing = timing ?? TableRecoveryTiming.None;
+            if (Control == null && Timing.Decisions.Count > 0)
+            {
+                throw new ArgumentException(
+                    "Restoring decision timing requires an exact control baseline; otherwise the old control epochs cannot be fenced.",
+                    nameof(timing));
+            }
         }
 
         public RoundStateMachine Round { get; }
@@ -707,22 +774,54 @@ namespace Mahjong.TableRuntime
         public EventSeq LastEventSeq { get; }
 
         public OwnerEpoch OwnerEpoch { get; }
+
+        /// <summary>Exact control authority/checkpoint version; null keeps the current registry (P3.1 legacy path).</summary>
+        public TableControlRecoveryBaseline? Control { get; }
+
+        /// <summary>Explicit restored decisions. Empty means all in-flight decisions are abandoned.</summary>
+        public TableRecoveryTiming Timing { get; }
     }
 
     /// <summary>Tick input. Deadline time always comes from the actor clock, not the client.</summary>
     public sealed class TableTickRequest
     {
         private readonly ReadOnlyCollection<AiDecisionSubmission> _aiSubmissions;
+        private readonly ReadOnlyCollection<AiDecision> _aiDecisions;
 
         public TableTickRequest(IReadOnlyList<AiDecisionSubmission>? aiSubmissions = null)
+            : this(aiSubmissions, null)
+        {
+        }
+
+        /// <summary>
+        /// Raw <paramref name="aiSubmissions"/> are the P3.1 legacy batch form and are accepted
+        /// only before any recovery generation exists. After a strict recovery, batch AI must
+        /// use <paramref name="aiDecisions"/> so the actor can verify the observation object was
+        /// captured in the current generation.
+        /// </summary>
+        public TableTickRequest(
+            IReadOnlyList<AiDecisionSubmission>? aiSubmissions,
+            IReadOnlyList<AiDecision>? aiDecisions)
         {
             _aiSubmissions = new ReadOnlyCollection<AiDecisionSubmission>(
                 aiSubmissions == null
                     ? new List<AiDecisionSubmission>()
                     : new List<AiDecisionSubmission>(aiSubmissions));
+            _aiDecisions = new ReadOnlyCollection<AiDecision>(
+                aiDecisions == null
+                    ? new List<AiDecision>()
+                    : new List<AiDecision>(aiDecisions));
         }
 
         public IReadOnlyList<AiDecisionSubmission> AiSubmissions => _aiSubmissions;
+
+        /// <summary>Actor-source-checked AI results for batch submission.</summary>
+        public IReadOnlyList<AiDecision> AiDecisions => _aiDecisions;
+
+        public static TableTickRequest WithAiDecisions(IReadOnlyList<AiDecision> decisions)
+        {
+            return new TableTickRequest(null, decisions);
+        }
 
         public static TableTickRequest Empty { get; } = new TableTickRequest();
     }

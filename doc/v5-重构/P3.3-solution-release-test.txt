@@ -1,0 +1,12 @@
+  运行测试:“D:\majiang-wt\p33-control\dotnet\tests\Mahjong.Client.Tests\bin\Release\net8.0\Mahjong.Client.Tests.dll”[net8.0|x64]
+  运行测试:“D:\majiang-wt\p33-control\dotnet\tests\Mahjong.Ai.Tests\bin\Release\net8.0\Mahjong.Ai.Tests.dll”[net8.0|x64]
+  运行测试:“D:\majiang-wt\p33-control\dotnet\tests\Mahjong.Domain.Tests\bin\Release\net8.0\Mahjong.Domain.Tests.dll”[net8.0|x64]
+  运行测试:“D:\majiang-wt\p33-control\dotnet\tests\Mahjong.Contracts.Tests\bin\Release\net8.0\Mahjong.Contracts.Tests.dll”[net8.0|x64]
+  已通过! - 失败: 0，通过: 14，已跳过: 0，总计: 14，持续时间: 612ms - Mahjong.Ai.Tests.dll (net8.0|x64)
+  已通过! - 失败: 0，通过: 82，已跳过: 0，总计: 82，持续时间: 1s 164ms - Mahjong.Contracts.Tests.dll (net8.0|x64)
+  成功的测试:“D:\majiang-wt\p33-control\dotnet\tests\Mahjong.Ai.Tests\bin\Release\net8.0\Mahjong.Ai.Tests.dll”[net8.0|x64]
+  已通过! - 失败: 0，通过: 132，已跳过: 0，总计: 132，持续时间: 2s 722ms - Mahjong.Client.Tests.dll (net8.0|x64)
+  成功的测试:“D:\majiang-wt\p33-control\dotnet\tests\Mahjong.Contracts.Tests\bin\Release\net8.0\Mahjong.Contracts.Tests.dll”[net8.0|x64]
+  已通过! - 失败: 0，通过: 313，已跳过: 0，总计: 313，持续时间: 3s 822ms - Mahjong.Domain.Tests.dll (net8.0|x64)
+  成功的测试:“D:\majiang-wt\p33-control\dotnet\tests\Mahjong.Client.Tests\bin\Release\net8.0\Mahjong.Client.Tests.dll”[net8.0|x64]
+  成功的测试:“D:\majiang-wt\p33-control\dotnet\tests\Mahjong.Domain.Tests\bin\Release\net8.0\Mahjong.Domain.Tests.dll”[net8.0|x64]

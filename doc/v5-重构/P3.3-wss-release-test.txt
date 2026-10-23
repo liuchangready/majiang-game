@@ -1,0 +1,9 @@
+  正在确定要还原的项目…
+  所有项目均是最新的，无法还原。
+  Mahjong.Contracts -> D:\majiang-wt\p33-control\dotnet\src\Mahjong.Contracts\bin\Release\netstandard2.1\Mahjong.Contracts.dll
+  Mahjong.Contracts.Wire -> D:\majiang-wt\p33-control\dotnet\src\Mahjong.Contracts.Wire\bin\Release\netstandard2.1\Mahjong.Contracts.Wire.dll
+  Mahjong.Client -> D:\majiang-wt\p33-control\dotnet\src\Mahjong.Client\bin\Release\netstandard2.1\Mahjong.Client.dll
+  Mahjong.Client.Wss.Tests -> D:\majiang-wt\p33-control\dotnet\tests\Mahjong.Client.Wss.Tests\bin\Release\net8.0\Mahjong.Client.Wss.Tests.dll
+  运行测试:“D:\majiang-wt\p33-control\dotnet\tests\Mahjong.Client.Wss.Tests\bin\Release\net8.0\Mahjong.Client.Wss.Tests.dll”[net8.0|x64]
+  已通过! - 失败: 0，通过: 80，已跳过: 0，总计: 80，持续时间: 2s 033ms - Mahjong.Client.Wss.Tests.dll (net8.0|x64)
+  成功的测试:“D:\majiang-wt\p33-control\dotnet\tests\Mahjong.Client.Wss.Tests\bin\Release\net8.0\Mahjong.Client.Wss.Tests.dll”[net8.0|x64]
