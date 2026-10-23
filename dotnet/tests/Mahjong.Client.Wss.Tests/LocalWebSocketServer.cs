@@ -65,8 +65,18 @@ namespace Mahjong.Client.Wss.Tests
         private int _accepted;
 
         public LocalWebSocketServer(bool tls = false)
+            : this(tls ? TestCertificates.CreateSelfSigned() : null)
         {
-            _certificate = tls ? TestCertificates.CreateSelfSigned() : null;
+        }
+
+        /// <summary>
+        /// TLS endpoint presenting a caller-provided certificate (for example a
+        /// leaf issued by a per-test CA). The server takes ownership and
+        /// disposes the certificate with itself.
+        /// </summary>
+        public LocalWebSocketServer(X509Certificate2? certificate)
+        {
+            _certificate = certificate;
             _listener = new TcpListener(IPAddress.Loopback, 0);
             _listener.Start();
             Port = ((IPEndPoint)_listener.LocalEndpoint).Port;
