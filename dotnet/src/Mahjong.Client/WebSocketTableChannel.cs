@@ -44,6 +44,16 @@ namespace Mahjong.Client
         private Connection? _connection;
         private long _generation;
         private bool _disposed;
+        private int _admittedPayloadCopies;
+        private int _payloadCopiesInFlight;
+        private int _maxPayloadCopiesInFlight;
+
+        /// <summary>Test/diagnostic evidence that payload copies happen after bounded admission.</summary>
+        internal int AdmittedPayloadCopies => Volatile.Read(ref _admittedPayloadCopies);
+
+        internal int PayloadCopiesInFlight => Volatile.Read(ref _payloadCopiesInFlight);
+
+        internal int MaxPayloadCopiesInFlight => Volatile.Read(ref _maxPayloadCopiesInFlight);
 
         public WebSocketTableChannel(WebSocketTableChannelOptions options)
             : this(options, new ClientWebSocketConnectionFactory())
@@ -119,7 +129,7 @@ namespace Mahjong.Client
                 {
                     if (_disposed)
                     {
-                        connection.Retire();
+                        connection.Retire(ProtocolErrorCode.LocalClosed, true);
                         throw new ObjectDisposedException(nameof(WebSocketTableChannel));
                     }
 
@@ -186,21 +196,28 @@ namespace Mahjong.Client
             }
 
             Connection? connection = Volatile.Read(ref _connection);
-            if (connection == null || connection.Retired)
+            if (connection == null)
             {
                 throw new TableChannelClosedException(ProtocolErrorCode.LocalClosed, false);
             }
 
-            byte[] payload = wireEnvelope.ToArray();
+            if (connection.Retired)
+            {
+                throw ClosedFor(connection, ProtocolErrorCode.LocalClosed);
+            }
+
             bool slotTaken = false;
             bool gateTaken = false;
+            bool copyTracked = false;
             using (var sendCts = CreateTimeoutSource(cancellationToken, connection.Lifetime.Token, _options.SendTimeout))
             {
                 try
                 {
                     // Admission is bounded: when MaxPendingSends callers are
                     // already waiting, this caller waits instead of growing an
-                    // unbounded queue. Then a single gate serializes writes.
+                    // unbounded queue. The payload is copied only after a slot
+                    // is granted, so queued callers do not each hold a private
+                    // copy of a large message.
                     try
                     {
                         await connection.SendSlots.WaitAsync(sendCts.Token).ConfigureAwait(false);
@@ -214,19 +231,24 @@ namespace Mahjong.Client
                             throw;
                         }
 
-                        // Backpressure timeout is reported as the immediate
-                        // cause even if another sender retired the socket while
-                        // this caller was queued.
-                        Retire(connection, ProtocolErrorCode.SlowConsumer, false);
-                        throw new TableChannelClosedException(ProtocolErrorCode.SlowConsumer, false);
+                        throw FailSend(connection, ProtocolErrorCode.SlowConsumer);
                     }
+
+                    if (!IsCurrent(connection))
+                    {
+                        throw ClosedFor(connection, ProtocolErrorCode.SlowConsumer);
+                    }
+
+                    byte[] payload = wireEnvelope.ToArray();
+                    copyTracked = true;
+                    TrackPayloadCopy();
 
                     await connection.SendGate.WaitAsync(sendCts.Token).ConfigureAwait(false);
                     gateTaken = true;
 
                     if (!IsCurrent(connection))
                     {
-                        throw new TableChannelClosedException(WebSocketChannelReason.StaleConnection, false);
+                        throw ClosedFor(connection, ProtocolErrorCode.SlowConsumer);
                     }
 
                     await connection.Socket.SendAsync(
@@ -237,7 +259,7 @@ namespace Mahjong.Client
 
                     if (!IsCurrent(connection))
                     {
-                        throw new TableChannelClosedException(WebSocketChannelReason.StaleConnection, false);
+                        throw ClosedFor(connection, ProtocolErrorCode.SlowConsumer);
                     }
                 }
                 catch (OperationCanceledException)
@@ -248,14 +270,7 @@ namespace Mahjong.Client
                         throw;
                     }
 
-                    if (!IsCurrent(connection))
-                    {
-                        Retire(connection, WebSocketChannelReason.StaleConnection, false);
-                        throw new TableChannelClosedException(WebSocketChannelReason.StaleConnection, false);
-                    }
-
-                    Retire(connection, ProtocolErrorCode.SlowConsumer, false);
-                    throw new TableChannelClosedException(ProtocolErrorCode.SlowConsumer, false);
+                    throw FailSend(connection, ProtocolErrorCode.SlowConsumer);
                 }
                 catch (TableChannelClosedException ex)
                 {
@@ -269,8 +284,8 @@ namespace Mahjong.Client
                 }
                 catch (ObjectDisposedException ex)
                 {
-                    Retire(connection, WebSocketChannelReason.TransportLost, false);
-                    throw new TableChannelClosedException(WebSocketChannelReason.TransportLost, false, ex);
+                    RetireIfCurrent(connection, WebSocketChannelReason.TransportLost, false);
+                    throw ClosedFor(connection, WebSocketChannelReason.TransportLost, ex);
                 }
                 finally
                 {
@@ -283,6 +298,11 @@ namespace Mahjong.Client
                     {
                         connection.SendSlots.Release();
                     }
+
+                    if (copyTracked)
+                    {
+                        ReleasePayloadCopy();
+                    }
                 }
             }
         }
@@ -290,9 +310,14 @@ namespace Mahjong.Client
         public async Task<ReadOnlyMemory<byte>> ReceiveAsync(CancellationToken cancellationToken)
         {
             Connection? connection = Volatile.Read(ref _connection);
-            if (connection == null || connection.Retired)
+            if (connection == null)
             {
                 throw new TableChannelClosedException(ProtocolErrorCode.LocalClosed, false);
+            }
+
+            if (connection.Retired)
+            {
+                throw ClosedFor(connection, ProtocolErrorCode.LocalClosed);
             }
 
             // Exactly one receive owner per connection. A second concurrent
@@ -306,7 +331,7 @@ namespace Mahjong.Client
             {
                 if (!IsCurrent(connection))
                 {
-                    throw new TableChannelClosedException(WebSocketChannelReason.StaleConnection, false);
+                    throw ClosedFor(connection, WebSocketChannelReason.StaleConnection);
                 }
 
                 using (var receiveCts = CreateTimeoutSource(cancellationToken, connection.Lifetime.Token, _options.ReceiveMessageTimeout))
@@ -318,7 +343,7 @@ namespace Mahjong.Client
                         {
                             // Bytes read from a retired socket must never reach a
                             // newer binding.
-                            throw new TableChannelClosedException(WebSocketChannelReason.StaleConnection, false);
+                            throw ClosedFor(connection, WebSocketChannelReason.StaleConnection);
                         }
 
                         return message;
@@ -333,7 +358,7 @@ namespace Mahjong.Client
 
                         if (!IsCurrent(connection))
                         {
-                            throw new TableChannelClosedException(WebSocketChannelReason.StaleConnection, false);
+                            throw ClosedFor(connection, WebSocketChannelReason.StaleConnection);
                         }
 
                         Retire(connection, WebSocketChannelReason.ReceiveTimeout, false);
@@ -499,9 +524,76 @@ namespace Mahjong.Client
             return ReferenceEquals(Volatile.Read(ref _connection), connection) && !connection.Retired;
         }
 
+        private bool IsSuperseded(Connection connection)
+        {
+            Connection? current = Volatile.Read(ref _connection);
+            return current != null && !ReferenceEquals(current, connection);
+        }
+
+        /// <summary>
+        /// Reason for a send that can no longer use its captured connection.
+        /// A retired-but-not-replaced connection reports its own retire reason
+        /// (for example SLOW_CONSUMER or LOCAL_CLOSED); only a connection that
+        /// was replaced by a newer OpenAsync reports STALE_CONNECTION.
+        /// </summary>
+        private TableChannelClosedException ClosedFor(Connection connection, string fallback, Exception? inner = null)
+        {
+            if (IsSuperseded(connection))
+            {
+                return inner == null
+                    ? new TableChannelClosedException(WebSocketChannelReason.StaleConnection, false)
+                    : new TableChannelClosedException(WebSocketChannelReason.StaleConnection, false, inner);
+            }
+
+            string code = connection.RetireCode ?? fallback;
+            bool permanent = connection.RetireCode != null && connection.RetirePermanent;
+            return inner == null
+                ? new TableChannelClosedException(code, permanent)
+                : new TableChannelClosedException(code, permanent, inner);
+        }
+
+        private TableChannelClosedException FailSend(Connection connection, string fallback)
+        {
+            if (IsSuperseded(connection))
+            {
+                return new TableChannelClosedException(WebSocketChannelReason.StaleConnection, false);
+            }
+
+            if (!connection.Retired)
+            {
+                Retire(connection, fallback, false);
+            }
+
+            // If another sender retired first, its reason is the cause this
+            // queued sender actually observed. Never invent STALE_CONNECTION
+            // merely because the shared socket was retired concurrently.
+            return ClosedFor(connection, fallback);
+        }
+
+        private void TrackPayloadCopy()
+        {
+            Interlocked.Increment(ref _admittedPayloadCopies);
+            int inFlight = Interlocked.Increment(ref _payloadCopiesInFlight);
+            int observed;
+            do
+            {
+                observed = Volatile.Read(ref _maxPayloadCopiesInFlight);
+                if (inFlight <= observed)
+                {
+                    break;
+                }
+            }
+            while (Interlocked.CompareExchange(ref _maxPayloadCopiesInFlight, inFlight, observed) != observed);
+        }
+
+        private void ReleasePayloadCopy()
+        {
+            Interlocked.Decrement(ref _payloadCopiesInFlight);
+        }
+
         private void Retire(Connection connection, string code, bool permanent)
         {
-            connection.Retire();
+            connection.Retire(code, permanent);
             lock (_gate)
             {
                 if (ReferenceEquals(_connection, connection))
@@ -612,6 +704,8 @@ namespace Mahjong.Client
         private sealed class Connection
         {
             private int _retired;
+            private string? _retireCode;
+            private bool _retirePermanent;
 
             public Connection(IWebSocketConnection socket, long generation, int maxPendingSends)
             {
@@ -634,18 +728,36 @@ namespace Mahjong.Client
 
             public bool Retired => Volatile.Read(ref _retired) != 0;
 
-            public void Retire()
+            public string? RetireCode => Volatile.Read(ref _retireCode);
+
+            public bool RetirePermanent => Volatile.Read(ref _retirePermanent);
+
+            public void Retire(string code, bool permanent)
             {
-                if (Interlocked.Exchange(ref _retired, 1) == 0)
+                bool first;
+                lock (this)
                 {
-                    try
+                    first = _retired == 0;
+                    if (first)
                     {
-                        Lifetime.Cancel();
+                        _retireCode = code;
+                        _retirePermanent = permanent;
+                        Volatile.Write(ref _retired, 1);
                     }
-                    catch (ObjectDisposedException)
-                    {
-                        // Already cancelled/disposed; nothing left to do.
-                    }
+                }
+
+                if (!first)
+                {
+                    return;
+                }
+
+                try
+                {
+                    Lifetime.Cancel();
+                }
+                catch (ObjectDisposedException)
+                {
+                    // Already cancelled/disposed; nothing left to do.
                 }
             }
         }

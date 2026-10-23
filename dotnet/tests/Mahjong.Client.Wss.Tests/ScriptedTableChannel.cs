@@ -39,6 +39,7 @@ namespace Mahjong.Client.Wss.Tests
         private Channel<InboundItem> _inbound = NewChannel();
         private bool _open;
         private int _openCount;
+        private int _receivedCount;
 
         public bool AutoHandshake { get; set; } = true;
 
@@ -55,6 +56,14 @@ namespace Mahjong.Client.Wss.Tests
 
         public Func<int, string, Envelope> SyncFactory { get; set; } =
             (index, correlation) => TestWire.PlayerSync(bindingEpoch: 10 + index, correlationId: correlation);
+
+        public Func<int, Envelope>? ExtraMessageFactory { get; set; }
+
+        public int ExtraMessagesAfterSync { get; set; }
+
+        public Action? OnReceive { get; set; }
+
+        public int ReceivedCount => Volatile.Read(ref _receivedCount);
 
         public int OpenCount
         {
@@ -146,6 +155,13 @@ namespace Mahjong.Client.Wss.Tests
                 else if (envelope.BodyCase == Envelope.BodyOneofCase.SyncRequest)
                 {
                     channel.Writer.TryWrite(InboundItem.FromEnvelope(SyncFactory(index, envelope.CorrelationId)));
+                    if (ExtraMessageFactory != null)
+                    {
+                        for (int i = 0; i < ExtraMessagesAfterSync; i++)
+                        {
+                            channel.Writer.TryWrite(InboundItem.FromEnvelope(ExtraMessageFactory(index)));
+                        }
+                    }
                 }
             }
 
@@ -187,6 +203,8 @@ namespace Mahjong.Client.Wss.Tests
                     throw item.Failure;
                 }
 
+                OnReceive?.Invoke();
+                Interlocked.Increment(ref _receivedCount);
                 return item.Bytes!;
             }
         }

@@ -64,12 +64,161 @@ namespace Mahjong.Client.Wss.Tests
             Task first = channel.SendAsync(TestWire.Encode(TestWire.PlayerPush(11, 5, 10, 6, 11)), CancellationToken.None);
             await sendEntered.Task.WaitAsync(TimeSpan.FromSeconds(2));
 
-            TableChannelClosedException ex = await Assert.ThrowsAsync<TableChannelClosedException>(
+            TableChannelClosedException secondEx = await Assert.ThrowsAsync<TableChannelClosedException>(
                 () => channel.SendAsync(TestWire.Encode(TestWire.PlayerPush(11, 5, 10, 6, 11)), CancellationToken.None));
+            TableChannelClosedException firstEx = await Assert.ThrowsAsync<TableChannelClosedException>(() => first);
+
+            // The first sender's timeout retired the shared connection; the
+            // queued sender must report the backpressure cause it observed,
+            // not STALE_CONNECTION merely because retire raced its admission.
+            Assert.Equal(ProtocolErrorCode.SlowConsumer, secondEx.Code);
+            Assert.Equal(ProtocolErrorCode.SlowConsumer, firstEx.Code);
+            Assert.False(secondEx.Permanent);
+            Assert.False(firstEx.Permanent);
+        }
+
+        [Fact]
+        public async Task IndependentSenderTimeoutIsSlowConsumer()
+        {
+            var factory = new FakeWebSocketConnectionFactory();
+            using var channel = Create(factory, options =>
+            {
+                options.MaxPendingSends = 1;
+                options.SendTimeout = TimeSpan.FromMilliseconds(80);
+            });
+            await channel.OpenAsync(Request(), CancellationToken.None);
+
+            var entered = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            factory.Last.SendHandler = async (buffer, type, endOfMessage, cancellationToken) =>
+            {
+                entered.TrySetResult(true);
+                await Task.Delay(Timeout.Infinite, cancellationToken);
+            };
+
+            Task send = channel.SendAsync(TestWire.Encode(TestWire.PlayerPush(11, 5, 10, 6, 11)), CancellationToken.None);
+            await entered.Task.WaitAsync(TimeSpan.FromSeconds(2));
+
+            TableChannelClosedException ex = await Assert.ThrowsAsync<TableChannelClosedException>(() => send);
 
             Assert.Equal(ProtocolErrorCode.SlowConsumer, ex.Code);
             Assert.False(ex.Permanent);
-            await Assert.ThrowsAnyAsync<Exception>(() => first);
+            Assert.False(channel.IsOpen);
+            Assert.Equal(0, channel.PayloadCopiesInFlight);
+        }
+
+        [Fact]
+        public async Task ExplicitCloseIsReportedAsLocalClosedToQueuedAndActiveSenders()
+        {
+            var factory = new FakeWebSocketConnectionFactory();
+            using var channel = Create(factory, options =>
+            {
+                options.MaxPendingSends = 1;
+                options.SendTimeout = TimeSpan.FromSeconds(2);
+            });
+            await channel.OpenAsync(Request(), CancellationToken.None);
+
+            var entered = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            factory.Last.SendHandler = async (buffer, type, endOfMessage, cancellationToken) =>
+            {
+                entered.TrySetResult(true);
+                await Task.Delay(Timeout.Infinite, cancellationToken);
+            };
+
+            Task first = channel.SendAsync(TestWire.Encode(TestWire.PlayerPush(11, 5, 10, 6, 11)), CancellationToken.None);
+            await entered.Task.WaitAsync(TimeSpan.FromSeconds(2));
+            Task second = channel.SendAsync(TestWire.Encode(TestWire.PlayerPush(11, 5, 10, 6, 11)), CancellationToken.None);
+
+            await channel.CloseAsync(
+                new TableChannelCloseReason(ProtocolErrorCode.LocalClosed, false),
+                CancellationToken.None);
+
+            TableChannelClosedException firstEx = await Assert.ThrowsAsync<TableChannelClosedException>(() => first);
+            TableChannelClosedException secondEx = await Assert.ThrowsAsync<TableChannelClosedException>(() => second);
+            Assert.Equal(ProtocolErrorCode.LocalClosed, firstEx.Code);
+            Assert.Equal(ProtocolErrorCode.LocalClosed, secondEx.Code);
+            Assert.False(firstEx.Permanent);
+            Assert.False(secondEx.Permanent);
+        }
+
+        [Fact]
+        public async Task ReopenReportsStaleOnlyToOldSendersAndNewConnectionWorks()
+        {
+            var factory = new FakeWebSocketConnectionFactory();
+            using var channel = Create(factory, options =>
+            {
+                options.MaxPendingSends = 1;
+                options.SendTimeout = TimeSpan.FromSeconds(2);
+            });
+            await channel.OpenAsync(Request(), CancellationToken.None);
+
+            var entered = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            factory.Last.SendHandler = async (buffer, type, endOfMessage, cancellationToken) =>
+            {
+                entered.TrySetResult(true);
+                await Task.Delay(Timeout.Infinite, cancellationToken);
+            };
+
+            Task oldSend = channel.SendAsync(TestWire.Encode(TestWire.PlayerPush(11, 5, 10, 6, 11)), CancellationToken.None);
+            await entered.Task.WaitAsync(TimeSpan.FromSeconds(2));
+
+            await channel.OpenAsync(Request(), CancellationToken.None);
+            factory.Last.SendHandler = null;
+
+            TableChannelClosedException oldEx = await Assert.ThrowsAsync<TableChannelClosedException>(() => oldSend);
+            Assert.Equal(WebSocketChannelReason.StaleConnection, oldEx.Code);
+
+            await channel.SendAsync(
+                TestWire.Encode(TestWire.PlayerPush(11, 6, 11, 7, 12)),
+                CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(2));
+            Assert.True(channel.IsOpen);
+        }
+
+        [Fact]
+        public async Task PayloadCopiesAreBoundedBySendAdmission()
+        {
+            var factory = new FakeWebSocketConnectionFactory();
+            using var channel = Create(factory, options =>
+            {
+                options.MaxPendingSends = 2;
+                options.SendTimeout = TimeSpan.FromSeconds(5);
+            });
+            await channel.OpenAsync(Request(), CancellationToken.None);
+
+            factory.Last.SendHandler = async (buffer, type, endOfMessage, cancellationToken) =>
+            {
+                await Task.Delay(Timeout.Infinite, cancellationToken);
+            };
+
+            using var cts = new CancellationTokenSource();
+            var sends = new Task[20];
+            for (int i = 0; i < sends.Length; i++)
+            {
+                sends[i] = channel.SendAsync(
+                    TestWire.Encode(TestWire.PlayerPush(11, 5, 10, 6, 11)),
+                    cts.Token);
+            }
+
+            await TestWire.WaitUntilAsync(
+                () => channel.MaxPayloadCopiesInFlight >= 2,
+                TimeSpan.FromSeconds(2),
+                "two admitted payload copies");
+            Assert.Equal(2, channel.AdmittedPayloadCopies);
+            Assert.True(channel.MaxPayloadCopiesInFlight <= 2);
+
+            cts.Cancel();
+            for (int i = 0; i < sends.Length; i++)
+            {
+                try
+                {
+                    await sends[i];
+                }
+                catch (Exception)
+                {
+                    // Cancellation/retire is expected.
+                }
+            }
+
+            Assert.Equal(0, channel.PayloadCopiesInFlight);
         }
 
         [Fact]

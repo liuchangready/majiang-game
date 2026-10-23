@@ -190,6 +190,45 @@ namespace Mahjong.Client.Wss.Tests
         }
 
         [Fact]
+        public async Task NonBaselineMessagesCannotExtendTheAbsoluteHandshakeDeadline()
+        {
+            using var fixture = new RunnerFixture(options =>
+            {
+                options.MaxReconnectAttempts = 0;
+                options.InitialBackoff = TimeSpan.FromMilliseconds(20);
+                options.MaxBackoff = TimeSpan.FromMilliseconds(20);
+                options.HandshakeTimeout = TimeSpan.FromMilliseconds(250);
+            });
+            fixture.Channel.SyncFactory = (index, correlation) =>
+                TestWire.PlayerPush(10 + index, 5, 10, 6, 11);
+            fixture.Channel.ExtraMessageFactory = index =>
+                TestWire.PlayerPush(10 + index, 6, 11, 7, 12);
+            fixture.Channel.ExtraMessagesAfterSync = 20;
+            fixture.Channel.OnReceive = () =>
+            {
+                // Real time advances slowly per message while the manual
+                // monotonic clock advances faster. A per-read CancelAfter would
+                // keep being reset and consume every message; the absolute
+                // Open->Ready deadline must stop after a few.
+                Thread.Sleep(60);
+                fixture.Clock.Advance(100);
+            };
+
+            TableSessionRunResult result = await fixture.Runner
+                .RunAsync(CancellationToken.None)
+                .WaitAsync(TimeSpan.FromSeconds(5));
+
+            Assert.Equal(TableSessionRunStop.ReconnectExhausted, result.Stop);
+            Assert.Equal(ProtocolErrorCode.HandshakeTimeout, result.ReasonCode);
+            Assert.Equal(1, result.ConnectionAttempts);
+            Assert.NotEqual(TableConnectionState.Ready, fixture.Session.State);
+            Assert.True(fixture.Channel.ReceivedCount >= 3);
+            Assert.True(fixture.Channel.ReceivedCount <= 5);
+            Assert.Equal(1, fixture.Channel.CountSent(MessageType.SyncRequest));
+            Assert.True(fixture.Clock.MonotonicMilliseconds >= 300);
+        }
+
+        [Fact]
         public async Task PermanentInboundCloseStopsTheRunner()
         {
             using var fixture = new RunnerFixture();
@@ -235,6 +274,7 @@ namespace Mahjong.Client.Wss.Tests
                 Channel = new ScriptedTableChannel();
                 Session = new TableSession(Channel, new InMemoryOutboxStore());
                 Provider = new RecordingTicketProvider();
+                Clock = new ManualTableClock();
                 var options = new TableSessionRunnerOptions
                 {
                     InitialBackoff = TimeSpan.FromMilliseconds(50),
@@ -254,7 +294,8 @@ namespace Mahjong.Client.Wss.Tests
                         token.ThrowIfCancellationRequested();
                         _delays.Add(delay);
                         return Task.CompletedTask;
-                    });
+                    },
+                    Clock);
             }
 
             public ScriptedTableChannel Channel { get; }
@@ -262,6 +303,8 @@ namespace Mahjong.Client.Wss.Tests
             public TableSession Session { get; }
 
             public RecordingTicketProvider Provider { get; }
+
+            public ManualTableClock Clock { get; }
 
             public TableSessionRunnerOptions Options { get; }
 
