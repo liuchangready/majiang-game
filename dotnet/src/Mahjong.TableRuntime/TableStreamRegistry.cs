@@ -114,6 +114,8 @@ namespace Mahjong.TableRuntime
         private bool _pumping;
         private bool _closed;
         private bool _terminationSent;
+        private int _cancelScheduled;
+        private long _allowedGeneration;
         private TableStreamTermination? _termination;
 
         public TableStreamChannel(
@@ -122,7 +124,8 @@ namespace Mahjong.TableRuntime
             int maxFrames,
             int maxBytes,
             bool enforceBytes,
-            ITableStreamTerminationSink? terminationSink)
+            ITableStreamTerminationSink? terminationSink,
+            long allowedGeneration)
         {
             _handle = handle ?? throw new ArgumentNullException(nameof(handle));
             _sink = sink ?? throw new ArgumentNullException(nameof(sink));
@@ -130,6 +133,7 @@ namespace Mahjong.TableRuntime
             _maxBytes = maxBytes;
             _enforceBytes = enforceBytes;
             _terminationSink = terminationSink;
+            _allowedGeneration = allowedGeneration;
         }
 
         public bool IsClosed
@@ -171,6 +175,12 @@ namespace Mahjong.TableRuntime
                     return TableStreamEnqueueStatus.Closed;
                 }
 
+                if (frame.RecoveryGeneration != _allowedGeneration)
+                {
+                    // A queued old-generation frame must never enter a new recovery generation.
+                    return TableStreamEnqueueStatus.Closed;
+                }
+
                 int size = frame.PayloadSize;
                 if (_enforceBytes && size > _maxBytes)
                 {
@@ -205,6 +215,7 @@ namespace Mahjong.TableRuntime
 
             if (termination != null)
             {
+                ScheduleCancellation();
                 Notify(termination);
             }
 
@@ -216,7 +227,23 @@ namespace Mahjong.TableRuntime
             return status;
         }
 
-        /// <summary>Stops future delivery and drops queued frames. The in-flight sink call is cancelled but never awaited by the actor.</summary>
+        /// <summary>
+        /// Drops every queued frame from an earlier recovery generation and fences the pump.
+        /// A sink call that already started cannot be recalled, but no old queued frame may
+        /// reach the sink after this fence. This method is intentionally non-blocking and does
+        /// not cancel under the actor thread.
+        /// </summary>
+        public void PurgeAndFence(long generation)
+        {
+            lock (_gate)
+            {
+                _allowedGeneration = generation;
+                _queue.Clear();
+                _queuedBytes = 0;
+            }
+        }
+
+        /// <summary>Stops future delivery and drops queued frames. The in-flight sink call is cancelled off-actor.</summary>
         public void Close(TableStreamTerminationKind kind, string reasonCode, string detail)
         {
             TableStreamTermination? termination;
@@ -230,6 +257,7 @@ namespace Mahjong.TableRuntime
                 termination = CloseLocked(kind, reasonCode, detail);
             }
 
+            ScheduleCancellation();
             Notify(termination);
         }
 
@@ -238,17 +266,32 @@ namespace Mahjong.TableRuntime
             _closed = true;
             _queue.Clear();
             _queuedBytes = 0;
-            try
-            {
-                _cancellation.Cancel();
-            }
-            catch (ObjectDisposedException)
-            {
-                // The pump already observed the close; there is nothing left to cancel.
-            }
-
             _termination = new TableStreamTermination(kind, _handle, reasonCode, detail);
             return _termination;
+        }
+
+        private void ScheduleCancellation()
+        {
+            if (Interlocked.CompareExchange(ref _cancelScheduled, 1, 0) != 0)
+            {
+                return;
+            }
+
+            // Cancel() executes user cancellation callbacks synchronously. Never do that on the
+            // actor consumer or while holding the channel lock: a blocking/reentrant callback
+            // would otherwise stall the table mailbox.
+            _ = Task.Run(() =>
+            {
+                try
+                {
+                    _cancellation.Cancel();
+                }
+                catch (Exception)
+                {
+                    // A cancellation callback is downstream code. Its failure/throwing cannot
+                    // fail the actor or duplicate termination.
+                }
+            });
         }
 
         private async Task PumpAsync()
@@ -256,6 +299,7 @@ namespace Mahjong.TableRuntime
             while (true)
             {
                 TableStreamFrame? frame = null;
+                long allowedGeneration;
                 lock (_gate)
                 {
                     if (_closed || _queue.Count == 0)
@@ -266,6 +310,14 @@ namespace Mahjong.TableRuntime
 
                     frame = _queue.Dequeue();
                     _queuedBytes -= frame.PayloadSize;
+                    allowedGeneration = _allowedGeneration;
+                }
+
+                if (frame.RecoveryGeneration != allowedGeneration)
+                {
+                    // Recovery fenced this frame while it was queued. Drop it without consulting
+                    // the sink; the next call must be the new generation's full baseline.
+                    continue;
                 }
 
                 try
@@ -298,6 +350,7 @@ namespace Mahjong.TableRuntime
                             exception.GetType().Name + ": " + exception.Message);
                     }
 
+                    ScheduleCancellation();
                     Notify(termination);
                     return;
                 }
@@ -323,14 +376,20 @@ namespace Mahjong.TableRuntime
                 return;
             }
 
-            try
+            // The termination observer is downstream code. Dispatch it off the actor thread and
+            // off the channel lock; a blocking/reentrant observer can neither stall the table
+            // mailbox nor duplicate the one-shot termination notification.
+            _ = Task.Run(() =>
             {
-                _terminationSink.OnStreamTerminated(termination);
-            }
-            catch (Exception)
-            {
-                // A diagnostic observer cannot re-enter or fail the table actor.
-            }
+                try
+                {
+                    _terminationSink.OnStreamTerminated(termination);
+                }
+                catch (Exception)
+                {
+                    // A diagnostic observer cannot re-enter or fail the table actor.
+                }
+            });
         }
     }
 }

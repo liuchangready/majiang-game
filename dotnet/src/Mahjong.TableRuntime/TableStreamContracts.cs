@@ -154,21 +154,37 @@ namespace Mahjong.TableRuntime
     /// </summary>
     public sealed class TableStreamHandle : IEquatable<TableStreamHandle>
     {
-        internal TableStreamHandle(ulong token, TableStreamIdentity identity)
+        private readonly object _source;
+
+        internal TableStreamHandle(ulong token, object source, TableStreamIdentity identity)
         {
             Token = token;
+            _source = source ?? throw new ArgumentNullException(nameof(source));
             Identity = identity ?? throw new ArgumentNullException(nameof(identity));
         }
 
         internal ulong Token { get; }
 
+        internal bool IsOwnedBy(object source) => ReferenceEquals(_source, source);
+
         public TableStreamIdentity Identity { get; }
 
-        public bool Equals(TableStreamHandle? other) => other != null && Token == other.Token;
+        public bool Equals(TableStreamHandle? other)
+        {
+            // Tokens restart at 1 for every actor instance. Equality must include the owning
+            // actor identity, otherwise two independent tables with token 1 alias each other.
+            return other != null && Token == other.Token && ReferenceEquals(_source, other._source);
+        }
 
         public override bool Equals(object? obj) => obj is TableStreamHandle other && Equals(other);
 
-        public override int GetHashCode() => Token.GetHashCode();
+        public override int GetHashCode()
+        {
+            unchecked
+            {
+                return (Token.GetHashCode() * 397) ^ _source.GetHashCode();
+            }
+        }
 
         public override string ToString() => Identity + "#" + Token.ToString(System.Globalization.CultureInfo.InvariantCulture);
     }

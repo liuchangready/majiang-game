@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text;
+using System.Threading;
 using System.Threading.Tasks;
 using Mahjong.Contracts;
 using Mahjong.Domain;
@@ -652,6 +653,153 @@ namespace Mahjong.TableRuntime.Tests
             await Task.Delay(100, TestContext.Current.CancellationToken);
             Assert.Equal(1, newSink.FrameCount);
             Assert.Equal(2, oldSink.FrameCount);
+        }
+
+        [Fact]
+        public async Task ForeignActorHandlesAreRejectedAndLocalStreamKeepsWorking()
+        {
+            await using StreamHarness first = StreamHarness.Create();
+            await using StreamHarness second = StreamHarness.Create();
+            var foreign = await first.SubscribeSeatAsync(0, "foreign", 1UL, 1UL, new RecordingStreamSink());
+            Assert.Equal(TableStreamControlStatus.Subscribed, foreign.Status);
+
+            var localSink = new RecordingStreamSink();
+            TableStreamControlResult local =
+                await second.SubscribeSpectatorAsync("local", 1UL, 1UL, localSink);
+            Assert.Equal(TableStreamControlStatus.Subscribed, local.Status);
+            await localSink.WaitForCountAsync(1);
+
+            TableStreamControlResult foreignUnsubscribe =
+                await second.UnsubscribeAsync(foreign.Handle!);
+            Assert.Equal(TableStreamControlStatus.Rejected, foreignUnsubscribe.Status);
+            TableStreamControlResult foreignSync =
+                await second.SyncAsync(foreign.Handle!, StreamCursor.Empty);
+            Assert.Equal(TableStreamControlStatus.Rejected, foreignSync.Status);
+
+            await Task.Delay(100, TestContext.Current.CancellationToken);
+            Assert.Single(localSink.Frames);
+            Assert.Null(localSink.Frames[0].Player);
+            Assert.Null(localSink.Frames[0].OwnerPrivate);
+
+            TableStreamControlResult localSync =
+                await second.SyncAsync(local.Handle!, local.Cursor!.Value);
+            Assert.Equal(TableStreamControlStatus.InSync, localSync.Status);
+
+            IReadOnlyList<TableCommandEnvelope> chain = second.DiscardChain(1);
+            Assert.Equal(
+                TableOperationStatus.Accepted,
+                (await second.Actor.SubmitAsync(chain[0], TestContext.Current.CancellationToken)).Status);
+            IReadOnlyList<TableStreamFrame> frames = await localSink.WaitForCountAsync(2);
+            Assert.NotNull(frames[1].Public);
+            Assert.Null(frames[1].Player);
+        }
+
+        [Fact]
+        public async Task RecoveryPurgesQueuedOldGenerationAndFirstNewDeliveryIsBaseline()
+        {
+            await using StreamHarness harness = StreamHarness.Create();
+            var sink = new RecordingStreamSink();
+            sink.BlockNext();
+            TableStreamControlResult subscribed =
+                await harness.SubscribeSpectatorAsync("local", 1UL, 1UL, sink);
+            Assert.Equal(TableStreamControlStatus.Subscribed, subscribed.Status);
+            await sink.Entered.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
+
+            IReadOnlyList<TableCommandEnvelope> chain = harness.DiscardChain(1);
+            Assert.Equal(
+                TableOperationStatus.Accepted,
+                (await harness.Actor.SubmitAsync(chain[0], TestContext.Current.CancellationToken)).Status);
+            RoundTransition transition = harness.InitialRound.Execute(chain[0].Command);
+            Assert.True(transition.IsAccepted);
+
+            Assert.Equal(
+                TableOperationStatus.Configured,
+                (await harness.Actor.BeginRecoveryAsync(
+                    "recovery queue probe",
+                    TestContext.Current.CancellationToken)).Status);
+
+            sink.Release();
+            await Task.Delay(100, TestContext.Current.CancellationToken);
+            Assert.Equal(1, sink.FrameCount);
+
+            Assert.Equal(
+                TableOperationStatus.Configured,
+                (await harness.Actor.CompleteRecoveryAsync(
+                    new TableRecoveryBaseline(
+                        transition.State!,
+                        new StateVersion(1),
+                        new EventSeq(unchecked((ulong)transition.Events.Count)),
+                        new OwnerEpoch(1)),
+                    TestContext.Current.CancellationToken)).Status);
+
+            IReadOnlyList<TableStreamFrame> frames = await sink.WaitForCountAsync(2);
+            Assert.True(frames[1].IsFullSnapshot);
+            Assert.Equal(new StreamVersion(1), frames[1].StreamVersion);
+            // The dropped old update had already consumed seq 2 locally. A full baseline is a
+            // reset, so the next emitted baseline may be seq 3; this is not an update gap.
+            Assert.Equal(new ProjectionSeq(3), frames[1].ProjectionSeq);
+            Assert.Equal(1L, frames[1].RecoveryGeneration);
+        }
+
+        [Fact]
+        public async Task BlockingTerminationSinkCannotStallLeaseLossOrSnapshot()
+        {
+            using var release = new ManualResetEventSlim(false);
+            var entered = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            var options = new TableStreamOptions
+            {
+                TerminationSink = new BlockingTerminationSink(entered, release)
+            };
+            await using StreamHarness harness = StreamHarness.Create(options);
+            var sink = new RecordingStreamSink();
+            TableStreamControlResult subscribed =
+                await harness.SubscribeSpectatorAsync("local", 1UL, 1UL, sink);
+            Assert.Equal(TableStreamControlStatus.Subscribed, subscribed.Status);
+            await sink.WaitForCountAsync(1);
+
+            try
+            {
+                Task<TableOperationResult> leaseLoss = harness.Actor.ReportLeaseLostAsync(
+                    new OwnerEpoch(1),
+                    "lease termination probe",
+                    TestContext.Current.CancellationToken).AsTask();
+                Task completed = await Task.WhenAny(
+                    leaseLoss,
+                    Task.Delay(500, TestContext.Current.CancellationToken));
+                Assert.Same(leaseLoss, completed);
+                Assert.Equal(TableOperationStatus.Configured, (await leaseLoss).Status);
+
+                await entered.Task.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
+                Task<TableSnapshot> snapshot = harness.Actor.GetSnapshotAsync(
+                    TestContext.Current.CancellationToken).AsTask();
+                Task snapshotCompleted = await Task.WhenAny(
+                    snapshot,
+                    Task.Delay(500, TestContext.Current.CancellationToken));
+                Assert.Same(snapshot, snapshotCompleted);
+                Assert.NotNull(await snapshot);
+            }
+            finally
+            {
+                release.Set();
+            }
+        }
+
+        private sealed class BlockingTerminationSink : ITableStreamTerminationSink
+        {
+            private readonly TaskCompletionSource<bool> _entered;
+            private readonly ManualResetEventSlim _release;
+
+            public BlockingTerminationSink(TaskCompletionSource<bool> entered, ManualResetEventSlim release)
+            {
+                _entered = entered;
+                _release = release;
+            }
+
+            public void OnStreamTerminated(TableStreamTermination termination)
+            {
+                _entered.TrySetResult(true);
+                _release.Wait();
+            }
         }
     }
 }

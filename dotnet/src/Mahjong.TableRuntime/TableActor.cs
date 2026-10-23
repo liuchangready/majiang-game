@@ -60,6 +60,7 @@ namespace Mahjong.TableRuntime
             new Dictionary<ulong, TableStreamRegistration>();
         private readonly Dictionary<string, TableStreamIdentityState> _streamIdentities =
             new Dictionary<string, TableStreamIdentityState>(StringComparer.Ordinal);
+        private readonly object _streamSource = new object();
         private ulong _nextStreamHandle;
 
         private RoundStateMachine _round;
@@ -1869,6 +1870,10 @@ namespace Mahjong.TableRuntime
             _lifecycle = TableActorLifecycle.Recovering;
             _lifecycleReason = reason ?? string.Empty;
             _pending.Clear();
+            // Fence every existing outbox to the new generation before any further work can be
+            // processed. The in-flight sink call (if any) cannot be recalled, but queued old
+            // update frames are dropped and can never be dispatched after this point.
+            FenceAndPurgeStreamsForRecovery(_recoveryGeneration);
             // Weakly-held observation generations from earlier recovery generations remain
             // collectible; IsCurrentObservation checks the current generation on submission.
             // Keep the reserve ledger and active round until the baseline proves whether they
@@ -3941,7 +3946,11 @@ namespace Mahjong.TableRuntime
                 !recoveryMismatch &&
                 !controlMismatch)
             {
-                return TableStreamControlResult.InSync(handle, registration.State.Cursor, _stateVersion, _controlVersion);
+                return TableStreamControlResult.InSync(
+                    registration.Handle,
+                    registration.State.Cursor,
+                    _stateVersion,
+                    _controlVersion);
             }
 
             ProjectionSeq nextSeq;
@@ -3966,7 +3975,7 @@ namespace Mahjong.TableRuntime
             {
                 StreamProjectionCapture capture = CaptureStreamProjection();
                 var cursor = new StreamCursor(new StreamVersion(_stateVersion.Value), nextSeq);
-                TableStreamFrame frame = BuildStreamFrame(handle, capture, true, cursor, null);
+                TableStreamFrame frame = BuildStreamFrame(registration.Handle, capture, true, cursor, null);
                 TableStreamEnqueueStatus enqueue = registration.Channel.TryEnqueue(frame);
                 if (enqueue != TableStreamEnqueueStatus.Enqueued)
                 {
@@ -3975,7 +3984,7 @@ namespace Mahjong.TableRuntime
                         TableStreamControlStatus.Overflow,
                         ProtocolErrorCode.SlowConsumer,
                         "The full baseline could not be queued without exceeding the stream bound.",
-                        handle,
+                        registration.Handle,
                         _stateVersion,
                         _controlVersion);
                 }
@@ -3987,7 +3996,7 @@ namespace Mahjong.TableRuntime
                 registration.ControlVersion = _controlVersion;
                 registration.NeedsSync = false;
                 return TableStreamControlResult.BaselineQueued(
-                    handle,
+                    registration.Handle,
                     cursor,
                     _stateVersion,
                     _controlVersion,
@@ -4040,7 +4049,7 @@ namespace Mahjong.TableRuntime
             }
 
             _nextStreamHandle = token;
-            return new TableStreamHandle(token, identity);
+            return new TableStreamHandle(token, _streamSource, identity);
         }
 
         private TableStreamChannel CreateStreamChannel(TableStreamHandle handle, ITableStreamSink sink)
@@ -4051,12 +4060,26 @@ namespace Mahjong.TableRuntime
                 _streamOptions.MaxQueuedFrames,
                 _streamOptions.MaxQueuedBytes,
                 _streamOptions.Encoder != null,
-                _streamOptions.TerminationSink);
+                _streamOptions.TerminationSink,
+                _recoveryGeneration);
         }
 
         private TableStreamRegistration? FindCurrentRegistration(TableStreamHandle handle)
         {
+            // A token is only unique inside one actor. Reject handles minted by another actor
+            // before touching the local token table; also require the exact current object so a
+            // stale handle from this actor cannot alias a replacement with the same token.
+            if (!handle.IsOwnedBy(_streamSource))
+            {
+                return null;
+            }
+
             if (!_streams.TryGetValue(handle.Token, out TableStreamRegistration? registration))
+            {
+                return null;
+            }
+
+            if (!ReferenceEquals(registration.Handle, handle))
             {
                 return null;
             }
@@ -4093,6 +4116,14 @@ namespace Mahjong.TableRuntime
         {
             RemoveRegistration(registration);
             registration.Channel.Close(kind, reasonCode, detail);
+        }
+
+        private void FenceAndPurgeStreamsForRecovery(long generation)
+        {
+            foreach (KeyValuePair<ulong, TableStreamRegistration> entry in _streams)
+            {
+                entry.Value.Channel.PurgeAndFence(generation);
+            }
         }
 
         private void CloseAllStreams(TableStreamTerminationKind kind, string reasonCode, string detail)

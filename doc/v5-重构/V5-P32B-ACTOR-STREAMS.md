@@ -1,9 +1,10 @@
-﻿# V5 P3.2b actor 流注册与帧边界交付说明
+# V5 P3.2b actor 流注册与帧边界交付说明
 
-日期：2026-10-24
-状态：**P3.2b 组件交付；不是完整 P3.2、P3.4 或 G1 通过。**
+日期：2026-10-24（第 2 轮返修）
+状态：**P3.2b 组件已针对第 1 轮阻断返修；不是完整 P3.2、P3.4 或 G1 通过。**
 工作树：`D:/majiang-wt/p32-streams`，分支 `wt/v5-p32-streams`。
 基线：`3e78367538b4f7520a1d414c82ef3155507a5206`（PR #19 已审查 head；已含 P3.2a、P3.3）。
+第 1 轮交付：`ac2f4ab6756024f6e96474ad76109954c5fe1736`，caller 独立验收 **FAIL**（3 类阻断）。本轮在该提交上返修并保留 caller 新增的 `CodexP32bReviewProbes.cs`。
 范围：TableActor/mailbox 的流接线、流注册、按流投影与发送、恢复/失租/故障生命周期、测试与说明。未改 Contracts/Wire、Domain、P3.2a 投影源/上下文、项目文件（csproj/sln）、Unity 环境/Resources/Burst、CI 或兄弟 P3.2c 文件。
 
 > P3.2a 的纯投影组件已独立验收；本交付只负责把它接到 actor 的提交后时序、流身份、游标、队列和生命周期上。实际 Protobuf/Wire 打包、真实 PG、WSS、Unity/设备与完整 G1 仍未完成，由 caller 在 P3.2c 接入后联合验收。
@@ -16,12 +17,14 @@
 
 - `Subscribe/Unsubscribe/Sync` 作为 actor 控制消息进入**同一个有界 mailbox**，由唯一消费者串行处理；首 full baseline 的投影、入队和注册在同一 actor turn 内完成，没有“先读 snapshot、再由别的线程注册”的窗口。
 - 席位 0..3 与公共观战流各自独立的 `(sessionId, audience)` 流身份；观战只拿 `PublicSnapshotView`，席位拿 `PlayerSnapshotView` + `TableOwnerPrivateView`。多观战者各自的公开事实载荷一致，但游标和身份独立。
+- `TableStreamHandle` 绑定 actor 私有来源对象 + token，`Equals`/`GetHashCode` 均包含来源；`Unsubscribe/Sync` 先校验来源、当前注册对象引用和 token，外 actor 的同号 token 不能命中、更不能借外来席位 handle 生成本地私有帧。
 - `bindingEpoch`、`syncEpoch`、`controlEpoch`、`ownerEpoch`、`recoveryGeneration` 分离校验；`bindingEpoch` 只作为宿主签发的重绑代数/防回退水位，不是出牌授权。出牌仍由 P3.1/P3.3 的 owner/control/round/state 校验。
 - commit 成功并安装新状态后才投影；失败/取消/拒绝的 commit 零发布。投影失败不改回/不回滚已持久状态，关闭受影响的流并记录 `PublicationFault`。
 - 每流 `projectionSeq` / `streamVersion`：只按实际发射递增；`streamVersion` 是观察到已提交的 `stateVersion`，控制变更只增加 `controlVersion` 与 `projectionSeq`，不伪造 stateVersion。事件 `eventSeq` 与流游标分离。
 - 每流独立有界队列和单发送泵；慢 sink 不阻塞 actor；消息数上限始终生效，配置可信编码器时同时按真实编码字节数限流。溢出/编码失败/投影失败/失租/关闭都有明确终止原因。
-- 恢复：`BeginRecovery` 期间流被 sync 门控且不发送；`CompleteRecovery` 安装后对仍有效的流重发 full baseline，旧 owner/旧控制者的私有流关闭而不是继续发旧内容。失租、关闭、故障会关闭全部流且不再发布内容。
-- 新测试直接使用真实 `TableActor` 公开 API 和受控 commit/sink；覆盖提交前后订阅、慢 commit、四席与观战隔离、独立游标、重绑/切换、旧 binding/sync/round/recovery、慢 sink/溢出、commit 失败、投影失败、恢复、控制变更和编码边界。既有 104 个 TableRuntime 用例与 caller provenance 探针保持不变并通过。
+- 恢复：`BeginRecovery` 递增 generation 后立即对所有 channel 做 **fence + purge**：清空旧代次排队帧、禁止旧 generation 再入队/再派发；已进入外部 sink 的单次调用不可召回。`CompleteRecovery` 安装后对仍有效流排入新代次 full baseline 并置 `NeedsSync`，宿主显式 Sync 前不发送增量。旧 owner/旧控制者的私有流关闭而不是继续发旧内容。
+- 取消与 termination 观察者不在 actor 线程、也不在 channel 锁内执行：`Cancel()` 与 `OnStreamTerminated` 均以一次性后台任务派发，阻塞/重入/抛异常的下游回调不能卡住 mailbox。
+- 新测试直接使用真实 `TableActor` 公开 API 和受控 commit/sink；覆盖提交前后订阅、慢 commit、四席与观战隔离、独立游标、重绑/切换、旧 binding/sync/round/recovery、慢 sink/溢出、commit 失败、投影失败、恢复队列代次、控制变更和编码边界。既有 104 个 TableRuntime 用例与 caller provenance 探针保持不变并通过。
 
 ### 1.2 明确未实现（P3.2c / P3.4 / 其他 owner）
 
@@ -49,7 +52,8 @@
 |---|---|
 | `TableActor.cs` | 流 API、mailbox 处理、提交后投影/发布、恢复/失租/关闭/故障联动 |
 | `TableActorMessages.cs` | Subscribe/Unsubscribe/Sync 三类控制消息 |
-| `TableStreamActorTests.cs`、`TableStreamTestSupport.cs` | 17 个 P3.2b 测试与受控 sink/commit/投影源 fixture |
+| `TableStreamActorTests.cs`、`TableStreamTestSupport.cs` | 20 个 P3.2b 测试与受控 sink/commit/投影源 fixture |
+| `CodexP32bReviewProbes.cs` | caller 第 1 轮新增的 5 项独立探针，原样保留并纳入交付 |
 
 ### 2.1 actor 入口
 
@@ -126,7 +130,8 @@ ValueTask<TableStreamControlResult> SyncStreamAsync(
 
 ### 2.3 谁拥有流/游标
 
-- actor 拥有 `TableStreamIdentityState`（binding/sync 高水位、`ProjectionSeq`、`StreamCursor`、当前 handle token）。
+- actor 拥有 `TableStreamIdentityState`（binding/sync 高水位、`ProjectionSeq`、`StreamCursor`、当前 handle token）和每 actor 唯一的私有 handle 来源对象。
+- `TableStreamHandle` 的相等性/哈希包含来源 + token；`FindCurrentRegistration` 先拒绝外 actor 来源，再要求当前注册对象引用完全一致，最后校验 token。`Sync` 的 baseline 只使用注册自己的 handle 身份，不使用请求传入的身份。
 - channel 只拥有发送队列；它不读 actor 状态、不回写游标。
 - sink 只收到帧；sink 的慢/异常不会在 actor 线程等待，也不会修改状态。
 - 身份在水位表中保留，unsubscribe 后旧 sync/binding 不能回退；同一身份的新 syncEpoch 才重置 `projectionSeq`。
@@ -206,8 +211,14 @@ actor 从 `_pending` + `DecisionClock` 生成 `DecisionView`：
 - `LeaseLost`：发布 `LeaseLost`，所有流以 `LEASE_LOST` 关闭，之后不再入队内容。
 - `CloseAsync`：关闭标记处理时所有流以 `LOCAL_CLOSED` 关闭。
 - actor 消费异常：`SetFaulted` 关闭所有流，reason `INTERNAL_ERROR`。
-- `ProcessBeginRecovery`：流注册保留但 sync 门控；没有提交/发布；不推进 deadline。
-- `CompleteRecovery`：完整 baseline 重新建立；旧 owner/旧 controller 的私有流直接关闭。
+- `ProcessBeginRecovery`：递增 recovery generation 后立即对所有 channel 执行 `PurgeAndFence(newGeneration)`；旧 generation 的排队帧被清空，泵即使已摘下旧帧也会在调用 sink 前丢弃；已进入 sink 的单次调用不可召回。Recovering 期间没有提交/发布，不推进 deadline。
+- `CompleteRecovery`：新代次 full baseline 入队并置 `NeedsSync`；旧 owner/旧 controller 的私有流直接关闭。恢复期间释放慢 sink 时不会出现第二个旧发送，恢复后的首新发送必须是 full baseline。
+
+### 4.4 下游回调隔离
+
+- `TableStreamChannel.Close`、溢出关闭和 sink 异常关闭都只做 `_closed`/清队列/生成一次 termination，然后立即返回；actor 绝不等待 sink。
+- `CancellationTokenSource.Cancel()` 会在后台任务中调用，避免执行 sink 注册的取消回调阻塞 actor；异常被隔离。
+- `ITableStreamTerminationSink.OnStreamTerminated` 同样以一次性后台任务派发，不在 channel 锁内、不在 actor 线程；阻塞/重入/抛异常不改变 mailbox 进度，也不会重复通知。
 
 ---
 
@@ -225,7 +236,8 @@ actor 从 `_pending` + `DecisionClock` 生成 `DecisionView`：
 每个注册有独立 `TableStreamChannel`：
 
 - actor 只做 `TryEnqueue`；一个 FIFO 泵在 thread pool 上调用 sink；
-- 消息数或字节数超限 → 关闭该 channel、丢弃其队列、通知 termination，actor 继续处理其他流；
+- 消息数或字节数超限 → 关闭该 channel、清空其队列、异步通知 termination，actor 继续处理其他流；
+- recovery fence 后旧 generation 的排队帧被丢弃，`TryEnqueue` 也拒绝旧 generation，防止恢复后重放旧内容；
 - 溢出不会被说成“补一个空事件”；该流必须重新订阅取得 full baseline；
 - 没有 encoder 时 actor 不声称对象估算是 protobuf 字节，也不做假的字节上限；此时消息数上限仍是硬上限。
 
@@ -250,7 +262,13 @@ actor 从 `_pending` + `DecisionClock` 生成 `DecisionView`：
 - `StaleControlEpoch`、`StaleOwner`；
 - `LeaseLost`、`ActorClosed`、`ActorFaulted`。
 
-sink 异常也会关闭该流（`ActorFaulted/INTERNAL_ERROR`），但不会把 actor 生命周期置为 Faulted；actor 不因下游异常回滚已提交状态。
+sink 异常也会关闭该流（`ActorFaulted/INTERNAL_ERROR`），但不会把 actor 生命周期置为 Faulted；actor 不因下游异常回滚已提交状态。termination 与取消回调均为 actor 外的一次性后台派发；`OnStreamTerminated` 阻塞或抛出不会阻塞 `GetSnapshot/Unsubscribe/Close` 等 mailbox 操作。
+
+### 5.5 第 1 轮阻断的修复语义
+
+- **句柄来源**：`TableStreamHandle` 增加 actor 私有来源对象；`Equals/GetHashCode` 使用来源 + token。`FindCurrentRegistration` 先拒绝外 actor 来源，再要求 `ReferenceEquals(registration.Handle, handle)`，最后校验当前 token。`Sync` 基线使用 `registration.Handle` 构造帧，不再使用调用方传入的 handle 身份；外 seat handle 不能把本地 spectator 流变成 `Player/OwnerPrivate` 帧。
+- **恢复隔离**：`ProcessBeginRecovery` 在递增 generation 后立即对所有 channel `PurgeAndFence`；旧排队 update 被清空，泵在调用 sink 前还会核对 `frame.RecoveryGeneration == allowedGeneration`。`CompleteRecovery` 的新 baseline 属于新 generation，且在 `NeedsSync` 放行前不追加增量。已进入 sink 的旧调用不可召回，但不会再有第二个旧排队帧发送。
+- **回调隔离**：`CloseLocked` 不再同步 `Cancel()`；`Close`/overflow/sink 异常都只生成一次 termination，然后由 `Task.Run` 执行取消和 termination 通知。actor 线程不等待任何下游回调；`BlockingTermination` 与 `BlockingCancellation` 探针证明 `GetSnapshot/Unsubscribe` 仍能在 500ms 内完成。
 
 ### 5.4 私有隔离
 
@@ -294,7 +312,8 @@ sink 异常也会关闭该流（`ActorFaulted/INTERNAL_ERROR`），但不会把 
 | 命令 | 结果 | 退出码 |
 |---|---|---|
 | `dotnet build dotnet/src/Mahjong.TableRuntime/Mahjong.TableRuntime.csproj -c Release --nologo -v:minimal` | 成功，0 warning / 0 error | 0 |
-| `dotnet test dotnet/tests/Mahjong.TableRuntime.Tests/Mahjong.TableRuntime.Tests.csproj -c Release --nologo -v:minimal` | **121 passed / 0 failed / 0 skipped**（既有 104 + 新增 17） | 0 |
+| `dotnet test dotnet/tests/Mahjong.TableRuntime.Tests/Mahjong.TableRuntime.Tests.csproj -c Release --nologo -v:minimal -- --filter-class "Mahjong.TableRuntime.Tests.CodexP32bReviewProbes"` | **5 passed / 0 failed / 0 skipped**（caller 新增探针） | 0 |
+| `dotnet test dotnet/tests/Mahjong.TableRuntime.Tests/Mahjong.TableRuntime.Tests.csproj -c Release --nologo -v:minimal` | **129 passed / 0 failed / 0 skipped**（既有 104 + P3.2b 17 + caller 5 + 本轮新增 3） | 0 |
 | `dotnet test dotnet/tests/Mahjong.Contracts.Tests/Mahjong.Contracts.Tests.csproj -c Release --nologo -v:minimal` | **82 passed / 0 failed / 0 skipped** | 0 |
 | `dotnet test dotnet/tests/Mahjong.Domain.Tests/Mahjong.Domain.Tests.csproj -c Release --nologo -v:minimal` | **313 passed / 0 failed / 0 skipped** | 0 |
 | `dotnet build dotnet/Mahjong.sln -c Release --nologo -v:minimal` | 成功，0 warning / 0 error（12 个项目） | 0 |
@@ -303,15 +322,17 @@ sink 异常也会关闭该流（`ActorFaulted/INTERNAL_ERROR`），但不会把 
 原始日志（未提交，位于工作树根）：
 
 - `artifacts-p32b-baseline-tabletests.log`（基线 104）
-- `artifacts-p32b-build.log`
-- `artifacts-p32b-tests6.log`（最终 121）
-- `artifacts-p32b-contracts-tests.log`（82）
-- `artifacts-p32b-domain-tests.log`（313）
-- `artifacts-p32b-solution-build-final.log`（最终 solution build）
+- `artifacts-p32b-caller-probes-final.log`（caller 5 项，5 passed）
+- `artifacts-p32b-tests8-full.log`（最终全量 129）
+- `artifacts-p32b-contracts-tests-round2.log`（82）
+- `artifacts-p32b-domain-tests-round2.log`（313）
+- `artifacts-p32b-solution-build-round2.log`（最终 solution build）
 
-### 7.3 新增测试覆盖（17 项）
+> 第 1 轮说明中的 121/0/0 是提交 `ac2f4ab` 的历史结果，caller 已在该提交上判定 FAIL；本轮不把它当作通过证据。当前有效结果为上表 129 与 5 项 caller 探针。
 
-`TableStreamActorTests`：
+### 7.3 测试覆盖
+
+`TableStreamActorTests`（原有 17 项 + 本轮新增 3 项）：
 
 1. 观战 baseline 明确为 full、只含 public、Sync 为 InSync；
 2. 四席 + 两观战：私有手牌/私有事件隔离、观战公开字节一致、无 fingerprint/private 字段；
@@ -329,7 +350,17 @@ sink 异常也会关闭该流（`ActorFaulted/INTERNAL_ERROR`），但不会把 
 14. 零长、谎报 size、超大、编码异常均在注册前拒绝；
 15. 控制变更刷新同一 stateVersion、只增 controlVersion；
 16. 控制器 epoch 变更关闭旧席位私有流、观战刷新、可重新订阅；
-17. 旧异步 sink 延迟完成不污染新注册。
+17. 旧异步 sink 延迟完成不污染新注册；
+18. **本轮新增**：外 actor handle 不能 Unsubscribe/Sync；外 seat handle 不能把本地观战流变成私有帧；合法本地 handle 仍可 InSync/继续收 update；
+19. **本轮新增**：恢复期间阻塞首 baseline、让旧 update 排队；`BeginRecovery` 后释放 sink，恢复期间只有一次旧调用、无第二个旧发送；`CompleteRecovery` 后首个新发送为 generation 1 full baseline；
+20. **本轮新增**：termination sink 阻塞时，`ReportLeaseLost` 与随后 `GetSnapshot` 均能在 actor 线程外完成，不被下游回调卡住。
+
+Caller `CodexP32bReviewProbes`（保留并纳入交付，5 项）：
+
+- `ForeignActorHandleCannotUnsubscribeLocalStream`
+- `ForeignSeatHandleCannotSyncSpectatorIntoPrivateFrame`
+- `RecoveryDropsQueuedOldGenerationBeforeNewBaseline`
+- `DownstreamTerminationAndCancellationCallbacksCannotBlockActor(false/true)`
 
 ### 7.4 未运行 / 不计入 PASS
 
@@ -352,14 +383,15 @@ sink 异常也会关闭该流（`ActorFaulted/INTERNAL_ERROR`），但不会把 
 
 | 文件 | SHA256 |
 |---|---|
-| `dotnet/src/Mahjong.TableRuntime/TableActor.cs` | `F38A063D789B1B08C433A9A2DB4F090AFA1A3912A0754648E16BC57267DB75C5` |
+| `dotnet/src/Mahjong.TableRuntime/TableActor.cs` | `1BDC39ED8E52B787D53AA16F9E52D10DA03B23275CB3706B4060A77FBACBDF76` |
 | `dotnet/src/Mahjong.TableRuntime/TableActorMessages.cs` | `2A53251BA7B2A55A42AD59E459ADC20B1753BE22ABABC0F837833A5635426C17` |
-| `dotnet/src/Mahjong.TableRuntime/TableStreamContracts.cs` | `7D339E140484DD995CA1AF14976003F40B671C6049F44598F5E558C186A78E6E` |
-| `dotnet/src/Mahjong.TableRuntime/TableStreamRegistry.cs` | `31C65155778095B1E82BD486D4CB776E362D52B5FE357F3D003A64ACA0571F5D` |
-| `dotnet/tests/Mahjong.TableRuntime.Tests/TableStreamActorTests.cs` | `2868417534A6820606FA5BFDE131DC952A82AF84C1EBC2E97BB29FCC5CB29131` |
+| `dotnet/src/Mahjong.TableRuntime/TableStreamContracts.cs` | `D75D087543E9A4714CD28B307453678B4D5753828A587DA0824CAE0DBD8D6D57` |
+| `dotnet/src/Mahjong.TableRuntime/TableStreamRegistry.cs` | `6EDA36199448D0B53FFE966EF82860AB22FADE7B6DD91BBB6BABFC2E9F4DCDD3` |
+| `dotnet/tests/Mahjong.TableRuntime.Tests/TableStreamActorTests.cs` | `5C069F70F617B54770D82750131CCD725814912A0DAFAE5C62B391484E5DC554` |
 | `dotnet/tests/Mahjong.TableRuntime.Tests/TableStreamTestSupport.cs` | `37F0183F239381C44C4A5FC08370888791A033D9F3FE30E46F7072D8DDC4B19B` |
+| `dotnet/tests/Mahjong.TableRuntime.Tests/CodexP32bReviewProbes.cs` | `AD9527CBE8E1A0E6E6533D5693FD7D7BBA5B0E28D506F8D8994783E390CF0AAA` |
 
-未修改：Contracts/Wire、Domain、`TableVisibilityContexts.cs`、`TableVisibilityProjection.cs`、`TableEventProjection.cs`、`TableRuntimeContracts.cs`、`TableMailbox.cs`、`Mahjong.sln`、任何 csproj/verifier、Unity 环境/Resources/Burst、兄弟 P3.2c 新增 mapper、CI workflow。
+未修改：Contracts/Wire、Domain、`TableVisibilityContexts.cs`、`TableVisibilityProjection.cs`、`TableEventProjection.cs`、`TableRuntimeContracts.cs`、`TableMailbox.cs`、`Mahjong.sln`、任何 csproj/verifier、Unity 环境/Resources/Burst、兄弟 P3.2c 新增 mapper、CI workflow。caller 新增的 `CodexP32bReviewProbes.cs` 按授权原样保留并纳入本提交。
 
 ---
 
@@ -372,4 +404,4 @@ sink 异常也会关闭该流（`ActorFaulted/INTERNAL_ERROR`），但不会把 
 - 恢复事件历史（当前 `_recentEvents` 是 P3.1 窗口，P3.4 冷恢复需显式结算/事件基线）；
 - 完整 P3.2 退出标准、G1/G5 和设备/平台证据。
 
-本交付只声明上表实际运行的 121/82/313 与 solution build；不声明 P3.4、真实 PG、真实 Wire、WSS、Unity/设备或 G1 通过。
+本交付只声明上表实际运行的 **129/5/82/313** 与 solution build；不声明 P3.4、真实 PG、真实 Wire、WSS、Unity/设备或 G1 通过。
