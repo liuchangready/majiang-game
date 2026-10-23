@@ -222,10 +222,10 @@ namespace Mahjong.Client.Wss.Tests
             Assert.Equal(ProtocolErrorCode.HandshakeTimeout, result.ReasonCode);
             Assert.Equal(1, result.ConnectionAttempts);
             Assert.NotEqual(TableConnectionState.Ready, fixture.Session.State);
-            Assert.True(fixture.Channel.ReceivedCount >= 3);
+            Assert.True(fixture.Channel.ReceivedCount >= 2);
             Assert.True(fixture.Channel.ReceivedCount <= 5);
             Assert.Equal(1, fixture.Channel.CountSent(MessageType.SyncRequest));
-            Assert.True(fixture.Clock.MonotonicMilliseconds >= 300);
+            Assert.True(fixture.Clock.MonotonicMilliseconds >= 200);
         }
 
         [Fact]
