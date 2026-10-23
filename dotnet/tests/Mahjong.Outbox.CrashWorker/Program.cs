@@ -7,7 +7,7 @@ using System.Threading.Tasks;
 using Mahjong.Client;
 using Mahjong.Contracts;
 
-namespace Mahjong.Client.OutboxWorker
+namespace Mahjong.Outbox.CrashWorker
 {
     /// <summary>
     /// Test-only process driver. Every command operates on a real

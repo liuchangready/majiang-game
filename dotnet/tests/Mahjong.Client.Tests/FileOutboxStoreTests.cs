@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Text;
@@ -19,7 +20,7 @@ namespace Mahjong.Client.Tests
         [Fact]
         public async Task SaveThenRestartPreservesExactBytesAndEveryMetadataField()
         {
-            using (var directory = new TempDirectory())
+            using (var directory = new TempOutboxDirectory())
             {
                 var store = new FileOutboxStore(directory.Path);
                 OutboxEntry expected = Entry(
@@ -72,7 +73,7 @@ namespace Mahjong.Client.Tests
         [Fact]
         public async Task SameKeySamePayloadIsIdempotentAndDoesNotDuplicate()
         {
-            using (var directory = new TempDirectory())
+            using (var directory = new TempOutboxDirectory())
             {
                 var store = new FileOutboxStore(directory.Path);
                 OutboxEntry entry = Entry();
@@ -82,8 +83,6 @@ namespace Mahjong.Client.Tests
 
                 Assert.Single(await store.LoadUnresolvedAsync(CancellationToken.None));
 
-                // A second instance is a separate opener, not a shared in-memory
-                // cache; it must observe the same single committed record.
                 var reopened = new FileOutboxStore(directory.Path);
                 Assert.Single(await reopened.LoadUnresolvedAsync(CancellationToken.None));
             }
@@ -92,7 +91,7 @@ namespace Mahjong.Client.Tests
         [Fact]
         public async Task SameKeyDifferentPayloadOrMetadataIsAConflict()
         {
-            using (var directory = new TempDirectory())
+            using (var directory = new TempOutboxDirectory())
             {
                 var store = new FileOutboxStore(directory.Path);
                 OutboxEntry original = Entry(tileIds: new uint[] { 5, 6 });
@@ -107,10 +106,10 @@ namespace Mahjong.Client.Tests
                 await Assert.ThrowsAsync<InvalidOperationException>(
                     () => store.SaveAsync(differentMetadata, CancellationToken.None));
 
-                Assert.Single(await store.LoadUnresolvedAsync(CancellationToken.None));
-                Assert.Equal(original.CopyCanonicalPayload(), (await store.LoadUnresolvedAsync(CancellationToken.None))[0].CopyCanonicalPayload());
+                IReadOnlyList<OutboxEntry> loaded = await store.LoadUnresolvedAsync(CancellationToken.None);
+                Assert.Single(loaded);
+                Assert.Equal(original.CopyCanonicalPayload(), loaded[0].CopyCanonicalPayload());
 
-                // The exact original remains an idempotent retry.
                 await store.SaveAsync(original, CancellationToken.None);
             }
         }
@@ -118,7 +117,7 @@ namespace Mahjong.Client.Tests
         [Fact]
         public async Task ResolutionSurvivesRestartAndPreventsResurrection()
         {
-            using (var directory = new TempDirectory())
+            using (var directory = new TempOutboxDirectory())
             {
                 var store = new FileOutboxStore(directory.Path);
                 OutboxEntry entry = Entry();
@@ -131,10 +130,8 @@ namespace Mahjong.Client.Tests
                 var reopened = new FileOutboxStore(directory.Path);
                 Assert.Empty(await reopened.LoadUnresolvedAsync(CancellationToken.None));
 
-                // The same definitive resolution is idempotent...
                 await reopened.ResolveAsync(entry.Key, resolution, CancellationToken.None);
 
-                // ...but the key can never be saved again.
                 InvalidOperationException error = await Assert.ThrowsAsync<InvalidOperationException>(
                     () => reopened.SaveAsync(entry, CancellationToken.None));
                 Assert.Contains("already resolved", error.Message, StringComparison.Ordinal);
@@ -145,7 +142,7 @@ namespace Mahjong.Client.Tests
         [Fact]
         public async Task DifferentResolutionForAResolvedKeyIsRejected()
         {
-            using (var directory = new TempDirectory())
+            using (var directory = new TempOutboxDirectory())
             {
                 var store = new FileOutboxStore(directory.Path);
                 OutboxEntry entry = Entry();
@@ -170,7 +167,7 @@ namespace Mahjong.Client.Tests
         [Fact]
         public async Task MissingCommittedFileIsAnEmptyStore()
         {
-            using (var directory = new TempDirectory())
+            using (var directory = new TempOutboxDirectory())
             {
                 var store = new FileOutboxStore(directory.Path);
                 Assert.Empty(await store.LoadUnresolvedAsync(CancellationToken.None));
@@ -187,7 +184,7 @@ namespace Mahjong.Client.Tests
         [InlineData("trailing")]
         public async Task CorruptCommittedStoreFailsClosedRatherThanBecomingEmpty(string corruption)
         {
-            using (var directory = new TempDirectory())
+            using (var directory = new TempOutboxDirectory())
             {
                 var store = new FileOutboxStore(directory.Path);
                 await store.SaveAsync(Entry(), CancellationToken.None);
@@ -226,8 +223,6 @@ namespace Mahjong.Client.Tests
                     () => reopened.LoadUnresolvedAsync(CancellationToken.None));
                 Assert.Contains("corrupt", error.Message, StringComparison.OrdinalIgnoreCase);
 
-                // A subsequent write must also refuse to treat the damaged
-                // committed file as an empty database.
                 await Assert.ThrowsAsync<OutboxStoreCorruptException>(
                     () => reopened.SaveAsync(Entry(requestId: "request-2"), CancellationToken.None));
             }
@@ -236,7 +231,7 @@ namespace Mahjong.Client.Tests
         [Fact]
         public async Task ValidCommittedFileWithUnknownFormatVersionIsRejected()
         {
-            using (var directory = new TempDirectory())
+            using (var directory = new TempOutboxDirectory())
             {
                 var store = new FileOutboxStore(directory.Path);
                 await store.SaveAsync(Entry(), CancellationToken.None);
@@ -256,7 +251,7 @@ namespace Mahjong.Client.Tests
         [Fact]
         public async Task OrphanTempFileDoesNotPoisonACommittedStore()
         {
-            using (var directory = new TempDirectory())
+            using (var directory = new TempOutboxDirectory())
             {
                 var store = new FileOutboxStore(directory.Path);
                 await store.SaveAsync(Entry(), CancellationToken.None);
@@ -271,7 +266,7 @@ namespace Mahjong.Client.Tests
         [Fact]
         public async Task OrphanTempFileWithoutACommittedFileIsNotACommittedRecord()
         {
-            using (var directory = new TempDirectory())
+            using (var directory = new TempOutboxDirectory())
             {
                 var store = new FileOutboxStore(directory.Path);
                 string temp = store.StorePath + ".tmp-orphan";
@@ -286,7 +281,7 @@ namespace Mahjong.Client.Tests
         [Fact]
         public async Task PreCancelledSaveWritesNothing()
         {
-            using (var directory = new TempDirectory())
+            using (var directory = new TempOutboxDirectory())
             {
                 var store = new FileOutboxStore(directory.Path);
                 using (var cts = new CancellationTokenSource())
@@ -304,7 +299,7 @@ namespace Mahjong.Client.Tests
         [Fact]
         public async Task CancellationAfterTempFlushRemovesTheTempAndLeavesTheOldSnapshot()
         {
-            using (var directory = new TempDirectory())
+            using (var directory = new TempOutboxDirectory())
             {
                 var store = new FileOutboxStore(directory.Path);
                 OutboxEntry first = Entry(requestId: "request-1");
@@ -342,7 +337,7 @@ namespace Mahjong.Client.Tests
         [Fact]
         public async Task CommitFailureKeepsThePreviousSnapshotAndRemovesTheTemp()
         {
-            using (var directory = new TempDirectory())
+            using (var directory = new TempOutboxDirectory())
             {
                 var store = new FileOutboxStore(directory.Path);
                 await store.SaveAsync(Entry(requestId: "request-1"), CancellationToken.None);
@@ -376,7 +371,7 @@ namespace Mahjong.Client.Tests
         [Fact]
         public async Task RepeatedOpenSeesUpdatesFromAnotherStoreInstance()
         {
-            using (var directory = new TempDirectory())
+            using (var directory = new TempOutboxDirectory())
             {
                 var first = new FileOutboxStore(directory.Path);
                 var second = new FileOutboxStore(directory.Path);
@@ -393,7 +388,7 @@ namespace Mahjong.Client.Tests
         [Fact]
         public async Task ConcurrentSavesAcrossTwoInstancesPreserveEveryEntry()
         {
-            using (var directory = new TempDirectory())
+            using (var directory = new TempOutboxDirectory())
             {
                 var first = new FileOutboxStore(directory.Path);
                 var second = new FileOutboxStore(directory.Path);
@@ -422,7 +417,7 @@ namespace Mahjong.Client.Tests
         [Fact]
         public async Task EntryBoundFailsExplicitlyWithoutLosingExistingEntries()
         {
-            using (var directory = new TempDirectory())
+            using (var directory = new TempOutboxDirectory())
             {
                 var store = new FileOutboxStore(directory.Path, new FileOutboxOptions { MaxEntries = 1 });
                 await store.SaveAsync(Entry(requestId: "request-1"), CancellationToken.None);
@@ -440,7 +435,7 @@ namespace Mahjong.Client.Tests
         [Fact]
         public async Task PayloadBoundFailsBeforeWriting()
         {
-            using (var directory = new TempDirectory())
+            using (var directory = new TempOutboxDirectory())
             {
                 var store = new FileOutboxStore(directory.Path, new FileOutboxOptions { MaxPayloadBytes = 8 });
                 await Assert.ThrowsAsync<ArgumentException>(
@@ -454,7 +449,7 @@ namespace Mahjong.Client.Tests
         [Fact]
         public async Task ResumeTokenBearingCommandIsRejectedBeforeAnyWrite()
         {
-            using (var directory = new TempDirectory())
+            using (var directory = new TempOutboxDirectory())
             {
                 var store = new FileOutboxStore(directory.Path);
                 var writer = new CanonicalPayloadWriter((ushort)CommandKind.ResumeSession);
@@ -486,7 +481,7 @@ namespace Mahjong.Client.Tests
         [Fact]
         public async Task TransportTicketIsNeverWrittenByTheFileStore()
         {
-            using (var directory = new TempDirectory())
+            using (var directory = new TempOutboxDirectory())
             {
                 var store = new FileOutboxStore(directory.Path);
                 var channel = new FakeTableChannel();
@@ -503,8 +498,6 @@ namespace Mahjong.Client.Tests
 
                 byte[] committed = File.ReadAllBytes(store.StorePath);
                 Assert.Equal(-1, IndexOf(committed, Encoding.ASCII.GetBytes("ticket-SENTINEL-DO-NOT-PERSIST")));
-
-                // The command identity is persisted; the transport ticket is not.
                 Assert.True(IndexOf(committed, Encoding.ASCII.GetBytes("request-1")) >= 0);
             }
         }
@@ -512,7 +505,7 @@ namespace Mahjong.Client.Tests
         [Fact]
         public async Task UnknownOutcomeAfterRestartQueriesTheOriginalRequestInsteadOfResending()
         {
-            using (var directory = new TempDirectory())
+            using (var directory = new TempOutboxDirectory())
             {
                 var seed = new FileOutboxStore(directory.Path);
                 OutboxEntry original = Entry(requestId: "request-restart", scopeId: "scope-1");
@@ -534,6 +527,7 @@ namespace Mahjong.Client.Tests
                 PendingCommandSnapshot pending = Assert.Single(session.PendingCommands);
                 Assert.True(pending.DeliveryUnknown);
                 Assert.True(pending.NeedsReconciliation);
+                Assert.Equal("account-1", pending.Key.AccountId);
 
                 string firstCorrelation = query.CorrelationId;
                 channel.Enqueue(TestWire.ReceiptLookup(firstCorrelation, WireLookupStatus.Unknown));
@@ -556,7 +550,395 @@ namespace Mahjong.Client.Tests
             }
         }
 
-        private static OutboxEntry Entry(
+        [Fact]
+        public async Task ReasonAt512AsciiBytesIsAcceptedAndReadable()
+        {
+            using (var directory = new TempOutboxDirectory())
+            {
+                var store = new FileOutboxStore(directory.Path);
+                OutboxEntry entry = Entry();
+                await store.SaveAsync(entry, CancellationToken.None);
+                OutboxResolution resolution = RejectedResolution(entry, new string('r', 512));
+
+                await store.ResolveAsync(entry.Key, resolution, CancellationToken.None);
+
+                Assert.Empty(await new FileOutboxStore(directory.Path).LoadUnresolvedAsync(CancellationToken.None));
+            }
+        }
+
+        [Fact]
+        public async Task ReasonAt513AsciiBytesIsRejectedBeforeCommitAndSnapshotIsUnchanged()
+        {
+            await AssertResolutionRejected(entry => RejectedResolution(entry, new string('r', 513)));
+        }
+
+        [Fact]
+        public async Task Utf8TwoByteReasonAt512BytesIsAcceptedAnd514IsRejected()
+        {
+            using (var directory = new TempOutboxDirectory())
+            {
+                var store = new FileOutboxStore(directory.Path);
+                OutboxEntry entry = Entry();
+                await store.SaveAsync(entry, CancellationToken.None);
+                OutboxResolution accepted = RejectedResolution(entry, new string('\u00e9', 256));
+                await store.ResolveAsync(entry.Key, accepted, CancellationToken.None);
+                Assert.Empty(await new FileOutboxStore(directory.Path).LoadUnresolvedAsync(CancellationToken.None));
+            }
+
+            await AssertResolutionRejected(entry => RejectedResolution(entry, new string('\u00e9', 257)));
+        }
+
+        [Fact]
+        public async Task Utf8ThreeByteReasonAt510BytesIsAcceptedAnd513IsRejected()
+        {
+            using (var directory = new TempOutboxDirectory())
+            {
+                var store = new FileOutboxStore(directory.Path);
+                OutboxEntry entry = Entry();
+                await store.SaveAsync(entry, CancellationToken.None);
+                OutboxResolution accepted = RejectedResolution(entry, new string('\u4e2d', 170));
+                await store.ResolveAsync(entry.Key, accepted, CancellationToken.None);
+                Assert.Empty(await new FileOutboxStore(directory.Path).LoadUnresolvedAsync(CancellationToken.None));
+            }
+
+            await AssertResolutionRejected(entry => RejectedResolution(entry, new string('\u4e2d', 171)));
+        }
+
+        [Fact]
+        public async Task Utf8FourByteReasonAt512BytesIsAcceptedAnd516IsRejected()
+        {
+            using (var directory = new TempOutboxDirectory())
+            {
+                var store = new FileOutboxStore(directory.Path);
+                OutboxEntry entry = Entry();
+                await store.SaveAsync(entry, CancellationToken.None);
+                string acceptedText = string.Concat(Enumerable.Repeat("\U0001F600", 128));
+                OutboxResolution accepted = RejectedResolution(entry, acceptedText);
+                await store.ResolveAsync(entry.Key, accepted, CancellationToken.None);
+                Assert.Empty(await new FileOutboxStore(directory.Path).LoadUnresolvedAsync(CancellationToken.None));
+            }
+
+            await AssertResolutionRejected(entry => RejectedResolution(entry, string.Concat(Enumerable.Repeat("\U0001F600", 129))));
+        }
+
+        [Fact]
+        public async Task AppliedWithZeroCommittedAtIsRejectedBeforeCommit()
+        {
+            await AssertResolutionRejected(entry => OutboxResolution.FromReceipt(
+                ReceiptStatus.Applied,
+                string.Empty,
+                new StateVersion(5),
+                new StateVersion(6),
+                new EventSeq(1),
+                committedAtMs: 0,
+                sha256: entry.DigestSha256,
+                fromLookup: true));
+        }
+
+        [Fact]
+        public async Task DispositionAndReceiptStatusMismatchIsRejectedBeforeCommit()
+        {
+            await AssertResolutionRejected(entry => new OutboxResolution(
+                OutboxDisposition.Applied,
+                ReceiptStatus.Rejected,
+                "REJECTED",
+                new StateVersion(5),
+                null,
+                null,
+                null,
+                entry.DigestSha256,
+                true));
+        }
+
+        [Fact]
+        public async Task AppliedWithoutCommandVersionIsRejectedBeforeCommit()
+        {
+            await AssertResolutionRejected(entry => new OutboxResolution(
+                OutboxDisposition.Applied,
+                ReceiptStatus.Applied,
+                string.Empty,
+                new StateVersion(5),
+                null,
+                new EventSeq(1),
+                null,
+                entry.DigestSha256,
+                true));
+        }
+
+        [Fact]
+        public async Task AppliedWithWrongCommandVersionIsRejectedBeforeCommit()
+        {
+            await AssertResolutionRejected(entry => new OutboxResolution(
+                OutboxDisposition.Applied,
+                ReceiptStatus.Applied,
+                string.Empty,
+                new StateVersion(5),
+                new StateVersion(7),
+                new EventSeq(1),
+                null,
+                entry.DigestSha256,
+                true));
+        }
+
+        [Fact]
+        public async Task AppliedWithZeroOrMissingEventSeqIsRejectedBeforeCommit()
+        {
+            await AssertResolutionRejected(entry => new OutboxResolution(
+                OutboxDisposition.Applied,
+                ReceiptStatus.Applied,
+                string.Empty,
+                new StateVersion(5),
+                new StateVersion(6),
+                new EventSeq(0),
+                null,
+                entry.DigestSha256,
+                true));
+
+            await AssertResolutionRejected(entry => new OutboxResolution(
+                OutboxDisposition.Applied,
+                ReceiptStatus.Applied,
+                string.Empty,
+                new StateVersion(5),
+                new StateVersion(6),
+                null,
+                null,
+                entry.DigestSha256,
+                true));
+        }
+
+        [Fact]
+        public async Task AppliedAtMaxStateVersionIsRejectedBeforeCommit()
+        {
+            await AssertResolutionRejected(entry => new OutboxResolution(
+                OutboxDisposition.Applied,
+                ReceiptStatus.Applied,
+                string.Empty,
+                new StateVersion(ulong.MaxValue),
+                new StateVersion(0),
+                new EventSeq(1),
+                null,
+                entry.DigestSha256,
+                true));
+        }
+
+        [Fact]
+        public async Task RejectedWithoutReasonOrWithCommandVersionIsRejectedBeforeCommit()
+        {
+            await AssertResolutionRejected(entry => new OutboxResolution(
+                OutboxDisposition.Rejected,
+                ReceiptStatus.Rejected,
+                string.Empty,
+                new StateVersion(5),
+                null,
+                null,
+                null,
+                entry.DigestSha256,
+                true));
+
+            await AssertResolutionRejected(entry => new OutboxResolution(
+                OutboxDisposition.Rejected,
+                ReceiptStatus.Rejected,
+                "REJECTED",
+                new StateVersion(5),
+                new StateVersion(6),
+                null,
+                null,
+                entry.DigestSha256,
+                true));
+        }
+
+        [Fact]
+        public async Task ConflictWithDefinitiveFieldsIsRejectedBeforeCommit()
+        {
+            await AssertResolutionRejected(entry => new OutboxResolution(
+                OutboxDisposition.Conflict,
+                ReceiptStatus.Unknown,
+                "REQUEST_ID_CONFLICT",
+                new StateVersion(1),
+                null,
+                null,
+                null,
+                entry.DigestSha256,
+                false));
+
+            await AssertResolutionRejected(entry => new OutboxResolution(
+                OutboxDisposition.Conflict,
+                ReceiptStatus.Unknown,
+                "REQUEST_ID_CONFLICT",
+                new StateVersion(0),
+                new StateVersion(1),
+                null,
+                null,
+                entry.DigestSha256,
+                false));
+
+            await AssertResolutionRejected(entry => new OutboxResolution(
+                OutboxDisposition.Conflict,
+                ReceiptStatus.Unknown,
+                "REQUEST_ID_CONFLICT",
+                new StateVersion(0),
+                null,
+                null,
+                1,
+                entry.DigestSha256,
+                false));
+
+            await AssertResolutionRejected(entry => new OutboxResolution(
+                OutboxDisposition.Conflict,
+                ReceiptStatus.Unknown,
+                "REQUEST_ID_CONFLICT",
+                new StateVersion(0),
+                null,
+                null,
+                null,
+                entry.DigestSha256,
+                true));
+
+            await AssertResolutionRejected(entry => new OutboxResolution(
+                OutboxDisposition.Conflict,
+                ReceiptStatus.Applied,
+                "REQUEST_ID_CONFLICT",
+                new StateVersion(0),
+                null,
+                null,
+                null,
+                entry.DigestSha256,
+                false));
+        }
+
+        [Fact]
+        public async Task UnknownEnumValuesAndInvalidDigestAreRejectedBeforeCommit()
+        {
+            await AssertResolutionRejected(entry => new OutboxResolution(
+                (OutboxDisposition)99,
+                ReceiptStatus.Applied,
+                "REJECTED",
+                new StateVersion(5),
+                new StateVersion(6),
+                new EventSeq(1),
+                null,
+                entry.DigestSha256,
+                true));
+
+            await AssertResolutionRejected(entry => new OutboxResolution(
+                OutboxDisposition.Applied,
+                (ReceiptStatus)99,
+                "REJECTED",
+                new StateVersion(5),
+                new StateVersion(6),
+                new EventSeq(1),
+                null,
+                entry.DigestSha256,
+                true));
+
+            await AssertResolutionRejected(entry => new OutboxResolution(
+                OutboxDisposition.Rejected,
+                ReceiptStatus.Rejected,
+                "REJECTED",
+                new StateVersion(5),
+                null,
+                null,
+                null,
+                new string('a', 63),
+                true));
+
+            await AssertResolutionRejected(entry => new OutboxResolution(
+                OutboxDisposition.Rejected,
+                ReceiptStatus.Rejected,
+                "REJECTED",
+                new StateVersion(5),
+                null,
+                null,
+                null,
+                new string('z', 64),
+                true));
+        }
+
+        [Fact]
+        public async Task RejectedWithPositiveCommittedAtAndConflictTombstoneAreAccepted()
+        {
+            using (var directory = new TempOutboxDirectory())
+            {
+                var store = new FileOutboxStore(directory.Path);
+                OutboxEntry entry = Entry();
+                await store.SaveAsync(entry, CancellationToken.None);
+                OutboxResolution rejected = OutboxResolution.FromReceipt(
+                    ReceiptStatus.Rejected,
+                    "STALE_DECISION",
+                    new StateVersion(5),
+                    null,
+                    null,
+                    committedAtMs: 1234,
+                    sha256: entry.DigestSha256,
+                    fromLookup: true);
+                await store.ResolveAsync(entry.Key, rejected, CancellationToken.None);
+                Assert.Empty(await new FileOutboxStore(directory.Path).LoadUnresolvedAsync(CancellationToken.None));
+            }
+
+            using (var directory = new TempOutboxDirectory())
+            {
+                var store = new FileOutboxStore(directory.Path);
+                OutboxEntry entry = Entry();
+                await store.SaveAsync(entry, CancellationToken.None);
+                OutboxResolution conflict = OutboxResolution.Conflict("REQUEST_ID_CONFLICT", entry.DigestSha256);
+                await store.ResolveAsync(entry.Key, conflict, CancellationToken.None);
+                Assert.Empty(await new FileOutboxStore(directory.Path).LoadUnresolvedAsync(CancellationToken.None));
+            }
+        }
+
+        [Fact]
+        public async Task UnpairedSurrogateReasonIsRejectedBeforeCommit()
+        {
+            await AssertResolutionRejected(entry => RejectedResolution(entry, "\ud800"));
+        }
+
+        private static async Task AssertResolutionRejected(Func<OutboxEntry, OutboxResolution> factory)
+        {
+            using (var directory = new TempOutboxDirectory())
+            {
+                var store = new FileOutboxStore(directory.Path);
+                OutboxEntry entry = Entry();
+                await store.SaveAsync(entry, CancellationToken.None);
+                byte[] before = File.ReadAllBytes(store.StorePath);
+
+                await Assert.ThrowsAsync<ArgumentException>(
+                    () => store.ResolveAsync(entry.Key, factory(entry), CancellationToken.None));
+
+                Assert.Equal(before, File.ReadAllBytes(store.StorePath));
+                IReadOnlyList<OutboxEntry> loaded = await new FileOutboxStore(directory.Path).LoadUnresolvedAsync(CancellationToken.None);
+                Assert.Single(loaded);
+                Assert.Equal(entry.Key, loaded[0].Key);
+                Assert.Equal(entry.CopyCanonicalPayload(), loaded[0].CopyCanonicalPayload());
+            }
+        }
+
+        private static OutboxResolution RejectedResolution(OutboxEntry entry, string reason)
+        {
+            return OutboxResolution.FromReceipt(
+                ReceiptStatus.Rejected,
+                reason,
+                new StateVersion(5),
+                null,
+                null,
+                null,
+                entry.DigestSha256,
+                fromLookup: true);
+        }
+
+        private static OutboxResolution AppliedResolution(OutboxEntry entry, bool fromLookup)
+        {
+            return OutboxResolution.FromReceipt(
+                ReceiptStatus.Applied,
+                null,
+                new StateVersion(entry.ExpectedStateVersion.Value),
+                new StateVersion(entry.ExpectedStateVersion.Value + 1),
+                new EventSeq(11),
+                1234,
+                entry.DigestSha256,
+                fromLookup);
+        }
+
+        internal static OutboxEntry Entry(
             string requestId = "request-1",
             string accountId = "account-1",
             string scopeId = "scope-1",
@@ -597,19 +979,6 @@ namespace Mahjong.Client.Tests
             return new OutboxEntry(command, scope, new SessionId(sessionId), new RoomId(roomId));
         }
 
-        private static OutboxResolution AppliedResolution(OutboxEntry entry, bool fromLookup)
-        {
-            return OutboxResolution.FromReceipt(
-                ReceiptStatus.Applied,
-                null,
-                new StateVersion(entry.ExpectedStateVersion.Value),
-                new StateVersion(entry.ExpectedStateVersion.Value + 1),
-                new EventSeq(11),
-                1234,
-                entry.DigestSha256,
-                fromLookup);
-        }
-
         private static int IndexOf(byte[] haystack, byte[] needle)
         {
             if (needle.Length == 0)
@@ -637,32 +1006,424 @@ namespace Mahjong.Client.Tests
 
             return -1;
         }
+    }
 
-        private sealed class TempDirectory : IDisposable
+    /// <summary>
+    /// Real child-process tests. These prove crash/restart behavior of the
+    /// on-disk snapshot on the host file system; they do not simulate power
+    /// loss, a disk cache flush failure, Android/iOS fsync, or a platform
+    /// secure-storage boundary.
+    /// </summary>
+    public sealed class FileOutboxCrashWorkerTests
+    {
+        [Fact]
+        public async Task KilledBeforeSaveLeavesNoCommittedRecord()
         {
-            public TempDirectory()
+            using (var directory = new TempOutboxDirectory())
             {
-                Path = System.IO.Path.Combine(
-                    System.IO.Path.GetTempPath(),
-                    "mahjong-file-outbox-tests",
-                    Guid.NewGuid().ToString("N"));
-                Directory.CreateDirectory(Path);
+                var worker = StartWorker("save-wait", directory.Path, "request-1");
+                await using (worker)
+                {
+                    Assert.Equal("READY", await worker.ReadLineAsync(TimeSpan.FromSeconds(20)));
+                    await worker.KillAsync();
+                }
+
+                var store = new FileOutboxStore(directory.Path);
+                Assert.Empty(await store.LoadUnresolvedAsync(CancellationToken.None));
+                Assert.False(File.Exists(store.StorePath));
             }
+        }
 
-            public string Path { get; }
-
-            public void Dispose()
+        [Fact]
+        public async Task KilledDuringCommitLeavesThePreviousSnapshotValid()
+        {
+            using (var directory = new TempOutboxDirectory())
             {
+                var seed = new FileOutboxStore(directory.Path);
+                OutboxEntry first = FileOutboxStoreTests.Entry("request-1");
+                await seed.SaveAsync(first, CancellationToken.None);
+                byte[] committedBefore = File.ReadAllBytes(seed.StorePath);
+
+                var worker = StartWorker("save-block", directory.Path, "request-2", "AfterTempFlush");
+                await using (worker)
+                {
+                    Assert.Equal("READY", await worker.ReadLineAsync(TimeSpan.FromSeconds(20)));
+                    string phase = await worker.ReadLineAsync(TimeSpan.FromSeconds(20));
+                    Assert.StartsWith("PHASE AfterTempFlush", phase, StringComparison.Ordinal);
+                    Assert.NotEmpty(Directory.GetFiles(directory.Path, "*.tmp-*"));
+                    Assert.Equal(committedBefore, File.ReadAllBytes(seed.StorePath));
+                    await worker.KillAsync();
+                }
+
+                var reopened = new FileOutboxStore(directory.Path);
+                IReadOnlyList<OutboxEntry> loaded = await reopened.LoadUnresolvedAsync(CancellationToken.None);
+                OutboxEntry actual = Assert.Single(loaded);
+                Assert.Equal("request-1", actual.RequestId.Value);
+                Assert.Equal(first.CopyCanonicalPayload(), actual.CopyCanonicalPayload());
+                Assert.Empty(Directory.GetFiles(directory.Path, "*.tmp-*"));
+            }
+        }
+
+        [Fact]
+        public async Task KilledAfterCommitKeepsExactBytesAndMetadata()
+        {
+            using (var directory = new TempOutboxDirectory())
+            {
+                var worker = StartWorker("save-hold", directory.Path, "request-1");
+                await using (worker)
+                {
+                    string saved = await worker.ReadLineAsync(TimeSpan.FromSeconds(20));
+                    Assert.StartsWith("SAVED request-1 ", saved, StringComparison.Ordinal);
+                    await worker.KillAsync();
+                }
+
+                (int exitCode, string output, string error) = await RunToExitAsync("load", directory.Path);
+                Assert.Equal(0, exitCode);
+                Assert.Equal(string.Empty, error);
+                string[] lines = output.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);
+                Assert.Equal("COUNT 1", lines[0]);
+                Assert.StartsWith("ENTRY request-1 scope-1 account-1 10 1 5 round-1 decision-1 7 3 session-1 room-1 ", lines[1], StringComparison.Ordinal);
+
+                string[] fields = lines[1].Split(' ');
+                Assert.Equal("request-1", fields[1]);
+                Assert.Equal("scope-1", fields[2]);
+                Assert.Equal("account-1", fields[3]);
+                Assert.Equal("10", fields[4]);
+                Assert.Equal("1", fields[5]);
+                Assert.Equal("5", fields[6]);
+                Assert.Equal("round-1", fields[7]);
+                Assert.Equal("decision-1", fields[8]);
+                Assert.Equal("7", fields[9]);
+                Assert.Equal("3", fields[10]);
+                Assert.Equal("session-1", fields[11]);
+                Assert.Equal("room-1", fields[12]);
+                Assert.Equal(ExpectedPayloadDigest(), fields[13]);
+                Assert.Equal(ExpectedPayload().Length.ToString(System.Globalization.CultureInfo.InvariantCulture), fields[14]);
+                Assert.Equal(ExpectedPayload(), Convert.FromBase64String(fields[15]));
+            }
+        }
+
+        [Fact]
+        public async Task ConcurrentWorkerProcessesSerializeCommitsAndPreserveEveryEntry()
+        {
+            using (var directory = new TempOutboxDirectory())
+            {
+                const int workers = 6;
+                var processes = new List<CrashWorkerProcess>(workers);
                 try
                 {
-                    Directory.Delete(Path, recursive: true);
+                    for (int i = 0; i < workers; i++)
+                    {
+                        processes.Add(StartWorker(
+                            "save",
+                            directory.Path,
+                            "request-" + i.ToString(System.Globalization.CultureInfo.InvariantCulture)));
+                    }
+
+                    for (int i = 0; i < processes.Count; i++)
+                    {
+                        await processes[i].WaitForExitAsync(TimeSpan.FromSeconds(60));
+                        Assert.Equal(0, processes[i].ExitCode);
+                        Assert.Equal(string.Empty, processes[i].ReadAllStandardError());
+                    }
                 }
-                catch (IOException)
+                finally
                 {
+                    for (int i = 0; i < processes.Count; i++)
+                    {
+                        await processes[i].DisposeAsync();
+                    }
                 }
-                catch (UnauthorizedAccessException)
+
+                var store = new FileOutboxStore(directory.Path);
+                IReadOnlyList<OutboxEntry> loaded = await store.LoadUnresolvedAsync(CancellationToken.None);
+                Assert.Equal(workers, loaded.Count);
+                Assert.Equal(
+                    Enumerable.Range(0, workers)
+                        .Select(i => "request-" + i.ToString(System.Globalization.CultureInfo.InvariantCulture))
+                        .OrderBy(value => value, StringComparer.Ordinal)
+                        .ToArray(),
+                    loaded.Select(entry => entry.RequestId.Value).OrderBy(value => value, StringComparer.Ordinal).ToArray());
+            }
+        }
+
+        [Fact]
+        public async Task KilledBeforeResolveKeepsTheUnknownEntryForReceiptQuery()
+        {
+            using (var directory = new TempOutboxDirectory())
+            {
+                (int saveExit, _, string saveError) = await RunToExitAsync("save", directory.Path, "request-1");
+                Assert.Equal(0, saveExit);
+                Assert.Equal(string.Empty, saveError);
+
+                var waiter = StartWorker("resolve-wait", directory.Path, "request-1");
+                await using (waiter)
                 {
+                    Assert.Equal("READY request-1", await waiter.ReadLineAsync(TimeSpan.FromSeconds(20)));
+                    await waiter.KillAsync();
                 }
+
+                var reopened = new FileOutboxStore(directory.Path);
+                OutboxEntry entry = Assert.Single(await reopened.LoadUnresolvedAsync(CancellationToken.None));
+                Assert.Equal("request-1", entry.RequestId.Value);
+                Assert.Equal("scope-1", entry.ScopeId.Value);
+            }
+        }
+
+        [Fact]
+        public async Task UnknownOutcomeAfterARealWorkerExitIsQueriedNotResent()
+        {
+            using (var directory = new TempOutboxDirectory())
+            {
+                (int saveExit, _, string saveError) = await RunToExitAsync("save", directory.Path, "request-1");
+                Assert.Equal(0, saveExit);
+                Assert.Equal(string.Empty, saveError);
+
+                var store = new FileOutboxStore(directory.Path);
+                var channel = new FakeTableChannel();
+                var session = new TableSession(channel, store);
+                await session.OpenAsync(new TableSessionOpenRequest("ticket-2", "client-build-1"), CancellationToken.None);
+                channel.Enqueue(TestWire.Welcome());
+                await session.PumpOnceAsync(CancellationToken.None);
+                channel.Enqueue(TestWire.PlayerSync(channel, 11, 5, 10));
+                await session.PumpOnceAsync(CancellationToken.None);
+
+                Assert.Equal(0, channel.CountSent(WireMessageType.Command));
+                Assert.Equal(1, channel.CountSent(WireMessageType.ReceiptQuery));
+                WireEnvelope query = TestWire.OutboundReceiptQuery(channel, "request-1");
+                Assert.Equal("scope-1", query.ReceiptQuery.RequestScopeId);
+                PendingCommandSnapshot pending = Assert.Single(session.PendingCommands);
+                Assert.True(pending.DeliveryUnknown);
+                Assert.True(pending.NeedsReconciliation);
+            }
+        }
+
+        [Fact]
+        public async Task KilledAfterResolveDoesNotResurrectTheRequest()
+        {
+            using (var directory = new TempOutboxDirectory())
+            {
+                var worker = StartWorker("resolve-hold", directory.Path, "request-1");
+                await using (worker)
+                {
+                    string resolved = await worker.ReadLineAsync(TimeSpan.FromSeconds(20));
+                    Assert.Equal("RESOLVED request-1", resolved);
+                    await worker.KillAsync();
+                }
+
+                (int loadExit, string loadOutput, _) = await RunToExitAsync("load", directory.Path);
+                Assert.Equal(0, loadExit);
+                Assert.Equal("COUNT 0", loadOutput.Trim());
+
+                (int saveExit, string saveOutput, string saveError) = await RunToExitAsync("save-after-resolve", directory.Path, "request-1");
+                Assert.Equal(0, saveExit);
+                Assert.Equal("RESOLVED", saveOutput.Trim());
+                Assert.Equal(string.Empty, saveError);
+            }
+        }
+
+        private static async Task<(int ExitCode, string Output, string Error)> RunToExitAsync(params string[] args)
+        {
+            var worker = StartWorker(args);
+            await using (worker)
+            {
+                await worker.WaitForExitAsync(TimeSpan.FromSeconds(30));
+                return (worker.ExitCode, worker.ReadAllStandardOutput(), worker.ReadAllStandardError());
+            }
+        }
+
+        private static CrashWorkerProcess StartWorker(params string[] args)
+        {
+            string workerPath = Path.Combine(AppContext.BaseDirectory, "outbox-worker", "Mahjong.Outbox.CrashWorker.dll");
+            if (!File.Exists(workerPath))
+            {
+                throw new FileNotFoundException(
+                    "The test-only crash worker was not copied next to the test assembly. Build the test project first.",
+                    workerPath);
+            }
+
+            var startInfo = new ProcessStartInfo(DotnetPath)
+            {
+                UseShellExecute = false,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                CreateNoWindow = true,
+                WorkingDirectory = Path.GetDirectoryName(workerPath) ?? AppContext.BaseDirectory
+            };
+            startInfo.ArgumentList.Add(workerPath);
+            for (int i = 0; i < args.Length; i++)
+            {
+                startInfo.ArgumentList.Add(args[i]);
+            }
+
+            Process process = Process.Start(startInfo) ?? throw new InvalidOperationException("Failed to start the crash worker process.");
+            return new CrashWorkerProcess(process);
+        }
+
+        private static string DotnetPath
+        {
+            get
+            {
+                string? configured = Environment.GetEnvironmentVariable("MAHJONG_DOTNET");
+                if (!string.IsNullOrEmpty(configured) && File.Exists(configured))
+                {
+                    return configured;
+                }
+
+                configured = Environment.GetEnvironmentVariable("DOTNET_HOST_PATH");
+                if (!string.IsNullOrEmpty(configured) && File.Exists(configured))
+                {
+                    return configured;
+                }
+
+                string? current = Environment.ProcessPath;
+                if (!string.IsNullOrEmpty(current) &&
+                    string.Equals(Path.GetFileNameWithoutExtension(current), "dotnet", StringComparison.OrdinalIgnoreCase))
+                {
+                    return current;
+                }
+
+                const string SdkPath = @"D:\Unity\dotnet\dotnet.exe";
+                if (File.Exists(SdkPath))
+                {
+                    return SdkPath;
+                }
+
+                return "dotnet";
+            }
+        }
+
+        private static byte[] ExpectedPayload()
+        {
+            return CommandPayloadFactory.SubmitAction(
+                "round-1",
+                "decision-1",
+                7,
+                ProtocolActionType.DiscardTile,
+                tileIds: new uint[] { 5, 6 }).CopyBytes();
+        }
+
+        private static string ExpectedPayloadDigest()
+        {
+            return CanonicalPayloadDigest.Compute(ExpectedPayload()).ToHex();
+        }
+    }
+
+    internal sealed class CrashWorkerProcess : IAsyncDisposable
+    {
+        private readonly Process _process;
+
+        public CrashWorkerProcess(Process process)
+        {
+            _process = process;
+        }
+
+        public int ExitCode => _process.ExitCode;
+
+        public async Task<string> ReadLineAsync(TimeSpan timeout)
+        {
+            Task<string?> read = _process.StandardOutput.ReadLineAsync();
+            Task delay = Task.Delay(timeout);
+            if (await Task.WhenAny(read, delay) != read)
+            {
+                throw new TimeoutException(
+                    "Timed out waiting for the crash worker to emit a line. Exited=" + _process.HasExited + ".");
+            }
+
+            string? line = await read;
+            if (line == null)
+            {
+                throw new InvalidOperationException(
+                    "The crash worker exited before emitting the expected line. stderr: " +
+                    ReadAllStandardError());
+            }
+
+            return line;
+        }
+
+        public async Task WaitForExitAsync(TimeSpan timeout)
+        {
+            Task exit = _process.WaitForExitAsync();
+            Task delay = Task.Delay(timeout);
+            if (await Task.WhenAny(exit, delay) != exit)
+            {
+                throw new TimeoutException("Timed out waiting for the crash worker to exit.");
+            }
+
+            await exit;
+        }
+
+        public async Task KillAsync()
+        {
+            if (!_process.HasExited)
+            {
+                _process.Kill(entireProcessTree: true);
+            }
+
+            await _process.WaitForExitAsync();
+        }
+
+        public string ReadAllStandardOutput()
+        {
+            return _process.StandardOutput.ReadToEnd();
+        }
+
+        public string ReadAllStandardError()
+        {
+            try
+            {
+                return _process.StandardError.ReadToEnd();
+            }
+            catch (InvalidOperationException)
+            {
+                return string.Empty;
+            }
+        }
+
+        public async ValueTask DisposeAsync()
+        {
+            try
+            {
+                if (!_process.HasExited)
+                {
+                    _process.Kill(entireProcessTree: true);
+                    await _process.WaitForExitAsync();
+                }
+            }
+            catch (InvalidOperationException)
+            {
+            }
+            finally
+            {
+                _process.Dispose();
+            }
+        }
+    }
+
+    internal sealed class TempOutboxDirectory : IDisposable
+    {
+        public TempOutboxDirectory()
+        {
+            Path = System.IO.Path.Combine(
+                System.IO.Path.GetTempPath(),
+                "mahjong-file-outbox-tests",
+                Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(Path);
+        }
+
+        public string Path { get; }
+
+        public void Dispose()
+        {
+            try
+            {
+                Directory.Delete(Path, recursive: true);
+            }
+            catch (IOException)
+            {
+            }
+            catch (UnauthorizedAccessException)
+            {
             }
         }
     }

@@ -1,9 +1,9 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <!--
-    Test-only worker process for P5.4a crash/restart tests. It is deliberately
-    not part of Mahjong.sln and is copied next to Mahjong.Client.Tests by a
-    build target. It has no production entry point and no network code.
+    Test-only crash worker for P5.4a. It is deliberately not part of
+    Mahjong.sln; Mahjong.Client.Tests references it for build and copies its
+    output next to the test assembly. No production entry point, no network.
   -->
   <PropertyGroup>
     <TargetFramework>net8.0</TargetFramework>
@@ -12,8 +12,8 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>disable</ImplicitUsings>
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
-    <AssemblyName>Mahjong.Client.OutboxWorker</AssemblyName>
-    <RootNamespace>Mahjong.Client.OutboxWorker</RootNamespace>
+    <AssemblyName>Mahjong.Outbox.CrashWorker</AssemblyName>
+    <RootNamespace>Mahjong.Outbox.CrashWorker</RootNamespace>
     <IsPackable>false</IsPackable>
   </PropertyGroup>
 
