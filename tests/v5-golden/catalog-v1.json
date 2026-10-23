@@ -22,8 +22,8 @@
                          "csharpGoldenClasses":  5,
                          "csharpGoldenFacts":  42,
                          "requirementCoverage":  {
-                                                     "full":  20,
-                                                     "partial":  17,
+                                                     "full":  18,
+                                                     "partial":  19,
                                                      "none":  33,
                                                      "v5-only":  3
                                                  },
@@ -1016,7 +1016,8 @@
                                              "physical-v1:samples/G-001a"
                                          ],
                              "owner":  "P1.1",
-                             "note":  "136 tiles and exactly 3 red fives exported; C# G001a asserts every identity/flag field."
+                             "note":  "136 tiles and exactly 3 red fives exported; C# G001a asserts every identity/flag field.",
+                             "csharpEvidence":  "PhysicalGoldenTests.G001aStandardSetMatchesDomainTileIdentityAndRedFiveRules: TileId fields, 136 tiles, redFiveIds 19/55/91"
                          },
                          {
                              "id":  "G-001b",
@@ -1026,7 +1027,8 @@
                                              "physical-v1:samples/G-001b"
                                          ],
                              "owner":  "P1.1",
-                             "note":  "34 typeIndex groups and 10 boundary indexes exported; C# G001b replays."
+                             "note":  "34 typeIndex groups and 10 boundary indexes exported; C# G001b replays.",
+                             "csharpEvidence":  "PhysicalGoldenTests.G001bTypeIndexBoundariesAnd34GroupsMatchDomain: boundaryTypeIndexes, 34 groups, totalTiles=136"
                          },
                          {
                              "id":  "G-001c",
@@ -1036,7 +1038,8 @@
                                              "physical-v1:samples/G-001c"
                                          ],
                              "owner":  "P1.1",
-                             "note":  "0..135 roundtrip plus 4 illegal inputs exported; C# G001c replays semantics (not exception-class equality)."
+                             "note":  "0..135 roundtrip plus 4 illegal inputs exported; C# G001c replays semantics (not exception-class equality).",
+                             "csharpEvidence":  "PhysicalGoldenTests.G001cTileIdRoundTripAndIllegalInputsMatch: valid 0..135, boundaries 0/135, illegal inputs"
                          },
                          {
                              "id":  "G-002",
@@ -1046,7 +1049,8 @@
                                              "physical-v1:samples/G-002"
                                          ],
                              "owner":  "P1.1",
-                             "note":  "20 zone/owner probes exported; C# maps legal positions and illegal-seat semantics; no-seat-zone owner is structurally unconstructible in C#."
+                             "note":  "20 zone/owner probes exported; C# maps legal positions and illegal-seat semantics; no-seat-zone owner is structurally unconstructible in C#.",
+                             "csharpEvidence":  "PhysicalGoldenTests.G002ZoneOwnerSemanticsMapToImmutablePositions: legal/illegal zone-owner probes; no-seat owner structural equivalence"
                          },
                          {
                              "id":  "G-003a",
@@ -1056,7 +1060,8 @@
                                              "physical-v1:samples/G-003a"
                                          ],
                              "owner":  "P1.1",
-                             "note":  "32 fixed seeds with complete walls and 4352 positions; C# replays explicit walls structurally, not JVM RNG reproduction."
+                             "note":  "32 fixed seeds with complete walls and 4352 positions; C# replays explicit walls structurally, not JVM RNG reproduction.",
+                             "csharpEvidence":  "PhysicalGoldenTests.G003aExportedWallsDriveDomainMapAndConservationWithoutRngClaim: 32 walls, red fives, 136 positions, dead-wall segment"
                          },
                          {
                              "id":  "G-003b",
@@ -1066,7 +1071,8 @@
                                              "physical-v1:samples/G-003b"
                                          ],
                              "owner":  "P1.1",
-                             "note":  "Real deletion and ledger-mismatch probes exported; C# covers missing placements and single-ledger invariant. Duplicate-key branch is NOT_CONSTRUCTIBLE in V4 MutableMap."
+                             "note":  "Real deletion and ledger-mismatch probes exported; C# covers missing placements and single-ledger invariant. Duplicate-key branch is NOT_CONSTRUCTIBLE in V4 MutableMap.",
+                             "csharpEvidence":  ""
                          },
                          {
                              "id":  "G-004",
@@ -1076,7 +1082,8 @@
 
                                          ],
                              "owner":  "P1.1",
-                             "note":  "No draw/discard TileMovement case in the five fixtures."
+                             "note":  "No draw/discard TileMovement case in the five fixtures.",
+                             "csharpEvidence":  ""
                          },
                          {
                              "id":  "G-005",
@@ -1086,7 +1093,8 @@
 
                                          ],
                              "owner":  "P1.1",
-                             "note":  "No pon/chi case in the five fixtures."
+                             "note":  "No pon/chi case in the five fixtures.",
+                             "csharpEvidence":  ""
                          },
                          {
                              "id":  "G-006",
@@ -1096,7 +1104,8 @@
 
                                          ],
                              "owner":  "P1.1",
-                             "note":  "No kan case in the five fixtures."
+                             "note":  "No kan case in the five fixtures.",
+                             "csharpEvidence":  ""
                          },
                          {
                              "id":  "G-007",
@@ -1106,7 +1115,8 @@
 
                                          ],
                              "owner":  "P1.1",
-                             "note":  "No duplicate-copy/fifth-rinshan rejection case in the five fixtures."
+                             "note":  "No duplicate-copy/fifth-rinshan rejection case in the five fixtures.",
+                             "csharpEvidence":  ""
                          },
                          {
                              "id":  "G-008",
@@ -1117,7 +1127,8 @@
                                              "cheat-v1:tileMovement/mv-swap-hand-with-dead-wall"
                                          ],
                              "owner":  "P1.1",
-                             "note":  "Two hand/wall swap cases exported and replayed; no draw/discard/pon/kan movement cases."
+                             "note":  "Two hand/wall swap cases exported and replayed; no draw/discard/pon/kan movement cases.",
+                             "csharpEvidence":  ""
                          },
                          {
                              "id":  "G-009",
@@ -1127,7 +1138,8 @@
 
                                          ],
                              "owner":  "P1.1",
-                             "note":  "No hidden-replacement/full-136 audit trace exported."
+                             "note":  "No hidden-replacement/full-136 audit trace exported.",
+                             "csharpEvidence":  ""
                          },
                          {
                              "id":  "G-010",
@@ -1137,7 +1149,8 @@
 
                                          ],
                              "owner":  "P1.1",
-                             "note":  "No duplicate-physical-wall deal rejection case in the five fixtures."
+                             "note":  "No duplicate-physical-wall deal rejection case in the five fixtures.",
+                             "csharpEvidence":  ""
                          },
                          {
                              "id":  "G-011",
@@ -1147,7 +1160,8 @@
 
                                          ],
                              "owner":  "P1.1",
-                             "note":  "No full deal event sequence/state trace exported."
+                             "note":  "No full deal event sequence/state trace exported.",
+                             "csharpEvidence":  ""
                          },
                          {
                              "id":  "G-012",
@@ -1157,7 +1171,8 @@
 
                                          ],
                              "owner":  "P1.1",
-                             "note":  "No post-deal full 136-placement trace exported."
+                             "note":  "No post-deal full 136-placement trace exported.",
+                             "csharpEvidence":  ""
                          },
                          {
                              "id":  "G-013",
@@ -1167,7 +1182,8 @@
                                              "scoring-v1:winSamples"
                                          ],
                              "owner":  "P1.2",
-                             "note":  "48 curated win samples cover the evaluator, but the exact 4-han/30-fu/7700 G-013 hand is not separately anchored."
+                             "note":  "48 curated win samples cover the evaluator, but the exact 4-han/30-fu/7700 G-013 hand is not separately anchored.",
+                             "csharpEvidence":  ""
                          },
                          {
                              "id":  "G-014",
@@ -1177,7 +1193,8 @@
                                              "scoring-v1:fuSamples"
                                          ],
                              "owner":  "P1.2",
-                             "note":  "9 fu samples cover rounding, but the exact 28-\u003e30 G-014 case is absent."
+                             "note":  "9 fu samples cover rounding, but the exact 28-\u003e30 G-014 case is absent.",
+                             "csharpEvidence":  ""
                          },
                          {
                              "id":  "G-015",
@@ -1187,7 +1204,8 @@
                                              "scoring-v1:doraSamples/D-002"
                                          ],
                              "owner":  "P1.2",
-                             "note":  "D-002 has indicator=2/red=1/total=3; the single-red-plus-indicator 1/1/2 case is absent."
+                             "note":  "D-002 has indicator=2/red=1/total=3; the single-red-plus-indicator 1/1/2 case is absent.",
+                             "csharpEvidence":  ""
                          },
                          {
                              "id":  "G-016",
@@ -1197,7 +1215,8 @@
                                              "scoring-v1:noWinSamples/N-001"
                                          ],
                              "owner":  "P1.2",
-                             "note":  "Open hand with dora but no yaku exported as noWin; C# replays."
+                             "note":  "Open hand with dora but no yaku exported as noWin; C# replays.",
+                             "csharpEvidence":  "ScoringGoldenTests.CuratedWinAndNoWinSamplesMatchV4 -\u003e CompareNoWinSample (N-001): Evaluate returns null"
                          },
                          {
                              "id":  "G-017",
@@ -1207,7 +1226,8 @@
                                              "scoring-v1:scoreSamples"
                                          ],
                              "owner":  "P1.2",
-                             "note":  "147 score-table samples include fu/han caps and rawExact; C# ScoreTableSamplesMatchV4 replays every field."
+                             "note":  "147 score-table samples include fu/han caps and rawExact; C# ScoreTableSamplesMatchV4 replays every field.",
+                             "csharpEvidence":  "ScoringGoldenTests.ScoreTableSamplesMatchV4 -\u003e CompareScoreSample: base/raw/cap/payments/payment plans"
                          },
                          {
                              "id":  "G-018",
@@ -1218,7 +1238,8 @@
                                              "scoring-v1:scoreSamples/S-YAKUMAN-2"
                                          ],
                              "owner":  "P1.2",
-                             "note":  "Yakuman 1 and 2 (plus 3/4) and payment plans exported; C# replays."
+                             "note":  "Yakuman 1 and 2 (plus 3/4) and payment plans exported; C# replays.",
+                             "csharpEvidence":  "ScoringGoldenTests.ScoreTableSamplesMatchV4 -\u003e S-YAKUMAN-1/2/3/4: base points, multipliers, payments"
                          },
                          {
                              "id":  "G-019",
@@ -1228,7 +1249,8 @@
                                              "scoring-v1:winSamples"
                                          ],
                              "owner":  "P1.2",
-                             "note":  "All 42 distinct yaku codes appear in winSamples and C# asserts 42, but the 41/42 D-01 adjudication is still unresolved."
+                             "note":  "All 42 distinct yaku codes appear in winSamples and C# asserts 42, but the 41/42 D-01 adjudication is still unresolved.",
+                             "csharpEvidence":  ""
                          },
                          {
                              "id":  "G-020",
@@ -1239,7 +1261,8 @@
                                              "scoring-v1:settlementSamples/ST-002"
                                          ],
                              "owner":  "P1.2",
-                             "note":  "Nondealer/dealer ron deltas and conservation exported; C# replays exact deltas."
+                             "note":  "Nondealer/dealer ron deltas and conservation exported; C# replays exact deltas.",
+                             "csharpEvidence":  "ScoringGoldenTests.SettlementSamplesMatchV4 -\u003e ST-001/ST-002: deltas, newScores, remainingRiichiSticks"
                          },
                          {
                              "id":  "G-021",
@@ -1251,7 +1274,8 @@
                                              "scoring-v1:settlementSamples/ST-007"
                                          ],
                              "owner":  "P1.2",
-                             "note":  "Nondealer/dealer tsumo and dealer=3 payer split exported; C# replays exact deltas."
+                             "note":  "Nondealer/dealer tsumo and dealer=3 payer split exported; C# replays exact deltas.",
+                             "csharpEvidence":  "ScoringGoldenTests.SettlementSamplesMatchV4 -\u003e ST-003/ST-004/ST-007: tsumo deltas/newScores/sticks"
                          },
                          {
                              "id":  "G-022",
@@ -1261,7 +1285,8 @@
                                              "scoring-v1:settlementSamples"
                                          ],
                              "owner":  "P1.2",
-                             "note":  "ST-100..ST-115 cover all 16 tenpai masks; C# replays deltas and stick handling."
+                             "note":  "ST-100..ST-115 cover all 16 tenpai masks; C# replays deltas and stick handling.",
+                             "csharpEvidence":  "ScoringGoldenTests.SettlementSamplesMatchV4 -\u003e ST-100..ST-115: all 16 tenpai masks deltas/newScores/sticks"
                          },
                          {
                              "id":  "G-023",
@@ -1271,7 +1296,8 @@
                                              "scoring-v1:settlementSamples/ST-008"
                                          ],
                              "owner":  "P1.2",
-                             "note":  "Abortive draw deltas/zero-change exported; C# replays."
+                             "note":  "Abortive draw deltas/zero-change exported; C# replays.",
+                             "csharpEvidence":  "ScoringGoldenTests.SettlementSamplesMatchV4 -\u003e ST-008: abortive draw deltas/newScores/sticks"
                          },
                          {
                              "id":  "G-024",
@@ -1281,7 +1307,8 @@
 
                                          ],
                              "owner":  "P1.2",
-                             "note":  "No session-boundary riichi-stick transfer case in the five fixtures."
+                             "note":  "No session-boundary riichi-stick transfer case in the five fixtures.",
+                             "csharpEvidence":  ""
                          },
                          {
                              "id":  "G-025",
@@ -1295,7 +1322,8 @@
                                              "round-v1:matchProgression/RG-003e"
                                          ],
                              "owner":  "P1.3",
-                             "note":  "Basic dealer/nondealer tsumo, exhaustive draw and abortive progression rows exported; C# replays all fields."
+                             "note":  "Basic dealer/nondealer tsumo, exhaustive draw and abortive progression rows exported; C# replays all fields.",
+                             "csharpEvidence":  "RoundReplayGoldenTests.MatchProgressionMatrixReplaysExactly -\u003e RG-003a..e: next/dealer/wind/round/honba/scores"
                          },
                          {
                              "id":  "G-026",
@@ -1310,7 +1338,8 @@
                                              "round-v1:matchProgression/RG-003p"
                                          ],
                              "owner":  "P1.3",
-                             "note":  "East-4 dealer rotation, south-4 target, west extension, west-4 finish and tonpuusen finish rows exported; C# replays."
+                             "note":  "East-4 dealer rotation, south-4 target, west extension, west-4 finish and tonpuusen finish rows exported; C# replays.",
+                             "csharpEvidence":  "RoundReplayGoldenTests.MatchProgressionMatrixReplaysExactly -\u003e RG-003f..j,p: next/final/rankings/reason/transferSeat"
                          },
                          {
                              "id":  "G-027",
@@ -1322,17 +1351,19 @@
                                              "round-v1:matchProgression/RG-003o"
                                          ],
                              "owner":  "P1.3",
-                             "note":  "Agari-yame eligibility/declaration and tie transfer exported; C# replays."
+                             "note":  "Agari-yame eligibility/declaration and tie transfer exported; C# replays.",
+                             "csharpEvidence":  "RoundReplayGoldenTests.MatchProgressionMatrixReplaysExactly -\u003e RG-003m..o: agari-yame/final/rankings/transferSeat"
                          },
                          {
                              "id":  "G-028a",
                              "manifestStatus":  "pending",
-                             "coverage":  "full",
+                             "coverage":  "partial",
                              "anchors":  [
                                              "round-v1:roundTerminal/RG-001"
                                          ],
                              "owner":  "P1.3",
-                             "note":  "Single-round terminal state, events, scores and three rejected post-terminal actions exported; C# replays."
+                             "note":  "C# RoundTerminalReplaysExactly asserts version/phase/result/scores/rejected actions and presence of TsumoWin, but not absence of MatchEnded or the full eventTypes sequence (ScoreSettled/RoundEnded).",
+                             "csharpEvidence":  ""
                          },
                          {
                              "id":  "G-028b",
@@ -1342,7 +1373,8 @@
 
                                          ],
                              "owner":  "P1.3",
-                             "note":  "No nextRound/new-roundId trace in the five fixtures."
+                             "note":  "No nextRound/new-roundId trace in the five fixtures.",
+                             "csharpEvidence":  ""
                          },
                          {
                              "id":  "G-029",
@@ -1352,7 +1384,8 @@
                                              "round-v1:chankanRon/RG-002"
                                          ],
                              "owner":  "P1.3",
-                             "note":  "CHANKAN_WINDOW state and ron-before-kan atomicity exported; C# replays."
+                             "note":  "CHANKAN_WINDOW state and ron-before-kan atomicity exported; C# replays.",
+                             "csharpEvidence":  "RoundReplayGoldenTests.ChankanRonReplaysExactly: phase/stateHash/rinshan/kan/events/result/scores/version"
                          },
                          {
                              "id":  "G-030",
@@ -1362,7 +1395,8 @@
 
                                          ],
                              "owner":  "P1.3",
-                             "note":  "No double-kan/DoraRevealed/RinshanDraw multi-event trace exported."
+                             "note":  "No double-kan/DoraRevealed/RinshanDraw multi-event trace exported.",
+                             "csharpEvidence":  ""
                          },
                          {
                              "id":  "G-031",
@@ -1372,7 +1406,8 @@
                                              "cheat-v1:ledger"
                                          ],
                              "owner":  "P1.3",
-                             "note":  "Ledger rejections prove zero balance/entry side effects; no event-list/version assertion for a no-event command."
+                             "note":  "Ledger rejections prove zero balance/entry side effects; no event-list/version assertion for a no-event command.",
+                             "csharpEvidence":  ""
                          },
                          {
                              "id":  "G-032",
@@ -1383,7 +1418,8 @@
                                              "cheat-v1:ledger/chargeOnce"
                                          ],
                              "owner":  "P1.4",
-                             "note":  "Allowed outcome and ledger charge exported; no single case with full post-state, group tiles, locations and deadline."
+                             "note":  "Allowed outcome and ledger charge exported; no single case with full post-state, group tiles, locations and deadline.",
+                             "csharpEvidence":  ""
                          },
                          {
                              "id":  "G-033",
@@ -1395,7 +1431,8 @@
                                              "cheat-v1:tileMarkState/expiry"
                                          ],
                              "owner":  "P1.4",
-                             "note":  "Capacity and expiry cases exported; C# replays expiry/cross-seat, capacity cases are reason-covered only."
+                             "note":  "Capacity and expiry cases exported; C# replays expiry/cross-seat, capacity cases are reason-covered only.",
+                             "csharpEvidence":  ""
                          },
                          {
                              "id":  "G-034",
@@ -1405,7 +1442,8 @@
                                              "cheat-v1:tileMarkHandler"
                                          ],
                              "owner":  "P1.4",
-                             "note":  "19 rejection cases with stable reasons exported; C# replays a representative subset, not every case."
+                             "note":  "19 rejection cases with stable reasons exported; C# replays a representative subset, not every case.",
+                             "csharpEvidence":  ""
                          },
                          {
                              "id":  "G-035",
@@ -1416,7 +1454,8 @@
                                              "cheat-v1:sleeveBloomHandler/sb-choose-first"
                                          ],
                              "owner":  "P1.4",
-                             "note":  "Activation/choice cases and golden inputs exported; C# binds a subset, not the full snapshot."
+                             "note":  "Activation/choice cases and golden inputs exported; C# binds a subset, not the full snapshot.",
+                             "csharpEvidence":  ""
                          },
                          {
                              "id":  "G-036",
@@ -1428,7 +1467,8 @@
                                              "cheat-v1:sleeveBloomHandler/sbo-choose-expired"
                                          ],
                              "owner":  "P1.4",
-                             "note":  "Off-turn activation/reservation/expiry cases exported; C# binds reservation delivery, not every timing branch."
+                             "note":  "Off-turn activation/reservation/expiry cases exported; C# binds reservation delivery, not every timing branch.",
+                             "csharpEvidence":  ""
                          },
                          {
                              "id":  "G-037",
@@ -1440,7 +1480,8 @@
                                              "cheat-v1:sleeveBloomHandler/sbo-activate-no-window"
                                          ],
                              "owner":  "P1.4",
-                             "note":  "Stale/wrong-window/no-offer reasons exported; C# replays a subset."
+                             "note":  "Stale/wrong-window/no-offer reasons exported; C# replays a subset.",
+                             "csharpEvidence":  ""
                          },
                          {
                              "id":  "G-038",
@@ -1452,7 +1493,8 @@
                                              "cheat-v1:beamSwapHandler/bm-choose-keep"
                                          ],
                              "owner":  "P1.4",
-                             "note":  "Activation/swap/keep cases exported; C# binds candidate entities and keep, not the full snapshot."
+                             "note":  "Activation/swap/keep cases exported; C# binds candidate entities and keep, not the full snapshot.",
+                             "csharpEvidence":  ""
                          },
                          {
                              "id":  "G-039",
@@ -1464,7 +1506,8 @@
                                              "cheat-v1:beamSwapHandler/bm-choose-stale-turn"
                                          ],
                              "owner":  "P1.4",
-                             "note":  "Invalid/stale/foreign cases exported; C# replays a subset."
+                             "note":  "Invalid/stale/foreign cases exported; C# replays a subset.",
+                             "csharpEvidence":  ""
                          },
                          {
                              "id":  "G-040a",
@@ -1474,7 +1517,8 @@
 
                                          ],
                              "owner":  "P1.4",
-                             "note":  "No owner/other-seat TileMark projection case in the five fixtures."
+                             "note":  "No owner/other-seat TileMark projection case in the five fixtures.",
+                             "csharpEvidence":  ""
                          },
                          {
                              "id":  "G-040b",
@@ -1484,7 +1528,8 @@
 
                                          ],
                              "owner":  "P1.4",
-                             "note":  "No owner/other-seat SleeveBloom projection case in the five fixtures."
+                             "note":  "No owner/other-seat SleeveBloom projection case in the five fixtures.",
+                             "csharpEvidence":  ""
                          },
                          {
                              "id":  "G-040c",
@@ -1494,17 +1539,19 @@
 
                                          ],
                              "owner":  "P1.4",
-                             "note":  "No owner/other-seat BeamSwap projection case in the five fixtures."
+                             "note":  "No owner/other-seat BeamSwap projection case in the five fixtures.",
+                             "csharpEvidence":  ""
                          },
                          {
                              "id":  "G-041",
                              "manifestStatus":  "pending",
-                             "coverage":  "full",
+                             "coverage":  "partial",
                              "anchors":  [
                                              "cheat-v1:ledger"
                                          ],
                              "owner":  "P1.4",
-                             "note":  "Replay/conflict/overdraw/overflow/invalid-seat/summary/snapshot all exported; C# Ledger_Section replays and asserts zero side effects."
+                             "note":  "C# Ledger_Section_ReplaysAgainstCheatLedger asserts replay/conflict/overdraw/overflow/invalid seat/summary/snapshot, but not round version, mahjong scores, or 136-tile conservation; those G-row assertions remain unverified.",
+                             "csharpEvidence":  ""
                          },
                          {
                              "id":  "G-042",
@@ -1514,7 +1561,8 @@
                                              "shuffle-v1:slotMatrix"
                                          ],
                              "owner":  "P1.5",
-                             "note":  "16 dealer/seat slot entries with initial and draw slots exported; C# replays."
+                             "note":  "16 dealer/seat slot entries with initial and draw slots exported; C# replays.",
+                             "csharpEvidence":  "ShuffleGoldenTests.SlotMatrixMatchesCSharpShuffleSlots: 16 dealer/seat initialSlots/drawSlots"
                          },
                          {
                              "id":  "G-043",
@@ -1524,7 +1572,8 @@
                                              "shuffle-v1:cases"
                                          ],
                              "owner":  "P1.5",
-                             "note":  "32 fixed-seed walls, red fives, dead-wall isolation, 3/4-caster laws exported; illegal seat/config rejection is not exported."
+                             "note":  "32 fixed-seed walls, red fives, dead-wall isolation, 3/4-caster laws exported; illegal seat/config rejection is not exported.",
+                             "csharpEvidence":  ""
                          },
                          {
                              "id":  "G-044",
@@ -1534,7 +1583,8 @@
 
                                          ],
                              "owner":  "P1.5",
-                             "note":  "See-through/anti-target cases are not in the five fixtures."
+                             "note":  "See-through/anti-target cases are not in the five fixtures.",
+                             "csharpEvidence":  ""
                          },
                          {
                              "id":  "G-045",
@@ -1544,7 +1594,8 @@
 
                                          ],
                              "owner":  "P1.5",
-                             "note":  "ShufflePreparation SecureRandom seed is not exported; D-07 remains."
+                             "note":  "ShufflePreparation SecureRandom seed is not exported; D-07 remains.",
+                             "csharpEvidence":  ""
                          },
                          {
                              "id":  "G-046",
@@ -1559,7 +1610,8 @@
                                              "round-v1:decisionClock/RG-004f"
                                          ],
                              "owner":  "P1.3",
-                             "note":  "Six complete clock operation traces (open/complete/cancel/pause/resume/scope reset) exported; C# replays every operation."
+                             "note":  "Six complete clock operation traces (open/complete/cancel/pause/resume/scope reset) exported; C# replays every operation.",
+                             "csharpEvidence":  "RoundReplayGoldenTests.DecisionClockTracesReplayExactly: 6 traces, every operation and remaining reserve"
                          },
                          {
                              "id":  "G-047",
@@ -1569,7 +1621,8 @@
 
                                          ],
                              "owner":  "P1.3",
-                             "note":  "TimeoutPolicy selection is not in the five fixtures."
+                             "note":  "TimeoutPolicy selection is not in the five fixtures.",
+                             "csharpEvidence":  ""
                          },
                          {
                              "id":  "G-048",
@@ -1579,7 +1632,8 @@
                                              "round-v1:controlEpoch/RG-005"
                                          ],
                              "owner":  "P1.3",
-                             "note":  "RG-005 covers engine ControllerRegistry epochs only; server ConnectionControl grace/reclaim is explicitly not exported by the engine-side exporter."
+                             "note":  "RG-005 covers engine ControllerRegistry epochs only; server ConnectionControl grace/reclaim is explicitly not exported by the engine-side exporter.",
+                             "csharpEvidence":  ""
                          },
                          {
                              "id":  "G-049",
@@ -1589,7 +1643,8 @@
 
                                          ],
                              "owner":  "P1.6",
-                             "note":  "No AiDecisionRecorded/intent or stale-AI submission fixture."
+                             "note":  "No AiDecisionRecorded/intent or stale-AI submission fixture.",
+                             "csharpEvidence":  ""
                          },
                          {
                              "id":  "G-050a",
@@ -1599,7 +1654,8 @@
 
                                          ],
                              "owner":  "P2.1",
-                             "note":  "No protocol/wire fixture among the five."
+                             "note":  "No protocol/wire fixture among the five.",
+                             "csharpEvidence":  ""
                          },
                          {
                              "id":  "G-050b",
@@ -1609,7 +1665,8 @@
 
                                          ],
                              "owner":  "P2.1",
-                             "note":  "No frame-codec fixture among the five."
+                             "note":  "No frame-codec fixture among the five.",
+                             "csharpEvidence":  ""
                          },
                          {
                              "id":  "G-050c",
@@ -1619,7 +1676,8 @@
 
                                          ],
                              "owner":  "P2.1",
-                             "note":  "No message-codec fixture among the five."
+                             "note":  "No message-codec fixture among the five.",
+                             "csharpEvidence":  ""
                          },
                          {
                              "id":  "G-051",
@@ -1629,7 +1687,8 @@
 
                                          ],
                              "owner":  "P2.1",
-                             "note":  "No error/close-reason fixture among the five."
+                             "note":  "No error/close-reason fixture among the five.",
+                             "csharpEvidence":  ""
                          },
                          {
                              "id":  "G-052",
@@ -1639,7 +1698,8 @@
 
                                          ],
                              "owner":  "P2.1",
-                             "note":  "No receipt-quota fixture among the five."
+                             "note":  "No receipt-quota fixture among the five.",
+                             "csharpEvidence":  ""
                          },
                          {
                              "id":  "G-053",
@@ -1649,7 +1709,8 @@
 
                                          ],
                              "owner":  "P2.1",
-                             "note":  "No request-scope receipt fixture among the five."
+                             "note":  "No request-scope receipt fixture among the five.",
+                             "csharpEvidence":  ""
                          },
                          {
                              "id":  "G-054",
@@ -1659,7 +1720,8 @@
 
                                          ],
                              "owner":  "P2.1",
-                             "note":  "No receipt-store expiry/saturation fixture among the five."
+                             "note":  "No receipt-store expiry/saturation fixture among the five.",
+                             "csharpEvidence":  ""
                          },
                          {
                              "id":  "G-055",
@@ -1669,7 +1731,8 @@
 
                                          ],
                              "owner":  "P5.4a",
-                             "note":  "V5-only persistent outbox/RECEIPT_QUERY; no V4 fixture by design."
+                             "note":  "V5-only persistent outbox/RECEIPT_QUERY; no V4 fixture by design.",
+                             "csharpEvidence":  ""
                          },
                          {
                              "id":  "G-056a",
@@ -1679,7 +1742,8 @@
 
                                          ],
                              "owner":  "P3.2",
-                             "note":  "No player-stream fixture among the five."
+                             "note":  "No player-stream fixture among the five.",
+                             "csharpEvidence":  ""
                          },
                          {
                              "id":  "G-056b",
@@ -1689,7 +1753,8 @@
 
                                          ],
                              "owner":  "P3.2",
-                             "note":  "No spectator-stream fixture among the five."
+                             "note":  "No spectator-stream fixture among the five.",
+                             "csharpEvidence":  ""
                          },
                          {
                              "id":  "G-056c",
@@ -1699,7 +1764,8 @@
 
                                          ],
                              "owner":  "P3.2",
-                             "note":  "No binding early-buffer/unconfirmed-side-effect fixture among the five."
+                             "note":  "No binding early-buffer/unconfirmed-side-effect fixture among the five.",
+                             "csharpEvidence":  ""
                          },
                          {
                              "id":  "G-056d",
@@ -1709,7 +1775,8 @@
 
                                          ],
                              "owner":  "P3.2",
-                             "note":  "No 65-item reorder/257-cursor/bindingEpoch-race probe."
+                             "note":  "No 65-item reorder/257-cursor/bindingEpoch-race probe.",
+                             "csharpEvidence":  ""
                          },
                          {
                              "id":  "G-057a",
@@ -1719,7 +1786,8 @@
 
                                          ],
                              "owner":  "P3.2",
-                             "note":  "No PlayerView snapshot fixture among the five."
+                             "note":  "No PlayerView snapshot fixture among the five.",
+                             "csharpEvidence":  ""
                          },
                          {
                              "id":  "G-057b",
@@ -1729,7 +1797,8 @@
 
                                          ],
                              "owner":  "P3.2",
-                             "note":  "No SessionUpdate visibility fixture among the five."
+                             "note":  "No SessionUpdate visibility fixture among the five.",
+                             "csharpEvidence":  ""
                          },
                          {
                              "id":  "G-057c",
@@ -1739,7 +1808,8 @@
 
                                          ],
                              "owner":  "P3.2",
-                             "note":  "No public-projection fixture among the five."
+                             "note":  "No public-projection fixture among the five.",
+                             "csharpEvidence":  ""
                          },
                          {
                              "id":  "G-057d",
@@ -1749,7 +1819,8 @@
 
                                          ],
                              "owner":  "P3.2",
-                             "note":  "No opponent-hidden/ura/wall-order probe."
+                             "note":  "No opponent-hidden/ura/wall-order probe.",
+                             "csharpEvidence":  ""
                          },
                          {
                              "id":  "G-058",
@@ -1759,7 +1830,8 @@
 
                                          ],
                              "owner":  "P3.4",
-                             "note":  "V5-only ownerEpoch/lease/Postgres contract; no V4 fixture by design."
+                             "note":  "V5-only ownerEpoch/lease/Postgres contract; no V4 fixture by design.",
+                             "csharpEvidence":  ""
                          },
                          {
                              "id":  "G-059",
@@ -1769,7 +1841,880 @@
 
                                          ],
                              "owner":  "P2.1/P2.2/P5.1/P5.4",
-                             "note":  "V5-only Protobuf/WSS/TLS/Unity/IL2CPP behavior; no V4 fixture by design."
+                             "note":  "V5-only Protobuf/WSS/TLS/Unity/IL2CPP behavior; no V4 fixture by design.",
+                             "csharpEvidence":  ""
                          }
-                     ]
+                     ],
+    "groupShapes":  {
+                        "physical-v1:samples":  {
+                                                    "requiredKeys":  [
+                                                                         "sampleId",
+                                                                         "extractionStatus",
+                                                                         "source",
+                                                                         "command",
+                                                                         "input",
+                                                                         "expected"
+                                                                     ],
+                                                    "rules":  [
+                                                                  {
+                                                                      "path":  "source",
+                                                                      "type":  "object"
+                                                                  },
+                                                                  {
+                                                                      "path":  "command",
+                                                                      "type":  "string"
+                                                                  },
+                                                                  {
+                                                                      "path":  "input",
+                                                                      "type":  "object"
+                                                                  },
+                                                                  {
+                                                                      "path":  "expected",
+                                                                      "type":  "object"
+                                                                  }
+                                                              ]
+                                                },
+                        "scoring-v1:winSamples":  {
+                                                      "requiredKeys":  [
+                                                                           "id",
+                                                                           "source",
+                                                                           "input",
+                                                                           "expected"
+                                                                       ],
+                                                      "rules":  [
+                                                                    {
+                                                                        "path":  "id",
+                                                                        "type":  "string"
+                                                                    },
+                                                                    {
+                                                                        "path":  "source",
+                                                                        "type":  "object"
+                                                                    },
+                                                                    {
+                                                                        "path":  "input",
+                                                                        "type":  "object"
+                                                                    },
+                                                                    {
+                                                                        "path":  "expected",
+                                                                        "type":  "object"
+                                                                    }
+                                                                ]
+                                                  },
+                        "scoring-v1:noWinSamples":  {
+                                                        "requiredKeys":  [
+                                                                             "id",
+                                                                             "source",
+                                                                             "input",
+                                                                             "expected"
+                                                                         ],
+                                                        "rules":  [
+                                                                      {
+                                                                          "path":  "id",
+                                                                          "type":  "string"
+                                                                      },
+                                                                      {
+                                                                          "path":  "source",
+                                                                          "type":  "object"
+                                                                      },
+                                                                      {
+                                                                          "path":  "input",
+                                                                          "type":  "object"
+                                                                      },
+                                                                      {
+                                                                          "path":  "expected",
+                                                                          "type":  "object"
+                                                                      }
+                                                                  ]
+                                                    },
+                        "scoring-v1:fuSamples":  {
+                                                     "requiredKeys":  [
+                                                                          "id",
+                                                                          "source",
+                                                                          "input",
+                                                                          "expected"
+                                                                      ],
+                                                     "rules":  [
+                                                                   {
+                                                                       "path":  "id",
+                                                                       "type":  "string"
+                                                                   },
+                                                                   {
+                                                                       "path":  "source",
+                                                                       "type":  "object"
+                                                                   },
+                                                                   {
+                                                                       "path":  "input",
+                                                                       "type":  "object"
+                                                                   },
+                                                                   {
+                                                                       "path":  "expected",
+                                                                       "type":  "object"
+                                                                   }
+                                                               ]
+                                                 },
+                        "scoring-v1:doraSamples":  {
+                                                       "requiredKeys":  [
+                                                                            "id",
+                                                                            "source",
+                                                                            "input",
+                                                                            "expected"
+                                                                        ],
+                                                       "rules":  [
+                                                                     {
+                                                                         "path":  "id",
+                                                                         "type":  "string"
+                                                                     },
+                                                                     {
+                                                                         "path":  "source",
+                                                                         "type":  "object"
+                                                                     },
+                                                                     {
+                                                                         "path":  "input",
+                                                                         "type":  "object"
+                                                                     },
+                                                                     {
+                                                                         "path":  "expected",
+                                                                         "type":  "object"
+                                                                     }
+                                                                 ]
+                                                   },
+                        "scoring-v1:settlementSamples":  {
+                                                             "requiredKeys":  [
+                                                                                  "id",
+                                                                                  "source",
+                                                                                  "input",
+                                                                                  "expected"
+                                                                              ],
+                                                             "rules":  [
+                                                                           {
+                                                                               "path":  "id",
+                                                                               "type":  "string"
+                                                                           },
+                                                                           {
+                                                                               "path":  "source",
+                                                                               "type":  "object"
+                                                                           },
+                                                                           {
+                                                                               "path":  "input",
+                                                                               "type":  "object"
+                                                                           },
+                                                                           {
+                                                                               "path":  "expected",
+                                                                               "type":  "object"
+                                                                           }
+                                                                       ]
+                                                         },
+                        "scoring-v1:scoreSamples":  {
+                                                        "requiredKeys":  [
+                                                                             "id",
+                                                                             "source",
+                                                                             "input",
+                                                                             "expected"
+                                                                         ],
+                                                        "rules":  [
+                                                                      {
+                                                                          "path":  "id",
+                                                                          "type":  "string"
+                                                                      },
+                                                                      {
+                                                                          "path":  "source",
+                                                                          "type":  "object"
+                                                                      },
+                                                                      {
+                                                                          "path":  "input",
+                                                                          "type":  "object"
+                                                                      },
+                                                                      {
+                                                                          "path":  "expected",
+                                                                          "type":  "object"
+                                                                      }
+                                                                  ]
+                                                    },
+                        "scoring-v1:randomSamples":  {
+                                                         "requiredKeys":  [
+                                                                              "id",
+                                                                              "closed",
+                                                                              "context",
+                                                                              "expected",
+                                                                              "melds",
+                                                                              "dora",
+                                                                              "ura",
+                                                                              "removedWinTile"
+                                                                          ],
+                                                         "rules":  [
+                                                                       {
+                                                                           "path":  "id",
+                                                                           "type":  "string"
+                                                                       },
+                                                                       {
+                                                                           "path":  "closed",
+                                                                           "type":  "array"
+                                                                       },
+                                                                       {
+                                                                           "path":  "context",
+                                                                           "type":  "object"
+                                                                       },
+                                                                       {
+                                                                           "path":  "expected",
+                                                                           "type":  "object"
+                                                                       },
+                                                                       {
+                                                                           "path":  "melds",
+                                                                           "type":  "array"
+                                                                       },
+                                                                       {
+                                                                           "path":  "dora",
+                                                                           "type":  "array"
+                                                                       },
+                                                                       {
+                                                                           "path":  "ura",
+                                                                           "type":  "array"
+                                                                       },
+                                                                       {
+                                                                           "path":  "removedWinTile",
+                                                                           "type":  "boolean"
+                                                                       }
+                                                                   ]
+                                                     },
+                        "scoring-v1:randomMeta":  {
+                                                      "requiredKeys":  [
+                                                                           "seed",
+                                                                           "iterations",
+                                                                           "win",
+                                                                           "noWin",
+                                                                           "openHands",
+                                                                           "closedHands",
+                                                                           "tsumo",
+                                                                           "ron",
+                                                                           "removedWinTile",
+                                                                           "yakumanSamples",
+                                                                           "yakuCounts",
+                                                                           "deterministicNote"
+                                                                       ],
+                                                      "rules":  [
+                                                                    {
+                                                                        "path":  "seed",
+                                                                        "type":  "number"
+                                                                    },
+                                                                    {
+                                                                        "path":  "iterations",
+                                                                        "type":  "number"
+                                                                    },
+                                                                    {
+                                                                        "path":  "win",
+                                                                        "type":  "number"
+                                                                    },
+                                                                    {
+                                                                        "path":  "noWin",
+                                                                        "type":  "number"
+                                                                    },
+                                                                    {
+                                                                        "path":  "openHands",
+                                                                        "type":  "number"
+                                                                    },
+                                                                    {
+                                                                        "path":  "closedHands",
+                                                                        "type":  "number"
+                                                                    },
+                                                                    {
+                                                                        "path":  "tsumo",
+                                                                        "type":  "number"
+                                                                    },
+                                                                    {
+                                                                        "path":  "ron",
+                                                                        "type":  "number"
+                                                                    },
+                                                                    {
+                                                                        "path":  "removedWinTile",
+                                                                        "type":  "number"
+                                                                    },
+                                                                    {
+                                                                        "path":  "yakumanSamples",
+                                                                        "type":  "number"
+                                                                    },
+                                                                    {
+                                                                        "path":  "yakuCounts",
+                                                                        "type":  "object"
+                                                                    },
+                                                                    {
+                                                                        "path":  "deterministicNote",
+                                                                        "type":  "string"
+                                                                    }
+                                                                ]
+                                                  },
+                        "scoring-v1:generationResult":  {
+                                                            "requiredKeys":  [
+                                                                                 "winSamples",
+                                                                                 "noWinSamples",
+                                                                                 "fuSamples",
+                                                                                 "doraSamples",
+                                                                                 "settlementSamples",
+                                                                                 "scoreSamples",
+                                                                                 "randomSamples",
+                                                                                 "totalSamples",
+                                                                                 "exporterTestResult"
+                                                                             ],
+                                                            "rules":  [
+                                                                          {
+                                                                              "path":  "winSamples",
+                                                                              "type":  "number"
+                                                                          },
+                                                                          {
+                                                                              "path":  "noWinSamples",
+                                                                              "type":  "number"
+                                                                          },
+                                                                          {
+                                                                              "path":  "fuSamples",
+                                                                              "type":  "number"
+                                                                          },
+                                                                          {
+                                                                              "path":  "doraSamples",
+                                                                              "type":  "number"
+                                                                          },
+                                                                          {
+                                                                              "path":  "settlementSamples",
+                                                                              "type":  "number"
+                                                                          },
+                                                                          {
+                                                                              "path":  "scoreSamples",
+                                                                              "type":  "number"
+                                                                          },
+                                                                          {
+                                                                              "path":  "randomSamples",
+                                                                              "type":  "number"
+                                                                          },
+                                                                          {
+                                                                              "path":  "totalSamples",
+                                                                              "type":  "number"
+                                                                          },
+                                                                          {
+                                                                              "path":  "exporterTestResult",
+                                                                              "type":  "string"
+                                                                          }
+                                                                      ]
+                                                        },
+                        "round-v1:matchProgression":  {
+                                                          "requiredKeys":  [
+                                                                               "sampleId",
+                                                                               "status",
+                                                                               "input",
+                                                                               "expected"
+                                                                           ],
+                                                          "rules":  [
+                                                                        {
+                                                                            "path":  "sampleId",
+                                                                            "type":  "string"
+                                                                        },
+                                                                        {
+                                                                            "path":  "status",
+                                                                            "type":  "string"
+                                                                        },
+                                                                        {
+                                                                            "path":  "input",
+                                                                            "type":  "object"
+                                                                        },
+                                                                        {
+                                                                            "path":  "expected",
+                                                                            "type":  "object"
+                                                                        }
+                                                                    ]
+                                                      },
+                        "round-v1:decisionClock":  {
+                                                       "requiredKeys":  [
+                                                                            "sampleId",
+                                                                            "status",
+                                                                            "operations"
+                                                                        ],
+                                                       "rules":  [
+                                                                     {
+                                                                         "path":  "sampleId",
+                                                                         "type":  "string"
+                                                                     },
+                                                                     {
+                                                                         "path":  "status",
+                                                                         "type":  "string"
+                                                                     },
+                                                                     {
+                                                                         "path":  "operations",
+                                                                         "type":  "array"
+                                                                     }
+                                                                 ]
+                                                   },
+                        "round-v1:roundTerminal":  {
+                                                       "requiredKeys":  [
+                                                                            "sampleId",
+                                                                            "status",
+                                                                            "input",
+                                                                            "settlement",
+                                                                            "expected"
+                                                                        ],
+                                                       "rules":  [
+                                                                     {
+                                                                         "path":  "sampleId",
+                                                                         "type":  "string"
+                                                                     },
+                                                                     {
+                                                                         "path":  "status",
+                                                                         "type":  "string"
+                                                                     },
+                                                                     {
+                                                                         "path":  "input",
+                                                                         "type":  "object"
+                                                                     },
+                                                                     {
+                                                                         "path":  "settlement",
+                                                                         "type":  "object"
+                                                                     },
+                                                                     {
+                                                                         "path":  "expected",
+                                                                         "type":  "object"
+                                                                     },
+                                                                     {
+                                                                         "path":  "expected.eventTypes",
+                                                                         "type":  "array"
+                                                                     },
+                                                                     {
+                                                                         "path":  "expected.rejectedActions",
+                                                                         "type":  "array"
+                                                                     }
+                                                                 ]
+                                                   },
+                        "round-v1:chankanRon":  {
+                                                    "requiredKeys":  [
+                                                                         "sampleId",
+                                                                         "status",
+                                                                         "input",
+                                                                         "expected"
+                                                                     ],
+                                                    "rules":  [
+                                                                  {
+                                                                      "path":  "sampleId",
+                                                                      "type":  "string"
+                                                                  },
+                                                                  {
+                                                                      "path":  "status",
+                                                                      "type":  "string"
+                                                                  },
+                                                                  {
+                                                                      "path":  "input",
+                                                                      "type":  "object"
+                                                                  },
+                                                                  {
+                                                                      "path":  "expected",
+                                                                      "type":  "object"
+                                                                  }
+                                                              ]
+                                                },
+                        "round-v1:controlEpoch":  {
+                                                      "requiredKeys":  [
+                                                                           "sampleId",
+                                                                           "status",
+                                                                           "operations"
+                                                                       ],
+                                                      "rules":  [
+                                                                    {
+                                                                        "path":  "sampleId",
+                                                                        "type":  "string"
+                                                                    },
+                                                                    {
+                                                                        "path":  "status",
+                                                                        "type":  "string"
+                                                                    },
+                                                                    {
+                                                                        "path":  "operations",
+                                                                        "type":  "array"
+                                                                    }
+                                                                ]
+                                                  },
+                        "round-v1:unexportedSamples":  {
+                                                           "requiredKeys":  [
+
+                                                                            ],
+                                                           "rules":  [
+
+                                                                     ]
+                                                       },
+                        "cheat-v1:tileMarkHandler":  {
+                                                         "requiredKeys":  [
+                                                                              "caseId",
+                                                                              "outcome",
+                                                                              "reason"
+                                                                          ],
+                                                         "rules":  [
+                                                                       {
+                                                                           "path":  "caseId",
+                                                                           "type":  "string"
+                                                                       },
+                                                                       {
+                                                                           "path":  "outcome",
+                                                                           "type":  "string"
+                                                                       },
+                                                                       {
+                                                                           "path":  "reason",
+                                                                           "type":  "string-or-null"
+                                                                       }
+                                                                   ]
+                                                     },
+                        "cheat-v1:sleeveBloomHandler":  {
+                                                            "requiredKeys":  [
+                                                                                 "caseId",
+                                                                                 "outcome",
+                                                                                 "reason"
+                                                                             ],
+                                                            "rules":  [
+                                                                          {
+                                                                              "path":  "caseId",
+                                                                              "type":  "string"
+                                                                          },
+                                                                          {
+                                                                              "path":  "outcome",
+                                                                              "type":  "string"
+                                                                          },
+                                                                          {
+                                                                              "path":  "reason",
+                                                                              "type":  "string-or-null"
+                                                                          }
+                                                                      ]
+                                                        },
+                        "cheat-v1:beamSwapHandler":  {
+                                                         "requiredKeys":  [
+                                                                              "caseId",
+                                                                              "outcome",
+                                                                              "reason"
+                                                                          ],
+                                                         "rules":  [
+                                                                       {
+                                                                           "path":  "caseId",
+                                                                           "type":  "string"
+                                                                       },
+                                                                       {
+                                                                           "path":  "outcome",
+                                                                           "type":  "string"
+                                                                       },
+                                                                       {
+                                                                           "path":  "reason",
+                                                                           "type":  "string-or-null"
+                                                                       }
+                                                                   ]
+                                                     },
+                        "cheat-v1:tileMovement":  {
+                                                      "requiredKeys":  [
+                                                                           "caseId",
+                                                                           "factsAfter"
+                                                                       ],
+                                                      "rules":  [
+                                                                    {
+                                                                        "path":  "caseId",
+                                                                        "type":  "string"
+                                                                    },
+                                                                    {
+                                                                        "path":  "factsAfter",
+                                                                        "type":  "array"
+                                                                    }
+                                                                ]
+                                                  },
+                        "cheat-v1:ledger":  {
+                                                "requiredKeys":  [
+                                                                     "initialPoints",
+                                                                     "chargeOnce",
+                                                                     "replaySamePayload",
+                                                                     "conflictDifferentPayload",
+                                                                     "insufficientFunds",
+                                                                     "overflow",
+                                                                     "invalidSeat",
+                                                                     "flowSummary",
+                                                                     "snapshotRoundTrip"
+                                                                 ],
+                                                "rules":  [
+                                                              {
+                                                                  "path":  "initialPoints",
+                                                                  "type":  "array"
+                                                              },
+                                                              {
+                                                                  "path":  "chargeOnce",
+                                                                  "type":  "object"
+                                                              },
+                                                              {
+                                                                  "path":  "replaySamePayload",
+                                                                  "type":  "object"
+                                                              },
+                                                              {
+                                                                  "path":  "conflictDifferentPayload",
+                                                                  "type":  "object"
+                                                              },
+                                                              {
+                                                                  "path":  "insufficientFunds",
+                                                                  "type":  "object"
+                                                              },
+                                                              {
+                                                                  "path":  "overflow",
+                                                                  "type":  "object"
+                                                              },
+                                                              {
+                                                                  "path":  "invalidSeat",
+                                                                  "type":  "object"
+                                                              },
+                                                              {
+                                                                  "path":  "flowSummary",
+                                                                  "type":  "object"
+                                                              },
+                                                              {
+                                                                  "path":  "snapshotRoundTrip",
+                                                                  "type":  "object"
+                                                              }
+                                                          ]
+                                            },
+                        "cheat-v1:tileMarkState":  {
+                                                       "requiredKeys":  [
+                                                                            "registerDealtRound",
+                                                                            "addGroup",
+                                                                            "expiry"
+                                                                        ],
+                                                       "rules":  [
+                                                                     {
+                                                                         "path":  "registerDealtRound",
+                                                                         "type":  "object"
+                                                                     },
+                                                                     {
+                                                                         "path":  "addGroup",
+                                                                         "type":  "object"
+                                                                     },
+                                                                     {
+                                                                         "path":  "expiry",
+                                                                         "type":  "object"
+                                                                     }
+                                                                 ]
+                                                   },
+                        "shuffle-v1:slotMatrix":  {
+                                                      "requiredKeys":  [
+                                                                           "dealerSeat",
+                                                                           "seat",
+                                                                           "initialSlots",
+                                                                           "drawSlots"
+                                                                       ],
+                                                      "rules":  [
+                                                                    {
+                                                                        "path":  "dealerSeat",
+                                                                        "type":  "number"
+                                                                    },
+                                                                    {
+                                                                        "path":  "seat",
+                                                                        "type":  "number"
+                                                                    },
+                                                                    {
+                                                                        "path":  "initialSlots",
+                                                                        "type":  "array"
+                                                                    },
+                                                                    {
+                                                                        "path":  "drawSlots",
+                                                                        "type":  "array"
+                                                                    }
+                                                                ]
+                                                  },
+                        "shuffle-v1:cases":  {
+                                                 "requiredKeys":  [
+                                                                      "seed",
+                                                                      "dealerSeat",
+                                                                      "plans",
+                                                                      "baseWall",
+                                                                      "threeCasterWall",
+                                                                      "fourCasterWall",
+                                                                      "noTargetWall",
+                                                                      "zeroBudgetWall",
+                                                                      "redFiveCount",
+                                                                      "deadWallSegmentEqual",
+                                                                      "fourCasterIdentity",
+                                                                      "reversedEqualsThree",
+                                                                      "threeCasterChanged"
+                                                                  ],
+                                                 "rules":  [
+                                                               {
+                                                                   "path":  "seed",
+                                                                   "type":  "number"
+                                                               },
+                                                               {
+                                                                   "path":  "dealerSeat",
+                                                                   "type":  "number"
+                                                               },
+                                                               {
+                                                                   "path":  "plans",
+                                                                   "type":  "array"
+                                                               },
+                                                               {
+                                                                   "path":  "baseWall",
+                                                                   "type":  "array",
+                                                                   "length":  136
+                                                               },
+                                                               {
+                                                                   "path":  "threeCasterWall",
+                                                                   "type":  "array",
+                                                                   "length":  136
+                                                               },
+                                                               {
+                                                                   "path":  "fourCasterWall",
+                                                                   "type":  "array",
+                                                                   "length":  136
+                                                               },
+                                                               {
+                                                                   "path":  "noTargetWall",
+                                                                   "type":  "array",
+                                                                   "length":  136
+                                                               },
+                                                               {
+                                                                   "path":  "zeroBudgetWall",
+                                                                   "type":  "array",
+                                                                   "length":  136
+                                                               },
+                                                               {
+                                                                   "path":  "redFiveCount",
+                                                                   "type":  "number"
+                                                               },
+                                                               {
+                                                                   "path":  "deadWallSegmentEqual",
+                                                                   "type":  "boolean"
+                                                               },
+                                                               {
+                                                                   "path":  "fourCasterIdentity",
+                                                                   "type":  "boolean"
+                                                               },
+                                                               {
+                                                                   "path":  "reversedEqualsThree",
+                                                                   "type":  "boolean"
+                                                               },
+                                                               {
+                                                                   "path":  "threeCasterChanged",
+                                                                   "type":  "boolean"
+                                                               }
+                                                           ]
+                                             },
+                        "shuffle-v1:demandVectors":  {
+                                                         "requiredKeys":  [
+                                                                              "CHINITSU_MAN",
+                                                                              "CHINITSU_SOU",
+                                                                              "CHINITSU_PIN",
+                                                                              "DAISANGEN",
+                                                                              "KOKUSHI",
+                                                                              "DAISUUSHII"
+                                                                          ],
+                                                         "rules":  [
+                                                                       {
+                                                                           "path":  "CHINITSU_MAN",
+                                                                           "type":  "array",
+                                                                           "length":  34
+                                                                       },
+                                                                       {
+                                                                           "path":  "CHINITSU_SOU",
+                                                                           "type":  "array",
+                                                                           "length":  34
+                                                                       },
+                                                                       {
+                                                                           "path":  "CHINITSU_PIN",
+                                                                           "type":  "array",
+                                                                           "length":  34
+                                                                       },
+                                                                       {
+                                                                           "path":  "DAISANGEN",
+                                                                           "type":  "array",
+                                                                           "length":  34
+                                                                       },
+                                                                       {
+                                                                           "path":  "KOKUSHI",
+                                                                           "type":  "array",
+                                                                           "length":  34
+                                                                       },
+                                                                       {
+                                                                           "path":  "DAISUUSHII",
+                                                                           "type":  "array",
+                                                                           "length":  34
+                                                                       }
+                                                                   ]
+                                                     },
+                        "shuffle-v1:overlapMatrix":  {
+                                                         "requiredKeys":  [
+                                                                              "CHINITSU_MAN",
+                                                                              "CHINITSU_SOU",
+                                                                              "CHINITSU_PIN",
+                                                                              "DAISANGEN",
+                                                                              "KOKUSHI",
+                                                                              "DAISUUSHII"
+                                                                          ],
+                                                         "rules":  [
+                                                                       {
+                                                                           "path":  "CHINITSU_MAN",
+                                                                           "type":  "object"
+                                                                       },
+                                                                       {
+                                                                           "path":  "CHINITSU_SOU",
+                                                                           "type":  "object"
+                                                                       },
+                                                                       {
+                                                                           "path":  "CHINITSU_PIN",
+                                                                           "type":  "object"
+                                                                       },
+                                                                       {
+                                                                           "path":  "DAISANGEN",
+                                                                           "type":  "object"
+                                                                       },
+                                                                       {
+                                                                           "path":  "KOKUSHI",
+                                                                           "type":  "object"
+                                                                       },
+                                                                       {
+                                                                           "path":  "DAISUUSHII",
+                                                                           "type":  "object"
+                                                                       }
+                                                                   ]
+                                                     },
+                        "shuffle-v1:configSnapshot":  {
+                                                          "requiredKeys":  [
+                                                                               "enabled",
+                                                                               "plannedDraws",
+                                                                               "strength",
+                                                                               "interference",
+                                                                               "diversityInterference",
+                                                                               "diversityBudgetPenalty",
+                                                                               "tiers",
+                                                                               "mixedTiers",
+                                                                               "targetTiers"
+                                                                           ],
+                                                          "rules":  [
+                                                                        {
+                                                                            "path":  "enabled",
+                                                                            "type":  "boolean"
+                                                                        },
+                                                                        {
+                                                                            "path":  "plannedDraws",
+                                                                            "type":  "number"
+                                                                        },
+                                                                        {
+                                                                            "path":  "strength",
+                                                                            "type":  "number"
+                                                                        },
+                                                                        {
+                                                                            "path":  "interference",
+                                                                            "type":  "number"
+                                                                        },
+                                                                        {
+                                                                            "path":  "diversityInterference",
+                                                                            "type":  "number"
+                                                                        },
+                                                                        {
+                                                                            "path":  "diversityBudgetPenalty",
+                                                                            "type":  "number"
+                                                                        },
+                                                                        {
+                                                                            "path":  "tiers",
+                                                                            "type":  "object"
+                                                                        },
+                                                                        {
+                                                                            "path":  "mixedTiers",
+                                                                            "type":  "object"
+                                                                        },
+                                                                        {
+                                                                            "path":  "targetTiers",
+                                                                            "type":  "object"
+                                                                        }
+                                                                    ]
+                                                      }
+                    }
 }

@@ -78,6 +78,9 @@ function Get-JsonValueByPath {
         if ($null -eq $property) { return $null }
         $current = $property.Value
     }
+    if ($current -is [System.Array]) {
+        return (, $current)
+    }
     return $current
 }
 
@@ -88,6 +91,77 @@ function Get-CompositeKey {
         $parts += [string](Get-Prop -Object $Item -Name ([string]$field))
     }
     return ($parts -join '/')
+}
+
+function Test-ValueType {
+    param([object]$Value, [string]$Type)
+    switch ($Type) {
+        'object' { return ($Value -is [System.Management.Automation.PSCustomObject] -or $Value -is [System.Collections.IDictionary]) }
+        'array' { return ($Value -is [System.Array]) }
+        'string' { return ($Value -is [string]) }
+        'number' { return ($Value -is [int] -or $Value -is [long] -or $Value -is [double] -or $Value -is [decimal]) }
+        'boolean' { return ($Value -is [bool]) }
+        'string-or-null' { return ($null -eq $Value -or $Value -is [string]) }
+        'null' { return ($null -eq $Value) }
+        default { return $false }
+    }
+}
+
+function Get-GroupShape {
+    param([string]$FixtureId, [string]$GroupName)
+    $shapes = Get-Prop -Object $script:Catalog -Name 'groupShapes'
+    if ($null -eq $shapes) { return $null }
+    return (Get-Prop -Object $shapes -Name ('{0}:{1}' -f $FixtureId, $GroupName))
+}
+
+function Get-DeclaredStringArray {
+    param([object]$Holder, [string]$Name, [string]$Label)
+    $property = $Holder.PSObject.Properties[$Name]
+    if ($null -eq $property) { return @() }
+    if ($null -eq $property.Value -or -not ($property.Value -is [System.Array])) {
+        Add-Failure 'GROUP_STRUCTURE_INVALID' ("{0}: '{1}' must be a non-null array" -f $Label, $Name)
+        return @()
+    }
+    return @($property.Value)
+}
+
+function Test-ShapeRules {
+    param([object]$Object, [object[]]$Rules, [string]$Label)
+    foreach ($rule in $Rules) {
+        $path = [string](Get-Prop -Object $rule -Name 'path')
+        $type = [string](Get-Prop -Object $rule -Name 'type')
+        if ([string]::IsNullOrWhiteSpace($path) -or [string]::IsNullOrWhiteSpace($type)) {
+            Add-Failure 'GROUP_STRUCTURE_INVALID' ("{0}: shape rule needs path and type" -f $Label)
+            continue
+        }
+        $value = Get-JsonValueByPath -Root $Object -Path $path
+        if ($null -eq $value) {
+            if ($type -ne 'string-or-null' -and $type -ne 'null') {
+                Add-Failure 'CASE_STRUCTURE_MISSING' ("{0}: missing path '{1}'" -f $Label, $path)
+                continue
+            }
+        }
+        elseif ($true) {
+            $typeOk = switch ($type) {
+                'object' { $value -is [System.Management.Automation.PSCustomObject] -or $value -is [System.Collections.IDictionary] }
+                'array' { $value -is [System.Array] }
+                'string' { $value -is [string] }
+                'number' { $value -is [int] -or $value -is [long] -or $value -is [double] -or $value -is [decimal] }
+                'boolean' { $value -is [bool] }
+                'string-or-null' { $value -is [string] }
+                'null' { $false }
+                default { $false }
+            }
+            if (-not $typeOk) {
+                Add-Failure 'CASE_STRUCTURE_TYPE' ("{0}: path '{1}' expected {2}" -f $Label, $path, $type)
+                continue
+            }
+        }
+        $length = Get-Prop -Object $rule -Name 'length'
+        if ($null -ne $length -and $value -is [System.Array] -and $value.Count -ne [int]$length) {
+            Add-Failure 'CASE_STRUCTURE_LENGTH' ("{0}: path '{1}' expected length {2}, actual {3}" -f $Label, $path, $length, $value.Count)
+        }
+    }
 }
 
 function Resolve-Anchor {
@@ -133,12 +207,33 @@ function Test-Group {
         Add-Failure 'GROUP_MISSING' ("{0}:{1}: jsonPath '{2}' not found" -f $fixtureId, $groupName, $jsonPath)
         return
     }
+
+    $shape = Get-GroupShape -FixtureId $fixtureId -GroupName $groupName
+    if ($null -eq $shape) {
+        Add-Failure 'GROUP_SHAPE_MISSING' ("{0}:{1}: no groupShapes entry" -f $fixtureId, $groupName)
+    }
+    $shapeRequiredKeys = @()
+    $shapeRules = @()
+    if ($null -ne $shape) {
+        $shapeRequiredKeys = @(Get-DeclaredStringArray -Holder $shape -Name 'requiredKeys' -Label ('{0}:{1}.shape' -f $fixtureId, $groupName))
+        $rulesProperty = $shape.PSObject.Properties['rules']
+        if ($null -ne $rulesProperty) {
+            if ($null -eq $rulesProperty.Value -or -not ($rulesProperty.Value -is [System.Array])) {
+                Add-Failure 'GROUP_STRUCTURE_INVALID' ("{0}:{1}.shape.rules must be a non-null array" -f $fixtureId, $groupName)
+            }
+            else {
+                $shapeRules = @($rulesProperty.Value)
+            }
+        }
+    }
+
     if ($kind -eq 'array') {
         $items = @($actual)
         if ($items.Count -ne $declaredCount) {
             Add-Failure 'GROUP_COUNT_MISMATCH' ("{0}:{1}: declared {2}, actual {3}" -f $fixtureId, $groupName, $declaredCount, $items.Count)
         }
-        $requiredKeys = @(Get-ArrayProp -Object $Group -Name 'requiredKeys')
+        $requiredKeys = @(Get-DeclaredStringArray -Holder $Group -Name 'requiredKeys' -Label ('{0}:{1}' -f $fixtureId, $groupName))
+        $requiredKeys = @(@($requiredKeys) + @($shapeRequiredKeys) | Select-Object -Unique)
         if ($requiredKeys.Count -gt 0) {
             foreach ($item in $items) {
                 $itemKeys = @($item.PSObject.Properties | ForEach-Object { $_.Name })
@@ -147,6 +242,17 @@ function Test-Group {
                     Add-Failure 'CASE_STRUCTURE_MISSING' ("{0}:{1}: case missing keys [{2}]" -f $fixtureId, $groupName, ($missingKeys -join ','))
                     break
                 }
+            }
+        }
+        if ($shapeRules.Count -gt 0 -and $items.Count -gt 0) {
+            if ($items.Count -le 100) {
+                $shapeTargets = $items
+            }
+            else {
+                $shapeTargets = @($items[0], $items[$items.Count - 1])
+            }
+            foreach ($target in $shapeTargets) {
+                Test-ShapeRules -Object $target -Rules $shapeRules -Label ('{0}:{1}' -f $fixtureId, $groupName)
             }
         }
         $ids = @()
@@ -206,13 +312,17 @@ function Test-Group {
         if ($keys.Count -ne $declaredCount) {
             Add-Failure 'GROUP_COUNT_MISMATCH' ("{0}:{1}: declared {2}, actual {3}" -f $fixtureId, $groupName, $declaredCount, $keys.Count)
         }
-        $declaredKeys = @(Get-ArrayProp -Object $Group -Name 'keys')
+        $declaredKeys = @(Get-DeclaredStringArray -Holder $Group -Name 'keys' -Label ('{0}:{1}' -f $fixtureId, $groupName))
+        $declaredKeys = @(@($declaredKeys) + @($shapeRequiredKeys) | Select-Object -Unique)
         if ($declaredKeys.Count -gt 0) {
             $missing = @($declaredKeys | Where-Object { $keys -notcontains $_ })
             $extra = @($keys | Where-Object { $declaredKeys -notcontains $_ })
             if ($missing.Count -gt 0 -or $extra.Count -gt 0) {
                 Add-Failure 'GROUP_KEYS_MISMATCH' ("{0}:{1}: missing=[{2}] extra=[{3}]" -f $fixtureId, $groupName, ($missing -join ','), ($extra -join ','))
             }
+        }
+        if ($shapeRules.Count -gt 0) {
+            Test-ShapeRules -Object $actual -Rules $shapeRules -Label ('{0}:{1}' -f $fixtureId, $groupName)
         }
         $ids = @()
         $idField = Get-Prop -Object $Group -Name 'idField'
@@ -225,10 +335,25 @@ function Test-Group {
         $script:ActualGroups[('{0}:{1}' -f $fixtureId, $groupName)] = @{ ids = $ids; isCase = [bool](Get-Prop -Object $Group -Name 'countAsCase') }
     }
     elseif ($kind -eq 'sample') {
+        if ($declaredCount -ne 1) {
+            Add-Failure 'GROUP_COUNT_MISMATCH' ("{0}:{1}: sample group must declare count=1, got {2}" -f $fixtureId, $groupName, $declaredCount)
+        }
         $idField = Get-Prop -Object $Group -Name 'idField'
         $sampleId = [string](Get-Prop -Object $actual -Name $idField)
         if ([string]::IsNullOrWhiteSpace($sampleId)) {
             Add-Failure 'GROUP_IDS_MISMATCH' ("{0}:{1}: sampleId missing" -f $fixtureId, $groupName)
+        }
+        $requiredKeys = @(Get-DeclaredStringArray -Holder $Group -Name 'requiredKeys' -Label ('{0}:{1}' -f $fixtureId, $groupName))
+        $requiredKeys = @(@($requiredKeys) + @($shapeRequiredKeys) | Select-Object -Unique)
+        if ($requiredKeys.Count -gt 0) {
+            $itemKeys = @($actual.PSObject.Properties | ForEach-Object { $_.Name })
+            $missingKeys = @($requiredKeys | Where-Object { $itemKeys -notcontains $_ })
+            if ($missingKeys.Count -gt 0) {
+                Add-Failure 'CASE_STRUCTURE_MISSING' ("{0}:{1}: sample missing keys [{2}]" -f $fixtureId, $groupName, ($missingKeys -join ','))
+            }
+        }
+        if ($shapeRules.Count -gt 0) {
+            Test-ShapeRules -Object $actual -Rules $shapeRules -Label ('{0}:{1}' -f $fixtureId, $groupName)
         }
         $script:ActualGroups[('{0}:{1}' -f $fixtureId, $groupName)] = @{ ids = @($sampleId); isCase = [bool](Get-Prop -Object $Group -Name 'countAsCase') }
     }
@@ -248,7 +373,7 @@ foreach ($tool in @('Get-FileHash', 'ConvertFrom-Json')) {
 }
 
 if ([string]::IsNullOrWhiteSpace($RepoRoot)) {
-    $RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
+    $RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 }
 if ([string]::IsNullOrWhiteSpace($CatalogPath)) {
     $CatalogPath = Join-Path $RepoRoot 'tests\v5-golden\catalog-v1.json'
@@ -375,12 +500,56 @@ foreach ($fixture in $fixtures) {
     if ($actualSchema -ne $declaredSchema) {
         Add-Failure 'FIXTURE_SCHEMA_MISMATCH' ("{0}: declared '{1}', actual '{2}'" -f $fixtureId, $declaredSchema, $actualSchema)
     }
-    if ([int](Get-Prop $raw 'rulesetVersion') -ne 1) {
-        Add-Failure 'FIXTURE_RULESET_VERSION' ("{0}: expected 1" -f $fixtureId)
+    $rawRuleset = Get-Prop $raw 'rulesetVersion'
+    $catalogRuleset = Get-Prop $fixture 'rulesetVersion'
+    if ($null -eq $rawRuleset -or $null -eq $catalogRuleset -or [int]$rawRuleset -ne [int]$catalogRuleset) {
+        Add-Failure 'RULESET_VERSION_MISMATCH' ("{0}: catalog {1}, fixture {2}" -f $fixtureId, $catalogRuleset, $rawRuleset)
     }
+
+    $rawGenerator = Get-Prop $raw 'generatorVersion'
+    $catalogGenerator = Get-Prop $fixture 'generatorVersion'
+    if (($null -eq $rawGenerator) -ne ($null -eq $catalogGenerator)) {
+        Add-Failure 'GENERATOR_VERSION_MISMATCH' ("{0}: catalog {1}, fixture {2}" -f $fixtureId, $catalogGenerator, $rawGenerator)
+    }
+    elseif ($null -ne $rawGenerator -and [int]$rawGenerator -ne [int]$catalogGenerator) {
+        Add-Failure 'GENERATOR_VERSION_MISMATCH' ("{0}: catalog {1}, fixture {2}" -f $fixtureId, $catalogGenerator, $rawGenerator)
+    }
+
+    $rawStatus = [string](Get-Prop $raw 'extractionStatus')
+    $catalogStatus = [string](Get-Prop $fixture 'extractionStatus')
+    if ($catalogStatus -ne $rawStatus) {
+        Add-Failure 'EXTRACTION_STATUS_MISMATCH' ("{0}: catalog '{1}', fixture '{2}'" -f $fixtureId, $catalogStatus, $rawStatus)
+    }
+    if ($rawStatus -ne 'exported') {
+        Add-Failure 'EXTRACTION_STATUS_NOT_EXPORTED' ("{0}: fixture status '{1}'" -f $fixtureId, $rawStatus)
+    }
+
+    $rawCommand = [string](Get-Prop $raw 'generatedByCommand')
+    $catalogCommand = [string](Get-Prop $fixture 'generatedByCommand')
+    if ($catalogCommand -ne $rawCommand) {
+        Add-Failure 'COMMAND_MISMATCH' ("{0}: catalog command differs from fixture generatedByCommand" -f $fixtureId)
+    }
+
     $commit = [string](Get-Prop $fixture 'sourceV4Commit')
+    $rawCommit = [string](Get-Prop $raw 'v4Commit')
     if ($commit -notmatch '^[0-9a-fA-F]{40}$') {
         Add-Failure 'SOURCE_COMMIT_INVALID' ("{0}: {1}" -f $fixtureId, $commit)
+    }
+    if ($commit -ne $rawCommit) {
+        Add-Failure 'SOURCE_COMMIT_MISMATCH' ("{0}: catalog {1}, fixture {2}" -f $fixtureId, $commit, $rawCommit)
+    }
+
+    if ($fixtureId -eq 'round-v1') {
+        $rawEngineCommit = [string](Get-Prop $raw 'v4EngineSourceCommit')
+        $catalogEngineCommit = [string](Get-Prop $fixture 'sourceV4EngineCommit')
+        if ($catalogEngineCommit -ne $rawEngineCommit) {
+            Add-Failure 'SOURCE_ENGINE_COMMIT_MISMATCH' ("{0}: catalog {1}, fixture {2}" -f $fixtureId, $catalogEngineCommit, $rawEngineCommit)
+        }
+        $rawDotnetCommit = [string](Get-Prop $raw 'v4DotnetRulesCommit')
+        $catalogDotnetCommit = [string](Get-Prop $fixture 'sourceV4DotnetCommit')
+        if ($catalogDotnetCommit -ne $rawDotnetCommit) {
+            Add-Failure 'SOURCE_DOTNET_COMMIT_MISMATCH' ("{0}: catalog {1}, fixture {2}" -f $fixtureId, $catalogDotnetCommit, $rawDotnetCommit)
+        }
     }
 
     $exporter = Get-Prop $fixture 'exporter'
@@ -406,6 +575,23 @@ foreach ($fixture in $fixtures) {
             $declaredLf = [string](Get-Prop $exporter 'declaredSha256Lf')
             if ($declaredLf -and $actualLf -ne $declaredLf.ToUpperInvariant()) {
                 Add-Failure 'EXPORTER_SHA_MISMATCH' ("{0}: fixture-declared LF hash" -f $fixtureId)
+            }
+            if ($fixtureId -eq 'physical-v1') {
+                $rawExporterSha = [string](Get-Prop $raw 'exporterSourceSha256')
+                if ([string]::IsNullOrWhiteSpace($rawExporterSha)) {
+                    Add-Failure 'EXPORTER_SOURCE_FIELD_MISSING' ("{0}: fixture exporterSourceSha256 missing" -f $fixtureId)
+                }
+                else {
+                    if ($rawExporterSha.ToUpperInvariant() -ne $actualLf) {
+                        Add-Failure 'EXPORTER_SOURCE_SHA_MISMATCH' ("{0}: fixture exporterSourceSha256 {1}, actual LF {2}" -f $fixtureId, $rawExporterSha, $actualLf)
+                    }
+                    if ([string]::IsNullOrWhiteSpace($declaredLf)) {
+                        Add-Failure 'EXPORTER_DECLARED_SOURCE_MISSING' ("{0}: catalog declaredSha256Lf missing" -f $fixtureId)
+                    }
+                    elseif ($declaredLf.ToUpperInvariant() -ne $rawExporterSha.ToUpperInvariant()) {
+                        Add-Failure 'EXPORTER_DECLARED_SOURCE_MISMATCH' ("{0}: catalog {1}, fixture {2}" -f $fixtureId, $declaredLf, $rawExporterSha)
+                    }
+                }
             }
         }
     }
@@ -491,6 +677,12 @@ foreach ($requirement in $requirements) {
         continue
     }
     $coverageCounts[$coverage] = [int]$coverageCounts[$coverage] + 1
+    if ($coverage -eq 'full') {
+        $evidence = [string](Get-Prop $requirement 'csharpEvidence')
+        if ([string]::IsNullOrWhiteSpace($evidence)) {
+            Add-Failure 'FULL_EVIDENCE_MISSING' ("{0}: full requires csharpEvidence method/fields" -f $id)
+        }
+    }
 
     $manifestStatus = [string](Get-Prop $requirement 'manifestStatus')
     if ($manifestStatuses -notcontains $manifestStatus) {

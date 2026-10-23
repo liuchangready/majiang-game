@@ -1,7 +1,7 @@
 #requires -Version 5.1
 <#
 .SYNOPSIS
-Self-test for tools/v5-golden/validate-golden-catalog.ps1.
+Self-test for tools/verify-v5-golden-catalog.ps1.
 
 .DESCRIPTION
 Copies the catalog, the five fixtures, the five exporters, the five C# readers
@@ -92,7 +92,7 @@ function New-CaseTree {
 
 function Invoke-Validator {
     param([string]$Root)
-    $validator = Join-Path $RepoRoot 'tools\v5-golden\validate-golden-catalog.ps1'
+    $validator = Join-Path $RepoRoot 'tools\verify-v5-golden-catalog.ps1'
     $catalog = Join-Path $Root 'tests\v5-golden\catalog-v1.json'
     $manifest = @(Get-ChildItem -LiteralPath (Join-Path $Root 'doc') -Recurse -Filter 'V5-0-GOLDEN-MANIFEST.md' -File)[0].FullName
     $output = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $validator -RepoRoot $Root -CatalogPath $catalog -ManifestPath $manifest 2>&1
@@ -192,7 +192,72 @@ Invoke-NegativeCase -Name 'sha-change' -ExpectedCode 'FIXTURE_SHA_MISMATCH' -Mut
     [System.IO.File]::WriteAllText($path, $text, (New-Object System.Text.UTF8Encoding($false)))
 }
 
-# 3. Unknown schema (fixture changed and catalog hash refreshed so schema is the only defect).
+# 3. Provenance mismatch: catalog sourceV4Commit no longer equals fixture v4Commit.
+Invoke-NegativeCase -Name 'source-commit' -ExpectedCode 'SOURCE_COMMIT_MISMATCH' -Mutator {
+    param($root)
+    $path = Join-Path $root 'tests\v5-golden\catalog-v1.json'
+    $catalog = Read-JsonFile $path
+    foreach ($fixture in @($catalog.fixtures)) {
+        if ([string]$fixture.id -eq 'physical-v1') { $fixture.sourceV4Commit = '0000000000000000000000000000000000000000' }
+    }
+    Write-JsonFile $path $catalog
+}
+
+# 4. Catalog rulesetVersion does not equal fixture rulesetVersion.
+Invoke-NegativeCase -Name 'ruleset-version' -ExpectedCode 'RULESET_VERSION_MISMATCH' -Mutator {
+    param($root)
+    $path = Join-Path $root 'tests\v5-golden\catalog-v1.json'
+    $catalog = Read-JsonFile $path
+    foreach ($fixture in @($catalog.fixtures)) {
+        if ([string]$fixture.id -eq 'scoring-v1') { $fixture.rulesetVersion = 2 }
+    }
+    Write-JsonFile $path $catalog
+}
+
+# 5. Catalog extractionStatus does not equal fixture extractionStatus.
+Invoke-NegativeCase -Name 'extraction-status' -ExpectedCode 'EXTRACTION_STATUS_MISMATCH' -Mutator {
+    param($root)
+    $path = Join-Path $root 'tests\v5-golden\catalog-v1.json'
+    $catalog = Read-JsonFile $path
+    foreach ($fixture in @($catalog.fixtures)) {
+        if ([string]$fixture.id -eq 'cheat-v1') { $fixture.extractionStatus = 'pending' }
+    }
+    Write-JsonFile $path $catalog
+}
+
+# 6. Catalog generatedByCommand does not equal fixture generatedByCommand.
+Invoke-NegativeCase -Name 'command' -ExpectedCode 'COMMAND_MISMATCH' -Mutator {
+    param($root)
+    $path = Join-Path $root 'tests\v5-golden\catalog-v1.json'
+    $catalog = Read-JsonFile $path
+    foreach ($fixture in @($catalog.fixtures)) {
+        if ([string]$fixture.id -eq 'shuffle-v1') { $fixture.generatedByCommand = 'bogus command' }
+    }
+    Write-JsonFile $path $catalog
+}
+
+# 7. Round dual-source commit mismatch.
+Invoke-NegativeCase -Name 'round-engine-commit' -ExpectedCode 'SOURCE_ENGINE_COMMIT_MISMATCH' -Mutator {
+    param($root)
+    $path = Join-Path $root 'tests\v5-golden\catalog-v1.json'
+    $catalog = Read-JsonFile $path
+    foreach ($fixture in @($catalog.fixtures)) {
+        if ([string]$fixture.id -eq 'round-v1') { $fixture.sourceV4EngineCommit = '0000000000000000000000000000000000000000' }
+    }
+    Write-JsonFile $path $catalog
+}
+
+# 8. physical exporterSourceSha256 in the fixture must be checked against the real exporter.
+Invoke-NegativeCase -Name 'exporter-source-field' -ExpectedCode 'EXPORTER_SOURCE_SHA_MISMATCH' -Mutator {
+    param($root)
+    $path = Join-Path $root 'tests\v5-golden\physical-v1.json'
+    $json = Read-JsonFile $path
+    $json.exporterSourceSha256 = '0000000000000000000000000000000000000000000000000000000000000000'
+    Write-JsonFile $path $json
+    Update-CatalogFixtureSha -Root $root -FixtureId 'physical-v1'
+}
+
+# 9. Unknown schema (fixture changed and catalog hash refreshed so schema is the only defect).
 Invoke-NegativeCase -Name 'unknown-schema' -ExpectedCode 'FIXTURE_SCHEMA_UNKNOWN' -Mutator {
     param($root)
     $path = Join-Path $root 'tests\v5-golden\physical-v1.json'
@@ -310,7 +375,67 @@ Invoke-NegativeCase -Name 'case-structure' -ExpectedCode 'CASE_STRUCTURE_MISSING
     Update-CatalogFixtureSha -Root $root -FixtureId 'physical-v1'
 }
 
-# 12. Exporter byte change.
+# 12. ID-only singleton must fail: roundTerminal loses input/settlement/expected.
+Invoke-NegativeCase -Name 'singleton-id-only' -ExpectedCode 'CASE_STRUCTURE_MISSING' -Mutator {
+    param($root)
+    $path = Join-Path $root 'tests\v5-golden\round-v1.json'
+    $json = Read-JsonFile $path
+    $json.roundTerminal = [pscustomobject]@{ sampleId = 'RG-001' }
+    Write-JsonFile $path $json
+    Update-CatalogFixtureSha -Root $root -FixtureId 'round-v1'
+}
+
+# 13. requiredKeys declared as null must be rejected.
+Invoke-NegativeCase -Name 'requiredkeys-null' -ExpectedCode 'GROUP_STRUCTURE_INVALID' -Mutator {
+    param($root)
+    $path = Join-Path $root 'tests\v5-golden\catalog-v1.json'
+    $catalog = Read-JsonFile $path
+    foreach ($fixture in @($catalog.fixtures)) {
+        if ([string]$fixture.id -eq 'physical-v1') {
+            foreach ($group in @($fixture.groups)) {
+                if ([string]$group.name -eq 'samples') { $group.requiredKeys = $null }
+            }
+        }
+    }
+    Write-JsonFile $path $catalog
+}
+
+# 14. requiredKeys declared as a scalar instead of an array must be rejected.
+Invoke-NegativeCase -Name 'requiredkeys-scalar' -ExpectedCode 'GROUP_STRUCTURE_INVALID' -Mutator {
+    param($root)
+    $path = Join-Path $root 'tests\v5-golden\catalog-v1.json'
+    $catalog = Read-JsonFile $path
+    foreach ($fixture in @($catalog.fixtures)) {
+        if ([string]$fixture.id -eq 'physical-v1') {
+            foreach ($group in @($fixture.groups)) {
+                if ([string]$group.name -eq 'samples') { $group.requiredKeys = 'sampleId' }
+            }
+        }
+    }
+    Write-JsonFile $path $catalog
+}
+
+# 15. Nested object key removal must fail (ledger.chargeOnce).
+Invoke-NegativeCase -Name 'nested-object-key' -ExpectedCode 'GROUP_KEYS_MISMATCH' -Mutator {
+    param($root)
+    $path = Join-Path $root 'tests\v5-golden\cheat-v1.json'
+    $json = Read-JsonFile $path
+    $json.ledger.PSObject.Properties.Remove('chargeOnce')
+    Write-JsonFile $path $json
+    Update-CatalogFixtureSha -Root $root -FixtureId 'cheat-v1'
+}
+
+# 16. Required path with wrong type must fail (roundTerminal.expected as string).
+Invoke-NegativeCase -Name 'singleton-wrong-type' -ExpectedCode 'CASE_STRUCTURE_TYPE' -Mutator {
+    param($root)
+    $path = Join-Path $root 'tests\v5-golden\round-v1.json'
+    $json = Read-JsonFile $path
+    $json.roundTerminal.expected = 'not-an-object'
+    Write-JsonFile $path $json
+    Update-CatalogFixtureSha -Root $root -FixtureId 'round-v1'
+}
+
+# 17. Exporter byte change.
 Invoke-NegativeCase -Name 'exporter-sha' -ExpectedCode 'EXPORTER_SHA_MISMATCH' -Mutator {
     param($root)
     $path = Join-Path $root 'engine\src\test\kotlin\com\majiang\model\V5PhysicalGoldenExporterTest.kt'
