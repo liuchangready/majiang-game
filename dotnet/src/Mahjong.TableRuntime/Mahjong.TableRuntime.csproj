@@ -7,6 +7,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\Mahjong.Domain\Mahjong.Domain.csproj" />
+    <ProjectReference Include="..\Mahjong.Ai\Mahjong.Ai.csproj" />
     <ProjectReference Include="..\Mahjong.Contracts\Mahjong.Contracts.csproj" />
   </ItemGroup>
 
