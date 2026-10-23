@@ -50,6 +50,8 @@ namespace Mahjong.TableRuntime
         private ControlRegistry _control;
         private DecisionClock _decisionClock;
         private readonly Dictionary<int, PendingDecision> _pending = new Dictionary<int, PendingDecision>();
+        private readonly Dictionary<AiObservation, long> _aiObservationGenerations =
+            new Dictionary<AiObservation, long>();
         private readonly List<TableEventRecord> _recentEvents = new List<TableEventRecord>();
 
         private RoundStateMachine _round;
@@ -59,6 +61,7 @@ namespace Mahjong.TableRuntime
         private long _controlVersion;
         private long _recoveryGeneration;
         private long _lastMonotonicMillis;
+        private bool _strictRecoveryFence;
         private TableActorLifecycle _lifecycle = TableActorLifecycle.Serving;
         private string _lifecycleReason = string.Empty;
         private string _publicationFault = string.Empty;
@@ -633,6 +636,15 @@ namespace Mahjong.TableRuntime
                 return guard;
             }
 
+            if (_strictRecoveryFence && command.RecoveryGeneration != _recoveryGeneration)
+            {
+                return TableOperationResult.Rejected(
+                    _stateVersion,
+                    TableRuntimeReasonCode.StaleRecoveryGeneration,
+                    "Command recovery generation " + command.RecoveryGeneration +
+                    " is not current generation " + _recoveryGeneration + ".");
+            }
+
             if (!TryReadClock(out long now, out _, out string clockFailure))
             {
                 return TableOperationResult.Rejected(_stateVersion, clockFailure, "The monotonic clock is not safe for authority.");
@@ -769,6 +781,25 @@ namespace Mahjong.TableRuntime
                     _stateVersion);
             }
 
+            if (_recoveryGeneration > 0)
+            {
+                DecisionKey key = decision.Intent.DecisionKey;
+                bool addressesCurrentDecision =
+                    _pending.TryGetValue(key.Seat, out PendingDecision? current) &&
+                    current.Key == key &&
+                    current.ControlEpoch == decision.Intent.ControlEpoch;
+                if (addressesCurrentDecision &&
+                    (!_aiObservationGenerations.TryGetValue(decision.Observation, out long observationGeneration) ||
+                     observationGeneration != _recoveryGeneration))
+                {
+                    return TableTickResult.Rejected(
+                        TableOperationStatus.Rejected,
+                        TableRuntimeReasonCode.StaleRecoveryGeneration,
+                        "The AI observation was not captured in the current recovery generation.",
+                        _stateVersion);
+                }
+            }
+
             AiDecisionSubmission submission;
             try
             {
@@ -881,20 +912,103 @@ namespace Mahjong.TableRuntime
                     continue;
                 }
 
-                if (entry.Action == null)
+                // Re-read the clock and revalidate the identity immediately before this item's
+                // own authoritative transition. A slow earlier commit may have moved time past
+                // this item's deadline; the earlier item itself remains valid because it was
+                // adjudicated and started before its deadline.
+                if (!TryReadClock(out long actionNow, out _, out string actionClockFailure))
                 {
-                    // No default action: the decision remains open/due. It is NOT removed.
                     entries.Add(new TableTickEntry(
                         entry.Kind,
                         entry.Seat,
                         entry.DecisionId,
-                        null,
+                        entry.Action,
                         entry.RejectionCode,
-                        entry.Detail,
-                        TableOperationResult.Rejected(
+                        "Skipped because the monotonic clock is not safe.",
+                        TableOperationResult.Failed(
                             _stateVersion,
-                            TableRuntimeReasonCode.NoDefaultAction,
-                            "No legal timeout/AI action was available; the decision remains due.")));
+                            actionClockFailure,
+                            "The monotonic clock regressed before this planned action could execute.")));
+                    commitAborted = true;
+                    continue;
+                }
+
+                if (entry.Kind == TickEntryKind.Timeout)
+                {
+                    TableTickEntry timeoutEntry = await ExecuteDueTimeoutAsync(
+                        entry.Seat,
+                        entry.DecisionId,
+                        actionNow).ConfigureAwait(false);
+                    entries.Add(timeoutEntry);
+                    if (timeoutEntry.Transition != null &&
+                        timeoutEntry.Transition.Status == TableOperationStatus.Failed)
+                    {
+                        commitAborted = true;
+                    }
+
+                    if (_round.IsFinished)
+                    {
+                        roundFinished = true;
+                    }
+
+                    continue;
+                }
+
+                PendingDecision? aiPending;
+                DecisionTiming? aiTiming;
+                TableTickEntry? aiRejection = RevalidateAiEntry(
+                    entry,
+                    out aiPending,
+                    out aiTiming);
+                if (aiRejection != null)
+                {
+                    entries.Add(aiRejection);
+                    continue;
+                }
+
+                if (actionNow >= aiTiming!.DeadlineMillis)
+                {
+                    // The AI was planned before the deadline but an earlier slow commit pushed
+                    // its actual execution to/past the deadline. Timeout wins now; the AI result
+                    // is reported late and never applied.
+                    TableTickEntry timeoutEntry = await ExecuteDueTimeoutAsync(
+                        entry.Seat,
+                        entry.DecisionId,
+                        actionNow).ConfigureAwait(false);
+                    entries.Add(timeoutEntry);
+                    if (timeoutEntry.Transition != null &&
+                        timeoutEntry.Transition.Status == TableOperationStatus.Failed)
+                    {
+                        commitAborted = true;
+                    }
+
+                    entries.Add(new TableTickEntry(
+                        TickEntryKind.AiRejected,
+                        entry.Seat,
+                        entry.DecisionId,
+                        entry.Action,
+                        TickRejectionCode.DeadlineExpired,
+                        "The AI result became late while an earlier transition was committing.",
+                        null));
+
+                    if (_round.IsFinished)
+                    {
+                        roundFinished = true;
+                    }
+
+                    continue;
+                }
+
+                if (entry.Action == null || !aiPending!.Contains(entry.Action))
+                {
+                    entries.Add(new TableTickEntry(
+                        TickEntryKind.AiRejected,
+                        entry.Seat,
+                        entry.DecisionId,
+                        entry.Action,
+                        TickRejectionCode.IllegalAction,
+                        "The submitted action is no longer a legal candidate.",
+                        null));
                     continue;
                 }
 
@@ -904,9 +1018,9 @@ namespace Mahjong.TableRuntime
                     // Unsupported action: keep the exact timing/pending state so a later owner
                     // (or a corrected adapter) can still resolve the same decision.
                     entries.Add(new TableTickEntry(
-                        entry.Kind,
+                        TickEntryKind.AiAccepted,
                         entry.Seat,
-                        entry.DecisionId,
+                        aiPending.Key.DecisionId,
                         entry.Action,
                         entry.RejectionCode,
                         entry.Detail,
@@ -919,13 +1033,13 @@ namespace Mahjong.TableRuntime
 
                 TableOperationResult result = await ApplyInternalCommandAsync(
                     command,
-                    BuildInternalRequestId(entry.Seat, entry.DecisionId),
-                    now).ConfigureAwait(false);
+                    BuildInternalRequestId(entry.Seat, aiPending.Key.DecisionId),
+                    actionNow).ConfigureAwait(false);
 
                 entries.Add(new TableTickEntry(
-                    entry.Kind,
+                    TickEntryKind.AiAccepted,
                     entry.Seat,
-                    entry.DecisionId,
+                    aiPending.Key.DecisionId,
                     entry.Action,
                     entry.RejectionCode,
                     entry.Detail,
@@ -940,19 +1054,14 @@ namespace Mahjong.TableRuntime
                         continue;
                     }
 
-                    if (entry.Timing != null)
+                    bool completed = _decisionClock.Complete(aiTiming.Key, actionNow);
+                    if (!completed)
                     {
-                        bool closed = entry.Kind == TickEntryKind.Timeout
-                            ? _decisionClock.Expire(entry.Timing.Key, entry.Timing.Generation, now)
-                            : _decisionClock.Complete(entry.Timing.Key, now);
-                        if (!closed)
-                        {
-                            SetFaulted(new InvalidOperationException(
-                                "The decision clock no longer matched the committed transition."));
-                        }
-
-                        _pending.Remove(entry.Seat);
+                        SetFaulted(new InvalidOperationException(
+                            "The decision clock no longer matched the committed AI transition."));
                     }
+
+                    _pending.Remove(entry.Seat);
                 }
                 else if (result.Status == TableOperationStatus.Failed)
                 {
@@ -963,6 +1072,172 @@ namespace Mahjong.TableRuntime
             }
 
             return TableTickResult.Processed(entries, _stateVersion);
+        }
+
+        private TableTickEntry? RevalidateAiEntry(
+            PlannedTickEntry entry,
+            out PendingDecision? pending,
+            out DecisionTiming? timing)
+        {
+            pending = null;
+            timing = null;
+            if (!_pending.TryGetValue(entry.Seat, out PendingDecision? current))
+            {
+                return new TableTickEntry(
+                    TickEntryKind.AiRejected,
+                    entry.Seat,
+                    entry.DecisionId,
+                    entry.Action,
+                    TickRejectionCode.StaleDecision,
+                    "No matching active decision at execution time.",
+                    null);
+            }
+
+            timing = _decisionClock.Timing(entry.Seat);
+            if (timing == null ||
+                timing.Key != current.Key ||
+                !string.Equals(current.Key.DecisionId, entry.DecisionId, StringComparison.Ordinal))
+            {
+                timing = null;
+                return new TableTickEntry(
+                    TickEntryKind.AiRejected,
+                    entry.Seat,
+                    entry.DecisionId,
+                    entry.Action,
+                    TickRejectionCode.StaleDecision,
+                    "The decision identity changed before execution.",
+                    null);
+            }
+
+            ControlValidation control = _control.ValidateAutomatedAction(entry.Seat, current.ControlEpoch);
+            if (!control.IsValid)
+            {
+                timing = null;
+                return new TableTickEntry(
+                    TickEntryKind.AiRejected,
+                    entry.Seat,
+                    entry.DecisionId,
+                    entry.Action,
+                    control.Code == ControlValidationCode.EpochMismatch
+                        ? TickRejectionCode.StaleEpoch
+                        : TickRejectionCode.SeatNotAutomated,
+                    control.Message,
+                    null);
+            }
+
+            pending = current;
+            return null;
+        }
+
+        private async ValueTask<TableTickEntry> ExecuteDueTimeoutAsync(
+            int seat,
+            string decisionId,
+            long now)
+        {
+            if (!_pending.TryGetValue(seat, out PendingDecision? pending) ||
+                !string.Equals(pending.Key.DecisionId, decisionId, StringComparison.Ordinal))
+            {
+                return new TableTickEntry(
+                    TickEntryKind.Timeout,
+                    seat,
+                    decisionId,
+                    null,
+                    TickRejectionCode.StaleDecision,
+                    "No matching active decision at timeout execution time.",
+                    TableOperationResult.Rejected(
+                        _stateVersion,
+                        TableRuntimeReasonCode.StaleDecision,
+                        "The decision was already closed or replaced; the timeout was not consumed."));
+            }
+
+            DecisionTiming? timing = _decisionClock.Timing(seat);
+            if (timing == null || timing.Key != pending.Key)
+            {
+                return new TableTickEntry(
+                    TickEntryKind.Timeout,
+                    seat,
+                    decisionId,
+                    null,
+                    TickRejectionCode.StaleDecision,
+                    "The decision clock no longer matched the pending decision.",
+                    TableOperationResult.Rejected(
+                        _stateVersion,
+                        TableRuntimeReasonCode.StaleDecision,
+                        "The decision clock no longer matched the pending decision."));
+            }
+
+            if (now < timing.DeadlineMillis)
+            {
+                return new TableTickEntry(
+                    TickEntryKind.Timeout,
+                    seat,
+                    decisionId,
+                    null,
+                    TickRejectionCode.None,
+                    "The deadline is not due at execution time.",
+                    TableOperationResult.Rejected(
+                        _stateVersion,
+                        TableRuntimeReasonCode.DeadlineNotDue,
+                        "The deadline is not due; the timeout was not applied."));
+            }
+
+            LegalActionOption? fallback = TimeoutPolicy.Choose(pending);
+            if (fallback == null)
+            {
+                return new TableTickEntry(
+                    TickEntryKind.Timeout,
+                    seat,
+                    decisionId,
+                    null,
+                    TickRejectionCode.NoDefaultAction,
+                    "No legal timeout default; the decision remains due.",
+                    TableOperationResult.Rejected(
+                        _stateVersion,
+                        TableRuntimeReasonCode.NoDefaultAction,
+                        "No legal timeout/AI action was available; the decision remains due."));
+            }
+
+            RoundCommand? command = MapAction(fallback);
+            if (command == null)
+            {
+                return new TableTickEntry(
+                    TickEntryKind.Timeout,
+                    seat,
+                    decisionId,
+                    fallback,
+                    TickRejectionCode.None,
+                    "The timeout action is not supported by the current adapter.",
+                    TableOperationResult.Rejected(
+                        _stateVersion,
+                        TableRuntimeReasonCode.UnsupportedAction,
+                        "The timeout action is not supported; the decision was not consumed."));
+            }
+
+            TableOperationResult result = await ApplyInternalCommandAsync(
+                command,
+                BuildInternalRequestId(seat, pending.Key.DecisionId),
+                now).ConfigureAwait(false);
+
+            if (result.Status == TableOperationStatus.Accepted && !_round.IsFinished)
+            {
+                bool expired = _decisionClock.Expire(timing.Key, timing.Generation, now);
+                if (!expired)
+                {
+                    SetFaulted(new InvalidOperationException(
+                        "The decision clock no longer matched the committed timeout transition."));
+                }
+
+                _pending.Remove(seat);
+            }
+
+            return new TableTickEntry(
+                TickEntryKind.Timeout,
+                seat,
+                pending.Key.DecisionId,
+                fallback,
+                TickRejectionCode.None,
+                "Authoritative deadline reached; timeout action planned at execution time.",
+                result);
         }
 
         /// <summary>
@@ -1410,7 +1685,10 @@ namespace Mahjong.TableRuntime
             _lifecycle = TableActorLifecycle.Recovering;
             _lifecycleReason = reason ?? string.Empty;
             _pending.Clear();
-            _decisionClock.Reset();
+            _aiObservationGenerations.Clear();
+            // Keep the reserve ledger and active round until the baseline proves whether they
+            // are still valid. Open timings are removed; tick/AI are refused while recovering.
+            _decisionClock.ClearTimings();
             return TableOperationResult.Configured(
                 _stateVersion,
                 "Recovery started; new state-changing and control work is refused.");
@@ -1492,7 +1770,16 @@ namespace Mahjong.TableRuntime
                     }
                 }
 
-                candidateControl = ControlRegistry.Restore(baseline.Control.State);
+                TableOperationResult? graceError = TryBuildRecoveredControlState(
+                    baseline.Control,
+                    now,
+                    out ControlRegistrySnapshot recoveredControl);
+                if (graceError != null)
+                {
+                    return graceError;
+                }
+
+                candidateControl = ControlRegistry.Restore(recoveredControl);
                 candidateControlVersion = baseline.Control.ControlVersion;
             }
 
@@ -1504,11 +1791,48 @@ namespace Mahjong.TableRuntime
                     "Restoring decision timing requires an exact control baseline.");
             }
 
+            bool sameState = string.Equals(_round.RoundId, baseline.Round.RoundId, StringComparison.Ordinal) &&
+                             _stateVersion == baseline.StateVersion &&
+                             _lastEventSeq == baseline.LastEventSeq;
+            IReadOnlyList<long>? recoveredReserves = baseline.Timing.SeatReservesMillis;
+            if (recoveredReserves == null)
+            {
+                if (sameState)
+                {
+                    recoveredReserves = _decisionClock.RemainingReserves();
+                }
+                else if (baseline.Control != null)
+                {
+                    return TableOperationResult.Rejected(
+                        _stateVersion,
+                        TableRuntimeReasonCode.RecoveryTimingInvalid,
+                        "A cross-state/control recovery must supply all four idle-seat reserves explicitly.");
+                }
+            }
+
             var candidateClock = new DecisionClock(_decisionClockConfig);
             var candidatePending = new Dictionary<int, PendingDecision>();
             if (!baseline.Round.IsFinished)
             {
                 candidateClock.BeginRound(baseline.Round.RoundId, now);
+            }
+
+            if (recoveredReserves != null)
+            {
+                for (int seat = 0; seat < 4; seat++)
+                {
+                    try
+                    {
+                        candidateClock.RestoreReserve(seat, recoveredReserves[seat]);
+                    }
+                    catch (ArgumentOutOfRangeException exception)
+                    {
+                        return TableOperationResult.Rejected(
+                            _stateVersion,
+                            TableRuntimeReasonCode.RecoveryTimingInvalid,
+                            "Seat " + seat + " reserve is invalid: " + exception.Message);
+                    }
+                }
             }
 
             for (int i = 0; i < baseline.Timing.Decisions.Count; i++)
@@ -1594,6 +1918,11 @@ namespace Mahjong.TableRuntime
             }
 
             _recentEvents.Clear();
+            _aiObservationGenerations.Clear();
+            if (baseline.Control != null)
+            {
+                _strictRecoveryFence = true;
+            }
 
             _lifecycle = TableActorLifecycle.Serving;
             _lifecycleReason = string.Empty;
@@ -2259,6 +2588,7 @@ namespace Mahjong.TableRuntime
                     _round.Tiles.DoraIndicators,
                     _round.Scores,
                     pending.Candidates);
+                _aiObservationGenerations[observation] = _recoveryGeneration;
                 return new TableAiObservationResult(
                     TableAiObservationStatus.Captured,
                     string.Empty,
@@ -2335,6 +2665,99 @@ namespace Mahjong.TableRuntime
             }
 
             return discards;
+        }
+
+        /// <summary>
+        /// Rebuilds every disconnected seat's timestamps from explicit remaining/overdue grace
+        /// at the local monotonic <paramref name="now"/>. Persisted absolute monotonic values
+        /// from another process are never copied into the local control registry.
+        /// </summary>
+        private TableOperationResult? TryBuildRecoveredControlState(
+            TableControlRecoveryBaseline baseline,
+            long now,
+            out ControlRegistrySnapshot recovered)
+        {
+            ControlRegistrySnapshot state = baseline.State;
+            var graceBySeat = new TableRecoveredGrace?[4];
+            if (baseline.GraceTiming != null)
+            {
+                for (int i = 0; i < baseline.GraceTiming.Seats.Count; i++)
+                {
+                    TableRecoveredGrace grace = baseline.GraceTiming.Seats[i];
+                    graceBySeat[grace.Seat] = grace;
+                }
+            }
+
+            var seats = new SeatControlState[4];
+            for (int seat = 0; seat < 4; seat++)
+            {
+                SeatControlState persisted = state.Seats[seat];
+                if (persisted.Status == ConnectionStatus.Connected)
+                {
+                    if (graceBySeat[seat] != null)
+                    {
+                        recovered = state;
+                        return TableOperationResult.Rejected(
+                            _stateVersion,
+                            TableRuntimeReasonCode.RecoveryGraceTimingInvalid,
+                            "Seat " + seat + " is connected but carries recovered grace timing.");
+                    }
+
+                    seats[seat] = persisted;
+                    continue;
+                }
+
+                long disconnectedAt = now;
+                long? graceDeadline = null;
+                if (persisted.GraceDeadlineMillis.HasValue)
+                {
+                    TableRecoveredGrace? grace = graceBySeat[seat];
+                    if (grace == null)
+                    {
+                        recovered = state;
+                        return TableOperationResult.Rejected(
+                            _stateVersion,
+                            TableRuntimeReasonCode.RecoveryGraceTimingRequired,
+                            "Disconnected seat " + seat +
+                            " requires explicit remaining/overdue grace; persisted absolute timestamps are not portable.");
+                    }
+
+                    try
+                    {
+                        graceDeadline = grace.OverdueMillis > 0
+                            ? now
+                            : checked(now + grace.RemainingGraceMillis);
+                    }
+                    catch (OverflowException exception)
+                    {
+                        recovered = state;
+                        return TableOperationResult.Rejected(
+                            _stateVersion,
+                            TableRuntimeReasonCode.RecoveryGraceTimingInvalid,
+                            "Seat " + seat + " grace deadline overflows: " + exception.Message);
+                    }
+                }
+                else if (graceBySeat[seat] != null)
+                {
+                    recovered = state;
+                    return TableOperationResult.Rejected(
+                        _stateVersion,
+                        TableRuntimeReasonCode.RecoveryGraceTimingInvalid,
+                        "Seat " + seat + " has recovered grace timing but no persisted grace deadline.");
+                }
+
+                seats[seat] = new SeatControlState(
+                    seat,
+                    persisted.Status,
+                    persisted.Kind,
+                    persisted.ControlEpoch,
+                    disconnectedAt,
+                    graceDeadline,
+                    persisted.AiProfileId);
+            }
+
+            recovered = new ControlRegistrySnapshot(state.Policy, seats, state.PreferredHumanKinds);
+            return null;
         }
 
         private TableControlSnapshot BuildControlSnapshot()

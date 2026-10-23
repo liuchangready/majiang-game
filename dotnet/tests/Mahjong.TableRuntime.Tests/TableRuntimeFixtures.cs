@@ -762,7 +762,8 @@ namespace Mahjong.TableRuntime.Tests
             string requestId,
             DecisionId? decisionId = null,
             ulong controlEpoch = 0UL,
-            ulong ownerEpoch = 1UL)
+            ulong ownerEpoch = 1UL,
+            long recoveryGeneration = 0L)
         {
             return new TableCommandEnvelope(
                 command,
@@ -770,7 +771,8 @@ namespace Mahjong.TableRuntime.Tests
                 new StateVersion((ulong)expectedStateVersion),
                 new OwnerEpoch(ownerEpoch),
                 new ControlEpoch(controlEpoch),
-                decisionId);
+                decisionId,
+                recoveryGeneration);
         }
 
         public static RoundCommand DiscardCurrent(RoundStateMachine round)

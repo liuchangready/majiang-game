@@ -1,20 +1,20 @@
   正在确定要还原的项目…
   所有项目均是最新的，无法还原。
-  Mahjong.Domain -> D:\majiang-wt\p33-control\dotnet\src\Mahjong.Domain\bin\Release\netstandard2.1\Mahjong.Domain.dll
   Mahjong.Contracts -> D:\majiang-wt\p33-control\dotnet\src\Mahjong.Contracts\bin\Release\netstandard2.1\Mahjong.Contracts.dll
+  Mahjong.Domain -> D:\majiang-wt\p33-control\dotnet\src\Mahjong.Domain\bin\Release\netstandard2.1\Mahjong.Domain.dll
   Mahjong.Ai -> D:\majiang-wt\p33-control\dotnet\src\Mahjong.Ai\bin\Release\netstandard2.1\Mahjong.Ai.dll
   Mahjong.Contracts.Wire -> D:\majiang-wt\p33-control\dotnet\src\Mahjong.Contracts.Wire\bin\Release\netstandard2.1\Mahjong.Contracts.Wire.dll
   Mahjong.TableRuntime -> D:\majiang-wt\p33-control\dotnet\src\Mahjong.TableRuntime\bin\Release\netstandard2.1\Mahjong.TableRuntime.dll
-  Mahjong.Domain.Tests -> D:\majiang-wt\p33-control\dotnet\tests\Mahjong.Domain.Tests\bin\Release\net8.0\Mahjong.Domain.Tests.dll
+  Mahjong.Client -> D:\majiang-wt\p33-control\dotnet\src\Mahjong.Client\bin\Release\netstandard2.1\Mahjong.Client.dll
   Mahjong.LocalHost -> D:\majiang-wt\p33-control\dotnet\src\Mahjong.LocalHost\bin\Release\netstandard2.1\Mahjong.LocalHost.dll
+  Mahjong.Outbox.CrashWorker -> D:\majiang-wt\p33-control\dotnet\tests\Mahjong.Outbox.CrashWorker\bin\Release\net8.0\Mahjong.Outbox.CrashWorker.dll
   Mahjong.Ai.Tests -> D:\majiang-wt\p33-control\dotnet\tests\Mahjong.Ai.Tests\bin\Release\net8.0\Mahjong.Ai.Tests.dll
   Mahjong.Contracts.Tests -> D:\majiang-wt\p33-control\dotnet\tests\Mahjong.Contracts.Tests\bin\Release\net8.0\Mahjong.Contracts.Tests.dll
-  Mahjong.Client -> D:\majiang-wt\p33-control\dotnet\src\Mahjong.Client\bin\Release\netstandard2.1\Mahjong.Client.dll
-  Mahjong.Outbox.CrashWorker -> D:\majiang-wt\p33-control\dotnet\tests\Mahjong.Outbox.CrashWorker\bin\Release\net8.0\Mahjong.Outbox.CrashWorker.dll
+  Mahjong.Domain.Tests -> D:\majiang-wt\p33-control\dotnet\tests\Mahjong.Domain.Tests\bin\Release\net8.0\Mahjong.Domain.Tests.dll
   Mahjong.Client.Tests -> D:\majiang-wt\p33-control\dotnet\tests\Mahjong.Client.Tests\bin\Release\net8.0\Mahjong.Client.Tests.dll
 
 已成功生成。
     0 个警告
     0 个错误
 
-已用时间 00:00:01.22
+已用时间 00:00:02.90

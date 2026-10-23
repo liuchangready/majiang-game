@@ -50,7 +50,11 @@ namespace Mahjong.TableRuntime
         public const string RecoveryControlRequired = "RECOVERY_CONTROL_REQUIRED";
         public const string RecoveryTimingInvalid = "RECOVERY_TIMING_INVALID";
         public const string RecoveryControlInvalid = "RECOVERY_CONTROL_INVALID";
+        public const string RecoveryGraceTimingRequired = "RECOVERY_GRACE_TIMING_REQUIRED";
+        public const string RecoveryGraceTimingInvalid = "RECOVERY_GRACE_TIMING_INVALID";
+        public const string StaleRecoveryGeneration = "STALE_RECOVERY_GENERATION";
         public const string AiObservationUnavailable = "AI_OBSERVATION_UNAVAILABLE";
+        public const string DeadlineNotDue = "DEADLINE_NOT_DUE";
         public const string SeatNotAutomated = "SEAT_NOT_AUTOMATED";
 
         public static string FromDomain(RoundTransitionErrorCode code)

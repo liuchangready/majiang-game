@@ -1,10 +1,10 @@
   正在确定要还原的项目…
   所有项目均是最新的，无法还原。
-  Mahjong.Domain -> D:\majiang-wt\p33-control\dotnet\src\Mahjong.Domain\bin\Release\netstandard2.1\Mahjong.Domain.dll
   Mahjong.Contracts -> D:\majiang-wt\p33-control\dotnet\src\Mahjong.Contracts\bin\Release\netstandard2.1\Mahjong.Contracts.dll
+  Mahjong.Domain -> D:\majiang-wt\p33-control\dotnet\src\Mahjong.Domain\bin\Release\netstandard2.1\Mahjong.Domain.dll
   Mahjong.Ai -> D:\majiang-wt\p33-control\dotnet\src\Mahjong.Ai\bin\Release\netstandard2.1\Mahjong.Ai.dll
   Mahjong.TableRuntime -> D:\majiang-wt\p33-control\dotnet\src\Mahjong.TableRuntime\bin\Release\netstandard2.1\Mahjong.TableRuntime.dll
   Mahjong.TableRuntime.Tests -> D:\majiang-wt\p33-control\dotnet\tests\Mahjong.TableRuntime.Tests\bin\Release\net8.0\Mahjong.TableRuntime.Tests.dll
   运行测试:“D:\majiang-wt\p33-control\dotnet\tests\Mahjong.TableRuntime.Tests\bin\Release\net8.0\Mahjong.TableRuntime.Tests.dll”[net8.0|x64]
-  已通过! - 失败: 0，通过: 49，已跳过: 0，总计: 49，持续时间: 740ms - Mahjong.TableRuntime.Tests.dll (net8.0|x64)
+  已通过! - 失败: 0，通过: 63，已跳过: 0，总计: 63，持续时间: 1s 076ms - Mahjong.TableRuntime.Tests.dll (net8.0|x64)
   成功的测试:“D:\majiang-wt\p33-control\dotnet\tests\Mahjong.TableRuntime.Tests\bin\Release\net8.0\Mahjong.TableRuntime.Tests.dll”[net8.0|x64]

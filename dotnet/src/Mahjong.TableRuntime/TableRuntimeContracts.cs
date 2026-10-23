@@ -125,7 +125,8 @@ namespace Mahjong.TableRuntime
             StateVersion expectedStateVersion,
             OwnerEpoch ownerEpoch,
             ControlEpoch controlEpoch,
-            DecisionId? decisionId = null)
+            DecisionId? decisionId = null,
+            long recoveryGeneration = 0L)
         {
             Command = command ?? throw new ArgumentNullException(nameof(command));
             if (requestId.IsEmpty)
@@ -133,11 +134,20 @@ namespace Mahjong.TableRuntime
                 throw new ArgumentException("A table command requires a request id.", nameof(requestId));
             }
 
+            if (recoveryGeneration < 0)
+            {
+                throw new ArgumentOutOfRangeException(
+                    nameof(recoveryGeneration),
+                    recoveryGeneration,
+                    "Recovery generation must be non-negative.");
+            }
+
             RequestId = requestId;
             ExpectedStateVersion = expectedStateVersion;
             OwnerEpoch = ownerEpoch;
             ControlEpoch = controlEpoch;
             DecisionId = decisionId;
+            RecoveryGeneration = recoveryGeneration;
         }
 
         public RoundCommand Command { get; }
@@ -151,6 +161,13 @@ namespace Mahjong.TableRuntime
         public ControlEpoch ControlEpoch { get; }
 
         public DecisionId? DecisionId { get; }
+
+        /// <summary>
+        /// Recovery generation the command was admitted under. After a control-baseline
+        /// recovery the actor requires this to equal its current generation, so a command that
+        /// was already in flight before recovery cannot mutate the new baseline.
+        /// </summary>
+        public long RecoveryGeneration { get; }
     }
 
     /// <summary>

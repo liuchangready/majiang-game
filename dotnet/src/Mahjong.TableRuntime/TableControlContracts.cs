@@ -778,42 +778,176 @@ namespace Mahjong.TableRuntime
         public long OverdueMillis { get; }
     }
 
-    /// <summary>Explicit timing reconstruction input for recovery. Empty means "restore none".</summary>
+    /// <summary>
+    /// Explicit timing reconstruction input for recovery. <see cref="SeatReservesMillis"/> is
+    /// the per-seat reserve ledger (including seats with no open decision); null means the
+    /// caller did not supply it and the actor may only reuse the current ledger for an exact
+    /// same-round/same-state recovery. Empty decisions means "restore no open decision".
+    /// </summary>
     public sealed class TableRecoveryTiming
     {
         private readonly ReadOnlyCollection<TableRecoveredDecision> _decisions;
+        private readonly ReadOnlyCollection<long>? _seatReserves;
 
         public TableRecoveryTiming(IReadOnlyList<TableRecoveredDecision>? decisions)
+            : this(decisions, null)
+        {
+        }
+
+        public TableRecoveryTiming(
+            IReadOnlyList<TableRecoveredDecision>? decisions,
+            IReadOnlyList<long>? seatReservesMillis)
         {
             if (decisions == null)
             {
                 _decisions = new ReadOnlyCollection<TableRecoveredDecision>(new List<TableRecoveredDecision>());
-                return;
             }
-
-            var copy = new List<TableRecoveredDecision>(decisions.Count);
-            for (int i = 0; i < decisions.Count; i++)
+            else
             {
-                copy.Add(decisions[i] ??
-                    throw new ArgumentException("Recovered decision cannot be null.", nameof(decisions)));
+                var copy = new List<TableRecoveredDecision>(decisions.Count);
+                for (int i = 0; i < decisions.Count; i++)
+                {
+                    copy.Add(decisions[i] ??
+                        throw new ArgumentException("Recovered decision cannot be null.", nameof(decisions)));
+                }
+
+                _decisions = new ReadOnlyCollection<TableRecoveredDecision>(copy);
             }
 
-            _decisions = new ReadOnlyCollection<TableRecoveredDecision>(copy);
+            if (seatReservesMillis == null)
+            {
+                _seatReserves = null;
+            }
+            else
+            {
+                if (seatReservesMillis.Count != 4)
+                {
+                    throw new ArgumentException(
+                        "Recovered seat reserves must contain exactly four entries.",
+                        nameof(seatReservesMillis));
+                }
+
+                var reserves = new long[4];
+                for (int seat = 0; seat < 4; seat++)
+                {
+                    long reserve = seatReservesMillis[seat];
+                    if (reserve < 0)
+                    {
+                        throw new ArgumentOutOfRangeException(
+                            nameof(seatReservesMillis),
+                            reserve,
+                            "Recovered seat reserve must be non-negative.");
+                    }
+
+                    reserves[seat] = reserve;
+                }
+
+                _seatReserves = new ReadOnlyCollection<long>(reserves);
+            }
         }
 
         public IReadOnlyList<TableRecoveredDecision> Decisions => _decisions;
 
-        public static TableRecoveryTiming None { get; } = new TableRecoveryTiming(null);
+        public IReadOnlyList<long>? SeatReservesMillis => _seatReserves;
+
+        public bool HasExplicitReserves => _seatReserves != null;
+
+        public static TableRecoveryTiming None { get; } = new TableRecoveryTiming(null, null);
+    }
+
+    /// <summary>
+    /// One disconnected seat's grace reconstructed from explicit remaining/overdue time. The
+    /// persisted absolute monotonic timestamps from another process must not be compared with
+    /// the local monotonic clock.
+    /// </summary>
+    public sealed class TableRecoveredGrace
+    {
+        public TableRecoveredGrace(int seat, long remainingGraceMillis, long overdueMillis)
+        {
+            if (seat < 0 || seat > 3)
+            {
+                throw new ArgumentOutOfRangeException(nameof(seat), seat, "Seat must be 0..3.");
+            }
+
+            if (remainingGraceMillis < 0)
+            {
+                throw new ArgumentOutOfRangeException(
+                    nameof(remainingGraceMillis),
+                    remainingGraceMillis,
+                    "Remaining grace must be non-negative.");
+            }
+
+            if (overdueMillis < 0)
+            {
+                throw new ArgumentOutOfRangeException(
+                    nameof(overdueMillis),
+                    overdueMillis,
+                    "Overdue grace must be non-negative.");
+            }
+
+            Seat = seat;
+            RemainingGraceMillis = remainingGraceMillis;
+            OverdueMillis = overdueMillis;
+        }
+
+        public int Seat { get; }
+
+        public long RemainingGraceMillis { get; }
+
+        public long OverdueMillis { get; }
+    }
+
+    /// <summary>Explicit grace reconstruction for every disconnected seat in a recovery baseline.</summary>
+    public sealed class TableGraceRecoveryTiming
+    {
+        private readonly ReadOnlyCollection<TableRecoveredGrace> _seats;
+
+        public TableGraceRecoveryTiming(IReadOnlyList<TableRecoveredGrace>? seats)
+        {
+            if (seats == null)
+            {
+                _seats = new ReadOnlyCollection<TableRecoveredGrace>(new List<TableRecoveredGrace>());
+                return;
+            }
+
+            var copy = new List<TableRecoveredGrace>(seats.Count);
+            var seen = new bool[4];
+            for (int i = 0; i < seats.Count; i++)
+            {
+                TableRecoveredGrace recovered = seats[i] ??
+                    throw new ArgumentException("Recovered grace cannot be null.", nameof(seats));
+                if (seen[recovered.Seat])
+                {
+                    throw new ArgumentException("A seat cannot have two recovered grace records.", nameof(seats));
+                }
+
+                seen[recovered.Seat] = true;
+                copy.Add(recovered);
+            }
+
+            _seats = new ReadOnlyCollection<TableRecoveredGrace>(copy);
+        }
+
+        public IReadOnlyList<TableRecoveredGrace> Seats => _seats;
     }
 
     /// <summary>
     /// Control authority included in a recovery baseline. The control version and exact seat
     /// epochs must come from the durable checkpoint; installing only controller kinds would
-    /// re-enable stale AI/player results.
+    /// re-enable stale AI/player results. Disconnected absolute timestamps are not trusted:
+    /// every disconnected seat must be rebuilt from explicit grace timing.
     /// </summary>
     public sealed class TableControlRecoveryBaseline
     {
         public TableControlRecoveryBaseline(ControlRegistrySnapshot state, long controlVersion)
+            : this(state, controlVersion, null)
+        {
+        }
+
+        public TableControlRecoveryBaseline(
+            ControlRegistrySnapshot state,
+            long controlVersion,
+            TableGraceRecoveryTiming? graceTiming)
         {
             State = state ?? throw new ArgumentNullException(nameof(state));
             if (controlVersion < 0)
@@ -822,10 +956,13 @@ namespace Mahjong.TableRuntime
             }
 
             ControlVersion = controlVersion;
+            GraceTiming = graceTiming;
         }
 
         public ControlRegistrySnapshot State { get; }
 
         public long ControlVersion { get; }
+
+        public TableGraceRecoveryTiming? GraceTiming { get; }
     }
 }

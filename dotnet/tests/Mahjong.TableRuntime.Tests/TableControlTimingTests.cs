@@ -317,11 +317,13 @@ namespace Mahjong.TableRuntime.Tests
                 new EventSeq(50UL),
                 new OwnerEpoch(1),
                 new TableControlRecoveryBaseline(control, 4L),
-                TableRecoveryTiming.None);
+                new TableRecoveryTiming(null, new long[] { 0L, 0L, 0L, 0L }));
             harness.CommitPort.SetDurableBaseline(new StateVersion(10UL), new EventSeq(50UL));
 
             TableOperationResult completed = await harness.CompleteRecoveryAsync(baseline);
-            Assert.Equal(TableOperationStatus.Configured, completed.Status);
+            Assert.True(
+                completed.Status == TableOperationStatus.Configured,
+                completed.ReasonCode + ": " + completed.Detail);
             TableControlSnapshot snapshot = await harness.GetControlSnapshotAsync();
             Assert.Equal("round-2", snapshot.RoundId);
             Assert.Equal(4L, snapshot.ControlVersion);
@@ -365,7 +367,9 @@ namespace Mahjong.TableRuntime.Tests
                 10,
                 "after-recovery",
                 null,
-                5UL);
+                5UL,
+                1UL,
+                snapshot.RecoveryGeneration);
             TableOperationResult accepted = await harness.SubmitAsync(newEpochCommand);
             Assert.Equal(TableOperationStatus.Accepted, accepted.Status);
             Assert.Equal(11UL, accepted.CommandVersion!.Value.Value);
@@ -404,9 +408,11 @@ namespace Mahjong.TableRuntime.Tests
                 new EventSeq(50UL),
                 new OwnerEpoch(1),
                 new TableControlRecoveryBaseline(control, 4L),
-                new TableRecoveryTiming(new[] { recovered }));
+                new TableRecoveryTiming(new[] { recovered }, new long[] { 0L, 0L, 0L, 0L }));
             TableOperationResult completed = await harness.CompleteRecoveryAsync(baseline);
-            Assert.Equal(TableOperationStatus.Configured, completed.Status);
+            Assert.True(
+                completed.Status == TableOperationStatus.Configured,
+                completed.ReasonCode + ": " + completed.Detail);
 
             TableTimingSnapshot timing = await harness.GetTimingSnapshotAsync();
             TableSeatTimingView seat0 = timing.Seats[0];
@@ -815,6 +821,459 @@ namespace Mahjong.TableRuntime.Tests
             Assert.True(disconnected.IsChanged);
             Assert.Null(disconnected.Snapshot!.Seats[0].GraceDeadlineMillis);
             Assert.Equal(SeatControllerKind.LocalHuman, disconnected.Snapshot.Seats[0].Kind);
+        }
+
+        [Fact]
+        public async Task CrossStateRecoveryRequiresExplicitIdleSeatReservesAndKeepsTheLedger()
+        {
+            await using ActorHarness harness = P31Fixtures.CreateActor(
+                decisionClockConfig: new DecisionClockConfig(100L, 1000L, ReserveScope.Round));
+            DiscardDecisionFixture decision = P31Fixtures.BuildDiscardDecision(harness);
+            Assert.Equal(
+                TableOperationStatus.Configured,
+                (await harness.OpenDecisionAsync(decision.Pending)).Status);
+            harness.Clock.Now = 1500L;
+            Assert.Equal(
+                TableOperationStatus.Accepted,
+                (await harness.CompleteAiAsync(decision.Ai)).Entries[0].Transition!.Status);
+            Assert.Equal(600L, (await harness.GetTimingSnapshotAsync()).Seats[0].RemainingReserveMillis);
+            TableSnapshot snapshot = await harness.GetSnapshotAsync();
+            RoundStateMachine round2 = P31Fixtures.Dealt("round-2");
+            ControlRegistrySnapshot control = P31Fixtures.ControlSnapshot(
+                P31Fixtures.Connected(SeatControllerKind.Computer, 0L, 0),
+                P31Fixtures.Connected(SeatControllerKind.Computer, 0L, 1),
+                P31Fixtures.Connected(SeatControllerKind.Computer, 0L, 2),
+                P31Fixtures.Connected(SeatControllerKind.Computer, 0L, 3));
+            Assert.Equal(
+                TableOperationStatus.Configured,
+                (await harness.BeginRecoveryAsync("cross-state")).Status);
+
+            var missingReserves = new TableRecoveryBaseline(
+                round2,
+                snapshot.StateVersion,
+                snapshot.LastEventSeq,
+                snapshot.OwnerEpoch,
+                new TableControlRecoveryBaseline(control, 0L),
+                TableRecoveryTiming.None);
+            TableOperationResult rejected = await harness.CompleteRecoveryAsync(missingReserves);
+            Assert.Equal(TableOperationStatus.Rejected, rejected.Status);
+            Assert.Equal(TableRuntimeReasonCode.RecoveryTimingInvalid, rejected.ReasonCode);
+            Assert.Equal(TableActorLifecycle.Recovering, (await harness.GetSnapshotAsync()).Lifecycle);
+
+            var explicitReserves = new TableRecoveryBaseline(
+                round2,
+                snapshot.StateVersion,
+                snapshot.LastEventSeq,
+                snapshot.OwnerEpoch,
+                new TableControlRecoveryBaseline(control, 0L),
+                new TableRecoveryTiming(null, new long[] { 600L, 1000L, 1000L, 1000L }));
+            TableOperationResult completed = await harness.CompleteRecoveryAsync(explicitReserves);
+            Assert.Equal(TableOperationStatus.Configured, completed.Status);
+            TableTimingSnapshot timing = await harness.GetTimingSnapshotAsync();
+            Assert.Equal(600L, timing.Seats[0].RemainingReserveMillis);
+            Assert.Equal(1000L, timing.Seats[1].RemainingReserveMillis);
+            Assert.Equal(1000L, timing.Seats[2].RemainingReserveMillis);
+            Assert.Equal(1000L, timing.Seats[3].RemainingReserveMillis);
+        }
+
+        [Fact]
+        public void RecoveredDecisionConsumesBaseBeforeReserveAndDoesNotRegrantBase()
+        {
+            var clock = new DecisionClock(new DecisionClockConfig(3000L, 5000L, ReserveScope.Round));
+            clock.BeginRound("r", 1000L);
+            DecisionTiming first = clock.RestoreDecision(
+                new DecisionKey("r", 0, "d1"),
+                1000L,
+                3000L,
+                5000L,
+                3000L);
+            Assert.Equal(6000L, first.DeadlineMillis);
+            Assert.Equal(0L, first.BaseMillis);
+            Assert.Equal(5000L, first.ReserveAtOpenMillis);
+
+            Assert.True(clock.Complete(first.Key, 2000L));
+            Assert.Equal(4000L, clock.RemainingReserve(0));
+            DecisionTiming second = clock.Open(new DecisionKey("r", 0, "d2"), 2000L);
+            Assert.Equal(3000L, second.BaseMillis);
+            Assert.Equal(4000L, second.ReserveAtOpenMillis);
+            Assert.Equal(9000L, second.DeadlineMillis);
+
+            var overdue = new DecisionClock(new DecisionClockConfig(1000L, 1000L, ReserveScope.Round));
+            overdue.BeginRound("r2", 100L);
+            DecisionTiming dueNow = overdue.RestoreDecision(
+                new DecisionKey("r2", 0, "due"),
+                100L,
+                1000L,
+                1000L,
+                5000L);
+            Assert.Equal(100L, dueNow.DeadlineMillis);
+            Assert.Equal(0L, dueNow.BaseMillis);
+            Assert.Equal(0L, dueNow.ReserveAtOpenMillis);
+            Assert.True(overdue.Expire(dueNow.Key, dueNow.Generation, 100L));
+
+            var overflow = new DecisionClock(new DecisionClockConfig(1000L, 1000L, ReserveScope.Round));
+            overflow.BeginRound("r3", long.MaxValue - 500L);
+            Assert.Throws<OverflowException>(() => overflow.RestoreDecision(
+                new DecisionKey("r3", 0, "overflow"),
+                long.MaxValue - 500L,
+                1000L,
+                1000L,
+                0L));
+            Assert.Throws<ArgumentOutOfRangeException>(() => overflow.RestoreDecision(
+                new DecisionKey("r3", 0, "over-config"),
+                100L,
+                1001L,
+                1000L,
+                0L));
+        }
+
+        [Fact]
+        public async Task RecoveredDecisionTimingExposesBaseFirstAccountingInTheActor()
+        {
+            await using ActorHarness harness = P31Fixtures.CreateActor(
+                controllers: P31Fixtures.Controllers(SeatControllerKind.Computer),
+                decisionClockConfig: new DecisionClockConfig(3000L, 5000L, ReserveScope.Round),
+                initialNow: 5000L);
+            RoundStateMachine round2 = P31Fixtures.Dealt("round-2");
+            TileId tile = round2.Tiles.TilesInZone(TileZone.Hand, 0)[0];
+            var recovered = new TableRecoveredDecision(
+                new DecisionKey("round-2", 0, "base-first"),
+                0L,
+                new[] { new LegalActionOption(LegalActionKind.Discard, 0, tile) },
+                tile,
+                3000L,
+                5000L,
+                3000L);
+            ControlRegistrySnapshot control = P31Fixtures.ControlSnapshot(
+                P31Fixtures.Connected(SeatControllerKind.Computer, 0L, 0),
+                P31Fixtures.Connected(SeatControllerKind.Computer, 0L, 1),
+                P31Fixtures.Connected(SeatControllerKind.Computer, 0L, 2),
+                P31Fixtures.Connected(SeatControllerKind.Computer, 0L, 3));
+            Assert.Equal(
+                TableOperationStatus.Configured,
+                (await harness.BeginRecoveryAsync("base-first")).Status);
+
+            var baseline = new TableRecoveryBaseline(
+                round2,
+                new StateVersion(0UL),
+                new EventSeq(0UL),
+                new OwnerEpoch(1),
+                new TableControlRecoveryBaseline(control, 0L),
+                new TableRecoveryTiming(new[] { recovered }, new long[] { 0L, 5000L, 5000L, 5000L }));
+            Assert.Equal(TableOperationStatus.Configured, (await harness.CompleteRecoveryAsync(baseline)).Status);
+
+            TableTimingSnapshot timing = await harness.GetTimingSnapshotAsync();
+            DecisionTiming seatTiming = timing.Seats[0].Timing!;
+            Assert.Equal(0L, seatTiming.BaseMillis);
+            Assert.Equal(5000L, seatTiming.ReserveAtOpenMillis);
+            Assert.Equal(10000L, seatTiming.DeadlineMillis);
+            Assert.Equal(5000L, timing.Seats[0].RemainingReserveMillis);
+            Assert.Equal(5000L, timing.Seats[1].RemainingReserveMillis);
+        }
+
+        [Fact]
+        public async Task StrictRecoveryFenceRejectsOldAiAndOldPlayerButAcceptsFreshObservation()
+        {
+            await using ActorHarness harness = P31Fixtures.CreateActor();
+            DiscardDecisionFixture decision = P31Fixtures.BuildDiscardDecision(harness);
+            Assert.Equal(
+                TableOperationStatus.Configured,
+                (await harness.OpenDecisionAsync(decision.Pending)).Status);
+            TableSnapshot snapshot = await harness.GetSnapshotAsync();
+            ControlRegistrySnapshot control = P31Fixtures.ControlSnapshot(
+                P31Fixtures.Connected(SeatControllerKind.Computer, 0L, 0),
+                P31Fixtures.Connected(SeatControllerKind.Computer, 0L, 1),
+                P31Fixtures.Connected(SeatControllerKind.Computer, 0L, 2),
+                P31Fixtures.Connected(SeatControllerKind.Computer, 0L, 3));
+            Assert.Equal(
+                TableOperationStatus.Configured,
+                (await harness.BeginRecoveryAsync("same decision")).Status);
+            var recovered = new TableRecoveredDecision(
+                decision.Pending.Key,
+                0L,
+                decision.Pending.Candidates,
+                decision.Pending.DrawnTile,
+                1000L,
+                0L,
+                0L);
+            var baseline = new TableRecoveryBaseline(
+                harness.InitialRound,
+                snapshot.StateVersion,
+                snapshot.LastEventSeq,
+                snapshot.OwnerEpoch,
+                new TableControlRecoveryBaseline(control, 0L),
+                new TableRecoveryTiming(new[] { recovered }));
+            Assert.Equal(TableOperationStatus.Configured, (await harness.CompleteRecoveryAsync(baseline)).Status);
+
+            TableTickResult oldAi = await harness.CompleteAiAsync(decision.Ai);
+            Assert.DoesNotContain(
+                oldAi.Entries,
+                entry => entry.Kind == TickEntryKind.AiAccepted &&
+                         entry.Transition?.Status == TableOperationStatus.Accepted);
+            Assert.Equal(TableRuntimeReasonCode.StaleRecoveryGeneration, oldAi.ReasonCode);
+
+            TableCommandEnvelope oldPlayer = P31Fixtures.Command(
+                RoundCommand.Discard(harness.InitialRound.RoundId, 0, decision.Chosen.Tile!.Value),
+                0,
+                "old-player",
+                new DecisionId("d1"),
+                0UL);
+            TableOperationResult oldPlayerResult = await harness.SubmitAsync(oldPlayer);
+            Assert.Equal(TableOperationStatus.Rejected, oldPlayerResult.Status);
+            Assert.Equal(TableRuntimeReasonCode.StaleRecoveryGeneration, oldPlayerResult.ReasonCode);
+
+            TableAiObservationResult captured = await harness.CaptureAiObservationAsync(0);
+            Assert.True(captured.IsCaptured);
+            TableTickResult oldAiAfterFreshCapture = await harness.CompleteAiAsync(decision.Ai);
+            Assert.Equal(TableRuntimeReasonCode.StaleRecoveryGeneration, oldAiAfterFreshCapture.ReasonCode);
+            var intent = new CommandIntent(captured.Observation!, decision.Chosen, "test-ai", 1);
+            var fresh = new AiDecision(captured.Observation!, intent, 0.5d);
+            harness.Clock.Now = 1500L;
+            TableTickResult accepted = await harness.CompleteAiAsync(fresh);
+            Assert.Equal(TickEntryKind.AiAccepted, accepted.Entries[0].Kind);
+            Assert.Equal(TableOperationStatus.Accepted, accepted.Entries[0].Transition!.Status);
+        }
+
+        [Fact]
+        public async Task RecoveryGraceIsRebuiltFromExplicitRemainingTimeAtTheLocalMonotonicStart()
+        {
+            await using ActorHarness harness = P31Fixtures.CreateActor(
+                controllers: P31Fixtures.Controllers(SeatControllerKind.LocalHuman),
+                initialNow: 50000L);
+            ControlRegistrySnapshot control = P31Fixtures.ControlSnapshot(
+                new SeatControlState(
+                    0,
+                    ConnectionStatus.Disconnected,
+                    SeatControllerKind.LocalHuman,
+                    0L,
+                    1000L,
+                    11000L,
+                    "ai"),
+                P31Fixtures.Connected(SeatControllerKind.Computer, 0L, 1),
+                P31Fixtures.Connected(SeatControllerKind.Computer, 0L, 2),
+                P31Fixtures.Connected(SeatControllerKind.Computer, 0L, 3));
+            Assert.Equal(
+                TableOperationStatus.Configured,
+                (await harness.BeginRecoveryAsync("grace recovery")).Status);
+            var baseline = new TableRecoveryBaseline(
+                harness.InitialRound,
+                new StateVersion(0UL),
+                new EventSeq(0UL),
+                new OwnerEpoch(1),
+                new TableControlRecoveryBaseline(
+                    control,
+                    0L,
+                    new TableGraceRecoveryTiming(new[] { new TableRecoveredGrace(0, 4000L, 0L) })),
+                TableRecoveryTiming.None);
+            Assert.Equal(TableOperationStatus.Configured, (await harness.CompleteRecoveryAsync(baseline)).Status);
+
+            TableControlSnapshot snapshot = await harness.GetControlSnapshotAsync();
+            Assert.Equal(50000L, snapshot.Seats[0].DisconnectedAtMillis);
+            Assert.Equal(54000L, snapshot.Seats[0].GraceDeadlineMillis);
+
+            harness.Clock.Now = 50000L;
+            TableGraceExpiryFence early = await FenceAsync(harness, 0, 54000L);
+            Assert.Equal(TableRuntimeReasonCode.GraceNotDue, (await harness.ExpireGraceAsync(early)).ReasonCode);
+
+            harness.Clock.Now = 54000L;
+            TableGraceExpiryFence due = await FenceAsync(harness, 0, 54000L);
+            TableControlResult taken = await harness.ExpireGraceAsync(due);
+            Assert.True(taken.IsChanged);
+            Assert.Equal(SeatControllerKind.Takeover, taken.Snapshot!.Seats[0].Kind);
+            Assert.Equal(1L, taken.Snapshot.Seats[0].ControlEpoch);
+        }
+
+        [Fact]
+        public async Task RecoveryGraceWithoutExplicitTimingIsRejected()
+        {
+            await using ActorHarness harness = P31Fixtures.CreateActor(
+                controllers: P31Fixtures.Controllers(SeatControllerKind.LocalHuman),
+                initialNow: 50000L);
+            ControlRegistrySnapshot control = P31Fixtures.ControlSnapshot(
+                new SeatControlState(
+                    0,
+                    ConnectionStatus.Disconnected,
+                    SeatControllerKind.LocalHuman,
+                    0L,
+                    1000L,
+                    11000L,
+                    null),
+                P31Fixtures.Connected(SeatControllerKind.Computer, 0L, 1),
+                P31Fixtures.Connected(SeatControllerKind.Computer, 0L, 2),
+                P31Fixtures.Connected(SeatControllerKind.Computer, 0L, 3));
+            Assert.Equal(
+                TableOperationStatus.Configured,
+                (await harness.BeginRecoveryAsync("missing grace timing")).Status);
+            var baseline = new TableRecoveryBaseline(
+                harness.InitialRound,
+                new StateVersion(0UL),
+                new EventSeq(0UL),
+                new OwnerEpoch(1),
+                new TableControlRecoveryBaseline(control, 0L),
+                TableRecoveryTiming.None);
+            TableOperationResult rejected = await harness.CompleteRecoveryAsync(baseline);
+
+            Assert.Equal(TableOperationStatus.Rejected, rejected.Status);
+            Assert.Equal(TableRuntimeReasonCode.RecoveryGraceTimingRequired, rejected.ReasonCode);
+            Assert.Equal(TableActorLifecycle.Recovering, (await harness.GetSnapshotAsync()).Lifecycle);
+        }
+
+        [Fact]
+        public async Task RecoveryGraceRemainingOverflowIsRejected()
+        {
+            await using ActorHarness harness = P31Fixtures.CreateActor(
+                controllers: P31Fixtures.Controllers(SeatControllerKind.LocalHuman),
+                initialNow: long.MaxValue - 10L);
+            ControlRegistrySnapshot control = P31Fixtures.ControlSnapshot(
+                new SeatControlState(
+                    0,
+                    ConnectionStatus.Disconnected,
+                    SeatControllerKind.LocalHuman,
+                    0L,
+                    1000L,
+                    11000L,
+                    null),
+                P31Fixtures.Connected(SeatControllerKind.Computer, 0L, 1),
+                P31Fixtures.Connected(SeatControllerKind.Computer, 0L, 2),
+                P31Fixtures.Connected(SeatControllerKind.Computer, 0L, 3));
+            Assert.Equal(
+                TableOperationStatus.Configured,
+                (await harness.BeginRecoveryAsync("grace overflow")).Status);
+            var baseline = new TableRecoveryBaseline(
+                harness.InitialRound,
+                new StateVersion(0UL),
+                new EventSeq(0UL),
+                new OwnerEpoch(1),
+                new TableControlRecoveryBaseline(
+                    control,
+                    0L,
+                    new TableGraceRecoveryTiming(new[] { new TableRecoveredGrace(0, 100L, 0L) })),
+                TableRecoveryTiming.None);
+            TableOperationResult rejected = await harness.CompleteRecoveryAsync(baseline);
+
+            Assert.Equal(TableOperationStatus.Rejected, rejected.Status);
+            Assert.Equal(TableRuntimeReasonCode.RecoveryGraceTimingInvalid, rejected.ReasonCode);
+            Assert.Equal(TableActorLifecycle.Recovering, (await harness.GetSnapshotAsync()).Lifecycle);
+        }
+
+        [Fact]
+        public async Task RecoveryGraceOverdueIsDueAtTheLocalNowNotThePersistedTimestamp()
+        {
+            await using ActorHarness harness = P31Fixtures.CreateActor(
+                controllers: P31Fixtures.Controllers(SeatControllerKind.LocalHuman),
+                initialNow: 50000L);
+            ControlRegistrySnapshot control = P31Fixtures.ControlSnapshot(
+                new SeatControlState(
+                    0,
+                    ConnectionStatus.Disconnected,
+                    SeatControllerKind.LocalHuman,
+                    0L,
+                    1000L,
+                    11000L,
+                    null),
+                P31Fixtures.Connected(SeatControllerKind.Computer, 0L, 1),
+                P31Fixtures.Connected(SeatControllerKind.Computer, 0L, 2),
+                P31Fixtures.Connected(SeatControllerKind.Computer, 0L, 3));
+            Assert.Equal(
+                TableOperationStatus.Configured,
+                (await harness.BeginRecoveryAsync("overdue grace")).Status);
+            var baseline = new TableRecoveryBaseline(
+                harness.InitialRound,
+                new StateVersion(0UL),
+                new EventSeq(0UL),
+                new OwnerEpoch(1),
+                new TableControlRecoveryBaseline(
+                    control,
+                    0L,
+                    new TableGraceRecoveryTiming(new[] { new TableRecoveredGrace(0, 0L, 2000L) })),
+                TableRecoveryTiming.None);
+            Assert.Equal(TableOperationStatus.Configured, (await harness.CompleteRecoveryAsync(baseline)).Status);
+
+            TableControlSnapshot snapshot = await harness.GetControlSnapshotAsync();
+            Assert.Equal(50000L, snapshot.Seats[0].GraceDeadlineMillis);
+            harness.Clock.Now = 50000L;
+            TableGraceExpiryFence due = await FenceAsync(harness, 0, 50000L);
+            TableControlResult taken = await harness.ExpireGraceAsync(due);
+            Assert.True(taken.IsChanged);
+            Assert.Equal(SeatControllerKind.Takeover, taken.Snapshot!.Seats[0].Kind);
+        }
+
+        [Fact]
+        public async Task SlowTickCommitRevalidatesDifferentSeatDeadlines()
+        {
+            await using ActorHarness harness = P31Fixtures.CreateActor();
+            RoundStateMachine round = harness.InitialRound;
+            TileId tile = round.Tiles.TilesInZone(TileZone.Hand, 0)[0];
+            await harness.SubmitAsync(P31Fixtures.Command(
+                RoundCommand.Discard(round.RoundId, 0, tile, new[] { 1, 2, 3 }),
+                0,
+                "open"));
+            var first = P31Fixtures.BuildSingleActionDecision(harness, LegalActionKind.Pass, "p1", 1);
+            var second = P31Fixtures.BuildSingleActionDecision(harness, LegalActionKind.Pass, "p2", 2);
+            harness.Clock.Now = 1000L;
+            await harness.OpenDecisionAsync(first.Pending);
+            harness.Clock.Now = 1200L;
+            await harness.OpenDecisionAsync(second.Pending);
+
+            harness.Clock.Now = 1300L;
+            harness.CommitPort.BlockNext();
+            Task<TableTickResult> running = harness.TickAsync(new TableTickRequest(new[]
+            {
+                first.Ai.ToDomainSubmission(1300L),
+                second.Ai.ToDomainSubmission(1300L)
+            })).AsTask();
+            await harness.CommitPort.Entered;
+            harness.Clock.Now = 2300L;
+            harness.CommitPort.Release();
+            TableTickResult result = await running;
+
+            Assert.DoesNotContain(
+                result.Entries,
+                entry => entry.Seat == 2 &&
+                         entry.Kind == TickEntryKind.AiAccepted &&
+                         entry.Transition?.Status == TableOperationStatus.Accepted);
+            Assert.Contains(
+                result.Entries,
+                entry => entry.Seat == 2 && entry.Kind == TickEntryKind.Timeout);
+            Assert.Contains(
+                result.Entries,
+                entry => entry.Seat == 2 &&
+                         entry.Kind == TickEntryKind.AiRejected &&
+                         entry.RejectionCode == TickRejectionCode.DeadlineExpired);
+        }
+
+        [Fact]
+        public async Task SlowTickFirstCommitFailureStopsLaterSeatAi()
+        {
+            await using ActorHarness harness = P31Fixtures.CreateActor();
+            RoundStateMachine round = harness.InitialRound;
+            TileId tile = round.Tiles.TilesInZone(TileZone.Hand, 0)[0];
+            await harness.SubmitAsync(P31Fixtures.Command(
+                RoundCommand.Discard(round.RoundId, 0, tile, new[] { 1, 2, 3 }),
+                0,
+                "open"));
+            var first = P31Fixtures.BuildSingleActionDecision(harness, LegalActionKind.Pass, "p1", 1);
+            var second = P31Fixtures.BuildSingleActionDecision(harness, LegalActionKind.Pass, "p2", 2);
+            harness.Clock.Now = 1000L;
+            await harness.OpenDecisionAsync(first.Pending);
+            await harness.OpenDecisionAsync(second.Pending);
+
+            harness.Clock.Now = 1300L;
+            harness.CommitPort.FailNext();
+            TableTickResult result = await harness.TickAsync(new TableTickRequest(new[]
+            {
+                first.Ai.ToDomainSubmission(1300L),
+                second.Ai.ToDomainSubmission(1300L)
+            }));
+
+            Assert.DoesNotContain(
+                result.Entries,
+                entry => entry.Kind == TickEntryKind.AiAccepted &&
+                         entry.Transition?.Status == TableOperationStatus.Accepted);
+            Assert.Contains(
+                result.Entries,
+                entry => entry.Seat == 2 &&
+                         entry.Transition?.Status == TableOperationStatus.Failed);
         }
 
         private static async Task<TableGraceExpiryFence> FenceAsync(

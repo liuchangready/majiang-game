@@ -4,5 +4,5 @@
   Mahjong.LobbyService -> D:\majiang-wt\p33-control\dotnet\src\Mahjong.LobbyService\bin\Release\net8.0\Mahjong.LobbyService.dll
   Mahjong.LobbyService.Tests -> D:\majiang-wt\p33-control\dotnet\tests\Mahjong.LobbyService.Tests\bin\Release\net8.0\Mahjong.LobbyService.Tests.dll
   运行测试:“D:\majiang-wt\p33-control\dotnet\tests\Mahjong.LobbyService.Tests\bin\Release\net8.0\Mahjong.LobbyService.Tests.dll”[net8.0|x64]
-  已通过! - 失败: 0，通过: 77，已跳过: 1，总计: 78，持续时间: 756ms - Mahjong.LobbyService.Tests.dll (net8.0|x64)
+  已通过! - 失败: 0，通过: 77，已跳过: 1，总计: 78，持续时间: 644ms - Mahjong.LobbyService.Tests.dll (net8.0|x64)
   成功的测试:“D:\majiang-wt\p33-control\dotnet\tests\Mahjong.LobbyService.Tests\bin\Release\net8.0\Mahjong.LobbyService.Tests.dll”[net8.0|x64]
