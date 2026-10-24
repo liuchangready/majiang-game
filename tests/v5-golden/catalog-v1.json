@@ -1894,6 +1894,18 @@
                                                                                                {
                                                                                                    "path":  "expected.redFiveCount",
                                                                                                    "type":  "number"
+                                                                                               },
+                                                                                               {
+                                                                                                   "path":  "expected.nonRedFiveCount",
+                                                                                                   "type":  "number"
+                                                                                               },
+                                                                                               {
+                                                                                                   "path":  "expected.standardSetOrderIsTileIdOrder",
+                                                                                                   "type":  "boolean"
+                                                                                               },
+                                                                                               {
+                                                                                                   "path":  "expected.redFiveTileIds",
+                                                                                                   "type":  "array"
                                                                                                }
                                                                                            ]
                                                                              },
@@ -1917,6 +1929,18 @@
                                                                                                {
                                                                                                    "path":  "expected.distinctTypeIndexes",
                                                                                                    "type":  "number"
+                                                                                               },
+                                                                                               {
+                                                                                                   "path":  "expected.allGroupsFour",
+                                                                                                   "type":  "boolean"
+                                                                                               },
+                                                                                               {
+                                                                                                   "path":  "expected.tileIdFormula",
+                                                                                                   "type":  "string"
+                                                                                               },
+                                                                                               {
+                                                                                                   "path":  "expected.boundaryTypeIndexes",
+                                                                                                   "type":  "array"
                                                                                                }
                                                                                            ]
                                                                              },
@@ -1936,6 +1960,10 @@
                                                                                                {
                                                                                                    "path":  "expected.validCount",
                                                                                                    "type":  "number"
+                                                                                               },
+                                                                                               {
+                                                                                                   "path":  "expected.allRoundTripEqual",
+                                                                                                   "type":  "boolean"
                                                                                                }
                                                                                            ]
                                                                              },
@@ -1972,6 +2000,26 @@
                                                                                                {
                                                                                                    "path":  "expected.positionsRecorded",
                                                                                                    "type":  "number"
+                                                                                               },
+                                                                                               {
+                                                                                                   "path":  "input.randomInputs",
+                                                                                                   "type":  "string"
+                                                                                               },
+                                                                                               {
+                                                                                                   "path":  "expected.allConserved",
+                                                                                                   "type":  "boolean"
+                                                                                               },
+                                                                                               {
+                                                                                                   "path":  "expected.allRedFiveThree",
+                                                                                                   "type":  "boolean"
+                                                                                               },
+                                                                                               {
+                                                                                                   "path":  "expected.allOrderIndependent",
+                                                                                                   "type":  "boolean"
+                                                                                               },
+                                                                                               {
+                                                                                                   "path":  "expected.allDeadWallIsolated",
+                                                                                                   "type":  "boolean"
                                                                                                }
                                                                                            ]
                                                                              },
@@ -1986,6 +2034,70 @@
                                                                                                {
                                                                                                    "path":  "expected.probeB",
                                                                                                    "type":  "object"
+                                                                                               },
+                                                                                               {
+                                                                                                   "path":  "expected.probeA.firstAudit.outcome",
+                                                                                                   "type":  "string"
+                                                                                               },
+                                                                                               {
+                                                                                                   "path":  "expected.probeA.firstAudit.exceptionType",
+                                                                                                   "type":  "string"
+                                                                                               },
+                                                                                               {
+                                                                                                   "path":  "expected.probeA.firstAudit.semanticCategory",
+                                                                                                   "type":  "string"
+                                                                                               },
+                                                                                               {
+                                                                                                   "path":  "expected.probeA.firstAudit.message",
+                                                                                                   "type":  "string"
+                                                                                               },
+                                                                                               {
+                                                                                                   "path":  "expected.probeA.mutation.mapSizeAfter",
+                                                                                                   "type":  "number"
+                                                                                               },
+                                                                                               {
+                                                                                                   "path":  "expected.probeA.after.poolSize",
+                                                                                                   "type":  "number"
+                                                                                               },
+                                                                                               {
+                                                                                                   "path":  "expected.probeA.after.mapSize",
+                                                                                                   "type":  "number"
+                                                                                               },
+                                                                                               {
+                                                                                                   "path":  "expected.probeA.autoRepairObserved",
+                                                                                                   "type":  "boolean"
+                                                                                               },
+                                                                                               {
+                                                                                                   "path":  "expected.probeB.before.auditOutcome",
+                                                                                                   "type":  "string"
+                                                                                               },
+                                                                                               {
+                                                                                                   "path":  "expected.probeB.firstAudit.outcome",
+                                                                                                   "type":  "string"
+                                                                                               },
+                                                                                               {
+                                                                                                   "path":  "expected.probeB.firstAudit.exceptionType",
+                                                                                                   "type":  "string"
+                                                                                               },
+                                                                                               {
+                                                                                                   "path":  "expected.probeB.firstAudit.semanticCategory",
+                                                                                                   "type":  "string"
+                                                                                               },
+                                                                                               {
+                                                                                                   "path":  "expected.probeB.firstAudit.message",
+                                                                                                   "type":  "string"
+                                                                                               },
+                                                                                               {
+                                                                                                   "path":  "expected.probeB.after.poolSize",
+                                                                                                   "type":  "number"
+                                                                                               },
+                                                                                               {
+                                                                                                   "path":  "expected.probeB.after.actualTilesCount",
+                                                                                                   "type":  "number"
+                                                                                               },
+                                                                                               {
+                                                                                                   "path":  "expected.probeB.autoRepairObserved",
+                                                                                                   "type":  "boolean"
                                                                                                }
                                                                                            ]
                                                                              }
@@ -2043,7 +2155,10 @@
                                                                                                                                                           "type":  "boolean"
                                                                                                                                                       }
                                                                                                                                                   ]
-                                                                                                                                    }
+                                                                                                                                    },
+                                                                                                                 "expected.redFiveTileIds":  {
+                                                                                                                                                 "type":  "number"
+                                                                                                                                             }
                                                                                                              }
                                                                                       },
                                                                                       {
@@ -2104,7 +2219,10 @@
                                                                                                                                                                     "type":  "number"
                                                                                                                                                                 }
                                                                                                                                                             ]
-                                                                                                                                              }
+                                                                                                                                              },
+                                                                                                                 "expected.boundaryTypeIndexes":  {
+                                                                                                                                                      "type":  "number"
+                                                                                                                                                  }
                                                                                                              }
                                                                                       },
                                                                                       {
@@ -2211,7 +2329,47 @@
                                                                                                                                                           "path":  "csharpMapping",
                                                                                                                                                           "type":  "string"
                                                                                                                                                       }
-                                                                                                                                                  ]
+                                                                                                                                                  ],
+                                                                                                                                        "allowedValues":  {
+                                                                                                                                                              "outcome":  [
+                                                                                                                                                                              "accepted",
+                                                                                                                                                                              "rejected"
+                                                                                                                                                                          ]
+                                                                                                                                                          },
+                                                                                                                                        "conditionalRules":  [
+                                                                                                                                                                 {
+                                                                                                                                                                     "path":  "outcome",
+                                                                                                                                                                     "equals":  "accepted",
+                                                                                                                                                                     "rules":  [
+                                                                                                                                                                                   {
+                                                                                                                                                                                       "path":  "zoneOut",
+                                                                                                                                                                                       "type":  "string"
+                                                                                                                                                                                   },
+                                                                                                                                                                                   {
+                                                                                                                                                                                       "path":  "playerOut",
+                                                                                                                                                                                       "type":  "number"
+                                                                                                                                                                                   }
+                                                                                                                                                                               ]
+                                                                                                                                                                 },
+                                                                                                                                                                 {
+                                                                                                                                                                     "path":  "outcome",
+                                                                                                                                                                     "equals":  "rejected",
+                                                                                                                                                                     "rules":  [
+                                                                                                                                                                                   {
+                                                                                                                                                                                       "path":  "exceptionType",
+                                                                                                                                                                                       "type":  "string"
+                                                                                                                                                                                   },
+                                                                                                                                                                                   {
+                                                                                                                                                                                       "path":  "message",
+                                                                                                                                                                                       "type":  "string"
+                                                                                                                                                                                   },
+                                                                                                                                                                                   {
+                                                                                                                                                                                       "path":  "semanticCategory",
+                                                                                                                                                                                       "type":  "string"
+                                                                                                                                                                                   }
+                                                                                                                                                                               ]
+                                                                                                                                                                 }
+                                                                                                                                                             ]
                                                                                                                                     }
                                                                                                              }
                                                                                       },
@@ -2270,7 +2428,34 @@
                                                                                                                                         "arrayItemRules":  {
                                                                                                                                                                "redFiveTileIds":  {
                                                                                                                                                                                       "type":  "number"
-                                                                                                                                                                                  }
+                                                                                                                                                                                  },
+                                                                                                                                                               "wall":  {
+                                                                                                                                                                            "type":  "number"
+                                                                                                                                                                        },
+                                                                                                                                                               "baseWall":  {
+                                                                                                                                                                                "type":  "number"
+                                                                                                                                                                            },
+                                                                                                                                                               "positions":  {
+                                                                                                                                                                                 "type":  "object",
+                                                                                                                                                                                 "rules":  [
+                                                                                                                                                                                               {
+                                                                                                                                                                                                   "path":  "tileId",
+                                                                                                                                                                                                   "type":  "number"
+                                                                                                                                                                                               },
+                                                                                                                                                                                               {
+                                                                                                                                                                                                   "path":  "zone",
+                                                                                                                                                                                                   "type":  "string"
+                                                                                                                                                                                               },
+                                                                                                                                                                                               {
+                                                                                                                                                                                                   "path":  "seat",
+                                                                                                                                                                                                   "type":  "number"
+                                                                                                                                                                                               },
+                                                                                                                                                                                               {
+                                                                                                                                                                                                   "path":  "slot",
+                                                                                                                                                                                                   "type":  "number"
+                                                                                                                                                                                               }
+                                                                                                                                                                                           ]
+                                                                                                                                                                             }
                                                                                                                                                            }
                                                                                                                                     }
                                                                                                              }

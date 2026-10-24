@@ -238,6 +238,14 @@ function Test-ArrayItemRules {
                 if ($null -ne $nestedSpecs) {
                     Test-ArrayItemRules -Object $element -Specs $nestedSpecs -Label ('{0}.{1}' -f $Label, $path)
                 }
+                $itemAllowed = Get-Prop -Object $spec -Name 'allowedValues'
+                if ($null -ne $itemAllowed) {
+                    Test-AllowedValues -Object $element -Specs $itemAllowed -Label ('{0}.{1}' -f $Label, $path)
+                }
+                $itemConditional = @(Get-ArrayProp -Object $spec -Name 'conditionalRules')
+                if ($itemConditional.Count -gt 0) {
+                    Test-ConditionalRules -Object $element -Rules $itemConditional -Label ('{0}.{1}' -f $Label, $path)
+                }
             }
             elseif ($type -eq 'number') {
                 if (-not ($element -is [int] -or $element -is [long] -or $element -is [double] -or $element -is [decimal])) {

@@ -781,7 +781,70 @@ Invoke-NegativeCase -Name 'physical-redfive-object' -ExpectedCode 'CASE_STRUCTUR
     Update-CatalogFixtureSha -Root $root -FixtureId 'physical-v1'
 }
 
-# 50. Exporter byte change.
+# 50. G-003a positions element must retain its four consumed fields.
+Invoke-NegativeCase -Name 'physical-position-empty' -ExpectedCode 'CASE_STRUCTURE_MISSING' -Mutator {
+    param($root)
+    $path = Join-Path $root 'tests\v5-golden\physical-v1.json'
+    $json = Read-JsonFile $path
+    $json.samples[4].expected.cases[0].positions[0] = [pscustomobject]@{}
+    Write-JsonFile $path $json
+    Update-CatalogFixtureSha -Root $root -FixtureId 'physical-v1'
+}
+
+# 51. G-003a wall elements must be numbers.
+Invoke-NegativeCase -Name 'physical-wall-object' -ExpectedCode 'CASE_STRUCTURE_TYPE' -Mutator {
+    param($root)
+    $path = Join-Path $root 'tests\v5-golden\physical-v1.json'
+    $json = Read-JsonFile $path
+    $json.samples[4].expected.cases[0].wall[0] = [pscustomobject]@{}
+    Write-JsonFile $path $json
+    Update-CatalogFixtureSha -Root $root -FixtureId 'physical-v1'
+}
+
+# 52. G-003a baseWall elements must be numbers.
+Invoke-NegativeCase -Name 'physical-basewall-object' -ExpectedCode 'CASE_STRUCTURE_TYPE' -Mutator {
+    param($root)
+    $path = Join-Path $root 'tests\v5-golden\physical-v1.json'
+    $json = Read-JsonFile $path
+    $json.samples[4].expected.cases[0].baseWall[0] = [pscustomobject]@{}
+    Write-JsonFile $path $json
+    Update-CatalogFixtureSha -Root $root -FixtureId 'physical-v1'
+}
+
+# 53. G-002 accepted branch requires zoneOut.
+Invoke-NegativeCase -Name 'physical-zoneout-missing' -ExpectedCode 'CASE_STRUCTURE_MISSING' -Mutator {
+    param($root)
+    $path = Join-Path $root 'tests\v5-golden\physical-v1.json'
+    $json = Read-JsonFile $path
+    $case = $json.samples[3].expected.cases | Where-Object { $_.outcome -eq 'accepted' } | Select-Object -First 1
+    $case.PSObject.Properties.Remove('zoneOut')
+    Write-JsonFile $path $json
+    Update-CatalogFixtureSha -Root $root -FixtureId 'physical-v1'
+}
+
+# 54. G-002 rejected branch requires exceptionType/semanticCategory.
+Invoke-NegativeCase -Name 'physical-rejected-field-missing' -ExpectedCode 'CASE_STRUCTURE_MISSING' -Mutator {
+    param($root)
+    $path = Join-Path $root 'tests\v5-golden\physical-v1.json'
+    $json = Read-JsonFile $path
+    $case = $json.samples[3].expected.cases | Where-Object { $_.outcome -eq 'rejected' } | Select-Object -First 1
+    $case.PSObject.Properties.Remove('exceptionType')
+    $case.PSObject.Properties.Remove('semanticCategory')
+    Write-JsonFile $path $json
+    Update-CatalogFixtureSha -Root $root -FixtureId 'physical-v1'
+}
+
+# 55. G-001c invalid element requires input.
+Invoke-NegativeCase -Name 'physical-invalid-input-missing' -ExpectedCode 'CASE_STRUCTURE_MISSING' -Mutator {
+    param($root)
+    $path = Join-Path $root 'tests\v5-golden\physical-v1.json'
+    $json = Read-JsonFile $path
+    $json.samples[2].expected.invalid[0].PSObject.Properties.Remove('input')
+    Write-JsonFile $path $json
+    Update-CatalogFixtureSha -Root $root -FixtureId 'physical-v1'
+}
+
+# 56. Exporter byte change.
 Invoke-NegativeCase -Name 'exporter-sha' -ExpectedCode 'EXPORTER_SHA_MISMATCH' -Mutator {
     param($root)
     $path = Join-Path $root 'engine\src\test\kotlin\com\majiang\model\V5PhysicalGoldenExporterTest.kt'
