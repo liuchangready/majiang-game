@@ -495,7 +495,37 @@ Invoke-NegativeCase -Name 'clock-operation-null' -ExpectedCode 'CASE_STRUCTURE_T
     Update-CatalogFixtureSha -Root $root -FixtureId 'round-v1'
 }
 
-# 23. Exporter byte change.
+# 23. Middle score sample with null input must fail, not be skipped as first/last.
+Invoke-NegativeCase -Name 'score-middle-null-input' -ExpectedCode 'CASE_STRUCTURE_MISSING' -Mutator {
+    param($root)
+    $path = Join-Path $root 'tests\v5-golden\scoring-v1.json'
+    $json = Read-JsonFile $path
+    $json.scoreSamples[70].input = $null
+    Write-JsonFile $path $json
+    Update-CatalogFixtureSha -Root $root -FixtureId 'scoring-v1'
+}
+
+# 24. Middle random sample with null context must fail.
+Invoke-NegativeCase -Name 'random-middle-null-context' -ExpectedCode 'CASE_STRUCTURE_MISSING' -Mutator {
+    param($root)
+    $path = Join-Path $root 'tests\v5-golden\scoring-v1.json'
+    $json = Read-JsonFile $path
+    $json.randomSamples[5000].context = $null
+    Write-JsonFile $path $json
+    Update-CatalogFixtureSha -Root $root -FixtureId 'scoring-v1'
+}
+
+# 25. Middle random sample with wrong context type must fail.
+Invoke-NegativeCase -Name 'random-middle-wrong-context' -ExpectedCode 'CASE_STRUCTURE_TYPE' -Mutator {
+    param($root)
+    $path = Join-Path $root 'tests\v5-golden\scoring-v1.json'
+    $json = Read-JsonFile $path
+    $json.randomSamples[5000].context = 'not-an-object'
+    Write-JsonFile $path $json
+    Update-CatalogFixtureSha -Root $root -FixtureId 'scoring-v1'
+}
+
+# 26. Exporter byte change.
 Invoke-NegativeCase -Name 'exporter-sha' -ExpectedCode 'EXPORTER_SHA_MISMATCH' -Mutator {
     param($root)
     $path = Join-Path $root 'engine\src\test\kotlin\com\majiang\model\V5PhysicalGoldenExporterTest.kt'

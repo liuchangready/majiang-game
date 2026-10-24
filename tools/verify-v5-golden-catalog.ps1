@@ -274,13 +274,7 @@ function Test-Group {
             }
         }
         if (($shapeRules.Count -gt 0 -or $null -ne $elementRules) -and $items.Count -gt 0) {
-            if ($items.Count -le 100) {
-                $shapeTargets = $items
-            }
-            else {
-                $shapeTargets = @($items[0], $items[$items.Count - 1])
-            }
-            foreach ($target in $shapeTargets) {
+            foreach ($target in $items) {
                 if ($shapeRules.Count -gt 0) {
                     Test-ShapeRules -Object $target -Rules $shapeRules -Label ('{0}:{1}' -f $fixtureId, $groupName)
                 }
