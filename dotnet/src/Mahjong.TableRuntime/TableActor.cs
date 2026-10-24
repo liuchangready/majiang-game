@@ -911,12 +911,6 @@ namespace Mahjong.TableRuntime
                 return await ProcessCommandCoreAsync(command).ConfigureAwait(false);
             }
 
-            TableOperationResult? guard = GuardServing();
-            if (guard != null)
-            {
-                return guard;
-            }
-
             if (!command.HasDurableIdentity)
             {
                 // Not admitted: a command without host-computed scope/API/digest cannot be
@@ -942,7 +936,8 @@ namespace Mahjong.TableRuntime
             TableScopeRecord scope = lookup.Scope;
 
             // Receipt-first: a committed receipt (including REJECTED) is returned exactly even
-            // when the scope was revoked/expired afterwards. No Domain evaluation happens here.
+            // when the scope was revoked/expired or the owner lease was lost afterwards. No
+            // Domain evaluation happens here.
             TableDurableReceipt? existing = await _durable.Receipts
                 .TryGetAsync(scope.AccountId, scopeId, command.RequestId, CancellationToken.None)
                 .ConfigureAwait(false);
@@ -950,11 +945,25 @@ namespace Mahjong.TableRuntime
             {
                 if (existing.Matches(command.Api!, command.PayloadSha256!.Value))
                 {
-                    return TableOperationResult.FromReplay(existing);
+                    if (_lifecycle == TableActorLifecycle.Serving ||
+                        _lifecycle == TableActorLifecycle.LeaseLost)
+                    {
+                        return TableOperationResult.FromReplay(existing);
+                    }
+
+                    TableOperationResult? replayGuard = GuardServing();
+                    return replayGuard ?? TableOperationResult.FromReplay(existing);
                 }
 
                 return TableOperationResult.Conflict(
                     "The same (account, scope, request) key was used with a different API or payload.");
+            }
+
+            // New work is never admitted after lease loss or any other non-serving lifecycle.
+            TableOperationResult? guard = GuardServing();
+            if (guard != null)
+            {
+                return guard;
             }
 
             TableOperationResult? scopeError = ValidateScopeForCommand(scope, command);
