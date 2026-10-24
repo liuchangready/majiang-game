@@ -1,6 +1,6 @@
-# V5 P3.4 回执、租约和恢复端口合同交付（第 21 轮返修）
+# V5 P3.4 回执、租约和恢复端口合同交付（第 22 轮返修）
 
-- 状态：**第 21 轮本地返修完成，等待 caller 第 21 轮独立验收**。不是 G1/G5，不是 V5 全链通过；V4 仍是唯一生产架构。
+- 状态：**第 22 轮本地返修完成，等待 caller 第 22 轮独立验收**。不是 G1/G5，不是 V5 全链通过；V4 仍是唯一生产架构。
 - 唯一工作树：`D:/majiang-wt/p34-receipts`（分支 `wt/v5-p34-receipts`）。
 - 冻结基线：`daeb19a64951174426924026fe974c8ae5caacd9`。
 - 第 1 轮实现：`9e909ea6b7dfb411b1e2511fa4f0f9d05307ba38`。
@@ -24,14 +24,16 @@
 - 第 19 轮实现：`ca2638cfd2638af4850d4e0adce99965cf3a7f4a`（`fix(v5-p34): prevent grace restart via timestamp shift`）。
 - 第 20 轮实现：`3772dc791656e94b7e068eeaa5957a55a51c5b9d`（`fix(v5-p34): rebuild same-boot grace recovery timing`）。
 - 第 21 轮实现：`7e0e0236cb29ddc07673531f68762f519ae3a5c4`（`fix(v5-p34): let recovered grace survive ordinary time`）。
+- 第 22 轮实现：`43cc8e456588de9eaaf8723034fd3b103ff0a814`（`fix(v5-p34): protect live grace from same-version expiry`）。
 - 本文件提交为最终本地 HEAD；未 push、未建 PR、未触发 CI、未转派。
-- caller 的 `CodexP34ReviewProbes.cs`、`CodexP34Round2ReviewProbes.cs`、`CodexP34Round3ReviewProbes.cs`、`CodexP34Round4ReviewProbes.cs`、`CodexP34Round5ReviewProbes.cs`、`CodexP34Round6ReviewProbes.cs`、`CodexP34Round7ReviewProbes.cs`、`CodexP34Round8ReviewProbes.cs`、`CodexP34Round9ReviewProbes.cs`、`CodexP34Round10ReviewProbes.cs`、`CodexP34Round11ReviewProbes.cs`、`CodexP34Round12ReviewProbes.cs`、`CodexP34Round13ReviewProbes.cs`、`CodexP34Round14ReviewProbes.cs`、`CodexP34Round15ReviewProbes.cs`、`CodexP34Round16ReviewProbes.cs`、`CodexP34Round17ReviewProbes.cs`、`CodexP34Round18ReviewProbes.cs`、`CodexP34Round19ReviewProbes.cs`、`CodexP34Round20ReviewProbes.cs` 均保留、纳入提交并通过；未删除或弱化探针。
+- caller 的 `CodexP34ReviewProbes.cs`、`CodexP34Round2ReviewProbes.cs`、`CodexP34Round3ReviewProbes.cs`、`CodexP34Round4ReviewProbes.cs`、`CodexP34Round5ReviewProbes.cs`、`CodexP34Round6ReviewProbes.cs`、`CodexP34Round7ReviewProbes.cs`、`CodexP34Round8ReviewProbes.cs`、`CodexP34Round9ReviewProbes.cs`、`CodexP34Round10ReviewProbes.cs`、`CodexP34Round11ReviewProbes.cs`、`CodexP34Round12ReviewProbes.cs`、`CodexP34Round13ReviewProbes.cs`、`CodexP34Round14ReviewProbes.cs`、`CodexP34Round15ReviewProbes.cs`、`CodexP34Round16ReviewProbes.cs`、`CodexP34Round17ReviewProbes.cs`、`CodexP34Round18ReviewProbes.cs`、`CodexP34Round19ReviewProbes.cs`、`CodexP34Round20ReviewProbes.cs`、`CodexP34Round21ReviewProbes.cs` 均保留、纳入提交并通过；未删除或弱化探针。
 
-## 1. 第 21 轮修复结论
+## 1. 第 22 轮修复结论
 
 |缺陷|修复|
 |---|---|
-|R30 恢复后正常时间流逝导致合法 checkpoint 保存失败|`IsValidRecoveredControlRebase` 改为：同 boot 下，deadline 在保存时已到期（`newDeadline <= nowMonotonic`）即视为已过期、不授予未来 grace；只有 `newDeadline > now` 的**未来** deadline 才必须等于旧绝对 deadline。因此恢复时 pin 到 now 的过期 grace、或恢复后时间越过 deadline，都可继续保存；同时 R28 的双时间后移仍因新 deadline 处于未来且不等于旧 deadline 被拒。|
+|R31 未到期 grace 可被同版本 checkpoint 提前耗尽|`IsValidRecoveredControlRebase` 改为先看旧 deadline 是否已过期：`oldDeadline > now` 时新 deadline 必须等于旧绝对 deadline（不得缩短/延长）；`oldDeadline <= now` 时仍允许已过期 pin 值，但新 deadline 不得回到未来。R31 的 deadline 改为 now/now-1 在旧 grace 仍未来时被拒；R30 的恢复后正常时间推进仍通过。|
+|R30 恢复后正常时间流逝导致合法 checkpoint 保存失败|`IsValidRecoveredControlRebase` 对保存时已到期的 deadline 允许其保持已过期（不授予未来 grace），因此恢复时 pin 到 now 的过期 grace、或恢复后时间越过 deadline，都可继续保存；同时 R28 的双时间后移仍被拒。|
 |R29 默认 GRACE_THEN_AI 同 boot 冷恢复失败（RECOVERY_GRACE_TIMING_REQUIRED）|`TableRecoveryService` 在 `checkpoint.BootId == options.BootId` 的可信同 boot 条件下，用 control snapshot 自身的绝对 `GraceDeadlineMillis` 与当前 monotonic 重建每个断线座位的显式 remaining/overdue，构造 `TableGraceRecoveryTiming` 注入 `TableControlRecoveryBaseline`；不再把同 boot 的 control 时间误判为不可移植。|
 |R29 deadline 语义|未到期：remaining=deadline-now，actor 重建后绝对 deadline 不变、不重复赠时；已过期：overdue=now-deadline，deadline 固定为 now，保持过期。|
 |R29 来源 boot|使用 checkpoint 自身的 BootId（control 载荷所在 checkpoint）判断 control 时间可比较，不只依赖可能被更新过的 timing journal boot；跨 boot 仍不信任绝对时间，缺少可信 grace 证据继续 fail closed。|
@@ -244,13 +246,15 @@ Decode 强制 round/state 匹配当前恢复目标、public/private 各 4、无�
 | caller `*CodexP34Round18ReviewProbes`（2 cases） | **2 passed / 0 failed / 0 skipped** |
 | caller `*CodexP34Round19ReviewProbes`（2 cases） | **2 passed / 0 failed / 0 skipped** |
 | caller `*CodexP34Round20ReviewProbes`（3 cases） | **3 passed / 0 failed / 0 skipped** |
-| `dotnet test .../Mahjong.TableRuntime.Tests.csproj -c Release` | **303 passed / 0 failed / 0 skipped**（原 168 + 135，含 67 探针/case） |
+| caller `*CodexP34Round21ReviewProbes`（2 cases） | **2 passed / 0 failed / 0 skipped** |
+| `dotnet test .../Mahjong.TableRuntime.Tests.csproj -c Release` | **305 passed / 0 failed / 0 skipped**（原 168 + 137，含 69 探针/case） |
 | `dotnet test dotnet/Mahjong.sln -c Release` | **575 passed / 0 failed / 0 skipped**（Domain 322、Contracts 104、Client 132、Ai 17） |
 | `dotnet build dotnet/Mahjong.sln -c Release` | **0 warnings / 0 errors** |
 | `git diff --check daeb19a..HEAD` | **exit 0** |
 
 新增/调整覆盖：
 
+- R31：`CodexP34Round21ReviewProbes` 的 overdue=0/1；旧 grace 仍未来时把 deadline 提前到 now/now-1 均 Failed，CommitCount/TimingVersion/ControlPayload 不变。
 - R30：`CodexP34Round20ReviewProbes` 的 (250,1)/(250,10000)/(20000,1)；恢复后时间推进仍可 Save，未到期 deadline 不变，已过期保持过期，再次 Recover 成功。
 - R29：`CodexP34Round19ReviewProbes` 默认 GRACE_THEN_AI elapsed250/20000；同 boot 恢复成功，elapsed250 deadline 不变，elapsed20000 保持过期；恢复后 Save 和再次 Recover 成功。
 - R28：`CodexP34Round18ReviewProbes` 的 same-boot shift250/shift20000；两时间同时后移保存 Failed，旧 deadline/CommitCount/TimingVersion 不变。
@@ -278,14 +282,14 @@ Decode 强制 round/state 匹配当前恢复目标、public/private 各 4、无�
 - R4：`RecoveryInstallsTypedCheatLedgerAndLatestCommittedFacts`、`FullHistoryIsInstalledEvenWhenSnapshotWindowIsZero`、`RecoveryInstallsStrictWireBaseline...`、`MissingCommittedFactsIsRefused`、`TamperedProjectionFactsAreRefused`、`UnmodeledPrivateCheatSubstateIsRefused`。
 - 既有回执/scope/租约/事务/fence 测试继续通过。
 
-## 6. SHA-256（第 21 轮实现）
+## 6. SHA-256（第 22 轮实现）
 
 | 文件 | SHA-256 |
 |---|---|
 | `dotnet/src/Mahjong.Domain/DecisionClock.cs` | `75f4314a580155f1b27a28a5db63601a7d78a1b9d8a4fc729b3570fe1e2dfaec` |
 | `dotnet/src/Mahjong.TableRuntime/TableActor.cs` | `827a3088dd885010932cff4ca66157317c8ca1cd7decbd0a1b6562cb72409d80` |
 | `dotnet/src/Mahjong.TableRuntime/TableDurableContracts.cs` | `a4b8f30f532ce1b949bae6152a39edef99d0c527c9d26e33b490d528c7c5c375` |
-| `dotnet/src/Mahjong.TableRuntime/InMemoryTableStore.cs` | `9feaf3154644f83e7267755681936419f7c6f65add2d1595058fbac77d167c7c` |
+| `dotnet/src/Mahjong.TableRuntime/InMemoryTableStore.cs` | `816fe247a2e782e8890dd8d887c6ddeb768ccd7508db483eb9c60bf29b4b97f2` |
 | `dotnet/src/Mahjong.TableRuntime/TableCheckpointValidator.cs` | `f01435562d6a1c8e88d1e886671f23e45a9f428cc6ee65dc8e4dd277acbc8817` |
 | `dotnet/src/Mahjong.TableRuntime/TableCheckpointCodecs.cs` | `d2783a6c08ffa4e35b741b92444755d3d69e4e0ab2d814bcd236c0897b5d1a9c` |
 | `dotnet/src/Mahjong.TableRuntime/TableControlContracts.cs` | `dc89595468c0802545a270c58133d121c11f5eb5fb72f375339739c2596ec498` |
@@ -320,8 +324,9 @@ Decode 强制 round/state 匹配当前恢复目标、public/private 各 4、无�
 | `dotnet/tests/.../CodexP34Round18ReviewProbes.cs` | `0bbff45b92e57b73f0fd3789af46731ba9586f5cae4c03f5650cafb16dca0da6` |
 | `dotnet/tests/.../CodexP34Round19ReviewProbes.cs` | `e4a6efbf317bcd0a45d6a936fe19a9a392b738e4b418ab97bde6245abbafb71d` |
 | `dotnet/tests/.../CodexP34Round20ReviewProbes.cs` | `5d86de87423d89cc6fb1a12e27af0702f168a791c3815df45021db61cc3113cf` |
+| `dotnet/tests/.../CodexP34Round21ReviewProbes.cs` | `36b0cb3c108f6717a8f5675e414dd642848149ab6f8a104ef81ad3c8e5351d8d` |
 
-第 21 轮实现提交：2 文件，`59 insertions(+), 12 deletions(-)`。未新增项目/包引用，未修改 `Mahjong.sln`、任务书、矩阵、黄金 fixtures、统一 verifier 或 CI。
+第 22 轮实现提交：2 文件，`74 insertions(+), 6 deletions(-)`。未新增项目/包引用，未修改 `Mahjong.sln`、任务书、矩阵、黄金 fixtures、统一 verifier 或 CI。
 
 ## 7. NOT_RUN 与边界
 
@@ -333,6 +338,6 @@ Decode 强制 round/state 匹配当前恢复目标、public/private 各 4、无�
 
 ## 8. 交接
 
-- 第 21 轮实现 HEAD：`7e0e0236cb29ddc07673531f68762f519ae3a5c4`。
+- 第 22 轮实现 HEAD：`43cc8e456588de9eaaf8723034fd3b103ff0a814`。
 - 本文件提交为最终本地 HEAD；工作树 clean。
-- 等待 caller 第 21 轮独立验收；caller 负责唯一 PR19 `feat/v5-1-integration -> v5` 及 merge-back。不自行宣告 G1/G5。
+- 等待 caller 第 22 轮独立验收；caller 负责唯一 PR19 `feat/v5-1-integration -> v5` 及 merge-back。不自行宣告 G1/G5。
