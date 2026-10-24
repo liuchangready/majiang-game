@@ -803,7 +803,8 @@ namespace Mahjong.Domain.Tests
                 roundWind: 3,
                 roundNumber: 0,
                 honbaSticks: 0,
-                scores: new long[] { long.MaxValue, 1, 1, 1 },
+                // The round-start total must fit in long; only the winner's later payment overflows.
+                scores: new long[] { long.MaxValue, -long.MaxValue, 25000, 25000 },
                 riichiSticks: 0);
 
             var plan = new TablePlan(RoundPhase.CheatWindow)
@@ -821,11 +822,20 @@ namespace Mahjong.Domain.Tests
                 9400,
                 new[] { new RoundSettlementSeatFacts(0) });
 
+            ulong sourceFingerprint = round.SourceFingerprint;
+            RoundPhase sourcePhase = round.Phase;
+            TilePositionMap sourceTiles = round.Tiles;
+            RoundEvent[] sourceEvents = round.Events.ToArray();
+
             RoundSettlementRejectedException overflow = Assert.Throws<RoundSettlementRejectedException>(
                 () => RoundSettlementCalculator.CalculateTsumo(round, facts));
             Assert.Equal(RoundSettlementRejectionCode.ArithmeticOverflow, overflow.Code);
             Assert.Equal(0, round.Version);
             Assert.False(round.IsFinished);
+            Assert.Equal(sourceFingerprint, round.SourceFingerprint);
+            Assert.Equal(sourcePhase, round.Phase);
+            Assert.Same(sourceTiles, round.Tiles);
+            Assert.Equal(sourceEvents, round.Events.ToArray());
 
             var shortPlan = new TablePlan(RoundPhase.CheatWindow)
             {
