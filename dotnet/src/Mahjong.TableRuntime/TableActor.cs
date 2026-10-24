@@ -853,7 +853,8 @@ namespace Mahjong.TableRuntime
                         begin.Completion.TrySetResult(ProcessBeginRecovery(begin.Reason));
                         break;
                     case CompleteRecoveryMailboxMessage complete:
-                        complete.Completion.TrySetResult(ProcessCompleteRecovery(complete.Baseline));
+                        complete.Completion.TrySetResult(
+                            await ProcessCompleteRecoveryAsync(complete.Baseline).ConfigureAwait(false));
                         break;
                     case LeaseLostMailboxMessage leaseLost:
                         leaseLost.Completion.TrySetResult(
@@ -2271,10 +2272,16 @@ namespace Mahjong.TableRuntime
             }
 
             byte[] nextStatePayload = RoundRecoveryCodec.Encode(RoundRecovery.Capture(nextState));
-            byte[]? rawFacts = durable.CommittedFactsProvider?.Invoke();
-            byte[]? factsPayload = rawFacts == null
+            TableProjectionContextData? projectionFacts = CaptureProjectionFacts(
+                nextState,
+                commandVersion,
+                lastEventSeq,
+                records,
+                now,
+                createdUtc);
+            byte[]? factsPayload = projectionFacts == null
                 ? null
-                : TableCommittedFactsCodec.Encode(nextState.RoundId, commandVersion, rawFacts);
+                : TableProjectionFactsCodec.Encode(projectionFacts);
             TablePayloadSha256? factsHash = factsPayload == null
                 ? (TablePayloadSha256?)null
                 : TablePayloadSha256.Compute(factsPayload);
@@ -2456,6 +2463,54 @@ namespace Mahjong.TableRuntime
             }
         }
 
+        private TableProjectionContextData? CaptureProjectionFacts(
+            RoundStateMachine round,
+            StateVersion stateVersion,
+            EventSeq lastEventSeq,
+            IReadOnlyList<TableEventRecord>? extraEvents,
+            long now,
+            ulong utcNow)
+        {
+            if (_durable == null ||
+                (_durable.ProjectionFactsProvider == null && _projectionContextSource == null))
+            {
+                return null;
+            }
+
+            var events = new List<TableEventRecord>(_committedEventLog);
+            if (extraEvents != null)
+            {
+                for (int i = 0; i < extraEvents.Count; i++)
+                {
+                    events.Add(extraEvents[i]);
+                }
+            }
+
+            var request = new TableProjectionContextRequest(
+                _options.RoomId,
+                round,
+                stateVersion,
+                lastEventSeq,
+                _ownerEpoch,
+                _controlVersion,
+                _recoveryGeneration,
+                now,
+                (long)utcNow,
+                events);
+            TableProjectionContextData? facts = _durable.ProjectionFactsProvider != null
+                ? _durable.ProjectionFactsProvider(request)
+                : _projectionContextSource!.Capture(request);
+            if (facts == null ||
+                !string.Equals(facts.RoundId, round.RoundId, StringComparison.Ordinal) ||
+                facts.StateVersion != stateVersion)
+            {
+                throw new InvalidOperationException(
+                    "Projection facts are missing or do not match the committed round/state.");
+            }
+
+            return facts;
+        }
+
         private TableCheckpoint BuildCheckpoint(
             RoundStateMachine round,
             StateVersion stateVersion,
@@ -2532,10 +2587,16 @@ namespace Mahjong.TableRuntime
                 : cheat == null
                     ? null
                     : TableCheatLedgerCheckpoint.FromLedger(cheat);
-            byte[]? rawFacts = durable.CommittedFactsProvider?.Invoke();
-            byte[]? factsPayload = rawFacts == null
+            TableProjectionContextData? projectionFacts = CaptureProjectionFacts(
+                round,
+                stateVersion,
+                lastEventSeq,
+                null,
+                now,
+                utcNow);
+            byte[]? factsPayload = projectionFacts == null
                 ? null
-                : TableCommittedFactsCodec.Encode(round.RoundId, stateVersion, rawFacts);
+                : TableProjectionFactsCodec.Encode(projectionFacts);
             return TableCheckpointFactory.Create(
                 _options.RoomId,
                 round,
@@ -2785,7 +2846,8 @@ namespace Mahjong.TableRuntime
                     "Lease/state changed between verification and install.");
             }
 
-            TableOperationResult installed = ProcessCompleteRecovery(recovered.Baseline);
+            TableOperationResult installed = await ProcessCompleteRecoveryAsync(recovered.Baseline)
+                .ConfigureAwait(false);
             if (installed.Status != TableOperationStatus.Configured)
             {
                 EnterFaulted(installed.ReasonCode, installed.Detail);
@@ -2795,6 +2857,77 @@ namespace Mahjong.TableRuntime
             }
 
             return recovered;
+        }
+
+        private async ValueTask<TableOperationResult?> RevalidateRecoveryInstallAsync(
+            TableRecoveryBaseline baseline)
+        {
+            if (_durable == null)
+            {
+                return null;
+            }
+
+            TableLeaseSnapshot? lease = await _durable.Lease
+                .GetAsync(_options.RoomId, CancellationToken.None)
+                .ConfigureAwait(false);
+            TableStateRow? state = await _durable.Store
+                .LoadStateAsync(_options.RoomId, CancellationToken.None)
+                .ConfigureAwait(false);
+            TableCheckpoint? checkpoint = await _durable.Store
+                .LoadCheckpointAsync(_options.RoomId, CancellationToken.None)
+                .ConfigureAwait(false);
+            TableTimingJournalRecord? timing = await _durable.Store
+                .LoadTimingAsync(_options.RoomId, CancellationToken.None)
+                .ConfigureAwait(false);
+            ulong nowUtc = NowUtc();
+            if (lease == null ||
+                !string.Equals(lease.OwnerInstance, _durable.OwnerInstance, StringComparison.Ordinal) ||
+                lease.OwnerEpoch != baseline.OwnerEpoch ||
+                lease.IsExpiredAt(nowUtc))
+            {
+                return TableOperationResult.Failed(
+                    _stateVersion,
+                    TableRuntimeReasonCode.StaleOwnerEpoch,
+                    "The lease expired or moved during host installation.");
+            }
+
+            if (state == null ||
+                state.StateVersion != baseline.StateVersion ||
+                state.LastEventSeq != baseline.LastEventSeq ||
+                state.StateFingerprint != baseline.Round.SourceFingerprint ||
+                state.ControlVersion != (baseline.Control?.ControlVersion ?? state.ControlVersion) ||
+                state.TimingVersion != baseline.TimingVersion)
+            {
+                return TableOperationResult.Failed(
+                    _stateVersion,
+                    TableRuntimeReasonCode.RecoveryStateChanged,
+                    "table_state changed during host installation.");
+            }
+
+            if (checkpoint == null ||
+                checkpoint.StateVersion.CompareTo(state.StateVersion) > 0 ||
+                checkpoint.LastEventSeq.CompareTo(state.LastEventSeq) > 0 ||
+                checkpoint.ControlVersion > state.ControlVersion ||
+                checkpoint.TimingVersion > state.TimingVersion)
+            {
+                return TableOperationResult.Failed(
+                    _stateVersion,
+                    TableRuntimeReasonCode.RecoveryStateChanged,
+                    "checkpoint changed during host installation.");
+            }
+
+            if (timing == null ||
+                timing.TimingVersion != baseline.TimingVersion ||
+                timing.StateVersion != state.StateVersion ||
+                timing.ControlVersion != state.ControlVersion)
+            {
+                return TableOperationResult.Failed(
+                    _stateVersion,
+                    TableRuntimeReasonCode.RecoveryTimingInvalid,
+                    "timing journal changed during host installation.");
+            }
+
+            return null;
         }
 
         private async ValueTask<TableOperationResult> ProcessOpenDecisionAsync(PendingDecision decision)
@@ -2980,7 +3113,7 @@ namespace Mahjong.TableRuntime
                 "Recovery started; new state-changing and control work is refused.");
         }
 
-        private TableOperationResult ProcessCompleteRecovery(TableRecoveryBaseline baseline)
+        private async ValueTask<TableOperationResult> ProcessCompleteRecoveryAsync(TableRecoveryBaseline baseline)
         {
             if (_lifecycle != TableActorLifecycle.Recovering)
             {
@@ -3161,9 +3294,11 @@ namespace Mahjong.TableRuntime
                     candidateClock.RestoreDecision(
                         recovered.Key,
                         now,
-                        recovered.RemainingBaseMillis,
+                        Math.Max(0L, recovered.RemainingBaseMillis - recovered.RecoveryGraceMillis),
                         recovered.RemainingReserveMillis,
-                        recovered.OverdueMillis);
+                        recovered.OverdueMillis,
+                        recovered.RecoveryGraceMillis,
+                        recovered.RecoveryGraceApplied);
                 }
                 catch (OverflowException exception)
                 {
@@ -3201,7 +3336,7 @@ namespace Mahjong.TableRuntime
                     "Strict recovery history is empty or does not end at the baseline sequence.");
             }
 
-            if ((baseline.Cheat != null || baseline.CommittedFactsPayload != null) &&
+            if ((baseline.Cheat != null || baseline.ProjectionFacts != null) &&
                 _durable?.RecoveryStateSink == null)
             {
                 return TableOperationResult.Failed(
@@ -3220,7 +3355,7 @@ namespace Mahjong.TableRuntime
                         baseline.TimingVersion,
                         baseline.Control?.ControlVersion ?? _controlVersion,
                         baseline.Cheat,
-                        baseline.CommittedFactsPayload,
+                        baseline.ProjectionFacts,
                         baseline.CommittedEvents));
                 }
                 catch (Exception exception)
@@ -3239,6 +3374,16 @@ namespace Mahjong.TableRuntime
                     _stateVersion,
                     TableRuntimeReasonCode.RecoveryEventGap,
                     "Recovery history does not end at the baseline event sequence.");
+            }
+
+            // The host install may be slow and may advance clocks or external state. Re-confirm
+            // the complete fence after Install and immediately before the first successful
+            // publication/Serving transition. A failure leaves the actor non-Serving.
+            TableOperationResult? finalFence = await RevalidateRecoveryInstallAsync(baseline).ConfigureAwait(false);
+            if (finalFence != null)
+            {
+                EnterFaulted(finalFence.ReasonCode, finalFence.Detail);
+                return finalFence;
             }
 
             _round = baseline.Round;

@@ -623,6 +623,7 @@ namespace Mahjong.TableRuntime.Tests
             Assert.True(playerSink.Frames[0].IsFullSnapshot);
             Assert.Equal(2UL, playerSink.Frames[0].StreamVersion.Value);
             Assert.NotNull(playerSink.Frames[0].Player);
+            Assert.True(recoveredSource.UsedRecovered);
 
             var spectatorSink = new RecordingStreamSink();
             TableStreamControlResult spectator = await recovered.Actor.SubscribeStreamAsync(
@@ -649,29 +650,53 @@ namespace Mahjong.TableRuntime.Tests
 
     internal sealed class RecoveredProjectionSource : ITableProjectionContextSource
     {
+        private readonly TestProjectionSource _live = new TestProjectionSource();
+
         public RecoveredProjectionSource(RecordingRecoveryStateSink sink)
         {
             Sink = sink ?? throw new ArgumentNullException(nameof(sink));
+            _live.EventFactsFactory = request => WireEventFacts.Build(request);
         }
 
         public RecordingRecoveryStateSink Sink { get; }
 
         public int Calls { get; private set; }
 
+        public bool UsedRecovered { get; private set; }
+
         public TableProjectionContextData Capture(TableProjectionContextRequest request)
         {
             Calls++;
-            CheatState cheat = Sink.Installed?.Cheat ?? V32Fixtures.Cheat();
-            return new TableProjectionContextData(
-                request.Round.RoundId,
-                request.StateVersion,
-                1UL,
-                cheat,
-                V32Fixtures.BuildPublicFacts(request.Round),
-                V32Fixtures.BuildPrivateFacts(request.Round),
-                new TableSessionProjection(false, string.Empty, null, null),
-                new TableProjectionPolicy(),
-                Array.Empty<TableProjectionEventFact>());
+            TableProjectionContextData? persisted = Sink.Installed?.ProjectionFacts;
+            if (persisted != null)
+            {
+                if (!string.Equals(persisted.RoundId, request.Round.RoundId, StringComparison.Ordinal) ||
+                    persisted.StateVersion != request.StateVersion)
+                {
+                    throw new InvalidOperationException(
+                        "Recovered projection facts do not match the requested round/state.");
+                }
+
+                if (Sink.Installed!.Cheat == null)
+                {
+                    throw new InvalidOperationException("Recovered cheat aggregate is missing.");
+                }
+
+                UsedRecovered = true;
+                return new TableProjectionContextData(
+                    persisted.RoundId,
+                    persisted.StateVersion,
+                    persisted.SessionVersion,
+                    Sink.Installed.Cheat,
+                    persisted.PublicFacts,
+                    persisted.PrivateFacts,
+                    persisted.Session,
+                    persisted.Policy,
+                    persisted.EventFacts,
+                    persisted.ConcealedMeldFacts);
+            }
+
+            return _live.Capture(request);
         }
     }
 }

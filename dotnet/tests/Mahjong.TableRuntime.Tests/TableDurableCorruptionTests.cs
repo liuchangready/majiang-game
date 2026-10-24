@@ -153,10 +153,79 @@ namespace Mahjong.TableRuntime.Tests
             Assert.Equal(TableRuntimeReasonCode.CheckpointInvalid, result.ReasonCode);
         }
 
+        [Fact]
+        public async Task MissingCommittedFactsIsRefused()
+        {
+            TableCheckpoint good = DurableHarness.InitialCheckpoint(
+                P31Fixtures.Dealt("round-1"),
+                DurableHarness.NewLedger());
+            await using DurableHarness harness = await DurableHarness.CreateAsync(
+                initialCheckpoint: WithFacts(good, null, null));
+
+            TableRecoveryResult result = await RecoverAsync(harness);
+
+            Assert.Equal(TableRecoveryStatus.Failed, result.Status);
+            Assert.Equal(TableRuntimeReasonCode.RecoveryStateSinkRequired, result.ReasonCode);
+        }
+
+        [Fact]
+        public async Task TamperedProjectionFactsAreRefused()
+        {
+            await using DurableHarness harness = await DurableHarness.CreateAsync();
+            TableCheckpoint good = (await harness.Store.LoadCheckpointAsync(
+                DurableHarness.Room,
+                TestContext.Current.CancellationToken))!;
+            byte[] facts = good.CommittedFactsPayload!;
+            facts[4] ^= 0xFF;
+            harness.Store.SetCommittedFactsForTest(
+                DurableHarness.Room,
+                facts,
+                TablePayloadSha256.Compute(facts));
+            harness.Store.ReplaceCheckpointForTest(
+                DurableHarness.Room,
+                WithFacts(good, facts, TablePayloadSha256.Compute(facts)));
+
+            TableRecoveryResult result = await RecoverAsync(harness);
+
+            Assert.Equal(TableRecoveryStatus.Failed, result.Status);
+            Assert.Equal(TableRuntimeReasonCode.CheckpointInvalid, result.ReasonCode);
+        }
+
         private static async Task<TableRecoveryResult> RecoverAsync(DurableHarness harness)
         {
             harness.Clock.Now += 1000L;
             return await harness.Actor.RecoverFromStoreAsync(TestContext.Current.CancellationToken);
+        }
+
+        private static TableCheckpoint WithFacts(
+            TableCheckpoint good,
+            byte[]? facts,
+            TablePayloadSha256? factsSha)
+        {
+            return new TableCheckpoint(
+                good.RoomId,
+                good.StateVersion,
+                good.LastEventSeq,
+                good.StateFingerprint,
+                good.RulesetVersion,
+                good.StatePayload,
+                good.StatePayloadSha256,
+                good.ControlVersion,
+                good.ControlPayload,
+                good.ControlPayloadSha256,
+                good.TimingPayload,
+                good.TimingPayloadSha256,
+                good.CheatPayload,
+                good.CheatPayloadSha256,
+                facts,
+                factsSha,
+                good.CreatedAtUtcMs,
+                good.BootId,
+                good.SchemaVersion,
+                good.TimingVersion,
+                good.CapturedMonotonicMillis,
+                good.CommittedHistoryPayload,
+                good.CommittedHistoryPayloadSha256);
         }
 
         private static TableCheckpoint WithStatePayload(TableCheckpoint good, byte[] payload)

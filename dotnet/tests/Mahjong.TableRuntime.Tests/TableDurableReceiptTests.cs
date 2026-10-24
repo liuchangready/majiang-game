@@ -395,18 +395,18 @@ namespace Mahjong.TableRuntime.Tests
                 new TileMarkState(),
                 new SleeveBloomState(),
                 new BeamSwapState());
-            byte[] facts = Encoding.UTF8.GetBytes("P3.2-committed-facts-v1");
-            harness.Durable.CommittedFactsProvider = () => facts;
 
             Assert.Equal(
                 TableOperationStatus.Accepted,
                 (await harness.SubmitAsync(harness.Envelope(P31Fixtures.DiscardCurrent(harness.InitialRound), 0, "facts"))).Status);
             TableCheckpoint checkpoint = await harness.SaveCheckpointAsync();
-            TableCommittedFactsEnvelope factsEnvelope = TableCommittedFactsCodec.Decode(
+            TableProjectionContextData projectionFacts = TableProjectionFactsCodec.Decode(
                 checkpoint.CommittedFactsPayload!,
                 harness.InitialRound.RoundId,
                 new StateVersion(1));
-            Assert.Equal(facts, factsEnvelope.Payload);
+            Assert.Equal(harness.InitialRound.RoundId, projectionFacts.RoundId);
+            Assert.Equal(1UL, projectionFacts.StateVersion.Value);
+            Assert.Equal(4, projectionFacts.PublicFacts.Count);
             Assert.NotNull(checkpoint.CommittedFactsPayloadSha256);
             Assert.NotNull(checkpoint.CheatPayload);
             TableCheatLedgerCheckpoint decodedCheat = TableCheatLedgerCheckpointCodec.Decode(checkpoint.CheatPayload!);

@@ -907,7 +907,7 @@ namespace Mahjong.TableRuntime
             TableRecoveryTiming? timing,
             long timingVersion = 0L,
             CheatState? cheat = null,
-            byte[]? committedFactsPayload = null,
+            TableProjectionContextData? projectionFacts = null,
             IReadOnlyList<TableEventRecord>? committedEvents = null,
             bool strictHistory = false)
         {
@@ -920,9 +920,7 @@ namespace Mahjong.TableRuntime
             TimingVersion = timingVersion;
             Cheat = cheat;
             StrictHistory = strictHistory;
-            CommittedFactsPayload = committedFactsPayload == null
-                ? null
-                : (byte[])committedFactsPayload.Clone();
+            ProjectionFacts = projectionFacts;
             _committedEvents = new ReadOnlyCollection<TableEventRecord>(
                 committedEvents == null
                     ? new List<TableEventRecord>()
@@ -955,7 +953,7 @@ namespace Mahjong.TableRuntime
         public CheatState? Cheat { get; }
 
         /// <summary>Host-owned committed facts persisted with the checkpoint; installed via the sink.</summary>
-        public byte[]? CommittedFactsPayload { get; }
+        public TableProjectionContextData? ProjectionFacts { get; }
 
         /// <summary>Full committed event history, not a SnapshotEventWindow.</summary>
         public IReadOnlyList<TableEventRecord> CommittedEvents => _committedEvents;

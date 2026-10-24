@@ -1570,7 +1570,6 @@ namespace Mahjong.TableRuntime
 
     public sealed class TableRecoveryAuxState
     {
-        private readonly byte[]? _committedFacts;
         private readonly ReadOnlyCollection<TableEventRecord> _history;
 
         public TableRecoveryAuxState(
@@ -1579,7 +1578,7 @@ namespace Mahjong.TableRuntime
             long timingVersion,
             long controlVersion,
             Mahjong.Domain.Cheat.CheatState? cheat,
-            byte[]? committedFactsPayload,
+            TableProjectionContextData? projectionFacts,
             IReadOnlyList<TableEventRecord>? committedHistory)
         {
             RoomId = roomId;
@@ -1587,7 +1586,7 @@ namespace Mahjong.TableRuntime
             TimingVersion = timingVersion;
             ControlVersion = controlVersion;
             Cheat = cheat;
-            _committedFacts = committedFactsPayload == null ? null : (byte[])committedFactsPayload.Clone();
+            ProjectionFacts = projectionFacts;
             _history = new ReadOnlyCollection<TableEventRecord>(
                 committedHistory == null
                     ? new List<TableEventRecord>()
@@ -1604,8 +1603,7 @@ namespace Mahjong.TableRuntime
 
         public Mahjong.Domain.Cheat.CheatState? Cheat { get; }
 
-        public byte[]? CommittedFactsPayload =>
-            _committedFacts == null ? null : (byte[])_committedFacts.Clone();
+        public TableProjectionContextData? ProjectionFacts { get; }
 
         public IReadOnlyList<TableEventRecord> CommittedHistory => _history;
     }
@@ -1686,11 +1684,11 @@ namespace Mahjong.TableRuntime
         public Func<Mahjong.Domain.Cheat.CheatState?>? CheatStateProvider { get; set; }
 
         /// <summary>
-        /// Optional host-owned opaque P3.2 committed-facts/private-state payload. P3.4 persists
-        /// it with a SHA-256 binding and replays it byte-for-byte; it never fabricates or
-        /// reinterprets host facts. Semantic ownership/projection remains P5.2's responsibility.
+        /// Trusted P3.2 fact capture for the exact round/state/events request. It must return
+        /// the same real data types consumed by strict projection; null/state mismatch blocks
+        /// checkpoint/recovery rather than fabricating fixtures.
         /// </summary>
-        public Func<byte[]>? CommittedFactsProvider { get; set; }
+        public Func<TableProjectionContextRequest, TableProjectionContextData?>? ProjectionFactsProvider { get; set; }
 
         /// <summary>
         /// Required when recovery carries cheat/private/facts data. Without it the actor cannot

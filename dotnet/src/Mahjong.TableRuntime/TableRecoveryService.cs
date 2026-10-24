@@ -643,14 +643,15 @@ namespace Mahjong.TableRuntime
                     "Committed facts are required but no trusted facts payload exists.");
             }
 
-            byte[]? effectiveFacts = null;
+            TableProjectionContextData? effectiveFacts = null;
             if (factsEnvelope != null)
             {
                 try
                 {
-                    effectiveFacts = TableCommittedFactsCodec
-                        .Decode(factsEnvelope, round.RoundId, state.StateVersion)
-                        .Payload;
+                    effectiveFacts = TableProjectionFactsCodec.Decode(
+                        factsEnvelope,
+                        round.RoundId,
+                        state.StateVersion);
                 }
                 catch (Exception exception) when (
                     exception is InvalidDataException ||
@@ -658,7 +659,55 @@ namespace Mahjong.TableRuntime
                 {
                     return TableRecoveryResult.Failed(
                         TableRuntimeReasonCode.CheckpointInvalid,
-                        "Committed facts envelope is invalid: " + exception.Message);
+                        "Projection facts payload is invalid: " + exception.Message);
+                }
+            }
+
+            if (effectiveFacts != null)
+            {
+                try
+                {
+                    TableVisibilityProjection.ValidateRecoveredFacts(round, effectiveFacts, recoveredCheat);
+                }
+                catch (Exception exception) when (
+                    exception is ArgumentException ||
+                    exception is InvalidOperationException ||
+                    exception is TableProjectionException)
+                {
+                    return TableRecoveryResult.Failed(
+                        TableRuntimeReasonCode.CheckpointInvalid,
+                        "Projection facts do not match the recovered round: " + exception.Message);
+                }
+
+                if (effectiveFacts.EventFacts.Count != fullHistory.Count)
+                {
+                    return TableRecoveryResult.Failed(
+                        TableRuntimeReasonCode.CheckpointInvalid,
+                        "Projection event facts are incomplete for the committed history.");
+                }
+
+                for (int i = 0; i < effectiveFacts.EventFacts.Count; i++)
+                {
+                    TableProjectionEventFact fact = effectiveFacts.EventFacts[i];
+                    bool found = false;
+                    for (int j = 0; j < fullHistory.Count; j++)
+                    {
+                        TableEventRecord record = fullHistory[j];
+                        if (record.Seq == fact.EventSeq &&
+                            record.CommandVersion == fact.CommandVersion &&
+                            record.Ordinal == unchecked((int)fact.EventOrdinal))
+                        {
+                            found = true;
+                            break;
+                        }
+                    }
+
+                    if (!found)
+                    {
+                        return TableRecoveryResult.Failed(
+                            TableRuntimeReasonCode.CheckpointInvalid,
+                            "Projection event fact does not match committed history.");
+                    }
                 }
             }
             if (timingRow != null)
@@ -1070,7 +1119,8 @@ namespace Mahjong.TableRuntime
             for (int i = 0; i < timing.Decisions.Count; i++)
             {
                 TableRecoveredDecision decision = timing.Decisions[i];
-                long baseRemaining = decision.RemainingBaseMillis;
+                long graceRemaining = decision.RecoveryGraceMillis;
+                long baseRemaining = Math.Max(0L, decision.RemainingBaseMillis - graceRemaining);
                 long reserveRemaining = decision.RemainingReserveMillis;
                 long overdue = decision.OverdueMillis;
                 long remainingDelta = activeDelta;
@@ -1079,21 +1129,32 @@ namespace Mahjong.TableRuntime
                     long baseCut = Math.Min(baseRemaining, remainingDelta);
                     baseRemaining -= baseCut;
                     remainingDelta -= baseCut;
+                    long graceCut = Math.Min(graceRemaining, remainingDelta);
+                    graceRemaining -= graceCut;
+                    remainingDelta -= graceCut;
                     long reserveCut = Math.Min(reserveRemaining, remainingDelta);
                     reserveRemaining -= reserveCut;
                     remainingDelta -= reserveCut;
                     overdue = checked(overdue + remainingDelta);
                 }
 
-                baseRemaining = checked(baseRemaining + grace);
+                bool alreadyApplied = decision.RecoveryGraceApplied;
+                if (!alreadyApplied && grace > 0)
+                {
+                    graceRemaining = checked(graceRemaining + grace);
+                    alreadyApplied = true;
+                }
+
                 decisions.Add(new TableRecoveredDecision(
                     decision.Key,
                     decision.ControlEpoch,
                     decision.Candidates,
                     decision.DrawnTile,
-                    baseRemaining,
+                    checked(baseRemaining + graceRemaining),
                     reserveRemaining,
-                    overdue));
+                    overdue,
+                    graceRemaining,
+                    alreadyApplied));
             }
 
             return new TableTimingCheckpoint(

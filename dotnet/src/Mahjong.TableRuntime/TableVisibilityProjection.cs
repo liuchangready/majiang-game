@@ -366,6 +366,53 @@ namespace Mahjong.TableRuntime
                 view);
         }
 
+        /// <summary>
+        /// Recovery-only validation: proves that persisted P3.2 public/private facts match the
+        /// recovered 136-tile round and (when cheat is modeled) owner-private meld/hand facts.
+        /// It throws before Serving on any inconsistency; it never fills missing facts.
+        /// </summary>
+        public static void ValidateRecoveredFacts(
+            RoundStateMachine round,
+            TableProjectionContextData data,
+            CheatState? cheat)
+        {
+            if (round == null)
+            {
+                throw new ArgumentNullException(nameof(round));
+            }
+
+            if (data == null)
+            {
+                throw new ArgumentNullException(nameof(data));
+            }
+
+            var identity = new TableProjectionIdentity(
+                new SessionId("recovery"),
+                new RoundId(round.RoundId),
+                data.StateVersion,
+                new EventSeq(0),
+                new StreamCursor(new StreamVersion(0), new ProjectionSeq(0)),
+                new SessionVersion(0));
+            var context = new TableProjectionContext(
+                identity,
+                data.Policy,
+                null,
+                data.PublicFacts,
+                data.PrivateFacts,
+                null,
+                null,
+                data.Session);
+            ContextIndex index = Validate(round, context);
+            _ = index;
+            if (cheat != null)
+            {
+                for (int seat = 0; seat < 4; seat++)
+                {
+                    _ = ProjectOwnerPrivate(round, cheat, seat, context);
+                }
+            }
+        }
+
         public static PlayerSnapshotView ProjectPlayerSnapshot(
             RoundStateMachine round,
             CheatState cheat,

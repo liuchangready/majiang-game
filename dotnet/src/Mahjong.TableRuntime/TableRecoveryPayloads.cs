@@ -126,17 +126,21 @@ namespace Mahjong.TableRuntime
                 }
 
                 long baseEnd = timing.OpensAtMillis + timing.BaseMillis;
+                long graceEnd = baseEnd + timing.RecoveryGraceMillis;
                 long remainingBase = Math.Max(0L, baseEnd - nowMillis);
-                long remainingReserve = Math.Max(0L, timing.DeadlineMillis - Math.Max(nowMillis, baseEnd));
+                long remainingGrace = Math.Max(0L, graceEnd - Math.Max(nowMillis, baseEnd));
+                long remainingReserve = Math.Max(0L, timing.DeadlineMillis - Math.Max(nowMillis, graceEnd));
                 long overdue = Math.Max(0L, nowMillis - timing.DeadlineMillis);
                 decisions.Add(new TableRecoveredDecision(
                     decision.Key,
                     decision.ControlEpoch,
                     decision.Candidates,
                     decision.DrawnTile,
-                    remainingBase,
+                    checked(remainingBase + remainingGrace),
                     remainingReserve,
-                    overdue));
+                    overdue,
+                    remainingGrace,
+                    timing.RecoveryGraceApplied));
             }
 
             return new TableTimingCheckpoint(
@@ -391,134 +395,6 @@ namespace Mahjong.TableRuntime
                 return events;
             }
         }
-    }
-
-    /// <summary>
-    /// Strict typed envelope for host-owned committed facts/private projection data. The body
-    /// remains host-defined, but the envelope binds schema, round/state version and SHA-256 so
-    /// stale or cross-state facts are rejected instead of being installed.
-    /// </summary>
-    public static class TableCommittedFactsCodec
-    {
-        public const int FormatVersion = 1;
-        private const int Magic = 0x4D4A4346; // MJCF
-        private const int MaxBytes = 1024 * 1024;
-
-        public static byte[] Encode(string roundId, StateVersion stateVersion, byte[] payload)
-        {
-            if (string.IsNullOrWhiteSpace(roundId))
-            {
-                throw new ArgumentException("RoundId cannot be blank.", nameof(roundId));
-            }
-
-            if (payload == null || payload.Length == 0 || payload.Length > MaxBytes)
-            {
-                throw new ArgumentException("Committed facts payload is empty or too large.", nameof(payload));
-            }
-
-            using (var stream = new MemoryStream())
-            using (var writer = new BinaryWriter(stream, Encoding.UTF8, leaveOpen: true))
-            {
-                writer.Write(Magic);
-                writer.Write(FormatVersion);
-                writer.Write(roundId);
-                writer.Write(stateVersion.Value);
-                writer.Write(payload.Length);
-                writer.Write(payload);
-                writer.Write(TablePayloadSha256.Compute(payload).ToArray());
-                writer.Flush();
-                return stream.ToArray();
-            }
-        }
-
-        public static TableCommittedFactsEnvelope Decode(
-            byte[] bytes,
-            string expectedRoundId,
-            StateVersion expectedStateVersion)
-        {
-            if (bytes == null || bytes.Length < 8)
-            {
-                throw new InvalidDataException("Committed facts envelope is empty or truncated.");
-            }
-
-            using (var stream = new MemoryStream(bytes, writable: false))
-            using (var reader = new BinaryReader(stream, Encoding.UTF8, leaveOpen: true))
-            {
-                if (reader.ReadInt32() != Magic)
-                {
-                    throw new InvalidDataException("Committed facts envelope magic is invalid.");
-                }
-
-                int schema = reader.ReadInt32();
-                if (schema != FormatVersion)
-                {
-                    throw new InvalidDataException("Unsupported committed facts schema " + schema + ".");
-                }
-
-                string roundId = reader.ReadString();
-                ulong stateVersion = reader.ReadUInt64();
-                int length = reader.ReadInt32();
-                if (length <= 0 || length > MaxBytes)
-                {
-                    throw new InvalidDataException("Committed facts body length is invalid.");
-                }
-
-                byte[] payload = reader.ReadBytes(length);
-                if (payload.Length != length)
-                {
-                    throw new InvalidDataException("Committed facts body is truncated.");
-                }
-
-                byte[] digest = reader.ReadBytes(TablePayloadSha256.SizeBytes);
-                if (digest.Length != TablePayloadSha256.SizeBytes ||
-                    TablePayloadSha256.Compute(payload) != new TablePayloadSha256(digest))
-                {
-                    throw new InvalidDataException("Committed facts body digest is invalid.");
-                }
-
-                if (stream.Position != bytes.Length)
-                {
-                    throw new InvalidDataException("Committed facts envelope has trailing bytes.");
-                }
-
-                if (!string.Equals(roundId, expectedRoundId, StringComparison.Ordinal) ||
-                    stateVersion != expectedStateVersion.Value)
-                {
-                    throw new InvalidDataException("Committed facts envelope does not match the recovered state.");
-                }
-
-                return new TableCommittedFactsEnvelope(
-                    roundId,
-                    new StateVersion(stateVersion),
-                    payload,
-                    new TablePayloadSha256(digest));
-            }
-        }
-    }
-
-    public sealed class TableCommittedFactsEnvelope
-    {
-        private readonly byte[] _payload;
-
-        public TableCommittedFactsEnvelope(
-            string roundId,
-            StateVersion stateVersion,
-            byte[] payload,
-            TablePayloadSha256 sha256)
-        {
-            RoundId = roundId;
-            StateVersion = stateVersion;
-            _payload = (byte[])payload.Clone();
-            Sha256 = sha256;
-        }
-
-        public string RoundId { get; }
-
-        public StateVersion StateVersion { get; }
-
-        public TablePayloadSha256 Sha256 { get; }
-
-        public byte[] Payload => (byte[])_payload.Clone();
     }
 
     /// <summary>Deterministic terminal result payload for the unique settlement outbox.</summary>

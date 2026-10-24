@@ -20,6 +20,26 @@ namespace Mahjong.TableRuntime.Tests
         }
     }
 
+    internal static class MinimalEventFacts
+    {
+        public static IReadOnlyList<TableProjectionEventFact> Build(TableProjectionContextRequest request)
+        {
+            var facts = new List<TableProjectionEventFact>(request.CommittedEvents.Count);
+            for (int i = 0; i < request.CommittedEvents.Count; i++)
+            {
+                TableEventRecord record = request.CommittedEvents[i];
+                facts.Add(new TableProjectionEventFact(
+                    WireEventFacts.MapType(record.Type),
+                    record.Seq,
+                    record.CommandVersion,
+                    unchecked((uint)record.Ordinal),
+                    new TableProjectionEventFacts()));
+            }
+
+            return facts;
+        }
+    }
+
     internal sealed class DurableHarness : IAsyncDisposable
     {
         public const string Room = "room-1";
@@ -104,10 +124,18 @@ namespace Mahjong.TableRuntime.Tests
             byte[] controlBytes = TableControlCheckpointCodec.Encode(actualControl);
             byte[] timingBytes = TableTimingCheckpointCodec.Encode(actualTiming);
             byte[] cheatBytes = TableCheatLedgerCheckpointCodec.Encode(TableCheatLedgerCheckpoint.FromLedger(ledger));
-            byte[] facts = TableCommittedFactsCodec.Encode(
-                round.RoundId,
-                new StateVersion(0),
-                Encoding.UTF8.GetBytes(Room + ":facts"));
+            byte[] facts = TableProjectionFactsCodec.Encode(
+                new TestProjectionSource().Capture(new TableProjectionContextRequest(
+                    Room,
+                    round,
+                    new StateVersion(0),
+                    new EventSeq(0),
+                    new OwnerEpoch(1),
+                    0L,
+                    0L,
+                    0L,
+                    (long)utc,
+                    Array.Empty<TableEventRecord>())));
             byte[] history = TableCommittedHistoryCodec.Encode(Array.Empty<TableEventRecord>());
             return new TableCheckpoint(
                 Room,
@@ -209,8 +237,12 @@ namespace Mahjong.TableRuntime.Tests
                 new TileMarkState(),
                 new SleeveBloomState(),
                 new BeamSwapState());
-            durable.CommittedFactsProvider = () => Encoding.UTF8.GetBytes(Room + ":facts");
             durable.RecoveryStateSink = recoverySink ?? new RecordingRecoveryStateSink();
+            projectionSource ??= new TestProjectionSource();
+            if (projectionSource is TestProjectionSource testSource && testSource.EventFactsFactory == null)
+            {
+                testSource.EventFactsFactory = request => MinimalEventFacts.Build(request);
+            }
 
             var legacy = new RecordingCommitPort();
             var sink = new RecordingPublicationSink(legacy);
@@ -258,7 +290,8 @@ namespace Mahjong.TableRuntime.Tests
             DurableHarness source,
             string owner,
             ulong ownerEpoch,
-            ITableRecoveryStateSink? recoverySink = null)
+            ITableRecoveryStateSink? recoverySink = null,
+            string boot = Boot)
         {
             var durable = new TableDurableContext(
                 source.Store,
@@ -268,7 +301,7 @@ namespace Mahjong.TableRuntime.Tests
                 source.Scopes,
                 owner,
                 TimeSpan.FromMinutes(10),
-                Boot,
+                boot,
                 1,
                 Room);
             durable.CheatLedgerProvider = () => source.Ledger;
@@ -277,8 +310,12 @@ namespace Mahjong.TableRuntime.Tests
                 new TileMarkState(),
                 new SleeveBloomState(),
                 new BeamSwapState());
-            durable.CommittedFactsProvider = () => Encoding.UTF8.GetBytes(Room + ":facts");
             durable.RecoveryStateSink = recoverySink ?? new RecordingRecoveryStateSink();
+            if (source.ProjectionSource == null)
+            {
+                throw new InvalidOperationException("A projection facts source is required.");
+            }
+
             var legacy = new RecordingCommitPort();
             var sink = new RecordingPublicationSink(legacy);
             var options = new TableActorOptions

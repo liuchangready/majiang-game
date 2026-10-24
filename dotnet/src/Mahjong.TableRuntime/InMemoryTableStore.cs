@@ -271,8 +271,15 @@ namespace Mahjong.TableRuntime
             }
         }
 
-        public int CommitCount { get; private set; }
+        public void SetCommittedFactsForTest(string roomId, byte[] payload, TablePayloadSha256 sha256)
+        {
+            lock (_gate)
+            {
+                _facts[roomId] = new TableCommittedFactsSnapshot(payload, sha256);
+            }
+        }
 
+        public int CommitCount { get; private set; }
         public int ReceiptCount
         {
             get

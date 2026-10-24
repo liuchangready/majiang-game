@@ -242,16 +242,13 @@ namespace Mahjong.TableRuntime.Tests
             CheatLedgerApplyResult applied = initial.Apply("fee-1", 0, -5, "TILE_MARK");
             Assert.True(applied.Success, applied.Error.ToString());
             var sink = new RecordingRecoveryStateSink();
-            byte[] facts = Encoding.UTF8.GetBytes("facts-v1");
             await using DurableHarness first = await DurableHarness.CreateAsync(
                 ledger: applied.Ledger!,
                 recoverySink: sink);
-            first.Durable.CommittedFactsProvider = () => facts;
             Assert.Equal(TableOperationStatus.Accepted, (await first.SubmitAsync(
                 first.Envelope(P31Fixtures.DiscardCurrent(first.InitialRound), 0, "facts-1"))).Status);
             await first.SaveCheckpointAsync();
 
-            facts = Encoding.UTF8.GetBytes("facts-v2");
             List<TableCommandEnvelope> chain = P31Fixtures.BuildDiscardChain(first.InitialRound, 2);
             Assert.Equal(TableOperationStatus.Accepted, (await first.SubmitAsync(
                 first.Envelope(chain[1].Command, 1, "facts-2"))).Status);
@@ -267,9 +264,131 @@ namespace Mahjong.TableRuntime.Tests
             Assert.NotNull(sink.Installed!.Cheat);
             Assert.Equal(1, sink.Installed.Cheat!.Ledger.Version);
             Assert.Equal(-5, sink.Installed.Cheat.Ledger.Entries[0].Amount);
-            Assert.Equal(facts, sink.Installed.CommittedFactsPayload);
+            Assert.NotNull(sink.Installed.ProjectionFacts);
+            Assert.Equal(2UL, sink.Installed.ProjectionFacts!.StateVersion.Value);
+            Assert.Equal(4, sink.Installed.ProjectionFacts.PublicFacts.Count);
             Assert.True(result.Report!.CheatStateRestored);
             Assert.True(result.Report.CommittedHistoryCount >= 4);
+        }
+
+        [Fact]
+        public async Task RecoveredCrossBootDecisionCanCommitBeforeGraceDeadline()
+        {
+            await using DurableHarness first = await DurableHarness.CreateAsync(configure: options =>
+                options.DecisionClockConfig = new DecisionClockConfig(1000L, 0L, ReserveScope.Round));
+            Assert.Equal(TableOperationStatus.Configured,
+                (await first.Actor.OpenDecisionAsync(Decision(first, 0, "cross-command"), TestContext.Current.CancellationToken)).Status);
+            await first.SaveCheckpointAsync();
+            first.Clock.Now += 60_000L;
+            await using DurableHarness recovered = DurableHarness.Attach(
+                first,
+                DurableHarness.Owner,
+                1UL,
+                new RecordingRecoveryStateSink(),
+                "boot-2");
+            Assert.True((await recovered.Actor.RecoverFromStoreAsync(TestContext.Current.CancellationToken)).Recovered);
+            IReadOnlyList<TileId> hand = first.InitialRound.Tiles.TilesInZone(TileZone.Hand, 0);
+            TableCommandEnvelope command = recovered.Envelope(
+                RoundCommand.Discard(first.InitialRound.RoundId, 0, hand[0]),
+                0,
+                "cross-command",
+                decisionId: "cross-command",
+                ownerEpoch: 2UL,
+                recoveryGeneration: 1L);
+            TableOperationResult result = await recovered.SubmitAsync(command);
+            Assert.Equal(TableOperationStatus.Accepted, result.Status);
+            Assert.Equal(1UL, result.CommandVersion!.Value.Value);
+        }
+
+        [Fact]
+        public async Task RecoveredCrossBootDecisionTimesOutAtGraceDeadlineWithoutSecondGrant()
+        {
+            await using DurableHarness first = await DurableHarness.CreateAsync(configure: options =>
+                options.DecisionClockConfig = new DecisionClockConfig(1000L, 0L, ReserveScope.Round));
+            Assert.Equal(TableOperationStatus.Configured,
+                (await first.Actor.OpenDecisionAsync(Decision(first, 0, "cross-timeout"), TestContext.Current.CancellationToken)).Status);
+            await first.SaveCheckpointAsync();
+            first.Clock.Now += 60_000L;
+            await using DurableHarness recovered = DurableHarness.Attach(
+                first,
+                DurableHarness.Owner,
+                1UL,
+                new RecordingRecoveryStateSink(),
+                "boot-2");
+            Assert.True((await recovered.Actor.RecoverFromStoreAsync(TestContext.Current.CancellationToken)).Recovered);
+            TableTimingSnapshot before = await recovered.Actor.GetTimingSnapshotAsync(TestContext.Current.CancellationToken);
+            long deadline = before.Seats[0].Timing!.DeadlineMillis;
+            recovered.Clock.Now = deadline + 1L;
+            TableTickResult tick = await recovered.Actor.TickAsync(
+                TableTickRequest.Empty,
+                TestContext.Current.CancellationToken);
+            Assert.Equal(TableOperationStatus.Accepted, tick.Status);
+            Assert.Contains(tick.Entries, entry => entry.Transition?.Status == TableOperationStatus.Accepted);
+            Assert.Equal(1UL, (await recovered.Actor.GetSnapshotAsync(TestContext.Current.CancellationToken)).StateVersion.Value);
+        }
+
+        [Fact]
+        public async Task OwnerTransferDuringHostInstallFailsClosed()
+        {
+            await using DurableHarness h = await DurableHarness.CreateAsync();
+            h.Durable.RecoveryStateSink = new ActionRecoverySink(() =>
+                h.Store.AcquireAsync(
+                    DurableHarness.Room,
+                    DurableHarness.Owner,
+                    TimeSpan.FromMinutes(10),
+                    TestContext.Current.CancellationToken).AsTask().GetAwaiter().GetResult());
+
+            TableRecoveryResult recovered = await h.Actor.RecoverFromStoreAsync(TestContext.Current.CancellationToken);
+
+            Assert.Equal(TableRecoveryStatus.Failed, recovered.Status);
+            Assert.NotEqual(TableActorLifecycle.Serving,
+                (await h.Actor.GetSnapshotAsync(TestContext.Current.CancellationToken)).Lifecycle);
+            Assert.DoesNotContain(h.Sink.Publications, value => value.Kind == TablePublicationKind.Recovered);
+        }
+
+        [Fact]
+        public async Task TimingChangeDuringHostInstallFailsClosed()
+        {
+            await using DurableHarness h = await DurableHarness.CreateAsync();
+            h.Durable.RecoveryStateSink = new ActionRecoverySink(() =>
+            {
+                TableTimingJournalRecord current = h.Store.LoadTimingAsync(
+                    DurableHarness.Room,
+                    TestContext.Current.CancellationToken).AsTask().GetAwaiter().GetResult()!;
+                var appended = h.Store.AppendTimingAsync(
+                    new TableTimingAppendRequest(
+                        DurableHarness.Room,
+                        DurableHarness.Owner,
+                        new OwnerEpoch(2),
+                        current.StateVersion,
+                        current.ControlVersion,
+                        current.TimingVersion,
+                        current.Timing),
+                    TestContext.Current.CancellationToken).AsTask().GetAwaiter().GetResult();
+                Assert.True(appended.IsCommitted, appended.ReasonCode + ": " + appended.Detail);
+            });
+
+            TableRecoveryResult recovered = await h.Actor.RecoverFromStoreAsync(TestContext.Current.CancellationToken);
+
+            Assert.Equal(TableRecoveryStatus.Failed, recovered.Status);
+            Assert.NotEqual(TableActorLifecycle.Serving,
+                (await h.Actor.GetSnapshotAsync(TestContext.Current.CancellationToken)).Lifecycle);
+            Assert.DoesNotContain(h.Sink.Publications, value => value.Kind == TablePublicationKind.Recovered);
+        }
+
+        [Fact]
+        public async Task HostInstallExceptionFailsClosedBeforePublishingRecovered()
+        {
+            await using DurableHarness h = await DurableHarness.CreateAsync();
+            h.Durable.RecoveryStateSink = new ActionRecoverySink(() =>
+                throw new InvalidOperationException("host install failed"));
+
+            TableRecoveryResult recovered = await h.Actor.RecoverFromStoreAsync(TestContext.Current.CancellationToken);
+
+            Assert.Equal(TableRecoveryStatus.Failed, recovered.Status);
+            Assert.NotEqual(TableActorLifecycle.Serving,
+                (await h.Actor.GetSnapshotAsync(TestContext.Current.CancellationToken)).Lifecycle);
+            Assert.DoesNotContain(h.Sink.Publications, value => value.Kind == TablePublicationKind.Recovered);
         }
 
         [Fact]
@@ -299,5 +418,17 @@ namespace Mahjong.TableRuntime.Tests
             Assert.Equal(totalEvents, sink.Installed!.CommittedHistory.Count);
             Assert.True(result.Report!.CommittedHistoryCount >= totalEvents);
         }
+    }
+
+    internal sealed class ActionRecoverySink : ITableRecoveryStateSink
+    {
+        private readonly Action _install;
+
+        public ActionRecoverySink(Action install)
+        {
+            _install = install ?? throw new ArgumentNullException(nameof(install));
+        }
+
+        public void Install(TableRecoveryAuxState state) => _install();
     }
 }

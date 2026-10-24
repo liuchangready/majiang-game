@@ -287,6 +287,8 @@ namespace Mahjong.TableRuntime
                     writer.Write(decision.RemainingBaseMillis);
                     writer.Write(decision.RemainingReserveMillis);
                     writer.Write(decision.OverdueMillis);
+                    writer.Write(decision.RecoveryGraceMillis);
+                    writer.Write(decision.RecoveryGraceApplied);
                     writer.Write(decision.Candidates.Count);
                     for (int c = 0; c < decision.Candidates.Count; c++)
                     {
@@ -362,6 +364,8 @@ namespace Mahjong.TableRuntime
                     long baseRemaining = reader.ReadInt64();
                     long reserveRemaining = reader.ReadInt64();
                     long overdue = reader.ReadInt64();
+                    long recoveryGrace = reader.ReadInt64();
+                    bool recoveryGraceApplied = reader.ReadBoolean();
                     int optionCount = reader.ReadInt32();
                     if (optionCount < 0 || optionCount > 64)
                     {
@@ -390,7 +394,9 @@ namespace Mahjong.TableRuntime
                         drawn,
                         baseRemaining,
                         reserveRemaining,
-                        overdue));
+                        overdue,
+                        recoveryGrace,
+                        recoveryGraceApplied));
                 }
 
                 if (stream.Position != payload.Length)

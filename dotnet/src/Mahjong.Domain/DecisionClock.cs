@@ -126,7 +126,9 @@ namespace Mahjong.Domain
             long deadlineMillis,
             long reserveAtOpenMillis,
             long baseMillis,
-            DecisionTimingStatus status)
+            DecisionTimingStatus status,
+            long recoveryGraceMillis = 0L,
+            bool recoveryGraceApplied = false)
         {
             if (generation < 1)
             {
@@ -153,7 +155,16 @@ namespace Mahjong.Domain
                 throw new ArgumentOutOfRangeException(nameof(baseMillis), baseMillis, "Base must be non-negative.");
             }
 
+            if (recoveryGraceMillis < 0)
+            {
+                throw new ArgumentOutOfRangeException(
+                    nameof(recoveryGraceMillis),
+                    recoveryGraceMillis,
+                    "Recovery grace must be non-negative.");
+            }
+
             _ = checked(baseMillis + reserveAtOpenMillis);
+            _ = checked(baseMillis + recoveryGraceMillis + reserveAtOpenMillis);
             Key = key;
             Generation = generation;
             OpensAtMillis = opensAtMillis;
@@ -161,6 +172,8 @@ namespace Mahjong.Domain
             ReserveAtOpenMillis = reserveAtOpenMillis;
             BaseMillis = baseMillis;
             Status = status;
+            RecoveryGraceMillis = recoveryGraceMillis;
+            RecoveryGraceApplied = recoveryGraceApplied;
         }
 
         public DecisionKey Key { get; }
@@ -176,6 +189,12 @@ namespace Mahjong.Domain
         public long BaseMillis { get; }
 
         public DecisionTimingStatus Status { get; }
+
+        /// <summary>Explicit recovery grace remaining; zero for a normal decision.</summary>
+        public long RecoveryGraceMillis { get; }
+
+        /// <summary>True once an explicit recovery grace was granted (prevents re-granting).</summary>
+        public bool RecoveryGraceApplied { get; }
 
         public string RoundId => Key.RoundId;
 
@@ -193,7 +212,7 @@ namespace Mahjong.Domain
             }
 
             long elapsed = checked(atMillis - OpensAtMillis);
-            long overBase = Math.Max(0L, checked(elapsed - BaseMillis));
+            long overBase = Math.Max(0L, checked(elapsed - checked(BaseMillis + RecoveryGraceMillis)));
             return Math.Min(ReserveAtOpenMillis, overBase);
         }
 
@@ -209,7 +228,9 @@ namespace Mahjong.Domain
                 DeadlineMillis,
                 ReserveAtOpenMillis,
                 BaseMillis,
-                status ?? Status);
+                status ?? Status,
+                RecoveryGraceMillis,
+                RecoveryGraceApplied);
         }
 
         internal DecisionTiming Shifted(long deltaMillis)
@@ -221,7 +242,9 @@ namespace Mahjong.Domain
                 checked(DeadlineMillis + deltaMillis),
                 ReserveAtOpenMillis,
                 BaseMillis,
-                Status);
+                Status,
+                RecoveryGraceMillis,
+                RecoveryGraceApplied);
         }
     }
 
@@ -398,6 +421,31 @@ namespace Mahjong.Domain
             long remainingReserveMillis,
             long overdueMillis)
         {
+            return RestoreDecision(
+                key,
+                nowMillis,
+                remainingBaseMillis,
+                remainingReserveMillis,
+                overdueMillis,
+                0L,
+                false);
+        }
+
+        /// <summary>
+        /// Restores a decision with an explicit recovery grace. The normal base/reserve caps
+        /// still apply; grace is a separate, policy-supplied allowance consumed after base and
+        /// before reserve. It is recorded on the timing so it is never re-granted on a later
+        /// recovery.
+        /// </summary>
+        public DecisionTiming RestoreDecision(
+            DecisionKey key,
+            long nowMillis,
+            long remainingBaseMillis,
+            long remainingReserveMillis,
+            long overdueMillis,
+            long recoveryGraceMillis,
+            bool recoveryGraceApplied)
+        {
             CheckSeat(key.Seat);
             if (nowMillis < 0)
             {
@@ -426,6 +474,14 @@ namespace Mahjong.Domain
                     nameof(overdueMillis),
                     overdueMillis,
                     "Overdue time must be non-negative.");
+            }
+
+            if (recoveryGraceMillis < 0)
+            {
+                throw new ArgumentOutOfRangeException(
+                    nameof(recoveryGraceMillis),
+                    recoveryGraceMillis,
+                    "Recovery grace must be non-negative.");
             }
 
             if (remainingBaseMillis > Config.BaseMillis)
@@ -460,18 +516,24 @@ namespace Mahjong.Domain
                     "Seat " + key.Seat + " already has a timing; recovery cannot overwrite it.");
             }
 
-            // Base is consumed before reserve. Subtracting from the combined budget and then
-            // re-granting part of it as base would hand the seat free base time again.
+            // Base is consumed before grace, grace before reserve. Overdue consumes the same
+            // order so a restored deadline never hands back already-elapsed base.
             long baseRemaining = remainingBaseMillis > overdueMillis
                 ? remainingBaseMillis - overdueMillis
                 : 0L;
-            long reserveOverdue = overdueMillis > remainingBaseMillis
+            long overdueAfterBase = overdueMillis > remainingBaseMillis
                 ? overdueMillis - remainingBaseMillis
                 : 0L;
-            long reserveRemaining = remainingReserveMillis > reserveOverdue
-                ? remainingReserveMillis - reserveOverdue
+            long graceRemaining = recoveryGraceMillis > overdueAfterBase
+                ? recoveryGraceMillis - overdueAfterBase
                 : 0L;
-            long deadline = checked(nowMillis + checked(baseRemaining + reserveRemaining));
+            long overdueAfterGrace = overdueAfterBase > recoveryGraceMillis
+                ? overdueAfterBase - recoveryGraceMillis
+                : 0L;
+            long reserveRemaining = remainingReserveMillis > overdueAfterGrace
+                ? remainingReserveMillis - overdueAfterGrace
+                : 0L;
+            long deadline = checked(nowMillis + checked(baseRemaining + graceRemaining + reserveRemaining));
             if (deadline < nowMillis)
             {
                 throw new OverflowException("The restored deadline overflowed Int64.");
@@ -485,7 +547,9 @@ namespace Mahjong.Domain
                 deadline,
                 reserveRemaining,
                 baseRemaining,
-                IsPausedState ? DecisionTimingStatus.Paused : DecisionTimingStatus.Active);
+                IsPausedState ? DecisionTimingStatus.Paused : DecisionTimingStatus.Active,
+                graceRemaining,
+                recoveryGraceApplied || recoveryGraceMillis > 0);
             _timings[key.Seat] = timing;
             _reserves[key.Seat] = reserveRemaining;
             return timing;

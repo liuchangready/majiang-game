@@ -705,7 +705,9 @@ namespace Mahjong.TableRuntime
             TileId? drawnTile,
             long remainingBaseMillis,
             long remainingReserveMillis,
-            long overdueMillis)
+            long overdueMillis,
+            long recoveryGraceMillis = 0L,
+            bool recoveryGraceApplied = false)
         {
             if (controlEpoch < 0)
             {
@@ -741,6 +743,14 @@ namespace Mahjong.TableRuntime
                     "Overdue time must be non-negative.");
             }
 
+            if (recoveryGraceMillis < 0)
+            {
+                throw new ArgumentOutOfRangeException(
+                    nameof(recoveryGraceMillis),
+                    recoveryGraceMillis,
+                    "Recovery grace must be non-negative.");
+            }
+
             var copy = new List<LegalActionOption>(candidates.Count);
             for (int i = 0; i < candidates.Count; i++)
             {
@@ -761,6 +771,8 @@ namespace Mahjong.TableRuntime
             RemainingBaseMillis = remainingBaseMillis;
             RemainingReserveMillis = remainingReserveMillis;
             OverdueMillis = overdueMillis;
+            RecoveryGraceMillis = recoveryGraceMillis;
+            RecoveryGraceApplied = recoveryGraceApplied || recoveryGraceMillis > 0;
         }
 
         public DecisionKey Key { get; }
@@ -776,6 +788,10 @@ namespace Mahjong.TableRuntime
         public long RemainingReserveMillis { get; }
 
         public long OverdueMillis { get; }
+
+        public long RecoveryGraceMillis { get; }
+
+        public bool RecoveryGraceApplied { get; }
     }
 
     /// <summary>

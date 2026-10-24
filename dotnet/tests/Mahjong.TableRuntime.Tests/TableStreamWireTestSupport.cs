@@ -209,7 +209,7 @@ namespace Mahjong.TableRuntime.Tests
             }
         }
 
-        private static ProtocolEventType MapType(RoundEventType type)
+        internal static ProtocolEventType MapType(RoundEventType type)
         {
             switch (type)
             {
