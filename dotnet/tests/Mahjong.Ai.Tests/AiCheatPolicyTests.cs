@@ -11,11 +11,13 @@ namespace Mahjong.Ai.Tests
     /// The matrix is not a property-readback mirror: every group exercises an observable
     /// behaviour the V4 source actually has — the master switch that no configuration can
     /// bypass, the intersection direction of every scalar in
-    /// <see cref="AiCheatPolicy.RestrictWith"/>, the union-of-keys toggle merge, Kotlin
-    /// <c>LinkedHashMap</c> iteration order, Kotlin data-class equality (including the
-    /// bitwise <c>Double.equals</c> treatment of -0.0) and the defensive-copy guarantee
-    /// that V4 call sites had to maintain by hand when copying <c>LinkedHashMap</c>
-    /// references.
+    /// <see cref="AiCheatPolicy.RestrictWith"/> (including the java.lang.Math.min signed
+    /// zero for the risk tolerance), the union-of-keys toggle merge, Kotlin
+    /// <c>LinkedHashMap</c> iteration order, the V4 Kotlin blank-id rule on both entry
+    /// points, the intrinsic null check on <c>allows</c>, Kotlin data-class equality
+    /// (including the bitwise <c>Double.equals</c> treatment of -0.0) and the
+    /// defensive-copy guarantee that V4 call sites had to maintain by hand when copying
+    /// <c>LinkedHashMap</c> references.
     /// </summary>
     public class AiCheatPolicyTests
     {
@@ -205,6 +207,98 @@ namespace Mahjong.Ai.Tests
             // A blank key must be rejected even when the toggle value would be true.
             Assert.ThrowsAny<ArgumentException>(() => new AiCheatPolicy(
                 capabilityToggles: new Dictionary<string, bool> { [""] = true }));
+
+            // Java-only whitespace 0x001C..0x001F is blank for V4 (Char.isWhitespace)
+            // although .NET does not classify it as whitespace (caller D-1-03); both
+            // entry points must reject it like any other blank id.
+            for (int code = 0x1C; code <= 0x1F; code++)
+            {
+                string key = ((char)code).ToString();
+                Assert.ThrowsAny<ArgumentException>(() => new AiCheatPolicy(
+                    capabilityToggles: new Dictionary<string, bool> { [key] = false }));
+                ArgumentException viaWith = Assert.ThrowsAny<ArgumentException>(
+                    () => new AiCheatPolicy().WithCapability(key, allowed: true));
+                Assert.Equal("capabilityId", viaWith.ParamName);
+            }
+        }
+
+        [Fact]
+        public void KotlinBlankRuleMatchesTheV4WhitespaceSetOnBothEntryPoints()
+        {
+            // Caller parity probe D-1-03: V4's isBlank() requires every char to satisfy
+            // Char.isWhitespace() = Character.isWhitespace(c) || Character.isSpaceChar(c).
+            // That set differs from .NET char.IsWhiteSpace in exactly two BMP places:
+            // 0x001C..0x001F are Java-only whitespace (V4 blank, .NET not), while 0x0085
+            // (next line) is neither Java whitespace nor a space char (V4 not blank,
+            // .NET whitespace). NBSP U+00A0, figure space U+2007 and narrow no-break
+            // space U+202F are isSpaceChar on both sides and stay blank/rejected.
+            int[] rejectedCodes =
+            {
+                0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x20,               // basic whitespace
+                0x1C, 0x1D, 0x1E, 0x1F,                           // Java-only separators
+                0xA0, 0x1680, 0x2000, 0x2007, 0x200A, 0x202F,     // space chars (isSpaceChar)
+                0x2028, 0x2029, 0x205F, 0x3000                    // line/para/ideographic space
+            };
+            foreach (int code in rejectedCodes)
+            {
+                string key = ((char)code).ToString();
+                Assert.ThrowsAny<ArgumentException>(() => new AiCheatPolicy(
+                    capabilityToggles: new Dictionary<string, bool> { [key] = true }));
+                ArgumentException viaWith = Assert.ThrowsAny<ArgumentException>(
+                    () => new AiCheatPolicy().WithCapability(key, allowed: true));
+                Assert.Equal("capabilityId", viaWith.ParamName);
+            }
+
+            // The whole U+2000..U+200A general-punctuation block is isSpaceChar for
+            // Kotlin (the probe's blankBMP lists every member) — swept, not sampled.
+            for (int code = 0x2000; code <= 0x200A; code++)
+            {
+                Assert.ThrowsAny<ArgumentException>(
+                    () => new AiCheatPolicy().WithCapability(((char)code).ToString(), allowed: true));
+            }
+
+            // 0x0085 is accepted as a stable id on both entry points, even with value
+            // false, and keeps behaving as an ordinary ordinal key afterwards.
+            string nextLine = ((char)0x85).ToString();
+            AiCheatPolicy fromCtor = new AiCheatPolicy(
+                enabled: true,
+                capabilityToggles: new Dictionary<string, bool> { [nextLine] = false });
+            Assert.False(fromCtor.IsCapabilityToggled(nextLine));
+            Assert.False(fromCtor.Allows(nextLine));
+            AiCheatPolicy fromWithCapability = new AiCheatPolicy(enabled: true)
+                .WithCapability(nextLine, allowed: false);
+            Assert.False(fromWithCapability.Allows(nextLine));
+
+            // A V4-blank id must be rejected even when the toggle value would be true.
+            Assert.ThrowsAny<ArgumentException>(() => new AiCheatPolicy(
+                capabilityToggles: new Dictionary<string, bool> { [((char)0x1C).ToString()] = true }));
+
+            // Mixed strings follow the same per-char rule: a mix containing the
+            // Java-only 0x001C is V4-blank even though .NET sees visible content, and a
+            // mix containing 0x0085 is NOT V4-blank even though .NET sees whitespace.
+            string javaOnlyMix = new string(new[] { (char)0x1C, (char)0x20, (char)0x1F });
+            Assert.ThrowsAny<ArgumentException>(() => new AiCheatPolicy(
+                capabilityToggles: new Dictionary<string, bool> { [javaOnlyMix] = true }));
+            Assert.ThrowsAny<ArgumentException>(
+                () => new AiCheatPolicy().WithCapability(javaOnlyMix, allowed: true));
+
+            string nextLineMix = new string(new[] { (char)0x85, (char)0x20, (char)0x0A });
+            AiCheatPolicy keptMix = new AiCheatPolicy(enabled: true)
+                .WithCapability(nextLineMix, allowed: false);
+            Assert.False(keptMix.IsCapabilityToggled(nextLineMix));
+
+            // The 0x0085 id survives a RestrictWith union like any other stable id.
+            AiCheatPolicy merged = fromCtor.RestrictWith(fromWithCapability);
+            Assert.False(merged.IsCapabilityToggled(nextLine));
+            Assert.Contains(nextLine, merged.CapabilityToggles.Keys);
+            Assert.True(merged.IsCapabilityToggled("absent_id"));
+
+            // Visible content is never blank on either side.
+            foreach (string visible in new[] { "TILE_MARK", " cap", "cap ", "0", "." })
+            {
+                _ = new AiCheatPolicy(capabilityToggles: new Dictionary<string, bool> { [visible] = true });
+                _ = new AiCheatPolicy().WithCapability(visible, allowed: true);
+            }
         }
 
         [Fact]
@@ -282,11 +376,15 @@ namespace Mahjong.Ai.Tests
             AiCheatPolicy policy = new AiCheatPolicy();
             Assert.Throws<ArgumentNullException>(() => policy.IsCapabilityToggled(null!));
 
-            // Kotlin's allows() short-circuits on the disabled master switch, so a null
-            // id only surfaces when the switch is on — exactly like the V4 source.
-            Assert.False(policy.Allows(null!));
-            AiCheatPolicy enabled = new AiCheatPolicy(enabled: true);
-            Assert.ThrowsAny<ArgumentException>(() => enabled.Allows(null!));
+            // Kotlin inserts the intrinsic parameter null check at the method entry,
+            // BEFORE the body and therefore before the `enabled &&` short-circuit:
+            // Allows(null) throws in BOTH master switch polarities (verified against V4
+            // by compiling and running the real AiCheatPolicy.kt, caller D-1-02).
+            Assert.Throws<ArgumentNullException>(() => new AiCheatPolicy(enabled: false).Allows(null!));
+            Assert.Throws<ArgumentNullException>(() => new AiCheatPolicy(enabled: true).Allows(null!));
+
+            // The short-circuit only governs valid ids on a disabled policy.
+            Assert.False(new AiCheatPolicy(enabled: false).Allows("TILE_MARK"));
         }
 
         [Fact]
@@ -473,6 +571,39 @@ namespace Mahjong.Ai.Tests
             Assert.Equal(1, rightFirst.CandidateLimit);
             Assert.Equal(0.1, leftFirst.RiskTolerance);
             Assert.Equal(0.1, rightFirst.RiskTolerance);
+        }
+
+        [Fact]
+        public void RestrictWithRiskZeroSignFollowsJavaLangMathMin()
+        {
+            // Kotlin minOf(Double, Double) delegates to java.lang.Math.min: when both
+            // operands are zero the negative zero wins REGARDLESS of argument order
+            // (caller parity probe D-1-01). Both a naive tie-keeps-left port and .NET's
+            // Math.Min(double, double) return the left operand on ties and would produce
+            // +0.0 for one of the two mixed orders.
+            AiCheatPolicy positive = new AiCheatPolicy(riskTolerance: 0.0);
+            AiCheatPolicy negative = new AiCheatPolicy(riskTolerance: -0.0);
+
+            Assert.Equal(long.MinValue, BitConverter.DoubleToInt64Bits(positive.RestrictWith(negative).RiskTolerance));
+            Assert.Equal(long.MinValue, BitConverter.DoubleToInt64Bits(negative.RestrictWith(positive).RiskTolerance));
+            Assert.Equal(0L, BitConverter.DoubleToInt64Bits(positive.RestrictWith(positive).RiskTolerance));
+            Assert.Equal(long.MinValue, BitConverter.DoubleToInt64Bits(negative.RestrictWith(negative).RiskTolerance));
+
+            // The two mixed orders agree bitwise (data-class equality is commutative in
+            // value), and either mixed result is a distinct policy from (+0,+0).
+            Assert.True(positive.RestrictWith(negative).Equals(negative.RestrictWith(positive)));
+            Assert.False(positive.RestrictWith(negative).Equals(positive.RestrictWith(positive)));
+            Assert.NotEqual(
+                positive.RestrictWith(negative).GetHashCode(),
+                positive.RestrictWith(positive).GetHashCode());
+
+            // When zero is the numeric minimum its sign survives the merge; when a
+            // non-zero risk is smaller, the zero sign is irrelevant to the value.
+            AiCheatPolicy lower = new AiCheatPolicy(riskTolerance: 0.25);
+            Assert.Equal(0L, BitConverter.DoubleToInt64Bits(positive.RestrictWith(lower).RiskTolerance));
+            Assert.Equal(0L, BitConverter.DoubleToInt64Bits(lower.RestrictWith(positive).RiskTolerance));
+            Assert.Equal(long.MinValue, BitConverter.DoubleToInt64Bits(negative.RestrictWith(lower).RiskTolerance));
+            Assert.Equal(long.MinValue, BitConverter.DoubleToInt64Bits(lower.RestrictWith(negative).RiskTolerance));
         }
 
         [Fact]

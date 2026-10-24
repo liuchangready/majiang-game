@@ -111,7 +111,7 @@ namespace Mahjong.Ai
                 var values = new Dictionary<string, bool>(capabilityToggles.Count, StringComparer.Ordinal);
                 foreach (KeyValuePair<string, bool> entry in capabilityToggles)
                 {
-                    if (string.IsNullOrWhiteSpace(entry.Key))
+                    if (entry.Key is null || IsKotlinBlank(entry.Key))
                     {
                         throw new ArgumentException(
                             "capability toggle id cannot be blank.",
@@ -182,9 +182,20 @@ namespace Mahjong.Ai
             return _values.TryGetValue(capabilityId, out bool allowed) ? allowed : true;
         }
 
-        /// <summary>Master switch and single toggle must both allow the capability.</summary>
+        /// <summary>
+        /// Master switch and single toggle must both allow the capability. Kotlin inserts
+        /// the intrinsic parameter null check at the method entry, before the
+        /// <c>enabled &amp;&amp;</c> short-circuit, so a null id throws in both master
+        /// switch polarities (verified against V4 via reflection, caller review D-1-02);
+        /// the short-circuit only governs valid ids on a disabled policy.
+        /// </summary>
         public bool Allows(string capabilityId)
         {
+            if (capabilityId == null)
+            {
+                throw new ArgumentNullException(nameof(capabilityId));
+            }
+
             return Enabled && IsCapabilityToggled(capabilityId);
         }
 
@@ -197,13 +208,17 @@ namespace Mahjong.Ai
         public AiCheatPolicy WithCapability(string capabilityId, bool allowed)
         {
             // Kotlin separates null (intrinsic null check → NPE) from blank
-            // (require → IllegalArgumentException); keep both distinct here.
+            // (require → IllegalArgumentException); keep both distinct here. The blank
+            // rule is the V4 Kotlin one, not .NET's — see IsKotlinBlank.
             if (capabilityId == null)
             {
                 throw new ArgumentNullException(nameof(capabilityId));
             }
 
-            AiGuard.RequireText(capabilityId, nameof(capabilityId));
+            if (IsKotlinBlank(capabilityId))
+            {
+                throw new ArgumentException("capabilityId cannot be blank.", nameof(capabilityId));
+            }
 
             var keys = new List<string>(_keys.Length + 1);
             var values = new Dictionary<string, bool>(_keys.Length + 1, StringComparer.Ordinal);
@@ -294,13 +309,40 @@ namespace Mahjong.Ai
         }
 
         /// <summary>
-        /// Kotlin <c>minOf(a, b)</c> returns the left operand on ties (including the
-        /// ±0.0 pair, which compares equal); <see cref="Math.Min(double, double)"/> does
-        /// not guarantee that, so the tie rule is spelled out.
+        /// Kotlin <c>minOf(Double, Double)</c> delegates to <c>java.lang.Math.min</c> on
+        /// the JVM. That IEEE rule is not a plain comparison and differs from both a
+        /// naive tie-keeps-left and .NET's own <see cref="Math.Min(double, double)"/>
+        /// (which returns the left operand on ties): when both values are zero, negative
+        /// zero wins regardless of the argument order — (+0,-0) and (-0,+0) both yield
+        /// -0.0 (caller parity probe D-1-01). NaN cannot occur here because the
+        /// constructor rejects it; the NaN arm merely mirrors the Math.min contract.
         /// </summary>
         private static double MinOf(double left, double right)
         {
-            return left <= right ? left : right;
+            if (double.IsNaN(left) || double.IsNaN(right))
+            {
+                return double.NaN;
+            }
+
+            if (left < right)
+            {
+                return left;
+            }
+
+            if (right < left)
+            {
+                return right;
+            }
+
+            if (left == 0.0)
+            {
+                // Equal zeros: -0.0 wins when either side carries the sign bit.
+                return (BitConverter.DoubleToInt64Bits(left) | BitConverter.DoubleToInt64Bits(right)) < 0
+                    ? -0.0
+                    : 0.0;
+            }
+
+            return left; // equal non-zero values are bitwise identical
         }
 
         private static int MinOf(int left, int right)
@@ -311,6 +353,47 @@ namespace Mahjong.Ai
         private static int MaxOf(int left, int right)
         {
             return left >= right ? left : right;
+        }
+
+        /// <summary>
+        /// V4 blank rule, ported from Kotlin <c>CharSequence.isBlank()</c>: the value is
+        /// blank when it is empty or every char satisfies Kotlin
+        /// <c>Char.isWhitespace()</c>, which is <c>Character.isWhitespace(c) ||
+        /// Character.isSpaceChar(c)</c>. That set differs from .NET
+        /// <see cref="char.IsWhiteSpace(char)"/> in exactly two BMP places (caller
+        /// parity probe D-1-03, blankBMP sweep): 0x001C..0x001F are Java-only whitespace
+        /// and must be rejected, while 0x0085 (next line) is neither Java whitespace nor
+        /// a space char and must be accepted. NBSP U+00A0, figure space U+2007 and
+        /// narrow no-break space U+202F are rejected by both sides (isSpaceChar).
+        /// Supplementary-plane characters are judged per UTF-16 code unit on both
+        /// sides, so lone surrogates are never blank there either.
+        /// </summary>
+        private static bool IsKotlinBlank(string value)
+        {
+            for (int i = 0; i < value.Length; i++)
+            {
+                if (!IsKotlinWhitespace(value[i]))
+                {
+                    return false;
+                }
+            }
+
+            return true;
+        }
+
+        private static bool IsKotlinWhitespace(char c)
+        {
+            if (c >= '\u001C' && c <= '\u001F')
+            {
+                return true; // Java file/group/record/unit separator: V4 whitespace, .NET is not
+            }
+
+            if (c == '\u0085')
+            {
+                return false; // next line: .NET whitespace, but neither Java whitespace nor space char
+            }
+
+            return char.IsWhiteSpace(c);
         }
 
         /// <summary>
