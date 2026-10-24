@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
+using System.IO;
 using System.Threading;
 using System.Threading.Tasks;
 using Mahjong.Contracts;
@@ -450,6 +451,49 @@ namespace Mahjong.TableRuntime
             }
 
             return null;
+        }
+
+        private static TableDurableCommitResult? ValidateAcceptedTiming(
+            TableDurableCommitRequest request,
+            TableCheckpoint? checkpoint)
+        {
+            try
+            {
+                RoundRecoveryState state = RoundRecoveryCodec.Decode(request.NextStatePayload!);
+                string roundId = request.Timing!.RoundId;
+                bool terminalReset = state.Result != null;
+                if ((roundId.Length == 0 && !terminalReset) ||
+                    (roundId.Length > 0 &&
+                     !string.Equals(roundId, state.Spec.RoundId, StringComparison.Ordinal)))
+                {
+                    return TableDurableCommitResult.Failed(
+                        TableRuntimeReasonCode.CheckpointInvalid,
+                        "Accepted timing does not belong to the committed next round.");
+                }
+
+                if (checkpoint != null)
+                {
+                    byte[] encoded = TableTimingCheckpointCodec.Encode(request.Timing);
+                    if (!encoded.AsSpan().SequenceEqual(checkpoint.TimingPayload))
+                    {
+                        return TableDurableCommitResult.Failed(
+                            TableRuntimeReasonCode.CheckpointInvalid,
+                            "Accepted timing journal and checkpoint timing payload disagree.");
+                    }
+                }
+
+                return null;
+            }
+            catch (Exception exception) when (
+                exception is InvalidDataException ||
+                exception is IOException ||
+                exception is ArgumentException ||
+                exception is InvalidOperationException)
+            {
+                return TableDurableCommitResult.Failed(
+                    TableRuntimeReasonCode.CheckpointInvalid,
+                    "Accepted timing/state is invalid: " + exception.Message);
+            }
         }
 
         public ValueTask<TableDurableCommitResult> SaveCheckpointAsync(
@@ -981,6 +1025,13 @@ namespace Mahjong.TableRuntime
                                 TableDurableCommitResult.Failed(
                                     TableRuntimeReasonCode.StaleStateVersion,
                                     "An accepted command requires the next timing snapshot/version."));
+                        }
+
+                        TableDurableCommitResult? timingFailure =
+                            ValidateAcceptedTiming(request, request.Checkpoint);
+                        if (timingFailure != null)
+                        {
+                            return new ValueTask<TableDurableCommitResult>(timingFailure);
                         }
 
                         newEvents = ValidateAndCopyEvents(request, state.LastEventSeq);
