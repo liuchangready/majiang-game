@@ -1091,6 +1091,10 @@ namespace Mahjong.TableRuntime
                         BeforeScopeCheckForTest?.Invoke();
                         scopeLease = _scopes.BeginScopeForCommit(receipt.ScopeId);
                         TableScopeRecord? scope = scopeLease.Scope;
+                        // The wait for the transactional scope read may have consumed time;
+                        // expiry must be evaluated at the linearization point, not with the
+                        // pre-wait sample.
+                        ulong scopeNow = (ulong)_clock.UtcNowMs;
                         if (scope == null)
                         {
                             return new ValueTask<TableDurableCommitResult>(
@@ -1131,7 +1135,7 @@ namespace Mahjong.TableRuntime
                                     "The request scope was revoked."));
                         }
 
-                        if (scope.IsExpiredAt(now))
+                        if (scope.IsExpiredAt(scopeNow))
                         {
                             return new ValueTask<TableDurableCommitResult>(
                                 TableDurableCommitResult.ScopeRejected(
@@ -1142,15 +1146,24 @@ namespace Mahjong.TableRuntime
 
                     ThrowIf(TableStoreFaultPoint.AfterScopeCheck);
                     AfterScopeCheckForTest?.Invoke();
+                    now = (ulong)_clock.UtcNowMs;
 
-                    // 3) Owner/lease fence.
+                    // 3) Owner/lease fence. This is the lease's linearization point; a wait
+                    // after the scope read must not authorize against the pre-wait clock.
                     if (!_leases.TryGetValue(request.RoomId, out LeaseRow? lease) ||
                         !string.Equals(lease.OwnerInstance, request.OwnerInstance, StringComparison.Ordinal) ||
-                        lease.OwnerEpoch != request.ExpectedOwnerEpoch ||
-                        now >= lease.ExpiresAtUtcMs)
+                        lease.OwnerEpoch != request.ExpectedOwnerEpoch)
                     {
                         return new ValueTask<TableDurableCommitResult>(
-                            TableDurableCommitResult.StaleOwner("The table lease is not owned by this instance/epoch or has expired."));
+                            TableDurableCommitResult.StaleOwner("The table lease is not owned by this instance/epoch."));
+                    }
+
+                    if (now >= lease.ExpiresAtUtcMs)
+                    {
+                        return new ValueTask<TableDurableCommitResult>(
+                            TableDurableCommitResult.Failed(
+                                TableRuntimeReasonCode.StaleOwnerEpoch,
+                                "The table lease expired before the transactional fence."));
                     }
 
                     ThrowIf(TableStoreFaultPoint.AfterLeaseCheck);
