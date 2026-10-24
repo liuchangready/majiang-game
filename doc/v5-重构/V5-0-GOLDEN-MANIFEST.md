@@ -31,9 +31,9 @@
 | `cheat-v1.json` | 42,120 | `A196CBBD97AB8F61BE8679B74C8F17DF2713CB37AEF0922E5F3C9F725B28AB4E` | `v5-cheat-golden-v1` | `a96c195` | 81 |
 | `shuffle-v1.json` | 99,467 | `386061B42691CCF36381E2D87DC4787367958C8E9E96A93BA69D1E3FE5DAC282` | `v5-shuffle-golden-v1` | `37b4dd6` | 32 |
 
-- **73 条 G 目录需求**的当前覆盖：`full` 18、`partial` 19、`none` 33、`v5-only` 3。`full` 表示该 G 条目的全部约定断言在当前五组 fixture + C# 读取范围内都有证据；`partial` 表示只覆盖部分断言并单列缺口，不冒充整项完成。**`full` 仍不是 G1 对齐率或验收结论**；`none` 的 33 项仍保留责任任务。
+- **73 条 G 目录需求**的当前覆盖：`full` 17、`partial` 20、`none` 33、`v5-only` 3。`full` 表示该 G 条目的全部约定断言在当前五组 fixture + C# 读取范围内都有证据；`partial` 表示只覆盖部分断言并单列缺口，不冒充整项完成。**`full` 仍不是 G1 对齐率或验收结论**；`none` 的 33 项仍保留责任任务。
 - **分母彼此独立，不能相加**：73 是 G 目录需求；10,382 是五组 fixture 的具体 JSON case；其中 `scoring-v1` 的 10,000 条 `randomSamples` 是这 10,382 的子集，不是另一个可加分母；42 是 5 个 C# Golden reader 类的 `[Fact]` 数；5 是 fixture 文件数。另有 5 个 V4 exporter 和 5 个 C# reader 类。
-- 五组 fixture 的存在不等于 73 条需求全部导出。33 条 `none`、19 条 `partial` 仍不得写成“已对齐”；G1 仍 `BLOCKED`，G5 未完成，V4 仍是唯一生产基线。
+- 五组 fixture 的存在不等于 73 条需求全部导出。33 条 `none`、20 条 `partial` 仍不得写成“已对齐”；G1 仍 `BLOCKED`，G5 未完成，V4 仍是唯一生产基线。
 - 未导出/纯 V5 需求继续按 §8.2 的责任任务保留；本清单没有把在途 G-049 AI 导出或任何兄弟工作树代码写入本目录。
 
 ---
@@ -283,9 +283,9 @@
 #### 8.3.2 当前机械口径（2026-10-24，`catalog-v1.json`）
 
 - 五组 fixture 已存在并被 5 个 C# Golden reader 类读取；但 **73 条 G 需求并未全部导出**。
-- 73 条 G 需求：`full` 18、`partial` 19、`none` 33、`v5-only` 3。`full` 指该条目的全部约定断言在当前范围内有证据；`partial` 只覆盖部分断言并单列缺口；`none` 与 `v5-only` 不进入 V4 对齐分子。
+- 73 条 G 需求：`full` 17、`partial` 20、`none` 33、`v5-only` 3。`full` 指该条目的全部约定断言在当前范围内有证据；`partial` 只覆盖部分断言并单列缺口；`none` 与 `v5-only` 不进入 V4 对齐分子。
 - 具体 JSON case：**10,382**（physical 6 + scoring 10,238 + round 25 + cheat 81 + shuffle 32）。其中 scoring 的 `randomSamples` **10,000** 条是这 10,382 的子集，不另加；C# `[Fact]` **42**（5 个类）；fixture **5**。这些分母不能相加成一个“完成数”。
-- “fixture 已导出 + C# 测试运行通过”只证明这五组样本可读、可差分，不等于 73/73，也不等于 G1 PASS。当前仍有 33 条 `none`、19 条 `partial`。
+- “fixture 已导出 + C# 测试运行通过”只证明这五组样本可读、可差分，不等于 73/73，也不等于 G1 PASS。当前仍有 33 条 `none`、20 条 `partial`。
 - 逐项状态见 §8.5；机器可读锚点/计数/哈希见 `tests/v5-golden/catalog-v1.json`，并由 `tools/verify-v5-golden-catalog.ps1` 从真实 JSON 重新计算。
 
 ### 8.4 复现命令（当前）
@@ -361,7 +361,7 @@ D:/Unity/dotnet/dotnet.exe dotnet/tests/Mahjong.Domain.Tests/bin/Release/net8.0/
 | G-043 | `pending` | `partial` | shuffle-v1:cases | — | P1.5 | 32 fixed-seed walls, red fives, dead-wall isolation, 3/4-caster laws exported; illegal seat/config rejection is not exported. |
 | G-044 | `pending` | `none` | — | — | P1.5 | See-through/anti-target cases are not in the five fixtures. |
 | G-045 | `pending-v4-replay` | `none` | — | — | P1.5 | ShufflePreparation SecureRandom seed is not exported; D-07 remains. |
-| G-046 | `pending` | `full` | round-v1:decisionClock/RG-004a<br>round-v1:decisionClock/RG-004b<br>round-v1:decisionClock/RG-004c<br>round-v1:decisionClock/RG-004d<br>round-v1:decisionClock/RG-004e<br>round-v1:decisionClock/RG-004f | RoundReplayGoldenTests.DecisionClockTracesReplayExactly: 6 traces, every operation and remaining reserve | P1.3 | Six complete clock operation traces (open/complete/cancel/pause/resume/scope reset) exported; C# replays every operation. |
+| G-046 | `pending` | `partial` | round-v1:decisionClock/RG-004a<br>round-v1:decisionClock/RG-004b<br>round-v1:decisionClock/RG-004c<br>round-v1:decisionClock/RG-004d<br>round-v1:decisionClock/RG-004e<br>round-v1:decisionClock/RG-004f | — | P1.3 | RG-004a..f have 9 successful open calls but no duplicate-open rejection and no old-roundId-key open rejection; DecisionClockTracesReplayExactly only replays successful open/complete/cancel/pause/resume/remainingReserve/expiry paths. The G-046 duplicate-open and old-round assertions remain unverified. |
 | G-047 | `pending` | `none` | — | — | P1.3 | TimeoutPolicy selection is not in the five fixtures. |
 | G-048 | `pending` | `partial` | round-v1:controlEpoch/RG-005 | — | P1.3 | RG-005 covers engine ControllerRegistry epochs only; server ConnectionControl grace/reclaim is explicitly not exported by the engine-side exporter. |
 | G-049 | `pending-v4-replay` | `none` | — | — | P1.6 | No AiDecisionRecorded/intent or stale-AI submission fixture. |

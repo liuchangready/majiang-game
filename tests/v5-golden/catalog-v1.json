@@ -22,8 +22,8 @@
                          "csharpGoldenClasses":  5,
                          "csharpGoldenFacts":  42,
                          "requirementCoverage":  {
-                                                     "full":  18,
-                                                     "partial":  19,
+                                                     "full":  17,
+                                                     "partial":  20,
                                                      "none":  33,
                                                      "v5-only":  3
                                                  },
@@ -1600,7 +1600,7 @@
                          {
                              "id":  "G-046",
                              "manifestStatus":  "pending",
-                             "coverage":  "full",
+                             "coverage":  "partial",
                              "anchors":  [
                                              "round-v1:decisionClock/RG-004a",
                                              "round-v1:decisionClock/RG-004b",
@@ -1610,8 +1610,8 @@
                                              "round-v1:decisionClock/RG-004f"
                                          ],
                              "owner":  "P1.3",
-                             "note":  "Six complete clock operation traces (open/complete/cancel/pause/resume/scope reset) exported; C# replays every operation.",
-                             "csharpEvidence":  "RoundReplayGoldenTests.DecisionClockTracesReplayExactly: 6 traces, every operation and remaining reserve"
+                             "note":  "RG-004a..f have 9 successful open calls but no duplicate-open rejection and no old-roundId-key open rejection; DecisionClockTracesReplayExactly only replays successful open/complete/cancel/pause/resume/remainingReserve/expiry paths. The G-046 duplicate-open and old-round assertions remain unverified.",
+                             "csharpEvidence":  ""
                          },
                          {
                              "id":  "G-047",
@@ -2238,7 +2238,166 @@
                                                                          "path":  "operations",
                                                                          "type":  "array"
                                                                      }
-                                                                 ]
+                                                                 ],
+                                                       "elementRules":  {
+                                                                            "operations":  {
+                                                                                               "discriminator":  "op",
+                                                                                               "variants":  {
+                                                                                                                "beginRound":  [
+                                                                                                                                   {
+                                                                                                                                       "path":  "roundId",
+                                                                                                                                       "type":  "string"
+                                                                                                                                   },
+                                                                                                                                   {
+                                                                                                                                       "path":  "now",
+                                                                                                                                       "type":  "number"
+                                                                                                                                   }
+                                                                                                                               ],
+                                                                                                                "open":  [
+                                                                                                                             {
+                                                                                                                                 "path":  "roundId",
+                                                                                                                                 "type":  "string"
+                                                                                                                             },
+                                                                                                                             {
+                                                                                                                                 "path":  "seat",
+                                                                                                                                 "type":  "number"
+                                                                                                                             },
+                                                                                                                             {
+                                                                                                                                 "path":  "decisionId",
+                                                                                                                                 "type":  "string"
+                                                                                                                             },
+                                                                                                                             {
+                                                                                                                                 "path":  "at",
+                                                                                                                                 "type":  "number"
+                                                                                                                             },
+                                                                                                                             {
+                                                                                                                                 "path":  "deadline",
+                                                                                                                                 "type":  "number"
+                                                                                                                             },
+                                                                                                                             {
+                                                                                                                                 "path":  "reserveAtOpen",
+                                                                                                                                 "type":  "number"
+                                                                                                                             },
+                                                                                                                             {
+                                                                                                                                 "path":  "generation",
+                                                                                                                                 "type":  "number"
+                                                                                                                             }
+                                                                                                                         ],
+                                                                                                                "complete":  [
+                                                                                                                                 {
+                                                                                                                                     "path":  "roundId",
+                                                                                                                                     "type":  "string"
+                                                                                                                                 },
+                                                                                                                                 {
+                                                                                                                                     "path":  "seat",
+                                                                                                                                     "type":  "number"
+                                                                                                                                 },
+                                                                                                                                 {
+                                                                                                                                     "path":  "decisionId",
+                                                                                                                                     "type":  "string"
+                                                                                                                                 },
+                                                                                                                                 {
+                                                                                                                                     "path":  "at",
+                                                                                                                                     "type":  "number"
+                                                                                                                                 },
+                                                                                                                                 {
+                                                                                                                                     "path":  "result",
+                                                                                                                                     "type":  "boolean"
+                                                                                                                                 }
+                                                                                                                             ],
+                                                                                                                "expired":  [
+                                                                                                                                {
+                                                                                                                                    "path":  "at",
+                                                                                                                                    "type":  "number"
+                                                                                                                                },
+                                                                                                                                {
+                                                                                                                                    "path":  "count",
+                                                                                                                                    "type":  "number"
+                                                                                                                                }
+                                                                                                                            ],
+                                                                                                                "expire":  [
+                                                                                                                               {
+                                                                                                                                   "path":  "roundId",
+                                                                                                                                   "type":  "string"
+                                                                                                                               },
+                                                                                                                               {
+                                                                                                                                   "path":  "seat",
+                                                                                                                                   "type":  "number"
+                                                                                                                               },
+                                                                                                                               {
+                                                                                                                                   "path":  "decisionId",
+                                                                                                                                   "type":  "string"
+                                                                                                                               },
+                                                                                                                               {
+                                                                                                                                   "path":  "generation",
+                                                                                                                                   "type":  "number"
+                                                                                                                               },
+                                                                                                                               {
+                                                                                                                                   "path":  "at",
+                                                                                                                                   "type":  "number"
+                                                                                                                               },
+                                                                                                                               {
+                                                                                                                                   "path":  "result",
+                                                                                                                                   "type":  "boolean"
+                                                                                                                               }
+                                                                                                                           ],
+                                                                                                                "pause":  [
+                                                                                                                              {
+                                                                                                                                  "path":  "at",
+                                                                                                                                  "type":  "number"
+                                                                                                                              }
+                                                                                                                          ],
+                                                                                                                "resume":  [
+                                                                                                                               {
+                                                                                                                                   "path":  "at",
+                                                                                                                                   "type":  "number"
+                                                                                                                               }
+                                                                                                                           ],
+                                                                                                                "timingDeadline":  [
+                                                                                                                                       {
+                                                                                                                                           "path":  "seat",
+                                                                                                                                           "type":  "number"
+                                                                                                                                       },
+                                                                                                                                       {
+                                                                                                                                           "path":  "value",
+                                                                                                                                           "type":  "number"
+                                                                                                                                       }
+                                                                                                                                   ],
+                                                                                                                "cancel":  [
+                                                                                                                               {
+                                                                                                                                   "path":  "roundId",
+                                                                                                                                   "type":  "string"
+                                                                                                                               },
+                                                                                                                               {
+                                                                                                                                   "path":  "seat",
+                                                                                                                                   "type":  "number"
+                                                                                                                               },
+                                                                                                                               {
+                                                                                                                                   "path":  "decisionId",
+                                                                                                                                   "type":  "string"
+                                                                                                                               },
+                                                                                                                               {
+                                                                                                                                   "path":  "at",
+                                                                                                                                   "type":  "number"
+                                                                                                                               },
+                                                                                                                               {
+                                                                                                                                   "path":  "result",
+                                                                                                                                   "type":  "boolean"
+                                                                                                                               }
+                                                                                                                           ],
+                                                                                                                "remainingReserve":  [
+                                                                                                                                         {
+                                                                                                                                             "path":  "seat",
+                                                                                                                                             "type":  "number"
+                                                                                                                                         },
+                                                                                                                                         {
+                                                                                                                                             "path":  "value",
+                                                                                                                                             "type":  "number"
+                                                                                                                                         }
+                                                                                                                                     ]
+                                                                                                            }
+                                                                                           }
+                                                                        }
                                                    },
                         "round-v1:roundTerminal":  {
                                                        "requiredKeys":  [
@@ -2270,12 +2429,97 @@
                                                                          "type":  "object"
                                                                      },
                                                                      {
+                                                                         "path":  "input.roundId",
+                                                                         "type":  "string"
+                                                                     },
+                                                                     {
+                                                                         "path":  "input.dealer",
+                                                                         "type":  "number"
+                                                                     },
+                                                                     {
+                                                                         "path":  "input.scores",
+                                                                         "type":  "array",
+                                                                         "length":  4
+                                                                     },
+                                                                     {
+                                                                         "path":  "input.riichiSticks",
+                                                                         "type":  "number"
+                                                                     },
+                                                                     {
+                                                                         "path":  "input.phaseBefore",
+                                                                         "type":  "string"
+                                                                     },
+                                                                     {
+                                                                         "path":  "input.versionBefore",
+                                                                         "type":  "number"
+                                                                     },
+                                                                     {
+                                                                         "path":  "settlement.resultId",
+                                                                         "type":  "string"
+                                                                     },
+                                                                     {
+                                                                         "path":  "settlement.outcome",
+                                                                         "type":  "string"
+                                                                     },
+                                                                     {
+                                                                         "path":  "settlement.winner",
+                                                                         "type":  "number"
+                                                                     },
+                                                                     {
+                                                                         "path":  "settlement.finalScores",
+                                                                         "type":  "array",
+                                                                         "length":  4
+                                                                     },
+                                                                     {
+                                                                         "path":  "settlement.totalDeltas",
+                                                                         "type":  "array",
+                                                                         "length":  4
+                                                                     },
+                                                                     {
+                                                                         "path":  "settlement.remainingSticks",
+                                                                         "type":  "number"
+                                                                     },
+                                                                     {
+                                                                         "path":  "settlement.completedAtUtc",
+                                                                         "type":  "string"
+                                                                     },
+                                                                     {
+                                                                         "path":  "settlement.completedAtMonotonicMillis",
+                                                                         "type":  "number"
+                                                                     },
+                                                                     {
+                                                                         "path":  "expected.versionAfter",
+                                                                         "type":  "number"
+                                                                     },
+                                                                     {
+                                                                         "path":  "expected.phaseAfter",
+                                                                         "type":  "string"
+                                                                     },
+                                                                     {
                                                                          "path":  "expected.eventTypes",
                                                                          "type":  "array"
                                                                      },
                                                                      {
+                                                                         "path":  "expected.resultOutcome",
+                                                                         "type":  "string"
+                                                                     },
+                                                                     {
+                                                                         "path":  "expected.resultFinalScores",
+                                                                         "type":  "array",
+                                                                         "length":  4
+                                                                     },
+                                                                     {
+                                                                         "path":  "expected.resultDeltas",
+                                                                         "type":  "array",
+                                                                         "length":  4
+                                                                     },
+                                                                     {
                                                                          "path":  "expected.rejectedActions",
                                                                          "type":  "array"
+                                                                     },
+                                                                     {
+                                                                         "path":  "expected.versionAfterRejections",
+                                                                         "type":  "number"
                                                                      }
                                                                  ]
                                                    },
@@ -2302,6 +2546,68 @@
                                                                   {
                                                                       "path":  "expected",
                                                                       "type":  "object"
+                                                                  },
+                                                                  {
+                                                                      "path":  "input.roundId",
+                                                                      "type":  "string"
+                                                                  },
+                                                                  {
+                                                                      "path":  "input.kanserSeat",
+                                                                      "type":  "number"
+                                                                  },
+                                                                  {
+                                                                      "path":  "input.ronSeat",
+                                                                      "type":  "number"
+                                                                  },
+                                                                  {
+                                                                      "path":  "input.addedTileId",
+                                                                      "type":  "number"
+                                                                  },
+                                                                  {
+                                                                      "path":  "input.eligibleSeats",
+                                                                      "type":  "array"
+                                                                  },
+                                                                  {
+                                                                      "path":  "expected.winner",
+                                                                      "type":  "number"
+                                                                  },
+                                                                  {
+                                                                      "path":  "expected.loser",
+                                                                      "type":  "number"
+                                                                  },
+                                                                  {
+                                                                      "path":  "expected.rinshanPointerAfterKan",
+                                                                      "type":  "number"
+                                                                  },
+                                                                  {
+                                                                      "path":  "expected.totalKanCountAfterKan",
+                                                                      "type":  "number"
+                                                                  },
+                                                                  {
+                                                                      "path":  "expected.rinshanPointerAfterRon",
+                                                                      "type":  "number"
+                                                                  },
+                                                                  {
+                                                                      "path":  "expected.totalKanCountAfterRon",
+                                                                      "type":  "number"
+                                                                  },
+                                                                  {
+                                                                      "path":  "expected.finalScores",
+                                                                      "type":  "array",
+                                                                      "length":  4
+                                                                  },
+                                                                  {
+                                                                      "path":  "expected.totalDeltas",
+                                                                      "type":  "array",
+                                                                      "length":  4
+                                                                  },
+                                                                  {
+                                                                      "path":  "expected.versionAfterRon",
+                                                                      "type":  "number"
+                                                                  },
+                                                                  {
+                                                                      "path":  "expected.resultId",
+                                                                      "type":  "string"
                                                                   }
                                                               ]
                                                 },
@@ -2324,7 +2630,66 @@
                                                                         "path":  "operations",
                                                                         "type":  "array"
                                                                     }
-                                                                ]
+                                                                ],
+                                                      "elementRules":  {
+                                                                           "operations":  {
+                                                                                              "discriminator":  "op",
+                                                                                              "variants":  {
+                                                                                                               "initial":  [
+                                                                                                                               {
+                                                                                                                                   "path":  "epochs",
+                                                                                                                                   "type":  "array"
+                                                                                                                               },
+                                                                                                                               {
+                                                                                                                                   "path":  "kinds",
+                                                                                                                                   "type":  "array"
+                                                                                                                               }
+                                                                                                                           ],
+                                                                                                               "setController":  [
+                                                                                                                                     {
+                                                                                                                                         "path":  "seat",
+                                                                                                                                         "type":  "number"
+                                                                                                                                     },
+                                                                                                                                     {
+                                                                                                                                         "path":  "kind",
+                                                                                                                                         "type":  "string"
+                                                                                                                                     },
+                                                                                                                                     {
+                                                                                                                                         "path":  "epochs",
+                                                                                                                                         "type":  "array"
+                                                                                                                                     },
+                                                                                                                                     {
+                                                                                                                                         "path":  "kinds",
+                                                                                                                                         "type":  "array"
+                                                                                                                                     }
+                                                                                                                                 ],
+                                                                                                               "initialize":  [
+                                                                                                                                  {
+                                                                                                                                      "path":  "kinds",
+                                                                                                                                      "type":  "array"
+                                                                                                                                  },
+                                                                                                                                  {
+                                                                                                                                      "path":  "epochs",
+                                                                                                                                      "type":  "array"
+                                                                                                                                  }
+                                                                                                                              ],
+                                                                                                               "validateEpoch":  [
+                                                                                                                                     {
+                                                                                                                                         "path":  "seat",
+                                                                                                                                         "type":  "number"
+                                                                                                                                     },
+                                                                                                                                     {
+                                                                                                                                         "path":  "expectedEpoch",
+                                                                                                                                         "type":  "number"
+                                                                                                                                     },
+                                                                                                                                     {
+                                                                                                                                         "path":  "result",
+                                                                                                                                         "type":  "boolean"
+                                                                                                                                     }
+                                                                                                                                 ]
+                                                                                                           }
+                                                                                          }
+                                                                       }
                                                   },
                         "round-v1:unexportedSamples":  {
                                                            "requiredKeys":  [
@@ -2428,7 +2793,8 @@
                                                 "rules":  [
                                                               {
                                                                   "path":  "initialPoints",
-                                                                  "type":  "array"
+                                                                  "type":  "array",
+                                                                  "length":  4
                                                               },
                                                               {
                                                                   "path":  "chargeOnce",
@@ -2461,6 +2827,153 @@
                                                               {
                                                                   "path":  "snapshotRoundTrip",
                                                                   "type":  "object"
+                                                              },
+                                                              {
+                                                                  "path":  "chargeOnce.entryId",
+                                                                  "type":  "string"
+                                                              },
+                                                              {
+                                                                  "path":  "chargeOnce.seat",
+                                                                  "type":  "number"
+                                                              },
+                                                              {
+                                                                  "path":  "chargeOnce.amount",
+                                                                  "type":  "number"
+                                                              },
+                                                              {
+                                                                  "path":  "chargeOnce.reason",
+                                                                  "type":  "string"
+                                                              },
+                                                              {
+                                                                  "path":  "chargeOnce.balanceAfter",
+                                                                  "type":  "number"
+                                                              },
+                                                              {
+                                                                  "path":  "chargeOnce.balancesAfter",
+                                                                  "type":  "array",
+                                                                  "length":  4
+                                                              },
+                                                              {
+                                                                  "path":  "chargeOnce.entryCount",
+                                                                  "type":  "number"
+                                                              },
+                                                              {
+                                                                  "path":  "replaySamePayload.returnsOriginalEntry",
+                                                                  "type":  "boolean"
+                                                              },
+                                                              {
+                                                                  "path":  "replaySamePayload.balanceAfter",
+                                                                  "type":  "number"
+                                                              },
+                                                              {
+                                                                  "path":  "replaySamePayload.entryCount",
+                                                                  "type":  "number"
+                                                              },
+                                                              {
+                                                                  "path":  "conflictDifferentPayload.requested.seat",
+                                                                  "type":  "number"
+                                                              },
+                                                              {
+                                                                  "path":  "conflictDifferentPayload.requested.amount",
+                                                                  "type":  "number"
+                                                              },
+                                                              {
+                                                                  "path":  "conflictDifferentPayload.outcome",
+                                                                  "type":  "string"
+                                                              },
+                                                              {
+                                                                  "path":  "conflictDifferentPayload.exception",
+                                                                  "type":  "string"
+                                                              },
+                                                              {
+                                                                  "path":  "conflictDifferentPayload.balancesAfter",
+                                                                  "type":  "array",
+                                                                  "length":  4
+                                                              },
+                                                              {
+                                                                  "path":  "conflictDifferentPayload.entryCount",
+                                                                  "type":  "number"
+                                                              },
+                                                              {
+                                                                  "path":  "insufficientFunds.amount",
+                                                                  "type":  "number"
+                                                              },
+                                                              {
+                                                                  "path":  "insufficientFunds.initialPoints",
+                                                                  "type":  "number"
+                                                              },
+                                                              {
+                                                                  "path":  "insufficientFunds.outcome",
+                                                                  "type":  "string"
+                                                              },
+                                                              {
+                                                                  "path":  "insufficientFunds.exception",
+                                                                  "type":  "string"
+                                                              },
+                                                              {
+                                                                  "path":  "overflow.amount",
+                                                                  "type":  "number"
+                                                              },
+                                                              {
+                                                                  "path":  "overflow.outcome",
+                                                                  "type":  "string"
+                                                              },
+                                                              {
+                                                                  "path":  "overflow.exception",
+                                                                  "type":  "string"
+                                                              },
+                                                              {
+                                                                  "path":  "invalidSeat.seat",
+                                                                  "type":  "number"
+                                                              },
+                                                              {
+                                                                  "path":  "invalidSeat.outcome",
+                                                                  "type":  "string"
+                                                              },
+                                                              {
+                                                                  "path":  "invalidSeat.exception",
+                                                                  "type":  "string"
+                                                              },
+                                                              {
+                                                                  "path":  "flowSummary.spend.seat",
+                                                                  "type":  "number"
+                                                              },
+                                                              {
+                                                                  "path":  "flowSummary.spend.amount",
+                                                                  "type":  "number"
+                                                              },
+                                                              {
+                                                                  "path":  "flowSummary.gain.seat",
+                                                                  "type":  "number"
+                                                              },
+                                                              {
+                                                                  "path":  "flowSummary.gain.amount",
+                                                                  "type":  "number"
+                                                              },
+                                                              {
+                                                                  "path":  "flowSummary.seat0TotalSpent",
+                                                                  "type":  "number"
+                                                              },
+                                                              {
+                                                                  "path":  "flowSummary.seat1TotalGained",
+                                                                  "type":  "number"
+                                                              },
+                                                              {
+                                                                  "path":  "flowSummary.seat1NetDelta",
+                                                                  "type":  "number"
+                                                              },
+                                                              {
+                                                                  "path":  "flowSummary.finalBalances",
+                                                                  "type":  "array",
+                                                                  "length":  4
+                                                              },
+                                                              {
+                                                                  "path":  "snapshotRoundTrip.balancesEqual",
+                                                                  "type":  "boolean"
+                                                              },
+                                                              {
+                                                                  "path":  "snapshotRoundTrip.entriesEqual",
+                                                                  "type":  "boolean"
                                                               }
                                                           ]
                                             },

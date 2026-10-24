@@ -435,7 +435,67 @@ Invoke-NegativeCase -Name 'singleton-wrong-type' -ExpectedCode 'CASE_STRUCTURE_T
     Update-CatalogFixtureSha -Root $root -FixtureId 'round-v1'
 }
 
-# 17. Exporter byte change.
+# 17. roundTerminal.input={} must fail its nested consumed fields.
+Invoke-NegativeCase -Name 'terminal-empty-input' -ExpectedCode 'CASE_STRUCTURE_MISSING' -Mutator {
+    param($root)
+    $path = Join-Path $root 'tests\v5-golden\round-v1.json'
+    $json = Read-JsonFile $path
+    $json.roundTerminal.input = [pscustomobject]@{}
+    Write-JsonFile $path $json
+    Update-CatalogFixtureSha -Root $root -FixtureId 'round-v1'
+}
+
+# 18. controlEpoch.operations[0]={} must fail the op discriminator/fields.
+Invoke-NegativeCase -Name 'clock-operation-empty' -ExpectedCode 'CASE_STRUCTURE_MISSING' -Mutator {
+    param($root)
+    $path = Join-Path $root 'tests\v5-golden\round-v1.json'
+    $json = Read-JsonFile $path
+    $json.controlEpoch.operations = @([pscustomobject]@{})
+    Write-JsonFile $path $json
+    Update-CatalogFixtureSha -Root $root -FixtureId 'round-v1'
+}
+
+# 19. ledger.chargeOnce={} must fail its consumed result fields.
+Invoke-NegativeCase -Name 'ledger-charge-empty' -ExpectedCode 'CASE_STRUCTURE_MISSING' -Mutator {
+    param($root)
+    $path = Join-Path $root 'tests\v5-golden\cheat-v1.json'
+    $json = Read-JsonFile $path
+    $json.ledger.chargeOnce = [pscustomobject]@{}
+    Write-JsonFile $path $json
+    Update-CatalogFixtureSha -Root $root -FixtureId 'cheat-v1'
+}
+
+# 20. null consumed array must fail.
+Invoke-NegativeCase -Name 'terminal-array-null' -ExpectedCode 'CASE_STRUCTURE_MISSING' -Mutator {
+    param($root)
+    $path = Join-Path $root 'tests\v5-golden\round-v1.json'
+    $json = Read-JsonFile $path
+    $json.roundTerminal.input.scores = $null
+    Write-JsonFile $path $json
+    Update-CatalogFixtureSha -Root $root -FixtureId 'round-v1'
+}
+
+# 21. null operations array must fail.
+Invoke-NegativeCase -Name 'clock-operations-null' -ExpectedCode 'CASE_STRUCTURE_MISSING' -Mutator {
+    param($root)
+    $path = Join-Path $root 'tests\v5-golden\round-v1.json'
+    $json = Read-JsonFile $path
+    $json.controlEpoch.operations = $null
+    Write-JsonFile $path $json
+    Update-CatalogFixtureSha -Root $root -FixtureId 'round-v1'
+}
+
+# 22. null operation element must fail with a structural type error.
+Invoke-NegativeCase -Name 'clock-operation-null' -ExpectedCode 'CASE_STRUCTURE_TYPE' -Mutator {
+    param($root)
+    $path = Join-Path $root 'tests\v5-golden\round-v1.json'
+    $json = Read-JsonFile $path
+    $json.controlEpoch.operations = @($null)
+    Write-JsonFile $path $json
+    Update-CatalogFixtureSha -Root $root -FixtureId 'round-v1'
+}
+
+# 23. Exporter byte change.
 Invoke-NegativeCase -Name 'exporter-sha' -ExpectedCode 'EXPORTER_SHA_MISMATCH' -Mutator {
     param($root)
     $path = Join-Path $root 'engine\src\test\kotlin\com\majiang\model\V5PhysicalGoldenExporterTest.kt'

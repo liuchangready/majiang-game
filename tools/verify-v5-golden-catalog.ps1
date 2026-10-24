@@ -164,6 +164,33 @@ function Test-ShapeRules {
     }
 }
 
+function Test-ElementRules {
+    param([object]$Array, [object]$Spec, [string]$Label)
+    $discriminator = [string](Get-Prop -Object $Spec -Name 'discriminator')
+    $variants = Get-Prop -Object $Spec -Name 'variants'
+    if ([string]::IsNullOrWhiteSpace($discriminator) -or $null -eq $variants) {
+        Add-Failure 'GROUP_STRUCTURE_INVALID' ("{0}: elementRules needs discriminator and variants" -f $Label)
+        return
+    }
+    foreach ($item in @($Array)) {
+        if ($null -eq $item -or -not ($item -is [System.Management.Automation.PSCustomObject])) {
+            Add-Failure 'CASE_STRUCTURE_TYPE' ("{0}: array element must be an object" -f $Label)
+            continue
+        }
+        $key = [string](Get-Prop -Object $item -Name $discriminator)
+        if ([string]::IsNullOrWhiteSpace($key)) {
+            Add-Failure 'CASE_STRUCTURE_MISSING' ("{0}: element missing discriminator '{1}'" -f $Label, $discriminator)
+            continue
+        }
+        $variant = $variants.PSObject.Properties[$key]
+        if ($null -eq $variant) {
+            Add-Failure 'CASE_STRUCTURE_UNKNOWN_VARIANT' ("{0}: unknown '{1}'='{2}'" -f $Label, $discriminator, $key)
+            continue
+        }
+        Test-ShapeRules -Object $item -Rules @($variant.Value) -Label ('{0}[{1}]' -f $Label, $key)
+    }
+}
+
 function Resolve-Anchor {
     param([string]$Anchor, [string]$RequirementId)
     $separator = $Anchor.IndexOf(':')
@@ -214,6 +241,7 @@ function Test-Group {
     }
     $shapeRequiredKeys = @()
     $shapeRules = @()
+    $elementRules = $null
     if ($null -ne $shape) {
         $shapeRequiredKeys = @(Get-DeclaredStringArray -Holder $shape -Name 'requiredKeys' -Label ('{0}:{1}.shape' -f $fixtureId, $groupName))
         $rulesProperty = $shape.PSObject.Properties['rules']
@@ -225,6 +253,7 @@ function Test-Group {
                 $shapeRules = @($rulesProperty.Value)
             }
         }
+        $elementRules = Get-Prop -Object $shape -Name 'elementRules'
     }
 
     if ($kind -eq 'array') {
@@ -244,7 +273,7 @@ function Test-Group {
                 }
             }
         }
-        if ($shapeRules.Count -gt 0 -and $items.Count -gt 0) {
+        if (($shapeRules.Count -gt 0 -or $null -ne $elementRules) -and $items.Count -gt 0) {
             if ($items.Count -le 100) {
                 $shapeTargets = $items
             }
@@ -252,7 +281,23 @@ function Test-Group {
                 $shapeTargets = @($items[0], $items[$items.Count - 1])
             }
             foreach ($target in $shapeTargets) {
-                Test-ShapeRules -Object $target -Rules $shapeRules -Label ('{0}:{1}' -f $fixtureId, $groupName)
+                if ($shapeRules.Count -gt 0) {
+                    Test-ShapeRules -Object $target -Rules $shapeRules -Label ('{0}:{1}' -f $fixtureId, $groupName)
+                }
+                if ($null -ne $elementRules) {
+                    foreach ($elementProperty in $elementRules.PSObject.Properties) {
+                        $arrayValue = Get-JsonValueByPath -Root $target -Path $elementProperty.Name
+                        if ($null -eq $arrayValue) {
+                            Add-Failure 'CASE_STRUCTURE_MISSING' ("{0}:{1}: missing element array '{2}'" -f $fixtureId, $groupName, $elementProperty.Name)
+                            continue
+                        }
+                        if (-not ($arrayValue -is [System.Array])) {
+                            Add-Failure 'CASE_STRUCTURE_TYPE' ("{0}:{1}: element array '{2}' expected array" -f $fixtureId, $groupName, $elementProperty.Name)
+                            continue
+                        }
+                        Test-ElementRules -Array $arrayValue -Spec $elementProperty.Value -Label ('{0}:{1}.{2}' -f $fixtureId, $groupName, $elementProperty.Name)
+                    }
+                }
             }
         }
         $ids = @()
@@ -352,8 +397,24 @@ function Test-Group {
                 Add-Failure 'CASE_STRUCTURE_MISSING' ("{0}:{1}: sample missing keys [{2}]" -f $fixtureId, $groupName, ($missingKeys -join ','))
             }
         }
-        if ($shapeRules.Count -gt 0) {
-            Test-ShapeRules -Object $actual -Rules $shapeRules -Label ('{0}:{1}' -f $fixtureId, $groupName)
+        if ($shapeRules.Count -gt 0 -or $null -ne $elementRules) {
+            if ($shapeRules.Count -gt 0) {
+                Test-ShapeRules -Object $actual -Rules $shapeRules -Label ('{0}:{1}' -f $fixtureId, $groupName)
+            }
+            if ($null -ne $elementRules) {
+                foreach ($elementProperty in $elementRules.PSObject.Properties) {
+                    $arrayValue = Get-JsonValueByPath -Root $actual -Path $elementProperty.Name
+                    if ($null -eq $arrayValue) {
+                        Add-Failure 'CASE_STRUCTURE_MISSING' ("{0}:{1}: missing element array '{2}'" -f $fixtureId, $groupName, $elementProperty.Name)
+                        continue
+                    }
+                    if (-not ($arrayValue -is [System.Array])) {
+                        Add-Failure 'CASE_STRUCTURE_TYPE' ("{0}:{1}: element array '{2}' expected array" -f $fixtureId, $groupName, $elementProperty.Name)
+                        continue
+                    }
+                    Test-ElementRules -Array $arrayValue -Spec $elementProperty.Value -Label ('{0}:{1}.{2}' -f $fixtureId, $groupName, $elementProperty.Name)
+                }
+            }
         }
         $script:ActualGroups[('{0}:{1}' -f $fixtureId, $groupName)] = @{ ids = @($sampleId); isCase = [bool](Get-Prop -Object $Group -Name 'countAsCase') }
     }
