@@ -54,6 +54,15 @@ namespace Mahjong.TableRuntime
         private readonly ConditionalWeakTable<AiObservation, ObservationGeneration> _aiObservationGenerations =
             new ConditionalWeakTable<AiObservation, ObservationGeneration>();
         private readonly List<TableEventRecord> _recentEvents = new List<TableEventRecord>();
+
+        /// <summary>
+        /// Complete committed event log for the current round. It is deliberately independent of
+        /// <c>SnapshotEventWindow</c>: the snapshot window is diagnostic and may be 0 or 1, while
+        /// Wire facts, typed settlement payloads and provenance need every event of the current
+        /// committed turn/round. It is cleared only when an authoritative recovery baseline
+        /// replaces the round; recovered history is never fabricated.
+        /// </summary>
+        private readonly List<TableEventRecord> _committedEventLog = new List<TableEventRecord>();
         private readonly ITableProjectionContextSource? _projectionContextSource;
         private readonly TableStreamOptions _streamOptions;
         private readonly Dictionary<ulong, TableStreamRegistration> _streams =
@@ -2117,6 +2126,7 @@ namespace Mahjong.TableRuntime
             }
 
             _recentEvents.Clear();
+            _committedEventLog.Clear();
             if (baseline.Control != null)
             {
                 _strictRecoveryFence = true;
@@ -4196,7 +4206,22 @@ namespace Mahjong.TableRuntime
                     "The projection clock is not safe: " + clockFailure);
             }
 
-            IReadOnlyList<TableEventRecord> committedEvents = CopyRecentEvents();
+            IReadOnlyList<TableEventRecord> committedEvents = CopyCommittedEventLog();
+            if (committedEvents.Count > 0 &&
+                committedEvents[committedEvents.Count - 1].Seq != _lastEventSeq)
+            {
+                throw new TableProjectionException(
+                    TableProjectionErrorCode.InvalidContext,
+                    "The committed event log does not end at the installed event sequence.");
+            }
+
+            if (_round.IsFinished && _round.Events.Count > 0 && committedEvents.Count == 0)
+            {
+                throw new TableProjectionException(
+                    TableProjectionErrorCode.InvalidContext,
+                    "A terminal round has no authoritative committed event history; settlement facts cannot be fabricated.");
+            }
+
             var request = new TableProjectionContextRequest(
                 _options.RoomId,
                 _round,
@@ -4251,12 +4276,12 @@ namespace Mahjong.TableRuntime
                 now);
         }
 
-        private IReadOnlyList<TableEventRecord> CopyRecentEvents()
+        private IReadOnlyList<TableEventRecord> CopyCommittedEventLog()
         {
-            var copy = new TableEventRecord[_recentEvents.Count];
-            for (int i = 0; i < _recentEvents.Count; i++)
+            var copy = new TableEventRecord[_committedEventLog.Count];
+            for (int i = 0; i < _committedEventLog.Count; i++)
             {
-                copy[i] = _recentEvents[i];
+                copy[i] = _committedEventLog[i];
             }
 
             return copy;
@@ -4417,6 +4442,35 @@ namespace Mahjong.TableRuntime
             }
         }
 
+        /// <summary>
+        /// A committed terminal win/draw is an authoritative settlement batch. The actor may
+        /// therefore promote only the batch gate from the trusted policy; it never changes
+        /// paused/ura authorization and it does not alter event visibility rules. This keeps a
+        /// later baseline/Sync/refresh able to carry the full typed settlement payload even when
+        /// the diagnostic recent-event window is 0 or 1.
+        /// </summary>
+        private static TableProjectionPolicy EffectiveProjectionPolicy(
+            TableProjectionPolicy policy,
+            IReadOnlyList<TableEventProjectionInput> events)
+        {
+            if (policy.SettlementBatch)
+            {
+                return policy;
+            }
+
+            for (int i = 0; i < events.Count; i++)
+            {
+                TableEventProjectionInput input = events[i];
+                if (TableEventProjectionInput.IsSettlementType(input.Type) ||
+                    (input.Type == ProtocolEventType.DoraRevealed && input.IsUraDora))
+                {
+                    return new TableProjectionPolicy(policy.Paused, true, policy.RevealSettlementUra);
+                }
+            }
+
+            return policy;
+        }
+
         private TableStreamFrame BuildStreamFrame(
             TableStreamHandle handle,
             StreamProjectionCapture capture,
@@ -4427,6 +4481,7 @@ namespace Mahjong.TableRuntime
         {
             TableStreamIdentity identity = handle.Identity;
             TableProjectionContextData data = capture.Data;
+            TableProjectionPolicy policy = EffectiveProjectionPolicy(data.Policy, capture.EventInputs);
             var context = new TableProjectionContext(
                 new TableProjectionIdentity(
                     identity.SessionId,
@@ -4435,7 +4490,7 @@ namespace Mahjong.TableRuntime
                     _lastEventSeq,
                     cursor,
                     new SessionVersion(data.SessionVersion)),
-                data.Policy,
+                policy,
                 capture.Clocks,
                 data.PublicFacts,
                 data.PrivateFacts,
@@ -4445,7 +4500,7 @@ namespace Mahjong.TableRuntime
 
             IReadOnlyList<TableProjectedEvent> events = committedEvents == null
                 ? Array.Empty<TableProjectedEvent>()
-                : ProjectStreamEvents(committedEvents, identity.Audience, data.Policy);
+                : ProjectStreamEvents(committedEvents, identity.Audience, policy);
             bool contractAware = _streamOptions.Encoder is IContractProjectionStreamFrameEncoder;
             IReadOnlyList<ProtocolEventRecord> typedEvents = contractAware
                 ? MapContractEvents(events, capture)
@@ -4462,7 +4517,7 @@ namespace Mahjong.TableRuntime
                         capture,
                         publicView.View.SettlementEvents,
                         TableProjectionAudience.Spectator,
-                        data.Policy);
+                        policy);
                     PublicSnapshotView mapped = TableProjectionContractMapper.MapPublicSnapshot(
                         publicView,
                         typedSettlement,
@@ -4530,7 +4585,7 @@ namespace Mahjong.TableRuntime
                         capture,
                         player.Public.SettlementEvents,
                         TableProjectionAudience.ForSeat(identity.Audience.Seat),
-                        data.Policy);
+                        policy);
                     PlayerSnapshotView mapped = TableProjectionContractMapper.MapPlayerSnapshot(
                         player,
                         owner,
@@ -5296,6 +5351,7 @@ namespace Mahjong.TableRuntime
             for (int i = 0; i < records.Count; i++)
             {
                 _recentEvents.Add(records[i]);
+                _committedEventLog.Add(records[i]);
             }
 
             int window = _options.SnapshotEventWindow;

@@ -460,7 +460,11 @@ namespace Mahjong.TableRuntime.Tests
                 EventFactsFactory = request => WireEventFacts.Build(request)
             };
             var codec = new StrictWireStreamCodec();
-            await using StreamHarness harness = StreamHarness.Create(WireOptions(codec), source, initialRound: round);
+            var channels = new List<TableStreamChannel>();
+            TableStreamOptions options = WireOptions(codec);
+            options.ObservePumpExit = true;
+            options.ChannelCreated = channels.Add;
+            await using StreamHarness harness = StreamHarness.Create(options, source, initialRound: round);
 
             var fastSink = new RecordingStreamSink();
             var slowSink = new RecordingStreamSink();
@@ -468,28 +472,43 @@ namespace Mahjong.TableRuntime.Tests
             await harness.SubscribeSpectatorAsync("slow", 1UL, 1UL, slowSink);
             await fastSink.WaitForCountAsync(1);
             await slowSink.WaitForCountAsync(1);
+            Assert.Equal(2, channels.Count);
+            TableStreamChannel slowChannel = channels[1];
 
             Assert.Equal(64, harness.StreamOptions.MaxQueuedFrames);
             Assert.Equal(4 * 1024 * 1024, harness.StreamOptions.MaxQueuedBytes);
 
-            slowSink.BlockNext();
             IReadOnlyList<TableCommandEnvelope> chain = harness.DiscardChain(66);
-            for (int i = 0; i < chain.Count; i++)
+            slowSink.BlockNext();
+            Assert.Equal(
+                TableOperationStatus.Accepted,
+                (await harness.Actor.SubmitAsync(chain[0], TestContext.Current.CancellationToken)).Status);
+            await slowSink.Entered.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
+            Task slowPumpExit = slowChannel.PumpExit;
+            Assert.False(slowPumpExit.IsCompleted, "The slow pump must still be parked inside the first update.");
+            await fastSink.WaitForCountAsync(2);
+
+            for (int i = 1; i < chain.Count; i++)
             {
                 TableOperationResult result = await harness.Actor.SubmitAsync(
                     chain[i], TestContext.Current.CancellationToken);
                 Assert.Equal(TableOperationStatus.Accepted, result.Status);
+                await fastSink.WaitForCountAsync(i + 2);
             }
 
             TableStreamTermination slow = await harness.Terminations.WaitForAsync(
                 item => item.Kind == TableStreamTerminationKind.SlowConsumer);
             Assert.Equal(ProtocolErrorCode.SlowConsumer, slow.ReasonCode);
             Assert.Equal(1, slowSink.FrameCount);
-            IReadOnlyList<TableStreamFrame> fastFrames = await fastSink.WaitForCountAsync(67, 30000);
-            Assert.Equal(67, fastFrames.Count);
-            Assert.True(fastFrames[66].PayloadSize > 0);
-            StrictWireStreamCodec.DecodeAndStrict(RequireBytes(fastFrames[66]));
+            Assert.Equal(67, fastSink.FrameCount);
+            byte[] lastFastFrame = RequireBytes(fastSink.Frames[66]);
+            Assert.True(lastFastFrame.Length > 0);
+            StrictWireStreamCodec.DecodeAndStrict(lastFastFrame);
+
             slowSink.Release();
+            await slowPumpExit.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
+            Assert.Equal(2, slowSink.FrameCount);
+            Assert.Equal(67, fastSink.FrameCount);
 
             var byteCodec = new StrictWireStreamCodec();
             TableStreamOptions byteOptions = WireOptions(byteCodec);
@@ -747,6 +766,232 @@ namespace Mahjong.TableRuntime.Tests
                 record => Assert.True(record.EventCase != PublicEventEnvelope.EventOneofCase.None));
             Assert.Equal(finalScores, update.Snapshot.PublicView.Board.Scores.Select(score => score.Score).ToArray());
             Assert.Equal(1ul, update.Snapshot.StateVersion);
+        }
+
+        [Fact]
+        public async Task diagnostic_window_zero_keeps_discard_update_and_failed_commit_is_silent()
+        {
+            RoundStateMachine round = P31Fixtures.Dealt("round-1");
+            var source = new TestProjectionSource
+            {
+                EventFactsFactory = request => WireEventFacts.Build(request)
+            };
+            var codec = new StrictWireStreamCodec();
+            await using StreamHarness harness = StreamHarness.Create(
+                WireOptions(codec),
+                source,
+                initialRound: round,
+                snapshotEventWindow: 0);
+
+            var sink = new RecordingStreamSink();
+            TableStreamControlResult subscribed = await harness.SubscribeSpectatorAsync("zero-discard", 1UL, 1UL, sink);
+            Assert.Equal(TableStreamControlStatus.Subscribed, subscribed.Status);
+            await sink.WaitForCountAsync(1);
+
+            IReadOnlyList<TableCommandEnvelope> chain = harness.DiscardChain(2);
+            TableOperationResult accepted = await harness.Actor.SubmitAsync(
+                chain[0], TestContext.Current.CancellationToken);
+            Assert.Equal(TableOperationStatus.Accepted, accepted.Status);
+            TableStreamFrame update = (await sink.WaitForCountAsync(2))[1];
+            Envelope envelope = StrictWireStreamCodec.DecodeAndStrict(RequireBytes(update));
+            Assert.Single(envelope.PublicUpdate.VisibleEvents);
+            Assert.Equal(EventType.TileDiscarded, envelope.PublicUpdate.VisibleEvents[0].EventType);
+            Assert.Empty(envelope.PublicUpdate.Snapshot.View.SettlementEvents);
+            TableSnapshot snapshot = await harness.Actor.GetSnapshotAsync(TestContext.Current.CancellationToken);
+            Assert.Empty(snapshot.RecentEvents);
+            Assert.Equal(new StateVersion(1), snapshot.StateVersion);
+
+            harness.CommitPort.FailNext();
+            TableOperationResult failed = await harness.Actor.SubmitAsync(
+                chain[1], TestContext.Current.CancellationToken);
+            Assert.Equal(TableOperationStatus.Failed, failed.Status);
+            Assert.Empty(failed.Events);
+            Assert.Equal(2, sink.FrameCount);
+            TableSnapshot afterFailure = await harness.Actor.GetSnapshotAsync(TestContext.Current.CancellationToken);
+            Assert.Equal(new StateVersion(1), afterFailure.StateVersion);
+            Assert.Empty(afterFailure.RecentEvents);
+        }
+
+        [Fact]
+        public async Task diagnostic_window_zero_keeps_complete_tsumo_settlement_for_update_baseline_sync_and_control_refresh()
+        {
+            RoundStateMachine round = P31Fixtures.Dealt("round-1");
+            var source = new TestProjectionSource
+            {
+                EventFactsFactory = request => WireEventFacts.Build(request, WinOptions())
+            };
+            var codec = new StrictWireStreamCodec();
+            await using StreamHarness harness = StreamHarness.Create(
+                WireOptions(codec),
+                source,
+                withControlCommit: true,
+                initialRound: round,
+                snapshotEventWindow: 0);
+
+            var seatSink = new RecordingStreamSink();
+            var spectatorSink = new RecordingStreamSink();
+            TableStreamControlResult seat = await harness.SubscribeSeatAsync(0, "zero-tsumo-seat", 1UL, 1UL, seatSink);
+            TableStreamControlResult spectator =
+                await harness.SubscribeSpectatorAsync("zero-tsumo-spec", 1UL, 1UL, spectatorSink);
+            Assert.Equal(TableStreamControlStatus.Subscribed, seat.Status);
+            Assert.Equal(TableStreamControlStatus.Subscribed, spectator.Status);
+            await seatSink.WaitForCountAsync(1);
+            await spectatorSink.WaitForCountAsync(1);
+
+            TableOperationResult accepted = await harness.Actor.SubmitAsync(
+                TsumoCommand(round, "zero-tsumo"),
+                TestContext.Current.CancellationToken);
+            Assert.Equal(TableOperationStatus.Accepted, accepted.Status);
+            Assert.Equal(2, accepted.Events.Count);
+            Assert.True(string.IsNullOrEmpty(harness.Actor.PublicationFault), harness.Actor.PublicationFault);
+            Assert.Empty(harness.Terminations.Terminations);
+
+            TableStreamFrame seatFrame = (await seatSink.WaitForCountAsync(2))[1];
+            TableStreamFrame spectatorFrame = (await spectatorSink.WaitForCountAsync(2))[1];
+            PlayerUpdate seatUpdate = StrictWireStreamCodec.DecodeAndStrict(RequireBytes(seatFrame)).PlayerUpdate;
+            PublicUpdate spectatorUpdate =
+                StrictWireStreamCodec.DecodeAndStrict(RequireBytes(spectatorFrame)).PublicUpdate;
+            Assert.Equal(2, seatUpdate.VisibleEvents.Count);
+            Assert.Equal(2, spectatorUpdate.VisibleEvents.Count);
+            Assert.Equal(2, seatUpdate.Snapshot.PublicView.SettlementEvents.Count);
+            Assert.Equal(2, spectatorUpdate.Snapshot.View.SettlementEvents.Count);
+            TableSnapshot snapshot = await harness.Actor.GetSnapshotAsync(TestContext.Current.CancellationToken);
+            Assert.Empty(snapshot.RecentEvents);
+
+            var lateSink = new RecordingStreamSink();
+            TableStreamControlResult late = await harness.SubscribeSpectatorAsync(
+                "zero-tsumo-late", 2UL, 2UL, lateSink);
+            Assert.Equal(TableStreamControlStatus.Subscribed, late.Status);
+            Envelope lateBaseline = StrictWireStreamCodec.DecodeAndStrict(
+                RequireBytes((await lateSink.WaitForCountAsync(1))[0]));
+            Assert.True(lateBaseline.PublicUpdate.IsFullSnapshot);
+            Assert.Equal(2, lateBaseline.PublicUpdate.Snapshot.View.SettlementEvents.Count);
+            Assert.Empty(lateBaseline.PublicUpdate.VisibleEvents);
+
+            TableStreamControlResult sync = await harness.SyncAsync(
+                late.Handle!,
+                new ContractCursor(new StreamVersion(0), new ProjectionSeq(0)));
+            Assert.Equal(TableStreamControlStatus.BaselineQueued, sync.Status);
+            Envelope synced = StrictWireStreamCodec.DecodeAndStrict(
+                RequireBytes((await lateSink.WaitForCountAsync(2))[1]));
+            Assert.True(synced.PublicUpdate.IsFullSnapshot);
+            Assert.Equal(2, synced.PublicUpdate.Snapshot.View.SettlementEvents.Count);
+
+            TableControlResult takeover = await harness.Actor.RequestTakeoverAsync(
+                0,
+                new OwnerEpoch(1),
+                new ControlEpoch(0),
+                "zero-window-control-refresh",
+                TestContext.Current.CancellationToken);
+            Assert.True(takeover.IsChanged);
+            Envelope refreshed = StrictWireStreamCodec.DecodeAndStrict(
+                RequireBytes((await spectatorSink.WaitForCountAsync(3))[2]));
+            Assert.Equal(2, refreshed.PublicUpdate.Snapshot.View.SettlementEvents.Count);
+            Assert.Empty(refreshed.PublicUpdate.VisibleEvents);
+        }
+
+        [Fact]
+        public async Task diagnostic_window_one_keeps_multi_event_tsumo_settlement_and_one_recent_diagnostic_event()
+        {
+            RoundStateMachine round = P31Fixtures.Dealt("round-1");
+            var source = new TestProjectionSource
+            {
+                EventFactsFactory = request => WireEventFacts.Build(request, WinOptions())
+            };
+            var codec = new StrictWireStreamCodec();
+            await using StreamHarness harness = StreamHarness.Create(
+                WireOptions(codec),
+                source,
+                initialRound: round,
+                snapshotEventWindow: 1);
+
+            var sink = new RecordingStreamSink();
+            TableStreamControlResult subscribed = await harness.SubscribeSpectatorAsync("one-tsumo", 1UL, 1UL, sink);
+            Assert.Equal(TableStreamControlStatus.Subscribed, subscribed.Status);
+            await sink.WaitForCountAsync(1);
+
+            TableOperationResult accepted = await harness.Actor.SubmitAsync(
+                TsumoCommand(round, "one-tsumo"),
+                TestContext.Current.CancellationToken);
+            Assert.Equal(TableOperationStatus.Accepted, accepted.Status);
+            Assert.Equal(2, accepted.Events.Count);
+            TableStreamFrame frame = (await sink.WaitForCountAsync(2))[1];
+            Envelope envelope = StrictWireStreamCodec.DecodeAndStrict(RequireBytes(frame));
+            Assert.Equal(2, envelope.PublicUpdate.VisibleEvents.Count);
+            Assert.Equal(2, envelope.PublicUpdate.Snapshot.View.SettlementEvents.Count);
+            TableSnapshot snapshot = await harness.Actor.GetSnapshotAsync(TestContext.Current.CancellationToken);
+            Assert.Single(snapshot.RecentEvents);
+            Assert.Equal(RoundEventType.RoundEnded, snapshot.RecentEvents[0].Type);
+        }
+
+        [Fact]
+        public async Task recovered_terminal_round_without_event_history_fails_closed()
+        {
+            RoundStateMachine initial = P31Fixtures.Dealt("round-1");
+            RoundStateMachine terminal = V32Fixtures.ApplyTsumo(
+                initial,
+                0,
+                new long[] { 26000, 24000, 25000, 25000 });
+            var source = new TestProjectionSource
+            {
+                EventFactsFactory = request => WireEventFacts.Build(request, WinOptions())
+            };
+            var codec = new StrictWireStreamCodec();
+            await using StreamHarness harness = StreamHarness.Create(
+                WireOptions(codec),
+                source,
+                initialRound: initial,
+                snapshotEventWindow: 0);
+
+            Assert.Equal(
+                TableOperationStatus.Configured,
+                (await harness.Actor.BeginRecoveryAsync(
+                    "terminal recovery without history",
+                    TestContext.Current.CancellationToken)).Status);
+            Assert.Equal(
+                TableOperationStatus.Configured,
+                (await harness.Actor.CompleteRecoveryAsync(
+                    new TableRecoveryBaseline(
+                        terminal,
+                        new StateVersion(1),
+                        new EventSeq(2),
+                        new OwnerEpoch(1)),
+                    TestContext.Current.CancellationToken)).Status);
+
+            var sink = new RecordingStreamSink();
+            TableStreamControlResult subscribed = await harness.SubscribeSpectatorAsync(
+                "recovered-terminal", 1UL, 1UL, sink, recoveryGeneration: 1L);
+            Assert.Equal(TableStreamControlStatus.Failed, subscribed.Status);
+            Assert.Equal(0, sink.FrameCount);
+            Assert.Contains("terminal round", subscribed.Detail);
+        }
+
+        private static WireEventFactOptions WinOptions()
+        {
+            return new WireEventFactOptions
+            {
+                WinYaku = new[] { new ContractYakuView("RIICHI", 1) },
+                WinHan = 1,
+                WinFu = 30,
+                WinScore = 1000
+            };
+        }
+
+        private static TableCommandEnvelope TsumoCommand(RoundStateMachine round, string requestId)
+        {
+            var settlement = new RoundSettlement(
+                "result-" + requestId,
+                RoundOutcome.Tsumo(0),
+                new long[] { 26000, 24000, 25000, 25000 },
+                0,
+                new PersistedUtcTime(new DateTimeOffset(2026, 10, 24, 0, 0, 0, TimeSpan.Zero)),
+                1234L);
+            return new TableCommandEnvelope(
+                RoundCommand.Tsumo(round.RoundId, 0, settlement),
+                new RequestId(requestId),
+                new StateVersion(0),
+                new OwnerEpoch(1),
+                new ControlEpoch(0));
         }
 
         private static Envelope BuildWelcome(TableStreamContractFrame frame, PlayerSnapshot baseline)

@@ -221,7 +221,7 @@ var actor = new TableActor(
 
 ---
 
-## 4. 联合测试（12 项，全部真实 actor + 真实 Wire）
+## 4. 联合测试（16 项，全部真实 actor + 真实 Wire）
 
 文件：`dotnet/tests/Mahjong.TableRuntime.Tests/TableStreamWireIntegrationTests.cs`；测试 codec 为 `StrictWireStreamCodec`，真实调用 `ProjectionWireMapper`、`WireCodec.EnsureStrict/Encode/Decode`，不使用 fake encoder 冒充 Wire。
 
@@ -241,7 +241,7 @@ var actor = new TableActor(
 7. `recovery_fences_queued_frames_rebaselines_and_sync_gates_updates`
    - 恢复 fence 丢弃旧队列；旧 completion 不污染新代次；新 generation full baseline；`NeedsSync` 期间增量被扣住；显式 Sync 重建 current full baseline 后才恢复 update。
 8. `actual_encoded_bytes_enforce_frame_and_byte_limits_and_isolate_slow_sink`
-   - 默认 64 帧边界下 66 次真实提交触发慢 sink `SlowConsumer`，快 sink 继续收 67 帧；`MaxQueuedBytes` 的真实编码字节超限返回 `MessageTooLarge`，不截断。
+   - 默认 64 帧边界下，先确认慢 sink 首帧进入（`Entered`）再逐帧提交；fast sink 每帧计数证明独立消费；第 66 帧触发慢 `SlowConsumer`，释放后经 `PumpExit` 屏障确认旧队列未发送；`MaxQueuedBytes` 的真实编码字节超限返回 `MessageTooLarge`，不截断。
 9. `missing_event_facts_fail_closed_after_commit_and_do_not_lose_committed_state`
    - 缺事件 facts：commit 成功但流 `ProjectionFailed`、无新帧；已提交 stateVersion/事件保留；修复后新订阅可重建含该提交的 baseline。
 10. `closed_kan_placeholder_and_owner_identities_stay_separated_and_no_seed_fields`
@@ -250,6 +250,14 @@ var actor = new TableActor(
     - 有 off-turn offer/reservation 但 window 被清除：订阅 fail closed，不伪造空 window/载荷。
 12. `current_client_accepts_actor_wire_update`
     - 当前 `TableSession` + `InMemoryOutboxStore` 接收 actor 真实 baseline/update 字节：WELCOME/SYNC_RESPONSE Ready，update 触发 `SnapshotChanged`，cursor/state/board 与 actor 帧一致。
+13. `diagnostic_window_zero_keeps_discard_update_and_failed_commit_is_silent`
+    - `SnapshotEventWindow=0` 下 discard update 仍携带 typed `TileDiscarded`，诊断 `RecentEvents` 为空；失败 commit 不发布、stateVersion 不变。
+14. `diagnostic_window_zero_keeps_complete_tsumo_settlement_for_update_baseline_sync_and_control_refresh`
+    - `SnapshotEventWindow=0` 下 Tsumo 的 update、终局后新订阅 baseline、显式 Sync、同 state 控制刷新均保留 `TsumoWin`+`RoundEnded` 两条 typed visible/settlement；`PublicationFault` 为空、无流终止。
+15. `diagnostic_window_one_keeps_multi_event_tsumo_settlement_and_one_recent_diagnostic_event`
+    - `SnapshotEventWindow=1` 下同一 Tsumo 仍保留 2 条 typed visible/settlement，诊断 `RecentEvents` 精确为 1（最后一条 `RoundEnded`）。
+16. `recovered_terminal_round_without_event_history_fails_closed`
+    - 恢复安装终局 round 但没有权威事件历史时，新订阅 fail closed，不伪造 settlement。
 
 现有 152 项 TableRuntime 用例与 caller 安全探针全部保留并通过；未删除、未改弱、未增加 skip；未改 verifier/生产校验。
 
@@ -263,15 +271,15 @@ SDK：`D:/Unity/dotnet/dotnet.exe`（8.0.426）。全部构建/测试为实际�
 |---:|---|---|---:|
 | 1 | `dotnet build dotnet/Mahjong.sln -c Release --nologo -v:minimal` | 成功，12 项目，0 warning / 0 error | 0 |
 | 2 | `dotnet build dotnet/tests/Mahjong.TableRuntime.Tests/Mahjong.TableRuntime.Tests.csproj -c Release -t:Rebuild --nologo -v:minimal` | 成功，0 warning / 0 error | 0 |
-| 3 | `dotnet test dotnet/tests/Mahjong.TableRuntime.Tests/Mahjong.TableRuntime.Tests.csproj -c Release --nologo -v:minimal` | **164 passed / 0 failed / 0 skipped**（152 基线 + 12 联合） | 0 |
-| 4 | `dotnet test ...TableRuntime.Tests... -c Release -- --filter-class "Mahjong.TableRuntime.Tests.TableStreamWireIntegrationTests"` | **12 passed / 0 failed / 0 skipped** | 0 |
+| 3 | `dotnet test dotnet/tests/Mahjong.TableRuntime.Tests/Mahjong.TableRuntime.Tests.csproj -c Release --nologo -v:minimal` | **168 passed / 0 failed / 0 skipped**（152 基线 + 16 联合） | 0 |
+| 4 | `dotnet test ...TableRuntime.Tests... -c Release -- --filter-class "Mahjong.TableRuntime.Tests.TableStreamWireIntegrationTests"` | **16 passed / 0 failed / 0 skipped** | 0 |
 | 5 | `dotnet test dotnet/tests/Mahjong.Contracts.Tests/Mahjong.Contracts.Tests.csproj -c Release --nologo -v:minimal` | **104 passed / 0 failed / 0 skipped** | 0 |
 | 6 | `dotnet test dotnet/tests/Mahjong.Client.Tests/Mahjong.Client.Tests.csproj -c Release --nologo -v:minimal` | **132 passed / 0 failed / 0 skipped** | 0 |
 | 7 | `dotnet test dotnet/tests/Mahjong.Domain.Tests/Mahjong.Domain.Tests.csproj -c Release --nologo -v:minimal` | **322 passed / 0 failed / 0 skipped** | 0 |
 | 8 | `dotnet test dotnet/tests/Mahjong.Ai.Tests/Mahjong.Ai.Tests.csproj -c Release --nologo -v:minimal` | **17 passed / 0 failed / 0 skipped** | 0 |
 | 9 | `git diff --check` | PASS（无空白错误） | 0 |
 
-非重复 Release 合计：`164 + 104 + 132 + 322 + 17 = 739 passed / 0 failed / 0 skipped`。TableRuntime 的 164 已包含 12 项联合用例，不重复相加。Debug 全量同树另行记录为 **164/0/0**。
+非重复 Release 合计：`168 + 104 + 132 + 322 + 17 = 743 passed / 0 failed / 0 skipped`。TableRuntime 的 168 已包含 16 项联合用例，不重复相加。Debug 全量同树另行记录为 **164/0/0**（历史轮次）。
 
 ### 5.1 第 2 轮独立验收返修（2026-10-24）
 
@@ -297,6 +305,43 @@ SDK：`D:/Unity/dotnet/dotnet.exe`（8.0.426）。全部构建/测试为实际�
 | `git diff --check` / `git diff HEAD^ HEAD --check` | PASS | 0 |
 
 本轮日志目录：`%TEMP%/p32-joint-r2-20261024/`，含 `slow-sink-stress-1..20.log`、`tableruntime-full-stress-1..3.log`、`tableruntime-tests-release-full.log`、`solution-build-release.log`、四个模块 `*-tests-release.log` 及 `.exit`。上一轮独立失败没有被改写成通过；返修后上述结果为本轮实际运行。
+
+### 5.2 第 3 轮独立验收返修（2026-10-24）
+
+独立验收在 `e28c251` 上新增两个合法配置边界探针并实际失败：
+
+- `SnapshotEventWindow=0`：真实 Tsumo `Accepted`，但 `PublicationFault='TableProjectionException: Event RoundEnded requires an explicit turnNumber fact...'`，流 `ProjectionFailed`、无新更新。
+- `SnapshotEventWindow=1`：提交成功，但 `PublicUpdate.Snapshot.View.SettlementEvents` 只有 1 条（应为 `TsumoWin`+`RoundEnded` 两条）。
+
+根因确认：`CaptureStreamProjection` 从 `CopyRecentEvents()` 构造 `TableProjectionContextRequest.CommittedEvents` 与 facts provenance，把业务 Wire/结算事实错误依赖在可裁剪的诊断 `SnapshotEventWindow` 上；`AppendRecent` 在窗口 0/1 时清空/裁剪，本次已提交的完整 `publication.Events` 没有进入 capture。不是未知领域路径。
+
+生产修复（`TableActor`）：
+
+- 新增 `_committedEventLog`：每次成功 commit 追加完整事件，直到当前 round 被权威恢复 baseline 替换；与诊断 `_recentEvents` 完全解耦。
+- `CaptureStreamProjection` 改用完整 `_committedEventLog` 构造 request/capture/event inputs/facts provenance；校验日志末事件 seq 等于已安装 `_lastEventSeq`。
+- 终局 round 若恢复后没有权威事件历史，`CaptureStreamProjection` 显式抛 `InvalidContext`，不伪造 settlement；恢复不会回填猜测历史。
+- 终局 win/draw 已提交时，actor 只把 `SettlementBatch` 门提升为 true（`TsumoWin/RonWin/RoundEnded` 等 settlement 类型），不改 `Paused`/`RevealSettlementUra`、不改事件白名单、不读可变 Domain 状态；使 spectator 的 update/baseline/Sync/控制刷新也保留完整 settlement。
+- `MapEvent`/`WireCodec` strict、facts 缺失 fail closed、64 帧/4 MiB 均未放宽。
+
+测试修复/新增：
+
+- `actual_encoded_bytes_enforce_frame_and_byte_limits_and_isolate_slow_sink` 改为与慢 sink 同轮模式：`Entered` 确认首帧进入、fast sink 逐帧计数、`PumpExit` 屏障验证释放后旧队列未发送；保留默认 64 帧/4 MiB 与真实 encoded 字节断言。
+- 新增 4 项回归：窗口 0 discard + 失败 commit 不发布；窗口 0 Tsumo 的 update/终局后新订阅/Sync/控制刷新完整；窗口 1 多事件 Tsumo 完整且诊断 `RecentEvents=1`；恢复终局缺历史 fail closed。
+- 联合测试由 12 增至 16，TableRuntime 由 164 增至 168；未删除/改弱既有用例，未加 skip/timeout/retry，未改 verifier。
+
+本轮实际结果：
+
+| 命令 | 结果 | exit |
+|---|---|---:|
+| caller 探针 `P32CallerReviewProbeTests`（2 项，临时放入测试目录后已移除） | **2 / 0 / 0**；重复 5 次均 2 / 0 / 0 | 0 |
+| TableRuntime 完整 Release 连续 3 次 | **168 / 0 / 0** 每次 | 0 |
+| 定向 Wire 联合类重复 10 次 | **16 / 0 / 0** 每次 | 0 |
+| 慢 sink 定向重复 20 次 | **1 / 0 / 0** 每次 | 0 |
+| `dotnet build dotnet/Mahjong.sln -c Release` | 12 项目，0 warning / 0 error | 0 |
+| Contracts / Client / Domain / AI Release | 104 / 132 / 322 / 17，均 0/0 | 0 |
+| `git diff --check` / `git diff HEAD^ HEAD --check` | PASS | 0 |
+
+本轮日志目录：`%TEMP%/p32-joint-r3-20261024/`，含 `caller-probe-after-fix*.log`、`caller-probe-stress-1..5.log`、`wire-integration-regressions*.log`、`wire-class-final-stress-1..10.log`、`tableruntime-full-final-stress-1..3.log`、`tableruntime-tests-release-full*.log`、`slow-sink-stress-1..20.log`、`solution-build-release.log`、四个模块日志及 `.exit`。第 2 轮失败与第 3 轮探针失败均保留为真实历史，未改写为通过。
 
 原始日志目录（未提交，位于临时目录）：
 
@@ -335,18 +380,18 @@ SDK：`D:/Unity/dotnet/dotnet.exe`（8.0.426）。全部构建/测试为实际�
 
 | 分类 | 项目 |
 |---|---|
-| **PASS** | Release solution build 0/0；TableRuntime 164/0/0（连续 3 次）；慢 sink 定向重复 20/20；Wire 联合 12/0/0；Contracts 104/0/0；Client 132/0/0；Domain 322/0/0；AI 17/0/0；`git diff --check` |
-| **FAIL** | 本轮无失败；第 1 轮独立验收的 1 项 `SlowSinkDoesNotBlockActorAndOverflowClosesOnlyThatStream` 超时已由本轮可控门闩返修并重复验证，未把原失败改写为通过 |
+| **PASS** | Release solution build 0/0；TableRuntime 168/0/0（连续 3 次）；慢 sink 定向重复 20/20；caller 事件窗口探针 2/0/0（重复 5 次）；Wire 联合 16/0/0（重复 10 次）；Contracts 104/0/0；Client 132/0/0；Domain 322/0/0；AI 17/0/0；`git diff --check` |
+| **FAIL** | 第 1 轮慢 sink 超时、第 3 轮 caller 窗口 0/1 探针失败均为真实历史；已分别由可控门闩与完整 committed event log/终局 settlement batch 修复并重复验证，未把原失败改写为通过；本轮修复后本地无失败 |
 | **BLOCKED** | 不适用（本任务本地实现可运行）；真实 PG、WSS/TCP、Unity/IL2CPP、Android/iOS、跨物理网络未由本任务提供环境 |
 | **NOT_RUN** | 真实 PostgreSQL/统一 PG 入口；真实 WSS/TCP 网络；远端 CI；Unity Editor/IL2CPP；Android/iOS 真机/模拟器；跨物理网络；P3.4；G1/G5；线上 E2E |
 
-V4 仍是唯一生产架构。G1/G5 未通过；本交付不宣称平台、真机、跨物理网络或线上验收通过。CI env 补修 `8d1bb9f` 与 receiver 的 `b473c4f` 均未读取/合入，由 caller 独立收口；本任务未运行统一 realPG，未来 caller 执行时无真实 PG 配置应如实 FAIL，不得把本文件的本地 739/0/0 写成统一入口 PASS。
+V4 仍是唯一生产架构。G1/G5 未通过；本交付不宣称平台、真机、跨物理网络或线上验收通过。CI env 补修 `8d1bb9f` 与 receiver 的 `b473c4f` 均未读取/合入，由 caller 独立收口；本任务未运行统一 realPG，未来 caller 执行时无真实 PG 配置应如实 FAIL，不得把本文件的本地 743/0/0 写成统一入口 PASS。
 
 ---
 
 ## 8. 仍需 caller 独立复核/收口
 
-1. 复核本 commit 的 9 个 expectedFiles 与真实 actor/Wire 路径，不把本地 commit 当作远端已推送。
+1. 复核本 commit 的 10 个 expectedFiles 与真实 actor/Wire 路径，不把本地 commit 当作远端已推送；第 3 轮修改 `TableActor.cs`、`TableStreamTestSupport.cs`、`TableStreamWireIntegrationTests.cs` 与本文件，`TableStreamActorTests.cs` 为第 2 轮已提交内容。
 2. 将本联合接线接入唯一 PR19（`feat/v5-1-integration -> v5`）的 caller 集成流程；push/PR/CI/record 由 caller 负责。
 3. 统一 realPG 由 caller 执行；本任务未配置、未运行、未改 verifier。
 4. P3.4、真实 WSS/TCP、Unity/IL2CPP、设备/弱网/跨物理网络、G1/G5 仍按原任务书独立验收。
@@ -358,12 +403,12 @@ V4 仍是唯一生产架构。G1/G5 未通过；本交付不宣称平台、真�
 | 文件 | SHA256 |
 |---|---|
 | `dotnet/src/Mahjong.TableRuntime/TableStreamEncodingContracts.cs` | `ABBD643D37DC871712F941B056A160126BCDD8C8D47726925B52D76177CDF4C4` |
-| `dotnet/src/Mahjong.TableRuntime/TableActor.cs` | `60934C2091A6DC4041D0401716ACD9225736733C7FEB510680E904A16231F313` |
+| `dotnet/src/Mahjong.TableRuntime/TableActor.cs` | `DA1E39136C791117B2584CEED743DF2C078EAFD72EE5ED9BAE2C3978668F4705` |
 | `dotnet/src/Mahjong.TableRuntime/TableProjectionContractMapper.cs` | `913A1822EADD236A1F1FE4A63C004566BF4ACF852B0C824F5B1C485E8D9B53B2` |
 | `dotnet/src/Mahjong.TableRuntime/TableStreamContracts.cs` | `1E40F29FAB43B80E921920DB1209D3FE5D8296E47DD4A02EF485E5D1BD5EE1D6` |
 | `dotnet/tests/Mahjong.TableRuntime.Tests/Mahjong.TableRuntime.Tests.csproj` | `F0D81FDE2A7F78E7E9A4C4F8C57E4B4A317B7BDFB92C9137501213ADF7239F1B` |
-| `dotnet/tests/Mahjong.TableRuntime.Tests/TableStreamTestSupport.cs` | `3B6037FD70E9733EED5DE02AE6CB3B6D34F1C6AD6214F0466144AFEF19057189` |
-| `dotnet/tests/Mahjong.TableRuntime.Tests/TableStreamWireIntegrationTests.cs` | `2AEAE176CC65FBEEFBABAED8503376948023CE969E15FE61201967CB03015B15` |
+| `dotnet/tests/Mahjong.TableRuntime.Tests/TableStreamTestSupport.cs` | `05E293A9C6EE3D4C25B971F25F630E53AC95769FF82AF4E76960AEDEEA698373` |
+| `dotnet/tests/Mahjong.TableRuntime.Tests/TableStreamWireIntegrationTests.cs` | `60FFF8B88E2987B594641AB344376527F71486A161387885A93AD65146747643` |
 | `dotnet/tests/Mahjong.TableRuntime.Tests/TableStreamWireTestSupport.cs` | `4EA4A88697A31A810776E1A6226406C4A5E224D410EC3FF3A7631A47FC4378B0` |
 | `dotnet/tests/Mahjong.TableRuntime.Tests/TableStreamActorTests.cs` | `DC1897261B2DEBBDF12C296B65C87851AC39809B553C2D1D0FAD72930D611C4D` |
 | `doc/v5-重构/V5-P32-JOINT-WIRING.md` | 本文 SHA256 见提交后最终响应（自引用无法在文件内固定） |
