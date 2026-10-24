@@ -379,3 +379,48 @@ PROBE MISMATCH
 - 本交付**不等于**完整 P1.6，**不宣告** G1/G5 通过，**不是**平台/端到端验收；V4 仍是唯一生产架构。
 - 不修改已验收的 `AiCheatPolicy.cs`/`AiObservation.cs`/`AiDecision.cs`/`CommandIntent.cs`/Basic 策略；`IAiStrategy`/`AiObservation`/`Domain`/`Contracts` 零改动（git status 仅三个 expectedFiles）。
 - 本任务不依赖、不消费兄弟黄金目录任务（thread_20261024_055105_a2cb）与独立启发式任务（远端 `3c2e7f5`）的任何在途产物；三任务文件面互不相交。
+
+## 9. Caller 独立验收与统一 PR19 集成（2026-10-25）
+
+Bridge 任务 `thread_20261025_005116_b40a` 第 1 轮已由 caller 独立验收，并通过 `approve_task` 归档为 COMPLETED。被验收开发提交为 `ba80e68c07e30d7f7c1a21b11ef834ab6d6f87f2`；开发树起止 clean，仅三个 expectedFiles，两个 C# 文件的 SHA-256 与 §1 一致。核对七类模型与真实 Kotlin 源码、参数解析、防御复制、十字段窗口身份、预算边界、结构等值及非权威哈希用途，未发现阻断缺陷。没有修改冻结矩阵、黄金样本或统一 verifier。
+
+### 9.1 本轮实际运行结果
+
+dotnet 路径为 `D:/Unity/dotnet/dotnet.exe`。下列路径均从对应工作树根执行；全部 exit 0，所有测试均为 0 failed / 0 skipped。
+
+| 工作树 / 命令 | 本轮实测 |
+|---|---|
+| 开发树 `D:/majiang-wt/ai-candidate-models`：`dotnet build dotnet/Mahjong.sln -c Release --no-incremental` | 0 warnings / 0 errors |
+| 开发树：`dotnet build dotnet/tests/Mahjong.Ai.Tests/Mahjong.Ai.Tests.csproj -c Release --no-incremental`，随后 `dotnet test` 同项目 `-c Release --no-build` | 强制重新编译后 Ai **243/243** |
+| 开发树：`dotnet test dotnet/tests/Mahjong.Domain.Tests/Mahjong.Domain.Tests.csproj -c Release --nologo` | **322/322** |
+| 开发树：同上换为 `Mahjong.Contracts.Tests` / `Mahjong.Client.Tests` | **104/104** / **132/132** |
+| 开发树：`./gradlew.bat :engine:compileKotlin --rerun-tasks --console=plain` | 真实 V4 engine 重新编译成功；不是 V4 全量测试 |
+| 独占 TEMP 驱动：真实 V4 `AiVisibleParams.int` 与 `AiDecisionStamp` 对照新构建的 C# 同接口；逐一输入全部 65,536 个 UTF-16 单元 | **131,072 项差分检查，0 differences**；逐字符比较整数解析结果与 sessionId 空白接受性 |
+| 集成树 `D:/majiang-wt/codex-candidate-review-20261025`，精确 merge `bc3149f`：同上 Release solution `--no-incremental` | 0 warnings / 0 errors |
+| 同一集成树：`dotnet test dotnet/tests/Mahjong.Ai.Tests/Mahjong.Ai.Tests.csproj -c Release --nologo` | **316/316**，包含已接受的启发式与 ENG-016 策略 |
+| 两树：`git diff --check` / 范围检查 | PASS |
+
+开发树四套测试总计 **801 passed / 0 failed / 0 skipped**。集成树 AI 的 316 项是单独结果，不与开发树重复累加成新的全量分母。本轮对照覆盖 BMP UTF-16 单元；不将其称为随机局面或完整 AI 端到端差分。
+
+### 9.2 原始证据
+
+本轮新证据目录：`C:/Users/sncdc/AppData/Local/Temp/eng017-review-e9debc3010de419184fc9460c85faba0/`。保留 `CharProbe.java`、`Program.cs`、`Probe.csproj`、重新编译日志和两份各 65,536 行的 TSV。Java 驱动反射调用真实 `int` 方法，直接构造真实 stamp；C# 驱动引用开发树本轮新构建的 `Mahjong.Ai.dll`，没有重写参考解析算法。
+
+| 原始日志 | SHA-256 |
+|---|---|
+| `build.log` | `284dbf9278759f4ab89dacd2e95993f0e2b8a34e185b19af9b0af1260bae6380` |
+| `Ai-clean-build.log` | `76c9bdcdccaba2b619305304db66a7945863536d02b51b1a1ac5636336c6aaf1` |
+| `Ai-rebuilt.log` | `17ee40e0e57691e738c1ebc6c703f834378059e059713016df4fd64b8f91bca1` |
+| `Domain.log` | `653094a594a24e4af6fe154d91aa4f81af61068183ca8d352f2c808e36399c06` |
+| `Contracts.log` | `0331e90724dbb0853dad659f263eb212db8bfd504ef4b89011126d48023552c0` |
+| `Client.log` | `1b3bd3601dd520e56a5f4748d81d593d439d7bd361e79a3207ea24d47d289290` |
+| `v4-compile.log` | `e41d09997732ea098bcd9c55b893cf9e7e2539658bdac8411afa672d25c1eb9b` |
+| `character-diff-result.log` | `221b4f20f165efb521075f8f6db4e12ff5450f57b4e2c78f962831fac434b698` |
+| `integration-build.log` | `a2682ea51bec85564b9e6bcc90d7a8354bda12930b2737699cc06e328dcdfe2a` |
+| `integration-Ai.log` | `9b0f08ff8e3591803c5e449a270d2f04a95c31d9519be67fe52f4f8dc6373fbf` |
+
+### 9.3 集成范围与剩余门槛
+
+仅更新既有 [PR #19](https://github.com/liuchangready/majiang-game/pull/19)，源分支 `feat/v5-1-integration`，目标 `v5`。测试的合并态 `bc3149f` 包含原远端 `e01073f` 的全部已验收批次内容及本交付；caller 发布提交只补充本节验收文档，不创建子任务 PR，不接纳其他未验收兄弟任务。开发树在发布后同步同一集成提交。
+
+本轮未重新运行 TableRuntime、PG/WSS/Lobby、统一 verifier、Unity/IL2CPP、Android/iOS、设备或跨物理网络测试；旧工作树内同名历史证据不计入本轮实测。推送后远端 CI 结果须另行检查，不预先写作通过。ENG-017 其余投影、ENG-018 工厂/能力注册/实际消费仍待后续工作；P1.6 整体与 G1/G5 不因本次组件验收关闭，V4 仍是唯一生产基线。
