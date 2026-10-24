@@ -599,7 +599,63 @@ Invoke-NegativeCase -Name 'physical-tile-wrong-type' -ExpectedCode 'CASE_STRUCTU
     Update-CatalogFixtureSha -Root $root -FixtureId 'physical-v1'
 }
 
-# 33. Exporter byte change.
+# 33. Random closed/dora elements must be numbers.
+Invoke-NegativeCase -Name 'random-closed-object' -ExpectedCode 'CASE_STRUCTURE_TYPE' -Mutator {
+    param($root)
+    $path = Join-Path $root 'tests\v5-golden\scoring-v1.json'
+    $json = Read-JsonFile $path
+    $json.randomSamples[5000].closed[0] = [pscustomobject]@{}
+    Write-JsonFile $path $json
+    Update-CatalogFixtureSha -Root $root -FixtureId 'scoring-v1'
+}
+
+# 34. Random meld elements must carry type/tiles/fromPlayer/calledTile.
+Invoke-NegativeCase -Name 'random-meld-empty' -ExpectedCode 'CASE_STRUCTURE_MISSING' -Mutator {
+    param($root)
+    $path = Join-Path $root 'tests\v5-golden\scoring-v1.json'
+    $json = Read-JsonFile $path
+    $json.randomSamples[5000].melds = @([pscustomobject]@{})
+    Write-JsonFile $path $json
+    Update-CatalogFixtureSha -Root $root -FixtureId 'scoring-v1'
+}
+
+# 35. Random win yaku elements must carry code/han.
+Invoke-NegativeCase -Name 'random-yaku-empty' -ExpectedCode 'CASE_STRUCTURE_MISSING' -Mutator {
+    param($root)
+    $path = Join-Path $root 'tests\v5-golden\scoring-v1.json'
+    $json = Read-JsonFile $path
+    $target = -1
+    for ($i = 0; $i -lt $json.randomSamples.Count; $i++) {
+        $sample = $json.randomSamples[$i]
+        if ($sample.expected.status -eq 'win' -and $sample.expected.yaku.Count -gt 0) { $target = $i; break }
+    }
+    if ($target -lt 0) { throw 'no win random sample with yaku' }
+    $json.randomSamples[$target].expected.yaku[0] = [pscustomobject]@{}
+    Write-JsonFile $path $json
+    Update-CatalogFixtureSha -Root $root -FixtureId 'scoring-v1'
+}
+
+# 36. Removing an existing nullable key must fail (missing vs null).
+Invoke-NegativeCase -Name 'required-nullable-key-missing' -ExpectedCode 'CASE_STRUCTURE_MISSING' -Mutator {
+    param($root)
+    $path = Join-Path $root 'tests\v5-golden\scoring-v1.json'
+    $json = Read-JsonFile $path
+    $json.scoreSamples[70].expected.PSObject.Properties.Remove('capCode')
+    Write-JsonFile $path $json
+    Update-CatalogFixtureSha -Root $root -FixtureId 'scoring-v1'
+}
+
+# 37. Random dora/ura elements must be numbers.
+Invoke-NegativeCase -Name 'random-dora-object' -ExpectedCode 'CASE_STRUCTURE_TYPE' -Mutator {
+    param($root)
+    $path = Join-Path $root 'tests\v5-golden\scoring-v1.json'
+    $json = Read-JsonFile $path
+    $json.randomSamples[5000].dora = @([pscustomobject]@{})
+    Write-JsonFile $path $json
+    Update-CatalogFixtureSha -Root $root -FixtureId 'scoring-v1'
+}
+
+# 38. Exporter byte change.
 Invoke-NegativeCase -Name 'exporter-sha' -ExpectedCode 'EXPORTER_SHA_MISMATCH' -Mutator {
     param($root)
     $path = Join-Path $root 'engine\src\test\kotlin\com\majiang\model\V5PhysicalGoldenExporterTest.kt'

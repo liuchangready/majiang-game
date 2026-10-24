@@ -135,15 +135,20 @@ function Test-ShapeRules {
             continue
         }
         $value = $Object
+        $exists = $true
         foreach ($segment in ($path -split '\.')) {
-            if ($null -eq $value) { break }
+            if ($null -eq $value) { $exists = $false; break }
             $property = $value.PSObject.Properties[$segment]
-            if ($null -eq $property) { $value = $null; break }
+            if ($null -eq $property) { $exists = $false; break }
             $value = $property.Value
+        }
+        if (-not $exists) {
+            Add-Failure 'CASE_STRUCTURE_MISSING' ("{0}: missing path '{1}'" -f $Label, $path)
+            continue
         }
         if ($null -eq $value) {
             if ($type -ne 'string-or-null' -and $type -ne 'number-or-null' -and $type -ne 'null') {
-                Add-Failure 'CASE_STRUCTURE_MISSING' ("{0}: missing path '{1}'" -f $Label, $path)
+                Add-Failure 'CASE_STRUCTURE_MISSING' ("{0}: null path '{1}'" -f $Label, $path)
                 continue
             }
         }
@@ -280,10 +285,29 @@ function Test-RandomSamplesFast {
         try {
         if (-not ($item.id -is [string])) { Add-Failure 'CASE_STRUCTURE_TYPE' ("{0}: id expected string" -f $Label); continue }
         if (-not ($item.closed -is [System.Array])) { Add-Failure 'CASE_STRUCTURE_TYPE' ("{0}: closed expected array" -f $Label); continue }
+        foreach ($tile in $item.closed) {
+            if (-not ($tile -is [int] -or $tile -is [long] -or $tile -is [double] -or $tile -is [decimal])) { Add-Failure 'CASE_STRUCTURE_TYPE' ("{0}: closed element expected number" -f $Label); break }
+        }
         if (-not ($null -eq $item.drawn -or $item.drawn -is [int] -or $item.drawn -is [long] -or $item.drawn -is [double] -or $item.drawn -is [decimal])) { Add-Failure 'CASE_STRUCTURE_TYPE' ("{0}: drawn expected number-or-null" -f $Label); continue }
         if (-not ($item.melds -is [System.Array])) { Add-Failure 'CASE_STRUCTURE_TYPE' ("{0}: melds expected array" -f $Label); continue }
+        foreach ($meld in $item.melds) {
+            if (-not ($meld -is [System.Management.Automation.PSCustomObject])) { Add-Failure 'CASE_STRUCTURE_TYPE' ("{0}: meld element expected object" -f $Label); break }
+            if (-not ($meld.type -is [string])) { Add-Failure 'CASE_STRUCTURE_MISSING' ("{0}: meld.type missing" -f $Label); break }
+            if (-not ($meld.tiles -is [System.Array])) { Add-Failure 'CASE_STRUCTURE_MISSING' ("{0}: meld.tiles missing" -f $Label); break }
+            foreach ($tile in $meld.tiles) {
+                if (-not ($tile -is [int] -or $tile -is [long] -or $tile -is [double] -or $tile -is [decimal])) { Add-Failure 'CASE_STRUCTURE_TYPE' ("{0}: meld.tiles element expected number" -f $Label); break }
+            }
+            if (-not ($meld.fromPlayer -is [int] -or $meld.fromPlayer -is [long] -or $meld.fromPlayer -is [double] -or $meld.fromPlayer -is [decimal])) { Add-Failure 'CASE_STRUCTURE_MISSING' ("{0}: meld.fromPlayer missing" -f $Label); break }
+            if (-not ($meld.calledTile -is [int] -or $meld.calledTile -is [long] -or $meld.calledTile -is [double] -or $meld.calledTile -is [decimal])) { Add-Failure 'CASE_STRUCTURE_MISSING' ("{0}: meld.calledTile missing" -f $Label); break }
+        }
         if (-not ($item.dora -is [System.Array])) { Add-Failure 'CASE_STRUCTURE_TYPE' ("{0}: dora expected array" -f $Label); continue }
+        foreach ($tile in $item.dora) {
+            if (-not ($tile -is [int] -or $tile -is [long] -or $tile -is [double] -or $tile -is [decimal])) { Add-Failure 'CASE_STRUCTURE_TYPE' ("{0}: dora element expected number" -f $Label); break }
+        }
         if (-not ($item.ura -is [System.Array])) { Add-Failure 'CASE_STRUCTURE_TYPE' ("{0}: ura expected array" -f $Label); continue }
+        foreach ($tile in $item.ura) {
+            if (-not ($tile -is [int] -or $tile -is [long] -or $tile -is [double] -or $tile -is [decimal])) { Add-Failure 'CASE_STRUCTURE_TYPE' ("{0}: ura element expected number" -f $Label); break }
+        }
         if (-not ($item.removedWinTile -is [bool])) { Add-Failure 'CASE_STRUCTURE_TYPE' ("{0}: removedWinTile expected boolean" -f $Label); continue }
         $ctx = $item.context
         if ($null -eq $ctx) { Add-Failure 'CASE_STRUCTURE_MISSING' ("{0}: context missing" -f $Label); continue }
@@ -301,6 +325,11 @@ function Test-RandomSamplesFast {
         if (-not ($expected.status -is [string])) { Add-Failure 'CASE_STRUCTURE_MISSING' ("{0}: expected.status missing/non-string" -f $Label); continue }
         if ($expected.status -eq 'win') {
             if (-not ($expected.yaku -is [System.Array])) { Add-Failure 'CASE_STRUCTURE_MISSING' ("{0}: expected.yaku missing" -f $Label); continue }
+            foreach ($yaku in $expected.yaku) {
+                if (-not ($yaku -is [System.Management.Automation.PSCustomObject])) { Add-Failure 'CASE_STRUCTURE_TYPE' ("{0}: expected.yaku element expected object" -f $Label); break }
+                if (-not ($yaku.code -is [string])) { Add-Failure 'CASE_STRUCTURE_MISSING' ("{0}: expected.yaku.code missing" -f $Label); break }
+                if (-not ($yaku.han -is [int] -or $yaku.han -is [long] -or $yaku.han -is [double] -or $yaku.han -is [decimal])) { Add-Failure 'CASE_STRUCTURE_MISSING' ("{0}: expected.yaku.han missing" -f $Label); break }
+            }
             if (-not ($expected.yakuHan -is [int] -or $expected.yakuHan -is [long] -or $expected.yakuHan -is [double] -or $expected.yakuHan -is [decimal])) { Add-Failure 'CASE_STRUCTURE_MISSING' ("{0}: expected.yakuHan missing" -f $Label); continue }
             if (-not ($expected.scoreHan -is [int] -or $expected.scoreHan -is [long] -or $expected.scoreHan -is [double] -or $expected.scoreHan -is [decimal])) { Add-Failure 'CASE_STRUCTURE_MISSING' ("{0}: expected.scoreHan missing" -f $Label); continue }
             if (-not ($expected.isYakuman -is [bool])) { Add-Failure 'CASE_STRUCTURE_MISSING' ("{0}: expected.isYakuman missing" -f $Label); continue }
