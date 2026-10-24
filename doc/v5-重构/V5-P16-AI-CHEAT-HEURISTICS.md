@@ -53,7 +53,7 @@ V4 源：`engine/src/main/kotlin/com/majiang/ai/cheat/AiCheatHeuristics.kt`（in
 - 语料（两侧同构、显式可复现）：
   - 显式手 9 组：空手、单张、同 type 对子/三张/四张（含红五 19）、4m/5m/6m 近邻链、三花色边界（9m/1s/1p）、幺九+风+三元、跨色不干扰手。
   - 随机手 96 组（大小 1..14，允许物理重复）+ 拟真手 48 组（13 张不重复 + 1 张摸牌），seed `20261025`，LCG `state*6364136223846793005+1442695040888963407`（64 位回绕两语言一致，取 `ushr 33` 高 31 位）。
-  - `tileValue`：全部 136 候选 × 15 手牌；`relativeValue`：136 候选 × 1 手；排序：152 手 × 去重 limit 集 `{0,1,2,⌊n/2⌋,n−1,n,n+1,n+5,64}`（自然含 −1）× {ASC,DESC}；null 入口 3 例。
+  - `tileValue`：全部 136 候选 × 15 手牌；`relativeValue`：136 候选 × 1 手；排序：159 手（15 + 96 + 48，含语料池间重复）× 去重 limit 集 `{0,1,2,⌊n/2⌋,n−1,n,n+1,n+5,64}`（自然含 −1）× {ASC,DESC}；null 入口 3 例。原交付误写为 152，caller 复跑后按实际 159 条 IN2 记录更正；5,054 总例数与 2,716 排序例数不变。
 - 结果（终版复跑，两次运行 SHA256 一致 → deterministic）：
 
 ```text
@@ -147,3 +147,52 @@ run-probe.sh                    70227db2312c7ea680d471304392b4daf8e91b01d458daca
 ## 9. 结论口径
 
 ENG-021 的**组件**（`AiCheatHeuristics` 四函数：TileValue / LeastValuableHandTiles / MostValuableHandTiles / RelativeValue）已按 V4 源码行为移植，真实 V4 源码编译执行的独立差分探针 5,054 例 0 差异，Ai 套件 115/115、Domain 322、Contracts 104、Client 132 全绿，Release 全解决方案 0 警告 0 错误。真实能力消费与 actor 接线仍待后续任务；**不宣告 P1.6、G1 或 G5 完成**；V4 仍是唯一生产基线。
+
+## 10. Caller 独立验收与统一 PR19 集成
+
+日期：2026-10-25。caller 已对原线程 `thread_20261025_001729_39d1` 调用 `approve_task`，Bridge 返回 COMPLETED 并归档；沿用原 callerSessionId，未另建任务、会话或转派。验收仅覆盖 ENG-021 排序组件；P1.6 整体、G1/G5 仍未完成，V4 仍为唯一生产基线。
+
+### 10.1 交付复核
+
+交付 HEAD `e4c6258`，base `654aa54175fb27dc1761a0bed00de1978684fabd`。caller 核实交付树 clean、diff 仅 §1 三文件、`git diff --check 654aa54..HEAD` exit 0。原 expectedFiles 将文档名写作 `V5-P16-CHEAT-HEURISTICS.md`，实际采用更明确的 `V5-P16-AI-CHEAT-HEURISTICS.md`；caller 认可该命名调整，未扩大代码范围。
+
+- 逐函数核对真实 V4 `Tile.kt`、`AiCheatHeuristics.kt`、C# `TileId` 与全部 21 项新增测试：同型含自身、物理副本/红五、同花色距离 1/2、幺九/风/龙、外部候选、两方向平局、负/零/超界 limit、null、输入不变和只读防御复制一致。
+- 无领域状态、隐藏牌/种子、网络、权威对象或回调依赖；该纯函数组件不改变终态、136 张守恒、deadline、租约、代次或重放。未改既有测试、verifier、fixture、黄金目录或冻结追踪矩阵，也未接入未验收任务。
+- 在交付工作区独立运行 Release solution `--no-incremental` 重建：0 warnings / 0 errors，exit 0。随后分别执行 Ai、Domain、Contracts、Client 测试：**115 + 322 + 104 + 132 = 673 passed / 0 failed / 0 skipped**，各命令 exit 0，未把空输出视为通过。
+- caller 用 Kotlin 2.4.10 编译器重新编译本工作区真实两个 V4 源文件及原 `Probe.kt`，输出到独占 TEMP 新 classes 目录；再以原 `Probe.csproj` ProjectReference 执行本工作区 C# 源码。**5,054 例、2,040 TV、136 REL、2,716 排序、159 次 IN2** 及完整分值分布逐字节一致；双侧 SHA256 均为 `b294be5fce4f7c640e961caa4c1d259cbd64a7eb98fb0641959f01839a15996c`。JBR 的 Unsafe 弃用提示保留于日志，不计作 .NET 构建警告。
+- 文档原写 152 手牌，实际为 159，已在 §3 更正。除该文档计数笔误外，无遗留可复现功能缺陷。§5 D-1/D-2 为接受的语言/实现映射，D-3 是后续接线复核约束，D-5 保持历史矩阵冻结。
+- §5 D-4 的初跑六项失败虽被原 TestResults 复跑覆盖，Bridge 原始执行日志仍完整保留；caller 已将该原日志复制到独占证据目录 `receiver-round1-raw.log`，其中原样包含 109 passed / 6 failed / 0 skipped。未改写失败历史。
+
+### 10.2 集成验证与唯一 MR
+
+既有 PR19 的本地/远端源分支起点均为 `78441944283ca111cc344f19d152514ed577574c`，无尚未推送的源分支提交。caller 在隔离工作树 `D:/majiang-wt/codex-heuristics-integration-20261025` 合并本任务，得到 `ddf07314b5e5e02443d40e479ad080c49f0ec513`。合并无冲突；保留同批已验收 Basic AI、Trivial/Tsumogiri、AiCheatPolicy 及 P3.4，增量仅本任务三个文件。未提交的主树用户文件保持原状并以哈希检查。
+
+在该精确集成版本执行，均 exit 0：
+
+```powershell
+& 'D:/Unity/dotnet/dotnet.exe' build dotnet/Mahjong.sln -c Release --no-incremental --nologo -v:minimal
+& 'D:/Unity/dotnet/dotnet.exe' test dotnet/Mahjong.sln -c Release --no-build --nologo -v:minimal
+& 'D:/Unity/dotnet/dotnet.exe' test dotnet/tests/Mahjong.TableRuntime.Tests/Mahjong.TableRuntime.Tests.csproj -c Release --nologo -v:minimal
+```
+
+Release solution build **0 warnings / 0 errors**。solution 测试 **Ai193 + Domain322 + Contracts104 + Client132 = 751/0/0**；独立工程 TableRuntime **313/0/0**，合计 **1,064 passed / 0 failed / 0 skipped**。随后仅增加本验收记录及文档计数更正，不修改执行代码。
+
+仅更新既有 [PR19](https://github.com/liuchangready/majiang-game/pull/19)（`feat/v5-1-integration -> v5`），统一一次 push 后调用原线程 `record_merge_request` 记录最终提交；不建立子任务 PR，不合并到 v5。本地结果不代表本次发布远端 CI 通过。
+
+本轮 PG/WSS/Lobby、完整 TableService/千术能力消费接线、Unity/IL2CPP、Android/iOS/设备/跨物理网络、V4 Gradle 全量、Debug 为 NOT_RUN；TableRuntime 仅运行已有单元/模块套件，不宣称 actor 千术端到端完成。
+
+### 10.3 Caller 证据
+
+独占目录 `C:/Users/sncdc/AppData/Local/Temp/codex-eng021-review-20261025/`，完整清单见 `SHA256SUMS.txt`。交付四套件命令为 `dotnet test dotnet/tests/Mahjong.<suite>.Tests/Mahjong.<suite>.Tests.csproj -c Release --no-build --nologo -v:minimal`，使用 §6 指定 dotnet，逐项核实真实分母。
+
+| 文件 | SHA-256 |
+|---|---|
+| Mahjong.Ai.Tests.log | `AAE267F97AD2238F07D60F9D9749A5209BD593301D3E78B4B98D44EFABB1BC22` |
+| Mahjong.Domain.Tests.log | `44AA9186A226D337A81AF9CDD70EFF6FE908AE531C824E4624FDB863142D138E` |
+| Mahjong.Contracts.Tests.log | `A2075F7A1F358DA96ACBDF23853E87EB84F972F6AFBBA0043D5E8A05B74147BE` |
+| Mahjong.Client.Tests.log | `61614765881F2F644CE7477BFE022B1ABF2C65C1F9C1E8A0EF0FDDC2B54ADF60` |
+| integration-build.log | `2A56C0B0C86C1E41B7B31CC7E83BC7637D41F3C66FAECBDAAEED63C35287ABF2` |
+| integration-solution-tests.log | `EA271D34B6FF56E552E891CBBD5C4A11E0C67BE9270AE2BC1B9E72A75E77C683` |
+| integration-TableRuntime.log | `A081AF3FF25D3EC89C11D0176545356776591F3188FE51480AE17A21D2B6F238` |
+| dump-kotlin.txt / dump-csharp.txt | `B294BE5FCE4F7C640E961CAA4C1D259CBD64A7EB98FB0641959F01839A15996C` |
+| receiver-round1-raw.log | `D3AC8DA7DB5E1DCF375EC1D03BCE11C135355C6AF443C389118513152F2B0FF9` |
