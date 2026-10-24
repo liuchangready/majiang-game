@@ -352,6 +352,60 @@ namespace Mahjong.TableRuntime.Tests
             Assert.True(recovery.Recovered, recovery.ReasonCode + ": " + recovery.Detail);
         }
 
+        [Fact]
+        public async Task RecoveredControlRebaseCannotExtendGraceDeadline()
+        {
+            await using DurableHarness harness = await DurableHarness.CreateAsync();
+            Assert.True((await harness.Actor.DisconnectAsync(
+                0,
+                new OwnerEpoch(1),
+                new ControlEpoch(0),
+                "grace-test",
+                TestContext.Current.CancellationToken)).IsChanged);
+            TableCheckpoint good = await harness.SaveCheckpointAsync();
+            TableControlCheckpoint control = TableControlCheckpointCodec.Decode(good.ControlPayload);
+            SeatControlState[] seats = control.Snapshot.Seats.ToArray();
+            Assert.True(seats[0].GraceDeadlineMillis.HasValue);
+            long graceDeadline = seats[0].GraceDeadlineMillis.GetValueOrDefault();
+            seats[0] = new SeatControlState(
+                seats[0].Seat,
+                seats[0].Status,
+                seats[0].Kind,
+                seats[0].ControlEpoch,
+                seats[0].DisconnectedAtMillis,
+                graceDeadline + 60000L,
+                seats[0].AiProfileId);
+            byte[] payload = TableControlCheckpointCodec.Encode(new TableControlCheckpoint(
+                new ControlRegistrySnapshot(control.Snapshot.Policy, seats, control.Snapshot.PreferredHumanKinds),
+                control.ControlVersion));
+            TableCheckpoint candidate = new TableCheckpoint(
+                good.RoomId, good.StateVersion, good.LastEventSeq, good.StateFingerprint,
+                good.RulesetVersion, good.StatePayload, good.StatePayloadSha256,
+                good.ControlVersion, payload, TablePayloadSha256.Compute(payload),
+                good.TimingPayload, good.TimingPayloadSha256, good.CheatPayload, good.CheatPayloadSha256,
+                good.CommittedFactsPayload, good.CommittedFactsPayloadSha256,
+                good.CreatedAtUtcMs, good.BootId, good.SchemaVersion,
+                good.TimingVersion + 1, good.CapturedMonotonicMillis,
+                good.CommittedHistoryPayload, good.CommittedHistoryPayloadSha256,
+                good.CommittedCommandBindingsPayload, good.CommittedCommandBindingsPayloadSha256);
+
+            TableDurableCommitResult saved = await harness.Store.SaveCheckpointAsync(
+                candidate,
+                new TableCheckpointFence(
+                    DurableHarness.Room,
+                    DurableHarness.Owner,
+                    new OwnerEpoch(1),
+                    good.StateVersion,
+                    good.ControlVersion,
+                    good.TimingVersion),
+                TestContext.Current.CancellationToken);
+
+            Assert.Equal(TableCommitDisposition.Failed, saved.Disposition);
+            TableCheckpoint current = (await harness.Store.LoadCheckpointAsync(
+                DurableHarness.Room, TestContext.Current.CancellationToken))!;
+            Assert.Equal(good.ControlPayloadSha256, current.ControlPayloadSha256);
+        }
+
         private static async Task<TableRecoveryResult> RecoverAsync(DurableHarness harness)
         {
             harness.Clock.Now += 1000L;

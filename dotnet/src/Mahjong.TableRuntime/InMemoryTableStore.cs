@@ -457,17 +457,129 @@ namespace Mahjong.TableRuntime
             string roomId,
             TableCheckpoint checkpoint)
         {
-            if (_checkpoints.TryGetValue(roomId, out CheckpointRow? existing) &&
-                existing.Checkpoint.ControlVersion == checkpoint.ControlVersion &&
-                !checkpoint.ControlPayload.AsSpan().SequenceEqual(
+            if (!_checkpoints.TryGetValue(roomId, out CheckpointRow? existing) ||
+                existing.Checkpoint.ControlVersion != checkpoint.ControlVersion)
+            {
+                return null;
+            }
+
+            if (checkpoint.ControlPayload.AsSpan().SequenceEqual(
                     existing.Checkpoint.ControlPayload))
+            {
+                return null;
+            }
+
+            try
+            {
+                TableControlCheckpoint before = TableControlCheckpointCodec.Decode(
+                    existing.Checkpoint.ControlPayload);
+                TableControlCheckpoint after = TableControlCheckpointCodec.Decode(
+                    checkpoint.ControlPayload);
+                if (IsValidRecoveredControlRebase(
+                        before.Snapshot,
+                        after.Snapshot,
+                        existing.Checkpoint.BootId,
+                        checkpoint.BootId,
+                        _clock.MonotonicMillis))
+                {
+                    return null;
+                }
+            }
+            catch (Exception exception) when (
+                exception is InvalidDataException ||
+                exception is IOException ||
+                exception is ArgumentException ||
+                exception is InvalidOperationException)
             {
                 return TableDurableCommitResult.Failed(
                     TableRuntimeReasonCode.CheckpointInvalid,
-                    "A same-version checkpoint cannot rewrite the authoritative control snapshot.");
+                    "Control snapshot is invalid: " + exception.Message);
             }
 
-            return null;
+            return TableDurableCommitResult.Failed(
+                TableRuntimeReasonCode.CheckpointInvalid,
+                "A same-version checkpoint cannot rewrite the authoritative control snapshot.");
+        }
+
+        private static bool IsValidRecoveredControlRebase(
+            ControlRegistrySnapshot before,
+            ControlRegistrySnapshot after,
+            string beforeBootId,
+            string afterBootId,
+            long nowMonotonic)
+        {
+            if (before.Policy.Mode != after.Policy.Mode ||
+                before.Policy.GraceMillis != after.Policy.GraceMillis ||
+                !string.Equals(before.Policy.AiProfileId, after.Policy.AiProfileId, StringComparison.Ordinal) ||
+                before.PreferredHumanKinds.Count != after.PreferredHumanKinds.Count)
+            {
+                return false;
+            }
+
+            for (int i = 0; i < before.PreferredHumanKinds.Count; i++)
+            {
+                if (before.PreferredHumanKinds[i] != after.PreferredHumanKinds[i])
+                {
+                    return false;
+                }
+            }
+
+            bool sameBoot = string.Equals(beforeBootId, afterBootId, StringComparison.Ordinal);
+            for (int seat = 0; seat < 4; seat++)
+            {
+                SeatControlState left = before.Seats[seat];
+                SeatControlState right = after.Seats[seat];
+                if (left.Seat != right.Seat ||
+                    left.Status != right.Status ||
+                    left.Kind != right.Kind ||
+                    left.ControlEpoch != right.ControlEpoch ||
+                    !string.Equals(left.AiProfileId, right.AiProfileId, StringComparison.Ordinal))
+                {
+                    return false;
+                }
+
+                if (left.Status == ConnectionStatus.Connected)
+                {
+                    if (right.DisconnectedAtMillis.HasValue ||
+                        right.GraceDeadlineMillis.HasValue)
+                    {
+                        return false;
+                    }
+
+                    continue;
+                }
+
+                if (left.DisconnectedAtMillis.HasValue != right.DisconnectedAtMillis.HasValue ||
+                    left.GraceDeadlineMillis.HasValue != right.GraceDeadlineMillis.HasValue)
+                {
+                    return false;
+                }
+
+                if (!left.DisconnectedAtMillis.HasValue)
+                {
+                    continue;
+                }
+
+                long oldDisconnected = left.DisconnectedAtMillis.Value;
+                long newDisconnected = right.DisconnectedAtMillis!.Value;
+                if (newDisconnected < 0 || newDisconnected > nowMonotonic ||
+                    (sameBoot && newDisconnected < oldDisconnected))
+                {
+                    return false;
+                }
+
+                if (left.GraceDeadlineMillis.HasValue)
+                {
+                    long oldDuration = left.GraceDeadlineMillis.Value - oldDisconnected;
+                    long newDuration = right.GraceDeadlineMillis!.Value - newDisconnected;
+                    if (oldDuration < 0 || newDuration < 0 || newDuration > oldDuration)
+                    {
+                        return false;
+                    }
+                }
+            }
+
+            return true;
         }
 
         private static TableDurableCommitResult? ValidateAcceptedTiming(
