@@ -671,7 +671,8 @@ namespace Mahjong.TableRuntime
                     TableVisibilityProjection.ValidateRecoveredEventFacts(
                         fullHistory,
                         effectiveFacts.EventFacts,
-                        effectiveFacts.Policy);
+                        effectiveFacts.Policy,
+                        round);
                 }
                 catch (Exception exception) when (
                     exception is ArgumentException ||

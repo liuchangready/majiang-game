@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
+using System.Linq;
 using Mahjong.Contracts;
 using Mahjong.Domain;
 using Mahjong.Domain.Cheat;
@@ -425,6 +426,23 @@ namespace Mahjong.TableRuntime
             IReadOnlyList<TableProjectionEventFact> facts,
             TableProjectionPolicy policy)
         {
+            ValidateRecoveredEventFacts(history, facts, policy, null);
+        }
+
+        /// <summary>
+        /// Adds Domain-verifiable cross-checks when the recovered final round is supplied:
+        /// each TileDrawn fact's wallRemaining is reconstructed backwards from the trusted
+        /// checkpoint/final wall; RoundEnded roundWind/roundNumber must equal the immutable
+        /// round spec; draw tenpai and win loser must equal the committed result. Histories
+        /// containing kan/replacement draws are rejected because live-wall inverse evidence is
+        /// not modeled rather than guessed.
+        /// </summary>
+        public static void ValidateRecoveredEventFacts(
+            IReadOnlyList<TableEventRecord> history,
+            IReadOnlyList<TableProjectionEventFact> facts,
+            TableProjectionPolicy policy,
+            RoundStateMachine? finalRound)
+        {
             if (history == null)
             {
                 throw new ArgumentNullException(nameof(history));
@@ -459,6 +477,36 @@ namespace Mahjong.TableRuntime
                     throw new TableProjectionException(
                         TableProjectionErrorCode.EventOrderMismatch,
                         "Recovered event facts repeat event_seq " + fact.EventSeq.Value + ".");
+                }
+            }
+
+            var expectedWallBySeq = new Dictionary<ulong, uint>();
+            if (finalRound != null)
+            {
+                long wall = finalRound.Tiles.WallRemaining;
+                for (int i = history.Count - 1; i >= 0; i--)
+                {
+                    TableEventRecord record = history[i];
+                    if (record.Type == RoundEventType.KanDeclared ||
+                        record.Type == RoundEventType.RinshanDrawn)
+                    {
+                        throw new TableProjectionException(
+                            TableProjectionErrorCode.InvalidContext,
+                            "Kan/replacement-draw wall evidence is not modeled; refusing to guess.");
+                    }
+
+                    if (record.Type == RoundEventType.TileDrawn)
+                    {
+                        if (wall < 0)
+                        {
+                            throw new TableProjectionException(
+                                TableProjectionErrorCode.InvalidContext,
+                                "Recovered wall remaining underflowed during event validation.");
+                        }
+
+                        expectedWallBySeq[record.Seq.Value] = unchecked((uint)wall);
+                        wall++;
+                    }
                 }
             }
 
@@ -507,6 +555,86 @@ namespace Mahjong.TableRuntime
                         TableProjectionErrorCode.InvalidContext,
                         "Committed event " + record.Seq + " is hidden from every validated audience.");
                 }
+
+                if (finalRound != null)
+                {
+                    ValidateDomainEventValues(record, fact, finalRound, expectedWallBySeq);
+                }
+            }
+        }
+
+        private static void ValidateDomainEventValues(
+            TableEventRecord record,
+            TableProjectionEventFact fact,
+            RoundStateMachine finalRound,
+            IReadOnlyDictionary<ulong, uint> expectedWallBySeq)
+        {
+            switch (record.Type)
+            {
+                case RoundEventType.TileDrawn:
+                    if (!fact.Facts.WallRemaining.HasValue ||
+                        !expectedWallBySeq.TryGetValue(record.Seq.Value, out uint expectedWall) ||
+                        fact.Facts.WallRemaining.Value != expectedWall)
+                    {
+                        throw new TableProjectionException(
+                            TableProjectionErrorCode.InvalidPayload,
+                            "TileDrawn wallRemaining contradicts the recovered wall at " + record.Seq + ".");
+                    }
+
+                    break;
+                case RoundEventType.RoundEnded:
+                    if (!fact.Facts.RoundWind.HasValue ||
+                        fact.Facts.RoundWind.Value != unchecked((uint)finalRound.RoundWind) ||
+                        !fact.Facts.RoundNumber.HasValue ||
+                        fact.Facts.RoundNumber.Value != unchecked((uint)finalRound.RoundNumber))
+                    {
+                        throw new TableProjectionException(
+                            TableProjectionErrorCode.InvalidPayload,
+                            "RoundEnded roundWind/roundNumber contradicts the immutable round spec.");
+                    }
+
+                    break;
+                case RoundEventType.ExhaustiveDraw:
+                    ValidateTenpai(record, fact, finalRound);
+                    break;
+                case RoundEventType.RonWin:
+                    ValidateLoser(record, fact, finalRound);
+                    break;
+            }
+        }
+
+        private static void ValidateTenpai(
+            TableEventRecord record,
+            TableProjectionEventFact fact,
+            RoundStateMachine finalRound)
+        {
+            RoundResult? result = finalRound.Result;
+            if (result == null ||
+                result.Outcome.Kind != RoundOutcomeKind.ExhaustiveDraw ||
+                fact.Facts.TenpaiPlayers == null ||
+                !fact.Facts.TenpaiPlayers.OrderBy(value => value)
+                    .SequenceEqual(result.Outcome.TenpaiSeats.OrderBy(value => value)))
+            {
+                throw new TableProjectionException(
+                    TableProjectionErrorCode.InvalidPayload,
+                    "Draw tenpai facts contradict the committed result at " + record.Seq + ".");
+            }
+        }
+
+        private static void ValidateLoser(
+            TableEventRecord record,
+            TableProjectionEventFact fact,
+            RoundStateMachine finalRound)
+        {
+            RoundResult? result = finalRound.Result;
+            if (result == null ||
+                (result.Outcome.Kind != RoundOutcomeKind.Ron &&
+                 result.Outcome.Kind != RoundOutcomeKind.Tsumo) ||
+                fact.Facts.LoserSeat != result.Outcome.LoserSeat)
+            {
+                throw new TableProjectionException(
+                    TableProjectionErrorCode.InvalidPayload,
+                    "Win loser facts contradict the committed result at " + record.Seq + ".");
             }
         }
 

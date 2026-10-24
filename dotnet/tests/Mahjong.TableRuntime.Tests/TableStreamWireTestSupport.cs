@@ -124,19 +124,34 @@ namespace Mahjong.TableRuntime.Tests
             WireEventFactOptions? options = null)
         {
             WireEventFactOptions actual = options ?? new WireEventFactOptions();
+            var wallBySeq = new Dictionary<ulong, uint>();
+            long wall = request.Round.Tiles.WallRemaining;
+            for (int i = request.CommittedEvents.Count - 1; i >= 0; i--)
+            {
+                TableEventRecord record = request.CommittedEvents[i];
+                if (record.Type == RoundEventType.TileDrawn)
+                {
+                    wallBySeq[record.Seq.Value] = unchecked((uint)wall);
+                    wall++;
+                }
+            }
+
             var facts = new List<TableProjectionEventFact>();
             for (int i = 0; i < request.CommittedEvents.Count; i++)
             {
                 TableEventRecord record = request.CommittedEvents[i];
-                TableProjectionEventFacts? value = BuildOne(request, record, actual);
-                if (value != null)
+                uint? wallRemaining = wallBySeq.TryGetValue(record.Seq.Value, out uint value)
+                    ? value
+                    : (uint?)null;
+                TableProjectionEventFacts? factsValue = BuildOne(request, record, actual, wallRemaining);
+                if (factsValue != null)
                 {
                     facts.Add(new TableProjectionEventFact(
                         MapType(record.Type),
                         record.Seq,
                         record.CommandVersion,
                         unchecked((uint)record.Ordinal),
-                        value));
+                        factsValue));
                 }
             }
 
@@ -146,7 +161,8 @@ namespace Mahjong.TableRuntime.Tests
         private static TableProjectionEventFacts? BuildOne(
             TableProjectionContextRequest request,
             TableEventRecord record,
-            WireEventFactOptions options)
+            WireEventFactOptions options,
+            uint? wallRemaining = null)
         {
             switch (record.Type)
             {
@@ -157,7 +173,8 @@ namespace Mahjong.TableRuntime.Tests
                 case RoundEventType.TileDrawn:
                     return new TableProjectionEventFacts(
                         turnNumber: options.TurnNumber,
-                        wallRemaining: unchecked((uint)request.Round.Tiles.WallRemaining));
+                        wallRemaining: wallRemaining ??
+                            unchecked((uint)request.Round.Tiles.WallRemaining));
                 case RoundEventType.RinshanDrawn:
                     return new TableProjectionEventFacts(turnNumber: options.TurnNumber);
                 case RoundEventType.TileDiscarded:

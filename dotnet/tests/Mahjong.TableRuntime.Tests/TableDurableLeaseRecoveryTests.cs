@@ -650,6 +650,14 @@ namespace Mahjong.TableRuntime.Tests
             Assert.True(result.Recovered, result.ReasonCode + ": " + result.Detail);
             Assert.NotNull(recoverySink.Installed);
             Assert.NotNull(recoverySink.Installed!.Cheat);
+            Assert.NotNull(recoverySink.Installed.ProjectionFacts);
+            var drawWalls = recoverySink.Installed.ProjectionFacts!.EventFacts
+                .Where(value => value.Type == ProtocolEventType.TileDrawn)
+                .Select(value => value.Facts.WallRemaining)
+                .ToList();
+            Assert.True(drawWalls.Count >= 2);
+            Assert.All(drawWalls, value => Assert.True(value.HasValue));
+            Assert.Equal(drawWalls.Count, drawWalls.Distinct().Count());
             Assert.Equal(2UL, recoverySink.Installed.StateVersion.Value);
             Assert.Equal(4, recoverySink.Installed.CommittedHistory.Count);
             Assert.Equal(result.Report!.TimingVersion, recoverySink.Installed.TimingVersion);
