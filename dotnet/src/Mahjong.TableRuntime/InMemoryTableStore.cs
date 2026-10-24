@@ -483,12 +483,13 @@ namespace Mahjong.TableRuntime
                     checkpoint.LastEventSeq != state.LastEventSeq ||
                     checkpoint.StateFingerprint != state.StateFingerprint ||
                     checkpoint.StatePayloadSha256 != state.StateHash ||
-                    checkpoint.ControlVersion != state.ControlVersion)
+                    checkpoint.ControlVersion != state.ControlVersion ||
+                    checkpoint.RulesetVersion != state.RulesetVersion)
                 {
                     return new ValueTask<TableDurableCommitResult>(
                         TableDurableCommitResult.Failed(
                             TableRuntimeReasonCode.CheckpointInvalid,
-                            "A checkpoint does not match the current committed state/control."));
+                            "A checkpoint does not match the current committed state/control/ruleset."));
                 }
 
                 if (checkpoint.TimingVersion != state.TimingVersion + 1)
@@ -693,12 +694,13 @@ namespace Mahjong.TableRuntime
                     checkpoint.StateFingerprint != state.StateFingerprint ||
                     checkpoint.StatePayloadSha256 != state.StateHash ||
                     checkpoint.ControlVersion != request.ControlVersion ||
-                    checkpoint.TimingVersion != state.TimingVersion + 1L)
+                    checkpoint.TimingVersion != state.TimingVersion + 1L ||
+                    checkpoint.RulesetVersion != state.RulesetVersion)
                 {
                     return new ValueTask<TableDurableCommitResult>(
                         TableDurableCommitResult.Failed(
                             TableRuntimeReasonCode.CheckpointInvalid,
-                            "The control checkpoint does not match table_state/timing."));
+                            "The control checkpoint does not match table_state/timing/ruleset."));
                 }
 
                 if (!TableCheckpointValidator.TryValidate(
@@ -956,12 +958,13 @@ namespace Mahjong.TableRuntime
                                 checkpoint.LastEventSeq != nextState.LastEventSeq ||
                                 checkpoint.StateFingerprint != request.NextStateFingerprint ||
                                 checkpoint.StatePayloadSha256 != nextHash ||
-                                checkpoint.TimingVersion != request.TimingVersion)
+                                checkpoint.TimingVersion != request.TimingVersion ||
+                                checkpoint.RulesetVersion != state.RulesetVersion)
                             {
                                 return new ValueTask<TableDurableCommitResult>(
                                     TableDurableCommitResult.Failed(
                                         TableRuntimeReasonCode.CheckpointInvalid,
-                                        "The checkpoint does not match the accepted state/timing."));
+                                        "The checkpoint does not match the accepted state/timing/ruleset."));
                             }
 
                             if (!TableCheckpointValidator.TryValidate(

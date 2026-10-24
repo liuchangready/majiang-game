@@ -25,6 +25,12 @@ namespace Mahjong.TableRuntime
 
             try
             {
+                if (checkpoint.SchemaVersion != TableCheckpointFactory.SchemaVersion)
+                {
+                    throw new InvalidDataException(
+                        "Checkpoint schema " + checkpoint.SchemaVersion + " is not supported.");
+                }
+
                 Validate(checkpoint);
                 reasonCode = string.Empty;
                 detail = string.Empty;
