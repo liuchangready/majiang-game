@@ -791,6 +791,19 @@ namespace Mahjong.TableRuntime
                 }
             }
 
+            TableGraceRecoveryTiming? graceTiming = null;
+            if (string.Equals(checkpoint.BootId, options.BootId, StringComparison.Ordinal))
+            {
+                if (nowMonotonic < checkpoint.CapturedMonotonicMillis)
+                {
+                    return TableRecoveryResult.Failed(
+                        TableRuntimeReasonCode.ClockRegression,
+                        "Monotonic time moved backwards for the checkpoint's own boot.");
+                }
+
+                graceTiming = BuildSameBootGraceTiming(control.Snapshot, nowMonotonic);
+            }
+
             TableTimingCheckpoint adjustedTiming;
             try
             {
@@ -900,7 +913,7 @@ namespace Mahjong.TableRuntime
                 state.StateVersion,
                 state.LastEventSeq,
                 lease.OwnerEpoch,
-                new TableControlRecoveryBaseline(control.Snapshot, control.ControlVersion),
+                new TableControlRecoveryBaseline(control.Snapshot, control.ControlVersion, graceTiming),
                 adjustedTiming.ToRecoveryTiming(),
                 effectiveTimingVersion,
                 recoveredCheat,
@@ -1293,6 +1306,29 @@ namespace Mahjong.TableRuntime
                 timing.CapturedAtUtcMs,
                 timing.CapturedMonotonicMillis,
                 timing.BootId);
+        }
+
+        private static TableGraceRecoveryTiming BuildSameBootGraceTiming(
+            ControlRegistrySnapshot control,
+            long nowMonotonic)
+        {
+            var seats = new List<TableRecoveredGrace>();
+            for (int seat = 0; seat < 4; seat++)
+            {
+                SeatControlState state = control.Seats[seat];
+                if (state.Status != ConnectionStatus.Disconnected ||
+                    !state.GraceDeadlineMillis.HasValue)
+                {
+                    continue;
+                }
+
+                long deadline = state.GraceDeadlineMillis.Value;
+                long remaining = deadline > nowMonotonic ? deadline - nowMonotonic : 0L;
+                long overdue = deadline <= nowMonotonic ? nowMonotonic - deadline : 0L;
+                seats.Add(new TableRecoveredGrace(seat, remaining, overdue));
+            }
+
+            return new TableGraceRecoveryTiming(seats);
         }
 
         private static bool HasUntrustedGrace(ControlRegistrySnapshot control)
