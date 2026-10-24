@@ -577,19 +577,13 @@ namespace Mahjong.TableRuntime
 
                     long oldDeadline = left.GraceDeadlineMillis.Value;
                     long newDeadline = right.GraceDeadlineMillis!.Value;
-                    if (oldDeadline > nowMonotonic)
+                    // Same-boot recovery may keep the absolute future deadline, or may pin an
+                    // already-overdue grace to the recovery-time now. After that, ordinary time
+                    // passing must not make the recovered control uncheckpointable: a deadline
+                    // at or before the save-time now is already expired and grants no future
+                    // grace. Extending a future deadline is still rejected.
+                    if (newDeadline > nowMonotonic && newDeadline != oldDeadline)
                     {
-                        // Same-boot recovery keeps the absolute grace deadline: only the
-                        // disconnected-at origin may move forward, consuming remaining grace.
-                        if (newDeadline != oldDeadline)
-                        {
-                            return false;
-                        }
-                    }
-                    else if (newDeadline != nowMonotonic)
-                    {
-                        // The old grace was already overdue; recovery may only pin it to now,
-                        // never extend it.
                         return false;
                     }
 
