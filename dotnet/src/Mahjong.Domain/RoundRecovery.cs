@@ -15,6 +15,9 @@ namespace Mahjong.Domain
     public sealed class RoundRecoveryState
     {
         private readonly ReadOnlyCollection<RoundEvent> _events;
+        private readonly ReadOnlyCollection<long> _scores;
+        private readonly ReadOnlyCollection<bool> _riichiDeclared;
+        private readonly ReadOnlyCollection<RoundMeld> _melds;
 
         public RoundRecoveryState(
             RoundSpec spec,
@@ -25,7 +28,12 @@ namespace Mahjong.Domain
             RoundResponseWindow? window,
             RoundResult? result,
             IReadOnlyList<RoundEvent> events,
-            ulong sourceFingerprint)
+            ulong sourceFingerprint,
+            IReadOnlyList<long>? scores = null,
+            int? riichiSticks = null,
+            IReadOnlyList<bool>? riichiDeclared = null,
+            IReadOnlyList<RoundMeld>? melds = null,
+            int pendingKanDoraCount = 0)
         {
             Spec = spec ?? throw new ArgumentNullException(nameof(spec));
             Tiles = tiles ?? throw new ArgumentNullException(nameof(tiles));
@@ -68,6 +76,54 @@ namespace Mahjong.Domain
                 throw new ArgumentException("ROUND_END and a result must be present together.");
             }
 
+            var scoreCopy = new long[4];
+            IReadOnlyList<long> scoreSource = scores ?? spec.Scores;
+            if (scoreSource.Count != 4)
+            {
+                throw new ArgumentException("Scores must contain exactly four entries.", nameof(scores));
+            }
+
+            for (int i = 0; i < 4; i++)
+            {
+                scoreCopy[i] = scoreSource[i];
+            }
+
+            _scores = new ReadOnlyCollection<long>(scoreCopy);
+            RiichiSticks = riichiSticks ?? spec.RiichiSticks;
+            var flags = new bool[4];
+            if (riichiDeclared != null)
+            {
+                if (riichiDeclared.Count != 4)
+                {
+                    throw new ArgumentException("Riichi flags must contain exactly four entries.", nameof(riichiDeclared));
+                }
+
+                for (int i = 0; i < 4; i++)
+                {
+                    flags[i] = riichiDeclared[i];
+                }
+            }
+
+            _riichiDeclared = new ReadOnlyCollection<bool>(flags);
+            var meldCopy = new List<RoundMeld>();
+            if (melds != null)
+            {
+                for (int i = 0; i < melds.Count; i++)
+                {
+                    meldCopy.Add(melds[i] ?? throw new ArgumentException("Meld cannot be null.", nameof(melds)));
+                }
+            }
+
+            _melds = new ReadOnlyCollection<RoundMeld>(meldCopy);
+            if (pendingKanDoraCount < 0 || pendingKanDoraCount > 5)
+            {
+                throw new ArgumentOutOfRangeException(
+                    nameof(pendingKanDoraCount),
+                    pendingKanDoraCount,
+                    "Pending kan dora must be 0..5.");
+            }
+
+            PendingKanDoraCount = pendingKanDoraCount;
             Version = version;
             Phase = phase;
             CurrentSeat = currentSeat;
@@ -91,6 +147,16 @@ namespace Mahjong.Domain
         public RoundResult? Result { get; }
 
         public IReadOnlyList<RoundEvent> Events => _events;
+
+        public IReadOnlyList<long> Scores => _scores;
+
+        public int RiichiSticks { get; }
+
+        public IReadOnlyList<bool> RiichiDeclared => _riichiDeclared;
+
+        public IReadOnlyList<RoundMeld> Melds => _melds;
+
+        public int PendingKanDoraCount { get; }
 
         public ulong SourceFingerprint { get; }
 
@@ -120,7 +186,12 @@ namespace Mahjong.Domain
                 round.Window,
                 round.Result,
                 round.Events,
-                round.SourceFingerprint);
+                round.SourceFingerprint,
+                round.Scores,
+                round.RiichiSticks,
+                round.RiichiDeclared,
+                round.Melds,
+                round.PendingKanDoraCount);
         }
 
         public static RoundStateMachine Restore(RoundRecoveryState state)
@@ -132,6 +203,7 @@ namespace Mahjong.Domain
 
             ValidateSpec(state.Spec);
             ValidateEvents(state.Events);
+            ValidateDecisionState(state);
             if (state.Window != null)
             {
                 ValidateWindow(state.Window, state.Events.Count);
@@ -151,7 +223,12 @@ namespace Mahjong.Domain
                 state.Window,
                 state.Result,
                 state.Events,
-                null);
+                null,
+                state.Scores,
+                state.RiichiSticks,
+                state.RiichiDeclared,
+                state.Melds,
+                state.PendingKanDoraCount);
 
             if (restored.SourceFingerprint != state.SourceFingerprint)
             {
@@ -178,6 +255,110 @@ namespace Mahjong.Domain
                 if (events[i].Ordinal != i)
                 {
                     throw new InvalidDataException("Round events are not contiguous from zero.");
+                }
+            }
+        }
+
+        private static void ValidateDecisionState(RoundRecoveryState state)
+        {
+            if (state.Scores.Count != 4 || state.RiichiDeclared.Count != 4)
+            {
+                throw new InvalidDataException("Round decision state requires four scores and four riichi flags.");
+            }
+
+            long startingTotal = 0;
+            long currentTotal = 0;
+            for (int i = 0; i < 4; i++)
+            {
+                startingTotal += state.Spec.Scores[i];
+                currentTotal += state.Scores[i];
+            }
+
+            startingTotal += (long)state.Spec.RiichiSticks * 1000L;
+            currentTotal += (long)state.RiichiSticks * 1000L;
+            if (startingTotal != currentTotal)
+            {
+                throw new InvalidDataException(
+                    "Recovered scores/sticks do not conserve the round-start total.");
+            }
+
+            if (state.RiichiSticks < 0)
+            {
+                throw new InvalidDataException("Recovered riichi sticks are negative.");
+            }
+
+            if (state.PendingKanDoraCount < 0 || state.PendingKanDoraCount > 5)
+            {
+                throw new InvalidDataException("Recovered pending kan-dora count is invalid.");
+            }
+
+            var seenTiles = new HashSet<int>();
+            var perSeat = new int[4];
+            for (int i = 0; i < state.Melds.Count; i++)
+            {
+                RoundMeld meld = state.Melds[i];
+                if (meld.Seat < 0 || meld.Seat > 3 || ++perSeat[meld.Seat] > 4)
+                {
+                    throw new InvalidDataException("Recovered meld seat/count is invalid.");
+                }
+
+                for (int t = 0; t < meld.Tiles.Count; t++)
+                {
+                    TileId tile = meld.Tiles[t];
+                    if (!seenTiles.Add(tile.Value))
+                    {
+                        throw new InvalidDataException("A recovered physical tile belongs to two melds.");
+                    }
+
+                    TilePosition position = state.Tiles[tile];
+                    if (position.Zone != TileZone.Meld || position.Seat != meld.Seat)
+                    {
+                        throw new InvalidDataException(
+                            "Recovered meld tile " + tile + " is not in seat " + meld.Seat + "'s meld zone.");
+                    }
+                }
+
+                bool hasEvent = false;
+                for (int e = 0; e < state.Events.Count; e++)
+                {
+                    RoundEvent value = state.Events[e];
+                    if (value.Seat == meld.Seat &&
+                        (value.Type == RoundEventType.ChiDeclared ||
+                         value.Type == RoundEventType.PonDeclared ||
+                         value.Type == RoundEventType.KanDeclared))
+                    {
+                        hasEvent = true;
+                        break;
+                    }
+                }
+
+                if (!hasEvent)
+                {
+                    throw new InvalidDataException("Recovered meld has no matching declared event.");
+                }
+            }
+
+            for (int seat = 0; seat < 4; seat++)
+            {
+                if (!state.RiichiDeclared[seat])
+                {
+                    continue;
+                }
+
+                bool declared = false;
+                for (int e = 0; e < state.Events.Count; e++)
+                {
+                    if (state.Events[e].Type == RoundEventType.RiichiDeclared &&
+                        state.Events[e].Seat == seat)
+                    {
+                        declared = true;
+                        break;
+                    }
+                }
+
+                if (!declared)
+                {
+                    throw new InvalidDataException("Recovered riichi flag has no RiichiDeclared event.");
                 }
             }
         }
@@ -212,6 +393,30 @@ namespace Mahjong.Domain
                     throw new InvalidDataException("A response claim belongs to a non-eligible seat.");
                 }
 
+                if (!Enum.IsDefined(typeof(RoundClaimKind), claim.Kind))
+                {
+                    throw new InvalidDataException("A response claim kind is invalid.");
+                }
+
+                int expectedTiles = claim.Kind == RoundClaimKind.Chi || claim.Kind == RoundClaimKind.Pon
+                    ? 2
+                    : claim.Kind == RoundClaimKind.OpenKan ? 3 : 0;
+                if (claim.MeldTiles.Count != expectedTiles)
+                {
+                    throw new InvalidDataException("A response claim carries the wrong number of meld tiles.");
+                }
+
+                var claimTiles = new HashSet<int>();
+                for (int t = 0; t < claim.MeldTiles.Count; t++)
+                {
+                    if (!claimTiles.Add(claim.MeldTiles[t].Value))
+                    {
+                        throw new InvalidDataException("A response claim repeats a physical tile.");
+                    }
+                }
+
+                ValidateClaimShape(claim, window.TargetTile);
+
                 if (claim.Settlement != null)
                 {
                     ValidateSettlement(claim.Settlement);
@@ -221,6 +426,41 @@ namespace Mahjong.Domain
             if (eventCount == 0)
             {
                 throw new InvalidDataException("A response window cannot exist without an event.");
+            }
+        }
+
+        private static void ValidateClaimShape(RoundResponseClaim claim, TileId target)
+        {
+            if (claim.Kind == RoundClaimKind.Chi)
+            {
+                var ordered = new List<TileId>
+                {
+                    claim.MeldTiles[0],
+                    claim.MeldTiles[1],
+                    target
+                };
+                ordered.Sort();
+                if (!ordered[0].IsNumberTile ||
+                    ordered[0].Suit != ordered[1].Suit ||
+                    ordered[1].Suit != ordered[2].Suit ||
+                    ordered[1].Rank != ordered[0].Rank + 1 ||
+                    ordered[2].Rank != ordered[1].Rank + 1)
+                {
+                    throw new InvalidDataException("A recovered Chi claim is not a consecutive sequence.");
+                }
+
+                return;
+            }
+
+            if (claim.Kind == RoundClaimKind.Pon || claim.Kind == RoundClaimKind.OpenKan)
+            {
+                for (int i = 0; i < claim.MeldTiles.Count; i++)
+                {
+                    if (!claim.MeldTiles[i].SameType(target))
+                    {
+                        throw new InvalidDataException("A recovered Pon/OpenKan claim has a wrong tile type.");
+                    }
+                }
             }
         }
 
@@ -248,6 +488,11 @@ namespace Mahjong.Domain
                 throw new InvalidDataException("A round result belongs to another round.");
             }
 
+            if (result.StartingRiichiSticks != spec.RiichiSticks)
+            {
+                throw new InvalidDataException("A round result starting sticks do not match its spec.");
+            }
+
             if (result.StartingScores.Count != 4 ||
                 result.FinalScores.Count != 4 ||
                 result.TotalDeltas.Count != 4)
@@ -267,6 +512,8 @@ namespace Mahjong.Domain
                 }
             }
 
+            startingTotal += (long)result.StartingRiichiSticks * 1000L;
+            finalTotal += (long)result.RemainingRiichiSticks * 1000L;
             if (startingTotal != finalTotal)
             {
                 throw new InvalidDataException("A round result does not conserve total score.");
@@ -306,7 +553,7 @@ namespace Mahjong.Domain
     /// </summary>
     public static class RoundRecoveryCodec
     {
-        public const int FormatVersion = 1;
+        public const int FormatVersion = 2;
         private const int Magic = 0x4D4A5231; // MJR1
 
         public static byte[] Encode(RoundRecoveryState state)
@@ -325,6 +572,29 @@ namespace Mahjong.Domain
                 writer.Write(state.Version);
                 writer.Write((byte)state.Phase);
                 writer.Write(state.CurrentSeat);
+                WriteLongs(writer, state.Scores);
+                writer.Write(state.RiichiSticks);
+                for (int i = 0; i < 4; i++)
+                {
+                    writer.Write(state.RiichiDeclared[i]);
+                }
+
+                writer.Write(state.Melds.Count);
+                for (int i = 0; i < state.Melds.Count; i++)
+                {
+                    RoundMeld meld = state.Melds[i];
+                    writer.Write((byte)meld.Kind);
+                    writer.Write(meld.Seat);
+                    writer.Write(meld.FromSeat);
+                    writer.Write(meld.CalledTile.Value);
+                    writer.Write(meld.Tiles.Count);
+                    for (int t = 0; t < meld.Tiles.Count; t++)
+                    {
+                        writer.Write(meld.Tiles[t].Value);
+                    }
+                }
+
+                writer.Write(state.PendingKanDoraCount);
                 WriteTiles(writer, state.Tiles);
                 WriteWindow(writer, state.Window);
                 WriteResult(writer, state.Result);
@@ -371,7 +641,49 @@ namespace Mahjong.Domain
 
                 RoundPhase phase = (RoundPhase)phaseByte;
                 int currentSeat = reader.ReadInt32();
-                TilePositionMap tiles = ReadTiles(reader);
+                IReadOnlyList<long> scores = ReadLongs(reader);
+                int riichiSticks = reader.ReadInt32();
+                var riichiDeclared = new bool[4];
+                for (int i = 0; i < 4; i++)
+                {
+                    riichiDeclared[i] = reader.ReadBoolean();
+                }
+
+                int meldCount = reader.ReadInt32();
+                if (meldCount < 0 || meldCount > 16)
+                {
+                    throw new InvalidDataException("Round recovery meld count is invalid.");
+                }
+
+                var melds = new List<RoundMeld>(meldCount);
+                for (int i = 0; i < meldCount; i++)
+                {
+                    byte kind = reader.ReadByte();
+                    if (!Enum.IsDefined(typeof(RoundMeldKind), kind))
+                    {
+                        throw new InvalidDataException("Round recovery meld kind is invalid.");
+                    }
+
+                    int meldSeat = reader.ReadInt32();
+                    int fromSeat = reader.ReadInt32();
+                    TileId called = ReadTile(reader);
+                    int tileCount = reader.ReadInt32();
+                    if (tileCount < 3 || tileCount > 4)
+                    {
+                        throw new InvalidDataException("Round recovery meld tile count is invalid.");
+                    }
+
+                    var tiles = new TileId[tileCount];
+                    for (int t = 0; t < tileCount; t++)
+                    {
+                        tiles[t] = ReadTile(reader);
+                    }
+
+                    melds.Add(new RoundMeld((RoundMeldKind)kind, meldSeat, fromSeat, called, tiles));
+                }
+
+                int pendingKanDora = reader.ReadInt32();
+                TilePositionMap tilesMap = ReadTiles(reader);
                 RoundResponseWindow? window = ReadWindow(reader);
                 RoundResult? result = ReadResult(reader);
                 int eventCount = reader.ReadInt32();
@@ -403,11 +715,16 @@ namespace Mahjong.Domain
                     roundVersion,
                     phase,
                     currentSeat,
-                    tiles,
+                    tilesMap,
                     window,
                     result,
                     events,
-                    fingerprint);
+                    fingerprint,
+                    scores,
+                    riichiSticks,
+                    riichiDeclared,
+                    melds,
+                    pendingKanDora);
             }
         }
 
@@ -654,12 +971,23 @@ namespace Mahjong.Domain
             for (int i = 0; i < window.Claims.Count; i++)
             {
                 RoundResponseClaim claim = window.Claims[i];
+                writer.Write((byte)claim.Kind);
                 writer.Write(claim.Seat);
-                writer.Write(claim.IsRon);
-                writer.Write(claim.Settlement != null);
-                if (claim.Settlement != null)
+                if (claim.Kind == RoundClaimKind.Ron)
                 {
-                    WriteSettlement(writer, claim.Settlement);
+                    writer.Write(claim.Settlement != null);
+                    if (claim.Settlement != null)
+                    {
+                        WriteSettlement(writer, claim.Settlement);
+                    }
+                }
+                else
+                {
+                    writer.Write(claim.MeldTiles.Count);
+                    for (int t = 0; t < claim.MeldTiles.Count; t++)
+                    {
+                        writer.Write(claim.MeldTiles[t].Value);
+                    }
                 }
             }
         }
@@ -695,13 +1023,15 @@ namespace Mahjong.Domain
             var claims = new List<RoundResponseClaim>(claimCount);
             for (int i = 0; i < claimCount; i++)
             {
-                int seat = reader.ReadInt32();
-                bool isRon = reader.ReadBoolean();
-                if (!isRon)
+                byte kindByte = reader.ReadByte();
+                if (!Enum.IsDefined(typeof(RoundClaimKind), kindByte))
                 {
-                    claims.Add(RoundResponseClaim.Pass(seat));
+                    throw new InvalidDataException("A response claim kind is invalid.");
                 }
-                else
+
+                RoundClaimKind kind = (RoundClaimKind)kindByte;
+                int seat = reader.ReadInt32();
+                if (kind == RoundClaimKind.Ron)
                 {
                     if (!reader.ReadBoolean())
                     {
@@ -709,6 +1039,58 @@ namespace Mahjong.Domain
                     }
 
                     claims.Add(RoundResponseClaim.Ron(seat, ReadSettlement(reader)));
+                }
+                else
+                {
+                    int tileCount = reader.ReadInt32();
+                    if (tileCount < 0 || tileCount > 4)
+                    {
+                        throw new InvalidDataException("A response claim tile count is invalid.");
+                    }
+
+                    var tiles = new TileId[tileCount];
+                    for (int t = 0; t < tileCount; t++)
+                    {
+                        tiles[t] = ReadTile(reader);
+                    }
+
+                    switch (kind)
+                    {
+                        case RoundClaimKind.Pass:
+                            if (tileCount != 0)
+                            {
+                                throw new InvalidDataException("A Pass claim cannot carry tiles.");
+                            }
+
+                            claims.Add(RoundResponseClaim.Pass(seat));
+                            break;
+                        case RoundClaimKind.Chi:
+                            if (tileCount != 2)
+                            {
+                                throw new InvalidDataException("A Chi claim requires two tiles.");
+                            }
+
+                            claims.Add(RoundResponseClaim.Chi(seat, tiles[0], tiles[1]));
+                            break;
+                        case RoundClaimKind.Pon:
+                            if (tileCount != 2)
+                            {
+                                throw new InvalidDataException("A Pon claim requires two tiles.");
+                            }
+
+                            claims.Add(RoundResponseClaim.Pon(seat, tiles[0], tiles[1]));
+                            break;
+                        case RoundClaimKind.OpenKan:
+                            if (tileCount != 3)
+                            {
+                                throw new InvalidDataException("An OpenKan claim requires three tiles.");
+                            }
+
+                            claims.Add(RoundResponseClaim.OpenKan(seat, tiles[0], tiles[1], tiles[2]));
+                            break;
+                        default:
+                            throw new InvalidDataException("Unknown response claim kind.");
+                    }
                 }
             }
 
@@ -996,6 +1378,11 @@ namespace Mahjong.Domain
     /// </summary>
     public static class RoundCommandCodec
     {
+        /// <summary>
+        /// Command payloads remain schema 1. N-1a appends an optional meld-tile block after the
+        /// original fields, so pre-N-1a journals still decode (with no meld tiles) and a new
+        /// chi/pon/kan command without that block is rejected explicitly at Prepare time.
+        /// </summary>
         public const int FormatVersion = 1;
         private const int Magic = 0x4D4A4331; // MJC1
 
@@ -1027,6 +1414,8 @@ namespace Mahjong.Domain
                 {
                     WriteSettlement(writer, command.Settlement);
                 }
+
+                WriteMeldTiles(writer, command.MeldTiles);
 
                 writer.Flush();
                 return stream.ToArray();
@@ -1066,12 +1455,15 @@ namespace Mahjong.Domain
                 IReadOnlyList<int>? eligible = ReadSeats(reader);
                 IReadOnlyList<int>? chankan = ReadSeats(reader);
                 RoundSettlement? settlement = reader.ReadBoolean() ? ReadSettlement(reader) : null;
+                IReadOnlyList<TileId>? meldTiles = stream.Position < payload.Length
+                    ? ReadMeldTiles(reader)
+                    : null;
                 if (stream.Position != payload.Length)
                 {
                     throw new InvalidDataException("Command journal payload has trailing bytes.");
                 }
 
-                return Create((RoundActionKind)action, roundId, seat, tile, eligible, chankan, settlement);
+                return Create((RoundActionKind)action, roundId, seat, tile, eligible, chankan, settlement, meldTiles);
             }
         }
 
@@ -1082,7 +1474,8 @@ namespace Mahjong.Domain
             TileId? tile,
             IReadOnlyList<int>? eligible,
             IReadOnlyList<int>? chankan,
-            RoundSettlement? settlement)
+            RoundSettlement? settlement,
+            IReadOnlyList<TileId>? meldTiles)
         {
             switch (action)
             {
@@ -1114,14 +1507,105 @@ namespace Mahjong.Domain
                     return RoundCommand.ExhaustiveDraw(roundId, RequireSettlement(settlement));
                 case RoundActionKind.DeclareAbortiveDraw:
                     return RoundCommand.AbortiveDraw(roundId, RequireSettlement(settlement));
+                case RoundActionKind.DeclareChi:
+                    RequireMeldTiles(meldTiles, 2, "Chi");
+                    if (!tile.HasValue)
+                    {
+                        throw new InvalidDataException("Chi command requires the called tile.");
+                    }
+
+                    return RoundCommand.Chi(roundId, seat, tile.Value, meldTiles![0], meldTiles[1]);
+                case RoundActionKind.DeclarePon:
+                    RequireMeldTiles(meldTiles, 2, "Pon");
+                    if (!tile.HasValue)
+                    {
+                        throw new InvalidDataException("Pon command requires the called tile.");
+                    }
+
+                    return RoundCommand.Pon(roundId, seat, tile.Value, meldTiles![0], meldTiles[1]);
+                case RoundActionKind.DeclareOpenKan:
+                    RequireMeldTiles(meldTiles, 3, "Open kan");
+                    if (!tile.HasValue)
+                    {
+                        throw new InvalidDataException("Open-kan command requires the called tile.");
+                    }
+
+                    return RoundCommand.OpenKan(
+                        roundId,
+                        seat,
+                        tile.Value,
+                        meldTiles![0],
+                        meldTiles[1],
+                        meldTiles[2]);
+                case RoundActionKind.DeclareClosedKan:
+                    RequireMeldTiles(meldTiles, 4, "Closed kan");
+                    return RoundCommand.ClosedKan(
+                        roundId,
+                        seat,
+                        meldTiles![0],
+                        meldTiles[1],
+                        meldTiles[2],
+                        meldTiles[3]);
+                case RoundActionKind.DeclareRiichi:
+                    if (!tile.HasValue)
+                    {
+                        throw new InvalidDataException("Riichi command requires the discard tile.");
+                    }
+
+                    return RoundCommand.Riichi(roundId, seat, tile.Value, eligible);
                 default:
                     throw new InvalidDataException("Command action is invalid.");
+            }
+        }
+
+        private static void RequireMeldTiles(IReadOnlyList<TileId>? tiles, int expected, string action)
+        {
+            if (tiles == null || tiles.Count != expected)
+            {
+                throw new InvalidDataException(action + " command requires " + expected + " meld tiles.");
             }
         }
 
         private static RoundSettlement RequireSettlement(RoundSettlement? settlement)
         {
             return settlement ?? throw new InvalidDataException("Command requires a settlement.");
+        }
+
+        private static void WriteMeldTiles(BinaryWriter writer, IReadOnlyList<TileId>? tiles)
+        {
+            writer.Write(tiles != null);
+            if (tiles == null)
+            {
+                return;
+            }
+
+            writer.Write(tiles.Count);
+            for (int i = 0; i < tiles.Count; i++)
+            {
+                writer.Write(tiles[i].Value);
+            }
+        }
+
+        private static IReadOnlyList<TileId>? ReadMeldTiles(BinaryReader reader)
+        {
+            if (!reader.ReadBoolean())
+            {
+                return null;
+            }
+
+            int count = reader.ReadInt32();
+            if (count < 0 || count > 4)
+            {
+                throw new InvalidDataException("Command meld tile count is invalid.");
+            }
+
+            var tiles = new TileId[count];
+            for (int i = 0; i < count; i++)
+            {
+                tiles[i] = ReadTile(reader);
+            }
+
+            return new ReadOnlyCollection<TileId>(tiles);
         }
 
         private static void WriteSeats(BinaryWriter writer, IReadOnlyList<int>? seats)

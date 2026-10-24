@@ -10,7 +10,12 @@ namespace Mahjong.TableRuntime
     /// <summary>Builds and validates self-contained checkpoints without sharing live objects.</summary>
     public static class TableCheckpointFactory
     {
-        public const int SchemaVersion = 1;
+        /// <summary>
+        /// Schema 2 carries N-1a Domain decision state (current scores, riichi flags/sticks,
+        /// meld records, pending kan dora) inside the recovery payload. Schema 1 checkpoints are
+        /// rejected rather than silently accepted with the new fields defaulted.
+        /// </summary>
+        public const int SchemaVersion = 2;
 
         public static TableCheckpoint Create(
             string roomId,

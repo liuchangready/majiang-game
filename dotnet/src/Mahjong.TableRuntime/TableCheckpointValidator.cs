@@ -109,6 +109,7 @@ namespace Mahjong.TableRuntime
 
             TableTimingCheckpoint timing = TableTimingCheckpointCodec.Decode(checkpoint.TimingPayload);
             RoundRecoveryState captured = RoundRecoveryCodec.Decode(checkpoint.StatePayload);
+            ValidateRoundDecisionState(captured);
             if (timing.CapturedAtUtcMs != checkpoint.CreatedAtUtcMs ||
                 timing.CapturedMonotonicMillis != checkpoint.CapturedMonotonicMillis ||
                 !string.Equals(timing.BootId, checkpoint.BootId, StringComparison.Ordinal))
@@ -140,6 +141,114 @@ namespace Mahjong.TableRuntime
                 facts.EventFacts,
                 facts.Policy,
                 round);
+        }
+
+        /// <summary>
+        /// Verifies the N-1a authoritative decision fields carried inside the recovery payload:
+        /// current scores/riichi sticks conserve the round-start total, flags have matching
+        /// declared events, meld records point at their own physical meld zone, and no physical
+        /// tile is claimed by two melds. A schema-1 payload has already been refused by the codec.
+        /// </summary>
+        private static void ValidateRoundDecisionState(RoundRecoveryState captured)
+        {
+            if (captured.Scores.Count != 4 || captured.RiichiDeclared.Count != 4)
+            {
+                throw new InvalidDataException(
+                    "Checkpoint decision state does not contain four scores and four riichi flags.");
+            }
+
+            long startingTotal = 0;
+            long currentTotal = 0;
+            for (int i = 0; i < 4; i++)
+            {
+                startingTotal += captured.Spec.Scores[i];
+                currentTotal += captured.Scores[i];
+            }
+
+            startingTotal += (long)captured.Spec.RiichiSticks * 1000L;
+            currentTotal += (long)captured.RiichiSticks * 1000L;
+            if (startingTotal != currentTotal)
+            {
+                throw new InvalidDataException(
+                    "Checkpoint scores/riichi sticks do not conserve the round-start total.");
+            }
+
+            if (captured.RiichiSticks < 0 ||
+                captured.PendingKanDoraCount < 0 ||
+                captured.PendingKanDoraCount > 5)
+            {
+                throw new InvalidDataException("Checkpoint riichi-stick/pending-dora value is invalid.");
+            }
+
+            var seenTiles = new HashSet<int>();
+            var perSeat = new int[4];
+            for (int i = 0; i < captured.Melds.Count; i++)
+            {
+                RoundMeld meld = captured.Melds[i];
+                if (meld.Seat < 0 || meld.Seat > 3 || ++perSeat[meld.Seat] > 4)
+                {
+                    throw new InvalidDataException("Checkpoint meld seat/count is invalid.");
+                }
+
+                bool hasEvent = false;
+                for (int e = 0; e < captured.Events.Count; e++)
+                {
+                    RoundEvent value = captured.Events[e];
+                    if (value.Seat == meld.Seat &&
+                        (value.Type == RoundEventType.ChiDeclared ||
+                         value.Type == RoundEventType.PonDeclared ||
+                         value.Type == RoundEventType.KanDeclared))
+                    {
+                        hasEvent = true;
+                        break;
+                    }
+                }
+
+                if (!hasEvent)
+                {
+                    throw new InvalidDataException("Checkpoint meld has no matching declared event.");
+                }
+
+                for (int t = 0; t < meld.Tiles.Count; t++)
+                {
+                    TileId tile = meld.Tiles[t];
+                    if (!seenTiles.Add(tile.Value))
+                    {
+                        throw new InvalidDataException("Checkpoint physical tile belongs to two melds.");
+                    }
+
+                    TilePosition position = captured.Tiles[tile];
+                    if (position.Zone != TileZone.Meld || position.Seat != meld.Seat)
+                    {
+                        throw new InvalidDataException(
+                            "Checkpoint meld tile is not in its owner's meld zone.");
+                    }
+                }
+            }
+
+            for (int seat = 0; seat < 4; seat++)
+            {
+                if (!captured.RiichiDeclared[seat])
+                {
+                    continue;
+                }
+
+                bool declared = false;
+                for (int e = 0; e < captured.Events.Count; e++)
+                {
+                    if (captured.Events[e].Type == RoundEventType.RiichiDeclared &&
+                        captured.Events[e].Seat == seat)
+                    {
+                        declared = true;
+                        break;
+                    }
+                }
+
+                if (!declared)
+                {
+                    throw new InvalidDataException("Checkpoint riichi flag has no RiichiDeclared event.");
+                }
+            }
         }
 
         private static void ValidateHistory(

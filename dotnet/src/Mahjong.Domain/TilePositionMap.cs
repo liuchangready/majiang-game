@@ -751,6 +751,80 @@ namespace Mahjong.Domain
                 nextDrawnTile: new DrawnTileEvidence(rinshanTile, seat, DrawSource.Rinshan));
         }
 
+        /// <summary>
+        /// Reveals the next kan-dora indicator from the dead wall using V4's fixed slots
+        /// (initial 4, then 6/8/10/12) and appends it to the immutable indicator list. No tile
+        /// moves; the indicator is already a dead-wall entity. The five-indicator and
+        /// fourteen-slot limits are enforced here rather than by a caller-side guess.
+        /// </summary>
+        public TransitionResult RevealDoraIndicator()
+        {
+            if (DoraIndicators.Count >= 5)
+            {
+                return TransitionResult.Failure(
+                    TransitionErrorCode.DeadWallExhausted,
+                    "All five dora indicators are already revealed.");
+            }
+
+            int index = 4 + (DoraIndicators.Count * 2);
+            if (index < 4 || index >= DeadWallSlotCount)
+            {
+                return TransitionResult.Failure(
+                    TransitionErrorCode.DeadWallExhausted,
+                    "No dead-wall slot remains for dora indicator " + DoraIndicators.Count + ".");
+            }
+
+            if (!TryGetTileAt(TilePosition.DeadWall(index), out TileId indicator))
+            {
+                return TransitionResult.Failure(
+                    TransitionErrorCode.DeadWallExhausted,
+                    "No dead-wall tile exists at indicator slot " + index + ".");
+            }
+
+            for (int i = 0; i < DoraIndicators.Count; i++)
+            {
+                if (DoraIndicators[i] == indicator)
+                {
+                    return TransitionResult.Failure(
+                        TransitionErrorCode.DeadWallExhausted,
+                        "Dora indicator " + indicator + " is already revealed.");
+                }
+            }
+
+            var nextIndicators = new TileId[DoraIndicators.Count + 1];
+            for (int i = 0; i < DoraIndicators.Count; i++)
+            {
+                nextIndicators[i] = DoraIndicators[i];
+            }
+
+            nextIndicators[nextIndicators.Length - 1] = indicator;
+            var nextPositions = new TilePosition[_positions.Length];
+            Array.Copy(_positions, nextPositions, _positions.Length);
+            try
+            {
+                var state = new TilePositionMap(
+                    nextPositions,
+                    WallPointer,
+                    WallEndExclusive,
+                    RinshanPointer,
+                    Revision + 1,
+                    KanCount,
+                    _lastDiscard,
+                    _rinshanDraw,
+                    _drawnTile,
+                    nextIndicators);
+                return TransitionResult.Success(state, indicator);
+            }
+            catch (ConservationException ex)
+            {
+                return TransitionResult.Failure(TransitionErrorCode.ConservationViolation, ex.Message);
+            }
+            catch (ArgumentException ex)
+            {
+                return TransitionResult.Failure(TransitionErrorCode.ConservationViolation, ex.Message);
+            }
+        }
+
         public TransitionResult Discard(int seat, TileId tile)
         {
             if (seat < 0 || seat > 3)

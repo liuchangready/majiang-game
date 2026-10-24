@@ -30,7 +30,16 @@ namespace Mahjong.Domain
         NoDrawnTile = 17,
         InvalidRoundSpec = 18,
         MatchCommandRejected = 19,
-        ForeignSourceState = 20
+        ForeignSourceState = 20,
+        InvalidMeld = 21,
+        MeldNotAllowed = 22,
+        RiichiAlreadyDeclared = 23,
+        RiichiNotMenzen = 24,
+        RiichiInsufficientPoints = 25,
+        RiichiNotTenpai = 26,
+        RiichiWallTooShort = 27,
+        RiichiDiscardLocked = 28,
+        KanLimitReached = 29
     }
 
     public sealed class RoundTransitionError
@@ -70,7 +79,10 @@ namespace Mahjong.Domain
         ExhaustiveDraw = 12,
         AbortiveDraw = 13,
         WallExhausted = 14,
-        RoundEnded = 15
+        RoundEnded = 15,
+        RiichiDeclared = 16,
+        ChiDeclared = 17,
+        PonDeclared = 18
     }
 
     /// <summary>A committed domain event. <see cref="Ordinal"/> is contiguous per round.</summary>

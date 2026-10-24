@@ -23,10 +23,10 @@ namespace Mahjong.Domain
     }
 
     /// <summary>
-    /// Approved round actions implemented by P1.3. V4's chi/pon/riichi/open-kan and the
-    /// cheat actions are deliberately absent: they belong to the rules/cheat layers and
-    /// must not be approximated here. Unsupported action types are rejected by the type
-    /// system rather than silently accepted.
+    /// Approved round actions. Values 0..8 are the original P1.3 surface and are frozen for
+    /// persistence. N-1a appends the player decision kinds that V4 exposes (chi, pon, open-kan
+    /// claim, closed kan and riichi); the cheat actions remain outside this enum. Values must
+    /// never be reordered or reused.
     /// </summary>
     public enum RoundActionKind : byte
     {
@@ -38,7 +38,159 @@ namespace Mahjong.Domain
         Pass = 5,
         DeclareAddedKan = 6,
         DeclareExhaustiveDraw = 7,
-        DeclareAbortiveDraw = 8
+        DeclareAbortiveDraw = 8,
+        DeclareChi = 9,
+        DeclarePon = 10,
+        DeclareOpenKan = 11,
+        DeclareClosedKan = 12,
+        DeclareRiichi = 13
+    }
+
+    /// <summary>
+    /// V4 <c>MeldType</c> with stable persisted numbers. <see cref="RoundMeld.IsOpen"/> is the
+    /// menzen test: only a closed kan leaves the hand concealed.
+    /// </summary>
+    public enum RoundMeldKind : byte
+    {
+        Chi = 1,
+        Pon = 2,
+        OpenKan = 3,
+        ClosedKan = 4,
+        AddedKan = 5
+    }
+
+    /// <summary>
+    /// Immutable authoritative meld record. The physical tile map proves where each tile is;
+    /// this record preserves the V4 meld type, caller and called tile that the map alone cannot
+    /// distinguish (a three-tile group can be either chi or pon).
+    /// </summary>
+    public sealed class RoundMeld
+    {
+        private readonly ReadOnlyCollection<TileId> _tiles;
+
+        public RoundMeld(
+            RoundMeldKind kind,
+            int seat,
+            int fromSeat,
+            TileId calledTile,
+            IReadOnlyList<TileId> tiles)
+        {
+            if (!Enum.IsDefined(typeof(RoundMeldKind), kind))
+            {
+                throw new ArgumentOutOfRangeException(nameof(kind), kind, "Unknown meld kind.");
+            }
+
+            V5Guard.CheckSeat(seat);
+            if (fromSeat < -1 || fromSeat > 3)
+            {
+                throw new ArgumentOutOfRangeException(nameof(fromSeat), fromSeat, "fromSeat must be -1 or 0..3.");
+            }
+
+            if (tiles == null)
+            {
+                throw new ArgumentNullException(nameof(tiles));
+            }
+
+            bool isKan = kind == RoundMeldKind.OpenKan ||
+                         kind == RoundMeldKind.ClosedKan ||
+                         kind == RoundMeldKind.AddedKan;
+            int expected = isKan ? 4 : 3;
+            if (tiles.Count != expected)
+            {
+                throw new ArgumentException(
+                    kind + " requires exactly " + expected + " physical tiles.", nameof(tiles));
+            }
+
+            var copy = new TileId[expected];
+            var seen = new HashSet<int>();
+            for (int i = 0; i < expected; i++)
+            {
+                copy[i] = tiles[i];
+                if (!seen.Add(tiles[i].Value))
+                {
+                    throw new ArgumentException("A meld cannot contain a duplicate physical tile.", nameof(tiles));
+                }
+            }
+
+            if (kind == RoundMeldKind.Chi)
+            {
+                var ordered = new List<TileId>(copy);
+                ordered.Sort();
+                if (!ordered[0].IsNumberTile ||
+                    ordered[0].Suit != ordered[1].Suit ||
+                    ordered[1].Suit != ordered[2].Suit ||
+                    ordered[1].Rank != ordered[0].Rank + 1 ||
+                    ordered[2].Rank != ordered[1].Rank + 1)
+                {
+                    throw new ArgumentException("Chi tiles must form one consecutive number sequence.", nameof(tiles));
+                }
+
+                copy = ordered.ToArray();
+            }
+            else
+            {
+                for (int i = 1; i < expected; i++)
+                {
+                    if (!copy[i].SameType(copy[0]))
+                    {
+                        throw new ArgumentException("Pon/kan tiles must share one type.", nameof(tiles));
+                    }
+                }
+            }
+
+            bool containsCalled = false;
+            for (int i = 0; i < copy.Length; i++)
+            {
+                if (copy[i] == calledTile)
+                {
+                    containsCalled = true;
+                    break;
+                }
+            }
+
+            if (!containsCalled)
+            {
+                throw new ArgumentException("The called tile must be part of the meld.", nameof(calledTile));
+            }
+
+            if (kind != RoundMeldKind.ClosedKan && fromSeat == seat)
+            {
+                throw new ArgumentException("An open meld cannot be called from the same seat.", nameof(fromSeat));
+            }
+
+            Kind = kind;
+            Seat = seat;
+            FromSeat = fromSeat;
+            CalledTile = calledTile;
+            _tiles = new ReadOnlyCollection<TileId>(copy);
+        }
+
+        public RoundMeldKind Kind { get; }
+
+        public int Seat { get; }
+
+        public int FromSeat { get; }
+
+        public TileId CalledTile { get; }
+
+        public IReadOnlyList<TileId> Tiles => _tiles;
+
+        public bool IsOpen => Kind != RoundMeldKind.ClosedKan;
+
+        public bool IsKan =>
+            Kind == RoundMeldKind.OpenKan ||
+            Kind == RoundMeldKind.ClosedKan ||
+            Kind == RoundMeldKind.AddedKan;
+    }
+
+    /// <summary>Stable response kinds. Values are persisted in recovery payloads.</summary>
+    public enum RoundClaimKind : byte
+    {
+        Pass = 0,
+        Ron = 1,
+        Chi = 2,
+        Pon = 3,
+        OpenKan = 4
     }
 
     public enum RoundEndReason : byte
@@ -322,36 +474,102 @@ namespace Mahjong.Domain
         }
     }
 
-    /// <summary>A recorded Pass or Ron claim. A Ron claim carries its scoring-layer settlement.</summary>
+    /// <summary>
+    /// A recorded window response. Ron carries the scoring-layer settlement; chi/pon/open-kan
+    /// carry the exact caller-owned physical tiles chosen for the meld. Pass carries neither.
+    /// </summary>
     public sealed class RoundResponseClaim
     {
-        private RoundResponseClaim(int seat, bool isRon, RoundSettlement? settlement)
+        private readonly ReadOnlyCollection<TileId> _meldTiles;
+
+        private RoundResponseClaim(
+            int seat,
+            RoundClaimKind kind,
+            RoundSettlement? settlement,
+            IReadOnlyList<TileId>? meldTiles)
         {
+            V5Guard.CheckSeat(seat);
+            if (!Enum.IsDefined(typeof(RoundClaimKind), kind))
+            {
+                throw new ArgumentOutOfRangeException(nameof(kind), kind, "Unknown claim kind.");
+            }
+
+            if (kind == RoundClaimKind.Ron && settlement == null)
+            {
+                throw new ArgumentNullException(nameof(settlement), "A Ron claim requires a settlement.");
+            }
+
+            if (kind != RoundClaimKind.Ron && settlement != null)
+            {
+                throw new ArgumentException("Only a Ron claim can carry a settlement.", nameof(settlement));
+            }
+
+            int expected = kind == RoundClaimKind.Chi || kind == RoundClaimKind.Pon
+                ? 2
+                : kind == RoundClaimKind.OpenKan ? 3 : 0;
+            if (expected == 0)
+            {
+                if (meldTiles != null && meldTiles.Count != 0)
+                {
+                    throw new ArgumentException("Pass/Ron cannot carry meld tiles.", nameof(meldTiles));
+                }
+
+                _meldTiles = new ReadOnlyCollection<TileId>(Array.Empty<TileId>());
+            }
+            else
+            {
+                if (meldTiles == null || meldTiles.Count != expected)
+                {
+                    throw new ArgumentException(kind + " requires exactly " + expected + " hand tiles.", nameof(meldTiles));
+                }
+
+                var copy = new TileId[expected];
+                var seen = new HashSet<int>();
+                for (int i = 0; i < expected; i++)
+                {
+                    copy[i] = meldTiles[i];
+                    if (!seen.Add(copy[i].Value))
+                    {
+                        throw new ArgumentException("A claim cannot contain a duplicate physical tile.", nameof(meldTiles));
+                    }
+                }
+
+                _meldTiles = new ReadOnlyCollection<TileId>(copy);
+            }
+
             Seat = seat;
-            IsRon = isRon;
+            Kind = kind;
             Settlement = settlement;
         }
 
         public int Seat { get; }
 
-        public bool IsRon { get; }
+        public RoundClaimKind Kind { get; }
+
+        public bool IsRon => Kind == RoundClaimKind.Ron;
 
         public RoundSettlement? Settlement { get; }
 
-        public static RoundResponseClaim Pass(int seat)
-        {
-            V5Guard.CheckSeat(seat);
-            return new RoundResponseClaim(seat, false, null);
-        }
+        public IReadOnlyList<TileId> MeldTiles => _meldTiles;
 
-        public static RoundResponseClaim Ron(int seat, RoundSettlement settlement)
-        {
-            V5Guard.CheckSeat(seat);
-            return new RoundResponseClaim(
+        public static RoundResponseClaim Pass(int seat) =>
+            new RoundResponseClaim(seat, RoundClaimKind.Pass, null, null);
+
+        public static RoundResponseClaim Ron(int seat, RoundSettlement settlement) =>
+            new RoundResponseClaim(
                 seat,
-                true,
-                settlement ?? throw new ArgumentNullException(nameof(settlement)));
-        }
+                RoundClaimKind.Ron,
+                settlement ?? throw new ArgumentNullException(nameof(settlement)),
+                null);
+
+        public static RoundResponseClaim Chi(int seat, TileId handTileA, TileId handTileB) =>
+            new RoundResponseClaim(seat, RoundClaimKind.Chi, null, new[] { handTileA, handTileB });
+
+        public static RoundResponseClaim Pon(int seat, TileId handTileA, TileId handTileB) =>
+            new RoundResponseClaim(seat, RoundClaimKind.Pon, null, new[] { handTileA, handTileB });
+
+        public static RoundResponseClaim OpenKan(int seat, TileId handTileA, TileId handTileB, TileId handTileC) =>
+            new RoundResponseClaim(seat, RoundClaimKind.OpenKan, null, new[] { handTileA, handTileB, handTileC });
     }
 
     internal static class V5Guard
