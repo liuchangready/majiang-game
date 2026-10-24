@@ -4,7 +4,7 @@
 - 唯一工作树：`D:/majiang-wt/p34-receipts`（分支 `wt/v5-p34-receipts`）。
 - 冻结基线：`daeb19a64951174426924026fe974c8ae5caacd9`。
 - 第 1 轮实现提交：`9e909ea6b7dfb411b1e2511fa4f0f9d05307ba38`。
-- 第 2 轮实现提交：`343b7a2271d5da4089646f48f521fcb69016d637`（`fix(v5-p34): fence checkpoints and rebuild durable timing`）。
+- 第 2 轮实现提交：`1438f2e1b9caf4fbe9531cd3cde63169e219d747`（并在其前有 `343b7a2271d5da4089646f48f521fcb69016d637` 主体返修）。
 - 本文件的提交为最终本地 HEAD；未 push、未建 PR、未触发 CI、未转派。
 - caller 的 `CodexP34ReviewProbes.cs` 被保留、纳入提交并通过；未删改探针。
 
@@ -161,7 +161,7 @@ void Install(TableRecoveryAuxState state);
 | `dotnet/src/Mahjong.TableRuntime/InMemoryTableStore.cs` | `6221b2b27abc307f9428cf46b9a119d3cec8bf71faf64247daab9e1850587e6d` |
 | `dotnet/src/Mahjong.TableRuntime/TableCheckpointCodecs.cs` | `6e210de402c9c6d261897a3997cca9d34fbdb7608e6c9cbf43aac7aaadfd9279` |
 | `dotnet/src/Mahjong.TableRuntime/TableRecoveryPayloads.cs` | `531c618855a8e7b90736dc67559874fdea832484c7732d26c26d96bad4b1a892` |
-| `dotnet/src/Mahjong.TableRuntime/TableRecoveryService.cs` | `a8029d8f7c014e73c2fc4e94c6621e6b4113a09b6fc67aa7fb61d9afeda28fdc` |
+| `dotnet/src/Mahjong.TableRuntime/TableRecoveryService.cs` | `2e4df5fc090cc481d81af9fa0e3b383b9ae1a6f4cea2b7487edba1b73400af16` |
 | `dotnet/src/Mahjong.TableRuntime/TableRuntimeContracts.cs` | `696e71bb7dbb51f4e858dda543c3897f009fb4c7d083e7783e1a8b95a17cc366` |
 | `dotnet/src/Mahjong.TableRuntime/TableRuntimeReasonCode.cs` | `7fece62eaf709597e10eca661afbad64cb2dbc3626a60a32af401b3e95840343` |
 | `dotnet/tests/.../TableDurableTestSupport.cs` | `27fa7163335782f8dda23f82670333436c598d47a1880a83d651f6785b0d8e46` |
@@ -183,6 +183,6 @@ void Install(TableRecoveryAuxState state);
 
 ## 10. 交接
 
-- 第 2 轮实现 HEAD：`343b7a2271d5da4089646f48f521fcb69016d637`。
+- 第 2 轮实现 HEAD：`1438f2e1b9caf4fbe9531cd3cde63169e219d747`。
 - 本文件所在提交为最终本地 HEAD。
 - 等待 caller 第 2 轮独立验收；caller 负责唯一 PR19 `feat/v5-1-integration -> v5` 及 merge-back。本报告不自行通过 G1/G5。
