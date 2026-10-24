@@ -285,29 +285,32 @@
 
 ---
 
-## 7. 2026-10-24 实现追踪核对（P0.1 现状复核，基线 437bd53）
+## 7. 2026-10-24 实现追踪核对（P0.1 现状复核，基线 437bd53；同日独立复核返修加固）
 
-**性质与边界**：本章为证据/追踪复核，不构成实现，不判定 G1，不修改任务书与架构文档。§1–§6 的历史日期、口径与结论全部保留，本章只在其上增加当前实现状态边界。核对基线为已审 PR19 实际头 `437bd53ca8771764d62ef75226b73efded2baabd`（独占工作树 `wt/v5-traceability-current`）；accepted 依据仅取自该基线内已复核验收文档、引入提交与实际 C# 源码，飞行中接收树与未推送候选一律不计入。
+**性质与边界**：本章为证据/追踪复核，不构成实现，不判定 G1，不修改任务书与架构文档。§1–§6 的历史日期、口径与结论全部保留，本章只在其上增加当前实现状态边界。核对基线为已审 PR19 实际头 `437bd53ca8771764d62ef75226b73efded2baabd`（独占工作树 `wt/v5-traceability-current`）；accepted 依据仅取自该基线内已复核验收文档、引入提交与实际 C# 源码，飞行中接收树与未推送候选一律不计入。初版（提交 f724262）经独立注入复核发现校验器 5 处放行漏洞与 3 处数据错误（详见 7.5），本章为返修后版本：五类注入负例全部转为强制失败，自测入 git 可从干净检出复跑。
 
 ### 7.1 新增产物
 
-- `doc/v5-重构/implementation-v1.json`（schema `v5-implementation-trace-v1`）：266 个 V4 生产源码文件逐一唯一行，含 V4 符号、计划归属、V5 目标模块、状态、责任任务、依赖、缺口、V5/测试/验收锚点、黄金样本引用。SHA256 `4739d7de1f3b140b53b524e6415deea552424c2df062de64bfe282304272106b`。
-- `tools/traceability/validate-implementation-trace.ps1`：只读机器校验器（PowerShell 5.1 兼容，无安装、无全局改动）。SHA256 `61e29346fe4db5af25c4c0c3aacfe002e04eb89f8860d277ee1b4115907f6568`。
+- `doc/v5-重构/implementation-v1.json`（schema `v5-implementation-trace-v1`）：266 个 V4 生产源码文件逐一唯一行。每行含：V4 符号（校验器强制为该行真实源文件内的真实声明，兼容 Kotlin 顶层/成员/扩展函数、typealias、属性等源码形态）；计划归属 `planTarget`（逐字引用 `DEEPSEEK-V5-MODULE-MIGRATION-PLAN.md` §1.3 逐文件表"V5 去向"列原文，266/266 机械重提，返修中修正 156 处非忠实转录）；V5 目标模块 `v5Targets`（受控词表）；状态、责任任务与依赖（对照任务书真实任务 ID；依赖语义与门槛反循环见文件头 `dependenciesSemantics` 与 `gatePrerequisites`）；缺口、V5/测试/验收锚点、黄金样本引用。SHA256 `036d4d0ec797d02ccaccfd42388fafbb5644490b07f390d8c1f6c35354d4e5b2`。
+- `tools/traceability/validate-implementation-trace.ps1`：只读机器校验器（PowerShell 5.1 兼容，无安装、无全局改动）。返修后新增强制项：全字段类型化 schema（必填非空、唯一稳定 ID、受控 V5 模块词表）；锚点路径规范性（拒绝绝对路径/反斜杠/`..` 逃逸）与类别匹配（V5 锚点必须 `dotnet/src/` 且 git-tracked、测试锚点必须测试源目录且 tracked、验收文档必须 `doc/` 下、黄金样本必须 `tests/v5-golden/` 下）；锚点符号必须真实声明；`v4Symbol` 必须在该行 V4 源文件内真实声明；验收提交必须真实存在、为冻结基线祖先、且文档在该提交中存在（`git cat-file` 三重核验，提交号格式本身不再构成证据）；责任任务/依赖必须对照任务书标题真实 ID，G0–G5 前置集由任务书标题结构机械推导并拒绝门槛循环。SHA256 `56a77cc8fe1364f31a25aebb38403f286b62ab9ea6bfb0dcf30942efde392c51`。
+- `tools/tests/VerifyV5Traceability.Tests.ps1`：入 git 的可复现自测（1 正例 + 21 负例），在真实仓库与真实矩阵的 TEMP 副本上注入运行，仓库本身不被修改；负例要求 exit=1 且命中预期 FAIL 标记。SHA256 `86d03b3e777e9fcb30c5faebc461bd76e53d7fa2cad8eff54da66ee161a5414a`。
+- **路径调整理由**：初版自测仅存于 gitignored 的 `artifacts/`（干净检出无法复跑），返修按要求交付至 `tools/tests/`；实现 JSON、校验器与本章路径不变，未扩大任何其他文件范围。
 
 ### 7.2 机械核对结果
 
-- 分母核清：§1.3 计划清单 266 条 = `git ls-files` 七模块 `src/main/*.kt` 实际 266 条，对射核验无缺失、无重复。§1.1 的"266 主源码"口径在当前基线仍然成立。
+- 分母核清：§1.3 计划清单逐文件表 266 条 = `git ls-files` 七模块 `src/main/*.kt` 实际 266 条，对射核验无缺失、无重复（逐模块 engine 114 / protocol 39 / server 27 / client 20 / presentation 63 / lwjgl3 2 / android 1，与计划书各节标注数完全一致）。§1.1 的"266 主源码"口径在当前基线仍然成立。
 - 六个 V5 导出器测试（`engine/src/test` 下 `V5*GoldenExporterTest`）为黄金样本提取工具，属测试不属生产，不计入 266 分母——回应"新导出器测试是否在 266 之内"的疑问：不在。
-- 锚点核验：395 个锚点（V5 C# `路径#符号`、V4 测试 `路径#类名`、验收 `文档@提交`）逐一核验文件存在且符号以类型声明存在，0 失败。
+- 锚点核验（返修后口径）：V5 C# 锚点逐条核验路径规范性、`dotnet/src/` 类别、git-tracked、文件存在且符号以类型声明存在；V4 测试锚点逐条核验测试目录类别、tracked、类声明存在；395 个锚点 0 失败。验收锚点 9 个不同 (文档,提交) 对逐条通过三重核验：提交真实存在、为冻结基线 437bd53 祖先、文档在该提交中存在。
+- 返修数据修正（均为行级修正，不放宽校验）：SRV-019 `TcpOutboundQueue` 由错误的"客户端 Outbox/P5.4a 承接"改写为实际 V4 行为（服务端每连接出站双队列、控制帧整帧边界优先 UC-L10、慢端 SLOW_CONSUMER、全局字节预算联动、单轮有界写出 UC-L05）与正确 V5 责任（服务端 WSS 发送侧未建，pending P5.1，`Mahjong.TableService`；客户端持久 Outbox 不承接服务端发送队列/背压/字节预算）；清除 24 行"责任任务本身是 G1 前置却依赖 G1"的门槛循环（P3.2×11→P3.1+P0.2、P1.3×7→P1.1、P2.1×3→G0、P1.5×2→P1.1、P1.2×1→P1.1，依据任务书各任务"依赖"条目）。
 
 ### 7.3 现状统计（由行实算，校验器强制与声明一致）
 
 | 状态 | 行数 | 说明 |
 |---|---|---|
-| accepted-component | 21 | 仅组件级：P1.1 物理黄金范围、P1.4 三绝技域/账本/经济、P3.1 串行邮箱、P3.2 投影组件、P3.3 计时/控制、P5.3 大厅、P5.4a 客户端通道等 |
+| accepted-component | 21 | 由行实算：engine 20（P1.1 物理黄金 4、P1.4 三绝技域/账本/经济 9、P3.3 计时/控制 5、P2.1 SeatControlView 1、P3.4 ControllerRegistry 1）+ server 1（P3.1 HostDispatch）。P5.3 大厅、P5.4a 客户端通道组件虽有验收记录，但其 V4 行级映射未全量对齐，全部计为 partial，不在本行 |
 | partial | 126 | 有 C# 对应物/组件承接但无独立验收或映射未完成 |
-| pending | 98 | C# 未建，全部带责任任务与依赖 |
-| replaced-by-v5-contract | 20 | MJ-TCP/1 链路与进程内回执/outbox 由 Wire v1/持久回执替换，不迁移 |
+| pending | 99 | C# 未建，全部带责任任务与依赖（含返修改写的 SRV-019 服务端出站队列） |
+| replaced-by-v5-contract | 19 | MJ-TCP/1 链路与进程内回执由 Wire v1/持久回执替换，不迁移（protocol 8、server 8、client 2、engine 1）；服务端出站队列语义不在其列（见 7.2 SRV-019 修正） |
 | platform-blocked | 1 | Android 真机/IL2CPP（P6.2） |
 
 逐模块：engine 114 / protocol 39 / server 27 / client 20 / presentation 63 / lwjgl3 2 / android 1。
@@ -319,7 +322,7 @@
 3. **AI**：ai-v1 为记录意图回放（`V5-P1.6-AI-GOLDEN.md@b49911c` + 独立复核@437bd53）；不宣称全量策略覆盖。策略集、能力注册、启发式未移植（partial，责任 P1.6）。
 4. **ApplicationCoordinator（3,336 行）与 TableAuthority（2,828 行）**：不做 1:1 搬运；串行化与部分语义由 P3.1/P3.4 组件承接，拆分未完成（partial）。
 5. **规则特况**：立直/副露/振听/双响三响裁决 C# 未建（`RoundActionKind` 经 P0.2 裁决明确排除这些动作，责任归规则层 P1.3）；42 役逐役差分未验收（D-01 口径以 V4 代码 42 项为准）。
-6. **传输**：MJ-TCP/1 是 V4 唯一生产传输；V5 以 WebSocket + Wire v1 替换，`protocol/transport/tcp` 与 `server/tcp` 共 20 行 replaced-by-v5-contract。服务端 WSS 宿主源码不在本基线树内，宿主装配责任 P5.1，G1 仍 BLOCKED（`V5-P31-WSS-INTEGRATION-20261024.md`）。无任何"删除 V4"或"回退旧协议"语义。
+6. **传输**：MJ-TCP/1 是 V4 唯一生产传输；V5 以 WebSocket + Wire v1 替换，replaced-by-v5-contract 共 19 行。服务端出站队列、慢消费者背压与字节预算语义**不是**"被契约替换"——`TcpOutboundQueue` 行为 pending P5.1（服务端 WSS 发送侧未建；客户端持久 Outbox 不承接服务端发送队列）。服务端 WSS 宿主源码不在本基线树内，宿主装配责任 P5.1，G1 仍 BLOCKED（`V5-P31-WSS-INTEGRATION-20261024.md`）。无任何"删除 V4"或"回退旧协议"语义。
 7. **回执/恢复**：V5 单一持久回执替换 V4 进程内回执与在飞表；`ITableStore`/`IReceiptStore` 端口未交付（P3.4/P5.2）。
 8. **本地宿主**：`Mahjong.LocalHost` 为空 csproj（预构建 DLL 与空源码工程不一致、已过期）；进程内宿主与 TableService 装配分别待 P4.1/P5.1。
 9. **平台阻塞保持记录**：Unity Editor 许可证（exit=198）、Windows/Android IL2CPP 缺 MSVC/Windows SDK/NDK、iOS/macOS 与真机弱网未实测（`V5-1-AOT-REVIEW.md@e41a998`）；Unity 表现层 63 行全部 pending（P4.2–P4.4，`unity/` 无 .cs 源，仅预构建 DLL）。
@@ -327,10 +330,12 @@
 
 ### 7.5 机器校验证据
 
-- 正例（真实仓库，只读）：`validate-implementation-trace.ps1` → `tracked-main-kt=266 rows=266`，`RESULT=PASS`，exit=0（2026-10-24T07:34:25+08:00，`artifacts/traceability-20261024/work/positive-run.log`，SHA256 `c0ec3587bee06a37434060a58a572ec208796a06bc058270c4e741d18817fc8d`）。
-- 负例自测（独占 TEMP 沙箱 git 仓库，本地提交身份，不动全局配置）：1 正例 + 10 负例全部符合预期（负例均 exit=1 且命中预期 FAIL 标记）：缺行、重复源行、未知状态、伪造锚点路径、伪造锚点符号（存在引用但无类型声明）、pending 无 gap/责任、坏 JSON、统计造假（反硬编码全过）、未跟踪多余行、accepted-component 无验收锚点。原始日志 SHA256 `1551b09c69cd07dc347d8d931b7ca99c5479a817e89e34f4a9112fc435c5d755`（`artifacts/traceability-20261024/work/selftest/selftest-raw.log`）。
-- 校验器核验项：真实 tracked 枚举对射（缺行/多余/重复→exit 1）、仅 main+仅 .kt 卫生、受控枚举（模块/状态/责任任务/依赖）、锚点路径与符号声明真实存在、验收提交号格式、golden 样本存在、非 accepted 状态必须有 gap+责任、分母与逐模块/逐状态统计必须与行实算一致。证据明细：`artifacts/traceability-20261024/EVIDENCE.md`。
+- 正例（真实仓库，只读）：`powershell -NoProfile -ExecutionPolicy Bypass -File tools/traceability/validate-implementation-trace.ps1 -RepoRoot .` → `tracked-main-kt=266 rows=266`，`RESULT=PASS`，**exit=0**（2026-10-24T08:05:18+08:00，`artifacts/traceability-20261024/work/positive-run.log`，SHA256 `e217f8bdb39475a5e0049900b38ba33ef289ab671aafd323e8009078b72baff3`）。
+- **返修前漏洞证明（独立复核）**：初版校验器对 5 个注入负例全部错误 `RESULT=PASS`（外部复核日志，`artifacts/codex-traceability-review-20261024/*.log`）：伪造 v4Symbol、伪造验收提交（deadbeef）、删除锚点 symbol、删除 v5Targets+planTarget、伪造任务 P999.9。返修后同一批输入全部 **exit=1** 且命中专属标记：`v4-symbol-not-declared` / `acceptance-commit-not-in-repo` / `v5-anchor-symbol-missing` / `v5-targets-missing`+`plan-target-missing` / `responsible-task-not-in-taskbook`（`artifacts/traceability-20261024/work/recheck-*.log`）。
+- **新增类别先失败后通过证明**：门槛循环（`gate-dependency-cycle`）、非祖先验收提交（`acceptance-commit-not-ancestor-of-baseline`）、未知 V5 模块（`unknown-v5-target-module`）在初版校验器均 exit=0（漏洞），返修后同一输入 exit=1 命中标记（`artifacts/traceability-20261024/work/mut-n16/n19/n21` 及 `*-new.log`）。
+- 负例自测（入 git，可从干净检出复跑）：`powershell -NoProfile -ExecutionPolicy Bypass -File tools/tests/VerifyV5Traceability.Tests.ps1` → **22/22 案例通过（1 正例 PASS + 21 负例全部 exit=1 且命中预期标记），SELFTEST=PASS，exit=0**（2026-10-24，日志 `artifacts/traceability-20261024/work/selftest-v2-raw.log`，SHA256 `627a1ac6fd86d24f4dc68aae42ac333b27969f062e1306a284872cc6d85f967d`）。负例覆盖：缺行、重复源行、未知状态、伪造锚点路径、伪造锚点符号、pending 无 gap/责任、坏 JSON、统计造假、未跟踪多余行、accepted 无验收锚点、伪造 v4Symbol、伪造验收提交、缺锚点 symbol、缺 V5 归属、伪造任务/依赖 ID、门槛依赖循环、路径逃逸、锚点类别错配、非祖先验收提交、文档缺在于提交、未知 V5 目标模块。
+- 校验器核验项：真实 tracked 枚举对射（缺行/多余/重复→exit 1）、仅 main+仅 .kt 卫生、全字段类型化 schema（必填非空/唯一 ID/受控模块词表）、模块与状态受控枚举、责任任务/依赖对照任务书真实标题 ID + 门槛反循环（前置集由任务书标题结构机械推导并与 JSON 头 `gatePrerequisites` 交叉核对）、锚点路径规范性 + 类别 + tracked + 符号真实声明、验收提交存在性/祖先性/文档在提交存在三重核验、v4Symbol 行内真实声明（Kotlin 全形态）、golden 存在且受控、非 accepted 状态必须有 gap+责任、分母与逐模块/逐状态统计必须与行实算一致。证据明细：`artifacts/traceability-20261024/EVIDENCE.md`。
 
 ### 7.6 结论
 
-P0.1 的"矩阵每行有源码/测试证据、V5 归属、状态；无待定而缺责任任务"在当前基线以 `implementation-v1.json` + 校验器方式达成机械可复核形态；同时为 G1 提供不漏项证据：266 个 V4 生产行为面全部有显式状态与未完成责任，无批量"已完成"宣称。本章不改变 §6 的交付边界，也不解除 §5 表中任何未决项。
+P0.1 的"矩阵每行有源码/测试证据、V5 归属、状态；无待定而缺责任任务"在当前基线以 `implementation-v1.json` + 校验器 + 入 git 自测的方式达成机械可复核形态：锚点、验收证据链、责任任务、依赖语义、统计口径全部受机器强制，独立注入的伪造输入不再被放行。同时为 G1 提供不漏项证据：266 个 V4 生产行为面全部有显式状态与未完成责任，无批量"已完成"宣称。本章不改变 §6 的交付边界，也不解除 §5 表中任何未决项。
