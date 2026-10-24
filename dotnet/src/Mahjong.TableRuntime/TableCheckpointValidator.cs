@@ -39,6 +39,7 @@ namespace Mahjong.TableRuntime
             }
             catch (Exception exception) when (
                 exception is InvalidDataException ||
+                exception is IOException ||
                 exception is ArgumentException ||
                 exception is InvalidOperationException ||
                 exception is TableProjectionException)
@@ -66,6 +67,7 @@ namespace Mahjong.TableRuntime
                         "A zero-version checkpoint cannot carry committed history/bindings.");
                 }
 
+                ValidateSidePayloads(history, checkpoint);
                 return;
             }
 
