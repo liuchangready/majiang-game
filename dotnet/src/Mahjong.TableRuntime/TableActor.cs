@@ -2590,7 +2590,12 @@ namespace Mahjong.TableRuntime
                 }
 
                 IReadOnlyList<TableCommandBinding> extraBindings =
-                    TableCommandBindingsCodec.Build(extraHistory);
+                    extraHistory.Count == 0
+                        ? Array.Empty<TableCommandBinding>()
+                        : new[] { new TableCommandBinding(
+                            stateVersion.Value,
+                            extraHistory.Count,
+                            round.SourceFingerprint) };
                 for (int i = 0; i < extraBindings.Count; i++)
                 {
                     commandBindings.Add(extraBindings[i]);

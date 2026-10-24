@@ -508,6 +508,7 @@ namespace Mahjong.TableRuntime
 
             int replayedEvents = 0;
             var consumedSeats = new HashSet<int>();
+            var effectiveBindings = new List<TableCommandBinding>(checkpointBindings);
             try
             {
                 for (ulong version = checkpoint.StateVersion.Value + 1; version <= state.StateVersion.Value; version++)
@@ -590,6 +591,10 @@ namespace Mahjong.TableRuntime
                     }
 
                     round = next;
+                    effectiveBindings.Add(new TableCommandBinding(
+                        version,
+                        committed.Count,
+                        next.SourceFingerprint));
                     replayedEvents += committed.Count;
                 }
             }
@@ -911,7 +916,7 @@ namespace Mahjong.TableRuntime
                 effectiveFacts,
                 fullHistory,
                 strictHistory: true,
-                commandBindings: checkpointBindings);
+                commandBindings: effectiveBindings);
 
             var report = new TableRecoveryReport(
                 roomId,

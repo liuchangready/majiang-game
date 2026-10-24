@@ -73,7 +73,9 @@ namespace Mahjong.TableRuntime.Tests
                     checkpoint.CommittedFactsPayload, checkpoint.CommittedFactsPayloadSha256,
                     checkpoint.CreatedAtUtcMs, checkpoint.BootId, checkpoint.SchemaVersion,
                     checkpoint.TimingVersion, checkpoint.CapturedMonotonicMillis,
-                    payload, TablePayloadSha256.Compute(payload)));
+                    payload, TablePayloadSha256.Compute(payload),
+                    checkpoint.CommittedCommandBindingsPayload,
+                    checkpoint.CommittedCommandBindingsPayloadSha256));
             }
 
             TableRecoveryResult result = await h.Actor.RecoverFromStoreAsync(TestContext.Current.CancellationToken);

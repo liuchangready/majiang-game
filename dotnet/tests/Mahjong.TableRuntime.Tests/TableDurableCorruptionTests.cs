@@ -311,7 +311,9 @@ namespace Mahjong.TableRuntime.Tests
                 good.TimingVersion,
                 good.CapturedMonotonicMillis,
                 good.CommittedHistoryPayload,
-                good.CommittedHistoryPayloadSha256);
+                good.CommittedHistoryPayloadSha256,
+                good.CommittedCommandBindingsPayload,
+                good.CommittedCommandBindingsPayloadSha256);
         }
 
         private static TableCheckpoint WithCommandBindings(TableCheckpoint good, byte[] payload)
@@ -369,7 +371,9 @@ namespace Mahjong.TableRuntime.Tests
                 good.TimingVersion,
                 good.CapturedMonotonicMillis,
                 payload,
-                TablePayloadSha256.Compute(payload));
+                TablePayloadSha256.Compute(payload),
+                good.CommittedCommandBindingsPayload,
+                good.CommittedCommandBindingsPayloadSha256);
         }
 
         private static TableCheckpoint WithStatePayload(TableCheckpoint good, byte[] payload)
@@ -393,7 +397,13 @@ namespace Mahjong.TableRuntime.Tests
                 good.CommittedFactsPayloadSha256,
                 good.CreatedAtUtcMs,
                 good.BootId,
-                good.SchemaVersion);
+                good.SchemaVersion,
+                good.TimingVersion,
+                good.CapturedMonotonicMillis,
+                good.CommittedHistoryPayload,
+                good.CommittedHistoryPayloadSha256,
+                good.CommittedCommandBindingsPayload,
+                good.CommittedCommandBindingsPayloadSha256);
         }
 
         private static TableCheckpoint WithCheatPayload(TableCheckpoint good, byte[] payload)
@@ -417,7 +427,13 @@ namespace Mahjong.TableRuntime.Tests
                 good.CommittedFactsPayloadSha256,
                 good.CreatedAtUtcMs,
                 good.BootId,
-                good.SchemaVersion);
+                good.SchemaVersion,
+                good.TimingVersion,
+                good.CapturedMonotonicMillis,
+                good.CommittedHistoryPayload,
+                good.CommittedHistoryPayloadSha256,
+                good.CommittedCommandBindingsPayload,
+                good.CommittedCommandBindingsPayloadSha256);
         }
     }
 }
