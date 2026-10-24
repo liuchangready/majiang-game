@@ -1,6 +1,6 @@
-# V5 P3.4 回执、租约和恢复端口合同交付（第 14 轮返修）
+# V5 P3.4 回执、租约和恢复端口合同交付（第 15 轮返修）
 
-- 状态：**第 14 轮本地返修完成，等待 caller 第 14 轮独立验收**。不是 G1/G5，不是 V5 全链通过；V4 仍是唯一生产架构。
+- 状态：**第 15 轮本地返修完成，等待 caller 第 15 轮独立验收**。不是 G1/G5，不是 V5 全链通过；V4 仍是唯一生产架构。
 - 唯一工作树：`D:/majiang-wt/p34-receipts`（分支 `wt/v5-p34-receipts`）。
 - 冻结基线：`daeb19a64951174426924026fe974c8ae5caacd9`。
 - 第 1 轮实现：`9e909ea6b7dfb411b1e2511fa4f0f9d05307ba38`。
@@ -17,17 +17,18 @@
 - 第 12 轮实现：`dfbb184505deac51f5afb8c77486bf0d934d2769`（`fix(v5-p34): validate zero-version side payloads and truncation`）。
 - 第 13 轮实现：`37b216121e560e21338dc47672cf2c8d8c2c8127`（`fix(v5-p34): preserve required cheat ledger at save`）。
 - 第 14 轮实现：`28c04ddd5d624aefa737e414cd69ccdb94f400eb`（`fix(v5-p34): bind checkpoint room and timing origin`）。
+- 第 15 轮实现：`b3e41b5860f2e7fbea2855d91c1ac706377d48e5`（`fix(v5-p34): bind accepted timing journal to checkpoint`）。
 - 本文件提交为最终本地 HEAD；未 push、未建 PR、未触发 CI、未转派。
-- caller 的 `CodexP34ReviewProbes.cs`、`CodexP34Round2ReviewProbes.cs`、`CodexP34Round3ReviewProbes.cs`、`CodexP34Round4ReviewProbes.cs`、`CodexP34Round5ReviewProbes.cs`、`CodexP34Round6ReviewProbes.cs`、`CodexP34Round7ReviewProbes.cs`、`CodexP34Round8ReviewProbes.cs`、`CodexP34Round9ReviewProbes.cs`、`CodexP34Round10ReviewProbes.cs`、`CodexP34Round11ReviewProbes.cs`、`CodexP34Round12ReviewProbes.cs`、`CodexP34Round13ReviewProbes.cs` 均保留、纳入提交并通过；未删除或弱化探针。
+- caller 的 `CodexP34ReviewProbes.cs`、`CodexP34Round2ReviewProbes.cs`、`CodexP34Round3ReviewProbes.cs`、`CodexP34Round4ReviewProbes.cs`、`CodexP34Round5ReviewProbes.cs`、`CodexP34Round6ReviewProbes.cs`、`CodexP34Round7ReviewProbes.cs`、`CodexP34Round8ReviewProbes.cs`、`CodexP34Round9ReviewProbes.cs`、`CodexP34Round10ReviewProbes.cs`、`CodexP34Round11ReviewProbes.cs`、`CodexP34Round12ReviewProbes.cs`、`CodexP34Round13ReviewProbes.cs`、`CodexP34Round14ReviewProbes.cs` 均保留、纳入提交并通过；未删除或弱化探针。
 
-## 1. 第 14 轮修复结论
+## 1. 第 15 轮修复结论
 
 |缺陷|修复|
 |---|---|
-|R22 CommitControlAsync 按 checkpoint.RoomId 查 carryover、按 request.RoomId 安装|`CommitControlAsync` 在 mutation 前要求 `checkpoint.RoomId == request.RoomId`，并用 `request.RoomId` 读取/保护旧 ledger；`CommitAsync` accepted checkpoint 同样要求 room 一致并使用 request 房间。`SaveCheckpointAsync` 继续使用 fence room。|
-|R22 恢复层接受错房间 checkpoint|`TableRecoveryService` 在加载 checkpoint/state 后校验 `checkpoint.RoomId == fenced roomId`；不匹配 fail closed。|
-|R23 外层 CapturedMonotonicMillis 与 timing payload 不一致仍保存|`TableCheckpointValidator.ValidateSidePayloads` 要求 timing payload 的 `CapturedAtUtcMs/CapturedMonotonicMillis/BootId` 分别等于 checkpoint 的 `CreatedAtUtcMs/CapturedMonotonicMillis/BootId`，并继续校验 RoundId；Save/Commit/Control 在 mutation 前拒绝。|
-|测试证据|`CodexP34Round13ReviewProbes` 6 case：control foreign room/erase ledger 4 组合；timing origin corrupt/合法 2 组合；失败均保留旧 checkpoint/ledger/control/timing/CommitCount 且旧恢复点仍 recover。|
+|R24 accepted 批次独立 request.Timing 与 checkpoint.TimingPayload 可不同原点|`CommitAsync` accepted 路径在 staging/apply 前调用 `ValidateAcceptedTiming`：将 request.Timing 用 codec 重新编码，必须与 checkpoint.TimingPayload 字节一致；覆盖 boot/UTC/monotonic/round/reserve/decisions/epoch 的完整时钟状态，不能只比 TimingVersion。|
+|R24 accepted 无 checkpoint 可用空/错 round 绕过|request.Timing.RoundId 必须等于 decoded NextStatePayload 的 round；空 round 仅允许 committed next state 已终局（clock reset）的可信条件，非终局拒绝。|
+|R24 player/internal 共用路径|校验位于 `CommitAsync` accepted 公共路径，玩家/internal 提交均适用；失败在 state/events/journal/receipt/outbox/checkpoint/facts/timing/control/lease/CommitCount mutation 前。|
+|测试证据|`CodexP34Round14ReviewProbes` 2 case：合法 accepted 批次恢复成功；仅 request.Timing.CapturedMonotonicMillis +60000 的候选 Failed，state/timing/events/CommitCount 不变且旧恢复点仍 recover。|
 
 ## 2. 历史轮次修复结论
 
@@ -229,14 +230,16 @@ Decode 强制 round/state 匹配当前恢复目标、public/private 各 4、无�
 | caller `*CodexP34Round11ReviewProbes`（9 cases） | **9 passed / 0 failed / 0 skipped** |
 | caller `*CodexP34Round12ReviewProbes`（2 cases） | **2 passed / 0 failed / 0 skipped** |
 | caller `*CodexP34Round13ReviewProbes`（6 cases） | **6 passed / 0 failed / 0 skipped** |
-| `dotnet test .../Mahjong.TableRuntime.Tests.csproj -c Release` | **283 passed / 0 failed / 0 skipped**（原 168 + 115，含 48 探针/case） |
+| caller `*CodexP34Round14ReviewProbes`（2 cases） | **2 passed / 0 failed / 0 skipped** |
+| `dotnet test .../Mahjong.TableRuntime.Tests.csproj -c Release` | **285 passed / 0 failed / 0 skipped**（原 168 + 117，含 50 探针/case） |
 | `dotnet test dotnet/Mahjong.sln -c Release` | **575 passed / 0 failed / 0 skipped**（Domain 322、Contracts 104、Client 132、Ai 17） |
 | `dotnet build dotnet/Mahjong.sln -c Release` | **0 warnings / 0 errors** |
 | `git diff --check daeb19a..HEAD` | **exit 0** |
 
 新增/调整覆盖：
 
-- R22/R23：`CodexP34Round13ReviewProbes` 的 control foreign-room/erase-ledger 组合与 timing-origin corrupt/合法组合；失败保留旧 checkpoint/ledger/control/timing/CommitCount 且旧恢复点仍 recover。
+- R24：`CodexP34Round14ReviewProbes` 的 accepted checkpoint + request.Timing 同 origin/篡改 origin 两 case；篡改候选 Failed，state/timing/events/CommitCount 不变且旧恢复点仍 recover。
+- R22/R23：`CodexP34Round13ReviewProbes` 的 control foreign-room/erase-ledger 组合与 timing-origin corrupt/合法组合；失败保留旧恢复点。
 - R21：`CodexP34Round12ReviewProbes` zero/nonzero；缺失 cheat ledger 的候选保存被拒，旧恢复点保留。
 - R19/R20：`CodexP34Round11ReviewProbes` 的 zero/nonzero × none/control-version/truncated control/cheat/facts/timing；全部返回 Failed、无异常、旧恢复点仍 recover。
 - R18：`CodexP34Round10ReviewProbes` 的 none/control-version/cheat-payload/facts-payload；无效 side payload 保存被拒，旧恢复点保留。
@@ -256,14 +259,14 @@ Decode 强制 round/state 匹配当前恢复目标、public/private 各 4、无�
 - R4：`RecoveryInstallsTypedCheatLedgerAndLatestCommittedFacts`、`FullHistoryIsInstalledEvenWhenSnapshotWindowIsZero`、`RecoveryInstallsStrictWireBaseline...`、`MissingCommittedFactsIsRefused`、`TamperedProjectionFactsAreRefused`、`UnmodeledPrivateCheatSubstateIsRefused`。
 - 既有回执/scope/租约/事务/fence 测试继续通过。
 
-## 6. SHA-256（第 14 轮实现）
+## 6. SHA-256（第 15 轮实现）
 
 | 文件 | SHA-256 |
 |---|---|
 | `dotnet/src/Mahjong.Domain/DecisionClock.cs` | `75f4314a580155f1b27a28a5db63601a7d78a1b9d8a4fc729b3570fe1e2dfaec` |
 | `dotnet/src/Mahjong.TableRuntime/TableActor.cs` | `827a3088dd885010932cff4ca66157317c8ca1cd7decbd0a1b6562cb72409d80` |
 | `dotnet/src/Mahjong.TableRuntime/TableDurableContracts.cs` | `a4b8f30f532ce1b949bae6152a39edef99d0c527c9d26e33b490d528c7c5c375` |
-| `dotnet/src/Mahjong.TableRuntime/InMemoryTableStore.cs` | `53f1282aa0085f647cbd2c0a53a633da723e431849e6c98ff08de623e054ff21` |
+| `dotnet/src/Mahjong.TableRuntime/InMemoryTableStore.cs` | `b17b8409817ba7f98a4cfb07f9ef3d44ad111fe334c0a5b952f1d45dd8f879f2` |
 | `dotnet/src/Mahjong.TableRuntime/TableCheckpointValidator.cs` | `f01435562d6a1c8e88d1e886671f23e45a9f428cc6ee65dc8e4dd277acbc8817` |
 | `dotnet/src/Mahjong.TableRuntime/TableCheckpointCodecs.cs` | `d2783a6c08ffa4e35b741b92444755d3d69e4e0ab2d814bcd236c0897b5d1a9c` |
 | `dotnet/src/Mahjong.TableRuntime/TableControlContracts.cs` | `dc89595468c0802545a270c58133d121c11f5eb5fb72f375339739c2596ec498` |
@@ -291,8 +294,9 @@ Decode 强制 round/state 匹配当前恢复目标、public/private 各 4、无�
 | `dotnet/tests/.../CodexP34Round11ReviewProbes.cs` | `39ccb7ed05f304e01452f84d9b6e50d5937b0ddc4d5c2f80c1271acc9d52f967` |
 | `dotnet/tests/.../CodexP34Round12ReviewProbes.cs` | `402212ee40106dab5ad637ad16f53e02f30d7ad4514113041ef5a68764879c52` |
 | `dotnet/tests/.../CodexP34Round13ReviewProbes.cs` | `a573b542b35f543e39e945d80522002bef7ff104a58b9f4c9f1e45434528fdd6` |
+| `dotnet/tests/.../CodexP34Round14ReviewProbes.cs` | `3a6c3a1700d959257d51e3e7012d2c1d0265fee17dc0ca2cab8cc7b0fa8cca22` |
 
-第 14 轮实现提交：4 文件，`148 insertions(+), 2 deletions(-)`。未新增项目/包引用，未修改 `Mahjong.sln`、任务书、矩阵、黄金 fixtures、统一 verifier 或 CI。
+第 15 轮实现提交：2 文件，`121 insertions(+)`。未新增项目/包引用，未修改 `Mahjong.sln`、任务书、矩阵、黄金 fixtures、统一 verifier 或 CI。
 
 ## 7. NOT_RUN 与边界
 
@@ -304,6 +308,6 @@ Decode 强制 round/state 匹配当前恢复目标、public/private 各 4、无�
 
 ## 8. 交接
 
-- 第 14 轮实现 HEAD：`28c04ddd5d624aefa737e414cd69ccdb94f400eb`。
+- 第 15 轮实现 HEAD：`b3e41b5860f2e7fbea2855d91c1ac706377d48e5`。
 - 本文件提交为最终本地 HEAD；工作树 clean。
-- 等待 caller 第 14 轮独立验收；caller 负责唯一 PR19 `feat/v5-1-integration -> v5` 及 merge-back。不自行宣告 G1/G5。
+- 等待 caller 第 15 轮独立验收；caller 负责唯一 PR19 `feat/v5-1-integration -> v5` 及 merge-back。不自行宣告 G1/G5。
