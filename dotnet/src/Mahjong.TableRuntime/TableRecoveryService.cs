@@ -329,6 +329,13 @@ namespace Mahjong.TableRuntime
                     "No initial checkpoint exists; recovery never opens a fresh game.");
             }
 
+            if (!string.Equals(checkpoint.RoomId, roomId, StringComparison.Ordinal))
+            {
+                return TableRecoveryResult.Failed(
+                    TableRuntimeReasonCode.CheckpointInvalid,
+                    "Checkpoint room id does not match the fenced recovery room.");
+            }
+
             if (checkpoint.SchemaVersion != TableCheckpointFactory.SchemaVersion)
             {
                 return TableRecoveryResult.Failed(

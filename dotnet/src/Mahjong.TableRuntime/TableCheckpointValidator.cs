@@ -109,6 +109,14 @@ namespace Mahjong.TableRuntime
 
             TableTimingCheckpoint timing = TableTimingCheckpointCodec.Decode(checkpoint.TimingPayload);
             RoundRecoveryState captured = RoundRecoveryCodec.Decode(checkpoint.StatePayload);
+            if (timing.CapturedAtUtcMs != checkpoint.CreatedAtUtcMs ||
+                timing.CapturedMonotonicMillis != checkpoint.CapturedMonotonicMillis ||
+                !string.Equals(timing.BootId, checkpoint.BootId, StringComparison.Ordinal))
+            {
+                throw new InvalidDataException(
+                    "Timing payload boot/UTC/monotonic origin does not match checkpoint metadata.");
+            }
+
             if (timing.RoundId.Length > 0 &&
                 !string.Equals(timing.RoundId, captured.Spec.RoundId, StringComparison.Ordinal))
             {

@@ -678,6 +678,14 @@ namespace Mahjong.TableRuntime
                 throw new ArgumentNullException(nameof(checkpoint));
             }
 
+            if (!string.Equals(checkpoint.RoomId, request.RoomId, StringComparison.Ordinal))
+            {
+                return new ValueTask<TableDurableCommitResult>(
+                    TableDurableCommitResult.Failed(
+                        TableRuntimeReasonCode.CheckpointInvalid,
+                        "Control checkpoint room does not match the fenced request room."));
+            }
+
             lock (_gate)
             {
                 if (!_rooms.Contains(request.RoomId))
@@ -734,7 +742,7 @@ namespace Mahjong.TableRuntime
                         TableDurableCommitResult.Failed(validationReason, validationDetail));
                 }
 
-                TableDurableCommitResult? cheatCarryover = ValidateCheatCarryover(checkpoint.RoomId, checkpoint);
+                TableDurableCommitResult? cheatCarryover = ValidateCheatCarryover(request.RoomId, checkpoint);
                 if (cheatCarryover != null)
                 {
                     return new ValueTask<TableDurableCommitResult>(cheatCarryover);
@@ -828,6 +836,15 @@ namespace Mahjong.TableRuntime
             if (request == null)
             {
                 throw new ArgumentNullException(nameof(request));
+            }
+
+            if (request.Checkpoint != null &&
+                !string.Equals(request.Checkpoint.RoomId, request.RoomId, StringComparison.Ordinal))
+            {
+                return new ValueTask<TableDurableCommitResult>(
+                    TableDurableCommitResult.Failed(
+                        TableRuntimeReasonCode.CheckpointInvalid,
+                        "Commit checkpoint room does not match the fenced request room."));
             }
 
             lock (_gate)
@@ -1005,7 +1022,7 @@ namespace Mahjong.TableRuntime
                             }
 
                             TableDurableCommitResult? cheatCarryover =
-                                ValidateCheatCarryover(checkpoint.RoomId, checkpoint);
+                                ValidateCheatCarryover(request.RoomId, checkpoint);
                             if (cheatCarryover != null)
                             {
                                 return new ValueTask<TableDurableCommitResult>(cheatCarryover);
