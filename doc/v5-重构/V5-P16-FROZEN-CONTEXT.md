@@ -141,3 +141,61 @@ V4 仍是唯一生产架构；G1 仍 **BLOCKED**，G5 **NOT_RUN**。
 - 完整 P1.6、ENG-018 工厂/能力注册、actor 接线、提交/物理移动/算分：**NOT_RUN**，不在本组件范围。
 - G1：**BLOCKED**（沿用基线状态）；G5：**NOT_RUN**（无发布/灰度证据）。
 - 本文件不把 V4 `Unsafe` 占位探针写成真实 `PlayerView`/`PlayerDecision` 装配验证。
+
+## 8. Caller 第 3 轮独立验收与统一 PR19 集成（2026-10-25）
+
+Bridge thread `thread_20261025_034834_4a76` 已由 caller 调用 `approve_task` 验收并归档。
+本次接受的交付 HEAD 为 `9c0692f9da8337c6a3224accbadaf889429a9256`，包括 R1/R2/R3 三个本地提交。
+相对冻结基线 `8ee22eb` 恰好六个约定路径；交付工作树干净，`git diff --check 8ee22eb..HEAD` 通过。
+caller 审查阶段/候选绑定、私有事实身份、余额门控、已知手牌、逐层复制和只读容器后，确认
+D-1-01～D-1-04、D-2-01～D-2-02 已修复，本轮未发现新增 BLOCKER/MAJOR。
+
+独立命令（在 `D:/majiang-wt/ai-frozen-context` 执行；全部 exit 0）：
+
+```powershell
+& D:/Unity/dotnet/dotnet.exe build dotnet/Mahjong.sln -c Release --no-incremental
+& D:/Unity/dotnet/dotnet.exe test dotnet/tests/Mahjong.Ai.Tests/Mahjong.Ai.Tests.csproj -c Release --no-build
+& D:/Unity/dotnet/dotnet.exe test dotnet/tests/Mahjong.Domain.Tests/Mahjong.Domain.Tests.csproj -c Release --no-build
+& D:/Unity/dotnet/dotnet.exe test dotnet/tests/Mahjong.Contracts.Tests/Mahjong.Contracts.Tests.csproj -c Release --no-build
+& D:/Unity/dotnet/dotnet.exe test dotnet/tests/Mahjong.Client.Tests/Mahjong.Client.Tests.csproj -c Release --no-build
+& D:/Unity/dotnet/dotnet.exe run --project "$env:TEMP/ai-frozen-r2-probe/Probe.csproj" -c Release
+& D:/Unity/dotnet/dotnet.exe run --project "$env:TEMP/ai-frozen-r3-probe/Probe.csproj" -c Release
+```
+
+独立 Release 非增量构建 0 warnings / 0 errors；MTP 实际执行
+AI **435** + Domain **322** + Contracts **104** + Client **132** = **993 passed / 0 failed / 0 skipped**。
+没有使用被忽略的 `--filter` 把全量计数冒充定向计数。两份探针直接引用本工作树新建的 Release DLL；
+原 8 个与扩展 6 个负例全部拒绝，合法 CONTROL 均成功，`REPRODUCED_DEFECT_CASES=0`。
+无普通 DecisionKey 的 offer 可取得本座位手牌。探针源码及断言未在本次复核中修改。
+
+隔离集成工作树为 `D:/majiang-wt/codex-frozen-integration-20261025`，从已发布 PR19 HEAD
+`aeba5ef86a32a8786312386906a5da3fee5246f4` 创建。合并提交
+`6ae31e73c8106ff5aaadc62c5e8d2a07bdd5d31a` 保留已接受的 ENG-001 能力契约和 ENG-007/011 公共历史，
+无冲突纳入上述三个交付提交；未合并仍在途的 G1 readiness 或其他未验收分支。
+在该精确合并提交重复上述 build 和四项 test：0 warnings / 0 errors，
+AI **435** + Domain **322** + Contracts **149** + Client **132** = **1,038 passed / 0 failed / 0 skipped**。
+`git diff --quiet 9c0692f HEAD -- dotnet/src/Mahjong.Ai dotnet/tests/Mahjong.Ai.Tests` exit 0，
+确认集成 AI 代码与测试完全相同。后续发布提交仅增加本节文档，无 C# 变化。
+
+所有本次 caller 日志位于 `C:/Users/sncdc/AppData/Local/Temp/codex-frozen-context-review-r3/`：
+
+| 日志 | SHA-256 |
+|---|---|
+| `build.log` | `F2F2C9920D18F911D4C2988760E42CF2E2330159E1D2D651D9C8B39ED1A2AE3F` |
+| `Ai.log` | `932A9789ECD8DD1D276BFAF96646FB3288C92483DF029B0F206E8816D197C71F` |
+| `Domain.log` | `41005D7065F78FC98E3AE787C23DE4CEF70EAED0C7B3D08BD960D25C0AC79EB9` |
+| `Contracts.log` | `269104B4427BE8482B1B385E1FE7E215A6D91A6DC53553DFBCF6C73E2D28A5BB` |
+| `Client.log` | `AB4AF135691D49227F1510CB1AE27AE296F7CB32E29C5B3539F809EB2A04368C` |
+| `probe-r1.log` | `7788F21EDEEC8BEE6AFA1308D439D623FB44E015284FD56EAD34FD9E27C66ED3` |
+| `probe-r3.log` | `7FC9020D9F25C6205D68CAE031D4222C673948D26345CBDED9EED862100F0B70` |
+| `integrated-build.log` | `57FD170A0E94FA88C6AA2BE52D8064574C969DA383DD09F2D3D87C51DAD2EC22` |
+| `integrated-Ai.log` | `CE05485029210F2A944AED4216BE2B21FB5971D690E8BF2BE615A2F3EAA0D8CB` |
+| `integrated-Domain.log` | `420E5EA7154AC053C3E46FC1E392EF2F9B991DFDF958F674CD8FE7CD832B1C94` |
+| `integrated-Contracts.log` | `698873F849B746D03B44C9A5128EF26AD409293DB223EF47BD3608EC88DF00D3` |
+| `integrated-Client.log` | `AA39E7042A817485A8FB1AB9DF83752794AA19534FAA0874E25F450EB28C125E` |
+
+本批只向既有 `feat/v5-1-integration -> v5` 的 [PR19](https://github.com/liuchangready/majiang-game/pull/19)
+统一正常快进推送，不新增组件 PR、不合并 PR、不改默认分支，也不触碰主 checkout 的用户改动。
+这是冻结上下文组件验收，**完整 P1.6 / ENG-018/020/022–025 / actor 接线仍未完成，G1 BLOCKED，G5 未完成，V4 仍唯一生产**。
+本轮 TableRuntime/PG/WSS/Lobby、Unity/IL2CPP、设备、跨物理网络、桌面 GL 和 V4 全量测试为 NOT_RUN；
+历史 V4 反射行为探针不扩大为端到端或本次重新执行的证据。发布后的远端 CI 结果另行评估，本节不宣称通过。
