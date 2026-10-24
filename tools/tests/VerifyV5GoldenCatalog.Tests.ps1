@@ -655,7 +655,47 @@ Invoke-NegativeCase -Name 'random-dora-object' -ExpectedCode 'CASE_STRUCTURE_TYP
     Update-CatalogFixtureSha -Root $root -FixtureId 'scoring-v1'
 }
 
-# 38. Exporter byte change.
+# 38. Fixture schema is a fixed literal; case change must fail.
+Invoke-NegativeCase -Name 'fixture-schema-case' -ExpectedCode 'FIXTURE_SCHEMA_UNKNOWN' -Mutator {
+    param($root)
+    $path = Join-Path $root 'tests\v5-golden\physical-v1.json'
+    $json = Read-JsonFile $path
+    $json.schema = 'V5-PHYSICAL-GOLDEN-V1'
+    Write-JsonFile $path $json
+    Update-CatalogFixtureSha -Root $root -FixtureId 'physical-v1'
+}
+
+# 39. Catalog schema is a fixed literal; case change must fail.
+Invoke-NegativeCase -Name 'catalog-schema-case' -ExpectedCode 'CATALOG_SCHEMA' -Mutator {
+    param($root)
+    $path = Join-Path $root 'tests\v5-golden\catalog-v1.json'
+    $catalog = Read-JsonFile $path
+    $catalog.schema = 'V5-GOLDEN-CATALOG-V1'
+    Write-JsonFile $path $catalog
+}
+
+# 40. Catalog extractionStatus must be exactly 'exported'.
+Invoke-NegativeCase -Name 'extraction-status-case' -ExpectedCode 'EXTRACTION_STATUS_MISMATCH' -Mutator {
+    param($root)
+    $path = Join-Path $root 'tests\v5-golden\catalog-v1.json'
+    $catalog = Read-JsonFile $path
+    foreach ($fixture in @($catalog.fixtures)) {
+        if ([string]$fixture.id -eq 'cheat-v1') { $fixture.extractionStatus = 'Exported' }
+    }
+    Write-JsonFile $path $catalog
+}
+
+# 41. Fixture extractionStatus case change must fail.
+Invoke-NegativeCase -Name 'fixture-extraction-case' -ExpectedCode 'EXTRACTION_STATUS_MISMATCH' -Mutator {
+    param($root)
+    $path = Join-Path $root 'tests\v5-golden\cheat-v1.json'
+    $json = Read-JsonFile $path
+    $json.extractionStatus = 'Exported'
+    Write-JsonFile $path $json
+    Update-CatalogFixtureSha -Root $root -FixtureId 'cheat-v1'
+}
+
+# 42. Exporter byte change.
 Invoke-NegativeCase -Name 'exporter-sha' -ExpectedCode 'EXPORTER_SHA_MISMATCH' -Mutator {
     param($root)
     $path = Join-Path $root 'engine\src\test\kotlin\com\majiang\model\V5PhysicalGoldenExporterTest.kt'

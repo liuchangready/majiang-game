@@ -693,7 +693,7 @@ catch {
 # ---------------------------------------------------------------------------
 # Catalog header
 # ---------------------------------------------------------------------------
-if ([string](Get-Prop $script:Catalog 'schema') -ne 'v5-golden-catalog-v1') {
+if ([string](Get-Prop $script:Catalog 'schema') -cne 'v5-golden-catalog-v1') {
     Add-Failure 'CATALOG_SCHEMA' ('expected v5-golden-catalog-v1, got {0}' -f (Get-Prop $script:Catalog 'schema'))
 }
 if ([int](Get-Prop $script:Catalog 'catalogVersion') -ne 1) {
@@ -771,14 +771,14 @@ foreach ($fixture in $fixtures) {
     $actualSchema = [string](Get-Prop $raw 'schema')
     $declaredSchema = [string](Get-Prop $fixture 'schema')
     if ($allowedSchemas.ContainsKey($fixtureId)) {
-        if ($actualSchema -ne $allowedSchemas[$fixtureId]) {
+        if ($actualSchema -cne $allowedSchemas[$fixtureId]) {
             Add-Failure 'FIXTURE_SCHEMA_UNKNOWN' ("{0}: actual schema '{1}' not the accepted '{2}'" -f $fixtureId, $actualSchema, $allowedSchemas[$fixtureId])
         }
     }
     else {
         Add-Failure 'FIXTURE_SCHEMA_UNKNOWN' ("{0}: fixture id is not in the accepted set" -f $fixtureId)
     }
-    if ($actualSchema -ne $declaredSchema) {
+    if ($actualSchema -cne $declaredSchema) {
         Add-Failure 'FIXTURE_SCHEMA_MISMATCH' ("{0}: declared '{1}', actual '{2}'" -f $fixtureId, $declaredSchema, $actualSchema)
     }
     $rawRuleset = Get-Prop $raw 'rulesetVersion'
@@ -798,10 +798,10 @@ foreach ($fixture in $fixtures) {
 
     $rawStatus = [string](Get-Prop $raw 'extractionStatus')
     $catalogStatus = [string](Get-Prop $fixture 'extractionStatus')
-    if ($catalogStatus -ne $rawStatus) {
+    if ($catalogStatus -cne $rawStatus) {
         Add-Failure 'EXTRACTION_STATUS_MISMATCH' ("{0}: catalog '{1}', fixture '{2}'" -f $fixtureId, $catalogStatus, $rawStatus)
     }
-    if ($rawStatus -ne 'exported') {
+    if ($rawStatus -cne 'exported') {
         Add-Failure 'EXTRACTION_STATUS_NOT_EXPORTED' ("{0}: fixture status '{1}'" -f $fixtureId, $rawStatus)
     }
 
