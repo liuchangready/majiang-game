@@ -1,6 +1,6 @@
-# V5 P3.4 回执、租约和恢复端口合同交付（第 8 轮返修）
+# V5 P3.4 回执、租约和恢复端口合同交付（第 9 轮返修）
 
-- 状态：**第 8 轮本地返修完成，等待 caller 第 8 轮独立验收**。不是 G1/G5，不是 V5 全链通过；V4 仍是唯一生产架构。
+- 状态：**第 9 轮本地返修完成，等待 caller 第 9 轮独立验收**。不是 G1/G5，不是 V5 全链通过；V4 仍是唯一生产架构。
 - 唯一工作树：`D:/majiang-wt/p34-receipts`（分支 `wt/v5-p34-receipts`）。
 - 冻结基线：`daeb19a64951174426924026fe974c8ae5caacd9`。
 - 第 1 轮实现：`9e909ea6b7dfb411b1e2511fa4f0f9d05307ba38`。
@@ -11,18 +11,19 @@
 - 第 6 轮实现：`deafa78690e3f32ecbf277817f4482bd97e123cf`（`fix(v5-p34): bind checkpoint history and abortive draw facts`）。
 - 第 7 轮实现：`8811e979e57230fc955b90a450e1e95b737c4247`（`fix(v5-p34): bind checkpoint command groups and fingerprints`）。
 - 第 8 轮实现：`36356b3850fba148b7db0d83adab67d3735143de`（`fix(v5-p34): retain replay bindings and terminal evidence`）。
+- 第 9 轮实现：`1e1d33423e9df736f285371999afc3f9afc8fdca`（`fix(v5-p34): validate bindings at atomic save boundary`）。
 - 本文件提交为最终本地 HEAD；未 push、未建 PR、未触发 CI、未转派。
-- caller 的 `CodexP34ReviewProbes.cs`、`CodexP34Round2ReviewProbes.cs`、`CodexP34Round3ReviewProbes.cs`、`CodexP34Round4ReviewProbes.cs`、`CodexP34Round5ReviewProbes.cs`、`CodexP34Round6ReviewProbes.cs`、`CodexP34Round7ReviewProbes.cs` 均保留、纳入提交并通过；未删除或弱化探针。
+- caller 的 `CodexP34ReviewProbes.cs`、`CodexP34Round2ReviewProbes.cs`、`CodexP34Round3ReviewProbes.cs`、`CodexP34Round4ReviewProbes.cs`、`CodexP34Round5ReviewProbes.cs`、`CodexP34Round6ReviewProbes.cs`、`CodexP34Round7ReviewProbes.cs`、`CodexP34Round8ReviewProbes.cs` 均保留、纳入提交并通过；未删除或弱化探针。
 
-## 1. 第 8 轮修复结论
+## 1. 第 9 轮修复结论
 
 |缺陷|修复|
 |---|---|
-|R13 尾部 replay 后 `_commandBindings` 丢失，save 产生不可恢复 checkpoint|`TableRecoveryService` 为每个成功 replay 的版本累加 `TableCommandBinding(version, committed.Count, next.SourceFingerprint)` 到 checkpoint 前缀证据，再把完整列表传入 baseline；actor 安装完整绑定。下次 SaveCheckpoint 不再持久化不完整证据。|
-|R13 保存入口放过不完整证据|`BuildCheckpoint` 仍从 actor 的完整 `_commandBindings` + 本次 `extraHistory` 证据生成 checkpoint；不完整/不一致证据不能伪装成功覆盖恢复点；缺证据的 checkpoint 恢复 fail closed。|
-|R14 首条之后的终局命令无法提交|`BuildCheckpoint` 不再对 `extraHistory` 调用从 version1 强制的 `TableCommandBindingsCodec.Build`；直接用本次真实 `stateVersion`、`extraHistory.Count`、`round.SourceFingerprint` 构造候选 binding，与已有证据组合。AbortiveDraw/Tsumo 等 version≥2 可原子提交 checkpoint/outbox。|
-|R15 负例因丢 binding 而“假绿”|历轮 checkpoint 复制助手与 probes 全部保留 `CommittedCommandBindingsPayload` + SHA；fingerprint/regroup、fake history、first/last 组负例都在证据仍存在时被目标校验拒绝。新增同形 `none` 正例。|
-|R13/R14 正向恢复|新增 `ReplayEvidenceMustSurviveSaveAndSecondRecovery`（checkpoint0/1，recover→save→recover）与 `TerminalCommandAfterEarlierCommitMustCreateAtomicCheckpointAndOutbox`（v1 discard 后 v2 AbortiveDraw）。|
+|R16 SaveCheckpointAsync 接受 empty/partial/eventCount/fingerprint/分组错误 binding 并覆盖有效恢复点|新增纯验证 `TableCheckpointValidator`：解码 history + independent bindings，强制 version 1..StateVersion、每版非空、ordinal/seq 连续、eventCount 分组、SourceFingerprint、history 与 StatePayload 的 Domain 前缀一致。`SaveCheckpointAsync` 在任何 checkpoint/facts/timing/stateTimingVersion/lease/CommitCount 突变之前调用该验证；失败返回 Failed，旧恢复点保持不变。|
+|R16 CommitAsync/CommitControlAsync 可能绕过|`CommitAsync`（accepted checkpoint）与 `CommitControlAsync` 在 staging/apply 前调用同一 `TableCheckpointValidator`；owner/state/control/timing fence 仍先校验，不另开宽松路径。|
+|R16 写读口径分裂|`TableRecoveryService` 也改用 `TableCheckpointValidator.TryValidate` 做 history/binding/Domain prefix 校验，保存与恢复共享同一纯验证规则。|
+|测试证据|新增 save 边界 empty/fingerprint 探针 + `none` 正例；新增 partial/event-count/group-mismatch 拒绝测试，并断言失败前后 checkpoint/facts/timing/CommitCount 未变、旧恢复点仍可恢复。|
+|R13/R14/R15 组合场景|新增 `ReplayBindingsSurviveCommandAfterRecoveryAndSecondSave`（recover→新命令→save→recover）；保留 `ReplayEvidenceMustSurviveSaveAndSecondRecovery`（checkpoint0/1）与 v2 AbortiveDraw 终局原子提交。|
 
 ## 2. 历史轮次修复结论
 
@@ -152,6 +153,7 @@ Decode 强制 round/state 匹配当前恢复目标、public/private 各 4、无�
 - `TableRecoveryService` 读取 store 的最新 facts（不是旧 checkpoint 快照），用 codec 解码；
 - `ValidateCheckpointHistoryAgainstCaptured` 将 checkpointHistory 与 `RoundRecoveryState.Events`（受 StatePayload SHA/fingerprint 保护）逐条绑定：type/seat/tile/detail 必须一致；prefix 偏移只允许 TilesDealt/DoraRevealed；history payload 的 commandVersion/ordinal 必须一致；
 - `ValidateCommandBindings` 使用独立 `CommittedCommandBindingsPayload`（actor 执行时逐命令累计的 eventCount + SourceFingerprint）逐组消费 history：组边界、ordinal、seq、fact.SourceFingerprint 必须一致；不能靠 history/latestFacts 自洽或自身 SHA；
+- `TableCheckpointValidator.TryValidate` 在 store 的 SaveCheckpoint/Commit/CommitControl 真正 apply 之前执行同一 history/binding/Domain-prefix 校验；失败返回 Failed 且旧 checkpoint/facts/timing/CommitCount 不变；
 - 尾部真实 replay 每个成功版本也累加 command binding（`next.SourceFingerprint` + committed.Count），并随 baseline 安装；save 时与 checkpoint 前缀证据合并，避免保存不完整恢复点；
 - `ValidateHistory` 强制 version 1..checkpoint.StateVersion 每版非空、ordinal/seq 连续、末尾等于 checkpoint.LastEventSeq；
 - `TableVisibilityProjection.ValidateRecoveredFacts` 以恢复后的 round 校验 public/private/meld 与 136 牌；
@@ -201,17 +203,18 @@ Decode 强制 round/state 匹配当前恢复目标、public/private 各 4、无�
 | caller `*CodexP34Round5ReviewProbes`（4 cases） | **4 passed / 0 failed / 0 skipped** |
 | caller `*CodexP34Round6ReviewProbes`（3 cases） | **3 passed / 0 failed / 0 skipped** |
 | caller `*CodexP34Round7ReviewProbes`（3 cases） | **3 passed / 0 failed / 0 skipped** |
-| `dotnet test .../Mahjong.TableRuntime.Tests.csproj -c Release` | **251 passed / 0 failed / 0 skipped**（原 168 + 83，含 20 探针/case） |
+| caller `*CodexP34Round8ReviewProbes`（3 cases） | **3 passed / 0 failed / 0 skipped** |
+| `dotnet test .../Mahjong.TableRuntime.Tests.csproj -c Release` | **258 passed / 0 failed / 0 skipped**（原 168 + 90，含 23 探针/case） |
 | `dotnet test dotnet/Mahjong.sln -c Release` | **575 passed / 0 failed / 0 skipped**（Domain 322、Contracts 104、Client 132、Ai 17） |
 | `dotnet build dotnet/Mahjong.sln -c Release` | **0 warnings / 0 errors** |
 | `git diff --check daeb19a..HEAD` | **exit 0** |
 
 新增/调整覆盖：
 
-- R13：`ReplayEvidenceMustSurviveSaveAndSecondRecovery` checkpoint0/1；recover→save→recover 保留 evidence。
-- R14：`TerminalCommandAfterEarlierCommitMustCreateAtomicCheckpointAndOutbox` v1 discard 后 v2 AbortiveDraw；原子 checkpoint/outbox。
-- R15：R5/R6 probes 与 corruption helpers 保留 command binding 元数据；`none` 同形正例通过，fingerprint/regroup 在证据存在时仍被拒。
-- R12：`CodexP34Round6ReviewProbes` 的 none/fingerprint/regroup；`CommandBindingEvidenceMustCoverExactCommandGroups` 的 first/last count/fingerprint 四负例；均在 sink/Serving 前失败。
+- R16：`CodexP34Round8ReviewProbes` 的 none/empty/fingerprint；`InvalidSaveBindingsMustNotReplaceCheckpointOrMutateEvidence` 的 partial/event-count/group-mismatch 三负例；断言旧 checkpoint/facts/timing/CommitCount 不变且旧恢复点仍 recover。
+- R13：`ReplayEvidenceMustSurviveSaveAndSecondRecovery` checkpoint0/1；`ReplayBindingsSurviveCommandAfterRecoveryAndSecondSave` 新命令后 save/recover。
+- R14：`TerminalCommandAfterEarlierCommitMustCreateAtomicCheckpointAndOutbox` v1 discard 后 v2 AbortiveDraw。
+- R15：R5/R6 probes 与 corruption helpers 保留 command binding 元数据；`none` 同形正例通过。
 - R10：`CodexP34Round5ReviewProbes` 的 checkpoint fake tile、type/seat/detail/version-gap；正向非零 checkpoint+尾部 replay 继续通过。
 - R11：`CodexP34Round5ReviewProbes` 的 AbortiveDraw 正常/错误 tenpai 两 case；错误 `[0]` 在 sink 前失败，正常空 tenpai 恢复成功。
 - R9：`CodexP34Round4ReviewProbes` 的 wrong-wall（TileDrawn 非零 wall 改 0）与 wrong-round-wind（RoundEnded 合法范围但 +1）两 case；均在 sink Install/Serving 前 `CHECKPOINT_INVALID`。
@@ -223,27 +226,27 @@ Decode 强制 round/state 匹配当前恢复目标、public/private 各 4、无�
 - R4：`RecoveryInstallsTypedCheatLedgerAndLatestCommittedFacts`、`FullHistoryIsInstalledEvenWhenSnapshotWindowIsZero`、`RecoveryInstallsStrictWireBaseline...`、`MissingCommittedFactsIsRefused`、`TamperedProjectionFactsAreRefused`、`UnmodeledPrivateCheatSubstateIsRefused`。
 - 既有回执/scope/租约/事务/fence 测试继续通过。
 
-## 6. SHA-256（第 8 轮实现）
+## 6. SHA-256（第 9 轮实现）
 
 | 文件 | SHA-256 |
 |---|---|
 | `dotnet/src/Mahjong.Domain/DecisionClock.cs` | `75f4314a580155f1b27a28a5db63601a7d78a1b9d8a4fc729b3570fe1e2dfaec` |
 | `dotnet/src/Mahjong.TableRuntime/TableActor.cs` | `0f085b364d764ce892ee7c33acbca4e77bac2ed93577150a932c9cdb33e311b5` |
 | `dotnet/src/Mahjong.TableRuntime/TableDurableContracts.cs` | `a4b8f30f532ce1b949bae6152a39edef99d0c527c9d26e33b490d528c7c5c375` |
-| `dotnet/src/Mahjong.TableRuntime/InMemoryTableStore.cs` | `4acec2fca3c44801918429a3a6fb95028f271d7459b989b0b326f8aa4557c6cb` |
+| `dotnet/src/Mahjong.TableRuntime/InMemoryTableStore.cs` | `1850a70ae98134367fd33a3d22fc2f4c9e1adb8078e2a77f7701861eb9704dd8` |
 | `dotnet/src/Mahjong.TableRuntime/TableCheckpointCodecs.cs` | `d2783a6c08ffa4e35b741b92444755d3d69e4e0ab2d814bcd236c0897b5d1a9c` |
 | `dotnet/src/Mahjong.TableRuntime/TableControlContracts.cs` | `dc89595468c0802545a270c58133d121c11f5eb5fb72f375339739c2596ec498` |
 | `dotnet/src/Mahjong.TableRuntime/TableRecoveryPayloads.cs` | `9969129b6076189daa4853ca6e2961b78c8b5f2880c9b0dc9fc8e4a881eda9ef` |
-| `dotnet/src/Mahjong.TableRuntime/TableRecoveryService.cs` | `7922a0d62334d16304009ed76cdf300496c2d34d4f385b0cdc261ee9bb9c52cc` |
+| `dotnet/src/Mahjong.TableRuntime/TableRecoveryService.cs` | `60aef83b1d517142108108f8c5cd11232f2d43e91544116075b0f7f1136161fe` |
 | `dotnet/src/Mahjong.TableRuntime/TableRuntimeContracts.cs` | `214402ac6c8b2334e4ac3afdef9d79d8c57acd278f95b1982ea37c213afd1341` |
 | `dotnet/src/Mahjong.TableRuntime/TableCommandBindingsCodec.cs` | `dc7af337ee49fc1dcdeda2b2a670a9c7a7931b0ea8eef54a9329c3ac2a3ba2e1` |
 | `dotnet/src/Mahjong.TableRuntime/TableVisibilityProjection.cs` | `0dd9d9ebdbc5e4db79790c66a14a0b3b631f7a83aa839a332b3230bea77e7b25` |
 | `dotnet/src/Mahjong.TableRuntime/TableProjectionFactsCodec.cs` | `8ece59cb1fee07ba33f781938c0acec2fb39c2b9d819e817b95417b1b26a02ad` |
 | `dotnet/tests/.../TableDurableTestSupport.cs` | `55019aef8f15bc26e30441ad78335c58a5a08c862e090dd4f466699707b6d534` |
 | `dotnet/tests/.../TableDurableReceiptTests.cs` | `114778553802ed5f2f97098d506ce4957c7faed8538a8bc3a9e01ffea463d4c6` |
-| `dotnet/tests/.../TableDurableLeaseRecoveryTests.cs` | `89e6fa7199851ef5a6aaccb3933c574377f32a32cb50725c35e8215d9c372eb7` |
+| `dotnet/tests/.../TableDurableLeaseRecoveryTests.cs` | `187d1798eb4ab1a743b0bda2e3a503b0f7dcc58d911d52ed3629db3ad7c24622` |
 | `dotnet/tests/.../TableStreamWireTestSupport.cs` | `8914663bff9439f2e00679cde7d08c003c93382a18c741b2d844dd6c2e02d249` |
-| `dotnet/tests/.../TableDurableCorruptionTests.cs` | `25707c5335602c0a72ae55376f83e2200fb8357998adc398eb58d021baafc4d4` |
+| `dotnet/tests/.../TableDurableCorruptionTests.cs` | `f11c941a85ccae47210cea9cb2752a7730fe403b21b903eb5385dfb93a8975cf` |
 | `dotnet/tests/.../TableDurableTimingRecoveryTests.cs` | `6c377c2a39c7180d48b277976933d57dfef73845c67e15af358f67b8c35ef833` |
 | `dotnet/tests/.../CodexP34Round2ReviewProbes.cs` | `af73da1ec72854d453412ffe77e5dda27dea9577303ff16494de0ffc3d872747` |
 | `dotnet/tests/.../CodexP34Round3ReviewProbes.cs` | `0c3078bc55db43d7097822697936994bff7aeb10c6c865a8482724a38346fce9` |
@@ -251,8 +254,10 @@ Decode 强制 round/state 匹配当前恢复目标、public/private 各 4、无�
 | `dotnet/tests/.../CodexP34Round5ReviewProbes.cs` | `1b9d80ddc3c0574747df857988d8b700f22f03b579552f33aa0acf7367781353` |
 | `dotnet/tests/.../CodexP34Round6ReviewProbes.cs` | `003752027d3ef246e17ca6a33fb332cfa35cda16119c897d101a5312024bbdac` |
 | `dotnet/tests/.../CodexP34Round7ReviewProbes.cs` | `2285283a57b6969939204d5011b5364d2986def8fa35ca9363097aaf21642e8e` |
+| `dotnet/tests/.../CodexP34Round8ReviewProbes.cs` | `42c8adb943fbeddecc57db076ed6933d3d02f478d19aaef7740e9ae7256de42c` |
+| `dotnet/src/Mahjong.TableRuntime/TableCheckpointValidator.cs` | `2c81497642ef19192b7e3883929568c3be12d2f2f929c7a5210a6a1103d01ee4` |
 
-第 8 轮实现提交：6 文件，`99 insertions(+), 8 deletions(-)`。未新增项目/包引用，未修改 `Mahjong.sln`、任务书、矩阵、黄金 fixtures、统一 verifier 或 CI。
+第 9 轮实现提交：6 文件，`412 insertions(+), 26 deletions(-)`。未新增项目/包引用，未修改 `Mahjong.sln`、任务书、矩阵、黄金 fixtures、统一 verifier 或 CI。
 
 ## 7. NOT_RUN 与边界
 
@@ -264,6 +269,6 @@ Decode 强制 round/state 匹配当前恢复目标、public/private 各 4、无�
 
 ## 8. 交接
 
-- 第 8 轮实现 HEAD：`36356b3850fba148b7db0d83adab67d3735143de`。
+- 第 9 轮实现 HEAD：`1e1d33423e9df736f285371999afc3f9afc8fdca`。
 - 本文件提交为最终本地 HEAD；工作树 clean。
-- 等待 caller 第 8 轮独立验收；caller 负责唯一 PR19 `feat/v5-1-integration -> v5` 及 merge-back。不自行宣告 G1/G5。
+- 等待 caller 第 9 轮独立验收；caller 负责唯一 PR19 `feat/v5-1-integration -> v5` 及 merge-back。不自行宣告 G1/G5。
