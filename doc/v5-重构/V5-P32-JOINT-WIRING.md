@@ -412,3 +412,37 @@ V4 仍是唯一生产架构。G1/G5 未通过；本交付不宣称平台、真�
 | `dotnet/tests/Mahjong.TableRuntime.Tests/TableStreamWireTestSupport.cs` | `4EA4A88697A31A810776E1A6226406C4A5E224D410EC3FF3A7631A47FC4378B0` |
 | `dotnet/tests/Mahjong.TableRuntime.Tests/TableStreamActorTests.cs` | `DC1897261B2DEBBDF12C296B65C87851AC39809B553C2D1D0FAD72930D611C4D` |
 | `doc/v5-重构/V5-P32-JOINT-WIRING.md` | 本文 SHA256 见提交后最终响应（自引用无法在文件内固定） |
+
+## 9. Caller 第 3 轮独立验收与统一 PR19 集成
+
+2026-10-24，caller 对交付 `566f641f4a8639a3f61e44e1095dc4886aee7b10` 独立验收通过，已实际调用 `approve_task(threadId="thread_20261024_065145_d0ec")`，Bridge 返回 `COMPLETED`。未新建任务、会话或转派。上轮窗口 0/1 的真实失败和原始探针保留，未改写历史结果。
+
+代码审查确认：当前 round 的完整已提交事件独立于诊断 `SnapshotEventWindow`；facts 仍绑定同 capture 的 type/seq/version/ordinal；终局恢复缺真实事件历史显式失败；公共暗杠与 owner 私有数据边界、严格 Wire 校验及 64 帧/4 MiB 界限均未放宽。可信宿主必须为 Domain 未建模的字段提供显式事实；本任务没有实现这些领域命令或完整 TableService。
+
+独立交付工作区 `D:/majiang-wt/p32-joint` 实测：
+
+| 检查 | 通过 / 失败 / 跳过或结果 | exit |
+|---|---|---:|
+| Solution Release build | 0 warning / 0 error | 0 |
+| TableRuntime 从源码重建并测试 | 168 / 0 / 0 | 0 |
+| Contracts / Client / Domain / Ai | 104 / 132 / 322 / 17，均零失败零跳过 | 0 |
+| 原始 caller 窗口 0/1 探针 | 2 / 0 / 0 | 0 |
+| 真实 Wire 联合类连续 5 轮 | 每轮 16 / 0 / 0 | 每轮 0 |
+| 移除临时探针后重新 build 测试工程 | 0 warning / 0 error | 0 |
+| 全任务 diff-check | PASS | 0 |
+
+非重复正式用例共 **743 / 0 / 0**；原始探针和定向重复不计入该分母。临时探针已从测试源码目录移除，receiver 工作树保持干净。原始失败证据位于 `artifacts/codex-p32-review-20261024/`；本轮独立证据位于 `artifacts/codex-p32-review-r3-20261024/`。
+
+Caller 沿用已有集成复核树 `D:/majiang-wt/codex-p32-joint-review-20261024`，保留未推送候选 `d235ba4`，将本轮交付合入已发布 PR19 基线 `49248de7710c81c3b8669cdda4875b71688ac938`，受测 merge 为 **`d5be850764db985f2d494cd365a9948e02f74ece`**。相对当前已发布分支仅有本任务十文件差异，未纳入仍在返修的 golden catalog 或 implementation traceability。只使用既有 [PR19](https://github.com/liuchangready/majiang-game/pull/19)，源分支 `feat/v5-1-integration`，目标 `v5`。
+
+在该 merge 上实际执行原样严格统一门禁：
+
+```powershell
+& C:/Users/sncdc/AppData/Local/Temp/majiang-env-matrix-20261024/pwsh7/pwsh.exe -NoProfile -ExecutionPolicy Bypass -File tools/ci/verify-v5-postgres.ps1 -Configuration Release -RunnerMode dotnetTest -DotnetPath D:/Unity/dotnet/dotnet.exe -Port 55526 -Root D:/majiang-pg-codex-p32-r3-20261024 -PgZipPath D:/majiang-pg-tmp/cache/postgresql-16.10-1-windows-x64-binaries.zip -LogDir D:/majiang-wt/codex-p32-joint-review-20261024/artifacts/codex-p32-r3-realpg
+```
+
+结果为 **912 passed / 0 failed / 0 skipped**：Ai17、Client132、Wss80、Contracts104、Domain322、真实 PostgreSQL Lobby89、TableRuntime168。两个 helper 仅构建，不计为测试。Solution build 为 0 warning / 0 error；12-assembly scratch plugin copy PASS；九个项目行全部 PASS。PostgreSQL 16.10 为独占 loopback 临时集群，所有权与服务端 identity 校验、迁移两次、十个 wrapper 阶段全部 PASS；verifier/wrapper exit 均为 0。集群 root 已删除、55526 无监听；四个原先 absent 的环境变量均恢复并由 fresh child 验证 absent。
+
+统一原始命令、框架日志、summary、wrapper-summary 和 PG 证据位于集成树 `artifacts/codex-p32-r3-realpg/`。Caller 证据 SHA256 清单位于同树 `artifacts/codex-p32-r3-evidence-sha256.csv`。后续发布仅追加本验收段，不改变受测生产代码。
+
+当前结果关闭本任务的 actor/Contracts/真实 Wire 联合接线缺口，并包含此前远端 slow-sink 等待失败的门闩修复。历史远端失败仍保留；新发布 SHA 的远端 CI 需单独判定。V4 仍是唯一生产架构，P3.4、G1/G5、真实 TableService 网络集成、Unity/IL2CPP、Android/iOS 和跨物理网络不因此通过。
