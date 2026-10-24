@@ -4,48 +4,55 @@
 # Exit 0 = all checks passed. Exit 1 = at least one check failed. Exit 2 = usage/environment error.
 #
 # Checks (fail -> exit 1):
-#   1. JSON parses; schema field matches v5-implementation-trace-v1; required header fields present.
-#   2. baselineCommit is a 40-hex sha and exists as a commit object in the repo (read-only git).
-#   2b. Taskbook is discovered under doc/ and parsed mechanically: every "### <id>" heading yields
-#       the REAL task ID set; the heading structure also yields each gate's prerequisite task set
-#       (tasks listed between the previous gate heading and the gate itself). The gate structure
-#       must be complete (G0..G5) or the run fails.
-#   3. Rows are compared against REAL tracked production sources via git ls-files:
-#      only "<module>/src/main/**/*.kt" counts (src/test, generated code, non-kt excluded).
-#      Missing row / extra row / duplicate (module,source) -> exit 1.
-#   4. Typed schema per row:
-#      - required non-empty strings: id module source v4Symbol planTarget status responsibleTask
-#        gapSummary notes
-#      - required arrays (may be empty only where noted): v5Targets (>=1), dependencies,
-#        v5Anchors, testAnchors, acceptanceAnchors, goldenSamples
-#      - id matches ^[A-Z]{3}-[0-9]{3}$ and is globally unique
-#      - v5Targets entries are controlled V5 module names (Unity( planned ) allowed as prefix form)
-#   4b. responsibleTask and every dependency must be a REAL taskbook task ID (from 2b, not a
-#       regex guess). Anti-cycle: a dependency on gate Gx is rejected when the row's
-#       responsibleTask is one of Gx's own prerequisites (derived from the taskbook headings).
-#   5. Anchor hygiene:
-#      - all anchor paths are canonical repo-relative (no backslash, no drive, no leading /,
-#        no "." or ".." segments)
-#      - v5Anchors: path under dotnet/src/ AND git-tracked; symbol required and declared in the
-#        anchored file (type declaration form)
-#      - testAnchors: path under a test source area (<module>/src/test/ or dotnet/tests/) AND
-#        git-tracked; symbol required and declared
-#      - acceptanceAnchors: doc under doc/ and present in the worktree; commit is 7..40 hex,
-#        EXISTS as a commit, is an ANCESTOR OF baselineCommit, and the doc EXISTS AT that commit
-#        (git cat-file). Format alone is not accepted evidence.
-#      - goldenSamples / goldenSamplesInBaseline: under tests/v5-golden/ and present.
-#   5b. v4Symbol must actually be declared in the row's own tracked V4 source file. Accepted
-#       declaration forms cover real Kotlin source shapes: class/interface/object (incl.
-#       enum/data/sealed/abstract variants), top-level/member/extension functions (incl. generic
-#       and receiver forms), typealias, and val/var/const val property declarations. A symbol
-#       that only appears as an import or usage is rejected.
+#   1. JSON parses; schema field matches v5-implementation-trace-v1; header fields present with
+#      STRICT JSON types (see 4).
+#   2. baselineCommit is a JSON string matching 40-hex and exists as a commit object (read-only git).
+#   2b. Taskbook discovered under doc/ and parsed mechanically: every "### <id>" heading yields
+#       the REAL task ID set; heading structure also yields each gate's prerequisite set. The
+#       gate structure must be complete (G0..G5).
+#   3. Row sources are compared against the FROZEN BASELINE tree (`git ls-tree -r baselineCommit`),
+#       not the current index or worktree: only "<module>/src/main/**/*.kt" counts. Missing row /
+#       extra row / duplicate (module,source) -> exit 1. A file tracked only AFTER the baseline
+#       cannot satisfy a row.
+#   4. Typed schema, enforced on raw JSON types (no string coercion):
+#      - header strings: schema generatedDate baselineCommit baselineBranch basisNote
+#        dependenciesSemantics planTargetBasis must be JSON strings, non-empty
+#      - denominator: JSON object with numeric productionSources; stats: object of objects with
+#        numeric values and no unknown keys; statusVocabulary: JSON string array equal to the
+#        controlled vocabulary; rows: JSON array; gatePrerequisites: object of JSON string arrays;
+#        goldenSamplesInBaseline: JSON string array
+#      - per row, non-empty JSON strings: id module source v4Symbol planTarget status
+#        responsibleTask gapSummary notes; JSON arrays: v5Targets dependencies v5Anchors
+#        testAnchors acceptanceAnchors goldenSamples (null/scalar/object values are rejected,
+#        empty arrays are legal only for the anchor/golden/deps lists)
+#      - array elements are typed too: dependency/v5Target/golden entries must be JSON strings;
+#        anchor entries must be JSON objects (a null/false element is a failure, never skipped)
+#      - anchor sub-fields path/symbol/doc/commit must be JSON strings
+#      - id matches ^[A-Z]{3}-[0-9]{3}$ and is globally unique; v5Targets entries are controlled
+#        V5 module names (Unity( planned ) allowed as prefix form)
+#   4b. responsibleTask and every dependency must be a REAL taskbook task ID (from 2b). A
+#       dependency equal to the row's own responsibleTask is rejected (self-task-dependency).
+#       A gate dependency Gx is rejected when responsibleTask is one of Gx's own prerequisites
+#       (gate-dependency-cycle, derived from the taskbook headings).
+#   5. Anchor hygiene against the FROZEN BASELINE (git ls-tree / git cat-file blob), never the
+#      current worktree or index:
+#      - all anchor paths canonical repo-relative (no backslash, drive, leading /, "." / "..")
+#      - v5Anchors: path under dotnet/src/ AND present in the baseline tree; symbol required and
+#        declared in the BASELINE BLOB of the anchored file (type declaration form)
+#      - testAnchors: path under a test source area (<module>/src/test/ or dotnet/tests/) AND in
+#        the baseline tree; symbol required and declared in the baseline blob
+#      - acceptanceAnchors: doc under doc/ and present in the baseline tree; commit 7..40 hex,
+#        EXISTS, is an ANCESTOR OF baselineCommit, and the doc EXISTS AT that commit (git cat-file)
+#      - goldenSamples / goldenSamplesInBaseline: under tests/v5-golden/ and in the baseline tree
+#   5b. v4Symbol must be declared in the BASELINE BLOB of the row's own source file. Accepted
+#       forms cover real Kotlin shapes: class/interface/object (incl. enum/data/sealed variants),
+#       top-level/member/extension functions (incl. generic and receiver forms), typealias, and
+#       val/var/const val declarations. Import- or usage-only appearances are rejected.
 #   6. Status-specific responsibility: accepted-component rows require v5Anchors AND
-#      acceptanceAnchors; every other status requires a non-empty gapSummary AND a valid
-#      responsibleTask. (No "pending without a responsible task".)
-#   7. Self-consistency: denominator.productionSources == row count == enumerated source count;
+#      acceptanceAnchors; every other status requires a non-empty gapSummary AND a responsibleTask.
+#   7. Self-consistency: denominator.productionSources == row count == enumerated baseline count;
 #      stats.byStatus / stats.byModule recomputed from rows must equal the declared values.
-#      (Deliberately NOT hardcoded to all-pass: numbers must match the real repo and the rows.)
-#   7b. Header gatePrerequisites (documentation) must equal the taskbook-derived sets.
+#   7b. Header gatePrerequisites must equal the taskbook-derived sets.
 
 param(
     [string]$RepoRoot = ".",
@@ -81,6 +88,17 @@ $notesOut = New-Object System.Collections.Generic.List[string]
 function Fail([string]$msg) { $script:failures.Add($msg) | Out-Null }
 function Note([string]$msg) { $script:notesOut.Add($msg) | Out-Null }
 function Has-Prop($obj, [string]$name) { return ($null -ne $obj -and $null -ne $obj.PSObject.Properties[$name]) }
+# The comma before the expression preserves array-ness through the function return: without it,
+# PowerShell unrolls a single-element JSON array to the bare element (and an empty array to $null),
+# which would defeat the strict array type checks.
+function Prop-Value($obj, [string]$name) { return ,$obj.PSObject.Properties[$name].Value }
+
+# --- STRICT JSON type predicates (no coercion) ---
+function Is-JsonString([object]$v)  { return ($null -ne $v -and $v -is [string]) }
+function Is-NonEmptyString([object]$v) { return ($null -ne $v -and $v -is [string] -and $v.Trim().Length -gt 0) }
+function Is-JsonArray([object]$v)   { return ($null -ne $v -and $v -is [System.Array]) }
+function Is-JsonNumber([object]$v)  { return ($null -ne $v -and ($v -is [int] -or $v -is [long] -or $v -is [double] -or $v -is [decimal])) }
+function Is-JsonObject([object]$v)  { return ($null -ne $v -and $v -is [System.Management.Automation.PSCustomObject]) }
 
 # --- resolve repo ---
 try {
@@ -120,18 +138,98 @@ try {
     Write-Output "REASON=bad-json $($_.Exception.Message)"
     exit 1
 }
-if ($doc.schema -ne "v5-implementation-trace-v1") {
+if (-not (Is-NonEmptyString $doc.schema) -or $doc.schema -ne "v5-implementation-trace-v1") {
     Fail ("bad-schema expected=v5-implementation-trace-v1 actual=" + $doc.schema)
 }
 
-# --- 1b. required header fields ---
-foreach ($hf in @("schema","generatedDate","baselineCommit","baselineBranch","basisNote","denominator","statusVocabulary","goldenSamplesInBaseline","stats","rows","dependenciesSemantics","planTargetBasis","gatePrerequisites")) {
-    if (-not (Has-Prop $doc $hf)) { Fail ("header-missing-field " + $hf) }
+# --- 1b. required header fields with STRICT types ---
+foreach ($hf in @("schema","generatedDate","baselineCommit","baselineBranch","basisNote","dependenciesSemantics","planTargetBasis")) {
+    if (-not (Has-Prop $doc $hf)) { Fail ("header-field-missing " + $hf) }
+    elseif (-not (Is-NonEmptyString (Prop-Value $doc $hf))) { Fail ("header-field-not-string " + $hf) }
+}
+foreach ($hf in @("denominator","statusVocabulary","goldenSamplesInBaseline","stats","rows","gatePrerequisites")) {
+    if (-not (Has-Prop $doc $hf)) { Fail ("header-field-missing " + $hf) }
+}
+
+# rows must be a JSON array
+$matrixRows = @()
+if ((Has-Prop $doc "rows") -and -not (Is-JsonArray (Prop-Value $doc "rows"))) {
+    Fail "header-field-not-array rows"
+} elseif (Has-Prop $doc "rows") {
+    # Direct assignment (no @()): the comma-protected array from Prop-Value arrives as one item
+    # and must stay the row array, not be re-wrapped into a single-element array.
+    $rv = Prop-Value $doc "rows"
+    if ($null -eq $rv) { $matrixRows = @() } else { $matrixRows = @($rv) }
+}
+
+# statusVocabulary must be a JSON string array equal to the controlled vocabulary
+$allowedStatus = @("accepted-component","partial","pending","replaced-by-v5-contract","platform-blocked")
+if ((Has-Prop $doc "statusVocabulary") -and -not (Is-JsonArray (Prop-Value $doc "statusVocabulary"))) {
+    Fail "header-field-not-array statusVocabulary"
+} elseif (Has-Prop $doc "statusVocabulary") {
+    $sv = Prop-Value $doc "statusVocabulary"   # protected array arrives intact via direct assignment
+    $svBad = $false
+    foreach ($s in $sv) { if (-not (Is-JsonString $s)) { Fail "array-element-not-string statusVocabulary"; $svBad = $true; break } }
+    if (-not $svBad -and ((@($sv | Sort-Object) -join ",") -ne (@($allowedStatus | Sort-Object) -join ","))) {
+        Fail "status-vocabulary-mismatch"
+    }
+}
+
+# goldenSamplesInBaseline must be a JSON string array
+if ((Has-Prop $doc "goldenSamplesInBaseline") -and -not (Is-JsonArray (Prop-Value $doc "goldenSamplesInBaseline"))) {
+    Fail "header-field-not-array goldenSamplesInBaseline"
+} elseif (Has-Prop $doc "goldenSamplesInBaseline") {
+    foreach ($g in (Prop-Value $doc "goldenSamplesInBaseline")) {
+        if (-not (Is-JsonString $g)) { Fail "array-element-not-string goldenSamplesInBaseline"; break }
+    }
+}
+
+# denominator must be an object with a numeric productionSources
+if ((Has-Prop $doc "denominator") -and -not (Is-JsonObject (Prop-Value $doc "denominator"))) {
+    Fail "header-field-not-object denominator"
+} elseif (Has-Prop $doc "denominator") {
+    $den = Prop-Value $doc "denominator"
+    if (-not (Has-Prop $den "productionSources")) { Fail "header-field-missing denominator.productionSources" }
+    elseif (-not (Is-JsonNumber (Prop-Value $den "productionSources"))) { Fail "header-field-not-number denominator.productionSources" }
+}
+
+# stats must be an object of objects with numeric values and no unknown keys
+if ((Has-Prop $doc "stats") -and -not (Is-JsonObject (Prop-Value $doc "stats"))) {
+    Fail "header-field-not-object stats"
+}
+$modules = @("engine","protocol","server","client","presentation","lwjgl3","android")
+if ((Has-Prop $doc "stats") -and (Is-JsonObject (Prop-Value $doc "stats"))) {
+    $statsObj = Prop-Value $doc "stats"
+    foreach ($part in @("byStatus","byModule")) {
+        if (-not (Has-Prop $statsObj $part)) { Fail ("header-field-missing stats." + $part); continue }
+        $pObj = Prop-Value $statsObj $part
+        if (-not (Is-JsonObject $pObj)) { Fail ("header-field-not-object stats." + $part); continue }
+        $expectedKeys = $allowedStatus
+        if ($part -eq "byModule") { $expectedKeys = $modules }
+        foreach ($p in $pObj.PSObject.Properties) {
+            if ($expectedKeys -notcontains $p.Name) { Fail ("header-stats-key-unknown " + $part + " " + $p.Name) }
+            if (-not (Is-JsonNumber $p.Value)) { Fail ("header-stats-value-not-number " + $part + " " + $p.Name) }
+        }
+    }
+}
+
+# gatePrerequisites must be an object of JSON string arrays keyed by gates
+if ((Has-Prop $doc "gatePrerequisites") -and -not (Is-JsonObject (Prop-Value $doc "gatePrerequisites"))) {
+    Fail "header-field-not-object gatePrerequisites"
+} elseif (Has-Prop $doc "gatePrerequisites") {
+    $gp = Prop-Value $doc "gatePrerequisites"
+    foreach ($p in $gp.PSObject.Properties) {
+        if ($p.Name -notmatch "^G[0-5]$") { Fail ("header-gate-prereqs-unknown-gate " + $p.Name); continue }
+        if (-not (Is-JsonArray $p.Value)) { Fail ("header-gate-prereqs-not-array " + $p.Name); continue }
+        foreach ($t in @($p.Value)) {
+            if (-not (Is-JsonString $t)) { Fail ("array-element-not-string gatePrerequisites." + $p.Name); break }
+        }
+    }
 }
 
 # --- 2. baseline commit exists (read-only) ---
 $bc = $doc.baselineCommit
-if (-not ("$bc" -match "^[0-9a-f]{40}$")) {
+if (-not (Is-NonEmptyString $bc) -or -not ($bc -match "^[0-9a-f]{40}$")) {
     Fail ("bad-baseline-commit format: " + $bc)
 } else {
     $ErrorActionPreference = "Continue"
@@ -175,11 +273,13 @@ if ($gatesFound.Count -lt 6) {
 Note ("taskbook-tasks=" + $taskIds.Count + " gates=" + $gatesFound.Count)
 
 # --- 7b. header gatePrerequisites must equal the taskbook-derived sets ---
-if (Has-Prop $doc "gatePrerequisites" -and $null -ne $doc.gatePrerequisites) {
+if ((Has-Prop $doc "gatePrerequisites") -and (Is-JsonObject (Prop-Value $doc "gatePrerequisites")) -and $gatesFound.Count -ge 6) {
+    $gpObj = Prop-Value $doc "gatePrerequisites"
     foreach ($g in $gatesFound) {
-        $decl = $doc.gatePrerequisites.PSObject.Properties[$g]
+        $decl = $gpObj.PSObject.Properties[$g]
         if ($null -eq $decl) { Fail ("header-gate-prereqs-missing-gate " + $g); continue }
-        $declList = (@($doc.gatePrerequisites.$g) | Sort-Object) -join ","
+        if (-not (Is-JsonArray $decl.Value)) { continue }
+        $declList = (@($decl.Value) | Sort-Object) -join ","
         $derivedList = (@($gatePrereqs[$g]) | Sort-Object) -join ","
         if ($declList -ne $derivedList) {
             Fail ("header-gate-prereqs-mismatch " + $g + " declared=[" + $declList + "] taskbook=[" + $derivedList + "]")
@@ -187,11 +287,23 @@ if (Has-Prop $doc "gatePrerequisites" -and $null -ne $doc.gatePrerequisites) {
     }
 }
 
-# --- 3. enumerate real tracked production sources ---
+# --- 3. FROZEN BASELINE tree is the authoritative source set ---
+# The matrix describes the frozen snapshot at baselineCommit; neither the current index
+# (git ls-files) nor the current worktree may substitute for it. Post-baseline files and
+# post-baseline symbol edits must not pass as baseline evidence.
+$ErrorActionPreference = "Continue"
+$treeLines = & git -C $RepoRoot -c core.quotepath=off ls-tree -r --name-only $bc 2>$null
+$treeExit = $LASTEXITCODE
+$ErrorActionPreference = "Stop"
+if ($treeExit -ne 0 -or @($treeLines).Count -eq 0) {
+    Write-Output "RESULT=FAIL"
+    Write-Output "REASON=baseline-tree-unreadable $bc"
+    exit 1
+}
+$baselineTree = @{}
+foreach ($t in $treeLines) { if (-not $baselineTree.ContainsKey($t)) { $baselineTree[$t] = $true } }
+
 # Plan-path convention per module: row.source = tracked path minus the module's package root.
-# Real package layouts differ per module (server/client/presentation carry an extra package
-# segment; presentation also has a root-level MahjongGame.kt under com/majiang), so each module
-# lists candidate prefixes longest-first. Anything that maps to no row under any candidate fails.
 $pkgPrefix = @{
     "engine"       = @("engine/src/main/kotlin/com/majiang/");
     "protocol"     = @("protocol/src/main/kotlin/com/majiang/");
@@ -201,24 +313,12 @@ $pkgPrefix = @{
     "lwjgl3"       = @("lwjgl3/src/main/kotlin/com/majiang/");
     "android"      = @("android/src/main/kotlin/com/majiang/")
 }
-$modules = @("engine","protocol","server","client","presentation","lwjgl3","android")
-$allowedStatus = @("accepted-component","partial","pending","replaced-by-v5-contract","platform-blocked")
-# Controlled V5 module vocabulary for v5Targets. Unity( ... ) is the planned Unity assembly,
-# matched by prefix so this script stays pure ASCII.
 $allowedV5Targets = @("Mahjong.Domain","Mahjong.TableRuntime","Mahjong.Contracts","Mahjong.Contracts.Wire","Mahjong.Ai","Mahjong.Client","Mahjong.LobbyService","Mahjong.LocalHost","Mahjong.TableService","Mahjong.Infrastructure")
 
-$ErrorActionPreference = "Continue"
-$lines = & git -C $RepoRoot ls-files -- "*.kt" 2>$null
-$lsExit = $LASTEXITCODE
-$allFiles = & git -C $RepoRoot ls-files 2>$null
-$ErrorActionPreference = "Stop"
-if ($lsExit -ne 0) { Write-Output "RESULT=FAIL"; Write-Output "REASON=git-ls-files-failed"; exit 1 }
-$trackedAll = @{}
-foreach ($f in $allFiles) { if (-not $trackedAll.ContainsKey($f)) { $trackedAll[$f] = $true } }
 $realSet = @{}
 $realPath = @{}
 $realCount = 0
-foreach ($l in $lines) {
+foreach ($l in $baselineTree.Keys) {
     if ($l -notmatch "/src/main/") { continue }        # main sources only
     if ($l -match "/src/test/")   { continue }         # never tests
     if ($l -notmatch "\.kt$")     { continue }         # kotlin only
@@ -246,15 +346,15 @@ foreach ($l in $lines) {
 
 # --- index rows ---
 $rowKeys = @{}
-$rows = @($doc.rows)
-if ($null -eq $doc.rows) { Fail "rows-array-missing" ; $rows = @() }
+$rows = $matrixRows
 foreach ($r in $rows) {
-    if ($null -eq $r) { Fail "null-row"; continue }
+    if ($null -eq $r) { Fail "rows-element-not-object"; continue }
+    if (-not (Is-JsonObject $r)) { Fail "rows-element-not-object"; continue }
     $k = "$($r.module)|$($r.source)"
     if ($rowKeys.ContainsKey($k)) { Fail ("duplicate-source-row: " + $k) } else { $rowKeys[$k] = $r }
 }
 
-# --- 3b. set comparison ---
+# --- 3b. set comparison (baseline tree vs rows) ---
 foreach ($k in $realSet.Keys) {
     if (-not $rowKeys.ContainsKey($k)) { Fail ("missing-row-for-tracked-source: " + $k) }
 }
@@ -267,30 +367,29 @@ foreach ($k in $rowKeys.Keys) {
 
 # --- hygiene of row.source itself ---
 foreach ($r in $rows) {
-    if ($null -eq $r) { continue }
+    if ($null -eq $r -or -not (Is-JsonObject $r)) { continue }
     $s = $r.source
-    if ([string]::IsNullOrEmpty($s)) { Fail ("empty-source in module=" + $r.module); continue }
+    if (-not (Is-NonEmptyString $s)) { continue }   # typed failure already reported in schema pass
     if ($s -notmatch "\.kt$")           { Fail ("source-not-kt: " + $s) }
     if ($s -match "(^/|[\\:]|\.\.)")    { Fail ("source-not-module-relative: " + $s) }
     if ($s -match "src/test|/build/|generated") { Fail ("source-looks-like-test-or-generated: " + $s) }
 }
 
 # --- symbol declaration checks ---
-# C# / Kotlin type declarations for v5/test anchors (struct/record kept for C# test sources).
-# ":" is excluded from the gap so a SUPERTYPE across "class X : Y" cannot satisfy the check.
-function Test-AnchorSymbol([string]$file, [string]$symbol) {
-    $text = Read-Utf8 $file
+# C# / Kotlin type declarations for v5/test anchors. ":" is excluded from the gap so a
+# SUPERTYPE across "class X : Y" cannot satisfy the check; modifiers like "public" can never
+# be the declared symbol.
+function Test-AnchorSymbol([string]$text, [string]$symbol) {
     $rx = [regex]::Escape($symbol)
     $pattern = "(class|struct|interface|enum|record|object)[^=\r\n{(:]{0,160}\b" + $rx + "\b"
     return [regex]::IsMatch($text, $pattern)
 }
 
-# Kotlin declaration forms for v4Symbol in the row's own V4 source file:
+# Kotlin declaration forms for v4Symbol in the row's own V4 source blob:
 #   type declarations: (enum|data|sealed|abstract|open|inner|fun)* class/interface/object
 #   functions: fun [typeparams] [Receiver.]name(   (covers top-level, member, extension)
 #   extension receiver: fun Receiver.name(
 #   typealias and property declarations: typealias X / const val X / val X / var X
-# A symbol appearing only as an import or a usage does NOT satisfy any of these.
 function Test-KotlinDeclaredSymbol([string]$text, [string]$symbol) {
     if ([string]::IsNullOrWhiteSpace($symbol)) { return $false }
     $rx = [regex]::Escape($symbol)
@@ -301,57 +400,148 @@ function Test-KotlinDeclaredSymbol([string]$text, [string]$symbol) {
     return $false
 }
 
-# --- 4/4b/5/5b/6. per-row schema, taskbook check, anchors, responsibility ---
+# --- frozen-baseline blob access (one bulk git cat-file --batch pass + cache) ---
+$script:blobCache = @{}
+$script:shaToPath = @{}
+
+function Add-BlobRequest([string]$path) {
+    if ([string]::IsNullOrEmpty($path)) { return }
+    if ($script:blobCache.ContainsKey($path)) { return }
+    if (-not $script:baselineTree.ContainsKey($path)) { return }   # membership failures reported separately
+    $script:blobCache[$path] = $null                                # reserve; filled by bulk load
+}
+
+function Load-BaselineBlobs {
+    if ($script:blobCache.Keys.Count -eq 0) { return }
+    # resolve blob shas for the requested paths from the baseline tree (with SHAs)
+    $ErrorActionPreference = "Continue"
+    $treeFull = & git -C $script:RepoRoot -c core.quotepath=off ls-tree -r $script:bc 2>$null
+    $ErrorActionPreference = "Stop"
+    foreach ($line in $treeFull) {
+        # ls-tree default line: "<mode> blob <sha> TAB <path>" (mode prefix included)
+        if ($line -match "^[0-6]{6}\s+blob\s+([0-9a-f]{40})\t(.+)$") {
+            $sha = $Matches[1]; $p = $Matches[2]
+            if ($script:blobCache.ContainsKey($p)) { $script:shaToPath[$sha] = $p }
+        }
+    }
+    $shas = @($script:shaToPath.Keys)
+    if ($shas.Count -eq 0) { return }
+    $ErrorActionPreference = "Continue"
+    $raw = $shas | & git -C $script:RepoRoot cat-file --batch 2>$null
+    $ErrorActionPreference = "Stop"
+    $currentPath = $null
+    $content = New-Object System.Collections.Generic.List[string]
+    foreach ($line in $raw) {
+        $s = "$line"
+        if ($s -match "^([0-9a-f]{40})\s+blob\s+\d+$") {
+            if ($null -ne $currentPath) { $script:blobCache[$currentPath] = ($content -join "`n") }
+            $currentPath = $script:shaToPath[$Matches[1]]
+            $content = New-Object System.Collections.Generic.List[string]
+            continue
+        }
+        if ($null -ne $currentPath) { $content.Add($s) }
+    }
+    if ($null -ne $currentPath) { $script:blobCache[$currentPath] = ($content -join "`n") }
+}
+
+function Get-BaselineBlob([string]$path) {
+    # A reserved entry ($null) means the bulk pass could not fill it (e.g. two paths sharing one
+    # blob sha) -> fall through to a direct per-path read instead of returning null.
+    if ($script:blobCache.ContainsKey($path) -and $null -ne $script:blobCache[$path]) { return $script:blobCache[$path] }
+    $ErrorActionPreference = "Continue"
+    $content = (& git -C $script:RepoRoot -c core.quotepath=off cat-file blob ($script:bc + ":" + $path) 2>$null) -join "`n"
+    $ErrorActionPreference = "Stop"
+    $script:blobCache[$path] = $content
+    return $content
+}
+
+# pre-request every baseline blob this run will need: row sources + all anchor files
+foreach ($p in $realPath.Values) { Add-BlobRequest $p }
+foreach ($r in $rows) {
+    if ($null -eq $r -or -not (Is-JsonObject $r)) { continue }
+    foreach ($f in @("v5Anchors","testAnchors")) {
+        if (-not (Has-Prop $r $f)) { continue }
+        $arr = Prop-Value $r $f
+        if (-not (Is-JsonArray $arr)) { continue }
+        foreach ($a in @($arr)) {
+            if (-not (Is-JsonObject $a)) { continue }
+            $p = Prop-Value $a "path"
+            if (Is-JsonString $p) { Add-BlobRequest $p }
+        }
+    }
+}
+Load-BaselineBlobs
+
+# --- 4/4b/5/5b/6. per-row schema, taskbook check, frozen anchors, responsibility ---
 $statusCount = @{}
 $moduleCount = @{}
 $rowIds = @{}
 foreach ($r in $rows) {
-    if ($null -eq $r) { continue }
+    if ($null -eq $r -or -not (Is-JsonObject $r)) { continue }
     $tag = "[" + $r.id + " " + $r.module + "/" + $r.source + "]"
 
-    # 4. typed schema: required non-empty strings
+    # 4. required non-empty JSON strings (no coercion: 42 / true / null are failures)
     foreach ($f in @("id","module","source","v4Symbol","planTarget","status","responsibleTask","gapSummary","notes")) {
-        if (-not (Has-Prop $r $f)) { Fail ($tag + " row-missing-required-field " + $f) }
-        elseif ([string]::IsNullOrWhiteSpace("$($r.$f)")) { Fail ($tag + " row-empty-required-field " + $f) }
+        if (-not (Has-Prop $r $f)) { Fail ($tag + " row-field-missing " + $f) }
+        elseif (-not (Is-NonEmptyString (Prop-Value $r $f))) { Fail ($tag + " row-field-not-string " + $f) }
     }
-    # id format + global uniqueness
-    if ("$($r.id)" -notmatch "^[A-Z]{3}-[0-9]{3}$") {
-        Fail ($tag + " bad-row-id: " + $r.id)
+    # id format + global uniqueness (only decidable for proper strings)
+    if ((Has-Prop $r "id") -and (Is-JsonString (Prop-Value $r "id"))) {
+        $idVal = Prop-Value $r "id"
+        if ($idVal -notmatch "^[A-Z]{3}-[0-9]{3}$") { Fail ($tag + " bad-row-id: " + $idVal) }
+        if ($rowIds.ContainsKey($idVal)) { Fail ($tag + " duplicate-row-id: " + $idVal) }
+        else { $rowIds[$idVal] = $true }
     }
-    if ($rowIds.ContainsKey("$($r.id)")) { Fail ($tag + " duplicate-row-id: " + $r.id) }
-    else { $rowIds["$($r.id)"] = $true }
-    # required arrays (present as JSON arrays; empty is legal for deps/anchor/golden lists)
-    foreach ($f in @("dependencies","v5Anchors","testAnchors","acceptanceAnchors","goldenSamples")) {
-        if (-not (Has-Prop $r $f)) { Fail ($tag + " row-missing-required-field " + $f) }
-    }
-    if (-not (Has-Prop $r "v5Targets")) { Fail ($tag + " v5-targets-missing") }
-    elseif ($null -eq @($r.v5Targets) -or @($r.v5Targets).Count -eq 0) { Fail ($tag + " v5-targets-empty") }
-    else {
-        foreach ($t in @($r.v5Targets)) {
-            $ts = "$t"
-            if ($ts.StartsWith("Unity(")) { continue }
-            if ($allowedV5Targets -notcontains $ts) { Fail ($tag + " unknown-v5-target-module: " + $ts) }
+    # 4. required JSON arrays (null/scalar/object values are failures; empty lists legal)
+    $depsArr = @()
+    $v5tArr = @()
+    $goldenArr = @()
+    $v5aArr = @()
+    $testaArr = @()
+    $accaArr = @()
+    foreach ($f in @("v5Targets","dependencies","v5Anchors","testAnchors","acceptanceAnchors","goldenSamples")) {
+        if (-not (Has-Prop $r $f)) { Fail ($tag + " row-field-missing " + $f); continue }
+        $fv = Prop-Value $r $f
+        if (-not (Is-JsonArray $fv)) { Fail ($tag + " row-field-not-array " + $f); continue }
+        switch ($f) {
+            "dependencies"      { $depsArr = @($fv) }
+            "v5Targets"         { $v5tArr = @($fv) }
+            "goldenSamples"     { $goldenArr = @($fv) }
+            "v5Anchors"         { $v5aArr = @($fv) }
+            "testAnchors"       { $testaArr = @($fv) }
+            "acceptanceAnchors" { $accaArr = @($fv) }
         }
     }
-    if (-not (Has-Prop $r "planTarget")) { Fail ($tag + " plan-target-missing") }
 
     if ($modules -notcontains $r.module) { Fail ($tag + " unknown-module: " + $r.module) }
     if ($allowedStatus -notcontains $r.status) { Fail ($tag + " unknown-status: " + $r.status) }
 
-    # 4b. responsibility must reference REAL taskbook IDs; anti gate-cycle
-    if (-not (Has-Prop $r "responsibleTask") -or [string]::IsNullOrWhiteSpace("$($r.responsibleTask)")) {
-        Fail ($tag + " missing-responsible-task")
-    } elseif (-not $taskIds.ContainsKey("$($r.responsibleTask)")) {
-        Fail ($tag + " responsible-task-not-in-taskbook: " + $r.responsibleTask)
+    # 4. v5Targets: >=1 entry, every entry a JSON string in the controlled vocabulary
+    if ((Has-Prop $r "v5Targets") -and (Is-JsonArray (Prop-Value $r "v5Targets"))) {
+        if ($v5tArr.Count -eq 0) { Fail ($tag + " v5-targets-empty") }
+        foreach ($t in $v5tArr) {
+            if (-not (Is-JsonString $t)) { Fail ($tag + " array-element-not-string v5Targets"); continue }
+            if (-not $t.StartsWith("Unity(") -and $allowedV5Targets -notcontains $t) { Fail ($tag + " unknown-v5-target-module: " + $t) }
+        }
     }
-    foreach ($d in @($r.dependencies)) {
-        if (-not $d) { continue }
-        $ds = "$d"
-        if (-not $taskIds.ContainsKey($ds)) { Fail ($tag + " dependency-not-in-taskbook: " + $ds); continue }
-        if ($ds -match "^G[0-5]$") {
-            $prereqs = $gatePrereqs[$ds]
-            if ($null -ne $prereqs -and $prereqs.Contains("$($r.responsibleTask)")) {
-                Fail ($tag + " gate-dependency-cycle: " + $ds + " itself requires " + $r.responsibleTask)
+
+    # 4b. responsibility: real taskbook IDs; no self-dependency; no gate cycles
+    $respTask = $null
+    if ((Has-Prop $r "responsibleTask") -and (Is-JsonString (Prop-Value $r "responsibleTask"))) { $respTask = Prop-Value $r "responsibleTask" }
+    if (-not (Is-NonEmptyString $respTask)) {
+        Fail ($tag + " missing-responsible-task")
+    } elseif (-not $taskIds.ContainsKey($respTask)) {
+        Fail ($tag + " responsible-task-not-in-taskbook: " + $respTask)
+    }
+    foreach ($d in $depsArr) {
+        if (-not (Is-NonEmptyString $d)) { Fail ($tag + " array-element-not-string dependencies"); continue }
+        if (-not $taskIds.ContainsKey($d)) { Fail ($tag + " dependency-not-in-taskbook: " + $d); continue }
+        if (-not (Is-NonEmptyString $respTask)) { continue }
+        if ($d -eq $respTask) { Fail ($tag + " self-task-dependency: " + $d); continue }
+        if ($d -match "^G[0-5]$") {
+            $prereqs = $gatePrereqs[$d]
+            if ($null -ne $prereqs -and $prereqs.Contains($respTask)) {
+                Fail ($tag + " gate-dependency-cycle: " + $d + " itself requires " + $respTask)
             }
         }
     }
@@ -359,120 +549,142 @@ foreach ($r in $rows) {
     $statusCount[$r.status] = 1 + ($statusCount[$r.status] | ForEach-Object { if ($_) { $_ } else { 0 } })
     $moduleCount[$r.module] = 1 + ($moduleCount[$r.module] | ForEach-Object { if ($_) { $_ } else { 0 } })
 
-    # 5. v5Anchors: canonical, category (V5 C# source, tracked), symbol required + declared
-    foreach ($a in @($r.v5Anchors)) {
-        if (-not $a) { continue }
-        if (-not (Has-Prop $a "path") -or [string]::IsNullOrWhiteSpace("$($a.path)")) { Fail ($tag + " v5-anchor-path-missing-field"); continue }
-        if (-not (Test-CanonicalRepoPath "$($a.path)")) { Fail ($tag + " anchor-path-not-canonical: " + $a.path); continue }
-        if (-not "$($a.path)".StartsWith("dotnet/src/")) { Fail ($tag + " v5-anchor-not-v5-source: " + $a.path) }
-        elseif (-not $trackedAll.ContainsKey("$($a.path)")) { Fail ($tag + " v5-anchor-not-tracked: " + $a.path) }
-        if (-not (Has-Prop $a "symbol") -or [string]::IsNullOrWhiteSpace("$($a.symbol)")) { Fail ($tag + " v5-anchor-symbol-missing"); continue }
-        $ap = Join-Path $RepoRoot ("$($a.path)" -replace "/", "\")
-        if (-not (Test-Path -LiteralPath $ap -PathType Leaf)) { Fail ($tag + " v5-anchor-path-missing: " + $a.path); continue }
-        if (-not (Test-AnchorSymbol $ap "$($a.symbol)")) { Fail ($tag + " v5-anchor-symbol-not-declared: " + $a.symbol + " in " + $a.path) }
+    # 5. v5Anchors: typed elements, canonical, category, IN BASELINE TREE, symbol in BASELINE BLOB
+    foreach ($a in $v5aArr) {
+        if (-not (Is-JsonObject $a)) { Fail ($tag + " anchor-element-not-object v5Anchors"); continue }
+        if (-not (Has-Prop $a "path")) { Fail ($tag + " anchor-field-missing path"); continue }
+        if (-not (Is-JsonString (Prop-Value $a "path"))) { Fail ($tag + " anchor-field-not-string path"); continue }
+        $p = Prop-Value $a "path"
+        if (-not (Test-CanonicalRepoPath $p)) { Fail ($tag + " anchor-path-not-canonical: " + $p); continue }
+        if (-not $p.StartsWith("dotnet/src/")) { Fail ($tag + " v5-anchor-not-v5-source: " + $p) }
+        elseif (-not $baselineTree.ContainsKey($p)) { Fail ($tag + " v5-anchor-not-in-baseline-tree: " + $p) }
+        if (-not (Has-Prop $a "symbol")) { Fail ($tag + " v5-anchor-symbol-missing"); continue }
+        if (-not (Is-NonEmptyString (Prop-Value $a "symbol"))) { Fail ($tag + " anchor-field-not-string symbol"); continue }
+        $sym = Prop-Value $a "symbol"
+        if ($baselineTree.ContainsKey($p) -and -not (Test-AnchorSymbol (Get-BaselineBlob $p) $sym)) {
+            Fail ($tag + " v5-anchor-symbol-not-declared-at-baseline: " + $sym + " in " + $p)
+        }
     }
-    # 5. testAnchors: canonical, category (test sources, tracked), symbol required + declared
-    foreach ($a in @($r.testAnchors)) {
-        if (-not $a) { continue }
-        if (-not (Has-Prop $a "path") -or [string]::IsNullOrWhiteSpace("$($a.path)")) { Fail ($tag + " test-anchor-path-missing-field"); continue }
-        if (-not (Test-CanonicalRepoPath "$($a.path)")) { Fail ($tag + " anchor-path-not-canonical: " + $a.path); continue }
-        $p = "$($a.path)"
+    # 5. testAnchors: typed elements, canonical, test category, IN BASELINE TREE, symbol in BASELINE BLOB
+    foreach ($a in $testaArr) {
+        if (-not (Is-JsonObject $a)) { Fail ($tag + " anchor-element-not-object testAnchors"); continue }
+        if (-not (Has-Prop $a "path")) { Fail ($tag + " anchor-field-missing path"); continue }
+        if (-not (Is-JsonString (Prop-Value $a "path"))) { Fail ($tag + " anchor-field-not-string path"); continue }
+        $p = Prop-Value $a "path"
+        if (-not (Test-CanonicalRepoPath $p)) { Fail ($tag + " anchor-path-not-canonical: " + $p); continue }
         if (-not ($p.Contains("/src/test/") -or $p.StartsWith("dotnet/tests/"))) { Fail ($tag + " test-anchor-not-test-source: " + $p) }
-        elseif (-not $trackedAll.ContainsKey($p)) { Fail ($tag + " test-anchor-not-tracked: " + $p) }
-        if (-not (Has-Prop $a "symbol") -or [string]::IsNullOrWhiteSpace("$($a.symbol)")) { Fail ($tag + " test-anchor-symbol-missing"); continue }
-        $ap = Join-Path $RepoRoot ($p -replace "/", "\")
-        if (-not (Test-Path -LiteralPath $ap -PathType Leaf)) { Fail ($tag + " test-anchor-path-missing: " + $p); continue }
-        if (-not (Test-AnchorSymbol $ap "$($a.symbol)")) { Fail ($tag + " test-anchor-symbol-not-declared: " + $a.symbol + " in " + $p) }
+        elseif (-not $baselineTree.ContainsKey($p)) { Fail ($tag + " test-anchor-not-in-baseline-tree: " + $p) }
+        if (-not (Has-Prop $a "symbol")) { Fail ($tag + " test-anchor-symbol-missing"); continue }
+        if (-not (Is-NonEmptyString (Prop-Value $a "symbol"))) { Fail ($tag + " anchor-field-not-string symbol"); continue }
+        $sym = Prop-Value $a "symbol"
+        if ($baselineTree.ContainsKey($p) -and -not (Test-AnchorSymbol (Get-BaselineBlob $p) $sym)) {
+            Fail ($tag + " test-anchor-symbol-not-declared-at-baseline: " + $sym + " in " + $p)
+        }
     }
-    # 5. acceptanceAnchors: doc under doc/ + commit must be REAL evidence, not just 7..40 hex
-    foreach ($a in @($r.acceptanceAnchors)) {
-        if (-not $a) { continue }
-        if (-not (Has-Prop $a "doc") -or [string]::IsNullOrWhiteSpace("$($a.doc)")) { Fail ($tag + " acceptance-doc-missing-field"); continue }
-        if (-not (Has-Prop $a "commit") -or [string]::IsNullOrWhiteSpace("$($a.commit)")) { Fail ($tag + " acceptance-commit-missing-field"); continue }
-        if (-not (Test-CanonicalRepoPath "$($a.doc)")) { Fail ($tag + " anchor-path-not-canonical: " + $a.doc); continue }
-        if (-not "$($a.doc)".StartsWith("doc/")) { Fail ($tag + " acceptance-doc-not-under-doc: " + $a.doc) }
-        if (-not ("$($a.commit)" -match "^[0-9a-f]{7,40}$")) { Fail ($tag + " acceptance-commit-bad: " + $a.commit); continue }
-        $ap = Join-Path $RepoRoot ("$($a.doc)" -replace "/", "\")
-        if (-not (Test-Path -LiteralPath $ap -PathType Leaf)) { Fail ($tag + " acceptance-doc-missing: " + $a.doc) }
+    # 5. acceptanceAnchors: typed elements, doc under doc/ and in baseline tree, commit REAL evidence
+    foreach ($a in $accaArr) {
+        if (-not (Is-JsonObject $a)) { Fail ($tag + " anchor-element-not-object acceptanceAnchors"); continue }
+        foreach ($sf in @("doc","commit")) {
+            if (-not (Has-Prop $a $sf)) { Fail ($tag + " anchor-field-missing " + $sf) }
+            elseif (-not (Is-NonEmptyString (Prop-Value $a $sf))) { Fail ($tag + " anchor-field-not-string " + $sf) }
+        }
+        if (-not (Has-Prop $a "doc") -or -not (Is-NonEmptyString (Prop-Value $a "doc"))) { continue }
+        if (-not (Has-Prop $a "commit") -or -not (Is-NonEmptyString (Prop-Value $a "commit"))) { continue }
+        $docPath = Prop-Value $a "doc"
+        $commit = Prop-Value $a "commit"
+        if (-not (Test-CanonicalRepoPath $docPath)) { Fail ($tag + " anchor-path-not-canonical: " + $docPath); continue }
+        if (-not $docPath.StartsWith("doc/")) { Fail ($tag + " acceptance-doc-not-under-doc: " + $docPath) }
+        if (-not ($commit -match "^[0-9a-f]{7,40}$")) { Fail ($tag + " acceptance-commit-bad: " + $commit); continue }
+        # Doc membership at the baseline is checked with cat-file -e on "<bc>:<doc>" instead of a
+        # tree lookup: doc paths may be non-ASCII, which ls-tree output cannot reliably round-trip
+        # through the console encoding, while a direct object argument can.
         $ErrorActionPreference = "Continue"
-        & git -C $RepoRoot cat-file -e ("$($a.commit)" + "^{commit}") 2>$null
+        & git -C $RepoRoot cat-file -e ($bc + ":" + $docPath) 2>$null
+        if ($LASTEXITCODE -ne 0) { Fail ($tag + " acceptance-doc-not-in-baseline-tree: " + $docPath) }
+        & git -C $RepoRoot cat-file -e ($commit + "^{commit}") 2>$null
         if ($LASTEXITCODE -ne 0) {
-            Fail ($tag + " acceptance-commit-not-in-repo: " + $a.commit)
+            Fail ($tag + " acceptance-commit-not-in-repo: " + $commit)
         } else {
-            & git -C $RepoRoot merge-base --is-ancestor "$($a.commit)" $bc 2>$null
-            if ($LASTEXITCODE -ne 0) { Fail ($tag + " acceptance-commit-not-ancestor-of-baseline: " + $a.commit) }
-            & git -C $RepoRoot cat-file -e ("$($a.commit)" + ":" + "$($a.doc)") 2>$null
-            if ($LASTEXITCODE -ne 0) { Fail ($tag + " acceptance-doc-missing-at-commit: " + $a.doc + "@" + $a.commit) }
+            & git -C $RepoRoot merge-base --is-ancestor $commit $bc 2>$null
+            if ($LASTEXITCODE -ne 0) { Fail ($tag + " acceptance-commit-not-ancestor-of-baseline: " + $commit) }
+            & git -C $RepoRoot cat-file -e ($commit + ":" + $docPath) 2>$null
+            if ($LASTEXITCODE -ne 0) { Fail ($tag + " acceptance-doc-missing-at-commit: " + $docPath + "@" + $commit) }
         }
         $ErrorActionPreference = "Stop"
     }
-    # 5. golden samples: controlled directory + presence (worktree and header list)
-    foreach ($g in @($r.goldenSamples)) {
-        if (-not $g) { continue }
-        $gs = "$g"
-        if (-not (Test-CanonicalRepoPath $gs)) { Fail ($tag + " anchor-path-not-canonical: " + $gs); continue }
-        if (-not $gs.StartsWith("tests/v5-golden/")) { Fail ($tag + " golden-sample-path-not-controlled: " + $gs) }
-        $gp = Join-Path $RepoRoot ($gs -replace "/", "\")
-        if (-not (Test-Path -LiteralPath $gp -PathType Leaf)) { Fail ($tag + " golden-sample-missing: " + $gs) }
+    # 5. golden samples: controlled directory + IN BASELINE TREE
+    foreach ($g in $goldenArr) {
+        if (-not (Is-JsonString $g)) { Fail ($tag + " array-element-not-string goldenSamples"); continue }
+        if (-not (Test-CanonicalRepoPath $g)) { Fail ($tag + " anchor-path-not-canonical: " + $g); continue }
+        if (-not $g.StartsWith("tests/v5-golden/")) { Fail ($tag + " golden-sample-path-not-controlled: " + $g) }
+        if (-not $baselineTree.ContainsKey($g)) { Fail ($tag + " golden-sample-not-in-baseline-tree: " + $g) }
     }
 
-    # 5b. v4Symbol must be declared in the row's own tracked V4 source file
+    # 5b. v4Symbol must be declared in the BASELINE BLOB of the row's own source file
     $srcKey = "$($r.module)|$($r.source)"
     if ($realPath.ContainsKey($srcKey)) {
-        $srcFull = Join-Path $RepoRoot ($realPath[$srcKey] -replace "/", "\")
-        $srcText = Read-Utf8 $srcFull
-        if (-not (Test-KotlinDeclaredSymbol $srcText "$($r.v4Symbol)")) {
-            Fail ($tag + " v4-symbol-not-declared: " + $r.v4Symbol + " in " + $realPath[$srcKey])
+        $srcFull = $realPath[$srcKey]
+        if (-not (Test-KotlinDeclaredSymbol (Get-BaselineBlob $srcFull) "$($r.v4Symbol)")) {
+            Fail ($tag + " v4-symbol-not-declared-at-baseline: " + $r.v4Symbol + " in " + $srcFull)
         }
     }
 
-    # 6. status-specific responsibility rules
+    # 6. status-specific responsibility rules (uses the pre-extracted typed arrays)
     if ($r.status -eq "accepted-component") {
-        if (@($r.v5Anchors).Count -eq 0 -or -not @($r.v5Anchors)[0]) { Fail ($tag + " accepted-component-without-v5-anchor") }
-        if (@($r.acceptanceAnchors).Count -eq 0 -or -not @($r.acceptanceAnchors)[0]) { Fail ($tag + " accepted-component-without-acceptance-anchor") }
+        if ($v5aArr.Count -eq 0 -or -not (Is-JsonObject $v5aArr[0])) {
+            Fail ($tag + " accepted-component-without-v5-anchor")
+        }
+        if ($accaArr.Count -eq 0 -or -not (Is-JsonObject $accaArr[0])) {
+            Fail ($tag + " accepted-component-without-acceptance-anchor")
+        }
     } else {
-        if ([string]::IsNullOrWhiteSpace("$($r.gapSummary)")) { Fail ($tag + " status-needs-gap-summary: " + $r.status) }
-        if (-not (Has-Prop $r "responsibleTask") -or [string]::IsNullOrWhiteSpace("$($r.responsibleTask)")) { Fail ($tag + " status-needs-responsible-task: " + $r.status) }
+        if (-not (Is-NonEmptyString (Prop-Value $r "gapSummary"))) { Fail ($tag + " status-needs-gap-summary: " + $r.status) }
+        if (-not (Is-NonEmptyString $respTask)) { Fail ($tag + " status-needs-responsible-task: " + $r.status) }
     }
 }
 
 # --- 7. denominator + stats self-consistency ---
-$den = $doc.denominator
-if ($null -eq $den) {
-    Fail "header-missing-field denominator"
-} elseif ($den.productionSources -ne $rows.Count) {
-    Fail ("denominator-mismatch declared=" + $den.productionSources + " rows=" + $rows.Count)
+$denOk = $false
+if ((Has-Prop $doc "denominator") -and (Is-JsonObject (Prop-Value $doc "denominator")) -and (Has-Prop (Prop-Value $doc "denominator") "productionSources") -and (Is-JsonNumber (Prop-Value (Prop-Value $doc "denominator") "productionSources"))) {
+    $denOk = $true
+    $denVal = Prop-Value (Prop-Value $doc "denominator") "productionSources"
+    if ($denVal -ne $rows.Count) {
+        Fail ("denominator-mismatch declared=" + $denVal + " rows=" + $rows.Count)
+    }
 }
 if ($rows.Count -ne $realCount) {
     Fail ("coverage-mismatch rows=" + $rows.Count + " enumerated-tracked=" + $realCount)
 }
-foreach ($st in $allowedStatus) {
-    $declared = 0
-    if ($doc.stats -and $doc.stats.byStatus.PSObject.Properties[$st]) { $declared = $doc.stats.byStatus.$st }
-    $computed = 0
-    if ($statusCount[$st]) { $computed = $statusCount[$st] }
-    if ($declared -ne $computed) { Fail ("stats-by-status-mismatch " + $st + " declared=" + $declared + " computed=" + $computed) }
-}
-foreach ($m in $modules) {
-    $declared = 0
-    if ($doc.stats -and $doc.stats.byModule.PSObject.Properties[$m]) { $declared = $doc.stats.byModule.$m }
-    $computed = 0
-    if ($moduleCount[$m]) { $computed = $moduleCount[$m] }
-    if ($declared -ne $computed) { Fail ("stats-by-module-mismatch " + $m + " declared=" + $declared + " computed=" + $computed) }
+if ((Has-Prop $doc "stats") -and (Is-JsonObject (Prop-Value $doc "stats"))) {
+    $statsObj = Prop-Value $doc "stats"
+    foreach ($st in $allowedStatus) {
+        $declared = 0
+        if ($null -ne $statsObj.byStatus -and $null -ne $statsObj.byStatus.PSObject.Properties[$st]) { $declared = $statsObj.byStatus.$st }
+        $computed = 0
+        if ($statusCount[$st]) { $computed = $statusCount[$st] }
+        if ($declared -ne $computed) { Fail ("stats-by-status-mismatch " + $st + " declared=" + $declared + " computed=" + $computed) }
+    }
+    foreach ($m in $modules) {
+        $declared = 0
+        if ($null -ne $statsObj.byModule -and $null -ne $statsObj.byModule.PSObject.Properties[$m]) { $declared = $statsObj.byModule.$m }
+        $computed = 0
+        if ($moduleCount[$m]) { $computed = $moduleCount[$m] }
+        if ($declared -ne $computed) { Fail ("stats-by-module-mismatch " + $m + " declared=" + $declared + " computed=" + $computed) }
+    }
 }
 
-# --- golden samples header list must exist and be controlled too ---
-foreach ($g in @($doc.goldenSamplesInBaseline)) {
-    if (-not $g) { continue }
-    $gs = "$g"
-    if (-not (Test-CanonicalRepoPath $gs)) { Fail ("anchor-path-not-canonical: " + $gs); continue }
-    if (-not $gs.StartsWith("tests/v5-golden/")) { Fail ("golden-sample-path-not-controlled: " + $gs) }
-    $gp = Join-Path $RepoRoot ($gs -replace "/", "\")
-    if (-not (Test-Path -LiteralPath $gp -PathType Leaf)) { Fail ("header-golden-sample-missing: " + $gs) }
+# --- header golden list: canonical, controlled, IN BASELINE TREE ---
+if ((Has-Prop $doc "goldenSamplesInBaseline") -and (Is-JsonArray (Prop-Value $doc "goldenSamplesInBaseline"))) {
+    foreach ($g in (Prop-Value $doc "goldenSamplesInBaseline")) {
+        if (-not (Is-JsonString $g)) { continue }   # typed failure already reported
+        if (-not (Test-CanonicalRepoPath $g)) { Fail ("anchor-path-not-canonical: " + $g); continue }
+        if (-not $g.StartsWith("tests/v5-golden/")) { Fail ("golden-sample-path-not-controlled: " + $g) }
+        if (-not $baselineTree.ContainsKey($g)) { Fail ("header-golden-sample-not-in-baseline-tree: " + $g) }
+    }
 }
 
 # --- report ---
-Note ("tracked-main-kt=" + $realCount)
+Note ("tracked-main-kt=" + $realCount + " (frozen baseline tree)")
 Note ("rows=" + $rows.Count)
 $statLine = ""
 foreach ($st in $allowedStatus) {
