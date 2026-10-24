@@ -108,7 +108,7 @@ namespace Mahjong.Ai
             AiSeatFacts? frozenSeatFacts = seatFacts?.DeepCopy();
             ValidatePrivateScope(frozenCheatView, stamp);
             ValidateSeatFacts(frozenSeatFacts, frozenCheatView, stamp, ordinaryObservation);
-            ValidateMarkedTileRelations(frozenCheatView, frozenSeatFacts, stamp);
+            ValidateMarkedTileRelations(frozenCheatView, frozenSeatFacts, ordinaryObservation, stamp);
             ValidatePreparation(frozenCheatView, stamp, options, ordinaryObservation);
             ValidatePhase(frozenCheatView, stamp, options, ordinaryObservation);
             ValidateFactIdentity(frozenCheatView, stamp);
@@ -347,7 +347,7 @@ namespace Mahjong.Ai
                     nameof(cheatView));
             }
 
-            if (cheatView.HasPrivateFacts && scope.RoundId == null)
+            if (cheatView.HasTechniqueFacts && scope.RoundId == null)
             {
                 throw new ArgumentException(
                     "Private technique facts require a current round.",
@@ -435,6 +435,7 @@ namespace Mahjong.Ai
         private static void ValidateMarkedTileRelations(
             AiCheatView cheatView,
             AiSeatFacts? seatFacts,
+            AiObservation? observation,
             AiDecisionStamp stamp)
         {
             AiTileMarkFacts? mark = cheatView.TileMark;
@@ -444,6 +445,20 @@ namespace Mahjong.Ai
             }
 
             AiPrivateFactScope? scope = cheatView.Scope;
+            IReadOnlyList<TileId>? knownHand = KnownOwnHand(seatFacts, observation);
+            if (knownHand != null)
+            {
+                for (int i = 0; i < mark.SelectableTileIds.Count; i++)
+                {
+                    if (!ContainsTile(knownHand, mark.SelectableTileIds[i]))
+                    {
+                        throw new ArgumentException(
+                            "A selectable own-hand mark tile is not in the frozen own hand.",
+                            nameof(cheatView));
+                    }
+                }
+            }
+
             for (int g = 0; g < mark.ActiveGroups.Count; g++)
             {
                 AiTileMarkGroupFacts group = mark.ActiveGroups[g];
@@ -480,19 +495,44 @@ namespace Mahjong.Ai
                         }
                     }
 
-                    if (seatFacts != null &&
+                    // OWN_HAND describes the tile's current projected location. The group's
+                    // CreatedRoundId is creation history and does not exempt a current
+                    // OwnHand position from the known current hand. Historical groups whose
+                    // tiles are NotVisible/opponent/discard remain legal.
+                    if (knownHand != null &&
                         tile.Area == AiTileMarkArea.OwnHand &&
-                        scope != null &&
-                        scope.RoundId != null &&
-                        string.Equals(group.CreatedRoundId, scope.RoundId, StringComparison.Ordinal) &&
-                        !ContainsTile(seatFacts.MyHandTileIds, tile.TileId))
+                        !ContainsTile(knownHand, tile.TileId))
                     {
                         throw new ArgumentException(
-                            "A current-round OWN_HAND mark must name a tile in the frozen own hand.",
+                            "An OWN_HAND mark must name a tile in the known frozen own hand.",
                             nameof(cheatView));
                     }
                 }
             }
+        }
+
+        private static IReadOnlyList<TileId>? KnownOwnHand(
+            AiSeatFacts? seatFacts,
+            AiObservation? observation)
+        {
+            if (seatFacts != null)
+            {
+                return seatFacts.MyHandTileIds;
+            }
+
+            if (observation == null)
+            {
+                return null;
+            }
+
+            var hand = new List<TileId>(observation.MyHandTileIds);
+            if (observation.MyDrawnTileId.HasValue &&
+                !ContainsTile(hand, observation.MyDrawnTileId.Value.Value))
+            {
+                hand.Add(observation.MyDrawnTileId.Value);
+            }
+
+            return hand;
         }
 
         private static bool TilesEqual(IReadOnlyList<TileId> left, IReadOnlyList<TileId> right)

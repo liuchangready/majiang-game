@@ -1594,6 +1594,216 @@ namespace Mahjong.Ai.Tests
         }
 
         [Fact]
+        public void UnscopedNonZeroBalanceIsRejected()
+        {
+            Assert.Throws<ArgumentException>(() => FrozenFixtures.Snapshot(
+                FrozenFixtures.Stamp(),
+                options: new[] { FrozenFixtures.Option("opt") },
+                cheat: new AiCheatView(23)));
+        }
+
+        [Fact]
+        public void BalanceOnlyViewCannotBeReusedAcrossIdentity()
+        {
+            AiSeatSnapshot owner = FrozenFixtures.Snapshot(
+                FrozenFixtures.Stamp(seat: 1, sessionId: "s1", roundId: "r1"),
+                options: new[] { FrozenFixtures.Option("opt") },
+                cheat: new AiCheatView(23, scope: FrozenFixtures.Scope()));
+
+            Assert.Throws<ArgumentException>(() => FrozenFixtures.Snapshot(
+                FrozenFixtures.Stamp(seat: 2, sessionId: "s2", roundId: "r2"),
+                options: new[] { FrozenFixtures.Option("opt", seat: 2) },
+                cheat: owner.CheatView));
+
+            Assert.Throws<ArgumentException>(() => FrozenFixtures.Snapshot(
+                FrozenFixtures.Stamp(seat: 1, sessionId: "S1", roundId: "r1"),
+                options: new[] { FrozenFixtures.Option("opt") },
+                cheat: owner.CheatView));
+            Assert.Throws<ArgumentException>(() => FrozenFixtures.Snapshot(
+                FrozenFixtures.Stamp(seat: 1, sessionId: "s1", roundId: "R1"),
+                options: new[] { FrozenFixtures.Option("opt") },
+                cheat: owner.CheatView));
+        }
+
+        [Fact]
+        public void BoundBalanceOnlyViewIsAccepted()
+        {
+            AiSeatSnapshot snapshot = FrozenFixtures.Snapshot(
+                FrozenFixtures.Stamp(),
+                options: new[] { FrozenFixtures.Option("opt") },
+                cheat: new AiCheatView(23, scope: FrozenFixtures.Scope()));
+
+            Assert.Equal(23, snapshot.CheatView.CheatPoints);
+            Assert.Equal(1, snapshot.CheatView.Scope!.Seat);
+            Assert.Equal("s1", snapshot.CheatView.Scope.SessionId);
+            Assert.Equal("r1", snapshot.CheatView.Scope.RoundId);
+        }
+
+        [Fact]
+        public void NoRoundBalanceOnlyViewIsAcceptedAndWrongRoundIsRejected()
+        {
+            AiDecisionStamp idle = FrozenFixtures.Stamp(
+                phase: AiPhase.Idle,
+                roundId: null,
+                decisionId: null,
+                deadlineMillis: null);
+
+            AiSeatSnapshot snapshot = FrozenFixtures.Snapshot(
+                idle,
+                cheat: new AiCheatView(23, scope: FrozenFixtures.Scope(roundId: null)));
+            Assert.Equal(23, snapshot.CheatView.CheatPoints);
+
+            Assert.Throws<ArgumentException>(() => FrozenFixtures.Snapshot(
+                idle,
+                cheat: new AiCheatView(23, scope: FrozenFixtures.Scope(roundId: "r1"))));
+        }
+
+        [Fact]
+        public void BalanceOnlyDeepCopyPreservesScope()
+        {
+            var view = new AiCheatView(23, scope: FrozenFixtures.Scope(seat: 2, sessionId: "S2", roundId: "R2"));
+            AiCheatView copy = view.DeepCopy();
+
+            Assert.NotSame(view.Scope, copy.Scope);
+            Assert.Equal(2, copy.Scope!.Seat);
+            Assert.Equal("S2", copy.Scope.SessionId);
+            Assert.Equal("R2", copy.Scope.RoundId);
+        }
+
+        [Fact]
+        public void NoRoundSeatFactsRejectClosedHandAndDrawnTile()
+        {
+            Assert.Throws<ArgumentException>(() => FrozenFixtures.SeatFacts(
+                FrozenFixtures.Tiles(10),
+                roundId: null));
+            Assert.Throws<ArgumentException>(() => FrozenFixtures.SeatFacts(
+                Array.Empty<TileId>(),
+                new TileId(10),
+                roundId: null));
+        }
+
+        [Fact]
+        public void HistoricalOwnHandMarkMustMatchKnownCurrentHand()
+        {
+            AiTileMarkGroupFacts group = FrozenFixtures.MarkGroup("r0", FrozenFixtures.Seat, 10, 11, 12, 13);
+            AiTileMarkFacts mark = FrozenFixtures.TileMark(activeGroups: new[] { group });
+
+            Assert.Throws<ArgumentException>(() => FrozenFixtures.Snapshot(
+                FrozenFixtures.Stamp(),
+                options: new[] { FrozenFixtures.Option("opt") },
+                cheat: FrozenFixtures.CheatView(tileMark: mark),
+                seatFacts: FrozenFixtures.SeatFacts(FrozenFixtures.Tiles(10, 11, 12, 14))));
+
+            AiSeatSnapshot positive = FrozenFixtures.Snapshot(
+                FrozenFixtures.Stamp(),
+                options: new[] { FrozenFixtures.Option("opt") },
+                cheat: FrozenFixtures.CheatView(tileMark: mark),
+                seatFacts: FrozenFixtures.SeatFacts(FrozenFixtures.Tiles(10, 11, 12, 13)));
+            Assert.Equal("r0", positive.CheatView.TileMark!.ActiveGroups[0].CreatedRoundId);
+        }
+
+        [Fact]
+        public void ObservationOnlyOwnHandMarkMustMatchObservationHand()
+        {
+            LegalActionOption[] actions = { FrozenFixtures.Option("opt") };
+            AiObservation observation = FrozenFixtures.Observation(
+                new DecisionKey("r1", FrozenFixtures.Seat, "d1"),
+                3,
+                9,
+                5000,
+                actions);
+            AiTileMarkGroupFacts group = FrozenFixtures.MarkGroup("r0", FrozenFixtures.Seat, 10, 11, 12, 13);
+            AiTileMarkFacts mark = FrozenFixtures.TileMark(activeGroups: new[] { group });
+
+            Assert.Throws<ArgumentException>(() => FrozenFixtures.Snapshot(
+                FrozenFixtures.Stamp(),
+                actions,
+                observation: observation,
+                cheat: FrozenFixtures.CheatView(tileMark: mark)));
+
+            AiObservation matching = FrozenFixtures.Observation(
+                new DecisionKey("r1", FrozenFixtures.Seat, "d1"),
+                3,
+                9,
+                5000,
+                actions,
+                hand: FrozenFixtures.Tiles(10, 11, 12, 13));
+            AiSeatSnapshot positive = FrozenFixtures.Snapshot(
+                FrozenFixtures.Stamp(),
+                actions,
+                observation: matching,
+                cheat: FrozenFixtures.CheatView(tileMark: mark));
+            Assert.Single(positive.CheatView.TileMark!.ActiveGroups);
+        }
+
+        [Fact]
+        public void ObservationAndSeatFactsMatchingHandIsAccepted()
+        {
+            LegalActionOption[] actions = { FrozenFixtures.Option("opt") };
+            AiObservation observation = FrozenFixtures.Observation(
+                new DecisionKey("r1", FrozenFixtures.Seat, "d1"),
+                3,
+                9,
+                5000,
+                actions,
+                hand: FrozenFixtures.Tiles(10, 11, 12, 13));
+            AiSeatSnapshot snapshot = FrozenFixtures.Snapshot(
+                FrozenFixtures.Stamp(),
+                actions,
+                observation: observation,
+                seatFacts: FrozenFixtures.SeatFacts(FrozenFixtures.Tiles(10, 11, 12, 13)));
+
+            Assert.Equal(4, snapshot.SeatFacts!.MyClosedTileIds.Count);
+        }
+
+        [Fact]
+        public void HistoricalNotVisibleGroupIsAllowed()
+        {
+            var group = new AiTileMarkGroupFacts("g1", "r0", 1, 4, 2, false, new[]
+            {
+                new AiMarkedTileFacts(10, AiTileMarkArea.NotVisible),
+                new AiMarkedTileFacts(11, AiTileMarkArea.NotVisible),
+                new AiMarkedTileFacts(12, AiTileMarkArea.NotVisible),
+                new AiMarkedTileFacts(13, AiTileMarkArea.NotVisible)
+            });
+            AiTileMarkFacts mark = FrozenFixtures.TileMark(activeGroups: new[] { group });
+            AiSeatSnapshot snapshot = FrozenFixtures.Snapshot(
+                FrozenFixtures.Stamp(),
+                options: new[] { FrozenFixtures.Option("opt") },
+                cheat: FrozenFixtures.CheatView(tileMark: mark));
+
+            Assert.Single(snapshot.CheatView.TileMark!.ActiveGroups);
+        }
+
+        [Fact]
+        public void DrawnTileCountsAsPartOfKnownOwnHand()
+        {
+            AiTileMarkGroupFacts group = FrozenFixtures.MarkGroup("r1", FrozenFixtures.Seat, 10, 11, 12, 13);
+            AiTileMarkFacts mark = FrozenFixtures.TileMark(activeGroups: new[] { group });
+            AiSeatSnapshot snapshot = FrozenFixtures.Snapshot(
+                FrozenFixtures.Stamp(),
+                options: new[] { FrozenFixtures.Option("opt") },
+                cheat: FrozenFixtures.CheatView(tileMark: mark),
+                seatFacts: FrozenFixtures.SeatFacts(
+                    FrozenFixtures.Tiles(11, 12, 13),
+                    new TileId(10)));
+
+            Assert.Single(snapshot.CheatView.TileMark!.ActiveGroups);
+        }
+
+        [Fact]
+        public void SelectableMarkTileMustBeInKnownOwnHand()
+        {
+            AiTileMarkFacts mark = FrozenFixtures.TileMark(selectableTileIds: new[] { 99 });
+
+            Assert.Throws<ArgumentException>(() => FrozenFixtures.Snapshot(
+                FrozenFixtures.Stamp(),
+                options: new[] { FrozenFixtures.Option("opt") },
+                cheat: FrozenFixtures.CheatView(tileMark: mark),
+                seatFacts: FrozenFixtures.SeatFacts(FrozenFixtures.Tiles(10, 11, 12, 13))));
+        }
+
+        [Fact]
         public void UnknownAiPhaseIsRejected()
         {
             Assert.Throws<ArgumentOutOfRangeException>(() => FrozenFixtures.Snapshot(

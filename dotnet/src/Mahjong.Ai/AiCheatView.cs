@@ -100,6 +100,14 @@ namespace Mahjong.Ai
                     nameof(myDrawnTileId));
             }
 
+            if (Scope.RoundId == null &&
+                (closed.Length != 0 || myDrawnTileId.HasValue))
+            {
+                throw new ArgumentException(
+                    "A seat view without a current round must have an empty hand.",
+                    nameof(myClosedTileIds));
+            }
+
             var combined = new TileId[combinedCount];
             Array.Copy(closed, combined, closed.Length);
             if (myDrawnTileId.HasValue)
@@ -210,8 +218,16 @@ namespace Mahjong.Ai
         public AiBeamSwapFacts? BeamSwap { get; }
 
         /// <summary>True when at least one private technique fact is attached.</summary>
-        public bool HasPrivateFacts =>
+        public bool HasTechniqueFacts =>
             Preparation != null || TileMark != null || SleeveBloom != null || BeamSwap != null;
+
+        /// <summary>
+        /// True when this view carries any seat-private content. A non-zero cheat-point
+        /// balance is private even when no technique sub-view is present, so it must be
+        /// bound to the owning seat/session/round just like a technique fact. The default
+        /// all-empty, zero-balance view remains scope-free.
+        /// </summary>
+        public bool HasPrivateFacts => CheatPoints != 0 || HasTechniqueFacts;
 
         /// <summary>
         /// Independent copy. Every nested fact type is immutable and already owns its
