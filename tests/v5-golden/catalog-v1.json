@@ -1872,7 +1872,124 @@
                                                                       "path":  "expected",
                                                                       "type":  "object"
                                                                   }
-                                                              ]
+                                                              ],
+                                                    "conditionalRules":  [
+                                                                             {
+                                                                                 "path":  "sampleId",
+                                                                                 "equals":  "G-001a",
+                                                                                 "rules":  [
+                                                                                               {
+                                                                                                   "path":  "expected.tiles",
+                                                                                                   "type":  "array",
+                                                                                                   "length":  136
+                                                                                               },
+                                                                                               {
+                                                                                                   "path":  "expected.size",
+                                                                                                   "type":  "number"
+                                                                                               },
+                                                                                               {
+                                                                                                   "path":  "expected.distinctIdentities",
+                                                                                                   "type":  "number"
+                                                                                               },
+                                                                                               {
+                                                                                                   "path":  "expected.redFiveCount",
+                                                                                                   "type":  "number"
+                                                                                               }
+                                                                                           ]
+                                                                             },
+                                                                             {
+                                                                                 "path":  "sampleId",
+                                                                                 "equals":  "G-001b",
+                                                                                 "rules":  [
+                                                                                               {
+                                                                                                   "path":  "expected.groups",
+                                                                                                   "type":  "array",
+                                                                                                   "length":  34
+                                                                                               },
+                                                                                               {
+                                                                                                   "path":  "expected.boundarySamples",
+                                                                                                   "type":  "array"
+                                                                                               },
+                                                                                               {
+                                                                                                   "path":  "expected.totalTiles",
+                                                                                                   "type":  "number"
+                                                                                               },
+                                                                                               {
+                                                                                                   "path":  "expected.distinctTypeIndexes",
+                                                                                                   "type":  "number"
+                                                                                               }
+                                                                                           ]
+                                                                             },
+                                                                             {
+                                                                                 "path":  "sampleId",
+                                                                                 "equals":  "G-001c",
+                                                                                 "rules":  [
+                                                                                               {
+                                                                                                   "path":  "expected.validRoundTrips",
+                                                                                                   "type":  "array",
+                                                                                                   "length":  136
+                                                                                               },
+                                                                                               {
+                                                                                                   "path":  "expected.boundaries",
+                                                                                                   "type":  "array"
+                                                                                               },
+                                                                                               {
+                                                                                                   "path":  "expected.validCount",
+                                                                                                   "type":  "number"
+                                                                                               }
+                                                                                           ]
+                                                                             },
+                                                                             {
+                                                                                 "path":  "sampleId",
+                                                                                 "equals":  "G-002",
+                                                                                 "rules":  [
+                                                                                               {
+                                                                                                   "path":  "expected.cases",
+                                                                                                   "type":  "array"
+                                                                                               },
+                                                                                               {
+                                                                                                   "path":  "expected.acceptedCount",
+                                                                                                   "type":  "number"
+                                                                                               },
+                                                                                               {
+                                                                                                   "path":  "expected.rejectedCount",
+                                                                                                   "type":  "number"
+                                                                                               }
+                                                                                           ]
+                                                                             },
+                                                                             {
+                                                                                 "path":  "sampleId",
+                                                                                 "equals":  "G-003a",
+                                                                                 "rules":  [
+                                                                                               {
+                                                                                                   "path":  "expected.cases",
+                                                                                                   "type":  "array"
+                                                                                               },
+                                                                                               {
+                                                                                                   "path":  "expected.seedCount",
+                                                                                                   "type":  "number"
+                                                                                               },
+                                                                                               {
+                                                                                                   "path":  "expected.positionsRecorded",
+                                                                                                   "type":  "number"
+                                                                                               }
+                                                                                           ]
+                                                                             },
+                                                                             {
+                                                                                 "path":  "sampleId",
+                                                                                 "equals":  "G-003b",
+                                                                                 "rules":  [
+                                                                                               {
+                                                                                                   "path":  "expected.probeA",
+                                                                                                   "type":  "object"
+                                                                                               },
+                                                                                               {
+                                                                                                   "path":  "expected.probeB",
+                                                                                                   "type":  "object"
+                                                                                               }
+                                                                                           ]
+                                                                             }
+                                                                         ]
                                                 },
                         "scoring-v1:winSamples":  {
                                                       "requiredKeys":  [
@@ -1897,6 +2014,194 @@
                                                                     {
                                                                         "path":  "expected",
                                                                         "type":  "object"
+                                                                    },
+                                                                    {
+                                                                        "path":  "input.closedTiles",
+                                                                        "type":  "array"
+                                                                    },
+                                                                    {
+                                                                        "path":  "input.drawnTile",
+                                                                        "type":  "number-or-null"
+                                                                    },
+                                                                    {
+                                                                        "path":  "input.melds",
+                                                                        "type":  "array"
+                                                                    },
+                                                                    {
+                                                                        "path":  "input.context",
+                                                                        "type":  "object"
+                                                                    },
+                                                                    {
+                                                                        "path":  "input.doraIndicators",
+                                                                        "type":  "array"
+                                                                    },
+                                                                    {
+                                                                        "path":  "input.uraDoraIndicators",
+                                                                        "type":  "array"
+                                                                    },
+                                                                    {
+                                                                        "path":  "input.honba",
+                                                                        "type":  "number"
+                                                                    },
+                                                                    {
+                                                                        "path":  "input.riichiSticks",
+                                                                        "type":  "number"
+                                                                    },
+                                                                    {
+                                                                        "path":  "expected.yaku",
+                                                                        "type":  "array"
+                                                                    },
+                                                                    {
+                                                                        "path":  "expected.totalHan",
+                                                                        "type":  "number"
+                                                                    },
+                                                                    {
+                                                                        "path":  "expected.scoreHan",
+                                                                        "type":  "number"
+                                                                    },
+                                                                    {
+                                                                        "path":  "expected.isYakuman",
+                                                                        "type":  "boolean"
+                                                                    },
+                                                                    {
+                                                                        "path":  "expected.yakumanCount",
+                                                                        "type":  "number"
+                                                                    },
+                                                                    {
+                                                                        "path":  "expected.dora",
+                                                                        "type":  "object"
+                                                                    },
+                                                                    {
+                                                                        "path":  "expected.fu",
+                                                                        "type":  "object"
+                                                                    },
+                                                                    {
+                                                                        "path":  "expected.score",
+                                                                        "type":  "object"
+                                                                    },
+                                                                    {
+                                                                        "path":  "expected.paymentPlan",
+                                                                        "type":  "object"
+                                                                    },
+                                                                    {
+                                                                        "path":  "expected.honbaAddition",
+                                                                        "type":  "number"
+                                                                    },
+                                                                    {
+                                                                        "path":  "expected.riichiAddition",
+                                                                        "type":  "number"
+                                                                    },
+                                                                    {
+                                                                        "path":  "expected.totalPoints",
+                                                                        "type":  "number"
+                                                                    },
+                                                                    {
+                                                                        "path":  "expected.score.basePoints",
+                                                                        "type":  "number"
+                                                                    },
+                                                                    {
+                                                                        "path":  "expected.score.rawBasePoints",
+                                                                        "type":  "number"
+                                                                    },
+                                                                    {
+                                                                        "path":  "expected.score.rawBasePointsExact",
+                                                                        "type":  "string"
+                                                                    },
+                                                                    {
+                                                                        "path":  "expected.score.capCode",
+                                                                        "type":  "string-or-null"
+                                                                    },
+                                                                    {
+                                                                        "path":  "expected.score.isYakuman",
+                                                                        "type":  "boolean"
+                                                                    },
+                                                                    {
+                                                                        "path":  "expected.score.yakumanMultiplier",
+                                                                        "type":  "number"
+                                                                    },
+                                                                    {
+                                                                        "path":  "expected.fu.subtotal",
+                                                                        "type":  "number"
+                                                                    },
+                                                                    {
+                                                                        "path":  "expected.fu.roundedUpTo",
+                                                                        "type":  "number"
+                                                                    },
+                                                                    {
+                                                                        "path":  "expected.fu.finalFu",
+                                                                        "type":  "number"
+                                                                    },
+                                                                    {
+                                                                        "path":  "expected.fu.lines",
+                                                                        "type":  "array"
+                                                                    },
+                                                                    {
+                                                                        "path":  "expected.paymentPlan.kind",
+                                                                        "type":  "string"
+                                                                    },
+                                                                    {
+                                                                        "path":  "expected.paymentPlan.components",
+                                                                        "type":  "array"
+                                                                    },
+                                                                    {
+                                                                        "path":  "expected.paymentPlan.total",
+                                                                        "type":  "number"
+                                                                    },
+                                                                    {
+                                                                        "path":  "input.context.winTile",
+                                                                        "type":  "number"
+                                                                    },
+                                                                    {
+                                                                        "path":  "input.context.isTsumo",
+                                                                        "type":  "boolean"
+                                                                    },
+                                                                    {
+                                                                        "path":  "input.context.isClosed",
+                                                                        "type":  "boolean"
+                                                                    },
+                                                                    {
+                                                                        "path":  "input.context.seatWind",
+                                                                        "type":  "number"
+                                                                    },
+                                                                    {
+                                                                        "path":  "input.context.roundWind",
+                                                                        "type":  "number"
+                                                                    },
+                                                                    {
+                                                                        "path":  "input.context.isRiichi",
+                                                                        "type":  "boolean"
+                                                                    },
+                                                                    {
+                                                                        "path":  "input.context.isDoubleRiichi",
+                                                                        "type":  "boolean"
+                                                                    },
+                                                                    {
+                                                                        "path":  "input.context.isIppatsu",
+                                                                        "type":  "boolean"
+                                                                    },
+                                                                    {
+                                                                        "path":  "input.context.isRinshan",
+                                                                        "type":  "boolean"
+                                                                    },
+                                                                    {
+                                                                        "path":  "input.context.isHaitei",
+                                                                        "type":  "boolean"
+                                                                    },
+                                                                    {
+                                                                        "path":  "input.context.isHoutei",
+                                                                        "type":  "boolean"
+                                                                    },
+                                                                    {
+                                                                        "path":  "input.context.isChankan",
+                                                                        "type":  "boolean"
+                                                                    },
+                                                                    {
+                                                                        "path":  "input.context.isTenhou",
+                                                                        "type":  "boolean"
+                                                                    },
+                                                                    {
+                                                                        "path":  "input.context.isChiihou",
+                                                                        "type":  "boolean"
                                                                     }
                                                                 ]
                                                   },
@@ -1923,6 +2228,86 @@
                                                                       {
                                                                           "path":  "expected",
                                                                           "type":  "object"
+                                                                      },
+                                                                      {
+                                                                          "path":  "input.closedTiles",
+                                                                          "type":  "array"
+                                                                      },
+                                                                      {
+                                                                          "path":  "input.drawnTile",
+                                                                          "type":  "number-or-null"
+                                                                      },
+                                                                      {
+                                                                          "path":  "input.melds",
+                                                                          "type":  "array"
+                                                                      },
+                                                                      {
+                                                                          "path":  "input.context",
+                                                                          "type":  "object"
+                                                                      },
+                                                                      {
+                                                                          "path":  "input.extraHan",
+                                                                          "type":  "number"
+                                                                      },
+                                                                      {
+                                                                          "path":  "expected.status",
+                                                                          "type":  "string"
+                                                                      },
+                                                                      {
+                                                                          "path":  "input.context.winTile",
+                                                                          "type":  "number"
+                                                                      },
+                                                                      {
+                                                                          "path":  "input.context.isTsumo",
+                                                                          "type":  "boolean"
+                                                                      },
+                                                                      {
+                                                                          "path":  "input.context.isClosed",
+                                                                          "type":  "boolean"
+                                                                      },
+                                                                      {
+                                                                          "path":  "input.context.seatWind",
+                                                                          "type":  "number"
+                                                                      },
+                                                                      {
+                                                                          "path":  "input.context.roundWind",
+                                                                          "type":  "number"
+                                                                      },
+                                                                      {
+                                                                          "path":  "input.context.isRiichi",
+                                                                          "type":  "boolean"
+                                                                      },
+                                                                      {
+                                                                          "path":  "input.context.isDoubleRiichi",
+                                                                          "type":  "boolean"
+                                                                      },
+                                                                      {
+                                                                          "path":  "input.context.isIppatsu",
+                                                                          "type":  "boolean"
+                                                                      },
+                                                                      {
+                                                                          "path":  "input.context.isRinshan",
+                                                                          "type":  "boolean"
+                                                                      },
+                                                                      {
+                                                                          "path":  "input.context.isHaitei",
+                                                                          "type":  "boolean"
+                                                                      },
+                                                                      {
+                                                                          "path":  "input.context.isHoutei",
+                                                                          "type":  "boolean"
+                                                                      },
+                                                                      {
+                                                                          "path":  "input.context.isChankan",
+                                                                          "type":  "boolean"
+                                                                      },
+                                                                      {
+                                                                          "path":  "input.context.isTenhou",
+                                                                          "type":  "boolean"
+                                                                      },
+                                                                      {
+                                                                          "path":  "input.context.isChiihou",
+                                                                          "type":  "boolean"
                                                                       }
                                                                   ]
                                                     },
@@ -1949,6 +2334,54 @@
                                                                    {
                                                                        "path":  "expected",
                                                                        "type":  "object"
+                                                                   },
+                                                                   {
+                                                                       "path":  "input.decomposition",
+                                                                       "type":  "object"
+                                                                   },
+                                                                   {
+                                                                       "path":  "input.winTile",
+                                                                       "type":  "number"
+                                                                   },
+                                                                   {
+                                                                       "path":  "input.isTsumo",
+                                                                       "type":  "boolean"
+                                                                   },
+                                                                   {
+                                                                       "path":  "input.isClosed",
+                                                                       "type":  "boolean"
+                                                                   },
+                                                                   {
+                                                                       "path":  "input.seatWind",
+                                                                       "type":  "number"
+                                                                   },
+                                                                   {
+                                                                       "path":  "input.roundWind",
+                                                                       "type":  "number"
+                                                                   },
+                                                                   {
+                                                                       "path":  "input.openMelds",
+                                                                       "type":  "array"
+                                                                   },
+                                                                   {
+                                                                       "path":  "expected.lines",
+                                                                       "type":  "array"
+                                                                   },
+                                                                   {
+                                                                       "path":  "expected.subtotal",
+                                                                       "type":  "number"
+                                                                   },
+                                                                   {
+                                                                       "path":  "expected.roundedUpTo",
+                                                                       "type":  "number"
+                                                                   },
+                                                                   {
+                                                                       "path":  "expected.finalFu",
+                                                                       "type":  "number"
+                                                                   },
+                                                                   {
+                                                                       "path":  "expected.specialNote",
+                                                                       "type":  "string-or-null"
                                                                    }
                                                                ]
                                                  },
@@ -1975,6 +2408,54 @@
                                                                      {
                                                                          "path":  "expected",
                                                                          "type":  "object"
+                                                                     },
+                                                                     {
+                                                                         "path":  "input.closedTiles",
+                                                                         "type":  "array"
+                                                                     },
+                                                                     {
+                                                                         "path":  "input.drawnTile",
+                                                                         "type":  "number-or-null"
+                                                                     },
+                                                                     {
+                                                                         "path":  "input.melds",
+                                                                         "type":  "array"
+                                                                     },
+                                                                     {
+                                                                         "path":  "input.doraIndicators",
+                                                                         "type":  "array"
+                                                                     },
+                                                                     {
+                                                                         "path":  "input.uraDoraIndicators",
+                                                                         "type":  "array"
+                                                                     },
+                                                                     {
+                                                                         "path":  "expected.indicatorCount",
+                                                                         "type":  "number"
+                                                                     },
+                                                                     {
+                                                                         "path":  "expected.uraCount",
+                                                                         "type":  "number"
+                                                                     },
+                                                                     {
+                                                                         "path":  "expected.redCount",
+                                                                         "type":  "number"
+                                                                     },
+                                                                     {
+                                                                         "path":  "expected.totalHan",
+                                                                         "type":  "number"
+                                                                     },
+                                                                     {
+                                                                         "path":  "expected.indicatorTiles",
+                                                                         "type":  "array"
+                                                                     },
+                                                                     {
+                                                                         "path":  "expected.uraTiles",
+                                                                         "type":  "array"
+                                                                     },
+                                                                     {
+                                                                         "path":  "expected.redTiles",
+                                                                         "type":  "array"
                                                                      }
                                                                  ]
                                                    },
@@ -2001,6 +2482,57 @@
                                                                            {
                                                                                "path":  "expected",
                                                                                "type":  "object"
+                                                                           },
+                                                                           {
+                                                                               "path":  "input.settlementKind",
+                                                                               "type":  "string"
+                                                                           },
+                                                                           {
+                                                                               "path":  "input.scores",
+                                                                               "type":  "array",
+                                                                               "length":  4
+                                                                           },
+                                                                           {
+                                                                               "path":  "input.dealer",
+                                                                               "type":  "number"
+                                                                           },
+                                                                           {
+                                                                               "path":  "input.honba",
+                                                                               "type":  "number"
+                                                                           },
+                                                                           {
+                                                                               "path":  "input.riichiSticks",
+                                                                               "type":  "number"
+                                                                           },
+                                                                           {
+                                                                               "path":  "input.winner",
+                                                                               "type":  "number-or-null"
+                                                                           },
+                                                                           {
+                                                                               "path":  "input.loser",
+                                                                               "type":  "number-or-null"
+                                                                           },
+                                                                           {
+                                                                               "path":  "input.fu",
+                                                                               "type":  "number"
+                                                                           },
+                                                                           {
+                                                                               "path":  "input.han",
+                                                                               "type":  "number"
+                                                                           },
+                                                                           {
+                                                                               "path":  "expected.deltas",
+                                                                               "type":  "array",
+                                                                               "length":  4
+                                                                           },
+                                                                           {
+                                                                               "path":  "expected.newScores",
+                                                                               "type":  "array",
+                                                                               "length":  4
+                                                                           },
+                                                                           {
+                                                                               "path":  "expected.remainingRiichiSticks",
+                                                                               "type":  "number"
                                                                            }
                                                                        ]
                                                          },
@@ -2027,6 +2559,134 @@
                                                                       {
                                                                           "path":  "expected",
                                                                           "type":  "object"
+                                                                      },
+                                                                      {
+                                                                          "path":  "input.fu",
+                                                                          "type":  "number"
+                                                                      },
+                                                                      {
+                                                                          "path":  "input.han",
+                                                                          "type":  "number"
+                                                                      },
+                                                                      {
+                                                                          "path":  "input.yakumanCount",
+                                                                          "type":  "number"
+                                                                      },
+                                                                      {
+                                                                          "path":  "expected.basePoints",
+                                                                          "type":  "number"
+                                                                      },
+                                                                      {
+                                                                          "path":  "expected.rawBasePoints",
+                                                                          "type":  "number"
+                                                                      },
+                                                                      {
+                                                                          "path":  "expected.rawBasePointsExact",
+                                                                          "type":  "string"
+                                                                      },
+                                                                      {
+                                                                          "path":  "expected.capCode",
+                                                                          "type":  "string-or-null"
+                                                                      },
+                                                                      {
+                                                                          "path":  "expected.isYakuman",
+                                                                          "type":  "boolean"
+                                                                      },
+                                                                      {
+                                                                          "path":  "expected.yakumanMultiplier",
+                                                                          "type":  "number"
+                                                                      },
+                                                                      {
+                                                                          "path":  "expected.payments",
+                                                                          "type":  "object"
+                                                                      },
+                                                                      {
+                                                                          "path":  "expected.payments.dealerTsumo",
+                                                                          "type":  "number"
+                                                                      },
+                                                                      {
+                                                                          "path":  "expected.payments.nonDealerTsumoDealer",
+                                                                          "type":  "number"
+                                                                      },
+                                                                      {
+                                                                          "path":  "expected.payments.nonDealerTsumoOther",
+                                                                          "type":  "number"
+                                                                      },
+                                                                      {
+                                                                          "path":  "expected.payments.dealerRon",
+                                                                          "type":  "number"
+                                                                      },
+                                                                      {
+                                                                          "path":  "expected.payments.nonDealerRon",
+                                                                          "type":  "number"
+                                                                      },
+                                                                      {
+                                                                          "path":  "expected.paymentPlans",
+                                                                          "type":  "object"
+                                                                      },
+                                                                      {
+                                                                          "path":  "expected.paymentPlans.dealerTsumo",
+                                                                          "type":  "object"
+                                                                      },
+                                                                      {
+                                                                          "path":  "expected.paymentPlans.nonDealerTsumo",
+                                                                          "type":  "object"
+                                                                      },
+                                                                      {
+                                                                          "path":  "expected.paymentPlans.dealerRon",
+                                                                          "type":  "object"
+                                                                      },
+                                                                      {
+                                                                          "path":  "expected.paymentPlans.nonDealerRon",
+                                                                          "type":  "object"
+                                                                      },
+                                                                      {
+                                                                          "path":  "expected.paymentPlans.dealerTsumo.kind",
+                                                                          "type":  "string"
+                                                                      },
+                                                                      {
+                                                                          "path":  "expected.paymentPlans.dealerTsumo.components",
+                                                                          "type":  "array"
+                                                                      },
+                                                                      {
+                                                                          "path":  "expected.paymentPlans.dealerTsumo.total",
+                                                                          "type":  "number"
+                                                                      },
+                                                                      {
+                                                                          "path":  "expected.paymentPlans.nonDealerTsumo.kind",
+                                                                          "type":  "string"
+                                                                      },
+                                                                      {
+                                                                          "path":  "expected.paymentPlans.nonDealerTsumo.components",
+                                                                          "type":  "array"
+                                                                      },
+                                                                      {
+                                                                          "path":  "expected.paymentPlans.nonDealerTsumo.total",
+                                                                          "type":  "number"
+                                                                      },
+                                                                      {
+                                                                          "path":  "expected.paymentPlans.dealerRon.kind",
+                                                                          "type":  "string"
+                                                                      },
+                                                                      {
+                                                                          "path":  "expected.paymentPlans.dealerRon.components",
+                                                                          "type":  "array"
+                                                                      },
+                                                                      {
+                                                                          "path":  "expected.paymentPlans.dealerRon.total",
+                                                                          "type":  "number"
+                                                                      },
+                                                                      {
+                                                                          "path":  "expected.paymentPlans.nonDealerRon.kind",
+                                                                          "type":  "string"
+                                                                      },
+                                                                      {
+                                                                          "path":  "expected.paymentPlans.nonDealerRon.components",
+                                                                          "type":  "array"
+                                                                      },
+                                                                      {
+                                                                          "path":  "expected.paymentPlans.nonDealerRon.total",
+                                                                          "type":  "number"
                                                                       }
                                                                   ]
                                                     },
@@ -2051,16 +2711,16 @@
                                                                            "type":  "array"
                                                                        },
                                                                        {
-                                                                           "path":  "context",
-                                                                           "type":  "object"
-                                                                       },
-                                                                       {
-                                                                           "path":  "expected",
-                                                                           "type":  "object"
+                                                                           "path":  "drawn",
+                                                                           "type":  "number-or-null"
                                                                        },
                                                                        {
                                                                            "path":  "melds",
                                                                            "type":  "array"
+                                                                       },
+                                                                       {
+                                                                           "path":  "context",
+                                                                           "type":  "object"
                                                                        },
                                                                        {
                                                                            "path":  "dora",
@@ -2073,8 +2733,116 @@
                                                                        {
                                                                            "path":  "removedWinTile",
                                                                            "type":  "boolean"
+                                                                       },
+                                                                       {
+                                                                           "path":  "expected",
+                                                                           "type":  "object"
+                                                                       },
+                                                                       {
+                                                                           "path":  "expected.status",
+                                                                           "type":  "string"
+                                                                       },
+                                                                       {
+                                                                           "path":  "context.winTile",
+                                                                           "type":  "number"
+                                                                       },
+                                                                       {
+                                                                           "path":  "context.isTsumo",
+                                                                           "type":  "boolean"
+                                                                       },
+                                                                       {
+                                                                           "path":  "context.isClosed",
+                                                                           "type":  "boolean"
+                                                                       },
+                                                                       {
+                                                                           "path":  "context.seatWind",
+                                                                           "type":  "number"
+                                                                       },
+                                                                       {
+                                                                           "path":  "context.roundWind",
+                                                                           "type":  "number"
+                                                                       },
+                                                                       {
+                                                                           "path":  "context.isRiichi",
+                                                                           "type":  "boolean"
+                                                                       },
+                                                                       {
+                                                                           "path":  "context.isDoubleRiichi",
+                                                                           "type":  "boolean"
+                                                                       },
+                                                                       {
+                                                                           "path":  "context.isIppatsu",
+                                                                           "type":  "boolean"
+                                                                       },
+                                                                       {
+                                                                           "path":  "context.isRinshan",
+                                                                           "type":  "boolean"
+                                                                       },
+                                                                       {
+                                                                           "path":  "context.isHaitei",
+                                                                           "type":  "boolean"
+                                                                       },
+                                                                       {
+                                                                           "path":  "context.isHoutei",
+                                                                           "type":  "boolean"
+                                                                       },
+                                                                       {
+                                                                           "path":  "context.isChankan",
+                                                                           "type":  "boolean"
+                                                                       },
+                                                                       {
+                                                                           "path":  "context.isTenhou",
+                                                                           "type":  "boolean"
+                                                                       },
+                                                                       {
+                                                                           "path":  "context.isChiihou",
+                                                                           "type":  "boolean"
                                                                        }
-                                                                   ]
+                                                                   ],
+                                                         "conditionalRules":  [
+                                                                                  {
+                                                                                      "path":  "expected.status",
+                                                                                      "equals":  "win",
+                                                                                      "rules":  [
+                                                                                                    {
+                                                                                                        "path":  "expected.yaku",
+                                                                                                        "type":  "array"
+                                                                                                    },
+                                                                                                    {
+                                                                                                        "path":  "expected.yakuHan",
+                                                                                                        "type":  "number"
+                                                                                                    },
+                                                                                                    {
+                                                                                                        "path":  "expected.scoreHan",
+                                                                                                        "type":  "number"
+                                                                                                    },
+                                                                                                    {
+                                                                                                        "path":  "expected.isYakuman",
+                                                                                                        "type":  "boolean"
+                                                                                                    },
+                                                                                                    {
+                                                                                                        "path":  "expected.yakumanCount",
+                                                                                                        "type":  "number"
+                                                                                                    },
+                                                                                                    {
+                                                                                                        "path":  "expected.fu",
+                                                                                                        "type":  "number"
+                                                                                                    },
+                                                                                                    {
+                                                                                                        "path":  "expected.basePoints",
+                                                                                                        "type":  "number"
+                                                                                                    },
+                                                                                                    {
+                                                                                                        "path":  "expected.capCode",
+                                                                                                        "type":  "string-or-null"
+                                                                                                    },
+                                                                                                    {
+                                                                                                        "path":  "expected.totalPoints",
+                                                                                                        "type":  "number"
+                                                                                                    }
+                                                                                                ]
+                                                                                  }
+                                                                              ]
                                                      },
                         "scoring-v1:randomMeta":  {
                                                       "requiredKeys":  [
@@ -2216,8 +2984,92 @@
                                                                         {
                                                                             "path":  "expected",
                                                                             "type":  "object"
+                                                                        },
+                                                                        {
+                                                                            "path":  "input.dealer",
+                                                                            "type":  "number"
+                                                                        },
+                                                                        {
+                                                                            "path":  "input.roundWind",
+                                                                            "type":  "number"
+                                                                        },
+                                                                        {
+                                                                            "path":  "input.roundNumber",
+                                                                            "type":  "number"
+                                                                        },
+                                                                        {
+                                                                            "path":  "input.honba",
+                                                                            "type":  "number"
+                                                                        },
+                                                                        {
+                                                                            "path":  "input.scores",
+                                                                            "type":  "array",
+                                                                            "length":  4
+                                                                        },
+                                                                        {
+                                                                            "path":  "input.outcome",
+                                                                            "type":  "object"
+                                                                        },
+                                                                        {
+                                                                            "path":  "input.outcome.kind",
+                                                                            "type":  "string"
+                                                                        },
+                                                                        {
+                                                                            "path":  "expected.type",
+                                                                            "type":  "string"
                                                                         }
-                                                                    ]
+                                                                    ],
+                                                          "conditionalRules":  [
+                                                                                   {
+                                                                                       "path":  "expected.type",
+                                                                                       "equals":  "NextRound",
+                                                                                       "rules":  [
+                                                                                                     {
+                                                                                                         "path":  "expected.roundWind",
+                                                                                                         "type":  "number"
+                                                                                                     },
+                                                                                                     {
+                                                                                                         "path":  "expected.roundNumber",
+                                                                                                         "type":  "number"
+                                                                                                     },
+                                                                                                     {
+                                                                                                         "path":  "expected.dealer",
+                                                                                                         "type":  "number"
+                                                                                                     },
+                                                                                                     {
+                                                                                                         "path":  "expected.honba",
+                                                                                                         "type":  "number"
+                                                                                                     },
+                                                                                                     {
+                                                                                                         "path":  "expected.canDealerDeclareAgariYame",
+                                                                                                         "type":  "boolean"
+                                                                                                     }
+                                                                                                 ]
+                                                                                   },
+                                                                                   {
+                                                                                       "path":  "expected.type",
+                                                                                       "equals":  "MatchFinished",
+                                                                                       "rules":  [
+                                                                                                     {
+                                                                                                         "path":  "expected.finalScores",
+                                                                                                         "type":  "array",
+                                                                                                         "length":  4
+                                                                                                     },
+                                                                                                     {
+                                                                                                         "path":  "expected.rankings",
+                                                                                                         "type":  "array"
+                                                                                                     },
+                                                                                                     {
+                                                                                                         "path":  "expected.reason",
+                                                                                                         "type":  "string"
+                                                                                                     },
+                                                                                                     {
+                                                                                                         "path":  "expected.transferSeat",
+                                                                                                         "type":  "number"
+                                                                                                     }
+                                                                                                 ]
+                                                                                   }
+                                                                               ]
                                                       },
                         "round-v1:decisionClock":  {
                                                        "requiredKeys":  [
@@ -2985,16 +3837,60 @@
                                                                         ],
                                                        "rules":  [
                                                                      {
-                                                                         "path":  "registerDealtRound",
-                                                                         "type":  "object"
+                                                                         "path":  "registerDealtRound.ordinalAfterFirst",
+                                                                         "type":  "number"
                                                                      },
                                                                      {
-                                                                         "path":  "addGroup",
-                                                                         "type":  "object"
+                                                                         "path":  "registerDealtRound.sameIdReplays",
+                                                                         "type":  "boolean"
                                                                      },
                                                                      {
-                                                                         "path":  "expiry",
-                                                                         "type":  "object"
+                                                                         "path":  "registerDealtRound.versionAfterFirstRegister",
+                                                                         "type":  "number"
+                                                                     },
+                                                                     {
+                                                                         "path":  "addGroup.expiresAfterRoundOrdinal",
+                                                                         "type":  "number"
+                                                                     },
+                                                                     {
+                                                                         "path":  "addGroup.sameIdSameContentReplays",
+                                                                         "type":  "boolean"
+                                                                     },
+                                                                     {
+                                                                         "path":  "addGroup.versionTrail",
+                                                                         "type":  "array"
+                                                                     },
+                                                                     {
+                                                                         "path":  "addGroup.crossSeatSameTilesAllowed",
+                                                                         "type":  "boolean"
+                                                                     },
+                                                                     {
+                                                                         "path":  "addGroup.crossSeatGroupCount",
+                                                                         "type":  "number"
+                                                                     },
+                                                                     {
+                                                                         "path":  "expiry.groupsAfterCompletingRound3",
+                                                                         "type":  "number"
+                                                                     },
+                                                                     {
+                                                                         "path":  "expiry.groupsAfterCompletingRound4",
+                                                                         "type":  "number"
+                                                                     },
+                                                                     {
+                                                                         "path":  "expiry.versionAfterFirstAdd",
+                                                                         "type":  "number"
+                                                                     },
+                                                                     {
+                                                                         "path":  "expiry.versionAfterCompletingRound3",
+                                                                         "type":  "number"
+                                                                     },
+                                                                     {
+                                                                         "path":  "expiry.versionAfterCompletingRound4",
+                                                                         "type":  "number"
+                                                                     },
+                                                                     {
+                                                                         "path":  "expiry.settledRoundCount",
+                                                                         "type":  "number"
                                                                      }
                                                                  ]
                                                    },
@@ -3153,28 +4049,148 @@
                                                                           ],
                                                          "rules":  [
                                                                        {
-                                                                           "path":  "CHINITSU_MAN",
-                                                                           "type":  "object"
+                                                                           "path":  "CHINITSU_MAN.CHINITSU_MAN",
+                                                                           "type":  "number"
                                                                        },
                                                                        {
-                                                                           "path":  "CHINITSU_SOU",
-                                                                           "type":  "object"
+                                                                           "path":  "CHINITSU_MAN.CHINITSU_SOU",
+                                                                           "type":  "number"
                                                                        },
                                                                        {
-                                                                           "path":  "CHINITSU_PIN",
-                                                                           "type":  "object"
+                                                                           "path":  "CHINITSU_MAN.CHINITSU_PIN",
+                                                                           "type":  "number"
                                                                        },
                                                                        {
-                                                                           "path":  "DAISANGEN",
-                                                                           "type":  "object"
+                                                                           "path":  "CHINITSU_MAN.DAISANGEN",
+                                                                           "type":  "number"
                                                                        },
                                                                        {
-                                                                           "path":  "KOKUSHI",
-                                                                           "type":  "object"
+                                                                           "path":  "CHINITSU_MAN.KOKUSHI",
+                                                                           "type":  "number"
                                                                        },
                                                                        {
-                                                                           "path":  "DAISUUSHII",
-                                                                           "type":  "object"
+                                                                           "path":  "CHINITSU_MAN.DAISUUSHII",
+                                                                           "type":  "number"
+                                                                       },
+                                                                       {
+                                                                           "path":  "CHINITSU_SOU.CHINITSU_MAN",
+                                                                           "type":  "number"
+                                                                       },
+                                                                       {
+                                                                           "path":  "CHINITSU_SOU.CHINITSU_SOU",
+                                                                           "type":  "number"
+                                                                       },
+                                                                       {
+                                                                           "path":  "CHINITSU_SOU.CHINITSU_PIN",
+                                                                           "type":  "number"
+                                                                       },
+                                                                       {
+                                                                           "path":  "CHINITSU_SOU.DAISANGEN",
+                                                                           "type":  "number"
+                                                                       },
+                                                                       {
+                                                                           "path":  "CHINITSU_SOU.KOKUSHI",
+                                                                           "type":  "number"
+                                                                       },
+                                                                       {
+                                                                           "path":  "CHINITSU_SOU.DAISUUSHII",
+                                                                           "type":  "number"
+                                                                       },
+                                                                       {
+                                                                           "path":  "CHINITSU_PIN.CHINITSU_MAN",
+                                                                           "type":  "number"
+                                                                       },
+                                                                       {
+                                                                           "path":  "CHINITSU_PIN.CHINITSU_SOU",
+                                                                           "type":  "number"
+                                                                       },
+                                                                       {
+                                                                           "path":  "CHINITSU_PIN.CHINITSU_PIN",
+                                                                           "type":  "number"
+                                                                       },
+                                                                       {
+                                                                           "path":  "CHINITSU_PIN.DAISANGEN",
+                                                                           "type":  "number"
+                                                                       },
+                                                                       {
+                                                                           "path":  "CHINITSU_PIN.KOKUSHI",
+                                                                           "type":  "number"
+                                                                       },
+                                                                       {
+                                                                           "path":  "CHINITSU_PIN.DAISUUSHII",
+                                                                           "type":  "number"
+                                                                       },
+                                                                       {
+                                                                           "path":  "DAISANGEN.CHINITSU_MAN",
+                                                                           "type":  "number"
+                                                                       },
+                                                                       {
+                                                                           "path":  "DAISANGEN.CHINITSU_SOU",
+                                                                           "type":  "number"
+                                                                       },
+                                                                       {
+                                                                           "path":  "DAISANGEN.CHINITSU_PIN",
+                                                                           "type":  "number"
+                                                                       },
+                                                                       {
+                                                                           "path":  "DAISANGEN.DAISANGEN",
+                                                                           "type":  "number"
+                                                                       },
+                                                                       {
+                                                                           "path":  "DAISANGEN.KOKUSHI",
+                                                                           "type":  "number"
+                                                                       },
+                                                                       {
+                                                                           "path":  "DAISANGEN.DAISUUSHII",
+                                                                           "type":  "number"
+                                                                       },
+                                                                       {
+                                                                           "path":  "KOKUSHI.CHINITSU_MAN",
+                                                                           "type":  "number"
+                                                                       },
+                                                                       {
+                                                                           "path":  "KOKUSHI.CHINITSU_SOU",
+                                                                           "type":  "number"
+                                                                       },
+                                                                       {
+                                                                           "path":  "KOKUSHI.CHINITSU_PIN",
+                                                                           "type":  "number"
+                                                                       },
+                                                                       {
+                                                                           "path":  "KOKUSHI.DAISANGEN",
+                                                                           "type":  "number"
+                                                                       },
+                                                                       {
+                                                                           "path":  "KOKUSHI.KOKUSHI",
+                                                                           "type":  "number"
+                                                                       },
+                                                                       {
+                                                                           "path":  "KOKUSHI.DAISUUSHII",
+                                                                           "type":  "number"
+                                                                       },
+                                                                       {
+                                                                           "path":  "DAISUUSHII.CHINITSU_MAN",
+                                                                           "type":  "number"
+                                                                       },
+                                                                       {
+                                                                           "path":  "DAISUUSHII.CHINITSU_SOU",
+                                                                           "type":  "number"
+                                                                       },
+                                                                       {
+                                                                           "path":  "DAISUUSHII.CHINITSU_PIN",
+                                                                           "type":  "number"
+                                                                       },
+                                                                       {
+                                                                           "path":  "DAISUUSHII.DAISANGEN",
+                                                                           "type":  "number"
+                                                                       },
+                                                                       {
+                                                                           "path":  "DAISUUSHII.KOKUSHI",
+                                                                           "type":  "number"
+                                                                       },
+                                                                       {
+                                                                           "path":  "DAISUUSHII.DAISUUSHII",
+                                                                           "type":  "number"
                                                                        }
                                                                    ]
                                                      },

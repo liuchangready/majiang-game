@@ -525,7 +525,41 @@ Invoke-NegativeCase -Name 'random-middle-wrong-context' -ExpectedCode 'CASE_STRU
     Update-CatalogFixtureSha -Root $root -FixtureId 'scoring-v1'
 }
 
-# 26. Exporter byte change.
+# 26. Empty consumed objects: score input/expected and random context.
+Invoke-NegativeCase -Name 'empty-consumed-objects' -ExpectedCode 'CASE_STRUCTURE_MISSING' -Mutator {
+    param($root)
+    $path = Join-Path $root 'tests\v5-golden\scoring-v1.json'
+    $json = Read-JsonFile $path
+    $json.scoreSamples[70].input = [pscustomobject]@{}
+    $json.scoreSamples[70].expected = [pscustomobject]@{}
+    $json.randomSamples[5000].context = [pscustomobject]@{}
+    Write-JsonFile $path $json
+    Update-CatalogFixtureSha -Root $root -FixtureId 'scoring-v1'
+}
+
+# 27. Non-empty consumed objects missing required fields.
+Invoke-NegativeCase -Name 'missing-consumed-fields' -ExpectedCode 'CASE_STRUCTURE_MISSING' -Mutator {
+    param($root)
+    $path = Join-Path $root 'tests\v5-golden\scoring-v1.json'
+    $json = Read-JsonFile $path
+    $json.scoreSamples[70].input.PSObject.Properties.Remove('fu')
+    $json.randomSamples[5000].context.PSObject.Properties.Remove('winTile')
+    Write-JsonFile $path $json
+    Update-CatalogFixtureSha -Root $root -FixtureId 'scoring-v1'
+}
+
+# 28. Consumed fields with wrong types.
+Invoke-NegativeCase -Name 'wrong-consumed-types' -ExpectedCode 'CASE_STRUCTURE_TYPE' -Mutator {
+    param($root)
+    $path = Join-Path $root 'tests\v5-golden\scoring-v1.json'
+    $json = Read-JsonFile $path
+    $json.scoreSamples[70].input.fu = 'not-a-number'
+    $json.randomSamples[5000].context.isTsumo = 'not-a-boolean'
+    Write-JsonFile $path $json
+    Update-CatalogFixtureSha -Root $root -FixtureId 'scoring-v1'
+}
+
+# 29. Exporter byte change.
 Invoke-NegativeCase -Name 'exporter-sha' -ExpectedCode 'EXPORTER_SHA_MISMATCH' -Mutator {
     param($root)
     $path = Join-Path $root 'engine\src\test\kotlin\com\majiang\model\V5PhysicalGoldenExporterTest.kt'

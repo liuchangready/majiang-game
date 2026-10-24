@@ -134,9 +134,15 @@ function Test-ShapeRules {
             Add-Failure 'GROUP_STRUCTURE_INVALID' ("{0}: shape rule needs path and type" -f $Label)
             continue
         }
-        $value = Get-JsonValueByPath -Root $Object -Path $path
+        $value = $Object
+        foreach ($segment in ($path -split '\.')) {
+            if ($null -eq $value) { break }
+            $property = $value.PSObject.Properties[$segment]
+            if ($null -eq $property) { $value = $null; break }
+            $value = $property.Value
+        }
         if ($null -eq $value) {
-            if ($type -ne 'string-or-null' -and $type -ne 'null') {
+            if ($type -ne 'string-or-null' -and $type -ne 'number-or-null' -and $type -ne 'null') {
                 Add-Failure 'CASE_STRUCTURE_MISSING' ("{0}: missing path '{1}'" -f $Label, $path)
                 continue
             }
@@ -147,6 +153,7 @@ function Test-ShapeRules {
                 'array' { $value -is [System.Array] }
                 'string' { $value -is [string] }
                 'number' { $value -is [int] -or $value -is [long] -or $value -is [double] -or $value -is [decimal] }
+                'number-or-null' { $value -is [int] -or $value -is [long] -or $value -is [double] -or $value -is [decimal] }
                 'boolean' { $value -is [bool] }
                 'string-or-null' { $value -is [string] }
                 'null' { $false }
@@ -160,6 +167,72 @@ function Test-ShapeRules {
         $length = Get-Prop -Object $rule -Name 'length'
         if ($null -ne $length -and $value -is [System.Array] -and $value.Count -ne [int]$length) {
             Add-Failure 'CASE_STRUCTURE_LENGTH' ("{0}: path '{1}' expected length {2}, actual {3}" -f $Label, $path, $length, $value.Count)
+        }
+    }
+}
+
+function Test-ConditionalRules {
+    param([object]$Object, [object[]]$Rules, [string]$Label)
+    foreach ($conditional in $Rules) {
+        $path = [string](Get-Prop -Object $conditional -Name 'path')
+        $equals = [string](Get-Prop -Object $conditional -Name 'equals')
+        $rules = @(Get-ArrayProp -Object $conditional -Name 'rules')
+        if ([string]::IsNullOrWhiteSpace($path) -or $rules.Count -eq 0) {
+            Add-Failure 'GROUP_STRUCTURE_INVALID' ("{0}: conditional rule needs path and rules" -f $Label)
+            continue
+        }
+        $value = $Object
+        foreach ($segment in ($path -split '\.')) {
+            if ($null -eq $value) { break }
+            $property = $value.PSObject.Properties[$segment]
+            if ($null -eq $property) { $value = $null; break }
+            $value = $property.Value
+        }
+        if ($null -ne $value -and [string]$value -eq $equals) {
+            Test-ShapeRules -Object $Object -Rules $rules -Label ('{0}[{1}={2}]' -f $Label, $path, $equals)
+        }
+    }
+}
+
+function Test-RandomSamplesFast {
+    param([object[]]$Items, [string]$Label)
+    foreach ($item in $Items) {
+        try {
+        if (-not ($item.id -is [string])) { Add-Failure 'CASE_STRUCTURE_TYPE' ("{0}: id expected string" -f $Label); continue }
+        if (-not ($item.closed -is [System.Array])) { Add-Failure 'CASE_STRUCTURE_TYPE' ("{0}: closed expected array" -f $Label); continue }
+        if (-not ($null -eq $item.drawn -or $item.drawn -is [int] -or $item.drawn -is [long] -or $item.drawn -is [double] -or $item.drawn -is [decimal])) { Add-Failure 'CASE_STRUCTURE_TYPE' ("{0}: drawn expected number-or-null" -f $Label); continue }
+        if (-not ($item.melds -is [System.Array])) { Add-Failure 'CASE_STRUCTURE_TYPE' ("{0}: melds expected array" -f $Label); continue }
+        if (-not ($item.dora -is [System.Array])) { Add-Failure 'CASE_STRUCTURE_TYPE' ("{0}: dora expected array" -f $Label); continue }
+        if (-not ($item.ura -is [System.Array])) { Add-Failure 'CASE_STRUCTURE_TYPE' ("{0}: ura expected array" -f $Label); continue }
+        if (-not ($item.removedWinTile -is [bool])) { Add-Failure 'CASE_STRUCTURE_TYPE' ("{0}: removedWinTile expected boolean" -f $Label); continue }
+        $ctx = $item.context
+        if ($null -eq $ctx) { Add-Failure 'CASE_STRUCTURE_MISSING' ("{0}: context missing" -f $Label); continue }
+        if (-not ($ctx -is [System.Management.Automation.PSCustomObject])) { Add-Failure 'CASE_STRUCTURE_TYPE' ("{0}: context expected object" -f $Label); continue }
+        if (-not ($ctx.winTile -is [int] -or $ctx.winTile -is [long] -or $ctx.winTile -is [double] -or $ctx.winTile -is [decimal])) { Add-Failure 'CASE_STRUCTURE_MISSING' ("{0}: context.winTile missing/non-number" -f $Label); continue }
+        if (-not ($ctx.isTsumo -is [bool])) { Add-Failure 'CASE_STRUCTURE_MISSING' ("{0}: context.isTsumo missing/non-boolean" -f $Label); continue }
+        if (-not ($ctx.isClosed -is [bool])) { Add-Failure 'CASE_STRUCTURE_MISSING' ("{0}: context.isClosed missing/non-boolean" -f $Label); continue }
+        if (-not ($ctx.seatWind -is [int] -or $ctx.seatWind -is [long] -or $ctx.seatWind -is [double] -or $ctx.seatWind -is [decimal])) { Add-Failure 'CASE_STRUCTURE_MISSING' ("{0}: context.seatWind missing/non-number" -f $Label); continue }
+        if (-not ($ctx.roundWind -is [int] -or $ctx.roundWind -is [long] -or $ctx.roundWind -is [double] -or $ctx.roundWind -is [decimal])) { Add-Failure 'CASE_STRUCTURE_MISSING' ("{0}: context.roundWind missing/non-number" -f $Label); continue }
+        foreach ($field in @('isRiichi','isDoubleRiichi','isIppatsu','isRinshan','isHaitei','isHoutei','isChankan','isTenhou','isChiihou')) {
+            if (-not ($ctx.$field -is [bool])) { Add-Failure 'CASE_STRUCTURE_MISSING' ("{0}: context.{1} missing/non-boolean" -f $Label, $field); break }
+        }
+        $expected = $item.expected
+        if (-not ($expected -is [System.Management.Automation.PSCustomObject])) { Add-Failure 'CASE_STRUCTURE_TYPE' ("{0}: expected expected object" -f $Label); continue }
+        if (-not ($expected.status -is [string])) { Add-Failure 'CASE_STRUCTURE_MISSING' ("{0}: expected.status missing/non-string" -f $Label); continue }
+        if ($expected.status -eq 'win') {
+            if (-not ($expected.yaku -is [System.Array])) { Add-Failure 'CASE_STRUCTURE_MISSING' ("{0}: expected.yaku missing" -f $Label); continue }
+            if (-not ($expected.yakuHan -is [int] -or $expected.yakuHan -is [long] -or $expected.yakuHan -is [double] -or $expected.yakuHan -is [decimal])) { Add-Failure 'CASE_STRUCTURE_MISSING' ("{0}: expected.yakuHan missing" -f $Label); continue }
+            if (-not ($expected.scoreHan -is [int] -or $expected.scoreHan -is [long] -or $expected.scoreHan -is [double] -or $expected.scoreHan -is [decimal])) { Add-Failure 'CASE_STRUCTURE_MISSING' ("{0}: expected.scoreHan missing" -f $Label); continue }
+            if (-not ($expected.isYakuman -is [bool])) { Add-Failure 'CASE_STRUCTURE_MISSING' ("{0}: expected.isYakuman missing" -f $Label); continue }
+            if (-not ($expected.yakumanCount -is [int] -or $expected.yakumanCount -is [long] -or $expected.yakumanCount -is [double] -or $expected.yakumanCount -is [decimal])) { Add-Failure 'CASE_STRUCTURE_MISSING' ("{0}: expected.yakumanCount missing" -f $Label); continue }
+            if (-not ($expected.fu -is [int] -or $expected.fu -is [long] -or $expected.fu -is [double] -or $expected.fu -is [decimal])) { Add-Failure 'CASE_STRUCTURE_MISSING' ("{0}: expected.fu missing" -f $Label); continue }
+            if (-not ($expected.basePoints -is [int] -or $expected.basePoints -is [long] -or $expected.basePoints -is [double] -or $expected.basePoints -is [decimal])) { Add-Failure 'CASE_STRUCTURE_MISSING' ("{0}: expected.basePoints missing" -f $Label); continue }
+            if (-not ($null -eq $expected.capCode -or $expected.capCode -is [string])) { Add-Failure 'CASE_STRUCTURE_TYPE' ("{0}: expected.capCode expected string-or-null" -f $Label); continue }
+            if (-not ($expected.totalPoints -is [int] -or $expected.totalPoints -is [long] -or $expected.totalPoints -is [double] -or $expected.totalPoints -is [decimal])) { Add-Failure 'CASE_STRUCTURE_MISSING' ("{0}: expected.totalPoints missing" -f $Label); continue }
+        }
+        }
+        catch {
+            Add-Failure 'CASE_STRUCTURE_MISSING' ("{0}: consumed field missing: {1}" -f $Label, $_.Exception.Message)
         }
     }
 }
@@ -242,6 +315,7 @@ function Test-Group {
     $shapeRequiredKeys = @()
     $shapeRules = @()
     $elementRules = $null
+    $conditionalRules = @()
     if ($null -ne $shape) {
         $shapeRequiredKeys = @(Get-DeclaredStringArray -Holder $shape -Name 'requiredKeys' -Label ('{0}:{1}.shape' -f $fixtureId, $groupName))
         $rulesProperty = $shape.PSObject.Properties['rules']
@@ -254,6 +328,15 @@ function Test-Group {
             }
         }
         $elementRules = Get-Prop -Object $shape -Name 'elementRules'
+        $conditionalProperty = $shape.PSObject.Properties['conditionalRules']
+        if ($null -ne $conditionalProperty) {
+            if ($null -eq $conditionalProperty.Value -or -not ($conditionalProperty.Value -is [System.Array])) {
+                Add-Failure 'GROUP_STRUCTURE_INVALID' ("{0}:{1}.shape.conditionalRules must be a non-null array" -f $fixtureId, $groupName)
+            }
+            else {
+                $conditionalRules = @($conditionalProperty.Value)
+            }
+        }
     }
 
     if ($kind -eq 'array') {
@@ -261,9 +344,10 @@ function Test-Group {
         if ($items.Count -ne $declaredCount) {
             Add-Failure 'GROUP_COUNT_MISMATCH' ("{0}:{1}: declared {2}, actual {3}" -f $fixtureId, $groupName, $declaredCount, $items.Count)
         }
+        $fastRandom = ($fixtureId -eq 'scoring-v1' -and $groupName -eq 'randomSamples')
         $requiredKeys = @(Get-DeclaredStringArray -Holder $Group -Name 'requiredKeys' -Label ('{0}:{1}' -f $fixtureId, $groupName))
         $requiredKeys = @(@($requiredKeys) + @($shapeRequiredKeys) | Select-Object -Unique)
-        if ($requiredKeys.Count -gt 0) {
+        if (-not $fastRandom -and $requiredKeys.Count -gt 0) {
             foreach ($item in $items) {
                 $itemKeys = @($item.PSObject.Properties | ForEach-Object { $_.Name })
                 $missingKeys = @($requiredKeys | Where-Object { $itemKeys -notcontains $_ })
@@ -273,10 +357,16 @@ function Test-Group {
                 }
             }
         }
-        if (($shapeRules.Count -gt 0 -or $null -ne $elementRules) -and $items.Count -gt 0) {
+        if ($fastRandom -and $items.Count -gt 0) {
+            Test-RandomSamplesFast -Items $items -Label ('{0}:{1}' -f $fixtureId, $groupName)
+        }
+        elseif (($shapeRules.Count -gt 0 -or $null -ne $elementRules -or $conditionalRules.Count -gt 0) -and $items.Count -gt 0) {
             foreach ($target in $items) {
                 if ($shapeRules.Count -gt 0) {
                     Test-ShapeRules -Object $target -Rules $shapeRules -Label ('{0}:{1}' -f $fixtureId, $groupName)
+                }
+                if ($conditionalRules.Count -gt 0) {
+                    Test-ConditionalRules -Object $target -Rules $conditionalRules -Label ('{0}:{1}' -f $fixtureId, $groupName)
                 }
                 if ($null -ne $elementRules) {
                     foreach ($elementProperty in $elementRules.PSObject.Properties) {
@@ -391,9 +481,12 @@ function Test-Group {
                 Add-Failure 'CASE_STRUCTURE_MISSING' ("{0}:{1}: sample missing keys [{2}]" -f $fixtureId, $groupName, ($missingKeys -join ','))
             }
         }
-        if ($shapeRules.Count -gt 0 -or $null -ne $elementRules) {
+        if ($shapeRules.Count -gt 0 -or $null -ne $elementRules -or $conditionalRules.Count -gt 0) {
             if ($shapeRules.Count -gt 0) {
                 Test-ShapeRules -Object $actual -Rules $shapeRules -Label ('{0}:{1}' -f $fixtureId, $groupName)
+            }
+            if ($conditionalRules.Count -gt 0) {
+                Test-ConditionalRules -Object $actual -Rules $conditionalRules -Label ('{0}:{1}' -f $fixtureId, $groupName)
             }
             if ($null -ne $elementRules) {
                 foreach ($elementProperty in $elementRules.PSObject.Properties) {
