@@ -364,7 +364,8 @@ namespace Mahjong.TableRuntime.Tests
             int mailboxCapacity = 16,
             int controlReserve = 16,
             string roundId = "round-1",
-            RoundStateMachine? initialRound = null)
+            RoundStateMachine? initialRound = null,
+            int? snapshotEventWindow = null)
         {
             var clock = new ManualTableClock { Now = 1000L };
             var commitPort = new RecordingCommitPort();
@@ -386,6 +387,11 @@ namespace Mahjong.TableRuntime.Tests
                     SeatControllerKind.RemoteHuman,
                     SeatControllerKind.RemoteHuman)
             };
+            if (snapshotEventWindow.HasValue)
+            {
+                actorOptions.SnapshotEventWindow = snapshotEventWindow.Value;
+            }
+
             RoundStateMachine round = initialRound ?? P31Fixtures.Dealt(roundId);
             var actor = new TableActor(
                 actorOptions,
@@ -434,7 +440,8 @@ namespace Mahjong.TableRuntime.Tests
             string session,
             ulong bindingEpoch,
             ulong syncEpoch,
-            ITableStreamSink sink)
+            ITableStreamSink sink,
+            long recoveryGeneration = 0L)
         {
             var request = new TableStreamSubscribeRequest(
                 new TableStreamIdentity(
@@ -443,7 +450,7 @@ namespace Mahjong.TableRuntime.Tests
                     new BindingEpoch(bindingEpoch),
                     new SyncEpoch(syncEpoch)),
                 new OwnerEpoch(1),
-                0L,
+                recoveryGeneration,
                 sink,
                 new RoundId(InitialRound.RoundId));
             return Actor.SubscribeStreamAsync(request, TestContext.Current.CancellationToken);
