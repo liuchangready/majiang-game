@@ -1054,13 +1054,14 @@ namespace Mahjong.TableRuntime
                                 checkpoint.LastEventSeq != nextState.LastEventSeq ||
                                 checkpoint.StateFingerprint != request.NextStateFingerprint ||
                                 checkpoint.StatePayloadSha256 != nextHash ||
+                                checkpoint.ControlVersion != state.ControlVersion ||
                                 checkpoint.TimingVersion != request.TimingVersion ||
                                 checkpoint.RulesetVersion != state.RulesetVersion)
                             {
                                 return new ValueTask<TableDurableCommitResult>(
                                     TableDurableCommitResult.Failed(
                                         TableRuntimeReasonCode.CheckpointInvalid,
-                                        "The checkpoint does not match the accepted state/timing/ruleset."));
+                                        "The checkpoint does not match the accepted state/control/timing/ruleset."));
                             }
 
                             if (!TableCheckpointValidator.TryValidate(
