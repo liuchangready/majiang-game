@@ -464,8 +464,9 @@ function Skip-LexChar([string]$text, [int]$i) {
 }
 
 # String dispatch at the opening quote ($i). Prefixes are read from the ORIGINAL text:
-# C# $"..." / $@"..." / @"..." / """...""", Kotlin """...""". Kotlin normal strings always
-# allow ${...} template holes; C# normal strings only with the $" interpolation prefix.
+# C# $"..." / $@"..." / @"..." / """...""", Kotlin """...""". Hole opening is PER LANGUAGE:
+# Kotlin normal strings open a template hole only at an unescaped "${"; C# normal strings
+# never (unless the $" interpolation prefix is present, where "{" opens and "{{" escapes).
 function Skip-LexString([string]$text, [int]$i, [bool]$isKotlin) {
     $prev = if ($i -gt 0) { $text[$i - 1] } else { ' ' }
     $prev2 = if ($i -gt 1) { $text[$i - 2] } else { ' ' }
@@ -476,23 +477,30 @@ function Skip-LexString([string]$text, [int]$i, [bool]$isKotlin) {
     $interp = ($prev -eq [char]36) -or ($prev -eq [char]64 -and $prev2 -eq [char]36)
     $verbatim = $prev -eq [char]64
     if ($verbatim -and -not $isKotlin) { return Skip-LexVerbatimString $text ($i + 1) $interp }
-    return Skip-LexNormalString $text ($i + 1) ($interp -or $isKotlin) $isKotlin
+    if ($isKotlin) { return Skip-LexNormalString $text ($i + 1) $true $false }
+    return Skip-LexNormalString $text ($i + 1) $false $interp
 }
 
-# Normal string (escapes on). With holes allowed, { opens an interpolation/template hole that
-# is scanned as code (Invoke-LexCodeHole); {{ is an escaped literal brace; " closes.
-function Skip-LexNormalString([string]$text, [int]$p, [bool]$allowHoles, [bool]$isKotlin) {
+# Normal string (escapes on). Hole opening is per language: Kotlin only at an unescaped "${"
+# (a plain "{" is literal content and never opens a hole); C# only when the string carries the
+# interpolation prefix ("{" opens, "{{" is an escaped literal brace). " closes the string.
+function Skip-LexNormalString([string]$text, [int]$p, [bool]$isKotlin, [bool]$isInterp) {
     $len = $text.Length
     while ($p -lt $len) {
         $c = $text[$p]
         if ($c -eq [char]92) { $p += 2; continue }
         if ($c -eq [char]34) { return $p + 1 }
-        if ($allowHoles -and $c -eq [char]123) {
+        if ($isKotlin) {
+            if ($c -eq [char]36 -and $p + 1 -lt $len -and $text[$p + 1] -eq [char]123) {
+                $p = Invoke-LexCodeHole $text ($p + 2) $true
+                continue
+            }
+        }
+        elseif ($isInterp -and $c -eq [char]123) {
             if ($p + 1 -lt $len -and $text[$p + 1] -eq [char]123) { $p += 2; continue }
-            $p = Invoke-LexCodeHole $text ($p + 1) $isKotlin
+            $p = Invoke-LexCodeHole $text ($p + 1) $false
             continue
         }
-        if ($allowHoles -and $c -eq [char]125) { $p += 1; continue }    # stray literal }
         if ($c -eq [char]10 -or $c -eq [char]13) { return $p }          # unterminated
         $p += 1
     }
@@ -536,15 +544,17 @@ function Invoke-LexCodeHole([string]$text, [int]$p, [bool]$isKotlin) {
     return $len
 }
 
-# C# verbatim string @"...": no escapes, "" is an escaped quote, spans newlines; with $interp
-# the { } holes are scanned as code.
+# C# verbatim string @"...": no escapes, "" is an escaped quote, spans newlines. Only an
+# interpolated verbatim ($@"...") scans for "{" holes; a PLAIN verbatim string treats "{" as
+# ordinary content (it must never terminate the string or expose its payload).
 function Skip-LexVerbatimString([string]$text, [int]$p, [bool]$interp) {
     $len = $text.Length
+    $trig = @([char]34)
+    if ($interp) { $trig = @([char]34, [char]123) }
     while ($p -lt $len) {
-        $n = $text.IndexOfAny(@([char]34, [char]123), $p)
+        $n = $text.IndexOfAny($trig, $p)
         if ($n -lt 0) { return $len }
-        $c = $text[$n]
-        if ($interp -and $c -eq [char]123) {
+        if ($interp -and $text[$n] -eq [char]123) {
             if ($n + 1 -lt $len -and $text[$n + 1] -eq [char]123) { $p = $n + 2; continue }
             $p = Invoke-LexCodeHole $text ($n + 1) $false
             continue
@@ -627,7 +637,10 @@ function Test-AnchorSymbol([string]$path, [string]$symbol) {
 #     receiver forms; the name must be immediately followed by "(")
 #   typealias: name directly after the keyword
 #   properties: the DECLARED name is the LAST segment of the qualified chain after val/var --
-#     "val Receiver.extensionProperty: Int" declares extensionProperty, NOT Receiver; a symbol
+#     "val Receiver.extensionProperty: Int" (and the spaced form
+#     "val Receiver . spacedProperty: Int") declares extensionProperty/spacedProperty, NOT
+#     Receiver; the chain parser allows legal whitespace on BOTH sides of each dot, so a
+#     symbol before a dot (spaced or not) can never be taken as the property name; a symbol
 #     in a non-final chain segment is a receiver and is NOT a declaration
 # Receiver names, parameter types, supertypes and generic parameters are NOT declarations.
 function Test-KotlinDeclaredSymbol([string]$text, [string]$symbol) {
@@ -638,10 +651,13 @@ function Test-KotlinDeclaredSymbol([string]$text, [string]$symbol) {
     if ([regex]::IsMatch($t, "\b(?:class|interface|object)\s+" + $rx + "\b")) { return $true }
     if ([regex]::IsMatch($t, "\bfun\s+(?:<[^<>()\r\n]*>\s*)?(?:[\w?<>.,\[\]]+\.)?" + $rx + "\s*\(")) { return $true }
     if ([regex]::IsMatch($t, "\btypealias\s+" + $rx + "\b")) { return $true }
-    $propRx = [regex]"\b(?:const\s+val|val|var)\s+([^\s=:;{}\[\]()\r\n,]+)"
+    # Property chain: identifier segments (with optional <...> generic tails) separated by
+    # dots that may carry whitespace on either side. The chain must start right after
+    # "val"/"var", so the FIRST segment can never be mistaken for a longer name.
+    $propRx = [regex]"\b(?:const\s+val|val|var)\s+([A-Za-z_][A-Za-z0-9_<>]*(?:\s*\.\s*[A-Za-z_][A-Za-z0-9_<>]*)*)"
     foreach ($m in $propRx.Matches($t)) {
         $clean = @()
-        foreach ($s in @($m.Groups[1].Value -split "\.")) { $clean += ($s -replace "<.*$", "") }
+        foreach ($s in @($m.Groups[1].Value -split "\.")) { $clean += (($s.Trim() -replace "<.*$", "")) }
         if ($clean[$clean.Count - 1] -ne $symbol) { continue }
         $isReceiver = $false
         for ($k = 0; $k -lt $clean.Count - 1; $k++) {
