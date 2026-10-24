@@ -427,7 +427,7 @@ function Resolve-Anchor {
     $caseId = $parts[1]
     $group = $script:ActualGroups[$groupKey]
     $ids = @($group.ids)
-    if (-not ($ids -contains $caseId)) {
+    if (-not ($ids -ccontains $caseId)) {
         Add-Failure 'ANCHOR_MISSING' ("{0}: case not found: {1}/{2}" -f $RequirementId, $groupKey, $caseId)
     }
 }
@@ -566,7 +566,7 @@ function Test-Group {
             }
             else {
                 for ($i = 0; $i -lt @($declaredIds).Count; $i++) {
-                    if ([string]$declaredIds[$i] -ne [string]$ids[$i]) {
+                    if ([string]$declaredIds[$i] -cne [string]$ids[$i]) {
                         Add-Failure 'GROUP_IDS_MISMATCH' ("{0}:{1}: id[{2}] declared '{3}', actual '{4}'" -f $fixtureId, $groupName, $i, $declaredIds[$i], $ids[$i])
                         break
                     }
@@ -584,14 +584,14 @@ function Test-Group {
             }
             $firstId = Get-Prop -Object $Group -Name 'firstId'
             $lastId = Get-Prop -Object $Group -Name 'lastId'
-            if ($ids.Count -gt 0 -and ([string]$firstId -ne [string]$ids[0] -or [string]$lastId -ne [string]$ids[$ids.Count - 1])) {
+            if ($ids.Count -gt 0 -and ([string]$firstId -cne [string]$ids[0] -or [string]$lastId -cne [string]$ids[$ids.Count - 1])) {
                 Add-Failure 'GROUP_IDS_MISMATCH' ("{0}:{1}: first/last id mismatch" -f $fixtureId, $groupName)
             }
         }
 
         $declaredKeys = @(Get-ArrayProp -Object $Group -Name 'keys')
         if ($declaredKeys.Count -gt 0) {
-            if ((@($declaredKeys) -join '|') -ne (@($ids) -join '|')) {
+            if ((@($declaredKeys) -join '|') -cne (@($ids) -join '|')) {
                 Add-Failure 'GROUP_KEYS_MISMATCH' ("{0}:{1}: declared keys differ from actual" -f $fixtureId, $groupName)
             }
         }
@@ -631,6 +631,22 @@ function Test-Group {
         $sampleId = [string](Get-Prop -Object $actual -Name $idField)
         if ([string]::IsNullOrWhiteSpace($sampleId)) {
             Add-Failure 'GROUP_IDS_MISMATCH' ("{0}:{1}: sampleId missing" -f $fixtureId, $groupName)
+        }
+        $idsProperty = $Group.PSObject.Properties['ids']
+        if ($null -eq $idsProperty) {
+            Add-Failure 'GROUP_IDS_MISMATCH' ("{0}:{1}: sample group has no declared ids" -f $fixtureId, $groupName)
+        }
+        elseif ($null -eq $idsProperty.Value -or -not ($idsProperty.Value -is [System.Array])) {
+            Add-Failure 'GROUP_STRUCTURE_INVALID' ("{0}:{1}: declared ids must be a non-null array" -f $fixtureId, $groupName)
+        }
+        else {
+            $declaredIds = @($idsProperty.Value)
+            if ($declaredIds.Count -ne 1) {
+                Add-Failure 'GROUP_IDS_MISMATCH' ("{0}:{1}: sample group must declare exactly one id, got {2}" -f $fixtureId, $groupName, $declaredIds.Count)
+            }
+            elseif ([string]$declaredIds[0] -cne $sampleId) {
+                Add-Failure 'GROUP_IDS_MISMATCH' ("{0}:{1}: declared id '{2}', actual sampleId '{3}'" -f $fixtureId, $groupName, $declaredIds[0], $sampleId)
+            }
         }
         $requiredKeys = @(Get-DeclaredStringArray -Holder $Group -Name 'requiredKeys' -Label ('{0}:{1}' -f $fixtureId, $groupName))
         $requiredKeys = @(@($requiredKeys) + @($shapeRequiredKeys) | Select-Object -Unique)

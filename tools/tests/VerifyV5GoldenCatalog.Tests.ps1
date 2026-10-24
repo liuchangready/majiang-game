@@ -894,7 +894,92 @@ Invoke-NegativeCase -Name 'g003b-csharpmapping-missing' -ExpectedCode 'CASE_STRU
     Update-CatalogFixtureSha -Root $root -FixtureId 'physical-v1'
 }
 
-# 61. Exporter byte change.
+# 61. Catalog single-sample declared id must equal actual sampleId.
+Invoke-NegativeCase -Name 'sample-id-wrong' -ExpectedCode 'GROUP_IDS_MISMATCH' -Mutator {
+    param($root)
+    $path = Join-Path $root 'tests\v5-golden\catalog-v1.json'
+    $catalog = Read-JsonFile $path
+    foreach ($fixture in @($catalog.fixtures)) {
+        if ([string]$fixture.id -eq 'round-v1') {
+            foreach ($group in @($fixture.groups)) {
+                if ([string]$group.name -eq 'roundTerminal') { $group.ids = @('RG-999') }
+            }
+        }
+    }
+    Write-JsonFile $path $catalog
+}
+
+# 62. Missing declared ids must not be silently ignored.
+Invoke-NegativeCase -Name 'sample-id-missing' -ExpectedCode 'GROUP_IDS_MISMATCH' -Mutator {
+    param($root)
+    $path = Join-Path $root 'tests\v5-golden\catalog-v1.json'
+    $catalog = Read-JsonFile $path
+    foreach ($fixture in @($catalog.fixtures)) {
+        if ([string]$fixture.id -eq 'round-v1') {
+            foreach ($group in @($fixture.groups)) {
+                if ([string]$group.name -eq 'roundTerminal') { $group.PSObject.Properties.Remove('ids') }
+            }
+        }
+    }
+    Write-JsonFile $path $catalog
+}
+
+# 63. Empty declared ids.
+Invoke-NegativeCase -Name 'sample-id-empty' -ExpectedCode 'GROUP_IDS_MISMATCH' -Mutator {
+    param($root)
+    $path = Join-Path $root 'tests\v5-golden\catalog-v1.json'
+    $catalog = Read-JsonFile $path
+    foreach ($fixture in @($catalog.fixtures)) {
+        if ([string]$fixture.id -eq 'round-v1') {
+            foreach ($group in @($fixture.groups)) {
+                if ([string]$group.name -eq 'roundTerminal') { $group.ids = @() }
+            }
+        }
+    }
+    Write-JsonFile $path $catalog
+}
+
+# 64. Multiple declared ids for a singleton.
+Invoke-NegativeCase -Name 'sample-id-multi' -ExpectedCode 'GROUP_IDS_MISMATCH' -Mutator {
+    param($root)
+    $path = Join-Path $root 'tests\v5-golden\catalog-v1.json'
+    $catalog = Read-JsonFile $path
+    foreach ($fixture in @($catalog.fixtures)) {
+        if ([string]$fixture.id -eq 'round-v1') {
+            foreach ($group in @($fixture.groups)) {
+                if ([string]$group.name -eq 'roundTerminal') { $group.ids = @('RG-001','RG-002') }
+            }
+        }
+    }
+    Write-JsonFile $path $catalog
+}
+
+# 65. Declared ids wrong type.
+Invoke-NegativeCase -Name 'sample-id-scalar' -ExpectedCode 'GROUP_STRUCTURE_INVALID' -Mutator {
+    param($root)
+    $path = Join-Path $root 'tests\v5-golden\catalog-v1.json'
+    $catalog = Read-JsonFile $path
+    foreach ($fixture in @($catalog.fixtures)) {
+        if ([string]$fixture.id -eq 'round-v1') {
+            foreach ($group in @($fixture.groups)) {
+                if ([string]$group.name -eq 'roundTerminal') { $group.ids = 'RG-001' }
+            }
+        }
+    }
+    Write-JsonFile $path $catalog
+}
+
+# 66. Actual singleton id changed while catalog declaration stays.
+Invoke-NegativeCase -Name 'sample-id-actual-change' -ExpectedCode 'GROUP_IDS_MISMATCH' -Mutator {
+    param($root)
+    $path = Join-Path $root 'tests\v5-golden\round-v1.json'
+    $json = Read-JsonFile $path
+    $json.roundTerminal.sampleId = 'RG-999'
+    Write-JsonFile $path $json
+    Update-CatalogFixtureSha -Root $root -FixtureId 'round-v1'
+}
+
+# 67. Exporter byte change.
 Invoke-NegativeCase -Name 'exporter-sha' -ExpectedCode 'EXPORTER_SHA_MISMATCH' -Mutator {
     param($root)
     $path = Join-Path $root 'engine\src\test\kotlin\com\majiang\model\V5PhysicalGoldenExporterTest.kt'

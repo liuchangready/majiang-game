@@ -16,7 +16,7 @@
 | 五组已接受 fixture 的目录核对 | **PASS** | `catalog-v1.json` 记录 5 个文件、真实 SHA-256、schema、V4 commit、exporter 命令、分组计数、样本 ID |
 | G-xxx 语义映射与锚点 | **PASS（逐项保留）** | 73 条 G 需求全部保留；17 full、20 partial、33 none、3 v5-only；partial 不冒充整项 |
 | 只读 validator 正例 | **PASS** | `verify-v5-golden-catalog.ps1` exit 0，5/73/10382/10000/42 |
-| validator 负例自测 | **PASS** | 1 个正例 + 70 个 TEMP 坏输入负例；坏 catalog/SHA/重复 ID/未知 schema/缺文件均 exit 1 |
+| validator 负例自测 | **PASS** | 1 个正例 + 76 个 TEMP 坏输入负例；坏 catalog/SHA/重复 ID/未知 schema/缺文件均 exit 1 |
 | 真实 fixture 未被自测修改 | **PASS** | 自测前后 5 个 fixture SHA-256 完全相同 |
 | C# Golden 定向运行 | **PASS** | 5 个 reader 类、42 Facts、0 failed、0 skipped，exit 0 |
 | 全 73 条 G 需求 | **NOT DONE** | 33 none、20 partial；不得写 73/73 或 G1 PASS |
@@ -329,15 +329,21 @@ exit 0。
 | 68 | g003b-location-missing | 删除 `probeA.after.location`，刷新 SHA | `CASE_STRUCTURE_MISSING` |
 | 69 | g003b-missingtileids-object | `probeA.after.missingTileIds[0]={}`，刷新 SHA | `CASE_STRUCTURE_TYPE` |
 | 70 | g003b-csharpmapping-missing | 删除 `probeB.csharpMapping.status`，刷新 SHA | `CASE_STRUCTURE_MISSING` |
+| 71 | sample-id-wrong | catalog roundTerminal `ids=[RG-999]`，fixture 不动 | `GROUP_IDS_MISMATCH` |
+| 72 | sample-id-missing | 删除 roundTerminal `ids` 键 | `GROUP_IDS_MISMATCH` |
+| 73 | sample-id-empty | roundTerminal `ids=[]` | `GROUP_IDS_MISMATCH` |
+| 74 | sample-id-multi | roundTerminal `ids=[RG-001,RG-002]` | `GROUP_IDS_MISMATCH` |
+| 75 | sample-id-scalar | roundTerminal `ids=RG-001` 字符串 | `GROUP_STRUCTURE_INVALID` |
+| 76 | sample-id-actual-change | fixture roundTerminal.sampleId 改 RG-999，刷新 SHA | `GROUP_IDS_MISMATCH` |
 
 ### 6.2 实际结果
 
 ```text
-SELFTEST PASS cases=71 positives=1 negatives=70
+SELFTEST PASS cases=77 positives=1 negatives=76
 real-fixtures-unchanged=true
 ```
 
-71/71 个 case 通过：1 个正例 exit 0，70 个坏输入负例均 exit 1 并命中预期错误码；真实 5 个 fixture 的 SHA-256 在自测前后逐项相等。
+77/77 个 case 通过：1 个正例 exit 0，76 个坏输入负例均 exit 1 并命中预期错误码；真实 5 个 fixture 的 SHA-256 在自测前后逐项相等。
 
 日志：`artifacts/golden-catalog/validator-selftest.log`（gitignored 工件，不随提交；路径/SHA 见 §9）。
 
@@ -361,7 +367,7 @@ real-fixtures-unchanged=true
 | # | 命令 | 结果 | exit |
 |---:|---|---|---:|
 | 1 | `powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/verify-v5-golden-catalog.ps1` | PASS 5/73/10382/10000/42 | 0 |
-| 2 | `powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/tests/VerifyV5GoldenCatalog.Tests.ps1` | 1 正例 + 70 负例全 PASS；真实 fixture 不变 | 0 |
+| 2 | `powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/tests/VerifyV5GoldenCatalog.Tests.ps1` | 1 正例 + 76 负例全 PASS；真实 fixture 不变 | 0 |
 | 3 | `D:/Unity/dotnet/dotnet.exe test dotnet/tests/Mahjong.Domain.Tests/Mahjong.Domain.Tests.csproj -c Release --nologo -v:minimal` | 322/0/0（全量 Domain；filter 被 MTP 忽略） | 0 |
 | 4 | `D:/Unity/dotnet/dotnet.exe dotnet/tests/Mahjong.Domain.Tests/bin/Release/net8.0/Mahjong.Domain.Tests.dll -class "*GoldenTests" -noColor -noLogo` | 42/0/0/0 | 0 |
 | 5 | `git status --porcelain` / `git diff --check` | 仅授权文件；无空白错误 | 0 |
@@ -388,8 +394,8 @@ real-fixtures-unchanged=true
 | 文件 | bytes | SHA-256 | 说明 |
 |---|---:|---|---|
 | `tests/v5-golden/catalog-v1.json` | 484414 | `16F7FD7F980398388E4E5DA45A3D5FB755C19990915F403987094617E90E891B` | 本任务新增；catalog |
-| `tools/verify-v5-golden-catalog.ps1` | 58142 | `B31C3ED6E6CB52F9C8C9B0E812FF4D3DF0BED192B1DCB1D414748D48595B8EB8` | 本任务新增；只读 validator |
-| `tools/tests/VerifyV5GoldenCatalog.Tests.ps1` | 42828 | `D810C2031B225AB2FC5064AD1F7B0700918D19BD951D03B090DC996B54E3B89C` | 本任务新增；TEMP 自测 |
+| `tools/verify-v5-golden-catalog.ps1` | 59126 | `9635064A70C82F1463EB8AB18F8D6F0A23797D204CCAE5699AE29CE7B337CFA0` | 本任务新增；只读 validator |
+| `tools/tests/VerifyV5GoldenCatalog.Tests.ps1` | 46057 | `46163D4D42AD4C647F632D423DDD2B43A025D1D2FA842389072F919CDEE51122` | 本任务新增；TEMP 自测 |
 | `doc/v5-重构/V5-0-GOLDEN-MANIFEST.md` | 70168 | `DA3ADB0B71D2EF7069F0103BCF592D299FE145DE8526E248EBE5CAF30BBBDA11` | 本任务更新；保留历史并增补当前事实 |
 | `tests/v5-golden/physical-v1.json` | 836369 | `B9384534E826473007511FD34096085C56EFD0E0F49E877978E50F847EDA0995` | 只读 fixture；未改 |
 | `tests/v5-golden/scoring-v1.json` | 8315131 | `53B1811079033E9044E222F7BB1FA263506FD724F09D6B13F84FE9CC2FCCD94E` | 只读 fixture；未改 |
@@ -407,9 +413,9 @@ real-fixtures-unchanged=true
 | `dotnet/tests/Mahjong.Domain.Tests/CheatGoldenTests.cs` | 69774 | `6B667231509A37685AE06B4F8C45DA3D5A01D9A740BFEF3295209D3ED8E2446F` | 只读 C# reader；16 Facts |
 | `dotnet/tests/Mahjong.Domain.Tests/ShuffleGoldenTests.cs` | 11797 | `B1B3940A0338835586814B78CB650095203B4EFA358D79BA4BACF82F5F68905B` | 只读 C# reader；4 Facts |
 | `artifacts/golden-catalog/validator-positive.log` | 510 | `3ECE982BAECBBDD36B7931FCC43F41E2EE20A5A163569B27EA2C4F71461F731E` | validator 正例原始日志（gitignored） |
-| `artifacts/golden-catalog/validator-selftest.log` | 29524 | `3277E557388B6919837C51058C9891F312AF4C91BAD5943FD0AC56954C4033E6` | 自测原始日志（gitignored） |
-| `artifacts/golden-catalog/csharp-golden-tests.log` | 1474 | `61F497401A8E4CA7E277A18B3DDAE3A79825661FED063CDA7951FE89D33795C0` | 322/0/0 全量 Domain 日志（gitignored） |
-| `artifacts/golden-catalog/csharp-golden-targeted.log` | 702 | `BE1F4F903843AC8016E3739A0684AF840835EB445E4363A6D165EF66905F11B2` | 42/0/0 定向日志（gitignored） |
+| `artifacts/golden-catalog/validator-selftest.log` | 30535 | `380CEA7E1C119B500020F03DE546D9068CA157B6C3ABEF25DC9DAB0880706155` | 自测原始日志（gitignored） |
+| `artifacts/golden-catalog/csharp-golden-tests.log` | 1474 | `51A609CD7559CBCC787484BD49A28237284EC56FEA021FE6E496046626C2048D` | 322/0/0 全量 Domain 日志（gitignored） |
+| `artifacts/golden-catalog/csharp-golden-targeted.log` | 702 | `BC22B4EB32CABF8E4D530B991AD986ED70E7ABE53DC2D12675235BDCF30EB400` | 42/0/0 定向日志（gitignored） |
 | `doc/v5-重构/V5-GOLDEN-CATALOG-RECONCILIATION.md` | - | 提交后计算 | 本报告；SHA 在提交后由最终交付消息给出（自引用不写入表） |
 
 ---
