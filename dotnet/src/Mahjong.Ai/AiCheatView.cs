@@ -6,6 +6,136 @@ using Mahjong.Domain;
 namespace Mahjong.Ai
 {
     /// <summary>
+    /// Owner/session/current-round identity for every private fact frozen in
+    /// <see cref="AiCheatView"/>. V4 carried these identities implicitly inside live
+    /// <c>PlayerView</c>/projection objects and trusted the projection; the safe V5 value
+    /// contract makes them explicit so a snapshot can reject a reused or cross-wired private
+    /// projection. The current round is nullable only to represent a genuinely unstarted
+    /// IDLE view; any view carrying a private technique fact must bind a real round.
+    /// </summary>
+    public sealed class AiPrivateFactScope
+    {
+        public AiPrivateFactScope(int seat, string sessionId, string? roundId)
+        {
+            AiFrozenGuard.CheckSeat(seat, nameof(seat));
+            AiFrozenGuard.RequireText(sessionId, nameof(sessionId));
+            if (roundId != null)
+            {
+                AiFrozenGuard.RequireText(roundId, nameof(roundId));
+            }
+
+            Seat = seat;
+            SessionId = sessionId;
+            RoundId = roundId;
+        }
+
+        public int Seat { get; }
+
+        public string SessionId { get; }
+
+        public string? RoundId { get; }
+
+        public AiPrivateFactScope DeepCopy()
+        {
+            return new AiPrivateFactScope(Seat, SessionId, RoundId);
+        }
+    }
+
+    /// <summary>
+    /// Minimal authorized own-seat observation that does not depend on an ordinary
+    /// <see cref="AiObservation"/> or a fabricated <c>DecisionKey</c>. It carries exactly
+    /// the V4 <c>PlayerView.myClosedTiles</c>/<c>myDrawnTile</c> information that the real
+    /// sleeve-bloom and beam-swap consumers need
+    /// (<c>SleeveBloomAiCapability.kt:99</c> and <c>BeamSwapAiCapability.kt:72,74</c>), plus
+    /// the combined read-only hand view. It deliberately contains no wall, dead wall,
+    /// opponent hand, seed, ledger or authority surface.
+    ///
+    /// Preparation before a deal may have an empty closed hand and a bound round; an IDLE
+    /// window may have no round and an empty hand. An offer window requires this fact to be
+    /// present so the offer choice has the same complete own-hand input as V4.
+    /// </summary>
+    public sealed class AiSeatFacts
+    {
+        private readonly ReadOnlyCollection<TileId> _myClosedTileIds;
+        private readonly ReadOnlyCollection<TileId> _myHandTileIds;
+
+        public AiSeatFacts(
+            AiPrivateFactScope scope,
+            IReadOnlyList<TileId> myClosedTileIds,
+            TileId? myDrawnTileId = null)
+        {
+            Scope = scope?.DeepCopy() ?? throw new ArgumentNullException(nameof(scope));
+            if (myClosedTileIds == null)
+            {
+                throw new ArgumentNullException(nameof(myClosedTileIds));
+            }
+
+            var closed = new TileId[myClosedTileIds.Count];
+            var seen = new HashSet<int>();
+            for (int i = 0; i < myClosedTileIds.Count; i++)
+            {
+                TileId tile = myClosedTileIds[i];
+                if (!seen.Add(tile.Value))
+                {
+                    throw new ArgumentException(
+                        "The own closed hand cannot repeat a physical tile.",
+                        nameof(myClosedTileIds));
+                }
+
+                closed[i] = tile;
+            }
+
+            int combinedCount = closed.Length + (myDrawnTileId.HasValue ? 1 : 0);
+            if (combinedCount > 14)
+            {
+                throw new ArgumentException(
+                    "The own hand cannot exceed 14 physical tiles.",
+                    nameof(myClosedTileIds));
+            }
+
+            if (myDrawnTileId.HasValue && seen.Contains(myDrawnTileId.Value.Value))
+            {
+                throw new ArgumentException(
+                    "The drawn tile cannot also be in the closed hand.",
+                    nameof(myDrawnTileId));
+            }
+
+            var combined = new TileId[combinedCount];
+            Array.Copy(closed, combined, closed.Length);
+            if (myDrawnTileId.HasValue)
+            {
+                combined[closed.Length] = myDrawnTileId.Value;
+            }
+
+            _myClosedTileIds = new ReadOnlyCollection<TileId>(closed);
+            _myHandTileIds = new ReadOnlyCollection<TileId>(combined);
+            MyDrawnTileId = myDrawnTileId;
+        }
+
+        public AiPrivateFactScope Scope { get; }
+
+        public int Seat => Scope.Seat;
+
+        public string SessionId => Scope.SessionId;
+
+        public string? RoundId => Scope.RoundId;
+
+        /// <summary>V4 <c>PlayerView.myClosedTiles</c> (drawn tile excluded).</summary>
+        public IReadOnlyList<TileId> MyClosedTileIds => _myClosedTileIds;
+
+        /// <summary>V4 <c>PlayerView.myDrawnTile</c>, if any.</summary>
+        public TileId? MyDrawnTileId { get; }
+
+        /// <summary>Closed hand plus the drawn tile, read-only.</summary>
+        public IReadOnlyList<TileId> MyHandTileIds => _myHandTileIds;
+
+        public AiSeatFacts DeepCopy()
+        {
+            return new AiSeatFacts(Scope, _myClosedTileIds, MyDrawnTileId);
+        }
+    }
+
+    /// <summary>
     /// Seat-scoped, immutable private facts an AI seat is authorized to see (the safe V5
     /// replacement for V4 <c>com.majiang.ai.AiCheatView</c>). V4 wrapped live projection
     /// view objects (<c>ShufflePreparationView</c>, <c>TileMarkView</c>,
@@ -45,15 +175,24 @@ namespace Mahjong.Ai
             AiShufflePreparationFacts? preparation = null,
             AiTileMarkFacts? tileMark = null,
             AiSleeveBloomFacts? sleeveBloom = null,
-            AiBeamSwapFacts? beamSwap = null)
+            AiBeamSwapFacts? beamSwap = null,
+            AiPrivateFactScope? scope = null)
         {
             AiFrozenGuard.CheckNonNegative(cheatPoints, nameof(cheatPoints));
             CheatPoints = cheatPoints;
+            Scope = scope?.DeepCopy();
             Preparation = preparation?.DeepCopy();
             TileMark = tileMark?.DeepCopy();
             SleeveBloom = sleeveBloom?.DeepCopy();
             BeamSwap = beamSwap?.DeepCopy();
         }
+
+        /// <summary>
+        /// Explicit owner/session/current-round binding for every private fact in this
+        /// view. Null is valid only for an empty view or a genuinely unstarted IDLE window;
+        /// <see cref="AiSeatSnapshot"/> rejects private facts without a scope.
+        /// </summary>
+        public AiPrivateFactScope? Scope { get; }
 
         /// <summary>Own cheat-point balance; V4 required non-negative.</summary>
         public int CheatPoints { get; }
@@ -81,7 +220,7 @@ namespace Mahjong.Ai
         /// </summary>
         public AiCheatView DeepCopy()
         {
-            return new AiCheatView(CheatPoints, Preparation, TileMark, SleeveBloom, BeamSwap);
+            return new AiCheatView(CheatPoints, Preparation, TileMark, SleeveBloom, BeamSwap, Scope);
         }
     }
 

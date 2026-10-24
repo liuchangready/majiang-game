@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using Mahjong.Ai;
 using Mahjong.Domain;
 using Xunit;
@@ -13,14 +14,14 @@ namespace Mahjong.Ai.Tests
     /// <c>candidate(id)</c> is an exact, case-sensitive <c>firstOrNull</c>;
     /// <c>safeDefault()</c> is the first flagged candidate; the candidate list is an
     /// unmodifiable copy; duplicate ids throw; a null id throws. The probe log is in the
-    /// task's evidence; see also <see cref="AiFrozenContextTests"/>.
+    /// task's evidence; see also <see cref="AiSeatSnapshotTests"/>.
     ///
     /// Unlike V4, the V5 snapshot supports IDLE, SHUFFLE_PREPARATION and offer windows
     /// without fabricating an ordinary <c>DecisionKey</c>. These tests exercise all four
     /// phases, empty candidate sets, and both ordinary and cheat candidate ids through the
     /// same strategy entry point.
     /// </summary>
-    public class AiFrozenContextPhaseTests
+    public class AiDecisionContextTests
     {
         [Fact]
         public void OrdinaryActionCarriesObservationAndOrdinaryCandidates()
@@ -85,7 +86,8 @@ namespace Mahjong.Ai.Tests
                     offerId: "bloom-1",
                     deadlineMillis: 5000),
                 cheat: FrozenFixtures.CheatView(
-                    sleeveBloom: FrozenFixtures.SleeveBloom(pendingOffer: offer)));
+                    sleeveBloom: FrozenFixtures.SleeveBloom(pendingOffer: offer)),
+                seatFacts: FrozenFixtures.SeatFacts());
             var candidates = new[]
             {
                 FrozenFixtures.Candidate("bloom-first", false, AiPhase.OfferChoice, "sleeve_bloom"),
@@ -112,7 +114,8 @@ namespace Mahjong.Ai.Tests
                     offerId: "beam-1",
                     deadlineMillis: 5000),
                 cheat: FrozenFixtures.CheatView(
-                    beamSwap: FrozenFixtures.BeamSwap(pendingOffer: offer)));
+                    beamSwap: FrozenFixtures.BeamSwap(pendingOffer: offer)),
+                seatFacts: FrozenFixtures.SeatFacts());
             var candidates = new[]
             {
                 FrozenFixtures.Candidate("beam-swap", false, AiPhase.OfferChoice, "beam_swap"),
@@ -180,7 +183,7 @@ namespace Mahjong.Ai.Tests
         public void ContextAllowsAnEmptyCandidateList()
         {
             var context = new AiDecisionContext(
-                FrozenFixtures.Snapshot(FrozenFixtures.Stamp()),
+                FrozenFixtures.OffTurnSnapshot(),
                 Array.Empty<AiCandidate>());
 
             Assert.Empty(context.Candidates);
@@ -190,7 +193,7 @@ namespace Mahjong.Ai.Tests
         [Fact]
         public void ContextRejectsDuplicateOptionId()
         {
-            AiSeatSnapshot snapshot = FrozenFixtures.Snapshot(FrozenFixtures.Stamp());
+            AiSeatSnapshot snapshot = FrozenFixtures.OffTurnSnapshot();
             Assert.Throws<ArgumentException>(() => new AiDecisionContext(
                 snapshot,
                 new[]
@@ -203,7 +206,7 @@ namespace Mahjong.Ai.Tests
         [Fact]
         public void ContextRejectsANullCandidateElement()
         {
-            AiSeatSnapshot snapshot = FrozenFixtures.Snapshot(FrozenFixtures.Stamp());
+            AiSeatSnapshot snapshot = FrozenFixtures.OffTurnSnapshot();
             Assert.Throws<ArgumentException>(() => new AiDecisionContext(
                 snapshot,
                 new AiCandidate[] { null! }));
@@ -212,7 +215,7 @@ namespace Mahjong.Ai.Tests
         [Fact]
         public void ContextAllowsCaseDistinctOptionIds()
         {
-            AiSeatSnapshot snapshot = FrozenFixtures.Snapshot(FrozenFixtures.Stamp());
+            AiSeatSnapshot snapshot = FrozenFixtures.OffTurnSnapshot();
             var context = new AiDecisionContext(
                 snapshot,
                 new[]
@@ -230,7 +233,7 @@ namespace Mahjong.Ai.Tests
         [Fact]
         public void ContextLookupIsExactAndCaseSensitive()
         {
-            AiSeatSnapshot snapshot = FrozenFixtures.Snapshot(FrozenFixtures.Stamp());
+            AiSeatSnapshot snapshot = FrozenFixtures.OffTurnSnapshot();
             var context = new AiDecisionContext(
                 snapshot,
                 new[]
@@ -250,7 +253,7 @@ namespace Mahjong.Ai.Tests
         public void ContextNullLookupThrows()
         {
             var context = new AiDecisionContext(
-                FrozenFixtures.Snapshot(FrozenFixtures.Stamp()),
+                FrozenFixtures.OffTurnSnapshot(),
                 Array.Empty<AiCandidate>());
 
             Assert.Throws<ArgumentNullException>(() => context.Candidate(null!));
@@ -259,7 +262,7 @@ namespace Mahjong.Ai.Tests
         [Fact]
         public void SafeDefaultReturnsTheFirstFlaggedCandidate()
         {
-            AiSeatSnapshot snapshot = FrozenFixtures.Snapshot(FrozenFixtures.Stamp());
+            AiSeatSnapshot snapshot = FrozenFixtures.OffTurnSnapshot();
             var context = new AiDecisionContext(
                 snapshot,
                 new[]
@@ -275,7 +278,7 @@ namespace Mahjong.Ai.Tests
         [Fact]
         public void SafeDefaultIsNullWhenNoCandidateIsFlagged()
         {
-            AiSeatSnapshot snapshot = FrozenFixtures.Snapshot(FrozenFixtures.Stamp());
+            AiSeatSnapshot snapshot = FrozenFixtures.OffTurnSnapshot();
             var context = new AiDecisionContext(
                 snapshot,
                 new[] { FrozenFixtures.Candidate("a"), FrozenFixtures.Candidate("b") });
@@ -286,7 +289,7 @@ namespace Mahjong.Ai.Tests
         [Fact]
         public void ContextCopiesCandidateListAndIgnoresLaterSourceMutation()
         {
-            AiSeatSnapshot snapshot = FrozenFixtures.Snapshot(FrozenFixtures.Stamp());
+            AiSeatSnapshot snapshot = FrozenFixtures.OffTurnSnapshot();
             var source = new List<AiCandidate>
             {
                 FrozenFixtures.Candidate("a"),
@@ -340,7 +343,7 @@ namespace Mahjong.Ai.Tests
         public void StrategySeesTheContextAndReturnsOnlyAnOptionId()
         {
             var context = new AiDecisionContext(
-                FrozenFixtures.Snapshot(FrozenFixtures.Stamp()),
+                FrozenFixtures.OffTurnSnapshot(),
                 new[] { FrozenFixtures.Candidate("chosen") });
             var strategy = new ReturningStrategy("chosen");
 
@@ -355,7 +358,7 @@ namespace Mahjong.Ai.Tests
         public void StrategyCanDeclareAPolicyAndReturnNullForTheSchedulerFallback()
         {
             var context = new AiDecisionContext(
-                FrozenFixtures.Snapshot(FrozenFixtures.Stamp()),
+                FrozenFixtures.OffTurnSnapshot(),
                 Array.Empty<AiCandidate>());
             AiCheatPolicy policy = FrozenFixtures.Policy(true);
             var strategy = new ReturningStrategy(null, policy);
@@ -368,12 +371,245 @@ namespace Mahjong.Ai.Tests
         public void ContextDoesNotExposeAWriteableCandidateBackingList()
         {
             var context = new AiDecisionContext(
-                FrozenFixtures.Snapshot(FrozenFixtures.Stamp()),
+                FrozenFixtures.OffTurnSnapshot(),
                 new[] { FrozenFixtures.Candidate("a") });
 
             Assert.IsNotType<List<AiCandidate>>(context.Candidates);
             Assert.IsNotType<AiCandidate[]>(context.Candidates);
             Assert.True(((IList<AiCandidate>)context.Candidates).IsReadOnly);
+        }
+
+        [Fact]
+        public void OrdinaryLegalOptionsRequireRoundDecisionAndDeadline()
+        {
+            LegalActionOption[] actions = { FrozenFixtures.Option("opt") };
+
+            Assert.Throws<ArgumentException>(() => FrozenFixtures.Snapshot(
+                FrozenFixtures.Stamp(roundId: null),
+                actions));
+            Assert.Throws<ArgumentException>(() => FrozenFixtures.Snapshot(
+                FrozenFixtures.Stamp(decisionId: null),
+                actions));
+            Assert.Throws<ArgumentException>(() => FrozenFixtures.Snapshot(
+                FrozenFixtures.Stamp(deadlineMillis: null),
+                actions));
+        }
+
+        [Fact]
+        public void CandidatePhaseMustMatchTheSnapshotPhase()
+        {
+            Assert.Throws<ArgumentException>(() => new AiDecisionContext(
+                FrozenFixtures.Snapshot(
+                    FrozenFixtures.Stamp(),
+                    options: new[] { FrozenFixtures.Option("opt") }),
+                new[] { FrozenFixtures.Candidate("wrong", true, AiPhase.OfferChoice) }));
+
+            Assert.Throws<ArgumentException>(() => new AiDecisionContext(
+                FrozenFixtures.Snapshot(
+                    FrozenFixtures.Stamp(
+                        phase: AiPhase.ShufflePreparation,
+                        decisionId: "prep-r1-1",
+                        deadlineMillis: 5000),
+                    cheat: FrozenFixtures.CheatView(preparation: FrozenFixtures.Preparation())),
+                new[] { FrozenFixtures.Candidate("wrong", false, AiPhase.OrdinaryAction) }));
+
+            AiSeatSnapshot offer = FrozenFixtures.Snapshot(
+                FrozenFixtures.Stamp(
+                    phase: AiPhase.OfferChoice,
+                    offerId: "bloom-1",
+                    deadlineMillis: 5000),
+                cheat: FrozenFixtures.CheatView(
+                    sleeveBloom: FrozenFixtures.SleeveBloom(
+                        pendingOffer: FrozenFixtures.BloomOffer())),
+                seatFacts: FrozenFixtures.SeatFacts());
+            Assert.Throws<ArgumentException>(() => new AiDecisionContext(
+                offer,
+                new[] { FrozenFixtures.Candidate("wrong", false, AiPhase.OrdinaryAction) }));
+        }
+
+        [Fact]
+        public void IdleContextRejectsCandidates()
+        {
+            AiSeatSnapshot idle = FrozenFixtures.Snapshot(
+                FrozenFixtures.Stamp(
+                    phase: AiPhase.Idle,
+                    roundId: null,
+                    decisionId: null,
+                    deadlineMillis: null));
+
+            Assert.Throws<ArgumentException>(() => new AiDecisionContext(
+                idle,
+                new[] { FrozenFixtures.Candidate("idle", true, AiPhase.Idle) }));
+        }
+
+        [Fact]
+        public void OfferWithoutOrdinaryDecisionCarriesCompleteOwnHand()
+        {
+            var closedSource = new List<TileId>
+            {
+                new TileId(1),
+                new TileId(2),
+                new TileId(3)
+            };
+            AiSeatFacts seatFacts = FrozenFixtures.SeatFacts(
+                closedSource,
+                new TileId(4));
+            AiSeatSnapshot snapshot = FrozenFixtures.Snapshot(
+                FrozenFixtures.Stamp(
+                    phase: AiPhase.OfferChoice,
+                    offerId: "bloom-1",
+                    deadlineMillis: 5000),
+                cheat: FrozenFixtures.CheatView(
+                    sleeveBloom: FrozenFixtures.SleeveBloom(
+                        pendingOffer: FrozenFixtures.BloomOffer())),
+                seatFacts: seatFacts);
+
+            closedSource.Clear();
+
+            var context = new AiDecisionContext(
+                snapshot,
+                new[]
+                {
+                    FrozenFixtures.Candidate("bloom-first", false, AiPhase.OfferChoice, "sleeve_bloom"),
+                    FrozenFixtures.Candidate("bloom-second", true, AiPhase.OfferChoice, "sleeve_bloom")
+                });
+
+            Assert.Null(context.OrdinaryObservation);
+            Assert.NotNull(context.SeatFacts);
+            Assert.Equal(new[] { 1, 2, 3 }, context.SeatFacts!.MyClosedTileIds.Select(t => t.Value).ToArray());
+            Assert.Equal(4, context.SeatFacts.MyDrawnTileId!.Value.Value);
+            Assert.Equal(new[] { 1, 2, 3, 4 }, context.SeatFacts.MyHandTileIds.Select(t => t.Value).ToArray());
+            Assert.Equal(new[] { 1, 2, 3, 4 }, context.MyHandTileIds.Select(t => t.Value).ToArray());
+            Assert.Equal("r1", context.SeatFacts.RoundId);
+            Assert.Equal("bloom-second", context.SafeDefault()!.OptionId);
+        }
+
+        [Fact]
+        public void OfferWithoutSeatFactsIsRejected()
+        {
+            Assert.Throws<ArgumentException>(() => FrozenFixtures.Snapshot(
+                FrozenFixtures.Stamp(
+                    phase: AiPhase.OfferChoice,
+                    offerId: "bloom-1",
+                    deadlineMillis: 5000),
+                cheat: FrozenFixtures.CheatView(
+                    sleeveBloom: FrozenFixtures.SleeveBloom(
+                        pendingOffer: FrozenFixtures.BloomOffer()))));
+        }
+
+        [Fact]
+        public void OfferSeatFactsCollectionsAreReadOnly()
+        {
+            AiSeatFacts seatFacts = FrozenFixtures.SeatFacts(
+                FrozenFixtures.Tiles(1, 2, 3),
+                new TileId(4));
+
+            Assert.IsNotType<List<TileId>>(seatFacts.MyClosedTileIds);
+            Assert.IsNotType<List<TileId>>(seatFacts.MyHandTileIds);
+            Assert.True(((IList<TileId>)seatFacts.MyClosedTileIds).IsReadOnly);
+            Assert.True(((IList<TileId>)seatFacts.MyHandTileIds).IsReadOnly);
+            Assert.Throws<NotSupportedException>(() => ((IList<TileId>)seatFacts.MyHandTileIds).Add(new TileId(5)));
+        }
+
+        [Fact]
+        public void ObservationAndSeatFactsHandMismatchIsRejected()
+        {
+            LegalActionOption[] actions = { FrozenFixtures.Option("opt") };
+            AiObservation observation = FrozenFixtures.Observation(
+                new DecisionKey("r1", FrozenFixtures.Seat, "d1"), 3, 9, 5000, actions);
+            AiSeatFacts seatFacts = FrozenFixtures.SeatFacts(FrozenFixtures.Tiles(1, 2));
+
+            Assert.Throws<ArgumentException>(() => FrozenFixtures.Snapshot(
+                FrozenFixtures.Stamp(),
+                actions,
+                observation: observation,
+                seatFacts: seatFacts));
+        }
+
+        [Fact]
+        public void SeatFactsWrongSeatSessionOrRoundIsRejected()
+        {
+            AiSleeveBloomOfferFacts offer = FrozenFixtures.BloomOffer();
+            AiCheatView cheat = FrozenFixtures.CheatView(
+                sleeveBloom: FrozenFixtures.SleeveBloom(pendingOffer: offer));
+
+            Assert.Throws<ArgumentException>(() => FrozenFixtures.Snapshot(
+                FrozenFixtures.Stamp(phase: AiPhase.OfferChoice, offerId: "bloom-1", deadlineMillis: 5000),
+                cheat: cheat,
+                seatFacts: FrozenFixtures.SeatFacts(seat: 2)));
+            Assert.Throws<ArgumentException>(() => FrozenFixtures.Snapshot(
+                FrozenFixtures.Stamp(phase: AiPhase.OfferChoice, offerId: "bloom-1", deadlineMillis: 5000),
+                cheat: cheat,
+                seatFacts: FrozenFixtures.SeatFacts(sessionId: "S1")));
+            Assert.Throws<ArgumentException>(() => FrozenFixtures.Snapshot(
+                FrozenFixtures.Stamp(phase: AiPhase.OfferChoice, offerId: "bloom-1", deadlineMillis: 5000),
+                cheat: cheat,
+                seatFacts: FrozenFixtures.SeatFacts(roundId: "r2")));
+        }
+
+        [Fact]
+        public void BeamSelectableHandMustBeInTheFrozenHand()
+        {
+            Assert.Throws<ArgumentException>(() => FrozenFixtures.Snapshot(
+                FrozenFixtures.Stamp(
+                    phase: AiPhase.OfferChoice,
+                    offerId: "beam-1",
+                    deadlineMillis: 5000),
+                cheat: FrozenFixtures.CheatView(
+                    beamSwap: FrozenFixtures.BeamSwap(
+                        pendingOffer: FrozenFixtures.BeamOffer())),
+                seatFacts: FrozenFixtures.SeatFacts(FrozenFixtures.Tiles(3, 4))));
+        }
+
+        [Fact]
+        public void PreparationEmptyHandIsAllowed()
+        {
+            AiSeatSnapshot snapshot = FrozenFixtures.Snapshot(
+                FrozenFixtures.Stamp(
+                    phase: AiPhase.ShufflePreparation,
+                    decisionId: "prep-r1-1",
+                    deadlineMillis: 5000),
+                cheat: FrozenFixtures.CheatView(preparation: FrozenFixtures.Preparation()),
+                seatFacts: FrozenFixtures.SeatFacts(Array.Empty<TileId>()));
+
+            Assert.Empty(snapshot.SeatFacts!.MyHandTileIds);
+        }
+
+        [Fact]
+        public void IdleEmptyHandWithoutRoundIsAllowed()
+        {
+            AiSeatSnapshot snapshot = FrozenFixtures.Snapshot(
+                FrozenFixtures.Stamp(
+                    phase: AiPhase.Idle,
+                    roundId: null,
+                    decisionId: null,
+                    deadlineMillis: null),
+                seatFacts: FrozenFixtures.SeatFacts(Array.Empty<TileId>(), roundId: null));
+
+            Assert.Empty(snapshot.SeatFacts!.MyHandTileIds);
+            Assert.Null(snapshot.SeatFacts.RoundId);
+        }
+
+        [Fact]
+        public void SnapshotDeepCopyPreservesSeatFactsAndPrivateScope()
+        {
+            AiSeatSnapshot snapshot = FrozenFixtures.Snapshot(
+                FrozenFixtures.Stamp(
+                    phase: AiPhase.OfferChoice,
+                    offerId: "bloom-1",
+                    deadlineMillis: 5000),
+                cheat: FrozenFixtures.CheatView(
+                    sleeveBloom: FrozenFixtures.SleeveBloom(
+                        pendingOffer: FrozenFixtures.BloomOffer())),
+                seatFacts: FrozenFixtures.SeatFacts(FrozenFixtures.Tiles(1, 2, 3)));
+
+            AiSeatSnapshot copy = snapshot.DeepCopy();
+
+            Assert.NotSame(snapshot.SeatFacts, copy.SeatFacts);
+            Assert.Equal(new[] { 1, 2, 3 }, copy.SeatFacts!.MyClosedTileIds.Select(t => t.Value).ToArray());
+            Assert.Equal(1, copy.CheatView.Scope!.Seat);
+            Assert.Equal("s1", copy.CheatView.Scope.SessionId);
+            Assert.Equal("r1", copy.CheatView.Scope.RoundId);
         }
 
         private sealed class ReturningStrategy : AiDecisionStrategy

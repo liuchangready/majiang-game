@@ -27,19 +27,28 @@ namespace Mahjong.Ai
     /// exists. It is deliberately nullable because IDLE, SHUFFLE_PREPARATION and
     /// OFFER_CHOICE windows do not necessarily have an ordinary <c>DecisionKey</c>; this
     /// type never fabricates one.</description></item>
+    /// <item><description><see cref="SeatFacts"/>: decision-independent own-seat hand facts
+    /// for offer/off-turn windows (V4 <c>PlayerView.myClosedTiles</c>/<c>myDrawnTile</c>).
+    /// Offer windows require it; preparation before a deal and IDLE may carry an empty hand
+    /// and IDLE may carry no round.</description></item>
     /// </list>
     ///
     /// There is intentionally no <c>GameState</c>, full <c>TilePositionMap</c>, wall order,
     /// opponent closed hand, seed, authority callback or submit surface. The table runtime
     /// remains responsible for producing the seat-scoped facts; this constructor validates
-    /// that a structurally inconsistent mix (wrong phase, seat, round, decision, control
+    /// that a structurally inconsistent mix (wrong session/phase/seat/round/decision, control
     /// epoch, state version, offer, window or deadline) is rejected instead of frozen.
     ///
     /// V5 non-equivalences relative to V4 are deliberate and documented here:
     /// <list type="bullet">
     /// <item><description>V4 accepted any <c>PlayerView</c>/<c>PlayerDecision</c> pair and
     /// trusted the projection. V5 requires the optional observation to match the stamp
-    /// field-by-field and to expose exactly the frozen ordinary candidates.</description></item>
+    /// field-by-field (including session id) and to expose exactly the frozen ordinary
+    /// candidates.</description></item>
+    /// <item><description>V4 private views implicitly belonged to the viewing seat and could
+    /// be reused without an explicit owner/session/round. V5 requires
+    /// <see cref="AiCheatView.Scope"/> and rejects cross-seat/session/round reuse; an empty
+    /// unstarted IDLE view may omit it.</description></item>
     /// <item><description>V4 allowed a preparation view and a pending offer to coexist while
     /// its phase precedence chose preparation. V5 rejects that ambiguous mix: the snapshot
     /// has at most one active window.</description></item>
@@ -61,7 +70,8 @@ namespace Mahjong.Ai
             AiCandidateLimits limits,
             AiCheatPolicy policy,
             bool takeover,
-            AiObservation? ordinaryObservation = null)
+            AiObservation? ordinaryObservation = null,
+            AiSeatFacts? seatFacts = null)
         {
             if (stamp == null)
             {
@@ -95,6 +105,10 @@ namespace Mahjong.Ai
             }
 
             AiCheatView frozenCheatView = cheatView.DeepCopy();
+            AiSeatFacts? frozenSeatFacts = seatFacts?.DeepCopy();
+            ValidatePrivateScope(frozenCheatView, stamp);
+            ValidateSeatFacts(frozenSeatFacts, frozenCheatView, stamp, ordinaryObservation);
+            ValidateMarkedTileRelations(frozenCheatView, frozenSeatFacts, stamp);
             ValidatePreparation(frozenCheatView, stamp, options, ordinaryObservation);
             ValidatePhase(frozenCheatView, stamp, options, ordinaryObservation);
             ValidateFactIdentity(frozenCheatView, stamp);
@@ -106,6 +120,7 @@ namespace Mahjong.Ai
             Policy = policy;
             Takeover = takeover;
             OrdinaryObservation = ordinaryObservation;
+            SeatFacts = frozenSeatFacts;
         }
 
         public AiDecisionStamp Stamp { get; }
@@ -136,9 +151,32 @@ namespace Mahjong.Ai
         public AiObservation? OrdinaryObservation { get; }
 
         /// <summary>
+        /// Optional decision-independent own-seat facts. Offer windows require them so
+        /// downstream capability adapters get the complete V4 <c>myClosedTiles</c> input
+        /// without fabricating a decision. Preparation before a deal and IDLE may carry an
+        /// empty hand; IDLE may carry no round.
+        /// </summary>
+        public AiSeatFacts? SeatFacts { get; }
+
+        /// <summary>
+        /// Complete own hand (closed plus drawn) when decision-independent seat facts are
+        /// present; empty for windows with no own-hand fact (for example an unstarted
+        /// IDLE). This is the direct V4 <c>myClosedTiles</c>/<c>myDrawnTile</c> replacement
+        /// for offer capability consumers.
+        /// </summary>
+        public IReadOnlyList<TileId> MyHandTileIds =>
+            SeatFacts?.MyHandTileIds ?? (IReadOnlyList<TileId>)Array.Empty<TileId>();
+
+        public IReadOnlyList<TileId> MyClosedTileIds =>
+            SeatFacts?.MyClosedTileIds ?? (IReadOnlyList<TileId>)Array.Empty<TileId>();
+
+        public TileId? MyDrawnTileId => SeatFacts?.MyDrawnTileId;
+
+        /// <summary>
         /// Independent copy. The nested cheat view is rebuilt through its validating
-        /// copy path; ordinary options are recopied; the optional observation, limits,
-        /// policy and stamp are immutable value surfaces and are safely shared.
+        /// copy path; ordinary options are recopied; the optional observation, seat facts,
+        /// limits, policy and stamp are immutable value surfaces and are safely shared or
+        /// recopied by their own constructors.
         /// </summary>
         public AiSeatSnapshot DeepCopy()
         {
@@ -149,7 +187,8 @@ namespace Mahjong.Ai
                 Limits,
                 Policy,
                 Takeover,
-                OrdinaryObservation);
+                OrdinaryObservation,
+                SeatFacts);
         }
 
         private static ReadOnlyCollection<LegalActionOption> CopyOrdinaryOptions(
@@ -191,6 +230,13 @@ namespace Mahjong.Ai
             {
                 throw new ArgumentException(
                     "The ordinary observation belongs to another seat.",
+                    nameof(observation));
+            }
+
+            if (!string.Equals(observation.SessionId, stamp.SessionId, StringComparison.Ordinal))
+            {
+                throw new ArgumentException(
+                    "The ordinary observation belongs to another session.",
                     nameof(observation));
             }
 
@@ -253,6 +299,231 @@ namespace Mahjong.Ai
                         nameof(observation));
                 }
             }
+        }
+
+        private static void ValidatePrivateScope(AiCheatView cheatView, AiDecisionStamp stamp)
+        {
+            AiPrivateFactScope? scope = cheatView.Scope;
+            if (scope == null)
+            {
+                if (cheatView.HasPrivateFacts)
+                {
+                    throw new ArgumentException(
+                        "Private facts require an owner/session/current-round scope.",
+                        nameof(cheatView));
+                }
+
+                return;
+            }
+
+            if (scope.Seat != stamp.Seat)
+            {
+                throw new ArgumentException(
+                    "Private facts belong to another seat.",
+                    nameof(cheatView));
+            }
+
+            if (!string.Equals(scope.SessionId, stamp.SessionId, StringComparison.Ordinal))
+            {
+                throw new ArgumentException(
+                    "Private facts belong to another session.",
+                    nameof(cheatView));
+            }
+
+            if (stamp.RoundId == null)
+            {
+                if (scope.RoundId != null)
+                {
+                    throw new ArgumentException(
+                        "Private facts name a round in a snapshot without one.",
+                        nameof(cheatView));
+                }
+            }
+            else if (scope.RoundId == null ||
+                     !string.Equals(scope.RoundId, stamp.RoundId, StringComparison.Ordinal))
+            {
+                throw new ArgumentException(
+                    "Private facts belong to another round.",
+                    nameof(cheatView));
+            }
+
+            if (cheatView.HasPrivateFacts && scope.RoundId == null)
+            {
+                throw new ArgumentException(
+                    "Private technique facts require a current round.",
+                    nameof(cheatView));
+            }
+        }
+
+        private static void ValidateSeatFacts(
+            AiSeatFacts? seatFacts,
+            AiCheatView cheatView,
+            AiDecisionStamp stamp,
+            AiObservation? observation)
+        {
+            bool hasPendingOffer = cheatView.SleeveBloom?.PendingOffer != null ||
+                                   cheatView.BeamSwap?.PendingOffer != null;
+            if (seatFacts == null)
+            {
+                if (hasPendingOffer)
+                {
+                    throw new ArgumentException(
+                        "A pending offer requires decision-independent own seat hand facts.",
+                        nameof(seatFacts));
+                }
+
+                return;
+            }
+
+            if (seatFacts.Scope.Seat != stamp.Seat)
+            {
+                throw new ArgumentException(
+                    "Own seat facts belong to another seat.",
+                    nameof(seatFacts));
+            }
+
+            if (!string.Equals(seatFacts.SessionId, stamp.SessionId, StringComparison.Ordinal))
+            {
+                throw new ArgumentException(
+                    "Own seat facts belong to another session.",
+                    nameof(seatFacts));
+            }
+
+            if (stamp.RoundId == null)
+            {
+                if (seatFacts.RoundId != null)
+                {
+                    throw new ArgumentException(
+                        "Own seat facts name a round in a snapshot without one.",
+                        nameof(seatFacts));
+                }
+            }
+            else if (seatFacts.RoundId == null ||
+                     !string.Equals(seatFacts.RoundId, stamp.RoundId, StringComparison.Ordinal))
+            {
+                throw new ArgumentException(
+                    "Own seat facts belong to another round.",
+                    nameof(seatFacts));
+            }
+
+            if (observation != null)
+            {
+                if (!TilesEqual(seatFacts.MyClosedTileIds, observation.MyHandTileIds) ||
+                    !Nullable.Equals(seatFacts.MyDrawnTileId, observation.MyDrawnTileId))
+                {
+                    throw new ArgumentException(
+                        "Own seat facts do not match the ordinary observation hand.",
+                        nameof(seatFacts));
+                }
+            }
+
+            AiBeamSwapOfferFacts? beamOffer = cheatView.BeamSwap?.PendingOffer;
+            if (beamOffer != null)
+            {
+                for (int i = 0; i < beamOffer.SelectableHandTileIds.Count; i++)
+                {
+                    if (!ContainsTile(seatFacts.MyHandTileIds, beamOffer.SelectableHandTileIds[i]))
+                    {
+                        throw new ArgumentException(
+                            "A beam-swap selectable hand tile is not in the frozen own hand.",
+                            nameof(seatFacts));
+                    }
+                }
+            }
+        }
+
+        private static void ValidateMarkedTileRelations(
+            AiCheatView cheatView,
+            AiSeatFacts? seatFacts,
+            AiDecisionStamp stamp)
+        {
+            AiTileMarkFacts? mark = cheatView.TileMark;
+            if (mark == null)
+            {
+                return;
+            }
+
+            AiPrivateFactScope? scope = cheatView.Scope;
+            for (int g = 0; g < mark.ActiveGroups.Count; g++)
+            {
+                AiTileMarkGroupFacts group = mark.ActiveGroups[g];
+                for (int t = 0; t < group.Tiles.Count; t++)
+                {
+                    AiMarkedTileFacts tile = group.Tiles[t];
+                    if (tile.Area == AiTileMarkArea.OwnHand && tile.Seat != stamp.Seat)
+                    {
+                        throw new ArgumentException(
+                            "An OWN_HAND mark must point at the viewing seat.",
+                            nameof(cheatView));
+                    }
+
+                    if (tile.Area == AiTileMarkArea.OpponentHand && tile.Seat == stamp.Seat)
+                    {
+                        throw new ArgumentException(
+                            "An OPPONENT_HAND mark cannot point at the viewing seat.",
+                            nameof(cheatView));
+                    }
+
+                    if (tile.Area == AiTileMarkArea.Discard)
+                    {
+                        if (scope == null ||
+                            scope.RoundId == null ||
+                            tile.RiverPosition == null ||
+                            !string.Equals(
+                                tile.RiverPosition.RoundId,
+                                scope.RoundId,
+                                StringComparison.Ordinal))
+                        {
+                            throw new ArgumentException(
+                                "A DISCARD mark must carry a river position in the current round.",
+                                nameof(cheatView));
+                        }
+                    }
+
+                    if (seatFacts != null &&
+                        tile.Area == AiTileMarkArea.OwnHand &&
+                        scope != null &&
+                        scope.RoundId != null &&
+                        string.Equals(group.CreatedRoundId, scope.RoundId, StringComparison.Ordinal) &&
+                        !ContainsTile(seatFacts.MyHandTileIds, tile.TileId))
+                    {
+                        throw new ArgumentException(
+                            "A current-round OWN_HAND mark must name a tile in the frozen own hand.",
+                            nameof(cheatView));
+                    }
+                }
+            }
+        }
+
+        private static bool TilesEqual(IReadOnlyList<TileId> left, IReadOnlyList<TileId> right)
+        {
+            if (left.Count != right.Count)
+            {
+                return false;
+            }
+
+            for (int i = 0; i < left.Count; i++)
+            {
+                if (!left[i].Equals(right[i]))
+                {
+                    return false;
+                }
+            }
+
+            return true;
+        }
+
+        private static bool ContainsTile(IReadOnlyList<TileId> tiles, int tileId)
+        {
+            for (int i = 0; i < tiles.Count; i++)
+            {
+                if (tiles[i].Value == tileId)
+                {
+                    return true;
+                }
+            }
+
+            return false;
         }
 
         private static void ValidatePreparation(
@@ -358,10 +629,12 @@ namespace Mahjong.Ai
                             nameof(cheatView));
                     }
 
-                    if (stamp.OfferId != null || stamp.DeadlineMillis.HasValue)
+                    if (stamp.OfferId != null ||
+                        stamp.DeadlineMillis.HasValue ||
+                        stamp.WindowId != null)
                     {
                         throw new ArgumentException(
-                            "An IDLE snapshot has no offer id or deadline.",
+                            "An IDLE snapshot has no offer id, deadline or window.",
                             nameof(cheatView));
                     }
 
@@ -379,6 +652,25 @@ namespace Mahjong.Ai
                     {
                         throw new ArgumentException(
                             "An ordinary action has no offer id.",
+                            nameof(cheatView));
+                    }
+
+                    bool hasOrdinaryDecision = options.Count != 0 || observation != null;
+                    if (hasOrdinaryDecision)
+                    {
+                        if (stamp.RoundId == null ||
+                            stamp.DecisionId == null ||
+                            !stamp.DeadlineMillis.HasValue)
+                        {
+                            throw new ArgumentException(
+                                "An ordinary action with legal candidates requires round, decision and deadline identity.",
+                                nameof(cheatView));
+                        }
+                    }
+                    else if (stamp.WindowId == null)
+                    {
+                        throw new ArgumentException(
+                            "An ordinary action without an ordinary decision requires an authorized off-turn window.",
                             nameof(cheatView));
                     }
 

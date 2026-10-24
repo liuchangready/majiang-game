@@ -18,10 +18,13 @@ namespace Mahjong.Ai
     /// match), and <see cref="SafeDefault"/> returns the first candidate flagged
     /// <see cref="AiCandidate.IsSafeDefault"/>, exactly like V4's <c>firstOrNull</c>.
     ///
-    /// The candidate list is defensive-copied at construction. <see cref="AiCandidate"/> is
-    /// immutable, so a later mutation of the caller's list cannot change the context, and no
-    /// public property exposes a writable collection. There is deliberately no
-    /// <c>Submit</c>, authority reference, table state or callback on this type.
+    /// The candidate list is defensive-copied at construction. Every candidate must carry
+    /// the snapshot's exact <see cref="AiCandidate.Phase"/>; an IDLE window accepts no
+    /// candidates at all, so a stale offer/ordinary candidate can never become the safe
+    /// default of a different phase. <see cref="AiCandidate"/> is immutable, so a later
+    /// mutation of the caller's list cannot change the context, and no public property
+    /// exposes a writable collection. There is deliberately no <c>Submit</c>, authority
+    /// reference, table state or callback on this type.
     /// </summary>
     public sealed class AiDecisionContext
     {
@@ -37,10 +40,24 @@ namespace Mahjong.Ai
 
             var copy = new AiCandidate[candidates.Count];
             var ids = new HashSet<string>(StringComparer.Ordinal);
+            if (snapshot.Phase == AiPhase.Idle && candidates.Count != 0)
+            {
+                throw new ArgumentException(
+                    "An IDLE decision cannot carry candidates.",
+                    nameof(candidates));
+            }
+
             for (int i = 0; i < candidates.Count; i++)
             {
                 AiCandidate candidate = candidates[i] ??
                     throw new ArgumentException("Candidates cannot contain null.", nameof(candidates));
+                if (candidate.Phase != snapshot.Phase)
+                {
+                    throw new ArgumentException(
+                        "Every candidate phase must match the frozen snapshot phase.",
+                        nameof(candidates));
+                }
+
                 if (!ids.Add(candidate.OptionId))
                 {
                     throw new ArgumentException(
@@ -81,6 +98,14 @@ namespace Mahjong.Ai
         public IReadOnlyList<LegalActionOption> OrdinaryLegalOptions => Snapshot.OrdinaryLegalOptions;
 
         public AiObservation? OrdinaryObservation => Snapshot.OrdinaryObservation;
+
+        public AiSeatFacts? SeatFacts => Snapshot.SeatFacts;
+
+        public IReadOnlyList<TileId> MyHandTileIds => Snapshot.MyHandTileIds;
+
+        public IReadOnlyList<TileId> MyClosedTileIds => Snapshot.MyClosedTileIds;
+
+        public TileId? MyDrawnTileId => Snapshot.MyDrawnTileId;
 
         /// <summary>
         /// Exact frozen candidate list. The backing array is private and the property is not
