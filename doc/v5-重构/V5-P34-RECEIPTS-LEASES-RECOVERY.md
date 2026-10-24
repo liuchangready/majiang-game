@@ -1,6 +1,6 @@
-# V5 P3.4 回执、租约和恢复端口合同交付（第 9 轮返修）
+# V5 P3.4 回执、租约和恢复端口合同交付（第 10 轮返修）
 
-- 状态：**第 9 轮本地返修完成，等待 caller 第 9 轮独立验收**。不是 G1/G5，不是 V5 全链通过；V4 仍是唯一生产架构。
+- 状态：**第 10 轮本地返修完成，等待 caller 第 10 轮独立验收**。不是 G1/G5，不是 V5 全链通过；V4 仍是唯一生产架构。
 - 唯一工作树：`D:/majiang-wt/p34-receipts`（分支 `wt/v5-p34-receipts`）。
 - 冻结基线：`daeb19a64951174426924026fe974c8ae5caacd9`。
 - 第 1 轮实现：`9e909ea6b7dfb411b1e2511fa4f0f9d05307ba38`。
@@ -12,18 +12,18 @@
 - 第 7 轮实现：`8811e979e57230fc955b90a450e1e95b737c4247`（`fix(v5-p34): bind checkpoint command groups and fingerprints`）。
 - 第 8 轮实现：`36356b3850fba148b7db0d83adab67d3735143de`（`fix(v5-p34): retain replay bindings and terminal evidence`）。
 - 第 9 轮实现：`1e1d33423e9df736f285371999afc3f9afc8fdca`（`fix(v5-p34): validate bindings at atomic save boundary`）。
+- 第 10 轮实现：`961f5942b70a6b3e644bf034a17a52ac1bb44ab5`（`fix(v5-p34): reject unsupported checkpoint versions at save`）。
 - 本文件提交为最终本地 HEAD；未 push、未建 PR、未触发 CI、未转派。
-- caller 的 `CodexP34ReviewProbes.cs`、`CodexP34Round2ReviewProbes.cs`、`CodexP34Round3ReviewProbes.cs`、`CodexP34Round4ReviewProbes.cs`、`CodexP34Round5ReviewProbes.cs`、`CodexP34Round6ReviewProbes.cs`、`CodexP34Round7ReviewProbes.cs`、`CodexP34Round8ReviewProbes.cs` 均保留、纳入提交并通过；未删除或弱化探针。
+- caller 的 `CodexP34ReviewProbes.cs`、`CodexP34Round2ReviewProbes.cs`、`CodexP34Round3ReviewProbes.cs`、`CodexP34Round4ReviewProbes.cs`、`CodexP34Round5ReviewProbes.cs`、`CodexP34Round6ReviewProbes.cs`、`CodexP34Round7ReviewProbes.cs`、`CodexP34Round8ReviewProbes.cs`、`CodexP34Round9ReviewProbes.cs` 均保留、纳入提交并通过；未删除或弱化探针。
 
-## 1. 第 9 轮修复结论
+## 1. 第 10 轮修复结论
 
 |缺陷|修复|
 |---|---|
-|R16 SaveCheckpointAsync 接受 empty/partial/eventCount/fingerprint/分组错误 binding 并覆盖有效恢复点|新增纯验证 `TableCheckpointValidator`：解码 history + independent bindings，强制 version 1..StateVersion、每版非空、ordinal/seq 连续、eventCount 分组、SourceFingerprint、history 与 StatePayload 的 Domain 前缀一致。`SaveCheckpointAsync` 在任何 checkpoint/facts/timing/stateTimingVersion/lease/CommitCount 突变之前调用该验证；失败返回 Failed，旧恢复点保持不变。|
-|R16 CommitAsync/CommitControlAsync 可能绕过|`CommitAsync`（accepted checkpoint）与 `CommitControlAsync` 在 staging/apply 前调用同一 `TableCheckpointValidator`；owner/state/control/timing fence 仍先校验，不另开宽松路径。|
-|R16 写读口径分裂|`TableRecoveryService` 也改用 `TableCheckpointValidator.TryValidate` 做 history/binding/Domain prefix 校验，保存与恢复共享同一纯验证规则。|
-|测试证据|新增 save 边界 empty/fingerprint 探针 + `none` 正例；新增 partial/event-count/group-mismatch 拒绝测试，并断言失败前后 checkpoint/facts/timing/CommitCount 未变、旧恢复点仍可恢复。|
-|R13/R14/R15 组合场景|新增 `ReplayBindingsSurviveCommandAfterRecoveryAndSecondSave`（recover→新命令→save→recover）；保留 `ReplayEvidenceMustSurviveSaveAndSecondRecovery`（checkpoint0/1）与 v2 AbortiveDraw 终局原子提交。|
+|R17 SaveCheckpointAsync 接受不可读取的 SchemaVersion/RulesetVersion 并覆盖有效恢复点|`TableCheckpointValidator` 增加 schema 版本合法性；`SaveCheckpointAsync` 在 mutation 前要求 `checkpoint.SchemaVersion == TableCheckpointFactory.SchemaVersion` 且 `checkpoint.RulesetVersion == state.RulesetVersion`，否则 Failed，旧 checkpoint/facts/timing/CommitCount 不变。|
+|R17 CommitAsync/CommitControlAsync 同类绕过|accepted CommitAsync 与 CommitControlAsync 的 checkpoint 均在 staging/apply 前调用同一 validator，并显式核对 `checkpoint.RulesetVersion == state.RulesetVersion`；owner/state/control/timing fences 不变。|
+|R17 保存/恢复版本兼容性分裂|恢复仍保留 schema/ruleset 检查；保存边界提前拒绝相同不可读版本。`TableCheckpointValidator` 覆盖 schema，store 覆盖 ruleset，恢复入口继续 fail closed。|
+|测试证据|`CodexP34Round9ReviewProbes` 的 `none` 正例、schema/ruleset 两负例；断言失败保存未变更 SchemaVersion/RulesetVersion/TimingVersion/CommitCount，旧恢复点仍可恢复。`LostResponseCanRecoverSaveRecoverAndReplayExactReceipt` 原 ID 精确回执重放继续通过。|
 
 ## 2. 历史轮次修复结论
 
@@ -204,13 +204,15 @@ Decode 强制 round/state 匹配当前恢复目标、public/private 各 4、无�
 | caller `*CodexP34Round6ReviewProbes`（3 cases） | **3 passed / 0 failed / 0 skipped** |
 | caller `*CodexP34Round7ReviewProbes`（3 cases） | **3 passed / 0 failed / 0 skipped** |
 | caller `*CodexP34Round8ReviewProbes`（3 cases） | **3 passed / 0 failed / 0 skipped** |
-| `dotnet test .../Mahjong.TableRuntime.Tests.csproj -c Release` | **258 passed / 0 failed / 0 skipped**（原 168 + 90，含 23 探针/case） |
+| caller `*CodexP34Round9ReviewProbes`（4 cases） | **4 passed / 0 failed / 0 skipped** |
+| `dotnet test .../Mahjong.TableRuntime.Tests.csproj -c Release` | **262 passed / 0 failed / 0 skipped**（原 168 + 94，含 27 探针/case） |
 | `dotnet test dotnet/Mahjong.sln -c Release` | **575 passed / 0 failed / 0 skipped**（Domain 322、Contracts 104、Client 132、Ai 17） |
 | `dotnet build dotnet/Mahjong.sln -c Release` | **0 warnings / 0 errors** |
 | `git diff --check daeb19a..HEAD` | **exit 0** |
 
 新增/调整覆盖：
 
+- R17：`CodexP34Round9ReviewProbes` 的 none/schema/ruleset；无效保存不覆盖旧 checkpoint，旧恢复点仍可 recover；丢失响应后 recover→save→recover→原 ID 精确回执重放继续通过。
 - R16：`CodexP34Round8ReviewProbes` 的 none/empty/fingerprint；`InvalidSaveBindingsMustNotReplaceCheckpointOrMutateEvidence` 的 partial/event-count/group-mismatch 三负例；断言旧 checkpoint/facts/timing/CommitCount 不变且旧恢复点仍 recover。
 - R13：`ReplayEvidenceMustSurviveSaveAndSecondRecovery` checkpoint0/1；`ReplayBindingsSurviveCommandAfterRecoveryAndSecondSave` 新命令后 save/recover。
 - R14：`TerminalCommandAfterEarlierCommitMustCreateAtomicCheckpointAndOutbox` v1 discard 后 v2 AbortiveDraw。
@@ -226,14 +228,14 @@ Decode 强制 round/state 匹配当前恢复目标、public/private 各 4、无�
 - R4：`RecoveryInstallsTypedCheatLedgerAndLatestCommittedFacts`、`FullHistoryIsInstalledEvenWhenSnapshotWindowIsZero`、`RecoveryInstallsStrictWireBaseline...`、`MissingCommittedFactsIsRefused`、`TamperedProjectionFactsAreRefused`、`UnmodeledPrivateCheatSubstateIsRefused`。
 - 既有回执/scope/租约/事务/fence 测试继续通过。
 
-## 6. SHA-256（第 9 轮实现）
+## 6. SHA-256（第 10 轮实现）
 
 | 文件 | SHA-256 |
 |---|---|
 | `dotnet/src/Mahjong.Domain/DecisionClock.cs` | `75f4314a580155f1b27a28a5db63601a7d78a1b9d8a4fc729b3570fe1e2dfaec` |
 | `dotnet/src/Mahjong.TableRuntime/TableActor.cs` | `0f085b364d764ce892ee7c33acbca4e77bac2ed93577150a932c9cdb33e311b5` |
 | `dotnet/src/Mahjong.TableRuntime/TableDurableContracts.cs` | `a4b8f30f532ce1b949bae6152a39edef99d0c527c9d26e33b490d528c7c5c375` |
-| `dotnet/src/Mahjong.TableRuntime/InMemoryTableStore.cs` | `1850a70ae98134367fd33a3d22fc2f4c9e1adb8078e2a77f7701861eb9704dd8` |
+| `dotnet/src/Mahjong.TableRuntime/InMemoryTableStore.cs` | `e2d7c775c325cf208ff4b1845ccd93f711ebf4eebcd6c2e62e70e546055590cb` |
 | `dotnet/src/Mahjong.TableRuntime/TableCheckpointCodecs.cs` | `d2783a6c08ffa4e35b741b92444755d3d69e4e0ab2d814bcd236c0897b5d1a9c` |
 | `dotnet/src/Mahjong.TableRuntime/TableControlContracts.cs` | `dc89595468c0802545a270c58133d121c11f5eb5fb72f375339739c2596ec498` |
 | `dotnet/src/Mahjong.TableRuntime/TableRecoveryPayloads.cs` | `9969129b6076189daa4853ca6e2961b78c8b5f2880c9b0dc9fc8e4a881eda9ef` |
@@ -255,9 +257,9 @@ Decode 强制 round/state 匹配当前恢复目标、public/private 各 4、无�
 | `dotnet/tests/.../CodexP34Round6ReviewProbes.cs` | `003752027d3ef246e17ca6a33fb332cfa35cda16119c897d101a5312024bbdac` |
 | `dotnet/tests/.../CodexP34Round7ReviewProbes.cs` | `2285283a57b6969939204d5011b5364d2986def8fa35ca9363097aaf21642e8e` |
 | `dotnet/tests/.../CodexP34Round8ReviewProbes.cs` | `42c8adb943fbeddecc57db076ed6933d3d02f478d19aaef7740e9ae7256de42c` |
-| `dotnet/src/Mahjong.TableRuntime/TableCheckpointValidator.cs` | `2c81497642ef19192b7e3883929568c3be12d2f2f929c7a5210a6a1103d01ee4` |
+| `dotnet/tests/.../CodexP34Round9ReviewProbes.cs` | `c4127b21105cbbb16fa512a6dfe6d818f6d5276205ebd00be09d01488c062ad9` |
 
-第 9 轮实现提交：6 文件，`412 insertions(+), 26 deletions(-)`。未新增项目/包引用，未修改 `Mahjong.sln`、任务书、矩阵、黄金 fixtures、统一 verifier 或 CI。
+第 10 轮实现提交：3 文件，`94 insertions(+), 6 deletions(-)`。未新增项目/包引用，未修改 `Mahjong.sln`、任务书、矩阵、黄金 fixtures、统一 verifier 或 CI。
 
 ## 7. NOT_RUN 与边界
 
@@ -269,6 +271,6 @@ Decode 强制 round/state 匹配当前恢复目标、public/private 各 4、无�
 
 ## 8. 交接
 
-- 第 9 轮实现 HEAD：`1e1d33423e9df736f285371999afc3f9afc8fdca`。
+- 第 10 轮实现 HEAD：`961f5942b70a6b3e644bf034a17a52ac1bb44ab5`。
 - 本文件提交为最终本地 HEAD；工作树 clean。
-- 等待 caller 第 9 轮独立验收；caller 负责唯一 PR19 `feat/v5-1-integration -> v5` 及 merge-back。不自行宣告 G1/G5。
+- 等待 caller 第 10 轮独立验收；caller 负责唯一 PR19 `feat/v5-1-integration -> v5` 及 merge-back。不自行宣告 G1/G5。
