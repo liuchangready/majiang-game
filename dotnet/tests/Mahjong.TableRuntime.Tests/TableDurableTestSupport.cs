@@ -20,26 +20,6 @@ namespace Mahjong.TableRuntime.Tests
         }
     }
 
-    internal static class MinimalEventFacts
-    {
-        public static IReadOnlyList<TableProjectionEventFact> Build(TableProjectionContextRequest request)
-        {
-            var facts = new List<TableProjectionEventFact>(request.CommittedEvents.Count);
-            for (int i = 0; i < request.CommittedEvents.Count; i++)
-            {
-                TableEventRecord record = request.CommittedEvents[i];
-                facts.Add(new TableProjectionEventFact(
-                    WireEventFacts.MapType(record.Type),
-                    record.Seq,
-                    record.CommandVersion,
-                    unchecked((uint)record.Ordinal),
-                    new TableProjectionEventFacts()));
-            }
-
-            return facts;
-        }
-    }
-
     internal sealed class DurableHarness : IAsyncDisposable
     {
         public const string Room = "room-1";
@@ -174,6 +154,23 @@ namespace Mahjong.TableRuntime.Tests
                     SeatControllerKind.RemoteHuman)).Capture();
         }
 
+        public static TestProjectionSource TerminalFactsSource()
+        {
+            return new TestProjectionSource
+            {
+                Policy = new TableProjectionPolicy(false, settlementBatch: true, revealSettlementUra: true),
+                EventFactsFactory = request => WireEventFacts.Build(
+                    request,
+                    new WireEventFactOptions
+                    {
+                        WinYaku = new[] { new YakuView("TSUMO", 1U) },
+                        WinHan = 1U,
+                        WinFu = 30U,
+                        WinScore = 26000L
+                    })
+            };
+        }
+
         public static CheatLedger NewLedger()
         {
             return CheatLedger.Initialize(new CheatEconomyConfig(
@@ -241,7 +238,7 @@ namespace Mahjong.TableRuntime.Tests
             projectionSource ??= new TestProjectionSource();
             if (projectionSource is TestProjectionSource testSource && testSource.EventFactsFactory == null)
             {
-                testSource.EventFactsFactory = request => MinimalEventFacts.Build(request);
+                testSource.EventFactsFactory = request => WireEventFacts.Build(request);
             }
 
             var legacy = new RecordingCommitPort();

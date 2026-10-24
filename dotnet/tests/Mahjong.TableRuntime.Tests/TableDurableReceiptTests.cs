@@ -249,7 +249,8 @@ namespace Mahjong.TableRuntime.Tests
         [Fact]
         public async Task TerminalOutboxFaultRollsBackAndRetryWritesOnlyOneResult()
         {
-            await using DurableHarness harness = await DurableHarness.CreateAsync();
+            await using DurableHarness harness = await DurableHarness.CreateAsync(
+                projectionSource: DurableHarness.TerminalFactsSource());
             RoundStateMachine round = harness.InitialRound;
             var settlement = new RoundSettlement(
                 "result-fault",

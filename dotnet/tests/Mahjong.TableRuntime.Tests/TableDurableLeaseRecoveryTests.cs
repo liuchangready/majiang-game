@@ -435,6 +435,87 @@ namespace Mahjong.TableRuntime.Tests
         }
 
         [Fact]
+        public async Task TerminalRecoveryWireExposesTypedSettlementFromPersistedFacts()
+        {
+            var sink = new RecordingRecoveryStateSink();
+            var source = new RecoveredProjectionSource(sink, DurableHarness.TerminalFactsSource());
+            await using DurableHarness first = await DurableHarness.CreateAsync(
+                projectionSource: source,
+                streamOptions: new TableStreamOptions(),
+                recoverySink: sink);
+            RoundStateMachine round = first.InitialRound;
+            var settlement = new RoundSettlement(
+                "terminal-wire",
+                RoundOutcome.Tsumo(0),
+                new long[] { 26000, 24000, 25000, 25000 },
+                0,
+                new PersistedUtcTime(new DateTimeOffset(2026, 10, 24, 0, 0, 0, TimeSpan.Zero)),
+                1234L);
+            TableCommandEnvelope command = first.Envelope(
+                RoundCommand.Tsumo(round.RoundId, 0, settlement),
+                0,
+                "terminal-wire",
+                api: "TSUMO");
+            Assert.Equal(TableOperationStatus.Accepted, (await first.SubmitAsync(command)).Status);
+
+            await using DurableHarness recovered = DurableHarness.Attach(
+                first,
+                DurableHarness.Owner,
+                1UL,
+                sink);
+            TableRecoveryResult result = await recovered.Actor.RecoverFromStoreAsync(TestContext.Current.CancellationToken);
+            Assert.True(result.Recovered, result.ReasonCode + ": " + result.Detail);
+            Assert.True(result.Report!.Terminal);
+            Assert.True(result.Report.OutboxPayloadMatches);
+
+            var playerSink = new RecordingStreamSink();
+            TableStreamControlResult player = await recovered.Actor.SubscribeStreamAsync(
+                new TableStreamSubscribeRequest(
+                    new TableStreamIdentity(
+                        new SessionId("terminal-player"),
+                        TableStreamAudience.ForSeat(0),
+                        new BindingEpoch(1),
+                        new SyncEpoch(1)),
+                    new OwnerEpoch(2),
+                    1L,
+                    playerSink,
+                    new RoundId(recovered.InitialRound.RoundId),
+                    new ControlEpoch(0)),
+                TestContext.Current.CancellationToken);
+            Assert.True(
+                player.Status == TableStreamControlStatus.Subscribed ||
+                player.Status == TableStreamControlStatus.BaselineQueued,
+                player.ReasonCode + ": " + player.Detail);
+            Assert.Single(await playerSink.WaitForCountAsync(1));
+            PlayerSnapshotView playerView = playerSink.Frames[0].Player!;
+            Assert.NotEmpty(playerView.Public.SettlementEvents);
+            Assert.Contains(
+                playerView.Public.SettlementEvents,
+                value => value.Type == ProtocolEventType.TsumoWin);
+            Assert.NotNull(playerView.Private.Cheat);
+
+            var spectatorSink = new RecordingStreamSink();
+            TableStreamControlResult spectator = await recovered.Actor.SubscribeStreamAsync(
+                new TableStreamSubscribeRequest(
+                    new TableStreamIdentity(
+                        new SessionId("terminal-spectator"),
+                        TableStreamAudience.Spectator,
+                        new BindingEpoch(1),
+                        new SyncEpoch(1)),
+                    new OwnerEpoch(2),
+                    1L,
+                    spectatorSink,
+                    new RoundId(recovered.InitialRound.RoundId)),
+                TestContext.Current.CancellationToken);
+            Assert.True(
+                spectator.Status == TableStreamControlStatus.Subscribed ||
+                spectator.Status == TableStreamControlStatus.BaselineQueued,
+                spectator.ReasonCode + ": " + spectator.Detail);
+            Assert.Single(await spectatorSink.WaitForCountAsync(1));
+            Assert.NotEmpty(spectatorSink.Frames[0].Public!.View.SettlementEvents);
+        }
+
+        [Fact]
         public async Task ControlEpochAndDecisionTimingAreRecoveredConsistently()
         {
             await using DurableHarness harness = await DurableHarness.CreateAsync();
@@ -494,7 +575,8 @@ namespace Mahjong.TableRuntime.Tests
         [Fact]
         public async Task TerminalCommitWritesOneOutboxAndReplayKeepsItUnique()
         {
-            await using DurableHarness harness = await DurableHarness.CreateAsync();
+            await using DurableHarness harness = await DurableHarness.CreateAsync(
+                projectionSource: DurableHarness.TerminalFactsSource());
             RoundStateMachine round = harness.InitialRound;
             var settlement = new RoundSettlement(
                 "result-1",
@@ -544,10 +626,14 @@ namespace Mahjong.TableRuntime.Tests
         {
             var recoverySink = new RecordingRecoveryStateSink();
             var recoveredSource = new RecoveredProjectionSource(recoverySink);
+            CheatLedger appliedLedger = DurableHarness.NewLedger()
+                .Apply("mark-fee", 0, -5, "TILE_MARK").Ledger!;
             await using DurableHarness first = await DurableHarness.CreateAsync(
+                ledger: appliedLedger,
                 projectionSource: recoveredSource,
                 streamOptions: new TableStreamOptions(),
-                recoverySink: recoverySink);
+                recoverySink: recoverySink,
+                configure: options => options.SnapshotEventWindow = 1);
             List<TableCommandEnvelope> chain = P31Fixtures.BuildDiscardChain(first.InitialRound, 3)
                 .Select((value, index) => first.Envelope(value.Command, index, "wire-" + index))
                 .ToList();
@@ -624,6 +710,15 @@ namespace Mahjong.TableRuntime.Tests
             Assert.Equal(2UL, playerSink.Frames[0].StreamVersion.Value);
             Assert.NotNull(playerSink.Frames[0].Player);
             Assert.True(recoveredSource.UsedRecovered);
+            PlayerSnapshotView playerView = playerSink.Frames[0].Player!;
+            Assert.Equal(2UL, playerView.StateVersion.Value);
+            Assert.NotNull(playerView.Private.Cheat);
+            Assert.Contains(
+                playerView.Private.Cheat!.Ledger,
+                entry => entry.EntryId == "mark-fee" && entry.Amount == -5);
+            Assert.Equal(appliedLedger.BalanceOf(0), playerView.Private.Cheat.CheatPoints);
+            Assert.True(playerView.Private.DiscardHistory.Count >= 1);
+            Assert.NotEmpty(playerView.Private.ClosedTiles);
 
             var spectatorSink = new RecordingStreamSink();
             TableStreamControlResult spectator = await recovered.Actor.SubscribeStreamAsync(
@@ -645,17 +740,28 @@ namespace Mahjong.TableRuntime.Tests
             Assert.Single(await spectatorSink.WaitForCountAsync(1));
             Assert.True(spectatorSink.Frames[0].IsFullSnapshot);
             Assert.NotNull(spectatorSink.Frames[0].Public);
+            PublicSnapshotView publicView = spectatorSink.Frames[0].Public!;
+            Assert.Equal(2UL, publicView.StateVersion.Value);
+            Assert.NotNull(publicView.View.Board);
+            Assert.Equal(2, publicView.View.Board!.Players.Sum(value => value.Discards.Count));
+            Assert.Empty(publicView.View.SettlementEvents);
         }
     }
 
     internal sealed class RecoveredProjectionSource : ITableProjectionContextSource
     {
-        private readonly TestProjectionSource _live = new TestProjectionSource();
+        private readonly TestProjectionSource _live;
 
-        public RecoveredProjectionSource(RecordingRecoveryStateSink sink)
+        public RecoveredProjectionSource(
+            RecordingRecoveryStateSink sink,
+            TestProjectionSource? live = null)
         {
             Sink = sink ?? throw new ArgumentNullException(nameof(sink));
-            _live.EventFactsFactory = request => WireEventFacts.Build(request);
+            _live = live ?? new TestProjectionSource();
+            if (_live.EventFactsFactory == null)
+            {
+                _live.EventFactsFactory = request => WireEventFacts.Build(request);
+            }
         }
 
         public RecordingRecoveryStateSink Sink { get; }

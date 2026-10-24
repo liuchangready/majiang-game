@@ -413,6 +413,103 @@ namespace Mahjong.TableRuntime
             }
         }
 
+        /// <summary>
+        /// Recovery-only event validation through the same P3.2 event projection and Contracts
+        /// mapper used by live streams. Every committed history event must have exactly one fact;
+        /// the fact type/version/ordinal must match the projected event, and MapEvent must accept
+        /// all required per-type fields. A forced settlement policy validates terminal win facts
+        /// without publishing them.
+        /// </summary>
+        public static void ValidateRecoveredEventFacts(
+            IReadOnlyList<TableEventRecord> history,
+            IReadOnlyList<TableProjectionEventFact> facts,
+            TableProjectionPolicy policy)
+        {
+            if (history == null)
+            {
+                throw new ArgumentNullException(nameof(history));
+            }
+
+            if (facts == null)
+            {
+                throw new ArgumentNullException(nameof(facts));
+            }
+
+            if (policy == null)
+            {
+                throw new ArgumentNullException(nameof(policy));
+            }
+
+            if (facts.Count != history.Count)
+            {
+                throw new TableProjectionException(
+                    TableProjectionErrorCode.InvalidContext,
+                    "Recovered event facts do not cover the complete committed history.");
+            }
+
+            var bySeq = new Dictionary<ulong, TableProjectionEventFact>(facts.Count);
+            for (int i = 0; i < facts.Count; i++)
+            {
+                TableProjectionEventFact fact = facts[i] ??
+                    throw new TableProjectionException(
+                        TableProjectionErrorCode.InvalidContext,
+                        "Recovered event facts contain null.");
+                if (!bySeq.TryAdd(fact.EventSeq.Value, fact))
+                {
+                    throw new TableProjectionException(
+                        TableProjectionErrorCode.EventOrderMismatch,
+                        "Recovered event facts repeat event_seq " + fact.EventSeq.Value + ".");
+                }
+            }
+
+            var validationPolicy = new TableProjectionPolicy(
+                policy.Paused,
+                settlementBatch: true,
+                revealSettlementUra: true);
+            for (int i = 0; i < history.Count; i++)
+            {
+                TableEventRecord record = history[i];
+                if (!bySeq.TryGetValue(record.Seq.Value, out TableProjectionEventFact? fact))
+                {
+                    throw new TableProjectionException(
+                        TableProjectionErrorCode.InvalidContext,
+                        "Committed event " + record.Seq + " has no recovered fact.");
+                }
+
+                TableEventProjectionInput? input = TableEventProjection.FromRoundEvent(record);
+                if (input == null ||
+                    input.Type != fact.Type ||
+                    input.CommandVersion != fact.CommandVersion ||
+                    input.EventOrdinal != fact.EventOrdinal)
+                {
+                    throw new TableProjectionException(
+                        TableProjectionErrorCode.EventVersionMismatch,
+                        "Recovered event fact " + record.Seq + " does not bind its committed event.");
+                }
+
+                bool projected = false;
+                for (int audienceIndex = -1; audienceIndex < 4; audienceIndex++)
+                {
+                    TableProjectionAudience audience = audienceIndex < 0
+                        ? TableProjectionAudience.Spectator
+                        : TableProjectionAudience.ForSeat(audienceIndex);
+                    TableProjectedEvent? value = TableEventProjection.Project(input, audience, validationPolicy);
+                    if (value != null)
+                    {
+                        _ = TableProjectionContractMapper.MapEvent(value, fact.Facts);
+                        projected = true;
+                    }
+                }
+
+                if (!projected)
+                {
+                    throw new TableProjectionException(
+                        TableProjectionErrorCode.InvalidContext,
+                        "Committed event " + record.Seq + " is hidden from every validated audience.");
+                }
+            }
+        }
+
         public static PlayerSnapshotView ProjectPlayerSnapshot(
             RoundStateMachine round,
             CheatState cheat,

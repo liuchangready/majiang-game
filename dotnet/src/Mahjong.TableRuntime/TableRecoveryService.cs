@@ -668,6 +668,10 @@ namespace Mahjong.TableRuntime
                 try
                 {
                     TableVisibilityProjection.ValidateRecoveredFacts(round, effectiveFacts, recoveredCheat);
+                    TableVisibilityProjection.ValidateRecoveredEventFacts(
+                        fullHistory,
+                        effectiveFacts.EventFacts,
+                        effectiveFacts.Policy);
                 }
                 catch (Exception exception) when (
                     exception is ArgumentException ||
@@ -676,38 +680,7 @@ namespace Mahjong.TableRuntime
                 {
                     return TableRecoveryResult.Failed(
                         TableRuntimeReasonCode.CheckpointInvalid,
-                        "Projection facts do not match the recovered round: " + exception.Message);
-                }
-
-                if (effectiveFacts.EventFacts.Count != fullHistory.Count)
-                {
-                    return TableRecoveryResult.Failed(
-                        TableRuntimeReasonCode.CheckpointInvalid,
-                        "Projection event facts are incomplete for the committed history.");
-                }
-
-                for (int i = 0; i < effectiveFacts.EventFacts.Count; i++)
-                {
-                    TableProjectionEventFact fact = effectiveFacts.EventFacts[i];
-                    bool found = false;
-                    for (int j = 0; j < fullHistory.Count; j++)
-                    {
-                        TableEventRecord record = fullHistory[j];
-                        if (record.Seq == fact.EventSeq &&
-                            record.CommandVersion == fact.CommandVersion &&
-                            record.Ordinal == unchecked((int)fact.EventOrdinal))
-                        {
-                            found = true;
-                            break;
-                        }
-                    }
-
-                    if (!found)
-                    {
-                        return TableRecoveryResult.Failed(
-                            TableRuntimeReasonCode.CheckpointInvalid,
-                            "Projection event fact does not match committed history.");
-                    }
+                        "Projection facts do not match the recovered round/history: " + exception.Message);
                 }
             }
             if (timingRow != null)
