@@ -578,9 +578,9 @@ namespace Mahjong.Ai.Tests
         {
             // Kotlin minOf(Double, Double) delegates to java.lang.Math.min: when both
             // operands are zero the negative zero wins REGARDLESS of argument order
-            // (caller parity probe D-1-01). Both a naive tie-keeps-left port and .NET's
-            // Math.Min(double, double) return the left operand on ties and would produce
-            // +0.0 for one of the two mixed orders.
+            // (caller parity probe D-1-01). A naive tie-keeps-left port would produce
+            // +0.0 for one of the two mixed orders. Modern .NET Math.Min also selects
+            // negative zero; these assertions verify the explicit portable rule.
             AiCheatPolicy positive = new AiCheatPolicy(riskTolerance: 0.0);
             AiCheatPolicy negative = new AiCheatPolicy(riskTolerance: -0.0);
 

@@ -310,12 +310,13 @@ namespace Mahjong.Ai
 
         /// <summary>
         /// Kotlin <c>minOf(Double, Double)</c> delegates to <c>java.lang.Math.min</c> on
-        /// the JVM. That IEEE rule is not a plain comparison and differs from both a
-        /// naive tie-keeps-left and .NET's own <see cref="Math.Min(double, double)"/>
-        /// (which returns the left operand on ties): when both values are zero, negative
+        /// the JVM. That IEEE rule differs from a naive tie-keeps-left comparison:
+        /// when both values are zero, negative
         /// zero wins regardless of the argument order — (+0,-0) and (-0,+0) both yield
         /// -0.0 (caller parity probe D-1-01). NaN cannot occur here because the
         /// constructor rejects it; the NaN arm merely mirrors the Math.min contract.
+        /// The rule is explicit here for the netstandard2.1 portability boundary;
+        /// modern .NET Math.Min also selects negative zero in both argument orders.
         /// </summary>
         private static double MinOf(double left, double right)
         {

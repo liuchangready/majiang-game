@@ -31,7 +31,7 @@ V4 来源文件（基线 HEAD 处读取）：`engine/src/main/kotlin/com/majiang
 | `allows = enabled && isCapabilityToggled`（`:46`） | 有效 id 上保留 `&&` 短路（禁用策略对任意有效 id 返回 false）；**Kotlin 编译器在方法入口、先于函数体注入固有参数 null 检查，故 `Allows(null)` 在总开关两种极性下都抛**（Kotlin NPE → `ArgumentNullException`；caller 以真实 `AiCheatPolicy.kt` + kotlinc 2.4.10 编译执行核实，D-1-02）。第 1 轮"短路使禁用策略免检 null"的判断是误读，第 2 轮已修正实现（入口 null 检查）与测试（`NullCapabilityIdIsRejectedLikeTheKotlinIntrinsicNullCheck` 双极性固化 + 有效 id 短路路径仍 false） |
 | `withCapability`：require 非空白（null→NPE、空白→IAE 两条不同异常路径）；`LinkedHashMap` 拷贝后 put；`copy()` 重校验（`:48-53`） | 显式 null→`ArgumentNullException`、空白→`ArgumentException`；新实例经构造器统一重校验；既有 key 保位、新 key 追加（测试 `WithCapabilityPreservesInsertionOrderLikeALinkedHashMap`） |
 | `restrictWith(null) → this` 同一引用（`:59`） | `return this`（`Assert.Same` 固化）；`restrictWith(this)` 返回相等但不同实例（Kotlin copy 语义） |
-| `restrictWith` 合并：`LinkedHashSet` 并集（左 keys 先、右新 keys 后）→ 值 `isCapabilityToggled(k) && other.isCapabilityToggled(k)`；`enabled=&&`、budget=min、reserve=max、risk=min、candidate=min、takeover=逻辑 AND（`:60-74`） | 逐项同构；**`minOf(Double,Double)` 按 Kotlin 实际委托的 `java.lang.Math.min` 语义实现**（`MinOf` 助手）：两侧均为零时**负零在任一参数序下都胜出**——(+0,−0) 与 (−0,+0) 均得 −0.0（位型 `long.MinValue`）；相等非零值位级同值返回左参。不用 .NET `Math.Min`（平局返回左操作数，与 JVM 相异；caller 探针 D-1-01 实测 V4 两向均为 −9223372036854775808，第 1 轮"±0.0 返回左参"的移植是错的，已修正——测试 `RestrictWithRiskZeroSignFollowsJavaLangMathMin`）。并集迭代序 `[a,c,b]` 用例固化 |
+| `restrictWith` 合并：`LinkedHashSet` 并集（左 keys 先、右新 keys 后）→ 值 `isCapabilityToggled(k) && other.isCapabilityToggled(k)`；`enabled=&&`、budget=min、reserve=max、risk=min、candidate=min、takeover=逻辑 AND（`:60-74`） | 逐项同构；**`minOf(Double,Double)` 按 Kotlin 实际委托的 `java.lang.Math.min` 语义实现**（`MinOf` 助手）：两侧均为零时**负零在任一参数序下都胜出**——(+0,−0) 与 (−0,+0) 均得 −0.0（位型 `long.MinValue`）；相等非零值位级同值返回左参。显式实现该规则以固定 netstandard2.1 兼容边界（现代 .NET 的 `Math.Min` 同样在两向选择负零；caller 探针 D-1-01 实测 V4 两向均为 −9223372036854775808，第 1 轮"±0.0 返回左参"的移植是错的，已修正——测试 `RestrictWithRiskZeroSignFollowsJavaLangMathMin`）。并集迭代序 `[a,c,b]` 用例固化 |
 | data class：值相等含 `Double.equals` 位级比较（**-0.0 ≠ 0.0**；NaN 不可能入域）；Map 相等按内容、与迭代序无关；hashCode 值相关；`toString` 数据类形状 | `Equals` 用 `BitConverter.DoubleToInt64Bits` 位比较 risk（`NegativeZeroRiskToleranceDiffersFromZeroInEqualityLikeKotlin`）；toggle 表内容等值、序不敏感（`ToggleEqualityIsContentBasedAndIgnoresIterationOrder`）；`==`/`!=`/`GetHashCode` 同步；`ToString` 输出 Kotlin 字段形状（诊断用途） |
 
 **配置≠权威**：本类型是纯配置描述——无任何花钱/读状态/加载能力 API；V4 中费用、余额、房间权威仍由 `TableAuthority` 交集裁决（`buildAiSeatSnapshot` 在 `restrictWith` 之后还叠加 `automated && (!takeover || policy.takeoverMaySpend)` 与 legacy 60 预算投影）。V5 的该投影接线属 TableRuntime/P3.x 既有合同，**不在本任务**；本移植在结构上保证 risk double 只停留在策略配置里（类型零 Domain/Contracts/网络/时钟/随机引用），不能进入 Domain 权威哈希、`CommandIntent` 规范字节或持久收费事实。无动态 DLL 注册、未知能力加载或额外钱包（类型无反射/IO 面）。
@@ -126,8 +126,8 @@ Total 均非 0、无 skip、无旧 DLL 凑绿（R2/R3 当场重建）；未修�
 | ID | 级别 | 缺陷（第 1 轮实际 vs V4 期望） | 修复 | 验收 |
 |---|---|---|---|---|
 | D-1-01 | MAJOR | `RestrictWith` risk `minOf` 按"`if (a<=b) a else b` 平局返回左参"移植：(+0,−0) 得 +0.0；V4 `minOf(Double,Double)` 委托 `java.lang.Math.min`，两向均得 −0.0（位型 `long.MinValue`） | `MinOf(double,double)` 按 Math.min 语义重写：NaN 臂 + 严格小于比较 + 相等零对按位型符号位 OR 定符号（`AiCheatPolicy.cs`） | 探针 `restrict(+0,-0)`/`restrict(-0,+0)` 均 `-9223372036854775808`；测试 `RestrictWithRiskZeroSignFollowsJavaLangMathMin` 固化四种零组合 + 两向交换 + 与非零混合 |
-| D-1-02 | MAJOR | 第 1 轮在 `Allows` 上依赖 `&&` 短路，`Allows(null)` 于禁用策略返回 false；V4 Kotlin 编译器在方法入口先于函数体注入固有 null 检查，两种极性都抛 NPE | `Allows` 入口显式 null 检查 → `ArgumentNullException`（注释注明依据）；同步修正第 1 轮被误改的测试断言，并在 §2/§4.2 更正误判记录 | 探针 `allows(null),enabled=false/true` Kotlin 侧 `NullPointerException`、C# 侧 `ArgumentNullException` 双极性一致；测试 `NullCapabilityIdIsRejectedLikeTheKotlinIntrinsicNullCheck` 双极性 + 有效 id 短路仍 false |
-| D-1-03 | MINOR | 空白判定用 .NET `char.IsWhiteSpace` 全集：0x001C–0x001F（Java 独有空白）被误收、0x0085（next line，非 Java 空白/非 space char）被误拒；且第 1 轮文档"NBSP 在 V4 可用"的断言本身有误（`isSpaceChar` 含 NBSP，V4 同样拒绝） | 私有 `IsKotlinBlank`/`IsKotlinWhitespace` 按 Kotlin `isBlank` 精确复刻（`.NET IsWhiteSpace` ∪ {0x001C–0x001F} ∖ {0x0085}，与探针 blankBMP 全集逐点核对一致）；构造器与 `WithCapability` 双入口均改用之；共享 `AiGuard` 未动 | 探针 U+001C–001F 全 REJECT、U+0085 全 ACCEPT、U+00A0/2007/202F 全 REJECT（与 Kotlin 逐点一致）；测试 `KotlinBlankRuleMatchesTheV4WhitespaceSetOnBothEntryPoints`（双入口 × 19 码点拒绝集 + 0x0085 存续 + 混串双向）及空白校验用例扩展 0x001C–0x001F |
+| D-1-02 | MINOR | 第 1 轮在 `Allows` 上依赖 `&&` 短路，`Allows(null)` 于禁用策略返回 false；V4 Kotlin 编译器在方法入口先于函数体注入固有 null 检查，两种极性都抛 NPE | `Allows` 入口显式 null 检查 → `ArgumentNullException`（注释注明依据）；同步修正第 1 轮被误改的测试断言，并在 §2/§4.2 更正误判记录 | 探针 `allows(null),enabled=false/true` Kotlin 侧 `NullPointerException`、C# 侧 `ArgumentNullException` 双极性一致；测试 `NullCapabilityIdIsRejectedLikeTheKotlinIntrinsicNullCheck` 双极性 + 有效 id 短路仍 false |
+| D-1-03 | MAJOR | 空白判定用 .NET `char.IsWhiteSpace` 全集：0x001C–0x001F（Java 独有空白）被误收、0x0085（next line，非 Java 空白/非 space char）被误拒；且第 1 轮文档"NBSP 在 V4 可用"的断言本身有误（`isSpaceChar` 含 NBSP，V4 同样拒绝） | 私有 `IsKotlinBlank`/`IsKotlinWhitespace` 按 Kotlin `isBlank` 精确复刻（`.NET IsWhiteSpace` ∪ {0x001C–0x001F} ∖ {0x0085}，与探针 blankBMP 全集逐点核对一致）；构造器与 `WithCapability` 双入口均改用之；共享 `AiGuard` 未动 | 探针 U+001C–001F 全 REJECT、U+0085 全 ACCEPT、U+00A0/2007/202F 全 REJECT（与 Kotlin 逐点一致）；测试 `KotlinBlankRuleMatchesTheV4WhitespaceSetOnBothEntryPoints`（双入口 × 19 码点拒绝集 + 0x0085 存续 + 混串双向）及空白校验用例扩展 0x001C–0x001F |
 
 修复后统一探针 **exit 0 / `V4 parity failures=0`**（第 1 轮 exit 1 / failures=7，证据：§4.2 R1 行与 `r2-parity-probe.log`）。
 
@@ -152,4 +152,40 @@ Total 均非 0、无 skip、无旧 DLL 凑绿（R2/R3 当场重建）；未修�
 
 ## 7. Caller 独立验收
 
-（由 caller 复核后追加；本节为占位，不预写验收结论。）
+2026-10-25，caller 在原工作树独立复核交付 `32caea769eb8d5b22600aadc66630daad65fa350`，确认只涉及约定三个文件，初始工作树 clean，`git diff 597eca1 HEAD --check` 通过。D-1-01/02/03 全部修复，无剩余功能缺陷；已调用 `approve_task(threadId="thread_20261024_231806_d84d")`，原线程归档为 COMPLETED，沿用原 callerSessionId。
+
+全部测试均在本工作树真实重建执行，使用 `D:/Unity/dotnet/dotnet.exe`；没有改 caller 探针、既有断言、fixture、追踪矩阵或 verifier。
+
+| 独立命令/验证 | exit | 结果 | 日志 |
+|---|---|---|---|
+| 原 `run-parity.ps1`（命令见 §4.2 R1） | 0 | 真实 V4 Kotlin 编译/执行成功，C# `V4 parity failures=0` | `parity.log` |
+| 独立补充 console，`dotnet run --project %TEMP%/eng019-caller-r2-supplement/Probe.csproj -c Release` | 0 | 全 BMP 65,536 码点 × 构造器/WithCapability 双入口；与真实 Kotlin 输出的 28 个空白码点集合完全一致，0 差异 | `supplement.log` |
+| `dotnet test dotnet/tests/Mahjong.Ai.Tests/Mahjong.Ai.Tests.csproj -c Debug --nologo -v:minimal` | 0 | 94 / 0 / 0 | `ai-Debug.log` |
+| 同上 `-c Release` | 0 | 94 / 0 / 0 | `ai-Release.log` |
+| `dotnet test dotnet/tests/Mahjong.Domain.Tests/Mahjong.Domain.Tests.csproj -c Release --nologo -v:minimal` | 0 | 322 / 0 / 0 | `Domain.log` |
+| 同命令替换为 `Mahjong.Contracts.Tests` | 0 | 104 / 0 / 0 | `Contracts.log` |
+| 同命令替换为 `Mahjong.Client.Tests` | 0 | 132 / 0 / 0 | `Client.log` |
+| 同命令替换为 `Mahjong.TableRuntime.Tests` | 0 | 313 / 0 / 0 | `TableRuntime.log` |
+| `dotnet build dotnet/Mahjong.sln -c Release --no-restore --nologo -v:minimal` | 0 | 0 警告 / 0 错误 | `build.log` |
+
+Release 非重复合计 **965 通过 / 0 失败 / 0 跳过**；Debug 94 项另列，不重复计入。原探针 SHA256 仍为 `CB0BFECD676EBBD868932911F058C8CCABF3C4008E9982E1E6C6F5B2E825DE7C`。
+
+独立原始证据目录为本工作树 ignored `artifacts/eng019-caller-review-r2/`，含 `SHA256SUMS.txt`：
+
+| 日志 | SHA256 |
+|---|---|
+| `parity.log` | `E309586FF28005A1E9EF134E7FBFECDEF7E152F0CE00AB18E115A729AD95D476` |
+| `supplement.log` | `447D961547C3FA2A34392D5C5865B31C3A74425C774697BD4447F1FC41352DE7` |
+| `ai-Debug.log` | `B1628E6BD0D8C999AE0A3ECDF68FE0386F4CDFC34EA761418536CA9F8D8BE415` |
+| `ai-Release.log` | `CCF701AD3D4039B1FE8068B55D9D2BCE69BD5D39056D954A3842C1CD9BAB2871` |
+| `Domain.log` | `03D06AAB750A4E44DEFA368DC2F5E39B733DDF10089D98B348C0100CF6D25DF6` |
+| `Contracts.log` | `ABC6FBB51A60D97A490A7B7F699D295856193C2C5DEA17057DC27357F21C2DAF` |
+| `Client.log` | `7F2643E5C4CE75D654C89779A0D3711E326BD65CAD38AFE44175015464E2911A` |
+| `TableRuntime.log` | `9B6D029542E2453B92B64C6102090820360573AB506D8CA8A8769FFE5174E381` |
+| `build.log` | `1A5EE0461E4E4AFD0A1F58487AC417D10C7AE514BDE5068DE64AF70B661E36FF` |
+
+Caller 收口仅更正注释和报告：本机现代 .NET 8 的 `Math.Min(+0,-0)` 与反向同样得到负零，交付中泛称“.NET 平局返回左参”不准确；显式 `MinOf` 实现及全部测试断言保持不变。D-1-02/03 严重级别按原返修清单分别规范为 MINOR/MAJOR，原始 Bridge 交付报告保留。
+
+唯一 MR 沿用 [PR19](https://github.com/liuchangready/majiang-game/pull/19)，源分支 `feat/v5-1-integration`，目标 `v5`；将本任务的两个本地实现/返修提交和 caller 验收文档一起发布，保留远端既有已验收批次。Basic AI 仍在返修、黄金目录仍待审，不混入未经独立验收的改动。主工作树的未提交文档、Unity 环境/Resources/Burst 与本批无关，继续保留。
+
+**PASS** 仅为上述配置组件和回归；真实 PG/WSS、Unity/IL2CPP、Android/iOS/真机、跨物理网络、V4 Gradle 全量及本次发布的远端 CI 均为 **NOT_RUN**。配置接线、实际千术 AI、P1.6 整体、G1/G5 不因此完成，V4 仍为唯一生产基线。
