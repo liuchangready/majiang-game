@@ -1,4 +1,4 @@
-# V5-1-REVIEW — 首次当前集成头阶段审查报告（G1 证据盘点，第 3 轮返修版）
+# V5-1-REVIEW — 首次当前集成头阶段审查报告（G1 证据盘点，第 4 轮返修版）
 
 > 本报告由实现侧审查代理产出，**不构成 G1 门槛批准**。caller 需独立复核全部证据锚点后另行判定。
 > 依据 `doc/v5-重构/V5-0-1-IMPLEMENTATION-TASKS.md:108`（下称"任务书"）："生成 `V5-1-REVIEW.md` 记录实际测试数、失败、设备与未覆盖范围。"
@@ -9,12 +9,13 @@
 |---|---|
 | 审查对象（唯一固定头） | `8ee22ebf5164f74db75e5a33e87900f5b87cd8bd`（PR19 head，分支 `feat/v5-1-integration`） |
 | 审查工作树 | `D:\majiang-wt\g1-readiness`，分支 `wt/v5-g1-readiness`；第 3 轮采样 HEAD `51cc902dcbc46400476f4c753aa69774f94c4f4c` = 审查头 + 仅本报告文件（`git diff --stat 8ee22eb..HEAD`：1 file changed, 467 insertions，源码面与审查头逐字节一致；第 3 轮探针 A 段复核） |
-| HEAD 采样语义（第 2 轮口径澄清） | `98d784624fb5…fce4` = **第 2 轮探针执行时的采样 HEAD**（第 1 轮报告 commit，返修前）；`51cc902dcbc4…f4c` = **第 2 轮最终交付 commit**，亦为本轮（第 3 轮）探针采样 HEAD（详见 §12.1） |
-| 审查日期 | 2026-10-25（第 1 轮 `98d7846`、第 2 轮 `51cc902`；本版为第 3 轮返修） |
-| 第 2 轮探针证据（历史，禁止覆盖/刷新） | `C:/Users/sncdc/AppData/Local/Temp/g1-review-r2-evidence/run-probes.ps1` 与 `probes.log`（SHA256 `3138e0b27e61e95a549018bc92ccf5ea360e4d33f154c69ead730bdba209c09a`，183 行，EXIT=0）；第 3 轮探针 I 段对其做哈希不变校验（ASSERT-PASS，§12.3） |
-| 第 3 轮独立探针证据 | `C:/Users/sncdc/AppData/Local/Temp/g1-review-r3-evidence/run-probes-r3.ps1` 与 `probes-r3.log`（SHA256 `146c388923f6427d0527c1806c1c2913e8e78664606649475d394fbfb2b80fe7`，170 行，14 ASSERT-PASS / 0 ASSERT-FAIL，**PROBE-EXIT=0**；断言合同：任一断言失败即 exit 1，§12.2） |
-| caller 复核证据（只读引用） | 第 1 轮：`C:/Users/sncdc/AppData/Local/Temp/g1-caller-review-20261025/`（source-audit.log SHA `49DA45BB…AC48E`、audit.log `0BA76DF4…60D63`、catalog.log `E3F631D9…8F6D2`；本树 5 次定向测试 1,187/0/0，日志 SHA 见 §10）。第 2 轮：`C:/Users/sncdc/AppData/Local/Temp/g1-caller-round2-20261025/`（review-audit.ps1 SHA `8106B0A0489508F5E11C0AACD95311C2F5D3681121DAA4D16AE804FCDBC9F5E1`、review-audit-run.log SHA `9A0E1218F8AED56CB9F4E49BDC95EC307BF317CF64B6B5B5B89559E513EA2145`、catalog PASS exit0 log SHA `E3F631D97B0D9C2AF3B5084E4CB751BE0FCAE856D6F231FE8A950E98CF38F6D2`） |
-| 本地统一 verify（caller 提供，本轮未重跑） | 总数 1,356 = **1,344 passed / 0 failed / 12 skipped**（Lobby 89 = 77+12，无本地 PG 的 PG 用例 skip）；**严格 verifier 整体 exit 1**——非全绿，如实分列，不修复 verifier、不改冻结口径（§5.7；本地 summary.log SHA `272112BBB8C990F86F1F425AC0A99DCBB186E29AFA5810E87999A59B73DCCCD2`） |
+| HEAD 采样语义（历史→当前分层，§12.1） | `98d784624fb5…fce4` = 第 2 轮探针采样 HEAD（返修前）；`51cc902dcbc4…f4c` = 第 2 轮交付 = 第 3 轮探针采样 HEAD（R3 固定采样探针，**历史证据**，§12.3）；`7c451c673220…941` = 第 3 轮交付 = **本轮（第 4 轮）探针采样 HEAD**（第 4 轮脚本对 HEAD 只记录数值并以审查不变量验证，不与硬编码 commit 比较，§12.2） |
+| 审查日期 | 2026-10-25（第 1 轮 `98d7846`、第 2 轮 `51cc902`、第 3 轮 `7c451c6`；本版为第 4 轮返修） |
+| 第 2 轮探针证据（历史，禁止覆盖/刷新） | `C:/Users/sncdc/AppData/Local/Temp/g1-review-r2-evidence/run-probes.ps1` 与 `probes.log`（SHA256 `3138e0b27e61e95a549018bc92ccf5ea360e4d33f154c69ead730bdba209c09a`，183 行，EXIT=0）；R3/R4 探针均对其做哈希不变校验（ASSERT-PASS，§12.3） |
+| 第 3 轮探针证据（历史采样事实，禁止覆盖/刷新） | `C:/Users/sncdc/AppData/Local/Temp/g1-review-r3-evidence/run-probes-r3.ps1` 与 `probes-r3.log`（SHA256 `146c388923f6427d0527c1806c1c2913e8e78664606649475d394fbfb2b80fe7`，170 行，14 ASSERT-PASS / 0 ASSERT-FAIL，进程 exit 0）。**该包的 HEAD 断言绑定采样点 51cc902**——在后续交付 commit 上复制运行会按断言合同如实 exit 1（caller 独立复现证实，§0.3）；源码面断言与其余 13 项不受影响。历史 14 PASS/0 FAIL 保持原始事实；当前交付复核用第 4 轮脚本（§12.2） |
+| 第 4 轮独立探针证据（当前交付可复现） | `C:/Users/sncdc/AppData/Local/Temp/g1-review-r4-evidence/run-probes-r4.ps1` 与 `probes-r4-9a0ca4c9e583.log`（GUID 独占日志；SHA256 `a2bf068f5d5164910903d0905cadc16ea38d5c44279a5307a0ba7269f7779bfc`，123 行，21 ASSERT-PASS / 0 ASSERT-FAIL，**数值进程 exit 0**；隔离负例 `negative-selftest-r4.ps1`→`negative-selftest-6258b41fec33.log`（SHA256 `fdb777f6f59682d2988b89dc5fe952c90be208cbbbbe713ffec5394afda9252f`）断言失败→**数值 exit 1**；§12.2） |
+| caller 复核证据（只读引用） | 第 1 轮：`C:/Users/sncdc/AppData/Local/Temp/g1-caller-review-20261025/`（source-audit.log SHA `49DA45BB…AC48E`、audit.log `0BA76DF4…60D63`、catalog.log `E3F631D9…8F6D2`；本树 5 次定向测试 1,187/0/0，日志 SHA 见 §10）。第 2 轮：`C:/Users/sncdc/AppData/Local/Temp/g1-caller-round2-20261025/`（review-audit.ps1 SHA `8106B0A0489508F5E11C0AACD95311C2F5D3681121DAA4D16AE804FCDBC9F5E1`、review-audit-run.log SHA `9A0E1218F8AED56CB9F4E49BDC95EC307BF317CF64B6B5B5B89559E513EA2145`、catalog PASS exit0 log SHA `E3F631D97B0D9C2AF3B5084E4CB751BE0FCAE856D6F231FE8A950E98CF38F6D2`）。第 3 轮：`C:/Users/sncdc/AppData/Local/Temp/g1-caller-round3-20261025-045851/`（evidence-command-repro.log SHA `B8AB7DA9397C553D5679476D0BABCBC846E0AA16D9A59FB9601DCBDDA4C3D00C`：`$?` 布尔实证 True/False、R3 脚本在 7c451c6 上 HEAD 断言如实 exit 1 且其余断言全过；R2/R3 日志哈希未覆盖） |
+| 本地统一 verify（caller 提供，本轮未重跑） | 第 3 轮 caller 实测（`tools/verify-v5.ps1 -DotnetPath D:/Unity/dotnet/dotnet.exe`，验证器自动避让已有目录、实际日志在 `…-045851-1`；summary.log SHA `86D9B383B639720936F1C693FBA4D15913B3A393F463958D6673F47D64F2BD0E`）：solution 编译 PASS exit 0、scratch 12-DLL PASS；Client 132/Domain 322/Ai 316/Contracts 104/TableRuntime 313/Wss 80 均 0 失败 0 跳过；Lobby 89=77+12（无本地 PG skip）；**总数 1,356 = 1,344 passed / 0 failed / 12 skipped；严格 verifier 整体 exit 1**——非全绿，如实分列（§5.7；与第 2 轮 caller 结果 1,344/0/12 + summary SHA `272112BBB8C9…CD2` 一致，环境缺口未变） |
 | 结论 | **G1 不批准**。九门逐项：**7 PASS / 2 FAIL / 0 BLOCKED / 0 NOT_RUN**（§2，与九行一一对应） |
 | 历史冻结审计 | 依赖矩阵 `437bd53`、黄金目录 `205506f`：引用其结论，不改写历史、不把已完成组件重列为未做 |
 
@@ -37,9 +38,15 @@
 | R1-3（遗留，MAJOR） | 第 2 轮重写 13 动作表时把 **AI/超时适配器 `MapAction` 误当玩家/协议入口**（"actor 协议命令入口仅通 2"由此而来；固定头玩家路径实为 `SubmitAsync(TableCommandEnvelope)` :175 → `ProcessCommandCoreAsync` :1039 → `_round.Execute(command.Command)` :1151 直达，不经过 MapAction，Tsumo/Discard 端到端有既存测试）；责任/DAG 不一致（§7 列 N-4 MAJOR 而 §8 关闭公式仅 N-1/N-2/N-3）；§9 缺关键残余的具体文件与测试 scope | **撤回误判，按四通道重写**：①域 `RoundCommand` 实际行为 / ②actor 玩家提交（envelope 直达 :1151，对 9 种域动作无 kind 白名单 + 守卫）/ ③AI·超时 `LegalAction` 适配（`MapAction` 仅 Pass/Discard 两分支，调用点仅 :1422（AI 返回）/:1611（超时 fallback）→`ApplyInternalCommandAsync` :1923-1931）/ ④协议→宿主适配（**P4.1 LocalHost 空壳 / P5.1 TableService 未开工，后阶段**）。三绝技独立逐类表（7 CommandKind→域入口→actor 零接线，§4.2.1）。N-1 按真实缺口重写为三子项（域缺 5 决策动作 N-1a + 出千执行层三段未接 N-1b + 自动适配 2/10 可选扩展 N-1c）；**N-4 改判阶段事实 SF-1**（正式条款：G1 九门原文无 AI 项 + P1.6 退出为组件级已接受 + 组合根属 P4.1/P5.1 宿主产物，§7.4）；负例矩阵只作用于真实新增入口、自动阶段权限保留（§7.2）；§8 关闭公式=N-3+N-1a/N-1b/N-2，SF-1 移出；§9.1 给 N-1a/N-1b/N-2/N-3 源码+测试文件 scope | §0、§2、§3.5、§4.1、§4.2、§4.2.1、§4.5、§6、§7.0/7.1/7.2/7.4、§8、§9.1、§10 |
 | R1-5（遗留，MINOR） | §12 仍有占位路径（`sha256sum …/ci-push/…/summary.log` 的"…"）；裸运行 `run-probes.ps1` 只出 stdout 不生成日志（脚本无重定向；`ErrorActionPreference=Continue` 使断言失败不改变退出码）；§0 未区分采样 HEAD 与交付 HEAD | **全部改正**：§12.4 给 PowerShell 可直接运行的 CI 两 bundle 文件发现+`Get-FileHash` 完整命令（无省略路径）；§12.2 探针命令显式重定向 `> probes-r3.log 2>&1` 并记录 exit/SHA；R3 脚本改为显式 `ASSERT-PASS/ASSERT-FAIL` 令牌+失败计数器，**任一断言失败即 exit 1**（诊断脚本退出与断言 PASS 由退出码区分）；§0/§12.1 标明 `98d7846`=第 2 轮采样 HEAD、`51cc902`=第 2 轮交付=第 3 轮采样 HEAD；第 2 轮 `probes.log`（SHA `3138e0b2…c09a`）保留为历史证据、不得覆盖，第 3 轮脚本 I 段做哈希不变校验（ASSERT-PASS） | §0、§6、§12.1-12.4 |
 
+### 0.3 第 4 轮返修逐组映射（R1-5 遗留-2 → 本版落点）
+
+| 组 | 第 3 轮遗留缺陷（caller 第 3 轮独立复核新增，E=`g1-caller-round3-20261025-045851`，evidence-command-repro.log SHA `B8AB7DA9…D00C`；§12.2/R3 探针为第 3 轮新写命令，非生产缺陷） | 本版处理 | 落点 |
+|---|---|---|---|
+| R1-5（遗留-2，MINOR）§12.2 复现命令不可按声称结果复现 | 三点：① 命令块 `echo "PROBE-EXIT=$?"` 未声明 shell——PowerShell 中 `$?` 是布尔（caller 实证 exit0→`True`、exit1→`False`），与报告声称的数值 0/1 不符；② R3 脚本 `delivery HEAD is 51cc902` 硬编码断言把**历史采样点**写成当前可复制复现——交付前进到 `7c451c6` 后按 §12.2 复制运行必然 ASSERT-FAIL exit 1（caller 实证其余断言全过，HEAD 断言如实失败）；③ 命令块 `> probes-r3.log` 固定同名重定向，复制即覆盖 R3 历史日志，违反独占路径 | **a) 数值退出码语义**：§12.2 命令块改 PowerShell 原生写法——`powershell -File …` 为 native 调用，随后**立即** `$r4Exit = $LASTEXITCODE` 保存数值并输出；R4 脚本 A 段自证 `cmd /c exit 0`→`$LASTEXITCODE=0`、`cmd /c exit 1`→`=1`（日志 ：3-6，ASSERT-PASS×2），全程不使用 `$?`。**b) 历史采样与当前复验分离**：R3 固定采样探针（含 HEAD=51cc902 断言）整体标注**历史采样事实**（§0/§12.3），14 PASS/0 FAIL 与 SHA 保持原始历史事实；当前交付复核另写 `run-probes-r4.ps1`——HEAD 断言改为**审查不变量**（`git rev-parse HEAD` 仅记录 40-hex 数值；`git merge-base --is-ancestor 8ee22eb HEAD`=0；对冻结头 `git diff --name-only` 恰 1 文件且为 V5-1-REVIEW.md；`-- dotnet tests tools assets` 零变化），**不硬编码交付 commit、无循环**；MapAction/玩家路径 :1151/出千零接线/域六入口/端到端锚点/计分/AI/validator 断言强度全部保留、失败非零语义不变。历史采样点复现另附**完全隔离 TEMP worktree 命令**（§12.2 模板，本轮未执行，不触碰当前/兄弟工作区）。**c) 独占日志**：R4 日志用 GUID 文件名 `probes-r4-9a0ca4c9e583.log`，负例独立日志 `negative-selftest-6258b41fec33.log`；R4 脚本 I 段对 R2 **与 R3** 日志做哈希不变校验（ASSERT-PASS×2）；实测数值 exit：R4 主探针=0（21 PASS/0 FAIL）、负例=1。**负例语义证明**：隔离 TEMP `negative-selftest-r4.ps1`（故意失败断言）→ ASSERT-FAIL → 数值 exit 1——修正过程中发现并修复该负例脚本自身的作用域 bug（函数内裸 `$fail++` 创建局部副本，改 `$script:fail`），主探针族无此问题 | §0、§1、§5.7、§6、§12.1、§12.2、§12.3 |
+
 ## 1. 环境前置核对（实际执行）
 
-- `git rev-parse HEAD` → `51cc902dcbc46400476f4c753aa69774f94c4f4c`（第 3 轮采样 HEAD；采样语义见 §0/§12.1）；分支 `wt/v5-g1-readiness`；`git status --porcelain` 空；`git diff --check HEAD^ HEAD` exit 0（探针 A 段）。
+- `git rev-parse HEAD` → `7c451c6732203a98738b2cc5fe40a4c4ad1cf941`（本轮采样时的实际 HEAD，由第 4 轮探针 B 段记录；交付 commit 在本轮返修后会再前进一次，审查不变量——冻结头祖先 + 仅报告差异——对任意后续交付 commit 均成立，采样语义见 §0/§12.1）；分支 `wt/v5-g1-readiness`；`git status --porcelain` 空；`git diff --check HEAD^ HEAD` exit 0；`git merge-base --is-ancestor 8ee22eb… HEAD` exit 0（第 4 轮探针 A/B 段）。
 - 未触碰 `D:/majiang` 主 checkout 及其用户未提交文件；未 reset/覆盖任何兄弟工作树；未 push/建 PR/触发远端 CI。
 - 文档阅读：`AGENTS.md`、`DEEPSEEK-V5-MODULE-MIGRATION-PLAN.md`、`V5-0-1-IMPLEMENTATION-TASKS.md`、`V5-0-GOLDEN-MANIFEST.md`、`UNITY-ENVIRONMENT.md` 全文通读用于口径；此外**大量源码文件与 CI 产物按证据需要阅读**（第 1 轮"读过且仅读过四文档"表述有误，特此更正；主 checkout 用户文件始终未动）。
 - 本报告引用的 CI 产物位于 caller 下载基 `D:/majiang-wt/codex-progress-20261025/artifacts/progress-20261025/`（只读）。
@@ -300,10 +307,11 @@ MTP/xUnit v3 框架日志为 UTF-16LE（`iconv` 转码后仅见 per-assembly tot
 |---|---|---|
 | CI（远端产物核验，§5.1-5.4） | 1,356 passed / 0 failed / 0 skipped，14 份 per-project meta 全 exit 0 | §5.2 |
 | caller 本树统一 verify（caller round-2 指令提供，**本轮未重跑**） | 总数 1,356 = **1,344 passed / 0 failed / 12 skipped**（Lobby 89 = 77+12：无本地 PG 的 12 个 PG 用例 skip）；**严格 verifier 整体 exit 1** | caller E=`C:/Users/sncdc/AppData/Local/Temp/g1-caller-round2-20261025`：review-audit.ps1 SHA `8106B0A0489508F5E11C0AACD95311C2F5D3681121DAA4D16AE804FCDBC9F5E1`、review-audit-run.log SHA `9A0E1218F8AED56CB9F4E49BDC95EC307BF317CF64B6B5B5B89559E513EA2145`；本地统一 summary.log SHA `272112BBB8C990F86F1F425AC0A99DCBB186E29AFA5810E87999A59B73DCCCD2`；catalog PASS exit0 log SHA `E3F631D97B0D9C2AF3B5084E4CB751BE0FCAE856D6F231FE8A950E98CF38F6D2` |
+| caller 本树统一 verify（caller round-3 实测，**本轮未重跑**；`tools/verify-v5.ps1 -DotnetPath D:/Unity/dotnet/dotnet.exe -LogDir …round3-20261025-045851`，验证器自动避让已有目录、实际日志 `…-045851-1`） | solution 编译 PASS exit 0、scratch 12-DLL PASS；Client 132/Domain 322/Ai 316/Contracts 104/TableRuntime 313/Wss 80 均 0 失败 0 跳过；Lobby 89=77+12（无本地 PG）；**总数 1,356 = 1,344 passed / 0 failed / 12 skipped；严格 verifier 整体 exit 1**——与上轮环境缺口一致 | 本地统一 summary.log SHA `86D9B383B639720936F1C693FBA4D15913B3A393F463958D6673F47D64F2BD0E` |
 
 差异说明：本地 skip 12 = 无本地 PG 实例的 PG 依赖用例（CI wrapper 启 PG 后同用例全过，§5.3/5.4），这是两环境计数的唯一结构差异；**严格 verifier exit 1 如实记录为非全绿状态**——本轮不重新解释其判据、不修改 verifier、不用 skip/放宽断言造绿。本报告任何位置均不得表述为"本轮本地运行全绿"。
 
-## 6. 本轮探针记录（第 1-3 轮，全部可复现）
+## 6. 本轮探针记录（第 1-4 轮，全部可复现）
 
 统一编号（第 1 轮 §3.2/§3.3/§3.4 的"§6.0/§6.1/§6.2"断链已废弃，改指本节）：
 
@@ -331,10 +339,11 @@ MTP/xUnit v3 框架日志为 UTF-16LE（`iconv` 转码后仅见 per-assembly tot
 | P-T | 三套枚举分离 | R3 | CommandKind 出千块 :21-27（SubmitTileMark=12…SubmitBeamSwapChoice=18）；LegalActionKind 10 值（DeadlinePolicy.cs:7-18）；RoundActionKind 9 值（RoundTypes.cs:31-42） | probes-r3.log E 段 |
 | P-U | 域出千六入口 | R3 | CheatSubmission.cs :109/:222/:322/:417/:442/:904（ASSERT-PASS ≥6） | probes-r3.log F 段 |
 | P-V | 状态复检 + 历史证据不可变 + validator 复跑 | R3 | 计分未接线/AI 无组合根 NO-MATCH（ASSERT-PASS×2）；旧 probes.log SHA 等值（ASSERT-PASS）；validator PASS exit 0（ASSERT-PASS） | probes-r3.log H/I/J 段 |
+| P-W | 当前交付复核：数值退出码语义 + 审查不变量 HEAD + 历史日志（R2+R3）不可变 + 保留断言复跑 + 负例 | R4 | `cmd /c exit 0/1`→`$LASTEXITCODE`=0/1（ASSERT-PASS×2）；ACTUAL-HEAD 记录=7c451c6…941、`merge-base --is-ancestor 8ee22eb`=0、对冻结头恰 1 文件（报告）且 dotnet/tests/tools/assets 零变化（ASSERT-PASS×4）；R2+R3 日志 SHA 等值（ASSERT-PASS×2）；MapAction 恰 3 处/:1151 直达/:715/:250/AI·超时锚点/域六入口/出千零命中/计分·AI NO-MATCH/validator exit0（ASSERT-PASS×13，强度不减）；隔离负例断言失败→数值 exit 1 | probes-r4-9a0ca4c9e583.log（A-J 段）+ negative-selftest-6258b41fec33.log |
 
-第 2 轮探针脚本与日志：`C:/Users/sncdc/AppData/Local/Temp/g1-review-r2-evidence/run-probes.ps1`、`probes.log`（SHA256 `3138e0b27e61e95a549018bc92ccf5ea360e4d33f154c69ead730bdba209c09a`）——**历史证据，本轮未改动且禁止覆盖**（第 3 轮脚本 I 段哈希不变校验 ASSERT-PASS）。第 3 轮探针脚本与日志：`C:/Users/sncdc/AppData/Local/Temp/g1-review-r3-evidence/run-probes-r3.ps1`、`probes-r3.log`（SHA256 `146c388923f6427d0527c1806c1c2913e8e78664606649475d394fbfb2b80fe7`，170 行，14 ASSERT-PASS / 0 ASSERT-FAIL，PROBE-EXIT=0；断言合同见 §12.2）。**历史 CI 证据（§5）为既存产物只读核验，与本轮新执行探针分开列示。** 未重跑项：本地 `verify-all.ps1` 全套（含 PG 重启探针）、77/91 串行 PS 自测、Unity/设备链路——无代码变化不盲重跑重型自测。
+第 2 轮探针脚本与日志：`C:/Users/sncdc/AppData/Local/Temp/g1-review-r2-evidence/run-probes.ps1`、`probes.log`（SHA256 `3138e0b27e61e95a549018bc92ccf5ea360e4d33f154c69ead730bdba209c09a`）——**历史证据，禁止覆盖/刷新**（R3/R4 脚本 I 段哈希不变校验 ASSERT-PASS）。第 3 轮探针脚本与日志：`C:/Users/sncdc/AppData/Local/Temp/g1-review-r3-evidence/run-probes-r3.ps1`、`probes-r3.log`（SHA256 `146c388923f6427d0527c1806c1c2913e8e78664606649475d394fbfb2b80fe7`，170 行，14 ASSERT-PASS / 0 ASSERT-FAIL，进程 exit 0）——**固定采样 HEAD=51cc902 的历史采样事实**；其 HEAD 硬编码断言不迁移到当前交付（§0.3），源码断言已由 R4 脚本以等强度承接。第 4 轮探针（当前交付可复现）：`C:/Users/sncdc/AppData/Local/Temp/g1-review-r4-evidence/run-probes-r4.ps1`、`probes-r4-9a0ca4c9e583.log`（SHA256 `a2bf068f5d5164910903d0905cadc16ea38d5c44279a5307a0ba7269f7779bfc`，123 行，21 ASSERT-PASS / 0 ASSERT-FAIL，**数值进程 exit 0**）与隔离负例 `negative-selftest-r4.ps1`、`negative-selftest-6258b41fec33.log`（SHA256 `fdb777f6f59682d2988b89dc5fe952c90be208cbbbbe713ffec5394afda9252f`，断言失败→**数值 exit 1**）；断言合同与复现命令见 §12.2。**历史 CI 证据（§5）为既存产物只读核验，与本轮新执行探针分开列示。** 未重跑项：本地 `verify-all.ps1` 全套（含 PG 重启探针）、77/91 串行 PS 自测、Unity/设备链路——无代码变化不盲重跑重型自测。
 
-## 7. 缺陷/缺口清单（第 3 轮现行全量；每条含复现/证据/修复/验收）
+## 7. 缺陷/缺口清单（第 4 轮现行全量；每条含复现/证据/修复/验收）
 
 ### 7.0 第 1 轮清单更正记录
 
@@ -500,33 +509,65 @@ caller 本树复证日志（只读引用，SHA 由 caller 记录）：domain-in-
 
 | HEAD | 语义 |
 |---|---|
-| `8ee22ebf5164…8bd` | 审查对象（冻结源码头），三轮不变 |
-| `98d784624fb5…fce4` | **第 2 轮探针执行时的采样 HEAD**（第 1 轮报告 commit，返修前） |
-| `51cc902dcbc4…f4c` | **第 2 轮最终交付 commit**；亦为本轮（第 3 轮）探针采样 HEAD（探针 A 段 `HEAD=51cc902dcbc46400476f4c753aa69774f94c4f4c` 实测）；本轮交付将在其上仅追加本报告修改 |
-| 交付↔冻结头差异 | 仅本报告文件（探针 A 段 `git diff --stat 8ee22eb..HEAD`：1 file changed, 467 insertions）——源码面与冻结头逐字节一致 |
+| `8ee22ebf5164…8bd` | 审查对象（冻结源码头），各轮不变 |
+| `98d784624fb5…fce4` | 第 2 轮探针执行时的采样 HEAD（第 1 轮报告 commit，返修前） |
+| `51cc902dcbc4…f4c` | 第 2 轮最终交付 commit；= 第 3 轮探针采样 HEAD（R3 探针 A 段实测，**历史采样事实**，§12.3） |
+| `7c451c673220…941` | 第 3 轮最终交付 commit；= 第 4 轮探针采样 HEAD（R4 探针 B 段 `ACTUAL-HEAD=…` 记录，不与常量比较）；本轮交付将在其上仅追加本报告修改 |
+| 交付↔冻结头差异 | 恒仅本报告文件（R4 探针 B 段：`changed-vs-frozen-count=1` 且文件名匹配 V5-1-REVIEW.md；`code-side-changed-count=0`）——源码/测试/tools/黄金 fixtures 面与冻结头逐字节一致，该不变量对任意后续交付 commit 成立 |
 
-### 12.2 第 3 轮探针包（断言合同；诊断退出 ≠ 断言 PASS）
+### 12.2 当前交付复核（第 4 轮探针：数值退出码 + 审查不变量 HEAD + 独占日志）
 
-脚本 `C:/Users/sncdc/AppData/Local/Temp/g1-review-r3-evidence/run-probes-r3.ps1`：纯 ASCII（规避 PS 5.1 对无 BOM UTF-8 的 GBK 误读）；显式 `ASSERT-PASS/ASSERT-FAIL` 令牌 + `$script:assertFail` 失败计数器；**任一断言失败即 exit 1**，全部通过才 exit 0——修正第 2 轮 `ErrorActionPreference=Continue` 使断言失败不改变退出码的问题（R1-5 遗留）。
+脚本 `C:/Users/sncdc/AppData/Local/Temp/g1-review-r4-evidence/run-probes-r4.ps1`（纯 ASCII）：显式 `ASSERT-PASS/ASSERT-FAIL` 令牌 + `$script:assertFail` 失败计数器，**任一断言失败即数值进程 exit 1**，全部通过才 exit 0。对第 3 轮遗留的三处复现缺陷的更正：
 
-复现命令（显式重定向到新独占日志，不触碰第 2 轮日志）：
+1. **数值退出码（不用 `$?`）**：shell 明确为 PowerShell。`powershell -File …` 是 native 调用，随后**立即**把 `$LASTEXITCODE` 保存进变量再输出——`$?` 是布尔（True/False），不得用于退出码报告。脚本 A 段自证语义：`cmd /c exit 0` → `$LASTEXITCODE` 打印 `0`；`cmd /c exit 1` → 打印 `1`（probes-r4 日志 ：3-6，ASSERT-PASS×2）。
+2. **HEAD 判断=审查不变量，非硬编码 commit**：B 段对实际 HEAD 只做记录（`ACTUAL-HEAD=<40-hex>`），验证三个不变量——冻结头祖先（`git merge-base --is-ancestor 8ee22eb… HEAD` exit 0）、对冻结头 `git diff --name-only` 恰 1 文件且为 `V5-1-REVIEW.md`、`-- dotnet tests tools assets` 零变化（源码/测试/tools/黄金 fixtures 与冻结头逐字节一致）。不把返修前文档 commit 当交付 HEAD 的必要条件，不用硬编码未来 commit 制造循环——脚本在任意基于冻结头的交付 commit 上均有效。
+3. **独占日志**：日志文件名内嵌每次运行新生成的 GUID，不重用 R2/R3 历史日志名；脚本 I 段对 R2 与 R3 历史日志做哈希不变校验。
+
+复现命令（PowerShell，逐行可复制；`$g` 每次运行生成新 GUID 防覆盖）：
 
 ```
-cd C:/Users/sncdc/AppData/Local/Temp/g1-review-r3-evidence
-powershell -NoProfile -ExecutionPolicy Bypass -File run-probes-r3.ps1 > probes-r3.log 2>&1
-echo "PROBE-EXIT=$?"
-powershell -NoProfile -Command "(Get-FileHash 'probes-r3.log' -Algorithm SHA256).Hash"
+cd C:/Users/sncdc/AppData/Local/Temp/g1-review-r4-evidence
+$g = [guid]::NewGuid().ToString('N').Substring(0,12)
+powershell -NoProfile -ExecutionPolicy Bypass -File run-probes-r4.ps1 > "probes-r4-$g.log" 2>&1
+$r4Exit = $LASTEXITCODE                 # native 调用后立即保存数值退出码
+Write-Output "PROBE-EXIT=$r4Exit"       # 输出数值 0 或 1（非 True/False）
+(Get-FileHash "probes-r4-$g.log" -Algorithm SHA256).Hash
 ```
 
-实测结果：**PROBE-EXIT=0**；`probes-r3.log` SHA256 `146c388923f6427d0527c1806c1c2913e8e78664606649475d394fbfb2b80fe7`；170 行；**14 ASSERT-PASS / 0 ASSERT-FAIL**；尾行 `===== ALL ASSERTIONS HELD (exit 0) =====`。
+本轮实测（记录为历史事实；重跑会生成新 GUID 日志，结果应一致）：日志 `probes-r4-9a0ca4c9e583.log`，SHA256 `a2bf068f5d5164910903d0905cadc16ea38d5c44279a5307a0ba7269f7779bfc`，123 行，**21 ASSERT-PASS / 0 ASSERT-FAIL，PROBE-EXIT=0**（数值）；`ACTUAL-HEAD=7c451c6732203a98738b2cc5fe40a4c4ad1cf941`（本轮采样时）；`changed-vs-frozen-count=1`；`code-side-changed-count=0`；尾行 `===== ALL ASSERTIONS HELD (exit 0) =====`。
 
-### 12.3 第 2 轮探针包（历史证据，禁止覆盖/刷新）
+**断言失败非零语义的隔离负例**（不改真实源码）：`C:/Users/sncdc/AppData/Local/Temp/g1-review-r4-evidence/negative-selftest-r4.ps1` 内含一个故意失败断言，运行即 `ASSERT-FAIL` → `failures=1` → **数值 exit 1**。本轮实测：日志 `negative-selftest-6258b41fec33.log`，SHA256 `fdb777f6f59682d2988b89dc5fe952c90be208cbbbbe713ffec5394afda9252f`，`NEG-NUMERIC-EXIT=1`。
 
-`C:/Users/sncdc/AppData/Local/Temp/g1-review-r2-evidence/run-probes.ps1`、`probes.log`（SHA256 `3138e0b27e61e95a549018bc92ccf5ea360e4d33f154c69ead730bdba209c09a`，183 行，EXIT=0）——**保留为第 2 轮历史证据，本轮未改动**。防覆盖校验已并入第 3 轮脚本 I 段：
+```
+cd C:/Users/sncdc/AppData/Local/Temp/g1-review-r4-evidence
+$g = [guid]::NewGuid().ToString('N').Substring(0,12)
+powershell -NoProfile -ExecutionPolicy Bypass -File negative-selftest-r4.ps1 > "negative-selftest-$g.log" 2>&1
+$negExit = $LASTEXITCODE
+Write-Output "NEG-PROBE-EXIT=$negExit"   # 期望数值 1
+(Get-FileHash "negative-selftest-$g.log" -Algorithm SHA256).Hash
+```
+
+**历史采样点（51cc902）如需复现 R3 探针**——用完全隔离的 TEMP worktree，不得切换/重置当前或兄弟工作区（本轮未执行，命令仅作历史采样复现路径；R3 原脚本硬编码 `$repo='D:\majiang-wt\g1-readiness'`，复现前须把复制副本中该行改为下列临时路径，原脚本文件不改动）：
+
+```
+git -C D:\majiang-wt\g1-readiness worktree add --detach C:\Users\sncdc\AppData\Local\Temp\g1-r3-replay-20261025 51cc902dcbc46400476f4c753aa69774f94c4f4c
+# 在副本脚本中把 $repo 行改为 'C:\Users\sncdc\AppData\Local\Temp\g1-r3-replay-20261025' 后运行；
+# 用完清理：git -C D:\majiang-wt\g1-readiness worktree remove C:\Users\sncdc\AppData\Local\Temp\g1-r3-replay-20261025
+```
+
+### 12.3 历史采样证据（R2 + R3，均不可变；禁止覆盖/刷新）
+
+| 轮次 | 文件 | SHA256 | 事实 |
+|---|---|---|---|
+| R2 | `C:/Users/sncdc/AppData/Local/Temp/g1-review-r2-evidence/run-probes.ps1` + `probes.log`（183 行，EXIT=0） | `3138e0b27e61e95a549018bc92ccf5ea360e4d33f154c69ead730bdba209c09a` | 第 2 轮探针历史采样；R3/R4 脚本 I 段哈希不变校验均 ASSERT-PASS |
+| R3 | `C:/Users/sncdc/AppData/Local/Temp/g1-review-r3-evidence/run-probes-r3.ps1` + `probes-r3.log`（170 行，14 PASS / 0 FAIL，进程 exit 0） | `146c388923f6427d0527c1806c1c2913e8e78664606649475d394fbfb2b80fe7` | **固定采样 HEAD=51cc902 的历史采样事实**；其 `delivery HEAD is 51cc902` 断言绑定采样点——在后续交付 commit 上复制运行会按断言合同如实 exit 1（caller 独立复现：E=`g1-caller-round3-20261025-045851`，evidence-command-repro.log SHA `B8AB7DA9…D00C`，其余断言全过）；当前交付复核一律走 §12.2 R4 脚本 |
+
+哈希不变校验命令（只读）：
 
 ```
 (Get-FileHash 'C:\Users\sncdc\AppData\Local\Temp\g1-review-r2-evidence\probes.log' -Algorithm SHA256).Hash
-# 实测 3138E0B27E61E95A549018BC92CCF5EA360E4D33F154C69EAD730BDBA209C09A（等值，ASSERT-PASS）
+(Get-FileHash 'C:\Users\sncdc\AppData\Local\Temp\g1-review-r3-evidence\probes-r3.log' -Algorithm SHA256).Hash
+# R4 探针 I 段实测两值均与上表等值（ASSERT-PASS×2）
 ```
 
 ### 12.4 CI 两 bundle 文件发现与哈希（PowerShell 可直接运行，无省略路径）
@@ -577,4 +618,4 @@ Get-ChildItem dotnet\src -Recurse -Filter *.cs | Where-Object { $_.FullName -not
 
 冻结引用：依赖矩阵 `437bd53`；黄金目录 `205506f`（caller 第 13 轮验收集成于 PR19，见 `doc/v5-重构/` 验收文档与 `V5-0-GOLDEN-MANIFEST.md`）。复核协议（只读）：`D:/majiang/doc/v5-重构/V5-REVIEW-REWORK-PROTOCOL.md`。
 
-—— 审查代理（实现侧），2026-10-25，第 3 轮返修版。本报告不批准 G1。
+—— 审查代理（实现侧），2026-10-25，第 4 轮返修版。本报告不批准 G1。
