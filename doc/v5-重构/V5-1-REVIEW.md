@@ -1,4 +1,4 @@
-# V5-1-REVIEW — 首次当前集成头阶段审查报告（G1 证据盘点，第 2 轮返修版）
+# V5-1-REVIEW — 首次当前集成头阶段审查报告（G1 证据盘点，第 3 轮返修版）
 
 > 本报告由实现侧审查代理产出，**不构成 G1 门槛批准**。caller 需独立复核全部证据锚点后另行判定。
 > 依据 `doc/v5-重构/V5-0-1-IMPLEMENTATION-TASKS.md:108`（下称"任务书"）："生成 `V5-1-REVIEW.md` 记录实际测试数、失败、设备与未覆盖范围。"
@@ -8,10 +8,13 @@
 | 项 | 值 |
 |---|---|
 | 审查对象（唯一固定头） | `8ee22ebf5164f74db75e5a33e87900f5b87cd8bd`（PR19 head，分支 `feat/v5-1-integration`） |
-| 审查工作树 | `D:\majiang-wt\g1-readiness`，分支 `wt/v5-g1-readiness`；当前 HEAD `98d784624fb5071dd7c24260a42bf621777dfce4` = 审查头 + 仅本报告文件（`git diff --stat 8ee22eb..98d7846`：1 file changed, 339 insertions，源码面与审查头逐字节一致；本轮探针 A 段复核） |
-| 审查日期 | 2026-10-25（第 1 轮报告 commit `98d7846`；本版为第 2 轮返修） |
-| 第 2 轮独立探针证据 | `C:/Users/sncdc/AppData/Local/Temp/g1-review-r2-evidence/run-probes.ps1`（脚本）与 `probes.log`（SHA256 `3138e0b27e61e95a549018bc92ccf5ea360e4d33f154c69ead730bdba209c09a`，183 行，EXIT=0） |
-| caller 复核证据（只读引用） | `C:/Users/sncdc/AppData/Local/Temp/g1-caller-review-20261025/`：source-audit.log SHA `49DA45BB…AC48E`、audit.log SHA `0BA76DF4…60D63`、catalog.log SHA `E3F631D9…8F6D2`；caller 本树 5 次定向测试 1187/0/0（Domain 322/TableRuntime 313/Contracts 104/Ai 316/Client 132，日志 SHA 见 §10 引用） |
+| 审查工作树 | `D:\majiang-wt\g1-readiness`，分支 `wt/v5-g1-readiness`；第 3 轮采样 HEAD `51cc902dcbc46400476f4c753aa69774f94c4f4c` = 审查头 + 仅本报告文件（`git diff --stat 8ee22eb..HEAD`：1 file changed, 467 insertions，源码面与审查头逐字节一致；第 3 轮探针 A 段复核） |
+| HEAD 采样语义（第 2 轮口径澄清） | `98d784624fb5…fce4` = **第 2 轮探针执行时的采样 HEAD**（第 1 轮报告 commit，返修前）；`51cc902dcbc4…f4c` = **第 2 轮最终交付 commit**，亦为本轮（第 3 轮）探针采样 HEAD（详见 §12.1） |
+| 审查日期 | 2026-10-25（第 1 轮 `98d7846`、第 2 轮 `51cc902`；本版为第 3 轮返修） |
+| 第 2 轮探针证据（历史，禁止覆盖/刷新） | `C:/Users/sncdc/AppData/Local/Temp/g1-review-r2-evidence/run-probes.ps1` 与 `probes.log`（SHA256 `3138e0b27e61e95a549018bc92ccf5ea360e4d33f154c69ead730bdba209c09a`，183 行，EXIT=0）；第 3 轮探针 I 段对其做哈希不变校验（ASSERT-PASS，§12.3） |
+| 第 3 轮独立探针证据 | `C:/Users/sncdc/AppData/Local/Temp/g1-review-r3-evidence/run-probes-r3.ps1` 与 `probes-r3.log`（SHA256 `146c388923f6427d0527c1806c1c2913e8e78664606649475d394fbfb2b80fe7`，170 行，14 ASSERT-PASS / 0 ASSERT-FAIL，**PROBE-EXIT=0**；断言合同：任一断言失败即 exit 1，§12.2） |
+| caller 复核证据（只读引用） | 第 1 轮：`C:/Users/sncdc/AppData/Local/Temp/g1-caller-review-20261025/`（source-audit.log SHA `49DA45BB…AC48E`、audit.log `0BA76DF4…60D63`、catalog.log `E3F631D9…8F6D2`；本树 5 次定向测试 1,187/0/0，日志 SHA 见 §10）。第 2 轮：`C:/Users/sncdc/AppData/Local/Temp/g1-caller-round2-20261025/`（review-audit.ps1 SHA `8106B0A0489508F5E11C0AACD95311C2F5D3681121DAA4D16AE804FCDBC9F5E1`、review-audit-run.log SHA `9A0E1218F8AED56CB9F4E49BDC95EC307BF317CF64B6B5B5B89559E513EA2145`、catalog PASS exit0 log SHA `E3F631D97B0D9C2AF3B5084E4CB751BE0FCAE856D6F231FE8A950E98CF38F6D2`） |
+| 本地统一 verify（caller 提供，本轮未重跑） | 总数 1,356 = **1,344 passed / 0 failed / 12 skipped**（Lobby 89 = 77+12，无本地 PG 的 PG 用例 skip）；**严格 verifier 整体 exit 1**——非全绿，如实分列，不修复 verifier、不改冻结口径（§5.7；本地 summary.log SHA `272112BBB8C990F86F1F425AC0A99DCBB186E29AFA5810E87999A59B73DCCCD2`） |
 | 结论 | **G1 不批准**。九门逐项：**7 PASS / 2 FAIL / 0 BLOCKED / 0 NOT_RUN**（§2，与九行一一对应） |
 | 历史冻结审计 | 依赖矩阵 `437bd53`、黄金目录 `205506f`：引用其结论，不改写历史、不把已完成组件重列为未做 |
 
@@ -27,9 +30,16 @@
 | R1-4 | 门 4 计数矛盾（5/2/2 vs 实际行）；D-2 把建议变强制门；平台门自扩张 | **改正**。每门一个状态，总计 7/2/0/0 与九行一致（§2）；D-2 降级为 I-4（G1 原文只要求状态不含隐式权威，未要求特定 source-scan 守护）；门 9 按 P2.2 出口口径判（可用平台原始日志 + 缺口分列），Unity/IL2CPP 子项 BLOCKED 明示且无通过宣称 | §2、§3.4、§3.9、§7 I-4 |
 | R1-5 | 锚点/格式错误（守恒混用、spectator 测试位置、meta 文件名、§6 断链、§12 占位符、§1 表述、缺陷缺复现/SHA） | **全部改正**。物理 136 守恒（TilePositionMap/PhysicalGoldenTests）与点棒/点数守恒（RoundStateMachine:742-750）分列（§3.5）；spectator 测试=`Mahjong.Client.Tests/IndependentReviewTests.cs:66`（§3.7）；meta=`dotnetTest.meta.txt`（§5.2）；探针统一为 §6 编号并给真实日志+SHA；§12 全部可复制命令无占位符；缺陷表每条含复现/证据 SHA | 全文 |
 
+### 0.2 第 3 轮返修逐组映射（R1-3 遗留 / R1-5 遗留 → 本版落点）
+
+| 组 | 第 2 轮遗留缺陷 | 本版处理 | 落点 |
+|---|---|---|---|
+| R1-3（遗留，MAJOR） | 第 2 轮重写 13 动作表时把 **AI/超时适配器 `MapAction` 误当玩家/协议入口**（"actor 协议命令入口仅通 2"由此而来；固定头玩家路径实为 `SubmitAsync(TableCommandEnvelope)` :175 → `ProcessCommandCoreAsync` :1039 → `_round.Execute(command.Command)` :1151 直达，不经过 MapAction，Tsumo/Discard 端到端有既存测试）；责任/DAG 不一致（§7 列 N-4 MAJOR 而 §8 关闭公式仅 N-1/N-2/N-3）；§9 缺关键残余的具体文件与测试 scope | **撤回误判，按四通道重写**：①域 `RoundCommand` 实际行为 / ②actor 玩家提交（envelope 直达 :1151，对 9 种域动作无 kind 白名单 + 守卫）/ ③AI·超时 `LegalAction` 适配（`MapAction` 仅 Pass/Discard 两分支，调用点仅 :1422（AI 返回）/:1611（超时 fallback）→`ApplyInternalCommandAsync` :1923-1931）/ ④协议→宿主适配（**P4.1 LocalHost 空壳 / P5.1 TableService 未开工，后阶段**）。三绝技独立逐类表（7 CommandKind→域入口→actor 零接线，§4.2.1）。N-1 按真实缺口重写为三子项（域缺 5 决策动作 N-1a + 出千执行层三段未接 N-1b + 自动适配 2/10 可选扩展 N-1c）；**N-4 改判阶段事实 SF-1**（正式条款：G1 九门原文无 AI 项 + P1.6 退出为组件级已接受 + 组合根属 P4.1/P5.1 宿主产物，§7.4）；负例矩阵只作用于真实新增入口、自动阶段权限保留（§7.2）；§8 关闭公式=N-3+N-1a/N-1b/N-2，SF-1 移出；§9.1 给 N-1a/N-1b/N-2/N-3 源码+测试文件 scope | §0、§2、§3.5、§4.1、§4.2、§4.2.1、§4.5、§6、§7.0/7.1/7.2/7.4、§8、§9.1、§10 |
+| R1-5（遗留，MINOR） | §12 仍有占位路径（`sha256sum …/ci-push/…/summary.log` 的"…"）；裸运行 `run-probes.ps1` 只出 stdout 不生成日志（脚本无重定向；`ErrorActionPreference=Continue` 使断言失败不改变退出码）；§0 未区分采样 HEAD 与交付 HEAD | **全部改正**：§12.4 给 PowerShell 可直接运行的 CI 两 bundle 文件发现+`Get-FileHash` 完整命令（无省略路径）；§12.2 探针命令显式重定向 `> probes-r3.log 2>&1` 并记录 exit/SHA；R3 脚本改为显式 `ASSERT-PASS/ASSERT-FAIL` 令牌+失败计数器，**任一断言失败即 exit 1**（诊断脚本退出与断言 PASS 由退出码区分）；§0/§12.1 标明 `98d7846`=第 2 轮采样 HEAD、`51cc902`=第 2 轮交付=第 3 轮采样 HEAD；第 2 轮 `probes.log`（SHA `3138e0b2…c09a`）保留为历史证据、不得覆盖，第 3 轮脚本 I 段做哈希不变校验（ASSERT-PASS） | §0、§6、§12.1-12.4 |
+
 ## 1. 环境前置核对（实际执行）
 
-- `git rev-parse HEAD` → `98d7846…ce4`；分支 `wt/v5-g1-readiness`；`git status --porcelain` 空（探针 A 段）。
+- `git rev-parse HEAD` → `51cc902dcbc46400476f4c753aa69774f94c4f4c`（第 3 轮采样 HEAD；采样语义见 §0/§12.1）；分支 `wt/v5-g1-readiness`；`git status --porcelain` 空；`git diff --check HEAD^ HEAD` exit 0（探针 A 段）。
 - 未触碰 `D:/majiang` 主 checkout 及其用户未提交文件；未 reset/覆盖任何兄弟工作树；未 push/建 PR/触发远端 CI。
 - 文档阅读：`AGENTS.md`、`DEEPSEEK-V5-MODULE-MIGRATION-PLAN.md`、`V5-0-1-IMPLEMENTATION-TASKS.md`、`V5-0-GOLDEN-MANIFEST.md`、`UNITY-ENVIRONMENT.md` 全文通读用于口径；此外**大量源码文件与 CI 产物按证据需要阅读**（第 1 轮"读过且仅读过四文档"表述有误，特此更正；主 checkout 用户文件始终未动）。
 - 本报告引用的 CI 产物位于 caller 下载基 `D:/majiang-wt/codex-progress-20261025/artifacts/progress-20261025/`（只读）。
@@ -44,7 +54,7 @@
 | 2 | 已导出黄金样本对齐率 100%，未导出样本单列 | **FAIL** | 机械目录校验 PASS ≠ 行为全字段对齐：G-028a 全序列未断言、G-003b/mv-swap-drawn-backfill 仅结构、20 partial 未对齐（§3.2 五层拆分，N-3） |
 | 3 | 依赖方向静态测试通过 | **PASS** | 固定头 8 处静态断言存在且双 run 全绿（§3.3 保护边清单）；残余精确白名单为建议（I-5，非门） |
 | 4 | Domain 不含隐式随机/时钟/浮点权威 | **PASS** | 严格 grep 零命中（探针 C 段 NO-MATCH）；守护测试为建议非门条款（I-4） |
-| 5 | 三绝技与 136 守恒通过 | **FAIL** | 136 守恒组件级证据充分；三绝技域层组件在、权威命令链未通（13 动作 actor 仅通 2，§3.5/§4.2，N-1/N-2） |
+| 5 | 三绝技与 136 守恒通过 | **FAIL** | 136 守恒组件级证据充分；三绝技：域转移面与玩家 envelope 通道在（Tsumo/Discard 端到端有既存测试），但**出千 7 协议命令执行层零接线**、域缺 5 类玩家决策动作（§3.5/§4.2/§4.2.1，N-1a/N-1b；N-2 结算未接线） |
 | 6 | Wire 可重复生成 | **PASS** | 稳定字节/字段号/错误码稳定 Fact 群 + Contracts 104 全绿（§3.6） |
 | 7 | 按座位/观战私有性通过 | **PASS** | 可见性 6 Fact + 观战命令前置拒绝（IndependentReviewTests.cs:66）+ 座位级 AI 观察（§3.7） |
 | 8 | TableRuntime 并发、版本与恢复合同通过 | **PASS** | TableRuntime 313 全绿 + CI 恢复/租约/回执证据事件（§3.8） |
@@ -52,7 +62,7 @@
 
 **计数核对：PASS=门 1,3,4,6,7,8,9（7 项）；FAIL=门 2,5（2 项）；BLOCKED=0；NOT_RUN=0；合计 9 = 行数。**
 
-**G1 不批准**：门 2（黄金行为全字段对齐未证实）与门 5（三绝技权威链未通）未满足。在 N-1/N-2/N-3（§7）完成前保持 V4 唯一生产基线，不进入 V5-2/3 集成验收。本报告与第 1 轮"BLOCKED"结论在"不批准"上一致，但门级判定与计数以本版为准。
+**G1 不批准**：门 2（黄金行为全字段对齐未证实）与门 5（三绝技权威链未通）未满足。在 N-1a/N-1b/N-2/N-3（§7）完成前保持 V4 唯一生产基线，不进入 V5-2/3 集成验收。SF-1（原 N-4，AI 组合根）为阶段事实，不在 G1 关闭公式（§7.4/§8）。本报告与第 1 轮"BLOCKED"结论在"不批准"上一致，但门级判定与计数以本版为准。
 
 ## 3. G1 门条件逐项证据
 
@@ -66,7 +76,7 @@
 
 | 层 | 事实 | 证据 |
 |---|---|---|
-| L1 机械目录校验 | PASS：validator 只查存在性/SHA/schema/计数/ID 去重/锚点/manifest 覆盖，**自述"never executes production code"**；本树复跑 PASS exit 0，catalog SHA `16F7FD7F…891B`，fixtures=5/requirements=73/cases=10,382/random=10,000/facts=42/coverage=full:17/partial:20/none:33/v5-only:3 | 探针 H/O 段；`tools/verify-v5-golden-catalog.ps1:9-11`；`tests/v5-golden/catalog-v1.json:4-5` |
+| L1 机械目录校验 | PASS：validator 只查存在性/SHA/schema/计数/ID 去重/锚点/manifest 覆盖，**自述"never executes production code"**；本树复跑 PASS exit 0（R2 探针 H/O 段 + 第 3 轮探针 J 段复跑一致），catalog SHA `16F7FD7F…891B`，fixtures=5/requirements=73/cases=10,382/random=10,000/facts=42/coverage=full:17/partial:20/none:33/v5-only:3 | `tools/verify-v5-golden-catalog.ps1:9-11`；`tests/v5-golden/catalog-v1.json:4-5` |
 | L2 目录自我定位 | catalog `status=evidence-index-not-acceptance`，notice 明示"does not assert G1/G5, V5 production readiness, or full 73-item coverage"——**10,382 是目录 case 数，不构成行为对齐分子** | catalog-v1.json:4-5（探针 H 段） |
 | L3 真实 C# 行为差分（已存在） | 17 项 full 覆盖需求中含真实调用断言，如 PhysicalGoldenTests 逐项对照 C# 公开 API 且"所有 expected 都来自 V4 真实调用"、"不把 C# 实现当 oracle"；scoring/cheat/round 各黄金测试为真实 C# 执行 | `PhysicalGoldenTests.cs:15-27`（探针 H 段 :20-22） |
 | L4 结构-only 与未断言字段边界 | ① G-003b V4 mutable 损坏注入探针在 C# 侧记 **structural**（C# 无可变容器，"没有把不可复现的 mutable 损坏注入写成 PASS"）；② `TileMovement_DrawnBackfill_IsAV4OnlyPath_RecordedAsStructure`（CheatGoldenTests.cs:644）：mv-swap-drawn-with-wall-backfill 为 V4-only 路径，C# `ChooseBeamSwap` 按设计拒绝摸牌实体，**仅断言黄金内部结构**；③ G-028a（manifest :343，`pending/partial`）：`RoundTerminalReplaysExactly`（RoundReplayGoldenTests.cs:101）断言 version/phase/result/scores/rejected+`TsumoWin` 在场（:134），**不断言 `MatchEnded` 缺席与完整 eventTypes 序列（ScoreSettled/RoundEnded）**；④ 20 项 partial 覆盖需求未对齐，33 项 none 单列 | manifest :343；三处测试源码（探针 H 段行号） |
@@ -110,12 +120,15 @@
 - 码牌/随机：shuffle-v1（32 用例）黄金差分；非法双占/重复拒绝在 P1.1 契约测试。
 - （分列）**点棒/点数守恒**（非 136 物理守恒）：`RoundStateMachine.cs:742-750` 验证调用方结算的 score/stick 起终恒等，`:802-822` 验证结果一致性——此为**结算数值守恒**，不是 136 物理守恒的锚点（第 1 轮混用，更正）。
 
-**三绝技（域层组件在、权威命令链未通）**：
-- 域层（P1.4 已交付组件）：`dotnet/src/Mahjong.Domain/Cheat/` 8 文件——`SleeveBloom`（袖里藏花）、`BeamSwap`（偷梁换柱，含 `ChooseBeamSwap` 域层入口）、`TileMark`（落汗标记面）、`CheatSubmission`、`CheatLedger`、`CheatState`、`CheatEconomy`、`CheatProjection`；CheatGoldenTests 覆盖资格/费用/物理移动黄金（含 V4-only 路径如实记录，§3.2 L4）。
-- 契约层：`CommandKind` 27 种含出千命令；协议私有两事件 `SleeveBloomResolved=20`/`BeamSwapResolved=21`（schema 冻结测试 SchemaCompatibilityTests.cs:409-417）；座位流要求受信 cheat 投影上下文（`TableActor.cs:5955-5969`）。
-- **未通**：协议玩家/出千命令到域权威入口的 actor 适配仅覆盖 13 动作中的 2 个（`MapAction` `TableActor.cs:4819-4834`：`Pass`→:4824、`Discard`→:4827，其余 `default`→null→`UNSUPPORTED_ACTION` :1436/:1623）。域权威入口本身支持 9 种动作（`RoundStateMachine.Execute` :294，dispatch :207-225），但 Chi/Pon/Kan(claim)/Riichi/AgariYame **域动作也不存在**（§4.2 表）。→ N-1。
+**三绝技（四通道分离核验；第 2 轮"13 动作 actor 仅通 2"系误判 `MapAction` 为玩家入口，本版撤回并更正）**：
 
-**判定**：136 守恒半项证据成立；三绝技半项"通过"要求资格/费用/窗口/等额物理移动在权威链端到端成立（任务书 P1.4 退出标准），当前命令面不通 → 门 5 **FAIL**。
+- **通道①域权威**：`RoundStateMachine.Execute`（:294，dispatch :207-225）接受全部 9 种 `RoundActionKind` 域动作（RoundTypes.cs:31-42）；出千转移不在该枚举——出千经由 `CheatSubmission` 六个公开入口（`ApplyTileMark` :109、`ActivateSleeveBloom` :222、`ChooseSleeveBloom` :322、`ExpireSleeveBloomImmediate` :417、`ActivateOffTurnSleeveBloom` :442、`ChooseBeamSwap` :904）的独立转移面，需显式调用（探针 E/F 段）。
+- **通道②actor 玩家路径**：`SubmitAsync(TableCommandEnvelope)`（`TableActor.cs:175`）→ `ProcessCommandCoreAsync`（:1039，守卫 `GuardServing` :1041、state version/control epoch 拒绝 :1140-1146）→ **`_round.Execute(command.Command)`（:1151）直达，不经过 MapAction**。envelope 仅承载域 `RoundCommand`（`TableRuntimeContracts.cs:134-142` 构造参数、:180 `Command` 属性），**无出千载荷字段**。端到端既存测试：`committed_tsumo_emits_typed_settlement_event_and_snapshot`（`TableStreamWireIntegrationTests.cs:715`，`RoundCommand.Tsumo` :747 → `SubmitAsync` :752 → `Accepted` :754 → Wire 事件可见）；`TerminalOutboxFaultRollsBackAndRetryWritesOnlyOneResult`（`TableDurableReceiptTests.cs:250`）；Discard 链路经 `P31Fixtures.BuildDiscardChain`（`TableRuntimeFixtures.cs:785`，`RoundCommand.Discard` :796 构造 envelope）贯穿数十个 `SubmitAsync` 用例（如 TableStreamWireIntegrationTests.cs:145-160）。
+- **通道③AI/超时（自动化座位）**：`MapAction(LegalActionOption)`（`TableActor.cs:4819`）全仓仅 3 处出现——定义 :4819 与两处调用：AI 返回 :1422（null→保持 pending，:1423-1425）、超时 fallback :1611（null→`UNSUPPORTED_ACTION` :1623）→ `ApplyInternalCommandAsync`（:1923-1931）→ `_round.Execute`（:1931）。**仅映射 `Pass`（:4824）/`Discard`（:4827）两分支**。它是自动化座位适配器，**不是玩家/协议入口**。测试：`DeadlineBoundaryTimeoutWinsOverSameTickAi`（`TableActorTests.cs:182`）、`AiBeforeDeadlineIsAcceptedAndItsTileIsApplied`（:213，AI 取高牌/超时 fallback 取低牌的判别式 fixture `BuildDiscardDecision`）。
+- **通道④协议→宿主适配**：`CommandKind` 27 种（含出千 7 命令）到 `RoundCommand`/出千命令的宿主映射属 **P4.1 LocalHost（空壳工程，G2 门内容）/ P5.1 TableService（未开工，V5-3）后阶段**（任务书 :114-119、:156-161）——阶段事实，非本头缺陷。
+- **真实缺口**（→ N-1）：(a) 域缺 5 类玩家决策动作（Chi/Pon/Kan(claim)/Riichi/AgariYame，RoundTypes.cs:31-42 无对应值，Execute 无对应 case）；(b) 出千 7 命令（`SubmitTileMark=12`…`SubmitBeamSwapChoice=18`，ProtocolCommand.cs:21-27）在 actor/envelope 层**零接线**（探针 G 段：`SubmitTileMark|SubmitSleeveBloom|SubmitBeamSwap|CheatCommand|CheatSubmission` 在 `Mahjong.TableRuntime` src 零命中）；(c) 自动化座位适配仅覆盖 LegalActionKind 10 值中的 2 值（Pass/Discard）。
+
+**判定**：136 守恒半项证据成立；三绝技半项"通过"要求资格/费用/窗口/等额物理移动在权威链端到端成立（任务书 P1.4 退出标准），当前出千命令执行层三段（envelope→actor 分发→CheatSubmission 调用）不通 → 门 5 **FAIL**。
 
 ### 3.6 门 6 Wire 可重复生成 — PASS
 
@@ -152,12 +165,12 @@ TableRuntime.Tests 313 双 run 全绿；P3.4 回合探针在树（`CodexP34Round
 |---|---|---|
 | Domain 牌实体/位置表/守恒（P1.1） | 完整功能（组件级，黄金差分） | TilePositionMap 136 槽+守恒审计；PhysicalGoldenTests 真实 API 对照 |
 | Domain 计分 42 役（P1.2） | 仅独立组件，**未接线**（N-2） | `Rules/Yaku.cs` 42 条；`YakuEvaluator/WinningScoreEvaluator` 在 src/Rules 外零调用（探针 M 段） |
-| Domain 单局/整场/计时/控制代次（P1.3） | 完整功能（组件级）；**命令面缺 5 类玩家决策动作**（N-1 域侧） | `RoundStateMachine.Execute` :294 覆盖 9 kinds；缺 Chi/Pon/Kan(claim)/Riichi/AgariYame |
-| Domain 三绝技/账本/私有状态（P1.4） | 仅独立组件+黄金（含结构-only 边界），**权威链未接**（N-1） | Cheat/ 8 文件；ChooseBeamSwap 入口；CheatGoldenTests |
+| Domain 单局/整场/计时/控制代次（P1.3） | 完整功能（组件级）；**命令面缺 5 类玩家决策动作**（N-1a） | `RoundStateMachine.Execute` :294 覆盖 9 kinds；缺 Chi/Pon/Kan(claim)/Riichi/AgariYame |
+| Domain 三绝技/账本/私有状态（P1.4） | 仅独立组件+黄金（含结构-only 边界）；**执行层三段未接**（envelope 载荷/actor 分发/投影，N-1b） | Cheat/ 8 文件；CheatSubmission 六入口（:109/:222/:322/:417/:442/:904）；CheatGoldenTests |
 | Domain 码牌/记录随机（P1.5） | 完整功能（组件级） | ShuffleConfig+shuffle-v1 黄金 |
-| AI 能力/意图记录（P1.6） | 仅独立组件，**无组合根**（N-4） | AiDecisionService 零消费者（探针 N 段）；BasicAiContextException :61/:502 |
+| AI 能力/意图记录（P1.6） | 仅独立组件（组件级退出已接受）；**组合根属宿主层**（SF-1 阶段事实，§7.4） | AiDecisionService 在 src/Mahjong.Ai 外零引用（探针 H 段）；AiDecisionTests 观察纯度+禁边全绿 |
 | Contracts/Wire（P2.1/P2.2） | 完整功能（契约面冻结 19+2 事件、27 CommandKind、13 动作） | SchemaCompatibilityTests;ProtocolSnapshot |
-| TableRuntime actor（P3.1） | 完整功能（组件合同）；**协议动作适配仅 2/13**（N-1 actor 侧） | MapAction :4819-4834；UNSUPPORTED_ACTION :1436/:1623 |
+| TableRuntime actor（P3.1） | 完整功能（组件合同）；**玩家 envelope 通道直达域**（9 kinds 无 kind 白名单）；自动化座位适配仅 2/10（N-1c 可选扩展） | 玩家路径 :175→:1039→:1151（守卫 :1140-1146）；`MapAction` :4819 仅 :1422（AI）/:1611（超时）调用；UNSUPPORTED_ACTION :1623 |
 | 按流投影和快照恢复（P3.2，**正名**） | 完整功能（组件级，6 可见性 Fact+红action） | TableVisibilityProjectionTests；TableProjectionContractMapper |
 | 计时、托管与控制竞态（P3.3，**正名**） | 完整功能（组件级） | actor 时钟/deadline/controlEpoch 守卫；TableRuntime 313 |
 | 回执/租约/恢复端口（P3.4） | 接口先行（**按任务书明文**：仅接口+内存契约测试，真实 PG 属 V5-3A——阶段事实，非缺陷） | TableDurableContracts.cs:1427-1526；InMemoryTableStore.cs:147-152 唯一实现 |
@@ -166,28 +179,52 @@ TableRuntime.Tests 313 双 run 全绿；P3.4 回合探针在树（`CodexP34Round
 | LocalHost | 空壳工程（0 .cs） | P4.1 未开工（G2 门） |
 | Unity/IL2CPP/Android/macOS/真机 | 平台资源阻塞（分列，无通过宣称） | UNITY-ENVIRONMENT.md；T4 清单 |
 
-### 4.2 完整 13 个 ProtocolActionType 映射表（R1-3 要求，逐项可复算）
+### 4.2 完整 13 个 ProtocolActionType 四通道映射表（R1-3 遗留更正版，逐项可复算）
 
-枚举源：`dotnet/src/Mahjong.Contracts/ProtocolCommand.cs:40-56`；域动作源：`dotnet/src/Mahjong.Domain/RoundTypes.cs:31-42`；域权威入口：`RoundStateMachine.Execute(RoundCommand)`（:294，dispatch :207-225，覆盖全部 9 kinds）；actor 命令适配：`TableActor.MapAction`（:4819-4834，仅 Pass/Discard）。
+枚举源：`dotnet/src/Mahjong.Contracts/ProtocolCommand.cs:40-56`（ProtocolActionType 13 值）；域动作源：`dotnet/src/Mahjong.Domain/RoundTypes.cs:31-42`（RoundActionKind 9 值）；自动化座位合法动作面：`dotnet/src/Mahjong.Domain/DeadlinePolicy.cs:7-18`（LegalActionKind 10 值，**第三套枚举**）。四通道定义（第 2 轮把通道③误作玩家/协议入口，本版更正）：
 
-| # | ProtocolActionType | 域层入口 | actor 协议命令入口 | 分类 |
-|---|---|---|---|---|
-| 0 | Unspecified=0 | — | — | 占位 |
-| 1 | StartStacking=1 | ✓ `StartStacking=0`（工厂含发牌，产 `TilesDealt` 事件） | ✗ 无分支（对局建立走 actor 回合装配路径，非玩家命令） | 域有 / actor 无玩家入口 |
-| 2 | DealComplete=2 | **无同名值**；语义并入 `StartStacking`（发牌完成即 `TilesDealt`，协议侧映射 `TileDealt=3`/`DealingComplete=4` 事件） | ✗ | 无同名值 / 语义入口存在 |
-| 3 | DrawTile=3 | ✓ `DrawTile=1` | ✗ 无分支（摸牌由权威回合推进驱动） | 域有 / actor 无 |
-| 4 | DiscardTile=4 | ✓ `DiscardTile=2` | ✓ :4827 | **已接线** |
-| 5 | DeclareChi=5 | ✗ 无域动作 | ✗ | **缺行为**（域+actor 均缺） |
-| 6 | DeclarePon=6 | ✗ | ✗ | **缺行为** |
-| 7 | DeclareKan=7 | **部分**：加杠有 `DeclareAddedKan=6`；明杠/暗杠 claim 无独立动作（域以 `ResponseClaimed`/`ChankanWindowOpened` 事件面存在，命令入口缺） | ✗ | **部分缺行为** |
-| 8 | DeclareRiichi=8 | ✗ 无域动作（`RiichiSticks` 仅为状态/结算量，RoundTypes.cs:113-191） | ✗（决策**视图**已映射候选：`LegalActionKind.Riichi`→`DeclareRiichi`，TableActor.cs:5829-5830） | **缺行为**（视图有/执行无） |
-| 9 | DeclareTsumo=9 | ✓ `DeclareTsumo=3` | ✗ 无分支 | 域有 / actor 无 |
-| 10 | DeclareRon=10 | ✓ `DeclareRon=4` | ✗ | 域有 / actor 无 |
-| 11 | Pass=11 | ✓ `Pass=5` | ✓ :4824 | **已接线** |
-| 12 | DeclareAbortiveDraw=12 | ✓ `DeclareAbortiveDraw=8` | ✗ | 域有 / actor 无 |
-| 13 | DeclareAgariYame=13 | ✗ 无域动作 | ✗ | **缺行为** |
+- **①域**：`RoundStateMachine.Execute(RoundCommand)`（:294，dispatch :207-225）的实际行为；
+- **②actor 玩家提交**：`SubmitAsync(TableCommandEnvelope)` :175 → `ProcessCommandCoreAsync` :1039（守卫）→ `_round.Execute(command.Command)` :1151——envelope 承载 `RoundCommand`，**对 9 种域动作无 kind 白名单**；系统阶段动作（建立/摸牌）不走玩家命令；
+- **③AI/超时适配**：`MapAction(LegalActionOption)` :4819（仅 :1422 AI 返回 / :1611 超时 fallback 两处调用，经 `ApplyInternalCommandAsync` :1923-1931 入域）；
+- **④协议→宿主**：ProtocolActionType 到 actor/宿主的命令映射，属 **P4.1 LocalHost（空壳，G2）/ P5.1 TableService（未开工，V5-3）**——后阶段，非本头缺陷。
 
-域独有 kinds（协议无同名动作，承载方式注明）：`DeclareAddedKan=6`（协议经 `DeclareKan`+`MeldKind.AddedKan=5` 承载）；`DeclareExhaustiveDraw=7`（协议无同名动作；荒牌流局由 `WallExhausted=14`/`ExhaustiveDraw=12` 域事件与 `DrawGame=16` 协议事件承载，属权威自动判定面）。第 1 轮"缺 5/独有 AddedKan"遗漏了 DealComplete 的语义入口与 DeclareExhaustiveDraw 的承载差异，本表更正。
+| # | ProtocolActionType | ①域 RoundCommand 行为 | ②actor 玩家提交 | ③AI/超时 MapAction | ④协议→宿主 | 分类 |
+|---|---|---|---|---|---|---|
+| 0 | Unspecified=0 | — | — | — | — | 占位 |
+| 1 | StartStacking=1 | ✓ `StartStacking=0`（工厂含发牌，产 `TilesDealt`；域测试 RoundStateMachineTests.cs:254 等） | 系统动作：对局建立走 actor 回合装配路径，**非玩家命令**（保留自动阶段权限，§7.2） | 不适用（建立期无自动化决策） | P5.1 后阶段 | 域有 / 玩家面不适用 |
+| 2 | DealComplete=2 | **无同名值**；语义并入 `StartStacking`（发牌完成即 `TilesDealt`，协议侧 `TileDealt=3`/`DealingComplete=4` 事件） | 同上（系统动作） | 不适用 | 同上 | 无同名值 / 语义入口在 |
+| 3 | DrawTile=3 | ✓ `DrawTile=1`（权威回合推进驱动） | 系统动作（同上） | 不适用 | 同上 | 域有 / 玩家面不适用 |
+| 4 | DiscardTile=4 | ✓ `DiscardTile=2` | **已通**：`RoundCommand.Discard` 构造 envelope（`P31Fixtures.BuildDiscardChain`，TableRuntimeFixtures.cs:785/:796）→`SubmitAsync`→:1151；端到端 TableStreamWireIntegrationTests.cs:145-160 等数十用例 | **已通**：:4827 | P5.1 后阶段 | **已接线**（玩家+自动双通道，均有测试） |
+| 5 | DeclareChi=5 | ✗ 域无动作 | ✗（无可承载域命令） | ✗（`LegalActionKind.Chi=4` 无映射） | 同上 | **缺行为**（域） |
+| 6 | DeclarePon=6 | ✗ | ✗ | ✗（Pon=5 无映射） | 同上 | **缺行为**（域） |
+| 7 | DeclareKan=7 | **部分**：加杠 `DeclareAddedKan=6` 在；明/暗杠 claim 无独立域动作（`ResponseClaimed`/`ChankanWindowOpened` 事件面在，命令入口缺） | AddedKan 可承载（同 :1151 路径）；claim 缺域动作 | ✗（Kan=6 无映射） | 同上 | **部分缺行为**（域 claim） |
+| 8 | DeclareRiichi=8 | ✗ 域无动作（`RiichiSticks` 仅为状态/结算量，RoundTypes.cs:113-191） | ✗ | ✗（Riichi=7 无映射）；决策**视图**已映射候选（`MapProtocolAction` `LegalActionKind.Riichi`→`DeclareRiichi`，TableActor.cs:5829-5830） | 同上 | **缺行为**（域；视图有/执行无） |
+| 9 | DeclareTsumo=9 | ✓ `DeclareTsumo=3` | **已通**：`committed_tsumo_emits_typed_settlement_event_and_snapshot`（TableStreamWireIntegrationTests.cs:715→:747→:752→:754）端到端 Accepted+Wire 事件；另有 TableDurableReceiptTests.cs:250 故障回滚重试链 | ✗（Tsumo=2 无映射） | 同上 | **玩家已接线**（有端到端测试）/ 自动适配缺 |
+| 10 | DeclareRon=10 | ✓ `DeclareRon=4` | envelope 结构可承载（同 :1151 无白名单路径）；本轮未定位 Ron 专属 actor 级端到端测试，如实标注 | ✗（Ron=3 无映射） | 同上 | 玩家通道结构可承载 / 自动适配缺 |
+| 11 | Pass=11 | ✓ `Pass=5` | envelope 结构可承载（同上） | **已通**：:4824 | 同上 | 玩家结构+自动已通 |
+| 12 | DeclareAbortiveDraw=12 | ✓ `DeclareAbortiveDraw=8` | envelope 结构可承载（同上） | ✗ | 同上 | 域有 / 自动适配缺 |
+| 13 | DeclareAgariYame=13 | ✗ 域无动作 | ✗ | ✗（Other=9 无映射） | 同上 | **缺行为**（域） |
+
+注记：
+1. 域独有 kinds（协议无同名动作）：`DeclareAddedKan=6`（协议经 `DeclareKan`+`MeldKind.AddedKan=5` 承载）；`DeclareExhaustiveDraw=7`（协议无同名动作；荒牌流局由 `WallExhausted=14`/`ExhaustiveDraw=12` 域事件与 `DrawGame=16` 协议事件承载，属权威自动判定面）。
+2. 第 2 轮表中把 StartStacking/DealComplete/DrawTile 标为"阶段入口"却要求其接进 `MapAction`，自相矛盾——三者是权威自动推进的系统动作，本版归位"玩家面不适用"；`MapAction` 是 LegalActionKind→RoundCommand 的**自动化座位适配器**（`LegalActionKind.Cheat=8` 无映射：自动化座位不作出千决策，出千为玩家主动命令，如实记录）。
+3. "玩家结构可承载"指 envelope 类型+`:1151` 直达路径对相应 `RoundActionKind` 无过滤（源码结构事实）；Tsumo/Discard 另有端到端测试，其余 kinds 的专属 actor 级测试为验收期补齐项（N-1 验收断言）。
+
+#### 4.2.1 三绝技命令独立映射（7 CommandKind，逐类；R1-3 遗留 b 项）
+
+协议命令面 `CommandKind`（`dotnet/src/Mahjong.Contracts/ProtocolCommand.cs:21-27`）→ 域转移面 `CheatSubmission`（`dotnet/src/Mahjong.Domain/Cheat/CheatSubmission.cs`）→ 执行层接线事实：
+
+| CommandKind | 值 | 域入口（候选对应） | actor/envelope 接线 | 投影/事件面 | 缺口 |
+|---|---|---|---|---|---|
+| SubmitTileMark | 12 | `ApplyTileMark` :109 | ✗ 零命中（探针 G 段） | 协议私有两事件 `SleeveBloomResolved=20`/`BeamSwapResolved=21` schema 冻结（SchemaCompatibilityTests.cs:409-417）；座位流受信 cheat 投影上下文 TableActor.cs:5955-5969 在位 | envelope 无出千载荷（TableRuntimeContracts.cs:134-142 仅 `RoundCommand`）+ actor 无分发 + 投影未调 |
+| SubmitSleeveBloom | 13 | `ActivateSleeveBloom` :222 | ✗ | 同 | 同 |
+| SubmitSleeveBloomChoice | 14 | `ChooseSleeveBloom` :322（:417 `ExpireSleeveBloomImmediate` 为权威过期路径，无协议命令） | ✗ | 同 | 同 + 命令↔入口逐一对应未定 |
+| SubmitSleeveBloomOffTurn | 15 | `ActivateOffTurnSleeveBloom` :442 | ✗ | 同 | 同 |
+| SubmitSleeveBloomOffTurnChoice | 16 | `ChooseSleeveBloom` :322（候选对应） | ✗ | 同 | 同 |
+| SubmitBeamSwap | 17 | `ChooseBeamSwap` :904 | ✗ | 同 | 同 |
+| SubmitBeamSwapChoice | 18 | `ChooseBeamSwap` :904（选择面对应） | ✗ | 同 | 同 |
+
+**结论**：域转移面（P1.4 六公开入口）、协议命令面（P2.1 七命令）、事件面（两私有类型）三层组件齐备；缺的是**执行层三段——envelope 扩展（出千载荷）→ actor 分发 → `CheatSubmission` 调用 → 投影调用**，当前全为零命中（探针 G 段）。此为门 5 FAIL 的核心构成（N-1b）。诚实注记：CommandKind↔域入口的逐一对应（尤其 14/16/18 三个 Choice 族）属接线设计决策，本表列"候选对应"，最终对应由实现任务定义并经 §7.2 出千行验收。
 
 ### 4.3 事件面分层（R1-3 要求：RoundEvent/CheatEvent/Match 与协议映射分开）
 
@@ -200,9 +237,9 @@ TableRuntime.Tests 313 双 run 全绿；P3.4 回合探针在树（`CodexP34Round
 
 接口 `ITableStore/IReceiptStore/ITableLease/ISettlementOutbox`（TableDurableContracts.cs:1427-1526），单原子边界 `CommitAsync`（:1469-1475 注释）；唯一实现 `InMemoryTableStore`（InMemoryTableStore.cs:147-152，四接口同实现，按 PG 同形事务约束）。任务书 P3.4 明文："这里仅完成接口与内存契约测试，**真实 PG 实现属于 V5-3A**"——内存-only 是**按计划的阶段边界，不是缺陷**（第 1 轮 D-6 撤回）。真实 PG 现存于 Lobby 线（PostgresLobbyStore/PostgresRoomProjectionReader）；跨进程重启探针见 §5.4。
 
-### 4.5 AI 观察与决策（P1.6 组件 + P3.1 观察）
+### 4.5 AI 观察与决策（P1.6 组件语义 vs P4.1/P5.1 宿主组合根边界）
 
-actor 座位级观察（:390-404/:4105-4200，含 Serving/时钟/决策窗/控制纪元守卫）；Ai 模型层本座位强制（§3.7）；`IAiStrategy.Decide(AiObservation, CancellationToken)` 双参签名冻结（AiDecisionTests.cs:431-436）；**组合根缺失**：`IAiStrategy/AiDecisionService` 在 src/Mahjong.Ai 之外零引用（探针 N 段），`BasicAiContext` 无生产构造点（喂真实 actor 观察将抛 `BasicAiContextException`，BasicAiStrategy.cs:61/:502）→ N-4。
+actor 座位级观察（:390-404/:4105-4200，含 Serving/时钟/决策窗/控制纪元守卫）；Ai 模型层本座位强制（§3.7）；`IAiStrategy.Decide(AiObservation, CancellationToken)` 双参签名冻结（AiDecisionTests.cs:431-436）。**组件语义（P1.6，已按组件级退出接受）**：观察纯度、迟到/过期拒绝、意图记录契约已测。**宿主组合根边界（SF-1 阶段事实，§7.4）**：`IAiStrategy/AiDecisionService` 在 src/Mahjong.Ai 之外零引用（探针 H 段），`BasicAiContext` 无生产构造点（喂真实 actor 观察将抛 `BasicAiContextException`，BasicAiStrategy.cs:61/:502）——strategy→观察装配属**宿主组合根**，即 P4.1 LocalHost（任务书 :114-119，现空壳工程，G2 门内容）与 P5.1 TableService（:156-161，未开工，V5-3）的产物清单；G1 九门原文（任务书 :107）九项无 AI 项。自动化管线本身在位：AI 返回 :1422 → `MapAction` → `ApplyInternalCommandAsync` :1923-1931 → `_round.Execute` :1931（TableActorTests.cs:182/:213 两通道判别式测试）。
 
 ## 5. CI 远端产物亲自核验记录
 
@@ -257,7 +294,16 @@ MTP/xUnit v3 框架日志为 UTF-16LE（`iconv` 转码后仅见 per-assembly tot
 
 失败框架日志在历史 bundle 缺失，无法补齐根因；当前双 run 全绿不构成原因已查明；不盲重试、不标 flaky（I-2）。caller 本轮两次非标准输出路径的本地测试失败已定位为路径/发现机制问题并按受支持路径复验通过，**不归因于该历史失败**。
 
-## 6. 本轮探针记录（第 1 轮 + 第 2 轮，全部可复现）
+### 5.7 本地统一 verify 与 CI 差异分列（非全绿声明，如实记录）
+
+| 运行 | 结果 | 证据 |
+|---|---|---|
+| CI（远端产物核验，§5.1-5.4） | 1,356 passed / 0 failed / 0 skipped，14 份 per-project meta 全 exit 0 | §5.2 |
+| caller 本树统一 verify（caller round-2 指令提供，**本轮未重跑**） | 总数 1,356 = **1,344 passed / 0 failed / 12 skipped**（Lobby 89 = 77+12：无本地 PG 的 12 个 PG 用例 skip）；**严格 verifier 整体 exit 1** | caller E=`C:/Users/sncdc/AppData/Local/Temp/g1-caller-round2-20261025`：review-audit.ps1 SHA `8106B0A0489508F5E11C0AACD95311C2F5D3681121DAA4D16AE804FCDBC9F5E1`、review-audit-run.log SHA `9A0E1218F8AED56CB9F4E49BDC95EC307BF317CF64B6B5B5B89559E513EA2145`；本地统一 summary.log SHA `272112BBB8C990F86F1F425AC0A99DCBB186E29AFA5810E87999A59B73DCCCD2`；catalog PASS exit0 log SHA `E3F631D97B0D9C2AF3B5084E4CB751BE0FCAE856D6F231FE8A950E98CF38F6D2` |
+
+差异说明：本地 skip 12 = 无本地 PG 实例的 PG 依赖用例（CI wrapper 启 PG 后同用例全过，§5.3/5.4），这是两环境计数的唯一结构差异；**严格 verifier exit 1 如实记录为非全绿状态**——本轮不重新解释其判据、不修改 verifier、不用 skip/放宽断言造绿。本报告任何位置均不得表述为"本轮本地运行全绿"。
+
+## 6. 本轮探针记录（第 1-3 轮，全部可复现）
 
 统一编号（第 1 轮 §3.2/§3.3/§3.4 的"§6.0/§6.1/§6.2"断链已废弃，改指本节）：
 
@@ -280,10 +326,15 @@ MTP/xUnit v3 框架日志为 UTF-16LE（`iconv` 转码后仅见 per-assembly tot
 | P-O | AI 组合根 | R1+R2 | src/Mahjong.Ai 外 NO-MATCH；BasicAiContextException :61/:502 | probes.log N 段 |
 | P-P | Ai 本座位观察（源读） | R1 | AiObservation.cs:73-83/:318-321/:349/:421 守卫 | 第 1 轮源读，锚点见 §3.7 |
 | P-Q | 按流隐私测试锚点 | R1 | TableVisibilityProjectionTests 6+3 Fact | §3.7 |
+| P-R | 四通道核验：MapAction 全部出现点 / 玩家路径直达 / 出千命令零接线 | R3 | MapAction 恰 3 处（:1422 AI / :1611 超时 / :4819 定义，ASSERT-PASS）；`_round.Execute` :1151（玩家）/ :1931（内自动）；出千符号在 TableRuntime src NO-MATCH（ASSERT-PASS） | probes-r3.log B/C/G 段 |
+| P-S | 端到端测试锚点（玩家双命令 + 自动双通道） | R3 | committed_tsumo :715（`RoundCommand.Tsumo` :747→SubmitAsync :752→Accepted :754）；TerminalOutboxFault :250；DiscardChain fixtures:785/:796；AI/超时 TableActorTests.cs:182/:213 | probes-r3.log D 段 |
+| P-T | 三套枚举分离 | R3 | CommandKind 出千块 :21-27（SubmitTileMark=12…SubmitBeamSwapChoice=18）；LegalActionKind 10 值（DeadlinePolicy.cs:7-18）；RoundActionKind 9 值（RoundTypes.cs:31-42） | probes-r3.log E 段 |
+| P-U | 域出千六入口 | R3 | CheatSubmission.cs :109/:222/:322/:417/:442/:904（ASSERT-PASS ≥6） | probes-r3.log F 段 |
+| P-V | 状态复检 + 历史证据不可变 + validator 复跑 | R3 | 计分未接线/AI 无组合根 NO-MATCH（ASSERT-PASS×2）；旧 probes.log SHA 等值（ASSERT-PASS）；validator PASS exit 0（ASSERT-PASS） | probes-r3.log H/I/J 段 |
 
-第 2 轮探针脚本与日志：`C:/Users/sncdc/AppData/Local/Temp/g1-review-r2-evidence/run-probes.ps1`、`probes.log`（SHA256 `3138e0b27e61e95a549018bc92ccf5ea360e4d33f154c69ead730bdba209c09a`）。**历史 CI 证据（§5）为既存产物只读核验，与本轮新执行探针分开列示。** 未重跑项：本地 `verify-all.ps1` 全套（含 PG 重启探针）、77/91 串行 PS 自测、Unity/设备链路——无代码变化不盲重跑重型自测。
+第 2 轮探针脚本与日志：`C:/Users/sncdc/AppData/Local/Temp/g1-review-r2-evidence/run-probes.ps1`、`probes.log`（SHA256 `3138e0b27e61e95a549018bc92ccf5ea360e4d33f154c69ead730bdba209c09a`）——**历史证据，本轮未改动且禁止覆盖**（第 3 轮脚本 I 段哈希不变校验 ASSERT-PASS）。第 3 轮探针脚本与日志：`C:/Users/sncdc/AppData/Local/Temp/g1-review-r3-evidence/run-probes-r3.ps1`、`probes-r3.log`（SHA256 `146c388923f6427d0527c1806c1c2913e8e78664606649475d394fbfb2b80fe7`，170 行，14 ASSERT-PASS / 0 ASSERT-FAIL，PROBE-EXIT=0；断言合同见 §12.2）。**历史 CI 证据（§5）为既存产物只读核验，与本轮新执行探针分开列示。** 未重跑项：本地 `verify-all.ps1` 全套（含 PG 重启探针）、77/91 串行 PS 自测、Unity/设备链路——无代码变化不盲重跑重型自测。
 
-## 7. 缺陷/缺口清单（第 2 轮一次性全量；每条含复现/证据/修复/验收）
+## 7. 缺陷/缺口清单（第 3 轮现行全量；每条含复现/证据/修复/验收）
 
 ### 7.0 第 1 轮清单更正记录
 
@@ -294,55 +345,65 @@ MTP/xUnit v3 框架日志为 UTF-16LE（`iconv` 转码后仅见 per-assembly tot
 | D-3/D-4 | **重构为 N-1/N-2** | 原责任归属错标 P3.2/P3.3，且无出千/计分实际任务；按任务书正名 |
 | D-5 | **重构为 N-4** | 内容不变，编号规整 |
 | D-6"表事件端口仅 InMemory" | **撤回（非缺陷）** | 任务书 P3.4 明文真实 PG 属 V5-3A，阶段事实 |
+| 第 2 轮 N-1"13 协议动作 actor 仅通 2" | **撤回表述，重构为 N-1a/N-1b/N-1c** | 该表述把 AI/超时适配器 `MapAction` 误当玩家/协议入口（R1-3 遗留）；四通道更正后真实缺口=域缺 5 动作（N-1a）+出千执行层三段未接（N-1b）+自动适配 2/10（N-1c 可选），§7.1 |
+| 第 2 轮 N-4"AI 组合根缺失"MAJOR | **改判阶段事实 SF-1**（§7.4） | G1 九门原文（任务书 :107）无 AI 项；P1.6 退出为组件级且已接受；组合根属 P4.1/P5.1 宿主产物清单。不得一处列 MAJOR 一处关闭公式遗漏（消除 §7/§8 不一致） |
 
 ### 7.1 现行缺陷/缺口（同类已合并）
 
-**N-1 [MAJOR] 权威链动作适配面：13 协议动作仅通 2，含三绝技/鸣牌/立直/和了止全族**
-- **位置**：`dotnet/src/Mahjong.TableRuntime/TableActor.cs:4819-4834`（MapAction）、`:1436`/`:1623`（UNSUPPORTED_ACTION）；`dotnet/src/Mahjong.Domain/RoundTypes.cs:31-42`（域 9 kinds，缺 5 类决策动作）；`RoundStateMachine.cs:207-225,294`。
-- **复现**：探针 F/E/D 段（§12 命令 4-6）；或对 `wss://` 会话发 `DeclareTsumo` 类命令观察 `UNSUPPORTED_ACTION`（不要求执行，源码可复算）。
-- **实际 vs 期望**：实际=玩家决策命令仅 Pass/Discard 到达域；期望=任务书 P1.3/P1.4 退出口径下，吃/碰/杠/立直/和了止与三绝技命令端到端（协议命令→回执→域事件→投影）成立。
-- **证据路径**：probes.log（SHA 见 §0）；TableActor.cs/RoundTypes.cs 固定头源码。
-- **修复要求**（**建议 G1 补齐子任务，尚未分配**；不得改名已完成 P3.2/P3.3）：
-  - 域侧（P1.1/P1.3 范围延伸）：`RoundActionKind` 增 `DeclareChi/DeclarePon/DeclareKan(claim)/DeclareRiichi/DeclareAgariYame`，`Execute` dispatch 补 case，产对应域事件（claim 可沿用 `ResponseClaimed` 泛化或新增，须与协议 21 类映射表对齐）。
-  - actor 侧（P3.1 范围延伸）：`MapAction` 补全 13 动作映射；三绝技命令接 `Cheat/CheatSubmission`/`ChooseBeamSwap` 等既有域入口。
-  - 依赖：计分接线（N-2）依赖本项 Tsumo/Ron/Riichi 通道；AI 组合根（N-4）依赖本项候选面。
-- **验收断言**：§4.2 表所有"缺行为/域有 actor 无"行转"已接线"；统一负例矩阵（7.2）全过；黄金对齐（round/cheat 目录）新增用例一致。
+**N-1 [MAJOR] 权威链真实缺口：域缺 5 类玩家决策动作（N-1a）+ 出千 7 命令零执行层接线（N-1b）+ 自动化座位适配 2/10（N-1c，可选扩展）**
+
+第 2 轮表述"13 协议动作 actor 仅通 2"**撤回**：该表述把 AI/超时适配器 `MapAction` 误当玩家/协议入口（§4.2 四通道更正）。修正后事实：玩家 envelope 通道 `:175→:1039→:1151` 对全部 9 种域动作无 kind 白名单，Tsumo/Discard 端到端有既存测试（§3.5 通道②）。真实缺口三子项：
+
+**N-1a 域侧缺 5 类玩家决策动作**
+- **位置**：`dotnet/src/Mahjong.Domain/RoundTypes.cs:31-42`（`RoundActionKind` 9 值无 DeclareChi/DeclarePon/DeclareKan(claim)/DeclareRiichi/DeclareAgariYame）；`RoundStateMachine.cs:207-225`（dispatch 无对应 case）、`:294`。
+- **复现**：探针 E 段枚举逐值（§12.5）；协议 5 动作（ProtocolActionType 5/6/7-claim/8/13）无可承载域命令（§4.2 表"缺行为"行）。
+- **实际 vs 期望**：实际=协议鸣牌/立直/和了止动作无域命令面；期望=任务书 P1.3 退出口径下单局状态机覆盖全部玩家决策（与协议 21 类事件映射对齐）。
+- **证据路径**：probes-r3.log E 段；RoundTypes.cs/RoundStateMachine.cs 固定头源码。
+- **修复要求**（建议 G1 补齐子任务，尚未分配；文件 scope 见 §9.1）：`RoundActionKind` 增 5 值、`Execute` dispatch 补 case、`RoundTransition` 产对应域事件（claim 可沿用 `ResponseClaimed` 泛化或新增，须与协议 21 类映射表对齐）。不得改名已完成 P3.2（按流投影和快照恢复）/P3.3（计时托管控制竞态）。
+
+**N-1b 出千 7 命令零执行层接线**
+- **位置**：协议命令面 ProtocolCommand.cs:21-27（7 值在）；域转移面 `CheatSubmission.cs:109/:222/:322/:417/:442/:904`（六入口在）；**缺**：envelope 出千载荷（`TableRuntimeContracts.cs:134-142` 仅 `RoundCommand`）、actor 分发（探针 G 段零命中）、投影调用。
+- **复现**：§12.5 G 段命令（期望 NO-MATCH）；§4.2.1 表逐行"✗"。
+- **实际 vs 期望**：实际=三绝技命令在 actor 层无任何路径，`CommandKind` 12-18 无消费者；期望=任务书 P1.4 退出标准——资格/费用/窗口/等额物理移动经权威链端到端成立（协议命令→回执→域事件→投影）。
+- **证据路径**：probes-r3.log G 段（NO-MATCH 断言）；E/F 段；§4.2.1。
+- **修复要求**（建议 G1 补齐子任务，尚未分配；文件 scope 见 §9.1）：`TableCommandEnvelope` 扩展出千载荷（或显式变体）→ actor 按 `CommandKind` 分发至 `CheatSubmission` 对应入口 → `TableProjectionContractMapper` 投影 20/21 私有事件；命令↔入口逐一对应由实现任务定义（§4.2.1 注记）。
+- **依赖**：N-2 结算接线不依赖本项；但 P1.4 端到端验收依赖 §7.2 出千行负例矩阵。
+
+**N-1c 自动化座位适配 2/10（可选扩展，不单独构成 G1 阻断）**
+- **位置**：`TableActor.cs:4819`（`MapAction` 仅 Pass :4824/Discard :4827）；`DeadlinePolicy.cs:7-18`（LegalActionKind 10 值）；调用点 :1422（AI，null→保持 pending :1423-1425）/:1611（超时 fallback，null→`UNSUPPORTED_ACTION` :1623）。
+- **复现**：探针 B 段（恰 3 处出现断言）。
+- **实际 vs 期望**：实际=自动化座位（AI/超时）只能响应 Pass/Discard；期望=若产品要求自动化座位响应鸣牌/立直窗口，则扩展映射。**是否扩展属产品决策，由 caller 定**；G1 九门文本无 AI 项，本子项不构成 G1 阻断——列出是为与 N-1a/N-1b 的伴生面（新窗口打开后自动化座位的行为）一次说清，避免遗漏。
+- **修复要求**（若实施）：`MapAction` 按 N-1a 新增域动作补对应 `LegalActionKind` 分支，保留 null→pending 语义；§7.2 仅在实施时适用其扩展行。
+
+**N-1 验收断言（统一）**：§4.2 表"缺行为"行转"已接线"；§4.2.1 七行"actor/envelope 接线"列转"✓"；§7.2 负例矩阵全过；黄金对齐（round/cheat 目录）新增用例一致。
 
 **N-2 [MAJOR] 结算计算未接线（计分评估器零生产调用者）**
-- **位置**：`dotnet/src/Mahjong.Domain/Rules/YakuEvaluator.cs`/`WinningScoreEvaluator.cs`（src/Rules 外零调用，探针 M 段）；`RoundStateMachine.cs:21`（头注释"computed by the frozen rules layer; this class verifies"）、`:742-750`（结算守恒验证）、`:802-822`。
-- **复现**：§12 命令 7（Get-ChildItem 排除 Rules 扫引用）。
-- **实际 vs 期望**：实际=`RoundSettlement` 由调用方供给、状态机只验证；期望=权威链内由规则层计算结算（P1.2 组件已黄金验收，差在接线）。
-- **证据路径**：probes.log M 段；RoundStateMachine.cs 源码。
-- **修复要求**（建议 G1 补齐子任务，尚未分配；依赖 N-1）：结算由 YakuEvaluator/WinningScoreEvaluator 在权威链计算，保留守恒验证为第二道闸。
-- **验收断言**：权威链产生的 settlement 与 scoring-v1（10,238 用例）一致；守恒断言对错误计算拒绝。
+- **位置**：`dotnet/src/Mahjong.Domain/Rules/YakuEvaluator.cs`/`WinningScoreEvaluator.cs`（src/Rules 外零调用，探针 H 段复检 ASSERT-PASS）；`RoundStateMachine.cs:21`（头注释"computed by the frozen rules layer; this class verifies"）、`:742-750`（结算守恒验证）、`:802-822`。
+- **复现**：§12.5 计分接线命令（Get-ChildItem 排除 Rules 扫引用，期望 NO-MATCH）。
+- **实际 vs 期望**：实际=`RoundSettlement` 由调用方供给（既存 Tsumo 端到端测试即由测试供给 settlement，TableStreamWireIntegrationTests.cs:747）、状态机只验证；期望=权威链内由规则层计算结算（P1.2 组件已黄金验收，差在接线）。
+- **证据路径**：probes-r3.log H 段；probes.log（R2）M 段；RoundStateMachine.cs 源码。
+- **修复要求**（建议 G1 补齐子任务，尚未分配；文件 scope 见 §9.1）：结算由 YakuEvaluator/WinningScoreEvaluator 在权威链计算，保留 :742-822 守恒/一致性验证为第二道闸。
+- **验收断言**：权威链产生的 settlement 与 scoring-v1（10,238 用例）一致；守恒断言对错误计算拒绝（§7.2 结算行）。
 
 **N-3 [MAJOR] 黄金全字段对齐残余（门 2 关闭条件）**
 - **位置**：manifest G-028a（`doc/v5-重构/V5-0-GOLDEN-MANIFEST.md:343`，pending/partial）；`dotnet/tests/Mahjong.Domain.Tests/RoundReplayGoldenTests.cs:101,134`；`CheatGoldenTests.cs:644`；`PhysicalGoldenTests.cs:20-26`；manifest 内 20 项 partial 覆盖需求。
-- **复现**：§12 命令 8-9；或读 manifest partial/pending 列。
+- **复现**：§12.5 沿用命令（Golden 边界组，对应 R2 probes.log H 段，日志为不可变历史证据）；或读 manifest partial/pending 列。
 - **实际 vs 期望**：实际=终局重放不断言完整 eventTypes 序列（ScoreSettled/RoundEnded 序列、MatchEnded 缺席）、V4-only 物理移动路径仅结构、20 partial 未对齐；期望=门 2"已导出黄金样本对齐率 100%"可依行为级证据宣布。
-- **证据路径**：probes.log H 段；manifest；E/catalog.log（SHA `E3F631D9…8F6D2`）。
+- **证据路径**：R2 probes.log H 段（SHA `3138e0b2…c09a`，§12.3）；manifest；E/catalog.log（SHA `E3F631D9…8F6D2`）。
 - **修复要求**（按 manifest 既定 pending 项推进，不新造口径）：① RoundTerminalReplaysExactly 增补全事件序列断言（含 MatchEnded 缺席/ScoreSettled/RoundEnded 次序）；② V4-only 路径（mv-swap-drawn-with-wall-backfill）明确产品决策（C# 入口或永久结构记录）；③ 20 partial 逐项转 full 或记录不可导出理由。
 - **验收断言**：manifest 对应行转 accepted/full 或留有显式决策记录；validator 机械层与行为断言层分开报告，不合并成"100%"。
 
-**N-4 [MAJOR] AI 组合根缺失（P1.6 组件未被权威宿主消费）**
-- **位置**：`dotnet/src/Mahjong.Ai/AiDecisionService.cs`（src/Mahjong.Ai 外零引用，探针 N 段）；`BasicAiStrategy.cs:61,502`（BasicAiContextException）；`Mahjong.LocalHost/`（空壳）。
-- **复现**：§12 命令 10。
-- **实际 vs 期望**：实际=actor 产座位级观察但无 strategy→actor 装配，Basic 策略对真实观察必抛异常；期望=P1.6 退出口径（迟到/过期拒绝、意图回放一致、无暗牌读取）在权威链内成立或显式声明阶段不支持自动 AI（口径由 caller 定）。
-- **证据路径**：probes.log N 段；AiDecisionTests.cs:431-452（观察纯度+禁边已测）。
-- **修复要求**（建议 G1 补齐子任务，尚未分配；依赖在途兄弟任务 T-A 的纯上下文与 N-1 候选面）：组合根把 actor 观察装配为策略可消费上下文并回投 `CommandIntent`。
-- **验收断言**：同记录意图回放一致；迟到/过期结果拒绝；AI 无暗牌路径（既有 AiDecisionTests 断言保持全绿）。
+### 7.2 统一负例矩阵（只作用于真实新增入口；自动阶段权限保留）
 
-### 7.2 统一负例矩阵（N-1/N-2 共用）
+**作用域（第 2 轮口径更正）**：本矩阵只对下列真实新增入口生效——(a) N-1a 新增域动作的命令提交（Chi/Pon/Kan(claim)/Riichi/AgariYame）；(b) N-1b 接线后的 7 出千命令；(c) 仅当 caller 决定实施 N-1c 时，扩展后的 `LegalActionKind` 映射。**不作用于既有系统阶段动作**：StartStacking/DealComplete/DrawTile 属权威自动推进（保留自动阶段权限，§4.2 表），超时 Pass/Discard fallback 通道已有守卫测试（TableActorTests.cs:182 等）——第 2 轮把它们要求接进玩家命令适配属口径错误，已随 §4.2 更正，不为其追加玩家负例。
 
-对每个新接线动作（Chi/Pon/Kan(claim)/Riichi/AgariYame/Tsumo/Ron/AddedKan + 三绝技三命令）：
-
-| 负例类 | 断言 |
-|---|---|
-| 资格不满足 | 拒绝且零状态变更（无事件、版本不变） |
-| 窗口关闭/过期 | 拒绝；决策窗外提交不入账 |
-| 旧 controlEpoch/旧 roundId | 拒绝，不可复活/不可跨局生效 |
-| 原子性（扣费/物理移动失败） | 回滚零副作用；出千类 entryId 同载荷重放返回原回执、异载荷冲突（P1.4 契约） |
-| 结算错误注入（N-2） | 守恒/结果一致性验证拒绝错误 settlement（RoundStateMachine.cs:742-822 既有闸保持） |
+| 负例类 | 断言 | 适用 |
+|---|---|---|
+| 资格不满足 | 拒绝且零状态变更（无事件、版本不变） | (a)(b)(c) |
+| 窗口关闭/过期 | 拒绝；决策窗外提交不入账 | (a)(b)(c) |
+| 旧 controlEpoch/旧 roundId | 拒绝，不可复活/不可跨局生效（既有 :1140-1146 control epoch 守卫语义扩展到新入口） | (a)(b)(c) |
+| 原子性（扣费/物理移动失败） | 回滚零副作用；出千类 entryId 同载荷重放返回原回执、异载荷冲突（P1.4 契约） | (b) |
+| 结算错误注入 | 守恒/结果一致性验证拒绝错误 settlement（RoundStateMachine.cs:742-822 既有闸保持） | N-2 |
 
 ### 7.3 INFO 挂账（非门槛缺陷）
 
@@ -354,32 +415,57 @@ MTP/xUnit v3 框架日志为 UTF-16LE（`iconv` 转码后仅见 per-assembly tot
 | I-4 | Domain 确定性 source-scan 守护测试（建议增强，非 G1 门条款；当前状态 PASS 以 P-D 探针为证） | §3.4 |
 | I-5 | 依赖方向精确白名单增强（建议，非门）：补 TableRuntime 正向允许集、Wire✛Domain、LocalHost✛其余断言 | §3.3 |
 
+### 7.4 阶段事实（非缺陷）：SF-1 AI 组合根属宿主层（P4.1/P5.1），非 G1 阻断
+
+原编号 N-4（第 2 轮 MAJOR），本版按正式条款改判：
+
+1. **G1 门文本无 AI 项**：任务书 :107 G1 九门逐字为"dotnet test 独立全绿；已导出黄金样本对齐率为 100%，未导出样本单列；依赖方向静态测试通过；Domain 不含隐式随机/时钟/浮点权威；三绝技与 136 守恒通过；Wire 可重复生成；按座位/观战私有性通过；TableRuntime 并发、版本与恢复合同通过；Unity/IL2CPP 可用平台的构建日志和缺口分列"——无任何 AI/组合根条款。
+2. **P1.6 退出为组件级且已接受**：任务书 :81-83 P1.6 退出标准="迟到/过期结果拒绝；同一记录意图回放一致；AI 无暗牌读取路径"——组件级语义，AiDecisionTests.cs:431-452（观察纯度+程序集禁边）已测且双 run 全绿。组件退出不被本报告改写（冻结口径）。
+3. **组合根属宿主产物清单**：strategy→观察装配是组合根职责，落点为 P4.1 LocalHost（任务书 :114-119：`LocalTableHost : ITableChannel`、本地时钟/随机适配；现空壳工程 0 .cs，G2 门内容）与 P5.1 TableService（任务书 :156-161，未开工，V5-3）。两阶段均未开工是**阶段事实**（同 P3.4 内存-only 口径），非本头缺陷。
+
+**现状保留（如实记录，不作为缺陷计）**：`IAiStrategy/AiDecisionService` 在 src/Mahjong.Ai 外零引用（探针 H 段 ASSERT-PASS）；`BasicAiContext` 无生产构造点（BasicAiStrategy.cs:61/:502，喂真实 actor 观察将抛 `BasicAiContextException`）。自动化管线在位：AI 返回 :1422 → `MapAction` → `ApplyInternalCommandAsync` :1923-1931 → `_round.Execute` :1931，判别式测试 TableActorTests.cs:182（超时胜同 tick AI）/:213（deadline 前 AI 被接受并落牌）。
+
+**落点与依赖**：P4.1 组合根任务（G2 阶段入口）；依赖在途兄弟任务 T-A 的纯上下文（§10）与 N-1 候选面（§4.2 决策视图已有候选映射）。**不进 §8 G1 关闭公式**；此改判消除第 2 轮"§7 列 N-4 MAJOR 而 §8 关闭公式无 N-4"的不一致。
+
 ## 8. 残余责任任务与依赖 DAG（按任务书正名）
 
 ```
-N-1 域侧命令面扩展（P1.1/P1.3 延伸）→ N-1 actor 适配（P3.1 延伸）
-        │                                    │
-        ├──→ N-2 结算计算接线（P1.2 组件→权威链）  │
-        │                                    │
-T-A(在途) Ai纯上下文 ──→ N-4 AI 组合根 ←── N-1 候选面
-                                 │
+N-1a 域侧 5 动作扩展（P1.1/P1.3 延伸）──→ N-1b 出千执行层三段接线（P1.4×P3.1 延伸）
+        │                                        │
+        └──→ N-2 结算计算接线（P1.2 组件→权威链）   │
+                 │                               │
+N-1c 自动化适配扩展（可选，caller 决策；G1 九门无 AI 项，不阻断）
+                 │
 N-3 黄金对齐残余推进（manifest pending/partial 逐项）
-                                 │
+                 │
 I-1/I-3 wrapper 探针与清单（可选，caller 决策）
-                                 │
-                          G1 关闭判定（caller）
-                                 │
-   ┌─────────────────────────────┼─────────────────────────────┐
-   ▼                             ▼                             ▼
-V5-2/G2（P4.1 LocalHost 组合根；  V5-3A 表事件 PG ITableStore 族   V5-3/G3（P5.x 远端）
-依赖 P5.4a Client 接口基线）      （P3.4 明文后阶段，独立可先行）    → G4（P6.x）→ G5（P7.x）
+                 │
+        G1 关闭判定（caller）
+                 │
+   ┌─────────────┼──────────────────────────────┐
+   ▼             ▼                              ▼
+V5-2/G2（P4.1 LocalHost 组合根：      V5-3A 表事件 PG ITableStore 族    V5-3/G3（P5.1 WSS 宿主与准入：
+SF-1 AI 装配 + 宿主命令映射入口；      （P3.4 明文后阶段，独立可先行）     协议→actor 入站命令映射在此落位）
+依赖 P5.4a Client 接口基线；                                           → G4（P6.x）→ G5（P7.x）
+T-A 纯上下文在此被消费）
 ```
 
-- **G1 关闭 = 门 2（N-3 推进至可宣布的对齐口径）+ 门 5（N-1/N-2 完成 + 负例矩阵过）**；门 1/3/4/6/7/8/9 维持 PASS 即可（门 9 的 Unity/IL2CPP 子项按 P2.2 保持"阻塞分列"口径）。
-- 阶段事实不构成 DAG 阻塞：LocalHost 组合根=P4.1（G2）；表事件 PG 存储=V5-3A（P3.4 明文）；两者不需为 G1 提前。
-- N-1/N-2/N-4 均为"建议 G1 补齐子任务，**尚未分配**"——下发与否、粒度与 expectedFiles 由 caller 决定；两个在途 DS 任务（§10）不重复下发。
+- **G1 关闭 = 门 2（N-3 推进至可宣布的对齐口径）+ 门 5（N-1a/N-1b 完成 + N-2 接线 + §7.2 负例矩阵过）**；N-1c 可选；**SF-1 不在关闭公式**（§7.4）；门 1/3/4/6/7/8/9 维持 PASS 即可（门 9 的 Unity/IL2CPP 子项按 P2.2 保持"阻塞分列"口径）。
+- 阶段事实不构成 DAG 阻塞：AI 组合根=SF-1→P4.1（G2）；表事件 PG 存储=V5-3A（P3.4 明文）；协议→宿主入站命令映射=P5.1（V5-3）——三者均不需为 G1 提前。
+- N-1a/N-1b/N-2/N-3 均为"建议 G1 补齐子任务，**尚未分配**"——下发与否、粒度与 expectedFiles 由 caller 决定；两个在途 DS 任务（§10）不重复下发。
 
-## 9. 可独立下发的文件范围建议（均非 G1 门槛项；本轮不实施）
+## 9. 可下发的文件范围建议（本轮不实施；下发与否由 caller 决定）
+
+### 9.1 G1 补齐子任务建议文件范围（对应 N-1a/N-1b/N-2/N-3，均"尚未分配"）
+
+| ID | 内容 | 建议源码文件 | 建议测试文件 |
+|---|---|---|---|
+| S-N1a | 域侧 5 决策动作扩展（N-1a） | `dotnet/src/Mahjong.Domain/RoundTypes.cs`（RoundActionKind 增值）、`RoundStateMachine.cs`（dispatch case + 窗口裁决）、`RoundTransition.cs`（新事件，须与协议 21 类映射表对齐） | `dotnet/tests/Mahjong.Domain.Tests/`（RoundStateMachineTests 扩展：每动作接受/拒绝/守恒；黄金 round 目录对齐新增用例） |
+| S-N1b | 出千执行层三段接线（N-1b） | `dotnet/src/Mahjong.TableRuntime/TableRuntimeContracts.cs`（envelope 出千载荷扩展）、`TableActor.cs`（CommandKind→CheatSubmission 分发）、`TableProjectionContractMapper`（20/21 私有事件投影） | `dotnet/tests/Mahjong.TableRuntime.Tests/`（7 命令端到端 + §7.2 出千行负例 + 回执幂等/冲突） |
+| S-N2 | 结算计算接线（N-2） | `dotnet/src/Mahjong.Domain/RoundStateMachine.cs`（或 caller 定义的新结算接线点）：YakuEvaluator/WinningScoreEvaluator 入权威链，保留 :742-822 守恒第二道闸 | `dotnet/tests/Mahjong.Domain.Tests/`（scoring-v1 全量对齐 + 错误 settlement 拒绝注入） |
+| S-N3 | 黄金对齐残余推进（N-3） | `dotnet/tests/Mahjong.Domain.Tests/RoundReplayGoldenTests.cs`（:101/:134 全事件序列断言）、`CheatGoldenTests.cs`（:644 V4-only 路径产品决策）、`doc/v5-重构/V5-0-GOLDEN-MANIFEST.md`（G-028a 与 20 partial 逐项） | 同左（manifest 行转 accepted/full 或显式决策记录） |
+
+### 9.2 增强建议（均非 G1 门槛项）
 
 | ID | 内容 | 文件范围 | 纳管方式 |
 |---|---|---|---|
@@ -391,7 +477,7 @@ V5-2/G2（P4.1 LocalHost 组合根；  V5-3A 表事件 PG ITableStore 族   V5-3
 
 | 任务 | 固定头处事实（探针 P-M） | 状态 |
 |---|---|---|
-| Ai `AiCheatView`/`AiSeatSnapshot`/`AiDecisionContext` 纯不可变上下文 + 测试 | 全仓仅 `dotnet/src/Mahjong.Ai/AiCandidateModels.cs:21` 注释引用 V4 类名；无类型/测试落地 | **in-flight 未合入**；不读取未提交产物；不重复下发；N-4 依赖其接受 |
+| Ai `AiCheatView`/`AiSeatSnapshot`/`AiDecisionContext` 纯不可变上下文 + 测试 | 全仓仅 `dotnet/src/Mahjong.Ai/AiCandidateModels.cs:21` 注释引用 V4 类名；无类型/测试落地 | **in-flight 未合入**；不读取未提交产物；不重复下发；SF-1→P4.1 组合根依赖其接受（§7.4） |
 | Contracts `AccessCapabilities` 纯契约 + 测试 | 全仓 0 命中 | **in-flight 未合入**；同上 |
 
 caller 本树复证日志（只读引用，SHA 由 caller 记录）：domain-in-tree-test.log `6C58EA84…AB642`、runtime-test.log `8F19FAA4…4D06`、contracts-test.log `C7EE456C…54AB0`、Mahjong.Ai.Tests-test.log `DC404918…B4425`、client-standard-test.log `9AF080E9…67192`。
@@ -410,58 +496,85 @@ caller 本树复证日志（只读引用，SHA 由 caller 记录）：domain-in-
 
 ## 12. 证据与命令附录（全部可复制，无占位符）
 
-第 2 轮统一证据包（一次执行产出全部下列段）：
+### 12.1 HEAD 采样语义（R1-5 遗留澄清）
+
+| HEAD | 语义 |
+|---|---|
+| `8ee22ebf5164…8bd` | 审查对象（冻结源码头），三轮不变 |
+| `98d784624fb5…fce4` | **第 2 轮探针执行时的采样 HEAD**（第 1 轮报告 commit，返修前） |
+| `51cc902dcbc4…f4c` | **第 2 轮最终交付 commit**；亦为本轮（第 3 轮）探针采样 HEAD（探针 A 段 `HEAD=51cc902dcbc46400476f4c753aa69774f94c4f4c` 实测）；本轮交付将在其上仅追加本报告修改 |
+| 交付↔冻结头差异 | 仅本报告文件（探针 A 段 `git diff --stat 8ee22eb..HEAD`：1 file changed, 467 insertions）——源码面与冻结头逐字节一致 |
+
+### 12.2 第 3 轮探针包（断言合同；诊断退出 ≠ 断言 PASS）
+
+脚本 `C:/Users/sncdc/AppData/Local/Temp/g1-review-r3-evidence/run-probes-r3.ps1`：纯 ASCII（规避 PS 5.1 对无 BOM UTF-8 的 GBK 误读）；显式 `ASSERT-PASS/ASSERT-FAIL` 令牌 + `$script:assertFail` 失败计数器；**任一断言失败即 exit 1**，全部通过才 exit 0——修正第 2 轮 `ErrorActionPreference=Continue` 使断言失败不改变退出码的问题（R1-5 遗留）。
+
+复现命令（显式重定向到新独占日志，不触碰第 2 轮日志）：
 
 ```
-powershell -NoProfile -ExecutionPolicy Bypass -File C:/Users/sncdc/AppData/Local/Temp/g1-review-r2-evidence/run-probes.ps1
-# → probes.log，SHA256 3138e0b27e61e95a549018bc92ccf5ea360e4d33f154c69ead730bdba209c09a
+cd C:/Users/sncdc/AppData/Local/Temp/g1-review-r3-evidence
+powershell -NoProfile -ExecutionPolicy Bypass -File run-probes-r3.ps1 > probes-r3.log 2>&1
+echo "PROBE-EXIT=$?"
+powershell -NoProfile -Command "(Get-FileHash 'probes-r3.log' -Algorithm SHA256).Hash"
 ```
 
-分段命令（与 probes.log 段号对应，均只读）：
+实测结果：**PROBE-EXIT=0**；`probes-r3.log` SHA256 `146c388923f6427d0527c1806c1c2913e8e78664606649475d394fbfb2b80fe7`；170 行；**14 ASSERT-PASS / 0 ASSERT-FAIL**；尾行 `===== ALL ASSERTIONS HELD (exit 0) =====`。
+
+### 12.3 第 2 轮探针包（历史证据，禁止覆盖/刷新）
+
+`C:/Users/sncdc/AppData/Local/Temp/g1-review-r2-evidence/run-probes.ps1`、`probes.log`（SHA256 `3138e0b27e61e95a549018bc92ccf5ea360e4d33f154c69ead730bdba209c09a`，183 行，EXIT=0）——**保留为第 2 轮历史证据，本轮未改动**。防覆盖校验已并入第 3 轮脚本 I 段：
 
 ```
-# 1. 头与范围（A 段）
-git rev-parse HEAD; git status --porcelain; git diff --stat 8ee22ebf5164f74db75e5a33e87900f5b87cd8bd..HEAD; git diff --check HEAD^ HEAD
-# 2. 依赖方向断言定位（B 段）
-Select-String -Path dotnet\tests\Mahjong.Contracts.Tests\SchemaCompatibilityTests.cs -Pattern 'DomainDoesNotReference|ContractsDoesNotReference|WireReferencesContracts|EventSchemaFreezes'
-Select-String -Path dotnet\tests\Mahjong.Domain.Tests\TilePositionMapTests.cs -Pattern 'DomainAssemblyDoesNotReference'
-Select-String -Path dotnet\tests\Mahjong.Ai.Tests\AiDecisionTests.cs -Pattern 'Mahjong.Ai must not reference'
-Select-String -Path dotnet\tests\Mahjong.Client.Tests\TableSessionTests.cs -Pattern 'ClientAssemblyDoesNotReference'
-Select-String -Path dotnet\tests\Mahjong.LobbyService.Tests\ArchitectureAndPolicyTests.cs -Pattern 'LobbyAssemblyDoesNotReference'
-# 3. Domain 确定性（C 段）
-Get-ChildItem dotnet\src\Mahjong.Domain -Recurse -Filter *.cs | Select-String -Pattern 'new Random\(|DateTime\.Now|DateTime\.UtcNow|DateTimeOffset\.Now|DateTimeOffset\.UtcNow|Guid\.NewGuid|Stopwatch\.|Environment\.TickCount|Thread\.Sleep|Task\.Delay|Math\.Random'
-# 4. 四枚举逐值（D 段）+ 域 dispatch（E 段）+ actor MapAction（F 段）
-Select-String -Path dotnet\src\Mahjong.Domain\RoundTypes.cs -Pattern 'enum RoundActionKind' -Context 0,11
-Select-String -Path dotnet\src\Mahjong.Contracts\ProtocolCommand.cs -Pattern 'enum ProtocolActionType' -Context 0,15
-Select-String -Path dotnet\src\Mahjong.Contracts\ProtocolSnapshot.cs -Pattern 'enum ProtocolEventType' -Context 0,23
-Select-String -Path dotnet\src\Mahjong.Domain\RoundTransition.cs -Pattern 'enum RoundEventType' -Context 0,17
-Select-String -Path dotnet\src\Mahjong.Domain\RoundStateMachine.cs -Pattern 'Execute\(RoundCommand|case RoundActionKind\.'
-Select-String -Path dotnet\src\Mahjong.TableRuntime\TableActor.cs -Pattern 'MapAction|RoundCommand\.(Pass|Discard)|UNSUPPORTED_ACTION'
-# 5. Golden 边界（H 段）+ 136（I 段）+ spectator（J 段）
-Get-Content tools\verify-v5-golden-catalog.ps1 -TotalCount 12
-Select-String -Path tests\v5-golden\catalog-v1.json -Pattern '"status"|"notice"'
-Select-String -Path doc\v5-重构\V5-0-GOLDEN-MANIFEST.md -Pattern 'G-028a'
-Select-String -Path dotnet\tests\Mahjong.Domain.Tests\PhysicalGoldenTests.cs -Pattern 'oracle|structural|136'
-Select-String -Path dotnet\tests\Mahjong.Domain.Tests\CheatGoldenTests.cs -Pattern 'IsAV4OnlyPath_RecordedAsStructure'
-Select-String -Path dotnet\tests\Mahjong.Domain.Tests\RoundReplayGoldenTests.cs -Pattern 'RoundTerminalReplaysExactly|TsumoWin'
-Select-String -Path dotnet\src\Mahjong.Domain\TilePositionMap.cs -Pattern 'TotalTileCount = 136|exactly 136|Conservation'
-Select-String -Path dotnet\tests\Mahjong.Client.Tests\IndependentReviewTests.cs -Pattern 'SpectatorMustReject'
-# 6. CI meta 文件名（K 段）
-Get-ChildItem D:\majiang-wt\codex-progress-20261025\artifacts\progress-20261025\ci-push -Recurse -Filter dotnetTest.meta.txt
-# 7. 计分接线（M 段）
-Get-ChildItem dotnet\src -Recurse -Filter *.cs | Where-Object FullName -notmatch 'Rules' | Select-String -Pattern 'YakuEvaluator|WinningScoreEvaluator'
-# 8. AI 组合根（N 段）
-Get-ChildItem dotnet\src -Recurse -Filter *.cs | Where-Object FullName -notmatch 'Mahjong.Ai' | Select-String -Pattern 'IAiStrategy|AiDecisionService|new BasicAiContext'
-# 9. validator 机械层复跑（O 段）
+(Get-FileHash 'C:\Users\sncdc\AppData\Local\Temp\g1-review-r2-evidence\probes.log' -Algorithm SHA256).Hash
+# 实测 3138E0B27E61E95A549018BC92CCF5EA360E4D33F154C69EAD730BDBA209C09A（等值，ASSERT-PASS）
+```
+
+### 12.4 CI 两 bundle 文件发现与哈希（PowerShell 可直接运行，无省略路径）
+
+```
+$base = 'D:\majiang-wt\codex-progress-20261025\artifacts\progress-20261025'
+foreach ($bundle in 'ci-push','ci-pr') {
+  Get-ChildItem -LiteralPath (Join-Path $base $bundle) -Recurse -File |
+    Where-Object { $_.Name -in @('summary.log','run-info.txt','wrapper-summary.json','postgres-evidence.jsonl','dotnetTest.meta.txt') } |
+    ForEach-Object { '{0}  {1}' -f (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash, $_.FullName }
+}
+```
+
+§5.2 表 10 项 SHA 即上述输出的对应行（`dotnetTest.meta.txt` 每 bundle 7 份共 14 份亦在输出中）。validator 机械层复跑（探针 J 段，PASS exit 0，catalog 文件 SHA `16F7FD7F98…`）：
+
+```
 powershell -NoProfile -ExecutionPolicy Bypass -File tools\verify-v5-golden-catalog.ps1 -RepoRoot .
 ```
 
-CI 产物 SHA256 复算命令：
+### 12.5 关键分段命令（第 3 轮探针 A-J 段核心，均只读；工作目录=审查工作树）
 
 ```
-sha256sum D:/majiang-wt/codex-progress-20261025/artifacts/progress-20261025/ci-push/…/summary.log   # 等 §5.2 表 10 项
+# A 段：头/范围
+git rev-parse HEAD; git status --porcelain; git diff --stat 8ee22ebf5164f74db75e5a33e87900f5b87cd8bd..HEAD; git diff --check HEAD^ HEAD
+# B 段：MapAction 全部出现点（应恰 3 处：1422 AI / 1611 超时 / 4819 定义）
+Select-String -Path dotnet\src\Mahjong.TableRuntime\TableActor.cs -Pattern 'MapAction\(' -Encoding UTF8
+# C 段：玩家路径直达与守卫（:175 入口 / :1039 守卫 / :1151 直达 / :1140-1146 control epoch）
+Select-String -Path dotnet\src\Mahjong.TableRuntime\TableActor.cs -Pattern 'SubmitAsync\(|_round\.Execute' -Encoding UTF8
+Select-String -Path dotnet\src\Mahjong.TableRuntime\TableRuntimeContracts.cs -Pattern 'public TableCommandEnvelope\(' -Encoding UTF8 -Context 0,9
+# D 段：端到端测试锚点
+Select-String -Path dotnet\tests\Mahjong.TableRuntime.Tests\TableStreamWireIntegrationTests.cs -Pattern 'committed_tsumo_emits_typed_settlement_event_and_snapshot|RoundCommand\.Tsumo|harness\.Actor\.SubmitAsync' -Encoding UTF8
+Select-String -Path dotnet\tests\Mahjong.TableRuntime.Tests\TableDurableReceiptTests.cs -Pattern 'TerminalOutboxFaultRollsBackAndRetryWritesOnlyOneResult' -Encoding UTF8
+Select-String -Path dotnet\tests\Mahjong.TableRuntime.Tests\TableActorTests.cs -Pattern 'DeadlineBoundaryTimeoutWinsOverSameTickAi|AiBeforeDeadlineIsAcceptedAndItsTileIsApplied' -Encoding UTF8
+# E 段：三套枚举分离
+Select-String -Path dotnet\src\Mahjong.Contracts\ProtocolCommand.cs -Pattern 'SubmitTileMark|SubmitSleeveBloom|SubmitBeamSwap' -Encoding UTF8
+Select-String -Path dotnet\src\Mahjong.Domain\DeadlinePolicy.cs -Pattern 'enum LegalActionKind' -Encoding UTF8 -Context 0,12
+Select-String -Path dotnet\src\Mahjong.Domain\RoundTypes.cs -Pattern 'enum RoundActionKind' -Encoding UTF8 -Context 0,11
+# F 段：域出千六入口
+Select-String -Path dotnet\src\Mahjong.Domain\Cheat\CheatSubmission.cs -Pattern 'public static CheatTransition (ApplyTileMark|ActivateSleeveBloom|ChooseSleeveBloom|ExpireSleeveBloomImmediate|ActivateOffTurnSleeveBloom|ChooseBeamSwap)' -Encoding UTF8
+# G 段：出千命令 actor 层零接线（期望 NO-MATCH）
+Get-ChildItem dotnet\src\Mahjong.TableRuntime -Recurse -Filter *.cs | Select-String -Pattern 'SubmitTileMark|SubmitSleeveBloom|SubmitBeamSwap|CheatCommand|CheatSubmission' -Encoding UTF8
+# H 段：计分/AI 状态复检（期望均 NO-MATCH）
+Get-ChildItem dotnet\src -Recurse -Filter *.cs | Where-Object { $_.FullName -notmatch 'Rules' } | Select-String -Pattern 'YakuEvaluator|WinningScoreEvaluator' -Encoding UTF8
+Get-ChildItem dotnet\src -Recurse -Filter *.cs | Where-Object { $_.FullName -notmatch 'Mahjong.Ai' } | Select-String -Pattern 'IAiStrategy|AiDecisionService|new BasicAiContext' -Encoding UTF8
 ```
+
+第 1-2 轮分段命令（依赖方向 8 断言定位、Domain 确定性 grep、Golden 边界、136 守恒、spectator、CI meta 文件名、兄弟任务符号）见交付 `51cc902` 版 §12 第 1-9 组——命令未变、仍可复现，其输出即 R2 `probes.log`（不可变历史证据，§12.3）对应段。
 
 冻结引用：依赖矩阵 `437bd53`；黄金目录 `205506f`（caller 第 13 轮验收集成于 PR19，见 `doc/v5-重构/` 验收文档与 `V5-0-GOLDEN-MANIFEST.md`）。复核协议（只读）：`D:/majiang/doc/v5-重构/V5-REVIEW-REWORK-PROTOCOL.md`。
 
-—— 审查代理（实现侧），2026-10-25，第 2 轮返修版。本报告不批准 G1。
+—— 审查代理（实现侧），2026-10-25，第 3 轮返修版。本报告不批准 G1。
