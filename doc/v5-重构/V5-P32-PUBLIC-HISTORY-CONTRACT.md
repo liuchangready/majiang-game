@@ -322,3 +322,36 @@ FE5EFAA876010B519061EA61A2A0B4B89B8742057FEDB1FC2DEC2CD77D793796  D:/majiang/eng
 | V4 生产基线 | 未改动；V4 仍是唯一生产 |
 
 本任务不宣告 G1/G3/G5，不宣告 P3.2 完整完成，不宣告任何平台已验收。
+
+## 8. Caller 第 2 轮独立验收与统一 PR19 集成（2026-10-25）
+
+Bridge `thread_20261025_041932_4f99` 第 2 轮交付 `9e72bd8` 已由 caller 独立审查并调用 `approve_task` 归档。D-1-01 全部三类负例关闭，无新增或遗留缺陷。相对已发布基线 `563b5ef5801bdee967e0897ba521082a375a3fc0`，交付仅四个授权文件，工作树干净，`git diff --check 563b5ef..HEAD` exit 0。
+
+独立审查确认：终局摘要校验只位于新 history 边界；既有 summary 不变；合法顺序、排名、有符号分数不重算；空集合兼容明确。所有集合防御复制且只读，行类型 sealed/get-only；公开类型图不含出千、牌、种子或领域实现。纯契约不引入领域执行、权威队列或恢复副作用。
+
+Caller 在交付工作树重新执行以下命令，均 exit 0：
+
+| 验证 | 实际结果 |
+|---|---|
+| `D:/Unity/dotnet/dotnet.exe build dotnet/Mahjong.sln -c Release --no-incremental --nologo -v:minimal` | 0 warnings / 0 errors |
+| `D:/Unity/dotnet/dotnet.exe dotnet/tests/Mahjong.Contracts.Tests/bin/Release/net8.0/Mahjong.Contracts.Tests.dll -class Mahjong.Protocol.Tests.PublicSessionHistoryTests` | 34 total / 0 failed / 0 errors / 0 skipped / 0 Not Run |
+| 同一 Contracts runner，不带 `-class` | 149 total / 0 failed / 0 errors / 0 skipped / 0 Not Run |
+| `D:/Unity/dotnet/dotnet.exe dotnet/tests/Mahjong.Client.Tests/bin/Release/net8.0/Mahjong.Client.Tests.dll` | 132 total / 0 failed / 0 errors / 0 skipped / 0 Not Run |
+| 原样 caller `summary-probe/Probe.csproj`，`dotnet run -c Release` | 三项 REJECTED，INVALID_ACCEPTED=0；源码 SHA256 仍为 D1803188DFAE6005482959BA782DC8FFB7045834A99004607D79B36616C2513A |
+| 重新 javac 编译并运行真实 V4 engine.jar 探针 | compile/run exit 0，CHECKS=21 |
+
+独立原始日志目录：`C:/Users/sncdc/AppData/Local/Temp/codex-public-history-round2-review-20261025/`。交付文档列出的 18 个日志哈希另经逐一实读核对，全部一致。Caller 日志 SHA256：
+
+```text
+4BEB0A1DFEE0610FB234CE782CF4C1EBE2F7F48E5891BDDD26A240A7D436905F  solution-build.log
+F8D4E4CD69E03570D12418E33860AAAA7CDF5C37CB9898607188104E4EEBA3B7  targeted.log
+1A2D832934EA8EBDAC883EFD3B5F78F0B9F3FB637855E0C0321E3082F4940AC6  contracts.log
+D2AC80ACA1152B715DADAB356E84DC356A4B6385A8A785D5D20C63BC50ED6F67  client.log
+433C5FA896B09A73182A068F7B9D62487DCA9448582DD2C7AF3F47919ED6786F  summary-probe.log
+E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855  v4-compile.log
+3CBCB27BABAD0FB730E221C04A5B21E4D465FEE28BA5C3C84D2704229AB46C63  v4-probe.log
+```
+
+Caller 发布提交仅追加本节；C# 内容与已验收交付 `9e72bd8` 完全相同。交付三笔本地提交及本验收记录统一更新既有 [PR19](https://github.com/liuchangready/majiang-game/pull/19)，源分支 `feat/v5-1-integration`，目标 `v5`，不新建组件 PR。远端发布前核实原源分支为基线 `563b5ef`，可普通快进推送；保留此前全部已验收批次。同批 frozen-context/readiness 仍在返修，无其他已接受而尚未发布的交付；其工作树不纳入本次发布。精确发布 SHA 与远端复核结果记录于同一 Bridge 线程 MR 登记。
+
+本次仅验收公开历史纯契约组件。完整 P3.2/G1/G3/G5 及生产投影、持久化、Wire 接线仍未完成；PG/WSS/Unity/IL2CPP/设备/物理网络和本次远端 CI 均未作为通过证据。V4 仍是唯一生产架构。
