@@ -414,36 +414,20 @@ namespace Mahjong.TableRuntime
                         "Checkpoint has committed events but no committed history payload.");
                 }
 
-                ValidateHistory(checkpointHistory, checkpoint);
-                if (checkpoint.StateVersion.Value > 0)
+                if (!TableCheckpointValidator.TryValidate(
+                        checkpoint,
+                        out string checkpointReason,
+                        out string checkpointDetail))
                 {
-                    if (checkpoint.CommittedCommandBindingsPayload == null)
-                    {
-                        return TableRecoveryResult.Failed(
-                            TableRuntimeReasonCode.CheckpointInvalid,
-                            "Checkpoint has committed versions but no command binding evidence.");
-                    }
-
-                    IReadOnlyList<TableCommandBinding> commandBindings;
-                    try
-                    {
-                        commandBindings = TableCommandBindingsCodec.Decode(
-                            checkpoint.CommittedCommandBindingsPayload);
-                    }
-                    catch (Exception exception) when (
-                        exception is InvalidDataException ||
-                        exception is ArgumentException)
-                    {
-                        return TableRecoveryResult.Failed(
-                            TableRuntimeReasonCode.CheckpointInvalid,
-                            "Command binding evidence is invalid: " + exception.Message);
-                    }
-
-                    ValidateCommandBindings(checkpointHistory, commandBindings, checkpoint);
-                    checkpointBindings = commandBindings;
+                    return TableRecoveryResult.Failed(checkpointReason, checkpointDetail);
                 }
 
-                ValidateCheckpointHistoryAgainstCaptured(checkpointHistory, captured, checkpoint);
+                if (checkpoint.StateVersion.Value > 0)
+                {
+                    checkpointBindings = TableCommandBindingsCodec.Decode(
+                        checkpoint.CommittedCommandBindingsPayload!);
+                }
+
                 if (checkpoint.CheatPayload != null)
                 {
                     cheat = TableCheatLedgerCheckpointCodec.Decode(checkpoint.CheatPayload);

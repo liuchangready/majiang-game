@@ -516,6 +516,30 @@ namespace Mahjong.TableRuntime.Tests
         }
 
         [Fact]
+        public async Task ReplayBindingsSurviveCommandAfterRecoveryAndSecondSave()
+        {
+            await using DurableHarness first = await DurableHarness.CreateAsync();
+            List<TableCommandEnvelope> chain = P31Fixtures.BuildDiscardChain(first.InitialRound, 3);
+            Assert.Equal(TableOperationStatus.Accepted,
+                (await first.SubmitAsync(first.Envelope(chain[0].Command, 0, "before-recovery"))).Status);
+            Assert.True((await first.Actor.RecoverFromStoreAsync(TestContext.Current.CancellationToken)).Recovered);
+            Assert.Equal(TableOperationStatus.Accepted,
+                (await first.SubmitAsync(first.Envelope(
+                    chain[1].Command,
+                    1,
+                    "after-recovery",
+                    ownerEpoch: 2UL,
+                    recoveryGeneration: 1L))).Status);
+            await first.SaveCheckpointAsync();
+
+            TableRecoveryResult second = await first.Actor.RecoverFromStoreAsync(
+                TestContext.Current.CancellationToken);
+            Assert.True(second.Recovered, second.ReasonCode + ": " + second.Detail);
+            Assert.Equal(2, second.Baseline!.CommandBindings.Count);
+            Assert.Equal(2UL, second.Baseline.StateVersion.Value);
+        }
+
+        [Fact]
         public async Task ControlEpochAndDecisionTimingAreRecoveredConsistently()
         {
             await using DurableHarness harness = await DurableHarness.CreateAsync();

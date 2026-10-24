@@ -499,6 +499,15 @@ namespace Mahjong.TableRuntime
                             "A checkpoint must advance timing version by exactly one."));
                 }
 
+                if (!TableCheckpointValidator.TryValidate(
+                        checkpoint,
+                        out string validationReason,
+                        out string validationDetail))
+                {
+                    return new ValueTask<TableDurableCommitResult>(
+                        TableDurableCommitResult.Failed(validationReason, validationDetail));
+                }
+
                 if (TablePayloadSha256.Compute(checkpoint.TimingPayload) != checkpoint.TimingPayloadSha256)
                 {
                     return new ValueTask<TableDurableCommitResult>(
@@ -690,6 +699,15 @@ namespace Mahjong.TableRuntime
                         TableDurableCommitResult.Failed(
                             TableRuntimeReasonCode.CheckpointInvalid,
                             "The control checkpoint does not match table_state/timing."));
+                }
+
+                if (!TableCheckpointValidator.TryValidate(
+                        checkpoint,
+                        out string validationReason,
+                        out string validationDetail))
+                {
+                    return new ValueTask<TableDurableCommitResult>(
+                        TableDurableCommitResult.Failed(validationReason, validationDetail));
                 }
 
                 TableTimingCheckpoint timing = TableTimingCheckpointCodec.Decode(checkpoint.TimingPayload);
@@ -944,6 +962,15 @@ namespace Mahjong.TableRuntime
                                     TableDurableCommitResult.Failed(
                                         TableRuntimeReasonCode.CheckpointInvalid,
                                         "The checkpoint does not match the accepted state/timing."));
+                            }
+
+                            if (!TableCheckpointValidator.TryValidate(
+                                    checkpoint,
+                                    out string validationReason,
+                                    out string validationDetail))
+                            {
+                                return new ValueTask<TableDurableCommitResult>(
+                                    TableDurableCommitResult.Failed(validationReason, validationDetail));
                             }
                         }
                     }

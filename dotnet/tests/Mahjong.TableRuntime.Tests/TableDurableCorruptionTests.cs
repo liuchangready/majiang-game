@@ -277,6 +277,81 @@ namespace Mahjong.TableRuntime.Tests
                 (await harness.Actor.GetSnapshotAsync(TestContext.Current.CancellationToken)).Lifecycle);
         }
 
+        [Theory]
+        [InlineData("partial")]
+        [InlineData("event-count")]
+        [InlineData("group-mismatch")]
+        public async Task InvalidSaveBindingsMustNotReplaceCheckpointOrMutateEvidence(string corruption)
+        {
+            await using DurableHarness harness = await DurableHarness.CreateAsync();
+            List<TableCommandEnvelope> chain = P31Fixtures.BuildDiscardChain(harness.InitialRound, 2)
+                .Select((value, index) => harness.Envelope(value.Command, index, "save-invalid-" + index))
+                .ToList();
+            Assert.Equal(TableOperationStatus.Accepted, (await harness.SubmitAsync(chain[0])).Status);
+            Assert.Equal(TableOperationStatus.Accepted, (await harness.SubmitAsync(chain[1])).Status);
+            TableCheckpoint good = await harness.SaveCheckpointAsync();
+            TableCommandBinding[] bindings = TableCommandBindingsCodec
+                .Decode(good.CommittedCommandBindingsPayload!).ToArray();
+            if (corruption == "partial")
+            {
+                bindings = new[] { bindings[0] };
+            }
+            else if (corruption == "event-count")
+            {
+                TableCommandBinding first = bindings[0];
+                bindings[0] = new TableCommandBinding(first.CommandVersion, first.EventCount + 1, first.SourceFingerprint);
+            }
+            else
+            {
+                TableCommandBinding first = bindings[0];
+                bindings[0] = new TableCommandBinding(2, first.EventCount, first.SourceFingerprint);
+            }
+
+            byte[] invalidPayload = TableCommandBindingsCodec.Encode(bindings);
+            TableCheckpoint invalid = new TableCheckpoint(
+                good.RoomId, good.StateVersion, good.LastEventSeq, good.StateFingerprint,
+                good.RulesetVersion, good.StatePayload, good.StatePayloadSha256,
+                good.ControlVersion, good.ControlPayload, good.ControlPayloadSha256,
+                good.TimingPayload, good.TimingPayloadSha256, good.CheatPayload, good.CheatPayloadSha256,
+                good.CommittedFactsPayload, good.CommittedFactsPayloadSha256,
+                good.CreatedAtUtcMs, good.BootId, good.SchemaVersion,
+                good.TimingVersion + 1, good.CapturedMonotonicMillis,
+                good.CommittedHistoryPayload, good.CommittedHistoryPayloadSha256,
+                invalidPayload, TablePayloadSha256.Compute(invalidPayload));
+            TableCommittedFactsSnapshot? factsBefore = await harness.Store.LoadCommittedFactsAsync(
+                DurableHarness.Room, TestContext.Current.CancellationToken);
+            TableTimingJournalRecord? timingBefore = await harness.Store.LoadTimingAsync(
+                DurableHarness.Room, TestContext.Current.CancellationToken);
+            int commitsBefore = harness.Store.CommitCount;
+
+            TableDurableCommitResult saved = await harness.Store.SaveCheckpointAsync(
+                invalid,
+                new TableCheckpointFence(
+                    DurableHarness.Room,
+                    DurableHarness.Owner,
+                    new OwnerEpoch(1),
+                    good.StateVersion,
+                    good.ControlVersion,
+                    good.TimingVersion),
+                TestContext.Current.CancellationToken);
+
+            Assert.Equal(TableCommitDisposition.Failed, saved.Disposition);
+            TableCheckpoint current = (await harness.Store.LoadCheckpointAsync(
+                DurableHarness.Room, TestContext.Current.CancellationToken))!;
+            Assert.Equal(good.TimingVersion, current.TimingVersion);
+            Assert.Equal(good.CommittedCommandBindingsPayload, current.CommittedCommandBindingsPayload);
+            TableCommittedFactsSnapshot? factsAfter = await harness.Store.LoadCommittedFactsAsync(
+                DurableHarness.Room, TestContext.Current.CancellationToken);
+            Assert.Equal(factsBefore?.Payload, factsAfter?.Payload);
+            TableTimingJournalRecord? timingAfter = await harness.Store.LoadTimingAsync(
+                DurableHarness.Room, TestContext.Current.CancellationToken);
+            Assert.Equal(timingBefore?.TimingVersion, timingAfter?.TimingVersion);
+            Assert.Equal(commitsBefore, harness.Store.CommitCount);
+            TableRecoveryResult recovery = await harness.Actor.RecoverFromStoreAsync(
+                TestContext.Current.CancellationToken);
+            Assert.True(recovery.Recovered, recovery.ReasonCode + ": " + recovery.Detail);
+        }
+
         private static async Task<TableRecoveryResult> RecoverAsync(DurableHarness harness)
         {
             harness.Clock.Now += 1000L;
