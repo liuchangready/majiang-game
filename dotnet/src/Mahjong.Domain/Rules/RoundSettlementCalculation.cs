@@ -111,7 +111,8 @@ namespace Mahjong.Domain.Rules
             TileId? firstDiscard = null,
             bool isFirstTurnUninterrupted = false,
             bool isTemporaryFuriten = false,
-            bool isRiichiFuriten = false)
+            bool isRiichiFuriten = false,
+            bool isIppatsuInterruptedByCallOrKan = false)
         {
             if (seat < 0 || seat > 3)
             {
@@ -164,6 +165,7 @@ namespace Mahjong.Domain.Rules
             IsFirstTurnUninterrupted = isFirstTurnUninterrupted;
             IsTemporaryFuriten = isTemporaryFuriten;
             IsRiichiFuriten = isRiichiFuriten;
+            IsIppatsuInterruptedByCallOrKan = isIppatsuInterruptedByCallOrKan;
         }
 
         public int Seat { get; }
@@ -206,6 +208,12 @@ namespace Mahjong.Domain.Rules
         public bool IsTemporaryFuriten { get; }
 
         public bool IsRiichiFuriten { get; }
+
+        /// <summary>
+        /// Trusted timing fact: a call/kan occurred after the current riichi declaration and
+        /// before this win. Old melds/kans that predate the riichi must not set this flag.
+        /// </summary>
+        public bool IsIppatsuInterruptedByCallOrKan { get; }
     }
 
     /// <summary>

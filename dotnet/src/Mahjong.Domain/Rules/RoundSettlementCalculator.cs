@@ -491,13 +491,11 @@ namespace Mahjong.Domain.Rules
 
             if (seatFacts.IsIppatsu &&
                 (seatFacts.IsRinshan ||
-                 round.Tiles.KanCount > 0 ||
-                 round.Tiles.CountAt(TileZone.Meld) > 0 ||
-                 HasEvent(round, RoundEventType.KanDeclared)))
+                 seatFacts.IsIppatsuInterruptedByCallOrKan))
             {
                 throw Reject(
                     RoundSettlementRejectionCode.WinFlagMismatch,
-                    "Ippatsu is cleared by a call/kan and cannot coexist with rinshan.");
+                    "Ippatsu cannot coexist with rinshan or a call/kan after the riichi declaration.");
             }
 
             if (seatFacts.IsTenhou && seatFacts.IsChiihou)
@@ -1150,6 +1148,24 @@ namespace Mahjong.Domain.Rules
                         throw Reject(
                             RoundSettlementRejectionCode.AbortiveReasonMismatch,
                             "Seat " + seat + " first discard " + first + " is not a wind.");
+                    }
+
+                    if (!seatFacts.DiscardHistoryProvided)
+                    {
+                        throw Reject(
+                            RoundSettlementRejectionCode.AbortiveReasonMismatch,
+                            "Seat " + seat + " lacks the complete discard history required for four winds.");
+                    }
+
+                    IReadOnlyList<TileId> river = round.Tiles.TilesInZone(TileZone.Discard, seat);
+                    if (river.Count != 1 ||
+                        river[0] != first ||
+                        seatFacts.DiscardHistory.Count != 1 ||
+                        seatFacts.DiscardHistory[0] != first)
+                    {
+                        throw Reject(
+                            RoundSettlementRejectionCode.AbortiveReasonMismatch,
+                            "Seat " + seat + " must have exactly one first discard and no extra/missing history.");
                     }
 
                     if (windType < 0)

@@ -502,12 +502,6 @@ namespace Mahjong.Domain.Tests
                 return false;
             }
 
-            if (ippatsu && melds.Length > 0)
-            {
-                reason = "ippatsu cannot coexist with a call/kan meld";
-                return false;
-            }
-
             var closed = ReadTileIdArray(sample.GetProperty("closed")).ToList();
             var winTile = new TileId(context.GetProperty("winTile").GetInt32());
             int index = closed.FindIndex(t => t == winTile);
