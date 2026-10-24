@@ -69,6 +69,21 @@ namespace Mahjong.TableRuntime
             }
         }
 
+        public TableScopeReadLease BeginScopeForCommit(RequestScopeId scopeId)
+        {
+            Monitor.Enter(_gate);
+            try
+            {
+                _scopes.TryGetValue(scopeId.Value, out TableScopeRecord? scope);
+                return new TableScopeReadLease(scope, () => Monitor.Exit(_gate));
+            }
+            catch
+            {
+                Monitor.Exit(_gate);
+                throw;
+            }
+        }
+
         public TableScopeRecord? ReadScopeForCommit(RequestScopeId scopeId)
         {
             lock (_gate)
@@ -145,6 +160,10 @@ namespace Mahjong.TableRuntime
         private readonly Dictionary<string, List<TableCommandJournalRecord>> _commands =
             new Dictionary<string, List<TableCommandJournalRecord>>(StringComparer.Ordinal);
         private readonly Dictionary<string, CheckpointRow> _checkpoints = new Dictionary<string, CheckpointRow>(StringComparer.Ordinal);
+        private readonly Dictionary<string, TableTimingJournalRecord> _timings =
+            new Dictionary<string, TableTimingJournalRecord>(StringComparer.Ordinal);
+        private readonly Dictionary<string, TableCommittedFactsSnapshot> _facts =
+            new Dictionary<string, TableCommittedFactsSnapshot>(StringComparer.Ordinal);
         private readonly Dictionary<string, List<TableRecoveryAuditRecord>> _audits =
             new Dictionary<string, List<TableRecoveryAuditRecord>>(StringComparer.Ordinal);
         private readonly Dictionary<string, ReceiptRow> _receipts = new Dictionary<string, ReceiptRow>(StringComparer.Ordinal);
@@ -165,6 +184,9 @@ namespace Mahjong.TableRuntime
         /// revocation at the documented linearization point without sleeping.
         /// </summary>
         public Action? BeforeScopeCheckForTest { get; set; }
+
+        /// <summary>Test hook invoked while the scope read lease is held and before commit apply.</summary>
+        public Action? AfterScopeCheckForTest { get; set; }
 
         /// <summary>Test hook: replaces the latest checkpoint without store-side validation.</summary>
         public void ReplaceCheckpointForTest(string roomId, TableCheckpoint checkpoint)
@@ -325,6 +347,7 @@ namespace Mahjong.TableRuntime
                     throw new InvalidOperationException("Room already exists.");
                 }
 
+                long initialTimingVersion = initialCheckpoint.TimingVersion == 0 ? 1L : initialCheckpoint.TimingVersion;
                 _states.Add(
                     initialCheckpoint.RoomId,
                     new StateRow(
@@ -334,11 +357,27 @@ namespace Mahjong.TableRuntime
                         initialCheckpoint.StatePayloadSha256,
                         initialCheckpoint.RulesetVersion,
                         initialCheckpoint.ControlVersion,
-                        (ulong)_clock.UtcNowMs));
+                        (ulong)_clock.UtcNowMs,
+                        initialTimingVersion));
                 _events.Add(initialCheckpoint.RoomId, new List<TableEventRecord>());
                 _commands.Add(initialCheckpoint.RoomId, new List<TableCommandJournalRecord>());
                 _audits.Add(initialCheckpoint.RoomId, new List<TableRecoveryAuditRecord>());
                 _checkpoints[initialCheckpoint.RoomId] = new CheckpointRow(initialCheckpoint);
+                _timings[initialCheckpoint.RoomId] = new TableTimingJournalRecord(
+                    initialCheckpoint.RoomId,
+                    initialTimingVersion,
+                    initialCheckpoint.StateVersion,
+                    initialCheckpoint.ControlVersion,
+                    initialCheckpoint.BootId,
+                    initialCheckpoint.CreatedAtUtcMs,
+                    initialCheckpoint.CapturedMonotonicMillis,
+                    TableTimingCheckpointCodec.Decode(initialCheckpoint.TimingPayload));
+                if (initialCheckpoint.CommittedFactsPayload != null)
+                {
+                    _facts[initialCheckpoint.RoomId] = new TableCommittedFactsSnapshot(
+                        initialCheckpoint.CommittedFactsPayload,
+                        initialCheckpoint.CommittedFactsPayloadSha256!.Value);
+                }
             }
 
             return default;
@@ -368,7 +407,32 @@ namespace Mahjong.TableRuntime
             }
         }
 
-        public ValueTask SaveCheckpointAsync(TableCheckpoint checkpoint, CancellationToken cancellationToken)
+        public ValueTask<TableTimingJournalRecord?> LoadTimingAsync(string roomId, CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            lock (_gate)
+            {
+                return new ValueTask<TableTimingJournalRecord?>(
+                    _timings.TryGetValue(roomId, out TableTimingJournalRecord? row) ? row : null);
+            }
+        }
+
+        public ValueTask<TableCommittedFactsSnapshot?> LoadCommittedFactsAsync(
+            string roomId,
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            lock (_gate)
+            {
+                return new ValueTask<TableCommittedFactsSnapshot?>(
+                    _facts.TryGetValue(roomId, out TableCommittedFactsSnapshot? facts) ? facts : null);
+            }
+        }
+
+        public ValueTask<TableDurableCommitResult> SaveCheckpointAsync(
+            TableCheckpoint checkpoint,
+            TableCheckpointFence fence,
+            CancellationToken cancellationToken)
         {
             cancellationToken.ThrowIfCancellationRequested();
             if (checkpoint == null)
@@ -376,34 +440,187 @@ namespace Mahjong.TableRuntime
                 throw new ArgumentNullException(nameof(checkpoint));
             }
 
-            lock (_gate)
+            if (fence == null)
             {
-                if (!_states.TryGetValue(checkpoint.RoomId, out StateRow? state))
-                {
-                    throw new InvalidOperationException("Room is not initialized.");
-                }
-
-                if (checkpoint.StateVersion != state.StateVersion || checkpoint.LastEventSeq != state.LastEventSeq)
-                {
-                    throw new InvalidOperationException("A checkpoint must describe the current committed state.");
-                }
-
-                if (checkpoint.StateFingerprint != state.StateFingerprint ||
-                    checkpoint.StatePayloadSha256 != state.StateHash)
-                {
-                    throw new InvalidOperationException("A checkpoint does not match the table_state hash/fingerprint.");
-                }
-
-                if (_checkpoints.TryGetValue(checkpoint.RoomId, out CheckpointRow? existing) &&
-                    existing.Checkpoint.StateVersion.CompareTo(checkpoint.StateVersion) > 0)
-                {
-                    throw new InvalidOperationException("A checkpoint cannot move backwards.");
-                }
-
-                _checkpoints[checkpoint.RoomId] = new CheckpointRow(checkpoint);
+                throw new ArgumentNullException(nameof(fence));
             }
 
-            return default;
+            lock (_gate)
+            {
+                if (!string.Equals(checkpoint.RoomId, fence.RoomId, StringComparison.Ordinal))
+                {
+                    return new ValueTask<TableDurableCommitResult>(
+                        TableDurableCommitResult.Failed(TableRuntimeReasonCode.CheckpointInvalid, "Fence room does not match checkpoint."));
+                }
+
+                TableDurableCommitResult? fenceFailure = ValidateFence(
+                    fence.RoomId,
+                    fence.OwnerInstance,
+                    fence.ExpectedOwnerEpoch,
+                    fence.ExpectedStateVersion,
+                    fence.ExpectedControlVersion,
+                    cancellationToken);
+                if (fenceFailure != null)
+                {
+                    return new ValueTask<TableDurableCommitResult>(fenceFailure);
+                }
+
+                StateRow state = _states[fence.RoomId];
+                if (state.TimingVersion != fence.ExpectedTimingVersion)
+                {
+                    return new ValueTask<TableDurableCommitResult>(
+                        TableDurableCommitResult.Failed(TableRuntimeReasonCode.StaleStateVersion, "Expected timing version is stale."));
+                }
+
+                if (checkpoint.StateVersion != state.StateVersion ||
+                    checkpoint.LastEventSeq != state.LastEventSeq ||
+                    checkpoint.StateFingerprint != state.StateFingerprint ||
+                    checkpoint.StatePayloadSha256 != state.StateHash ||
+                    checkpoint.ControlVersion != state.ControlVersion)
+                {
+                    return new ValueTask<TableDurableCommitResult>(
+                        TableDurableCommitResult.Failed(
+                            TableRuntimeReasonCode.CheckpointInvalid,
+                            "A checkpoint does not match the current committed state/control."));
+                }
+
+                if (checkpoint.TimingVersion != state.TimingVersion + 1)
+                {
+                    return new ValueTask<TableDurableCommitResult>(
+                        TableDurableCommitResult.Failed(
+                            TableRuntimeReasonCode.CheckpointInvalid,
+                            "A checkpoint must advance timing version by exactly one."));
+                }
+
+                if (TablePayloadSha256.Compute(checkpoint.TimingPayload) != checkpoint.TimingPayloadSha256)
+                {
+                    return new ValueTask<TableDurableCommitResult>(
+                        TableDurableCommitResult.Failed(
+                            TableRuntimeReasonCode.CheckpointInvalid,
+                            "Checkpoint timing payload/boot is inconsistent."));
+                }
+
+                TableTimingCheckpoint timing = TableTimingCheckpointCodec.Decode(checkpoint.TimingPayload);
+                _checkpoints[checkpoint.RoomId] = new CheckpointRow(checkpoint);
+                if (checkpoint.CommittedFactsPayload != null)
+                {
+                    _facts[checkpoint.RoomId] = new TableCommittedFactsSnapshot(
+                        checkpoint.CommittedFactsPayload,
+                        checkpoint.CommittedFactsPayloadSha256!.Value);
+                }
+                _timings[checkpoint.RoomId] = new TableTimingJournalRecord(
+                    checkpoint.RoomId,
+                    checkpoint.TimingVersion,
+                    checkpoint.StateVersion,
+                    checkpoint.ControlVersion,
+                    checkpoint.BootId,
+                    checkpoint.CreatedAtUtcMs,
+                    checkpoint.CapturedMonotonicMillis,
+                    timing);
+                state.TimingVersion = checkpoint.TimingVersion;
+                _leases[checkpoint.RoomId].UpdatedAtUtcMs = (ulong)_clock.UtcNowMs;
+                CommitCount++;
+                return new ValueTask<TableDurableCommitResult>(TableDurableCommitResult.Committed(null));
+            }
+        }
+
+        public ValueTask<TableDurableCommitResult> AppendTimingAsync(
+            TableTimingAppendRequest request,
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (request == null)
+            {
+                throw new ArgumentNullException(nameof(request));
+            }
+
+            lock (_gate)
+            {
+                TableDurableCommitResult? fenceFailure = ValidateFence(
+                    request.RoomId,
+                    request.OwnerInstance,
+                    request.ExpectedOwnerEpoch,
+                    request.ExpectedStateVersion,
+                    request.ExpectedControlVersion,
+                    cancellationToken);
+                if (fenceFailure != null)
+                {
+                    return new ValueTask<TableDurableCommitResult>(fenceFailure);
+                }
+
+                StateRow state = _states[request.RoomId];
+                if (state.TimingVersion != request.ExpectedTimingVersion)
+                {
+                    return new ValueTask<TableDurableCommitResult>(
+                        TableDurableCommitResult.Failed(TableRuntimeReasonCode.StaleStateVersion, "Expected timing version is stale."));
+                }
+
+                long nextVersion = checked(state.TimingVersion + 1L);
+                string boot = request.Timing.BootId;
+                if (string.IsNullOrWhiteSpace(boot))
+                {
+                    return new ValueTask<TableDurableCommitResult>(
+                        TableDurableCommitResult.Failed(
+                            TableRuntimeReasonCode.RecoveryTimingInvalid,
+                            "Timing append requires a boot id."));
+                }
+                _timings[request.RoomId] = new TableTimingJournalRecord(
+                    request.RoomId,
+                    nextVersion,
+                    state.StateVersion,
+                    state.ControlVersion,
+                    boot,
+                    request.Timing.CapturedAtUtcMs,
+                    request.Timing.CapturedMonotonicMillis,
+                    request.Timing);
+                state.TimingVersion = nextVersion;
+                _leases[request.RoomId].UpdatedAtUtcMs = (ulong)_clock.UtcNowMs;
+                CommitCount++;
+                return new ValueTask<TableDurableCommitResult>(TableDurableCommitResult.Committed(null));
+            }
+        }
+
+        private string _durableBootId(string roomId)
+        {
+            return _timings.TryGetValue(roomId, out TableTimingJournalRecord? existing)
+                ? existing.BootId
+                : _checkpoints.TryGetValue(roomId, out CheckpointRow? checkpoint)
+                    ? checkpoint.Checkpoint.BootId
+                    : "unknown";
+        }
+
+        private TableDurableCommitResult? ValidateFence(
+            string roomId,
+            string ownerInstance,
+            OwnerEpoch expectedOwnerEpoch,
+            StateVersion expectedStateVersion,
+            long expectedControlVersion,
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            ulong now = (ulong)_clock.UtcNowMs;
+            if (!_leases.TryGetValue(roomId, out LeaseRow? lease) ||
+                !string.Equals(lease.OwnerInstance, ownerInstance, StringComparison.Ordinal) ||
+                lease.OwnerEpoch != expectedOwnerEpoch ||
+                now >= lease.ExpiresAtUtcMs)
+            {
+                return TableDurableCommitResult.StaleOwner("The lease is not owned by this instance/epoch or has expired.");
+            }
+
+            if (!_states.TryGetValue(roomId, out StateRow? state) ||
+                state.StateVersion != expectedStateVersion)
+            {
+                return TableDurableCommitResult.StaleState("The expected state version is not current.");
+            }
+
+            if (state.ControlVersion != expectedControlVersion)
+            {
+                return TableDurableCommitResult.Failed(
+                    TableRuntimeReasonCode.StaleControlVersion,
+                    "The expected control version is not current.");
+            }
+
+            return null;
         }
 
         public ValueTask<TableDurableCommitResult> CommitControlAsync(
@@ -459,17 +676,35 @@ namespace Mahjong.TableRuntime
                     checkpoint.LastEventSeq != state.LastEventSeq ||
                     checkpoint.StateFingerprint != state.StateFingerprint ||
                     checkpoint.StatePayloadSha256 != state.StateHash ||
-                    checkpoint.ControlVersion != request.ControlVersion)
+                    checkpoint.ControlVersion != request.ControlVersion ||
+                    checkpoint.TimingVersion != state.TimingVersion + 1L)
                 {
                     return new ValueTask<TableDurableCommitResult>(
                         TableDurableCommitResult.Failed(
                             TableRuntimeReasonCode.CheckpointInvalid,
-                            "The control checkpoint does not match table_state."));
+                            "The control checkpoint does not match table_state/timing."));
                 }
 
+                TableTimingCheckpoint timing = TableTimingCheckpointCodec.Decode(checkpoint.TimingPayload);
                 state.ControlVersion = request.ControlVersion;
+                state.TimingVersion = checkpoint.TimingVersion;
                 state.UpdatedAtUtcMs = now;
+                _timings[request.RoomId] = new TableTimingJournalRecord(
+                    request.RoomId,
+                    checkpoint.TimingVersion,
+                    state.StateVersion,
+                    state.ControlVersion,
+                    checkpoint.BootId,
+                    checkpoint.CreatedAtUtcMs,
+                    checkpoint.CapturedMonotonicMillis,
+                    timing);
                 _checkpoints[request.RoomId] = new CheckpointRow(checkpoint);
+                if (checkpoint.CommittedFactsPayload != null)
+                {
+                    _facts[request.RoomId] = new TableCommittedFactsSnapshot(
+                        checkpoint.CommittedFactsPayload,
+                        checkpoint.CommittedFactsPayloadSha256!.Value);
+                }
                 lease.UpdatedAtUtcMs = now;
                 CommitCount++;
                 return new ValueTask<TableDurableCommitResult>(TableDurableCommitResult.Committed(null));
@@ -543,6 +778,7 @@ namespace Mahjong.TableRuntime
             lock (_gate)
             {
                 bool applied = false;
+                TableScopeReadLease? scopeLease = null;
                 try
                 {
                     if (!_rooms.Contains(request.RoomId))
@@ -578,7 +814,8 @@ namespace Mahjong.TableRuntime
                     {
                         TableDurableReceipt receipt = request.Receipt!;
                         BeforeScopeCheckForTest?.Invoke();
-                        TableScopeRecord? scope = _scopes.ReadScopeForCommit(receipt.ScopeId);
+                        scopeLease = _scopes.BeginScopeForCommit(receipt.ScopeId);
+                        TableScopeRecord? scope = scopeLease.Scope;
                         if (scope == null)
                         {
                             return new ValueTask<TableDurableCommitResult>(
@@ -629,6 +866,7 @@ namespace Mahjong.TableRuntime
                     }
 
                     ThrowIf(TableStoreFaultPoint.AfterScopeCheck);
+                    AfterScopeCheckForTest?.Invoke();
 
                     // 3) Owner/lease fence.
                     if (!_leases.TryGetValue(request.RoomId, out LeaseRow? lease) ||
@@ -665,6 +903,14 @@ namespace Mahjong.TableRuntime
                     TableCheckpoint? checkpoint = null;
                     if (accepted)
                     {
+                        if (request.Timing == null || request.TimingVersion != state.TimingVersion + 1L)
+                        {
+                            return new ValueTask<TableDurableCommitResult>(
+                                TableDurableCommitResult.Failed(
+                                    TableRuntimeReasonCode.StaleStateVersion,
+                                    "An accepted command requires the next timing snapshot/version."));
+                        }
+
                         newEvents = ValidateAndCopyEvents(request, state.LastEventSeq);
                         journal = request.CommandJournal ??
                             throw new InvalidOperationException("Accepted batch has no command journal.");
@@ -676,19 +922,21 @@ namespace Mahjong.TableRuntime
                             nextHash,
                             state.RulesetVersion,
                             state.ControlVersion,
-                            now);
+                            now,
+                            request.TimingVersion);
                         checkpoint = request.Checkpoint;
                         if (checkpoint != null)
                         {
                             if (checkpoint.StateVersion != request.CommandVersion ||
                                 checkpoint.LastEventSeq != nextState.LastEventSeq ||
                                 checkpoint.StateFingerprint != request.NextStateFingerprint ||
-                                checkpoint.StatePayloadSha256 != nextHash)
+                                checkpoint.StatePayloadSha256 != nextHash ||
+                                checkpoint.TimingVersion != request.TimingVersion)
                             {
                                 return new ValueTask<TableDurableCommitResult>(
                                     TableDurableCommitResult.Failed(
                                         TableRuntimeReasonCode.CheckpointInvalid,
-                                        "The checkpoint does not match the accepted state."));
+                                        "The checkpoint does not match the accepted state/timing."));
                             }
                         }
                     }
@@ -739,6 +987,19 @@ namespace Mahjong.TableRuntime
                     }
 
                     ThrowIf(TableStoreFaultPoint.AfterOutboxStage);
+                    if (accepted && request.CommittedFactsPayload != null)
+                    {
+                        if (!request.CommittedFactsPayloadSha256.HasValue ||
+                            TablePayloadSha256.Compute(request.CommittedFactsPayload) !=
+                            request.CommittedFactsPayloadSha256.Value)
+                        {
+                            return new ValueTask<TableDurableCommitResult>(
+                                TableDurableCommitResult.Failed(
+                                    TableRuntimeReasonCode.CheckpointInvalid,
+                                    "Committed facts payload does not match its digest."));
+                        }
+                    }
+
                     ThrowIf(TableStoreFaultPoint.BeforeApply);
 
                     // Apply only after every validation and stage has succeeded.
@@ -747,9 +1008,25 @@ namespace Mahjong.TableRuntime
                         _events[request.RoomId].AddRange(newEvents!);
                         _commands[request.RoomId].Add(journal!);
                         _states[request.RoomId] = nextState!;
+                        _timings[request.RoomId] = new TableTimingJournalRecord(
+                            request.RoomId,
+                            request.TimingVersion,
+                            nextState!.StateVersion,
+                            nextState.ControlVersion,
+                            request.Timing!.BootId,
+                            request.Timing.CapturedAtUtcMs,
+                            request.Timing.CapturedMonotonicMillis,
+                            request.Timing);
                         if (checkpoint != null)
                         {
                             _checkpoints[request.RoomId] = new CheckpointRow(checkpoint);
+                        }
+
+                        if (request.CommittedFactsPayload != null)
+                        {
+                            _facts[request.RoomId] = new TableCommittedFactsSnapshot(
+                                request.CommittedFactsPayload,
+                                request.CommittedFactsPayloadSha256!.Value);
                         }
                     }
 
@@ -803,6 +1080,10 @@ namespace Mahjong.TableRuntime
 
                     return new ValueTask<TableDurableCommitResult>(
                         TableDurableCommitResult.Failed(TableRuntimeReasonCode.CommitFailed, exception.Message));
+                }
+                finally
+                {
+                    scopeLease?.Dispose();
                 }
             }
         }
@@ -1114,7 +1395,8 @@ namespace Mahjong.TableRuntime
                 TablePayloadSha256 stateHash,
                 int rulesetVersion,
                 long controlVersion,
-                ulong updatedAtUtcMs)
+                ulong updatedAtUtcMs,
+                long timingVersion = 0L)
             {
                 StateVersion = stateVersion;
                 LastEventSeq = lastEventSeq;
@@ -1123,6 +1405,7 @@ namespace Mahjong.TableRuntime
                 RulesetVersion = rulesetVersion;
                 ControlVersion = controlVersion;
                 UpdatedAtUtcMs = updatedAtUtcMs;
+                TimingVersion = timingVersion;
             }
 
             public StateVersion StateVersion { get; }
@@ -1137,6 +1420,8 @@ namespace Mahjong.TableRuntime
 
             public long ControlVersion { get; set; }
 
+            public long TimingVersion { get; set; }
+
             public ulong UpdatedAtUtcMs { get; set; }
 
             public TableStateRow ToPublic(string roomId) =>
@@ -1148,7 +1433,8 @@ namespace Mahjong.TableRuntime
                     StateHash,
                     RulesetVersion,
                     ControlVersion,
-                    UpdatedAtUtcMs);
+                    UpdatedAtUtcMs,
+                    TimingVersion);
         }
 
         private sealed class CheckpointRow

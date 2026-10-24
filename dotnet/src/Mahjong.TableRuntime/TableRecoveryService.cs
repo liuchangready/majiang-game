@@ -19,7 +19,8 @@ namespace Mahjong.TableRuntime
             TimeSpan leaseTtl,
             long graceMillis = 5000L,
             string? matchId = null,
-            bool requireCheatLedger = true)
+            bool requireCheatLedger = true,
+            bool requireCommittedFacts = false)
         {
             if (string.IsNullOrWhiteSpace(ownerInstance))
             {
@@ -53,6 +54,7 @@ namespace Mahjong.TableRuntime
             GraceMillis = graceMillis;
             MatchId = string.IsNullOrWhiteSpace(matchId) ? null : matchId;
             RequireCheatLedger = requireCheatLedger;
+            RequireCommittedFacts = requireCommittedFacts;
         }
 
         public string OwnerInstance { get; }
@@ -68,6 +70,8 @@ namespace Mahjong.TableRuntime
         public string? MatchId { get; }
 
         public bool RequireCheatLedger { get; }
+
+        public bool RequireCommittedFacts { get; }
     }
 
     public enum TableRecoveryStatus : byte
@@ -100,7 +104,11 @@ namespace Mahjong.TableRuntime
             int? cheatLedgerVersion,
             bool terminal,
             bool outboxPresent,
-            TableRecoveryAuditRecord audit)
+            TableRecoveryAuditRecord audit,
+            long timingVersion = 0L,
+            bool cheatStateRestored = false,
+            int committedHistoryCount = 0,
+            bool outboxPayloadMatches = false)
         {
             RoomId = roomId;
             CheckpointVersion = checkpointVersion;
@@ -123,6 +131,10 @@ namespace Mahjong.TableRuntime
             Terminal = terminal;
             OutboxPresent = outboxPresent;
             Audit = audit;
+            TimingVersion = timingVersion;
+            CheatStateRestored = cheatStateRestored;
+            CommittedHistoryCount = committedHistoryCount;
+            OutboxPayloadMatches = outboxPayloadMatches;
         }
 
         public string RoomId { get; }
@@ -166,6 +178,14 @@ namespace Mahjong.TableRuntime
         public bool OutboxPresent { get; }
 
         public TableRecoveryAuditRecord Audit { get; }
+
+        public long TimingVersion { get; }
+
+        public bool CheatStateRestored { get; }
+
+        public int CommittedHistoryCount { get; }
+
+        public bool OutboxPayloadMatches { get; }
     }
 
     public sealed class TableRecoveryResult
@@ -298,6 +318,10 @@ namespace Mahjong.TableRuntime
         {
             TableStateRow? state = await _store.LoadStateAsync(roomId, cancellationToken).ConfigureAwait(false);
             TableCheckpoint? checkpoint = await _store.LoadCheckpointAsync(roomId, cancellationToken).ConfigureAwait(false);
+            TableTimingJournalRecord? timingRow = await _store.LoadTimingAsync(roomId, cancellationToken).ConfigureAwait(false);
+            TableCommittedFactsSnapshot? latestFacts = await _store
+                .LoadCommittedFactsAsync(roomId, cancellationToken)
+                .ConfigureAwait(false);
             if (state == null || checkpoint == null)
             {
                 return TableRecoveryResult.Failed(
@@ -331,6 +355,8 @@ namespace Mahjong.TableRuntime
             TableControlCheckpoint control;
             TableTimingCheckpoint timing;
             TableCheatLedgerCheckpoint? cheat = null;
+            CheatState? recoveredCheat = null;
+            IReadOnlyList<TableEventRecord> checkpointHistory = Array.Empty<TableEventRecord>();
             try
             {
                 if (TablePayloadSha256.Compute(checkpoint.ControlPayload) != checkpoint.ControlPayloadSha256 ||
@@ -365,9 +391,30 @@ namespace Mahjong.TableRuntime
                 }
 
                 timing = TableTimingCheckpointCodec.Decode(checkpoint.TimingPayload);
+                if (checkpoint.CommittedHistoryPayload != null)
+                {
+                    if (TablePayloadSha256.Compute(checkpoint.CommittedHistoryPayload) !=
+                        checkpoint.CommittedHistoryPayloadSha256)
+                    {
+                        return TableRecoveryResult.Failed(
+                            TableRuntimeReasonCode.RecoveryStateHashMismatch,
+                            "Committed history payload does not match its stored hash.");
+                    }
+
+                    checkpointHistory = TableCommittedHistoryCodec.Decode(checkpoint.CommittedHistoryPayload);
+                }
+                else if (checkpoint.LastEventSeq.Value > 0)
+                {
+                    return TableRecoveryResult.Failed(
+                        TableRuntimeReasonCode.CheckpointInvalid,
+                        "Checkpoint has committed events but no committed history payload.");
+                }
+
+                ValidateHistory(checkpointHistory, checkpoint);
                 if (checkpoint.CheatPayload != null)
                 {
                     cheat = TableCheatLedgerCheckpointCodec.Decode(checkpoint.CheatPayload);
+                    recoveredCheat = cheat.RestoreCheatState();
                 }
                 else if (options.RequireCheatLedger)
                 {
@@ -375,6 +422,10 @@ namespace Mahjong.TableRuntime
                         TableRuntimeReasonCode.CheckpointInvalid,
                         "Cheat ledger checkpoint is required but missing.");
                 }
+            }
+            catch (RecoveryValidationException exception)
+            {
+                return TableRecoveryResult.Failed(exception.ReasonCode, exception.Message);
             }
             catch (Exception exception) when (
                 exception is InvalidDataException ||
@@ -403,6 +454,10 @@ namespace Mahjong.TableRuntime
             IReadOnlyList<TableCommandJournalRecord> commands = await _store
                 .LoadCommandsAfterAsync(roomId, checkpoint.StateVersion, cancellationToken)
                 .ConfigureAwait(false);
+
+            var fullHistory = new List<TableEventRecord>(checkpointHistory.Count + events.Count);
+            fullHistory.AddRange(checkpointHistory);
+            fullHistory.AddRange(events);
 
             Dictionary<ulong, List<TableEventRecord>> eventsByVersion;
             try
@@ -521,6 +576,13 @@ namespace Mahjong.TableRuntime
 
             byte[] finalPayload = RoundRecoveryCodec.Encode(RoundRecovery.Capture(round));
             TablePayloadSha256 finalHash = TablePayloadSha256.Compute(finalPayload);
+            if (fullHistory.Count > 0 &&
+                fullHistory[fullHistory.Count - 1].Seq != state.LastEventSeq)
+            {
+                return TableRecoveryResult.Failed(
+                    TableRuntimeReasonCode.RecoveryEventGap,
+                    "Reconstructed committed history does not end at table_state.last_event_seq.");
+            }
             if (round.SourceFingerprint != state.StateFingerprint || finalHash != state.StateHash)
             {
                 return TableRecoveryResult.Failed(
@@ -556,35 +618,131 @@ namespace Mahjong.TableRuntime
                         "Terminal state has no settlement outbox record.");
                 }
 
+                byte[] expectedOutbox = TableSettlementPayloadCodec.Encode(roomId, round.Result);
+                if (TablePayloadSha256.Compute(expectedOutbox) != outbox.PayloadSha256 ||
+                    !BytesEqual(expectedOutbox, outbox.Payload))
+                {
+                    return TableRecoveryResult.Failed(
+                        TableRuntimeReasonCode.RecoveryOutboxMissing,
+                        "Settlement outbox payload does not match the recovered result.");
+                }
+
                 outboxPresent = true;
             }
 
-            if (round.IsFinished)
+            TableTimingCheckpoint effectiveTiming;
+            long effectiveTimingVersion;
+            string timingBootId;
+            ulong timingCapturedUtc;
+            long timingCapturedMonotonic;
+            byte[]? factsEnvelope = latestFacts?.Payload ?? checkpoint.CommittedFactsPayload;
+            if (options.RequireCommittedFacts && factsEnvelope == null)
             {
-                consumedSeats.UnionWith(new[] { 0, 1, 2, 3 });
+                return TableRecoveryResult.Failed(
+                    TableRuntimeReasonCode.RecoveryStateSinkRequired,
+                    "Committed facts are required but no trusted facts payload exists.");
+            }
+
+            byte[]? effectiveFacts = null;
+            if (factsEnvelope != null)
+            {
+                try
+                {
+                    effectiveFacts = TableCommittedFactsCodec
+                        .Decode(factsEnvelope, round.RoundId, state.StateVersion)
+                        .Payload;
+                }
+                catch (Exception exception) when (
+                    exception is InvalidDataException ||
+                    exception is ArgumentException)
+                {
+                    return TableRecoveryResult.Failed(
+                        TableRuntimeReasonCode.CheckpointInvalid,
+                        "Committed facts envelope is invalid: " + exception.Message);
+                }
+            }
+            if (timingRow != null)
+            {
+                if (timingRow.StateVersion != state.StateVersion ||
+                    timingRow.ControlVersion != state.ControlVersion)
+                {
+                    return TableRecoveryResult.Failed(
+                        TableRuntimeReasonCode.RecoveryTimingInvalid,
+                        "The latest timing journal does not belong to the current state/control version.");
+                }
+
+                if (timingRow.TimingVersion < checkpoint.TimingVersion)
+                {
+                    return TableRecoveryResult.Failed(
+                        TableRuntimeReasonCode.RecoveryTimingInvalid,
+                        "The latest timing journal is older than the checkpoint.");
+                }
+
+                effectiveTiming = timingRow.Timing;
+                effectiveTimingVersion = timingRow.TimingVersion;
+                timingBootId = timingRow.BootId;
+                timingCapturedUtc = timingRow.CapturedAtUtcMs;
+                timingCapturedMonotonic = timingRow.CapturedMonotonicMillis;
+            }
+            else
+            {
+                if (checkpoint.StateVersion != state.StateVersion ||
+                    checkpoint.TimingVersion != state.TimingVersion)
+                {
+                    return TableRecoveryResult.Failed(
+                        TableRuntimeReasonCode.RecoveryTimingInvalid,
+                        "No trusted timing journal exists after the checkpoint.");
+                }
+
+                effectiveTiming = timing;
+                effectiveTimingVersion = checkpoint.TimingVersion;
+                timingBootId = checkpoint.BootId;
+                timingCapturedUtc = checkpoint.CreatedAtUtcMs;
+                timingCapturedMonotonic = checkpoint.CapturedMonotonicMillis;
             }
 
             ulong nowUtc = (ulong)_clock.UtcNowMs;
-            long downtime = options.BootId == checkpoint.BootId
-                ? 0L
-                : Math.Max(0L, (long)nowUtc - (long)checkpoint.CreatedAtUtcMs);
-            long adjustedGrace = options.BootId == checkpoint.BootId ? 0L : options.GraceMillis;
+            long nowMonotonic = _clock.MonotonicMillis;
+            bool sameBoot = string.Equals(options.BootId, timingBootId, StringComparison.Ordinal);
+            long activeDelta = 0L;
+            long adjustedGrace = 0L;
+            long downtime = 0L;
+            if (sameBoot)
+            {
+                if (nowMonotonic < timingCapturedMonotonic)
+                {
+                    return TableRecoveryResult.Failed(
+                        TableRuntimeReasonCode.ClockRegression,
+                        "Monotonic time moved backwards for the same boot.");
+                }
+
+                activeDelta = nowMonotonic - timingCapturedMonotonic;
+            }
+            else
+            {
+                if (timingCapturedUtc > 0 && nowUtc < timingCapturedUtc)
+                {
+                    return TableRecoveryResult.Failed(
+                        TableRuntimeReasonCode.ClockRegression,
+                        "UTC time moved backwards across boot.");
+                }
+
+                downtime = timingCapturedUtc == 0 || nowUtc <= timingCapturedUtc
+                    ? 0L
+                    : (long)(nowUtc - timingCapturedUtc);
+                adjustedGrace = options.GraceMillis;
+                if (HasUntrustedGrace(control.Snapshot))
+                {
+                    return TableRecoveryResult.Failed(
+                        TableRuntimeReasonCode.RecoveryGraceTimingRequired,
+                        "A cross-boot recovery cannot trust persisted monotonic grace deadlines.");
+                }
+            }
+
             TableTimingCheckpoint adjustedTiming;
             try
             {
-                var surviving = new List<TableRecoveredDecision>();
-                for (int i = 0; i < timing.Decisions.Count; i++)
-                {
-                    if (!consumedSeats.Contains(timing.Decisions[i].Key.Seat))
-                    {
-                        surviving.Add(timing.Decisions[i]);
-                    }
-                }
-
-                adjustedTiming = AdjustTiming(
-                    new TableTimingCheckpoint(timing.RoundId, timing.SeatReservesMillis, surviving),
-                    downtime,
-                    adjustedGrace);
+                adjustedTiming = AdjustTiming(effectiveTiming, activeDelta, adjustedGrace);
             }
             catch (Exception exception) when (
                 exception is ArgumentException ||
@@ -595,18 +753,86 @@ namespace Mahjong.TableRuntime
                     exception.Message);
             }
 
-            if (adjustedGrace > 0 && HasUntrustedGrace(control.Snapshot))
+            TableLeaseSnapshot? finalLease = await _lease.GetAsync(roomId, cancellationToken).ConfigureAwait(false);
+            ulong revalidateUtc = (ulong)_clock.UtcNowMs;
+            if (finalLease == null ||
+                !string.Equals(finalLease.OwnerInstance, lease.OwnerInstance, StringComparison.Ordinal) ||
+                finalLease.OwnerEpoch != lease.OwnerEpoch ||
+                finalLease.IsExpiredAt(revalidateUtc))
             {
                 return TableRecoveryResult.Failed(
-                    TableRuntimeReasonCode.RecoveryGraceTimingRequired,
-                    "A cross-boot recovery cannot trust persisted monotonic grace deadlines.");
+                    TableRuntimeReasonCode.StaleOwnerEpoch,
+                    "The lease expired or moved during recovery.");
             }
+
+            var recoveredTiming = new TableTimingCheckpoint(
+                adjustedTiming.RoundId,
+                adjustedTiming.SeatReservesMillis,
+                adjustedTiming.Decisions,
+                nowUtc,
+                nowMonotonic,
+                options.BootId);
+            TableDurableCommitResult timingAppend = await _store.AppendTimingAsync(
+                new TableTimingAppendRequest(
+                    roomId,
+                    lease.OwnerInstance,
+                    lease.OwnerEpoch,
+                    state.StateVersion,
+                    state.ControlVersion,
+                    state.TimingVersion,
+                    recoveredTiming),
+                cancellationToken).ConfigureAwait(false);
+            if (!timingAppend.IsCommitted)
+            {
+                return TableRecoveryResult.Failed(
+                    timingAppend.ReasonCode,
+                    "Recovery could not persist its adjusted timing baseline: " + timingAppend.Detail);
+            }
+
+            long expectedTimingVersion = state.TimingVersion + 1L;
+            effectiveTimingVersion = expectedTimingVersion;
+
+            TableStateRow? finalState = await _store.LoadStateAsync(roomId, cancellationToken).ConfigureAwait(false);
+            TableCheckpoint? finalCheckpoint = await _store.LoadCheckpointAsync(roomId, cancellationToken).ConfigureAwait(false);
+            TableTimingJournalRecord? finalTimingRow = await _store.LoadTimingAsync(roomId, cancellationToken).ConfigureAwait(false);
+            if (finalState == null ||
+                finalState.StateVersion != state.StateVersion ||
+                finalState.LastEventSeq != state.LastEventSeq ||
+                finalState.StateFingerprint != state.StateFingerprint ||
+                finalState.StateHash != state.StateHash ||
+                finalState.ControlVersion != state.ControlVersion ||
+                finalState.TimingVersion != expectedTimingVersion)
+            {
+                return TableRecoveryResult.Failed(
+                    TableRuntimeReasonCode.RecoveryFailed,
+                    "table_state changed during recovery.");
+            }
+
+            if (finalCheckpoint == null ||
+                finalCheckpoint.StateVersion != checkpoint.StateVersion ||
+                finalCheckpoint.LastEventSeq != checkpoint.LastEventSeq ||
+                finalCheckpoint.ControlVersion != checkpoint.ControlVersion ||
+                finalCheckpoint.TimingVersion != checkpoint.TimingVersion)
+            {
+                return TableRecoveryResult.Failed(
+                    TableRuntimeReasonCode.RecoveryFailed,
+                    "checkpoint changed during recovery.");
+            }
+
+            if (finalTimingRow == null || finalTimingRow.TimingVersion != expectedTimingVersion)
+            {
+                return TableRecoveryResult.Failed(
+                    TableRuntimeReasonCode.RecoveryTimingInvalid,
+                    "timing journal changed during recovery.");
+            }
+
+            adjustedTiming = recoveredTiming;
 
             var audit = new TableRecoveryAuditRecord(
                 roomId,
                 TableRecoveryAuditKind.RecoveryAdjusted,
                 nowUtc,
-                checkpoint.BootId,
+                timingBootId,
                 options.BootId,
                 downtime,
                 adjustedGrace,
@@ -623,7 +849,12 @@ namespace Mahjong.TableRuntime
                 state.LastEventSeq,
                 lease.OwnerEpoch,
                 new TableControlRecoveryBaseline(control.Snapshot, control.ControlVersion),
-                adjustedTiming.ToRecoveryTiming());
+                adjustedTiming.ToRecoveryTiming(),
+                effectiveTimingVersion,
+                recoveredCheat,
+                effectiveFacts,
+                fullHistory,
+                strictHistory: true);
 
             var report = new TableRecoveryReport(
                 roomId,
@@ -637,7 +868,7 @@ namespace Mahjong.TableRuntime
                 round.SourceFingerprint,
                 downtime,
                 adjustedGrace,
-                checkpoint.BootId,
+                timingBootId,
                 options.BootId,
                 previousLease?.OwnerEpoch ?? new OwnerEpoch(0),
                 lease.OwnerEpoch,
@@ -646,9 +877,87 @@ namespace Mahjong.TableRuntime
                 cheat?.Entries.Count,
                 round.IsFinished,
                 outboxPresent,
-                audit);
+                audit,
+                effectiveTimingVersion,
+                recoveredCheat != null,
+                fullHistory.Count,
+                outboxPresent);
 
             return TableRecoveryResult.Success(baseline, report);
+        }
+
+        private static bool BytesEqual(byte[] left, byte[] right)
+        {
+            if (left.Length != right.Length)
+            {
+                return false;
+            }
+
+            int diff = 0;
+            for (int i = 0; i < left.Length; i++)
+            {
+                diff |= left[i] ^ right[i];
+            }
+
+            return diff == 0;
+        }
+
+        private static void ValidateHistory(
+            IReadOnlyList<TableEventRecord> history,
+            TableCheckpoint checkpoint)
+        {
+            ulong expectedSeq = 1;
+            ulong currentVersion = 0;
+            int expectedOrdinal = 0;
+            for (int i = 0; i < history.Count; i++)
+            {
+                TableEventRecord record = history[i];
+                if (record.Seq.Value != expectedSeq)
+                {
+                    throw new RecoveryValidationException(
+                        TableRuntimeReasonCode.RecoveryEventGap,
+                        "Checkpoint history sequence is not contiguous.");
+                }
+
+                if (record.CommandVersion.Value > checkpoint.StateVersion.Value ||
+                    record.CommandVersion.Value == 0)
+                {
+                    throw new RecoveryValidationException(
+                        TableRuntimeReasonCode.CheckpointInvalid,
+                        "Checkpoint history references a version beyond the checkpoint.");
+                }
+
+                if (record.CommandVersion.Value != currentVersion)
+                {
+                    currentVersion = record.CommandVersion.Value;
+                    expectedOrdinal = 0;
+                }
+
+                if (record.Ordinal != expectedOrdinal)
+                {
+                    throw new RecoveryValidationException(
+                        TableRuntimeReasonCode.RecoveryOrdinalInvalid,
+                        "Checkpoint history ordinal is not contiguous.");
+                }
+
+                if (record.EventSchema != 1)
+                {
+                    throw new RecoveryValidationException(
+                        TableRuntimeReasonCode.CheckpointInvalid,
+                        "Checkpoint history uses an unsupported event schema.");
+                }
+
+                expectedOrdinal++;
+                expectedSeq++;
+            }
+
+            ulong lastSeq = expectedSeq - 1;
+            if (lastSeq != checkpoint.LastEventSeq.Value)
+            {
+                throw new RecoveryValidationException(
+                    TableRuntimeReasonCode.RecoveryEventGap,
+                    "Checkpoint history does not end at checkpoint.lastEventSeq.");
+            }
         }
 
         private static Dictionary<ulong, List<TableEventRecord>> ValidateSequence(
@@ -749,25 +1058,51 @@ namespace Mahjong.TableRuntime
 
         private static TableTimingCheckpoint AdjustTiming(
             TableTimingCheckpoint timing,
-            long downtime,
+            long activeDelta,
             long grace)
         {
+            if (activeDelta < 0 || grace < 0)
+            {
+                throw new ArgumentOutOfRangeException(nameof(activeDelta), "Timing adjustment cannot be negative.");
+            }
+
             var decisions = new List<TableRecoveredDecision>(timing.Decisions.Count);
             for (int i = 0; i < timing.Decisions.Count; i++)
             {
                 TableRecoveredDecision decision = timing.Decisions[i];
-                long baseRemaining = checked(decision.RemainingBaseMillis + downtime + grace);
+                long baseRemaining = decision.RemainingBaseMillis;
+                long reserveRemaining = decision.RemainingReserveMillis;
+                long overdue = decision.OverdueMillis;
+                long remainingDelta = activeDelta;
+                if (remainingDelta > 0)
+                {
+                    long baseCut = Math.Min(baseRemaining, remainingDelta);
+                    baseRemaining -= baseCut;
+                    remainingDelta -= baseCut;
+                    long reserveCut = Math.Min(reserveRemaining, remainingDelta);
+                    reserveRemaining -= reserveCut;
+                    remainingDelta -= reserveCut;
+                    overdue = checked(overdue + remainingDelta);
+                }
+
+                baseRemaining = checked(baseRemaining + grace);
                 decisions.Add(new TableRecoveredDecision(
                     decision.Key,
                     decision.ControlEpoch,
                     decision.Candidates,
                     decision.DrawnTile,
                     baseRemaining,
-                    decision.RemainingReserveMillis,
-                    decision.OverdueMillis));
+                    reserveRemaining,
+                    overdue));
             }
 
-            return new TableTimingCheckpoint(timing.RoundId, timing.SeatReservesMillis, decisions);
+            return new TableTimingCheckpoint(
+                timing.RoundId,
+                timing.SeatReservesMillis,
+                decisions,
+                timing.CapturedAtUtcMs,
+                timing.CapturedMonotonicMillis,
+                timing.BootId);
         }
 
         private static bool HasUntrustedGrace(ControlRegistrySnapshot control)

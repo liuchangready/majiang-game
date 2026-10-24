@@ -4,6 +4,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using Mahjong.Contracts;
 using Mahjong.Domain;
+using Mahjong.Domain.Cheat;
 using Xunit;
 
 namespace Mahjong.TableRuntime.Tests
@@ -130,6 +131,24 @@ namespace Mahjong.TableRuntime.Tests
                 WithCheatPayload(good, cheat));
 
             TableRecoveryResult result = await RecoverAsync(harness);
+            Assert.Equal(TableRecoveryStatus.Failed, result.Status);
+            Assert.Equal(TableRuntimeReasonCode.CheckpointInvalid, result.ReasonCode);
+        }
+
+        [Fact]
+        public async Task UnmodeledPrivateCheatSubstateIsRefused()
+        {
+            CheatLedger ledger = DurableHarness.NewLedger();
+            byte[] cheat = TableCheatLedgerCheckpointCodec.Encode(
+                new TableCheatLedgerCheckpoint(40, ledger, totalVersion: 5L, fingerprint: 123UL));
+            TableCheckpoint good = DurableHarness.InitialCheckpoint(
+                P31Fixtures.Dealt("round-1"),
+                ledger);
+            await using DurableHarness harness = await DurableHarness.CreateAsync(
+                initialCheckpoint: WithCheatPayload(good, cheat));
+
+            TableRecoveryResult result = await RecoverAsync(harness);
+
             Assert.Equal(TableRecoveryStatus.Failed, result.Status);
             Assert.Equal(TableRuntimeReasonCode.CheckpointInvalid, result.ReasonCode);
         }

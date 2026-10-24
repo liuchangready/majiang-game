@@ -10,6 +10,16 @@ using Xunit;
 
 namespace Mahjong.TableRuntime.Tests
 {
+    internal sealed class RecordingRecoveryStateSink : ITableRecoveryStateSink
+    {
+        public TableRecoveryAuxState? Installed { get; private set; }
+
+        public void Install(TableRecoveryAuxState state)
+        {
+            Installed = state;
+        }
+    }
+
     internal sealed class DurableHarness : IAsyncDisposable
     {
         public const string Room = "room-1";
@@ -82,13 +92,23 @@ namespace Mahjong.TableRuntime.Tests
             var clock = new DecisionClock(new DecisionClockConfig(1000L, 0L, ReserveScope.Round));
             clock.BeginRound(round.RoundId, 0L);
             TableTimingCheckpoint actualTiming = timing ??
-                TableCheckpointFactory.CaptureTiming(clock, Array.Empty<PendingDecision>(), 0L);
+                TableCheckpointFactory.CaptureTiming(
+                    clock,
+                    Array.Empty<PendingDecision>(),
+                    0L,
+                    utc,
+                    boot);
             TableControlCheckpoint actualControl = control ??
                 new TableControlCheckpoint(DefaultControl(), 0L);
             byte[] state = RoundRecoveryCodec.Encode(RoundRecovery.Capture(round));
             byte[] controlBytes = TableControlCheckpointCodec.Encode(actualControl);
             byte[] timingBytes = TableTimingCheckpointCodec.Encode(actualTiming);
             byte[] cheatBytes = TableCheatLedgerCheckpointCodec.Encode(TableCheatLedgerCheckpoint.FromLedger(ledger));
+            byte[] facts = TableCommittedFactsCodec.Encode(
+                round.RoundId,
+                new StateVersion(0),
+                Encoding.UTF8.GetBytes(Room + ":facts"));
+            byte[] history = TableCommittedHistoryCodec.Encode(Array.Empty<TableEventRecord>());
             return new TableCheckpoint(
                 Room,
                 new StateVersion(0),
@@ -104,11 +124,15 @@ namespace Mahjong.TableRuntime.Tests
                 TablePayloadSha256.Compute(timingBytes),
                 cheatBytes,
                 TablePayloadSha256.Compute(cheatBytes),
-                null,
-                null,
+                facts,
+                TablePayloadSha256.Compute(facts),
                 utc,
                 boot,
-                schemaVersion);
+                schemaVersion,
+                1L,
+                0L,
+                history,
+                TablePayloadSha256.Compute(history));
         }
 
         public static ControlRegistrySnapshot DefaultControl()
@@ -142,7 +166,8 @@ namespace Mahjong.TableRuntime.Tests
             bool acquireLease = true,
             Action<TableActorOptions>? configure = null,
             ITableProjectionContextSource? projectionSource = null,
-            TableStreamOptions? streamOptions = null)
+            TableStreamOptions? streamOptions = null,
+            ITableRecoveryStateSink? recoverySink = null)
         {
             var clock = new ManualTableClock { Now = 1000L };
             var scopes = new InMemoryRequestScopeAuthority();
@@ -179,6 +204,13 @@ namespace Mahjong.TableRuntime.Tests
                 1,
                 Room);
             durable.CheatLedgerProvider = () => actualLedger;
+            durable.CheatStateProvider = () => new CheatState(
+                actualLedger,
+                new TileMarkState(),
+                new SleeveBloomState(),
+                new BeamSwapState());
+            durable.CommittedFactsProvider = () => Encoding.UTF8.GetBytes(Room + ":facts");
+            durable.RecoveryStateSink = recoverySink ?? new RecordingRecoveryStateSink();
 
             var legacy = new RecordingCommitPort();
             var sink = new RecordingPublicationSink(legacy);
@@ -222,7 +254,11 @@ namespace Mahjong.TableRuntime.Tests
         }
 
         /// <summary>Wires another actor to the same store/clock/scope for stale-owner and dual-writer tests.</summary>
-        public static DurableHarness Attach(DurableHarness source, string owner, ulong ownerEpoch)
+        public static DurableHarness Attach(
+            DurableHarness source,
+            string owner,
+            ulong ownerEpoch,
+            ITableRecoveryStateSink? recoverySink = null)
         {
             var durable = new TableDurableContext(
                 source.Store,
@@ -236,6 +272,13 @@ namespace Mahjong.TableRuntime.Tests
                 1,
                 Room);
             durable.CheatLedgerProvider = () => source.Ledger;
+            durable.CheatStateProvider = () => new CheatState(
+                source.Ledger,
+                new TileMarkState(),
+                new SleeveBloomState(),
+                new BeamSwapState());
+            durable.CommittedFactsProvider = () => Encoding.UTF8.GetBytes(Room + ":facts");
+            durable.RecoveryStateSink = recoverySink ?? new RecordingRecoveryStateSink();
             var legacy = new RecordingCommitPort();
             var sink = new RecordingPublicationSink(legacy);
             var options = new TableActorOptions

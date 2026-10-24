@@ -182,9 +182,23 @@ namespace Mahjong.TableRuntime
         public TableTimingCheckpoint(
             string roundId,
             IReadOnlyList<long> seatReservesMillis,
-            IReadOnlyList<TableRecoveredDecision> decisions)
+            IReadOnlyList<TableRecoveredDecision> decisions,
+            ulong capturedAtUtcMs = 0UL,
+            long capturedMonotonicMillis = 0L,
+            string bootId = "")
         {
             RoundId = roundId ?? string.Empty;
+            if (capturedMonotonicMillis < 0)
+            {
+                throw new ArgumentOutOfRangeException(
+                    nameof(capturedMonotonicMillis),
+                    capturedMonotonicMillis,
+                    "Captured monotonic time must be non-negative.");
+            }
+
+            BootId = bootId ?? string.Empty;
+            CapturedAtUtcMs = capturedAtUtcMs;
+            CapturedMonotonicMillis = capturedMonotonicMillis;
             if (seatReservesMillis == null || seatReservesMillis.Count != 4)
             {
                 throw new ArgumentException("Timing checkpoint requires four seat reserves.", nameof(seatReservesMillis));
@@ -220,13 +234,19 @@ namespace Mahjong.TableRuntime
 
         public IReadOnlyList<TableRecoveredDecision> Decisions => _decisions;
 
+        public ulong CapturedAtUtcMs { get; }
+
+        public long CapturedMonotonicMillis { get; }
+
+        public string BootId { get; }
+
         public TableRecoveryTiming ToRecoveryTiming() =>
             new TableRecoveryTiming(_decisions, _reserves);
     }
 
     public static class TableTimingCheckpointCodec
     {
-        public const int FormatVersion = 1;
+        public const int FormatVersion = 2;
         private const int Magic = 0x4D4A5443; // MJTC
 
         public static byte[] Encode(TableTimingCheckpoint checkpoint)
@@ -242,6 +262,9 @@ namespace Mahjong.TableRuntime
                 writer.Write(Magic);
                 writer.Write(FormatVersion);
                 writer.Write(checkpoint.RoundId);
+                writer.Write(checkpoint.CapturedAtUtcMs);
+                writer.Write(checkpoint.CapturedMonotonicMillis);
+                writer.Write(checkpoint.BootId);
                 for (int seat = 0; seat < 4; seat++)
                 {
                     writer.Write(checkpoint.SeatReservesMillis[seat]);
@@ -311,6 +334,9 @@ namespace Mahjong.TableRuntime
                 }
 
                 string roundId = reader.ReadString();
+                ulong capturedUtc = reader.ReadUInt64();
+                long capturedMonotonic = reader.ReadInt64();
+                string bootId = reader.ReadString();
                 var reserves = new long[4];
                 for (int seat = 0; seat < 4; seat++)
                 {
@@ -372,7 +398,13 @@ namespace Mahjong.TableRuntime
                     throw new InvalidDataException("Timing checkpoint payload has trailing bytes.");
                 }
 
-                return new TableTimingCheckpoint(roundId, reserves, decisions);
+                return new TableTimingCheckpoint(
+                    roundId,
+                    reserves,
+                    decisions,
+                    capturedUtc,
+                    capturedMonotonic,
+                    bootId);
             }
         }
     }
@@ -383,7 +415,11 @@ namespace Mahjong.TableRuntime
         private readonly ReadOnlyCollection<int> _balances;
         private readonly ReadOnlyCollection<CheatLedgerEntry> _entries;
 
-        public TableCheatLedgerCheckpoint(int initialPoints, CheatLedger ledger)
+        public TableCheatLedgerCheckpoint(
+            int initialPoints,
+            CheatLedger ledger,
+            long totalVersion = -1L,
+            ulong fingerprint = 0UL)
         {
             if (ledger == null)
             {
@@ -394,6 +430,10 @@ namespace Mahjong.TableRuntime
             {
                 throw new ArgumentOutOfRangeException(nameof(initialPoints), initialPoints, "Initial points must be non-negative.");
             }
+
+            var emptyState = new CheatState(ledger, new TileMarkState(), new SleeveBloomState(), new BeamSwapState());
+            TotalVersion = totalVersion < 0 ? emptyState.Version : totalVersion;
+            Fingerprint = fingerprint == 0 ? emptyState.Fingerprint : fingerprint;
 
             var balances = new int[4];
             for (int seat = 0; seat < 4; seat++)
@@ -417,6 +457,36 @@ namespace Mahjong.TableRuntime
         public IReadOnlyList<int> Balances => _balances;
 
         public IReadOnlyList<CheatLedgerEntry> Entries => _entries;
+
+        /// <summary>Total CheatState version (ledger + private substates).</summary>
+        public long TotalVersion { get; }
+
+        /// <summary>CheatState fingerprint for the modeled aggregate.</summary>
+        public ulong Fingerprint { get; }
+
+        /// <summary>
+        /// Rebuilds the real CheatState. If the persisted total version exceeds the ledger
+        /// version, private substate content exists that this task does not model; recovery
+        /// fails closed instead of silently replacing it with empty substates.
+        /// </summary>
+        public CheatState RestoreCheatState()
+        {
+            CheatLedger ledger = CheatLedger.FromSnapshot(InitialPoints, _balances, _entries);
+            if (TotalVersion != ledger.Version)
+            {
+                throw new InvalidOperationException(
+                    "Cheat private substate version " + TotalVersion +
+                    " is not modeled; ledger version is " + ledger.Version + ".");
+            }
+
+            var state = new CheatState(ledger, new TileMarkState(), new SleeveBloomState(), new BeamSwapState());
+            if (state.Fingerprint != Fingerprint)
+            {
+                throw new InvalidOperationException("Recovered cheat aggregate fingerprint does not match.");
+            }
+
+            return state;
+        }
 
         /// <summary>
         /// Derives the initial points from the real ledger history. With no entries, all four
@@ -466,12 +536,27 @@ namespace Mahjong.TableRuntime
             return new TableCheatLedgerCheckpoint(initial ?? 0, ledger);
         }
 
+        public static TableCheatLedgerCheckpoint FromCheatState(CheatState state)
+        {
+            if (state == null)
+            {
+                throw new ArgumentNullException(nameof(state));
+            }
+
+            var ledgerCheckpoint = FromLedger(state.Ledger);
+            return new TableCheatLedgerCheckpoint(
+                ledgerCheckpoint.InitialPoints,
+                state.Ledger,
+                state.Version,
+                state.Fingerprint);
+        }
+
         public CheatLedger Restore() => CheatLedger.FromSnapshot(InitialPoints, _balances, _entries);
     }
 
     public static class TableCheatLedgerCheckpointCodec
     {
-        public const int FormatVersion = 1;
+        public const int FormatVersion = 2;
         private const int Magic = 0x4D4A4C43; // MJLC
 
         public static byte[] Encode(TableCheatLedgerCheckpoint checkpoint)
@@ -486,6 +571,8 @@ namespace Mahjong.TableRuntime
             {
                 writer.Write(Magic);
                 writer.Write(FormatVersion);
+                writer.Write(checkpoint.TotalVersion);
+                writer.Write(checkpoint.Fingerprint);
                 writer.Write(checkpoint.InitialPoints);
                 for (int seat = 0; seat < 4; seat++)
                 {
@@ -529,6 +616,8 @@ namespace Mahjong.TableRuntime
                     throw new InvalidDataException("Unsupported cheat checkpoint schema " + schema + ".");
                 }
 
+                long totalVersion = reader.ReadInt64();
+                ulong fingerprint = reader.ReadUInt64();
                 int initial = reader.ReadInt32();
                 var balances = new int[4];
                 for (int seat = 0; seat < 4; seat++)
@@ -560,7 +649,7 @@ namespace Mahjong.TableRuntime
 
                 // Replays the real ledger entries and verifies balances before returning.
                 CheatLedger ledger = CheatLedger.FromSnapshot(initial, balances, entries);
-                return new TableCheatLedgerCheckpoint(initial, ledger);
+                return new TableCheatLedgerCheckpoint(initial, ledger, totalVersion, fingerprint);
             }
         }
     }

@@ -4,6 +4,7 @@ using System.Collections.ObjectModel;
 using Mahjong.Ai;
 using Mahjong.Contracts;
 using Mahjong.Domain;
+using Mahjong.Domain.Cheat;
 
 namespace Mahjong.TableRuntime
 {
@@ -69,6 +70,9 @@ namespace Mahjong.TableRuntime
 
         public OwnerEpoch InitialOwnerEpoch { get; set; } = new OwnerEpoch(1);
 
+        /// <summary>Initial durable timing version. The first durable write advances it by one.</summary>
+        public long InitialTimingVersion { get; set; } = 1L;
+
         /// <summary>Initial seat controllers. P3.3 owns runtime takeover/reclaim changes.</summary>
         public IReadOnlyDictionary<int, SeatControllerKind>? InitialControllers { get; set; }
 
@@ -101,6 +105,11 @@ namespace Mahjong.TableRuntime
             if (InitialOwnerEpoch.Value == 0)
             {
                 throw new ArgumentOutOfRangeException(nameof(InitialOwnerEpoch), "Owner epoch starts at 1.");
+            }
+
+            if (InitialTimingVersion < 0)
+            {
+                throw new ArgumentOutOfRangeException(nameof(InitialTimingVersion), InitialTimingVersion, "Timing version must be non-negative.");
             }
 
             if (InitialControllers != null)
@@ -878,6 +887,8 @@ namespace Mahjong.TableRuntime
     /// </summary>
     public sealed class TableRecoveryBaseline
     {
+        private readonly ReadOnlyCollection<TableEventRecord> _committedEvents;
+
         public TableRecoveryBaseline(
             RoundStateMachine round,
             StateVersion stateVersion,
@@ -893,7 +904,12 @@ namespace Mahjong.TableRuntime
             EventSeq lastEventSeq,
             OwnerEpoch ownerEpoch,
             TableControlRecoveryBaseline? control,
-            TableRecoveryTiming? timing)
+            TableRecoveryTiming? timing,
+            long timingVersion = 0L,
+            CheatState? cheat = null,
+            byte[]? committedFactsPayload = null,
+            IReadOnlyList<TableEventRecord>? committedEvents = null,
+            bool strictHistory = false)
         {
             Round = round ?? throw new ArgumentNullException(nameof(round));
             StateVersion = stateVersion;
@@ -901,6 +917,16 @@ namespace Mahjong.TableRuntime
             OwnerEpoch = ownerEpoch;
             Control = control;
             Timing = timing ?? TableRecoveryTiming.None;
+            TimingVersion = timingVersion;
+            Cheat = cheat;
+            StrictHistory = strictHistory;
+            CommittedFactsPayload = committedFactsPayload == null
+                ? null
+                : (byte[])committedFactsPayload.Clone();
+            _committedEvents = new ReadOnlyCollection<TableEventRecord>(
+                committedEvents == null
+                    ? new List<TableEventRecord>()
+                    : new List<TableEventRecord>(committedEvents));
             if (Control == null && Timing.Decisions.Count > 0)
             {
                 throw new ArgumentException(
@@ -922,6 +948,19 @@ namespace Mahjong.TableRuntime
 
         /// <summary>Explicit restored decisions. Empty means all in-flight decisions are abandoned.</summary>
         public TableRecoveryTiming Timing { get; }
+
+        public long TimingVersion { get; }
+
+        /// <summary>Real cheat aggregate rebuilt from persisted ledger entries, when modeled.</summary>
+        public CheatState? Cheat { get; }
+
+        /// <summary>Host-owned committed facts persisted with the checkpoint; installed via the sink.</summary>
+        public byte[]? CommittedFactsPayload { get; }
+
+        /// <summary>Full committed event history, not a SnapshotEventWindow.</summary>
+        public IReadOnlyList<TableEventRecord> CommittedEvents => _committedEvents;
+
+        public bool StrictHistory { get; }
     }
 
     /// <summary>Tick input. Deadline time always comes from the actor clock, not the client.</summary>

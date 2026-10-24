@@ -79,6 +79,10 @@ namespace Mahjong.TableRuntime
         public const string RecoveryLeaseHeld = "RECOVERY_LEASE_HELD";
         public const string LeaseRenewFailed = "LEASE_RENEW_FAILED";
         public const string OutboxConflict = "OUTBOX_CONFLICT";
+        public const string RecoveryStateSinkRequired = "RECOVERY_STATE_SINK_REQUIRED";
+        public const string RecoveryStateSinkFailed = "RECOVERY_STATE_SINK_FAILED";
+        public const string RecoveryPrivateStateUnsupported = "RECOVERY_PRIVATE_STATE_UNSUPPORTED";
+        public const string RecoveryStateChanged = "RECOVERY_STATE_CHANGED";
 
         public static string FromDomain(RoundTransitionErrorCode code)
         {

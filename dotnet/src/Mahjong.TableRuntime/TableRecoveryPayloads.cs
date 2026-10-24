@@ -23,7 +23,10 @@ namespace Mahjong.TableRuntime
             string bootId,
             ulong utcNowMs,
             TableCheatLedgerCheckpoint? cheat = null,
-            byte[]? committedFactsPayload = null)
+            byte[]? committedFactsPayload = null,
+            long timingVersion = 1L,
+            long capturedMonotonicMillis = 0L,
+            IReadOnlyList<TableEventRecord>? committedHistory = null)
         {
             if (round == null)
             {
@@ -51,6 +54,12 @@ namespace Mahjong.TableRuntime
             TablePayloadSha256? factsHash = committedFactsPayload == null
                 ? (TablePayloadSha256?)null
                 : TablePayloadSha256.Compute(committedFactsPayload);
+            byte[]? historyBytes = committedHistory == null
+                ? null
+                : TableCommittedHistoryCodec.Encode(committedHistory);
+            TablePayloadSha256? historyHash = historyBytes == null
+                ? (TablePayloadSha256?)null
+                : TablePayloadSha256.Compute(historyBytes);
 
             return new TableCheckpoint(
                 roomId,
@@ -71,7 +80,11 @@ namespace Mahjong.TableRuntime
                 factsHash,
                 utcNowMs,
                 bootId,
-                SchemaVersion);
+                SchemaVersion,
+                timingVersion,
+                capturedMonotonicMillis,
+                historyBytes,
+                historyHash);
         }
 
         /// <summary>
@@ -82,7 +95,9 @@ namespace Mahjong.TableRuntime
         public static TableTimingCheckpoint CaptureTiming(
             DecisionClock clock,
             IEnumerable<PendingDecision> pending,
-            long nowMillis)
+            long nowMillis,
+            ulong utcNowMs = 0UL,
+            string bootId = "")
         {
             if (clock == null)
             {
@@ -124,7 +139,13 @@ namespace Mahjong.TableRuntime
                     overdue));
             }
 
-            return new TableTimingCheckpoint(clock.ActiveRoundId ?? string.Empty, reserves, decisions);
+            return new TableTimingCheckpoint(
+                clock.ActiveRoundId ?? string.Empty,
+                reserves,
+                decisions,
+                utcNowMs,
+                nowMillis,
+                bootId);
         }
     }
 
@@ -224,6 +245,280 @@ namespace Mahjong.TableRuntime
         public int Ordinal { get; }
 
         public ulong SourceFingerprint { get; }
+    }
+
+    /// <summary>
+    /// Full committed history kept by a checkpoint. It is deliberately not the diagnostic
+    /// SnapshotEventWindow: recovery installs this list into the actor's committed history so
+    /// P3.2 settlement/event facts do not depend on a truncated window.
+    /// </summary>
+    public static class TableCommittedHistoryCodec
+    {
+        public const int FormatVersion = 1;
+        private const int Magic = 0x4D4A4843; // MJHC
+        private const int MaxEvents = 1_000_000;
+
+        public static byte[] Encode(IReadOnlyList<TableEventRecord> events)
+        {
+            if (events == null)
+            {
+                throw new ArgumentNullException(nameof(events));
+            }
+
+            if (events.Count > MaxEvents)
+            {
+                throw new ArgumentException("Committed history exceeds the event cap.", nameof(events));
+            }
+
+            using (var stream = new MemoryStream())
+            using (var writer = new BinaryWriter(stream, Encoding.UTF8, leaveOpen: true))
+            {
+                writer.Write(Magic);
+                writer.Write(FormatVersion);
+                writer.Write(events.Count);
+                for (int i = 0; i < events.Count; i++)
+                {
+                    TableEventRecord value = events[i] ??
+                        throw new ArgumentException("Committed history contains null.", nameof(events));
+                    writer.Write(value.Seq.Value);
+                    writer.Write(value.CommandVersion.Value);
+                    writer.Write(value.Ordinal);
+                    writer.Write((byte)value.Type);
+                    writer.Write(value.Seat);
+                    writer.Write(value.Tile.HasValue);
+                    if (value.Tile.HasValue)
+                    {
+                        writer.Write(value.Tile.Value.Value);
+                    }
+
+                    writer.Write(value.Detail != null);
+                    if (value.Detail != null)
+                    {
+                        writer.Write(value.Detail);
+                    }
+
+                    writer.Write(value.EventSchema);
+                    byte[]? payload = value.Payload;
+                    writer.Write(payload != null);
+                    if (payload != null)
+                    {
+                        writer.Write(payload.Length);
+                        writer.Write(payload);
+                    }
+                }
+
+                writer.Flush();
+                return stream.ToArray();
+            }
+        }
+
+        public static IReadOnlyList<TableEventRecord> Decode(byte[] payload)
+        {
+            if (payload == null || payload.Length < 8)
+            {
+                throw new InvalidDataException("Committed history payload is empty or truncated.");
+            }
+
+            using (var stream = new MemoryStream(payload, writable: false))
+            using (var reader = new BinaryReader(stream, Encoding.UTF8, leaveOpen: true))
+            {
+                if (reader.ReadInt32() != Magic)
+                {
+                    throw new InvalidDataException("Committed history magic is invalid.");
+                }
+
+                int schema = reader.ReadInt32();
+                if (schema != FormatVersion)
+                {
+                    throw new InvalidDataException("Unsupported committed history schema " + schema + ".");
+                }
+
+                int count = reader.ReadInt32();
+                if (count < 0 || count > MaxEvents)
+                {
+                    throw new InvalidDataException("Committed history count is invalid.");
+                }
+
+                var events = new List<TableEventRecord>(count);
+                for (int i = 0; i < count; i++)
+                {
+                    ulong seq = reader.ReadUInt64();
+                    ulong version = reader.ReadUInt64();
+                    int ordinal = reader.ReadInt32();
+                    byte type = reader.ReadByte();
+                    if (!Enum.IsDefined(typeof(RoundEventType), type))
+                    {
+                        throw new InvalidDataException("Committed history event type is invalid.");
+                    }
+
+                    int seat = reader.ReadInt32();
+                    TileId? tile = reader.ReadBoolean() ? new TileId(reader.ReadInt32()) : (TileId?)null;
+                    string? detail = reader.ReadBoolean() ? reader.ReadString() : null;
+                    int eventSchema = reader.ReadInt32();
+                    byte[]? eventPayload = null;
+                    if (reader.ReadBoolean())
+                    {
+                        int length = reader.ReadInt32();
+                        if (length <= 0 || length > 1024 * 1024)
+                        {
+                            throw new InvalidDataException("Committed history event payload length is invalid.");
+                        }
+
+                        eventPayload = reader.ReadBytes(length);
+                        if (eventPayload.Length != length)
+                        {
+                            throw new InvalidDataException("Committed history event payload is truncated.");
+                        }
+                    }
+
+                    events.Add(new TableEventRecord(
+                        new EventSeq(seq),
+                        new StateVersion(version),
+                        ordinal,
+                        (RoundEventType)type,
+                        seat,
+                        tile,
+                        detail,
+                        eventSchema,
+                        eventPayload));
+                }
+
+                if (stream.Position != payload.Length)
+                {
+                    throw new InvalidDataException("Committed history payload has trailing bytes.");
+                }
+
+                return events;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Strict typed envelope for host-owned committed facts/private projection data. The body
+    /// remains host-defined, but the envelope binds schema, round/state version and SHA-256 so
+    /// stale or cross-state facts are rejected instead of being installed.
+    /// </summary>
+    public static class TableCommittedFactsCodec
+    {
+        public const int FormatVersion = 1;
+        private const int Magic = 0x4D4A4346; // MJCF
+        private const int MaxBytes = 1024 * 1024;
+
+        public static byte[] Encode(string roundId, StateVersion stateVersion, byte[] payload)
+        {
+            if (string.IsNullOrWhiteSpace(roundId))
+            {
+                throw new ArgumentException("RoundId cannot be blank.", nameof(roundId));
+            }
+
+            if (payload == null || payload.Length == 0 || payload.Length > MaxBytes)
+            {
+                throw new ArgumentException("Committed facts payload is empty or too large.", nameof(payload));
+            }
+
+            using (var stream = new MemoryStream())
+            using (var writer = new BinaryWriter(stream, Encoding.UTF8, leaveOpen: true))
+            {
+                writer.Write(Magic);
+                writer.Write(FormatVersion);
+                writer.Write(roundId);
+                writer.Write(stateVersion.Value);
+                writer.Write(payload.Length);
+                writer.Write(payload);
+                writer.Write(TablePayloadSha256.Compute(payload).ToArray());
+                writer.Flush();
+                return stream.ToArray();
+            }
+        }
+
+        public static TableCommittedFactsEnvelope Decode(
+            byte[] bytes,
+            string expectedRoundId,
+            StateVersion expectedStateVersion)
+        {
+            if (bytes == null || bytes.Length < 8)
+            {
+                throw new InvalidDataException("Committed facts envelope is empty or truncated.");
+            }
+
+            using (var stream = new MemoryStream(bytes, writable: false))
+            using (var reader = new BinaryReader(stream, Encoding.UTF8, leaveOpen: true))
+            {
+                if (reader.ReadInt32() != Magic)
+                {
+                    throw new InvalidDataException("Committed facts envelope magic is invalid.");
+                }
+
+                int schema = reader.ReadInt32();
+                if (schema != FormatVersion)
+                {
+                    throw new InvalidDataException("Unsupported committed facts schema " + schema + ".");
+                }
+
+                string roundId = reader.ReadString();
+                ulong stateVersion = reader.ReadUInt64();
+                int length = reader.ReadInt32();
+                if (length <= 0 || length > MaxBytes)
+                {
+                    throw new InvalidDataException("Committed facts body length is invalid.");
+                }
+
+                byte[] payload = reader.ReadBytes(length);
+                if (payload.Length != length)
+                {
+                    throw new InvalidDataException("Committed facts body is truncated.");
+                }
+
+                byte[] digest = reader.ReadBytes(TablePayloadSha256.SizeBytes);
+                if (digest.Length != TablePayloadSha256.SizeBytes ||
+                    TablePayloadSha256.Compute(payload) != new TablePayloadSha256(digest))
+                {
+                    throw new InvalidDataException("Committed facts body digest is invalid.");
+                }
+
+                if (stream.Position != bytes.Length)
+                {
+                    throw new InvalidDataException("Committed facts envelope has trailing bytes.");
+                }
+
+                if (!string.Equals(roundId, expectedRoundId, StringComparison.Ordinal) ||
+                    stateVersion != expectedStateVersion.Value)
+                {
+                    throw new InvalidDataException("Committed facts envelope does not match the recovered state.");
+                }
+
+                return new TableCommittedFactsEnvelope(
+                    roundId,
+                    new StateVersion(stateVersion),
+                    payload,
+                    new TablePayloadSha256(digest));
+            }
+        }
+    }
+
+    public sealed class TableCommittedFactsEnvelope
+    {
+        private readonly byte[] _payload;
+
+        public TableCommittedFactsEnvelope(
+            string roundId,
+            StateVersion stateVersion,
+            byte[] payload,
+            TablePayloadSha256 sha256)
+        {
+            RoundId = roundId;
+            StateVersion = stateVersion;
+            _payload = (byte[])payload.Clone();
+            Sha256 = sha256;
+        }
+
+        public string RoundId { get; }
+
+        public StateVersion StateVersion { get; }
+
+        public TablePayloadSha256 Sha256 { get; }
+
+        public byte[] Payload => (byte[])_payload.Clone();
     }
 
     /// <summary>Deterministic terminal result payload for the unique settlement outbox.</summary>

@@ -246,6 +246,28 @@ namespace Mahjong.Domain
 
         public DecisionClockConfig Config { get; }
 
+        /// <summary>
+        /// Exact copy for candidate timing transactions. The actor mutates the clone, persists
+        /// the snapshot, and only then installs the clone as live authority.
+        /// </summary>
+        public DecisionClock Clone()
+        {
+            var copy = new DecisionClock(Config)
+            {
+                ActiveRoundId = ActiveRoundId,
+                IsPausedState = IsPausedState,
+                _pausedAt = _pausedAt,
+                _generationCounter = _generationCounter
+            };
+            for (int seat = 0; seat < 4; seat++)
+            {
+                copy._timings[seat] = _timings[seat];
+                copy._reserves[seat] = _reserves[seat];
+            }
+
+            return copy;
+        }
+
         public string? ActiveRoundId { get; private set; }
 
         public bool IsPausedState { get; private set; }

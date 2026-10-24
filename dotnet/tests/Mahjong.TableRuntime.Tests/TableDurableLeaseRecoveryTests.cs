@@ -5,6 +5,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using Mahjong.Contracts;
 using Mahjong.Domain;
+using Mahjong.Domain.Cheat;
 using Xunit;
 
 namespace Mahjong.TableRuntime.Tests
@@ -326,6 +327,114 @@ namespace Mahjong.TableRuntime.Tests
         }
 
         [Fact]
+        public async Task SaveCheckpointRejectsExpiredLeaseAndLeavesCheckpointUnchanged()
+        {
+            await using DurableHarness h = await DurableHarness.CreateAsync();
+            TableCheckpoint before = (await h.Store.LoadCheckpointAsync(
+                DurableHarness.Room,
+                TestContext.Current.CancellationToken))!;
+            h.Clock.Now += 700_000L;
+
+            TableOperationResult saved = await h.Actor.SaveCheckpointAsync(TestContext.Current.CancellationToken);
+
+            Assert.Equal(TableOperationStatus.Failed, saved.Status);
+            Assert.Equal(TableRuntimeReasonCode.StaleOwnerEpoch, saved.ReasonCode);
+            TableCheckpoint after = (await h.Store.LoadCheckpointAsync(
+                DurableHarness.Room,
+                TestContext.Current.CancellationToken))!;
+            Assert.Equal(before.TimingVersion, after.TimingVersion);
+            Assert.Equal(before.ControlVersion, after.ControlVersion);
+        }
+
+        [Fact]
+        public async Task SameEpochOldControlCannotOverwriteCheckpoint()
+        {
+            await using DurableHarness old = await DurableHarness.CreateAsync();
+            await using DurableHarness current = DurableHarness.Attach(old, DurableHarness.Owner, 1UL);
+            TableControlResult changed = await current.Actor.RequestTakeoverAsync(
+                1,
+                new OwnerEpoch(1),
+                new ControlEpoch(0),
+                "control fence",
+                TestContext.Current.CancellationToken);
+            Assert.Equal(TableControlStatus.Changed, changed.Status);
+
+            TableOperationResult saved = await old.Actor.SaveCheckpointAsync(TestContext.Current.CancellationToken);
+
+            Assert.Equal(TableOperationStatus.Failed, saved.Status);
+            Assert.Equal(TableRuntimeReasonCode.StaleControlVersion, saved.ReasonCode);
+            TableCheckpoint checkpoint = (await old.Store.LoadCheckpointAsync(
+                DurableHarness.Room,
+                TestContext.Current.CancellationToken))!;
+            Assert.Equal(1L, checkpoint.ControlVersion);
+            TableSnapshot snapshot = await old.Actor.GetSnapshotAsync(TestContext.Current.CancellationToken);
+            Assert.Equal(TableActorLifecycle.Faulted, snapshot.Lifecycle);
+        }
+
+        [Fact]
+        public async Task ConcurrentOldAndNewOwnerCheckpointSavesLeaveNewOwnerState()
+        {
+            await using DurableHarness old = await DurableHarness.CreateAsync();
+            await using DurableHarness current = DurableHarness.Attach(old, DurableHarness.Owner, 1UL);
+            Assert.True((await current.Actor.RecoverFromStoreAsync(TestContext.Current.CancellationToken)).Recovered);
+
+            Task<TableOperationResult> oldSave = old.Actor.SaveCheckpointAsync(TestContext.Current.CancellationToken).AsTask();
+            Task<TableOperationResult> currentSave = current.Actor.SaveCheckpointAsync(TestContext.Current.CancellationToken).AsTask();
+            TableOperationResult[] results = await Task.WhenAll(oldSave, currentSave);
+
+            Assert.Equal(TableOperationStatus.Failed, results[0].Status);
+            Assert.Equal(TableOperationStatus.Configured, results[1].Status);
+            TableCheckpoint checkpoint = (await old.Store.LoadCheckpointAsync(
+                DurableHarness.Room,
+                TestContext.Current.CancellationToken))!;
+            Assert.Equal(0UL, checkpoint.StateVersion.Value);
+            Assert.Equal(0L, checkpoint.ControlVersion);
+        }
+
+        [Fact]
+        public async Task RevokeAfterScopeReadCannotInterleaveBeforeCommitApply()
+        {
+            await using DurableHarness h = await DurableHarness.CreateAsync();
+            TableCommandEnvelope command = h.Envelope(
+                P31Fixtures.DiscardCurrent(h.InitialRound),
+                0,
+                "scope-race");
+            using var entered = new ManualResetEventSlim(false);
+            using var release = new ManualResetEventSlim(false);
+            h.Store.AfterScopeCheckForTest = () =>
+            {
+                entered.Set();
+                release.Wait(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
+            };
+
+            Task<TableOperationResult> submit = Task.Run(async () =>
+                await h.SubmitAsync(command).ConfigureAwait(false),
+                TestContext.Current.CancellationToken);
+            Assert.True(entered.Wait(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken));
+
+            var revokeStarted = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            Task revoke = Task.Run(() =>
+            {
+                revokeStarted.TrySetResult(true);
+                h.Scopes.Revoke(h.Scope.ScopeId, (ulong)h.Clock.UtcNowMs);
+            }, TestContext.Current.CancellationToken);
+            await revokeStarted.Task;
+            Assert.False(revoke.IsCompleted);
+
+            release.Set();
+            TableOperationResult result = await submit;
+            await revoke;
+            h.Store.AfterScopeCheckForTest = null;
+
+            Assert.Equal(TableOperationStatus.Accepted, result.Status);
+            Assert.True(h.Scopes.ReadScopeForCommit(h.Scope.ScopeId)!.IsRevoked);
+            TableOperationResult next = await h.SubmitAsync(
+                h.Envelope(P31Fixtures.DiscardCurrent(h.InitialRound), 1, "scope-race-next"));
+            Assert.Equal(TableOperationStatus.Rejected, next.Status);
+            Assert.Equal(ProtocolErrorCode.RequestScopeExpired, next.ReasonCode);
+        }
+
+        [Fact]
         public async Task ControlEpochAndDecisionTimingAreRecoveredConsistently()
         {
             await using DurableHarness harness = await DurableHarness.CreateAsync();
@@ -378,7 +487,7 @@ namespace Mahjong.TableRuntime.Tests
             Assert.Equal(1L, result.Baseline.Control.State.Seats[1].ControlEpoch);
             Assert.Equal(SeatControllerKind.Takeover, result.Baseline.Control.State.Seats[1].Kind);
             TableRecoveredDecision restored = Assert.Single(result.Baseline.Timing.Decisions);
-            Assert.Equal(originalBase + 3000L, restored.RemainingBaseMillis);
+            Assert.Equal(originalBase + 1000L, restored.RemainingBaseMillis);
             Assert.Equal(2UL, result.Baseline.OwnerEpoch.Value);
         }
 
@@ -427,24 +536,37 @@ namespace Mahjong.TableRuntime.Tests
             Assert.True(recovery.Recovered, recovery.ReasonCode + ": " + recovery.Detail);
             Assert.True(recovery.Report!.Terminal);
             Assert.True(recovery.Report.OutboxPresent);
+            Assert.True(recovery.Report.OutboxPayloadMatches);
         }
 
         [Fact]
         public async Task RecoveryInstallsStrictWireBaselineAndRejectsOldGenerationAndEpoch()
         {
+            var recoverySink = new RecordingRecoveryStateSink();
+            var recoveredSource = new RecoveredProjectionSource(recoverySink);
             await using DurableHarness first = await DurableHarness.CreateAsync(
-                projectionSource: new TestProjectionSource(),
-                streamOptions: new TableStreamOptions());
+                projectionSource: recoveredSource,
+                streamOptions: new TableStreamOptions(),
+                recoverySink: recoverySink);
             List<TableCommandEnvelope> chain = P31Fixtures.BuildDiscardChain(first.InitialRound, 3)
                 .Select((value, index) => first.Envelope(value.Command, index, "wire-" + index))
                 .ToList();
             Assert.Equal(TableOperationStatus.Accepted, (await first.SubmitAsync(chain[0])).Status);
             Assert.Equal(TableOperationStatus.Accepted, (await first.SubmitAsync(chain[1])).Status);
 
-            await using DurableHarness recovered = DurableHarness.Attach(first, DurableHarness.Owner, 1UL);
+            await using DurableHarness recovered = DurableHarness.Attach(
+                first,
+                DurableHarness.Owner,
+                1UL,
+                recoverySink);
             TableRecoveryResult result = await recovered.Actor.RecoverFromStoreAsync(
                 TestContext.Current.CancellationToken);
             Assert.True(result.Recovered, result.ReasonCode + ": " + result.Detail);
+            Assert.NotNull(recoverySink.Installed);
+            Assert.NotNull(recoverySink.Installed!.Cheat);
+            Assert.Equal(2UL, recoverySink.Installed.StateVersion.Value);
+            Assert.Equal(4, recoverySink.Installed.CommittedHistory.Count);
+            Assert.Equal(result.Report!.TimingVersion, recoverySink.Installed.TimingVersion);
 
             var oldOwnerSink = new RecordingStreamSink();
             TableStreamControlResult oldOwner = await recovered.Actor.SubscribeStreamAsync(
@@ -522,6 +644,34 @@ namespace Mahjong.TableRuntime.Tests
             Assert.Single(await spectatorSink.WaitForCountAsync(1));
             Assert.True(spectatorSink.Frames[0].IsFullSnapshot);
             Assert.NotNull(spectatorSink.Frames[0].Public);
+        }
+    }
+
+    internal sealed class RecoveredProjectionSource : ITableProjectionContextSource
+    {
+        public RecoveredProjectionSource(RecordingRecoveryStateSink sink)
+        {
+            Sink = sink ?? throw new ArgumentNullException(nameof(sink));
+        }
+
+        public RecordingRecoveryStateSink Sink { get; }
+
+        public int Calls { get; private set; }
+
+        public TableProjectionContextData Capture(TableProjectionContextRequest request)
+        {
+            Calls++;
+            CheatState cheat = Sink.Installed?.Cheat ?? V32Fixtures.Cheat();
+            return new TableProjectionContextData(
+                request.Round.RoundId,
+                request.StateVersion,
+                1UL,
+                cheat,
+                V32Fixtures.BuildPublicFacts(request.Round),
+                V32Fixtures.BuildPrivateFacts(request.Round),
+                new TableSessionProjection(false, string.Empty, null, null),
+                new TableProjectionPolicy(),
+                Array.Empty<TableProjectionEventFact>());
         }
     }
 }

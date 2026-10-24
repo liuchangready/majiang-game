@@ -262,7 +262,26 @@ namespace Mahjong.TableRuntime
     /// </summary>
     public interface ITableTransactionalScopeReader
     {
-        TableScopeRecord? ReadScopeForCommit(RequestScopeId scopeId);
+        /// <summary>
+        /// Acquires the scope row lock and returns the immutable scope. The caller must hold the
+        /// lease until the commit is applied or rolled back; revoke blocks for that duration.
+        /// </summary>
+        TableScopeReadLease BeginScopeForCommit(RequestScopeId scopeId);
+    }
+
+    public sealed class TableScopeReadLease : IDisposable
+    {
+        private readonly Action _release;
+
+        public TableScopeReadLease(TableScopeRecord? scope, Action release)
+        {
+            Scope = scope;
+            _release = release ?? throw new ArgumentNullException(nameof(release));
+        }
+
+        public TableScopeRecord? Scope { get; }
+
+        public void Dispose() => _release();
     }
 
     public sealed class TableDurableReceipt
@@ -541,6 +560,7 @@ namespace Mahjong.TableRuntime
         private readonly byte[] _timingPayload;
         private readonly byte[]? _cheatPayload;
         private readonly byte[]? _committedFactsPayload;
+        private readonly byte[]? _committedHistoryPayload;
 
         public TableCheckpoint(
             string roomId,
@@ -561,7 +581,11 @@ namespace Mahjong.TableRuntime
             TablePayloadSha256? committedFactsPayloadSha256,
             ulong createdAtUtcMs,
             string bootId,
-            int schemaVersion = 1)
+            int schemaVersion = 1,
+            long timingVersion = 0L,
+            long capturedMonotonicMillis = 0L,
+            byte[]? committedHistoryPayload = null,
+            TablePayloadSha256? committedHistoryPayloadSha256 = null)
         {
             if (string.IsNullOrWhiteSpace(roomId))
             {
@@ -586,6 +610,16 @@ namespace Mahjong.TableRuntime
             if (string.IsNullOrWhiteSpace(bootId))
             {
                 throw new ArgumentException("BootId cannot be blank.", nameof(bootId));
+            }
+
+            if (timingVersion < 0)
+            {
+                throw new ArgumentOutOfRangeException(nameof(timingVersion), timingVersion, "Timing version must be non-negative.");
+            }
+
+            if (capturedMonotonicMillis < 0)
+            {
+                throw new ArgumentOutOfRangeException(nameof(capturedMonotonicMillis), capturedMonotonicMillis, "Captured monotonic time must be non-negative.");
             }
 
             _statePayload = CopyAndVerify(statePayload, statePayloadSha256, nameof(statePayload));
@@ -614,6 +648,19 @@ namespace Mahjong.TableRuntime
                     nameof(committedFactsPayload));
             }
 
+            if (committedHistoryPayload != null)
+            {
+                if (!committedHistoryPayloadSha256.HasValue)
+                {
+                    throw new ArgumentException("Committed history payload requires a digest.", nameof(committedHistoryPayloadSha256));
+                }
+
+                _committedHistoryPayload = CopyAndVerify(
+                    committedHistoryPayload,
+                    committedHistoryPayloadSha256.Value,
+                    nameof(committedHistoryPayload));
+            }
+
             RoomId = roomId;
             StateVersion = stateVersion;
             LastEventSeq = lastEventSeq;
@@ -628,6 +675,9 @@ namespace Mahjong.TableRuntime
             CreatedAtUtcMs = createdAtUtcMs;
             BootId = bootId;
             SchemaVersion = schemaVersion;
+            TimingVersion = timingVersion;
+            CapturedMonotonicMillis = capturedMonotonicMillis;
+            CommittedHistoryPayloadSha256 = committedHistoryPayloadSha256;
         }
 
         public string RoomId { get; }
@@ -652,6 +702,12 @@ namespace Mahjong.TableRuntime
 
         public TablePayloadSha256? CommittedFactsPayloadSha256 { get; }
 
+        public long TimingVersion { get; }
+
+        public long CapturedMonotonicMillis { get; }
+
+        public TablePayloadSha256? CommittedHistoryPayloadSha256 { get; }
+
         public long ControlVersion { get; }
 
         public ulong CreatedAtUtcMs { get; }
@@ -668,6 +724,9 @@ namespace Mahjong.TableRuntime
 
         public byte[]? CommittedFactsPayload =>
             _committedFactsPayload == null ? null : Copy(_committedFactsPayload);
+
+        public byte[]? CommittedHistoryPayload =>
+            _committedHistoryPayload == null ? null : Copy(_committedHistoryPayload);
 
         internal ReadOnlySpan<byte> StatePayloadSpan => new ReadOnlySpan<byte>(_statePayload);
 
@@ -714,7 +773,8 @@ namespace Mahjong.TableRuntime
             TablePayloadSha256 stateHash,
             int rulesetVersion,
             long controlVersion,
-            ulong updatedAtUtcMs)
+            ulong updatedAtUtcMs,
+            long timingVersion = 0L)
         {
             RoomId = roomId;
             StateVersion = stateVersion;
@@ -724,6 +784,7 @@ namespace Mahjong.TableRuntime
             RulesetVersion = rulesetVersion;
             ControlVersion = controlVersion;
             UpdatedAtUtcMs = updatedAtUtcMs;
+            TimingVersion = timingVersion;
         }
 
         public string RoomId { get; }
@@ -741,6 +802,8 @@ namespace Mahjong.TableRuntime
         public long ControlVersion { get; }
 
         public ulong UpdatedAtUtcMs { get; }
+
+        public long TimingVersion { get; }
     }
 
     /// <summary>
@@ -766,7 +829,11 @@ namespace Mahjong.TableRuntime
             TableCheckpoint? checkpoint,
             byte[]? nextStatePayload,
             ulong nextStateFingerprint,
-            bool terminal)
+            bool terminal,
+            TableTimingCheckpoint? timing = null,
+            long timingVersion = 0L,
+            byte[]? committedFactsPayload = null,
+            TablePayloadSha256? committedFactsPayloadSha256 = null)
         {
             if (string.IsNullOrWhiteSpace(roomId))
             {
@@ -815,9 +882,23 @@ namespace Mahjong.TableRuntime
                 {
                     throw new ArgumentException("A REJECTED batch cannot change state or write a checkpoint.");
                 }
+
+                if (timing != null || timingVersion != 0)
+                {
+                    throw new ArgumentException("A REJECTED batch cannot change timing.");
+                }
             }
             else if (accepted)
             {
+                if (timing == null)
+                {
+                    throw new ArgumentException("An accepted command requires a post-command timing snapshot.", nameof(timing));
+                }
+
+                if (timingVersion < 1)
+                {
+                    throw new ArgumentOutOfRangeException(nameof(timingVersion), timingVersion, "Accepted timing version must be positive.");
+                }
                 if (events == null || events.Count == 0)
                 {
                     throw new ArgumentException("An accepted command requires at least one event.", nameof(events));
@@ -912,6 +993,12 @@ namespace Mahjong.TableRuntime
             NextStatePayload = nextStatePayload == null ? null : Copy(nextStatePayload);
             NextStateFingerprint = nextStateFingerprint;
             Terminal = terminal;
+            Timing = timing;
+            TimingVersion = timingVersion;
+            CommittedFactsPayload = committedFactsPayload == null
+                ? null
+                : Copy(committedFactsPayload);
+            CommittedFactsPayloadSha256 = committedFactsPayloadSha256;
         }
 
         public string RoomId { get; }
@@ -939,6 +1026,14 @@ namespace Mahjong.TableRuntime
         public ulong NextStateFingerprint { get; }
 
         public bool Terminal { get; }
+
+        public TableTimingCheckpoint? Timing { get; }
+
+        public long TimingVersion { get; }
+
+        public byte[]? CommittedFactsPayload { get; }
+
+        public TablePayloadSha256? CommittedFactsPayloadSha256 { get; }
 
         public StateVersion CommandVersion => ExpectedStateVersion.Next();
 
@@ -1125,6 +1220,186 @@ namespace Mahjong.TableRuntime
             new TableLeaseRenewResult(TableLeaseRenewStatus.Failed, null, detail);
     }
 
+    /// <summary>
+    /// Fence for every checkpoint write. The store validates owner/epoch/lease, state version,
+    /// control version and timing version inside the same lock/transaction. A pre-read in the
+    /// actor is never the linearization point.
+    /// </summary>
+    public sealed class TableCheckpointFence
+    {
+        public TableCheckpointFence(
+            string roomId,
+            string ownerInstance,
+            OwnerEpoch expectedOwnerEpoch,
+            StateVersion expectedStateVersion,
+            long expectedControlVersion,
+            long expectedTimingVersion)
+        {
+            if (string.IsNullOrWhiteSpace(roomId))
+            {
+                throw new ArgumentException("RoomId cannot be blank.", nameof(roomId));
+            }
+
+            if (string.IsNullOrWhiteSpace(ownerInstance))
+            {
+                throw new ArgumentException("Owner instance cannot be blank.", nameof(ownerInstance));
+            }
+
+            if (expectedControlVersion < 0)
+            {
+                throw new ArgumentOutOfRangeException(nameof(expectedControlVersion), expectedControlVersion, "Control version must be non-negative.");
+            }
+
+            if (expectedTimingVersion < 0)
+            {
+                throw new ArgumentOutOfRangeException(nameof(expectedTimingVersion), expectedTimingVersion, "Timing version must be non-negative.");
+            }
+
+            RoomId = roomId;
+            OwnerInstance = ownerInstance;
+            ExpectedOwnerEpoch = expectedOwnerEpoch;
+            ExpectedStateVersion = expectedStateVersion;
+            ExpectedControlVersion = expectedControlVersion;
+            ExpectedTimingVersion = expectedTimingVersion;
+        }
+
+        public string RoomId { get; }
+
+        public string OwnerInstance { get; }
+
+        public OwnerEpoch ExpectedOwnerEpoch { get; }
+
+        public StateVersion ExpectedStateVersion { get; }
+
+        public long ExpectedControlVersion { get; }
+
+        public long ExpectedTimingVersion { get; }
+    }
+
+    /// <summary>
+    /// Durable timing observation. Every accepted command, decision open, control checkpoint,
+    /// save-checkpoint and recovery installation advances <see cref="TimingVersion"/> and
+    /// stores the full post-event reserves/open decisions with capture metadata.
+    /// </summary>
+    public sealed class TableTimingJournalRecord
+    {
+        public TableTimingJournalRecord(
+            string roomId,
+            long timingVersion,
+            StateVersion stateVersion,
+            long controlVersion,
+            string bootId,
+            ulong capturedAtUtcMs,
+            long capturedMonotonicMillis,
+            TableTimingCheckpoint timing)
+        {
+            RoomId = roomId;
+            if (timingVersion < 1)
+            {
+                throw new ArgumentOutOfRangeException(nameof(timingVersion), timingVersion, "Timing version starts at 1.");
+            }
+
+            if (controlVersion < 0)
+            {
+                throw new ArgumentOutOfRangeException(nameof(controlVersion), controlVersion, "Control version must be non-negative.");
+            }
+
+            if (string.IsNullOrWhiteSpace(bootId))
+            {
+                throw new ArgumentException("BootId cannot be blank.", nameof(bootId));
+            }
+
+            if (capturedMonotonicMillis < 0)
+            {
+                throw new ArgumentOutOfRangeException(nameof(capturedMonotonicMillis), capturedMonotonicMillis, "Captured monotonic time must be non-negative.");
+            }
+
+            TimingVersion = timingVersion;
+            StateVersion = stateVersion;
+            ControlVersion = controlVersion;
+            BootId = bootId;
+            CapturedAtUtcMs = capturedAtUtcMs;
+            CapturedMonotonicMillis = capturedMonotonicMillis;
+            Timing = timing ?? throw new ArgumentNullException(nameof(timing));
+        }
+
+        public string RoomId { get; }
+
+        public long TimingVersion { get; }
+
+        public StateVersion StateVersion { get; }
+
+        public long ControlVersion { get; }
+
+        public string BootId { get; }
+
+        public ulong CapturedAtUtcMs { get; }
+
+        public long CapturedMonotonicMillis { get; }
+
+        public TableTimingCheckpoint Timing { get; }
+    }
+
+    public sealed class TableTimingAppendRequest
+    {
+        public TableTimingAppendRequest(
+            string roomId,
+            string ownerInstance,
+            OwnerEpoch expectedOwnerEpoch,
+            StateVersion expectedStateVersion,
+            long expectedControlVersion,
+            long expectedTimingVersion,
+            TableTimingCheckpoint timing)
+        {
+            RoomId = roomId;
+            OwnerInstance = ownerInstance;
+            ExpectedOwnerEpoch = expectedOwnerEpoch;
+            ExpectedStateVersion = expectedStateVersion;
+            ExpectedControlVersion = expectedControlVersion;
+            ExpectedTimingVersion = expectedTimingVersion;
+            Timing = timing ?? throw new ArgumentNullException(nameof(timing));
+        }
+
+        public string RoomId { get; }
+
+        public string OwnerInstance { get; }
+
+        public OwnerEpoch ExpectedOwnerEpoch { get; }
+
+        public StateVersion ExpectedStateVersion { get; }
+
+        public long ExpectedControlVersion { get; }
+
+        public long ExpectedTimingVersion { get; }
+
+        public TableTimingCheckpoint Timing { get; }
+    }
+
+    public sealed class TableCommittedFactsSnapshot
+    {
+        private readonly byte[] _payload;
+
+        public TableCommittedFactsSnapshot(byte[] payload, TablePayloadSha256 sha256)
+        {
+            if (payload == null || payload.Length == 0)
+            {
+                throw new ArgumentException("Committed facts payload cannot be empty.", nameof(payload));
+            }
+
+            if (sha256.IsEmpty || TablePayloadSha256.Compute(payload) != sha256)
+            {
+                throw new ArgumentException("Committed facts digest does not match.", nameof(sha256));
+            }
+
+            _payload = (byte[])payload.Clone();
+            Sha256 = sha256;
+        }
+
+        public TablePayloadSha256 Sha256 { get; }
+
+        public byte[] Payload => (byte[])_payload.Clone();
+    }
+
     public interface ITableStore
     {
         ValueTask CreateRoomAsync(TableCheckpoint initialCheckpoint, CancellationToken cancellationToken);
@@ -1133,7 +1408,20 @@ namespace Mahjong.TableRuntime
 
         ValueTask<TableCheckpoint?> LoadCheckpointAsync(string roomId, CancellationToken cancellationToken);
 
-        ValueTask SaveCheckpointAsync(TableCheckpoint checkpoint, CancellationToken cancellationToken);
+        ValueTask<TableTimingJournalRecord?> LoadTimingAsync(string roomId, CancellationToken cancellationToken);
+
+        ValueTask<TableCommittedFactsSnapshot?> LoadCommittedFactsAsync(
+            string roomId,
+            CancellationToken cancellationToken);
+
+        ValueTask<TableDurableCommitResult> AppendTimingAsync(
+            TableTimingAppendRequest request,
+            CancellationToken cancellationToken);
+
+        ValueTask<TableDurableCommitResult> SaveCheckpointAsync(
+            TableCheckpoint checkpoint,
+            TableCheckpointFence fence,
+            CancellationToken cancellationToken);
 
         /// <summary>
         /// Durably journals one control-authority change and its matching control checkpoint.
@@ -1271,6 +1559,57 @@ namespace Mahjong.TableRuntime
         public string Detail { get; }
     }
 
+    public interface ITableRecoveryStateSink
+    {
+        /// <summary>
+        /// Installs verified cold-recovery state into the owning host/projection layer. The sink
+        /// must throw if it cannot install the exact state; the actor then stays non-Serving.
+        /// </summary>
+        void Install(TableRecoveryAuxState state);
+    }
+
+    public sealed class TableRecoveryAuxState
+    {
+        private readonly byte[]? _committedFacts;
+        private readonly ReadOnlyCollection<TableEventRecord> _history;
+
+        public TableRecoveryAuxState(
+            string roomId,
+            StateVersion stateVersion,
+            long timingVersion,
+            long controlVersion,
+            Mahjong.Domain.Cheat.CheatState? cheat,
+            byte[]? committedFactsPayload,
+            IReadOnlyList<TableEventRecord>? committedHistory)
+        {
+            RoomId = roomId;
+            StateVersion = stateVersion;
+            TimingVersion = timingVersion;
+            ControlVersion = controlVersion;
+            Cheat = cheat;
+            _committedFacts = committedFactsPayload == null ? null : (byte[])committedFactsPayload.Clone();
+            _history = new ReadOnlyCollection<TableEventRecord>(
+                committedHistory == null
+                    ? new List<TableEventRecord>()
+                    : new List<TableEventRecord>(committedHistory));
+        }
+
+        public string RoomId { get; }
+
+        public StateVersion StateVersion { get; }
+
+        public long TimingVersion { get; }
+
+        public long ControlVersion { get; }
+
+        public Mahjong.Domain.Cheat.CheatState? Cheat { get; }
+
+        public byte[]? CommittedFactsPayload =>
+            _committedFacts == null ? null : (byte[])_committedFacts.Clone();
+
+        public IReadOnlyList<TableEventRecord> CommittedHistory => _history;
+    }
+
     /// <summary>
     /// Durable dependencies wired into one actor. The four ports are logical faces of one
     /// atomic store/transaction; a deployment must not wire independent databases/writers.
@@ -1341,10 +1680,25 @@ namespace Mahjong.TableRuntime
         public Func<Mahjong.Domain.Cheat.CheatLedger?>? CheatLedgerProvider { get; set; }
 
         /// <summary>
+        /// Optional real CheatState provider. When set it is preferred over the ledger-only
+        /// provider so total private-substate version/fingerprint are persisted and verified.
+        /// </summary>
+        public Func<Mahjong.Domain.Cheat.CheatState?>? CheatStateProvider { get; set; }
+
+        /// <summary>
         /// Optional host-owned opaque P3.2 committed-facts/private-state payload. P3.4 persists
         /// it with a SHA-256 binding and replays it byte-for-byte; it never fabricates or
         /// reinterprets host facts. Semantic ownership/projection remains P5.2's responsibility.
         /// </summary>
         public Func<byte[]>? CommittedFactsProvider { get; set; }
+
+        /// <summary>
+        /// Required when recovery carries cheat/private/facts data. Without it the actor cannot
+        /// install the verified recovery state and must not enter Serving.
+        /// </summary>
+        public ITableRecoveryStateSink? RecoveryStateSink { get; set; }
+
+        /// <summary>When true, recovery must carry host committed facts or fail closed.</summary>
+        public bool RequireCommittedFacts { get; set; } = true;
     }
 }
