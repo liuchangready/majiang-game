@@ -75,6 +75,9 @@ namespace Mahjong.Ai
     /// melds, public dora indicators, scores, the authoritative decision identity and the
     /// frozen legal candidate list. There is intentionally no wall composition, dead-wall
     /// composition, opponent closed hand, ura-dora, seed or full <c>TilePositionMap</c>.
+    /// The optional <see cref="BasicContext"/> adds only the viewer's own riichi status, the
+    /// public last discard and typed per-candidate kan/abortive-draw facts; it remains null
+    /// for callers that do not run <see cref="BasicAiStrategy"/>.
     ///
     /// Construction validates and defensively copies every collection. The table runtime
     /// (P3.2 projection) is responsible for passing only information that this seat may see;
@@ -112,7 +115,8 @@ namespace Mahjong.Ai
             IReadOnlyList<AiVisibleDiscard> visibleDiscards,
             IReadOnlyList<TileId> visibleDoraIndicators,
             IReadOnlyList<long> scores,
-            IReadOnlyList<LegalActionOption> legalActions)
+            IReadOnlyList<LegalActionOption> legalActions,
+            BasicAiContext? basicContext = null)
         {
             SessionId = AiGuard.RequireText(sessionId, nameof(sessionId));
             AiGuard.RequireText(decisionKey.RoundId, "decisionKey.RoundId");
@@ -202,6 +206,7 @@ namespace Mahjong.Ai
                 throw new ArgumentException("An AI observation must contain at least one legal candidate.", nameof(legalActions));
             }
 
+            BasicContext = ValidateBasicContext(basicContext, decisionKey.Seat, _legalActions);
             _myHandTileIds = new ReadOnlyCollection<TileId>(hand);
             DecisionKey = decisionKey;
             ControlEpoch = controlEpoch;
@@ -266,6 +271,15 @@ namespace Mahjong.Ai
 
         public IReadOnlyList<LegalActionOption> LegalActions => _legalActions;
 
+        /// <summary>
+        /// Optional typed context for strategies that need explicit own riichi status, the
+        /// public last discard and per-candidate kan/abortive-draw metadata. It is null for
+        /// observations built by callers that do not run BasicStrategy, so existing
+        /// constructor calls and the baseline strategies keep their previous behaviour.
+        /// When present it is validated against this seat and this candidate list.
+        /// </summary>
+        public BasicAiContext? BasicContext { get; }
+
         public bool ContainsLegalAction(LegalActionOption action)
         {
             if (action == null)
@@ -282,6 +296,79 @@ namespace Mahjong.Ai
             }
 
             return false;
+        }
+
+        /// <summary>
+        /// Binds the optional Basic context to this observation. The context is immutable and
+        /// has already copied its fact list, so no caller-owned collection is retained. Every
+        /// fact must name a candidate that is actually in this seat's frozen list; every Kan
+        /// and Other candidate must be explicitly classified. Missing information is rejected
+        /// here rather than guessed by the strategy.
+        /// </summary>
+        private static BasicAiContext? ValidateBasicContext(
+            BasicAiContext? context,
+            int seat,
+            IReadOnlyList<LegalActionOption> legalActions)
+        {
+            if (context == null)
+            {
+                return null;
+            }
+
+            if (context.Seat != seat)
+            {
+                throw new ArgumentException(
+                    "Basic context must belong to the viewing seat.",
+                    nameof(context));
+            }
+
+            IReadOnlyList<BasicCandidateFacts> facts = context.CandidateFacts;
+            for (int i = 0; i < facts.Count; i++)
+            {
+                BasicCandidateFacts fact = facts[i];
+                bool found = false;
+                for (int j = 0; j < legalActions.Count; j++)
+                {
+                    if (AiGuard.ActionsEqual(legalActions[j], fact.Candidate))
+                    {
+                        found = true;
+                        break;
+                    }
+                }
+
+                if (!found)
+                {
+                    throw new ArgumentException(
+                        "Basic context binds metadata to a candidate that is not part of this observation.",
+                        nameof(context));
+                }
+            }
+
+            for (int i = 0; i < legalActions.Count; i++)
+            {
+                LegalActionOption action = legalActions[i];
+                if (action.Kind == LegalActionKind.Kan)
+                {
+                    if (!context.TryGetFacts(action, out BasicCandidateFacts kanFacts) ||
+                        !kanFacts.KanKind.HasValue)
+                    {
+                        throw new ArgumentException(
+                            "Basic context is missing an explicit physical kan kind for a Kan candidate.",
+                            nameof(context));
+                    }
+                }
+                else if (action.Kind == LegalActionKind.Other)
+                {
+                    if (!context.TryGetFacts(action, out _))
+                    {
+                        throw new ArgumentException(
+                            "Basic context is missing an explicit abortive-draw classification for an Other candidate.",
+                            nameof(context));
+                    }
+                }
+            }
+
+            return context;
         }
 
         private static ReadOnlyCollection<AiVisibleMeld> CopyMelds(
