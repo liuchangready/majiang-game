@@ -11,14 +11,18 @@
 #     its own marker (numbers/booleans in string fields, scalars/null/objects where arrays are
 #     required, null/false array elements, anchor sub-field types, header denominator/stats/
 #     vocabulary/gate list types). No case bundles several error types.
-#   - Sandbox cases s1..s6: a THROWAWAY ISOLATED git repository is created under the system temp
+#   - Sandbox cases s1..s10: a THROWAWAY ISOLATED git repository is created under the system temp
 #     directory with a baseline commit B and a child commit C. B carries a minimal production
 #     source, a test source, a V5 C# source and the real taskbook; C adds post-baseline files and
 #     post-baseline-only symbols. The cases prove that (a) the baseline-good matrix passes, (b) a
 #     file tracked only AFTER the baseline cannot satisfy a row, (c) a symbol added to a source
 #     only AFTER the baseline cannot serve as v4Symbol or as a V5 anchor symbol, and (d) an
-#     acceptance commit that is a descendant of the baseline is rejected. These cases are fully
-#     deterministic and never touch the real repository's production code or index.
+#     acceptance commit that is a descendant of the baseline is rejected. Cases s7..s10 pin the
+#     pseudo-symbol holes: a word that appears only in a COMMENT (s7), only inside a STRING
+#     literal (s8), only as a GENERIC PARAMETER (s9), or only as an extension RECEIVER (s10)
+#     must all fail; the declaration matchers strip comments/strings first and require real
+#     declaration syntax. These cases are fully deterministic and never touch the real
+#     repository's production code or index.
 #   - NO-SKIP RULE: there is no skipped, defaulted or otherwise hidden-green case anywhere. If an
 #     environment assumption (for example resolving a non-ancestor commit in the real repo) cannot
 #     be met, the case is counted as FAILED and the self-test exits non-zero.
@@ -390,18 +394,18 @@ try {
     $sbDocDir = Join-Path $sb "doc"
     $tbCopied = @(Get-ChildItem -LiteralPath $sbDocDir -Recurse -Filter "V5-0-1-IMPLEMENTATION-TASKS.md" -ErrorAction SilentlyContinue)
     if ($tbCopied.Count -ne 1) { throw "taskbook copy not unique" }
-    Write-SandboxFile "engine/src/main/kotlin/com/majiang/Demo.kt" ("class DemoEngine`n`n// sandbox production source`n")
+    Write-SandboxFile "engine/src/main/kotlin/com/majiang/Demo.kt" ("class DemoEngine`n`n// sandbox production source`nfun ExtraEngine.polish() { }`n")
     Write-SandboxFile "engine/src/test/kotlin/com/majiang/DemoTest.kt" ("class DemoEngineTest`n")
-    Write-SandboxFile "dotnet/src/DemoV5.cs" ("public sealed class DemoV5Type`n{`n}`n")
+    Write-SandboxFile "dotnet/src/DemoV5.cs" ("public sealed class DemoV5Type`n{`n    // this record is durable before use`n    public const string Label = `"class StringOnlySymbol in string`";`n}`nclass SandboxBox<T>`n{`n}`n")
     $null = & git -C $sb add -A 2>&1
     $null = & git -C $sb -c user.name=selftest -c user.email=selftest@example.invalid commit -m "B baseline" 2>&1
     $shaB = (& git -C $sb rev-parse HEAD 2>$null)
     if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrEmpty($shaB)) { throw "baseline commit B failed" }
     $shaB = $shaB.Trim()
     # child commit C: post-baseline files and post-baseline-only symbols
-    Write-SandboxFile "engine/src/main/kotlin/com/majiang/Demo.kt" ("class DemoEngine`n`nclass LaterEngineSymbol`n")
+    Write-SandboxFile "engine/src/main/kotlin/com/majiang/Demo.kt" ("class DemoEngine`n`n// sandbox production source`nfun ExtraEngine.polish() { }`n`nclass LaterEngineSymbol`n")
     Write-SandboxFile "engine/src/main/kotlin/com/majiang/Extra.kt" ("class ExtraEngine`n")
-    Write-SandboxFile "dotnet/src/DemoV5.cs" ("public sealed class DemoV5Type`n{`n}`nclass LaterV5Symbol`n")
+    Write-SandboxFile "dotnet/src/DemoV5.cs" ("public sealed class DemoV5Type`n{`n    // this record is durable before use`n    public const string Label = `"class StringOnlySymbol in string`";`n}`nclass SandboxBox<T>`n{`n}`nclass LaterV5Symbol`n")
     Write-SandboxFile "dotnet/src/ExtraV5.cs" ("public sealed class ExtraV5Type`n")
     Write-SandboxFile "doc/SIDE-ACCEPT.md" ("# side acceptance at C`n")
     $null = & git -C $sb add -A 2>&1
@@ -472,6 +476,28 @@ if (-not $sandboxOk) {
     $m = Serialize $good | ConvertFrom-Json
     $m.rows[0].acceptanceAnchors = @(@{ doc = "doc/SIDE-ACCEPT.md"; commit = $shaC })
     $null = Run-Case "s6-nonancestor-acceptance-commit" (Serialize $m) 1 @("acceptance-commit-not-ancestor-of-baseline", "acceptance-doc-not-in-baseline-tree") $sb
+
+    # s7: a word that appears only in a COMMENT of the anchored file is not a declaration
+    $m = Serialize $good | ConvertFrom-Json
+    $m.rows[0].v5Anchors = @(@{ path = "dotnet/src/DemoV5.cs"; symbol = "durable" })
+    $null = Run-Case "s7-comment-only-anchor-symbol" (Serialize $m) 1 @("v5-anchor-symbol-not-declared-at-baseline") $sb
+
+    # s8: a class name that appears only inside a STRING literal is not a declaration
+    $m = Serialize $good | ConvertFrom-Json
+    $m.rows[0].v5Anchors = @(@{ path = "dotnet/src/DemoV5.cs"; symbol = "StringOnlySymbol" })
+    $null = Run-Case "s8-string-only-anchor-symbol" (Serialize $m) 1 @("v5-anchor-symbol-not-declared-at-baseline") $sb
+
+    # s9: a generic PARAMETER name is not a declared type ("class SandboxBox<T>" declares
+    # SandboxBox, not T)
+    $m = Serialize $good | ConvertFrom-Json
+    $m.rows[0].v5Anchors = @(@{ path = "dotnet/src/DemoV5.cs"; symbol = "T" })
+    $null = Run-Case "s9-generic-param-anchor-symbol" (Serialize $m) 1 @("v5-anchor-symbol-not-declared-at-baseline") $sb
+
+    # s10: an extension RECEIVER name is not a declaration in the receiver-bearing file
+    # ("fun ExtraEngine.polish()" declares polish, not ExtraEngine)
+    $m = Serialize $good | ConvertFrom-Json
+    $m.rows[0].v4Symbol = "ExtraEngine"
+    $null = Run-Case "s10-receiver-only-v4-symbol" (Serialize $m) 1 @("v4-symbol-not-declared-at-baseline") $sb
 }
 
 # --- summary ---

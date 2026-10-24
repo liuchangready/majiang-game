@@ -376,27 +376,58 @@ foreach ($r in $rows) {
 }
 
 # --- symbol declaration checks ---
-# C# / Kotlin type declarations for v5/test anchors. ":" is excluded from the gap so a
-# SUPERTYPE across "class X : Y" cannot satisfy the check; modifiers like "public" can never
-# be the declared symbol.
-function Test-AnchorSymbol([string]$text, [string]$symbol) {
-    $rx = [regex]::Escape($symbol)
-    $pattern = "(class|struct|interface|enum|record|object)[^=\r\n{(:]{0,160}\b" + $rx + "\b"
-    return [regex]::IsMatch($text, $pattern)
+# Comments and string/char literals are stripped BEFORE any declaration matching: a word that
+# only occurs inside a comment ("this record is durable before") or a string literal is not a
+# declaration. The union pattern covers C# ("//", "/* */", @"...", $"...", 'c') and Kotlin
+# ("//", "/* */", triple-quoted, "...", 'c'). Quotes are written as \x22/\x27 so this file
+# stays pure ASCII under PowerShell 5.1's ANSI read.
+$script:commentStringRegex = [regex]'(?s)/\*.*?\*/|//[^\r\n]*|\x22\x22\x22(?:\\.|[^\x22\\])*\x22\x22\x22|@\x22(?:\x22\x22|[^\x22])*\x22|\$?\x22(?:\\.|[^\x22\\\r\n])*\x22|\x27(?:\\.|[^\x27\\\r\n])*\x27'
+$script:strippedCache = @{}
+
+function Get-StrippedText([string]$path) {
+    if ($script:strippedCache.ContainsKey($path)) { return $script:strippedCache[$path] }
+    $t = $script:commentStringRegex.Replace((Get-BaselineBlob $path), " ")
+    $script:strippedCache[$path] = $t
+    return $t
 }
 
-# Kotlin declaration forms for v4Symbol in the row's own V4 source blob:
-#   type declarations: (enum|data|sealed|abstract|open|inner|fun)* class/interface/object
-#   functions: fun [typeparams] [Receiver.]name(   (covers top-level, member, extension)
-#   extension receiver: fun Receiver.name(
-#   typealias and property declarations: typealias X / const val X / val X / var X
-function Test-KotlinDeclaredSymbol([string]$text, [string]$symbol) {
+# Type declarations for v5/test anchors: the declared name must DIRECTLY follow the keyword
+# (only whitespace between). This rejects supertype positions ("class X : Y"), generic
+# parameter positions ("class Box<T>"), keyword substrings and comment/string text. Modifiers
+# (public/sealed/data/enum/fun ...) precede the keyword, so a bare keyword can never be the
+# declared name. Language is chosen by file extension (.cs -> C# keywords, .kt -> Kotlin
+# keywords, unknown -> either).
+function Test-AnchorSymbol([string]$path, [string]$symbol) {
     if ([string]::IsNullOrWhiteSpace($symbol)) { return $false }
     $rx = [regex]::Escape($symbol)
-    if ([regex]::IsMatch($text, "(class|interface|object)[^=\r\n{(:]{0,160}\b" + $rx + "\b")) { return $true }
-    if ([regex]::IsMatch($text, "\bfun\s+(<[^>\r\n]*>\s*)?([A-Za-z0-9_.?<>\[\]]+\.)?" + $rx + "\s*[(<:]")) { return $true }
-    if ([regex]::IsMatch($text, "\bfun\s+" + $rx + "\s*[.]")) { return $true }
-    if ([regex]::IsMatch($text, "\b(const\s+val|val|var|typealias)\s+(<[^>\r\n]*>\s*)?([A-Za-z0-9_.?<>\[\]]+\.)?" + $rx + "\b")) { return $true }
+    $t = Get-StrippedText $path
+    if ($path -match "\.cs$") {
+        return [regex]::IsMatch($t, "\b(?:class|struct|interface|enum|record)\s+" + $rx + "\b")
+    }
+    if ($path -match "\.kt$") {
+        return [regex]::IsMatch($t, "\b(?:class|interface|object)\s+" + $rx + "\b")
+    }
+    return ([regex]::IsMatch($t, "\b(?:class|struct|interface|enum|record)\s+" + $rx + "\b") -or
+            [regex]::IsMatch($t, "\b(?:class|interface|object)\s+" + $rx + "\b"))
+}
+
+# Kotlin declaration forms for v4Symbol on the row's own baseline blob (comments/strings
+# stripped first). Declarations only:
+#   type declarations: name directly after class/interface/object (enum/data/sealed/abstract/
+#     open/inner/fun modifiers precede the keyword)
+#   functions: fun [typeparams] [Receiver.]name(   (top-level, member, extension, generic and
+#     receiver forms; the name must be immediately followed by "(")
+#   typealias and property declarations: name directly after the keyword (optional dotted
+#     receiver segment for extension properties)
+# Receiver names, parameter types, supertypes and generic parameters are NOT declarations.
+function Test-KotlinDeclaredSymbol([string]$text, [string]$symbol) {
+    if ([string]::IsNullOrWhiteSpace($symbol)) { return $false }
+    if ($symbol -notmatch "^[A-Za-z_][A-Za-z0-9_]*$") { return $false }
+    $rx = [regex]::Escape($symbol)
+    $t = $script:commentStringRegex.Replace($text, " ")
+    if ([regex]::IsMatch($t, "\b(?:class|interface|object)\s+" + $rx + "\b")) { return $true }
+    if ([regex]::IsMatch($t, "\bfun\s+(?:<[^<>()\r\n]*>\s*)?(?:[\w?<>.,\[\]]+\.)?" + $rx + "\s*\(")) { return $true }
+    if ([regex]::IsMatch($t, "\b(?:const\s+val|val|var|typealias)\s+(?:[\w?<>.,\[\]]+\.)?" + $rx + "\b")) { return $true }
     return $false
 }
 
@@ -561,7 +592,7 @@ foreach ($r in $rows) {
         if (-not (Has-Prop $a "symbol")) { Fail ($tag + " v5-anchor-symbol-missing"); continue }
         if (-not (Is-NonEmptyString (Prop-Value $a "symbol"))) { Fail ($tag + " anchor-field-not-string symbol"); continue }
         $sym = Prop-Value $a "symbol"
-        if ($baselineTree.ContainsKey($p) -and -not (Test-AnchorSymbol (Get-BaselineBlob $p) $sym)) {
+        if ($baselineTree.ContainsKey($p) -and -not (Test-AnchorSymbol $p $sym)) {
             Fail ($tag + " v5-anchor-symbol-not-declared-at-baseline: " + $sym + " in " + $p)
         }
     }
@@ -577,7 +608,7 @@ foreach ($r in $rows) {
         if (-not (Has-Prop $a "symbol")) { Fail ($tag + " test-anchor-symbol-missing"); continue }
         if (-not (Is-NonEmptyString (Prop-Value $a "symbol"))) { Fail ($tag + " anchor-field-not-string symbol"); continue }
         $sym = Prop-Value $a "symbol"
-        if ($baselineTree.ContainsKey($p) -and -not (Test-AnchorSymbol (Get-BaselineBlob $p) $sym)) {
+        if ($baselineTree.ContainsKey($p) -and -not (Test-AnchorSymbol $p $sym)) {
             Fail ($tag + " test-anchor-symbol-not-declared-at-baseline: " + $sym + " in " + $p)
         }
     }
