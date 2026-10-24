@@ -427,3 +427,21 @@ real-fixtures-unchanged=true
 3. 五组 fixture 中不含 G-049 AI、G-040 私有投影、G-050+ 协议/投影、G-044 看破、G-045 SecureRandom 等；本任务没有用五组文件冒充全量。
 4. 本任务未修改统一 verifier、未放宽校验、未用 skip/空测试获得绿色。
 5. 交付为本地 commit，供 caller 独立复核；caller 负责唯一 PR19 `feat/v5-1-integration -> v5` 与 merge-back。未 push、未建 PR、未触发远端 CI。
+
+## 11. Caller 第 13 轮独立验收与 PR19 集成（2026-10-25）
+
+Bridge `thread_20261024_055105_a2cb` 已由 caller 调用 `approve_task` 验收归档，返回 `COMPLETED`。交付提交为 `2d29fed154205c26d91b8035095a00a11ad6275a`，相对冻结基线仍仅五个授权文件变化，工作树 clean，`git diff --check 205506f HEAD` exit 0。
+
+Caller 在交付工作树实际运行：
+
+- PS5.1 目录正例 exit 0：5 fixture、73 G 需求、10,382 具体 case（包含 10,000 随机输入）、42 Facts；覆盖 17 full / 20 partial / 33 none / 3 v5-only。
+- 原始自测的全部 76 个负例经 PowerShell AST 提取原始语句，分配到八个独占 TEMP 分片，每个负例恰好运行一次，全部 exit 1 且命中原预期错误码；八个分片各运行一次原正例，全部 exit 0。八个分片进程均 exit 0，输入 fixture/catalog/script 哈希不变。已逐名与原测试源码核对，覆盖原始 77 个逻辑用例；实际运行 8 正例 + 76 负例。最初启动的串行自测已主动停止，不作为完整通过证据。
+- 六个独立 TEMP 探针分别将 roundTerminal/chankanRon/controlEpoch 的声明 ids 设为 null 或小写错误 ID，全部正确拒绝 exit 1，分别命中 GROUP_STRUCTURE_INVALID / GROUP_IDS_MISMATCH。
+- `D:/Unity/dotnet/dotnet.exe test dotnet/tests/Mahjong.Domain.Tests/Mahjong.Domain.Tests.csproj -c Release --nologo -v:minimal`：322 passed / 0 failed / 0 skipped，exit 0。
+- `D:/Unity/dotnet/dotnet.exe dotnet/tests/Mahjong.Domain.Tests/bin/Release/net8.0/Mahjong.Domain.Tests.dll -class "*GoldenTests" -noColor -noLogo`：42 total / 0 errors / 0 failed / 0 skipped / 0 not-run，exit 0。
+
+独立证据保存在交付树 `artifacts/caller-golden-round13/`：`shard-selftest.ps1`、八份生成脚本和日志、`shard-manifest.txt`、`verify-shard-results.ps1`、`shard-results.log`、`id-probes.ps1/.log`、`input-sha256.json`。汇总日志 SHA-256 为 `5C4AD3590B1824DD5F1F6DF835BFF5AAE8BA9FE9088849D2B505FD1F2E3E69FC`；独立 ID 探针日志为 `E65FE9DA62F8BB1C9FD0354410FE0ED16E617DB27CFE3A741CA71CBD12B3D17F`；分片清单为 `87F6752940B6352BD5CFE2B482E35D6C2809ABED3AA1F6F9DBC9C563C79EFD05`。
+
+Caller 将本任务全部 13 个本地交付/返修提交一次合入既有 PR19 的已发布 head `690ed6e0be7dff0231329b57d69bbe6b53e7935d`，测试合并提交为 `fc56e07674dd0082c76a40c7c818fbbcb908490e`，工作树为 `D:/majiang-wt/codex-golden-catalog-integration-20261025`。合并无冲突，增量仍只有五个授权文件；集成目录正例与 Domain 322/0/0 再次通过，五个 Golden reader 与冻结基线无源码差异。集成正例日志为 `artifacts/golden-catalog/caller-r13-positive.log`，SHA-256 `982272134CF96F31A1747F84BF07AF211EF4348C06D29E1793AAD605405F6EAA`。本节仅补充 caller 验收记录，不改已测试脚本、目录或 fixture。
+
+统一发布沿用 [PR19](https://github.com/liuchangready/majiang-game/pull/19)，不另建子任务 MR。本目录是 `205506f` 五组样本的冻结审计；PR19 后续纳入的 AI 样本不属于该分母，本节不重述其当前验收状态。G1 仍 BLOCKED，G5 未完成，V4 仍是唯一生产基线。本轮未运行 Gradle 全量、PG/WSS、Unity/IL2CPP、真机、真实网络或远端 CI；发布后的 CI 状态应按实际新运行单独评估。
