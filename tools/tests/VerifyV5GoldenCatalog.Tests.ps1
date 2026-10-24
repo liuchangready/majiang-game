@@ -844,7 +844,57 @@ Invoke-NegativeCase -Name 'physical-invalid-input-missing' -ExpectedCode 'CASE_S
     Update-CatalogFixtureSha -Root $root -FixtureId 'physical-v1'
 }
 
-# 56. Exporter byte change.
+# 56. G-003b duplicate-key limitation object must exist.
+Invoke-NegativeCase -Name 'g003b-duplicatekey-missing' -ExpectedCode 'CASE_STRUCTURE_MISSING' -Mutator {
+    param($root)
+    $path = Join-Path $root 'tests\v5-golden\physical-v1.json'
+    $json = Read-JsonFile $path
+    $json.samples[5].expected.PSObject.Properties.Remove('duplicateKeyStaticLimitation')
+    Write-JsonFile $path $json
+    Update-CatalogFixtureSha -Root $root -FixtureId 'physical-v1'
+}
+
+# 57. G-003b probeB.after.poolZone must exist.
+Invoke-NegativeCase -Name 'g003b-probeb-poolzone-missing' -ExpectedCode 'CASE_STRUCTURE_MISSING' -Mutator {
+    param($root)
+    $path = Join-Path $root 'tests\v5-golden\physical-v1.json'
+    $json = Read-JsonFile $path
+    $json.samples[5].expected.probeB.after.PSObject.Properties.Remove('poolZone')
+    Write-JsonFile $path $json
+    Update-CatalogFixtureSha -Root $root -FixtureId 'physical-v1'
+}
+
+# 58. G-003b probeA.after.location must exist and be null.
+Invoke-NegativeCase -Name 'g003b-location-missing' -ExpectedCode 'CASE_STRUCTURE_MISSING' -Mutator {
+    param($root)
+    $path = Join-Path $root 'tests\v5-golden\physical-v1.json'
+    $json = Read-JsonFile $path
+    $json.samples[5].expected.probeA.after.PSObject.Properties.Remove('location')
+    Write-JsonFile $path $json
+    Update-CatalogFixtureSha -Root $root -FixtureId 'physical-v1'
+}
+
+# 59. G-003b missingTileIds elements must be numbers.
+Invoke-NegativeCase -Name 'g003b-missingtileids-object' -ExpectedCode 'CASE_STRUCTURE_TYPE' -Mutator {
+    param($root)
+    $path = Join-Path $root 'tests\v5-golden\physical-v1.json'
+    $json = Read-JsonFile $path
+    $json.samples[5].expected.probeA.after.missingTileIds[0] = [pscustomobject]@{}
+    Write-JsonFile $path $json
+    Update-CatalogFixtureSha -Root $root -FixtureId 'physical-v1'
+}
+
+# 60. G-003b csharpMapping.status must exist.
+Invoke-NegativeCase -Name 'g003b-csharpmapping-missing' -ExpectedCode 'CASE_STRUCTURE_MISSING' -Mutator {
+    param($root)
+    $path = Join-Path $root 'tests\v5-golden\physical-v1.json'
+    $json = Read-JsonFile $path
+    $json.samples[5].expected.probeB.csharpMapping.PSObject.Properties.Remove('status')
+    Write-JsonFile $path $json
+    Update-CatalogFixtureSha -Root $root -FixtureId 'physical-v1'
+}
+
+# 61. Exporter byte change.
 Invoke-NegativeCase -Name 'exporter-sha' -ExpectedCode 'EXPORTER_SHA_MISMATCH' -Mutator {
     param($root)
     $path = Join-Path $root 'engine\src\test\kotlin\com\majiang\model\V5PhysicalGoldenExporterTest.kt'

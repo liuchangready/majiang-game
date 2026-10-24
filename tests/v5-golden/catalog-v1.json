@@ -2098,6 +2098,82 @@
                                                                                                {
                                                                                                    "path":  "expected.probeB.autoRepairObserved",
                                                                                                    "type":  "boolean"
+                                                                                               },
+                                                                                               {
+                                                                                                   "path":  "expected.probeA.after.location",
+                                                                                                   "type":  "null"
+                                                                                               },
+                                                                                               {
+                                                                                                   "path":  "expected.probeA.after.missingTileIds",
+                                                                                                   "type":  "array"
+                                                                                               },
+                                                                                               {
+                                                                                                   "path":  "expected.probeA.secondAudit.outcome",
+                                                                                                   "type":  "string"
+                                                                                               },
+                                                                                               {
+                                                                                                   "path":  "expected.probeA.secondAudit.message",
+                                                                                                   "type":  "string"
+                                                                                               },
+                                                                                               {
+                                                                                                   "path":  "expected.probeB.before.actualTilesSha256",
+                                                                                                   "type":  "string"
+                                                                                               },
+                                                                                               {
+                                                                                                   "path":  "expected.probeB.after.poolZone",
+                                                                                                   "type":  "string"
+                                                                                               },
+                                                                                               {
+                                                                                                   "path":  "expected.probeB.after.poolPlayer",
+                                                                                                   "type":  "number"
+                                                                                               },
+                                                                                               {
+                                                                                                   "path":  "expected.probeB.after.closedTilesStillContains",
+                                                                                                   "type":  "boolean"
+                                                                                               },
+                                                                                               {
+                                                                                                   "path":  "expected.probeB.after.actualTilesSha256",
+                                                                                                   "type":  "string"
+                                                                                               },
+                                                                                               {
+                                                                                                   "path":  "expected.probeB.secondAudit.outcome",
+                                                                                                   "type":  "string"
+                                                                                               },
+                                                                                               {
+                                                                                                   "path":  "expected.probeB.secondAudit.message",
+                                                                                                   "type":  "string"
+                                                                                               },
+                                                                                               {
+                                                                                                   "path":  "expected.probeB.csharpMapping.status",
+                                                                                                   "type":  "string"
+                                                                                               },
+                                                                                               {
+                                                                                                   "path":  "expected.probeB.csharpMapping.note",
+                                                                                                   "type":  "string"
+                                                                                               },
+                                                                                               {
+                                                                                                   "path":  "expected.duplicateKeyStaticLimitation.status",
+                                                                                                   "type":  "string"
+                                                                                               },
+                                                                                               {
+                                                                                                   "path":  "expected.duplicateKeyStaticLimitation.observedMapSize",
+                                                                                                   "type":  "number"
+                                                                                               },
+                                                                                               {
+                                                                                                   "path":  "expected.duplicateKeyStaticLimitation.auditBranchReachability",
+                                                                                                   "type":  "string"
+                                                                                               },
+                                                                                               {
+                                                                                                   "path":  "expected.duplicateKeyStaticLimitation.reason",
+                                                                                                   "type":  "string"
+                                                                                               },
+                                                                                               {
+                                                                                                   "path":  "expected.duplicateKeyStaticLimitation.firstValue.zone",
+                                                                                                   "type":  "string"
+                                                                                               },
+                                                                                               {
+                                                                                                   "path":  "expected.duplicateKeyStaticLimitation.finalValue.zone",
+                                                                                                   "type":  "string"
                                                                                                }
                                                                                            ]
                                                                              }
@@ -2458,6 +2534,15 @@
                                                                                                                                                                              }
                                                                                                                                                            }
                                                                                                                                     }
+                                                                                                             }
+                                                                                      },
+                                                                                      {
+                                                                                          "path":  "sampleId",
+                                                                                          "equals":  "G-003b",
+                                                                                          "arrayItemRules":  {
+                                                                                                                 "expected.probeA.after.missingTileIds":  {
+                                                                                                                                                              "type":  "number"
+                                                                                                                                                          }
                                                                                                              }
                                                                                       }
                                                                                   ],
