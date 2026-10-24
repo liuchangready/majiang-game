@@ -365,3 +365,65 @@ Release 五个测试工程合计：`128 + 322 + 104 + 132 + 313 = 999` 通过 / 
 | `engine/src/main/kotlin/com/majiang/state/GameAction.kt` | `94cc1eca043bb6dfd4fbe05db24d841f34e11a99686ab9add98ef878b97b243c` |
 | `engine/src/main/kotlin/com/majiang/rules/HandDecomposer.kt` | `7a5a84ced89ce0cce85fa044b40ad7373374721aaf26852bd3e65b52d99c988e` |
 | `engine/src/main/kotlin/com/majiang/state/LegalActionProvider.kt` | `2505c715537e15d22913189e82dd4fa2445f397163ab3b6c51774ab9a37165a0` |
+
+## 10. Caller 独立验收与统一 PR19 集成
+
+日期：2026-10-25。Bridge 同一线程 `thread_20261024_231806_87ce` 第 2 轮已由 caller 调用 `approve_task` 归档为 COMPLETED。未新建任务或转派；仅本组件验收，P1.6 整体、G1/G5 均未完成，V4 仍是唯一生产基线。
+
+交付 HEAD `f464789c76f0c83369eecc71a16f92296ccf0f35`，起点 `597eca1ff4688ff61fa4f5fea700bdf9eb3dd1be`。caller 核对交付只改原五个 expectedFiles、工作树 clean、`git diff HEAD^ HEAD --check` exit 0；未改 Domain、actor、其他策略、verifier、既有探针、fixture 或冻结追踪矩阵。
+
+### 10.1 独立复核结果
+
+- D-1-01：Kan/abortive 枚举在构造边界明确拒绝未知值，流局分支只匹配 NineTerminals。有效 Closed/Open/Added、NineTerminals 和 Other+null 行为保留。
+- D-1-02：AiObservation 与公开 TryChoose 共用候选契约，拒绝错席、null、重复、孤儿 facts 和同 OptionId 的错绑定；保留正确空列表、取消和原候选身份/次序。
+- 逐分支核对 V4 Basic 源码及针对性断言：荣和、自摸、流局、立直待牌种数、暗杠、碰役牌、响应 Pass、立直摸切、整数弃牌启发式、兜底；红五/物理 copy、手牌单次移除、自风/场风、首个平局、1000 分阈值一致。
+- 上下文只含本席/公开信息，无隐藏状态或权威回调。真实 ReasonAsync→Submit→Replay、deadline/round/epoch 拒绝用例通过。历史失败证据保留；未发现遗留的已知可复现缺陷。
+
+在 `D:/majiang-wt/ai-basic` 独立执行，均 exit 0：
+
+```powershell
+& 'D:/Unity/dotnet/dotnet.exe' build dotnet/Mahjong.sln -c Release --no-incremental --nologo -v:minimal
+# 分别以 Ai、Domain、Contracts、Client、TableRuntime 替换 <suite>：
+& 'D:/Unity/dotnet/dotnet.exe' test dotnet/tests/Mahjong.<suite>.Tests/Mahjong.<suite>.Tests.csproj -c Release --no-build
+& 'D:/Unity/dotnet/dotnet.exe' run --project 'C:/Users/sncdc/AppData/Local/Temp/codex-basic-review-e26d5d01cb2843c6ad4dbfc9aa45ded5/Probe.csproj' -c Release
+```
+
+Release solution build 为 0 warning / 0 error。Ai128 + Domain322 + Contracts104 + Client132 + TableRuntime313 = **999 passed / 0 failed / 0 skipped**。原 caller probe 原样重跑，INVALID_ABORTIVE=-1/1/999、INVALID_KAN=999、FOREIGN_SEAT、GHOST_FACT 六行全部 REJECTED。
+
+原始日志目录 `D:/majiang-wt/ai-basic/artifacts/codex-basic-review-round2/`：
+
+| 日志 | SHA-256 |
+|---|---|
+| build.log | `B4EFE7E50D6F062806D032257275584FBB5C028F39E42BF2B972786FD6B9FEE6` |
+| Ai.log | `E0A3BA446A9AFB7ED656CD26EB1E576493C77F0154E9EB7A9D7980C19B6A24B2` |
+| Domain.log | `192B00B15E1666841288D6C9F47E9B6837B080A41FB0D73787B1C07143901A00` |
+| Contracts.log | `A3F67EAAD02F1E93EBF99613B5533CE8EB9A3A84E0AF9889773D7CA568995C4D` |
+| Client.log | `F58C2D64CF51FC6B632ED598051AA62DDD94CB8962A713C088EBD2A7CCCF25B0` |
+| TableRuntime.log | `A72D15C629AD362F383CF23AEC2E8679B91A96BD95786ADE7DBF397AFB6CB613` |
+| probe.log | `9CA02CCC419A20D57C73201F88C5D615C5B9AC9AE8A3743A109368CE82ACE7D4` |
+
+### 10.2 同批集成与发布边界
+
+caller 在隔离工作树 `D:/majiang-wt/codex-basic-integration-20261025` 从既有 PR19 head `654aa54175fb27dc1761a0bed00de1978684fabd` 合并本任务两个实现/返修提交，得到 `73d3f3ce9c9cd2093d7a3547a8a17ac0232502ed`。合并无冲突，保留同批已验收 Trivial/Tsumogiri、AiCheatPolicy、P3.4 和追踪矩阵；未接入尚未验收的黄金目录。相对既有 PR19 head 仍仅本任务五个文件。本节为 caller 后加验收记录，不改变实现方历史报告。
+
+集成版本重新执行以下命令，均 exit 0：
+
+```powershell
+& 'D:/Unity/dotnet/dotnet.exe' build dotnet/Mahjong.sln -c Release --no-incremental --nologo -v:minimal
+& 'D:/Unity/dotnet/dotnet.exe' test dotnet/Mahjong.sln -c Release --no-build
+& 'D:/Unity/dotnet/dotnet.exe' test dotnet/tests/Mahjong.TableRuntime.Tests/Mahjong.TableRuntime.Tests.csproj -c Release
+```
+
+solution 重建 0 warning / 0 error；solution 测试 Ai172 + Domain322 + Contracts104 + Client132 = 730/0/0；TableRuntime 独立工程实际构建并运行 313/0/0，合计 **1043 passed / 0 failed / 0 skipped**。Ai172 包含此前已验收 AiCheatPolicy 的 44 项。TableRuntime 未列入 solution，初次在新树使用 `--no-build` 未产生测试计数，因此该次空输出不计 PASS；上述带构建的独立执行才是验收证据。
+
+集成日志目录 `D:/majiang-wt/codex-basic-integration-20261025/artifacts/codex-basic-integration/`：
+
+| 日志 | SHA-256 |
+|---|---|
+| build.log | `DCB6A521E763490BBD575E2C5FF215D813FE4B31F5F05F476FFE548C68219EA7` |
+| tests.log | `1970954A890328F3A6630810F115EA8A74551F31CF56811E0E3709A93D0FD9D9` |
+| TableRuntime.log | `73C71C5E1B5D2A80569D41FD799D11C5B1BD9D0047BCE72589039C73F85EFF34` |
+
+仅更新既有 [PR19](https://github.com/liuchangready/majiang-game/pull/19)（`feat/v5-1-integration -> v5`），不另建子任务 PR。caller 的验收记录提交不改执行代码，统一推送后回写同线程 MR 信息。主树四项未提交用户改动保持原状。
+
+本轮未运行 PG/WSS/Lobby、Unity/IL2CPP、Android/iOS/真机/物理网络、V4 Gradle/Kotlin 差分、actor 端到端；不把本地结果写成此次发布的远端 CI 通过。BasicContext 的 actor 产出仍属后续接线；本组件验收不解除这些边界。
