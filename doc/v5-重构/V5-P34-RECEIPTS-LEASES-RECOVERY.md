@@ -1,188 +1,190 @@
-# V5 P3.4 回执、租约和恢复端口合同交付（第 2 轮返修）
+# V5 P3.4 回执、租约和恢复端口合同交付（第 3 轮返修）
 
-- 状态：**第 2 轮本地返修完成，等待 caller 第 2 轮独立验收**。不是 G1/G5，不是 V5 全链通过；V4 仍是唯一生产架构。
+- 状态：**第 3 轮本地返修完成，等待 caller 第 3 轮独立验收**。不是 G1/G5，不是 V5 全链通过；V4 仍是唯一生产架构。
 - 唯一工作树：`D:/majiang-wt/p34-receipts`（分支 `wt/v5-p34-receipts`）。
 - 冻结基线：`daeb19a64951174426924026fe974c8ae5caacd9`。
-- 第 1 轮实现提交：`9e909ea6b7dfb411b1e2511fa4f0f9d05307ba38`。
-- 第 2 轮实现提交：`1438f2e1b9caf4fbe9531cd3cde63169e219d747`（并在其前有 `343b7a2271d5da4089646f48f521fcb69016d637` 主体返修）。
-- 本文件的提交为最终本地 HEAD；未 push、未建 PR、未触发 CI、未转派。
-- caller 的 `CodexP34ReviewProbes.cs` 被保留、纳入提交并通过；未删改探针。
+- 第 1 轮实现：`9e909ea6b7dfb411b1e2511fa4f0f9d05307ba38`。
+- 第 2 轮实现：`1438f2e1b9caf4fbe9531cd3cde63169e219d747`（主体 `343b7a2271d5da4089646f48f521fcb69016d637`）。
+- 第 3 轮实现：`46dfffd2aedfed3329c1b9e7d7318dfcecbf200d`（`fix(v5-p34): install explicit grace and typed projection facts`）。
+- 本文件提交为最终本地 HEAD；未 push、未建 PR、未触发 CI、未转派。
+- caller 的 `CodexP34ReviewProbes.cs` 与 `CodexP34Round2ReviewProbes.cs` 均保留、纳入提交并通过；未删除或弱化探针。
 
-## 1. 第 2 轮修复结论
+## 1. 第 3 轮修复结论
 
-| 缺陷 | 本轮修复 |
+|缺陷|修复|
 |---|---|
-| R1 恢复时钟把相对 remaining 再加 downtime | 改为按 checkpoint/timing journal 的 `bootId + UTC + monotonic capture` 计算：同 boot 只扣实际活跃时间；跨 boot 排除 downtime，只加显式 grace；不再出现 `remaining + 60000 + grace`。 |
-| R1 连续恢复重复赠 grace | 每次恢复安装前原子追加新的 timing observation（当前 boot/UTC/monotonic + 调整后剩余）；第二次恢复从该 observation 计算，不再重复加 grace。 |
-| R2 checkpoint 后 reserve 消费丢失 | 每个已接受命令的事件/journal/回执/outbox 与**post-command timing snapshot** 同一事务提交；REJECTED 不变 timing。恢复使用最新 timing journal，不靠删除 decision 保留旧 reserve。 |
-| R2 checkpoint 后新 open decision 无持久记录 | `OpenDecisionAsync` 在 durable 路径先原子 `AppendTimingAsync`（owner/state/control/timing CAS），成功后才安装内存 pending；失败不安装。 |
-| R3 `SaveCheckpointAsync` 绕过 owner/control | 新增 `TableCheckpointFence`；checkpoint 写入必须同事务校验 owner instance + epoch + live lease + stateVersion + controlVersion + timingVersion。旧 owner 立即 LeaseLost，stale control/state 立即 Faulted。 |
-| R4 恢复 baseline 不携带/安装 cheat/facts/history | `TableRecoveryBaseline` 现携带真实 `CheatState`（由持久化 ledger 重建）、committed-facts envelope 和完整 committed history；actor 通过 `ITableRecoveryStateSink` 安装，缺 sink/缺可信 facts 时 fail closed。还原后 `_committedEventLog` 从持久历史重建，不再依赖 `SnapshotEventWindow`。 |
-| R4 outbox 只检查存在 | 恢复时重新编码终局 result 并逐字节/摘要比对 outbox payload；不一致 fail closed。 |
-| scope 读后撤销可插入提交 | `InMemoryRequestScopeAuthority` 提供持有锁的 `TableScopeReadLease`；store 在 scope 校验后一直持有到 apply/rollback，revoke 只能在线性化点之前或 commit 之后生效。 |
+|R5 跨 boot 开放决策在真实 actor 安装时 `Remaining base 6000 > Config.Base 1000`|恢复 grace 改为**独立字段** `RecoveryGraceMillis`/`RecoveryGraceApplied`，不塞进正常 base。Domain 新增显式 `RestoreDecision(..., recoveryGrace, applied)`；base 仍受 `Config.BaseMillis` 原校验，grace 在 base 之后、reserve 之前消费，并记录到 `DecisionTiming`。actor 安装时拆分 total/base 后调用该重载。|
+|R5 只测 service 不测 actor|新增真实新宿主 actor 跨 boot 恢复测试：sink、open decision、deadline=`now+6000`、恢复后真实命令与 timeout。|
+|R6 sink 安装期间租约过期仍 Serving|`ProcessCompleteRecoveryAsync` 在 sink/history 之后、任何 `Serving`/`Recovered` 发布之前执行 `RevalidateRecoveryInstallAsync`：owner instance+epoch、未过期 lease、state/control/timing、checkpoint 全部重验；失败 Faulted，无成功 publication。|
+|R6 owner/timing/异常未覆盖|新增 sink 期间强制 owner 转移、timing 追加、sink 抛异常的确定性测试；均无 `Recovered` 发布。|
+|R4 facts 仍是无参数 `Func<byte[]>`、RecoveredProjectionSource 仍用 fixtures|新增严格 `TableProjectionFactsCodec`（真实 `TableProjectionContextData` 类型，含 public/private/event/session/policy/concealed）；`ProjectionFactsProvider(TableProjectionContextRequest)` 捕获真实 P3.2 facts。`TableRecoveryBaseline/AuxState` 携带 typed `TableProjectionContextData`；`RecoveredProjectionSource` 恢复后只使用 sink 安装的持久 facts/cheat，`UsedRecovered` 由测试断言。|
+|R4 facts 缺失/损坏/不完整仍可 Serving|codec 强制 round/state、4 个 public、4 个 private、event facts 数量与完整历史一致且逐条 seq/version/ordinal 匹配；`TableVisibilityProjection.ValidateRecoveredFacts` 用恢复 round 校验 public/private/meld 与 136 牌；缺 facts/坏 schema/不匹配均阻止 Serving。|
 
-## 2. 时钟模型（R1）
+## 2. R5：受控恢复 grace 贯通 service→baseline→actor→DecisionClock
 
-### 2.1 持久化 observation
+### 2.1 数据模型
 
-`TableTimingCheckpoint` 在原有四席 reserve + open decisions 之外持久化：
+`TableRecoveredDecision` 新增：
 
-- `CapturedAtUtcMs`
-- `CapturedMonotonicMillis`
-- `BootId`
+- `RecoveryGraceMillis`：恢复策略给出的剩余 grace；
+- `RecoveryGraceApplied`：是否已经授予过 grace，防止下一次恢复重复赠时。
 
-每个 `TableTimingJournalRecord` 还记录 `TimingVersion`、`StateVersion`、`ControlVersion`。以下操作各自推进 `TimingVersion+1` 并写完整 observation：
+`TableTimingCheckpoint` codec 持久化这两个字段。`DecisionTiming` 新增同名属性；`CalculateReserveSpent` 从 `BaseMillis + RecoveryGraceMillis` 之后才开始消耗 reserve。
 
-- 已接受命令（atomic command batch 内）；
-- `OpenDecisionAsync`；
-- `SaveCheckpointAsync`；
-- control change checkpoint；
-- 恢复安装前的最终 adjusted observation。
-
-### 2.2 恢复计算
-
-令 `t` 为选中的最新 timing observation（优先 `timingRow`，否则 checkpoint；两者都必须与当前 state/control 一致）：
-
-- **同 boot**：`activeDelta = max(0, nowMonotonic - t.CapturedMonotonic)`；不赠 grace；base-first 扣减 base，再扣 reserve，超出部分记 overdue。
-- **跨 boot**：`activeDelta = 0`；`downtime = max(0, nowUtc - t.CapturedAtUtc)` 只写审计，不加入 remaining；`remainingBase += grace`。grace 只加一次。
-- UTC 回拨跨 boot、或同 boot monotonic 回拨 → `CLOCK_REGRESSION`，不 Serving。
-- 跨 boot 只要 control snapshot 仍有“断线 + 绝对 monotonic grace deadline”，无论本次 `graceMillis` 是否为 0，都 fail closed `RECOVERY_GRACE_TIMING_REQUIRED`；不会因 grace=0 放过旧 monotonic grace。
-- 恢复结束写 `RecoveryAdjusted` 审计，包含实际 downtime、applied grace、前后 boot、前后 owner epoch。
-
-第 1 轮测试 `ControlEpochAndDecisionTimingAreRecoveredConsistently` 中 `originalBase+3000` 固化了错误行为；本轮按合同改为 `originalBase+1000`（跨 boot 只加 1000 grace，不加重置的 2000 active/downtime）。
-
-## 3. Timing 与 reserve 的原子合同（R2）
-
-`TableDurableCommitRequest` 现包含 `TableTimingCheckpoint Timing` 和 `TimingVersion`：
-
-- 已接受批次必须有 `TimingVersion == state.TimingVersion + 1`；事件、command journal、回执、outbox、checkpoint 和 timing record 同一事务。
-- actor 在提交前克隆 `DecisionClock`，对 `Complete`/`Expire` 在 clone 上执行，生成 post-command timing snapshot；提交成功后才安装 clone，不再在提交后二次 `Complete/Expire`。
-- REJECTED 批次不写 timing，不推进 reserve/decision。
-- `TableTimingJournalRecord` / checkpoint 的 `TimingVersion` 是 CAS：旧 timing 写入返回 stale，actor 停服。
-- 恢复从最新 timing journal 取四席 reserve 和 decisions；不再用 `consumedSeats` 删除旧 decision 后保留旧 reserve 的近似做法。
-- checkpoint 后新 open decision 的 `AppendTimingAsync` 与 owner/state/control/timing fence 同一锁/事务；失败不安装内存 pending。
-- 提交后丢回包：timing/事件/回执已提交，查询可对账；显式恢复后同 request 回放不重复消费 reserve。
-
-## 4. Checkpoint 栅栏（R3）
-
-`ITableStore.SaveCheckpointAsync` 改为：
+`DecisionClock` 保留原 `RestoreDecision`（正常 base 校验）并新增：
 
 ```csharp
-ValueTask<TableDurableCommitResult> SaveCheckpointAsync(
-    TableCheckpoint checkpoint,
-    TableCheckpointFence fence,
-    CancellationToken ct);
+RestoreDecision(key, now, remainingBase, remainingReserve, overdue,
+                recoveryGraceMillis, recoveryGraceApplied)
 ```
 
-`TableCheckpointFence` 包含 room、ownerInstance、expectedOwnerEpoch、expectedStateVersion、expectedControlVersion、expectedTimingVersion。
+- `remainingBase <= Config.BaseMillis` 仍强制；
+- grace 独立校验非负；base 先消费，grace 其次，reserve 最后，overdue 按同一顺序扣减；
+- 恢复 deadline = `now + baseRemaining + graceRemaining + reserveRemaining`；
+- `RecoveryGraceApplied` 表示已授予，后续恢复不再叠加。
 
-`InMemoryTableStore` 在同一 `_gate`/事务内：
+### 2.2 兼容观察值
 
-1. 校验 lease 的 owner/epoch 且未过期；
-2. 校验 stateVersion；
-3. 校验 controlVersion；
-4. 校验 timingVersion；
-5. 校验 checkpoint 的 stateVersion/lastSeq/stateFingerprint/stateHash/controlVersion/timingVersion；
-6. 全部通过才替换 checkpoint、timing observation、可选 facts。
-
-旧 owner 返回 `STALE_OWNER` 并由 actor 进入 LeaseLost；同 epoch 但旧 control 返回 `STALE_CONTROL_VERSION` 并由 actor 进入 Faulted。没有“actor 先读 lease”的 TOCTOU 线性化点。
-
-## 5. Scope 线性化（额外核对）
-
-`InMemoryRequestScopeAuthority` 新增 `BeginScopeForCommit`，返回 `TableScopeReadLease`：
-
-- store 在回执查重通过、开始 scope 校验时获取该 lease；
-- lease 持有 scope 的同一把锁直到 commit apply/rollback；
-- `Revoke` 只能发生在 scope 校验之前（commit 看到 revoked 而拒绝），或 commit 释放锁之后（只影响后续命令）；
-- 不再存在“读取 scope 后释放锁、apply 前 revoke 插入”的窗口。
-
-测试用 `AfterScopeCheckForTest` 门闩阻塞 commit、并发启动 revoke，确认 revoke 在 apply 前不能完成；commit 完成后 revoke 才完成，后续命令被 `REQUEST_SCOPE_EXPIRED` 拒绝。
-
-## 6. 冷恢复数据完整性（R4）
-
-### 6.1 恢复数据
-
-`TableRecoveryService` 现在返回的 `TableRecoveryBaseline` 包含：
-
-- 重建后的 `RoundStateMachine`（136 牌、状态 hash/fingerprint、窗口/终局）；
-- 精确 control baseline 与 adjusted timing；
-- **真实 `CheatState`**：从持久化 `CheatLedger` 条目重建；若 `CheatState.Version != Ledger.Version`（存在本任务未建模的 TileMark/Sleeve/Beam 私有子状态），恢复返回 `CHECKPOINT_INVALID`，block Serving，不把空子状态当成功。
-- **typed committed-facts envelope**：`TableCommittedFactsCodec` 绑定 schema、roundId、stateVersion、body SHA-256；body 本身是宿主定义的 P3.2 facts/private payload，通过 `ITableRecoveryStateSink.Install` 安装。缺 facts（当 `RequireCommittedFacts` 为真）或 decode 不匹配当前 round/state 时 fail closed。
-- **完整 committed history**：checkpoint 的 history payload + checkpoint 之后全部事件；不是 `SnapshotEventWindow`。actor 在 `ProcessCompleteRecovery` 中用 baseline 历史重建 `_committedEventLog`，`_recentEvents` 只按窗口截取展示。
-- 终局 outbox：恢复重新编码 `RoundResult`，与持久化 outbox payload 逐字节/摘要比对；不一致 fail closed。
-
-### 6.2 宿主安装边界
-
-`TableDurableContext.RecoveryStateSink` 必须提供当 recovery 携带 cheat/facts 时；actor 在安装任何 Domain 状态前调用：
+`TableRecoveredDecision.RemainingBaseMillis` 继续报告 **base+grace** 的总剩余（旧探针 `remaining+500` 仍成立）；actor 在调用 Domain 时拆分：
 
 ```csharp
-void Install(TableRecoveryAuxState state);
+restoreBase = max(0, RemainingBaseMillis - RecoveryGraceMillis)
 ```
 
-`TableRecoveryAuxState` 类型化携带 `CheatState`、facts payload 和完整 history。sink 抛错时 actor 保持 Faulted，不 Serving。该边界避免“只校验 hash 后丢弃”而宣称恢复成功。
+因此 Domain 的 base 上限不被绕过，deadline 又包含显式 grace。正常决策 `RecoveryGraceMillis=0`，行为不变。
 
-### 6.3 真实投影验证
+### 2.3 行为
 
-`RecoveryInstallsStrictWireBaselineAndRejectsOldGenerationAndEpoch` 使用新的 `RecoveredProjectionSource`（不是 `TestProjectionSource`）读取 sink 安装的 `CheatState`，在恢复后的 actor 上取得玩家/观战严格 Wire 基线；同时断言 old ownerEpoch、old recoveryGeneration 被拒绝。`FullHistoryIsInstalledEvenWhenSnapshotWindowIsZero` 用 `SnapshotEventWindow=0` 证明历史来自持久 checkpoint/journal 而非诊断窗口。
+- 跨 boot：不把 downtime 加进 remaining；只加策略 grace 一次。
+- 同 boot：按 monotonic 活跃时间扣减 base/grace/reserve，不加 grace。
+- 连续恢复：timing observation 带着 `RecoveryGraceApplied`，第二次恢复不再赠 grace。
+- 恢复后真实 actor 可在 grace 截止前提交命令；超过 deadline 的 `TickAsync` 产生 timeout，均写入正常事件/journal/timing。
+- 非空旧 monotonic grace 在跨 boot 时仍 fail closed，即使本次 `graceMillis=0`。
 
-### 6.4 仍需明确限制
+## 3. R6：完整安装边界后的最终 fence
 
-- `CommittedFacts` body 的语义 codec 仍属宿主/P5.2；本任务提供的是严格 envelope + state/round/SHA-256 绑定 + 安装 sink，不声称 TableRuntime 能自行解释所有 P3.2 public/private 事实。宿主未提供 body 或 sink 时，durable recovery 默认 fail closed。
-- 非空 `TileMark/SleeveBloom/BeamSwap` 私有子状态未在本任务建模；checkpoint 记录其版本，恢复检测到非空即 fail closed，不静默替换成空状态。
-- 真实 PostgreSQL/P5.2、备份恢复、真实进程 kill、WSS/TableService、LocalHost、Unity/IL2CPP/真机/物理网络仍 **NOT_RUN**。
+`ProcessCompleteRecoveryAsync` 顺序改为：
 
-## 7. 测试与证据
+1. 校验 baseline、control/timing/history；
+2. 调用 `ITableRecoveryStateSink.Install`（宿主准备/安装）；
+3. 校验完整 committed history 尾部；
+4. **`RevalidateRecoveryInstallAsync`**：重新读取 lease/state/checkpoint/timing，确认：
+   - owner instance 与 `baseline.OwnerEpoch` 一致且租约未过期；
+   - stateVersion/lastEventSeq/fingerprint/hash/controlVersion/timingVersion 与 baseline 一致；
+   - checkpoint 不领先 state/control/timing；
+   - timing journal 的 version/state/control 与 baseline 一致；
+5. 只有通过后才安装 `_round/_control/_decisionClock/_pending` 并设置 Serving/发布 `Recovered`。
 
-在 `D:/majiang-wt/p34-receipts`、`D:/Unity/dotnet/dotnet.exe` 下：
+失败路径：
+
+- sink 抛异常 → `RECOVERY_STATE_SINK_FAILED`；
+- 安装期间租约过期 → `STALE_OWNER_EPOCH`；
+- owner 转移/control/timing/state 变化 → `RECOVERY_STATE_CHANGED`/`RECOVERY_TIMING_INVALID`；
+- 任何失败都进入 Faulted，不发布成功、不暴露可用玩家/观战基线。
+
+测试用 `CallbackRecoverySink`/`ActionRecoverySink` 推进 clock、Acquire 新 epoch、追加 timing、抛异常；均断言 `recovered.Recovered == false`、Lifecycle != Serving、无 `Recovered` publication。
+
+## 4. R4：真实 P3.2 facts 的捕获、codec、安装与投影
+
+### 4.1 捕获接口
+
+`TableDurableContext` 移除无参数 `Func<byte[]> CommittedFactsProvider`，改为：
+
+```csharp
+Func<TableProjectionContextRequest, TableProjectionContextData?>? ProjectionFactsProvider
+```
+
+actor 用真实 `RoundStateMachine`、`StateVersion`、`EventSeq`、owner/control/recovery generation、UTC/monotonic 和完整 committed events 构造 request；provider 或现有 `ITableProjectionContextSource` 返回真实 `TableProjectionContextData`。若返回 null 或 round/state 不匹配，提交/checkpoint 失败，不写入伪造 facts。
+
+### 4.2 严格 codec
+
+`TableProjectionFactsCodec`（MJPF schema 1）编码：
+
+- 4 个 `TableSeatPublicFacts`：seat、riichi、`TableMeldFact`（type/tiles/called/fromSeat）、`DiscardView`；
+- 4 个 `TableSeatPrivateFacts`：furiten/preparation/discard history；
+- `TableSessionProjection`；
+- `TableProjectionPolicy`；
+- 全部 `TableProjectionEventFact` + `TableProjectionEventFacts` 字段（turn/wall/meld/yaku/score/breakdown/payments/scores/offer/beam/hand/target 等，含 presence tag）；
+- `TablePublicConcealedMeldFact` 计数。
+
+Decode 强制 round/state 匹配当前恢复目标、public/private 各 4、无尾随字节、未知 schema/枚举/长度拒绝。event facts 数量必须等于完整 committed history 数量，且每条 seq/commandVersion/ordinal 必须在历史中存在。
+
+### 4.3 恢复验证与安装
+
+- `TableRecoveryService` 读取 store 的最新 facts（不是旧 checkpoint 快照），用 codec 解码；
+- `TableVisibilityProjection.ValidateRecoveredFacts` 以恢复后的 round 校验 public/private/meld 与 136 牌/终局；
+- `TableRecoveryBaseline.ProjectionFacts` 是 typed `TableProjectionContextData`；
+- `TableRecoveryAuxState.ProjectionFacts` 交给宿主 sink；
+- `ProcessCompleteRecoveryAsync` 在 sink 安装后仍执行 §3 的 lease/state/control/timing 最终 fence。
+
+### 4.4 独立新宿主的 Wire 验证
+
+`RecoveredProjectionSource`：
+
+- 恢复前只用于捕获真实 live facts（`_live` 带真实 `WireEventFacts`）；
+- sink 安装后 `Capture` **只**读取 `Sink.Installed.ProjectionFacts` 与 `Sink.Installed.Cheat`，校验 round/state 后返回，不调用 `V32Fixtures.BuildPublicFacts/BuildPrivateFacts`，不 fallback `V32Fixtures.Cheat`；
+- `UsedRecovered` 由测试断言为 true。
+
+`RecoveryInstallsStrictWireBaselineAndRejectsOldGenerationAndEpoch` 在恢复后的 actor 上取得玩家/观战严格 Wire 基线，并断言 old ownerEpoch/old recoveryGeneration 拒绝。`FullHistoryIsInstalledEvenWhenSnapshotWindowIsZero` 证明历史来自持久 checkpoint/journal，而非 `SnapshotEventWindow`。终局测试验证 outbox payload 与重建 `RoundResult` 逐字节一致。
+
+### 4.5 仍 fail closed 的未建模状态
+
+- 非空 `TileMark/SleeveBloom/BeamSwap` 私有子状态仍未建模；checkpoint 记录总版本，恢复检测到 `CheatState.Version != Ledger.Version` 即失败，不替换为空状态。
+- 真正的 P3.2 facts 语义由宿主 `ITableProjectionContextSource`/`ProjectionFactsProvider` 提供；TableRuntime 只做严格类型化持久化、校验和安装，不自行推导未建模业务值。
+- 缺 facts、未知 schema、round/state 不匹配、private/event facts 不完整、坏哈希均阻止 Serving。
+
+## 5. 测试与证据
 
 | 命令 | 结果 |
 |---|---|
-| `dotnet test .../Mahjong.TableRuntime.Tests.csproj -c Release --nologo -v minimal -- --filter-class '*CodexP34ReviewProbes'` | **3 passed / 0 failed / 0 skipped** |
-| `dotnet test .../Mahjong.TableRuntime.Tests.csproj -c Release --nologo -v minimal` | **218 passed / 0 failed / 0 skipped**（原 168 + 本轮/新增 50，含 caller 3 探针） |
-| `dotnet test dotnet/Mahjong.sln -c Release --nologo -v minimal` | **575 passed / 0 failed / 0 skipped**（Domain 322、Contracts 104、Client 132、Ai 17） |
-| `dotnet build dotnet/Mahjong.sln -c Release --nologo -v minimal` | **0 warnings / 0 errors** |
-| `git diff --check` / `git show --check HEAD` | **exit 0** |
+| caller `*CodexP34ReviewProbes`（旧 3 探针） | **3 passed / 0 failed / 0 skipped** |
+| caller `*CodexP34Round2ReviewProbes`（新 2 探针） | **2 passed / 0 failed / 0 skipped** |
+| `dotnet test .../Mahjong.TableRuntime.Tests.csproj -c Release` | **227 passed / 0 failed / 0 skipped**（原 168 + 59，含 5 探针） |
+| `dotnet test dotnet/Mahjong.sln -c Release` | **575 passed / 0 failed / 0 skipped**（Domain 322、Contracts 104、Client 132、Ai 17） |
+| `dotnet build dotnet/Mahjong.sln -c Release` | **0 warnings / 0 errors** |
+| `git diff --check daeb19a..HEAD` | **exit 0** |
 
-本轮新增/调整的测试覆盖：
+新增/调整覆盖：
 
-- R1：`RelativeRemainingTimeMustNotGainDowntimeTwice`、`SameBootRecoveryChargesActiveElapsedAndDoesNotGrantGrace`、`LongCrossBootDowntimeIsExcludedButGraceIsAppliedOnce`、`UtcRollbackAcrossBootFailsClosed`、`TwoConsecutiveRecoveriesDoNotGrantGraceTwice`。
-- R2：`ReplayMustKeepReserveConsumedAfterCheckpoint`、`DecisionOpenedAfterCheckpointIsRecoveredWithoutLoss`、`MultipleSeatsAndInternalTimeoutKeepReservesConsistent`、`FailedCommitDoesNotAdvanceTimingJournalAndRetrySucceeds`、`LostResponseTimingIsRecoveredAndReplayDoesNotReconsume`。
-- R3：`OldOwnerMustNotOverwriteNewOwnersControlCheckpoint`、`SaveCheckpointRejectsExpiredLeaseAndLeavesCheckpointUnchanged`、`SameEpochOldControlCannotOverwriteCheckpoint`、`ConcurrentOldAndNewOwnerCheckpointSavesLeaveNewOwnerState`。
-- scope：`RevokeAfterScopeReadCannotInterleaveBeforeCommitApply`、既有 `RevocationAtCommitBoundaryRollsBackEverything`。
-- R4：`RecoveryInstallsTypedCheatLedgerAndLatestCommittedFacts`、`MissingRecoverySinkFailsClosedInsteadOfServing`、`UnmodeledPrivateCheatSubstateIsRefused`、`FullHistoryIsInstalledEvenWhenSnapshotWindowIsZero`、`RecoveryInstallsStrictWireBaseline...`、`TerminalCommitWritesOneOutboxAndReplayKeepsItUnique`（含 outbox payload 一致性）。
+- R5：`CrossBootRecoveryWithOpenDecisionMustInstallExplicitGrace`、`RecoveredCrossBootDecisionCanCommitBeforeGraceDeadline`、`RecoveredCrossBootDecisionTimesOutAtGraceDeadlineWithoutSecondGrant`、`SameBootRecoveryChargesActiveElapsed...`、`LongCrossBoot...`、`TwoConsecutiveRecoveries...`。
+- R6：`LeaseExpiringDuringHostInstallMustNotEnterServing`、`OwnerTransferDuringHostInstallFailsClosed`、`TimingChangeDuringHostInstallFailsClosed`、`HostInstallExceptionFailsClosedBeforePublishingRecovered`。
+- R4：`RecoveryInstallsTypedCheatLedgerAndLatestCommittedFacts`、`FullHistoryIsInstalledEvenWhenSnapshotWindowIsZero`、`RecoveryInstallsStrictWireBaseline...`、`MissingCommittedFactsIsRefused`、`TamperedProjectionFactsAreRefused`、`UnmodeledPrivateCheatSubstateIsRefused`。
+- 既有回执/scope/租约/事务/fence 测试继续通过。
 
-## 8. 变更文件与 SHA-256（第 2 轮）
+## 6. SHA-256（第 3 轮实现）
 
 | 文件 | SHA-256 |
 |---|---|
-| `dotnet/src/Mahjong.Domain/DecisionClock.cs` | `b02e20150b67beb330a42a7201e6fadb075bd95873fc67211ea5858d9f19fafe` |
-| `dotnet/src/Mahjong.TableRuntime/TableActor.cs` | `673a1ed591484de06e28d9a7feee129b28dbc42f876f35a991d59498483d6bcc` |
-| `dotnet/src/Mahjong.TableRuntime/TableDurableContracts.cs` | `82b5912b643aedd2e48e4279beb3f833cb41838acecec8b5395194b0d905015f` |
-| `dotnet/src/Mahjong.TableRuntime/InMemoryTableStore.cs` | `6221b2b27abc307f9428cf46b9a119d3cec8bf71faf64247daab9e1850587e6d` |
-| `dotnet/src/Mahjong.TableRuntime/TableCheckpointCodecs.cs` | `6e210de402c9c6d261897a3997cca9d34fbdb7608e6c9cbf43aac7aaadfd9279` |
-| `dotnet/src/Mahjong.TableRuntime/TableRecoveryPayloads.cs` | `531c618855a8e7b90736dc67559874fdea832484c7732d26c26d96bad4b1a892` |
-| `dotnet/src/Mahjong.TableRuntime/TableRecoveryService.cs` | `2e4df5fc090cc481d81af9fa0e3b383b9ae1a6f4cea2b7487edba1b73400af16` |
-| `dotnet/src/Mahjong.TableRuntime/TableRuntimeContracts.cs` | `696e71bb7dbb51f4e858dda543c3897f009fb4c7d083e7783e1a8b95a17cc366` |
-| `dotnet/src/Mahjong.TableRuntime/TableRuntimeReasonCode.cs` | `7fece62eaf709597e10eca661afbad64cb2dbc3626a60a32af401b3e95840343` |
-| `dotnet/tests/.../TableDurableTestSupport.cs` | `27fa7163335782f8dda23f82670333436c598d47a1880a83d651f6785b0d8e46` |
-| `dotnet/tests/.../TableDurableReceiptTests.cs` | `904a54ce1be4109498e8037b007398376f4d2656ea092b1c5478a08f679dd639` |
-| `dotnet/tests/.../TableDurableLeaseRecoveryTests.cs` | `5f0417033233eaf6c6486d123cae0dcef2cdb7c4d6e2abf465946436f9259eec` |
-| `dotnet/tests/.../TableDurableCorruptionTests.cs` | `e2a49fbe8e5a0e2f28dc6f913c6d80e9779ce184d18ac94803224e6f1d163660` |
-| `dotnet/tests/.../TableDurableTimingRecoveryTests.cs` | `546e67ce13c917ef6632b5ee7614d824c760377f0b3965bc42bf32cae0efcc3d` |
-| `dotnet/tests/.../CodexP34ReviewProbes.cs` | `3873c6ac75f10d1555b317d1f114402f5951c35708c1998c012d998d6e25212c` |
+| `dotnet/src/Mahjong.Domain/DecisionClock.cs` | `75f4314a580155f1b27a28a5db63601a7d78a1b9d8a4fc729b3570fe1e2dfaec` |
+| `dotnet/src/Mahjong.TableRuntime/TableActor.cs` | `cc72f87332d6825d3b9f950e7cf07de822cefdc19026d5ec865dbd2e092ad586` |
+| `dotnet/src/Mahjong.TableRuntime/TableDurableContracts.cs` | `f73c0e1e7a37694c792609bad3e237c81c1cb0ff6decc6f20f9d9710f885ea8d` |
+| `dotnet/src/Mahjong.TableRuntime/InMemoryTableStore.cs` | `4acec2fca3c44801918429a3a6fb95028f271d7459b989b0b326f8aa4557c6cb` |
+| `dotnet/src/Mahjong.TableRuntime/TableCheckpointCodecs.cs` | `d2783a6c08ffa4e35b741b92444755d3d69e4e0ab2d814bcd236c0897b5d1a9c` |
+| `dotnet/src/Mahjong.TableRuntime/TableControlContracts.cs` | `dc89595468c0802545a270c58133d121c11f5eb5fb72f375339739c2596ec498` |
+| `dotnet/src/Mahjong.TableRuntime/TableRecoveryPayloads.cs` | `92c5813edb64b6694fcfcc6887e4498701ead0c8bdb83506de924b907dca2bb6` |
+| `dotnet/src/Mahjong.TableRuntime/TableRecoveryService.cs` | `e0474117e4b75a26dd62b278c6d8f438ea5c92c837d9913d35ff3f177542fe3a` |
+| `dotnet/src/Mahjong.TableRuntime/TableRuntimeContracts.cs` | `f7b962b551f1f01a3818828ea4c9641ebe037fd09bdd7327864bf2f38aa33c47` |
+| `dotnet/src/Mahjong.TableRuntime/TableVisibilityProjection.cs` | `c8010493ff576a207f78e10affc79225755cebdadf91abeae1ff69e7e8e841b9` |
+| `dotnet/src/Mahjong.TableRuntime/TableProjectionFactsCodec.cs` | `8ece59cb1fee07ba33f781938c0acec2fb39c2b9d819e817b95417b1b26a02ad` |
+| `dotnet/tests/.../TableDurableTestSupport.cs` | `27d6f7f63940749a67bb6145abf13c46f1ef5ac95298fe8a9d48bd722c2aa708` |
+| `dotnet/tests/.../TableDurableReceiptTests.cs` | `7cf240add816b932c1cb77f8c0402a9eabf8c7f0891b0c61f097e9841d6771ef` |
+| `dotnet/tests/.../TableDurableLeaseRecoveryTests.cs` | `d15fc3273bc48fe2703a6c866139724ee24ba7b7b9c896d115aed0ca640751b3` |
+| `dotnet/tests/.../TableDurableCorruptionTests.cs` | `a8067ab0930397584d15db3c0e5344c9ddd4a2c8db1302cead6fe48d554c503c` |
+| `dotnet/tests/.../TableDurableTimingRecoveryTests.cs` | `6c377c2a39c7180d48b277976933d57dfef73845c67e15af358f67b8c35ef833` |
+| `dotnet/tests/.../CodexP34Round2ReviewProbes.cs` | `af73da1ec72854d453412ffe77e5dda27dea9577303ff16494de0ffc3d872747` |
 
-第 2 轮实现提交差异：15 文件，`2475 insertions(+), 130 deletions(-)`。未新增项目/包引用，未修改 `Mahjong.sln`、统一 verifier、黄金 fixtures、任务书或 CI。
+第 3 轮实现提交：18 文件，`1529 insertions(+), 209 deletions(-)`。未新增项目/包引用，未修改 `Mahjong.sln`、任务书、矩阵、黄金 fixtures、统一 verifier 或 CI。
 
-## 9. 明确 NOT_RUN 与边界
+## 7. NOT_RUN 与边界
 
-- 真实 PostgreSQL、migrations、advisory/row lock、DB 慢/断、备份从空库恢复：**NOT_RUN**（P5.2）。
-- 真实进程 kill/DB 提交后崩溃/网络分区：**NOT_RUN**；`AfterApplyBeforeReturn` 是内存注入的“已提交未回包”，不等于真实崩溃。
+- 真实 PostgreSQL/P5.2、migrations、advisory/row lock、DB 慢/断、备份从空库恢复：**NOT_RUN**。
+- 真实进程 kill/DB 提交后崩溃/网络分区：**NOT_RUN**；`AfterApplyBeforeReturn` 与 sink 时钟推进都是内存确定性注入。
 - WSS/TableService/P5.1、LocalHost/P4、Unity/IL2CPP/真机/物理网络：**NOT_RUN**。
 - V4 Gradle 全量、Unity 许可/SDK/NDK/macOS/Xcode：**NOT_RUN**；V4 仍是唯一生产版本。
-- G1/G5 未宣告；P5.1 未提前实现；P5.2 的真实 DB/消费者仍未交付。
+- G1/G5 未宣告；P5.1 未提前实现。
 
-## 10. 交接
+## 8. 交接
 
-- 第 2 轮实现 HEAD：`1438f2e1b9caf4fbe9531cd3cde63169e219d747`。
-- 本文件所在提交为最终本地 HEAD。
-- 等待 caller 第 2 轮独立验收；caller 负责唯一 PR19 `feat/v5-1-integration -> v5` 及 merge-back。本报告不自行通过 G1/G5。
+- 第 3 轮实现 HEAD：`46dfffd2aedfed3329c1b9e7d7318dfcecbf200d`。
+- 本文件提交为最终本地 HEAD；工作树 clean。
+- 等待 caller 第 3 轮独立验收；caller 负责唯一 PR19 `feat/v5-1-integration -> v5` 及 merge-back。不自行宣告 G1/G5。
