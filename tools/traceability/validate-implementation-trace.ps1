@@ -636,32 +636,130 @@ function Test-AnchorSymbol([string]$path, [string]$symbol) {
 #   functions: fun [typeparams] [Receiver.]name(   (top-level, member, extension, generic and
 #     receiver forms; the name must be immediately followed by "(")
 #   typealias: name directly after the keyword
-#   properties: the DECLARED name is the LAST segment of the qualified chain after val/var --
-#     "val Receiver.extensionProperty: Int" (and the spaced form
-#     "val Receiver . spacedProperty: Int") declares extensionProperty/spacedProperty, NOT
-#     Receiver; the chain parser allows legal whitespace on BOTH sides of each dot, so a
-#     symbol before a dot (spaced or not) can never be taken as the property name; a symbol
-#     in a non-final chain segment is a receiver and is NOT a declaration
+#   properties and function receivers are parsed STRUCTURALLY (Get-KotlinPropertyChain):
+#     Segment := identifier [ balanced "<...>" type-args ] [ "?" ]
+#     Chain   := Segment ( "." Segment )*      -- dots may carry legal whitespace both sides
+#   so nullable receivers ("val String?.nullableProperty: Int"), multi-parameter/nested
+#   generic receivers ("val Map<String, Int>.genericProperty: Int", comma/whitespace/variance
+#   inside the type args) and qualified chains parse to their real LAST segment. A flat
+#   character set is deliberately NOT used: it would truncate at "?" or inside generics and
+#   fake a declaration out of the receiver (and reject the real name). The DECLARED name is
+#   the LAST segment after val/var/const val; a symbol in a non-final chain segment is a
+#   receiver and is NOT a declaration; a symbol inside type-args is consumed wholesale and
+#   is NOT a declaration either.
 # Receiver names, parameter types, supertypes and generic parameters are NOT declarations.
+
+# Structurally parses one Kotlin declaration chain starting at index $start (right after the
+# val/var/const val keyword or the fun type-parameter list):
+#   Segment := identifier [ balanced "<...>" type-args ] [ "?" ]
+#   Chain   := Segment ( "." Segment )*
+# Type args are consumed as a balanced bracket group (commas, whitespace, variance
+# modifiers, "?" and nested/qualified types inside are inert), "?" nullable suffixes are
+# consumed, and dots may carry legal whitespace on either side. Returns $null when the text
+# at $start is not a well-formed declaration chain; otherwise an object with:
+#   Segments = chain segment names (LAST segment is the declared name, earlier are receiver
+#              parts); type-arg contents never become segments
+#   End      = index just past the chain (for the caller's tight-syntax check)
+function Get-KotlinPropertyChain([string]$t, [int]$start) {
+    $len = $t.Length
+    $p = $start
+    $segs = New-Object System.Collections.Generic.List[string]
+    while ($true) {
+        while ($p -lt $len -and [char]::IsWhiteSpace($t[$p])) { $p++ }
+        if ($p -ge $len) { return $null }
+        $c = $t[$p]
+        if (-not (($c -ge [char]65 -and $c -le [char]90) -or ($c -ge [char]97 -and $c -le [char]122) -or $c -eq [char]95)) { return $null }
+        $nameStart = $p
+        $p++
+        while ($p -lt $len) {
+            $d = $t[$p]
+            if (($d -ge [char]65 -and $d -le [char]90) -or ($d -ge [char]97 -and $d -le [char]122) -or ($d -ge [char]48 -and $d -le [char]57) -or $d -eq [char]95) { $p++ } else { break }
+        }
+        $segs.Add($t.Substring($nameStart, $p - $nameStart))
+        # optional type args: balanced angle brackets (whitespace allowed before "<")
+        $q = $p
+        while ($q -lt $len -and [char]::IsWhiteSpace($t[$q])) { $q++ }
+        if ($q -lt $len -and $t[$q] -eq [char]60) {
+            $depth = 0
+            while ($q -lt $len) {
+                $g = $t[$q]
+                if ($g -eq [char]60) { $depth++ } elseif ($g -eq [char]62) { $depth-- }
+                $q++
+                if ($depth -eq 0) { break }
+            }
+            if ($depth -ne 0) { return $null }   # unterminated type args: not a declaration
+            $p = $q
+        }
+        # nullable suffix ("?"), whitespace allowed before it
+        while ($p -lt $len -and [char]::IsWhiteSpace($t[$p])) { $p++ }
+        if ($p -lt $len -and $t[$p] -eq [char]63) { $p++ }
+        # chain continuation: "." with a legal identifier start after it (whitespace both sides)
+        $r = $p
+        while ($r -lt $len -and [char]::IsWhiteSpace($t[$r])) { $r++ }
+        if ($r -lt $len -and $t[$r] -eq [char]46) {
+            $s = $r + 1
+            while ($s -lt $len -and [char]::IsWhiteSpace($t[$s])) { $s++ }
+            if ($s -lt $len) {
+                $e = $t[$s]
+                if (($e -ge [char]65 -and $e -le [char]90) -or ($e -ge [char]97 -and $e -le [char]122) -or $e -eq [char]95) { $p = $s; continue }
+            }
+        }
+        return [pscustomobject]@{ Segments = $segs; End = $p }
+    }
+}
+
+# Function declarations: "fun" [typeparams] [receiver-chain] name "(" -- the receiver chain
+# and type args are parsed structurally (see Get-KotlinPropertyChain), so receivers like
+# "Map<String, Int>" or "String?" can never be truncated into a fake name, and the declared
+# name must be immediately followed by "(" (tight syntax, optional whitespace).
+function Test-KotlinFunDeclaration([string]$t, [string]$symbol) {
+    $len = $t.Length
+    foreach ($m in [regex]::Matches($t, "(?<![A-Za-z0-9_])fun(?![A-Za-z0-9_])")) {
+        $p = $m.Index + 3
+        while ($p -lt $len -and [char]::IsWhiteSpace($t[$p])) { $p++ }
+        if ($p -lt $len -and $t[$p] -eq [char]60) {           # optional type-parameter list
+            $depth = 0
+            while ($p -lt $len) {
+                $g = $t[$p]
+                if ($g -eq [char]60) { $depth++ } elseif ($g -eq [char]62) { $depth-- }
+                $p++
+                if ($depth -eq 0) { break }
+            }
+            if ($depth -ne 0) { continue }
+        }
+        $chain = Get-KotlinPropertyChain $t $p
+        if ($null -eq $chain -or $chain.Segments.Count -eq 0) { continue }
+        $q = $chain.End
+        while ($q -lt $len -and [char]::IsWhiteSpace($t[$q])) { $q++ }
+        if ($q -ge $len -or $t[$q] -ne [char]40) { continue } # tight syntax: name "("
+        if ($chain.Segments[$chain.Segments.Count - 1] -ne $symbol) { continue }
+        $isReceiver = $false
+        for ($k = 0; $k -lt $chain.Segments.Count - 1; $k++) {
+            if ($chain.Segments[$k] -eq $symbol) { $isReceiver = $true; break }
+        }
+        if (-not $isReceiver) { return $true }
+    }
+    return $false
+}
+
 function Test-KotlinDeclaredSymbol([string]$text, [string]$symbol) {
     if ([string]::IsNullOrWhiteSpace($symbol)) { return $false }
     if (-not (Test-IdentifierSymbol $symbol)) { return $false }
     $rx = [regex]::Escape($symbol)
     $t = ConvertTo-LexicallyStripped $text $true
     if ([regex]::IsMatch($t, "\b(?:class|interface|object)\s+" + $rx + "\b")) { return $true }
-    if ([regex]::IsMatch($t, "\bfun\s+(?:<[^<>()\r\n]*>\s*)?(?:[\w?<>.,\[\]]+\.)?" + $rx + "\s*\(")) { return $true }
+    if (Test-KotlinFunDeclaration $t $symbol) { return $true }
     if ([regex]::IsMatch($t, "\btypealias\s+" + $rx + "\b")) { return $true }
-    # Property chain: identifier segments (with optional <...> generic tails) separated by
-    # dots that may carry whitespace on either side. The chain must start right after
-    # "val"/"var", so the FIRST segment can never be mistaken for a longer name.
-    $propRx = [regex]"\b(?:const\s+val|val|var)\s+([A-Za-z_][A-Za-z0-9_<>]*(?:\s*\.\s*[A-Za-z_][A-Za-z0-9_<>]*)*)"
-    foreach ($m in $propRx.Matches($t)) {
-        $clean = @()
-        foreach ($s in @($m.Groups[1].Value -split "\.")) { $clean += (($s.Trim() -replace "<.*$", "")) }
-        if ($clean[$clean.Count - 1] -ne $symbol) { continue }
+    # Property chain: structurally parsed (Get-KotlinPropertyChain). The chain must start
+    # right after "val"/"var"/"const val", so the FIRST segment can never be mistaken for a
+    # longer name; the declared name is the LAST segment and receiver segments never declare.
+    foreach ($kw in [regex]::Matches($t, "(?<![A-Za-z0-9_])(const\s+val|val|var)(?![A-Za-z0-9_])")) {
+        $chain = Get-KotlinPropertyChain $t ($kw.Index + $kw.Length)
+        if ($null -eq $chain -or $chain.Segments.Count -eq 0) { continue }
+        if ($chain.Segments[$chain.Segments.Count - 1] -ne $symbol) { continue }
         $isReceiver = $false
-        for ($k = 0; $k -lt $clean.Count - 1; $k++) {
-            if ($clean[$k] -eq $symbol) { $isReceiver = $true; break }
+        for ($k = 0; $k -lt $chain.Segments.Count - 1; $k++) {
+            if ($chain.Segments[$k] -eq $symbol) { $isReceiver = $true; break }
         }
         if (-not $isReceiver) { return $true }
     }

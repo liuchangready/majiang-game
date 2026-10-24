@@ -11,7 +11,7 @@
 #     its own marker (numbers/booleans in string fields, scalars/null/objects where arrays are
 #     required, null/false array elements, anchor sub-field types, header denominator/stats/
 #     vocabulary/gate list types). No case bundles several error types.
-#   - Sandbox cases s1..s25: a THROWAWAY ISOLATED git repository is created under the system temp
+#   - Sandbox cases s1..s29: a THROWAWAY ISOLATED git repository is created under the system temp
 #     directory with a baseline commit B and a child commit C. B carries a minimal production
 #     source, a test source, a V5 C# source and the real taskbook; C adds post-baseline files and
 #     post-baseline-only symbols. The cases prove that (a) the baseline-good matrix passes, (b) a
@@ -29,14 +29,21 @@
 #     a string nested in a C# INTERPOLATION hole (s17), a non-identifier anchor symbol (s18),
 #     a name inside a REAL Kotlin TRIPLE-QUOTED raw string (s19), a name inside a PLAIN
 #     non-interpolated C# verbatim string that contains "{" (s20), and a name inside a string
-#     nested in a Kotlin "${" template hole (s25) must all fail. Cases s21/s22/s24 are
-#     ANTI-REGRESSION POSITIVES: a real declaration AFTER a verbatim string containing "{",
-#     a real declaration AFTER a Kotlin string containing a plain "{", and a SPACED property's
-#     declared name must all still pass. The declaration matchers use a lexical state scanner
-#     that strips comments/strings (nested block comments, raw/verbatim/interpolated strings
-#     included; Kotlin template holes only at unescaped "${", plain verbatim braces are
-#     ordinary content) before matching real declaration syntax. These cases are fully
-#     deterministic and never touch the real repository's production code or index.
+#     nested in a Kotlin "${" template hole (s25), a NULLABLE extension property RECEIVER
+#     ("val String?.nullableProperty" declares nullableProperty, not String) (s26), and a
+#     GENERIC extension property RECEIVER ("val Map<String, Int>.genericProperty" declares
+#     genericProperty, not Map -- balanced type-args are consumed wholesale) (s27) must all
+#     fail. Cases s21/s22/s24/s28/s29 are ANTI-REGRESSION POSITIVES: a real declaration AFTER
+#     a verbatim string containing "{", a real declaration AFTER a Kotlin string containing a
+#     plain "{", a SPACED property's declared name, the NULLABLE property's declared name and
+#     the GENERIC property's declared name must all still pass. The declaration matchers use a
+#     lexical state scanner that strips comments/strings (nested block comments, raw/verbatim/
+#     interpolated strings included; Kotlin template holes only at unescaped "${", plain
+#     verbatim braces are ordinary content) and a STRUCTURAL chain parser (identifier segments
+#     with balanced "<...>" type-args and "?" nullable suffixes, whitespace-tolerant dots)
+#     before matching real declaration syntax -- no flat character set that could truncate at
+#     "?" or inside generics. These cases are fully deterministic and never touch the real
+#     repository's production code or index.
 #   - NO-SKIP RULE: there is no skipped, defaulted or otherwise hidden-green case anywhere. If an
 #     environment assumption (for example resolving a non-ancestor commit in the real repo) cannot
 #     be met, the case is counted as FAILED and the self-test exits non-zero.
@@ -408,7 +415,7 @@ try {
     $sbDocDir = Join-Path $sb "doc"
     $tbCopied = @(Get-ChildItem -LiteralPath $sbDocDir -Recurse -Filter "V5-0-1-IMPLEMENTATION-TASKS.md" -ErrorAction SilentlyContinue)
     if ($tbCopied.Count -ne 1) { throw "taskbook copy not unique" }
-    Write-SandboxFile "engine/src/main/kotlin/com/majiang/Demo.kt" ("class DemoEngine`n`n// sandbox production source`nfun ExtraEngine.polish() { }`nval plainProperty = 1`nval ExternalReceiver.extensionProperty: Int get() = 1`nval ExternalReceiver . spacedProperty: Int get() = 1`ntypealias DemoAlias = Int`n/* outer comment`n   /* nested comment */`n   class NestedCommentOnly`n*/`nval message = `"`"`"`n    literal `" class RawStringOnly `" literal`n`"`"`"`nval spaced = `"literal { brace`"`nclass RealAfterKotlin`nval templated = `"a `$`{ `"class TemplateOnly`" } b`"`n")
+    Write-SandboxFile "engine/src/main/kotlin/com/majiang/Demo.kt" ("class DemoEngine`n`n// sandbox production source`nfun ExtraEngine.polish() { }`nval plainProperty = 1`nval ExternalReceiver.extensionProperty: Int get() = 1`nval ExternalReceiver . spacedProperty: Int get() = 1`nval String?.nullableProperty: Int get() = 1`nval Map<String, Int>.genericProperty: Int get() = 1`ntypealias DemoAlias = Int`n/* outer comment`n   /* nested comment */`n   class NestedCommentOnly`n*/`nval message = `"`"`"`n    literal `" class RawStringOnly `" literal`n`"`"`"`nval spaced = `"literal { brace`"`nclass RealAfterKotlin`nval templated = `"a `$`{ `"class TemplateOnly`" } b`"`n")
     Write-SandboxFile "engine/src/test/kotlin/com/majiang/DemoTest.kt" ("class DemoEngineTest`n")
     Write-SandboxFile "dotnet/src/DemoV5.cs" ("public sealed class DemoV5Type`n{`n    // this record is durable before use`n    public const string Label = `"class StringOnlySymbol in string`";`n    public string Message => `$`"prefix { `"class InterpolatedOnly `" } suffix`";`n    public const string Verbatim = @`"prefix { class VerbatimOnly tail`";`n}`nclass SandboxBox<T>`n{`n}`nclass RealAfterVerbatim`n")
     $null = & git -C $sb add -A 2>&1
@@ -417,7 +424,7 @@ try {
     if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrEmpty($shaB)) { throw "baseline commit B failed" }
     $shaB = $shaB.Trim()
     # child commit C: post-baseline files and post-baseline-only symbols
-    Write-SandboxFile "engine/src/main/kotlin/com/majiang/Demo.kt" ("class DemoEngine`n`n// sandbox production source`nfun ExtraEngine.polish() { }`nval plainProperty = 1`nval ExternalReceiver.extensionProperty: Int get() = 1`nval ExternalReceiver . spacedProperty: Int get() = 1`ntypealias DemoAlias = Int`n/* outer comment`n   /* nested comment */`n   class NestedCommentOnly`n*/`nval message = `"`"`"`n    literal `" class RawStringOnly `" literal`n`"`"`"`nval spaced = `"literal { brace`"`nclass RealAfterKotlin`nval templated = `"a `$`{ `"class TemplateOnly`" } b`"`n`nclass LaterEngineSymbol`n")
+    Write-SandboxFile "engine/src/main/kotlin/com/majiang/Demo.kt" ("class DemoEngine`n`n// sandbox production source`nfun ExtraEngine.polish() { }`nval plainProperty = 1`nval ExternalReceiver.extensionProperty: Int get() = 1`nval ExternalReceiver . spacedProperty: Int get() = 1`nval String?.nullableProperty: Int get() = 1`nval Map<String, Int>.genericProperty: Int get() = 1`ntypealias DemoAlias = Int`n/* outer comment`n   /* nested comment */`n   class NestedCommentOnly`n*/`nval message = `"`"`"`n    literal `" class RawStringOnly `" literal`n`"`"`"`nval spaced = `"literal { brace`"`nclass RealAfterKotlin`nval templated = `"a `$`{ `"class TemplateOnly`" } b`"`n`nclass LaterEngineSymbol`n")
     Write-SandboxFile "engine/src/main/kotlin/com/majiang/Extra.kt" ("class ExtraEngine`n")
     Write-SandboxFile "dotnet/src/DemoV5.cs" ("public sealed class DemoV5Type`n{`n    // this record is durable before use`n    public const string Label = `"class StringOnlySymbol in string`";`n    public string Message => `$`"prefix { `"class InterpolatedOnly `" } suffix`";`n    public const string Verbatim = @`"prefix { class VerbatimOnly tail`";`n}`nclass SandboxBox<T>`n{`n}`nclass RealAfterVerbatim`nnclass LaterV5Symbol`n")
     Write-SandboxFile "dotnet/src/ExtraV5.cs" ("public sealed class ExtraV5Type`n")
@@ -435,9 +442,9 @@ $ErrorActionPreference = "Stop"
 
 if (-not $sandboxOk) {
     # NO-SKIP: a sandbox environment failure is an explicit self-test failure, never a pass.
-    # 25 sandbox cases exist (s1..s25); all of them count as failed when setup breaks.
-    Log "  CASE-BROKEN sandbox-setup (counted as failures for s1..s25)"
-    1..25 | ForEach-Object { $script:results += $false }
+    # 29 sandbox cases exist (s1..s29); all of them count as failed when setup breaks.
+    Log "  CASE-BROKEN sandbox-setup (counted as failures for s1..s29)"
+    1..29 | ForEach-Object { $script:results += $false }
 } else {
     Log ("SANDBOX-B=" + $shaB)
     Log ("SANDBOX-C=" + $shaC)
@@ -593,6 +600,29 @@ if (-not $sandboxOk) {
     $m = Serialize $good | ConvertFrom-Json
     $m.rows[0].v4Symbol = "TemplateOnly"
     $null = Run-Case "s25-kotlin-template-hole-v4-symbol" (Serialize $m) 1 @("v4-symbol-not-declared-at-baseline") $sb
+
+    # s26: a NULLABLE extension property receiver ("val String?.nullableProperty: Int") is
+    # not a declaration -- the structural parser consumes the "?" with the receiver segment
+    $m = Serialize $good | ConvertFrom-Json
+    $m.rows[0].v4Symbol = "String"
+    $null = Run-Case "s26-nullable-property-receiver-v4-symbol" (Serialize $m) 1 @("v4-symbol-not-declared-at-baseline") $sb
+
+    # s27: a GENERIC extension property receiver ("val Map<String, Int>.genericProperty: Int")
+    # is not a declaration either -- balanced type-args (comma/whitespace inside) are consumed
+    # wholesale and can never truncate into a fake declaration of the receiver
+    $m = Serialize $good | ConvertFrom-Json
+    $m.rows[0].v4Symbol = "Map"
+    $null = Run-Case "s27-generic-property-receiver-v4-symbol" (Serialize $m) 1 @("v4-symbol-not-declared-at-baseline") $sb
+
+    # s28: the NULLABLE property's declared name (real last chain segment) passes
+    $m = Serialize $good | ConvertFrom-Json
+    $m.rows[0].v4Symbol = "nullableProperty"
+    $null = Run-Case "s28-positive-nullable-property-name" (Serialize $m) 0 @() $sb
+
+    # s29: the GENERIC property's declared name (real last chain segment) passes
+    $m = Serialize $good | ConvertFrom-Json
+    $m.rows[0].v4Symbol = "genericProperty"
+    $null = Run-Case "s29-positive-generic-property-name" (Serialize $m) 0 @() $sb
 }
 
 # --- summary ---
