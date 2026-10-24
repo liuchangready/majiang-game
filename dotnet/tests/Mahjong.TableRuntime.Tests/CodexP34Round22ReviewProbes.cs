@@ -34,7 +34,12 @@ namespace Mahjong.TableRuntime.Tests
             Assert.Equal(commits, h.Store.CommitCount);
             Assert.Equal(before.StateVersion,
                 (await h.Store.LoadStateAsync(DurableHarness.Room, ct))!.StateVersion);
-            Assert.Empty(h.Sink.Publications);
+            // A failed expiration must not publish successful applied/recovered content. A
+            // necessary LeaseLost control notification is allowed (and required by R33).
+            Assert.DoesNotContain(
+                h.Sink.Publications,
+                value => value.Kind == TablePublicationKind.Applied ||
+                         value.Kind == TablePublicationKind.Recovered);
         }
     }
 }

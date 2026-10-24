@@ -1161,8 +1161,7 @@ namespace Mahjong.TableRuntime
                     if (now >= lease.ExpiresAtUtcMs)
                     {
                         return new ValueTask<TableDurableCommitResult>(
-                            TableDurableCommitResult.Failed(
-                                TableRuntimeReasonCode.StaleOwnerEpoch,
+                            TableDurableCommitResult.StaleOwner(
                                 "The table lease expired before the transactional fence."));
                     }
 
