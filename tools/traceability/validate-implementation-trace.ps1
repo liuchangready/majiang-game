@@ -376,19 +376,226 @@ foreach ($r in $rows) {
 }
 
 # --- symbol declaration checks ---
-# Comments and string/char literals are stripped BEFORE any declaration matching: a word that
-# only occurs inside a comment ("this record is durable before") or a string literal is not a
-# declaration. The union pattern covers C# ("//", "/* */", @"...", $"...", 'c') and Kotlin
-# ("//", "/* */", triple-quoted, "...", 'c'). Quotes are written as \x22/\x27 so this file
-# stays pure ASCII under PowerShell 5.1's ANSI read.
-$script:commentStringRegex = [regex]'(?s)/\*.*?\*/|//[^\r\n]*|\x22\x22\x22(?:\\.|[^\x22\\])*\x22\x22\x22|@\x22(?:\x22\x22|[^\x22])*\x22|\$?\x22(?:\\.|[^\x22\\\r\n])*\x22|\x27(?:\\.|[^\x27\\\r\n])*\x27'
+# A lexical state scanner strips comments and string/char literals BEFORE any declaration
+# matching: a word that only occurs inside a comment or a literal is not a declaration. The
+# scanner (replacing an earlier union regex that leaked nested constructs) handles:
+#   - line + block comments; Kotlin block comments NEST (depth counted), C# do not
+#   - Kotlin triple-quoted raw strings (no escapes, closed by """), C# verbatim @"..." ("" to
+#     escape) and C# raw """...""" strings
+#   - interpolated strings ($"..." / $@"...") and Kotlin string templates: the { } holes are
+#     scanned as brace-nested CODE (nested strings/chars/comments allowed), so a quoted
+#     literal inside a hole ("prefix { "class X" } suffix") cannot leak as source
+#   - escape sequences and adjacent quote runs position-by-position
+# Stripped spans become a single space; plain code (including lone division slashes) is kept.
+# Trigger chars are written as numeric char codes so this file stays pure ASCII under
+# PowerShell 5.1's ANSI read.
+$script:lexTriggerChars = @([char]47, [char]34, [char]39)                        # / " '
+$script:lexHoleChars = @([char]47, [char]34, [char]39, [char]123, [char]125)     # / " ' { }
+$script:lexNewlines = @([char]13, [char]10)
 $script:strippedCache = @{}
+
+function ConvertTo-LexicallyStripped([string]$text, [bool]$isKotlin) {
+    $len = $text.Length
+    $sb = New-Object System.Text.StringBuilder($len)
+    $i = 0
+    while ($i -lt $len) {
+        $n = $text.IndexOfAny($script:lexTriggerChars, $i)
+        if ($n -lt 0) { [void]$sb.Append($text.Substring($i)); break }
+        if ($n -gt $i) { [void]$sb.Append($text.Substring($i, $n - $i)) }
+        $i = Invoke-LexToken $text $n $isKotlin $sb
+        [void]$sb.Append(' ')
+    }
+    return $sb.ToString()
+}
+
+# Consumes one lexical token starting at $i (a comment, a string/char literal, or a lone '/'
+# kept as code) and returns the index of the first character after it.
+function Invoke-LexToken([string]$text, [int]$i, [bool]$isKotlin, [System.Text.StringBuilder]$sb) {
+    $len = $text.Length
+    $c = $text[$i]
+    if ($c -eq [char]47) {
+        if ($i + 1 -lt $len -and $text[$i + 1] -eq [char]47) {          # // line comment
+            $j = $text.IndexOfAny($script:lexNewlines, $i + 1)
+            if ($j -lt 0) { return $len }
+            return $j
+        }
+        if ($i + 1 -lt $len -and $text[$i + 1] -eq [char]42) {          # /* block comment
+            return Skip-LexBlockComment $text ($i + 2) $isKotlin
+        }
+        [void]$sb.Append('/')
+        return $i + 1
+    }
+    if ($c -eq [char]34) { return Skip-LexString $text $i $isKotlin }
+    if ($c -eq [char]39) { return Skip-LexChar $text $i }
+    return $i + 1
+}
+
+# Block comment: Kotlin nests (depth counted), C# does not. Unterminated consumes to EOF.
+function Skip-LexBlockComment([string]$text, [int]$p, [bool]$isKotlin) {
+    $len = $text.Length
+    $depth = 1
+    while ($p -lt $len) {
+        $open = -1
+        if ($isKotlin) { $open = $text.IndexOf('/*', $p) }
+        $close = $text.IndexOf('*/', $p)
+        if ($close -lt 0) { return $len }
+        if ($open -ge 0 -and $open -lt $close) { $depth++; $p = $open + 2 }
+        else {
+            $depth--
+            if ($depth -le 0) { return $close + 2 }
+            $p = $close + 2
+        }
+    }
+    return $len
+}
+
+# Char literal: escapes skipped; an unterminated literal ends at the newline defensively.
+function Skip-LexChar([string]$text, [int]$i) {
+    $len = $text.Length
+    $p = $i + 1
+    while ($p -lt $len) {
+        $c = $text[$p]
+        if ($c -eq [char]92) { $p += 2; continue }                      # backslash escape
+        if ($c -eq [char]39) { return $p + 1 }
+        if ($c -eq [char]10 -or $c -eq [char]13) { return $p }
+        $p += 1
+    }
+    return $len
+}
+
+# String dispatch at the opening quote ($i). Prefixes are read from the ORIGINAL text:
+# C# $"..." / $@"..." / @"..." / """...""", Kotlin """...""". Kotlin normal strings always
+# allow ${...} template holes; C# normal strings only with the $" interpolation prefix.
+function Skip-LexString([string]$text, [int]$i, [bool]$isKotlin) {
+    $prev = if ($i -gt 0) { $text[$i - 1] } else { ' ' }
+    $prev2 = if ($i -gt 1) { $text[$i - 2] } else { ' ' }
+    if ($text.IndexOf('"""', $i) -eq $i) {
+        if ($isKotlin) { return Skip-LexKotlinRawString $text ($i + 3) }
+        return Skip-LexRawString $text ($i + 3)
+    }
+    $interp = ($prev -eq [char]36) -or ($prev -eq [char]64 -and $prev2 -eq [char]36)
+    $verbatim = $prev -eq [char]64
+    if ($verbatim -and -not $isKotlin) { return Skip-LexVerbatimString $text ($i + 1) $interp }
+    return Skip-LexNormalString $text ($i + 1) ($interp -or $isKotlin) $isKotlin
+}
+
+# Normal string (escapes on). With holes allowed, { opens an interpolation/template hole that
+# is scanned as code (Invoke-LexCodeHole); {{ is an escaped literal brace; " closes.
+function Skip-LexNormalString([string]$text, [int]$p, [bool]$allowHoles, [bool]$isKotlin) {
+    $len = $text.Length
+    while ($p -lt $len) {
+        $c = $text[$p]
+        if ($c -eq [char]92) { $p += 2; continue }
+        if ($c -eq [char]34) { return $p + 1 }
+        if ($allowHoles -and $c -eq [char]123) {
+            if ($p + 1 -lt $len -and $text[$p + 1] -eq [char]123) { $p += 2; continue }
+            $p = Invoke-LexCodeHole $text ($p + 1) $isKotlin
+            continue
+        }
+        if ($allowHoles -and $c -eq [char]125) { $p += 1; continue }    # stray literal }
+        if ($c -eq [char]10 -or $c -eq [char]13) { return $p }          # unterminated
+        $p += 1
+    }
+    return $len
+}
+
+# Interpolation/template hole: scan as code until the "}" that closes the hole at brace depth
+# zero. Nested strings, chars, comments and braces inside follow their own rules, so nested
+# literals cannot terminate the hole or leak their content as declarations.
+function Invoke-LexCodeHole([string]$text, [int]$p, [bool]$isKotlin) {
+    $len = $text.Length
+    $depth = 0
+    while ($p -lt $len) {
+        $n = $text.IndexOfAny($script:lexHoleChars, $p)
+        if ($n -lt 0) { return $len }
+        $c = $text[$n]
+        if ($c -eq [char]123) { $depth++; $p = $n + 1; continue }
+        if ($c -eq [char]125) {
+            if ($depth -eq 0) { return $n + 1 }
+            $depth--
+            $p = $n + 1
+            continue
+        }
+        if ($c -eq [char]47) {
+            if ($n + 1 -lt $len -and $text[$n + 1] -eq [char]47) {
+                $j = $text.IndexOfAny($script:lexNewlines, $n + 1)
+                if ($j -lt 0) { return $len }
+                $p = $j
+                continue
+            }
+            if ($n + 1 -lt $len -and $text[$n + 1] -eq [char]42) {
+                $p = Skip-LexBlockComment $text ($n + 2) $isKotlin
+                continue
+            }
+            $p = $n + 1
+            continue
+        }
+        if ($c -eq [char]34) { $p = Skip-LexString $text $n $isKotlin; continue }
+        $p = Skip-LexChar $text $n
+    }
+    return $len
+}
+
+# C# verbatim string @"...": no escapes, "" is an escaped quote, spans newlines; with $interp
+# the { } holes are scanned as code.
+function Skip-LexVerbatimString([string]$text, [int]$p, [bool]$interp) {
+    $len = $text.Length
+    while ($p -lt $len) {
+        $n = $text.IndexOfAny(@([char]34, [char]123), $p)
+        if ($n -lt 0) { return $len }
+        $c = $text[$n]
+        if ($interp -and $c -eq [char]123) {
+            if ($n + 1 -lt $len -and $text[$n + 1] -eq [char]123) { $p = $n + 2; continue }
+            $p = Invoke-LexCodeHole $text ($n + 1) $false
+            continue
+        }
+        if ($n + 1 -lt $len -and $text[$n + 1] -eq [char]34) { $p = $n + 2; continue }
+        return $n + 1
+    }
+    return $len
+}
+
+# C# raw string """...""" (C# 11): closed by a run of at least three quotes.
+function Skip-LexRawString([string]$text, [int]$p) {
+    $len = $text.Length
+    while ($p -lt $len) {
+        $n = $text.IndexOf([char]34, $p)
+        if ($n -lt 0) { return $len }
+        $run = 0
+        while ($n + $run -lt $len -and $text[$n + $run] -eq [char]34) { $run++ }
+        if ($run -ge 3) { return $n + 3 }
+        $p = $n + $run
+    }
+    return $len
+}
+
+# Kotlin raw string """...""" : no escapes, closed by """, ${...} template holes are scanned
+# as code.
+function Skip-LexKotlinRawString([string]$text, [int]$p) {
+    $len = $text.Length
+    while ($p -lt $len) {
+        $hole = $text.IndexOf('${', $p)
+        $end = $text.IndexOf('"""', $p)
+        if ($hole -ge 0 -and ($end -lt 0 -or $hole -lt $end)) {
+            $p = Invoke-LexCodeHole $text ($hole + 2) $true
+            continue
+        }
+        if ($end -lt 0) { return $len }
+        return $end + 3
+    }
+    return $len
+}
 
 function Get-StrippedText([string]$path) {
     if ($script:strippedCache.ContainsKey($path)) { return $script:strippedCache[$path] }
-    $t = $script:commentStringRegex.Replace((Get-BaselineBlob $path), " ")
+    $t = ConvertTo-LexicallyStripped (Get-BaselineBlob $path) ($path -match "\.kt$")
     $script:strippedCache[$path] = $t
     return $t
+}
+
+# A legal single identifier (enforced, not just documented) before any declaration matching.
+function Test-IdentifierSymbol([string]$symbol) {
+    return ($symbol -match "^[A-Za-z_][A-Za-z0-9_]*$")
 }
 
 # Type declarations for v5/test anchors: the declared name must DIRECTLY follow the keyword
@@ -399,6 +606,7 @@ function Get-StrippedText([string]$path) {
 # keywords, unknown -> either).
 function Test-AnchorSymbol([string]$path, [string]$symbol) {
     if ([string]::IsNullOrWhiteSpace($symbol)) { return $false }
+    if (-not (Test-IdentifierSymbol $symbol)) { return $false }
     $rx = [regex]::Escape($symbol)
     $t = Get-StrippedText $path
     if ($path -match "\.cs$") {
@@ -417,17 +625,30 @@ function Test-AnchorSymbol([string]$path, [string]$symbol) {
 #     open/inner/fun modifiers precede the keyword)
 #   functions: fun [typeparams] [Receiver.]name(   (top-level, member, extension, generic and
 #     receiver forms; the name must be immediately followed by "(")
-#   typealias and property declarations: name directly after the keyword (optional dotted
-#     receiver segment for extension properties)
+#   typealias: name directly after the keyword
+#   properties: the DECLARED name is the LAST segment of the qualified chain after val/var --
+#     "val Receiver.extensionProperty: Int" declares extensionProperty, NOT Receiver; a symbol
+#     in a non-final chain segment is a receiver and is NOT a declaration
 # Receiver names, parameter types, supertypes and generic parameters are NOT declarations.
 function Test-KotlinDeclaredSymbol([string]$text, [string]$symbol) {
     if ([string]::IsNullOrWhiteSpace($symbol)) { return $false }
-    if ($symbol -notmatch "^[A-Za-z_][A-Za-z0-9_]*$") { return $false }
+    if (-not (Test-IdentifierSymbol $symbol)) { return $false }
     $rx = [regex]::Escape($symbol)
-    $t = $script:commentStringRegex.Replace($text, " ")
+    $t = ConvertTo-LexicallyStripped $text $true
     if ([regex]::IsMatch($t, "\b(?:class|interface|object)\s+" + $rx + "\b")) { return $true }
     if ([regex]::IsMatch($t, "\bfun\s+(?:<[^<>()\r\n]*>\s*)?(?:[\w?<>.,\[\]]+\.)?" + $rx + "\s*\(")) { return $true }
-    if ([regex]::IsMatch($t, "\b(?:const\s+val|val|var|typealias)\s+(?:[\w?<>.,\[\]]+\.)?" + $rx + "\b")) { return $true }
+    if ([regex]::IsMatch($t, "\btypealias\s+" + $rx + "\b")) { return $true }
+    $propRx = [regex]"\b(?:const\s+val|val|var)\s+([^\s=:;{}\[\]()\r\n,]+)"
+    foreach ($m in $propRx.Matches($t)) {
+        $clean = @()
+        foreach ($s in @($m.Groups[1].Value -split "\.")) { $clean += ($s -replace "<.*$", "") }
+        if ($clean[$clean.Count - 1] -ne $symbol) { continue }
+        $isReceiver = $false
+        for ($k = 0; $k -lt $clean.Count - 1; $k++) {
+            if ($clean[$k] -eq $symbol) { $isReceiver = $true; break }
+        }
+        if (-not $isReceiver) { return $true }
+    }
     return $false
 }
 
@@ -592,7 +813,10 @@ foreach ($r in $rows) {
         if (-not (Has-Prop $a "symbol")) { Fail ($tag + " v5-anchor-symbol-missing"); continue }
         if (-not (Is-NonEmptyString (Prop-Value $a "symbol"))) { Fail ($tag + " anchor-field-not-string symbol"); continue }
         $sym = Prop-Value $a "symbol"
-        if ($baselineTree.ContainsKey($p) -and -not (Test-AnchorSymbol $p $sym)) {
+        if (-not (Test-IdentifierSymbol $sym)) {
+            Fail ($tag + " anchor-symbol-not-identifier: " + $sym)
+        }
+        elseif ($baselineTree.ContainsKey($p) -and -not (Test-AnchorSymbol $p $sym)) {
             Fail ($tag + " v5-anchor-symbol-not-declared-at-baseline: " + $sym + " in " + $p)
         }
     }
@@ -608,7 +832,10 @@ foreach ($r in $rows) {
         if (-not (Has-Prop $a "symbol")) { Fail ($tag + " test-anchor-symbol-missing"); continue }
         if (-not (Is-NonEmptyString (Prop-Value $a "symbol"))) { Fail ($tag + " anchor-field-not-string symbol"); continue }
         $sym = Prop-Value $a "symbol"
-        if ($baselineTree.ContainsKey($p) -and -not (Test-AnchorSymbol $p $sym)) {
+        if (-not (Test-IdentifierSymbol $sym)) {
+            Fail ($tag + " anchor-symbol-not-identifier: " + $sym)
+        }
+        elseif ($baselineTree.ContainsKey($p) -and -not (Test-AnchorSymbol $p $sym)) {
             Fail ($tag + " test-anchor-symbol-not-declared-at-baseline: " + $sym + " in " + $p)
         }
     }
@@ -655,7 +882,10 @@ foreach ($r in $rows) {
     $srcKey = "$($r.module)|$($r.source)"
     if ($realPath.ContainsKey($srcKey)) {
         $srcFull = $realPath[$srcKey]
-        if (-not (Test-KotlinDeclaredSymbol (Get-BaselineBlob $srcFull) "$($r.v4Symbol)")) {
+        if (-not (Test-IdentifierSymbol "$($r.v4Symbol)")) {
+            Fail ($tag + " v4-symbol-not-identifier: " + $r.v4Symbol)
+        }
+        elseif (-not (Test-KotlinDeclaredSymbol (Get-BaselineBlob $srcFull) "$($r.v4Symbol)")) {
             Fail ($tag + " v4-symbol-not-declared-at-baseline: " + $r.v4Symbol + " in " + $srcFull)
         }
     }

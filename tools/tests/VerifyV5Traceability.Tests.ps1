@@ -11,7 +11,7 @@
 #     its own marker (numbers/booleans in string fields, scalars/null/objects where arrays are
 #     required, null/false array elements, anchor sub-field types, header denominator/stats/
 #     vocabulary/gate list types). No case bundles several error types.
-#   - Sandbox cases s1..s10: a THROWAWAY ISOLATED git repository is created under the system temp
+#   - Sandbox cases s1..s18: a THROWAWAY ISOLATED git repository is created under the system temp
 #     directory with a baseline commit B and a child commit C. B carries a minimal production
 #     source, a test source, a V5 C# source and the real taskbook; C adds post-baseline files and
 #     post-baseline-only symbols. The cases prove that (a) the baseline-good matrix passes, (b) a
@@ -19,10 +19,17 @@
 #     only AFTER the baseline cannot serve as v4Symbol or as a V5 anchor symbol, and (d) an
 #     acceptance commit that is a descendant of the baseline is rejected. Cases s7..s10 pin the
 #     pseudo-symbol holes: a word that appears only in a COMMENT (s7), only inside a STRING
-#     literal (s8), only as a GENERIC PARAMETER (s9), or only as an extension RECEIVER (s10)
-#     must all fail; the declaration matchers strip comments/strings first and require real
-#     declaration syntax. These cases are fully deterministic and never touch the real
-#     repository's production code or index.
+#     literal (s8), only as a GENERIC PARAMETER (s9), or only as an extension RECEIVER of a
+#     function (s10) must all fail. Cases s11..s14 are ANTI-REGRESSION POSITIVES: a plain
+#     property, an extension PROPERTY's declared name, a typealias and an extension FUNCTION's
+#     declared name must all still pass. Cases s15..s18 pin the round-5 holes: an extension
+#     property RECEIVER ("val ExternalReceiver.extensionProperty" declares extensionProperty,
+#     not ExternalReceiver) (s15), a name hidden in a KOTLIN NESTED block comment (s16), a name
+#     inside a string nested in a C# INTERPOLATION hole (s17), and a non-identifier anchor
+#     symbol (s18) must all fail. The declaration matchers use a lexical state scanner that
+#     strips comments/strings (nested block comments, raw/verbatim/interpolated strings
+#     included) before matching real declaration syntax. These cases are fully deterministic
+#     and never touch the real repository's production code or index.
 #   - NO-SKIP RULE: there is no skipped, defaulted or otherwise hidden-green case anywhere. If an
 #     environment assumption (for example resolving a non-ancestor commit in the real repo) cannot
 #     be met, the case is counted as FAILED and the self-test exits non-zero.
@@ -394,18 +401,18 @@ try {
     $sbDocDir = Join-Path $sb "doc"
     $tbCopied = @(Get-ChildItem -LiteralPath $sbDocDir -Recurse -Filter "V5-0-1-IMPLEMENTATION-TASKS.md" -ErrorAction SilentlyContinue)
     if ($tbCopied.Count -ne 1) { throw "taskbook copy not unique" }
-    Write-SandboxFile "engine/src/main/kotlin/com/majiang/Demo.kt" ("class DemoEngine`n`n// sandbox production source`nfun ExtraEngine.polish() { }`n")
+    Write-SandboxFile "engine/src/main/kotlin/com/majiang/Demo.kt" ("class DemoEngine`n`n// sandbox production source`nfun ExtraEngine.polish() { }`nval plainProperty = 1`nval ExternalReceiver.extensionProperty: Int get() = 1`ntypealias DemoAlias = Int`n/* outer comment`n   /* nested comment */`n   class NestedCommentOnly`n*/`nval message = `"`"`n    literal `" class RawStringOnly `" literal`n`"`"`n")
     Write-SandboxFile "engine/src/test/kotlin/com/majiang/DemoTest.kt" ("class DemoEngineTest`n")
-    Write-SandboxFile "dotnet/src/DemoV5.cs" ("public sealed class DemoV5Type`n{`n    // this record is durable before use`n    public const string Label = `"class StringOnlySymbol in string`";`n}`nclass SandboxBox<T>`n{`n}`n")
+    Write-SandboxFile "dotnet/src/DemoV5.cs" ("public sealed class DemoV5Type`n{`n    // this record is durable before use`n    public const string Label = `"class StringOnlySymbol in string`";`n    public string Message => `$`"prefix { `"class InterpolatedOnly `" } suffix`";`n}`nclass SandboxBox<T>`n{`n}`n")
     $null = & git -C $sb add -A 2>&1
     $null = & git -C $sb -c user.name=selftest -c user.email=selftest@example.invalid commit -m "B baseline" 2>&1
     $shaB = (& git -C $sb rev-parse HEAD 2>$null)
     if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrEmpty($shaB)) { throw "baseline commit B failed" }
     $shaB = $shaB.Trim()
     # child commit C: post-baseline files and post-baseline-only symbols
-    Write-SandboxFile "engine/src/main/kotlin/com/majiang/Demo.kt" ("class DemoEngine`n`n// sandbox production source`nfun ExtraEngine.polish() { }`n`nclass LaterEngineSymbol`n")
+    Write-SandboxFile "engine/src/main/kotlin/com/majiang/Demo.kt" ("class DemoEngine`n`n// sandbox production source`nfun ExtraEngine.polish() { }`nval plainProperty = 1`nval ExternalReceiver.extensionProperty: Int get() = 1`ntypealias DemoAlias = Int`n/* outer comment`n   /* nested comment */`n   class NestedCommentOnly`n*/`nval message = `"`"`n    literal `" class RawStringOnly `" literal`n`"`"`n`nclass LaterEngineSymbol`n")
     Write-SandboxFile "engine/src/main/kotlin/com/majiang/Extra.kt" ("class ExtraEngine`n")
-    Write-SandboxFile "dotnet/src/DemoV5.cs" ("public sealed class DemoV5Type`n{`n    // this record is durable before use`n    public const string Label = `"class StringOnlySymbol in string`";`n}`nclass SandboxBox<T>`n{`n}`nclass LaterV5Symbol`n")
+    Write-SandboxFile "dotnet/src/DemoV5.cs" ("public sealed class DemoV5Type`n{`n    // this record is durable before use`n    public const string Label = `"class StringOnlySymbol in string`";`n    public string Message => `$`"prefix { `"class InterpolatedOnly `" } suffix`";`n}`nclass SandboxBox<T>`n{`n}`nclass LaterV5Symbol`n")
     Write-SandboxFile "dotnet/src/ExtraV5.cs" ("public sealed class ExtraV5Type`n")
     Write-SandboxFile "doc/SIDE-ACCEPT.md" ("# side acceptance at C`n")
     $null = & git -C $sb add -A 2>&1
@@ -421,8 +428,9 @@ $ErrorActionPreference = "Stop"
 
 if (-not $sandboxOk) {
     # NO-SKIP: a sandbox environment failure is an explicit self-test failure, never a pass.
-    Log "  CASE-BROKEN sandbox-setup (counted as failures for s1..s6)"
-    1..6 | ForEach-Object { $script:results += $false }
+    # 18 sandbox cases exist (s1..s18); all of them count as failed when setup breaks.
+    Log "  CASE-BROKEN sandbox-setup (counted as failures for s1..s18)"
+    1..18 | ForEach-Object { $script:results += $false }
 } else {
     Log ("SANDBOX-B=" + $shaB)
     Log ("SANDBOX-C=" + $shaC)
@@ -498,6 +506,48 @@ if (-not $sandboxOk) {
     $m = Serialize $good | ConvertFrom-Json
     $m.rows[0].v4Symbol = "ExtraEngine"
     $null = Run-Case "s10-receiver-only-v4-symbol" (Serialize $m) 1 @("v4-symbol-not-declared-at-baseline") $sb
+
+    # s11..s14: ANTI-REGRESSION POSITIVES -- legitimate declaration forms must still pass.
+    # s11: a plain property ("val plainProperty = 1")
+    $m = Serialize $good | ConvertFrom-Json
+    $m.rows[0].v4Symbol = "plainProperty"
+    $null = Run-Case "s11-positive-plain-property" (Serialize $m) 0 @() $sb
+    # s12: an extension PROPERTY's declared name ("val ExternalReceiver.extensionProperty: Int"
+    # declares extensionProperty)
+    $m = Serialize $good | ConvertFrom-Json
+    $m.rows[0].v4Symbol = "extensionProperty"
+    $null = Run-Case "s12-positive-extension-property-name" (Serialize $m) 0 @() $sb
+    # s13: a typealias ("typealias DemoAlias = Int")
+    $m = Serialize $good | ConvertFrom-Json
+    $m.rows[0].v4Symbol = "DemoAlias"
+    $null = Run-Case "s13-positive-typealias" (Serialize $m) 0 @() $sb
+    # s14: an extension FUNCTION's declared name ("fun ExtraEngine.polish()" declares polish)
+    $m = Serialize $good | ConvertFrom-Json
+    $m.rows[0].v4Symbol = "polish"
+    $null = Run-Case "s14-positive-extension-fun-name" (Serialize $m) 0 @() $sb
+
+    # s15: an extension PROPERTY RECEIVER is not a declaration ("val
+    # ExternalReceiver.extensionProperty: Int" declares extensionProperty, NOT ExternalReceiver)
+    $m = Serialize $good | ConvertFrom-Json
+    $m.rows[0].v4Symbol = "ExternalReceiver"
+    $null = Run-Case "s15-property-receiver-v4-symbol" (Serialize $m) 1 @("v4-symbol-not-declared-at-baseline") $sb
+
+    # s16: a name hidden inside a KOTLIN NESTED block comment is not a declaration
+    # ("/* outer /* nested */ class NestedCommentOnly */")
+    $m = Serialize $good | ConvertFrom-Json
+    $m.rows[0].v4Symbol = "NestedCommentOnly"
+    $null = Run-Case "s16-nested-comment-v4-symbol" (Serialize $m) 1 @("v4-symbol-not-declared-at-baseline") $sb
+
+    # s17: a name inside a string NESTED IN A C# INTERPOLATION hole is not a declaration
+    # ($"prefix { "class InterpolatedOnly" } suffix")
+    $m = Serialize $good | ConvertFrom-Json
+    $m.rows[0].v5Anchors = @(@{ path = "dotnet/src/DemoV5.cs"; symbol = "InterpolatedOnly" })
+    $null = Run-Case "s17-interpolated-string-anchor-symbol" (Serialize $m) 1 @("v5-anchor-symbol-not-declared-at-baseline") $sb
+
+    # s18: an anchor symbol that is not a legal single identifier is rejected outright
+    $m = Serialize $good | ConvertFrom-Json
+    $m.rows[0].v5Anchors = @(@{ path = "dotnet/src/DemoV5.cs"; symbol = "not-an-identifier" })
+    $null = Run-Case "s18-anchor-symbol-not-identifier" (Serialize $m) 1 @("anchor-symbol-not-identifier") $sb
 }
 
 # --- summary ---
