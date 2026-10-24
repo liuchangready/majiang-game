@@ -20,7 +20,7 @@ namespace Mahjong.TableRuntime
             long graceMillis = 5000L,
             string? matchId = null,
             bool requireCheatLedger = true,
-            bool requireCommittedFacts = false)
+            bool requireCommittedFacts = true)
         {
             if (string.IsNullOrWhiteSpace(ownerInstance))
             {
