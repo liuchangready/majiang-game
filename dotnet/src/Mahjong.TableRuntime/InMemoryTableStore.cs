@@ -570,8 +570,31 @@ namespace Mahjong.TableRuntime
 
                 if (left.GraceDeadlineMillis.HasValue)
                 {
-                    long oldDuration = left.GraceDeadlineMillis.Value - oldDisconnected;
-                    long newDuration = right.GraceDeadlineMillis!.Value - newDisconnected;
+                    if (!sameBoot)
+                    {
+                        return false;
+                    }
+
+                    long oldDeadline = left.GraceDeadlineMillis.Value;
+                    long newDeadline = right.GraceDeadlineMillis!.Value;
+                    if (oldDeadline > nowMonotonic)
+                    {
+                        // Same-boot recovery keeps the absolute grace deadline: only the
+                        // disconnected-at origin may move forward, consuming remaining grace.
+                        if (newDeadline != oldDeadline)
+                        {
+                            return false;
+                        }
+                    }
+                    else if (newDeadline != nowMonotonic)
+                    {
+                        // The old grace was already overdue; recovery may only pin it to now,
+                        // never extend it.
+                        return false;
+                    }
+
+                    long oldDuration = oldDeadline - oldDisconnected;
+                    long newDuration = newDeadline - newDisconnected;
                     if (oldDuration < 0 || newDuration < 0 || newDuration > oldDuration)
                     {
                         return false;
