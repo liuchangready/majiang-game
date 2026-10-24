@@ -16,7 +16,7 @@
 | 五组已接受 fixture 的目录核对 | **PASS** | `catalog-v1.json` 记录 5 个文件、真实 SHA-256、schema、V4 commit、exporter 命令、分组计数、样本 ID |
 | G-xxx 语义映射与锚点 | **PASS（逐项保留）** | 73 条 G 需求全部保留；17 full、20 partial、33 none、3 v5-only；partial 不冒充整项 |
 | 只读 validator 正例 | **PASS** | `verify-v5-golden-catalog.ps1` exit 0，5/73/10382/10000/42 |
-| validator 负例自测 | **PASS** | 1 个正例 + 54 个 TEMP 坏输入负例；坏 catalog/SHA/重复 ID/未知 schema/缺文件均 exit 1 |
+| validator 负例自测 | **PASS** | 1 个正例 + 59 个 TEMP 坏输入负例；坏 catalog/SHA/重复 ID/未知 schema/缺文件均 exit 1 |
 | 真实 fixture 未被自测修改 | **PASS** | 自测前后 5 个 fixture SHA-256 完全相同 |
 | C# Golden 定向运行 | **PASS** | 5 个 reader 类、42 Facts、0 failed、0 skipped，exit 0 |
 | 全 73 条 G 需求 | **NOT DONE** | 33 none、20 partial；不得写 73/73 或 G1 PASS |
@@ -298,15 +298,20 @@ exit 0。
 | 52 | random-status-unknown | `randomSamples[5000].expected={status:'invalid-status'}`，刷新 SHA | `CASE_STRUCTURE_UNKNOWN_VARIANT` |
 | 53 | random-status-case | `randomSamples[5000].expected.status='WIN'`，刷新 SHA | `CASE_STRUCTURE_UNKNOWN_VARIANT` |
 | 54 | branch-discriminators-unknown | match `expected.type=NextRoundX`、settlement `RON`、op `INITIAL`，刷新 SHA | `CASE_STRUCTURE_UNKNOWN_VARIANT` |
+| 55 | physical-boundary-copyindex-missing | 删除 G-001b `boundarySamples[0].copyIndex`，刷新 SHA | `CASE_STRUCTURE_MISSING` |
+| 56 | physical-boundary-copyindex-null | G-001b `copyIndex=null`，刷新 SHA | `CASE_STRUCTURE_MISSING` |
+| 57 | physical-boundary-copyindex-type | G-001b `copyIndex` 改字符串，刷新 SHA | `CASE_STRUCTURE_TYPE` |
+| 58 | physical-zone-case-empty | G-002 `cases[0]={}`，刷新 SHA | `CASE_STRUCTURE_MISSING` |
+| 59 | physical-redfive-object | G-003a `redFiveTileIds[0]={}`，刷新 SHA | `CASE_STRUCTURE_TYPE` |
 
 ### 6.2 实际结果
 
 ```text
-SELFTEST PASS cases=55 positives=1 negatives=54
+SELFTEST PASS cases=60 positives=1 negatives=59
 real-fixtures-unchanged=true
 ```
 
-55/55 个 case 通过：1 个正例 exit 0，54 个坏输入负例均 exit 1 并命中预期错误码；真实 5 个 fixture 的 SHA-256 在自测前后逐项相等。
+60/60 个 case 通过：1 个正例 exit 0，59 个坏输入负例均 exit 1 并命中预期错误码；真实 5 个 fixture 的 SHA-256 在自测前后逐项相等。
 
 日志：`artifacts/golden-catalog/validator-selftest.log`（gitignored 工件，不随提交；路径/SHA 见 §9）。
 
@@ -330,7 +335,7 @@ real-fixtures-unchanged=true
 | # | 命令 | 结果 | exit |
 |---:|---|---|---:|
 | 1 | `powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/verify-v5-golden-catalog.ps1` | PASS 5/73/10382/10000/42 | 0 |
-| 2 | `powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/tests/VerifyV5GoldenCatalog.Tests.ps1` | 1 正例 + 54 负例全 PASS；真实 fixture 不变 | 0 |
+| 2 | `powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/tests/VerifyV5GoldenCatalog.Tests.ps1` | 1 正例 + 59 负例全 PASS；真实 fixture 不变 | 0 |
 | 3 | `D:/Unity/dotnet/dotnet.exe test dotnet/tests/Mahjong.Domain.Tests/Mahjong.Domain.Tests.csproj -c Release --nologo -v:minimal` | 322/0/0（全量 Domain；filter 被 MTP 忽略） | 0 |
 | 4 | `D:/Unity/dotnet/dotnet.exe dotnet/tests/Mahjong.Domain.Tests/bin/Release/net8.0/Mahjong.Domain.Tests.dll -class "*GoldenTests" -noColor -noLogo` | 42/0/0/0 | 0 |
 | 5 | `git status --porcelain` / `git diff --check` | 仅授权文件；无空白错误 | 0 |
@@ -356,9 +361,9 @@ real-fixtures-unchanged=true
 
 | 文件 | bytes | SHA-256 | 说明 |
 |---|---:|---|---|
-| `tests/v5-golden/catalog-v1.json` | 443972 | `ACF355D6921BFF051B1DD0F5648988BB6C750E16CC35A19657F2D1A6AE43FAA4` | 本任务新增；catalog |
+| `tests/v5-golden/catalog-v1.json` | 447993 | `3CE5CE98E3B6B1B19068AC2F616E0C054B64C5BF87298577A3807A7905CD2502` | 本任务新增；catalog |
 | `tools/verify-v5-golden-catalog.ps1` | 57610 | `34A219BE972A5D9DEAE6A7EB1C790AD0D09E434AFABD87859623C6BDB38BED5D` | 本任务新增；只读 validator |
-| `tools/tests/VerifyV5GoldenCatalog.Tests.ps1` | 35459 | `08FCC579C08D175FB57953271472A1AC4A64ABFA6AE60CA8A6E1330145AE5023` | 本任务新增；TEMP 自测 |
+| `tools/tests/VerifyV5GoldenCatalog.Tests.ps1` | 37665 | `888A8955BCB53DF7159C08DA97C9832D6C18B6D644797BB9895FDD4DBF54A295` | 本任务新增；TEMP 自测 |
 | `doc/v5-重构/V5-0-GOLDEN-MANIFEST.md` | 70168 | `DA3ADB0B71D2EF7069F0103BCF592D299FE145DE8526E248EBE5CAF30BBBDA11` | 本任务更新；保留历史并增补当前事实 |
 | `tests/v5-golden/physical-v1.json` | 836369 | `B9384534E826473007511FD34096085C56EFD0E0F49E877978E50F847EDA0995` | 只读 fixture；未改 |
 | `tests/v5-golden/scoring-v1.json` | 8315131 | `53B1811079033E9044E222F7BB1FA263506FD724F09D6B13F84FE9CC2FCCD94E` | 只读 fixture；未改 |
@@ -375,10 +380,10 @@ real-fixtures-unchanged=true
 | `dotnet/tests/Mahjong.Domain.Tests/RoundReplayGoldenTests.cs` | 25622 | `B7BEB497372B030EA66366DFDC8E884306B8FE6C490C26219048538307B895AE` | 只读 C# reader；6 Facts |
 | `dotnet/tests/Mahjong.Domain.Tests/CheatGoldenTests.cs` | 69774 | `6B667231509A37685AE06B4F8C45DA3D5A01D9A740BFEF3295209D3ED8E2446F` | 只读 C# reader；16 Facts |
 | `dotnet/tests/Mahjong.Domain.Tests/ShuffleGoldenTests.cs` | 11797 | `B1B3940A0338835586814B78CB650095203B4EFA358D79BA4BACF82F5F68905B` | 只读 C# reader；4 Facts |
-| `artifacts/golden-catalog/validator-positive.log` | 510 | `AA2FCFE75630DA838C250E098ED940969B31AC27B3CB5C120907E59F11497371` | validator 正例原始日志（gitignored） |
-| `artifacts/golden-catalog/validator-selftest.log` | 24194 | `A663B9A451A0D621E9A763BD3057ABBFB6F765D548F2F124B7454D085573B2F5` | 自测原始日志（gitignored） |
-| `artifacts/golden-catalog/csharp-golden-tests.log` | 1474 | `27354E33E5703AD39815C06AF45CC1FF94192D918AD4B8E07C4F8ACBE36A3695` | 322/0/0 全量 Domain 日志（gitignored） |
-| `artifacts/golden-catalog/csharp-golden-targeted.log` | 702 | `5FACD67F4B51424BB914E5AF4EACEB82379205D093FD3DCA3A2E61E3252E7CBA` | 42/0/0 定向日志（gitignored） |
+| `artifacts/golden-catalog/validator-positive.log` | 510 | `6173CDF57D7C2E84424A74993CEBB45AB187214F38F36FC2FDE8B049A67705ED` | validator 正例原始日志（gitignored） |
+| `artifacts/golden-catalog/validator-selftest.log` | 25687 | `1B86DDC34A3E08A133A37FCC7F1AFC9DEE34C038C8EBB08C6451F2F94998C271` | 自测原始日志（gitignored） |
+| `artifacts/golden-catalog/csharp-golden-tests.log` | 1474 | `8D1711628F8B8016798B6A1E6BD0B873B8C91CA3D97910A032F4791E2782DF99` | 322/0/0 全量 Domain 日志（gitignored） |
+| `artifacts/golden-catalog/csharp-golden-targeted.log` | 702 | `03286E3C51446E83009C22BE2C5E13F571E02B6C0D8A24E300EF1FBEE4151592` | 42/0/0 定向日志（gitignored） |
 | `doc/v5-重构/V5-GOLDEN-CATALOG-RECONCILIATION.md` | - | 提交后计算 | 本报告；SHA 在提交后由最终交付消息给出（自引用不写入表） |
 
 ---

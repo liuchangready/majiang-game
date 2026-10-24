@@ -731,7 +731,57 @@ Invoke-NegativeCase -Name 'branch-discriminators-unknown' -ExpectedCode 'CASE_ST
     Update-CatalogFixtureSha -Root $root -FixtureId 'scoring-v1'
 }
 
-# 45. Exporter byte change.
+# 45. Physical G-001b boundarySamples must carry copyIndex.
+Invoke-NegativeCase -Name 'physical-boundary-copyindex-missing' -ExpectedCode 'CASE_STRUCTURE_MISSING' -Mutator {
+    param($root)
+    $path = Join-Path $root 'tests\v5-golden\physical-v1.json'
+    $json = Read-JsonFile $path
+    $json.samples[1].expected.boundarySamples[0].PSObject.Properties.Remove('copyIndex')
+    Write-JsonFile $path $json
+    Update-CatalogFixtureSha -Root $root -FixtureId 'physical-v1'
+}
+
+# 46. copyIndex null is not a valid number.
+Invoke-NegativeCase -Name 'physical-boundary-copyindex-null' -ExpectedCode 'CASE_STRUCTURE_MISSING' -Mutator {
+    param($root)
+    $path = Join-Path $root 'tests\v5-golden\physical-v1.json'
+    $json = Read-JsonFile $path
+    $json.samples[1].expected.boundarySamples[0].copyIndex = $null
+    Write-JsonFile $path $json
+    Update-CatalogFixtureSha -Root $root -FixtureId 'physical-v1'
+}
+
+# 47. copyIndex wrong type.
+Invoke-NegativeCase -Name 'physical-boundary-copyindex-type' -ExpectedCode 'CASE_STRUCTURE_TYPE' -Mutator {
+    param($root)
+    $path = Join-Path $root 'tests\v5-golden\physical-v1.json'
+    $json = Read-JsonFile $path
+    $json.samples[1].expected.boundarySamples[0].copyIndex = 'not-a-number'
+    Write-JsonFile $path $json
+    Update-CatalogFixtureSha -Root $root -FixtureId 'physical-v1'
+}
+
+# 48. G-002 case element losing its consumed fields.
+Invoke-NegativeCase -Name 'physical-zone-case-empty' -ExpectedCode 'CASE_STRUCTURE_MISSING' -Mutator {
+    param($root)
+    $path = Join-Path $root 'tests\v5-golden\physical-v1.json'
+    $json = Read-JsonFile $path
+    $json.samples[3].expected.cases[0] = [pscustomobject]@{}
+    Write-JsonFile $path $json
+    Update-CatalogFixtureSha -Root $root -FixtureId 'physical-v1'
+}
+
+# 49. G-003a redFiveTileIds elements must be numbers.
+Invoke-NegativeCase -Name 'physical-redfive-object' -ExpectedCode 'CASE_STRUCTURE_TYPE' -Mutator {
+    param($root)
+    $path = Join-Path $root 'tests\v5-golden\physical-v1.json'
+    $json = Read-JsonFile $path
+    $json.samples[4].expected.cases[0].redFiveTileIds[0] = [pscustomobject]@{}
+    Write-JsonFile $path $json
+    Update-CatalogFixtureSha -Root $root -FixtureId 'physical-v1'
+}
+
+# 50. Exporter byte change.
 Invoke-NegativeCase -Name 'exporter-sha' -ExpectedCode 'EXPORTER_SHA_MISMATCH' -Mutator {
     param($root)
     $path = Join-Path $root 'engine\src\test\kotlin\com\majiang\model\V5PhysicalGoldenExporterTest.kt'

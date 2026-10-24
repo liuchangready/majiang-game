@@ -2098,6 +2098,10 @@
                                                                                                                                                                 {
                                                                                                                                                                     "path":  "rank",
                                                                                                                                                                     "type":  "number"
+                                                                                                                                                                },
+                                                                                                                                                                {
+                                                                                                                                                                    "path":  "copyIndex",
+                                                                                                                                                                    "type":  "number"
                                                                                                                                                                 }
                                                                                                                                                             ]
                                                                                                                                               }
@@ -2156,7 +2160,24 @@
                                                                                                                                                                "type":  "number"
                                                                                                                                                            }
                                                                                                                                                        ]
-                                                                                                                                         }
+                                                                                                                                         },
+                                                                                                                 "expected.invalid":  {
+                                                                                                                                          "type":  "object",
+                                                                                                                                          "rules":  [
+                                                                                                                                                        {
+                                                                                                                                                            "path":  "input",
+                                                                                                                                                            "type":  "number"
+                                                                                                                                                        },
+                                                                                                                                                        {
+                                                                                                                                                            "path":  "exceptionType",
+                                                                                                                                                            "type":  "string"
+                                                                                                                                                        },
+                                                                                                                                                        {
+                                                                                                                                                            "path":  "semanticCategory",
+                                                                                                                                                            "type":  "string"
+                                                                                                                                                        }
+                                                                                                                                                    ]
+                                                                                                                                      }
                                                                                                              }
                                                                                       },
                                                                                       {
@@ -2180,6 +2201,14 @@
                                                                                                                                                       },
                                                                                                                                                       {
                                                                                                                                                           "path":  "outcome",
+                                                                                                                                                          "type":  "string"
+                                                                                                                                                      },
+                                                                                                                                                      {
+                                                                                                                                                          "path":  "constructed",
+                                                                                                                                                          "type":  "boolean"
+                                                                                                                                                      },
+                                                                                                                                                      {
+                                                                                                                                                          "path":  "csharpMapping",
                                                                                                                                                           "type":  "string"
                                                                                                                                                       }
                                                                                                                                                   ]
@@ -2212,36 +2241,36 @@
                                                                                                                                                       {
                                                                                                                                                           "path":  "positions",
                                                                                                                                                           "type":  "array"
+                                                                                                                                                      },
+                                                                                                                                                      {
+                                                                                                                                                          "path":  "redFiveTileIds",
+                                                                                                                                                          "type":  "array"
+                                                                                                                                                      },
+                                                                                                                                                      {
+                                                                                                                                                          "path":  "redFiveCount",
+                                                                                                                                                          "type":  "number"
+                                                                                                                                                      },
+                                                                                                                                                      {
+                                                                                                                                                          "path":  "conserved",
+                                                                                                                                                          "type":  "boolean"
+                                                                                                                                                      },
+                                                                                                                                                      {
+                                                                                                                                                          "path":  "deadWallSegmentEqual",
+                                                                                                                                                          "type":  "boolean"
+                                                                                                                                                      },
+                                                                                                                                                      {
+                                                                                                                                                          "path":  "reversedEquals",
+                                                                                                                                                          "type":  "boolean"
+                                                                                                                                                      },
+                                                                                                                                                      {
+                                                                                                                                                          "path":  "wallCanonicalSha256",
+                                                                                                                                                          "type":  "string"
                                                                                                                                                       }
                                                                                                                                                   ],
                                                                                                                                         "arrayItemRules":  {
-                                                                                                                                                               "wall":  {
-                                                                                                                                                                            "type":  "number"
-                                                                                                                                                                        },
-                                                                                                                                                               "baseWall":  {
-                                                                                                                                                                                "type":  "number"
-                                                                                                                                                                            },
-                                                                                                                                                               "positions":  {
-                                                                                                                                                                                 "type":  "object",
-                                                                                                                                                                                 "rules":  [
-                                                                                                                                                                                               {
-                                                                                                                                                                                                   "path":  "tileId",
-                                                                                                                                                                                                   "type":  "number"
-                                                                                                                                                                                               },
-                                                                                                                                                                                               {
-                                                                                                                                                                                                   "path":  "zone",
-                                                                                                                                                                                                   "type":  "string"
-                                                                                                                                                                                               },
-                                                                                                                                                                                               {
-                                                                                                                                                                                                   "path":  "seat",
-                                                                                                                                                                                                   "type":  "number"
-                                                                                                                                                                                               },
-                                                                                                                                                                                               {
-                                                                                                                                                                                                   "path":  "slot",
-                                                                                                                                                                                                   "type":  "number"
-                                                                                                                                                                                               }
-                                                                                                                                                                                           ]
-                                                                                                                                                                             }
+                                                                                                                                                               "redFiveTileIds":  {
+                                                                                                                                                                                      "type":  "number"
+                                                                                                                                                                                  }
                                                                                                                                                            }
                                                                                                                                     }
                                                                                                              }
