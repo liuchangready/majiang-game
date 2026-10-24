@@ -17,7 +17,9 @@ namespace Mahjong.Contracts
     /// The optional summary reuses the existing
     /// <see cref="PublicSessionSummary"/> for final scores/rankings. No second
     /// session-result type and no duplicate wind/round-number/honba game state
-    /// are introduced. An unfinished match is represented by an empty history
+    /// are introduced. The summary is validated only for structural identity
+    /// (null rows, duplicate/missing seats), never re-ranked, re-sorted or
+    /// de-duplicated. An unfinished match is represented by an empty history
     /// and/or a null summary, not by inventing a partial settlement.
     ///
     /// This read model does not carry cheat balances or details, seeds, tiles,
@@ -42,9 +44,14 @@ namespace Mahjong.Contracts
         /// <param name="finalSummary">
         /// Optional final summary. When supplied it must be finished and is
         /// defensively copied into a new <see cref="PublicSessionSummary"/>.
-        /// Pass null while the match is still in progress or has no final
-        /// summary. This contract does not infer match completion from the
-        /// round count.
+        /// Its score rows and ranking seats are validated at this boundary:
+        /// null score rows and duplicate/missing seats are rejected rather than
+        /// silently repaired. Empty score/ranking lists remain allowed for
+        /// compatibility with the existing summary type; a populated list must
+        /// contain all four seats exactly once. Valid input order, rankings and
+        /// signed values are copied unchanged. Pass null while the match is
+        /// still in progress or has no final summary. This contract does not
+        /// infer match completion from the round count.
         /// </param>
         public PublicSessionHistory(
             SessionId sessionId,
@@ -115,6 +122,11 @@ namespace Mahjong.Contracts
                     nameof(finalSummary));
             }
 
+            if (finalSummary != null)
+            {
+                ValidateFinalSummary(finalSummary, nameof(finalSummary));
+            }
+
             FinalSummary = CopyFinalSummary(finalSummary);
         }
 
@@ -133,6 +145,103 @@ namespace Mahjong.Contracts
         /// produced a final summary in this read model.
         /// </summary>
         public PublicSessionSummary? FinalSummary { get; }
+
+        private static void ValidateFinalSummary(PublicSessionSummary summary, string parameterName)
+        {
+            ValidateScoreRows(summary.FinalScores, parameterName);
+            ValidateRankingSeats(summary.Rankings, parameterName);
+        }
+
+        private static void ValidateScoreRows(IReadOnlyList<ScoreView> scores, string parameterName)
+        {
+            if (scores.Count == 0)
+            {
+                // PublicSessionSummary permits an empty placeholder shape. Keep
+                // that compatibility at this boundary and reject only malformed
+                // rows when a four-seat summary is actually supplied.
+                return;
+            }
+
+            if (scores.Count != ProtocolConstants.MaxSeat + 1)
+            {
+                throw new ArgumentException(
+                    "finalSummary.FinalScores must be empty or contain four seat rows.",
+                    parameterName);
+            }
+
+            var seen = new bool[ProtocolConstants.MaxSeat + 1];
+            for (int i = 0; i < scores.Count; i++)
+            {
+                ScoreView row = scores[i];
+                if (row == null)
+                {
+                    throw new ArgumentException(
+                        "finalSummary.FinalScores cannot contain null rows.",
+                        parameterName);
+                }
+
+                int seat = row.Seat;
+                if (seen[seat])
+                {
+                    throw new ArgumentException(
+                        "finalSummary.FinalScores contains duplicate seat " + seat + ".",
+                        parameterName);
+                }
+
+                seen[seat] = true;
+            }
+
+            for (int seat = 0; seat < seen.Length; seat++)
+            {
+                if (!seen[seat])
+                {
+                    throw new ArgumentException(
+                        "finalSummary.FinalScores is missing seat " + seat + ".",
+                        parameterName);
+                }
+            }
+        }
+
+        private static void ValidateRankingSeats(IReadOnlyList<int> rankings, string parameterName)
+        {
+            if (rankings.Count == 0)
+            {
+                // Same compatibility carve-out as FinalScores: an empty summary
+                // remains expressible, but a populated ranking must be complete.
+                return;
+            }
+
+            if (rankings.Count != ProtocolConstants.MaxSeat + 1)
+            {
+                throw new ArgumentException(
+                    "finalSummary.Rankings must be empty or contain four seats.",
+                    parameterName);
+            }
+
+            var seen = new bool[ProtocolConstants.MaxSeat + 1];
+            for (int i = 0; i < rankings.Count; i++)
+            {
+                int seat = rankings[i];
+                if (seen[seat])
+                {
+                    throw new ArgumentException(
+                        "finalSummary.Rankings contains duplicate seat " + seat + ".",
+                        parameterName);
+                }
+
+                seen[seat] = true;
+            }
+
+            for (int seat = 0; seat < seen.Length; seat++)
+            {
+                if (!seen[seat])
+                {
+                    throw new ArgumentException(
+                        "finalSummary.Rankings is missing seat " + seat + ".",
+                        parameterName);
+                }
+            }
+        }
 
         private static PublicSessionSummary? CopyFinalSummary(PublicSessionSummary? summary)
         {

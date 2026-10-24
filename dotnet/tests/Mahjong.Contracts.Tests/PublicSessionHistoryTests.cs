@@ -387,6 +387,126 @@ namespace Mahjong.Protocol.Tests
         }
 
         [Fact]
+        public void HistoryRejectsFinalSummaryWithNullScoreRow()
+        {
+            var summary = new PublicSessionSummary(
+                true,
+                "NORMAL_COMPLETION",
+                new[]
+                {
+                    new ScoreView(0, 25000),
+                    null!,
+                    new ScoreView(2, 25000),
+                    new ScoreView(3, 25000)
+                },
+                new[] { 0, 1, 2, 3 });
+
+            var exception = Assert.Throws<ArgumentException>(() =>
+                new PublicSessionHistory(
+                    new SessionId("session-null-final-score"),
+                    Array.Empty<PublicRoundRecord>(),
+                    summary));
+
+            Assert.Equal("finalSummary", exception.ParamName);
+            Assert.Contains("FinalScores cannot contain null rows", exception.Message);
+            Assert.Null(summary.FinalScores[1]);
+        }
+
+        [Fact]
+        public void HistoryRejectsFinalSummaryWithDuplicateScoreSeat()
+        {
+            var summary = new PublicSessionSummary(
+                true,
+                "NORMAL_COMPLETION",
+                new[]
+                {
+                    new ScoreView(0, 25000),
+                    new ScoreView(0, 25000),
+                    new ScoreView(2, 25000),
+                    new ScoreView(3, 25000)
+                },
+                new[] { 0, 1, 2, 3 });
+
+            var exception = Assert.Throws<ArgumentException>(() =>
+                new PublicSessionHistory(
+                    new SessionId("session-duplicate-final-score"),
+                    Array.Empty<PublicRoundRecord>(),
+                    summary));
+
+            Assert.Equal("finalSummary", exception.ParamName);
+            Assert.Contains("FinalScores contains duplicate seat 0", exception.Message);
+            Assert.Equal(4, summary.FinalScores.Count);
+        }
+
+        [Fact]
+        public void HistoryRejectsFinalSummaryWithDuplicateRankingSeat()
+        {
+            var summary = new PublicSessionSummary(
+                true,
+                "NORMAL_COMPLETION",
+                SeatRows(DefaultScores),
+                new[] { 0, 0, 2, 3 });
+
+            var exception = Assert.Throws<ArgumentException>(() =>
+                new PublicSessionHistory(
+                    new SessionId("session-duplicate-ranking"),
+                    Array.Empty<PublicRoundRecord>(),
+                    summary));
+
+            Assert.Equal("finalSummary", exception.ParamName);
+            Assert.Contains("Rankings contains duplicate seat 0", exception.Message);
+            Assert.Equal(new[] { 0, 0, 2, 3 }, summary.Rankings.ToArray());
+        }
+
+        [Fact]
+        public void HistoryPreservesValidFinalSummaryInputOrderRankingsAndSigns()
+        {
+            var summary = new PublicSessionSummary(
+                true,
+                "NORMAL_COMPLETION",
+                new[]
+                {
+                    new ScoreView(2, -1000),
+                    new ScoreView(0, 26000),
+                    new ScoreView(3, 25000),
+                    new ScoreView(1, 25000)
+                },
+                new[] { 2, 0, 3, 1 });
+
+            var history = new PublicSessionHistory(
+                new SessionId("session-summary-order"),
+                Array.Empty<PublicRoundRecord>(),
+                summary);
+
+            PublicSessionSummary copied = history.FinalSummary!;
+            Assert.NotSame(summary, copied);
+            Assert.Equal(new[] { 2, 0, 3, 1 }, copied.FinalScores.Select(row => row.Seat).ToArray());
+            Assert.Equal(new long[] { -1000, 26000, 25000, 25000 },
+                copied.FinalScores.Select(row => row.Score).ToArray());
+            Assert.Equal(new[] { 2, 0, 3, 1 }, copied.Rankings.ToArray());
+        }
+
+        [Fact]
+        public void HistoryAllowsEmptyFinalSummaryCollectionsForCompatibility()
+        {
+            var summary = new PublicSessionSummary(
+                true,
+                "NORMAL_COMPLETION",
+                Array.Empty<ScoreView>(),
+                Array.Empty<int>());
+
+            var history = new PublicSessionHistory(
+                new SessionId("session-empty-summary"),
+                Array.Empty<PublicRoundRecord>(),
+                summary);
+
+            Assert.NotNull(history.FinalSummary);
+            Assert.Empty(history.FinalSummary!.FinalScores);
+            Assert.Empty(history.FinalSummary.Rankings);
+            Assert.NotSame(summary, history.FinalSummary);
+        }
+
+        [Fact]
         public void HistoryCopiesRoundListAgainstCallerMutationAndRejectsWrites()
         {
             var first = Record("round-a", "result-a");

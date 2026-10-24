@@ -1,10 +1,11 @@
 # V5 P3.2 公开单局历史纯契约（PublicRoundRecord / PublicSessionHistory）
 
 - 日期：2026-10-25
-- 状态：**组件 PASS**（P3.2 公开历史只读契约子项）；完整 P3.2、G1、G3、G5 **NOT_RUN**，不得据此宣告阶段或平台完成。
+- 状态：**组件 PASS**（P3.2 公开历史只读契约子项，含复核缺陷 D-1-01 修复）；完整 P3.2、G1、G3、G5 **NOT_RUN**，不得据此宣告阶段或平台完成。
 - 基线：`563b5ef5801bdee967e0897ba521082a375a3fc0`（PR19 已接受并发布的唯一头）。
 - 工作树/分支：`D:/majiang-wt/public-history` / `wt/v5-public-history`。
-- 实现/测试提交：`ccedb016883d037bfbaf09c407caf8d072bdce8a`。
+- 初版实现/测试提交：`ccedb016883d037bfbaf09c407caf8d072bdce8a`。
+- 复核修复：D-1-01（MAJOR，`FinalSummary` 结构校验）；复核修复提交：本文件所在提交（最终 HEAD 见交付消息）。
 - 文档提交：本文件所在提交（见最终 `git log`；不把文档提交写成实现提交）。
 - 生产基线：**V4 仍是唯一生产架构**。本任务只做本地 commit，不 push、不新建 PR、不触发远端 CI、不改默认分支、不部署。
 
@@ -34,7 +35,7 @@
 |---|---|
 | `dotnet/src/Mahjong.Contracts/PublicRoundRecord.cs` | 单局公开记录 |
 | `dotnet/src/Mahjong.Contracts/PublicSessionHistory.cs` | 会话公开历史 |
-| `dotnet/tests/Mahjong.Contracts.Tests/PublicSessionHistoryTests.cs` | 29 个定向用例 |
+| `dotnet/tests/Mahjong.Contracts.Tests/PublicSessionHistoryTests.cs` | 34 个定向用例 |
 | `doc/v5-重构/V5-P32-PUBLIC-HISTORY-CONTRACT.md` | 本证据文档 |
 
 未修改 `AGENTS.md`、`CLAUDE.md`、taskbook、review protocol、兄弟任务代码/报告/追踪 JSON；未读取或合并兄弟未接受/未提交代码。证据只写独占 `%TEMP%\mahjong-v5-public-history\`。
@@ -116,13 +117,13 @@
 
 ### 3.2 `PublicSessionHistory`
 
-位置：`dotnet/src/Mahjong.Contracts/PublicSessionHistory.cs:28`（类）、`:49`（构造）、`:128`（`Rounds`）、`:135`（`FinalSummary`）。
+位置：`dotnet/src/Mahjong.Contracts/PublicSessionHistory.cs:28`（类）、`:56`（构造）、`:140`（`Rounds`）、`:147`（`FinalSummary`）、`:149`（`ValidateFinalSummary`）。
 
 | 成员 | 类型 | 语义 |
 |---|---|---|
 | `SessionId` | `SessionId` | 已有 Contracts 窄型；`default`/空值拒绝 |
 | `Rounds` | `IReadOnlyList<PublicRoundRecord>` | 严格保持调用方顺序；只读、不可重排/替换/清空 |
-| `FinalSummary` | `PublicSessionSummary?` | 可选；非 null 时必须是 `Finished=true`，并防御复制为新 `PublicSessionSummary` |
+| `FinalSummary` | `PublicSessionSummary?` | 可选；非 null 时必须是 `Finished=true`，防御复制并校验分数行/席位/排名结构 |
 
 结构处理：
 
@@ -131,7 +132,8 @@
 - **重复 resultId**：跨轮复用同一个 result 即拒绝（相邻/非相邻都拒绝），覆盖“跨轮结果边界”。
 - **身份错接**：roundId 不得等于此前 resultId；resultId 不得等于任一 roundId；同一记录 roundId==resultId 也被拒绝。两个身份命名空间在冻结历史内互斥。
 - **空/进行中**：允许空 `Rounds` + null `FinalSummary`；也允许已有若干局但 `FinalSummary=null`。不从局数推断终场。
-- **终局摘要**：只复用现有 `PublicSessionSummary`，不新造 `PublicSessionResult`，不复制 `PublicBoardView` 的风/局号/本场/庄家。`Finished=false` 的摘要被拒绝，避免把进行中摘要标成终局。
+- **终局摘要**：只复用现有 `PublicSessionSummary`，不新造 `PublicSessionResult`，不复制 `PublicBoardView` 的风/局号/本场/庄家。`Finished=false` 的摘要被拒绝，避免把进行中摘要标成终局。非空 `FinalScores` 的每一行必须非 null，且 0..3 四席各一次；非空 `Rankings` 必须是 0..3 四席各一次。重复/缺漏席位抛 `ArgumentException`，不静默纠正或去重。
+- **空集合契约**：既有 `PublicSessionSummary` 允许 0 或 4 行；本历史为兼容保留空 `FinalScores`/空 `Rankings`（两者各自为空时保留为空，不伪造另一侧），不伪造分数或排名。1–3 行的部分集合无法由该 summary 构造，故历史边界不会见到。合法输入顺序、排名次序与有符号数值原样复制，不重排、不重算、不重新排名。
 - **防御复制**：`Rounds` 复制列表；每个 `PublicRoundRecord` 自身已不可变且内部列表只读；`FinalSummary` 复制为新的 summary（分数/排名列表由 summary 构造器再复制）。
 
 非目标/边界：
@@ -152,10 +154,40 @@
 | 历史重复 | `SessionView` 允许相邻重复 round/result | 重复 roundId/resultId 构造时拒绝 | 安全加强，不排序消解 |
 | 身份错接 | 无跨集合校验 | round/result 命名空间互斥 | 安全加强 |
 | 负值/总和 | 接受负分/负 delta，无零和强制 | 保持接受 | 等价保留合法事实 |
-| 终局摘要 | `PublicSessionResult` 带 cheat 且无 Finished | 复用 `PublicSessionSummary`，要求 Finished | 公共安全加强 |
-| 顺序 | List 顺序 | 严格保持输入顺序 | 等价且不可变 |
+| 终局摘要 | `PublicSessionResult` 带 cheat 且无 Finished；summary 只做浅层数量/范围校验 | 复用 `PublicSessionSummary`，要求 Finished；拒绝 null 分数行、重复/缺漏分数席位与排名席位；空集合兼容保留 | 公共安全加强（D-1-01） |
+| 顺序 | List 顺序 | 严格保持输入顺序；summary 合法输入顺序/排名/符号原样保留 | 等价且不可变 |
 
 这些差异是 **V5 对公开历史的收紧**，不是 V4 行为等价移植；没有修改 V4 源码或测试来“凑”V5。V4 允许的畸形集合（空/3/5 列表、重复历史）在 V5 被明确拒绝，并在测试中固定。
+
+### 4.1 复核修复 D-1-01（MAJOR）
+
+**缺陷**：初版只检查 `FinalSummary.Finished`，随后直接复制；既有 `PublicSessionSummary` 仅校验列表数量 0/4 与排名范围，不校验 `ScoreView` 元素非 null，也不校验分数/排名席位唯一。因此三组非法终局摘要被接受：
+
+| 负例 | 非法事实 | 修复前 |
+|---|---|---|
+| `null-final-score` | `FinalScores` 含 null 行 | `ACCEPTED_INVALID` |
+| `duplicate-final-score-seat` | 分数席位 `[0,0,2,3]`，seat 1 缺失 | `ACCEPTED_INVALID` |
+| `duplicate-ranking-seat` | 排名席位 `[0,0,2,3]`，seat 1 缺失 | `ACCEPTED_INVALID` |
+
+**修复**：仅在新 `PublicSessionHistory` 边界新增 `ValidateFinalSummary`：
+
+- `FinalScores`：空保留兼容；非空必须恰 4 行、每行非 null、seat 0..3 各一次。
+- `Rankings`：空保留兼容；非空必须恰 4 项、seat 0..3 各一次。
+- 仅做结构校验；不重算分数、不调整排名、不排序、不去重、不改写合法输入顺序或负值。
+- 所有拒绝的 `ParamName` 为 `finalSummary`，调用者传入的 `PublicSessionSummary` 不被修改。
+
+**统一负例矩阵**（全部 `ArgumentException`）：null 分数行、重复分数席位、重复排名席位；另有合法乱序/负分/排名原样保留与空集合兼容正例。原 29 个用例全部保留，新增 5 项后共 34 项。
+
+**原样 caller probe**（路径与源码未改）：
+
+```text
+修复前: ACCEPTED_INVALID null-final-score / duplicate-final-score-seat / duplicate-ranking-seat
+        INVALID_ACCEPTED=3, exit 1
+修复后: REJECTED null-final-score finalSummary
+        REJECTED duplicate-final-score-seat finalSummary
+        REJECTED duplicate-ranking-seat finalSummary
+        INVALID_ACCEPTED=0, exit 0
+```
 
 ---
 
@@ -168,22 +200,25 @@
 | # | 命令 | Exit | 真实结果 | 原始日志 |
 |---|---|---|---|---|
 | 1 | `dotnet test dotnet/tests/Mahjong.Contracts.Tests/Mahjong.Contracts.Tests.csproj -c Release --nologo -v:minimal`（改动前基线） | 0 | **115 passed / 0 failed / 0 skipped** | `baseline-contracts.log` |
-| 2 | `dotnet build dotnet/Mahjong.sln -c Release --no-incremental --nologo -v:minimal` | 0 | **0 warnings / 0 errors**；12 个工程产物 | `solution-build-release.log` |
-| 3 | `dotnet test .../Mahjong.Contracts.Tests.csproj -c Release --no-build --nologo -v:minimal -- --filter-class "Mahjong.Protocol.Tests.PublicSessionHistoryTests"` | 0 | **29 passed / 0 failed / 0 skipped** | `targeted-public-history.log` |
-| 4 | `dotnet test .../Mahjong.Contracts.Tests.csproj -c Release --no-build --nologo -v:minimal` | 0 | **144 passed / 0 failed / 0 skipped**（115 基线 + 29 新增） | `contracts-full-after.log` |
-| 5 | `dotnet test dotnet/tests/Mahjong.Client.Tests/Mahjong.Client.Tests.csproj -c Release --no-build --nologo -v:minimal` | 0 | **132 passed / 0 failed / 0 skipped** | `client-full-after.log` |
-| 6 | V4 探针 `javac` + `java`（见 §2.3） | 0 / 0 | **21 checks PASS** | `probe-compile.log`、`v4-public-history-probe.log` |
+| 2 | `dotnet build dotnet/Mahjong.sln -c Release --no-incremental --nologo -v:minimal` | 0 | **0 warnings / 0 errors**；12 个工程产物 | `d101-solution-build.log` |
+| 3 | `dotnet test .../Mahjong.Contracts.Tests.csproj -c Release --no-build --nologo -v:minimal -- --filter-class "Mahjong.Protocol.Tests.PublicSessionHistoryTests"` | 0 | **34 passed / 0 failed / 0 skipped** | `d101-targeted-final.log` |
+| 4 | `dotnet test .../Mahjong.Contracts.Tests.csproj -c Release --no-build --nologo -v:minimal` | 0 | **149 passed / 0 failed / 0 skipped**（115 基线 + 34 本任务） | `d101-contracts-full-final.log` |
+| 5 | `dotnet test dotnet/tests/Mahjong.Client.Tests/Mahjong.Client.Tests.csproj -c Release --no-build --nologo -v:minimal` | 0 | **132 passed / 0 failed / 0 skipped** | `d101-client-full.log` |
+| 6 | 原样 caller probe `dotnet run --project .../summary-probe/Probe.csproj -c Release`（修复前） | 1 | `ACCEPTED_INVALID` ×3；`INVALID_ACCEPTED=3` | `summary-probe-before.log` |
+| 7 | 同一 caller probe（修复后，未改其源码） | 0 | `REJECTED` ×3；`INVALID_ACCEPTED=0` | `d101-summary-probe-final.log` |
+| 8 | V4 探针 `javac` + `java`（见 §2.3，D-1-01 未触碰 V4） | 0 / 0 | **21 checks PASS** | `probe-compile.log`、`v4-public-history-probe.log` |
 
 说明：
 
-- `dotnet --filter` 在 xUnit v3/Microsoft Testing Platform 下可能不生效；本轮定向使用仓库既有 `-- --filter-class`，日志显示只跑 29 项，不是全量 144。
+- `dotnet --filter` 在 xUnit v3/Microsoft Testing Platform 下可能不生效；本轮定向使用仓库既有 `-- --filter-class`，日志显示只跑 34 项，不是全量 149。
 - 未把空输出、`Total=0`、旧产物或 skip 当作通过；上述每行都有实际 `passed/failed/skipped` 总数。
-- 文档提交后对同一 Release 产物使用 `--no-build` 复跑：targeted **29/29**、full **144/144**，均 exit 0；日志 `final-targeted-public-history.log`（SHA-256 `4F8842740B9167747006E14088CFC15CC97B463BA8425B07B89D824889C22897`）与 `final-contracts-full.log`（SHA-256 `AF800EF2FED2125800B378168A9725E3F65ECE22471B61536321DF7513CDBBD2`）。
+- 非增量 solution build 后使用 `--no-build` 复跑 targeted **34/34**、full **149/149**、Client **132/132**，均 exit 0；最终日志为 `d101-targeted-final.log`、`d101-contracts-full-final.log`、`d101-client-full.log`。
+- D-1-01 的 caller probe 源码/路径未改；修复前日志保留在 `summary-probe-before.log`，修复后日志在 `d101-summary-probe-final.log`，两次均原样执行。
 - 未运行 PostgreSQL、Unity、IL2CPP、Android/iOS 真机、WSS/远端 CI；这些是 **NOT_RUN**，不是 PASS。本任务不依赖它们，也不据此宣告平台完成。
 
 ### 5.2 用例覆盖
 
-`PublicSessionHistoryTests` 共 21 个测试方法 / 29 个执行用例：
+`PublicSessionHistoryTests` 共 26 个测试方法 / 34 个执行用例：
 
 - 真实公开数值与 seat 映射：`RoundRecordStoresRealPublicValuesBySeatWithoutRepricing`。
 - 负分、负 delta、非零和（立直供托）：`RoundRecordAcceptsNegativeScoresAndRiichiDepositDeltas`。
@@ -193,6 +228,8 @@
 - 历史顺序不排序/不去重：`HistoryPreservesCallerOrderWithoutSortingOrDeduplicating`。
 - 相邻/非相邻重复 roundId、跨轮重复 resultId、round/result 身份互斥：3 个方法。
 - 空/进行中历史、终局摘要必须 Finished、default sessionId、null 历史/元素：4 个方法。
+- D-1-01 负例矩阵：`HistoryRejectsFinalSummaryWithNullScoreRow`、`HistoryRejectsFinalSummaryWithDuplicateScoreSeat`、`HistoryRejectsFinalSummaryWithDuplicateRankingSeat`。
+- D-1-01 正例：`HistoryPreservesValidFinalSummaryInputOrderRankingsAndSigns`（乱序席位、负分、排名原样）、`HistoryAllowsEmptyFinalSummaryCollectionsForCompatibility`（空集合兼容）。
 - 历史列表与 summary 防御复制、只读集合：2 个方法。
 - 复用现有 `PublicSessionSummary`、无 `PublicSessionResult`、最小公开属性面：1 个方法。
 - 反射扫描公共图/私有字段：拒绝 cheat/seed/tile/hand/wall/ura/dora/ledger/account/MatchSession/private 名称片段与非 Contracts/BCL 类型：1 个方法。
@@ -207,11 +244,11 @@
 
 ```text
 107E2FB3E76CC588E7BD69EEB40FD1249EF614D090CA1CD0081C3988DF40F2AF  dotnet/src/Mahjong.Contracts/PublicRoundRecord.cs
-05F0104B5EC8E331E30108AB46E7EBE5A53DE6482FE0BB67746C75001CE25C7F  dotnet/src/Mahjong.Contracts/PublicSessionHistory.cs
-DB03B6FB7595B5A535B6B613730DFB6EEEC38537C0640258EC4ED7D1D6E44542  dotnet/tests/Mahjong.Contracts.Tests/PublicSessionHistoryTests.cs
+594D809C7DFC46E60F143AC591A00DBE5D1C3762C18901818CE2EA024B12DE9E  dotnet/src/Mahjong.Contracts/PublicSessionHistory.cs
+7F8F7406A7CA7C0D45BC9E4ED066AFCF154981F095736E13CCCB23D55074C20F  dotnet/tests/Mahjong.Contracts.Tests/PublicSessionHistoryTests.cs
 ```
 
-本文件的 SHA-256 在写入/提交后由交付消息给出；文档自身不可能在内容中稳定包含自己的最终哈希。实现提交 `ccedb016883d037bfbaf09c407caf8d072bdce8a` 的代码/测试与上表一致（提交后未再改代码）。
+本文件的 SHA-256 在写入/提交后由交付消息给出；文档自身不可能在内容中稳定包含自己的最终哈希。上表是 D-1-01 修复后的工作副本：`PublicRoundRecord.cs` 与初版实现提交 `ccedb016883d037bfbaf09c407caf8d072bdce8a` 一致；`PublicSessionHistory.cs` 与测试由复核修复提交（本文件所在提交）更新。
 
 ### 6.2 证据日志 SHA-256（`%TEMP%\mahjong-v5-public-history\`）
 
@@ -228,6 +265,26 @@ BA57A71A6973844039FFB4DF278560D48DA529FD3CA6E7106FD39A8106226DE1  probe-meta.txt
 1A5C0FB0C1746C6627E3D79CDCC51D989D7FBCB4C5E90973530E8C26566E503D  v4-public-history-probe.log            8220 B
 ```
 
+D-1-01 复现/修复日志：
+
+```text
+010D9DF5E276A78EE3EC5C092802B65BE81CA2B7AB0491009EAC044EA6E0A19C  summary-probe-before.log                 440 B
+433C5FA896B09A73182A068F7B9D62487DCA9448582DD2C7AF3F47919ED6786F  d101-summary-probe-final.log             314 B
+FD397E194D82D5F9FCF1CB4976955227AA249E3C08C0EF30DFF85B1B91BEDFFF  d101-solution-build.log                 3348 B
+D8C39ADC860AA083214397461642D19478777CE751D6D41A4570C2FF3A369FC2  d101-targeted-final.log                  728 B
+3768AF51418D1A182226C4AD3AA6448CE82122F1C7BCA6336EE16D9F40A5A630  d101-contracts-full-final.log            738 B
+CD161E39404D946036EF573B55600B3B706BD0C4B1FA6221035ACE959ED1A1DF  d101-client-full.log                     708 B
+2FE03D98770CF51D24DF9D66A9A491AA967FF0E6802E6A29C7D8B004155A5BE5  d101-contracts-build.log                 436 B
+BDE0453D65E479BB0A7D2A4C2FE37A756C0DEB2412DE11B98ABFD9C0506AEE6E  d101-tests-build.log                    1258 B
+```
+
+原样 caller probe 源码（未修改）：
+
+```text
+D1803188DFAE6005482959BA782DC8FFB7045834A99004607D79B36616C2513A  .../summary-probe/Program.cs
+4903795C03421D72C161C053FD533A4C73A0B12C09F455DF3BD5599A39BC01C8  .../summary-probe/Probe.csproj
+```
+
 V4 源码与 jar 参考 SHA-256：
 
 ```text
@@ -241,7 +298,8 @@ FE5EFAA876010B519061EA61A2A0B4B89B8742057FEDB1FC2DEC2CD77D793796  D:/majiang/eng
 
 ### 6.3 Git
 
-- 实现/测试提交：`ccedb016883d037bfbaf09c407caf8d072bdce8a`（3 files changed, 917 insertions）。
+- 初版实现/测试提交：`ccedb016883d037bfbaf09c407caf8d072bdce8a`（3 files changed, 917 insertions）。
+- 复核修复提交：本文件所在提交；修改 `PublicSessionHistory.cs`、`PublicSessionHistoryTests.cs` 与本文档，完成 D-1-01。
 - 文档提交：本文件所在提交；最终 HEAD 以交付消息的 `git log`/`rev-parse` 为准。
 - 最终复核：`git status --porcelain` 为空；`git diff --check 563b5ef..HEAD` exit 0；范围仅四个 expectedFiles（3 个代码/测试 + 1 个文档）；无越界文件、无未提交改动。
 - 未 push、未建 PR、未触发远端 CI、未改默认分支/机器环境/信任/部署。
@@ -253,8 +311,9 @@ FE5EFAA876010B519061EA61A2A0B4B89B8742057FEDB1FC2DEC2CD77D793796  D:/majiang/eng
 | 项目 | 状态 |
 |---|---|
 | P3.2 公开单局历史纯契约（`PublicRoundRecord`/`PublicSessionHistory`） | **PASS** |
-| 新增定向用例 | **PASS 29/29** |
-| Contracts 全量（115 基线 + 29） | **PASS 144/144** |
+| 复核缺陷 D-1-01（终局摘要 null/重复席位） | **PASS**（3 负例拒绝，caller probe exit 0） |
+| 新增定向用例 | **PASS 34/34** |
+| Contracts 全量（115 基线 + 34） | **PASS 149/149** |
 | Client 必要回归 | **PASS 132/132** |
 | Release 非增量 solution build | **PASS 0 warnings / 0 errors** |
 | V4 编译类行为探针 | **PASS 21 checks** |
