@@ -436,6 +436,22 @@ namespace Mahjong.TableRuntime
             }
         }
 
+        private TableDurableCommitResult? ValidateCheatCarryover(
+            string roomId,
+            TableCheckpoint checkpoint)
+        {
+            if (_checkpoints.TryGetValue(roomId, out CheckpointRow? existing) &&
+                existing.Checkpoint.CheatPayload != null &&
+                checkpoint.CheatPayload == null)
+            {
+                return TableDurableCommitResult.Failed(
+                    TableRuntimeReasonCode.CheckpointInvalid,
+                    "A checkpoint cannot erase the existing required cheat ledger.");
+            }
+
+            return null;
+        }
+
         public ValueTask<TableDurableCommitResult> SaveCheckpointAsync(
             TableCheckpoint checkpoint,
             TableCheckpointFence fence,
@@ -507,6 +523,12 @@ namespace Mahjong.TableRuntime
                 {
                     return new ValueTask<TableDurableCommitResult>(
                         TableDurableCommitResult.Failed(validationReason, validationDetail));
+                }
+
+                TableDurableCommitResult? cheatCarryover = ValidateCheatCarryover(checkpoint.RoomId, checkpoint);
+                if (cheatCarryover != null)
+                {
+                    return new ValueTask<TableDurableCommitResult>(cheatCarryover);
                 }
 
                 if (TablePayloadSha256.Compute(checkpoint.TimingPayload) != checkpoint.TimingPayloadSha256)
@@ -710,6 +732,12 @@ namespace Mahjong.TableRuntime
                 {
                     return new ValueTask<TableDurableCommitResult>(
                         TableDurableCommitResult.Failed(validationReason, validationDetail));
+                }
+
+                TableDurableCommitResult? cheatCarryover = ValidateCheatCarryover(checkpoint.RoomId, checkpoint);
+                if (cheatCarryover != null)
+                {
+                    return new ValueTask<TableDurableCommitResult>(cheatCarryover);
                 }
 
                 TableTimingCheckpoint timing = TableTimingCheckpointCodec.Decode(checkpoint.TimingPayload);
@@ -974,6 +1002,13 @@ namespace Mahjong.TableRuntime
                             {
                                 return new ValueTask<TableDurableCommitResult>(
                                     TableDurableCommitResult.Failed(validationReason, validationDetail));
+                            }
+
+                            TableDurableCommitResult? cheatCarryover =
+                                ValidateCheatCarryover(checkpoint.RoomId, checkpoint);
+                            if (cheatCarryover != null)
+                            {
+                                return new ValueTask<TableDurableCommitResult>(cheatCarryover);
                             }
                         }
                     }
