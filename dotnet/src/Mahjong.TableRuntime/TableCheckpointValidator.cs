@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using Mahjong.Domain;
+using Mahjong.Domain.Cheat;
 
 namespace Mahjong.TableRuntime
 {
@@ -39,7 +40,8 @@ namespace Mahjong.TableRuntime
             catch (Exception exception) when (
                 exception is InvalidDataException ||
                 exception is ArgumentException ||
-                exception is InvalidOperationException)
+                exception is InvalidOperationException ||
+                exception is TableProjectionException)
             {
                 reasonCode = TableRuntimeReasonCode.CheckpointInvalid;
                 detail = "Checkpoint history/binding evidence is invalid: " + exception.Message;
@@ -81,6 +83,53 @@ namespace Mahjong.TableRuntime
             ValidateHistory(history, checkpoint);
             ValidateBindings(history, bindings);
             ValidateCapturedPrefix(history, checkpoint);
+            ValidateSidePayloads(history, checkpoint);
+        }
+
+        private static void ValidateSidePayloads(
+            IReadOnlyList<TableEventRecord> history,
+            TableCheckpoint checkpoint)
+        {
+            TableControlCheckpoint control = TableControlCheckpointCodec.Decode(checkpoint.ControlPayload);
+            if (control.ControlVersion != checkpoint.ControlVersion)
+            {
+                throw new InvalidDataException(
+                    "Control payload version does not match checkpoint metadata.");
+            }
+
+            CheatState? cheat = null;
+            if (checkpoint.CheatPayload != null)
+            {
+                TableCheatLedgerCheckpoint cheatCheckpoint =
+                    TableCheatLedgerCheckpointCodec.Decode(checkpoint.CheatPayload);
+                cheat = cheatCheckpoint.RestoreCheatState();
+            }
+
+            TableTimingCheckpoint timing = TableTimingCheckpointCodec.Decode(checkpoint.TimingPayload);
+            RoundRecoveryState captured = RoundRecoveryCodec.Decode(checkpoint.StatePayload);
+            if (timing.RoundId.Length > 0 &&
+                !string.Equals(timing.RoundId, captured.Spec.RoundId, StringComparison.Ordinal))
+            {
+                throw new InvalidDataException(
+                    "Timing checkpoint round id does not match the recovered round.");
+            }
+
+            if (checkpoint.CommittedFactsPayload == null)
+            {
+                return;
+            }
+
+            TableProjectionContextData facts = TableProjectionFactsCodec.Decode(
+                checkpoint.CommittedFactsPayload,
+                captured.Spec.RoundId,
+                checkpoint.StateVersion);
+            RoundStateMachine round = RoundRecovery.Restore(captured);
+            TableVisibilityProjection.ValidateRecoveredFacts(round, facts, cheat);
+            TableVisibilityProjection.ValidateRecoveredEventFacts(
+                history,
+                facts.EventFacts,
+                facts.Policy,
+                round);
         }
 
         private static void ValidateHistory(

@@ -2613,7 +2613,7 @@ namespace Mahjong.TableRuntime
                 round,
                 stateVersion,
                 lastEventSeq,
-                null,
+                extraHistory,
                 now,
                 utcNow);
             byte[]? factsPayload = projectionFacts == null
