@@ -559,7 +559,47 @@ Invoke-NegativeCase -Name 'wrong-consumed-types' -ExpectedCode 'CASE_STRUCTURE_T
     Update-CatalogFixtureSha -Root $root -FixtureId 'scoring-v1'
 }
 
-# 29. Exporter byte change.
+# 29. Deep empty expected.dora object must fail.
+Invoke-NegativeCase -Name 'win-dora-empty' -ExpectedCode 'CASE_STRUCTURE_MISSING' -Mutator {
+    param($root)
+    $path = Join-Path $root 'tests\v5-golden\scoring-v1.json'
+    $json = Read-JsonFile $path
+    $json.winSamples[24].expected.dora = [pscustomobject]@{}
+    Write-JsonFile $path $json
+    Update-CatalogFixtureSha -Root $root -FixtureId 'scoring-v1'
+}
+
+# 30. Empty payment-plan component element must fail.
+Invoke-NegativeCase -Name 'score-payment-component-empty' -ExpectedCode 'CASE_STRUCTURE_MISSING' -Mutator {
+    param($root)
+    $path = Join-Path $root 'tests\v5-golden\scoring-v1.json'
+    $json = Read-JsonFile $path
+    $json.scoreSamples[70].expected.paymentPlans.dealerTsumo.components[0] = [pscustomobject]@{}
+    Write-JsonFile $path $json
+    Update-CatalogFixtureSha -Root $root -FixtureId 'scoring-v1'
+}
+
+# 31. Empty physical tile element must fail.
+Invoke-NegativeCase -Name 'physical-tile-empty' -ExpectedCode 'CASE_STRUCTURE_MISSING' -Mutator {
+    param($root)
+    $path = Join-Path $root 'tests\v5-golden\physical-v1.json'
+    $json = Read-JsonFile $path
+    $json.samples[0].expected.tiles[0] = [pscustomobject]@{}
+    Write-JsonFile $path $json
+    Update-CatalogFixtureSha -Root $root -FixtureId 'physical-v1'
+}
+
+# 32. Physical tile element with wrong field type must fail.
+Invoke-NegativeCase -Name 'physical-tile-wrong-type' -ExpectedCode 'CASE_STRUCTURE_TYPE' -Mutator {
+    param($root)
+    $path = Join-Path $root 'tests\v5-golden\physical-v1.json'
+    $json = Read-JsonFile $path
+    $json.samples[0].expected.tiles[0].tileId = 'not-a-number'
+    Write-JsonFile $path $json
+    Update-CatalogFixtureSha -Root $root -FixtureId 'physical-v1'
+}
+
+# 33. Exporter byte change.
 Invoke-NegativeCase -Name 'exporter-sha' -ExpectedCode 'EXPORTER_SHA_MISMATCH' -Mutator {
     param($root)
     $path = Join-Path $root 'engine\src\test\kotlin\com\majiang\model\V5PhysicalGoldenExporterTest.kt'

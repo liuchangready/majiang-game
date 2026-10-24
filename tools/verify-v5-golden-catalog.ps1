@@ -194,6 +194,86 @@ function Test-ConditionalRules {
     }
 }
 
+function Test-ArrayItemRules {
+    param([object]$Object, [object]$Specs, [string]$Label)
+    foreach ($property in $Specs.PSObject.Properties) {
+        $path = $property.Name
+        $spec = $property.Value
+        $type = [string](Get-Prop -Object $spec -Name 'type')
+        if ([string]::IsNullOrWhiteSpace($type)) {
+            Add-Failure 'GROUP_STRUCTURE_INVALID' ("{0}: arrayItemRules '{1}' needs type" -f $Label, $path)
+            continue
+        }
+        $value = $Object
+        foreach ($segment in ($path -split '\.')) {
+            if ($null -eq $value) { break }
+            $prop = $value.PSObject.Properties[$segment]
+            if ($null -eq $prop) { $value = $null; break }
+            $value = $prop.Value
+        }
+        if ($null -eq $value) {
+            Add-Failure 'CASE_STRUCTURE_MISSING' ("{0}: array '{1}' missing" -f $Label, $path)
+            continue
+        }
+        if (-not ($value -is [System.Array])) {
+            Add-Failure 'CASE_STRUCTURE_TYPE' ("{0}: array '{1}' expected array" -f $Label, $path)
+            continue
+        }
+        foreach ($element in $value) {
+            if ($type -eq 'object') {
+                if (-not ($element -is [System.Management.Automation.PSCustomObject])) {
+                    Add-Failure 'CASE_STRUCTURE_TYPE' ("{0}: array '{1}' element expected object" -f $Label, $path)
+                    continue
+                }
+                $rules = @(Get-ArrayProp -Object $spec -Name 'rules')
+                if ($rules.Count -gt 0) {
+                    Test-ShapeRules -Object $element -Rules $rules -Label ('{0}.{1}' -f $Label, $path)
+                }
+                $nestedSpecs = Get-Prop -Object $spec -Name 'arrayItemRules'
+                if ($null -ne $nestedSpecs) {
+                    Test-ArrayItemRules -Object $element -Specs $nestedSpecs -Label ('{0}.{1}' -f $Label, $path)
+                }
+            }
+            elseif ($type -eq 'number') {
+                if (-not ($element -is [int] -or $element -is [long] -or $element -is [double] -or $element -is [decimal])) {
+                    Add-Failure 'CASE_STRUCTURE_TYPE' ("{0}: array '{1}' element expected number" -f $Label, $path)
+                }
+            }
+            elseif ($type -eq 'string') {
+                if (-not ($element -is [string])) {
+                    Add-Failure 'CASE_STRUCTURE_TYPE' ("{0}: array '{1}' element expected string" -f $Label, $path)
+                }
+            }
+            else {
+                Add-Failure 'GROUP_STRUCTURE_INVALID' ("{0}: arrayItemRules '{1}' unknown type '{2}'" -f $Label, $path, $type)
+            }
+        }
+    }
+}
+
+function Test-ConditionalArrayItemRules {
+    param([object]$Object, [object[]]$Rules, [string]$Label)
+    foreach ($conditional in $Rules) {
+        $path = [string](Get-Prop -Object $conditional -Name 'path')
+        $equals = [string](Get-Prop -Object $conditional -Name 'equals')
+        $specs = Get-Prop -Object $conditional -Name 'arrayItemRules'
+        if ([string]::IsNullOrWhiteSpace($path) -or $null -eq $specs) {
+            Add-Failure 'GROUP_STRUCTURE_INVALID' ("{0}: conditional array rule needs path and arrayItemRules" -f $Label)
+            continue
+        }
+        $value = $Object
+        foreach ($segment in ($path -split '\.')) {
+            if ($null -eq $value) { break }
+            $prop = $value.PSObject.Properties[$segment]
+            if ($null -eq $prop) { $value = $null; break }
+            $value = $prop.Value
+        }
+        if ($null -ne $value -and [string]$value -eq $equals) {
+            Test-ArrayItemRules -Object $Object -Specs $specs -Label ('{0}[{1}={2}]' -f $Label, $path, $equals)
+        }
+    }
+}
+
 function Test-RandomSamplesFast {
     param([object[]]$Items, [string]$Label)
     foreach ($item in $Items) {
@@ -316,6 +396,8 @@ function Test-Group {
     $shapeRules = @()
     $elementRules = $null
     $conditionalRules = @()
+    $arrayItemRules = $null
+    $conditionalArrayItemRules = @()
     if ($null -ne $shape) {
         $shapeRequiredKeys = @(Get-DeclaredStringArray -Holder $shape -Name 'requiredKeys' -Label ('{0}:{1}.shape' -f $fixtureId, $groupName))
         $rulesProperty = $shape.PSObject.Properties['rules']
@@ -335,6 +417,16 @@ function Test-Group {
             }
             else {
                 $conditionalRules = @($conditionalProperty.Value)
+            }
+        }
+        $arrayItemRules = Get-Prop -Object $shape -Name 'arrayItemRules'
+        $conditionalArrayProperty = $shape.PSObject.Properties['conditionalArrayItemRules']
+        if ($null -ne $conditionalArrayProperty) {
+            if ($null -eq $conditionalArrayProperty.Value -or -not ($conditionalArrayProperty.Value -is [System.Array])) {
+                Add-Failure 'GROUP_STRUCTURE_INVALID' ("{0}:{1}.shape.conditionalArrayItemRules must be a non-null array" -f $fixtureId, $groupName)
+            }
+            else {
+                $conditionalArrayItemRules = @($conditionalArrayProperty.Value)
             }
         }
     }
@@ -360,7 +452,7 @@ function Test-Group {
         if ($fastRandom -and $items.Count -gt 0) {
             Test-RandomSamplesFast -Items $items -Label ('{0}:{1}' -f $fixtureId, $groupName)
         }
-        elseif (($shapeRules.Count -gt 0 -or $null -ne $elementRules -or $conditionalRules.Count -gt 0) -and $items.Count -gt 0) {
+        elseif (($shapeRules.Count -gt 0 -or $null -ne $elementRules -or $conditionalRules.Count -gt 0 -or $null -ne $arrayItemRules -or $conditionalArrayItemRules.Count -gt 0) -and $items.Count -gt 0) {
             foreach ($target in $items) {
                 if ($shapeRules.Count -gt 0) {
                     Test-ShapeRules -Object $target -Rules $shapeRules -Label ('{0}:{1}' -f $fixtureId, $groupName)
@@ -381,6 +473,12 @@ function Test-Group {
                         }
                         Test-ElementRules -Array $arrayValue -Spec $elementProperty.Value -Label ('{0}:{1}.{2}' -f $fixtureId, $groupName, $elementProperty.Name)
                     }
+                }
+                if ($null -ne $arrayItemRules) {
+                    Test-ArrayItemRules -Object $target -Specs $arrayItemRules -Label ('{0}:{1}' -f $fixtureId, $groupName)
+                }
+                if ($conditionalArrayItemRules.Count -gt 0) {
+                    Test-ConditionalArrayItemRules -Object $target -Rules $conditionalArrayItemRules -Label ('{0}:{1}' -f $fixtureId, $groupName)
                 }
             }
         }
@@ -481,7 +579,7 @@ function Test-Group {
                 Add-Failure 'CASE_STRUCTURE_MISSING' ("{0}:{1}: sample missing keys [{2}]" -f $fixtureId, $groupName, ($missingKeys -join ','))
             }
         }
-        if ($shapeRules.Count -gt 0 -or $null -ne $elementRules -or $conditionalRules.Count -gt 0) {
+        if ($shapeRules.Count -gt 0 -or $null -ne $elementRules -or $conditionalRules.Count -gt 0 -or $null -ne $arrayItemRules -or $conditionalArrayItemRules.Count -gt 0) {
             if ($shapeRules.Count -gt 0) {
                 Test-ShapeRules -Object $actual -Rules $shapeRules -Label ('{0}:{1}' -f $fixtureId, $groupName)
             }
@@ -501,6 +599,12 @@ function Test-Group {
                     }
                     Test-ElementRules -Array $arrayValue -Spec $elementProperty.Value -Label ('{0}:{1}.{2}' -f $fixtureId, $groupName, $elementProperty.Name)
                 }
+            }
+            if ($null -ne $arrayItemRules) {
+                Test-ArrayItemRules -Object $actual -Specs $arrayItemRules -Label ('{0}:{1}' -f $fixtureId, $groupName)
+            }
+            if ($conditionalArrayItemRules.Count -gt 0) {
+                Test-ConditionalArrayItemRules -Object $actual -Rules $conditionalArrayItemRules -Label ('{0}:{1}' -f $fixtureId, $groupName)
             }
         }
         $script:ActualGroups[('{0}:{1}' -f $fixtureId, $groupName)] = @{ ids = @($sampleId); isCase = [bool](Get-Prop -Object $Group -Name 'countAsCase') }
