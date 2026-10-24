@@ -357,6 +357,7 @@ namespace Mahjong.TableRuntime
             TableCheatLedgerCheckpoint? cheat = null;
             CheatState? recoveredCheat = null;
             IReadOnlyList<TableEventRecord> checkpointHistory = Array.Empty<TableEventRecord>();
+            IReadOnlyList<TableCommandBinding> checkpointBindings = Array.Empty<TableCommandBinding>();
             try
             {
                 if (TablePayloadSha256.Compute(checkpoint.ControlPayload) != checkpoint.ControlPayloadSha256 ||
@@ -365,7 +366,10 @@ namespace Mahjong.TableRuntime
                      TablePayloadSha256.Compute(checkpoint.CheatPayload) != checkpoint.CheatPayloadSha256) ||
                     (checkpoint.CommittedFactsPayload != null &&
                      TablePayloadSha256.Compute(checkpoint.CommittedFactsPayload) !=
-                     checkpoint.CommittedFactsPayloadSha256))
+                     checkpoint.CommittedFactsPayloadSha256) ||
+                    (checkpoint.CommittedCommandBindingsPayload != null &&
+                     TablePayloadSha256.Compute(checkpoint.CommittedCommandBindingsPayload) !=
+                     checkpoint.CommittedCommandBindingsPayloadSha256))
                 {
                     return TableRecoveryResult.Failed(
                         TableRuntimeReasonCode.RecoveryStateHashMismatch,
@@ -411,6 +415,34 @@ namespace Mahjong.TableRuntime
                 }
 
                 ValidateHistory(checkpointHistory, checkpoint);
+                if (checkpoint.StateVersion.Value > 0)
+                {
+                    if (checkpoint.CommittedCommandBindingsPayload == null)
+                    {
+                        return TableRecoveryResult.Failed(
+                            TableRuntimeReasonCode.CheckpointInvalid,
+                            "Checkpoint has committed versions but no command binding evidence.");
+                    }
+
+                    IReadOnlyList<TableCommandBinding> commandBindings;
+                    try
+                    {
+                        commandBindings = TableCommandBindingsCodec.Decode(
+                            checkpoint.CommittedCommandBindingsPayload);
+                    }
+                    catch (Exception exception) when (
+                        exception is InvalidDataException ||
+                        exception is ArgumentException)
+                    {
+                        return TableRecoveryResult.Failed(
+                            TableRuntimeReasonCode.CheckpointInvalid,
+                            "Command binding evidence is invalid: " + exception.Message);
+                    }
+
+                    ValidateCommandBindings(checkpointHistory, commandBindings, checkpoint);
+                    checkpointBindings = commandBindings;
+                }
+
                 ValidateCheckpointHistoryAgainstCaptured(checkpointHistory, captured, checkpoint);
                 if (checkpoint.CheatPayload != null)
                 {
@@ -878,7 +910,8 @@ namespace Mahjong.TableRuntime
                 recoveredCheat,
                 effectiveFacts,
                 fullHistory,
-                strictHistory: true);
+                strictHistory: true,
+                commandBindings: checkpointBindings);
 
             var report = new TableRecoveryReport(
                 roomId,
@@ -987,6 +1020,70 @@ namespace Mahjong.TableRuntime
                 throw new RecoveryValidationException(
                     TableRuntimeReasonCode.RecoveryEventGap,
                     "Checkpoint history does not end at checkpoint.lastEventSeq.");
+            }
+        }
+
+        private static void ValidateCommandBindings(
+            IReadOnlyList<TableEventRecord> history,
+            IReadOnlyList<TableCommandBinding> bindings,
+            TableCheckpoint checkpoint)
+        {
+            if (bindings.Count != (int)checkpoint.StateVersion.Value)
+            {
+                throw new RecoveryValidationException(
+                    TableRuntimeReasonCode.CheckpointInvalid,
+                    "Command binding evidence does not cover every checkpoint command version.");
+            }
+
+            int index = 0;
+            for (int i = 0; i < bindings.Count; i++)
+            {
+                TableCommandBinding binding = bindings[i];
+                ulong expectedVersion = (ulong)(i + 1);
+                if (binding.CommandVersion != expectedVersion || binding.EventCount <= 0)
+                {
+                    throw new RecoveryValidationException(
+                        TableRuntimeReasonCode.CheckpointInvalid,
+                        "Command binding versions/event counts are invalid.");
+                }
+
+                for (int ordinal = 0; ordinal < binding.EventCount; ordinal++)
+                {
+                    if (index >= history.Count)
+                    {
+                        throw new RecoveryValidationException(
+                            TableRuntimeReasonCode.RecoveryEventGap,
+                            "Command binding evidence is longer than checkpoint history.");
+                    }
+
+                    TableEventRecord record = history[index++];
+                    if (record.CommandVersion.Value != expectedVersion ||
+                        record.Ordinal != ordinal ||
+                        record.Payload == null)
+                    {
+                        throw new RecoveryValidationException(
+                            TableRuntimeReasonCode.RecoveryReplayMismatch,
+                            "Checkpoint history command grouping does not match its binding evidence.");
+                    }
+
+                    TableEventFact fact = TableEventFactCodec.Decode(record.Payload);
+                    if (fact.CommandVersion != record.CommandVersion ||
+                        fact.Ordinal != record.Ordinal ||
+                        fact.SourceFingerprint != binding.SourceFingerprint)
+                    {
+                        throw new RecoveryValidationException(
+                            TableRuntimeReasonCode.RecoveryReplayMismatch,
+                            "Checkpoint history SourceFingerprint/version binding differs from evidence at event " +
+                            record.Seq + ".");
+                    }
+                }
+            }
+
+            if (index != history.Count)
+            {
+                throw new RecoveryValidationException(
+                    TableRuntimeReasonCode.RecoveryEventGap,
+                    "Command binding evidence is shorter than checkpoint history.");
             }
         }
 

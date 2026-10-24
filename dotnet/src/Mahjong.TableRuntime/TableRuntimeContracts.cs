@@ -888,6 +888,7 @@ namespace Mahjong.TableRuntime
     public sealed class TableRecoveryBaseline
     {
         private readonly ReadOnlyCollection<TableEventRecord> _committedEvents;
+        private readonly ReadOnlyCollection<TableCommandBinding> _commandBindings;
 
         public TableRecoveryBaseline(
             RoundStateMachine round,
@@ -909,7 +910,8 @@ namespace Mahjong.TableRuntime
             CheatState? cheat = null,
             TableProjectionContextData? projectionFacts = null,
             IReadOnlyList<TableEventRecord>? committedEvents = null,
-            bool strictHistory = false)
+            bool strictHistory = false,
+            IReadOnlyList<TableCommandBinding>? commandBindings = null)
         {
             Round = round ?? throw new ArgumentNullException(nameof(round));
             StateVersion = stateVersion;
@@ -921,6 +923,10 @@ namespace Mahjong.TableRuntime
             Cheat = cheat;
             StrictHistory = strictHistory;
             ProjectionFacts = projectionFacts;
+            _commandBindings = new ReadOnlyCollection<TableCommandBinding>(
+                commandBindings == null
+                    ? new List<TableCommandBinding>()
+                    : new List<TableCommandBinding>(commandBindings));
             _committedEvents = new ReadOnlyCollection<TableEventRecord>(
                 committedEvents == null
                     ? new List<TableEventRecord>()
@@ -954,6 +960,9 @@ namespace Mahjong.TableRuntime
 
         /// <summary>Host-owned committed facts persisted with the checkpoint; installed via the sink.</summary>
         public TableProjectionContextData? ProjectionFacts { get; }
+
+        /// <summary>Per-command event-group boundaries/fingerprints from trusted checkpoint evidence.</summary>
+        public IReadOnlyList<TableCommandBinding> CommandBindings => _commandBindings;
 
         /// <summary>Full committed event history, not a SnapshotEventWindow.</summary>
         public IReadOnlyList<TableEventRecord> CommittedEvents => _committedEvents;

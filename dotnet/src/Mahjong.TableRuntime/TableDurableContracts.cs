@@ -561,6 +561,7 @@ namespace Mahjong.TableRuntime
         private readonly byte[]? _cheatPayload;
         private readonly byte[]? _committedFactsPayload;
         private readonly byte[]? _committedHistoryPayload;
+        private readonly byte[]? _committedCommandBindingsPayload;
 
         public TableCheckpoint(
             string roomId,
@@ -585,7 +586,9 @@ namespace Mahjong.TableRuntime
             long timingVersion = 0L,
             long capturedMonotonicMillis = 0L,
             byte[]? committedHistoryPayload = null,
-            TablePayloadSha256? committedHistoryPayloadSha256 = null)
+            TablePayloadSha256? committedHistoryPayloadSha256 = null,
+            byte[]? committedCommandBindingsPayload = null,
+            TablePayloadSha256? committedCommandBindingsPayloadSha256 = null)
         {
             if (string.IsNullOrWhiteSpace(roomId))
             {
@@ -661,6 +664,21 @@ namespace Mahjong.TableRuntime
                     nameof(committedHistoryPayload));
             }
 
+            if (committedCommandBindingsPayload != null)
+            {
+                if (!committedCommandBindingsPayloadSha256.HasValue)
+                {
+                    throw new ArgumentException(
+                        "Committed command bindings payload requires a digest.",
+                        nameof(committedCommandBindingsPayloadSha256));
+                }
+
+                _committedCommandBindingsPayload = CopyAndVerify(
+                    committedCommandBindingsPayload,
+                    committedCommandBindingsPayloadSha256.Value,
+                    nameof(committedCommandBindingsPayload));
+            }
+
             RoomId = roomId;
             StateVersion = stateVersion;
             LastEventSeq = lastEventSeq;
@@ -678,6 +696,7 @@ namespace Mahjong.TableRuntime
             TimingVersion = timingVersion;
             CapturedMonotonicMillis = capturedMonotonicMillis;
             CommittedHistoryPayloadSha256 = committedHistoryPayloadSha256;
+            CommittedCommandBindingsPayloadSha256 = committedCommandBindingsPayloadSha256;
         }
 
         public string RoomId { get; }
@@ -708,6 +727,8 @@ namespace Mahjong.TableRuntime
 
         public TablePayloadSha256? CommittedHistoryPayloadSha256 { get; }
 
+        public TablePayloadSha256? CommittedCommandBindingsPayloadSha256 { get; }
+
         public long ControlVersion { get; }
 
         public ulong CreatedAtUtcMs { get; }
@@ -727,6 +748,9 @@ namespace Mahjong.TableRuntime
 
         public byte[]? CommittedHistoryPayload =>
             _committedHistoryPayload == null ? null : Copy(_committedHistoryPayload);
+
+        public byte[]? CommittedCommandBindingsPayload =>
+            _committedCommandBindingsPayload == null ? null : Copy(_committedCommandBindingsPayload);
 
         internal ReadOnlySpan<byte> StatePayloadSpan => new ReadOnlySpan<byte>(_statePayload);
 

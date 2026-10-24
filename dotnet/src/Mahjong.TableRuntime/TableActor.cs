@@ -66,6 +66,7 @@ namespace Mahjong.TableRuntime
         /// replaces the round; recovered history is never fabricated.
         /// </summary>
         private readonly List<TableEventRecord> _committedEventLog = new List<TableEventRecord>();
+        private readonly List<TableCommandBinding> _commandBindings = new List<TableCommandBinding>();
         private readonly ITableProjectionContextSource? _projectionContextSource;
         private readonly TableStreamOptions _streamOptions;
         private readonly Dictionary<ulong, TableStreamRegistration> _streams =
@@ -2103,6 +2104,10 @@ namespace Mahjong.TableRuntime
             }
 
             AppendRecent(records);
+            _commandBindings.Add(new TableCommandBinding(
+                commandVersion.Value,
+                records.Count,
+                nextState.SourceFingerprint));
             TableSnapshot snapshot = BuildSnapshot();
             Publish(new TablePublication(TablePublicationKind.Applied, snapshot, records, receipt));
             return TableOperationResult.Accepted(receipt, records);
@@ -2372,6 +2377,10 @@ namespace Mahjong.TableRuntime
 
             TableCommandReceipt durableCommandReceipt = durableReceipt?.ToCommandReceipt() ?? receipt;
             AppendRecent(records);
+            _commandBindings.Add(new TableCommandBinding(
+                commandVersion.Value,
+                records.Count,
+                nextState.SourceFingerprint));
             TableSnapshot snapshot = BuildSnapshot();
             Publish(new TablePublication(TablePublicationKind.Applied, snapshot, records, durableCommandReceipt));
             return TableOperationResult.Accepted(durableCommandReceipt, records, durableReceipt);
@@ -2572,11 +2581,19 @@ namespace Mahjong.TableRuntime
             }
 
             var history = new List<TableEventRecord>(_committedEventLog);
+            var commandBindings = new List<TableCommandBinding>(_commandBindings);
             if (extraHistory != null)
             {
                 for (int i = 0; i < extraHistory.Count; i++)
                 {
                     history.Add(extraHistory[i]);
+                }
+
+                IReadOnlyList<TableCommandBinding> extraBindings =
+                    TableCommandBindingsCodec.Build(extraHistory);
+                for (int i = 0; i < extraBindings.Count; i++)
+                {
+                    commandBindings.Add(extraBindings[i]);
                 }
             }
 
@@ -2611,7 +2628,8 @@ namespace Mahjong.TableRuntime
                 factsPayload,
                 timingVersionOverride ?? _timingVersion + 1L,
                 now,
-                history);
+                history,
+                commandBindings);
         }
 
         private static ulong ReceiptExpiry(ulong createdUtcMs, TableDurableContext durable)
@@ -3405,6 +3423,12 @@ namespace Mahjong.TableRuntime
             for (int i = 0; i < baseline.CommittedEvents.Count; i++)
             {
                 _committedEventLog.Add(baseline.CommittedEvents[i]);
+            }
+
+            _commandBindings.Clear();
+            for (int i = 0; i < baseline.CommandBindings.Count; i++)
+            {
+                _commandBindings.Add(baseline.CommandBindings[i]);
             }
 
             int recentWindow = _options.SnapshotEventWindow;

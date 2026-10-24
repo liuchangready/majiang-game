@@ -26,7 +26,8 @@ namespace Mahjong.TableRuntime
             byte[]? committedFactsPayload = null,
             long timingVersion = 1L,
             long capturedMonotonicMillis = 0L,
-            IReadOnlyList<TableEventRecord>? committedHistory = null)
+            IReadOnlyList<TableEventRecord>? committedHistory = null,
+            IReadOnlyList<TableCommandBinding>? committedCommandBindings = null)
         {
             if (round == null)
             {
@@ -60,6 +61,16 @@ namespace Mahjong.TableRuntime
             TablePayloadSha256? historyHash = historyBytes == null
                 ? (TablePayloadSha256?)null
                 : TablePayloadSha256.Compute(historyBytes);
+            byte[]? bindingBytes = committedHistory == null || committedHistory.Count == 0
+                ? null
+                : TableCommandBindingsCodec.Encode(
+                    committedCommandBindings ??
+                    throw new ArgumentException(
+                        "Committed history requires independent command binding evidence.",
+                        nameof(committedCommandBindings)));
+            TablePayloadSha256? bindingHash = bindingBytes == null
+                ? (TablePayloadSha256?)null
+                : TablePayloadSha256.Compute(bindingBytes);
 
             return new TableCheckpoint(
                 roomId,
@@ -84,7 +95,9 @@ namespace Mahjong.TableRuntime
                 timingVersion,
                 capturedMonotonicMillis,
                 historyBytes,
-                historyHash);
+                historyHash,
+                bindingBytes,
+                bindingHash);
         }
 
         /// <summary>

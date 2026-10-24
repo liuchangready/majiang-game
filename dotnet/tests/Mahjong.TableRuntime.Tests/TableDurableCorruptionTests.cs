@@ -241,6 +241,42 @@ namespace Mahjong.TableRuntime.Tests
                 (await harness.Actor.GetSnapshotAsync(TestContext.Current.CancellationToken)).Lifecycle);
         }
 
+        [Theory]
+        [InlineData("first-count")]
+        [InlineData("last-count")]
+        [InlineData("first-fingerprint")]
+        [InlineData("last-fingerprint")]
+        public async Task CommandBindingEvidenceMustCoverExactCommandGroups(string corruption)
+        {
+            var sink = new RecordingRecoveryStateSink();
+            await using DurableHarness harness = await DurableHarness.CreateAsync(recoverySink: sink);
+            List<TableCommandEnvelope> chain = P31Fixtures.BuildDiscardChain(harness.InitialRound, 2)
+                .Select((value, index) => harness.Envelope(value.Command, index, "group-" + index))
+                .ToList();
+            Assert.Equal(TableOperationStatus.Accepted, (await harness.SubmitAsync(chain[0])).Status);
+            Assert.Equal(TableOperationStatus.Accepted, (await harness.SubmitAsync(chain[1])).Status);
+            TableCheckpoint checkpoint = await harness.SaveCheckpointAsync();
+            TableCommandBinding[] bindings = TableCommandBindingsCodec
+                .Decode(checkpoint.CommittedCommandBindingsPayload!).ToArray();
+            Assert.Equal(2, bindings.Length);
+            int index = corruption.StartsWith("first", StringComparison.Ordinal) ? 0 : bindings.Length - 1;
+            TableCommandBinding original = bindings[index];
+            bindings[index] = corruption.EndsWith("count", StringComparison.Ordinal)
+                ? new TableCommandBinding(original.CommandVersion, original.EventCount + 1, original.SourceFingerprint)
+                : new TableCommandBinding(original.CommandVersion, original.EventCount, original.SourceFingerprint ^ 1UL);
+            byte[] payload = TableCommandBindingsCodec.Encode(bindings);
+            harness.Store.ReplaceCheckpointForTest(
+                DurableHarness.Room,
+                WithCommandBindings(checkpoint, payload));
+
+            TableRecoveryResult result = await RecoverAsync(harness);
+
+            Assert.Equal(TableRecoveryStatus.Failed, result.Status);
+            Assert.Null(sink.Installed);
+            Assert.NotEqual(TableActorLifecycle.Serving,
+                (await harness.Actor.GetSnapshotAsync(TestContext.Current.CancellationToken)).Lifecycle);
+        }
+
         private static async Task<TableRecoveryResult> RecoverAsync(DurableHarness harness)
         {
             harness.Clock.Now += 1000L;
@@ -276,6 +312,36 @@ namespace Mahjong.TableRuntime.Tests
                 good.CapturedMonotonicMillis,
                 good.CommittedHistoryPayload,
                 good.CommittedHistoryPayloadSha256);
+        }
+
+        private static TableCheckpoint WithCommandBindings(TableCheckpoint good, byte[] payload)
+        {
+            return new TableCheckpoint(
+                good.RoomId,
+                good.StateVersion,
+                good.LastEventSeq,
+                good.StateFingerprint,
+                good.RulesetVersion,
+                good.StatePayload,
+                good.StatePayloadSha256,
+                good.ControlVersion,
+                good.ControlPayload,
+                good.ControlPayloadSha256,
+                good.TimingPayload,
+                good.TimingPayloadSha256,
+                good.CheatPayload,
+                good.CheatPayloadSha256,
+                good.CommittedFactsPayload,
+                good.CommittedFactsPayloadSha256,
+                good.CreatedAtUtcMs,
+                good.BootId,
+                good.SchemaVersion,
+                good.TimingVersion,
+                good.CapturedMonotonicMillis,
+                good.CommittedHistoryPayload,
+                good.CommittedHistoryPayloadSha256,
+                payload,
+                TablePayloadSha256.Compute(payload));
         }
 
         private static TableCheckpoint WithHistory(TableCheckpoint good, byte[] payload)
