@@ -27,7 +27,7 @@ namespace Mahjong.Domain
         private readonly ReadOnlyCollection<RoundEvent> _events;
         private readonly RoundResult? _result;
 
-        private RoundStateMachine(
+        internal RoundStateMachine(
             RoundSpec spec,
             long version,
             RoundPhase phase,

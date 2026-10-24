@@ -150,4 +150,22 @@ namespace Mahjong.TableRuntime
         public TaskCompletionSource<bool> Completion { get; } =
             new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
     }
+
+    internal sealed class DurableRecoveryMailboxMessage : TableMailboxMessage
+    {
+        public TaskCompletionSource<TableRecoveryResult> Completion { get; } =
+            new TaskCompletionSource<TableRecoveryResult>(TaskCreationOptions.RunContinuationsAsynchronously);
+    }
+
+    internal sealed class LeaseRenewMailboxMessage : TableMailboxMessage
+    {
+        public TaskCompletionSource<TableLeaseRenewResult> Completion { get; } =
+            new TaskCompletionSource<TableLeaseRenewResult>(TaskCreationOptions.RunContinuationsAsynchronously);
+    }
+
+    internal sealed class CheckpointMailboxMessage : TableMailboxMessage
+    {
+        public TaskCompletionSource<TableOperationResult> Completion { get; } =
+            new TaskCompletionSource<TableOperationResult>(TaskCreationOptions.RunContinuationsAsynchronously);
+    }
 }

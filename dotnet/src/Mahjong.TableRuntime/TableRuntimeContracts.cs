@@ -35,7 +35,9 @@ namespace Mahjong.TableRuntime
         Failed = 2,
         MailboxFull = 3,
         Closed = 4,
-        Configured = 5
+        Configured = 5,
+        Replayed = 6,
+        Conflict = 7
     }
 
     public enum TablePublicationKind : byte
@@ -127,7 +129,10 @@ namespace Mahjong.TableRuntime
             OwnerEpoch ownerEpoch,
             ControlEpoch controlEpoch,
             DecisionId? decisionId = null,
-            long recoveryGeneration = 0L)
+            long recoveryGeneration = 0L,
+            RequestScopeId? scopeId = null,
+            string? api = null,
+            TablePayloadSha256? payloadSha256 = null)
         {
             Command = command ?? throw new ArgumentNullException(nameof(command));
             if (requestId.IsEmpty)
@@ -143,12 +148,24 @@ namespace Mahjong.TableRuntime
                     "Recovery generation must be non-negative.");
             }
 
+            bool hasScope = scopeId.HasValue && !scopeId.Value.IsEmpty;
+            bool hasApi = !string.IsNullOrEmpty(api);
+            bool hasDigest = payloadSha256.HasValue && !payloadSha256.Value.IsEmpty;
+            if (hasScope != hasApi || hasScope != hasDigest)
+            {
+                throw new ArgumentException(
+                    "A durable command identity requires scopeId, api and payloadSha256 together.");
+            }
+
             RequestId = requestId;
             ExpectedStateVersion = expectedStateVersion;
             OwnerEpoch = ownerEpoch;
             ControlEpoch = controlEpoch;
             DecisionId = decisionId;
             RecoveryGeneration = recoveryGeneration;
+            ScopeId = hasScope ? scopeId : (RequestScopeId?)null;
+            Api = hasApi ? TableDurableReceipt.RequireApi(api!) : null;
+            PayloadSha256 = hasDigest ? payloadSha256 : (TablePayloadSha256?)null;
         }
 
         public RoundCommand Command { get; }
@@ -169,6 +186,17 @@ namespace Mahjong.TableRuntime
         /// was already in flight before recovery cannot mutate the new baseline.
         /// </summary>
         public long RecoveryGeneration { get; }
+
+        /// <summary>Host-issued scope; never a client-selected authorization field.</summary>
+        public RequestScopeId? ScopeId { get; }
+
+        /// <summary>Stable API name used with the original business-byte digest.</summary>
+        public string? Api { get; }
+
+        /// <summary>SHA-256 over the exact business bytes, computed by the trusted host.</summary>
+        public TablePayloadSha256? PayloadSha256 { get; }
+
+        public bool HasDurableIdentity => ScopeId.HasValue && Api != null && PayloadSha256.HasValue;
     }
 
     /// <summary>
@@ -178,6 +206,8 @@ namespace Mahjong.TableRuntime
     /// </summary>
     public sealed class TableEventRecord
     {
+        private readonly byte[]? _payload;
+
         public TableEventRecord(
             EventSeq seq,
             StateVersion commandVersion,
@@ -185,7 +215,9 @@ namespace Mahjong.TableRuntime
             RoundEventType type,
             int seat,
             TileId? tile,
-            string? detail)
+            string? detail,
+            int eventSchema = 1,
+            byte[]? payload = null)
         {
             if (seq.Value == 0)
             {
@@ -207,6 +239,16 @@ namespace Mahjong.TableRuntime
                 throw new ArgumentOutOfRangeException(nameof(seat), seat, "Seat must be -1 or 0..3.");
             }
 
+            if (eventSchema < 1)
+            {
+                throw new ArgumentOutOfRangeException(nameof(eventSchema), eventSchema, "Event schema must be positive.");
+            }
+
+            if (payload != null && payload.Length > 1024 * 1024)
+            {
+                throw new ArgumentException("Event payload exceeds the 1 MiB cap.", nameof(payload));
+            }
+
             Seq = seq;
             CommandVersion = commandVersion;
             Ordinal = ordinal;
@@ -214,6 +256,8 @@ namespace Mahjong.TableRuntime
             Seat = seat;
             Tile = tile;
             Detail = detail;
+            EventSchema = eventSchema;
+            _payload = payload == null ? null : Copy(payload);
         }
 
         public EventSeq Seq { get; }
@@ -229,6 +273,25 @@ namespace Mahjong.TableRuntime
         public TileId? Tile { get; }
 
         public string? Detail { get; }
+
+        /// <summary>Strict schema of the optional durable event payload.</summary>
+        public int EventSchema { get; }
+
+        /// <summary>
+        /// Optional strict committed-facts payload. P3.1's compact fields remain the business
+        /// identity; this payload is never a saved whole candidate and is bounded/defensively
+        /// copied. P3.4 persists and replays the command journal separately.
+        /// </summary>
+        public byte[]? Payload => _payload == null ? null : Copy(_payload);
+
+        public bool HasPayload => _payload != null;
+
+        private static byte[] Copy(byte[] value)
+        {
+            var copy = new byte[value.Length];
+            Array.Copy(value, copy, value.Length);
+            return copy;
+        }
     }
 
     /// <summary>
@@ -364,16 +427,25 @@ namespace Mahjong.TableRuntime
             string detail,
             StateVersion evaluatedStateVersion,
             TableCommandReceipt? receipt,
-            IReadOnlyList<TableEventRecord>? events)
+            IReadOnlyList<TableEventRecord>? events,
+            TableDurableReceipt? durableReceipt = null,
+            bool replayed = false)
         {
             if (status == TableOperationStatus.Accepted && receipt == null)
             {
                 throw new ArgumentException("An accepted operation requires a receipt.", nameof(receipt));
             }
 
-            if (status != TableOperationStatus.Accepted && receipt != null)
+            if (status == TableOperationStatus.Replayed && (receipt == null || durableReceipt == null))
             {
-                throw new ArgumentException("Only an accepted operation carries a success receipt.", nameof(receipt));
+                throw new ArgumentException("A replayed operation requires its original durable receipt.", nameof(receipt));
+            }
+
+            if (status != TableOperationStatus.Accepted &&
+                status != TableOperationStatus.Replayed &&
+                receipt != null)
+            {
+                throw new ArgumentException("Only an accepted/replayed operation carries a receipt.", nameof(receipt));
             }
 
             Status = status;
@@ -381,6 +453,8 @@ namespace Mahjong.TableRuntime
             Detail = detail ?? string.Empty;
             EvaluatedStateVersion = evaluatedStateVersion;
             Receipt = receipt;
+            DurableReceipt = durableReceipt;
+            Replayed = replayed;
             _events = new ReadOnlyCollection<TableEventRecord>(
                 events == null ? new List<TableEventRecord>() : new List<TableEventRecord>(events));
             Admitted = status != TableOperationStatus.MailboxFull && status != TableOperationStatus.Closed;
@@ -398,6 +472,12 @@ namespace Mahjong.TableRuntime
 
         public TableCommandReceipt? Receipt { get; }
 
+        /// <summary>The original durable receipt for a replay; null on a first-time result.</summary>
+        public TableDurableReceipt? DurableReceipt { get; }
+
+        /// <summary>True only when this delivery replayed a previously committed receipt.</summary>
+        public bool Replayed { get; }
+
         public StateVersion? CommandVersion => Receipt?.CommandVersion;
 
         public EventSeq? LastEventSeq => Receipt?.LastEventSeq;
@@ -406,9 +486,21 @@ namespace Mahjong.TableRuntime
 
         public bool IsAccepted => Status == TableOperationStatus.Accepted;
 
+        public bool IsSuccess =>
+            Status == TableOperationStatus.Accepted ||
+            (Status == TableOperationStatus.Replayed && Receipt != null && Receipt.IsAccepted);
+
         public static TableOperationResult Accepted(
             TableCommandReceipt receipt,
             IReadOnlyList<TableEventRecord> events)
+        {
+            return Accepted(receipt, events, null);
+        }
+
+        public static TableOperationResult Accepted(
+            TableCommandReceipt receipt,
+            IReadOnlyList<TableEventRecord> events,
+            TableDurableReceipt? durableReceipt)
         {
             if (receipt == null)
             {
@@ -426,7 +518,40 @@ namespace Mahjong.TableRuntime
                 string.Empty,
                 receipt.EvaluatedStateVersion,
                 receipt,
-                events);
+                events,
+                durableReceipt);
+        }
+
+        public static TableOperationResult FromReplay(
+            TableDurableReceipt durableReceipt,
+            IReadOnlyList<TableEventRecord>? events = null)
+        {
+            if (durableReceipt == null)
+            {
+                throw new ArgumentNullException(nameof(durableReceipt));
+            }
+
+            TableCommandReceipt receipt = durableReceipt.ToCommandReceipt();
+            return new TableOperationResult(
+                TableOperationStatus.Replayed,
+                receipt.ReasonCode,
+                "Exact receipt replay; no Domain evaluation or side effect was repeated.",
+                receipt.EvaluatedStateVersion,
+                receipt,
+                events,
+                durableReceipt,
+                replayed: true);
+        }
+
+        public static TableOperationResult Conflict(string detail)
+        {
+            return new TableOperationResult(
+                TableOperationStatus.Conflict,
+                ProtocolErrorCode.RequestIdConflict,
+                detail,
+                new StateVersion(0),
+                null,
+                null);
         }
 
         public static TableOperationResult Rejected(
@@ -441,6 +566,23 @@ namespace Mahjong.TableRuntime
                 evaluatedStateVersion,
                 null,
                 null);
+        }
+
+        public static TableOperationResult RejectedCommitted(TableDurableReceipt durableReceipt)
+        {
+            if (durableReceipt == null)
+            {
+                throw new ArgumentNullException(nameof(durableReceipt));
+            }
+
+            return new TableOperationResult(
+                TableOperationStatus.Rejected,
+                durableReceipt.Receipt.ReasonCode,
+                durableReceipt.Detail,
+                durableReceipt.Receipt.EvaluatedStateVersion,
+                null,
+                null,
+                durableReceipt);
         }
 
         public static TableOperationResult Failed(

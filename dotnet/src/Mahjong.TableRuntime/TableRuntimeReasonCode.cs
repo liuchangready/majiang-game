@@ -57,6 +57,29 @@ namespace Mahjong.TableRuntime
         public const string DeadlineNotDue = "DEADLINE_NOT_DUE";
         public const string SeatNotAutomated = "SEAT_NOT_AUTOMATED";
 
+        // P3.4 durable receipt/lease/checkpoint additions.
+        public const string CommitOutcomeUnknown = "COMMIT_OUTCOME_UNKNOWN";
+        public const string DurableNotConfigured = "DURABLE_NOT_CONFIGURED";
+        public const string PayloadIdentityRequired = "PAYLOAD_IDENTITY_REQUIRED";
+        public const string ScopeAccountMismatch = "SCOPE_ACCOUNT_MISMATCH";
+        public const string ScopeRoleMismatch = "SCOPE_ROLE_MISMATCH";
+        public const string ScopeRoomMismatch = "SCOPE_ROOM_MISMATCH";
+        public const string ScopeRevoked = "SCOPE_REVOKED";
+        public const string ReceiptNotFound = "RECEIPT_NOT_FOUND";
+        public const string RecoveryFailed = "RECOVERY_FAILED";
+        public const string CheckpointMissing = "CHECKPOINT_MISSING";
+        public const string CheckpointInvalid = "CHECKPOINT_INVALID";
+        public const string CheckpointSchemaUnsupported = "CHECKPOINT_SCHEMA_UNSUPPORTED";
+        public const string RecoveryEventGap = "RECOVERY_EVENT_GAP";
+        public const string RecoveryOrdinalInvalid = "RECOVERY_ORDINAL_INVALID";
+        public const string RecoveryCommandMissing = "RECOVERY_COMMAND_MISSING";
+        public const string RecoveryReplayMismatch = "RECOVERY_REPLAY_MISMATCH";
+        public const string RecoveryStateHashMismatch = "RECOVERY_STATE_HASH_MISMATCH";
+        public const string RecoveryOutboxMissing = "RECOVERY_OUTBOX_MISSING";
+        public const string RecoveryLeaseHeld = "RECOVERY_LEASE_HELD";
+        public const string LeaseRenewFailed = "LEASE_RENEW_FAILED";
+        public const string OutboxConflict = "OUTBOX_CONFLICT";
+
         public static string FromDomain(RoundTransitionErrorCode code)
         {
             switch (code)

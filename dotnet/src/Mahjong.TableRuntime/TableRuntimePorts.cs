@@ -229,7 +229,8 @@ namespace Mahjong.TableRuntime
             long controlVersion,
             StateVersion stateVersion,
             string roundId,
-            TableControlEvent change)
+            TableControlEvent change,
+            string? ownerInstance = null)
         {
             if (string.IsNullOrWhiteSpace(roomId))
             {
@@ -273,6 +274,7 @@ namespace Mahjong.TableRuntime
             StateVersion = stateVersion;
             RoundId = roundId;
             Change = change;
+            OwnerInstance = ownerInstance ?? string.Empty;
         }
 
         public string RoomId { get; }
@@ -288,6 +290,9 @@ namespace Mahjong.TableRuntime
         public string RoundId { get; }
 
         public TableControlEvent Change { get; }
+
+        /// <summary>Durable owner instance for the P3.4 control journal; empty on the legacy P3.3 port.</summary>
+        public string OwnerInstance { get; }
     }
 
     public sealed class TableControlCommitResult

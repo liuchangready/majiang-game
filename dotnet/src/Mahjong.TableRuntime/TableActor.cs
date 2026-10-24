@@ -7,6 +7,7 @@ using System.Threading.Tasks;
 using Mahjong.Ai;
 using Mahjong.Contracts;
 using Mahjong.Domain;
+using Mahjong.Domain.Cheat;
 
 namespace Mahjong.TableRuntime
 {
@@ -47,6 +48,8 @@ namespace Mahjong.TableRuntime
         private readonly ITableClock _clockPort;
         private readonly ITablePublicationSink? _publicationSink;
         private readonly ITableControlCommitPort? _controlCommitPort;
+        private readonly TableDurableContext? _durable;
+        private readonly TableRecoveryService? _recoveryService;
         private readonly DecisionClockConfig _decisionClockConfig;
         private ControlRegistry _control;
         private DecisionClock _decisionClock;
@@ -115,7 +118,8 @@ namespace Mahjong.TableRuntime
             ITablePublicationSink? publicationSink,
             ITableControlCommitPort? controlCommitPort,
             ITableProjectionContextSource? projectionContextSource,
-            TableStreamOptions? streamOptions)
+            TableStreamOptions? streamOptions,
+            TableDurableContext? durableContext = null)
         {
             _options = options ?? throw new ArgumentNullException(nameof(options));
             _options.Validate();
@@ -127,6 +131,14 @@ namespace Mahjong.TableRuntime
             _projectionContextSource = projectionContextSource;
             _streamOptions = streamOptions ?? new TableStreamOptions();
             _streamOptions.Validate();
+            _durable = durableContext;
+            _recoveryService = durableContext == null
+                ? null
+                : new TableRecoveryService(
+                    durableContext.Store,
+                    durableContext.Lease,
+                    durableContext.Outbox,
+                    clock);
             _ownerEpoch = options.InitialOwnerEpoch;
             _mailbox = new TableMailbox(options.MailboxCapacity, options.ControlReserve);
             _control = new ControlRegistry(options.DisconnectPolicy, CopyControllers(options.InitialControllers));
@@ -169,6 +181,123 @@ namespace Mahjong.TableRuntime
             cancellationToken.ThrowIfCancellationRequested();
             var message = new CommandMailboxMessage(command);
             TableMailboxEnqueueStatus enqueue = _mailbox.TryEnqueue(message);
+            if (enqueue != TableMailboxEnqueueStatus.Enqueued)
+            {
+                return new ValueTask<TableOperationResult>(AdmissionFailure(enqueue));
+            }
+
+            EnsurePump();
+            return new ValueTask<TableOperationResult>(message.Completion.Task);
+        }
+
+        /// <summary>
+        /// Receipt query by an authenticated account. A query for another account's scope
+        /// returns NOT_FOUND and never leaks the receipt. It is safe to call while recovering or
+        /// faulted because it only reads the durable store and never mutates Domain state.
+        /// </summary>
+        public async ValueTask<ReceiptLookupResult> QueryReceiptAsync(
+            string accountId,
+            RequestScopeId scopeId,
+            RequestId requestId,
+            CancellationToken cancellationToken = default)
+        {
+            if (string.IsNullOrWhiteSpace(accountId) || scopeId.IsEmpty || requestId.IsEmpty)
+            {
+                return ReceiptLookupResult.NotFound();
+            }
+
+            if (_durable == null)
+            {
+                return ReceiptLookupResult.NotFound();
+            }
+
+            TableScopeLookup scope = await _durable.Scopes.LookupAsync(scopeId, cancellationToken).ConfigureAwait(false);
+            if (!scope.Found ||
+                scope.Scope == null ||
+                !string.Equals(scope.Scope.AccountId, accountId, StringComparison.Ordinal))
+            {
+                return ReceiptLookupResult.NotFound();
+            }
+
+            TableDurableReceipt? receipt = await _durable.Receipts
+                .TryGetAsync(accountId, scopeId, requestId, cancellationToken)
+                .ConfigureAwait(false);
+            return receipt == null
+                ? ReceiptLookupResult.NotFound()
+                : ReceiptLookupResult.Found(receipt.Receipt.AsReplay());
+        }
+
+        /// <summary>
+        /// Explicit cold recovery from the durable checkpoint/event/command journal. It runs on
+        /// the actor consumer, enters RECOVERING first, refuses player/AI/tick work until it
+        /// finishes, and leaves the actor non-Serving on any failure.
+        /// </summary>
+        public ValueTask<TableRecoveryResult> RecoverFromStoreAsync(CancellationToken cancellationToken = default)
+        {
+            if (_durable == null)
+            {
+                return new ValueTask<TableRecoveryResult>(
+                    TableRecoveryResult.Failed(
+                        TableRuntimeReasonCode.DurableNotConfigured,
+                        "No durable context is wired into this actor."));
+            }
+
+            cancellationToken.ThrowIfCancellationRequested();
+            var message = new DurableRecoveryMailboxMessage();
+            TableMailboxEnqueueStatus enqueue = _mailbox.TryEnqueueControl(message);
+            if (enqueue != TableMailboxEnqueueStatus.Enqueued)
+            {
+                return new ValueTask<TableRecoveryResult>(
+                    TableRecoveryResult.Failed(TableRuntimeReasonCode.MailboxFull, "Recovery could not enter the mailbox."));
+            }
+
+            EnsurePump();
+            return new ValueTask<TableRecoveryResult>(message.Completion.Task);
+        }
+
+        /// <summary>
+        /// Renews the current lease on the actor consumer. A stale/expired renewal immediately
+        /// enters LEASE_LOST and stops authoritative pushes; it is never silently retried.
+        /// </summary>
+        public ValueTask<TableLeaseRenewResult> RenewLeaseAsync(CancellationToken cancellationToken = default)
+        {
+            if (_durable == null)
+            {
+                return new ValueTask<TableLeaseRenewResult>(
+                    TableLeaseRenewResult.Failed("No durable context is wired into this actor."));
+            }
+
+            cancellationToken.ThrowIfCancellationRequested();
+            var message = new LeaseRenewMailboxMessage();
+            TableMailboxEnqueueStatus enqueue = _mailbox.TryEnqueueControl(message);
+            if (enqueue != TableMailboxEnqueueStatus.Enqueued)
+            {
+                return new ValueTask<TableLeaseRenewResult>(
+                    TableLeaseRenewResult.Failed("Lease renewal could not enter the mailbox."));
+            }
+
+            EnsurePump();
+            return new ValueTask<TableLeaseRenewResult>(message.Completion.Task);
+        }
+
+        /// <summary>
+        /// Writes a checkpoint of the current committed state. P5.2 may call this on a round
+        /// boundary or event-count threshold; terminal commits include their checkpoint atomically.
+        /// </summary>
+        public ValueTask<TableOperationResult> SaveCheckpointAsync(CancellationToken cancellationToken = default)
+        {
+            if (_durable == null)
+            {
+                return new ValueTask<TableOperationResult>(
+                    TableOperationResult.Failed(
+                        _stateVersion,
+                        TableRuntimeReasonCode.DurableNotConfigured,
+                        "No durable context is wired into this actor."));
+            }
+
+            cancellationToken.ThrowIfCancellationRequested();
+            var message = new CheckpointMailboxMessage();
+            TableMailboxEnqueueStatus enqueue = _mailbox.TryEnqueueControl(message);
             if (enqueue != TableMailboxEnqueueStatus.Enqueued)
             {
                 return new ValueTask<TableOperationResult>(AdmissionFailure(enqueue));
@@ -748,6 +877,18 @@ namespace Mahjong.TableRuntime
                         _lifecycleReason = "actor closed";
                         close.Completion.TrySetResult(true);
                         break;
+                    case DurableRecoveryMailboxMessage recovery:
+                        recovery.Completion.TrySetResult(
+                            await ProcessDurableRecoveryAsync().ConfigureAwait(false));
+                        break;
+                    case LeaseRenewMailboxMessage renew:
+                        renew.Completion.TrySetResult(
+                            await ProcessLeaseRenewAsync().ConfigureAwait(false));
+                        break;
+                    case CheckpointMailboxMessage checkpoint:
+                        checkpoint.Completion.TrySetResult(
+                            await ProcessCheckpointAsync().ConfigureAwait(false));
+                        break;
                     default:
                         throw new InvalidOperationException("Unknown table mailbox message.");
                 }
@@ -760,6 +901,129 @@ namespace Mahjong.TableRuntime
         }
 
         private async ValueTask<TableOperationResult> ProcessCommandAsync(TableCommandEnvelope command)
+        {
+            if (_durable == null)
+            {
+                return await ProcessCommandCoreAsync(command).ConfigureAwait(false);
+            }
+
+            TableOperationResult? guard = GuardServing();
+            if (guard != null)
+            {
+                return guard;
+            }
+
+            if (!command.HasDurableIdentity)
+            {
+                // Not admitted: a command without host-computed scope/API/digest cannot be
+                // replayed or fenced, so it must not create a receipt or touch Domain state.
+                return TableOperationResult.Rejected(
+                    _stateVersion,
+                    TableRuntimeReasonCode.PayloadIdentityRequired,
+                    "A durable table command requires scopeId, api and payloadSha256.");
+            }
+
+            RequestScopeId scopeId = command.ScopeId!.Value;
+            TableScopeLookup lookup = await _durable.Scopes
+                .LookupAsync(scopeId, CancellationToken.None)
+                .ConfigureAwait(false);
+            if (!lookup.Found || lookup.Scope == null)
+            {
+                return TableOperationResult.Rejected(
+                    _stateVersion,
+                    ProtocolErrorCode.Unauthenticated,
+                    "The host-issued request scope does not exist.");
+            }
+
+            TableScopeRecord scope = lookup.Scope;
+
+            // Receipt-first: a committed receipt (including REJECTED) is returned exactly even
+            // when the scope was revoked/expired afterwards. No Domain evaluation happens here.
+            TableDurableReceipt? existing = await _durable.Receipts
+                .TryGetAsync(scope.AccountId, scopeId, command.RequestId, CancellationToken.None)
+                .ConfigureAwait(false);
+            if (existing != null)
+            {
+                if (existing.Matches(command.Api!, command.PayloadSha256!.Value))
+                {
+                    return TableOperationResult.FromReplay(existing);
+                }
+
+                return TableOperationResult.Conflict(
+                    "The same (account, scope, request) key was used with a different API or payload.");
+            }
+
+            TableOperationResult? scopeError = ValidateScopeForCommand(scope, command);
+            if (scopeError != null)
+            {
+                // Scope/authentication failures are not admitted commands: no receipt, no event
+                // and no state change.
+                return scopeError;
+            }
+
+            TableOperationResult result = await ProcessCommandCoreAsync(command).ConfigureAwait(false);
+            if (result.Status != TableOperationStatus.Rejected || !ShouldPersistRejection(result.ReasonCode))
+            {
+                return result;
+            }
+
+            return await CommitRejectedReceiptAsync(command, scope, result).ConfigureAwait(false);
+        }
+
+        private static bool ShouldPersistRejection(string reasonCode)
+        {
+            // Fence/admission failures are not admitted business rejections: writing a receipt
+            // for them would let an old owner/generation create a durable side effect.
+            return !string.Equals(reasonCode, TableRuntimeReasonCode.StaleOwnerEpoch, StringComparison.Ordinal) &&
+                   !string.Equals(reasonCode, TableRuntimeReasonCode.StaleStateVersion, StringComparison.Ordinal) &&
+                   !string.Equals(reasonCode, TableRuntimeReasonCode.StaleRecoveryGeneration, StringComparison.Ordinal) &&
+                   !string.Equals(reasonCode, TableRuntimeReasonCode.LeaseLost, StringComparison.Ordinal) &&
+                   !string.Equals(reasonCode, TableRuntimeReasonCode.Recovering, StringComparison.Ordinal) &&
+                   !string.Equals(reasonCode, TableRuntimeReasonCode.ActorClosed, StringComparison.Ordinal);
+        }
+
+        private TableOperationResult? ValidateScopeForCommand(
+            TableScopeRecord scope,
+            TableCommandEnvelope command)
+        {
+            if (scope.Role != TableScopeRole.Player)
+            {
+                return TableOperationResult.Rejected(
+                    _stateVersion,
+                    TableRuntimeReasonCode.ScopeRoleMismatch,
+                    "Only a player scope can submit a table command.");
+            }
+
+            if (!scope.MatchesRoom(_options.RoomId))
+            {
+                return TableOperationResult.Rejected(
+                    _stateVersion,
+                    TableRuntimeReasonCode.ScopeRoomMismatch,
+                    "The request scope is bound to another room.");
+            }
+
+            if (scope.IsRevoked)
+            {
+                return TableOperationResult.Rejected(
+                    _stateVersion,
+                    ProtocolErrorCode.RequestScopeExpired,
+                    "The request scope was revoked.");
+            }
+
+            long utc = _clockPort.UtcNowMs;
+            ulong now = utc < 0 ? 0UL : (ulong)utc;
+            if (scope.IsExpiredAt(now))
+            {
+                return TableOperationResult.Rejected(
+                    _stateVersion,
+                    ProtocolErrorCode.RequestScopeExpired,
+                    "The request scope expired.");
+            }
+
+            return null;
+        }
+
+        private async ValueTask<TableOperationResult> ProcessCommandCoreAsync(TableCommandEnvelope command)
         {
             TableOperationResult? guard = GuardServing();
             if (guard != null)
@@ -892,7 +1156,9 @@ namespace Mahjong.TableRuntime
                 command.RequestId,
                 pending,
                 command.DecisionId,
-                now).ConfigureAwait(false);
+                now,
+                command,
+                command.Command).ConfigureAwait(false);
         }
 
         private bool IsCurrentObservation(AiObservation observation)
@@ -1649,7 +1915,7 @@ namespace Mahjong.TableRuntime
                 return transitionError;
             }
 
-            return await CommitAndInstallAsync(transition, requestId, null, null, now).ConfigureAwait(false);
+            return await CommitAndInstallAsync(transition, requestId, null, null, now, null, command).ConfigureAwait(false);
         }
 
         private async ValueTask<TableOperationResult> CommitAndInstallAsync(
@@ -1657,7 +1923,9 @@ namespace Mahjong.TableRuntime
             RequestId requestId,
             PendingDecision? pending,
             DecisionId? decisionId,
-            long now)
+            long now,
+            TableCommandEnvelope? envelope = null,
+            RoundCommand? commandForJournal = null)
         {
             StateVersion evaluated = _stateVersion;
             StateVersion commandVersion;
@@ -1695,7 +1963,10 @@ namespace Mahjong.TableRuntime
                     "Event sequence overflow.");
             }
 
-            List<TableEventRecord> records = BuildEventRecords(commandVersion, domainEvents);
+            List<TableEventRecord> records = BuildEventRecords(
+                commandVersion,
+                domainEvents,
+                transition.State!.SourceFingerprint);
             TableCommandReceipt receipt = TableCommandReceipt.Applied(
                 evaluated,
                 commandVersion,
@@ -1703,6 +1974,32 @@ namespace Mahjong.TableRuntime
                 requestId);
 
             RoundStateMachine nextState = transition.State!;
+            if (_durable != null)
+            {
+                try
+                {
+                    return await CommitDurableAcceptedAsync(
+                        nextState,
+                        evaluated,
+                        commandVersion,
+                        lastEventSeq,
+                        records,
+                        receipt,
+                        envelope,
+                        pending,
+                        decisionId,
+                        now,
+                        commandForJournal).ConfigureAwait(false);
+                }
+                catch (Exception exception)
+                {
+                    return TableOperationResult.Failed(
+                        evaluated,
+                        TableRuntimeReasonCode.InternalError,
+                        "DurableCommit " + exception.GetType().Name + ": " + exception.Message);
+                }
+            }
+
             var request = new TableCommitRequest(
                 _options.RoomId,
                 _ownerEpoch,
@@ -1776,6 +2073,529 @@ namespace Mahjong.TableRuntime
             TableSnapshot snapshot = BuildSnapshot();
             Publish(new TablePublication(TablePublicationKind.Applied, snapshot, records, receipt));
             return TableOperationResult.Accepted(receipt, records);
+        }
+
+        private async ValueTask<TableOperationResult> CommitDurableAcceptedAsync(
+            RoundStateMachine nextState,
+            StateVersion evaluated,
+            StateVersion commandVersion,
+            EventSeq lastEventSeq,
+            IReadOnlyList<TableEventRecord> records,
+            TableCommandReceipt receipt,
+            TableCommandEnvelope? envelope,
+            PendingDecision? pending,
+            DecisionId? decisionId,
+            long now,
+            RoundCommand? commandForJournal = null)
+        {
+            TableDurableContext durable = _durable!;
+            ulong createdUtc = NowUtc();
+            string accountId = "system";
+            RequestScopeId scopeId = new RequestScopeId("system");
+            string api = "INTERNAL_COMMAND";
+            TablePayloadSha256 digest;
+            TableDurableReceipt? durableReceipt = null;
+
+            byte[] commandPayload = RoundCommandCodec.Encode(
+                commandForJournal ?? envelope!.Command);
+            if (envelope != null)
+            {
+                TableScopeLookup lookup = await durable.Scopes
+                    .LookupAsync(envelope.ScopeId!.Value, CancellationToken.None)
+                    .ConfigureAwait(false);
+                if (!lookup.Found || lookup.Scope == null)
+                {
+                    return TableOperationResult.Failed(
+                        evaluated,
+                        ProtocolErrorCode.Unauthenticated,
+                        "The host-issued scope disappeared before commit.");
+                }
+
+                accountId = lookup.Scope.AccountId;
+                scopeId = envelope.ScopeId.Value;
+                api = envelope.Api!;
+                digest = envelope.PayloadSha256!.Value;
+                durableReceipt = new TableDurableReceipt(
+                    accountId,
+                    scopeId,
+                    envelope.RequestId,
+                    api,
+                    digest,
+                    Receipt.Applied(
+                        evaluated,
+                        commandVersion,
+                        lastEventSeq,
+                        null,
+                        createdUtc == 0 ? (ulong?)null : createdUtc),
+                    string.Empty,
+                    createdUtc,
+                    ReceiptExpiry(createdUtc, durable));
+            }
+            else
+            {
+                digest = TablePayloadSha256.Compute(commandPayload);
+            }
+
+            var journal = new TableCommandJournalRecord(
+                commandVersion,
+                evaluated,
+                envelope != null ? envelope.RequestId : new RequestId("internal-" + commandVersion.Value.ToString(System.Globalization.CultureInfo.InvariantCulture)),
+                accountId,
+                scopeId,
+                api,
+                digest,
+                commandPayload);
+
+            TableCheckpoint? checkpoint = null;
+            IReadOnlyList<TableSettlementOutboxRecord> outbox = Array.Empty<TableSettlementOutboxRecord>();
+            if (nextState.IsFinished)
+            {
+                if (nextState.Result == null)
+                {
+                    return TableOperationResult.Failed(
+                        evaluated,
+                        TableRuntimeReasonCode.RecoveryReplayMismatch,
+                        "A finished round has no result.");
+                }
+
+                checkpoint = BuildCheckpoint(nextState, commandVersion, lastEventSeq, terminal: true, now);
+                byte[] payload = TableSettlementPayloadCodec.Encode(_options.RoomId, nextState.Result);
+                outbox = new[]
+                {
+                    new TableSettlementOutboxRecord(
+                        durable.MatchId ?? _options.RoomId,
+                        checked((int)commandVersion.Value),
+                        payload,
+                        TablePayloadSha256.Compute(payload),
+                        createdUtc)
+                };
+            }
+
+            byte[] nextStatePayload = RoundRecoveryCodec.Encode(RoundRecovery.Capture(nextState));
+            var request = new TableDurableCommitRequest(
+                _options.RoomId,
+                durable.OwnerInstance,
+                _ownerEpoch,
+                evaluated,
+                durableReceipt,
+                envelope == null,
+                records,
+                journal,
+                outbox,
+                checkpoint,
+                nextStatePayload,
+                nextState.SourceFingerprint,
+                nextState.IsFinished);
+
+            TableDurableCommitResult commit;
+            try
+            {
+                commit = await durable.Store.CommitAsync(request, CancellationToken.None).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException exception)
+            {
+                return TableOperationResult.Failed(
+                    evaluated,
+                    TableRuntimeReasonCode.CommitCancelled,
+                    exception.Message);
+            }
+            catch (Exception exception)
+            {
+                EnterFaulted(TableRuntimeReasonCode.CommitFailed, exception.GetType().Name + ": " + exception.Message);
+                return TableOperationResult.Failed(
+                    evaluated,
+                    TableRuntimeReasonCode.CommitFailed,
+                    exception.GetType().Name + ": " + exception.Message);
+            }
+
+            switch (commit.Disposition)
+            {
+                case TableCommitDisposition.Replayed:
+                    return commit.Receipt == null
+                        ? TableOperationResult.Failed(
+                            evaluated,
+                            TableRuntimeReasonCode.CommitFailed,
+                            "A replayed commit result had no receipt.")
+                        : TableOperationResult.FromReplay(commit.Receipt);
+                case TableCommitDisposition.Conflict:
+                    return TableOperationResult.Conflict(commit.Detail);
+                case TableCommitDisposition.ScopeRejected:
+                    return TableOperationResult.Rejected(evaluated, commit.ReasonCode, commit.Detail);
+                case TableCommitDisposition.StaleOwner:
+                    EnterLeaseLost(commit.Detail);
+                    return TableOperationResult.Failed(evaluated, TableRuntimeReasonCode.StaleOwnerEpoch, commit.Detail);
+                case TableCommitDisposition.StaleState:
+                    EnterFaulted(TableRuntimeReasonCode.StaleStateVersion, commit.Detail);
+                    return TableOperationResult.Failed(evaluated, TableRuntimeReasonCode.StaleStateVersion, commit.Detail);
+                case TableCommitDisposition.OutcomeUnknown:
+                    EnterFaulted(TableRuntimeReasonCode.CommitOutcomeUnknown, commit.Detail);
+                    return TableOperationResult.Failed(evaluated, TableRuntimeReasonCode.CommitOutcomeUnknown, commit.Detail);
+                case TableCommitDisposition.Cancelled:
+                    return TableOperationResult.Failed(evaluated, TableRuntimeReasonCode.CommitCancelled, commit.Detail);
+                case TableCommitDisposition.Failed:
+                    return TableOperationResult.Failed(
+                        evaluated,
+                        string.IsNullOrEmpty(commit.ReasonCode) ? TableRuntimeReasonCode.CommitFailed : commit.ReasonCode,
+                        commit.Detail);
+            }
+
+            // The commit is durable. From this point the in-memory state/receipt/publication
+            // must follow it; no failure below may report a business rejection.
+            _round = nextState;
+            _stateVersion = commandVersion;
+            _lastEventSeq = lastEventSeq;
+
+            if (pending != null &&
+                decisionId.HasValue &&
+                string.Equals(decisionId.Value.Value, pending.Key.DecisionId, StringComparison.Ordinal))
+            {
+                bool closed = _decisionClock.Complete(pending.Key, now);
+                if (!closed)
+                {
+                    SetFaulted(new InvalidOperationException(
+                        "The decision clock could not close the committed player command."));
+                }
+
+                _pending.Remove(pending.Key.Seat);
+            }
+
+            if (_round.IsFinished)
+            {
+                _pending.Clear();
+                _decisionClock.Reset();
+            }
+
+            TableCommandReceipt durableCommandReceipt = durableReceipt?.ToCommandReceipt() ?? receipt;
+            AppendRecent(records);
+            TableSnapshot snapshot = BuildSnapshot();
+            Publish(new TablePublication(TablePublicationKind.Applied, snapshot, records, durableCommandReceipt));
+            return TableOperationResult.Accepted(durableCommandReceipt, records, durableReceipt);
+        }
+
+        private async ValueTask<TableOperationResult> CommitRejectedReceiptAsync(
+            TableCommandEnvelope command,
+            TableScopeRecord scope,
+            TableOperationResult rejection)
+        {
+            TableDurableContext durable = _durable!;
+            ulong createdUtc = NowUtc();
+            var receipt = new TableDurableReceipt(
+                scope.AccountId,
+                command.ScopeId!.Value,
+                command.RequestId,
+                command.Api!,
+                command.PayloadSha256!.Value,
+                Receipt.Rejected(rejection.EvaluatedStateVersion, rejection.ReasonCode),
+                rejection.Detail,
+                createdUtc,
+                ReceiptExpiry(createdUtc, durable));
+
+            var request = new TableDurableCommitRequest(
+                _options.RoomId,
+                durable.OwnerInstance,
+                _ownerEpoch,
+                _stateVersion,
+                receipt,
+                internalCommand: false,
+                events: null,
+                commandJournal: null,
+                outbox: null,
+                checkpoint: null,
+                nextStatePayload: null,
+                nextStateFingerprint: 0UL,
+                terminal: false);
+
+            TableDurableCommitResult commit;
+            try
+            {
+                commit = await durable.Store.CommitAsync(request, CancellationToken.None).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException exception)
+            {
+                return TableOperationResult.Failed(
+                    _stateVersion,
+                    TableRuntimeReasonCode.CommitCancelled,
+                    exception.Message);
+            }
+            catch (Exception exception)
+            {
+                EnterFaulted(TableRuntimeReasonCode.CommitFailed, exception.GetType().Name + ": " + exception.Message);
+                return TableOperationResult.Failed(
+                    _stateVersion,
+                    TableRuntimeReasonCode.CommitFailed,
+                    exception.GetType().Name + ": " + exception.Message);
+            }
+
+            switch (commit.Disposition)
+            {
+                case TableCommitDisposition.Committed:
+                    return TableOperationResult.RejectedCommitted(commit.Receipt ?? receipt);
+                case TableCommitDisposition.Replayed:
+                    return commit.Receipt == null
+                        ? TableOperationResult.Failed(
+                            _stateVersion,
+                            TableRuntimeReasonCode.CommitFailed,
+                            "A replayed rejection had no receipt.")
+                        : TableOperationResult.FromReplay(commit.Receipt);
+                case TableCommitDisposition.Conflict:
+                    return TableOperationResult.Conflict(commit.Detail);
+                case TableCommitDisposition.ScopeRejected:
+                    return TableOperationResult.Rejected(_stateVersion, commit.ReasonCode, commit.Detail);
+                case TableCommitDisposition.StaleOwner:
+                    EnterLeaseLost(commit.Detail);
+                    return TableOperationResult.Failed(_stateVersion, TableRuntimeReasonCode.StaleOwnerEpoch, commit.Detail);
+                case TableCommitDisposition.StaleState:
+                    EnterFaulted(TableRuntimeReasonCode.StaleStateVersion, commit.Detail);
+                    return TableOperationResult.Failed(_stateVersion, TableRuntimeReasonCode.StaleStateVersion, commit.Detail);
+                case TableCommitDisposition.OutcomeUnknown:
+                    EnterFaulted(TableRuntimeReasonCode.CommitOutcomeUnknown, commit.Detail);
+                    return TableOperationResult.Failed(_stateVersion, TableRuntimeReasonCode.CommitOutcomeUnknown, commit.Detail);
+                default:
+                    return TableOperationResult.Failed(
+                        _stateVersion,
+                        string.IsNullOrEmpty(commit.ReasonCode) ? TableRuntimeReasonCode.CommitFailed : commit.ReasonCode,
+                        commit.Detail);
+            }
+        }
+
+        private TableCheckpoint BuildCheckpoint(
+            RoundStateMachine round,
+            StateVersion stateVersion,
+            EventSeq lastEventSeq,
+            bool terminal,
+            long now,
+            ControlRegistrySnapshot? controlOverride = null,
+            long? controlVersionOverride = null,
+            TableControlEvent? controlChange = null)
+        {
+            TableDurableContext durable = _durable!;
+            ControlRegistrySnapshot control = controlOverride ?? _control.Capture();
+            long controlVersion = controlVersionOverride ?? _controlVersion;
+            TableTimingCheckpoint timing;
+            if (terminal)
+            {
+                timing = new TableTimingCheckpoint(
+                    round.RoundId,
+                    _decisionClock.RemainingReserves(),
+                    Array.Empty<TableRecoveredDecision>());
+            }
+            else
+            {
+                var pending = new List<PendingDecision>(4);
+                for (int seat = 0; seat < 4; seat++)
+                {
+                    if (_pending.TryGetValue(seat, out PendingDecision? value))
+                    {
+                        long epoch = controlChange != null &&
+                                     controlChange.Seat == seat &&
+                                     controlChange.NewEpoch.HasValue
+                            ? controlChange.NewEpoch.Value
+                            : value.ControlEpoch;
+                        pending.Add(new PendingDecision(
+                            value.Key,
+                            epoch,
+                            value.Candidates,
+                            value.DrawnTile));
+                    }
+                }
+
+                timing = TableCheckpointFactory.CaptureTiming(_decisionClock, pending, now);
+            }
+
+            CheatLedger? cheat = durable.CheatLedgerProvider?.Invoke();
+            TableCheatLedgerCheckpoint? cheatCheckpoint = cheat == null
+                ? null
+                : TableCheatLedgerCheckpoint.FromLedger(cheat);
+            return TableCheckpointFactory.Create(
+                _options.RoomId,
+                round,
+                stateVersion,
+                lastEventSeq,
+                new TableControlCheckpoint(control, controlVersion),
+                timing,
+                durable.RulesetVersion,
+                durable.BootId,
+                NowUtc(),
+                cheatCheckpoint,
+                durable.CommittedFactsProvider?.Invoke());
+        }
+
+        private static ulong ReceiptExpiry(ulong createdUtcMs, TableDurableContext durable)
+        {
+            double retention = durable.ReceiptRetention.TotalMilliseconds;
+            if (retention < 1)
+            {
+                retention = 1;
+            }
+
+            ulong amount = retention >= ulong.MaxValue ? ulong.MaxValue : (ulong)retention;
+            return createdUtcMs > ulong.MaxValue - amount ? ulong.MaxValue : createdUtcMs + amount;
+        }
+
+        private ulong NowUtc()
+        {
+            long value = _clockPort.UtcNowMs;
+            return value < 0 ? 0UL : (ulong)value;
+        }
+
+        private void EnterLeaseLost(string detail)
+        {
+            if (_lifecycle == TableActorLifecycle.Closed || _lifecycle == TableActorLifecycle.Faulted)
+            {
+                return;
+            }
+
+            _lifecycle = TableActorLifecycle.LeaseLost;
+            _lifecycleReason = detail ?? "lease lost";
+            _pending.Clear();
+            _decisionClock.Reset();
+            CloseAllStreams(TableStreamTerminationKind.LeaseLost, TableRuntimeReasonCode.LeaseLost, _lifecycleReason);
+            Publish(new TablePublication(
+                TablePublicationKind.LeaseLost,
+                BuildSnapshot(),
+                Array.Empty<TableEventRecord>(),
+                null));
+        }
+
+        private void EnterFaulted(string reasonCode, string detail)
+        {
+            if (_lifecycle == TableActorLifecycle.Closed || _lifecycle == TableActorLifecycle.Faulted)
+            {
+                return;
+            }
+
+            _lifecycle = TableActorLifecycle.Faulted;
+            _lifecycleReason = reasonCode + ": " + (detail ?? string.Empty);
+            _pending.Clear();
+            _decisionClock.Reset();
+            CloseAllStreams(TableStreamTerminationKind.ActorFaulted, reasonCode, _lifecycleReason);
+            Publish(new TablePublication(
+                TablePublicationKind.LeaseLost,
+                BuildSnapshot(),
+                Array.Empty<TableEventRecord>(),
+                null));
+        }
+
+        private async ValueTask<TableOperationResult> ProcessCheckpointAsync()
+        {
+            TableOperationResult? guard = GuardServing();
+            if (guard != null)
+            {
+                return guard;
+            }
+
+            if (!TryReadClock(out long now, out _, out string clockFailure))
+            {
+                return TableOperationResult.Failed(_stateVersion, clockFailure, "The clock is not safe for a checkpoint.");
+            }
+
+            if (_durable == null)
+            {
+                return TableOperationResult.Failed(
+                    _stateVersion,
+                    TableRuntimeReasonCode.DurableNotConfigured,
+                    "No durable context is wired into this actor.");
+            }
+
+            TableCheckpoint checkpoint = BuildCheckpoint(_round, _stateVersion, _lastEventSeq, _round.IsFinished, now);
+            try
+            {
+                await _durable.Store.SaveCheckpointAsync(checkpoint, CancellationToken.None).ConfigureAwait(false);
+            }            catch (Exception exception)
+            {
+                return TableOperationResult.Failed(
+                    _stateVersion,
+                    TableRuntimeReasonCode.CheckpointInvalid,
+                    exception.GetType().Name + ": " + exception.Message);
+            }
+
+            return TableOperationResult.Configured(_stateVersion, "Checkpoint written at version " + _stateVersion + ".");
+        }
+
+        private async ValueTask<TableLeaseRenewResult> ProcessLeaseRenewAsync()
+        {
+            if (_durable == null)
+            {
+                return TableLeaseRenewResult.Failed("No durable context is wired into this actor.");
+            }
+
+            if (_lifecycle == TableActorLifecycle.Closed || _lifecycle == TableActorLifecycle.Faulted)
+            {
+                return TableLeaseRenewResult.Failed("The actor is not serving.");
+            }
+
+            TableLeaseRenewResult result = await _durable.Lease
+                .RenewAsync(
+                    _options.RoomId,
+                    _durable.OwnerInstance,
+                    _ownerEpoch,
+                    _durable.LeaseTtl,
+                    CancellationToken.None)
+                .ConfigureAwait(false);
+            if (!result.Renewed)
+            {
+                EnterLeaseLost(result.Detail);
+            }
+
+            return result;
+        }
+
+        private async ValueTask<TableRecoveryResult> ProcessDurableRecoveryAsync()
+        {
+            if (_durable == null || _recoveryService == null)
+            {
+                return TableRecoveryResult.Failed(
+                    TableRuntimeReasonCode.DurableNotConfigured,
+                    "No durable context is wired into this actor.");
+            }
+
+            if (_lifecycle == TableActorLifecycle.Closed)
+            {
+                return TableRecoveryResult.Failed(
+                    TableRuntimeReasonCode.ActorClosed,
+                    "The actor is closed.");
+            }
+
+            if (_lifecycle == TableActorLifecycle.Faulted || _lifecycle == TableActorLifecycle.LeaseLost)
+            {
+                // Explicit cold recovery is the only path allowed to leave these states.
+                _lifecycle = TableActorLifecycle.Serving;
+                _lifecycleReason = string.Empty;
+            }
+
+            TableOperationResult began = ProcessBeginRecovery("durable cold recovery");
+            if (began.Status != TableOperationStatus.Configured)
+            {
+                return TableRecoveryResult.Failed(
+                    began.ReasonCode,
+                    "Recovery could not enter RECOVERING: " + began.Detail);
+            }
+
+            var options = new TableRecoveryOptions(
+                _durable.OwnerInstance,
+                _durable.BootId,
+                _durable.RulesetVersion,
+                _durable.LeaseTtl,
+                matchId: _durable.MatchId);
+            TableRecoveryResult recovered = await _recoveryService
+                .RecoverAsync(_options.RoomId, options, CancellationToken.None)
+                .ConfigureAwait(false);
+            if (!recovered.Recovered || recovered.Baseline == null)
+            {
+                EnterFaulted(recovered.ReasonCode, recovered.Detail);
+                return recovered;
+            }
+
+            TableOperationResult installed = ProcessCompleteRecovery(recovered.Baseline);
+            if (installed.Status != TableOperationStatus.Configured)
+            {
+                EnterFaulted(installed.ReasonCode, installed.Detail);
+                return TableRecoveryResult.Failed(
+                    installed.ReasonCode,
+                    "The verified recovery baseline could not be installed: " + installed.Detail);
+            }
+
+            return recovered;
         }
 
         private TableOperationResult ProcessOpenDecision(PendingDecision decision)
@@ -2659,6 +3479,67 @@ namespace Mahjong.TableRuntime
             ControlRegistrySnapshot next,
             TableControlEvent change)
         {
+            if (_durable != null)
+            {
+                if (!TryReadClock(out long now, out _, out string clockFailure))
+                {
+                    return ControlFailed(clockFailure, "The clock is not safe for a durable control change.");
+                }
+
+                TableCheckpoint checkpoint;
+                try
+                {
+                    checkpoint = BuildCheckpoint(
+                        _round,
+                        _stateVersion,
+                        _lastEventSeq,
+                        _round.IsFinished,
+                        now,
+                        next,
+                        change.ControlVersion,
+                        change);
+                }
+                catch (Exception exception)
+                {
+                    return ControlFailed(
+                        TableRuntimeReasonCode.CheckpointInvalid,
+                        exception.GetType().Name + ": " + exception.Message);
+                }
+
+                var durableRequest = new TableControlCommitRequest(
+                    _options.RoomId,
+                    _ownerEpoch,
+                    _controlVersion,
+                    change.ControlVersion,
+                    _stateVersion,
+                    _round.RoundId,
+                    change,
+                    _durable.OwnerInstance);
+                TableDurableCommitResult commit = await _durable.Store
+                    .CommitControlAsync(durableRequest, checkpoint, CancellationToken.None)
+                    .ConfigureAwait(false);
+                switch (commit.Disposition)
+                {
+                    case TableCommitDisposition.Committed:
+                        break;
+                    case TableCommitDisposition.StaleOwner:
+                        EnterLeaseLost(commit.Detail);
+                        return ControlFailed(TableRuntimeReasonCode.StaleOwnerEpoch, commit.Detail);
+                    case TableCommitDisposition.StaleState:
+                        EnterFaulted(TableRuntimeReasonCode.StaleStateVersion, commit.Detail);
+                        return ControlFailed(TableRuntimeReasonCode.StaleStateVersion, commit.Detail);
+                    case TableCommitDisposition.OutcomeUnknown:
+                        EnterFaulted(TableRuntimeReasonCode.CommitOutcomeUnknown, commit.Detail);
+                        return ControlFailed(TableRuntimeReasonCode.CommitOutcomeUnknown, commit.Detail);
+                    default:
+                        return ControlFailed(
+                            string.IsNullOrEmpty(commit.ReasonCode)
+                                ? TableRuntimeReasonCode.ControlCommitFailed
+                                : commit.ReasonCode,
+                            commit.Detail);
+                }
+            }
+
             if (_controlCommitPort != null)
             {
                 var request = new TableControlCommitRequest(
@@ -3375,7 +4256,8 @@ namespace Mahjong.TableRuntime
 
         private List<TableEventRecord> BuildEventRecords(
             StateVersion commandVersion,
-            IReadOnlyList<RoundEvent> domainEvents)
+            IReadOnlyList<RoundEvent> domainEvents,
+            ulong sourceFingerprint)
         {
             var records = new List<TableEventRecord>(domainEvents.Count);
             ulong seq = _lastEventSeq.Value;
@@ -3390,7 +4272,9 @@ namespace Mahjong.TableRuntime
                     domainEvent.Type,
                     domainEvent.Seat,
                     domainEvent.Tile,
-                    domainEvent.Detail));
+                    domainEvent.Detail,
+                    1,
+                    TableEventFactCodec.Encode(commandVersion, i, sourceFingerprint)));
             }
 
             return records;
