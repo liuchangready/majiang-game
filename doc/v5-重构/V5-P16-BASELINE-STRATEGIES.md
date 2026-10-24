@@ -123,3 +123,24 @@ V4 `Tile` 是 `data class`（`suit, rank, copyIndex` 结构相等）：红五为
 - 追踪矩阵两行仍是 `partial→待复核` 的收敛判断：本任务不自行改写 `implementation-v1.json` 的 status（矩阵是已验收产物，改写属 caller/独立复核职权）。
 - **P1.6 不因本交付而宣告完整**（同任务族还有 Basic/TargetAware/cheat 能力策略等条目），**G1 未过、G5 未过**；V4 仍是唯一生产基线。
 - 交付方式：本地 commit，工作树 clean 后停止，等待 caller 独立复核；不 push、不触发 CI、不创建新 PR。
+
+## 7. Caller 独立验收与统一 PR19 集成
+
+2026-10-24，Codex 独立验收交付 `1219897523dd7d062ddeb7d07a2f9ece3dd619ec`，通过原 Bridge 线程 `thread_20261024_224740_7338` 的 `approve_task` 归档。无已知需返修缺陷；本节为 caller 验收记录，不改写上文 receiver 的历史交付口径。
+
+复核逐项确认：仅四个 expectedFiles、交付工作树 clean；V4 两个 `decideAction` 的分支、列表顺序、实体牌相等与兜底保持一致；返回原候选且保留 optionId；算法身份互异；空列表、取消、错误文本与隐私边界符合既有合同；真实 `ReasonAsync`、`Submit`、`Replay` 与 deadline/round/controlEpoch 栅栏保持生效。Tsumogiri 没有和牌优先分支，但在仅有和牌等候选时仍可由首合法兜底返回它们，不能把“永不自和”解读成额外的动作禁令。未修改既有测试、黄金样本、矩阵或 verifier。
+
+在交付工作树重新执行（使用 `D:/Unity/dotnet/dotnet.exe`）：
+
+- `build dotnet/Mahjong.sln -c Release --no-incremental --nologo -v:minimal`：exit 0，0 警告、0 错误。
+- `test dotnet/tests/<Project>/<Project>.csproj -c Release --no-build --nologo -v:minimal`：在上述新构建产物上运行 Ai 50、Domain 322、Contracts 104、Client 132，合计 **608 通过 / 0 失败 / 0 跳过**。
+- Ai 同命令追加 `-- --filter-class Mahjong.Ai.Tests.BaselineAiStrategyTests`：**33/0/0**（为上面 50 项的子集，不重复计数）。
+- `git diff HEAD^ HEAD --check`：exit 0；三个源码/测试 SHA-256 与 §1 完全一致。
+
+原始日志及逐日志 SHA-256 清单：交付工作树的 `artifacts/p16-codex-review/` 和 `SHA256SUMS.txt`，均 ignored。
+
+集成在独占工作树 `D:/majiang-wt/codex-ai-baseline-integration-20261024` 进行，不改动主 checkout 的用户未提交文件。以已发布且已验收的 PR19 head `7637664224488c46a3e0e0279352c1dfc100a2ef` 为基线，合入交付得到 `991da3fab2deccfba0c24ca7adcd75e028ae11f4`；相对该远端仅增加四个交付文件，无冲突。未纳入仍待复核的黄金 catalog。
+
+在该准确集成提交重新运行上述 Release 非增量 solution build（0 警告/错误），并运行 `test dotnet/tests/<Project>/<Project>.csproj -c Release --nologo -v:minimal`：Ai 50、Domain 322、Contracts 104、Client 132、TableRuntime 313，合计 **921 通过 / 0 失败 / 0 跳过**，每个命令 exit 0。TableRuntime 包含当前 P3.4 已验收回归。日志及 SHA-256 清单位于集成工作树的 `artifacts/p16-codex-integration/`；本节后续提交只追加验收文档，不改变所测代码。
+
+统一沿用 [PR19](https://github.com/liuchangready/majiang-game/pull/19)，源分支 `feat/v5-1-integration`、目标 `v5`；caller 负责单次推送与 Bridge `record_merge_request`，不另建子任务 PR。远端 CI 结果须另行判读，本地通过不等于本次远端通过。PG/WSS/Unity/IL2CPP/真机/V4 全量本轮仍为 **NOT_RUN**。本次只验收 ENG-014/015 的策略实现，不改变冻结追踪矩阵，也不宣告 P1.6 整体、G1 或 G5 完成；V4 仍是唯一生产基线。
