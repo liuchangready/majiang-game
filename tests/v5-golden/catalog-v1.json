@@ -2246,7 +2246,17 @@
                                                                                                                                     }
                                                                                                              }
                                                                                       }
-                                                                                  ]
+                                                                                  ],
+                                                    "allowedValues":  {
+                                                                          "sampleId":  [
+                                                                                           "G-001a",
+                                                                                           "G-001b",
+                                                                                           "G-001c",
+                                                                                           "G-002",
+                                                                                           "G-003a",
+                                                                                           "G-003b"
+                                                                                       ]
+                                                                      }
                                                 },
                         "scoring-v1:winSamples":  {
                                                       "requiredKeys":  [
@@ -3220,7 +3230,15 @@
                                                                                                                                            }
                                                                                                                       }
                                                                                                }
-                                                                                           ]
+                                                                                           ],
+                                                             "allowedValues":  {
+                                                                                   "input.settlementKind":  [
+                                                                                                                "ron",
+                                                                                                                "tsumo",
+                                                                                                                "exhaustiveDraw",
+                                                                                                                "abortive"
+                                                                                                            ]
+                                                                               }
                                                          },
                         "scoring-v1:scoreSamples":  {
                                                         "requiredKeys":  [
@@ -3598,7 +3616,13 @@
                                                                                                     }
                                                                                                 ]
                                                                                   }
-                                                                              ]
+                                                                              ],
+                                                         "allowedValues":  {
+                                                                               "expected.status":  [
+                                                                                                       "win",
+                                                                                                       "noWin"
+                                                                                                   ]
+                                                                           }
                                                      },
                         "scoring-v1:randomMeta":  {
                                                       "requiredKeys":  [
@@ -3874,7 +3898,13 @@
                                                                                                                                              }
                                                                                                                    }
                                                                                             }
-                                                                                        ]
+                                                                                        ],
+                                                          "allowedValues":  {
+                                                                                "expected.type":  [
+                                                                                                      "NextRound",
+                                                                                                      "MatchFinished"
+                                                                                                  ]
+                                                                            }
                                                       },
                         "round-v1:decisionClock":  {
                                                        "requiredKeys":  [

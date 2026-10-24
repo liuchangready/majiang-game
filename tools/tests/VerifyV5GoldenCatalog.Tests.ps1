@@ -695,7 +695,43 @@ Invoke-NegativeCase -Name 'fixture-extraction-case' -ExpectedCode 'EXTRACTION_ST
     Update-CatalogFixtureSha -Root $root -FixtureId 'cheat-v1'
 }
 
-# 42. Exporter byte change.
+# 42. Unknown random expected.status must fail, even if only status remains.
+Invoke-NegativeCase -Name 'random-status-unknown' -ExpectedCode 'CASE_STRUCTURE_UNKNOWN_VARIANT' -Mutator {
+    param($root)
+    $path = Join-Path $root 'tests\v5-golden\scoring-v1.json'
+    $json = Read-JsonFile $path
+    $json.randomSamples[5000].expected = [pscustomobject]@{ status = 'invalid-status' }
+    Write-JsonFile $path $json
+    Update-CatalogFixtureSha -Root $root -FixtureId 'scoring-v1'
+}
+
+# 43. Random status is case-sensitive: WIN is not win.
+Invoke-NegativeCase -Name 'random-status-case' -ExpectedCode 'CASE_STRUCTURE_UNKNOWN_VARIANT' -Mutator {
+    param($root)
+    $path = Join-Path $root 'tests\v5-golden\scoring-v1.json'
+    $json = Read-JsonFile $path
+    $json.randomSamples[5000].expected.status = 'WIN'
+    Write-JsonFile $path $json
+    Update-CatalogFixtureSha -Root $root -FixtureId 'scoring-v1'
+}
+
+# 44. Other branch discriminators must be exact literals.
+Invoke-NegativeCase -Name 'branch-discriminators-unknown' -ExpectedCode 'CASE_STRUCTURE_UNKNOWN_VARIANT' -Mutator {
+    param($root)
+    $roundPath = Join-Path $root 'tests\v5-golden\round-v1.json'
+    $round = Read-JsonFile $roundPath
+    $round.matchProgression[0].expected.type = 'NextRoundX'
+    $round.controlEpoch.operations[0].op = 'INITIAL'
+    Write-JsonFile $roundPath $round
+    Update-CatalogFixtureSha -Root $root -FixtureId 'round-v1'
+    $scorePath = Join-Path $root 'tests\v5-golden\scoring-v1.json'
+    $score = Read-JsonFile $scorePath
+    $score.settlementSamples[0].input.settlementKind = 'RON'
+    Write-JsonFile $scorePath $score
+    Update-CatalogFixtureSha -Root $root -FixtureId 'scoring-v1'
+}
+
+# 45. Exporter byte change.
 Invoke-NegativeCase -Name 'exporter-sha' -ExpectedCode 'EXPORTER_SHA_MISMATCH' -Mutator {
     param($root)
     $path = Join-Path $root 'engine\src\test\kotlin\com\majiang\model\V5PhysicalGoldenExporterTest.kt'

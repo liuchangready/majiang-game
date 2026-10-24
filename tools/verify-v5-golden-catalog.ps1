@@ -193,7 +193,7 @@ function Test-ConditionalRules {
             if ($null -eq $property) { $value = $null; break }
             $value = $property.Value
         }
-        if ($null -ne $value -and [string]$value -eq $equals) {
+        if ($null -ne $value -and [string]$value -ceq $equals) {
             Test-ShapeRules -Object $Object -Rules $rules -Label ('{0}[{1}={2}]' -f $Label, $path, $equals)
         }
     }
@@ -273,7 +273,7 @@ function Test-ConditionalArrayItemRules {
             if ($null -eq $prop) { $value = $null; break }
             $value = $prop.Value
         }
-        if ($null -ne $value -and [string]$value -eq $equals) {
+        if ($null -ne $value -and [string]$value -ceq $equals) {
             Test-ArrayItemRules -Object $Object -Specs $specs -Label ('{0}[{1}={2}]' -f $Label, $path, $equals)
         }
     }
@@ -323,7 +323,8 @@ function Test-RandomSamplesFast {
         $expected = $item.expected
         if (-not ($expected -is [System.Management.Automation.PSCustomObject])) { Add-Failure 'CASE_STRUCTURE_TYPE' ("{0}: expected expected object" -f $Label); continue }
         if (-not ($expected.status -is [string])) { Add-Failure 'CASE_STRUCTURE_MISSING' ("{0}: expected.status missing/non-string" -f $Label); continue }
-        if ($expected.status -eq 'win') {
+        if ($expected.status -cne 'win' -and $expected.status -cne 'noWin') { Add-Failure 'CASE_STRUCTURE_UNKNOWN_VARIANT' ("{0}: expected.status '{1}' not in win/noWin" -f $Label, $expected.status); continue }
+        if ($expected.status -ceq 'win') {
             if (-not ($expected.yaku -is [System.Array])) { Add-Failure 'CASE_STRUCTURE_MISSING' ("{0}: expected.yaku missing" -f $Label); continue }
             foreach ($yaku in $expected.yaku) {
                 if (-not ($yaku -is [System.Management.Automation.PSCustomObject])) { Add-Failure 'CASE_STRUCTURE_TYPE' ("{0}: expected.yaku element expected object" -f $Label); break }
@@ -364,12 +365,31 @@ function Test-ElementRules {
             Add-Failure 'CASE_STRUCTURE_MISSING' ("{0}: element missing discriminator '{1}'" -f $Label, $discriminator)
             continue
         }
-        $variant = $variants.PSObject.Properties[$key]
-        if ($null -eq $variant) {
+        $variantNames = @($variants.PSObject.Properties | ForEach-Object { $_.Name })
+        if (-not ($variantNames -ccontains $key)) {
             Add-Failure 'CASE_STRUCTURE_UNKNOWN_VARIANT' ("{0}: unknown '{1}'='{2}'" -f $Label, $discriminator, $key)
             continue
         }
+        $variant = $variants.PSObject.Properties[$key]
         Test-ShapeRules -Object $item -Rules @($variant.Value) -Label ('{0}[{1}]' -f $Label, $key)
+    }
+}
+
+function Test-AllowedValues {
+    param([object]$Object, [object]$Specs, [string]$Label)
+    foreach ($property in $Specs.PSObject.Properties) {
+        $path = $property.Name
+        $allowed = @($property.Value)
+        $value = $Object
+        foreach ($segment in ($path -split '\.')) {
+            if ($null -eq $value) { break }
+            $prop = $value.PSObject.Properties[$segment]
+            if ($null -eq $prop) { $value = $null; break }
+            $value = $prop.Value
+        }
+        if ($null -eq $value -or -not ($allowed -ccontains [string]$value)) {
+            Add-Failure 'CASE_STRUCTURE_UNKNOWN_VARIANT' ("{0}: '{1}'='{2}' not in accepted literals" -f $Label, $path, $value)
+        }
     }
 }
 
@@ -427,6 +447,7 @@ function Test-Group {
     $conditionalRules = @()
     $arrayItemRules = $null
     $conditionalArrayItemRules = @()
+    $allowedValueSpecs = $null
     if ($null -ne $shape) {
         $shapeRequiredKeys = @(Get-DeclaredStringArray -Holder $shape -Name 'requiredKeys' -Label ('{0}:{1}.shape' -f $fixtureId, $groupName))
         $rulesProperty = $shape.PSObject.Properties['rules']
@@ -449,6 +470,7 @@ function Test-Group {
             }
         }
         $arrayItemRules = Get-Prop -Object $shape -Name 'arrayItemRules'
+        $allowedValueSpecs = Get-Prop -Object $shape -Name 'allowedValues'
         $conditionalArrayProperty = $shape.PSObject.Properties['conditionalArrayItemRules']
         if ($null -ne $conditionalArrayProperty) {
             if ($null -eq $conditionalArrayProperty.Value -or -not ($conditionalArrayProperty.Value -is [System.Array])) {
@@ -508,6 +530,9 @@ function Test-Group {
                 }
                 if ($conditionalArrayItemRules.Count -gt 0) {
                     Test-ConditionalArrayItemRules -Object $target -Rules $conditionalArrayItemRules -Label ('{0}:{1}' -f $fixtureId, $groupName)
+                }
+                if ($null -ne $allowedValueSpecs) {
+                    Test-AllowedValues -Object $target -Specs $allowedValueSpecs -Label ('{0}:{1}' -f $fixtureId, $groupName)
                 }
             }
         }
@@ -634,6 +659,9 @@ function Test-Group {
             }
             if ($conditionalArrayItemRules.Count -gt 0) {
                 Test-ConditionalArrayItemRules -Object $actual -Rules $conditionalArrayItemRules -Label ('{0}:{1}' -f $fixtureId, $groupName)
+            }
+            if ($null -ne $allowedValueSpecs) {
+                Test-AllowedValues -Object $actual -Specs $allowedValueSpecs -Label ('{0}:{1}' -f $fixtureId, $groupName)
             }
         }
         $script:ActualGroups[('{0}:{1}' -f $fixtureId, $groupName)] = @{ ids = @($sampleId); isCase = [bool](Get-Prop -Object $Group -Name 'countAsCase') }
