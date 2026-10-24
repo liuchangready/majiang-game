@@ -641,13 +641,44 @@ function Test-AnchorSymbol([string]$path, [string]$symbol) {
 #     Chain   := Segment ( "." Segment )*      -- dots may carry legal whitespace both sides
 #   so nullable receivers ("val String?.nullableProperty: Int"), multi-parameter/nested
 #   generic receivers ("val Map<String, Int>.genericProperty: Int", comma/whitespace/variance
-#   inside the type args) and qualified chains parse to their real LAST segment. A flat
+#   inside the type args), FUNCTION-TYPE receivers ("val Map<(String) -> Int, List<Int>>
+#   .functionProperty" -- the ">" of an arrow token "->" never closes a bracket) and
+#   qualified chains parse to their real LAST segment. A flat
 #   character set is deliberately NOT used: it would truncate at "?" or inside generics and
 #   fake a declaration out of the receiver (and reject the real name). The DECLARED name is
 #   the LAST segment after val/var/const val; a symbol in a non-final chain segment is a
 #   receiver and is NOT a declaration; a symbol inside type-args is consumed wholesale and
-#   is NOT a declaration either.
+#   is NOT a declaration either. A property match additionally requires a LEGAL DECLARATION
+#   BOUNDARY after the chain (":" type / "=" initializer / "by" delegate / "get"/"set"
+#   accessor), so a truncated receiver can never be judged a declaration.
 # Receiver names, parameter types, supertypes and generic parameters are NOT declarations.
+
+# Consumes ONE balanced "<...>" type-argument group; $t[$start] must be "<". FUNCTION-TYPE
+# ARROW AWARE: the ">" of an arrow token "->" never closes a bracket, so function types
+# inside type arguments ("Map<(String) -> Int, List<Int>>", "suspend (A) -> B", receiver
+# function types "Int.(String) -> Unit") are consumed wholesale and can never truncate the
+# receiver into a fake declaration. Parentheses and nested angle groups are balanced by
+# counting ("<" increments, ">" decrements), so "(List<Int>) -> List<String>" and nested
+# nullable args ("List<List<Int?>>") parse correctly too. Returns the index just past the
+# matching ">" or -1 when the group never closes (not a valid declaration then).
+function Skip-BalancedTypeArgs([string]$t, [int]$start) {
+    $len = $t.Length
+    $depth = 0
+    $p = $start
+    while ($p -lt $len) {
+        $g = $t[$p]
+        if ($g -eq [char]60) {
+            $depth++
+        } elseif ($g -eq [char]62) {
+            if (-not ($p -gt 0 -and $t[$p - 1] -eq [char]45)) {   # ">" of "->" is inert
+                $depth--
+                if ($depth -eq 0) { return $p + 1 }
+            }
+        }
+        $p++
+    }
+    return -1
+}
 
 # Structurally parses one Kotlin declaration chain starting at index $start (right after the
 # val/var/const val keyword or the fun type-parameter list):
@@ -676,19 +707,14 @@ function Get-KotlinPropertyChain([string]$t, [int]$start) {
             if (($d -ge [char]65 -and $d -le [char]90) -or ($d -ge [char]97 -and $d -le [char]122) -or ($d -ge [char]48 -and $d -le [char]57) -or $d -eq [char]95) { $p++ } else { break }
         }
         $segs.Add($t.Substring($nameStart, $p - $nameStart))
-        # optional type args: balanced angle brackets (whitespace allowed before "<")
+        # optional type args: balanced angle brackets via Skip-BalancedTypeArgs
+        # (function-type arrows inside are consumed wholesale; whitespace allowed before "<")
         $q = $p
         while ($q -lt $len -and [char]::IsWhiteSpace($t[$q])) { $q++ }
         if ($q -lt $len -and $t[$q] -eq [char]60) {
-            $depth = 0
-            while ($q -lt $len) {
-                $g = $t[$q]
-                if ($g -eq [char]60) { $depth++ } elseif ($g -eq [char]62) { $depth-- }
-                $q++
-                if ($depth -eq 0) { break }
-            }
-            if ($depth -ne 0) { return $null }   # unterminated type args: not a declaration
-            $p = $q
+            $end = Skip-BalancedTypeArgs $t $q
+            if ($end -lt 0) { return $null }   # unterminated type args: not a declaration
+            $p = $end
         }
         # nullable suffix ("?"), whitespace allowed before it
         while ($p -lt $len -and [char]::IsWhiteSpace($t[$p])) { $p++ }
@@ -718,14 +744,11 @@ function Test-KotlinFunDeclaration([string]$t, [string]$symbol) {
         $p = $m.Index + 3
         while ($p -lt $len -and [char]::IsWhiteSpace($t[$p])) { $p++ }
         if ($p -lt $len -and $t[$p] -eq [char]60) {           # optional type-parameter list
-            $depth = 0
-            while ($p -lt $len) {
-                $g = $t[$p]
-                if ($g -eq [char]60) { $depth++ } elseif ($g -eq [char]62) { $depth-- }
-                $p++
-                if ($depth -eq 0) { break }
-            }
-            if ($depth -ne 0) { continue }
+            # same arrow-aware balanced scan as receivers: a bound like
+            # "fun <F : (String) -> Int> higherFun(...)" must never truncate at "->"
+            $end = Skip-BalancedTypeArgs $t $p
+            if ($end -lt 0) { continue }
+            $p = $end
         }
         $chain = Get-KotlinPropertyChain $t $p
         if ($null -eq $chain -or $chain.Segments.Count -eq 0) { continue }
@@ -753,10 +776,32 @@ function Test-KotlinDeclaredSymbol([string]$text, [string]$symbol) {
     # Property chain: structurally parsed (Get-KotlinPropertyChain). The chain must start
     # right after "val"/"var"/"const val", so the FIRST segment can never be mistaken for a
     # longer name; the declared name is the LAST segment and receiver segments never declare.
+    # The chain must further be followed by a LEGAL PROPERTY DECLARATION BOUNDARY -- ":"
+    # (type), "=" (initializer), "by" (delegate) or a "get"/"set" accessor -- so a truncated
+    # receiver can never be judged a declaration even if a future parse defect ends a chain
+    # early (defense in depth on top of the arrow-aware balanced consumption).
+    $len = $t.Length
     foreach ($kw in [regex]::Matches($t, "(?<![A-Za-z0-9_])(const\s+val|val|var)(?![A-Za-z0-9_])")) {
         $chain = Get-KotlinPropertyChain $t ($kw.Index + $kw.Length)
         if ($null -eq $chain -or $chain.Segments.Count -eq 0) { continue }
         if ($chain.Segments[$chain.Segments.Count - 1] -ne $symbol) { continue }
+        $b = $chain.End
+        while ($b -lt $len -and [char]::IsWhiteSpace($t[$b])) { $b++ }
+        if ($b -ge $len) { continue }
+        $bc = $t[$b]
+        $isBoundary = ($bc -eq [char]58) -or ($bc -eq [char]61)   # ":" or "="
+        if (-not $isBoundary) {
+            # accessor / delegate keywords: exact word "by", "get" or "set"
+            foreach ($w in @("by", "get", "set")) {
+                $wl = $w.Length
+                if (($len - $b) -ge $wl -and $t.Substring($b, $wl) -eq $w) {
+                    $after = if ($b + $wl -lt $len) { $t[$b + $wl] } else { ' ' }
+                    $afterIsIdent = (($after -ge [char]65 -and $after -le [char]90) -or ($after -ge [char]97 -and $after -le [char]122) -or ($after -ge [char]48 -and $after -le [char]57) -or $after -eq [char]95)
+                    if (-not $afterIsIdent) { $isBoundary = $true; break }
+                }
+            }
+        }
+        if (-not $isBoundary) { continue }
         $isReceiver = $false
         for ($k = 0; $k -lt $chain.Segments.Count - 1; $k++) {
             if ($chain.Segments[$k] -eq $symbol) { $isReceiver = $true; break }
