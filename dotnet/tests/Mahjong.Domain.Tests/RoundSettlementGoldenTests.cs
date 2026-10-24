@@ -226,7 +226,7 @@ namespace Mahjong.Domain.Tests
                 new TileId(17));
             var plan = new TablePlan(RoundPhase.CheatWindow)
             {
-                WallTiles = 8,
+                WallTiles = 8, FillRemainingIntoWall = true,
                 DrawnTile = new TileId(16),
                 DrawnSeat = 0,
                 DrawnSource = DrawSource.Wall
@@ -245,7 +245,7 @@ namespace Mahjong.Domain.Tests
                 expected.GetProperty("resultId").GetString()!,
                 new PersistedUtcTime(new DateTimeOffset(2026, 10, 23, 0, 0, 0, TimeSpan.Zero)),
                 1000,
-                new[] { new RoundSettlementSeatFacts(1, isChankan: true) });
+                new[] { new RoundSettlementSeatFacts(1, isChankan: true, discardHistory: Array.Empty<TileId>()) });
             RoundSettlementCalculation calc = RoundSettlementCalculator.CalculateRon(round, 1, facts);
 
             Assert.Equal(ReadLongs(expected.GetProperty("finalScores")), calc.Settlement.FinalScores.ToArray());
@@ -276,7 +276,8 @@ namespace Mahjong.Domain.Tests
         {
             var plan = new TablePlan(RoundPhase.CheatWindow)
             {
-                WallTiles = 4
+                WallTiles = 4,
+                FillRemainingIntoWall = true
             };
             var used = new HashSet<int>();
             foreach (TileId tile in mapped.Closed)
@@ -392,7 +393,8 @@ namespace Mahjong.Domain.Tests
                         mapped.IsRiichi,
                         mapped.IsDoubleRiichi,
                         mapped.IsIppatsu,
-                        isTenpai: false)
+                        isTenpai: false,
+                        discardHistory: Array.Empty<TileId>())
                 });
         }
 
@@ -497,6 +499,12 @@ namespace Mahjong.Domain.Tests
             if (riichi && melds.Any(m => m.IsOpen))
             {
                 reason = "riichi with open meld";
+                return false;
+            }
+
+            if (ippatsu && melds.Length > 0)
+            {
+                reason = "ippatsu cannot coexist with a call/kan meld";
                 return false;
             }
 

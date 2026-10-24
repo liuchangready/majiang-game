@@ -44,7 +44,10 @@ namespace Mahjong.Domain.Rules
         SourceRoundMismatch = 31,
         StaleSourceVersion = 32,
         ForeignSourceState = 33,
-        InvalidSeat = 34
+        InvalidSeat = 34,
+        FuritenRon = 35,
+        FuritenEvidenceMissing = 36,
+        MeldTypeMismatch = 37
     }
 
     /// <summary>
@@ -80,12 +83,16 @@ namespace Mahjong.Domain.Rules
     /// Trusted, host-verified hand history for one seat. Closed/dora/drawn/winning-window facts
     /// are derived from the immutable <see cref="RoundStateMachine"/>; only facts that the
     /// current tile map cannot represent are accepted here:
-    /// meld kinds/call ownership, riichi/double-riichi/ippatsu, tenhou/chiihou and the tenpai
-    /// flag. Every supplied meld is re-bound to the exact Meld-zone slots and physical tiles.
+    /// meld kinds/call ownership, riichi/double-riichi/ippatsu, tenhou/chiihou, tenpai,
+    /// the complete discard history, and furiten/first-turn state. Every supplied meld is
+    /// re-bound to the exact Meld-zone slots and physical tiles. A null
+    /// <see cref="DiscardHistory"/> means "not supplied"; an empty collection means "proved
+    /// empty". Ron and chiihou/nine-terminals validation never treats missing history as empty.
     /// </summary>
     public sealed class RoundSettlementSeatFacts
     {
         private readonly ReadOnlyCollection<Meld> _melds;
+        private readonly ReadOnlyCollection<TileId> _discardHistory;
 
         public RoundSettlementSeatFacts(
             int seat,
@@ -99,7 +106,12 @@ namespace Mahjong.Domain.Rules
             bool isChankan = false,
             bool isTenhou = false,
             bool isChiihou = false,
-            bool isTenpai = false)
+            bool isTenpai = false,
+            IReadOnlyList<TileId>? discardHistory = null,
+            TileId? firstDiscard = null,
+            bool isFirstTurnUninterrupted = false,
+            bool isTemporaryFuriten = false,
+            bool isRiichiFuriten = false)
         {
             if (seat < 0 || seat > 3)
             {
@@ -125,6 +137,17 @@ namespace Mahjong.Domain.Rules
                 throw new ArgumentException("A seat cannot have more than four melds.", nameof(melds));
             }
 
+            if (discardHistory == null)
+            {
+                _discardHistory = new ReadOnlyCollection<TileId>(new List<TileId>());
+                DiscardHistoryProvided = false;
+            }
+            else
+            {
+                _discardHistory = new ReadOnlyCollection<TileId>(new List<TileId>(discardHistory));
+                DiscardHistoryProvided = true;
+            }
+
             Seat = seat;
             _melds = new ReadOnlyCollection<Meld>(copy);
             IsRiichi = isRiichi;
@@ -137,6 +160,10 @@ namespace Mahjong.Domain.Rules
             IsTenhou = isTenhou;
             IsChiihou = isChiihou;
             IsTenpai = isTenpai;
+            FirstDiscard = firstDiscard;
+            IsFirstTurnUninterrupted = isFirstTurnUninterrupted;
+            IsTemporaryFuriten = isTemporaryFuriten;
+            IsRiichiFuriten = isRiichiFuriten;
         }
 
         public int Seat { get; }
@@ -163,6 +190,22 @@ namespace Mahjong.Domain.Rules
 
         /// <summary>Only used by an exhaustive draw; ignored for win calculations.</summary>
         public bool IsTenpai { get; }
+
+        /// <summary>False when the host did not supply the complete discard history.</summary>
+        public bool DiscardHistoryProvided { get; }
+
+        /// <summary>Complete own discard history, including tiles later called away.</summary>
+        public IReadOnlyList<TileId> DiscardHistory => _discardHistory;
+
+        /// <summary>First discard of the first uninterrupted go, for four-winds abort.</summary>
+        public TileId? FirstDiscard { get; }
+
+        /// <summary>Trusted: no call/kan interrupted the first go before this fact was recorded.</summary>
+        public bool IsFirstTurnUninterrupted { get; }
+
+        public bool IsTemporaryFuriten { get; }
+
+        public bool IsRiichiFuriten { get; }
     }
 
     /// <summary>

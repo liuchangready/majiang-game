@@ -105,7 +105,7 @@ namespace Mahjong.Domain.Tests
                 "res-nondealer-tsumo",
                 FixedUtc,
                 2000,
-                new[] { new RoundSettlementSeatFacts(1) });
+                new[] { new RoundSettlementSeatFacts(1, discardHistory: Array.Empty<TileId>()) });
 
             RoundSettlementCalculation calc = RoundSettlementCalculator.CalculateTsumo(round, facts);
 
@@ -137,7 +137,7 @@ namespace Mahjong.Domain.Tests
 
             var plan = new TablePlan(RoundPhase.CheatWindow)
             {
-                WallTiles = 8
+                WallTiles = 8, FillRemainingIntoWall = true
             };
             plan.AddHand(1, 92, 96, 100, 12, 20, 40, 44, 48, 17, 21, 24, 13, 14);
             plan.AddHand(0, 16, 0, 1, 2, 3, 5, 6, 7, 9, 10, 11, 52, 56, 60);
@@ -153,7 +153,7 @@ namespace Mahjong.Domain.Tests
                 "res-ron",
                 FixedUtc,
                 3000,
-                new[] { new RoundSettlementSeatFacts(1) });
+                new[] { new RoundSettlementSeatFacts(1, discardHistory: Array.Empty<TileId>()) });
             RoundSettlementCalculation calc = RoundSettlementCalculator.CalculateRon(round, 1, facts);
 
             Assert.NotNull(calc.Breakdown);
@@ -190,7 +190,7 @@ namespace Mahjong.Domain.Tests
                 new TileId(17));
             var plan = new TablePlan(RoundPhase.CheatWindow)
             {
-                WallTiles = 8,
+                WallTiles = 8, FillRemainingIntoWall = true,
                 DrawnTile = new TileId(16),
                 DrawnSeat = 0,
                 DrawnSource = DrawSource.Wall
@@ -215,7 +215,7 @@ namespace Mahjong.Domain.Tests
                 "res-chankan",
                 FixedUtc,
                 4000,
-                new[] { new RoundSettlementSeatFacts(1, isChankan: true) });
+                new[] { new RoundSettlementSeatFacts(1, isChankan: true, discardHistory: Array.Empty<TileId>()) });
             RoundSettlementCalculation calc = RoundSettlementCalculator.CalculateRon(round, 1, facts);
 
             Assert.NotNull(calc.Breakdown);
@@ -317,15 +317,25 @@ namespace Mahjong.Domain.Tests
 
             var plan = new TablePlan(RoundPhase.CheatWindow)
             {
-                WallTiles = 8
+                WallTiles = 8, FillRemainingIntoWall = true
             };
             plan.AddHand(0, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13);
+            plan.AddDiscard(0, 108);
+            plan.AddDiscard(1, 109);
+            plan.AddDiscard(2, 110);
+            plan.AddDiscard(3, 111);
             RoundStateMachine round = TablePlan.Build(spec, plan);
             var facts = new RoundSettlementFacts(
                 "res-abortive",
                 FixedUtc,
                 6000,
-                new[] { new RoundSettlementSeatFacts(0) },
+                new[]
+                {
+                    new RoundSettlementSeatFacts(0, firstDiscard: new TileId(108), isFirstTurnUninterrupted: true),
+                    new RoundSettlementSeatFacts(1, firstDiscard: new TileId(109), isFirstTurnUninterrupted: true),
+                    new RoundSettlementSeatFacts(2, firstDiscard: new TileId(110), isFirstTurnUninterrupted: true),
+                    new RoundSettlementSeatFacts(3, firstDiscard: new TileId(111), isFirstTurnUninterrupted: true)
+                },
                 SettlementAbortiveDrawReason.FourWinds);
 
             RoundSettlementCalculation calc = RoundSettlementCalculator.CalculateAbortiveDraw(round, facts);
@@ -401,7 +411,7 @@ namespace Mahjong.Domain.Tests
                 riichiSticks: 0);
             var plan = new TablePlan(RoundPhase.CheatWindow)
             {
-                WallTiles = 8
+                WallTiles = 8, FillRemainingIntoWall = true
             };
             plan.AddHand(0, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13);
             RoundStateMachine round = TablePlan.Build(spec, plan);
@@ -440,7 +450,7 @@ namespace Mahjong.Domain.Tests
 
             var plan = new TablePlan(RoundPhase.CheatWindow)
             {
-                WallTiles = 8
+                WallTiles = 8, FillRemainingIntoWall = true
             };
             plan.AddHand(0, 16, 100, 101, 102, 103, 104, 105, 106, 107, 108, 109, 110, 111);
             // Two disjoint tanyao hands with the same 4m/6m wait on 5m.
@@ -458,12 +468,12 @@ namespace Mahjong.Domain.Tests
                 "res-multi-1",
                 FixedUtc,
                 7000,
-                new[] { new RoundSettlementSeatFacts(1) });
+                new[] { new RoundSettlementSeatFacts(1, discardHistory: Array.Empty<TileId>()) });
             var facts2 = new RoundSettlementFacts(
                 "res-multi-2",
                 FixedUtc,
                 7001,
-                new[] { new RoundSettlementSeatFacts(2) });
+                new[] { new RoundSettlementSeatFacts(2, discardHistory: Array.Empty<TileId>()) });
             RoundSettlementCalculation calc1 = RoundSettlementCalculator.CalculateRon(round, 1, facts1);
             RoundSettlementCalculation calc2 = RoundSettlementCalculator.CalculateRon(round, 2, facts2);
             Assert.Equal(2600, calc1.Breakdown!.PaymentPlan.Total);
@@ -586,7 +596,7 @@ namespace Mahjong.Domain.Tests
                 riichiSticks: 0);
             var noYakuPlan = new TablePlan(RoundPhase.CheatWindow)
             {
-                WallTiles = 8
+                WallTiles = 8, FillRemainingIntoWall = true
             };
             noYakuPlan.AddHand(1, 0, 4, 8, 12, 17, 20, 32, 36, 40, 72, 76, 80, 19);
             noYakuPlan.AddHand(0, 16, 100, 101, 102, 103, 104, 105, 106, 107, 108, 109, 110, 111);
@@ -598,7 +608,7 @@ namespace Mahjong.Domain.Tests
                 "res-no-yaku",
                 FixedUtc,
                 9001,
-                new[] { new RoundSettlementSeatFacts(1) });
+                new[] { new RoundSettlementSeatFacts(1, discardHistory: Array.Empty<TileId>()) });
             RoundSettlementRejectedException noYaku = Assert.Throws<RoundSettlementRejectedException>(
                 () => RoundSettlementCalculator.CalculateRon(discard.State!, 1, noYakuFacts));
             Assert.Equal(RoundSettlementRejectionCode.NoWinningHand, noYaku.Code);
@@ -618,7 +628,7 @@ namespace Mahjong.Domain.Tests
 
             var plan = new TablePlan(RoundPhase.CheatWindow)
             {
-                WallTiles = 8
+                WallTiles = 8, FillRemainingIntoWall = true
             };
             plan.AddHand(1, 92, 96, 100, 12, 20, 40, 44, 48, 17, 21, 24, 13, 14);
             plan.AddHand(0, 16, 0, 1, 2, 3, 5, 6, 7, 9, 10, 11, 52, 56, 60);
@@ -627,7 +637,7 @@ namespace Mahjong.Domain.Tests
                 "res-window-negative",
                 FixedUtc,
                 9100,
-                new[] { new RoundSettlementSeatFacts(1) });
+                new[] { new RoundSettlementSeatFacts(1, discardHistory: Array.Empty<TileId>()) });
 
             RoundSettlementRejectedException noWindow = Assert.Throws<RoundSettlementRejectedException>(
                 () => RoundSettlementCalculator.CalculateRon(round, 1, facts));
@@ -649,7 +659,7 @@ namespace Mahjong.Domain.Tests
                 "res-wrong-chankan",
                 FixedUtc,
                 9101,
-                new[] { new RoundSettlementSeatFacts(1, isChankan: true) });
+                new[] { new RoundSettlementSeatFacts(1, isChankan: true, discardHistory: Array.Empty<TileId>()) });
             RoundSettlementRejectedException wrongChankan = Assert.Throws<RoundSettlementRejectedException>(
                 () => RoundSettlementCalculator.CalculateRon(window, 1, wrongChankanFacts));
             Assert.Equal(RoundSettlementRejectionCode.WinFlagMismatch, wrongChankan.Code);
@@ -674,7 +684,7 @@ namespace Mahjong.Domain.Tests
                 new TileId(17));
             var plan = new TablePlan(RoundPhase.CheatWindow)
             {
-                WallTiles = 8,
+                WallTiles = 8, FillRemainingIntoWall = true,
                 DrawnTile = new TileId(16),
                 DrawnSeat = 0,
                 DrawnSource = DrawSource.Wall
@@ -904,6 +914,574 @@ namespace Mahjong.Domain.Tests
             Assert.Throws<NotSupportedException>(
                 () => ((IList<Meld>)facts.Seats[0].Melds).Add(null!));
         }
+
+        [Fact]
+        public void AbortiveFourWinds_RequiresMatchingFirstDiscardsAndNoCalls()
+        {
+            RoundSpec spec = new RoundSpec(
+                "n2-four-winds-negative",
+                0,
+                1,
+                0,
+                0,
+                new long[] { 25000, 25000, 25000, 25000 },
+                0);
+
+            var missingPlan = new TablePlan(RoundPhase.CheatWindow)
+            {
+                WallTiles = 8,
+                FillRemainingIntoWall = true
+            };
+            missingPlan.AddHand(0, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13);
+            RoundStateMachine missingRound = TablePlan.Build(spec, missingPlan);
+            RoundSettlementRejectedException missing = Assert.Throws<RoundSettlementRejectedException>(
+                () => RoundSettlementCalculator.CalculateAbortiveDraw(
+                    missingRound,
+                    FourSeatAbortiveFacts("res-four-winds-missing", SettlementAbortiveDrawReason.FourWinds)));
+            Assert.Equal(RoundSettlementRejectionCode.AbortiveReasonMismatch, missing.Code);
+
+            var wrongPlan = new TablePlan(RoundPhase.CheatWindow)
+            {
+                WallTiles = 8,
+                FillRemainingIntoWall = true
+            };
+            wrongPlan.AddHand(0, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13);
+            wrongPlan.AddDiscard(0, 108);
+            wrongPlan.AddDiscard(1, 109);
+            wrongPlan.AddDiscard(2, 110);
+            wrongPlan.AddDiscard(3, 112);
+            var wrongFacts = new RoundSettlementFacts(
+                "res-four-winds-wrong",
+                FixedUtc,
+                9800,
+                new[]
+                {
+                    new RoundSettlementSeatFacts(0, firstDiscard: new TileId(108), isFirstTurnUninterrupted: true),
+                    new RoundSettlementSeatFacts(1, firstDiscard: new TileId(109), isFirstTurnUninterrupted: true),
+                    new RoundSettlementSeatFacts(2, firstDiscard: new TileId(110), isFirstTurnUninterrupted: true),
+                    new RoundSettlementSeatFacts(3, firstDiscard: new TileId(112), isFirstTurnUninterrupted: true)
+                },
+                SettlementAbortiveDrawReason.FourWinds);
+            RoundStateMachine wrongRound = TablePlan.Build(spec, wrongPlan);
+            RoundSettlementRejectedException wrong = Assert.Throws<RoundSettlementRejectedException>(
+                () => RoundSettlementCalculator.CalculateAbortiveDraw(wrongRound, wrongFacts));
+            Assert.Equal(RoundSettlementRejectionCode.AbortiveReasonMismatch, wrong.Code);
+
+            var callPlan = new TablePlan(RoundPhase.CheatWindow)
+            {
+                WallTiles = 8,
+                FillRemainingIntoWall = true
+            };
+            callPlan.AddHand(0, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10);
+            callPlan.AddMeld(0, new Meld(
+                MeldType.Pon,
+                new[] { new TileId(17), new TileId(18), new TileId(19) },
+                3,
+                new TileId(17)));
+            RoundStateMachine callRound = TablePlan.Build(spec, callPlan);
+            RoundSettlementRejectedException call = Assert.Throws<RoundSettlementRejectedException>(
+                () => RoundSettlementCalculator.CalculateAbortiveDraw(
+                    callRound,
+                    FourSeatAbortiveFacts("res-four-winds-call", SettlementAbortiveDrawReason.FourWinds)));
+            Assert.Equal(RoundSettlementRejectionCode.AbortiveReasonMismatch, call.Code);
+        }
+
+        [Fact]
+        public void AbortiveFourKans_RequiresKansAcrossAtLeastTwoSeats()
+        {
+            RoundSpec spec = new RoundSpec(
+                "n2-four-kans",
+                0,
+                1,
+                0,
+                0,
+                new long[] { 25000, 25000, 25000, 25000 },
+                0);
+
+            var sameSeatMelds = new[]
+            {
+                new Meld(MeldType.ClosedKan, new[] { new TileId(0), new TileId(1), new TileId(2), new TileId(3) }, -1, new TileId(0)),
+                new Meld(MeldType.ClosedKan, new[] { new TileId(4), new TileId(5), new TileId(6), new TileId(7) }, -1, new TileId(4)),
+                new Meld(MeldType.ClosedKan, new[] { new TileId(8), new TileId(9), new TileId(10), new TileId(11) }, -1, new TileId(8)),
+                new Meld(MeldType.ClosedKan, new[] { new TileId(12), new TileId(13), new TileId(14), new TileId(15) }, -1, new TileId(12))
+            };
+            var sameSeat = new TablePlan(RoundPhase.CheatWindow)
+            {
+                WallTiles = 8,
+                FillRemainingIntoWall = true,
+                KanCount = 4
+            };
+            sameSeat.AddHand(0, 52, 53);
+            foreach (Meld meld in sameSeatMelds)
+            {
+                sameSeat.AddMeld(0, meld);
+            }
+
+            var sameFacts = new RoundSettlementFacts(
+                "res-four-kans-same",
+                FixedUtc,
+                9810,
+                new[]
+                {
+                    new RoundSettlementSeatFacts(0, sameSeatMelds),
+                    new RoundSettlementSeatFacts(1),
+                    new RoundSettlementSeatFacts(2),
+                    new RoundSettlementSeatFacts(3)
+                },
+                SettlementAbortiveDrawReason.FourKans);
+            RoundStateMachine sameRound = TablePlan.Build(spec, sameSeat);
+            RoundSettlementRejectedException sameError = Assert.Throws<RoundSettlementRejectedException>(
+                () => RoundSettlementCalculator.CalculateAbortiveDraw(sameRound, sameFacts));
+            Assert.Equal(RoundSettlementRejectionCode.AbortiveReasonMismatch, sameError.Code);
+
+            var seat0Melds = new[]
+            {
+                new Meld(MeldType.ClosedKan, new[] { new TileId(0), new TileId(1), new TileId(2), new TileId(3) }, -1, new TileId(0)),
+                new Meld(MeldType.ClosedKan, new[] { new TileId(4), new TileId(5), new TileId(6), new TileId(7) }, -1, new TileId(4))
+            };
+            var seat1Melds = new[]
+            {
+                new Meld(MeldType.ClosedKan, new[] { new TileId(12), new TileId(13), new TileId(14), new TileId(15) }, -1, new TileId(12)),
+                new Meld(MeldType.ClosedKan, new[] { new TileId(16), new TileId(17), new TileId(18), new TileId(19) }, -1, new TileId(16))
+            };
+            var twoSeats = new TablePlan(RoundPhase.CheatWindow)
+            {
+                WallTiles = 8,
+                FillRemainingIntoWall = true,
+                KanCount = 4
+            };
+            twoSeats.AddHand(0, 8, 9, 10, 32, 36, 40, 44);
+            twoSeats.AddHand(1, 20, 21, 22, 23, 24, 25, 26);
+            foreach (Meld meld in seat0Melds)
+            {
+                twoSeats.AddMeld(0, meld);
+            }
+
+            foreach (Meld meld in seat1Melds)
+            {
+                twoSeats.AddMeld(1, meld);
+            }
+
+            var twoFacts = new RoundSettlementFacts(
+                "res-four-kans-two",
+                FixedUtc,
+                9811,
+                new[]
+                {
+                    new RoundSettlementSeatFacts(0, seat0Melds),
+                    new RoundSettlementSeatFacts(1, seat1Melds),
+                    new RoundSettlementSeatFacts(2),
+                    new RoundSettlementSeatFacts(3)
+                },
+                SettlementAbortiveDrawReason.FourKans);
+            RoundStateMachine twoRound = TablePlan.Build(spec, twoSeats);
+            RoundSettlementCalculation calc = RoundSettlementCalculator.CalculateAbortiveDraw(twoRound, twoFacts);
+            Assert.Equal(new long[] { 25000, 25000, 25000, 25000 }, calc.Settlement.FinalScores.ToArray());
+            Assert.Equal(RoundOutcomeKind.AbortiveDraw, calc.Outcome.Kind);
+            RoundTransition applied = calc.Execute(twoRound);
+            Assert.True(applied.IsAccepted, applied.Error?.ToString());
+            Assert.Equal(RoundEndReason.AbortiveDraw, applied.State!.Result!.EndReason);
+        }
+
+        [Fact]
+        public void AbortiveNineTerminals_UsesCurrentSeatAndRejectsLateOrOtherSeat()
+        {
+            RoundSpec spec = new RoundSpec(
+                "n2-nine-terminals",
+                0,
+                1,
+                0,
+                0,
+                new long[] { 25000, 25000, 25000, 25000 },
+                0);
+            var validPlan = new TablePlan(RoundPhase.CheatWindow)
+            {
+                WallTiles = 8,
+                FillRemainingIntoWall = true
+            };
+            validPlan.AddHand(0, 0, 32, 72, 104, 36, 68, 108, 112, 116, 4, 8, 12, 16);
+            RoundStateMachine validRound = TablePlan.Build(spec, validPlan);
+            var validFacts = new RoundSettlementFacts(
+                "res-nine-valid",
+                FixedUtc,
+                9820,
+                new[]
+                {
+                    new RoundSettlementSeatFacts(
+                        0,
+                        isFirstTurnUninterrupted: true,
+                        discardHistory: Array.Empty<TileId>())
+                },
+                SettlementAbortiveDrawReason.NineTerminals);
+            RoundSettlementCalculation valid = RoundSettlementCalculator.CalculateAbortiveDraw(validRound, validFacts);
+            Assert.Equal(RoundOutcomeKind.AbortiveDraw, valid.Outcome.Kind);
+            RoundTransition applied = valid.Execute(validRound);
+            Assert.True(applied.IsAccepted, applied.Error?.ToString());
+
+            var otherSeatPlan = new TablePlan(RoundPhase.CheatWindow)
+            {
+                WallTiles = 8,
+                FillRemainingIntoWall = true
+            };
+            otherSeatPlan.AddHand(0, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17);
+            otherSeatPlan.AddHand(1, 0, 32, 36, 68, 72, 104, 108, 112, 116, 120, 124, 128, 132);
+            var otherFacts = new RoundSettlementFacts(
+                "res-nine-other",
+                FixedUtc,
+                9821,
+                new[]
+                {
+                    new RoundSettlementSeatFacts(
+                        0,
+                        isFirstTurnUninterrupted: true,
+                        discardHistory: Array.Empty<TileId>())
+                },
+                SettlementAbortiveDrawReason.NineTerminals);
+            RoundStateMachine otherRound = TablePlan.Build(spec, otherSeatPlan);
+            RoundSettlementRejectedException other = Assert.Throws<RoundSettlementRejectedException>(
+                () => RoundSettlementCalculator.CalculateAbortiveDraw(otherRound, otherFacts));
+            Assert.Equal(RoundSettlementRejectionCode.AbortiveReasonMismatch, other.Code);
+
+            var latePlan = new TablePlan(RoundPhase.CheatWindow)
+            {
+                WallTiles = 8,
+                FillRemainingIntoWall = true
+            };
+            latePlan.AddHand(0, 0, 32, 72, 104, 36, 68, 108, 112, 116, 4, 8, 12, 16);
+            latePlan.AddDiscard(0, 20);
+            var lateFacts = new RoundSettlementFacts(
+                "res-nine-late",
+                FixedUtc,
+                9822,
+                new[]
+                {
+                    new RoundSettlementSeatFacts(
+                        0,
+                        isFirstTurnUninterrupted: true,
+                        discardHistory: new[] { new TileId(20) })
+                },
+                SettlementAbortiveDrawReason.NineTerminals);
+            RoundStateMachine lateRound = TablePlan.Build(spec, latePlan);
+            RoundSettlementRejectedException late = Assert.Throws<RoundSettlementRejectedException>(
+                () => RoundSettlementCalculator.CalculateAbortiveDraw(lateRound, lateFacts));
+            Assert.Equal(RoundSettlementRejectionCode.AbortiveReasonMismatch, late.Code);
+        }
+
+        [Fact]
+        public void MeldShapeRejectsHonorChiAndUndefinedType()
+        {
+            RoundSpec spec = new RoundSpec(
+                "n2-meld-shape",
+                0,
+                1,
+                0,
+                0,
+                new long[] { 25000, 25000, 25000, 25000 },
+                0);
+            var honorChi = new Meld(
+                MeldType.Chi,
+                new[] { new TileId(108), new TileId(112), new TileId(116) },
+                3,
+                new TileId(108));
+            var honorPlan = new TablePlan(RoundPhase.CheatWindow)
+            {
+                WallTiles = 8,
+                FillRemainingIntoWall = true,
+                DrawnTile = new TileId(53),
+                DrawnSeat = 0,
+                DrawnSource = DrawSource.Wall
+            };
+            honorPlan.AddHand(0, 4, 8, 12, 40, 44, 48, 76, 80, 84, 52, 53);
+            honorPlan.AddMeld(0, honorChi);
+            var honorFacts = new RoundSettlementFacts(
+                "res-honor-chi",
+                FixedUtc,
+                9830,
+                new[] { new RoundSettlementSeatFacts(0, new[] { honorChi }) });
+            RoundStateMachine honorRound = TablePlan.Build(spec, honorPlan);
+            RoundSettlementRejectedException honor = Assert.Throws<RoundSettlementRejectedException>(
+                () => RoundSettlementCalculator.CalculateTsumo(honorRound, honorFacts));
+            Assert.Equal(RoundSettlementRejectionCode.MeldTypeMismatch, honor.Code);
+
+            var undefined = new Meld(
+                (MeldType)255,
+                new[] { new TileId(0), new TileId(1), new TileId(2), new TileId(3) },
+                3,
+                new TileId(0));
+            var undefinedPlan = new TablePlan(RoundPhase.CheatWindow)
+            {
+                WallTiles = 8,
+                FillRemainingIntoWall = true,
+                DrawnTile = new TileId(53),
+                DrawnSeat = 0,
+                DrawnSource = DrawSource.Wall
+            };
+            undefinedPlan.AddHand(0, 4, 8, 12, 40, 44, 48, 76, 80, 84, 52, 53);
+            undefinedPlan.AddMeld(0, undefined);
+            var undefinedFacts = new RoundSettlementFacts(
+                "res-undefined-meld",
+                FixedUtc,
+                9831,
+                new[] { new RoundSettlementSeatFacts(0, new[] { undefined }) });
+            RoundStateMachine undefinedRound = TablePlan.Build(spec, undefinedPlan);
+            RoundSettlementRejectedException undefinedError = Assert.Throws<RoundSettlementRejectedException>(
+                () => RoundSettlementCalculator.CalculateTsumo(undefinedRound, undefinedFacts));
+            Assert.Equal(RoundSettlementRejectionCode.MeldTypeMismatch, undefinedError.Code);
+        }
+
+        [Fact]
+        public void HistoricalWinFlagsMustNotContradictTheMapOrKanState()
+        {
+            RoundSpec spec = new RoundSpec(
+                "n2-history-flags",
+                0,
+                1,
+                0,
+                0,
+                new long[] { 25000, 25000, 25000, 25000 },
+                0);
+
+            var tenhouPon = new Meld(
+                MeldType.Pon,
+                new[] { new TileId(0), new TileId(1), new TileId(2) },
+                3,
+                new TileId(0));
+            var tenhouBadPlan = new TablePlan(RoundPhase.CheatWindow)
+            {
+                WallTiles = 8,
+                FillRemainingIntoWall = true,
+                DrawnTile = new TileId(53),
+                DrawnSeat = 0,
+                DrawnSource = DrawSource.DealExtra,
+                KanCount = 1
+            };
+            tenhouBadPlan.AddHand(0, 4, 8, 12, 40, 44, 48, 76, 80, 84, 52, 53);
+            tenhouBadPlan.AddMeld(0, tenhouPon);
+            var tenhouBadFacts = new RoundSettlementFacts(
+                "res-tenhou-bad",
+                FixedUtc,
+                9840,
+                new[] { new RoundSettlementSeatFacts(0, new[] { tenhouPon }, isTenhou: true) });
+            RoundStateMachine tenhouBadRound = TablePlan.Build(spec, tenhouBadPlan);
+            RoundSettlementRejectedException tenhou = Assert.Throws<RoundSettlementRejectedException>(
+                () => RoundSettlementCalculator.CalculateTsumo(tenhouBadRound, tenhouBadFacts));
+            Assert.Equal(RoundSettlementRejectionCode.WinFlagMismatch, tenhou.Code);
+
+            var chiihouBadPlan = new TablePlan(RoundPhase.CheatWindow)
+            {
+                WallTiles = 8,
+                FillRemainingIntoWall = true
+            };
+            chiihouBadPlan.AddHand(1, 16, 17, 18, 20, 24, 12, 13, 14, 21, 22, 23, 52, 53);
+            chiihouBadPlan.AddHand(0, 100, 101, 102, 103, 104, 105, 106, 107, 108, 109, 110, 111, 112);
+            chiihouBadPlan.AddWallTop(19);
+            chiihouBadPlan.AddDiscard(1, 120);
+            RoundStateMachine chiihouRound = TablePlan.Build(spec, chiihouBadPlan);
+            RoundTransition chiihouDiscard = chiihouRound.Execute(
+                RoundCommand.Discard(chiihouRound.RoundId, 0, new TileId(100)));
+            Assert.True(chiihouDiscard.IsAccepted, chiihouDiscard.Error?.ToString());
+            var chiihouFacts = new RoundSettlementFacts(
+                "res-chiihou-bad",
+                FixedUtc,
+                9841,
+                new[]
+                {
+                    new RoundSettlementSeatFacts(
+                        1,
+                        isChiihou: true,
+                        isFirstTurnUninterrupted: true,
+                        discardHistory: new[] { new TileId(120) })
+                });
+            RoundSettlementRejectedException chiihou = Assert.Throws<RoundSettlementRejectedException>(
+                () => RoundSettlementCalculator.CalculateTsumo(chiihouDiscard.State!, chiihouFacts));
+            Assert.Equal(RoundSettlementRejectionCode.WinFlagMismatch, chiihou.Code);
+
+            var rinshanKan = new Meld(
+                MeldType.ClosedKan,
+                new[] { new TileId(0), new TileId(1), new TileId(2), new TileId(3) },
+                -1,
+                new TileId(0));
+            var rinshanPlan = new TablePlan(RoundPhase.CheatWindow)
+            {
+                WallTiles = 8,
+                FillRemainingIntoWall = true,
+                DrawnTile = new TileId(53),
+                DrawnSeat = 0,
+                DrawnSource = DrawSource.Rinshan,
+                KanCount = 1
+            };
+            rinshanPlan.AddHand(0, 4, 8, 12, 40, 44, 48, 76, 80, 84, 52, 53);
+            rinshanPlan.AddMeld(0, rinshanKan);
+            var rinshanFacts = new RoundSettlementFacts(
+                "res-ippatsu-rinshan",
+                FixedUtc,
+                9842,
+                new[]
+                {
+                    new RoundSettlementSeatFacts(
+                        0,
+                        new[] { rinshanKan },
+                        isRiichi: true,
+                        isIppatsu: true,
+                        isRinshan: true)
+                });
+            RoundStateMachine rinshanRound = TablePlan.Build(spec, rinshanPlan);
+            RoundSettlementRejectedException ippatsu = Assert.Throws<RoundSettlementRejectedException>(
+                () => RoundSettlementCalculator.CalculateTsumo(rinshanRound, rinshanFacts));
+            Assert.Equal(RoundSettlementRejectionCode.WinFlagMismatch, ippatsu.Code);
+
+            var tenhouGoodPlan = new TablePlan(RoundPhase.CheatWindow)
+            {
+                WallTiles = 8,
+                FillRemainingIntoWall = true,
+                DrawnTile = new TileId(19),
+                DrawnSeat = 0,
+                DrawnSource = DrawSource.DealExtra
+            };
+            tenhouGoodPlan.AddHand(0, 16, 17, 18, 19, 20, 24, 12, 13, 14, 21, 22, 23, 52, 53);
+            RoundStateMachine tenhouGoodRound = TablePlan.Build(spec, tenhouGoodPlan);
+            RoundSettlementCalculation tenhouGood = RoundSettlementCalculator.CalculateTsumo(
+                tenhouGoodRound,
+                new RoundSettlementFacts(
+                    "res-tenhou-good",
+                    FixedUtc,
+                    9843,
+                    new[] { new RoundSettlementSeatFacts(0, isTenhou: true) }));
+            Assert.Contains(tenhouGood.Breakdown!.Yaku, y => y.Code == "TENHOU");
+
+            var chiihouGoodPlan = new TablePlan(RoundPhase.CheatWindow)
+            {
+                WallTiles = 8,
+                FillRemainingIntoWall = true
+            };
+            chiihouGoodPlan.AddHand(1, 16, 17, 18, 20, 24, 12, 13, 14, 21, 22, 23, 52, 53);
+            chiihouGoodPlan.AddHand(0, 100, 101, 102, 103, 104, 105, 106, 107, 108, 109, 110, 111, 112);
+            chiihouGoodPlan.AddWallTop(19);
+            RoundStateMachine chiihouGoodRound = TablePlan.Build(spec, chiihouGoodPlan);
+            RoundTransition chiihouGoodDiscard = chiihouGoodRound.Execute(
+                RoundCommand.Discard(chiihouGoodRound.RoundId, 0, new TileId(100)));
+            Assert.True(chiihouGoodDiscard.IsAccepted, chiihouGoodDiscard.Error?.ToString());
+            RoundSettlementCalculation chiihouGood = RoundSettlementCalculator.CalculateTsumo(
+                chiihouGoodDiscard.State!,
+                new RoundSettlementFacts(
+                    "res-chiihou-good",
+                    FixedUtc,
+                    9844,
+                    new[]
+                    {
+                        new RoundSettlementSeatFacts(
+                            1,
+                            isChiihou: true,
+                            isFirstTurnUninterrupted: true,
+                            discardHistory: Array.Empty<TileId>())
+                    }));
+            Assert.Contains(chiihouGood.Breakdown!.Yaku, y => y.Code == "CHIIHOU");
+        }
+
+        [Fact]
+        public void RonFuritenAndMissingHistoryAreRejectedButTsumoIsNotBlocked()
+        {
+            RoundSpec spec = new RoundSpec(
+                "n2-furiten",
+                0,
+                1,
+                0,
+                0,
+                new long[] { 25000, 25000, 25000, 25000 },
+                0);
+            var plan = new TablePlan(RoundPhase.CheatWindow)
+            {
+                WallTiles = 8,
+                FillRemainingIntoWall = true
+            };
+            plan.AddHand(1, 92, 96, 100, 12, 20, 40, 44, 48, 17, 21, 24, 13, 14);
+            plan.AddHand(0, 16, 0, 1, 2, 3, 5, 6, 7, 9, 10, 11, 52, 56, 60);
+            plan.AddDiscard(1, 19);
+            RoundStateMachine round = TablePlan.Build(spec, plan);
+            RoundTransition discard = round.Execute(
+                RoundCommand.Discard(round.RoundId, 0, new TileId(16), new[] { 1 }));
+            Assert.True(discard.IsAccepted, discard.Error?.ToString());
+            RoundStateMachine window = discard.State!;
+
+            var missing = new RoundSettlementFacts(
+                "res-furiten-missing",
+                FixedUtc,
+                9850,
+                new[] { new RoundSettlementSeatFacts(1) });
+            RoundSettlementRejectedException missingError = Assert.Throws<RoundSettlementRejectedException>(
+                () => RoundSettlementCalculator.CalculateRon(window, 1, missing));
+            Assert.Equal(RoundSettlementRejectionCode.FuritenEvidenceMissing, missingError.Code);
+
+            var furiten = new RoundSettlementFacts(
+                "res-furiten",
+                FixedUtc,
+                9851,
+                new[]
+                {
+                    new RoundSettlementSeatFacts(1, discardHistory: new[] { new TileId(19) })
+                });
+            RoundSettlementRejectedException furitenError = Assert.Throws<RoundSettlementRejectedException>(
+                () => RoundSettlementCalculator.CalculateRon(window, 1, furiten));
+            Assert.Equal(RoundSettlementRejectionCode.FuritenRon, furitenError.Code);
+
+            var temporary = new RoundSettlementFacts(
+                "res-furiten-temporary",
+                FixedUtc,
+                9852,
+                new[]
+                {
+                    new RoundSettlementSeatFacts(
+                        1,
+                        isTemporaryFuriten: true,
+                        discardHistory: Array.Empty<TileId>())
+                });
+            RoundSettlementRejectedException tempError = Assert.Throws<RoundSettlementRejectedException>(
+                () => RoundSettlementCalculator.CalculateRon(window, 1, temporary));
+            Assert.Equal(RoundSettlementRejectionCode.FuritenRon, tempError.Code);
+
+            var tsumoPlan = new TablePlan(RoundPhase.CheatWindow)
+            {
+                WallTiles = 8,
+                FillRemainingIntoWall = true,
+                DrawnTile = new TileId(19),
+                DrawnSeat = 0,
+                DrawnSource = DrawSource.Wall
+            };
+            tsumoPlan.AddHand(0, 16, 17, 18, 19, 20, 24, 12, 13, 14, 21, 22, 23, 52, 53);
+            RoundStateMachine tsumoRound = TablePlan.Build(spec, tsumoPlan);
+            RoundSettlementCalculation tsumo = RoundSettlementCalculator.CalculateTsumo(
+                tsumoRound,
+                new RoundSettlementFacts(
+                    "res-furiten-tsumo",
+                    FixedUtc,
+                    9853,
+                    new[]
+                    {
+                        new RoundSettlementSeatFacts(
+                            0,
+                            isRiichi: true,
+                            isRiichiFuriten: true)
+                    }));
+            Assert.NotNull(tsumo.Breakdown);
+        }
+
+        private static RoundSettlementFacts FourSeatAbortiveFacts(
+            string resultId,
+            SettlementAbortiveDrawReason reason)
+        {
+            return new RoundSettlementFacts(
+                resultId,
+                FixedUtc,
+                9900,
+                new[]
+                {
+                    new RoundSettlementSeatFacts(0),
+                    new RoundSettlementSeatFacts(1),
+                    new RoundSettlementSeatFacts(2),
+                    new RoundSettlementSeatFacts(3)
+                },
+                reason);
+        }
     }
     internal sealed class TablePlan
     {
@@ -929,6 +1507,8 @@ namespace Mahjong.Domain.Tests
 
         internal int KanCount { get; set; }
 
+        internal bool FillRemainingIntoWall { get; set; }
+
         internal TileId? LastDiscardTile { get; set; }
 
         internal int LastDiscardSeat { get; set; }
@@ -936,6 +1516,8 @@ namespace Mahjong.Domain.Tests
         private readonly List<TileId> _dora = new List<TileId>();
         private readonly List<TileId> _ura = new List<TileId>();
         private readonly List<TileId> _wallTop = new List<TileId>();
+        private readonly List<(int Seat, TileId Tile)> _explicitDiscards =
+            new List<(int Seat, TileId Tile)>();
         private readonly List<TileId>[] _hands =
         {
             new List<TileId>(), new List<TileId>(), new List<TileId>(), new List<TileId>()
@@ -982,6 +1564,11 @@ namespace Mahjong.Domain.Tests
             }
         }
 
+        internal void AddDiscard(int seat, int value)
+        {
+            _explicitDiscards.Add((seat, new TileId(value)));
+        }
+
         internal void RemoveTile(int seat, TileId tile)
         {
             if (!_hands[seat].Remove(tile))
@@ -1007,7 +1594,7 @@ namespace Mahjong.Domain.Tests
                 throw new InvalidOperationException("WallTiles must be 0..122.");
             }
 
-            if (_wallTop.Count > WallTiles)
+            if (!FillRemainingIntoWall && _wallTop.Count > WallTiles)
             {
                 throw new InvalidOperationException("WallTop exceeds WallTiles.");
             }
@@ -1040,6 +1627,11 @@ namespace Mahjong.Domain.Tests
                 }
             }
 
+            foreach ((int seat, TileId tile) in _explicitDiscards)
+            {
+                Place(tile, TilePosition.Discard(seat, _nextDiscard[seat]++));
+            }
+
             for (int i = 0; i < _dora.Count; i++)
             {
                 Place(_dora[i], TilePosition.DeadWall(4 + (2 * i)));
@@ -1062,6 +1654,12 @@ namespace Mahjong.Domain.Tests
                 {
                     Place(NextUnused(), position);
                 }
+            }
+
+            if (FillRemainingIntoWall)
+            {
+                int remaining = TileId.Count - _usedTiles.Count;
+                WallTiles = Math.Min(122, _wallTop.Count + remaining);
             }
 
             for (int i = _wallTop.Count; i < WallTiles; i++)

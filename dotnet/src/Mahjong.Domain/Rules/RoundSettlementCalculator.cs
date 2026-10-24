@@ -347,6 +347,11 @@ namespace Mahjong.Domain.Rules
                 winner,
                 melds,
                 isTsumo ? winTile : (TileId?)null);
+            if (!isTsumo)
+            {
+                ValidateRonFuriten(round, winner, seatFacts, hand);
+            }
+
             int seatWind = SeatWind(round, winner);
             bool isDealer = winner == round.DealerSeat;
             var context = new WinContext(
@@ -484,6 +489,17 @@ namespace Mahjong.Domain.Rules
                     "Riichi cannot be declared with an open meld.");
             }
 
+            if (seatFacts.IsIppatsu &&
+                (seatFacts.IsRinshan ||
+                 round.Tiles.KanCount > 0 ||
+                 round.Tiles.CountAt(TileZone.Meld) > 0 ||
+                 HasEvent(round, RoundEventType.KanDeclared)))
+            {
+                throw Reject(
+                    RoundSettlementRejectionCode.WinFlagMismatch,
+                    "Ippatsu is cleared by a call/kan and cannot coexist with rinshan.");
+            }
+
             if (seatFacts.IsTenhou && seatFacts.IsChiihou)
             {
                 throw Reject(
@@ -503,6 +519,18 @@ namespace Mahjong.Domain.Rules
                         RoundSettlementRejectionCode.WinFlagMismatch,
                         "Tenhou requires the dealer's initial 14-tile deal.");
                 }
+
+                if (round.Tiles.CountAt(TileZone.Meld) != 0 ||
+                    round.Tiles.KanCount != 0 ||
+                    round.Tiles.CountAt(TileZone.Discard) != 0 ||
+                    HasEvent(round, RoundEventType.TileDiscarded) ||
+                    HasEvent(round, RoundEventType.ResponseClaimed) ||
+                    HasEvent(round, RoundEventType.KanDeclared))
+                {
+                    throw Reject(
+                        RoundSettlementRejectionCode.WinFlagMismatch,
+                        "Tenhou is impossible after any discard, call or kan on the table.");
+                }
             }
 
             if (seatFacts.IsChiihou)
@@ -519,6 +547,36 @@ namespace Mahjong.Domain.Rules
                     throw Reject(
                         RoundSettlementRejectionCode.WinFlagMismatch,
                         "Chiihou requires a closed hand.");
+                }
+
+                if (round.Tiles.CountAt(TileZone.Meld) != 0 ||
+                    round.Tiles.KanCount != 0)
+                {
+                    throw Reject(
+                        RoundSettlementRejectionCode.WinFlagMismatch,
+                        "Chiihou is impossible after any call or kan on the table.");
+                }
+
+                if (!seatFacts.DiscardHistoryProvided)
+                {
+                    throw Reject(
+                        RoundSettlementRejectionCode.WinFlagMismatch,
+                        "Chiihou requires the complete own discard history, including called-away tiles.");
+                }
+
+                if (seatFacts.DiscardHistory.Count != 0 ||
+                    round.Tiles.CountAt(TileZone.Discard, winner) != 0)
+                {
+                    throw Reject(
+                        RoundSettlementRejectionCode.WinFlagMismatch,
+                        "Chiihou requires that the winner has never discarded.");
+                }
+
+                if (!seatFacts.IsFirstTurnUninterrupted)
+                {
+                    throw Reject(
+                        RoundSettlementRejectionCode.WinFlagMismatch,
+                        "Chiihou requires the winner's first uninterrupted turn.");
                 }
 
                 for (int i = 0; i < round.Events.Count; i++)
@@ -603,6 +661,89 @@ namespace Mahjong.Domain.Rules
                         seatFacts.IsChankan + ".");
                 }
             }
+        }
+
+        private static void ValidateRonFuriten(
+            RoundStateMachine round,
+            int winner,
+            RoundSettlementSeatFacts seatFacts,
+            PlayerHand hand)
+        {
+            if (seatFacts.IsTemporaryFuriten || seatFacts.IsRiichiFuriten)
+            {
+                throw Reject(
+                    RoundSettlementRejectionCode.FuritenRon,
+                    "The trusted record marks seat " + winner + " as temporary/riichi furiten.");
+            }
+
+            if (!seatFacts.DiscardHistoryProvided)
+            {
+                throw Reject(
+                    RoundSettlementRejectionCode.FuritenEvidenceMissing,
+                    "Ron requires the complete own discard history; missing history is not treated as empty.");
+            }
+
+            IReadOnlyList<TileId> history = seatFacts.DiscardHistory;
+            IReadOnlyList<TileId> currentRiver = round.Tiles.TilesInZone(TileZone.Discard, winner);
+            var seenHistory = new HashSet<int>();
+            for (int i = 0; i < currentRiver.Count; i++)
+            {
+                if (!ContainsTile(history, currentRiver[i]))
+                {
+                    throw Reject(
+                        RoundSettlementRejectionCode.FuritenEvidenceMissing,
+                        "Own discard history omits current river tile " + currentRiver[i] + ".");
+                }
+            }
+
+            for (int i = 0; i < history.Count; i++)
+            {
+                if (!seenHistory.Add(history[i].Value))
+                {
+                    throw Reject(
+                        RoundSettlementRejectionCode.FuritenEvidenceMissing,
+                        "Own discard history contains duplicate physical tile " + history[i] + ".");
+                }
+
+                TilePosition position = round.Tiles.PositionOf(history[i]);
+                if (!position.IsAssigned ||
+                    (position.Zone != TileZone.Discard && position.Zone != TileZone.Meld) ||
+                    (position.Zone == TileZone.Discard && position.Seat != winner) ||
+                    (position.Zone == TileZone.Meld && position.Seat == winner))
+                {
+                    throw Reject(
+                        RoundSettlementRejectionCode.FuritenEvidenceMissing,
+                        "Discard-history tile " + history[i] + " is not in a legal discard/called-away position.");
+                }
+            }
+
+            IReadOnlyCollection<int> waits = HandDecomposer.CalculateWaits(hand.AllClosedTiles);
+            for (int i = 0; i < history.Count; i++)
+            {
+                int discardedType = history[i].TypeIndex;
+                foreach (int wait in waits)
+                {
+                    if (wait == discardedType)
+                    {
+                        throw Reject(
+                            RoundSettlementRejectionCode.FuritenRon,
+                            "Own discard " + history[i] + " intersects the theoretical waits of the hand.");
+                    }
+                }
+            }
+        }
+
+        private static bool HasEvent(RoundStateMachine round, RoundEventType type)
+        {
+            for (int i = 0; i < round.Events.Count; i++)
+            {
+                if (round.Events[i].Type == type)
+                {
+                    return true;
+                }
+            }
+
+            return false;
         }
 
         private static PlayerHand BuildHand(
@@ -702,6 +843,7 @@ namespace Mahjong.Domain.Rules
             for (int i = 0; i < melds.Count; i++)
             {
                 Meld meld = melds[i];
+                ValidateMeldShape(meld);
                 int expected = meld.Type == MeldType.Chi || meld.Type == MeldType.Pon ? 3 : 4;
                 if (meld.Tiles.Count != expected)
                 {
@@ -788,6 +930,73 @@ namespace Mahjong.Domain.Rules
             }
 
             return groups;
+        }
+
+        private static void ValidateMeldShape(Meld meld)
+        {
+            if (!Enum.IsDefined(typeof(MeldType), meld.Type))
+            {
+                throw Reject(
+                    RoundSettlementRejectionCode.MeldTypeMismatch,
+                    "Undefined meld type value " + (int)meld.Type + ".");
+            }
+
+            int expected = meld.Type == MeldType.Chi || meld.Type == MeldType.Pon ? 3 : 4;
+            if (meld.Tiles.Count != expected)
+            {
+                throw Reject(
+                    RoundSettlementRejectionCode.MeldTypeMismatch,
+                    "Meld " + meld.Type + " requires " + expected + " tiles, got " + meld.Tiles.Count + ".");
+            }
+
+            if (meld.Type == MeldType.Chi)
+            {
+                var indices = new int[meld.Tiles.Count];
+                for (int i = 0; i < meld.Tiles.Count; i++)
+                {
+                    TileId tile = meld.Tiles[i];
+                    if (!tile.IsNumberTile)
+                    {
+                        throw Reject(
+                            RoundSettlementRejectionCode.MeldTypeMismatch,
+                            "Chi cannot contain an honor tile: " + tile + ".");
+                    }
+
+                    indices[i] = tile.TypeIndex;
+                }
+
+                Array.Sort(indices);
+                int suit = indices[0] / 9;
+                for (int i = 0; i < indices.Length; i++)
+                {
+                    if (indices[i] / 9 != suit)
+                    {
+                        throw Reject(
+                            RoundSettlementRejectionCode.MeldTypeMismatch,
+                            "Chi must contain tiles of one suit.");
+                    }
+
+                    if (i > 0 && indices[i] != indices[i - 1] + 1)
+                    {
+                        throw Reject(
+                            RoundSettlementRejectionCode.MeldTypeMismatch,
+                            "Chi tiles must be consecutive ranks.");
+                    }
+                }
+
+                return;
+            }
+
+            int firstType = meld.Tiles[0].TypeIndex;
+            for (int i = 1; i < meld.Tiles.Count; i++)
+            {
+                if (meld.Tiles[i].TypeIndex != firstType)
+                {
+                    throw Reject(
+                        RoundSettlementRejectionCode.MeldTypeMismatch,
+                        "Pon/kan tiles must share one tile type.");
+                }
+            }
         }
 
         private static void ValidateMeldOwnership(Meld meld, int seat)
@@ -904,13 +1113,115 @@ namespace Mahjong.Domain.Rules
             RoundSettlementFacts facts,
             SettlementAbortiveDrawReason reason)
         {
+            if (reason == SettlementAbortiveDrawReason.FourWinds)
+            {
+                if (facts.Seats.Count != 4)
+                {
+                    throw Reject(
+                        RoundSettlementRejectionCode.AbortiveReasonMismatch,
+                        "Four-winds abort requires trusted first-discard facts for all four seats.");
+                }
+
+                if (round.Tiles.CountAt(TileZone.Meld) != 0 ||
+                    round.Tiles.KanCount != 0 ||
+                    HasEvent(round, RoundEventType.ResponseClaimed) ||
+                    HasEvent(round, RoundEventType.KanDeclared))
+                {
+                    throw Reject(
+                        RoundSettlementRejectionCode.AbortiveReasonMismatch,
+                        "Four-winds abort requires an uninterrupted first go with no calls or kans.");
+                }
+
+                int windType = -1;
+                for (int seat = 0; seat < 4; seat++)
+                {
+                    RoundSettlementSeatFacts seatFacts = RequireSeat(facts, seat);
+                    if (!seatFacts.FirstDiscard.HasValue || !seatFacts.IsFirstTurnUninterrupted)
+                    {
+                        throw Reject(
+                            RoundSettlementRejectionCode.AbortiveReasonMismatch,
+                            "Seat " + seat + " lacks a trusted first discard / uninterrupted first-go fact.");
+                    }
+
+                    TileId first = seatFacts.FirstDiscard.Value;
+                    int type = first.TypeIndex;
+                    if (type < 27 || type > 30)
+                    {
+                        throw Reject(
+                            RoundSettlementRejectionCode.AbortiveReasonMismatch,
+                            "Seat " + seat + " first discard " + first + " is not a wind.");
+                    }
+
+                    if (windType < 0)
+                    {
+                        windType = type;
+                    }
+                    else if (type != windType)
+                    {
+                        throw Reject(
+                            RoundSettlementRejectionCode.AbortiveReasonMismatch,
+                            "Four-winds abort requires all four first discards to share one wind.");
+                    }
+
+                    TilePosition position = round.Tiles.PositionOf(first);
+                    if (!position.IsAssigned ||
+                        (position.Zone != TileZone.Discard && position.Zone != TileZone.Meld) ||
+                        (position.Zone == TileZone.Discard && position.Seat != seat) ||
+                        (position.Zone == TileZone.Meld && position.Seat == seat))
+                    {
+                        throw Reject(
+                            RoundSettlementRejectionCode.AbortiveReasonMismatch,
+                            "First discard " + first + " is not in a legal discard or called-away meld slot.");
+                    }
+                }
+
+                return;
+            }
+
             if (reason == SettlementAbortiveDrawReason.FourKans)
             {
+                if (facts.Seats.Count != 4)
+                {
+                    throw Reject(
+                        RoundSettlementRejectionCode.AbortiveReasonMismatch,
+                        "Four-kans abort requires trusted meld facts for all four seats.");
+                }
+
                 if (round.Tiles.KanCount != 4)
                 {
                     throw Reject(
                         RoundSettlementRejectionCode.AbortiveReasonMismatch,
                         "Four-kans abort requires KanCount=4, got " + round.Tiles.KanCount + ".");
+                }
+
+                int totalKans = 0;
+                int seatsWithKan = 0;
+                for (int seat = 0; seat < 4; seat++)
+                {
+                    RoundSettlementSeatFacts seatFacts = RequireSeat(facts, seat);
+                    Meld[] melds = ValidateMelds(round.Tiles, seat, seatFacts.Melds);
+                    int seatKans = 0;
+                    for (int i = 0; i < melds.Length; i++)
+                    {
+                        if (melds[i].IsKan)
+                        {
+                            seatKans++;
+                        }
+                    }
+
+                    if (seatKans > 0)
+                    {
+                        seatsWithKan++;
+                    }
+
+                    totalKans += seatKans;
+                }
+
+                if (totalKans != 4 || seatsWithKan < 2)
+                {
+                    throw Reject(
+                        RoundSettlementRejectionCode.AbortiveReasonMismatch,
+                        "Four-kans abort requires four kans owned by at least two different seats.");
                 }
 
                 return;
@@ -942,47 +1253,66 @@ namespace Mahjong.Domain.Rules
 
             if (reason == SettlementAbortiveDrawReason.NineTerminals)
             {
-                if (facts.Seats.Count != 4)
+                int declarer = round.CurrentSeat;
+                RoundSettlementSeatFacts seatFacts = RequireSeat(facts, declarer);
+                if (!seatFacts.IsFirstTurnUninterrupted)
                 {
                     throw Reject(
                         RoundSettlementRejectionCode.AbortiveReasonMismatch,
-                        "Nine-terminals abort requires trusted facts for all four seats.");
+                        "Nine-terminals abort requires the declarer's first uninterrupted turn.");
                 }
 
-                for (int seat = 0; seat < 4; seat++)
+                if (!seatFacts.DiscardHistoryProvided || seatFacts.DiscardHistory.Count != 0)
                 {
-                    RoundSettlementSeatFacts seatFacts = RequireSeat(facts, seat);
-                    Meld[] melds = ValidateMelds(round.Tiles, seat, seatFacts.Melds);
-                    if (melds.Length != 0)
-                    {
-                        continue;
-                    }
+                    throw Reject(
+                        RoundSettlementRejectionCode.AbortiveReasonMismatch,
+                        "Nine-terminals abort requires a complete, empty own discard history.");
+                }
 
-                    IReadOnlyList<TileId> handTiles = round.Tiles.TilesInZone(TileZone.Hand, seat);
-                    if (handTiles.Count != HandTileCount && handTiles.Count != HandTileCount + 1)
-                    {
-                        continue;
-                    }
+                if (round.Tiles.CountAt(TileZone.Meld) != 0 ||
+                    round.Tiles.KanCount != 0 ||
+                    round.Tiles.CountAt(TileZone.Discard, declarer) != 0)
+                {
+                    throw Reject(
+                        RoundSettlementRejectionCode.AbortiveReasonMismatch,
+                        "Nine-terminals abort is impossible after a call, kan or the declarer's discard.");
+                }
 
-                    var terminalTypes = new HashSet<int>();
-                    for (int i = 0; i < handTiles.Count; i++)
-                    {
-                        TileId tile = handTiles[i];
-                        if (tile.IsTerminalOrHonor)
-                        {
-                            terminalTypes.Add(tile.TypeIndex);
-                        }
-                    }
+                Meld[] melds = ValidateMelds(round.Tiles, declarer, seatFacts.Melds);
+                if (melds.Length != 0)
+                {
+                    throw Reject(
+                        RoundSettlementRejectionCode.AbortiveReasonMismatch,
+                        "Nine-terminals abort requires a closed hand.");
+                }
 
-                    if (terminalTypes.Count >= 9)
+                IReadOnlyList<TileId> handTiles = round.Tiles.TilesInZone(TileZone.Hand, declarer);
+                if (handTiles.Count != HandTileCount && handTiles.Count != HandTileCount + 1)
+                {
+                    throw Reject(
+                        RoundSettlementRejectionCode.AbortiveReasonMismatch,
+                        "Nine-terminals declarer must hold 13 or 14 tiles.");
+                }
+
+                var terminalTypes = new HashSet<int>();
+                for (int i = 0; i < handTiles.Count; i++)
+                {
+                    TileId tile = handTiles[i];
+                    if (tile.IsTerminalOrHonor)
                     {
-                        return;
+                        terminalTypes.Add(tile.TypeIndex);
                     }
                 }
 
-                throw Reject(
-                    RoundSettlementRejectionCode.AbortiveReasonMismatch,
-                    "No closed hand contains nine distinct terminal/honor types for a nine-terminals abort.");
+                if (terminalTypes.Count < 9)
+                {
+                    throw Reject(
+                        RoundSettlementRejectionCode.AbortiveReasonMismatch,
+                        "Nine-terminals declarer holds only " + terminalTypes.Count +
+                        " distinct terminal/honor types.");
+                }
+
+                return;
             }
         }
 
