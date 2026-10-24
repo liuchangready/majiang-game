@@ -340,3 +340,25 @@
 ### 7.6 结论
 
 P0.1 的"矩阵每行有源码/测试证据、V5 归属、状态；无待定而缺责任任务"在当前基线以 `implementation-v1.json` + 校验器 + 入 git 自测的方式达成机械可复核形态：**全字段严格 JSON 类型 schema**、**全部锚点与符号证据锚定在冻结基线 437bd53 的树与 blob，且经词法状态扫描器 + 箭头感知结构化声明链解析器（嵌套注释/原始串/逐字串/插值与模板洞按语言正确隔离；receiver 链——可空、多参数/嵌套泛型、函数类型实参、空白点、限定名——完整解析取真实末段，属性链后必须命中合法声明续元）剥离后的真实声明语法核验，标识符/路径/任务 ID/受控枚举全量序数（大小写敏感）语义**（当前索引/工作树不构成证据；注释、字符串、receiver、类型实参、泛型参数、超类型中的词与非单标识符一律不构成声明，异大小写引用是不同的值）、**无 skip 无隐藏绿分支且沙箱失败按真实案例数计数**、验收证据链、责任任务、依赖语义（含直接自依赖与门槛循环双向拒绝）、统计口径全部受机器强制，九轮独立注入的伪造输入（类型伪造、基线后文件/符号冒充、自依赖、注释/字符串/泛型/各类 receiver——紧凑、空白点、可空、泛型、函数类型实参——/箭头界类型参数/嵌套注释/插值洞/逐字串花括号/模板洞伪声明/异大小写伪声明与异大小写枚举值）不再被放行，防误伤正例（普通/扩展属性含空白点/可空/泛型/函数类型实参/嵌套可空泛型/receiver 与名字仅大小写不同形态、typealias、扩展函数名、泛型约束界函数名、逐字串与花括号串后真实声明）同时保证不误拒真实声明。同时为 G1 提供不漏项证据：266 个 V4 生产行为面全部有显式状态与未完成责任，无批量"已完成"宣称。本章不改变 §6 的交付边界，也不解除 §5 表中任何未决项。
+
+## 8. 2026-10-24 Codex 独立验收与统一 PR19 收口
+
+本节验收对象为 Bridge 原任务 `thread_20261024_065145_3e3c` 第九轮交付 `8c72c43229db152a892ef8ee25089b0d2bfe2abe`。调用者已直接调用 `approve_task`，工具返回 `COMPLETED`、已批准并归档。§7 与 JSON 继续描述冻结基线 `437bd53ca8771764d62ef75226b73efded2baabd`，不把其后批次进展回填为该历史快照的完成事实。
+
+独立运行结果（均在本次实际执行）：
+
+| 检查 | 结果 |
+|---|---|
+| 交付工作树 `powershell -NoProfile -ExecutionPolicy Bypass -File tools/traceability/validate-implementation-trace.ps1 -RepoRoot .` | 266/266，`RESULT=PASS`，exit 0 |
+| `powershell -NoProfile -ExecutionPolicy Bypass -File tools/tests/VerifyV5Traceability.Tests.ps1 -RepoRoot . -OutLog artifacts/codex-traceability-round9-review/selftest.log` | **91/91**；16 正例 exit 0，75 负例 exit 1 且全部命中预期标记；`SELFTEST=PASS`，exit 0；无 broken/缺失标记 |
+| 原 reviewer 输入 ENG-031 `deepCopy` → `DEEPCOPY` | exit 1，唯一错误 `v4-symbol-not-declared-at-baseline: DEEPCOPY`，原缺陷确认修复 |
+| 原历史 7 项 probe，复制脚本 SHA256 与原件一致 | **7/7** 符合预期，exit 0；正例与拒绝例均验证 |
+| 迁移计划 §1.3 与矩阵逐行独立核对 | 266 个去向原文全部匹配，0 差异；245 个非 accepted 条目均有既有责任任务 |
+| 历史章节保护 | Git 原始 blob 前 47,135 字节与冻结基线完全一致；新 checkout 的 CRLF 与既有工作树换行差异单独记录，不冒称原始工作树哈希相同 |
+| PR19 集成候选 `bfe9968f9efdc44940a321fbe6568812ea365fab` | 从既有远端 `daeb19a` 无冲突合入九轮本地提交；再次 266/266、exit 0，diff-check 通过；脚本/JSON 的 Git blob 与交付完全相同 |
+
+独立自测日志 SHA256：`c0ed72ae96b4139d348af4d2497b18bc91edd4b6bd8d6e58457c4b742db3edd4`。当前交付树原始证据保存在 `artifacts/codex-traceability-round9-review/`（`selftest.log`、`positive.log`、原负例输入/日志、`probe-console.log`、`prefix.log`、`integrated-hashes.json` 与 SHA256 清单）；集成正例在独立集成树 `artifacts/codex-traceability-integration-review/positive.log`。辅助复核脚本早先把 Git LF 与工作树 CRLF 直接作字节比较而失败，已改用两端 Git 原始 blob 确认历史前缀一致；该辅助脚本中间日志保留，不计作产品缺陷或自测通过证据。
+
+状态复核：accepted-component 21、partial 126、pending 99、replaced-by-v5-contract 19、platform-blocked 1。SRV-019 保留服务端背压/慢消费者/字节预算语义的 P5.1 责任；表现层 63 行继续 pending。组件有验收不等于 V4/V5 行为全部等价。V4/MJ-TCP/1 仍为唯一生产基线，G1/G5、黄金目录、P3.4、Unity/IL2CPP、真机与跨物理网络不因本任务通过而解除。
+
+本次只集成四个追踪交付文件及本验收段，不改生产源码、黄金 fixture、catalog、CI 或统一 verifier；对应验证范围为追踪数据与 PowerShell 5.1 校验器，没有把本次未运行的 Gradle/.NET/平台测试写为通过。统一沿用现有唯一 PR19（`feat/v5-1-integration` → `v5`），接收方不推送、不建子任务 PR；最终远端提交与 MR 同步状态由 caller 的 `record_merge_request` 账本记录为准，新远端 CI 结果须独立判定。
