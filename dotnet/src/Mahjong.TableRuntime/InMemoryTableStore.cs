@@ -453,6 +453,23 @@ namespace Mahjong.TableRuntime
             return null;
         }
 
+        private TableDurableCommitResult? ValidateControlSnapshotUnchanged(
+            string roomId,
+            TableCheckpoint checkpoint)
+        {
+            if (_checkpoints.TryGetValue(roomId, out CheckpointRow? existing) &&
+                existing.Checkpoint.ControlVersion == checkpoint.ControlVersion &&
+                !checkpoint.ControlPayload.AsSpan().SequenceEqual(
+                    existing.Checkpoint.ControlPayload))
+            {
+                return TableDurableCommitResult.Failed(
+                    TableRuntimeReasonCode.CheckpointInvalid,
+                    "A same-version checkpoint cannot rewrite the authoritative control snapshot.");
+            }
+
+            return null;
+        }
+
         private static TableDurableCommitResult? ValidateAcceptedTiming(
             TableDurableCommitRequest request,
             TableCheckpoint? checkpoint)
@@ -573,6 +590,13 @@ namespace Mahjong.TableRuntime
                 if (cheatCarryover != null)
                 {
                     return new ValueTask<TableDurableCommitResult>(cheatCarryover);
+                }
+
+                TableDurableCommitResult? controlSnapshot =
+                    ValidateControlSnapshotUnchanged(checkpoint.RoomId, checkpoint);
+                if (controlSnapshot != null)
+                {
+                    return new ValueTask<TableDurableCommitResult>(controlSnapshot);
                 }
 
                 if (TablePayloadSha256.Compute(checkpoint.TimingPayload) != checkpoint.TimingPayloadSha256)
@@ -1078,6 +1102,13 @@ namespace Mahjong.TableRuntime
                             if (cheatCarryover != null)
                             {
                                 return new ValueTask<TableDurableCommitResult>(cheatCarryover);
+                            }
+
+                            TableDurableCommitResult? controlSnapshot =
+                                ValidateControlSnapshotUnchanged(request.RoomId, checkpoint);
+                            if (controlSnapshot != null)
+                            {
+                                return new ValueTask<TableDurableCommitResult>(controlSnapshot);
                             }
                         }
                     }
