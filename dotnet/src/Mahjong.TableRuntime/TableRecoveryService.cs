@@ -411,6 +411,7 @@ namespace Mahjong.TableRuntime
                 }
 
                 ValidateHistory(checkpointHistory, checkpoint);
+                ValidateCheckpointHistoryAgainstCaptured(checkpointHistory, captured, checkpoint);
                 if (checkpoint.CheatPayload != null)
                 {
                     cheat = TableCheatLedgerCheckpointCodec.Decode(checkpoint.CheatPayload);
@@ -930,7 +931,7 @@ namespace Mahjong.TableRuntime
             TableCheckpoint checkpoint)
         {
             ulong expectedSeq = 1;
-            ulong currentVersion = 0;
+            ulong expectedVersion = 1;
             int expectedOrdinal = 0;
             for (int i = 0; i < history.Count; i++)
             {
@@ -942,18 +943,11 @@ namespace Mahjong.TableRuntime
                         "Checkpoint history sequence is not contiguous.");
                 }
 
-                if (record.CommandVersion.Value > checkpoint.StateVersion.Value ||
-                    record.CommandVersion.Value == 0)
+                if (record.CommandVersion.Value != expectedVersion)
                 {
                     throw new RecoveryValidationException(
                         TableRuntimeReasonCode.CheckpointInvalid,
-                        "Checkpoint history references a version beyond the checkpoint.");
-                }
-
-                if (record.CommandVersion.Value != currentVersion)
-                {
-                    currentVersion = record.CommandVersion.Value;
-                    expectedOrdinal = 0;
+                        "Checkpoint history command versions must cover 1..checkpoint.StateVersion contiguously.");
                 }
 
                 if (record.Ordinal != expectedOrdinal)
@@ -972,6 +966,19 @@ namespace Mahjong.TableRuntime
 
                 expectedOrdinal++;
                 expectedSeq++;
+                if (i == history.Count - 1 ||
+                    history[i + 1].CommandVersion.Value != expectedVersion)
+                {
+                    expectedVersion++;
+                    expectedOrdinal = 0;
+                }
+            }
+
+            if (expectedVersion != checkpoint.StateVersion.Value + 1)
+            {
+                throw new RecoveryValidationException(
+                    TableRuntimeReasonCode.CheckpointInvalid,
+                    "Checkpoint history does not cover every command version through the checkpoint.");
             }
 
             ulong lastSeq = expectedSeq - 1;
@@ -980,6 +987,61 @@ namespace Mahjong.TableRuntime
                 throw new RecoveryValidationException(
                     TableRuntimeReasonCode.RecoveryEventGap,
                     "Checkpoint history does not end at checkpoint.lastEventSeq.");
+            }
+        }
+
+        private static void ValidateCheckpointHistoryAgainstCaptured(
+            IReadOnlyList<TableEventRecord> history,
+            RoundRecoveryState captured,
+            TableCheckpoint checkpoint)
+        {
+            int offset = captured.Events.Count - history.Count;
+            if (offset < 0)
+            {
+                throw new RecoveryValidationException(
+                    TableRuntimeReasonCode.CheckpointInvalid,
+                    "Committed checkpoint history is longer than the captured Domain event prefix.");
+            }
+
+            for (int i = 0; i < offset; i++)
+            {
+                RoundEvent prefix = captured.Events[i];
+                if (prefix.Type != RoundEventType.TilesDealt &&
+                    prefix.Type != RoundEventType.DoraRevealed)
+                {
+                    throw new RecoveryValidationException(
+                        TableRuntimeReasonCode.CheckpointInvalid,
+                        "Committed checkpoint history omits a non-initialization Domain event.");
+                }
+            }
+
+            for (int i = 0; i < history.Count; i++)
+            {
+                TableEventRecord record = history[i];
+                RoundEvent domain = captured.Events[offset + i];
+                if (domain.Ordinal != offset + i ||
+                    domain.Type != record.Type ||
+                    domain.Seat != record.Seat ||
+                    !Nullable.Equals(domain.Tile, record.Tile) ||
+                    !string.Equals(domain.Detail, record.Detail, StringComparison.Ordinal))
+                {
+                    throw new RecoveryValidationException(
+                        TableRuntimeReasonCode.RecoveryReplayMismatch,
+                        "Checkpoint history diverges from the captured Domain event prefix at ordinal " +
+                        (offset + i) + ".");
+                }
+
+                if (record.Payload != null)
+                {
+                    TableEventFact fact = TableEventFactCodec.Decode(record.Payload);
+                    if (fact.CommandVersion != record.CommandVersion ||
+                        fact.Ordinal != record.Ordinal)
+                    {
+                        throw new RecoveryValidationException(
+                            TableRuntimeReasonCode.RecoveryReplayMismatch,
+                            "Checkpoint history payload binding differs at event " + record.Seq + ".");
+                    }
+                }
             }
         }
 

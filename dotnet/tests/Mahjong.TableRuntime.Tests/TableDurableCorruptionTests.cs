@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using Mahjong.Contracts;
@@ -191,6 +192,55 @@ namespace Mahjong.TableRuntime.Tests
             Assert.Equal(TableRuntimeReasonCode.CheckpointInvalid, result.ReasonCode);
         }
 
+        [Theory]
+        [InlineData("type")]
+        [InlineData("seat")]
+        [InlineData("detail")]
+        [InlineData("version-gap")]
+        public async Task CheckpointHistoryPrefixMustBindCapturedDomainEvent(string corruption)
+        {
+            var sink = new RecordingRecoveryStateSink();
+            await using DurableHarness harness = await DurableHarness.CreateAsync(recoverySink: sink);
+            List<TableCommandEnvelope> chain = P31Fixtures.BuildDiscardChain(harness.InitialRound, 2)
+                .Select((value, index) => harness.Envelope(value.Command, index, "prefix-" + index))
+                .ToList();
+            Assert.Equal(TableOperationStatus.Accepted, (await harness.SubmitAsync(chain[0])).Status);
+            TableCheckpoint checkpoint = await harness.SaveCheckpointAsync();
+            Assert.Equal(TableOperationStatus.Accepted, (await harness.SubmitAsync(chain[1])).Status);
+
+            TableEventRecord[] history = TableCommittedHistoryCodec
+                .Decode(checkpoint.CommittedHistoryPayload!).ToArray();
+            int index = Array.FindIndex(history, value => value.Type == RoundEventType.TileDiscarded);
+            Assert.True(index >= 0);
+            TableEventRecord original = history[index];
+            history[index] = corruption switch
+            {
+                "type" => new TableEventRecord(original.Seq, original.CommandVersion, original.Ordinal,
+                    RoundEventType.TileDrawn, original.Seat, original.Tile, original.Detail,
+                    original.EventSchema, original.Payload),
+                "seat" => new TableEventRecord(original.Seq, original.CommandVersion, original.Ordinal,
+                    original.Type, (original.Seat + 1) % 4, original.Tile, original.Detail,
+                    original.EventSchema, original.Payload),
+                "detail" => new TableEventRecord(original.Seq, original.CommandVersion, original.Ordinal,
+                    original.Type, original.Seat, original.Tile, "forged-detail",
+                    original.EventSchema, original.Payload),
+                _ => new TableEventRecord(original.Seq, new StateVersion(2), original.Ordinal,
+                    original.Type, original.Seat, original.Tile, original.Detail,
+                    original.EventSchema, original.Payload)
+            };
+            byte[] payload = TableCommittedHistoryCodec.Encode(history);
+            harness.Store.ReplaceCheckpointForTest(
+                DurableHarness.Room,
+                WithHistory(checkpoint, payload));
+
+            TableRecoveryResult result = await RecoverAsync(harness);
+
+            Assert.Equal(TableRecoveryStatus.Failed, result.Status);
+            Assert.Null(sink.Installed);
+            Assert.NotEqual(TableActorLifecycle.Serving,
+                (await harness.Actor.GetSnapshotAsync(TestContext.Current.CancellationToken)).Lifecycle);
+        }
+
         private static async Task<TableRecoveryResult> RecoverAsync(DurableHarness harness)
         {
             harness.Clock.Now += 1000L;
@@ -226,6 +276,34 @@ namespace Mahjong.TableRuntime.Tests
                 good.CapturedMonotonicMillis,
                 good.CommittedHistoryPayload,
                 good.CommittedHistoryPayloadSha256);
+        }
+
+        private static TableCheckpoint WithHistory(TableCheckpoint good, byte[] payload)
+        {
+            return new TableCheckpoint(
+                good.RoomId,
+                good.StateVersion,
+                good.LastEventSeq,
+                good.StateFingerprint,
+                good.RulesetVersion,
+                good.StatePayload,
+                good.StatePayloadSha256,
+                good.ControlVersion,
+                good.ControlPayload,
+                good.ControlPayloadSha256,
+                good.TimingPayload,
+                good.TimingPayloadSha256,
+                good.CheatPayload,
+                good.CheatPayloadSha256,
+                good.CommittedFactsPayload,
+                good.CommittedFactsPayloadSha256,
+                good.CreatedAtUtcMs,
+                good.BootId,
+                good.SchemaVersion,
+                good.TimingVersion,
+                good.CapturedMonotonicMillis,
+                payload,
+                TablePayloadSha256.Compute(payload));
         }
 
         private static TableCheckpoint WithStatePayload(TableCheckpoint good, byte[] payload)

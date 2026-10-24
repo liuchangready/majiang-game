@@ -595,6 +595,7 @@ namespace Mahjong.TableRuntime
 
                     break;
                 case RoundEventType.ExhaustiveDraw:
+                case RoundEventType.AbortiveDraw:
                     ValidateTenpai(record, fact, finalRound);
                     break;
                 case RoundEventType.RonWin:
@@ -610,7 +611,8 @@ namespace Mahjong.TableRuntime
         {
             RoundResult? result = finalRound.Result;
             if (result == null ||
-                result.Outcome.Kind != RoundOutcomeKind.ExhaustiveDraw ||
+                (result.Outcome.Kind != RoundOutcomeKind.ExhaustiveDraw &&
+                 result.Outcome.Kind != RoundOutcomeKind.AbortiveDraw) ||
                 fact.Facts.TenpaiPlayers == null ||
                 !fact.Facts.TenpaiPlayers.OrderBy(value => value)
                     .SequenceEqual(result.Outcome.TenpaiSeats.OrderBy(value => value)))
