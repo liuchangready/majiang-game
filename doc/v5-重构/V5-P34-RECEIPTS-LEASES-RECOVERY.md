@@ -1,6 +1,6 @@
 # V5 P3.4 回执、租约和恢复端口合同交付（第 25 轮返修）
 
-- 状态：**第 25 轮本地返修完成，等待 caller 第 25 轮独立验收**。不是 G1/G5，不是 V5 全链通过；V4 仍是唯一生产架构。
+- 状态：**第 25 轮 caller 独立验收通过，Bridge 已归档；统一纳入已有 PR19**。不是 G1/G5，不是 V5 全链通过；V4 仍是唯一生产架构。
 - 唯一工作树：`D:/majiang-wt/p34-receipts`（分支 `wt/v5-p34-receipts`）。
 - 冻结基线：`daeb19a64951174426924026fe974c8ae5caacd9`。
 - 第 1 轮实现：`9e909ea6b7dfb411b1e2511fa4f0f9d05307ba38`。
@@ -353,3 +353,22 @@ Decode 强制 round/state 匹配当前恢复目标、public/private 各 4、无�
 - 第 25 轮实现 HEAD：`4dffd221ba0442290d2848238bea14f55a49b9a8`。
 - 本文件提交为最终本地 HEAD；工作树 clean。
 - 等待 caller 第 25 轮独立验收；caller 负责唯一 PR19 `feat/v5-1-integration -> v5` 及 merge-back。不自行宣告 G1/G5。
+
+## 9. Caller 第 25 轮独立验收与统一 PR19
+
+验收对象为 `48c350062e05e6e775d2c48a7ab494948d31be4d`。Caller 在当前工作树独立审查第 25 轮差异、原探针及 durable 命令入口，确认已提交回执在 LeaseLost 下仍可按原 API/digest 精确重放，新请求继续失败关闭，不安装候选状态、不新增事件/回执或 Applied 发布。可信宿主仍负责 scope 与原业务字节摘要，查询仍校验账户归属。
+
+独立执行（全部 exit 0）：
+
+| 命令 | 结果 |
+|---|---|
+| `D:/Unity/dotnet/dotnet.exe test dotnet/tests/Mahjong.TableRuntime.Tests/Mahjong.TableRuntime.Tests.csproj -c Release --nologo -v minimal` | 313 passed / 0 failed / 0 skipped，包含全部历轮独立探针 |
+| `D:/Unity/dotnet/dotnet.exe test dotnet/Mahjong.sln -c Release --nologo -v minimal` | Domain 322、Contracts 104、Client 132、Ai 17；合计 575 passed / 0 failed / 0 skipped |
+| `D:/Unity/dotnet/dotnet.exe build dotnet/Mahjong.sln -c Release --nologo -v minimal` | 0 warnings / 0 errors |
+| `git diff --check daeb19a..HEAD` | 无空白错误 |
+
+合计 888 项，不是包含 PostgreSQL、WSS 等独立项目的统一 verifier 全量。第 7 节全部 NOT_RUN 和未建模恢复失败关闭边界继续有效，不宣告 G1/G5。
+
+Caller 已调用 `approve_task(threadId="thread_20261024_081554_9483")`，Bridge 返回 COMPLETED。随后将远端已有统一分支 `6f1fbee7d8fe94bf98307800168acf56b05d19c4` 合入当前工作树，得到 `a07e1db12c03922895822e3dd7439e8e580d3fcd`，无冲突；该合并仅新增已验收的 traceability 文档/工具，`git diff --exit-code 48c3500..a07e1db -- dotnet` 为 0，已测 .NET 源码和测试完全一致。
+
+统一交付沿用 [PR19](https://github.com/liuchangready/majiang-game/pull/19)，源分支 `feat/v5-1-integration`，目标 `v5`。本任务的全部本地提交一次性纳入该分支，不创建子任务 PR，不包含其他尚未验收工作树，不合并或部署 PR。远端最终提交以 Bridge `record_merge_request` 的记录为准。
