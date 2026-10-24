@@ -141,7 +141,7 @@ namespace Mahjong.Ai
                 return null;
             }
 
-            ValidateCandidateFacts(legalActions, context);
+            BasicAiContext.ValidateCandidateList(context, legalActions);
             var allClosed = AllClosedTiles(myClosedTiles, myDrawnTile);
 
             // 1. Win is always first: Ron, then Tsumo.
@@ -170,7 +170,7 @@ namespace Mahjong.Ai
                 LegalActionOption candidate = legalActions[i];
                 if (candidate.Kind == LegalActionKind.Other &&
                     context.TryGetFacts(candidate, out BasicCandidateFacts facts) &&
-                    facts.AbortiveDraw.HasValue)
+                    facts.AbortiveDraw == BasicAbortiveDrawKind.NineTerminals)
                 {
                     return new AiStrategicChoice(candidate, NeutralScore);
                 }
@@ -342,37 +342,6 @@ namespace Mahjong.Ai
         public override string ToString() =>
             "BasicAiStrategy/algorithm=" + AlgorithmIdValue +
             "/version=" + AlgorithmVersionValue.ToString(CultureInfo.InvariantCulture);
-
-        private static void ValidateCandidateFacts(
-            IReadOnlyList<LegalActionOption> legalActions,
-            BasicAiContext context)
-        {
-            for (int i = 0; i < legalActions.Count; i++)
-            {
-                LegalActionOption candidate = legalActions[i];
-                if (candidate.Kind == LegalActionKind.Kan)
-                {
-                    if (!context.TryGetFacts(candidate, out BasicCandidateFacts facts) ||
-                        !facts.KanKind.HasValue)
-                    {
-                        throw new BasicAiContextException(
-                            "BasicAiContext is missing an explicit physical kan kind for a Kan candidate " +
-                            "(option=" + DisplayOption(candidate) + "). " +
-                            "An open or added kan must not be treated as a closed kan.");
-                    }
-                }
-                else if (candidate.Kind == LegalActionKind.Other)
-                {
-                    if (!context.TryGetFacts(candidate, out _))
-                    {
-                        throw new BasicAiContextException(
-                            "BasicAiContext is missing an explicit abortive-draw classification for an " +
-                            "Other candidate (option=" + DisplayOption(candidate) + "). " +
-                            "An Other candidate must not be assumed to be 九种九牌.");
-                    }
-                }
-            }
-        }
 
         /// <summary>
         /// V4 <c>myAllClosedTiles</c>. The V5 runtime stores the drawn tile in the hand zone,

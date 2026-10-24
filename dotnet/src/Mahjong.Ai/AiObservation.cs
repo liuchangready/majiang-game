@@ -322,52 +322,10 @@ namespace Mahjong.Ai
                     nameof(context));
             }
 
-            IReadOnlyList<BasicCandidateFacts> facts = context.CandidateFacts;
-            for (int i = 0; i < facts.Count; i++)
-            {
-                BasicCandidateFacts fact = facts[i];
-                bool found = false;
-                for (int j = 0; j < legalActions.Count; j++)
-                {
-                    if (AiGuard.ActionsEqual(legalActions[j], fact.Candidate))
-                    {
-                        found = true;
-                        break;
-                    }
-                }
-
-                if (!found)
-                {
-                    throw new ArgumentException(
-                        "Basic context binds metadata to a candidate that is not part of this observation.",
-                        nameof(context));
-                }
-            }
-
-            for (int i = 0; i < legalActions.Count; i++)
-            {
-                LegalActionOption action = legalActions[i];
-                if (action.Kind == LegalActionKind.Kan)
-                {
-                    if (!context.TryGetFacts(action, out BasicCandidateFacts kanFacts) ||
-                        !kanFacts.KanKind.HasValue)
-                    {
-                        throw new ArgumentException(
-                            "Basic context is missing an explicit physical kan kind for a Kan candidate.",
-                            nameof(context));
-                    }
-                }
-                else if (action.Kind == LegalActionKind.Other)
-                {
-                    if (!context.TryGetFacts(action, out _))
-                    {
-                        throw new ArgumentException(
-                            "Basic context is missing an explicit abortive-draw classification for an Other candidate.",
-                            nameof(context));
-                    }
-                }
-            }
-
+            // Share the exact same contract with BasicAiStrategy.TryChoose: candidates must
+            // be non-null, belong to this seat and be unique; every fact must name one of
+            // them and every Kan/Other must be explicitly classified.
+            BasicAiContext.ValidateCandidateList(context, legalActions);
             return context;
         }
 

@@ -62,8 +62,8 @@ namespace Mahjong.Ai.Tests
         {
             LegalActionOption firstRon = Ron("ron-1");
             LegalActionOption secondRon = Ron("ron-2");
-            LegalActionOption firstTsumo = Tsumo();
-            LegalActionOption secondTsumo = Tsumo();
+            LegalActionOption firstTsumo = Tsumo("tsumo-1");
+            LegalActionOption secondTsumo = Tsumo("tsumo-2");
 
             var withRons = new[] { firstRon, secondRon, firstTsumo, secondTsumo };
             Assert.Same(firstRon, Choose(withRons, Context()).Action);
@@ -721,7 +721,7 @@ namespace Mahjong.Ai.Tests
             ArgumentException exception = Assert.Throws<ArgumentException>(
                 () => Observation(actions, context));
 
-            Assert.Contains("not part of this observation", exception.Message, StringComparison.Ordinal);
+            Assert.Contains("not part of this candidate list", exception.Message, StringComparison.Ordinal);
         }
 
         [Fact]
@@ -796,6 +796,61 @@ namespace Mahjong.Ai.Tests
         }
 
         [Fact]
+        public void BasicCandidateFactsRejectsUnknownKanKindValues()
+        {
+            foreach (int raw in new[] { -1, 3, 999 })
+            {
+                BasicKanKind invalid = (BasicKanKind)raw;
+                ArgumentOutOfRangeException exception = Assert.Throws<ArgumentOutOfRangeException>(
+                    () => new BasicCandidateFacts(Kan("kan-" + raw), invalid));
+                Assert.Equal("KanKind", exception.ParamName);
+            }
+        }
+
+        [Fact]
+        public void BasicCandidateFactsRejectsUnknownAbortiveDrawValues()
+        {
+            foreach (int raw in new[] { -1, 1, 999 })
+            {
+                BasicAbortiveDrawKind invalid = (BasicAbortiveDrawKind)raw;
+                ArgumentOutOfRangeException exception = Assert.Throws<ArgumentOutOfRangeException>(
+                    () => new BasicCandidateFacts(
+                        Other("other-" + raw),
+                        abortiveDraw: invalid));
+                Assert.Equal("AbortiveDraw", exception.ParamName);
+            }
+        }
+
+        [Fact]
+        public void BasicCandidateFactsAcceptsOnlyDefinedKanAndAbortiveValues()
+        {
+            foreach (BasicKanKind kind in new[]
+            {
+                BasicKanKind.Closed,
+                BasicKanKind.Open,
+                BasicKanKind.Added
+            })
+            {
+                var facts = new BasicCandidateFacts(Kan("kan-" + kind), kind);
+                Assert.Equal(kind, facts.KanKind);
+                Assert.Null(facts.AbortiveDraw);
+                Assert.False(facts.IsAbortiveDraw);
+            }
+
+            var abortive = new BasicCandidateFacts(
+                Other("other-abortive"),
+                abortiveDraw: BasicAbortiveDrawKind.NineTerminals);
+            Assert.Equal(BasicAbortiveDrawKind.NineTerminals, abortive.AbortiveDraw);
+            Assert.True(abortive.IsAbortiveDraw);
+
+            var notAbortive = new BasicCandidateFacts(
+                Other("other-not-abortive"),
+                abortiveDraw: null);
+            Assert.Null(notAbortive.AbortiveDraw);
+            Assert.False(notAbortive.IsAbortiveDraw);
+        }
+
+        [Fact]
         public void ObservationDefensivelyCopiesTheBasicContextFactList()
         {
             LegalActionOption closed = Kan("closed-kan");
@@ -840,6 +895,146 @@ namespace Mahjong.Ai.Tests
             Assert.Contains("last discard", exception.Message, StringComparison.Ordinal);
             Assert.Contains("kan", exception.Message, StringComparison.Ordinal);
             Assert.Contains("abortive", exception.Message, StringComparison.Ordinal);
+        }
+
+        [Fact]
+        public void BasicTryChooseRejectsForeignSeatRon()
+        {
+            var context = new BasicAiContext(0, false, null, Array.Empty<BasicCandidateFacts>());
+            LegalActionOption foreignRon = new LegalActionOption(
+                LegalActionKind.Ron,
+                2,
+                optionId: "foreign-ron");
+
+            ArgumentException exception = Assert.Throws<ArgumentException>(
+                () => TryRaw(new[] { foreignRon }, context));
+
+            Assert.Contains("context seat", exception.Message, StringComparison.Ordinal);
+        }
+
+        [Fact]
+        public void BasicTryChooseRejectsForeignSeatDiscard()
+        {
+            var context = new BasicAiContext(0, false, null, Array.Empty<BasicCandidateFacts>());
+            LegalActionOption foreignDiscard = new LegalActionOption(
+                LegalActionKind.Discard,
+                2,
+                T(4),
+                "foreign-discard");
+
+            ArgumentException exception = Assert.Throws<ArgumentException>(
+                () => TryRaw(new[] { foreignDiscard }, context));
+
+            Assert.Contains("context seat", exception.Message, StringComparison.Ordinal);
+        }
+
+        [Fact]
+        public void BasicTryChooseRejectsOrphanFacts()
+        {
+            LegalActionOption ghost = Other("ghost");
+            BasicAiContext context = Context(new[]
+            {
+                new BasicCandidateFacts(ghost, abortiveDraw: null)
+            });
+
+            ArgumentException exception = Assert.Throws<ArgumentException>(
+                () => TryRaw(new[] { Pass() }, context));
+
+            Assert.Contains("not part of this candidate list", exception.Message, StringComparison.Ordinal);
+        }
+
+        [Fact]
+        public void BasicTryChooseRejectsFactWithSameOptionIdButDifferentTile()
+        {
+            LegalActionOption bound = Other("shared");
+            BasicAiContext context = Context(new[]
+            {
+                new BasicCandidateFacts(bound, abortiveDraw: null)
+            });
+            var differentTile = new LegalActionOption(
+                LegalActionKind.Other,
+                Seat,
+                T(5),
+                "shared");
+
+            Assert.Throws<ArgumentException>(
+                () => TryRaw(new[] { differentTile }, context));
+        }
+
+        [Fact]
+        public void BasicTryChooseRejectsFactWithSameOptionIdButDifferentKind()
+        {
+            LegalActionOption bound = Other("shared");
+            BasicAiContext context = Context(new[]
+            {
+                new BasicCandidateFacts(bound, abortiveDraw: null)
+            });
+            var differentKind = Kan("shared");
+
+            Assert.Throws<ArgumentException>(
+                () => TryRaw(new[] { differentKind }, context));
+        }
+
+        [Fact]
+        public void BasicTryChooseRejectsFactWithSameOptionIdButDifferentSeat()
+        {
+            LegalActionOption bound = Other("shared");
+            BasicAiContext context = Context(new[]
+            {
+                new BasicCandidateFacts(bound, abortiveDraw: null)
+            });
+            var differentSeat = new LegalActionOption(
+                LegalActionKind.Other,
+                2,
+                optionId: "shared");
+
+            Assert.Throws<ArgumentException>(
+                () => TryRaw(new[] { differentSeat }, context));
+        }
+
+        [Fact]
+        public void BasicTryChooseRejectsNullAndDuplicateCandidates()
+        {
+            var nulls = new LegalActionOption[] { null! };
+            Assert.Throws<ArgumentException>(
+                () => TryRaw(nulls, Context()));
+
+            var duplicates = new[] { Pass("duplicate"), Pass("duplicate") };
+            Assert.Throws<ArgumentException>(
+                () => TryRaw(duplicates, Context()));
+        }
+
+        [Fact]
+        public void BasicTryChoosePreservesTheCorrectEmptyListAndCancellationSemantics()
+        {
+            Assert.Null(TryRaw(Array.Empty<LegalActionOption>(), Context()));
+
+            using var source = new CancellationTokenSource();
+            source.Cancel();
+            Assert.ThrowsAny<OperationCanceledException>(
+                () => Basic.TryChoose(
+                    Array.Empty<LegalActionOption>(),
+                    Context(),
+                    DefaultHand(),
+                    null,
+                    0,
+                    1,
+                    ScoresAll(),
+                    source.Token));
+        }
+
+        [Fact]
+        public void BasicTryChooseReturnsTheOriginalCandidateInstance()
+        {
+            LegalActionOption pass = Pass("pass");
+            LegalActionOption ron = Ron("ron");
+            var actions = new[] { pass, ron };
+
+            AiStrategicChoice? choice = TryRaw(actions, Context());
+
+            Assert.NotNull(choice);
+            Assert.Same(ron, choice!.Action);
+            Assert.Equal("ron", choice.Action.OptionId);
         }
 
         [Fact]
@@ -1132,8 +1327,8 @@ namespace Mahjong.Ai.Tests
         private static LegalActionOption Ron(string optionId = "ron") =>
             new LegalActionOption(LegalActionKind.Ron, Seat, optionId: optionId);
 
-        private static LegalActionOption Tsumo() =>
-            new LegalActionOption(LegalActionKind.Tsumo, Seat);
+        private static LegalActionOption Tsumo(string? optionId = null) =>
+            new LegalActionOption(LegalActionKind.Tsumo, Seat, optionId: optionId);
 
         private static LegalActionOption Riichi(TileId tile, string optionId) =>
             new LegalActionOption(LegalActionKind.Riichi, Seat, tile, optionId);
@@ -1185,6 +1380,26 @@ namespace Mahjong.Ai.Tests
                 CancellationToken.None);
             Assert.NotNull(choice);
             return choice!;
+        }
+
+        private static AiStrategicChoice? TryRaw(
+            IReadOnlyList<LegalActionOption> actions,
+            BasicAiContext context,
+            IReadOnlyList<TileId>? hand = null,
+            TileId? drawn = null,
+            int dealerSeat = 0,
+            int roundWind = 1,
+            IReadOnlyList<long>? scores = null)
+        {
+            return Basic.TryChoose(
+                actions,
+                context,
+                hand ?? DefaultHand(),
+                drawn,
+                dealerSeat,
+                roundWind,
+                scores ?? ScoresAll(),
+                CancellationToken.None);
         }
 
         private static AiObservation Observation(

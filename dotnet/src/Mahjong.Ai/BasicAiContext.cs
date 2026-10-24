@@ -48,45 +48,9 @@ namespace Mahjong.Ai
             BasicAbortiveDrawKind? abortiveDraw = null)
         {
             Candidate = candidate ?? throw new ArgumentNullException(nameof(candidate));
-
-            if (candidate.Kind == LegalActionKind.Kan)
-            {
-                if (!kanKind.HasValue)
-                {
-                    throw new ArgumentException(
-                        "A Kan candidate requires an explicit physical kan kind.",
-                        nameof(kanKind));
-                }
-
-                if (abortiveDraw.HasValue)
-                {
-                    throw new ArgumentException(
-                        "A Kan candidate cannot carry abortive-draw metadata.",
-                        nameof(abortiveDraw));
-                }
-            }
-            else if (candidate.Kind == LegalActionKind.Other)
-            {
-                if (kanKind.HasValue)
-                {
-                    throw new ArgumentException(
-                        "Only a Kan candidate can carry a physical kan kind.",
-                        nameof(kanKind));
-                }
-
-                // abortiveDraw == null is meaningful here: the projection explicitly says
-                // this Other candidate is not an abortive draw. Missing facts are different
-                // and are rejected by AiObservation / BasicAiStrategy.
-            }
-            else
-            {
-                throw new ArgumentException(
-                    "Basic candidate facts are only defined for Kan and Other candidates.",
-                    nameof(candidate));
-            }
-
             KanKind = kanKind;
             AbortiveDraw = abortiveDraw;
+            Validate();
         }
 
         public LegalActionOption Candidate { get; }
@@ -95,7 +59,81 @@ namespace Mahjong.Ai
 
         public BasicAbortiveDrawKind? AbortiveDraw { get; }
 
-        public bool IsAbortiveDraw => AbortiveDraw.HasValue;
+        public bool IsAbortiveDraw =>
+            AbortiveDraw.HasValue && AbortiveDraw.Value == BasicAbortiveDrawKind.NineTerminals;
+
+        /// <summary>
+        /// Re-checks the fact's public invariants. The constructor is the primary boundary;
+        /// AiObservation and the raw TryChoose entry point call this again so a future
+        /// deserialized/fabricated instance cannot bypass the enum checks.
+        /// </summary>
+        internal void Validate()
+        {
+            if (Candidate == null)
+            {
+                throw new ArgumentException("Candidate facts require a candidate.", nameof(Candidate));
+            }
+
+            if (KanKind.HasValue && !IsDefined(KanKind.Value))
+            {
+                throw new ArgumentOutOfRangeException(
+                    nameof(KanKind),
+                    KanKind.Value,
+                    "Unknown physical kan kind. Only Closed, Open and Added are defined.");
+            }
+
+            if (AbortiveDraw.HasValue && !IsDefined(AbortiveDraw.Value))
+            {
+                throw new ArgumentOutOfRangeException(
+                    nameof(AbortiveDraw),
+                    AbortiveDraw.Value,
+                    "Unknown abortive-draw kind. Only NineTerminals is defined.");
+            }
+
+            if (Candidate.Kind == LegalActionKind.Kan)
+            {
+                if (!KanKind.HasValue)
+                {
+                    throw new ArgumentException(
+                        "A Kan candidate requires an explicit physical kan kind.",
+                        nameof(KanKind));
+                }
+
+                if (AbortiveDraw.HasValue)
+                {
+                    throw new ArgumentException(
+                        "A Kan candidate cannot carry abortive-draw metadata.",
+                        nameof(AbortiveDraw));
+                }
+            }
+            else if (Candidate.Kind == LegalActionKind.Other)
+            {
+                if (KanKind.HasValue)
+                {
+                    throw new ArgumentException(
+                        "Only a Kan candidate can carry a physical kan kind.",
+                        nameof(KanKind));
+                }
+
+                // AbortiveDraw == null is meaningful here: the projection explicitly says
+                // this Other candidate is not an abortive draw. Missing facts are different
+                // and are rejected by AiObservation / BasicAiStrategy.
+            }
+            else
+            {
+                throw new ArgumentException(
+                    "Basic candidate facts are only defined for Kan and Other candidates.",
+                    nameof(Candidate));
+            }
+        }
+
+        private static bool IsDefined(BasicKanKind value) =>
+            value == BasicKanKind.Closed ||
+            value == BasicKanKind.Open ||
+            value == BasicKanKind.Added;
+
+        private static bool IsDefined(BasicAbortiveDrawKind value) =>
+            value == BasicAbortiveDrawKind.NineTerminals;
     }
 
     /// <summary>
@@ -136,6 +174,7 @@ namespace Mahjong.Ai
             {
                 BasicCandidateFacts facts = candidateFacts[i] ??
                     throw new ArgumentException("Candidate facts cannot be null.", nameof(candidateFacts));
+                facts.Validate();
                 if (facts.Candidate.Seat != seat)
                 {
                     throw new ArgumentException(
@@ -189,6 +228,109 @@ namespace Mahjong.Ai
 
             facts = null!;
             return false;
+        }
+
+        /// <summary>
+        /// The complete candidate-binding contract shared by AiObservation and the raw
+        /// <see cref="BasicAiStrategy.TryChoose"/> entry point. It rejects null/foreign-seat
+        /// or duplicate candidates, facts that do not name a candidate in this exact list,
+        /// unknown enum values and unclassified Kan/Other candidates. It never rewrites the
+        /// list, so valid candidates keep their instance, OptionId and order.
+        /// </summary>
+        internal static void ValidateCandidateList(
+            BasicAiContext context,
+            IReadOnlyList<LegalActionOption> legalActions)
+        {
+            if (context == null)
+            {
+                throw new ArgumentNullException(nameof(context));
+            }
+
+            if (legalActions == null)
+            {
+                throw new ArgumentNullException(nameof(legalActions));
+            }
+
+            for (int i = 0; i < legalActions.Count; i++)
+            {
+                LegalActionOption candidate = legalActions[i];
+                if (candidate == null)
+                {
+                    throw new ArgumentException(
+                        "Legal candidate cannot be null.",
+                        nameof(legalActions));
+                }
+
+                if (candidate.Seat != context.Seat)
+                {
+                    throw new ArgumentException(
+                        "Every legal candidate must belong to the context seat.",
+                        nameof(legalActions));
+                }
+
+                for (int j = 0; j < i; j++)
+                {
+                    if (AiGuard.ActionsEqual(legalActions[j], candidate))
+                    {
+                        throw new ArgumentException(
+                            "Legal candidate list cannot contain duplicates.",
+                            nameof(legalActions));
+                    }
+                }
+            }
+
+            for (int i = 0; i < context.CandidateFacts.Count; i++)
+            {
+                BasicCandidateFacts facts = context.CandidateFacts[i];
+                facts.Validate();
+                if (facts.Candidate.Seat != context.Seat)
+                {
+                    throw new ArgumentException(
+                        "Candidate facts must belong to the context seat.",
+                        nameof(context));
+                }
+
+                bool found = false;
+                for (int j = 0; j < legalActions.Count; j++)
+                {
+                    if (AiGuard.ActionsEqual(legalActions[j], facts.Candidate))
+                    {
+                        found = true;
+                        break;
+                    }
+                }
+
+                if (!found)
+                {
+                    throw new ArgumentException(
+                        "Basic context binds metadata to a candidate that is not part of this candidate list.",
+                        nameof(context));
+                }
+            }
+
+            for (int i = 0; i < legalActions.Count; i++)
+            {
+                LegalActionOption action = legalActions[i];
+                if (action.Kind == LegalActionKind.Kan)
+                {
+                    if (!context.TryGetFacts(action, out BasicCandidateFacts kanFacts) ||
+                        !kanFacts.KanKind.HasValue)
+                    {
+                        throw new ArgumentException(
+                            "Basic context is missing an explicit physical kan kind for a Kan candidate.",
+                            nameof(context));
+                    }
+                }
+                else if (action.Kind == LegalActionKind.Other)
+                {
+                    if (!context.TryGetFacts(action, out _))
+                    {
+                        throw new ArgumentException(
+                            "Basic context is missing an explicit abortive-draw classification for an Other candidate.",
+                            nameof(context));
+                    }
+                }
+            }
         }
     }
 

@@ -14,8 +14,9 @@
 
 - `BasicAiStrategy` 以 V4 实际源码（不是类注释）为准，逐分支移植；返回原合法候选实例与原 `OptionId`。
 - 稳定独立算法身份：`AlgorithmId = "baseline-basic"`，`AlgorithmVersion = 1`；算法身份进入 `CommandIntent` 规范字节，启发式分数不进入权威哈希。
-- 新增 66 项针对性测试；Ai 全量 116 项（原 50 + 新 66）通过。
+- 新增 78 项针对性测试；Ai 全量 128 项（原 50 + 新 78）通过。
 - 新增强类型上下文与 `AiObservation` 兼容接入；旧构造调用与 Trivial/Tsumogiri 行为不变（既有 50 项全过）。
+- 第 2 轮独立复核提出的 D-1-01（未定义枚举值被接受）与 D-1-02（公开 `TryChoose` 绕过本席/候选绑定）已批量修复；新增有效/无效负例矩阵，详见 §5.3/§7.1。
 
 **不包含**
 
@@ -32,6 +33,7 @@
 | 独占工作树 | `D:/majiang-wt/ai-basic` |
 | 分支 | `wt/v5-ai-basic` |
 | 起始 HEAD | `597eca1ff4688ff61fa4f5fea700bdf9eb3dd1be`（已验收 PR19 head；与 dispatch 指定基线一致） |
+| 第 2 轮返修起点 | `ea69c84ff0dc2361f7df0c932598568665a365c9`（第 1 轮交付，独立复核结论 REQUEST_REWORK） |
 | 起始状态 | `git status --porcelain` 为空，工作树 clean |
 | .NET SDK | `8.0.426` @ `D:/Unity/dotnet/dotnet.exe` |
 | 共享库目标 | `netstandard2.1`，C# 9，`Nullable=enable`，`TreatWarningsAsErrors=true` |
@@ -74,8 +76,8 @@ V4 仍是生产架构；G1/G5 未通过；V5-1 尚未整体验收。
 
 补充：
 
-- V4 的 `DeclareAbortiveDraw` 只由 `RuleEngine.canDeclareNineTerminals` 产出（`LegalActionProvider.kt:88-90`）；V5 没有专用枚举，故用 `Kind.Other` + 显式 `BasicAbortiveDrawKind.NineTerminals`，**不把任何未标注 Other 当作九种九牌**。
-- V4 的 `DeclareKan` 携带 `MeldType`（`GameAction.kt:35`，`LegalActionProvider.kt:98-113, :204-209`）；V5 的 `LegalActionOption` 没有该字段，故用 `BasicCandidateFacts.KanKind` 显式提供，**不把任何 Kan 当作暗杠**。
+- V4 的 `DeclareAbortiveDraw` 只由 `RuleEngine.canDeclareNineTerminals` 产出（`LegalActionProvider.kt:88-90`）；V5 没有专用枚举，故用 `Kind.Other` + 显式 `BasicAbortiveDrawKind.NineTerminals`，**不把任何未标注 Other 当作九种九牌**。第 2 轮修复后，策略分支显式比较 `== BasicAbortiveDrawKind.NineTerminals`，不再使用 `HasValue`；构造/验证边界拒绝 `-1`、`1`、`999` 等未定义枚举值。
+- V4 的 `DeclareKan` 携带 `MeldType`（`GameAction.kt:35`，`LegalActionProvider.kt:98-113, :204-209`）；V5 的 `LegalActionOption` 没有该字段，故用 `BasicCandidateFacts.KanKind` 显式提供，**不把任何 Kan 当作暗杠**。`BasicKanKind` 只接受 `Closed/Open/Added`；`-1`、`3`、`999` 被拒绝。
 
 ### 3.2 立直与待牌
 
@@ -161,13 +163,13 @@ V5 运行时当前 `TableActor.ProcessAiObservation` 传入 `_round.Tiles.TilesI
 
 | # | 文件 | 内容 | SHA-256（提交前） |
 |---|---|---|---|
-| 1 | `dotnet/src/Mahjong.Ai/BasicAiContext.cs` | 新增：`BasicAiContext`、`BasicCandidateFacts`、`BasicKanKind`、`BasicAbortiveDrawKind`、`BasicAiContextException` | `66f0c47adca72e3d6ff5081b871674a2142b8a18e14c490d7268b158aedd51f9` |
-| 2 | `dotnet/src/Mahjong.Ai/BasicAiStrategy.cs` | 新增：`BasicAiStrategy : IAiStrategy`（ENG-013 移植） | `72a3e09586072347086f3b959c29879ac206208859b5e7b0594b7bade325969e` |
-| 3 | `dotnet/src/Mahjong.Ai/AiObservation.cs` | 修改：可选 `BasicAiContext` 参数、只读属性、本席/候选绑定验证；旧构造调用兼容 | `94e4e391a3b1024526a16b8ce25cb933c8f4353cf990074ff0e5946771069920` |
-| 4 | `dotnet/tests/Mahjong.Ai.Tests/BasicAiStrategyTests.cs` | 新增：66 项行为矩阵/元数据/取消/真实服务接线测试 | `df36f03960f8ccfc0e46191690bf0caa39e4e130794de98836b8d2560fc9ef9c` |
+| 1 | `dotnet/src/Mahjong.Ai/BasicAiContext.cs` | 新增：`BasicAiContext`、`BasicCandidateFacts`、`BasicKanKind`、`BasicAbortiveDrawKind`、`BasicAiContextException`；第 2 轮加入枚举有效性/共享候选绑定验证 | `5c0c5b740282304333e5d41e2b4cd133373145c96857a081bf893163e2296ebc` |
+| 2 | `dotnet/src/Mahjong.Ai/BasicAiStrategy.cs` | 新增：`BasicAiStrategy : IAiStrategy`（ENG-013 移植）；第 2 轮显式 `NineTerminals` 比较与 raw 入口契约 | `89b644656350bbdd6e9900d2fb65e383093d6a3d1518254cb6cfa81309332663` |
+| 3 | `dotnet/src/Mahjong.Ai/AiObservation.cs` | 修改：可选 `BasicAiContext` 参数、只读属性、本席/候选绑定验证；旧构造调用兼容 | `e5285f0a6214056b7187773430a82e21246cabb5f6eaad228f9e800af11bd35f` |
+| 4 | `dotnet/tests/Mahjong.Ai.Tests/BasicAiStrategyTests.cs` | 新增：78 项行为矩阵/元数据/取消/真实服务接线/无效枚举与 raw 契约负例 | `d038535337301a5a153e4afcd8de0bfbd088a673bb3a337a6eebbcece511aa0f` |
 | 5 | `doc/v5-重构/V5-P16-BASIC-STRATEGY.md` | 本报告 | 提交后由最终回执给出（报告不自引用自身哈希） |
 
-> 行尾说明：仓库 `core.autocrlf=true`；`AiObservation.cs` 在工作树为 CRLF、在提交 blob 中为 LF。上表 `94e4...` 是工作树字节哈希；该文件提交 blob 的 SHA-256 为 `c29227149aed014cc55f07c48d818e4f2ba9c50c34f6833152bc574f064b992d`。其余四个文件工作树与 blob 均为 LF，哈希一致。
+> 行尾说明：仓库 `core.autocrlf=true`；`AiObservation.cs` 在工作树为 CRLF、在提交 blob 中为 LF。上表为工作树字节哈希；该文件提交 blob 的 SHA-256 与最终 HEAD/commit 一并由最终回执给出。其余四个文件工作树与 blob 均为 LF，哈希一致。
 
 无其他生产/测试/文档文件被修改或删除。构建产物与原始日志在 ignored 目录 `artifacts/p16-basic/`，不入库。
 
@@ -187,8 +189,8 @@ public sealed class BasicAiContext
 - 仅包含：本席座位、本人立直状态、公开最后弃牌、与合法候选绑定的显式 Kan/流局语义。**不含** `GameState`、牌山顺序、他家暗牌、seed、全位置图、时钟、权威回调对象。
 - 不可变；构造时防御复制 `CandidateFacts` 列表。
 - 仅允许 Kan/Other 候选携带 facts：
-  - Kan 必须给出 `BasicKanKind.Closed/Open/Added`；
-  - Other 必须给出 facts；`AbortiveDraw = null` 表示“显式确认不是流局”，`NineTerminals` 表示九种九牌；
+  - Kan 必须给出 `BasicKanKind.Closed/Open/Added`；`-1`、`3`、`999` 等未定义值在构造与 `Validate()` 边界抛 `ArgumentOutOfRangeException`；
+  - Other 必须给出 facts；`AbortiveDraw = null` 表示“显式确认不是流局”，`NineTerminals` 表示九种九牌；`-1`、`1`、`999` 被拒绝；
   - 非 Kan/Other 携带 facts 直接 `ArgumentException`。
 - 事实候选必须属于 context 座位；同一候选最多一条 facts。
 
@@ -198,7 +200,8 @@ public sealed class BasicAiContext
 2. 每条 fact 的候选必须按 `(Kind, Seat, Tile, OptionId)` 出现在该 observation 的冻结候选列表中；
 3. 每个 Kan 候选必须有 `KanKind`；
 4. 每个 Other 候选必须有显式流局分类；
-5. 失败抛 `ArgumentException`，不静默补齐。
+5. 第 2 轮起与 `BasicAiStrategy.TryChoose` 共用 `BasicAiContext.ValidateCandidateList`：同一套 null/错席/重复候选/facts 归属/enum 有效性校验，不再存在 raw 入口绕过；
+6. 失败抛 `ArgumentException`/`ArgumentOutOfRangeException`，不静默补齐。
 
 既有构造调用因可选参数保持源码兼容；不传 context 时 `BasicContext == null`，Trivial/Tsumogiri 行为不变。
 
@@ -206,7 +209,7 @@ public sealed class BasicAiContext
 
 - `IAiStrategy` 实现；`AlgorithmId="baseline-basic"`、`AlgorithmVersion=1`；`ToString()` 为常量，不含 observation/手牌/牌山。
 - `Decide`：入口检查取消 → 要求 `BasicContext`（缺失抛带诊断的 `BasicAiContextException`）→ `TryChoose`。
-- `TryChoose`：V4 形状的可空入口，空列表返回 `null`；覆盖全部十个分支；每轮候选扫描检查 `CancellationToken`。
+- `TryChoose`：V4 形状的可空入口，空列表返回 `null`；覆盖全部十个分支；每轮候选扫描检查 `CancellationToken`。第 2 轮起在分支前调用共享 `ValidateCandidateList`：拒绝 null/错席/重复候选、孤儿 facts、同 OptionId 但 Kind/Tile/Seat 不同的错绑定；合法列表不重排、不克隆。
 - 返回输入列表中的**原实例**；`OptionId`/`Tile` 原样保留。
 - 立直排序只调用既有 `HandDecomposer.CalculateWaits`；不复制另一套和牌/待牌规则。
 - 纯整数 `tileDisposability`；返回的 double 分数仅用于非权威比较，`CommandIntent` 不编码分数。
@@ -231,7 +234,7 @@ public sealed class BasicAiContext
 
 ## 5. 测试矩阵
 
-新增 `BasicAiStrategyTests` 共 **66 项**，均为可观察决策/合同断言，不以内部打分自洽代替行为。
+新增 `BasicAiStrategyTests` 共 **78 项**，均为可观察决策/合同断言，不以内部打分自洽代替行为。
 
 ### 5.1 覆盖分组
 
@@ -245,13 +248,26 @@ public sealed class BasicAiContext
 - **最终兜底**：无 Pass 时首个合法（含立直/开放杠）；999 分时立直分支被跳过但最终兜底仍可返回立直（V4 源码行为）。
 - **取消**：空列表前取消、`Decide` 在 context 校验前取消、真实 `ReasonAsync` 在策略执行前取消。
 - **typed metadata 错绑定拒绝**：context 他席、fact 候选不在列表、Kan 缺 kind、Other 缺分类、fact 放在 Discard、Kan 带 abortive、Kan 缺 kind 构造、重复 fact、他席 fact；context 列表防御复制。
+- **D-1-01 无效枚举负例**：`BasicKanKind` 的 `-1/3/999`、`BasicAbortiveDrawKind` 的 `-1/1/999` 在构造边界抛 `ArgumentOutOfRangeException`；有效 `Closed/Open/Added`、`NineTerminals`、Other `null` 矩阵保持不变。
+- **D-1-02 raw 入口契约负例**：错席 Ron、错席 Discard、孤儿 facts、同 OptionId 但不同 Tile/Kind/Seat 的错绑定、null 候选、重复候选；空列表仍返回 `null`，取消优先，合法候选保持原实例与 OptionId。
 - **无隐藏输入**：`BasicAiContext`/`BasicCandidateFacts` 公开属性名扫描；`Mahjong.Ai` 程序集既有引用边界测试继续通过；`ToString` 恒定且不含牌数据。
 - **真实服务**：`AiDecisionService.ReasonAsync` → `CommandIntent`（真实算法身份）→ `Submit` 接受 → Domain `DeadlineArbiter` 同 tick 接受；stale round/stale epoch/`deadline` 到点拒绝且无 `Submission`；`Replay` 注入不重跑策略、哈希一致、篡改/收窄候选拒绝；heuristic 不同但 `AuthorityHash` 一致。
 - **旧基线回归**：不传 `BasicContext` 时 Trivial 选 Ron、Tsumogiri 选 Pass；既有 50 项全过。
 
 ### 5.2 历史失败（保留记录）
 
-新增测试首轮出现 4 项失败：两项是测试手牌/候选列表写错导致待牌数不是预期的平局/大小关系；一项是期望实例写成了列表中的另一项；一项是异常消息断言缺少类型名。随后追加的顺序测试又有 2 项把“列表首个”写成了变量名语义上的“第一个”。这些均为**测试输入/断言编写错误**；其中异常消息补上了 `BasicAiContext` 类型名，使诊断更明确。修正后最终 66/66 通过；没有为了变绿而删除/弱化任何断言、没有修改既有探针/verifier/fixture/矩阵。
+- 第 1 轮新增测试首轮出现 4 项失败：两项是测试手牌/候选列表写错导致待牌数不是预期的平局/大小关系；一项是期望实例写成了列表中的另一项；一项是异常消息断言缺少类型名。随后追加的顺序测试又有 2 项把“列表首个”写成了变量名语义上的“第一个”。这些均为**测试输入/断言编写错误**；其中异常消息补上了 `BasicAiContext` 类型名，使诊断更明确。修正后 66/66 通过。
+- 第 2 轮复核发现 D-1-01/D-1-02 两组 MAJOR（真实 probe 可复现）：未定义枚举值被接受；公开 `TryChoose` 接受错席候选/孤儿 facts。修复后新增 12 项负例/有效矩阵，最终 78/78 通过。此前测试绿没有覆盖这两个反例，这是本轮的证据缺口，已保留。
+- 没有为了变绿而删除/弱化任何断言、没有修改既有探针/verifier/fixture/矩阵。
+
+### 5.3 第 2 轮缺陷修复映射
+
+| ID | 修复位置 | 修复内容 | 验收负例/证据 |
+|---|---|---|---|
+| D-1-01 | `BasicCandidateFacts.Validate()`、构造器；`BasicAiStrategy` 流局分支；`BasicAiContext.ValidateCandidateList` | `KanKind` 仅允许 Closed/Open/Added，`AbortiveDraw` 仅允许 NineTerminals 或 null；非法值抛 `ArgumentOutOfRangeException`；流局分支改为 `== NineTerminals`；构造与验证边界都调用 `Validate()` | `BasicCandidateFactsRejectsUnknownKanKindValues`、`BasicCandidateFactsRejectsUnknownAbortiveDrawValues`、`BasicCandidateFactsAcceptsOnlyDefinedKanAndAbortiveValues`；probe 的 `-1/1/999` 均在构造处 REJECTED |
+| D-1-02 | `BasicAiContext.ValidateCandidateList()`；`BasicAiStrategy.TryChoose`；`AiObservation.ValidateBasicContext` | raw 入口与 observation 共用同一契约：拒绝 null/错席/重复候选、孤儿 facts、同 OptionId 不同 Kind/Tile/Seat 的错绑定；空列表返回 null、取消优先、合法候选原实例保真 | `BasicTryChooseRejectsForeignSeatRon`、`BasicTryChooseRejectsForeignSeatDiscard`、`BasicTryChooseRejectsOrphanFacts`、`BasicTryChooseRejectsFactWithSameOptionIdButDifferentTile/Kind/Seat`、`BasicTryChooseRejectsNullAndDuplicateCandidates`、`BasicTryChoosePreservesTheCorrectEmptyListAndCancellationSemantics`、`BasicTryChooseReturnsTheOriginalCandidateInstance` |
+
+复核方原 probe 已用第 2 轮产物重跑（`artifacts/p16-basic/round2-probe.log`，SHA-256 `9ca02ccc419a20d57c73201f88c5d615c5b9ac9ae8a3743a109368ce82ace7d4`）：`INVALID_ABORTIVE=-1/1/999`、`INVALID_KAN=999`、`FOREIGN_SEAT`、`GHOST_FACT` 全部 `REJECTED`。
 
 ---
 
@@ -261,21 +277,24 @@ public sealed class BasicAiContext
 
 | # | 命令 | exit | 结果 | 日志 SHA-256 |
 |---|---|---|---|---|
-| 1 | `dotnet build dotnet/Mahjong.sln -c Release --no-incremental --nologo -v:minimal` | 0 | **0 警告 / 0 错误** | `78d7c1189d94869de43315c9837e7ee01e7de050ffcd49c301a0c05b7bc34203` |
-| 2 | `dotnet test dotnet/tests/Mahjong.Ai.Tests/Mahjong.Ai.Tests.csproj -c Release --no-build --nologo -v:minimal` | 0 | **116 通过 / 0 失败 / 0 跳过**（原 50 + 新 66） | `1949fb6968d268e462d9031341d2b8a9cb91294b196d421b7e2f052bd55db92f` |
-| 3 | `dotnet test dotnet/tests/Mahjong.Ai.Tests/Mahjong.Ai.Tests.csproj -c Debug --nologo -v:minimal` | 0 | **116 通过 / 0 失败 / 0 跳过** | `1102fdfab1fb9c86895ccd9fdd6d84e402f2a18acd180496ebbcc5f8590d6e8d` |
-| 4 | `dotnet test dotnet/tests/Mahjong.Ai.Tests/Mahjong.Ai.Tests.csproj -c Release --no-build --nologo -v:minimal -- --filter-class "Mahjong.Ai.Tests.BasicAiStrategyTests"` | 0 | **66 通过 / 0 失败 / 0 跳过** | `2eb471c264db7f434f86aa2e360bbbd8f3ab331958aaf5a30ede3b3ab0fcd9d0` |
-| 5 | `dotnet test dotnet/tests/Mahjong.Domain.Tests/Mahjong.Domain.Tests.csproj -c Release --no-build --nologo -v:minimal` | 0 | **322 通过 / 0 失败 / 0 跳过** | `321e3a9a0f8060789c16ab3287aa9c3eefb0967ea16ef8b26fc991c279f27edd` |
-| 6 | `dotnet test dotnet/tests/Mahjong.Contracts.Tests/Mahjong.Contracts.Tests.csproj -c Release --no-build --nologo -v:minimal` | 0 | **104 通过 / 0 失败 / 0 跳过** | `1c4324d22197a7c5394f8d858647f260c679295bba5cf6bc4df1e2537cca5cad` |
-| 7 | `dotnet test dotnet/tests/Mahjong.Client.Tests/Mahjong.Client.Tests.csproj -c Release --no-build --nologo -v:minimal` | 0 | **132 通过 / 0 失败 / 0 跳过** | `e73e87569531492a5c9c78be48363897fd3937c010fb11886467a7708b61a4e5` |
-| 8 | `dotnet test dotnet/tests/Mahjong.TableRuntime.Tests/Mahjong.TableRuntime.Tests.csproj -c Release --no-build --nologo -v:minimal` | 0 | **313 通过 / 0 失败 / 0 跳过**（含 AI 观察/批量/恢复/控制时序） | `90590b9096fec8e1c6389eb2b2348bf2cd087b446a9247cbbcb74d799f7bbfcb` |
+| 1 | `dotnet build dotnet/Mahjong.sln -c Release --no-incremental --nologo -v:minimal` | 0 | **0 警告 / 0 错误** | `81ea71297b3ca3c214bd059a2407f2d4f77b8f24423dd1b23e4698f61763d28a` |
+| 2 | `dotnet test dotnet/tests/Mahjong.Ai.Tests/Mahjong.Ai.Tests.csproj -c Release --no-build --nologo -v:minimal` | 0 | **128 通过 / 0 失败 / 0 跳过**（原 50 + 新 78） | `e8e96b7e06ca0cf883a3af92ffb72c0f2b36e65e3cdcbf42ce4d51f7bb7ca0fb` |
+| 3 | `dotnet test dotnet/tests/Mahjong.Ai.Tests/Mahjong.Ai.Tests.csproj -c Debug --nologo -v:minimal` | 0 | **128 通过 / 0 失败 / 0 跳过** | `01e85aadc0e3feed244c4575893e34b1c1e5f57b52f565f9e36e419e2dc581d7` |
+| 4 | `dotnet test dotnet/tests/Mahjong.Ai.Tests/Mahjong.Ai.Tests.csproj -c Release --no-build --nologo -v:minimal -- --filter-class "Mahjong.Ai.Tests.BasicAiStrategyTests"` | 0 | **78 通过 / 0 失败 / 0 跳过** | `1f0502694470d07432d332d6499ccd4db850ec9f0638a34ef62225939ee466bb` |
+| 5 | `dotnet test dotnet/tests/Mahjong.Domain.Tests/Mahjong.Domain.Tests.csproj -c Release --no-build --nologo -v:minimal` | 0 | **322 通过 / 0 失败 / 0 跳过** | `f1603f8ff8c2d20d7668c294c7cea77ed216fa04d0bd4cf73cf897466bec6497` |
+| 6 | `dotnet test dotnet/tests/Mahjong.Contracts.Tests/Mahjong.Contracts.Tests.csproj -c Release --no-build --nologo -v:minimal` | 0 | **104 通过 / 0 失败 / 0 跳过** | `97fa1c31ce21fd988f72cf53e96814efa4ff3a01d0679e8abced6e34d187e3be` |
+| 7 | `dotnet test dotnet/tests/Mahjong.Client.Tests/Mahjong.Client.Tests.csproj -c Release --no-build --nologo -v:minimal` | 0 | **132 通过 / 0 失败 / 0 跳过** | `f92ad806bc8c4e3ac87eaf145fb3d83fade4642b8c97b17f0420242846b6c8a4` |
+| 8 | `dotnet test dotnet/tests/Mahjong.TableRuntime.Tests/Mahjong.TableRuntime.Tests.csproj -c Release --no-build --nologo -v:minimal` | 0 | **313 通过 / 0 失败 / 0 跳过**（含 AI 观察/批量/恢复/控制时序） | `cde4ae952c19904f0625e7538de768b1e731e5527ee870e9c01fbb41af4a0e94` |
+| 9 | `& 'D:/Unity/dotnet/dotnet.exe' run --project 'C:/Users/sncdc/AppData/Local/Temp/codex-basic-review-e26d5d01cb2843c6ad4dbfc9aa45ded5/Probe.csproj' -c Release` | 0 | 复核方原 probe 重跑：6 行全部 **REJECTED**（`INVALID_ABORTIVE=-1/1/999`、`INVALID_KAN=999`、`FOREIGN_SEAT`、`GHOST_FACT`） | `9ca02ccc419a20d57c73201f88c5d615c5b9ac9ae8a3743a109368ce82ace7d4` |
 
-Release 五个测试工程合计：`116 + 322 + 104 + 132 + 313 = 987` 通过 / 0 失败 / 0 跳过。
+Release 五个测试工程合计：`128 + 322 + 104 + 132 + 313 = 999` 通过 / 0 失败 / 0 跳过。
+
+> 第 9 行 exit 0 只表示 probe 进程完成；负例是否通过以输出逐行的 `REJECTED` 为准。复核方第 1 轮 probe 原始证据为 `artifacts/codex-basic-review/probe.log`（SHA-256 `40821EDE7F5D990149D6576296DA61DAE9A30EF4C4380C18BE0F00AED144F6D5`），本轮已用同一输入重跑并全部拒绝。
 
 口径：
 
 - 全部 `Total != 0`、`Failed=0`、`Skipped=0`；没有 skip、空测试、旧 DLL 凑绿；测试在最终 `--no-incremental` solution build 产物上以 `--no-build` 运行。
-- `AiReplayGoldenTests` 在同一 AI 工程内随 116 项运行通过；未重写/刷新 `tests/v5-golden/ai-v1.json`。
+- `AiReplayGoldenTests` 在同一 AI 工程内随 128 项运行通过；未重写/刷新 `tests/v5-golden/ai-v1.json`。
 - 未修改统一 verifier、既有探针、fixture、追踪矩阵、既有基线报告。
 - 提交前另行运行 `git diff --check` / `git diff --cached --check`，无空白错误；最终 `git status --porcelain` clean（见最终回执）。
 
@@ -295,7 +314,12 @@ Release 五个测试工程合计：`116 + 322 + 104 + 132 + 313 = 987` 通过 / 
 
 ## 7. 已知缺陷/限制/风险（一次性）
 
-**最终交付代码未发现可复现的行为缺陷。** 以下为已知限制与范围外缺口，均需在后续接线/验收中处理：
+### 7.1 第 2 轮复核发现并修复的缺陷
+
+- **D-1-01（MAJOR，已修复）未定义枚举值被接受。** 位置：`BasicCandidateFacts` 构造器/`Validate()`、`BasicAiStrategy` 流局分支。原因：`BasicKanKind`/`BasicAbortiveDrawKind` 是 enum，C# 允许 `(BasicKanKind)999`；旧构造器只检查 HasValue，旧流局分支用 `HasValue`。修复：显式白名单 `Closed/Open/Added` 与 `NineTerminals`，非法值抛 `ArgumentOutOfRangeException`；流局分支改 `== NineTerminals`；构造、`BasicAiContext`、`AiObservation`、`TryChoose` 都经过 `Validate()`/`ValidateCandidateList`。负例：`-1/3/999`（Kan）、`-1/1/999`（abortive）均 REJECTED；有效三 Kan、NineTerminals、Other null 保持。
+- **D-1-02（MAJOR，已修复）公开 `TryChoose` 绕过本席/候选绑定。** 位置：`BasicAiStrategy.TryChoose`。原因：旧实现只检查 Kan/Other 缺 facts，未检查候选 Seat、重复/null、孤儿 facts。修复：新增 `BasicAiContext.ValidateCandidateList`，由 `AiObservation` 与 `TryChoose` 共用；拒绝错席 Ron/Discard、孤儿 facts、同 OptionId 不同 Tile/Kind/Seat、null/重复候选；空列表仍返回 null，取消优先，合法候选原实例保真。负例见 §5.3。
+
+**修复后未发现新的已知可复现行为缺陷。** 以下为仍需在后续接线/验收中处理的限制与范围外缺口：
 
 - **D1（范围边界，非代码缺陷）actor 未接线。** `TableActor.ProcessAiObservation` 不产出 `BasicAiContext`；真实 actor 观察上运行 Basic 会抛 `BasicAiContextException`。最小依赖见 §4.4。组件本身可由调用方显式构造 context 使用，测试已验证；但“生产 actor 端到端可用”未完成、未宣称。
 - **D2（既有契约风险）手牌表示不一致。** 当前 `TableActor` 传入的 `MyHandTileIds` 是 Hand zone（含摸牌），而 V4 `myClosedTiles` 不含摸牌；既有 Trivial/Tsumogiri 代码/测试仍按 closed hand 解释。Basic 已显式规范化两种表示并通过测试；未修改既有两个策略，也不能据本任务宣称它们不受该差异影响。后续 actor 接线应统一该表示或在文档/测试中明确。
@@ -304,7 +328,7 @@ Release 五个测试工程合计：`116 + 322 + 104 + 132 + 313 = 987` 通过 / 
 - **D5（类型映射约定）** 九种九牌必须映射为 `Kind.Other` + `BasicAbortiveDrawKind.NineTerminals`；Kan kind 必须显式；facts 只允许 Kan/Other。若 actor 用其他 Kind 表示流局，会被拒绝。未改 Domain 枚举/DTO 来逃避该边界。
 - **D6（证据口径）黄金 fixture 的历史 source hash 已过期。** `tests/v5-golden/ai-v1.json` 记录了旧 `AiObservation.cs` 的 `sourceFileSha256`；本任务按授权修改了该文件，但未改 fixture（禁止）。fixture 测试只校验 hash 长度为 64 并回放记录意图，不校验当前源文件 hash，因此回放仍通过；不得把该历史 hash 当作本交付的当前完整性证明。
 - **D7（证据口径）无 V4 Kotlin 差分执行。** 行为矩阵来自 V4 源码逐分支阅读与 C# 手工/定向测试，没有运行 Kotlin `BasicAIStrategy` 对同一输入的生成式差分；V4 Gradle 全量为 `NOT_RUN`。
-- **D8（覆盖边界）66 项为定向矩阵，不是穷举证明。** 未对全部手牌/候选排列做 property-based/随机搜索；`HandDecomposer` 的既有 322 项 Domain 测试继续通过，但其全部边界不由本任务重证。
+- **D8（覆盖边界）78 项为定向矩阵，不是穷举证明。** 未对全部手牌/候选排列做 property-based/随机搜索；`HandDecomposer` 的既有 322 项 Domain 测试继续通过，但其全部边界不由本任务重证。
 - **D9（取消粒度）** 取消在每个候选扫描/每次 `CalculateWaits` 前后检查；`HandDecomposer.CalculateWaits` 单次调用内部不接收 token。14 张手牌的有界搜索很快，但这是协作式取消而非抢占式中断。
 - **D10（平台）** 只验证 netstandard2.1/C#9 的 .NET 8 编译/测试；Unity、IL2CPP、Android/iOS 未验证。代码未引入 Unity/网络/时钟/RNG 依赖，但这不等于 IL2CPP 已通过。
 - **D11（策略范围）** 未迁移 `TargetAwareAIStrategies`、`AIPlayer`、`AiCheatPolicy`/`cheat/*`、actor 调度、TimeoutPolicy 接线；V4 Basic 不使用的 `myFuriten`、袖牌、`lastDiscardPlayer` 等也未放入 context，这是按最小可见信息约束的刻意取舍。
@@ -316,8 +340,8 @@ Release 五个测试工程合计：`116 + 322 + 104 + 132 + 313 = 987` 通过 / 
 
 | 口径 | 内容 |
 |---|---|
-| **PASS** | 五个 expectedFiles 的组件/测试/文档；V4 分支顺序、列表序、物理副本、红五、手牌移除一次、双风、1000 分阈值、待牌种数、取消、候选身份、metadata 绑定拒绝、真实 `ReasonAsync→Submit→Replay` 迟到/代次拒绝；Release solution build 0/0；Ai 116、Domain 322、Contracts 104、Client 132、TableRuntime 313。 |
-| **FAIL** | 最终交付无 FAIL。历史失败仅为新增测试编写错误（首轮 4 项、追加顺序 2 项），已在 §5.2 如实保留；不是产品行为失败。 |
+| **PASS** | 五个 expectedFiles 的组件/测试/文档；V4 分支顺序、列表序、物理副本、红五、手牌移除一次、双风、1000 分阈值、待牌种数、取消、候选身份、metadata 绑定拒绝、无效枚举/raw 独占契约拒绝、真实 `ReasonAsync→Submit→Replay` 迟到/代次拒绝；Release solution build 0/0；Ai 128、Domain 322、Contracts 104、Client 132、TableRuntime 313。 |
+| **FAIL** | 第 2 轮复核发现 D-1-01/D-1-02 两组 MAJOR（已修复，见 §7.1）；最终交付无 FAIL。历史失败还包括第 1 轮新增测试编写错误（首轮 4 项、追加顺序 2 项），已在 §5.2 如实保留；不是产品行为失败。 |
 | **BLOCKED** | 本组件无 BLOCKED。actor 端到端是**后续接线任务**的依赖，不是本任务无法形成组件的阻塞；本报告不把它写成已通过。 |
 | **NOT_RUN** | PG/WSS/Lobby/Unity/IL2CPP/Android/iOS/真机/物理网络/V4 Gradle/远端 CI/actor e2e/P1.6 整体/G1/G5；理由见 §6.1。 |
 
@@ -325,7 +349,7 @@ Release 五个测试工程合计：`116 + 322 + 104 + 132 + 313 = 987` 通过 / 
 
 ## 9. 交付与后续
 
-- 交付方式：本工作树**本地 commit**；不转派、不 push、不建 PR、不触发 CI、不改全局环境/信任、不纳入其他工作树未验收代码。
+- 交付方式：本工作树**本地 commit**；不转派、不 push、不建 PR、不触发 CI、不改全局环境/信任、不纳入其他工作树未验收代码。第 2 轮 D-1-01/D-1-02 修复以新的本地 commit 追加在 `ea69c84ff0dc2361f7df0c932598568665a365c9` 之上，保留第 1 轮历史，不改写旧提交。
 - 提交后工作树 `clean`；最终 HEAD、commit、五个文件的最终 SHA-256 与报告自身 SHA-256 见最终回执（报告不内嵌自身提交哈希，避免自引用）。
 - 独立复核由 caller 负责；唯一 PR19 仍为 `feat/v5-1-integration -> v5` 及 merge-back，由 caller 执行。
 - 本任务**不宣告** P1.6 整体、G1、G5 完成；V4 仍是唯一生产基线。
