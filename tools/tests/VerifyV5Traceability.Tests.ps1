@@ -11,7 +11,14 @@
 #     its own marker (numbers/booleans in string fields, scalars/null/objects where arrays are
 #     required, null/false array elements, anchor sub-field types, header denominator/stats/
 #     vocabulary/gate list types). No case bundles several error types.
-#   - Sandbox cases s1..s35: a THROWAWAY ISOLATED git repository is created under the system temp
+#   - Case-sensitivity negatives t18..t27 and s36..s41 [review round 9]: PowerShell's -eq/-ne/
+#     -match/-notcontains and @{} hashtable keys are case-INSENSITIVE by default, but Kotlin/C#
+#     identifiers, tree paths, row IDs, taskbook task IDs, commit hashes and the controlled
+#     vocabularies are EXACT-CASE, so a value differing only in case is a DIFFERENT value and
+#     must be rejected (ordinal compares and ordinal maps everywhere). s39 is the matching
+#     ANTI-REGRESSION POSITIVE: a receiver and a declared name differing only in case
+#     ("val ReceiverCase.receiverCase") are two DIFFERENT names, so the real declaration passes.
+#   - Sandbox cases s1..s41: a THROWAWAY ISOLATED git repository is created under the system temp
 #     directory with a baseline commit B and a child commit C. B carries a minimal production
 #     source, a test source, a V5 C# source and the real taskbook; C adds post-baseline files and
 #     post-baseline-only symbols. The cases prove that (a) the baseline-good matrix passes, (b) a
@@ -401,6 +408,74 @@ $m = New-Matrix
 $m.rows = "boo"
 $null = Run-Case "t17-rows-scalar" (Serialize $m) 1 @("header-field-not-array rows") ""
 
+# --- case-sensitivity negatives t18..t27 [review round 9]: PowerShell's -eq/-ne/-match/
+# -notcontains and @{} keys are case-INSENSITIVE by default, but identifiers, tree paths,
+# task IDs, commit hashes and controlled vocabularies are EXACT-CASE -- a value differing
+# only in case is a DIFFERENT value and must be rejected.
+# t18: wrong-case schema string
+$m = New-Matrix
+$m.schema = "V5-IMPLEMENTATION-TRACE-V1"
+$null = Run-Case "t18-schema-wrong-case" (Serialize $m) 1 @("bad-schema") ""
+
+# t19: wrong-case row status is not a controlled status ("pending" != "PENDING")
+$m = New-Matrix
+$m.rows[0].status = $m.rows[0].status.ToUpper()
+$null = Run-Case "t19-status-wrong-case" (Serialize $m) 1 @("unknown-status") ""
+
+# t20: wrong-case row ID violates the exact-case ID format ("ENG-001" != "eng-001")
+$m = New-Matrix
+$m.rows[0].id = $m.rows[0].id.ToLower()
+$null = Run-Case "t20-row-id-wrong-case" (Serialize $m) 1 @("bad-row-id") ""
+
+# t21: wrong-case module is not a controlled module ("engine" != "ENGINE")
+$m = New-Matrix
+$m.rows[0].module = $m.rows[0].module.ToUpper()
+$null = Run-Case "t21-module-wrong-case" (Serialize $m) 1 @("unknown-module") ""
+
+# t22: wrong-case responsible task is not a taskbook task ("P2.1" != "p2.1")
+$m = New-Matrix
+$m.rows[0].responsibleTask = $m.rows[0].responsibleTask.ToLower()
+$null = Run-Case "t22-responsible-task-wrong-case" (Serialize $m) 1 @("responsible-task-not-in-taskbook") ""
+
+# t23: a wrong-case stats key is an unknown key ("pending" != "Pending")
+$m = New-Matrix
+$sk = @()
+foreach ($p in $m.stats.byStatus.PSObject.Properties) {
+    $n = $p.Name
+    if ($n -ceq "pending") { $n = "Pending" }
+    $sk += '"' + $n + '": ' + [string]$p.Value
+}
+$m.stats.byStatus = ('{ ' + ($sk -join ', ') + ' }') | ConvertFrom-Json
+$null = Run-Case "t23-stats-key-wrong-case" (Serialize $m) 1 @("header-stats-key-unknown byStatus Pending") ""
+
+# t24: a wrong-case gatePrerequisites key is an unknown gate ("G0" != "g0")
+$m = New-Matrix
+$gk = @()
+foreach ($p in $m.gatePrerequisites.PSObject.Properties) {
+    $n = $p.Name
+    if ($n -ceq "G0") { $n = "g0" }
+    $gk += '"' + $n + '": ' + (ConvertTo-Json -InputObject @($p.Value) -Compress)
+}
+$m.gatePrerequisites = ('{ ' + ($gk -join ', ') + ' }') | ConvertFrom-Json
+$null = Run-Case "t24-gate-key-wrong-case" (Serialize $m) 1 @("header-gate-prereqs-unknown-gate g0") ""
+
+# t25: uppercase hex violates the exact lowercase commit-hash format
+$m = New-Matrix
+$m.baselineCommit = $m.baselineCommit.ToUpper()
+$null = Run-Case "t25-baseline-commit-uppercase" (Serialize $m) 1 @("bad-baseline-commit") ""
+
+# t26: a wrong-case element makes statusVocabulary deviate from the controlled set
+$m = New-Matrix
+$m.statusVocabulary = @("accepted-component","partial","Pending","replaced-by-v5-contract","platform-blocked")
+$null = Run-Case "t26-status-vocabulary-wrong-case" (Serialize $m) 1 @("status-vocabulary-mismatch") ""
+
+# t27: a wrong-case task ID inside a gate prerequisite list is a declared-vs-derived mismatch
+$m = New-Matrix
+$ga = @($m.gatePrerequisites.G1)
+$ga[0] = $ga[0].Substring(0, 1).ToLower() + $ga[0].Substring(1)
+$m.gatePrerequisites.G1 = $ga
+$null = Run-Case "t27-gate-prereq-element-wrong-case" (Serialize $m) 1 @("header-gate-prereqs-mismatch G1") ""
+
 # --- sandbox cases s1..s6: isolated throwaway git repo, baseline B + child commit C ---
 $sb = Join-Path $tempDir "sandbox"
 New-Item -ItemType Directory -Force -Path $sb | Out-Null
@@ -424,7 +499,7 @@ try {
     $sbDocDir = Join-Path $sb "doc"
     $tbCopied = @(Get-ChildItem -LiteralPath $sbDocDir -Recurse -Filter "V5-0-1-IMPLEMENTATION-TASKS.md" -ErrorAction SilentlyContinue)
     if ($tbCopied.Count -ne 1) { throw "taskbook copy not unique" }
-    Write-SandboxFile "engine/src/main/kotlin/com/majiang/Demo.kt" ("class DemoEngine`n`n// sandbox production source`nfun ExtraEngine.polish() { }`nval plainProperty = 1`nval ExternalReceiver.extensionProperty: Int get() = 1`nval ExternalReceiver . spacedProperty: Int get() = 1`nval String?.nullableProperty: Int get() = 1`nval Map<String, Int>.genericProperty: Int get() = 1`nval Map<(String) -> Int, List<Int>>.functionProperty: Int get() = 1`nval List<List<Int?>> . nestedProperty: Int get() = 1`nfun Map<(String) -> Int, List<Int>>.functionFun(): Int = 1`nfun <F : (String) -> Int> higherFun(f: F): Int = 1`ntypealias DemoAlias = Int`n/* outer comment`n   /* nested comment */`n   class NestedCommentOnly`n*/`nval message = `"`"`"`n    literal `" class RawStringOnly `" literal`n`"`"`"`nval spaced = `"literal { brace`"`nclass RealAfterKotlin`nval templated = `"a `$`{ `"class TemplateOnly`" } b`"`n")
+    Write-SandboxFile "engine/src/main/kotlin/com/majiang/Demo.kt" ("class DemoEngine`n`n// sandbox production source`nfun ExtraEngine.polish() { }`nval plainProperty = 1`nval ExternalReceiver.extensionProperty: Int get() = 1`nval ExternalReceiver . spacedProperty: Int get() = 1`nval String?.nullableProperty: Int get() = 1`nval Map<String, Int>.genericProperty: Int get() = 1`nval Map<(String) -> Int, List<Int>>.functionProperty: Int get() = 1`nval List<List<Int?>> . nestedProperty: Int get() = 1`nval ReceiverCase.receiverCase: Int get() = 1`nfun Map<(String) -> Int, List<Int>>.functionFun(): Int = 1`nfun <F : (String) -> Int> higherFun(f: F): Int = 1`ntypealias DemoAlias = Int`n/* outer comment`n   /* nested comment */`n   class NestedCommentOnly`n*/`nval message = `"`"`"`n    literal `" class RawStringOnly `" literal`n`"`"`"`nval spaced = `"literal { brace`"`nclass RealAfterKotlin`nval templated = `"a `$`{ `"class TemplateOnly`" } b`"`n")
     Write-SandboxFile "engine/src/test/kotlin/com/majiang/DemoTest.kt" ("class DemoEngineTest`n")
     Write-SandboxFile "dotnet/src/DemoV5.cs" ("public sealed class DemoV5Type`n{`n    // this record is durable before use`n    public const string Label = `"class StringOnlySymbol in string`";`n    public string Message => `$`"prefix { `"class InterpolatedOnly `" } suffix`";`n    public const string Verbatim = @`"prefix { class VerbatimOnly tail`";`n}`nclass SandboxBox<T>`n{`n}`nclass RealAfterVerbatim`n")
     $null = & git -C $sb add -A 2>&1
@@ -433,7 +508,7 @@ try {
     if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrEmpty($shaB)) { throw "baseline commit B failed" }
     $shaB = $shaB.Trim()
     # child commit C: post-baseline files and post-baseline-only symbols
-    Write-SandboxFile "engine/src/main/kotlin/com/majiang/Demo.kt" ("class DemoEngine`n`n// sandbox production source`nfun ExtraEngine.polish() { }`nval plainProperty = 1`nval ExternalReceiver.extensionProperty: Int get() = 1`nval ExternalReceiver . spacedProperty: Int get() = 1`nval String?.nullableProperty: Int get() = 1`nval Map<String, Int>.genericProperty: Int get() = 1`nval Map<(String) -> Int, List<Int>>.functionProperty: Int get() = 1`nval List<List<Int?>> . nestedProperty: Int get() = 1`nfun Map<(String) -> Int, List<Int>>.functionFun(): Int = 1`nfun <F : (String) -> Int> higherFun(f: F): Int = 1`ntypealias DemoAlias = Int`n/* outer comment`n   /* nested comment */`n   class NestedCommentOnly`n*/`nval message = `"`"`"`n    literal `" class RawStringOnly `" literal`n`"`"`"`nval spaced = `"literal { brace`"`nclass RealAfterKotlin`nval templated = `"a `$`{ `"class TemplateOnly`" } b`"`n`nclass LaterEngineSymbol`n")
+    Write-SandboxFile "engine/src/main/kotlin/com/majiang/Demo.kt" ("class DemoEngine`n`n// sandbox production source`nfun ExtraEngine.polish() { }`nval plainProperty = 1`nval ExternalReceiver.extensionProperty: Int get() = 1`nval ExternalReceiver . spacedProperty: Int get() = 1`nval String?.nullableProperty: Int get() = 1`nval Map<String, Int>.genericProperty: Int get() = 1`nval Map<(String) -> Int, List<Int>>.functionProperty: Int get() = 1`nval List<List<Int?>> . nestedProperty: Int get() = 1`nval ReceiverCase.receiverCase: Int get() = 1`nfun Map<(String) -> Int, List<Int>>.functionFun(): Int = 1`nfun <F : (String) -> Int> higherFun(f: F): Int = 1`ntypealias DemoAlias = Int`n/* outer comment`n   /* nested comment */`n   class NestedCommentOnly`n*/`nval message = `"`"`"`n    literal `" class RawStringOnly `" literal`n`"`"`"`nval spaced = `"literal { brace`"`nclass RealAfterKotlin`nval templated = `"a `$`{ `"class TemplateOnly`" } b`"`n`nclass LaterEngineSymbol`n")
     Write-SandboxFile "engine/src/main/kotlin/com/majiang/Extra.kt" ("class ExtraEngine`n")
     Write-SandboxFile "dotnet/src/DemoV5.cs" ("public sealed class DemoV5Type`n{`n    // this record is durable before use`n    public const string Label = `"class StringOnlySymbol in string`";`n    public string Message => `$`"prefix { `"class InterpolatedOnly `" } suffix`";`n    public const string Verbatim = @`"prefix { class VerbatimOnly tail`";`n}`nclass SandboxBox<T>`n{`n}`nclass RealAfterVerbatim`nnclass LaterV5Symbol`n")
     Write-SandboxFile "dotnet/src/ExtraV5.cs" ("public sealed class ExtraV5Type`n")
@@ -451,9 +526,9 @@ $ErrorActionPreference = "Stop"
 
 if (-not $sandboxOk) {
     # NO-SKIP: a sandbox environment failure is an explicit self-test failure, never a pass.
-    # 35 sandbox cases exist (s1..s35); all of them count as failed when setup breaks.
-    Log "  CASE-BROKEN sandbox-setup (counted as failures for s1..s35)"
-    1..35 | ForEach-Object { $script:results += $false }
+    # 41 sandbox cases exist (s1..s41); all of them count as failed when setup breaks.
+    Log "  CASE-BROKEN sandbox-setup (counted as failures for s1..s41)"
+    1..41 | ForEach-Object { $script:results += $false }
 } else {
     Log ("SANDBOX-B=" + $shaB)
     Log ("SANDBOX-C=" + $shaC)
@@ -670,6 +745,43 @@ if (-not $sandboxOk) {
     $m = Serialize $good | ConvertFrom-Json
     $m.rows[0].v4Symbol = "F"
     $null = Run-Case "s35-generic-type-param-v4-symbol" (Serialize $m) 1 @("v4-symbol-not-declared-at-baseline") $sb
+
+    # --- case-sensitivity cases s36..s41 [review round 9]: identifiers and tree paths are
+    # EXACT-CASE -- a name differing only in case is a DIFFERENT symbol/value, and a receiver
+    # differing only in case from the declared name must not suppress the real declaration.
+    # s36: wrong-case CLASS name ("DemoEngine" != "DEMOENGINE")
+    $m = Serialize $good | ConvertFrom-Json
+    $m.rows[0].v4Symbol = "DEMOENGINE"
+    $null = Run-Case "s36-v4-symbol-wrong-case-class" (Serialize $m) 1 @("v4-symbol-not-declared-at-baseline") $sb
+
+    # s37: wrong-case extension FUNCTION name ("polish" != "POLISH")
+    $m = Serialize $good | ConvertFrom-Json
+    $m.rows[0].v4Symbol = "POLISH"
+    $null = Run-Case "s37-v4-symbol-wrong-case-fun" (Serialize $m) 1 @("v4-symbol-not-declared-at-baseline") $sb
+
+    # s38: wrong-case plain PROPERTY name ("plainProperty" != "PLAINPROPERTY")
+    $m = Serialize $good | ConvertFrom-Json
+    $m.rows[0].v4Symbol = "PLAINPROPERTY"
+    $null = Run-Case "s38-v4-symbol-wrong-case-property" (Serialize $m) 1 @("v4-symbol-not-declared-at-baseline") $sb
+
+    # s39 POSITIVE: receiver and declared name differing only in case are TWO DIFFERENT names --
+    # "val ReceiverCase.receiverCase: Int get() = 1" declares receiverCase, and the case-variant
+    # receiver must not suppress that real declaration
+    $m = Serialize $good | ConvertFrom-Json
+    $m.rows[0].v4Symbol = "receiverCase"
+    $null = Run-Case "s39-positive-receiver-case-variant-name" (Serialize $m) 0 @() $sb
+
+    # s40: the wrong-case form of that property name is not the declaration
+    # ("receiverCase" != "RECEIVERCASE")
+    $m = Serialize $good | ConvertFrom-Json
+    $m.rows[0].v4Symbol = "RECEIVERCASE"
+    $null = Run-Case "s40-v4-symbol-wrong-case-extension-property" (Serialize $m) 1 @("v4-symbol-not-declared-at-baseline") $sb
+
+    # s41: a wrong-case anchor PATH is not in the frozen baseline tree (tree entries are
+    # exact-case; "dotnet/src/DemoV5.cs" != "dotnet/src/DEMOV5.cs")
+    $m = Serialize $good | ConvertFrom-Json
+    $m.rows[0].v5Anchors = @(@{ path = "dotnet/src/DEMOV5.cs"; symbol = "DemoV5Type" })
+    $null = Run-Case "s41-anchor-path-wrong-case" (Serialize $m) 1 @("v5-anchor-not-in-baseline-tree") $sb
 }
 
 # --- summary ---

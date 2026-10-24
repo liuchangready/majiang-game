@@ -138,7 +138,7 @@ try {
     Write-Output "REASON=bad-json $($_.Exception.Message)"
     exit 1
 }
-if (-not (Is-NonEmptyString $doc.schema) -or $doc.schema -ne "v5-implementation-trace-v1") {
+if (-not (Is-NonEmptyString $doc.schema) -or $doc.schema -cne "v5-implementation-trace-v1") {
     Fail ("bad-schema expected=v5-implementation-trace-v1 actual=" + $doc.schema)
 }
 
@@ -170,7 +170,7 @@ if ((Has-Prop $doc "statusVocabulary") -and -not (Is-JsonArray (Prop-Value $doc 
     $sv = Prop-Value $doc "statusVocabulary"   # protected array arrives intact via direct assignment
     $svBad = $false
     foreach ($s in $sv) { if (-not (Is-JsonString $s)) { Fail "array-element-not-string statusVocabulary"; $svBad = $true; break } }
-    if (-not $svBad -and ((@($sv | Sort-Object) -join ",") -ne (@($allowedStatus | Sort-Object) -join ","))) {
+    if (-not $svBad -and ((@($sv | Sort-Object) -join ",") -cne (@($allowedStatus | Sort-Object) -join ","))) {
         Fail "status-vocabulary-mismatch"
     }
 }
@@ -207,7 +207,7 @@ if ((Has-Prop $doc "stats") -and (Is-JsonObject (Prop-Value $doc "stats"))) {
         $expectedKeys = $allowedStatus
         if ($part -eq "byModule") { $expectedKeys = $modules }
         foreach ($p in $pObj.PSObject.Properties) {
-            if ($expectedKeys -notcontains $p.Name) { Fail ("header-stats-key-unknown " + $part + " " + $p.Name) }
+            if ($expectedKeys -cnotcontains $p.Name) { Fail ("header-stats-key-unknown " + $part + " " + $p.Name) }
             if (-not (Is-JsonNumber $p.Value)) { Fail ("header-stats-value-not-number " + $part + " " + $p.Name) }
         }
     }
@@ -219,7 +219,7 @@ if ((Has-Prop $doc "gatePrerequisites") -and -not (Is-JsonObject (Prop-Value $do
 } elseif (Has-Prop $doc "gatePrerequisites") {
     $gp = Prop-Value $doc "gatePrerequisites"
     foreach ($p in $gp.PSObject.Properties) {
-        if ($p.Name -notmatch "^G[0-5]$") { Fail ("header-gate-prereqs-unknown-gate " + $p.Name); continue }
+        if ($p.Name -cnotmatch "^G[0-5]$") { Fail ("header-gate-prereqs-unknown-gate " + $p.Name); continue }
         if (-not (Is-JsonArray $p.Value)) { Fail ("header-gate-prereqs-not-array " + $p.Name); continue }
         foreach ($t in @($p.Value)) {
             if (-not (Is-JsonString $t)) { Fail ("array-element-not-string gatePrerequisites." + $p.Name); break }
@@ -229,7 +229,7 @@ if ((Has-Prop $doc "gatePrerequisites") -and -not (Is-JsonObject (Prop-Value $do
 
 # --- 2. baseline commit exists (read-only) ---
 $bc = $doc.baselineCommit
-if (-not (Is-NonEmptyString $bc) -or -not ($bc -match "^[0-9a-f]{40}$")) {
+if (-not (Is-NonEmptyString $bc) -or -not ($bc -cmatch "^[0-9a-f]{40}$")) {
     Fail ("bad-baseline-commit format: " + $bc)
 } else {
     $ErrorActionPreference = "Continue"
@@ -250,8 +250,11 @@ if ($tbCandidates.Count -gt 1) {
     Write-Output "REASON=multiple-taskbooks-found"
     exit 2
 }
-$taskIds = @{}
-$gatePrereqs = @{}
+# Ordinal (case-sensitive) maps: keys may originate from JSON input (responsibleTask,
+# dependencies) and task IDs are exact-case, so PowerShell's default case-insensitive
+# hashtable must never stand in for identity here ("p1.1" is not the taskbook's "P1.1").
+$taskIds = New-Object 'System.Collections.Generic.Dictionary[string,object]'
+$gatePrereqs = New-Object 'System.Collections.Generic.Dictionary[string,object]'
 $gatesFound = New-Object System.Collections.Generic.List[string]
 $curPrereqs = New-Object System.Collections.Generic.List[string]
 foreach ($ln in ((Read-Utf8 $tbCandidates[0]) -split "`r?`n")) {
@@ -276,12 +279,13 @@ Note ("taskbook-tasks=" + $taskIds.Count + " gates=" + $gatesFound.Count)
 if ((Has-Prop $doc "gatePrerequisites") -and (Is-JsonObject (Prop-Value $doc "gatePrerequisites")) -and $gatesFound.Count -ge 6) {
     $gpObj = Prop-Value $doc "gatePrerequisites"
     foreach ($g in $gatesFound) {
-        $decl = $gpObj.PSObject.Properties[$g]
+        $decl = $null
+        foreach ($gprop in $gpObj.PSObject.Properties) { if ($gprop.Name -ceq $g) { $decl = $gprop; break } }
         if ($null -eq $decl) { Fail ("header-gate-prereqs-missing-gate " + $g); continue }
         if (-not (Is-JsonArray $decl.Value)) { continue }
         $declList = (@($decl.Value) | Sort-Object) -join ","
         $derivedList = (@($gatePrereqs[$g]) | Sort-Object) -join ","
-        if ($declList -ne $derivedList) {
+        if ($declList -cne $derivedList) {
             Fail ("header-gate-prereqs-mismatch " + $g + " declared=[" + $declList + "] taskbook=[" + $derivedList + "]")
         }
     }
@@ -300,7 +304,9 @@ if ($treeExit -ne 0 -or @($treeLines).Count -eq 0) {
     Write-Output "REASON=baseline-tree-unreadable $bc"
     exit 1
 }
-$baselineTree = @{}
+# Ordinal (case-sensitive) map for the frozen tree: anchor/golden paths arrive from JSON and
+# git tree entries are exact-case, so "Dotnet/src/X.cs" must never satisfy ContainsKey.
+$baselineTree = New-Object 'System.Collections.Generic.Dictionary[string,object]'
 foreach ($t in $treeLines) { if (-not $baselineTree.ContainsKey($t)) { $baselineTree[$t] = $true } }
 
 # Plan-path convention per module: row.source = tracked path minus the module's package root.
@@ -315,8 +321,10 @@ $pkgPrefix = @{
 }
 $allowedV5Targets = @("Mahjong.Domain","Mahjong.TableRuntime","Mahjong.Contracts","Mahjong.Contracts.Wire","Mahjong.Ai","Mahjong.Client","Mahjong.LobbyService","Mahjong.LocalHost","Mahjong.TableService","Mahjong.Infrastructure")
 
-$realSet = @{}
-$realPath = @{}
+# Ordinal (case-sensitive): row keys built from JSON module|source must match tracked
+# tree paths exactly -- "engine|demo.kt" is not the tracked "engine|Demo.kt".
+$realSet = New-Object 'System.Collections.Generic.Dictionary[string,object]'
+$realPath = New-Object 'System.Collections.Generic.Dictionary[string,object]'
 $realCount = 0
 foreach ($l in $baselineTree.Keys) {
     if ($l -notmatch "/src/main/") { continue }        # main sources only
@@ -345,7 +353,7 @@ foreach ($l in $baselineTree.Keys) {
 }
 
 # --- index rows ---
-$rowKeys = @{}
+$rowKeys = New-Object 'System.Collections.Generic.Dictionary[string,object]'
 $rows = $matrixRows
 foreach ($r in $rows) {
     if ($null -eq $r) { Fail "rows-element-not-object"; continue }
@@ -755,10 +763,12 @@ function Test-KotlinFunDeclaration([string]$t, [string]$symbol) {
         $q = $chain.End
         while ($q -lt $len -and [char]::IsWhiteSpace($t[$q])) { $q++ }
         if ($q -ge $len -or $t[$q] -ne [char]40) { continue } # tight syntax: name "("
-        if ($chain.Segments[$chain.Segments.Count - 1] -ne $symbol) { continue }
+        # Kotlin identifiers are case-sensitive: a reference differing only in case is a
+        # DIFFERENT symbol and must never validate as the declared name (ordinal compare).
+        if ($chain.Segments[$chain.Segments.Count - 1] -cne $symbol) { continue }
         $isReceiver = $false
         for ($k = 0; $k -lt $chain.Segments.Count - 1; $k++) {
-            if ($chain.Segments[$k] -eq $symbol) { $isReceiver = $true; break }
+            if ($chain.Segments[$k] -ceq $symbol) { $isReceiver = $true; break }
         }
         if (-not $isReceiver) { return $true }
     }
@@ -784,7 +794,8 @@ function Test-KotlinDeclaredSymbol([string]$text, [string]$symbol) {
     foreach ($kw in [regex]::Matches($t, "(?<![A-Za-z0-9_])(const\s+val|val|var)(?![A-Za-z0-9_])")) {
         $chain = Get-KotlinPropertyChain $t ($kw.Index + $kw.Length)
         if ($null -eq $chain -or $chain.Segments.Count -eq 0) { continue }
-        if ($chain.Segments[$chain.Segments.Count - 1] -ne $symbol) { continue }
+        # Ordinal name compare: wrong-case property names are different symbols.
+        if ($chain.Segments[$chain.Segments.Count - 1] -cne $symbol) { continue }
         $b = $chain.End
         while ($b -lt $len -and [char]::IsWhiteSpace($t[$b])) { $b++ }
         if ($b -ge $len) { continue }
@@ -794,7 +805,7 @@ function Test-KotlinDeclaredSymbol([string]$text, [string]$symbol) {
             # accessor / delegate keywords: exact word "by", "get" or "set"
             foreach ($w in @("by", "get", "set")) {
                 $wl = $w.Length
-                if (($len - $b) -ge $wl -and $t.Substring($b, $wl) -eq $w) {
+                if (($len - $b) -ge $wl -and $t.Substring($b, $wl) -ceq $w) {
                     $after = if ($b + $wl -lt $len) { $t[$b + $wl] } else { ' ' }
                     $afterIsIdent = (($after -ge [char]65 -and $after -le [char]90) -or ($after -ge [char]97 -and $after -le [char]122) -or ($after -ge [char]48 -and $after -le [char]57) -or $after -eq [char]95)
                     if (-not $afterIsIdent) { $isBoundary = $true; break }
@@ -804,7 +815,9 @@ function Test-KotlinDeclaredSymbol([string]$text, [string]$symbol) {
         if (-not $isBoundary) { continue }
         $isReceiver = $false
         for ($k = 0; $k -lt $chain.Segments.Count - 1; $k++) {
-            if ($chain.Segments[$k] -eq $symbol) { $isReceiver = $true; break }
+            # Ordinal receiver compare: "ReceiverCase" and "receiverCase" are distinct names,
+            # so a receiver differing only in case must not suppress a real declaration.
+            if ($chain.Segments[$k] -ceq $symbol) { $isReceiver = $true; break }
         }
         if (-not $isReceiver) { return $true }
     }
@@ -886,7 +899,7 @@ Load-BaselineBlobs
 # --- 4/4b/5/5b/6. per-row schema, taskbook check, frozen anchors, responsibility ---
 $statusCount = @{}
 $moduleCount = @{}
-$rowIds = @{}
+$rowIds = New-Object 'System.Collections.Generic.Dictionary[string,object]'
 foreach ($r in $rows) {
     if ($null -eq $r -or -not (Is-JsonObject $r)) { continue }
     $tag = "[" + $r.id + " " + $r.module + "/" + $r.source + "]"
@@ -899,7 +912,7 @@ foreach ($r in $rows) {
     # id format + global uniqueness (only decidable for proper strings)
     if ((Has-Prop $r "id") -and (Is-JsonString (Prop-Value $r "id"))) {
         $idVal = Prop-Value $r "id"
-        if ($idVal -notmatch "^[A-Z]{3}-[0-9]{3}$") { Fail ($tag + " bad-row-id: " + $idVal) }
+        if ($idVal -cnotmatch "^[A-Z]{3}-[0-9]{3}$") { Fail ($tag + " bad-row-id: " + $idVal) }
         if ($rowIds.ContainsKey($idVal)) { Fail ($tag + " duplicate-row-id: " + $idVal) }
         else { $rowIds[$idVal] = $true }
     }
@@ -924,15 +937,16 @@ foreach ($r in $rows) {
         }
     }
 
-    if ($modules -notcontains $r.module) { Fail ($tag + " unknown-module: " + $r.module) }
-    if ($allowedStatus -notcontains $r.status) { Fail ($tag + " unknown-status: " + $r.status) }
+    # Controlled vocabularies are exact-case (ordinal): wrong-case values are unknown values.
+    if ($modules -cnotcontains $r.module) { Fail ($tag + " unknown-module: " + $r.module) }
+    if ($allowedStatus -cnotcontains $r.status) { Fail ($tag + " unknown-status: " + $r.status) }
 
     # 4. v5Targets: >=1 entry, every entry a JSON string in the controlled vocabulary
     if ((Has-Prop $r "v5Targets") -and (Is-JsonArray (Prop-Value $r "v5Targets"))) {
         if ($v5tArr.Count -eq 0) { Fail ($tag + " v5-targets-empty") }
         foreach ($t in $v5tArr) {
             if (-not (Is-JsonString $t)) { Fail ($tag + " array-element-not-string v5Targets"); continue }
-            if (-not $t.StartsWith("Unity(") -and $allowedV5Targets -notcontains $t) { Fail ($tag + " unknown-v5-target-module: " + $t) }
+            if (-not $t.StartsWith("Unity(") -and $allowedV5Targets -cnotcontains $t) { Fail ($tag + " unknown-v5-target-module: " + $t) }
         }
     }
 
@@ -948,8 +962,8 @@ foreach ($r in $rows) {
         if (-not (Is-NonEmptyString $d)) { Fail ($tag + " array-element-not-string dependencies"); continue }
         if (-not $taskIds.ContainsKey($d)) { Fail ($tag + " dependency-not-in-taskbook: " + $d); continue }
         if (-not (Is-NonEmptyString $respTask)) { continue }
-        if ($d -eq $respTask) { Fail ($tag + " self-task-dependency: " + $d); continue }
-        if ($d -match "^G[0-5]$") {
+        if ($d -ceq $respTask) { Fail ($tag + " self-task-dependency: " + $d); continue }
+        if ($d -cmatch "^G[0-5]$") {
             $prereqs = $gatePrereqs[$d]
             if ($null -ne $prereqs -and $prereqs.Contains($respTask)) {
                 Fail ($tag + " gate-dependency-cycle: " + $d + " itself requires " + $respTask)
@@ -1011,7 +1025,7 @@ foreach ($r in $rows) {
         $commit = Prop-Value $a "commit"
         if (-not (Test-CanonicalRepoPath $docPath)) { Fail ($tag + " anchor-path-not-canonical: " + $docPath); continue }
         if (-not $docPath.StartsWith("doc/")) { Fail ($tag + " acceptance-doc-not-under-doc: " + $docPath) }
-        if (-not ($commit -match "^[0-9a-f]{7,40}$")) { Fail ($tag + " acceptance-commit-bad: " + $commit); continue }
+        if (-not ($commit -cmatch "^[0-9a-f]{7,40}$")) { Fail ($tag + " acceptance-commit-bad: " + $commit); continue }
         # Doc membership at the baseline is checked with cat-file -e on "<bc>:<doc>" instead of a
         # tree lookup: doc paths may be non-ASCII, which ls-tree output cannot reliably round-trip
         # through the console encoding, while a direct object argument can.
@@ -1050,7 +1064,7 @@ foreach ($r in $rows) {
     }
 
     # 6. status-specific responsibility rules (uses the pre-extracted typed arrays)
-    if ($r.status -eq "accepted-component") {
+    if ($r.status -ceq "accepted-component") {
         if ($v5aArr.Count -eq 0 -or -not (Is-JsonObject $v5aArr[0])) {
             Fail ($tag + " accepted-component-without-v5-anchor")
         }
@@ -1079,14 +1093,20 @@ if ((Has-Prop $doc "stats") -and (Is-JsonObject (Prop-Value $doc "stats"))) {
     $statsObj = Prop-Value $doc "stats"
     foreach ($st in $allowedStatus) {
         $declared = 0
-        if ($null -ne $statsObj.byStatus -and $null -ne $statsObj.byStatus.PSObject.Properties[$st]) { $declared = $statsObj.byStatus.$st }
+        # Ordinal name match: PSObject property tables are case-insensitive, so the declared
+        # value must be read by exact-case key only (a "PENDING" key is a different key).
+        if ($null -ne $statsObj.byStatus) {
+            foreach ($sprop in $statsObj.byStatus.PSObject.Properties) { if ($sprop.Name -ceq $st) { $declared = $sprop.Value; break } }
+        }
         $computed = 0
         if ($statusCount[$st]) { $computed = $statusCount[$st] }
         if ($declared -ne $computed) { Fail ("stats-by-status-mismatch " + $st + " declared=" + $declared + " computed=" + $computed) }
     }
     foreach ($m in $modules) {
         $declared = 0
-        if ($null -ne $statsObj.byModule -and $null -ne $statsObj.byModule.PSObject.Properties[$m]) { $declared = $statsObj.byModule.$m }
+        if ($null -ne $statsObj.byModule) {
+            foreach ($mprop in $statsObj.byModule.PSObject.Properties) { if ($mprop.Name -ceq $m) { $declared = $mprop.Value; break } }
+        }
         $computed = 0
         if ($moduleCount[$m]) { $computed = $moduleCount[$m] }
         if ($declared -ne $computed) { Fail ("stats-by-module-mismatch " + $m + " declared=" + $declared + " computed=" + $computed) }
