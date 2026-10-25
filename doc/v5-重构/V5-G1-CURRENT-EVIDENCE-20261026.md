@@ -230,10 +230,9 @@
 1. **P4.1 本地宿主**（依赖 I-CUR-6 的重新准备：b43435d 未接受，需按 FAILED 原因重开准备线程，禁止复用 FAILED session）：LocalHost 组合根、AI 组合根接线、SF-1 中 MapAction 扩展前置。
 2. **P4.2 壳层**（其 docs-only 准备已接受：V5-P4.2-SHELL-PREPARATION，冻结 f9fd8e8d）：可先行，与 P4.1 文件集互不重叠。
 3. **P5.x 服务端/存储线**：P5.2 事件存储（I-CUR-5 的重启探针归入其验收）、HTTPS/WSS 宿主链路（`V5-ARCHITECTURE-DESIGN.md:16/:146`：V5 公网入口为 HTTPS + WSS，**不沿用 MJ-TCP/1 的 `MJTC` 魔数与 12 字节长度帧头**；MJ-TCP/1 仍为 V4 唯一生产传输边界，两者不混淆）。
-4. **门2 台账改判**（D-CUR-2，caller 串行）：不与代码任务并行冲突。
-5. **Unity 平台线**（门9 缺口清偿：许可、IL2CPP、SDK/NDK、iOS、真机）——按 UNITY-ENVIRONMENT.md 依赖顺序，不借 Editor 冒充。
+4. **Unity 平台线**（门9 缺口清偿：许可、IL2CPP、SDK/NDK、iOS、真机）——按 UNITY-ENVIRONMENT.md 依赖顺序，不借 Editor 冒充。
 
-注：N-2 接线**不在上列**——按原关闭公式（`V5-1-REVIEW.md:462`）它是 G1 判定前的硬前置（§4），须由 caller 在 G1 判定前处置；其余三项 N-2 残余的时点交 caller 裁决。
+注：门2 台账改判与 N-2 接线**不在上列**——按原关闭公式（`V5-1-REVIEW.md:462`）两者均是 G1 判定前的硬前置（§4），须由 caller 在 G1 判定前处置；门2 台账由 caller 串行更新，其余三项 N-2 残余的时点交 caller 裁决。
 
 约束不变：V4 是唯一生产基线；G1 未批准前不创建 complete.flag；组件验收不得写成阶段验收；push/PR/合并由 caller 独占。
 
