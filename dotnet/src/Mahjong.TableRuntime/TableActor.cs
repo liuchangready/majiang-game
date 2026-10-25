@@ -8,6 +8,7 @@ using Mahjong.Ai;
 using Mahjong.Contracts;
 using Mahjong.Domain;
 using Mahjong.Domain.Cheat;
+using Mahjong.Domain.Rules;
 
 namespace Mahjong.TableRuntime
 {
@@ -50,6 +51,7 @@ namespace Mahjong.TableRuntime
         private readonly ITableControlCommitPort? _controlCommitPort;
         private readonly TableDurableContext? _durable;
         private readonly TableRecoveryService? _recoveryService;
+        private readonly ITableSettlementFactsPort? _settlementFactsPort;
         private readonly DecisionClockConfig _decisionClockConfig;
         private ControlRegistry _control;
         private DecisionClock _decisionClock;
@@ -128,6 +130,37 @@ namespace Mahjong.TableRuntime
             ITableProjectionContextSource? projectionContextSource,
             TableStreamOptions? streamOptions,
             TableDurableContext? durableContext = null)
+            : this(
+                options,
+                initialRound,
+                commitPort,
+                clock,
+                publicationSink,
+                controlCommitPort,
+                projectionContextSource,
+                streamOptions,
+                durableContext,
+                null)
+        {
+        }
+
+        /// <summary>
+        /// Adds the N-2 host settlement fact boundary to the normal actor dependencies. The port
+        /// is a composition-root dependency; when it is present the actor is the only settlement
+        /// authority and raw settlement-bearing envelopes are refused. Real P4.1/P5.1 hosts are
+        /// later-stage work; this constructor is the testable G1 boundary.
+        /// </summary>
+        public TableActor(
+            TableActorOptions options,
+            RoundStateMachine initialRound,
+            ITableCommitPort commitPort,
+            ITableClock clock,
+            ITablePublicationSink? publicationSink,
+            ITableControlCommitPort? controlCommitPort,
+            ITableProjectionContextSource? projectionContextSource,
+            TableStreamOptions? streamOptions,
+            TableDurableContext? durableContext,
+            ITableSettlementFactsPort? settlementFactsPort)
         {
             _options = options ?? throw new ArgumentNullException(nameof(options));
             _options.Validate();
@@ -155,6 +188,7 @@ namespace Mahjong.TableRuntime
             _streamOptions = streamOptions ?? new TableStreamOptions();
             _streamOptions.Validate();
             _durable = durableContext;
+            _settlementFactsPort = settlementFactsPort;
             _recoveryService = durableContext == null
                 ? null
                 : new TableRecoveryService(
@@ -231,6 +265,38 @@ namespace Mahjong.TableRuntime
 
             cancellationToken.ThrowIfCancellationRequested();
             var message = new CommandMailboxMessage(command);
+            TableMailboxEnqueueStatus enqueue = _mailbox.TryEnqueue(message);
+            if (enqueue != TableMailboxEnqueueStatus.Enqueued)
+            {
+                return new ValueTask<TableOperationResult>(AdmissionFailure(enqueue));
+            }
+
+            EnsurePump();
+            return new ValueTask<TableOperationResult>(message.Completion.Task);
+        }
+
+        /// <summary>
+        /// Admits one typed settlement intent to the same serial business mailbox. The actor
+        /// reads the then-current round, derives every provable fact, asks the configured host
+        /// fact port only for the model-missing facts, calls the frozen
+        /// <c>RoundSettlementCalculator</c>, re-verifies the exact source, and only then uses the
+        /// normal Prepare/Install + durable receipt/event projection commit path. The request
+        /// carries no settlement scores, han, fu or payments.
+        ///
+        /// This is the only settlement entry when the N-2 authority is configured; a raw
+        /// settlement-bearing <see cref="SubmitAsync"/> envelope is refused in that mode.
+        /// </summary>
+        public ValueTask<TableOperationResult> SubmitSettlementAsync(
+            TableSettlementRequest request,
+            CancellationToken cancellationToken = default)
+        {
+            if (request == null)
+            {
+                throw new ArgumentNullException(nameof(request));
+            }
+
+            cancellationToken.ThrowIfCancellationRequested();
+            var message = new SettlementMailboxMessage(request);
             TableMailboxEnqueueStatus enqueue = _mailbox.TryEnqueue(message);
             if (enqueue != TableMailboxEnqueueStatus.Enqueued)
             {
@@ -846,6 +912,10 @@ namespace Mahjong.TableRuntime
                                 ? await ProcessCheatCommandAsync(command.CheatCommand).ConfigureAwait(false)
                                 : await ProcessCommandAsync(command.Command!).ConfigureAwait(false));
                         break;
+                    case SettlementMailboxMessage settlementMessage:
+                        settlementMessage.Completion.TrySetResult(
+                            await ProcessSettlementCommandAsync(settlementMessage.Request).ConfigureAwait(false));
+                        break;
                     case OpenDecisionMailboxMessage open:
                         TableOperationResult openResult = await ProcessOpenDecisionAsync(open.Decision).ConfigureAwait(false);
                         if (openResult.Status == TableOperationStatus.Configured)
@@ -953,11 +1023,25 @@ namespace Mahjong.TableRuntime
             }
         }
 
-        private async ValueTask<TableOperationResult> ProcessCommandAsync(TableCommandEnvelope command)
+        private ValueTask<TableOperationResult> ProcessCommandAsync(TableCommandEnvelope command)
+        {
+            return ProcessAdmittedCommandAsync(command, () => ProcessCommandCoreAsync(command));
+        }
+
+        private ValueTask<TableOperationResult> ProcessSettlementCommandAsync(TableSettlementRequest request)
+        {
+            return ProcessAdmittedCommandAsync(
+                request.Envelope,
+                () => ProcessSettlementCoreAsync(request));
+        }
+
+        private async ValueTask<TableOperationResult> ProcessAdmittedCommandAsync(
+            TableCommandEnvelope command,
+            Func<ValueTask<TableOperationResult>> core)
         {
             if (_durable == null)
             {
-                return await ProcessCommandCoreAsync(command).ConfigureAwait(false);
+                return await core().ConfigureAwait(false);
             }
 
             if (!command.HasDurableIdentity)
@@ -1023,7 +1107,7 @@ namespace Mahjong.TableRuntime
                 return scopeError;
             }
 
-            TableOperationResult result = await ProcessCommandCoreAsync(command).ConfigureAwait(false);
+            TableOperationResult result = await core().ConfigureAwait(false);
             if (result.Status != TableOperationStatus.Rejected || !ShouldPersistRejection(result.ReasonCode))
             {
                 return result;
@@ -1090,6 +1174,18 @@ namespace Mahjong.TableRuntime
 
         private async ValueTask<TableOperationResult> ProcessCommandCoreAsync(TableCommandEnvelope command)
         {
+            if (TableSettlementIntent.IsSettlementAction(command.Command.Action) &&
+                _settlementFactsPort != null)
+            {
+                // In N-2 authority mode every Tsumo/Ron/draw must come through the typed intent
+                // path. A raw settlement-bearing envelope is not an authenticated production
+                // entry: refuse it before reading any caller-supplied score/han/fu/payment.
+                return TableOperationResult.Rejected(
+                    _stateVersion,
+                    TableSettlementReasonCode.RawEntryRejected,
+                    "Settlement actions require SubmitSettlementAsync when the N-2 authority is configured.");
+            }
+
             TableOperationResult? guard = GuardServing();
             if (guard != null)
             {
@@ -1482,6 +1578,217 @@ namespace Mahjong.TableRuntime
                 command.Command,
                 TimingConsumption.Complete,
                 nextCheat).ConfigureAwait(false);
+        }
+
+        private async ValueTask<TableOperationResult> ProcessSettlementCoreAsync(
+            TableSettlementRequest request)
+        {
+            TableOperationResult? guard = GuardServing();
+            if (guard != null)
+            {
+                return guard;
+            }
+
+            if (_strictRecoveryFence &&
+                request.Envelope.RecoveryGeneration != _recoveryGeneration)
+            {
+                return TableOperationResult.Rejected(
+                    _stateVersion,
+                    TableRuntimeReasonCode.StaleRecoveryGeneration,
+                    "Settlement recovery generation " + request.Envelope.RecoveryGeneration +
+                    " is not current generation " + _recoveryGeneration + ".");
+            }
+
+            if (!TryReadClock(out long now, out long utcMillis, out string clockFailure))
+            {
+                return TableOperationResult.Rejected(
+                    _stateVersion,
+                    clockFailure,
+                    "The monotonic clock is not safe for settlement authority.");
+            }
+
+            if (_settlementFactsPort == null)
+            {
+                return TableOperationResult.Rejected(
+                    _stateVersion,
+                    TableSettlementReasonCode.AuthorityUnavailable,
+                    "No N-2 settlement host fact port is configured on this table.");
+            }
+
+            PendingDecision? pending;
+            TableOperationResult? identityError = ValidateAuthorityIdentity(
+                request.Intent.RoundId,
+                request.Intent.Seat,
+                request.Envelope.ExpectedStateVersion,
+                request.Envelope.OwnerEpoch,
+                request.Envelope.ControlEpoch,
+                request.Envelope.DecisionId,
+                request.Envelope.RecoveryGeneration,
+                now,
+                out pending);
+            if (identityError != null)
+            {
+                return identityError;
+            }
+
+            var source = new TableSettlementSourceRef(
+                _round.RoundId,
+                _round.Version,
+                _round.SourceFingerprint);
+            TableSettlementHostFacts hostFacts;
+            try
+            {
+                hostFacts = _settlementFactsPort.Resolve(source, request.Intent);
+            }
+            catch (TableSettlementHostRejectedException rejected)
+            {
+                return TableOperationResult.Rejected(
+                    _stateVersion,
+                    rejected.ReasonCode,
+                    rejected.Message);
+            }
+            catch (Exception exception)
+            {
+                return TableOperationResult.Rejected(
+                    _stateVersion,
+                    TableSettlementReasonCode.FactsUnavailable,
+                    "The settlement fact port failed: " + exception.GetType().Name + ": " + exception.Message);
+            }
+
+            string resultId = "settlement:" + _options.RoomId + ":" + _round.RoundId + ":" +
+                              _round.Version.ToString(CultureInfo.InvariantCulture) + ":" +
+                              request.Intent.Action + ":" +
+                              request.Intent.Seat.ToString(CultureInfo.InvariantCulture);
+
+            RoundSettlementFacts facts;
+            try
+            {
+                facts = TableSettlementFactBuilder.Build(
+                    _round,
+                    request.Intent,
+                    hostFacts,
+                    resultId,
+                    utcMillis,
+                    now);
+            }
+            catch (TableSettlementHostRejectedException rejected)
+            {
+                return TableOperationResult.Rejected(
+                    _stateVersion,
+                    rejected.ReasonCode,
+                    rejected.Message);
+            }
+            catch (ArgumentOutOfRangeException invalid)
+            {
+                return TableOperationResult.Rejected(
+                    _stateVersion,
+                    TableRuntimeReasonCode.ClockInvalid,
+                    "The settlement UTC instant is outside the persistable range: " + invalid.Message);
+            }
+            catch (ArgumentException invalid)
+            {
+                return TableOperationResult.Rejected(
+                    _stateVersion,
+                    TableSettlementReasonCode.HostFactsInvalid,
+                    invalid.Message);
+            }
+            catch (Exception exception)
+            {
+                return TableOperationResult.Failed(
+                    _stateVersion,
+                    TableRuntimeReasonCode.InternalError,
+                    "SettlementFacts " + exception.GetType().Name + ": " + exception.Message);
+            }
+
+            RoundSettlementCalculation calculation;
+            try
+            {
+                switch (request.Intent.Action)
+                {
+                    case TableSettlementAction.Tsumo:
+                        calculation = RoundSettlementCalculator.CalculateTsumo(_round, facts);
+                        break;
+                    case TableSettlementAction.Ron:
+                        calculation = RoundSettlementCalculator.CalculateRon(_round, request.Intent.Seat, facts);
+                        break;
+                    case TableSettlementAction.ExhaustiveDraw:
+                        calculation = RoundSettlementCalculator.CalculateExhaustiveDraw(_round, facts);
+                        break;
+                    case TableSettlementAction.AbortiveDraw:
+                        calculation = RoundSettlementCalculator.CalculateAbortiveDraw(_round, facts);
+                        break;
+                    default:
+                        return TableOperationResult.Rejected(
+                            _stateVersion,
+                            TableSettlementReasonCode.IntentInvalid,
+                            "Unknown settlement action " + request.Intent.Action + ".");
+                }
+            }
+            catch (RoundSettlementRejectedException rejected)
+            {
+                return TableOperationResult.Rejected(
+                    _stateVersion,
+                    TableSettlementReasonCode.FromRejection(rejected.Code),
+                    rejected.Message);
+            }
+            catch (ArgumentException invalid)
+            {
+                return TableOperationResult.Rejected(
+                    _stateVersion,
+                    TableSettlementReasonCode.IntentInvalid,
+                    invalid.Message);
+            }
+            catch (Exception exception)
+            {
+                return TableOperationResult.Failed(
+                    _stateVersion,
+                    TableRuntimeReasonCode.InternalError,
+                    exception.GetType().Name + ": " + exception.Message);
+            }
+
+            try
+            {
+                calculation.VerifySource(_round);
+            }
+            catch (RoundSettlementRejectedException rejected)
+            {
+                return TableOperationResult.Rejected(
+                    _stateVersion,
+                    TableSettlementReasonCode.FromRejection(rejected.Code),
+                    rejected.Message);
+            }
+
+            RoundTransition transition;
+            try
+            {
+                // The original Prepare/Install path is kept: Execute() prepares a candidate from
+                // this exact round and installs it only when its source binding still matches.
+                transition = _round.Execute(calculation.Command, CheatProtectionPredicate());
+            }
+            catch (Exception exception)
+            {
+                return TableOperationResult.Failed(
+                    _stateVersion,
+                    TableRuntimeReasonCode.InternalError,
+                    exception.GetType().Name + ": " + exception.Message);
+            }
+
+            TableOperationResult? transitionError = ValidateTransition(transition);
+            if (transitionError != null)
+            {
+                return transitionError;
+            }
+
+            return await CommitAndInstallAsync(
+                transition,
+                request.Envelope.RequestId,
+                pending,
+                request.Envelope.DecisionId,
+                now,
+                request.Envelope,
+                calculation.Command,
+                _durable != null ? TimingConsumption.Complete : TimingConsumption.None)
+                .ConfigureAwait(false);
         }
 
         private async ValueTask<TableOperationResult> ProcessCheatCommandAsync(TableCheatCommandEnvelope command)
@@ -2845,6 +3152,18 @@ namespace Mahjong.TableRuntime
             PendingDecision? pending,
             TimingConsumption timingConsumption)
         {
+            if (TableSettlementIntent.IsSettlementAction(command.Action) &&
+                _settlementFactsPort != null)
+            {
+                // The AI/timeout adapter has no typed settlement intent and no host fact
+                // binding. Refuse it rather than silently falling back to a caller-supplied
+                // settlement when the N-2 authority is configured.
+                return TableOperationResult.Rejected(
+                    _stateVersion,
+                    TableSettlementReasonCode.RawEntryRejected,
+                    "The internal AI/timeout path cannot submit a settlement command under the N-2 authority.");
+            }
+
             DecisionId? timingDecision = pending != null
                 ? (DecisionId?)new DecisionId(pending.Key.DecisionId)
                 : null;
