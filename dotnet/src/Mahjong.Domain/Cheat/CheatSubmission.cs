@@ -218,10 +218,9 @@ namespace Mahjong.Domain.Cheat
         // === 袖里藏花 SleeveBloom — 即时路径 ===
 
         /// <summary>
-        /// Activates the immediate sleeve bloom on the actor's own draw: current player,
-        /// CHEAT_WINDOW without response window, drawn tile held in hand, not the deal-extra
-        /// draw, no other pending offer, and neither sleeve nor beam already used this turn.
-        /// Cost is exactly 10; no tile moves at activation — the choice moves them.
+        /// Legacy map-only activation entry: no frozen normal-wall evidence is supplied, so the
+        /// second candidate is derived from the live map exactly as before. Kept as its own
+        /// method name (rather than an overload) so reflection-based probes stay unambiguous.
         /// </summary>
         public static CheatTransition ActivateSleeveBloom(
             CheatState state,
@@ -230,13 +229,38 @@ namespace Mahjong.Domain.Cheat
             CheatEconomyConfig economy,
             SleeveBloomConfig sleeveConfig,
             int seat,
-            string requestId)
+            string requestId) =>
+            ActivateSleeveBloomWithFrozenInput(
+                state, map, context, economy, sleeveConfig, seat, requestId,
+                SleeveBloomActivationInput.Unspecified);
+
+        /// <summary>
+        /// Activates the immediate sleeve bloom on the actor's own draw: current player,
+        /// CHEAT_WINDOW without response window, drawn tile held in hand, not the deal-extra
+        /// draw, no other pending offer, and neither sleeve nor beam already used this turn.
+        /// Cost is exactly 10; no tile moves at activation — the choice moves them.
+        ///
+        /// For a normal draw, an explicitly frozen next-wall candidate is replayed instead of
+        /// re-searched: a missing, off-wall, out-of-bounds, reserved or drifted candidate rejects
+        /// with <see cref="CheatErrorCode.NoWallCandidate"/> and zero state/map/event side effects.
+        /// <see cref="SleeveBloomActivationInput.Unspecified"/> preserves the legacy map-only path.
+        /// </summary>
+        public static CheatTransition ActivateSleeveBloomWithFrozenInput(
+            CheatState state,
+            TilePositionMap map,
+            CheatTurnContext context,
+            CheatEconomyConfig economy,
+            SleeveBloomConfig sleeveConfig,
+            int seat,
+            string requestId,
+            SleeveBloomActivationInput activationInput)
         {
             if (state == null) throw new ArgumentNullException(nameof(state));
             if (map == null) throw new ArgumentNullException(nameof(map));
             if (context == null) throw new ArgumentNullException(nameof(context));
             if (economy == null) throw new ArgumentNullException(nameof(economy));
             if (sleeveConfig == null) throw new ArgumentNullException(nameof(sleeveConfig));
+            if (activationInput == null) throw new ArgumentNullException(nameof(activationInput));
 
             if (!sleeveConfig.Enabled || !economy.Enabled) return CheatTransition.Rejected(CheatErrorCode.Disabled, "Sleeve bloom is disabled.");
             if (seat < 0 || seat > 3) return CheatTransition.Rejected(CheatErrorCode.InvalidSeat, "Seat must be 0..3.");
@@ -277,13 +301,25 @@ namespace Mahjong.Domain.Cheat
             TileId secondTile;
             if (drawKind == SleeveBloomDrawKind.Normal)
             {
-                int secondIndex = FindFirstAvailableWallIndex(map, sleeve);
-                if (secondIndex < 0)
+                if (activationInput.IsFrozen)
                 {
-                    return CheatTransition.Rejected(CheatErrorCode.NoWallCandidate, "No available live-wall tile for the second candidate.");
+                    CheatTransition? frozenFailure = ResolveFrozenNormalWallCandidate(
+                        map, sleeve, activationInput, out secondTile);
+                    if (frozenFailure != null)
+                    {
+                        return frozenFailure;
+                    }
                 }
+                else
+                {
+                    int secondIndex = FindFirstAvailableWallIndex(map, sleeve);
+                    if (secondIndex < 0)
+                    {
+                        return CheatTransition.Rejected(CheatErrorCode.NoWallCandidate, "No available live-wall tile for the second candidate.");
+                    }
 
-                secondTile = map.TileAt(TilePosition.Wall(secondIndex));
+                    secondTile = map.TileAt(TilePosition.Wall(secondIndex));
+                }
             }
             else
             {
@@ -1191,29 +1227,73 @@ namespace Mahjong.Domain.Cheat
             return null;
         }
 
-        private static int FindFirstAvailableWallIndex(TilePositionMap map, SleeveBloomState sleeve)
+        /// <summary>
+        /// Replays the frozen normal-wall candidate against the authoritative map. The frozen
+        /// flags and the live map must both say the candidate is available; neither side may
+        /// override the other. When they disagree the transition rejects and never substitutes
+        /// another wall tile.
+        /// </summary>
+        private static CheatTransition? ResolveFrozenNormalWallCandidate(
+            TilePositionMap map,
+            SleeveBloomState sleeve,
+            SleeveBloomActivationInput activationInput,
+            out TileId candidate)
         {
-            for (int i = 0; i < map.WallEndExclusive; i++)
+            candidate = default;
+
+            if (!activationInput.NextWallTileId.HasValue || !activationInput.NextWallTileInWall)
             {
-                if (!map.TryGetTileAt(TilePosition.Wall(i), out TileId tile))
-                {
-                    continue;
-                }
-
-                if (map.PositionOf(tile).Zone != TileZone.Wall)
-                {
-                    continue;
-                }
-
-                if (sleeve.IsProtectedTile(tile))
-                {
-                    continue;
-                }
-
-                return i;
+                return CheatTransition.Rejected(
+                    CheatErrorCode.NoWallCandidate,
+                    "The frozen next-wall candidate is missing or no longer in the wall.");
             }
 
-            return -1;
+            TileId frozen = activationInput.NextWallTileId.Value;
+            TilePosition position = map.PositionOf(frozen);
+            if (position.Zone != TileZone.Wall ||
+                position.Index < 0 ||
+                position.Index >= map.WallEndExclusive)
+            {
+                return CheatTransition.Rejected(
+                    CheatErrorCode.NoWallCandidate,
+                    "The frozen next-wall candidate " + frozen + " is outside the live wall bounds.");
+            }
+
+            if (sleeve.IsProtectedTile(frozen))
+            {
+                return CheatTransition.Rejected(
+                    CheatErrorCode.NoWallCandidate,
+                    "The frozen next-wall candidate " + frozen + " is reserved by another sleeve bloom selection.");
+            }
+
+            if (!SleeveBloomActivationInput.TryResolveFirstAvailableWallCandidate(
+                    map, sleeve, out TileId authoritative, out int authoritativeIndex) ||
+                !authoritative.Equals(frozen) ||
+                authoritativeIndex != position.Index)
+            {
+                return CheatTransition.Rejected(
+                    CheatErrorCode.NoWallCandidate,
+                    "The frozen next-wall candidate " + frozen + " drifted from the live wall.");
+            }
+
+            if (!map.TryGetTileAt(TilePosition.Wall(position.Index), out TileId occupying) ||
+                !occupying.Equals(frozen))
+            {
+                return CheatTransition.Rejected(
+                    CheatErrorCode.NoWallCandidate,
+                    "The frozen next-wall candidate " + frozen + " no longer occupies its wall slot.");
+            }
+
+            candidate = frozen;
+            return null;
+        }
+
+        private static int FindFirstAvailableWallIndex(TilePositionMap map, SleeveBloomState sleeve)
+        {
+            return SleeveBloomActivationInput.TryResolveFirstAvailableWallCandidate(
+                map, sleeve, out _, out int index)
+                ? index
+                : -1;
         }
 
         private static IReadOnlyList<int> AvailableWallIndices(TilePositionMap map, SleeveBloomState sleeve)

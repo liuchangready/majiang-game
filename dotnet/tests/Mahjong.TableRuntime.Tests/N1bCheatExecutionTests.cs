@@ -193,6 +193,246 @@ namespace Mahjong.TableRuntime.Tests
         }
 
         [Fact]
+        public async Task frozen_wall_activation_skips_a_foreign_reservation_and_replays_the_same_receipt()
+        {
+            var clock = new ManualTableClock { Now = 1000L };
+            var commitPort = new RecordingCommitPort();
+            var sink = new RecordingPublicationSink(commitPort);
+            RoundStateMachine round = P31Fixtures.Dealt("round-1");
+            TileId reserved = round.Tiles.TileAt(TilePosition.Wall(round.Tiles.WallPointer));
+            CheatState cheat = V32Fixtures.WithRegisteredRound(V32Fixtures.Cheat(InitialPoints), round.RoundId);
+            cheat = cheat.WithSleeveBloom(cheat.SleeveBloom.WithReservation(
+                new SleeveBloomReservation(2, "foreign-reservation", reserved, "window", 0)));
+            var options = new TableActorOptions
+            {
+                RoomId = "room-1",
+                MailboxCapacity = 16,
+                ControlReserve = 16,
+                DecisionClockConfig = new DecisionClockConfig(1000L, 0L, ReserveScope.Round),
+                InitialControllers = P31Fixtures.Controllers(
+                    SeatControllerKind.Computer,
+                    SeatControllerKind.Computer,
+                    SeatControllerKind.Computer,
+                    SeatControllerKind.Computer),
+                CheatEconomy = V32Fixtures.Economy(InitialPoints),
+                SleeveBloomConfig = V32Fixtures.SleeveConfig(),
+                InitialCheatState = cheat
+            };
+            await using var actor = new TableActor(options, round, commitPort, clock, sink);
+
+            IReadOnlyList<TableCommandEnvelope> chain = P31Fixtures.BuildDiscardChain(round, 1);
+            TableOperationResult discard = await actor.SubmitAsync(
+                new TableCommandEnvelope(
+                    chain[0].Command,
+                    new RequestId("frozen-discard"),
+                    chain[0].ExpectedStateVersion,
+                    new OwnerEpoch(1),
+                    new ControlEpoch(0)),
+                TestContext.Current.CancellationToken);
+            Assert.Equal(TableOperationStatus.Accepted, discard.Status);
+
+            TableCheatCommandEnvelope envelope = Cheat(
+                round.RoundId,
+                1,
+                RoundCheatAction.SubmitSleeveBloom,
+                "sb-frozen",
+                RoundCheatPayload.SleeveBloom(),
+                1,
+                "sb-frozen");
+            TableOperationResult activation = await actor.SubmitCheatAsync(
+                envelope, TestContext.Current.CancellationToken);
+            Assert.Equal(TableOperationStatus.Accepted, activation.Status);
+            Assert.Equal(2UL, activation.CommandVersion!.Value.Value);
+
+            TilePositionMap map = GetRound(actor).Tiles;
+            int expectedIndex = -1;
+            for (int i = 0; i < map.WallEndExclusive; i++)
+            {
+                if (!map.TryGetTileAt(TilePosition.Wall(i), out TileId tile) ||
+                    map.PositionOf(tile).Zone != TileZone.Wall ||
+                    tile.Equals(reserved))
+                {
+                    continue;
+                }
+
+                expectedIndex = i;
+                break;
+            }
+
+            Assert.True(expectedIndex >= 0);
+            SleeveBloomOffer offer = GetCheat(actor)!.SleeveBloom.ImmediateOffer!;
+            Assert.Equal(map.TileAt(TilePosition.Wall(expectedIndex)), offer.SecondTile);
+            Assert.NotEqual(reserved, offer.SecondTile);
+            Assert.Equal(990, GetCheat(actor)!.Ledger.BalanceOf(1));
+
+            TableOperationResult replay = await actor.SubmitCheatAsync(
+                envelope, TestContext.Current.CancellationToken);
+            Assert.Same(activation, replay);
+            Assert.Equal(990, GetCheat(actor)!.Ledger.BalanceOf(1));
+            Assert.Equal(2UL, (await actor.GetSnapshotAsync(TestContext.Current.CancellationToken)).StateVersion.Value);
+        }
+
+        [Fact]
+        public async Task sleeve_activation_commit_failure_publishes_nothing_and_leaves_no_charge_or_offer()
+        {
+            await using ActorHarness harness = CreateHarness();
+            RoundStateMachine round = harness.InitialRound;
+            await DiscardOnceAsync(harness, "freeze-discard");
+            int publishedBeforeFailure = harness.Sink.Publications.Count;
+            harness.CommitPort.FailNext();
+
+            TableOperationResult failed = await harness.Actor.SubmitCheatAsync(
+                Cheat(
+                    round.RoundId,
+                    1,
+                    RoundCheatAction.SubmitSleeveBloom,
+                    "sb-freeze-fail",
+                    RoundCheatPayload.SleeveBloom(),
+                    1,
+                    "sb-freeze-fail"),
+                TestContext.Current.CancellationToken);
+
+            Assert.Equal(TableOperationStatus.Failed, failed.Status);
+            Assert.Empty(failed.Events);
+            Assert.Empty(harness.Sink.Publications.Skip(publishedBeforeFailure));
+            Assert.Equal(1UL, (await harness.GetSnapshotAsync()).StateVersion.Value);
+            Assert.Equal(1000, GetCheat(harness.Actor)!.Ledger.BalanceOf(1));
+            Assert.Null(GetCheat(harness.Actor)!.SleeveBloom.ImmediateOffer);
+
+            TableOperationResult retry = await harness.Actor.SubmitCheatAsync(
+                Cheat(
+                    round.RoundId,
+                    1,
+                    RoundCheatAction.SubmitSleeveBloom,
+                    "sb-freeze-retry",
+                    RoundCheatPayload.SleeveBloom(),
+                    1,
+                    "sb-freeze-retry"),
+                TestContext.Current.CancellationToken);
+            Assert.Equal(TableOperationStatus.Accepted, retry.Status);
+            Assert.Equal(2UL, retry.CommandVersion!.Value.Value);
+            Assert.Equal(990, GetCheat(harness.Actor)!.Ledger.BalanceOf(1));
+            Assert.NotNull(GetCheat(harness.Actor)!.SleeveBloom.ImmediateOffer);
+        }
+
+        [Fact]
+        public async Task frozen_missing_wall_candidate_rejects_activation_with_zero_side_effects_and_replays()
+        {
+            var clock = new ManualTableClock { Now = 1000L };
+            var commitPort = new RecordingCommitPort();
+            var sink = new RecordingPublicationSink(commitPort);
+            RoundStateMachine round = BuildNoLiveWallRound("round-empty-wall", out _);
+            CheatState cheat = V32Fixtures.WithRegisteredRound(V32Fixtures.Cheat(InitialPoints), round.RoundId);
+            var options = new TableActorOptions
+            {
+                RoomId = "room-1",
+                MailboxCapacity = 16,
+                ControlReserve = 16,
+                DecisionClockConfig = new DecisionClockConfig(1000L, 0L, ReserveScope.Round),
+                InitialControllers = P31Fixtures.Controllers(
+                    SeatControllerKind.Computer,
+                    SeatControllerKind.Computer,
+                    SeatControllerKind.Computer,
+                    SeatControllerKind.Computer),
+                CheatEconomy = V32Fixtures.Economy(InitialPoints),
+                SleeveBloomConfig = V32Fixtures.SleeveConfig(),
+                InitialCheatState = cheat
+            };
+            await using var actor = new TableActor(options, round, commitPort, clock, sink);
+
+            TableCheatCommandEnvelope envelope = Cheat(
+                round.RoundId,
+                0,
+                RoundCheatAction.SubmitSleeveBloom,
+                "sb-empty-wall",
+                RoundCheatPayload.SleeveBloom(),
+                0,
+                "sb-empty-wall");
+            TableOperationResult rejected = await actor.SubmitCheatAsync(
+                envelope, TestContext.Current.CancellationToken);
+            Assert.Equal(TableOperationStatus.Rejected, rejected.Status);
+            Assert.Equal(
+                TableRuntimeReasonCode.FromCheat(RoundCheatErrorCode.CheatRejected, CheatErrorCode.NoWallCandidate),
+                rejected.ReasonCode);
+            Assert.Empty(rejected.Events);
+            Assert.Empty(sink.Publications);
+            Assert.Equal(0UL, (await actor.GetSnapshotAsync(TestContext.Current.CancellationToken)).StateVersion.Value);
+            Assert.Equal(1000, GetCheat(actor)!.Ledger.BalanceOf(0));
+            Assert.Null(GetCheat(actor)!.SleeveBloom.ImmediateOffer);
+
+            TableOperationResult replay = await actor.SubmitCheatAsync(
+                envelope, TestContext.Current.CancellationToken);
+            Assert.Equal(TableOperationStatus.Rejected, replay.Status);
+            Assert.Equal(rejected.ReasonCode, replay.ReasonCode);
+            Assert.Empty(replay.Events);
+            Assert.Equal(0UL, (await actor.GetSnapshotAsync(TestContext.Current.CancellationToken)).StateVersion.Value);
+            Assert.Equal(1000, GetCheat(actor)!.Ledger.BalanceOf(0));
+            Assert.Null(GetCheat(actor)!.SleeveBloom.ImmediateOffer);
+        }
+
+        private static RoundStateMachine BuildNoLiveWallRound(string roundId, out TileId drawn)
+        {
+            var placements = new List<TilePlacement>();
+            var used = new bool[TileId.Count];
+            void Place(TileId tile, TilePosition position)
+            {
+                Assert.False(used[tile.Value]);
+                used[tile.Value] = true;
+                placements.Add(new TilePlacement(tile, position));
+            }
+
+            for (int slot = 0; slot < 13; slot++)
+            {
+                Place(new TileId(slot), TilePosition.Hand(0, slot));
+            }
+
+            drawn = new TileId(13);
+            Place(drawn, TilePosition.Hand(0, 13));
+
+            int next = 14;
+            for (int seat = 1; seat < 4; seat++)
+            {
+                for (int slot = 0; slot < 13; slot++)
+                {
+                    Place(new TileId(next++), TilePosition.Hand(seat, slot));
+                }
+            }
+
+            for (int slot = 0; slot < TilePositionMap.DeadWallSlotCount; slot++)
+            {
+                Place(new TileId(next++), TilePosition.DeadWall(slot));
+            }
+
+            int discard = 0;
+            while (next < TileId.Count)
+            {
+                Place(new TileId(next++), TilePosition.Discard(discard % 4, discard / 4));
+                discard++;
+            }
+
+            TilePositionMap map = TilePositionMap.FromPlacements(
+                placements,
+                0,
+                0,
+                0,
+                null,
+                0,
+                null,
+                Array.Empty<TileId>(),
+                0,
+                new DrawnTileEvidence(drawn, 0, DrawSource.Wall));
+            var spec = new RoundSpec(
+                roundId,
+                0,
+                1,
+                0,
+                0,
+                new long[] { 25000, 25000, 25000, 25000 },
+                0);
+            return RoundStateMachine.CreateDealt(spec, map, RoundPhase.CheatWindow);
+        }
+
+        [Fact]
         public async Task beam_swap_activation_and_keep_original_commit_only_the_owner_events()
         {
             await using ActorHarness harness = CreateHarness();
