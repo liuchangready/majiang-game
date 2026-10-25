@@ -44,6 +44,14 @@ function Write-JsonFile {
     [System.IO.File]::WriteAllText($Path, $text, (New-Object System.Text.UTF8Encoding($false)))
 }
 
+function Update-ManifestText {
+    param([string]$Root, [scriptblock]$Mutator)
+    $manifest = @(Get-ChildItem -LiteralPath (Join-Path $Root 'doc') -Recurse -Filter 'V5-0-GOLDEN-MANIFEST.md' -File)[0]
+    $text = [System.IO.File]::ReadAllText($manifest.FullName, [System.Text.Encoding]::UTF8)
+    $text = & $Mutator $text
+    [System.IO.File]::WriteAllText($manifest.FullName, $text, (New-Object System.Text.UTF8Encoding($false)))
+}
+
 function New-BaseTree {
     param([string]$Root, [string]$SourceRepo)
     New-Item -ItemType Directory -Force -Path (Join-Path $Root 'tests\v5-golden') | Out-Null
@@ -1292,6 +1300,52 @@ Invoke-NegativeCase -Name 'ai-binding-nonexistent-path' -ExpectedCode 'AI_BINDIN
         if ([string]$entry.id -eq 'ai-v1') { $entry.bindings[0].jsonPath = '$.notARealFixtureField' }
     }
     Write-JsonFile $catalogPath $catalog
+}
+
+# 37. An identical duplicate current manifest row must fail, not first-win.
+Invoke-NegativeCase -Name 'manifest-duplicate-identical' -ExpectedCode 'MANIFEST_CURRENT_DUPLICATE_ID' -Mutator {
+    param($root)
+    Update-ManifestText -Root $root -Mutator {
+        param($text)
+        $row = [regex]::Match($text, '(?m)^\| G-049 \| `pending-v4-replay` \| `partial` \|[^\r\n]*').Value
+        if ([string]::IsNullOrWhiteSpace($row)) { throw 'current G-049 row missing' }
+        return $text.Replace($row, $row + "`r`n" + $row)
+    }
+}
+
+# 38. G-049 partial followed by a contradictory full duplicate must fail.
+Invoke-NegativeCase -Name 'manifest-duplicate-g049-partial-full' -ExpectedCode 'MANIFEST_CURRENT_DUPLICATE_ID' -Mutator {
+    param($root)
+    Update-ManifestText -Root $root -Mutator {
+        param($text)
+        $row = [regex]::Match($text, '(?m)^\| G-049 \| `pending-v4-replay` \| `partial` \|[^\r\n]*').Value
+        if ([string]::IsNullOrWhiteSpace($row)) { throw 'current G-049 row missing' }
+        $full = $row.Replace('`partial`', '`full`')
+        return $text.Replace($row, $row + "`r`n" + $full)
+    }
+}
+
+# 39. G-049 full followed by a contradictory partial duplicate must also fail.
+Invoke-NegativeCase -Name 'manifest-duplicate-g049-full-partial' -ExpectedCode 'MANIFEST_CURRENT_DUPLICATE_ID' -Mutator {
+    param($root)
+    Update-ManifestText -Root $root -Mutator {
+        param($text)
+        $row = [regex]::Match($text, '(?m)^\| G-049 \| `pending-v4-replay` \| `partial` \|[^\r\n]*').Value
+        if ([string]::IsNullOrWhiteSpace($row)) { throw 'current G-049 row missing' }
+        $full = $row.Replace('`partial`', '`full`')
+        return $text.Replace($row, $full + "`r`n" + $row)
+    }
+}
+
+# 40. A duplicate non-G-049 current row must fail even when coverage is consistent.
+Invoke-NegativeCase -Name 'manifest-duplicate-non-g049' -ExpectedCode 'MANIFEST_CURRENT_DUPLICATE_ID' -Mutator {
+    param($root)
+    Update-ManifestText -Root $root -Mutator {
+        param($text)
+        $row = [regex]::Match($text, '(?m)^\| G-048 \| `pending` \| `partial` \|[^\r\n]*').Value
+        if ([string]::IsNullOrWhiteSpace($row)) { throw 'current G-048 row missing' }
+        return $text.Replace($row, $row + "`r`n" + $row)
+    }
 }
 
 # Real fixture immutability check.

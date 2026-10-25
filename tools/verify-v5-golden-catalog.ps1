@@ -1646,24 +1646,28 @@ if (Test-Path -LiteralPath $ManifestPath -PathType Leaf) {
     }
     else {
         $currentRows = @{}
+        $currentPhysicalRows = 0
         for ($i = $currentStart + 1; $i -lt $manifestLines.Count; $i++) {
             $line = $manifestLines[$i]
             if ($line -match '^#{2,3}\s+') { break }
             $match = [regex]::Match($line, '^\|\s*(G-[0-9A-Za-z-]+)\s*\|(.*)\|\s*$')
             if (-not $match.Success) { continue }
+            $currentPhysicalRows++
             $id = $match.Groups[1].Value
             $cells = @($match.Groups[2].Value -split '\|' | ForEach-Object { ($_ -replace '`', '').Trim() })
             if ($cells.Count -lt 2) {
                 Add-Failure 'MANIFEST_CURRENT_ROW_INVALID' ("{0}: fewer than two current-table cells" -f $id)
                 continue
             }
-            if (-not $currentRows.ContainsKey($id)) {
-                $currentRows[$id] = [pscustomobject]@{ Status = $cells[0]; Coverage = $cells[1]; Raw = $line }
+            if ($currentRows.ContainsKey($id)) {
+                Add-Failure 'MANIFEST_CURRENT_DUPLICATE_ID' ("{0}: duplicate current §8.5 row; first-wins is forbidden" -f $id)
+                continue
             }
+            $currentRows[$id] = [pscustomobject]@{ Status = $cells[0]; Coverage = $cells[1]; Raw = $line }
         }
         $currentIds = @($currentRows.Keys | Sort-Object)
-        if ($currentIds.Count -ne 73) {
-            Add-Failure 'MANIFEST_CURRENT_ROW_COUNT' ('expected 73 current G rows, got {0}' -f $currentIds.Count)
+        if ($currentPhysicalRows -ne 73) {
+            Add-Failure 'MANIFEST_CURRENT_ROW_COUNT' ('expected 73 physical current G rows, got {0} ({1} distinct IDs)' -f $currentPhysicalRows, $currentIds.Count)
         }
         if (($currentIds -join ',') -ne (@($requirementIds | Sort-Object) -join ',')) {
             Add-Failure 'MANIFEST_CURRENT_REQUIREMENT_SET_MISMATCH' 'catalog requirements and current manifest G rows differ'
