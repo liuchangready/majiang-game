@@ -103,6 +103,12 @@ namespace Mahjong.Domain.Tests
             "reversedEqualsThree"
         };
 
+        private static readonly string[] PlanFields =
+        {
+            "seat",
+            "target"
+        };
+
         private static readonly string[] SourceFields =
         {
             "role",
@@ -211,7 +217,13 @@ namespace Mahjong.Domain.Tests
             Assert.Equal("exported", Str(root, "extractionStatus"));
             Assert.Equal(FrozenV4Base, Str(root, "v4BaseCommit"));
             Assert.Equal(FrozenV4Base, Str(root, "exportWorktreeHead"));
-            Assert.Contains("V5ShuffleReversedGoldenExporterTest", Str(root, "generatedByCommand"));
+            string command = Str(root, "generatedByCommand");
+            Assert.Contains("V5_SHUFFLE_REVERSED_GOLDEN_EXPORT=1", command);
+            Assert.Contains(":engine:test", command);
+            Assert.Contains("--tests", command);
+            Assert.Contains("com.majiang.v3.V5ShuffleReversedGoldenExporterTest", command);
+            Assert.Contains("--console=plain", command);
+            Assert.Contains("V5ShuffleReversedGoldenExporterTest", command);
             Assert.Contains("actual V4 ShuffleWallGenerator.generate", Str(root, "exportedAtNote"));
             Assert.Contains("not copied from shuffle-v1.json", Str(root, "relationNote"));
             Assert.Contains("BLOCKED_RANDOM_INPUT", Str(root, "scopeNote"));
@@ -223,6 +235,19 @@ namespace Mahjong.Domain.Tests
             Assert.Contains(FrozenV4Base, Str(root, "generationBaselineNote"));
 
             string repositoryRoot = RequireRepositoryRoot();
+            string v4SourceNote = Str(root, "v4ProductionSourceNote");
+            Assert.Contains("engine/src/main/kotlin/com/majiang/stacking", v4SourceNote);
+            Assert.Contains("engine/src/main/kotlin/com/majiang/model", v4SourceNote);
+            Assert.Contains("V4 production sources", v4SourceNote);
+            Assert.Contains("v4BaseCommit is the frozen tree at export time", v4SourceNote);
+            Assert.Contains("source hashes below bind the exact working-tree bytes", v4SourceNote);
+            Assert.True(
+                Directory.Exists(Path.Combine(repositoryRoot, "engine/src/main/kotlin/com/majiang/stacking")),
+                "v4ProductionSourceNote must name the real V4 stacking source tree");
+            Assert.True(
+                Directory.Exists(Path.Combine(repositoryRoot, "engine/src/main/kotlin/com/majiang/model")),
+                "v4ProductionSourceNote must name the real V4 model source tree");
+
             JsonElement sources = Arr(root, "sourceTree", RequiredSources.Count);
             var roles = new HashSet<string>(StringComparer.Ordinal);
             var paths = new HashSet<string>(StringComparer.Ordinal);
@@ -509,6 +534,16 @@ namespace Mahjong.Domain.Tests
             var result = new List<Plan>(3);
             foreach (JsonElement plan in plans.EnumerateArray())
             {
+                if (plan.ValueKind != JsonValueKind.Object)
+                {
+                    throw new InvalidOperationException(
+                        name + "[] must be a JSON object, got " + plan.ValueKind + ".");
+                }
+
+                // Exact inventory is also the duplicate-key gate: EnumerateObject()
+                // preserves every occurrence, so a second "seat" or "target" cannot be
+                // hidden behind GetProperty's last-value behaviour.
+                AssertExactProperties(plan, PlanFields, name + "[]");
                 int seat = Int(plan, "seat");
                 ShuffleTarget target = ParseTarget(Str(plan, "target"));
                 result.Add(new Plan(seat, target));

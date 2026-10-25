@@ -79,6 +79,22 @@ function Swap-ArrayValues($Array, [int]$Left, [int]$Right) {
     $Array[$Right] = $temporary
 }
 
+function New-PlanObjectText([int]$Seat, [string]$Target) {
+    return "        {`n          `"seat`": $Seat,`n          `"target`": `"$Target`"`n        }"
+}
+
+function New-ReversedFirstPlanAnchor([string]$PlanText) {
+    return "      `"reversedPlans`": [`n" + $PlanText
+}
+
+function Replace-FirstLiteral([string]$Text, [string]$Old, [string]$New) {
+    $index = $Text.IndexOf($Old, [StringComparison]::Ordinal)
+    if ($index -lt 0) {
+        throw "raw mutation did not match: $Old"
+    }
+    return $Text.Substring(0, $index) + $New + $Text.Substring($index + $Old.Length)
+}
+
 if (-not (Test-Path -LiteralPath $RepoRoot -PathType Container)) {
     Stop-Probe "RepoRoot does not exist: $RepoRoot"
 }
@@ -210,6 +226,8 @@ $scenarios = @(
     [pscustomobject]@{ Name = 'baseline'; Expect = 'Pass'; Newline = 'LF'; Why = 'positive control: unmodified external companion copy'; Mutate = { param($j) } }
     [pscustomobject]@{ Name = 'legal-case-order'; Expect = 'Pass'; Newline = 'LF'; Why = 'cases are independent samples and every binding iterates all 32; array order is non-semantic'; Mutate = { param($j) $j.cases = @($j.cases[31..0]) } }
     [pscustomobject]@{ Name = 'legal-crlf'; Expect = 'Pass'; Newline = 'CRLF'; Why = 'JSON line endings are non-semantic; CRLF must remain green and must not be pinned to a repository byte hash'; Mutate = { param($j) } }
+    [pscustomobject]@{ Name = 'legal-plan-property-order'; Expect = 'Pass'; Newline = 'LF'; Why = 'plan property order is non-semantic; exact field inventory must still pass when target precedes seat'; RawMutation = { param($t) $old = New-PlanObjectText 0 'KOKUSHI'; $new = "        {`n          `"target`": `"KOKUSHI`",`n          `"seat`": 0`n        }"; Replace-FirstLiteral $t $old $new } }
+    [pscustomobject]@{ Name = 'legal-reversed-plan-property-order'; Expect = 'Pass'; Newline = 'LF'; Why = 'reversed plan property order is non-semantic; exact field inventory must still pass when target precedes seat'; RawMutation = { param($t) $old = New-ReversedFirstPlanAnchor (New-PlanObjectText 2 'CHINITSU_MAN'); $newPlan = "        {`n          `"target`": `"CHINITSU_MAN`",`n          `"seat`": 2`n        }"; $new = New-ReversedFirstPlanAnchor $newPlan; Replace-FirstLiteral $t $old $new } }
 
     [pscustomobject]@{ Name = 'duplicate-seed'; Expect = 'Fail'; Newline = 'LF'; Why = 'replacing one sample with another seed leaves a duplicate and a missing seed'; Mutate = { param($j) $j.cases[1].seed = $j.cases[0].seed } }
     [pscustomobject]@{ Name = 'duplicate-all-seeds'; Expect = 'Fail'; Newline = 'LF'; Why = '32 copies of seed 0 must not satisfy the exact seed set 0..31'; Mutate = { param($j) $j.cases = @(0..31 | ForEach-Object { $j.cases[0] }) } }
@@ -223,6 +241,23 @@ $scenarios = @(
     [pscustomobject]@{ Name = 'wrong-plan-target-mismatch'; Expect = 'Fail'; Newline = 'LF'; Why = 'changing a plan target breaks the exact old-case input binding'; Mutate = { param($j) $j.cases[0].plans[0].target = 'CHINITSU_SOU' } }
     [pscustomobject]@{ Name = 'reversed-plans-not-reverse'; Expect = 'Fail'; Newline = 'LF'; Why = 'reversedPlans must be the exact reverse of plans'; Mutate = { param($j) $j.cases[0].reversedPlans = @($j.cases[0].plans[0], $j.cases[0].plans[1], $j.cases[0].plans[2]) } }
     [pscustomobject]@{ Name = 'reversed-plans-missing'; Expect = 'Fail'; Newline = 'LF'; Why = 'missing reversedPlans must fail, never default to forward order'; Mutate = { param($j) Remove-JsonField $j.cases[0] 'reversedPlans' } }
+
+    [pscustomobject]@{ Name = 'plan-extra-field'; Expect = 'Fail'; Newline = 'LF'; Why = 'each plan object must have exactly seat/target; an extra field must fail'; RawMutation = { param($t) $old = New-PlanObjectText 0 'KOKUSHI'; $new = $old.Replace("`n        }", ",`n          `"extraField`": 1`n        }"); Replace-FirstLiteral $t $old $new } }
+    [pscustomobject]@{ Name = 'reversed-plan-extra-field'; Expect = 'Fail'; Newline = 'LF'; Why = 'each reversed plan object must have exactly seat/target; an extra field must fail'; RawMutation = { param($t) $old = New-ReversedFirstPlanAnchor (New-PlanObjectText 2 'CHINITSU_MAN'); $newPlan = (New-PlanObjectText 2 'CHINITSU_MAN').Replace("`n        }", ",`n          `"extraField`": 1`n        }"); $new = New-ReversedFirstPlanAnchor $newPlan; Replace-FirstLiteral $t $old $new } }
+    [pscustomobject]@{ Name = 'plan-duplicate-seat'; Expect = 'Fail'; Newline = 'LF'; Why = 'real duplicate seat key (invalid then legal) must fail, never use the last value'; RawMutation = { param($t) $old = New-PlanObjectText 0 'KOKUSHI'; $new = "        {`n          `"seat`": 9,`n          `"seat`": 0,`n          `"target`": `"KOKUSHI`"`n        }"; Replace-FirstLiteral $t $old $new } }
+    [pscustomobject]@{ Name = 'plan-duplicate-seat-legal-then-invalid'; Expect = 'Fail'; Newline = 'LF'; Why = 'real duplicate seat key (legal then invalid) must fail even if the last value looks legal'; RawMutation = { param($t) $old = New-PlanObjectText 0 'KOKUSHI'; $new = "        {`n          `"seat`": 0,`n          `"seat`": 9,`n          `"target`": `"KOKUSHI`"`n        }"; Replace-FirstLiteral $t $old $new } }
+    [pscustomobject]@{ Name = 'plan-duplicate-seat-same'; Expect = 'Fail'; Newline = 'LF'; Why = 'duplicate identical seat keys are still a non-unique field and must fail'; RawMutation = { param($t) $old = New-PlanObjectText 0 'KOKUSHI'; $new = "        {`n          `"seat`": 0,`n          `"seat`": 0,`n          `"target`": `"KOKUSHI`"`n        }"; Replace-FirstLiteral $t $old $new } }
+    [pscustomobject]@{ Name = 'plan-duplicate-target'; Expect = 'Fail'; Newline = 'LF'; Why = 'real duplicate target key (invalid then legal) must fail, never use the last value'; RawMutation = { param($t) $old = New-PlanObjectText 0 'KOKUSHI'; $new = "        {`n          `"seat`": 0,`n          `"target`": `"INVALID`",`n          `"target`": `"KOKUSHI`"`n        }"; Replace-FirstLiteral $t $old $new } }
+    [pscustomobject]@{ Name = 'plan-duplicate-target-legal-then-invalid'; Expect = 'Fail'; Newline = 'LF'; Why = 'real duplicate target key (legal then invalid) must fail even if the last value would be rejected later'; RawMutation = { param($t) $old = New-PlanObjectText 0 'KOKUSHI'; $new = "        {`n          `"seat`": 0,`n          `"target`": `"KOKUSHI`",`n          `"target`": `"INVALID`"`n        }"; Replace-FirstLiteral $t $old $new } }
+    [pscustomobject]@{ Name = 'plan-duplicate-target-same'; Expect = 'Fail'; Newline = 'LF'; Why = 'duplicate identical target keys are still a non-unique field and must fail'; RawMutation = { param($t) $old = New-PlanObjectText 0 'KOKUSHI'; $new = "        {`n          `"seat`": 0,`n          `"target`": `"KOKUSHI`",`n          `"target`": `"KOKUSHI`"`n        }"; Replace-FirstLiteral $t $old $new } }
+    [pscustomobject]@{ Name = 'reversed-plan-duplicate-target'; Expect = 'Fail'; Newline = 'LF'; Why = 'real duplicate target key in reversedPlans must fail'; RawMutation = { param($t) $old = New-ReversedFirstPlanAnchor (New-PlanObjectText 2 'CHINITSU_MAN'); $newPlan = "        {`n          `"seat`": 2,`n          `"target`": `"INVALID`",`n          `"target`": `"CHINITSU_MAN`"`n        }"; $new = New-ReversedFirstPlanAnchor $newPlan; Replace-FirstLiteral $t $old $new } }
+    [pscustomobject]@{ Name = 'reversed-plan-duplicate-seat'; Expect = 'Fail'; Newline = 'LF'; Why = 'real duplicate seat key in reversedPlans must fail'; RawMutation = { param($t) $old = New-ReversedFirstPlanAnchor (New-PlanObjectText 2 'CHINITSU_MAN'); $newPlan = "        {`n          `"seat`": 9,`n          `"seat`": 2,`n          `"target`": `"CHINITSU_MAN`"`n        }"; $new = New-ReversedFirstPlanAnchor $newPlan; Replace-FirstLiteral $t $old $new } }
+    [pscustomobject]@{ Name = 'plan-missing-target'; Expect = 'Fail'; Newline = 'LF'; Why = 'missing plan target must fail exact field inventory'; Mutate = { param($j) Remove-JsonField $j.cases[0].plans[0] 'target' } }
+    [pscustomobject]@{ Name = 'plan-seat-wrong-type'; Expect = 'Fail'; Newline = 'LF'; Why = 'string plan seat must not be coerced to an int'; Mutate = { param($j) $j.cases[0].plans[0].seat = 'zero' } }
+    [pscustomobject]@{ Name = 'plan-target-wrong-type'; Expect = 'Fail'; Newline = 'LF'; Why = 'number plan target must not be coerced to a string'; Mutate = { param($j) $j.cases[0].plans[0].target = 42 } }
+    [pscustomobject]@{ Name = 'plan-count-two'; Expect = 'Fail'; Newline = 'LF'; Why = 'plans must contain exactly 3 objects'; Mutate = { param($j) $j.cases[0].plans = @($j.cases[0].plans[0], $j.cases[0].plans[1]) } }
+    [pscustomobject]@{ Name = 'plan-count-four'; Expect = 'Fail'; Newline = 'LF'; Why = 'plans must not accept an extra fourth object'; Mutate = { param($j) $j.cases[0].plans = @($j.cases[0].plans + [pscustomobject]@{ seat = 3; target = 'DAISUUSHII' }) } }
+    [pscustomobject]@{ Name = 'reversed-plan-count-two'; Expect = 'Fail'; Newline = 'LF'; Why = 'reversedPlans must contain exactly 3 objects'; Mutate = { param($j) $j.cases[0].reversedPlans = @($j.cases[0].reversedPlans[0], $j.cases[0].reversedPlans[1]) } }
     [pscustomobject]@{ Name = 'config-strength-wrong'; Expect = 'Fail'; Newline = 'LF'; Why = 'config must equal the old sample and C# ShuffleConfig defaults'; Mutate = { param($j) $j.config.strength = 0.1 } }
     [pscustomobject]@{ Name = 'config-missing'; Expect = 'Fail'; Newline = 'LF'; Why = 'missing config must fail, never default to a valid configuration'; Mutate = { param($j) Remove-JsonField $j 'config' } }
 
@@ -251,6 +286,12 @@ $scenarios = @(
     [pscustomobject]@{ Name = 'generator-wrong-path'; Expect = 'Fail'; Newline = 'LF'; Why = 'generator must name the real companion exporter path'; Mutate = { param($j) $j.generator = 'not-the-exporter' } }
     [pscustomobject]@{ Name = 'generator-wrong-type'; Expect = 'Fail'; Newline = 'LF'; Why = 'generator must be a string, not a number'; Mutate = { param($j) $j.generator = 42 } }
     [pscustomobject]@{ Name = 'base-commit-wrong'; Expect = 'Fail'; Newline = 'LF'; Why = 'v4BaseCommit must equal the frozen accepted base'; Mutate = { param($j) $j.v4BaseCommit = 'not-a-commit' } }
+    [pscustomobject]@{ Name = 'meta-source-note-number'; Expect = 'Fail'; Newline = 'LF'; Why = 'v4ProductionSourceNote must be a string, not a number'; Mutate = { param($j) $j.v4ProductionSourceNote = 42 } }
+    [pscustomobject]@{ Name = 'meta-source-note-null'; Expect = 'Fail'; Newline = 'LF'; Why = 'v4ProductionSourceNote must be a string, not null'; Mutate = { param($j) $j.v4ProductionSourceNote = $null } }
+    [pscustomobject]@{ Name = 'meta-source-note-empty'; Expect = 'Fail'; Newline = 'LF'; Why = 'empty V4 source declaration must fail meaningful-path/content checks'; Mutate = { param($j) $j.v4ProductionSourceNote = '' } }
+    [pscustomobject]@{ Name = 'meta-source-note-unrelated'; Expect = 'Fail'; Newline = 'LF'; Why = 'unrelated V4 source declaration must fail the engine stacking/model path and frozen-tree assertions'; Mutate = { param($j) $j.v4ProductionSourceNote = 'not a V4 source declaration' } }
+    [pscustomobject]@{ Name = 'meta-command-wrong'; Expect = 'Fail'; Newline = 'LF'; Why = 'generatedByCommand must name the real exporter test and export command, not an unrelated echo'; Mutate = { param($j) $j.generatedByCommand = 'echo not the exporter' } }
+    [pscustomobject]@{ Name = 'meta-command-missing'; Expect = 'Fail'; Newline = 'LF'; Why = 'missing generatedByCommand must fail exact field inventory'; Mutate = { param($j) Remove-JsonField $j 'generatedByCommand' } }
     [pscustomobject]@{ Name = 'source-tree-empty'; Expect = 'Fail'; Newline = 'LF'; Why = 'empty sourceTree must not pass the required source role set'; Mutate = { param($j) $j.sourceTree = @() } }
     [pscustomobject]@{ Name = 'source-tree-missing-role'; Expect = 'Fail'; Newline = 'LF'; Why = 'a missing required source role must fail, not be skipped'; Mutate = { param($j) $j.sourceTree = @($j.sourceTree[0..8]) } }
     [pscustomobject]@{ Name = 'source-tree-duplicate'; Expect = 'Fail'; Newline = 'LF'; Why = 'duplicate source role/path must fail even if the array length stays valid'; Mutate = { param($j) $j.sourceTree[1] = $j.sourceTree[0] } }
@@ -290,10 +331,20 @@ try {
         $fixtureDir = Join-Path $caseRoot 'tests/v5-golden'
         New-Item -ItemType Directory -Path $fixtureDir -Force | Out-Null
 
-        $json = $fixtureRaw | ConvertFrom-Json
-        & $scenario.Mutate $json
-
-        $jsonText = ($json | ConvertTo-Json -Depth 100).Replace("`r`n", "`n")
+        $rawMutation = $scenario.PSObject.Properties['RawMutation']
+        if ($null -ne $rawMutation) {
+            # Duplicate JSON keys cannot survive ConvertFrom-Json/ConvertTo-Json.
+            # These scenarios mutate the real JSON text directly, then write it as-is.
+            $jsonText = & $rawMutation.Value $fixtureRaw
+            if ([string]::IsNullOrWhiteSpace($jsonText) -or $jsonText -eq $fixtureRaw) {
+                throw "raw mutation did not change fixture: $($scenario.Name)"
+            }
+        }
+        else {
+            $json = $fixtureRaw | ConvertFrom-Json
+            & $scenario.Mutate $json
+            $jsonText = ($json | ConvertTo-Json -Depth 100).Replace("`r`n", "`n")
+        }
         if ($scenario.Newline -eq 'CRLF') {
             $jsonText = $jsonText.Replace("`n", "`r`n")
         }

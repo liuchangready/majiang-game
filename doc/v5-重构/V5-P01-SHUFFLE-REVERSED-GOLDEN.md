@@ -53,8 +53,10 @@ Worktree：`D:/majiang-wt/shuffle-reversed-golden`
 - LF-normalized SHA-256：`EB1FCCE7A11330721AFF5042C73E7140E229A815B83F8202DE3C17312788B4B4`
 - 新旧逐字段比较：32/32 的 `dealerSeat`、`plans`、`baseWall`、`threeCasterWall` 与旧布尔全部一致。
 
-本文件所在的本地最小 commit 只包含上述 5 个文件；准确 commit SHA 由调用者交付回执记录，
-避免在文件内写入自引用哈希。
+最终交付范围仍是上述 5 个文件。第 1 轮 commit
+`8734494936aad0d451511156a454b989d508468b` 建立这 5 个文件；第 2 轮返修 commit 只修改其中
+C# 测试、探针与本文档 3 个文件，exporter 与 fixture 字节不变。准确最终 commit SHA 由调用者
+交付回执记录，避免在文件内写入自引用哈希。
 
 ## 2. 字段级分类
 
@@ -66,9 +68,9 @@ Worktree：`D:/majiang-wt/shuffle-reversed-golden`
 | `schema`, `generatorVersion`, `rulesetVersion`, `extractionStatus` | META | 精确值；schema 必须为新独立版本 |
 | `generator` | META | 必须是新 exporter 真实路径；C# 校验文件存在 |
 | `v4BaseCommit`, `exportWorktreeHead` | META | 精确等于冻结 base `03084f08...`；只做声明相等，不声称 ancestry |
-| `generatedByCommand` | META | 包含真实 exporter 类名；C# 不执行该命令 |
+| `generatedByCommand` | META | 严格读取字符串并校验 exporter 类名、`V5_SHUFFLE_REVERSED_GOLDEN_EXPORT=1`、`:engine:test`、`--tests`、`--console=plain`；不执行该命令 |
 | `exportedAtNote` | META | 明确真实 `generate` 调用、正逆序分别执行、无手填 |
-| `v4ProductionSourceNote` | META | 明确 V4 stacking/model 生产源与冻结树 |
+| `v4ProductionSourceNote` | META | 严格读取字符串；必须包含 `engine/src/main/kotlin/com/majiang/stacking`、`engine/src/main/kotlin/com/majiang/model`、`V4 production sources`、冻结树声明与 source-hash 声明；对应目录真实存在；数字/null/空/无关声明均 FAIL |
 | `relationNote` | META | 明确 `threeCasterWall` 与 `reversedWall` 是两次独立执行，布尔由两墙重算 |
 | `scopeNote` | META | 明确不是 C# Shape 输出差分，且不清除 `BLOCKED_RANDOM_INPUT` |
 | `generationBaselineNote` | META | 明确在冻结 base 之上导出，交付 commit 只加 test-only 文件 |
@@ -78,8 +80,8 @@ Worktree：`D:/majiang-wt/shuffle-reversed-golden`
 | `config` | INPUT / META | 与旧 `configSnapshot` 深度逐值相等，并与 C# `new ShuffleConfig(enabled:true)` 默认值逐项相等 |
 | `cases[].seed` | INPUT / STRUCTURE | 精确集合 `0..31`、无重复、无缺失、无越界 |
 | `cases[].dealerSeat` | INPUT / STRUCTURE | 等于 `seed % 4`，并等于旧样本 dealer |
-| `cases[].plans` | INPUT / STRUCTURE | 精确 3 项，seat `0/1/2`，target `KOKUSHI/DAISANGEN/CHINITSU_MAN` |
-| `cases[].reversedPlans` | INPUT / STRUCTURE | 必须是 `plans` 的精确逆序；缺失/非逆序 FAIL |
+| `cases[].plans` | INPUT / STRUCTURE | 精确 3 项；每个对象恰好 `seat`/`target` 两个唯一字段，属性顺序无关；seat `0/1/2`，target `KOKUSHI/DAISANGEN/CHINITSU_MAN`；额外字段、大小写替代、重复键、错类型/数量/枚举均 FAIL |
+| `cases[].reversedPlans` | INPUT / STRUCTURE | 必须是 `plans` 的精确逆序；每个对象同样严格 `seat`/`target` 两个唯一字段；缺失/非逆序/额外字段/重复键均 FAIL |
 | `cases[].baseWall` | OUTPUT | 真实 `generate(seed, dealer, emptyList, cfg)` 输出；136 唯一/范围/3 赤五 |
 | `cases[].threeCasterWall` | OUTPUT | 真实 `generate(seed, dealer, threePlans, cfg)` 输出；与旧样本逐张相等 |
 | `cases[].reversedWall` | OUTPUT | 真实 `generate(seed, dealer, threePlans.reversed(), cfg)` 输出；136 唯一/范围/3 赤五 |
@@ -233,27 +235,41 @@ C# 另外把这两个旧 fixture 摘要作为**历史完整性 pin**：`386061B4
 - 负例：exit 非 0、Failed > 0；
 - 日志出现 abort/no-match/unhandled 等即 violation。
 
-矩阵：**52 场景 = 3 正控制 + 49 负例**，0 violations。正控制：
+矩阵：**76 场景 = 5 正控制 + 71 负例**，0 violations。正控制：
 
 - `baseline`；
 - `legal-case-order`（case 顺序逆排仍绿）；
-- `legal-crlf`（新 fixture 用 CRLF 仍绿）。
+- `legal-crlf`（新 fixture 用 CRLF 仍绿）；
+- `legal-plan-property-order`（plan 对象 target 在 seat 前仍绿）；
+- `legal-reversed-plan-property-order`（reversed plan 对象属性顺序互换仍绿）。
+
+重复键场景直接对真实 JSON 文本注入第二份 `seat`/`target`，不经过
+`ConvertFrom-Json`/`ConvertTo-Json`；这样 `JsonDocument.EnumerateObject()` 能看到两个键，
+`AssertExactProperties` 才能真实拒绝。证据中的 `plan-duplicate-seat.shuffle-reversed-v1.json`
+确实含 `"seat": 9, "seat": 0`，`reversed-plan-duplicate-target...` 确实含
+`"target": "INVALID", "target": "CHINITSU_MAN"`。
 
 负例族：
 
 | 族 | 代表场景 |
 |---|---|
 | INPUT | duplicate/out-of-range seed、missing case、wrong dealer、unknown/duplicate plan、非逆序 reversedPlans、config 错误/缺失 |
+| PLAN_OBJECT | plan/reversed plan 额外字段、重复 seat/target（非法→合法、合法→非法、相同值重复）、缺字段、seat/target 错类型、plan 数量 2/4 |
 | OUTPUT | base/three/reversed 单字段交换、长度 135/137、tile 999、字符串值 |
 | STRUCTURE | 缺 `threeCasterWall`/`reversedWall`、extra case/top field、数量 31/33、bool/seed 错类型 |
 | INTERNAL_RELATION | `reversedEqualsThree=false`、`threeCasterChanged=false`、`redFiveCount=2`、`deadWallSegmentEqual=false` |
-| META | schema/generator/base commit/command 错误、generation count 错误 |
+| META | schema/generator/base commit、`v4ProductionSourceNote` 数字/null/空/无关、`generatedByCommand` 错误/缺失、generation count 错误 |
 | SOURCE | sourceTree 空/缺项/重复/错 role/错 path/错 LF hash/错 raw hash/错 lineEnding、旧 fixture hash/caseCount/commit 错误 |
 
 self-negative：`-SelfNegative` 注入一个合法 no-op 副本但标记为 `Fail`。同一 checker 实际观察到
 `exit 0 / Failed 0` 并记为
 `VIOLATION: expected non-zero native exit; expected Failed > 0`，脚本 exit **1**。这不是无条件
-exit 1，也没有修改生产源或放宽 verifier。
+exit 1，也没有修改生产源或放宽 verifier。扩展矩阵的 self-negative 为 77 场景，仍只有该 1 个
+预期 violation。
+
+调用者独立脚本 `reviewer-strictness.ps1` 的 9 个场景（baseline + 8 个此前意外绿负例）在修复后：
+baseline `Total4/Errors0/Failed0/Skipped0/NotRun0/native0`；8 个负例均
+`Total4/Errors0/Failed>0/Skipped0/NotRun0/native1`。
 
 ## 6. 实测命令、native exit 与真实计数
 
@@ -261,29 +277,31 @@ CLI：`D:/Unity/dotnet/dotnet.exe`（SDK `8.0.426`）。Gradle launcher JVM 为
 `25.0.2`（JetBrains JBR），Kotlin/Java **compile target 为 JVM 17**；两者不同，已按实际记录。
 Shell：Windows PowerShell `5.1.19041.6456`；OS：Windows 10.0.19045。
 
-证据根 E：`D:/majiang-wt/shuffle-reversed-golden-evidence-20261025`。
-计数顺序：Total / Errors / Failed / Skipped / Not Run。
+证据根 E：`D:/majiang-wt/shuffle-reversed-golden-evidence-20261025`；本轮返修日志在
+`E/rework-r1/`。计数顺序：Total / Errors / Failed / Skipped / Not Run。
 
 | 检查 | native exit | 结果 / 原始日志 |
 |---|---:|---|
-| Kotlin 新 exporter + 既有 Shuffle 验收 | 0 | 17 项（新 1 + `ShuffleAlgorithmAcceptanceTest` 15 + `ShuffleAtomicDealAcceptanceTest` 1），0 fail；`kotlin-shuffle-verify.log` |
-| 默认 exporter 不写盘 | 0 | fixture hash 前后均为 `5A5EA43F...B619`；`kotlin-shuffle-verify.log` |
-| solution Release `--no-incremental` | 0 | 0 warning / 0 error；`solution-build.log` |
-| TableRuntime.Tests Release `--no-incremental` | 0 | 0 warning / 0 error；`tableruntime-build.log` |
-| Domain 全量 | 0 | 496 / 0 / 0 / 0 / 0；`domain-full.log` |
-| AI 全量 | 0 | 438 / 0 / 0 / 0 / 0；`ai-full.log` |
-| Contracts 全量 | 0 | 149 / 0 / 0 / 0 / 0；`contracts-full.log` |
-| Client 全量 | 0 | 132 / 0 / 0 / 0 / 0；`client-full.log` |
-| TableRuntime 全量 | 0 | 365 / 0 / 0 / 0 / 0；`tableruntime-full.log` |
-| 旧 shuffle 定向 | 0 | 22 / 0 / 0 / 0 / 0；`shuffle-legacy-targeted.log` |
-| typed shuffle 定向 | 0 | 9 / 0 / 0 / 0 / 0；`shuffle-typed-targeted.log` |
-| 新 reversed 定向 | 0 | 4 / 0 / 0 / 0 / 0；`shuffle-reversed-targeted.log` |
-| 外部矩阵正常模式 | 0 | 52 场景，baseline Total4，0 violations；`probe-final/` |
-| 外部矩阵 self-negative | **1（预期）** | 53 场景，1 个预期 unexpected-green violation；`probe-self-negative-final/` |
+| Kotlin 新 exporter + 既有 Shuffle 验收 | 0 | 17 项（新 1 + `ShuffleAlgorithmAcceptanceTest` 15 + `ShuffleAtomicDealAcceptanceTest` 1），0 fail；`rework-r1/kotlin-shuffle-verify.log` |
+| 默认 exporter 不写盘 | 0 | fixture hash 前后均为 `5A5EA43F...B619`；`rework-r1/kotlin-shuffle-verify.log` |
+| solution Release `--no-incremental` | 0 | 0 warning / 0 error；`rework-r1/solution-build.log` |
+| TableRuntime.Tests Release `--no-incremental` | 0 | 0 warning / 0 error；`rework-r1/tableruntime-build.log` |
+| Domain 全量 | 0 | 496 / 0 / 0 / 0 / 0；`rework-r1/domain-full.log` |
+| AI 全量 | 0 | 438 / 0 / 0 / 0 / 0；`rework-r1/ai-full.log` |
+| Contracts 全量 | 0 | 149 / 0 / 0 / 0 / 0；`rework-r1/contracts-full.log` |
+| Client 全量 | 0 | 132 / 0 / 0 / 0 / 0；`rework-r1/client-full.log` |
+| TableRuntime 全量 | 0 | 365 / 0 / 0 / 0 / 0；`rework-r1/tableruntime-full.log` |
+| 旧 shuffle 定向 | 0 | 22 / 0 / 0 / 0 / 0；`rework-r1/shuffle-legacy-targeted.log` |
+| typed shuffle 定向 | 0 | 9 / 0 / 0 / 0 / 0；`rework-r1/shuffle-typed-targeted.log` |
+| 新 reversed 定向 | 0 | 4 / 0 / 0 / 0 / 0；`rework-r1/shuffle-reversed-targeted.log` |
+| 外部矩阵正常模式 | 0 | 76 场景，baseline Total4，0 violations；`rework-r1/probe-final/` |
+| 外部矩阵 self-negative | **1（预期）** | 77 场景，1 个预期 unexpected-green violation；`rework-r1/probe-final-self-negative/` |
+| 调用者 reviewer 脚本 | 0（脚本自身） | baseline native0/Total4/Errors0/Failed0/Skipped0/NotRun0；8 负例均 native1/Total4/Errors0/Failed>0/Skipped0/NotRun0；`codex-.../rework-r1-final/strictness-results.json` |
 
 五模块合计 **1580 passed / 0 failed / 0 skipped / 0 not-run**。定向 22/9/4 已包含在
 Domain 496 内，不重复加总。无 skip、空测试、`Total=0`、旧 DLL 或编译失败掩盖；所有
-C# 运行都使用本轮非增量构建产物。
+C# 运行都使用本轮非增量构建产物。Kotlin 首次 daemon 连接失败后由 Gradle 非 daemon 回退编译，
+同一命令最终 exit0、17 项全绿；不是测试跳过。
 
 ### 6.1 环境与启动器差异
 
@@ -305,29 +323,35 @@ C# 运行都使用本轮非增量构建产物。
 | `tests/v5-golden/shuffle-reversed-v1.json` | 75847 | `5A5EA43F774E8341D740E6B5840AAFD4B671AEDFF9830D59DA161D758C14B619` |
 | `tests/v5-golden/shuffle-v1.json`（未改） | 99467 | `386061B42691CCF36381E2D87DC4787367958C8E9E96A93BA69D1E3FE5DAC282` |
 | `engine/src/test/kotlin/com/majiang/v3/V5ShuffleReversedGoldenExporterTest.kt` | 23341 | `8E3E3821D3F6ADFB56116875D22DD1C6C6384A44A9613813171FEA6A93BD9420` |
-| `dotnet/tests/Mahjong.Domain.Tests/ShuffleReversedGoldenTests.cs` | 44817 | `699FC6A1B48FF525E405E709A3BD6BF091D19D22A1CA523CEE976D70045A8ECB` |
-| `tools/v5-golden/probe-shuffle-reversed-binding.ps1` | 28371 | `F0B93E76D8C3DB667D1347832B8A4A4CFE6970C5DC6717BA5611D9424DD6AB33` |
+| `dotnet/tests/Mahjong.Domain.Tests/ShuffleReversedGoldenTests.cs` | 46804 | `0035BC592A89DED23FBEF3552C193EFD5318E9DC925F562E29F8E4DC635B5D74` |
+| `tools/v5-golden/probe-shuffle-reversed-binding.ps1` | 37414 | `3E054BE213DA0824A05114F1B451A81F8FD2F92FA8841B92C6F9CE1D4BE2AEBD` |
 
 ### 7.2 关键日志
 
+本轮返修日志位于 `E/rework-r1/`；上一轮日志保留在 E 根，不覆盖。
+
 | 文件 | 字节 | SHA-256 |
 |---|---:|---|
-| `kotlin-shuffle-verify.log` | 29614 | `8BE15B81E9BD1A1BE7375E03707038C11E0B8F28077E5D100AA55EF02E7755B6` |
-| `solution-build.log` | 3564 | `24C3C178F55AEAF5856D25D9D11E9F48AD8DD562AC8E2FE7C9BCECFFF06F2E45` |
-| `tableruntime-build.log` | 2146 | `76CD7F6ECA3DA067DCBCFBC6F776E142252D6874E800B6BFD793E58F321C24D9` |
-| `domain-full.log` | 958 | `404AA7740D33ACF31262EB15AE6C17FB70FD8DE520C1A59D53256CE0BFCFB462` |
-| `ai-full.log` | 664 | `51538FBE76F1A0A7A3691B5A290F50C46B88A139C59A184522BAFC0CDE76D724` |
-| `contracts-full.log` | 734 | `907765E6B16495AB6C7D042F558679B0D5D127EFFE368607E9764038D2658867` |
-| `client-full.log` | 704 | `E230EE52D8081E705F502F15B2292AD6C2F12A7CB262659A233BA0A8EAD666A5` |
-| `tableruntime-full.log` | 764 | `B12943ECBE84DB10C63A4C123A25B816FAC63FCB9849AA3E6FADB2F39A5060AE` |
-| `shuffle-legacy-targeted.log` | 702 | `EB712613069E86E4D43F577788D323CFFF102101472D27684CF214B01ACED721` |
-| `shuffle-typed-targeted.log` | 700 | `266B6432C652C6D4D11850C1B3ECD5F0FA3C82D81BD8D4511FA590C50600B8BB` |
-| `shuffle-reversed-targeted.log` | 700 | `C28267D0DF931380CB04CA48B1968B938D6B310DB792B15E144921681CFB6487` |
-| `probe-final-console.log` | 10980 | `E6927C62AA33A2C717EF2297F7E7372132993FF24C305319DA43DE580FAFAC22` |
-| `probe-self-negative-final-console.log` | 16370 | `5F2B32874440C5550FF0A91872D4AB77D438ECD3FE94752D4AA6807BE1512B9B` |
+| `rework-r1/kotlin-shuffle-verify.log` | 42426 | `F6BF7CC10DD37CE5B77F87289035D921CA5FDE7527A72186CAD846A7703CB6E6` |
+| `rework-r1/solution-build.log` | 3564 | `73A2F5E772FA6AC0DDBDCB0D6AABCBA62AB78759B1EEAA07B4C985FC44D8F75E` |
+| `rework-r1/tableruntime-build.log` | 2146 | `B322D29CBE86EFB22E1711B5F71D1C61FEC8B8DF25E8D58A6727473FC50C7ABB` |
+| `rework-r1/domain-full.log` | 958 | `C0EAEB01126C17F5F8B55B3D2E219E803E9DE957FBEC58777F0B35CB261E00C3` |
+| `rework-r1/ai-full.log` | 664 | `31FB952621A3FC0DDCD2460E6F04B4B4BEF9E22C34A6A763E2753AA78973A40E` |
+| `rework-r1/contracts-full.log` | 734 | `4E109830B93414A34A9E1634CE22FC2F58DE895E621F977E9FD417F696F22E4F` |
+| `rework-r1/client-full.log` | 704 | `789635E5C506FF3A9C15B2CF15BE2C54651CD32FDC8481BB39176421EAF78916` |
+| `rework-r1/tableruntime-full.log` | 764 | `88FC82F23B8DB263C395983E7170BE058BDE18D98CE40A7B6FCE2B53EA63F097` |
+| `rework-r1/shuffle-legacy-targeted.log` | 702 | `4765FAB4F7C917AC36DECC2B226F27DA677D7F21908AF838A16DB079956CEE01` |
+| `rework-r1/shuffle-typed-targeted.log` | 700 | `4FAB803DC37A03606A1129196AB0E26E59CF3057C40E19568155A738293DB29B` |
+| `rework-r1/shuffle-reversed-targeted.log` | 700 | `3A27A26A73B9A9337D279C58C5A00D283F6939911B9AC344AA1191D0FA247A22` |
+| `rework-r1/probe-final-console.log` | 17652 | `A79C11F9208773F7BFF4F9A7C0A9BA2A7E8B113C56C979FA938A5A770D05E923` |
+| `rework-r1/probe-final-self-negative-console.log` | 22178 | `0339255D8EAC5EC954D5BA136163A4EF4DDEEB8B358BFEE9CFA82E88B7F0630B` |
+| `codex-.../rework-r1-final/strictness-results.json` | — | `4CA5900D3EE44291B75A123BBBF2B2E4DE0FBADB55C70A705930B9263CE86CD7` |
 
-E 下另有 `probe-final/` 与 `probe-self-negative-final/` 的逐场景原始日志、变异 fixture 副本、
-CSV 和 `probe-summary.json`；完整 SHA-256 清单见 E 根 `SHA256-MANIFEST.csv`。
+`reviewer-strictness.ps1` 本身 SHA-256 仍为
+`45A24083D4EDCE029B09FD5CA15F829B591EFA348FBA211880863DD6D4203E8D`，未被修改。
+
+E/rework-r1 下另有 `probe-final/` 与 `probe-final-self-negative/` 的逐场景原始日志、变异
+fixture 副本、CSV 和 `probe-summary.json`；完整 SHA-256 清单见 E 根 `SHA256-MANIFEST.csv`。
 
 ## 8. 限制、未运行项与后续责任
 
@@ -411,6 +435,12 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass `
   -File "$R/tools/v5-golden/probe-shuffle-reversed-binding.ps1" `
   -RepoRoot $R -Dotnet $CLI -OutDir "$E/probe-self-negative-rerun" -SelfNegative
 # 上一条必须 native exit 1，且 self-negative-legal-control 为意外绿 violation。
+
+# 调用者独立 strictness 脚本（Evidence 目录必须先创建；脚本自身 exit0，结果看 9 行 JSON）
+powershell.exe -NoProfile -ExecutionPolicy Bypass `
+  -File "D:/majiang-wt/codex-shuffle-reversed-review-1792915003211/reviewer-strictness.ps1" `
+  -RepoRoot $R -Evidence "D:/majiang-wt/codex-shuffle-reversed-review-1792915003211/rework-rerun"
+# 期望：baseline native0/Failed0；8 个负例 native1/Total4/Failed>0/Skipped0/NotRun0。
 ```
 
 外部矩阵 OutDir 必须不存在；脚本会拒绝复用。探针只写独占 TEMP 与 OutDir，不改仓库 fixture
@@ -425,8 +455,9 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass `
 | 旧样本 32 seed/dealer/plans/config/base/three 绑定 | **PASS（C#）** |
 | `reversedEqualsThree` 从真实正逆序墙重算 | **PASS（伴随绑定）** |
 | 136 唯一 / 3 赤五 / 死山隔离 / 确定性 | **PASS** |
-| 单字段负例/结构/来源/行尾/顺序探针 | **PASS**（52 场景，0 violations） |
+| 单字段负例/结构/来源/行尾/顺序探针 | **PASS**（76 场景，0 violations） |
 | self-negative checker | **PASS（实际 exit 1，预期 violation）** |
+| 调用者 8 个意外绿复现 | **PASS（修复后全部 native1/Failed>0）** |
 | `threeCasterShapeBinding` | **BLOCKED_RANDOM_INPUT** |
 | 真实 V4 有序 typed 随机提取 | **NOT_IMPLEMENTED** |
 | C# 三人 Shape 逐张输出差分 | **NOT_RUN / 不得声称** |
@@ -436,3 +467,55 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass `
 | 旧 Client `39970580589` | **UNRESOLVED** |
 
 本任务不宣布 G1/G5 完成，不创建 `complete.flag`，不 push、不建 PR、不触发远端 CI、不改默认分支。
+
+## 11. 第 2 轮返修记录（D-R1-01 / D-R1-02）
+
+第 1 轮交付 commit 为 `8734494936aad0d451511156a454b989d508468b`。本轮在同一 thread、
+同一 receiver/native session/model 内修复两条 MAJOR；返修 commit 是本文件所在的后续本地
+commit，准确 SHA 由调用者回执记录。
+
+### 11.1 D-R1-01：plan 对象字段清单与重复键
+
+- 位置：`ShuffleReversedGoldenTests.cs` 的 `ParsePlans`；探针矩阵。
+- 原缺陷：只 `GetProperty` 读取 `seat`/`target`，未校验每个 plan 对象的字段清单；
+  `plan-extra-field`、`plan-duplicate-seat`、`reversed-plan-extra-field`、
+  `reversed-plan-duplicate-target` 均意外 native0/Failed0。
+- 修复：`ParsePlans` 对每个对象先断言 `ValueKind=Object`，再调用
+  `AssertExactProperties(plan, ["seat","target"])`；`EnumerateObject()` 保留重复键，
+  因此第二份 `seat`/`target` 不能藏在 `GetProperty` 的最后值后面。属性顺序无关。
+- 探针：新增 5 个正控制（含 plan/reversed-plan 属性顺序）和 17 个 plan 负例；重复键由
+  `RawMutation` 直接写真实 JSON 文本，不经 `ConvertFrom-Json`/`ConvertTo-Json`。
+- 验收：reviewer 的 4 个 plan 场景修复后均 native1/Total4/Errors0/Failed2/Skipped0/NotRun0；
+  扩展矩阵 `plan-*`/`reversed-plan-*` 全部 FAIL；`legal-plan-property-order` 与
+  `legal-reversed-plan-property-order` 保持 native0/Failed0。
+
+### 11.2 D-R1-02：未读取的 V4 来源 META
+
+- 位置：`ShuffleReversedGoldenTests.cs` 的 provenance Fact；报告 META 口径。
+- 原缺陷：`v4ProductionSourceNote` 只出现在 `TopLevelFields`，从未 `Str` 读取；
+  `meta-number`、`meta-null`、`meta-empty`、`meta-unrelated` 均意外 native0/Failed0。
+- 修复：严格 `Str` 读取并断言：
+  `engine/src/main/kotlin/com/majiang/stacking`、
+  `engine/src/main/kotlin/com/majiang/model`、
+  `V4 production sources`、`v4BaseCommit is the frozen tree at export time`、
+  `source hashes below bind the exact working-tree bytes`；两个目录必须真实存在。
+  同时补上 `generatedByCommand` 的真实命令片段校验（export 变量、`:engine:test`、
+  `--tests`、exporter 类名、`--console=plain`），并新增 command 负例，使报告口径与实际
+  场景一致。
+- 验收：reviewer 的 4 个 META 场景修复后均 native1/Total4/Errors0/Failed1/Skipped0/NotRun0；
+  扩展矩阵的 `meta-source-note-*`、`meta-command-wrong`、`meta-command-missing` 全部 FAIL；
+  真实 fixture 与来源 SHA 校验继续绿。
+
+### 11.3 复跑结果
+
+- 调用者 `reviewer-strictness.ps1`（SHA-256 `45A24083...203E8D`）：
+  baseline native0/Total4/Failed0；8 个负例全部 native1/Total4/Errors0/Failed>0/
+  Skipped0/NotRun0。新 `strictness-results.json` SHA-256
+  `4CA5900D3EE44291B75A123BBBF2B2E4DE0FBADB55C70A705930B9263CE86CD7`；
+  原始 `C1EBBD0A...BD5E` 保留在 E 根，不覆盖。
+- 扩展矩阵：76 场景 = 5 正控制 + 71 负例，0 violations；self-negative 77 场景，
+  exit1，仅 `self-negative-legal-control` 一个预期 violation。
+- fresh solution/TableRuntime 构建均 0 warning/0 error；五模块 1580/0/0/0/0；
+  Kotlin 17/0/0/0；新 reversed 定向 4/0/0/0/0。
+- 仍未改变：旧 fixture `386061B4...`、新 fixture `5A5EA43F...`、exporter `8E3E3821...`；
+  `BLOCKED_RANDOM_INPUT`、G1 BLOCKED、G5 NOT APPROVED 均保持。
