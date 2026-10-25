@@ -567,6 +567,187 @@ try {
             }
         },
         @{
+            Name = "negative-input-current-player"
+            Kind = "INPUT"
+            Expected = "FAIL"
+            RefreshHash = $true
+            Apply = {
+                param($json)
+                $json.cases[0].input.state.currentPlayer = 2
+            }
+        },
+        @{
+            Name = "negative-output-meld-fromseat"
+            Kind = "OUTPUT"
+            Expected = "FAIL"
+            RefreshHash = $true
+            Apply = {
+                param($json)
+                $json.cases[0].expected.snapshot.melds[1][0].fromSeat = 2
+            }
+        },
+        @{
+            Name = "negative-output-meld-called"
+            Kind = "OUTPUT"
+            Expected = "FAIL"
+            RefreshHash = $true
+            Apply = {
+                param($json)
+                $json.cases[0].expected.snapshot.melds[1][0].calledTileId = 4
+            }
+        },
+        @{
+            Name = "negative-input-meld-fromseat"
+            Kind = "INPUT"
+            Expected = "FAIL"
+            RefreshHash = $true
+            Apply = {
+                param($json)
+                $json.cases[0].input.state.melds[1][0].fromSeat = 2
+            }
+        },
+        @{
+            Name = "negative-input-meld-called"
+            Kind = "INPUT"
+            Expected = "FAIL"
+            RefreshHash = $true
+            Apply = {
+                param($json)
+                $json.cases[0].input.state.melds[1][0].calledTileId = 4
+            }
+        },
+        @{
+            Name = "negative-input-meld-tile"
+            Kind = "INPUT"
+            Expected = "FAIL"
+            RefreshHash = $true
+            Apply = {
+                param($json)
+                $json.cases[0].input.state.melds[1][0].tileIds[0] = 1
+            }
+        },
+        @{
+            Name = "negative-input-discard-tile"
+            Kind = "INPUT"
+            Expected = "FAIL"
+            RefreshHash = $true
+            Apply = {
+                param($json)
+                $json.cases[0].input.state.discards[0][0] = 135
+            }
+        },
+        @{
+            Name = "negative-input-hand-tile"
+            Kind = "INPUT"
+            Expected = "FAIL"
+            RefreshHash = $true
+            Apply = {
+                param($json)
+                $json.cases[3].input.state.hands[1].closedTileIds[0] = 135
+            }
+        },
+        @{
+            Name = "negative-output-event-turn"
+            Kind = "OUTPUT"
+            Expected = "FAIL"
+            RefreshHash = $true
+            Apply = {
+                param($json)
+                $json.cases[1].expected.visibility.unauthorized.'0'[0].turnNumber = 999
+            }
+        },
+        @{
+            Name = "negative-output-event-fromseat"
+            Kind = "OUTPUT"
+            Expected = "FAIL"
+            RefreshHash = $true
+            Apply = {
+                param($json)
+                $json.cases[1].expected.visibility.unauthorized.'0'[3].fromSeat = 2
+            }
+        },
+        @{
+            Name = "negative-input-event-turn"
+            Kind = "INPUT"
+            Expected = "FAIL"
+            RefreshHash = $true
+            Apply = {
+                param($json)
+                $json.cases[1].input.events[0].turnNumber = 999
+            }
+        },
+        @{
+            Name = "negative-input-clock-deadline"
+            Kind = "INPUT"
+            Expected = "FAIL"
+            RefreshHash = $true
+            Apply = {
+                param($json)
+                $json.cases[2].input.clock.deadline = 999
+            }
+        },
+        @{
+            Name = "negative-output-copy-clocks"
+            Kind = "OUTPUT"
+            Expected = "FAIL"
+            RefreshHash = $true
+            Apply = {
+                param($json)
+                $json.cases[2].expected.copyProbe.clocksAfterMutation = 0
+            }
+        },
+        @{
+            Name = "negative-input-cheat-points"
+            Kind = "INPUT"
+            Expected = "FAIL"
+            RefreshHash = $true
+            Apply = {
+                param($json)
+                $json.cases[3].input.state.privateCheat.points[1] = 2000
+            }
+        },
+        @{
+            Name = "negative-input-cheat-reason"
+            Kind = "INPUT"
+            Expected = "FAIL"
+            RefreshHash = $true
+            Apply = {
+                param($json)
+                $json.cases[3].input.state.privateCheat.entries[0].reason = "CHANGED"
+            }
+        },
+        @{
+            Name = "negative-input-placement-swap"
+            Kind = "INPUT"
+            Expected = "FAIL"
+            RefreshHash = $true
+            Apply = {
+                param($json)
+                $json.cases[0].input.state.placements[0][0] = 1
+                $json.cases[0].input.state.placements[1][0] = 0
+            }
+        },
+        @{
+            Name = "negative-input-breakdown-ura"
+            Kind = "INPUT"
+            Expected = "FAIL"
+            RefreshHash = $true
+            Apply = {
+                param($json)
+                $json.cases[2].input.events[8].breakdown.uraTiles[0] = 31
+            }
+        },
+        @{
+            Name = "negative-output-breakdown-ura"
+            Kind = "OUTPUT"
+            Expected = "FAIL"
+            RefreshHash = $true
+            Apply = {
+                param($json)
+                $json.cases[2].expected.tsumoBreakdown.authorized.uraTiles[0] = 35
+            }
+        },
+        @{
             Name = "positive-source-only-legal-actions"
             Kind = "SOURCE_ONLY"
             Expected = "PASS"

@@ -18,19 +18,11 @@ namespace Mahjong.TableRuntime.Tests
     /// <summary>
     /// P0.1-a/P0.1-b visibility binding for G-057a..G-057d.
     ///
-    /// The fixture <c>tests/v5-golden/visibility-v1.json</c> is generated only by the V4
-    /// exporter <c>V5VisibilityGoldenExporterTest</c>; every expected value in it is an
-    /// actual V4 call result. This test rebuilds a real V5 136-entity round from the
-    /// exported placement input and calls the existing production projections:
-    /// <see cref="TableVisibilityProjection.ProjectPlayerSnapshot"/>,
-    /// <see cref="TableVisibilityProjection.ProjectPublicSnapshot"/>,
-    /// <see cref="TableVisibilityProjection.ProjectOwnerPrivate"/> and
-    /// <see cref="TableEventProjection.ProjectMany"/>. It never feeds a V4 object into a
-    /// V5 API and never copies a V5 expected value back out of the fixture.
-    ///
-    /// Known semantic gaps (legal actions, ScoreBreakdown, closed-kan identities, session
-    /// summary shape, sleeve representation) are listed in the fixture's
-    /// <c>knownDivergences</c> block and are NOT counted as aligned fields.
+    /// The fixture is produced only by the V4 exporter. This test rebuilds a real V5
+    /// 136-entity round from the exported placement input and drives the complete existing
+    /// production path: typed projections, TableProjectionContractMapper.MapEvent /
+    /// MapPublicSnapshot / MapPlayerSnapshot, including owner sleeve/melds and score
+    /// breakdown payloads. No V4 object is passed into a V5 API.
     /// </summary>
     public sealed class VisibilityGoldenTests
     {
@@ -90,10 +82,13 @@ namespace Mahjong.TableRuntime.Tests
             "dotnet/src/Mahjong.TableRuntime/TableVisibilityProjection.cs",
             "dotnet/src/Mahjong.TableRuntime/TableEventProjection.cs",
             "dotnet/src/Mahjong.TableRuntime/TableVisibilityContexts.cs",
+            "dotnet/src/Mahjong.TableRuntime/TableProjectionContractMapper.cs",
             "dotnet/src/Mahjong.Contracts/ProtocolSnapshot.cs",
+            "dotnet/src/Mahjong.Contracts/ProtocolProjectionPayload.cs",
             "dotnet/src/Mahjong.Domain/TilePositionMap.cs",
             "dotnet/src/Mahjong.Domain/RoundStateMachine.cs",
-            "dotnet/src/Mahjong.Domain/RoundTypes.cs"
+            "dotnet/src/Mahjong.Domain/RoundTypes.cs",
+            "dotnet/tests/Mahjong.TableRuntime.Tests/TableProjectionContractMapperTests.cs"
         };
 
         private static readonly string[] SupportedGenerationCommands =
@@ -190,7 +185,9 @@ namespace Mahjong.TableRuntime.Tests
                 value => Str(value, "id") == "VG-D01" && Str(value, "status").StartsWith("BLOCKED", StringComparison.Ordinal));
             Assert.Contains(
                 divergences.EnumerateArray(),
-                value => Str(value, "id") == "VG-D06" && Str(value, "status").StartsWith("BLOCKED", StringComparison.Ordinal));
+                value => Str(value, "id") == "VG-D06" &&
+                         (Str(value, "status").Contains("MAPPED", StringComparison.Ordinal) ||
+                          Str(value, "status").Contains("AUTHORIZATION", StringComparison.Ordinal)));
             Assert.Contains(
                 divergences.EnumerateArray(),
                 value => Str(value, "id") == "VG-D03" && Str(value, "status").Contains("UNREPRESENTABLE", StringComparison.Ordinal));
@@ -205,54 +202,69 @@ namespace Mahjong.TableRuntime.Tests
             JsonElement item = Case("VIS-G057A-SNAPSHOT-COPY");
             JsonElement stateJson = item.GetProperty("input").GetProperty("state");
             Scenario scenario = BuildScenario(stateJson);
-            CheatState cheat = V32Fixtures.Cheat();
+            CheatState cheat = BuildCheat(stateJson.GetProperty("privateCheat"));
             TableProjectionContext context = scenario.Context(new TableProjectionPolicy());
             PlayerSnapshotView view = TableVisibilityProjection.ProjectPlayerSnapshot(
                 scenario.Round, cheat, 0, context);
 
             AssertSeatView(item.GetProperty("expected").GetProperty("snapshot"), view);
 
-            // The fixture's expected snapshot was captured after the V4 source state and the
-            // producer-owned meld/legal-action lists were mutated. The V4 view and the V5 view
-            // must agree on that captured value.
-            List<uint> before = view.Private.ClosedTiles.ToList();
-            scenario.Placements.Clear();
-            scenario.Scores[0] = 1;
-            scenario.Dora[0] = 135;
-            PlayerSnapshotView replayed = TableVisibilityProjection.ProjectPlayerSnapshot(
-                scenario.Round, cheat, 0, scenario.Context(new TableProjectionPolicy()));
-            Assert.Equal(before, replayed.Private.ClosedTiles);
-            Assert.Equal(25000L, replayed.Public.Board!.Scores[0].Score);
+            TableOwnerPrivateView owner0 = TableVisibilityProjection.ProjectOwnerPrivate(
+                scenario.Round, cheat, 0, context);
+            PlayerSnapshotView mapped = TableProjectionContractMapper.MapPlayerSnapshot(
+                view, owner0, new TableProjectionTimeContext(0));
+            Assert.Equal(view.Private.ClosedTiles, mapped.Private.ClosedTiles);
+            Assert.Equal(view.Private.DrawnTileId, mapped.Private.DrawnTileId);
+            Assert.Empty(mapped.Private.SleeveTiles);
 
-            JsonElement expectedSnapshot = item.GetProperty("expected").GetProperty("snapshot");
-            Assert.Equal(
-                Ints(expectedSnapshot.GetProperty("scores")).Select(value => (long)value),
-                replayed.Public.Board!.Scores.Select(value => value.Score));
+            // Real authoritative transition, not a mutation of constructor material: the new
+            // round must differ and the old V4-golden snapshot must not drift.
+            List<uint> oldClosed = view.Private.ClosedTiles.ToList();
+            int oldDiscards = view.Public.Board!.Players[0].Discards.Count;
+            RoundStateMachine advanced = V32Fixtures.ApplyDiscard(scenario.Round, 0, out _);
+            var melds = new Dictionary<int, IReadOnlyList<TableMeldFact>>
+            {
+                [1] = scenario.PublicFacts[1].Melds
+            };
+            PlayerSnapshotView advancedView = TableVisibilityProjection.ProjectPlayerSnapshot(
+                advanced, cheat, 0, V32Fixtures.Context(advanced, melds: melds));
+            Assert.True(
+                advancedView.Public.Board!.Players[0].Discards.Count > oldDiscards,
+                "the real discard transition must be visible to the new projection");
+            Assert.NotEqual(oldClosed, advancedView.Private.ClosedTiles);
+            Assert.Equal(oldClosed, view.Private.ClosedTiles);
+            Assert.Equal(oldDiscards, view.Public.Board!.Players[0].Discards.Count);
+
+            // Nested meld facts are copied at construction; this is a construction-layer proof,
+            // not a claim about the immutable snapshot itself.
+            uint[] meldTiles = { 0, 4, 8 };
+            var fact = new TableMeldFact(ProtocolMeldType.Chi, meldTiles, 0, 0);
+            meldTiles[0] = 9;
+            Assert.Equal(new uint[] { 0, 4, 8 }, fact.TileIds);
         }
 
         [Fact]
-        public void G057bEventVisibilityMatchesV4()
+        public void G057bEventVisibilityAndMappedPayloadsMatchV4()
         {
             JsonElement item = Case("VIS-G057B-EVENT-VISIBILITY");
             JsonElement input = item.GetProperty("input");
-            List<TableEventProjectionInput> unauthorized = BuildEventInputs(input.GetProperty("events"));
-            List<TableEventProjectionInput> authorized = BuildEventInputs(input.GetProperty("authorizedEvents"));
+            List<FixtureEvent> unauthorized = BuildFixtureEvents(input.GetProperty("events"));
+            List<FixtureEvent> authorized = BuildFixtureEvents(input.GetProperty("authorizedEvents"));
 
             JsonElement visibility = item.GetProperty("expected").GetProperty("visibility");
             for (int seat = 0; seat < 4; seat++)
             {
                 TableProjectionAudience audience = TableProjectionAudience.ForSeat(seat);
-                IReadOnlyList<TableProjectedEvent> actualUnauthorized = TableEventProjection.ProjectMany(
-                    unauthorized, audience, new TableProjectionPolicy(false, false, false));
-                AssertEventList(
+                AssertScenarioEvents(
                     visibility.GetProperty("unauthorized").GetProperty(seat.ToString(CultureInfo.InvariantCulture)),
-                    actualUnauthorized);
-
-                IReadOnlyList<TableProjectedEvent> actualAuthorized = TableEventProjection.ProjectMany(
-                    authorized, audience, new TableProjectionPolicy(false, true, true));
-                AssertEventList(
+                    unauthorized,
+                    audience,
+                    new TableProjectionPolicy(false, false, false));
+                AssertScenarioEvents(
                     visibility.GetProperty("settlementAuthorized").GetProperty(seat.ToString(CultureInfo.InvariantCulture)),
-                    actualAuthorized);
+                    authorized,
+                    audience,
+                    new TableProjectionPolicy(false, true, true));
             }
 
             // V5-only stricter policy (VG-D01): CheatPointsChanged is private by type.
@@ -267,8 +279,11 @@ namespace Mahjong.TableRuntime.Tests
                 cheatAmount: -10,
                 cheatBalance: 990);
             Assert.Empty(cheatPoints.TileIds);
-            Assert.NotNull(TableEventProjection.Project(
-                cheatPoints, TableProjectionAudience.ForSeat(0), new TableProjectionPolicy()));
+            TableProjectedEvent ownerCheat = TableEventProjection.Project(
+                cheatPoints, TableProjectionAudience.ForSeat(0), new TableProjectionPolicy())!;
+            var mappedCheat = TableProjectionContractMapper.MapEvent(
+                ownerCheat, new TableProjectionEventFacts(turnNumber: 0));
+            Assert.Equal(-10L, mappedCheat.ProjectionPayload!.CheatAmount);
             for (int seat = 1; seat < 4; seat++)
             {
                 Assert.Null(TableEventProjection.Project(
@@ -277,16 +292,28 @@ namespace Mahjong.TableRuntime.Tests
 
             Assert.Null(TableEventProjection.Project(
                 cheatPoints, TableProjectionAudience.Spectator, new TableProjectionPolicy()));
+
+            // Mapping rejects a missing required fact; it never invents a default.
+            TableProjectedEvent discard = TableEventProjection.Project(
+                unauthorized.First(value => Str(value.Descriptor, "kind") == "TileDiscarded").Input,
+                TableProjectionAudience.ForSeat(2),
+                new TableProjectionPolicy())!;
+            Assert.Throws<TableProjectionException>(() =>
+                TableProjectionContractMapper.MapEvent(discard, null));
         }
 
         [Fact]
-        public void G057cPublicProjectionBoardAndWhitelistMatchV4()
+        public void G057cPublicProjectionAndMappedPayloadsMatchV4()
         {
             JsonElement item = Case("VIS-G057C-PUBLIC-PROJECTION");
             JsonElement input = item.GetProperty("input");
             Scenario scenario = BuildScenario(input.GetProperty("state"));
-            List<TableEventProjectionInput> events = BuildEventInputs(input.GetProperty("events"));
+            List<FixtureEvent> fixtures = BuildFixtureEvents(input.GetProperty("events"));
+            List<TableEventProjectionInput> events = fixtures.Select(value => value.Input).ToList();
             JsonElement expected = item.GetProperty("expected");
+            ClockView clock = ParseClock(input.GetProperty("clock"));
+            ClockView expectedClock = ParseClock(expected.GetProperty("clock"));
+            var clocks = new List<ClockView> { clock };
 
             var unauthorizedPolicy = new TableProjectionPolicy(false, true, false);
             var sessionProjection = new TableSessionProjection(
@@ -296,10 +323,11 @@ namespace Mahjong.TableRuntime.Tests
                 Array.Empty<int>(),
                 "round-vis-g057c");
             TableProjectionContext unauthorizedContext = scenario.Context(
-                unauthorizedPolicy, events, sessionProjection);
+                unauthorizedPolicy, events, sessionProjection, clocks);
             PublicSnapshotView unauthorized = TableVisibilityProjection.ProjectPublicSnapshot(
                 scenario.Round, unauthorizedContext);
             AssertBoard(expected.GetProperty("board"), unauthorized.View.Board!);
+            AssertClock(expectedClock, unauthorized.View.Clocks);
             Assert.False(unauthorized.View.Session.Finished);
             Assert.Equal("round-vis-g057c", unauthorized.View.SettlementRoundId);
 
@@ -310,9 +338,37 @@ namespace Mahjong.TableRuntime.Tests
                 unauthorizedEvents);
             Assert.DoesNotContain(unauthorizedEvents, value => value.IsUraDora);
 
+            List<FixtureEvent> unauthorizedVisible = VisibleFixtures(
+                fixtures, TableProjectionAudience.Spectator, unauthorizedPolicy);
+            List<ProtocolEventRecord> unauthorizedTyped = MapAll(
+                unauthorizedEvents, unauthorizedVisible, includeBreakdown: false, uraAuthorized: false);
+            foreach (ProtocolEventRecord record in unauthorizedTyped)
+            {
+                if (record.Type == ProtocolEventType.TsumoWin)
+                {
+                    Assert.Null(record.ProjectionPayload!.Breakdown);
+                    Assert.Equal(4000L, record.ProjectionPayload.Score);
+                    Assert.Equal(3u, record.ProjectionPayload.Han);
+                    Assert.Equal(30u, record.ProjectionPayload.Fu);
+                }
+            }
+
+            // Raw unauthorised breakdown identities are a caller-contract rejection, not a
+            // silent strip inside the mapper.
+            FixtureEvent tsumo = fixtures.Single(value => Str(value.Descriptor, "kind") == "TsumoWin");
+            Assert.Throws<ArgumentException>(() => Facts(tsumo, uraAuthorized: false, includeBreakdown: true));
+
+            PublicSnapshotView mappedUnauthorized = TableProjectionContractMapper.MapPublicSnapshot(
+                unauthorized,
+                SettlementTyped(unauthorizedEvents, unauthorizedVisible, includeBreakdown: false, uraAuthorized: false));
+            AssertBoard(expected.GetProperty("board"), mappedUnauthorized.View.Board!);
+            Assert.All(
+                mappedUnauthorized.View.SettlementEvents,
+                record => Assert.NotNull(record.ProjectionPayload));
+
             var authorizedPolicy = new TableProjectionPolicy(false, true, true);
             TableProjectionContext authorizedContext = scenario.Context(
-                authorizedPolicy, events, sessionProjection);
+                authorizedPolicy, events, sessionProjection, clocks);
             PublicSnapshotView authorized = TableVisibilityProjection.ProjectPublicSnapshot(
                 scenario.Round, authorizedContext);
             AssertBoard(expected.GetProperty("board"), authorized.View.Board!);
@@ -323,52 +379,70 @@ namespace Mahjong.TableRuntime.Tests
                 authorizedEvents);
             Assert.Contains(authorizedEvents, value => value.IsUraDora);
 
-            // The metadata-only settlement records must agree on type/visibility with the
-            // typed spectator projection. Their payload is intentionally empty in P3.2a.
-            bool sawUraRecord = false;
-            foreach (ProtocolEventRecord record in authorized.View.SettlementEvents)
-            {
-                Assert.True(
-                    record.Visibility == ProtocolEventVisibility.Public ||
-                    record.Visibility == ProtocolEventVisibility.SettlementPublic,
-                    "settlement record has an unexpected visibility " + record.Visibility);
-                Assert.Empty(record.CopyWirePayload());
-                if (record.Type == ProtocolEventType.DoraRevealed)
-                {
-                    sawUraRecord = true;
-                    Assert.Equal(ProtocolEventVisibility.SettlementPublic, record.Visibility);
-                }
-            }
+            List<FixtureEvent> authorizedVisible = VisibleFixtures(
+                fixtures, TableProjectionAudience.Spectator, authorizedPolicy);
+            List<ProtocolEventRecord> authorizedTyped = MapAll(
+                authorizedEvents, authorizedVisible, includeBreakdown: true, uraAuthorized: true);
+            ProtocolEventRecord authorizedTsumo = authorizedTyped.Single(
+                value => value.Type == ProtocolEventType.TsumoWin);
+            JsonElement breakdown = expected.GetProperty("tsumoBreakdown").GetProperty("authorized");
+            Assert.NotNull(authorizedTsumo.ProjectionPayload!.Breakdown);
+            ScoreBreakdownView payload = authorizedTsumo.ProjectionPayload.Breakdown!;
+            Assert.Equal(Ints(breakdown.GetProperty("uraTiles")).Select(value => (uint)value), payload.UraTiles);
+            Assert.Equal(
+                Ints(breakdown.GetProperty("uraHitTiles")).Select(value => (uint)value),
+                payload.UraHits);
+            Assert.Equal((uint)Int(breakdown, "totalPoints"), checked((uint)payload.TotalPoints));
+            Assert.Equal((uint)Int(breakdown, "doraCount"), payload.DoraCount);
+            Assert.Equal((uint)Int(breakdown, "uraCount"), payload.UraCount);
+            Assert.True(payload.UraAuthorized);
+            Assert.Equal(4000L, authorizedTsumo.ProjectionPayload.Score);
 
-            Assert.True(sawUraRecord, "authorized settlement batch must carry the ura DoraRevealed record");
-
-            // V4-only ScoreBreakdown is recorded but cannot be compared to a V5 field.
-            JsonElement breakdownUnauthorized = expected.GetProperty("tsumoBreakdown").GetProperty("unauthorized");
-            JsonElement breakdownAuthorized = expected.GetProperty("tsumoBreakdown").GetProperty("authorized");
-            Assert.Empty(Ints(breakdownUnauthorized.GetProperty("uraTiles")));
-            Assert.Single(Ints(breakdownAuthorized.GetProperty("uraTiles")));
-            Assert.Equal(0, Int(breakdownUnauthorized, "uraHits"));
-            Assert.Equal(1, Int(breakdownAuthorized, "uraHits"));
+            PublicSnapshotView mappedAuthorized = TableProjectionContractMapper.MapPublicSnapshot(
+                authorized,
+                SettlementTyped(authorizedEvents, authorizedVisible, includeBreakdown: true, uraAuthorized: true));
+            AssertBoard(expected.GetProperty("board"), mappedAuthorized.View.Board!);
+            Assert.Contains(
+                mappedAuthorized.View.SettlementEvents,
+                record => record.Type == ProtocolEventType.DoraRevealed &&
+                          record.ProjectionPayload!.UraAuthorized);
         }
 
         [Fact]
-        public void G057cPublicProjectionIsDefensivelyCopiedAndReadOnly()
+        public void G057cPublicProjectionIsDefensivelyCopiedAndClockSensitive()
         {
             JsonElement item = Case("VIS-G057C-PUBLIC-PROJECTION");
             JsonElement input = item.GetProperty("input");
             Scenario scenario = BuildScenario(input.GetProperty("state"));
-            List<TableEventProjectionInput> events = BuildEventInputs(input.GetProperty("events"));
+            List<FixtureEvent> fixtures = BuildFixtureEvents(input.GetProperty("events"));
+            JsonElement expected = item.GetProperty("expected");
             var policy = new TableProjectionPolicy(false, true, false);
+            ClockView clock = ParseClock(input.GetProperty("clock"));
+            ClockView expectedClock = ParseClock(expected.GetProperty("clock"));
+            var mutableClocks = new List<ClockView> { clock };
             PublicSnapshotView snapshot = TableVisibilityProjection.ProjectPublicSnapshot(
-                scenario.Round, scenario.Context(policy, events));
+                scenario.Round, scenario.Context(policy, fixtures.Select(value => value.Input).ToList(), clocks: mutableClocks));
+            AssertClock(expectedClock, snapshot.View.Clocks);
 
             long[] scoresBefore = snapshot.View.Board!.Scores.Select(value => value.Score).ToArray();
             uint[] doraBefore = snapshot.View.Board!.DoraIndicators.ToArray();
-            scenario.Placements.Clear();
             scenario.Scores[0] = 7;
             scenario.Dora[0] = 135;
+            mutableClocks.Clear();
             Assert.Equal(scoresBefore, snapshot.View.Board!.Scores.Select(value => value.Score));
             Assert.Equal(doraBefore, snapshot.View.Board!.DoraIndicators);
+            AssertClock(expectedClock, snapshot.View.Clocks);
+            Assert.Equal(
+                Int(expected.GetProperty("copyProbe"), "clocksAfterMutation"),
+                snapshot.View.Clocks.Count);
+
+            // A genuinely different explicit clock input produces a different new snapshot,
+            // while the old snapshot retains the old value.
+            var newClock = new ClockView(expectedClock.ServerTimeMs, expectedClock.DeadlineRemainingMs + 100, expectedClock.ReserveRemainingMs, expectedClock.DecisionSeat);
+            PublicSnapshotView newer = TableVisibilityProjection.ProjectPublicSnapshot(
+                scenario.Round, scenario.Context(policy, fixtures.Select(value => value.Input).ToList(), clocks: new[] { newClock }));
+            Assert.NotEqual(expectedClock.DeadlineRemainingMs, newer.View.Clocks[0].DeadlineRemainingMs);
+            AssertClock(expectedClock, snapshot.View.Clocks);
 
             Assert.Throws<NotSupportedException>(
                 () => ((IList<uint>)snapshot.View.Board!.DoraIndicators).Add(0));
@@ -378,7 +452,6 @@ namespace Mahjong.TableRuntime.Tests
             Assert.Throws<NotSupportedException>(
                 () => ((IList<ClockView>)snapshot.View.Clocks).Add(new ClockView(0, 0, 0, 0)));
 
-            // A projected event owns its tile list; mutating the producer array cannot change it.
             uint[] producerTiles = { 53 };
             var producer = new TableEventProjectionInput(
                 ProtocolEventType.TileDiscarded,
@@ -395,53 +468,72 @@ namespace Mahjong.TableRuntime.Tests
         }
 
         [Fact]
-        public void G057dSeatViewsAndOwnerExtensionMatchV4()
+        public void G057dSeatViewsOwnerMappedPathAndCheatFactsMatchV4()
         {
             JsonElement item = Case("VIS-G057D-SEAT-VIEW-ISOLATION");
-            Scenario scenario = BuildScenario(item.GetProperty("input").GetProperty("state"));
-            CheatState cheat = BuildCheat(item.GetProperty("input").GetProperty("state").GetProperty("privateCheat"));
+            JsonElement input = item.GetProperty("input");
+            Scenario scenario = BuildScenario(input.GetProperty("state"));
+            CheatState cheat = BuildCheat(input.GetProperty("state").GetProperty("privateCheat"));
             TableProjectionContext context = scenario.Context(new TableProjectionPolicy());
             JsonElement seatViews = item.GetProperty("expected").GetProperty("seatViews");
+            var time = new TableProjectionTimeContext(0);
 
             for (int seat = 0; seat <= 2; seat++)
             {
                 PlayerSnapshotView view = TableVisibilityProjection.ProjectPlayerSnapshot(
                     scenario.Round, cheat, seat, context);
                 AssertSeatView(seatViews.GetProperty(seat.ToString(CultureInfo.InvariantCulture)), view);
+                TableOwnerPrivateView owner = TableVisibilityProjection.ProjectOwnerPrivate(
+                    scenario.Round, cheat, seat, context);
+                AssertCheat(input.GetProperty("state").GetProperty("privateCheat"), owner.Cheat, seat);
             }
 
             JsonElement seat1Expected = seatViews.GetProperty("1");
             TableOwnerPrivateView owner1 = TableVisibilityProjection.ProjectOwnerPrivate(
                 scenario.Round, cheat, 1, context);
             Assert.Equal(Ints(seat1Expected.GetProperty("mySleeveTiles")).Select(value => (uint)value), owner1.SleeveTiles);
-            Assert.Equal(990, owner1.Cheat.Balance);
-            Assert.Single(owner1.Cheat.Ledger);
-            Assert.Equal("vis-g057d-cheat-seat1", owner1.Cheat.Ledger[0].EntryId);
             Assert.Single(owner1.Melds);
             Assert.Equal(ProtocolMeldType.Chi, owner1.Melds[0].Type);
             Assert.Equal(new uint[] { 72, 76, 80 }, owner1.Melds[0].TileIds);
+            Assert.Equal(0, owner1.Melds[0].FromSeat);
+            Assert.Equal(72u, owner1.Melds[0].CalledTileId);
+
+            PlayerSnapshotView seat1 = TableVisibilityProjection.ProjectPlayerSnapshot(
+                scenario.Round, cheat, 1, context);
+            PlayerSnapshotView mappedSeat1 = TableProjectionContractMapper.MapPlayerSnapshot(
+                seat1, owner1, time);
+            Assert.Equal(owner1.SleeveTiles, mappedSeat1.Private.SleeveTiles);
+            Assert.Single(mappedSeat1.Private.OwnerMelds);
+            Assert.Equal(72u, mappedSeat1.Private.OwnerMelds[0].CalledTileId);
+            Assert.Equal(0, mappedSeat1.Private.OwnerMelds[0].FromSeat);
+            Assert.Equal(990L, mappedSeat1.Private.Cheat!.CheatPoints);
+            Assert.Single(mappedSeat1.Private.Cheat!.Ledger);
+            Assert.Equal("vis-g057d-cheat-seat1", mappedSeat1.Private.Cheat!.Ledger[0].EntryId);
+            Assert.Equal(-10L, mappedSeat1.Private.Cheat!.Ledger[0].Amount);
+            Assert.Equal(990L, mappedSeat1.Private.Cheat!.Ledger[0].BalanceAfter);
+            Assert.Equal("CHEAT_COST", mappedSeat1.Private.Cheat!.Ledger[0].ReasonCode);
 
             TableOwnerPrivateView owner0 = TableVisibilityProjection.ProjectOwnerPrivate(
                 scenario.Round, cheat, 0, context);
             Assert.Empty(owner0.SleeveTiles);
-            Assert.Equal(1000, owner0.Cheat.Balance);
             Assert.Empty(owner0.Cheat.Ledger);
-
             PlayerSnapshotView seat0 = TableVisibilityProjection.ProjectPlayerSnapshot(
                 scenario.Round, cheat, 0, context);
-            Assert.Null(seat0.Private.Decision);
-            Assert.NotNull(seat0.Private.Cheat);
-            Assert.Equal(1000L, seat0.Private.Cheat!.CheatPoints);
-            Assert.Empty(seat0.Private.Cheat!.Ledger);
-            Assert.Empty(seat0.Private.SleeveTiles);
+            PlayerSnapshotView mappedSeat0 = TableProjectionContractMapper.MapPlayerSnapshot(
+                seat0, owner0, time);
+            Assert.Empty(mappedSeat0.Private.SleeveTiles);
+            Assert.Null(mappedSeat0.Private.Decision);
+            Assert.Equal(1000L, mappedSeat0.Private.Cheat!.CheatPoints);
+            Assert.Empty(mappedSeat0.Private.Cheat!.Ledger);
         }
 
         [Fact]
         public void G057dNeighbourAndSpectatorNeverSeeHiddenIdentities()
         {
             JsonElement item = Case("VIS-G057D-SEAT-VIEW-ISOLATION");
-            Scenario scenario = BuildScenario(item.GetProperty("input").GetProperty("state"));
-            CheatState cheat = BuildCheat(item.GetProperty("input").GetProperty("state").GetProperty("privateCheat"));
+            JsonElement input = item.GetProperty("input");
+            Scenario scenario = BuildScenario(input.GetProperty("state"));
+            CheatState cheat = BuildCheat(input.GetProperty("state").GetProperty("privateCheat"));
             TableProjectionContext context = scenario.Context(new TableProjectionPolicy());
             JsonElement expected = item.GetProperty("expected");
             JsonElement hidden = expected.GetProperty("hiddenTileIds");
@@ -452,7 +544,6 @@ namespace Mahjong.TableRuntime.Tests
                 scenario.Round, cheat, 1, context);
             PublicSnapshotView spectator = TableVisibilityProjection.ProjectPublicSnapshot(
                 scenario.Round, context);
-
             AssertBoard(expected.GetProperty("spectatorBoard"), spectator.View.Board!);
 
             HashSet<int> seat0Ids = PlayerTileIds(seat0);
@@ -460,6 +551,10 @@ namespace Mahjong.TableRuntime.Tests
             HashSet<int> spectatorIds = BoardTileIds(spectator.View.Board!);
             TableOwnerPrivateView owner1 = TableVisibilityProjection.ProjectOwnerPrivate(
                 scenario.Round, cheat, 1, context);
+            PlayerSnapshotView mappedSeat0 = TableProjectionContractMapper.MapPlayerSnapshot(
+                seat0,
+                TableVisibilityProjection.ProjectOwnerPrivate(scenario.Round, cheat, 0, context),
+                new TableProjectionTimeContext(0));
 
             foreach (int tile in Ints(hidden.GetProperty("opponentClosedFromSeat0")))
             {
@@ -490,17 +585,17 @@ namespace Mahjong.TableRuntime.Tests
                 Assert.DoesNotContain(tile, spectatorIds);
             }
 
-            TableOwnerPrivateView owner1ForSleeve = owner1;
             foreach (int tile in Ints(expected.GetProperty("seatViews").GetProperty("1").GetProperty("mySleeveTiles")))
             {
-                Assert.Contains((uint)tile, owner1ForSleeve.SleeveTiles);
+                Assert.Contains((uint)tile, owner1.SleeveTiles);
                 Assert.DoesNotContain(tile, seat0Ids);
+                Assert.DoesNotContain(tile, PlayerTileIds(mappedSeat0));
             }
 
             foreach (string entryId in Strings(hidden.GetProperty("privateCheatEntryIds")))
             {
                 Assert.DoesNotContain(
-                    seat0.Private.Cheat!.Ledger,
+                    mappedSeat0.Private.Cheat!.Ledger,
                     value => string.Equals(value.EntryId, entryId, StringComparison.Ordinal));
                 Assert.Contains(
                     owner1.Cheat.Ledger,
@@ -509,19 +604,23 @@ namespace Mahjong.TableRuntime.Tests
 
             foreach (int balance in Ints(hidden.GetProperty("privateCheatBalances")))
             {
-                Assert.NotEqual(balance, (int)seat0.Private.Cheat!.CheatPoints);
+                Assert.NotEqual(balance, (int)mappedSeat0.Private.Cheat!.CheatPoints);
             }
         }
 
         [Fact]
-        public void V5ProjectionCollectionsAreReadOnlyAndCopied()
+        public void V5ProjectionCollectionsContextAndEventInputsAreReadOnlyOrCopied()
         {
             JsonElement item = Case("VIS-G057D-SEAT-VIEW-ISOLATION");
             JsonElement stateJson = item.GetProperty("input").GetProperty("state");
             Scenario scenario = BuildScenario(stateJson);
             CheatState cheat = V32Fixtures.Cheat();
+            var clocks = new List<ClockView> { new ClockView(10, 20, 30, 0) };
+            TableProjectionContext context = scenario.Context(new TableProjectionPolicy(), clocks: clocks);
             PlayerSnapshotView seat0 = TableVisibilityProjection.ProjectPlayerSnapshot(
-                scenario.Round, cheat, 0, scenario.Context(new TableProjectionPolicy()));
+                scenario.Round, cheat, 0, context);
+            clocks.Clear();
+            Assert.Single(context.Clocks);
 
             Assert.Throws<NotSupportedException>(
                 () => ((IList<uint>)seat0.Private.ClosedTiles).Add(0));
@@ -532,13 +631,14 @@ namespace Mahjong.TableRuntime.Tests
                 () => ((IList<MeldView>)seat0.Public.Board!.Players[1].Melds).Add(
                     new MeldView(ProtocolMeldType.Chi, new uint[] { 0, 1, 2 }, null, 0)));
 
-            List<uint> closedBefore = seat0.Private.ClosedTiles.ToList();
-            scenario.Placements.Clear();
-            scenario.Scores[0] = 1;
-            PlayerSnapshotView replayed = TableVisibilityProjection.ProjectPlayerSnapshot(
-                scenario.Round, cheat, 0, scenario.Context(new TableProjectionPolicy()));
-            Assert.Equal(closedBefore, replayed.Private.ClosedTiles);
-            Assert.Equal(25000L, replayed.Public.Board!.Scores[0].Score);
+            uint[] meldTiles = { 10, 14, 18 };
+            var meldFact = new TableMeldFact(ProtocolMeldType.Chi, meldTiles, 10, 0);
+            meldTiles[0] = 22;
+            Assert.Equal(10u, meldFact.TileIds[0]);
+            var discards = new List<DiscardView> { new DiscardView(53, 0, false, false) };
+            var publicFacts = new TableSeatPublicFacts(0, false, new[] { meldFact }, discards);
+            discards.Clear();
+            Assert.Single(publicFacts.Discards);
 
             // A closed kan is public as an event but its identities are owner-only.
             var closedKan = new TableEventProjectionInput(
@@ -557,6 +657,280 @@ namespace Mahjong.TableRuntime.Tests
             Assert.Empty(spectatorKan!.TileIds);
             Assert.NotNull(ownerKan);
             Assert.Equal(new uint[] { 10, 11, 12, 13 }, ownerKan!.TileIds);
+            ProtocolEventRecord mappedOwnerKan = TableProjectionContractMapper.MapEvent(
+                ownerKan,
+                new TableProjectionEventFacts(
+                    turnNumber: 1,
+                    meld: new MeldView(ProtocolMeldType.ClosedKan, new uint[] { 10, 11, 12, 13 }, null, 2)));
+            Assert.Equal(4, mappedOwnerKan.ProjectionPayload!.Meld!.TileIds.Count);
+            Assert.Throws<TableProjectionException>(() =>
+                TableProjectionContractMapper.MapEvent(
+                    spectatorKan,
+                    new TableProjectionEventFacts(
+                        turnNumber: 1,
+                        meld: new MeldView(ProtocolMeldType.ClosedKan, new uint[] { 10, 11, 12, 13 }, null, 2))));
+        }
+
+        // ------------------------------------------------------------------
+        // Fixture event model / facts
+        // ------------------------------------------------------------------
+
+        private sealed class FixtureEvent
+        {
+            public FixtureEvent(JsonElement descriptor, TableEventProjectionInput input)
+            {
+                Descriptor = descriptor;
+                Input = input;
+            }
+
+            public JsonElement Descriptor { get; }
+
+            public TableEventProjectionInput Input { get; }
+        }
+
+        private static List<FixtureEvent> BuildFixtureEvents(JsonElement events)
+        {
+            var result = new List<FixtureEvent>();
+            int lastTurn = -1;
+            uint ordinal = 0;
+            foreach (JsonElement value in events.EnumerateArray())
+            {
+                int turn = Int(value, "turnNumber");
+                Assert.True(turn >= lastTurn, "fixture event turns must be non-decreasing");
+                lastTurn = turn;
+                ProtocolEventType type = Enum.Parse<ProtocolEventType>(Str(value, "kind"), false);
+                uint[] tiles = Ints(value.GetProperty("tileIds")).Select(tile => (uint)tile).ToArray();
+                bool ura = value.TryGetProperty("isUraDora", out JsonElement uraValue) && uraValue.GetBoolean();
+                long? cheatAmount = value.TryGetProperty("amount", out JsonElement amountValue)
+                    ? amountValue.GetInt32()
+                    : (long?)null;
+                long? cheatBalance = value.TryGetProperty("newBalance", out JsonElement balanceValue)
+                    ? balanceValue.GetInt32()
+                    : (long?)null;
+                var input = new TableEventProjectionInput(
+                    type,
+                    new EventSeq((ulong)result.Count + 1),
+                    new StateVersion(1),
+                    ordinal++,
+                    Int(value, "seat"),
+                    tiles,
+                    isUraDora: ura,
+                    cheatAmount: cheatAmount,
+                    cheatBalance: cheatBalance);
+                result.Add(new FixtureEvent(value, input));
+            }
+
+            return result;
+        }
+
+        private static List<FixtureEvent> VisibleFixtures(
+            List<FixtureEvent> fixtures,
+            TableProjectionAudience audience,
+            TableProjectionPolicy policy)
+        {
+            return fixtures
+                .Where(value => TableEventProjection.Project(value.Input, audience, policy) != null)
+                .ToList();
+        }
+
+        private static TableProjectionEventFacts Facts(
+            FixtureEvent fixture,
+            bool uraAuthorized,
+            bool includeBreakdown)
+        {
+            JsonElement value = fixture.Descriptor;
+            ProtocolEventType type = fixture.Input.Type;
+            int? fromSeat = value.TryGetProperty("fromSeat", out JsonElement fromSeatValue)
+                ? fromSeatValue.GetInt32()
+                : (int?)null;
+            uint? calledTile = value.TryGetProperty("calledTileId", out JsonElement calledValue)
+                ? (uint)calledValue.GetInt32()
+                : (uint?)null;
+            uint? wallRemaining = value.TryGetProperty("wallRemaining", out JsonElement wallValue)
+                ? (uint)wallValue.GetInt32()
+                : (uint?)null;
+            bool? riichiDiscard = value.TryGetProperty("riichiDiscard", out JsonElement riichiValue)
+                ? riichiValue.GetBoolean()
+                : (bool?)null;
+            bool? tsumogiri = value.TryGetProperty("tsumogiri", out JsonElement tsumogiriValue)
+                ? tsumogiriValue.GetBoolean()
+                : (bool?)null;
+            uint? roundWind = value.TryGetProperty("roundWind", out JsonElement windValue)
+                ? (uint)windValue.GetInt32()
+                : (uint?)null;
+            uint? roundNumber = value.TryGetProperty("roundNumber", out JsonElement numberValue)
+                ? (uint)numberValue.GetInt32()
+                : (uint?)null;
+            int? loserSeat = value.TryGetProperty("loserSeat", out JsonElement loserValue)
+                ? loserValue.GetInt32()
+                : (int?)null;
+
+            MeldView? meld = null;
+            if (type == ProtocolEventType.ChiDeclared ||
+                type == ProtocolEventType.PonDeclared ||
+                type == ProtocolEventType.KanDeclared)
+            {
+                ProtocolMeldType meldType = type == ProtocolEventType.ChiDeclared
+                    ? ProtocolMeldType.Chi
+                    : type == ProtocolEventType.PonDeclared
+                        ? ProtocolMeldType.Pon
+                        : ParseMeldType(Str(value, "kanType"));
+                meld = new MeldView(
+                    meldType,
+                    fixture.Input.TileIds,
+                    calledTile,
+                    fromSeat ?? ProtocolConstants.NoSeat);
+            }
+
+            IReadOnlyList<YakuView>? yaku = null;
+            if (value.TryGetProperty("yaku", out JsonElement yakuValue))
+            {
+                var list = new List<YakuView>();
+                foreach (JsonElement item in yakuValue.EnumerateArray())
+                {
+                    list.Add(new YakuView(Str(item, "code"), (uint)Int(item, "han")));
+                }
+
+                yaku = list;
+            }
+
+            ScoreBreakdownView? breakdown = null;
+            if (includeBreakdown && value.TryGetProperty("breakdown", out JsonElement breakdownValue))
+            {
+                var yakuList = new List<YakuView>();
+                foreach (JsonElement item in breakdownValue.GetProperty("yaku").EnumerateArray())
+                {
+                    yakuList.Add(new YakuView(Str(item, "code"), (uint)Int(item, "han")));
+                }
+
+                breakdown = new ScoreBreakdownView(
+                    (uint)Int(breakdownValue, "han"),
+                    (uint)Int(breakdownValue, "fu"),
+                    Int(breakdownValue, "totalPoints"),
+                    yakuList,
+                    (uint)Int(breakdownValue, "doraCount"),
+                    (uint)Int(breakdownValue, "uraCount"),
+                    Ints(breakdownValue.GetProperty("uraTiles")).Select(tile => (uint)tile).ToArray(),
+                    Ints(breakdownValue.GetProperty("uraHitTiles")).Select(tile => (uint)tile).ToArray(),
+                    uraAuthorized);
+            }
+
+            return new TableProjectionEventFacts(
+                turnNumber: (uint)Int(value, "turnNumber"),
+                wallRemaining: wallRemaining,
+                meld: meld,
+                fromSeat: fromSeat,
+                riichiDiscard: riichiDiscard,
+                tsumogiri: tsumogiri,
+                loserSeat: loserSeat,
+                yaku: yaku,
+                han: value.TryGetProperty("han", out JsonElement hanValue) ? (uint)hanValue.GetInt32() : (uint?)null,
+                fu: value.TryGetProperty("fu", out JsonElement fuValue) ? (uint)fuValue.GetInt32() : (uint?)null,
+                score: value.TryGetProperty("score", out JsonElement scoreValue) ? scoreValue.GetInt32() : (long?)null,
+                breakdown: breakdown,
+                roundWind: roundWind,
+                roundNumber: roundNumber);
+        }
+
+        private static List<ProtocolEventRecord> MapAll(
+            IReadOnlyList<TableProjectedEvent> projected,
+            List<FixtureEvent> fixtures,
+            bool includeBreakdown,
+            bool uraAuthorized)
+        {
+            Assert.Equal(projected.Count, fixtures.Count);
+            var result = new List<ProtocolEventRecord>(projected.Count);
+            for (int index = 0; index < projected.Count; index++)
+            {
+                result.Add(TableProjectionContractMapper.MapEvent(
+                    projected[index],
+                    Facts(fixtures[index], uraAuthorized, includeBreakdown)));
+            }
+
+            return result;
+        }
+
+        private static List<ProtocolEventRecord> SettlementTyped(
+            IReadOnlyList<TableProjectedEvent> projected,
+            List<FixtureEvent> fixtures,
+            bool includeBreakdown,
+            bool uraAuthorized)
+        {
+            var result = new List<ProtocolEventRecord>();
+            for (int index = 0; index < projected.Count; index++)
+            {
+                TableProjectedEvent value = projected[index];
+                bool settlement = value.Type == ProtocolEventType.TsumoWin ||
+                                  value.Type == ProtocolEventType.RonWin ||
+                                  value.Type == ProtocolEventType.DrawGame ||
+                                  value.Type == ProtocolEventType.ScoreSettled ||
+                                  value.Type == ProtocolEventType.RoundEnded ||
+                                  value.Type == ProtocolEventType.MatchEnded ||
+                                  (value.Type == ProtocolEventType.DoraRevealed && value.IsUraDora);
+                if (!settlement)
+                {
+                    continue;
+                }
+
+                result.Add(TableProjectionContractMapper.MapEvent(
+                    value,
+                    Facts(fixtures[index], uraAuthorized, includeBreakdown)));
+            }
+
+            return result;
+        }
+
+        private static void AssertScenarioEvents(
+            JsonElement expected,
+            List<FixtureEvent> fixtures,
+            TableProjectionAudience audience,
+            TableProjectionPolicy policy)
+        {
+            List<TableEventProjectionInput> inputs = fixtures.Select(value => value.Input).ToList();
+            IReadOnlyList<TableProjectedEvent> projected = TableEventProjection.ProjectMany(inputs, audience, policy);
+            AssertEventList(expected, projected);
+            List<FixtureEvent> visible = VisibleFixtures(fixtures, audience, policy);
+            Assert.Equal(projected.Count, visible.Count);
+            for (int index = 0; index < projected.Count; index++)
+            {
+                JsonElement descriptor = expected[index];
+                ProtocolEventRecord record = TableProjectionContractMapper.MapEvent(
+                    projected[index],
+                    Facts(visible[index], projected[index].IsUraDora, includeBreakdown: true));
+                ProjectedEventPayload payload = record.ProjectionPayload!;
+                Assert.Equal((uint)Int(descriptor, "turnNumber"), payload.TurnNumber);
+                Assert.Equal(Int(descriptor, "seat"), payload.Seat);
+                Assert.Equal(
+                    Ints(descriptor.GetProperty("tileIds")).Select(tile => (uint)tile),
+                    payload.TileIds);
+                if (descriptor.TryGetProperty("fromSeat", out JsonElement fromSeat))
+                {
+                    Assert.Equal(fromSeat.GetInt32(), payload.FromSeat);
+                }
+
+                if (descriptor.TryGetProperty("calledTileId", out JsonElement called))
+                {
+                    Assert.NotNull(payload.Meld);
+                    Assert.Equal((uint)called.GetInt32(), payload.Meld!.CalledTileId);
+                }
+
+                if (descriptor.TryGetProperty("riichiDiscard", out JsonElement riichi))
+                {
+                    Assert.Equal(riichi.GetBoolean(), payload.RiichiDiscard);
+                    Assert.Equal(Bool(descriptor, "tsumogiri"), payload.Tsumogiri);
+                }
+
+                if (descriptor.TryGetProperty("wallRemaining", out JsonElement wall))
+                {
+                    Assert.Equal((uint)wall.GetInt32(), payload.WallRemaining);
+                }
+
+                if (descriptor.TryGetProperty("roundWind", out JsonElement wind))
+                {
+                    Assert.Equal((uint)wind.GetInt32(), payload.RoundWind);
+                    Assert.Equal((uint)Int(descriptor, "roundNumber"), payload.RoundNumber);
+                }
+            }
         }
 
         // ------------------------------------------------------------------
@@ -588,9 +962,7 @@ namespace Mahjong.TableRuntime.Tests
             JsonElement furiten = expected.GetProperty("myFuriten");
             bool isFuriten = Bool(furiten, "discard") || Bool(furiten, "temporary") || Bool(furiten, "riichi");
             Assert.Equal(isFuriten, actual.Private.Furiten);
-
-            int? derivedLastDiscardSeat = DeriveLastDiscardSeat(board);
-            Assert.Equal(NullableInt(expected.GetProperty("lastDiscardPlayer")), derivedLastDiscardSeat);
+            Assert.Equal(NullableInt(expected.GetProperty("lastDiscardPlayer")), DeriveLastDiscardSeat(board));
 
             if (expected.GetProperty("legalActions").GetArrayLength() == 0)
             {
@@ -643,18 +1015,36 @@ namespace Mahjong.TableRuntime.Tests
                 for (int index = 0; index < melds.GetArrayLength(); index++)
                 {
                     JsonElement meld = melds[index];
-                    Assert.Equal(
-                        Str(meld, "type"),
-                        actual.Players[seat].Melds[index].Type.ToString().ToUpperInvariant());
+                    MeldView actualMeld = actual.Players[seat].Melds[index];
+                    Assert.Equal(Str(meld, "type"), actualMeld.Type.ToString().ToUpperInvariant());
                     Assert.Equal(
                         Ints(meld.GetProperty("tileIds")).Select(value => (uint)value),
-                        actual.Players[seat].Melds[index].TileIds);
+                        actualMeld.TileIds);
+                    Assert.Equal(Int(meld, "fromSeat"), actualMeld.FromSeat);
+                    Assert.Equal(NullableUInt(meld.GetProperty("calledTileId")), actualMeld.CalledTileId);
                 }
             }
 
             Assert.Equal(
                 NullableInt(expected.GetProperty("lastDiscard")),
                 actual.LastDiscard == null ? (int?)null : (int)actual.LastDiscard.TileId);
+        }
+
+        private static void AssertCheat(JsonElement privateCheat, TableOwnerCheatView actual, int seat)
+        {
+            JsonElement points = privateCheat.GetProperty("points");
+            Assert.Equal(points[seat].GetInt32(), actual.Balance);
+            List<JsonElement> entries = privateCheat.GetProperty("entries").EnumerateArray()
+                .Where(value => Int(value, "seat") == seat)
+                .ToList();
+            Assert.Equal(entries.Count, actual.Ledger.Count);
+            for (int index = 0; index < entries.Count; index++)
+            {
+                Assert.Equal(Str(entries[index], "entryId"), actual.Ledger[index].EntryId);
+                Assert.Equal(Int(entries[index], "amount"), actual.Ledger[index].Amount);
+                Assert.Equal(Int(entries[index], "balanceAfter"), actual.Ledger[index].BalanceAfter);
+                Assert.Equal(Str(entries[index], "reason"), actual.Ledger[index].ReasonCode);
+            }
         }
 
         private static int? DeriveLastDiscardSeat(PublicBoardView board)
@@ -679,7 +1069,7 @@ namespace Mahjong.TableRuntime.Tests
         }
 
         // ------------------------------------------------------------------
-        // Scenario construction
+        // Scenario construction and input consistency
         // ------------------------------------------------------------------
 
         private sealed class Scenario
@@ -719,7 +1109,18 @@ namespace Mahjong.TableRuntime.Tests
             public TableProjectionContext Context(
                 TableProjectionPolicy policy,
                 IReadOnlyList<TableEventProjectionInput>? events = null,
-                TableSessionProjection? session = null)
+                TableSessionProjection? session = null,
+                IReadOnlyList<ClockView>? clocks = null)
+            {
+                return ContextFor(Round, policy, events, session, clocks);
+            }
+
+            public TableProjectionContext ContextFor(
+                RoundStateMachine round,
+                TableProjectionPolicy policy,
+                IReadOnlyList<TableEventProjectionInput>? events = null,
+                TableSessionProjection? session = null,
+                IReadOnlyList<ClockView>? clocks = null)
             {
                 ulong lastSeq = 0;
                 ulong eventVersion = 0;
@@ -732,10 +1133,10 @@ namespace Mahjong.TableRuntime.Tests
                     }
                 }
 
-                ulong version = Math.Max(unchecked((ulong)Round.Version), eventVersion);
+                ulong version = Math.Max(unchecked((ulong)round.Version), eventVersion);
                 var identity = new TableProjectionIdentity(
                     new SessionId("session-visibility-golden"),
-                    new RoundId(Round.RoundId),
+                    new RoundId(round.RoundId),
                     new StateVersion(version),
                     new EventSeq(lastSeq),
                     new StreamCursor(new StreamVersion(0), new ProjectionSeq(0)),
@@ -743,7 +1144,7 @@ namespace Mahjong.TableRuntime.Tests
                 return new TableProjectionContext(
                     identity,
                     policy,
-                    Array.Empty<ClockView>(),
+                    clocks ?? Array.Empty<ClockView>(),
                     PublicFacts,
                     PrivateFacts,
                     null,
@@ -770,6 +1171,10 @@ namespace Mahjong.TableRuntime.Tests
                 placements.Add(new TilePlacement(new TileId(tileId), Position(zone, seat, index)));
             }
 
+            Assert.Equal(Int(state, "wallRemaining"), wallCount);
+            Assert.Equal(Int(state, "dealerSeat"), Int(state, "currentPlayer"));
+            Assert.Equal(136, placements.Select(value => value.Tile.Value).Distinct().Count());
+
             uint[] dora = Ints(state.GetProperty("doraIndicators")).Select(value => (uint)value).ToArray();
             LastDiscardEvidence? lastDiscard = null;
             JsonElement last = state.GetProperty("lastDiscard");
@@ -788,11 +1193,7 @@ namespace Mahjong.TableRuntime.Tests
                 if (drawnTile.ValueKind != JsonValueKind.Null)
                 {
                     int seat = Int(hand, "seat");
-                    if (drawn.HasValue)
-                    {
-                        throw new InvalidOperationException("fixture expects at most one tracked drawn tile");
-                    }
-
+                    Assert.False(drawn.HasValue, "fixture expects at most one tracked drawn tile");
                     drawn = new DrawnTileEvidence(
                         new TileId(drawnTile.GetInt32()),
                         seat,
@@ -812,6 +1213,8 @@ namespace Mahjong.TableRuntime.Tests
                 0,
                 drawn);
 
+            AssertPlacementConsistency(state, placements);
+
             long[] scores = Ints(state.GetProperty("scores")).Select(value => (long)value).ToArray();
             var spec = new RoundSpec(
                 Str(state, "roundId"),
@@ -822,6 +1225,7 @@ namespace Mahjong.TableRuntime.Tests
                 scores,
                 Int(state, "riichiSticks"));
             RoundStateMachine round = RoundStateMachine.CreateDealt(spec, map, ParsePhase(Str(state, "phase")));
+            Assert.Equal(Int(state, "currentPlayer"), round.CurrentSeat);
 
             var publicFacts = new List<TableSeatPublicFacts>(4);
             var privateFacts = new List<TableSeatPrivateFacts>(4);
@@ -864,6 +1268,61 @@ namespace Mahjong.TableRuntime.Tests
             return new Scenario(placements, dora, scores, map, round, publicFacts, privateFacts);
         }
 
+        private static void AssertPlacementConsistency(JsonElement state, List<TilePlacement> placements)
+        {
+            JsonElement hands = state.GetProperty("hands");
+            JsonElement discards = state.GetProperty("discards");
+            JsonElement melds = state.GetProperty("melds");
+            for (int seat = 0; seat < 4; seat++)
+            {
+                List<int> handTiles = placements
+                    .Where(value => value.Position.Zone == TileZone.Hand && value.Position.Seat == seat)
+                    .OrderBy(value => value.Position.Index)
+                    .Select(value => value.Tile.Value)
+                    .ToList();
+                JsonElement hand = hands[seat];
+                int[] closed = Ints(hand.GetProperty("closedTileIds"));
+                int? drawn = NullableInt(hand.GetProperty("drawnTileId"));
+                Assert.Equal(closed.Length + (drawn.HasValue ? 1 : 0), handTiles.Count);
+                Assert.Equal(closed, handTiles.Take(closed.Length));
+                if (drawn.HasValue)
+                {
+                    Assert.Equal(drawn.Value, handTiles[closed.Length]);
+                }
+
+                int[] river = placements
+                    .Where(value => value.Position.Zone == TileZone.Discard && value.Position.Seat == seat)
+                    .OrderBy(value => value.Position.Index)
+                    .Select(value => value.Tile.Value)
+                    .ToArray();
+                Assert.Equal(Ints(discards[seat]), river);
+
+                int[] sleeves = placements
+                    .Where(value => value.Position.Zone == TileZone.Sleeve && value.Position.Seat == seat)
+                    .OrderBy(value => value.Position.Index)
+                    .Select(value => value.Tile.Value)
+                    .ToArray();
+                Assert.Equal(Ints(hand.GetProperty("sleeveTileIds")), sleeves);
+
+                int meldIndex = 0;
+                foreach (JsonElement meld in melds[seat].EnumerateArray())
+                {
+                    int[] expected = Ints(meld.GetProperty("tileIds"));
+                    for (int offset = 0; offset < expected.Length; offset++)
+                    {
+                        int slot = meldIndex * 4 + offset;
+                        TilePlacement placed = placements.Single(
+                            value => value.Position.Zone == TileZone.Meld &&
+                                     value.Position.Seat == seat &&
+                                     value.Position.Index == slot);
+                        Assert.Equal(expected[offset], placed.Tile.Value);
+                    }
+
+                    meldIndex++;
+                }
+            }
+        }
+
         private static CheatState BuildCheat(JsonElement privateCheat)
         {
             JsonElement points = privateCheat.GetProperty("points");
@@ -881,37 +1340,32 @@ namespace Mahjong.TableRuntime.Tests
                         Str(entry, "reason")));
             }
 
+            for (int seat = 0; seat < 4; seat++)
+            {
+                Assert.Equal(points[seat].GetInt32(), state.ViewFor(seat).Balance);
+            }
+
             return state;
         }
 
-        private static List<TableEventProjectionInput> BuildEventInputs(JsonElement events)
+        private static ClockView ParseClock(JsonElement clock)
         {
-            var result = new List<TableEventProjectionInput>();
-            uint ordinal = 0;
-            foreach (JsonElement value in events.EnumerateArray())
-            {
-                ProtocolEventType type = Enum.Parse<ProtocolEventType>(Str(value, "kind"), false);
-                uint[] tiles = Ints(value.GetProperty("tileIds")).Select(tile => (uint)tile).ToArray();
-                bool ura = value.TryGetProperty("isUraDora", out JsonElement uraValue) && uraValue.GetBoolean();
-                long? cheatAmount = value.TryGetProperty("amount", out JsonElement amountValue)
-                    ? amountValue.GetInt32()
-                    : (long?)null;
-                long? cheatBalance = value.TryGetProperty("newBalance", out JsonElement balanceValue)
-                    ? balanceValue.GetInt32()
-                    : (long?)null;
-                result.Add(new TableEventProjectionInput(
-                    type,
-                    new EventSeq((ulong)result.Count + 1),
-                    new StateVersion(1),
-                    ordinal++,
-                    Int(value, "seat"),
-                    tiles,
-                    isUraDora: ura,
-                    cheatAmount: cheatAmount,
-                    cheatBalance: cheatBalance));
-            }
+            long serverNow = Int(clock, "serverNow");
+            long deadline = Int(clock, "deadline");
+            return new ClockView(
+                serverNow,
+                deadline - serverNow,
+                Int(clock, "reserve"),
+                Int(clock, "seat"));
+        }
 
-            return result;
+        private static void AssertClock(ClockView expected, IReadOnlyList<ClockView> actual)
+        {
+            Assert.Single(actual);
+            Assert.Equal(expected.ServerTimeMs, actual[0].ServerTimeMs);
+            Assert.Equal(expected.DeadlineRemainingMs, actual[0].DeadlineRemainingMs);
+            Assert.Equal(expected.ReserveRemainingMs, actual[0].ReserveRemainingMs);
+            Assert.Equal(expected.DecisionSeat, actual[0].DecisionSeat);
         }
 
         private static void AssertEventList(JsonElement expected, IReadOnlyList<TableProjectedEvent> actual)
@@ -1065,8 +1519,6 @@ namespace Mahjong.TableRuntime.Tests
             }
             else
             {
-                // A checkout with a different autocrlf profile must change raw bytes but not
-                // the LF-normalized content authority.
                 Assert.NotEqual(Str(source, "sha256RawBytes"), Sha256(raw));
                 Assert.NotEqual(Int(source, "bytesRaw"), raw.Length);
                 Assert.Contains(actualKind, new[] { "CRLF", "LF", "MIXED", "NONE" });

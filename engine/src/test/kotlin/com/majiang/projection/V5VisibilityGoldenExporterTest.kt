@@ -66,7 +66,7 @@ class V5VisibilityGoldenExporterTest {
         assertEquals(renderRoot(first, null, null), renderRoot(second, null, null))
 
         if (!exportEnabled()) {
-            validateCommittedFixtureShape(root, first)
+            validateCommittedFixture(root, first)
             return
         }
 
@@ -293,6 +293,13 @@ class V5VisibilityGoldenExporterTest {
             result = null
         )
         val mutableClocks = mutableListOf(ClockView(0, 100L, 200L, 5000L, 100L))
+        val clockDoc = obj(
+            "seat" to mutableClocks.single().seat,
+            "opensAt" to mutableClocks.single().opensAt,
+            "deadline" to mutableClocks.single().deadline,
+            "reserve" to mutableClocks.single().reserve,
+            "serverNow" to mutableClocks.single().serverNow
+        )
         val events = mutableListOf<GameEvent>(
             GameEvent.TileDealt(1, 1, tile(50)),
             GameEvent.TileDrawn(2, 1, tile(51), 50),
@@ -311,6 +318,7 @@ class V5VisibilityGoldenExporterTest {
         )
         // RoundEnded is a public settlement fact and is supplied in the same settlement batch.
         events.add(GameEvent.RoundEnded(10, 1, 0))
+        val inputEvents = events.map { eventDoc(it) }
 
         val unauthorized = PublicProjectionFactory.project(
             session = session,
@@ -382,13 +390,14 @@ class V5VisibilityGoldenExporterTest {
                 "lifecycle" to "ROUND_ACTIVE",
                 "settlementRoundId" to "round-vis-g057c",
                 "clock" to obj("seat" to 0, "opensAt" to 100, "deadline" to 200, "reserve" to 5000, "serverNow" to 100),
-                "events" to eventsSnapshot(),
+                "events" to inputEvents,
                 "clockUsed" to false,
                 "implicitRandomUsed" to false,
                 "state" to stateDoc(state, "round-vis-g057c")
             ),
             "expected" to obj(
                 "board" to boardDoc(board),
+                "clock" to clockDoc,
                 "session" to obj(
                     "lifecycle" to unauthorized.session.lifecycle,
                     "scores" to unauthorized.session.scores,
@@ -410,24 +419,11 @@ class V5VisibilityGoldenExporterTest {
                 )
             ),
             "sourceOnly" to obj(
-                "tsumoBreakdown" to "V5 TableProjectedEvent is metadata-only and carries no ScoreBreakdown. The V4 uraTiles/uraHits strip/preserve result is recorded but cannot be compared against a V5 field; see knownDivergences VG-D06.",
-                "sessionSummary" to "V4 PublicSessionSummary carries lifecycle/scores/roundRecords/finalResult; V5 PublicSessionSummary carries finished/finishReason/finalScores/rankings. Only finished=false is comparable. See knownDivergences VG-D07."
+                "tsumoBreakdown" to "V4 expected breakdown is the source value; the C# binding builds TableProjectionEventFacts from the raw input event and compares the mapped ProjectedEventPayload.Breakdown. The mapper does not auto-redact: the caller must pass uraAuthorized=false with no ura identities (raw identities are rejected), or explicitly authorize the raw breakdown.",
+                "sessionSummary" to "V4 PublicSessionSummary carries lifecycle/scores/roundRecords/finalResult; V5 PublicSessionSummary carries finished/finishReason/finalScores/rankings. Only finished=false is comparable. See knownDivergences VG-D05."
             )
         )
     }
-
-    private fun eventsSnapshot(): List<Map<String, Any?>> = listOf(
-        obj("kind" to "TileDealt", "turnNumber" to 1, "seat" to 1, "tileIds" to listOf(50)),
-        obj("kind" to "TileDrawn", "turnNumber" to 2, "seat" to 1, "tileIds" to listOf(51)),
-        obj("kind" to "RinshanDraw", "turnNumber" to 3, "seat" to 2, "tileIds" to listOf(52)),
-        obj("kind" to "CheatPointsChanged", "turnNumber" to 4, "seat" to 0, "amount" to -10, "newBalance" to 990, "tileIds" to emptyList<Int>()),
-        obj("kind" to "TileDiscarded", "turnNumber" to 5, "seat" to 0, "tileIds" to listOf(53)),
-        obj("kind" to "ChiDeclared", "turnNumber" to 6, "seat" to 1, "tileIds" to listOf(36, 40, 44)),
-        obj("kind" to "DoraRevealed", "turnNumber" to 7, "seat" to -1, "isUraDora" to false, "tileIds" to listOf(29)),
-        obj("kind" to "DoraRevealed", "turnNumber" to 8, "seat" to -1, "isUraDora" to true, "tileIds" to listOf(30)),
-        obj("kind" to "TsumoWin", "turnNumber" to 9, "seat" to 0, "tileIds" to listOf(34)),
-        obj("kind" to "RoundEnded", "turnNumber" to 10, "seat" to -1, "tileIds" to emptyList<Int>())
-    )
 
     private fun buildD(): Map<String, Any?> {
         val seat0Closed = (0..12).map { tile(it) }
@@ -626,9 +622,16 @@ class V5VisibilityGoldenExporterTest {
         return obj(
             "uraTiles" to breakdown.dora.uraTiles.map { it.tileId },
             "uraHits" to breakdown.dora.uraHits.size,
+            "uraHitTiles" to breakdown.dora.uraHits.flatMap { hit -> hit.tiles.map { it.tileId } },
             "indicatorTiles" to breakdown.dora.indicatorTiles.map { it.tileId },
+            "doraCount" to breakdown.dora.uraCount + breakdown.dora.indicatorCount + breakdown.dora.redCount,
             "uraCount" to breakdown.dora.uraCount,
-            "totalPoints" to breakdown.totalPoints
+            "totalPoints" to breakdown.totalPoints,
+            "han" to breakdown.dora.totalHan,
+            "fu" to breakdown.fu.finalFu,
+            "score" to breakdown.score.totalPoints(isDealer = false, isTsumo = true),
+            "yaku" to breakdown.yakuLines.map { (code, han) -> obj("code" to code, "han" to han) },
+            "uraAuthorized" to true
         )
     }
 
@@ -658,6 +661,19 @@ class V5VisibilityGoldenExporterTest {
         }
         assertEquals(136, placements.size, "state must contain all 136 physical entities")
         assertEquals(136, seen.size, "state must contain unique physical entities")
+        assertEquals(
+            state.dealerIndex,
+            state.currentPlayer,
+            "V5 CreateDealt derives CurrentSeat from the dealer; this fixture must be the dealer's turn"
+        )
+        assertEquals(wallSuffix.size, state.wallRemaining, "canonical wall suffix size must equal wallRemaining")
+        for (entry in state.cheatEntries) {
+            assertEquals(
+                state.cheatPoints[entry.seat],
+                entry.balanceAfter,
+                "cheat ledger balanceAfter must equal the exported seat points"
+            )
+        }
         placements.sortBy { it[0] as Int }
 
         val last = state.lastDiscard?.let { tile ->
@@ -794,7 +810,13 @@ class V5VisibilityGoldenExporterTest {
 
     private fun eventDoc(event: GameEvent): Map<String, Any?> = when (event) {
         is GameEvent.TileDealt -> obj("kind" to "TileDealt", "turnNumber" to event.turnNumber, "seat" to event.player, "tileIds" to listOf(event.tile.tileId))
-        is GameEvent.TileDrawn -> obj("kind" to "TileDrawn", "turnNumber" to event.turnNumber, "seat" to event.player, "tileIds" to listOf(event.tile.tileId))
+        is GameEvent.TileDrawn -> obj(
+            "kind" to "TileDrawn",
+            "turnNumber" to event.turnNumber,
+            "seat" to event.player,
+            "wallRemaining" to event.wallRemaining,
+            "tileIds" to listOf(event.tile.tileId)
+        )
         is GameEvent.RinshanDraw -> obj("kind" to "RinshanDraw", "turnNumber" to event.turnNumber, "seat" to event.player, "tileIds" to listOf(event.tile.tileId))
         is GameEvent.DoraRevealed -> obj(
             "kind" to "DoraRevealed",
@@ -803,12 +825,20 @@ class V5VisibilityGoldenExporterTest {
             "isUraDora" to event.isUraDora,
             "tileIds" to listOf(event.indicator.tileId)
         )
-        is GameEvent.TileDiscarded -> obj("kind" to "TileDiscarded", "turnNumber" to event.turnNumber, "seat" to event.player, "tileIds" to listOf(event.tile.tileId))
+        is GameEvent.TileDiscarded -> obj(
+            "kind" to "TileDiscarded",
+            "turnNumber" to event.turnNumber,
+            "seat" to event.player,
+            "riichiDiscard" to event.isRiichiDiscard,
+            "tsumogiri" to event.isTsumogiri,
+            "tileIds" to listOf(event.tile.tileId)
+        )
         is GameEvent.ChiDeclared -> obj(
             "kind" to "ChiDeclared",
             "turnNumber" to event.turnNumber,
             "seat" to event.player,
             "fromSeat" to event.fromPlayer,
+            "calledTileId" to event.meld.calledTile.tileId,
             "tileIds" to event.meld.tiles.map { it.tileId }
         )
         is GameEvent.PonDeclared -> obj(
@@ -816,12 +846,15 @@ class V5VisibilityGoldenExporterTest {
             "turnNumber" to event.turnNumber,
             "seat" to event.player,
             "fromSeat" to event.fromPlayer,
+            "calledTileId" to event.meld.calledTile.tileId,
             "tileIds" to event.meld.tiles.map { it.tileId }
         )
         is GameEvent.KanDeclared -> obj(
             "kind" to "KanDeclared",
             "turnNumber" to event.turnNumber,
             "seat" to event.player,
+            "calledTileId" to event.meld.calledTile.tileId,
+            "kanType" to event.kanType.name,
             "tileIds" to event.meld.tiles.map { it.tileId }
         )
         is GameEvent.RiichiDeclared -> obj("kind" to "RiichiDeclared", "turnNumber" to event.turnNumber, "seat" to event.player, "tileIds" to listOf(event.discardTile.tileId))
@@ -830,17 +863,32 @@ class V5VisibilityGoldenExporterTest {
             "turnNumber" to event.turnNumber,
             "seat" to event.player,
             "tileIds" to listOf(event.winTile.tileId),
+            "yaku" to (
+                event.breakdown?.yakuLines?.map { (code, han) -> obj("code" to code, "han" to han) }
+                    ?: event.yakuList.map { obj("code" to it, "han" to 1) }
+                ),
+            "han" to event.han,
+            "fu" to event.fu,
+            "score" to event.score,
             "breakdown" to breakdownDoc(event.breakdown)
         )
         is GameEvent.RonWin -> obj(
             "kind" to "RonWin",
             "turnNumber" to event.turnNumber,
             "seat" to event.winner,
+            "loserSeat" to event.loser,
             "tileIds" to listOf(event.winTile.tileId)
         )
         is GameEvent.DrawGame -> obj("kind" to "DrawGame", "turnNumber" to event.turnNumber, "seat" to -1, "tileIds" to emptyList<Int>())
         is GameEvent.ScoreSettled -> obj("kind" to "ScoreSettled", "turnNumber" to event.turnNumber, "seat" to -1, "tileIds" to emptyList<Int>())
-        is GameEvent.RoundEnded -> obj("kind" to "RoundEnded", "turnNumber" to event.turnNumber, "seat" to -1, "tileIds" to emptyList<Int>())
+        is GameEvent.RoundEnded -> obj(
+            "kind" to "RoundEnded",
+            "turnNumber" to event.turnNumber,
+            "seat" to -1,
+            "roundWind" to event.roundWind,
+            "roundNumber" to event.roundNumber,
+            "tileIds" to emptyList<Int>()
+        )
         is GameEvent.MatchEnded -> obj("kind" to "MatchEnded", "turnNumber" to event.turnNumber, "seat" to -1, "tileIds" to emptyList<Int>())
         is GameEvent.CheatPointsChanged -> obj(
             "kind" to "CheatPointsChanged",
@@ -931,17 +979,87 @@ class V5VisibilityGoldenExporterTest {
         assertTrue((seat1["mySleeveTiles"] as List<*>).isNotEmpty())
     }
 
-    private fun validateCommittedFixtureShape(root: Path, cases: List<Map<String, Any?>>) {
-        val fixture = root.resolve(FIXTURE_PATH)
-        if (!Files.exists(fixture)) {
+    /**
+     * Default-mode guard: the committed fixture must equal this run's real V4 results.
+     * Missing, truncated or stale case content fails; only explicitly dynamic META may differ.
+     */
+    @Test
+    fun defaultModeRejectsStaleOrMissingFixture() {
+        if (exportEnabled()) {
             return
         }
-        val text = Files.readString(fixture, StandardCharsets.UTF_8)
+        val root = repoRoot()
+        assertThrows<AssertionError>("stale expected score must be rejected") {
+            val stale = buildCases()
+            @Suppress("UNCHECKED_CAST")
+            val snapshot = ((stale[0]["expected"] as Map<String, Any?>)["snapshot"] as MutableMap<String, Any?>)
+            snapshot["scores"] = listOf(24999, 25000, 25000, 25000)
+            validateCommittedFixture(root, stale)
+        }
+        assertThrows<AssertionError>("stale placement must be rejected") {
+            val stale = buildCases()
+            @Suppress("UNCHECKED_CAST")
+            val placements = ((stale[0]["input"] as Map<String, Any?>)["state"] as Map<String, Any?>)["placements"] as MutableList<List<Any?>>
+            placements[0] = listOf(placements[0][0], "WALL", -1, 0).toMutableList().also { it[0] = 1 }
+            validateCommittedFixture(root, stale)
+        }
+        assertThrows<AssertionError>("stale meld origin must be rejected") {
+            val stale = buildCases()
+            @Suppress("UNCHECKED_CAST")
+            val melds = ((stale[0]["expected"] as Map<String, Any?>)["snapshot"] as Map<String, Any?>)["melds"] as List<List<Map<String, Any?>>>
+            @Suppress("UNCHECKED_CAST")
+            (melds[1][0] as MutableMap<String, Any?>)["fromSeat"] = 2
+            validateCommittedFixture(root, stale)
+        }
+        assertThrows<AssertionError>("missing fixture must be rejected") {
+            validateCommittedFixture(root, buildCases(), root.resolve("build/visibility-exporter-missing-fixture.json"))
+        }
+    }
+
+    private fun validateCommittedFixture(
+        root: Path,
+        cases: List<Map<String, Any?>>,
+        fixture: Path = root.resolve(FIXTURE_PATH)
+    ) {
+        assertTrue(Files.exists(fixture), "committed fixture is missing: $fixture")
+        val text = Files.readString(fixture, StandardCharsets.UTF_8).replace("\r\n", "\n")
         assertTrue(text.contains("\"schema\": \"v5-visibility-golden-v1\""), "committed fixture schema drifted")
         assertTrue(text.contains("\"caseCount\": 4"), "committed fixture caseCount drifted")
-        for (case in cases) {
-            assertTrue(text.contains("\"id\": \"" + case["id"] + "\""), "committed fixture is missing " + case["id"])
+        val marker = "\n  \"cases\": "
+        val index = text.indexOf(marker)
+        assertTrue(index >= 0, "committed fixture has no cases block")
+        var actualCases = text.substring(index + marker.length).trimEnd()
+        if (actualCases.endsWith("}")) {
+            actualCases = actualCases.dropLast(1).trimEnd()
         }
+        val expectedCases = renderValue(cases, 1)
+        if (expectedCases != actualCases) {
+            val limit = minOf(expectedCases.length, actualCases.length)
+            var index = 0
+            while (index < limit && expectedCases[index] == actualCases[index]) index++
+            val from = maxOf(0, index - 80)
+            val toE = minOf(expectedCases.length, index + 120)
+            val toA = minOf(actualCases.length, index + 120)
+            assertEquals(
+                expectedCases,
+                actualCases,
+                "committed fixture cases differ at char $index; expected[" +
+                    expectedCases.substring(from, toE) + "] actual[" +
+                    actualCases.substring(from, toA) + "]"
+            )
+        }
+        val recordedHash = Regex("\"renderSha256LfNormalized\": \"([0-9a-f]{64})\"")
+            .find(text)?.groupValues?.get(1)
+        assertNotNull(recordedHash, "committed fixture has no render hash")
+        val normalized = text.replace(
+            Regex("\"renderSha256LfNormalized\": \"[0-9a-f]{64}\""),
+            "\"renderSha256LfNormalized\": null"
+        )
+        assertEquals(
+            recordedHash,
+            sha256(normalized.toByteArray(StandardCharsets.UTF_8)),
+            "committed fixture render hash drifted"
+        )
     }
 
     // ------------------------------------------------------------------
@@ -953,7 +1071,11 @@ class V5VisibilityGoldenExporterTest {
         val sources = SOURCE_FILES.map { sourceHash(root, it) }
         val exporterHash = sourceHash(root, EXPORTER_PATH)
         val trackedModified = gitOrEmpty(root, "diff", "--name-only", "HEAD")
-            .lineSequence().map { it.trim() }.filter { it.isNotEmpty() }.toList()
+            .lineSequence()
+            .map { it.trim() }
+            .filter { it.isNotEmpty() }
+            .filterNot { it.startsWith("warning:", ignoreCase = true) || it.startsWith("hint:", ignoreCase = true) }
+            .toList()
         val trackedProductionModified = trackedModified.filterNot { it in TASK_PATHS }
 
         val doc = linkedMapOf<String, Any?>(
@@ -1057,15 +1179,18 @@ class V5VisibilityGoldenExporterTest {
         ),
         "deadWallMapping" to "V4 deadWall list index i -> V5 DeadWall(i). Dora indicators must be at index >= 4; this fixture uses index 4.",
         "handMapping" to "V4 closedTiles list order -> V5 Hand(seat, 0..n-1); drawn tile -> Hand(seat, n) plus DrawnTileEvidence. V5 sorts by slot index, reproducing V4 list order.",
-        "meldMapping" to "V4 meld list index i -> V5 Meld(seat, i*4 + tileOffset). V4 MeldType/fromPlayer/calledTile -> TableMeldFact input; V5 Domain stores physical slots only.",
+        "meldMapping" to "V4 meld list index i -> V5 Meld(seat, i*4 + tileOffset). V4 MeldType/fromPlayer/calledTile -> TableMeldFact/MeldView input and output; both fromSeat and calledTileId are compared.",
         "eventMapping" to (
             "V4 TileDealt/TileDrawn/RinshanDraw -> ProtocolEventType private types with the owner seat; " +
                 "DoraRevealed(isUraDora) -> DoraRevealed; TileDiscarded/ChiDeclared/PonDeclared/KanDeclared/" +
                 "RiichiDeclared/DrawGame/ScoreSettled/RoundEnded/MatchEnded keep their names; " +
-                "V4 passing settlementEvents implies V5 SettlementBatch=true."
+                "V4 turnNumber/fromSeat/riichiDiscard/tsumogiri/wallRemaining/roundWind/roundNumber and " +
+                "TsumoWin yaku/han/fu/score/breakdown are supplied as TableProjectionEventFacts and compared " +
+                "through TableProjectionContractMapper.MapEvent payloads. V4 settlementEvents implies V5 SettlementBatch=true."
         ),
-        "discardMapping" to "V4 river list index -> V5 DiscardView turnNumber=index, riichiDiscard=false, tsumogiri=false. Flags are SOURCE_ONLY because V4 GameState does not persist them for these cases.",
-        "scoreMapping" to "V4 Int score -> V5 long ScoreView.Score, value-preserving.",
+        "discardMapping" to "V4 river list index -> V5 DiscardView turnNumber=index. TileDiscarded riichiDiscard/tsumogiri flags are mapped as explicit facts and compared; only the per-river turnNumber assignment is a representation choice.",
+        "scoreMapping" to "V4 Int score -> V5 long ScoreView.Score, value-preserving; TsumoWin breakdown maps through ScoreBreakdownView with explicit ura authorization.",
+        "ownerMapping" to "V4 mySleeveTiles -> TableOwnerPrivateView.SleeveTiles -> MapPlayerSnapshot -> PrivatePlayerView.SleeveTiles for the owner; V4 meld metadata -> TableOwnerMeldView -> MeldView. Other seats/spectator never receive them.",
         "versionMapping" to "V5 state_version/event_seq/stream cursor are explicit fixture inputs; V4 PlayerView has no equivalent and they are STRUCTURE only, never compared to V4 values."
     )
 
@@ -1073,9 +1198,11 @@ class V5VisibilityGoldenExporterTest {
         "INPUT" to listOf(
             "state.roundId/phase/roundWind/roundNumber/honbaSticks/riichiSticks/dealerSeat/currentPlayer",
             "state.scores[]", "state.riichiDeclared[]", "state.doraIndicators[]", "state.uraDoraIndicators[] (hidden input)",
-            "state.placements[136] (tileId/zone/seat/index)", "state.melds[]", "state.discards[][]",
-            "state.hands[] (closed/drawn/sleeve/furiten/discardHistory)", "state.lastDiscard",
-            "state.privateCheat", "events[] (kind/turnNumber/seat/tileIds/isUraDora)", "viewerSeat", "legalActions",
+            "state.placements[136] (tileId/zone/seat/index)", "state.melds[] (type/tiles/fromSeat/calledTileId)",
+            "state.discards[][]", "state.hands[] (closed/drawn/sleeve/furiten/discardHistory)", "state.lastDiscard",
+            "state.privateCheat (points + entryId/seat/amount/balanceAfter/reason)",
+            "events[] (kind/turn/seat/tiles/ura/fromSeat/calledTileId/flags/wallRemaining/round fields/yaku/han/fu/score/breakdown)",
+            "clock (seat/opensAt/deadline/reserve/serverNow)", "viewerSeat", "legalActions",
             "settlementEvents", "revealSettlementUra", "policy flags"
         ),
         "OUTPUT" to listOf(
@@ -1083,12 +1210,17 @@ class V5VisibilityGoldenExporterTest {
             "expected.updateVisibleEventsAfterProducerClear", "expected.visibility.*",
             "expected.board.*", "expected.session.lifecycle/scores/roundRecords/finalResult",
             "expected.settlement.unauthorized/authorized", "expected.tsumoBreakdown.*",
-            "expected.spectatorBoard.*", "expected.hiddenTileIds.* (negative privacy expectations)"
+            "expected.spectatorBoard.*", "expected.hiddenTileIds.* (negative privacy expectations)",
+            "mapped MapEvent payload TurnNumber/Seat/TileIds/Meld/FromSeat/flags/WallRemaining/Round fields/Yaku/Han/Fu/Score/Breakdown",
+            "mapped MapPlayerSnapshot Private.SleeveTiles/OwnerMelds/Cheat ledger"
         ),
         "STRUCTURE" to listOf(
             "exactly 136 unique physical entities per state", "unique tile ids 0..135",
-            "unique positions", "dead wall = 14 tiles", "dora indicator in dead-wall slot >= 4",
+            "unique positions", "hands/discards/sleeve/meld placement vs duplicate lists consistency",
+            "currentPlayer == dealerSeat for CreateDealt", "wallRemaining == dense wall count",
+            "dead wall = 14 tiles", "dora indicator in dead-wall slot >= 4",
             "wall indices < WallEndExclusive", "four scores/four seats", "case id uniqueness",
+            "event turn order", "cheat balanceAfter == seat points",
             "G-row mapping", "V5 state_version/event_seq/stream cursor"
         ),
         "META" to listOf(
@@ -1099,18 +1231,17 @@ class V5VisibilityGoldenExporterTest {
         ),
         "SOURCE_ONLY" to listOf(
             "state.v4WallPointer", "state.v4WallEndExclusive", "state.v4RinshanPointer",
-            "state.kanCount", "state.privateCheat (V4 PlayerView has no field)",
-            "sourceOnly.v4DeadWall", "sourceOnly.drawSource", "sourceOnly.discardFlags",
+            "state.kanCount", "sourceOnly.v4DeadWall", "sourceOnly.drawSource",
             "sourceOnly.legalActions", "sourceOnly.sessionUpdateWholesaleCopy",
-            "expected.tsumoBreakdown (V4-only ScoreBreakdown)"
+            "sourceOnly.v4CheatPointsChangedVisibilityCounts",
+            "V4 raw event turn numbers as wire turn values (mapped, but V4-only source anchor)"
         ),
         "UNREPRESENTABLE" to listOf(
             "V4 legalActions -> V5 Policy/DecisionView (P3.3 supplies it; no same-shape field)",
-            "V4 PlayerView.mySleeveTiles -> V5 TableOwnerPrivateView, not PlayerSnapshotView.Private",
             "V4 SessionUpdate unfiltered visible events -> V5 has no unfiltered client event list",
             "V4 PublicSessionSummary lifecycle/scores/roundRecords/finalResult -> V5 finished/finalScores/rankings",
-            "V4 ScoreBreakdown.uraTiles/uraHits -> V5 TableProjectedEvent is metadata-only",
-            "V4 closed-kan public meld identity -> V5 public board omits it (ConcealedMelds placeholder)"
+            "V4 closed-kan public meld identity -> V5 public board omits it (ConcealedMelds placeholder)",
+            "V4 per-river turnNumber assignment -> V5 DiscardView turnNumber uses river index"
         )
     )
 
@@ -1143,9 +1274,9 @@ class V5VisibilityGoldenExporterTest {
             "VG-D04", "LOW",
             "engine/src/main/kotlin/com/majiang/session/PlayerView.kt:145 vs dotnet/src/Mahjong.Contracts/ProtocolSnapshot.cs:1183-1190",
             "V4 PlayerView.mySleeveTiles is part of the player view.",
-            "V5 keeps sleeve identities in TableOwnerPrivateView (owner-only extension), not in PlayerSnapshotView.Private.",
+            "V5 keeps sleeve identities in TableOwnerPrivateView; MapPlayerSnapshot then maps them into PrivatePlayerView.SleeveTiles for the owner only.",
             "P3.2 owner",
-            "REPRESENTATION MAPPING, not a leak: the owner extension carries it; public/other-seat views do not."
+            "REPRESENTATION MAPPING, not a leak: the owner mapped snapshot carries it; public/other-seat views do not."
         ),
         divergence(
             "VG-D05", "LOW",
@@ -1156,12 +1287,12 @@ class V5VisibilityGoldenExporterTest {
             "UNREPRESENTABLE; only finished=false is compared for an active round."
         ),
         divergence(
-            "VG-D06", "MEDIUM",
-            "engine/src/main/kotlin/com/majiang/projection/PublicTableProjection.kt:643-790 vs dotnet/src/Mahjong.TableRuntime/TableEventProjection.cs:314-551",
+            "VG-D06", "LOW",
+            "engine/src/main/kotlin/com/majiang/projection/PublicTableProjection.kt:643-790 vs dotnet/src/Mahjong.TableRuntime/TableProjectionContractMapper.cs:492-513,895-940",
             "V4 publicEvents strips ScoreBreakdown.dora.uraTiles/uraHits when revealSettlementUra=false and restores them when true.",
-            "V5 TableProjectedEvent is metadata-only and has no ScoreBreakdown field; no V5 production value exists to compare.",
-            "P2.1 Contracts event payload owner",
-            "BLOCKED; the V4 result is recorded, but this component does not claim a V5 binding for breakdown fields."
+            "V5 TableProjectedEvent is metadata-only, but TableProjectionEventFacts.Breakdown + MapEvent + ScoreBreakdownView are the existing full mapping path. The mapper does NOT auto-redact: a caller must pass uraAuthorized=false without ura identities (otherwise ScoreBreakdownView rejects), or authorize the raw breakdown.",
+            "P3.2 joined-map caller / P2.1 payload contract",
+            "MAPPED + CALLER AUTHORIZATION CONTRACT; the golden now compares mapped UraTiles/UraHits/TotalPoints/DoraCount/UraCount and asserts the unauthorized raw breakdown is rejected."
         ),
         divergence(
             "VG-D07", "LOW",
@@ -1375,10 +1506,13 @@ class V5VisibilityGoldenExporterTest {
             "dotnet/src/Mahjong.TableRuntime/TableVisibilityProjection.cs",
             "dotnet/src/Mahjong.TableRuntime/TableEventProjection.cs",
             "dotnet/src/Mahjong.TableRuntime/TableVisibilityContexts.cs",
+            "dotnet/src/Mahjong.TableRuntime/TableProjectionContractMapper.cs",
             "dotnet/src/Mahjong.Contracts/ProtocolSnapshot.cs",
+            "dotnet/src/Mahjong.Contracts/ProtocolProjectionPayload.cs",
             "dotnet/src/Mahjong.Domain/TilePositionMap.cs",
             "dotnet/src/Mahjong.Domain/RoundStateMachine.cs",
-            "dotnet/src/Mahjong.Domain/RoundTypes.cs"
+            "dotnet/src/Mahjong.Domain/RoundTypes.cs",
+            "dotnet/tests/Mahjong.TableRuntime.Tests/TableProjectionContractMapperTests.cs"
         )
     }
 }
