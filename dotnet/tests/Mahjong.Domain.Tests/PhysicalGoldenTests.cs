@@ -450,6 +450,8 @@ namespace Mahjong.Domain.Tests
             int rejected = 0;
             int invalidZoneOwner = 0;
             int invalidPlayerOwner = 0;
+            int seatFactoryAccepted = 0;
+            int seatlessFactoryAccepted = 0;
 
             foreach (JsonElement json in cases.EnumerateArray())
             {
@@ -466,10 +468,19 @@ namespace Mahjong.Domain.Tests
                     Assert.True(Bool(json, "constructed"), caseId);
                     Assert.Equal(zoneName, Str(json, "zoneOut"));
                     Assert.Equal(player, Int(json, "playerOut"));
-                    Assert.Equal(TileZoneRules.RequiresSeat(zone), player >= 0);
 
-                    if (TileZoneRules.RequiresSeat(zone))
+                    // The mapping is a real branch selector, not a label: a seatless
+                    // factory must be used exactly when TileZoneRules.RequiresSeat is
+                    // false, and vice versa. Unknown values and a legal enum that names
+                    // the wrong branch are both rejected here.
+                    bool requiresSeat = TileZoneRules.RequiresSeat(zone);
+                    string expectedMapping = requiresSeat ? "seat-factory" : "seatless-factory";
+                    Assert.Equal(expectedMapping, csharpMapping);
+                    Assert.Equal(requiresSeat, player >= 0);
+
+                    if (requiresSeat)
                     {
+                        seatFactoryAccepted++;
                         TilePosition position = SeatPosition(zone, player);
                         Assert.Equal(zone, position.Zone);
                         Assert.Equal(player, position.Seat);
@@ -477,6 +488,7 @@ namespace Mahjong.Domain.Tests
                     }
                     else
                     {
+                        seatlessFactoryAccepted++;
                         TilePosition position = SeatlessPosition(zone);
                         Assert.Equal(zone, position.Zone);
                         Assert.Equal(-1, position.Seat);
@@ -489,6 +501,9 @@ namespace Mahjong.Domain.Tests
                     Assert.Equal("rejected", outcome);
                     Assert.False(Bool(json, "constructed"), caseId);
                     Assert.Equal("java.lang.IllegalArgumentException", Str(json, "exceptionType"));
+                    Assert.True(
+                        csharpMapping == "structural-owner-forbidden" || csharpMapping == "invalid-seat",
+                        caseId + " has unknown rejected csharpMapping " + csharpMapping);
                     AssertV4ZoneOwnerMessage(json, zoneName, player, csharpMapping);
 
                     if (csharpMapping == "structural-owner-forbidden")
@@ -520,6 +535,8 @@ namespace Mahjong.Domain.Tests
             Assert.Equal(10, rejected);
             Assert.Equal(4, invalidZoneOwner);
             Assert.Equal(6, invalidPlayerOwner);
+            Assert.Equal(3, seatlessFactoryAccepted);
+            Assert.Equal(7, seatFactoryAccepted);
             Assert.Equal(accepted, expected.GetProperty("acceptedCount").GetInt32());
             Assert.Equal(rejected, expected.GetProperty("rejectedCount").GetInt32());
             string structuralNote = Str(expected, "csharpStructuralNote");
