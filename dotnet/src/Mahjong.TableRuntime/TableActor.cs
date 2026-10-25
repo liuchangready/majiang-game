@@ -80,6 +80,7 @@ namespace Mahjong.TableRuntime
         private CheatState? _cheat;
         private readonly CheatEconomyConfig? _cheatEconomy;
         private readonly SleeveBloomConfig? _sleeveConfig;
+
         private readonly Dictionary<string, CheatRequestBinding> _cheatRequestBindings =
             new Dictionary<string, CheatRequestBinding>(StringComparer.Ordinal);
         private StateVersion _stateVersion = new StateVersion(0);
@@ -1131,7 +1132,9 @@ namespace Mahjong.TableRuntime
                 RoundCheatPreparation? settlement = TrySettleOfferForCommand(
                     command.Command,
                     now,
-                    openDiscardWindow: false);
+                    openDiscardWindow: false,
+                    deliverDeferred: command.Command.Action == RoundActionKind.Pass ||
+                                     command.Command.Action == RoundActionKind.DeclareRiichi);
                 if (settlement != null)
                 {
                     if (!settlement.IsReady)
@@ -1519,6 +1522,14 @@ namespace Mahjong.TableRuntime
                 }
             }
 
+            if (_cheatRequestBindings.Count >= _options.CheatRequestBindingCapacity)
+            {
+                return TableOperationResult.Rejected(
+                    _stateVersion,
+                    TableRuntimeReasonCode.CheatReceiptCapacityExceeded,
+                    "The actor cheat receipt binding table is full; refusing a new request rather than evicting an authority receipt.");
+            }
+
             TableOperationResult result = await ProcessCheatCommandInternalAsync(command).ConfigureAwait(false);
             bool persist = result.Status == TableOperationStatus.Accepted ||
                            result.Status == TableOperationStatus.Replayed ||
@@ -1726,7 +1737,7 @@ namespace Mahjong.TableRuntime
                 _round.RoundId,
                 _cheat.TileMarks.DealtRoundOrdinal,
                 DrawKindOf(_round.Tiles),
-                now);
+                (long)NowUtc());
         }
 
         private static int CountDrawTurns(RoundStateMachine round)
@@ -1747,7 +1758,8 @@ namespace Mahjong.TableRuntime
         private RoundCheatPreparation? TrySettleOfferForCommand(
             RoundCommand command,
             long now,
-            bool openDiscardWindow)
+            bool openDiscardWindow,
+            bool deliverDeferred = false)
         {
             CheatState? cheat = _cheat;
             if (cheat == null || _sleeveConfig == null)
@@ -1770,7 +1782,8 @@ namespace Mahjong.TableRuntime
                 context,
                 CheatProtectionPredicate(),
                 openDiscardWindow && (command.Action == RoundActionKind.DiscardTile ||
-                                      command.Action == RoundActionKind.DeclareRiichi));
+                                      command.Action == RoundActionKind.DeclareRiichi),
+                deliverDeferred ? CheatDeferDrawPredicate() : null);
         }
 
         private Func<int, bool>? CheatDeferDrawPredicate()
@@ -2860,7 +2873,9 @@ namespace Mahjong.TableRuntime
                     command,
                     now,
                     command.Action == RoundActionKind.DiscardTile ||
-                    command.Action == RoundActionKind.DeclareRiichi);
+                    command.Action == RoundActionKind.DeclareRiichi,
+                    deliverDeferred: command.Action == RoundActionKind.Pass ||
+                                     command.Action == RoundActionKind.DeclareRiichi);
                 if (settlement != null)
                 {
                     if (!settlement.IsReady)
@@ -5016,7 +5031,8 @@ namespace Mahjong.TableRuntime
 
                         RoundCheatJournal cheatJournal = TableCheatCommandCodec.Decode(journal.CommandPayload);
                         string key = journal.RequestId.Value;
-                        if (!_cheatRequestBindings.ContainsKey(key))
+                        if (!_cheatRequestBindings.ContainsKey(key) &&
+                            _cheatRequestBindings.Count < _options.CheatRequestBindingCapacity)
                         {
                             _cheatRequestBindings[key] = new CheatRequestBinding(
                                 journal.ScopeId,
@@ -7262,7 +7278,8 @@ namespace Mahjong.TableRuntime
                 BuildStreamDecisions(now),
                 eventInputs,
                 factsBySeq,
-                now);
+                now,
+                utc);
         }
 
         private IReadOnlyList<TableEventRecord> CopyCommittedEventLog()
@@ -7663,7 +7680,7 @@ namespace Mahjong.TableRuntime
                     PlayerSnapshotView mapped = TableProjectionContractMapper.MapPlayerSnapshot(
                         player,
                         owner,
-                        new TableProjectionTimeContext(capture.MonotonicMillis),
+                        new TableProjectionTimeContext(capture.MonotonicMillis, capture.UtcMillis),
                         typedSettlement,
                         data.ConcealedMeldFacts);
                     contract = new TableStreamContractFrame(
@@ -8356,7 +8373,8 @@ namespace Mahjong.TableRuntime
                 IReadOnlyList<TableSeatDecision> decisions,
                 IReadOnlyList<TableEventProjectionInput> eventInputs,
                 IReadOnlyDictionary<ulong, TableProjectionEventFact> facts,
-                long monotonicMillis)
+                long monotonicMillis,
+                long utcMillis)
             {
                 Data = data;
                 Clocks = clocks;
@@ -8364,6 +8382,7 @@ namespace Mahjong.TableRuntime
                 EventInputs = eventInputs;
                 _facts = facts;
                 MonotonicMillis = monotonicMillis;
+                UtcMillis = utcMillis;
                 _inputs = new Dictionary<ulong, TableEventProjectionInput>(eventInputs.Count);
                 for (int i = 0; i < eventInputs.Count; i++)
                 {
@@ -8380,6 +8399,8 @@ namespace Mahjong.TableRuntime
             public IReadOnlyList<TableEventProjectionInput> EventInputs { get; }
 
             public long MonotonicMillis { get; }
+
+            public long UtcMillis { get; }
 
             public TableProjectionEventFacts? FactsFor(TableProjectedEvent value)
             {

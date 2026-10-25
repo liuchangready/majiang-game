@@ -1240,7 +1240,8 @@ namespace Mahjong.TableRuntime
                             now,
                             request.TimingVersion,
                             request.NextCheatVersion,
-                            request.NextCheatFingerprint);
+                            request.NextCheatFingerprint,
+                            request.NextCheatVersion != 0L);
                         checkpoint = request.Checkpoint;
                         if (checkpoint != null)
                         {
@@ -1740,7 +1741,8 @@ namespace Mahjong.TableRuntime
                 ulong updatedAtUtcMs,
                 long timingVersion = 0L,
                 long cheatVersion = 0L,
-                ulong cheatFingerprint = 0UL)
+                ulong cheatFingerprint = 0UL,
+                bool cheatBound = false)
             {
                 StateVersion = stateVersion;
                 LastEventSeq = lastEventSeq;
@@ -1752,6 +1754,7 @@ namespace Mahjong.TableRuntime
                 TimingVersion = timingVersion;
                 CheatVersion = cheatVersion;
                 CheatFingerprint = cheatFingerprint;
+                CheatBound = cheatBound;
             }
 
             public StateVersion StateVersion { get; }
@@ -1772,6 +1775,8 @@ namespace Mahjong.TableRuntime
 
             public ulong CheatFingerprint { get; set; }
 
+            public bool CheatBound { get; set; }
+
             public ulong UpdatedAtUtcMs { get; set; }
 
             public TableStateRow ToPublic(string roomId) =>
@@ -1786,7 +1791,8 @@ namespace Mahjong.TableRuntime
                     UpdatedAtUtcMs,
                     TimingVersion,
                     CheatVersion,
-                    CheatFingerprint);
+                    CheatFingerprint,
+                    CheatBound);
         }
 
         private sealed class CheckpointRow

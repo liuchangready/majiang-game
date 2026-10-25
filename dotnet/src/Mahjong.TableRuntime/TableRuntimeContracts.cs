@@ -92,6 +92,12 @@ namespace Mahjong.TableRuntime
         public SleeveBloomConfig? SleeveBloomConfig { get; set; }
 
         /// <summary>
+        /// Hard upper bound for the actor-local cheat request/receipt binding cache. On exhaustion
+        /// new request ids are rejected; existing ids remain replayable and are never evicted.
+        /// </summary>
+        public int CheatRequestBindingCapacity { get; set; } = 8192;
+
+        /// <summary>
         /// Optional initial authoritative cheat aggregate. When supplied it replaces the empty
         /// wallet; when omitted but <see cref="CheatEconomy"/> is supplied the actor starts from
         /// <see cref="CheatState.Initialize"/>. The actor owns this state and never reads a stale
@@ -129,6 +135,14 @@ namespace Mahjong.TableRuntime
             if (InitialTimingVersion < 0)
             {
                 throw new ArgumentOutOfRangeException(nameof(InitialTimingVersion), InitialTimingVersion, "Timing version must be non-negative.");
+            }
+
+            if (CheatRequestBindingCapacity <= 0)
+            {
+                throw new ArgumentOutOfRangeException(
+                    nameof(CheatRequestBindingCapacity),
+                    CheatRequestBindingCapacity,
+                    "Cheat request binding capacity must be positive.");
             }
 
             if (CheatEconomy == null && SleeveBloomConfig != null)

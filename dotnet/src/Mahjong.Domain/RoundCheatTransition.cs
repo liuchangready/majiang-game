@@ -821,7 +821,8 @@ namespace Mahjong.Domain
             RoundCommand command,
             CheatTurnContext context,
             Func<TileId, bool>? isProtectedWallTile,
-            bool openDiscardWindow)
+            bool openDiscardWindow,
+            Func<int, bool>? deferAutomaticDraw = null)
         {
             if (round == null) throw new ArgumentNullException(nameof(round));
             if (command == null) throw new ArgumentNullException(nameof(command));
@@ -834,7 +835,7 @@ namespace Mahjong.Domain
                     "Cheat execution is not configured.");
             }
 
-            RoundPreparation prepared = round.Prepare(command, isProtectedWallTile);
+            RoundPreparation prepared = round.Prepare(command, isProtectedWallTile, deferAutomaticDraw);
             if (!prepared.IsReady)
             {
                 return RoundCheatPreparation.Rejected(
@@ -885,6 +886,39 @@ namespace Mahjong.Domain
             {
                 current = current.WithSleeveBloom(
                     current.SleeveBloom.WithOpenedWindow(command.Seat, CountDrawTurns(round), out _));
+            }
+
+            if (deferAutomaticDraw != null &&
+                prepared.Change!.NextState.Phase == RoundPhase.Draw)
+            {
+                int drawSeat = prepared.Change.NextState.CurrentSeat;
+                if (current.SleeveBloom.ReservationFor(drawSeat) != null ||
+                    current.SleeveBloom.OffTurnOfferFor(drawSeat) != null)
+                {
+                    RoundCheatPreparation delivery = PrepareDeferredDrawDelivery(
+                        round,
+                        prepared.Change,
+                        current,
+                        context.NowMillis);
+                    if (!delivery.IsReady)
+                    {
+                        return delivery;
+                    }
+
+                    var combined = new List<RoundCheatEvent>(events);
+                    for (int i = 0; i < delivery.Change!.Events.Count; i++)
+                    {
+                        combined.Add(delivery.Change.Events[i]);
+                    }
+
+                    return RoundCheatPreparation.Ready(new RoundCheatChange(
+                        delivery.Change.RoundChange,
+                        delivery.Change.CheatState,
+                        combined,
+                        accepted: true,
+                        CheatErrorCode.None,
+                        string.Empty));
+                }
             }
 
             return RoundCheatPreparation.Ready(new RoundCheatChange(

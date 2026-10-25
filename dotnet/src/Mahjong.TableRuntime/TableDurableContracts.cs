@@ -800,7 +800,8 @@ namespace Mahjong.TableRuntime
             ulong updatedAtUtcMs,
             long timingVersion = 0L,
             long cheatVersion = 0L,
-            ulong cheatFingerprint = 0UL)
+            ulong cheatFingerprint = 0UL,
+            bool cheatBound = false)
         {
             RoomId = roomId;
             StateVersion = stateVersion;
@@ -813,6 +814,7 @@ namespace Mahjong.TableRuntime
             TimingVersion = timingVersion;
             CheatVersion = cheatVersion;
             CheatFingerprint = cheatFingerprint;
+            CheatBound = cheatBound;
         }
 
         public string RoomId { get; }
@@ -838,6 +840,9 @@ namespace Mahjong.TableRuntime
 
         /// <summary>Complete cheat aggregate fingerprint bound to this table state.</summary>
         public ulong CheatFingerprint { get; }
+
+        /// <summary>True once any accepted command has committed a complete cheat aggregate.</summary>
+        public bool CheatBound { get; }
     }
 
     /// <summary>

@@ -621,7 +621,12 @@ namespace Mahjong.TableRuntime
                                     settlementContext,
                                     tile => settlementCheat.SleeveBloom.IsProtectedTile(tile),
                                     command.Action == RoundActionKind.DiscardTile ||
-                                    command.Action == RoundActionKind.DeclareRiichi);
+                                    command.Action == RoundActionKind.DeclareRiichi,
+                                    (command.Action == RoundActionKind.Pass ||
+                                     command.Action == RoundActionKind.DeclareRiichi)
+                                        ? seat => settlementCheat.SleeveBloom.ReservationFor(seat) != null ||
+                                                  settlementCheat.SleeveBloom.OffTurnOfferFor(seat) != null
+                                        : (Func<int, bool>?)null);
                                 if (!settlement.IsReady)
                                 {
                                     return TableRecoveryResult.Failed(
@@ -1017,15 +1022,42 @@ namespace Mahjong.TableRuntime
                     "Recovered state fingerprint/hash does not match table_state.");
             }
 
-            if (state.CheatVersion != 0L || state.CheatFingerprint != 0UL)
+            if (state.CheatBound)
             {
-                if (cheat == null ||
+                if (state.CheatVersion == 0L || state.CheatFingerprint == 0UL ||
+                    cheat == null ||
                     cheat.Version != state.CheatVersion ||
                     cheat.Fingerprint != state.CheatFingerprint)
                 {
                     return TableRecoveryResult.Failed(
                         TableRuntimeReasonCode.RecoveryStateHashMismatch,
                         "Recovered complete cheat aggregate does not match the committed table_state binding.");
+                }
+            }
+            else
+            {
+                if (state.CheatVersion != 0L || state.CheatFingerprint != 0UL)
+                {
+                    return TableRecoveryResult.Failed(
+                        TableRuntimeReasonCode.RecoveryStateHashMismatch,
+                        "table_state carries a cheat binding without the committed binding marker.");
+                }
+
+                bool hasCommittedCheatJournal = false;
+                for (int i = 0; i < commands.Count; i++)
+                {
+                    if (commands[i].SchemaVersion == 2 || commands[i].SchemaVersion == 3)
+                    {
+                        hasCommittedCheatJournal = true;
+                        break;
+                    }
+                }
+
+                if (hasCommittedCheatJournal)
+                {
+                    return TableRecoveryResult.Failed(
+                        TableRuntimeReasonCode.RecoveryStateHashMismatch,
+                        "Committed cheat journal exists but table_state carries no complete cheat binding.");
                 }
             }
 

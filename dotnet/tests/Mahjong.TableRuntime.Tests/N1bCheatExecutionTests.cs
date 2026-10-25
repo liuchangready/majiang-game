@@ -1660,7 +1660,40 @@ namespace Mahjong.TableRuntime.Tests
             Assert.Equal(reserved, drawn.Tile);
         }
 
-        private static ActorHarness CreateHarness()
+        [Fact]
+        public async Task cheat_request_binding_capacity_rejects_new_ids_without_evicting_replays()
+        {
+            await using ActorHarness harness = CreateHarness(cheatRequestBindingCapacity: 2);
+            RoundStateMachine round = harness.InitialRound;
+            TileId[] tiles = round.Tiles.TilesInZone(TileZone.Hand, 1).Take(4).ToArray();
+            TableOperationResult first = await harness.Actor.SubmitCheatAsync(
+                Cheat(round.RoundId, 1, RoundCheatAction.SubmitTileMark, "bound-1",
+                    RoundCheatPayload.TileMark("g1", tiles), 0, "bound-1"),
+                TestContext.Current.CancellationToken);
+            TableOperationResult second = await harness.Actor.SubmitCheatAsync(
+                Cheat(round.RoundId, 1, RoundCheatAction.SubmitTileMark, "bound-2",
+                    RoundCheatPayload.TileMark("g2", tiles), 0, "bound-2"),
+                TestContext.Current.CancellationToken);
+            Assert.Equal(TableOperationStatus.Rejected, first.Status);
+            Assert.Equal(TableOperationStatus.Rejected, second.Status);
+
+            TableOperationResult third = await harness.Actor.SubmitCheatAsync(
+                Cheat(round.RoundId, 1, RoundCheatAction.SubmitTileMark, "bound-3",
+                    RoundCheatPayload.TileMark("g3", tiles), 0, "bound-3"),
+                TestContext.Current.CancellationToken);
+            Assert.Equal(TableOperationStatus.Rejected, third.Status);
+            Assert.Equal(TableRuntimeReasonCode.CheatReceiptCapacityExceeded, third.ReasonCode);
+
+            TableOperationResult replay = await harness.Actor.SubmitCheatAsync(
+                Cheat(round.RoundId, 1, RoundCheatAction.SubmitTileMark, "bound-1",
+                    RoundCheatPayload.TileMark("g1", tiles), 0, "bound-1"),
+                TestContext.Current.CancellationToken);
+            Assert.Equal(first.Status, replay.Status);
+            Assert.Equal(first.ReasonCode, replay.ReasonCode);
+            Assert.Equal(0UL, (await harness.GetSnapshotAsync()).StateVersion.Value);
+        }
+
+        private static ActorHarness CreateHarness(int cheatRequestBindingCapacity = 8192)
         {
             var clock = new ManualTableClock { Now = 1000L };
             var commitPort = new RecordingCommitPort();
@@ -1680,6 +1713,7 @@ namespace Mahjong.TableRuntime.Tests
                     SeatControllerKind.Computer),
                 CheatEconomy = V32Fixtures.Economy(InitialPoints),
                 SleeveBloomConfig = V32Fixtures.SleeveConfig(),
+                CheatRequestBindingCapacity = cheatRequestBindingCapacity,
                 InitialCheatState = cheat
             };
             var actor = new TableActor(options, round, commitPort, clock, sink);
