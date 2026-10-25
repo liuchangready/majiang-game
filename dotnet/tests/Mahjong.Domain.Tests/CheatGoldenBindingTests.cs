@@ -1478,10 +1478,8 @@ namespace Mahjong.Domain.Tests
                 "CheatSubmission.ActivateSleeveBloom", "immediate offer already frozen"),
             Refined("sleeveBloomHandler", "sb-activate-wall-empty", "Rejected", "SLEEVE_BLOOM_WALL_EMPTY", CheatErrorCode.NoWallCandidate,
                 "CheatSubmission.ActivateSleeveBloom", "no available live-wall candidate"),
-            Blocked("sleeveBloomHandler", "sb-activate-wall-empty-drift", "Rejected", "SLEEVE_BLOOM_WALL_EMPTY",
-                BindingKind.UnrepresentableBlocked, "CheatSubmission.ActivateSleeveBloom + frozen nextWallTileId input",
-                "V4 freezes nextWallTileId=32 and rejects when that entity left the wall; C# has no such input and re-searches the first available tile",
-                "missing API input: a frozen nextWallTileId/nextWallTileInWall parameter (or actor pre-check). A map-only projection cannot distinguish this from a legal other-candidate wall; readiness probe intentionally fails until the input exists."),
+            Refined("sleeveBloomHandler", "sb-activate-wall-empty-drift", "Rejected", "SLEEVE_BLOOM_WALL_EMPTY", CheatErrorCode.NoWallCandidate,
+                "CheatSubmission.ActivateSleeveBloomWithFrozenInput", "V4 frozen nextWallTileId=32/nextWallTileInWall=false; a missing or drifted frozen candidate rejects instead of re-searching"),
             Bound("sleeveBloomHandler", "sb-activate-no-drawn-tile", "Rejected", "SLEEVE_BLOOM_NO_DRAWN_TILE", CheatErrorCode.NoDrawnTile,
                 "CheatSubmission.ActivateSleeveBloom", "no tracked draw"),
             Bound("sleeveBloomHandler", "sb-activate-not-your-turn", "Rejected", "NOT_YOUR_TURN", CheatErrorCode.NotYourTurn,
@@ -1682,13 +1680,12 @@ namespace Mahjong.Domain.Tests
                 "tm-no-active-decision",
                 "tm-deadline-expired",
                 "tm-decision-mismatch",
-                "sb-activate-wall-empty-drift",
                 "bm-activate-deadwall-empty",
                 "bm-activate-deadwall-dora-only"
             }, blocked);
-            Assert.Equal(67, AllSpecs.Count(s => s.IsBehaviourBound));
+            Assert.Equal(68, AllSpecs.Count(s => s.IsBehaviourBound));
             Assert.Equal(4, AllSpecs.Count(s => s.Kind == BindingKind.ActorLayerBlocked));
-            Assert.Equal(4, AllSpecs.Count(s => s.Kind == BindingKind.UnrepresentableBlocked));
+            Assert.Equal(3, AllSpecs.Count(s => s.Kind == BindingKind.UnrepresentableBlocked));
         }
 
         // ------------------------------------------------------------------
@@ -2059,6 +2056,17 @@ namespace Mahjong.Domain.Tests
             {
                 map = SleeveBaseMap(wallCount: 0);
             }
+            else if (caseId == "sb-activate-wall-empty-drift")
+            {
+                // Source anchor: V5CheatGoldenExporterTest.kt:716 exports
+                // activation(nextWallTileInWall = false) with the buildActivation defaults
+                // nextWallTileId = 32 (lines 443-444) and no placements for this handler case.
+                // The C# physical board therefore keeps a legal alternate candidate (40) in the
+                // live wall while the frozen entity 32 is a river tile: the same situation the
+                // accepted readiness control used. The domain must replay the frozen input and
+                // reject, not quietly pick 40.
+                map = SleeveBaseMap(wallHead: new[] { 40, 44, 48 }, reservedDiscards: new[] { 32 });
+            }
             else if (caseId == "sb-activate-no-drawn-tile")
             {
                 map = SleeveBaseMap(withoutDrawn: true);
@@ -2098,8 +2106,12 @@ namespace Mahjong.Domain.Tests
             if (caseId.StartsWith("sb-activate-", StringComparison.Ordinal))
             {
                 Snapshot before = Snapshot.Capture(state, map);
-                CheatTransition actual = CheatSubmission.ActivateSleeveBloom(
-                    state, map, ctx, economy, CheatTestBench.Sleeve(), seat, requestId);
+                CheatTransition actual = caseId == "sb-activate-wall-empty-drift"
+                    ? CheatSubmission.ActivateSleeveBloomWithFrozenInput(
+                        state, map, ctx, economy, CheatTestBench.Sleeve(), seat, requestId,
+                        SleeveBloomActivationInput.Frozen(new TileId(32), false))
+                    : CheatSubmission.ActivateSleeveBloom(
+                        state, map, ctx, economy, CheatTestBench.Sleeve(), seat, requestId);
 
                 if (caseId == "sb-activate-allowed")
                 {

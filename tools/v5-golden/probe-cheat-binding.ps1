@@ -341,7 +341,6 @@ $blocked = @(
     'tm-no-active-decision',
     'tm-deadline-expired',
     'tm-decision-mismatch',
-    'sb-activate-wall-empty-drift',
     'bm-activate-deadwall-empty',
     'bm-activate-deadwall-dora-only'
 )
@@ -385,29 +384,54 @@ namespace Mahjong.Domain.Tests
             {
                 16, new[] { 40, 44, 48 }, 60, DrawSource.Wall, false, new[] { 32 }, false
             })!;
-            Assert.True(map.PositionOf(new TileId(32)).Zone != TileZone.Wall);
+            Assert.NotEqual(TileZone.Wall, map.PositionOf(new TileId(32)).Zone);
+            Assert.Equal(TileZone.Wall, map.PositionOf(new TileId(40)).Zone);
 
-            CheatTransition actual = CheatSubmission.ActivateSleeveBloom(
-                CheatTestBench.InitialState(), map,
-                CheatTestBench.Context(0, RoundPhase.CheatWindow, SleeveBloomDrawKind.Normal),
-                CheatTestBench.Economy(), CheatTestBench.Sleeve(), 0, "req-1");
-            Assert.True(actual.Success,
+            CheatState state = CheatTestBench.InitialState();
+            CheatTurnContext ctx = CheatTestBench.Context(0, RoundPhase.CheatWindow, SleeveBloomDrawKind.Normal);
+            CheatEconomyConfig economy = CheatTestBench.Economy();
+
+            // Positive control A: the legacy map-only call is a different, legal input and must
+            // stay Allowed on the same board (candidate 40), never rejected just because the V4
+            // case exists.
+            CheatTransition mapOnly = CheatSubmission.ActivateSleeveBloom(
+                state, map, ctx, economy, CheatTestBench.Sleeve(), 0, "req-1");
+            Assert.True(mapOnly.Success,
                 "legal other-candidate control: map-only input must stay Allowed; actual=" +
-                (actual.Success ? "Allowed" : actual.Error.ToString()));
+                (mapOnly.Success ? "Allowed" : mapOnly.Error.ToString()));
+            Assert.Equal(new TileId(40), mapOnly.State!.SleeveBloom.ImmediateOffer!.SecondTile);
 
-            MethodInfo activate = typeof(CheatSubmission).GetMethod(
-                "ActivateSleeveBloom", BindingFlags.Public | BindingFlags.Static)!;
-            ParameterInfo? frozen = activate.GetParameters().FirstOrDefault(parameter =>
-                parameter.Name != null &&
-                (parameter.Name.Contains("nextWall", StringComparison.OrdinalIgnoreCase) ||
-                 parameter.Name.Contains("frozen", StringComparison.OrdinalIgnoreCase)));
-            Assert.True(frozen != null,
-                "BLOCKED_INPUT: ActivateSleeveBloom has no frozen nextWallTileId/nextWallTileInWall input; " +
-                "the full V4 sb-activate-wall-empty-drift input cannot be replayed. The map-only call above is " +
-                "a legal other-candidate control, not a conformance failure.");
-            Assert.Fail(
-                "BLOCKED_INPUT: a frozen wall-candidate input now exists; replace this capability gate with " +
-                "the same-input Rejected/SLEEVE_BLOOM_WALL_EMPTY conformance assertion before claiming readiness.");
+            // Conformance: replay the exact V4 input (nextWallTileId=32, nextWallTileInWall=false;
+            // V5CheatGoldenExporterTest.kt:716 with the buildActivation defaults). The frozen
+            // candidate is a river tile while 40 remains a legal wall candidate, so a re-search
+            // would wrongly return Allowed. It must reject with zero side effects.
+            long stateVersion = state.Version;
+            ulong mapHash = map.StateHash;
+            string locations = CheatTestBench.Locations(map);
+            CheatTransition drift = CheatSubmission.ActivateSleeveBloomWithFrozenInput(
+                state, map, ctx, economy, CheatTestBench.Sleeve(), 0, "req-1",
+                SleeveBloomActivationInput.Frozen(new TileId(32), false));
+            Assert.False(drift.Success, "frozen 32/false must not be re-searched into 40");
+            Assert.Equal(CheatErrorCode.NoWallCandidate, drift.Error);
+            Assert.Null(drift.State);
+            Assert.Null(drift.Map);
+            Assert.Empty(drift.Events);
+            Assert.Equal(stateVersion, state.Version);
+            Assert.Equal(40, state.Ledger.BalanceOf(0));
+            Assert.Empty(state.SleeveBloom.Reservations);
+            Assert.Equal(mapHash, map.StateHash);
+            Assert.Equal(locations, CheatTestBench.Locations(map));
+
+            // Positive control B: a genuinely frozen live-wall candidate still allows the same
+            // typed entry, so the conformance assertion above is not satisfied by a blanket reject.
+            CheatTransition frozenOk = CheatSubmission.ActivateSleeveBloomWithFrozenInput(
+                state, map, ctx, economy, CheatTestBench.Sleeve(), 0, "req-1",
+                SleeveBloomActivationInput.Frozen(new TileId(40), true));
+            Assert.True(frozenOk.Success,
+                "frozen legal wall candidate must stay Allowed; actual=" +
+                (frozenOk.Success ? "Allowed" : frozenOk.Error.ToString()));
+            Assert.Equal(new TileId(40), frozenOk.State!.SleeveBloom.ImmediateOffer!.SecondTile);
+            Assert.Equal(30, frozenOk.State.Ledger.BalanceOf(0));
         }
     }
 }
@@ -501,9 +525,6 @@ else {
     Invoke-ReadinessProbe -Root $EvidenceRoot
 }
 $readinessCauses = @($blocked)
-if (-not $MatrixOnly -and $readiness.status -eq 'BLOCKED_INPUT') {
-    $readinessCauses += 'F-01:missing-frozen-next-wall-input'
-}
 if (-not $MatrixOnly -and $readiness.status -in @('TOOL_FAILURE', 'TOOL_OR_UNEXPECTED_FAILURE')) {
     $readinessCauses += 'readiness-tool-or-probe-failure'
 }
@@ -515,7 +536,7 @@ $readinessStatus = if (-not $matrixOk) { 'FAIL' }
     else { 'FAIL' }
 
 $summary = [ordered]@{
-    schema = 'v5-cheat-binding-probe-v3'
+    schema = 'v5-cheat-binding-probe-v4'
     matrixStatus = if ($matrixOk) { 'PASS' } else { 'FAIL' }
     readinessStatus = $readinessStatus
     status = if (-not $matrixOk) { 'FAIL' }

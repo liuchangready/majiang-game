@@ -539,14 +539,23 @@ namespace Mahjong.Domain
                         command.Payload.Tiles);
                     break;
                 case RoundCheatAction.SubmitSleeveBloom:
-                    transition = CheatSubmission.ActivateSleeveBloom(
+                    // The authoritative bridge freezes the next-wall candidate from the same
+                    // read-only map and cheat state it hands to the domain entry. A normal draw
+                    // therefore replays an explicit candidate instead of falling back to a
+                    // second search; the rinshan path already carries full dead-wall evidence.
+                    SleeveBloomActivationInput activationInput =
+                        context.LastDrawKind == SleeveBloomDrawKind.Normal
+                            ? SleeveBloomActivationInput.FromAuthoritativeState(round.Tiles, before.SleeveBloom)
+                            : SleeveBloomActivationInput.Unspecified;
+                    transition = CheatSubmission.ActivateSleeveBloomWithFrozenInput(
                         before,
                         round.Tiles,
                         context,
                         economy,
                         sleeveConfig,
                         command.Seat,
-                        command.RequestId);
+                        command.RequestId,
+                        activationInput);
                     break;
                 case RoundCheatAction.SubmitSleeveBloomChoice:
                     transition = CheatSubmission.ChooseSleeveBloom(
