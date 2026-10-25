@@ -51,6 +51,42 @@ namespace Mahjong.Domain.Tests
             "MV-G007-FIFTH-RINSHAN-REJECTION"
         };
 
+        private static readonly string[] RequiredSourceFiles =
+        {
+            "engine/src/main/kotlin/com/majiang/model/Tile.kt",
+            "engine/src/main/kotlin/com/majiang/model/TileLocation.kt",
+            "engine/src/main/kotlin/com/majiang/model/TilePool.kt",
+            "engine/src/main/kotlin/com/majiang/model/TileMovement.kt",
+            "engine/src/main/kotlin/com/majiang/model/Meld.kt",
+            "engine/src/main/kotlin/com/majiang/model/PlayerHand.kt",
+            "engine/src/main/kotlin/com/majiang/state/GameState.kt",
+            "engine/src/main/kotlin/com/majiang/state/StateInvariants.kt",
+            "engine/src/testFixtures/kotlin/com/majiang/testing/TestTableBuilder.kt",
+            "engine/src/test/kotlin/com/majiang/model/TileMovementContractTest.kt"
+        };
+
+        private static readonly string[] ExpectedTaskPaths =
+        {
+            "doc/v5-重构/V5-P01-MOVEMENT-GOLDEN-G004-G007.md",
+            "dotnet/tests/Mahjong.Domain.Tests/TileMovementGoldenTests.cs",
+            "engine/src/test/kotlin/com/majiang/model/V5TileMovementGoldenExporterTest.kt",
+            "tests/v5-golden/movement-v1.json",
+            "tools/v5-golden/probe-movement-binding.ps1"
+        };
+
+        private static readonly Dictionary<string, string[]> ExpectedGRows =
+            new Dictionary<string, string[]>(StringComparer.Ordinal)
+            {
+                { "MV-G004-DRAW-DISCARD", new[] { "G-004" } },
+                { "MV-G005-PON", new[] { "G-005" } },
+                { "MV-G005-CHI", new[] { "G-005" } },
+                { "MV-G006-CLOSED-KAN-RINSHAN", new[] { "G-006" } },
+                { "MV-G006-ADDED-KAN-RINSHAN", new[] { "G-006" } },
+                { "MV-G006-OPEN-KAN-RINSHAN", new[] { "G-006" } },
+                { "MV-G007-DUPLICATE-PON-REJECTION", new[] { "G-007" } },
+                { "MV-G007-FIFTH-RINSHAN-REJECTION", new[] { "G-007" } }
+            };
+
         [Fact]
         public void GoldenFileCarriesRealV4ProvenanceAndEightCases()
         {
@@ -74,11 +110,17 @@ namespace Mahjong.Domain.Tests
             Assert.Empty(Strings(root.GetProperty("trackedProductionModifiedFiles")));
 
             string[] tasks = Strings(root.GetProperty("taskPaths"));
-            Assert.Contains("engine/src/test/kotlin/com/majiang/model/V5TileMovementGoldenExporterTest.kt", tasks);
-            Assert.Contains("tests/v5-golden/movement-v1.json", tasks);
-            Assert.Contains("dotnet/tests/Mahjong.Domain.Tests/TileMovementGoldenTests.cs", tasks);
-            Assert.Contains("tools/v5-golden/probe-movement-binding.ps1", tasks);
-            Assert.Contains(tasks, t => t.EndsWith("V5-P01-MOVEMENT-GOLDEN-G004-G007.md", StringComparison.Ordinal));
+            Assert.Equal(
+                ExpectedTaskPaths.OrderBy(t => t, StringComparer.Ordinal).ToArray(),
+                tasks.OrderBy(t => t, StringComparer.Ordinal).ToArray());
+
+            string command = Str(root, "generatedByCommand");
+            Assert.Contains("V5_MOVEMENT_GOLDEN_EXPORT", command);
+            Assert.Contains("gradlew", command);
+            Assert.Contains(":engine:test", command);
+            Assert.Contains("--tests", command);
+            Assert.Contains("V5TileMovementGoldenExporterTest", command);
+            Assert.Contains("--rerun-tasks", command);
 
             JsonElement generation = root.GetProperty("generationResult");
             Assert.Equal(8, Int(generation, "casesExported"));
@@ -93,12 +135,27 @@ namespace Mahjong.Domain.Tests
             Assert.Contains("not a full 73-case audit", Str(scope, "note"));
 
             string repositoryRoot = RepositoryRoot();
-            foreach (JsonElement source in root.GetProperty("sourceHashes").EnumerateArray())
+            JsonElement sources = root.GetProperty("sourceHashes");
+            Assert.Equal(RequiredSourceFiles.Length, sources.GetArrayLength());
+            var seenSources = new HashSet<string>(StringComparer.Ordinal);
+            foreach (JsonElement source in sources.EnumerateArray())
             {
+                string relative = Str(source, "file");
+                Assert.Contains(relative, RequiredSourceFiles);
+                Assert.True(seenSources.Add(relative), "duplicate source hash entry " + relative);
                 AssertSourceHash(repositoryRoot, source);
             }
 
-            AssertSourceHash(repositoryRoot, root.GetProperty("exporterSource"));
+            foreach (string required in RequiredSourceFiles)
+            {
+                Assert.True(seenSources.Contains(required), "missing required source hash " + required);
+            }
+
+            JsonElement exporterSource = root.GetProperty("exporterSource");
+            Assert.Equal(
+                "engine/src/test/kotlin/com/majiang/model/V5TileMovementGoldenExporterTest.kt",
+                Str(exporterSource, "file"));
+            AssertSourceHash(repositoryRoot, exporterSource);
 
             JsonElement cases = root.GetProperty("cases");
             Assert.Equal(ExpectedCaseIds.Length, cases.GetArrayLength());
@@ -107,7 +164,8 @@ namespace Mahjong.Domain.Tests
             {
                 string caseId = Str(sample, "caseId");
                 ids.Add(caseId);
-                Assert.NotEmpty(Strings(sample.GetProperty("gRows")));
+                Assert.True(ExpectedGRows.ContainsKey(caseId), "unknown case id " + caseId);
+                Assert.Equal(ExpectedGRows[caseId], Strings(sample.GetProperty("gRows")));
                 Assert.True(sample.GetProperty("steps").GetArrayLength() > 0, caseId + " has no steps");
                 JsonElement initial = sample.GetProperty("initialState");
                 Assert.Equal(136, Int(initial, "tileCount"));
@@ -248,10 +306,18 @@ namespace Mahjong.Domain.Tests
                     Assert.True(result.IsSuccess, label + " expected success but got " + result.Error);
                     Assert.NotNull(result.State);
                     map = result.State!;
-                    if (step.GetProperty("resultTileId").ValueKind != JsonValueKind.Null)
+                    JsonElement expectedResult = step.GetProperty("resultTileId");
+                    if (expectedResult.ValueKind == JsonValueKind.Null)
+                    {
+                        Assert.False(
+                            result.ResultTile.HasValue,
+                            label + " expected null result, but the production call returned " +
+                            (result.ResultTile.HasValue ? result.ResultTile.Value.ToString() : "<null>"));
+                    }
+                    else
                     {
                         Assert.True(result.ResultTile.HasValue, label + " missing result tile");
-                        Assert.Equal(Int(step, "resultTileId"), result.ResultTile!.Value.Value);
+                        Assert.Equal(expectedResult.GetInt32(), result.ResultTile!.Value.Value);
                     }
 
                     successes++;
@@ -262,6 +328,8 @@ namespace Mahjong.Domain.Tests
                     Assert.False(result.IsSuccess, label + " expected rejection");
                     Assert.Null(result.State);
                     Assert.NotNull(result.Error);
+                    Assert.False(result.ResultTile.HasValue, label + " rejection must not return a tile");
+                    Assert.Equal(JsonValueKind.Null, step.GetProperty("resultTileId").ValueKind);
                     string[] codes = Strings(step.GetProperty("csharpErrorCodes"));
                     Assert.Contains(result.Error!.Code.ToString(), codes);
                     Assert.True(Bool(step, "unchangedOnRejection"));
@@ -369,62 +437,50 @@ namespace Mahjong.Domain.Tests
         {
             Assert.Equal(136, Int(expected, "tileCount"));
             Assert.True(Bool(expected, "standardSetMatches"), label + " standard set");
+            CanonicalState expectedState = ParseExpectedState(expected, label);
             CanonicalState actual = Canonicalize(map);
 
-            JsonElement pointers = expected.GetProperty("pointers");
-            Eq(Int(pointers, "wallPointer"), actual.WallPointer, label + " wallPointer");
-            Eq(Int(pointers, "wallEndExclusive"), actual.WallEndExclusive, label + " wallEndExclusive");
-            Eq(Int(pointers, "rinshanPointer"), actual.RinshanPointer, label + " rinshanPointer");
-
-            JsonElement placements = expected.GetProperty("placements");
-            Assert.Equal(136, placements.GetArrayLength());
-            var seen = new HashSet<int>();
-            foreach (JsonElement placement in placements.EnumerateArray())
+            for (int tileId = 0; tileId < 136; tileId++)
             {
-                int tileId = Int(placement, "tileId");
-                Assert.True(seen.Add(tileId), label + " duplicate tile id " + tileId);
-                TilePosition position = actual.Positions[tileId];
-                TileZone zone = ParseZone(Str(placement, "zone"));
-                Eq(zone, position.Zone, label + " T" + tileId + " zone");
-                Eq(Int(placement, "seat"), position.Seat, label + " T" + tileId + " seat");
-                if (zone != TileZone.Hand && zone != TileZone.Meld)
-                {
-                    Eq(Int(placement, "index"), position.Index, label + " T" + tileId + " index");
-                }
+                Eq(expectedState.Positions[tileId], actual.Positions[tileId], label + " T" + tileId + " canonical position");
             }
 
-            Eq(136, seen.Count, label + " unique placements");
+            Eq(expectedState.WallPointer, actual.WallPointer, label + " wallPointer");
+            Eq(expectedState.WallEndExclusive, actual.WallEndExclusive, label + " wallEndExclusive");
+            Eq(expectedState.RinshanPointer, actual.RinshanPointer, label + " rinshanPointer");
+            AssertEvidence(expected.GetProperty("lastDiscard"), actual.LastDiscard, label + " lastDiscard");
+            AssertDrawn(expected.GetProperty("drawnTile"), actual.DrawnTile, label + " drawnTile");
+            AssertRinshan(expected.GetProperty("rinshanDraw"), actual.RinshanDraw, label + " rinshanDraw");
+            SeqEq(expectedState.DoraIndicators, actual.DoraIndicators, label + " doraIndicators");
 
-            JsonElement hands = expected.GetProperty("hands");
-            Assert.Equal(4, hands.GetArrayLength());
+            Assert.Equal(4, expectedState.Hands.Count);
             for (int seat = 0; seat < 4; seat++)
             {
-                JsonElement hand = hands[seat];
-                Eq(seat, Int(hand, "seat"), label + " hand seat");
-                int[] tiles = Ints(hand.GetProperty("tiles"));
-                Eq(Int(hand, "count"), tiles.Length, label + " hand count seat " + seat);
-                SeqEq(tiles, actual.Hands[seat], label + " hand seat " + seat);
+                SeqEq(expectedState.Hands[seat], actual.Hands[seat], label + " hand seat " + seat);
             }
 
-            JsonElement melds = expected.GetProperty("melds");
-            Eq(melds.GetArrayLength(), actual.Melds.Count, label + " meld group count");
+            Eq(expectedState.Melds.Count, actual.Melds.Count, label + " meld group count");
             var actualMelds = actual.Melds.ToDictionary(m => (m.Seat, m.GroupIndex));
-            foreach (JsonElement meld in melds.EnumerateArray())
+            foreach (MeldGroup meld in expectedState.Melds)
             {
-                int seat = Int(meld, "seat");
-                int group = Int(meld, "groupIndex");
-                Assert.True(actualMelds.TryGetValue((seat, group), out MeldGroup? actualMeld),
-                    label + " missing meld group seat" + seat + "/" + group);
+                Assert.True(actualMelds.TryGetValue((meld.Seat, meld.GroupIndex), out MeldGroup? actualMeld),
+                    label + " missing meld group seat" + meld.Seat + "/" + meld.GroupIndex);
                 Assert.NotNull(actualMeld);
-                SeqEq(Ints(meld.GetProperty("tiles")), actualMeld!.Tiles, label + " meld tiles seat" + seat + "/" + group);
+                SeqEq(meld.Tiles, actualMeld!.Tiles, label + " meld tiles seat" + meld.Seat + "/" + meld.GroupIndex);
             }
 
-            JsonElement rivers = expected.GetProperty("rivers");
-            Assert.Equal(4, rivers.GetArrayLength());
             for (int seat = 0; seat < 4; seat++)
             {
-                Eq(seat, Int(rivers[seat], "seat"), label + " river seat");
-                SeqEq(Ints(rivers[seat].GetProperty("tiles")), actual.Rivers[seat], label + " river seat " + seat);
+                SeqEq(expectedState.Rivers[seat], actual.Rivers[seat], label + " river seat " + seat);
+            }
+
+            SeqEq(expectedState.Replacements, actual.Replacements, label + " replacements");
+            Eq(14, expectedState.DeadWallSlots.Count, label + " expected dead-wall slots");
+            Eq(14, actual.DeadWallSlots.Count, label + " actual dead-wall slots");
+
+            for (int slot = 0; slot < 14; slot++)
+            {
+                Eq(expectedState.DeadWallSlots[slot], actual.DeadWallSlots[slot], label + " dead-wall slot " + slot);
             }
 
             JsonElement zoneCounts = expected.GetProperty("zoneCounts");
@@ -438,32 +494,269 @@ namespace Mahjong.Domain.Tests
             Eq(Int(zoneCounts, "DISCARD"), actual.Positions.Count(p => p.Zone == TileZone.Discard), label + " DISCARD count");
             Eq(Int(zoneCounts, "MELD"), actual.Positions.Count(p => p.Zone == TileZone.Meld), label + " MELD count");
             Eq(Int(zoneCounts, "SLEEVE"), actual.Positions.Count(p => p.Zone == TileZone.Sleeve), label + " SLEEVE count");
+            Eq(14, actual.Positions.Count(p => p.Zone == TileZone.DeadWall) +
+                  actual.Positions.Count(p => p.Zone == TileZone.DeadWallReplacement), label + " effective dead wall");
+        }
 
-            AssertEvidence(expected.GetProperty("lastDiscard"), actual.LastDiscard, label + " lastDiscard");
-            AssertDrawn(expected.GetProperty("drawnTile"), actual.DrawnTile, label + " drawnTile");
-            AssertRinshan(expected.GetProperty("rinshanDraw"), actual.RinshanDraw, label + " rinshanDraw");
-            SeqEq(Ints(expected.GetProperty("doraIndicators")), actual.DoraIndicators, label + " doraIndicators");
+        /// <summary>
+        /// Validates the fixture's redundant STRUCTURE expressions before comparing anything to
+        /// the C# map: 136 unique tile ids, unique legal raw positions, hand slot permutations
+        /// allowed, meld group identity exact with only in-group order free, and hands/melds/
+        /// rivers/dead-wall/replacements/dora all agreeing with placements.
+        /// </summary>
+        private static CanonicalState ParseExpectedState(JsonElement expected, string label)
+        {
+            var state = new CanonicalState();
+            JsonElement pointers = expected.GetProperty("pointers");
+            state.WallPointer = Int(pointers, "wallPointer");
+            state.WallEndExclusive = Int(pointers, "wallEndExclusive");
+            state.RinshanPointer = Int(pointers, "rinshanPointer");
+            Assert.InRange(state.WallPointer, 0, 122);
+            Assert.InRange(state.WallEndExclusive, 0, 122);
+            Assert.InRange(state.RinshanPointer, 0, 4);
+            Assert.True(state.WallPointer <= state.WallEndExclusive, label + " wallPointer > wallEndExclusive");
 
-            JsonElement deadWall = expected.GetProperty("deadWallBySlot");
-            Eq(14, deadWall.GetArrayLength(), label + " deadWallBySlot");
-            for (int slot = 0; slot < 14; slot++)
+            state.LastDiscard = ParseLastDiscard(expected.GetProperty("lastDiscard"));
+            state.DrawnTile = ParseDrawn(expected.GetProperty("drawnTile"));
+            state.RinshanDraw = ParseRinshan(expected.GetProperty("rinshanDraw"));
+            state.DoraIndicators = Ints(expected.GetProperty("doraIndicators"));
+            int[] replacementIds = Ints(expected.GetProperty("replacements"));
+            Assert.InRange(replacementIds.Length, 0, 4);
+            Assert.Equal(state.RinshanPointer, replacementIds.Length);
+            state.Replacements.AddRange(replacementIds);
+
+            var raw = new List<(int TileId, TilePosition Position)>();
+            var tileIds = new HashSet<int>();
+            var rawPositions = new HashSet<TilePosition>();
+            foreach (JsonElement placement in expected.GetProperty("placements").EnumerateArray())
             {
-                bool hasTile = map.TryGetTileAt(TilePosition.DeadWall(slot), out TileId tile);
-                JsonElement expectedSlot = deadWall[slot];
-                if (expectedSlot.ValueKind == JsonValueKind.Null)
+                int tileId = Int(placement, "tileId");
+                Assert.InRange(tileId, 0, 135);
+                Assert.True(tileIds.Add(tileId), label + " duplicate tile id " + tileId);
+                TilePosition position = ParsePosition(placement);
+                Assert.True(position.IsAssigned, label + " T" + tileId + " must be assigned");
+                Assert.True(rawPositions.Add(position), label + " duplicate raw position " + position);
+                raw.Add((tileId, position));
+            }
+
+            Assert.Equal(136, raw.Count);
+            Assert.Equal(136, tileIds.Count);
+            Assert.Equal(136, rawPositions.Count);
+
+            var handBySeat = new List<int>[4];
+            var riverBySeat = new List<(int Slot, int TileId)>[4];
+            var meldGroups = new Dictionary<(int Seat, int Group), List<(int Offset, int TileId)>>();
+            var deadWallSlots = new int?[14];
+            for (int seat = 0; seat < 4; seat++)
+            {
+                handBySeat[seat] = new List<int>();
+                riverBySeat[seat] = new List<(int Slot, int TileId)>();
+            }
+
+            foreach ((int tileId, TilePosition position) in raw)
+            {
+                switch (position.Zone)
                 {
-                    Assert.False(hasTile, label + " dead-wall slot " + slot + " should be empty");
-                }
-                else
-                {
-                    Assert.True(hasTile, label + " dead-wall slot " + slot + " should hold " + expectedSlot.GetInt32());
-                    Assert.Equal(expectedSlot.GetInt32(), tile.Value);
+                    case TileZone.Wall:
+                        Eq(-1, position.Seat, label + " T" + tileId + " WALL seat");
+                        Assert.InRange(position.Index, 0, 121);
+                        Assert.True(position.Index < state.WallEndExclusive, label + " T" + tileId + " WALL index");
+                        break;
+                    case TileZone.DeadWall:
+                        Eq(-1, position.Seat, label + " T" + tileId + " DEAD_WALL seat");
+                        Assert.InRange(position.Index, 0, 13);
+                        Assert.True(position.Index >= state.RinshanPointer, label + " T" + tileId + " consumed DEAD_WALL slot");
+                        Assert.Null(deadWallSlots[position.Index]);
+                        deadWallSlots[position.Index] = tileId;
+                        break;
+                    case TileZone.DeadWallReplacement:
+                        Eq(-1, position.Seat, label + " T" + tileId + " REPLACEMENT seat");
+                        Assert.InRange(position.Index, 0, 3);
+                        Assert.True(position.Index < replacementIds.Length, label + " T" + tileId + " replacement slot");
+                        Assert.Equal(replacementIds[position.Index], tileId);
+                        break;
+                    case TileZone.Hand:
+                        Assert.InRange(position.Seat, 0, 3);
+                        Assert.InRange(position.Index, 0, 13);
+                        handBySeat[position.Seat].Add(tileId);
+                        break;
+                    case TileZone.Discard:
+                        Assert.InRange(position.Seat, 0, 3);
+                        Assert.InRange(position.Index, 0, 135);
+                        riverBySeat[position.Seat].Add((position.Index, tileId));
+                        break;
+                    case TileZone.Meld:
+                        Assert.InRange(position.Seat, 0, 3);
+                        Assert.InRange(position.Index, 0, 15);
+                        var key = (position.Seat, position.Index / 4);
+                        if (!meldGroups.TryGetValue(key, out List<(int Offset, int TileId)>? groupTiles))
+                        {
+                            groupTiles = new List<(int Offset, int TileId)>();
+                            meldGroups.Add(key, groupTiles);
+                        }
+
+                        groupTiles.Add((position.Index % 4, tileId));
+                        break;
+                    case TileZone.Sleeve:
+                        Assert.InRange(position.Seat, 0, 3);
+                        Assert.InRange(position.Index, 0, 13);
+                        break;
+                    default:
+                        Assert.Fail(label + " T" + tileId + " has unsupported zone " + position.Zone);
+                        break;
                 }
             }
 
-            SeqEq(Ints(expected.GetProperty("replacements")), actual.Replacements, label + " replacements");
-            Eq(14, actual.Positions.Count(p => p.Zone == TileZone.DeadWall) +
-                  actual.Positions.Count(p => p.Zone == TileZone.DeadWallReplacement), label + " effective dead wall");
+            state.DeadWallSlots.AddRange(deadWallSlots);
+            int effectiveDeadWall = deadWallSlots.Count(v => v.HasValue) + replacementIds.Length;
+            Eq(14, effectiveDeadWall, label + " effective dead wall");
+
+            JsonElement expectedDeadWall = expected.GetProperty("deadWallBySlot");
+            Assert.Equal(14, expectedDeadWall.GetArrayLength());
+            for (int slot = 0; slot < 14; slot++)
+            {
+                if (expectedDeadWall[slot].ValueKind == JsonValueKind.Null)
+                {
+                    Assert.Null(deadWallSlots[slot]);
+                }
+                else
+                {
+                    Assert.Equal(expectedDeadWall[slot].GetInt32(), deadWallSlots[slot]);
+                }
+            }
+
+            JsonElement expectedReplacements = expected.GetProperty("replacements");
+            Assert.Equal(replacementIds, Ints(expectedReplacements));
+            JsonElement hands = expected.GetProperty("hands");
+            Assert.Equal(4, hands.GetArrayLength());
+            for (int seat = 0; seat < 4; seat++)
+            {
+                handBySeat[seat].Sort();
+                JsonElement hand = hands[seat];
+                Eq(seat, Int(hand, "seat"), label + " hand seat");
+                int[] handTiles = Ints(hand.GetProperty("tiles"));
+                Eq(Int(hand, "count"), handTiles.Length, label + " hand count seat " + seat);
+                SeqEq(handTiles, handBySeat[seat], label + " hands/placements seat " + seat);
+                state.Hands.Add(handBySeat[seat]);
+            }
+
+            JsonElement melds = expected.GetProperty("melds");
+            var fixtureMelds = new Dictionary<(int Seat, int Group), int[]>();
+            foreach (JsonElement meld in melds.EnumerateArray())
+            {
+                int seat = Int(meld, "seat");
+                int group = Int(meld, "groupIndex");
+                int[] tiles = Ints(meld.GetProperty("tiles"));
+                Assert.True(fixtureMelds.TryAdd((seat, group), tiles), label + " duplicate meld group " + seat + "/" + group);
+            }
+
+            Eq(fixtureMelds.Count, meldGroups.Count, label + " melds/placements group count");
+            foreach (KeyValuePair<(int Seat, int Group), List<(int Offset, int TileId)>> pair in meldGroups)
+            {
+                List<(int Offset, int TileId)> groupTiles = pair.Value;
+                groupTiles.Sort((left, right) => left.Offset.CompareTo(right.Offset));
+                int[] offsets = groupTiles.Select(t => t.Offset).ToArray();
+                SeqEq(Enumerable.Range(0, groupTiles.Count).ToArray(), offsets,
+                    label + " meld group seat" + pair.Key.Seat + "/" + pair.Key.Group + " raw offsets");
+                Assert.True(groupTiles.Count == 3 || groupTiles.Count == 4,
+                    label + " meld group must have 3 or 4 tiles");
+                int[] tiles = groupTiles.Select(t => t.TileId).OrderBy(t => t).ToArray();
+                Assert.True(fixtureMelds.TryGetValue(pair.Key, out int[]? fixtureTiles),
+                    label + " melds/placements missing group " + pair.Key.Seat + "/" + pair.Key.Group);
+                SeqEq(fixtureTiles!, tiles, label + " melds/placements seat" + pair.Key.Seat + "/" + pair.Key.Group);
+                state.Melds.Add(new MeldGroup(pair.Key.Seat, pair.Key.Group, tiles.ToList()));
+            }
+
+            for (int seat = 0; seat < 4; seat++)
+            {
+                riverBySeat[seat].Sort((left, right) => left.Slot.CompareTo(right.Slot));
+                int[] slots = riverBySeat[seat].Select(r => r.Slot).ToArray();
+                SeqEq(Enumerable.Range(0, riverBySeat[seat].Count).ToArray(), slots,
+                    label + " river slots must be dense from 0 for seat " + seat);
+                int[] riverTiles = riverBySeat[seat].Select(r => r.TileId).ToArray();
+                JsonElement river = expected.GetProperty("rivers")[seat];
+                Eq(seat, Int(river, "seat"), label + " river seat");
+                SeqEq(Ints(river.GetProperty("tiles")), riverTiles, label + " rivers/placements seat " + seat);
+                state.Rivers.Add(riverTiles.ToList());
+            }
+
+            Assert.Equal(4, expected.GetProperty("rivers").GetArrayLength());
+            Assert.Equal(state.RinshanPointer, replacementIds.Length);
+            if (state.RinshanDraw is RinshanDrawEvidence rinshan)
+            {
+                Eq(state.RinshanPointer - 1, rinshan.DeadWallIndex, label + " rinshan slot");
+                Assert.Null(deadWallSlots[rinshan.DeadWallIndex]);
+                Assert.True(handBySeat[rinshan.Seat].Contains(rinshan.Tile.Value),
+                    label + " rinshan tile must be in hand");
+            }
+
+            if (state.DrawnTile is DrawnTileEvidence drawn)
+            {
+                Assert.True(handBySeat[drawn.Seat].Contains(drawn.Tile.Value), label + " drawn tile must be in hand");
+                if (drawn.Source == DrawSource.Rinshan)
+                {
+                    Assert.True(state.RinshanDraw.HasValue, label + " rinshan drawn source requires rinshan evidence");
+                    Eq(drawn.Tile, state.RinshanDraw!.Value.Tile, label + " drawn/rinshan tile");
+                    Eq(drawn.Seat, state.RinshanDraw!.Value.Seat, label + " drawn/rinshan seat");
+                }
+            }
+            else
+            {
+                Assert.Null(state.RinshanDraw);
+            }
+
+            if (state.LastDiscard is LastDiscardEvidence last)
+            {
+                Assert.InRange(last.Seat, 0, 3);
+                Assert.Equal(last.Seat, last.Position.Seat);
+                Assert.InRange(last.Position.Index, 0, 135);
+                Eq(state.Rivers[last.Seat].Count - 1, last.Position.Index,
+                    label + " lastDiscard must be the latest river slot");
+                Assert.Equal(state.Rivers[last.Seat].Last(), last.Tile.Value);
+            }
+
+            var doraSeen = new HashSet<int>();
+            foreach (int dora in state.DoraIndicators)
+            {
+                Assert.True(doraSeen.Add(dora), label + " duplicate dora indicator " + dora);
+                Assert.InRange(dora, 0, 135);
+                Assert.True(deadWallSlots.Contains(dora), label + " dora indicator must be in DEAD_WALL");
+                int doraSlot = Array.IndexOf(deadWallSlots, dora);
+                Assert.True(doraSlot >= 4, label + " dora indicator must be in an unrevealed slot >=4");
+            }
+
+            JsonElement zoneCounts = expected.GetProperty("zoneCounts");
+            Eq(Int(zoneCounts, "WALL"), raw.Count(p => p.Position.Zone == TileZone.Wall), label + " WALL count");
+            Eq(Int(zoneCounts, "DEAD_WALL"), raw.Count(p => p.Position.Zone == TileZone.DeadWall), label + " DEAD_WALL count");
+            Eq(Int(zoneCounts, "DEAD_WALL_REPLACEMENT"), raw.Count(p => p.Position.Zone == TileZone.DeadWallReplacement), label + " REPLACEMENT count");
+            Eq(Int(zoneCounts, "HAND"), raw.Count(p => p.Position.Zone == TileZone.Hand), label + " HAND count");
+            Eq(Int(zoneCounts, "DISCARD"), raw.Count(p => p.Position.Zone == TileZone.Discard), label + " DISCARD count");
+            Eq(Int(zoneCounts, "MELD"), raw.Count(p => p.Position.Zone == TileZone.Meld), label + " MELD count");
+            Eq(Int(zoneCounts, "SLEEVE"), raw.Count(p => p.Position.Zone == TileZone.Sleeve), label + " SLEEVE count");
+
+            for (int tileId = 0; tileId < 136; tileId++)
+            {
+                state.Positions[tileId] = raw.Single(p => p.TileId == tileId).Position;
+            }
+
+            for (int seat = 0; seat < 4; seat++)
+            {
+                for (int rank = 0; rank < state.Hands[seat].Count; rank++)
+                {
+                    state.Positions[state.Hands[seat][rank]] = TilePosition.Hand(seat, rank);
+                }
+            }
+
+            foreach (MeldGroup meld in state.Melds)
+            {
+                for (int rank = 0; rank < meld.Tiles.Count; rank++)
+                {
+                    state.Positions[meld.Tiles[rank]] = TilePosition.Meld(meld.Seat, meld.GroupIndex * 4 + rank);
+                }
+            }
+
+            Eq(136, state.Positions.Distinct().Count(), label + " canonical unique positions");
+            return state;
         }
 
         private static void AssertEvidence(JsonElement expected, LastDiscardEvidence? actual, string label)
@@ -549,6 +842,18 @@ namespace Mahjong.Domain.Tests
                 state.Rivers.Add(river.OrderBy(item => item.Slot).Select(item => item.TileId).ToList());
             }
 
+            for (int slot = 0; slot < 14; slot++)
+            {
+                if (map.TryGetTileAt(TilePosition.DeadWall(slot), out TileId deadWallTile))
+                {
+                    state.DeadWallSlots.Add(deadWallTile.Value);
+                }
+                else
+                {
+                    state.DeadWallSlots.Add(null);
+                }
+            }
+
             for (int seat = 0; seat < 4; seat++)
             {
                 for (int baseSlot = 0; baseSlot < TilePositionMap.MeldGroupCount * TilePositionMap.MeldGroupSize; baseSlot += TilePositionMap.MeldGroupSize)
@@ -575,6 +880,25 @@ namespace Mahjong.Domain.Tests
                 if (map.TryGetTileAt(TilePosition.DeadWallReplacement(slot), out TileId replacement))
                 {
                     state.Replacements.Add(replacement.Value);
+                }
+            }
+
+            // Canonical positions for the slot-addressed zones: hand slots are allocation
+            // details, and meld group-internal order is free; wall/discard/dead-wall/
+            // replacement/sleeve slots remain exact.
+            for (int seat = 0; seat < 4; seat++)
+            {
+                for (int rank = 0; rank < state.Hands[seat].Count; rank++)
+                {
+                    state.Positions[state.Hands[seat][rank]] = TilePosition.Hand(seat, rank);
+                }
+            }
+
+            foreach (MeldGroup meld in state.Melds)
+            {
+                for (int rank = 0; rank < meld.Tiles.Count; rank++)
+                {
+                    state.Positions[meld.Tiles[rank]] = TilePosition.Meld(meld.Seat, meld.GroupIndex * 4 + rank);
                 }
             }
 
@@ -859,6 +1183,8 @@ namespace Mahjong.Domain.Tests
             public List<MeldGroup> Melds { get; } = new List<MeldGroup>();
 
             public List<List<int>> Rivers { get; } = new List<List<int>>();
+
+            public List<int?> DeadWallSlots { get; } = new List<int?>();
 
             public List<int> Replacements { get; } = new List<int>();
         }

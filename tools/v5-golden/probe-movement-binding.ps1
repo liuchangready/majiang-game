@@ -8,17 +8,20 @@
   files), runs the real TileMovementGoldenTests through the native xUnit runner, then
   applies one-field mutations to the copied fixture only:
     - INPUT negative: change one action seat
-    - OUTPUT negative: change one expected wall pointer
-    - STRUCTURE negative: duplicate one physical position
-    - META negative: change the schema
+    - OUTPUT negative: wall/rinshan pointer, nullable result both directions, rejection
+      result, evidence, hands/rivers/dead-wall/replacements/dora arrays
+    - STRUCTURE negative: invalid/duplicate hand slots, wrong meld group, before/after
+    - META negative: schema, required source set, source hashes, command, G-row mapping
     - SOURCE_ONLY positive: change v4TotalKanCount (must not affect the physical diff)
-    - representation/order positive: reverse the placement array
-    - representation/order positive: swap two hand slot indices
+    - representation/order positive: reversed placements, swapped hand slots, swapped
+      meld group-internal offsets, CRLF-only exporter checkout
+  Every native run passes one exact count gate (Total=10, Errors/Skipped/NotRun=0;
+  PASS exit0/Failed0, FAIL exit1/Failed>=1). The gate has its own negative self-check.
   The original worktree fixture is never modified. A -SelfNegative switch performs the
   baseline and then exits 1 deliberately, proving the probe's own failure path.
 
   Run:
-    pwsh -NoProfile -File tools/v5-golden/probe-movement-binding.ps1
+    powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/v5-golden/probe-movement-binding.ps1
 
   Exit codes:
     0  PASS (baseline green, every negative failed, every positive passed)
@@ -104,6 +107,91 @@ function Get-FixtureHash([string]$Path) {
     return (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash
 }
 
+$script:ExpectedTotal = 10
+
+function Test-CountGate([string]$Expected, [int]$ExitCode, $Summary) {
+    if ($null -eq $Summary) {
+        return $false
+    }
+
+    if ($Summary.Total -ne $script:ExpectedTotal -or
+        $Summary.Errors -ne 0 -or
+        $Summary.Skipped -ne 0 -or
+        $Summary.NotRun -ne 0) {
+        return $false
+    }
+
+    if ($Expected -eq "PASS") {
+        return ($ExitCode -eq 0 -and $Summary.Failed -eq 0)
+    }
+
+    if ($Expected -eq "FAIL") {
+        return ($ExitCode -eq 1 -and $Summary.Failed -ge 1)
+    }
+
+    return $false
+}
+
+function Format-Summary($Summary) {
+    if ($null -eq $Summary) {
+        return "<no summary>"
+    }
+
+    return ("Total={0}, Errors={1}, Failed={2}, Skipped={3}, NotRun={4}" -f `
+        $Summary.Total, $Summary.Errors, $Summary.Failed, $Summary.Skipped, $Summary.NotRun)
+}
+
+function Assert-CountGate([string]$Expected, [int]$ExitCode, $Summary, [string]$Label) {
+    if (Test-CountGate $Expected $ExitCode $Summary) {
+        return $true
+    }
+
+    $script:Failures.Add(
+        $Label + ": count gate expected " + $Expected + " exit " +
+        $(if ($Expected -eq "PASS") { "0" } else { "1" }) +
+        ", got exit " + $ExitCode + " / " + (Format-Summary $Summary))
+    return $false
+}
+
+function Invoke-GateSelfCheck {
+    $bad = @(
+        @{ Name = "pass-total-0"; Expected = "PASS"; Exit = 0; Total = 0; Errors = 0; Failed = 0; Skipped = 0; NotRun = 0 },
+        @{ Name = "pass-total-9"; Expected = "PASS"; Exit = 0; Total = 9; Errors = 0; Failed = 0; Skipped = 0; NotRun = 0 },
+        @{ Name = "pass-skipped-1"; Expected = "PASS"; Exit = 0; Total = 10; Errors = 0; Failed = 0; Skipped = 1; NotRun = 0 },
+        @{ Name = "pass-notrun-1"; Expected = "PASS"; Exit = 0; Total = 10; Errors = 0; Failed = 0; Skipped = 0; NotRun = 1 },
+        @{ Name = "pass-errors-1"; Expected = "PASS"; Exit = 0; Total = 10; Errors = 1; Failed = 0; Skipped = 0; NotRun = 0 },
+        @{ Name = "pass-failed-1"; Expected = "PASS"; Exit = 0; Total = 10; Errors = 0; Failed = 1; Skipped = 0; NotRun = 0 },
+        @{ Name = "fail-exit-0"; Expected = "FAIL"; Exit = 0; Total = 10; Errors = 0; Failed = 1; Skipped = 0; NotRun = 0 },
+        @{ Name = "fail-total-9"; Expected = "FAIL"; Exit = 1; Total = 9; Errors = 0; Failed = 1; Skipped = 0; NotRun = 0 },
+        @{ Name = "fail-errors-1"; Expected = "FAIL"; Exit = 1; Total = 10; Errors = 1; Failed = 1; Skipped = 0; NotRun = 0 },
+        @{ Name = "fail-skipped-1"; Expected = "FAIL"; Exit = 1; Total = 10; Errors = 0; Failed = 1; Skipped = 1; NotRun = 0 },
+        @{ Name = "fail-notrun-1"; Expected = "FAIL"; Exit = 1; Total = 10; Errors = 0; Failed = 1; Skipped = 0; NotRun = 1 },
+        @{ Name = "fail-exit-2"; Expected = "FAIL"; Exit = 2; Total = 10; Errors = 0; Failed = 1; Skipped = 0; NotRun = 0 }
+    )
+
+    foreach ($case in $bad) {
+        $summary = [pscustomobject]@{
+            Total = $case.Total
+            Errors = $case.Errors
+            Failed = $case.Failed
+            Skipped = $case.Skipped
+            NotRun = $case.NotRun
+        }
+        if (Test-CountGate $case.Expected $case.Exit $summary) {
+            $script:Failures.Add("gate self-check accepted invalid case " + $case.Name)
+        }
+    }
+
+    $goodPass = [pscustomobject]@{ Total = 10; Errors = 0; Failed = 0; Skipped = 0; NotRun = 0 }
+    $goodFail = [pscustomobject]@{ Total = 10; Errors = 0; Failed = 2; Skipped = 0; NotRun = 0 }
+    if (-not (Test-CountGate "PASS" 0 $goodPass)) {
+        $script:Failures.Add("gate self-check rejected the valid PASS case")
+    }
+    if (-not (Test-CountGate "FAIL" 1 $goodFail)) {
+        $script:Failures.Add("gate self-check rejected the valid FAIL case")
+    }
+}
+
 function Invoke-Baseline(
     [string]$DotnetPath,
     [string]$DllPath,
@@ -124,39 +212,6 @@ function Invoke-Baseline(
         Summary = $summary
         Log = $log
     }
-}
-
-function Assert-Baseline($Run, [string]$Label) {
-    if ($Run.Native.ExitCode -ne 0) {
-        $script:Failures.Add($Label + ": native exit " + $Run.Native.ExitCode)
-        return $false
-    }
-
-    if ($null -eq $Run.Summary) {
-        $script:Failures.Add($Label + ": no xUnit summary")
-        return $false
-    }
-
-    if ($Run.Summary.Total -lt 1) {
-        $script:Failures.Add($Label + ": Total must be non-zero")
-        return $false
-    }
-
-    if ($Run.Summary.Total -ne 10) {
-        $script:Failures.Add($Label + ": expected 10 discovered tests, got " + $Run.Summary.Total)
-        return $false
-    }
-
-    if ($Run.Summary.Failed -ne 0 -or $Run.Summary.Errors -ne 0 -or
-        $Run.Summary.Skipped -ne 0 -or $Run.Summary.NotRun -ne 0) {
-        $script:Failures.Add(
-            $Label + ": expected 0 failed/errors/skipped/notRun, got " +
-            $Run.Summary.Failed + "/" + $Run.Summary.Errors + "/" +
-            $Run.Summary.Skipped + "/" + $Run.Summary.NotRun)
-        return $false
-    }
-
-    return $true
 }
 
 function Invoke-Mutation(
@@ -189,36 +244,15 @@ function Invoke-Mutation(
     $summary = Get-Summary $native.Text
     Add-Result $Name $Kind $Expected $native.ExitCode $summary $log
 
+    if (-not (Assert-CountGate $Expected $native.ExitCode $summary $Name)) {
+        return
+    }
+
     if ($Expected -eq "FAIL") {
-        if ($native.ExitCode -eq 0) {
-            $script:Failures.Add($Name + ": mutation unexpectedly passed (native exit 0)")
-            return
-        }
-
-        if ($null -eq $summary) {
-            $script:Failures.Add($Name + ": mutation failed without a real xUnit summary")
-            return
-        }
-
-        if ($summary.Failed -lt 1) {
-            $script:Failures.Add($Name + ": mutation exit was non-zero but Failed=0")
-            return
-        }
-
-        Write-Step ("{0}: FAIL as expected (exit {1}, Total {2}, Failed {3})" -f $Name, $native.ExitCode, $summary.Total, $summary.Failed)
+        Write-Step ("{0}: FAIL as expected (exit 1, {1})" -f $Name, (Format-Summary $summary))
     }
     else {
-        if ($native.ExitCode -ne 0) {
-            $script:Failures.Add($Name + ": positive control failed with native exit " + $native.ExitCode)
-            return
-        }
-
-        if ($null -eq $summary -or $summary.Failed -ne 0 -or $summary.Errors -ne 0) {
-            $script:Failures.Add($Name + ": positive control did not report 0 failed/errors")
-            return
-        }
-
-        Write-Step ("{0}: PASS as expected (exit 0, Total {1}, Failed 0)" -f $Name, $summary.Total)
+        Write-Step ("{0}: PASS as expected (exit 0, {1})" -f $Name, (Format-Summary $summary))
     }
 }
 
@@ -293,14 +327,24 @@ try {
         exit 2
     }
 
+    Invoke-GateSelfCheck
+    if ($script:Failures.Count -gt 0) {
+        foreach ($failure in $script:Failures) {
+            Write-Step ("FAIL: " + $failure)
+        }
+        Write-Step "FAIL: count-gate self-check"
+        exit 1
+    }
+    Write-Step "count-gate self-check: rejected Total0/short/skip/notRun/error/exit drift cases"
+
     $baseline = Invoke-Baseline $Dotnet $dllPath $evidenceDir "baseline"
-    if (-not (Assert-Baseline $baseline "baseline")) {
+    if (-not (Assert-CountGate "PASS" $baseline.Native.ExitCode $baseline.Summary "baseline")) {
         $script:Results | Export-Csv -LiteralPath $summaryPath -NoTypeInformation -Encoding utf8
         Write-Step "FAIL: baseline"
         exit 1
     }
 
-    Write-Step ("baseline: Total {0}, Failed 0, Errors 0, Skipped 0, Not Run 0" -f $baseline.Summary.Total)
+    Write-Step ("baseline: " + (Format-Summary $baseline.Summary))
 
     if ($SelfNegative) {
         Write-Step "SELF-NEGATIVE: deliberate exit 1 after a green baseline"
@@ -328,7 +372,142 @@ try {
             }
         },
         @{
-            Name = "negative-structure-duplicate-position"
+            Name = "negative-output-draw-result-null"
+            Kind = "OUTPUT"
+            Expected = "FAIL"
+            Apply = {
+                param($json)
+                $json.cases[0].steps[0].resultTileId = $null
+            }
+        },
+        @{
+            Name = "negative-output-draw-result-wrong"
+            Kind = "OUTPUT"
+            Expected = "FAIL"
+            Apply = {
+                param($json)
+                $json.cases[0].steps[0].resultTileId = 65
+            }
+        },
+        @{
+            Name = "negative-output-discard-result-null"
+            Kind = "OUTPUT"
+            Expected = "FAIL"
+            Apply = {
+                param($json)
+                $json.cases[0].steps[1].resultTileId = $null
+            }
+        },
+        @{
+            Name = "negative-output-rinshan-result-null"
+            Kind = "OUTPUT"
+            Expected = "FAIL"
+            Apply = {
+                param($json)
+                $json.cases[3].steps[2].resultTileId = $null
+            }
+        },
+        @{
+            Name = "negative-output-null-to-value"
+            Kind = "OUTPUT"
+            Expected = "FAIL"
+            Apply = {
+                param($json)
+                $json.cases[1].steps[0].resultTileId = 1
+            }
+        },
+        @{
+            Name = "negative-output-rejection-result"
+            Kind = "OUTPUT"
+            Expected = "FAIL"
+            Apply = {
+                param($json)
+                $json.cases[6].steps[0].resultTileId = 1
+            }
+        },
+        @{
+            Name = "negative-output-lastdiscard-tile"
+            Kind = "OUTPUT"
+            Expected = "FAIL"
+            Apply = {
+                param($json)
+                $json.cases[0].steps[1].after.lastDiscard.tileId = 67
+            }
+        },
+        @{
+            Name = "negative-output-drawntile-tile"
+            Kind = "OUTPUT"
+            Expected = "FAIL"
+            Apply = {
+                param($json)
+                $json.cases[0].steps[0].after.drawnTile.tileId = 63
+            }
+        },
+        @{
+            Name = "negative-output-rinshan-slot"
+            Kind = "OUTPUT"
+            Expected = "FAIL"
+            Apply = {
+                param($json)
+                $json.cases[3].steps[2].after.rinshanDraw.slot = 1
+            }
+        },
+        @{
+            Name = "negative-output-hands-array"
+            Kind = "OUTPUT"
+            Expected = "FAIL"
+            Apply = {
+                param($json)
+                $json.cases[0].steps[0].after.hands[0].tiles[0] = 99
+            }
+        },
+        @{
+            Name = "negative-output-rivers-array"
+            Kind = "OUTPUT"
+            Expected = "FAIL"
+            Apply = {
+                param($json)
+                $json.cases[0].steps[1].after.rivers[0].tiles[0] = 67
+            }
+        },
+        @{
+            Name = "negative-output-deadwall-array"
+            Kind = "OUTPUT"
+            Expected = "FAIL"
+            Apply = {
+                param($json)
+                $json.cases[0].initialState.deadWallBySlot[0] = 99
+            }
+        },
+        @{
+            Name = "negative-output-replacements-array"
+            Kind = "OUTPUT"
+            Expected = "FAIL"
+            Apply = {
+                param($json)
+                $json.cases[3].steps[2].after.replacements[0] = 99
+            }
+        },
+        @{
+            Name = "negative-output-dora-array"
+            Kind = "OUTPUT"
+            Expected = "FAIL"
+            Apply = {
+                param($json)
+                $json.cases[3].initialState.doraIndicators[0] = 99
+            }
+        },
+        @{
+            Name = "negative-output-rinshan-pointer"
+            Kind = "OUTPUT"
+            Expected = "FAIL"
+            Apply = {
+                param($json)
+                $json.cases[7].steps[6].after.pointers.rinshanPointer = 3
+            }
+        },
+        @{
+            Name = "negative-structure-initial-duplicate-position"
             Kind = "STRUCTURE"
             Expected = "FAIL"
             Apply = {
@@ -340,12 +519,115 @@ try {
             }
         },
         @{
+            Name = "negative-structure-output-hand-index"
+            Kind = "STRUCTURE"
+            Expected = "FAIL"
+            Apply = {
+                param($json)
+                $hand = @($json.cases[0].steps[0].after.placements | Where-Object { $_.zone -eq "HAND" })
+                $hand[0].index = -1
+            }
+        },
+        @{
+            Name = "negative-structure-output-duplicate-position"
+            Kind = "STRUCTURE"
+            Expected = "FAIL"
+            Apply = {
+                param($json)
+                $hand = @($json.cases[0].steps[0].after.placements | Where-Object { $_.zone -eq "HAND" })
+                $hand[1].index = $hand[0].index
+            }
+        },
+        @{
+            Name = "negative-structure-meld-wrong-group"
+            Kind = "STRUCTURE"
+            Expected = "FAIL"
+            Apply = {
+                param($json)
+                $meld = @($json.cases[1].steps[0].after.placements | Where-Object { $_.zone -eq "MELD" })
+                $meld[0].index = 15
+            }
+        },
+        @{
+            Name = "negative-structure-before-hand-index"
+            Kind = "STRUCTURE"
+            Expected = "FAIL"
+            Apply = {
+                param($json)
+                $hand = @($json.cases[0].steps[1].before.placements | Where-Object { $_.zone -eq "HAND" })
+                $hand[0].index = -1
+            }
+        },
+        @{
             Name = "negative-meta-schema"
             Kind = "META"
             Expected = "FAIL"
             Apply = {
                 param($json)
                 $json.schema = "not-v5-movement-golden-v1"
+            }
+        },
+        @{
+            Name = "negative-meta-source-hashes-empty"
+            Kind = "META"
+            Expected = "FAIL"
+            Apply = {
+                param($json)
+                $json.sourceHashes = @()
+            }
+        },
+        @{
+            Name = "negative-meta-source-omitted"
+            Kind = "META"
+            Expected = "FAIL"
+            Apply = {
+                param($json)
+                $json.sourceHashes = @($json.sourceHashes | Select-Object -Skip 1)
+            }
+        },
+        @{
+            Name = "negative-meta-source-duplicate"
+            Kind = "META"
+            Expected = "FAIL"
+            Apply = {
+                param($json)
+                $json.sourceHashes = @($json.sourceHashes) + @($json.sourceHashes[0])
+            }
+        },
+        @{
+            Name = "negative-meta-source-unknown"
+            Kind = "META"
+            Expected = "FAIL"
+            Apply = {
+                param($json)
+                $json.sourceHashes[0].file = "unknown/source.kt"
+            }
+        },
+        @{
+            Name = "negative-meta-source-hash-wrong"
+            Kind = "META"
+            Expected = "FAIL"
+            Apply = {
+                param($json)
+                $json.sourceHashes[0].sha256LfNormalized = ("0" * 64)
+            }
+        },
+        @{
+            Name = "negative-meta-command-bogus"
+            Kind = "META"
+            Expected = "FAIL"
+            Apply = {
+                param($json)
+                $json.generatedByCommand = "bogus"
+            }
+        },
+        @{
+            Name = "negative-meta-grows-wrong"
+            Kind = "META"
+            Expected = "FAIL"
+            Apply = {
+                param($json)
+                $json.cases[0].gRows = @("G-007")
             }
         },
         @{
@@ -381,6 +663,18 @@ try {
                 $hand[0].index = $hand[1].index
                 $hand[1].index = $first
             }
+        },
+        @{
+            Name = "positive-order-meld-offsets"
+            Kind = "ORDER"
+            Expected = "PASS"
+            Apply = {
+                param($json)
+                $meld = @($json.cases[1].steps[0].after.placements | Where-Object { $_.zone -eq "MELD" })
+                $first = $meld[0].index
+                $meld[0].index = $meld[1].index
+                $meld[1].index = $first
+            }
         }
     )
 
@@ -415,12 +709,8 @@ try {
     ) $lineLog
     $lineSummary = Get-Summary $lineNative.Text
     Add-Result "positive-line-ending-crlf" "LINE_ENDING" "PASS" $lineNative.ExitCode $lineSummary $lineLog
-    if ($lineNative.ExitCode -ne 0 -or $null -eq $lineSummary -or
-        $lineSummary.Failed -ne 0 -or $lineSummary.Errors -ne 0) {
-        $script:Failures.Add("positive-line-ending-crlf: expected PASS after CRLF-only source checkout")
-    }
-    else {
-        Write-Step ("positive-line-ending-crlf: PASS as expected (exit 0, Total {0}, Failed 0)" -f $lineSummary.Total)
+    if (Assert-CountGate "PASS" $lineNative.ExitCode $lineSummary "positive-line-ending-crlf") {
+        Write-Step ("positive-line-ending-crlf: PASS as expected (exit 0, {0})" -f (Format-Summary $lineSummary))
     }
 
     $script:Results | Export-Csv -LiteralPath $summaryPath -NoTypeInformation -Encoding utf8
@@ -445,12 +735,21 @@ try {
         exit 1
     }
 
-    Write-Step ("PASS: baseline 10/0/0/0/0; 4 negative classes failed; 4 positive controls passed")
+    Write-Step ("PASS: baseline 10/0/0/0/0; 30 negative cases failed; 5 positive controls passed")
     Write-Step ("evidence: " + $evidenceDir)
     exit 0
 }
 finally {
-    if (-not $KeepTemp -and (Test-Path -LiteralPath $tempRoot)) {
-        Remove-Item -LiteralPath $tempRoot -Recurse -Force -ErrorAction SilentlyContinue
+    $resolvedTemp = [System.IO.Path]::GetFullPath($tempRoot)
+    $resolvedBase = [System.IO.Path]::GetFullPath([System.IO.Path]::GetTempPath())
+    $leaf = Split-Path -Leaf $resolvedTemp
+    if (-not $KeepTemp -and
+        $resolvedTemp.StartsWith($resolvedBase, [System.StringComparison]::OrdinalIgnoreCase) -and
+        $leaf.StartsWith("movement-binding-probe-", [System.StringComparison]::Ordinal) -and
+        (Test-Path -LiteralPath $resolvedTemp)) {
+        Remove-Item -LiteralPath $resolvedTemp -Recurse -Force -ErrorAction SilentlyContinue
+    }
+    elseif ($KeepTemp) {
+        Write-Step ("kept TEMP copy: " + $resolvedTemp)
     }
 }
