@@ -1002,6 +1002,9 @@ namespace Mahjong.Domain.Tests
             CheatTestBench.AssertConserved(map);
             Assert.Equal(WallSlotOffset + Int(m5, "inputWallPointer"), map.WallPointer);
             Assert.Equal(WallSlotOffset + Int(m5, "inputWallEndExclusive"), map.WallEndExclusive);
+            Assert.Equal(Int(m5, "inputKanCount"), map.KanCount);
+            Assert.Equal(Int(m5, "inputLastDiscardTileId"), map.LastDiscard!.Value.Tile.Value);
+            Assert.Equal(Int(m5, "inputLastDiscardSeat"), map.LastDiscard.Value.Position.Seat);
             Assert.True(map.TileAt(TilePosition.Wall(WallSlotOffset)).Value == Int(m5, "firstUndrawnTileId"),
                 "rebuilt wall front must hold the golden firstUndrawn entity");
             Assert.True(map.TileAt(TilePosition.Wall(WallSlotOffset + 1)).Value == Int(m5, "reservedTileId"),
@@ -1020,9 +1023,12 @@ namespace Mahjong.Domain.Tests
                 seat);
             Assert.True(delivery.Success, delivery.Message);
             TilePositionMap delivered = delivery.Map!;
+            Assert.Equal(WallSlotOffset + Int(m5, "wallPointerBeforeDelivery"), map.WallPointer);
             Assert.Equal(WallSlotOffset + Int(m5, "wallPointerAfterDelivery"), delivered.WallPointer);
             Assert.Equal(WallSlotOffset + Int(m5, "wallEndExclusiveAfterDelivery"), delivered.WallEndExclusive);
-            TilePosition deliveredPos = delivered.PositionOf(new TileId(Int(m5, "reservedTileId")));
+            int deliveredTileId = Int(m5, "deliveredTileId");
+            Assert.Equal(Int(m5, "reservedTileId"), deliveredTileId);
+            TilePosition deliveredPos = delivered.PositionOf(new TileId(deliveredTileId));
             Assert.True(deliveredPos.Zone == TileZone.Hand && deliveredPos.Seat == seat, // 黄金：预留牌进手
                 "delivered reservation tile must sit in the owner's hand");
 
@@ -1080,6 +1086,18 @@ namespace Mahjong.Domain.Tests
             {
                 int factTileId = Int(fact, "tileId");
                 string container = Str(fact, "container");
+                bool seatless = container == "wall" || container == "deadWall" || container == "replacement";
+                if (seatless)
+                {
+                    Assert.Equal(JsonValueKind.Null, fact.GetProperty("seat").ValueKind);
+                    Assert.Equal(JsonValueKind.Number, fact.GetProperty("index").ValueKind);
+                }
+                else
+                {
+                    Assert.Equal(JsonValueKind.Number, fact.GetProperty("seat").ValueKind);
+                    Assert.Equal(JsonValueKind.Null, fact.GetProperty("index").ValueKind);
+                }
+
                 TilePosition pos = nextDraw.PositionOf(new TileId(factTileId));
                 string label = "fact tile " + factTileId + " expected in " + container;
                 switch (container)

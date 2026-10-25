@@ -17,7 +17,8 @@
 param(
     [string]$Repo = 'D:/majiang-wt/n3-cheat-binding',
     [string]$EvidenceRoot,
-    [switch]$SkipBuild
+    [switch]$SkipBuild,
+    [switch]$MatrixOnly
 )
 
 Set-StrictMode -Version Latest
@@ -228,7 +229,47 @@ $mutations = @(
     @{ id = 'movement-candidate-slot'; category = 'physical-slot'; field = 'tileMovement[mv-reservation-delivery-then-beam].candidateSlots[0]';
         expect = 'DeliveryThenBeam'; mutate = { param($j) (Find-Case $j.tileMovement 'mv-reservation-delivery-then-beam').candidateSlots[0] = 1 } },
     @{ id = 'beam-outcome'; category = 'outcome'; field = 'beamSwapHandler[bm-choose-keep].outcome';
-        expect = 'BeamSwap_BoundCase'; mutate = { param($j) (Find-Case $j.beamSwapHandler 'bm-choose-keep').outcome = 'Rejected' } }
+        expect = 'BeamSwap_BoundCase'; mutate = { param($j) (Find-Case $j.beamSwapHandler 'bm-choose-keep').outcome = 'Rejected' } },
+    @{ id = 'ledger-initial-points'; category = 'ledger-balance'; field = 'ledger.initialPoints[1]';
+        expect = 'Ledger_Snapshot'; mutate = { param($j) $j.ledger.initialPoints[1] = 41 } },
+    @{ id = 'ledger-entry-id'; category = 'ledger-amount'; field = 'ledger.chargeOnce.entryId';
+        expect = 'Ledger_Snapshot'; mutate = { param($j) $j.ledger.chargeOnce.entryId = 'skill-1_MUTANT' } },
+    @{ id = 'ledger-reject-exception'; category = 'ledger-reason'; field = 'ledger.insufficientFunds.exception';
+        expect = 'Ledger_Snapshot'; mutate = { param($j) $j.ledger.insufficientFunds.exception = 'MUTANT' } },
+    @{ id = 'mark-register-version'; category = 'mark-version'; field = 'tileMarkState.registerDealtRound.versionAfterFirstRegister';
+        expect = 'TileMarkState_Binds'; mutate = { param($j) $j.tileMarkState.registerDealtRound.versionAfterFirstRegister = 2 } },
+    @{ id = 'mark-group-exception'; category = 'mark-version'; field = 'tileMarkState.addGroup.sameIdDifferentContentException';
+        expect = 'TileMarkState_Binds'; mutate = { param($j) $j.tileMarkState.addGroup.sameIdDifferentContentException = 'MUTANT' } },
+    @{ id = 'sleeve-seat'; category = 'input-window'; field = 'sleeveBloomHandler[sb-activate-allowed].goldenInputs.seat';
+        expect = 'SleeveBloom_BoundCase'; mutate = { param($j) (Find-Case $j.sleeveBloomHandler 'sb-activate-allowed').goldenInputs.seat = 1 } },
+    @{ id = 'sleeve-keep-unknown'; category = 'input-offer'; field = 'sleeveBloomHandler[sb-choose-first].goldenInputs.keep';
+        expect = 'SleeveBloom_BoundCase'; mutate = { param($j) (Find-Case $j.sleeveBloomHandler 'sb-choose-first').goldenInputs.keep = 'UNKNOWN' } },
+    @{ id = 'sleeve-keep-missing'; category = 'input-offer'; field = 'sleeveBloomHandler[sb-choose-first].goldenInputs.keep';
+        expect = 'SleeveBloom_BoundCase'; mutate = { param($j) (Find-Case $j.sleeveBloomHandler 'sb-choose-first').goldenInputs.PSObject.Properties.Remove('keep') } },
+    @{ id = 'sleeve-seat-missing'; category = 'input-window'; field = 'sleeveBloomHandler[sb-choose-first].goldenInputs.seat';
+        expect = 'SleeveBloom_BoundCase'; mutate = { param($j) (Find-Case $j.sleeveBloomHandler 'sb-choose-first').goldenInputs.PSObject.Properties.Remove('seat') } },
+    @{ id = 'sleeve-draw-kind'; category = 'input-tile'; field = 'sleeveBloomHandler[sb-choose-second].goldenInputs.drawKind';
+        expect = 'SleeveBloom_BoundCase'; mutate = { param($j) (Find-Case $j.sleeveBloomHandler 'sb-choose-second').goldenInputs.drawKind = 'RINSHAN' } },
+    @{ id = 'sleeve-null-typed'; category = 'input-tile'; field = 'sleeveBloomHandler[sb-activate-allowed].goldenInputs.nextDeadWallTileId';
+        expect = 'SleeveBloom_BoundCase'; mutate = { param($j) (Find-Case $j.sleeveBloomHandler 'sb-activate-allowed').goldenInputs.nextDeadWallTileId = 'MUTANT' } },
+    @{ id = 'sleeve-cost'; category = 'input-pointer'; field = 'sleeveBloomHandler[sb-choose-first].goldenInputs.cost';
+        expect = 'SleeveBloom_BoundCase'; mutate = { param($j) (Find-Case $j.sleeveBloomHandler 'sb-choose-first').goldenInputs.cost = 11 } },
+    @{ id = 'facts-wall-seat'; category = 'physical-seat'; field = 'tileMovement[mv-swap-hand-with-wall-direct].factsAfter[0].seat';
+        expect = 'Movement_SwapHandWithWall'; mutate = { param($j) (Find-Case $j.tileMovement 'mv-swap-hand-with-wall-direct').factsAfter[0].seat = 1 } },
+    @{ id = 'facts-hand-index'; category = 'physical-index'; field = 'tileMovement[mv-swap-hand-with-wall-direct].factsAfter[1].index';
+        expect = 'Movement_SwapHandWithWall'; mutate = { param($j) (Find-Case $j.tileMovement 'mv-swap-hand-with-wall-direct').factsAfter[1].index = 7 } },
+    @{ id = 'm5-delivered'; category = 'physical-tile'; field = 'tileMovement[mv-reservation-delivery-then-beam].deliveredTileId';
+        expect = 'DeliveryThenBeam'; mutate = { param($j) (Find-Case $j.tileMovement 'mv-reservation-delivery-then-beam').deliveredTileId = 18 } },
+    @{ id = 'm5-delivery-pointer'; category = 'physical-pointer'; field = 'tileMovement[mv-reservation-delivery-then-beam].wallPointerBeforeDelivery';
+        expect = 'DeliveryThenBeam'; mutate = { param($j) (Find-Case $j.tileMovement 'mv-reservation-delivery-then-beam').wallPointerBeforeDelivery = 1 } },
+    @{ id = 'm3-stale-index'; category = 'physical-index'; field = 'tileMovement[mv-rinshan-and-drawn-swap].factsAfter[0].index';
+        expect = 'Movement_Rinshan'; mutate = { param($j) (Find-Case $j.tileMovement 'mv-rinshan-and-drawn-swap').factsAfter[0].index = 1 } },
+    @{ id = 'm4-dora-exception'; category = 'metadata'; field = 'tileMovement[mv-swap-hand-with-dead-wall].doraRefusalException';
+        expect = 'Movement_DeadWall'; mutate = { param($j) (Find-Case $j.tileMovement 'mv-swap-hand-with-dead-wall').doraRefusalException = 'UNKNOWN' } },
+    @{ id = 'm4-wall-exception'; category = 'metadata'; field = 'tileMovement[mv-swap-hand-with-dead-wall].wallSlotRefusalException';
+        expect = 'Movement_DeadWall'; mutate = { param($j) (Find-Case $j.tileMovement 'mv-swap-hand-with-dead-wall').wallSlotRefusalException = 'UNKNOWN' } },
+    @{ id = 'request-exception'; category = 'metadata'; field = 'beamSwapHandler[bm-keep-original-args-forbidden-at-request].requestException';
+        expect = 'BeamSwap_BoundCase'; mutate = { param($j) (Find-Case $j.beamSwapHandler 'bm-keep-original-args-forbidden-at-request').requestException = 'UNKNOWN' } }
 )
 
 $rows = New-Object System.Collections.Generic.List[object]
@@ -288,6 +329,7 @@ $rows | Export-Csv -LiteralPath $csvPath -NoTypeInformation -Encoding utf8
 
 $blocked = @(
     'tm-wrong-phase-round-end',
+    'tm-capacity-tiles',
     'tm-no-active-decision',
     'tm-deadline-expired',
     'tm-decision-mismatch',
@@ -295,9 +337,163 @@ $blocked = @(
     'bm-activate-deadwall-empty',
     'bm-activate-deadwall-dora-only'
 )
+
+function Invoke-ReadinessProbe {
+    param([string]$Root)
+    $dir = Join-Path $Root 'readiness'
+    New-Item -ItemType Directory -Path $dir -Force | Out-Null
+    $domainDll = Join-Path $Repo 'dotnet/src/Mahjong.Domain/bin/Release/netstandard2.1/Mahjong.Domain.dll'
+    if (-not (Test-Path -LiteralPath $domainDll)) {
+        throw "Domain DLL missing for readiness probe: $domainDll"
+    }
+
+    $readinessSource = @'
+using System;
+using System.IO;
+using System.Linq;
+using System.Reflection;
+using System.Text.Json;
+using Mahjong.Domain;
+using Mahjong.Domain.Cheat;
+using Xunit;
+
+namespace Mahjong.Domain.Tests
+{
+    public class CheatBindingReadinessTests
+    {
+        [Fact]
+        public void SleeveBloom_WallEmptyDrift_MustRejectLikeGolden()
+        {
+            string path = Environment.GetEnvironmentVariable("V5_CHEAT_GOLDEN_PATH")!;
+            using JsonDocument doc = JsonDocument.Parse(File.ReadAllBytes(path));
+            JsonElement c = doc.RootElement.GetProperty("sleeveBloomHandler").EnumerateArray()
+                .Single(x => x.GetProperty("caseId").GetString() == "sb-activate-wall-empty-drift");
+            Assert.Equal("Rejected", c.GetProperty("outcome").GetString());
+            Assert.Equal("SLEEVE_BLOOM_WALL_EMPTY", c.GetProperty("reason").GetString());
+
+            MethodInfo method = typeof(CheatGoldenBindingTests).GetMethod(
+                "SleeveBaseMap", BindingFlags.NonPublic | BindingFlags.Static)!;
+            TilePositionMap map = (TilePositionMap)method.Invoke(null, new object?[]
+            {
+                16, new[] { 40, 44, 48 }, 60, DrawSource.Wall, false, new[] { 32 }, false
+            })!;
+            Assert.True(map.PositionOf(new TileId(32)).Zone != TileZone.Wall);
+
+            CheatTransition actual = CheatSubmission.ActivateSleeveBloom(
+                CheatTestBench.InitialState(), map,
+                CheatTestBench.Context(0, RoundPhase.CheatWindow, SleeveBloomDrawKind.Normal),
+                CheatTestBench.Economy(), CheatTestBench.Sleeve(), 0, "req-1");
+            Assert.False(actual.Success,
+                "V4 expects Rejected/SLEEVE_BLOOM_WALL_EMPTY; C# returned " +
+                (actual.Success ? "Allowed" : actual.Error.ToString()));
+            Assert.Equal(CheatErrorCode.NoWallCandidate, actual.Error);
+        }
+    }
+}
+'@
+    [IO.File]::WriteAllText((Join-Path $dir 'Readiness.cs'), $readinessSource, (New-Object Text.UTF8Encoding($false)))
+
+    $testSource = Join-Path $Repo 'dotnet/tests/Mahjong.Domain.Tests'
+    $projectXml = @"
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <OutputType>Exe</OutputType>
+    <LangVersion>9.0</LangVersion>
+    <Nullable>enable</Nullable>
+    <IsPackable>false</IsPackable>
+    <TestingPlatformDotnetTestSupport>true</TestingPlatformDotnetTestSupport>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+    <AssemblyName>CheatReadinessProbe</AssemblyName>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="xunit.v3" Version="4.0.2" />
+    <Reference Include="Mahjong.Domain">
+      <HintPath>$domainDll</HintPath>
+    </Reference>
+  </ItemGroup>
+  <ItemGroup>
+    <Compile Include="$testSource/*.cs" />
+    <Compile Include="Readiness.cs" />
+  </ItemGroup>
+</Project>
+"@
+    [IO.File]::WriteAllText((Join-Path $dir 'CheatReadinessProbe.csproj'), $projectXml, (New-Object Text.UTF8Encoding($false)))
+
+    $buildLog = Join-Path $dir 'build.log'
+    $buildOutput = & $dotnet build (Join-Path $dir 'CheatReadinessProbe.csproj') -c Release 2>&1
+    $buildExit = $LASTEXITCODE
+    [IO.File]::WriteAllText($buildLog, ($buildOutput | Out-String), (New-Object Text.UTF8Encoding($false)))
+    if ($buildExit -ne 0) {
+        return [ordered]@{
+            status = 'TOOL_FAILURE'
+            reason = 'readiness probe build failed'
+            buildExit = $buildExit
+            buildLog = $buildLog
+        }
+    }
+
+    $readyDll = Join-Path $dir 'bin/Release/net8.0/CheatReadinessProbe.dll'
+    $readyLog = Join-Path $dir 'readiness.log'
+    $prior = $env:V5_CHEAT_GOLDEN_PATH
+    try {
+        $env:V5_CHEAT_GOLDEN_PATH = $originalCopy
+        $output = & $dotnet $readyDll -class '*CheatBindingReadinessTests*' -showLiveOutput -noLogo 2>&1
+        $exit = $LASTEXITCODE
+        $text = $output | Out-String
+        [IO.File]::WriteAllText($readyLog, $text, (New-Object Text.UTF8Encoding($false)))
+    }
+    finally {
+        if ($null -eq $prior) {
+            Remove-Item Env:V5_CHEAT_GOLDEN_PATH -ErrorAction SilentlyContinue
+        }
+        else {
+            $env:V5_CHEAT_GOLDEN_PATH = $prior
+        }
+    }
+
+    $counts = Get-TestCounts -Text $text
+    $failedNames = @(Get-FailedTestNames -Text $text)
+    $conformanceFailure = ($exit -eq 1) -and ($null -ne $counts) -and
+        ($counts.total -eq 1) -and ($counts.failed -gt 0) -and ($counts.errors -eq 0) -and
+        ($counts.skipped -eq 0) -and ($counts.notRun -eq 0) -and
+        ($text -match 'V4 expects Rejected/SLEEVE_BLOOM_WALL_EMPTY')
+    $status = if ($exit -eq 0 -and $null -ne $counts -and $counts.failed -eq 0) { 'PASS' }
+        elseif ($conformanceFailure) { 'FAIL_CONFORMANCE' }
+        else { 'TOOL_OR_UNEXPECTED_FAILURE' }
+
+    return [ordered]@{
+        status = $status
+        nativeExit = $exit
+        counts = $counts
+        failedTests = ($failedNames -join ';')
+        log = $readyLog
+        buildLog = $buildLog
+    }
+}
+
+$matrixOk = $unexpectedPass -eq 0 -and $toolFailures -eq 0 -and $wrongFailure -eq 0
+$readiness = if ($MatrixOnly) {
+    [ordered]@{ status = 'NOT_RUN'; reason = 'MatrixOnly' }
+}
+else {
+    Invoke-ReadinessProbe -Root $EvidenceRoot
+}
+$readinessCauses = @($blocked)
+if (-not $MatrixOnly -and $readiness.status -eq 'FAIL_CONFORMANCE') {
+    $readinessCauses += 'F-01:sleeve-wall-empty-drift-conformance'
+}
+$readinessStatus = if (-not $matrixOk) { 'FAIL' }
+    elseif ($MatrixOnly) { 'NOT_RUN' }
+    elseif ($blocked.Count -gt 0 -or $readiness.status -eq 'FAIL_CONFORMANCE') { 'BLOCKED' }
+    elseif ($readiness.status -eq 'PASS') { 'PASS' }
+    else { 'FAIL' }
+
 $summary = [ordered]@{
-    schema = 'v5-cheat-binding-probe-v1'
-    status = if ($unexpectedPass -eq 0 -and $toolFailures -eq 0 -and $wrongFailure -eq 0) { 'MATRIX_PASS_WITH_BLOCKED' } else { 'FAIL' }
+    schema = 'v5-cheat-binding-probe-v2'
+    matrixStatus = if ($matrixOk) { 'PASS' } else { 'FAIL' }
+    readinessStatus = $readinessStatus
+    status = if ($matrixOk -and $readinessStatus -eq 'PASS') { 'PASS' } elseif ($matrixOk) { 'MATRIX_PASS_READINESS_BLOCKED' } else { 'FAIL' }
     positive = [ordered]@{
         exit = $positive.exit
         counts = $positiveCounts
@@ -310,6 +506,8 @@ $summary = [ordered]@{
     categories = @($mutations | ForEach-Object { $_.category } | Sort-Object -Unique)
     blockedCases = $blocked
     blockedCount = $blocked.Count
+    readinessProbe = $readiness
+    readinessCauses = $readinessCauses
     fixtureRawSha256 = $rawSha
     fixtureLfNormalizedSha256 = $normalizedSha
     fixtureGitBlobSha1 = $gitBlobSha1
@@ -339,8 +537,13 @@ foreach ($row in $rows) {
         $row.index, $row.status, $row.id, $row.nativeExit, $row.total, $row.failed, $row.skipped, $row.notRun, $row.category)
 }
 Write-Host ("BLOCKED={0} ({1})" -f $blocked.Count, ($blocked -join ','))
+Write-Host ("MATRIX={0}" -f $summary.matrixStatus)
+Write-Host ("READINESS={0} probe={1} causes={2}" -f $readinessStatus, $readiness.status, ($readinessCauses -join ','))
 
-if ($unexpectedPass -ne 0 -or $toolFailures -ne 0 -or $wrongFailure -ne 0) {
+if (-not $matrixOk) {
+    exit 1
+}
+if (-not $MatrixOnly -and $readinessStatus -ne 'PASS') {
     exit 1
 }
 exit 0

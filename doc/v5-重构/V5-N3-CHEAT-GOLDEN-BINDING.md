@@ -1,121 +1,52 @@
-# V5 N3 cheat-v1 字段行为绑定（G1 剩余消费者测试任务）
+# V5 N3 cheat-v1 字段行为绑定（G1 剩余消费者测试任务，第 2 轮返修）
 
-日期：2026-10-25。工作树：`D:/majiang-wt/n3-cheat-binding`，分支 `wt/v5-n3-cheat-binding`，冻结基线 `900a043cfa276c0e172672b8b7cc7d6d4ebc4767`。本地交付提交见本工作树 `git log -1`。
+日期：2026-10-25。工作树：`D:/majiang-wt/n3-cheat-binding`，分支 `wt/v5-n3-cheat-binding`，冻结基线 `900a043cfa276c0e172672b8b7cc7d6d4ebc4767`。第 2 轮返修提交见本工作树 `git log -1`。
 
-本报告只覆盖 **cheat-v1 测试消费者字段绑定**。它不是 N3/G1 通过：G1 仍未批准，V4 仍是唯一生产架构，G5 未完成，`complete.flag` 不存在。本轮没有修改生产 C#、V4 exporter/fixture、catalog/manifest、统一 verifier、项目/solution 或用户环境。
+本报告只覆盖 **cheat-v1 测试消费者字段绑定**。它不是 N3/G1 通过：G1 仍未批准，V4 仍是唯一生产架构，G5 未完成，`complete.flag` 不存在。未修改生产 C#、V4 exporter/fixture、catalog/manifest、统一 verifier、项目/solution 或用户环境；仍仅原四文件。
 
-## 0. 范围与结论
+## 0. 第 2 轮结论
 
 | 对象 | 结果 | 说明 |
 |---|---|---|
-| 75 个 handler case | **68 PASS / 1 FAIL / 6 BLOCKED** | 68 = Bound/Refined，逐例调用真实 Domain 入口；1 = `sb-activate-wall-empty-drift` 真实行为分歧；6 = 4 个 actor 层 + 2 个不可规范表示的 dead-wall 过滤态 |
-| 6 个 tileMovement case | **6 PASS** | 5 个新增精确重建 + 既有 M5 全 136 placements 对照 |
-| ledger 深字段/快照 | **PASS** | 每条 entry 的 id/seat/amount/balanceAfter/reason、顺序、余额与 flow 汇总逐项绑定 |
-| TileMarkState 深字段 | **PASS** | group 全字段、版本轨迹、到期、跨座位、拒绝零副作用 |
-| 原 16 个 Fact | **16 PASS** | 保持有效断言；纠正了 drawn-backfill「V4-only」、disabled 换输入、foreign-hand 换输入三处旧断言 |
-| 外部单字段错值矩阵 | **22/22 FAIL_AS_EXPECTED** | 原 fixture 正控制 96/0/0/0/0，exit0；每个变异 exit1 且真实 Failed>0 |
-| Domain 全量 | **465 passed / 0 failed / 0 skipped / 0 Not Run** | native exit 0 |
+| 75 个 handler case | **67 PASS / 0 FAIL / 8 BLOCKED** | 67 个真实调用；8 个准确 BLOCKED，未计 PASS |
+| 6 个 tileMovement case | **6 PASS** | 5 个精确重建 + M5 全 136 placements；M3 stale-index 叶显式映射 |
+| ledger 深字段/快照 | **PASS** | initialPoints 四座、entry 全字段、拒绝 outcome/exception、flow、snapshot 顺序 |
+| TileMarkState 深字段 | **PASS** | group 全字段、版本、到期、跨座位、异常语义、拒绝零副作用 |
+| 原 16 Fact | **16 PASS** | 保持有效断言；纠正 drawn-backfill、disabled、foreign-hand |
+| 外部单字段错值矩阵 | **42/42 FAIL_AS_EXPECTED** | 正控制 94/0/0/0/0 exit0；每项 native1 且真实 Failed>0 |
+| 296 叶扫描 | **294 native1；2 项合法等价输入** | 2 项 = `factsBefore.tileId 8→9`、`inputKanCount 0→1`，见 §6.1 |
+| 8 项严格性探针 | **8/8 native1 / Total94 / Failed1** | keep unknown/missing/wrong type、seat missing、version missing、fact schema、requestException |
+| **独立 readiness 符合性探针** | **FAIL_CONFORMANCE：native1 / Total1 / Failed1** | 同一黄金期望，C# 返回 Allowed；不再用反向 pin 计绿 |
+| Domain 全量 | **463 passed / 0 failed / 0 skipped / 0 Not Run** | native exit 0 |
 | Release solution 构建 | **0 warning / 0 error** | native exit 0 |
-| solution 测试 | **1181 passed / 0 failed / 0 skipped** | 435 AI + 149 Contracts + 132 Client + 465 Domain，native exit 0 |
-| PG/WSS/Unity/IL2CPP/Gradle/远端 CI | **NOT_RUN** | 本任务不需要为测试绑定变更重跑平台重型全量 |
+| solution 测试 | **1179 passed / 0 failed / 0 skipped** | 435 AI + 149 Contracts + 132 Client + 463 Domain，native exit 0 |
+| PG/WSS/Unity/IL2CPP/Gradle/远端 CI | **NOT_RUN** | 无生产变更，未重跑平台重型全量 |
 
-“68 PASS”是**行为绑定**计数，不是 N3 总完成度；6 个 BLOCKED 与 1 个 FAIL 仍计入 75 的分母，未删除、未改名、未转成 skip。
+**矩阵状态与绑定就绪分离**：`MATRIX=PASS`（42/42 变异真实失败）；`READINESS=BLOCKED`（8 个 BLOCKED + F-01 符合性探针 native1）。默认脚本以 readiness 非零退出；`-MatrixOnly` 才返回 matrix-only exit0。标准测试全绿**不**代表组件闭合。
 
-## 1. 输入重建与 JSONpath 口径
+## 1. D-R1-01 修复：不再反向 pin
 
-### 1.1 源锚点
+- 删除了 `SleeveBloom_WallEmptyDrift_PinsKnownDivergence`（旧代码断言 `Assert.True(actual.Success)` 计绿）。该 case 现在为 **BLOCKED-input**：V4 输入包含独立的 `nextWallTileId=32 / nextWallTileInWall=false`，`CheatSubmission.ActivateSleeveBloom` 没有这个参数；仅把 32 移到河的 map 不能重放完整 V4 调用。
+- 新增独立符合性探针（脚本默认路径；`-MatrixOnly` 可跳过 readiness）：在 TEMP 生成 xUnit 项目，引用现有测试程序集源码，按黄金要求断言 `Rejected/SLEEVE_BLOOM_WALL_EMPTY`。实际 C# 返回 Allowed，得到 **native1 / Total1 / Failed1 / Errors0 / Skipped0 / NotRun0**；日志 `readiness/readiness.log`。生产行为修正后该探针应转绿。
+- `probe-cheat-binding.ps1` 现在输出 `matrixStatus`、`readinessStatus`、`readinessCauses`；8 个未闭合项 + F-01 未解决时 readiness 非零。`-MatrixOnly` 仅用于独立矩阵证据，summary 明示 `readinessStatus=NOT_RUN`。
+- 不选择产品策略：没有改 V4/golden 规则、没有加生产参数、没有把其他合法墙牌宣布为必须拒绝。F-01 的准确依赖见 §8。
 
-- V4 只读导出器：`engine/src/test/kotlin/com/majiang/v3/V5CheatGoldenExporterTest.kt`
-  - ledger：:111-187；tileMarkState：:193-254；tileMark handler：:359-427；
-  - sleeve bloom：:432-765；beam swap：:767-976；tileMovement：:1043-1378。
-- V4 测试桌构造器：`engine/src/testFixtures/kotlin/com/majiang/testing/TestTableBuilder.kt:8-76`。重建遵循其真实顺序：先 reserve 显式 hands/drawn/wallPrefix/deadWallPrefix，再按座位补到 14（当前座位在 DISCARD/CHEAT_WINDOW）或 13，再补满 14 张王牌，最后把剩余实体按升序追加到活墙。
-- V4 生产源：`engine/src/main/kotlin/com/majiang/economy/CheatLedger.kt:70,138,148,179`、`CheatLedgerEntry.kt`、`engine/src/main/kotlin/com/majiang/cheat/mark/TileMarkState.kt:42,68,120`、`engine/src/main/kotlin/com/majiang/authority/cheat/{TileMark,SleeveBloom,BeamSwap}SubmissionHandler.kt`、`engine/src/main/kotlin/com/majiang/model/TileMovement.kt:469,518,567,611`。
-- C# 真实入口：`dotnet/src/Mahjong.Domain/Cheat/CheatSubmission.cs:113,226,327,447,539,664,756,914`；物理原语：`dotnet/src/Mahjong.Domain/TilePositionMap.cs:637,686,1203,1258,1321,1375`。
+## 2. 输入重建与严格 schema
 
-### 1.2 重建控制
+### 2.1 源锚点
 
-`V4TableReconstruction_MatchesExportedM5InputPlacements` 用上述构造器规则重建 `mv-reservation-delivery-then-beam` 的交付前牌桌，并逐项对照 golden 的 **136 个 `inputPlacements`**、`inputWallPointer=0`、`inputWallEndExclusive=69`、`inputRinshanPointer=0`、`lastDiscard=16/seat0`。136/136 一致。这是后续 5 个 movement 精确重建的可信控制，不是用 C# 输出反算输入。
+- V4 exporter：`engine/src/test/kotlin/com/majiang/v3/V5CheatGoldenExporterTest.kt`（ledger :111-187；tileMarkState :193-254；tileMark handler :359-427；sleeve :432-765；beam :767-976；tileMovement :1043-1378）。
+- V4 构造器：`engine/src/testFixtures/kotlin/com/majiang/testing/TestTableBuilder.kt:8-76`。
+- C# 入口：`CheatSubmission.cs:113,226,327,447,539,664,756,914`；`TilePositionMap.cs:637,686,1203,1258,1321,1375`。
+- N1b 已接受入口：`dotnet/src/Mahjong.TableRuntime/TableActor.cs:223 SubmitCheatAsync`、`:1639 ProcessCheatCommandCoreAsync`、`:1662/:1893 ValidateAuthorityIdentity`、`:1689 RoundCheatTransition.Prepare`；测试文件 `dotnet/tests/Mahjong.TableRuntime.Tests/N1bCheatExecutionTests.cs`。
 
-### 1.3 槽位/指针映射
+### 2.2 严格性
 
-- movement 的 V4 `wall[k]`（从 0 开始的活墙列表）↔ C# `Wall(53+k)`；V4 指针 0 ↔ C# 53。M1a 的 `wallIndex=0` 因此绑定到 C# `Wall(53)`，不是旧测试的同构替代 `Wall(54)`。
-- handler 导出的 `wallPointer=53`、`wallEndExclusive=113`、`offerSecondWallIndex=53` 已经是 V4 绝对槽位口径；直接绑定 C# `WallPointer/WallEndExclusive/PositionOf(...).Index`，不再加 53。
-- `deadWall[i]` ↔ C# `DeadWall(i)`；`replacement[i]` ↔ `DeadWallReplacement(i)`；手牌按座位+容器，不按 V4 列表排序。
-- 无法在 C# 规范牌桌中表示的 V4 过滤态单列为 BLOCKED（见 F-02），不以空测试或放宽断言消失。
+`AssertKeys` 对每个 `goldenInputs` 做精确 key 集校验；`GoldenString/Int/Long/Bool/Enum/NullableInt` 分别拒绝缺失、错型和未知枚举；`AssertFact` 区分 `FactsAfter`（hand/discard seat=number,index=null；wall/dead/replacement seat=null,index=number）与 `InputPlacements`（wall/dead/replacement seat=-1，hand/discard index=number）。未知 `keep`、删除 `keep`、删除 `seat`、`keep=123`、null 字段改字符串均真实失败。
 
-### 1.4 允许的原因细化，不冒充完全相同
+## 3. 75 个 handler 的完整映射
 
-V4 把多个语义合并成粗码；C# 有更细的 typed code。以下均为“同输入、同拒绝、零副作用，C# 更细”，在 `CaseSpec.Kind=Refined` 中逐例登记：
-
-- `WRONG_PHASE` → `ResponseWindowOpen`（response window）；
-- `SLEEVE_BLOOM_DISABLED` / `BEAM_SWAP_DISABLED`（真实输入 `configuredCost=5`）→ `CostMustBeTen`，**没有**把输入换成 `featureEnabled=false`；
-- `SLEEVE_BLOOM_WALL_EMPTY` / `BEAM_SWAP_NO_CANDIDATES` → `NoWallCandidate` 或 `CandidateUnavailable`；
-- `SLEEVE_BLOOM_NO_WINDOW`（实际是已签发窗口的 id 不匹配）→ `WindowMismatch`；
-- `BEAM_SWAP_INVALID_CHOICE` 的窗外槽 → `CandidateNotFound`；冻结外手牌/非法 keep 参数 → `InvalidSelection`；
-- `SLEEVE_BLOOM_CHOICE_PENDING` / `BEAM_SWAP_CHOICE_PENDING` / `BEAM_SWAP_ALREADY_PENDING` → `OtherOfferPending` / `OfferAlreadyPending`。
-
-## 2. Ledger：快照不是布尔
-
-`Ledger_Snapshot_RestoresEveryEntryFieldInOrder` 对真实 `CheatLedger` 执行：
-
-- `chargeOnce`：`entryId=skill-1`、`seat=0`、`amount=-7`、`balanceAfter=33`、`reason=TILE_MARK`（V4 导出器 :115 的源字面量）逐项断言；四座余额 `33 40 40 40`；entryCount=1。
-- 同 id 同载荷：`Replayed=true`、`Assert.Same` 原 entry、entryCount=1。
-- flow：`spend` 后 `gain`，顺序固定；逐条断言 entryId/seat/amount/balanceAfter/reason；`seat0TotalSpent=7`、`seat1TotalGained=5`、`seat1NetDelta=5` 从 entries 重算后与 golden 对照。
-- `FromSnapshot(10, finalBalances, flow.Entries)`：恢复 2 条 entry，逐条逐字段、顺序、余额、`Version=2`；`entriesEqual=true` 只是导出摘要，不是唯一断言。
-- 余额漂移 `finalBalances[0]+1` 必须 `ArgumentException`；这是负例控制，证明恢复路径不是无条件接受。
-
-| JSONpath（可逐叶展开） | 实际调用/断言 |
-|---|---|
-| `$.ledger.initialPoints[0..3]` | `CheatLedger.Initialize(Economy(initialPoints[0]))`；四座起始余额 |
-| `$.ledger.chargeOnce.entryId/seat/amount/reason` | `Apply(...)` 的输入；`Entry.EntryId/Seat/Amount/Reason` 逐项断言 |
-| `$.ledger.chargeOnce.balanceAfter` | `Entry.BalanceAfter==33` |
-| `$.ledger.chargeOnce.balancesAfter[0..3]` | `Ledger.BalanceOf(seat)` 四座 |
-| `$.ledger.chargeOnce.entryCount` | `Ledger.Entries.Count` |
-| `$.ledger.replaySamePayload.returnsOriginalEntry/balanceAfter/entryCount` | 二次同载荷 `Apply`；`Replayed`、`Assert.Same`、entryCount |
-| `$.ledger.conflictDifferentPayload.requested.seat/amount` | 同 id 异载荷 `Apply`；`EntryConflict`、`Ledger=null` |
-| `$.ledger.conflictDifferentPayload.balancesAfter[0..3]/entryCount` | 冲突后源 ledger 余额/条数不变 |
-| `$.ledger.insufficientFunds.initialPoints/amount/outcome/exception` | 10 点账本扣 11；`InsufficientFunds`、零副作用 |
-| `$.ledger.overflow.amount/outcome/exception` | `int.MaxValue`；`BalanceOverflow`、零副作用 |
-| `$.ledger.invalidSeat.seat/outcome/exception` | seat4；`InvalidSeat`、零副作用 |
-| `$.ledger.flowSummary.spend.seat/amount` | `Apply("spend",...)`；entry0 全字段 |
-| `$.ledger.flowSummary.gain.seat/amount` | `Apply("gain",...)`；entry1 全字段 |
-| `$.ledger.flowSummary.seat0TotalSpent/seat1TotalGained/seat1NetDelta` | 从 entries 重算后对照 |
-| `$.ledger.flowSummary.finalBalances[0..3]` | `BalanceOf(seat)` 四座 |
-| `$.ledger.snapshotRoundTrip.balancesEqual/entriesEqual` | 导出摘要；不作为唯一断言，另做 entry 逐字段/顺序/Version 断言 |
-
-## 3. TileMarkState：版本、到期、跨座位、零副作用
-
-`TileMarkState_BindsEveryExportedFieldAndZeroSideEffect` 绑定：
-
-- 初始 version0/ordinal0/dealtIds/settledIds 空；`registerDealtRound("r1")` 后 ordinal1、version1、`CurrentRoundId=r1`、同 id 返回同一实例。
-- `g1` 全字段：groupId、owner0、tileIds `[0,1,2,3]` 顺序、createdRoundId `r1`、createdOrdinal1、expiresAfter4、version2；`MarkedTilesForSeat(0)` 顺序一致；同 id 同内容返回同一实例；同 id 异内容 `GroupIdConflict` 且源状态/版本不变。
-- 三组容量：3 组接受，第 4 组 `GroupLimitExceeded` 且源状态/组数不变；每组实体数固定为 4，因此 12 张上限与 3 组上限在公开构造边界重合；`seatTileLimitIsTwelve=true` 被绑定，`TileLimitExceeded` 的 13+ 分支在公开 API 下不可达（这是 C# 的结构事实，不是跳过）。
-- 跨座位同一实体 `[0,1,2,3]` 允许，组数2、version3。
-- 到期：createdOrdinal1→expires4；完成 r3 仍有1组/version7；完成 r4 后0组/version9；`SettledRoundIds` 精确 `["r1","r2","r3","r4"]`，`DealtRoundOrdinal=4`，`IsSettled("r3")=true`。
-
-| JSONpath（可逐叶展开） | 实际调用/断言 |
-|---|---|
-| `$.tileMarkState.registerDealtRound.ordinalAfterFirst` | `RegisterDealtRound("r1").DealtRoundOrdinal` |
-| `$.tileMarkState.registerDealtRound.sameIdReplays` | 再次 `RegisterDealtRound("r1")`；`Assert.Same` |
-| `$.tileMarkState.registerDealtRound.versionAfterFirstRegister` | `Version==1`（同时与 `versionTrail[1]` 对照） |
-| `$.tileMarkState.addGroup.expiresAfterRoundOrdinal` | `Groups[0].ExpiresAfterRoundOrdinal==4` |
-| `$.tileMarkState.addGroup.sameIdSameContentReplays` | `AddGroup(g1)` 二次；`Assert.Same` |
-| `$.tileMarkState.addGroup.sameIdDifferentContentException` | `AddGroup(g1 异内容)`；`GroupIdConflict`、源状态/版本不变 |
-| `$.tileMarkState.addGroup.seatGroupLimitIsThree/seatGroupLimitException` | 3 组接受；第 4 组 `GroupLimitExceeded`、零副作用 |
-| `$.tileMarkState.addGroup.seatTileLimitIsTwelve` | 3×4=12；第 4 组在 group limit 处拒绝（公开 API 的 13+ 分支不可达） |
-| `$.tileMarkState.addGroup.crossSeatSameTilesAllowed/crossSeatGroupCount` | 座位1 同实体 `[0,1,2,3]`；组数2/version3 |
-| `$.tileMarkState.addGroup.versionTrail[0..3]` | 初始0、register1、add2、cross3 的逐点断言 |
-| `$.tileMarkState.expiry.createdRoundOrdinal` | `g1.CreatedRoundOrdinal==1` |
-| `$.tileMarkState.expiry.groupsAfterCompletingRound3` | 完成 r3 后组数1 |
-| `$.tileMarkState.expiry.groupsAfterCompletingRound4` | 完成 r4 后组数0 |
-| `$.tileMarkState.expiry.settledRoundCount` | `SettledRoundIds.Count==4` 且逐项 `r1..r4` |
-| `$.tileMarkState.expiry.versionAfterFirstAdd/versionAfterCompletingRound3/versionAfterCompletingRound4` | 2/7/9 |
-
-## 4. 75 个 handler case 的完整映射
-
-每条 JSONpath 都可直接展开；`PASS`/`PASS-refined` 行由对应的 `[Theory]` 真实调用，`BLOCKED`/`FAIL-open` 行由 manifest 固定并在报告中单列，不能计入行为通过。表内 `Allowed / —` 的 reason 为 JSON null。
-
-真实调用计数：68 个 handler case（16 tileMark + 31 sleeve + 21 beam）各至少一次真实 Domain 调用；6 个 movement 各真实调用物理入口；22 个外部变异各一次独立测试进程；ledger/state 两个深字段 Fact。各行的 V4 输入源按 section 固定：`tileMarkHandler` 为 exporter `:359-427`，`sleeveBloomHandler` 为 `:432-765`，`beamSwapHandler` 为 `:767-976`；7 个 sleeve 成功例的 `goldenInputs` 逐字段读取，其余 68 个没有 `goldenInputs`，输入由 exporter/`TestTableBuilder` 构造代码重建。
+`PASS`/`PASS-refined` 行由 `[Theory]` 真实调用；`BLOCKED` 行由 manifest 固定并单列，不能计入通过。表内 `Allowed / —` 的 reason 为 JSON null。各行 V4 输入源按 section 固定：tileMark `:359-427`，sleeve `:432-765`，beam `:767-976`；7 个 sleeve 成功例的 `goldenInputs` 逐字段读取。
 
 | Case | JSONpath | 真实入口 | V4 outcome / reason | 状态 | C# code | 测试 |
 |---|---|---|---|---|---|---|
@@ -123,7 +54,7 @@ V4 把多个语义合并成粗码；C# 有更细的 typed code。以下均为“
 | tm-not-your-turn | $.tileMarkHandler[?(@.caseId=='tm-not-your-turn')] | CheatSubmission.ApplyTileMark | Rejected / NOT_YOUR_TURN | PASS | NotYourTurn | TileMark_BoundCase_ReplaysThroughApplyTileMark |
 | tm-wrong-phase-preparation | $.tileMarkHandler[?(@.caseId=='tm-wrong-phase-preparation')] | CheatSubmission.ApplyTileMark | Rejected / WRONG_PHASE | PASS | WrongPhase | TileMark_BoundCase_ReplaysThroughApplyTileMark |
 | tm-wrong-phase-draw | $.tileMarkHandler[?(@.caseId=='tm-wrong-phase-draw')] | CheatSubmission.ApplyTileMark | Rejected / WRONG_PHASE | PASS | WrongPhase | TileMark_BoundCase_ReplaysThroughApplyTileMark |
-| tm-wrong-phase-round-end | $.tileMarkHandler[?(@.caseId=='tm-wrong-phase-round-end')] | RoundStateMachine terminal guard + actor decision binding | Rejected / DECISION_MISMATCH | BLOCKED-actor | — | BindingManifest row; actor dependency |
+| tm-wrong-phase-round-end | $.tileMarkHandler[?(@.caseId=='tm-wrong-phase-round-end')] | RoundStateMachine terminal guard + actor decision binding | Rejected / DECISION_MISMATCH | BLOCKED-actor | — | BindingManifest row |
 | tm-response-window | $.tileMarkHandler[?(@.caseId=='tm-response-window')] | CheatSubmission.ApplyTileMark | Rejected / WRONG_PHASE | PASS-refined | ResponseWindowOpen | TileMark_BoundCase_ReplaysThroughApplyTileMark |
 | tm-riichi-locked | $.tileMarkHandler[?(@.caseId=='tm-riichi-locked')] | CheatSubmission.ApplyTileMark | Rejected / TILE_MARK_RIICHI_LOCKED | PASS | RiichiLocked | TileMark_BoundCase_ReplaysThroughApplyTileMark |
 | tm-invalid-selection-three | $.tileMarkHandler[?(@.caseId=='tm-invalid-selection-three')] | CheatSubmission.ApplyTileMark | Rejected / TILE_MARK_INVALID_SELECTION | PASS | InvalidSelection | TileMark_BoundCase_ReplaysThroughApplyTileMark |
@@ -131,21 +62,21 @@ V4 把多个语义合并成粗码；C# 有更细的 typed code。以下均为“
 | tm-tile-not-owned | $.tileMarkHandler[?(@.caseId=='tm-tile-not-owned')] | CheatSubmission.ApplyTileMark | Rejected / TILE_MARK_TILE_NOT_OWNED | PASS | TileNotOwned | TileMark_BoundCase_ReplaysThroughApplyTileMark |
 | tm-already-marked | $.tileMarkHandler[?(@.caseId=='tm-already-marked')] | CheatSubmission.ApplyTileMark | Rejected / TILE_MARK_ALREADY_MARKED | PASS | AlreadyMarked | TileMark_BoundCase_ReplaysThroughApplyTileMark |
 | tm-capacity-groups | $.tileMarkHandler[?(@.caseId=='tm-capacity-groups')] | CheatSubmission.ApplyTileMark | Rejected / TILE_MARK_CAPACITY_EXCEEDED | PASS | MarkCapacityExceeded | TileMark_BoundCase_ReplaysThroughApplyTileMark |
-| tm-capacity-tiles | $.tileMarkHandler[?(@.caseId=='tm-capacity-tiles')] | CheatSubmission.ApplyTileMark | Rejected / TILE_MARK_CAPACITY_EXCEEDED | PASS | MarkCapacityExceeded | TileMark_BoundCase_ReplaysThroughApplyTileMark |
+| tm-capacity-tiles | $.tileMarkHandler[?(@.caseId=='tm-capacity-tiles')] | TileMarkGroup exactly-four invariant / tile-limit guard | Rejected / TILE_MARK_CAPACITY_EXCEEDED | BLOCKED-input | — | BindingManifest row |
 | tm-insufficient-funds | $.tileMarkHandler[?(@.caseId=='tm-insufficient-funds')] | CheatSubmission.ApplyTileMark | Rejected / INSUFFICIENT_FUNDS | PASS | InsufficientFunds | TileMark_BoundCase_ReplaysThroughApplyTileMark |
 | tm-sleeve-pending | $.tileMarkHandler[?(@.caseId=='tm-sleeve-pending')] | CheatSubmission.ApplyTileMark | Rejected / SLEEVE_BLOOM_CHOICE_PENDING | PASS-refined | OtherOfferPending | TileMark_BoundCase_ReplaysThroughApplyTileMark |
 | tm-offturn-sleeve-pending | $.tileMarkHandler[?(@.caseId=='tm-offturn-sleeve-pending')] | CheatSubmission.ApplyTileMark | Rejected / SLEEVE_BLOOM_CHOICE_PENDING | PASS-refined | OtherOfferPending | TileMark_BoundCase_ReplaysThroughApplyTileMark |
 | tm-beam-pending | $.tileMarkHandler[?(@.caseId=='tm-beam-pending')] | CheatSubmission.ApplyTileMark | Rejected / BEAM_SWAP_CHOICE_PENDING | PASS-refined | OtherOfferPending | TileMark_BoundCase_ReplaysThroughApplyTileMark |
-| tm-no-active-decision | $.tileMarkHandler[?(@.caseId=='tm-no-active-decision')] | DecisionClock/actor decision admission | Rejected / NO_ACTIVE_DECISION | BLOCKED-actor | — | BindingManifest row; actor dependency |
-| tm-deadline-expired | $.tileMarkHandler[?(@.caseId=='tm-deadline-expired')] | DecisionTiming.IsExpired(now == deadline) | Rejected / DEADLINE_EXPIRED | BLOCKED-actor | — | BindingManifest row; actor dependency |
-| tm-decision-mismatch | $.tileMarkHandler[?(@.caseId=='tm-decision-mismatch')] | actor round/decision identity binding | Rejected / DECISION_MISMATCH | BLOCKED-actor | — | BindingManifest row; actor dependency |
+| tm-no-active-decision | $.tileMarkHandler[?(@.caseId=='tm-no-active-decision')] | DecisionClock/actor decision admission | Rejected / NO_ACTIVE_DECISION | BLOCKED-actor | — | BindingManifest row |
+| tm-deadline-expired | $.tileMarkHandler[?(@.caseId=='tm-deadline-expired')] | DecisionTiming.IsExpired(now == deadline) | Rejected / DEADLINE_EXPIRED | BLOCKED-actor | — | BindingManifest row |
+| tm-decision-mismatch | $.tileMarkHandler[?(@.caseId=='tm-decision-mismatch')] | actor round/decision identity binding | Rejected / DECISION_MISMATCH | BLOCKED-actor | — | BindingManifest row |
 | sb-activate-allowed | $.sleeveBloomHandler[?(@.caseId=='sb-activate-allowed')] | CheatSubmission.ActivateSleeveBloom | Allowed / — | PASS | None | SleeveBloom_BoundCase_ReplaysThroughDomainEntry |
 | sb-activate-dealer-extra | $.sleeveBloomHandler[?(@.caseId=='sb-activate-dealer-extra')] | CheatSubmission.ActivateSleeveBloom | Rejected / SLEEVE_BLOOM_DEALER_EXTRA_EXCLUDED | PASS | DealExtraDraw | SleeveBloom_BoundCase_ReplaysThroughDomainEntry |
 | sb-activate-already-used | $.sleeveBloomHandler[?(@.caseId=='sb-activate-already-used')] | CheatSubmission.ActivateSleeveBloom | Rejected / SLEEVE_BLOOM_ALREADY_USED_THIS_DRAW | PASS | AlreadyUsedThisTurn | SleeveBloom_BoundCase_ReplaysThroughDomainEntry |
 | sb-activate-beam-pending | $.sleeveBloomHandler[?(@.caseId=='sb-activate-beam-pending')] | CheatSubmission.ActivateSleeveBloom | Rejected / BEAM_SWAP_ALREADY_PENDING | PASS-refined | OtherOfferPending | SleeveBloom_BoundCase_ReplaysThroughDomainEntry |
 | sb-activate-sleeve-pending | $.sleeveBloomHandler[?(@.caseId=='sb-activate-sleeve-pending')] | CheatSubmission.ActivateSleeveBloom | Rejected / SLEEVE_BLOOM_ALREADY_PENDING | PASS | OfferAlreadyPending | SleeveBloom_BoundCase_ReplaysThroughDomainEntry |
 | sb-activate-wall-empty | $.sleeveBloomHandler[?(@.caseId=='sb-activate-wall-empty')] | CheatSubmission.ActivateSleeveBloom | Rejected / SLEEVE_BLOOM_WALL_EMPTY | PASS-refined | NoWallCandidate | SleeveBloom_BoundCase_ReplaysThroughDomainEntry |
-| sb-activate-wall-empty-drift | $.sleeveBloomHandler[?(@.caseId=='sb-activate-wall-empty-drift')] | CheatSubmission.ActivateSleeveBloom | Rejected / SLEEVE_BLOOM_WALL_EMPTY | FAIL-open | — | SleeveBloom_WallEmptyDrift_PinsKnownDivergence |
+| sb-activate-wall-empty-drift | $.sleeveBloomHandler[?(@.caseId=='sb-activate-wall-empty-drift')] | CheatSubmission.ActivateSleeveBloom + frozen nextWallTileId input | Rejected / SLEEVE_BLOOM_WALL_EMPTY | BLOCKED-input | — | readiness probe / manifest |
 | sb-activate-no-drawn-tile | $.sleeveBloomHandler[?(@.caseId=='sb-activate-no-drawn-tile')] | CheatSubmission.ActivateSleeveBloom | Rejected / SLEEVE_BLOOM_NO_DRAWN_TILE | PASS | NoDrawnTile | SleeveBloom_BoundCase_ReplaysThroughDomainEntry |
 | sb-activate-not-your-turn | $.sleeveBloomHandler[?(@.caseId=='sb-activate-not-your-turn')] | CheatSubmission.ActivateSleeveBloom | Rejected / NOT_YOUR_TURN | PASS | NotYourTurn | SleeveBloom_BoundCase_ReplaysThroughDomainEntry |
 | sb-activate-wrong-phase | $.sleeveBloomHandler[?(@.caseId=='sb-activate-wrong-phase')] | CheatSubmission.ActivateSleeveBloom | Rejected / WRONG_PHASE | PASS | WrongPhase | SleeveBloom_BoundCase_ReplaysThroughDomainEntry |
@@ -182,8 +113,8 @@ V4 把多个语义合并成粗码；C# 有更细的 typed code。以下均为“
 | bm-activate-disabled | $.beamSwapHandler[?(@.caseId=='bm-activate-disabled')] | CheatSubmission.ActivateBeamSwap | Rejected / BEAM_SWAP_DISABLED | PASS-refined | CostMustBeTen | BeamSwap_BoundCase_ReplaysThroughDomainEntry |
 | bm-activate-insufficient | $.beamSwapHandler[?(@.caseId=='bm-activate-insufficient')] | CheatSubmission.ActivateBeamSwap | Rejected / INSUFFICIENT_FUNDS | PASS | InsufficientFunds | BeamSwap_BoundCase_ReplaysThroughDomainEntry |
 | bm-activate-deadwall-allowed | $.beamSwapHandler[?(@.caseId=='bm-activate-deadwall-allowed')] | CheatSubmission.ActivateBeamSwap | Allowed / — | PASS | None | BeamSwap_BoundCase_ReplaysThroughDomainEntry |
-| bm-activate-deadwall-empty | $.beamSwapHandler[?(@.caseId=='bm-activate-deadwall-empty')] | physical dead-wall map with no eligible candidate | Rejected / BEAM_SWAP_NO_CANDIDATES | BLOCKED-unrepr | — | BeamDeadWallFilterStates_AreNotCanonicalTilePositionMaps |
-| bm-activate-deadwall-dora-only | $.beamSwapHandler[?(@.caseId=='bm-activate-deadwall-dora-only')] | physical dead-wall map with only the dora indicator located in the dead wall | Rejected / BEAM_SWAP_NO_CANDIDATES | BLOCKED-unrepr | — | BeamDeadWallFilterStates_AreNotCanonicalTilePositionMaps |
+| bm-activate-deadwall-empty | $.beamSwapHandler[?(@.caseId=='bm-activate-deadwall-empty')] | physical dead-wall map with no eligible candidate | Rejected / BEAM_SWAP_NO_CANDIDATES | BLOCKED-input | — | BeamDeadWallFilterStates / manifest |
+| bm-activate-deadwall-dora-only | $.beamSwapHandler[?(@.caseId=='bm-activate-deadwall-dora-only')] | physical dead-wall map with only the dora indicator located in the dead wall | Rejected / BEAM_SWAP_NO_CANDIDATES | BLOCKED-input | — | BeamDeadWallFilterStates / manifest |
 | bm-choose-swap | $.beamSwapHandler[?(@.caseId=='bm-choose-swap')] | CheatSubmission.ChooseBeamSwap | Allowed / — | PASS | None | BeamSwap_BoundCase_ReplaysThroughDomainEntry |
 | bm-choose-keep | $.beamSwapHandler[?(@.caseId=='bm-choose-keep')] | CheatSubmission.ChooseBeamSwap | Allowed / — | PASS | None | BeamSwap_BoundCase_ReplaysThroughDomainEntry |
 | bm-choose-invalid-slot | $.beamSwapHandler[?(@.caseId=='bm-choose-invalid-slot')] | CheatSubmission.ChooseBeamSwap | Rejected / BEAM_SWAP_INVALID_CHOICE | PASS-refined | CandidateNotFound | BeamSwap_BoundCase_ReplaysThroughDomainEntry |
@@ -195,127 +126,124 @@ V4 把多个语义合并成粗码；C# 有更细的 typed code。以下均为“
 | bm-choose-deadwall-dora-stale | $.beamSwapHandler[?(@.caseId=='bm-choose-deadwall-dora-stale')] | CheatSubmission.ChooseBeamSwap | StaleOffer / BEAM_SWAP_STALE_OFFER | PASS | StaleOffer | BeamSwap_BoundCase_ReplaysThroughDomainEntry |
 | bm-choose-replacement-allowed | $.beamSwapHandler[?(@.caseId=='bm-choose-replacement-allowed')] | CheatSubmission.ChooseBeamSwap | Allowed / — | PASS | None | BeamSwap_BoundCase_ReplaysThroughDomainEntry |
 
-### 4.1 逐例执行的共同断言
+### 3.1 关键修正
 
-- 拒绝：`Success=false`、`Changed=false`、`Error=声明的 C# code`、`State=null`、`Map=null`、`Events=[]`，且输入 `CheatState` 的 ledger 余额/entryCount、mark version/groupCount、sleeve version/offer/reservation、beam version/offer 与 map 的 136 位置快照全部不变。
-- Stale（immediate/beam）：`Error=StaleOffer`、`Changed=true`、`State` 非空且 offer 已清除、`Map=null`、ledger 不变、事件为 clear。
-- Stale（off-turn）：V4 语义是 plain rejection，`State=null`、offer 仍挂起；与 immediate/beam 的 “带清除状态” 分开断言。
-- 到期：`DeadlineExpired`、`Changed=true`、offer 清除、reservation 落在 FIRST、事件 Keep=First。
-- Allowed：逐例检查 offer/group/reservation/candidate/map 后态、扣费 entry 的 id/amount/balance/reason、事件序列、136 守恒；不只看 `Success`。
+- `tm-capacity-tiles`：V4 源输入是 `groups=2, marked=(16..27)=12, selected=0/4/8/12`。C# `TileMarkGroup` 固定四张，2 组不可能有 12 张；3 组会先触发 group limit，不能冒充 tile-count guard。该 case 从 PASS 改为 **BLOCKED-input**，分母保留；`tm-capacity-groups` 仍真实绑定 group limit。
+- disabled 输入继续使用真实 `configuredCost=5`，不换成 `featureEnabled=false`；旧错误已删除。
+- `bm-keep-original-args-forbidden-at-request.requestException` 断言精确 `IllegalArgumentException`；M4 `doraRefusalException`/`wallSlotRefusalException` 同样精确校验，不再忽略 metadata。
+- Beam activation 使用 V4 activation 默认输入：`drawnTileId=16`、`replacement=0`；choice 使用 `beamTable`/`deadTable` 的 `drawn=52` 或 `108`、`replacement=135`。不再把 choice 的桌构造器当作 activation 输入。
+- `sb-choose-stale-index`：保留冻结候选 32 在 `Wall(53)`，用同 tile 的 reservation 使其受保护，使 `nextAvailableWallIndex=54`；不再移动候选本身。行为仍是 StaleOffer，且 `offerSecondWallIndex=53` 得到消费。
 
-### 4.2 特别说明
+## 4. 6 个物理移动
 
-- `tm-capacity-tiles`：V4 handler 输入是 `groups=2, marked=(16..27)`（12 张）+4；C# `TileMarkGroup` 固定 4 张，12 张只能由 3 个组构成，因此 C# 走 3 组后第 4 组，group limit 映射到同一个 `MarkCapacityExceeded`。行为码一致，输入形状不是逐字同构；已在行内登记。
-- `sb-activate-disabled` / `bm-activate-disabled`：真实输入是 `configuredCost=5`，不是 `featureEnabled=false`。旧测试换输入的做法已删除；现在断言 `CostMustBeTen`，仍为零副作用。
-- `bm-choose-invalid-foreign-hand`：真实输入是 `handTileId=52`（当前摸牌），不是另一座手牌；旧测试已纠正。
-- `bm-choose-deadwall-dora-stale`：C# 用真实 `BeamSwapState.Restore` 注入“冻结候选含 dora 槽”的 V4 输入，再走真实 `ChooseBeamSwap`；不是只读数组。
+| Case | 真实入口/断言 | 结果 |
+|---|---|---|
+| `mv-swap-hand-with-wall-direct` | `SwapHandWithWall`，wall0→Wall53；factsBefore/After、指针、136 | PASS |
+| `mv-swap-drawn-with-wall-backfill` | `DrawFromWall` → `ActivateSleeveBloom` → `ChooseSleeveBloom(SECOND)`；drawn 回 Wall54、墙牌进手/新 drawn evidence | PASS（表示差异见 §4.1） |
+| `mv-reservation-delivery` | `DeliverSleeveBloomReservation`；removeAt、wallEnd-1、指针不动 | PASS |
+| `mv-reservation-delivery-then-beam` | 136 placements、8 候选实体+槽、beamGot/nextDraw、factsAfter | PASS |
+| `mv-rinshan-and-drawn-swap` | `DrawReplacement` + `SwapDrawnWithNextRinshan`；deadWall1=108、109 进手、135 replacement；108 的 V4 stale index=0 显式消费并映射到权威 slot=1 | PASS |
+| `mv-swap-hand-with-dead-wall` | `DrawReplacement` + `SwapHandWithDeadWall(1)` + dora/WallSlot 拒绝 + `SwapHandWithReplacement(0)` | PASS |
 
-## 5. 6 个物理移动
+### 4.1 drawn-backfill
 
-| Case | JSONpath | 真实入口/断言 | 结果 |
-|---|---|---|---|
-| `mv-swap-hand-with-wall-direct` | `$.tileMovement[?(@.caseId=='mv-swap-hand-with-wall-direct')]` | `TilePositionMap.SwapHandWithWall`，V4 wall0→C# Wall53；factsBefore/After、指针、容器、136 | PASS |
-| `mv-swap-drawn-with-wall-backfill` | `...=='mv-swap-drawn-with-wall-backfill'` | `DrawFromWall` → `ActivateSleeveBloom` → `ChooseSleeveBloom(SECOND)`；drawn 回 Wall54、墙牌进手并成为新 drawn evidence、指针不前进 | PASS（表示差异见 5.1） |
-| `mv-reservation-delivery` | `...=='mv-reservation-delivery'` | `DeliverSleeveBloomReservation`；removeAt、wallEnd-1、指针不动、17 进手、16 在河 | PASS |
-| `mv-reservation-delivery-then-beam` | `...=='mv-reservation-delivery-then-beam'` | 既有 `DeliveryThenBeam`：136 placements、8 候选实体+槽、beamGot/nextDraw、factsAfter | PASS |
-| `mv-rinshan-and-drawn-swap` | `...=='mv-rinshan-and-drawn-swap'` | `DrawReplacement` + `SwapDrawnWithNextRinshan`；rinshanPointer1、wallEnd-1、deadWall1=108、109 进手、135 replacement | PASS |
-| `mv-swap-hand-with-dead-wall` | `...=='mv-swap-hand-with-dead-wall'` | `DrawReplacement` + `SwapHandWithDeadWall(1)` + dora/WallSlot 拒绝 + `SwapHandWithReplacement(0)`；factsAfter 四项 | PASS |
+旧“V4-only/no C# entry”说法错误：`ChooseSleeveBloom` normal-draw SECOND 分支调用 `SwapHandWithWall`，允许 drawn 作为手牌来源并重写 `DrawnTileEvidence`。C# 规范 map 不保留 V4 旧墙槽洞：`backfilledIndex=0` 映射为 Wall53 为空、29 成为新 drawn evidence；实体/容器/座位/槽位/后续摸牌一致。该 case 为 PASS，不冒充逐字相同，也不因此 BLOCKED。
 
-### 5.1 drawn-backfill 的表示差异（不是 V4-only）
+## 5. 第 2 轮 5 组缺陷修复映射
 
-旧注释声称该路径“C# 无入口”，只因为把入口限定为 `ChooseBeamSwap`（它按设计拒绝摸牌实体）。实际 `ChooseSleeveBloom` 的 normal-draw SECOND 分支调用 `SwapHandWithWall`，允许 drawn 作为手牌来源，并把墙牌写成新的 `DrawnTileEvidence`；因此该法律 **有真实入口**。
+### D-R1-01（MAJOR）反向 pin / exit0
 
-C# 规范牌桌在摸牌后不保留 V4 的“旧墙槽洞”：`DrawFromWall` 把实体从 Wall53 移到手中。V4 的 `backfilledIndex=0/backfilledTileId=29` 表示 29 填回旧洞；C# 对应后态是 Wall53 为空、29 成为新的 drawn evidence，而 33 在 Wall54、29 在手中。实体/容器/座位/槽位/后续摸牌顺序一致；`backfilledIndex` 这个“洞”字段不能在 C# 规范 map 中物化。测试显式断言这一映射，不声称逐字相同，也不因此把 case 算作 BLOCKED。
+- **位置**：旧 `CheatGoldenBindingTests.cs:1493-1511`；脚本 `blocked/summary/exit`；报告 §6/§9。
+- **实际 vs 期望**：旧测试把实际 Allowed 当成功；未来黄金拒绝反而失败。旧脚本 7 项 blocked 仍 exit0。
+- **修复**：删除反向 pin；case 改为 BLOCKED-input；新增独立 TEMP xUnit readiness 探针，黄金期望 `Rejected/NoWallCandidate`，实际 Allowed → native1/Total1/Failed1。脚本默认 readiness 非零；`-MatrixOnly` 分离矩阵。报告明确 matrixStatus 与 readinessStatus。
+- **验收**：同一黄金期望探针 native1、Total>0、Failed>0、零 errors/skip/not-run；未来生产满足黄金时转绿。已绑定案例正控制/负例仍有效。
 
-## 6. 一次性缺陷/缺口清单
+### D-R1-02（MAJOR）漏绑与宽松 schema
 
-共同复现命令（只读本树，测试会自行创建内存牌桌；矩阵证据写新 TEMP）：
+- **位置**：ledger/state、sleeve 分支、AssertFact/M3/M4/M5、矩阵。
+- **实际 vs 期望**：initialPoints[1..3]、ledger 拒绝 outcome/exception、versionAfterFirstRegister、异常字符串、sleeve 多数 goldenInputs、keep 未知/缺失/错型、nullable schema、M5 delivered/pointer、M3 index、M4 metadata 曾被忽略或宽松。
+- **修复**：所有上述字段逐叶断言；`AssertKeys` 精确 key 集，`GoldenEnum` 严格解析，`AssertFact` 区分 factsAfter/inputPlacements 的 nullable schema；M5 增补 deliveredTileId/wallPointerBeforeDelivery/inputKanCount/lastDiscard schema；M3 显式消费 stale index=0 并映射权威 slot1；M4 异常字符串精确；矩阵扩到 42 项，覆盖新类别。
+- **验收**：8/8 strict probes native1/Total94/Failed1；296 叶扫描仅 2 项合法等价输入；42/42 单字段变异真实 Failed>0；合法等价项见 §6.1。
 
-```powershell
-& D:/Unity/dotnet/dotnet.exe dotnet/tests/Mahjong.Domain.Tests/bin/Release/net8.0/Mahjong.Domain.Tests.dll -class '*CheatGoldenBindingTests*' -showLiveOutput -noLogo
-```
+### D-R1-03（MAJOR）换输入冒充分支
 
-具体 test 名在每条 F-01/F-02/F-03 中给出；xUnit 的 `-class` 输出会列出 theory 的 `caseId`。
+- **位置**：`tm-capacity-tiles`、Beam activation、stale-index。
+- **实际 vs 期望**：旧 `tm-capacity-tiles` 用 3 组 12 张验证 group limit，不是 tile-count guard；Beam activation 用了 choice 的 drawn52/replacement135；stale-index 移动候选。
+- **修复**：`tm-capacity-tiles` 改 BLOCKED-input（2×6 不可由四张组构造）；Beam activation 改 drawn16/replacement0，choice 保留 52/108/135；stale-index 保留候选 53 并用 reservation 使 first-available=54。
+- **验收**：`tm-capacity-groups` 与 tile-limit 不再混同；activation/choice 源输入分别有构造器锚点；stale-index 消费 offerSecondWallIndex=53/nextAvailableWallIndex=54；分母重算 67 PASS/8 BLOCKED。
 
-### F-01（MAJOR，OPEN DIVERGENCE）sleeve 的“下一张墙牌漂移”被 C# 重新搜索而放行
+### D-R1-04（MAJOR）零副作用取样时点
 
-- **位置**：`dotnet/src/Mahjong.Domain/Cheat/CheatSubmission.cs:278-286`（`FindFirstAvailableWallIndex`）与 V4 `SleeveBloomSubmissionHandler` 的 `nextWallTileId/nextWallTileInWall` 检查；golden `sleeveBloomHandler[sb-activate-wall-empty-drift]`。
-- **复现**：`SleeveBloom_WallEmptyDrift_PinsKnownDivergence`。真实输入：drawn=16，wall 首个候选 32 不在墙（32 在河中），40/44/48 仍在墙；V4 的 `nextWallTileId=32` 已离开墙，返回 `Rejected/SLEEVE_BLOOM_WALL_EMPTY`。
-- **实际**：C# 重新扫描，选 40 为第二候选，返回 `Allowed`，扣10、生成 offer。**期望**：同输入应 `Rejected/NoWallCandidate`（V4 `SLEEVE_BLOOM_WALL_EMPTY`），零扣费、零 offer。
-- **证据**：`C:/Users/sncdc/AppData/Local/Temp/n3-cheat-binding-probe-7acbace0dfd64cc384aa41d58acdd8d8` 的测试源码/日志；本树 `CheatGoldenBindingTests.cs` 的 pin 测试。该 pin 在行为被修正为拒绝后会失败，迫使更新绑定，不是永久豁免。
-- **修复要求**：不要改规则/放宽断言。需要 caller 决策：(a) 接受 C# “重新搜索更稳”的行为并更新 V4/golden 语义；或 (b) 给 Domain 增加冻结候选输入（`nextWallTileId`/`frozenWallIndex`）并在 `ActivateSleeveBloom` 校验其仍在墙；或 (c) 由 actor 层在调用前做该检查。选 (b)/(c) 时需补生产测试与本 case 的正/负矩阵。
-- **验收断言**：同输入 `Success=false`、`Error=NoWallCandidate`、ledger 40 不变、无 offer、map 136 不变；正控制 `sb-activate-allowed` 仍 Allowed。
+- **位置**：旧 `AssertRejected` 在入口后 `Snapshot.Capture`。
+- **实际 vs 期望**：执行后与自身比较，无法检测改动。
+- **修复**：`AssertRejected`/`AssertStaleWithState` 强制接收调用前 Snapshot；所有 caller 在入口前捕获并传入。Snapshot 覆盖 ledger entry 全字段、mark 全字段/round ids、sleeve offer/reservation、beam offer、`CheatState.Fingerprint`、136 locations；stale 分支只允许 offer 清除，ledger/marks/beam/map 必须不变。
+- **验收**：代码中 helper 不再内部生成 before；拒绝/stale 分支的真实前态与后态对照；定向+全量真实计数/exit。
 
-### F-02（BLOCKED，UNREPRESENTABLE）beam dead-wall 的“空集/仅 dora”过滤态不是规范牌桌
+### D-R1-05（MINOR）依赖文档与冻结基线不符
 
-- **位置**：V4 `BeamSwapSubmissionHandler.ActivationInput.deadWallTileIdsInDeadWall` 与 golden `bm-activate-deadwall-empty` / `bm-activate-deadwall-dora-only`；C# `TilePositionMap.Validate` 要求 `deadWall + replacements == 14`（`TilePositionMap.cs:1587-1593`），`ActivateBeamSwap` 只从规范 DeadWall/Replacement 读候选（`CheatSubmission.cs:842-882`）。
-- **复现**：`BeamDeadWallFilterStates_AreNotCanonicalTilePositionMaps` 构造两种过滤态，均 `ConservationException`（有效王牌区≠14）。
-- **实际**：C# 无法表示“14 张王牌实体仍在，但不在 deadWall 位置”的 V4 handler 过滤态；规范 map 下 dead-wall 窗口至少有 10+4 个物理候选。**期望**：若产品要求该拒绝，需要 handler 级 `deadWallTileIdsInDeadWall` 输入或候选抑制面，而不是把实体搬出王牌区。
-- **证据**：上述测试、`TilePositionMap.cs:1587-1593`、golden 两 case。
-- **修复要求**：新增 handler-level 输入或在 actor 适配层维护该集合；不得通过空王牌区/伪造 136 位置绕过守恒。`bm-activate-deadwall-allowed`、`bm-choose-deadwall-allowed`、`bm-choose-deadwall-dora-stale`、`bm-choose-replacement-allowed` 已真实绑定；dora 排除另有 `BeamSwap_DoraIndicator_IsNeverACandidate` 正/负验证。
-- **验收断言**：在规范 map 上调用新入口，空集/仅 dora 均 Rejected，其他合法槽仍 Allowed；136 守恒；无扣费/offer 副作用。
+- **实际 vs 期望**：旧报告写“未来 actor dispatch/N-1b 完成后”；冻结基线已接受 N1b，存在 `SubmitCheatAsync`/`ValidateAuthorityIdentity`/`RoundCheatTransition.Prepare`。
+- **修复**：4 个 ActorLayerBlocked 的 dependency 改为现有 N1b 链路 + 精确下一测试文件 `TableRuntime.Tests/N1bCheatExecutionTests.cs`；明确 Domain.Tests 不引用 TableRuntime，不声称这 4 例完成。
+- **验收**：准确引用已接受 N1b；只有真实残余（CheatTurnContext 无 decision/deadline/round-ended 输入）标 BLOCKED。
 
-### F-03（BLOCKED，ACTOR LAYER）4 个 tile-mark 决策/截止时间 case 不属于 `CheatSubmission`
+## 6. 第 2 轮外部矩阵（42 项）
 
-- **位置**：`tm-wrong-phase-round-end`、`tm-no-active-decision`、`tm-deadline-expired`、`tm-decision-mismatch`；`CheatTurnContext` 只有 `NowMillis`，没有 decisionId/deadline/round-ended 字段；`ApplyTileMark` 不比较 deadline。
-- **实际**：Domain handler 不能在这些 V4 输入上给出 `DECISION_MISMATCH`/`NO_ACTIVE_DECISION`/`DEADLINE_EXPIRED`。**期望**：由 actor 决策门先校验 round/decision 身份与 `DecisionTiming.IsExpired(now==deadline)`，再调用 Domain。
-- **对应已接受入口**：`dotnet/src/Mahjong.Domain/DecisionClock.cs` 的 `DecisionTiming.IsExpired`/`DecisionClock.Timing`；下一精确接线点是未来的 actor/TableRuntime 命令分发（N-1b 完成后），不是 `CheatSubmission` 内偷偷加时钟依赖。
-- **修复要求**：N-1b/actor 层接线后补 4 例；在那之前 manifest 固定 BLOCKED，不计 PASS。**验收断言**：deadline 相等即拒绝、无 decision 即拒绝、round ended/round id 不符即拒绝，均零扣费；合法 case 仍 Allowed。
-
-### F-04（MINOR，fixture note 不自洽）`tm-capacity-tiles` 的 note 与 exporter 输入不一致
-
-- **位置**：`tests/v5-golden/cheat-v1.json` 该 case 的 note “8 marked + 4 > 12”；exporter `V5CheatGoldenExporterTest.kt:418` 实际 `marked=(16..27).toSet()` 是 12 张。
-- **实际/期望**：行为 reason 一致（`TILE_MARK_CAPACITY_EXCEEDED`），但 note 的 8 与输入 12 不一致。**修复**：下一次合法导出时把 note 改成 “12 marked + 4 > 12”，或删除 note 中的计数；本轮不改 fixture（用户所有）。
-- **验收**：重新导出后 fixture note 与 `marked` 集合一致；断言不变。
-
-### F-05（MINOR，V4 list artifact）M3 `factsAfter` 的 108 槽位
-
-- **位置**：`V5CheatGoldenExporterTest.kt:1315-1330`；V4 `TileMovement.kt:591` 保留 `deadWall[0]` 旧引用，`swapDrawnWithNextRinshan` 又写 `deadWall[1]=108`，`factsJson` 的 `indexOf(108)` 返回旧槽 0；权威字段 `deadWallSlot1AfterSwap=108`。
-- **实际/期望**：C# 规范 map 只有一个 108，位于 `DeadWall(1)`；测试绑定 `deadWallSlot1AfterSwap` 与其它两条 facts，对 108 只断言容器为 deadWall，不把重复列表 artifact 当槽位。**修复**：下次导出可让 `factsJson` 对重复实体显式给槽位/去重；本轮不改。
-- **验收**：重导出后 108 的 factsAfter index=1；当前绑定保持 `deadWallSlot1AfterSwap=1`。
-
-## 7. 外部单字段错值矩阵（22 项）
-
-脚本：`tools/v5-golden/probe-cheat-binding.ps1`。每次从原始副本复制，只改一个字段，`V5_CHEAT_GOLDEN_PATH` 指向独占 TEMP 副本，`try/finally` 恢复环境变量；原 fixture 不写。正控制为未修改副本，96 tests / 0 failed / exit0。每项要求：native exit1、Total=96、Errors=0、Skipped=0、Not Run=0、真实 Failed>0，且预期测试名出现在失败列表；`ConvertTo-Json` 写副本时显式去 BOM，避免把编码异常冒充行为失败。
+脚本：`tools/v5-golden/probe-cheat-binding.ps1`。原始 fixture 单字段复制到独占 TEMP；`try/finally` 恢复 `V5_CHEAT_GOLDEN_PATH`；写副本显式去 BOM；正控制未修改副本 94/0/0/0/0 exit0。每项要求 native1、Total=94、Errors=0、Skipped=0、NotRun=0、真实 Failed>0，且预期 test 名出现。
 
 | ID | 类别 | 字段 | 结果 | exit / Total / Failed / Skipped | 首个失败测试 |
 |---|---|---|---|---|---|
-| outcome-tilemark | outcome | tileMarkHandler[tm-allowed].outcome | FAIL_AS_EXPECTED | 1/96/3/0 | CheatGoldenTests.Handler_Sections_CoverEveryRejectionReason |
-| reason-tilemark | reason | tileMarkHandler[tm-not-your-turn].reason | FAIL_AS_EXPECTED | 1/96/3/0 | CheatGoldenTests.Handler_TileMark_RepresentativeCases_ReplayAgainstCheatSubmission |
-| reason-beam | reason | beamSwapHandler[bm-activate-riichi].reason | FAIL_AS_EXPECTED | 1/96/2/0 | CheatGoldenBindingTests.BindingManifest_PreservesTheFullDenominator |
-| ledger-amount | ledger-amount | ledger.chargeOnce.amount | FAIL_AS_EXPECTED | 1/96/2/0 | CheatGoldenTests.Ledger_Section_ReplaysAgainstCheatLedger |
-| ledger-balance | ledger-balance | ledger.chargeOnce.balancesAfter[0] | FAIL_AS_EXPECTED | 1/96/2/0 | CheatGoldenTests.Ledger_Section_ReplaysAgainstCheatLedger |
-| ledger-flow | ledger-flow | ledger.flowSummary.seat1NetDelta | FAIL_AS_EXPECTED | 1/96/2/0 | CheatGoldenTests.Ledger_Section_ReplaysAgainstCheatLedger |
-| ledger-snapshot-balance | ledger-balance | ledger.flowSummary.finalBalances[1] | FAIL_AS_EXPECTED | 1/96/2/0 | CheatGoldenTests.Ledger_Section_ReplaysAgainstCheatLedger |
-| ledger-reason | ledger-reason | ledger.chargeOnce.reason | FAIL_AS_EXPECTED | 1/96/1/0 | CheatGoldenBindingTests.Ledger_Snapshot_RestoresEveryEntryFieldInOrder |
-| mark-version | mark-version | tileMarkState.addGroup.versionTrail[2] | FAIL_AS_EXPECTED | 1/96/2/0 | CheatGoldenTests.TileMarkState_Section_ReplaysAgainstTileMarkState |
-| mark-expiry | mark-expiry | tileMarkState.expiry.groupsAfterCompletingRound3 | FAIL_AS_EXPECTED | 1/96/2/0 | CheatGoldenTests.TileMarkState_Section_ReplaysAgainstTileMarkState |
-| mark-ordinal | mark-ordinal | tileMarkState.registerDealtRound.ordinalAfterFirst | FAIL_AS_EXPECTED | 1/96/2/0 | CheatGoldenTests.TileMarkState_Section_ReplaysAgainstTileMarkState |
-| sleeve-window | input-window | sleeveBloomHandler[sbo-activate-allowed].goldenInputs.windowId | FAIL_AS_EXPECTED | 1/96/1/0 | CheatGoldenBindingTests.SleeveBloom_BoundCase_ReplaysThroughDomainEntry |
-| sleeve-offer | input-offer | sleeveBloomHandler[sb-choose-second].goldenInputs.offerId | FAIL_AS_EXPECTED | 1/96/1/0 | CheatGoldenBindingTests.SleeveBloom_BoundCase_ReplaysThroughDomainEntry |
-| sleeve-tile | input-tile | sleeveBloomHandler[sb-activate-allowed].goldenInputs.drawnTileId | FAIL_AS_EXPECTED | 1/96/1/0 | CheatGoldenBindingTests.SleeveBloom_BoundCase_ReplaysThroughDomainEntry |
-| sleeve-pointer | input-pointer | sleeveBloomHandler[sb-activate-allowed].goldenInputs.wallPointer | FAIL_AS_EXPECTED | 1/96/1/0 | CheatGoldenBindingTests.SleeveBloom_BoundCase_ReplaysThroughDomainEntry |
-| movement-container | physical-container | tileMovement[mv-swap-hand-with-wall-direct].factsAfter[0].container | FAIL_AS_EXPECTED | 1/96/2/0 | CheatGoldenBindingTests.Movement_SwapHandWithWall_BindsFactsBeforeAndAfter |
-| movement-seat | physical-seat | tileMovement[mv-swap-hand-with-wall-direct].factsAfter[1].seat | FAIL_AS_EXPECTED | 1/96/1/0 | CheatGoldenBindingTests.Movement_SwapHandWithWall_BindsFactsBeforeAndAfter |
-| movement-index | physical-index | tileMovement[mv-swap-hand-with-wall-direct].factsAfter[0].index | FAIL_AS_EXPECTED | 1/96/2/0 | CheatGoldenBindingTests.Movement_SwapHandWithWall_BindsFactsBeforeAndAfter |
-| movement-hand-tile | physical-tile | tileMovement[mv-swap-hand-with-wall-direct].handTileId | FAIL_AS_EXPECTED | 1/96/2/0 | CheatGoldenBindingTests.Movement_SwapHandWithWall_BindsFactsBeforeAndAfter |
-| movement-pointer | physical-pointer | tileMovement[mv-reservation-delivery].wallPointerAfter | FAIL_AS_EXPECTED | 1/96/3/0 | CheatGoldenTests.TileMovement_ReservationDelivery_ReplaysThroughCsharpEntrypoint |
-| movement-candidate-slot | physical-slot | tileMovement[mv-reservation-delivery-then-beam].candidateSlots[0] | FAIL_AS_EXPECTED | 1/96/1/0 | CheatGoldenTests.DeliveryThenBeam_BindsToGoldenCandidateEntities |
-| beam-outcome | outcome | beamSwapHandler[bm-choose-keep].outcome | FAIL_AS_EXPECTED | 1/96/4/0 | CheatGoldenTests.Handler_Sections_CoverEveryRejectionReason |
+| outcome-tilemark | outcome | tileMarkHandler[tm-allowed].outcome | FAIL_AS_EXPECTED | 1/94/3/0 | CheatGoldenTests.Handler_Sections_CoverEveryRejectionReason |
+| reason-tilemark | reason | tileMarkHandler[tm-not-your-turn].reason | FAIL_AS_EXPECTED | 1/94/3/0 | CheatGoldenTests.Handler_TileMark_RepresentativeCases_ReplayAgainstCheatSubmission |
+| reason-beam | reason | beamSwapHandler[bm-activate-riichi].reason | FAIL_AS_EXPECTED | 1/94/2/0 | CheatGoldenBindingTests.BindingManifest_PreservesTheFullDenominator |
+| ledger-amount | ledger-amount | ledger.chargeOnce.amount | FAIL_AS_EXPECTED | 1/94/2/0 | CheatGoldenTests.Ledger_Section_ReplaysAgainstCheatLedger |
+| ledger-balance | ledger-balance | ledger.chargeOnce.balancesAfter[0] | FAIL_AS_EXPECTED | 1/94/2/0 | CheatGoldenTests.Ledger_Section_ReplaysAgainstCheatLedger |
+| ledger-flow | ledger-flow | ledger.flowSummary.seat1NetDelta | FAIL_AS_EXPECTED | 1/94/2/0 | CheatGoldenTests.Ledger_Section_ReplaysAgainstCheatLedger |
+| ledger-snapshot-balance | ledger-balance | ledger.flowSummary.finalBalances[1] | FAIL_AS_EXPECTED | 1/94/2/0 | CheatGoldenTests.Ledger_Section_ReplaysAgainstCheatLedger |
+| ledger-reason | ledger-reason | ledger.chargeOnce.reason | FAIL_AS_EXPECTED | 1/94/1/0 | CheatGoldenBindingTests.Ledger_Snapshot_RestoresEveryEntryFieldInOrder |
+| mark-version | mark-version | tileMarkState.addGroup.versionTrail[2] | FAIL_AS_EXPECTED | 1/94/2/0 | CheatGoldenTests.TileMarkState_Section_ReplaysAgainstTileMarkState |
+| mark-expiry | mark-expiry | tileMarkState.expiry.groupsAfterCompletingRound3 | FAIL_AS_EXPECTED | 1/94/2/0 | CheatGoldenTests.TileMarkState_Section_ReplaysAgainstTileMarkState |
+| mark-ordinal | mark-ordinal | tileMarkState.registerDealtRound.ordinalAfterFirst | FAIL_AS_EXPECTED | 1/94/2/0 | CheatGoldenTests.TileMarkState_Section_ReplaysAgainstTileMarkState |
+| sleeve-window | input-window | sleeveBloomHandler[sbo-activate-allowed].goldenInputs.windowId | FAIL_AS_EXPECTED | 1/94/1/0 | CheatGoldenBindingTests.SleeveBloom_BoundCase_ReplaysThroughDomainEntry |
+| sleeve-offer | input-offer | sleeveBloomHandler[sb-choose-second].goldenInputs.offerId | FAIL_AS_EXPECTED | 1/94/1/0 | CheatGoldenBindingTests.SleeveBloom_BoundCase_ReplaysThroughDomainEntry |
+| sleeve-tile | input-tile | sleeveBloomHandler[sb-activate-allowed].goldenInputs.drawnTileId | FAIL_AS_EXPECTED | 1/94/1/0 | CheatGoldenBindingTests.SleeveBloom_BoundCase_ReplaysThroughDomainEntry |
+| sleeve-pointer | input-pointer | sleeveBloomHandler[sb-activate-allowed].goldenInputs.wallPointer | FAIL_AS_EXPECTED | 1/94/1/0 | CheatGoldenBindingTests.SleeveBloom_BoundCase_ReplaysThroughDomainEntry |
+| movement-container | physical-container | tileMovement[mv-swap-hand-with-wall-direct].factsAfter[0].container | FAIL_AS_EXPECTED | 1/94/2/0 | CheatGoldenBindingTests.Movement_SwapHandWithWall_BindsFactsBeforeAndAfter |
+| movement-seat | physical-seat | tileMovement[mv-swap-hand-with-wall-direct].factsAfter[1].seat | FAIL_AS_EXPECTED | 1/94/1/0 | CheatGoldenBindingTests.Movement_SwapHandWithWall_BindsFactsBeforeAndAfter |
+| movement-index | physical-index | tileMovement[mv-swap-hand-with-wall-direct].factsAfter[0].index | FAIL_AS_EXPECTED | 1/94/2/0 | CheatGoldenBindingTests.Movement_SwapHandWithWall_BindsFactsBeforeAndAfter |
+| movement-hand-tile | physical-tile | tileMovement[mv-swap-hand-with-wall-direct].handTileId | FAIL_AS_EXPECTED | 1/94/2/0 | CheatGoldenBindingTests.Movement_SwapHandWithWall_BindsFactsBeforeAndAfter |
+| movement-pointer | physical-pointer | tileMovement[mv-reservation-delivery].wallPointerAfter | FAIL_AS_EXPECTED | 1/94/3/0 | CheatGoldenTests.TileMovement_ReservationDelivery_ReplaysThroughCsharpEntrypoint |
+| movement-candidate-slot | physical-slot | tileMovement[mv-reservation-delivery-then-beam].candidateSlots[0] | FAIL_AS_EXPECTED | 1/94/1/0 | CheatGoldenTests.DeliveryThenBeam_BindsToGoldenCandidateEntities |
+| beam-outcome | outcome | beamSwapHandler[bm-choose-keep].outcome | FAIL_AS_EXPECTED | 1/94/4/0 | CheatGoldenTests.Handler_Sections_CoverEveryRejectionReason |
+| ledger-initial-points | ledger-balance | ledger.initialPoints[1] | FAIL_AS_EXPECTED | 1/94/1/0 | CheatGoldenBindingTests.Ledger_Snapshot_RestoresEveryEntryFieldInOrder |
+| ledger-entry-id | ledger-amount | ledger.chargeOnce.entryId | FAIL_AS_EXPECTED | 1/94/1/0 | CheatGoldenBindingTests.Ledger_Snapshot_RestoresEveryEntryFieldInOrder |
+| ledger-reject-exception | ledger-reason | ledger.insufficientFunds.exception | FAIL_AS_EXPECTED | 1/94/1/0 | CheatGoldenBindingTests.Ledger_Snapshot_RestoresEveryEntryFieldInOrder |
+| mark-register-version | mark-version | tileMarkState.registerDealtRound.versionAfterFirstRegister | FAIL_AS_EXPECTED | 1/94/1/0 | CheatGoldenBindingTests.TileMarkState_BindsEveryExportedFieldAndZeroSideEffect |
+| mark-group-exception | mark-version | tileMarkState.addGroup.sameIdDifferentContentException | FAIL_AS_EXPECTED | 1/94/1/0 | CheatGoldenBindingTests.TileMarkState_BindsEveryExportedFieldAndZeroSideEffect |
+| sleeve-seat | input-window | sleeveBloomHandler[sb-activate-allowed].goldenInputs.seat | FAIL_AS_EXPECTED | 1/94/1/0 | CheatGoldenBindingTests.SleeveBloom_BoundCase_ReplaysThroughDomainEntry |
+| sleeve-keep-unknown | input-offer | sleeveBloomHandler[sb-choose-first].goldenInputs.keep | FAIL_AS_EXPECTED | 1/94/1/0 | CheatGoldenBindingTests.SleeveBloom_BoundCase_ReplaysThroughDomainEntry |
+| sleeve-keep-missing | input-offer | sleeveBloomHandler[sb-choose-first].goldenInputs.keep | FAIL_AS_EXPECTED | 1/94/1/0 | CheatGoldenBindingTests.SleeveBloom_BoundCase_ReplaysThroughDomainEntry |
+| sleeve-seat-missing | input-window | sleeveBloomHandler[sb-choose-first].goldenInputs.seat | FAIL_AS_EXPECTED | 1/94/1/0 | CheatGoldenBindingTests.SleeveBloom_BoundCase_ReplaysThroughDomainEntry |
+| sleeve-draw-kind | input-tile | sleeveBloomHandler[sb-choose-second].goldenInputs.drawKind | FAIL_AS_EXPECTED | 1/94/1/0 | CheatGoldenBindingTests.SleeveBloom_BoundCase_ReplaysThroughDomainEntry |
+| sleeve-null-typed | input-tile | sleeveBloomHandler[sb-activate-allowed].goldenInputs.nextDeadWallTileId | FAIL_AS_EXPECTED | 1/94/1/0 | CheatGoldenBindingTests.SleeveBloom_BoundCase_ReplaysThroughDomainEntry |
+| sleeve-cost | input-pointer | sleeveBloomHandler[sb-choose-first].goldenInputs.cost | FAIL_AS_EXPECTED | 1/94/1/0 | CheatGoldenBindingTests.SleeveBloom_BoundCase_ReplaysThroughDomainEntry |
+| facts-wall-seat | physical-seat | tileMovement[mv-swap-hand-with-wall-direct].factsAfter[0].seat | FAIL_AS_EXPECTED | 1/94/1/0 | CheatGoldenBindingTests.Movement_SwapHandWithWall_BindsFactsBeforeAndAfter |
+| facts-hand-index | physical-index | tileMovement[mv-swap-hand-with-wall-direct].factsAfter[1].index | FAIL_AS_EXPECTED | 1/94/1/0 | CheatGoldenBindingTests.Movement_SwapHandWithWall_BindsFactsBeforeAndAfter |
+| m5-delivered | physical-tile | tileMovement[mv-reservation-delivery-then-beam].deliveredTileId | FAIL_AS_EXPECTED | 1/94/1/0 | CheatGoldenTests.DeliveryThenBeam_BindsToGoldenCandidateEntities |
+| m5-delivery-pointer | physical-pointer | tileMovement[mv-reservation-delivery-then-beam].wallPointerBeforeDelivery | FAIL_AS_EXPECTED | 1/94/1/0 | CheatGoldenTests.DeliveryThenBeam_BindsToGoldenCandidateEntities |
+| m3-stale-index | physical-index | tileMovement[mv-rinshan-and-drawn-swap].factsAfter[0].index | FAIL_AS_EXPECTED | 1/94/1/0 | CheatGoldenBindingTests.Movement_RinshanAndDrawnSwap_BindsDeadWallSlotAndReplacement |
+| m4-dora-exception | metadata | tileMovement[mv-swap-hand-with-dead-wall].doraRefusalException | FAIL_AS_EXPECTED | 1/94/1/0 | CheatGoldenBindingTests.Movement_DeadWallSwap_BindsCompositeFactsAndRefusals |
+| m4-wall-exception | metadata | tileMovement[mv-swap-hand-with-dead-wall].wallSlotRefusalException | FAIL_AS_EXPECTED | 1/94/1/0 | CheatGoldenBindingTests.Movement_DeadWallSwap_BindsCompositeFactsAndRefusals |
+| request-exception | metadata | beamSwapHandler[bm-keep-original-args-forbidden-at-request].requestException | FAIL_AS_EXPECTED | 1/94/1/0 | CheatGoldenBindingTests.BeamSwap_BoundCase_ReplaysThroughDomainEntry |
 
-覆盖类别：outcome、reason、ledger-amount/balance/flow/reason、mark-version/expiry/ordinal、input-window/offer/tile/pointer、physical-container/seat/index/tile/pointer/slot。没有只触发 header/hash；每项都在 `matrix/failedTests` 中记录真实失败 test 名。
+### 6.1 296 叶扫描（调用者脚本）
 
-### 7.1 fixture 身份（三者区分）
+- 原始调用者 `probe-leaves-v2.ps1` 硬编码 Total=96；本轮移除两个不可绑定 case（drift 反向 pin、capacity theory）后行为套件 Total=94。使用 TEMP 副本仅把该期望从 96 改为 94，其余不变；调用者原证据未改。
+- 结果：296 项中 **294 项 native1**，2 项 native0。
+- 2 项合法等价输入：
+  1. `$.tileMovement[mv-swap-hand-with-wall-direct].factsBefore[0].tileId 8→9`：9 仍是 seat0 手牌，`AssertFacts` 仍真实读取并断言 hand/seat；输入事实保持真，不是漏绑。
+  2. `$.tileMovement[mv-reservation-delivery-then-beam].inputKanCount 0→1`：值进入 `FromPlacements(..., kanCount)` 且 `map.KanCount` 被断言等于 fixture；该 case 的物理行为不依赖 kanCount，属于合法等价输入。
+- 其余 59 个旧 native0 叶现在均 native1；8/8 strict probes native1/Total94/Failed1。
 
-| 口径 | 值 |
-|---|---|
-| raw SHA-256 | `A196CBBD97AB8F61BE8679B74C8F17DF2713CB37AEF0922E5F3C9F725B28AB4E` |
-| LF 归一化 SHA-256 | `3B33824F53E6E5808D2475CC212FCF3A914BBB5DF9A1A367BF2078A252F1F68D` |
-| Git blob SHA-1 | `61307f255c8d1b02f1b64084768b6a500f3307b4` |
-
-原始 fixture 未被修改；`git status` 不含 `tests/v5-golden/cheat-v1.json`。
-
-## 8. 命令、native exit、计数与日志
+## 7. 证据与命令
 
 ```powershell
 & D:/Unity/dotnet/dotnet.exe build dotnet/Mahjong.sln -c Release --no-incremental
@@ -323,52 +251,104 @@ C# 规范牌桌在摸牌后不保留 V4 的“旧墙槽洞”：`DrawFromWall` �
 & D:/Unity/dotnet/dotnet.exe dotnet/tests/Mahjong.Domain.Tests/bin/Release/net8.0/Mahjong.Domain.Tests.dll -showLiveOutput -noLogo
 & D:/Unity/dotnet/dotnet.exe dotnet/tests/Mahjong.Domain.Tests/bin/Release/net8.0/Mahjong.Domain.Tests.dll -class '*CheatGolden*' -showLiveOutput -noLogo
 powershell -NoProfile -ExecutionPolicy Bypass -File tools/v5-golden/probe-cheat-binding.ps1 -Repo D:/majiang-wt/n3-cheat-binding
+# 纯矩阵 exit0：
+powershell -NoProfile -ExecutionPolicy Bypass -File tools/v5-golden/probe-cheat-binding.ps1 -Repo D:/majiang-wt/n3-cheat-binding -MatrixOnly
 ```
 
-| 验证 | 结果 | native exit | 原始日志 |
+| 验证 | 结果 | native exit | 日志 |
 |---|---|---:|---|
-| solution Release 非增量构建 | 0 warning / 0 error | 0 | `C:/Users/sncdc/AppData/Local/Temp/n3-cheat-solution-build-final.log`（SHA-256 `9CCA363C33A598260DED280D95F54CA51AE767E29E5FD0C2F337201505B2FFA2`） |
-| solution 测试 | 1181 passed / 0 failed / 0 skipped（435+149+132+465） | 0 | `.../n3-cheat-solution-tests-final.log`（`BF80615E275F79F98E9B24B63EEB4017B5DEB1AC4A40435A3179E40912D5804E`） |
-| Domain 全量 | 465 passed / 0 failed / 0 skipped / 0 Not Run | 0 | `.../n3-cheat-domain-full-final.log`（`C98F9DA51DF5C08297A1344DED58418982779B064180D3EE4FADFF53E52F460B`） |
-| Cheat 定向（旧+新） | 96 passed / 0 failed / 0 skipped | 0 | 矩阵正控制 `positive-control.log`（`B7AB680F88CBE92E85225E57FC22A33A5AB14E858A9C998347ED4942B03CB8F0`） |
-| 错值矩阵 | 22/22 FAIL_AS_EXPECTED；0 unexpected pass；0 tool failure | 0（矩阵本身；每个变异 exit1） | `.../n3-cheat-binding-probe-7acbace0dfd64cc384aa41d58acdd8d8`；console `817765AB237D3659A223D1336DB390E5371C1BDC26005CAC43E3BC9E4F76DC77` |
-| 原 16 Fact | 16 passed | 0 | 见旧类日志/上面的 Cheat 定向 |
+| solution 构建 | 0 warning / 0 error | 0 | `C:/Users/sncdc/AppData/Local/Temp/n3-cheat-r2-solution-build.log` |
+| solution 测试 | 1179 passed / 0 failed / 0 skipped（435+149+132+463） | 0 | `.../n3-cheat-r2-solution-tests.log` |
+| Domain 全量 | 463 passed / 0 failed / 0 skipped / 0 Not Run | 0 | `.../n3-cheat-r2-domain-full.log` |
+| Cheat 定向 | 94 passed / 0 failed / 0 skipped | 0 | 正控制 `positive-control.log` |
+| 42 项矩阵 | 42/42 FAIL_AS_EXPECTED；0 unexpected/tool/wrong | 0（matrix） | `matrix/matrix.csv` |
+| readiness | FAIL_CONFORMANCE：Total1/Failed1/Errors0/Skip0/NotRun0 | 1 | `readiness/readiness.log` |
+| 默认脚本整体 | MATRIX=PASS，READINESS=BLOCKED | 1 | `summary.json` |
+| 296 叶 | 294 native1；2 合法等价 | 每项 1（除2项） | `n3-cheat-r2-leaf-9d22/leaf-probes-v2/results.csv` |
+| 8 strict | 8/8 native1 / Total94 / Failed1 | 每项 1 | `n3-cheat-r2-strict-9d22/strict-probes/results.csv` |
 
-证据根（新独占）：`C:/Users/sncdc/AppData/Local/Temp/n3-cheat-binding-probe-7acbace0dfd64cc384aa41d58acdd8d8`。
+最终默认证据根（新独占）：`C:/Users/sncdc/AppData/Local/Temp/n3-cheat-r2-final-cca1b707168047b19ca48b0c4b53d6af`。
 
-| 证据文件 | SHA-256 |
+| 文件 | SHA-256 |
 |---|---|
-| `summary.json` | `C92B492EF74FC669472D6AD9A50C3B651090EB011E10C316851EBCA32BD21897` |
-| `matrix/matrix.csv` | `22D0B289C942AD64A7314187EE92AF1E23007865392D733B35DEA326EA342F17` |
-| `evidence-sha256.csv` | `2DE2C1C0763D43238CF19CC585555CD6DCEA59B5117F5EBD490594BBCFE1F8D4` |
-| `meta.json` | `151856B65738C7CF171DAD13F42CEFBC281498D1C93628FD1E87E5D67A25D13C` |
+| `summary.json` | `ABDA80D11DEDA927F703EEF26DDDA9828AEB6295697930F1F6E8391865FE739E` |
+| `matrix/matrix.csv` | `EA3A4BCCFC87F8B85227D8586FB40ABBB4DBCC313EFC77A0407202600FD16DE3` |
+| `evidence-sha256.csv` | `76A07DA54629340F331DD1E94DC46E2E4633630152B10E6ADF83AE95D6335A3A` |
+| `readiness/readiness.log` | `F72356C6C6D87F632699AB827E9CAED5FA49A90A921EC3EC330A5412C502D8B9` |
+| `logs/positive-control.log` | `BCF559884B846D0C2BCBEF919DA26ED1AFC98ECCB3F69451C55593FFE2DDA925` |
+
+纯矩阵 exit0 证据根：`C:/Users/sncdc/AppData/Local/Temp/n3-cheat-r2-matrix-final-cf7c091be4a742f9bd816dc3de258886`，42 行，`matrixStatus=PASS`、`readinessStatus=NOT_RUN`、`blockedCount=8`，`summary.json` SHA-256 `CEABF9F58D925D7DAC5BE36867736341514ACEAB2AEFB360FAD29BF5747D6322`。
+
+| 日志/CSV | SHA-256 |
+|---|---|
+| Domain 全量 `n3-cheat-r2-domain-full.log` | `F14BCEFEBC5C05565B4C320D0104E538D251B5CE43E64802D7447F3B8FD3CC1D` |
+| solution 构建 `n3-cheat-r2-solution-build.log` | `BD31477C5C059467ED0CFA829FB542BBEA7AFB63126DB50C13C05CA5422C6D9C` |
+| solution 测试 `n3-cheat-r2-solution-tests.log` | `CE24D02095C87F48EE2380B07E98A3592728268BB636F24258C2029EDB0681BD` |
+| 最终脚本 console `n3-cheat-r2-final-console.log` | `3154DA2A85BC1E3943AD1B4208D16DCB767D856D03FA1AC6F9BB6C5D9D86B9D4` |
+| 296 叶 `results.csv` | `03ECFDBA8019147EA7A179FEC70B040B8354C39CE3491D602E36572B41EA4ABF` |
+| 8 strict `results.csv` | `A9E52A6E13B16D991771BA1C3FD0189888ADCF59128A5EA84BABB54DE3C86C77` |
+| 296 叶 console | `15C116F1CBE3689521F2DBA86B8B7BF552A622CF946323093851EFE3546097DF` |
+| strict console | `E4BA87476C5EC8CFD7AD9B2A00489B2FFEAB5859627DB17F205D7026708E9909` |
 
 源码 SHA-256：
 
 | 文件 | SHA-256 |
 |---|---|
-| `dotnet/tests/Mahjong.Domain.Tests/CheatGoldenBindingTests.cs` | `63D70A201789A0B2759685550FEBA3CFDF28032D5B6E33E7718214C370B981AE` |
-| `dotnet/tests/Mahjong.Domain.Tests/CheatGoldenTests.cs` | `96C07EC799801F8F86AF7468F6AF3D518ADAC3C30D8B3AFB2B53980835D97C56` |
-| `tools/v5-golden/probe-cheat-binding.ps1` | `12FEF86805F57D31BCB20054E38CEFF288964964FD0E43B7099323E01A7621BA` |
-| `tests/v5-golden/cheat-v1.json` | `A196CBBD97AB8F61BE8679B74C8F17DF2713CB37AEF0922E5F3C9F725B28AB4E` |
+| `CheatGoldenBindingTests.cs` | `9C95A5C4CCA543E5A85F922E5F5C5338B1E43710A06626C152714FDFCACD23EE` |
+| `CheatGoldenTests.cs` | `3B869A5491FCB029640B95364A61A3739EB0D6B45B80B90273151D00E68F88E5` |
+| `probe-cheat-binding.ps1` | `F0C9010AE707680A15693883134E5C933502F81EEB1939CDD55718C7433B5DD6` |
+| `tests/v5-golden/cheat-v1.json` | raw `A196CBBD97AB8F61BE8679B74C8F17DF2713CB37AEF0922E5F3C9F725B28AB4E`；LF `3B33824F53E6E5808D2475CC212FCF3A914BBB5DF9A1A367BF2078A252F1F68D`；Git blob `61307f255c8d1b02f1b64084768b6a500f3307b4` |
+
+## 8. 剩余缺口与最小 scope
+
+### F-01（BLOCKED-input，readiness FAIL）sleeve 冻结 next-wall 输入缺失
+
+- **位置**：`CheatSubmission.cs:278-286`；`sb-activate-wall-empty-drift`。
+- **复现**：默认脚本 readiness 段，或 `-class '*CheatBindingReadinessTests*'`（TEMP 生成工程）。
+- **实际 vs 期望**：C# 重新搜索返回 Allowed；V4 冻结 `nextWallTileId=32`，期望 Rejected/NoWallCandidate。
+- **证据**：`readiness/readiness.log`（native1/Total1/Failed1）。
+- **修复**：caller 决策：接受 C# 重搜索并更新 golden 语义，或给 Domain 增加冻结候选输入（`nextWallTileId/nextWallTileInWall`），或 actor 预检。不得改规则或凭空选策略。
+- **验收**：readiness 探针转绿；合法墙牌仍 Allowed；8 个 blocked 清零后 readiness 才为 PASS。
+
+### F-02（BLOCKED-input）beam dead-wall 空集/仅 dora
+
+- **位置**：`bm-activate-deadwall-empty`、`bm-activate-deadwall-dora-only`；`TilePositionMap.cs:1587-1593`。
+- **复现**：`BeamDeadWallFilterStates_AreNotCanonicalTilePositionMaps`；两种过滤态 `ConservationException`。
+- **期望**：需要 handler-level `deadWallTileIdsInDeadWall` 输入或候选抑制面；不得搬空王牌区/伪造 136 位置。
+- **验收**：新入口下空集/仅 dora Rejected，其他合法槽 Allowed，136 守恒；dora 排除另有正/负测试。
+
+### F-03（BLOCKED-actor）4 个 tile-mark 决策/截止时间
+
+- **位置**：`tm-wrong-phase-round-end`、`tm-no-active-decision`、`tm-deadline-expired`、`tm-decision-mismatch`。
+- **实际**：N1b 已接受；`TableActor.SubmitCheatAsync → ValidateAuthorityIdentity → RoundCheatTransition.Prepare` 存在；但 `CheatTurnContext` 无 decisionId/deadline/round-ended，Domain.Tests 不引用 TableRuntime。
+- **下一测试**：`dotnet/tests/Mahjong.TableRuntime.Tests/N1bCheatExecutionTests.cs`（或同项目 actor 测试），不新增 Domain.Tests 项目引用。
+- **验收**：deadline 相等/无 decision/round ended/id 不符均拒绝，零扣费；合法 case 仍 Allowed。
+
+### F-04（MINOR）`tm-capacity-tiles` fixture note 与 exporter 输入不一致
+
+- note 说“8 marked +4”，exporter `:418` 实际 `marked=(16..27)=12`。行为 reason 一致，但 note 不自洽；下次合法导出改为 12。本轮不改 fixture。
+
+### F-05（MINOR）M3 `factsAfter` 108 的 V4 重复列表 artifact
+
+- V4 `TileMovement.kt:591` 保留旧 `deadWall[0]` 引用，`factsJson indexOf` 返回 0；权威 `deadWallSlot1AfterSwap=1`。本轮显式消费 index=0 并映射权威 slot1，不把 artifact 当 C# 槽位；下次导出可去重。
+
+### F-06（BLOCKED-input）`tm-capacity-tiles` 的 2×6 输入不可构造
+
+- V4 handler 输入 `groups=2, marked=12` 与 C# `TileMarkGroup` 固定四张冲突；13+ tile-limit 分支不可由公开构造器到达。该 case 不再计 PASS，需 state-level group-size 输入或新的可达导出 case；不得用 group limit 冒充 tile-count guard。
+
+### F-07（MINOR）296 叶中的 2 项合法等价
+
+- `factsBefore[0].tileId 8→9`、`inputKanCount 0→1` 保持输入语义/物理行为；已记录为等价控制，不是漏绑。若要求所有叶严格不等价，需要更窄的 fact 选择器或 kanCount-sensitive case，但不应把合法变化硬判失败。
 
 ## 9. 状态分列
 
 | 状态 | 内容 |
 |---|---|
-| **PASS** | 68/75 handler（Bound/Refined）真实调用；6/6 movement；ledger/state 深字段；22 项外部变异矩阵；Domain 465；solution 1181；Release 构建 0/0 |
-| **FAIL** | 1/75 handler：`sb-activate-wall-empty-drift`（V4 拒绝 vs C# Allowed）；有 pin 测试与修复要求，未放宽 |
-| **BLOCKED** | 4 个 actor/decision tile-mark case；2 个 beam dead-wall 过滤态不可规范表示；共 6，均有依赖/验收断言 |
-| **NOT_RUN** | PG/WSS、Unity/IL2CPP、Android/真机、真实网络、V4 Gradle 全量、远端 CI；没有为测试绑定变更重跑平台重型全量 |
+| **PASS** | 67/75 handler；6/6 movement；ledger/state 深字段；42 项矩阵；294/296 叶；8/8 strict；Domain 463；solution 1179；Release 0/0 |
+| **FAIL** | readiness F-01：同一黄金期望 native1/Total1/Failed1（C# Allowed vs V4 Rejected）；不是行为测试全绿 |
+| **BLOCKED** | 8 个 handler：4 actor + F-01 + 2 beam 过滤态 + F-06 capacity；均保留分母和依赖 |
+| **NOT_RUN** | PG/WSS、Unity/IL2CPP、Android/真机、真实网络、V4 Gradle 全量、TableRuntime 重跑、远端 CI；无生产变更，不盲跑 |
 
-## 10. 剩余最小任务
+## 10. 完成边界
 
-1. **F-01 决策**：caller 选“接受 C# 重新搜索并更新 V4/golden 语义”或“加冻结候选输入/actor 预检”；后者需生产改动与同 case 负例。
-2. **F-02 入口**：若产品要求 dead-wall 空集/仅 dora 拒绝，增加 handler-level `deadWallTileIdsInDeadWall` 或等价候选抑制面；否则把这两个 partial case 的产品语义写回 golden/manifest，不能伪装为 Domain 行为已验证。
-3. **F-03 接线**：N-1b/actor 完成 `DecisionClock`/round identity 预检后，把 4 个 case 从 BLOCKED 转为真实调用；目前不向项目偷加时钟/决策依赖。
-4. **F-04/F-05 文档/导出**：下次合法重导出修正 note 与 M3 facts 槽位；当前 fixture 属于用户，未改。
-5. **完整 N3/G1**：另审；本组件不关闭 G1，不改变 V4 唯一生产基线。
-
-## 11. 完成边界
-
-本轮 PASS 仅为上述 cheat-v1 消费者绑定与本地 solution 回归。75 个 handler 的分母保留：68 通过、1 真实 FAIL、6 BLOCKED；6 个 movement 通过，但 drawn-backfill 的 V4 洞表示差异已显式映射。完整 N3、G1、G5、平台矩阵和远端 PR/CI 均未由本任务关闭。
+67/75 行为绑定通过，但 8 个 BLOCKED 与 readiness FAIL 仍未闭合；F-01/F-02/F-03/F-06 的依赖已列。G1/N3/G5 仍不通过，V4 仍唯一生产基线。没有 push/PR/CI/合并兄弟代码；主 checkout 用户未提交文件与 GLM 在途工作树未触碰。
