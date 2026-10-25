@@ -1,10 +1,10 @@
-# V5-G1 N-3 前置独立审计报告 — 黄金样本字段级映射与覆盖口径核查（第 4 轮返修版）
+# V5-G1 N-3 前置独立审计报告 — 黄金样本字段级映射与覆盖口径核查（第 5 轮返修版）
 
 - **审计执行**：Claude Code（本 agent），独占 worktree `D:/majiang-wt/n3-golden-field-audit`，分支 `wt/v5-n3-golden-field-audit`
 - **冻结基线**：`8254c9b783740ddf519cebc15bb50a8f9974cf58`（PR19 最新已发布头；工作树 status clean，HEAD 即该提交）
 - **审计对象**：V5-1-REVIEW §7.1 N-3 [MAJOR]（G-028a 事件序列 + mv-swap-drawn-with-wall-backfill + 20 项 partial 的断言边界），以及"已导出黄金样本对齐率为 100%"这一 G1 门口径的字段级核实
 - **交付路径**：`doc/v5-重构/V5-G1-N3-GOLDEN-FIELD-AUDIT.md`（任务 expectedFiles 指定路径；第 1 轮曾误用 `N3-GOLDEN-FIELD-AUDIT-REPORT.md`，第 2 轮已 `git mv` 统一，无第二拷贝）
-- **版本史**：第 1 轮 = commit `5ba62bd`（REWORK_REQUIRED，R1-1..R1-5）；第 2 轮 = commit `48660db`（REWORK_REQUIRED，R2-1..R2-3）；第 3 轮 = commit `7ea62e6`（REWORK_REQUIRED，R3-1..R3-3，无 BLOCKER，3 组 MAJOR）；第 4 轮 = 本文件，R3-1..R3-3 逐条映射见 §14/§15
+- **版本史**：第 1 轮 = commit `5ba62bd`（REWORK_REQUIRED，R1-1..R1-5）；第 2 轮 = commit `48660db`（REWORK_REQUIRED，R2-1..R2-3）；第 3 轮 = commit `7ea62e6`（REWORK_REQUIRED，R3-1..R3-3，无 BLOCKER，3 组 MAJOR）；第 4 轮 = commit `4561431`（REWORK_REQUIRED，R4-1..R4-3，0 BLOCKER，3 MAJOR）；第 5 轮 = 本文件，R3-1..R3-3 逐条映射见 §14、R4-1..R4-3 逐条映射见 §15.3
 - **报告日期**：2026-10-25
 - **性质声明**：本报告只产出审计证据与最小补齐包建议；**不实施任何 P0.1/已接受项开发，不改 catalog/manifest/fixtures/生产或测试代码，不改固定头已接受 G1 盘点报告**。本报告组件完成 ≠ N-3 关闭 ≠ G1 批准。
 
@@ -43,16 +43,21 @@
 | shuffle-v1 | 199 | 140 | 23016 | 172 |
 | ai-v1 | 198 | 152 | 1199 | 81 |
 
-### 1.3 两层覆盖口径（R2-1a 建立；第 4 轮按 R3-1 全面加固校验器并改为有序口径）
+### 1.3 两层覆盖口径（R2-1a 建立；第 4 轮加固为有序口径；第 5 轮按 R4-1 升级为逐节点 case 归属 + 双口径统计）
 
-**"报告覆盖了全部字段"必须同时由两层独立机器校验证明，缺一不可：**
+**"报告覆盖了全部字段"必须同时由两层独立机器校验证明，缺一不可；且第 5 轮起路径级与单元级统计双口径并报（R4-1）：**
 
 - **层 1 = 路径枚举覆盖（COVERAGE 块）**：`verify-coverage.ps1`（源码全文内嵌 §11.5）把每条 census 归一化路径归入 prefix-2 组，6 份 fixture 各产出一个**完全划分**的 `组 = distinctPaths` 清单内嵌 §3.0。它证明的仅是"**枚举出的每条路径都进了报告、计数一致**"——**对语义零断言**：把映射整段删除、把某组路径漏报、或把计数抄错，verify 都会 exit 非 0；但**所有路径全部塞进一行 `META` 也能通过层 1**。
-- **层 2 = 字段消费语义映射（FIELD-RULES 块）**：`verify-mapping.ps1` v2（源码全文内嵌 §11.6）对 §3.0.1 内嵌的 **497 条有序规则**逐条复核。**规则匹配是有序的（表内文件顺序 first-match-wins）**——第 3 轮"无重叠、顺序无关"的表述已按 caller 反例**撤回**：census 实测 935 条路径被 2 条以上规则同时命中（含 `X.#` 与其子叶规则的语义交叠），有序表把这 935 条全部裁决给首条命中规则；本报告不再声明"规则间互不覆盖路径"，只声明"**每条路径的判类 = 表内首条命中规则的类**"并让校验器复算。v2 校验器强制：每条路径恰被一条规则**裁决**（无规则命中 = LEAK）；每条规则的声明路径数 = census 重算的 first-match 残差（COUNT）；判级类合法；**锚点真实性（-Repo 消费：exporter `File.kt:L1-L2` 在 `engine/src/test` 下真实存在且 1≤L1≤L2≤行数，C# 锚点在 `dotnet/tests` 下同理）**；`(fixture,pattern,scope)` 三元组无重复（DUP）；CONTAINER 类规则不得持有标量节点（SCALAR-AS-CONTAINER）；scoped 规则的 case 清单格式合法、caseId 属于 fixture 案例全集、各 scoped 行两两不相交且并集=该字段全部出现 case（SCOPE）。把映射删除 → LEAK；计数抄错 → COUNT；锚点写不存在文件/超界行号 → ANCHOR；重复规则 → DUP；标量塞进 CONTAINER → SCALAR-AS-CONTAINER；只交一份"计数对了但没有语义映射"的 COVERAGE 副本 → 层 2 ANCHOR-C#/LEAK 失败。**本报告两层均 exit 0（§11.5/§11.6），且六种变异负例全部被检出（§11.6 负例矩阵）；第 3 轮 caller 的三类 checker 反例已先在第 3 轮旧校验器上复现（§3.0.1 反例复现表），再以 v2 负例逐一证明已修复。**
+- **层 2 = 字段消费语义映射（FIELD-RULES 块）**：`verify-mapping.ps1` **v3**（源码全文内嵌 §11.6）对 §3.0.1 内嵌的 **540 条 8 列规则**逐条复核，在 v2 全部强制项（**有序 first-match 裁决**——第 3 轮"无重叠"表述已撤回，census 实测 935 条路径多命中、有序表裁决唯一；每条路径恰被一条规则**裁决**（无规则命中 = LEAK）；声明路径数 = census 重算 first-match 残差（COUNT）；判级类合法；**锚点真实性（-Repo 消费，`File.kt:L1-L2`/`File.cs:L(-L2)` 逐一打开核对行界）**；`(fixture,pattern,scope)` 无重复（DUP）；CONTAINER 不得持有标量（SCALAR-AS-CONTAINER））之上，新增 **R4-1 要求的逐节点 case 归属校验**：
+  - **单位（unit）=（case，路径出现实例）**：校验器**递归走查每个案例的每个数组元素**枚举 unit（v2 对嵌套数组只采样 `arr[0]`，漏掉仅出现在后续元素的节点）；JSON `null` 叶也计 unit（与 census 把 null 记实例同口径）。
+  - **双向 scope 并集等式**：同 (fixture,pattern) 族内 scoped 行的 case 并集必须**等于**该路径实际出现 case 全集——并集多出/缺少任一 case 都报错；scope id 若指向**不存在的字段、跨 section 的案例、或该 pattern 下无任何 unit 的 id**，一律显式 SCOPE 错误（v2 的 presence 单向检查与"case 在 fixture 别处存在即放行"两个漏网形态全部堵死）。
+  - **六类 SCOPE 错误 + where 谓词**：`SCOPE-ID-UNKNOWN` / `SCOPE-ID-ABSENT` / `SCOPE-UNIT-UNCOVERED` / `SCOPE-OVERLAP` / `SCOPE-MIXED` / `SCOPE-NO-CASE-ID`；scope 文法支持 `case=<ids>[;where=<field>==<v1>|<v2>]`（负例矩阵含 broken-where）。
+  - **双口径统计并排输出**：`DIST`（路径级 first-match 首行投影，历史口径保留）与 `CASE-DIST`/`CASE-TOTAL units=`（单元级真值：每 unit 按其案例实际认领行判类）并排；`CASE-MIXED` 行公布判类混合路径清单。**"101 条 GAP 路径"是 DIST 口径的定义投影（保留，但不再声明它枚举全部未绑定单元）；未绑定单元完整分母 = CASE-DIST 口径 286 units（§2/§9）。**
+- **验收现状**：两层正检均 exit 0（§11.5/§11.6）；**12 种 checker 变异负例全部 NEGATIVE-DETECTED**（§11.6 v3 负例矩阵），含 caller R4-1 指定负例——给 `availableWallCount` UNBOUND 行的 scope 追加不存在的 `|sb-activate-disabled` → `FAIL SCOPE-ID-ABSENT cheat-v1|$.sleeveBloomHandler[*].goldenInputs.availableWallCount sb-activate-disabled`、exit 1（v2 同变异仍 `RULES-CHECK-OK-V2 scope-errors=0` exit 0，复现 log SHA `17EC626D…` 在案，§11.6）；**兄弟行换序不变性**实测（同族行互换后 CASE-DIST 逐字节不变，§11.6）；第 3/4 轮 caller 的全部 checker 反例先在旧器上复现（§3.0.1 反例复现表），再逐代修复。
 
-### 1.4 字段判级八类与锚点文法（R2-1a 建立；第 4 轮升级为 8 列 TSV + 逐类锚点强制）
+### 1.4 字段判级八类与锚点文法（R2-1a 建立；第 4 轮升级 8 列 TSV；第 5 轮起 scoped 行按单元级真值判类并双口径统计）
 
-**判级类**（FIELD-RULES 第 4 列，有序表首条命中规则的终态裁决）：
+**判级类**（FIELD-RULES 第 4 列）：路径级统计（`DIST`）按有序表首条命中行归属；单元级统计（`CASE-DIST`）按**每 unit 所属案例的实际认领行**归属——scoped 兄弟行在两个口径下分别进账（§1.3）：
 
 | 类 | 含义 | csAnchor 文法 | exporterAnchor 文法 |
 |---|---|---|---|
@@ -65,16 +70,16 @@
 | META | exporter 元数据/provenance，无生产行为语义，显式排除 | `meta:<说明>` | `meta:<说明>` |
 | CONTAINER | 纯容器节点（object/array 自身，无独立语义；校验器拒绝其持有标量） | `meta:<说明>` | `meta:<说明>` |
 
-- **TSV 8 列**：`fixture / pattern / paths / class / exporterAnchor / csAnchor / owner / scope`。`scope` 列 = `*`（全量）或 `case=<caseId>|<caseId>|…`（仅该 case 集上的 case 级细化判类）。**同一 pattern 存在多条 scoped 兄弟行时，`paths` 列按 pattern 残差计（同一 normalized 路径数在各行重复声明，校验器按 pattern 重算强制一致）；行与行之间的 case 归属由 scope 列单独机器校验**（caseId ∈ fixture 案例全集、两两不相交、并集=该字段出现过的全部 case）。路径级类分布统计按**表内首条命中行**归属（校验器 `DIST` 行输出，可复算）。
+- **TSV 8 列**：`fixture / pattern / paths / class / exporterAnchor / csAnchor / owner / scope`。`scope` 列 = `*`（全量）或 `case=<caseId>|<caseId>|…`（仅该 case 集上的 case 级细化判类；文法另支持 `;where=<field>==<v>` 谓词，本表未用到、校验器负例覆盖）。**同一 pattern 存在多条 scoped 兄弟行时，`paths` 列按 pattern 残差计（同一 normalized 路径数在各行重复声明，校验器按 pattern 重算强制一致）；行与行之间的 case 归属由 scope 列单独机器校验**——v3 起为**双向并集等式 + 逐 unit 认领**（caseId ∈ fixture 案例全集、scope 必须真实产出 unit、两两不相交、并集=该字段出现过的全部 case，§1.3 六类 SCOPE 错误）。路径级类分布按**表内首条命中行**归属（`DIST`）；单元级分布按案例认领行归属（`CASE-DIST`/`CASE-MIXED`/`CASE-TOTAL units=1821 gap-units=286`）。
 - UNBOUND/UNBOUND_HC 的 owner/csAnchor 必须指向补齐包（`GAP:N3-*`，§9）；exporterAnchor 必须**真实存在**（校验器 -Repo 逐一打开文件核对行界）；**禁止空串、省略号、仅文件名**（第 3 轮 322 条 filename-only 锚点已全部升级为 `文件.kt:L1-L2` 行段锚点并经 -Repo 校验）。
 - 判级是**保守**的：语义可比但当前未绑定的（如 hasKanDeclared）一律记 UNBOUND_HC 并指向补齐包，**不以"可语义映射"抵扣缺口**（§13 INFO-1）。
-- 本表与 §3.0.1 FIELD-RULES 块、§11.6 v2 校验器三方一致；§3 各节正文引用的计数全部可由 §11.6 的 `check` 命令 `DIST` 输出复算（含按类、按 GAP owner 两种分布）。
+- 本表与 §3.0.1 FIELD-RULES 块、§11.6 v3 校验器三方一致；§3 各节正文引用的计数全部可由 §11.6 的 `check` 命令 `DIST`/`CASE-DIST` 输出复算（含按类、按 GAP owner 两种分布 × 两种口径）。
 
 
-## 2. 总判定（先给结论，第 4 轮修正版）
+## 2. 总判定（先给结论，第 5 轮修正版）
 
-1. **"已导出黄金样本对齐率为 100%" 不成立（字段级）**。两层口径实测：层 1 = 1516 条归一化路径全覆盖（§3.0，verify exit 0）；层 2 = 497 条有序语义映射规则全划分（§3.0.1，v2 check exit 0）。**已导出但当前无 C# 值级断言消费的路径 = 101**（UNBOUND 56 + UNBOUND_HC 45，全部带 `GAP:N3-*` 补齐包指针；§11.6 `DIST` 行机器输出）。该数是**当前判级规则表上的机器求和**——它覆盖 §3 全部逐字段核查与全部变异探针已证面，但**判级表本身的完备性以本审计的复核过程为界**（未穷尽证明"不存在第 102 条"前不称完整集合，§15 不可发现说明），分布：
-   - **cheat-v1：49 条路径** = tileMovement 14（GAP:N3-B1，逐条清单见 §3.4）+ sleeveBloom goldenInputs 6（GAP:N3-B3）+ tileMarkState 6（GAP:N3-B4 的 cheat 部分）+ ledger 10（GAP:N3-B5 = 4 子键 outcome/exception 8 叶 + snapshotRoundTrip 两布尔）+ handler note 3（GAP:N3-B8）+ beamSwap requestException 1（GAP:N3-B7）；**75 个 handler case 分桶 = A16+B2+C6+D50+E1**（D-α46/D-β4，§3.4 逐条表），行为级黄金对照 **24/75**（A16+B2+C6=24），另有 E1（#36）1 例存在级对照（24+1=25/75 有某种形式的黄金对照，E 桶非行为绑定）；
+1. **"已导出黄金样本对齐率为 100%" 不成立（字段级）**。两层口径实测：层 1 = 1516 条归一化路径全覆盖（§3.0，verify exit 0）；层 2 = 540 条语义映射规则、逐 unit case 归属双向校验全通过（§3.0.1，v3 check exit 0）。**已导出但当前无 C# 值级断言消费的缺口为双口径**：**路径口径 = 101**（UNBOUND 56 + UNBOUND_HC 45；§11.6 `DIST` 行机器输出——该口径是规则表 first-match 首行投影的**定义投影**，保留但不声明枚举全部未绑定单元）；**单元口径 = 286 units**（UNBOUND 125 + UNBOUND_HC 161；§11.6 `CASE-DIST` 行机器输出，逐（case，路径实例）枚举——这是未绑定单元的完整分母）。全部带 `GAP:N3-*` 补齐包指针，分布：
+   - **cheat-v1：路径口径 49 条 / 单元口径待 §3.0.1 CASE-DIST 分解** = tileMovement 14 路径（GAP:N3-B1，逐条清单见 §3.4）+ sleeveBloom goldenInputs 6 路径 21 单元（GAP:N3-B3）+ goldenInputs 按单元细化的新缺口 28 单元 13 路径（GAP:N3-B10，第 5 轮新增——R4-2 逐单元重划后暴露：同一路径的其它案例此前被"整路径 IN_BIND"误记为已绑）+ factsAfter `index`/`seat` 2 路径 26 单元（GAP:N3-B11，第 5 轮新增）+ tileMarkState 6（GAP:N3-B4 的 cheat 部分）+ ledger 10（GAP:N3-B5 = 4 子键 outcome/exception 8 叶 + snapshotRoundTrip 两布尔）+ handler note 3 路径 + **六个 handler outcome/reason scoped 行 116 个（case,路径）单元**（GAP:N3-B8；第 4 轮曾误写"72 条路径"）+ beamSwap requestException 1（GAP:N3-B7）；**75 个 handler case 分桶 = A16+B2+C6+D50+E1**（D-α46/D-β4，§3.4 逐条表），行为级黄金对照 **24/75**（A16+B2+C6=24），另有 E1（#36）1 例存在级对照（24+1=25/75 有某种形式的黄金对照，E 桶非行为绑定）；
    - **round-v1：20 条路径（16 个字段级条目）UNBOUND_HC**（roundTerminal 9 + chankanRon 11，§3.3 两表），其中事件序列面零护栏（G-028a 核心）；
    - **physical-v1：29 条路径** = GAP:N3-E2 24（boundaries[*] 11 + boundarySamples 6 + invalid[*] 3 + csharpExceptionMapping 4）+ GAP:N3-E3 5（hashCrosswalk.csharpHashVerification/v4Reason 2 + expected.suitOrder 1 + scope.targetIds 2，§3.1）；
    - **scoring-v1：6 条路径**（winSamples `expected.status`+`input.extraHan`、noWinSamples `doraIndicators/uraDoraIndicators/honba/riichiSticks`，GAP:N3-E1，§3.2）；
@@ -84,9 +89,9 @@
 3. **mv-swap-drawn-with-wall-backfill（第 4 轮定稿）**：非 V4-only 断言撤回后的事实面 = C# 等价入口已被行为重放；m1b 交叉字段为 **INTERNAL 结构自检**（无生产差分语义，连贯变异不设防——但按 §1.4 这不是缺口类，是显式声明的结构保留）；真实缺口收窄为 §3.4 逐条表的 14 条 UNBOUND/UNBOUND_HC（N3-B1）+ 注释更正（N3-B2）+ 一处不可表示的地址级表示差（INFO-2）。无需用户规则裁决、无需刷新冻结记录（§7）。
 4. **AgariYame（沿用）**：行为在 C# match 层完整存在；疑虑仅保留"round 层命令入口枚举"一点（§8）。
 5. **ai-v1 / G-049（沿用 + 路径级修正）**：第 6 份 fixture 存在且 Replay/Submit/拒绝码/动作绑定/decisionClock 全绑定（8 条路径 IN_BIND 5 + OUT_DIFF 1 + SEM_MAP 1 + CONTAINER 1；正控制探针 baseMillis/reserveMillis→999 → 1 FAIL exit 1，§11.8）为真实 C# 行为，但 `DeepEquals(before,after)` 是同一 fixture 的 V4 前后树内部比对，不是"C# 重放后态 vs V4 全树"差分；**G-049 不可据此重算 full，建议 partial**（§3.6，caller 裁决）。第 4 轮修正：未绑定的 mappingBasis 实际路径是 `$.cases[*].v5.expected.mappingBasis`（第 3 轮误写为 `$.v5Observation.mappingBasis`），`mappingLimits` 2 条确在 `$.v5Observation` 下；另新增 2 条文本叶 `events[*].text`/`action.text`（GAP:N3-B9）。
-6. **45/45 定向 Golden Facts 全 PASS（native exit 0）维持**——失败不在断言结果，而在断言覆盖。**累计 12 个独立变异探针**（不设防实证：第 2 轮 4 + 第 3 轮 3 + 第 4 轮 5，§10/§11.8）+ **4 个正控制**（设防实证：第 2 轮 totalPoints、第 3 轮 #23 reason、第 4 轮 physical tile.rank→99 与 ai baseMillis/reserveMillis→999，均 1 FAIL exit 1）+ **3 个第 3 轮校验器反例复现**（§3.0.1）证明判级方法与校验器边界均经实证。
+6. **45/45 定向 Golden Facts 全 PASS（native exit 0）维持**——失败不在断言结果，而在断言覆盖。**累计 32 个独立变异探针**（不设防实证 23：第 2 轮 4 + 第 3 轮 3 + 第 4 轮 5 + 第 5 轮 11；设防正控制 9：第 2 轮 1 + 第 3 轮 1 + 第 4 轮 2 + 第 5 轮 5——physical tile.rank→99、sb-activate-allowed cost 绑定面、m5 hand/discard seat、sleeve 关系对单侧破坏、ai baseMillis/reserveMillis→999，均 1 FAIL exit 1，§10/§11.8）+ **3 个第 3 轮校验器反例复现**（§3.0.1）证明判级方法与校验器边界均经实证；第 5 轮探针驱动自带**逐探针期望校验 + 失败累计 + 负向自检**（变异被剥离 → 驱动自身 exit 1，§11.8）。
 7. **case 总数口径（沿用）**：catalog `fixtureConcreteCases=10382` vs 本审计 census 案例口径 10353，Δ=29（round +23、cheat +6）——catalog 未声明案例分解口径，Δ29 如实上报、不采纳、不改 catalog（§5）；ai-v1 的 7 case 在 catalog 之外。
-8. **一次性缺陷清单见 §13（DEF-1..DEF-5 + INFO-1..4）**。本审计按任务书**不实施修复**；修复经由 §9 补齐包由 caller 独立下发。§9 覆盖本报告所报**全部当前可比较缺口**（101 条 GAP 路径逐一映射到包）；确属不可机械比较的项逐条给出语义与批准责任（无沉默移出分母）。
+8. **一次性缺陷清单见 §13（DEF-1..DEF-5 + INFO-1..4）**。本审计按任务书**不实施修复**；修复经由 §9 补齐包由 caller 独立下发。§9 覆盖本报告所报**全部当前可比较缺口**（路径口径 101 / 单元口径 286 逐一映射到 14 个包）；确属不可机械比较的项逐条给出语义与批准责任（无沉默移出分母）。
 
 ---
 
@@ -274,17 +279,28 @@ $.v5Observation = 33
 COVERAGE:END
 ```
 
-### 3.0.1 层 2：字段消费语义映射规则表（FIELD-RULES，R2-1a 核心交付；第 4 轮 v2 加固版）
+### 3.0.1 层 2：字段消费语义映射规则表（FIELD-RULES，R2-1a 核心交付；第 5 轮 v3 逐单元版）
 
-**目的**：把 §3.0 的"每条路径都进了报告"升级为"每条路径都被判入一个语义类，且每个非排除类都有真实存在的 V4 导出行段锚点与 C# 消费（或显式缺口/排除）锚点"。第 2 轮只交了层 1；第 3 轮展开为 417 条显式规则但**校验器不消费仓库**，被 caller 三类反例击穿（不存在锚点通过、935 路径多重命中+1 标量挂 CONTAINER、322 条 filename-only 导出锚点）；第 4 轮全部修复并升级为 **497 条 8 列有序规则**（新增 scope 列 case 级拆分 66 行、GAP 行 88 行、12 个缺口包 ID）。
+**目的**：把 §3.0 的"每条路径都进了报告"升级为"每条路径、每个（case，实例）单元都被判入一个语义类，且每个非排除类都有真实存在的 V4 导出行段锚点与 C# 消费（或显式缺口/排除）锚点"。第 2 轮只交了层 1；第 3 轮展开为 417 条显式规则但**校验器不消费仓库**，被 caller 三类反例击穿（不存在锚点通过、935 路径多重命中+1 标量挂 CONTAINER、322 条 filename-only 导出锚点）；第 4 轮升级 **497 条 8 列有序规则**（-Repo 锚点消费、DUP/SCALAR/CLASS 拒绝、scope presence 校验）；**第 5 轮（R4-1/R4-2）升级为 540 条逐单元版**：109 条 scoped 行（INTERNAL 41 + OUT_DIFF 21 + SEM_MAP 18 + UNBOUND 22 + UNBOUND_HC 6 + IN_BIND 1）、GAP 行 98 行、**14 个缺口包 ID**（新增 N3-B10/B11）、`goldenInputs` 家族按叶×案例拆为 34 行（79 个单元逐单元判类）、`factsAfter[*].index`/`[*].seat` 按案例拆分。
 
-**规则文法与顺序语义**（TSV 8 列：`fixture` `pattern` `paths` `class` `exporterAnchor` `csAnchor` `owner` `scope`；`#` 匹配零或多层后缀且**只作末段**、`*` 匹配单层下标、其余为字面段比较——census 路径的 `[*]` 紧贴段名，**`X.#` 不匹配 `X[*]`/`X[*].y`**）：pattern 按表内顺序 **first-match-wins** 裁决 census 路径（一条路径可被多条 pattern 命中——第 3 轮"无重叠"表述已撤回，实测 935 条路径多命中——有序表保证**裁决唯一**）；`paths` 列 = 该 pattern 的 first-match 残差路径数（同 pattern 的 scoped 兄弟行重复声明同一残差，校验器按 pattern 重算强制一致；行间 case 归属由 `scope` 列机器校验：caseId ∈ fixture 案例全集、两两不相交、并集=该字段全部出现 case）；8 个判级类与锚点文法见 §1.4。
+**机器统计（§11.6 正检 `DIST` + `CASE-DIST` 双口径，可复算）**：
+
+| 口径 | CONTAINER | IN_BIND | INTERNAL | META | OUT_DIFF | SEM_MAP | UNBOUND | UNBOUND_HC | 合计 | GAP 合计 |
+|---|---|---|---|---|---|---|---|---|---|---|
+| 路径（DIST，first-match 首行投影） | 18 | 314 | 114 | 308 | 405 | 256 | 56 | 45 | **1516** | **101** |
+| 单元（CASE-DIST，逐 unit 真值） | 18 | 315 | 173 | 308 | 436 | 285 | 125 | 161 | **1821 units** | **286 units** |
+
+- **GAP 单元级分解（CASE-DIST `gap=` 行）**：B1 14 / **B10 28（新）** / **B11 26（新）** / B2 1 / B3 21 / B4 26 / B5 10 / B6 3 / B7 1 / **B8 119（= 3 note 路径 + 六 handler scoped 行 116 单元）** / B9 2 / E1 6 / E2 24 / E3 5 = **286**。路径级分解（DIST `gap=` 行）= B1 14 / B2 1 / B3 6 / B4 26 / B5 10 / B6 3 / B7 1 / B8 3 / B9 2 / E1 6 / E2 24 / E3 5 = **101**。
+- **判类混合路径 = 27 条**（`CASE-MIXED` 行逐一公布，§11.6 正检输出）：同一路径在不同案例下判类不同——这正是第 4 轮"整路径单一标签"掩盖按单元缺口的机制性原因；其中 `goldenInputs` 家族 22 条 + `factsAfter` 家族 5 条。
+- **兄弟行换序不变性**：scoped 兄弟行的表内顺序不影响任何 unit 的判类（实测：同族行互换后 `CASE-DIST` 输出逐字节不变，§11.6）；`DIST` 口径则**有意**保留"表内文件顺序 first-match"的历史投影语义（裁决唯一但依赖行序），两口径的差异全部由 `CASE-MIXED` 行显式可见。
+
+**规则文法与顺序语义**（TSV 8 列：`fixture` `pattern` `paths` `class` `exporterAnchor` `csAnchor` `owner` `scope`；`#` 匹配零或多层后缀且**只作末段**、`*` 匹配单层下标、其余为字面段比较——census 路径的 `[*]` 紧贴段名，**`X.#` 不匹配 `X[*]`/`X[*].y`**）：pattern 按表内顺序 **first-match-wins** 裁决 census 路径（一条路径可被多条 pattern 命中——第 3 轮"无重叠"表述已撤回，实测 935 条路径多命中——有序表保证**裁决唯一**）；`paths` 列 = 该 pattern 的 first-match 残差路径数（同 pattern 的 scoped 兄弟行重复声明同一残差，校验器按 pattern 重算强制一致）；**行间 case 归属由 `scope` 列机器校验（v3 双向等式：scoped 并集 = 该字段实际出现 case 全集，逐 unit 认领唯一，六类 SCOPE 错误见 §1.3）**；8 个判级类与锚点文法见 §1.4。
 
 **块内嵌如下（成对标记行之间的原始 TSV；校验器 `-ReportPath` 模式直接从本报告读取该块复算，§11.6）**：
 
 FIELD-RULES:BEGIN
 ```text
-fixture	pattern	paths	class	exporterAnchor	csAnchor	owner	scope
+﻿fixture	pattern	paths	class	exporterAnchor	csAnchor	owner	scope
 physical-v1	$	1	CONTAINER	meta:root-node	meta:container-node	META	*
 physical-v1	$.clockUsed	1	SEM_MAP	V5PhysicalGoldenExporterTest.kt:39-668	PhysicalGoldenTests.cs:41	BOUND	*
 physical-v1	$.exporterSourceSha256	1	SEM_MAP	V5PhysicalGoldenExporterTest.kt:39-668	PhysicalGoldenTests.cs:49	BOUND	*
@@ -589,13 +605,56 @@ cheat-v1	$.tileMarkHandler[*].reason	1	UNBOUND_HC	V5CheatGoldenExporterTest.kt:2
 cheat-v1	$.tileMarkHandler[*].note	1	UNBOUND_HC	V5CheatGoldenExporterTest.kt:283-299	CheatGoldenTests.cs:350	GAP:N3-B8	*
 cheat-v1	$.tileMarkHandler[*].#	1	CONTAINER	meta:case-array-elements	meta:case-array-elements	META	*
 cheat-v1	$.tileMarkHandler.#	1	SEM_MAP	V5CheatGoldenExporterTest.kt:359-428	CheatGoldenTests.cs:153	BOUND	*
+cheat-v1	$.sleeveBloomHandler[*].goldenInputs.seat	1	SEM_MAP	V5CheatGoldenExporterTest.kt:308-357	CheatGoldenTests.cs:819	BOUND	case=sbo-activate-allowed
+cheat-v1	$.sleeveBloomHandler[*].goldenInputs.currentPlayer	1	SEM_MAP	V5CheatGoldenExporterTest.kt:308-357	CheatGoldenTests.cs:820	BOUND	case=sbo-activate-allowed
+cheat-v1	$.sleeveBloomHandler[*].goldenInputs.phase	1	SEM_MAP	V5CheatGoldenExporterTest.kt:308-357	CheatGoldenTests.cs:821	BOUND	case=sbo-activate-allowed
+cheat-v1	$.sleeveBloomHandler[*].goldenInputs.keep	1	SEM_MAP	V5CheatGoldenExporterTest.kt:308-357	CheatGoldenTests.cs:723	BOUND	case=sb-choose-second
+cheat-v1	$.sleeveBloomHandler[*].goldenInputs.keep	1	SEM_MAP	V5CheatGoldenExporterTest.kt:308-357	CheatGoldenTests.cs:773	BOUND	case=sb-choose-rinshan
+cheat-v1	$.sleeveBloomHandler[*].goldenInputs.keep	1	SEM_MAP	V5CheatGoldenExporterTest.kt:308-357	CheatGoldenTests.cs:823	BOUND	case=sbo-choose-allowed
+cheat-v1	$.sleeveBloomHandler[*].goldenInputs.drawKind	1	SEM_MAP	V5CheatGoldenExporterTest.kt:308-357	CheatGoldenTests.cs:722	BOUND	case=sb-activate-allowed
+cheat-v1	$.sleeveBloomHandler[*].goldenInputs.drawKind	1	SEM_MAP	V5CheatGoldenExporterTest.kt:308-357	CheatGoldenTests.cs:772	BOUND	case=sb-activate-rinshan-allowed
+cheat-v1	$.sleeveBloomHandler[*].goldenInputs.cheatPoints	1	SEM_MAP	V5CheatGoldenExporterTest.kt:308-357	CheatGoldenTests.cs:822	BOUND	case=sbo-activate-allowed
+cheat-v1	$.sleeveBloomHandler[*].goldenInputs.cost	1	SEM_MAP	V5CheatGoldenExporterTest.kt:308-357	CheatGoldenTests.cs:822	BOUND	case=sbo-activate-allowed
+cheat-v1	$.sleeveBloomHandler[*].goldenInputs.offerFirstInWall	1	SEM_MAP	V5CheatGoldenExporterTest.kt:308-357	CheatGoldenTests.cs:825	BOUND	case=sbo-choose-allowed
+cheat-v1	$.sleeveBloomHandler[*].goldenInputs.offerSecondInWall	1	SEM_MAP	V5CheatGoldenExporterTest.kt:308-357	CheatGoldenTests.cs:826	BOUND	case=sbo-choose-allowed
+cheat-v1	$.sleeveBloomHandler[*].goldenInputs.cheatPoints	1	OUT_DIFF	V5CheatGoldenExporterTest.kt:308-357	CheatGoldenTests.cs:737	BOUND	case=sb-activate-allowed
+cheat-v1	$.sleeveBloomHandler[*].goldenInputs.cheatPoints	1	OUT_DIFF	V5CheatGoldenExporterTest.kt:308-357	CheatGoldenTests.cs:787	BOUND	case=sb-activate-rinshan-allowed
+cheat-v1	$.sleeveBloomHandler[*].goldenInputs.cost	1	OUT_DIFF	V5CheatGoldenExporterTest.kt:308-357	CheatGoldenTests.cs:737	BOUND	case=sb-activate-allowed
+cheat-v1	$.sleeveBloomHandler[*].goldenInputs.cost	1	OUT_DIFF	V5CheatGoldenExporterTest.kt:308-357	CheatGoldenTests.cs:787	BOUND	case=sb-activate-rinshan-allowed
+cheat-v1	$.sleeveBloomHandler[*].goldenInputs.drawnTileId	1	INTERNAL	V5CheatGoldenExporterTest.kt:308-357	CheatGoldenTests.cs:774	BOUND	case=sb-activate-rinshan-allowed
+cheat-v1	$.sleeveBloomHandler[*].goldenInputs.drawnTileId	1	INTERNAL	V5CheatGoldenExporterTest.kt:308-357	CheatGoldenTests.cs:725	BOUND	case=sb-choose-second
+cheat-v1	$.sleeveBloomHandler[*].goldenInputs.nextWallTileId	1	INTERNAL	V5CheatGoldenExporterTest.kt:308-357	CheatGoldenTests.cs:727	BOUND	case=sb-activate-allowed
+cheat-v1	$.sleeveBloomHandler[*].goldenInputs.nextDeadWallTileId	1	INTERNAL	V5CheatGoldenExporterTest.kt:308-357	CheatGoldenTests.cs:775	BOUND	case=sb-activate-rinshan-allowed
+cheat-v1	$.sleeveBloomHandler[*].goldenInputs.turnNumber	1	INTERNAL	V5CheatGoldenExporterTest.kt:308-357	CheatGoldenTests.cs:724	BOUND	case=sb-choose-second
+cheat-v1	$.sleeveBloomHandler[*].goldenInputs.offerCreatedTurnNumber	1	INTERNAL	V5CheatGoldenExporterTest.kt:308-357	CheatGoldenTests.cs:724	BOUND	case=sb-choose-second
+cheat-v1	$.sleeveBloomHandler[*].goldenInputs.offerFirstTileId	1	INTERNAL	V5CheatGoldenExporterTest.kt:308-357	CheatGoldenTests.cs:725	BOUND	case=sb-choose-second
+cheat-v1	$.sleeveBloomHandler[*].goldenInputs.offerFirstTileId	1	INTERNAL	V5CheatGoldenExporterTest.kt:308-357	CheatGoldenTests.cs:774	BOUND	case=sb-choose-rinshan
+cheat-v1	$.sleeveBloomHandler[*].goldenInputs.offerSecondTileId	1	INTERNAL	V5CheatGoldenExporterTest.kt:308-357	CheatGoldenTests.cs:727	BOUND	case=sb-choose-second
+cheat-v1	$.sleeveBloomHandler[*].goldenInputs.offerSecondTileId	1	INTERNAL	V5CheatGoldenExporterTest.kt:308-357	CheatGoldenTests.cs:775	BOUND	case=sb-choose-rinshan
+cheat-v1	$.sleeveBloomHandler[*].goldenInputs.offerSecondWallIndex	1	INTERNAL	V5CheatGoldenExporterTest.kt:308-357	CheatGoldenTests.cs:726	BOUND	case=sb-choose-second
+cheat-v1	$.sleeveBloomHandler[*].goldenInputs.nextAvailableWallIndex	1	INTERNAL	V5CheatGoldenExporterTest.kt:308-357	CheatGoldenTests.cs:726	BOUND	case=sb-choose-second
+cheat-v1	$.sleeveBloomHandler[*].goldenInputs.now	1	INTERNAL	V5CheatGoldenExporterTest.kt:308-357	CheatGoldenTests.cs:824	BOUND	case=sbo-choose-allowed
+cheat-v1	$.sleeveBloomHandler[*].goldenInputs.deadlineMillis	1	INTERNAL	V5CheatGoldenExporterTest.kt:308-357	CheatGoldenTests.cs:824	BOUND	case=sbo-choose-allowed
 cheat-v1	$.sleeveBloomHandler[*].goldenInputs.availableWallCount	1	UNBOUND	V5CheatGoldenExporterTest.kt:308-357	GAP:N3-B3	GAP:N3-B3	case=sbo-activate-allowed
 cheat-v1	$.sleeveBloomHandler[*].goldenInputs.offerId	1	UNBOUND	V5CheatGoldenExporterTest.kt:308-357	GAP:N3-B3	GAP:N3-B3	case=sb-choose-first|sb-choose-second|sb-choose-rinshan|sbo-choose-allowed
 cheat-v1	$.sleeveBloomHandler[*].goldenInputs.rinshanPointer	1	UNBOUND	V5CheatGoldenExporterTest.kt:308-357	GAP:N3-B3	GAP:N3-B3	case=sb-activate-allowed|sb-activate-rinshan-allowed|sb-choose-first|sb-choose-second|sb-choose-rinshan
 cheat-v1	$.sleeveBloomHandler[*].goldenInputs.wallEndExclusive	1	UNBOUND	V5CheatGoldenExporterTest.kt:308-357	GAP:N3-B3	GAP:N3-B3	case=sb-activate-allowed|sb-activate-rinshan-allowed|sb-choose-first|sb-choose-second|sb-choose-rinshan
 cheat-v1	$.sleeveBloomHandler[*].goldenInputs.wallPointer	1	UNBOUND	V5CheatGoldenExporterTest.kt:308-357	GAP:N3-B3	GAP:N3-B3	case=sb-activate-allowed|sb-activate-rinshan-allowed|sb-choose-first|sb-choose-second|sb-choose-rinshan
 cheat-v1	$.sleeveBloomHandler[*].goldenInputs.windowId	1	UNBOUND	V5CheatGoldenExporterTest.kt:308-357	GAP:N3-B3	GAP:N3-B3	case=sbo-activate-allowed
-cheat-v1	$.sleeveBloomHandler[*].goldenInputs.#	21	IN_BIND	V5CheatGoldenExporterTest.kt:308-357	CheatGoldenTests.cs:718-826	BOUND	*
+cheat-v1	$.sleeveBloomHandler[*].goldenInputs.seat	1	UNBOUND	V5CheatGoldenExporterTest.kt:308-357	GAP:N3-B10	GAP:N3-B10	case=sb-activate-allowed|sb-activate-rinshan-allowed|sb-choose-first|sb-choose-second|sb-choose-rinshan|sbo-choose-allowed
+cheat-v1	$.sleeveBloomHandler[*].goldenInputs.keep	1	UNBOUND	V5CheatGoldenExporterTest.kt:308-357	GAP:N3-B10	GAP:N3-B10	case=sb-choose-first
+cheat-v1	$.sleeveBloomHandler[*].goldenInputs.drawKind	1	UNBOUND	V5CheatGoldenExporterTest.kt:308-357	GAP:N3-B10	GAP:N3-B10	case=sb-choose-first|sb-choose-second|sb-choose-rinshan
+cheat-v1	$.sleeveBloomHandler[*].goldenInputs.drawnTileId	1	UNBOUND	V5CheatGoldenExporterTest.kt:308-357	GAP:N3-B10	GAP:N3-B10	case=sb-activate-allowed|sb-choose-first|sb-choose-rinshan
+cheat-v1	$.sleeveBloomHandler[*].goldenInputs.nextWallTileId	1	UNBOUND	V5CheatGoldenExporterTest.kt:308-357	GAP:N3-B10	GAP:N3-B10	case=sb-activate-rinshan-allowed
+cheat-v1	$.sleeveBloomHandler[*].goldenInputs.nextDeadWallTileId	1	UNBOUND	V5CheatGoldenExporterTest.kt:308-357	GAP:N3-B10	GAP:N3-B10	case=sb-activate-allowed
+cheat-v1	$.sleeveBloomHandler[*].goldenInputs.cost	1	UNBOUND	V5CheatGoldenExporterTest.kt:308-357	GAP:N3-B10	GAP:N3-B10	case=sb-choose-first|sb-choose-second|sb-choose-rinshan
+cheat-v1	$.sleeveBloomHandler[*].goldenInputs.turnNumber	1	UNBOUND	V5CheatGoldenExporterTest.kt:308-357	GAP:N3-B10	GAP:N3-B10	case=sb-choose-first|sb-choose-rinshan
+cheat-v1	$.sleeveBloomHandler[*].goldenInputs.offerCreatedTurnNumber	1	UNBOUND	V5CheatGoldenExporterTest.kt:308-357	GAP:N3-B10	GAP:N3-B10	case=sb-choose-first|sb-choose-rinshan
+cheat-v1	$.sleeveBloomHandler[*].goldenInputs.offerFirstTileId	1	UNBOUND	V5CheatGoldenExporterTest.kt:308-357	GAP:N3-B10	GAP:N3-B10	case=sb-choose-first
+cheat-v1	$.sleeveBloomHandler[*].goldenInputs.offerSecondTileId	1	UNBOUND	V5CheatGoldenExporterTest.kt:308-357	GAP:N3-B10	GAP:N3-B10	case=sb-choose-first
+cheat-v1	$.sleeveBloomHandler[*].goldenInputs.offerSecondWallIndex	1	UNBOUND	V5CheatGoldenExporterTest.kt:308-357	GAP:N3-B10	GAP:N3-B10	case=sb-choose-first|sb-choose-rinshan
+cheat-v1	$.sleeveBloomHandler[*].goldenInputs.nextAvailableWallIndex	1	UNBOUND	V5CheatGoldenExporterTest.kt:308-357	GAP:N3-B10	GAP:N3-B10	case=sb-choose-first|sb-choose-rinshan
+cheat-v1	$.sleeveBloomHandler[*].goldenInputs.#	1	CONTAINER	meta:container-exporter	meta:container-node	META	*
 cheat-v1	$.sleeveBloomHandler[*].caseId	1	IN_BIND	V5CheatGoldenExporterTest.kt:283-299	CheatGoldenTests.cs:118	BOUND	*
 cheat-v1	$.sleeveBloomHandler[*].outcome	1	SEM_MAP	V5CheatGoldenExporterTest.kt:283-299	CheatGoldenTests.cs:552-575	BOUND	case=sb-activate-insufficient|sb-activate-disabled|sb-choose-stale-turn|sb-activate-already-used|sbo-activate-no-window
 cheat-v1	$.sleeveBloomHandler[*].outcome	1	UNBOUND_HC	V5CheatGoldenExporterTest.kt:283-299	CheatGoldenTests.cs:351-375	GAP:N3-B8	case=sb-activate-allowed|sb-activate-dealer-extra|sb-activate-beam-pending|sb-activate-sleeve-pending|sb-activate-wall-empty|sb-activate-wall-empty-drift|sb-activate-no-drawn-tile|sb-activate-not-your-turn|sb-activate-wrong-phase|sb-activate-response-window|sb-activate-rinshan-allowed|sb-activate-rinshan-empty|sb-choose-first|sb-choose-second|sb-choose-stale-drawn|sb-choose-stale-index|sb-choose-offer-mismatch|sb-choose-no-offer|sb-choose-rinshan|sbo-activate-allowed|sbo-activate-reserved|sbo-activate-own-turn|sbo-activate-wall-empty|sbo-choose-allowed|sbo-choose-expired|sbo-choose-stale-first|sbo-choose-stale-second
@@ -642,10 +701,10 @@ cheat-v1	$.tileMovement[*].factsAfter[*]	1	OUT_DIFF	V5CheatGoldenExporterTest.kt
 cheat-v1	$.tileMovement[*].factsAfter[*]	1	INTERNAL	V5CheatGoldenExporterTest.kt:1011-1042	CheatGoldenTests.cs:601-714	BOUND	case=mv-swap-hand-with-wall-direct|mv-swap-drawn-with-wall-backfill|mv-reservation-delivery|mv-rinshan-and-drawn-swap|mv-swap-hand-with-dead-wall
 cheat-v1	$.tileMovement[*].factsAfter[*].container	1	OUT_DIFF	V5CheatGoldenExporterTest.kt:1011-1042	CheatGoldenTests.cs:1016-1044	BOUND	case=mv-reservation-delivery-then-beam
 cheat-v1	$.tileMovement[*].factsAfter[*].container	1	INTERNAL	V5CheatGoldenExporterTest.kt:1011-1042	CheatGoldenTests.cs:601-714	BOUND	case=mv-swap-hand-with-wall-direct|mv-swap-drawn-with-wall-backfill|mv-reservation-delivery|mv-rinshan-and-drawn-swap|mv-swap-hand-with-dead-wall
-cheat-v1	$.tileMovement[*].factsAfter[*].index	1	OUT_DIFF	V5CheatGoldenExporterTest.kt:1011-1042	CheatGoldenTests.cs:1016-1044	BOUND	case=mv-reservation-delivery-then-beam
-cheat-v1	$.tileMovement[*].factsAfter[*].index	1	INTERNAL	V5CheatGoldenExporterTest.kt:1011-1042	CheatGoldenTests.cs:601-714	BOUND	case=mv-swap-hand-with-wall-direct|mv-swap-drawn-with-wall-backfill|mv-reservation-delivery|mv-rinshan-and-drawn-swap|mv-swap-hand-with-dead-wall
+cheat-v1	$.tileMovement[*].factsAfter[*].index	1	INTERNAL	V5CheatGoldenExporterTest.kt:1011-1042	CheatGoldenTests.cs:609-650	BOUND	case=mv-swap-hand-with-wall-direct|mv-swap-drawn-with-wall-backfill
+cheat-v1	$.tileMovement[*].factsAfter[*].index	1	UNBOUND	V5CheatGoldenExporterTest.kt:1011-1042	GAP:N3-B11	GAP:N3-B11	case=mv-reservation-delivery|mv-reservation-delivery-then-beam|mv-rinshan-and-drawn-swap|mv-swap-hand-with-dead-wall
 cheat-v1	$.tileMovement[*].factsAfter[*].seat	1	OUT_DIFF	V5CheatGoldenExporterTest.kt:1011-1042	CheatGoldenTests.cs:1016-1044	BOUND	case=mv-reservation-delivery-then-beam
-cheat-v1	$.tileMovement[*].factsAfter[*].seat	1	INTERNAL	V5CheatGoldenExporterTest.kt:1011-1042	CheatGoldenTests.cs:601-714	BOUND	case=mv-swap-hand-with-wall-direct|mv-swap-drawn-with-wall-backfill|mv-reservation-delivery|mv-rinshan-and-drawn-swap|mv-swap-hand-with-dead-wall
+cheat-v1	$.tileMovement[*].factsAfter[*].seat	1	UNBOUND	V5CheatGoldenExporterTest.kt:1011-1042	GAP:N3-B11	GAP:N3-B11	case=mv-swap-hand-with-wall-direct|mv-swap-drawn-with-wall-backfill|mv-reservation-delivery|mv-rinshan-and-drawn-swap|mv-swap-hand-with-dead-wall
 cheat-v1	$.tileMovement[*].factsAfter[*].tileId	1	OUT_DIFF	V5CheatGoldenExporterTest.kt:1011-1042	CheatGoldenTests.cs:1016-1044	BOUND	case=mv-reservation-delivery-then-beam
 cheat-v1	$.tileMovement[*].factsAfter[*].tileId	1	INTERNAL	V5CheatGoldenExporterTest.kt:1011-1042	CheatGoldenTests.cs:601-714	BOUND	case=mv-swap-hand-with-wall-direct|mv-swap-drawn-with-wall-backfill|mv-reservation-delivery|mv-rinshan-and-drawn-swap|mv-swap-hand-with-dead-wall
 cheat-v1	$.tileMovement[*].backfilledIndex	1	INTERNAL	V5CheatGoldenExporterTest.kt:1043-1383	CheatGoldenTests.cs:644-666	BOUND	case=mv-swap-drawn-with-wall-backfill
@@ -878,10 +937,10 @@ FIELD-RULES:END
 - **事件序列投影规则（R1-1，沿用）**：N3-A1/A2 的 C# 期望序列 = fixture `eventTypes` 按 §6 表示映射投影（ScoreSettled 信息由 `RoundSettlement/RoundResult` 字段承载 → 从事件序列折叠）→ roundTerminal 投影为 `[TsumoWin, RoundEnded]`、chankanRon 投影为 `[RonWin, RoundEnded]`；断言注释必须引用 fixture 原始序列与投影规则。
 - 其余组：matchProgression 16 case 全字段消费（含 allowAgariYame/dealerDeclaredAgariYame/canDealerDeclareAgariYame/tieBreakSeats/tenpai/transferSeat）；decisionClock 41 ops 全走 + ≥35 断言；controlEpoch 6 ops 全走；unexportedSamples[3] 显式声明未导出项。本节未列"弱化/未绑定"的行均为逐值绑定，无沉默省略。
 
-### 3.4 cheat-v1（catalog 内，第 4 轮字段级 scoped 重划版）
+### 3.4 cheat-v1（catalog 内，第 5 轮逐单元 scoped 重划版）
 
-- **SHA256** `A196CBBD97AB8F61BE8679B74C8F17DF2713CB37AEF0922E5F3C9F725B28AB4E`；v4Commit `a96c195c…`（真实）；census 204 distinctPaths（FIELD-RULES 172 条规则全裁决，其中 scoped case 级规则 66 行）；C# 消费 `CheatGoldenTests`（16 Facts 全 PASS）。
-- **路径级类分布（§11.6 `DIST` 复算）**：CONTAINER 6 + INTERNAL 21 + IN_BIND 66 + META 3 + OUT_DIFF 49 + SEM_MAP 19 + UNBOUND 19 + UNBOUND_HC 21 = 204。
+- **SHA256** `A196CBBD97AB8F61BE8679B74C8F17DF2713CB37AEF0922E5F3C9F725B28AB4E`；v4Commit `a96c195c…`（真实）；census 204 distinctPaths（FIELD-RULES 215 条规则全裁决，其中 scoped case 级规则 109 行——全部 scoped 机制集中于本 fixture）；C# 消费 `CheatGoldenTests`（16 Facts 全 PASS）。
+- **路径级类分布（§11.6 `DIST` 复算，first-match 首行投影）**：CONTAINER 7 + INTERNAL 33 + IN_BIND 45 + META 3 + OUT_DIFF 48 + SEM_MAP 28 + UNBOUND 19 + UNBOUND_HC 21 = 204（第 4 轮口径 66 IN_BIND 的下降 = goldenInputs 家族按单元重划后，"整路径已绑"的假象被拆散：见下两行）。
 - **第 2 轮分桶错误的正式更正（R2-3a，沿用）**：case **#23 sb-activate-already-used 实为 A 桶（已绑定）**——`CheatGoldenTests.cs:486-490` 经 `AssertGoldenRejection` → `:557 Assert.Equal(ReasonMap[Str(c,"reason")], expected)` 真实读取该 case 的导出 reason 并与 C# 实算错误码差分；**正控制探针**把该 case 的 reason 篡改为 WRONG_PHASE 后 → `Handler_SleeveBloom_RepresentativeCases_ReplayAgainstCheatSubmission [FAIL]`（Assert.Equal Failure，Total:16 Failed:1，exit 1，§11.8 探针 P1）——第 2 轮把 #23 记为 D-α（无黄金对照）与源码事实矛盾，**更正为 A**。
 - **75 个 handler case 逐条分桶**（tileMark 20 + sleeveBloom 32 + beamSwap 23；桶定义：**A** 黄金输出行为重放（真 C# 入口 + outcome/reason 逐值对照）、**B** 部分绑定、**C** goldenInputs 驱动全链路重放、**D** 无黄金行为对照（仅 `Handler_Sections_CoverEveryRejectionReason` :339-365 的 reason 映射完备性覆盖）、**E** 纯 C# 存在断言但黄金条目未绑定。分桶依据 = 源码字面量差集初筛 + 逐断言深读判级；**机器复算命令与 75 行 TSV 见 §11.7（case-refs.ps1，-File 形式，exit 0）**）：
 
@@ -964,13 +1023,39 @@ FIELD-RULES:END
 
 
 - **分桶汇总（第 4 轮算术修正，R3-3(a)）**：**行为级黄金对照 = 24/75（A 16 + B 2 + C 6）**；E 1 条为纯 C# 存在断言（golden 条目本身未绑定，注释级对照，**不计入行为绑定**）；**合计某种形式对照 = 25/75**；D 50 条无行为对照。第 3 轮 "A16+B2+C6=24" 本身正确，但 §13 曾误写 "24/75 行为对照（注释级 E1 亦计入）" 与 "+E1=25 行为级"——E1 是存在级不是行为级，两种口径在第 4 轮明确分离。
-- **引用侧逐字段结论（第 4 轮修正，R3-3(b)）**：6 条 goldenInputs 缺口属 **sleeveBloom** 而非 tileMark/beamSwap——`$.sleeveBloomHandler[*].goldenInputs` 的 6 叶 `{availableWallCount, offerId, rinshanPointer, wallEndExclusive, wallPointer, windowId}` → **GAP:N3-B3**（scoped 66 case 全集，§9 逐叶列出）；sleeveBloom goldenInputs 其余 22 条 IN_BIND 路径已绑 `:718-826`（`AssertGoldenRejection` 差分链）；tileMark 与 beamSwap 的 goldenInputs 均已绑定，无缺口。
+- **goldenInputs 家族逐单元真值（第 5 轮，R4-2 核心）**：`$.sleeveBloomHandler[*].goldenInputs` = **26 个叶路径、79 个（case，实例）单元**，逐叶逐案例判类后 **INTERNAL 14 + SEM_MAP 12 + OUT_DIFF 4 = 30 单元有真实绑定/映射锚点；UNBOUND 49 单元（B3 21 + B10 28）；IN_BIND 0**。**第 4 轮"其余 22 条 IN_BIND 已绑 ：718-826"的错误**：该说法把"叶路径在部分案例下被消费"当成了"整路径 21 条已绑"——按单元拆开后，任一叶都不存在"全部案例已绑"；被消费的 30 个单元各有独立锚点（`act=sb-activate-allowed→choice=sb-choose-second` 绑定链 `:718-727`/`:737`、`act-rinshan→choose-rinshan` `:769-775`/`:787`、`sbo` 链 `:814-826`、exporter 锚 `V5CheatGoldenExporterTest.kt:308-357`）。逐叶表（units = 案例数；锚点 = C# 消费行）：
+
+| goldenInputs 叶 | units（按类） | 缺口归属 |
+|---|---|---|
+| `availableWallCount` | UNBOUND 1 | B3 |
+| `offerId` | UNBOUND 4 | B3 |
+| `rinshanPointer` / `wallEndExclusive` / `wallPointer` | 各 UNBOUND 5 | B3 |
+| `windowId` | UNBOUND 1 | B3 |
+| `seat` | SEM_MAP 1（sbo `:819`）+ UNBOUND 6 | **B10** 6 |
+| `keep` | SEM_MAP 3（`:723`/`:773`/`:823`）+ UNBOUND 1（choose-first） | **B10** 1 |
+| `drawKind` | SEM_MAP 2（`:722`/`:772`）+ UNBOUND 3 | **B10** 3 |
+| `drawnTileId` | INTERNAL 2（`:725`/`:774`）+ UNBOUND 3 | **B10** 3 |
+| `nextWallTileId` | INTERNAL 1（`:727`）+ UNBOUND 1 | **B10** 1 |
+| `nextDeadWallTileId` | INTERNAL 1（`:775`）+ UNBOUND 1 | **B10** 1 |
+| `cost` | SEM_MAP 1（sbo `:822`）+ OUT_DIFF 2（`:737`/`:787`）+ UNBOUND 3 | **B10** 3 |
+| `cheatPoints` | SEM_MAP 1（sbo `:822`）+ OUT_DIFF 2（`:737`/`:787`） | 已绑（3/3 单元） |
+| `turnNumber` / `offerCreatedTurnNumber` | 各 INTERNAL 1（`:724`）+ UNBOUND 2 | **B10** 各 2 |
+| `offerFirstTileId` | INTERNAL 2（`:725`/`:774`）+ UNBOUND 1 | **B10** 1 |
+| `offerSecondTileId` | INTERNAL 2（`:727`/`:775`）+ UNBOUND 1 | **B10** 1 |
+| `offerSecondWallIndex` | INTERNAL 1（`:726`）+ UNBOUND 2 | **B10** 2 |
+| `nextAvailableWallIndex` | INTERNAL 1（`:726`）+ UNBOUND 2 | **B10** 2 |
+| `currentPlayer` / `phase` | 各 SEM_MAP 1（`:820`/`:821`） | 已绑 |
+| `offerFirstInWall` / `offerSecondInWall` | 各 SEM_MAP 1（`:825`/`:826`） | 已绑 |
+| `now` / `deadlineMillis` | 各 INTERNAL 1（`:824`） | 已绑 |
+
+  合计 26 叶 79 单元 = **B3 21 + B10 28 UNBOUND**（补齐包 §9）；tileMark/beamSwap 的 goldenInputs 全绑定无缺口（结论沿用）。**UNBOUND 判级的实证护栏**：B10 代表单元变异 3 例（choose-second 的 `cost`→999、choose-first 的 `seat`→999、choose-second 的 `drawKind`→WRONG）全部 16/16 PASS exit 0（§11.8 第 5 轮探针）；BOUND 面正控制 = `sb-activate-allowed` 的 `cost`→999 → 1 FAIL exit 1（`sleeve-input-bound-control`）。
+- **factsAfter 家族逐单元真值（第 5 轮，R4-2）**：`$.tileMovement[*].factsAfter[*].index` 在 `mv-swap-hand-with-wall-direct`/`mv-swap-drawn-with-wall-backfill` 两案例被 `:609-650` 结构断言读（INTERNAL 2 单元），其余 4 案例 13 单元无人读 → **GAP:N3-B11**；`[*].seat` 仅 m5（`mv-reservation-delivery-then-beam`）在 `:1016-1044` 的 hand/discard 分区被读（OUT_DIFF 4 单元，正控制 `m5-facts-hand-seat-control` 1 FAIL 实证设防），其余 5 案例 13 单元无人读 → **GAP:N3-B11**；`index` 的 wall 分区与 `seat` 的 wall 分区显式排除（`m5-facts-unchecked-coordinate` 探针 16/16 PASS 证其不设防，按"坐标分区适用性"语义记 UNBOUND 而非整路径 OUT_DIFF——第 4 轮把该两行整路径标 OUT_DIFF/INTERNAL 掩盖了分区适用性，第 5 轮拆分）。B11 合计 **2 路径 26 单元**（§9）。
 - **D-β（50 条 D 桶非全部"侥幸"）**：其中 reason-mapped case 由 `Handler_Sections_CoverEveryRejectionReason`（:339-365）的 C# 实算错误码差分构成**存在级**覆盖（逐值 outcome/reason 重放仍缺，落在 B4/B5/B8 包）。
 - **ledger（第 4 轮机器重划）**：SEM_MAP 1（`$.ledger` 容器经读点持有）+ IN_BIND 26（差分子集逐值对照）+ UNBOUND_HC 10 + OUT_DIFF 15 + CONTAINER 1 = 53。**GAP:N3-B5 = 10 条**（四子键 outcome/exception 8 + snapshotRoundTrip `balancesEqual`/`entriesEqual` 两布尔 2——读点 `CheatGoldenTests.cs:261-262` `Assert.True(Bool(...))` 为信任级存在断言，翻值即 FAIL 但无计算值差分，绑定任务记 N3-B5 逐值对照）。
 - **tileMarkState**：6 条 UNBOUND_HC（`registerDealtRound.versionAfterFirstRegister`、`addGroup.sameIdDifferentContentException/seatGroupLimitIsThree/seatGroupLimitException/seatTileLimitIsTwelve`、`expiry.createdRoundOrdinal`）随 GAP:N3-B4 包（§9）；其余 tileMarkState 路径 META/容器。
-- **tileMovement（第 4 轮机器重划，R3-2(c)）**：IN_BIND 16（m1a/m3 结构断言，:602-629/:412-418）+ OUT_DIFF 17 + **INTERNAL 21** + SEM_MAP 1 + UNBOUND 12 + UNBOUND_HC 2 + CONTAINER 1 = 70。**m1b cross 字段（resolvedIndex/backfilledIndex/backfilledTileId/drawnTileId/wallPointerBeforeDraw/wallPointerAfterDraw/wallPointerAfterSwap/displacedTileId）= INTERNAL**：`TileMovement_DrawnBackfill_IsAV4OnlyPath_RecordedAsStructure`（:642-666）为纯结构自洽断言（resolvedIndex==factsAfter.index、backfilledIndex==resolvedIndex-1、wallPointerBeforeDraw+1==wallPointerAfterDraw），无生产差分语义、无绝对锚——第 3 轮把 m1b 记 "11 叶 golden 输出对照" 与源码不符，更正；coherent+100 变异 16/16 PASS（§11.8）与 INTERNAL 判级一致（非 GAP）。其余 UNBOUND 12 条入 **GAP:N3-B1（14 条，§9 逐路径列出）**。
-- **handler scoped 拆分（第 4 轮新增，R3-2(b)）**：`tileMarkHandler[*].outcome` 拆 SEM_MAP 6 case + UNBOUND_HC 14 case；`tileMarkHandler[*].reason` 拆 SEM_MAP 6 + IN_BIND 1（tm-response-window，:417-418 实读 ResponseWindowOpen/WRONG_PHASE）+ UNBOUND_HC 13；`sleeveBloomHandler[*].outcome` 拆 SEM_MAP 5 + UNBOUND_HC 27；`beamSwapHandler[*].outcome` 拆 SEM_MAP 5 + OUT_DIFF 1（bm-choose-keep，:553-556 黄金重放）+ UNBOUND_HC 17；`beamSwapHandler[*].reason` 拆 SEM_MAP 5 + UNBOUND_HC 18；`beamSwapHandler[*].requestException` 整组 UNBOUND → **GAP:N3-B7**（CONTAINER 吞并缺陷修复）；三 handler `note` 叶 → **GAP:N3-B8**（存在级 :350-351 读点）。UNBOUND_HC 行的 case 集消解 = §9 N3-B3（按 case 展开覆盖）。
-- **侥幸通过判定（第 4 轮更新）**：UNBOUND/UNBOUND_HC 面（B1/B3/B4 部分/B5 部分/B7/B8）变异不设防——第 4 轮探针新增 cheat-request-exception（requestException 篡改 → 16/16 PASS exit 0）、cheat-unbound-reason（UNBOUND_HC case 的 reason 改 NOT_YOUR_TURN → 16/16 PASS exit 0）、cheat-six-goldeninputs（六叶删 → 16/16 PASS exit 0）、cheat-backfill-coherent（m1b coherent 值 +100 → 16/16 PASS exit 0，证 INTERNAL 无生产语义）；cheat 绑定面的正控制 = 第 3 轮 **#23 正控制**（reason→WRONG_PHASE → 1 FAIL exit 1，A 桶证据，§11.8 P1）；snapshotRoundTrip 翻布尔 → FAIL（信任级，绑定任务 N3-B5）。
+- **tileMovement（第 4 轮机器重划 R3-2(c)；第 5 轮 factsAfter index/seat 拆分后组内算术更新）**：IN_BIND 16（m1a/m3 结构断言，:602-629/:412-418）+ OUT_DIFF 18 + **INTERNAL 20** + SEM_MAP 1 + UNBOUND 12 + UNBOUND_HC 2 + CONTAINER 1 = 70（`factsAfter[*].index` 首行投影仍 INTERNAL、`[*].seat` 首行投影改 OUT_DIFF——单元级拆分见下一段）。**m1b cross 字段（resolvedIndex/backfilledIndex/backfilledTileId/drawnTileId/wallPointerBeforeDraw/wallPointerAfterDraw/wallPointerAfterSwap/displacedTileId）= INTERNAL**：`TileMovement_DrawnBackfill_IsAV4OnlyPath_RecordedAsStructure`（:642-666）为纯结构自洽断言（resolvedIndex==factsAfter.index、backfilledIndex==resolvedIndex-1、wallPointerBeforeDraw+1==wallPointerAfterDraw），无生产差分语义、无绝对锚——第 3 轮把 m1b 记 "11 叶 golden 输出对照" 与源码不符，更正；coherent+100 变异 16/16 PASS（§11.8）与 INTERNAL 判级一致（非 GAP）。其余 UNBOUND 12 条入 **GAP:N3-B1（14 条，§9 逐路径列出）**。
+- **handler scoped 拆分（第 4 轮新增 R3-2(b)；第 5 轮按 R4-1 公布单元数）**：`tileMarkHandler[*].outcome` 拆 SEM_MAP 6 case + UNBOUND_HC 14 case；`tileMarkHandler[*].reason` 拆 SEM_MAP 6 + IN_BIND 1（tm-response-window，:417-418 实读 ResponseWindowOpen/WRONG_PHASE）+ UNBOUND_HC 13；`sleeveBloomHandler[*].outcome` 拆 SEM_MAP 5 + UNBOUND_HC 27；`beamSwapHandler[*].outcome` 拆 SEM_MAP 5 + OUT_DIFF 1（bm-choose-keep，:553-556 黄金重放）+ UNBOUND_HC 17；`beamSwapHandler[*].reason` 拆 SEM_MAP 5 + UNBOUND_HC 18；`beamSwapHandler[*].requestException` 整组 UNBOUND → **GAP:N3-B7**（CONTAINER 吞并缺陷修复）；三 handler `note` 叶 → **GAP:N3-B8**（存在级 :350-351 读点）。**第 4 轮 §9 曾把六个 UNBOUND_HC scoped 行记为"72 条 UNBOUND_HC 路径"——实为 116 个（case,路径）单元**（14+13+27+27+17+18，§11.6 `CASE-DIST` gap=B8 units=119 = 116 + note 3），第 5 轮更正；HC 单元的 case 集消解落 **GAP:N3-B8**（机器 owner 列同值，§9 N3-B8 承载 case 级绑定动作清单）。
+- **侥幸通过判定（第 5 轮更新）**：UNBOUND/UNBOUND_HC 面（B1/B3/**B10**/B11/B4 部分/B5 部分/B7/B8）变异不设防——第 4 轮探针：cheat-request-exception（requestException 篡改 → 16/16 PASS exit 0）、cheat-unbound-reason（UNBOUND_HC case 的 reason 改 NOT_YOUR_TURN → 16/16 PASS exit 0）、cheat-six-goldeninputs（B3 六叶值改 WRONG/999 → 16/16 PASS exit 0）、cheat-backfill-coherent（m1b coherent 值 +100 → 16/16 PASS exit 0，证 INTERNAL 无生产语义）；**第 5 轮新增 7 个 cheat 探针**：sleeve-input-relative-turns（关系对双 +100 → 16/16 PASS）、sleeve-input-relative-entities（实体对双 +1 → 16/16 PASS）、m5-facts-unchecked-coordinate（m5 的 hand/discard 分区 `index`→999 + wall 分区 `seat`→999 → 16/16 PASS，证分区排除语义）、sleeve-unbound-cost/seat/drawkind 三例（B10 代表单元 → 16/16 PASS）、sleeve-input-relation-break（**正控制**：关系对单侧 +100 → 1 FAIL exit 1，证 INTERNAL 对是真绑定）；cheat 绑定面的正控制 = 第 3 轮 **#23 正控制**（reason→WRONG_PHASE → 1 FAIL exit 1，A 桶证据，§11.8 P1）+ 第 5 轮 `sleeve-input-bound-control`（cost→999 → 1 FAIL）与 `m5-facts-hand-seat-control`（hand/discard seat→999 → 1 FAIL）；snapshotRoundTrip 翻布尔 → FAIL（信任级，绑定任务 N3-B5）。
 
 ### 3.5 shuffle-v1（catalog 内，第 4 轮机器重划版）
 
@@ -991,7 +1076,7 @@ FIELD-RULES:END
 - **路径级类分布（§11.6 `DIST` 复算）**：CONTAINER 4 + INTERNAL 64 + IN_BIND 54 + META 24 + OUT_DIFF 14 + SEM_MAP 33 + UNBOUND 5 = 198。
 - **真实 C# 行为（保留）**：7/7 case 经 `AiDecisionService.Replay + Submit`（`ThrowingStrategy` 保证绝不运行启发式）：录制意图（recordedIntent 绑定防换动作）、拒绝码（AI-002-old-round/AI-003-old-decision/AI-004-old-epoch/AI-005-wrong-seat/AI-006-candidate-not-legal/AI-007-exact-deadline/AI-001-legal-intent）、v5.authorityMapping 六种 mode 构造校验（输入/配置面绑定）。
 - **fixture 内部证据（非 C# 后态差分，保留）**：`AssertV4Evidence` 的 `DeepEquals(before,after)`（:571/:607）比较的是同一 fixture 的 V4 前后树（尤其拒绝 case 的 before==after 期望），不是"C# 重放后实际状态 vs V4 全树"差分；接受 case 仅核若干关系字段（receiptStatus/eventCount/stateChanged）；末 Fact 仅 DeadlineArbiter 接纳动作，不执行 RoundStateMachine 产生 C# 后态。第 4 轮该面落为显式 INTERNAL 规则 `$.cases[*].v4.#`（64 条路径，导出锚 `V5AiGoldenExporterTest.kt:624-709`）。
-- **decisionClock 全组绑定（第 4 轮机器复核，8 条路径无一 GAP）**：容器 CONTAINER + `baseMillis`/`reserveMillis`/`opensAtMillis` IN_BIND（:228/:229/:232）+ `deadlineMillis` OUT_DIFF（:233 实算对照）+ `reserveScope` SEM_MAP（:221-227）+ `expiredAtDeadline`/`expiredAtDeadlineMinus1` IN_BIND（:65-71 边界构造）。**正控制探针 ai-clock-metadata**（deadline 改 ±1 → 1 FAIL exit 1，§11.8）证明该组确已设防——第 3 轮草案曾误记其为缺口，机器探针推翻。
+- **decisionClock 全组绑定（第 4 轮机器复核，8 条路径无一 GAP）**：容器 CONTAINER + `baseMillis`/`reserveMillis`/`opensAtMillis` IN_BIND（:228/:229/:232）+ `deadlineMillis` OUT_DIFF（:233 实算对照）+ `reserveScope` SEM_MAP（:221-227）+ `expiredAtDeadline`/`expiredAtDeadlineMinus1` IN_BIND（:65-71 边界构造）。**正控制探针 ai-clock-metadata**（`baseMillis`/`reserveMillis`→999 → 1 FAIL exit 1，§11.8；第 3 轮草案曾误记为"deadline 改 ±1"，第 5 轮按工具实际变异行更正）证明该组确已设防——第 3 轮草案曾误记其为缺口，机器探针推翻。
 - **GAP:N3-B6 = 3 条（第 4 轮路径修正，R3-3(d)）**：`$.cases[*].v5.expected.mappingBasis`（导出锚 `V5AiGoldenExporterTest.kt:740-742`；第 3 轮误写为 `$.v5Observation.mappingBasis`，机器 census 证实真实路径在 `cases[*].v5.expected` 之下）+ `$.v5Observation.mappingLimits[*]`/`.#`（:88-547）。观测元数据中声明"映射依据/边界"的字段无 C# 断言消费；补齐包 N3-B6 = 在 `AiReplayGoldenTests` 增加存在+取值断言或导出侧声明排除（caller 裁决，二选一，禁止沉默）。
 - **GAP:N3-B9 = 2 条（第 4 轮新增）**：`$.cases[*].v4Call.action.text` 与 `$.cases[*].v4.events[*].text`（:624-709）——动作/事件的人类可读文本叶无 C# 断言消费（结构面 v4Call/v4 已由 INTERNAL/recordedIntent 覆盖，仅 text 叶悬空）；补齐包 N3-B9 = 存在断言或导出侧排除（§9）。
 - **索引缺口与 G-049（保留）**：catalog `fixtures[]=5`（notice 明示 five accepted V4-exported fixtures）、manifest 无 ai-v1 行、G-049 `coverage=none` 与仓库现状不符——ai-v1 恰为 recorded-intent + stale-AI submission fixture。按本节消费边界，G-049 不可重算 full；**建议 partial**（真实行为面存在 + 后态差分缺位）。是否扩口径由 caller 裁决（§9 N3-C1）。
@@ -1129,24 +1214,26 @@ matchProgression 16 case 全字段消费含 `allowAgariYame/dealerDeclaredAgariY
 
 ---
 
-## 9. 最小补齐包（可独立下发）与依赖 DAG（第 4 轮：覆盖全部 101 条 GAP 路径）
+## 9. 最小补齐包（可独立下发）与依赖 DAG（第 5 轮：路径口径 101 / 单元口径 286 双分母全覆盖）
 
 ### 补齐项（全部为测试/文档/索引文件，不触生产代码、不改 fixtures、不改 catalog 冻结数字以外的语义）
 
-每包的机器分母 = §3.0.1 FIELD-RULES 块中 owner 列为对应 `GAP:N3-*` 的路径数，**逐路径清单由 §11.6 `DIST gap=` 行与独立匹配器复算**（第 4 轮 101 条逐一核对：cheat 40 + round 20 + scoring 6 + physical 29 + shuffle 1 + ai 5 = 101）。**诚实口径**：分母为当前规则表机器值；判级表本身的完备性以本审计的复核过程为界（未穷尽证明"不存在第 102 条"前不称完整集合，不可发现性说明见 §15）。
+每包的机器分母 = §3.0.1 FIELD-RULES 块中 owner 列为对应 `GAP:N3-*` 的路径数（DIST 口径）与单元数（CASE-DIST 口径）**双口径并报**，**逐路径清单由 §11.6 `DIST gap=` 行复算、逐单元数由 `CASE-DIST gap=` 行复算**（路径口径 101 条逐一核对：cheat 40 + round 20 + scoring 6 + physical 29 + shuffle 1 + ai 5 = 101；单元口径 286 = 路径 101 中 scoped 家族按（case，实例）展开 + 未展开路径的实例数，分解见 §3.0.1 表）。**诚实口径（R4-1）**：scoped 家族（goldenInputs/factsAfter/六个 handler outcome-reason 行）的完整分母是**单元**而非路径——"101 条 GAP 路径"是 DIST 口径的定义投影，**不声明它枚举全部未绑定单元**；未绑定单元完整分母 = **286 units**。分母为当前规则表机器值；判级表本身的完备性以本审计的复核过程为界（不可发现性说明见 §15）。
 
-| ID | 文件 | 内容（断言要求逐项） | 依赖 | 对应缺口（GAP 路径数） |
+| ID | 文件 | 内容（断言要求逐项） | 依赖 | 对应缺口（路径 / 单元） |
 |---|---|---|---|---|
 | N3-A1 | `dotnet/tests/Mahjong.Domain.Tests/RoundReplayGoldenTests.cs` | RoundTerminal：(a) 事件序列 = fixture `eventTypes=[TsumoWin,ScoreSettled,RoundEnded]` 经 §3.3 投影规则 → `Assert.Equal(["TsumoWin","RoundEnded"])`，注释引用 fixture 原序列与投影规则；(b) 绑定 `input.phaseBefore/versionBefore`（替换硬编码 :110-113）；(c) 绑定 `settlement.outcome/totalDeltas`（:117/:131）；(d) 绑定 `expected.phaseAfter/resultOutcome`（:129/:130 改读导出值） | 无 | GAP:N3-B4 round 部分 9 条路径 |
 | N3-A2 | 同上 | ChankanRon：(a) `Assert.Equal(["RonWin","RoundEnded"])`（投影注释同上）；(b) **绑定 `expected.hasKanDeclared/hasRinshanDraw`**：`Assert.Equal(导出布尔, 终局事件列表.Contains("KanDeclared"/"RinshanDrawn"))`，行注释仅作名称映射说明，不以注释豁免绑定；(c) 绑定 `meldTypeAfterKan/legalRonSeat1/input.meldTiles/phaseAfterKan/phaseAfterRon/resultOutcome`（替换 :221/:227 硬编码） | 无 | GAP:N3-B4 round 部分 11 条路径 |
 | N3-B1 | `dotnet/tests/Mahjong.Domain.Tests/CheatGoldenTests.cs` | tileMovement **14 条路径绑定（第 4 轮逐路径清单，机器 DIST 复算）**：`deliveredTileId`、`inputLastDiscardSeat`、`replacementTileId`、`rinshanPointerAfterDraw`、`wallPointerBeforeDelivery`、`note`、`factsBefore`、`factsBefore[*]`、`factsBefore[*].container/.index/.seat/.tileId` 共 12 条 UNBOUND + `doraRefusalException`、`wallSlotRefusalException` 2 条 UNBOUND_HC。**第 4 轮口径更正（R3-3(f)）**：m1b cross 字段（resolvedIndex/backfilledIndex/…）已改判 INTERNAL（§3.4），**不再入 B1 分母**——B1 = 14 非 13，且无 "11 叶 golden 输出对照" 之说 | 无 | GAP:N3-B1 = 14 |
 | N3-B2 | `dotnet/tests/Mahjong.Domain.Tests/CheatGoldenTests.cs` + `ShuffleGoldenTests.cs` | (a) 更正 CheatGoldenTests :638-642 注释为准确映射（ChooseSleeveBloom:376 为入口；ChooseBeamSwap 拒绝=V4 生产对齐；地址落点差按 INFO-2 记录为表示差）；(b) **第 4 轮新增（R3-3(c)）**：`ShuffleGoldenTests.cs` 增加 `deadWallSegmentEqual` 绑定断言（32 布尔逐值对照或导出侧显式排除，禁止沉默） | 无 | GAP:N3-B2 = 1（+(a) 注释项非路径分母） |
-| N3-B3 | `dotnet/tests/Mahjong.Domain.Tests/CheatGoldenTests.cs`（仅测试） | **handler 全清单补齐包**，覆盖 §3.4 表全部非 A/C 桶：(a) **D-α 46 例**：真实入口行为重放 + outcome/reason/requestException 逐值绑定——**构造输入不得声称"复用现有 goldenInputs"**（引用实测 tileMark 0/20、beamSwap 0/23），须按 V4 exporter 源锚点（`V5CheatGoldenExporterTest.kt` 对应 case 构造段）重建输入并留锚点注释；Allowed 主路径 6 例（#1/#53/#63/#66/#73/#75）另绑副作用/事件形状；(b) **D-β 4 例**（#5/#18/#19/#20）：#19 在岗 deadline 等价类断言 + 映射注释 + **owner 批准记录**；#5/#18/#20 绑定 InvalidRequest 合并语义实际 outcome；(c) **B 2 例升级**：#6 绑定 C# 特化 ResponseWindowOpen 错误码逐值、#67 升级全链路重放；(d) **E 1 例绑定**：#36 sb-choose-first 以 fixture goldenInputs 构造并绑定 outcome=Allowed/reason=null。**第 4 轮更正（R3-3(b)）**：同时绑定的 goldenInputs 6 条缺口路径属 **sleeveBloom** 六叶 `{availableWallCount, offerId, rinshanPointer, wallEndExclusive, wallPointer, windowId}`（§3.4）；tileMark/beamSwap 的 goldenInputs 均已绑定（sleeveBloom goldenInputs 其余 22 条 IN_BIND 路径已绑 :718-826）。**兼负 UNBOUND_HC scoped 行的 case 集消解**：§3.4 handler scoped 拆分产出的 72 条 UNBOUND_HC 路径按 case 逐一绑定或显式排除 | 无 | GAP:N3-B3 = 6（sleeveBloom goldenInputs 六叶）+ D50/B2/E1（case 级）+ UNBOUND_HC case 集消解（scoped） |
+| N3-B3 | `dotnet/tests/Mahjong.Domain.Tests/CheatGoldenTests.cs`（仅测试） | **sleeveBloom goldenInputs 未绑定单元绑定包（第 5 轮按 R4-2 重写）**：`$.sleeveBloomHandler[*].goldenInputs` 的 6 叶 × 出现案例共 **21 个 UNBOUND 单元**逐单元绑定或导出侧显式排除——`availableWallCount`（1：sbo-activate-allowed）、`offerId`（4：sb-choose-first/second/rinshan、sbo-choose-allowed）、`rinshanPointer`（5）、`wallEndExclusive`（5）、`wallPointer`（5）、`windowId`（1：sbo-activate-allowed）。**第 4 轮"其余 22 条 IN_BIND 已绑 ：718-826"撤回**（§3.4 逐叶表：真相 = 30 个单元有锚点、49 个 UNBOUND、IN_BIND 0）；tileMark/beamSwap goldenInputs 已绑无缺口（沿用）。handler case 级动作清单（D-α/D-β/B/E）随 §3.4 分桶表执行，其机器单元分母记在 N3-B8（scoped HC 行 owner 列） | 无 | GAP:N3-B3 = 6 路径 / 21 单元 |
+| N3-B8 | `dotnet/tests/Mahjong.Domain.Tests/CheatGoldenTests.cs` | **handler 全清单包（第 5 轮扩为 scoped HC 单元承载包）**：(a) 三 handler `note` 叶 3 条路径绑定（存在+取值，读点 `:350-351` 现为存在级）或导出侧排除；(b) **六个 handler outcome/reason scoped 行的 116 个（case,路径）单元**（tileMark outcome 14 + tileMark reason 13 + sleeveBloom outcome 27 + sleeveBloom reason 27 + beamSwap outcome 17 + beamSwap reason 18；**第 4 轮曾误写"72 条路径"，R4-1 更正**）逐 case 绑定或显式排除——动作清单 = §3.4 分桶表非 A/C 桶：**D-α 46 例** 真实入口行为重放 + outcome/reason/requestException 逐值绑定（构造输入按 V4 exporter 源锚点 `V5CheatGoldenExporterTest.kt` 对应 case 构造段重建并留锚点注释，**不得声称"复用现有 goldenInputs"**，实测 tileMark 0/20、beamSwap 0/23；Allowed 主路径 6 例 #1/#53/#63/#66/#73/#75 另绑副作用/事件形状）；**D-β 4 例**（#5/#18/#19/#20：#19 在岗 deadline 等价类断言 + 映射注释 + owner 批准记录，#5/#18/#20 绑定 InvalidRequest 合并语义实际 outcome）；**B 2 例升级**（#6 ResponseWindowOpen 错误码逐值、#67 全链路重放）；**E 1 例绑定**（#36 sb-choose-first 以 fixture goldenInputs 构造并绑定 outcome=Allowed/reason=null） | 无 | GAP:N3-B8 = 3 路径 + 116 HC 单元（CASE-DIST gap=B8 units=119） |
+| N3-B10 | `dotnet/tests/Mahjong.Domain.Tests/CheatGoldenTests.cs`（仅测试） | **goldenInputs 按单元细化新缺口（第 5 轮新增，R4-2）**：`goldenInputs` 家族逐叶逐案例重划后暴露的 **28 个 UNBOUND 单元（13 叶路径）**——`seat` 6、`drawKind` 3、`drawnTileId` 3、`cost` 3、`turnNumber` 2、`offerCreatedTurnNumber` 2、`offerSecondWallIndex` 2、`nextAvailableWallIndex` 2、`keep` 1（sb-choose-first）、`nextWallTileId` 1、`nextDeadWallTileId` 1、`offerFirstTileId` 1、`offerSecondTileId` 1。同叶的已绑单元（30 个）保持现状锚点；逐单元绑定或导出侧显式排除。实证：3 个代表单元变异 16/16 PASS（§11.8 第 5 轮）；BOUND 面正控制 `sleeve-input-bound-control` 1 FAIL | 无 | GAP:N3-B10 = 13 路径 / 28 单元 |
+| N3-B11 | `dotnet/tests/Mahjong.Domain.Tests/CheatGoldenTests.cs`（仅测试） | **factsAfter 坐标分区未读单元（第 5 轮新增，R4-2）**：`$.tileMovement[*].factsAfter[*].index` 非 m1a/m1b 案例 **13 单元** + `[*].seat` 非 m5-hand/discard 分区 **13 单元** = 26 单元（2 路径）。绑定 = 按 §3.4 分区适用性逐区断言（index 在 m2/m3/m4/m5、seat 在 m1a/m1b/m2/m3/m4 的导出值与 C# 实际落位逐值对照）或导出侧显式排除无人读的分区。实证：`m5-facts-unchecked-coordinate` 16/16 PASS（不设防）；`m5-facts-hand-seat-control` 1 FAIL（OUT_DIFF 分区确设防） | 无 | GAP:N3-B11 = 2 路径 / 26 单元 |
 | N3-B4 | `dotnet/tests/Mahjong.Domain.Tests/RoundReplayGoldenTests.cs`（round 20 条）+ `CheatGoldenTests.cs`（tileMarkState 6 条） | round 20 条路径的断言明细 = N3-A1/A2；**tileMarkState 6 字段绑定**：`versionAfterFirstRegister`、`sameIdDifferentContentException`、`seatGroupLimitIsThree`、`seatGroupLimitException`、`seatTileLimitIsTwelve`、`createdRoundOrdinal` 改读导出值（替换/补足 :280-329 版本链断言未覆盖处） | 无（A1/A2 与本包 round 部分为同一工作的两个视图） | GAP:N3-B4 = 26（round 20 + tileMarkState 6） |
 | N3-B5 | `dotnet/tests/Mahjong.Domain.Tests/CheatGoldenTests.cs` | ledger 4 子键（conflictDifferentPayload/insufficientFunds/overflow/invalidSeat）的 `outcome`/`exception` 导出叶逐值绑定（8 条；探针 P4 证明当前不设防）；**第 4 轮新增（R3-3(g)）**：`snapshotRoundTrip.balancesEqual`/`entriesEqual` 两布尔（读点 `CheatGoldenTests.cs:261-262` `Assert.True(Bool(...))` 为信任级存在断言——翻布尔即 FAIL 但无计算值差分）升级为逐值对照（C# 实算 balance/entry 集合 vs 导出布尔） | 无 | GAP:N3-B5 = 10 |
 | N3-B6 | `dotnet/tests/Mahjong.Ai.Tests/AiReplayGoldenTests.cs` 或 fixture 导出侧（caller 裁决二选一） | **第 4 轮路径修正（R3-3(d)）**：`$.cases[*].v5.expected.mappingBasis`（导出锚 `V5AiGoldenExporterTest.kt:740-742`）+ `$.v5Observation.mappingLimits`/`mappingLimits[*]` 共 3 条路径：绑定（存在+取值断言）或导出侧显式排除声明——禁止沉默 | 无 | GAP:N3-B6 = 3 |
 | N3-B7 | `dotnet/tests/Mahjong.Domain.Tests/CheatGoldenTests.cs` | **第 4 轮新增**：`$.beamSwapHandler[*].requestException` 1 条路径——第 3 轮被 CONTAINER catch-all 吞并（§3.0.1 缺陷 (b)），机器重划显影为 UNBOUND；绑定 = beamSwap 异常 case 的 requestException 逐值断言或导出侧排除 | 无 | GAP:N3-B7 = 1 |
-| N3-B8 | `dotnet/tests/Mahjong.Domain.Tests/CheatGoldenTests.cs` | **第 4 轮新增**：三 handler `note` 叶（`tileMarkHandler[*].note`/`sleeveBloomHandler[*].note`/`beamSwapHandler[*].note`，读点 `:350-351` 存在级）3 条路径：绑定（存在+取值）或导出侧排除 | 无 | GAP:N3-B8 = 3 |
 | N3-B9 | `dotnet/tests/Mahjong.Ai.Tests/AiReplayGoldenTests.cs` | **第 4 轮新增**：`$.cases[*].v4Call.action.text` + `$.cases[*].v4.events[*].text` 2 条路径（结构面已由 INTERNAL/recordedIntent 覆盖，仅 text 叶悬空）：绑定或导出侧排除 | 无 | GAP:N3-B9 = 2 |
 | N3-C1 | `tests/v5-golden/catalog-v1.json` + `V5-0-GOLDEN-MANIFEST.md` | **caller 口径决定**：ai-v1 纳入 fixtures[]/manifest 并把 G-049 重算 partial（§3.6）；catalog caseTotal 口径 Δ29 是否声明分解（§5） | caller 裁决 | §3.6 / §5 / G-049 |
 | N3-E1 | `dotnet/tests/Mahjong.Domain.Tests/ScoringGoldenTests.cs` | (a) 绑定 `winSamples[*].expected.status` = C# 重放实算 status；(b) 绑定 `winSamples[*].input.extraHan`（win 侧现无断言，noWin 侧 :250 已有）；(c) 绑定 `noWinSamples[*]` 的 `input.doraIndicators/uraDoraIndicators/honba/riichiSticks` 4 字段；(d) `winSamples[*].tags/tags[*]` 以**显式排除声明**处理（exporter 元数据：caller 认为须绑定则并入，否则测试内加显式注释使分母可见——禁止沉默） | 无 | GAP:N3-E1 = 6 + tags 显式排除（META 10 条不进 GAP 分母） |
@@ -1180,7 +1267,7 @@ N3-D1（P3 TableRuntime，独立轨）──────────────
 所有 N3-A*/B*/E* 互不依赖、可并行；N3-C1 是索引口径决定非代码；N3-D1 与 G1 无前置关系。**本包覆盖本报告所报全部可比较缺口（GAP 101 条路径逐一映射如上，清单可由 §11.6 机器复算）**；唯一"不直接绑定"项 = D-β #19 的在岗 deadline 表示（等价类 + 批准）、tags 元数据（显式排除声明）、ledger Entries 级对照（fixture 无 golden Entries 数组，需 exporter 扩导出——属 catalog 语义变更，caller 裁决）。三者均显式留痕，无沉默移出分母。
 
 ---
-## 10. 侥幸通过（wrong-value-passes）判定汇总（第 4 轮：12 探针 + 4 正控制实证；新增 5 探针由 R4 TEMP `probes-round4.ps1` 驱动）
+## 10. 侥幸通过（wrong-value-passes）判定汇总（第 5 轮：累计 32 探针 = 不设防实证 23 + 正控制 9；第 5 轮 16 探针由 R5 TEMP `probes-round5.ps1` 驱动——含重跑第 4 轮 7 探针、逐探针期望校验、失败累计与负向自检，§11.8）
 
 | # | 位置 | 错值场景 | 现有断言是否设防 | 实证（轮次/探针） |
 |---|---|---|---|---|
@@ -1194,17 +1281,26 @@ N3-D1（P3 TableRuntime，独立轨）──────────────
 | 8 | cheat D50（含 6 个 Allowed 主路径） | 真实 C# 行为与 V4 相悖（同 reason 不同副作用/事件形状） | **不设防** | §3.4 分桶 + §13 DEF-2 负例矩阵 |
 | 9 | tileMarkState 6 字段（versionAfterFirstRegister 等） | 六字段全部篡改 | **不设防** | **第 3 轮探针 P3** tilemark-state-fields-unbound：16/16 PASS exit 0 |
 | 10 | ledger 4 子键 outcome/exception | rejected→accepted + 异常类→NOT_AN_EXCEPTION | **不设防** | **第 3 轮探针 P4** ledger-markers-unbound：16/16 PASS exit 0 |
-| 11 | physical hashCrosswalk `csharpHashVerification`/`v4Reason` + `scope.targetIds` | 双标签叶 + targetIds 全部改 WRONG | **不设防** | **第 4 轮探针 physical-hash-labels**：9/9 PASS exit 0（fixture SHA `7B605C10…`，§11.8） |
+| 11 | physical hashCrosswalk `csharpHashVerification`/`v4Reason` 双标签叶（GAP:N3-E3 的 2 条） | 两标签值改 WRONG | **不设防** | **第 4 轮探针 physical-hash-labels（第 5 轮重跑同判）**：9/9 PASS exit 0（fixture SHA `7B605C10…`，§11.8）——注：变异仅覆盖两标签，`scope.targetIds`/`expected.suitOrder` 未在变异范围，其不设防由 §9 N3-E3 静态读点（`:73-:77` 读 scope 5 条、targetIds 零引用）证实 |
 | 12 | `$.beamSwapHandler[*].requestException`（GAP:N3-B7） | requestException 篡改为 WRONG | **不设防** | **第 4 轮探针 cheat-request-exception**：16/16 PASS exit 0（cheat 绑定面正控制由 §10 表 18 #23 探针承担） |
 | 13 | UNBOUND_HC scoped case 的 reason（tm-wrong-phase-preparation 拆分行） | 改 NOT_YOUR_TURN | **不设防** | **第 4 轮探针 cheat-unbound-reason**：16/16 PASS exit 0 |
-| 14 | sleeveBloom goldenInputs 六叶（GAP:N3-B3） | 六叶整体删除 | **不设防** | **第 4 轮探针 cheat-six-goldeninputs**：16/16 PASS exit 0 |
-| 15 | m1b cross 字段（INTERNAL 判级复核） | coherent 值 +100 | **不设防（=INTERNAL 无生产语义的实证）** | **第 4 轮探针 cheat-backfill-coherent**：16/16 PASS exit 0——与 §3.4 INTERNAL 判级一致，非 GAP |
+| 14 | sleeveBloom goldenInputs 六叶（GAP:N3-B3） | 六叶逐 case 在场者改 WRONG（字符串叶）/999（数值叶），非整体删除 | **不设防** | **第 4 轮探针 cheat-six-goldeninputs（第 5 轮重跑同判）**：16/16 PASS exit 0 |
+| 15 | m1b cross 字段（INTERNAL 判级复核） | `mv-swap-drawn-with-wall-backfill` 的 `resolvedIndex`/`backfilledIndex`/`factsAfter[index]` 三值 +100 | **不设防（=INTERNAL 无生产语义的实证）** | **第 4 轮探针 cheat-backfill-coherent（第 5 轮重跑同判）**：16/16 PASS exit 0——与 §3.4 INTERNAL 判级一致，非 GAP |
 | 16 | `$.ledger.snapshotRoundTrip.balancesEqual`/`entriesEqual`（信任级） | 翻布尔 | **半设防（存在级）** | 读点 `:261-262` `Assert.True(Bool(...))` 翻值即 FAIL，但无计算值差分 → 绑定任务 N3-B5 逐值对照 |
 | 17 | **正控制①**：已绑定 totalPoints | 2000→123456789 | **设防（1 FAIL exit 1）** | 第 2 轮探针 positive-control：Total:7, Failed:1 |
 | 18 | **正控制②**：sb-activate-already-used（A 桶 #23） | reason→WRONG_PHASE | **设防（1 FAIL exit 1）** | **第 3 轮探针 P1**：`Handler_SleeveBloom_RepresentativeCases_ReplayAgainstCheatSubmission [FAIL]`（Assert.Equal Failure @ CheatGoldenTests.cs:557）——证明 :486-490 ReasonMap 绑定真实存在，#23 = A 桶 |
 | 19 | **正控制③**：physical samples[0].expected.tiles[0].rank | rank→99 | **设防（1 FAIL exit 1）** | **第 4 轮探针 physical-boundary-control**（fixture SHA `99DA2673…`） |
-| 20 | **正控制④**：ai decisionClock deadlineMillis | 改 ±1 | **设防（1 FAIL exit 1）** | **第 4 轮探针 ai-clock-metadata**（原拟缺口假设被探针推翻 → decisionClock 8 路径全绑定，§3.6） |
-| 21 | physical samples/scope 已绑 5 条、scoring 其余绑定组、shuffle 三矩阵、round version/scores/deltas/rejected、ledger 差分子集、tileMarkState 版本链 17 条 | 数值/结构错值 | 设防（逐值断言 + 分布对账 + 冻结硬值双锚，§3 逐字段表） | 45/45 PASS 维持 |
+| 20 | **正控制④**：ai decisionClock | `baseMillis`/`reserveMillis`→999 | **设防（1 FAIL exit 1）** | **第 4 轮探针 ai-clock-metadata（第 5 轮重跑同判，fixture SHA `62838FE1…`）**（原拟缺口假设被探针推翻 → decisionClock 8 路径全绑定，§3.6） |
+| 21 | sb-choose-second goldenInputs 相对回合对（`offerCreatedTurnNumber`+`turnNumber`，INTERNAL 判级复核） | 关系对双侧 +100（保持自洽） | **不设防（=内部相对关系非真输入绑定的实证）** | **第 5 轮探针 sleeve-input-relative-turns**：16/16 PASS exit 0（§11.8） |
+| 22 | sb-choose-second goldenInputs 相对实体对（`drawnTileId`+`offerFirstTileId`，INTERNAL 判级复核） | 关系对双侧 +1（保持自洽） | **不设防** | **第 5 轮探针 sleeve-input-relative-entities**：16/16 PASS exit 0（§11.8） |
+| 23 | m5（`mv-reservation-delivery-then-beam`）factsAfter 分区坐标（GAP:N3-B11 的 OUT_DIFF/排除面） | hand/discard 分区 `index`→999 + wall 分区 `seat`→999 | **不设防（=分区排除语义的实证）** | **第 5 轮探针 m5-facts-unchecked-coordinate**：16/16 PASS exit 0（§11.8） |
+| 24 | B10 代表单元①：sb-choose-second `cost` | cost→999 | **不设防** | **第 5 轮探针 sleeve-unbound-cost-choose-second**：16/16 PASS exit 0（§11.8） |
+| 25 | B10 代表单元②：sb-choose-first `seat` | seat→999 | **不设防** | **第 5 轮探针 sleeve-unbound-seat-choose-first**：16/16 PASS exit 0（§11.8） |
+| 26 | B10 代表单元③：sb-choose-second `drawKind` | drawKind→WRONG | **不设防** | **第 5 轮探针 sleeve-unbound-drawkind-choose-second**：16/16 PASS exit 0（§11.8） |
+| 27 | **正控制⑤**：sb-choose-second 相对回合对单侧破坏 | 仅 `offerCreatedTurnNumber` +100（破坏自洽） | **设防（1 FAIL exit 1）** | **第 5 轮探针 sleeve-input-relation-break**：失败点 = fixture 自检断言 `SleeveBloomSecondChoice_BindsToGoldenInputs`（CheatGoldenTests.cs:724，Expected 112/Actual 12）——证该对存在 fixture 级自洽守卫，与 INTERNAL（无生产语义锚、双侧 +100 不设防，表 21）判级一致 |
+| 28 | **正控制⑥**：sb-activate-allowed `cost`（已绑 OUT_DIFF/SEM_MAP 面） | cost→999 | **设防（1 FAIL exit 1）** | **第 5 轮探针 sleeve-input-bound-control**：失败点 `SleeveBloomSecondChoice_BindsToGoldenInputs`（fixture SHA `1E24FFEE…`，§11.8） |
+| 29 | **正控制⑦**：m5 factsAfter hand/discard 分区 `seat`（已绑 INTERNAL 面） | seat→999 | **设防（1 FAIL exit 1）** | **第 5 轮探针 m5-facts-hand-seat-control**：失败点 `DeliveryThenBeam_BindsToGoldenCandidateEntities`——证 B11 拆分中 hand/discard 分区 seat 已绑、仅 index 与 wall 分区坐标悬空（表 23） |
+| 30 | physical samples/scope 已绑 5 条、scoring 其余绑定组、shuffle 三矩阵、round version/scores/deltas/rejected、ledger 差分子集、tileMarkState 版本链 17 条 | 数值/结构错值 | 设防（逐值断言 + 分布对账 + 冻结硬值双锚，§3 逐字段表） | 45/45 PASS 维持 |
 
 ---
 ## 11. 可复算命令与证据（完整命令、native exit、全 SHA256；无省略号）
@@ -1590,32 +1686,50 @@ VERIFY ai-v1 groups=31 unmapped=0 mismatched=0 extra=0
 COVERAGE-VERIFY-OK unmapped-total=0
 ```
 
-### 11.6 层 2 语义映射校验 verify-mapping v2（工具源内嵌；R3-1 验收：正检 exit 0 + 六负例全部检出 + 第 3 轮 caller 三类 checker 反例全部堵死）
+### 11.6 层 2 语义映射校验 verify-mapping v3（工具源内嵌；R4-1/R4-2 验收：正检 exit 0 + 12 负例全部检出 + 兄弟行换序不变性 + 第 3/4 轮 caller 全部 checker 反例堵死）
 
-工具源码全文内嵌如下（**v2 实测 SHA256 `772e492778b2e057db31520b519113f9605afe76598f6a32056464998f291101`**；规则 TSV 以 §3.0.1 内嵌块为准，R4 独立副本 `field-rules-v2.tsv` SHA256 `de338fffddc5a939ddef5a2f50dceaf25ac81a50f7746d08a3375e2152b4cfe5`，两者内容逐行一致）。
+工具源码全文内嵌如下（**v3 实测 SHA256 `414b042e1eee34fd9e8872e75263e7ec10df08ac5b637e463784e0c3991caa0b`，617 行**；规则 TSV 以 §3.0.1 内嵌块为准——本报告为 LF 行尾，提取副本 SHA256 `68e9b7fb5dda1f44f9b2ab346de612a427a05a0eeda255497af68647a092b059`，与 R5 TEMP 原始产物 `field-rules-v3.tsv`（CRLF 行尾 + UTF-8 BOM，SHA256 `b43a7ab514c2838b6fcb3e3ee474113805b921c2d9ea5ea48b59a95135aa7afb`）**内容逐行一致、仅行尾不同**，`diff` 为空）。
 
-**v2 相对第 3 轮校验器的六项加固（对应 R3-1 三类反例 + R3-2 标量吞噬）**：(1) **-Repo 被真实消费**——每条 exporter 锚点必须解析为仓库内真实文件的 `File.kt:L1-L2` 行段（1≤L1≤L2≤行数），每条 `File.cs:L(-L2)` 消费锚点同样逐一打开核对，不存在文件/越界行号即 ANCHOR 错误（反例 nonexistent-anchors 从"check 仍 OK"变为 717 错误）；(2) **DUP 拒绝**——同 fixture+pattern+scope 的重复规则行即 DUP 错误（反例 overlap-duplicate 从"check 仍 OK"变为 1 错误）；(3) **SCALAR-AS-CONTAINER 拒绝**——census 标量叶（kind=number/string/bool）命中 CONTAINER 类规则即错误（反例 overlap-and-kind 的 SCALAR_AS_CONTAINER=1 变为 324 错误）；(4) **SCOPE 机器校验**——scope 列 caseId ∈ fixture 案例全集、同 pattern 各 scope 两两不相交、并集=该字段全部出现 case；(5) **判级一致性 CLASS 复核**——UNBOUND 必须 owner=GAP:、IN_BIND/OUT_DIFF/INTERNAL/SEM_MAP 必须真实锚点、META/CONTAINER 必须 `meta:`，broad catch-all 不再可能通过；(6) **DIST 分布输出**——unique-path 按表内首条命中行归属输出 8 类 × 12 GAP 分布行 + DIST-TOTAL（§3.0.1 统计与 §2/§9 分母的机器来源）。
+**v3 相对 v2 的四项加固（对应 R4-1/R4-2；v2 对 caller 负例 scope 追加 `|sb-activate-disabled` 仍 `RULES-CHECK-OK-V2 scope-errors=0` exit 0，复现 log SHA `17EC626D…` 在案）**：(1) **逐节点 presence**——unit 由遍历 fixture 每个案例的**每个**数组元素枚举（v2 采样 arr[0]，首元素之外的节点全部漏计）；(2) **双向 scope 并集等式**——逐 (fixture,pattern) 族校验：行 scope 并集 = 该路径实际出现 case 集，**且** fixture 产出的每个 (case,path) unit 恰被一行覆盖；v2 只查"并集缺漏"单向、且幻影 caseId 只要存在于 fixture 任意分区即可通过（跨分区洞），v3 拆为六种显式 SCOPE 错误（SCOPE-ID-UNKNOWN / SCOPE-ID-ABSENT（含不存在字段/跨分区/改名案例）/ SCOPE-UNIT-UNCOVERED / SCOPE-OVERLAP / SCOPE-MIXED / SCOPE-NO-CASE-ID）；(3) **where 谓词**——scope 文法扩为 `case=<id>|…[;where=<field>==<v1>|<v2>]`，谓词字段读自 unit 父对象（`tileMovement[*].factsAfter[*]` 的 `container==hand|discard` 等分区拆分由此机器可表）；(4) **CASE-DIST 逐单元分布**——在历史 first-match 投影（DIST，语义不变）旁并列输出逐单元（case,path）口径：CASE-DIST class/gap 行、CASE-MIXED 行、CASE-TOTAL units/mixed-paths——第 4 轮 v2 的"并集=字段实际出现 case 全集"未实现与"116 单元冒充 72 路径"两类失真由此在机器层不可再犯。
 
 ```powershell
 <!--TOOL:verify-mapping:BEGIN-->
-# N-3 round-4 rework: semantic field-mapping rule checker v2 (R3-1/R3-2).
-# v2 hardening over the round-3 checker, driven by the round-3 review:
-#   1. -Repo is CONSUMED: every exporter anchor must be File.kt:L1-L2 (or
-#      File.kt:L) resolved under the repo with 1<=L1<=L2<=lineCount, and every
-#      file:line consumer anchor must resolve under the repo the same way.
-#      Filename-only anchors are rejected (round-3 defect: 322 such anchors).
-#   2. Duplicate (fixture,pattern,scope) triples are rejected (round-3 defect:
-#      a duplicated $.clockUsed rule passed).
-#   3. A CONTAINER-class rule that owns a scalar census path (kind not
-#      object/array) is rejected (round-3 defect: scalar swallowed by catch-all).
-#   4. case= scopes are validated: ids must exist in the fixture, sibling
-#      scopes of one pattern must be pairwise disjoint, and their union must
-#      equal the set of cases in which the leaf path is present.
-# Modes:
+# N-3 round-5 rework: semantic field-mapping rule checker v3 (R4-1/R4-2).
+# v3 hardening over v2, driven by the round-4 review:
+#   1. FULL per-node presence: units are enumerated by walking EVERY array
+#      element of every fixture case (v2 sampled arr[0] for nested arrays and
+#      could miss nodes that only exist past the first element).
+#   2. BIDIRECTIONAL scope equality: per (fixture,pattern) family, the union of
+#      row scopes must equal the set of cases in which the path is present, AND
+#      every (case,path) unit produced by the fixture must be covered by exactly
+#      one row. v2 only checked presence-rowside (union misses -> error) and let
+#      phantom scope ids pass when the case existed anywhere in the fixture
+#      (cross-section hole). v3 flags:
+#        SCOPE-ID-UNKNOWN    scope id not a caseId/id of the fixture at all
+#        SCOPE-ID-ABSENT     scope id never yields a unit for this pattern
+#                            (absent field / wrong section / renamed case)
+#        SCOPE-UNIT-UNCOVERED fixture unit owned by no row (union misses a case)
+#        SCOPE-OVERLAP       unit covered by 2+ rows (sibling scopes intersect)
+#        SCOPE-MIXED         one family mixes scope='*' rows with scoped rows
+#        SCOPE-NO-CASE-ID    scoped row on a section without caseId/id elements
+#   3. where predicate: scope grammar extends to
+#        case=<id>|...[;where=<field>==<v1>|<v2>]
+#      the field is read from the unit's parent object. Units failing the
+#      predicate are not covered by the row (and surface as uncovered if no
+#      other row takes them).
+#   4. CASE-AWARE distribution: alongside the historical first-row projection
+#      (DIST, unchanged semantics), v3 counts units (case,path) with their
+#      owning row's class:
+#        CASE-DIST class=<c> units=<n>
+#        CASE-DIST gap=<pkg> units=<n>
+#        CASE-MIXED paths whose units span 2+ classes (per-path class split)
+#        CASE-TOTAL units=<n> mixed-paths=<k>
+#   Modes:
 #   check    -RulesFile <tsv> | -ReportPath <md> -CensusDir <dir> -Repo <path>
 #   emit     -PatternsFile <tsv> -CensusDir <dir> -OutFile <tsv>
 #   negative -Kind strip-anchors|drop-rule|anchorless-rule|nonexistent-anchors|
-#                  duplicate-rule|scalar-container
+#                  duplicate-rule|scalar-container|scope-extra-case|scope-drop-case|
+#                  scope-unknown-case|scope-dup-case|scope-cross-section|scope-where-broken
 #            -RulesFile <tsv> -CensusDir <dir> -Repo <path>
 #            (expect the mutated check to FAIL; exit 0 when it fails = detected)
 param([string]$Mode, [string]$RulesFile, [string]$PatternsFile, [string]$ReportPath,
@@ -1710,8 +1824,8 @@ function Test-FileLineAnchor([string]$anchor, [string]$kind, [string]$fixture, [
   }
 }
 
-# ---- fixture case universe + presence (scope validation) ----
-$fxJson = @{}; $caseUniverse = @{}
+# ---- fixture case universe + full per-node unit enumeration (v3) ----
+$fxJson = @{}; $caseUniverse = @{}; $unitCache = @{}
 function Get-FixtureJson([string]$fx) {
   if ($fxJson.ContainsKey($fx)) { return $fxJson[$fx] }
   $p = Join-Path $Repo ("tests/v5-golden/" + $fx + '.json')
@@ -1730,29 +1844,79 @@ function Get-FixtureJson([string]$fx) {
   $caseUniverse[$fx] = $ids
   return $j
 }
-function Get-Presence([string]$fx, [string]$section, [string]$rest) {
+function Get-Units([string]$fx, [string]$pattern) {
+  # enumerate EVERY (case,path) node matching the pattern; $out units carry
+  # caseId (from the section element), normalized census-style path, the node
+  # and its parent object (for where predicates).
+  $ck = $fx + '|' + $pattern
+  if ($unitCache.ContainsKey($ck)) { return $unitCache[$ck] }
+  $out = New-Object 'System.Collections.Generic.List[object]'
+  $unitCache[$ck] = $out
+  if (-not $Repo) { return $out }
   $j = Get-FixtureJson $fx
-  $out = New-Object 'System.Collections.Generic.List[string]'
-  $segs = @()
-  if ($rest.Length -gt 0) { $segs = $rest.Split('.') }
-  foreach ($el in @($j.$section)) {
-    $cur = $el; $ok = $true
-    for ($i = 0; $i -lt $segs.Count; $i++) {
-      if ($null -eq $cur) { $ok = $false; break }
-      $name = $segs[$i] -replace '\[\*\]$', ''
-      if (-not ($cur.PSObject.Properties.Name -contains $name)) { $ok = $false; break }
-      $cur = $cur.$name
-      if ($segs[$i].EndsWith('[*]')) {
-        $arr = @($cur)
-        if ($arr.Count -eq 0) { $ok = $false; break }
-        $cur = $arr[0]
-      }
+  $segs = $pattern.TrimStart('$').TrimStart('.').Split('.')
+  if ($segs.Count -lt 2) { return $out }
+  if ($segs[0] -notmatch '^(.+)\[\*\]$') { return $out }
+  $sec = $Matches[1]
+  if (-not ($j.PSObject.Properties.Name -ccontains $sec)) { return $out }
+  $walk = {
+    param($node, [string]$path, [string[]]$segsLeft, [string]$cid, [string]$id, $parent)
+    if ($segsLeft.Count -eq 0) {
+      # terminal: emit the unit even when the leaf value is JSON null — the
+      # census counts null leaves as instances (kind null|string), so per-node
+      # presence must include them; only a MISSING property yields no unit.
+      [void]$out.Add([pscustomobject]@{ seq = $out.Count; caseId = $cid; id = $id; path = $path; node = $node; parent = $parent })
+      return
     }
-    $cid = ''
-    if ($el.PSObject.Properties.Name -contains 'caseId') { $cid = [string]$el.caseId }
-    if ($ok) { $out.Add($cid) }
+    if ($null -eq $node) { return }
+    $s = $segsLeft[0]
+    $rest = @($segsLeft | Select-Object -Skip 1)
+    if ($s.EndsWith('[*]')) {
+      $name = $s.Substring(0, $s.Length - 3)
+      if (-not ($node.PSObject.Properties.Name -ccontains $name)) { return }
+      $arr = $node.$name
+      if ($null -eq $arr -or -not ($arr -is [System.Array])) { return }
+      foreach ($el in @($arr)) {
+        if ($null -eq $el) { continue }
+        & $walk $el ($path + '.' + $name + '[*]') $rest $cid $id $el
+      }
+      return
+    }
+    if (-not ($node.PSObject.Properties.Name -ccontains $s)) { return }
+    $v = $node.$s
+    & $walk $v ($path + '.' + $s) $rest $cid $id $node
+  }
+  foreach ($el in @($j.$sec)) {
+    if ($null -eq $el) { continue }
+    $cid = ''; $id = ''
+    if ($el.PSObject.Properties.Name -ccontains 'caseId') { $cid = [string]$el.caseId }
+    elseif ($el.PSObject.Properties.Name -ccontains 'id') { $id = [string]$el.id }
+    & $walk $el ('$.' + $sec + '[*]') @($segs | Select-Object -Skip 1) $cid $id $el
   }
   return $out
+}
+function Get-UnitCase([object]$u) { if ($u.caseId) { return $u.caseId } else { return $u.id } }
+
+# ---- scope grammar: case=<id>|...[;where=<field>==<v1>|<v2>] ----
+function Parse-Scope([string]$scope) {
+  if ($scope -eq '*') { return $null }
+  if ($scope -notmatch '^case=[A-Za-z0-9._-]+(\|[A-Za-z0-9._-]+)*((;where=)[A-Za-z0-9_]+==[A-Za-z0-9._-]+(\|[A-Za-z0-9._-]+)*)?$') { return $null }
+  $parts = $scope -split ';'
+  $ids = $parts[0].Substring(5) -split '\|'
+  $wf = ''; $wv = @()
+  if ($parts.Count -gt 1) {
+    $w = ($parts[1].Substring(6)) -split '=='
+    $wf = $w[0]
+    $wv = $w[1] -split '\|'
+  }
+  return [pscustomobject]@{ ids = $ids; whereField = $wf; whereVals = $wv }
+}
+function Test-Where($parent, [string]$field, [string[]]$vals) {
+  if ($null -eq $parent) { return $false }
+  if (-not ($parent.PSObject.Properties.Name -ccontains $field)) { return $false }
+  $v = $parent.$field
+  if ($null -eq $v -or $v -is [System.Array]) { return $false }
+  return ($vals -ccontains ([string]$v))
 }
 
 function Invoke-Check($rules) {
@@ -1765,8 +1929,124 @@ function Invoke-Check($rules) {
     if ($seen.ContainsKey($k)) { [void]$errors.Add('DUP ' + $r.fixture + ' ' + $r.pattern + ' scope=' + $r.scope) }
     else { $seen[$k] = $true }
   }
+  # v3: a family (fixture,pattern) must not mix scope='*' rows with scoped rows
+  $famStyle = @{}
+  foreach ($r in $rules) {
+    $gk = $r.fixture + '|' + $r.pattern
+    if (-not $famStyle.ContainsKey($gk)) { $famStyle[$gk] = '' }
+    if ($r.scope -eq '*') { $famStyle[$gk] = $famStyle[$gk] + 'S' } else { $famStyle[$gk] = $famStyle[$gk] + 'C' }
+  }
+  foreach ($gk in $famStyle.Keys) {
+    if ($famStyle[$gk].Contains('S') -and $famStyle[$gk].Contains('C')) {
+      [void]$errors.Add('SCOPE-MIXED ' + $gk + ' family mixes unscoped and scoped rows')
+    }
+  }
   # unique-path distribution (first matching RULE ROW in file order owns the path)
   $classDist = @{}; $gapDist = @{}
+  # case-aware distribution (v3): scoped families contribute per-unit classes
+  $classDistU = @{}; $gapDistU = @{}
+  $totalUnits = 0
+  $mixedPaths = New-Object System.Collections.Generic.List[string]
+  $scopedFamPaths = @{}   # fixture -> hashset of census paths owned by scoped families
+  foreach ($fx in $fixtures) { $scopedFamPaths[$fx] = @{} }
+  # pre-group scoped rows per fixture+pattern for unit adjudication
+  $scopedGroups = @{}
+  foreach ($r in $rules) {
+    if ($r.scope -eq '*') { continue }
+    $gk = $r.fixture + '|' + $r.pattern
+    if (-not $scopedGroups.ContainsKey($gk)) { $scopedGroups[$gk] = New-Object System.Collections.Generic.List[object] }
+    [void]$scopedGroups[$gk].Add($r)
+  }
+  # per-family unit adjudication (bidirectional scope equality)
+  $famUnitClass = @{}   # fixture|pattern|unitSeq -> owning class
+  foreach ($gk in $scopedGroups.Keys) {
+    $grp = $scopedGroups[$gk]
+    $parts = $gk -split '\|'
+    $fx = $parts[0]; $pattern = $parts[1]
+    $segs = $pattern.TrimStart('$').TrimStart('.').Split('.')
+    $isContainer = ($segs.Count -lt 2) -or ($segs[-1] -eq '#') -or ($pattern.EndsWith('.#'))
+    $parsed = @()
+    $bad = $false
+    foreach ($r in $grp) {
+      if (-not $Repo) { [void]$errors.Add('SCOPE ' + $gk + ' cannot validate without -Repo'); $bad = $true; break }
+      $sc = Parse-Scope $r.scope
+      if ($null -eq $sc) { [void]$errors.Add('SCOPE-FORMAT ' + $gk + ' ' + $r.scope); $bad = $true; continue }
+      foreach ($id in $sc.ids) {
+        if (-not ($caseUniverse.ContainsKey($fx))) { $null = Get-FixtureJson $fx }
+        if (-not ($caseUniverse[$fx] -ccontains $id)) { [void]$errors.Add('SCOPE-ID-UNKNOWN ' + $gk + ' ' + $id) }
+      }
+      $parsed += [pscustomobject]@{ row = $r; sc = $sc }
+    }
+    if ($bad) { continue }
+    if ($isContainer) { continue }   # container families: disjointness enforced at unit level only when non-container
+    if (-not $Repo) { continue }
+    $units = Get-Units $fx $pattern
+    # family must be case-attributable
+    $noCase = $true
+    foreach ($u in $units) { if ((Get-UnitCase $u) -ne '') { $noCase = $false; break } }
+    if ($units.Count -gt 0 -and $noCase) { [void]$errors.Add('SCOPE-NO-CASE-ID ' + $gk + ' section elements carry no caseId/id'); continue }
+    # unit coverage: exactly one owning row per unit (keyed by enumeration seq —
+    # path+caseId alone collide for sibling elements of one case)
+    $owner = @{}
+    foreach ($pr in $parsed) {
+      foreach ($u in $units) {
+        $uc = Get-UnitCase $u
+        if ($pr.sc.ids -cnotcontains $uc) { continue }
+        if ($pr.sc.whereField -and -not (Test-Where $u.parent $pr.sc.whereField $pr.sc.whereVals)) { continue }
+        $uk = $u.seq
+        if ($owner.ContainsKey($uk)) { $owner[$uk] = $owner[$uk] + 1 } else { $owner[$uk] = 1 }
+      }
+    }
+    foreach ($u in $units) {
+      if (-not $owner.ContainsKey($u.seq)) { [void]$errors.Add('SCOPE-UNIT-UNCOVERED ' + $gk + ' ' + (Get-UnitCase $u) + ' ' + $u.path) }
+      elseif ($owner[$u.seq] -gt 1) { [void]$errors.Add('SCOPE-OVERLAP ' + $gk + ' ' + (Get-UnitCase $u) + ' ' + $u.path + ' owners=' + $owner[$u.seq]) }
+    }
+    # scope ids must all yield at least one unit (absent-field / cross-section / renamed case)
+    $caseSet = @{}
+    foreach ($u in $units) { $caseSet[(Get-UnitCase $u)] = $true }
+    foreach ($pr in $parsed) {
+      foreach ($id in $pr.sc.ids) {
+        if (-not $caseSet.ContainsKey($id)) { [void]$errors.Add('SCOPE-ID-ABSENT ' + $gk + ' ' + $id) }
+      }
+    }
+    # census agreement: census paths matched by this family == enumerated unit paths
+    $unitPaths = @{}
+    foreach ($u in $units) { $unitPaths[$u.path] = $true }
+    foreach ($p in (Load-Census $fx)) {
+      if (Test-Match $pattern $p.path) {
+        $scopedFamPaths[$fx][$p.path] = $true
+        if (-not $unitPaths.ContainsKey($p.path)) { [void]$errors.Add('UNIT-CENSUS-MISMATCH ' + $gk + ' census path with no enumerated unit: ' + $p.path) }
+      }
+    }
+    foreach ($up in $unitPaths.Keys) {
+      $hit = $false
+      foreach ($p in (Load-Census $fx)) { if ($p.path -eq $up) { $hit = $true; break } }
+      if (-not $hit) { [void]$errors.Add('UNIT-CENSUS-MISMATCH ' + $gk + ' enumerated unit path missing from census: ' + $up) }
+    }
+    # case-aware tally: owning row class per unit; per-path class split
+    $pathClasses = @{}
+    foreach ($pr in $parsed) {
+      foreach ($u in $units) {
+        $uc = Get-UnitCase $u
+        if ($pr.sc.ids -cnotcontains $uc) { continue }
+        if ($pr.sc.whereField -and -not (Test-Where $u.parent $pr.sc.whereField $pr.sc.whereVals)) { continue }
+        $cls = $pr.row.cls
+        if (-not $classDistU.ContainsKey($cls)) { $classDistU[$cls] = 0 }
+        $classDistU[$cls]++; $totalUnits++
+        if ($pr.row.owner -match '^GAP:') {
+          if (-not $gapDistU.ContainsKey($pr.row.owner)) { $gapDistU[$pr.row.owner] = 0 }
+          $gapDistU[$pr.row.owner]++
+        }
+        if (-not $pathClasses.ContainsKey($u.path)) { $pathClasses[$u.path] = @{} }
+        $pathClasses[$u.path][$cls] = $true
+      }
+    }
+    foreach ($pp in $pathClasses.Keys) {
+      if ($pathClasses[$pp].Keys.Count -gt 1) {
+        [void]$mixedPaths.Add($fx + ' ' + $pp + ' classes=' + (($pathClasses[$pp].Keys | Sort-Object) -join ','))
+      }
+    }
+  }
   foreach ($fx in $fixtures) {
     $fr = @($rules | Where-Object { $_.fixture -eq $fx })
     if ($fr.Count -eq 0) { $errors.Add('no rules for ' + $fx); continue }
@@ -1790,6 +2070,15 @@ function Invoke-Check($rules) {
       if ($owned.cls -eq 'CONTAINER' -and $p.kind -notmatch '^(object|array)') {
         [void]$errors.Add('SCALAR-AS-CONTAINER ' + $fx + ' ' + $p.path + ' kind=' + $p.kind + ' rule=' + $owned.pattern)
         $scalarAsContainer++
+      }
+      # case-aware tally for unscoped families (scoped family paths counted per-unit above)
+      if (-not $scopedFamPaths[$fx].ContainsKey($p.path)) {
+        if (-not $classDistU.ContainsKey($owned.cls)) { $classDistU[$owned.cls] = 0 }
+        $classDistU[$owned.cls]++; $totalUnits++
+        if ($owned.owner -match '^GAP:') {
+          if (-not $gapDistU.ContainsKey($owned.owner)) { $gapDistU[$owned.owner] = 0 }
+          $gapDistU[$owned.owner]++
+        }
       }
     }
     foreach ($r in $fr) {
@@ -1824,7 +2113,7 @@ function Invoke-Check($rules) {
     }
     Write-Host ('RULES ' + $fx + ' paths=' + $paths.Count + ' rules=' + $fr.Count + ' leaked=' + $leak + ' scalarAsContainer=' + $scalarAsContainer)
   }
-  # emit unique-path class distribution + gap distribution (reproducible stats)
+  # emit unique-path class distribution + gap distribution (first-row projection, historical)
   $distSum = 0
   foreach ($k in @('CONTAINER','IN_BIND','INTERNAL','META','OUT_DIFF','SEM_MAP','UNBOUND','UNBOUND_HC')) {
     $n = if ($classDist.ContainsKey($k)) { $classDist[$k] } else { 0 }
@@ -1837,38 +2126,22 @@ function Invoke-Check($rules) {
     Write-Host ('DIST gap=' + $k + ' paths=' + $gapDist[$k])
   }
   Write-Host ('DIST-TOTAL unique-paths=' + $distSum + ' gap-paths=' + $gapSum)
-  # scope validation (needs repo fixtures)
-  $scopedGroups = @{}
-  foreach ($r in $rules) {
-    if ($r.scope -eq '*') { continue }
-    if (-not $Repo) { [void]$errors.Add('SCOPE ' + $r.fixture + ' ' + $r.pattern + ' cannot validate without -Repo'); continue }
-    if ($r.scope -notmatch '^case=[A-Za-z0-9._-]+(\|[A-Za-z0-9._-]+)*$') { [void]$errors.Add('SCOPE-FORMAT ' + $r.fixture + ' ' + $r.pattern + ' ' + $r.scope); continue }
-    $j = Get-FixtureJson $r.fixture
-    $ids = $r.scope.Substring(5).Split('|')
-    foreach ($id in $ids) { if (-not ($caseUniverse[$r.fixture] -ccontains $id)) { [void]$errors.Add('SCOPE-ID-UNKNOWN ' + $r.fixture + ' ' + $r.pattern + ' ' + $id) } }
-    $gk = $r.fixture + '|' + $r.pattern
-    if (-not $scopedGroups.ContainsKey($gk)) { $scopedGroups[$gk] = New-Object 'System.Collections.Generic.List[object]' }
-    $scopedGroups[$gk].Add($r)
+  # case-aware unit distribution (v3)
+  $distSumU = 0
+  foreach ($k in @('CONTAINER','IN_BIND','INTERNAL','META','OUT_DIFF','SEM_MAP','UNBOUND','UNBOUND_HC')) {
+    $n = if ($classDistU.ContainsKey($k)) { $classDistU[$k] } else { 0 }
+    $distSumU += $n
+    Write-Host ('CASE-DIST class=' + $k + ' units=' + $n)
   }
-  foreach ($gk in $scopedGroups.Keys) {
-    $grp = $scopedGroups[$gk]
-    $segs = $grp[0].pattern.TrimStart('$').TrimStart('.').Split('.')
-    if ($segs.Count -lt 2) { continue }
-    $sec = $segs[0] -replace '\[\*\]$',''
-    $rest = if ($segs.Count -gt 1) { ($segs[1..($segs.Count-1)] -join '.') } else { '' }
-    $union = @{}
-    foreach ($r in $grp) {
-      foreach ($id in $r.scope.Substring(5).Split('|')) {
-        if ($union.ContainsKey($id)) { [void]$errors.Add('SCOPE-OVERLAP ' + $gk + ' ' + $id) }
-        $union[$id] = $true
-      }
-    }
-    if ($rest -eq '' -or $rest -eq '#' -or $rest.EndsWith('.#')) { continue }   # containers: disjointness only
-    $pres = Get-Presence $grp[0].fixture $sec $rest
-    foreach ($p in $pres) { if (-not $union.ContainsKey($p)) { [void]$errors.Add('SCOPE-COVERAGE-MISS ' + $gk + ' ' + $p) } }
+  $gapSumU = 0
+  foreach ($k in ($gapDistU.Keys | Sort-Object)) {
+    $gapSumU += $gapDistU[$k]
+    Write-Host ('CASE-DIST gap=' + $k + ' units=' + $gapDistU[$k])
   }
+  foreach ($m in $mixedPaths) { Write-Host ('CASE-MIXED ' + $m) }
+  Write-Host ('CASE-TOTAL units=' + $distSumU + ' gap-units=' + $gapSumU + ' mixed-paths=' + $mixedPaths.Count)
   if ($errors.Count -eq 0) {
-    Write-Host ('RULES-CHECK-OK-V2 total-paths=' + $totalPaths + ' rules=' + $rules.Count + ' leaks=0 mismatches=0 anchor-errors=0 dup=0 scalarAsContainer=0 scope-errors=0')
+    Write-Host ('RULES-CHECK-OK-V3 total-paths=' + $totalPaths + ' units=' + $totalUnits + ' rules=' + $rules.Count + ' leaks=0 mismatches=0 anchor-errors=0 dup=0 scalarAsContainer=0 scope-errors=0')
     return 0
   }
   $errors | Select-Object -First 40 | ForEach-Object { Write-Host ('FAIL ' + $_) }
@@ -1914,7 +2187,7 @@ switch ($Mode) {
     exit 0
   }
   'check' {
-    if (-not $Repo) { Write-Error 'check mode requires -Repo (v2 validates anchors against the repo)'; exit 2 }
+    if (-not $Repo) { Write-Error 'check mode requires -Repo (v3 validates anchors against the repo)'; exit 2 }
     if ($ReportPath) { $rules = Parse-Rules (Read-Rules-Block $ReportPath) }
     else { $rules = Parse-Rules (Get-Content -Encoding UTF8 $RulesFile) }
     $rc = Invoke-Check $rules
@@ -1922,6 +2195,14 @@ switch ($Mode) {
   }
   'negative' {
     $lines = if ($ReportPath) { Read-Rules-Block $ReportPath } else { Get-Content -Encoding UTF8 $RulesFile }
+    function Find-Row([string[]]$ls, [string]$fx, [string]$patSuffix, [string]$cls) {
+      foreach ($l in $ls) {
+        $c = $l -split "`t"
+        if ($c.Count -ge 8 -and $c[0] -eq $fx -and $c[3] -eq $cls -and $c[1].EndsWith($patSuffix)) { return $l }
+      }
+      return $null
+    }
+    $mut = $null
     switch ($Kind) {
       'strip-anchors' {
         $mut = New-Object System.Collections.Generic.List[string]
@@ -1981,6 +2262,46 @@ switch ($Mode) {
           [void]$mut.Add($l)
         }
       }
+      'scope-extra-case' {
+        # caller R4-1 negative, exact shape: append an absent sibling case to a scoped leaf
+        $row = Find-Row $lines 'cheat-v1' 'goldenInputs.availableWallCount' 'UNBOUND'
+        if (-not $row) { Write-Error 'scope-extra-case negative needs the availableWallCount UNBOUND row'; exit 2 }
+        $mut = New-Object System.Collections.Generic.List[string]
+        foreach ($l in $lines) { if ($l -ceq $row) { $c = $l -split "`t"; $c[7] = $c[7] + '|sb-activate-disabled'; [void]$mut.Add($c -join "`t") } else { [void]$mut.Add($l) } }
+      }
+      'scope-drop-case' {
+        $row = Find-Row $lines 'cheat-v1' 'goldenInputs.availableWallCount' 'UNBOUND'
+        if (-not $row) { Write-Error 'scope-drop-case negative needs the availableWallCount UNBOUND row'; exit 2 }
+        $mut = New-Object System.Collections.Generic.List[string]
+        foreach ($l in $lines) { if ($l -ceq $row) { $c = $l -split "`t"; $c[7] = 'case=' + ($c[7].Substring(5).Split('|') | Select-Object -Skip 1) ; [void]$mut.Add($c -join "`t") } else { [void]$mut.Add($l) } }
+      }
+      'scope-unknown-case' {
+        $row = Find-Row $lines 'cheat-v1' 'goldenInputs.availableWallCount' 'UNBOUND'
+        if (-not $row) { Write-Error 'scope-unknown-case negative needs the availableWallCount UNBOUND row'; exit 2 }
+        $mut = New-Object System.Collections.Generic.List[string]
+        foreach ($l in $lines) { if ($l -ceq $row) { $c = $l -split "`t"; $c[7] = $c[7] + '|no-such-case-anywhere'; [void]$mut.Add($c -join "`t") } else { [void]$mut.Add($l) } }
+      }
+      'scope-cross-section' {
+        $row = Find-Row $lines 'cheat-v1' 'goldenInputs.availableWallCount' 'UNBOUND'
+        if (-not $row) { Write-Error 'scope-cross-section negative needs the availableWallCount UNBOUND row'; exit 2 }
+        $mut = New-Object System.Collections.Generic.List[string]
+        foreach ($l in $lines) { if ($l -ceq $row) { $c = $l -split "`t"; $c[7] = $c[7] + '|tm-wrong-phase-preparation'; [void]$mut.Add($c -join "`t") } else { [void]$mut.Add($l) } }
+      }
+      'scope-dup-case' {
+        # sibling-row overlap: the seat UNBOUND row already covers 6 cases;
+        # appending sbo-activate-allowed (owned by the seat SEM_MAP row) must
+        # double-cover those units -> SCOPE-OVERLAP
+        $row = Find-Row $lines 'cheat-v1' 'goldenInputs.seat' 'UNBOUND'
+        if (-not $row) { Write-Error 'scope-dup-case negative needs the goldenInputs.seat UNBOUND row'; exit 2 }
+        $mut = New-Object System.Collections.Generic.List[string]
+        foreach ($l in $lines) { if ($l -ceq $row) { $c = $l -split "`t"; $c[7] = $c[7] + '|sbo-activate-allowed'; [void]$mut.Add($c -join "`t") } else { [void]$mut.Add($l) } }
+      }
+      'scope-where-broken' {
+        $row = Find-Row $lines 'cheat-v1' 'factsAfter[*].seat' 'OUT_DIFF'
+        if (-not $row) { Write-Error 'scope-where-broken negative needs the factsAfter[*].seat OUT_DIFF row'; exit 2 }
+        $mut = New-Object System.Collections.Generic.List[string]
+        foreach ($l in $lines) { if ($l -ceq $row) { $c = $l -split "`t"; $c[7] = $c[7] + ';where=container==wall'; [void]$mut.Add($c -join "`t") } else { [void]$mut.Add($l) } }
+      }
       default { Write-Error 'unknown -Kind'; exit 2 }
     }
     $rules = Parse-Rules $mut
@@ -1993,37 +2314,57 @@ switch ($Mode) {
 <!--TOOL:verify-mapping:END-->
 ```
 
-**正检实测（v2，-ReportPath 模式 = 校验器直接消费本报告 §3.0.1 内嵌块复算）**：
+**正检实测（v3，-ReportPath 模式 = 校验器直接消费本报告 §3.0.1 内嵌块复算；census 用第 5 轮驱动新产物）**：
 
 ```
-powershell -NoProfile -ExecutionPolicy Bypass -File C:/Users/sncdc/AppData/Local/Temp/n3-rework-round4/verify-mapping.ps1 -Mode check -ReportPath "D:/majiang-wt/n3-golden-field-audit/doc/v5-重构/V5-G1-N3-GOLDEN-FIELD-AUDIT.md" -CensusDir C:/Users/sncdc/AppData/Local/Temp/n3-rework-round4/census-out -Repo D:/majiang-wt/n3-golden-field-audit 1> C:/Users/sncdc/AppData/Local/Temp/n3-rework-round4/check-v2-positive.log 2>&1
-→ EXIT=0；RULES physical-v1 paths=296 rules=91 leaked=0 scalarAsContainer=0（…6 行）+ DIST class=×8 + DIST gap=×12 + DIST-TOTAL unique-paths=1516 gap-paths=101 + RULES-CHECK-OK-V2 total-paths=1516 rules=497 leaks=0 mismatches=0 anchor-errors=0 dup=0 scalarAsContainer=0 scope-errors=0（check-v2-positive.log SHA256 c52452dd934fd16fec3c0d4ecf1a5921562218bad0b7ea257e5cc1d058e1841a）
+powershell -NoProfile -ExecutionPolicy Bypass -File C:/Users/sncdc/AppData/Local/Temp/n3-rework-round5/vm-run/verify-mapping-v3.ps1 -Mode check -ReportPath "D:/majiang-wt/n3-golden-field-audit/doc/v5-重构/V5-G1-N3-GOLDEN-FIELD-AUDIT.md" -CensusDir C:/Users/sncdc/AppData/Local/Temp/n3-rework-round5/probes-run2/census-out -Repo D:/majiang-wt/n3-golden-field-audit 1> C:/Users/sncdc/AppData/Local/Temp/n3-rework-round5/vm-run/check-report-v3.log 2>&1
+→ EXIT=0；RULES physical-v1 paths=296 rules=91 leaked=0 scalarAsContainer=0（…6 行，六 fixture 296/419/200/204/199/198）+ DIST class=×8（CONTAINER 18/IN_BIND 314/INTERNAL 114/META 308/OUT_DIFF 405/SEM_MAP 256/UNBOUND 56/UNBOUND_HC 45）+ DIST gap=×12 + DIST-TOTAL unique-paths=1516 gap-paths=101 + CASE-DIST class=×8（18/315/173/308/436/285/125/161）+ CASE-DIST gap=×14 + 27 行 CASE-MIXED + CASE-TOTAL units=1821 gap-units=286 mixed-paths=27 + RULES-CHECK-OK-V3 total-paths=1516 units=1821 rules=540 leaks=0 mismatches=0 anchor-errors=0 dup=0 scalarAsContainer=0 scope-errors=0（check-report-v3.log SHA256 180b37b7458016622f3572a2b74c45b4dd5177b1189bd65c70bcb8483dc2310f）
 ```
 
-**checker 负例矩阵（六种作弊路径全部 NEGATIVE-DETECTED；v2 对每种变异 exit 1、负例包装器 exit 0）**：
+**兄弟行换序不变性实测（R4-1 验收：scoped 兄弟行互换后逐单元判类不变）**——把 §3.0.1 内嵌 TSV 的数据行按 (fixture,pattern) 分组、组内逆序重排（行集合不变，仅 scoped 兄弟行次序变化），再跑 check：
 
 ```
-powershell -NoProfile -ExecutionPolicy Bypass -File C:/Users/sncdc/AppData/Local/Temp/n3-rework-round4/verify-mapping.ps1 -Mode negative -Kind strip-anchors -RulesFile C:/Users/sncdc/AppData/Local/Temp/n3-rework-round4/field-rules-v2.tsv -CensusDir C:/Users/sncdc/AppData/Local/Temp/n3-rework-round4/census-out -Repo D:/majiang-wt/n3-golden-field-audit 1> C:/Users/sncdc/AppData/Local/Temp/n3-rework-round4/negative-strip-anchors.log 2>&1
-→ EXIT=0；RULES-CHECK-FAILED errors=309（全部 ANCHOR-C#）；NEGATIVE-DETECTED strip-anchors（negative-strip-anchors.log SHA256 8d39fa10c8f0cb6a8337916227afe387ff64c90d9246431898dc79be22de4ac1）
-powershell -NoProfile -ExecutionPolicy Bypass -File C:/Users/sncdc/AppData/Local/Temp/n3-rework-round4/verify-mapping.ps1 -Mode negative -Kind drop-rule -RulesFile C:/Users/sncdc/AppData/Local/Temp/n3-rework-round4/field-rules-v2.tsv -CensusDir C:/Users/sncdc/AppData/Local/Temp/n3-rework-round4/census-out -Repo D:/majiang-wt/n3-golden-field-audit 1> C:/Users/sncdc/AppData/Local/Temp/n3-rework-round4/negative-drop-rule.log 2>&1
-→ EXIT=0；FAIL LEAK physical-v1 $；RULES-CHECK-FAILED errors=1；NEGATIVE-DETECTED drop-rule（negative-drop-rule.log SHA256 e40e23e41049742367dac35eeee19ec4aaac80027414e1947faf580706de97a5）
-powershell -NoProfile -ExecutionPolicy Bypass -File C:/Users/sncdc/AppData/Local/Temp/n3-rework-round4/verify-mapping.ps1 -Mode negative -Kind anchorless-rule -RulesFile C:/Users/sncdc/AppData/Local/Temp/n3-rework-round4/field-rules-v2.tsv -CensusDir C:/Users/sncdc/AppData/Local/Temp/n3-rework-round4/census-out -Repo D:/majiang-wt/n3-golden-field-audit 1> C:/Users/sncdc/AppData/Local/Temp/n3-rework-round4/negative-anchorless-rule.log 2>&1
-→ EXIT=0；4 × ANCHOR（V4 lacks line range / C# anchor missing）；RULES-CHECK-FAILED errors=4；NEGATIVE-DETECTED anchorless-rule（negative-anchorless-rule.log SHA256 0107553a008b36a9edb4b2361b87682a232908b965e868b9255a6f858e2b21a6）
-powershell -NoProfile -ExecutionPolicy Bypass -File C:/Users/sncdc/AppData/Local/Temp/n3-rework-round4/verify-mapping.ps1 -Mode negative -Kind nonexistent-anchors -RulesFile C:/Users/sncdc/AppData/Local/Temp/n3-rework-round4/field-rules-v2.tsv -CensusDir C:/Users/sncdc/AppData/Local/Temp/n3-rework-round4/census-out -Repo D:/majiang-wt/n3-golden-field-audit 1> C:/Users/sncdc/AppData/Local/Temp/n3-rework-round4/negative-nonexistent-anchors.log 2>&1
-→ EXIT=0；RULES-CHECK-FAILED errors=717（file not found / 行号越界）；NEGATIVE-DETECTED nonexistent-anchors（negative-nonexistent-anchors.log SHA256 7ea6f6d5de74d0c50518893e80fc09a03857a1c803d3216a9543366fde27a060）——第 3 轮同类反例"check 仍 OK"（§3.0.1 反例表 nonexistent-anchors.log SHA afafefaa…）被堵死
-powershell -NoProfile -ExecutionPolicy Bypass -File C:/Users/sncdc/AppData/Local/Temp/n3-rework-round4/verify-mapping.ps1 -Mode negative -Kind duplicate-rule -RulesFile C:/Users/sncdc/AppData/Local/Temp/n3-rework-round4/field-rules-v2.tsv -CensusDir C:/Users/sncdc/AppData/Local/Temp/n3-rework-round4/census-out -Repo D:/majiang-wt/n3-golden-field-audit 1> C:/Users/sncdc/AppData/Local/Temp/n3-rework-round4/negative-duplicate-rule.log 2>&1
-→ EXIT=0；FAIL DUP physical-v1 $.clockUsed scope=*；RULES-CHECK-FAILED errors=1；NEGATIVE-DETECTED duplicate-rule（negative-duplicate-rule.log SHA256 dd0b33023bd1b551fff52d6cb7e4fb3eda95d26dc87441d6198fb5a194fc1d48）——第 3 轮同类反例"check 仍 OK"（overlap-duplicate.log SHA 83b70ebc…）被堵死
-powershell -NoProfile -ExecutionPolicy Bypass -File C:/Users/sncdc/AppData/Local/Temp/n3-rework-round4/verify-mapping.ps1 -Mode negative -Kind scalar-container -RulesFile C:/Users/sncdc/AppData/Local/Temp/n3-rework-round4/field-rules-v2.tsv -CensusDir C:/Users/sncdc/AppData/Local/Temp/n3-rework-round4/census-out -Repo D:/majiang-wt/n3-golden-field-audit 1> C:/Users/sncdc/AppData/Local/Temp/n3-rework-round4/negative-scalar-container.log 2>&1
-→ EXIT=0；324 × SCALAR-AS-CONTAINER（首条 `…boundarySamples[*].copyIndex kind=number rule=$.#`）；RULES-CHECK-FAILED errors=324；NEGATIVE-DETECTED scalar-container（negative-scalar-container.log SHA256 d5091c0f682ef6600aad44a32affa60fb20f61478f933a5afabcc6587ee6556e）——第 3 轮同类反例 SCALAR_AS_CONTAINER=1（overlap-and-kind-details.log SHA e309ddfa…）被堵死
+# 派生脚本（本节内嵌，亦存 vm-run/sibling-reorder.ps1 SHA256 ad0d95a070e1bf923d502e544e44c9f153a54a5af93f5fa027ed07a46fdc4302）
+$in = Get-Content -Encoding UTF8 '<R5>/field-rules-v3.tsv'
+$out = New-Object System.Collections.Generic.List[string]; $out.Add($in[0])
+$groups = New-Object System.Collections.Generic.List[object]; $idx = @{}
+for ($i = 1; $i -lt $in.Count; $i++) {
+  if ($in[$i] -notmatch '\S') { continue }
+  $c = $in[$i] -split "`t"; $k = $c[0] + '|' + $c[1]
+  if (-not $idx.ContainsKey($k)) { $idx[$k] = $groups.Count; [void]$groups.Add((New-Object System.Collections.Generic.List[string])) }
+  [void]$groups[$idx[$k]].Add($in[$i])
+}
+foreach ($g in $groups) { for ($j = $g.Count - 1; $j -ge 0; $j--) { $out.Add($g[$j]) } }
+[IO.File]::WriteAllLines('<R5>/vm-run/field-rules-sibling-reorder.tsv', $out)
+# 派生产物 body 与原 TSV 逐行集合相同（tail -n +2 | sort 逐字节一致），行序不同
+powershell -NoProfile -ExecutionPolicy Bypass -File C:/Users/sncdc/AppData/Local/Temp/n3-rework-round5/vm-run/verify-mapping-v3.ps1 -Mode check -RulesFile C:/Users/sncdc/AppData/Local/Temp/n3-rework-round5/vm-run/field-rules-sibling-reorder.tsv -CensusDir C:/Users/sncdc/AppData/Local/Temp/n3-rework-round5/probes-run2/census-out -Repo D:/majiang-wt/n3-golden-field-audit 1> C:/Users/sncdc/AppData/Local/Temp/n3-rework-round5/vm-run/check-sibling-reorder.log 2>&1
+→ EXIT=0；**CASE-DIST 22 行（class×8 + gap×14）与正检逐字节相同**、CASE-TOTAL units=1821 gap-units=286 mixed-paths=27 相同、RULES-CHECK-OK-V3 判定行相同——逐单元判类对兄弟行次序不变；`DIST-TOTAL gap-paths=122`（正检 101）——DIST 口径**有意**保留"表内 first-match 投影"语义，scoped 兄弟行换序会改变路径级投影归属（UNBOUND 兄弟行排前时该路径投影为 UNBOUND），两口径差异由 27 行 CASE-MIXED 显式可见；因此 §3.0.1/§9 的 DIST 数字恒以锁 SHA 的原始行序表为准（field-rules-sibling-reorder.tsv SHA256 ded2443267da932a07e0a03b8a38c3fe6e0f2e559fe58c4beb419c1e3e879e63、check-sibling-reorder.log SHA256 a39890f1fff04b95abfaab54d569cce070b83de07b49cf78f0c08665268421ec）
 ```
 
-**FIELD-RULES 按类/按 owner 复算命令（§3.0.1 统计表的独立核对；注意 8 列 TSV 中 owner=$7、unique-path 口径须按首条命中行归属，同 pattern 的 scoped 兄弟行重复声明同一残差，直接对 $3 求和会双重计数）**：
+**checker 负例矩阵（12 种作弊路径全部 NEGATIVE-DETECTED；v3 对每种变异 exit 1、负例包装器 exit 0；命令形如 `-Mode negative -Kind <k> -RulesFile <R5>/vm-run/field-rules-v3.tsv -CensusDir <R5>/probes-run2/census-out -Repo D:/majiang-wt/n3-golden-field-audit`，日志 `vm-run/neg-<k>.log`）**：
+
+| Kind | 变异 | 首条机器错误 | errors | 负例 log SHA256 |
+|---|---|---|---|---|
+| strip-anchors | 全部锚点置空 | `FAIL ANCHOR-C# physical-v1 $.clockUsed scope=* class=SEM_MAP cs=` | 336 | `1ea532c87a2f21e59c7671f0c3340e2cc0141b165d0adc727ce3b3bf1ac4d58b` |
+| drop-rule | 删 `$.clockUsed` 行 | `FAIL LEAK physical-v1 $` | 1 | `e0212802314bc84c2ee6d74e212f504a6194d35436adfefa74f96af8e5918a14` |
+| anchorless-rule | `$.samples[*].expected.#` 置空锚点 | `FAIL DUP …expected.# scope=*`（空锚点行与 META 行同 pattern+scope 冲突） | 4 | `cb4963960b284265240523333350bbfa9d976c9d532367c76ea1374ba82e8454` |
+| nonexistent-anchors | `$.clockUsed` 双锚点指向不存在文件 | `FAIL ANCHOR-C# physical-v1 $.clockUsed file not found under repo: NonexistentConsumer.cs` | 786 | `9463376c28128914f80ce36dbfc34911899e6764d2244d6439990eacf62c1676` |
+| duplicate-rule | 复制 `$.clockUsed` 行 | `FAIL DUP physical-v1 $.clockUsed scope=*` | 1 | `5e35e1cec982a5c1f6b3069d694546f40284a75d8ab9d66db2e170ce80d5ddd6` |
+| scalar-container | `$.#` 置 CONTAINER | 324 × `FAIL SCALAR-AS-CONTAINER`（首条 `$.clockUsed kind=boolean rule=$.#`） | 324 | `00c45e82636946205e0252a8a29dbbc1d65434587ddf947cd8a115cb7e59e32a` |
+| scope-extra-case | **caller R4-1 指定负例**：`availableWallCount` scope 追加 `\|sb-activate-disabled` | `FAIL SCOPE-ID-ABSENT cheat-v1\|$.sleeveBloomHandler[*].goldenInputs.availableWallCount sb-activate-disabled`（v2 同变异仍 OK exit 0，SHA `17EC626D…`） | 1 | `0b8919a2f126d45627910db1667b0ce758176734146d83648a3dc96aea5b1a34` |
+| scope-drop-case | scope 删去实际出现 case（单 case 行删后剩空 `case=`） | `FAIL SCOPE-FORMAT cheat-v1\|$.sleeveBloomHandler[*].goldenInputs.availableWallCount case=`（文法校验拒绝空 case 列表；多 case 行的删 case 由 scope-extra/cross-section 两行覆盖语义面） | 1 | `2c729db26546b888a13f4d26ef0fb7de954350c96d8c394649342223480938eb` |
+| scope-unknown-case | scope 追加全 fixture 不存在的 `no-such-case-anywhere` | `FAIL SCOPE-ID-UNKNOWN … no-such-case-anywhere` + `FAIL SCOPE-ID-ABSENT … no-such-case-anywhere` | 2 | `a417d4870b135b2a163f419e2d9c93affcd860acd6dde2a000528685162494ae` |
+| scope-dup-case | `goldenInputs.seat` UNBOUND 行并复制 case 造成双认领 | `FAIL SCOPE-OVERLAP cheat-v1\|…goldenInputs.seat sbo-activate-allowed … owners=2` | 1 | `348840e4b35ae25d756f6661491471f035ae2717bc47ec5340cb2f41dfe55715` |
+| scope-cross-section | scope 混入跨分区 case（`tm-wrong-phase-preparation`） | `FAIL SCOPE-ID-ABSENT cheat-v1\|…goldenInputs.availableWallCount tm-wrong-phase-preparation` | 1 | `8927ab4e7faf86529a334ac2dab15f061316a654c17dc002b4f5a946d54416ec` |
+| scope-where-broken | `factsAfter[*].seat` OUT_DIFF 行 where 谓词改为永假值 | 4 × `FAIL SCOPE-UNIT-UNCOVERED cheat-v1\|$.tileMovement[*].factsAfter[*].seat mv-reservation-delivery-then-beam …` | 4 | `7fdb5a44f956c91e1184d612054ca2037c47c669a92f3239cc3fe85ef241e74d` |
+
+**FIELD-RULES 按类/按 owner 复算命令（§3.0.1 统计表的独立核对；残差列 $3 对 scoped 兄弟行重复声明同一 pattern 残差，直接求和会双重计数，unique-path/逐单元口径以 §11.6 正检 DIST/CASE-DIST 行为准）**：
 
 ```
-awk -F'\t' 'NR>1 && $4=="UNBOUND" || NR>1 && $4=="UNBOUND_HC" {s[$4]+=$3} END {print "UNBOUND="s["UNBOUND"], "UNBOUND_HC="s["UNBOUND_HC"]}' C:/Users/sncdc/AppData/Local/Temp/n3-rework-round4/field-rules-v2.tsv
-→ 残差列口径 UNBOUND=56 UNBOUND_HC=51；UNBOUND_HC 比 unique-path DIST（45）多 6 = 6 条 scoped handler outcome/reason UNBOUND_HC 兄弟行重复声明了同 pattern 的残差（该残差已由表序在前的 scoped SEM_MAP/IN_BIND 行声明并裁决）——双重计数仅存在于残差列，unique-path 归属以 §11.6 正检 `DIST class=`/`DIST gap=` 行为准（UNBOUND 56/UNBOUND_HC 45，GAP 合计 101）
-awk -F'\t' 'NR>1 && $7 ~ /^GAP/ {t[$7]+=$3} END {for (k in t) print k, t[k]}' C:/Users/sncdc/AppData/Local/Temp/n3-rework-round4/field-rules-v2.tsv | sort
-→ 残差列口径：GAP:N3-B1 14 / B2 1 / B3 6 / B4 26 / B5 10 / B6 3 / B7 1 / B8 9 / B9 2 / E1 6 / E2 24 / E3 5（合计 107）；B8 残差 9 = 3 条 note 路径 + 6 条 scoped outcome/reason UNBOUND_HC 兄弟行的重复残差声明，unique-path 口径 B8 = 3（正检 `DIST gap=GAP:N3-B8 paths=3`）；其余 11 包残差列与 unique-path 同值
+awk -F'\t' 'NR>1 && $4=="UNBOUND" || NR>1 && $4=="UNBOUND_HC" {s[$4]+=$3} END {print "UNBOUND="s["UNBOUND"], "UNBOUND_HC="s["UNBOUND_HC"]}' C:/Users/sncdc/AppData/Local/Temp/n3-rework-round5/vm-run/field-rules-v3.tsv
+→ 残差列口径 UNBOUND=71 UNBOUND_HC=51；比 unique-path DIST（UNBOUND 56/UNBOUND_HC 45）多出的 15/6 条 = scoped 兄弟行（goldenInputs UNBOUND 面、factsAfter UNBOUND 面、handler outcome/reason UNBOUND_HC 行）在自身 pattern 上重复声明的残差（该残差已由表序在前的绑定类行声明并裁决）
+awk -F'\t' 'NR>1 && $7 ~ /^GAP/ {t[$7]+=$3} END {for (k in t) print k, t[k]}' C:/Users/sncdc/AppData/Local/Temp/n3-rework-round5/vm-run/field-rules-v3.tsv | sort
+→ 残差列口径：B1 14 / B10 13 / B11 2 / B2 1 / B3 6 / B4 26 / B5 10 / B6 3 / B7 1 / B8 9 / B9 2 / E1 6 / E2 24 / E3 5（合计 122）。与 unique-path DIST（gap 合计 101）的差异全部在 mixed 路径：B10 的 13 个单元全部住在同叶路径的绑定类行之下（`DIST gap=GAP:N3-B10` 不出现），B11 的 2 个残差声明同理由 m5 OUT_DIFF 兄弟行持有路径；B8 残差 9 = 3 条 note 路径 + 6 条 scoped outcome/reason UNBOUND_HC 兄弟行重复声明，unique-path 口径 B8 = 3（`DIST gap=GAP:N3-B8 paths=3`）、逐单元口径 B8 = 119（`CASE-DIST gap=GAP:N3-B8 units=119`）——三层口径的换算关系由本命令 + 正检 DIST/CASE-DIST 行共同机器可核
 ```
 
 ### 11.7 75-case 分桶机器复算 case-refs（工具源内嵌；R2-3a-c/R2-2 验收：-File 命令 exit 0）
@@ -2144,62 +2485,175 @@ rows=75
 
 75 行逐条桶归属 = §3.4 表；case-refs.tsv 为机器真值（`caseId,section,outcome,reason,quoted,bucket` 75 行），与 §3.4 表格、§4 拆分、§9 N3-B3 三处引用同源。
 
-### 11.8 判级变异探针与 caller 反例独立复现（第 4 轮 6 探针 + 3 反例工具源内嵌；第 3/2 轮探针存档引用）
+### 11.8 判级变异探针与 caller 反例独立复现（第 5 轮：16 探针自足驱动 + 负向自检内嵌；R4/R3/R2 历史运行存档引用）
 
-第 4 轮探针工具源码全文内嵌如下（R4 实测 SHA256 `f64337f5cf175b062f17896487c74eae017493c1cb5198ca30bf3c7bf89b293c`；变异全部发生在 R4 TEMP 副本（`fake-repo`），真实工作树零改动；本工具兼负两职：**(a) 对第 3 轮旧校验器复现 caller 三类 checker 反例**（nonexistent-anchors / overlap-duplicate / overlap-and-kind，§3.0.1 反例表），**(b) 5 个新判级变异探针 + 1 个意外转正的 ai-clock-metadata 探针**）。提取命令见 §11.10。
+第 5 轮探针驱动源码全文内嵌如下（交付实测 SHA256 `fab9222a5ebb103fc2ac04ed9a1dc0655bd87a5647bce2c103b15db172abd256`；变异全部发生在 R5 TEMP 副本（`fake-repo`），真实工作树零改动）。本驱动为 R4-3 返修件，对第 4 轮驱动的四项硬化：(1) **无旧 TEMP 依赖**——历史第 3 轮校验器 + 417 规则表改从本报告 `git 7ea62e6` 提取并锁 SHA（`1CE17DAC…`/`D932A03F…`），不再读 R3 TEMP；(2) **全新 census**——每轮重跑 1516 路径清点（六 fixture 296/419/200/204/199/198）而非引用旧产物；(3) **逐探针期望校验 + 失败累计**——16 个探针各带 `nativeExit/Total/Failed/Skipped/NotRun` 期望值，任何失配进 failures 累计、末尾统一判 ROUND5-PROBES-FAILED → exit 1（不再出现"期望失配仍 exit 0"）；(4) **负向自检**——`-SelfTest -SkipMutation <probe>` 跳过某变异后运行，若失败集恰好只含该探针自身的期望失配 → 判 SELFTEST-PASS（守卫生效），证明"变异被静默剥离 → 正常模式必 exit 1"。本驱动兼负两职：**(a) 对第 3 轮旧校验器复现 caller 三类 checker 反例**（nonexistent-anchors / overlap-duplicate / overlap-and-kind，§3.0.1 反例表），**(b) 16 探针 = 重跑第 4 轮 7 探针 + 9 个新探针**（6 不设防实证 + 3 正控制，§10 表 21-29）。提取命令见 §11.10。
 
 ```powershell
-<!--TOOL:probes-round4:BEGIN-->
-# N-3 round-4: independent reproduction of the caller's round-3 counterexamples.
-# Implemented from the audit's own source reading; not a copy of the caller script.
-# Checks:
-#   A nonexistent-anchors      : replace every file:line anchor pair with fake ones -> expect checker still OK (bug)
-#   A overlap-duplicate        : append a duplicate-pattern rule ($.clockUsed)       -> expect checker still OK (bug)
-#   A overlap-and-kind-details : count multi-match paths + scalar-under-CONTAINER    -> expect >0 / >0 (bug)
-#   B physical-hash-labels     : csharpHashVerification/v4Reason -> WRONG           -> expect 9 PASS exit 0 (gap)
-#   B physical-boundary-control: bound tile.rank -> 99 (positive control)            -> expect 1 FAIL exit 1
-#   B cheat-request-exception  : beamSwap requestException -> WRONG                  -> expect 16 PASS exit 0 (gap)
-#   B cheat-unbound-reason     : tm-wrong-phase-preparation reason -> NOT_YOUR_TURN  -> expect 16 PASS exit 0 (gap)
-#   B cheat-six-goldeninputs   : 6 sleeve goldenInputs leaves -> WRONG/999           -> expect 16 PASS exit 0 (gap)
-#   B cheat-backfill-coherent  : m1b resolved/backfilled/factsAfter.index +100 coherent -> expect 16 PASS exit 0 (gap)
-#   B ai-clock-metadata        : decisionClock base/reserveMillis -> 999             -> expect 3 PASS exit 0 (gap)
+<!--TOOL:probes-round5:BEGIN-->
+# N-3 round-5: self-contained verification driver (R4-3 rework).
+# Hardening over the round-4 driver, driven by the round-4 review:
+#   1. NO old-TEMP dependency: the historical round-3 checker + 417-rule table
+#      are extracted from GIT COMMIT 7ea62e6 of THIS report (SHA-pinned below);
+#      the census is regenerated fresh from the report-embedded FullCensus
+#      tool blocks. -SourceDir is gone.
+#   2. EXPLICIT PER-PROBE EXPECTATIONS: every probe declares expected
+#      nativeExit/Total/Failed/Skipped/NotRun (and the A-probes pin the exact
+#      historical blind-spot magnitudes). ANY mismatch is accumulated; the
+#      driver exits non-zero if any expectation fails. Stripping a mutation
+#      (e.g. the Q2 rank=99 positive control) flips that probe's actuals away
+#      from its expectations and the driver FAILS - the round-4 silent-pass
+#      hole is closed.
+#   3. -SkipMutation <name> runs a probe with the ORIGINAL fixture (no
+#      mutation applied); its expectation then fails and the driver exits 1.
+#      -SelfTest is the documented negative self-test: it runs the whole
+#      driver with the physical-boundary-control mutation skipped and REQUIRES
+#      exactly that one failure (exit 0 = guard works, otherwise exit 1).
+# Probe families:
+#   A (historical R3 checker blind spots, checker+rules pinned from 7ea62e6):
+#     A1 nonexistent-anchors   fake file:line anchors -> OLD checker exit 0 (blind)
+#     A2 overlap-duplicate     duplicated $.clockUsed rule -> OLD checker exit 0 (blind)
+#     A3 overlap-and-kind      driver's own matcher -> OVERLAPPING_PATHS=935
+#                              SCALAR_AS_CONTAINER=1 (exact historical counts)
+#   B (mutated fixture copies under a fake repo; real tree untouched):
+#     physical-hash-labels             two hashCrosswalk labels -> WRONG     : gap  (9 PASS)
+#     physical-boundary-control        bound tiles[0].rank -> 99             : control (1 FAIL)
+#     cheat-request-exception          beamSwap requestException -> WRONG    : gap  (16 PASS)
+#     cheat-unbound-reason             tm-wrong-phase reason -> NOT_YOUR_TURN: gap  (16 PASS)
+#     cheat-six-goldeninputs           6 B3 goldenInputs leaves WRONG/999    : gap  (16 PASS)
+#     cheat-backfill-coherent          m1b resolved/backfilled/fact.index+100: gap  (16 PASS)
+#     sleeve-input-relative-turns      offerCreatedTurnNumber+turnNumber+100 : gap  (16 PASS)
+#     sleeve-input-relative-entities   drawnTileId+offerFirstTileId+1        : gap  (16 PASS)
+#     m5-facts-unchecked-coordinate    m5 hand/discard index=999, wall seat  : gap  (16 PASS)
+#     sleeve-unbound-cost-choose-second   cost=999 on sb-choose-second       : gap  (16 PASS)
+#     sleeve-unbound-seat-choose-first    seat=999 on sb-choose-first        : gap  (16 PASS)
+#     sleeve-unbound-drawkind-choose-second drawKind=WRONG on sb-choose-second: gap (16 PASS)
+#     sleeve-input-bound-control       bound act goldenInputs.cost -> 999    : control (1 FAIL)
+#     m5-facts-hand-seat-control       m5 hand/discard seat -> 999           : control (1 FAIL)
+#     sleeve-input-relation-break      offerCreatedTurnNumber+100 single side: control (1 FAIL)
+#     ai-clock-metadata                decisionClock base/reserveMillis->999 : control (1 FAIL)
+#                                      (R4 Q7 outcome: positive control proving the
+#                                       ai decisionClock 8 paths ARE bound)
 param([string]$Repo = 'D:/majiang-wt/n3-golden-field-audit',
-      [string]$Evidence = 'C:/Users/sncdc/AppData/Local/Temp/n3-rework-round4',
-      [string]$SourceDir = 'C:/Users/sncdc/AppData/Local/Temp/n3-rework-round3')
+      [Parameter(Mandatory=$true)][string]$Evidence,
+      [string]$ReportPath = '',
+      [string]$SkipMutation = '',
+      [switch]$SelfTest)
 $ErrorActionPreference = 'Stop'
 $dotnet = 'D:/Unity/dotnet/dotnet.exe'
-New-Item -ItemType Directory -Force -Path "$Evidence/census-out" | Out-Null
-Copy-Item (Join-Path $SourceDir 'census-out/*') "$Evidence/census-out" -Recurse -Force
-$rulesPath = Join-Path $Evidence 'rules.tsv'
-Copy-Item (Join-Path $SourceDir 'field-rules.tsv') $rulesPath -Force
-$checker = Join-Path $Evidence 'verify-mapping-r3.ps1'
-Copy-Item (Join-Path $SourceDir 'verify-mapping.ps1') $checker -Force
+# CJK-safe: build the v5-重构 path segment from code points (PS 5.1 reads BOM-less
+# .ps1 as ANSI, so literal CJK in this file would mangle)
+$cjkDir = 'doc/v5-' + [string][char]0x91CD + [string][char]0x6784 + '/V5-G1-N3-GOLDEN-FIELD-AUDIT.md'
+if (-not $ReportPath) { $ReportPath = Join-Path $Repo $cjkDir }
+if ($SelfTest -and -not $SkipMutation) { $SkipMutation = 'physical-boundary-control' }
+$failures = New-Object System.Collections.Generic.List[string]
+function Add-Failure([string]$msg) { $failures.Add($msg); Write-Output ('EXPECTATION-FAILED ' + $msg) }
 
-function Invoke-RuleCheck([string]$Name, [string[]]$Lines) {
-  $p = Join-Path $Evidence ($Name + '.tsv')
-  [IO.File]::WriteAllText($p, ($lines -join "`n") + "`n", (New-Object Text.UTF8Encoding($false)))
-  & powershell -NoProfile -ExecutionPolicy Bypass -File $checker -Mode check -RulesFile $p -CensusDir "$Evidence/census-out" 1> (Join-Path $Evidence ($Name + '.log')) 2>&1
-  $rc = $LASTEXITCODE
-  Write-Output ($Name + ' nativeExit=' + $rc)
-  Get-Content (Join-Path $Evidence ($Name + '.log')) -Tail 1
-  return $rc
+# ---------- step 0: preflight ----------
+New-Item -ItemType Directory -Force -Path $Evidence | Out-Null
+$Evidence = (Get-Item $Evidence).FullName
+foreach ($d in @("$Repo/AGENTS.md",
+                 "$Repo/dotnet/tests/Mahjong.Domain.Tests/bin/Release/net8.0/Mahjong.Domain.Tests.dll",
+                 "$Repo/dotnet/tests/Mahjong.Ai.Tests/bin/Release/net8.0/Mahjong.Ai.Tests.dll",
+                 $ReportPath)) {
+  if (-not (Test-Path $d)) { throw ('preflight missing: ' + $d) }
 }
 
-$lines = @(Get-Content -Encoding UTF8 $rulesPath | Where-Object { $_ -match '\t' })
+# ---------- step 1: historical round-3 checker + rules from git 7ea62e6 (SHA-pinned) ----------
+$archive = Join-Path $Evidence 'archive-r3'
+New-Item -ItemType Directory -Force -Path $archive | Out-Null
+$rel = $cjkDir
+& cmd /c ("git -C `"$Repo`" show 7ea62e6:`"$rel`" > `"" + (Join-Path $archive 'r3-report.md') + "`"") | Out-Null
+if ($LASTEXITCODE -ne 0) { throw 'git show 7ea62e6 failed' }
+$r3md = Join-Path $archive 'r3-report.md'
+$lines = [IO.File]::ReadAllLines($r3md)
+$vm = New-Object System.Collections.Generic.List[string]
+$inf = $false
+foreach ($l in $lines) {
+  if ($l -eq '<!--TOOL:verify-mapping:BEGIN-->') { $inf = $true; continue }
+  if ($l -eq '<!--TOOL:verify-mapping:END-->') { $inf = $false; continue }
+  if ($inf) { $vm.Add($l) }
+}
+# LF-only write: the awk-extracted pins are LF; WriteAllLines would emit CRLF and break the SHA
+[IO.File]::WriteAllText((Join-Path $archive 'verify-mapping-r3.ps1'), ($vm -join "`n") + "`n", (New-Object Text.UTF8Encoding($false)))
+$fr = New-Object System.Collections.Generic.List[string]
+$inf = $false
+foreach ($l in $lines) {
+  if ($l -eq 'FIELD-RULES:BEGIN') { $inf = $true; continue }
+  if ($l -eq 'FIELD-RULES:END') { $inf = $false; continue }
+  if ($inf -and -not $l.StartsWith('```')) { $fr.Add($l) }
+}
+[IO.File]::WriteAllText((Join-Path $archive 'field-rules-r3.tsv'), ($fr -join "`n") + "`n", (New-Object Text.UTF8Encoding($false)))
+# ASCII-only artifacts: PS line round-trip is byte-safe; SHA-pin against tampering
+$pinVm = (Get-FileHash -Algorithm SHA256 (Join-Path $archive 'verify-mapping-r3.ps1')).Hash
+$pinFr = (Get-FileHash -Algorithm SHA256 (Join-Path $archive 'field-rules-r3.tsv')).Hash
+$expVm = '1CE17DAC4F663714492315D30F85C173B0E4EF0506F4BDF0175A03BDA5B793C3'
+$expFr = 'D932A03FF9A6B958576ADF51A87DEEE684C88776F726F4546257D4EDE51EE73D'
+Write-Output ('archive-r3/verify-mapping-r3.ps1 sha256=' + $pinVm)
+Write-Output ('archive-r3/field-rules-r3.tsv sha256=' + $pinFr)
+if ($pinVm -ne $expVm) { Add-Failure ('archive verify-mapping-r3.ps1 SHA mismatch: ' + $pinVm) }
+if ($pinFr -ne $expFr) { Add-Failure ('archive field-rules-r3.tsv SHA mismatch: ' + $pinFr) }
 
-# A1: every rule that has a cs file:line anchor gets fake exporter+consumer file:line
-$fake = @($lines | ForEach-Object {
+# ---------- step 2: fresh census from the report-embedded FullCensus ----------
+$censusOut = Join-Path $Evidence 'census-out'
+$extracted = Join-Path $Evidence 'extracted'
+New-Item -ItemType Directory -Force -Path $censusOut, $extracted | Out-Null
+function Extract-Tool([string]$name, [string]$dest) {
+  $out = New-Object System.Collections.Generic.List[string]
+  $inf = $false
+  foreach ($l in [IO.File]::ReadAllLines($ReportPath)) {
+    if ($l -eq ('<!--TOOL:' + $name + ':BEGIN-->')) { $inf = $true; continue }
+    if ($l -eq ('<!--TOOL:' + $name + ':END-->')) { $inf = $false; continue }
+    if ($inf) { $out.Add($l) }
+  }
+  [IO.File]::WriteAllLines($dest, $out)
+  if ($out.Count -eq 0) { throw ('tool block empty: ' + $name) }
+}
+Extract-Tool 'fullcensus-csproj' (Join-Path $extracted 'FullCensus.csproj')
+Extract-Tool 'fullcensus-program' (Join-Path $extracted 'Program.cs')
+Push-Location $Evidence
+try {
+  & $dotnet run --project (Join-Path $extracted 'FullCensus.csproj') -- $Repo $censusOut 1> (Join-Path $Evidence 'census-run.log') 2>&1
+  $rc = $LASTEXITCODE
+} finally { Pop-Location }
+if ($rc -ne 0) { Add-Failure ('census regeneration nativeExit=' + $rc) }
+$tail = (Get-Content (Join-Path $Evidence 'census-run.log') | Select-Object -Last 1)
+Write-Output ('census tail: ' + $tail)
+if ($tail -notmatch 'FULL-CENSUS-DONE failures=0') { Add-Failure ('census tail unexpected: ' + $tail) }
+$expPaths = @{ 'physical-v1' = 296; 'scoring-v1' = 419; 'round-v1' = 200; 'cheat-v1' = 204; 'shuffle-v1' = 199; 'ai-v1' = 198 }
+foreach ($fx in $expPaths.Keys) {
+  $n = @((Get-Content (Join-Path $censusOut ($fx + '-full-paths.txt')))).Count
+  if ($n -ne $expPaths[$fx]) { Add-Failure ('census ' + $fx + ' paths=' + $n + ' expected=' + $expPaths[$fx]) }
+}
+Write-Output ('census regenerated: ' + (($expPaths.Keys | ForEach-Object { $_ + '=' + $expPaths[$_] }) -join ' '))
+
+# ---------- step 3: A-probes - historical R3 checker blind spots (expectations!) ----------
+$rules3 = Join-Path $Evidence 'rules-r3.tsv'
+Copy-Item (Join-Path $archive 'field-rules-r3.tsv') $rules3 -Force
+$checker3 = Join-Path $Evidence 'verify-mapping-r3.ps1'
+Copy-Item (Join-Path $archive 'verify-mapping-r3.ps1') $checker3 -Force
+function Invoke-OldCheck([string]$Name, [string[]]$RuleLines) {
+  $p = Join-Path $Evidence ($Name + '.tsv')
+  [IO.File]::WriteAllText($p, ($RuleLines -join "`n") + "`n", (New-Object Text.UTF8Encoding($false)))
+  & powershell -NoProfile -ExecutionPolicy Bypass -File $checker3 -Mode check -RulesFile $p -CensusDir $censusOut 1> (Join-Path $Evidence ($Name + '.log')) 2>&1
+  return $LASTEXITCODE
+}
+$ruleLines = @(Get-Content -Encoding UTF8 $rules3 | Where-Object { $_ -match "`t" })
+# A1 nonexistent-anchors: OLD checker must stay exit 0 (the round-3 blind spot)
+$fake = @($ruleLines | ForEach-Object {
   $c = $_ -split "`t"
   if ($c.Count -ge 7 -and $c[5] -match '\.cs:\d+') { $c[4] = 'NonexistentExporter.kt:999999'; $c[5] = 'NonexistentConsumer.cs:999999' }
   $c -join "`t"
 })
-$null = Invoke-RuleCheck 'nonexistent-anchors' $fake
-
-# A2: duplicate pattern with a valid anchor (same fixture+pattern as an existing row)
-$dup = $lines + ('physical-v1' + "`t" + '$.clockUsed' + "`t0`tSEM_MAP`tV5PhysicalGoldenExporterTest.kt`tPhysicalGoldenTests.cs:41`tBOUND`t*")
-$null = Invoke-RuleCheck 'overlap-duplicate' $dup
-
-# A3: multi-match + scalar-under-CONTAINER census over all fixtures (own matcher)
+$a1 = Invoke-OldCheck 'nonexistent-anchors' $fake
+Write-Output ('A1 nonexistent-anchors nativeExit=' + $a1 + ' (expected 0 = historical blind spot reproduced)')
+if ($a1 -ne 0) { Add-Failure ('A1 nonexistent-anchors expected old-checker exit 0, got ' + $a1) }
+# A2 overlap-duplicate: OLD checker must stay exit 0
+$dup = $ruleLines + ('physical-v1' + "`t" + '$.clockUsed' + "`t0`tSEM_MAP`tV5PhysicalGoldenExporterTest.kt`tPhysicalGoldenTests.cs:41`tBOUND`t*")
+$a2 = Invoke-OldCheck 'overlap-duplicate' $dup
+Write-Output ('A2 overlap-duplicate nativeExit=' + $a2 + ' (expected 0 = historical blind spot reproduced)')
+if ($a2 -ne 0) { Add-Failure ('A2 overlap-duplicate expected old-checker exit 0, got ' + $a2) }
+# A3 exact historical blind-spot magnitudes via the driver's own matcher
 function Test-Pattern([string]$pat, [string]$path) {
   if ($pat -eq '$') { return ($path -eq '$') }
   if ($path -eq '$') { return $false }
@@ -2215,97 +2669,185 @@ $fixtures = @('physical-v1','scoring-v1','round-v1','cheat-v1','shuffle-v1','ai-
 $detail = New-Object System.Collections.Generic.List[string]
 $overlapTotal = 0; $scalarAsContainer = 0
 foreach ($fx in $fixtures) {
-  $fr = @($lines | Where-Object { ($_ -split "`t")[0] -eq $fx } | ForEach-Object { $c = $_ -split "`t"; [pscustomobject]@{ pat = $c[1]; cls = $c[3] } })
-  foreach ($line in Get-Content "$Evidence/census-out/$fx-full-paths.txt") {
+  $fr3 = @($ruleLines | Where-Object { ($_ -split "`t")[0] -eq $fx } | ForEach-Object { $c = $_ -split "`t"; [pscustomobject]@{ pat = $c[1]; cls = $c[3] } })
+  foreach ($line in Get-Content (Join-Path $censusOut ($fx + '-full-paths.txt'))) {
     $sp = $line.Split(' '); $path = $sp[0]; $kind = $sp[1]
-    $hits = @($fr | Where-Object { Test-Pattern $_.pat $path })
-    if ($hits.Count -gt 1) { $overlapTotal++; $detail.Add("OVERLAP $fx $path rules=$($hits.Count)") }
-    if ($hits.Count -gt 0 -and $hits[0].cls -eq 'CONTAINER' -and $kind -notmatch '^(object|array)$') { $scalarAsContainer++; $detail.Add("SCALAR-AS-CONTAINER $fx $line") }
+    $hits = @($fr3 | Where-Object { Test-Pattern $_.pat $path })
+    if ($hits.Count -gt 1) { $overlapTotal++; $detail.Add('OVERLAP ' + $fx + ' ' + $path + ' rules=' + $hits.Count) }
+    if ($hits.Count -gt 0 -and $hits[0].cls -eq 'CONTAINER' -and $kind -notmatch '^(object|array)$') { $scalarAsContainer++; $detail.Add('SCALAR-AS-CONTAINER ' + $fx + ' ' + $line) }
   }
 }
 $detail | Set-Content -Encoding UTF8 (Join-Path $Evidence 'overlap-and-kind-details.log')
-Write-Output ("OVERLAPPING_PATHS=$overlapTotal SCALAR_AS_CONTAINER=$scalarAsContainer")
+Write-Output ('A3 OVERLAPPING_PATHS=' + $overlapTotal + ' SCALAR_AS_CONTAINER=' + $scalarAsContainer + ' (expected 935 / 1)')
+if ($overlapTotal -ne 935) { Add-Failure ('A3 OVERLAPPING_PATHS=' + $overlapTotal + ' expected 935') }
+if ($scalarAsContainer -ne 1) { Add-Failure ('A3 SCALAR_AS_CONTAINER=' + $scalarAsContainer + ' expected 1') }
 
-# B probes: mutated fixture copies under a fake repo; real tree untouched
+# ---------- step 4: B-probes - mutated fixture copies with expectations ----------
 $fake = Join-Path $Evidence 'fake-repo'
 New-Item -ItemType Directory -Force -Path "$fake/tests/v5-golden" | Out-Null
 Copy-Item "$Repo/AGENTS.md" "$fake/AGENTS.md" -Force
 foreach ($m in @('Domain','Ai')) {
   $src = "$Repo/dotnet/tests/Mahjong.$m.Tests/bin/Release/net8.0"
   $dst = "$fake/dotnet/tests/Mahjong.$m.Tests/bin/Release/net8.0"
-  if (-not (Test-Path $dst)) { Copy-Item $src $dst -Recurse }
+  if (-not (Test-Path $dst)) { Copy-Item $src $dst -Recurse -Force }
 }
-# physical fixture embeds v4SourceHashes -> fake repo must carry those source files for SHA re-verification
 $phy = Get-Content -Raw -Encoding UTF8 "$Repo/tests/v5-golden/physical-v1.json" | ConvertFrom-Json
 foreach ($src in @($phy.v4SourceHashes | ForEach-Object { $_.file }) + 'engine/src/test/kotlin/com/majiang/model/V5PhysicalGoldenExporterTest.kt') {
   $dest = Join-Path $fake $src
   New-Item -ItemType Directory -Force -Path (Split-Path $dest) | Out-Null
   Copy-Item (Join-Path $Repo $src) $dest -Force
 }
-
-function Invoke-MutationProbe([string]$Name, [string]$Fixture, [string]$Class, [scriptblock]$Mutate) {
-  $j = Get-Content -Raw -Encoding UTF8 "$Repo/tests/v5-golden/$Fixture.json" | ConvertFrom-Json
-  & $Mutate $j
-  $dst = "$fake/tests/v5-golden/$Fixture.json"
+# expectation rows: name | fixture | test class | exit | total | failed | skipped | notrun
+$expect = @(
+  @{n='physical-hash-labels';            f='physical-v1'; c='PhysicalGoldenTests';  e=0; t=9;  fl=0},
+  @{n='physical-boundary-control';       f='physical-v1'; c='PhysicalGoldenTests';  e=1; t=9;  fl=1},
+  @{n='cheat-request-exception';         f='cheat-v1';    c='CheatGoldenTests';     e=0; t=16; fl=0},
+  @{n='cheat-unbound-reason';            f='cheat-v1';    c='CheatGoldenTests';     e=0; t=16; fl=0},
+  @{n='cheat-six-goldeninputs';          f='cheat-v1';    c='CheatGoldenTests';     e=0; t=16; fl=0},
+  @{n='cheat-backfill-coherent';         f='cheat-v1';    c='CheatGoldenTests';     e=0; t=16; fl=0},
+  @{n='sleeve-input-relative-turns';     f='cheat-v1';    c='CheatGoldenTests';     e=0; t=16; fl=0},
+  @{n='sleeve-input-relative-entities';  f='cheat-v1';    c='CheatGoldenTests';     e=0; t=16; fl=0},
+  @{n='m5-facts-unchecked-coordinate';   f='cheat-v1';    c='CheatGoldenTests';     e=0; t=16; fl=0},
+  @{n='sleeve-unbound-cost-choose-second';    f='cheat-v1'; c='CheatGoldenTests';   e=0; t=16; fl=0},
+  @{n='sleeve-unbound-seat-choose-first';     f='cheat-v1'; c='CheatGoldenTests';   e=0; t=16; fl=0},
+  @{n='sleeve-unbound-drawkind-choose-second'; f='cheat-v1'; c='CheatGoldenTests';  e=0; t=16; fl=0},
+  @{n='sleeve-input-bound-control';      f='cheat-v1';    c='CheatGoldenTests';     e=1; t=16; fl=1},
+  @{n='m5-facts-hand-seat-control';      f='cheat-v1';    c='CheatGoldenTests';     e=1; t=16; fl=1},
+  @{n='sleeve-input-relation-break';     f='cheat-v1';    c='CheatGoldenTests';     e=1; t=16; fl=1},
+  @{n='ai-clock-metadata';               f='ai-v1';       c='AiReplayGoldenTests';  e=1; t=3;  fl=1}  # positive control (R4 Q7: decisionClock bound)
+)
+$mutations = @{
+  'physical-hash-labels'                  = { param($j) $j.hashCrosswalk.csharpHashVerification = 'WRONG'; $j.hashCrosswalk.v4Reason = 'WRONG' }
+  'physical-boundary-control'             = { param($j) $j.samples[0].expected.tiles[0].rank = 99 }
+  'cheat-request-exception'               = { param($j) ($j.beamSwapHandler | Where-Object requestException).requestException = 'WRONG' }
+  'cheat-unbound-reason'                  = { param($j) ($j.tileMarkHandler | Where-Object caseId -eq 'tm-wrong-phase-preparation').reason = 'NOT_YOUR_TURN' }
+  'cheat-six-goldeninputs'                = { param($j)
+    foreach ($c in $j.sleeveBloomHandler) {
+      if ($c.goldenInputs) {
+        foreach ($p in @('availableWallCount','offerId','rinshanPointer','wallEndExclusive','wallPointer','windowId')) {
+          if ($c.goldenInputs.PSObject.Properties.Name -contains $p) {
+            if ($c.goldenInputs.$p -is [string]) { $c.goldenInputs.$p = 'WRONG' } else { $c.goldenInputs.$p = 999 }
+          }
+        }
+      }
+    } }
+  'cheat-backfill-coherent'               = { param($j)
+    $m = $j.tileMovement | Where-Object caseId -eq 'mv-swap-drawn-with-wall-backfill'
+    $m.resolvedIndex += 100; $m.backfilledIndex += 100
+    ($m.factsAfter | Where-Object tileId -eq $m.drawnTileId).index += 100 }
+  'sleeve-input-relative-turns'           = { param($j) $g = ($j.sleeveBloomHandler | Where-Object caseId -eq 'sb-choose-second').goldenInputs; $g.offerCreatedTurnNumber += 100; $g.turnNumber += 100 }
+  'sleeve-input-relative-entities'        = { param($j) $g = ($j.sleeveBloomHandler | Where-Object caseId -eq 'sb-choose-second').goldenInputs; $g.drawnTileId += 1; $g.offerFirstTileId += 1 }
+  'm5-facts-unchecked-coordinate'         = { param($j)
+    $g = $j.tileMovement | Where-Object caseId -eq 'mv-reservation-delivery-then-beam'
+    foreach ($f in $g.factsAfter) {
+      if ($f.container -eq 'hand' -or $f.container -eq 'discard') { $f.index = 999 }
+      if ($f.container -eq 'wall') { $f.seat = 999 }
+    } }
+  'sleeve-unbound-cost-choose-second'     = { param($j) ($j.sleeveBloomHandler | Where-Object caseId -eq 'sb-choose-second').goldenInputs.cost = 999 }
+  'sleeve-unbound-seat-choose-first'      = { param($j) ($j.sleeveBloomHandler | Where-Object caseId -eq 'sb-choose-first').goldenInputs.seat = 999 }
+  'sleeve-unbound-drawkind-choose-second' = { param($j) ($j.sleeveBloomHandler | Where-Object caseId -eq 'sb-choose-second').goldenInputs.drawKind = 'WRONG' }
+  'sleeve-input-bound-control'            = { param($j) ($j.sleeveBloomHandler | Where-Object caseId -eq 'sb-activate-allowed').goldenInputs.cost = 999 }
+  'm5-facts-hand-seat-control'            = { param($j)
+    $g = $j.tileMovement | Where-Object caseId -eq 'mv-reservation-delivery-then-beam'
+    foreach ($f in $g.factsAfter) { if ($f.container -eq 'hand' -or $f.container -eq 'discard') { $f.seat = 999 } } }
+  'sleeve-input-relation-break'           = { param($j) $g = ($j.sleeveBloomHandler | Where-Object caseId -eq 'sb-choose-second').goldenInputs; $g.offerCreatedTurnNumber += 100 }
+  'ai-clock-metadata'                     = { param($j) $j.decisionClock.baseMillis = 999; $j.decisionClock.reserveMillis = 999 }
+}
+$summary = New-Object System.Collections.Generic.List[string]
+foreach ($x in $expect) {
+  $name = $x.n
+  $j = Get-Content -Raw -Encoding UTF8 "$Repo/tests/v5-golden/$($x.f).json" | ConvertFrom-Json
+  if ($name -ne $SkipMutation) { & $mutations[$name] $j }
+  else { Write-Output ('SKIP-MUTATION ' + $name + ' (self-test: original fixture, expectation MUST fail)') }
+  $dst = "$fake/tests/v5-golden/$($x.f).json"
   [IO.File]::WriteAllText($dst, ($j | ConvertTo-Json -Depth 100), (New-Object Text.UTF8Encoding($false)))
-  Copy-Item $dst (Join-Path $Evidence ($Name + '.json')) -Force
-  $module = if ($Class -eq 'AiReplayGoldenTests') { 'Ai' } else { 'Domain' }
+  Copy-Item $dst (Join-Path $Evidence ($name + '.json')) -Force
+  $module = if ($x.c -eq 'AiReplayGoldenTests') { 'Ai' } else { 'Domain' }
   if ($module -eq 'Ai') { Copy-Item $dst "$fake/dotnet/tests/Mahjong.Ai.Tests/bin/Release/net8.0/ai-v1.json" -Force }
   $dll = "$fake/dotnet/tests/Mahjong.$module.Tests/bin/Release/net8.0/Mahjong.$module.Tests.dll"
   $old = $env:MAHJONG_REPO_ROOT; $env:MAHJONG_REPO_ROOT = $fake
   try {
-    & $dotnet $dll -class "Mahjong.$module.Tests.$Class" -noColor -noLogo 1> (Join-Path $Evidence ($Name + '.log')) 2>&1
+    & $dotnet $dll -class "Mahjong.$module.Tests.$($x.c)" -noColor -noLogo 1> (Join-Path $Evidence ($name + '.log')) 2>&1
     $rc = $LASTEXITCODE
   } finally { $env:MAHJONG_REPO_ROOT = $old }
-  $sum = (Get-Content (Join-Path $Evidence ($Name + '.log')) | Select-String 'Total:').Line | Select-Object -First 1
-  $sha = (Get-FileHash -Algorithm SHA256 $dst).Hash
-  Write-Output ($Name + ' nativeExit=' + $rc + ' | ' + $sum.Trim() + ' | mutatedFixtureSha256=' + $sha)
-  Add-Content -Encoding UTF8 -Path (Join-Path $Evidence 'probe-summary.txt') -Value ($Name + ' nativeExit=' + $rc + ' | ' + $sum.Trim() + ' | mutatedFixtureSha256=' + $sha)
+  $sum = ((Get-Content (Join-Path $Evidence ($name + '.log')) | Select-String 'Total:') | Select-Object -First 1).Line.Trim()
+  $m = [regex]::Match($sum, 'Total: (\d+), Errors: \d+, Failed: (\d+), Skipped: (\d+), Not Run: (\d+)')
+  if (-not $m.Success) { Add-Failure ($name + ' cannot parse summary line: ' + $sum); continue }
+  $total = [int]$m.Groups[1].Value; $failed = [int]$m.Groups[2].Value; $skipped = [int]$m.Groups[3].Value; $notrun = [int]$m.Groups[4].Value
+  $fxSha = (Get-FileHash -Algorithm SHA256 $dst).Hash
+  $logSha = (Get-FileHash -Algorithm SHA256 (Join-Path $Evidence ($name + '.log'))).Hash
+  $line = $name + ' nativeExit=' + $rc + ' (exp ' + $x.e + ') | ' + $sum + ' (exp total=' + $x.t + ' failed=' + $x.fl + ' skipped=0 notrun=0)' + ' | mutatedFixtureSha256=' + $fxSha + ' | logSha256=' + $logSha
+  Write-Output $line
+  $summary.Add($line)
+  if ($rc -ne $x.e) { Add-Failure ($name + ' nativeExit=' + $rc + ' expected ' + $x.e) }
+  if ($total -ne $x.t) { Add-Failure ($name + ' Total=' + $total + ' expected ' + $x.t) }
+  if ($failed -ne $x.fl) { Add-Failure ($name + ' Failed=' + $failed + ' expected ' + $x.fl) }
+  if ($skipped -ne 0) { Add-Failure ($name + ' Skipped=' + $skipped + ' expected 0') }
+  if ($notrun -ne 0) { Add-Failure ($name + ' NotRun=' + $notrun + ' expected 0') }
 }
+$summary | Set-Content -Encoding UTF8 (Join-Path $Evidence 'probe-summary.txt')
 
-Invoke-MutationProbe 'physical-hash-labels' 'physical-v1' 'PhysicalGoldenTests' { param($j) $j.hashCrosswalk.csharpHashVerification = 'WRONG'; $j.hashCrosswalk.v4Reason = 'WRONG' }
-Invoke-MutationProbe 'physical-boundary-control' 'physical-v1' 'PhysicalGoldenTests' { param($j) $j.samples[0].expected.tiles[0].rank = 99 }
-Invoke-MutationProbe 'cheat-request-exception' 'cheat-v1' 'CheatGoldenTests' { param($j) ($j.beamSwapHandler | Where-Object requestException).requestException = 'WRONG' }
-Invoke-MutationProbe 'cheat-unbound-reason' 'cheat-v1' 'CheatGoldenTests' { param($j) ($j.tileMarkHandler | Where-Object caseId -eq 'tm-wrong-phase-preparation').reason = 'NOT_YOUR_TURN' }
-Invoke-MutationProbe 'cheat-six-goldeninputs' 'cheat-v1' 'CheatGoldenTests' { param($j)
-  foreach ($c in $j.sleeveBloomHandler) {
-    if ($c.goldenInputs) {
-      foreach ($p in @('availableWallCount','offerId','rinshanPointer','wallEndExclusive','wallPointer','windowId')) {
-        if ($c.goldenInputs.PSObject.Properties.Name -contains $p) {
-          if ($c.goldenInputs.$p -is [string]) { $c.goldenInputs.$p = 'WRONG' } else { $c.goldenInputs.$p = 999 }
-        }
-      }
-    }
+# ---------- verdict ----------
+if ($SelfTest) {
+  $foreign = @($failures | Where-Object { -not $_.StartsWith($SkipMutation + ' ') })
+  if ($failures.Count -ge 1 -and $foreign.Count -eq 0) {
+    Write-Output ('SELFTEST-PASS (skipped mutation produced only its own expectation failures: ' + $failures.Count + '; guard works)')
+    exit 0
   }
+  Write-Output ('SELFTEST-FAIL failures=' + $failures.Count + ' foreign=' + $foreign.Count + ' (expected failures ONLY for skipped probe ' + $SkipMutation + ')')
+  $failures | ForEach-Object { Write-Output ('  ' + $_) }
+  exit 1
 }
-Invoke-MutationProbe 'cheat-backfill-coherent' 'cheat-v1' 'CheatGoldenTests' { param($j)
-  $m = $j.tileMovement | Where-Object caseId -eq 'mv-swap-drawn-with-wall-backfill'
-  $m.resolvedIndex += 100; $m.backfilledIndex += 100
-  ($m.factsAfter | Where-Object tileId -eq $m.drawnTileId).index += 100
+if ($failures.Count -eq 0) {
+  Write-Output 'ROUND5-PROBES-COMPLETE (all A/B expectations matched)'
+  exit 0
 }
-Invoke-MutationProbe 'ai-clock-metadata' 'ai-v1' 'AiReplayGoldenTests' { param($j) $j.decisionClock.baseMillis = 999; $j.decisionClock.reserveMillis = 999 }
-Write-Output 'ROUND4-PROBES-COMPLETE'
-<!--TOOL:probes-round4:END-->
+Write-Output ('ROUND5-PROBES-FAILED failures=' + $failures.Count)
+$failures | ForEach-Object { Write-Output ('  ' + $_) }
+exit 1
+<!--TOOL:probes-round5:END-->
 ```
 
-**第 4 轮完整命令（-File 形式，exit 0 = 反例复现 + 七探针全部 AS-EXPECTED）**：
+**第 5 轮完整命令（-File 形式，exit 0 = 反例复现 + 16 探针期望全部匹配）**：
 
 ```
-powershell -NoProfile -ExecutionPolicy Bypass -File C:/Users/sncdc/AppData/Local/Temp/n3-rework-round4/probes-round4.ps1 -Repo D:/majiang-wt/n3-golden-field-audit -Evidence C:/Users/sncdc/AppData/Local/Temp/n3-rework-round4 1> C:/Users/sncdc/AppData/Local/Temp/n3-rework-round4/probes-round4-run.log 2>&1
-→ EXIT=0；反例行 OVERLAPPING_PATHS=935 SCALAR_AS_CONTAINER=1 + 7 行探针结果 + 尾行 ROUND4-PROBES-COMPLETE（probes-round4-run.log SHA256 f8c68326ff126ec201c1ed92a2d3d38064047444d76fdf3f4eb1934827bc67f7）
+powershell -NoProfile -ExecutionPolicy Bypass -File C:/Users/sncdc/AppData/Local/Temp/n3-rework-round5/probes-round5.ps1 -Repo D:/majiang-wt/n3-golden-field-audit -Evidence C:/Users/sncdc/AppData/Local/Temp/n3-rework-round5/probes-run2 1> C:/Users/sncdc/AppData/Local/Temp/n3-rework-round5/probes-run2/driver-run.log 2>&1
+→ TRUE_EXIT=0；关键行：archive-r3/verify-mapping-r3.ps1 sha256=1CE17DAC4F663714492315D30F85C173B0E4EF0506F4BDF0175A03BDA5B793C3、archive-r3/field-rules-r3.tsv sha256=D932A03FF9A6B958576ADF51A87DEEE684C88776F726F4546257D4EDE51EE73D（git 7ea62e6 提取锁 SHA 全中）、census regenerated: cheat-v1=204 shuffle-v1=199 ai-v1=198 physical-v1=296 scoring-v1=419 round-v1=200 + census tail: FULL-CENSUS-DONE failures=0、A3 OVERLAPPING_PATHS=935 SCALAR_AS_CONTAINER=1 (expected 935 / 1)、16 行探针结果（下表）+ 尾行 ROUND5-PROBES-COMPLETE (all A/B expectations matched)（driver-run.log SHA256 e622e20102207c6be9fb229c7497b50451fe99de1481f3003f46e50ba2cc352f，census-run.log SHA256 6b7c79e2de1e0dc7b170972ac0cd1a6bba2951b02bddd310805f49195d7d6a23；逐探针日志 16 份 + 变异 fixture 16 份 + archive-r3/ + census-out/ + extracted/ 同目录在案）
 ```
 
-| # | 探针 | 变异 | native exit（期望） | 实测结果 | 探针日志 SHA256 | 变异 fixture SHA256 |
+**16 探针逐行结果（R5 TEMP `probes-run2` 实测；变异列与工具 `$mutations` 哈希表逐字一致；期望列 = 工具 `$expect` 表）**：
+
+| # | 探针 | 变异（逐字） | native exit（期望） | 实测结果 | 探针日志 SHA256 | 变异 fixture SHA256 |
 |---|---|---|---|---|---|---|
-| Q1 | physical-hash-labels | hashCrosswalk `csharpHashVerification`/`v4Reason` 双标签叶 + `scope.targetIds` 全改 WRONG | 0（0 FAIL） | Mahjong.Domain.Tests Total: 9, **Failed: 0**——E3 五路径确不设防 | `eab7e92f9d0b836f3c10135acfadfa95f29738e64818874de0218e26f2b7d9a4` | `7B605C10BB15D9E250F1E3B09A78D8C8AB27B08C6F45175DFF00E6CAAAE87DA2` |
-| Q2 | physical-boundary-control（正控制） | `samples[0].expected.tiles[0].rank`→99 | **1**（1 FAIL） | Total: 9, **Failed: 1**——physical samples 数值面设防实证 | `2ff1e1570f99213ae8c36f7e6837693897d0b97601bfd0bcf1c350515cb92949` | `99DA2673A3D0AA76E69C68BE2B26A5AFB35EBB13753441EA65476AF355E85BFF` |
-| Q3 | cheat-request-exception | `$.beamSwapHandler[*].requestException` 全字段删除（GAP:N3-B7） | 0（0 FAIL） | Total: 16, **Failed: 0**——B7 确不设防 | `1534fdb2a851226205a42807d9bcbb43182081a82d74f23dddf17d39609316a7` | `756795243F50C318D7BE71A65D2580C6EB4CC998B0EF5E55AECE50252C796EAC` |
-| Q4 | cheat-unbound-reason | UNBOUND_HC scoped case 的 reason 改 WRONG_PHASE | 0（0 FAIL） | Total: 16, **Failed: 0**——handler scoped 拆分的 HC 案例集确不设防 | `d5dedd07742a32179f10e4b400b1f78a0bf8f36657ff9d56e417c0c8e492305c` | `FEDD45B579EC11A5DCDAC064A1AC0351524D9587B1ADAEBA4D84B6DF059D0D86` |
-| Q5 | cheat-six-goldeninputs | sleeveBloom goldenInputs 六叶整体删除（GAP:N3-B3） | 0（0 FAIL） | Total: 16, **Failed: 0**——六叶确不设防 | `67b6a054af9ee5480ba90edea22d2da3f5931d7685fa6cbcad530d83d1ccfdc2` | `6656871D7823F5BC096D97CA153A6F74DEE88F6AA72F17E11307B5DE344CF016` |
-| Q6 | cheat-backfill-coherent | m1b coherent 值 +100（INTERNAL 判级复核） | 0（0 FAIL） | Total: 16, **Failed: 0**——与 §3.4 INTERNAL 判级一致（结构自洽断言无生产差分语义，非 GAP） | `cc9610a46eb5193d131e6eaca8486bf9542788354c6a44dc3b723aade47b685b` | `C734E77956673D8DF37ABE2C85FF9C7AE5ACC0B5B24819EF88293499D435B073` |
-| Q7 | ai-clock-metadata | decisionClock baseMillis/reserveMillis→999 | **1**（1 FAIL） | Mahjong.Ai.Tests Total: 3, **Failed: 1**——**正控制**：decisionClock 8 路径全绑定实证（第 3 轮草案的缺口假设被推翻，§3.6） | `459fe7b8f23180a3417a1d460bdfbb4ba49866427f55b1d196160475de652060` | `62838FE1B8ABAEA05A822A5B598BF0CA47AA6D14C103090DC597F422F32EA886` |
+| P1 | physical-hash-labels | `hashCrosswalk.csharpHashVerification`→'WRONG' + `v4Reason`→'WRONG'（仅两标签；targetIds/suitOrder 不在变异范围） | 0（exp 0） | Mahjong.Domain.Tests Total: 9, **Failed: 0**——E3 双标签确不设防 | `0D662BB585AA1997D68767EDE4191EC0E138A26C7E0D39377CEB138900991844` | `7B605C10BB15D9E250F1E3B09A78D8C8AB27B08C6F45175DFF00E6CAAAE87DA2` |
+| P2 | physical-boundary-control（正控制①） | `samples[0].expected.tiles[0].rank`→99 | **1**（exp 1） | Total: 9, **Failed: 1**——physical 数值面设防实证 | `385D55037560E678774507B56169C5B802B20BECBA5B5C99E10613BDAECC2C8C` | `99DA2673A3D0AA76E69C68BE2B26A5AFB35EBB13753441EA65476AF355E85BFF` |
+| P3 | cheat-request-exception | `beamSwapHandler` 含 requestException 案例的 `requestException`→'WRONG' | 0（exp 0） | Total: 16, **Failed: 0**——B7 确不设防 | `0D2816A16668E01D3BEF2698DBCF00DA7057E57C8B81B9FD3743BD760E08E6B0` | `756795243F50C318D7BE71A65D2580C6EB4CC998B0EF5E55AECE50252C796EAC` |
+| P4 | cheat-unbound-reason | `tileMarkHandler` case `tm-wrong-phase-preparation` 的 `reason`→'NOT_YOUR_TURN' | 0（exp 0） | Total: 16, **Failed: 0**——UNBOUND_HC 拆分行确不设防 | `EE8787A3B0CC72C36814AA77001CBF839E3E2D64FF3F6C8779B48C7883EC0B7F` | `FEDD45B579EC11A5DCDAC064A1AC0351524D9587B1ADAEBA4D84B6DF059D0D86` |
+| P5 | cheat-six-goldeninputs | sleeveBloom 全案例六叶（availableWallCount/offerId/rinshanPointer/wallEndExclusive/wallPointer/windowId）逐 case 在场者：字符串叶→'WRONG'、数值叶→999（非整体删除） | 0（exp 0） | Total: 16, **Failed: 0**——B3 六叶确不设防 | `4CC28600A5DE23F48A288403646FA5284205BA73B3F0566F5AC4B6AC15F22FCD` | `6656871D7823F5BC096D97CA153A6F74DEE88F6AA72F17E11307B5DE344CF016` |
+| P6 | cheat-backfill-coherent | `mv-swap-drawn-with-wall-backfill` 的 `resolvedIndex`+100、`backfilledIndex`+100、`factsAfter[drawnTileId 匹配行].index`+100（INTERNAL 判级复核） | 0（exp 0） | Total: 16, **Failed: 0**——与 §3.4 INTERNAL 判级一致（结构自洽断言无生产差分语义，非 GAP） | `B6636D6A9CB7C1139BD1673D38EF24683ACF469EE40886BDD3CECBBE397B1E58` | `C734E77956673D8DF37ABE2C85FF9C7AE5ACC0B5B24819EF88293499D435B073` |
+| P7 | sleeve-input-relative-turns | sb-choose-second goldenInputs `offerCreatedTurnNumber`+100 与 `turnNumber`+100（关系对双侧） | 0（exp 0） | Total: 16, **Failed: 0**——内部相对回合非真输入绑定（B10 面） | `C479E9A1E4756F540CFC3808E0D83AF0366DBDEFEACC06709B7AD5EA3E6D7576` | `A1EAB34E135D136F474154F7B51CA208AE6EA0A28630166357C5B67E447E9A13` |
+| P8 | sleeve-input-relative-entities | sb-choose-second goldenInputs `drawnTileId`+1 与 `offerFirstTileId`+1（关系对双侧） | 0（exp 0） | Total: 16, **Failed: 0**——内部相对实体非真输入绑定（B10 面） | `73C315F361A7B082F18A73E2DEAC9D20952052576C4601F52EBBAA5AF6DB9A5F` | `ADADD797EB01086B68706C7DAC965692FADA88E2B6324938F459E590815C9664` |
+| P9 | m5-facts-unchecked-coordinate | `mv-reservation-delivery-then-beam` factsAfter：container=hand/discard 行 `index`→999 + container=wall 行 `seat`→999 | 0（exp 0） | Total: 16, **Failed: 0**——分区排除语义（B11 悬空坐标）确不设防 | `460EF7A9B915D6C9210404F0893AFAC7073230648044C379C366BE78324A08A3` | `A4964643F9B532654EBDA9F0771313B016210BF17C6FF7F0E5698499F9866916` |
+| P10 | sleeve-unbound-cost-choose-second | sb-choose-second goldenInputs `cost`→999（B10 代表单元①） | 0（exp 0） | Total: 16, **Failed: 0** | `DEECC0C060D0D0D99AD3A392BC262951ED897CE8701C6809D09CD0180BED8856` | `6C920C72932143624E786FDD93927BD164CC06211B8F084D973763ACA8F87D8D` |
+| P11 | sleeve-unbound-seat-choose-first | sb-choose-first goldenInputs `seat`→999（B10 代表单元②） | 0（exp 0） | Total: 16, **Failed: 0** | `202092C81934EC3AB284F820576CD4FF55747D2C74CC76ABA5B4005DA6DC1AD9` | `28004414BD1AA4FA06AABF34CC89849AB7BB83510B63D742C72A1BEEB81F81BD` |
+| P12 | sleeve-unbound-drawkind-choose-second | sb-choose-second goldenInputs `drawKind`→'WRONG'（B10 代表单元③） | 0（exp 0） | Total: 16, **Failed: 0** | `803136B0C9914D7A4FA665FD075F698C123306590537BDDE802663597B25244E` | `2493E156A3843639503C82C3A90A71C3EF8FCD7AB7DAE84B6CA49D2D1FBDF50A` |
+| P13 | sleeve-input-bound-control（正控制⑥） | sb-activate-allowed goldenInputs `cost`→999（已绑面） | **1**（exp 1） | Total: 16, **Failed: 1**（`SleeveBloomSecondChoice_BindsToGoldenInputs`） | `64968528589BFB626ADA6E3DED6D96B6E2E3B99CC14232E715EE06F6A5887C30` | `1E24FFEE3753146A58CA05E4214F545BD0E615902CE5DC6945CFB0CD28BEE5A6` |
+| P14 | m5-facts-hand-seat-control（正控制⑦） | `mv-reservation-delivery-then-beam` factsAfter：container=hand/discard 行 `seat`→999（已绑面） | **1**（exp 1） | Total: 16, **Failed: 1**（`DeliveryThenBeam_BindsToGoldenCandidateEntities`） | `2633DB8D41C0E2D64B21384C526C1C392DA1FB0B0AFF554905FC610E4B66BFE2` | `6F8FF7F2FE0B5DBF403903BA5992A04D662A9ABDFF852935E6621BFE725A4058` |
+| P15 | sleeve-input-relation-break（正控制⑤） | sb-choose-second goldenInputs 仅 `offerCreatedTurnNumber`+100（关系对单侧破坏） | **1**（exp 1） | Total: 16, **Failed: 1**（`SleeveBloomSecondChoice_BindsToGoldenInputs`，Expected 112/Actual 12，CheatGoldenTests.cs:724） | `124E794024ED22042EFCD04E605FFC443F46B89D3FF73523C86F548BB1F01A1E` | `A7A49933B0F13B9ED34A60A4C0CD6C1A9E963801ADD2F61EB26F5B98CF39CEB9` |
+| P16 | ai-clock-metadata（正控制④） | `decisionClock.baseMillis`→999 + `reserveMillis`→999 | **1**（exp 1） | Mahjong.Ai.Tests Total: 3, **Failed: 1**——decisionClock 8 路径全绑定实证 | `2571D66DA32D0BDA0F1906A5D40DFC5C321973F215134926DC2D17337A22329C` | `62838FE1B8ABAEA05A822A5B598BF0CA47AA6D14C103090DC597F422F32EA886` |
 
-`probe-summary.txt`（7 行，Evidence 根平铺）SHA256 `60e1c7b4d3a0116be7a5a054412cdce630d3ca909e7b88ffa604a40a94fc513a`。探针日志内 `Time:` 为实测耗时、随运行变化，判定行/exit/变异 fixture SHA 恒定；本表 SHA 为交付时在案实测值。cheat 绑定面的正控制由第 3 轮 P1（§10 表 18）承担，第 4 轮 cheat 探针均为不设防判定。
+`probe-summary.txt`（16 行，Evidence 根平铺）SHA256 `8ac4168f03c4a7e3d9a313ebf6db19b8f2d9db9226bc0dab6b2eddffe20cb6d5`，其内容 = 上表 P1-P16 判定列逐字（nativeExit/Total/Failed/变异 fixture SHA/日志 SHA）。探针日志内 `Time:` 为实测耗时、随运行变化，判定行/exit/变异 fixture SHA 恒定；本表 SHA 为交付时在案实测值。cheat 绑定面的正控制由第 3 轮 P1（§10 表 18）+ 第 5 轮 P13/P14/P15（§10 表 27-29）共同承担。
+
+**负向自检（R4-3 验收：变异被剥离 → 驱动必报失败）**：
+
+```
+powershell -NoProfile -ExecutionPolicy Bypass -File C:/Users/sncdc/AppData/Local/Temp/n3-rework-round5/probes-round5.ps1 -Repo D:/majiang-wt/n3-golden-field-audit -Evidence C:/Users/sncdc/AppData/Local/Temp/n3-rework-round5/selftest-run2 -SkipMutation physical-boundary-control -SelfTest 1> C:/Users/sncdc/AppData/Local/Temp/n3-rework-round5/selftest-run2/driver-selftest.log 2>&1
+→ TRUE_EXIT=0；日志含 SKIP-MUTATION physical-boundary-control (self-test: original fixture, expectation MUST fail) + 该探针 1 FAIL 期望失配 ×2（nativeExit=0 exp 1 / Failed=0 exp 1）+ 尾行 SELFTEST-PASS (skipped mutation produced only its own expectation failures: 2; guard works)（driver-selftest.log SHA256 e42aa98030c348529cb813754db506348c10255769e428b926bfa43f5306142d）
+```
+
+语义：`-SelfTest` 模式下"失败集只含被跳探针自身的期望失配" = 守卫正确识别了被剥离的变异（对驱动逻辑的验收，故 exit 0）；等价地在**正常模式**下任何期望失配（含变异被静默剥离产生的 0 FAIL）都会进 failures → `ROUND5-PROBES-FAILED` → exit 1——第 4 轮"counterfactual 仍 exit 0 + COMPLETE"的缺陷由此堵死。
+
+**第 4 轮运行（历史存档，证据在 R4 TEMP；7 探针由已被第 5 轮驱动取代的 `probes-round4.ps1` 执行，SHA256 `f64337f5cf175b062f17896487c74eae017493c1cb5198ca30bf3c7bf89b293c`，现锚定于本报告 `git 7ea62e6`）**：命令 `powershell -NoProfile -ExecutionPolicy Bypass -File C:/Users/sncdc/AppData/Local/Temp/n3-rework-round4/probes-round4.ps1 -Repo D:/majiang-wt/n3-golden-field-audit -Evidence C:/Users/sncdc/AppData/Local/Temp/n3-rework-round4` → EXIT=0，尾行 ROUND4-PROBES-COMPLETE（probes-round4-run.log SHA256 f8c68326ff126ec201c1ed92a2d3d38064047444d76fdf3f4eb1934827bc67f7，probe-summary.txt 7 行 SHA256 60e1c7b4d3a0116be7a5a054412cdce630d3ca909e7b88ffa604a40a94fc513a）。历史日志 SHA 不变；第 4 轮报告曾有 4 处变异描述与工具实际行为不符（Q1 误写"targetIds 全改 WRONG"、Q3 误写"全字段删除"、Q4 误写"改 WRONG_PHASE"、Q5 误写"六叶整体删除"），第 5 轮按工具 `$mutations` 逐字更正如本表 P1/P3/P4/P5 变异列所示——七探针的判定行/exit/变异 fixture SHA 与本表 P1-P7 一致（同一变异代码逐字沿用，第 5 轮重跑同判）。
 
 **第 3 轮 4 探针（存档引用，证据在 R3；结论已在 §10 表 7/9/10/12/18 引用）**：P1 sb-already-used-bound-positive（**1 FAIL exit 1**，A 桶正控制）、P2 sb-choose-first-unbound（16/16 PASS）、P3 tilemark-state-fields-unbound（16/16 PASS）、P4 ledger-markers-unbound（16/16 PASS）；工具源全文内嵌于第 3 轮报告 §11.8（`<!--TOOL:probes-state-fields:BEGIN/END-->`，SHA `bd9a403d01da8260979918e2e1509d1fcae1844da98b85f5a7a4599a79c0ef9c`，提取命令同 §11.10 awk 模式），probe-summary.txt SHA `539ad92504871baf61fbbc6583b0813109961e88c59db87b2d56299db06d224f`、run log SHA `d9595cd9d717dfb497488f77eb4d1796160322aa40c820041fe6b93df1c9dfc6`。
 
@@ -2323,12 +2865,12 @@ powershell -NoProfile -ExecutionPolicy Bypass -File C:/Users/sncdc/AppData/Local
 | ai-v1.json | `E898CDB6E1034D1DC8229E807A919E7F64E03062D3E9AD64DED36317402375C9` | catalog 外（§3.6） |
 | catalog-v1.json | `16f7fd7f980398388e4e5da45a3d5fb755c19990915f403987094617e90e891b` | — |
 
-### 11.10 自抽取复算闭环（R2-2 验收沿用 + 第 4 轮工具集复算；空 TEMP 从本报告代码块重建全部工具并复算）
+### 11.10 自抽取复算闭环（R2-2 验收沿用 + 第 5 轮工具集复算；空 TEMP 从本报告代码块重建全部工具并复算）
 
-**提取命令（awk 按行内标记对切分；6 个工具全部来自本报告 §11 代码块；第 4 轮探针工具 `probes-round4` 替换第 3 轮 `probes-state-fields`，后者已改为存档引用见 §11.8）**：
+**提取命令（awk 按行内标记对切分；6 个工具全部来自本报告 §11 代码块；第 5 轮探针工具 `probes-round5` 取代第 4 轮 `probes-round4`（后者改为 git `7ea62e6` 存档引用见 §11.8））**：
 
 ```
-EV=C:/Users/sncdc/AppData/Local/Temp/n3-extract-loop-r4
+EV=C:/Users/sncdc/AppData/Local/Temp/n3-extract-loop-r5
 mkdir -p "$EV/extracted"
 R=D:/majiang-wt/n3-golden-field-audit/doc/v5-重构/V5-G1-N3-GOLDEN-FIELD-AUDIT.md
 awk '/^<!--TOOL:fullcensus-csproj:BEGIN-->/{f=1;next} /^<!--TOOL:fullcensus-csproj:END-->/{f=0} f' "$R" > "$EV/extracted/FullCensus.csproj"
@@ -2336,57 +2878,43 @@ awk '/^<!--TOOL:fullcensus-program:BEGIN-->/{f=1;next} /^<!--TOOL:fullcensus-pro
 awk '/^<!--TOOL:verify-coverage:BEGIN-->/{f=1;next} /^<!--TOOL:verify-coverage:END-->/{f=0} f' "$R" > "$EV/extracted/verify-coverage.ps1"
 awk '/^<!--TOOL:verify-mapping:BEGIN-->/{f=1;next} /^<!--TOOL:verify-mapping:END-->/{f=0} f' "$R" > "$EV/extracted/verify-mapping.ps1"
 awk '/^<!--TOOL:case-refs:BEGIN-->/{f=1;next} /^<!--TOOL:case-refs:END-->/{f=0} f' "$R" > "$EV/extracted/case-refs.ps1"
-awk '/^<!--TOOL:probes-round4:BEGIN-->/{f=1;next} /^<!--TOOL:probes-round4:END-->/{f=0} f' "$R" > "$EV/extracted/probes-round4.ps1"
+awk '/^<!--TOOL:probes-round5:BEGIN-->/{f=1;next} /^<!--TOOL:probes-round5:END-->/{f=0} f' "$R" > "$EV/extracted/probes-round5.ps1"
+awk '/^FIELD-RULES:BEGIN$/{f=1;next} /^FIELD-RULES:END$/{f=0} f' "$R" | sed '/^```/d' > "$EV/extracted/field-rules-from-report.tsv"
 ```
 
-**实测证据表（LOOP-R4 = `C:/Users/sncdc/AppData/Local/Temp/n3-extract-loop-r4`，全新空 TEMP；下列步骤按上块命令原样执行，SHA256 为交付时在案实测；确定性产物必须与 §11 对应内嵌源/日志逐字节相等，随耗时变化的日志以实测为准并保持判定行一致）**：
+**实测证据表（LOOP-R5 = `C:/Users/sncdc/AppData/Local/Temp/n3-extract-loop-r5`，全新空 TEMP；下列步骤按上块命令原样执行，SHA256 为交付时在案实测；确定性产物与 §11 对应日志逐字节相等，随耗时变化的日志以实测为准并保持判定行一致）**：
 
-**① 工具重建**：上块 6 条 awk 提取全部成功，提取件与 §11 各内嵌源 `cmp` **逐一 byte-identical**：
+**① 工具重建**：上块 6 条 awk + 1 条 FIELD-RULES 提取全部成功，SHA256：
 
 | 提取件 | SHA256（= §11 对应内嵌源） |
 |---|---|
 | `extracted/FullCensus.csproj` | `8f946bc6c411cc89c659c88eeb89ddeaeb52cb54b0d480e58e09ff418e29168d` |
 | `extracted/Program.cs` | `fd49db41b5dbb6602b7ce1a2e9a52b679f78b700dc1d93606d8f12f8f530b4d0` |
 | `extracted/verify-coverage.ps1` | `f932794ee00db2c8cea4a67b15e4ec640bdc933f890a0240c3091a59e22d3997`（§11.5 头注同值） |
-| `extracted/verify-mapping.ps1` | `772e492778b2e057db31520b519113f9605afe76598f6a32056464998f291101`（§11.6 v2 头注同值） |
+| `extracted/verify-mapping.ps1` | `414b042e1eee34fd9e8872e75263e7ec10df08ac5b637e463784e0c3991caa0b`（§11.6 v3 头注同值） |
 | `extracted/case-refs.ps1` | `39aeccc450fcb3ddd63cfa4ed56b3527071b88934e293ce42e616cf499995492`（§11.7 头注同值） |
-| `extracted/probes-round4.ps1` | `f64337f5cf175b062f17896487c74eae017493c1cb5198ca30bf3c7bf89b293c`（§11.8 头注同值） |
+| `extracted/probes-round5.ps1` | `fab9222a5ebb103fc2ac04ed9a1dc0655bd87a5647bce2c103b15db172abd256`（§11.8 头注同值） |
+| `extracted/field-rules-from-report.tsv` | `68e9b7fb5dda1f44f9b2ab346de612a427a05a0eeda255497af68647a092b059`（= §11.6 头注报告提取副本；与 R5 TEMP 原始产物 `b43a7ab5…` 内容逐行一致、仅 CRLF/LF 行尾不同） |
 
-另将本报告 `FIELD-RULES:BEGIN/END` 块提取为 `field-rules-from-report.tsv`（表头 + 497 规则 = 498 行）SHA256 `de338fffddc5a939ddef5a2f50dceaf25ac81a50f7746d08a3375e2152b4cfe5`，与 §11.6 独立副本 `field-rules-v2.tsv` `cmp` 逐字节一致——"报告内嵌规则表 = 独立副本"由此闭环。
+**② census 复算**：`D:/Unity/dotnet/dotnet.exe run --project LOOP-R5/extracted/FullCensus.csproj -- D:/majiang-wt/n3-golden-field-audit LOOP-R5/census-out` → EXIT=0，**13 件产物与 §11.4/R5 驱动产物逐字节相等**（`cmp` 全零）：6 × `<fixture>-full-paths.txt`（296/419/200/204/199/198 = 1516 路径复现）+ 6 × group-counts + census-summary；`census-run.log` SHA256 `72c78ea2284e26f12d6828f693798b0f8b8b2d76c5fb285d7ff28ed8d7b86c7d`（与 §11.4 表/R5 驱动 census-run.log 逐字节相等，尾部 `FULL-CENSUS-DONE failures=0`）。scoring-v1 case 总数复现 = fixture `generationResult.totalSamples = 10238`（7 组：win 48 + noWin 4 + fu 9 + dora 6 + settlement 24 + score 147 + random 10000；census 对全部 case 逐节点遍历，scoring leafInstances=476153）。
 
-**② census 复算**：`D:/Unity/dotnet/dotnet.exe run --project LOOP-R4/extracted/FullCensus.csproj -- D:/majiang-wt/n3-golden-field-audit LOOP-R4/census-out` → EXIT=0，**14 件产物与 §11.4 表逐一相等**：
-
-| 产物 | SHA256 | 与 §11.4 |
-|---|---|---|
-| `census-run.log` | `72c78ea2284e26f12d6828f693798b0f8b8b2d76c5fb285d7ff28ed8d7b86c7d` | 相等（尾部 `FULL-CENSUS-DONE failures=0`） |
-| `census-summary.txt` | `7b8909f2a2a0c4dc4f4dff068fafb1e19762ed86d0af005d2eb739ea98041504` | 相等 |
-| 6 × `<fixture>-full-paths.txt` | physical `db9f3db6…` / scoring `d84b7e1f…` / round `e646e083…` / cheat `391966d9…` / shuffle `5c0ada44…` / ai `ff1b9f56…` | 全部相等（296/419/200/204/199/198，合计 1516 路径复现） |
-| 6 × `<fixture>-group-counts.txt` | `404757d8…` / `22eb1544…` / `5ae03e74…` / `e133b039…` / `5c93bd81…` / `d29988b8…` | 全部相等 |
-
-scoring-v1 case 总数复现 = fixture `generationResult.totalSamples = 10238`（7 组：win 48 + noWin 4 + fu 9 + dora 6 + settlement 24 + score 147 + random 10000；fixture SHA 见 §11.9；census 对全部 case 逐节点遍历，scoring leafInstances=476153）。
-
-**③ coverage/mapping 两层复算**（均对**本报告**执行；六组 EMIT 计数 28/27/22/21/19/31 与 §3.0 一致；v2 映射校验含 DIST 分布输出）：
+**③ coverage/mapping 两层复算**（均对**本报告**执行；六组 EMIT 计数 28/27/22/21/19/31 与 §3.0 一致；v3 映射校验含 DIST+CASE-DIST 双分布输出）：
 
 | 步骤 | native exit | 实测输出 | 日志 SHA256 |
 |---|---|---|---|
-| emit（-Evidence LOOP-R4） | 0 | 6 × prefix2 产物与 §11.5 版 `cmp` 相等 | LOOP-R4 `coverage-emit.log` `06efd6a773ef9a14a4d7b1c6869441ed8d18f58b370852b2df2796013eee8e51`（与 §11.5 命令日志逐字节相等） |
-| verify（-ReportPath 本报告） | 0 | `COVERAGE-VERIFY-OK unmapped-total=0`（六组全 unmapped=0 mismatched=0 extra=0） | LOOP-R4 `coverage-verify.log` `e0dd66910112c9cd4c15eb3a18404d6114cb0cd296954e28deff5f5c2a4fce31`（与 §11.5 命令日志逐字节相等） |
-| check `-ReportPath`（-CensusDir LOOP-R4/census-out，-Repo 工作树） | 0 | `RULES-CHECK-OK-V2 total-paths=1516 rules=497 leaks=0 mismatches=0 anchor-errors=0 dup=0 scalarAsContainer=0 scope-errors=0` + DIST ×20 + `DIST-TOTAL unique-paths=1516 gap-paths=101` | LOOP-R4 `check-report.log` `c52452dd934fd16fec3c0d4ecf1a5921562218bad0b7ea257e5cc1d058e1841a`（= §11.6 `check-v2-positive.log` 逐字节） |
-| check `-RulesFile`（① 的报告块提取 TSV） | 0 | 同上 | LOOP-R4 `check-tsv.log` 同 SHA `c52452dd…`（两次独立调用输出逐字节一致） |
-| negative strip-anchors | 0（NEGATIVE-DETECTED） | errors=309 全 `ANCHOR-C#` | LOOP-R4 `negative-strip-anchors.log` `8d39fa10c8f0cb6a8337916227afe387ff64c90d9246431898dc79be22de4ac1`（= §11.6 版逐字节） |
-| negative drop-rule | 0（NEGATIVE-DETECTED） | `FAIL LEAK physical-v1 $`；errors=1 | LOOP-R4 `negative-drop-rule.log` `e40e23e41049742367dac35eeee19ec4aaac80027414e1947faf580706de97a5`（= §11.6 版逐字节） |
-| negative anchorless-rule | 0（NEGATIVE-DETECTED） | 4 × ANCHOR；errors=4 | LOOP-R4 `negative-anchorless-rule.log` `0107553a008b36a9edb4b2361b87682a232908b965e868b9255a6f858e2b21a6`（= §11.6 版逐字节） |
-| negative nonexistent-anchors | 0（NEGATIVE-DETECTED） | errors=717（file not found / 越界） | LOOP-R4 `negative-nonexistent-anchors.log` `7ea6f6d5de74d0c50518893e80fc09a03857a1c803d3216a9543366fde27a060`（= §11.6 版逐字节） |
-| negative duplicate-rule | 0（NEGATIVE-DETECTED） | `FAIL DUP physical-v1 $.clockUsed scope=*`；errors=1 | LOOP-R4 `negative-duplicate-rule.log` `dd0b33023bd1b551fff52d6cb7e4fb3eda95d26dc87441d6198fb5a194fc1d48`（= §11.6 版逐字节） |
-| negative scalar-container | 0（NEGATIVE-DETECTED） | 324 × SCALAR-AS-CONTAINER；errors=324 | LOOP-R4 `negative-scalar-container.log` `d5091c0f682ef6600aad44a32affa60fb20f61478f933a5afabcc6587ee6556e`（= §11.6 版逐字节） |
+| emit（-OutDir LOOP-R5/coverage-out） | 0 | 6 × prefix2 产物与 §11.5 版相等 | `coverage-emit.log` `06efd6a773ef9a14a4d7b1c6869441ed8d18f58b370852b2df2796013eee8e51`（与 §11.5 命令日志逐字节相等） |
+| verify（-ReportPath 本报告） | 0 | `COVERAGE-VERIFY-OK unmapped-total=0`（六组全 unmapped=0 mismatched=0 extra=0） | `coverage-verify.log` `e0dd66910112c9cd4c15eb3a18404d6114cb0cd296954e28deff5f5c2a4fce31`（与 §11.5 命令日志逐字节相等） |
+| check `-ReportPath`（-CensusDir LOOP-R5/census-out） | 0 | `RULES-CHECK-OK-V3 total-paths=1516 units=1821 rules=540 … scope-errors=0` + DIST ×20 + `DIST-TOTAL unique-paths=1516 gap-paths=101` + CASE-DIST ×22 + 27 × CASE-MIXED + `CASE-TOTAL units=1821 gap-units=286 mixed-paths=27` | `check-report.log` `180b37b7458016622f3572a2b74c45b4dd5177b1189bd65c70bcb8483dc2310f`（= §11.6 `check-report-v3.log` 逐字节） |
+| check `-RulesFile`（① 的报告块提取 TSV） | 0 | 同上 | `check-tsv.log` 同 SHA `180b37b7…`（两次独立调用输出逐字节一致） |
+| negative ×12（strip-anchors/drop-rule/anchorless-rule/nonexistent-anchors/duplicate-rule/scalar-container/scope-extra-case/scope-drop-case/scope-unknown-case/scope-dup-case/scope-cross-section/scope-where-broken） | 0（全部 NEGATIVE-DETECTED） | 12 份日志与 §11.6 负例矩阵表**逐字节相等**（`cmp` 全零：336/1/4/786/1/324/1/1/2/1/1/4 errors） | `negative-<kind>.log` ×12，SHA 见 §11.6 表（同值） |
 
-**④ case 分桶复算**：`extracted/case-refs.ps1 -Repo … -Evidence LOOP-R4` → EXIT=0：`quoted tileMarkHandler=7 sleeveBloomHandler=11 beamSwapHandler=6 total=24`、`goldenInputs tileMark=0/20 sleeveBloom=7/32 beamSwap=0/23`、`buckets A=16 B=2 C=6 D=50 E=1`、`rows=75`、`CASE-REFS-OK`；`case-refs.tsv` `af0aedd8…` 与 `case-refs-summary.txt` `e8303afc…` 均与 §11.7 版逐字节相等；运行日志 LOOP-R4 `case-refs-run.log` SHA256 `a5e774b4d8bdc90c44df7164e1e9cdeb19350633aa7f98ea138241b99676c84c`。
+**④ case 分桶复算**：`extracted/case-refs.ps1 -Repo … -Evidence LOOP-R5` → EXIT=0：`quoted tileMarkHandler=7 sleeveBloomHandler=11 beamSwapHandler=6 total=24`、`goldenInputs tileMark=0/20 sleeveBloom=7/32 beamSwap=0/23`、`buckets A=16 B=2 C=6 D=50 E=1`、`rows=75`、`CASE-REFS-OK`；`case-refs.tsv` SHA256 `af0aedd8b62fa05be5f95ddc04f3390321ec1711d41621a6737f367d3b0b72bb`、`case-refs-summary.txt` `e8303afc3ae73aa7d051c0d37a95ccc4dea7a27962f8e51d419998427ea2dce4`、运行日志 `case-refs-run.log` `a5e774b4d8bdc90c44df7164e1e9cdeb19350633aa7f98ea138241b99676c84c`——三件均与 §11.7 版逐字节相等。
 
-**⑤ 探针复算（含"故意失败 → 非零"验收）**：`extracted/probes-round4.ps1 -Repo … -Evidence LOOP-R4` → EXIT=0，反例行 `OVERLAPPING_PATHS=935 SCALAR_AS_CONTAINER=1` + 尾行 `ROUND4-PROBES-COMPLETE`；七个探针判定行/exit/变异 fixture SHA 与 §11.8 表逐一相等（Q2 physical-boundary-control 与 Q7 ai-clock-metadata 的测试进程实测 native **exit=1**——探针工具捕获该非零并按预期判 AS-EXPECTED）；LOOP-R4 探针工具运行日志 `probes-round4-run.log` SHA256 `fbf436e6db1ff78016f11461847538bc0369cc6a3d52803551af7a77207fa1da`，`probe-summary.txt`（Evidence 根平铺）SHA256 `4a1d4d91908e622f160c105390baf16a2ce9308e39cd8cc359fe91e06522c541`，逐探针日志 7 份在 `LOOP-R4/<name>.log`（`Time:` 耗时随运行变化致 SHA 与 §11.8 R4 版不同，判定行/exit/变异 fixture SHA 一致——本次复算 7 份变异 fixture SHA 与 §11.8 表逐一相符）。
+**⑤ 探针复算（含逐探针期望校验）**：`extracted/probes-round5.ps1 -Repo … -Evidence LOOP-R5` → EXIT=0，git `7ea62e6` 存档提取锁 SHA 全中（`1CE17DAC…`/`D932A03F…`）+ 全新 census（204/199/198/296/419/200）+ 反例行 `A3 OVERLAPPING_PATHS=935 SCALAR_AS_CONTAINER=1 (expected 935 / 1)` + 尾行 `ROUND5-PROBES-COMPLETE (all A/B expectations matched)`；**16 探针判定行/exit/变异 fixture SHA 与 §11.8 表逐一相等**（`diff` 全零；P2/P13/P14/P15/P16 实测 native exit=1——驱动捕获非零并按期望判行）。运行日志 `probes-round5-run.log` SHA256 `d6c4810af8d927fd166592f472abe8686f9e942a9da819713d727b1cc7ee9998`、`probe-summary.txt`（Evidence 根平铺，16 行）SHA256 `d43794f8432e11bfe4741fef3d3e9821e0c3aa01bcdde4cecc422f8eada8a813`，逐探针日志 16 份在 `LOOP-R5/<name>.log`（`Time:` 耗时随运行变化致 logSha 与 §11.8 版不同，判定行/exit/变异 fixture SHA 一致）。
 
-**⑥ 基线重放**：真实树上 `Mahjong.Domain.Tests.dll -class Mahjong.Domain.Tests.CheatGoldenTests -noColor -noLogo` → **EXIT=0**、`Total: 16, Errors: 0, Failed: 0`（LOOP-R4 `cheat-golden-baseline.log` SHA256 `e762fba0490aa661c05aa3476be2f7cb1e6c3874cb9503a3a0a50a0d143d19a1`）。
+**⑥ 基线重放**：真实工作树 `D:/majiang-wt/n3-golden-field-audit` 下 `D:/Unity/dotnet/dotnet.exe dotnet/tests/Mahjong.Domain.Tests/bin/Release/net8.0/Mahjong.Domain.Tests.dll -class Mahjong.Domain.Tests.CheatGoldenTests -noColor -noLogo` → **EXIT=0**、`Total: 16, Errors: 0, Failed: 0`（LOOP-R5 `cheat-golden-baseline.log` SHA256 `4cfa65a226225544381f9038bb95bd4dbae31e2f57333c81b2b42e99756cd1b8`）。
 
-**闭环结论**：空 TEMP 从本报告代码块重建 6 工具 + 报告内嵌规则块，复算出与本审计 §11 各节**逐字节相等**的 census（1516 路径 / scoring 10238 case 全量遍历）、两层 coverage（`COVERAGE-VERIFY-OK` + v2 `RULES-CHECK-OK-V2` + 六负例全检出）、case 分桶（75 行 = A16+B2+C6+D50+E1）与探针结论（Q2/Q7 故意失败 exit 1 实证）；R2-2 验收四要素——空 TEMP 重建复现 1516 路径/10238 case、handler 命令 exit 0、故意失败非零、证据清单与实际日志 1:1——全部满足。
+**闭环结论**：空 TEMP 从本报告代码块重建 6 工具 + 报告内嵌规则块，复算出与本审计 §11 各节**逐字节相等**的 census（1516 路径 / scoring 10238 case 全量遍历）、两层 coverage（`COVERAGE-VERIFY-OK` + v3 `RULES-CHECK-OK-V3` units=1821 + 12 负例全检出）、case 分桶（75 行 = A16+B2+C6+D50+E1）与探针结论（16 探针期望全配、5 个故意失败 exit 1 实证）；R2-2 验收四要素——空 TEMP 重建复现 1516 路径/10238 case、handler 命令 exit 0、故意失败非零、证据清单与实际日志 1:1——全部满足。
 
 ### 11.11 本报告自身哈希
 
@@ -2398,18 +2926,20 @@ scoring-v1 case 总数复现 = fixture `generationResult.totalSamples = 10238`�
 
 第 3 轮 caller 审查证据 E = `C:/Users/sncdc/AppData/Local/Temp/codex-n3-r3-review-d9701474e23244b880077239233f103e`（只读引用；全量 SHA 见其 sha256.json）。**逐字节相同的独立复现**：本方 R4 反例复现日志与 caller E 目录同名产物 SHA256 逐一相等——nonexistent-anchors.log = mapping-check.log = `AFAFEFAAEADCCDCA2499016BE57CF787D30BCDE7B8620BF8761375366A0052B1`、overlap-duplicate.log = `83B70EBC45E209450E6C4A0DEEBA4B0AD1968D6BF686D7313108D8F243D92D4E`、overlap-and-kind-details.log = `E309DDFAD55DD7BF00FEF12B56A6502CE719C2D4E0E8CC83DEF02B84E4E0AF60`（两个独立会话对同一第 3 轮校验器产生逐字节一致的反例输出，R3-1 三缺陷为客观事实）；caller 对本方第 3 轮报告的内嵌规则块提取件 rules.tsv `D932A03FF9A6B958576ADF51A87DEEE684C88776F726F4546257D4EDE51EE73D` 与本方 §11.10（第 3 轮版）提取件同值。caller 侧其余关键件：review-new-evidence.ps1 `FBFB921F…`/review-new-evidence.log `F3BCD75E…`、source-checks.log `047F4779…`、worktree.log `95882FAF…`、probes-run.log `80F2DAFB…`、六份 test-*.log（test-CheatGoldenTests `F29D9E99…` 等）、census-out/census-summary.txt `7B8909F2…`（与本方 §11.4 同值）、变异 fixture ai-clock-metadata.json `62838FE1…`（与本方 §11.8 Q7 同值——同一变异位置约定）、build-domain/build-ai log `B5C092F1…`/`EBD60389…`。**关键交叉点**：caller R3 三组 MAJOR（R3-1/R3-2/R3-3）的反例与本方 §3.0.1 反例表、§3 重分类、§13 算术修正一一对应，本报告第 4 轮已逐项修复（§15 映射表）。本报告所有数字以 §11 本方独占 TEMP 复算件为准，两个 E 目录均为独立第二来源，三方无矛盾。
 
+第 4 轮 caller 审查证据 E = `C:/Users/sncdc/AppData/Local/Temp/codex-n3-r4-review-d4c6b79dc4ab4cfe8df00fa84a658525`（只读引用；全量 SHA 见其 sha256.json）。**关键交叉点**：R4-1 指定负例——caller 对本方第 4 轮 v2 校验器执行 `availableWallCount` scope 追加 `|sb-activate-disabled`，实测仍 `RULES-CHECK-OK-V2 scope-errors=0` exit 0（independent-probes.ps1 SHA256 `A040D239…`、log `2B37B13C…`、sha256.json `F7CE2A86…`）——该反例成为 v3 六种 SCOPE 错误的直接设计输入（本方 v3 复现与堵死见 §3.0.1 反例复现表与 §11.6 负例表 scope-extra-case 行，`FAIL SCOPE-ID-ABSENT … sb-activate-disabled` exit 1）。本方 R5 探针驱动重跑 16 探针所得变异 fixture SHA 与 caller R4 目录在案变异 fixture 逐一相符（P1 `7B605C10…`/P2 `99DA2673…`/P16 `62838FE1…` 等，§11.8 表），两轮独立运行对同一变异代码产生逐字节一致的 fixture，变异复现性由此第三方可验。
+
 ---
 ## 12. 边界声明
 
 1. 本报告**只读**了仓库与兄弟任务无关区域；未读取 N1a/N2 兄弟在途未提交内容，未假设其已修。
 2. 未修改：生产代码、测试代码、fixtures、catalog、manifest、固定头已接受 G1 盘点报告、用户未提交文件（CLAUDE.md/PROMPTS.md/任务书/协议/Unity 环境/Resources/Burst）。
-3. 全部写入限于：本报告一个文档（expectedFiles 指定路径）+ 独占 TEMP 四处（第 1 轮 `n3-field-audit-01edf75dbc3b`、第 2 轮 `n3-rework-round2`（含 fake-repo 变异副本）、第 3 轮 `n3-rework-round3` 与自抽取闭环 `n3-extract-loop`、第 4 轮 `n3-rework-round4`（含 fake-repo 变异副本，§11.10 自抽取闭环 TEMP 在该轮内新建），均不触仓库）。
+3. 全部写入限于：本报告一个文档（expectedFiles 指定路径）+ 独占 TEMP 六处（第 1 轮 `n3-field-audit-01edf75dbc3b`、第 2 轮 `n3-rework-round2`（含 fake-repo 变异副本）、第 3 轮 `n3-rework-round3` 与自抽取闭环 `n3-extract-loop`、第 4 轮 `n3-rework-round4`（含 fake-repo 变异副本，第 4 轮版自抽取闭环 TEMP 在该轮内新建）、第 5 轮 `n3-rework-round5`（含 `probes-run2`/`selftest-run2`/`vm-run` 子目录与 fake-repo 变异副本）与自抽取闭环 `n3-extract-loop-r5`，均不触仓库）。另有 caller 五轮审查 E 目录（§11.12）只读未复制未改。
 4. `V5-REVIEW-REWORK-PROTOCOL.md` 全程只读，未复制提交。
 5. **审计报告组件完成 ≠ N-3 关闭 ≠ G1 批准**：N-3/G1 的关闭由 caller 依据本报告与补齐包（§9）独立复核后裁决。G1 门的全部口径由任务书既有规定与 caller 汇总复核决定——本报告与 §9 不缩小也不扩大该口径：所有已导出可比较未绑定内容全部保留为缺口（§3.0.1 GAP 101 条 + §9 覆盖清单），不增设任务书之外的批准前置条件。
 6. 本报告不带任何 push/PR/CI 触发/远端操作。
 
 ---
-## 13. 协议格式缺陷清单（第 4 轮一次性全量版；同类合并 + 统一负例矩阵；R3-3 算术/路径修正）
+## 13. 协议格式缺陷清单（第 5 轮一次性全量版；同类合并 + 统一负例矩阵；R3-3 算术修正 + R4-2 逐单元语义更正）
 
 > 本审计冻结在"只写一个新报告"边界内，**不实施任何修复**；每项"修复要求"指向 §9 补齐包 ID，由 caller 独立下发。严重级别口径：MAJOR = 现有断言防不住错误值/错误行为或阻断 G1 门口径核实；MINOR = 文档/索引失真，无行为风险。无 BLOCKER（未发现生产行为错误或守恒违例）。**本清单已覆盖当前全部已知可复现缺陷，无分批保留**；后续仅当出现新信息才追加，并须说明此前为何不可发现。**第 4 轮修正（R3-3）**：DEF-2 的行为级对照算术更正（A16+B2+C6=**24**，E1 为存在级不计入行为绑定，合计 25/75）、B1=14（m1b 移出）、B5=10（snapshot 两布尔移入）、B3 归属更正（sleeveBloom 六叶，非 tileMark/beamSwap）、新增 B7/B8/B9/E3 缺口包；DEF-5 的规则表分母更新 417→497、GAP 87→101。
 
@@ -2431,24 +2961,24 @@ scoring-v1 case 总数复现 = fixture `generationResult.totalSamples = 10238`�
 
 ### DEF-2 [MAJOR] cheat-v1 case 级 53（D50+B2+E1）无/弱黄金行为对照 + 路径级 40（B1/B3/B4cheat/B5/B7/B8）
 
-- **准确位置**：`dotnet/tests/Mahjong.Domain.Tests/CheatGoldenTests.cs`——行为级黄金对照 **24/75（A16+B2+C6=24）**；**E1 存在级 1**（#36 :480 注释级——纯 C# 存在断言、golden 条目本身未绑定，**不计入行为绑定**；两种口径合计 = 25/75 有某种形式对照）；其余 **50**（D 桶，§3.4 表标 D 者）仅经 `Handler_Sections_CoverEveryRejectionReason`（:339-365）做 reason 映射完备性；B2（#6 同族码、#67 仅 outcome :539-544）；路径级 **40 条**（第 4 轮机器重划）：tileMovement 14（GAP:N3-B1，m1b cross 字段已移出为 INTERNAL）、goldenInputs 六叶 6（GAP:N3-B3：`$.sleeveBloomHandler[*].goldenInputs` 的 `availableWallCount/offerId/rinshanPointer/wallEndExclusive/wallPointer/windowId`——**第 4 轮更正：缺口属 sleeveBloom，tileMark/beamSwap 的 goldenInputs 均已绑定**；sleeveBloom goldenInputs 其余 22 条 IN_BIND 已绑 :718-826）、tileMarkState 6 字段（GAP:N3-B4 cheat 部分）、ledger 四子键 outcome/exception 8 叶 + snapshotRoundTrip 两布尔 = 10（GAP:N3-B5）、beamSwap requestException 1（GAP:N3-B7）、三 handler note 叶 3（GAP:N3-B8）。
+- **准确位置**：`dotnet/tests/Mahjong.Domain.Tests/CheatGoldenTests.cs`——行为级黄金对照 **24/75（A16+B2+C6=24）**；**E1 存在级 1**（#36 :480 注释级——纯 C# 存在断言、golden 条目本身未绑定，**不计入行为绑定**；两种口径合计 = 25/75 有某种形式对照）；其余 **50**（D 桶，§3.4 表标 D 者）仅经 `Handler_Sections_CoverEveryRejectionReason`（:339-365）做 reason 映射完备性；B2（#6 同族码、#67 仅 outcome :539-544）；**路径级 40 条 + 混合路径逐单元 54 个**（第 5 轮机器重划）：路径级 40 = tileMovement 14（GAP:N3-B1，m1b cross 字段已移出为 INTERNAL）+ goldenInputs UNBOUND 六叶 6 路径（GAP:N3-B3：`availableWallCount/offerId/rinshanPointer/wallEndExclusive/wallPointer/windowId`——**第 4 轮更正：缺口属 sleeveBloom，tileMark/beamSwap 的 goldenInputs 均已绑定**）+ tileMarkState 6 字段（GAP:N3-B4 cheat 部分）+ ledger 10（GAP:N3-B5）+ beamSwap requestException 1（GAP:N3-B7）+ 三 handler note 叶 3（GAP:N3-B8）；**混合路径逐单元**（路径被绑定类行裁决、单元级悬空，DIST 不显、CASE-DIST 显）= goldenInputs B10 28 单元 + factsAfter B11 26 单元。**goldenInputs 逐单元真值（第 5 轮 R4-2 更正，撤回第 4 轮"其余 22 条 IN_BIND 已绑 :718-826"）**：sleeveBloom goldenInputs 合计 79 单元 = 绑定类 30（INTERNAL 14 + SEM_MAP 12 + OUT_DIFF 4）+ UNBOUND 49（B3 21 + B10 28）+ **IN_BIND 0**——第 4 轮 TSV 的 `goldenInputs.#` 21 行 IN_BIND"已绑 :718-826"系容器捕获误作输入绑定，第 5 轮 FIELD-RULES v3 已按 26 叶 × case 逐单元重列（§3.4 表）。
 - **原样复现（全部 -File 形式，native exit；工具源均内嵌于本报告，提取见 §11.10）**：
   ```
-  powershell -NoProfile -ExecutionPolicy Bypass -File C:/Users/sncdc/AppData/Local/Temp/n3-rework-round4/verify-mapping.ps1 -Mode check -ReportPath "D:/majiang-wt/n3-golden-field-audit/doc/v5-重构/V5-G1-N3-GOLDEN-FIELD-AUDIT.md" -CensusDir C:/Users/sncdc/AppData/Local/Temp/n3-rework-round4/census-out -Repo D:/majiang-wt/n3-golden-field-audit
-  → EXIT=0（RULES cheat-v1 paths=204 rules=172 leaked=0 scalarAsContainer=0 + DIST-TOTAL unique-paths=1516 gap-paths=101 + RULES-CHECK-OK-V2 …）
+  powershell -NoProfile -ExecutionPolicy Bypass -File C:/Users/sncdc/AppData/Local/Temp/n3-rework-round5/vm-run/verify-mapping-v3.ps1 -Mode check -ReportPath "D:/majiang-wt/n3-golden-field-audit/doc/v5-重构/V5-G1-N3-GOLDEN-FIELD-AUDIT.md" -CensusDir C:/Users/sncdc/AppData/Local/Temp/n3-rework-round5/probes-run2/census-out -Repo D:/majiang-wt/n3-golden-field-audit
+  → EXIT=0（RULES cheat-v1 paths=204 rules=215 leaked=0 scalarAsContainer=0 + DIST-TOTAL unique-paths=1516 gap-paths=101 + CASE-TOTAL units=1821 gap-units=286 mixed-paths=27 + RULES-CHECK-OK-V3 …）
   powershell -NoProfile -ExecutionPolicy Bypass -File C:/Users/sncdc/AppData/Local/Temp/n3-rework-round3/case-refs.ps1 -Repo D:/majiang-wt/n3-golden-field-audit -Evidence C:/Users/sncdc/AppData/Local/Temp/n3-rework-round3
-  → EXIT=0（quoted tileMarkHandler=7 sleeveBloomHandler=11 beamSwapHandler=6 total=24；goldenInputs tileMark=0/20 sleeveBloom=7/32 beamSwap=0/23；buckets A=16 B=2 C=6 D=50 E=1；rows=75——case-refs 口径为"case 引用侧"，与字段级 goldenInputs 绑定（B3）分属两层）
-  powershell -NoProfile -ExecutionPolicy Bypass -File C:/Users/sncdc/AppData/Local/Temp/n3-rework-round4/probes-round4.ps1 -Repo D:/majiang-wt/n3-golden-field-audit -Evidence C:/Users/sncdc/AppData/Local/Temp/n3-rework-round4
-  → EXIT=0（Q3 requestException / Q4 unbound-reason / Q5 six-goldeninputs 全 16/16 PASS；正控制 = 第 3 轮 P1 1 FAIL）
+  → EXIT=0（quoted tileMarkHandler=7 sleeveBloomHandler=11 beamSwapHandler=6 total=24；goldenInputs tileMark=0/20 sleeveBloom=7/32 beamSwap=0/23；buckets A=16 B=2 C=6 D=50 E=1；rows=75——case-refs 口径为"case 引用侧"，与字段级 goldenInputs 绑定（B3/B10）分属两层）
+  powershell -NoProfile -ExecutionPolicy Bypass -File C:/Users/sncdc/AppData/Local/Temp/n3-rework-round5/probes-round5.ps1 -Repo D:/majiang-wt/n3-golden-field-audit -Evidence C:/Users/sncdc/AppData/Local/Temp/n3-rework-round5/probes-run2
+  → EXIT=0（P3 requestException / P4 unbound-reason / P5 six-goldeninputs 全 16/16 PASS；P9 m5 分区坐标 16/16 PASS；正控制 = 第 3 轮 P1 + 第 5 轮 P13/P14/P15 各 1 FAIL）
   cd D:/majiang-wt/n3-golden-field-audit
   D:/Unity/dotnet/dotnet.exe dotnet/tests/Mahjong.Domain.Tests/bin/Release/net8.0/Mahjong.Domain.Tests.dll -class Mahjong.Domain.Tests.CheatGoldenTests -noColor -noLogo
   → EXIT=0（Total: 16, Failed: 0）
   ```
-- **实际 vs 期望**：实际 = D50 的 outcome/reason 仅被映射表消费、B2 部分绑定、E1 存在级、40 条路径未消费（Q3/Q4/Q5 + P3/P4 变异全 PASS）；期望 = §9 N3-B3(a)-(d) + N3-B1/B3/B4(cheat 部分)/B5/B7/B8 全覆盖——**所有已导出可比较未绑定内容保留缺口直至绑定**；D-β 4 例以等价类断言 + 映射注释 + owner 批准落地（真正不可比处显式说明语义与批准责任，不沉默移出分母）。
-- **证据**：fixture `tests/v5-golden/cheat-v1.json` SHA256 `A196CBBD97AB8F61BE8679B74C8F17DF2713CB37AEF0922E5F3C9F725B28AB4E`；运行日志 SHA256 `4783C3761FF0F2360B626A1B03B317DC43ACBD7BABAFCD8F3CDFE95B7D721AF4`；R4 探针日志/变异 fixture SHA（§11.8 表 Q3-Q6）；第 3 轮 4 探针（§11.8 存档）；case-refs.tsv/summary SHA（§11.7）；§3.4 逐条 75 行表；snapshotRoundTrip 读点 `:261-262`。
-- **修复要求**：§9 N3-B3（case 级 + sleeveBloom 六叶 + scoped HC case 集消解）+ N3-B1/B4(cheat 部分)/B5/B7/B8（路径级），仅测试文件。
+- **实际 vs 期望**：实际 = D50 的 outcome/reason 仅被映射表消费、B2 部分绑定、E1 存在级、40 条路径 + 54 个混合路径单元未消费（P3/P4/P5/P9/P10-P12 变异全 PASS）；期望 = §9 N3-B3(a)-(d) + N3-B1/B3/B10/B11/B4(cheat 部分)/B5/B7/B8 全覆盖——**所有已导出可比较未绑定内容保留缺口直至绑定**；D-β 4 例以等价类断言 + 映射注释 + owner 批准落地（真正不可比处显式说明语义与批准责任，不沉默移出分母）。
+- **证据**：fixture `tests/v5-golden/cheat-v1.json` SHA256 `A196CBBD97AB8F61BE8679B74C8F17DF2713CB37AEF0922E5F3C9F725B28AB4E`；运行日志 SHA256 `4783C3761FF0F2360B626A1B03B317DC43ACBD7BABAFCD8F3CDFE95B7D721AF4`；R5 探针日志/变异 fixture SHA（§11.8 表 P3-P12）；第 3 轮 4 探针（§11.8 存档）；case-refs.tsv/summary SHA（§11.7）；§3.4 逐条 75 行表 + goldenInputs 26 叶逐单元表；snapshotRoundTrip 读点 `:261-262`。
+- **修复要求**：§9 N3-B3（case 级 + sleeveBloom UNBOUND 面）+ N3-B1/B10/B11/B4(cheat 部分)/B5/B7/B8（路径级/单元级），仅测试文件。
 - **统一负例矩阵**：(a) 6 个 Allowed 主路径 case 任一副作用/事件形状错值 → 应 FAIL；(b) sb-choose-first outcome→Rejected + reason→WRONG_PHASE → 应 FAIL；(c) 任一 stale case 的 stale 判定翻转 → 应 FAIL；(d) #70 requestException 缺失/错型 → 应 FAIL；(e) D-β #19/#5/#18/#20 的映射断言值错置 → 应 FAIL；(f) tileMarkState 6 字段/ledger 四子键 outcome·exception/snapshot 两布尔篡改 → 修复后应 FAIL（现 PASS = 探针 P3/P4/Q3/Q4 实证）。
-- **验收断言**：(a) §3.4 表 D50+E1 全部有行为级断言或显式映射断言；(b) B2 升级后逐值绑定；(c) 负例矩阵 (a)-(f) 全部 FAIL；(d) 现有 16 Facts 保持 PASS；(e) **无门径收窄**：本缺陷的关闭标准 = §3.4 分桶清零（绑定或显式映射）+ 40 条 GAP 路径清零，不以"至少 N 个 Allowed + 代表拒绝"替代。
+- **验收断言**：(a) §3.4 表 D50+E1 全部有行为级断言或显式映射断言；(b) B2 升级后逐值绑定；(c) 负例矩阵 (a)-(f) 全部 FAIL；(d) 现有 16 Facts 保持 PASS；(e) **无门径收窄**：本缺陷的关闭标准 = §3.4 分桶清零（绑定或显式映射）+ 40 条 GAP 路径清零 + 混合路径 B10 28/B11 26 单元清零（以修复后 FIELD-RULES 重列 + CASE-DIST gap 归零为准），不以"至少 N 个 Allowed + 代表拒绝"替代。
 
 ### DEF-3 [MINOR] CheatGoldenTests.cs:638-642 差距声明与源码事实不符（mv-swap 定级；第 3 轮全量内嵌，不再引用第 1 轮）
 
@@ -2484,13 +3014,13 @@ scoring-v1 case 总数复现 = fixture `generationResult.totalSamples = 10238`�
 - **修复要求**：§9 N3-C1（caller 裁决口径）。
 - **验收断言**：catalog/manifest 与"仓库现存 fixture 清单"一致（含或显式排除 ai-v1 的书面理由）。
 
-### DEF-5 [MAJOR] 已导出字段未绑定族（scoring/shuffle/physical/ai/tileMovement/goldenInputs/requestException/note/text）与"fixture 内部结构误判为生产行为差分"的结论性错误（第 4 轮分母：GAP 101 条路径 / 12 包）
+### DEF-5 [MAJOR] 已导出字段未绑定族（scoring/shuffle/physical/ai/tileMovement/goldenInputs/requestException/note/text/factsAfter 坐标）与"fixture 内部结构误判为生产行为差分"的结论性错误（第 5 轮双分母：GAP 101 条路径【定义投影】/ 286 单元【完整分母】/ 14 包）
 
 - **准确位置**：`ScoringGoldenTests.cs`（`CompareWinSample` :207-242 不读 `expected.status` 与 `input.extraHan`；`CompareNoWinSample` :247-250 不读 doraIndicators/uraDoraIndicators/honba/riichiSticks；`tags` 全文 0 次引用）；`ShuffleGoldenTests.cs`（`deadWallSegmentEqual` 全文 0 次引用；`ExportedWallsSatisfyPhysicalLaws` :160-175 为导出数组内部检查）；`CheatGoldenTests.cs:261-262`（snapshotRoundTrip 布尔信任级）+ tileMovement 14 条 + goldenInputs 六叶 + requestException 1 条 + note 3 条；`PhysicalGoldenTests.cs`（boundaries/boundarySamples/invalid/csharpExceptionMapping 24 条 + hashCrosswalk 双标签/suitOrder/scope.targetIds 5 条；`:56/:61/:663-666` 归一化 SHA 口径）；`AiReplayGoldenTests`（mappingBasis/mappingLimits 3 条 + v4Call/v4 text 叶 2 条）。
-- **原样复现**：§11.8 探针命令（P3/P4 + 第 4 轮 Q1/Q3/Q4/Q5）；§11.6 v2 check 命令（`RULES-CHECK-OK-V2 total-paths=1516 rules=497 leaks=0 mismatches=0 anchor-errors=0 dup=0 scalarAsContainer=0 scope-errors=0` + `DIST-TOTAL unique-paths=1516 gap-paths=101`）；`grep -c 'tags' dotnet/tests/Mahjong.Domain.Tests/ScoringGoldenTests.cs` → `0`；`grep -c 'deadWallSegmentEqual' dotnet/tests/Mahjong.Domain.Tests/ShuffleGoldenTests.cs` → `0`。
-- **实际 vs 期望**：实际 = GAP 101 条路径（§3.0.1 DIST 分布）当前变异后 PASS——探针实证 10 条面（win status/noWin 四字段/deadWallSegmentEqual/sb-choose-first/tileMarkState 6 字段/ledger 8 叶/hashCrosswalk 双标签+targetIds/requestException/UNBOUND_HC reason/六叶）；期望 = §9 N3-E1/E2/E3/B1/B2/B3/B4(cheat)/B5/B7/B8/B9 逐包绑定、tags/mappingLimits/text 类元数据显式排除声明、各 fixture 判级以 §3.0.1 FIELD-RULES 八类为准（行为差分/输入绑定/语义映射/内部结构/未绑定/硬编码未绑定/元数据/容器），**禁止"fixture 内部结构"与"生产行为差分"混称**（m1b cross 字段与 shuffle 五组墙数组/identity 布尔在第 4 轮均显式落 INTERNAL 行段规则，§3.4/§3.5）。
-- **证据**：探针日志/变异 fixture SHA（§11.8 表 + 存档）；census 路径行（`$.winSamples[*].expected.status string instances=48`、`$.winSamples[*].tags array instances=48 elements=54`、`$.cases[*].deadWallSegmentEqual boolean instances=32` 等，`*-full-paths.txt` 逐条在案）；FIELD-RULES 497 条规则（§3.0.1）。
-- **修复要求**：§9 N3-E1 + N3-E2 + N3-E3 + N3-B1/B2/B3/B4(cheat 部分)/B5/B7/B8/B9（全部仅测试/文档文件）；分类表述以本报告 §3 为准同步至任何下游盘点。
+- **原样复现**：§11.8 探针命令（第 3 轮 P3/P4 + 第 5 轮 P1/P3/P4/P5/P9/P10-P12）；§11.6 v3 check 命令（`RULES-CHECK-OK-V3 total-paths=1516 units=1821 rules=540 leaks=0 mismatches=0 anchor-errors=0 dup=0 scalarAsContainer=0 scope-errors=0` + `DIST-TOTAL unique-paths=1516 gap-paths=101` + `CASE-TOTAL units=1821 gap-units=286 mixed-paths=27`）；`grep -c 'tags' dotnet/tests/Mahjong.Domain.Tests/ScoringGoldenTests.cs` → `0`；`grep -c 'deadWallSegmentEqual' dotnet/tests/Mahjong.Domain.Tests/ShuffleGoldenTests.cs` → `0`。
+- **实际 vs 期望**：实际 = GAP 101 条路径（§3.0.1 DIST 定义投影）/ 286 单元（§3.0.1 CASE-DIST 完整分母，14 包 = B1-B11 + E1-E3）当前变异后 PASS——探针实证 16 条面（win status/noWin 四字段/deadWallSegmentEqual/sb-choose-first/tileMarkState 6 字段/ledger 8 叶/hashCrosswalk 双标签/requestException/UNBOUND_HC reason/六叶/相对回合对/相对实体对/m5 分区坐标/B10 三代表单元）；期望 = §9 N3-E1/E2/E3/B1/B2/B3/B10/B11/B4(cheat)/B5/B7/B8/B9 逐包绑定、tags/mappingLimits/text 类元数据显式排除声明、各 fixture 判级以 §3.0.1 FIELD-RULES 八类为准（行为差分/输入绑定/语义映射/内部结构/未绑定/硬编码未绑定/元数据/容器），**禁止"fixture 内部结构"与"生产行为差分"混称**（m1b cross 字段与 shuffle 五组墙数组/identity 布尔在第 4 轮、goldenInputs 相对关系对与 factsAfter 分区坐标在第 5 轮均显式落 INTERNAL/分区谓词行段规则，§3.4/§3.5）。
+- **证据**：探针日志/变异 fixture SHA（§11.8 表 + 存档）；census 路径行（`$.winSamples[*].expected.status string instances=48`、`$.winSamples[*].tags array instances=48 elements=54`、`$.cases[*].deadWallSegmentEqual boolean instances=32` 等，`*-full-paths.txt` 逐条在案）；FIELD-RULES 540 条规则（§3.0.1，109 条 scoped 行承载 1821 单元分母）。
+- **修复要求**：§9 N3-E1 + N3-E2 + N3-E3 + N3-B1/B2/B3/B10/B11/B4(cheat 部分)/B5/B7/B8/B9（全部仅测试/文档文件）；分类表述以本报告 §3 为准同步至任何下游盘点。
 - **统一负例矩阵**：(a) win 首例 status win→noWin → 修复后应 FAIL；(b) deadWallSegmentEqual 首例 true→false → 修复后应 FAIL；(c) tags 数组注入标记 → 绑定或显式排除后行为确定（FAIL 或明确不适用声明）；(d) 正控制 totalPoints 错值 → FAIL（已实证）；(e) tileMarkState 6 字段与 ledger 8 叶篡改 → 修复后应 FAIL（现 PASS = P3/P4）；(f) hashCrosswalk 双标签/targetIds/requestException/note 篡改 → 修复后应 FAIL（现 PASS = Q1/Q3）。
 - **验收断言**：(a) 探针面在修复后全部 FAIL；(b) tags/mappingLimits/text 的分母可见性成立（绑定或显式声明）；(c) §3.0.1 FIELD-RULES 与 §11.5/§11.6 双层校验 exit 0 维持（修复后重跑本报告工具链即得）。
 
@@ -2529,7 +3059,7 @@ scoring-v1 case 总数复现 = fixture `generationResult.totalSamples = 10238`�
 6. 第 1/2 轮 caller 认可方向（mv-swap 五层、ChooseDealerEnd、45/45、哈希口径表）未改动，仅按本轮口径补充引用。
 ---
 
-## 15. 第 3 轮审查意见 → 第 4 轮返修映射与不可发现性说明
+## 15. 历轮审查意见 → 返修映射与不可发现性说明（R3 → 第 4 轮；R4 → 第 5 轮）
 
 ### 15.1 caller R3 审查意见逐项映射（REWORK_REQUIRED，commit 7ea62e6）
 
@@ -2556,6 +3086,16 @@ scoring-v1 case 总数复现 = fixture `generationResult.totalSamples = 10238`�
 
 ### 15.2 不可发现性说明（后续轮次追加缺陷时适用）
 
-本报告第 4 轮的以下机制**自第 3 轮审查后才存在**：v2 校验器的 -Repo 真实锚点核对、DUP/SCALAR-AS-CONTAINER/SCOPE 拒绝、有序 first-match 裁决口径、scope 列 case 集机器校验、DIST 分布输出、497 条 8 列规则表的 66 条 cheat scoped 行段规则。因此——凡属"第 3 轮规则表/校验器无法表达或无法检出"的判级误差（如 scoped case 拆分粒度、行段锚点行界、同 pattern 重复行），其在此前的不可发现性以第 3 轮工具能力为界；第 4 轮起这些机制在案，后续轮次不得再以"工具不支持"为由豁免同类核查。凡属纯源码阅读可达的事实（如 `:261-262` 信任级断言、`deadWallSegmentEqual` 零引用、m1b 结构自洽断言性质），第 1-3 轮即应可发现，本报告在第 4 轮方才更正的（snapshot 归 B5、m1b 移出 B1、B2 文件扩展），更正原因记录于 §15.1 对应行与 §3.0.1 修复对照 (a)-(g)，不新增豁免。
+本报告第 4 轮的以下机制**自第 3 轮审查后才存在**：v2 校验器的 -Repo 真实锚点核对、DUP/SCALAR-AS-CONTAINER/SCOPE 拒绝、有序 first-match 裁决口径、scope 列 case 集机器校验、DIST 分布输出、497 条 8 列规则表的 66 条 cheat scoped 行段规则。因此——凡属"第 3 轮规则表/校验器无法表达或无法检出"的判级误差（如 scoped case 拆分粒度、行段锚点行界、同 pattern 重复行），其在此前的不可发现性以第 3 轮工具能力为界；第 4 轮起这些机制在案，后续轮次不得再以"工具不支持"为由豁免同类核查。**第 5 轮新增机制**（自第 4 轮审查后才存在，第 4 轮及以前不可发现）：v3 逐节点 presence 枚举（v2 arr[0] 采样）、双向 scope 并集等式与六种 SCOPE 显式错误、`where` 分区谓词文法、CASE-DIST 逐单元分布（v2 只有路径级 DIST，跨分区/混合路径单元缺口不可见）、探针驱动逐探针期望校验 + 失败累计 + 负向自检（v2 时代 counterfactual 失配仍 exit 0）、历史工具 git 存档锁 SHA（v2 时代依赖旧 TEMP 在场）。凡属纯源码阅读可达的事实（如 `:261-262` 信任级断言、`deadWallSegmentEqual` 零引用、m1b 结构自洽断言性质、**goldenInputs 各叶的真实读点 :718-826 与逐 case 分布**），第 1-4 轮即应可发现，本报告在第 4/5 轮方才更正的（snapshot 归 B5、m1b 移出 B1、B2 文件扩展、**goldenInputs 容器行 IN_BIND 误作输入绑定、m5 factsAfter index/seat 分区坐标 OUT_DIFF 以偏概全**——后者属 R3-2"内部自洽误作输入绑定"同类残余），更正原因记录于 §15.1/§15.3 对应行与 §3.0.1 修复对照，不新增豁免。
+
+### 15.3 caller R4 审查意见逐项映射（REWORK_REQUIRED，commit 4561431，3 MAJOR / 0 BLOCKER）
+
+| caller 意见 | 内容摘要 | 第 5 轮修复落点 | 机器验收 |
+|---|---|---|---|
+| R4-1(a)(b)(c) | v2 "并集=字段实际出现 case 全集"未实现：presence 采样 arr[0]、scope 校验仅 pres⊆union 单向、caseUniverse 取整 fixture 致跨分区洞（caller 指定负例 scope 追加 `\|sb-activate-disabled` → v2 仍 `RULES-CHECK-OK-V2 scope-errors=0` exit 0，log SHA `17EC626D…`） | §11.6 verify-mapping **v3**：逐节点 presence 枚举（遍历每案例每数组元素）+ **双向** scope 等式（并集=present 集 且每 (case,path) unit 恰一行覆盖）+ 六种显式 SCOPE 错误（UNKNOWN/ABSENT/UNCOVERED/OVERLAP/MIXED/NO-CASE-ID） | 负例 scope-extra-case：`FAIL SCOPE-ID-ABSENT cheat-v1\|$.sleeveBloomHandler[*].goldenInputs.availableWallCount sb-activate-disabled`、exit 1（§11.6 表）；12 负例全 DETECTED；兄弟行换序后 CASE-DIST 逐字节不变（§11.6 实测）；正检 scope-errors=0 |
+| R4-1(d) | 六条 HC scoped 行 = 116 个 (case,path) 单元，报告冒称"72 条路径"且"其余 22 条全部 IN_BIND"不实；§9 N3-B3 数字须重算 | §1.3/§3.0.1 双口径声明：DIST（路径，定义投影 101）与 CASE-DIST（单元，完整分母 286）并列公布；§9 N3-B3 重算为 **21 单元/6 路径**、N3-B8 重算为 **116 HC 单元 + 3 note 路径（CASE-DIST 119）**、新增 N3-B10 28 单元/N3-B11 26 单元；mixed-paths=27 显式公布 | 正检 `CASE-TOTAL units=1821 gap-units=286 mixed-paths=27` + `CASE-DIST gap=GAP:N3-B8 units=119`（§11.6 实测）；"101 = 定义投影、不宣称枚举全部未绑定单元"写入 §1.3/§3.0.1 |
+| R4-2 | goldenInputs 容器行 21 条 IN_BIND"已绑 :718-826"不实（实为容器捕获）；m5 factsAfter index/seat 整组 OUT_DIFF 以偏概全（仅 mv-reservation-delivery-then-beam 的 hand/discard 分区 index 等被消费） | FIELD-RULES **v3** 逐单元重列：goldenInputs 26 叶 × case = 79 单元（绑定类 30 = INTERNAL 14 + SEM_MAP 12 + OUT_DIFF 4；UNBOUND 49 = B3 21 + B10 28；**IN_BIND 0**）；factsAfter `index` INTERNAL 2-case + UNBOUND 4-case（→B11）、`seat` UNBOUND 5-case（→B11）+ 保留 m5 OUT_DIFF `;where=container==hand\|discard` 谓词行；§3.4 新增 26 叶逐单元表 + B11 分区排除段；§13 DEF-2 同步 | 探针 P7 相对回合对双侧 +100 → 16/16 PASS、P8 相对实体对 +1 → PASS、P9 m5 分区坐标 → PASS（不设防）；正控制 P13 sb-activate-allowed cost→999 → 1 FAIL、P14 m5 hand/discard seat→999 → 1 FAIL、P15 关系对单侧破坏 → 1 FAIL（§11.8 表）；CASE-DIST gap=B10 units=28/B11 units=26 |
+| R4-3(a) | probes-round4 非自足：默认 SourceDir 指向 R3 TEMP 绝对路径、Invoke-RuleCheck 结果弃置、无期望校验、counterfactual 失配仍 exit 0 + COMPLETE | §11.8 **probes-round5** 驱动：R3 历史工具改从 git `7ea62e6` 提取并锁 SHA（`1CE17DAC…`/`D932A03F…`）、每轮全新 census、16 探针逐项 nativeExit/Total/Failed/Skipped/NotRun 期望 + 失败累计 → 任何失配 ROUND5-PROBES-FAILED exit 1、`-SelfTest -SkipMutation` 负向自检（守卫生效判 SELFTEST-PASS） | 全跑 TRUE_EXIT=0 ROUND5-PROBES-COMPLETE（§11.8 driver-run.log `e622e201…`）；负向自检 SELFTEST-PASS（仅被跳探针自身 2 条期望失配；driver-selftest.log `e42aa980…`）；LOOP-R5 提取件复算 16 fixture SHA 与 §11.8 全等（§11.10 ⑤） |
+| R4-3(b) | 探针正文 5 处变异描述与工具实际行为不符（Q1 "targetIds 全改 WRONG" 实为仅双标签；Q3 "全字段删除" 实为置 WRONG；Q4 "WRONG_PHASE" 实为 NOT_YOUR_TURN；Q5 "六叶整体删除" 实为在场者置 WRONG/999；Q7 "deadline±1" 实为 base/reserveMillis→999） | §10 表 11/14/15/20 行与 §11.8 R4 存档段全部按工具 `$mutations` 哈希表逐字更正；§3.6 ai-clock 段同步；历史日志 SHA 不变、仅正文更正并注明撤回 | §11.8 P1-P16 变异列与工具源逐字一致（同一哈希表内嵌 §11.8）；R4/R5 两轮独立运行变异 fixture SHA 逐一相符（P1 `7B605C10…` 等 7 件，§11.12 caller E 对照） |
 
 ---
