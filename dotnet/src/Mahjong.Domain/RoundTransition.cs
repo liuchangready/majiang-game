@@ -82,7 +82,15 @@ namespace Mahjong.Domain
         RoundEnded = 15,
         RiichiDeclared = 16,
         ChiDeclared = 17,
-        PonDeclared = 18
+        PonDeclared = 18,
+        /// <summary>
+        /// Table-level marker for one accepted cheat command that changed the authoritative
+        /// state without a normal round action. It never changes phase/seat/window; it exists
+        /// so the command still has one round event, one version step and one provenance
+        /// binding. Private cheat facts travel as separate owner-scoped runtime events and are
+        /// never renamed into another protocol event.
+        /// </summary>
+        CheatApplied = 19
     }
 
     /// <summary>A committed domain event. <see cref="Ordinal"/> is contiguous per round.</summary>

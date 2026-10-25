@@ -63,7 +63,8 @@ namespace Mahjong.Domain.Cheat
             SleeveBloomOfferMode mode,
             string? windowId = null,
             long deadlineMillis = 0,
-            long createdAtMillis = 0)
+            long createdAtMillis = 0,
+            string? bootId = null)
         {
             if (string.IsNullOrWhiteSpace(offerId))
             {
@@ -118,6 +119,7 @@ namespace Mahjong.Domain.Cheat
             WindowId = windowId;
             DeadlineMillis = deadlineMillis;
             CreatedAtMillis = createdAtMillis;
+            BootId = bootId ?? string.Empty;
         }
 
         public string OfferId { get; }
@@ -141,6 +143,9 @@ namespace Mahjong.Domain.Cheat
 
         public long CreatedAtMillis { get; }
 
+        /// <summary>Boot instance that supplied the monotonic deadline domain.</summary>
+        public string BootId { get; }
+
         public bool Equals(SleeveBloomOffer? other) =>
             other != null &&
             OfferId == other.OfferId &&
@@ -152,13 +157,18 @@ namespace Mahjong.Domain.Cheat
             Mode == other.Mode &&
             WindowId == other.WindowId &&
             DeadlineMillis == other.DeadlineMillis &&
-            CreatedAtMillis == other.CreatedAtMillis;
+            CreatedAtMillis == other.CreatedAtMillis &&
+            BootId == other.BootId;
 
         public override bool Equals(object? obj) => obj is SleeveBloomOffer other && Equals(other);
 
-        public override int GetHashCode() =>
-            (((OfferId.GetHashCode(StringComparison.Ordinal) * 31 + Seat) * 31 +
-              FirstTile.Value) * 31 + SecondTile.Value) * 31 + CreatedTurnNumber;
+        public override int GetHashCode()
+        {
+            int hash = ((OfferId.GetHashCode(StringComparison.Ordinal) * 31 + Seat) * 31 +
+                        FirstTile.Value) * 31 + SecondTile.Value;
+            hash = hash * 31 + CreatedTurnNumber;
+            return hash * 31 + BootId.GetHashCode(StringComparison.Ordinal);
+        }
 
         public override string ToString() =>
             OfferId + "[seat" + Seat + " " + Mode + " " + DrawKind + " first=" + FirstTile + " second=" + SecondTile + "]";
@@ -249,6 +259,94 @@ namespace Mahjong.Domain.Cheat
         public SleeveBloomState()
             : this(null, Array.Empty<SleeveBloomOffer>(), Array.Empty<SleeveBloomReservation>(), new string?[4], 0, -1, 0)
         {
+        }
+
+        /// <summary>
+        /// Rehydrates an already validated checkpoint aggregate. All per-seat uniqueness,
+        /// window and mode invariants are rechecked; a malformed payload throws instead of
+        /// silently discarding offers, reservations or candidate windows.
+        /// </summary>
+        public static SleeveBloomState Restore(
+            SleeveBloomOffer? immediateOffer,
+            IReadOnlyList<SleeveBloomOffer> offTurnOffers,
+            IReadOnlyList<SleeveBloomReservation> reservations,
+            IReadOnlyList<string?> windowIds,
+            int windowSeq,
+            int usedOnTurn,
+            long version)
+        {
+            if (version < 0)
+            {
+                throw new ArgumentOutOfRangeException(nameof(version), version, "Sleeve bloom version must be non-negative.");
+            }
+
+            if (windowSeq < 0)
+            {
+                throw new ArgumentOutOfRangeException(nameof(windowSeq), windowSeq, "Window sequence must be non-negative.");
+            }
+
+            if (usedOnTurn < -1)
+            {
+                throw new ArgumentOutOfRangeException(nameof(usedOnTurn), usedOnTurn, "Used-on-turn must be -1 or non-negative.");
+            }
+
+            if (offTurnOffers == null || reservations == null || windowIds == null || windowIds.Count != 4)
+            {
+                throw new ArgumentException("Sleeve bloom restore requires offers, reservations and four window ids.");
+            }
+
+            if (immediateOffer != null && immediateOffer.Mode != SleeveBloomOfferMode.Immediate)
+            {
+                throw new ArgumentException("The immediate offer slot cannot hold an off-turn offer.", nameof(immediateOffer));
+            }
+
+            var windows = new string?[4];
+            for (int seat = 0; seat < 4; seat++)
+            {
+                string? id = windowIds[seat];
+                if (id != null && string.IsNullOrWhiteSpace(id))
+                {
+                    throw new ArgumentException("Window ids cannot be blank strings.", nameof(windowIds));
+                }
+
+                windows[seat] = id;
+            }
+
+            var offers = new SleeveBloomOffer[offTurnOffers.Count];
+            var offerSeats = new bool[4];
+            for (int i = 0; i < offTurnOffers.Count; i++)
+            {
+                SleeveBloomOffer offer = offTurnOffers[i] ??
+                    throw new ArgumentException("Off-turn offers cannot contain null.", nameof(offTurnOffers));
+                if (offer.Mode != SleeveBloomOfferMode.OffTurn || offer.Seat < 0 || offer.Seat > 3 ||
+                    offerSeats[offer.Seat])
+                {
+                    throw new ArgumentException("Off-turn offers must be one per seat and in off-turn mode.", nameof(offTurnOffers));
+                }
+
+                offerSeats[offer.Seat] = true;
+                offers[i] = offer;
+            }
+
+            Array.Sort(offers, (left, right) => left.Seat.CompareTo(right.Seat));
+
+            var reservationCopy = new SleeveBloomReservation[reservations.Count];
+            var reservationSeats = new bool[4];
+            for (int i = 0; i < reservations.Count; i++)
+            {
+                SleeveBloomReservation reservation = reservations[i] ??
+                    throw new ArgumentException("Reservations cannot contain null.", nameof(reservations));
+                if (reservation.Seat < 0 || reservation.Seat > 3 || reservationSeats[reservation.Seat])
+                {
+                    throw new ArgumentException("Reservations must be one per seat.", nameof(reservations));
+                }
+
+                reservationSeats[reservation.Seat] = true;
+                reservationCopy[i] = reservation;
+            }
+
+            Array.Sort(reservationCopy, (left, right) => left.Seat.CompareTo(right.Seat));
+            return new SleeveBloomState(immediateOffer, offers, reservationCopy, windows, windowSeq, usedOnTurn, version);
         }
 
         public SleeveBloomOffer? ImmediateOffer { get; }

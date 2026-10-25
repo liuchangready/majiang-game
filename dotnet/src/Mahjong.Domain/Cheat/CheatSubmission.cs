@@ -22,7 +22,8 @@ namespace Mahjong.Domain.Cheat
             string roundId,
             int roundOrdinal,
             SleeveBloomDrawKind lastDrawKind,
-            long nowMillis)
+            long nowMillis,
+            string? bootId = null)
         {
             if (currentPlayer < 0 || currentPlayer > 3)
             {
@@ -63,6 +64,7 @@ namespace Mahjong.Domain.Cheat
             RoundOrdinal = roundOrdinal;
             LastDrawKind = lastDrawKind;
             NowMillis = nowMillis;
+            BootId = bootId ?? string.Empty;
         }
 
         public int CurrentPlayer { get; }
@@ -82,6 +84,8 @@ namespace Mahjong.Domain.Cheat
         public SleeveBloomDrawKind LastDrawKind { get; }
 
         public long NowMillis { get; }
+
+        public string BootId { get; }
     }
 
     /// <summary>
@@ -305,7 +309,8 @@ namespace Mahjong.Domain.Cheat
                 drawnTile,
                 secondTile,
                 context.TurnNumber,
-                SleeveBloomOfferMode.Immediate);
+                SleeveBloomOfferMode.Immediate,
+                bootId: context.BootId);
             CheatState next = charged
                 .WithSleeveBloom(sleeve.WithImmediateOffer(offer).WithUsedOnTurn(context.TurnNumber));
             return CheatTransition.Applied(next, null, new[] { chargeEvent });
@@ -517,7 +522,8 @@ namespace Mahjong.Domain.Cheat
                 SleeveBloomOfferMode.OffTurn,
                 issuedWindowId,
                 context.NowMillis + sleeveConfig.OffTurnChoiceMillis,
-                context.NowMillis);
+                context.NowMillis,
+                context.BootId);
             CheatState next = charged.WithSleeveBloom(charged.SleeveBloom.WithOffTurnOffer(offer));
             return CheatTransition.Applied(next, null, new[] { chargeEvent });
         }
@@ -584,7 +590,10 @@ namespace Mahjong.Domain.Cheat
         /// Authority sweep: settles every off-turn offer past its deadline as FIRST. No
         /// expired offers returns the same state unchanged.
         /// </summary>
-        public static CheatTransition ExpireOffTurnSleeveBlooms(CheatState state, CheatTurnContext context)
+        public static CheatTransition ExpireOffTurnSleeveBlooms(
+            CheatState state,
+            CheatTurnContext context,
+            Func<SleeveBloomOffer, bool>? forceExpire = null)
         {
             if (state == null) throw new ArgumentNullException(nameof(state));
             if (context == null) throw new ArgumentNullException(nameof(context));
@@ -595,7 +604,8 @@ namespace Mahjong.Domain.Cheat
             for (int i = 0; i < sleeve.OffTurnOffers.Count; i++)
             {
                 SleeveBloomOffer offer = sleeve.OffTurnOffers[i];
-                if (context.NowMillis < offer.DeadlineMillis)
+                if (context.NowMillis < offer.DeadlineMillis &&
+                    (forceExpire == null || !forceExpire(offer)))
                 {
                     continue;
                 }

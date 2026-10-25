@@ -634,14 +634,21 @@ namespace Mahjong.Domain
         }
 
         /// <summary>Draws the first available live-wall tile (V4 scans from slot 0 to re-enter holes).</summary>
-        public TransitionResult DrawFromWall(int seat)
+        public TransitionResult DrawFromWall(int seat) => DrawFromWall(seat, null);
+
+        /// <summary>
+        /// Draws the first live-wall tile not locked by an owner reservation/off-turn offer.
+        /// The callback is supplied by the N-1b cheat bridge; a null callback keeps the normal
+        /// rule. Skipped protected tiles stay physically in the wall.
+        /// </summary>
+        public TransitionResult DrawFromWall(int seat, Func<TileId, bool>? isProtected)
         {
             if (seat < 0 || seat > 3)
             {
                 return TransitionResult.Failure(TransitionErrorCode.InvalidSeat, "Seat must be 0..3.");
             }
 
-            int wallIndex = FindFirstWallIndex();
+            int wallIndex = FindFirstWallIndex(isProtected);
             if (wallIndex < 0)
             {
                 return TransitionResult.Failure(TransitionErrorCode.WallExhausted, "No live-wall tile remains.");
@@ -670,7 +677,13 @@ namespace Mahjong.Domain
         }
 
         /// <summary>Draws dead-wall[rinshanPointer] and replaces it from the live wall's tail.</summary>
-        public TransitionResult DrawReplacement(int seat)
+        public TransitionResult DrawReplacement(int seat) => DrawReplacement(seat, null);
+
+        /// <summary>
+        /// Draws the rinshan tile and takes its replacement from the last live-wall tile not
+        /// locked by a reservation/offer. The protected tail tile stays in the wall.
+        /// </summary>
+        public TransitionResult DrawReplacement(int seat, Func<TileId, bool>? isProtected)
         {
             if (seat < 0 || seat > 3)
             {
@@ -691,7 +704,7 @@ namespace Mahjong.Domain
                     "No dead-wall tile at rinshan slot " + RinshanPointer + ".");
             }
 
-            int replacementSource = FindLastWallIndex();
+            int replacementSource = FindLastWallIndex(isProtected);
             if (replacementSource < 0)
             {
                 return TransitionResult.Failure(
@@ -720,6 +733,13 @@ namespace Mahjong.Domain
             if (nextWallEnd < 0)
             {
                 return TransitionResult.Failure(TransitionErrorCode.WallExhausted, "WallEndExclusive is already 0.");
+            }
+
+            // When protected/reserved tail tiles remain above the replacement source, keep the
+            // wall end open so those entities stay inside the 136-position live-wall window.
+            if (replacementSource < WallEndExclusive - 1)
+            {
+                nextWallEnd = WallEndExclusive;
             }
 
             int nextPointer = replacementSource < WallPointer ? WallPointer - 1 : WallPointer;
@@ -1986,13 +2006,20 @@ namespace Mahjong.Domain
             return null;
         }
 
-        private int FindFirstWallIndex()
+        private int FindFirstWallIndex() => FindFirstWallIndex(null);
+
+        private int FindFirstWallIndex(Func<TileId, bool>? isProtected)
         {
             int best = -1;
             for (int tileValue = 0; tileValue < TileId.Count; tileValue++)
             {
                 TilePosition position = _positions[tileValue];
                 if (position.Zone != TileZone.Wall || position.Index >= WallEndExclusive)
+                {
+                    continue;
+                }
+
+                if (isProtected != null && isProtected(new TileId(tileValue)))
                 {
                     continue;
                 }
@@ -2006,13 +2033,20 @@ namespace Mahjong.Domain
             return best;
         }
 
-        private int FindLastWallIndex()
+        private int FindLastWallIndex() => FindLastWallIndex(null);
+
+        private int FindLastWallIndex(Func<TileId, bool>? isProtected)
         {
             int best = -1;
             for (int tileValue = 0; tileValue < TileId.Count; tileValue++)
             {
                 TilePosition position = _positions[tileValue];
                 if (position.Zone != TileZone.Wall || position.Index >= WallEndExclusive)
+                {
+                    continue;
+                }
+
+                if (isProtected != null && isProtected(new TileId(tileValue)))
                 {
                     continue;
                 }

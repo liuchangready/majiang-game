@@ -77,6 +77,12 @@ namespace Mahjong.TableRuntime
         private ulong _nextStreamHandle;
 
         private RoundStateMachine _round;
+        private CheatState? _cheat;
+        private readonly CheatEconomyConfig? _cheatEconomy;
+        private readonly SleeveBloomConfig? _sleeveConfig;
+
+        private readonly Dictionary<string, CheatRequestBinding> _cheatRequestBindings =
+            new Dictionary<string, CheatRequestBinding>(StringComparer.Ordinal);
         private StateVersion _stateVersion = new StateVersion(0);
         private EventSeq _lastEventSeq = new EventSeq(0);
         private OwnerEpoch _ownerEpoch;
@@ -126,6 +132,21 @@ namespace Mahjong.TableRuntime
             _options = options ?? throw new ArgumentNullException(nameof(options));
             _options.Validate();
             _round = initialRound ?? throw new ArgumentNullException(nameof(initialRound));
+            _cheatEconomy = options.CheatEconomy;
+            _sleeveConfig = options.SleeveBloomConfig;
+            if (_cheatEconomy != null)
+            {
+                _cheat = options.InitialCheatState ?? CheatState.Initialize(_cheatEconomy);
+                TileMarkTransition registration = _cheat.TileMarks.RegisterDealtRound(_round.RoundId);
+                if (!registration.Success)
+                {
+                    throw new ArgumentException(
+                        "The initial cheat state cannot register the initial round: " + registration.Error + ".",
+                        nameof(options));
+                }
+
+                _cheat = _cheat.WithTileMarks(registration.State);
+            }
             _commitPort = commitPort ?? throw new ArgumentNullException(nameof(commitPort));
             _clockPort = clock ?? throw new ArgumentNullException(nameof(clock));
             _publicationSink = publicationSink;
@@ -174,6 +195,33 @@ namespace Mahjong.TableRuntime
         /// </summary>
         public ValueTask<TableOperationResult> SubmitAsync(
             TableCommandEnvelope command,
+            CancellationToken cancellationToken = default)
+        {
+            if (command == null)
+            {
+                throw new ArgumentNullException(nameof(command));
+            }
+
+            cancellationToken.ThrowIfCancellationRequested();
+            var message = new CommandMailboxMessage(command);
+            TableMailboxEnqueueStatus enqueue = _mailbox.TryEnqueue(message);
+            if (enqueue != TableMailboxEnqueueStatus.Enqueued)
+            {
+                return new ValueTask<TableOperationResult>(AdmissionFailure(enqueue));
+            }
+
+            EnsurePump();
+            return new ValueTask<TableOperationResult>(message.Completion.Task);
+        }
+
+        /// <summary>
+        /// Admits one typed cheat command to the same serial business mailbox as normal table
+        /// commands. It is never a side channel: the actor rebuilds the turn context from its
+        /// authoritative round/cheat state and applies the same scope/receipt/owner/control/
+        /// decision/version/recovery guards before any P1.4 transition runs.
+        /// </summary>
+        public ValueTask<TableOperationResult> SubmitCheatAsync(
+            TableCheatCommandEnvelope command,
             CancellationToken cancellationToken = default)
         {
             if (command == null)
@@ -774,7 +822,6 @@ namespace Mahjong.TableRuntime
                 }
 
                 Interlocked.Exchange(ref _pumpRunning, 0);
-
                 if (!_mailbox.HasItems)
                 {
                     return;
@@ -795,7 +842,9 @@ namespace Mahjong.TableRuntime
                 {
                     case CommandMailboxMessage command:
                         command.Completion.TrySetResult(
-                            await ProcessCommandAsync(command.Command).ConfigureAwait(false));
+                            command.CheatCommand != null
+                                ? await ProcessCheatCommandAsync(command.CheatCommand).ConfigureAwait(false)
+                                : await ProcessCommandAsync(command.Command!).ConfigureAwait(false));
                         break;
                     case OpenDecisionMailboxMessage open:
                         TableOperationResult openResult = await ProcessOpenDecisionAsync(open.Decision).ConfigureAwait(false);
@@ -966,7 +1015,7 @@ namespace Mahjong.TableRuntime
                 return guard;
             }
 
-            TableOperationResult? scopeError = ValidateScopeForCommand(scope, command);
+            TableOperationResult? scopeError = ValidateScope(scope);
             if (scopeError != null)
             {
                 // Scope/authentication failures are not admitted commands: no receipt, no event
@@ -980,7 +1029,12 @@ namespace Mahjong.TableRuntime
                 return result;
             }
 
-            return await CommitRejectedReceiptAsync(command, scope, result).ConfigureAwait(false);
+            return await CommitRejectedReceiptAsync(
+                scope,
+                command.RequestId,
+                command.Api!,
+                command.PayloadSha256!.Value,
+                result).ConfigureAwait(false);
         }
 
         private static bool ShouldPersistRejection(string reasonCode)
@@ -995,9 +1049,7 @@ namespace Mahjong.TableRuntime
                    !string.Equals(reasonCode, TableRuntimeReasonCode.ActorClosed, StringComparison.Ordinal);
         }
 
-        private TableOperationResult? ValidateScopeForCommand(
-            TableScopeRecord scope,
-            TableCommandEnvelope command)
+        private TableOperationResult? ValidateScope(TableScopeRecord scope)
         {
             if (scope.Role != TableScopeRole.Player)
             {
@@ -1058,24 +1110,824 @@ namespace Mahjong.TableRuntime
                 return TableOperationResult.Rejected(_stateVersion, clockFailure, "The monotonic clock is not safe for authority.");
             }
 
-            if (command.OwnerEpoch != _ownerEpoch)
+            PendingDecision? pending;
+            TableOperationResult? identityError = ValidateAuthorityIdentity(
+                command.Command.RoundId,
+                command.Command.Seat,
+                command.ExpectedStateVersion,
+                command.OwnerEpoch,
+                command.ControlEpoch,
+                command.DecisionId,
+                command.RecoveryGeneration,
+                now,
+                out pending);
+            if (identityError != null)
+            {
+                return identityError;
+            }
+
+            if (command.Command.Action != RoundActionKind.DiscardTile &&
+                command.Command.Action != RoundActionKind.DrawTile)
+            {
+                RoundCheatPreparation? settlement = TrySettleOfferForCommand(
+                    command.Command,
+                    now,
+                    openDiscardWindow: false,
+                    deliverDeferred: command.Command.Action == RoundActionKind.Pass ||
+                                     command.Command.Action == RoundActionKind.DeclareRiichi);
+                if (settlement != null)
+                {
+                    if (!settlement.IsReady)
+                    {
+                        return TableOperationResult.Rejected(
+                            _stateVersion,
+                            TableRuntimeReasonCode.FromCheat(settlement.Error, settlement.CheatError),
+                            settlement.Message);
+                    }
+
+                    return await CommitCheatAndInstallAsync(
+                        settlement.Change!,
+                        command,
+                        cheatEnvelope: null,
+                        command.Command,
+                        cheatCommand: null,
+                        systemJournal: null,
+                        BuildCheatContext(now),
+                        pending,
+                        command.DecisionId,
+                        now).ConfigureAwait(false);
+                }
+            }
+
+            if ((command.Command.Action == RoundActionKind.Pass ||
+                 command.Command.Action == RoundActionKind.DeclareRiichi) &&
+                _cheat != null &&
+                _cheatEconomy != null &&
+                _sleeveConfig != null)
+            {
+                Func<int, bool>? defer = CheatDeferDrawPredicate();
+                if (defer != null)
+                {
+                    RoundPreparation deferred = _round.Prepare(
+                        command.Command,
+                        CheatProtectionPredicate(),
+                        defer);
+                    if (deferred.IsReady && deferred.Change!.NextState.Phase == RoundPhase.Draw)
+                    {
+                        RoundCheatPreparation delivery = RoundCheatTransition.PrepareDeferredDrawDelivery(
+                            _round,
+                            deferred.Change,
+                            _cheat,
+                            now);
+                        if (!delivery.IsReady)
+                        {
+                            return TableOperationResult.Rejected(
+                                _stateVersion,
+                                TableRuntimeReasonCode.FromCheat(delivery.Error, delivery.CheatError),
+                                delivery.Message);
+                        }
+
+                        return await CommitCheatAndInstallAsync(
+                            delivery.Change!,
+                            command,
+                            cheatEnvelope: null,
+                            command.Command,
+                            cheatCommand: null,
+                            systemJournal: null,
+                            BuildCheatContext(now),
+                            pending,
+                            command.DecisionId,
+                            now).ConfigureAwait(false);
+                    }
+                }
+            }
+
+            if (command.Command.Action == RoundActionKind.DiscardTile &&
+                _cheat != null &&
+                _cheatEconomy != null &&
+                _sleeveConfig != null &&
+                (command.Command.EligibleSeats == null || command.Command.EligibleSeats.Count == 0))
+            {
+                int nextSeat = (command.Command.Seat + 1) % 4;
+                if (_cheat.SleeveBloom.ReservationFor(nextSeat) != null ||
+                    _cheat.SleeveBloom.OffTurnOfferFor(nextSeat) != null)
+                {
+                    CheatTurnContext discardContext = BuildCheatContext(now);
+                    RoundCheatPreparation delivery;
+                    try
+                    {
+                        delivery = RoundCheatTransition.PrepareDiscardDelivery(
+                            _round,
+                            _cheat,
+                            command.Command,
+                            now);
+                    }
+                    catch (Exception exception)
+                    {
+                        return TableOperationResult.Failed(
+                            _stateVersion,
+                            TableRuntimeReasonCode.InternalError,
+                            exception.GetType().Name + ": " + exception.Message);
+                    }
+
+                    if (!delivery.IsReady)
+                    {
+                        return TableOperationResult.Rejected(
+                            _stateVersion,
+                            TableRuntimeReasonCode.FromCheat(delivery.Error, delivery.CheatError),
+                            delivery.Message);
+                    }
+
+                    return await CommitCheatAndInstallAsync(
+                        delivery.Change!,
+                        command,
+                        cheatEnvelope: null,
+                        command.Command,
+                        cheatCommand: null,
+                        systemJournal: null,
+                        discardContext,
+                        pending,
+                        command.DecisionId,
+                        now).ConfigureAwait(false);
+                }
+            }
+
+            if (command.Command.Action == RoundActionKind.DiscardTile)
+            {
+                RoundCheatPreparation? settlement = TrySettleOfferForCommand(
+                    command.Command,
+                    now,
+                    openDiscardWindow: true);
+                if (settlement != null)
+                {
+                    if (!settlement.IsReady)
+                    {
+                        return TableOperationResult.Rejected(
+                            _stateVersion,
+                            TableRuntimeReasonCode.FromCheat(settlement.Error, settlement.CheatError),
+                            settlement.Message);
+                    }
+
+                    return await CommitCheatAndInstallAsync(
+                        settlement.Change!,
+                        command,
+                        cheatEnvelope: null,
+                        command.Command,
+                        cheatCommand: null,
+                        systemJournal: null,
+                        BuildCheatContext(now),
+                        pending,
+                        command.DecisionId,
+                        now).ConfigureAwait(false);
+                }
+            }
+
+            if (command.Command.Action == RoundActionKind.DrawTile &&
+                _cheat != null &&
+                _cheatEconomy != null &&
+                _sleeveConfig != null)
+            {
+                CheatTurnContext drawContext = BuildCheatContext(now);
+                RoundCheatPreparation delivery;
+                try
+                {
+                    delivery = RoundCheatTransition.PrepareReservationDraw(
+                        _round,
+                        _cheat,
+                        drawContext,
+                        command.Command.Seat);
+                }
+                catch (Exception exception)
+                {
+                    return TableOperationResult.Failed(
+                        _stateVersion,
+                        TableRuntimeReasonCode.InternalError,
+                        exception.GetType().Name + ": " + exception.Message);
+                }
+
+                if (delivery.IsReady)
+                {
+                    return await CommitCheatAndInstallAsync(
+                        delivery.Change!,
+                        command,
+                        cheatEnvelope: null,
+                        command.Command,
+                        cheatCommand: null,
+                        systemJournal: null,
+                        drawContext,
+                        pending,
+                        command.DecisionId,
+                        now).ConfigureAwait(false);
+                }
+
+                RoundCheatPreparation? settlement = TrySettleOfferForCommand(
+                    command.Command,
+                    now,
+                    openDiscardWindow: false);
+                if (settlement != null)
+                {
+                    if (!settlement.IsReady)
+                    {
+                        return TableOperationResult.Rejected(
+                            _stateVersion,
+                            TableRuntimeReasonCode.FromCheat(settlement.Error, settlement.CheatError),
+                            settlement.Message);
+                    }
+
+                    return await CommitCheatAndInstallAsync(
+                        settlement.Change!,
+                        command,
+                        cheatEnvelope: null,
+                        command.Command,
+                        cheatCommand: null,
+                        systemJournal: null,
+                        drawContext,
+                        pending,
+                        command.DecisionId,
+                        now).ConfigureAwait(false);
+                }
+
+                if (HasProtectedWallTiles(_cheat))
+                {
+                    RoundTransition projected;
+                    try
+                    {
+                        RoundPreparation prepared = _round.PrepareDrawProtected(
+                            command.Command,
+                            tile => _cheat.SleeveBloom.IsProtectedTile(tile));
+                        if (!prepared.IsReady)
+                        {
+                            return TableOperationResult.Rejected(
+                                _stateVersion,
+                                TableRuntimeReasonCode.FromDomain(prepared.Error!.Code),
+                                prepared.Error.Message);
+                        }
+
+                        projected = _round.Install(prepared.Change!);
+                    }
+                    catch (Exception exception)
+                    {
+                        return TableOperationResult.Failed(
+                            _stateVersion,
+                            TableRuntimeReasonCode.InternalError,
+                            exception.GetType().Name + ": " + exception.Message);
+                    }
+
+                    TableOperationResult? projectedError = ValidateTransition(projected);
+                    if (projectedError != null)
+                    {
+                        return projectedError;
+                    }
+
+                    return await CommitAndInstallAsync(
+                        projected,
+                        command.RequestId,
+                        pending,
+                        command.DecisionId,
+                        now,
+                        command,
+                        command.Command,
+                        TimingConsumption.Complete).ConfigureAwait(false);
+                }
+            }
+
+            if (command.Command.Action == RoundActionKind.DiscardTile &&
+                _cheat != null &&
+                (command.Command.EligibleSeats == null || command.Command.EligibleSeats.Count == 0) &&
+                HasProtectedWallTiles(_cheat))
+            {
+                CheatState protectedCheat = _cheat;
+                RoundTransition projected;
+                try
+                {
+                    RoundPreparation prepared = _round.PrepareDiscardProtected(
+                        command.Command,
+                        tile => protectedCheat.SleeveBloom.IsProtectedTile(tile));
+                    if (!prepared.IsReady)
+                    {
+                        return TableOperationResult.Rejected(
+                            _stateVersion,
+                            TableRuntimeReasonCode.FromDomain(prepared.Error!.Code),
+                            prepared.Error.Message);
+                    }
+
+                    projected = _round.Install(prepared.Change!);
+                }
+                catch (Exception exception)
+                {
+                    return TableOperationResult.Failed(
+                        _stateVersion,
+                        TableRuntimeReasonCode.InternalError,
+                        exception.GetType().Name + ": " + exception.Message);
+                }
+
+                TableOperationResult? projectedError = ValidateTransition(projected);
+                if (projectedError != null)
+                {
+                    return projectedError;
+                }
+
+                SleeveBloomState opened = protectedCheat.SleeveBloom.WithOpenedWindow(
+                    command.Command.Seat,
+                    CountDrawTurns(_round),
+                    out _);
+                return await CommitAndInstallAsync(
+                    projected,
+                    command.RequestId,
+                    pending,
+                    command.DecisionId,
+                    now,
+                    command,
+                    command.Command,
+                    TimingConsumption.Complete,
+                    protectedCheat.WithSleeveBloom(opened)).ConfigureAwait(false);
+            }
+
+            RoundTransition transition;
+            try
+            {
+                transition = _round.Execute(command.Command, CheatProtectionPredicate());
+            }
+            catch (Exception exception)
+            {
+                return TableOperationResult.Failed(
+                    _stateVersion,
+                    TableRuntimeReasonCode.InternalError,
+                    exception.GetType().Name + ": " + exception.Message);
+            }
+
+            TableOperationResult? transitionError = ValidateTransition(transition);
+            if (transitionError != null)
+            {
+                return transitionError;
+            }
+
+            CheatState? nextCheat = null;
+            if (command.Command.Action == RoundActionKind.DiscardTile && _cheat != null)
+            {
+                SleeveBloomState opened = _cheat.SleeveBloom.WithOpenedWindow(
+                    command.Command.Seat,
+                    CountDrawTurns(_round),
+                    out _);
+                nextCheat = _cheat.WithSleeveBloom(opened);
+            }
+
+            return await CommitAndInstallAsync(
+                transition,
+                command.RequestId,
+                pending,
+                command.DecisionId,
+                now,
+                command,
+                command.Command,
+                TimingConsumption.Complete,
+                nextCheat).ConfigureAwait(false);
+        }
+
+        private async ValueTask<TableOperationResult> ProcessCheatCommandAsync(TableCheatCommandEnvelope command)
+        {
+            if (!string.Equals(
+                    command.CheatCommand.RequestId,
+                    command.RequestId.Value,
+                    StringComparison.Ordinal))
+            {
+                return TableOperationResult.Rejected(
+                    _stateVersion,
+                    TableRuntimeReasonCode.CheatRequestIdMismatch,
+                    "The inner domain request id must equal the host envelope request id.");
+            }
+
+            string requestKey = command.RequestId.Value;
+            if (_cheatRequestBindings.TryGetValue(requestKey, out CheatRequestBinding? prior))
+            {
+                if (!Nullable.Equals(prior.ScopeId, command.ScopeId))
+                {
+                    return TableOperationResult.Rejected(
+                        _stateVersion,
+                        TableRuntimeReasonCode.CheatRequestIdConflict,
+                        "The request id is already bound to another scope.");
+                }
+
+                if (!string.Equals(prior.Api, command.Api, StringComparison.Ordinal) ||
+                    prior.Payload != command.PayloadSha256)
+                {
+                    return TableOperationResult.Conflict(
+                        "The same request id was used with a different API or payload digest.");
+                }
+
+                if (prior.Result != null &&
+                    (_durable == null || prior.Result.Status == TableOperationStatus.Rejected))
+                {
+                    return prior.Result;
+                }
+            }
+
+            if (prior == null &&
+                IsOfferChoice(command.CheatCommand.Action) &&
+                ChoiceTargetsForeignBootOffer(command.CheatCommand))
+            {
+                return TableOperationResult.Rejected(
+                    _stateVersion,
+                    TableRuntimeReasonCode.CheatBootReconciliationRequired,
+                    "The targeted cheat offer belongs to a previous boot/clock domain and cannot be selected directly.");
+            }
+
+            if (prior == null &&
+                _cheatRequestBindings.Count >= _options.CheatRequestBindingCapacity)
+            {
+                return TableOperationResult.Rejected(
+                    _stateVersion,
+                    TableRuntimeReasonCode.CheatReceiptCapacityExceeded,
+                    "The actor cheat receipt binding table is full; refusing a new request rather than evicting an authority receipt.");
+            }
+
+            TableOperationResult result = await ProcessCheatCommandInternalAsync(command).ConfigureAwait(false);
+            bool persist = result.Status == TableOperationStatus.Accepted ||
+                           result.Status == TableOperationStatus.Replayed ||
+                           (result.Status == TableOperationStatus.Rejected &&
+                            ShouldPersistRejection(result.ReasonCode));
+            if (persist &&
+                command.ScopeId.HasValue &&
+                command.Api != null &&
+                command.PayloadSha256.HasValue)
+            {
+                _cheatRequestBindings[requestKey] = new CheatRequestBinding(
+                    command.ScopeId.Value,
+                    command.Api,
+                    command.PayloadSha256.Value,
+                    result);
+            }
+
+            return result;
+        }
+
+        private async ValueTask<TableOperationResult> ProcessCheatCommandInternalAsync(TableCheatCommandEnvelope command)
+        {
+            if (_durable == null)
+            {
+                return await ProcessCheatCommandCoreAsync(command).ConfigureAwait(false);
+            }
+
+            if (!command.HasDurableIdentity)
+            {
+                return TableOperationResult.Rejected(
+                    _stateVersion,
+                    TableRuntimeReasonCode.PayloadIdentityRequired,
+                    "A durable cheat command requires scopeId, api and payloadSha256.");
+            }
+
+            RequestScopeId scopeId = command.ScopeId!.Value;
+            TableScopeLookup lookup = await _durable.Scopes
+                .LookupAsync(scopeId, CancellationToken.None)
+                .ConfigureAwait(false);
+            if (!lookup.Found || lookup.Scope == null)
+            {
+                return TableOperationResult.Rejected(
+                    _stateVersion,
+                    ProtocolErrorCode.Unauthenticated,
+                    "The host-issued request scope does not exist.");
+            }
+
+            TableScopeRecord scope = lookup.Scope;
+            TableDurableReceipt? existing = await _durable.Receipts
+                .TryGetAsync(scope.AccountId, scopeId, command.RequestId, CancellationToken.None)
+                .ConfigureAwait(false);
+            if (existing != null)
+            {
+                if (existing.Matches(command.Api!, command.PayloadSha256!.Value))
+                {
+                    if (_lifecycle == TableActorLifecycle.Serving ||
+                        _lifecycle == TableActorLifecycle.LeaseLost)
+                    {
+                        return TableOperationResult.FromReplay(existing);
+                    }
+
+                    TableOperationResult? replayGuard = GuardServing();
+                    return replayGuard ?? TableOperationResult.FromReplay(existing);
+                }
+
+                return TableOperationResult.Conflict(
+                    "The same (account, scope, request) key was used with a different API or payload.");
+            }
+
+            TableOperationResult? guard = GuardServing();
+            if (guard != null)
+            {
+                return guard;
+            }
+
+            TableOperationResult? scopeError = ValidateScope(scope);
+            if (scopeError != null)
+            {
+                return scopeError;
+            }
+
+            TableOperationResult result = await ProcessCheatCommandCoreAsync(command).ConfigureAwait(false);
+            if (result.Status != TableOperationStatus.Rejected || !ShouldPersistRejection(result.ReasonCode))
+            {
+                return result;
+            }
+
+            return await CommitRejectedReceiptAsync(
+                scope,
+                command.RequestId,
+                command.Api!,
+                command.PayloadSha256!.Value,
+                result).ConfigureAwait(false);
+        }
+
+        private async ValueTask<TableOperationResult> ProcessCheatCommandCoreAsync(TableCheatCommandEnvelope envelope)
+        {
+            TableOperationResult? guard = GuardServing();
+            if (guard != null)
+            {
+                return guard;
+            }
+
+            if (!TryReadClock(out long now, out _, out string clockFailure))
+            {
+                return TableOperationResult.Rejected(_stateVersion, clockFailure, "The monotonic clock is not safe for authority.");
+            }
+
+            RoundCheatCommand command = envelope.CheatCommand;
+            if (!envelope.HasDurableIdentity)
+            {
+                return TableOperationResult.Rejected(
+                    _stateVersion,
+                    TableRuntimeReasonCode.PayloadIdentityRequired,
+                    "A cheat command requires host-issued scopeId, api and the original business payload SHA-256.");
+            }
+
+            PendingDecision? pending;
+            TableOperationResult? identityError = ValidateAuthorityIdentity(
+                command.RoundId,
+                command.Seat,
+                envelope.ExpectedStateVersion,
+                envelope.OwnerEpoch,
+                envelope.ControlEpoch,
+                envelope.DecisionId,
+                envelope.RecoveryGeneration,
+                now,
+                out pending);
+            if (identityError != null)
+            {
+                return identityError;
+            }
+
+            if (_cheat == null || _cheatEconomy == null || _sleeveConfig == null)
+            {
+                return TableOperationResult.Rejected(
+                    _stateVersion,
+                    TableRuntimeReasonCode.CheatNotConfigured,
+                    "No authoritative cheat aggregate/economy/sleeve configuration is wired into this actor.");
+            }
+
+            CheatTurnContext context = BuildCheatContext(now);
+            RoundCheatPreparation preparation;
+            try
+            {
+                preparation = RoundCheatTransition.Prepare(
+                    _round,
+                    _cheat,
+                    command,
+                    context,
+                    _cheatEconomy,
+                    _sleeveConfig);
+            }
+            catch (Exception exception)
+            {
+                return TableOperationResult.Failed(
+                    _stateVersion,
+                    TableRuntimeReasonCode.InternalError,
+                    exception.GetType().Name + ": " + exception.Message);
+            }
+
+            if (!preparation.IsReady)
+            {
+                if (string.Equals(preparation.Message, "CHEAT_REPLAYED", StringComparison.Ordinal))
+                {
+                    return TableOperationResult.Rejected(
+                        _stateVersion,
+                        TableRuntimeReasonCode.CheatReplayed,
+                        "The cheat request was already applied; no version, charge or physical move was repeated.");
+                }
+
+                return TableOperationResult.Rejected(
+                    _stateVersion,
+                    TableRuntimeReasonCode.FromCheat(preparation.Error, preparation.CheatError),
+                    preparation.Message);
+            }
+
+            RoundCheatChange change = preparation.Change!;
+            return await CommitCheatAndInstallAsync(
+                change,
+                roundEnvelope: null,
+                envelope,
+                roundCommand: null,
+                command,
+                systemJournal: null,
+                context,
+                pending: null,
+                decisionId: null,
+                now).ConfigureAwait(false);
+        }
+
+        private CheatTurnContext BuildCheatContext(long now)
+        {
+            if (_cheat == null)
+            {
+                throw new InvalidOperationException("No cheat aggregate is configured.");
+            }
+
+            return new CheatTurnContext(
+                _round.CurrentSeat,
+                _round.Phase,
+                _round.Window != null,
+                _round.RiichiDeclared,
+                CountDrawTurns(_round),
+                _round.RoundId,
+                _cheat.TileMarks.DealtRoundOrdinal,
+                DrawKindOf(_round.Tiles),
+                now,
+                _durable?.BootId ?? string.Empty);
+        }
+
+        private static int CountDrawTurns(RoundStateMachine round)
+        {
+            int turns = 0;
+            for (int i = 0; i < round.Events.Count; i++)
+            {
+                RoundEventType type = round.Events[i].Type;
+                if (type == RoundEventType.TileDrawn || type == RoundEventType.RinshanDrawn)
+                {
+                    turns++;
+                }
+            }
+
+            return turns;
+        }
+
+        private RoundCheatPreparation? TrySettleOfferForCommand(
+            RoundCommand command,
+            long now,
+            bool openDiscardWindow,
+            bool deliverDeferred = false)
+        {
+            CheatState? cheat = _cheat;
+            if (cheat == null || _sleeveConfig == null)
+            {
+                return null;
+            }
+
+            bool immediate = cheat.SleeveBloom.ImmediateOffer?.Seat == command.Seat;
+            bool beam = cheat.BeamSwap.Offer?.Seat == command.Seat;
+            if (!immediate && !beam)
+            {
+                return null;
+            }
+
+            CheatTurnContext context = BuildCheatContext(now);
+            return RoundCheatTransition.PrepareCommandWithOfferSettlement(
+                _round,
+                cheat,
+                command,
+                context,
+                CheatProtectionPredicate(),
+                openDiscardWindow && (command.Action == RoundActionKind.DiscardTile ||
+                                      command.Action == RoundActionKind.DeclareRiichi),
+                deliverDeferred ? CheatDeferDrawPredicate() : null);
+        }
+
+        private bool ChoiceTargetsForeignBootOffer(RoundCheatCommand command)
+        {
+            CheatState? cheat = _cheat;
+            if (cheat == null)
+            {
+                return false;
+            }
+
+            SleeveBloomOffer? offer = command.Action == RoundCheatAction.SubmitSleeveBloomChoice
+                ? cheat.SleeveBloom.ImmediateOffer
+                : command.Action == RoundCheatAction.SubmitSleeveBloomOffTurnChoice
+                    ? cheat.SleeveBloom.OffTurnOfferFor(command.Seat)
+                    : null;
+            return offer != null &&
+                   !string.Equals(
+                       offer.BootId,
+                       _durable?.BootId ?? string.Empty,
+                       StringComparison.Ordinal);
+        }
+
+        private static bool IsOfferChoice(RoundCheatAction action) =>
+            action == RoundCheatAction.SubmitSleeveBloomOffTurnChoice ||
+            action == RoundCheatAction.SubmitSleeveBloomChoice ||
+            action == RoundCheatAction.SubmitBeamSwapChoice;
+
+        private Func<int, bool>? CheatDeferDrawPredicate()
+        {
+            CheatState? cheat = _cheat;
+            if (cheat == null)
+            {
+                return null;
+            }
+
+            return seat => cheat.SleeveBloom.ReservationFor(seat) != null ||
+                           cheat.SleeveBloom.OffTurnOfferFor(seat) != null;
+        }
+
+        private Func<TileId, bool>? CheatProtectionPredicate()
+        {
+            CheatState? cheat = _cheat;
+            if (cheat == null || !HasProtectedWallTiles(cheat))
+            {
+                return null;
+            }
+
+            return tile => cheat.SleeveBloom.IsProtectedTile(tile);
+        }
+
+        private CheatState? OpenDiscardWindow(CheatState? state, int seat)
+        {
+            if (state == null)
+            {
+                return null;
+            }
+
+            SleeveBloomState opened = state.SleeveBloom.WithOpenedWindow(
+                seat,
+                CountDrawTurns(_round),
+                out _);
+            return state.WithSleeveBloom(opened);
+        }
+
+        private static bool HasProtectedWallTiles(CheatState cheat)
+        {
+            for (int value = 0; value < TileId.Count; value++)
+            {
+                if (cheat.SleeveBloom.IsProtectedTile(new TileId(value)))
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        private static SleeveBloomDrawKind DrawKindOf(TilePositionMap map)
+        {
+            if (!map.DrawnTile.HasValue)
+            {
+                return SleeveBloomDrawKind.DealExtra;
+            }
+
+            switch (map.DrawnTile.Value.Source)
+            {
+                case DrawSource.Wall:
+                    return SleeveBloomDrawKind.Normal;
+                case DrawSource.Rinshan:
+                    return SleeveBloomDrawKind.Rinshan;
+                default:
+                    return SleeveBloomDrawKind.DealExtra;
+            }
+        }
+        private TableOperationResult? ValidateAuthorityIdentity(
+            string roundId,
+            int seat,
+            StateVersion expectedStateVersion,
+            OwnerEpoch ownerEpoch,
+            ControlEpoch controlEpoch,
+            DecisionId? decisionId,
+            long recoveryGeneration,
+            long now,
+            out PendingDecision? pending)
+        {
+            pending = null;
+            if (_strictRecoveryFence && recoveryGeneration != _recoveryGeneration)
+            {
+                return TableOperationResult.Rejected(
+                    _stateVersion,
+                    TableRuntimeReasonCode.StaleRecoveryGeneration,
+                    "Command recovery generation " + recoveryGeneration +
+                    " is not current generation " + _recoveryGeneration + ".");
+            }
+
+            if (ownerEpoch != _ownerEpoch)
             {
                 return TableOperationResult.Rejected(
                     _stateVersion,
                     TableRuntimeReasonCode.StaleOwnerEpoch,
-                    "Command owner epoch " + command.OwnerEpoch + " is not the table lease epoch " + _ownerEpoch + ".");
+                    "Command owner epoch " + ownerEpoch + " is not the table lease epoch " + _ownerEpoch + ".");
             }
 
-            if (!string.Equals(command.Command.RoundId, _round.RoundId, StringComparison.Ordinal))
+            if (!string.Equals(roundId, _round.RoundId, StringComparison.Ordinal))
             {
                 return TableOperationResult.Rejected(
                     _stateVersion,
                     TableRuntimeReasonCode.RoundMismatch,
-                    "Command round '" + command.Command.RoundId + "' does not match '" + _round.RoundId + "'.");
+                    "Command round '" + roundId + "' does not match '" + _round.RoundId + "'.");
             }
 
-            int seat = command.Command.Seat;
-            if (!TryToDomainEpoch(command.ControlEpoch, out long controlEpoch))
+            if (!TryToDomainEpoch(controlEpoch, out long controlEpochValue))
             {
                 return TableOperationResult.Rejected(
                     _stateVersion,
@@ -1083,7 +1935,6 @@ namespace Mahjong.TableRuntime
                     "Control epoch exceeds the Domain range.");
             }
 
-            PendingDecision? pending = null;
             if (_pending.TryGetValue(seat, out PendingDecision foundPending))
             {
                 pending = foundPending;
@@ -1091,12 +1942,9 @@ namespace Mahjong.TableRuntime
 
             if (pending != null)
             {
-                if (!command.DecisionId.HasValue ||
-                    command.DecisionId.Value.IsEmpty ||
-                    !string.Equals(
-                        command.DecisionId.Value.Value,
-                        pending.Key.DecisionId,
-                        StringComparison.Ordinal))
+                if (!decisionId.HasValue ||
+                    decisionId.Value.IsEmpty ||
+                    !string.Equals(decisionId.Value.Value, pending.Key.DecisionId, StringComparison.Ordinal))
                 {
                     return TableOperationResult.Rejected(
                         _stateVersion,
@@ -1121,7 +1969,7 @@ namespace Mahjong.TableRuntime
                         "The player command arrived at or after the authoritative deadline.");
                 }
             }
-            else if (command.DecisionId.HasValue && !command.DecisionId.Value.IsEmpty)
+            else if (decisionId.HasValue && !decisionId.Value.IsEmpty)
             {
                 return TableOperationResult.Rejected(
                     _stateVersion,
@@ -1129,50 +1977,23 @@ namespace Mahjong.TableRuntime
                     "The command refers to a decision that is not open for this seat.");
             }
 
-            if (command.ExpectedStateVersion != _stateVersion)
+            if (expectedStateVersion != _stateVersion)
             {
                 return TableOperationResult.Rejected(
                     _stateVersion,
                     TableRuntimeReasonCode.StaleStateVersion,
-                    "Expected state version " + command.ExpectedStateVersion + ", actual " + _stateVersion + ".");
+                    "Expected state version " + expectedStateVersion + ", actual " + _stateVersion + ".");
             }
 
-            if (_control.GetEpoch(seat) != controlEpoch)
+            if (_control.GetEpoch(seat) != controlEpochValue)
             {
                 return TableOperationResult.Rejected(
                     _stateVersion,
                     TableRuntimeReasonCode.StaleControlEpoch,
-                    "Control epoch " + controlEpoch + " is not current for seat " + seat + ".");
+                    "Control epoch " + controlEpochValue + " is not current for seat " + seat + ".");
             }
 
-            RoundTransition transition;
-            try
-            {
-                transition = _round.Execute(command.Command);
-            }
-            catch (Exception exception)
-            {
-                return TableOperationResult.Failed(
-                    _stateVersion,
-                    TableRuntimeReasonCode.InternalError,
-                    exception.GetType().Name + ": " + exception.Message);
-            }
-
-            TableOperationResult? transitionError = ValidateTransition(transition);
-            if (transitionError != null)
-            {
-                return transitionError;
-            }
-
-            return await CommitAndInstallAsync(
-                transition,
-                command.RequestId,
-                pending,
-                command.DecisionId,
-                now,
-                command,
-                command.Command,
-                TimingConsumption.Complete).ConfigureAwait(false);
+            return null;
         }
 
         private bool IsCurrentObservation(AiObservation observation)
@@ -1256,6 +2077,16 @@ namespace Mahjong.TableRuntime
             List<PlannedTickEntry> planned;
             try
             {
+                TableOperationResult? cheatSweep = await SweepExpiredCheatOffersAsync(now).ConfigureAwait(false);
+                if (cheatSweep != null && cheatSweep.Status == TableOperationStatus.Failed)
+                {
+                    return TableTickResult.Rejected(
+                        cheatSweep.Status,
+                        cheatSweep.ReasonCode,
+                        cheatSweep.Detail,
+                        _stateVersion);
+                }
+
                 planned = PlanTick(request, now);
             }
             catch (Exception exception)
@@ -1540,6 +2371,46 @@ namespace Mahjong.TableRuntime
             return null;
         }
 
+        private async ValueTask<TableOperationResult?> SweepExpiredCheatOffersAsync(long now)
+        {
+            if (_cheat == null || _cheatEconomy == null || _sleeveConfig == null || _round.IsFinished)
+            {
+                return null;
+            }
+
+            CheatTurnContext context = BuildCheatContext(now);
+            string currentBoot = _durable?.BootId ?? string.Empty;
+            RoundCheatPreparation preparation = RoundCheatTransition.ExpireOffTurn(
+                _round,
+                _cheat,
+                context,
+                offer => !string.Equals(offer.BootId, currentBoot, StringComparison.Ordinal));
+            if (!preparation.IsReady)
+            {
+                return null;
+            }
+
+            var journal = new TableCheatSystemJournal(
+                RoundCheatSystemAction.OffTurnExpiry,
+                -1,
+                context.TurnNumber,
+                context.NowMillis,
+                context.RoundOrdinal,
+                context.LastDrawKind,
+                context.BootId);
+            return await CommitCheatAndInstallAsync(
+                preparation.Change!,
+                roundEnvelope: null,
+                cheatEnvelope: null,
+                roundCommand: null,
+                cheatCommand: null,
+                journal,
+                context,
+                pending: null,
+                decisionId: null,
+                now).ConfigureAwait(false);
+        }
+
         private async ValueTask<TableTickEntry> ExecuteDueTimeoutAsync(
             int seat,
             string decisionId,
@@ -1590,6 +2461,55 @@ namespace Mahjong.TableRuntime
                         _stateVersion,
                         TableRuntimeReasonCode.DeadlineNotDue,
                         "The deadline is not due; the timeout was not applied."));
+            }
+
+            if (_cheat != null && _cheatEconomy != null && _sleeveConfig != null)
+            {
+                CheatTurnContext cheatContext = BuildCheatContext(now);
+                RoundCheatPreparation? cheatExpiry = null;
+                RoundCheatSystemAction systemAction = RoundCheatSystemAction.OffTurnExpiry;
+                if (_cheat.SleeveBloom.ImmediateOffer?.Seat == seat)
+                {
+                    cheatExpiry = RoundCheatTransition.ExpireImmediate(_round, _cheat, cheatContext, seat);
+                    systemAction = RoundCheatSystemAction.ImmediateExpiry;
+                }
+                else if (_cheat.BeamSwap.Offer?.Seat == seat)
+                {
+                    cheatExpiry = RoundCheatTransition.ExpireBeamSwap(_round, _cheat, cheatContext, seat);
+                    systemAction = RoundCheatSystemAction.BeamExpiry;
+                }
+
+                if (cheatExpiry != null && cheatExpiry.IsReady)
+                {
+                    var journal = new TableCheatSystemJournal(
+                        systemAction,
+                        seat,
+                        cheatContext.TurnNumber,
+                        cheatContext.NowMillis,
+                        cheatContext.RoundOrdinal,
+                        cheatContext.LastDrawKind,
+                        cheatContext.BootId);
+                    TableOperationResult applied = await CommitCheatAndInstallAsync(
+                        cheatExpiry.Change!,
+                        roundEnvelope: null,
+                        cheatEnvelope: null,
+                        roundCommand: null,
+                        cheatCommand: null,
+                        journal,
+                        cheatContext,
+                        pending,
+                        new DecisionId(decisionId),
+                        now,
+                        TimingConsumption.Expire).ConfigureAwait(false);
+                    return new TableTickEntry(
+                        TickEntryKind.Timeout,
+                        seat,
+                        decisionId,
+                        null,
+                        TickRejectionCode.None,
+                        "Authoritative deadline reached; the pending cheat offer settled by forced fallback.",
+                        applied);
+                }
             }
 
             LegalActionOption? fallback = TimeoutPolicy.Choose(pending);
@@ -1925,10 +2845,152 @@ namespace Mahjong.TableRuntime
             PendingDecision? pending,
             TimingConsumption timingConsumption)
         {
+            DecisionId? timingDecision = pending != null
+                ? (DecisionId?)new DecisionId(pending.Key.DecisionId)
+                : null;
+
+            if (_cheat != null && _cheatEconomy != null && _sleeveConfig != null)
+            {
+                CheatTurnContext context = BuildCheatContext(now);
+                if (command.Action == RoundActionKind.DrawTile)
+                {
+                    RoundCheatPreparation delivery = RoundCheatTransition.PrepareReservationDraw(
+                        _round,
+                        _cheat,
+                        context,
+                        command.Seat);
+                    if (delivery.IsReady)
+                    {
+                        return await CommitCheatAndInstallAsync(
+                            delivery.Change!,
+                            roundEnvelope: null,
+                            cheatEnvelope: null,
+                            command,
+                            cheatCommand: null,
+                            systemJournal: null,
+                            context,
+                            pending,
+                            timingDecision,
+                            now,
+                            timingConsumption).ConfigureAwait(false);
+                    }
+                }
+                else if (command.Action == RoundActionKind.DiscardTile &&
+                         (command.EligibleSeats == null || command.EligibleSeats.Count == 0))
+                {
+                    int nextSeat = (command.Seat + 1) % 4;
+                    if (_cheat.SleeveBloom.ReservationFor(nextSeat) != null ||
+                        _cheat.SleeveBloom.OffTurnOfferFor(nextSeat) != null)
+                    {
+                        RoundCheatPreparation delivery = RoundCheatTransition.PrepareDiscardDelivery(
+                            _round,
+                            _cheat,
+                            command,
+                            now);
+                        if (!delivery.IsReady)
+                        {
+                            return TableOperationResult.Rejected(
+                                _stateVersion,
+                                TableRuntimeReasonCode.FromCheat(delivery.Error, delivery.CheatError),
+                                delivery.Message);
+                        }
+
+                        return await CommitCheatAndInstallAsync(
+                            delivery.Change!,
+                            roundEnvelope: null,
+                            cheatEnvelope: null,
+                            command,
+                            cheatCommand: null,
+                            systemJournal: null,
+                            context,
+                            pending,
+                            timingDecision,
+                            now,
+                            timingConsumption).ConfigureAwait(false);
+                    }
+                }
+            }
+
+            if (_cheat != null && _cheatEconomy != null && _sleeveConfig != null)
+            {
+                RoundCheatPreparation? settlement = TrySettleOfferForCommand(
+                    command,
+                    now,
+                    command.Action == RoundActionKind.DiscardTile ||
+                    command.Action == RoundActionKind.DeclareRiichi,
+                    deliverDeferred: command.Action == RoundActionKind.Pass ||
+                                     command.Action == RoundActionKind.DeclareRiichi);
+                if (settlement != null)
+                {
+                    if (!settlement.IsReady)
+                    {
+                        return TableOperationResult.Rejected(
+                            _stateVersion,
+                            TableRuntimeReasonCode.FromCheat(settlement.Error, settlement.CheatError),
+                            settlement.Message);
+                    }
+
+                    return await CommitCheatAndInstallAsync(
+                        settlement.Change!,
+                        roundEnvelope: null,
+                        cheatEnvelope: null,
+                        command,
+                        cheatCommand: null,
+                        systemJournal: null,
+                        BuildCheatContext(now),
+                        pending,
+                        timingDecision,
+                        now,
+                        timingConsumption).ConfigureAwait(false);
+                }
+            }
+
+            if ((command.Action == RoundActionKind.Pass ||
+                 command.Action == RoundActionKind.DeclareRiichi) &&
+                _cheat != null)
+            {
+                Func<int, bool>? defer = CheatDeferDrawPredicate();
+                if (defer != null)
+                {
+                    RoundPreparation deferred = _round.Prepare(
+                        command,
+                        CheatProtectionPredicate(),
+                        defer);
+                    if (deferred.IsReady && deferred.Change!.NextState.Phase == RoundPhase.Draw)
+                    {
+                        RoundCheatPreparation delivery = RoundCheatTransition.PrepareDeferredDrawDelivery(
+                            _round,
+                            deferred.Change,
+                            _cheat,
+                            now);
+                        if (!delivery.IsReady)
+                        {
+                            return TableOperationResult.Rejected(
+                                _stateVersion,
+                                TableRuntimeReasonCode.FromCheat(delivery.Error, delivery.CheatError),
+                                delivery.Message);
+                        }
+
+                        return await CommitCheatAndInstallAsync(
+                            delivery.Change!,
+                            roundEnvelope: null,
+                            cheatEnvelope: null,
+                            command,
+                            cheatCommand: null,
+                            systemJournal: null,
+                            BuildCheatContext(now),
+                            pending,
+                            timingDecision,
+                            now,
+                            timingConsumption).ConfigureAwait(false);
+                    }
+                }
+            }
+
             RoundTransition transition;
             try
             {
-                transition = _round.Execute(command);
+                transition = _round.Execute(command, CheatProtectionPredicate());
             }
             catch (Exception exception)
             {
@@ -1944,19 +3006,21 @@ namespace Mahjong.TableRuntime
                 return transitionError;
             }
 
-            PendingDecision? timingPending = _durable != null ? pending : null;
-            DecisionId? timingDecision = _durable != null && pending != null
-                ? (DecisionId?)new DecisionId(pending.Key.DecisionId)
+            CheatState? nextCheat = command.Action == RoundActionKind.DiscardTile
+                ? OpenDiscardWindow(_cheat, command.Seat)
                 : null;
+            PendingDecision? timingPending = _durable != null ? pending : null;
+            DecisionId? durableTimingDecision = _durable != null ? timingDecision : null;
             return await CommitAndInstallAsync(
                 transition,
                 requestId,
                 timingPending,
-                timingDecision,
+                durableTimingDecision,
                 now,
                 null,
                 command,
-                _durable != null ? timingConsumption : TimingConsumption.None).ConfigureAwait(false);
+                _durable != null ? timingConsumption : TimingConsumption.None,
+                nextCheat).ConfigureAwait(false);
         }
 
         private async ValueTask<TableOperationResult> CommitAndInstallAsync(
@@ -1967,7 +3031,8 @@ namespace Mahjong.TableRuntime
             long now,
             TableCommandEnvelope? envelope = null,
             RoundCommand? commandForJournal = null,
-            TimingConsumption timingConsumption = TimingConsumption.None)
+            TimingConsumption timingConsumption = TimingConsumption.None,
+            CheatState? nextCheat = null)
         {
             StateVersion evaluated = _stateVersion;
             StateVersion commandVersion;
@@ -2032,7 +3097,8 @@ namespace Mahjong.TableRuntime
                         decisionId,
                         now,
                         commandForJournal,
-                        timingConsumption).ConfigureAwait(false);
+                        timingConsumption,
+                        nextCheat).ConfigureAwait(false);
                 }
                 catch (Exception exception)
                 {
@@ -2089,6 +3155,11 @@ namespace Mahjong.TableRuntime
             // The commit is durable. From this point the in-memory state/receipt/publication
             // must follow it; no failure below may report a business rejection.
             _round = nextState;
+            if (nextCheat != null)
+            {
+                _cheat = nextCheat;
+            }
+
             _stateVersion = commandVersion;
             _lastEventSeq = lastEventSeq;
 
@@ -2134,7 +3205,8 @@ namespace Mahjong.TableRuntime
             DecisionId? decisionId,
             long now,
             RoundCommand? commandForJournal = null,
-            TimingConsumption timingConsumption = TimingConsumption.None)
+            TimingConsumption timingConsumption = TimingConsumption.None,
+            CheatState? nextCheat = null)
         {
             TableDurableContext durable = _durable!;
             ulong createdUtc = NowUtc();
@@ -2316,7 +3388,9 @@ namespace Mahjong.TableRuntime
                 timingSnapshot,
                 nextTimingVersion,
                 factsPayload,
-                factsHash);
+                factsHash,
+                (nextCheat ?? _cheat)?.Version ?? 0L,
+                (nextCheat ?? _cheat)?.Fingerprint ?? 0UL);
 
             TableDurableCommitResult commit;
             try
@@ -2373,6 +3447,11 @@ namespace Mahjong.TableRuntime
             // The commit is durable. The candidate timing was persisted in the same transaction,
             // so installing it cannot drift from the recovered reserve/decision state.
             _round = nextState;
+            if (nextCheat != null)
+            {
+                _cheat = nextCheat;
+            }
+
             _stateVersion = commandVersion;
             _lastEventSeq = lastEventSeq;
             _decisionClock = candidateClock;
@@ -2395,19 +3474,500 @@ namespace Mahjong.TableRuntime
             return TableOperationResult.Accepted(durableCommandReceipt, records, durableReceipt);
         }
 
+        private async ValueTask<TableOperationResult> CommitCheatAndInstallAsync(
+            RoundCheatChange change,
+            TableCommandEnvelope? roundEnvelope,
+            TableCheatCommandEnvelope? cheatEnvelope,
+            RoundCommand? roundCommand,
+            RoundCheatCommand? cheatCommand,
+            TableCheatSystemJournal? systemJournal,
+            CheatTurnContext context,
+            PendingDecision? pending,
+            DecisionId? decisionId,
+            long now,
+            TimingConsumption timingConsumption = TimingConsumption.Complete)
+        {
+            StateVersion evaluated = _stateVersion;
+            StateVersion commandVersion;
+            try
+            {
+                commandVersion = evaluated.Next();
+            }
+            catch (OverflowException)
+            {
+                return TableOperationResult.Failed(evaluated, TableRuntimeReasonCode.InternalError, "State version overflow.");
+            }
+
+            RoundTransition installed;
+            try
+            {
+                installed = _round.Install(change.RoundChange);
+            }
+            catch (Exception exception)
+            {
+                return TableOperationResult.Failed(
+                    evaluated,
+                    TableRuntimeReasonCode.InternalError,
+                    exception.GetType().Name + ": " + exception.Message);
+            }
+
+            if (!installed.IsAccepted || installed.State == null)
+            {
+                return TableOperationResult.Failed(
+                    evaluated,
+                    TableRuntimeReasonCode.InternalError,
+                    "The prepared cheat candidate did not install: " +
+                    (installed.Error == null ? "unknown" : installed.Error.ToString()));
+            }
+
+            RoundStateMachine nextState = installed.State;
+            List<TableEventRecord> records = BuildCheatEventRecords(
+                commandVersion,
+                new EventSeq(_lastEventSeq.Value + 1),
+                installed.Events,
+                change.Events,
+                nextState.SourceFingerprint);
+            EventSeq lastEventSeq = records[records.Count - 1].Seq;
+
+            string reasonCode = change.Accepted
+                ? string.Empty
+                : TableRuntimeReasonCode.FromCheat(RoundCheatErrorCode.CheatRejected, change.Error);
+            RequestId requestId = roundEnvelope?.RequestId ??
+                                  cheatEnvelope?.RequestId ??
+                                  new RequestId("internal-" + commandVersion.Value.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            TableCommandReceipt receipt = change.Accepted
+                ? TableCommandReceipt.Applied(evaluated, commandVersion, lastEventSeq, requestId)
+                : TableCommandReceipt.Rejected(evaluated, reasonCode, requestId);
+
+            if (_durable == null)
+            {
+                var request = new TableCommitRequest(
+                    _options.RoomId,
+                    _ownerEpoch,
+                    evaluated,
+                    commandVersion,
+                    lastEventSeq,
+                    nextState.SourceFingerprint,
+                    records,
+                    receipt,
+                    rejectedWithState: !change.Accepted);
+                TableCommitResult commit;
+                try
+                {
+                    commit = await _commitPort.CommitAsync(request, CancellationToken.None).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException exception)
+                {
+                    return TableOperationResult.Failed(evaluated, TableRuntimeReasonCode.CommitCancelled, exception.Message);
+                }
+                catch (Exception exception)
+                {
+                    return TableOperationResult.Failed(
+                        evaluated,
+                        TableRuntimeReasonCode.CommitFailed,
+                        exception.GetType().Name + ": " + exception.Message);
+                }
+
+                if (commit == null || !commit.IsCommitted)
+                {
+                    return commit == null
+                        ? TableOperationResult.Failed(evaluated, TableRuntimeReasonCode.CommitFailed, "The commit port returned no result.")
+                        : CommitFailure(evaluated, commit);
+                }
+
+                InstallCommittedCheat(nextState, change.CheatState, commandVersion, lastEventSeq, records, pending, decisionId, now, receipt, timingConsumption);
+                TableOperationResult result = change.Accepted
+                    ? TableOperationResult.Accepted(receipt, records)
+                    : TableOperationResult.RejectedWithState(receipt, records);
+                return result;
+            }
+
+            TableDurableContext durable = _durable;
+            ulong createdUtc = NowUtc();
+            string accountId = "system";
+            RequestScopeId scopeId = new RequestScopeId("system");
+            string api = "INTERNAL_CHEAT_SYSTEM";
+            TablePayloadSha256 digest;
+            TableDurableReceipt? durableReceipt = null;
+            byte[] commandPayload;
+            int journalSchema;
+            if (roundEnvelope != null || cheatEnvelope != null)
+            {
+                RequestScopeId requestScope = roundEnvelope != null ? roundEnvelope.ScopeId!.Value : cheatEnvelope!.ScopeId!.Value;
+                string requestApi = roundEnvelope != null ? roundEnvelope.Api! : cheatEnvelope!.Api!;
+                TablePayloadSha256 requestDigest = roundEnvelope != null
+                    ? roundEnvelope.PayloadSha256!.Value
+                    : cheatEnvelope!.PayloadSha256!.Value;
+                RequestId requestRequestId = roundEnvelope != null ? roundEnvelope.RequestId : cheatEnvelope!.RequestId;
+                TableScopeLookup lookup = await durable.Scopes
+                    .LookupAsync(requestScope, CancellationToken.None)
+                    .ConfigureAwait(false);
+                if (!lookup.Found || lookup.Scope == null)
+                {
+                    return TableOperationResult.Failed(
+                        evaluated,
+                        ProtocolErrorCode.Unauthenticated,
+                        "The host-issued scope disappeared before cheat commit.");
+                }
+
+                accountId = lookup.Scope.AccountId;
+                scopeId = requestScope;
+                api = requestApi;
+                digest = requestDigest;
+                if (roundEnvelope != null)
+                {
+                    commandPayload = RoundCommandCodec.Encode(roundCommand!);
+                    journalSchema = RoundCommandCodec.FormatVersion;
+                }
+                else
+                {
+                    commandPayload = TableCheatCommandCodec.Encode(new RoundCheatJournal(
+                        cheatCommand!,
+                        context.TurnNumber,
+                        context.NowMillis,
+                        context.RoundOrdinal,
+                        context.LastDrawKind,
+                        context.BootId));
+                    journalSchema = 2;
+                }
+
+                durableReceipt = new TableDurableReceipt(
+                    accountId,
+                    scopeId,
+                    requestRequestId,
+                    api,
+                    digest,
+                    change.Accepted
+                        ? Receipt.Applied(evaluated, commandVersion, lastEventSeq, null, createdUtc == 0 ? (ulong?)null : createdUtc)
+                        : Receipt.Rejected(evaluated, reasonCode),
+                    string.Empty,
+                    createdUtc,
+                    ReceiptExpiry(createdUtc, durable));
+            }
+            else
+            {
+                commandPayload = TableCheatSystemCodec.Encode(systemJournal!);
+                journalSchema = 3;
+                digest = TablePayloadSha256.Compute(commandPayload);
+            }
+
+            var journal = new TableCommandJournalRecord(
+                commandVersion,
+                evaluated,
+                roundEnvelope?.RequestId ??
+                cheatEnvelope?.RequestId ??
+                new RequestId("internal-" + commandVersion.Value.ToString(System.Globalization.CultureInfo.InvariantCulture)),
+                accountId,
+                scopeId,
+                api,
+                digest,
+                commandPayload,
+                journalSchema);
+
+            DecisionClock candidateClock = _decisionClock.Clone();
+            int consumedSeat = -1;
+            if (change.Accepted &&
+                pending != null &&
+                decisionId.HasValue &&
+                string.Equals(decisionId.Value.Value, pending.Key.DecisionId, StringComparison.Ordinal))
+            {
+                DecisionTiming? timing = candidateClock.Timing(pending.Key.Seat);
+                if (timing == null || timing.Key != pending.Key)
+                {
+                    return TableOperationResult.Failed(
+                        evaluated,
+                        TableRuntimeReasonCode.DecisionMismatch,
+                        "The open timing no longer matches the cheat command's decision.");
+                }
+
+                if (!(timingConsumption == TimingConsumption.Expire
+                        ? candidateClock.Expire(pending.Key, timing.Generation, now)
+                        : candidateClock.Complete(pending.Key, now)))
+                {
+                    return TableOperationResult.Failed(
+                        evaluated,
+                        TableRuntimeReasonCode.DecisionMismatch,
+                        "The candidate timing could not close the committed cheat decision.");
+                }
+
+                consumedSeat = pending.Key.Seat;
+            }
+
+            var pendingAfter = new List<PendingDecision>(4);
+            for (int seat = 0; seat < 4; seat++)
+            {
+                if (seat == consumedSeat)
+                {
+                    continue;
+                }
+
+                if (_pending.TryGetValue(seat, out PendingDecision? value))
+                {
+                    pendingAfter.Add(value);
+                }
+            }
+
+            long nextTimingVersion = checked(_timingVersion + 1L);
+            TableTimingCheckpoint timingSnapshot = TableCheckpointFactory.CaptureTiming(
+                candidateClock,
+                pendingAfter,
+                now,
+                createdUtc,
+                durable.BootId);
+
+            byte[] nextStatePayload = RoundRecoveryCodec.Encode(RoundRecovery.Capture(nextState));
+            TableProjectionContextData? projectionFacts = CaptureProjectionFacts(
+                nextState,
+                commandVersion,
+                lastEventSeq,
+                records,
+                now,
+                createdUtc);
+            byte[]? factsPayload = projectionFacts == null
+                ? null
+                : TableProjectionFactsCodec.Encode(projectionFacts);
+            TablePayloadSha256? factsHash = factsPayload == null
+                ? null
+                : TablePayloadSha256.Compute(factsPayload);
+
+            TableCheckpoint? checkpoint = null;
+            IReadOnlyList<TableSettlementOutboxRecord> outbox = Array.Empty<TableSettlementOutboxRecord>();
+            if (nextState.IsFinished)
+            {
+                if (nextState.Result == null)
+                {
+                    return TableOperationResult.Failed(
+                        evaluated,
+                        TableRuntimeReasonCode.RecoveryReplayMismatch,
+                        "A finished cheated round has no result.");
+                }
+
+                checkpoint = BuildCheckpoint(
+                    nextState,
+                    commandVersion,
+                    lastEventSeq,
+                    terminal: true,
+                    now,
+                    timingVersionOverride: nextTimingVersion,
+                    extraHistory: records,
+                    timingOverride: timingSnapshot,
+                    cheatOverride: change.CheatState);
+                byte[] settlementPayload = TableSettlementPayloadCodec.Encode(_options.RoomId, nextState.Result);
+                outbox = new[]
+                {
+                    new TableSettlementOutboxRecord(
+                        durable.MatchId ?? _options.RoomId,
+                        checked((int)commandVersion.Value),
+                        settlementPayload,
+                        TablePayloadSha256.Compute(settlementPayload),
+                        createdUtc)
+                };
+            }
+
+            var requestDurable = new TableDurableCommitRequest(
+                _options.RoomId,
+                durable.OwnerInstance,
+                _ownerEpoch,
+                evaluated,
+                durableReceipt,
+                internalCommand: roundEnvelope == null && cheatEnvelope == null,
+                events: records,
+                commandJournal: journal,
+                outbox: outbox,
+                checkpoint: checkpoint,
+                nextStatePayload: nextStatePayload,
+                nextStateFingerprint: nextState.SourceFingerprint,
+                terminal: nextState.IsFinished,
+                timing: timingSnapshot,
+                timingVersion: nextTimingVersion,
+                committedFactsPayload: factsPayload,
+                committedFactsPayloadSha256: factsHash,
+                nextCheatVersion: change.CheatState.Version,
+                nextCheatFingerprint: change.CheatState.Fingerprint);
+
+            TableDurableCommitResult durableCommit;
+            try
+            {
+                durableCommit = await durable.Store.CommitAsync(requestDurable, CancellationToken.None).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException exception)
+            {
+                return TableOperationResult.Failed(evaluated, TableRuntimeReasonCode.CommitCancelled, exception.Message);
+            }
+            catch (Exception exception)
+            {
+                EnterFaulted(TableRuntimeReasonCode.CommitFailed, exception.GetType().Name + ": " + exception.Message);
+                return TableOperationResult.Failed(
+                    evaluated,
+                    TableRuntimeReasonCode.CommitFailed,
+                    exception.GetType().Name + ": " + exception.Message);
+            }
+
+            switch (durableCommit.Disposition)
+            {
+                case TableCommitDisposition.Replayed:
+                    return durableCommit.Receipt == null
+                        ? TableOperationResult.Failed(evaluated, TableRuntimeReasonCode.CommitFailed, "A replayed commit result had no receipt.")
+                        : TableOperationResult.FromReplay(durableCommit.Receipt);
+                case TableCommitDisposition.Conflict:
+                    return TableOperationResult.Conflict(durableCommit.Detail);
+                case TableCommitDisposition.ScopeRejected:
+                    return TableOperationResult.Rejected(evaluated, durableCommit.ReasonCode, durableCommit.Detail);
+                case TableCommitDisposition.StaleOwner:
+                    EnterLeaseLost(durableCommit.Detail);
+                    return TableOperationResult.Failed(evaluated, TableRuntimeReasonCode.StaleOwnerEpoch, durableCommit.Detail);
+                case TableCommitDisposition.StaleState:
+                    EnterFaulted(TableRuntimeReasonCode.StaleStateVersion, durableCommit.Detail);
+                    return TableOperationResult.Failed(evaluated, TableRuntimeReasonCode.StaleStateVersion, durableCommit.Detail);
+                case TableCommitDisposition.OutcomeUnknown:
+                    EnterFaulted(TableRuntimeReasonCode.CommitOutcomeUnknown, durableCommit.Detail);
+                    return TableOperationResult.Failed(evaluated, TableRuntimeReasonCode.CommitOutcomeUnknown, durableCommit.Detail);
+                case TableCommitDisposition.Cancelled:
+                    return TableOperationResult.Failed(evaluated, TableRuntimeReasonCode.CommitCancelled, durableCommit.Detail);
+                case TableCommitDisposition.Failed:
+                    return TableOperationResult.Failed(
+                        evaluated,
+                        string.IsNullOrEmpty(durableCommit.ReasonCode) ? TableRuntimeReasonCode.CommitFailed : durableCommit.ReasonCode,
+                        durableCommit.Detail);
+            }
+
+            _round = nextState;
+            _cheat = change.CheatState;
+            _stateVersion = commandVersion;
+            _lastEventSeq = lastEventSeq;
+            _decisionClock = candidateClock;
+            _timingVersion = nextTimingVersion;
+            _pending.Clear();
+            for (int i = 0; i < pendingAfter.Count; i++)
+            {
+                PendingDecision value = pendingAfter[i];
+                _pending[value.Key.Seat] = value;
+            }
+
+            TableCommandReceipt durableCommandReceipt = durableReceipt?.ToCommandReceipt() ?? receipt;
+            AppendRecent(records);
+            _commandBindings.Add(new TableCommandBinding(
+                commandVersion.Value,
+                records.Count,
+                nextState.SourceFingerprint));
+            TableSnapshot snapshot = BuildSnapshot();
+            Publish(new TablePublication(TablePublicationKind.Applied, snapshot, records, durableCommandReceipt));
+            return change.Accepted
+                ? TableOperationResult.Accepted(durableCommandReceipt, records, durableReceipt)
+                : TableOperationResult.RejectedCommitted(durableReceipt!);
+        }
+
+        private void InstallCommittedCheat(
+            RoundStateMachine nextState,
+            CheatState nextCheat,
+            StateVersion commandVersion,
+            EventSeq lastEventSeq,
+            IReadOnlyList<TableEventRecord> records,
+            PendingDecision? pending,
+            DecisionId? decisionId,
+            long now,
+            TableCommandReceipt receipt,
+            TimingConsumption timingConsumption)
+        {
+            _round = nextState;
+            _cheat = nextCheat;
+            _stateVersion = commandVersion;
+            _lastEventSeq = lastEventSeq;
+            if (pending != null &&
+                decisionId.HasValue &&
+                string.Equals(decisionId.Value.Value, pending.Key.DecisionId, StringComparison.Ordinal))
+            {
+                DecisionTiming? timing = _decisionClock.Timing(pending.Key.Seat);
+                bool closed = timing != null &&
+                              (timingConsumption == TimingConsumption.Expire
+                                  ? _decisionClock.Expire(pending.Key, timing.Generation, now)
+                                  : _decisionClock.Complete(pending.Key, now));
+                if (!closed)
+                {
+                    SetFaulted(new InvalidOperationException("The decision clock could not close the committed cheat command."));
+                }
+
+                _pending.Remove(pending.Key.Seat);
+            }
+
+            AppendRecent(records);
+            _commandBindings.Add(new TableCommandBinding(
+                commandVersion.Value,
+                records.Count,
+                nextState.SourceFingerprint));
+            TableSnapshot snapshot = BuildSnapshot();
+            Publish(new TablePublication(TablePublicationKind.Applied, snapshot, records, receipt));
+        }
+
+        private static List<TableEventRecord> BuildCheatEventRecords(
+            StateVersion commandVersion,
+            EventSeq firstSeq,
+            IReadOnlyList<RoundEvent> roundEvents,
+            IReadOnlyList<RoundCheatEvent> cheatEvents,
+            ulong sourceFingerprint)
+        {
+            var records = new List<TableEventRecord>(roundEvents.Count + cheatEvents.Count);
+            int ordinal = 0;
+            ulong seq = firstSeq.Value;
+            for (int i = 0; i < roundEvents.Count; i++)
+            {
+                RoundEvent value = roundEvents[i];
+                records.Add(new TableEventRecord(
+                    new EventSeq(seq++),
+                    commandVersion,
+                    ordinal,
+                    value.Type,
+                    value.Seat,
+                    value.Tile,
+                    value.Detail,
+                    1,
+                    TableEventFactCodec.Encode(commandVersion, ordinal, sourceFingerprint)));
+                ordinal++;
+            }
+
+            for (int i = 0; i < cheatEvents.Count; i++)
+            {
+                RoundCheatEvent value = cheatEvents[i];
+                records.Add(new TableEventRecord(
+                    new EventSeq(seq++),
+                    commandVersion,
+                    ordinal,
+                    RoundEventType.CheatApplied,
+                    value.Value.Seat,
+                    null,
+                    null,
+                    1,
+                    TableEventFactCodec.Encode(commandVersion, ordinal, sourceFingerprint),
+                    new TableCheatEventRecord(
+                        value.Value,
+                        value.OfferId,
+                        value.Keep,
+                        value.Action,
+                        value.ResultTile,
+                        value.HandTile,
+                        value.TargetSlot,
+                        value.TurnNumber)));
+                ordinal++;
+            }
+
+            return records;
+        }
+
         private async ValueTask<TableOperationResult> CommitRejectedReceiptAsync(
-            TableCommandEnvelope command,
             TableScopeRecord scope,
+            RequestId requestId,
+            string api,
+            TablePayloadSha256 payloadSha256,
             TableOperationResult rejection)
         {
             TableDurableContext durable = _durable!;
             ulong createdUtc = NowUtc();
             var receipt = new TableDurableReceipt(
                 scope.AccountId,
-                command.ScopeId!.Value,
-                command.RequestId,
-                command.Api!,
-                command.PayloadSha256!.Value,
+                scope.ScopeId,
+                requestId,
+                api,
+                payloadSha256,
                 Receipt.Rejected(rejection.EvaluatedStateVersion, rejection.ReasonCode),
                 rejection.Detail,
                 createdUtc,
@@ -2526,7 +4086,45 @@ namespace Mahjong.TableRuntime
                     "Projection facts are missing or do not match the committed round/state.");
             }
 
+            if (_cheat != null)
+            {
+                facts = OverlayCheat(facts, _cheat);
+            }
+
+            IReadOnlyList<TableProjectionEventFact> mergedFacts = MergeCheatFacts(facts.EventFacts, events);
+            if (!ReferenceEquals(mergedFacts, facts.EventFacts))
+            {
+                facts = new TableProjectionContextData(
+                    facts.RoundId,
+                    facts.StateVersion,
+                    facts.SessionVersion,
+                    facts.Cheat,
+                    facts.PublicFacts,
+                    facts.PrivateFacts,
+                    facts.Session,
+                    facts.Policy,
+                    mergedFacts,
+                    facts.ConcealedMeldFacts);
+            }
+
             return facts;
+        }
+
+        private static TableProjectionContextData OverlayCheat(
+            TableProjectionContextData data,
+            CheatState cheat)
+        {
+            return new TableProjectionContextData(
+                data.RoundId,
+                data.StateVersion,
+                data.SessionVersion,
+                cheat,
+                data.PublicFacts,
+                data.PrivateFacts,
+                data.Session,
+                data.Policy,
+                data.EventFacts,
+                data.ConcealedMeldFacts);
         }
 
         private TableCheckpoint BuildCheckpoint(
@@ -2540,7 +4138,8 @@ namespace Mahjong.TableRuntime
             TableControlEvent? controlChange = null,
             long? timingVersionOverride = null,
             IReadOnlyList<TableEventRecord>? extraHistory = null,
-            TableTimingCheckpoint? timingOverride = null)
+            TableTimingCheckpoint? timingOverride = null,
+            CheatState? cheatOverride = null)
         {
             TableDurableContext durable = _durable!;
             ControlRegistrySnapshot control = controlOverride ?? _control.Capture();
@@ -2611,7 +4210,7 @@ namespace Mahjong.TableRuntime
                 }
             }
 
-            CheatState? cheatState = durable.CheatStateProvider?.Invoke();
+            CheatState? cheatState = cheatOverride ?? _cheat ?? durable.CheatStateProvider?.Invoke();
             CheatLedger? cheat = cheatState?.Ledger ?? durable.CheatLedgerProvider?.Invoke();
             TableCheatLedgerCheckpoint? cheatCheckpoint = cheatState != null
                 ? TableCheatLedgerCheckpoint.FromCheatState(cheatState)
@@ -2844,7 +4443,9 @@ namespace Mahjong.TableRuntime
                 _durable.RulesetVersion,
                 _durable.LeaseTtl,
                 matchId: _durable.MatchId,
-                requireCommittedFacts: _durable.RequireCommittedFacts);
+                requireCommittedFacts: _durable.RequireCommittedFacts,
+                cheatEconomy: _cheatEconomy,
+                sleeveBloomConfig: _sleeveConfig);
             TableRecoveryResult recovered = await _recoveryService
                 .RecoverAsync(_options.RoomId, options, CancellationToken.None)
                 .ConfigureAwait(false);
@@ -2868,7 +4469,10 @@ namespace Mahjong.TableRuntime
                 finalState == null ||
                 finalState.StateVersion != recovered.Baseline.StateVersion ||
                 finalState.LastEventSeq != recovered.Baseline.LastEventSeq ||
-                finalState.TimingVersion != recovered.Baseline.TimingVersion)
+                finalState.TimingVersion != recovered.Baseline.TimingVersion ||
+                finalState.CheatBound != recovered.Baseline.CheatBound ||
+                finalState.CheatVersion != recovered.Baseline.CheatVersion ||
+                finalState.CheatFingerprint != recovered.Baseline.CheatFingerprint)
             {
                 EnterFaulted(
                     TableRuntimeReasonCode.RecoveryStateChanged,
@@ -2928,7 +4532,10 @@ namespace Mahjong.TableRuntime
                 state.LastEventSeq != baseline.LastEventSeq ||
                 state.StateFingerprint != baseline.Round.SourceFingerprint ||
                 state.ControlVersion != (baseline.Control?.ControlVersion ?? state.ControlVersion) ||
-                state.TimingVersion != baseline.TimingVersion)
+                state.TimingVersion != baseline.TimingVersion ||
+                state.CheatBound != baseline.CheatBound ||
+                state.CheatVersion != baseline.CheatVersion ||
+                state.CheatFingerprint != baseline.CheatFingerprint)
             {
                 return TableOperationResult.Failed(
                     _stateVersion,
@@ -3377,6 +4984,14 @@ namespace Mahjong.TableRuntime
                     "Recovery carries cheat/private/facts state but no install sink is configured.");
             }
 
+            if (_cheatEconomy != null && baseline.Cheat == null)
+            {
+                return TableOperationResult.Failed(
+                    _stateVersion,
+                    TableRuntimeReasonCode.CheatNotConfigured,
+                    "Cheat execution is configured but the recovery baseline carries no cheat aggregate.");
+            }
+
             if (_durable?.RecoveryStateSink != null)
             {
                 try
@@ -3419,6 +5034,11 @@ namespace Mahjong.TableRuntime
             }
 
             _round = baseline.Round;
+            if (baseline.Cheat != null)
+            {
+                _cheat = baseline.Cheat;
+            }
+
             _stateVersion = baseline.StateVersion;
             _lastEventSeq = baseline.LastEventSeq;
             _ownerEpoch = baseline.OwnerEpoch;
@@ -3445,12 +5065,57 @@ namespace Mahjong.TableRuntime
                 _commandBindings.Add(baseline.CommandBindings[i]);
             }
 
-            int recentWindow = _options.SnapshotEventWindow;
-            if (recentWindow > 0 && _committedEventLog.Count > recentWindow)
+            if (_durable != null)
             {
-                for (int i = _committedEventLog.Count - recentWindow; i < _committedEventLog.Count; i++)
+                try
                 {
-                    _recentEvents.Add(_committedEventLog[i]);
+                    IReadOnlyList<TableCommandJournalRecord> allCommands = await _durable.Store
+                        .LoadCommandsAfterAsync(_options.RoomId, new StateVersion(0), CancellationToken.None)
+                        .ConfigureAwait(false);
+                    for (int i = 0; i < allCommands.Count; i++)
+                    {
+                        TableCommandJournalRecord journal = allCommands[i];
+                        if (journal.SchemaVersion != 2)
+                        {
+                            continue;
+                        }
+
+                        RoundCheatJournal cheatJournal = TableCheatCommandCodec.Decode(journal.CommandPayload);
+                        string key = journal.RequestId.Value;
+                        if (!_cheatRequestBindings.ContainsKey(key))
+                        {
+                            _cheatRequestBindings[key] = new CheatRequestBinding(
+                                journal.ScopeId,
+                                journal.Api,
+                                journal.PayloadSha256,
+                                null);
+                        }
+                    }
+                }
+                catch (Exception exception)
+                {
+                    EnterFaulted(
+                        TableRuntimeReasonCode.RecoveryStateChanged,
+                        "Cheat receipt identity reconstruction failed: " +
+                        exception.GetType().Name + ": " + exception.Message);
+                    return TableOperationResult.Failed(
+                        _stateVersion,
+                        TableRuntimeReasonCode.RecoveryStateChanged,
+                        "Cheat receipt identity reconstruction failed.");
+                }
+            }
+
+            int recentWindow = _options.SnapshotEventWindow;
+            if (recentWindow > 0 && _committedEventLog.Count > 0)
+            {
+                for (int i = _committedEventLog.Count - 1;
+                     i >= 0 && _recentEvents.Count < recentWindow;
+                     i--)
+                {
+                    if (_committedEventLog[i].Cheat == null)
+                    {
+                        _recentEvents.Insert(0, _committedEventLog[i]);
+                    }
                 }
             }
             if (baseline.Control != null)
@@ -5642,6 +7307,11 @@ namespace Mahjong.TableRuntime
                     "Projection context version " + data.StateVersion + " is not the committed version " + _stateVersion + ".");
             }
 
+            if (_cheat != null)
+            {
+                data = OverlayCheat(data, _cheat);
+            }
+
             var eventInputs = new List<TableEventProjectionInput>(Math.Min(committedEvents.Count, 4096));
             int start = Math.Max(0, committedEvents.Count - 4096);
             for (int i = start; i < committedEvents.Count; i++)
@@ -5654,7 +7324,7 @@ namespace Mahjong.TableRuntime
             }
 
             IReadOnlyDictionary<ulong, TableProjectionEventFact> factsBySeq = ValidateEventFacts(
-                data.EventFacts,
+                MergeCheatFacts(data.EventFacts, committedEvents),
                 eventInputs,
                 committedEvents);
 
@@ -5742,6 +7412,91 @@ namespace Mahjong.TableRuntime
             return result;
         }
 
+        /// <summary>
+        /// Cheat events are actual committed facts, not host-supplied guesses: their protocol
+        /// 20/21 facts are derived from the persisted typed event record and merged with the
+        /// host's round facts. This keeps owner offerId/keep/action/tile/target exact on live
+        /// streams and after cold recovery without a second projection store.
+        /// </summary>
+        private static IReadOnlyList<TableProjectionEventFact> MergeCheatFacts(
+            IReadOnlyList<TableProjectionEventFact> hostFacts,
+            IReadOnlyList<TableEventRecord> committedEvents)
+        {
+            var merged = new List<TableProjectionEventFact>(hostFacts.Count + committedEvents.Count);
+            var replaced = new HashSet<ulong>();
+            for (int i = 0; i < committedEvents.Count; i++)
+            {
+                TableEventRecord record = committedEvents[i];
+                if (record.Cheat == null)
+                {
+                    continue;
+                }
+
+                TableProjectionEventFacts? facts = CheatFacts(record.Cheat);
+                if (facts == null)
+                {
+                    continue;
+                }
+
+                TableEventProjectionInput? input = TableEventProjection.FromRoundEvent(record);
+                if (input == null)
+                {
+                    continue;
+                }
+
+                merged.Add(new TableProjectionEventFact(
+                    input.Type,
+                    record.Seq,
+                    record.CommandVersion,
+                    unchecked((uint)record.Ordinal),
+                    facts));
+                replaced.Add(record.Seq.Value);
+            }
+
+            for (int i = 0; i < hostFacts.Count; i++)
+            {
+                if (!replaced.Contains(hostFacts[i].EventSeq.Value))
+                {
+                    merged.Add(hostFacts[i]);
+                }
+            }
+
+            return merged;
+        }
+
+        private static TableProjectionEventFacts? CheatFacts(TableCheatEventRecord cheat)
+        {
+            switch (cheat.Event.Kind)
+            {
+                case CheatEventKind.CheatPointsChanged:
+                    return new TableProjectionEventFacts(turnNumber: unchecked((uint)cheat.TurnNumber));
+                case CheatEventKind.SleeveBloomResolved:
+                    return new TableProjectionEventFacts(
+                        turnNumber: unchecked((uint)cheat.TurnNumber),
+                        offerId: cheat.OfferId,
+                        keptFirst: cheat.Keep.HasValue && cheat.Keep.Value == SleeveBloomKeep.First,
+                        resultTileId: cheat.ResultTile.HasValue
+                            ? unchecked((uint)cheat.ResultTile.Value.Value)
+                            : (uint?)null);
+                case CheatEventKind.BeamSwapResolved:
+                    return new TableProjectionEventFacts(
+                        turnNumber: unchecked((uint)cheat.TurnNumber),
+                        offerId: cheat.OfferId,
+                        beamSwapResolution: cheat.Action.HasValue
+                            ? (cheat.Action.Value == BeamSwapAction.Swap
+                                ? ProjectionBeamSwapResolution.Swap
+                                : ProjectionBeamSwapResolution.KeepOriginal)
+                            : (ProjectionBeamSwapResolution?)null,
+                        handTileId: cheat.HandTile.HasValue
+                            ? unchecked((uint)cheat.HandTile.Value.Value)
+                            : (uint?)null,
+                        targetSlot: cheat.TargetSlot.HasValue
+                            ? unchecked((uint)cheat.TargetSlot.Value.Index)
+                            : (uint?)null);
+                default:
+                    return null;
+            }
+        }
         private IReadOnlyList<ClockView> BuildStreamClocks(long now, long utc)
         {
             var clocks = new List<ClockView>(4);
@@ -5980,7 +7735,9 @@ namespace Mahjong.TableRuntime
                     PlayerSnapshotView mapped = TableProjectionContractMapper.MapPlayerSnapshot(
                         player,
                         owner,
-                        new TableProjectionTimeContext(capture.MonotonicMillis),
+                        new TableProjectionTimeContext(
+                            capture.MonotonicMillis,
+                            currentBootId: _durable?.BootId ?? string.Empty),
                         typedSettlement,
                         data.ConcealedMeldFacts);
                     contract = new TableStreamContractFrame(
@@ -6723,6 +8480,29 @@ namespace Mahjong.TableRuntime
             }
         }
 
+        private sealed class CheatRequestBinding
+        {
+            public CheatRequestBinding(
+                RequestScopeId scopeId,
+                string api,
+                TablePayloadSha256 payload,
+                TableOperationResult? result)
+            {
+                ScopeId = scopeId;
+                Api = api;
+                Payload = payload;
+                Result = result;
+            }
+
+            public RequestScopeId ScopeId { get; }
+
+            public string Api { get; }
+
+            public TablePayloadSha256 Payload { get; }
+
+            public TableOperationResult? Result { get; }
+        }
+
         private sealed class StreamFrameException : Exception
         {
             public StreamFrameException(TableStreamTerminationKind kind, string reasonCode, string detail)
@@ -6741,8 +8521,15 @@ namespace Mahjong.TableRuntime
         {
             for (int i = 0; i < records.Count; i++)
             {
-                _recentEvents.Add(records[i]);
-                _committedEventLog.Add(records[i]);
+                TableEventRecord record = records[i];
+                _committedEventLog.Add(record);
+                if (record.Cheat == null)
+                {
+                    // The authority snapshot's recent-event window is public/round-shaped.
+                    // Owner-scoped cheat events stay in the committed log used by the seat
+                    // projection; they must never leak through TableSnapshot.
+                    _recentEvents.Add(record);
+                }
             }
 
             int window = _options.SnapshotEventWindow;

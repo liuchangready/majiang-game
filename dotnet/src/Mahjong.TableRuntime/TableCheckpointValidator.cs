@@ -343,7 +343,16 @@ namespace Mahjong.TableRuntime
             TableCheckpoint checkpoint)
         {
             RoundRecoveryState captured = RoundRecoveryCodec.Decode(checkpoint.StatePayload);
-            int offset = captured.Events.Count - history.Count;
+            var roundHistory = new List<TableEventRecord>(history.Count);
+            for (int i = 0; i < history.Count; i++)
+            {
+                if (history[i].Cheat == null)
+                {
+                    roundHistory.Add(history[i]);
+                }
+            }
+
+            int offset = captured.Events.Count - roundHistory.Count;
             if (offset < 0)
             {
                 throw new InvalidDataException(
@@ -361,9 +370,9 @@ namespace Mahjong.TableRuntime
                 }
             }
 
-            for (int i = 0; i < history.Count; i++)
+            for (int i = 0; i < roundHistory.Count; i++)
             {
-                TableEventRecord record = history[i];
+                TableEventRecord record = roundHistory[i];
                 RoundEvent domain = captured.Events[offset + i];
                 if (domain.Type != record.Type ||
                     domain.Seat != record.Seat ||

@@ -236,6 +236,26 @@ namespace Mahjong.Domain.Cheat
         {
         }
 
+        /// <summary>
+        /// Rehydrates an already validated checkpoint aggregate. The offer is the same frozen
+        /// typed value used by the command path, so candidates/eligible hand tiles/drawn tile
+        /// survive recovery without a summary flag or a re-derived candidate list.
+        /// </summary>
+        public static BeamSwapState Restore(BeamSwapOffer? offer, int usedOnTurn, long version)
+        {
+            if (usedOnTurn < -1)
+            {
+                throw new ArgumentOutOfRangeException(nameof(usedOnTurn), usedOnTurn, "Used-on-turn must be -1 or non-negative.");
+            }
+
+            if (version < 0)
+            {
+                throw new ArgumentOutOfRangeException(nameof(version), version, "Beam swap version must be non-negative.");
+            }
+
+            return new BeamSwapState(offer, usedOnTurn, version);
+        }
+
         public BeamSwapOffer? Offer { get; }
 
         /// <summary>Turn number on which the beam swap was last activated; -1 when never.</summary>

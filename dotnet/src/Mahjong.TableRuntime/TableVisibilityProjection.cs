@@ -232,7 +232,8 @@ namespace Mahjong.TableRuntime
             SleeveBloomOfferMode mode,
             string? windowId,
             long deadlineMillis,
-            long createdAtMillis)
+            long createdAtMillis,
+            string? bootId = null)
         {
             OfferId = ProtocolText.RequireId(offerId, nameof(offerId));
             FirstTileId = TableProjectionCopy.Tile(firstTileId, nameof(firstTileId));
@@ -243,6 +244,7 @@ namespace Mahjong.TableRuntime
             Mode = mode;
             DeadlineMillis = deadlineMillis;
             CreatedAtMillis = createdAtMillis;
+            BootId = bootId ?? string.Empty;
         }
 
         public string OfferId { get; }
@@ -260,6 +262,8 @@ namespace Mahjong.TableRuntime
         public string WindowId { get; }
 
         public long DeadlineMillis { get; }
+
+        public string BootId { get; }
 
         public long CreatedAtMillis { get; }
     }
@@ -458,11 +462,20 @@ namespace Mahjong.TableRuntime
                 throw new ArgumentNullException(nameof(policy));
             }
 
-            if (facts.Count != history.Count)
+            int projectable = 0;
+            for (int i = 0; i < history.Count; i++)
+            {
+                if (TableEventProjection.FromRoundEvent(history[i]) != null)
+                {
+                    projectable++;
+                }
+            }
+
+            if (facts.Count != projectable)
             {
                 throw new TableProjectionException(
                     TableProjectionErrorCode.InvalidContext,
-                    "Recovered event facts do not cover the complete committed history.");
+                    "Recovered event facts do not cover the complete projectable committed history.");
             }
 
             var bySeq = new Dictionary<ulong, TableProjectionEventFact>(facts.Count);
@@ -517,6 +530,14 @@ namespace Mahjong.TableRuntime
             for (int i = 0; i < history.Count; i++)
             {
                 TableEventRecord record = history[i];
+                TableEventProjectionInput? input = TableEventProjection.FromRoundEvent(record);
+                if (input == null)
+                {
+                    // CheatApplied is the one-command provenance bridge; it has no frozen
+                    // protocol event and therefore no projection fact to validate.
+                    continue;
+                }
+
                 if (!bySeq.TryGetValue(record.Seq.Value, out TableProjectionEventFact? fact))
                 {
                     throw new TableProjectionException(
@@ -524,9 +545,7 @@ namespace Mahjong.TableRuntime
                         "Committed event " + record.Seq + " has no recovered fact.");
                 }
 
-                TableEventProjectionInput? input = TableEventProjection.FromRoundEvent(record);
-                if (input == null ||
-                    input.Type != fact.Type ||
+                if (input.Type != fact.Type ||
                     input.CommandVersion != fact.CommandVersion ||
                     input.EventOrdinal != fact.EventOrdinal)
                 {
@@ -1283,7 +1302,8 @@ namespace Mahjong.TableRuntime
                 offer.Mode,
                 offer.WindowId,
                 offer.DeadlineMillis,
-                offer.CreatedAtMillis);
+                offer.CreatedAtMillis,
+                offer.BootId);
         }
 
         private static TableOwnerSleeveBloomReservationView? MapReservation(SleeveBloomReservation? reservation)

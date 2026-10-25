@@ -272,6 +272,19 @@ namespace Mahjong.TableRuntime
             }
         }
 
+        /// <summary>Negative-control hook: tamper with the committed complete-cheat binding.</summary>
+        public void SetCheatBindingForTest(string roomId, long version, ulong fingerprint)
+        {
+            lock (_gate)
+            {
+                if (_states.TryGetValue(roomId, out StateRow? state))
+                {
+                    state.CheatVersion = version;
+                    state.CheatFingerprint = fingerprint;
+                }
+            }
+        }
+
         public void SetCommittedFactsForTest(string roomId, byte[] payload, TablePayloadSha256 sha256)
         {
             lock (_gate)
@@ -1184,6 +1197,14 @@ namespace Mahjong.TableRuntime
                         accepted = true;
                     }
 
+                    // N-1b forced-state rejection: the business reply stays REJECTED, but the
+                    // P1.4 forced FIRST/clear state, its private events and journal commit in
+                    // the same atomic transaction as an accepted command.
+                    if (request.RejectedWithState)
+                    {
+                        accepted = true;
+                    }
+
                     List<TableEventRecord>? newEvents = null;
                     TableCommandJournalRecord? journal = null;
                     StateRow? nextState = null;
@@ -1217,7 +1238,10 @@ namespace Mahjong.TableRuntime
                             state.RulesetVersion,
                             state.ControlVersion,
                             now,
-                            request.TimingVersion);
+                            request.TimingVersion,
+                            request.NextCheatVersion,
+                            request.NextCheatFingerprint,
+                            request.NextCheatVersion != 0L);
                         checkpoint = request.Checkpoint;
                         if (checkpoint != null)
                         {
@@ -1715,7 +1739,10 @@ namespace Mahjong.TableRuntime
                 int rulesetVersion,
                 long controlVersion,
                 ulong updatedAtUtcMs,
-                long timingVersion = 0L)
+                long timingVersion = 0L,
+                long cheatVersion = 0L,
+                ulong cheatFingerprint = 0UL,
+                bool cheatBound = false)
             {
                 StateVersion = stateVersion;
                 LastEventSeq = lastEventSeq;
@@ -1725,6 +1752,9 @@ namespace Mahjong.TableRuntime
                 ControlVersion = controlVersion;
                 UpdatedAtUtcMs = updatedAtUtcMs;
                 TimingVersion = timingVersion;
+                CheatVersion = cheatVersion;
+                CheatFingerprint = cheatFingerprint;
+                CheatBound = cheatBound;
             }
 
             public StateVersion StateVersion { get; }
@@ -1741,6 +1771,12 @@ namespace Mahjong.TableRuntime
 
             public long TimingVersion { get; set; }
 
+            public long CheatVersion { get; set; }
+
+            public ulong CheatFingerprint { get; set; }
+
+            public bool CheatBound { get; set; }
+
             public ulong UpdatedAtUtcMs { get; set; }
 
             public TableStateRow ToPublic(string roomId) =>
@@ -1753,7 +1789,10 @@ namespace Mahjong.TableRuntime
                     RulesetVersion,
                     ControlVersion,
                     UpdatedAtUtcMs,
-                    TimingVersion);
+                    TimingVersion,
+                    CheatVersion,
+                    CheatFingerprint,
+                    CheatBound);
         }
 
         private sealed class CheckpointRow

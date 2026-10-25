@@ -55,7 +55,8 @@ namespace Mahjong.TableRuntime
             EventSeq lastEventSeq,
             ulong stateFingerprint,
             IReadOnlyList<TableEventRecord> events,
-            TableCommandReceipt receipt)
+            TableCommandReceipt receipt,
+            bool rejectedWithState = false)
         {
             if (string.IsNullOrWhiteSpace(roomId))
             {
@@ -72,9 +73,10 @@ namespace Mahjong.TableRuntime
                 throw new ArgumentNullException(nameof(receipt));
             }
 
-            if (!receipt.IsAccepted)
+            if (!receipt.IsAccepted &&
+                !(rejectedWithState && receipt.Status == ReceiptStatus.Rejected))
             {
-                throw new ArgumentException("A commit request requires an accepted receipt.", nameof(receipt));
+                throw new ArgumentException("A commit request requires an accepted or committed-rejection receipt.", nameof(receipt));
             }
 
             if (expectedStateVersion.Value == ulong.MaxValue)
@@ -87,9 +89,13 @@ namespace Mahjong.TableRuntime
                 throw new ArgumentException("commandVersion must equal expectedStateVersion + 1.", nameof(commandVersion));
             }
 
-            if (receipt.EvaluatedStateVersion != expectedStateVersion ||
-                receipt.CommandVersion != commandVersion ||
-                receipt.LastEventSeq != lastEventSeq)
+            if (receipt.EvaluatedStateVersion != expectedStateVersion)
+            {
+                throw new ArgumentException("Receipt evaluated version must match the proposed transition.");
+            }
+
+            if (!rejectedWithState &&
+                (receipt.CommandVersion != commandVersion || receipt.LastEventSeq != lastEventSeq))
             {
                 throw new ArgumentException("Receipt versions must match the proposed transition.");
             }
@@ -131,6 +137,7 @@ namespace Mahjong.TableRuntime
             StateFingerprint = stateFingerprint;
             _events = new ReadOnlyCollection<TableEventRecord>(copy);
             Receipt = receipt;
+            RejectedWithState = rejectedWithState;
         }
 
         public string RoomId { get; }
@@ -148,6 +155,9 @@ namespace Mahjong.TableRuntime
         public IReadOnlyList<TableEventRecord> Events => _events;
 
         public TableCommandReceipt Receipt { get; }
+
+        /// <summary>True only for a committed P1.4 forced-state rejection.</summary>
+        public bool RejectedWithState { get; }
     }
 
     public sealed class TableCommitResult

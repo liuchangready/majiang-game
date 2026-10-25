@@ -13,7 +13,14 @@ namespace Mahjong.TableRuntime
             Command = command ?? throw new ArgumentNullException(nameof(command));
         }
 
-        public TableCommandEnvelope Command { get; }
+        public CommandMailboxMessage(TableCheatCommandEnvelope cheatCommand)
+        {
+            CheatCommand = cheatCommand ?? throw new ArgumentNullException(nameof(cheatCommand));
+        }
+
+        public TableCommandEnvelope? Command { get; }
+
+        public TableCheatCommandEnvelope? CheatCommand { get; }
 
         public TaskCompletionSource<TableOperationResult> Completion { get; } =
             new TaskCompletionSource<TableOperationResult>(TaskCreationOptions.RunContinuationsAsynchronously);

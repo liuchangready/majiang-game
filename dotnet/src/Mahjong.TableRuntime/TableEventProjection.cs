@@ -73,7 +73,13 @@ namespace Mahjong.TableRuntime
             bool isChankan = false,
             long? cheatAmount = null,
             long? cheatBalance = null,
-            string? publicReasonCode = null)
+            string? publicReasonCode = null,
+            string? cheatOfferId = null,
+            bool? cheatKeptFirst = null,
+            ProjectionBeamSwapResolution? cheatBeamSwapResolution = null,
+            uint? cheatResultTileId = null,
+            uint? cheatHandTileId = null,
+            int? cheatTargetSlot = null)
         {
             if (type == ProtocolEventType.Unspecified || !ProtocolEventPolicy.IsKnownEventType((uint)type))
             {
@@ -132,6 +138,34 @@ namespace Mahjong.TableRuntime
                 throw new ArgumentOutOfRangeException(nameof(cheatBalance), "A cheat balance cannot be negative.");
             }
 
+            bool hasResolutionFacts = cheatOfferId != null || cheatKeptFirst.HasValue ||
+                                      cheatBeamSwapResolution.HasValue || cheatResultTileId.HasValue ||
+                                      cheatHandTileId.HasValue || cheatTargetSlot.HasValue;
+            if (hasResolutionFacts &&
+                type != ProtocolEventType.SleeveBloomResolved &&
+                type != ProtocolEventType.BeamSwapResolved)
+            {
+                throw new ArgumentException(
+                    "Offer/resolution facts are only valid for SleeveBloomResolved/BeamSwapResolved.",
+                    nameof(cheatOfferId));
+            }
+
+            if (type == ProtocolEventType.SleeveBloomResolved &&
+                cheatBeamSwapResolution.HasValue)
+            {
+                throw new ArgumentException(
+                    "SleeveBloomResolved cannot carry a beam swap resolution.",
+                    nameof(cheatBeamSwapResolution));
+            }
+
+            if (type == ProtocolEventType.BeamSwapResolved &&
+                (cheatKeptFirst.HasValue || cheatResultTileId.HasValue))
+            {
+                throw new ArgumentException(
+                    "BeamSwapResolved cannot carry sleeve bloom keep/tile facts.",
+                    nameof(cheatKeptFirst));
+            }
+
             string reason = publicReasonCode ?? string.Empty;
             if (reason.Length > 0)
             {
@@ -169,6 +203,12 @@ namespace Mahjong.TableRuntime
             CheatAmount = cheatAmount;
             CheatBalance = cheatBalance;
             PublicReasonCode = reason;
+            CheatOfferId = cheatOfferId;
+            CheatKeptFirst = cheatKeptFirst;
+            CheatBeamSwapResolution = cheatBeamSwapResolution;
+            CheatResultTileId = cheatResultTileId;
+            CheatHandTileId = cheatHandTileId;
+            CheatTargetSlot = cheatTargetSlot;
         }
 
         public ProtocolEventType Type { get; }
@@ -194,6 +234,18 @@ namespace Mahjong.TableRuntime
         public long? CheatBalance { get; }
 
         public string PublicReasonCode { get; }
+
+        public string? CheatOfferId { get; }
+
+        public bool? CheatKeptFirst { get; }
+
+        public ProjectionBeamSwapResolution? CheatBeamSwapResolution { get; }
+
+        public uint? CheatResultTileId { get; }
+
+        public uint? CheatHandTileId { get; }
+
+        public int? CheatTargetSlot { get; }
 
         internal static bool IsPrivateType(ProtocolEventType type) => ProtocolEventPolicy.IsPrivateEventType(type);
 
@@ -279,7 +331,13 @@ namespace Mahjong.TableRuntime
             bool isChankan,
             long? cheatAmount,
             long? cheatBalance,
-            string publicReasonCode)
+            string publicReasonCode,
+            string? cheatOfferId = null,
+            bool? cheatKeptFirst = null,
+            ProjectionBeamSwapResolution? cheatBeamSwapResolution = null,
+            uint? cheatResultTileId = null,
+            uint? cheatHandTileId = null,
+            int? cheatTargetSlot = null)
         {
             Type = type;
             Visibility = visibility;
@@ -294,6 +352,12 @@ namespace Mahjong.TableRuntime
             CheatAmount = cheatAmount;
             CheatBalance = cheatBalance;
             PublicReasonCode = publicReasonCode ?? string.Empty;
+            CheatOfferId = cheatOfferId;
+            CheatKeptFirst = cheatKeptFirst;
+            CheatBeamSwapResolution = cheatBeamSwapResolution;
+            CheatResultTileId = cheatResultTileId;
+            CheatHandTileId = cheatHandTileId;
+            CheatTargetSlot = cheatTargetSlot;
         }
 
         public ProtocolEventType Type { get; }
@@ -323,6 +387,18 @@ namespace Mahjong.TableRuntime
         public long? CheatBalance { get; }
 
         public string PublicReasonCode { get; }
+
+        public string? CheatOfferId { get; }
+
+        public bool? CheatKeptFirst { get; }
+
+        public ProjectionBeamSwapResolution? CheatBeamSwapResolution { get; }
+
+        public uint? CheatResultTileId { get; }
+
+        public uint? CheatHandTileId { get; }
+
+        public int? CheatTargetSlot { get; }
 
         /// <summary>
         /// A deterministic projection-body encoding for verification and the P3.2b adapter.
@@ -384,6 +460,68 @@ namespace Mahjong.TableRuntime
                 if (CheatBalance.HasValue)
                 {
                     writer.Write(CheatBalance.Value);
+                }
+
+                byte resolutionFlags = 0;
+                if (CheatOfferId != null)
+                {
+                    resolutionFlags |= 1;
+                }
+
+                if (CheatKeptFirst.HasValue)
+                {
+                    resolutionFlags |= 2;
+                }
+
+                if (CheatBeamSwapResolution.HasValue)
+                {
+                    resolutionFlags |= 4;
+                }
+
+                if (CheatResultTileId.HasValue)
+                {
+                    resolutionFlags |= 8;
+                }
+
+                if (CheatHandTileId.HasValue)
+                {
+                    resolutionFlags |= 16;
+                }
+
+                if (CheatTargetSlot.HasValue)
+                {
+                    resolutionFlags |= 32;
+                }
+
+                writer.Write(resolutionFlags);
+                if (CheatOfferId != null)
+                {
+                    writer.Write(CheatOfferId);
+                }
+
+                if (CheatKeptFirst.HasValue)
+                {
+                    writer.Write(CheatKeptFirst.Value);
+                }
+
+                if (CheatBeamSwapResolution.HasValue)
+                {
+                    writer.Write((byte)CheatBeamSwapResolution.Value);
+                }
+
+                if (CheatResultTileId.HasValue)
+                {
+                    writer.Write(CheatResultTileId.Value);
+                }
+
+                if (CheatHandTileId.HasValue)
+                {
+                    writer.Write(CheatHandTileId.Value);
+                }
+
+                if (CheatTargetSlot.HasValue)
+                {
+                    writer.Write(CheatTargetSlot.Value);
                 }
 
                 byte[] reason = Encoding.ASCII.GetBytes(PublicReasonCode);
@@ -460,7 +598,19 @@ namespace Mahjong.TableRuntime
                     return null;
                 }
 
-                return Build(input, ProtocolEventVisibility.Private, input.TileIds, input.IsClosedKan, input.CheatAmount, input.CheatBalance);
+                return Build(
+                    input,
+                    ProtocolEventVisibility.Private,
+                    input.TileIds,
+                    input.IsClosedKan,
+                    input.CheatAmount,
+                    input.CheatBalance,
+                    input.CheatOfferId,
+                    input.CheatKeptFirst,
+                    input.CheatBeamSwapResolution,
+                    input.CheatResultTileId,
+                    input.CheatHandTileId,
+                    input.CheatTargetSlot);
             }
 
             ProtocolEventVisibility visibility = BaseVisibility(input.Type);
@@ -572,8 +722,22 @@ namespace Mahjong.TableRuntime
                 throw new ArgumentNullException(nameof(record));
             }
 
+            if (record.Cheat != null)
+            {
+                return FromCheatEvent(
+                    record.Cheat.Event,
+                    record.Seq,
+                    record.CommandVersion,
+                    (uint)record.Ordinal,
+                    record.Cheat);
+            }
+
             switch (record.Type)
             {
+                case RoundEventType.CheatApplied:
+                    // The single bridge marker binds the command version/event ordinal for a
+                    // cheat command; it has no frozen protocol type and must not be renamed.
+                    return null;
                 case RoundEventType.TilesDealt:
                     return new TableEventProjectionInput(
                         ProtocolEventType.DealingComplete,
@@ -674,7 +838,8 @@ namespace Mahjong.TableRuntime
             CheatEvent cheatEvent,
             EventSeq eventSeq,
             StateVersion commandVersion,
-            uint eventOrdinal)
+            uint eventOrdinal,
+            TableCheatEventRecord? metadata = null)
         {
             if (cheatEvent == null)
             {
@@ -705,14 +870,34 @@ namespace Mahjong.TableRuntime
                         eventSeq,
                         commandVersion,
                         eventOrdinal,
-                        cheatEvent.Seat);
+                        cheatEvent.Seat,
+                        cheatOfferId: metadata?.OfferId ?? cheatEvent.OfferId,
+                        cheatKeptFirst: metadata?.Keep.HasValue == true
+                            ? metadata.Keep.Value == SleeveBloomKeep.First
+                            : (bool?)null,
+                        cheatResultTileId: metadata?.ResultTile.HasValue == true
+                            ? unchecked((uint)metadata.ResultTile.Value.Value)
+                            : (uint?)null);
                 case CheatEventKind.BeamSwapResolved:
+                    ProjectionBeamSwapResolution? resolution = metadata?.Action.HasValue == true
+                        ? (metadata.Action.Value == BeamSwapAction.Swap
+                            ? ProjectionBeamSwapResolution.Swap
+                            : ProjectionBeamSwapResolution.KeepOriginal)
+                        : (ProjectionBeamSwapResolution?)null;
                     return new TableEventProjectionInput(
                         ProtocolEventType.BeamSwapResolved,
                         eventSeq,
                         commandVersion,
                         eventOrdinal,
-                        cheatEvent.Seat);
+                        cheatEvent.Seat,
+                        cheatOfferId: metadata?.OfferId ?? cheatEvent.OfferId,
+                        cheatBeamSwapResolution: resolution,
+                        cheatHandTileId: metadata?.HandTile.HasValue == true
+                            ? unchecked((uint)metadata.HandTile.Value.Value)
+                            : (uint?)null,
+                        cheatTargetSlot: metadata?.TargetSlot.HasValue == true
+                            ? metadata.TargetSlot.Value.Index
+                            : (int?)null);
                 default:
                     return null;
             }
@@ -773,7 +958,13 @@ namespace Mahjong.TableRuntime
             IReadOnlyList<uint> tileIds,
             bool isClosedKan,
             long? cheatAmount,
-            long? cheatBalance)
+            long? cheatBalance,
+            string? cheatOfferId = null,
+            bool? cheatKeptFirst = null,
+            ProjectionBeamSwapResolution? cheatBeamSwapResolution = null,
+            uint? cheatResultTileId = null,
+            uint? cheatHandTileId = null,
+            int? cheatTargetSlot = null)
         {
             return new TableProjectedEvent(
                 input.Type,
@@ -788,7 +979,13 @@ namespace Mahjong.TableRuntime
                 input.IsChankan,
                 cheatAmount,
                 cheatBalance,
-                input.PublicReasonCode);
+                input.PublicReasonCode,
+                cheatOfferId,
+                cheatKeptFirst,
+                cheatBeamSwapResolution,
+                cheatResultTileId,
+                cheatHandTileId,
+                cheatTargetSlot);
         }
 
         private static uint RequireTile(TableEventRecord record)
