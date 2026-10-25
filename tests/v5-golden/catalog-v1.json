@@ -2,38 +2,147 @@
     "schema":  "v5-golden-catalog-v1",
     "catalogVersion":  1,
     "status":  "evidence-index-not-acceptance",
-    "notice":  "Mechanical hash/count/anchor index over five accepted V4-exported fixtures frozen at PR19 head 205506f. This catalog does not assert G1/G5, V5 production readiness, or full 73-item coverage.",
+    "notice":  "Mechanical hash/count/anchor index over six accepted V4-exported fixtures. The five original fixtures are byte-frozen at 205506f. Accepted ai-v1 is byte-frozen at 09d2a4f (blob 032d79e95e45bde9cb29046cad5f49f338fa78f3), while its embedded v4Commit remains the original V4 source pin 205506f, a source-only commit where no ai-v1 path exists. The catalog index is refreshed at 004c247. This catalog does not assert G1/G5, V5 production readiness, full AI migration, or full 73-item coverage; G-049 is partial only.",
     "baseline":  {
                      "pr":  "feat/v5-1-integration -\u003e v5",
-                     "freezeCommit":  "205506f07f6a1ccfef6b32cf97390431e3349f8d",
-                     "worktree":  "D:/majiang-wt/golden-catalog",
-                     "branch":  "wt/v5-golden-catalog",
+                     "freezeCommit":  "004c24708917168877efaba2565da9dc375fe170",
+                     "fixtureFreezeCommit":  "205506f07f6a1ccfef6b32cf97390431e3349f8d",
+                     "aiFixtureByteFreezeCommit":  "09d2a4fd1690d319b90044becc9156a7c6563cde",
+                     "worktree":  "D:/majiang-wt/n3-c1-index-20261025",
+                     "branch":  "wt/v5-n3-c1-index-20261025",
                      "v4Production":  true,
                      "v5Production":  false,
                      "g1":  "BLOCKED",
                      "g5":  "NOT_COMPLETE",
-                     "fixtureFreezeNote":  "The five fixture files are frozen at 205506f; their embedded v4Commit fields record the original V4 export commits and may differ from the freeze commit."
+                     "fixtureFreezeNote":  "The five original fixtures are byte-frozen at 205506f. Accepted ai-v1 is byte-frozen at 09d2a4f (the first accepted commit containing blob 032d79e95e45bde9cb29046cad5f49f338fa78f3); its embedded v4Commit=205506f is a source-only pin and 205506f contains no ai-v1 path. The catalog index is refreshed at 004c247; this is not a fixture re-export.",
+                     "sourcePinModel":  "Each fixture separates fixtureSourcePin (embedded v4Commit) from fixtureByteFreezeCommit (the accepted commit that actually contains the bytes). The five original fixtures share the historical byte-freeze 205506f; ai-v1's byte-freeze is 09d2a4f while its source pin is 205506f. catalogFreezeCommit is the current index commit. Every fixture declares sourcePinRelation, and accepted bytes are pinned independently in the verifier."
                  },
     "denominators":  {
                          "manifestRequirements":  73,
-                         "fixtures":  5,
-                         "fixtureConcreteCases":  10382,
+                         "fixtures":  6,
+                         "fixtureConcreteCases":  10389,
                          "scoringRandomInputs":  10000,
-                         "csharpGoldenClasses":  5,
-                         "csharpGoldenFacts":  42,
+                         "csharpGoldenClasses":  6,
+                         "csharpGoldenFacts":  45,
                          "requirementCoverage":  {
                                                      "full":  17,
-                                                     "partial":  20,
-                                                     "none":  33,
+                                                     "partial":  21,
+                                                     "none":  32,
                                                      "v5-only":  3
                                                  },
                          "notes":  [
                                        "manifestRequirements counts the 73 G-xxx rows of V5-0-GOLDEN-MANIFEST.md.",
-                                       "fixtureConcreteCases counts concrete JSON cases across the five fixtures; it is not a G-requirement count and excludes the 73-item matrix.",
-                                       "scoringRandomInputs is the 10,000-entry randomSamples subset of scoring-v1 and is not added to fixtureConcreteCases a second time.",
-                                       "csharpGoldenFacts counts [Fact] methods in the five C# reader classes and is a test-method denominator, not a JSON case or requirement count."
+                                       "fixtureConcreteCases counts concrete JSON execution cases across the six fixtures (five original 10382 + accepted ai-v1 7 = 10389); it is not a G-requirement count and excludes the 73-item matrix.",
+                                       "scoringRandomInputs is the 10,000-entry randomSamples subset of scoring-v1; it sits inside scoring-v1's 10,238 cases and is not added to fixtureConcreteCases a second time.",
+                                       "csharpGoldenFacts counts [Fact] methods in the six catalog C# reader classes (42 Domain + 3 Ai = 45); it is a test-method denominator, not a JSON case or requirement count.",
+                                       "ai-v1's recordedIntent, v5Observation, decisionClock, reproducibility, sourceFileSha256 and unexportedOrMappedSamples are not execution cases; only its 7 root cases are counted."
                                    ]
                      },
+    "immutableFixturePins":  [
+                                {
+                                    "id":  "physical-v1",
+                                    "sha256":  "B9384534E826473007511FD34096085C56EFD0E0F49E877978E50F847EDA0995",
+                                    "bytes":  836369,
+                                    "fixtureFreezeCommit":  "205506f07f6a1ccfef6b32cf97390431e3349f8d",
+                                    "sourceV4Commit":  "32f645ec9b134e9ad261a2df89437416b20b3119"
+                                },
+                                {
+                                    "id":  "scoring-v1",
+                                    "sha256":  "53B1811079033E9044E222F7BB1FA263506FD724F09D6B13F84FE9CC2FCCD94E",
+                                    "bytes":  8315131,
+                                    "fixtureFreezeCommit":  "205506f07f6a1ccfef6b32cf97390431e3349f8d",
+                                    "sourceV4Commit":  "97831c88f664a0ff6589b7fa062464d2ca057e29"
+                                },
+                                {
+                                    "id":  "round-v1",
+                                    "sha256":  "DF5FC5F8199C039823BAC1C668F911637EEB80E7F8A785C84D011401CF2452B7",
+                                    "bytes":  43474,
+                                    "fixtureFreezeCommit":  "205506f07f6a1ccfef6b32cf97390431e3349f8d",
+                                    "sourceV4Commit":  "21a7d2c495397b943fc1a170dc23ebc0dc77d4e9"
+                                },
+                                {
+                                    "id":  "cheat-v1",
+                                    "sha256":  "A196CBBD97AB8F61BE8679B74C8F17DF2713CB37AEF0922E5F3C9F725B28AB4E",
+                                    "bytes":  42120,
+                                    "fixtureFreezeCommit":  "205506f07f6a1ccfef6b32cf97390431e3349f8d",
+                                    "sourceV4Commit":  "a96c195c852e035ff6434584135718bbb8a05d29"
+                                },
+                                {
+                                    "id":  "shuffle-v1",
+                                    "sha256":  "386061B42691CCF36381E2D87DC4787367958C8E9E96A93BA69D1E3FE5DAC282",
+                                    "bytes":  99467,
+                                    "fixtureFreezeCommit":  "205506f07f6a1ccfef6b32cf97390431e3349f8d",
+                                    "sourceV4Commit":  "37b4dd610c5e7908dc4938378278c1475e0eee73"
+                                },
+                                {
+                                    "id":  "ai-v1",
+                                    "sha256":  "E898CDB6E1034D1DC8229E807A919E7F64E03062D3E9AD64DED36317402375C9",
+                                    "bytes":  51271,
+                                    "fixtureFreezeCommit":  "09d2a4fd1690d319b90044becc9156a7c6563cde",
+                                    "sourceV4Commit":  "205506f07f6a1ccfef6b32cf97390431e3349f8d"
+                                }
+                            ],
+    "sourcePins":  {
+                       "catalogFreezeCommit":  "004c24708917168877efaba2565da9dc375fe170",
+                       "historicalFixtureFreezeCommit":  "205506f07f6a1ccfef6b32cf97390431e3349f8d",
+                       "aiFixtureByteFreezeCommit":  "09d2a4fd1690d319b90044becc9156a7c6563cde",
+                       "relationVocabulary":  [
+                                                  "source-pin-equals-fixture-freeze",
+                                                  "source-pin-precedes-fixture-freeze"
+                                              ],
+                       "note":  "Three auditable pins are separate: catalogFreezeCommit=004c247 (current index), historicalFixtureFreezeCommit=205506f (the five original fixture bytes), and aiFixtureByteFreezeCommit=09d2a4f (the accepted ai-v1 bytes, blob 032d79e...). ai-v1's embedded v4Commit=205506f is a source-only pin; 205506f has no ai-v1 path. A fixture hash refresh cannot silently move any pin."
+                   },
+    "caseAccounting":  {
+                           "definition":  "catalogCaseTotal = sum of countAsCase groups over the six catalog fixtures. frozenAuditReplayCaseTotal is the frozen N-3 audit's narrower replay-case definition over the five original fixtures: round-v1 counts only roundTerminal+chankanRon, and cheat-v1 counts only the three handler arrays (tileMovement excluded). delta = fiveFixtureCatalogCaseTotal - frozenAuditReplayCaseTotal. aiIncrement is added exactly once after that historical comparison.",
+                           "catalogCaseTotal":  10389,
+                           "fiveFixtureCatalogCaseTotal":  10382,
+                           "frozenAuditReplayCaseTotal":  10353,
+                           "delta":  29,
+                           "deltaDirection":  "five-fixture catalog minus frozen audit replay count",
+                           "deltaBreakdown":  [
+                                                  {
+                                                      "fixture":  "round-v1",
+                                                      "catalogCaseTotal":  25,
+                                                      "auditReplayCaseTotal":  2,
+                                                      "delta":  23,
+                                                      "catalogOnlyGroups":  [
+                                                                                "matchProgression",
+                                                                                "decisionClock",
+                                                                                "controlEpoch"
+                                                                            ],
+                                                      "auditReplayGroups":  [
+                                                                                "roundTerminal",
+                                                                                "chankanRon"
+                                                                            ]
+                                                  },
+                                                  {
+                                                      "fixture":  "cheat-v1",
+                                                      "catalogCaseTotal":  81,
+                                                      "auditReplayCaseTotal":  75,
+                                                      "delta":  6,
+                                                      "catalogOnlyGroups":  [
+                                                                                "tileMovement"
+                                                                            ],
+                                                      "auditReplayGroups":  [
+                                                                                "tileMarkHandler",
+                                                                                "sleeveBloomHandler",
+                                                                                "beamSwapHandler"
+                                                                            ]
+                                                  }
+                                              ],
+                           "aiIncrement":  7,
+                           "aiExecutionCaseGroup":  "cases",
+                           "notExecutionCases":  [
+                                                     "decisionClock",
+                                                     "recordedIntent",
+                                                     "v5Observation",
+                                                     "reproducibility",
+                                                     "sourceFileSha256",
+                                                     "unexportedOrMappedSamples"
+                                                 ],
+                           "scoringRandomInputsAreSubsetOfScoringCases":  true,
+                           "note":  "Delta 29 is a deterministic definition difference, not a defect, not a vulnerability, and not the same denominator. It must not be added to catalogCaseTotal, and aiIncrement must not absorb it."
+                       },
     "fixtures":  [
                      {
                          "id":  "physical-v1",
@@ -45,6 +154,8 @@
                          "rulesetVersion":  1,
                          "extractionStatus":  "exported",
                          "sourceV4Commit":  "32f645ec9b134e9ad261a2df89437416b20b3119",
+                         "fixtureFreezeCommit":  "205506f07f6a1ccfef6b32cf97390431e3349f8d",
+                         "sourcePinRelation":  "source-pin-precedes-fixture-freeze",
                          "sourceV4EngineCommit":  null,
                          "sourceV4DotnetCommit":  null,
                          "generatedByCommand":  "$env:V5_PHYSICAL_GOLDEN_EXPORT=\u00271\u0027; .\\gradlew.bat :engine:test --tests \"com.majiang.model.V5PhysicalGoldenExporterTest\" --console=plain",
@@ -102,6 +213,8 @@
                          "rulesetVersion":  1,
                          "extractionStatus":  "exported",
                          "sourceV4Commit":  "97831c88f664a0ff6589b7fa062464d2ca057e29",
+                         "fixtureFreezeCommit":  "205506f07f6a1ccfef6b32cf97390431e3349f8d",
+                         "sourcePinRelation":  "source-pin-precedes-fixture-freeze",
                          "sourceV4EngineCommit":  null,
                          "sourceV4DotnetCommit":  null,
                          "generatedByCommand":  "$env:V5_GOLDEN_EXPORT=\u00271\u0027; .\\gradlew.bat :engine:test --tests \"com.majiang.rules.V5ScoringGoldenExporterTest\" --console=plain",
@@ -525,6 +638,8 @@
                          "rulesetVersion":  1,
                          "extractionStatus":  "exported",
                          "sourceV4Commit":  "21a7d2c495397b943fc1a170dc23ebc0dc77d4e9",
+                         "fixtureFreezeCommit":  "205506f07f6a1ccfef6b32cf97390431e3349f8d",
+                         "sourcePinRelation":  "source-pin-precedes-fixture-freeze",
                          "sourceV4EngineCommit":  "3f5370c30983a4047dade0835bb2c49dacc5ebbf",
                          "sourceV4DotnetCommit":  "21a7d2c495397b943fc1a170dc23ebc0dc77d4e9",
                          "generatedByCommand":  "$env:V5_ROUND_GOLDEN_EXPORT=\u00271\u0027; .\\gradlew.bat :engine:test --tests \"com.majiang.rules.V5RoundGoldenExportTest\" --console=plain",
@@ -651,6 +766,8 @@
                          "rulesetVersion":  1,
                          "extractionStatus":  "exported",
                          "sourceV4Commit":  "a96c195c852e035ff6434584135718bbb8a05d29",
+                         "fixtureFreezeCommit":  "205506f07f6a1ccfef6b32cf97390431e3349f8d",
+                         "sourcePinRelation":  "source-pin-precedes-fixture-freeze",
                          "sourceV4EngineCommit":  null,
                          "sourceV4DotnetCommit":  null,
                          "generatedByCommand":  "V5_CHEAT_GOLDEN_EXPORT=1 ./gradlew :engine:test --tests com.majiang.v3.V5CheatGoldenExporterTest --console=plain",
@@ -854,6 +971,8 @@
                          "rulesetVersion":  1,
                          "extractionStatus":  "exported",
                          "sourceV4Commit":  "37b4dd610c5e7908dc4938378278c1475e0eee73",
+                         "fixtureFreezeCommit":  "205506f07f6a1ccfef6b32cf97390431e3349f8d",
+                         "sourcePinRelation":  "source-pin-precedes-fixture-freeze",
                          "sourceV4EngineCommit":  null,
                          "sourceV4DotnetCommit":  null,
                          "generatedByCommand":  "V5_SHUFFLE_GOLDEN_EXPORT=1 ./gradlew :engine:test --tests \\\"com.majiang.v3.V5ShuffleGoldenExporterTest\\\" --console=plain",
@@ -1006,7 +1125,251 @@
                                     ],
                          "caseTotal":  32
                      }
-                 ],
+                 ,
+                     {
+                         "id":  "ai-v1",
+                         "path":  "tests/v5-golden/ai-v1.json",
+                         "sha256":  "E898CDB6E1034D1DC8229E807A919E7F64E03062D3E9AD64DED36317402375C9",
+                         "bytes":  51271,
+                         "schema":  "v5-ai-golden-v1",
+                         "generatorVersion":  1,
+                         "rulesetVersion":  1,
+                         "extractionStatus":  "exported",
+                         "sourceV4Commit":  "205506f07f6a1ccfef6b32cf97390431e3349f8d",
+                         "sourceV4EngineCommit":  "3f5370c30983a4047dade0835bb2c49dacc5ebbf",
+                         "sourceV4AiCommit":  "a96c195c852e035ff6434584135718bbb8a05d29",
+                         "sourceV4DomainCommit":  "5f4f8295297d60011f07115fe9b984a1ef80c4ba",
+                         "fixtureFreezeCommit":  "09d2a4fd1690d319b90044becc9156a7c6563cde",
+                         "sourcePinRelation":  "source-pin-precedes-fixture-freeze",
+                         "byteFreezeEvidence":  "09d2a4f:tests/v5-golden/ai-v1.json = blob 032d79e95e45bde9cb29046cad5f49f338fa78f3; 205506f has no ai-v1 path",
+                         "generatedAtHead":  "b49911ca3c2010719715982bfb83b2ad70358a1a",
+                         "generatedByCommand":  "$env:V5_AI_GOLDEN_EXPORT='1'; .\\gradlew.bat :engine:test --tests \"com.majiang.state.V5AiGoldenExporterTest\" --console=plain",
+                         "exporter":  {
+                                          "path":  "engine/src/test/kotlin/com/majiang/state/V5AiGoldenExporterTest.kt",
+                                          "testClass":  "com.majiang.state.V5AiGoldenExporterTest",
+                                          "sha256Raw":  "F70DA6A4AFBB06FA1BC80F2D0A6573BFB5A63DD302B2CA52122A551D623C76F8",
+                                          "sha256Lf":  "0E4289DE81E9BCC31D9D37E1A22D79D63816E807A4619912A70B787E1E3DA863",
+                                          "declaredSha256Lf":  null
+                                      },
+                         "csharp":  {
+                                        "path":  "dotnet/tests/Mahjong.Ai.Tests/AiReplayGoldenTests.cs",
+                                        "class":  "Mahjong.Ai.Tests.AiReplayGoldenTests",
+                                        "factCount":  3,
+                                        "filter":  "-class \"Mahjong.Ai.Tests.AiReplayGoldenTests\"",
+                                        "buildCommand":  "D:/Unity/dotnet/dotnet.exe test dotnet/tests/Mahjong.Ai.Tests/Mahjong.Ai.Tests.csproj -c Release --nologo -v:minimal",
+                                        "targetedCommand":  "D:/Unity/dotnet/dotnet.exe dotnet/tests/Mahjong.Ai.Tests/bin/Release/net8.0/Mahjong.Ai.Tests.dll -class \"Mahjong.Ai.Tests.AiReplayGoldenTests\" -noColor -noLogo",
+                                        "note":  "xUnit v3 Microsoft.Testing.Platform ignores dotnet-test VSTest --filter; the targeted command uses the direct runner. AiReplayStateGoldenTests is accepted state-execution evidence and is not added to the catalog Fact denominator."
+                                    },
+                         "acceptedBindings":  [
+                                                  {
+                                                      "path":  "dotnet/tests/Mahjong.Ai.Tests/AiReplayStateGoldenTests.cs",
+                                                      "class":  "Mahjong.Ai.Tests.AiReplayStateGoldenTests",
+                                                      "factCount":  3,
+                                                      "commit":  "7da818dc12d19739e2bd0026f90990b2aff098fc",
+                                                      "includedCommits":  [
+                                                                              "6d168123b3115ae52ced6bf834035176a7c2e600",
+                                                                              "7da818dc12d19739e2bd0026f90990b2aff098fc"
+                                                                          ],
+                                                      "report":  "doc/v5-重构/V5-N3-AI-REPLAY-BINDING.md",
+                                                      "role":  "accepted real RoundStateMachine execution and zero-side-effect evidence"
+                                                  }
+                                              ],
+                         "bindings":  [
+                                          {
+                                              "jsonPath":  "$.decisionClock",
+                                              "kind":  "IN_BIND",
+                                              "consumerPath":  "dotnet/tests/Mahjong.Ai.Tests/AiReplayGoldenTests.cs",
+                                              "consumerLines":  "97-101,251-265",
+                                              "evidence":  "Fact1 provenance/expired boundaries and Fact3 DecisionClockConfig/Open/deadline OUT_DIFF"
+                                          },
+                                          {
+                                              "jsonPath":  "$.recordedIntent",
+                                              "kind":  "IN_BIND",
+                                              "consumerPath":  "dotnet/tests/Mahjong.Ai.Tests/AiReplayGoldenTests.cs",
+                                              "consumerLines":  "103-109,402-420",
+                                              "evidence":  "recorded intent fields select the replay action; heuristic is never run"
+                                          },
+                                          {
+                                              "jsonPath":  "$.cases[*].v4Call",
+                                              "kind":  "IN_BIND",
+                                              "consumerPath":  "dotnet/tests/Mahjong.Ai.Tests/AiReplayGoldenTests.cs",
+                                              "consumerLines":  "523-584",
+                                              "evidence":  "submitted stamps and action are rebuilt from v4Call and checked against the frozen observation"
+                                          },
+                                          {
+                                              "jsonPath":  "$.cases[*].v5.authorityMapping",
+                                              "kind":  "IN_BIND",
+                                              "consumerPath":  "dotnet/tests/Mahjong.Ai.Tests/AiReplayGoldenTests.cs",
+                                              "consumerLines":  "133-140,434-442",
+                                              "evidence":  "authority mode, derivedFrom and isFreshV4Authority are bound per case kind"
+                                          },
+                                          {
+                                              "jsonPath":  "$.cases[*].v4",
+                                              "kind":  "OUT_DIFF",
+                                              "consumerPath":  "dotnet/tests/Mahjong.Ai.Tests/AiReplayGoldenTests.cs",
+                                              "consumerLines":  "586-637",
+                                              "evidence":  "receipt status/reason/stateChanged/eventCount and accepted/rejected state relations"
+                                          },
+                                          {
+                                              "jsonPath":  "$.cases[*].v4.beforeState",
+                                              "kind":  "OUT_DIFF",
+                                              "consumerPath":  "dotnet/tests/Mahjong.Ai.Tests/AiReplayStateGoldenTests.cs",
+                                              "consumerLines":  "101-333",
+                                              "evidence":  "accepted state execution and rejected zero-side-effect compared field by field"
+                                          },
+                                          {
+                                              "jsonPath":  "$.cases[*].v5.expected.mappingBasis",
+                                              "kind":  "UNBOUND",
+                                              "owner":  "GAP:N3-B6",
+                                              "evidence":  "no C# read; remains a G-049 partial gap"
+                                          },
+                                          {
+                                              "jsonPath":  "$.v5Observation.mappingLimits",
+                                              "kind":  "UNBOUND",
+                                              "owner":  "GAP:N3-B6",
+                                              "evidence":  "no C# read; remains a G-049 partial gap"
+                                          },
+                                          {
+                                              "jsonPath":  "$.cases[*].v4.events[*].text",
+                                              "kind":  "UNBOUND",
+                                              "owner":  "GAP:N3-B9",
+                                              "evidence":  "C# has no event text field; structural fields only"
+                                          },
+                                          {
+                                              "jsonPath":  "$.cases[*].v4Call.action.text",
+                                              "kind":  "UNBOUND",
+                                              "owner":  "GAP:N3-B9",
+                                              "evidence":  "C# has no action text field; structured action fields only"
+                                          }
+                                      ],
+                         "partialReason":  [
+                                               "No C# replay of every case against the full V4 before/after tree; the fixture-internal DeepEquals is not a C# post-state differential.",
+                                               "mappingBasis and mappingLimits have no C# value assertion (GAP:N3-B6).",
+                                               "V4 event text and v4Call.action.text have no C# value assertion (GAP:N3-B9).",
+                                               "AI host integration, cheat intent and cross-language canonical hash equality are not exported or tested."
+                                           ],
+                         "groups":  [
+                                        {
+                                            "name":  "cases",
+                                            "jsonPath":  "cases",
+                                            "kind":  "array",
+                                            "count":  7,
+                                            "countAsCase":  true,
+                                            "idField":  "id",
+                                            "ids":  [
+                                                        "AI-002-old-round",
+                                                        "AI-003-old-decision",
+                                                        "AI-004-old-epoch",
+                                                        "AI-005-wrong-seat",
+                                                        "AI-006-candidate-not-legal",
+                                                        "AI-007-exact-deadline",
+                                                        "AI-001-legal-intent-before-deadline"
+                                                    ],
+                                            "requiredKeys":  [
+                                                                 "id",
+                                                                 "kind",
+                                                                 "note",
+                                                                 "v4Call",
+                                                                 "v4",
+                                                                 "v5"
+                                                             ]
+                                        },
+                                        {
+                                            "name":  "decisionClock",
+                                            "jsonPath":  "decisionClock",
+                                            "kind":  "object",
+                                            "count":  7,
+                                            "countAsCase":  false,
+                                            "keys":  [
+                                                         "baseMillis",
+                                                         "reserveMillis",
+                                                         "reserveScope",
+                                                         "opensAtMillis",
+                                                         "deadlineMillis",
+                                                         "expiredAtDeadlineMinus1",
+                                                         "expiredAtDeadline"
+                                                     ]
+                                        },
+                                        {
+                                            "name":  "recordedIntent",
+                                            "jsonPath":  "recordedIntent",
+                                            "kind":  "object",
+                                            "count":  5,
+                                            "countAsCase":  false,
+                                            "keys":  [
+                                                         "algorithmId",
+                                                         "algorithmVersion",
+                                                         "selectedLegalActionRef",
+                                                         "selectedOptionId",
+                                                         "selectedAction"
+                                                     ]
+                                        },
+                                        {
+                                            "name":  "v5Observation",
+                                            "jsonPath":  "v5Observation",
+                                            "kind":  "object",
+                                            "count":  23,
+                                            "countAsCase":  false,
+                                            "keys":  [
+                                                         "sessionId",
+                                                         "seat",
+                                                         "roundId",
+                                                         "decisionId",
+                                                         "controlEpoch",
+                                                         "stateVersion",
+                                                         "deadlineMillis",
+                                                         "phase",
+                                                         "dealerSeat",
+                                                         "roundWind",
+                                                         "roundNumber",
+                                                         "honbaSticks",
+                                                         "riichiSticks",
+                                                         "remainingWallCount",
+                                                         "myHandTileIds",
+                                                         "myDrawnTileId",
+                                                         "myMelds",
+                                                         "visibleMelds",
+                                                         "visibleDiscards",
+                                                         "visibleDoraIndicators",
+                                                         "scores",
+                                                         "legalActions",
+                                                         "mappingLimits"
+                                                     ]
+                                        },
+                                        {
+                                            "name":  "reproducibility",
+                                            "jsonPath":  "reproducibility",
+                                            "kind":  "object",
+                                            "count":  3,
+                                            "countAsCase":  false,
+                                            "keys":  [
+                                                         "stableAcrossRegeneration",
+                                                         "randomOrRunSpecific",
+                                                         "note"
+                                                     ]
+                                        },
+                                        {
+                                            "name":  "sourceFileSha256",
+                                            "jsonPath":  "sourceFileSha256",
+                                            "kind":  "array",
+                                            "count":  13,
+                                            "countAsCase":  false,
+                                            "requiredKeys":  [
+                                                                 "path",
+                                                                 "sha256",
+                                                                 "lastCommit"
+                                                             ]
+                                        },
+                                        {
+                                            "name":  "unexportedOrMappedSamples",
+                                            "jsonPath":  "unexportedOrMappedSamples",
+                                            "kind":  "array",
+                                            "count":  6,
+                                            "countAsCase":  false
+                                        }
+                                    ],
+                         "caseTotal":  7
+                     }],
     "requirements":  [
                          {
                              "id":  "G-001a",
@@ -1638,13 +2001,32 @@
                          {
                              "id":  "G-049",
                              "manifestStatus":  "pending-v4-replay",
-                             "coverage":  "none",
+                             "coverage":  "partial",
                              "anchors":  [
-
+                                             "ai-v1:cases/AI-002-old-round",
+                                             "ai-v1:cases/AI-003-old-decision",
+                                             "ai-v1:cases/AI-004-old-epoch",
+                                             "ai-v1:cases/AI-005-wrong-seat",
+                                             "ai-v1:cases/AI-006-candidate-not-legal",
+                                             "ai-v1:cases/AI-007-exact-deadline",
+                                             "ai-v1:cases/AI-001-legal-intent-before-deadline",
+                                             "ai-v1:decisionClock",
+                                             "ai-v1:recordedIntent",
+                                             "ai-v1:v5Observation"
                                          ],
                              "owner":  "P1.6",
-                             "note":  "No AiDecisionRecorded/intent or stale-AI submission fixture.",
-                             "csharpEvidence":  ""
+                             "note":  "Accepted ai-v1 is now indexed: 7 real cases replay the recorded intent through AiDecisionService.Submit and the accepted case executes a real RoundStateMachine. G-049 remains partial, never full: mappingBasis/mappingLimits (GAP:N3-B6), event/action text (GAP:N3-B9), full C# post-state vs V4 tree differential, AI host integration and cheat intent remain unbound or unexported. This row does not assert all-AI migration, field-level 100% or G1.",
+                             "csharpEvidence":  "AiReplayGoldenTests.GoldenFixtureHasProvenanceAndTheExpectedV4Cases / GoldenCasesReplayTheRecordedIntentAndMatchTheV4SemanticMapping / AcceptedGoldenIntentFeedsTheDomainDeadlineArbiter (3 Facts); AiReplayStateGoldenTests.AcceptedIntentExecutesTheRealRoundAndMatchesExportedState / RejectedIntentsHaveZeroRealRoundSideEffects / ExportedStateSchemaIsFullyBoundOrDeclaredUnrepresentable (3 accepted Facts, not in catalog Fact denominator)",
+                             "partialScope":  {
+                                                  "fullClaim":  false,
+                                                  "closed":  false,
+                                                  "remainingGaps":  [
+                                                                        "GAP:N3-B6 mappingBasis and mappingLimits have no C# value assertion.",
+                                                                        "GAP:N3-B9 v4.events[*].text and v4Call.action.text have no C# value assertion.",
+                                                                        "No C# replay of every case against the full V4 before/after tree; fixture-internal DeepEquals is not that differential.",
+                                                                        "AI host integration, cheat intent and cross-language canonical hash equality are not exported or tested."
+                                                                    ]
+                                              }
                          },
                          {
                              "id":  "G-050a",
@@ -5416,6 +5798,767 @@
                                                                             "type":  "object"
                                                                         }
                                                                     ]
-                                                      }
+                                                      },
+"ai-v1:cases":  {
+                                                "requiredKeys":  [
+                                                                     "id",
+                                                                     "kind",
+                                                                     "note",
+                                                                     "v4Call",
+                                                                     "v4",
+                                                                     "v5"
+                                                                 ],
+                                                "rules":  [
+                                                              {
+                                                                  "path":  "id",
+                                                                  "type":  "string"
+                                                              },
+                                                              {
+                                                                  "path":  "kind",
+                                                                  "type":  "string"
+                                                              },
+                                                              {
+                                                                  "path":  "note",
+                                                                  "type":  "string"
+                                                              },
+                                                              {
+                                                                  "path":  "v4Call",
+                                                                  "type":  "object"
+                                                              },
+                                                              {
+                                                                  "path":  "v4Call.entryPoint",
+                                                                  "type":  "string"
+                                                              },
+                                                              {
+                                                                  "path":  "v4Call.seat",
+                                                                  "type":  "number"
+                                                              },
+                                                              {
+                                                                  "path":  "v4Call.roundId",
+                                                                  "type":  "string"
+                                                              },
+                                                              {
+                                                                  "path":  "v4Call.decisionId",
+                                                                  "type":  "string"
+                                                              },
+                                                              {
+                                                                  "path":  "v4Call.controlEpoch",
+                                                                  "type":  "number"
+                                                              },
+                                                              {
+                                                                  "path":  "v4Call.optionId",
+                                                                  "type":  "string-or-null"
+                                                              },
+                                                              {
+                                                                  "path":  "v4Call.submittedActionRef",
+                                                                  "type":  "string"
+                                                              },
+                                                              {
+                                                                  "path":  "v4Call.nowMillis",
+                                                                  "type":  "number"
+                                                              },
+                                                              {
+                                                                  "path":  "v4Call.deadlineMillis",
+                                                                  "type":  "number"
+                                                              },
+                                                              {
+                                                                  "path":  "v4Call.nowBeforeDeadline",
+                                                                  "type":  "boolean"
+                                                              },
+                                                              {
+                                                                  "path":  "v4Call.action",
+                                                                  "type":  "object"
+                                                              },
+                                                              {
+                                                                  "path":  "v4Call.action.type",
+                                                                  "type":  "string"
+                                                              },
+                                                              {
+                                                                  "path":  "v4Call.action.kind",
+                                                                  "type":  "string"
+                                                              },
+                                                              {
+                                                                  "path":  "v4Call.action.player",
+                                                                  "type":  "number"
+                                                              },
+                                                              {
+                                                                  "path":  "v4Call.action.tileId",
+                                                                  "type":  "number-or-null"
+                                                              },
+                                                              {
+                                                                  "path":  "v4Call.action.optionId",
+                                                                  "type":  "string-or-null"
+                                                              },
+                                                              {
+                                                                  "path":  "v4Call.action.text",
+                                                                  "type":  "string"
+                                                              },
+                                                              {
+                                                                  "path":  "v4",
+                                                                  "type":  "object"
+                                                              },
+                                                              {
+                                                                  "path":  "v4.receiptStatus",
+                                                                  "type":  "string"
+                                                              },
+                                                              {
+                                                                  "path":  "v4.reason",
+                                                                  "type":  "string-or-null"
+                                                              },
+                                                              {
+                                                                  "path":  "v4.stateChanged",
+                                                                  "type":  "boolean"
+                                                              },
+                                                              {
+                                                                  "path":  "v4.eventCount",
+                                                                  "type":  "number"
+                                                              },
+                                                              {
+                                                                  "path":  "v4.events",
+                                                                  "type":  "array"
+                                                              },
+                                                              {
+                                                                  "path":  "v4.beforeState",
+                                                                  "type":  "object"
+                                                              },
+                                                              {
+                                                                  "path":  "v4.afterState",
+                                                                  "type":  "object"
+                                                              },
+                                                              {
+                                                                  "path":  "v4.beforeState.roundId",
+                                                                  "type":  "string"
+                                                              },
+                                                              {
+                                                                  "path":  "v4.beforeState.roundVersion",
+                                                                  "type":  "number"
+                                                              },
+                                                              {
+                                                                  "path":  "v4.beforeState.phase",
+                                                                  "type":  "string"
+                                                              },
+                                                              {
+                                                                  "path":  "v4.beforeState.currentPlayer",
+                                                                  "type":  "number"
+                                                              },
+                                                              {
+                                                                  "path":  "v4.beforeState.dealerSeat",
+                                                                  "type":  "number"
+                                                              },
+                                                              {
+                                                                  "path":  "v4.beforeState.turnNumber",
+                                                                  "type":  "number"
+                                                              },
+                                                              {
+                                                                  "path":  "v4.beforeState.wallPointer",
+                                                                  "type":  "number"
+                                                              },
+                                                              {
+                                                                  "path":  "v4.beforeState.wallEndExclusive",
+                                                                  "type":  "number"
+                                                              },
+                                                              {
+                                                                  "path":  "v4.beforeState.wallRemaining",
+                                                                  "type":  "number"
+                                                              },
+                                                              {
+                                                                  "path":  "v4.beforeState.riichiSticks",
+                                                                  "type":  "number"
+                                                              },
+                                                              {
+                                                                  "path":  "v4.beforeState.honbaSticks",
+                                                                  "type":  "number"
+                                                              },
+                                                              {
+                                                                  "path":  "v4.beforeState.scores",
+                                                                  "type":  "array",
+                                                                  "length":  4
+                                                              },
+                                                              {
+                                                                  "path":  "v4.beforeState.cheatPoints",
+                                                                  "type":  "array",
+                                                                  "length":  4
+                                                              },
+                                                              {
+                                                                  "path":  "v4.beforeState.lastDiscardTileId",
+                                                                  "type":  "number-or-null"
+                                                              },
+                                                              {
+                                                                  "path":  "v4.beforeState.lastDiscardPlayer",
+                                                                  "type":  "number"
+                                                              },
+                                                              {
+                                                                  "path":  "v4.beforeState.seats",
+                                                                  "type":  "array",
+                                                                  "length":  4
+                                                              },
+                                                              {
+                                                                  "path":  "v4.afterState.roundId",
+                                                                  "type":  "string"
+                                                              },
+                                                              {
+                                                                  "path":  "v4.afterState.roundVersion",
+                                                                  "type":  "number"
+                                                              },
+                                                              {
+                                                                  "path":  "v4.afterState.phase",
+                                                                  "type":  "string"
+                                                              },
+                                                              {
+                                                                  "path":  "v4.afterState.currentPlayer",
+                                                                  "type":  "number"
+                                                              },
+                                                              {
+                                                                  "path":  "v4.afterState.dealerSeat",
+                                                                  "type":  "number"
+                                                              },
+                                                              {
+                                                                  "path":  "v4.afterState.turnNumber",
+                                                                  "type":  "number"
+                                                              },
+                                                              {
+                                                                  "path":  "v4.afterState.wallPointer",
+                                                                  "type":  "number"
+                                                              },
+                                                              {
+                                                                  "path":  "v4.afterState.wallEndExclusive",
+                                                                  "type":  "number"
+                                                              },
+                                                              {
+                                                                  "path":  "v4.afterState.wallRemaining",
+                                                                  "type":  "number"
+                                                              },
+                                                              {
+                                                                  "path":  "v4.afterState.riichiSticks",
+                                                                  "type":  "number"
+                                                              },
+                                                              {
+                                                                  "path":  "v4.afterState.honbaSticks",
+                                                                  "type":  "number"
+                                                              },
+                                                              {
+                                                                  "path":  "v4.afterState.scores",
+                                                                  "type":  "array",
+                                                                  "length":  4
+                                                              },
+                                                              {
+                                                                  "path":  "v4.afterState.cheatPoints",
+                                                                  "type":  "array",
+                                                                  "length":  4
+                                                              },
+                                                              {
+                                                                  "path":  "v4.afterState.lastDiscardTileId",
+                                                                  "type":  "number-or-null"
+                                                              },
+                                                              {
+                                                                  "path":  "v4.afterState.lastDiscardPlayer",
+                                                                  "type":  "number"
+                                                              },
+                                                              {
+                                                                  "path":  "v4.afterState.seats",
+                                                                  "type":  "array",
+                                                                  "length":  4
+                                                              },
+                                                              {
+                                                                  "path":  "v5",
+                                                                  "type":  "object"
+                                                              },
+                                                              {
+                                                                  "path":  "v5.intentActionRef",
+                                                                  "type":  "string"
+                                                              },
+                                                              {
+                                                                  "path":  "v5.submittedAtMillis",
+                                                                  "type":  "number"
+                                                              },
+                                                              {
+                                                                  "path":  "v5.authority",
+                                                                  "type":  "object"
+                                                              },
+                                                              {
+                                                                  "path":  "v5.authority.seat",
+                                                                  "type":  "number"
+                                                              },
+                                                              {
+                                                                  "path":  "v5.authority.roundId",
+                                                                  "type":  "string"
+                                                              },
+                                                              {
+                                                                  "path":  "v5.authority.currentDecisionId",
+                                                                  "type":  "string"
+                                                              },
+                                                              {
+                                                                  "path":  "v5.authority.controlEpoch",
+                                                                  "type":  "number"
+                                                              },
+                                                              {
+                                                                  "path":  "v5.authority.seatAutomated",
+                                                                  "type":  "boolean"
+                                                              },
+                                                              {
+                                                                  "path":  "v5.authority.clockPaused",
+                                                                  "type":  "boolean"
+                                                              },
+                                                              {
+                                                                  "path":  "v5.authority.deadlineMillis",
+                                                                  "type":  "number"
+                                                              },
+                                                              {
+                                                                  "path":  "v5.authority.legalActionRefs",
+                                                                  "type":  "array"
+                                                              },
+                                                              {
+                                                                  "path":  "v5.authorityMapping",
+                                                                  "type":  "object"
+                                                              },
+                                                              {
+                                                                  "path":  "v5.authorityMapping.mode",
+                                                                  "type":  "string"
+                                                              },
+                                                              {
+                                                                  "path":  "v5.authorityMapping.derivedFrom",
+                                                                  "type":  "array",
+                                                                  "length":  2
+                                                              },
+                                                              {
+                                                                  "path":  "v5.authorityMapping.isFreshV4Authority",
+                                                                  "type":  "boolean"
+                                                              },
+                                                              {
+                                                                  "path":  "v5.authorityMapping.basis",
+                                                                  "type":  "string"
+                                                              },
+                                                              {
+                                                                  "path":  "v5.expected",
+                                                                  "type":  "object"
+                                                              },
+                                                              {
+                                                                  "path":  "v5.expected.accepted",
+                                                                  "type":  "boolean"
+                                                              },
+                                                              {
+                                                                  "path":  "v5.expected.rejectionCode",
+                                                                  "type":  "string-or-null"
+                                                              },
+                                                              {
+                                                                  "path":  "v5.expected.mappingBasis",
+                                                                  "type":  "string"
+                                                              }
+                                                          ],
+                                                "arrayItemRules":  {
+                                                                       "v4.events":  {
+                                                                                         "type":  "object",
+                                                                                         "rules":  [
+                                                                                                                                       {
+                                                                                                                                           "path":  "type",
+                                                                                                                                           "type":  "string"
+                                                                                                                                       },
+                                                                                                                                       {
+                                                                                                                                           "path":  "kind",
+                                                                                                                                           "type":  "string"
+                                                                                                                                       },
+                                                                                                                                       {
+                                                                                                                                           "path":  "player",
+                                                                                                                                           "type":  "number"
+                                                                                                                                       },
+                                                                                                                                       {
+                                                                                                                                           "path":  "tileId",
+                                                                                                                                           "type":  "number"
+                                                                                                                                       },
+                                                                                                                                       {
+                                                                                                                                           "path":  "structured",
+                                                                                                                                           "type":  "boolean"
+                                                                                                                                       },
+                                                                                                                                       {
+                                                                                                                                           "path":  "text",
+                                                                                                                                           "type":  "string"
+                                                                                                                                       }
+                                                                                                                                   ]
+                                                                                     },
+                                                                       "v4.beforeState.seats":  {
+                                                                                                    "type":  "object",
+                                                                                                    "rules":  [
+                                                                                                                                                  {
+                                                                                                                                                      "path":  "seat",
+                                                                                                                                                      "type":  "number"
+                                                                                                                                                  },
+                                                                                                                                                  {
+                                                                                                                                                      "path":  "closedCount",
+                                                                                                                                                      "type":  "number"
+                                                                                                                                                  },
+                                                                                                                                                  {
+                                                                                                                                                      "path":  "drawnTileId",
+                                                                                                                                                      "type":  "number-or-null"
+                                                                                                                                                  },
+                                                                                                                                                  {
+                                                                                                                                                      "path":  "meldCount",
+                                                                                                                                                      "type":  "number"
+                                                                                                                                                  },
+                                                                                                                                                  {
+                                                                                                                                                      "path":  "discardCount",
+                                                                                                                                                      "type":  "number"
+                                                                                                                                                  },
+                                                                                                                                                  {
+                                                                                                                                                      "path":  "sleeveCount",
+                                                                                                                                                      "type":  "number"
+                                                                                                                                                  }
+                                                                                                                                              ]
+                                                                                                },
+                                                                       "v4.afterState.seats":  {
+                                                                                                   "type":  "object",
+                                                                                                   "rules":  [
+                                                                                                                                                 {
+                                                                                                                                                     "path":  "seat",
+                                                                                                                                                     "type":  "number"
+                                                                                                                                                 },
+                                                                                                                                                 {
+                                                                                                                                                     "path":  "closedCount",
+                                                                                                                                                     "type":  "number"
+                                                                                                                                                 },
+                                                                                                                                                 {
+                                                                                                                                                     "path":  "drawnTileId",
+                                                                                                                                                     "type":  "number-or-null"
+                                                                                                                                                 },
+                                                                                                                                                 {
+                                                                                                                                                     "path":  "meldCount",
+                                                                                                                                                     "type":  "number"
+                                                                                                                                                 },
+                                                                                                                                                 {
+                                                                                                                                                     "path":  "discardCount",
+                                                                                                                                                     "type":  "number"
+                                                                                                                                                 },
+                                                                                                                                                 {
+                                                                                                                                                     "path":  "sleeveCount",
+                                                                                                                                                     "type":  "number"
+                                                                                                                                                 }
+                                                                                                                                             ]
+                                                                                               },
+                                                                       "v5.authority.legalActionRefs":  {
+                                                                                                            "type":  "string"
+                                                                                                        },
+                                                                       "v5.authorityMapping.derivedFrom":  {
+                                                                                                               "type":  "string"
+                                                                                                           }
+                                                                   }
+                                            },
+                            "ai-v1:decisionClock":  {
+                                                        "requiredKeys":  [
+                                                                             "baseMillis",
+                                                                             "reserveMillis",
+                                                                             "reserveScope",
+                                                                             "opensAtMillis",
+                                                                             "deadlineMillis",
+                                                                             "expiredAtDeadlineMinus1",
+                                                                             "expiredAtDeadline"
+                                                                         ],
+                                                        "rules":  [
+                                                                      {
+                                                                          "path":  "baseMillis",
+                                                                          "type":  "number"
+                                                                      },
+                                                                      {
+                                                                          "path":  "reserveMillis",
+                                                                          "type":  "number"
+                                                                      },
+                                                                      {
+                                                                          "path":  "reserveScope",
+                                                                          "type":  "string"
+                                                                      },
+                                                                      {
+                                                                          "path":  "opensAtMillis",
+                                                                          "type":  "number"
+                                                                      },
+                                                                      {
+                                                                          "path":  "deadlineMillis",
+                                                                          "type":  "number"
+                                                                      },
+                                                                      {
+                                                                          "path":  "expiredAtDeadlineMinus1",
+                                                                          "type":  "boolean"
+                                                                      },
+                                                                      {
+                                                                          "path":  "expiredAtDeadline",
+                                                                          "type":  "boolean"
+                                                                      }
+                                                                  ]
+                                                    },
+                            "ai-v1:recordedIntent":  {
+                                                         "requiredKeys":  [
+                                                                              "algorithmId",
+                                                                              "algorithmVersion",
+                                                                              "selectedLegalActionRef",
+                                                                              "selectedOptionId",
+                                                                              "selectedAction"
+                                                                          ],
+                                                         "rules":  [
+                                                                       {
+                                                                           "path":  "algorithmId",
+                                                                           "type":  "string"
+                                                                       },
+                                                                       {
+                                                                           "path":  "algorithmVersion",
+                                                                           "type":  "number"
+                                                                       },
+                                                                       {
+                                                                           "path":  "selectedLegalActionRef",
+                                                                           "type":  "string"
+                                                                       },
+                                                                       {
+                                                                           "path":  "selectedOptionId",
+                                                                           "type":  "string"
+                                                                       },
+                                                                       {
+                                                                           "path":  "selectedAction",
+                                                                           "type":  "object"
+                                                                       },
+                                                                       {
+                                                                           "path":  "selectedAction.type",
+                                                                           "type":  "string"
+                                                                       },
+                                                                       {
+                                                                           "path":  "selectedAction.kind",
+                                                                           "type":  "string"
+                                                                       },
+                                                                       {
+                                                                           "path":  "selectedAction.player",
+                                                                           "type":  "number"
+                                                                       },
+                                                                       {
+                                                                           "path":  "selectedAction.tileId",
+                                                                           "type":  "number-or-null"
+                                                                       },
+                                                                       {
+                                                                           "path":  "selectedAction.optionId",
+                                                                           "type":  "string-or-null"
+                                                                       },
+                                                                       {
+                                                                           "path":  "selectedAction.text",
+                                                                           "type":  "string"
+                                                                       }
+                                                                   ]
+                                                     },
+                            "ai-v1:v5Observation":  {
+                                                        "requiredKeys":  [
+                                                                             "sessionId",
+                                                                             "seat",
+                                                                             "roundId",
+                                                                             "decisionId",
+                                                                             "controlEpoch",
+                                                                             "stateVersion",
+                                                                             "deadlineMillis",
+                                                                             "phase",
+                                                                             "dealerSeat",
+                                                                             "roundWind",
+                                                                             "roundNumber",
+                                                                             "honbaSticks",
+                                                                             "riichiSticks",
+                                                                             "remainingWallCount",
+                                                                             "myHandTileIds",
+                                                                             "myDrawnTileId",
+                                                                             "myMelds",
+                                                                             "visibleMelds",
+                                                                             "visibleDiscards",
+                                                                             "visibleDoraIndicators",
+                                                                             "scores",
+                                                                             "legalActions",
+                                                                             "mappingLimits"
+                                                                         ],
+                                                        "rules":  [
+                                                                      {
+                                                                          "path":  "sessionId",
+                                                                          "type":  "string"
+                                                                      },
+                                                                      {
+                                                                          "path":  "seat",
+                                                                          "type":  "number"
+                                                                      },
+                                                                      {
+                                                                          "path":  "roundId",
+                                                                          "type":  "string"
+                                                                      },
+                                                                      {
+                                                                          "path":  "decisionId",
+                                                                          "type":  "string"
+                                                                      },
+                                                                      {
+                                                                          "path":  "controlEpoch",
+                                                                          "type":  "number"
+                                                                      },
+                                                                      {
+                                                                          "path":  "stateVersion",
+                                                                          "type":  "number"
+                                                                      },
+                                                                      {
+                                                                          "path":  "deadlineMillis",
+                                                                          "type":  "number"
+                                                                      },
+                                                                      {
+                                                                          "path":  "phase",
+                                                                          "type":  "string"
+                                                                      },
+                                                                      {
+                                                                          "path":  "dealerSeat",
+                                                                          "type":  "number"
+                                                                      },
+                                                                      {
+                                                                          "path":  "roundWind",
+                                                                          "type":  "number"
+                                                                      },
+                                                                      {
+                                                                          "path":  "roundNumber",
+                                                                          "type":  "number"
+                                                                      },
+                                                                      {
+                                                                          "path":  "honbaSticks",
+                                                                          "type":  "number"
+                                                                      },
+                                                                      {
+                                                                          "path":  "riichiSticks",
+                                                                          "type":  "number"
+                                                                      },
+                                                                      {
+                                                                          "path":  "remainingWallCount",
+                                                                          "type":  "number"
+                                                                      },
+                                                                      {
+                                                                          "path":  "myHandTileIds",
+                                                                          "type":  "array",
+                                                                          "length":  14
+                                                                      },
+                                                                      {
+                                                                          "path":  "myDrawnTileId",
+                                                                          "type":  "number-or-null"
+                                                                      },
+                                                                      {
+                                                                          "path":  "myMelds",
+                                                                          "type":  "array"
+                                                                      },
+                                                                      {
+                                                                          "path":  "visibleMelds",
+                                                                          "type":  "array"
+                                                                      },
+                                                                      {
+                                                                          "path":  "visibleDiscards",
+                                                                          "type":  "array"
+                                                                      },
+                                                                      {
+                                                                          "path":  "visibleDoraIndicators",
+                                                                          "type":  "array"
+                                                                      },
+                                                                      {
+                                                                          "path":  "scores",
+                                                                          "type":  "array",
+                                                                          "length":  4
+                                                                      },
+                                                                      {
+                                                                          "path":  "legalActions",
+                                                                          "type":  "array",
+                                                                          "length":  14
+                                                                      },
+                                                                      {
+                                                                          "path":  "mappingLimits",
+                                                                          "type":  "array",
+                                                                          "length":  3
+                                                                      }
+                                                                  ],
+                                                        "arrayItemRules":  {
+                                                                               "myHandTileIds":  {
+                                                                                                     "type":  "number"
+                                                                                                 },
+                                                                               "scores":  {
+                                                                                              "type":  "number"
+                                                                                          },
+                                                                               "visibleDoraIndicators":  {
+                                                                                                             "type":  "number"
+                                                                                                         },
+                                                                               "mappingLimits":  {
+                                                                                                     "type":  "string"
+                                                                                                 },
+                                                                               "legalActions":  {
+                                                                                                    "type":  "object",
+                                                                                                    "rules":  [
+                                                                                                                                                  {
+                                                                                                                                                      "path":  "ref",
+                                                                                                                                                      "type":  "string"
+                                                                                                                                                  },
+                                                                                                                                                  {
+                                                                                                                                                      "path":  "kind",
+                                                                                                                                                      "type":  "string"
+                                                                                                                                                  },
+                                                                                                                                                  {
+                                                                                                                                                      "path":  "seat",
+                                                                                                                                                      "type":  "number"
+                                                                                                                                                  },
+                                                                                                                                                  {
+                                                                                                                                                      "path":  "tileId",
+                                                                                                                                                      "type":  "number-or-null"
+                                                                                                                                                  },
+                                                                                                                                                  {
+                                                                                                                                                      "path":  "optionId",
+                                                                                                                                                      "type":  "string-or-null"
+                                                                                                                                                  }
+                                                                                                                                              ]
+                                                                                                }
+                                                                           }
+                                                    },
+                            "ai-v1:reproducibility":  {
+                                                          "requiredKeys":  [
+                                                                               "stableAcrossRegeneration",
+                                                                               "randomOrRunSpecific",
+                                                                               "note"
+                                                                           ],
+                                                          "rules":  [
+                                                                        {
+                                                                            "path":  "stableAcrossRegeneration",
+                                                                            "type":  "array"
+                                                                        },
+                                                                        {
+                                                                            "path":  "randomOrRunSpecific",
+                                                                            "type":  "array"
+                                                                        },
+                                                                        {
+                                                                            "path":  "note",
+                                                                            "type":  "string"
+                                                                        }
+                                                                    ],
+                                                          "arrayItemRules":  {
+                                                                                 "stableAcrossRegeneration":  {
+                                                                                                                  "type":  "string"
+                                                                                                              },
+                                                                                 "randomOrRunSpecific":  {
+                                                                                                             "type":  "string"
+                                                                                                         }
+                                                                             }
+                                                      },
+                            "ai-v1:sourceFileSha256":  {
+                                                           "requiredKeys":  [
+                                                                                "path",
+                                                                                "sha256",
+                                                                                "lastCommit"
+                                                                            ],
+                                                           "rules":  [
+                                                                         {
+                                                                             "path":  "path",
+                                                                             "type":  "string"
+                                                                         },
+                                                                         {
+                                                                             "path":  "sha256",
+                                                                             "type":  "string"
+                                                                         },
+                                                                         {
+                                                                             "path":  "lastCommit",
+                                                                             "type":  "string"
+                                                                         }
+                                                                     ]
+                                                       },
+                            "ai-v1:unexportedOrMappedSamples":  {
+                                                                    "requiredKeys":  [
+
+                                                                                     ],
+                                                                    "rules":  [
+
+                                                                              ]
+                                                                }
+
                     }
 }

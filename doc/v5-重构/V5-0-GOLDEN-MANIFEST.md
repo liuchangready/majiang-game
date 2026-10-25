@@ -16,7 +16,7 @@
 - 本清单当时没有填写任何预期 `stateHash`、`event_hash`、`snapshot_hash`。哈希必须在真实导出时由 V4 运行结果生成；手填哈希视为伪造。
 - V4 源码/测试在 `f8f4543..48125ff` 之间无 diff；原始表格引用当时 `48125ff` 工作树路径与行号。
 
-### 0.2 当前事实（2026-10-24，以 `205506f` 五组文件为准）
+### 0.2 历史事实（2026-10-24，以 `205506f` 五组文件为准；N3-C1 前口径，保留）
 
 - `tests/v5-golden/` 现有 **5 个** 已导出的 V4 fixture：`physical-v1.json`、`scoring-v1.json`、`round-v1.json`、`cheat-v1.json`、`shuffle-v1.json`。文件冻结在 PR19 head `205506f07f6a1ccfef6b32cf97390431e3349f8d`；各文件内嵌的 `v4Commit` 是原始导出时的 V4 提交，可能不同于冻结提交。
 - 本任务新增机器可读目录 `tests/v5-golden/catalog-v1.json`，逐文件记录真实 SHA-256、schema、源 V4 commit/exporter 命令、实际样本 ID、分组计数、C# 消费位置/定向命令、G-xxx 锚点。
@@ -35,6 +35,31 @@
 - **分母彼此独立，不能相加**：73 是 G 目录需求；10,382 是五组 fixture 的具体 JSON case；其中 `scoring-v1` 的 10,000 条 `randomSamples` 是这 10,382 的子集，不是另一个可加分母；42 是 5 个 C# Golden reader 类的 `[Fact]` 数；5 是 fixture 文件数。另有 5 个 V4 exporter 和 5 个 C# reader 类。
 - 五组 fixture 的存在不等于 73 条需求全部导出。33 条 `none`、20 条 `partial` 仍不得写成“已对齐”；G1 仍 `BLOCKED`，G5 未完成，V4 仍是唯一生产基线。
 - 未导出/纯 V5 需求继续按 §8.2 的责任任务保留；本清单没有把在途 G-049 AI 导出或任何兄弟工作树代码写入本目录。
+
+---
+
+### 0.3 N3-C1 增量目录（2026-10-25，索引冻结头 `004c247`；`205506f` 历史 pin 保留）
+
+- 本节是 N3-C1 的增量口径，不重写 §0.1/§0.2 的 2026-10-23/24 历史结果。旧五组 fixture 的文件字节、SHA-256、内嵌 `v4Commit`、`caseTotal` 和原报告全部不变；`205506f07f6a1ccfef6b32cf97390431e3349f8d` 仍是它们的 fixture freeze。当前 catalog 索引在 `004c24708917168877efaba2565da9dc375fe170` 刷新，**不是** fixture 重新导出。
+- **caller 裁决**：把真实已接受 `tests/v5-golden/ai-v1.json` 纳入 `catalog-v1.json` 的 `fixtures[]` 和本 manifest；G-049 只从 `none` 登记为 `partial`。不得写成 `full`、不得写成“全部 AI 移植”、不得写成 G1 通过。
+- `ai-v1.json` 实测：schema `v5-ai-golden-v1`；51,271 bytes；SHA-256 `E898CDB6E1034D1DC8229E807A919E7F64E03062D3E9AD64DED36317402375C9`；LF 归一化 `4ECE5EBA95851FF2BBCED3A109A16DFE1E308494D7557583EF192BC6BECE52A2`；Git blob `032d79e95e45bde9cb29046cad5f49f338fa78f3`。**字节 freeze 与 source pin 分离**：fixture 字节在 `09d2a4fd1690d319b90044becc9156a7c6563cde`（catalog 索引头 `004c247` 同 blob）；fixture 内嵌 `v4Commit=205506f...` 只是原始 V4 source pin，`205506f` 中不存在 `tests/v5-golden/ai-v1.json`（`git cat-file -e` native 128、`git ls-tree` 0 条）。`v4EngineSourceCommit=3f5370c...`、`v4DotnetAiSourceCommit=a96c195...`、`v4DotnetDomainSourceCommit=5f4f829...`、`generatedAtHead=b49911c...`。
+- 生成命令（fixture 内嵌原文）：`$env:V5_AI_GOLDEN_EXPORT='1'; .\gradlew.bat :engine:test --tests "com.majiang.state.V5AiGoldenExporterTest" --console=plain`；exporter `engine/src/test/kotlin/com/majiang/state/V5AiGoldenExporterTest.kt`，raw SHA-256 `F70DA6A4AFBB06FA1BC80F2D0A6573BFB5A63DD302B2CA52122A551D623C76F8`，LF SHA-256 `0E4289DE81E9BCC31D9D37E1A22D79D63816E807A4619912A70B787E1E3DA863`。
+- 六组目录事实（旧五组沿用 §0.2 原值，不重新导出）：
+
+| fixture | bytes | SHA-256 | schema | 内嵌 V4 commit | 具体 case | catalog C# reader | Facts |
+|---|---:|---|---|---|---:|---|---:|
+| `physical-v1.json` | 836,369 | `B9384534E826473007511FD34096085C56EFD0E0F49E877978E50F847EDA0995` | `v5-physical-golden-v1` | `32f645e` | 6 | `PhysicalGoldenTests` | 9 |
+| `scoring-v1.json` | 8,315,131 | `53B1811079033E9044E222F7BB1FA263506FD724F09D6B13F84FE9CC2FCCD94E` | `v5-scoring-golden-v1` | `97831c8` | 10,238 | `ScoringGoldenTests` | 7 |
+| `round-v1.json` | 43,474 | `DF5FC5F8199C039823BAC1C668F911637EEB80E7F8A785C84D011401CF2452B7` | `v5-round-golden-v1` | `21a7d2c` | 25 | `RoundReplayGoldenTests` | 6 |
+| `cheat-v1.json` | 42,120 | `A196CBBD97AB8F61BE8679B74C8F17DF2713CB37AEF0922E5F3C9F725B28AB4E` | `v5-cheat-golden-v1` | `a96c195` | 81 | `CheatGoldenTests` | 16 |
+| `shuffle-v1.json` | 99,467 | `386061B42691CCF36381E2D87DC4787367958C8E9E96A93BA69D1E3FE5DAC282` | `v5-shuffle-golden-v1` | `37b4dd6` | 32 | `ShuffleGoldenTests` | 4 |
+| `ai-v1.json` | 51,271 | `E898CDB6E1034D1DC8229E807A919E7F64E03062D3E9AD64DED36317402375C9` | `v5-ai-golden-v1` | `205506f` | 7 | `AiReplayGoldenTests` | 3 |
+
+- 具体 JSON case：**10,389** = 旧五组 10,382 + ai-v1 的 7 个执行 case。ai-v1 的 `decisionClock`、`recordedIntent`、`v5Observation`、`reproducibility`、`sourceFileSha256`、`unexportedOrMappedSamples` **不是**执行 case，不能重复计数；`legalActionRefs`/`mappingLimits`/events 也不是 case。
+- G-049 的 `partial` 边界：真实 `Replay → Submit → DeadlineArbiter → 同一接受动作 → RoundStateMachine` 与 6 个拒绝 case 的零副作用已有 C# 证据；但 `mappingBasis`/`mappingLimits`（GAP:N3-B6）、`v4.events[*].text`/`v4Call.action.text`（GAP:N3-B9）、全 case 的 C# 后态 vs V4 全树差分、AI host/cheat intent 仍未绑定或未导出。故 G-049 只能 partial。
+- **Δ29 的确定分解（不是漏洞、不是同一分母）**：旧五组 catalog 口径 10,382 = physical 6 + scoring 10,238 + round 25 + cheat 81 + shuffle 32；冻结 N-3 审计的 replay 案例口径 10,353 = physical 6 + scoring 10,238 + round 2（只 `roundTerminal`+`chankanRon`）+ cheat 75（只三个 handler 数组）+ shuffle 32。Δ = 10,382 − 10,353 = **29** = round **+23**（catalog 多计 `matchProgression`16 + `decisionClock`6 + `controlEpoch`1）+ cheat **+6**（catalog 多计 6 个 `tileMovement`）。这 29 是**旧 catalog 相对旧审计定义多出的条目**，不是新增样本，也不加到 10,389。
+- 分母各自独立：73 = G 需求行；10,389 = 六组具体 JSON 执行 case；10,000 = scoring `randomSamples`，是 scoring 10,238 的子集，不另加；45 = 六个 catalog C# reader 类的 `[Fact]`（Domain 42 + Ai 3）；6 = fixture 文件数。另有 `AiReplayStateGoldenTests` 3 个已接受状态绑定 Fact，属独立证据类，**不加入** catalog 的 45 Fact 分母。审计全集 1,516 归一化路径 / 655,145 节点实例 / 592 GAP units / 17 UNA units 已包含 ai-v1，本次不改这组分母，也不给旧分母追加样本。
+- G1 仍 `BLOCKED`，G5 未完成，V4 仍是唯一生产架构；`ai-v1` 的加入不等于 N3/G-049/G1 关闭。
 
 ---
 
@@ -280,29 +305,35 @@
 - 当时 `pending`/`pending-v4-replay`/`v5-only` 不计入分子或分母，因此不能报告“对齐率 100%”或“黄金样本已建立”。
 - 这段是历史盘点，不抹掉；它说明 2026-10-23 的真实起点。
 
-#### 8.3.2 当前机械口径（2026-10-24，`catalog-v1.json`）
+#### 8.3.2 当前机械口径（2026-10-25，`catalog-v1.json`；N3-C1 六组）
 
-- 五组 fixture 已存在并被 5 个 C# Golden reader 类读取；但 **73 条 G 需求并未全部导出**。
-- 73 条 G 需求：`full` 17、`partial` 20、`none` 33、`v5-only` 3。`full` 指该条目的全部约定断言在当前范围内有证据；`partial` 只覆盖部分断言并单列缺口；`none` 与 `v5-only` 不进入 V4 对齐分子。
-- 具体 JSON case：**10,382**（physical 6 + scoring 10,238 + round 25 + cheat 81 + shuffle 32）。其中 scoring 的 `randomSamples` **10,000** 条是这 10,382 的子集，不另加；C# `[Fact]` **42**（5 个类）；fixture **5**。这些分母不能相加成一个“完成数”。
-- “fixture 已导出 + C# 测试运行通过”只证明这五组样本可读、可差分，不等于 73/73，也不等于 G1 PASS。当前仍有 33 条 `none`、20 条 `partial`。
-- 逐项状态见 §8.5；机器可读锚点/计数/哈希见 `tests/v5-golden/catalog-v1.json`，并由 `tools/verify-v5-golden-catalog.ps1` 从真实 JSON 重新计算。
+- 六组 fixture 已存在并被 6 个 catalog C# Golden reader 类读取；但 **73 条 G 需求并未全部导出**。
+- 73 条 G 需求：`full` 17、`partial` 21、`none` 32、`v5-only` 3。`full` 指该条目的全部约定断言在当前范围内有证据；`partial` 只覆盖部分断言并单列缺口；`none` 与 `v5-only` 不进入 V4 对齐分子。G-049 由 `none` 改为 `partial`，不是 `full`。
+- 具体 JSON case：**10,389**（旧五组 10,382 + ai-v1 7）。其中 scoring 的 `randomSamples` **10,000** 条是 scoring 10,238 的子集，不另加；catalog C# `[Fact]` **45**（6 个类：Domain 42 + Ai 3）；fixture **6**。这些分母不能相加成一个“完成数”。`AiReplayStateGoldenTests` 的 3 个已接受状态绑定 Fact 是独立证据类，不加入 45。
+- 历史五组口径（2026-10-24，保留）：10,382 / 42 Facts / 5 classes / 5 fixtures。冻结审计 replay 口径 10,353；Δ29 = round +23 + cheat +6，是 catalog 相对审计定义多出的条目，不是新增样本。详细分解见 §0.3 与 `V5-N3-C1-CATALOG-UPDATE.md`。
+- “fixture 已导出 + C# 测试运行通过”只证明这些样本可读、可差分，不等于 73/73，也不等于 G1 PASS。当前仍有 32 条 `none`、21 条 `partial`。
+- 逐项状态见 §8.5；机器可读锚点/计数/哈希见 `tests/v5-golden/catalog-v1.json`，并由 `tools/verify-v5-golden-catalog.ps1` 从真实 JSON 重新计算。verifier 只证明索引/计数/provenance，不替代领域行为测试。
 
 ### 8.4 复现命令（当前）
 
 ```powershell
-# 1) 只读校验五组 fixture + catalog（正常 exit 0；坏 catalog/SHA/重复 ID/未知 schema/缺文件 exit 1）
+# 1) 只读校验六组 fixture + catalog（正常 exit 0；坏 catalog/SHA/重复 ID/未知 schema/缺文件 exit 1）
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/verify-v5-golden-catalog.ps1
 
 # 2) 在独占 TEMP 副本注入坏输入；验证 FAIL 且真实 fixture 不变
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/tests/VerifyV5GoldenCatalog.Tests.ps1
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/tests/VerifyV5GoldenCatalog.Tests.ps1 -LogPath <TEMP>\selftest.log
 
-# 3) 定向运行 5 个 C# Golden reader 类（42 Facts；不跑 PG）
+# 3) 定向运行 6 个 catalog C# Golden reader 类（45 Facts；Domain 42 + Ai 3；不跑 PG）
 D:/Unity/dotnet/dotnet.exe test dotnet/tests/Mahjong.Domain.Tests/Mahjong.Domain.Tests.csproj -c Release --nologo -v:minimal
 D:/Unity/dotnet/dotnet.exe dotnet/tests/Mahjong.Domain.Tests/bin/Release/net8.0/Mahjong.Domain.Tests.dll -class "*GoldenTests" -noColor -noLogo
+D:/Unity/dotnet/dotnet.exe test dotnet/tests/Mahjong.Ai.Tests/Mahjong.Ai.Tests.csproj -c Release --nologo -v:minimal
+D:/Unity/dotnet/dotnet.exe dotnet/tests/Mahjong.Ai.Tests/bin/Release/net8.0/Mahjong.Ai.Tests.dll -class "Mahjong.Ai.Tests.AiReplayGoldenTests" -noColor -noLogo
+
+# 4) 已接受 AI 状态绑定证据（3 Facts，独立分母；不是 catalog 的 45）
+D:/Unity/dotnet/dotnet.exe dotnet/tests/Mahjong.Ai.Tests/bin/Release/net8.0/Mahjong.Ai.Tests.dll -class "Mahjong.Ai.Tests.AiReplayStateGoldenTests" -noColor -noLogo
 ```
 
-注意：该测试工程是 xUnit v3 Microsoft.Testing.Platform；实测 `dotnet test --filter "FullyQualifiedName~Golden"` 被忽略并运行全部 322 个 Domain 测试，因此定向证据使用 direct runner 的 `-class "*GoldenTests"`（42/0/0）。全量 322/0/0 只能作为 Domain 全量证据，不能替代 42 项定向计数。
+注意：该测试工程是 xUnit v3 Microsoft.Testing.Platform；实测 `dotnet test --filter "FullyQualifiedName~Golden"` 被忽略并运行全部 322 个 Domain 测试，因此定向证据使用 direct runner 的 `-class`，并报告 runner 的实际选中数。Domain `*GoldenTests` = 42/0/0，Ai `AiReplayGoldenTests` = 3/0/0；全量 Domain/Ai 数只能作为全量证据，不能替代定向计数。
 
 ### 8.5 逐项当前状态（catalog-v1 机械核对）
 
@@ -364,7 +395,7 @@ D:/Unity/dotnet/dotnet.exe dotnet/tests/Mahjong.Domain.Tests/bin/Release/net8.0/
 | G-046 | `pending` | `partial` | round-v1:decisionClock/RG-004a<br>round-v1:decisionClock/RG-004b<br>round-v1:decisionClock/RG-004c<br>round-v1:decisionClock/RG-004d<br>round-v1:decisionClock/RG-004e<br>round-v1:decisionClock/RG-004f | — | P1.3 | RG-004a..f have 9 successful open calls but no duplicate-open rejection and no old-roundId-key open rejection; DecisionClockTracesReplayExactly only replays successful open/complete/cancel/pause/resume/remainingReserve/expiry paths. The G-046 duplicate-open and old-round assertions remain unverified. |
 | G-047 | `pending` | `none` | — | — | P1.3 | TimeoutPolicy selection is not in the five fixtures. |
 | G-048 | `pending` | `partial` | round-v1:controlEpoch/RG-005 | — | P1.3 | RG-005 covers engine ControllerRegistry epochs only; server ConnectionControl grace/reclaim is explicitly not exported by the engine-side exporter. |
-| G-049 | `pending-v4-replay` | `none` | — | — | P1.6 | No AiDecisionRecorded/intent or stale-AI submission fixture. |
+| G-049 | `pending-v4-replay` | `partial` | ai-v1:cases/AI-002-old-round<br>ai-v1:cases/AI-003-old-decision<br>ai-v1:cases/AI-004-old-epoch<br>ai-v1:cases/AI-005-wrong-seat<br>ai-v1:cases/AI-006-candidate-not-legal<br>ai-v1:cases/AI-007-exact-deadline<br>ai-v1:cases/AI-001-legal-intent-before-deadline<br>ai-v1:decisionClock<br>ai-v1:recordedIntent<br>ai-v1:v5Observation | `AiReplayGoldenTests` 3 Facts: provenance, Replay/Submit mapping, accepted DeadlineArbiter; `AiReplayStateGoldenTests` 3 accepted Facts: real RoundStateMachine execution, rejected zero side effects, field coverage/unrepresentable guard | P1.6 | ai-v1 accepted and indexed. G-049 stays **partial**: `mappingBasis`/`mappingLimits` (GAP:N3-B6), `v4.events[*].text`/`v4Call.action.text` (GAP:N3-B9), a C# post-state vs V4 full-tree differential for every case, and AI host/cheat intent remain unbound or unexported. Do not read as full, all-AI migration, or G1. |
 | G-050a | `pending` | `none` | — | — | P2.1 | No protocol/wire fixture among the five. |
 | G-050b | `pending` | `none` | — | — | P2.1 | No frame-codec fixture among the five. |
 | G-050c | `pending` | `none` | — | — | P2.1 | No message-codec fixture among the five. |
