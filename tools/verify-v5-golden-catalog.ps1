@@ -24,6 +24,19 @@ $script:Catalog = $null
 $script:FixturesById = @{}
 $script:ActualGroups = @{}
 
+# Accepted fixture bytes are an immutable audit boundary. A future fixture hash
+# refresh cannot pass by updating only catalog-v1.json: the verifier must change
+# deliberately, which is the review gate for any new fixture version.
+$script:AcceptedFixturePins = @{
+    'physical-v1' = [pscustomobject]@{ Sha256 = 'B9384534E826473007511FD34096085C56EFD0E0F49E877978E50F847EDA0995'; Bytes = 836369; SourceV4Commit = '32f645ec9b134e9ad261a2df89437416b20b3119'; FixtureFreezeCommit = '205506f07f6a1ccfef6b32cf97390431e3349f8d' }
+    'scoring-v1'  = [pscustomobject]@{ Sha256 = '53B1811079033E9044E222F7BB1FA263506FD724F09D6B13F84FE9CC2FCCD94E'; Bytes = 8315131; SourceV4Commit = '97831c88f664a0ff6589b7fa062464d2ca057e29'; FixtureFreezeCommit = '205506f07f6a1ccfef6b32cf97390431e3349f8d' }
+    'round-v1'    = [pscustomobject]@{ Sha256 = 'DF5FC5F8199C039823BAC1C668F911637EEB80E7F8A785C84D011401CF2452B7'; Bytes = 43474; SourceV4Commit = '21a7d2c495397b943fc1a170dc23ebc0dc77d4e9'; FixtureFreezeCommit = '205506f07f6a1ccfef6b32cf97390431e3349f8d' }
+    'cheat-v1'    = [pscustomobject]@{ Sha256 = 'A196CBBD97AB8F61BE8679B74C8F17DF2713CB37AEF0922E5F3C9F725B28AB4E'; Bytes = 42120; SourceV4Commit = 'a96c195c852e035ff6434584135718bbb8a05d29'; FixtureFreezeCommit = '205506f07f6a1ccfef6b32cf97390431e3349f8d' }
+    'shuffle-v1'  = [pscustomobject]@{ Sha256 = '386061B42691CCF36381E2D87DC4787367958C8E9E96A93BA69D1E3FE5DAC282'; Bytes = 99467; SourceV4Commit = '37b4dd610c5e7908dc4938378278c1475e0eee73'; FixtureFreezeCommit = '205506f07f6a1ccfef6b32cf97390431e3349f8d' }
+    'ai-v1'       = [pscustomobject]@{ Sha256 = 'E898CDB6E1034D1DC8229E807A919E7F64E03062D3E9AD64DED36317402375C9'; Bytes = 51271; SourceV4Commit = '205506f07f6a1ccfef6b32cf97390431e3349f8d'; FixtureFreezeCommit = '205506f07f6a1ccfef6b32cf97390431e3349f8d' }
+}
+$script:HistoricalFixtureFreezeCommit = '205506f07f6a1ccfef6b32cf97390431e3349f8d'
+
 function Add-Failure {
     param([string]$Code, [string]$Message)
     $script:Failures.Add(('{0}: {1}' -f $Code, $Message)) | Out-Null
@@ -432,6 +445,122 @@ function Resolve-Anchor {
     }
 }
 
+function Test-LineRangeAnchor {
+    param([string]$Path, [string]$Lines, [string]$CodePrefix, [string]$Label)
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+        Add-Failure ($CodePrefix + '_MISSING') ("{0}: consumer file not found: {1}" -f $Label, $Path)
+        return
+    }
+    if ([string]::IsNullOrWhiteSpace($Lines) -or $Lines -notmatch '^[0-9]+(-[0-9]+)?(,[0-9]+(-[0-9]+)?)*$') {
+        Add-Failure ($CodePrefix + '_INVALID') ("{0}: invalid line anchor '{1}'" -f $Label, $Lines)
+        return
+    }
+    $lineCount = @([System.IO.File]::ReadAllLines($Path, [System.Text.Encoding]::UTF8)).Count
+    foreach ($part in ($Lines -split ',')) {
+        $bounds = $part -split '-'
+        $start = [int]$bounds[0]
+        $end = if ($bounds.Count -gt 1) { [int]$bounds[1] } else { $start }
+        if ($start -lt 1 -or $end -lt $start -or $end -gt $lineCount) {
+            Add-Failure ($CodePrefix + '_INVALID') ("{0}: line range '{1}' outside 1..{2}" -f $Label, $part, $lineCount)
+        }
+    }
+}
+
+function Test-AiBindings {
+    param([object]$Fixture, [string]$RepoRoot)
+    $bindings = @(Get-ArrayProp $Fixture 'bindings')
+    if ($bindings.Count -eq 0) {
+        Add-Failure 'AI_BINDING_MISSING' 'ai-v1 must declare value-binding anchors'
+        return
+    }
+    $allowedKinds = @('IN_BIND', 'OUT_DIFF', 'SEM_MAP', 'INTERNAL', 'UNBOUND', 'UNBOUND_HC', 'UNA', 'META', 'CONTAINER')
+    $seen = @{}
+    foreach ($binding in $bindings) {
+        $jsonPath = [string](Get-Prop $binding 'jsonPath')
+        if ([string]::IsNullOrWhiteSpace($jsonPath) -or -not $jsonPath.StartsWith('$')) {
+            Add-Failure 'AI_BINDING_INVALID' ("invalid jsonPath '{0}'" -f $jsonPath)
+            continue
+        }
+        $kind = [string](Get-Prop $binding 'kind')
+        if ($allowedKinds -notcontains $kind) {
+            Add-Failure 'AI_BINDING_KIND_INVALID' ("{0}: unknown kind '{1}'" -f $jsonPath, $kind)
+        }
+        $seen[$jsonPath] = $true
+        if ($kind -eq 'UNBOUND' -or $kind -eq 'UNBOUND_HC') {
+            $owner = [string](Get-Prop $binding 'owner')
+            if ($owner -notmatch '^GAP:N3-[A-Za-z0-9]+$') {
+                Add-Failure 'AI_BINDING_OWNER_INVALID' ("{0}: missing GAP:N3-* owner" -f $jsonPath)
+            }
+        }
+        else {
+            $consumerPath = [string](Get-Prop $binding 'consumerPath')
+            $consumerLines = [string](Get-Prop $binding 'consumerLines')
+            if ([string]::IsNullOrWhiteSpace($consumerPath)) {
+                Add-Failure 'AI_BINDING_CONSUMER_MISSING' ("{0}: bound field has no consumerPath" -f $jsonPath)
+                continue
+            }
+            $full = Join-Path $RepoRoot ($consumerPath -replace '/', '\')
+            Test-LineRangeAnchor -Path $full -Lines $consumerLines -CodePrefix 'AI_BINDING_ANCHOR' -Label $jsonPath
+        }
+    }
+    foreach ($required in @('$.cases[*].v5.expected.mappingBasis', '$.v5Observation.mappingLimits', '$.cases[*].v4.events[*].text', '$.cases[*].v4Call.action.text')) {
+        if (-not $seen.ContainsKey($required)) {
+            Add-Failure 'AI_BINDING_GAP_MISSING' ("required unbound field not declared: {0}" -f $required)
+        }
+    }
+    $partial = @(Get-ArrayProp $Fixture 'partialReason')
+    if ($partial.Count -lt 3) {
+        Add-Failure 'AI_PARTIAL_REASON_MISSING' 'ai-v1 must declare at least three partial reasons'
+    }
+}
+
+function Test-AcceptedBindings {
+    param([object]$Fixture, [string]$RepoRoot)
+    $accepted = @(Get-ArrayProp $Fixture 'acceptedBindings')
+    if ($accepted.Count -eq 0) {
+        Add-Failure 'AI_ACCEPTED_BINDING_MISSING' 'ai-v1 must index its accepted state-binding test class'
+        return
+    }
+    foreach ($binding in $accepted) {
+        $relative = [string](Get-Prop $binding 'path')
+        $full = Join-Path $RepoRoot ($relative -replace '/', '\')
+        if (-not (Test-Path -LiteralPath $full -PathType Leaf)) {
+            Add-Failure 'AI_ACCEPTED_BINDING_PATH_MISSING' $relative
+            continue
+        }
+        $actualFacts = @(Select-String -LiteralPath $full -Pattern '^\s*\[Fact\]').Count
+        if ($actualFacts -ne [int](Get-Prop $binding 'factCount')) {
+            Add-Failure 'AI_ACCEPTED_BINDING_FACT_MISMATCH' ("{0}: declared {1}, actual {2}" -f $relative, (Get-Prop $binding 'factCount'), $actualFacts)
+        }
+        if ([string](Get-Prop $binding 'class') -notmatch '^[A-Za-z0-9_.]+$') {
+            Add-Failure 'AI_ACCEPTED_BINDING_CLASS_INVALID' $relative
+        }
+        if ([string](Get-Prop $binding 'commit') -notmatch '^[0-9a-fA-F]{40}$') {
+            Add-Failure 'AI_ACCEPTED_BINDING_COMMIT_INVALID' $relative
+        }
+        $reportRelative = [string](Get-Prop $binding 'report')
+        if ([string]::IsNullOrWhiteSpace($reportRelative) -or -not (Test-Path -LiteralPath (Join-Path $RepoRoot ($reportRelative -replace '/', '\')) -PathType Leaf)) {
+            Add-Failure 'AI_ACCEPTED_BINDING_REPORT_MISSING' $reportRelative
+        }
+    }
+}
+
+function Test-AiSourceFileSha {
+    param([object]$Raw)
+    $files = @(Get-Prop $Raw 'sourceFileSha256')
+    if ($files.Count -ne 13) {
+        Add-Failure 'AI_SOURCE_FILE_COUNT' ("expected 13, got {0}" -f $files.Count)
+    }
+    foreach ($file in $files) {
+        if ([string](Get-Prop $file 'sha256') -notmatch '^[0-9a-fA-F]{64}$') {
+            Add-Failure 'AI_SOURCE_SHA_INVALID' ([string](Get-Prop $file 'path'))
+        }
+        if ([string](Get-Prop $file 'lastCommit') -notmatch '^[0-9a-fA-F]{40}$') {
+            Add-Failure 'AI_SOURCE_COMMIT_INVALID' ([string](Get-Prop $file 'path'))
+        }
+    }
+}
+
 function Test-Group {
     param([object]$Fixture, [object]$Group)
     $fixtureId = [string]$Fixture.id
@@ -761,6 +890,10 @@ else {
     if ($freeze -notmatch '^[0-9a-fA-F]{40}$') {
         Add-Failure 'BASELINE_COMMIT_INVALID' $freeze
     }
+    $fixtureFreeze = [string](Get-Prop $baseline 'fixtureFreezeCommit')
+    if ($fixtureFreeze -cne $script:HistoricalFixtureFreezeCommit) {
+        Add-Failure 'BASELINE_FIXTURE_FREEZE_INVALID' ("expected {0}, got {1}" -f $script:HistoricalFixtureFreezeCommit, $fixtureFreeze)
+    }
 }
 
 $denominators = Get-Prop $script:Catalog 'denominators'
@@ -778,11 +911,12 @@ $allowedSchemas = @{
     'round-v1' = 'v5-round-golden-v1'
     'cheat-v1' = 'v5-cheat-golden-v1'
     'shuffle-v1' = 'v5-shuffle-golden-v1'
+    'ai-v1' = 'v5-ai-golden-v1'
 }
 
 $fixtures = @(Get-ArrayProp $script:Catalog 'fixtures')
-if ($fixtures.Count -ne 5) {
-    Add-Failure 'FIXTURE_COUNT' ('expected 5, got {0}' -f $fixtures.Count)
+if ($fixtures.Count -ne 6) {
+    Add-Failure 'FIXTURE_COUNT' ('expected 6, got {0}' -f $fixtures.Count)
 }
 $fixtureIds = @()
 $fixtureCaseTotal = 0
@@ -810,6 +944,22 @@ foreach ($fixture in $fixtures) {
     }
     if ([int64]$file.Length -ne [int64](Get-Prop $fixture 'bytes')) {
         Add-Failure 'FIXTURE_BYTES_MISMATCH' ("{0}: catalog {1}, actual {2}" -f $fixtureId, (Get-Prop $fixture 'bytes'), $file.Length)
+    }
+    $acceptedPin = $script:AcceptedFixturePins[$fixtureId]
+    if ($null -eq $acceptedPin) {
+        Add-Failure 'FIXTURE_ID_UNKNOWN' ("{0}: not in the accepted fixture pin set" -f $fixtureId)
+    }
+    else {
+        if ($actualSha -cne $acceptedPin.Sha256) {
+            Add-Failure 'IMMUTABLE_FIXTURE_PIN_MISMATCH' ("{0}: accepted {1}, actual {2}" -f $fixtureId, $acceptedPin.Sha256, $actualSha)
+        }
+        if ([int64]$file.Length -ne [int64]$acceptedPin.Bytes) {
+            Add-Failure 'IMMUTABLE_FIXTURE_PIN_MISMATCH' ("{0}: accepted bytes {1}, actual {2}" -f $fixtureId, $acceptedPin.Bytes, $file.Length)
+        }
+        $catalogFixtureFreeze = [string](Get-Prop $fixture 'fixtureFreezeCommit')
+        if ($catalogFixtureFreeze -cne $acceptedPin.FixtureFreezeCommit) {
+            Add-Failure 'FIXTURE_FREEZE_COMMIT_MISMATCH' ("{0}: catalog '{1}', accepted '{2}'" -f $fixtureId, $catalogFixtureFreeze, $acceptedPin.FixtureFreezeCommit)
+        }
     }
     try {
         $raw = Read-JsonFile $fullPath
@@ -871,6 +1021,18 @@ foreach ($fixture in $fixtures) {
     if ($commit -ne $rawCommit) {
         Add-Failure 'SOURCE_COMMIT_MISMATCH' ("{0}: catalog {1}, fixture {2}" -f $fixtureId, $commit, $rawCommit)
     }
+    if ($null -ne $acceptedPin -and $commit -cne $acceptedPin.SourceV4Commit) {
+        Add-Failure 'IMMUTABLE_SOURCE_PIN_MISMATCH' ("{0}: accepted {1}, catalog {2}" -f $fixtureId, $acceptedPin.SourceV4Commit, $commit)
+    }
+    $fixtureFreezeValue = [string](Get-Prop $fixture 'fixtureFreezeCommit')
+    if ($fixtureFreezeValue -cne $script:HistoricalFixtureFreezeCommit) {
+        Add-Failure 'FIXTURE_FREEZE_COMMIT_MISMATCH' ("{0}: catalog '{1}', historical '{2}'" -f $fixtureId, $fixtureFreezeValue, $script:HistoricalFixtureFreezeCommit)
+    }
+    $relation = [string](Get-Prop $fixture 'sourcePinRelation')
+    $expectedRelation = if ($commit -ceq $fixtureFreezeValue) { 'source-pin-equals-fixture-freeze' } else { 'source-pin-precedes-fixture-freeze' }
+    if ($relation -cne $expectedRelation) {
+        Add-Failure 'SOURCE_PIN_RELATION_MISMATCH' ("{0}: declared '{1}', expected '{2}'" -f $fixtureId, $relation, $expectedRelation)
+    }
 
     if ($fixtureId -eq 'round-v1') {
         $rawEngineCommit = [string](Get-Prop $raw 'v4EngineSourceCommit')
@@ -883,6 +1045,33 @@ foreach ($fixture in $fixtures) {
         if ($catalogDotnetCommit -ne $rawDotnetCommit) {
             Add-Failure 'SOURCE_DOTNET_COMMIT_MISMATCH' ("{0}: catalog {1}, fixture {2}" -f $fixtureId, $catalogDotnetCommit, $rawDotnetCommit)
         }
+    }
+
+    if ($fixtureId -eq 'ai-v1') {
+        foreach ($mapping in @(
+            @{ Catalog = 'sourceV4EngineCommit'; Raw = 'v4EngineSourceCommit'; Code = 'SOURCE_ENGINE_COMMIT_MISMATCH' },
+            @{ Catalog = 'sourceV4AiCommit'; Raw = 'v4DotnetAiSourceCommit'; Code = 'SOURCE_AI_COMMIT_MISMATCH' },
+            @{ Catalog = 'sourceV4DomainCommit'; Raw = 'v4DotnetDomainSourceCommit'; Code = 'SOURCE_DOMAIN_COMMIT_MISMATCH' }
+        )) {
+            $catalogValue = [string](Get-Prop $fixture $mapping.Catalog)
+            $rawValue = [string](Get-Prop $raw $mapping.Raw)
+            if ($catalogValue -cne $rawValue) {
+                Add-Failure $mapping.Code ("{0}: catalog {1}, fixture {2}" -f $mapping.Catalog, $catalogValue, $rawValue)
+            }
+        }
+        $generatedAtHead = [string](Get-Prop $fixture 'generatedAtHead')
+        if ($generatedAtHead -notmatch '^[0-9a-fA-F]{40}$' -or $generatedAtHead -cne [string](Get-Prop $raw 'generatedAtHead')) {
+            Add-Failure 'AI_GENERATED_AT_HEAD_MISMATCH' ("{0}: catalog '{1}', fixture '{2}'" -f $fixtureId, $generatedAtHead, (Get-Prop $raw 'generatedAtHead'))
+        }
+        if ([bool](Get-Prop $raw 'v4ProductionSourceDirty')) {
+            Add-Failure 'AI_PRODUCTION_SOURCE_DIRTY' 'v4ProductionSourceDirty must be false'
+        }
+        if (@(Get-ArrayProp $raw 'v4ProductionSourceDirtyPaths').Count -ne 0) {
+            Add-Failure 'AI_PRODUCTION_SOURCE_DIRTY' 'v4ProductionSourceDirtyPaths must be empty'
+        }
+        Test-AiSourceFileSha -Raw $raw
+        Test-AcceptedBindings -Fixture $fixture -RepoRoot $RepoRoot
+        Test-AiBindings -Fixture $fixture -RepoRoot $RepoRoot
     }
 
     $exporter = Get-Prop $fixture 'exporter'
@@ -990,6 +1179,190 @@ foreach ($fixtureId in $fixtureIds) {
 }
 
 # ---------------------------------------------------------------------------
+# Source pins, immutable pins and case accounting
+# ---------------------------------------------------------------------------
+function Get-CaseGroupSum {
+    param([string]$FixtureId, [string[]]$Names)
+    $fixture = $script:FixturesById[$FixtureId]
+    if ($null -eq $fixture) { return -1 }
+    $sum = 0
+    foreach ($group in @(Get-ArrayProp $fixture 'groups')) {
+        if ([bool](Get-Prop $group 'countAsCase') -and ($Names -contains [string](Get-Prop $group 'name'))) {
+            $sum += [int](Get-Prop $group 'count')
+        }
+    }
+    return $sum
+}
+
+$sourcePins = Get-Prop $script:Catalog 'sourcePins'
+if ($null -eq $sourcePins) {
+    Add-Failure 'SOURCE_PINS_MISSING' 'sourcePins'
+}
+else {
+    $catalogFreezePin = [string](Get-Prop $sourcePins 'catalogFreezeCommit')
+    if ($catalogFreezePin -cne [string](Get-Prop $baseline 'freezeCommit')) {
+        Add-Failure 'SOURCE_PIN_BASELINE_MISMATCH' ("sourcePins {0}, baseline {1}" -f $catalogFreezePin, (Get-Prop $baseline 'freezeCommit'))
+    }
+    $historicalPin = [string](Get-Prop $sourcePins 'historicalFixtureFreezeCommit')
+    if ($historicalPin -cne $script:HistoricalFixtureFreezeCommit) {
+        Add-Failure 'SOURCE_PIN_HISTORICAL_MISMATCH' ("expected {0}, got {1}" -f $script:HistoricalFixtureFreezeCommit, $historicalPin)
+    }
+}
+
+$immutablePins = @(Get-ArrayProp $script:Catalog 'immutableFixturePins')
+if ($immutablePins.Count -ne $fixtures.Count) {
+    Add-Failure 'IMMUTABLE_PIN_SET_MISMATCH' ("pins {0}, fixtures {1}" -f $immutablePins.Count, $fixtures.Count)
+}
+foreach ($fixture in $fixtures) {
+    $fixtureId = [string](Get-Prop $fixture 'id')
+    $matches = @($immutablePins | Where-Object { [string](Get-Prop $_ 'id') -eq $fixtureId })
+    if ($matches.Count -ne 1) {
+        Add-Failure 'IMMUTABLE_PIN_MISSING' ("{0}: expected exactly one immutable pin, got {1}" -f $fixtureId, $matches.Count)
+        continue
+    }
+    $pin = $matches[0]
+    if ([string](Get-Prop $pin 'sha256') -cne [string](Get-Prop $fixture 'sha256')) {
+        Add-Failure 'IMMUTABLE_PIN_ENTRY_MISMATCH' ("{0}: sha256" -f $fixtureId)
+    }
+    if ([int64](Get-Prop $pin 'bytes') -ne [int64](Get-Prop $fixture 'bytes')) {
+        Add-Failure 'IMMUTABLE_PIN_ENTRY_MISMATCH' ("{0}: bytes" -f $fixtureId)
+    }
+    if ([string](Get-Prop $pin 'sourceV4Commit') -cne [string](Get-Prop $fixture 'sourceV4Commit')) {
+        Add-Failure 'IMMUTABLE_PIN_ENTRY_MISMATCH' ("{0}: sourceV4Commit" -f $fixtureId)
+    }
+    if ([string](Get-Prop $pin 'fixtureFreezeCommit') -cne [string](Get-Prop $fixture 'fixtureFreezeCommit')) {
+        Add-Failure 'IMMUTABLE_PIN_ENTRY_MISMATCH' ("{0}: fixtureFreezeCommit" -f $fixtureId)
+    }
+}
+
+$fiveIds = @('physical-v1', 'scoring-v1', 'round-v1', 'cheat-v1', 'shuffle-v1')
+$fiveTotal = 0
+foreach ($fixtureId in $fiveIds) {
+    $fiveTotal += [int](Get-Prop $script:FixturesById[$fixtureId] 'caseTotal')
+}
+$roundCatalog = [int](Get-Prop $script:FixturesById['round-v1'] 'caseTotal')
+$cheatCatalog = [int](Get-Prop $script:FixturesById['cheat-v1'] 'caseTotal')
+$roundAudit = Get-CaseGroupSum -FixtureId 'round-v1' -Names @('roundTerminal', 'chankanRon')
+$cheatAudit = Get-CaseGroupSum -FixtureId 'cheat-v1' -Names @('tileMarkHandler', 'sleeveBloomHandler', 'beamSwapHandler')
+$auditReplay = [int](Get-Prop $script:FixturesById['physical-v1'] 'caseTotal') +
+    [int](Get-Prop $script:FixturesById['scoring-v1'] 'caseTotal') +
+    $roundAudit +
+    $cheatAudit +
+    [int](Get-Prop $script:FixturesById['shuffle-v1'] 'caseTotal')
+$aiTotal = [int](Get-Prop $script:FixturesById['ai-v1'] 'caseTotal')
+$scoringCaseTotal = [int](Get-Prop $script:FixturesById['scoring-v1'] 'caseTotal')
+
+$caseAccounting = Get-Prop $script:Catalog 'caseAccounting'
+if ($null -eq $caseAccounting) {
+    Add-Failure 'CASE_ACCOUNTING_MISSING' 'caseAccounting'
+}
+else {
+    $caCatalog = [int64](Get-Prop $caseAccounting 'catalogCaseTotal')
+    $caFive = [int64](Get-Prop $caseAccounting 'fiveFixtureCatalogCaseTotal')
+    $caAudit = [int64](Get-Prop $caseAccounting 'frozenAuditReplayCaseTotal')
+    $caDelta = [int64](Get-Prop $caseAccounting 'delta')
+    $caAi = [int64](Get-Prop $caseAccounting 'aiIncrement')
+    if ($caCatalog -ne $fixtureCaseTotal) {
+        Add-Failure 'CASE_ACCOUNTING_MISMATCH' ("catalogCaseTotal {0}, computed fixtures {1}" -f $caCatalog, $fixtureCaseTotal)
+    }
+    if ($caFive -ne $fiveTotal) {
+        Add-Failure 'CASE_ACCOUNTING_MISMATCH' ("fiveFixtureCatalogCaseTotal {0}, computed {1}" -f $caFive, $fiveTotal)
+    }
+    if ($caAudit -ne $auditReplay) {
+        Add-Failure 'CASE_ACCOUNTING_MISMATCH' ("frozenAuditReplayCaseTotal {0}, computed {1}" -f $caAudit, $auditReplay)
+    }
+    if ($caDelta -ne ($fiveTotal - $auditReplay)) {
+        Add-Failure 'CASE_ACCOUNTING_MISMATCH' ("delta {0}, computed {1}" -f $caDelta, ($fiveTotal - $auditReplay))
+    }
+    if ($caAi -ne $aiTotal) {
+        Add-Failure 'CASE_ACCOUNTING_MISMATCH' ("aiIncrement {0}, computed {1}" -f $caAi, $aiTotal)
+    }
+    if ($caCatalog -ne ($fiveTotal + $aiTotal)) {
+        Add-Failure 'CASE_ACCOUNTING_MISMATCH' ("catalogCaseTotal {0} != five {1} + ai {2}" -f $caCatalog, $fiveTotal, $aiTotal)
+    }
+    if ($caCatalog -eq ($fiveTotal + $aiTotal + $scoringRandom)) {
+        Add-Failure 'CASE_ACCOUNTING_DOUBLE_COUNT' 'catalogCaseTotal appears to add scoring random samples a second time'
+    }
+    if (-not [bool](Get-Prop $caseAccounting 'scoringRandomInputsAreSubsetOfScoringCases')) {
+        Add-Failure 'CASE_ACCOUNTING_MISMATCH' 'scoringRandomInputsAreSubsetOfScoringCases must be true'
+    }
+    if ($scoringRandom -gt $scoringCaseTotal) {
+        Add-Failure 'CASE_ACCOUNTING_MISMATCH' ("scoring random {0} exceeds scoring cases {1}" -f $scoringRandom, $scoringCaseTotal)
+    }
+
+    $breakdown = @(Get-ArrayProp $caseAccounting 'deltaBreakdown')
+    if ($breakdown.Count -ne 2) {
+        Add-Failure 'CASE_ACCOUNTING_MISMATCH' ("deltaBreakdown must have 2 entries, got {0}" -f $breakdown.Count)
+    }
+    else {
+        $expected = @(
+            @{ Fixture = 'round-v1'; Catalog = $roundCatalog; Audit = $roundAudit; Only = @('matchProgression', 'decisionClock', 'controlEpoch'); AuditGroups = @('roundTerminal', 'chankanRon') },
+            @{ Fixture = 'cheat-v1'; Catalog = $cheatCatalog; Audit = $cheatAudit; Only = @('tileMovement'); AuditGroups = @('tileMarkHandler', 'sleeveBloomHandler', 'beamSwapHandler') }
+        )
+        foreach ($want in $expected) {
+            $rows = @($breakdown | Where-Object { [string](Get-Prop $_ 'fixture') -eq $want.Fixture })
+            if ($rows.Count -ne 1) {
+                Add-Failure 'CASE_ACCOUNTING_MISMATCH' ("{0}: expected one breakdown row, got {1}" -f $want.Fixture, $rows.Count)
+                continue
+            }
+            $row = $rows[0]
+            $rowCatalog = [int64](Get-Prop $row 'catalogCaseTotal')
+            $rowAudit = [int64](Get-Prop $row 'auditReplayCaseTotal')
+            $rowDelta = [int64](Get-Prop $row 'delta')
+            if ($rowCatalog -ne $want.Catalog -or $rowAudit -ne $want.Audit -or $rowDelta -ne ($want.Catalog - $want.Audit)) {
+                Add-Failure 'CASE_ACCOUNTING_MISMATCH' ("{0}: catalog/audit/delta do not recompute" -f $want.Fixture)
+            }
+            $only = @(Get-ArrayProp $row 'catalogOnlyGroups')
+            $auditGroups = @(Get-ArrayProp $row 'auditReplayGroups')
+            if ((@($only) -join '|') -cne (@($want.Only) -join '|')) {
+                Add-Failure 'CASE_ACCOUNTING_MISMATCH' ("{0}: catalogOnlyGroups differ" -f $want.Fixture)
+            }
+            if ((@($auditGroups) -join '|') -cne (@($want.AuditGroups) -join '|')) {
+                Add-Failure 'CASE_ACCOUNTING_MISMATCH' ("{0}: auditReplayGroups differ" -f $want.Fixture)
+            }
+            $fixtureGroups = @(Get-ArrayProp $script:FixturesById[$want.Fixture] 'groups')
+            $onlySum = 0
+            foreach ($name in $only) {
+                $groupRows = @($fixtureGroups | Where-Object { [string](Get-Prop $_ 'name') -eq [string]$name })
+                if ($groupRows.Count -ne 1) {
+                    Add-Failure 'CASE_ACCOUNTING_MISMATCH' ("{0}: group '{1}' not unique" -f $want.Fixture, $name)
+                    continue
+                }
+                $onlySum += [int](Get-Prop $groupRows[0] 'count')
+            }
+            $auditSum = 0
+            foreach ($name in $auditGroups) {
+                $groupRows = @($fixtureGroups | Where-Object { [string](Get-Prop $_ 'name') -eq [string]$name })
+                if ($groupRows.Count -ne 1) {
+                    Add-Failure 'CASE_ACCOUNTING_MISMATCH' ("{0}: group '{1}' not unique" -f $want.Fixture, $name)
+                    continue
+                }
+                $auditSum += [int](Get-Prop $groupRows[0] 'count')
+            }
+            if ($onlySum -ne $rowDelta -or $auditSum -ne $rowAudit) {
+                Add-Failure 'CASE_ACCOUNTING_MISMATCH' ("{0}: group sums do not match delta/audit" -f $want.Fixture)
+            }
+        }
+    }
+
+    $aiFixture = $script:FixturesById['ai-v1']
+    $aiExecutionGroup = [string](Get-Prop $caseAccounting 'aiExecutionCaseGroup')
+    $execRows = @(Get-ArrayProp $aiFixture 'groups' | Where-Object { [string](Get-Prop $_ 'name') -eq $aiExecutionGroup })
+    if ($execRows.Count -ne 1 -or -not [bool](Get-Prop $execRows[0] 'countAsCase') -or [int](Get-Prop $execRows[0] 'count') -ne $aiTotal) {
+        Add-Failure 'CASE_ACCOUNTING_MISMATCH' 'aiExecutionCaseGroup must be the single countAsCase group equal to aiTotal'
+    }
+    foreach ($name in @(Get-ArrayProp $caseAccounting 'notExecutionCases')) {
+        $rows = @(Get-ArrayProp $aiFixture 'groups' | Where-Object { [string](Get-Prop $_ 'name') -eq [string]$name })
+        if ($rows.Count -ne 1) {
+            Add-Failure 'CASE_ACCOUNTING_MISMATCH' ("ai-v1: notExecutionCases group '{0}' missing" -f $name)
+        }
+        elseif ([bool](Get-Prop $rows[0] 'countAsCase')) {
+            Add-Failure 'CASE_ACCOUNTING_MISMATCH' ("ai-v1: '{0}' must not count as an execution case" -f $name)
+        }
+    }
+}
+
+# ---------------------------------------------------------------------------
 # Requirements and anchors
 # ---------------------------------------------------------------------------
 $requirements = @(Get-ArrayProp $script:Catalog 'requirements')
@@ -1023,6 +1396,30 @@ foreach ($requirement in $requirements) {
     }
     if ([string]::IsNullOrWhiteSpace([string](Get-Prop $requirement 'owner'))) {
         Add-Failure 'OWNER_MISSING' $id
+    }
+
+    if ($id -eq 'G-049') {
+        if ($coverage -cne 'partial') {
+            Add-Failure 'G049_COVERAGE_MUST_BE_PARTIAL' ("G-049 is partial-only; got '{0}'" -f $coverage)
+        }
+        if ($manifestStatus -cne 'pending-v4-replay') {
+            Add-Failure 'G049_STATUS_MUST_BE_PENDING_V4_REPLAY' ("G-049 historical status must remain pending-v4-replay; got '{0}'" -f $manifestStatus)
+        }
+        $partialScope = Get-Prop $requirement 'partialScope'
+        if ($null -eq $partialScope) {
+            Add-Failure 'G049_PARTIAL_SCOPE_MISSING' 'G-049 must declare partialScope'
+        }
+        else {
+            if ([bool](Get-Prop $partialScope 'fullClaim')) {
+                Add-Failure 'G049_FULL_CLAIM_FORBIDDEN' 'G-049 partialScope.fullClaim must be false'
+            }
+            if ([bool](Get-Prop $partialScope 'closed')) {
+                Add-Failure 'G049_CLOSED_CLAIM_FORBIDDEN' 'G-049 partialScope.closed must be false'
+            }
+            if (@(Get-ArrayProp $partialScope 'remainingGaps').Count -lt 3) {
+                Add-Failure 'G049_PARTIAL_REASON_MISSING' 'G-049 must list at least three remaining gaps'
+            }
+        }
     }
 
     $anchors = @(Get-ArrayProp $requirement 'anchors')

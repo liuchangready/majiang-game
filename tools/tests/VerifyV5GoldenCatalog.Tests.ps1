@@ -4,8 +4,9 @@
 Self-test for tools/verify-v5-golden-catalog.ps1.
 
 .DESCRIPTION
-Copies the catalog, the five fixtures, the five exporters, the five C# readers
-and the manifest into an exclusive TEMP tree. It then injects one meaningful
+Copies the catalog, the six fixtures (including accepted ai-v1), the six
+exporters, the six catalog C# readers, the accepted AI state-binding reader and
+the manifest into an exclusive TEMP tree. It then injects one meaningful
 defect per case and asserts that the validator fails with the expected code.
 The real tracked fixtures are never written; their SHA-256 values are compared
 before and after the run.
@@ -50,19 +51,24 @@ function New-BaseTree {
     New-Item -ItemType Directory -Force -Path (Join-Path $Root 'engine\src\test\kotlin\com\majiang\model') | Out-Null
     New-Item -ItemType Directory -Force -Path (Join-Path $Root 'engine\src\test\kotlin\com\majiang\rules') | Out-Null
     New-Item -ItemType Directory -Force -Path (Join-Path $Root 'engine\src\test\kotlin\com\majiang\v3') | Out-Null
+    New-Item -ItemType Directory -Force -Path (Join-Path $Root 'engine\src\test\kotlin\com\majiang\state') | Out-Null
     New-Item -ItemType Directory -Force -Path (Join-Path $Root 'dotnet\tests\Mahjong.Domain.Tests') | Out-Null
+    New-Item -ItemType Directory -Force -Path (Join-Path $Root 'dotnet\tests\Mahjong.Ai.Tests') | Out-Null
 
     Copy-Item -LiteralPath (Join-Path $SourceRepo 'tests\v5-golden\physical-v1.json') -Destination (Join-Path $Root 'tests\v5-golden\physical-v1.json')
     Copy-Item -LiteralPath (Join-Path $SourceRepo 'tests\v5-golden\scoring-v1.json') -Destination (Join-Path $Root 'tests\v5-golden\scoring-v1.json')
     Copy-Item -LiteralPath (Join-Path $SourceRepo 'tests\v5-golden\round-v1.json') -Destination (Join-Path $Root 'tests\v5-golden\round-v1.json')
     Copy-Item -LiteralPath (Join-Path $SourceRepo 'tests\v5-golden\cheat-v1.json') -Destination (Join-Path $Root 'tests\v5-golden\cheat-v1.json')
     Copy-Item -LiteralPath (Join-Path $SourceRepo 'tests\v5-golden\shuffle-v1.json') -Destination (Join-Path $Root 'tests\v5-golden\shuffle-v1.json')
+    Copy-Item -LiteralPath (Join-Path $SourceRepo 'tests\v5-golden\ai-v1.json') -Destination (Join-Path $Root 'tests\v5-golden\ai-v1.json')
     Copy-Item -LiteralPath (Join-Path $SourceRepo 'tests\v5-golden\catalog-v1.json') -Destination (Join-Path $Root 'tests\v5-golden\catalog-v1.json')
 
     $manifest = @(Get-ChildItem -LiteralPath (Join-Path $SourceRepo 'doc') -Recurse -Filter 'V5-0-GOLDEN-MANIFEST.md' -File)[0]
     $manifestDir = Join-Path $Root ('doc\' + $manifest.Directory.Name)
     New-Item -ItemType Directory -Force -Path $manifestDir | Out-Null
     Copy-Item -LiteralPath $manifest.FullName -Destination (Join-Path $manifestDir $manifest.Name)
+    $acceptedReport = @(Get-ChildItem -LiteralPath (Join-Path $SourceRepo 'doc') -Recurse -Filter 'V5-N3-AI-REPLAY-BINDING.md' -File)[0]
+    Copy-Item -LiteralPath $acceptedReport.FullName -Destination (Join-Path $manifestDir $acceptedReport.Name)
 
     $exporterMap = @{
         'engine\src\test\kotlin\com\majiang\model\V5PhysicalGoldenExporterTest.kt' = 'engine\src\test\kotlin\com\majiang\model'
@@ -70,6 +76,7 @@ function New-BaseTree {
         'engine\src\test\kotlin\com\majiang\rules\V5RoundGoldenExportTest.kt' = 'engine\src\test\kotlin\com\majiang\rules'
         'engine\src\test\kotlin\com\majiang\v3\V5CheatGoldenExporterTest.kt' = 'engine\src\test\kotlin\com\majiang\v3'
         'engine\src\test\kotlin\com\majiang\v3\V5ShuffleGoldenExporterTest.kt' = 'engine\src\test\kotlin\com\majiang\v3'
+        'engine\src\test\kotlin\com\majiang\state\V5AiGoldenExporterTest.kt' = 'engine\src\test\kotlin\com\majiang\state'
     }
     foreach ($relative in $exporterMap.Keys) {
         $source = Join-Path $SourceRepo ($relative -replace '/', '\')
@@ -79,6 +86,9 @@ function New-BaseTree {
 
     foreach ($name in @('PhysicalGoldenTests.cs', 'ScoringGoldenTests.cs', 'RoundReplayGoldenTests.cs', 'CheatGoldenTests.cs', 'ShuffleGoldenTests.cs')) {
         Copy-Item -LiteralPath (Join-Path $SourceRepo ('dotnet\tests\Mahjong.Domain.Tests\' + $name)) -Destination (Join-Path $Root ('dotnet\tests\Mahjong.Domain.Tests\' + $name))
+    }
+    foreach ($name in @('AiReplayGoldenTests.cs', 'AiReplayStateGoldenTests.cs')) {
+        Copy-Item -LiteralPath (Join-Path $SourceRepo ('dotnet\tests\Mahjong.Ai.Tests\' + $name)) -Destination (Join-Path $Root ('dotnet\tests\Mahjong.Ai.Tests\' + $name))
     }
 }
 
@@ -121,9 +131,9 @@ function Set-JsonProperty {
 
 $repo = if ([string]::IsNullOrWhiteSpace($RepoRoot)) { (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path } else { (Resolve-Path $RepoRoot).Path }
 $RepoRoot = $repo
-$artifactDir = Join-Path $repo 'artifacts\golden-catalog'
-New-Item -ItemType Directory -Force -Path $artifactDir | Out-Null
 if ([string]::IsNullOrWhiteSpace($LogPath)) {
+    $artifactDir = Join-Path $repo 'artifacts\golden-catalog'
+    New-Item -ItemType Directory -Force -Path $artifactDir | Out-Null
     $LogPath = Join-Path $artifactDir 'validator-selftest.log'
 }
 
@@ -134,7 +144,7 @@ foreach ($tool in @('Get-FileHash', 'ConvertFrom-Json')) {
     }
 }
 
-$realFixtures = @('physical-v1.json', 'scoring-v1.json', 'round-v1.json', 'cheat-v1.json', 'shuffle-v1.json')
+$realFixtures = @('physical-v1.json', 'scoring-v1.json', 'round-v1.json', 'cheat-v1.json', 'shuffle-v1.json', 'ai-v1.json')
 $beforeHashes = @{}
 foreach ($name in $realFixtures) {
     $beforeHashes[$name] = Get-Sha256 (Join-Path $repo ('tests\v5-golden\' + $name))
@@ -1025,6 +1035,180 @@ Invoke-NegativeCase -Name 'catalog-schema' -ExpectedCode 'CATALOG_SCHEMA' -Mutat
     $catalog = Read-JsonFile $path
     $catalog.schema = 'v5-golden-catalog-v2'
     Write-JsonFile $path $catalog
+}
+
+# 15. AI fixture loses an execution case; catalog group count still declares 7.
+Invoke-NegativeCase -Name 'ai-missing-case' -ExpectedCode 'GROUP_COUNT_MISMATCH' -Mutator {
+    param($root)
+    $fixturePath = Join-Path $root 'tests\v5-golden\ai-v1.json'
+    $fixture = Read-JsonFile $fixturePath
+    $fixture.cases = @($fixture.cases[0..5])
+    Write-JsonFile $fixturePath $fixture
+    Update-CatalogFixtureSha -Root $root -FixtureId 'ai-v1'
+}
+
+# 16. AI duplicate case ID inside the real cases array.
+Invoke-NegativeCase -Name 'ai-duplicate-case' -ExpectedCode 'DUPLICATE_CASE_ID' -Mutator {
+    param($root)
+    $fixturePath = Join-Path $root 'tests\v5-golden\ai-v1.json'
+    $fixture = Read-JsonFile $fixturePath
+    $fixture.cases[1].id = $fixture.cases[0].id
+    Write-JsonFile $fixturePath $fixture
+    Update-CatalogFixtureSha -Root $root -FixtureId 'ai-v1'
+}
+
+# 17. Unknown AI schema, with catalog and fixture hash refreshed to isolate it.
+Invoke-NegativeCase -Name 'ai-unknown-schema' -ExpectedCode 'FIXTURE_SCHEMA_UNKNOWN' -Mutator {
+    param($root)
+    $fixturePath = Join-Path $root 'tests\v5-golden\ai-v1.json'
+    $fixture = Read-JsonFile $fixturePath
+    $fixture.schema = 'v5-ai-golden-v2'
+    Write-JsonFile $fixturePath $fixture
+    Update-CatalogFixtureSha -Root $root -FixtureId 'ai-v1'
+    $catalogPath = Join-Path $root 'tests\v5-golden\catalog-v1.json'
+    $catalog = Read-JsonFile $catalogPath
+    foreach ($entry in @($catalog.fixtures)) {
+        if ([string]$entry.id -eq 'ai-v1') { $entry.schema = 'v5-ai-golden-v2' }
+    }
+    Write-JsonFile $catalogPath $catalog
+}
+
+# 18. AI case loses a required semantic field.
+Invoke-NegativeCase -Name 'ai-missing-semantic-field' -ExpectedCode 'CASE_STRUCTURE_MISSING' -Mutator {
+    param($root)
+    $fixturePath = Join-Path $root 'tests\v5-golden\ai-v1.json'
+    $fixture = Read-JsonFile $fixturePath
+    $fixture.cases[0].v5.expected.PSObject.Properties.Remove('mappingBasis')
+    Write-JsonFile $fixturePath $fixture
+    Update-CatalogFixtureSha -Root $root -FixtureId 'ai-v1'
+}
+
+# 19. AI decisionClock field with the wrong JSON type.
+Invoke-NegativeCase -Name 'ai-wrong-type' -ExpectedCode 'CASE_STRUCTURE_TYPE' -Mutator {
+    param($root)
+    $fixturePath = Join-Path $root 'tests\v5-golden\ai-v1.json'
+    $fixture = Read-JsonFile $fixturePath
+    $fixture.decisionClock.baseMillis = '3000'
+    Write-JsonFile $fixturePath $fixture
+    Update-CatalogFixtureSha -Root $root -FixtureId 'ai-v1'
+}
+
+# 20. AI declared caseTotal drifts from the actual cases group.
+Invoke-NegativeCase -Name 'ai-count-drift' -ExpectedCode 'CASE_TOTAL_MISMATCH' -Mutator {
+    param($root)
+    $catalogPath = Join-Path $root 'tests\v5-golden\catalog-v1.json'
+    $catalog = Read-JsonFile $catalogPath
+    foreach ($entry in @($catalog.fixtures)) {
+        if ([string]$entry.id -eq 'ai-v1') { $entry.caseTotal = 8 }
+    }
+    Write-JsonFile $catalogPath $catalog
+}
+
+# 21. AI fixture byte drift without a catalog hash refresh.
+Invoke-NegativeCase -Name 'ai-hash-drift' -ExpectedCode 'FIXTURE_SHA_MISMATCH' -Mutator {
+    param($root)
+    $fixturePath = Join-Path $root 'tests\v5-golden\ai-v1.json'
+    [System.IO.File]::AppendAllText($fixturePath, "`n", (New-Object System.Text.UTF8Encoding($false)))
+}
+
+# 22. G-049 must never be promoted to full.
+Invoke-NegativeCase -Name 'ai-g049-full' -ExpectedCode 'G049_COVERAGE_MUST_BE_PARTIAL' -Mutator {
+    param($root)
+    $catalogPath = Join-Path $root 'tests\v5-golden\catalog-v1.json'
+    $catalog = Read-JsonFile $catalogPath
+    foreach ($requirement in @($catalog.requirements)) {
+        if ([string]$requirement.id -eq 'G-049') {
+            $requirement.coverage = 'full'
+            $requirement.partialScope.fullClaim = $true
+        }
+    }
+    $catalog.denominators.requirementCoverage.full = 18
+    $catalog.denominators.requirementCoverage.partial = 20
+    $catalog.denominators.requirementCoverage.none = 32
+    Write-JsonFile $catalogPath $catalog
+}
+
+# 23. AI consumer path points to a missing C# reader.
+Invoke-NegativeCase -Name 'ai-bad-consumer' -ExpectedCode 'CSHARP_MISSING' -Mutator {
+    param($root)
+    $catalogPath = Join-Path $root 'tests\v5-golden\catalog-v1.json'
+    $catalog = Read-JsonFile $catalogPath
+    foreach ($entry in @($catalog.fixtures)) {
+        if ([string]$entry.id -eq 'ai-v1') { $entry.csharp.path = 'dotnet/tests/Mahjong.Ai.Tests/NoSuchAiGoldenTests.cs' }
+    }
+    Write-JsonFile $catalogPath $catalog
+}
+
+# 24. AI source-pin anchor no longer matches the fixture.
+Invoke-NegativeCase -Name 'ai-bad-source-anchor' -ExpectedCode 'SOURCE_ENGINE_COMMIT_MISMATCH' -Mutator {
+    param($root)
+    $catalogPath = Join-Path $root 'tests\v5-golden\catalog-v1.json'
+    $catalog = Read-JsonFile $catalogPath
+    foreach ($entry in @($catalog.fixtures)) {
+        if ([string]$entry.id -eq 'ai-v1') { $entry.sourceV4EngineCommit = '0000000000000000000000000000000000000000' }
+    }
+    Write-JsonFile $catalogPath $catalog
+}
+
+# 25. AI binding anchor line is outside the real consumer file.
+Invoke-NegativeCase -Name 'ai-bad-binding-line' -ExpectedCode 'AI_BINDING_ANCHOR_INVALID' -Mutator {
+    param($root)
+    $catalogPath = Join-Path $root 'tests\v5-golden\catalog-v1.json'
+    $catalog = Read-JsonFile $catalogPath
+    foreach ($entry in @($catalog.fixtures)) {
+        if ([string]$entry.id -eq 'ai-v1') { $entry.bindings[0].consumerLines = '99999' }
+    }
+    Write-JsonFile $catalogPath $catalog
+}
+
+# 26. Delta 29 must not be merged into the catalog case denominator.
+Invoke-NegativeCase -Name 'ai-delta29-merge' -ExpectedCode 'CASE_ACCOUNTING_MISMATCH' -Mutator {
+    param($root)
+    $catalogPath = Join-Path $root 'tests\v5-golden\catalog-v1.json'
+    $catalog = Read-JsonFile $catalogPath
+    $catalog.caseAccounting.catalogCaseTotal = 10418
+    Write-JsonFile $catalogPath $catalog
+}
+
+# 27. Refresh both fixture and catalog hash but leave the accepted immutable pin.
+Invoke-NegativeCase -Name 'ai-immutable-pin' -ExpectedCode 'IMMUTABLE_FIXTURE_PIN_MISMATCH' -Mutator {
+    param($root)
+    $fixturePath = Join-Path $root 'tests\v5-golden\ai-v1.json'
+    [System.IO.File]::AppendAllText($fixturePath, "`n", (New-Object System.Text.UTF8Encoding($false)))
+    Update-CatalogFixtureSha -Root $root -FixtureId 'ai-v1'
+    $catalogPath = Join-Path $root 'tests\v5-golden\catalog-v1.json'
+    $catalog = Read-JsonFile $catalogPath
+    $newSha = Get-Sha256 $fixturePath
+    $newBytes = (Get-Item -LiteralPath $fixturePath).Length
+    foreach ($pin in @($catalog.immutableFixturePins)) {
+        if ([string]$pin.id -eq 'ai-v1') {
+            $pin.sha256 = $newSha
+            $pin.bytes = $newBytes
+        }
+    }
+    Write-JsonFile $catalogPath $catalog
+}
+
+# 28. G-049 partial with no anchor must fail.
+Invoke-NegativeCase -Name 'ai-g049-anchor-missing' -ExpectedCode 'ANCHOR_MISSING' -Mutator {
+    param($root)
+    $catalogPath = Join-Path $root 'tests\v5-golden\catalog-v1.json'
+    $catalog = Read-JsonFile $catalogPath
+    foreach ($requirement in @($catalog.requirements)) {
+        if ([string]$requirement.id -eq 'G-049') { $requirement.anchors = @() }
+    }
+    Write-JsonFile $catalogPath $catalog
+}
+
+# 29. Accepted AI state-binding Fact count drift.
+Invoke-NegativeCase -Name 'ai-accepted-binding-fact' -ExpectedCode 'AI_ACCEPTED_BINDING_FACT_MISMATCH' -Mutator {
+    param($root)
+    $catalogPath = Join-Path $root 'tests\v5-golden\catalog-v1.json'
+    $catalog = Read-JsonFile $catalogPath
+    foreach ($entry in @($catalog.fixtures)) {
+        if ([string]$entry.id -eq 'ai-v1') { $entry.acceptedBindings[0].factCount = 4 }
+    }
+    Write-JsonFile $catalogPath $catalog
 }
 
 # Real fixture immutability check.
