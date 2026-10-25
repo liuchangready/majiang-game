@@ -1040,7 +1040,7 @@ namespace Mahjong.TableRuntime
     /// </summary>
     public static class TableCheatCommandCodec
     {
-        public const int FormatVersion = 1;
+        public const int FormatVersion = 2;
         private const int Magic = 0x4D4A4348; // MJCH
 
         public static byte[] Encode(RoundCheatJournal journal)
@@ -1065,6 +1065,7 @@ namespace Mahjong.TableRuntime
                 writer.Write(journal.NowMillis);
                 writer.Write(journal.RoundOrdinal);
                 writer.Write((byte)journal.LastDrawKind);
+                writer.Write(journal.BootId);
                 writer.Flush();
                 return stream.ToArray();
             }
@@ -1110,6 +1111,8 @@ namespace Mahjong.TableRuntime
                     throw new InvalidDataException("Cheat command draw kind is invalid.");
                 }
 
+                string bootId = reader.ReadString();
+
                 if (stream.Position != payload.Length)
                 {
                     throw new InvalidDataException("Cheat command journal payload has trailing bytes.");
@@ -1120,7 +1123,8 @@ namespace Mahjong.TableRuntime
                     turn,
                     now,
                     ordinal,
-                    (SleeveBloomDrawKind)drawKind);
+                    (SleeveBloomDrawKind)drawKind,
+                    bootId);
             }
         }
 
@@ -1297,7 +1301,7 @@ namespace Mahjong.TableRuntime
     /// <summary>Durable journal for an authority cheat sweep/timeout (no client request id).</summary>
     public static class TableCheatSystemCodec
     {
-        public const int FormatVersion = 1;
+        public const int FormatVersion = 2;
         private const int Magic = 0x4D4A4353; // MJCS
 
         public static byte[] Encode(TableCheatSystemJournal journal)
@@ -1318,6 +1322,7 @@ namespace Mahjong.TableRuntime
                 writer.Write(journal.NowMillis);
                 writer.Write(journal.RoundOrdinal);
                 writer.Write((byte)journal.LastDrawKind);
+                writer.Write(journal.BootId);
                 writer.Flush();
                 return stream.ToArray();
             }
@@ -1360,6 +1365,8 @@ namespace Mahjong.TableRuntime
                     throw new InvalidDataException("Cheat system draw kind is invalid.");
                 }
 
+                string bootId = reader.ReadString();
+
                 if (stream.Position != payload.Length)
                 {
                     throw new InvalidDataException("Cheat system journal payload has trailing bytes.");
@@ -1371,7 +1378,8 @@ namespace Mahjong.TableRuntime
                     turn,
                     now,
                     ordinal,
-                    (SleeveBloomDrawKind)drawKind);
+                    (SleeveBloomDrawKind)drawKind,
+                    bootId);
             }
         }
     }

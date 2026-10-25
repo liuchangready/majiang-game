@@ -812,7 +812,7 @@ namespace Mahjong.TableRuntime
                             cheatJournal.NowMillis,
                             cheatJournal.LastDrawKind,
                             cheatJournal.RoundOrdinal,
-                            checkpoint.BootId);
+                            cheatJournal.BootId);
                         RoundCheatPreparation preparation = RoundCheatTransition.Prepare(
                             round,
                             cheat,
@@ -858,12 +858,19 @@ namespace Mahjong.TableRuntime
                             system.NowMillis,
                             system.LastDrawKind,
                             system.RoundOrdinal,
-                            checkpoint.BootId);
+                            system.BootId);
                         RoundCheatPreparation preparation;
                         switch (system.Action)
                         {
                             case RoundCheatSystemAction.OffTurnExpiry:
-                                preparation = RoundCheatTransition.ExpireOffTurn(round, cheat, context);
+                                preparation = RoundCheatTransition.ExpireOffTurn(
+                                    round,
+                                    cheat,
+                                    context,
+                                    offer => !string.Equals(
+                                        offer.BootId,
+                                        system.BootId,
+                                        StringComparison.Ordinal));
                                 break;
                             case RoundCheatSystemAction.ImmediateExpiry:
                                 preparation = RoundCheatTransition.ExpireImmediate(round, cheat, context, system.Seat);

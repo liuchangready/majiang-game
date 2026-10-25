@@ -2396,7 +2396,8 @@ namespace Mahjong.TableRuntime
                 context.TurnNumber,
                 context.NowMillis,
                 context.RoundOrdinal,
-                context.LastDrawKind);
+                context.LastDrawKind,
+                context.BootId);
             return await CommitCheatAndInstallAsync(
                 preparation.Change!,
                 roundEnvelope: null,
@@ -2486,7 +2487,8 @@ namespace Mahjong.TableRuntime
                         cheatContext.TurnNumber,
                         cheatContext.NowMillis,
                         cheatContext.RoundOrdinal,
-                        cheatContext.LastDrawKind);
+                        cheatContext.LastDrawKind,
+                        cheatContext.BootId);
                     TableOperationResult applied = await CommitCheatAndInstallAsync(
                         cheatExpiry.Change!,
                         roundEnvelope: null,
@@ -3624,7 +3626,8 @@ namespace Mahjong.TableRuntime
                         context.TurnNumber,
                         context.NowMillis,
                         context.RoundOrdinal,
-                        context.LastDrawKind));
+                        context.LastDrawKind,
+                        context.BootId));
                     journalSchema = 2;
                 }
 

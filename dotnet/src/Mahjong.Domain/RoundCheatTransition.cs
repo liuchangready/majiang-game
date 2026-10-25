@@ -452,7 +452,8 @@ namespace Mahjong.Domain
             int turnNumber,
             long nowMillis,
             int roundOrdinal,
-            SleeveBloomDrawKind lastDrawKind)
+            SleeveBloomDrawKind lastDrawKind,
+            string? bootId = null)
         {
             Command = command ?? throw new ArgumentNullException(nameof(command));
             if (turnNumber < 0)
@@ -479,6 +480,7 @@ namespace Mahjong.Domain
             NowMillis = nowMillis;
             RoundOrdinal = roundOrdinal;
             LastDrawKind = lastDrawKind;
+            BootId = bootId ?? string.Empty;
         }
 
         public RoundCheatCommand Command { get; }
@@ -490,6 +492,8 @@ namespace Mahjong.Domain
         public int RoundOrdinal { get; }
 
         public SleeveBloomDrawKind LastDrawKind { get; }
+
+        public string BootId { get; }
     }
 
     /// <summary>

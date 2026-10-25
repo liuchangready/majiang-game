@@ -1775,6 +1775,76 @@ namespace Mahjong.TableRuntime.Tests
             Assert.Equal(offer.FirstTile, GetCheat(actor)!.SleeveBloom.ReservationFor(0)!.Tile);
         }
 
+        [Theory]
+        [InlineData(false)]
+        [InlineData(true)]
+        public async Task cross_boot_tick_commit_replays_with_and_without_new_boot_checkpoint(
+            bool checkpointInNewBoot)
+        {
+            await using DurableHarness harness = await CreateDurableCheatHarnessAsync();
+            SleeveBloomOffer offer = await OpenDurableOffTurnOfferAsync(harness);
+            var clock = new BootShiftClock
+            {
+                MonotonicMillis = 10L,
+                UtcNowMs = harness.Clock.UtcNowMs + 10000L
+            };
+            await using TableActor actor = AttachDurable(harness, clock, "boot-2");
+            Assert.Equal(TableRecoveryStatus.Recovered, (await actor.RecoverFromStoreAsync(
+                TestContext.Current.CancellationToken)).Status);
+            if (checkpointInNewBoot)
+            {
+                Assert.Equal(TableOperationStatus.Configured, (await actor.SaveCheckpointAsync(
+                    TestContext.Current.CancellationToken)).Status);
+            }
+
+            await actor.TickAsync(cancellationToken: TestContext.Current.CancellationToken);
+            Assert.Null(GetCheat(actor)!.SleeveBloom.OffTurnOfferFor(0));
+            Assert.Equal(offer.FirstTile, GetCheat(actor)!.SleeveBloom.ReservationFor(0)!.Tile);
+            ulong fingerprint = GetCheat(actor)!.Fingerprint;
+            Assert.Equal(TableRecoveryStatus.Recovered, (await actor.RecoverFromStoreAsync(
+                TestContext.Current.CancellationToken)).Status);
+            Assert.Equal(fingerprint, GetCheat(actor)!.Fingerprint);
+        }
+
+        [Fact]
+        public async Task new_boot_offer_journal_preserves_its_creation_boot()
+        {
+            await using DurableHarness harness = await CreateDurableCheatHarnessAsync();
+            var clock = new BootShiftClock
+            {
+                MonotonicMillis = 10L,
+                UtcNowMs = harness.Clock.UtcNowMs + 10000L
+            };
+            await using TableActor actor = AttachDurable(harness, clock, "boot-2");
+            Assert.Equal(TableRecoveryStatus.Recovered, (await actor.RecoverFromStoreAsync(
+                TestContext.Current.CancellationToken)).Status);
+            TableSnapshot snapshot = await actor.GetSnapshotAsync(TestContext.Current.CancellationToken);
+            IReadOnlyList<TableCommandEnvelope> chain = P31Fixtures.BuildDiscardChain(
+                harness.InitialRound, 1);
+            Assert.Equal(TableOperationStatus.Accepted, (await actor.SubmitAsync(
+                DurableRound(
+                    harness.Scope, chain[0].Command, 0, "newboot-discard",
+                    recoveryGeneration: 1L,
+                    ownerEpoch: snapshot.OwnerEpoch.Value),
+                TestContext.Current.CancellationToken)).Status);
+
+            var command = new TableCheatCommandEnvelope(
+                new RoundCheatCommand(
+                    "round-1", 0, RoundCheatAction.SubmitSleeveBloomOffTurn, "newboot-offer",
+                    RoundCheatPayload.OffTurn("bloom-window-0-0-0")),
+                new RequestId("newboot-offer"), new StateVersion(1), snapshot.OwnerEpoch,
+                new ControlEpoch(0), null, 1L, harness.Scope.ScopeId, "CHEAT",
+                TablePayloadSha256.Compute(new byte[] { 9, 8, 7 }));
+            Assert.Equal(TableOperationStatus.Accepted, (await actor.SubmitCheatAsync(
+                command, TestContext.Current.CancellationToken)).Status);
+            Assert.Equal("boot-2", GetCheat(actor)!.SleeveBloom.OffTurnOfferFor(0)!.BootId);
+            ulong fingerprint = GetCheat(actor)!.Fingerprint;
+            Assert.Equal(TableRecoveryStatus.Recovered, (await actor.RecoverFromStoreAsync(
+                TestContext.Current.CancellationToken)).Status);
+            Assert.Equal(fingerprint, GetCheat(actor)!.Fingerprint);
+            Assert.Equal("boot-2", GetCheat(actor)!.SleeveBloom.OffTurnOfferFor(0)!.BootId);
+        }
+
         private static async Task<SleeveBloomOffer> OpenDurableOffTurnOfferAsync(DurableHarness harness)
         {
             IReadOnlyList<TableCommandEnvelope> chain = P31Fixtures.BuildDiscardChain(harness.InitialRound, 1);

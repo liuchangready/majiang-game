@@ -360,7 +360,8 @@ namespace Mahjong.TableRuntime
             int turnNumber,
             long nowMillis,
             int roundOrdinal,
-            SleeveBloomDrawKind lastDrawKind)
+            SleeveBloomDrawKind lastDrawKind,
+            string? bootId = null)
         {
             if (!Enum.IsDefined(typeof(RoundCheatSystemAction), action))
             {
@@ -383,6 +384,7 @@ namespace Mahjong.TableRuntime
             NowMillis = nowMillis;
             RoundOrdinal = roundOrdinal;
             LastDrawKind = lastDrawKind;
+            BootId = bootId ?? string.Empty;
         }
 
         public RoundCheatSystemAction Action { get; }
@@ -396,6 +398,8 @@ namespace Mahjong.TableRuntime
         public int RoundOrdinal { get; }
 
         public SleeveBloomDrawKind LastDrawKind { get; }
+
+        public string BootId { get; }
     }
 
     /// <summary>
