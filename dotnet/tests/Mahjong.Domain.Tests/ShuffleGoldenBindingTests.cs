@@ -44,6 +44,9 @@ namespace Mahjong.Domain.Tests
     {
         private static readonly Lazy<JsonDocument> Golden = new Lazy<JsonDocument>(LoadGolden);
 
+        private const string ExporterPath = "engine/src/test/kotlin/com/majiang/v3/V5ShuffleGoldenExporterTest.kt";
+        private const string V4RulesSourcePath = "engine/src/main/kotlin/com/majiang/stacking";
+
         private static readonly string[] TopLevelFields =
         {
             "schema",
@@ -122,6 +125,27 @@ namespace Mahjong.Domain.Tests
             Assert.Equal(40, commit.Length);
             Assert.True(commit.All(Uri.IsHexDigit), "v4Commit must be a real 40-hex git commit");
 
+            string generator = Str(root, "generator");
+            Assert.Equal(ExporterPath, generator);
+            string? repositoryRoot = FindRepositoryRoot();
+            if (repositoryRoot != null)
+            {
+                Assert.True(
+                    File.Exists(Path.Combine(repositoryRoot, generator)),
+                    "generator must name the real V4 exporter source: " + generator);
+            }
+
+            string v4RulesSource = Str(root, "v4RulesSourceNote");
+            Assert.Contains(V4RulesSourcePath, v4RulesSource);
+            Assert.Contains("V4 production source", v4RulesSource);
+            Assert.Contains("v4Commit above is the exact tree used", v4RulesSource);
+            if (repositoryRoot != null)
+            {
+                Assert.True(
+                    Directory.Exists(Path.Combine(repositoryRoot, V4RulesSourcePath)),
+                    "v4RulesSourceNote must name the real V4 production source tree: " + V4RulesSourcePath);
+            }
+
             string rngGap = Str(root, "rngGapNote");
             Assert.Contains("D-09", rngGap);
             Assert.Contains("behavior samples", rngGap);
@@ -135,10 +159,13 @@ namespace Mahjong.Domain.Tests
 
             JsonElement cases = Arr(root, "cases", 32);
             int changed = 0;
+            var seeds = new HashSet<int>();
             foreach (JsonElement entry in cases.EnumerateArray())
             {
                 AssertExactProperties(entry, CaseFields, "cases[]");
-                Assert.Equal(Int(entry, "seed") % 4, Int(entry, "dealerSeat"));
+                int seed = Int(entry, "seed");
+                Assert.True(seeds.Add(seed), "duplicate seed sample: " + seed);
+                Assert.Equal(seed % 4, Int(entry, "dealerSeat"));
                 Assert.Equal(3, Int(entry, "redFiveCount"));
                 if (Bool(entry, "threeCasterChanged"))
                 {
@@ -146,6 +173,11 @@ namespace Mahjong.Domain.Tests
                 }
             }
 
+            // The V4 exporter loop is exactly seed 0..31. Length alone is not
+            // completeness: 32 copies of seed 0, one missing seed or seed 32 must fail.
+            // Set equality is order-independent, so reordering cases remains legal.
+            Assert.Equal(32, seeds.Count);
+            Assert.Equal(Enumerable.Range(0, 32), seeds.OrderBy(seed => seed));
             Assert.Equal(changed, Int(generation, "threeCasterChangedSeeds"));
         }
 
@@ -742,6 +774,26 @@ namespace Mahjong.Domain.Tests
         private static JsonDocument LoadGolden()
         {
             return JsonDocument.Parse(File.ReadAllText(FindGoldenPath()));
+        }
+
+        private static string? FindRepositoryRoot()
+        {
+            foreach (string start in new[] { AppContext.BaseDirectory, Directory.GetCurrentDirectory() })
+            {
+                var directory = new DirectoryInfo(start);
+                while (directory != null)
+                {
+                    if (File.Exists(Path.Combine(directory.FullName, ExporterPath)) &&
+                        Directory.Exists(Path.Combine(directory.FullName, V4RulesSourcePath)))
+                    {
+                        return directory.FullName;
+                    }
+
+                    directory = directory.Parent;
+                }
+            }
+
+            return null;
         }
 
         private static string FindGoldenPath([CallerFilePath] string sourceFile = "")

@@ -147,6 +147,15 @@ $cases = @(
     [pscustomobject]@{ Name = 'legal-plan-order'; Expect = 'Pass'; Why = 'V4 ShuffleWallGenerator.kt:68 canonicalises plans by seat; array order is non-semantic'; Mutate = { param($j) $j.cases[0].plans = @($j.cases[0].plans[2], $j.cases[0].plans[1], $j.cases[0].plans[0]) } }
     [pscustomobject]@{ Name = 'legal-case-order'; Expect = 'Pass'; Why = 'cases are independent samples and every binding iterates all 32; array order is non-semantic'; Mutate = { param($j) $j.cases = @($j.cases[31..0]) } }
 
+    [pscustomobject]@{ Name = 'duplicate-all-samples'; Expect = 'Fail'; Why = '32 copies of one seed must not satisfy the exact seed set 0..31'; Mutate = { param($j) $j.cases = @(0..31 | ForEach-Object { $j.cases[0] }) } }
+    [pscustomobject]@{ Name = 'duplicate-one-sample'; Expect = 'Fail'; Why = 'replacing one sample with a copy of another leaves only 31 unique seeds'; Mutate = { param($j) $j.cases[1] = $j.cases[0] } }
+    [pscustomobject]@{ Name = 'missing-one-sample'; Expect = 'Fail'; Why = '31 cases must fail the required 32-case set'; Mutate = { param($j) $j.cases = @($j.cases[0..30]) } }
+    [pscustomobject]@{ Name = 'out-of-range-seed'; Expect = 'Fail'; Why = 'seed 32 with dealer 0 still satisfies seed % 4 but violates the required 0..31 set'; Mutate = { param($j) $j.cases[0].seed = 32; $j.cases[0].dealerSeat = 0 } }
+    [pscustomobject]@{ Name = 'generator-wrong-type'; Expect = 'Fail'; Why = 'generator must be a string at the real exporter path, not coerced number'; Mutate = { param($j) $j.generator = 42 } }
+    [pscustomobject]@{ Name = 'generator-wrong-path'; Expect = 'Fail'; Why = 'generator path must equal the real V4 exporter source'; Mutate = { param($j) $j.generator = 'not-the-exporter' } }
+    [pscustomobject]@{ Name = 'rules-source-wrong-type'; Expect = 'Fail'; Why = 'v4RulesSourceNote must be a string naming the real V4 source tree'; Mutate = { param($j) $j.v4RulesSourceNote = 42 } }
+    [pscustomobject]@{ Name = 'rules-source-wrong-path'; Expect = 'Fail'; Why = 'v4RulesSourceNote must contain the real V4 stacking source path and exact-tree declaration'; Mutate = { param($j) $j.v4RulesSourceNote = 'not the V4 source' } }
+
     [pscustomobject]@{ Name = 'deadwall-flag-false'; Expect = 'Fail'; Why = 'deadWallSegmentEqual must equal the C# TilePositionMap dead-wall relation'; Mutate = { param($j) $j.cases[0].deadWallSegmentEqual = $false } }
     [pscustomobject]@{ Name = 'fourcaster-identity-false'; Expect = 'Fail'; Why = 'fourCasterIdentity must equal base == four and the n=4 Shape output'; Mutate = { param($j) $j.cases[0].fourCasterIdentity = $false } }
     [pscustomobject]@{ Name = 'threecaster-changed-false'; Expect = 'Fail'; Why = 'threeCasterChanged must equal base != three for the exported arrays'; Mutate = { param($j) $j.cases[0].threeCasterChanged = $false } }
@@ -285,7 +294,7 @@ $summary = [ordered]@{
         g1 = 'NOT_RUN'
         threeCasterShapeBinding = 'BLOCKED_RANDOM_INPUT'
         threeCasterBlockedReason = 'fixture has no recordedDoubles for the V4 Random(seed) decisions; Shape(empty trace) is TraceExhausted'
-        threeCasterMinimalExtension = 'cases[].threeCasterRecordedDoubles: exact V4 rng.nextDouble() sequence; needs a test-only recording seam at engine/src/main/kotlin/com/majiang/stacking/ShuffleWallGenerator.kt:63 (do not simulate the JVM RNG)'
+        threeCasterMinimalExtension = 'cases[].threeCasterRandomEvents: ordered typed events after base wall formation: {kind:"nextInt", bound:n, result:r} for every Fisher-Yates bounded choice and {kind:"nextDouble", value:v} for last-chance/proficiency/donor; C# ShuffleWallSynthesizer currently consumes one [0,1) double per decision, so an adapter must encode each bounded integer result as a double whose floor(pick*(i+1)) equals r and preserve the original event order; recording only nextDouble is not sufficient; seam and per-wall verification still require authorization'
         reversedEqualsThreeIndependentRecompute = 'BLOCKED_MISSING_REVERSED_WALL'
         reversedMinimalExtension = 'cases[].reversedWall: the exporter already computes reversed at engine/src/test/kotlin/com/majiang/v3/V5ShuffleGoldenExporterTest.kt:65'
         zeroBudgetEmptyTrace = 'NOT_APPLICABLE: V4 consumes the seat/slot shuffle draws before observing budget 0; empty trace is TraceExhausted'
