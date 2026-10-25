@@ -14,11 +14,10 @@
 | 原 16 Fact | **16 PASS** | drawn-backfill、disabled、foreign-hand 已纠正 |
 | 外部单字段错值矩阵 | **46/46 FAIL_AS_EXPECTED** | 正控制 94/0/0/0/0 exit0；每项 native1 且真实 Failed>0 |
 | stale/expired 断言审计 | **15/15 PASS**（8 stale + 7 expired） | 正控制与 6+6 个恶意后态/事件均被 helper 拒绝 |
-| 7 项 enum 严格性探针 | **7/7 native1 / Total94 / Failed1** | 数字、组合、重复 token 不再归一化 |
+| 7 项 enum 严格性探针 | **7/7 native1 / Total94 / Failed 1或2** | 数字、组合、重复 token 不再归一化；逐例 keep-numeric 1、keep-first-composite 1、keep-offturn-numeric 2、keep-composite 2、keep-repeated 2、draw 2、keep-unknown-control 1 |
 | 296 叶扫描 | **294 native1；2 项合法等价** | `factsBefore.tileId 8→9`、`inputKanCount 0→1` |
 | 8 项 strict probes | **8/8 native1 / Total94 / Failed1** | keep/seat/version/fact schema/requestException |
-| **readiness 探针** | **BLOCKED_INPUT：native1 / Total1 / Failed1** | map-only 合法候选控制为 Allowed；明确缺 frozen
-extWallTileId` 输入，不称产品 FAIL |
+| **readiness 探针** | **BLOCKED_INPUT：native1 / Total1 / Failed1** | map-only 合法候选控制为 Allowed；明确缺 frozen `nextWallTileId` 输入，不称产品 FAIL |
 | Domain 全量 | **463 passed / 0 failed / 0 skipped / 0 Not Run** | native exit 0 |
 | Release solution 构建 | **0 warning / 0 error** | native exit 0 |
 | solution 测试 | **1179 passed / 0 failed / 0 skipped** | 435 AI + 149 Contracts + 132 Client + 463 Domain，native exit 0 |
@@ -40,13 +39,12 @@ extWallTileId` 输入，不称产品 FAIL |
 - **位置**：`GoldenEnum<T>`；`sb-choose-first.goldenInputs.keep`。
 - **实际**：`Enum.TryParse("0", true)` 与 `"FIRST, FIRST"` 可归一化成 FIRST，随后 `Enum.IsDefined` 通过；整套实际 Allowed。
 - **修复**：先 `Enum.GetNames` 做**原始 token 名字**（大小写不敏感）校验，找不到即断言失败；只对 canonical name 调 `Enum.Parse`。禁止数字、逗号组合、重复、空白。所有 `goldenInputs` 的 keep/drawKind/phase 都走同一解析。
-- **验收**：调用者 `probe-enum.ps1` 7/7 native1/Total94/Failed1；正式矩阵新增 4 项数字/组合 token（keep、drawKind、phase）均 FAIL_AS_EXPECTED；canonical FIRST/SECOND/NORMAL/RINSHAN/DISCARD 正控制仍通过。
+- **验收**：调用者 `probe-enum.ps1` 7/7 native1/Total94/Failed 1或2（逐例 1,1,2,2,2,2,1）；正式矩阵新增 4 项数字/组合 token（keep、drawKind、phase）均 FAIL_AS_EXPECTED；canonical FIRST/SECOND/NORMAL/RINSHAN/DISCARD 正控制仍通过。
 
 ### D-R2-03（MAJOR）readiness 把缺输入投影当产品 FAIL
 
 - **位置**：`probe-cheat-binding.ps1` 生成的 TEMP readiness 测试；报告 F-01/§9。
-- **实际**：旧 readiness 对 map-only 调用断言 V4 Rejected，消息写成 `FAIL_CONFORMANCE`/“生产修正后应转绿”；但完整 V4 输入还含独立
-extWallTileId=32/nextWallTileInWall=false`，C# API 无此参，不能据此判定生产违约。
+- **实际**：旧 readiness 对 map-only 调用断言 V4 Rejected，消息写成 `FAIL_CONFORMANCE`/“生产修正后应转绿”；但完整 V4 输入还含独立 `nextWallTileId=32/nextWallTileInWall=false`，C# API 无此参，不能据此判定生产违约。
 - **修复**：readiness 改为能力门：
   - 先断言 map-only 调用 **Allowed**（合法其它墙候选控制）；
   - 再反射检查 `ActivateSleeveBloom` 是否有 frozen nextWall/frozen 参数；没有则失败，消息 `BLOCKED_INPUT: ...`；若未来参数出现，则 `Assert.Fail("BLOCKED_INPUT: ... update to same-input conformance")`，直到用真正同输入 Rejected 断言替换。
@@ -231,7 +229,7 @@ D-R1-01..05 的有效部分继续保留：不再反向 pin；ledger/state 全字
 
 - 调用者 `probe-leaves-v2.ps1` 硬编码 Total=96；移除两个不可绑定 case 后行为套件 Total=94，TEMP 副本仅改该期望，原证据未改。
 - 296 项：**294 native1**，2 项合法等价：`factsBefore.tileId 8→9`（仍是 seat0 手牌，事实保持真）、`inputKanCount 0→1`（进入 `FromPlacements` 且 `map.KanCount` 被断言；物理行为不依赖）。
-- enum：调用者 `probe-enum.ps1` 7/7 native1/Total94/Failed1；数字、组合、重复 token 均被 GoldenEnum 名字白名单拒绝。
+- enum：调用者 `probe-enum.ps1` 7/7 native1/Total94/Failed 1或2（逐例 keep-numeric 1、keep-first-composite 1、keep-offturn-numeric 2、keep-composite 2、keep-repeated 2、draw 2、keep-unknown-control 1）；数字、组合、重复 token 均被 GoldenEnum 名字白名单拒绝。
 
 ## 7. 命令、结果、证据
 
@@ -248,21 +246,17 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools/v5-golden/probe-cheat-
 | 验证 | 结果 | native exit | 日志 |
 |---|---|---:|---|
 | solution 构建 | 0 warning / 0 error | 0 | `C:/Users/sncdc/AppData/Local/Temp/n3-cheat-r3-solution-build.log`（`4494FBC6EE4FA65DE7425F88D49640483A4FF8805A27C16B80C2DB051526B141`） |
-| solution 测试 | 1179 passed / 0 failed / 0 skipped（435+149+132+463） | 0 | `.../n3-cheat-r3-solution-tests.log`（`3A5A02E23FB0875A83E0FD966ADA115EDB5B0B118D9C49BE8EA3C5B60E0CD188`） |
-| Domain 全量 | 463 passed / 0 failed / 0 skipped / 0 Not Run | 0 | `.../n3-cheat-r3-domain-full.log`（`0DA3D517740FC2EABB8F8C559895DCED4C01CD8FFF76908657426AFF087F9D2D`） |
-| Cheat 定向 | 94 passed / 0 failed / 0 skipped | 0 | 正控制 `positive-control.log`（`8FC07333CA734A42E5E1AC2B1B3A55EB4670D45FF6C43DD4C14A97CFC1933B8B`） |
-| 46 项矩阵 | 46/46 FAIL_AS_EXPECTED；0 unexpected/tool/wrong | matrix 0；每变异 1 | 最终根 `matrix/matrix.csv`（`7F40E2FE2A459EA9650F782FC9A1822B064E73BD480A31F71728E1116C8F9341`） |
-| readiness | **BLOCKED_INPUT：Total1/Failed1/Errors0/Skip0/NotRun0** | 1 | `readiness/readiness.log`（`0F7A18289471B95F29AA40C72445E6CD73A8E67389B5567F64313E376D8E5A66`） |
-| 默认脚本整体 | MATRIX=PASS，READINESS=BLOCKED，status=MATRIX_PASS_READINESS_BLOCKED | 1 | `summary.json`（`ABFAF94C803EC84293A440B31E38638125670D767EBDC2FBC597120B92DC8E82`） |
-| MatrixOnly | MATRIX=PASS，READINESS=NOT_RUN，status=MATRIX_ONLY_PASS | 0 |
-3-cheat-r3-matrixonly-8add5b805abe46d7bb7ed6d8c7096e09/summary.json`（`AD926B406C2042C906C8236948D8EFBB3F709E28A541FE1E4B6CB643F114FBB6`） |
-| stale audit | 8/8 passed；6 恶意后态/事件被拒 | 0 |
-3-cheat-r3-stale-fa0c15bcb3b94fe3b149c46b8fcf5b9a/review.log`（`298772BA0BBB37E0CBC07E4804F19F26C8D6863CC91E7C1FB3B8B79370B2E9FA`） |
-| expired audit | 7/7 passed；6 恶意后态/事件被拒 | 0 | `.../review-expired.log`（`C680BCF62353BEF19D386D8B61CB624F4E4F1F00C6570948F171C30C1E455A7D`） |
-| enum probe | 7/7 native1 / Total94 / Failed1 | 每项1 |
-3-cheat-r3-enum-db1b25bc5f684cf9a74843a689a20419/results.csv`（`9978EFBBD86B7B41D6DDBD30129E01394064501460A2B1CF341618AE0B733528`） |
-| 工具失败审计 | readinessProbe=TOOL_FAILURE，readinessStatus=FAIL，status=FAIL | 1 |
-3-cheat-r3-toolfail-627ca250d1aa4975a4e947f5b7043a3e/summary.json`（`51341701DF20D1284817742188C1517E5ACEA35EB381BB8CBEE470058721FB58`） |
+| solution 测试 | 1179 passed / 0 failed / 0 skipped（435+149+132+463） | 0 | `C:/Users/sncdc/AppData/Local/Temp/n3-cheat-r3-solution-tests.log`（`3A5A02E23FB0875A83E0FD966ADA115EDB5B0B118D9C49BE8EA3C5B60E0CD188`） |
+| Domain 全量 | 463 passed / 0 failed / 0 skipped / 0 Not Run | 0 | `C:/Users/sncdc/AppData/Local/Temp/n3-cheat-r3-domain-full.log`（`0DA3D517740FC2EABB8F8C559895DCED4C01CD8FFF76908657426AFF087F9D2D`） |
+| Cheat 定向 | 94 passed / 0 failed / 0 skipped | 0 | 正控制 `C:/Users/sncdc/AppData/Local/Temp/n3-cheat-r3-final-298d30bb204c4fa3ae6a840c00da30bf/logs/positive-control.log`（`8FC07333CA734A42E5E1AC2B1B3A55EB4670D45FF6C43DD4C14A97CFC1933B8B`） |
+| 46 项矩阵 | 46/46 FAIL_AS_EXPECTED；0 unexpected/tool/wrong | matrix 0；每变异 1 | 最终根 `C:/Users/sncdc/AppData/Local/Temp/n3-cheat-r3-final-298d30bb204c4fa3ae6a840c00da30bf/matrix/matrix.csv`（`7F40E2FE2A459EA9650F782FC9A1822B064E73BD480A31F71728E1116C8F9341`） |
+| readiness | **BLOCKED_INPUT：Total1/Failed1/Errors0/Skip0/NotRun0** | 1 | `C:/Users/sncdc/AppData/Local/Temp/n3-cheat-r3-final-298d30bb204c4fa3ae6a840c00da30bf/readiness/readiness.log`（`0F7A18289471B95F29AA40C72445E6CD73A8E67389B5567F64313E376D8E5A66`） |
+| 默认脚本整体 | MATRIX=PASS，READINESS=BLOCKED，status=MATRIX_PASS_READINESS_BLOCKED | 1 | `C:/Users/sncdc/AppData/Local/Temp/n3-cheat-r3-final-298d30bb204c4fa3ae6a840c00da30bf/summary.json`（`ABFAF94C803EC84293A440B31E38638125670D767EBDC2FBC597120B92DC8E82`） |
+| MatrixOnly | MATRIX=PASS，READINESS=NOT_RUN，status=MATRIX_ONLY_PASS | 0 | `C:/Users/sncdc/AppData/Local/Temp/n3-cheat-r3-matrixonly-8add5b805abe46d7bb7ed6d8c7096e09/summary.json`（`AD926B406C2042C906C8236948D8EFBB3F709E28A541FE1E4B6CB643F114FBB6`） |
+| stale audit | 8/8 passed；6 恶意后态/事件被拒 | 0 | `C:/Users/sncdc/AppData/Local/Temp/n3-cheat-r3-stale-fa0c15bcb3b94fe3b149c46b8fcf5b9a/review.log`（`298772BA0BBB37E0CBC07E4804F19F26C8D6863CC91E7C1FB3B8B79370B2E9FA`） |
+| expired audit | 7/7 passed；6 恶意后态/事件被拒 | 0 | `C:/Users/sncdc/AppData/Local/Temp/n3-cheat-r3-stale-fa0c15bcb3b94fe3b149c46b8fcf5b9a/review-expired.log`（`C680BCF62353BEF19D386D8B61CB624F4E4F1F00C6570948F171C30C1E455A7D`） |
+| enum probe | 7/7 native1 / Total94 / Failed 1或2 | 每项1 | `C:/Users/sncdc/AppData/Local/Temp/n3-cheat-r3-enum-db1b25bc5f684cf9a74843a689a20419/results.csv`（`9978EFBBD86B7B41D6DDBD30129E01394064501460A2B1CF341618AE0B733528`） |
+| 工具失败审计 | readinessProbe=TOOL_FAILURE，readinessStatus=FAIL，status=FAIL | 1 | `C:/Users/sncdc/AppData/Local/Temp/n3-cheat-r3-toolfail-627ca250d1aa4975a4e947f5b7043a3e/summary.json`（`51341701DF20D1284817742188C1517E5ACEA35EB381BB8CBEE470058721FB58`） |
 
 最终默认证据根：`C:/Users/sncdc/AppData/Local/Temp/n3-cheat-r3-final-298d30bb204c4fa3ae6a840c00da30bf`；`evidence-sha256.csv` `1E40D50BC058E5C153C7BD049FF4C17B67080125CF436256298C5C88609C720D`。
 
@@ -281,8 +275,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools/v5-golden/probe-cheat-
 
 - **位置**：`CheatSubmission.cs:278-286`；`sb-activate-wall-empty-drift`。
 - **复现**：默认脚本 readiness 段；`readiness.log` 消息 `BLOCKED_INPUT: ActivateSleeveBloom has no frozen nextWallTileId/nextWallTileInWall input...`。
-- **实际 vs 期望**：map-only 调用 Allowed 是合法其它候选控制；V4 完整输入还需独立
-extWallTileId=32/nextWallTileInWall=false`，C# 无此参。**不得**据此断言产品违约或要求拒绝其它合法墙牌。
+- **实际 vs 期望**：map-only 调用 Allowed 是合法其它候选控制；V4 完整输入还需独立 `nextWallTileId=32/nextWallTileInWall=false`，C# 无此参。**不得**据此断言产品违约或要求拒绝其它合法墙牌。
 - **修复**：caller 决策：接受 C# 重搜索并更新 golden 语义，或增加 frozen 输入，或 actor 预检；生产/fixture 未授权修改。
 - **验收**：默认 readiness 仍 native 非零/Total>0/清晰 BLOCKED_INPUT；合法候选 Allowed 控制通过；真正 frozen 输入出现后替换为同输入 Rejected 断言；分母 67/75、8 BLOCKED 保留。
 
