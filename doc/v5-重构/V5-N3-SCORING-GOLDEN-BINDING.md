@@ -704,3 +704,53 @@ $.randomMeta.yakuCounts.YAKUHAI_JIKAZE
 ```
 
 这些字段不参与单样本算分输出差分：`schema`/`rulesetVersion`/`v4Commit`/`generationResult`/`extractionStatus` 用于 provenance 与计数一致性；`randomMeta` 用于 10,000 随机分布的计数断言；`generatedByCommand`/notes 仅说明生成方式。没有用它们替代真实 C# 行为比较。
+
+---
+
+## 9. 调用者独立验收与 PR19 收口（2026-10-25）
+
+调用者在当前工作树独立复核候选 `3332d11fd573942c9a145b2fe5ec9060b699fd2a`，父提交 `b7c780269a3c240ccda9b8a0edb7d3ad3b7e7a9b`。相对父提交仅改约定三个文件，生产代码及 fixture 未改，工作树 clean，`git diff --check b7c7802 HEAD` 通过。原全部算分断言保留；新增入口分发到原有比较函数。win status 常量约束与真实 `Explain` 非 null 约束共同绑定和牌语义，未用 fixture 内部关系代替生产结果。
+
+独立全量遍历确认 10,238 样本、249 leaf paths、476,093 instances；其中 96 expected paths、83,780 expected instances。另将 §8 全部 249 行路径和实例数与独立机器集合逐条比较，全部相等。开发者原始枚举脚本、机器集合及代表性错值日志的 SHA-256 与报告一致。
+
+| 调用者独立验证 | 实际结果 | native exit |
+|---|---|---:|
+| `D:/Unity/dotnet/dotnet.exe build dotnet/Mahjong.sln -c Release --no-incremental` | 0 warnings / 0 errors | 0 |
+| `D:/Unity/dotnet/dotnet.exe test dotnet/tests/Mahjong.Domain.Tests/Mahjong.Domain.Tests.csproj -c Release --no-build` | 385 passed / 0 failed / 0 skipped / 385 total | 0 |
+| 上述 test 加 `-- --filter-class '*ScoringGolden*'` | 18 passed / 0 failed / 0 skipped / 18 total | 0 |
+| 独立外部错值注入 12 次，每次仅执行原 `*ScoringGoldenTests` | **每次** 1 failed / 6 passed / 0 skipped / 7 total | **每次 1** |
+
+12 次外部注入分别为：win/noWin status 反转（2），win status 删除/数字类型（2），win totalPoints 删除/字符串类型/+1（3），fu.finalFu、dora.totalHan、settlement.deltas[0]、score.basePoints、首个获胜 random.totalPoints 分别 +1（5）。各 section 单独执行，避免 win/noWin 共用 fact 造成遮蔽。它们是真实框架失败，与新增 mutation 自测的成功计数分离。
+
+全部 fixture 副本均位于本节独占 TEMP；每次 test 通过 `MAHJONG_REPO_ROOT` 指向对应副本，环境变量在 `finally` 恢复。实仓 fixture SHA-256 仍为 `53B1811079033E9044E222F7BB1FA263506FD724F09D6B13F84FE9CC2FCCD94E`。独立脚本生成各 mutant 与全量机器集合，`verify-report.js` 逐行核验报告。
+
+独立证据根目录：
+
+`C:/Users/sncdc/AppData/Local/Temp/codex-scoring-binding-review-464cdb367be84408bfdc9352c0a07591`
+
+| 独立证据文件 | SHA-256 |
+|---|---|
+| `build.log` | `3A59AF3D04356A9AAD4632E2ED103BE780F781DB9DBD2B211023317B4D66975C` |
+| `domain.log` | `AD159F1D60D6CB9124D61AC9FB45E419D32E234E49399BA559E3859D77412BD8` |
+| `dora-output.log` | `A1B6828BC7E6AF7B6E092E25ED745EE831878A2075AA2A7C55F0E2CAF71A5556` |
+| `fu-output.log` | `8889AC4DD0D7E51EE0B4BEC1B29BE9F4964522E80F3CE49250C3D61B8C0B791C` |
+| `independent-census.json` | `6373C38B21DCCD314A560744772444A195DE0B8C7C5AB05C8049C333A8F91295` |
+| `independent-probes.js` | `85047C2F4D87BE9CA75604C09519193E9A96517D0C4E2788B6A2750C0FB3B11B` |
+| `nowin-status-invert.log` | `33B21849694E24786EE78B922A31DE2594C64115AADFF87788951E6E16E46CD8` |
+| `random-output.log` | `7BC3E22113265C7247CFAEC8F46BCACB9AFCF733FD971D3F7963D3CE8DC455E5` |
+| `score-output.log` | `279B646F61BBBC3983553B281EC500C80CEF8840B7C43D1D706612F9A912DCCB` |
+| `scoring.log` | `84E18D8FF6D2E236A14A6B57C567AD3D4400056E65C5BFDB20F7DC0E61C76E73` |
+| `settlement-output.log` | `A43D15861473D651037E00D0A4DC7389D989F5CD25CBD1E031316E1CB34D707C` |
+| `verify-report.js` | `B6416C726F0FDB1438CBDDCBAD4B09C17750EDEAF9AD80CB005FF3F93C3B2FF2` |
+| `win-status-delete.log` | `A1A1812629F7240F9FF01030A3084DDD8C279DE35A1EBE021610336951EC90AE` |
+| `win-status-invert.log` | `E78E86030288BCD80A8CDEB9456E634A60FEE429F616FA1D81245169EE010084` |
+| `win-status-type.log` | `E001CDA029F629C380A0C9FB3D9B0BBB1F313E0FC0AE8CFFB7F1892F79AD080B` |
+| `win-total-delete.log` | `BB2FEB83D1E7BCD945B90288E97CE95566CF94C8B771D6626F6160F8473A39F6` |
+| `win-total-offset.log` | `B331FD5A541145F44BC357F5A3B2737215A74B3FC898D25F429DA2422AB6F26B` |
+| `win-total-type.log` | `7DCC1EE1377E089DB9E94426C67C8994A1D82267FF0F4C07656E5CD33DE6C01F` |
+
+**PASS**：限定 scoring 消费者字段绑定、源码构建、Domain 全量、定向测试和真实外部错值拒绝；未发现本范围内未修复缺陷。生产并发/恢复/隐私逻辑无改动，本次未重复重平台验收。
+
+**NOT_RUN/非本次结论**：完整 N-3、其他 fixture、20 partial、兄弟任务、G1/G5、PG/WSS/Unity/IL2CPP/设备验收。V4 仍为唯一生产基线，未创建 complete.flag。
+
+已调用桥接 `approve_task(threadId="thread_20261025_092018_3f96")`，返回 COMPLETED 并归档。发布复用既有唯一 [PR19](https://github.com/liuchangready/majiang-game/pull/19)，`feat/v5-1-integration` → `v5`；调用者只收口已接受的本任务，未纳入在途兄弟改动。§1–8 的“未 push”等说明属于开发者交付时状态；调用者的远端同步另由同一线程 `record_merge_request` 记录。本节本地测试通过不代表远端 CI 已通过。
