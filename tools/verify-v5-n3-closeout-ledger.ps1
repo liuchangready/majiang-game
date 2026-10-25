@@ -64,22 +64,29 @@ $pkgTotal = @{
   'GAP:N3-B11'=11;'GAP:N3-E1'=112;'GAP:N3-E2'=98; 'GAP:N3-E3'=10
 }
 $pkgVerdictWant = @{
-  'GAP:N3-B1|bound'=18;      'GAP:N3-B1|pending'=6
+  'GAP:N3-B1|bound'=18
+  'GAP:N3-B1|classified'=5
+  'GAP:N3-B1|pending'=1
+  'GAP:N3-B10|bound'=28
+  'GAP:N3-B11|bound'=11
   'GAP:N3-B2|bound'=32
   'GAP:N3-B3|bound'=21
   'GAP:N3-B4|bound'=35
   'GAP:N3-B5|bound'=10
-  'GAP:N3-B6|pending'=11
+  'GAP:N3-B6|classified'=9
+  'GAP:N3-B6|pending'=2
   'GAP:N3-B7|bound'=1
-  'GAP:N3-B8|bound'=108;     'GAP:N3-B8|classified'=8; 'GAP:N3-B8|pending'=75
-  'GAP:N3-B9|classified'=1;  'GAP:N3-B9|pending'=7
-  'GAP:N3-B10|bound'=28
-  'GAP:N3-B11|bound'=11
-  'GAP:N3-E1|bound'=48;      'GAP:N3-E1|classified'=64
+  'GAP:N3-B8|bound'=108
+  'GAP:N3-B8|classified'=80
+  'GAP:N3-B8|pending'=3
+  'GAP:N3-B9|classified'=8
+  'GAP:N3-E1|bound'=48
+  'GAP:N3-E1|classified'=64
   'GAP:N3-E2|bound'=98
-  'GAP:N3-E3|bound'=1;       'GAP:N3-E3|classified'=9
+  'GAP:N3-E3|bound'=1
+  'GAP:N3-E3|classified'=9
 }
-$verdictTotalWant = @{ bound=411; classified=82; pending=99 }
+$verdictTotalWant = @{ bound=411; classified=175; pending=6 }
 
 # ---------- shared evidence registry (runtime-verified) ----------
 # Every ledger evidence cell cites only these IDs; each file is hashed at
@@ -117,6 +124,20 @@ $evidenceCatalog = @{
   'EV-R1-PHYSHASH' = @(($reviewDir + '/physical-hash-verification-value.log'), '1692254931aecf482485f68c150d771c390f621942f47d5c71fefd7f64cb327e')
   'EV-R1-PHYSV4'  = @(($reviewDir + '/physical-v4-reason-value.log'), '98497fcee6ce6707b33d3325eb9e9c1c0ccb2e019426138d013c0acb163bcf42')
 }
+# Caller serial adjudication: accepted note/AI evidence and unchanged source pins.
+foreach ($entry in @{
+  'EV-AIT-ACC' = @(($docDirName + '/CODEX-V5-N3-AI-TEXT-ACCEPTANCE.md'), 'df35b930343d9c0f1da89b2556b0999102b44b736c65fb042e46e390838b7267')
+  'EV-AIT-DOC' = @(($docDirName + '/V5-N3-AI-TEXT-ADJUDICATION.md'), '41ca324c5c79bad308bf646201418de2d7daec311e684d2ae4a7e187a3cb8765')
+  'EV-AIT-SUB' = @(($docDirName + '/V5-N3-AI-TEXT-ADJUDICATION.tsv'), 'e73a4dc2b2e68e6f4712854706d8b5a5543c6672593d4198584c7230733497c5')
+  'EV-N3M-ADM' = @('dotnet/tests/Mahjong.TableRuntime.Tests/N3TableCheatGoldenAdmissionTests.cs', '51de26646bb921af0bece51dff8a94393d7b6ab6b40d0618bb8ec1b492ffcca3')
+  'EV-N3M-BIND' = @('dotnet/tests/Mahjong.Domain.Tests/CheatGoldenBindingTests.cs', 'fbccbe81277dd02b53f2cece4a2f17e0570eb0d87e66c47de9930c50a8a69ac0')
+  'EV-N3M-DOM' = @('dotnet/tests/Mahjong.Domain.Tests/CheatGoldenTests.cs', '3b869a5491fcb029640b95364a61a3739eb0d6b45b80b90273151d00e68f88e5')
+  'EV-N3M-EXP' = @('engine/src/test/kotlin/com/majiang/v3/V5CheatGoldenExporterTest.kt', '402aa8ebf03b8e3f2aeb5712a94e7fc1c8508ee327981bc014f7a0a2a67902e4')
+  'EV-N3M-FIX' = @('tests/v5-golden/cheat-v1.json', 'a196cbbd97ab8f61be8679b74c8f17df2713cb37aef0922e5f3c9f725b28ab4e')
+  'EV-N3M-TMK' = @('dotnet/tests/Mahjong.Domain.Tests/TileMarkTests.cs', '496bb948072d0df951a882eb0e714d3bb4f3efcef989b0f7a038758f0334c479')
+  'EV-NOTE-DOC' = @(($docDirName + '/V5-N3-NOTE-ADJUDICATION.md'), 'd9e5260eae502207b2f53078da0681567da5a235e46c95502c550778a38dfa0d')
+  'EV-NOTE-SUB' = @(($docDirName + '/V5-N3-NOTE-ADJUDICATION.tsv'), '4dee4f0452370d1f61db73128d2f690c13903e8d7a868b6a523b0417464a241b')
+}.GetEnumerator()) { $evidenceCatalog.Add($entry.Key, $entry.Value) }
 $evidenceOk = @{}
 foreach ($evId in $evidenceCatalog.Keys) {
   $evPath = $evidenceCatalog[$evId][0]
@@ -134,17 +155,17 @@ if ($failures -eq 0) { Pass 'evidence-catalog' ('all ' + $evidenceCatalog.Count 
 # and any silent per-row adjudication change; regenerate together with the
 # evidence registry when the ledger is legitimately re-adjudicated.
 $adjudicationPin = @{
-  'GAP:N3-B1'='72f5d50b71a1e94a5f0ee7a17052d2eac7f8a762892968f29a4b477656dc8069'
+  'GAP:N3-B1'='6214892ea3e78443aacf151b517a481502bf9fd8b3644ea6c2a32609399e4e13'
   'GAP:N3-B10'='6b348e74d74cdf136d8dd24a16ff0f8282122cacd2b3dac623183b4191d55cdb'
   'GAP:N3-B11'='763625e1c6a7cacaffda2e51b95071ad4371af4b5b943f03ffdd9f1d969a4826'
   'GAP:N3-B2'='1d371bc1fc76f58edee4f42f8d3cb1a9d09d200e0b42500c8661120c3c679010'
   'GAP:N3-B3'='bbe8661eb7a45b7898f30629511ada7a256a3e1e1bef714249dcea4085ae71dc'
   'GAP:N3-B4'='21d83e73028bdcffa4ad22875f457bb56c50cffdfdc07b65c39f57ddfde8cfbf'
   'GAP:N3-B5'='8c3805d9752854ab57023a96e312e35ca341ce0c17850ea8ab7044d0a7ac7be7'
-  'GAP:N3-B6'='77b6a764b01df03167f38bd4d99a55c0c3d2bb5113f1347626901fc344d12305'
+  'GAP:N3-B6'='6a6a9e9fd5303a576537200a5b729344b63c9ecb708c018634c92c2d70e672a9'
   'GAP:N3-B7'='3a7386f9f839df90421fee6614d4653236d92e822a677bac3aa1318803f07bb8'
-  'GAP:N3-B8'='becfff903f9fc123a92cb97ec4f46f556163b04e1b2e0d76a7abc2e9c65cfc18'
-  'GAP:N3-B9'='abd4e9f8f03670fa45c48f17186ea8883b39115ea6858e217a9e938b46f75f4a'
+  'GAP:N3-B8'='9b83fc2736b91e0334aefd92599225c73c7b4fbe43bbb8e13e80b94fff306d10'
+  'GAP:N3-B9'='294d6eb3928f309ca1d50bcb11437832a87856f6e6bbc5bcf808a4b65a7f81f0'
   'GAP:N3-E1'='3967694903f0934bc21caeac122a39bfdd5b62371a19781aa9444cb7bfbaaa3d'
   'GAP:N3-E2'='64bc076514ae919e94412d4921203416b1a8f13dd60248b1d5c6dad7875d53a0'
   'GAP:N3-E3'='6754375c49db62ad23053cc21d10ebd8c7ffc8a0efa95f9fc85ad1be9defeee5'
@@ -523,12 +544,12 @@ if ($adjBad -eq 0) { Pass 'adjudication-pin' ('all ' + $adjudicationPin.Count + 
 $blockedWant = @('tm-capacity-tiles','tm-decision-mismatch','bm-activate-deadwall-empty','bm-activate-deadwall-dora-only')
 $blockedSeen = @{}
 foreach ($r in $rows) {
-  if ($r.verdict -eq 'classified' -and $r.package -eq 'GAP:N3-B8') { $blockedSeen[$r.caseId] = $true }
+  if ($r.verdict -eq 'classified' -and $r.package -eq 'GAP:N3-B8' -and $r.path -match '\.(outcome|reason)$') { $blockedSeen[$r.caseId] = $true }
 }
 foreach ($c in $blockedWant) { if (-not $blockedSeen.ContainsKey($c)) { Fail 'blocked-set' ('missing classified blocked case ' + $c) } }
 foreach ($c in $blockedSeen.Keys) { if ($blockedWant -cnotcontains $c) { Fail 'blocked-set' ('unexpected classified blocked case ' + $c) } }
-if ($failures -eq 0) { Pass 'blocked-set' 'B8 classified blocked cases are exactly the four still-blocked dependencies' }
+if ($failures -eq 0) { Pass 'blocked-set' 'B8 classified outcome/reason cases are exactly the four still-blocked dependencies' }
 
 if ($failures -gt 0) { Write-Host ("VERIFY-FAIL failures=" + $failures); exit 1 }
-Write-Host 'VERIFY-OK n3-closeout-ledger 592=411bound+82classified+99pending, 14 packages, pins/digests/registry intact'
+Write-Host 'VERIFY-OK n3-closeout-ledger 592=411bound+175classified+6pending, 14 packages, pins/digests/registry intact'
 exit 0

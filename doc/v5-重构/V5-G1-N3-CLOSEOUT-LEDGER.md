@@ -1,5 +1,9 @@
 # V5-G1-N3 销账台账（N3 closeout ledger：592 个 GAP 实例的 bound / classified / pending 三选一）
 
+**当前持久化结果（caller 串行裁决，2026-10-26）：592 = 411 bound / 175 classified / 6 pending。** 本次只应用同批已接受的 81 条 note 与 18 条 AI 文本举证：93 条 pending 改为 classified，6 条保留 pending 并补齐具体义务；411 条 bound 和另外 82 条原 classified 均不变。classified 仍是未覆盖分类，不计 full；不宣告 N3、门2、G1 或 G5 通过，V4 继续是唯一生产架构。当前逐包向量、规则、剩余六条和 pins 见 **§14** 及 TSV/校验器。
+
+**历史记录边界：下列原日期至 §13 保留原验收时点。** 其中 411/82/99、§5–6 的分类和 pending 清单、§10 的两个待办组合均为串行裁决前的历史事实，已由 §14 的当前裁决取代；历史实测、原 census、原 accepted 报告与日志不改写。
+
 日期：2026-10-25（R1 独立复审后返修版；复审全文 SHA `e520991daa3b2c253053431a9bef3db032a802344c9ddea1a8c6002b5087f33e` = `artifacts/TEMP/codex-review-20261025/findings.md`）
 工作树：`D:/majiang-wt/n3-closeout-ledger`（独占），分支 `wt/v5-n3-closeout-ledger`，冻结基线 `cae94de6c6f18a56134c6b0beeaec0e61ad4bc8e`（PR19 当前已发布头）。
 交付物（仅三个文件）：本报告、`V5-G1-N3-CLOSEOUT-LEDGER.tsv`（592 行实例级台账）、`tools/verify-v5-n3-closeout-ledger.ps1`（只读台账校验器）。
@@ -244,3 +248,50 @@ G-049 维持未裁决（catalog 口径 none、审计建议 partial、N3-C1 calle
 | §8a 同口径复算：同根 `incremental-census.ps1` + 其输出 `incremental-census.json`；本侧复算副本 `artifacts/TEMP/r3/incremental-census-repro.json` 与之**逐字节同哈希**（SHA 见 §8a） | `9efa7c2f4cdf9e47fceb199dd0769ed803832ebae561736a3bdb4194995d27dc` / `b30b98958c0039acc9c5919099cb4c61443f86ee6ab56c268813fe35c801a961` |
 
 `artifacts/TEMP/` 不入库（含复审证据根 `codex-review-20261025/`，只读保留）；上表 TEMP 路径的 SHA 供复核方在本机复核对照。
+
+## 14. Caller 串行裁决（2026-10-26，当前有效）
+
+已接受线程 `thread_20261026_061703_b390`（note，交付 `d9159a3550b6a03931e0b576dce216d194d2ad5a`）与 `thread_20261026_061703_8ad8`（AI，交付 `bb34338e3b20d562c029204f42c1ca612f943e58`）的逐实例证据现统一入账。两份交付报告/TSV 保留原文，旧 census、历史 accepted 报告不改写。本次由 caller 在隔离集成树执行，不是 receiver 修改共享文件。
+
+规则 N3-META-01：exporter 人工叙述、未进入领域返回值/输入/事件/回执/状态哈希/协议的 note，在其描述行为已有值级锚点时 classified；否则 pending。N3-META-02 适用于 AI exporter 的说明元数据/容器/隐私边界，行为义务不得借文字被豁免。N3-REPR-01 将 Kotlin action.toString 调试表示与 C# 结构化动作区分；不伪造跨语言文字等价。全部 classified 仍是未覆盖，不升为 bound/full。
+
+| 变更包 | bound | classified | pending | 本次改判 |
+|---|---:|---:|---:|---|
+| B1 | 18 | 5 | 1 | note 5 classified，1 pending |
+| B6 | 0 | 9 | 2 | mapping metadata 9 classified，2 pending |
+| B8 | 108 | 80 | 3 | note 72 classified，3 pending；原 outcome/reason classified 8 不变 |
+| B9 | 0 | 8 | 0 | action.text 7 classified；原 events.text 1 不变 |
+| 其余 10 包 | 285 | 73 | 0 | 全部原行不变 |
+| 总计 | **411** | **175** | **6** | **93 pending→classified；6 pending 保留具体义务** |
+
+1516 路径、655145 节点、592 GAP、17 UNA、14 包分母均不变。独立串行审计核对 592 个 identity/kind/parent/histClass，恰好应用 99 个原 pending identity；493 条非目标 raw 行和 411 条 bound 全列不变。五个 note 的 census parent 历史截断继续冻结；完整 note 以 subset 的 noteText/noteSha256 追溯，不伪造修复 parent。
+
+### 14.1 剩余六条（均不得计 full，期限 2026-11-30）
+
+| 包 / 冻结实例 | 未覆盖行为 | owner / 复访条件 |
+|---|---|---|
+| B1 `mv-swap-drawn-with-wall-backfill` note | V4 backfill 槽位物化 | P1.4 + caller；补精确值级 backfill 断言，或另行显式接受 V4-only 物化边界 |
+| B8 `tm-capacity-tiles` note | 真实 V4 groups=2、marked16..27 共12张，加 selected0/4/8/12 共4张；C# exactly-four group 无法表达此状态 | P1.4 + caller；补可达的 12+4>12 值级锚点，或另行显式裁决该边界。原 note `8 marked + 4 > 12` 是叙述笔误，8+4=12；原文/SHA 保留，绝不要求错误算术断言 |
+| B8 `tm-decision-mismatch` note | 无活跃局的 V4 输入 | P1.4 + caller；安全 null-round 入口的精确值级断言，或另行显式裁决该边界 |
+| B8 `bm-activate-deadwall-empty` note | V4 deadWallTileIdsInDeadWall 为空的过滤状态 | P1.4 + caller；可表达的候选抑制入口及空候选值级断言，或另行显式裁决非规范过滤状态边界 |
+| B6 `$.v5Observation.mappingLimits[*]` idx1 | 每张弃牌 isClaimed；冻结 fixture 无弃牌，现 C# Assert.Empty | P1.6 + caller；有弃牌实例及 isClaimed 值级消费断言，或 exporter/PlayerView 实际暴露此字段 |
+| B6 `$.v5Observation.mappingLimits[*]` idx2 | 每张弃牌 isRiichi；同上空集合边界 | P1.6 + caller；有弃牌实例及 isRiichi 值级消费断言，或 exporter/PlayerView 实际暴露此字段 |
+
+### 14.2 同步 pins 与验证边界
+
+校验器保留原 26 个 evidence pins，新增 11 个（共 37 个，运行时全部重哈希）：`EV-N3M-EXP/FIX/DOM/BIND/ADM/TMK` 为 note 报告 Appendix A 的六个源码 pins；`EV-NOTE-DOC/SUB` 为两份 note 交付；`EV-AIT-DOC/SUB/ACC` 为 AI 报告、subset 与 caller acceptance。精确路径/SHA 以 `tools/verify-v5-n3-closeout-ledger.ps1` 注册表为准。原行继续使用原 evidence；新行的 E-* 子证据键由 AI 报告与已接受 manifest 追溯。
+
+仅四个包的裁决 digest 改变，其他十个原 digest 不变：
+
+| 包 | 当前 SHA256（原 canonical 算法不变） |
+|---|---|
+| B1 | `6214892ea3e78443aacf151b517a481502bf9fd8b3644ea6c2a32609399e4e13` |
+| B6 | `6a6a9e9fd5303a576537200a5b729344b63c9ecb708c018634c92c2d70e672a9` |
+| B8 | `9b83fc2736b91e0334aefd92599225c73c7b4fbe43bbb8e13e80b94fff306d10` |
+| B9 | `294d6eb3928f309ca1d50bcb11437832a87856f6e6bbc5bcf808a4b65a7f81f0` |
+
+原 B8 blocked-set 检查明确限定原 outcome/reason 路径，仍精确要求四个原 blocked case；新增 note classifications 由逐包向量与逐身份 digest 约束，不混入该 outcome/reason 集合。没有删除身份、锚点、祖先、证据、义务、schema 或 census 检查，也未修改统一 verifier。
+
+Caller 本轮在 note 工作区 fresh Domain/TableRuntime build 均 exit0、0 warnings/errors；direct runner/XML 精确选择 Domain 95/95、actor 7/7；81 note 全部替换仍 95/95、7/7；B1 结构化负例 3 FAIL，B8 Domain/actor 各2 FAIL，native exit1 均符合预期；无类控制0test，8/8矩阵通过。subset14项和容量纠错10项通过。集成树源码/测试/fixture 与实测交付树一致；当前台账校验24项、37 evidence hashes、14 digests 通过，catalog 仍6 fixtures/73 requirements/10389 cases/45 Facts，full17/partial21/none32/V5-only3。具体命令、重拒绝探针与日志 hashes 见独立 caller 记录 `CODEX-V5-N3-NOTE-ACCEPTANCE.md`。
+
+这次裁决不重跑全量、PG/WSS、Unity/IL2CPP、Gradle、设备、物理网络或远端CI；不把历史同批 G1 证据报告的九门建议当作批准。六条 pending、N-2 宿主接线与最终 G1 重审仍按既有规则处理，不在本次自动闭环中宣告完成。复用唯一 PR19，不创建组件 MR。
