@@ -9,6 +9,40 @@ using Xunit;
 namespace Mahjong.Ai.Tests
 {
     /// <summary>
+    /// Single read-only loader shared by every ai-v1 golden test. The optional
+    /// MAHJONG_AI_GOLDEN override exists so the probe script can point the same compiled tests
+    /// at an isolated TEMP copy instead of mutating the real fixture or the build output.
+    /// A set-but-missing path is a hard failure, never a silent fallback.
+    /// </summary>
+    internal static class AiGoldenFixture
+    {
+        public const string ExpectedSchema = "v5-ai-golden-v1";
+        public const string OverrideVariable = "MAHJONG_AI_GOLDEN";
+
+        public static string ResolvePath()
+        {
+            string? overridden = Environment.GetEnvironmentVariable(OverrideVariable);
+            if (!string.IsNullOrWhiteSpace(overridden))
+            {
+                string fullPath = Path.GetFullPath(overridden!);
+                Assert.True(
+                    File.Exists(fullPath),
+                    OverrideVariable + " points to a missing fixture: " + fullPath);
+                return fullPath;
+            }
+
+            return Path.Combine(AppContext.BaseDirectory, "ai-v1.json");
+        }
+
+        public static JsonDocument Load()
+        {
+            string path = ResolvePath();
+            Assert.True(File.Exists(path), "Missing golden fixture: " + path);
+            return JsonDocument.Parse(File.ReadAllText(path));
+        }
+    }
+
+    /// <summary>
     /// Reads tests/v5-golden/ai-v1.json, which was produced by the V4 test-only exporter
     /// (engine/src/test/kotlin/com/majiang/state/V5AiGoldenExporterTest.kt) from actual
     /// TableAuthority.submitAiChoice calls.
@@ -23,10 +57,8 @@ namespace Mahjong.Ai.Tests
     /// </summary>
     public class AiReplayGoldenTests
     {
-        private const string ExpectedSchema = "v5-ai-golden-v1";
+        private const string ExpectedSchema = AiGoldenFixture.ExpectedSchema;
         private const string BaselineCommit = "205506f07f6a1ccfef6b32cf97390431e3349f8d";
-
-        private static string FixturePath => Path.Combine(AppContext.BaseDirectory, "ai-v1.json");
 
         [Fact]
         public void GoldenFixtureHasProvenanceAndTheExpectedV4Cases()
@@ -262,13 +294,9 @@ namespace Mahjong.Ai.Tests
             Assert.Same(intent.Action, tick.AcceptedAi[0].Action);
         }
 
-        private static JsonDocument LoadFixture()
-        {
-            Assert.True(File.Exists(FixturePath), "Missing golden fixture: " + FixturePath);
-            return JsonDocument.Parse(File.ReadAllText(FixturePath));
-        }
+        private static JsonDocument LoadFixture() => AiGoldenFixture.Load();
 
-        private static AiObservation BuildObservation(
+        internal static AiObservation BuildObservation(
             JsonElement observation,
             out Dictionary<string, LegalActionOption> actions,
             out List<string> legalActionRefs)
@@ -279,7 +307,7 @@ namespace Mahjong.Ai.Tests
             foreach (JsonElement action in observation.GetProperty("legalActions").EnumerateArray())
             {
                 var option = new LegalActionOption(
-                    Enum.Parse<LegalActionKind>(Text(action, "kind"), ignoreCase: false),
+                    ParseDefinedEnum<LegalActionKind>(action, "kind"),
                     action.GetProperty("seat").GetInt32(),
                     TileIdOrNull(action, "tileId"),
                     TextOrNull(action, "optionId"));
@@ -316,7 +344,7 @@ namespace Mahjong.Ai.Tests
                 Int64(observation, "controlEpoch"),
                 Int64(observation, "stateVersion"),
                 Int64(observation, "deadlineMillis"),
-                Enum.Parse<RoundPhase>(Text(observation, "phase"), ignoreCase: false),
+                ParseDefinedEnum<RoundPhase>(observation, "phase"),
                 observation.GetProperty("dealerSeat").GetInt32(),
                 observation.GetProperty("roundWind").GetInt32(),
                 observation.GetProperty("roundNumber").GetInt32(),
@@ -365,7 +393,7 @@ namespace Mahjong.Ai.Tests
             return discards;
         }
 
-        private static CommandIntent BuildIntent(
+        internal static CommandIntent BuildIntent(
             JsonElement root,
             AiObservation observation,
             IReadOnlyDictionary<string, LegalActionOption> actions,
@@ -393,7 +421,7 @@ namespace Mahjong.Ai.Tests
                 checked((int)Int64(recorded, "algorithmVersion")));
         }
 
-        private static AiAuthoritySnapshot BuildAuthority(
+        internal static AiAuthoritySnapshot BuildAuthority(
             JsonElement caseElement,
             AiObservation observation,
             IReadOnlyDictionary<string, LegalActionOption> actions,
@@ -634,16 +662,44 @@ namespace Mahjong.Ai.Tests
 
         private static LegalActionOption ActionOptionFromJson(JsonElement json) =>
             new LegalActionOption(
-                Enum.Parse<LegalActionKind>(Text(json, "kind"), ignoreCase: false),
+                ParseDefinedEnum<LegalActionKind>(json, "kind"),
                 Int(json, "player"),
                 TileIdOrNull(json, "tileId"),
                 TextOrNull(json, "optionId"));
+
+        /// <summary>
+        /// Strict symbolic enum parse for fixture boundaries. Enum.Parse accepts a numeric
+        /// string such as "254" for a byte-backed enum even though no such member exists; a
+        /// fixture that feeds an undefined numeric value must fail instead of silently
+        /// selecting an impossible action/phase.
+        /// </summary>
+        internal static TEnum ParseDefinedEnum<TEnum>(JsonElement element, string name)
+            where TEnum : struct, Enum
+        {
+            JsonElement value = element.GetProperty(name);
+            if (value.ValueKind != JsonValueKind.String)
+            {
+                throw new Xunit.Sdk.XunitException(
+                    name + " must be a symbolic enum string, got " + value.ValueKind +
+                    " raw=" + value.GetRawText());
+            }
+
+            string text = value.GetString()!;
+            string[] names = Enum.GetNames(typeof(TEnum));
+            if (Array.IndexOf(names, text) < 0)
+            {
+                throw new Xunit.Sdk.XunitException(
+                    name + " is not a defined " + typeof(TEnum).Name + " member: " + text);
+            }
+
+            return (TEnum)Enum.Parse(typeof(TEnum), text, ignoreCase: false);
+        }
 
         private static JsonElement SeatState(JsonElement state, int seat) =>
             state.GetProperty("seats").EnumerateArray()
                 .Single(element => element.GetProperty("seat").GetInt32() == seat);
 
-        private static bool DeepEquals(JsonElement left, JsonElement right)
+        internal static bool DeepEquals(JsonElement left, JsonElement right)
         {
             if (left.ValueKind != right.ValueKind)
             {
