@@ -664,6 +664,49 @@ namespace Mahjong.Domain
             int nextSeat = drawState.CurrentSeat;
             CheatState current = cheat;
             var events = new List<RoundCheatEvent>();
+            CheatTurnContext discardContext = BuildDeliveryContext(drawState, round, current, nowMillis);
+            if (current.SleeveBloom.ImmediateOffer?.Seat == discardCommand.Seat)
+            {
+                CheatTransition expired = CheatSubmission.ExpireSleeveBloomImmediate(
+                    current,
+                    discardContext,
+                    discardCommand.Seat);
+                if (!expired.Changed || expired.State == null)
+                {
+                    return RoundCheatPreparation.Rejected(
+                        RoundCheatErrorCode.CheatRejected,
+                        expired.Error,
+                        expired.Message ?? "The immediate offer did not settle.");
+                }
+
+                current = expired.State;
+                for (int i = 0; i < expired.Events.Count; i++)
+                {
+                    events.Add(Wrap(expired.Events[i], command: null, cheat, discardContext));
+                }
+            }
+
+            if (current.BeamSwap.Offer?.Seat == discardCommand.Seat)
+            {
+                CheatTransition expired = CheatSubmission.ExpireBeamSwap(
+                    current,
+                    discardContext,
+                    discardCommand.Seat);
+                if (!expired.Changed || expired.State == null)
+                {
+                    return RoundCheatPreparation.Rejected(
+                        RoundCheatErrorCode.CheatRejected,
+                        expired.Error,
+                        expired.Message ?? "The beam swap offer did not settle.");
+                }
+
+                current = expired.State;
+                for (int i = 0; i < expired.Events.Count; i++)
+                {
+                    events.Add(Wrap(expired.Events[i], command: null, cheat, discardContext));
+                }
+            }
+
             CheatTransition settled = CheatSubmission.SettleOffTurnForDraw(current, nextSeat);
             if (settled.State != null && settled.Changed)
             {
@@ -763,6 +806,184 @@ namespace Mahjong.Domain
             }
 
             return turns;
+        }
+
+        /// <summary>
+        /// Applies one normal round command while settling a pending immediate/beam offer owned
+        /// by the acting seat in the same version step. V4 has no choice-less offer survival:
+        /// a discard/riichi/terminal/other decisive command forces the existing P1.4 fallback
+        /// (FIRST / KEEP_ORIGINAL) before the round advances, and the offer-cleared state is
+        /// committed with the round event batch.
+        /// </summary>
+        public static RoundCheatPreparation PrepareCommandWithOfferSettlement(
+            RoundStateMachine round,
+            CheatState? cheat,
+            RoundCommand command,
+            CheatTurnContext context,
+            Func<TileId, bool>? isProtectedWallTile,
+            bool openDiscardWindow)
+        {
+            if (round == null) throw new ArgumentNullException(nameof(round));
+            if (command == null) throw new ArgumentNullException(nameof(command));
+            if (context == null) throw new ArgumentNullException(nameof(context));
+            if (cheat == null)
+            {
+                return RoundCheatPreparation.Rejected(
+                    RoundCheatErrorCode.NotConfigured,
+                    CheatErrorCode.None,
+                    "Cheat execution is not configured.");
+            }
+
+            RoundPreparation prepared = round.Prepare(command, isProtectedWallTile);
+            if (!prepared.IsReady)
+            {
+                return RoundCheatPreparation.Rejected(
+                    RoundCheatErrorCode.ContextMismatch,
+                    CheatErrorCode.None,
+                    prepared.Error!.Message);
+            }
+
+            CheatState current = cheat;
+            var events = new List<RoundCheatEvent>();
+            if (current.SleeveBloom.ImmediateOffer?.Seat == command.Seat)
+            {
+                CheatTransition expired = CheatSubmission.ExpireSleeveBloomImmediate(current, context, command.Seat);
+                if (!expired.Changed || expired.State == null)
+                {
+                    return RoundCheatPreparation.Rejected(
+                        RoundCheatErrorCode.CheatRejected,
+                        expired.Error,
+                        expired.Message ?? "The immediate offer did not settle.");
+                }
+
+                current = expired.State;
+                for (int i = 0; i < expired.Events.Count; i++)
+                {
+                    events.Add(Wrap(expired.Events[i], command: null, cheat, context));
+                }
+            }
+
+            if (current.BeamSwap.Offer?.Seat == command.Seat)
+            {
+                CheatTransition expired = CheatSubmission.ExpireBeamSwap(current, context, command.Seat);
+                if (!expired.Changed || expired.State == null)
+                {
+                    return RoundCheatPreparation.Rejected(
+                        RoundCheatErrorCode.CheatRejected,
+                        expired.Error,
+                        expired.Message ?? "The beam swap offer did not settle.");
+                }
+
+                current = expired.State;
+                for (int i = 0; i < expired.Events.Count; i++)
+                {
+                    events.Add(Wrap(expired.Events[i], command: null, cheat, context));
+                }
+            }
+
+            if (openDiscardWindow)
+            {
+                current = current.WithSleeveBloom(
+                    current.SleeveBloom.WithOpenedWindow(command.Seat, CountDrawTurns(round), out _));
+            }
+
+            return RoundCheatPreparation.Ready(new RoundCheatChange(
+                prepared.Change!,
+                current,
+                events,
+                accepted: true,
+                CheatErrorCode.None,
+                string.Empty));
+        }
+
+        /// <summary>
+        /// Composes a deferred automatic draw (response Pass / riichi / other non-discard source)
+        /// with the owner's locked reservation. The round was prepared in DRAW without drawing;
+        /// delivery runs on that map and the public TileDrawn plus private delivery event are
+        /// committed in the same version step as the triggering command.
+        /// </summary>
+        public static RoundCheatPreparation PrepareDeferredDrawDelivery(
+            RoundStateMachine source,
+            RoundChange deferred,
+            CheatState? cheat,
+            long nowMillis)
+        {
+            if (source == null) throw new ArgumentNullException(nameof(source));
+            if (deferred == null) throw new ArgumentNullException(nameof(deferred));
+            if (cheat == null)
+            {
+                return RoundCheatPreparation.Rejected(
+                    RoundCheatErrorCode.NotConfigured,
+                    CheatErrorCode.None,
+                    "Cheat execution is not configured.");
+            }
+
+            RoundStateMachine drawState = deferred.NextState;
+            if (drawState.Phase != RoundPhase.Draw)
+            {
+                return RoundCheatPreparation.Rejected(
+                    RoundCheatErrorCode.ContextMismatch,
+                    CheatErrorCode.None,
+                    "Deferred delivery requires the DRAW phase.");
+            }
+
+            int seat = drawState.CurrentSeat;
+            CheatTurnContext context = BuildDeliveryContext(drawState, source, cheat, nowMillis);
+            CheatState current = cheat;
+            var events = new List<RoundCheatEvent>();
+            CheatTransition settled = CheatSubmission.SettleOffTurnForDraw(current, seat);
+            if (settled.State != null && settled.Changed)
+            {
+                current = settled.State;
+                for (int i = 0; i < settled.Events.Count; i++)
+                {
+                    events.Add(Wrap(settled.Events[i], command: null, cheat, context));
+                }
+            }
+
+            CheatTransition delivery = CheatSubmission.DeliverSleeveBloomReservation(
+                current,
+                drawState.Tiles,
+                context,
+                seat);
+            if (!delivery.Success || delivery.State == null || delivery.Map == null)
+            {
+                return RoundCheatPreparation.Rejected(
+                    RoundCheatErrorCode.CheatRejected,
+                    delivery.Error,
+                    delivery.Message ?? "Reservation delivery failed.");
+            }
+
+            SleeveBloomReservation? reservation = cheat.SleeveBloom.ReservationFor(seat);
+            TileId delivered = reservation?.Tile ?? delivery.Map.DrawnTile!.Value.Tile;
+            var added = new List<RoundEvent>(deferred.AddedEvents);
+            added.Add(new RoundEvent(RoundEventType.TileDrawn, 0, seat, delivered, null));
+            RoundPreparation composed = source.PrepareCheatComposed(
+                delivery.Map,
+                RoundPhase.CheatWindow,
+                seat,
+                null,
+                added);
+            if (!composed.IsReady)
+            {
+                return RoundCheatPreparation.Rejected(
+                    RoundCheatErrorCode.ContextMismatch,
+                    delivery.Error,
+                    composed.Error!.Message);
+            }
+
+            for (int i = 0; i < delivery.Events.Count; i++)
+            {
+                events.Add(Wrap(delivery.Events[i], command: null, cheat, context));
+            }
+
+            return RoundCheatPreparation.Ready(new RoundCheatChange(
+                composed.Change!,
+                delivery.State,
+                events,
+                accepted: true,
+                CheatErrorCode.None,
+                string.Empty));
         }
 
         /// <summary>Pure next-normal-draw bridge. An outstanding off-turn offer is first settled as a

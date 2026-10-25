@@ -798,7 +798,9 @@ namespace Mahjong.TableRuntime
             int rulesetVersion,
             long controlVersion,
             ulong updatedAtUtcMs,
-            long timingVersion = 0L)
+            long timingVersion = 0L,
+            long cheatVersion = 0L,
+            ulong cheatFingerprint = 0UL)
         {
             RoomId = roomId;
             StateVersion = stateVersion;
@@ -809,6 +811,8 @@ namespace Mahjong.TableRuntime
             ControlVersion = controlVersion;
             UpdatedAtUtcMs = updatedAtUtcMs;
             TimingVersion = timingVersion;
+            CheatVersion = cheatVersion;
+            CheatFingerprint = cheatFingerprint;
         }
 
         public string RoomId { get; }
@@ -828,6 +832,12 @@ namespace Mahjong.TableRuntime
         public ulong UpdatedAtUtcMs { get; }
 
         public long TimingVersion { get; }
+
+        /// <summary>Complete cheat aggregate version bound to this table state (0 = unmodeled).</summary>
+        public long CheatVersion { get; }
+
+        /// <summary>Complete cheat aggregate fingerprint bound to this table state.</summary>
+        public ulong CheatFingerprint { get; }
     }
 
     /// <summary>
@@ -857,7 +867,9 @@ namespace Mahjong.TableRuntime
             TableTimingCheckpoint? timing = null,
             long timingVersion = 0L,
             byte[]? committedFactsPayload = null,
-            TablePayloadSha256? committedFactsPayloadSha256 = null)
+            TablePayloadSha256? committedFactsPayloadSha256 = null,
+            long nextCheatVersion = 0L,
+            ulong nextCheatFingerprint = 0UL)
         {
             if (string.IsNullOrWhiteSpace(roomId))
             {
@@ -944,6 +956,13 @@ namespace Mahjong.TableRuntime
                     throw new ArgumentException("An accepted command requires a nonzero state fingerprint.", nameof(nextStateFingerprint));
                 }
 
+                if ((nextCheatVersion == 0L) != (nextCheatFingerprint == 0UL))
+                {
+                    throw new ArgumentException(
+                        "Cheat version and fingerprint must be supplied together.",
+                        nameof(nextCheatVersion));
+                }
+
                 ulong expectedSeq = (ulong)events.Count;
                 if (events[events.Count - 1].Seq.Value < expectedSeq)
                 {
@@ -1025,6 +1044,8 @@ namespace Mahjong.TableRuntime
                 ? null
                 : Copy(committedFactsPayload);
             CommittedFactsPayloadSha256 = committedFactsPayloadSha256;
+            NextCheatVersion = nextCheatVersion;
+            NextCheatFingerprint = nextCheatFingerprint;
         }
 
         public string RoomId { get; }
@@ -1066,6 +1087,12 @@ namespace Mahjong.TableRuntime
         public byte[]? CommittedFactsPayload { get; }
 
         public TablePayloadSha256? CommittedFactsPayloadSha256 { get; }
+
+        /// <summary>Complete cheat aggregate version to bind into the committed table state.</summary>
+        public long NextCheatVersion { get; }
+
+        /// <summary>Complete cheat aggregate fingerprint to bind into the committed table state.</summary>
+        public ulong NextCheatFingerprint { get; }
 
         public StateVersion CommandVersion => ExpectedStateVersion.Next();
 

@@ -603,6 +603,105 @@ namespace Mahjong.TableRuntime
                                 expectedRound = installed.Events;
                                 expectedCheat = preparation.Change.Events;
                             }
+                            else if (cheat != null &&
+                                     (cheat.SleeveBloom.ImmediateOffer?.Seat == command.Seat ||
+                                      cheat.BeamSwap.Offer?.Seat == command.Seat))
+                            {
+                                CheatState settlementCheat = cheat;
+                                CheatTurnContext settlementContext = BuildRecoveryCheatContext(
+                                    round,
+                                    settlementCheat,
+                                    CountDrawTurns(round),
+                                    0L,
+                                    SleeveBloomDrawKind.Normal);
+                                RoundCheatPreparation settlement = RoundCheatTransition.PrepareCommandWithOfferSettlement(
+                                    round,
+                                    settlementCheat,
+                                    command,
+                                    settlementContext,
+                                    tile => settlementCheat.SleeveBloom.IsProtectedTile(tile),
+                                    command.Action == RoundActionKind.DiscardTile ||
+                                    command.Action == RoundActionKind.DeclareRiichi);
+                                if (!settlement.IsReady)
+                                {
+                                    return TableRecoveryResult.Failed(
+                                        TableRuntimeReasonCode.RecoveryReplayMismatch,
+                                        "Offer settlement no longer replays at command " + version + ": " +
+                                        settlement.Message);
+                                }
+
+                                RoundTransition installed = round.Install(settlement.Change!.RoundChange);
+                                if (!installed.IsAccepted || installed.State == null)
+                                {
+                                    return TableRecoveryResult.Failed(
+                                        TableRuntimeReasonCode.RecoveryReplayMismatch,
+                                        "Offer settlement candidate did not install at command " + version + ".");
+                                }
+
+                                next = installed.State;
+                                cheat = settlement.Change.CheatState;
+                                expectedRound = installed.Events;
+                                expectedCheat = settlement.Change.Events;
+                            }
+                            else if ((command.Action == RoundActionKind.Pass ||
+                                      command.Action == RoundActionKind.DeclareRiichi) &&
+                                     cheat != null &&
+                                     (HasProtectedWallTiles(cheat)))
+                            {
+                                CheatState deferredCheat = cheat;
+                                Func<int, bool> defer = seat =>
+                                    deferredCheat.SleeveBloom.ReservationFor(seat) != null ||
+                                    deferredCheat.SleeveBloom.OffTurnOfferFor(seat) != null;
+                                RoundPreparation deferred = round.Prepare(
+                                    command,
+                                    tile => deferredCheat.SleeveBloom.IsProtectedTile(tile),
+                                    defer);
+                                if (deferred.IsReady &&
+                                    deferred.Change!.NextState.Phase == RoundPhase.Draw)
+                                {
+                                    RoundCheatPreparation delivery = RoundCheatTransition.PrepareDeferredDrawDelivery(
+                                        round,
+                                        deferred.Change,
+                                        deferredCheat,
+                                        0L);
+                                    if (!delivery.IsReady)
+                                    {
+                                        return TableRecoveryResult.Failed(
+                                            TableRuntimeReasonCode.RecoveryReplayMismatch,
+                                            "Deferred draw delivery no longer replays at command " + version + ": " +
+                                            delivery.Message);
+                                    }
+
+                                    RoundTransition installed = round.Install(delivery.Change!.RoundChange);
+                                    if (!installed.IsAccepted || installed.State == null)
+                                    {
+                                        return TableRecoveryResult.Failed(
+                                            TableRuntimeReasonCode.RecoveryReplayMismatch,
+                                            "Deferred draw delivery candidate did not install at command " + version + ".");
+                                    }
+
+                                    next = installed.State;
+                                    cheat = delivery.Change.CheatState;
+                                    expectedRound = installed.Events;
+                                    expectedCheat = delivery.Change.Events;
+                                }
+                                else
+                                {
+                                    RoundTransition transition = round.Execute(
+                                        command,
+                                        tile => deferredCheat.SleeveBloom.IsProtectedTile(tile));
+                                    if (!transition.IsAccepted || transition.State == null)
+                                    {
+                                        return TableRecoveryResult.Failed(
+                                            TableRuntimeReasonCode.RecoveryReplayMismatch,
+                                            "Command version " + version + " no longer replays: " +
+                                            (transition.Error?.Code.ToString() ?? "unknown"));
+                                    }
+
+                                    next = transition.State;
+                                    expectedRound = transition.Events;
+                                }
+                            }
                             else if (command.Action == RoundActionKind.DrawTile &&
                                      cheat != null &&
                                      HasProtectedWallTiles(cheat))
@@ -664,7 +763,11 @@ namespace Mahjong.TableRuntime
                             }
                             else
                             {
-                                RoundTransition transition = round.Execute(command);
+                                CheatState? protectionState = cheat;
+                                Func<TileId, bool>? protection = protectionState == null
+                                    ? null
+                                    : tile => protectionState.SleeveBloom.IsProtectedTile(tile);
+                                RoundTransition transition = round.Execute(command, protection);
                                 if (!transition.IsAccepted || transition.State == null)
                                 {
                                     return TableRecoveryResult.Failed(
@@ -912,6 +1015,18 @@ namespace Mahjong.TableRuntime
                 return TableRecoveryResult.Failed(
                     TableRuntimeReasonCode.RecoveryStateHashMismatch,
                     "Recovered state fingerprint/hash does not match table_state.");
+            }
+
+            if (state.CheatVersion != 0L || state.CheatFingerprint != 0UL)
+            {
+                if (cheat == null ||
+                    cheat.Version != state.CheatVersion ||
+                    cheat.Fingerprint != state.CheatFingerprint)
+                {
+                    return TableRecoveryResult.Failed(
+                        TableRuntimeReasonCode.RecoveryStateHashMismatch,
+                        "Recovered complete cheat aggregate does not match the committed table_state binding.");
+                }
             }
 
             if (checkpoint.ControlVersion != state.ControlVersion)

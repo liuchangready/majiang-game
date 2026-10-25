@@ -249,7 +249,22 @@ namespace Mahjong.Domain
         /// Builds a candidate transition without touching this instance. A rejection returns a
         /// value with no candidate and no event; the source round is byte-for-byte unchanged.
         /// </summary>
-        public RoundPreparation Prepare(RoundCommand command)
+        public RoundPreparation Prepare(RoundCommand command) => Prepare(command, null, null);
+
+        /// <summary>
+        /// Builds a candidate with an explicit live-wall protection predicate. The predicate is
+        /// supplied by the N-1b bridge for every command that may trigger an automatic draw
+        /// (draw, discard, pass/response closure, riichi, open/closed/added kan). It never
+        /// changes the command vocabulary; it only prevents protected reservation/offer tiles
+        /// from being consumed by an unrelated draw.
+        /// </summary>
+        public RoundPreparation Prepare(RoundCommand command, Func<TileId, bool>? isProtectedWallTile) =>
+            Prepare(command, isProtectedWallTile, null);
+
+        public RoundPreparation Prepare(
+            RoundCommand command,
+            Func<TileId, bool>? isProtectedWallTile,
+            Func<int, bool>? deferAutomaticDraw)
         {
             if (command == null)
             {
@@ -277,31 +292,31 @@ namespace Mahjong.Domain
                     case RoundActionKind.StartStacking:
                         return PrepareStartStacking();
                     case RoundActionKind.DrawTile:
-                        return PrepareDraw(command.Seat);
+                        return PrepareDraw(command.Seat, isProtectedWallTile);
                     case RoundActionKind.DiscardTile:
-                        return PrepareDiscard(command);
+                        return PrepareDiscardCore(command, false, isProtectedWallTile);
                     case RoundActionKind.DeclareTsumo:
                         return PrepareTsumo(command);
                     case RoundActionKind.DeclareRon:
                         return PrepareRon(command);
                     case RoundActionKind.Pass:
-                        return PreparePass(command.Seat);
+                        return PreparePass(command.Seat, isProtectedWallTile, deferAutomaticDraw);
                     case RoundActionKind.DeclareAddedKan:
-                        return PrepareAddedKan(command);
+                        return PrepareAddedKan(command, isProtectedWallTile);
                     case RoundActionKind.DeclareExhaustiveDraw:
                         return PrepareExhaustiveDraw(command);
                     case RoundActionKind.DeclareAbortiveDraw:
                         return PrepareAbortiveDraw(command);
                     case RoundActionKind.DeclareChi:
-                        return PrepareChi(command);
+                        return PrepareChi(command, isProtectedWallTile);
                     case RoundActionKind.DeclarePon:
-                        return PreparePon(command);
+                        return PreparePon(command, isProtectedWallTile);
                     case RoundActionKind.DeclareOpenKan:
-                        return PrepareOpenKan(command);
+                        return PrepareOpenKan(command, isProtectedWallTile);
                     case RoundActionKind.DeclareClosedKan:
-                        return PrepareClosedKan(command);
+                        return PrepareClosedKan(command, isProtectedWallTile);
                     case RoundActionKind.DeclareRiichi:
-                        return PrepareRiichi(command);
+                        return PrepareRiichi(command, isProtectedWallTile, deferAutomaticDraw);
                     default:
                         return RoundPreparation.Rejected(
                             RoundTransitionErrorCode.WrongPhase,
@@ -369,9 +384,18 @@ namespace Mahjong.Domain
         }
 
         /// <summary>Prepare + install convenience entry used by rule/authority adapters.</summary>
-        public RoundTransition Execute(RoundCommand command)
+        public RoundTransition Execute(RoundCommand command) => Execute(command, null, null);
+
+        /// <summary>Prepare + install with the N-1b live-wall protection predicate.</summary>
+        public RoundTransition Execute(RoundCommand command, Func<TileId, bool>? isProtectedWallTile) =>
+            Execute(command, isProtectedWallTile, null);
+
+        public RoundTransition Execute(
+            RoundCommand command,
+            Func<TileId, bool>? isProtectedWallTile,
+            Func<int, bool>? deferAutomaticDraw)
         {
-            RoundPreparation prepared = Prepare(command);
+            RoundPreparation prepared = Prepare(command, isProtectedWallTile, deferAutomaticDraw);
             if (!prepared.IsReady)
             {
                 RoundTransitionError error = prepared.Error!;
@@ -645,7 +669,10 @@ namespace Mahjong.Domain
             return ResolveCompletedWindow(nextWindow, events);
         }
 
-        private RoundPreparation PreparePass(int seat)
+        private RoundPreparation PreparePass(
+            int seat,
+            Func<TileId, bool>? isProtectedWallTile = null,
+            Func<int, bool>? deferAutomaticDraw = null)
         {
             CheckSeat(seat);
             RoundResponseWindow window = RequireWindow();
@@ -671,10 +698,10 @@ namespace Mahjong.Domain
                 return Build(Tiles, window.IsChankan ? RoundPhase.ChankanWindow : RoundPhase.ResponseWindow, window.FromSeat, nextWindow, null, events);
             }
 
-            return ResolveCompletedWindow(nextWindow, events);
+            return ResolveCompletedWindow(nextWindow, events, isProtectedWallTile, deferAutomaticDraw);
         }
 
-        private RoundPreparation PrepareChi(RoundCommand command)
+        private RoundPreparation PrepareChi(RoundCommand command, Func<TileId, bool>? isProtectedWallTile = null)
         {
             CheckSeat(command.Seat);
             RoundResponseWindow window = RequireWindow();
@@ -721,10 +748,10 @@ namespace Mahjong.Domain
             }
 
             RoundResponseClaim claim = RoundResponseClaim.Chi(command.Seat, handTiles[0], handTiles[1]);
-            return RecordMeldClaim(window, claim, RoundEventType.ResponseClaimed, "CHI");
+            return RecordMeldClaim(window, claim, RoundEventType.ResponseClaimed, "CHI", isProtectedWallTile);
         }
 
-        private RoundPreparation PreparePon(RoundCommand command)
+        private RoundPreparation PreparePon(RoundCommand command, Func<TileId, bool>? isProtectedWallTile = null)
         {
             CheckSeat(command.Seat);
             RoundResponseWindow window = RequireWindow();
@@ -763,10 +790,10 @@ namespace Mahjong.Domain
             }
 
             RoundResponseClaim claim = RoundResponseClaim.Pon(command.Seat, handTiles[0], handTiles[1]);
-            return RecordMeldClaim(window, claim, RoundEventType.ResponseClaimed, "PON");
+            return RecordMeldClaim(window, claim, RoundEventType.ResponseClaimed, "PON", isProtectedWallTile);
         }
 
-        private RoundPreparation PrepareOpenKan(RoundCommand command)
+        private RoundPreparation PrepareOpenKan(RoundCommand command, Func<TileId, bool>? isProtectedWallTile = null)
         {
             CheckSeat(command.Seat);
             RoundResponseWindow window = RequireWindow();
@@ -811,14 +838,15 @@ namespace Mahjong.Domain
                 handTiles[0],
                 handTiles[1],
                 handTiles[2]);
-            return RecordMeldClaim(window, claim, RoundEventType.ResponseClaimed, "OPEN_KAN");
+            return RecordMeldClaim(window, claim, RoundEventType.ResponseClaimed, "OPEN_KAN", isProtectedWallTile);
         }
 
         private RoundPreparation RecordMeldClaim(
             RoundResponseWindow window,
             RoundResponseClaim claim,
             RoundEventType eventType,
-            string detail)
+            string detail,
+            Func<TileId, bool>? isProtectedWallTile = null)
         {
             RoundResponseWindow nextWindow = window.WithClaim(claim);
             var events = new List<RoundEvent>();
@@ -834,10 +862,10 @@ namespace Mahjong.Domain
                     events);
             }
 
-            return ResolveCompletedWindow(nextWindow, events);
+            return ResolveCompletedWindow(nextWindow, events, isProtectedWallTile);
         }
 
-        private RoundPreparation PrepareClosedKan(RoundCommand command)
+        private RoundPreparation PrepareClosedKan(RoundCommand command, Func<TileId, bool>? isProtectedWallTile = null)
         {
             CheckSeat(command.Seat);
             if (Window != null)
@@ -891,7 +919,7 @@ namespace Mahjong.Domain
 
             Add(events, RoundEventType.DoraRevealed, -1, dora.ResultTile, null);
             Add(events, RoundEventType.KanDeclared, command.Seat, tiles[0], "CLOSED_KAN");
-            TransitionResult replacement = dora.State!.DrawReplacement(command.Seat);
+            TransitionResult replacement = dora.State!.DrawReplacement(command.Seat, isProtectedWallTile);
             if (!replacement.IsSuccess)
             {
                 throw FromTileError(replacement);
@@ -915,7 +943,10 @@ namespace Mahjong.Domain
                 pendingKanDoraCount: 0);
         }
 
-        private RoundPreparation PrepareRiichi(RoundCommand command)
+        private RoundPreparation PrepareRiichi(
+            RoundCommand command,
+            Func<TileId, bool>? isProtectedWallTile = null,
+            Func<int, bool>? deferAutomaticDraw = null)
         {
             CheckSeat(command.Seat);
             if (Window != null)
@@ -1007,7 +1038,9 @@ namespace Mahjong.Domain
                     pendingAfter,
                     nextScores,
                     _riichiSticks + 1,
-                    nextDeclared);
+                    nextDeclared,
+                    isProtectedWallTile,
+                    deferAutomaticDraw);
             }
 
             var window = new RoundResponseWindow(
@@ -1094,7 +1127,7 @@ namespace Mahjong.Domain
             }
         }
 
-        private RoundPreparation PrepareAddedKan(RoundCommand command)
+        private RoundPreparation PrepareAddedKan(RoundCommand command, Func<TileId, bool>? isProtectedWallTile = null)
         {
             CheckSeat(command.Seat);
             if (Window != null)
@@ -1136,7 +1169,7 @@ namespace Mahjong.Domain
             var events = new List<RoundEvent>();
             if (eligible.Count == 0)
             {
-                return CommitAddedKan(dryRun.State!, command.Seat, command.Tile.Value, events);
+                return CommitAddedKan(dryRun.State!, command.Seat, command.Tile.Value, events, isProtectedWallTile);
             }
 
             var window = new RoundResponseWindow(
@@ -1194,7 +1227,11 @@ namespace Mahjong.Domain
             return BuildTerminal(settlement, RoundEndReason.AbortiveDraw, events);
         }
 
-        private RoundPreparation ResolveCompletedWindow(RoundResponseWindow window, List<RoundEvent> events)
+        private RoundPreparation ResolveCompletedWindow(
+            RoundResponseWindow window,
+            List<RoundEvent> events,
+            Func<TileId, bool>? isProtectedWallTile = null,
+            Func<int, bool>? deferAutomaticDraw = null)
         {
             RoundResponseClaim? winner = SelectWinningClaim(window);
             if (winner == null)
@@ -1207,10 +1244,16 @@ namespace Mahjong.Domain
                         throw FromTileError(kan);
                     }
 
-                    return CommitAddedKan(kan.State!, window.FromSeat, window.TargetTile, events);
+                    return CommitAddedKan(kan.State!, window.FromSeat, window.TargetTile, events, isProtectedWallTile);
                 }
 
-                return AdvanceToNextDraw(Tiles, window.FromSeat, events, _pendingKanDoraCount);
+                return AdvanceToNextDraw(
+                    Tiles,
+                    window.FromSeat,
+                    events,
+                    _pendingKanDoraCount,
+                    isProtectedWallTile: isProtectedWallTile,
+                    deferAutomaticDraw: deferAutomaticDraw);
             }
 
             switch (winner.Kind)
@@ -1238,7 +1281,7 @@ namespace Mahjong.Domain
                     return CommitChi(window, winner, events);
 
                 case RoundClaimKind.OpenKan:
-                    return CommitOpenKan(window, winner, events);
+                    return CommitOpenKan(window, winner, events, isProtectedWallTile);
 
                 default:
                     throw new RoundRuleViolation(
@@ -1368,7 +1411,8 @@ namespace Mahjong.Domain
         private RoundPreparation CommitOpenKan(
             RoundResponseWindow window,
             RoundResponseClaim claim,
-            List<RoundEvent> events)
+            List<RoundEvent> events,
+            Func<TileId, bool>? isProtectedWallTile = null)
         {
             CheckKanAvailable();
             TransitionResult kan = Tiles.OpenKan(
@@ -1395,7 +1439,7 @@ namespace Mahjong.Domain
                 window.TargetTile,
                 tiles));
             Add(events, RoundEventType.KanDeclared, claim.Seat, window.TargetTile, "OPEN_KAN");
-            TransitionResult replacement = afterPending.DrawReplacement(claim.Seat);
+            TransitionResult replacement = afterPending.DrawReplacement(claim.Seat, isProtectedWallTile);
             if (!replacement.IsSuccess)
             {
                 throw FromTileError(replacement);
@@ -1417,12 +1461,13 @@ namespace Mahjong.Domain
             TilePositionMap afterKan,
             int seat,
             TileId tile,
-            List<RoundEvent> events)
+            List<RoundEvent> events,
+            Func<TileId, bool>? isProtectedWallTile = null)
         {
             TilePositionMap afterPending = RevealPendingKanDora(afterKan, events, out _);
             IReadOnlyList<RoundMeld> melds = MeldsWithAddedKan(seat, tile);
             Add(events, RoundEventType.KanDeclared, seat, tile, "ADDED_KAN");
-            TransitionResult replacement = afterPending.DrawReplacement(seat);
+            TransitionResult replacement = afterPending.DrawReplacement(seat, isProtectedWallTile);
             if (!replacement.IsSuccess)
             {
                 throw FromTileError(replacement);
@@ -1470,12 +1515,28 @@ namespace Mahjong.Domain
             IReadOnlyList<long>? scores = null,
             int? riichiSticks = null,
             IReadOnlyList<bool>? riichiDeclared = null,
-            Func<TileId, bool>? isProtectedWallTile = null)
+            Func<TileId, bool>? isProtectedWallTile = null,
+            Func<int, bool>? deferAutomaticDraw = null)
         {
             int nextSeat = (fromSeat + 1) % 4;
             if (currentTiles.WallRemaining == 0)
             {
                 Add(events, RoundEventType.WallExhausted, -1, null, null);
+                return Build(
+                    currentTiles,
+                    RoundPhase.Draw,
+                    nextSeat,
+                    null,
+                    null,
+                    events,
+                    scores: scores,
+                    riichiSticks: riichiSticks,
+                    riichiDeclared: riichiDeclared,
+                    pendingKanDoraCount: pendingKanDoraCount);
+            }
+
+            if (deferAutomaticDraw != null && deferAutomaticDraw(nextSeat))
+            {
                 return Build(
                     currentTiles,
                     RoundPhase.Draw,

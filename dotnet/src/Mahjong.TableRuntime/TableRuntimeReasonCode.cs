@@ -89,6 +89,8 @@ namespace Mahjong.TableRuntime
         public const string CheatRejected = "CHEAT_REJECTED";
         public const string CheatReplayed = "CHEAT_REPLAYED";
         public const string CheatContextMismatch = "CHEAT_CONTEXT_MISMATCH";
+        public const string CheatRequestIdMismatch = "CHEAT_REQUEST_ID_MISMATCH";
+        public const string CheatRequestIdConflict = "CHEAT_REQUEST_ID_CONFLICT";
 
         public static string FromCheat(Mahjong.Domain.RoundCheatErrorCode bridge, Mahjong.Domain.Cheat.CheatErrorCode cheat)
         {

@@ -272,6 +272,19 @@ namespace Mahjong.TableRuntime
             }
         }
 
+        /// <summary>Negative-control hook: tamper with the committed complete-cheat binding.</summary>
+        public void SetCheatBindingForTest(string roomId, long version, ulong fingerprint)
+        {
+            lock (_gate)
+            {
+                if (_states.TryGetValue(roomId, out StateRow? state))
+                {
+                    state.CheatVersion = version;
+                    state.CheatFingerprint = fingerprint;
+                }
+            }
+        }
+
         public void SetCommittedFactsForTest(string roomId, byte[] payload, TablePayloadSha256 sha256)
         {
             lock (_gate)
@@ -1225,7 +1238,9 @@ namespace Mahjong.TableRuntime
                             state.RulesetVersion,
                             state.ControlVersion,
                             now,
-                            request.TimingVersion);
+                            request.TimingVersion,
+                            request.NextCheatVersion,
+                            request.NextCheatFingerprint);
                         checkpoint = request.Checkpoint;
                         if (checkpoint != null)
                         {
@@ -1723,7 +1738,9 @@ namespace Mahjong.TableRuntime
                 int rulesetVersion,
                 long controlVersion,
                 ulong updatedAtUtcMs,
-                long timingVersion = 0L)
+                long timingVersion = 0L,
+                long cheatVersion = 0L,
+                ulong cheatFingerprint = 0UL)
             {
                 StateVersion = stateVersion;
                 LastEventSeq = lastEventSeq;
@@ -1733,6 +1750,8 @@ namespace Mahjong.TableRuntime
                 ControlVersion = controlVersion;
                 UpdatedAtUtcMs = updatedAtUtcMs;
                 TimingVersion = timingVersion;
+                CheatVersion = cheatVersion;
+                CheatFingerprint = cheatFingerprint;
             }
 
             public StateVersion StateVersion { get; }
@@ -1749,6 +1768,10 @@ namespace Mahjong.TableRuntime
 
             public long TimingVersion { get; set; }
 
+            public long CheatVersion { get; set; }
+
+            public ulong CheatFingerprint { get; set; }
+
             public ulong UpdatedAtUtcMs { get; set; }
 
             public TableStateRow ToPublic(string roomId) =>
@@ -1761,7 +1784,9 @@ namespace Mahjong.TableRuntime
                     RulesetVersion,
                     ControlVersion,
                     UpdatedAtUtcMs,
-                    TimingVersion);
+                    TimingVersion,
+                    CheatVersion,
+                    CheatFingerprint);
         }
 
         private sealed class CheckpointRow

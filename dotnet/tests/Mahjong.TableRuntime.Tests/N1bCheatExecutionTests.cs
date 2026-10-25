@@ -910,9 +910,22 @@ namespace Mahjong.TableRuntime.Tests
         {
             RoundStateMachine round = P31Fixtures.Dealt("round-1");
             CheatState cheat = V32Fixtures.WithRegisteredRound(V32Fixtures.Cheat(InitialPoints), round.RoundId);
+            var source = new TestProjectionSource
+            {
+                EventFactsFactory = request => WireEventFacts.Build(
+                    request,
+                    new WireEventFactOptions
+                    {
+                        WinYaku = new[] { new Mahjong.Contracts.YakuView("TSUMO", 1U) },
+                        WinHan = 1U,
+                        WinFu = 30U,
+                        WinScore = 1000L
+                    })
+            };
             return await DurableHarness.CreateAsync(
                 ledger: cheat.Ledger,
                 initialCheckpoint: WithCheat(DurableHarness.InitialCheckpoint(round, cheat.Ledger), cheat),
+                projectionSource: source,
                 configure: options =>
                 {
                     options.CheatEconomy = V32Fixtures.Economy(InitialPoints);
@@ -1077,6 +1090,574 @@ namespace Mahjong.TableRuntime.Tests
                 new StateVersion((ulong)expectedVersion),
                 new OwnerEpoch(1),
                 new ControlEpoch(0)));
+        }
+
+        [Fact]
+        public async Task inner_and_outer_request_ids_must_match_before_domain_execution()
+        {
+            await using ActorHarness harness = CreateHarness();
+            RoundStateMachine round = harness.InitialRound;
+            TileId[] tiles = round.Tiles.TilesInZone(TileZone.Hand, 0).Take(8).ToArray();
+            Assert.Equal(TableOperationStatus.Accepted, (await harness.Actor.SubmitCheatAsync(
+                Cheat(round.RoundId, 0, RoundCheatAction.SubmitTileMark, "r1",
+                    RoundCheatPayload.TileMark("g1", tiles.Take(4).ToArray()), 0, "first"),
+                TestContext.Current.CancellationToken)).Status);
+
+            var mismatched = new TableCheatCommandEnvelope(
+                new RoundCheatCommand(round.RoundId, 0, RoundCheatAction.SubmitTileMark, "r1",
+                    RoundCheatPayload.TileMark("g2", tiles.Skip(4).ToArray())),
+                new RequestId("r2"), new StateVersion(1), new OwnerEpoch(1), new ControlEpoch(0),
+                null, 0, new RequestScopeId("scope-1"), "CHEAT", TablePayloadSha256.Compute(new byte[] { 2 }));
+            TableOperationResult result = await harness.Actor.SubmitCheatAsync(
+                mismatched, TestContext.Current.CancellationToken);
+            Assert.Equal(TableOperationStatus.Rejected, result.Status);
+            Assert.Empty(result.Events);
+            Assert.Single(GetCheat(harness.Actor)!.TileMarks.Groups);
+            Assert.Equal(995, GetCheat(harness.Actor)!.Ledger.BalanceOf(0));
+        }
+
+        [Fact]
+        public async Task business_rejection_replays_after_turn_changes_and_distinct_scope_cannot_reuse_private_result()
+        {
+            await using ActorHarness harness = CreateHarness();
+            RoundStateMachine round = harness.InitialRound;
+            TileId[] seat1Tiles = round.Tiles.TilesInZone(TileZone.Hand, 1).Take(4).ToArray();
+            TableOperationResult first = await harness.Actor.SubmitCheatAsync(
+                Cheat(round.RoundId, 1, RoundCheatAction.SubmitTileMark, "reject-once",
+                    RoundCheatPayload.TileMark("g", seat1Tiles), 0, "same"),
+                TestContext.Current.CancellationToken);
+            Assert.Equal(TableOperationStatus.Rejected, first.Status);
+
+            await DiscardOnceAsync(harness, "discard");
+            TableOperationResult replay = await harness.Actor.SubmitCheatAsync(
+                Cheat(round.RoundId, 1, RoundCheatAction.SubmitTileMark, "reject-once",
+                    RoundCheatPayload.TileMark("g", seat1Tiles), 1, "same"),
+                TestContext.Current.CancellationToken);
+            Assert.Equal(first.Status, replay.Status);
+            Assert.Equal(first.ReasonCode, replay.ReasonCode);
+            Assert.Empty(replay.Events);
+
+            TileId[] seat0Tiles = round.Tiles.TilesInZone(TileZone.Hand, 1).Take(4).ToArray();
+            TableCheatCommandEnvelope accepted = Cheat(
+                round.RoundId, 1, RoundCheatAction.SubmitTileMark, "scope-request",
+                RoundCheatPayload.TileMark("g0", seat0Tiles), 1, "scope-request");
+            Assert.Equal(TableOperationStatus.Accepted, (await harness.Actor.SubmitCheatAsync(
+                accepted, TestContext.Current.CancellationToken)).Status);
+
+            var otherScope = new TableCheatCommandEnvelope(
+                accepted.CheatCommand, accepted.RequestId, accepted.ExpectedStateVersion,
+                accepted.OwnerEpoch, accepted.ControlEpoch, null, 0,
+                new RequestScopeId("other-scope"), "OTHER_API", accepted.PayloadSha256);
+            TableOperationResult isolated = await harness.Actor.SubmitCheatAsync(
+                otherScope, TestContext.Current.CancellationToken);
+            Assert.Equal(TableOperationStatus.Rejected, isolated.Status);
+            Assert.Empty(isolated.Events);
+        }
+
+        [Fact]
+        public async Task internal_timeout_discard_opens_window_and_preserves_foreign_reservation()
+        {
+            await using ActorHarness harness = CreateHarness();
+            await DiscardOnceAsync(harness, "d0");
+            Assert.Equal(TableOperationStatus.Accepted, (await harness.Actor.SubmitCheatAsync(
+                Cheat("round-1", 0, RoundCheatAction.SubmitSleeveBloomOffTurn, "off",
+                    RoundCheatPayload.OffTurn("bloom-window-0-0-0"), 1, "off"),
+                TestContext.Current.CancellationToken)).Status);
+            Assert.Equal(TableOperationStatus.Accepted, (await harness.Actor.SubmitCheatAsync(
+                Cheat("round-1", 0, RoundCheatAction.SubmitSleeveBloomOffTurnChoice, "choose",
+                    RoundCheatPayload.OffTurnChoice("bloom-offturn-0-off", SleeveBloomKeep.First), 2, "choose"),
+                TestContext.Current.CancellationToken)).Status);
+            TileId reserved = GetCheat(harness.Actor)!.SleeveBloom.ReservationFor(0)!.Tile;
+
+            RoundStateMachine round = GetRound(harness.Actor);
+            TileId tile = round.Tiles.TilesInZone(TileZone.Hand, 1)[0];
+            var pending = new PendingDecision(
+                new DecisionKey("round-1", 1, "timeout"), 0L,
+                new[] { new LegalActionOption(LegalActionKind.Discard, 1, tile) }, tile);
+            Assert.Equal(TableOperationStatus.Configured, (await harness.OpenDecisionAsync(pending)).Status);
+            harness.Clock.Now = 3000L;
+            await harness.TickAsync();
+            Assert.Equal(TileZone.Wall, GetRound(harness.Actor).Tiles.PositionOf(reserved).Zone);
+            Assert.NotNull(GetCheat(harness.Actor)!.SleeveBloom.WindowIdFor(1));
+        }
+
+        [Fact]
+        public async Task response_pass_after_discard_preserves_foreign_reservation()
+        {
+            await using ActorHarness harness = CreateHarness();
+            await DiscardOnceAsync(harness, "d0");
+            Assert.Equal(TableOperationStatus.Accepted, (await harness.Actor.SubmitCheatAsync(
+                Cheat("round-1", 0, RoundCheatAction.SubmitSleeveBloomOffTurn, "off",
+                    RoundCheatPayload.OffTurn("bloom-window-0-0-0"), 1, "off"),
+                TestContext.Current.CancellationToken)).Status);
+            Assert.Equal(TableOperationStatus.Accepted, (await harness.Actor.SubmitCheatAsync(
+                Cheat("round-1", 0, RoundCheatAction.SubmitSleeveBloomOffTurnChoice, "choose",
+                    RoundCheatPayload.OffTurnChoice("bloom-offturn-0-off", SleeveBloomKeep.First), 2, "choose"),
+                TestContext.Current.CancellationToken)).Status);
+            TileId reserved = GetCheat(harness.Actor)!.SleeveBloom.ReservationFor(0)!.Tile;
+
+            RoundStateMachine round = GetRound(harness.Actor);
+            TileId tile = round.Tiles.TilesInZone(TileZone.Hand, 1)[0];
+            Assert.Equal(TableOperationStatus.Accepted, (await harness.SubmitAsync(new TableCommandEnvelope(
+                RoundCommand.Discard("round-1", 1, tile, new[] { 2 }), new RequestId("discard1"),
+                new StateVersion(3), new OwnerEpoch(1), new ControlEpoch(0)))).Status);
+            Assert.Equal(TableOperationStatus.Accepted, (await harness.SubmitAsync(new TableCommandEnvelope(
+                RoundCommand.Pass("round-1", 2), new RequestId("pass"),
+                new StateVersion(4), new OwnerEpoch(1), new ControlEpoch(0)))).Status);
+            Assert.Equal(TileZone.Wall, GetRound(harness.Actor).Tiles.PositionOf(reserved).Zone);
+        }
+
+        [Fact]
+        public async Task normal_discard_settles_pending_immediate_and_beam_offers()
+        {
+            await using ActorHarness harness = CreateHarness();
+            await DiscardOnceAsync(harness, "d0");
+            Assert.Equal(TableOperationStatus.Accepted, (await harness.Actor.SubmitCheatAsync(
+                Cheat("round-1", 1, RoundCheatAction.SubmitSleeveBloom, "immediate",
+                    RoundCheatPayload.SleeveBloom(), 1, "immediate"),
+                TestContext.Current.CancellationToken)).Status);
+            RoundStateMachine round = GetRound(harness.Actor);
+            TileId tile = round.Tiles.TilesInZone(TileZone.Hand, 1)[0];
+            Assert.Equal(TableOperationStatus.Accepted, (await harness.SubmitAsync(new TableCommandEnvelope(
+                RoundCommand.Discard("round-1", 1, tile), new RequestId("discard1"),
+                new StateVersion(2), new OwnerEpoch(1), new ControlEpoch(0)))).Status);
+            Assert.Null(GetCheat(harness.Actor)!.SleeveBloom.ImmediateOffer);
+
+            await using ActorHarness beamHarness = CreateHarness();
+            await DiscardOnceAsync(beamHarness, "d0");
+            Assert.Equal(TableOperationStatus.Accepted, (await beamHarness.Actor.SubmitCheatAsync(
+                Cheat("round-1", 1, RoundCheatAction.SubmitBeamSwap, "beam",
+                    RoundCheatPayload.BeamSwap(), 1, "beam"),
+                TestContext.Current.CancellationToken)).Status);
+            RoundStateMachine beamRound = GetRound(beamHarness.Actor);
+            TileId beamTile = beamRound.Tiles.TilesInZone(TileZone.Hand, 1)[0];
+            Assert.Equal(TableOperationStatus.Accepted, (await beamHarness.SubmitAsync(new TableCommandEnvelope(
+                RoundCommand.Discard("round-1", 1, beamTile), new RequestId("beam-discard"),
+                new StateVersion(2), new OwnerEpoch(1), new ControlEpoch(0)))).Status);
+            Assert.Null(GetCheat(beamHarness.Actor)!.BeamSwap.Offer);
+        }
+
+        [Fact]
+        public async Task durable_cheat_binding_is_persisted_and_tamper_recovery_is_refused()
+        {
+            await using DurableHarness harness = await CreateDurableCheatHarnessAsync();
+            RoundStateMachine round = harness.InitialRound;
+            TileId[] tiles = round.Tiles.TilesInZone(TileZone.Hand, 0).Take(4).ToArray();
+            Assert.Equal(TableOperationStatus.Accepted, (await harness.Actor.SubmitCheatAsync(
+                DurableCheat(round.RoundId, 0, RoundCheatAction.SubmitTileMark, "bind",
+                    RoundCheatPayload.TileMark("bind", tiles), 0, harness.Scope),
+                TestContext.Current.CancellationToken)).Status);
+
+            CheatState current = GetCheat(harness.Actor)!;
+            TableStateRow state = (await harness.Store.LoadStateAsync(
+                DurableHarness.Room, TestContext.Current.CancellationToken))!;
+            Assert.Equal(current.Version, state.CheatVersion);
+            Assert.Equal(current.Fingerprint, state.CheatFingerprint);
+
+            harness.Store.SetCheatBindingForTest(
+                DurableHarness.Room, current.Version + 1, current.Fingerprint);
+            TableRecoveryResult recovered = await harness.Actor.RecoverFromStoreAsync(
+                TestContext.Current.CancellationToken);
+            Assert.Equal(TableRecoveryStatus.Failed, recovered.Status);
+            Assert.Equal(TableRuntimeReasonCode.RecoveryStateHashMismatch, recovered.ReasonCode);
+        }
+
+        [Fact]
+        public async Task durable_commit_fault_leaves_no_cheat_state_version_or_charge()
+        {
+            await using DurableHarness harness = await CreateDurableCheatHarnessAsync();
+            RoundStateMachine round = harness.InitialRound;
+            TileId[] tiles = round.Tiles.TilesInZone(TileZone.Hand, 0).Take(4).ToArray();
+            harness.Store.ArmedFaultPoint = TableStoreFaultPoint.BeforeApply;
+            TableOperationResult failed = await harness.Actor.SubmitCheatAsync(
+                DurableCheat(round.RoundId, 0, RoundCheatAction.SubmitTileMark, "fault",
+                    RoundCheatPayload.TileMark("fault", tiles), 0, harness.Scope),
+                TestContext.Current.CancellationToken);
+            Assert.Equal(TableOperationStatus.Failed, failed.Status);
+            TableStateRow state = (await harness.Store.LoadStateAsync(
+                DurableHarness.Room, TestContext.Current.CancellationToken))!;
+            Assert.Equal(0UL, state.StateVersion.Value);
+            Assert.Equal(0L, state.CheatVersion);
+            Assert.Equal(0UL, state.CheatFingerprint);
+        }
+
+        [Fact]
+        public async Task terminal_tsumo_settles_a_pending_immediate_offer_before_ending_the_round()
+        {
+            await using ActorHarness harness = CreateHarness();
+            await DiscardOnceAsync(harness, "d0");
+            Assert.Equal(TableOperationStatus.Accepted, (await harness.Actor.SubmitCheatAsync(
+                Cheat("round-1", 1, RoundCheatAction.SubmitSleeveBloom, "immediate",
+                    RoundCheatPayload.SleeveBloom(), 1, "immediate"),
+                TestContext.Current.CancellationToken)).Status);
+
+            long[] finalScores = { 25000, 26000, 24000, 25000 };
+            var settlement = new RoundSettlement(
+                "terminal-1",
+                RoundOutcome.Tsumo(1),
+                finalScores,
+                0,
+                new PersistedUtcTime(new DateTimeOffset(2026, 10, 25, 1, 0, 0, TimeSpan.Zero)),
+                4321L);
+            TableOperationResult tsumo = await harness.SubmitAsync(new TableCommandEnvelope(
+                RoundCommand.Tsumo("round-1", 1, settlement),
+                new RequestId("tsumo"),
+                new StateVersion(2),
+                new OwnerEpoch(1),
+                new ControlEpoch(0)));
+            Assert.Equal(TableOperationStatus.Accepted, tsumo.Status);
+            Assert.Contains(tsumo.Events, e => e.Type == RoundEventType.TsumoWin);
+            Assert.Null(GetCheat(harness.Actor)!.SleeveBloom.ImmediateOffer);
+            Assert.Equal(3UL, (await harness.GetSnapshotAsync()).StateVersion.Value);
+        }
+
+        [Fact]
+        public async Task closed_kan_replacement_skips_a_protected_live_wall_tail_tile()
+        {
+            var clock = new ManualTableClock { Now = 1000L };
+            var commitPort = new RecordingCommitPort();
+            var sink = new RecordingPublicationSink(commitPort);
+            RoundStateMachine round = BuildKanProtectionRound("kan-protect");
+            const int protectedValue = 135;
+            CheatState cheat = V32Fixtures.WithRegisteredRound(V32Fixtures.Cheat(InitialPoints), round.RoundId);
+            cheat = cheat.WithSleeveBloom(cheat.SleeveBloom.WithReservation(
+                new SleeveBloomReservation(1, "reservation", new TileId(protectedValue), null, 0)));
+            var options = new TableActorOptions
+            {
+                RoomId = "room-1",
+                MailboxCapacity = 16,
+                ControlReserve = 16,
+                DecisionClockConfig = new DecisionClockConfig(1000L, 0L, ReserveScope.Round),
+                InitialControllers = P31Fixtures.Controllers(
+                    SeatControllerKind.Computer,
+                    SeatControllerKind.Computer,
+                    SeatControllerKind.Computer,
+                    SeatControllerKind.Computer),
+                CheatEconomy = V32Fixtures.Economy(InitialPoints),
+                SleeveBloomConfig = V32Fixtures.SleeveConfig(),
+                InitialCheatState = cheat
+            };
+            await using var actor = new TableActor(options, round, commitPort, clock, sink);
+            TableOperationResult result = await actor.SubmitAsync(
+                new TableCommandEnvelope(
+                    RoundCommand.ClosedKan(
+                        round.RoundId,
+                        0,
+                        new TileId(0),
+                        new TileId(1),
+                        new TileId(2),
+                        new TileId(3)),
+                    new RequestId("kan"),
+                    new StateVersion(0),
+                    new OwnerEpoch(1),
+                    new ControlEpoch(0)),
+                TestContext.Current.CancellationToken);
+            Assert.True(result.Status == TableOperationStatus.Accepted, result.ReasonCode + "|" + result.Detail);
+            RoundStateMachine after = GetRound(actor);
+            Assert.Equal(TileZone.Wall, after.Tiles.PositionOf(new TileId(protectedValue)).Zone);
+            Assert.NotEqual(protectedValue, after.Tiles.DrawnTile!.Value.Tile.Value);
+            Assert.Equal(136, after.Tiles.AsPlacements().Select(p => p.Tile.Value).Distinct().Count());
+        }
+
+        private static RoundStateMachine BuildKanProtectionRound(string roundId)
+        {
+            var placements = new List<TilePlacement>();
+            for (int value = 0; value < 4; value++)
+            {
+                placements.Add(new TilePlacement(new TileId(value), TilePosition.Hand(0, value == 3 ? 13 : value)));
+            }
+
+            for (int value = 4; value < 14; value++)
+            {
+                placements.Add(new TilePlacement(new TileId(value), TilePosition.Hand(0, value - 1)));
+            }
+
+            int next = 14;
+            for (int seat = 1; seat < 4; seat++)
+            {
+                for (int slot = 0; slot < 13; slot++)
+                {
+                    placements.Add(new TilePlacement(new TileId(next++), TilePosition.Hand(seat, slot)));
+                }
+            }
+
+            for (int slot = 0; slot < TilePositionMap.DeadWallSlotCount; slot++)
+            {
+                placements.Add(new TilePlacement(new TileId(next++), TilePosition.DeadWall(slot)));
+            }
+
+            for (int slot = 0; slot < 69; slot++)
+            {
+                placements.Add(new TilePlacement(new TileId(next++), TilePosition.Wall(slot)));
+            }
+
+            Assert.Equal(136, next);
+            TilePositionMap map = TilePositionMap.FromPlacements(
+                placements,
+                0,
+                69,
+                0,
+                null,
+                0,
+                null,
+                Array.Empty<TileId>(),
+                0,
+                new DrawnTileEvidence(new TileId(3), 0, DrawSource.DealExtra));
+            var spec = new RoundSpec(
+                roundId,
+                0,
+                1,
+                0,
+                0,
+                new long[] { 25000, 25000, 25000, 25000 },
+                0);
+            return RoundStateMachine.CreateDealt(spec, map, RoundPhase.CheatWindow);
+        }
+
+        [Fact]
+        public async Task riichi_automatic_draw_skips_a_protected_reservation_tile()
+        {
+            RoundStateMachine round = BuildRiichiProtectionRound("riichi-protect", out TileId protectedWall);
+            var clock = new ManualTableClock { Now = 1000L };
+            var commitPort = new RecordingCommitPort();
+            var sink = new RecordingPublicationSink(commitPort);
+            CheatState cheat = V32Fixtures.WithRegisteredRound(V32Fixtures.Cheat(InitialPoints), round.RoundId);
+            cheat = cheat.WithSleeveBloom(cheat.SleeveBloom.WithReservation(
+                new SleeveBloomReservation(1, "reservation", protectedWall, null, 0)));
+            var options = new TableActorOptions
+            {
+                RoomId = "room-1",
+                MailboxCapacity = 16,
+                ControlReserve = 16,
+                DecisionClockConfig = new DecisionClockConfig(1000L, 0L, ReserveScope.Round),
+                InitialControllers = P31Fixtures.Controllers(
+                    SeatControllerKind.Computer,
+                    SeatControllerKind.Computer,
+                    SeatControllerKind.Computer,
+                    SeatControllerKind.Computer),
+                CheatEconomy = V32Fixtures.Economy(InitialPoints),
+                SleeveBloomConfig = V32Fixtures.SleeveConfig(),
+                InitialCheatState = cheat
+            };
+            await using var actor = new TableActor(options, round, commitPort, clock, sink);
+            TableOperationResult result = await actor.SubmitAsync(
+                new TableCommandEnvelope(
+                    RoundCommand.Riichi(round.RoundId, 0, TileId.FromTypeIndex(26 + 4, 0)),
+                    new RequestId("riichi"),
+                    new StateVersion(0),
+                    new OwnerEpoch(1),
+                    new ControlEpoch(0)),
+                TestContext.Current.CancellationToken);
+            Assert.True(result.Status == TableOperationStatus.Accepted, result.ReasonCode + "|" + result.Detail);
+            RoundStateMachine after = GetRound(actor);
+            Assert.Null(GetCheat(actor)!.SleeveBloom.ReservationFor(1));
+            Assert.Equal(TileZone.Hand, after.Tiles.PositionOf(protectedWall).Zone);
+            Assert.Equal(1, after.Tiles.DrawnTile!.Value.Seat);
+            Assert.Equal(protectedWall, after.Tiles.DrawnTile!.Value.Tile);
+            Assert.Equal(136, after.Tiles.AsPlacements().Select(p => p.Tile.Value).Distinct().Count());
+        }
+
+        private static RoundStateMachine BuildRiichiProtectionRound(string roundId, out TileId protectedWall)
+        {
+            var hand = new[]
+            {
+                TileId.FromTypeIndex(30 + 1, 0), TileId.FromTypeIndex(30 + 1, 1), TileId.FromTypeIndex(30 + 1, 2),
+                TileId.FromTypeIndex(1 - 1, 0), TileId.FromTypeIndex(2 - 1, 0), TileId.FromTypeIndex(3 - 1, 0),
+                TileId.FromTypeIndex(17 + 6, 0), TileId.FromTypeIndex(17 + 7, 0), TileId.FromTypeIndex(17 + 8, 0),
+                TileId.FromTypeIndex(8 + 2, 0), TileId.FromTypeIndex(8 + 2, 1), TileId.FromTypeIndex(8 + 5, 0),
+                TileId.FromTypeIndex(8 + 6, 0)
+            };
+            var placements = new List<TilePlacement>();
+            var used = new bool[TileId.Count];
+            void Place(TileId tile, TilePosition position)
+            {
+                Assert.False(used[tile.Value]);
+                used[tile.Value] = true;
+                placements.Add(new TilePlacement(tile, position));
+            }
+
+            for (int i = 0; i < hand.Length; i++)
+            {
+                Place(hand[i], TilePosition.Hand(0, i));
+            }
+
+            Place(TileId.FromTypeIndex(26 + 4, 0), TilePosition.Hand(0, 13));
+
+            int Next()
+            {
+                for (int value = 0; value < TileId.Count; value++)
+                {
+                    if (!used[value])
+                    {
+                        return value;
+                    }
+                }
+
+                throw new InvalidOperationException("no tile left");
+            }
+
+            for (int slot = 0; slot < TilePositionMap.DeadWallSlotCount; slot++)
+            {
+                Place(new TileId(Next()), TilePosition.DeadWall(slot));
+            }
+
+            for (int seat = 1; seat < 4; seat++)
+            {
+                for (int slot = 0; slot < 13; slot++)
+                {
+                    Place(new TileId(Next()), TilePosition.Hand(seat, slot));
+                }
+            }
+
+            int wallCount = 0;
+            while (wallCount < 69)
+            {
+                int value = Next();
+                Place(new TileId(value), TilePosition.Wall(wallCount++));
+            }
+
+            protectedWall = new TileId(0);
+            for (int value = 0; value < TileId.Count; value++)
+            {
+                if (placements.Exists(p => p.Tile.Value == value && p.Position.Equals(TilePosition.Wall(0))))
+                {
+                    protectedWall = new TileId(value);
+                    break;
+                }
+            }
+
+            TilePositionMap map = TilePositionMap.FromPlacements(
+                placements,
+                0,
+                69,
+                0,
+                null,
+                0,
+                null,
+                new[] { placements.Find(p => p.Position.Equals(TilePosition.DeadWall(4))).Tile },
+                0,
+                new DrawnTileEvidence(TileId.FromTypeIndex(26 + 4, 0), 0, DrawSource.DealExtra));
+            var spec = new RoundSpec(roundId, 0, 1, 0, 0, new long[] { 25000, 25000, 25000, 25000 }, 0);
+            return RoundStateMachine.CreateDealt(spec, map, RoundPhase.CheatWindow);
+        }
+
+        [Fact]
+        public async Task durable_terminal_tsumo_with_pending_offer_commits_checkpoint_and_outbox()
+        {
+            await using DurableHarness harness = await CreateDurableCheatHarnessAsync();
+            RoundStateMachine round = harness.InitialRound;
+            IReadOnlyList<TableCommandEnvelope> chain = P31Fixtures.BuildDiscardChain(round, 1);
+            Assert.Equal(TableOperationStatus.Accepted, (await harness.Actor.SubmitAsync(
+                DurableRound(harness.Scope, chain[0].Command, 0, "d0"),
+                TestContext.Current.CancellationToken)).Status);
+            Assert.Equal(TableOperationStatus.Accepted, (await harness.Actor.SubmitCheatAsync(
+                DurableCheat(round.RoundId, 1, RoundCheatAction.SubmitSleeveBloom, "immediate",
+                    RoundCheatPayload.SleeveBloom(), 1, harness.Scope),
+                TestContext.Current.CancellationToken)).Status);
+
+            long[] finalScores = { 25000, 26000, 24000, 25000 };
+            var settlement = new RoundSettlement(
+                "terminal-durable",
+                RoundOutcome.Tsumo(1),
+                finalScores,
+                0,
+                new PersistedUtcTime(new DateTimeOffset(2026, 10, 25, 2, 0, 0, TimeSpan.Zero)),
+                9999L);
+            TableOperationResult tsumo = await harness.Actor.SubmitAsync(
+                DurableRound(harness.Scope, RoundCommand.Tsumo(round.RoundId, 1, settlement), 2, "tsumo"),
+                TestContext.Current.CancellationToken);
+            Assert.True(tsumo.Status == TableOperationStatus.Accepted, tsumo.ReasonCode + "|" + tsumo.Detail);
+            Assert.Null(GetCheat(harness.Actor)!.SleeveBloom.ImmediateOffer);
+            Assert.NotNull(await harness.Store.LoadCheckpointAsync(
+                DurableHarness.Room, TestContext.Current.CancellationToken));
+
+            TableRecoveryResult recovered = await harness.Actor.RecoverFromStoreAsync(
+                TestContext.Current.CancellationToken);
+            Assert.Equal(TableRecoveryStatus.Recovered, recovered.Status);
+            Assert.True(recovered.Report!.Terminal);
+        }
+
+        [Fact]
+        public async Task old_owner_epoch_is_rejected_after_recovery_and_concurrent_cheats_commit_at_most_once()
+        {
+            await using DurableHarness harness = await CreateDurableCheatHarnessAsync();
+            RoundStateMachine round = harness.InitialRound;
+            TileId[] tiles = round.Tiles.TilesInZone(TileZone.Hand, 0).Take(4).ToArray();
+            Assert.Equal(TableOperationStatus.Accepted, (await harness.Actor.SubmitCheatAsync(
+                DurableCheat(round.RoundId, 0, RoundCheatAction.SubmitTileMark, "old-owner-first",
+                    RoundCheatPayload.TileMark("g1", tiles), 0, harness.Scope),
+                TestContext.Current.CancellationToken)).Status);
+            Assert.Equal(TableRecoveryStatus.Recovered, (await harness.Actor.RecoverFromStoreAsync(
+                TestContext.Current.CancellationToken)).Status);
+
+            var oldOwner = new TableCheatCommandEnvelope(
+                new RoundCheatCommand(round.RoundId, 0, RoundCheatAction.SubmitTileMark, "old-owner",
+                    RoundCheatPayload.TileMark("g2", tiles)),
+                new RequestId("old-owner"), new StateVersion(1), new OwnerEpoch(1), new ControlEpoch(0),
+                null, 1L, harness.Scope.ScopeId, "CHEAT",
+                TablePayloadSha256.Compute(System.Text.Encoding.UTF8.GetBytes("old-owner")));
+            TableOperationResult ownerRejected = await harness.Actor.SubmitCheatAsync(
+                oldOwner, TestContext.Current.CancellationToken);
+            Assert.Equal(TableOperationStatus.Rejected, ownerRejected.Status);
+            Assert.Equal(TableRuntimeReasonCode.StaleOwnerEpoch, ownerRejected.ReasonCode);
+            Assert.Empty(ownerRejected.Events);
+
+            await using ActorHarness concurrent = CreateHarness();
+            TileId[] concurrentTiles = concurrent.InitialRound.Tiles
+                .TilesInZone(TileZone.Hand, 0).Take(8).ToArray();
+            Task<TableOperationResult> first = concurrent.Actor.SubmitCheatAsync(
+                Cheat("round-1", 0, RoundCheatAction.SubmitTileMark, "parallel-1",
+                    RoundCheatPayload.TileMark("p1", concurrentTiles.Take(4).ToArray()), 0, "parallel-1"),
+                TestContext.Current.CancellationToken).AsTask();
+            Task<TableOperationResult> second = concurrent.Actor.SubmitCheatAsync(
+                Cheat("round-1", 0, RoundCheatAction.SubmitTileMark, "parallel-2",
+                    RoundCheatPayload.TileMark("p2", concurrentTiles.Skip(4).ToArray()), 0, "parallel-2"),
+                TestContext.Current.CancellationToken).AsTask();
+            TableOperationResult[] results = await Task.WhenAll(first, second);
+            Assert.Equal(1, results.Count(r => r.Status == TableOperationStatus.Accepted));
+            Assert.Equal(1UL, (await concurrent.GetSnapshotAsync()).StateVersion.Value);
+            Assert.Single(GetCheat(concurrent.Actor)!.TileMarks.Groups);
+        }
+
+        [Fact]
+        public async Task response_pass_delivers_a_reservation_to_the_next_owner_draw()
+        {
+            await using ActorHarness harness = CreateHarness();
+            RoundStateMachine round = harness.InitialRound;
+            IReadOnlyList<TableCommandEnvelope> chain = P31Fixtures.BuildDiscardChain(round, 4);
+            Assert.Equal(TableOperationStatus.Accepted, (await SubmitRoundAsync(harness, chain[0], 0, "d0")).Status);
+            Assert.Equal(TableOperationStatus.Accepted, (await harness.Actor.SubmitCheatAsync(
+                Cheat("round-1", 0, RoundCheatAction.SubmitSleeveBloomOffTurn, "off",
+                    RoundCheatPayload.OffTurn("bloom-window-0-0-0"), 1, "off"),
+                TestContext.Current.CancellationToken)).Status);
+            Assert.Equal(TableOperationStatus.Accepted, (await harness.Actor.SubmitCheatAsync(
+                Cheat("round-1", 0, RoundCheatAction.SubmitSleeveBloomOffTurnChoice, "choose",
+                    RoundCheatPayload.OffTurnChoice("bloom-offturn-0-off", SleeveBloomKeep.First), 2, "choose"),
+                TestContext.Current.CancellationToken)).Status);
+            TileId reserved = GetCheat(harness.Actor)!.SleeveBloom.ReservationFor(0)!.Tile;
+
+            Assert.Equal(TableOperationStatus.Accepted, (await SubmitRoundAsync(harness, chain[1], 3, "d1")).Status);
+            Assert.Equal(TableOperationStatus.Accepted, (await SubmitRoundAsync(harness, chain[2], 4, "d2")).Status);
+            RoundStateMachine beforeSeat3 = GetRound(harness.Actor);
+            TileId seat3Tile = beforeSeat3.Tiles.TilesInZone(TileZone.Hand, 3)[0];
+            Assert.Equal(TableOperationStatus.Accepted, (await harness.SubmitAsync(new TableCommandEnvelope(
+                RoundCommand.Discard("round-1", 3, seat3Tile, new[] { 1 }),
+                new RequestId("d3"),
+                new StateVersion(5),
+                new OwnerEpoch(1),
+                new ControlEpoch(0)))).Status);
+
+            TableOperationResult pass = await harness.SubmitAsync(new TableCommandEnvelope(
+                RoundCommand.Pass("round-1", 1),
+                new RequestId("pass"),
+                new StateVersion(6),
+                new OwnerEpoch(1),
+                new ControlEpoch(0)));
+            Assert.Equal(TableOperationStatus.Accepted, pass.Status);
+            Assert.Equal(7UL, pass.CommandVersion!.Value.Value);
+            Assert.Null(GetCheat(harness.Actor)!.SleeveBloom.ReservationFor(0));
+            TableEventRecord drawn = Assert.Single(pass.Events, e => e.Type == RoundEventType.TileDrawn && e.Seat == 0);
+            Assert.Equal(reserved, drawn.Tile);
         }
 
         private static ActorHarness CreateHarness()
