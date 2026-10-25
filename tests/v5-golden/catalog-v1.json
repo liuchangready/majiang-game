@@ -2,19 +2,20 @@
     "schema":  "v5-golden-catalog-v1",
     "catalogVersion":  1,
     "status":  "evidence-index-not-acceptance",
-    "notice":  "Mechanical hash/count/anchor index over six accepted V4-exported fixtures: the five original fixtures frozen at PR19 head 205506f, plus accepted ai-v1 whose bytes and embedded v4Commit are also frozen at 205506f. The catalog index is refreshed at 004c247. This catalog does not assert G1/G5, V5 production readiness, full AI migration, or full 73-item coverage; G-049 is partial only.",
+    "notice":  "Mechanical hash/count/anchor index over six accepted V4-exported fixtures. The five original fixtures are byte-frozen at 205506f. Accepted ai-v1 is byte-frozen at 09d2a4f (blob 032d79e95e45bde9cb29046cad5f49f338fa78f3), while its embedded v4Commit remains the original V4 source pin 205506f, a source-only commit where no ai-v1 path exists. The catalog index is refreshed at 004c247. This catalog does not assert G1/G5, V5 production readiness, full AI migration, or full 73-item coverage; G-049 is partial only.",
     "baseline":  {
                      "pr":  "feat/v5-1-integration -\u003e v5",
                      "freezeCommit":  "004c24708917168877efaba2565da9dc375fe170",
                      "fixtureFreezeCommit":  "205506f07f6a1ccfef6b32cf97390431e3349f8d",
+                     "aiFixtureByteFreezeCommit":  "09d2a4fd1690d319b90044becc9156a7c6563cde",
                      "worktree":  "D:/majiang-wt/n3-c1-index-20261025",
                      "branch":  "wt/v5-n3-c1-index-20261025",
                      "v4Production":  true,
                      "v5Production":  false,
                      "g1":  "BLOCKED",
                      "g5":  "NOT_COMPLETE",
-                     "fixtureFreezeNote":  "The five original fixtures and ai-v1 are byte-frozen at 205506f; each embedded v4Commit records the original V4 export commit and may differ from the fixture freeze. The catalog index is refreshed at 004c247; this is not a fixture re-export.",
-                     "sourcePinModel":  "fixtureSourcePin is the fixture-embedded v4Commit; fixtureFreezeCommit is the historical byte-freeze 205506f; catalogFreezeCommit is the current index commit. Every fixture declares its sourcePinRelation, and the accepted bytes are pinned independently in the verifier."
+                     "fixtureFreezeNote":  "The five original fixtures are byte-frozen at 205506f. Accepted ai-v1 is byte-frozen at 09d2a4f (the first accepted commit containing blob 032d79e95e45bde9cb29046cad5f49f338fa78f3); its embedded v4Commit=205506f is a source-only pin and 205506f contains no ai-v1 path. The catalog index is refreshed at 004c247; this is not a fixture re-export.",
+                     "sourcePinModel":  "Each fixture separates fixtureSourcePin (embedded v4Commit) from fixtureByteFreezeCommit (the accepted commit that actually contains the bytes). The five original fixtures share the historical byte-freeze 205506f; ai-v1's byte-freeze is 09d2a4f while its source pin is 205506f. catalogFreezeCommit is the current index commit. Every fixture declares sourcePinRelation, and accepted bytes are pinned independently in the verifier."
                  },
     "denominators":  {
                          "manifestRequirements":  73,
@@ -77,18 +78,19 @@
                                     "id":  "ai-v1",
                                     "sha256":  "E898CDB6E1034D1DC8229E807A919E7F64E03062D3E9AD64DED36317402375C9",
                                     "bytes":  51271,
-                                    "fixtureFreezeCommit":  "205506f07f6a1ccfef6b32cf97390431e3349f8d",
+                                    "fixtureFreezeCommit":  "09d2a4fd1690d319b90044becc9156a7c6563cde",
                                     "sourceV4Commit":  "205506f07f6a1ccfef6b32cf97390431e3349f8d"
                                 }
                             ],
     "sourcePins":  {
                        "catalogFreezeCommit":  "004c24708917168877efaba2565da9dc375fe170",
                        "historicalFixtureFreezeCommit":  "205506f07f6a1ccfef6b32cf97390431e3349f8d",
+                       "aiFixtureByteFreezeCommit":  "09d2a4fd1690d319b90044becc9156a7c6563cde",
                        "relationVocabulary":  [
                                                   "source-pin-equals-fixture-freeze",
                                                   "source-pin-precedes-fixture-freeze"
                                               ],
-                       "note":  "The current index commit and the historical fixture byte-freeze are separate auditable pins. ai-v1's embedded v4Commit equals the 205506f historical freeze; the five original fixtures embed earlier V4 source commits. A fixture hash refresh cannot silently move either pin."
+                       "note":  "Three auditable pins are separate: catalogFreezeCommit=004c247 (current index), historicalFixtureFreezeCommit=205506f (the five original fixture bytes), and aiFixtureByteFreezeCommit=09d2a4f (the accepted ai-v1 bytes, blob 032d79e...). ai-v1's embedded v4Commit=205506f is a source-only pin; 205506f has no ai-v1 path. A fixture hash refresh cannot silently move any pin."
                    },
     "caseAccounting":  {
                            "definition":  "catalogCaseTotal = sum of countAsCase groups over the six catalog fixtures. frozenAuditReplayCaseTotal is the frozen N-3 audit's narrower replay-case definition over the five original fixtures: round-v1 counts only roundTerminal+chankanRon, and cheat-v1 counts only the three handler arrays (tileMovement excluded). delta = fiveFixtureCatalogCaseTotal - frozenAuditReplayCaseTotal. aiIncrement is added exactly once after that historical comparison.",
@@ -1137,8 +1139,9 @@
                          "sourceV4EngineCommit":  "3f5370c30983a4047dade0835bb2c49dacc5ebbf",
                          "sourceV4AiCommit":  "a96c195c852e035ff6434584135718bbb8a05d29",
                          "sourceV4DomainCommit":  "5f4f8295297d60011f07115fe9b984a1ef80c4ba",
-                         "fixtureFreezeCommit":  "205506f07f6a1ccfef6b32cf97390431e3349f8d",
-                         "sourcePinRelation":  "source-pin-equals-fixture-freeze",
+                         "fixtureFreezeCommit":  "09d2a4fd1690d319b90044becc9156a7c6563cde",
+                         "sourcePinRelation":  "source-pin-precedes-fixture-freeze",
+                         "byteFreezeEvidence":  "09d2a4f:tests/v5-golden/ai-v1.json = blob 032d79e95e45bde9cb29046cad5f49f338fa78f3; 205506f has no ai-v1 path",
                          "generatedAtHead":  "b49911ca3c2010719715982bfb83b2ad70358a1a",
                          "generatedByCommand":  "$env:V5_AI_GOLDEN_EXPORT='1'; .\\gradlew.bat :engine:test --tests \"com.majiang.state.V5AiGoldenExporterTest\" --console=plain",
                          "exporter":  {

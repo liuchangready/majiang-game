@@ -1211,6 +1211,89 @@ Invoke-NegativeCase -Name 'ai-accepted-binding-fact' -ExpectedCode 'AI_ACCEPTED_
     Write-JsonFile $catalogPath $catalog
 }
 
+# 30. AI byte-freeze must not be assigned to the source-only 205506f commit.
+Invoke-NegativeCase -Name 'ai-freeze-to-source-pin' -ExpectedCode 'AI_FIXTURE_FREEZE_COMMIT_MISMATCH' -Mutator {
+    param($root)
+    $catalogPath = Join-Path $root 'tests\v5-golden\catalog-v1.json'
+    $catalog = Read-JsonFile $catalogPath
+    foreach ($entry in @($catalog.fixtures)) {
+        if ([string]$entry.id -eq 'ai-v1') {
+            $entry.fixtureFreezeCommit = '205506f07f6a1ccfef6b32cf97390431e3349f8d'
+            $entry.sourcePinRelation = 'source-pin-equals-fixture-freeze'
+        }
+    }
+    foreach ($pin in @($catalog.immutableFixturePins)) {
+        if ([string]$pin.id -eq 'ai-v1') { $pin.fixtureFreezeCommit = '205506f07f6a1ccfef6b32cf97390431e3349f8d' }
+    }
+    Write-JsonFile $catalogPath $catalog
+}
+
+# 31. Current manifest-only G-049 promotion to full must fail even when catalog is partial.
+Invoke-NegativeCase -Name 'manifest-g049-full' -ExpectedCode 'MANIFEST_COVERAGE_MISMATCH' -Mutator {
+    param($root)
+    $manifest = @(Get-ChildItem -LiteralPath (Join-Path $root 'doc') -Recurse -Filter 'V5-0-GOLDEN-MANIFEST.md' -File)[0]
+    $text = [System.IO.File]::ReadAllText($manifest.FullName, [System.Text.Encoding]::UTF8)
+    $old = '| G-049 | `pending-v4-replay` | `partial` |'
+    $new = '| G-049 | `pending-v4-replay` | `full` |'
+    if (-not $text.Contains($old)) { throw 'manifest G-049 anchor missing' }
+    [System.IO.File]::WriteAllText($manifest.FullName, $text.Replace($old, $new), (New-Object System.Text.UTF8Encoding($false)))
+}
+
+# 32. Current manifest coverage drift on a non-G-049 row must fail.
+Invoke-NegativeCase -Name 'manifest-coverage-drift' -ExpectedCode 'MANIFEST_COVERAGE_MISMATCH' -Mutator {
+    param($root)
+    $manifest = @(Get-ChildItem -LiteralPath (Join-Path $root 'doc') -Recurse -Filter 'V5-0-GOLDEN-MANIFEST.md' -File)[0]
+    $text = [System.IO.File]::ReadAllText($manifest.FullName, [System.Text.Encoding]::UTF8)
+    $old = '| G-048 | `pending` | `partial` |'
+    $new = '| G-048 | `pending` | `none` |'
+    if (-not $text.Contains($old)) { throw 'manifest G-048 anchor missing' }
+    [System.IO.File]::WriteAllText($manifest.FullName, $text.Replace($old, $new), (New-Object System.Text.UTF8Encoding($false)))
+}
+
+# 33. Accepted AI state-binding commit identity must be the accepted commit, not zeros.
+Invoke-NegativeCase -Name 'ai-accepted-commit-zero' -ExpectedCode 'AI_ACCEPTED_BINDING_COMMIT_MISMATCH' -Mutator {
+    param($root)
+    $catalogPath = Join-Path $root 'tests\v5-golden\catalog-v1.json'
+    $catalog = Read-JsonFile $catalogPath
+    foreach ($entry in @($catalog.fixtures)) {
+        if ([string]$entry.id -eq 'ai-v1') { $entry.acceptedBindings[0].commit = '0000000000000000000000000000000000000000' }
+    }
+    Write-JsonFile $catalogPath $catalog
+}
+
+# 34. Accepted AI binding class must be a real class declared in its source file.
+Invoke-NegativeCase -Name 'ai-accepted-fake-class' -ExpectedCode 'AI_ACCEPTED_BINDING_CLASS_MISMATCH' -Mutator {
+    param($root)
+    $catalogPath = Join-Path $root 'tests\v5-golden\catalog-v1.json'
+    $catalog = Read-JsonFile $catalogPath
+    foreach ($entry in @($catalog.fixtures)) {
+        if ([string]$entry.id -eq 'ai-v1') { $entry.acceptedBindings[0].class = 'Mahjong.Ai.Tests.NonexistentTests' }
+    }
+    Write-JsonFile $catalogPath $catalog
+}
+
+# 35. A syntactically valid line number with no read-point token must fail.
+Invoke-NegativeCase -Name 'ai-anchor-line-one' -ExpectedCode 'AI_BINDING_ANCHOR_EVIDENCE_MISSING' -Mutator {
+    param($root)
+    $catalogPath = Join-Path $root 'tests\v5-golden\catalog-v1.json'
+    $catalog = Read-JsonFile $catalogPath
+    foreach ($entry in @($catalog.fixtures)) {
+        if ([string]$entry.id -eq 'ai-v1') { $entry.bindings[0].consumerLines = '1' }
+    }
+    Write-JsonFile $catalogPath $catalog
+}
+
+# 36. A binding jsonPath that does not exist in the fixture must fail.
+Invoke-NegativeCase -Name 'ai-binding-nonexistent-path' -ExpectedCode 'AI_BINDING_PATH_MISSING' -Mutator {
+    param($root)
+    $catalogPath = Join-Path $root 'tests\v5-golden\catalog-v1.json'
+    $catalog = Read-JsonFile $catalogPath
+    foreach ($entry in @($catalog.fixtures)) {
+        if ([string]$entry.id -eq 'ai-v1') { $entry.bindings[0].jsonPath = '$.notARealFixtureField' }
+    }
+    Write-JsonFile $catalogPath $catalog
+}
+
 # Real fixture immutability check.
 $afterHashes = @{}
 foreach ($name in $realFixtures) {

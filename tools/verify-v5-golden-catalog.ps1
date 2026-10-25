@@ -33,9 +33,19 @@ $script:AcceptedFixturePins = @{
     'round-v1'    = [pscustomobject]@{ Sha256 = 'DF5FC5F8199C039823BAC1C668F911637EEB80E7F8A785C84D011401CF2452B7'; Bytes = 43474; SourceV4Commit = '21a7d2c495397b943fc1a170dc23ebc0dc77d4e9'; FixtureFreezeCommit = '205506f07f6a1ccfef6b32cf97390431e3349f8d' }
     'cheat-v1'    = [pscustomobject]@{ Sha256 = 'A196CBBD97AB8F61BE8679B74C8F17DF2713CB37AEF0922E5F3C9F725B28AB4E'; Bytes = 42120; SourceV4Commit = 'a96c195c852e035ff6434584135718bbb8a05d29'; FixtureFreezeCommit = '205506f07f6a1ccfef6b32cf97390431e3349f8d' }
     'shuffle-v1'  = [pscustomobject]@{ Sha256 = '386061B42691CCF36381E2D87DC4787367958C8E9E96A93BA69D1E3FE5DAC282'; Bytes = 99467; SourceV4Commit = '37b4dd610c5e7908dc4938378278c1475e0eee73'; FixtureFreezeCommit = '205506f07f6a1ccfef6b32cf97390431e3349f8d' }
-    'ai-v1'       = [pscustomobject]@{ Sha256 = 'E898CDB6E1034D1DC8229E807A919E7F64E03062D3E9AD64DED36317402375C9'; Bytes = 51271; SourceV4Commit = '205506f07f6a1ccfef6b32cf97390431e3349f8d'; FixtureFreezeCommit = '205506f07f6a1ccfef6b32cf97390431e3349f8d' }
+    'ai-v1'       = [pscustomobject]@{ Sha256 = 'E898CDB6E1034D1DC8229E807A919E7F64E03062D3E9AD64DED36317402375C9'; Bytes = 51271; SourceV4Commit = '205506f07f6a1ccfef6b32cf97390431e3349f8d'; FixtureFreezeCommit = '09d2a4fd1690d319b90044becc9156a7c6563cde' }
 }
 $script:HistoricalFixtureFreezeCommit = '205506f07f6a1ccfef6b32cf97390431e3349f8d'
+# ai-v1 did not exist at 205506f. 205506f is its embedded V4 source pin only;
+# 09d2a4f is the first accepted commit that contains the frozen ai-v1 bytes.
+$script:AiFixtureByteFreezeCommit = '09d2a4fd1690d319b90044becc9156a7c6563cde'
+$script:AcceptedAiBindingIdentity = @{
+    'dotnet/tests/Mahjong.Ai.Tests/AiReplayStateGoldenTests.cs' = [pscustomobject]@{
+        Commit = '7da818dc12d19739e2bd0026f90990b2aff098fc'
+        IncludedCommits = @('6d168123b3115ae52ced6bf834035176a7c2e600', '7da818dc12d19739e2bd0026f90990b2aff098fc')
+        Class = 'Mahjong.Ai.Tests.AiReplayStateGoldenTests'
+    }
+}
 
 function Add-Failure {
     param([string]$Code, [string]$Message)
@@ -449,12 +459,13 @@ function Test-LineRangeAnchor {
     param([string]$Path, [string]$Lines, [string]$CodePrefix, [string]$Label)
     if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
         Add-Failure ($CodePrefix + '_MISSING') ("{0}: consumer file not found: {1}" -f $Label, $Path)
-        return
+        return $false
     }
     if ([string]::IsNullOrWhiteSpace($Lines) -or $Lines -notmatch '^[0-9]+(-[0-9]+)?(,[0-9]+(-[0-9]+)?)*$') {
         Add-Failure ($CodePrefix + '_INVALID') ("{0}: invalid line anchor '{1}'" -f $Label, $Lines)
-        return
+        return $false
     }
+    $valid = $true
     $lineCount = @([System.IO.File]::ReadAllLines($Path, [System.Text.Encoding]::UTF8)).Count
     foreach ($part in ($Lines -split ',')) {
         $bounds = $part -split '-'
@@ -462,12 +473,71 @@ function Test-LineRangeAnchor {
         $end = if ($bounds.Count -gt 1) { [int]$bounds[1] } else { $start }
         if ($start -lt 1 -or $end -lt $start -or $end -gt $lineCount) {
             Add-Failure ($CodePrefix + '_INVALID') ("{0}: line range '{1}' outside 1..{2}" -f $Label, $part, $lineCount)
+            $valid = $false
         }
+    }
+    return $valid
+}
+
+function Test-JsonPathExists {
+    param([object]$Root, [string]$JsonPath)
+    if ([string]::IsNullOrWhiteSpace($JsonPath) -or -not $JsonPath.StartsWith('$.')) { return $false }
+    $parts = $JsonPath.Substring(2) -split '\.'
+    $cursor = @($Root)
+    foreach ($part in $parts) {
+        $array = $false
+        $name = $part
+        if ($part -match '^(.*)\[\*\]$') {
+            $array = $true
+            $name = $Matches[1]
+        }
+        $next = New-Object System.Collections.Generic.List[object]
+        foreach ($node in $cursor) {
+            if ($null -eq $node -or $node -is [System.Array]) { continue }
+            $property = $node.PSObject.Properties[$name]
+            if ($null -eq $property) { continue }
+            $value = $property.Value
+            if ($array) {
+                if ($value -is [System.Array]) {
+                    foreach ($element in $value) { $next.Add($element) }
+                }
+            }
+            else {
+                $next.Add($value)
+            }
+        }
+        if ($next.Count -eq 0) { return $false }
+        $cursor = $next.ToArray()
+    }
+    return $true
+}
+
+function Test-BindingAnchorEvidence {
+    param([string]$Path, [string]$Lines, [string]$JsonPath, [string]$CodePrefix)
+    $leaf = ($JsonPath -split '\.')[-1]
+    $leaf = $leaf -replace '\[\*\]$', ''
+    if ([string]::IsNullOrWhiteSpace($leaf)) { return }
+    $fileLines = [System.IO.File]::ReadAllLines($Path, [System.Text.Encoding]::UTF8)
+    $found = $false
+    foreach ($part in ($Lines -split ',')) {
+        $bounds = $part -split '-'
+        $start = [int]$bounds[0]
+        $end = if ($bounds.Count -gt 1) { [int]$bounds[1] } else { $start }
+        for ($i = $start; $i -le $end; $i++) {
+            if ($fileLines[$i - 1] -match [regex]::Escape($leaf)) {
+                $found = $true
+                break
+            }
+        }
+        if ($found) { break }
+    }
+    if (-not $found) {
+        Add-Failure ($CodePrefix + '_EVIDENCE_MISSING') ("{0}: no '{1}' read-point token in declared ranges '{2}'" -f $JsonPath, $leaf, $Lines)
     }
 }
 
 function Test-AiBindings {
-    param([object]$Fixture, [string]$RepoRoot)
+    param([object]$Fixture, [object]$Raw, [string]$RepoRoot)
     $bindings = @(Get-ArrayProp $Fixture 'bindings')
     if ($bindings.Count -eq 0) {
         Add-Failure 'AI_BINDING_MISSING' 'ai-v1 must declare value-binding anchors'
@@ -479,6 +549,10 @@ function Test-AiBindings {
         $jsonPath = [string](Get-Prop $binding 'jsonPath')
         if ([string]::IsNullOrWhiteSpace($jsonPath) -or -not $jsonPath.StartsWith('$')) {
             Add-Failure 'AI_BINDING_INVALID' ("invalid jsonPath '{0}'" -f $jsonPath)
+            continue
+        }
+        if (-not (Test-JsonPathExists -Root $Raw -JsonPath $jsonPath)) {
+            Add-Failure 'AI_BINDING_PATH_MISSING' ("{0}: path does not exist in ai-v1" -f $jsonPath)
             continue
         }
         $kind = [string](Get-Prop $binding 'kind')
@@ -499,8 +573,14 @@ function Test-AiBindings {
                 Add-Failure 'AI_BINDING_CONSUMER_MISSING' ("{0}: bound field has no consumerPath" -f $jsonPath)
                 continue
             }
+            if ($consumerPath -notmatch '^dotnet/tests/Mahjong\.Ai\.Tests/(AiReplayGoldenTests|AiReplayStateGoldenTests)\.cs$') {
+                Add-Failure 'AI_BINDING_CONSUMER_INVALID' ("{0}: unexpected consumer path '{1}'" -f $jsonPath, $consumerPath)
+                continue
+            }
             $full = Join-Path $RepoRoot ($consumerPath -replace '/', '\')
-            Test-LineRangeAnchor -Path $full -Lines $consumerLines -CodePrefix 'AI_BINDING_ANCHOR' -Label $jsonPath
+            if (Test-LineRangeAnchor -Path $full -Lines $consumerLines -CodePrefix 'AI_BINDING_ANCHOR' -Label $jsonPath) {
+                Test-BindingAnchorEvidence -Path $full -Lines $consumerLines -JsonPath $jsonPath -CodePrefix 'AI_BINDING_ANCHOR'
+            }
         }
     }
     foreach ($required in @('$.cases[*].v5.expected.mappingBasis', '$.v5Observation.mappingLimits', '$.cases[*].v4.events[*].text', '$.cases[*].v4Call.action.text')) {
@@ -532,11 +612,44 @@ function Test-AcceptedBindings {
         if ($actualFacts -ne [int](Get-Prop $binding 'factCount')) {
             Add-Failure 'AI_ACCEPTED_BINDING_FACT_MISMATCH' ("{0}: declared {1}, actual {2}" -f $relative, (Get-Prop $binding 'factCount'), $actualFacts)
         }
-        if ([string](Get-Prop $binding 'class') -notmatch '^[A-Za-z0-9_.]+$') {
+        $declaredClass = [string](Get-Prop $binding 'class')
+        if ($declaredClass -notmatch '^[A-Za-z0-9_.]+$') {
             Add-Failure 'AI_ACCEPTED_BINDING_CLASS_INVALID' $relative
         }
-        if ([string](Get-Prop $binding 'commit') -notmatch '^[0-9a-fA-F]{40}$') {
+        else {
+            $simpleClass = ($declaredClass -split '\.')[-1]
+            $fileStem = [System.IO.Path]::GetFileNameWithoutExtension($full)
+            if ($simpleClass -cne $fileStem) {
+                Add-Failure 'AI_ACCEPTED_BINDING_CLASS_MISMATCH' ("{0}: declared class '{1}' does not match file class '{2}'" -f $relative, $declaredClass, $fileStem)
+            }
+            if (-not (Select-String -LiteralPath $full -Pattern ('\bclass\s+' + [regex]::Escape($simpleClass) + '\b') -Quiet)) {
+                Add-Failure 'AI_ACCEPTED_BINDING_CLASS_MISMATCH' ("{0}: class '{1}' is not declared in the file" -f $relative, $declaredClass)
+            }
+        }
+        $declaredCommit = [string](Get-Prop $binding 'commit')
+        if ($declaredCommit -notmatch '^[0-9a-fA-F]{40}$') {
             Add-Failure 'AI_ACCEPTED_BINDING_COMMIT_INVALID' $relative
+        }
+        else {
+            $normalizedRelative = $relative -replace '\\', '/'
+            $identity = $script:AcceptedAiBindingIdentity[$normalizedRelative]
+            if ($null -eq $identity) {
+                Add-Failure 'AI_ACCEPTED_BINDING_COMMIT_MISMATCH' ("{0}: no accepted identity for this consumer path" -f $relative)
+            }
+            else {
+                if ($declaredCommit -cne $identity.Commit) {
+                    Add-Failure 'AI_ACCEPTED_BINDING_COMMIT_MISMATCH' ("{0}: declared '{1}', accepted '{2}'" -f $relative, $declaredCommit, $identity.Commit)
+                }
+                if ($declaredClass -cne $identity.Class) {
+                    Add-Failure 'AI_ACCEPTED_BINDING_CLASS_MISMATCH' ("{0}: declared '{1}', accepted '{2}'" -f $relative, $declaredClass, $identity.Class)
+                }
+                $included = @(Get-ArrayProp $binding 'includedCommits')
+                foreach ($requiredCommit in $identity.IncludedCommits) {
+                    if (-not ($included -ccontains $requiredCommit)) {
+                        Add-Failure 'AI_ACCEPTED_BINDING_COMMIT_MISMATCH' ("{0}: includedCommits missing {1}" -f $relative, $requiredCommit)
+                    }
+                }
+            }
         }
         $reportRelative = [string](Get-Prop $binding 'report')
         if ([string]::IsNullOrWhiteSpace($reportRelative) -or -not (Test-Path -LiteralPath (Join-Path $RepoRoot ($reportRelative -replace '/', '\')) -PathType Leaf)) {
@@ -894,6 +1007,10 @@ else {
     if ($fixtureFreeze -cne $script:HistoricalFixtureFreezeCommit) {
         Add-Failure 'BASELINE_FIXTURE_FREEZE_INVALID' ("expected {0}, got {1}" -f $script:HistoricalFixtureFreezeCommit, $fixtureFreeze)
     }
+    $aiFreeze = [string](Get-Prop $baseline 'aiFixtureByteFreezeCommit')
+    if ($aiFreeze -cne $script:AiFixtureByteFreezeCommit) {
+        Add-Failure 'BASELINE_AI_FIXTURE_FREEZE_INVALID' ("expected {0}, got {1}" -f $script:AiFixtureByteFreezeCommit, $aiFreeze)
+    }
 }
 
 $denominators = Get-Prop $script:Catalog 'denominators'
@@ -1025,7 +1142,15 @@ foreach ($fixture in $fixtures) {
         Add-Failure 'IMMUTABLE_SOURCE_PIN_MISMATCH' ("{0}: accepted {1}, catalog {2}" -f $fixtureId, $acceptedPin.SourceV4Commit, $commit)
     }
     $fixtureFreezeValue = [string](Get-Prop $fixture 'fixtureFreezeCommit')
-    if ($fixtureFreezeValue -cne $script:HistoricalFixtureFreezeCommit) {
+    if ($fixtureId -eq 'ai-v1') {
+        if ($fixtureFreezeValue -cne $script:AiFixtureByteFreezeCommit) {
+            Add-Failure 'AI_FIXTURE_FREEZE_COMMIT_MISMATCH' ("{0}: catalog byte-freeze '{1}', accepted '{2}'; 205506f is source-only and contains no ai-v1 path" -f $fixtureId, $fixtureFreezeValue, $script:AiFixtureByteFreezeCommit)
+        }
+        if ($commit -cne $script:HistoricalFixtureFreezeCommit) {
+            Add-Failure 'AI_SOURCE_PIN_MISMATCH' ("{0}: embedded sourceV4Commit '{1}' must remain '{2}'" -f $fixtureId, $commit, $script:HistoricalFixtureFreezeCommit)
+        }
+    }
+    elseif ($fixtureFreezeValue -cne $script:HistoricalFixtureFreezeCommit) {
         Add-Failure 'FIXTURE_FREEZE_COMMIT_MISMATCH' ("{0}: catalog '{1}', historical '{2}'" -f $fixtureId, $fixtureFreezeValue, $script:HistoricalFixtureFreezeCommit)
     }
     $relation = [string](Get-Prop $fixture 'sourcePinRelation')
@@ -1071,7 +1196,7 @@ foreach ($fixture in $fixtures) {
         }
         Test-AiSourceFileSha -Raw $raw
         Test-AcceptedBindings -Fixture $fixture -RepoRoot $RepoRoot
-        Test-AiBindings -Fixture $fixture -RepoRoot $RepoRoot
+        Test-AiBindings -Fixture $fixture -Raw $raw -RepoRoot $RepoRoot
     }
 
     $exporter = Get-Prop $fixture 'exporter'
@@ -1137,6 +1262,14 @@ foreach ($fixture in $fixtures) {
             $fileName = [System.IO.Path]::GetFileName($relativePath)
             if (-not $text.Contains($fileName)) {
                 Add-Failure 'CSHARP_FIXTURE_REFERENCE_MISSING' ("{0}: {1} not referenced in {2}" -f $fixtureId, $fileName, $csharpPath)
+            }
+            $declaredClass = [string](Get-Prop $csharp 'class')
+            $simpleClass = ($declaredClass -split '\.')[-1]
+            if ([string]::IsNullOrWhiteSpace($simpleClass) -or $simpleClass -cne [System.IO.Path]::GetFileNameWithoutExtension($csharpFull)) {
+                Add-Failure 'CSHARP_CLASS_MISMATCH' ("{0}: declared class '{1}' does not match file '{2}'" -f $fixtureId, $declaredClass, $csharpPath)
+            }
+            elseif (-not (Select-String -LiteralPath $csharpFull -Pattern ('\bclass\s+' + [regex]::Escape($simpleClass) + '\b') -Quiet)) {
+                Add-Failure 'CSHARP_CLASS_MISMATCH' ("{0}: class '{1}' is not declared in {2}" -f $fixtureId, $declaredClass, $csharpPath)
             }
             $csharpFacts += [int](Get-Prop $csharp 'factCount')
         }
@@ -1206,6 +1339,10 @@ else {
     $historicalPin = [string](Get-Prop $sourcePins 'historicalFixtureFreezeCommit')
     if ($historicalPin -cne $script:HistoricalFixtureFreezeCommit) {
         Add-Failure 'SOURCE_PIN_HISTORICAL_MISMATCH' ("expected {0}, got {1}" -f $script:HistoricalFixtureFreezeCommit, $historicalPin)
+    }
+    $aiByteFreezePin = [string](Get-Prop $sourcePins 'aiFixtureByteFreezeCommit')
+    if ($aiByteFreezePin -cne $script:AiFixtureByteFreezeCommit) {
+        Add-Failure 'SOURCE_PIN_AI_BYTE_FREEZE_MISMATCH' ("expected {0}, got {1}" -f $script:AiFixtureByteFreezeCommit, $aiByteFreezePin)
     }
 }
 
@@ -1491,6 +1628,64 @@ if (Test-Path -LiteralPath $ManifestPath -PathType Leaf) {
         }
         elseif ([string]$manifestRows[$id].Status -ne $status) {
             Add-Failure 'MANIFEST_ROW_MISMATCH' ("{0}: catalog status '{1}' not the manifest token '{2}'" -f $id, $status, $manifestRows[$id].Status)
+        }
+    }
+
+    # The current §8.5 table is a second, independent projection of the
+    # catalog. Historical tables above remain checked as history; this block
+    # additionally requires the CURRENT 73 rows (status + coverage) to agree.
+    $currentStart = -1
+    for ($i = 0; $i -lt $manifestLines.Count; $i++) {
+        if ($manifestLines[$i] -match '^###\s+8\.5(\s|$)') {
+            $currentStart = $i
+            break
+        }
+    }
+    if ($currentStart -lt 0) {
+        Add-Failure 'MANIFEST_CURRENT_SECTION_MISSING' 'manifest section 8.5 not found'
+    }
+    else {
+        $currentRows = @{}
+        for ($i = $currentStart + 1; $i -lt $manifestLines.Count; $i++) {
+            $line = $manifestLines[$i]
+            if ($line -match '^#{2,3}\s+') { break }
+            $match = [regex]::Match($line, '^\|\s*(G-[0-9A-Za-z-]+)\s*\|(.*)\|\s*$')
+            if (-not $match.Success) { continue }
+            $id = $match.Groups[1].Value
+            $cells = @($match.Groups[2].Value -split '\|' | ForEach-Object { ($_ -replace '`', '').Trim() })
+            if ($cells.Count -lt 2) {
+                Add-Failure 'MANIFEST_CURRENT_ROW_INVALID' ("{0}: fewer than two current-table cells" -f $id)
+                continue
+            }
+            if (-not $currentRows.ContainsKey($id)) {
+                $currentRows[$id] = [pscustomobject]@{ Status = $cells[0]; Coverage = $cells[1]; Raw = $line }
+            }
+        }
+        $currentIds = @($currentRows.Keys | Sort-Object)
+        if ($currentIds.Count -ne 73) {
+            Add-Failure 'MANIFEST_CURRENT_ROW_COUNT' ('expected 73 current G rows, got {0}' -f $currentIds.Count)
+        }
+        if (($currentIds -join ',') -ne (@($requirementIds | Sort-Object) -join ',')) {
+            Add-Failure 'MANIFEST_CURRENT_REQUIREMENT_SET_MISMATCH' 'catalog requirements and current manifest G rows differ'
+        }
+        foreach ($requirement in $requirements) {
+            $id = [string](Get-Prop $requirement 'id')
+            $coverage = [string](Get-Prop $requirement 'coverage')
+            $status = [string](Get-Prop $requirement 'manifestStatus')
+            if (-not $currentRows.ContainsKey($id)) {
+                Add-Failure 'MANIFEST_CURRENT_ROW_MISSING' $id
+                continue
+            }
+            $row = $currentRows[$id]
+            if ([string]$row.Coverage -cne $coverage) {
+                Add-Failure 'MANIFEST_COVERAGE_MISMATCH' ("{0}: catalog coverage '{1}', current manifest '{2}'" -f $id, $coverage, $row.Coverage)
+            }
+            if ([string]$row.Status -cne $status) {
+                Add-Failure 'MANIFEST_CURRENT_STATUS_MISMATCH' ("{0}: catalog status '{1}', current manifest '{2}'" -f $id, $status, $row.Status)
+            }
+            if ($id -eq 'G-049' -and [string]$row.Coverage -cne 'partial') {
+                Add-Failure 'MANIFEST_G049_COVERAGE_MUST_BE_PARTIAL' ("G-049 current manifest coverage '{0}'" -f $row.Coverage)
+            }
         }
     }
 }
