@@ -4,6 +4,7 @@ using System.Linq;
 using System.Text.Json;
 using Mahjong.Domain;
 using Mahjong.Domain.Cheat;
+using Mahjong.Domain.Rules;
 using Xunit;
 
 namespace Mahjong.Ai.Tests
@@ -137,11 +138,14 @@ namespace Mahjong.Ai.Tests
             Assert.Equal(submission.Key.DecisionId, accepted.DecisionId);
             Assert.Equal(intent.DecisionKey, submission.Key);
 
-            // Build the C# opening state from exported inputs only: observation identity,
-            // seats, scores, dealer/wind/round, hand identities, wall count and the V4 deal
-            // constants (53-tile standard deal offset, 14 dead-wall slots, 13 closed tiles for
-            // a non-acting seat; V4 TestTableBuilder target rule).
-            (RoundStateMachine round, CheatLedger ledger) = BuildInitialRound(observation);
+            // Build the C# opening state by replaying the real V4 exporter constructor:
+            // TestTableBuilder.create reserves the exported hand, then wallPrefix
+            // [SOU9=68, WIND2=112], fills seats 0..3 in order to 14/13, takes 14 dead-wall
+            // tiles and lets the rest form the live wall. This is source-known input, not a
+            // JSON state oracle.
+            SourceTable table = BuildInitialRound(observation);
+            RoundStateMachine round = table.Round;
+            CheatLedger ledger = table.Ledger;
             Assert.Equal(observation.RoundId, round.RoundId);
             Assert.Equal(0L, round.Version);
             Assert.Equal(136, TilePositionMap.Validate(round.Tiles).AssignedCount);
@@ -151,8 +155,9 @@ namespace Mahjong.Ai.Tests
 
             // V4 only: the turn counter is exported and a discard must not advance it. C# has
             // no such field, so this is checked on the V4 side and declared unrepresentable.
-            Assert.Equal(JsonValueKind.Number, after.GetProperty("turnNumber").ValueKind);
-            Assert.Equal(Int64(before, "turnNumber"), Int64(after, "turnNumber"));
+            int turnBefore = V4TurnNumber(before, "AI-001 beforeState");
+            int turnAfter = V4TurnNumber(after, "AI-001 afterState");
+            Assert.Equal(turnBefore, turnAfter);
 
             // Execute the exact record the arbiter accepted, on a real Domain round.
             Assert.Equal(LegalActionKind.Discard, submission.Action.Kind);
@@ -164,11 +169,28 @@ namespace Mahjong.Ai.Tests
                 observation.MyHandTileIds,
                 round.Tiles.TilesInZone(TileZone.Hand, observation.Seat).ToArray());
 
+            // The response eligibility is derived from the source-reconstructed hands and the
+            // V4 rule predicates, never from the exported after.phase or a synthetic seat.
+            // Seat 2's exact hand is the TestTableBuilder fill order after reserving hands[1]
+            // and wallPrefix [68,112]; this is the constructor output, not a JSON oracle.
+            Assert.Equal(
+                new[] { 18, 19, 21, 22, 23, 25, 26, 27, 29, 30, 31, 33, 34 },
+                table.Hands[2].Select(tile => tile.Value).ToArray());
+            Assert.Equal(3, CountSameType(table.Hands[0], discardedTile));
+            Assert.Equal(0, CountSameType(table.Hands[2], discardedTile));
+            Assert.Equal(0, CountSameType(table.Hands[3], discardedTile));
+            Assert.False(CanChi(table.Hands[2], discardedTile));
+            IReadOnlyList<int> eligibleSeats = DeriveEligibleResponseSeats(table, submission.Key.Seat, discardedTile);
+            Assert.Equal(new[] { 0 }, eligibleSeats.ToArray());
+            Assert.Equal(13, table.Hands[0].Count);
+            Assert.Equal(13, table.Hands[2].Count);
+            Assert.Equal(13, table.Hands[3].Count);
+
             RoundCommand command = RoundCommand.Discard(
                 submission.Key.RoundId,
                 submission.Key.Seat,
                 discardedTile,
-                EligibleSeatsFor(submission.Key.Seat));
+                eligibleSeats);
 
             RoundTransition transition = round.Execute(command);
             Assert.True(transition.IsAccepted, transition.Error?.ToString());
@@ -186,6 +208,7 @@ namespace Mahjong.Ai.Tests
             Assert.Equal(observation.Seat, executed.Window!.FromSeat);
             Assert.Equal(discardedTile, executed.Window.TargetTile);
             Assert.False(executed.Window.IsChankan);
+            Assert.Equal(eligibleSeats.ToArray(), executed.Window.EligibleSeats.ToArray());
             Assert.True(TilePositionMap.Validate(executed.Tiles).IsValid);
             Assert.Equal(136, TilePositionMap.Validate(executed.Tiles).AssignedCount);
 
@@ -239,7 +262,9 @@ namespace Mahjong.Ai.Tests
                 out Dictionary<string, LegalActionOption> actions,
                 out List<string> legalRefs);
 
-            (RoundStateMachine round, CheatLedger ledger) = BuildInitialRound(observation);
+            SourceTable table = BuildInitialRound(observation);
+            RoundStateMachine round = table.Round;
+            CheatLedger ledger = table.Ledger;
             ulong tilesHash = round.Tiles.StateHash;
             ulong sourceFingerprint = round.SourceFingerprint;
             long version = round.Version;
@@ -355,7 +380,7 @@ namespace Mahjong.Ai.Tests
 
                     // Declared-unrepresentable fields are still checked for the V4-side
                     // invariants we can state without a C# oracle.
-                    Assert.Equal(JsonValueKind.Number, state.GetProperty("turnNumber").ValueKind);
+                    V4TurnNumber(state, id + " " + stateName);
                     seatCount += seats.GetArrayLength();
                     stateCount++;
                 }
@@ -410,13 +435,83 @@ namespace Mahjong.Ai.Tests
         }
 
         /// <summary>
-        /// The exported receipt only proves V4 reached RESPONSE_WINDOW, which means at least
-        /// one seat was eligible. The actual eligible set is not exported, so the C# command
-        /// declares one non-discarder seat to exercise the real window path; window membership
-        /// is therefore NOT differentially compared and is recorded as an open gap.
+        /// V4 response eligibility, derived from the source-reconstructed hands and the frozen
+        /// V4 predicates (not from after.phase and not from a hand-picked non-empty list):
+        /// - ron: a structurally complete hand is a necessary condition
+        ///   (HandDecomposer.CanWin). V4 additionally requires a legal yaku and no furiten
+        ///   (LegalActionProvider.kt:168-192); no seat is structurally complete for this
+        ///   fixture, so structural false is a decisive "no ron". If a seat ever were
+        ///   complete, this throws rather than pretending the yaku/furiten port exists.
+        /// - pon: RiichiRuleEngine.canPon (LegalActionProvider.kt:197-201);
+        /// - open kan: RiichiRuleEngine.canOpenKan plus the wall/rinshan/kan guards
+        ///   (LegalActionProvider.kt:204-209);
+        /// - chi: only (discarder+1)%4 and RiichiRuleEngine.canChi
+        ///   (LegalActionProvider.kt:212-217, RiichiRuleEngine.kt:146-...).
+        /// No seat is riichi, so the V4 riichi-call prohibition (LegalActionProvider.kt:195)
+        /// is vacuously satisfied.
         /// </summary>
-        private static IReadOnlyList<int> EligibleSeatsFor(int discarder) =>
-            new[] { (discarder + 1) % 4 };
+        private static IReadOnlyList<int> DeriveEligibleResponseSeats(
+            SourceTable table,
+            int discarder,
+            TileId discard)
+        {
+            var eligible = new List<int>();
+            for (int seat = 0; seat < 4; seat++)
+            {
+                if (seat == discarder)
+                {
+                    continue;
+                }
+
+                IReadOnlyList<TileId> hand = table.Hands[seat];
+                Assert.Equal(13, hand.Count);
+                int copies = CountSameType(hand, discard);
+
+                bool pon = copies >= 2;
+                bool openKan =
+                    copies >= 3 &&
+                    table.Round.Tiles.WallRemaining > 0 &&
+                    table.Round.Tiles.RinshanPointer < 4 &&
+                    table.Round.Tiles.KanCount < 4;
+                bool chi = seat == (discarder + 1) % 4 && CanChi(hand, discard);
+
+                // V4 requires yaku/furiten for a ron. HandDecomposer only proves structural
+                // completeness; a structural win would need the missing yaku/furiten port.
+                if (HandDecomposer.CanWin(hand.Append(discard)))
+                {
+                    throw new Xunit.Sdk.XunitException(
+                        "seat " + seat + " is structurally complete on " + discard +
+                        "; V4 ron eligibility additionally needs yaku/furiten evaluation, which is not ported here. " +
+                        "Declare the BLOCKED range instead of guessing eligibility.");
+                }
+
+                if (pon || openKan || chi)
+                {
+                    eligible.Add(seat);
+                }
+            }
+
+            return eligible;
+        }
+
+        private static bool CanChi(IReadOnlyList<TileId> hand, TileId discard)
+        {
+            if (!discard.IsNumberTile)
+            {
+                return false;
+            }
+
+            bool HasRank(int rank) => hand.Any(tile =>
+                tile.IsNumberTile && tile.Suit == discard.Suit && tile.Rank == rank);
+
+            int rank = discard.Rank;
+            return (rank <= 7 && HasRank(rank + 1) && HasRank(rank + 2)) ||
+                   (rank >= 2 && rank <= 8 && HasRank(rank - 1) && HasRank(rank + 1)) ||
+                   (rank >= 3 && HasRank(rank - 2) && HasRank(rank - 1));
+        }
+
+        private static int CountSameType(IReadOnlyList<TileId> hand, TileId tile) =>
+            hand.Count(candidate => candidate.TypeIndex == tile.TypeIndex);
 
         private static TickResult Tick(
             AiObservation observation,
@@ -462,22 +557,46 @@ namespace Mahjong.Ai.Tests
                 new[] { submission }));
         }
 
+        private sealed class SourceTable
+        {
+            public SourceTable(
+                RoundStateMachine round,
+                CheatLedger ledger,
+                IReadOnlyList<TileId>[] hands,
+                IReadOnlyList<TileId> wallPrefix)
+            {
+                Round = round;
+                Ledger = ledger;
+                Hands = hands;
+                WallPrefix = wallPrefix;
+            }
+
+            public RoundStateMachine Round { get; }
+
+            public CheatLedger Ledger { get; }
+
+            public IReadOnlyList<TileId>[] Hands { get; }
+
+            public IReadOnlyList<TileId> WallPrefix { get; }
+        }
+
         /// <summary>
-        /// Reconstructs the C# opening state from exported AI inputs and frozen V4 deal
-        /// constants only (not from the exported before/after expectations):
-        /// - current seat's 14 closed tiles come from v5Observation.myHandTileIds in order;
-        /// - the other three seats hold 13 closed tiles (V4 TestTableBuilder target rule for a
-        ///   DISCARD decision);
-        /// - 14 dead-wall tiles, none revealed (visibleDoraIndicators is empty);
-        /// - the live wall occupies the standard 53..121 slots with exactly
-        ///   v5Observation.remainingWallCount tiles.
+        /// Reconstructs the V4 opening table by replaying the real exporter constructor
+        /// (V5AiGoldenExporterTest.kt:99-124 + TestTableBuilder.kt:20-76) instead of filling
+        /// the unexported containers from an arbitrary complement:
+        /// 1. TilePool.buildStandardSet() is typeIndex 0..33 x copyIndex 0..3, i.e. ascending
+        ///    physical TileId 0..135;
+        /// 2. TestTableBuilder reserves hands[1] (the exported 14 ids), then wallPrefix
+        ///    [SOU9 copy0 = 68, WIND2 copy0 = 112];
+        /// 3. seats 0..3 are filled in source order to 14 for the DISCARD actor and 13 for the
+        ///    other seats, taking remaining tiles from the front;
+        /// 4. the next 14 tiles become the dead wall and the rest follows wallPrefix in the
+        ///    live wall (V4 array index 0 -> C# absolute slot 53).
         ///
-        /// Identities of the unexported containers (other hands, wall, dead wall) are the
-        /// deterministic ascending complement of the exported hand: they cannot be derived
-        /// from this fixture and no assertion compares them. Only counts, positions and the
-        /// acting seat's physical identities are claimed.
+        /// These identities are source-known inputs, not values read from the expected after
+        /// state and not a claim that the JSON summary contains a full-table oracle.
         /// </summary>
-        private static (RoundStateMachine Round, CheatLedger Ledger) BuildInitialRound(AiObservation observation)
+        private static SourceTable BuildInitialRound(AiObservation observation)
         {
             Assert.Equal(observation.DealerSeat, observation.Seat);
             Assert.Equal(RoundPhase.Discard, observation.Phase);
@@ -487,6 +606,56 @@ namespace Mahjong.Ai.Tests
             Assert.Empty(observation.VisibleDiscards);
             Assert.Empty(observation.VisibleDoraIndicators);
             Assert.Equal(14, observation.MyHandTileIds.Count);
+
+            var remaining = Enumerable.Range(0, TileId.Count)
+                .Select(value => new TileId(value))
+                .ToList();
+
+            void Reserve(TileId tile, string source)
+            {
+                Assert.True(
+                    remaining.Remove(tile),
+                    "source table tile " + tile + " is reserved twice or missing (reservation: " + source + ")");
+            }
+
+            foreach (TileId tile in observation.MyHandTileIds)
+            {
+                Reserve(tile, "hands[1]");
+            }
+
+            // V4 exporter wallPrefix = [Tile(SOU, 9, copy0), Tile(WIND, 2, copy0)].
+            TileId[] wallPrefix = { new TileId(68), new TileId(112) };
+            foreach (TileId tile in wallPrefix)
+            {
+                Reserve(tile, "wallPrefix");
+            }
+
+            var hands = new List<TileId>[4];
+            for (int seat = 0; seat < 4; seat++)
+            {
+                hands[seat] = new List<TileId>();
+            }
+
+            hands[observation.Seat].AddRange(observation.MyHandTileIds);
+            for (int seat = 0; seat < 4; seat++)
+            {
+                int target = seat == observation.Seat ? 14 : 13;
+                while (hands[seat].Count < target)
+                {
+                    hands[seat].Add(remaining[0]);
+                    remaining.RemoveAt(0);
+                }
+
+                Assert.Equal(target, hands[seat].Count);
+            }
+
+            var deadWall = remaining.Take(TilePositionMap.DeadWallSlotCount).ToList();
+            remaining.RemoveRange(0, TilePositionMap.DeadWallSlotCount);
+            var wall = wallPrefix.Concat(remaining).ToList();
+
+            Assert.Equal(observation.RemainingWallCount, wall.Count);
+            Assert.Equal(69, wall.Count);
+            Assert.Equal(new[] { 68, 112 }, wall.Take(2).Select(tile => tile.Value).ToArray());
 
             var used = new bool[TileId.Count];
             var placements = new List<TilePlacement>(TileId.Count);
@@ -498,53 +667,23 @@ namespace Mahjong.Ai.Tests
                 placements.Add(new TilePlacement(tile, position));
             }
 
-            for (int index = 0; index < observation.MyHandTileIds.Count; index++)
-            {
-                Place(observation.MyHandTileIds[index], TilePosition.Hand(observation.Seat, index));
-            }
-
-            int nextUnused = 0;
-            TileId TakeNextUnused()
-            {
-                while (nextUnused < TileId.Count && used[nextUnused])
-                {
-                    nextUnused++;
-                }
-
-                if (nextUnused >= TileId.Count)
-                {
-                    throw new InvalidOperationException("no physical tile left for the reconstructed table");
-                }
-
-                return new TileId(nextUnused);
-            }
-
             for (int seat = 0; seat < 4; seat++)
             {
-                if (seat == observation.Seat)
+                for (int index = 0; index < hands[seat].Count; index++)
                 {
-                    continue;
-                }
-
-                for (int index = 0; index < 13; index++)
-                {
-                    Place(TakeNextUnused(), TilePosition.Hand(seat, index));
+                    Place(hands[seat][index], TilePosition.Hand(seat, index));
                 }
             }
 
-            for (int index = 0; index < TilePositionMap.DeadWallSlotCount; index++)
+            for (int index = 0; index < deadWall.Count; index++)
             {
-                Place(TakeNextUnused(), TilePosition.DeadWall(index));
+                Place(deadWall[index], TilePosition.DeadWall(index));
             }
 
-            int wallCount = observation.RemainingWallCount;
-            Assert.Equal(
-                TilePositionMap.LiveWallSlotCount - TilePositionMap.InitialDealCount,
-                wallCount);
-            for (int index = 0; index < wallCount; index++)
+            for (int index = 0; index < wall.Count; index++)
             {
                 Place(
-                    TakeNextUnused(),
+                    wall[index],
                     TilePosition.Wall(TilePositionMap.InitialDealCount + index));
             }
 
@@ -552,7 +691,7 @@ namespace Mahjong.Ai.Tests
             TilePositionMap map = TilePositionMap.FromPlacements(
                 placements,
                 TilePositionMap.InitialDealCount,
-                TilePositionMap.InitialDealCount + wallCount,
+                TilePositionMap.InitialDealCount + wall.Count,
                 0,
                 doraIndicators: Array.Empty<TileId>());
             Assert.True(TilePositionMap.Validate(map).IsValid);
@@ -575,7 +714,14 @@ namespace Mahjong.Ai.Tests
                 initialPoints: 0,
                 costs: new Dictionary<string, int>(StringComparer.Ordinal)));
             Assert.Equal(new[] { 0, 0, 0, 0 }, ledger.Balances.ToArray());
-            return (round, ledger);
+
+            var handViews = new IReadOnlyList<TileId>[4];
+            for (int seat = 0; seat < 4; seat++)
+            {
+                handViews[seat] = hands[seat];
+            }
+
+            return new SourceTable(round, ledger, handViews, wallPrefix);
         }
 
         private static RoundProjection Project(RoundStateMachine round, CheatLedger ledger)
@@ -691,6 +837,30 @@ namespace Mahjong.Ai.Tests
         private static int Int(JsonElement element, string name) => element.GetProperty(name).GetInt32();
 
         private static long Int64(JsonElement element, string name) => element.GetProperty(name).GetInt64();
+
+        /// <summary>
+        /// `turnNumber` has no C# round-state port, but the V4 value is still a Kotlin Int.
+        /// Number-kind alone is not enough: 12.5 and 1e30 are JSON numbers but not V4 Ints.
+        /// There is deliberately no fallback to a default or truncated value.
+        /// </summary>
+        private static int V4TurnNumber(JsonElement state, string context)
+        {
+            JsonElement value = state.GetProperty("turnNumber");
+            Assert.Equal(JsonValueKind.Number, value.ValueKind);
+            if (!value.TryGetInt32(out int turn))
+            {
+                throw new Xunit.Sdk.XunitException(
+                    context + ".turnNumber must be a V4 Int32, raw=" + value.GetRawText());
+            }
+
+            if (turn < 0)
+            {
+                throw new Xunit.Sdk.XunitException(
+                    context + ".turnNumber must be non-negative, was " + turn);
+            }
+
+            return turn;
+        }
 
         private static bool Bool(JsonElement element, string name) => element.GetProperty(name).GetBoolean();
 

@@ -281,6 +281,16 @@ $cases = @(
     @{ Id = 'N36-wrong-type-score'; Expect = 'fail'; Path = 'cases[AI-001].v4.afterState.scores[1] = string'; Apply = { param($r) $c = $r.cases | Where-Object { $_.id -eq 'AI-001-legal-intent-before-deadline' }; $c.v4.afterState.scores[1] = '25000' } }
     @{ Id = 'N37-extra-state-field'; Expect = 'fail'; Path = 'cases[AI-001].v4.afterState.unexpectedField (added)'; Apply = { param($r) $c = $r.cases | Where-Object { $_.id -eq 'AI-001-legal-intent-before-deadline' }; $c.v4.afterState | Add-Member -NotePropertyName unexpectedField -NotePropertyValue 1 } }
     @{ Id = 'N38-fixture-identity-sentinel'; Expect = 'fail'; Path = 'v4Commit (proves the TEMP copy is the file under test)'; Apply = { param($r) $r.v4Commit = '0000000000000000000000000000000000000000' } }
+
+    # D-R1-01: eligibility/reservation inputs must come from the source-reconstructed table,
+    # not from a synthetic seat or an arbitrary complement.
+    @{ Id = 'N39-eligibility-input-break'; Expect = 'fail'; Path = 'v5Observation.myHandTileIds reserve Man1 copies 1-3 so source seat0 loses the Pon/OpenKan triple'; Apply = { param($r) $h = $r.v5Observation.myHandTileIds; $h[1] = 1; $h[2] = 2; $h[3] = 3 } }
+    @{ Id = 'N40-wallprefix-reservation-conflict'; Expect = 'fail'; Path = 'v5Observation.myHandTileIds[13] = 68 (SOU9 copy0 is reserved by wallPrefix, so the source table would double-reserve it)'; Apply = { param($r) $r.v5Observation.myHandTileIds[13] = 68 } }
+
+    # D-R1-02: strict symbolic enum and V4 Int turn validation.
+    @{ Id = 'N41-unknown-numeric-action-enum'; Expect = 'fail'; Path = 'v5Observation.legalActions[1].kind = "254" (undefined byte-range enum member)'; Apply = { param($r) $r.v5Observation.legalActions[1].kind = '254' } }
+    @{ Id = 'N42-rejected-fractional-turn'; Expect = 'fail'; Path = 'cases[AI-002].v4.beforeState.turnNumber + afterState.turnNumber = 12.5'; Apply = { param($r) $c = $r.cases | Where-Object { $_.id -eq 'AI-002-old-round' }; $c.v4.beforeState.turnNumber = 12.5; $c.v4.afterState.turnNumber = 12.5 } }
+    @{ Id = 'N43-rejected-out-of-int64-turn'; Expect = 'fail'; Path = 'cases[AI-002].v4.beforeState.turnNumber + afterState.turnNumber = 1e30'; Apply = { param($r) $c = $r.cases | Where-Object { $_.id -eq 'AI-002-old-round' }; $c.v4.beforeState.turnNumber = 1e30; $c.v4.afterState.turnNumber = 1e30 } }
 )
 
 $baselineTemplate = Join-Path $EvidenceRoot 'ai-v1.baseline.json'
