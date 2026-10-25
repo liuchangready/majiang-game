@@ -9,6 +9,40 @@ using Xunit;
 namespace Mahjong.Ai.Tests
 {
     /// <summary>
+    /// Single read-only loader shared by every ai-v1 golden test. The optional
+    /// MAHJONG_AI_GOLDEN override exists so the probe script can point the same compiled tests
+    /// at an isolated TEMP copy instead of mutating the real fixture or the build output.
+    /// A set-but-missing path is a hard failure, never a silent fallback.
+    /// </summary>
+    internal static class AiGoldenFixture
+    {
+        public const string ExpectedSchema = "v5-ai-golden-v1";
+        public const string OverrideVariable = "MAHJONG_AI_GOLDEN";
+
+        public static string ResolvePath()
+        {
+            string? overridden = Environment.GetEnvironmentVariable(OverrideVariable);
+            if (!string.IsNullOrWhiteSpace(overridden))
+            {
+                string fullPath = Path.GetFullPath(overridden!);
+                Assert.True(
+                    File.Exists(fullPath),
+                    OverrideVariable + " points to a missing fixture: " + fullPath);
+                return fullPath;
+            }
+
+            return Path.Combine(AppContext.BaseDirectory, "ai-v1.json");
+        }
+
+        public static JsonDocument Load()
+        {
+            string path = ResolvePath();
+            Assert.True(File.Exists(path), "Missing golden fixture: " + path);
+            return JsonDocument.Parse(File.ReadAllText(path));
+        }
+    }
+
+    /// <summary>
     /// Reads tests/v5-golden/ai-v1.json, which was produced by the V4 test-only exporter
     /// (engine/src/test/kotlin/com/majiang/state/V5AiGoldenExporterTest.kt) from actual
     /// TableAuthority.submitAiChoice calls.
@@ -23,10 +57,8 @@ namespace Mahjong.Ai.Tests
     /// </summary>
     public class AiReplayGoldenTests
     {
-        private const string ExpectedSchema = "v5-ai-golden-v1";
+        private const string ExpectedSchema = AiGoldenFixture.ExpectedSchema;
         private const string BaselineCommit = "205506f07f6a1ccfef6b32cf97390431e3349f8d";
-
-        private static string FixturePath => Path.Combine(AppContext.BaseDirectory, "ai-v1.json");
 
         [Fact]
         public void GoldenFixtureHasProvenanceAndTheExpectedV4Cases()
@@ -262,13 +294,9 @@ namespace Mahjong.Ai.Tests
             Assert.Same(intent.Action, tick.AcceptedAi[0].Action);
         }
 
-        private static JsonDocument LoadFixture()
-        {
-            Assert.True(File.Exists(FixturePath), "Missing golden fixture: " + FixturePath);
-            return JsonDocument.Parse(File.ReadAllText(FixturePath));
-        }
+        private static JsonDocument LoadFixture() => AiGoldenFixture.Load();
 
-        private static AiObservation BuildObservation(
+        internal static AiObservation BuildObservation(
             JsonElement observation,
             out Dictionary<string, LegalActionOption> actions,
             out List<string> legalActionRefs)
@@ -365,7 +393,7 @@ namespace Mahjong.Ai.Tests
             return discards;
         }
 
-        private static CommandIntent BuildIntent(
+        internal static CommandIntent BuildIntent(
             JsonElement root,
             AiObservation observation,
             IReadOnlyDictionary<string, LegalActionOption> actions,
@@ -393,7 +421,7 @@ namespace Mahjong.Ai.Tests
                 checked((int)Int64(recorded, "algorithmVersion")));
         }
 
-        private static AiAuthoritySnapshot BuildAuthority(
+        internal static AiAuthoritySnapshot BuildAuthority(
             JsonElement caseElement,
             AiObservation observation,
             IReadOnlyDictionary<string, LegalActionOption> actions,
@@ -643,7 +671,7 @@ namespace Mahjong.Ai.Tests
             state.GetProperty("seats").EnumerateArray()
                 .Single(element => element.GetProperty("seat").GetInt32() == seat);
 
-        private static bool DeepEquals(JsonElement left, JsonElement right)
+        internal static bool DeepEquals(JsonElement left, JsonElement right)
         {
             if (left.ValueKind != right.ValueKind)
             {
