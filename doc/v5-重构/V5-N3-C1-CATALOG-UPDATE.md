@@ -14,9 +14,10 @@
 - 旧五组 fixture 的字节、SHA-256、内嵌 `v4Commit`、`caseTotal` 和原报告不变；`205506f07f6a1ccfef6b32cf97390431e3349f8d` 仍是历史 fixture freeze。当前 catalog 索引在 `004c247...` 刷新，这是索引更新，不是 fixture 重新导出。
 - 净改动仅 5 个约定文件（见 §2）。没有改生产/测试 C#、V4 Kotlin、fixture JSON、exporter、任务书、已接受报告、统一 verifier/manifest、Unity/Resources/Burst。
 - catalog verifier 实测 PASS：`fixtures=6 requirements=73 cases=10389 random=10000 facts=45 coverage=full:17/partial:21/none:32/v5-only:3`，native exit 0。
-- 返修后定向自测 **99 例**（1 正常基线 + 98 负例，含原 76 负例 + 前轮 15 个 AI/Δ29/G-049 负例 + 本轮 7 个 caller 反例）实跑结果见 §11；AI 定向 `AiReplayGoldenTests` 3/0/0、`AiReplayStateGoldenTests` 3/0/0，native exit 0。
+- 返修后定向自测 **103 例**（1 正常基线 + 102 负例，含原 76 负例 + 前轮 15 个 AI/Δ29/G-049 负例 + D-R1 的 7 个反例 + D-R2 的 4 个重复 ID 反例）实跑结果见 §11；AI 定向 `AiReplayGoldenTests` 3/0/0、`AiReplayStateGoldenTests` 3/0/0，native exit 0。
 - 不宣告 N3/G1/G5，不写 `complete.flag`，不覆盖主 checkout 用户 `CLAUDE.md`/`PROMPTS.md`，不 push、不建 PR、不触发 CI、不部署、不改环境/信任。
 - 2026-10-26 caller 首轮独立复核提出 3 条 MAJOR（D-R1-01 AI 字节 freeze 误指 source-only 提交、D-R1-02 manifest 当前表未核对、D-R1-03 锚点仅语法检查）；均已在原 5 文件内修复并加入 7 个负例，见 §13。
+- 第二轮复核新增 D-R2-01：当前 §8.5 重复 ID 静默 first-wins，partial 后紧跟 full 仍 PASS。已在原 5 文件内修复，并加入 4 个重复 ID 负例（#37-#40），见 §13/§13.1。
 
 ---
 
@@ -45,7 +46,7 @@
 | 1 | `doc/v5-重构/V5-0-GOLDEN-MANIFEST.md` | 修改 | 历史五组 0.2 保留；新增 0.3 N3-C1 增量；更新 8.3.2/8.4；G-049 行改 partial |
 | 2 | `tests/v5-golden/catalog-v1.json` | 修改 | 新增 ai-v1 fixture/groupShapes；baseline/denominators；immutableFixturePins/sourcePins/caseAccounting；G-049 partial |
 | 3 | `tools/verify-v5-golden-catalog.ps1` | 修改 | 支持 ai schema、source/immutable pins、AI bindings、case accounting、G-049 partial guard |
-| 4 | `tools/tests/VerifyV5GoldenCatalog.Tests.ps1` | 修改 | 保留原负例；AI TEMP 副本；前轮 15 个 + 本轮 7 个 caller 反例，共 22 个新增负例 |
+| 4 | `tools/tests/VerifyV5GoldenCatalog.Tests.ps1` | 修改 | 保留原负例；AI TEMP 副本；前轮 15 个 + D-R1 的 7 个 + D-R2 的 4 个，共 26 个新增负例 |
 | 5 | `doc/v5-重构/V5-N3-C1-CATALOG-UPDATE.md` | 新增 | 本文 |
 
 明确未改：任何生产/测试 C#、`engine/src/main` V4 Kotlin、6 份 fixture JSON（含 ai-v1）、`V5AiGoldenExporterTest.kt`、任务书、已接受报告、`tools/verify-v5.ps1`、统一 manifest、Unity 环境/Resources/Burst、`CLAUDE.md`、`PROMPTS.md`、CI/环境/信任配置。
@@ -255,7 +256,7 @@ $audit = 6 + 10238 + $roundAudit + $cheatAudit + 32
 5. immutable pins：catalog 内 6 条 + verifier 内 hardcoded accepted pin；ai 的 accepted byte-freeze 独立为 `09d2a4f`；任一 fixture 字节/来源/冻结提交变化即 `IMMUTABLE_FIXTURE_PIN_MISMATCH`、`IMMUTABLE_SOURCE_PIN_MISMATCH` 或 `AI_FIXTURE_FREEZE_COMMIT_MISMATCH`。
 6. `acceptedBindings`：路径存在、Fact 数等于真实 `[Fact]` 数、`class` 必须与文件名/源码 `class` 声明一致、`commit` 必须等于已接受身份（state 绑定 `7da818d...`）且 `includedCommits` 含 `6d16812...`/`7da818d...`、报告存在；零 commit 或假类名即 fail。
 7. `bindings`：jsonPath 不仅以 `$` 开头，还必须在 ai fixture 中真实存在（`AI_BINDING_PATH_MISSING`）；bound consumerPath 限定真实 AI 测试类，行号范围必须含对应字段读点 token（`AI_BINDING_ANCHOR_EVIDENCE_MISSING`）；UNBOUND 必须有 `GAP:N3-*` owner；四个必需 GAP 字段必须显式登记。
-8. manifest 双表交叉：历史表状态保留原检查；当前 §8.5 的 73 行 ID、`coverage`、`manifestStatus` 必须与 catalog 一致，manifest-only full/漂移即 `MANIFEST_COVERAGE_MISMATCH` / `MANIFEST_CURRENT_STATUS_MISMATCH`。
+8. manifest 双表交叉：历史表状态保留原检查；当前 §8.5 必须有 73 条物理行且 ID 唯一；重复 ID 在比较/丢弃前即 `MANIFEST_CURRENT_DUPLICATE_ID`；73 行 ID、`coverage`、`manifestStatus` 必须与 catalog 一致，manifest-only full/漂移即 `MANIFEST_COVERAGE_MISMATCH` / `MANIFEST_CURRENT_STATUS_MISMATCH`。
 9. `caseAccounting`：catalog/six、five/audit replay、delta 29、breakdown round +23 / cheat +6、aiIncrement 7、notExecutionCases 不计 case、random 子集不重加；不一致即 `CASE_ACCOUNTING_MISMATCH`。
 10. G-049 guard：`coverage` 必须 `partial`、`manifestStatus` 必须 `pending-v4-replay`、`partialScope.fullClaim=false`、`closed=false`、`remainingGaps>=3`；任何 full/closed 声明即 fail。
 
@@ -265,7 +266,7 @@ $audit = 6 + 10238 + $roundAudit + $cheatAudit + 32
 
 ## 10. 自测扩展（TEMP 副本，真实 fixture 不动）
 
-`tools/tests/VerifyV5GoldenCatalog.Tests.ps1` 现在复制 6 份 fixture、6 个 exporter、6 个 catalog C# reader、`AiReplayStateGoldenTests` 和 manifest 到独占 TEMP；基线 native 0；每个负例 native 1 且必须出现预期错误码。原 76 个负例原样保留；前轮新增 15 个，本轮按 caller D-R1 反例新增 7 个（总计 22 个新增、98 个负例）：
+`tools/tests/VerifyV5GoldenCatalog.Tests.ps1` 现在复制 6 份 fixture、6 个 exporter、6 个 catalog C# reader、`AiReplayStateGoldenTests` 和 manifest 到独占 TEMP；基线 native 0；每个负例 native 1 且必须出现预期错误码。原 76 个负例原样保留；前轮新增 15 个，D-R1 新增 7 个，D-R2 新增 4 个（总计 26 个新增、102 个负例）：
 
 | # | 负例 | 注入 | 预期错误码 |
 |---:|---|---|---|
@@ -291,8 +292,12 @@ $audit = 6 + 10238 + $roundAudit + $cheatAudit + 32
 | 34 | `ai-accepted-fake-class` | acceptedBindings class=NonexistentTests | `AI_ACCEPTED_BINDING_CLASS_MISMATCH` |
 | 35 | `ai-anchor-line-one` | decisionClock consumerLines=1（using System，无读点） | `AI_BINDING_ANCHOR_EVIDENCE_MISSING` |
 | 36 | `ai-binding-nonexistent-path` | binding jsonPath=`$.notARealFixtureField` | `AI_BINDING_PATH_MISSING` |
+| 37 | `manifest-duplicate-identical` | 当前 G-049 partial 行后原样重复一行 | `MANIFEST_CURRENT_DUPLICATE_ID` |
+| 38 | `manifest-duplicate-g049-partial-full` | G-049 partial 后紧跟同 ID `full` | `MANIFEST_CURRENT_DUPLICATE_ID` |
+| 39 | `manifest-duplicate-g049-full-partial` | G-049 `full` 后紧跟同 ID `partial` | `MANIFEST_CURRENT_DUPLICATE_ID` |
+| 40 | `manifest-duplicate-non-g049` | 当前 G-048 行原样重复 | `MANIFEST_CURRENT_DUPLICATE_ID` |
 
-实跑汇总：**SELFTEST PASS cases=99 positives=1 negatives=98；real-fixtures-unchanged=true，native exit 0**。日志与 SHA 见 §11.2；真实 6 份 fixture 的 before/after SHA 相同。
+实跑汇总：**SELFTEST PASS cases=103 positives=1 negatives=102；real-fixtures-unchanged=true，native exit 0**。日志与 SHA 见 §11.2；真实 6 份 fixture 的 before/after SHA 相同。
 
 ---
 
@@ -310,7 +315,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/verify-v5-golden-c
 PASS catalog=D:\majiang-wt\n3-c1-index-20261025\tests\v5-golden\catalog-v1.json sha256=236C8E0EE9B7FFB86187CB7D3AB650C9EA13FC0A4C47675E044B64BB0C93116D fixtures=6 requirements=73 cases=10389 random=10000 facts=45 coverage=full:17/partial:21/none:32/v5-only:3
 ```
 
-日志：`C:/Users/sncdc/AppData/Local/Temp/n3c1-r2-catalog-verify.log`，522 bytes，SHA256 `8CB83E2C66DD8F9B64DD8539656994DA3BFB54CDDD04E2C1C96C2952018F4012`。
+日志：`C:/Users/sncdc/AppData/Local/Temp/n3c1-r3-final-verify.log`，522 bytes，SHA256 `8CB83E2C66DD8F9B64DD8539656994DA3BFB54CDDD04E2C1C96C2952018F4012`。
 
 ### 11.2 自测
 
@@ -318,8 +323,8 @@ PASS catalog=D:\majiang-wt\n3-c1-index-20261025\tests\v5-golden\catalog-v1.json 
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/tests/VerifyV5GoldenCatalog.Tests.ps1 -LogPath <TEMP>/n3c1-selftest.log
 ```
 
-- 命令：`powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/tests/VerifyV5GoldenCatalog.Tests.ps1 -LogPath C:/Users/sncdc/AppData/Local/Temp/n3c1-r2-selftest.log`；native exit **0**；stdout 末行 `SELFTEST PASS cases=99 positives=1 negatives=98`、`real-fixtures-unchanged=true`；日志 59,660 bytes，SHA256 `36F5C556EB48F3EEE939418DCBBA3B6990B28157DBA0A8DD9222BFA25E1C1451`；7 个 D-R1 负例（#30-#36）均 `exit=1` 且命中预期码。
-- 原 76 负例全部保留（name/error-code 对照 76/76），前轮 15 个负例保留；新增 7 个 caller 反例的预期码见 §10。
+- 命令：`powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/tests/VerifyV5GoldenCatalog.Tests.ps1 -LogPath C:/Users/sncdc/AppData/Local/Temp/n3c1-r3-selftest.log`；native exit **0**；stdout 末行 `SELFTEST PASS cases=103 positives=1 negatives=102`、`real-fixtures-unchanged=true`；日志 60,957 bytes，SHA256 `C63E70B548CB6CDF279B4ED320F51D831F47A7E3C71FA94369B3AF5D2D92CA93`；D-R1 的 7 个负例（#30-#36）与 D-R2 的 4 个重复 ID 负例（#37-#40）均 `exit=1` 且命中预期码。
+- 原 98 负例全部保留（name/error-code 对照 98/98），其中原 76 负例 76/76；新增 4 个重复 ID 反例的预期码见 §10。
 
 ### 11.3 AI 定向测试
 
@@ -344,8 +349,8 @@ D:/Unity/dotnet/dotnet.exe dotnet/tests/Mahjong.Ai.Tests/bin/Release/net8.0/Mahj
 | `tests/v5-golden/ai-v1.json` | 51,271 | `E898CDB6E1034D1DC8229E807A919E7F64E03062D3E9AD64DED36317402375C9` | `4ECE5EBA95851FF2BBCED3A109A16DFE1E308494D7557583EF192BC6BECE52A2` |
 | `tests/v5-golden/catalog-v1.json` | 586,645 | `236C8E0EE9B7FFB86187CB7D3AB650C9EA13FC0A4C47675E044B64BB0C93116D` | `FB8A64FFA3F09E9C60D461B6704C084196B6092F58AB5D766F55000EB8E5D20F` |
 | `doc/v5-重构/V5-0-GOLDEN-MANIFEST.md` | 77,396 | `6CA8A5521C73A0315F17B9162E9D17CD0A932D3F0E618FD56AD390C02423C057` | `4D8CC1C1FA5BA73A20AA0735C7E2206E5A0D161790B3AC9CC4285C234A5E9BA0` |
-| `tools/verify-v5-golden-catalog.ps1` | 93,890 | `D3B37728312492E950B234E37C960F73F94CBA1D3F8C859A3D661653DFAF81E6` | `EF73B068C5AC09943EDF744D5A0AE8931052B106EE0FDDAD2EB8B03B757194EA` |
-| `tools/tests/VerifyV5GoldenCatalog.Tests.ps1` | 60,465 | `6DD52B3D70FF1C89CA6C33B01CB945D00B285727D3379BC7A571A667BAB4AD7C` | `EDC8F7DA00F69CC8BA70126CCD054B50CC093755B86B8505D25872B51A7795BE` |
+| `tools/verify-v5-golden-catalog.ps1` | 94,160 | `9F0D2A823C87D8F87B4D2B26C7479076F41BB21120647562CCFFF5243FF31DFB` | `442542DAA9B5591D917AC8210F065EB46C11A825B1CBA57D0D156B3A429942CD` |
+| `tools/tests/VerifyV5GoldenCatalog.Tests.ps1` | 63,209 | `5EB98735DD6D21BF95742B0948DD3DFDFEA05A81CB427D601585A5A668D6C294` | `0CDC98233467DDF8D5DC53B2555C227C0D0D80C371F1468FEB159CFADAE7FCE3` |
 | `doc/v5-重构/V5-N3-C1-CATALOG-UPDATE.md` | 自指，不在文内嵌自身 SHA | 自指，不在文内嵌自身 SHA | 自指，不在文内嵌自身 SHA（commit 后以 `git show HEAD:doc/...` 复算） |
 
 ### 11.5 编码与 diff
@@ -361,7 +366,7 @@ D:/Unity/dotnet/dotnet.exe dotnet/tests/Mahjong.Ai.Tests/bin/Release/net8.0/Mahj
 | 项 | 状态 | 证据 |
 |---|---|---|
 | catalog verifier 正例 | **PASS** (exit 0) | 6/73/10389/10000/45；§11.1 |
-| 自测正例 + 98 负例 | **PASS** (见 §11.2) | 每负例 exit1 + 预期码；真实 fixture 不变 |
+| 自测正例 + 102 负例 | **PASS** (见 §11.2) | 每负例 exit1 + 预期码；真实 fixture 不变 |
 | AI 定向 `AiReplayGoldenTests` | **PASS** 3/3 | exit 0 |
 | AI 定向 `AiReplayStateGoldenTests` | **PASS** 3/3 | exit 0 |
 | AI Release build | **PASS** 0 warn/0 err | exit 0 |
@@ -385,20 +390,24 @@ D:/Unity/dotnet/dotnet.exe dotnet/tests/Mahjong.Ai.Tests/bin/Release/net8.0/Mahj
 | N3C1-F05 | INFO | `AiReplayStateGoldenTests` | 把 3 个 accepted state Facts 与 catalog 45 Facts 混加 | 实际 45 = 42 Domain + 3 AiReplayGoldenTests；state 类 3 Facts 是独立证据。期望分列。 | `53B45095...`；`CODEX-V5-N3-AI-R2-ACCEPTANCE.md` | §5/§7；catalog `acceptedBindings` 明确 `not in catalog Fact denominator` |
 | N3C1-F06 | MAJOR（范围） | `AiReplayGoldenTests`/fixture | 试图把 G-049 标 full 或“全部 AI 移植” | 实际 mappingBasis/mappingLimits/event-text/action-text 无 C# 值级读取，且无全 case C# 后态 vs V4 全树差分；AI host/cheat intent 未导出。期望 partial。 | `E898...` fixture；`24F911...` consumer；`V5-N3-AI-REPLAY-BINDING.md` §5 | G-049 `partialScope` + verifier `G049_*`；不 full |
 | N3C1-F07 | INFO | ai fixture top fields | 读 `generatedAtHead=b49911c` 以为 fixture 等于 b49911c 提交树 | 实际 fixture 在 b49911c 生成时含 test-only dirty 路径，随后 09d2a4f 提交；`v4ProductionSourceDirty=false`。期望按“生成时 HEAD + dirty 声明”读。 | `E898...`；blob `032d79e...`；09d2a4f stat | §3；不修改 fixture |
-| N3C1-F08 | MINOR（测试装置，已修复） | `tools/tests/VerifyV5GoldenCatalog.Tests.ps1` 的 `New-BaseTree` | 首次全量自测正例 exit 1，报 `AI_ACCEPTED_BINDING_REPORT_MISSING` | 实际 TEMP 树只复制了 manifest，未复制已接受的 `V5-N3-AI-REPLAY-BINDING.md`；verifier 按设计拒绝缺失报告。期望 TEMP 树也复制该只读报告。 | 首轮日志 `A99D38...`；91/91 负例 PASS，仅正例失败 | 已复制报告；本轮返修后 `cases=99 positives=1 negatives=98`、native 0，日志 `36F5C556...`（§11.2） |
+| N3C1-F08 | MINOR（测试装置，已修复） | `tools/tests/VerifyV5GoldenCatalog.Tests.ps1` 的 `New-BaseTree` | 首次全量自测正例 exit 1，报 `AI_ACCEPTED_BINDING_REPORT_MISSING` | 实际 TEMP 树只复制了 manifest，未复制已接受的 `V5-N3-AI-REPLAY-BINDING.md`；verifier 按设计拒绝缺失报告。期望 TEMP 树也复制该只读报告。 | 首轮日志 `A99D38...`；91/91 负例 PASS，仅正例失败 | 已复制报告；本轮返修后 `cases=103 positives=1 negatives=102`、native 0，日志 `C63E70B5...`（§11.2） |
 | D-R1-01 | MAJOR（已修复） | catalog notice/baseline/immutable pin/ai entry；verifier accepted pin 与 freeze 检查；manifest §0.3；本文 §3/§6.1 | `git cat-file -e 205506f:tests/v5-golden/ai-v1.json`；`git ls-tree 205506f -- ...`；对比 09d2a4f/004c247 | 实际 205506f native128、0 条；09d2a4f/004c247 各 1 条 blob `032d79e...`。期望 205506f 只作 AI source pin/旧五组 freeze，AI byte-freeze=09d2a4f。 | caller `REVIEW.md` `91ED48...`；`provenance.log` `A067F4AA...`；本轮 `4257B913...` | 三 pin 分离；ai immutable pin=09d2a4f、relation=precedes；负例 `ai-freeze-to-source-pin` 期望 `AI_FIXTURE_FREEZE_COMMIT_MISMATCH` |
 | D-R1-02 | MAJOR（已修复） | verifier manifest 交叉检查（原遇 §8.5 即 break） | 仅改独立 manifest 当前 G-049 coverage partial→full，catalog 保持 partial | 实际原 native0/PASS；期望 native1。已新增当前 §8.5 73 行 ID/coverage/status 双向核对。 | caller `probes-summary.json` `FE41BD94...`；`review-probes.ps1` `44B81A64...` | 负例 `manifest-g049-full`、`manifest-coverage-drift` 均期望 `MANIFEST_COVERAGE_MISMATCH` |
 | D-R1-03 | MAJOR（已修复） | verifier Test-LineRangeAnchor/Test-AiBindings/Test-AcceptedBindings | (a) accepted commit=40 个 0；(b) accepted class=NonexistentTests；(c) decisionClock lines=1；(d) jsonPath=`$.notARealFixtureField` | 实际原 4 项均 native0/PASS；期望各 native1+具体 code。已校验 accepted 身份/真实 class、binding path 存在、行锚含字段读点 token、consumerPath 限定真实 AI 类。 | 同一 `probes-summary.json`/`review-probes.ps1` | 4 负例 `ai-accepted-commit-zero`/`ai-accepted-fake-class`/`ai-anchor-line-one`/`ai-binding-nonexistent-path`，分别期望 `AI_ACCEPTED_BINDING_COMMIT_MISMATCH`/`AI_ACCEPTED_BINDING_CLASS_MISMATCH`/`AI_BINDING_ANCHOR_EVIDENCE_MISSING`/`AI_BINDING_PATH_MISSING` |
+| D-R2-01 | MAJOR（已修复） | verifier 当前 §8.5 解析（原 `ContainsKey` first-wins，行数按 distinct keys） | caller `repro-duplicate-manifest.ps1`：保留 G-049 partial，紧跟同 ID full | 实际原 native0/PASS，74 物理行只算 73 distinct ID；期望 native1。已改为重复 ID 在写入前 `MANIFEST_CURRENT_DUPLICATE_ID`，并核对 73 条物理行，不做 last-wins/first-wins。 | caller `REVIEW.md` `A39C53...`；`manifest-duplicate-g049.md` `57C209...`；`manifest-duplicate-g049.log` `8CB83E...`；`repro-duplicate-manifest.ps1` `3468E7...` | 4 负例 #37-#40：相同重复行、G-049 partial→full、full→partial、非 G-049 重复；均期望 `MANIFEST_CURRENT_DUPLICATE_ID` |
 
-无 BLOCKER。3 条 caller MAJOR 均在本轮 5 文件范围内修复；N3/G1/G5 未关闭属于范围边界，不是本目录增量缺陷。
+无 BLOCKER。D-R1-01/02/03 与 D-R2-01 均在原 5 文件范围内修复；N3/G1/G5 未关闭属于范围边界，不是本目录增量缺陷。
 
-### 13.1 D-R1 修复映射
+### 13.1 D-R1/D-R2 修复映射
 
 | caller ID | 直接修复 | 负例 | 验收断言 |
 |---|---|---|---|
 | D-R1-01 | catalog 增 `baseline.aiFixtureByteFreezeCommit`、`sourcePins.aiFixtureByteFreezeCommit`，ai 条目/freeze pin 改 `09d2a4f`、relation 改 precedes；verifier 加 `$script:AiFixtureByteFreezeCommit`、accepted pin 改 `09d2a4f`、ai 专用 freeze 检查；manifest §0.3/本文 §3/§6.1 同步 | `ai-freeze-to-source-pin` (#30) | 基线 native0；负例 native1 且 `AI_FIXTURE_FREEZE_COMMIT_MISMATCH`；真实 Git `cat-file`/`ls-tree` 已写 §3 |
 | D-R1-02 | verifier 在历史表检查后解析当前 §8.5，核对 73 行 ID、coverage、status，G-049 不得 full | `manifest-g049-full` (#31)、`manifest-coverage-drift` (#32) | 基线 native0；仅改 manifest 的负例 native1 且 `MANIFEST_COVERAGE_MISMATCH` |
 | D-R1-03 | verifier 加 accepted identity（`7da818d`/included）、真实 class 声明、binding jsonPath 存在、行锚读点 token、consumerPath 白名单；catalog C# class 也做声明校验 | `ai-accepted-commit-zero` (#33)、`ai-accepted-fake-class` (#34)、`ai-anchor-line-one` (#35)、`ai-binding-nonexistent-path` (#36) | 基线 native0；四负例各自 native1 且命中对应 `AI_ACCEPTED_BINDING_COMMIT_MISMATCH`/`AI_ACCEPTED_BINDING_CLASS_MISMATCH`/`AI_BINDING_ANCHOR_EVIDENCE_MISSING`/`AI_BINDING_PATH_MISSING` |
+| D-R2-01 | verifier 当前 §8.5 在写入/丢弃前拒绝重复 ID，并以物理行数 73 校验；历史表检查不变 | `manifest-duplicate-identical` (#37)、`manifest-duplicate-g049-partial-full` (#38)、`manifest-duplicate-g049-full-partial` (#39)、`manifest-duplicate-non-g049` (#40) | 基线 native0；四负例均 native1 且 `MANIFEST_CURRENT_DUPLICATE_ID`；caller 74 行反例由 native0 变 native1 |
+
+D-R2-01 的新信息来自 `16722f8` 新增的当前 §8.5 解析路径；`227b328` 不存在该代码（当时遇 §8.5 即 break），因此首轮复核无法发现重复 ID first-wins。
 
 ---
 
