@@ -204,6 +204,49 @@ namespace Mahjong.Domain.Tests
             Assert.True(failures.Count == 0, section + " mismatches (first 20):\n" + string.Join("\n", failures));
         }
 
+        // Binding tests derive mutated samples from the same fixture and must run through the
+        // exact production comparison paths above, not a second copy of the assertions.
+        internal static JsonElement BindingGoldenRoot => Golden.Value.RootElement;
+
+        internal static void CompareSampleForBindingTests(string section, JsonElement sample)
+        {
+            switch (section)
+            {
+                case "winSamples":
+                    CompareWinSample(sample);
+                    break;
+                case "noWinSamples":
+                    CompareNoWinSample(sample);
+                    break;
+                case "fuSamples":
+                    CompareFuSample(sample);
+                    break;
+                case "doraSamples":
+                    CompareDoraSample(sample);
+                    break;
+                case "settlementSamples":
+                    CompareSettlementSample(sample);
+                    break;
+                case "scoreSamples":
+                    CompareScoreSample(sample);
+                    break;
+                case "randomSamples":
+                {
+                    int yakumanCount = 0;
+                    CompareRandomSample(
+                        sample,
+                        new SortedDictionary<string, int>(StringComparer.Ordinal),
+                        ref yakumanCount,
+                        out _,
+                        out _,
+                        out _);
+                    break;
+                }
+                default:
+                    throw new ArgumentOutOfRangeException(nameof(section), section, "unknown scoring golden section");
+            }
+        }
+
         private static void CompareWinSample(JsonElement sample)
         {
             JsonElement input = sample.GetProperty("input");
@@ -214,6 +257,9 @@ namespace Mahjong.Domain.Tests
             int honba = input.GetProperty("honba").GetInt32();
             int sticks = input.GetProperty("riichiSticks").GetInt32();
             JsonElement expected = sample.GetProperty("expected");
+            // The exported status is part of the production contract: a win sample whose
+            // expected status says anything else must fail here instead of being ignored.
+            Assert.Equal("win", expected.GetProperty("status").GetString());
             long expectedHonba = expected.GetProperty("honbaAddition").GetInt64();
             long expectedRiichi = expected.GetProperty("riichiAddition").GetInt64();
 
