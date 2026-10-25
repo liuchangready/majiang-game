@@ -6,7 +6,7 @@
   "generatedByCommand": "$env:V5_VISIBILITY_GOLDEN_EXPORT='1'; .\\gradlew.bat :engine:test --tests \"com.majiang.projection.V5VisibilityGoldenExporterTest\" --rerun-tasks --console=plain",
   "generatedByCommandPosix": "V5_VISIBILITY_GOLDEN_EXPORT=1 ./gradlew :engine:test --tests \"com.majiang.projection.V5VisibilityGoldenExporterTest\" --rerun-tasks --console=plain",
   "extractionStatus": "exported",
-  "v4SourceCommit": "544f9c1a306a135254f0fe6a1dee139e5a30d381",
+  "v4SourceCommit": "e8a9e9adc401becef6d05d4cf5de972e998df976",
   "v5BaselineCommit": "1432d775526de921f2cde3aba283236fc3b8e8c1",
   "v4ProductionTreeClean": true,
   "trackedModifiedFiles": [
@@ -41,8 +41,9 @@
     "meldMapping": "V4 meld list index i -> V5 Meld(seat, i*4 + tileOffset). V4 MeldType/fromPlayer/calledTile -> TableMeldFact/MeldView input and output; both fromSeat and calledTileId are compared.",
     "eventMapping": "V4 TileDealt/TileDrawn/RinshanDraw -> ProtocolEventType private types with the owner seat; DoraRevealed(isUraDora) -> DoraRevealed; TileDiscarded/ChiDeclared/PonDeclared/KanDeclared/RiichiDeclared/DrawGame/ScoreSettled/RoundEnded/MatchEnded keep their names; V4 turnNumber/fromSeat/riichiDiscard/tsumogiri/wallRemaining/roundWind/roundNumber and TsumoWin yaku/han/fu/score/breakdown are supplied as TableProjectionEventFacts and compared through TableProjectionContractMapper.MapEvent payloads. V4 settlementEvents implies V5 SettlementBatch=true.",
     "discardMapping": "V4 river list index -> V5 DiscardView turnNumber=index. TileDiscarded riichiDiscard/tsumogiri flags are mapped as explicit facts and compared; only the per-river turnNumber assignment is a representation choice.",
-    "scoreMapping": "V4 Int score -> V5 long ScoreView.Score, value-preserving; TsumoWin breakdown maps through ScoreBreakdownView with explicit ura authorization.",
+    "scoreMapping": "V4 Int score -> V5 long ScoreView.Score, value-preserving. TsumoWin breakdown maps Han/Fu/TotalPoints/Yaku/DoraCount/UraCount/UraTiles/UraHits through ScoreBreakdownView. V4 breakdown.indicatorTiles/breakdown.score have no same-shape V5 field (SOURCE_ONLY); V4 uraHits group count is cross-checked against the flattened uraHitTiles list.",
     "ownerMapping": "V4 mySleeveTiles -> TableOwnerPrivateView.SleeveTiles -> MapPlayerSnapshot -> PrivatePlayerView.SleeveTiles for the owner; V4 meld metadata -> TableOwnerMeldView -> MeldView. Other seats/spectator never receive them.",
+    "authorizationMapping": "uraAuthorized is not a V4 ScoreBreakdown property. The raw fixture event carries an explicit source-authorization adapter flag (true when raw ura identities are present); the C# caller chooses per-branch authorization and the expected canonical blocks record true/false. Raw identities with source authorization false are rejected; the mapper never strips automatically.",
     "versionMapping": "V5 state_version/event_seq/stream cursor are explicit fixture inputs; V4 PlayerView has no equivalent and they are STRUCTURE only, never compared to V4 values."
   },
   "fieldClassification": {
@@ -59,6 +60,7 @@
       "state.lastDiscard",
       "state.privateCheat (points + entryId/seat/amount/balanceAfter/reason)",
       "events[] (kind/turn/seat/tiles/ura/fromSeat/calledTileId/flags/wallRemaining/round fields/yaku/han/fu/score/breakdown)",
+      "events[].breakdown.uraAuthorized (explicit source-authorization adapter, not a V4 field)",
       "clock (seat/opensAt/deadline/reserve/serverNow)",
       "viewerSeat",
       "legalActions",
@@ -74,11 +76,13 @@
       "expected.board.*",
       "expected.session.lifecycle/scores/roundRecords/finalResult",
       "expected.settlement.unauthorized/authorized",
-      "expected.tsumoBreakdown.*",
+      "expected.tsumoBreakdown.* (canonical branch + authorization)",
       "expected.spectatorBoard.*",
       "expected.hiddenTileIds.* (negative privacy expectations)",
-      "mapped MapEvent payload TurnNumber/Seat/TileIds/Meld/FromSeat/flags/WallRemaining/Round fields/Yaku/Han/Fu/Score/Breakdown",
-      "mapped MapPlayerSnapshot Private.SleeveTiles/OwnerMelds/Cheat ledger"
+      "mapped MapEvent payload TurnNumber/Seat/TileIds/Meld/FromSeat/flags/WallRemaining/Round fields/Yaku/Han/Fu/Score",
+      "mapped Breakdown Han/Fu/TotalPoints/Yaku/DoraCount/UraCount/UraTiles/UraHits/UraAuthorized",
+      "mapped MapPlayerSnapshot Private.SleeveTiles/OwnerMelds/Cheat ledger",
+      "MapPublicSnapshot typed settlement records are identity-preserved from the fully compared MapEvent records"
     ],
     "STRUCTURE": [
       "exactly 136 unique physical entities per state",
@@ -94,6 +98,7 @@
       "case id uniqueness",
       "event turn order",
       "cheat balanceAfter == seat points",
+      "breakdown uraHits count == uraHitTiles length",
       "G-row mapping",
       "V5 state_version/event_seq/stream cursor"
     ],
@@ -126,7 +131,9 @@
       "sourceOnly.legalActions",
       "sourceOnly.sessionUpdateWholesaleCopy",
       "sourceOnly.v4CheatPointsChangedVisibilityCounts",
-      "V4 raw event turn numbers as wire turn values (mapped, but V4-only source anchor)"
+      "breakdown.indicatorTiles (V5 ScoreBreakdownView has no indicator list; board dora is separate)",
+      "breakdown.score (V5 payload has event Score, not a breakdown-specific score field)",
+      "V4 breakdown.uraHits group count (cross-checked against V5 UraHits tile list, not a separate V5 field)"
     ],
     "UNREPRESENTABLE": [
       "V4 legalActions -> V5 Policy/DecisionView (P3.3 supplies it; no same-shape field)",
@@ -414,15 +421,15 @@
   ],
   "exporterSource": {
     "file": "engine/src/test/kotlin/com/majiang/projection/V5VisibilityGoldenExporterTest.kt",
-    "bytesRaw": 77859,
-    "sha256RawBytes": "d3e0de437b8f5266ced114c018a1a0410eb1a86833efd159a3ef1e7d9707d8c7",
-    "sha256LfNormalized": "d3e0de437b8f5266ced114c018a1a0410eb1a86833efd159a3ef1e7d9707d8c7",
+    "bytesRaw": 79508,
+    "sha256RawBytes": "bc5fdec591119207ec54fcff19fe882ecfaa54324ed29ff7844b5c1f2bacf870",
+    "sha256LfNormalized": "bc5fdec591119207ec54fcff19fe882ecfaa54324ed29ff7844b5c1f2bacf870",
     "crlfCount": 0,
-    "lfOnlyCount": 1518,
+    "lfOnlyCount": 1537,
     "lineEndings": "LF",
     "algorithm": "SHA-256; sha256RawBytes over raw file bytes; sha256LfNormalized over UTF-8 text with CRLF replaced by LF"
   },
-  "renderSha256LfNormalized": "8d28b1f0a71efe9d87d87f36c549e5f8fefcec3d319bbe1e3e8da74af4a7d8c2",
+  "renderSha256LfNormalized": "642cfdda1c11587c63ae9f8587c24c4959f7ed3e8bea5bd51d70a36a7b4cb4b8",
   "scope": {
     "manifestEntriesTargeted": 4,
     "manifestEntriesExportedByThisRun": 4,
@@ -4475,8 +4482,7 @@
                     "code": "TANYAO",
                     "han": 1
                   }
-                ],
-                "uraAuthorized": true
+                ]
               }
             },
             {
@@ -4575,8 +4581,7 @@
                     "code": "TANYAO",
                     "han": 1
                   }
-                ],
-                "uraAuthorized": true
+                ]
               }
             },
             {
@@ -4613,7 +4618,7 @@
                 "han": 1
               }
             ],
-            "uraAuthorized": true
+            "uraAuthorized": false
           },
           "authorized": {
             "uraTiles": [

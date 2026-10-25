@@ -1,23 +1,20 @@
-# V5 P0.1-a/P0.1-b 可见性/快照深拷贝黄金 —— G-057a..G-057d（R1 返修）
+# V5 P0.1-a/P0.1-b 可见性/快照深拷贝黄金 —— G-057a..G-057d（R2 返修）
 
 日期：2026-10-25
-任务：G-057a 旧 `PlayerView` 快照深拷贝、G-057b 事件列表深拷贝与逐席可见性、G-057c 公开投影白名单/授权里宝/不可变、G-057d 真实 136 实体状态的 owner/他座/观战隔离。
-性质：**严格 test-only**。不修改 V4 生产代码、V5 生产代码、旧五组 fixture、manifest/catalog、既有测试或已接受审计报告。
-本轮：针对复核 `D-G057-R1-01..04` 批量返修；只改原 5 个 expectedFiles。
-结论：R1 四组 MAJOR 全部修复并有真实负例；剩余 V4 既有隐私差异与明确的模型差异见 §8。**G1 仍未批准，G5 未完成，V4 仍是唯一生产架构**；没有任何平台通过声明。
+性质：**严格 test-only**；仅原 5 个 expectedFiles。
+本轮：合并遗留 `[D-G057-R2-01]`（R1-01/02 的 C mapped payload 完整比较/未授权 breakdown 覆盖）批量返修。
+结论：R2 修复完成；C 的 authorized/unauthorized 全部可见事件逐字段比较，MapPublicSnapshot typed records 逐值/同一性验证，23 个复核变异全部真实 FAIL，提交内 probe 扩为 **67 native runs**。**G1 未批准、G5 未完成、V4 唯一生产**；无平台通过声明。
 
 ---
 
-## 1. 基线、范围、归属
+## 1. 基线与范围
 
-| 项 | 实测值 |
+| 项 | 值 |
 |---|---|
-| worktree | `D:/majiang-wt/visibility-golden-g057` |
-| branch | `wt/v5-visibility-golden-g057` |
+| worktree/branch | `D:/majiang-wt/visibility-golden-g057` / `wt/v5-visibility-golden-g057` |
 | 冻结 base | `1432d775526de921f2cde3aba283236fc3b8e8c1` |
-| R1 起始 HEAD | `544f9c1a306a135254f0fe6a1dee139e5a30d381` |
-| base 是否为祖先 | 是 |
-| 交付 | 仍仅 5 个 expectedFiles；无第 6 个跟踪文件 |
+| R2 起始 HEAD | `e8a9e9adc401becef6d05d4cf5de972e998df976` |
+| 交付 | 仍仅 5 文件；无生产/旧 fixture/catalog/manifest 修改 |
 
 ```text
 engine/src/test/kotlin/com/majiang/projection/V5VisibilityGoldenExporterTest.kt
@@ -27,257 +24,153 @@ tools/v5-golden/probe-visibility-binding.ps1
 doc/v5-重构/V5-P01-VISIBILITY-GOLDEN-G057.md
 ```
 
-未改 V4/C# 生产、旧 fixtures、`catalog-v1.json`、manifest、兄弟任务或用户主 checkout。
+---
+
+## 2. D-G057-R2-01 修复映射
+
+### 缺陷（复核实测）
+
+- C 用例只比较 `kind/seat/tileIds/isUraDora`；`expected.settlement.authorized/ unauthorized` 的 `score/han/fu/yaku/turn/fromSeat/calledTileId/riichi/wind/breakdown` 均未消费。
+- `MapAll` 构建了 payload 但仅对 Tsumo 做了 4000/3/30 硬编码；`MapPublicSnapshot` 只做 NotNull/Contains。
+- 未授权分支整块省略 breakdown；`expected.tsumoBreakdown.unauthorized` 注入私有 ura 也 PASS。
+- `uraAuthorized` 由 caller 常量覆盖、输入被忽略，且 Kotlin 对 unauthorized 也写 true。
+- probe 没有覆盖 C 的 yaku/han/fu/score/breakdown/authorization、settlement fromSeat/called/riichi/wind 等路径。
+
+### 修复
+
+1. **统一 mapped-event 比较器** `AssertScenarioEvents` 同时用于 G-057b 与 G-057c 的 authorized/unauthorized：对每个可见事件调用 `MapEvent` 后逐值比较 `TurnNumber/Seat/TileIds/Meld(type,tiles,called,fromSeat)/FromSeat/RiichiDiscard/Tsumogiri/WallRemaining/RoundWind/RoundNumber/LoserSeat/Yaku(code+han)/Han/Fu/Score`。
+2. **Breakdown 全字段**：`AssertBreakdownShared` 比较 `Han/Fu/TotalPoints/Yaku(code+han)/DoraCount/UraCount/UraTiles/UraHits`；`AssertBreakdownAuthorization` 比较显式 `UraAuthorized`。`uraHits` 组数同时与 `uraHitTiles` 长度互校。
+3. **未授权分支不再整块跳过**：
+   - V4 unauthorized 的安全非 null breakdown（数值/yaku/空 ura）现在通过 call-safe facts（`includeUraIdentities=false`, `uraAuthorized=false`）映射并逐值比较。
+   - raw 私有身份 + `uraAuthorized=false` 实测被 `ScoreBreakdownView` 拒绝；该分支明确是 **caller authorization contract**，不是 V5 自动脱敏。
+   - `expected.tsumoBreakdown.unauthorized` 的 `uraTiles/uraHitTiles` 现被消费；注入 34/35 会真实 FAIL。
+4. **授权上下文显式化**：
+   - raw fixture event 的 `breakdown.uraAuthorized` 是显式 **V5 adapter source-authorization** 输入（不是 V4 ScoreBreakdown 属性）；C# `Facts` 读取并校验：raw identity 与 source authorization=false 组合被拒绝。
+   - expected canonical blocks 记录 authorized=true / unauthorized=false；unauthorized 不再写 true。
+   - 输出 `uraAuthorized` 变异真实 FAIL。
+5. **MapPublicSnapshot 路径**：`SettlementRecords` 从已逐值比较的 `MapEvent` 记录中筛选；`MapPublicSnapshot` 后的 `typedSettlementEvents` 用 `Assert.Same` 逐条验证是同一批完整 payload，而不是只查非空/Contains。
+6. **重复表示一致性**：expected settlement 事件内的 breakdown 与独立 `expected.tsumoBreakdown.{authorized,unauthorized}` 都消费；共享字段互校，canonical 额外校验 authorization。
+7. **probe**：同一矩阵新增 23 个 C mapped 变异（输入/输出 yaku/han/fu/score/breakdown/authorization、fromSeat/called/riichi/wind/turn、unauth private ura/uraHits），保留原 38 负例（R1 含 18 新增）与 5 正例；总计 **67 native runs**。
 
 ---
 
-## 2. 复核缺陷逐条修复映射
+## 3. 复核 23 变异结果
 
-### D-G057-R1-01（MAJOR）：遗漏现有完整生产映射路径
+直接运行复核方 `build/review-g057-r2/extra-mutations.ps1`（fresh DLL，独立 extra-repo，逐次重算 render hash）：
 
-- **实际（复核）**：新测试只到 metadata；`TableProjectedEvent`/`ProtocolEventRecord` 空 payload 被当成“V5 无字段”。但 `TableProjectionContractMapper.MapEvent/MapPublicSnapshot/MapPlayerSnapshot`、`TableProjectionEventFacts.Breakdown`、`ScoreBreakdownView` 已存在；`MapPlayerSnapshot` 已支持袖牌/owner meld。
-- **修复**：
-  - `VisibilityGoldenTests` 新增 `FixtureEvent`/`Facts`，从 fixture 的 raw INPUT 事件构建 `TableProjectionEventFacts`，调用 `MapEvent` 并逐字段检查 `ProjectedEventPayload`。
-  - C 用例授权分支比较 `Breakdown.UraTiles/UraHits/TotalPoints/DoraCount/UraCount/Yaku`；未授权分支不伪称自动裁剪：对“raw breakdown + `uraAuthorized=false`”实测拒绝（`ScoreBreakdownView` 抛 `ArgumentException`），无 breakdown 的未授权 Tsumo 可映射且 `Breakdown=null`。
-  - `MapPublicSnapshot` 用 typed settlement records 重建并逐事件 payload 非空。
-  - D 用例调用 `MapPlayerSnapshot`：owner seat1 的 `Private.SleeveTiles`/`OwnerMelds`/ledger 与 owner extension/V4 逐值一致；seat0 空；观战无。
-  - `sourceHashes` 新增 `TableProjectionContractMapper.cs`、`ProtocolProjectionPayload.cs`、`TableProjectionContractMapperTests.cs`；`fieldClassification` 改为按实际 mapped payload 分类。
-- **验收断言**：C# 定向 8/8；`negative-input-breakdown-ura`、`negative-output-breakdown-ura` 真实 exit1；袖牌 owner 有/他座观战无；`MapEvent` payload 不允许空 metadata 通过。
+| 变异 | exit | 计数 |
+|---|---:|---|
+| `input-c-event-yaku` | 1 | 8/0/1/0/0 |
+| `input-c-breakdown-yaku` | 1 | 8/0/1/0/0 |
+| `input-c-breakdown-han` | 1 | 8/0/1/0/0 |
+| `input-c-breakdown-fu` | 1 | 8/0/1/0/0 |
+| `output-c-breakdown-yaku` | 1 | 8/0/1/0/0 |
+| `output-c-breakdown-han` | 1 | 8/0/1/0/0 |
+| `output-c-breakdown-fu` | 1 | 8/0/1/0/0 |
+| `output-c-unauth-private-ura` | 1 | 8/0/1/0/0 |
+| `output-c-unauth-private-urahits` | 1 | 8/0/1/0/0 |
+| `output-c-event-score` | 1 | 8/0/1/0/0 |
+| `output-c-event-han` | 1 | 8/0/1/0/0 |
+| `output-c-event-fu` | 1 | 8/0/1/0/0 |
+| `output-c-event-yaku` | 1 | 8/0/1/0/0 |
+| `output-c-event-turn` | 1 | 8/0/1/0/0 |
+| `input-c-event-turn` | 1 | 8/0/1/0/0 |
+| `output-c-event-fromseat` | 1 | 8/0/1/0/0 |
+| `output-c-event-called` | 1 | 8/0/1/0/0 |
+| `output-c-event-riichi` | 1 | 8/0/1/0/0 |
+| `output-c-event-wind` | 1 | 8/0/1/0/0 |
+| `input-c-event-fromseat` | 1 | 8/0/1/0/0 |
+| `output-c-event-breakdown-ura` | 1 | 8/0/1/0/0 |
+| `input-c-breakdown-authorization` | 1 | 8/0/1/0/0 |
+| `output-c-breakdown-authorization` | 1 | 8/0/1/0/0 |
+| baseline | 0 | 8/0/0/0/0 |
 
-### D-G057-R1-02（MAJOR）：可比字段遗漏/输入被忽略，probe 漏类别
-
-- **实际（复核）**：14 个单字段变异仍绿；副露 `fromSeat/calledTileId`、事件 `turn/fromSeat`、clock、cheat、hands/discards 重复表示均未真正绑定。
-- **修复**：
-  - `BuildScenario` 增加输入一致性：`currentPlayer==dealerSeat`、`wallRemaining==` 稠密墙数、`hands.closed/drawn` 与 HAND placement、`discards` 与 DISCARD placement、sleeve、melds 与 MELD slots 逐项相等。
-  - `AssertBoardCommon` 增加副露 `fromSeat`/`calledTileId`；owner meld 同样逐值。
-  - `AssertScenarioEvents` 对每个可见事件调用 `MapEvent`，比较 payload `TurnNumber/Seat/TileIds/Meld/FromSeat/RiichiDiscard/Tsumogiri/WallRemaining/RoundWind/RoundNumber`；`BuildFixtureEvents` 校验 turn 非降序。
-  - clock：从 fixture `input.clock` 构建 `ClockView`，与 `expected.clock` 比较 `ServerTimeMs/DeadlineRemainingMs/ReserveRemainingMs/DecisionSeat`；清空 caller clock 列表后旧快照仍保留；换 clock 后新快照变化、旧不变。
-  - cheat：`BuildCheat` 核对每席 points；`AssertCheat` 比较 `entryId/amount/balanceAfter/reason`。
-  - probe 新增 18 个关键负例（副露 fromSeat/called/牌、currentPlayer、弃牌/手牌重复表示、事件 turn/fromSeat、clock、copyProbe、cheat points/reason、合法 136 两位置交换、breakdown ura 输入/输出）；原 20 负例与 5 正例保留。
-- **验收断言**：上述每项变异均真实 exit1/Failed≥1/Errors0/Skipped0/NotRun0；正表示控制全 PASS；总 native run=44。
-
-### D-G057-R1-03（MAJOR）：默认 exporter 不核对真实 V4 结果
-
-- **实际（复核）**：只查 schema/case ID；陈旧分数、实体、副露或缺失 fixture 都通过。
-- **修复**：
-  - 默认模式把本次 `buildCases()` 的四 case 序列化文本与 fixture `cases` **完整逐字节比较**；同时重算 `renderSha256LfNormalized`。
-  - 缺 fixture、stale expected、stale placement、stale meld 均在新增 `defaultModeRejectsStaleOrMissingFixture` 中 `AssertionError`。
-  - 默认仍不写 fixture；显式 export 才写。
-- **验收断言**：未改 fixture 默认测试通过且文件 SHA 不变；隔离副本改 `scores[0]=24999` 后默认 Gradle 实测 exit1/Failed=1（§7）。
-
-### D-G057-R1-04（MAJOR）：快照深拷贝测试的源变异无效
-
-- **实际（复核）**：`Scenario.Placements/Scores/Dora` 在建 map/RoundSpec 后修改，已与投影输入无关；没有“后续权威状态变化 → 新投影不同、旧快照不变”的敏感性控制。
-- **修复**：
-  - G-057a 用真实 `RoundCommand.Discard` 产生新的 `RoundStateMachine`，重新投影：新投影 river 增加、手牌变化；旧 V4-golden 快照逐值不变。
-  - G-057c 用真实 `ClockView` 输入：旧快照保留旧 clock，新 context/不同 clock 的新快照显示新值；清空 caller clock 列表不改变旧快照。
-  - 保留并加强只读/producer 数组复制；新增 `TableMeldFact` tileIds、`TableSeatPublicFacts` discards 的构造层复制证明。
-  - 文档明确：构造层复制与不可变快照分别证明，不宣称未测试的层。
-- **验收断言**：新增真实 discard/clock 敏感性断言通过；旧快照逐值等于 V4 golden；只读 Add 实际抛 `NotSupportedException`。
+`extra-results.csv`：1 baseline exit0，23 变异 exit1；无 skip/error/notRun。
 
 ---
 
-## 3. Fixture、来源与默认校验
+## 4. 字段分类（R2 修正）
 
-- 生成命令：
-
-```powershell
-$env:V5_VISIBILITY_GOLDEN_EXPORT='1'
-.\gradlew.bat :engine:test --tests "com.majiang.projection.V5VisibilityGoldenExporterTest" --rerun-tasks --console=plain
-```
-
-- 默认：真实执行四 case + 全 case 内容比较 + render hash；不写文件。
-- 双次构造/渲染字节一致；导出变化日志列出 changed top-level keys，不静默忽略。
-- `sourceHashes[]` 现覆盖 20 个 V4/V5 源码/测试（含 mapper/payload/mapper tests），raw bytes 与 LF-normalized 明确分开。
-- fixture 实际值：
-
-| 项 | 值 |
+| 类别 | 字段 |
 |---|---|
-| path | `tests/v5-golden/visibility-v1.json` |
-| bytes | 139876 |
-| raw SHA-256 | `b901eb6d07cb1da5df0f7c4f3c39a259273cd35b6307b2f2d0913e9f228d385b` |
-| LF-normalized SHA-256 | 同上（LF 文件） |
-| `renderSha256LfNormalized` | `8d28b1f0a71efe9d87d87f36c549e5f8fefcec3d319bbe1e3e8da74af4a7d8c2` |
-| `v4ProductionTreeClean` | true |
-| `trackedModifiedFiles` | 4 个 task path（提交后为 0 diff） |
+| INPUT | state（136 placement/melds/discards/hands/sleeve/lastDiscard/privateCheat）；event 全字段（turn/seat/tiles/ura/fromSeat/called/flags/wall/round/yaku/han/fu/score/breakdown）；`events[].breakdown.uraAuthorized`（显式 source-authorization adapter，不是 V4 字段）；clock；viewerSeat/legalActions/policy |
+| OUTPUT | V4 expected snapshot/seatViews/board/session/settlement/hiddenTileIds；canonical `tsumoBreakdown.{authorized,unauthorized}`（含显式 authorization）；mapped `ProjectedEventPayload` 全部适用字段；Breakdown 全字段；MapPlayerSnapshot 的 sleeve/owner meld/cheat；MapPublicSnapshot typed settlement records |
+| STRUCTURE | 136 唯一实体/位置、wall/王牌/dora 槽、currentPlayer==dealer、输入重复表示一致性、事件 turn 非降序、cheat balanceAfter==points、uraHits 组数==uraHitTiles 长度、case/G 行唯一 |
+| META | schema/version/commit/taskPaths/sourceHashes/exporterSource/renderSha256LfNormalized |
+| SOURCE_ONLY | `v4WallPointer/v4WallEndExclusive/v4RinshanPointer/kanCount/v4DeadWall/drawSource/legalActions/sessionUpdateWholesaleCopy/v4CheatPointsChangedVisibilityCounts`；`breakdown.indicatorTiles`（V5 无同形字段）；`breakdown.score`（V5 用事件 Score）；V4 `uraHits` 组数（映射到 V5 UraHits 列表并互校） |
+| UNREPRESENTABLE | V4 legalActions→P3.3 DecisionView；V4 未过滤 SessionUpdate 列表；V4 session summary 全形状；V4 暗杠公开身份；V4 river turnNumber 分配 |
 
-事件 INPUT 现在包含：`turnNumber`、`seat`、`tileIds`、`isUraDora`、`fromSeat`、`calledTileId`、`riichiDiscard`、`tsumogiri`、`wallRemaining`、`roundWind/roundNumber`、`yaku/han/fu/score`、`breakdown{uraTiles,uraHits,uraHitTiles,indicatorTiles,doraCount,uraCount,totalPoints,han,fu,score,yaku,uraAuthorized}`。C 用例另有 `expected.clock`。
-
----
-
-## 4. 完整绑定字段
-
-<details>
-<summary><b>V4 → V5 typed projection → MapEvent/MapPublicSnapshot/MapPlayerSnapshot</b></summary>
-
-| V4 字段/行为 | V5 路径 | 断言 |
-|---|---|---|
-| phase/round/wind/honba/riichi/dealer/current/wallRemaining | Board / MapPhase | 逐值 |
-| scores Int | ScoreView.Score long | 逐值 |
-| doraIndicators | Board.DoraIndicators | 逐值 |
-| riichiStatus | PublicFacts.Riichi → PlayerPublicView.Riichi | 逐值 |
-| discards | DiscardView.TileId/顺序 | 逐值；turnNumber 表示映射 |
-| meld type/tiles/fromSeat/calledTileId | TableMeldFact → MeldView / owner MeldView | 全部逐值 |
-| handTileCounts | PlayerPublicView.HandCount | 逐值 |
-| myClosedTiles/myDrawnTile/myAllClosedTiles | Private.ClosedTiles/DrawnTileId | 逐值 |
-| mySleeveTiles | Owner.SleeveTiles → MapPlayerSnapshot → Private.SleeveTiles | owner 逐值 |
-| myFuriten/myDiscardHistory | Private.Furiten/DiscardHistory | 逐值 |
-| lastDiscard/lastDiscardPlayer | Board.LastDiscard + river 推导 | 逐值 |
-| events turnNumber | EventFacts.TurnNumber → payload.TurnNumber | 逐值 |
-| Chi/Pon fromSeat/calledTileId | EventFacts.Meld/FromSeat → payload.Meld/FromSeat | 逐值 |
-| TileDrawn wallRemaining | EventFacts.WallRemaining → payload.WallRemaining | 逐值 |
-| TileDiscarded riichi/tsumogiri | EventFacts → payload flags | 逐值 |
-| RoundEnded wind/number | EventFacts → payload | 逐值 |
-| TsumoWin yaku/han/fu/score | EventFacts → payload | 逐值 |
-| TsumoWin breakdown ura | EventFacts.Breakdown → ScoreBreakdownView | 授权逐值；未授权 raw 拒绝 |
-| clock serverNow/deadline/reserve/seat | ClockView | 逐值 |
-| privateCheat points/entry fields | BuildCheat/Owner.Cheat/MapOwnerCheat | 逐值 |
-| 136 placements | TilePositionMap | 结构 + 真实 view 值 |
-
-</details>
+**不再声明**“Yaku/breakdown 未绑定”或“unauthorized 整个输出已对齐”。未授权分支准确口径：V4 安全非 null breakdown 可映射并已逐值比较；V4 raw 私有身份需要 caller 显式授权，V5 不自动裁剪。
 
 ---
 
-## 5. 测试计数与 exit（最终实跑）
+## 5. 测试计数 / exit（最终）
 
 | 项 | exit | 计数 |
 |---|---:|---|
-| 新鲜 Release solution `--no-incremental` | 0 | 0 warning / 0 error |
-| TableRuntime.Tests 构建 | 0 | 0 warning / 0 error |
+| Release solution `--no-incremental` | 0 | 0 warning/error |
+| TableRuntime.Tests 构建 | 0 | 0 warning/error |
 | C# `VisibilityGoldenTests` 定向 | 0 | Total=8, Errors=0, Failed=0, Skipped=0, NotRun=0 |
-| TableRuntime 全量 | 0 | Total=373, Errors=0, Failed=0, Skipped=0, NotRun=0 |
-| Domain TilePositionMapTests | 0 | 59/0 |
-| Domain TileMovementGoldenTests | 0 | 10/0 |
-| Domain CheatVisibilityTests | 0 | 10/0 |
-| Contracts ProjectionWireMapperTests | 0 | 16/0 |
-| Contracts ProtocolContractTests | 0 | 30/0 |
+| TableRuntime 全量 | 0 | 373/0/0/0/0 |
+| Domain TilePositionMap | 0 | 59/0 |
+| Domain TileMovementGolden | 0 | 10/0 |
+| Domain CheatVisibility | 0 | 10/0 |
+| Contracts ProjectionWireMapper | 0 | 16/0 |
+| Contracts ProtocolContract | 0 | 30/0 |
 | Gradle exporter | 0 | tests=2, failures=0, errors=0, skipped=0 |
-| Gradle SessionSnapshotContractTest | 0 | tests=8, failures=0, errors=0, skipped=0 |
-| Gradle PublicProjectionTest | 0 | tests=12, failures=0, errors=0, skipped=0 |
-| Probe 全量 | 0 | **44 native runs**：baseline + 38 FAIL 负例 + 5 PASS 正例 |
-| Probe `-SelfNegative` | 1 | 绿色 baseline 后故意 exit1 |
-| 隔离陈旧 fixture 默认 Gradle | 1 | 2 tests, 1 failed（default 检测到 stale case） |
-
-所有 negative 均 `Total=8 / Errors=0 / Skipped=0 / NotRun=0`，Failed≥1 且 exit1；正例 `exit0/Failed=0`。
+| Gradle SessionSnapshot | 0 | tests=8, failures=0, errors=0, skipped=0 |
+| Gradle PublicProjection | 0 | tests=12, failures=0, errors=0, skipped=0 |
+| 提交内 probe | 0 | **67 native runs**：baseline + 61 FAIL 负例 + 5 PASS 正例 |
+| Probe self-negative | 1 | 绿色 baseline 后故意 exit1 |
 
 ---
 
-## 6. Probe 矩阵（44 native runs）
+## 6. Fixture / 证据
 
-原有 20 负例与 5 正例保留；新增 18 个关键负例全部实测 exit1：
-
-| 新增负例 | 类别 | 实际 |
-|---|---|---|
-| `negative-input-current-player` | INPUT/一致性 | exit1 Failed=1 |
-| `negative-output-meld-fromseat` | OUTPUT/副露 | exit1 Failed=1 |
-| `negative-output-meld-called` | OUTPUT/副露 | exit1 Failed=1 |
-| `negative-input-meld-fromseat` | INPUT/副露 | exit1 Failed=1 |
-| `negative-input-meld-called` | INPUT/副露 | exit1 Failed=1 |
-| `negative-input-meld-tile` | INPUT/物理牌 | exit1 Failed=1 |
-| `negative-input-discard-tile` | INPUT/河重复表示 | exit1 Failed=1 |
-| `negative-input-hand-tile` | INPUT/手牌重复表示 | exit1 Failed=3 |
-| `negative-output-event-turn` | OUTPUT/事件 | exit1 Failed=1 |
-| `negative-output-event-fromseat` | OUTPUT/事件 | exit1 Failed=1 |
-| `negative-input-event-turn` | INPUT/事件 | exit1 Failed=1 |
-| `negative-input-clock-deadline` | INPUT/clock | exit1 Failed=2 |
-| `negative-output-copy-clocks` | OUTPUT/拷贝 | exit1 Failed=1 |
-| `negative-input-cheat-points` | INPUT/账本 | exit1 Failed=2 |
-| `negative-input-cheat-reason` | INPUT/账本 | exit1 Failed=1 |
-| `negative-input-placement-swap` | INPUT/合法 136 身份 | exit1 Failed=1 |
-| `negative-input-breakdown-ura` | INPUT/里宝 | exit1 Failed=1 |
-| `negative-output-breakdown-ura` | OUTPUT/里宝 | exit1 Failed=1 |
-
-正控制：SOURCE_ONLY legalActions/dead-wall、placement 顺序、scope note、CRLF fixture 均 PASS。计数门自检仍拒绝 Total0/short/skip/notRun/error/exit drift。
-
----
-
-## 7. 关键日志与 SHA-256
+- fixture：141007 bytes，LF；raw/LF SHA-256 `30291ec270efb6f2a7d8c6984d53e7ae2dbd5ae45a41a7114ee69288749f346e`；`renderSha256LfNormalized=642cfdda1c11587c63ae9f8587c24c4959f7ed3e8bea5bd51d70a36a7b4cb4b8`。
+- `v4ProductionTreeClean=true`；`trackedModifiedFiles` 为 task paths。
+- probe evidence：`build/visibility-binding-probe/20261025T102947Z-46996/`；`results.csv` SHA-256 `32ca7da6a64d121df365866d1805684fb8f5cefb863edc7412b728e6d79bcf7d`。
 
 | 证据 | SHA-256 |
 |---|---|
-| fixture raw/LF | `b901eb6d07cb1da5df0f7c4f3c39a259273cd35b6307b2f2d0913e9f228d385b` |
-| `build/rework-solution-build.log` | `5c70aff3e6f86c7a1483fdc0d15fbd30bcac5f120ff61e9d9a231bb5be1f6958` |
-| `build/rework-trt-build.log` | `09e8fb7123fe19ceda0b8a0616e443ae3095960d69daa6d39d20ecf39155bd49` |
-| `build/rework-csharp-targeted-final.log` | `d5a16cfb76433a9c8597b5e209903a68ecc9ac271743e713cd29e531298bd7df` |
-| `build/rework-trt-full-final.log` | `04356fbab01b60c849b538a99739a428b69e9073fdc9c543538af5c1b71519dd` |
-| `build/rework-domain-TilePositionMapTests.log` | `7e2763c0a4f82a9cdfb85f2cfbe963844af7ee6b4d2eae45553c680e84d8b2b9` |
-| `build/rework-domain-TileMovementGoldenTests.log` | `88aaf8382a2beb06846071b7b5d833e2c7f3c089bb4f781509648995ba3193ad` |
-| `build/rework-domain-CheatVisibilityTests.log` | `6c8def4f5194ad3b6b790f416280612d511bb7db22a84cb8e65fc55d0d3f6f97` |
-| `build/rework-contracts-ProjectionWireMapperTests.log` | `470afcd70dc7f6df8cb3388262ded40a79a8ff7b1e37c10458ecd32242f5feb5` |
-| `build/rework-contracts-ProtocolContractTests.log` | `258711953a22b6888f9e3f779c934149fb42691686d32695619275c093fed27c` |
-| `build/rework-gradle-final.log` | `3fef63dc990e40991867ef6561cda6f4e84516d7e03ae3396c8f74ec7676ac10` |
-| `build/rework-export6.log` | `58d5732d9640ec77ad1a9a63ca26d843a3224894c3933f06c952b2f6439f3f9c` |
-| `build/rework-stale-fixture.log` | `11d6633ea5698eff5826aaea5310fe5a3747df981abee25cb22154b4735d69ca` |
-| `build/rework-probe-final.log` | `42aadfb73064a8a13c6807a7848a8563fb2dd1da4d045953de2e96a09706ea4f` |
-| `build/rework-probe-selfneg.log` | `f11ded02839c4f1f133081b171c64b17bf52bc43befa34cba6a24ec74995e90d` |
-| `build/visibility-binding-probe/20261025T100614Z-9272/results.csv` | `a8239e04089d7e3343b52e8300249fc2fa35dbbfbe2a4b9cf445bf51d57700f1` |
-| 同上 `baseline.log` | `cd1f1292d76bf38e0609d00c00722c8443da1dd09c06a228e78544bb77f18f87` |
-| 同上 `negative-input-clock-deadline.log` | `ecd86e1765d6d3a9537e33f81622022c03b6b9e70b0092fb32b6b5e57ff294d0` |
-| 同上 `negative-input-meld-fromseat.log` | `3fa900134951c6e5fc444cf201df04122b0d297b52cb7c09448c5e45644cc93a` |
-| 同上 `negative-input-breakdown-ura.log` | `05b2ae353263a80e1f86c3b06c60185ce4a8067a5d458be7d7a77cfe4c7fd642` |
+| `build/r2-solution-build.log` | `e349863039e7990699ffdb3731c3cb95ab3ea5af54da8ea5107d7b3f427c46e4` |
+| `build/r2-trt-build.log` | `54747d2a7e27139aba02fabfe6bc65f391f516e4d43a269225fde6af212da3ba` |
+| `build/r2-csharp-run3.log` | `ec4699a00de88ef48e5aec61b84fa318af65a67b49c037707e95f9c4ab76e24c` |
+| `build/r2-trt-full.log` | `703596fef50c1cbf649ffea7e9a44c6cd6cf4ce78511f88bc85a09e6dd9270db` |
+| `build/r2-domain-TilePositionMapTests.log` | `7ea7ca5c179fe28809e8875069f023e382311d4f21b13448586c00bedda75358` |
+| `build/r2-domain-TileMovementGoldenTests.log` | `5efeeb171085acf2a3cc004c286c86a4144ad016d5dbe071359670feda44e6ea` |
+| `build/r2-domain-CheatVisibilityTests.log` | `521341214d655107755fdbf55b84a7d16adfaf29d34b37a8cfd78ab56f83e734` |
+| `build/r2-contracts-ProjectionWireMapperTests.log` | `b186872b9154e028b35df045b23c9bf5b09da59270f137a7510b194b8a0bf3bc` |
+| `build/r2-contracts-ProtocolContractTests.log` | `ed3e8a25f046acf3fc889dd91a792b2048148a66396d70dfaef63ae2b1f469f0` |
+| `build/r2-gradle-final.log` | `8f1fdf67147e30f3695cab76b383f2eb42526d4863b0c51733e0da902c031d02` |
+| `build/r2-export3.log` | `7a24a3824b638e46268f191d4711f15c56fa933bb4391382eed85060aa7fdd9a` |
+| `build/r2-probe-final.log` | `a854dff58069758d63ef78ff63a8d40560df8c9f61b18335eda8fa462d03c3ee` |
+| `build/r2-probe-selfneg.log` | `2f9b6012771a680471cf1ad58e9e35d5a9a311db36de82349e90ce6ee5d46ff0` |
+| `build/r2-extra-final.log` | `26f320de77a06e15a8fb11acacf59f9e707dec82ac0be5309c93f67998c2d896` |
+| `build/review-g057-r2/extra-results.csv` | `2df0a7fa005bc72a3af2c8eaec9999251536f54a0ede891e8061ef75dab4dba7` |
+| probe `results.csv` | `32ca7da6a64d121df365866d1805684fb8f5cefb863edc7412b728e6d79bcf7d` |
+| probe `baseline.log` | `de4aac7f29e1127d50f0253993e6e99d7ef6f092754bb871e6f8944ec48ec631` |
+| probe `negative-c-output-event-score.log` | `536c908a8e6383674b50b449553be769e708ab5a37ede5dddd64af712398ce92` |
+| probe `negative-c-output-unauth-private-ura.log` | `cb09749b828c6b33e85fd736595a11d1cb806488f7f41fbafc2411ee4aafcc76` |
 
 ---
 
-## 8. 剩余缺陷/差异（修正后的准确口径）
+## 7. 仍存在的缺陷/差异（不在本轮修复权限）
 
-**本轮 R1 四组 MAJOR：全部 FIXED。** 以下为仍存在、但不属于本轮可修范围或明确不可表示的项。
+| ID | 级别 | 状态 | 内容 |
+|---|---|---|---|
+| D-01-01 | MAJOR | BLOCKED（V4 冻结） | V4 `CheatPointsChanged` 泄漏四席；V5 仅 owner |
+| D-01-03 | MINOR | UNREPRESENTABLE | V4/V5 session summary 不同形；仅 finished=false 可比 |
+| D-01-04 | MINOR | UNREPRESENTABLE | V4 legalActions vs P3.3 DecisionView |
+| D-01-05 | MINOR | 差异（V5 更严格） | V4 公开暗杠身份；V5 隐藏占位 |
 
-```text
-[D-01-01]
-严重级别：MAJOR
-位置：engine/src/main/kotlin/com/majiang/session/SessionUpdate.kt:85-90；
-      dotnet/src/Mahjong.TableRuntime/TableEventProjection.cs:594-614
-复现：V5VisibilityGoldenExporterTest + VisibilityGoldenTests.G057bEventVisibilityAndMappedPayloadsMatchV4
-实际：V4 seat0..3 各收到 1 条 CheatPointsChanged（fixture sourceOnly.v4CheatPointsChangedVisibilityCounts=[1,1,1,1]）；
-      V5 仅 owner，其他席/观战 null。
-期望：千术流水仅 owner；不能把 V4 else 分支移植到 V5。
-证据：fixture sourceOnly 字段；build/rework-export6.log、build/rework-csharp-targeted-final.log。
-修复要求：V4 冻结；V5 保持 ProtocolEventPolicy private，P3.2 不放宽。
-验收断言：G057b 的 owner-only 断言保持；若 V4 修复，必须以新信息显式更新 fixture。
-```
-
-```text
-[D-01-03]
-严重级别：MINOR
-位置：PublicTableProjection.kt:222-244；ProtocolSnapshot.cs:717-757
-实际：V4 summary 有 lifecycle/scores/roundRecords/finalResult；V5 只有 finished/finishReason/finalScores/rankings。
-期望/分类：仅 finished=false 可比；roundRecords 等 UNREPRESENTABLE，待 P2.1/P3.2 定义。
-证据：fixture expected.session；G057c。
-修复/验收：补字段后再加逐值断言；当前不冒充对齐。
-```
-
-```text
-[D-01-04]
-严重级别：MINOR
-位置：PlayerView.kt:124-142；ProtocolSnapshot.cs:887-911
-实际：V4 legalActions 深拷贝通过；V5 DecisionView 由 P3.3 提供，无同形映射。
-期望/分类：UNREPRESENTABLE；不得伪造 GameAction→LegalActionView。
-证据：fixture VIS-G057A；sourceOnly.legalActions。
-修复/验收：P3.3 实现后另立动作映射样本。
-```
-
-```text
-[D-01-05]
-严重级别：MINOR
-位置：PublicTableProjection.kt:482-506；TableVisibilityProjection.cs:1009-1017
-实际：V4 公开暗杠四张身份；V5 公开 board 仅隐藏占位/数量。
-期望/分类：V5 更严格；fixture 不含暗杠，不把差异伪装 PASS。
-证据：knownDivergences VG-D03；C# 暗杠事件测试（观战空/owner 四张）。
-修复/验收：新增暗杠 board 样本时明确期望 V5 隐藏。
-```
-
-**已修正的旧说明**：
-
-- D-01-02 “V5 无 ScoreBreakdown/交 P2.1 补字段”：**失实，已撤销**。现有 `TableProjectionEventFacts.Breakdown + MapEvent + ScoreBreakdownView` 已绑定；剩余的是“mapper 不自动剥除，调用方必须显式授权/拒绝”的契约，已在 C 用例实测。
-- D-01-06 “袖牌无法映射”：**失实，已撤销**。`MapPlayerSnapshot` 已把 owner sleeve/owner meld 写入 `PrivatePlayerView`；已逐值验证 owner 有、他座/观战无。
-
-**其余差异（非缺陷）**：V4 未过滤 SessionUpdate 事件列表在 V5 无对应；V4 弃牌 turnNumber 与 V5 river index 为表示映射。
+已确认并撤销的失实说明：D-01-02（无 breakdown 映射）、D-01-06（袖牌无法映射）不成立。
+表示差异：V4 未过滤 SessionUpdate 列表、river turnNumber 分配、breakdown.indicatorTiles/breakdown.score。
 
 ---
 
-## 9. 边界
+## 8. 边界
 
-- **G1 仍未批准**；不导出全部 73 例，不改 catalog/manifest。
-- **G5 未完成**；没有平台源码变更，未重跑 PG/WSS/Unity/IL2CPP/Android，不声称平台通过。
-- **V4 仍是唯一生产架构**；未 push、未建 PR、未触发 CI、未改默认分支/全局环境。
-- caller 复核通过后才统一 MR；receiver 不自行合并/推送。
+- **G1 未批准，G5 未完成**；不导出 73 例、不改 catalog/manifest。
+- **V4 唯一生产**；无平台重跑/平台通过声明。
+- 未 push/PR/CI/默认分支/全局环境变更；caller 通过后统一 MR。

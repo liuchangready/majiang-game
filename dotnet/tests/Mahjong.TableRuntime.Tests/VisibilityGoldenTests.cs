@@ -333,38 +333,30 @@ namespace Mahjong.TableRuntime.Tests
 
             IReadOnlyList<TableProjectedEvent> unauthorizedEvents = TableEventProjection.ProjectMany(
                 events, TableProjectionAudience.Spectator, unauthorizedPolicy);
-            AssertEventList(
-                expected.GetProperty("settlement").GetProperty("unauthorized"),
-                unauthorizedEvents);
             Assert.DoesNotContain(unauthorizedEvents, value => value.IsUraDora);
-
-            List<FixtureEvent> unauthorizedVisible = VisibleFixtures(
-                fixtures, TableProjectionAudience.Spectator, unauthorizedPolicy);
-            List<ProtocolEventRecord> unauthorizedTyped = MapAll(
-                unauthorizedEvents, unauthorizedVisible, includeBreakdown: false, uraAuthorized: false);
-            foreach (ProtocolEventRecord record in unauthorizedTyped)
-            {
-                if (record.Type == ProtocolEventType.TsumoWin)
-                {
-                    Assert.Null(record.ProjectionPayload!.Breakdown);
-                    Assert.Equal(4000L, record.ProjectionPayload.Score);
-                    Assert.Equal(3u, record.ProjectionPayload.Han);
-                    Assert.Equal(30u, record.ProjectionPayload.Fu);
-                }
-            }
+            List<ProtocolEventRecord> unauthorizedTyped = AssertScenarioEvents(
+                expected.GetProperty("settlement").GetProperty("unauthorized"),
+                fixtures,
+                TableProjectionAudience.Spectator,
+                unauthorizedPolicy,
+                uraAuthorized: false,
+                includeBreakdown: true,
+                includeUraIdentities: false,
+                canonicalBreakdown: expected.GetProperty("tsumoBreakdown").GetProperty("unauthorized"));
 
             // Raw unauthorised breakdown identities are a caller-contract rejection, not a
             // silent strip inside the mapper.
             FixtureEvent tsumo = fixtures.Single(value => Str(value.Descriptor, "kind") == "TsumoWin");
-            Assert.Throws<ArgumentException>(() => Facts(tsumo, uraAuthorized: false, includeBreakdown: true));
+            Assert.Throws<ArgumentException>(() => Facts(
+                tsumo, uraAuthorized: false, includeBreakdown: true, includeUraIdentities: true));
 
             PublicSnapshotView mappedUnauthorized = TableProjectionContractMapper.MapPublicSnapshot(
                 unauthorized,
-                SettlementTyped(unauthorizedEvents, unauthorizedVisible, includeBreakdown: false, uraAuthorized: false));
+                SettlementRecords(unauthorizedTyped));
             AssertBoard(expected.GetProperty("board"), mappedUnauthorized.View.Board!);
-            Assert.All(
-                mappedUnauthorized.View.SettlementEvents,
-                record => Assert.NotNull(record.ProjectionPayload));
+            AssertSameSettlementRecords(
+                SettlementRecords(unauthorizedTyped),
+                mappedUnauthorized.View.SettlementEvents);
 
             var authorizedPolicy = new TableProjectionPolicy(false, true, true);
             TableProjectionContext authorizedContext = scenario.Context(
@@ -374,38 +366,24 @@ namespace Mahjong.TableRuntime.Tests
             AssertBoard(expected.GetProperty("board"), authorized.View.Board!);
             IReadOnlyList<TableProjectedEvent> authorizedEvents = TableEventProjection.ProjectMany(
                 events, TableProjectionAudience.Spectator, authorizedPolicy);
-            AssertEventList(
-                expected.GetProperty("settlement").GetProperty("authorized"),
-                authorizedEvents);
             Assert.Contains(authorizedEvents, value => value.IsUraDora);
-
-            List<FixtureEvent> authorizedVisible = VisibleFixtures(
-                fixtures, TableProjectionAudience.Spectator, authorizedPolicy);
-            List<ProtocolEventRecord> authorizedTyped = MapAll(
-                authorizedEvents, authorizedVisible, includeBreakdown: true, uraAuthorized: true);
-            ProtocolEventRecord authorizedTsumo = authorizedTyped.Single(
-                value => value.Type == ProtocolEventType.TsumoWin);
-            JsonElement breakdown = expected.GetProperty("tsumoBreakdown").GetProperty("authorized");
-            Assert.NotNull(authorizedTsumo.ProjectionPayload!.Breakdown);
-            ScoreBreakdownView payload = authorizedTsumo.ProjectionPayload.Breakdown!;
-            Assert.Equal(Ints(breakdown.GetProperty("uraTiles")).Select(value => (uint)value), payload.UraTiles);
-            Assert.Equal(
-                Ints(breakdown.GetProperty("uraHitTiles")).Select(value => (uint)value),
-                payload.UraHits);
-            Assert.Equal((uint)Int(breakdown, "totalPoints"), checked((uint)payload.TotalPoints));
-            Assert.Equal((uint)Int(breakdown, "doraCount"), payload.DoraCount);
-            Assert.Equal((uint)Int(breakdown, "uraCount"), payload.UraCount);
-            Assert.True(payload.UraAuthorized);
-            Assert.Equal(4000L, authorizedTsumo.ProjectionPayload.Score);
+            List<ProtocolEventRecord> authorizedTyped = AssertScenarioEvents(
+                expected.GetProperty("settlement").GetProperty("authorized"),
+                fixtures,
+                TableProjectionAudience.Spectator,
+                authorizedPolicy,
+                uraAuthorized: true,
+                includeBreakdown: true,
+                includeUraIdentities: true,
+                canonicalBreakdown: expected.GetProperty("tsumoBreakdown").GetProperty("authorized"));
 
             PublicSnapshotView mappedAuthorized = TableProjectionContractMapper.MapPublicSnapshot(
                 authorized,
-                SettlementTyped(authorizedEvents, authorizedVisible, includeBreakdown: true, uraAuthorized: true));
+                SettlementRecords(authorizedTyped));
             AssertBoard(expected.GetProperty("board"), mappedAuthorized.View.Board!);
-            Assert.Contains(
-                mappedAuthorized.View.SettlementEvents,
-                record => record.Type == ProtocolEventType.DoraRevealed &&
-                          record.ProjectionPayload!.UraAuthorized);
+            AssertSameSettlementRecords(
+                SettlementRecords(authorizedTyped),
+                mappedAuthorized.View.SettlementEvents);
         }
 
         [Fact]
@@ -736,7 +714,8 @@ namespace Mahjong.TableRuntime.Tests
         private static TableProjectionEventFacts Facts(
             FixtureEvent fixture,
             bool uraAuthorized,
-            bool includeBreakdown)
+            bool includeBreakdown,
+            bool includeUraIdentities)
         {
             JsonElement value = fixture.Descriptor;
             ProtocolEventType type = fixture.Input.Type;
@@ -797,6 +776,20 @@ namespace Mahjong.TableRuntime.Tests
             ScoreBreakdownView? breakdown = null;
             if (includeBreakdown && value.TryGetProperty("breakdown", out JsonElement breakdownValue))
             {
+                if (!breakdownValue.TryGetProperty("uraAuthorized", out JsonElement sourceAuthorization))
+                {
+                    throw new InvalidOperationException(
+                        "The fixture raw-event authorization context is missing; it is an explicit " +
+                        "V5 adapter input, not a V4 ScoreBreakdown property.");
+                }
+
+                bool sourceAuthorized = sourceAuthorization.GetBoolean();
+                if (includeUraIdentities && !sourceAuthorized)
+                {
+                    throw new InvalidOperationException(
+                        "Raw ura identities cannot be consumed when the explicit source authorization is false.");
+                }
+
                 var yakuList = new List<YakuView>();
                 foreach (JsonElement item in breakdownValue.GetProperty("yaku").EnumerateArray())
                 {
@@ -810,8 +803,12 @@ namespace Mahjong.TableRuntime.Tests
                     yakuList,
                     (uint)Int(breakdownValue, "doraCount"),
                     (uint)Int(breakdownValue, "uraCount"),
-                    Ints(breakdownValue.GetProperty("uraTiles")).Select(tile => (uint)tile).ToArray(),
-                    Ints(breakdownValue.GetProperty("uraHitTiles")).Select(tile => (uint)tile).ToArray(),
+                    includeUraIdentities
+                        ? Ints(breakdownValue.GetProperty("uraTiles")).Select(tile => (uint)tile).ToArray()
+                        : Array.Empty<uint>(),
+                    includeUraIdentities
+                        ? Ints(breakdownValue.GetProperty("uraHitTiles")).Select(tile => (uint)tile).ToArray()
+                        : Array.Empty<uint>(),
                     uraAuthorized);
             }
 
@@ -832,104 +829,176 @@ namespace Mahjong.TableRuntime.Tests
                 roundNumber: roundNumber);
         }
 
-        private static List<ProtocolEventRecord> MapAll(
-            IReadOnlyList<TableProjectedEvent> projected,
-            List<FixtureEvent> fixtures,
-            bool includeBreakdown,
-            bool uraAuthorized)
-        {
-            Assert.Equal(projected.Count, fixtures.Count);
-            var result = new List<ProtocolEventRecord>(projected.Count);
-            for (int index = 0; index < projected.Count; index++)
-            {
-                result.Add(TableProjectionContractMapper.MapEvent(
-                    projected[index],
-                    Facts(fixtures[index], uraAuthorized, includeBreakdown)));
-            }
-
-            return result;
-        }
-
-        private static List<ProtocolEventRecord> SettlementTyped(
-            IReadOnlyList<TableProjectedEvent> projected,
-            List<FixtureEvent> fixtures,
-            bool includeBreakdown,
-            bool uraAuthorized)
-        {
-            var result = new List<ProtocolEventRecord>();
-            for (int index = 0; index < projected.Count; index++)
-            {
-                TableProjectedEvent value = projected[index];
-                bool settlement = value.Type == ProtocolEventType.TsumoWin ||
-                                  value.Type == ProtocolEventType.RonWin ||
-                                  value.Type == ProtocolEventType.DrawGame ||
-                                  value.Type == ProtocolEventType.ScoreSettled ||
-                                  value.Type == ProtocolEventType.RoundEnded ||
-                                  value.Type == ProtocolEventType.MatchEnded ||
-                                  (value.Type == ProtocolEventType.DoraRevealed && value.IsUraDora);
-                if (!settlement)
-                {
-                    continue;
-                }
-
-                result.Add(TableProjectionContractMapper.MapEvent(
-                    value,
-                    Facts(fixtures[index], uraAuthorized, includeBreakdown)));
-            }
-
-            return result;
-        }
-
-        private static void AssertScenarioEvents(
+        private static List<ProtocolEventRecord> AssertScenarioEvents(
             JsonElement expected,
             List<FixtureEvent> fixtures,
             TableProjectionAudience audience,
-            TableProjectionPolicy policy)
+            TableProjectionPolicy policy,
+            bool uraAuthorized = false,
+            bool includeBreakdown = false,
+            bool includeUraIdentities = false,
+            JsonElement? canonicalBreakdown = null)
         {
             List<TableEventProjectionInput> inputs = fixtures.Select(value => value.Input).ToList();
             IReadOnlyList<TableProjectedEvent> projected = TableEventProjection.ProjectMany(inputs, audience, policy);
             AssertEventList(expected, projected);
             List<FixtureEvent> visible = VisibleFixtures(fixtures, audience, policy);
             Assert.Equal(projected.Count, visible.Count);
+            var records = new List<ProtocolEventRecord>(projected.Count);
             for (int index = 0; index < projected.Count; index++)
             {
                 JsonElement descriptor = expected[index];
                 ProtocolEventRecord record = TableProjectionContractMapper.MapEvent(
                     projected[index],
-                    Facts(visible[index], projected[index].IsUraDora, includeBreakdown: true));
-                ProjectedEventPayload payload = record.ProjectionPayload!;
-                Assert.Equal((uint)Int(descriptor, "turnNumber"), payload.TurnNumber);
-                Assert.Equal(Int(descriptor, "seat"), payload.Seat);
-                Assert.Equal(
-                    Ints(descriptor.GetProperty("tileIds")).Select(tile => (uint)tile),
-                    payload.TileIds);
-                if (descriptor.TryGetProperty("fromSeat", out JsonElement fromSeat))
-                {
-                    Assert.Equal(fromSeat.GetInt32(), payload.FromSeat);
-                }
+                    Facts(visible[index], uraAuthorized, includeBreakdown, includeUraIdentities));
+                AssertPayload(descriptor, record.ProjectionPayload!, canonicalBreakdown);
+                records.Add(record);
+            }
 
-                if (descriptor.TryGetProperty("calledTileId", out JsonElement called))
-                {
-                    Assert.NotNull(payload.Meld);
-                    Assert.Equal((uint)called.GetInt32(), payload.Meld!.CalledTileId);
-                }
+            return records;
+        }
 
-                if (descriptor.TryGetProperty("riichiDiscard", out JsonElement riichi))
-                {
-                    Assert.Equal(riichi.GetBoolean(), payload.RiichiDiscard);
-                    Assert.Equal(Bool(descriptor, "tsumogiri"), payload.Tsumogiri);
-                }
+        private static void AssertPayload(
+            JsonElement descriptor,
+            ProjectedEventPayload payload,
+            JsonElement? canonicalBreakdown)
+        {
+            Assert.Equal((uint)Int(descriptor, "turnNumber"), payload.TurnNumber);
+            Assert.Equal(Int(descriptor, "seat"), payload.Seat);
+            Assert.Equal(Ints(descriptor.GetProperty("tileIds")).Select(tile => (uint)tile), payload.TileIds);
 
-                if (descriptor.TryGetProperty("wallRemaining", out JsonElement wall))
-                {
-                    Assert.Equal((uint)wall.GetInt32(), payload.WallRemaining);
-                }
+            if (descriptor.TryGetProperty("fromSeat", out JsonElement fromSeat))
+            {
+                Assert.Equal(fromSeat.GetInt32(), payload.FromSeat);
+            }
 
-                if (descriptor.TryGetProperty("roundWind", out JsonElement wind))
-                {
-                    Assert.Equal((uint)wind.GetInt32(), payload.RoundWind);
-                    Assert.Equal((uint)Int(descriptor, "roundNumber"), payload.RoundNumber);
-                }
+            if (descriptor.TryGetProperty("calledTileId", out JsonElement called))
+            {
+                Assert.NotNull(payload.Meld);
+                Assert.Equal((uint)called.GetInt32(), payload.Meld!.CalledTileId);
+                Assert.Equal(payload.FromSeat, payload.Meld.FromSeat);
+                Assert.Equal(payload.TileIds, payload.Meld.TileIds);
+            }
+
+            if (descriptor.TryGetProperty("riichiDiscard", out JsonElement riichi))
+            {
+                Assert.Equal(riichi.GetBoolean(), payload.RiichiDiscard);
+                Assert.Equal(Bool(descriptor, "tsumogiri"), payload.Tsumogiri);
+            }
+
+            if (descriptor.TryGetProperty("wallRemaining", out JsonElement wall))
+            {
+                Assert.Equal((uint)wall.GetInt32(), payload.WallRemaining);
+            }
+
+            if (descriptor.TryGetProperty("roundWind", out JsonElement wind))
+            {
+                Assert.Equal((uint)wind.GetInt32(), payload.RoundWind);
+                Assert.Equal((uint)Int(descriptor, "roundNumber"), payload.RoundNumber);
+            }
+
+            if (descriptor.TryGetProperty("loserSeat", out JsonElement loser))
+            {
+                Assert.Equal(loser.GetInt32(), payload.LoserSeat);
+            }
+
+            if (descriptor.TryGetProperty("yaku", out JsonElement yaku))
+            {
+                AssertYaku(yaku, payload.Yaku);
+            }
+
+            if (descriptor.TryGetProperty("han", out JsonElement han))
+            {
+                Assert.Equal((uint)han.GetInt32(), payload.Han);
+            }
+
+            if (descriptor.TryGetProperty("fu", out JsonElement fu))
+            {
+                Assert.Equal((uint)fu.GetInt32(), payload.Fu);
+            }
+
+            if (descriptor.TryGetProperty("score", out JsonElement score))
+            {
+                Assert.Equal(score.GetInt64(), payload.Score);
+            }
+
+            if (descriptor.TryGetProperty("breakdown", out JsonElement descriptorBreakdown))
+            {
+                Assert.NotNull(payload.Breakdown);
+                Assert.NotNull(canonicalBreakdown);
+                AssertBreakdownShared(descriptorBreakdown, payload.Breakdown!);
+                AssertBreakdownShared(canonicalBreakdown!.Value, payload.Breakdown!);
+                AssertBreakdownAuthorization(canonicalBreakdown.Value, payload.Breakdown!);
+            }
+            else
+            {
+                Assert.Null(payload.Breakdown);
+            }
+        }
+
+        private static void AssertYaku(JsonElement expected, IReadOnlyList<YakuView> actual)
+        {
+            JsonElement.ArrayEnumerator enumerator = expected.EnumerateArray();
+            int index = 0;
+            while (enumerator.MoveNext())
+            {
+                Assert.True(index < actual.Count, "actual yaku list is shorter at " + index);
+                Assert.Equal(Str(enumerator.Current, "code"), actual[index].Code);
+                Assert.Equal((uint)Int(enumerator.Current, "han"), actual[index].Han);
+                index++;
+            }
+
+            Assert.Equal(index, actual.Count);
+        }
+
+        private static void AssertBreakdownShared(JsonElement expected, ScoreBreakdownView actual)
+        {
+            Assert.Equal((uint)Int(expected, "han"), actual.Han);
+            Assert.Equal((uint)Int(expected, "fu"), actual.Fu);
+            Assert.Equal(Int(expected, "totalPoints"), actual.TotalPoints);
+            Assert.Equal((uint)Int(expected, "doraCount"), actual.DoraCount);
+            Assert.Equal((uint)Int(expected, "uraCount"), actual.UraCount);
+            AssertYaku(expected.GetProperty("yaku"), actual.Yaku);
+            Assert.Equal(
+                Ints(expected.GetProperty("uraTiles")).Select(tile => (uint)tile),
+                actual.UraTiles);
+            Assert.Equal(
+                Ints(expected.GetProperty("uraHitTiles")).Select(tile => (uint)tile),
+                actual.UraHits);
+            Assert.Equal(
+                Int(expected, "uraHits"),
+                Ints(expected.GetProperty("uraHitTiles")).Length);
+            Assert.Equal(Int(expected, "uraHits"), actual.UraHits.Count);
+        }
+
+        private static void AssertBreakdownAuthorization(JsonElement canonical, ScoreBreakdownView actual)
+        {
+            Assert.True(canonical.TryGetProperty("uraAuthorized", out JsonElement authorized),
+                "canonical breakdown must carry the explicit V5 authorization adaptation");
+            Assert.Equal(authorized.GetBoolean(), actual.UraAuthorized);
+        }
+
+        private static List<ProtocolEventRecord> SettlementRecords(List<ProtocolEventRecord> records)
+        {
+            return records.Where(value =>
+                value.Type == ProtocolEventType.TsumoWin ||
+                value.Type == ProtocolEventType.RonWin ||
+                value.Type == ProtocolEventType.DrawGame ||
+                value.Type == ProtocolEventType.ScoreSettled ||
+                value.Type == ProtocolEventType.RoundEnded ||
+                value.Type == ProtocolEventType.MatchEnded ||
+                (value.Type == ProtocolEventType.DoraRevealed &&
+                 value.ProjectionPayload!.IsUraDora)).ToList();
+        }
+
+        private static void AssertSameSettlementRecords(
+            IReadOnlyList<ProtocolEventRecord> expected,
+            IReadOnlyList<ProtocolEventRecord> actual)
+        {
+            Assert.Equal(expected.Count, actual.Count);
+            for (int index = 0; index < expected.Count; index++)
+            {
+                Assert.Same(expected[index], actual[index]);
             }
         }
 

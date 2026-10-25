@@ -748,6 +748,167 @@ try {
             }
         },
         @{
+            Name = "negative-c-input-event-yaku"
+            Kind = "INPUT"
+            Expected = "FAIL"
+            RefreshHash = $true
+            Apply = { param($json) $json.cases[2].input.events[8].yaku[0].code = "CHANGED" }
+        },
+        @{
+            Name = "negative-c-input-breakdown-yaku"
+            Kind = "INPUT"
+            Expected = "FAIL"
+            RefreshHash = $true
+            Apply = { param($json) $json.cases[2].input.events[8].breakdown.yaku[0].code = "CHANGED" }
+        },
+        @{
+            Name = "negative-c-input-breakdown-han"
+            Kind = "INPUT"
+            Expected = "FAIL"
+            RefreshHash = $true
+            Apply = { param($json) $json.cases[2].input.events[8].breakdown.han = 9 }
+        },
+        @{
+            Name = "negative-c-input-breakdown-fu"
+            Kind = "INPUT"
+            Expected = "FAIL"
+            RefreshHash = $true
+            Apply = { param($json) $json.cases[2].input.events[8].breakdown.fu = 40 }
+        },
+        @{
+            Name = "negative-c-output-breakdown-yaku"
+            Kind = "OUTPUT"
+            Expected = "FAIL"
+            RefreshHash = $true
+            Apply = { param($json) $json.cases[2].expected.tsumoBreakdown.authorized.yaku[0].code = "CHANGED" }
+        },
+        @{
+            Name = "negative-c-output-breakdown-han"
+            Kind = "OUTPUT"
+            Expected = "FAIL"
+            RefreshHash = $true
+            Apply = { param($json) $json.cases[2].expected.tsumoBreakdown.authorized.han = 9 }
+        },
+        @{
+            Name = "negative-c-output-breakdown-fu"
+            Kind = "OUTPUT"
+            Expected = "FAIL"
+            RefreshHash = $true
+            Apply = { param($json) $json.cases[2].expected.tsumoBreakdown.authorized.fu = 40 }
+        },
+        @{
+            Name = "negative-c-output-unauth-private-ura"
+            Kind = "PRIVACY"
+            Expected = "FAIL"
+            RefreshHash = $true
+            Apply = { param($json) $json.cases[2].expected.tsumoBreakdown.unauthorized.uraTiles = @(34) }
+        },
+        @{
+            Name = "negative-c-output-unauth-private-urahits"
+            Kind = "PRIVACY"
+            Expected = "FAIL"
+            RefreshHash = $true
+            Apply = { param($json) $json.cases[2].expected.tsumoBreakdown.unauthorized.uraHitTiles = @(35) }
+        },
+        @{
+            Name = "negative-c-output-event-score"
+            Kind = "OUTPUT"
+            Expected = "FAIL"
+            RefreshHash = $true
+            Apply = { param($json) $json.cases[2].expected.settlement.authorized[4].score = 4100 }
+        },
+        @{
+            Name = "negative-c-output-event-han"
+            Kind = "OUTPUT"
+            Expected = "FAIL"
+            RefreshHash = $true
+            Apply = { param($json) $json.cases[2].expected.settlement.authorized[4].han = 9 }
+        },
+        @{
+            Name = "negative-c-output-event-fu"
+            Kind = "OUTPUT"
+            Expected = "FAIL"
+            RefreshHash = $true
+            Apply = { param($json) $json.cases[2].expected.settlement.authorized[4].fu = 40 }
+        },
+        @{
+            Name = "negative-c-output-event-yaku"
+            Kind = "OUTPUT"
+            Expected = "FAIL"
+            RefreshHash = $true
+            Apply = { param($json) $json.cases[2].expected.settlement.authorized[4].yaku[0].code = "CHANGED" }
+        },
+        @{
+            Name = "negative-c-output-event-turn"
+            Kind = "OUTPUT"
+            Expected = "FAIL"
+            RefreshHash = $true
+            Apply = { param($json) $json.cases[2].expected.settlement.authorized[4].turnNumber = 99 }
+        },
+        @{
+            Name = "negative-c-input-event-turn"
+            Kind = "INPUT"
+            Expected = "FAIL"
+            RefreshHash = $true
+            Apply = { param($json) $json.cases[2].input.events[8].turnNumber = 10 }
+        },
+        @{
+            Name = "negative-c-output-event-fromseat"
+            Kind = "OUTPUT"
+            Expected = "FAIL"
+            RefreshHash = $true
+            Apply = { param($json) $json.cases[2].expected.settlement.authorized[1].fromSeat = 2 }
+        },
+        @{
+            Name = "negative-c-output-event-called"
+            Kind = "OUTPUT"
+            Expected = "FAIL"
+            RefreshHash = $true
+            Apply = { param($json) $json.cases[2].expected.settlement.authorized[1].calledTileId = 40 }
+        },
+        @{
+            Name = "negative-c-output-event-riichi"
+            Kind = "OUTPUT"
+            Expected = "FAIL"
+            RefreshHash = $true
+            Apply = { param($json) $json.cases[2].expected.settlement.authorized[0].riichiDiscard = $true }
+        },
+        @{
+            Name = "negative-c-output-event-wind"
+            Kind = "OUTPUT"
+            Expected = "FAIL"
+            RefreshHash = $true
+            Apply = { param($json) $json.cases[2].expected.settlement.authorized[5].roundWind = 2 }
+        },
+        @{
+            Name = "negative-c-input-event-fromseat"
+            Kind = "INPUT"
+            Expected = "FAIL"
+            RefreshHash = $true
+            Apply = { param($json) $json.cases[2].input.events[5].fromSeat = 2 }
+        },
+        @{
+            Name = "negative-c-output-event-breakdown-ura"
+            Kind = "OUTPUT"
+            Expected = "FAIL"
+            RefreshHash = $true
+            Apply = { param($json) $json.cases[2].expected.settlement.authorized[4].breakdown.uraTiles[0] = 35 }
+        },
+        @{
+            Name = "negative-c-input-breakdown-authorization"
+            Kind = "INPUT"
+            Expected = "FAIL"
+            RefreshHash = $true
+            Apply = { param($json) $json.cases[2].input.events[8].breakdown.uraAuthorized = $false }
+        },
+        @{
+            Name = "negative-c-output-breakdown-authorization"
+            Kind = "OUTPUT"
+            Expected = "FAIL"
+            RefreshHash = $true
+            Apply = { param($json) $json.cases[2].expected.tsumoBreakdown.authorized.uraAuthorized = $false }
+        },
+        @{
             Name = "positive-source-only-legal-actions"
             Kind = "SOURCE_ONLY"
             Expected = "PASS"

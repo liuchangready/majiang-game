@@ -318,7 +318,7 @@ class V5VisibilityGoldenExporterTest {
         )
         // RoundEnded is a public settlement fact and is supplied in the same settlement batch.
         events.add(GameEvent.RoundEnded(10, 1, 0))
-        val inputEvents = events.map { eventDoc(it) }
+        val inputEvents = events.map { eventDoc(it, sourceAuthorization = true) }
 
         val unauthorized = PublicProjectionFactory.project(
             session = session,
@@ -370,8 +370,8 @@ class V5VisibilityGoldenExporterTest {
             (unauthorized.session.scores as MutableList<Int>)[0] = 1
         }
 
-        val breakdownFalse = breakdownDoc(unauthTsumo.breakdown)
-        val breakdownTrue = breakdownDoc(authTsumo.breakdown)
+        val breakdownFalse = breakdownDoc(unauthTsumo.breakdown, false)
+        val breakdownTrue = breakdownDoc(authTsumo.breakdown, true)
 
         return obj(
             "id" to "VIS-G057C-PUBLIC-PROJECTION",
@@ -617,9 +617,9 @@ class V5VisibilityGoldenExporterTest {
         )
     }
 
-    private fun breakdownDoc(value: ScoreBreakdown?): Map<String, Any?> {
+    private fun breakdownDoc(value: ScoreBreakdown?, uraAuthorized: Boolean?): Map<String, Any?> {
         val breakdown = value!!
-        return obj(
+        val result = linkedMapOf<String, Any?>(
             "uraTiles" to breakdown.dora.uraTiles.map { it.tileId },
             "uraHits" to breakdown.dora.uraHits.size,
             "uraHitTiles" to breakdown.dora.uraHits.flatMap { hit -> hit.tiles.map { it.tileId } },
@@ -630,9 +630,12 @@ class V5VisibilityGoldenExporterTest {
             "han" to breakdown.dora.totalHan,
             "fu" to breakdown.fu.finalFu,
             "score" to breakdown.score.totalPoints(isDealer = false, isTsumo = true),
-            "yaku" to breakdown.yakuLines.map { (code, han) -> obj("code" to code, "han" to han) },
-            "uraAuthorized" to true
+            "yaku" to breakdown.yakuLines.map { (code, han) -> obj("code" to code, "han" to han) }
         )
+        if (uraAuthorized != null) {
+            result["uraAuthorized"] = uraAuthorized
+        }
+        return result
     }
 
     private fun stateDoc(state: GameState, roundId: String): Map<String, Any?> {
@@ -808,7 +811,7 @@ class V5VisibilityGoldenExporterTest {
         "lastDiscardPlayer" to board.lastDiscardPlayer
     )
 
-    private fun eventDoc(event: GameEvent): Map<String, Any?> = when (event) {
+    private fun eventDoc(event: GameEvent, sourceAuthorization: Boolean? = null): Map<String, Any?> = when (event) {
         is GameEvent.TileDealt -> obj("kind" to "TileDealt", "turnNumber" to event.turnNumber, "seat" to event.player, "tileIds" to listOf(event.tile.tileId))
         is GameEvent.TileDrawn -> obj(
             "kind" to "TileDrawn",
@@ -870,7 +873,7 @@ class V5VisibilityGoldenExporterTest {
             "han" to event.han,
             "fu" to event.fu,
             "score" to event.score,
-            "breakdown" to breakdownDoc(event.breakdown)
+            "breakdown" to breakdownDoc(event.breakdown, sourceAuthorization)
         )
         is GameEvent.RonWin -> obj(
             "kind" to "RonWin",
@@ -1189,8 +1192,19 @@ class V5VisibilityGoldenExporterTest {
                 "through TableProjectionContractMapper.MapEvent payloads. V4 settlementEvents implies V5 SettlementBatch=true."
         ),
         "discardMapping" to "V4 river list index -> V5 DiscardView turnNumber=index. TileDiscarded riichiDiscard/tsumogiri flags are mapped as explicit facts and compared; only the per-river turnNumber assignment is a representation choice.",
-        "scoreMapping" to "V4 Int score -> V5 long ScoreView.Score, value-preserving; TsumoWin breakdown maps through ScoreBreakdownView with explicit ura authorization.",
+        "scoreMapping" to (
+            "V4 Int score -> V5 long ScoreView.Score, value-preserving. TsumoWin breakdown maps " +
+                "Han/Fu/TotalPoints/Yaku/DoraCount/UraCount/UraTiles/UraHits through ScoreBreakdownView. " +
+                "V4 breakdown.indicatorTiles/breakdown.score have no same-shape V5 field (SOURCE_ONLY); " +
+                "V4 uraHits group count is cross-checked against the flattened uraHitTiles list."
+        ),
         "ownerMapping" to "V4 mySleeveTiles -> TableOwnerPrivateView.SleeveTiles -> MapPlayerSnapshot -> PrivatePlayerView.SleeveTiles for the owner; V4 meld metadata -> TableOwnerMeldView -> MeldView. Other seats/spectator never receive them.",
+        "authorizationMapping" to (
+            "uraAuthorized is not a V4 ScoreBreakdown property. The raw fixture event carries an explicit " +
+                "source-authorization adapter flag (true when raw ura identities are present); the C# caller " +
+                "chooses per-branch authorization and the expected canonical blocks record true/false. " +
+                "Raw identities with source authorization false are rejected; the mapper never strips automatically."
+        ),
         "versionMapping" to "V5 state_version/event_seq/stream cursor are explicit fixture inputs; V4 PlayerView has no equivalent and they are STRUCTURE only, never compared to V4 values."
     )
 
@@ -1202,6 +1216,7 @@ class V5VisibilityGoldenExporterTest {
             "state.discards[][]", "state.hands[] (closed/drawn/sleeve/furiten/discardHistory)", "state.lastDiscard",
             "state.privateCheat (points + entryId/seat/amount/balanceAfter/reason)",
             "events[] (kind/turn/seat/tiles/ura/fromSeat/calledTileId/flags/wallRemaining/round fields/yaku/han/fu/score/breakdown)",
+            "events[].breakdown.uraAuthorized (explicit source-authorization adapter, not a V4 field)",
             "clock (seat/opensAt/deadline/reserve/serverNow)", "viewerSeat", "legalActions",
             "settlementEvents", "revealSettlementUra", "policy flags"
         ),
@@ -1209,10 +1224,12 @@ class V5VisibilityGoldenExporterTest {
             "expected.snapshot.* (V4 PlayerView)", "expected.seatViews.* (V4 PlayerView per seat)",
             "expected.updateVisibleEventsAfterProducerClear", "expected.visibility.*",
             "expected.board.*", "expected.session.lifecycle/scores/roundRecords/finalResult",
-            "expected.settlement.unauthorized/authorized", "expected.tsumoBreakdown.*",
+            "expected.settlement.unauthorized/authorized", "expected.tsumoBreakdown.* (canonical branch + authorization)",
             "expected.spectatorBoard.*", "expected.hiddenTileIds.* (negative privacy expectations)",
-            "mapped MapEvent payload TurnNumber/Seat/TileIds/Meld/FromSeat/flags/WallRemaining/Round fields/Yaku/Han/Fu/Score/Breakdown",
-            "mapped MapPlayerSnapshot Private.SleeveTiles/OwnerMelds/Cheat ledger"
+            "mapped MapEvent payload TurnNumber/Seat/TileIds/Meld/FromSeat/flags/WallRemaining/Round fields/Yaku/Han/Fu/Score",
+            "mapped Breakdown Han/Fu/TotalPoints/Yaku/DoraCount/UraCount/UraTiles/UraHits/UraAuthorized",
+            "mapped MapPlayerSnapshot Private.SleeveTiles/OwnerMelds/Cheat ledger",
+            "MapPublicSnapshot typed settlement records are identity-preserved from the fully compared MapEvent records"
         ),
         "STRUCTURE" to listOf(
             "exactly 136 unique physical entities per state", "unique tile ids 0..135",
@@ -1220,7 +1237,7 @@ class V5VisibilityGoldenExporterTest {
             "currentPlayer == dealerSeat for CreateDealt", "wallRemaining == dense wall count",
             "dead wall = 14 tiles", "dora indicator in dead-wall slot >= 4",
             "wall indices < WallEndExclusive", "four scores/four seats", "case id uniqueness",
-            "event turn order", "cheat balanceAfter == seat points",
+            "event turn order", "cheat balanceAfter == seat points", "breakdown uraHits count == uraHitTiles length",
             "G-row mapping", "V5 state_version/event_seq/stream cursor"
         ),
         "META" to listOf(
@@ -1234,7 +1251,9 @@ class V5VisibilityGoldenExporterTest {
             "state.kanCount", "sourceOnly.v4DeadWall", "sourceOnly.drawSource",
             "sourceOnly.legalActions", "sourceOnly.sessionUpdateWholesaleCopy",
             "sourceOnly.v4CheatPointsChangedVisibilityCounts",
-            "V4 raw event turn numbers as wire turn values (mapped, but V4-only source anchor)"
+            "breakdown.indicatorTiles (V5 ScoreBreakdownView has no indicator list; board dora is separate)",
+            "breakdown.score (V5 payload has event Score, not a breakdown-specific score field)",
+            "V4 breakdown.uraHits group count (cross-checked against V5 UraHits tile list, not a separate V5 field)"
         ),
         "UNREPRESENTABLE" to listOf(
             "V4 legalActions -> V5 Policy/DecisionView (P3.3 supplies it; no same-shape field)",
