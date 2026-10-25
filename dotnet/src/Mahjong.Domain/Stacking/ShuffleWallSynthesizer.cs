@@ -15,7 +15,12 @@ namespace Mahjong.Domain.Stacking
         InvalidPlanSeat = 5,
         DuplicatePlanSeat = 6,
         TraceExhausted = 7,
-        TraceNotFullyConsumed = 8
+        TraceNotFullyConsumed = 8,
+
+        // 以下为 typed 记录入口新增值；保留 0..8 的既有数值语义。
+        InvalidTypedTrace = 9,
+        UnexpectedTypedDrawKind = 10,
+        TypedDrawBoundMismatch = 11
     }
 
     /// <summary>结构化失败信息。</summary>
@@ -47,18 +52,22 @@ namespace Mahjong.Domain.Stacking
     /// </summary>
     public sealed class ShuffleSynthesisResult
     {
+        private readonly IReadOnlyList<ShuffleTypedRandomDraw> _randomRequests;
+
         private ShuffleSynthesisResult(
             bool isSuccess,
             RecordedRandomDraw? wall,
             ShuffleSynthesisError? error,
             int consumedRandomCount,
-            int activePlanCount)
+            int activePlanCount,
+            IReadOnlyList<ShuffleTypedRandomDraw>? randomRequests)
         {
             IsSuccess = isSuccess;
             Wall = wall;
             Error = error;
             ConsumedRandomCount = consumedRandomCount;
             ActivePlanCount = activePlanCount;
+            _randomRequests = Freeze(randomRequests);
         }
 
         public bool IsSuccess { get; }
@@ -74,14 +83,36 @@ namespace Mahjong.Domain.Stacking
         /// <summary>有效施术人数 n（target 非空的活跃方案数）。</summary>
         public int ActivePlanCount { get; }
 
-        public static ShuffleSynthesisResult Success(RecordedRandomDraw wall, int consumedRandomCount, int activePlanCount)
+        /// <summary>
+        /// 本次合成实际接受的随机请求序列（诊断/兼容性证据）。
+        ///
+        /// 对既有 double-only 入口，它把每次 Fisher-Yates 的 floor 选择记录为
+        /// nextInt(bound, result)，把每次概率/供体选择记录为 nextDouble(value)；
+        /// 对 typed 入口，它逐项等于来源记录中被消费的事件。失败时也报告已消费的前缀。
+        /// 这是 C# 执行请求的只读快照，不是 V4 黄金样本，也不证明跨运行时行为一致。
+        /// </summary>
+        public IReadOnlyList<ShuffleTypedRandomDraw> RandomRequests => _randomRequests;
+
+        public static ShuffleSynthesisResult Success(
+            RecordedRandomDraw wall,
+            int consumedRandomCount,
+            int activePlanCount)
+        {
+            return Success(wall, consumedRandomCount, activePlanCount, null);
+        }
+
+        public static ShuffleSynthesisResult Success(
+            RecordedRandomDraw wall,
+            int consumedRandomCount,
+            int activePlanCount,
+            IReadOnlyList<ShuffleTypedRandomDraw>? randomRequests)
         {
             if (wall == null)
             {
                 throw new ArgumentNullException(nameof(wall));
             }
 
-            return new ShuffleSynthesisResult(true, wall, null, consumedRandomCount, activePlanCount);
+            return new ShuffleSynthesisResult(true, wall, null, consumedRandomCount, activePlanCount, randomRequests);
         }
 
         public static ShuffleSynthesisResult Failure(
@@ -90,7 +121,40 @@ namespace Mahjong.Domain.Stacking
             int consumedRandomCount,
             int activePlanCount)
         {
-            return new ShuffleSynthesisResult(false, null, new ShuffleSynthesisError(code, message), consumedRandomCount, activePlanCount);
+            return Failure(code, message, consumedRandomCount, activePlanCount, null);
+        }
+
+        public static ShuffleSynthesisResult Failure(
+            ShuffleSynthesisErrorCode code,
+            string message,
+            int consumedRandomCount,
+            int activePlanCount,
+            IReadOnlyList<ShuffleTypedRandomDraw>? randomRequests)
+        {
+            return new ShuffleSynthesisResult(
+                false,
+                null,
+                new ShuffleSynthesisError(code, message),
+                consumedRandomCount,
+                activePlanCount,
+                randomRequests);
+        }
+
+        private static IReadOnlyList<ShuffleTypedRandomDraw> Freeze(
+            IReadOnlyList<ShuffleTypedRandomDraw>? randomRequests)
+        {
+            if (randomRequests == null || randomRequests.Count == 0)
+            {
+                return Array.Empty<ShuffleTypedRandomDraw>();
+            }
+
+            var copy = new ShuffleTypedRandomDraw[randomRequests.Count];
+            for (int i = 0; i < randomRequests.Count; i++)
+            {
+                copy[i] = randomRequests[i];
+            }
+
+            return Array.AsReadOnly(copy);
         }
     }
 
@@ -99,12 +163,14 @@ namespace Mahjong.Domain.Stacking
     ///
     /// V4 <c>com.majiang.stacking.ShuffleWallGenerator</c> 决策协议的逐值移植，唯一差异是
     /// 随机来源：V4 用 <c>Random(seed)</c> 内部派生（JVM 专属，开放决策 D-09），V5 依照
-    /// “随机结果作为明确输入记录”的契约改由 <see cref="ShuffleRandomTrace"/> 供给，
-    /// 每个随机决策按固定顺序消耗一个记录值：
-    /// - 席位/槽位洗牌：Fisher-Yates，长度 m 的序列消耗 m-1 个值；
+    /// “随机结果作为明确输入记录”的契约改由 <see cref="ShuffleRandomTrace"/> 或
+    /// <see cref="ShuffleTypedRandomTrace"/> 供给。两个入口共享同一决策算法：
+    /// - 席位/槽位洗牌：Fisher-Yates，长度 m 的序列消耗 m-1 个有界整数决策（bound = i + 1）；
     /// - 小数额度最后一搏：<c>double >= remaining</c> 则放弃；
     /// - 熟练度判定：<c>double >= strength</c> 则跳过该槽；
     /// - 供体抽样：<c>double * totalWeight</c> 做 Delta^2 加权选择。
+    /// 既有 double-only 入口把这些有界决策保持为 floor(double * (i + 1)) 以维持旧结果；
+    /// typed 入口直接消费 nextInt(bound) 的整数结果，避免把 int 伪装成 double。
     /// 轨迹消耗必须恰好用尽：不足/多余都是记录与输入不匹配的失败。
     ///
     /// 核心设计与物理守恒规则（与 V4 KDoc 一致）：
@@ -205,9 +271,10 @@ namespace Mahjong.Domain.Stacking
                 }
             }
 
+            var reader = new DoubleTraceReader(recordedDoubles);
             try
             {
-                return ShapeValidated(recordId, baseWallOrder, recordedDoubles, dealerSeat, plans, config);
+                return ShapeValidated(recordId, baseWallOrder, reader, dealerSeat, plans, config);
             }
             catch (TraceExhaustedSignal)
             {
@@ -215,7 +282,8 @@ namespace Mahjong.Domain.Stacking
                     ShuffleSynthesisErrorCode.TraceExhausted,
                     "recorded doubles exhausted before synthesis completed; the record does not match this input.",
                     0,
-                    0);
+                    0,
+                    reader.Requests);
             }
         }
 
@@ -234,10 +302,129 @@ namespace Mahjong.Domain.Stacking
             return Shape(trace.RecordId, trace.BaseWall.WallOrder, trace.Doubles, dealerSeat, plans, config);
         }
 
+        /// <summary>
+        /// 从有序 typed 随机记录回放（D-R1-02 seam）。
+        ///
+        /// 与既有 double-only 入口共享同一合成算法，但随机消费严格按类型：
+        /// - Fisher-Yates 每次消耗 <c>nextInt(i + 1)</c> 并直接使用整数结果；
+        /// - 小数额度最后一搏、熟练度判定、供体 Delta^2 抽样消耗 <c>nextDouble()</c>。
+        /// 不会把 int 伪装成 double 再 floor，也不会搜索/跳过不匹配事件。kind 或 bound
+        /// 不匹配、记录不足或多余都返回结构化失败，<see cref="ShuffleSynthesisResult.Wall"/>
+        /// 为 null，输入记录不被修改。ConsumedRandomCount 是在失败前已成功匹配并应用的
+        /// 事件数（不包含触发失败的那个事件）。
+        /// </summary>
+        public static ShuffleSynthesisResult ShapeWithTypedRandomTrace(
+            ShuffleTypedRandomTrace trace,
+            int dealerSeat,
+            IReadOnlyList<SeatShufflePlan> plans,
+            ShuffleConfig config)
+        {
+            if (config == null)
+            {
+                throw new ArgumentNullException(nameof(config));
+            }
+
+            if (trace == null)
+            {
+                throw new ArgumentNullException(nameof(trace));
+            }
+
+            if (dealerSeat < 0 || dealerSeat > 3)
+            {
+                return Failure(
+                    ShuffleSynthesisErrorCode.InvalidDealerSeat,
+                    "dealerSeat must be 0..3, got " + dealerSeat.ToString(CultureInfo.InvariantCulture) + ".",
+                    0,
+                    0);
+            }
+
+            if (plans == null)
+            {
+                return Failure(ShuffleSynthesisErrorCode.InvalidPlanSeat, "plans must not be null.", 0, 0);
+            }
+
+            for (int i = 0; i < plans.Count; i++)
+            {
+                SeatShufflePlan? plan = plans[i];
+                if (plan == null || plan.Seat < 0 || plan.Seat > 3)
+                {
+                    return Failure(
+                        ShuffleSynthesisErrorCode.InvalidPlanSeat,
+                        "plan at index " + i.ToString(CultureInfo.InvariantCulture) + " has an invalid seat.",
+                        0,
+                        0);
+                }
+            }
+
+            for (int i = 0; i < plans.Count; i++)
+            {
+                for (int j = i + 1; j < plans.Count; j++)
+                {
+                    if (plans[i].Seat == plans[j].Seat)
+                    {
+                        return Failure(
+                            ShuffleSynthesisErrorCode.DuplicatePlanSeat,
+                            "duplicate plan seat " + plans[i].Seat.ToString(CultureInfo.InvariantCulture) + ".",
+                            0,
+                            0);
+                    }
+                }
+            }
+
+            var reader = new TypedTraceReader(trace);
+            try
+            {
+                return ShapeValidated(trace.RecordId, trace.BaseWall.WallOrder, reader, dealerSeat, plans, config);
+            }
+            catch (TypedTraceExhaustedSignal)
+            {
+                return Failure(
+                    ShuffleSynthesisErrorCode.TraceExhausted,
+                    "typed random draws exhausted before synthesis completed; the record does not match this input.",
+                    reader.Position,
+                    0,
+                    reader.Requests);
+            }
+            catch (TypedTraceMismatchSignal mismatch)
+            {
+                return Failure(mismatch.Code, mismatch.Message, reader.Position, 0, reader.Requests);
+            }
+        }
+
+        /// <summary>
+        /// 从未校验的 typed 事件原始列表回放。记录级非法字段（未知 kind、非法 bound/result、
+        /// NaN/Infinity、空/重复基础墙）返回 <see cref="ShuffleSynthesisErrorCode.InvalidTypedTrace"/>，
+        /// 不创建部分记录，也不产生牌山。
+        /// </summary>
+        public static ShuffleSynthesisResult ShapeWithTypedRandomTrace(
+            string recordId,
+            IReadOnlyList<TileId> baseWallOrder,
+            IReadOnlyList<ShuffleTypedRandomEvent> draws,
+            int dealerSeat,
+            IReadOnlyList<SeatShufflePlan> plans,
+            ShuffleConfig config)
+        {
+            if (config == null)
+            {
+                throw new ArgumentNullException(nameof(config));
+            }
+
+            if (!ShuffleTypedRandomTrace.TryCreate(recordId, baseWallOrder, draws, out ShuffleTypedRandomTrace? trace, out string? error))
+            {
+                return Failure(
+                    ShuffleSynthesisErrorCode.InvalidTypedTrace,
+                    error ?? "invalid typed shuffle random trace.",
+                    0,
+                    0);
+            }
+
+            return ShapeWithTypedRandomTrace(trace!, dealerSeat, plans, config);
+        }
+
         private static ShuffleSynthesisResult ShapeValidated(
             string recordId,
             IReadOnlyList<TileId> baseWallOrder,
-            IReadOnlyList<double> recordedDoubles,
+            IRandomDecisionSource reader,
             int dealerSeat,
             IReadOnlyList<SeatShufflePlan> plans,
             ShuffleConfig config)
@@ -270,18 +457,18 @@ namespace Mahjong.Domain.Stacking
             // 记录序列必须为空——多余值意味着记录与输入不匹配（回放契约与正常路径一致）。
             if (active.Count == 0)
             {
-                if (recordedDoubles.Count != 0)
+                if (reader.Count != 0)
                 {
                     return ShuffleSynthesisResult.Failure(
                         ShuffleSynthesisErrorCode.TraceNotFullyConsumed,
-                        "recorded doubles not fully consumed: consumed 0 of " +
-                        recordedDoubles.Count.ToString(CultureInfo.InvariantCulture) +
+                        reader.TraceLabel + " not fully consumed: consumed 0 of " +
+                        reader.Count.ToString(CultureInfo.InvariantCulture) +
                         "; the record does not match this input.",
                         0,
                         0);
                 }
 
-                return ShuffleSynthesisResult.Success(RecordedRandomDraw.Create(recordId, wall), 0, 0);
+                return ShuffleSynthesisResult.Success(RecordedRandomDraw.Create(recordId, wall), 0, 0, reader.Requests);
             }
 
             int n = active.Count;
@@ -290,21 +477,19 @@ namespace Mahjong.Domain.Stacking
             // 同样必须拒绝多余记录值。
             if (n == 4)
             {
-                if (recordedDoubles.Count != 0)
+                if (reader.Count != 0)
                 {
                     return ShuffleSynthesisResult.Failure(
                         ShuffleSynthesisErrorCode.TraceNotFullyConsumed,
-                        "recorded doubles not fully consumed: consumed 0 of " +
-                        recordedDoubles.Count.ToString(CultureInfo.InvariantCulture) +
+                        reader.TraceLabel + " not fully consumed: consumed 0 of " +
+                        reader.Count.ToString(CultureInfo.InvariantCulture) +
                         "; the record does not match this input.",
                         0,
                         4);
                 }
 
-                return ShuffleSynthesisResult.Success(RecordedRandomDraw.Create(recordId, wall), 0, 4);
+                return ShuffleSynthesisResult.Success(RecordedRandomDraw.Create(recordId, wall), 0, 4, reader.Requests);
             }
-
-            TraceReader reader = new TraceReader(recordedDoubles);
 
             // 同目标桌按目标取覆盖档；存在异目标时全桌改用混合专用档。
             bool mixedTargetTable = CountDistinctTargets(active) > 1;
@@ -396,7 +581,7 @@ namespace Mahjong.Domain.Stacking
                     }
 
                     // 异目标额度可能是小数：按剩余额度概率允许最后一次尝试，得到期望额度。
-                    if (remaining < 1.0 && reader.Next() >= remaining)
+                    if (remaining < 1.0 && reader.NextDouble() >= remaining)
                     {
                         break;
                     }
@@ -404,7 +589,7 @@ namespace Mahjong.Domain.Stacking
                     committedSlots.Add(targetSlot);
 
                     // 有效熟练度只决定一次“正收益交换尝试”是否发生；失败不耗成功额度。
-                    if (reader.Next() >= strength)
+                    if (reader.NextDouble() >= strength)
                     {
                         continue;
                     }
@@ -460,13 +645,13 @@ namespace Mahjong.Domain.Stacking
                         break;
                     }
 
-                    if (remaining < 1.0 && reader.Next() >= remaining)
+                    if (remaining < 1.0 && reader.NextDouble() >= remaining)
                     {
                         break;
                     }
 
                     committedSlots.Add(targetSlot);
-                    if (reader.Next() >= strength)
+                    if (reader.NextDouble() >= strength)
                     {
                         continue;
                     }
@@ -497,18 +682,20 @@ namespace Mahjong.Domain.Stacking
             }
 
             // V5 回放协议：轨迹必须恰好用尽，不足/多余都意味着记录与输入不匹配。
-            if (reader.Index != recordedDoubles.Count)
+            if (reader.Position != reader.Count)
             {
                 return ShuffleSynthesisResult.Failure(
                     ShuffleSynthesisErrorCode.TraceNotFullyConsumed,
-                    "recorded doubles not fully consumed: consumed " +
-                    reader.Index.ToString(CultureInfo.InvariantCulture) + " of " +
-                    recordedDoubles.Count.ToString(CultureInfo.InvariantCulture) + "; the record does not match this input.",
-                    reader.Index,
-                    n);
+                    reader.TraceLabel + " not fully consumed: consumed " +
+                    reader.Position.ToString(CultureInfo.InvariantCulture) + " of " +
+                    reader.Count.ToString(CultureInfo.InvariantCulture) + "; the record does not match this input.",
+                    reader.Position,
+                    n,
+                    reader.Requests);
             }
 
-            return ShuffleSynthesisResult.Success(RecordedRandomDraw.Create(recordId, wall), reader.Index, n);
+            return ShuffleSynthesisResult.Success(
+                RecordedRandomDraw.Create(recordId, wall), reader.Position, n, reader.Requests);
         }
 
         /// <summary>公开效用评估（供测试与工具复用；与 V4 evaluateTile 逐值一致）。</summary>
@@ -675,7 +862,7 @@ namespace Mahjong.Domain.Stacking
             Dictionary<int, SeatShufflePlan> planBySeat,
             Dictionary<int, int[]> initialSlotsMap,
             Dictionary<int, int[]> drawSlotsMap,
-            TraceReader reader)
+            IRandomDecisionSource reader)
         {
             TileId currentTile = wall[targetSlot];
             double currentUtil = EvaluateTile(currentTile, target, contextTiles);
@@ -746,7 +933,7 @@ namespace Mahjong.Domain.Stacking
                 return false;
             }
 
-            double pick = reader.Next() * totalWeight;
+            double pick = reader.NextDouble() * totalWeight;
             int chosen = candidateSlots[0];
             for (int i = 0; i < candidateSlots.Count; i++)
             {
@@ -945,19 +1132,15 @@ namespace Mahjong.Domain.Stacking
         }
 
         /// <summary>
-        /// V5 洗牌协议：Fisher-Yates，长度 m 的序列消耗 m-1 个记录值（m &lt;= 1 消耗 0 个）。
+        /// V5 洗牌协议：Fisher-Yates，长度 m 的序列消耗 m-1 个有界整数决策（m &lt;= 1 消耗 0 个）。
+        /// typed 入口直接使用 nextInt(i + 1) 的整数结果；legacy 入口在
+        /// <see cref="DoubleTraceReader.NextInt"/> 内保持原有的 floor(double * (i + 1)) 语义。
         /// </summary>
-        private static void ShuffledInPlace(int[] items, TraceReader reader)
+        private static void ShuffledInPlace(int[] items, IRandomDecisionSource reader)
         {
             for (int i = items.Length - 1; i >= 1; i--)
             {
-                double pick = reader.Next();
-                int j = (int)(pick * (i + 1));
-                if (j > i)
-                {
-                    j = i;
-                }
-
+                int j = reader.NextInt(i + 1);
                 int temp = items[i];
                 items[i] = items[j];
                 items[j] = temp;
@@ -1017,12 +1200,13 @@ namespace Mahjong.Domain.Stacking
             ShuffleSynthesisErrorCode code,
             string message,
             int consumedRandomCount,
-            int activePlanCount)
+            int activePlanCount,
+            IReadOnlyList<ShuffleTypedRandomDraw>? randomRequests = null)
         {
-            return ShuffleSynthesisResult.Failure(code, message, consumedRandomCount, activePlanCount);
+            return ShuffleSynthesisResult.Failure(code, message, consumedRandomCount, activePlanCount, randomRequests);
         }
 
-        /// <summary>轨迹耗尽的内部信号；在 <see cref="Shape(string, IReadOnlyList{TileId}, IReadOnlyList{double}, int, IReadOnlyList{SeatShufflePlan}, ShuffleConfig)"/> 边界转为结构化失败。</summary>
+        /// <summary>轨迹耗尽的内部信号；在既有 double-only 入口边界转为结构化失败。</summary>
         private sealed class TraceExhaustedSignal : Exception
         {
             public TraceExhaustedSignal()
@@ -1031,19 +1215,82 @@ namespace Mahjong.Domain.Stacking
             }
         }
 
-        private sealed class TraceReader
+        /// <summary>
+        /// 合成算法的唯一随机消费面。typed 与 legacy 入口只在“如何取得下一个值”上不同，
+        /// 决策顺序、槽位/供体选择、预算与失败边界全部共享同一实现。
+        /// </summary>
+        private interface IRandomDecisionSource
+        {
+            /// <summary>记录中的事件/值总数。</summary>
+            int Count { get; }
+
+            /// <summary>已经成功匹配并应用的事件/值数量。</summary>
+            int Position { get; }
+
+            /// <summary>错误消息中使用的记录名称（legacy: recorded doubles；typed: typed random draws）。</summary>
+            string TraceLabel { get; }
+
+            /// <summary>已应用请求的只读快照。</summary>
+            IReadOnlyList<ShuffleTypedRandomDraw> Requests { get; }
+
+            int NextInt(int bound);
+
+            double NextDouble();
+        }
+
+        /// <summary>
+        /// 既有 double-only 记录适配器：保持原语义，以 floor(pick * bound) 实现有界选择；
+        /// 同时把每次实际请求记录为 typed draw，供兼容性测试核对。
+        /// </summary>
+        private sealed class DoubleTraceReader : IRandomDecisionSource
         {
             private readonly IReadOnlyList<double> _values;
+            private readonly List<ShuffleTypedRandomDraw> _requests = new List<ShuffleTypedRandomDraw>();
             private int _index;
 
-            internal TraceReader(IReadOnlyList<double> values)
+            internal DoubleTraceReader(IReadOnlyList<double> values)
             {
                 _values = values;
             }
 
-            internal int Index => _index;
+            public int Count => _values.Count;
 
-            internal double Next()
+            public int Position => _index;
+
+            public string TraceLabel => "recorded doubles";
+
+            public IReadOnlyList<ShuffleTypedRandomDraw> Requests => _requests;
+
+            public int NextInt(int bound)
+            {
+                if (bound <= 0)
+                {
+                    throw new ArgumentOutOfRangeException(nameof(bound), bound, "nextInt bound must be positive.");
+                }
+
+                double pick = ReadRaw();
+                int result = (int)(pick * bound);
+                if (result < 0)
+                {
+                    result = 0;
+                }
+                else if (result >= bound)
+                {
+                    result = bound - 1;
+                }
+
+                _requests.Add(ShuffleTypedRandomDraw.NextInt(bound, result));
+                return result;
+            }
+
+            public double NextDouble()
+            {
+                double value = ReadRaw();
+                _requests.Add(ShuffleTypedRandomDraw.NextDouble(value));
+                return value;
+            }
+
+            private double ReadRaw()
             {
                 if (_index >= _values.Count)
                 {
@@ -1054,6 +1301,102 @@ namespace Mahjong.Domain.Stacking
                 _index++;
                 return value;
             }
+        }
+
+        /// <summary>
+        /// 有序 typed 记录读取器：严格按位置消费，kind/bound 必须与算法请求完全一致；
+        /// 不搜索、不跳过、不重排。失败事件不计入 Position（即“已消费”数量）。
+        /// </summary>
+        private sealed class TypedTraceReader : IRandomDecisionSource
+        {
+            private readonly ShuffleTypedRandomTrace _trace;
+            private readonly List<ShuffleTypedRandomDraw> _requests = new List<ShuffleTypedRandomDraw>();
+            private int _index;
+
+            internal TypedTraceReader(ShuffleTypedRandomTrace trace)
+            {
+                _trace = trace;
+            }
+
+            public int Count => _trace.Count;
+
+            public int Position => _index;
+
+            public string TraceLabel => "typed random draws";
+
+            public IReadOnlyList<ShuffleTypedRandomDraw> Requests => _requests;
+
+            public int NextInt(int bound)
+            {
+                if (_index >= _trace.Count)
+                {
+                    throw new TypedTraceExhaustedSignal();
+                }
+
+                ShuffleTypedRandomDraw draw = _trace.Draws[_index];
+                if (draw.Kind != ShuffleTypedRandomDrawKind.NextInt)
+                {
+                    throw new TypedTraceMismatchSignal(
+                        ShuffleSynthesisErrorCode.UnexpectedTypedDrawKind,
+                        "typed draw at index " + _index.ToString(CultureInfo.InvariantCulture) +
+                        " must be nextInt(bound=" + bound.ToString(CultureInfo.InvariantCulture) +
+                        ") but was " + draw + ".");
+                }
+
+                if (draw.Bound != bound)
+                {
+                    throw new TypedTraceMismatchSignal(
+                        ShuffleSynthesisErrorCode.TypedDrawBoundMismatch,
+                        "typed draw at index " + _index.ToString(CultureInfo.InvariantCulture) +
+                        " nextInt bound mismatch: expected " + bound.ToString(CultureInfo.InvariantCulture) +
+                        ", got " + draw.Bound.ToString(CultureInfo.InvariantCulture) +
+                        " (result=" + draw.Result.ToString(CultureInfo.InvariantCulture) + ").");
+                }
+
+                _index++;
+                _requests.Add(draw);
+                return draw.Result;
+            }
+
+            public double NextDouble()
+            {
+                if (_index >= _trace.Count)
+                {
+                    throw new TypedTraceExhaustedSignal();
+                }
+
+                ShuffleTypedRandomDraw draw = _trace.Draws[_index];
+                if (draw.Kind != ShuffleTypedRandomDrawKind.NextDouble)
+                {
+                    throw new TypedTraceMismatchSignal(
+                        ShuffleSynthesisErrorCode.UnexpectedTypedDrawKind,
+                        "typed draw at index " + _index.ToString(CultureInfo.InvariantCulture) +
+                        " must be nextDouble but was " + draw + ".");
+                }
+
+                _index++;
+                _requests.Add(draw);
+                return draw.Value;
+            }
+        }
+
+        private sealed class TypedTraceExhaustedSignal : Exception
+        {
+            public TypedTraceExhaustedSignal()
+                : base("Typed random trace exhausted.")
+            {
+            }
+        }
+
+        private sealed class TypedTraceMismatchSignal : Exception
+        {
+            public TypedTraceMismatchSignal(ShuffleSynthesisErrorCode code, string message)
+                : base(message)
+            {
+                Code = code;
+            }
+
+            public ShuffleSynthesisErrorCode Code { get; }
         }
     }
 }
