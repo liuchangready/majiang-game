@@ -1,7 +1,7 @@
 ﻿# V5 N3-A Round Golden Consumer Field Binding（RG-001 / RG-002）
 
 日期：2026-10-25
-任务：`thread_20261025_061655_e4bd` 体系下的 N3-A round-v1 黄金消费者字段绑定（第二个 DS 空位的新任务）
+任务：`thread_20261025_094642_e558` 的 N3-A round-v1 黄金消费者字段绑定（第 2 轮返修；兄弟 N1b 线程 `thread_20261025_061655_e4bd` 独立，不在本任务转派/合并）
 工作树：`D:/majiang-wt/n3-round-binding`
 分支：`wt/v5-n3-round-binding`
 冻结基线 / 交付前 HEAD：`8ef0f49f452349cfb1d7ad35cfeec8558d7075db`
@@ -13,11 +13,13 @@
 
 | 范围 | 状态 | 依据 |
 |---|---|---|
-| 本任务：RG-001 / RG-002 消费者字段与终局生命周期绑定 | **PASS（仅本范围）** | 2 个既有 Fact 真实执行真实 `RoundStateMachine` / `MatchSession`；定向 6/0/0/0；46 个负例全部 exit1；6 个 identity 保留控制 exit0；正控制原 fixture 6/0/0/0 |
+| 本任务：RG-001 / RG-002 消费者字段与终局生命周期绑定 | **PASS（仅本范围）** | 2 个既有 Fact 真实执行真实 `RoundStateMachine` / `MatchSession`；定向 6/0/0/0；60 个负例全部 exit1；6 个 identity 保留控制 exit0；正控制原 fixture 6/0/0/0 |
+| D-R1-01 三处 match/clock fallback | **PASS（已修复）** | 3 个 caller 等价探针均从 exit0 变 exit1；新增 9 个 unknown/缺失/错型负例 + 5 个同面负例全部 exit1；合法 HANCHAN/TONPUUSEN、ROUND/SESSION、NextRound/MatchFinished 正控制覆盖 |
+| D-R1-02 脚本 env 恢复 | **PASS（已修复）** | 脚本 `try/finally`；同一 PowerShell 进程中 existing/unset × normal/forced-failure 四路径全部 `ENV-RESTORE-PASS`，exit0 |
 | Release solution build `--no-incremental` | **PASS** | exit0，0 warnings / 0 errors |
 | Domain 全量 | **PASS** | 385 passed / 0 failed / 0 skipped，exit0 |
 | `RoundReplayGoldenTests` 定向 | **PASS** | Total 6 / Errors 0 / Failed 0 / Skipped 0 / Not Run 0，exit0；仍为原 6 个 Fact，无 skip、无空测试 |
-| 负例矩阵 | **PASS（预期失败）** | 46/46 negative exit1；0 unexpected pass |
+| 负例矩阵 | **PASS（预期失败）** | 60/60 negative exit1；0 unexpected pass；原 46 例全部保留 |
 | identity 保留控制 | **PASS（预期通过）** | 6/6 preservation exit0；0 unexpected failure |
 | 原始 fixture 内容 | **PASS（不可变）** | SHA256 `DF5FC5F8199C039823BAC1C668F911637EEB80E7F8A785C84D011401CF2452B7` 交付前后相同；未改 `tests/v5-golden/*` |
 | N3 整体 | **FAIL / 未完成** | 本任务只覆盖 round-v1 的 RG-001/RG-002 消费者；manifest 的 20 项 partial、G-028a 等未因本任务关闭 |
@@ -81,7 +83,8 @@ A doc/v5-重构/V5-N3-ROUND-GOLDEN-BINDING.md
    - `legalRonSeat1` 由真实 `RoundResponseWindow` 的 `IsChankan/FromSeat/TargetTile/EligibleSeats` 计算；
    - `eventTypes` 精确绑定 `ChankanWindowOpened, ResponseClaimed` 前缀 + `RonWin, ScoreSettled, RoundEnded` 终局语义；
    - `hasKanDeclared/hasRinshanDraw` 直接取 `result.Events.Contains`，`RinshanDraw -> RinshanDrawn` 名称映射，不使用“曾发生状态旗标”。
-5. 保留并强化：
+5. 严格解析 match/clock 结果类型：`MatchLength`（HANCHAN/TONPUUSEN）、`ReserveScope`（ROUND/SESSION）、`ProgressionResult` 类型（NextRound/MatchFinished）；未知值不再落入默认分支；`transferSeat` 的 null 显式映射为 -1，不再用 `?? -1` 兜底。
+6. 保留并强化：
    - `hashBefore` 在加杠窗口与 Ron 终局均不变；
    - 岭上指针/杠数/手牌数/副露数不变；
    - 版本从 0→1（RG-001）与 0→1→2（RG-002）；
@@ -116,7 +119,7 @@ C# 消费者：`RoundReplayGoldenTests.cs` 的 `RoundTerminalReplaysExactly()`�
 | `settlement.completedAtMonotonicMillis` | `:173` fixture literal | `:195,216` | fixture 提供的时间输入；真实 `CompletedAtMonotonicMillis` 保留并相等 |
 | `expected.versionAfter` | `:176` actual `round.version` | `:227` | 真实终态版本必须 1 |
 | `expected.phaseAfter` | `:177` actual `round.readState().phase.name` | `:228-230` | 严格解析 + 真实 `RoundPhase.RoundEnd` |
-| `expected.eventTypes` | `:178` actual `result.events` | `:242-258`；helper `:778-827` | 精确终局语义序列，见 §4 |
+| `expected.eventTypes` | `:178` actual `result.events` | `:242-258`；helper `:833-882` | 精确终局语义序列，见 §4 |
 | `expected.resultOutcome` | `:179` literal `Tsumo` | `:231-233` | 严格解析 + 真实 `Result.Outcome.Kind` |
 | `expected.resultFinalScores` | `:180` actual `result.finalScores` | `:235` | 与真实 `Result.FinalScores` 相等 |
 | `expected.resultDeltas` | `:181` actual `result.totalDeltas` | `:236` | 与真实 `Result.TotalDeltas` 相等 |
@@ -156,7 +159,7 @@ C# 消费者：`ChankanRonReplaysExactly()`（`:299-557`）与 helper（`:778-91
 | `expected.phaseAfterRon` | `:272` actual `round.readState().phase.name` | `:505` | 严格解析 + 真实 `RoundEnd` |
 | `expected.rinshanPointerAfterRon` | `:273` **实际写出 `afterKan.rinshanPointer`** | `:509` | 真实 Ron 后指针；见 §8.2 provenance 限制 |
 | `expected.totalKanCountAfterRon` | `:274` **实际写出 `afterKan.totalKanCount`** | `:510` | 真实 Ron 后杠数；见 §8.2 provenance 限制 |
-| `expected.eventTypes` | `:275` actual `result.events` | `:552-557`；helper `:778-827` | 精确前缀 + 终局语义 |
+| `expected.eventTypes` | `:275` actual `result.events` | `:552-557`；helper `:833-882` | 精确前缀 + 终局语义 |
 | `expected.hasKanDeclared` | `:276` `events.contains("KanDeclared")` | `:520,523` | 直接 `result.Events.Contains(KanDeclared)`，无状态旗标豁免 |
 | `expected.hasRinshanDraw` | `:277` `events.contains("RinshanDraw")` | `:521,526` | `RinshanDraw -> RinshanDrawn` 名称映射后的真实 Contains |
 | `expected.resultOutcome` | `:278` literal `Ron` | `:531-532` | 严格只接受 Ron + 真实 `Result.Outcome.Kind` |
@@ -219,7 +222,7 @@ RG-002: ChankanWindowOpened, ResponseClaimed, RonWin, RoundEnded
 
 V4 的 `GameAction.DeclareAgariYame` 在 `RoundCommandProcessor.prepare` 中由 round 终态先行拒绝；V5 C# `RoundActionKind` 不含该动作（`RoundTypes.cs:31-47`），匹配层 API 是 `MatchSession.ChooseDealerEnd`（`MatchSession.cs:498-556`）。
 
-`AssertAgariYameRejectedAfterRoundEnd`（`:840-919`）实际执行：
+`AssertAgariYameRejectedAfterRoundEnd`（`:895-960`）实际执行：
 
 1. 用同一冻结 spec/settlement 在各新 round 上真实执行到 `ROUND_END`；
 2. `MatchSession.StartSession(active)` → `AcceptRoundResult(finished.State, ...)`；
@@ -232,7 +235,31 @@ V4 的 `GameAction.DeclareAgariYame` 在 `RoundCommandProcessor.prepare` 中由 
 
 ## 7. 已知缺陷全量清单与修复映射（同类合并）
 
-以下 6 组覆盖本轮已知全部 MAJOR；未只修 caller 的 5 个探针。
+### 7.0 第 2 轮复核缺陷（本轮全部修复）
+
+本轮复核结论为 0 BLOCKER、1 MAJOR、1 MINOR；无其他已知缺陷留待下轮。以下 D-R1-01/02 为本轮新增/遗留；D01–D06 是第 1 轮已关闭项，保留映射，不重复计缺陷。
+
+#### D-R1-01 [MAJOR] match/clock 未知枚举仍 fallback，产生真实假绿
+
+- **位置（修复前）**：`RoundReplayGoldenTests.cs` 第 1 轮提交 `6c8597b` 的 `:583`（`config.length == "TONPUUSEN" ? Tonpuusen : Hanchan`）、`:609-638`（`expected.type` 的 `if NextRound / else MatchFinished`）、`:660`（`config.scope == "SESSION" ? Session : Round`）。
+- **复现**：caller 脚本 `C:/Users/sncdc/AppData/Local/Temp/codex-n3-fallback-probes.ps1`（SHA256 `FBF6D5323171E389E59E098438C2BDA6120C10FA023F0C1179AA08D5DF47FC59`），三例分别把首个 HANCHAN `length`、首个 `scope`、首个 MatchFinished `expected.type` 改为 `BOGUS`；每例独立复制原 fixture 到外部副本并调用新 DLL。
+- **实际（修复前）**：三例均 `Total 6 / Failed 0 / Skipped 0`，exit0；未知 `length` 被当 Hanchan，未知 `scope` 被当 Round，未知 `type` 被当 MatchFinished。caller 证据：`E/match-length-unknown.log`（SHA `F909A31A32E97199732501A0BFCF303AD929E947AA2ACC775E16F38C6B0073B0`）、`E/clock-scope-unknown.log`（`719119C5F079CF43BC6F7B0BF495BA7AF60BEB82A4E3739DB3573B37625A1FC7`）、`E/match-result-type-unknown.log`（`5C868627AB950FE808BB3A6137345D5B871EAD0278B6642F47C40353A7ABB067`）。
+- **期望**：未知值必须由 `XunitException` 显式失败；合法 HANCHAN/TONPUUSEN、ROUND/SESSION、NextRound/MatchFinished 保留原行为断言。
+- **修复**：新增 `ParseMatchLength`（`:1031`）、`ParseReserveScope`（`:1044`）、`ParseProgressionType`（`:1057`）；match 调用 `:586`、`:623`；clock 调用 `:700`；`expected.type` 用 `switch` + `default throw`（`:625-674`）；`transferSeat` 改为显式 nullable 分支（`:647-656`），不再 `?? -1`。同轮审计其余 match/clock/control：`ParseOutcome`/`ReasonCode`/`ParseControllerKind`/clock op/control op 均已有 default throw；缺失/错型由 `Str/Long/Bool/IntArray` 强类型读取显式失败。
+- **验收断言**：caller 三例在本轮新 DLL 上均 exit1：`fallback-probes-console.log` 的 `match-length-unknown EXIT=1`、`clock-scope-unknown EXIT=1`、`match-result-type-unknown EXIT=1`；新增 9 个 unknown/缺失/错型负例 + 5 个同面负例全部 exit1（`matrix.csv`）；合法分支正控制见 `MatchProgressionMatrixReplaysExactly` 的 `hanchanCases/tonpuusenCases/nextRoundCases/matchFinishedCases > 0`（`:681-684`）与 `DecisionClockTracesReplayExactly` 的 `roundScopeScenarios/sessionScopeScenarios > 0`（`:777-778`）。
+
+#### D-R1-02 [MINOR] 可复制证据脚本未 finally 恢复环境，报告任务归属不精确
+
+- **位置**：第 1 轮报告附录 A + TEMP `run-matrix.ps1`；旧脚本 `$oldRoot` 保存后未使用，设置 `MAHJONG_REPO_ROOT` 后无 `try/finally`。
+- **复现**：`Select-String -Path <旧 run-matrix.ps1> -Pattern 'oldRoot|finally|try'` 仅 `oldRoot` 赋值；同一 PowerShell 会话 `& run-matrix.ps1` 后环境变量遗留。
+- **实际（修复前）**：成功/异常路径都不恢复；报告开头误写兄弟线程 `thread_20261025_061655_e4bd`。
+- **期望**：成功与异常路径均恢复原值或原未设置状态；报告任务 ID 为 `thread_20261025_094642_e558`，兄弟关系另列。
+- **修复**：新 TEMP 脚本 `run-matrix.ps1` 使用 `$previousRoot` + `$hadRoot = Test-Path Env:...`，整体 `try { ... } finally { if ($hadRoot) { restore } else { Remove-Item Env:... } }`；新增 `-FailAfterSetup` 仅用于同进程失败路径验证。报告开头已改为本任务 ID。
+- **验收断言**：同一 PowerShell 进程四路径 `existing-normal`、`unset-normal`、`existing-failure`、`unset-failure` 均 `ENV-RESTORE-PASS`；`env-restore-console.log` 末行 `ENV-RESTORE-COMPLETE ...`，exit0。新脚本 SHA256 `0511BAF113C79A726B5CDE7E92CB4EECCD5053458EC22833DFE39D39ACA07DB7`。
+
+### 7.1 第 1 轮已关闭缺陷（保留映射）
+
+以下 6 组是第 1 轮已知缺陷，已在 commit `6c8597b` 关闭；本轮复核不重复报。
 
 ### N3-RG-D01 [MAJOR] RG-001 输入 phase/version 与 outcome 被硬编码
 
@@ -251,7 +278,7 @@ V4 的 `GameAction.DeclareAgariYame` 在 `RoundCommandProcessor.prepare` 中由 
 - **实际（修复前）**：caller `E/event-sequence-unbound.log`：6 pass / 0 fail / 0 skip，exit0；旧测试不读 `eventTypes`。
 - **期望**：精确 `TsumoWin, ScoreSettled, RoundEnded`；`ScoreSettled`/`RoundEnded` 缺失、重复、错序、`MatchEnded` 额外出现均失败。
 - **证据**：`logs/negative.terminal.eventTypes.*.log`；`matrix.csv`。
-- **修复**：`AssertTerminalLifecycle` `:778-827`；调用 `:242-258`。
+- **修复**：`AssertTerminalLifecycle` `:833-882`；调用 `:242-258`。
 - **验收断言**：6 个独立负例 exit1；正控制 6/0/0/0；C# committed/state/result 三个事件序列均精确。
 
 ### N3-RG-D03 [MAJOR] `rejectedActions` 把所有非 StartStacking 当作 Tsumo，AgariYame 未真实调用
@@ -261,7 +288,7 @@ V4 的 `GameAction.DeclareAgariYame` 在 `RoundCommandProcessor.prepare` 中由 
 - **实际（修复前）**：`DeclareAgariYame` 被构造为 `RoundCommand.Tsumo(...)`；未知动作同样走 Tsumo；`MatchSession.ChooseDealerEnd` 从未调用。
 - **期望**：精确列表 `StartStacking, DeclareTsumo, DeclareAgariYame`；未知动作显式失败；AgariYame 走真实 match API 并验证 `ROUND_END`/版本不变。
 - **证据**：`logs/negative.terminal.rejectedActions.remove-agari-yame.log`、`...unknown-action.log`；正控制原 fixture。
-- **修复**：`:261-303`；`AssertAgariYameRejectedAfterRoundEnd` `:840-919`。
+- **修复**：`:261-303`；`AssertAgariYameRejectedAfterRoundEnd` `:895-960`。
 - **验收断言**：删除 AgariYame 或加入未知动作均 exit1；AgariYame 负例通过真实 `DealerChoiceUnavailable` 路径，round/session 版本均不变。
 
 ### N3-RG-D04 [MAJOR] RG-002 meldTiles / meld 类型 / legal Ron / phase / 布尔 / 事件未绑定
@@ -291,7 +318,7 @@ V4 的 `GameAction.DeclareAgariYame` 在 `RoundCommandProcessor.prepare` 中由 
 - **实际（修复前）**：缺失字段可能由 `GetProperty` 抛异常，但未知额外字段被忽略；未知 phase 不解析（硬编码）；未知 action 走 Tsumo；未知事件不参与检查。
 - **期望**：`AssertExactProperties` 对 sample/source/input/settlement/expected 精确字段集；`ParsePhase/ParseMeldKind/ParseOutcomeKind/ParseTsumoOutcome/ParseRonOutcome` 未知值抛 `XunitException`；错型由强类型 JSON 访问抛异常。
 - **证据**：`logs/negative.terminal.eventTypes.missing-field.log`、`...chankan.hasRinshanDraw.wrong-type.log`、`...terminal.phaseBefore.unknown.log`、`...chankan.phaseAfterKan.unknown.log`、`...terminal.rejectedActions.unknown-action.log`。
-- **修复**：`AssertExactProperties` `:1022-1046`；严格 parser `:908-1014`；字段集合调用 `:105-157,304-360`。
+- **修复**：`AssertExactProperties` `:1117-1137`；严格 parser `:986-1115`；字段集合调用 `:105-157,304-360`。
 - **验收断言**：5 个独立负例 exit1；正控制原 fixture 6/0/0/0。
 
 ## 8. 真实边界、未导出与不宣称项
@@ -318,15 +345,27 @@ V4 的 `GameAction.DeclareAgariYame` 在 `RoundCommandProcessor.prepare` 中由 
 - RG-002 `completedAt*`：fixture 未导出；测试使用固定 `2026-10-23T00:00:00+00:00` / `2000` 仅用于构造 `RoundSettlement`，不进入业务差分，也不宣称 V4 值。
 - `finalScores` / `totalDeltas`：C# 的 settlement 由调用方提供（N2 整体接线未完成），本测试验证守恒、逐座 delta 恒等、与真实 `Result` 的保留关系；**不**重新计算 V4 算分，不宣称 N2 完成。
 
-### 8.4 未导出/未覆盖
+### 8.4 match/clock/control 本轮真实覆盖字段与正控制
+
+不是“保留”一句话带过；本文件实际消费的范围如下：
+
+| 区段 | 已消费字段 | 断言范围 | 未消费/单列 |
+|---|---|---|---|
+| `matchProgression[16]` | `config.length/targetScore/allowWestExtension/allowAgariYame/allowBankruptcy/handsPerWind/winds/bankruptcyThreshold/bankruptcyInclusive/awardRemainingRiichiSticksToFirst/tieBreakSeats`；`input.dealer/roundWind/roundNumber/honba/scores/remainingRiichiSticks/dealerDeclaredAgariYame/outcome.kind/winner/loser/tenpai/reason`；`expected.type` + NextRound 的 `roundWind/roundNumber/dealer/honba/canDealerDeclareAgariYame` 或 MatchFinished 的 `finalScores/rankings.rank/seat/score/reason/transferSeat` | 16 例真实 `MatchProgression.NextRound`；`length` 严格 HANCHAN/TONPUUSEN；`type` 严格 NextRound/MatchFinished；outcome/reason/controller 未知值显式失败；`transferSeat` null→-1 显式分支 | `sampleId/kind/status/source` 是 metadata，本消费者不纳入业务差分；未导出/未覆盖样本不扩分母 |
+| `decisionClock[6]` | `config.baseMillis/reserveMillis/scope`；`operations[].op` 及该 op 的 `roundId/seat/decisionId/at/now/deadline/reserveAtOpen/generation/result/count/value` | 6 场景真实 `DecisionClock`；`scope` 严格 ROUND/SESSION；10 个 op 分支在 fixture 中实际执行；未知 op/缺失/错型显式失败；`replayedOperations >= 35` | `sampleId/kind/status/source` 未进入业务差分 |
+| `controlEpoch` | `operations[].op` + `initial/setController/initialize` 的 `kinds/epochs/seat/kind`，`validateEpoch` 的 `seat/expectedEpoch/result` | 真实 `ControlRegistry`；`ParseControllerKind` 严格 4 值；每个 op 后 4 席 epoch/kind 全量比较；未知 op/kind 显式失败 | `sampleId/kind/status/source` 未进入业务差分 |
+
+正控制：原 fixture 同时包含 HANCHAN 与 TONPUUSEN、ROUND 与 SESSION、NextRound 与 MatchFinished；测试新增计数断言 `hanchanCases/tonpuusenCases/nextRoundCases/matchFinishedCases > 0`（`:681-684`）与 `roundScopeScenarios/sessionScopeScenarios > 0`（`:777-778`），避免合法分支被“只剩一条路径”时仍绿。
+
+### 8.5 未导出/未覆盖
 
 - `unexportedSamples` 中的完整 136 位 V4 状态摘要、`server.ConnectionControl` grace/reclaim、V4 加杠里宝 reveal 仍未导出；本任务不补造。
 - RG-002 未导出 `remainingSticks` / `completedAt*`；测试构造值已单列。
-- match/clock/control 的既有断言保留；本任务不把它们的未导出样本纳入本报告分母，也不修改 catalog/manifest。
+- match/clock/control 的 `sampleId/kind/status/source` 不进入本报告行为差分；未导出样本不纳入本报告分母，也不修改 catalog/manifest。
 
 ## 9. 验证执行记录（原始命令 / 数值 exit / 计数 / 日志 / SHA）
 
-证据根：`C:/Users/sncdc/AppData/Local/Temp/n3-round-binding-evidence-20261025-2/`（独占 TEMP）。
+证据根：`C:/Users/sncdc/AppData/Local/Temp/n3-round-binding-evidence-r2-20261025/`（第 2 轮独占 TEMP；第 1 轮证据根保持只读）。
 CLI：`D:/Unity/dotnet/dotnet.exe`。所有 native exit 在命令后立即捕获；失败日志保留，不覆盖原始 fixture。
 
 ### 9.1 命令与结果
@@ -349,35 +388,47 @@ CLI：`D:/Unity/dotnet/dotnet.exe`。所有 native exit 在命令后立即捕获
   -class '*RoundReplayGoldenTests*' -showLiveOutput -noLogo
 # exit 0；Total 6 / Errors 0 / Failed 0 / Skipped 0 / Not Run 0
 
-# 4. Negative + preservation matrix
+# 4. Full negative + preservation matrix
 powershell -NoProfile -ExecutionPolicy Bypass `
-  -File C:/Users/sncdc/AppData/Local/Temp/n3-round-binding-evidence-20261025-2/run-matrix.ps1
-# exit 0；46 negative exit1 + 6 preservation exit0
+  -File C:/Users/sncdc/AppData/Local/Temp/n3-round-binding-evidence-r2-20261025/run-matrix.ps1
+# exit 0；60 negative exit1 + 6 preservation exit0
 # positive original fixture: Total 6 / Errors 0 / Failed 0 / Skipped 0
-# SOURCE_FIXTURE_SHA256=DF5FC5F8199C039823BAC1C668F911637EEB80E7F8A785C84D011401CF2452B7
+
+# 5. Caller three fallback probes (same mutations; only output/DLL path localized)
+powershell -NoProfile -ExecutionPolicy Bypass `
+  -File C:/Users/sncdc/AppData/Local/Temp/n3-round-binding-evidence-r2-20261025/fallback-probes-local.ps1
+# exit 0；match-length-unknown EXIT=1；clock-scope-unknown EXIT=1；match-result-type-unknown EXIT=1
+
+# 6. Environment restore proof, same PowerShell process
+powershell -NoProfile -ExecutionPolicy Bypass `
+  -File C:/Users/sncdc/AppData/Local/Temp/n3-round-binding-evidence-r2-20261025/env-restore-probes.ps1
+# exit 0；existing-normal / unset-normal / existing-failure / unset-failure 均 ENV-RESTORE-PASS
 ```
 
 ### 9.2 证据文件与 SHA256
 
 | 文件 | 字节 | SHA256 |
 |---|---:|---|
-| `final-solution-build.log` | 3396 | `BEE33FA7CCBF6962B4B244059B6064070DDCB31822503E0FDD01FDD8FB023DA4` |
-| `final-domain-full.log` | 716 | `83682FDC5AD50DDFF3127CE756A5A2A8B02ED8D456E5E14FB4EBE752FA6A1B1E` |
-| `final-round-targeted.log` | 700 | `DA8FC8EAE3E26067560153CFEF1A5CC99460CBC229CD0F05C5AB4625E1BDC021` |
-| `matrix-console.log` | 16778 | `7088BA44308EBA3F278473096EABF5C2AAB9CCB654DD01CB5C63A82A6A3B61FD` |
-| `matrix.csv` | 24290 | `07E1C7DF785C1AB05FA99DD0935C72DFF97F72018F0AE94D66F10A9908306B2D` |
-| `summary.json` | 524 | `35D94918D9212C04FD7471BAB546FC8ED452C40F1A0CE4EB8460A57F35DC9985` |
-| `run-matrix.ps1` | 14107 | `5DF5D952CF2D05EDCD877D55AC47CD564A179ABB9884ADB2B8179EFD58218CC7` |
-| `logs/positive.original-fixture.log` | 700 | `FE60078089C88D1AFE9467C51F0B7C75F1F72B9AF3E35324E0E74395677B17ED` |
-| 测试文件 `RoundReplayGoldenTests.cs` | — | `C16B9D03B80A2C25F3FC5D49224A3AD50AAFA9FBC2227C281EA6A099E078BBB1` |
+| `final-solution-build.log` | 3396 | `A0E9F11FA348C5A3D7B25071E98EFF11FF55A1C0C23FCAD3F1DBD0BB553CF217` |
+| `final-domain-full.log` | 716 | `4C1202E6F2EA7BC77F913EB05B5CAEB9D5E6C30147EE22C5012090636B4F47F3` |
+| `final-round-targeted.log` | 700 | `0BEB0B42C5ECF9CFC124897C40573422BCF7721EADF68BFC93DD8AEC52A8B7E1` |
+| `matrix-console.log` | 20648 | `4C833E477EFB683C5A43FDE2411D94EF0F1F561F8A145B547A12AC0B3B64AA1B` |
+| `matrix.csv` | 30704 | `D59576F91733017E203AB07442A6BEAB158B634011005D91B4BD8607F9F3A88C` |
+| `summary.json` | 524 | `FB094517B8F5DBAB63DE2C64A62301967D43DABB0C34CF0256E05673212828B9` |
+| `run-matrix.ps1` | 16745 | `0511BAF113C79A726B5CDE7E92CB4EECCD5053458EC22833DFE39D39ACA07DB7` |
+| `fallback-probes-local.ps1` | 2055 | `8BCCD9518F1DC84B19E83F15F921DB3A5EFD1787F71346B89358BCD284B51E05` |
+| `fallback-probes-console.log` | 236 | `7D1D7EFCAD723AFA3E14A05C5DA6698B2569E21054CCE44DF27ED8AF34B0244A` |
+| `env-restore-probes.ps1` | 2595 | `B3E4AE635396193AE2110ACD69AB49D4EFD0A181550201516C2DE5CDB34DB31C` |
+| `env-restore-console.log` | 41722 | `9CFB1B25523C82B4E7D4C10A7B8C5D7825EF5883C2BDF664F6E78CFAA53FC94F` |
+| 测试文件 `RoundReplayGoldenTests.cs` | — | `93B3D1B8F24DA3EF7ADDEA9C7D9B7A25AAB0B1BDE7445702F60350D685BE2FC8` |
 | 原始 fixture `tests/v5-golden/round-v1.json` | 43474 | `DF5FC5F8199C039823BAC1C668F911637EEB80E7F8A785C84D011401CF2452B7` |
 
 ### 9.3 5 个 caller 已知探针的修复前后
 
 | 探针 | 修复前 caller 证据 | 本交付矩阵 | 失败锚点 |
 |---|---|---|---|
-| `hasKanDeclared/hasRinshanDraw false->true` | `E/flags-unbound.log` 6/0/0 exit0 | `chankan.hasKanDeclared.false-to-true` exit1；`chankan.hasRinshanDraw.true` exit1 | `:520-526` |
-| 终局 eventTypes 改错/加 MatchEnded | `E/event-sequence-unbound.log` 6/0/0 exit0 | `terminal.eventTypes.match-ended-plus-reordered`、`chankan.eventTypes.match-ended` 等 exit1 | `:778-827` |
+| `hasKanDeclared/hasRinshanDraw false->true` | `E/flags-unbound.log` 6/0/0 exit0 | `chankan.hasKanDeclared.false-to-true`、`chankan.hasRinshanDraw.true` exit1 | `:520-526` |
+| 终局 eventTypes 改错/加 MatchEnded | `E/event-sequence-unbound.log` 6/0/0 exit0 | `terminal.eventTypes.match-ended-plus-reordered`、`chankan.eventTypes.match-ended` 等 exit1 | `:833-882` |
 | `roundTerminal.settlement.totalDeltas[0]=123456789` | `E/settlement-deltas-unbound.log` 6/0/0 exit0 | `terminal.totalDeltas.first-123456789` exit1 | `:210` |
 | `phaseAfter` / afterKan / afterRon 改错 | `E/phase-unbound.log` 6/0/0 exit0 | `terminal.phaseAfter.wrong`、`chankan.phaseAfterKan.wrong`、`chankan.phaseAfterRon.wrong` exit1 | `:228-230,416,505` |
 | `meldTypeAfterKan=CHOW` + `legalRonSeat1=false` | `E/meld-and-legal-unbound.log` 6/0/0 exit0 | `chankan.meldTypeAfterKan.chow`、`chankan.legalRonSeat1.false` exit1 | `:435-436,454` |
@@ -386,29 +437,32 @@ powershell -NoProfile -ExecutionPolicy Bypass `
 
 ### 9.4 统一负例矩阵
 
-- 46 个 negative：全部 exit1，0 unexpected pass。每个 case 独立从原始 fixture 复制、单独变异、单独启动测试进程，避免同一 Fact 首个失败掩盖其他未绑定字段。
+- 60 个 negative：全部 exit1，0 unexpected pass。第 1 轮 46 例全部保留；新增 14 例为 D-R1-01 的三字段 unknown/missing/wrong-type（9 例）加 `match.transferSeat.wrong`、`match.outcome.unknown`、`clock.op.unknown`、`control.op.unknown`、`control.kind.unknown`（5 例）。
 - 6 个 preservation：全部 exit0，0 unexpected failure，证明 caller-supplied identity 被真实保留。
-- 1 个 positive：原始 fixture 6 pass / 0 fail / 0 skip / 0 Not Run，exit0。
+- 1 个 positive：原始 fixture 6 pass / 0 fail / 0 skip / 0 Not Run，exit0；同时覆盖 HANCHAN/TONPUUSEN、ROUND/SESSION、NextRound/MatchFinished 合法分支。
 - 完整 case 名称、mutation、exit、日志路径、fixture SHA 见 `matrix.csv`；脚本见附录 A。
 
-代表性失败日志：
+D-R1-01 caller 三例的本地复现：
 
-| case | SHA256 |
+| case | 本交付 exit | 日志 | 日志 SHA256 |
+|---|---:|---|---|
+| `match-length-unknown` | 1 | `fallback-match-length-unknown.log` | `434D91E179105F032CE44E0CDAFC9A00DF345A50402FC9D31E9D1429211D835E` |
+| `clock-scope-unknown` | 1 | `fallback-clock-scope-unknown.log` | `07035DC1031249FA920199F3705C5B2F0CCD11C8042DE5C8942F8E00EF7D8BEA` |
+| `match-result-type-unknown` | 1 | `fallback-match-result-type-unknown.log` | `E0FDC04369C690B75DA4F8D67953681004F4413544BD74034CE6A8AA0F01A1FE` |
+
+D-R1-02 环境恢复四路径：
+
+| 路径 | 结果 |
 |---|---|
-| `logs/negative.chankan.hasKanDeclared.false-to-true.log` | `5822C467606C91DD62AD72689F1FE70F0AEB07DBDE415A4176ECC1C3A4954C47` |
-| `logs/negative.terminal.eventTypes.match-ended-plus-reordered.log` | `37A584C12B004636D62E148830995BBC724EEC65C02583596B2FEE5CCBD5B30C` |
-| `logs/negative.chankan.eventTypes.match-ended.log` | `9F0E434EF1097D8C2797BFE72DCB78667DD37C79D016CE4606D425A6C84C4CCB` |
-| `logs/negative.terminal.totalDeltas.first-123456789.log` | `2076C47BC8271904A7D81A48F540BEFA8667F0330CDE4820F67223BC3A3DDD18` |
-| `logs/negative.terminal.phaseAfter.wrong.log` | `68167991FE7916B959396346DB1507EFE41AF4B12049EB14502922C0602DDCD1` |
-| `logs/negative.chankan.phaseAfterKan.wrong.log` | `1D1B38D3046115815D0BD2B939AA06F7727E06E4346D1C29DD055DC512E484BC` |
-| `logs/negative.chankan.phaseAfterRon.wrong.log` | `C37609275EE61DC660A8BB6F0E5934BCE54DF604923124DCAFBC38D333CA9D8E` |
-| `logs/negative.chankan.meldTypeAfterKan.chow.log` | `22796BC085D8EB826B54207A24E7EB93E7502CC983832BA713E4F31FD2A01CD4` |
-| `logs/negative.chankan.legalRonSeat1.false.log` | `E8E3930528CA18997CBF33434D00D32C25256744795BBCE9F97FF9B326A197E2` |
+| `existing-normal` | `ENV-RESTORE-PASS`（恢复 sentinel 原值） |
+| `unset-normal` | `ENV-RESTORE-PASS`（恢复未设置状态） |
+| `existing-failure` | `ENV-RESTORE-PASS`（强制中途失败后恢复 sentinel 原值） |
+| `unset-failure` | `ENV-RESTORE-PASS`（强制中途失败后保持未设置） |
 
 ## 10. 残余责任与不宣称
 
 - **N3 整体未完成**：本任务只覆盖 `round-v1.json` 的 `roundTerminal`/`chankanRon` 消费者；manifest 的 20 项 partial、G-028a 的完整口径、其他 GoldenTests / catalog / verifier 不在本任务范围。
-- **G1 仍 FAIL**：门 2（黄金行为全字段对齐）与门 5（三绝技权威链）不由本任务关闭；N1b 出千接线、N2 整体宿主接线仍在其他责任范围。
+- **G1 仍 FAIL/BLOCKED**：门 2（黄金行为全字段对齐）与门 5（三绝技权威链）不由本任务关闭；N1b 出千接线、N2 整体宿主接线仍在其他责任范围。
 - **G5 NOT_RUN**：PG/WSS/Unity/IL2CPP/Android/iOS/设备/弱网/跨物理网络/远端 CI/Kotlin 全量均未运行；不拿历史 CI 或本范围测试代替。
 - **V4 唯一生产**：本任务没有修改生产代码；不宣称 P4.1/P5.1/完整 N3 完成。
 - **未改 `complete.flag`**：未创建、未修改。
@@ -417,19 +471,21 @@ powershell -NoProfile -ExecutionPolicy Bypass `
 ## 11. 最终交付状态
 
 - 本地最小 commit 包含：强化后的 `RoundReplayGoldenTests.cs` + 本报告。
+- 父提交：`6c8597b5caa8392c32674783f1de565bb134331b`（第 1 轮交付）；本轮新 commit 以最终 `git rev-parse HEAD` 为准。
 - 提交后 `git status --porcelain=v1` 应为空；`git diff --check HEAD^ HEAD` exit0。
-- 最终 commit SHA 以本次会话交付回复中的 `git rev-parse HEAD` 为准；报告与测试同笔提交，不再追加生产文件。
+- 仅两文件变更；未 push、未开 PR。
 
 ## 附录 A：参数化负例脚本（TEMP 原样）
 
-脚本路径：`C:/Users/sncdc/AppData/Local/Temp/n3-round-binding-evidence-20261025-2/run-matrix.ps1`
-SHA256：`5DF5D952CF2D05EDCD877D55AC47CD564A179ABB9884ADB2B8179EFD58218CC7`
+脚本路径：`C:/Users/sncdc/AppData/Local/Temp/n3-round-binding-evidence-r2-20261025/run-matrix.ps1`
+SHA256：`0511BAF113C79A726B5CDE7E92CB4EECCD5053458EC22833DFE39D39ACA07DB7`
 
 ```powershell
 param(
     [string]$Repo = 'D:/majiang-wt/n3-round-binding',
-    [string]$EvidenceRoot = 'C:\Users\sncdc\AppData\Local\Temp\n3-round-binding-evidence-20261025-2',
-    [string]$Dotnet = 'D:/Unity/dotnet/dotnet.exe'
+    [string]$EvidenceRoot = 'C:\Users\sncdc\AppData\Local\Temp\n3-round-binding-evidence-r2-20261025',
+    [string]$Dotnet = 'D:/Unity/dotnet/dotnet.exe',
+    [switch]$FailAfterSetup
 )
 
 $ErrorActionPreference = 'Stop'
@@ -443,8 +499,13 @@ New-Item -ItemType Directory -Path $logs -Force | Out-Null
 
 $sourceHashBefore = (Get-FileHash $sourceFixture -Algorithm SHA256).Hash
 $results = New-Object System.Collections.Generic.List[object]
-$oldRoot = $env:MAHJONG_REPO_ROOT
+$previousRoot = $env:MAHJONG_REPO_ROOT
+$hadRoot = Test-Path Env:MAHJONG_REPO_ROOT
 $env:MAHJONG_REPO_ROOT = $fixtureRoot
+try {
+    if ($FailAfterSetup) {
+        throw "intentional failure after MAHJONG_REPO_ROOT setup"
+    }
 
 function Reset-Fixture {
     Copy-Item -LiteralPath $sourceFixture -Destination $fixture -Force
@@ -765,6 +826,78 @@ Invoke-Case 'preservation' 'chankan.roundId.changed-valid' 'caller round id is p
     $d.chankanRon.input.roundId = 'rg-002-chankan-copy'
 }
 
+# Round-2 review D-R1-01: strict match/clock/control enum parsing, no fallback.
+
+Invoke-Case 'negative' 'match.length.unknown' 'config.length unknown must fail' {
+    param($d)
+    $d.matchProgression[0].config.length = 'BOGUS'
+}
+
+Invoke-Case 'negative' 'match.length.missing' 'config.length missing must fail' {
+    param($d)
+    $d.matchProgression[0].config.PSObject.Properties.Remove('length')
+}
+
+Invoke-Case 'negative' 'match.length.wrong-type' 'config.length wrong type must fail' {
+    param($d)
+    $d.matchProgression[0].config.length = 1
+}
+
+Invoke-Case 'negative' 'clock.scope.unknown' 'config.scope unknown must fail' {
+    param($d)
+    $d.decisionClock[0].config.scope = 'BOGUS'
+}
+
+Invoke-Case 'negative' 'clock.scope.missing' 'config.scope missing must fail' {
+    param($d)
+    $d.decisionClock[0].config.PSObject.Properties.Remove('scope')
+}
+
+Invoke-Case 'negative' 'clock.scope.wrong-type' 'config.scope wrong type must fail' {
+    param($d)
+    $d.decisionClock[0].config.scope = 1
+}
+
+Invoke-Case 'negative' 'match.resultType.unknown' 'expected.type unknown must fail' {
+    param($d)
+    $d.matchProgression[6].expected.type = 'BOGUS'
+}
+
+Invoke-Case 'negative' 'match.resultType.missing' 'expected.type missing must fail' {
+    param($d)
+    $d.matchProgression[6].expected.PSObject.Properties.Remove('type')
+}
+
+Invoke-Case 'negative' 'match.resultType.wrong-type' 'expected.type wrong type must fail' {
+    param($d)
+    $d.matchProgression[6].expected.type = 1
+}
+
+Invoke-Case 'negative' 'match.transferSeat.wrong' 'nullable transfer seat is not defaulted' {
+    param($d)
+    $d.matchProgression[6].expected.transferSeat = 5
+}
+
+Invoke-Case 'negative' 'match.outcome.unknown' 'unknown outcome must fail explicitly' {
+    param($d)
+    $d.matchProgression[0].input.outcome.kind = 'BOGUS'
+}
+
+Invoke-Case 'negative' 'clock.op.unknown' 'unknown clock op must fail explicitly' {
+    param($d)
+    $d.decisionClock[0].operations[0].op = 'BOGUS'
+}
+
+Invoke-Case 'negative' 'control.op.unknown' 'unknown control op must fail explicitly' {
+    param($d)
+    $d.controlEpoch.operations[0].op = 'BOGUS'
+}
+
+Invoke-Case 'negative' 'control.kind.unknown' 'unknown controller kind must fail explicitly' {
+    param($d)
+    $d.controlEpoch.operations[0].kinds[0] = 'BOGUS'
+}
+
 Reset-Fixture
 $positiveLog = Join-Path $logs 'positive.original-fixture.log'
 & $Dotnet $testDll -class '*RoundReplayGoldenTests*' -showLiveOutput -noLogo *> $positiveLog
@@ -797,4 +930,13 @@ $summary = [pscustomobject]@{
 $summary | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $EvidenceRoot 'summary.json') -Encoding utf8
 $summary | Format-List
 Write-Output 'MATRIX-COMPLETE'
+}
+finally {
+    if ($hadRoot) {
+        $env:MAHJONG_REPO_ROOT = $previousRoot
+    }
+    else {
+        Remove-Item Env:MAHJONG_REPO_ROOT -ErrorAction SilentlyContinue
+    }
+}
 ```

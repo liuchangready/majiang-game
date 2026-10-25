@@ -576,11 +576,25 @@ namespace Mahjong.Domain.Tests
             Assert.Equal(16, cases.GetArrayLength());
 
             int replayed = 0;
+            int hanchanCases = 0;
+            int tonpuusenCases = 0;
+            int nextRoundCases = 0;
+            int matchFinishedCases = 0;
             foreach (JsonElement sample in cases.EnumerateArray())
             {
                 JsonElement configElement = sample.GetProperty("config");
+                MatchLength length = ParseMatchLength(Str(configElement, "length"));
+                if (length == MatchLength.Hanchan)
+                {
+                    hanchanCases++;
+                }
+                else
+                {
+                    tonpuusenCases++;
+                }
+
                 MatchRuleConfig config = new MatchRuleConfig(
-                    length: Str(configElement, "length") == "TONPUUSEN" ? MatchLength.Tonpuusen : MatchLength.Hanchan,
+                    length: length,
                     targetScore: Long(configElement, "targetScore"),
                     allowWestExtension: Bool(configElement, "allowWestExtension"),
                     allowAgariYame: Bool(configElement, "allowAgariYame"),
@@ -606,41 +620,68 @@ namespace Mahjong.Domain.Tests
 
                 ProgressionResult result = new MatchProgression(config).NextRound(progressionInput);
                 JsonElement expected = sample.GetProperty("expected");
-                string type = Str(expected, "type");
+                string type = ParseProgressionType(Str(expected, "type"));
 
-                if (type == "NextRound")
+                switch (type)
                 {
-                    var next = result as ProgressionResult.NextRound;
-                    Assert.NotNull(next);
-                    Assert.Equal(Int(expected, "roundWind"), next!.RoundWind);
-                    Assert.Equal(Int(expected, "roundNumber"), next.RoundNumber);
-                    Assert.Equal(Int(expected, "dealer"), next.DealerSeat);
-                    Assert.Equal(Int(expected, "honba"), next.HonbaSticks);
-                    Assert.Equal(Bool(expected, "canDealerDeclareAgariYame"), next.CanDealerDeclareAgariYame);
-                }
-                else
-                {
-                    var finished = result as ProgressionResult.MatchFinished;
-                    Assert.NotNull(finished);
-                    Assert.Equal(LongArray(expected.GetProperty("finalScores")), finished!.FinalScores);
-                    Assert.Equal(Str(expected, "reason"), ReasonCode(finished.Reason));
-                    Assert.Equal(Int(expected, "transferSeat"), finished.RemainingRiichiSticksTransferredTo ?? -1);
-                    JsonElement rankings = expected.GetProperty("rankings");
-                    Assert.Equal(rankings.GetArrayLength(), finished.Rankings.Count);
-                    int i = 0;
-                    foreach (JsonElement ranking in rankings.EnumerateArray())
+                    case "NextRound":
                     {
-                        Assert.Equal(Int(ranking, "rank"), finished.Rankings[i].Rank);
-                        Assert.Equal(Int(ranking, "seat"), finished.Rankings[i].Seat);
-                        Assert.Equal(Long(ranking, "score"), finished.Rankings[i].Score);
-                        i++;
+                        nextRoundCases++;
+                        var next = result as ProgressionResult.NextRound;
+                        Assert.NotNull(next);
+                        Assert.Equal(Int(expected, "roundWind"), next!.RoundWind);
+                        Assert.Equal(Int(expected, "roundNumber"), next.RoundNumber);
+                        Assert.Equal(Int(expected, "dealer"), next.DealerSeat);
+                        Assert.Equal(Int(expected, "honba"), next.HonbaSticks);
+                        Assert.Equal(Bool(expected, "canDealerDeclareAgariYame"), next.CanDealerDeclareAgariYame);
+                        break;
                     }
+
+                    case "MatchFinished":
+                    {
+                        matchFinishedCases++;
+                        var finished = result as ProgressionResult.MatchFinished;
+                        Assert.NotNull(finished);
+                        Assert.Equal(LongArray(expected.GetProperty("finalScores")), finished!.FinalScores);
+                        Assert.Equal(Str(expected, "reason"), ReasonCode(finished.Reason));
+                        int expectedTransferSeat = Int(expected, "transferSeat");
+                        int? actualTransferSeat = finished.RemainingRiichiSticksTransferredTo;
+                        if (actualTransferSeat.HasValue)
+                        {
+                            Assert.Equal(expectedTransferSeat, actualTransferSeat.Value);
+                        }
+                        else
+                        {
+                            Assert.Equal(-1, expectedTransferSeat);
+                        }
+
+                        JsonElement rankings = expected.GetProperty("rankings");
+                        Assert.Equal(rankings.GetArrayLength(), finished.Rankings.Count);
+                        int i = 0;
+                        foreach (JsonElement ranking in rankings.EnumerateArray())
+                        {
+                            Assert.Equal(Int(ranking, "rank"), finished.Rankings[i].Rank);
+                            Assert.Equal(Int(ranking, "seat"), finished.Rankings[i].Seat);
+                            Assert.Equal(Long(ranking, "score"), finished.Rankings[i].Score);
+                            i++;
+                        }
+
+                        break;
+                    }
+
+                    default:
+                        throw new Xunit.Sdk.XunitException(
+                            "Unknown golden progression type " + type);
                 }
 
                 replayed++;
             }
 
             Assert.Equal(16, replayed);
+            Assert.True(hanchanCases > 0, "no HANCHAN match-progression case was replayed");
+            Assert.True(tonpuusenCases > 0, "no TONPUUSEN match-progression case was replayed");
+            Assert.True(nextRoundCases > 0, "no NextRound match-progression case was replayed");
+            Assert.True(matchFinishedCases > 0, "no MatchFinished match-progression case was replayed");
         }
 
         [Fact]
@@ -651,13 +692,25 @@ namespace Mahjong.Domain.Tests
             Assert.Equal(6, scenarios.GetArrayLength());
 
             int replayedOperations = 0;
+            int roundScopeScenarios = 0;
+            int sessionScopeScenarios = 0;
             foreach (JsonElement scenario in scenarios.EnumerateArray())
             {
                 JsonElement configElement = scenario.GetProperty("config");
+                ReserveScope scope = ParseReserveScope(Str(configElement, "scope"));
+                if (scope == ReserveScope.Round)
+                {
+                    roundScopeScenarios++;
+                }
+                else
+                {
+                    sessionScopeScenarios++;
+                }
+
                 var config = new DecisionClockConfig(
                     Long(configElement, "baseMillis"),
                     Long(configElement, "reserveMillis"),
-                    Str(configElement, "scope") == "SESSION" ? ReserveScope.Session : ReserveScope.Round);
+                    scope);
                 var clock = new DecisionClock(config);
 
                 foreach (JsonElement op in scenario.GetProperty("operations").EnumerateArray())
@@ -721,6 +774,8 @@ namespace Mahjong.Domain.Tests
             }
 
             Assert.True(replayedOperations >= 35, "too few exported clock operations were replayed: " + replayedOperations);
+            Assert.True(roundScopeScenarios > 0, "no ROUND clock scenario was replayed");
+            Assert.True(sessionScopeScenarios > 0, "no SESSION clock scenario was replayed");
         }
 
         [Fact]
@@ -971,6 +1026,46 @@ namespace Mahjong.Domain.Tests
             }
 
             return RoundOutcome.Ron(Int(expected, "winner"), Int(expected, "loser"));
+        }
+
+        private static MatchLength ParseMatchLength(string value)
+        {
+            switch (value)
+            {
+                case "HANCHAN":
+                    return MatchLength.Hanchan;
+                case "TONPUUSEN":
+                    return MatchLength.Tonpuusen;
+                default:
+                    throw new Xunit.Sdk.XunitException("Unknown golden match length " + value);
+            }
+        }
+
+        private static ReserveScope ParseReserveScope(string value)
+        {
+            switch (value)
+            {
+                case "ROUND":
+                    return ReserveScope.Round;
+                case "SESSION":
+                    return ReserveScope.Session;
+                default:
+                    throw new Xunit.Sdk.XunitException("Unknown golden reserve scope " + value);
+            }
+        }
+
+        private static string ParseProgressionType(string value)
+        {
+            switch (value)
+            {
+                case "NextRound":
+                    return "NextRound";
+                case "MatchFinished":
+                    return "MatchFinished";
+                default:
+                    throw new Xunit.Sdk.XunitException(
+                        "Unknown golden progression type " + value);
+            }
         }
 
         private static RoundPhase ParsePhase(string value)
