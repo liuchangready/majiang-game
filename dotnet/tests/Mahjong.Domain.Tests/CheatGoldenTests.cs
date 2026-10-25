@@ -99,7 +99,10 @@ namespace Mahjong.Domain.Tests
 
         private static JsonElement Golden()
         {
-            string path = Path.Combine(RepoRoot(), "tests", "v5-golden", "cheat-v1.json");
+            string? overridePath = Environment.GetEnvironmentVariable("V5_CHEAT_GOLDEN_PATH");
+            string path = string.IsNullOrWhiteSpace(overridePath)
+                ? Path.Combine(RepoRoot(), "tests", "v5-golden", "cheat-v1.json")
+                : Path.GetFullPath(overridePath);
             using JsonDocument doc = JsonDocument.Parse(File.ReadAllBytes(path));
             return doc.RootElement.Clone();
         }
@@ -265,6 +268,19 @@ namespace Mahjong.Domain.Tests
             {
                 Assert.Equal(finalBalances[seat], restored.BalanceOf(seat));
             }
+
+            // The boolean is only the exporter's summary; bind every restored entry field
+            // and its order as well (full matrix in CheatGoldenBindingTests).
+            Assert.Equal(flow.Entries.Count, restored.Entries.Count);
+            Assert.Equal(flow.Entries, restored.Entries);
+            for (int i = 0; i < restored.Entries.Count; i++)
+            {
+                Assert.Equal(flow.Entries[i].EntryId, restored.Entries[i].EntryId);
+                Assert.Equal(flow.Entries[i].Seat, restored.Entries[i].Seat);
+                Assert.Equal(flow.Entries[i].Amount, restored.Entries[i].Amount);
+                Assert.Equal(flow.Entries[i].BalanceAfter, restored.Entries[i].BalanceAfter);
+                Assert.Equal(flow.Entries[i].Reason, restored.Entries[i].Reason);
+            }
         }
 
         // ------------------------------------------------------------------
@@ -339,6 +355,9 @@ namespace Mahjong.Domain.Tests
         public void Handler_Sections_CoverEveryRejectionReason()
         {
             JsonElement root = Golden();
+            Assert.Equal(20, Cases(root, "tileMarkHandler").Length);
+            Assert.Equal(32, Cases(root, "sleeveBloomHandler").Length);
+            Assert.Equal(23, Cases(root, "beamSwapHandler").Length);
             var unmapped = new List<string>();
             int allowed = 0, rejected = 0, stale = 0;
 
@@ -457,13 +476,25 @@ namespace Mahjong.Domain.Tests
                     CheatTestBench.InitialState(5), map, ctx, economy, CheatTestBench.Sleeve(), Seat, "req-a"),
                 CheatErrorCode.InsufficientFunds);
 
-            // sb-activate-disabled：V4 导出夹具以 cost≠10 配置触发（golden note「cost must
-            // be exactly 10」），但导出原因 SLEEVE_BLOOM_DISABLED 的语义是“绝技不可用”，
-            // C# 的对应门是绝技开关关闭；cost≠10 在 C# 是另一个独立原因 CostMustBeTen。
-            AssertGoldenRejection(root, "sleeveBloomHandler", "sb-activate-disabled",
-                CheatSubmission.ActivateSleeveBloom(
-                    state, map, ctx, economy, CheatTestBench.Sleeve(enabled: false), Seat, "req-b"),
-                CheatErrorCode.Disabled);
+            // sb-activate-disabled：V4 的真实输入是 configuredCost=5（golden note「cost must
+            // be exactly 10」），不是 featureEnabled=false。C# 用更细的 CostMustBeTen 拒绝，
+            // 仍为零副作用；不得换输入去匹配 Disabled。
+            var disabledCosts = new Dictionary<string, int>(StringComparer.Ordinal)
+            {
+                { CheatEconomyConfig.TileMarkCostKey, 10 },
+                { CheatEconomyConfig.SleeveBloomCostKey, 5 },
+                { CheatEconomyConfig.BeamSwapCostKey, 10 }
+            };
+            var disabledEconomy = new CheatEconomyConfig(true, 40, disabledCosts);
+            CheatTransition disabled = CheatSubmission.ActivateSleeveBloom(
+                state, map, ctx, disabledEconomy, CheatTestBench.Sleeve(), Seat, "req-b");
+            JsonElement disabledCase = Case(root, "sleeveBloomHandler", "sb-activate-disabled");
+            Assert.Equal("Rejected", Str(disabledCase, "outcome"));
+            Assert.Equal("SLEEVE_BLOOM_DISABLED", Str(disabledCase, "reason"));
+            Assert.False(disabled.Success);
+            Assert.Equal(CheatErrorCode.CostMustBeTen, disabled.Error);
+            Assert.Null(disabled.State);
+            Assert.Null(disabled.Map);
 
             // 激活成功后才能触发 stale / already-used 案例
             CheatState activated = CheatSubmission.ActivateSleeveBloom(
@@ -511,11 +542,23 @@ namespace Mahjong.Domain.Tests
                     CheatTestBench.InitialState(5), map, ctx, economy, CheatTestBench.Sleeve(), "req-a", Seat),
                 CheatErrorCode.InsufficientFunds);
 
-            // bm-activate-disabled
-            AssertGoldenRejection(root, "beamSwapHandler", "bm-activate-disabled",
-                CheatSubmission.ActivateBeamSwap(
-                    state, map, ctx, economy, CheatTestBench.Sleeve(enabled: false), "req-b", Seat),
-                CheatErrorCode.Disabled);
+            // bm-activate-disabled：与袖里藏花相同，V4 真实输入是 configuredCost=5。
+            var disabledCosts = new Dictionary<string, int>(StringComparer.Ordinal)
+            {
+                { CheatEconomyConfig.TileMarkCostKey, 10 },
+                { CheatEconomyConfig.SleeveBloomCostKey, 10 },
+                { CheatEconomyConfig.BeamSwapCostKey, 5 }
+            };
+            var disabledEconomy = new CheatEconomyConfig(true, 40, disabledCosts);
+            CheatTransition disabled = CheatSubmission.ActivateBeamSwap(
+                state, map, ctx, disabledEconomy, CheatTestBench.Sleeve(), "req-b", Seat);
+            JsonElement disabledCase = Case(root, "beamSwapHandler", "bm-activate-disabled");
+            Assert.Equal("Rejected", Str(disabledCase, "outcome"));
+            Assert.Equal("BEAM_SWAP_DISABLED", Str(disabledCase, "reason"));
+            Assert.False(disabled.Success);
+            Assert.Equal(CheatErrorCode.CostMustBeTen, disabled.Error);
+            Assert.Null(disabled.State);
+            Assert.Null(disabled.Map);
 
             CheatState activated = CheatSubmission.ActivateBeamSwap(
                 state, map, ctx, economy, CheatTestBench.Sleeve(), "req-1", Seat).State!;
@@ -529,11 +572,12 @@ namespace Mahjong.Domain.Tests
                     CheatTestBench.Context(Seat, RoundPhase.CheatWindow, SleeveBloomDrawKind.Normal, turn: 2),
                     Seat, offer.OfferId, BeamSwapAction.Swap, closedTile, BeamSwapSlot.Wall(54)));
 
-            // bm-choose-invalid-foreign-hand：冻结后才在手上的牌不合资格
+            // bm-choose-invalid-foreign-hand：V4 的真实输入是 handTileId=52（当前摸牌），
+            // 摸牌不属于冻结的暗手集合，而不是另一座的手牌。
             AssertGoldenRejection(root, "beamSwapHandler", "bm-choose-invalid-foreign-hand",
                 CheatSubmission.ChooseBeamSwap(
                     activated, map, ctx, Seat, offer.OfferId, BeamSwapAction.Swap,
-                    map.TilesInZone(TileZone.Hand, (Seat + 1) % 4)[0], BeamSwapSlot.Wall(54)),
+                    map.DrawnTile!.Value.Tile, BeamSwapSlot.Wall(54)),
                 CheatErrorCode.InvalidSelection);
 
             // bm-choose-keep：放行且不动任何牌
@@ -636,24 +680,43 @@ namespace Mahjong.Domain.Tests
         }
 
         /// <summary>
-        /// mv-swap-drawn-with-wall-backfill 是 V4 TileMovement 原语级路径（摸牌实体参与
-        /// 置换并回填旧墙槽）。C# P1.4 域层入口（ChooseBeamSwap）按设计拒绝摸牌实体，
-        /// 该法律在 C# 侧无入口，仅断言黄金内部结构一致，差异如实记录于交付报告。
+        /// mv-swap-drawn-with-wall-backfill 并非 V4-only：ChooseSleeveBloom(SECOND) 的
+        /// normal-draw 分支正是摸牌实体与活墙候选互换（SwapHandWithWall 允许 drawn 作为
+        /// 手牌来源并重写 drawn evidence）。旧注释把入口误限为 ChooseBeamSwap（它按设计
+        /// 拒绝摸牌实体），本轮改为真实入口重放；逐字段精确重建见
+        /// CheatGoldenBindingTests.Movement_DrawnBackfill_ReplaysThroughSleeveBloomSecondChoice。
         /// </summary>
         [Fact]
-        public void TileMovement_DrawnBackfill_IsAV4OnlyPath_RecordedAsStructure()
+        public void TileMovement_DrawnBackfill_ReplaysThroughSleeveBloomSecondChoice()
         {
             JsonElement m1b = Case(Golden(), "tileMovement", "mv-swap-drawn-with-wall-backfill");
-
             Assert.Equal("wall", FactContainer(m1b, "factsAfter", Int(m1b, "drawnTileId")));
-            Assert.Equal(Int(m1b, "resolvedIndex"), Int(Fact(m1b, "factsAfter", Int(m1b, "drawnTileId")), "index"));
             Assert.Equal("hand", FactContainer(m1b, "factsAfter", Int(m1b, "displacedTileId")));
-            // 洞回填：被置换的墙实体恰好落进摸牌实体腾出的旧槽
             Assert.Equal(Int(m1b, "backfilledTileId"), Int(m1b, "displacedTileId"));
             Assert.Equal(Int(m1b, "resolvedIndex") - 1, Int(m1b, "backfilledIndex"));
-            // 指针：摸牌推进一格，置换不再推进
             Assert.Equal(Int(m1b, "wallPointerBeforeDraw") + 1, Int(m1b, "wallPointerAfterDraw"));
             Assert.Equal(Int(m1b, "wallPointerAfterDraw"), Int(m1b, "wallPointerAfterSwap"));
+
+            TilePositionMap map = CheatTestBench.OpeningAfterNormalDraw(Seat, out TileId drawnTile, out TileId nextWallTile);
+            CheatTurnContext ctx = CheatTestBench.Context(Seat, RoundPhase.CheatWindow, SleeveBloomDrawKind.Normal);
+            CheatTransition activated = CheatSubmission.ActivateSleeveBloom(
+                CheatTestBench.InitialState(), map, ctx, CheatTestBench.Economy(),
+                CheatTestBench.Sleeve(), Seat, "req-1");
+            Assert.True(activated.Success, activated.Message);
+            SleeveBloomOffer offer = activated.State!.SleeveBloom.ImmediateOffer!;
+            Assert.Equal(drawnTile, offer.FirstTile);
+            Assert.Equal(nextWallTile, offer.SecondTile);
+
+            int candidateSlot = map.PositionOf(nextWallTile).Index;
+            CheatTransition chosen = CheatSubmission.ChooseSleeveBloom(
+                activated.State, map, ctx, Seat, offer.OfferId, SleeveBloomKeep.Second);
+            Assert.True(chosen.Success, chosen.Message);
+            TilePositionMap moved = chosen.Map!;
+            Assert.Equal(TilePosition.Wall(candidateSlot), moved.PositionOf(drawnTile));
+            Assert.Equal(TileZone.Hand, moved.PositionOf(nextWallTile).Zone);
+            Assert.Equal(nextWallTile, moved.DrawnTile!.Value.Tile);
+            Assert.Equal(map.WallPointer, moved.WallPointer);
+            CheatTestBench.AssertConserved(moved);
         }
 
         /// <summary>
