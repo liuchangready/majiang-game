@@ -142,9 +142,12 @@ namespace Mahjong.Domain.Tests
         private static T GoldenEnum<T>(JsonElement e, string name) where T : struct, Enum
         {
             string text = GoldenString(e, name);
-            Assert.True(Enum.TryParse<T>(text, true, out T value) && Enum.IsDefined(typeof(T), value),
-                "unknown " + typeof(T).Name + " value: " + text);
-            return value;
+            string[] names = Enum.GetNames(typeof(T));
+            string? canonical = names.FirstOrDefault(candidate =>
+                string.Equals(candidate, text, StringComparison.OrdinalIgnoreCase));
+            Assert.True(canonical != null,
+                "unknown " + typeof(T).Name + " token: '" + text + "'; allowed names: " + string.Join(",", names));
+            return (T)Enum.Parse(typeof(T), canonical!, false);
         }
 
         private static int[] Ints(JsonElement e, string name) =>
@@ -1804,7 +1807,13 @@ namespace Mahjong.Domain.Tests
         }
 
         private static void AssertStaleWithState(
-            CaseSpec spec, CheatTransition actual, Snapshot before, CheatState state, TilePositionMap map)
+            CaseSpec spec,
+            CheatTransition actual,
+            Snapshot before,
+            CheatState state,
+            TilePositionMap map,
+            CheatState expectedState,
+            IReadOnlyList<CheatEvent> expectedEvents)
         {
             AssertFixture(spec);
             Assert.False(actual.Success, spec.CaseId + " must be stale: " + actual.Message);
@@ -1812,16 +1821,30 @@ namespace Mahjong.Domain.Tests
             Assert.True(actual.Changed);
             Assert.NotNull(actual.State);
             Assert.Null(actual.Map);
-            Assert.NotEmpty(actual.Events);
-            Assert.Equal(before.Balances, actual.State!.Ledger.Balances.ToArray());
-            Assert.Equal(before.Entries, string.Join("|", actual.State.Ledger.Entries.Select(e =>
-                e.EntryId + "/" + e.Seat + "/" + e.Amount + "/" + e.BalanceAfter + "/" + e.Reason)));
-            Assert.Equal(before.Marks, string.Join("|", actual.State.TileMarks.Groups.Select(g =>
-                g.GroupId + "/" + g.OwnerSeat + "/" + string.Join(",", g.TileIds.Select(t => t.Value)) +
-                "/" + g.CreatedRoundId + "/" + g.CreatedRoundOrdinal + "/" + g.ExpiresAfterRoundOrdinal)) +
-                "#" + string.Join(",", actual.State.TileMarks.DealtRoundIds) +
-                "#" + string.Join(",", actual.State.TileMarks.SettledRoundIds));
-            Assert.Equal(before.Locations, CheatTestBench.Locations(map));
+            AssertUnchanged(before, state, map);
+            AssertUnchanged(Snapshot.Capture(expectedState, map), actual.State!, map);
+            Assert.Equal(expectedEvents.ToArray(), actual.Events.ToArray());
+            CheatTestBench.AssertConserved(map);
+        }
+
+        private static void AssertExpiredWithState(
+            CaseSpec spec,
+            CheatTransition actual,
+            Snapshot before,
+            CheatState state,
+            TilePositionMap map,
+            CheatState expectedState,
+            IReadOnlyList<CheatEvent> expectedEvents)
+        {
+            AssertFixture(spec);
+            Assert.False(actual.Success, spec.CaseId + " must settle expired: " + actual.Message);
+            Assert.Equal(CheatErrorCode.DeadlineExpired, actual.Error);
+            Assert.True(actual.Changed);
+            Assert.NotNull(actual.State);
+            Assert.Null(actual.Map);
+            AssertUnchanged(before, state, map);
+            AssertUnchanged(Snapshot.Capture(expectedState, map), actual.State!, map);
+            Assert.Equal(expectedEvents.ToArray(), actual.Events.ToArray());
             CheatTestBench.AssertConserved(map);
         }
 
@@ -2217,11 +2240,15 @@ namespace Mahjong.Domain.Tests
             {
                 CheatTransition activated = CheatSubmission.ActivateSleeveBloom(
                     state, map, ctx, economy, CheatTestBench.Sleeve(), 0, requestId);
-                Snapshot before = Snapshot.Capture(activated.State!, map);
+                SleeveBloomOffer offer = activated.State!.SleeveBloom.ImmediateOffer!;
+                Snapshot before = Snapshot.Capture(activated.State, map);
                 CheatTransition actual = CheatSubmission.ChooseSleeveBloom(
-                    activated.State!, map, Ctx(0, RoundPhase.CheatWindow, SleeveBloomDrawKind.Normal, turn: 13),
-                    0, activated.State!.SleeveBloom.ImmediateOffer!.OfferId, SleeveBloomKeep.First);
-                AssertStaleWithState(spec, actual, before, activated.State!, map);
+                    activated.State, map, Ctx(0, RoundPhase.CheatWindow, SleeveBloomDrawKind.Normal, turn: 13),
+                    0, offer.OfferId, SleeveBloomKeep.First);
+                CheatState expected = activated.State.WithSleeveBloom(
+                    activated.State.SleeveBloom.WithClearedImmediateOffer());
+                AssertStaleWithState(spec, actual, before, activated.State, map, expected,
+                    new[] { CheatEvent.SleeveBloomOfferCleared(0, offer.OfferId, "Stale") });
                 Assert.Null(actual.State!.SleeveBloom.ImmediateOffer);
             }
             else if (caseId == "sb-choose-stale-drawn")
@@ -2229,11 +2256,14 @@ namespace Mahjong.Domain.Tests
                 CheatTransition activated = CheatSubmission.ActivateSleeveBloom(
                     state, map, ctx, economy, CheatTestBench.Sleeve(), 0, requestId);
                 TilePositionMap drifted = SleeveBaseMap(drawnTile: 20, includeDrawnTileInHand: true);
-                Snapshot before = Snapshot.Capture(activated.State!, drifted);
+                SleeveBloomOffer offer = activated.State!.SleeveBloom.ImmediateOffer!;
+                Snapshot before = Snapshot.Capture(activated.State, drifted);
                 CheatTransition actual = CheatSubmission.ChooseSleeveBloom(
-                    activated.State!, drifted, ctx, 0,
-                    activated.State!.SleeveBloom.ImmediateOffer!.OfferId, SleeveBloomKeep.First);
-                AssertStaleWithState(spec, actual, before, activated.State!, drifted);
+                    activated.State, drifted, ctx, 0, offer.OfferId, SleeveBloomKeep.First);
+                CheatState expected = activated.State.WithSleeveBloom(
+                    activated.State.SleeveBloom.WithClearedImmediateOffer());
+                AssertStaleWithState(spec, actual, before, activated.State, drifted, expected,
+                    new[] { CheatEvent.SleeveBloomOfferCleared(0, offer.OfferId, "Stale") });
                 Assert.Null(actual.State!.SleeveBloom.ImmediateOffer);
             }
             else if (caseId == "sb-choose-stale-index")
@@ -2252,7 +2282,10 @@ namespace Mahjong.Domain.Tests
                 Snapshot before = Snapshot.Capture(protectedState, map);
                 CheatTransition actual = CheatSubmission.ChooseSleeveBloom(
                     protectedState, map, ctx, 0, offer.OfferId, SleeveBloomKeep.Second);
-                AssertStaleWithState(spec, actual, before, protectedState, map);
+                CheatState expected = protectedState.WithSleeveBloom(
+                    protectedState.SleeveBloom.WithClearedImmediateOffer());
+                AssertStaleWithState(spec, actual, before, protectedState, map, expected,
+                    new[] { CheatEvent.SleeveBloomOfferCleared(0, offer.OfferId, "Stale") });
                 Assert.Null(actual.State!.SleeveBloom.ImmediateOffer);
             }
             else if (caseId == "sb-choose-offer-mismatch")
@@ -2357,6 +2390,7 @@ namespace Mahjong.Domain.Tests
                 }
 
                 long now = caseId == "sbo-choose-expired" ? offer.DeadlineMillis : 1_000;
+                Snapshot before = Snapshot.Capture(activated.State, map);
                 CheatTransition chosen = CheatSubmission.ChooseOffTurnSleeveBloom(
                     activated.State, map,
                     Ctx(0, RoundPhase.Discard, SleeveBloomDrawKind.Normal, now: now),
@@ -2378,15 +2412,13 @@ namespace Mahjong.Domain.Tests
                 }
                 else
                 {
-                    Assert.Equal(CheatErrorCode.DeadlineExpired, chosen.Error);
-                    Assert.False(chosen.Success);
-                    Assert.True(chosen.Changed);
-                    Assert.NotNull(chosen.State);
-                    Assert.Null(chosen.State!.SleeveBloom.OffTurnOfferFor(2));
-                    SleeveBloomReservation reservation = chosen.State.SleeveBloom.ReservationFor(2)!;
-                    Assert.Equal(offer.FirstTile, reservation.Tile);
-                    Assert.Single(chosen.Events);
-                    Assert.Equal(SleeveBloomKeep.First, chosen.Events[0].Keep);
+                    Assert.True(activated.State.SleeveBloom.TryResolveOffTurnOffer(
+                        2, SleeveBloomKeep.First, out SleeveBloomState expired, out SleeveBloomReservation? expectedReservation));
+                    Assert.NotNull(expectedReservation);
+                    Assert.Equal(offer.FirstTile, expectedReservation!.Tile);
+                    CheatState expected = activated.State.WithSleeveBloom(expired);
+                    AssertExpiredWithState(spec, chosen, before, activated.State, map, expected,
+                        new[] { CheatEvent.SleeveBloomResolved(2, offer.OfferId, SleeveBloomKeep.First) });
                 }
             }
             else if (caseId == "sbo-choose-stale-first" || caseId == "sbo-choose-stale-second")
@@ -2817,7 +2849,9 @@ namespace Mahjong.Domain.Tests
                 }
                 else if (caseId == "bm-choose-stale-turn" || caseId == "bm-choose-stale-drawn")
                 {
-                    AssertStaleWithState(spec, chosen, before, activated.State!, map);
+                    CheatState expected = activated.State!.WithBeamSwap(activated.State.BeamSwap.WithoutOffer());
+                    AssertStaleWithState(spec, chosen, before, activated.State, map, expected,
+                        new[] { CheatEvent.BeamSwapOfferCleared(0, offer.OfferId, "Stale") });
                     Assert.Null(chosen.State!.BeamSwap.Offer);
                 }
                 else
@@ -2865,7 +2899,9 @@ namespace Mahjong.Domain.Tests
 
                 if (caseId == "bm-choose-deadwall-dora-stale")
                 {
-                    AssertStaleWithState(spec, chosen, before, activated.State!, map);
+                    CheatState expected = activated.State!.WithBeamSwap(activated.State.BeamSwap.WithoutOffer());
+                    AssertStaleWithState(spec, chosen, before, activated.State, map, expected,
+                        new[] { CheatEvent.BeamSwapOfferCleared(0, "beam-0-req-1", "Stale") });
                     Assert.Null(chosen.State!.BeamSwap.Offer);
                 }
                 else if (caseId == "bm-choose-deadwall-allowed")

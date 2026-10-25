@@ -269,7 +269,15 @@ $mutations = @(
     @{ id = 'm4-wall-exception'; category = 'metadata'; field = 'tileMovement[mv-swap-hand-with-dead-wall].wallSlotRefusalException';
         expect = 'Movement_DeadWall'; mutate = { param($j) (Find-Case $j.tileMovement 'mv-swap-hand-with-dead-wall').wallSlotRefusalException = 'UNKNOWN' } },
     @{ id = 'request-exception'; category = 'metadata'; field = 'beamSwapHandler[bm-keep-original-args-forbidden-at-request].requestException';
-        expect = 'BeamSwap_BoundCase'; mutate = { param($j) (Find-Case $j.beamSwapHandler 'bm-keep-original-args-forbidden-at-request').requestException = 'UNKNOWN' } }
+        expect = 'BeamSwap_BoundCase'; mutate = { param($j) (Find-Case $j.beamSwapHandler 'bm-keep-original-args-forbidden-at-request').requestException = 'UNKNOWN' } },
+    @{ id = 'sleeve-keep-numeric-token'; category = 'input-offer'; field = 'sleeveBloomHandler[sb-choose-first].goldenInputs.keep';
+        expect = 'SleeveBloom_BoundCase'; mutate = { param($j) (Find-Case $j.sleeveBloomHandler 'sb-choose-first').goldenInputs.keep = '0' } },
+    @{ id = 'sleeve-keep-combined-token'; category = 'input-offer'; field = 'sleeveBloomHandler[sb-choose-first].goldenInputs.keep';
+        expect = 'SleeveBloom_BoundCase'; mutate = { param($j) (Find-Case $j.sleeveBloomHandler 'sb-choose-first').goldenInputs.keep = 'FIRST, FIRST' } },
+    @{ id = 'sleeve-draw-numeric-token'; category = 'input-tile'; field = 'sleeveBloomHandler[sb-activate-allowed].goldenInputs.drawKind';
+        expect = 'SleeveBloom_BoundCase'; mutate = { param($j) (Find-Case $j.sleeveBloomHandler 'sb-activate-allowed').goldenInputs.drawKind = '0' } },
+    @{ id = 'sleeve-phase-combined-token'; category = 'input-window'; field = 'sleeveBloomHandler[sbo-activate-allowed].goldenInputs.phase';
+        expect = 'SleeveBloom_BoundCase'; mutate = { param($j) (Find-Case $j.sleeveBloomHandler 'sbo-activate-allowed').goldenInputs.phase = 'DISCARD, DISCARD' } }
 )
 
 $rows = New-Object System.Collections.Generic.List[object]
@@ -383,10 +391,23 @@ namespace Mahjong.Domain.Tests
                 CheatTestBench.InitialState(), map,
                 CheatTestBench.Context(0, RoundPhase.CheatWindow, SleeveBloomDrawKind.Normal),
                 CheatTestBench.Economy(), CheatTestBench.Sleeve(), 0, "req-1");
-            Assert.False(actual.Success,
-                "V4 expects Rejected/SLEEVE_BLOOM_WALL_EMPTY; C# returned " +
+            Assert.True(actual.Success,
+                "legal other-candidate control: map-only input must stay Allowed; actual=" +
                 (actual.Success ? "Allowed" : actual.Error.ToString()));
-            Assert.Equal(CheatErrorCode.NoWallCandidate, actual.Error);
+
+            MethodInfo activate = typeof(CheatSubmission).GetMethod(
+                "ActivateSleeveBloom", BindingFlags.Public | BindingFlags.Static)!;
+            ParameterInfo? frozen = activate.GetParameters().FirstOrDefault(parameter =>
+                parameter.Name != null &&
+                (parameter.Name.Contains("nextWall", StringComparison.OrdinalIgnoreCase) ||
+                 parameter.Name.Contains("frozen", StringComparison.OrdinalIgnoreCase)));
+            Assert.True(frozen != null,
+                "BLOCKED_INPUT: ActivateSleeveBloom has no frozen nextWallTileId/nextWallTileInWall input; " +
+                "the full V4 sb-activate-wall-empty-drift input cannot be replayed. The map-only call above is " +
+                "a legal other-candidate control, not a conformance failure.");
+            Assert.Fail(
+                "BLOCKED_INPUT: a frozen wall-candidate input now exists; replace this capability gate with " +
+                "the same-input Rejected/SLEEVE_BLOOM_WALL_EMPTY conformance assertion before claiming readiness.");
         }
     }
 }
@@ -454,12 +475,12 @@ namespace Mahjong.Domain.Tests
 
     $counts = Get-TestCounts -Text $text
     $failedNames = @(Get-FailedTestNames -Text $text)
-    $conformanceFailure = ($exit -eq 1) -and ($null -ne $counts) -and
+    $blockedInput = ($exit -eq 1) -and ($null -ne $counts) -and
         ($counts.total -eq 1) -and ($counts.failed -gt 0) -and ($counts.errors -eq 0) -and
         ($counts.skipped -eq 0) -and ($counts.notRun -eq 0) -and
-        ($text -match 'V4 expects Rejected/SLEEVE_BLOOM_WALL_EMPTY')
+        ($text -match 'BLOCKED_INPUT:')
     $status = if ($exit -eq 0 -and $null -ne $counts -and $counts.failed -eq 0) { 'PASS' }
-        elseif ($conformanceFailure) { 'FAIL_CONFORMANCE' }
+        elseif ($blockedInput) { 'BLOCKED_INPUT' }
         else { 'TOOL_OR_UNEXPECTED_FAILURE' }
 
     return [ordered]@{
@@ -480,20 +501,28 @@ else {
     Invoke-ReadinessProbe -Root $EvidenceRoot
 }
 $readinessCauses = @($blocked)
-if (-not $MatrixOnly -and $readiness.status -eq 'FAIL_CONFORMANCE') {
-    $readinessCauses += 'F-01:sleeve-wall-empty-drift-conformance'
+if (-not $MatrixOnly -and $readiness.status -eq 'BLOCKED_INPUT') {
+    $readinessCauses += 'F-01:missing-frozen-next-wall-input'
+}
+if (-not $MatrixOnly -and $readiness.status -in @('TOOL_FAILURE', 'TOOL_OR_UNEXPECTED_FAILURE')) {
+    $readinessCauses += 'readiness-tool-or-probe-failure'
 }
 $readinessStatus = if (-not $matrixOk) { 'FAIL' }
     elseif ($MatrixOnly) { 'NOT_RUN' }
-    elseif ($blocked.Count -gt 0 -or $readiness.status -eq 'FAIL_CONFORMANCE') { 'BLOCKED' }
+    elseif ($readiness.status -in @('TOOL_FAILURE', 'TOOL_OR_UNEXPECTED_FAILURE')) { 'FAIL' }
+    elseif ($readiness.status -eq 'BLOCKED_INPUT' -or $blocked.Count -gt 0) { 'BLOCKED' }
     elseif ($readiness.status -eq 'PASS') { 'PASS' }
     else { 'FAIL' }
 
 $summary = [ordered]@{
-    schema = 'v5-cheat-binding-probe-v2'
+    schema = 'v5-cheat-binding-probe-v3'
     matrixStatus = if ($matrixOk) { 'PASS' } else { 'FAIL' }
     readinessStatus = $readinessStatus
-    status = if ($matrixOk -and $readinessStatus -eq 'PASS') { 'PASS' } elseif ($matrixOk) { 'MATRIX_PASS_READINESS_BLOCKED' } else { 'FAIL' }
+    status = if (-not $matrixOk) { 'FAIL' }
+        elseif ($MatrixOnly) { 'MATRIX_ONLY_PASS' }
+        elseif ($readinessStatus -eq 'PASS') { 'PASS' }
+        elseif ($readinessStatus -eq 'BLOCKED') { 'MATRIX_PASS_READINESS_BLOCKED' }
+        else { 'FAIL' }
     positive = [ordered]@{
         exit = $positive.exit
         counts = $positiveCounts
