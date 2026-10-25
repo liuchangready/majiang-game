@@ -1308,7 +1308,10 @@ namespace Mahjong.TableRuntime
                 finalState.StateFingerprint != state.StateFingerprint ||
                 finalState.StateHash != state.StateHash ||
                 finalState.ControlVersion != state.ControlVersion ||
-                finalState.TimingVersion != expectedTimingVersion)
+                finalState.TimingVersion != expectedTimingVersion ||
+                finalState.CheatBound != state.CheatBound ||
+                finalState.CheatVersion != state.CheatVersion ||
+                finalState.CheatFingerprint != state.CheatFingerprint)
             {
                 return TableRecoveryResult.Failed(
                     TableRuntimeReasonCode.RecoveryFailed,
@@ -1362,7 +1365,12 @@ namespace Mahjong.TableRuntime
                 effectiveFacts,
                 fullHistory,
                 strictHistory: true,
-                commandBindings: effectiveBindings);
+                commandBindings: effectiveBindings,
+                previousBootId: checkpoint.BootId,
+                currentBootId: options.BootId,
+                cheatBound: state.CheatBound,
+                cheatVersion: state.CheatVersion,
+                cheatFingerprint: state.CheatFingerprint);
 
             var report = new TableRecoveryReport(
                 roomId,

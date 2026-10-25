@@ -5,7 +5,7 @@
 冻结基线：`3bfe952cc7adb9bdc2f5bb0a7589a26ec731886b`
 （已核实 `git rev-parse --show-toplevel` / `HEAD` / `--abbrev-ref HEAD` / `status --porcelain`；基线是 PR19 `feat/v5-1-integration -> v5` 的已发布头，含已验收 N-1a。）
 
-> **结论边界（必读）**：第 2 轮 D-R1-01..05 已修复；第 3 轮进一步修复 D-R2-01..05（riichi 组合交付、跨 boot offer 期限、零值 cheat binding、绑定容量、文档计数）。N-1b actor 组件面在最终测试与复核探针上通过，但 D-R1-06（协议 `CommandKind`→actor 宿主入站映射）仍属 P4.1/P5.1；PG/WSS/Unity/IL2CPP/设备/网络未跑。G1/G5 不批准，不创建 `complete.flag`。
+> **结论边界（必读）**：第 2 轮 D-R1-01..05、第 3 轮 D-R2-01..05 已修复；第 4 轮进一步修复 D-R3-01..03（满载 durable 回执重放、安装期最终 cheat binding 屏障、同 boot UTC 回拨）。N-1b actor 组件面在最终测试与 13 个复核探针上通过，但 D-R1-06（协议 `CommandKind`→actor 宿主入站映射）仍属 P4.1/P5.1；PG/WSS/Unity/IL2CPP/设备/网络未跑。G1/G5 不批准，不创建 `complete.flag`。
 
 ---
 
@@ -138,7 +138,7 @@ TableActor.SubmitCheatAsync(TableCheatCommandEnvelope, CancellationToken)
 - `Cheat/CheatState.cs`、`TileMark.cs`、`SleeveBloom.cs`、`BeamSwap.cs`：完整 cheat checkpoint/恢复需要受验证的恢复构造器；不修改 P1.4 的费用/物理/窗口规则。
 - `TableActorMessages.cs`、`TableRuntimeReasonCode.cs`：typed envelope 进入同一 mailbox 与稳定拒绝码。
 - `TableCheckpointCodecs.cs`、`TableCheckpointValidator.cs`、`TableRecoveryPayloads.cs`、`TableRecoveryService.cs`、`TableDurableContracts.cs`、`TableRuntimePorts.cs`、`InMemoryTableStore.cs`、`TableVisibilityProjection.cs`：第 6 条要求的 journal/checkpoint/冷恢复/旧 schema 拒绝/rejected-with-state/恢复 facts 校验；不新增第二套 receipt store。
-- `TableProjectionContractMapper.cs` 未改：既有 20/21 payload 分支与 facts 字段已足够，本次只补“实际事件→facts”的来源。
+- `TableProjectionContractMapper.cs` 已改：D-R2-02 曾加入 UTC 阈值猜域，D-R3-03 已移除该阈值并恢复显式 monotonic 投影时间契约；不改变冻结 Wire payload。
 
 未改：`AGENTS.md`、`CLAUDE.md`、`PROMPTS.md`、任务书/协议、`unity/`、`Engine/Resources`、Burst、`tests/v5-golden/*`、任何冻结 fixture/catalog/verifier/GoldenTests，以及 N-2/N-3 在途文件。
 
@@ -156,6 +156,7 @@ TableActor.SubmitCheatAsync(TableCheatCommandEnvelope, CancellationToken)
 | Contracts/Wire 回归 | `dotnet test dotnet/tests/Mahjong.Contracts.Tests/Mahjong.Contracts.Tests.csproj -c Release --no-build` | **149 passed / 0 failed / 0 skipped / 149 total** | 0 |
 | 复核 7 探针 | 复核方 `Review.csproj --filter-method '*Review_*'` | **7 passed / 0 failed / 0 skipped** | 0 |
 | 复核 R2 3 探针 | 复核方 `Review.csproj --filter-method '*ReviewR2_*'` | **3 passed / 0 failed / 0 skipped** | 0 |
+| 复核 R3 3 探针 | 复核方 `Review.csproj --filter-method '*ReviewR3_*'` | **3 passed / 0 failed / 0 skipped** | 0 |
 | diff 格式 | `git diff --check` | 无输出 | 0 |
 
 基线对照：Domain 346（N1b 未新增 Domain 测试文件）；TableRuntime 316 → **349（+33 N1b 用例）**；Contracts 149。
@@ -164,12 +165,13 @@ TableActor.SubmitCheatAsync(TableCheatCommandEnvelope, CancellationToken)
 
 | 文件 | SHA256 | 字节 |
 |---|---|---|
-| `r13-build.log` | `d264532740520ab2b4c1d809577c6a2fb7b670470634a113c573b52fe6f05373` | 3468 |
-| `r13-domain.log` | `9f70f97ca9893a04a118fcaae5c9443cec61dff1fec93f651c98f3428c0f7f67` | 728 |
-| `r13-table-runtime.log` | `d7901f5c03fe25c8049552ed08555e2037dac464472eadf3d410f298b10391f6` | 788 |
-| `r13-contracts.log` | `82a68523d3fc0faf01436f93f79da1717f901a2eb83d580c66e0054fbd7c22d4` | 758 |
-| `r13-r1-probes.log` | `a5aa90e9f5ca47d1320ed604f3bc2325dca3bef312f92c8a069460e9cbb81935` | 2682 |
-| `r13-r2-probes.log` | `189935cdca7694baba28a39ced3ba34901c9f43a4bf526ab78f48be9e995aad9` | 2658 |
+| `r14-build.log` | `a457659f524f558e66ae4adbcddd4049f3e80d73da5765376f4e0ae0541ff1a3` | 3468 |
+| `r14-domain.log` | `4ff246b8d3a7cec64f72f82f37b2541de05c9f69ed0d8838625b29b4b1af2f9c` | 728 |
+| `r14-table-runtime.log` | `ccc87b6c672c8b8498ee84e79283feef741d499e19ee94d1a9154db8f323d87c` | 788 |
+| `r14-contracts.log` | `601f69a4b4eff5e5b6812d777b718b966f563b70e9d305fc51bde8888cc79159` | 758 |
+| `r14-r1-probes.log` | `82382320c241abb9fbf08ec805e717edf8b86be7f738207db6beb5ab198fe8ea` | 2682 |
+| `r14-r2-probes.log` | `df99d0d7e8a10060f249f8703912e8d5dfc3c3977598039374e4b8935b26f69d` | 2658 |
+| `r14-r3-probes.log` | `b7afd41495d030df458fc21295f2f734711aeb2d9da6c8bc1211bfc413e05b8f` | 2658 |
 
 源码 SHA256（本轮提交前）：
 
@@ -178,11 +180,11 @@ TableActor.SubmitCheatAsync(TableCheatCommandEnvelope, CancellationToken)
 | `RoundCheatTransition.cs` | `b633a6d540b323bd426a1ece14329452d7c0e0ca2301bbd0c29aceaec00f5891` |
 | `RoundStateMachine.cs` | `ff3c867129a63fd8aef8effde96a769a8cc19defa1b5cb0a4c80f7dce3dc27a0` |
 | `TilePositionMap.cs` | `350d9cd8a2878f90001ccb3aa909fa4bb1223c5dc2502b6f223756ef87201dbb` |
-| `TableActor.cs` | `66b7cb3bde1b8164e9cd735a54b2798b33a3fa58be8fdcd406cde00911dca8f7` |
-| `TableRuntimeContracts.cs` | `c3fee38655408174db9bf5d3508e64324363ef19b2d5d8db76910f2bebb786b2` |
-| `TableProjectionContractMapper.cs` | `436ca6b677438db7bec2421a3c1d25897d17840b730921ff70c8553bbb04b719` |
+| `TableActor.cs` | `f8f5d065b5043c62406c6948498446532356f32ed9e721de02f3ba3859825b83` |
+| `TableRuntimeContracts.cs` | `d97b7b630e15ac689563901e7463394fbbc4a9bdb9394a4db0d3a326c63f2c52` |
+| `TableProjectionContractMapper.cs` | `8cf4df0bac72e778597bd086d3757d823fd7f69c046ad44e9053e2ea35f02148` |
 | `TableDurableContracts.cs` | `af0cb6c57326e74c42c01535688e19c6bcd95faafd81ee854e1ffc6a09cefc84` |
-| `TableRecoveryService.cs` | `cc14100d0db03db360615c2c13b695814de38858cd2e646b5f4fdf451629054e` |
+| `TableRecoveryService.cs` | `7907e2bf6d8e4bc81ee1232ed62c9ef7f0c7eedeade593cd34580ca1527bbaf0` |
 | `InMemoryTableStore.cs` | `986804eecb1ae2cb1aaa8bf0f941c7cdb5912fb231ee2f4f6270c14cd36044f6` |
 | `N1bCheatExecutionTests.cs` | `ce80b1f09fcbd490d630463611c3ff29fb02f2946d3bffb8f324255ad3d18013` |
 
@@ -200,7 +202,7 @@ TableActor.SubmitCheatAsync(TableCheatCommandEnvelope, CancellationToken)
 | D-R1-06 | 协议 `CommandKind`→actor 的宿主入站映射 | 仍属 P4.1/P5.1，**BLOCKED/阶段事实**，本轮不抢做。 |
 
 `N1bCheatExecutionTests.cs` 现为 **33 项**真实 actor/durable/wire 测试；Domain 既有 346 项全部保持。
-复核方 TEMP 7 探针在本轮代码上 **7 passed / 0 failed / 0 skipped**（`r13-r1-probes.log`）。
+复核方 TEMP 7 探针在本轮代码上 **7 passed / 0 failed / 0 skipped**（`r14-r1-probes.log`）。
 
 ### 新增/加强的负例矩阵
 
@@ -223,7 +225,35 @@ TableActor.SubmitCheatAsync(TableCheatCommandEnvelope, CancellationToken)
 
 ---
 
+## 7.2 第 4 轮 D-R3-01..03 修复映射
+
+| ID | 修复 | 验证 |
+|---|---|---|
+| D-R3-01 | 容量检查改为仅对 `prior == null` 的新 request 生效；已知 request 先做 scope/API/SHA 验证后始终进入权威 receipt lookup，满载不再拒绝已提交/冷恢复的 durable 回执。 | `ReviewR3_durable_receipt_replays_at_capacity` PASS；`cheat_request_binding_capacity...` 仍 PASS。 |
+| D-R3-02 | `TableRecoveryBaseline` 携带 `CheatBound/CheatVersion/CheatFingerprint`；`TableRecoveryService` 最终 state 重读、`ProcessDurableRecoveryAsync` 最终校验、`RevalidateRecoveryInstallAsync`（host Install 后、Serving 前）全部比较这 3 项。 | `ReviewR3_final_binding_tamper_during_install_must_fail_closed` PASS；正常/首次 tamper 测试仍 PASS。 |
+| D-R3-03 | 回退同 boot 的 UTC deadline；`CheatTurnContext.NowMillis` 恢复权威 monotonic，同一 boot 的 UTC 回拨不能延长/复活 offer。跨 boot 由 baseline `PreviousBootId/CurrentBootId` 检测，存在未结 offer 时对 choice fail-closed（`CHEAT_BOOT_RECONCILIATION_REQUIRED`）；投影恢复显式 monotonic，移除 1e12 阈值猜域。 | `ReviewR3_utc_rollback_must_not_extend_live_offer_deadline` PASS；R2 cross-boot 3/3 PASS。 |
+
+---
+
 ## 8. 缺陷/缺口清单（PASS/FAIL/BLOCKED/NOT_RUN）
+
+### D-R3-01 [已修复/PASS] 满载 durable 已提交回执必须重放
+
+原缺陷：容量检查位于 prior 检查之后但未区分已知 request，durable Accepted 落空后直接容量拒绝。
+修复：仅新 request 受容量限制；已知身份保持 scope/API/SHA 验证后进入权威 receipt lookup。
+证据：`ReviewR3_durable_receipt_replays_at_capacity`；原容量测试仍通过。
+
+### D-R3-02 [已修复/PASS] 安装期最终 cheat binding 必须 fail-closed
+
+原缺陷：最终 state 重读/install 后 revalidation 未比较 `CheatBound/Version/Fingerprint`，sink 内篡改可被 Recovered 安装。
+修复：baseline 携带完整 binding；service 最终重读、actor 最终校验、host Install 后 final fence 三重比较。
+证据：`ReviewR3_final_binding_tamper_during_install_must_fail_closed`；首次/正常恢复仍通过。
+
+### D-R3-03 [已修复/PASS] 同 boot UTC 回拨不能延长 offer
+
+原缺陷：cheat context 改用 UTC，UTC 回拨可让已耗尽窗口复活；投影按数值阈值猜时间域。
+修复：同 boot 使用权威 monotonic；跨 boot 由 boot id 检测，存在未结 offer 时 choice fail-closed；投影恢复显式 monotonic，无阈值。
+证据：`ReviewR3_utc_rollback_must_not_extend_live_offer_deadline`；R2 cross-boot 探针仍 PASS。
 
 ### D-R2-01 [已修复/PASS] riichi + immediate offer + next-seat reservation 组合
 
@@ -251,7 +281,7 @@ TableActor.SubmitCheatAsync(TableCheatCommandEnvelope, CancellationToken)
 ### D-R2-05 [已修复/MINOR] 文档过时计数
 
 修复：§6/§9 统一为最终实测计数（见下），D-R2 FAIL 单列，未升格 G1/G5。
-证据：本文件与 `r13-*` 日志。
+证据：本文件与 `r14-*` 日志。
 
 ### D-R1-01 [已修复/PASS] 所有自动摸牌来源统一受保护
 
@@ -311,7 +341,7 @@ TableActor.SubmitCheatAsync(TableCheatCommandEnvelope, CancellationToken)
 ## 9. 未宣称完成
 
 - G1 **未批准**；G5 **未完成**；V4 仍是唯一生产架构；无 `complete.flag`。
-- 组件面通过 Domain 346 / TableRuntime 349 / Contracts-Wire 149（0 fail/0 skip）与复核 7/7；D-R1-06 宿主全链路、PG/WSS/Unity/设备/网络为阶段外，NOT_RUN。
+- 组件面通过 Domain 346 / TableRuntime 349 / Contracts-Wire 149（0 fail/0 skip）与复核 13/13；D-R1-06 宿主全链路、PG/WSS/Unity/设备/网络为阶段外，NOT_RUN。
 - 未执行 push、PR、merge、远端 CI、默认分支/部署/全局环境/转派；caller 独占复核/隔离集成/push/MR/merge-back。
 
 ---

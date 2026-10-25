@@ -78,6 +78,7 @@ namespace Mahjong.TableRuntime
 
         private RoundStateMachine _round;
         private CheatState? _cheat;
+        private bool _cheatOfferRequiresBootReconciliation;
         private readonly CheatEconomyConfig? _cheatEconomy;
         private readonly SleeveBloomConfig? _sleeveConfig;
 
@@ -1522,7 +1523,18 @@ namespace Mahjong.TableRuntime
                 }
             }
 
-            if (_cheatRequestBindings.Count >= _options.CheatRequestBindingCapacity)
+            if (_cheatOfferRequiresBootReconciliation &&
+                prior == null &&
+                IsOfferChoice(command.CheatCommand.Action))
+            {
+                return TableOperationResult.Rejected(
+                    _stateVersion,
+                    TableRuntimeReasonCode.CheatBootReconciliationRequired,
+                    "A cheat offer was open across a boot/clock discontinuity; it cannot be accepted until reconciled.");
+            }
+
+            if (prior == null &&
+                _cheatRequestBindings.Count >= _options.CheatRequestBindingCapacity)
             {
                 return TableOperationResult.Rejected(
                     _stateVersion,
@@ -1737,7 +1749,7 @@ namespace Mahjong.TableRuntime
                 _round.RoundId,
                 _cheat.TileMarks.DealtRoundOrdinal,
                 DrawKindOf(_round.Tiles),
-                (long)NowUtc());
+                now);
         }
 
         private static int CountDrawTurns(RoundStateMachine round)
@@ -1785,6 +1797,11 @@ namespace Mahjong.TableRuntime
                                       command.Action == RoundActionKind.DeclareRiichi),
                 deliverDeferred ? CheatDeferDrawPredicate() : null);
         }
+
+        private static bool IsOfferChoice(RoundCheatAction action) =>
+            action == RoundCheatAction.SubmitSleeveBloomOffTurnChoice ||
+            action == RoundCheatAction.SubmitSleeveBloomChoice ||
+            action == RoundCheatAction.SubmitBeamSwapChoice;
 
         private Func<int, bool>? CheatDeferDrawPredicate()
         {
@@ -4424,7 +4441,10 @@ namespace Mahjong.TableRuntime
                 finalState == null ||
                 finalState.StateVersion != recovered.Baseline.StateVersion ||
                 finalState.LastEventSeq != recovered.Baseline.LastEventSeq ||
-                finalState.TimingVersion != recovered.Baseline.TimingVersion)
+                finalState.TimingVersion != recovered.Baseline.TimingVersion ||
+                finalState.CheatBound != recovered.Baseline.CheatBound ||
+                finalState.CheatVersion != recovered.Baseline.CheatVersion ||
+                finalState.CheatFingerprint != recovered.Baseline.CheatFingerprint)
             {
                 EnterFaulted(
                     TableRuntimeReasonCode.RecoveryStateChanged,
@@ -4484,7 +4504,10 @@ namespace Mahjong.TableRuntime
                 state.LastEventSeq != baseline.LastEventSeq ||
                 state.StateFingerprint != baseline.Round.SourceFingerprint ||
                 state.ControlVersion != (baseline.Control?.ControlVersion ?? state.ControlVersion) ||
-                state.TimingVersion != baseline.TimingVersion)
+                state.TimingVersion != baseline.TimingVersion ||
+                state.CheatBound != baseline.CheatBound ||
+                state.CheatVersion != baseline.CheatVersion ||
+                state.CheatFingerprint != baseline.CheatFingerprint)
             {
                 return TableOperationResult.Failed(
                     _stateVersion,
@@ -4981,6 +5004,16 @@ namespace Mahjong.TableRuntime
                 EnterFaulted(finalFence.ReasonCode, finalFence.Detail);
                 return finalFence;
             }
+
+            _cheatOfferRequiresBootReconciliation =
+                baseline.BootChanged &&
+                baseline.Cheat != null &&
+                (baseline.Cheat.SleeveBloom.ImmediateOffer != null ||
+                 baseline.Cheat.SleeveBloom.OffTurnOfferFor(0) != null ||
+                 baseline.Cheat.SleeveBloom.OffTurnOfferFor(1) != null ||
+                 baseline.Cheat.SleeveBloom.OffTurnOfferFor(2) != null ||
+                 baseline.Cheat.SleeveBloom.OffTurnOfferFor(3) != null ||
+                 baseline.Cheat.BeamSwap.Offer != null);
 
             _round = baseline.Round;
             if (baseline.Cheat != null)
@@ -7278,8 +7311,7 @@ namespace Mahjong.TableRuntime
                 BuildStreamDecisions(now),
                 eventInputs,
                 factsBySeq,
-                now,
-                utc);
+                now);
         }
 
         private IReadOnlyList<TableEventRecord> CopyCommittedEventLog()
@@ -7680,7 +7712,7 @@ namespace Mahjong.TableRuntime
                     PlayerSnapshotView mapped = TableProjectionContractMapper.MapPlayerSnapshot(
                         player,
                         owner,
-                        new TableProjectionTimeContext(capture.MonotonicMillis, capture.UtcMillis),
+                        new TableProjectionTimeContext(capture.MonotonicMillis),
                         typedSettlement,
                         data.ConcealedMeldFacts);
                     contract = new TableStreamContractFrame(
@@ -8373,8 +8405,7 @@ namespace Mahjong.TableRuntime
                 IReadOnlyList<TableSeatDecision> decisions,
                 IReadOnlyList<TableEventProjectionInput> eventInputs,
                 IReadOnlyDictionary<ulong, TableProjectionEventFact> facts,
-                long monotonicMillis,
-                long utcMillis)
+                long monotonicMillis)
             {
                 Data = data;
                 Clocks = clocks;
@@ -8382,7 +8413,6 @@ namespace Mahjong.TableRuntime
                 EventInputs = eventInputs;
                 _facts = facts;
                 MonotonicMillis = monotonicMillis;
-                UtcMillis = utcMillis;
                 _inputs = new Dictionary<ulong, TableEventProjectionInput>(eventInputs.Count);
                 for (int i = 0; i < eventInputs.Count; i++)
                 {
@@ -8399,8 +8429,6 @@ namespace Mahjong.TableRuntime
             public IReadOnlyList<TableEventProjectionInput> EventInputs { get; }
 
             public long MonotonicMillis { get; }
-
-            public long UtcMillis { get; }
 
             public TableProjectionEventFacts? FactsFor(TableProjectedEvent value)
             {

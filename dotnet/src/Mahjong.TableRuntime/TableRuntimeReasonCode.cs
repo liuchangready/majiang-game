@@ -92,6 +92,7 @@ namespace Mahjong.TableRuntime
         public const string CheatRequestIdMismatch = "CHEAT_REQUEST_ID_MISMATCH";
         public const string CheatRequestIdConflict = "CHEAT_REQUEST_ID_CONFLICT";
         public const string CheatReceiptCapacityExceeded = "CHEAT_RECEIPT_CAPACITY_EXCEEDED";
+        public const string CheatBootReconciliationRequired = "CHEAT_BOOT_RECONCILIATION_REQUIRED";
 
         public static string FromCheat(Mahjong.Domain.RoundCheatErrorCode bridge, Mahjong.Domain.Cheat.CheatErrorCode cheat)
         {

@@ -812,10 +812,7 @@ namespace Mahjong.TableRuntime
             TableProjectionTimeContext time)
         {
             bool hasDeadline = offer.DeadlineMillis > 0;
-            long now = offer.DeadlineMillis >= 1_000_000_000_000L
-                ? time.UtcNowMs
-                : time.MonotonicNowMs;
-            long remaining = hasDeadline ? Remaining(offer.DeadlineMillis, now) : 0;
+            long remaining = hasDeadline ? Remaining(offer.DeadlineMillis, time.MonotonicNowMs) : 0;
             return new SleeveBloomView(
                 offer.OfferId,
                 offer.Mode == Mahjong.Domain.Cheat.SleeveBloomOfferMode.Immediate

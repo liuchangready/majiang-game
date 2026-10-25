@@ -1216,7 +1216,12 @@ namespace Mahjong.TableRuntime
             TableProjectionContextData? projectionFacts = null,
             IReadOnlyList<TableEventRecord>? committedEvents = null,
             bool strictHistory = false,
-            IReadOnlyList<TableCommandBinding>? commandBindings = null)
+            IReadOnlyList<TableCommandBinding>? commandBindings = null,
+            string? previousBootId = null,
+            string? currentBootId = null,
+            bool cheatBound = false,
+            long cheatVersion = 0L,
+            ulong cheatFingerprint = 0UL)
         {
             Round = round ?? throw new ArgumentNullException(nameof(round));
             StateVersion = stateVersion;
@@ -1226,6 +1231,11 @@ namespace Mahjong.TableRuntime
             Timing = timing ?? TableRecoveryTiming.None;
             TimingVersion = timingVersion;
             Cheat = cheat;
+            CheatBound = cheatBound;
+            CheatVersion = cheatVersion;
+            CheatFingerprint = cheatFingerprint;
+            PreviousBootId = previousBootId ?? string.Empty;
+            CurrentBootId = currentBootId ?? previousBootId ?? string.Empty;
             StrictHistory = strictHistory;
             ProjectionFacts = projectionFacts;
             _commandBindings = new ReadOnlyCollection<TableCommandBinding>(
@@ -1262,6 +1272,19 @@ namespace Mahjong.TableRuntime
 
         /// <summary>Real cheat aggregate rebuilt from persisted ledger entries, when modeled.</summary>
         public CheatState? Cheat { get; }
+
+        /// <summary>The committed table_state carried a complete cheat binding marker.</summary>
+        public bool CheatBound { get; }
+
+        public long CheatVersion { get; }
+
+        public ulong CheatFingerprint { get; }
+
+        public string PreviousBootId { get; }
+
+        public string CurrentBootId { get; }
+
+        public bool BootChanged => !string.Equals(PreviousBootId, CurrentBootId, StringComparison.Ordinal);
 
         /// <summary>Host-owned committed facts persisted with the checkpoint; installed via the sink.</summary>
         public TableProjectionContextData? ProjectionFacts { get; }
