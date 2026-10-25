@@ -166,24 +166,54 @@ function Invoke-GoldenRun {
     }
 }
 
-function Invoke-ListMethods {
+function Invoke-ListDiscovered {
     param([string]$AssemblyPath, [string]$Dotnet, [string]$LogPath)
-    $output = & $Dotnet $AssemblyPath -noLogo -list methods -class $script:ClassFilter 2>&1
+    $output = & $Dotnet $AssemblyPath -noLogo -list 'full/json' -class $script:ClassFilter 2>&1
     $exit = $LASTEXITCODE
     $text = ($output | Out-String)
     Write-Utf8NoBom $LogPath $text
+
+    $items = @()
+    $parsed = $false
+    try {
+        $parsedObject = $text | ConvertFrom-Json
+        if ($parsedObject -is [System.Array]) {
+            $items = @($parsedObject)
+        } else {
+            $items = @($parsedObject)
+        }
+        $parsed = $true
+    } catch {
+        $items = @()
+    }
+
     $methods = @()
-    foreach ($line in ($output | ForEach-Object { $_.ToString() })) {
-        $trimmed = $line.Trim()
-        if ($trimmed -match '^Mahjong\.TableRuntime\.Tests\.N3TableCheatGoldenAdmissionTests\.([A-Za-z0-9_]+)$') {
-            $methods += $Matches[1]
+    foreach ($item in $items) {
+        if ($null -ne $item.Method -and -not [string]::IsNullOrWhiteSpace($item.Method)) {
+            $methods += ([string]$item.Method)
         }
     }
+
+    $manifestItem = @($items | Where-Object {
+        $null -ne $_.DisplayName -and ([string]$_.DisplayName).Contains('N3-BINDING-MANIFEST')
+    }) | Select-Object -First 1
+
+    $manifestText = ''
+    if ($null -ne $manifestItem) {
+        $display = [string]$manifestItem.DisplayName
+        $index = $display.IndexOf('N3-BINDING-MANIFEST')
+        if ($index -ge 0) {
+            $manifestText = $display.Substring($index)
+        }
+    }
+
     return [pscustomobject]@{
-        Exit    = $exit
-        Methods = $methods
-        Text    = $text
-        Log     = $LogPath
+        Exit         = $exit
+        Parsed       = $parsed
+        Methods      = $methods
+        ManifestText = $manifestText
+        Text         = $text
+        Log          = $LogPath
     }
 }
 
@@ -258,23 +288,22 @@ try {
     }
 
     # -----------------------------------------------------------------------
-    # Binding readiness: discovered methods, the five bound cases, and a green baseline.
+    # Binding readiness: real eligibility from the machine-readable manifest, not just
+    # method-name presence. Blocked cases make readiness non-zero but do NOT stop the matrix.
     # -----------------------------------------------------------------------
-    $list = Invoke-ListMethods -AssemblyPath $AssemblyPath -Dotnet $DotnetPath -LogPath (Join-Path $EvidenceRoot 'list-methods.log')
-    $boundCaseTokens = [ordered]@{
+    $list = Invoke-ListDiscovered -AssemblyPath $AssemblyPath -Dotnet $DotnetPath -LogPath (Join-Path $EvidenceRoot 'list-discovered.json')
+    $expectedBoundCaseTokens = [ordered]@{
         'tm-allowed'                = 'golden_tm_allowed_commits_once_and_replays_without_a_second_charge'
         'tm-wrong-phase-round-end'  = 'golden_tm_wrong_phase_round_end_rejects_with_the_terminated_round_reason'
         'tm-no-active-decision'     = 'golden_tm_no_active_decision_rejects_when_pending_exists_without_clock_timing'
         'tm-deadline-expired'       = 'golden_tm_deadline_expired_rejects_at_the_exact_deadline_before_any_tick'
-        'tm-decision-mismatch'      = 'golden_tm_decision_mismatch_rejects_when_the_command_round_is_not_active'
     }
-
-    $missingMethods = @()
-    foreach ($caseId in $boundCaseTokens.Keys) {
-        if ($list.Methods -notcontains $boundCaseTokens[$caseId]) {
-            $missingMethods += ($caseId + ' -> ' + $boundCaseTokens[$caseId])
-        }
+    $expectedBlockedCaseIds = @('tm-decision-mismatch')
+    $blockedReasons = @{
+        'tm-decision-mismatch' = 'authority has no active round (V4 roundIdGiven=null); the accepted actor always owns a concrete _round and has no safe null-round port'
     }
+    $expectedFaultInjection = @('tm-wrong-phase-round-end', 'tm-no-active-decision')
+    $supplementaryMethod = 'supplementary_stale_round_identity_is_rejected_with_round_mismatch'
 
     $baselineCopy = Join-Path $EvidenceRoot 'cheat-v1.real.json'
     Copy-Item -LiteralPath $FixturePath -Destination $baselineCopy -Force
@@ -284,11 +313,11 @@ try {
     if ($list.Exit -ne 0) {
         $readinessReasons += ('method discovery exit ' + $list.Exit)
     }
+    if (-not $list.Parsed) {
+        $readinessReasons += 'method discovery JSON could not be parsed'
+    }
     if ($list.Methods.Count -le 0) {
         $readinessReasons += 'method discovery returned zero methods'
-    }
-    if ($missingMethods.Count -gt 0) {
-        $readinessReasons += ('missing bound test methods: ' + ($missingMethods -join '; '))
     }
     if (-not $baselineResult.Parsed) {
         $readinessReasons += 'baseline run produced no parsable test summary'
@@ -321,14 +350,116 @@ try {
         $readinessReasons += ('baseline [FAIL] markers ' + $baselineResult.FailedMarkers)
     }
 
-    $boundCount = $boundCaseTokens.Count - $missingMethods.Count
-    $readinessStatus = if ($readinessReasons.Count -eq 0) { 'PASS' } else { 'FAIL' }
+    $manifestFields = @{}
+    $manifestBoundCases = @()
+    $manifestBlockedCases = @()
+    $manifestFaultInjection = @()
+    if ([string]::IsNullOrWhiteSpace($list.ManifestText)) {
+        $readinessReasons += 'N3-BINDING-MANIFEST was not discovered'
+    } else {
+        foreach ($part in ($list.ManifestText -split '\|' | Select-Object -Skip 1)) {
+            $kv = $part -split '=', 2
+            if ($kv.Count -eq 2) {
+                $manifestFields[$kv[0]] = $kv[1]
+            }
+        }
+
+        foreach ($required in @('denominator', 'bound', 'blocked', 'boundCases', 'blockedCases', 'faultInjection', 'reason')) {
+            if (-not $manifestFields.ContainsKey($required)) {
+                $readinessReasons += ('manifest is missing field ' + $required)
+            }
+        }
+
+        if ($readinessReasons.Count -eq 0) {
+            $manifestBoundCases = @($manifestFields['boundCases'] -split ',')
+            $manifestBlockedCases = @($manifestFields['blockedCases'] -split ',')
+            $manifestFaultInjection = @($manifestFields['faultInjection'] -split ',')
+
+            if ($manifestFields['denominator'] -ne '5') {
+                $readinessReasons += ('manifest denominator is ' + $manifestFields['denominator'] + ', expected 5')
+            }
+            if ($manifestFields['bound'] -ne ([string]$manifestBoundCases.Count)) {
+                $readinessReasons += ('manifest bound=' + $manifestFields['bound'] + ' != boundCases ' + $manifestBoundCases.Count)
+            }
+            if ($manifestFields['blocked'] -ne ([string]$manifestBlockedCases.Count)) {
+                $readinessReasons += ('manifest blocked=' + $manifestFields['blocked'] + ' != blockedCases ' + $manifestBlockedCases.Count)
+            }
+            if (($manifestBoundCases.Count + $manifestBlockedCases.Count) -ne 5) {
+                $readinessReasons += 'manifest boundCases + blockedCases != denominator 5'
+            }
+            if (($manifestBlockedCases -join ',') -ne ($expectedBlockedCaseIds -join ',')) {
+                $readinessReasons += ('manifest blockedCases [' + ($manifestBlockedCases -join ',') + '] != expected [' + ($expectedBlockedCaseIds -join ',') + ']')
+            }
+            if (($manifestFaultInjection -join ',') -ne ($expectedFaultInjection -join ',')) {
+                $readinessReasons += ('manifest faultInjection [' + ($manifestFaultInjection -join ',') + '] != expected [' + ($expectedFaultInjection -join ',') + ']')
+            }
+            if ([string]::IsNullOrWhiteSpace($manifestFields['reason'])) {
+                $readinessReasons += 'manifest blocked reason token is empty'
+            }
+
+            foreach ($caseId in $expectedBoundCaseTokens.Keys) {
+                if ($manifestBoundCases -notcontains $caseId) {
+                    $readinessReasons += ('manifest does not declare bound case ' + $caseId)
+                }
+                $method = $expectedBoundCaseTokens[$caseId]
+                if ($list.Methods -notcontains $method) {
+                    $readinessReasons += ('missing bound test method ' + $caseId + ' -> ' + $method)
+                }
+            }
+
+            foreach ($caseId in $expectedBlockedCaseIds) {
+                if ($manifestBoundCases -contains $caseId) {
+                    $readinessReasons += ('blocked case ' + $caseId + ' is also declared bound')
+                }
+                if (@($list.Methods | Where-Object { $_ -like ('golden_' + ($caseId -replace '-', '_') + '*') }).Count -gt 0) {
+                    $readinessReasons += ('blocked case ' + $caseId + ' has a golden binding method; BLOCKED must not be claimed as bound')
+                }
+            }
+
+            if ($list.Methods -notcontains $supplementaryMethod) {
+                $readinessReasons += ('missing supplementary stale-round guard ' + $supplementaryMethod)
+            }
+        }
+    }
+
+    $boundCount = 0
+    if ($readinessReasons.Count -eq 0) {
+        $boundCount = $manifestBoundCases.Count
+    }
+    $blockedCount = $manifestBlockedCases.Count
+    if ($readinessReasons.Count -gt 0) {
+        $readinessStatus = 'FAIL'
+        $readinessRatio = ('0/5')
+    } elseif ($blockedCount -gt 0) {
+        $readinessStatus = 'BLOCKED'
+        $readinessRatio = ('' + $boundCount + '/5')
+    } else {
+        $readinessStatus = 'PASS'
+        $readinessRatio = ('' + $boundCount + '/5')
+    }
+
+    $blockedReasonRows = @()
+    foreach ($caseId in $manifestBlockedCases) {
+        $reason = $blockedReasons[$caseId]
+        if ([string]::IsNullOrWhiteSpace($reason)) {
+            $reason = 'unspecified blocked reason'
+        }
+        $blockedReasonRows += [pscustomobject]@{
+            caseId = $caseId
+            reason = $reason
+        }
+    }
+
     $readiness = [ordered]@{
         status              = $readinessStatus
-        discoveredMethods   = $list.Methods.Count
+        denominator         = 5
         boundCases          = $boundCount
-        requiredBoundCases  = $boundCaseTokens.Count
-        readinessRatio      = ('' + $boundCount + '/' + $boundCaseTokens.Count)
+        blockedCases        = $blockedCount
+        blockedCaseIds      = $manifestBlockedCases
+        blockedReasons      = $blockedReasonRows
+        faultInjectionCases = $manifestFaultInjection
+        readinessRatio      = $readinessRatio
+        discoveredMethods   = $list.Methods.Count
         baselineTotal       = $baselineResult.Total
         baselineFailed      = $baselineResult.Failed
         baselineSkipped     = $baselineResult.Skipped
@@ -337,24 +468,19 @@ try {
         reasons             = $readinessReasons
         log                 = $baselineResult.Log
     }
-    Write-Utf8NoBom (Join-Path $EvidenceRoot 'readiness.json') ($readiness | ConvertTo-Json -Depth 6)
+    Write-Utf8NoBom (Join-Path $EvidenceRoot 'readiness.json') ($readiness | ConvertTo-Json -Depth 8)
 
-    if ($readinessReasons.Count -gt 0) {
-        Write-Host ''
-        Write-Host '=== BINDING READINESS: FAIL ==='
-        Write-Host ('discoveredMethods={0} boundCases={1}/{2} baselineTotal={3} exit={4} failed={5} errors={6} skipped={7} notRun={8}' -f `
-            $list.Methods.Count, $boundCount, $boundCaseTokens.Count, $baselineResult.Total, `
-            $baselineResult.Exit, $baselineResult.Failed, $baselineResult.Errors, `
-            $baselineResult.Skipped, $baselineResult.NotRun)
-        foreach ($reason in $readinessReasons) {
-            Write-Host ('READINESS-FAIL-REASON: ' + $reason)
-        }
-        Write-Host ('baseline log: ' + $baselineResult.Log)
-        Write-Host 'BINDING-READINESS-FAIL: mutation matrix was not used to mask an unbound case.'
-        exit 3
+    Write-Host ''
+    Write-Host ('=== BINDING READINESS: {0} ===' -f $readinessStatus)
+    Write-Host ('denominator=5 bound={0} blocked={1} readiness={2} blockedCaseIds=[{3}]' -f `
+        $boundCount, $blockedCount, $readinessRatio, ($manifestBlockedCases -join ','))
+    foreach ($row in $blockedReasonRows) {
+        Write-Host ('READINESS-BLOCKED-CASE: {0}: {1}' -f $row.caseId, $row.reason)
     }
-
-    Write-Step ('binding readiness PASS: ' + $readiness.readinessRatio + ' bound cases; discovered methods=' + $list.Methods.Count)
+    foreach ($reason in $readinessReasons) {
+        Write-Host ('READINESS-FAIL-REASON: ' + $reason)
+    }
+    Write-Step ('binding readiness ' + $readinessStatus + ' (' + $readinessRatio + '); continuing to the full mutation matrix.')
 
     # -----------------------------------------------------------------------
     # Case matrix
@@ -499,12 +625,17 @@ try {
     }
 
     $matrixPass = ($unexpected -eq 0) -and (-not $script:ToolFailure) -and $sourcePreserved
-    $readinessResult = if ($readinessReasons.Count -eq 0) { 'PASS' } else { 'FAIL' }
     $matrixResult = if ($matrixPass) { 'PASS' } else { 'FAIL' }
     $summary = [ordered]@{
         evidenceRoot             = $EvidenceRoot
-        bindingReadiness         = $readinessResult
+        bindingReadiness         = $readinessStatus
         readinessRatio           = $readiness.readinessRatio
+        denominator              = 5
+        boundCases               = $boundCount
+        blockedCases             = $blockedCount
+        blockedCaseIds           = $manifestBlockedCases
+        blockedReasons           = $blockedReasonRows
+        faultInjectionCases      = $manifestFaultInjection
         discoveredMethods        = $list.Methods.Count
         mutationMatrix           = $matrixResult
         cases                    = $rows.Count
@@ -520,14 +651,18 @@ try {
         sourceFixtureRawSha256After = $sourceRawAfter
         finishedAtUtc            = (Get-Date).ToUniversalTime().ToString('o')
     }
-    Write-Utf8NoBom (Join-Path $EvidenceRoot 'summary.json') ($summary | ConvertTo-Json -Depth 6)
+    Write-Utf8NoBom (Join-Path $EvidenceRoot 'summary.json') ($summary | ConvertTo-Json -Depth 8)
 
     Write-Host ''
     Write-Host '=== PROBE SUMMARY ==='
     $rows | Format-Table id, expectation, status, exit, total, failed, errors, skipped, notRun, patternMatched -AutoSize | Out-String -Width 220 | Write-Host
-    Write-Host ('bindingReadiness={0} readiness={1} discoveredMethods={2} mutationMatrix={3} cases={4} positive={5} negative={6} expectedTotal={7} unexpected={8} toolFailure={9}' -f `
-        $summary.bindingReadiness, $summary.readinessRatio, $summary.discoveredMethods, $summary.mutationMatrix, `
-        $rows.Count, $summary.positiveControls, $summary.negativeControls, $expectedTotal, $unexpected, $script:ToolFailure)
+    Write-Host ('bindingReadiness={0} readiness={1} denominator=5 bound={2} blocked={3} blockedCaseIds=[{4}] discoveredMethods={5} mutationMatrix={6} cases={7} positive={8} negative={9} expectedTotal={10} unexpected={11} toolFailure={12}' -f `
+        $readinessStatus, $readiness.readinessRatio, $boundCount, $blockedCount, ($manifestBlockedCases -join ','), `
+        $list.Methods.Count, $matrixResult, $rows.Count, $summary.positiveControls, $summary.negativeControls, `
+        $expectedTotal, $unexpected, $script:ToolFailure)
+    foreach ($row in $blockedReasonRows) {
+        Write-Host ('BLOCKED-CASE: {0}: {1}' -f $row.caseId, $row.reason)
+    }
     Write-Host ('source raw SHA256: {0}' -f $sourceRawSha)
     Write-Host ('source LF  SHA256: {0}' -f $sourceNormalizedSha)
     Write-Host ('source git  SHA1  : {0}' -f $sourceGitSha1)
@@ -539,7 +674,21 @@ try {
         exit 1
     }
 
-    Write-Host 'PROBE-PASS: binding readiness is full and every positive/negative mutation behaved as required.'
+    if ($readinessStatus -eq 'FAIL') {
+        Write-Host 'PROBE-FAIL: mutation matrix passed but binding readiness is FAIL.'
+        exit 2
+    }
+
+    if ($readinessStatus -eq 'BLOCKED') {
+        Write-Host ('PROBE-BLOCKED: mutation matrix PASS, binding readiness BLOCKED {0}; blockedCaseIds=[{1}].' -f `
+            $readiness.readinessRatio, ($manifestBlockedCases -join ','))
+        foreach ($row in $blockedReasonRows) {
+            Write-Host ('BLOCKED-REASON: {0}: {1}' -f $row.caseId, $row.reason)
+        }
+        exit 3
+    }
+
+    Write-Host 'PROBE-PASS: mutation matrix PASS and binding readiness PASS with every declared bound case.'
     exit 0
 } finally {
     Restore-GoldenEnvironment $previousEnvironment

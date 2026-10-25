@@ -27,13 +27,21 @@ namespace Mahjong.TableRuntime.Tests
     /// <see cref="TableActor.SubmitCheatAsync"/> -&gt; ValidateAuthorityIdentity -&gt;
     /// RoundCheatTransition.Prepare -&gt; real Domain path.
     ///
+    /// Binding readiness is deliberately 4/5, not 5/5. <c>tm-decision-mismatch</c> is the V4
+    /// "authority has no active round" input; the accepted actor always owns a concrete
+    /// <c>_round</c> and there is no safe null-round port. It is declared BLOCKED by
+    /// <see cref="BindingCases"/> and is never counted as bound. The wrong-round guard is kept
+    /// only as <c>supplementary_stale_round_identity_is_rejected_with_round_mismatch</c>.
+    ///
+    /// Two bound cases need test-only reflection WRITES:
+    /// <see cref="ClearClockTimings"/> removes the clock timing while keeping the pending decision
+    /// (<c>tm-no-active-decision</c>), and <see cref="InjectPendingAndTiming"/> re-installs the
+    /// original pending decision + timing after a real terminal Tsumo
+    /// (<c>tm-wrong-phase-round-end</c>, preserving the original decision id). Both states are
+    /// fault injections, not business-reachable states, and the tests assert the exact branches.
+    ///
     /// The fixture path can be overridden with V5_TABLE_CHEAT_GOLDEN_PATH so the independent
     /// mutation probe can point the same compiled tests at single-field TEMP copies.
-    ///
-    /// Only one test-only reflection WRITE exists: <see cref="ClearClockTimings"/>. It injects
-    /// the V4 "decision exists but timing is absent" state because the accepted actor API keeps
-    /// _pending and _decisionClock atomic. That state is a fault injection, not a business-reachable
-    /// state, and the test asserts the exact "not open in the clock" branch.
     /// </summary>
     public sealed class N3TableCheatGoldenAdmissionTests
     {
@@ -46,8 +54,60 @@ namespace Mahjong.TableRuntime.Tests
         private const string FixtureSchema = "v5-cheat-golden-v1";
         private const string FixtureGenerator = "engine/src/test/kotlin/com/majiang/v3/V5CheatGoldenExporterTest.kt";
 
+        /// <summary>
+        /// Machine-readable readiness ledger consumed by probe-table-cheat-golden.ps1. It declares
+        /// the real eligibility, not just green method names: four bound source-input cases (two of
+        /// them fault-injection reproductions) and one explicitly blocked source case.
+        /// </summary>
+        private const string ManifestDisplayName =
+            "N3-BINDING-MANIFEST|denominator=5|bound=4|blocked=1|" +
+            "boundCases=tm-allowed,tm-wrong-phase-round-end,tm-no-active-decision,tm-deadline-expired|" +
+            "blockedCases=tm-decision-mismatch|" +
+            "faultInjection=tm-wrong-phase-round-end,tm-no-active-decision|" +
+            "reason=NO_ACTIVE_ROUND_NOT_REPRESENTABLE";
+
         private static readonly string OpenPendingTiming =
             "0:" + DecisionId + ":" + Deadline + ";1:-:-;2:-:-;3:-:-";
+
+        private static readonly BindingCase[] BindingCases =
+        {
+            new BindingCase(
+                "tm-allowed",
+                BindingStatus.Bound,
+                "golden_tm_allowed_commits_once_and_replays_without_a_second_charge",
+                "source input expressed with a real RemoteHuman seat; host sessionId and " +
+                "RemoteHuman(autoRiichiDiscard=false) have no actor cheat-envelope field but are " +
+                "not read by the tile-mark verdict",
+                "sessionId,autoRiichiDiscard"),
+            new BindingCase(
+                "tm-wrong-phase-round-end",
+                BindingStatus.BoundFaultInjection,
+                "golden_tm_wrong_phase_round_end_rejects_with_the_terminated_round_reason",
+                "ROUND_END with the original pending decision/timing and decision id re-injected " +
+                "after a real terminal Tsumo via test-only reflection; not business reachable",
+                "sessionId,autoRiichiDiscard"),
+            new BindingCase(
+                "tm-no-active-decision",
+                BindingStatus.BoundFaultInjection,
+                "golden_tm_no_active_decision_rejects_when_pending_exists_without_clock_timing",
+                "pending decision kept while the clock timing is cleared via test-only reflection; " +
+                "not business reachable because OpenDecisionAsync installs both atomically",
+                "sessionId,autoRiichiDiscard"),
+            new BindingCase(
+                "tm-deadline-expired",
+                BindingStatus.Bound,
+                "golden_tm_deadline_expired_rejects_at_the_exact_deadline_before_any_tick",
+                "source input expressed with a real RemoteHuman seat and now == authoritative deadline",
+                "sessionId,autoRiichiDiscard"),
+            new BindingCase(
+                "tm-decision-mismatch",
+                BindingStatus.Blocked,
+                null,
+                "V4 roundIdGiven=null means the authority has no active round; the accepted actor " +
+                "always owns a concrete _round and has no safe null-round port. The stale-round " +
+                "supplementary guard is not this source case.",
+                "sessionId,autoRiichiDiscard,noActiveRoundState")
+        };
 
         private static readonly string[] KnownTileMarkCaseIds =
         {
@@ -109,8 +169,11 @@ namespace Mahjong.TableRuntime.Tests
                 // V4 :424 sets now == deadline, so :85 returns DEADLINE_EXPIRED.
                 ["tm-deadline-expired"] = new OracleRow("Rejected", "DEADLINE_EXPIRED"),
                 // V4 :425 passes roundId = null (an absent active round) while the request keeps its
-                // original identity, so :64-71 returns DECISION_MISMATCH. C# has a bound round and
-                // rejects a command for another round in ValidateAuthorityIdentity as RoundMismatch.
+                // original identity, so :64-71 returns DECISION_MISMATCH. This source input is
+                // BLOCKED for the accepted actor: it always owns a concrete _round and there is no
+                // safe null-round port. The fixture value is still validated for structure, and a
+                // separate supplementary test covers the wrong-round guard without claiming this
+                // source case.
                 ["tm-decision-mismatch"] = new OracleRow("Rejected", "DECISION_MISMATCH")
             };
 
@@ -122,6 +185,7 @@ namespace Mahjong.TableRuntime.Tests
             Assert.Null(golden.Reason);
 
             await using ActorHarness harness = CreateHarness();
+            await AssertRemoteHumanControllers(harness);
             RoundStateMachine round = harness.InitialRound;
             Assert.Equal(InitialPoints, GetCheat(harness.Actor)!.Ledger.BalanceOf(0));
             Assert.Equal(
@@ -133,6 +197,7 @@ namespace Mahjong.TableRuntime.Tests
             Assert.Equal(InitialPoints, before.Balance);
             Assert.Equal(0, before.MarkGroupCount);
             Assert.Equal(OpenPendingTiming, before.PendingTiming);
+            await AssertRemoteHumanControllers(harness);
 
             TableCheatCommandEnvelope envelope = Cheat(
                 harness, "tm-allowed", RoundId, 0, new DecisionId(DecisionId));
@@ -206,6 +271,7 @@ namespace Mahjong.TableRuntime.Tests
             Assert.Equal("DECISION_MISMATCH", golden.Reason);
 
             await using ActorHarness harness = CreateHarness();
+            await AssertRemoteHumanControllers(harness);
             RoundStateMachine round = harness.InitialRound;
             Assert.Equal(
                 TableOperationStatus.Configured,
@@ -228,21 +294,25 @@ namespace Mahjong.TableRuntime.Tests
                 new DecisionId(DecisionId)));
             Assert.Equal(TableOperationStatus.Accepted, tsumo.Status);
 
+            // The terminal transition itself consumed the open decision. To reproduce the V4
+            // source input exactly (ROUND_END and the original decision still present), re-install
+            // the same pending decision and its clock timing. This is a test-only fault injection:
+            // a finished round with a pending decision is not business reachable.
+            InjectPendingAndTiming(harness.Actor, Pending(harness, discard: false));
+
             ObservedState before = await CaptureAsync(harness);
             Assert.True(before.IsFinished);
             Assert.Equal(RoundPhase.RoundEnd, before.Phase);
             Assert.Equal(1UL, before.StateVersion);
             Assert.Equal(1, before.CommitCount);
-            // The terminal transition itself consumed the open decision; no pending key survives.
-            Assert.Equal("0:-:-;1:-:-;2:-:-;3:-:-", before.PendingTiming);
+            Assert.Equal(OpenPendingTiming, before.PendingTiming);
             Assert.Equal(136, before.UniqueTileCount);
+            await AssertRemoteHumanControllers(harness);
 
-            // V4 still shows a decision object at ROUND_END, but C# clears _pending on the terminal
-            // transition. Supplying a decision id here would select the other (no-pending) branch,
-            // so the representable equivalent carries the original round/seat/request identity and
-            // no decision id, letting the terminal guard be the rejecting branch.
+            // The source request keeps its original decision identity; the terminal guard, not the
+            // no-pending branch, must reject it.
             TableCheatCommandEnvelope envelope = Cheat(
-                harness, "tm-round-end", RoundId, 1, decision: null);
+                harness, "tm-round-end", RoundId, 1, new DecisionId(DecisionId));
             TableOperationResult result = await harness.Actor.SubmitCheatAsync(
                 envelope, TestContext.Current.CancellationToken);
 
@@ -280,6 +350,7 @@ namespace Mahjong.TableRuntime.Tests
             Assert.Equal("NO_ACTIVE_DECISION", golden.Reason);
 
             await using ActorHarness harness = CreateHarness();
+            await AssertRemoteHumanControllers(harness);
             Assert.Equal(
                 TableOperationStatus.Configured,
                 (await harness.OpenDecisionAsync(Pending(harness, discard: false))).Status);
@@ -295,6 +366,7 @@ namespace Mahjong.TableRuntime.Tests
             ObservedState before = await CaptureAsync(harness);
             Assert.Equal("0:" + DecisionId + ":-;1:-:-;2:-:-;3:-:-", before.PendingTiming);
             AssertUnchangedExceptPending(beforeInjection, before);
+            await AssertRemoteHumanControllers(harness);
 
             // The request definitely carries the active decision id, so this cannot be the
             // "request without a decision id" or "no pending decision" branch.
@@ -332,6 +404,7 @@ namespace Mahjong.TableRuntime.Tests
             Assert.Equal("DEADLINE_EXPIRED", golden.Reason);
 
             await using ActorHarness harness = CreateHarness();
+            await AssertRemoteHumanControllers(harness);
             RoundStateMachine round = harness.InitialRound;
             Assert.Equal(
                 TableOperationStatus.Configured,
@@ -342,6 +415,7 @@ namespace Mahjong.TableRuntime.Tests
             // Exactly at the deadline. Admission is processed before any tick, so the identity
             // check sees the still-open timing and rejects with zero side effects.
             harness.Clock.Now = Deadline;
+            await AssertRemoteHumanControllers(harness);
             TableCheatCommandEnvelope envelope = Cheat(
                 harness, "tm-deadline-expired", RoundId, 0, new DecisionId(DecisionId));
             TableOperationResult result = await harness.Actor.SubmitCheatAsync(
@@ -392,25 +466,23 @@ namespace Mahjong.TableRuntime.Tests
         }
 
         [Fact]
-        public async Task golden_tm_decision_mismatch_rejects_when_the_command_round_is_not_active()
+        public async Task supplementary_stale_round_identity_is_rejected_with_round_mismatch()
         {
-            GoldenCase golden = LoadBoundCase("tm-decision-mismatch");
-            Assert.Equal("Rejected", golden.Outcome);
-            Assert.Equal("DECISION_MISMATCH", golden.Reason);
-
+            // SUPPLEMENTARY C# COVERAGE ONLY. This is NOT the V4 tm-decision-mismatch source case:
+            // that case's authority has no active round (roundIdGiven=null), which the accepted
+            // actor cannot represent. This test keeps the wrong-round identity guard honest without
+            // counting toward binding readiness.
             await using ActorHarness harness = CreateHarness();
+            await AssertRemoteHumanControllers(harness);
             Assert.Equal(
                 TableOperationStatus.Configured,
                 (await harness.OpenDecisionAsync(Pending(harness, discard: false))).Status);
             ObservedState before = await CaptureAsync(harness);
             Assert.Equal(OpenPendingTiming, before.PendingTiming);
+            await AssertRemoteHumanControllers(harness);
 
-            // V4's roundIdGiven = null means the authority has no active round while the request
-            // still names one. The C# actor always has a bound round, so the representable
-            // equivalent is a command naming a round that is not the active round. The pending
-            // decision is present and matches, so this is not the decision-id mismatch branch.
             TableCheatCommandEnvelope envelope = Cheat(
-                harness, "tm-decision-mismatch", "r-stale-golden", 0, new DecisionId(DecisionId));
+                harness, "supplementary-stale-round", "r-stale-golden", 0, new DecisionId(DecisionId));
             TableOperationResult result = await harness.Actor.SubmitCheatAsync(
                 envelope, TestContext.Current.CancellationToken);
 
@@ -433,6 +505,35 @@ namespace Mahjong.TableRuntime.Tests
             AssertPhysicalConservation(harness.Actor);
         }
 
+        [Fact(DisplayName = ManifestDisplayName)]
+        public void binding_readiness_manifest_is_explicit()
+        {
+            Assert.Equal(5, BindingCases.Length);
+            BindingCase[] bound = BindingCases
+                .Where(c => c.Status != BindingStatus.Blocked)
+                .ToArray();
+            BindingCase[] blocked = BindingCases
+                .Where(c => c.Status == BindingStatus.Blocked)
+                .ToArray();
+
+            Assert.Equal(4, bound.Length);
+            BindingCase blockedCase = Assert.Single(blocked);
+            Assert.Equal("tm-decision-mismatch", blockedCase.CaseId);
+            Assert.False(string.IsNullOrWhiteSpace(blockedCase.Reason));
+            Assert.True(string.IsNullOrWhiteSpace(blockedCase.BindingMethod));
+            Assert.All(bound, c => Assert.False(string.IsNullOrWhiteSpace(c.BindingMethod)));
+            Assert.All(bound, c => Assert.False(string.IsNullOrWhiteSpace(c.Reason)));
+            Assert.Equal(2, bound.Count(c => c.Status == BindingStatus.BoundFaultInjection));
+            Assert.Equal(2, bound.Count(c => c.Status == BindingStatus.Bound));
+            Assert.Contains("denominator=5", ManifestDisplayName, StringComparison.Ordinal);
+            Assert.Contains("bound=4", ManifestDisplayName, StringComparison.Ordinal);
+            Assert.Contains("blocked=1", ManifestDisplayName, StringComparison.Ordinal);
+            Assert.Contains(
+                "blockedCases=tm-decision-mismatch",
+                ManifestDisplayName,
+                StringComparison.Ordinal);
+        }
+
         [Fact]
         public void golden_tile_mark_handler_cases_are_strictly_typed_and_complete()
         {
@@ -441,7 +542,7 @@ namespace Mahjong.TableRuntime.Tests
             Assert.Equal(KnownTileMarkCaseIds, fixture.Cases.Select(c => c.CaseId).ToArray());
             foreach (string id in Oracle.Keys)
             {
-                Assert.True(fixture.CasesById.ContainsKey(id), "missing bound tileMark case " + id);
+                Assert.True(fixture.CasesById.ContainsKey(id), "missing tileMark case " + id);
             }
 
             foreach (GoldenCase item in fixture.Cases)
@@ -762,16 +863,37 @@ namespace Mahjong.TableRuntime.Tests
                 ControlReserve = 16,
                 DecisionClockConfig = new DecisionClockConfig(Deadline - Now, 0L, ReserveScope.Round),
                 InitialControllers = P31Fixtures.Controllers(
-                    SeatControllerKind.Computer,
-                    SeatControllerKind.Computer,
-                    SeatControllerKind.Computer,
-                    SeatControllerKind.Computer),
+                    SeatControllerKind.RemoteHuman,
+                    SeatControllerKind.RemoteHuman,
+                    SeatControllerKind.RemoteHuman,
+                    SeatControllerKind.RemoteHuman),
                 CheatEconomy = economy,
                 SleeveBloomConfig = V32Fixtures.SleeveConfig(),
                 InitialCheatState = cheat
             };
             var actor = new TableActor(options, round, commitPort, clock, sink);
             return new ActorHarness(actor, clock, commitPort, sink, round);
+        }
+
+        /// <summary>
+        /// The V4 source uses <c>SeatController.RemoteHuman(false)</c>. The accepted actor expresses
+        /// the controller KIND through <see cref="TableActorOptions.InitialControllers"/>; read the
+        /// real control snapshot and assert the kind/connection/control epoch before execution.
+        /// The <c>autoRiichiDiscard=false</c> flag is not part of the C# control view and is not
+        /// read by the tile-mark admission branch; it is recorded as a host gap, not invented.
+        /// </summary>
+        private static async Task AssertRemoteHumanControllers(ActorHarness harness)
+        {
+            TableControlSnapshot control = await harness.Actor.GetControlSnapshotAsync(
+                TestContext.Current.CancellationToken);
+            Assert.Equal(4, control.Seats.Count);
+            for (int seat = 0; seat < 4; seat++)
+            {
+                Assert.Equal(seat, control.Seats[seat].Seat);
+                Assert.Equal(SeatControllerKind.RemoteHuman, control.Seats[seat].Kind);
+                Assert.Equal(ConnectionStatus.Connected, control.Seats[seat].Status);
+                Assert.Equal(0L, control.Seats[seat].ControlEpoch);
+            }
         }
 
         private static PendingDecision Pending(ActorHarness harness, bool discard)
@@ -954,10 +1076,32 @@ namespace Mahjong.TableRuntime.Tests
         /// </summary>
         private static void ClearClockTimings(TableActor actor)
         {
+            GetDecisionClock(actor).ClearTimings();
+        }
+
+        /// <summary>
+        /// Test-only fault injection: re-installs the original pending decision and its clock timing
+        /// after a real terminal Tsumo consumed them. This preserves the V4 ROUND_END source input
+        /// (finished round + pending decision + original decision id) while remaining an abnormal,
+        /// non-business-reachable state. Production terminal cleanup is not modified.
+        /// </summary>
+        private static void InjectPendingAndTiming(TableActor actor, PendingDecision decision)
+        {
+            FieldInfo field = typeof(TableActor).GetField(
+                "_pending", BindingFlags.Instance | BindingFlags.NonPublic)!;
+            var pending = (Dictionary<int, PendingDecision>)field.GetValue(actor)!;
+            pending[decision.Key.Seat] = decision;
+
+            DecisionClock clock = GetDecisionClock(actor);
+            clock.ClearTimings();
+            clock.Open(decision.Key, Now);
+        }
+
+        private static DecisionClock GetDecisionClock(TableActor actor)
+        {
             FieldInfo field = typeof(TableActor).GetField(
                 "_decisionClock", BindingFlags.Instance | BindingFlags.NonPublic)!;
-            var clock = (DecisionClock)field.GetValue(actor)!;
-            clock.ClearTimings();
+            return (DecisionClock)field.GetValue(actor)!;
         }
 
         private static RoundStateMachine GetRound(TableActor actor)
@@ -972,6 +1116,40 @@ namespace Mahjong.TableRuntime.Tests
             FieldInfo field = typeof(TableActor).GetField(
                 "_cheat", BindingFlags.Instance | BindingFlags.NonPublic)!;
             return (CheatState?)field.GetValue(actor);
+        }
+
+        private enum BindingStatus
+        {
+            Bound = 0,
+            BoundFaultInjection = 1,
+            Blocked = 2
+        }
+
+        private sealed class BindingCase
+        {
+            public BindingCase(
+                string caseId,
+                BindingStatus status,
+                string? bindingMethod,
+                string reason,
+                string hostGaps)
+            {
+                CaseId = caseId;
+                Status = status;
+                BindingMethod = bindingMethod;
+                Reason = reason;
+                HostGaps = hostGaps;
+            }
+
+            public string CaseId { get; }
+
+            public BindingStatus Status { get; }
+
+            public string? BindingMethod { get; }
+
+            public string Reason { get; }
+
+            public string HostGaps { get; }
         }
 
         private sealed class GoldenCase
