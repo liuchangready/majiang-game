@@ -538,7 +538,8 @@ namespace Mahjong.TableRuntime
                                 cheat!,
                                 CountDrawTurns(round),
                                 0L,
-                                SleeveBloomDrawKind.Normal);
+                                SleeveBloomDrawKind.Normal,
+                                bootId: checkpoint.BootId);
                             RoundCheatPreparation preparation = RoundCheatTransition.PrepareReservationDraw(
                                 round,
                                 cheat,
@@ -613,7 +614,8 @@ namespace Mahjong.TableRuntime
                                     settlementCheat,
                                     CountDrawTurns(round),
                                     0L,
-                                    SleeveBloomDrawKind.Normal);
+                                    SleeveBloomDrawKind.Normal,
+                                    bootId: checkpoint.BootId);
                                 RoundCheatPreparation settlement = RoundCheatTransition.PrepareCommandWithOfferSettlement(
                                     round,
                                     settlementCheat,
@@ -809,7 +811,8 @@ namespace Mahjong.TableRuntime
                             cheatJournal.TurnNumber,
                             cheatJournal.NowMillis,
                             cheatJournal.LastDrawKind,
-                            cheatJournal.RoundOrdinal);
+                            cheatJournal.RoundOrdinal,
+                            checkpoint.BootId);
                         RoundCheatPreparation preparation = RoundCheatTransition.Prepare(
                             round,
                             cheat,
@@ -854,7 +857,8 @@ namespace Mahjong.TableRuntime
                             system.TurnNumber,
                             system.NowMillis,
                             system.LastDrawKind,
-                            system.RoundOrdinal);
+                            system.RoundOrdinal,
+                            checkpoint.BootId);
                         RoundCheatPreparation preparation;
                         switch (system.Action)
                         {
@@ -1424,7 +1428,8 @@ namespace Mahjong.TableRuntime
             int turnNumber,
             long nowMillis,
             SleeveBloomDrawKind lastDrawKind,
-            int roundOrdinal = -1)
+            int roundOrdinal = -1,
+            string? bootId = null)
         {
             return new CheatTurnContext(
                 round.CurrentSeat,
@@ -1435,7 +1440,8 @@ namespace Mahjong.TableRuntime
                 round.RoundId,
                 roundOrdinal >= 0 ? roundOrdinal : cheat.TileMarks.DealtRoundOrdinal,
                 lastDrawKind,
-                nowMillis);
+                nowMillis,
+                bootId);
         }
 
         private static bool HasProtectedWallTiles(CheatState cheat)

@@ -591,7 +591,7 @@ namespace Mahjong.TableRuntime
 
     public static class TableCheatLedgerCheckpointCodec
     {
-        public const int FormatVersion = 3;
+        public const int FormatVersion = 4;
         private const int Magic = 0x4D4A4C43; // MJLC
 
         public static byte[] Encode(TableCheatLedgerCheckpoint checkpoint)
@@ -864,6 +864,7 @@ namespace Mahjong.TableRuntime
             WriteNullableString(writer, offer.WindowId);
             writer.Write(offer.DeadlineMillis);
             writer.Write(offer.CreatedAtMillis);
+            writer.Write(offer.BootId);
         }
 
         private static SleeveBloomOffer? ReadOffer(BinaryReader reader)
@@ -893,6 +894,7 @@ namespace Mahjong.TableRuntime
             string? windowId = ReadNullableString(reader);
             long deadline = reader.ReadInt64();
             long createdAt = reader.ReadInt64();
+            string bootId = reader.ReadString();
             return new SleeveBloomOffer(
                 offerId,
                 seat,
@@ -903,7 +905,8 @@ namespace Mahjong.TableRuntime
                 (SleeveBloomOfferMode)mode,
                 windowId,
                 deadline,
-                createdAt);
+                createdAt,
+                bootId);
         }
 
         private static void WriteBeamSwap(BinaryWriter writer, BeamSwapState state)

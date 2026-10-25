@@ -232,7 +232,8 @@ namespace Mahjong.TableRuntime
             SleeveBloomOfferMode mode,
             string? windowId,
             long deadlineMillis,
-            long createdAtMillis)
+            long createdAtMillis,
+            string? bootId = null)
         {
             OfferId = ProtocolText.RequireId(offerId, nameof(offerId));
             FirstTileId = TableProjectionCopy.Tile(firstTileId, nameof(firstTileId));
@@ -243,6 +244,7 @@ namespace Mahjong.TableRuntime
             Mode = mode;
             DeadlineMillis = deadlineMillis;
             CreatedAtMillis = createdAtMillis;
+            BootId = bootId ?? string.Empty;
         }
 
         public string OfferId { get; }
@@ -260,6 +262,8 @@ namespace Mahjong.TableRuntime
         public string WindowId { get; }
 
         public long DeadlineMillis { get; }
+
+        public string BootId { get; }
 
         public long CreatedAtMillis { get; }
     }
@@ -1298,7 +1302,8 @@ namespace Mahjong.TableRuntime
                 offer.Mode,
                 offer.WindowId,
                 offer.DeadlineMillis,
-                offer.CreatedAtMillis);
+                offer.CreatedAtMillis,
+                offer.BootId);
         }
 
         private static TableOwnerSleeveBloomReservationView? MapReservation(SleeveBloomReservation? reservation)

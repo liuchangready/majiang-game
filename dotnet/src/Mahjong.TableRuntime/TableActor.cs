@@ -78,7 +78,6 @@ namespace Mahjong.TableRuntime
 
         private RoundStateMachine _round;
         private CheatState? _cheat;
-        private bool _cheatOfferRequiresBootReconciliation;
         private readonly CheatEconomyConfig? _cheatEconomy;
         private readonly SleeveBloomConfig? _sleeveConfig;
 
@@ -1523,14 +1522,14 @@ namespace Mahjong.TableRuntime
                 }
             }
 
-            if (_cheatOfferRequiresBootReconciliation &&
-                prior == null &&
-                IsOfferChoice(command.CheatCommand.Action))
+            if (prior == null &&
+                IsOfferChoice(command.CheatCommand.Action) &&
+                ChoiceTargetsForeignBootOffer(command.CheatCommand))
             {
                 return TableOperationResult.Rejected(
                     _stateVersion,
                     TableRuntimeReasonCode.CheatBootReconciliationRequired,
-                    "A cheat offer was open across a boot/clock discontinuity; it cannot be accepted until reconciled.");
+                    "The targeted cheat offer belongs to a previous boot/clock domain and cannot be selected directly.");
             }
 
             if (prior == null &&
@@ -1749,7 +1748,8 @@ namespace Mahjong.TableRuntime
                 _round.RoundId,
                 _cheat.TileMarks.DealtRoundOrdinal,
                 DrawKindOf(_round.Tiles),
-                now);
+                now,
+                _durable?.BootId ?? string.Empty);
         }
 
         private static int CountDrawTurns(RoundStateMachine round)
@@ -1796,6 +1796,26 @@ namespace Mahjong.TableRuntime
                 openDiscardWindow && (command.Action == RoundActionKind.DiscardTile ||
                                       command.Action == RoundActionKind.DeclareRiichi),
                 deliverDeferred ? CheatDeferDrawPredicate() : null);
+        }
+
+        private bool ChoiceTargetsForeignBootOffer(RoundCheatCommand command)
+        {
+            CheatState? cheat = _cheat;
+            if (cheat == null)
+            {
+                return false;
+            }
+
+            SleeveBloomOffer? offer = command.Action == RoundCheatAction.SubmitSleeveBloomChoice
+                ? cheat.SleeveBloom.ImmediateOffer
+                : command.Action == RoundCheatAction.SubmitSleeveBloomOffTurnChoice
+                    ? cheat.SleeveBloom.OffTurnOfferFor(command.Seat)
+                    : null;
+            return offer != null &&
+                   !string.Equals(
+                       offer.BootId,
+                       _durable?.BootId ?? string.Empty,
+                       StringComparison.Ordinal);
         }
 
         private static bool IsOfferChoice(RoundCheatAction action) =>
@@ -2359,7 +2379,12 @@ namespace Mahjong.TableRuntime
             }
 
             CheatTurnContext context = BuildCheatContext(now);
-            RoundCheatPreparation preparation = RoundCheatTransition.ExpireOffTurn(_round, _cheat, context);
+            string currentBoot = _durable?.BootId ?? string.Empty;
+            RoundCheatPreparation preparation = RoundCheatTransition.ExpireOffTurn(
+                _round,
+                _cheat,
+                context,
+                offer => !string.Equals(offer.BootId, currentBoot, StringComparison.Ordinal));
             if (!preparation.IsReady)
             {
                 return null;
@@ -5005,16 +5030,6 @@ namespace Mahjong.TableRuntime
                 return finalFence;
             }
 
-            _cheatOfferRequiresBootReconciliation =
-                baseline.BootChanged &&
-                baseline.Cheat != null &&
-                (baseline.Cheat.SleeveBloom.ImmediateOffer != null ||
-                 baseline.Cheat.SleeveBloom.OffTurnOfferFor(0) != null ||
-                 baseline.Cheat.SleeveBloom.OffTurnOfferFor(1) != null ||
-                 baseline.Cheat.SleeveBloom.OffTurnOfferFor(2) != null ||
-                 baseline.Cheat.SleeveBloom.OffTurnOfferFor(3) != null ||
-                 baseline.Cheat.BeamSwap.Offer != null);
-
             _round = baseline.Round;
             if (baseline.Cheat != null)
             {
@@ -5064,8 +5079,7 @@ namespace Mahjong.TableRuntime
 
                         RoundCheatJournal cheatJournal = TableCheatCommandCodec.Decode(journal.CommandPayload);
                         string key = journal.RequestId.Value;
-                        if (!_cheatRequestBindings.ContainsKey(key) &&
-                            _cheatRequestBindings.Count < _options.CheatRequestBindingCapacity)
+                        if (!_cheatRequestBindings.ContainsKey(key))
                         {
                             _cheatRequestBindings[key] = new CheatRequestBinding(
                                 journal.ScopeId,
@@ -5075,10 +5089,16 @@ namespace Mahjong.TableRuntime
                         }
                     }
                 }
-                catch (Exception)
+                catch (Exception exception)
                 {
-                    // Recovery already validated the journal; a decode failure here would have
-                    // failed the earlier replay. Never invent a binding from malformed data.
+                    EnterFaulted(
+                        TableRuntimeReasonCode.RecoveryStateChanged,
+                        "Cheat receipt identity reconstruction failed: " +
+                        exception.GetType().Name + ": " + exception.Message);
+                    return TableOperationResult.Failed(
+                        _stateVersion,
+                        TableRuntimeReasonCode.RecoveryStateChanged,
+                        "Cheat receipt identity reconstruction failed.");
                 }
             }
 
@@ -7712,7 +7732,9 @@ namespace Mahjong.TableRuntime
                     PlayerSnapshotView mapped = TableProjectionContractMapper.MapPlayerSnapshot(
                         player,
                         owner,
-                        new TableProjectionTimeContext(capture.MonotonicMillis),
+                        new TableProjectionTimeContext(
+                            capture.MonotonicMillis,
+                            currentBootId: _durable?.BootId ?? string.Empty),
                         typedSettlement,
                         data.ConcealedMeldFacts);
                     contract = new TableStreamContractFrame(

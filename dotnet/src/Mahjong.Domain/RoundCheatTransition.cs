@@ -1152,7 +1152,8 @@ namespace Mahjong.Domain
         public static RoundCheatPreparation ExpireOffTurn(
             RoundStateMachine round,
             CheatState? cheat,
-            CheatTurnContext context)
+            CheatTurnContext context,
+            Func<SleeveBloomOffer, bool>? forceExpire = null)
         {
             if (round == null) throw new ArgumentNullException(nameof(round));
             if (context == null) throw new ArgumentNullException(nameof(context));
@@ -1164,7 +1165,7 @@ namespace Mahjong.Domain
                     "Cheat execution is not configured.");
             }
 
-            CheatTransition transition = CheatSubmission.ExpireOffTurnSleeveBlooms(cheat, context);
+            CheatTransition transition = CheatSubmission.ExpireOffTurnSleeveBlooms(cheat, context, forceExpire);
             return Materialize(round, cheat, command: null, context, transition);
         }
 

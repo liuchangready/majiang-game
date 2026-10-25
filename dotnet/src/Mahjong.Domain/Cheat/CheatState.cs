@@ -298,6 +298,7 @@ namespace Mahjong.Domain.Cheat
                 hash = MixString(hash, immediate.WindowId);
                 hash = MixValue(hash, (ulong)immediate.CreatedAtMillis);
                 hash = MixValue(hash, (ulong)immediate.DeadlineMillis);
+                hash = MixString(hash, immediate.BootId);
                 hash = MixOfferTile(hash, immediate.FirstTile);
                 hash = MixOfferTile(hash, immediate.SecondTile);
             }
@@ -314,6 +315,7 @@ namespace Mahjong.Domain.Cheat
                 hash = MixString(hash, offer.WindowId);
                 hash = MixValue(hash, (ulong)offer.CreatedAtMillis);
                 hash = MixValue(hash, (ulong)offer.DeadlineMillis);
+                hash = MixString(hash, offer.BootId);
                 hash = MixOfferTile(hash, offer.FirstTile);
                 hash = MixOfferTile(hash, offer.SecondTile);
             }

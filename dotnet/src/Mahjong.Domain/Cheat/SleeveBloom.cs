@@ -63,7 +63,8 @@ namespace Mahjong.Domain.Cheat
             SleeveBloomOfferMode mode,
             string? windowId = null,
             long deadlineMillis = 0,
-            long createdAtMillis = 0)
+            long createdAtMillis = 0,
+            string? bootId = null)
         {
             if (string.IsNullOrWhiteSpace(offerId))
             {
@@ -118,6 +119,7 @@ namespace Mahjong.Domain.Cheat
             WindowId = windowId;
             DeadlineMillis = deadlineMillis;
             CreatedAtMillis = createdAtMillis;
+            BootId = bootId ?? string.Empty;
         }
 
         public string OfferId { get; }
@@ -141,6 +143,9 @@ namespace Mahjong.Domain.Cheat
 
         public long CreatedAtMillis { get; }
 
+        /// <summary>Boot instance that supplied the monotonic deadline domain.</summary>
+        public string BootId { get; }
+
         public bool Equals(SleeveBloomOffer? other) =>
             other != null &&
             OfferId == other.OfferId &&
@@ -152,13 +157,18 @@ namespace Mahjong.Domain.Cheat
             Mode == other.Mode &&
             WindowId == other.WindowId &&
             DeadlineMillis == other.DeadlineMillis &&
-            CreatedAtMillis == other.CreatedAtMillis;
+            CreatedAtMillis == other.CreatedAtMillis &&
+            BootId == other.BootId;
 
         public override bool Equals(object? obj) => obj is SleeveBloomOffer other && Equals(other);
 
-        public override int GetHashCode() =>
-            (((OfferId.GetHashCode(StringComparison.Ordinal) * 31 + Seat) * 31 +
-              FirstTile.Value) * 31 + SecondTile.Value) * 31 + CreatedTurnNumber;
+        public override int GetHashCode()
+        {
+            int hash = ((OfferId.GetHashCode(StringComparison.Ordinal) * 31 + Seat) * 31 +
+                        FirstTile.Value) * 31 + SecondTile.Value;
+            hash = hash * 31 + CreatedTurnNumber;
+            return hash * 31 + BootId.GetHashCode(StringComparison.Ordinal);
+        }
 
         public override string ToString() =>
             OfferId + "[seat" + Seat + " " + Mode + " " + DrawKind + " first=" + FirstTile + " second=" + SecondTile + "]";

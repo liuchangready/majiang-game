@@ -906,7 +906,8 @@ namespace Mahjong.TableRuntime.Tests
             return (CheatState?)field.GetValue(actor);
         }
 
-        private static async Task<DurableHarness> CreateDurableCheatHarnessAsync()
+        private static async Task<DurableHarness> CreateDurableCheatHarnessAsync(
+            int cheatRequestBindingCapacity = 8192)
         {
             RoundStateMachine round = P31Fixtures.Dealt("round-1");
             CheatState cheat = V32Fixtures.WithRegisteredRound(V32Fixtures.Cheat(InitialPoints), round.RoundId);
@@ -930,6 +931,7 @@ namespace Mahjong.TableRuntime.Tests
                 {
                     options.CheatEconomy = V32Fixtures.Economy(InitialPoints);
                     options.SleeveBloomConfig = V32Fixtures.SleeveConfig();
+                    options.CheatRequestBindingCapacity = cheatRequestBindingCapacity;
                     options.InitialCheatState = cheat;
                 });
         }
@@ -1691,6 +1693,140 @@ namespace Mahjong.TableRuntime.Tests
             Assert.Equal(first.Status, replay.Status);
             Assert.Equal(first.ReasonCode, replay.ReasonCode);
             Assert.Equal(0UL, (await harness.GetSnapshotAsync()).StateVersion.Value);
+        }
+
+        [Fact]
+        public async Task cold_recovery_capacity_shrink_still_replays_a_committed_durable_receipt()
+        {
+            await using DurableHarness harness = await CreateDurableCheatHarnessAsync();
+            RoundStateMachine round = harness.InitialRound;
+            TileId[] tiles = round.Tiles.TilesInZone(TileZone.Hand, 0).Take(8).ToArray();
+            TableCheatCommandEnvelope first = DurableCheat(
+                round.RoundId, 0, RoundCheatAction.SubmitTileMark, "cold-first",
+                RoundCheatPayload.TileMark("g1", tiles.Take(4).ToArray()), 0, harness.Scope);
+            TableCheatCommandEnvelope second = DurableCheat(
+                round.RoundId, 0, RoundCheatAction.SubmitTileMark, "cold-second",
+                RoundCheatPayload.TileMark("g2", tiles.Skip(4).ToArray()), 1, harness.Scope);
+            Assert.Equal(TableOperationStatus.Accepted, (await harness.Actor.SubmitCheatAsync(
+                first, TestContext.Current.CancellationToken)).Status);
+            TableOperationResult original = await harness.Actor.SubmitCheatAsync(
+                second, TestContext.Current.CancellationToken);
+            Assert.Equal(TableOperationStatus.Accepted, original.Status);
+            await harness.SaveCheckpointAsync();
+
+            await using TableActor actor = AttachDurable(harness, harness.Clock, DurableHarness.Boot, 1);
+            Assert.Equal(TableRecoveryStatus.Recovered, (await actor.RecoverFromStoreAsync(
+                TestContext.Current.CancellationToken)).Status);
+            TableOperationResult replay = await actor.SubmitCheatAsync(
+                second, TestContext.Current.CancellationToken);
+            Assert.True(replay.Status == TableOperationStatus.Replayed ||
+                        replay.Status == TableOperationStatus.Accepted,
+                replay.Status + "|" + replay.ReasonCode);
+            Assert.Equal(original.CommandVersion, replay.CommandVersion);
+            Assert.Equal(2, GetCheat(actor)!.TileMarks.Groups.Count);
+        }
+
+        [Fact]
+        public async Task cross_boot_offer_survives_checkpoint_and_second_recovery_but_cannot_be_selected()
+        {
+            await using DurableHarness harness = await CreateDurableCheatHarnessAsync();
+            SleeveBloomOffer offer = await OpenDurableOffTurnOfferAsync(harness);
+            var clock = new BootShiftClock
+            {
+                MonotonicMillis = 10L,
+                UtcNowMs = harness.Clock.UtcNowMs + 10000L
+            };
+            await using TableActor actor = AttachDurable(harness, clock, "boot-2");
+            Assert.Equal(TableRecoveryStatus.Recovered, (await actor.RecoverFromStoreAsync(
+                TestContext.Current.CancellationToken)).Status);
+            Assert.Equal(TableOperationStatus.Configured, (await actor.SaveCheckpointAsync(
+                TestContext.Current.CancellationToken)).Status);
+            Assert.Equal(TableRecoveryStatus.Recovered, (await actor.RecoverFromStoreAsync(
+                TestContext.Current.CancellationToken)).Status);
+
+            TableSnapshot snapshot = await actor.GetSnapshotAsync(TestContext.Current.CancellationToken);
+            TableOperationResult choice = await actor.SubmitCheatAsync(new TableCheatCommandEnvelope(
+                new RoundCheatCommand(
+                    "round-1", 0, RoundCheatAction.SubmitSleeveBloomOffTurnChoice, "reboot-second",
+                    RoundCheatPayload.OffTurnChoice(offer.OfferId, SleeveBloomKeep.Second)),
+                new RequestId("reboot-second"), new StateVersion(2), snapshot.OwnerEpoch,
+                new ControlEpoch(0), null, 2L, harness.Scope.ScopeId, "CHEAT",
+                TablePayloadSha256.Compute(new byte[] { 9, 8, 7 })),
+                TestContext.Current.CancellationToken);
+            Assert.NotEqual(TableOperationStatus.Accepted, choice.Status);
+            Assert.Equal(TableRuntimeReasonCode.CheatBootReconciliationRequired, choice.ReasonCode);
+        }
+
+        [Fact]
+        public async Task cross_boot_offer_is_forced_first_by_authority_tick()
+        {
+            await using DurableHarness harness = await CreateDurableCheatHarnessAsync();
+            SleeveBloomOffer offer = await OpenDurableOffTurnOfferAsync(harness);
+            var clock = new BootShiftClock
+            {
+                MonotonicMillis = 10L,
+                UtcNowMs = harness.Clock.UtcNowMs + 10000L
+            };
+            await using TableActor actor = AttachDurable(harness, clock, "boot-2");
+            Assert.Equal(TableRecoveryStatus.Recovered, (await actor.RecoverFromStoreAsync(
+                TestContext.Current.CancellationToken)).Status);
+            await actor.TickAsync(cancellationToken: TestContext.Current.CancellationToken);
+            Assert.Null(GetCheat(actor)!.SleeveBloom.OffTurnOfferFor(0));
+            Assert.Equal(offer.FirstTile, GetCheat(actor)!.SleeveBloom.ReservationFor(0)!.Tile);
+        }
+
+        private static async Task<SleeveBloomOffer> OpenDurableOffTurnOfferAsync(DurableHarness harness)
+        {
+            IReadOnlyList<TableCommandEnvelope> chain = P31Fixtures.BuildDiscardChain(harness.InitialRound, 1);
+            Assert.Equal(TableOperationStatus.Accepted, (await harness.Actor.SubmitAsync(
+                DurableRound(harness.Scope, chain[0].Command, 0, "boot-discard"),
+                TestContext.Current.CancellationToken)).Status);
+            Assert.Equal(TableOperationStatus.Accepted, (await harness.Actor.SubmitCheatAsync(
+                DurableCheat("round-1", 0, RoundCheatAction.SubmitSleeveBloomOffTurn, "boot-offer",
+                    RoundCheatPayload.OffTurn("bloom-window-0-0-0"), 1, harness.Scope),
+                TestContext.Current.CancellationToken)).Status);
+            SleeveBloomOffer offer = GetCheat(harness.Actor)!.SleeveBloom.OffTurnOfferFor(0)!;
+            await harness.SaveCheckpointAsync();
+            return offer;
+        }
+
+        private static TableActor AttachDurable(
+            DurableHarness harness,
+            ITableClock clock,
+            string boot,
+            int capacity = 8192)
+        {
+            var durable = new TableDurableContext(
+                harness.Store, harness.Store, harness.Store, harness.Store, harness.Scopes,
+                DurableHarness.Owner, TimeSpan.FromMinutes(10), boot, 1, DurableHarness.Room);
+            durable.RecoveryStateSink = new RecordingRecoveryStateSink();
+            var options = new TableActorOptions
+            {
+                RoomId = DurableHarness.Room,
+                MailboxCapacity = 16,
+                ControlReserve = 16,
+                CheatRequestBindingCapacity = capacity,
+                DecisionClockConfig = new DecisionClockConfig(1000L, 0L, ReserveScope.Round),
+                InitialControllers = P31Fixtures.Controllers(
+                    SeatControllerKind.RemoteHuman,
+                    SeatControllerKind.RemoteHuman,
+                    SeatControllerKind.RemoteHuman,
+                    SeatControllerKind.RemoteHuman),
+                CheatEconomy = V32Fixtures.Economy(InitialPoints),
+                SleeveBloomConfig = V32Fixtures.SleeveConfig(),
+                InitialCheatState = V32Fixtures.WithRegisteredRound(
+                    V32Fixtures.Cheat(InitialPoints), "round-1")
+            };
+            return new TableActor(
+                options, harness.InitialRound, new RecordingCommitPort(), clock,
+                null, null, harness.ProjectionSource, null, durable);
+        }
+
+        private sealed class BootShiftClock : ITableClock
+        {
+            public long MonotonicMillis { get; set; }
+
+            public long UtcNowMs { get; set; }
         }
 
         private static ActorHarness CreateHarness(int cheatRequestBindingCapacity = 8192)

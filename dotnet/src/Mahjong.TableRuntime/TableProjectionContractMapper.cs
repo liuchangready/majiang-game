@@ -12,7 +12,10 @@ namespace Mahjong.TableRuntime
     /// </summary>
     public sealed class TableProjectionTimeContext
     {
-        public TableProjectionTimeContext(long monotonicNowMs, long? utcNowMs = null)
+        public TableProjectionTimeContext(
+            long monotonicNowMs,
+            long? utcNowMs = null,
+            string? currentBootId = null)
         {
             if (monotonicNowMs < 0)
             {
@@ -27,11 +30,14 @@ namespace Mahjong.TableRuntime
 
             MonotonicNowMs = monotonicNowMs;
             UtcNowMs = utc;
+            CurrentBootId = currentBootId ?? string.Empty;
         }
 
         public long MonotonicNowMs { get; }
 
         public long UtcNowMs { get; }
+
+        public string CurrentBootId { get; }
     }
 
     /// <summary>
@@ -812,7 +818,11 @@ namespace Mahjong.TableRuntime
             TableProjectionTimeContext time)
         {
             bool hasDeadline = offer.DeadlineMillis > 0;
-            long remaining = hasDeadline ? Remaining(offer.DeadlineMillis, time.MonotonicNowMs) : 0;
+            bool bootMatches = string.IsNullOrEmpty(offer.BootId) ||
+                               string.Equals(offer.BootId, time.CurrentBootId, StringComparison.Ordinal);
+            long remaining = hasDeadline && bootMatches
+                ? Remaining(offer.DeadlineMillis, time.MonotonicNowMs)
+                : 0;
             return new SleeveBloomView(
                 offer.OfferId,
                 offer.Mode == Mahjong.Domain.Cheat.SleeveBloomOfferMode.Immediate
