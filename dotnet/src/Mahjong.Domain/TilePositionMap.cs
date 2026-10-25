@@ -634,14 +634,21 @@ namespace Mahjong.Domain
         }
 
         /// <summary>Draws the first available live-wall tile (V4 scans from slot 0 to re-enter holes).</summary>
-        public TransitionResult DrawFromWall(int seat)
+        public TransitionResult DrawFromWall(int seat) => DrawFromWall(seat, null);
+
+        /// <summary>
+        /// Draws the first live-wall tile not locked by an owner reservation/off-turn offer.
+        /// The callback is supplied by the N-1b cheat bridge; a null callback keeps the normal
+        /// rule. Skipped protected tiles stay physically in the wall.
+        /// </summary>
+        public TransitionResult DrawFromWall(int seat, Func<TileId, bool>? isProtected)
         {
             if (seat < 0 || seat > 3)
             {
                 return TransitionResult.Failure(TransitionErrorCode.InvalidSeat, "Seat must be 0..3.");
             }
 
-            int wallIndex = FindFirstWallIndex();
+            int wallIndex = FindFirstWallIndex(isProtected);
             if (wallIndex < 0)
             {
                 return TransitionResult.Failure(TransitionErrorCode.WallExhausted, "No live-wall tile remains.");
@@ -1986,13 +1993,20 @@ namespace Mahjong.Domain
             return null;
         }
 
-        private int FindFirstWallIndex()
+        private int FindFirstWallIndex() => FindFirstWallIndex(null);
+
+        private int FindFirstWallIndex(Func<TileId, bool>? isProtected)
         {
             int best = -1;
             for (int tileValue = 0; tileValue < TileId.Count; tileValue++)
             {
                 TilePosition position = _positions[tileValue];
                 if (position.Zone != TileZone.Wall || position.Index >= WallEndExclusive)
+                {
+                    continue;
+                }
+
+                if (isProtected != null && isProtected(new TileId(tileValue)))
                 {
                     continue;
                 }

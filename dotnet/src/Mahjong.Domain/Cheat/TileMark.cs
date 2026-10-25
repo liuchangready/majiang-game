@@ -196,6 +196,111 @@ namespace Mahjong.Domain.Cheat
         {
         }
 
+        /// <summary>
+        /// Rehydrates an already validated checkpoint aggregate. It is a recovery constructor,
+        /// not a command path: every group/ordinal/seat/capacity/overlap invariant is rechecked
+        /// and violations throw instead of silently dropping private state.
+        /// </summary>
+        public static TileMarkState Restore(
+            long version,
+            int dealtRoundOrdinal,
+            IReadOnlyList<string> dealtRoundIds,
+            IReadOnlyList<string> settledRoundIds,
+            IReadOnlyList<TileMarkGroup> groups)
+        {
+            if (version < 0)
+            {
+                throw new ArgumentOutOfRangeException(nameof(version), version, "Tile mark version must be non-negative.");
+            }
+
+            if (dealtRoundOrdinal < 0)
+            {
+                throw new ArgumentOutOfRangeException(nameof(dealtRoundOrdinal), dealtRoundOrdinal, "Dealt round ordinal must be non-negative.");
+            }
+
+            if (dealtRoundIds == null || settledRoundIds == null || groups == null)
+            {
+                throw new ArgumentNullException(nameof(dealtRoundIds));
+            }
+
+            var dealt = new string[dealtRoundIds.Count];
+            var seenRounds = new HashSet<string>(StringComparer.Ordinal);
+            for (int i = 0; i < dealtRoundIds.Count; i++)
+            {
+                string id = dealtRoundIds[i];
+                if (string.IsNullOrWhiteSpace(id) || !seenRounds.Add(id))
+                {
+                    throw new ArgumentException("Dealt round ids must be non-blank and unique.", nameof(dealtRoundIds));
+                }
+
+                dealt[i] = id;
+            }
+
+            var settled = new string[settledRoundIds.Count];
+            var seenSettled = new HashSet<string>(StringComparer.Ordinal);
+            for (int i = 0; i < settledRoundIds.Count; i++)
+            {
+                string id = settledRoundIds[i];
+                if (string.IsNullOrWhiteSpace(id) || !seenRounds.Contains(id) || !seenSettled.Add(id))
+                {
+                    throw new ArgumentException("Settled round ids must refer to a unique dealt round.", nameof(settledRoundIds));
+                }
+
+                settled[i] = id;
+            }
+
+            if (dealtRoundOrdinal != dealt.Length)
+            {
+                throw new ArgumentException("Dealt round ordinal must equal the dealt round id count.", nameof(dealtRoundOrdinal));
+            }
+
+            var groupCopy = new TileMarkGroup[groups.Count];
+            var perSeatGroups = new int[4];
+            var perSeatTiles = new int[4];
+            var marked = new HashSet<int>[4];
+            for (int seat = 0; seat < 4; seat++)
+            {
+                marked[seat] = new HashSet<int>();
+            }
+
+            for (int i = 0; i < groups.Count; i++)
+            {
+                TileMarkGroup group = groups[i] ?? throw new ArgumentException("Mark groups cannot contain null.", nameof(groups));
+                if (group.OwnerSeat < 0 || group.OwnerSeat > 3)
+                {
+                    throw new ArgumentException("Mark group owner seat is invalid.", nameof(groups));
+                }
+
+                if (++perSeatGroups[group.OwnerSeat] > 3)
+                {
+                    throw new ArgumentException("A seat cannot own more than three mark groups.", nameof(groups));
+                }
+
+                perSeatTiles[group.OwnerSeat] += group.TileIds.Count;
+                if (perSeatTiles[group.OwnerSeat] > 12)
+                {
+                    throw new ArgumentException("A seat cannot mark more than twelve tiles.", nameof(groups));
+                }
+
+                if (!seenRounds.Contains(group.CreatedRoundId))
+                {
+                    throw new ArgumentException("A mark group refers to an unknown dealt round.", nameof(groups));
+                }
+
+                for (int t = 0; t < group.TileIds.Count; t++)
+                {
+                    if (!marked[group.OwnerSeat].Add(group.TileIds[t].Value))
+                    {
+                        throw new ArgumentException("A seat cannot mark the same physical tile twice.", nameof(groups));
+                    }
+                }
+
+                groupCopy[i] = group;
+            }
+
+            return new TileMarkState(version, dealtRoundOrdinal, dealt, settled, groupCopy);
+        }
+
         public long Version { get; }
 
         /// <summary>Count of successfully dealt rounds; the current round ordinal when non-zero.</summary>

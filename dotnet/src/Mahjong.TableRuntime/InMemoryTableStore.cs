@@ -1184,6 +1184,14 @@ namespace Mahjong.TableRuntime
                         accepted = true;
                     }
 
+                    // N-1b forced-state rejection: the business reply stays REJECTED, but the
+                    // P1.4 forced FIRST/clear state, its private events and journal commit in
+                    // the same atomic transaction as an accepted command.
+                    if (request.RejectedWithState)
+                    {
+                        accepted = true;
+                    }
+
                     List<TableEventRecord>? newEvents = null;
                     TableCommandJournalRecord? journal = null;
                     StateRow? nextState = null;

@@ -415,11 +415,18 @@ namespace Mahjong.TableRuntime
         }
     }
 
-    /// <summary>Strict cheat-ledger checkpoint. It is real Domain ledger data, not a summary flag.</summary>
+    /// <summary>
+    /// Strict cheat checkpoint. It carries the real Domain ledger plus the complete private
+    /// aggregate (tile marks, sleeve bloom offers/reservations/windows and beam swap offer).
+    /// A ledger-only constructor remains for callers that explicitly have no private substate;
+    /// such a payload restores only when its total version/fingerprint prove the substates are
+    /// empty. A malformed or unmodelled substate is refused, never replaced with an empty one.
+    /// </summary>
     public sealed class TableCheatLedgerCheckpoint
     {
         private readonly ReadOnlyCollection<int> _balances;
         private readonly ReadOnlyCollection<CheatLedgerEntry> _entries;
+        private readonly CheatState? _state;
 
         public TableCheatLedgerCheckpoint(
             int initialPoints,
@@ -458,6 +465,22 @@ namespace Mahjong.TableRuntime
             _entries = new ReadOnlyCollection<CheatLedgerEntry>(entries);
         }
 
+        public TableCheatLedgerCheckpoint(CheatState state)
+        {
+            if (state == null)
+            {
+                throw new ArgumentNullException(nameof(state));
+            }
+
+            TableCheatLedgerCheckpoint ledgerCheckpoint = FromLedger(state.Ledger);
+            InitialPoints = ledgerCheckpoint.InitialPoints;
+            _balances = ledgerCheckpoint._balances;
+            _entries = ledgerCheckpoint._entries;
+            TotalVersion = state.Version;
+            Fingerprint = state.Fingerprint;
+            _state = state;
+        }
+
         public int InitialPoints { get; }
 
         public IReadOnlyList<int> Balances => _balances;
@@ -470,13 +493,24 @@ namespace Mahjong.TableRuntime
         /// <summary>CheatState fingerprint for the modeled aggregate.</summary>
         public ulong Fingerprint { get; }
 
+        internal CheatState? FullState => _state;
+
         /// <summary>
-        /// Rebuilds the real CheatState. If the persisted total version exceeds the ledger
-        /// version, private substate content exists that this task does not model; recovery
-        /// fails closed instead of silently replacing it with empty substates.
+        /// Rebuilds the real CheatState, or fails closed when the persisted total version /
+        /// fingerprint cannot be produced by the modeled substate.
         /// </summary>
         public CheatState RestoreCheatState()
         {
+            if (_state != null)
+            {
+                if (_state.Version != TotalVersion || _state.Fingerprint != Fingerprint)
+                {
+                    throw new InvalidOperationException("Recovered cheat aggregate metadata does not match its full state.");
+                }
+
+                return _state;
+            }
+
             CheatLedger ledger = CheatLedger.FromSnapshot(InitialPoints, _balances, _entries);
             if (TotalVersion != ledger.Version)
             {
@@ -549,12 +583,7 @@ namespace Mahjong.TableRuntime
                 throw new ArgumentNullException(nameof(state));
             }
 
-            var ledgerCheckpoint = FromLedger(state.Ledger);
-            return new TableCheatLedgerCheckpoint(
-                ledgerCheckpoint.InitialPoints,
-                state.Ledger,
-                state.Version,
-                state.Fingerprint);
+            return new TableCheatLedgerCheckpoint(state);
         }
 
         public CheatLedger Restore() => CheatLedger.FromSnapshot(InitialPoints, _balances, _entries);
@@ -562,7 +591,7 @@ namespace Mahjong.TableRuntime
 
     public static class TableCheatLedgerCheckpointCodec
     {
-        public const int FormatVersion = 2;
+        public const int FormatVersion = 3;
         private const int Magic = 0x4D4A4C43; // MJLC
 
         public static byte[] Encode(TableCheatLedgerCheckpoint checkpoint)
@@ -571,6 +600,13 @@ namespace Mahjong.TableRuntime
             {
                 throw new ArgumentNullException(nameof(checkpoint));
             }
+
+            CheatState state = checkpoint.FullState ??
+                new CheatState(
+                    CheatLedger.FromSnapshot(checkpoint.InitialPoints, checkpoint.Balances, checkpoint.Entries),
+                    new TileMarkState(),
+                    new SleeveBloomState(),
+                    new BeamSwapState());
 
             using (var stream = new MemoryStream())
             using (var writer = new BinaryWriter(stream, Encoding.UTF8, leaveOpen: true))
@@ -595,6 +631,10 @@ namespace Mahjong.TableRuntime
                     writer.Write(entry.BalanceAfter);
                     writer.Write(entry.Reason);
                 }
+
+                WriteTileMarks(writer, state.TileMarks);
+                WriteSleeveBloom(writer, state.SleeveBloom);
+                WriteBeamSwap(writer, state.BeamSwap);
 
                 writer.Flush();
                 return stream.ToArray();
@@ -648,14 +688,687 @@ namespace Mahjong.TableRuntime
                         reader.ReadString());
                 }
 
+                // Replays the real ledger entries and verifies balances before returning.
+                CheatLedger ledger = CheatLedger.FromSnapshot(initial, balances, entries);
+                TileMarkState tileMarks = ReadTileMarks(reader);
+                SleeveBloomState sleeve = ReadSleeveBloom(reader);
+                BeamSwapState beam = ReadBeamSwap(reader);
+
                 if (stream.Position != payload.Length)
                 {
                     throw new InvalidDataException("Cheat checkpoint payload has trailing bytes.");
                 }
 
-                // Replays the real ledger entries and verifies balances before returning.
-                CheatLedger ledger = CheatLedger.FromSnapshot(initial, balances, entries);
-                return new TableCheatLedgerCheckpoint(initial, ledger, totalVersion, fingerprint);
+                var state = new CheatState(ledger, tileMarks, sleeve, beam);
+                if (state.Version != totalVersion || state.Fingerprint != fingerprint)
+                {
+                    throw new InvalidDataException(
+                        "Cheat checkpoint version/fingerprint does not match its full private state.");
+                }
+
+                return new TableCheatLedgerCheckpoint(state);
+            }
+        }
+
+        private static void WriteTileMarks(BinaryWriter writer, TileMarkState state)
+        {
+            writer.Write(state.Version);
+            writer.Write(state.DealtRoundOrdinal);
+            writer.Write(state.DealtRoundIds.Count);
+            for (int i = 0; i < state.DealtRoundIds.Count; i++)
+            {
+                writer.Write(state.DealtRoundIds[i]);
+            }
+
+            writer.Write(state.SettledRoundIds.Count);
+            for (int i = 0; i < state.SettledRoundIds.Count; i++)
+            {
+                writer.Write(state.SettledRoundIds[i]);
+            }
+
+            writer.Write(state.Groups.Count);
+            for (int i = 0; i < state.Groups.Count; i++)
+            {
+                TileMarkGroup group = state.Groups[i];
+                writer.Write(group.GroupId);
+                writer.Write(group.OwnerSeat);
+                writer.Write(group.TileIds.Count);
+                for (int t = 0; t < group.TileIds.Count; t++)
+                {
+                    writer.Write(group.TileIds[t].Value);
+                }
+
+                writer.Write(group.CreatedRoundId);
+                writer.Write(group.CreatedRoundOrdinal);
+            }
+        }
+
+        private static TileMarkState ReadTileMarks(BinaryReader reader)
+        {
+            long version = reader.ReadInt64();
+            int dealtOrdinal = reader.ReadInt32();
+            int dealtCount = ReadCount(reader, 10000, "dealt round");
+            var dealt = new string[dealtCount];
+            for (int i = 0; i < dealtCount; i++)
+            {
+                dealt[i] = reader.ReadString();
+            }
+
+            int settledCount = ReadCount(reader, 10000, "settled round");
+            var settled = new string[settledCount];
+            for (int i = 0; i < settledCount; i++)
+            {
+                settled[i] = reader.ReadString();
+            }
+
+            int groupCount = ReadCount(reader, 12, "tile mark group");
+            var groups = new TileMarkGroup[groupCount];
+            for (int i = 0; i < groupCount; i++)
+            {
+                string groupId = reader.ReadString();
+                int owner = reader.ReadInt32();
+                int tileCount = ReadCount(reader, 4, "tile mark tile");
+                var tiles = new TileId[tileCount];
+                for (int t = 0; t < tileCount; t++)
+                {
+                    tiles[t] = new TileId(reader.ReadInt32());
+                }
+
+                string createdRoundId = reader.ReadString();
+                int createdOrdinal = reader.ReadInt32();
+                groups[i] = new TileMarkGroup(groupId, owner, tiles, createdRoundId, createdOrdinal);
+            }
+
+            return TileMarkState.Restore(version, dealtOrdinal, dealt, settled, groups);
+        }
+
+        private static void WriteSleeveBloom(BinaryWriter writer, SleeveBloomState state)
+        {
+            writer.Write(state.Version);
+            writer.Write(state.WindowSeq);
+            writer.Write(state.UsedOnTurn);
+            WriteOffer(writer, state.ImmediateOffer);
+            writer.Write(state.OffTurnOffers.Count);
+            for (int i = 0; i < state.OffTurnOffers.Count; i++)
+            {
+                WriteOffer(writer, state.OffTurnOffers[i]);
+            }
+
+            writer.Write(state.Reservations.Count);
+            for (int i = 0; i < state.Reservations.Count; i++)
+            {
+                SleeveBloomReservation reservation = state.Reservations[i];
+                writer.Write(reservation.Seat);
+                writer.Write(reservation.OfferId);
+                writer.Write(reservation.Tile.Value);
+                WriteNullableString(writer, reservation.WindowId);
+                writer.Write(reservation.CreatedAtMillis);
+            }
+
+            for (int seat = 0; seat < 4; seat++)
+            {
+                WriteNullableString(writer, state.WindowIdFor(seat));
+            }
+        }
+
+        private static SleeveBloomState ReadSleeveBloom(BinaryReader reader)
+        {
+            long version = reader.ReadInt64();
+            int windowSeq = reader.ReadInt32();
+            int usedOnTurn = reader.ReadInt32();
+            SleeveBloomOffer? immediate = ReadOffer(reader);
+            int offerCount = ReadCount(reader, 4, "off-turn offer");
+            var offers = new SleeveBloomOffer[offerCount];
+            for (int i = 0; i < offerCount; i++)
+            {
+                offers[i] = ReadOffer(reader) ??
+                    throw new InvalidDataException("An off-turn offer slot cannot be empty.");
+            }
+
+            int reservationCount = ReadCount(reader, 4, "reservation");
+            var reservations = new SleeveBloomReservation[reservationCount];
+            for (int i = 0; i < reservationCount; i++)
+            {
+                reservations[i] = new SleeveBloomReservation(
+                    reader.ReadInt32(),
+                    reader.ReadString(),
+                    new TileId(reader.ReadInt32()),
+                    ReadNullableString(reader),
+                    reader.ReadInt64());
+            }
+
+            var windows = new string?[4];
+            for (int seat = 0; seat < 4; seat++)
+            {
+                windows[seat] = ReadNullableString(reader);
+            }
+
+            return SleeveBloomState.Restore(immediate, offers, reservations, windows, windowSeq, usedOnTurn, version);
+        }
+
+        private static void WriteOffer(BinaryWriter writer, SleeveBloomOffer? offer)
+        {
+            writer.Write(offer != null);
+            if (offer == null)
+            {
+                return;
+            }
+
+            writer.Write(offer.OfferId);
+            writer.Write(offer.Seat);
+            writer.Write((byte)offer.DrawKind);
+            writer.Write(offer.FirstTile.Value);
+            writer.Write(offer.SecondTile.Value);
+            writer.Write(offer.CreatedTurnNumber);
+            writer.Write((byte)offer.Mode);
+            WriteNullableString(writer, offer.WindowId);
+            writer.Write(offer.DeadlineMillis);
+            writer.Write(offer.CreatedAtMillis);
+        }
+
+        private static SleeveBloomOffer? ReadOffer(BinaryReader reader)
+        {
+            if (!reader.ReadBoolean())
+            {
+                return null;
+            }
+
+            string offerId = reader.ReadString();
+            int seat = reader.ReadInt32();
+            byte drawKind = reader.ReadByte();
+            if (!Enum.IsDefined(typeof(SleeveBloomDrawKind), drawKind))
+            {
+                throw new InvalidDataException("Sleeve bloom draw kind is invalid.");
+            }
+
+            TileId first = new TileId(reader.ReadInt32());
+            TileId second = new TileId(reader.ReadInt32());
+            int createdTurn = reader.ReadInt32();
+            byte mode = reader.ReadByte();
+            if (!Enum.IsDefined(typeof(SleeveBloomOfferMode), mode))
+            {
+                throw new InvalidDataException("Sleeve bloom offer mode is invalid.");
+            }
+
+            string? windowId = ReadNullableString(reader);
+            long deadline = reader.ReadInt64();
+            long createdAt = reader.ReadInt64();
+            return new SleeveBloomOffer(
+                offerId,
+                seat,
+                (SleeveBloomDrawKind)drawKind,
+                first,
+                second,
+                createdTurn,
+                (SleeveBloomOfferMode)mode,
+                windowId,
+                deadline,
+                createdAt);
+        }
+
+        private static void WriteBeamSwap(BinaryWriter writer, BeamSwapState state)
+        {
+            writer.Write(state.Version);
+            writer.Write(state.UsedOnTurn);
+            BeamSwapOffer? offer = state.Offer;
+            writer.Write(offer != null);
+            if (offer == null)
+            {
+                return;
+            }
+
+            writer.Write(offer.OfferId);
+            writer.Write(offer.Seat);
+            writer.Write((byte)offer.Window);
+            writer.Write(offer.DrawnTileId.Value);
+            writer.Write(offer.CreatedTurnNumber);
+            writer.Write(offer.Candidates.Count);
+            for (int i = 0; i < offer.Candidates.Count; i++)
+            {
+                BeamSwapCandidate candidate = offer.Candidates[i];
+                writer.Write(candidate.Tile.Value);
+                writer.Write((byte)candidate.Slot.Kind);
+                writer.Write(candidate.Slot.Index);
+            }
+
+            writer.Write(offer.EligibleHandTileIds.Count);
+            for (int i = 0; i < offer.EligibleHandTileIds.Count; i++)
+            {
+                writer.Write(offer.EligibleHandTileIds[i].Value);
+            }
+        }
+
+        private static BeamSwapState ReadBeamSwap(BinaryReader reader)
+        {
+            long version = reader.ReadInt64();
+            int usedOnTurn = reader.ReadInt32();
+            BeamSwapOffer? offer = null;
+            if (reader.ReadBoolean())
+            {
+                string offerId = reader.ReadString();
+                int seat = reader.ReadInt32();
+                byte window = reader.ReadByte();
+                if (!Enum.IsDefined(typeof(BeamSwapWindow), window))
+                {
+                    throw new InvalidDataException("Beam swap window is invalid.");
+                }
+
+                TileId drawn = new TileId(reader.ReadInt32());
+                int createdTurn = reader.ReadInt32();
+                int candidateCount = ReadCount(reader, 256, "beam candidate");
+                var candidates = new BeamSwapCandidate[candidateCount];
+                for (int i = 0; i < candidateCount; i++)
+                {
+                    TileId tile = new TileId(reader.ReadInt32());
+                    byte kind = reader.ReadByte();
+                    int index = reader.ReadInt32();
+                    candidates[i] = new BeamSwapCandidate(tile, SlotOf(kind, index));
+                }
+
+                int handCount = ReadCount(reader, 14, "beam eligible hand tile");
+                var hand = new TileId[handCount];
+                for (int i = 0; i < handCount; i++)
+                {
+                    hand[i] = new TileId(reader.ReadInt32());
+                }
+
+                offer = new BeamSwapOffer(
+                    offerId,
+                    seat,
+                    (BeamSwapWindow)window,
+                    candidates,
+                    hand,
+                    drawn,
+                    createdTurn);
+            }
+
+            return BeamSwapState.Restore(offer, usedOnTurn, version);
+        }
+
+        private static BeamSwapSlot SlotOf(byte kind, int index)
+        {
+            if (!Enum.IsDefined(typeof(BeamSwapSlotKind), kind))
+            {
+                throw new InvalidDataException("Beam swap slot kind is invalid.");
+            }
+
+            switch ((BeamSwapSlotKind)kind)
+            {
+                case BeamSwapSlotKind.WallSlot:
+                    return BeamSwapSlot.Wall(index);
+                case BeamSwapSlotKind.DeadWallSlot:
+                    return BeamSwapSlot.DeadWall(index);
+                case BeamSwapSlotKind.ReplacementSlot:
+                    return BeamSwapSlot.Replacement(index);
+                default:
+                    throw new InvalidDataException("Beam swap slot kind is invalid.");
+            }
+        }
+
+        private static int ReadCount(BinaryReader reader, int max, string name)
+        {
+            int count = reader.ReadInt32();
+            if (count < 0 || count > max)
+            {
+                throw new InvalidDataException("Cheat checkpoint " + name + " count is invalid.");
+            }
+
+            return count;
+        }
+
+        private static void WriteNullableString(BinaryWriter writer, string? value)
+        {
+            writer.Write(value != null);
+            if (value != null)
+            {
+                writer.Write(value);
+            }
+        }
+
+        private static string? ReadNullableString(BinaryReader reader) =>
+            reader.ReadBoolean() ? reader.ReadString() : null;
+    }
+
+    /// <summary>
+    /// Durable cheat command journal. It stores the exact typed request plus the authoritative
+    /// context values (turn, injected monotonic milliseconds, round ordinal, draw kind) that
+    /// the actor used. Cold recovery re-executes this through the same pure Domain bridge and
+    /// never re-reads the wall clock or allocates a new request id.
+    /// </summary>
+    public static class TableCheatCommandCodec
+    {
+        public const int FormatVersion = 1;
+        private const int Magic = 0x4D4A4348; // MJCH
+
+        public static byte[] Encode(RoundCheatJournal journal)
+        {
+            if (journal == null)
+            {
+                throw new ArgumentNullException(nameof(journal));
+            }
+
+            using (var stream = new MemoryStream())
+            using (var writer = new BinaryWriter(stream, Encoding.UTF8, leaveOpen: true))
+            {
+                writer.Write(Magic);
+                writer.Write(FormatVersion);
+                RoundCheatCommand command = journal.Command;
+                writer.Write(command.RoundId);
+                writer.Write(command.Seat);
+                writer.Write((byte)command.Action);
+                writer.Write(command.RequestId);
+                WritePayload(writer, command.Payload);
+                writer.Write(journal.TurnNumber);
+                writer.Write(journal.NowMillis);
+                writer.Write(journal.RoundOrdinal);
+                writer.Write((byte)journal.LastDrawKind);
+                writer.Flush();
+                return stream.ToArray();
+            }
+        }
+
+        public static RoundCheatJournal Decode(byte[] payload)
+        {
+            if (payload == null || payload.Length < 8)
+            {
+                throw new InvalidDataException("Cheat command journal payload is empty or truncated.");
+            }
+
+            using (var stream = new MemoryStream(payload, writable: false))
+            using (var reader = new BinaryReader(stream, Encoding.UTF8, leaveOpen: true))
+            {
+                if (reader.ReadInt32() != Magic)
+                {
+                    throw new InvalidDataException("Cheat command journal magic is invalid.");
+                }
+
+                int schema = reader.ReadInt32();
+                if (schema != FormatVersion)
+                {
+                    throw new InvalidDataException("Unsupported cheat command journal schema " + schema + ".");
+                }
+
+                string roundId = reader.ReadString();
+                int seat = reader.ReadInt32();
+                byte action = reader.ReadByte();
+                if (!Enum.IsDefined(typeof(RoundCheatAction), action))
+                {
+                    throw new InvalidDataException("Cheat command action is invalid.");
+                }
+
+                string requestId = reader.ReadString();
+                RoundCheatPayload request = ReadPayload(reader, (RoundCheatAction)action);
+                int turn = reader.ReadInt32();
+                long now = reader.ReadInt64();
+                int ordinal = reader.ReadInt32();
+                byte drawKind = reader.ReadByte();
+                if (!Enum.IsDefined(typeof(SleeveBloomDrawKind), drawKind))
+                {
+                    throw new InvalidDataException("Cheat command draw kind is invalid.");
+                }
+
+                if (stream.Position != payload.Length)
+                {
+                    throw new InvalidDataException("Cheat command journal payload has trailing bytes.");
+                }
+
+                return new RoundCheatJournal(
+                    new RoundCheatCommand(roundId, seat, (RoundCheatAction)action, requestId, request),
+                    turn,
+                    now,
+                    ordinal,
+                    (SleeveBloomDrawKind)drawKind);
+            }
+        }
+
+        private static void WritePayload(BinaryWriter writer, RoundCheatPayload payload)
+        {
+            WriteNullableString(writer, payload.GroupId);
+            writer.Write(payload.Tiles.Count);
+            for (int i = 0; i < payload.Tiles.Count; i++)
+            {
+                writer.Write(payload.Tiles[i].Value);
+            }
+
+            WriteNullableString(writer, payload.OfferId);
+            writer.Write(payload.Keep.HasValue);
+            if (payload.Keep.HasValue)
+            {
+                writer.Write((byte)payload.Keep.Value);
+            }
+
+            WriteNullableString(writer, payload.WindowId);
+            writer.Write(payload.Action.HasValue);
+            if (payload.Action.HasValue)
+            {
+                writer.Write((byte)payload.Action.Value);
+            }
+
+            writer.Write(payload.HandTile.HasValue);
+            if (payload.HandTile.HasValue)
+            {
+                writer.Write(payload.HandTile.Value.Value);
+            }
+
+            writer.Write(payload.TargetSlot.HasValue);
+            if (payload.TargetSlot.HasValue)
+            {
+                writer.Write((byte)payload.TargetSlot.Value.Kind);
+                writer.Write(payload.TargetSlot.Value.Index);
+            }
+        }
+
+        private static RoundCheatPayload ReadPayload(BinaryReader reader, RoundCheatAction action)
+        {
+            string? groupId = ReadNullableString(reader);
+            int tileCount = reader.ReadInt32();
+            if (tileCount < 0 || tileCount > 4)
+            {
+                throw new InvalidDataException("Cheat command tile count is invalid.");
+            }
+
+            var tiles = new TileId[tileCount];
+            for (int i = 0; i < tileCount; i++)
+            {
+                tiles[i] = new TileId(reader.ReadInt32());
+            }
+
+            string? offerId = ReadNullableString(reader);
+            SleeveBloomKeep? keep = reader.ReadBoolean()
+                ? ReadKeep(reader)
+                : (SleeveBloomKeep?)null;
+            string? windowId = ReadNullableString(reader);
+            BeamSwapAction? swapAction = reader.ReadBoolean()
+                ? ReadBeamAction(reader)
+                : (BeamSwapAction?)null;
+            TileId? handTile = reader.ReadBoolean() ? new TileId(reader.ReadInt32()) : (TileId?)null;
+            BeamSwapSlot? targetSlot = null;
+            if (reader.ReadBoolean())
+            {
+                byte kind = reader.ReadByte();
+                int index = reader.ReadInt32();
+                if (!Enum.IsDefined(typeof(BeamSwapSlotKind), kind))
+                {
+                    throw new InvalidDataException("Cheat command target slot kind is invalid.");
+                }
+
+                targetSlot = SlotOf((BeamSwapSlotKind)kind, index);
+            }
+
+            switch (action)
+            {
+                case RoundCheatAction.SubmitTileMark:
+                    if (groupId == null || tileCount != 4)
+                    {
+                        throw new InvalidDataException("Tile mark journal payload is incomplete.");
+                    }
+
+                    return RoundCheatPayload.TileMark(groupId, tiles);
+                case RoundCheatAction.SubmitSleeveBloom:
+                    return RoundCheatPayload.SleeveBloom();
+                case RoundCheatAction.SubmitSleeveBloomChoice:
+                    if (offerId == null || !keep.HasValue)
+                    {
+                        throw new InvalidDataException("Sleeve bloom choice journal payload is incomplete.");
+                    }
+
+                    return RoundCheatPayload.SleeveBloomChoice(offerId, keep.Value);
+                case RoundCheatAction.SubmitSleeveBloomOffTurn:
+                    if (windowId == null)
+                    {
+                        throw new InvalidDataException("Off-turn sleeve bloom journal payload is incomplete.");
+                    }
+
+                    return RoundCheatPayload.OffTurn(windowId);
+                case RoundCheatAction.SubmitSleeveBloomOffTurnChoice:
+                    if (offerId == null || !keep.HasValue)
+                    {
+                        throw new InvalidDataException("Off-turn sleeve bloom choice journal payload is incomplete.");
+                    }
+
+                    return RoundCheatPayload.OffTurnChoice(offerId, keep.Value);
+                case RoundCheatAction.SubmitBeamSwap:
+                    return RoundCheatPayload.BeamSwap();
+                case RoundCheatAction.SubmitBeamSwapChoice:
+                    if (offerId == null || !swapAction.HasValue)
+                    {
+                        throw new InvalidDataException("Beam swap choice journal payload is incomplete.");
+                    }
+
+                    return RoundCheatPayload.BeamSwapChoice(offerId, swapAction.Value, handTile, targetSlot);
+                default:
+                    throw new InvalidDataException("Cheat command action is invalid.");
+            }
+        }
+
+        private static SleeveBloomKeep ReadKeep(BinaryReader reader)
+        {
+            byte value = reader.ReadByte();
+            if (!Enum.IsDefined(typeof(SleeveBloomKeep), value))
+            {
+                throw new InvalidDataException("Cheat command keep value is invalid.");
+            }
+
+            return (SleeveBloomKeep)value;
+        }
+
+        private static BeamSwapAction ReadBeamAction(BinaryReader reader)
+        {
+            byte value = reader.ReadByte();
+            if (!Enum.IsDefined(typeof(BeamSwapAction), value))
+            {
+                throw new InvalidDataException("Cheat command beam action is invalid.");
+            }
+
+            return (BeamSwapAction)value;
+        }
+
+        private static BeamSwapSlot SlotOf(BeamSwapSlotKind kind, int index)
+        {
+            switch (kind)
+            {
+                case BeamSwapSlotKind.WallSlot:
+                    return BeamSwapSlot.Wall(index);
+                case BeamSwapSlotKind.DeadWallSlot:
+                    return BeamSwapSlot.DeadWall(index);
+                case BeamSwapSlotKind.ReplacementSlot:
+                    return BeamSwapSlot.Replacement(index);
+                default:
+                    throw new InvalidDataException("Cheat command target slot kind is invalid.");
+            }
+        }
+
+        private static void WriteNullableString(BinaryWriter writer, string? value)
+        {
+            writer.Write(value != null);
+            if (value != null)
+            {
+                writer.Write(value);
+            }
+        }
+
+        private static string? ReadNullableString(BinaryReader reader) =>
+            reader.ReadBoolean() ? reader.ReadString() : null;
+    }
+
+    /// <summary>Durable journal for an authority cheat sweep/timeout (no client request id).</summary>
+    public static class TableCheatSystemCodec
+    {
+        public const int FormatVersion = 1;
+        private const int Magic = 0x4D4A4353; // MJCS
+
+        public static byte[] Encode(TableCheatSystemJournal journal)
+        {
+            if (journal == null)
+            {
+                throw new ArgumentNullException(nameof(journal));
+            }
+
+            using (var stream = new MemoryStream())
+            using (var writer = new BinaryWriter(stream, Encoding.UTF8, leaveOpen: true))
+            {
+                writer.Write(Magic);
+                writer.Write(FormatVersion);
+                writer.Write((byte)journal.Action);
+                writer.Write(journal.Seat);
+                writer.Write(journal.TurnNumber);
+                writer.Write(journal.NowMillis);
+                writer.Write(journal.RoundOrdinal);
+                writer.Write((byte)journal.LastDrawKind);
+                writer.Flush();
+                return stream.ToArray();
+            }
+        }
+
+        public static TableCheatSystemJournal Decode(byte[] payload)
+        {
+            if (payload == null || payload.Length < 8)
+            {
+                throw new InvalidDataException("Cheat system journal payload is empty or truncated.");
+            }
+
+            using (var stream = new MemoryStream(payload, writable: false))
+            using (var reader = new BinaryReader(stream, Encoding.UTF8, leaveOpen: true))
+            {
+                if (reader.ReadInt32() != Magic)
+                {
+                    throw new InvalidDataException("Cheat system journal magic is invalid.");
+                }
+
+                int schema = reader.ReadInt32();
+                if (schema != FormatVersion)
+                {
+                    throw new InvalidDataException("Unsupported cheat system journal schema " + schema + ".");
+                }
+
+                byte action = reader.ReadByte();
+                if (!Enum.IsDefined(typeof(RoundCheatSystemAction), action))
+                {
+                    throw new InvalidDataException("Cheat system action is invalid.");
+                }
+
+                int seat = reader.ReadInt32();
+                int turn = reader.ReadInt32();
+                long now = reader.ReadInt64();
+                int ordinal = reader.ReadInt32();
+                byte drawKind = reader.ReadByte();
+                if (!Enum.IsDefined(typeof(SleeveBloomDrawKind), drawKind))
+                {
+                    throw new InvalidDataException("Cheat system draw kind is invalid.");
+                }
+
+                if (stream.Position != payload.Length)
+                {
+                    throw new InvalidDataException("Cheat system journal payload has trailing bytes.");
+                }
+
+                return new TableCheatSystemJournal(
+                    (RoundCheatSystemAction)action,
+                    seat,
+                    turn,
+                    now,
+                    ordinal,
+                    (SleeveBloomDrawKind)drawKind);
             }
         }
     }

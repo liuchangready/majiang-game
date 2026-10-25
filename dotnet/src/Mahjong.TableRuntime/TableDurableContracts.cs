@@ -874,6 +874,7 @@ namespace Mahjong.TableRuntime
                             status == ReceiptStatus.Applied ||
                             status == ReceiptStatus.Recorded;
             bool rejected = !internalCommand && status == ReceiptStatus.Rejected;
+            bool rejectedWithState = rejected && events != null && events.Count > 0;
 
             if (!internalCommand && receipt == null)
             {
@@ -885,7 +886,7 @@ namespace Mahjong.TableRuntime
                 throw new ArgumentException("Receipt evaluated version must equal the expected state version.", nameof(receipt));
             }
 
-            if (rejected)
+            if (rejected && !rejectedWithState)
             {
                 if (events != null && events.Count != 0)
                 {
@@ -912,7 +913,7 @@ namespace Mahjong.TableRuntime
                     throw new ArgumentException("A REJECTED batch cannot change timing.");
                 }
             }
-            else if (accepted)
+            else if (accepted || rejectedWithState)
             {
                 if (timing == null)
                 {
@@ -1010,6 +1011,7 @@ namespace Mahjong.TableRuntime
             ExpectedStateVersion = expectedStateVersion;
             Receipt = receipt;
             InternalCommand = internalCommand;
+            RejectedWithState = rejectedWithState;
             _events = new ReadOnlyCollection<TableEventRecord>(eventCopy);
             CommandJournal = commandJournal;
             _outbox = new ReadOnlyCollection<TableSettlementOutboxRecord>(outboxCopy);
@@ -1036,6 +1038,12 @@ namespace Mahjong.TableRuntime
         public TableDurableReceipt? Receipt { get; }
 
         public bool InternalCommand { get; }
+
+        /// <summary>
+        /// True only for a committed P1.4 forced-state rejection: the receipt says REJECTED but
+        /// the private forced state/events/journal are persisted in the same transaction.
+        /// </summary>
+        public bool RejectedWithState { get; }
 
         public IReadOnlyList<TableEventRecord> Events => _events;
 

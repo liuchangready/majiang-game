@@ -251,6 +251,94 @@ namespace Mahjong.Domain.Cheat
         {
         }
 
+        /// <summary>
+        /// Rehydrates an already validated checkpoint aggregate. All per-seat uniqueness,
+        /// window and mode invariants are rechecked; a malformed payload throws instead of
+        /// silently discarding offers, reservations or candidate windows.
+        /// </summary>
+        public static SleeveBloomState Restore(
+            SleeveBloomOffer? immediateOffer,
+            IReadOnlyList<SleeveBloomOffer> offTurnOffers,
+            IReadOnlyList<SleeveBloomReservation> reservations,
+            IReadOnlyList<string?> windowIds,
+            int windowSeq,
+            int usedOnTurn,
+            long version)
+        {
+            if (version < 0)
+            {
+                throw new ArgumentOutOfRangeException(nameof(version), version, "Sleeve bloom version must be non-negative.");
+            }
+
+            if (windowSeq < 0)
+            {
+                throw new ArgumentOutOfRangeException(nameof(windowSeq), windowSeq, "Window sequence must be non-negative.");
+            }
+
+            if (usedOnTurn < -1)
+            {
+                throw new ArgumentOutOfRangeException(nameof(usedOnTurn), usedOnTurn, "Used-on-turn must be -1 or non-negative.");
+            }
+
+            if (offTurnOffers == null || reservations == null || windowIds == null || windowIds.Count != 4)
+            {
+                throw new ArgumentException("Sleeve bloom restore requires offers, reservations and four window ids.");
+            }
+
+            if (immediateOffer != null && immediateOffer.Mode != SleeveBloomOfferMode.Immediate)
+            {
+                throw new ArgumentException("The immediate offer slot cannot hold an off-turn offer.", nameof(immediateOffer));
+            }
+
+            var windows = new string?[4];
+            for (int seat = 0; seat < 4; seat++)
+            {
+                string? id = windowIds[seat];
+                if (id != null && string.IsNullOrWhiteSpace(id))
+                {
+                    throw new ArgumentException("Window ids cannot be blank strings.", nameof(windowIds));
+                }
+
+                windows[seat] = id;
+            }
+
+            var offers = new SleeveBloomOffer[offTurnOffers.Count];
+            var offerSeats = new bool[4];
+            for (int i = 0; i < offTurnOffers.Count; i++)
+            {
+                SleeveBloomOffer offer = offTurnOffers[i] ??
+                    throw new ArgumentException("Off-turn offers cannot contain null.", nameof(offTurnOffers));
+                if (offer.Mode != SleeveBloomOfferMode.OffTurn || offer.Seat < 0 || offer.Seat > 3 ||
+                    offerSeats[offer.Seat])
+                {
+                    throw new ArgumentException("Off-turn offers must be one per seat and in off-turn mode.", nameof(offTurnOffers));
+                }
+
+                offerSeats[offer.Seat] = true;
+                offers[i] = offer;
+            }
+
+            Array.Sort(offers, (left, right) => left.Seat.CompareTo(right.Seat));
+
+            var reservationCopy = new SleeveBloomReservation[reservations.Count];
+            var reservationSeats = new bool[4];
+            for (int i = 0; i < reservations.Count; i++)
+            {
+                SleeveBloomReservation reservation = reservations[i] ??
+                    throw new ArgumentException("Reservations cannot contain null.", nameof(reservations));
+                if (reservation.Seat < 0 || reservation.Seat > 3 || reservationSeats[reservation.Seat])
+                {
+                    throw new ArgumentException("Reservations must be one per seat.", nameof(reservations));
+                }
+
+                reservationSeats[reservation.Seat] = true;
+                reservationCopy[i] = reservation;
+            }
+
+            Array.Sort(reservationCopy, (left, right) => left.Seat.CompareTo(right.Seat));
+            return new SleeveBloomState(immediateOffer, offers, reservationCopy, windows, windowSeq, usedOnTurn, version);
+        }
+
         public SleeveBloomOffer? ImmediateOffer { get; }
 
         /// <summary>At most one off-turn offer per seat; ordered by seat.</summary>

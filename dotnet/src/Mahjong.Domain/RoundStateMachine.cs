@@ -415,7 +415,9 @@ namespace Mahjong.Domain
             return Build(dealt.State, RoundPhase.CheatWindow, DealerSeat, null, null, events);
         }
 
-        private RoundPreparation PrepareDraw(int seat)
+        internal RoundPreparation PrepareDraw(int seat) => PrepareDraw(seat, null);
+
+        internal RoundPreparation PrepareDraw(int seat, Func<TileId, bool>? isProtected)
         {
             CheckSeat(seat);
             if (Phase != RoundPhase.Draw || Window != null)
@@ -432,7 +434,7 @@ namespace Mahjong.Domain
                     "Seat " + seat + " is not the current player (" + CurrentSeat + ").");
             }
 
-            TransitionResult drawn = Tiles.DrawFromWall(seat);
+            TransitionResult drawn = Tiles.DrawFromWall(seat, isProtected);
             if (!drawn.IsSuccess)
             {
                 throw FromTileError(drawn);
@@ -443,7 +445,40 @@ namespace Mahjong.Domain
             return Build(drawn.State!, RoundPhase.CheatWindow, seat, null, null, events);
         }
 
-        private RoundPreparation PrepareDiscard(RoundCommand command)
+        public RoundPreparation PrepareDrawProtected(RoundCommand command, Func<TileId, bool>? isProtected)
+        {
+            CheckSeat(command.Seat);
+            if (command.Action != RoundActionKind.DrawTile)
+            {
+                throw new RoundRuleViolation(
+                    RoundTransitionErrorCode.WrongPhase,
+                    "The protected draw bridge requires DrawTile.");
+            }
+
+            return PrepareDraw(command.Seat, isProtected);
+        }
+
+        private RoundPreparation PrepareDiscard(RoundCommand command) =>
+            PrepareDiscardCore(command, suppressAutomaticNextDraw: false, isProtectedWallTile: null);
+
+        /// <summary>
+        /// N-1b bridge: performs the same discard but, when no response window opens, leaves the
+        /// round in DRAW for the next seat without drawing. The caller then delivers a locked
+        /// sleeve bloom reservation and composes both effects into one version step. With an
+        /// open response window it behaves exactly like a normal discard.
+        /// </summary>
+        internal RoundPreparation PrepareDiscardSuppressed(RoundCommand command) =>
+            PrepareDiscardCore(command, suppressAutomaticNextDraw: true, isProtectedWallTile: null);
+
+        public RoundPreparation PrepareDiscardProtected(
+            RoundCommand command,
+            Func<TileId, bool>? isProtectedWallTile) =>
+            PrepareDiscardCore(command, suppressAutomaticNextDraw: false, isProtectedWallTile);
+
+        private RoundPreparation PrepareDiscardCore(
+            RoundCommand command,
+            bool suppressAutomaticNextDraw,
+            Func<TileId, bool>? isProtectedWallTile)
         {
             CheckSeat(command.Seat);
             if (Phase != RoundPhase.CheatWindow && Phase != RoundPhase.Discard)
@@ -498,7 +533,20 @@ namespace Mahjong.Domain
             TilePositionMap afterDora = RevealPendingKanDora(discarded.State!, events, out int pendingAfter);
             if (eligible.Count == 0)
             {
-                return AdvanceToNextDraw(afterDora, command.Seat, events, pendingAfter);
+                if (suppressAutomaticNextDraw)
+                {
+                    int nextSeat = (command.Seat + 1) % 4;
+                    return Build(
+                        afterDora,
+                        RoundPhase.Draw,
+                        nextSeat,
+                        null,
+                        null,
+                        events,
+                        pendingKanDoraCount: pendingAfter);
+                }
+
+                return AdvanceToNextDraw(afterDora, command.Seat, events, pendingAfter, isProtectedWallTile: isProtectedWallTile);
             }
 
             var window = new RoundResponseWindow(
@@ -1421,7 +1469,8 @@ namespace Mahjong.Domain
             int pendingKanDoraCount = 0,
             IReadOnlyList<long>? scores = null,
             int? riichiSticks = null,
-            IReadOnlyList<bool>? riichiDeclared = null)
+            IReadOnlyList<bool>? riichiDeclared = null,
+            Func<TileId, bool>? isProtectedWallTile = null)
         {
             int nextSeat = (fromSeat + 1) % 4;
             if (currentTiles.WallRemaining == 0)
@@ -1440,7 +1489,7 @@ namespace Mahjong.Domain
                     pendingKanDoraCount: pendingKanDoraCount);
             }
 
-            TransitionResult drawn = currentTiles.DrawFromWall(nextSeat);
+            TransitionResult drawn = currentTiles.DrawFromWall(nextSeat, isProtectedWallTile);
             if (!drawn.IsSuccess)
             {
                 throw FromTileError(drawn);
@@ -1458,6 +1507,109 @@ namespace Mahjong.Domain
                 riichiSticks: riichiSticks,
                 riichiDeclared: riichiDeclared,
                 pendingKanDoraCount: pendingKanDoraCount);
+        }
+
+        /// <summary>
+        /// Domain bridge used only by the G1/N-1b cheat execution layer. It creates a direct
+        /// child of this exact state with the supplied physical map and one committed event,
+        /// leaving phase, seat, window, scores, riichi flags, melds and result untouched. The
+        /// normal <see cref="Install"/> guard (source version, source fingerprint, parent
+        /// identity, immediate successor) still applies, so a stale/foreign cheat candidate
+        /// cannot be installed.
+        /// </summary>
+        internal RoundPreparation PrepareCheatBridge(
+            TilePositionMap tiles,
+            RoundPhase phase,
+            int currentSeat,
+            RoundResponseWindow? window,
+            RoundEventType eventType,
+            int eventSeat,
+            TileId? tile,
+            string detail,
+            int? pendingKanDoraCount = null)
+        {
+            if (tiles == null)
+            {
+                throw new ArgumentNullException(nameof(tiles));
+            }
+
+            if (IsFinished || _result != null)
+            {
+                return RoundPreparation.Rejected(
+                    RoundTransitionErrorCode.RoundFinished,
+                    "Round " + RoundId + " is already finished.");
+            }
+
+            CheckSeat(currentSeat);
+            if (eventSeat < -1 || eventSeat > 3)
+            {
+                return RoundPreparation.Rejected(
+                    RoundTransitionErrorCode.InvalidSeat,
+                    "Event seat must be -1 or 0..3.");
+            }
+
+            if (eventType != RoundEventType.CheatApplied && eventType != RoundEventType.TileDrawn)
+            {
+                return RoundPreparation.Rejected(
+                    RoundTransitionErrorCode.WrongPhase,
+                    "Cheat bridge only accepts CheatApplied or TileDrawn.");
+            }
+
+            var events = new List<RoundEvent>(1)
+            {
+                new RoundEvent(eventType, 0, eventSeat, tile, detail)
+            };
+            return Build(
+                tiles,
+                phase,
+                currentSeat,
+                window,
+                null,
+                events,
+                pendingKanDoraCount: pendingKanDoraCount ?? _pendingKanDoraCount);
+        }
+
+        /// <summary>
+        /// N-1b composition bridge: one discard plus one delivered reservation must remain one
+        /// version step. The caller already prepared the suppressed discard and the physical
+        /// delivery; this method rebuilds the single child from <em>this</em> source with the
+        /// concatenated event list and the delivered physical map.
+        /// </summary>
+        internal RoundPreparation PrepareCheatComposed(
+            TilePositionMap tiles,
+            RoundPhase phase,
+            int currentSeat,
+            RoundResponseWindow? window,
+            IReadOnlyList<RoundEvent> addedEvents,
+            int? pendingKanDoraCount = null)
+        {
+            if (tiles == null)
+            {
+                throw new ArgumentNullException(nameof(tiles));
+            }
+
+            if (IsFinished || _result != null)
+            {
+                return RoundPreparation.Rejected(
+                    RoundTransitionErrorCode.RoundFinished,
+                    "Round " + RoundId + " is already finished.");
+            }
+
+            if (addedEvents == null || addedEvents.Count == 0)
+            {
+                return RoundPreparation.Rejected(
+                    RoundTransitionErrorCode.WrongPhase,
+                    "A composed cheat transition requires at least one event.");
+            }
+
+            return Build(
+                tiles,
+                phase,
+                currentSeat,
+                window,
+                null,
+                new List<RoundEvent>(addedEvents),
+                pendingKanDoraCount: pendingKanDoraCount ?? _pendingKanDoraCount);
         }
 
         private RoundPreparation Build(

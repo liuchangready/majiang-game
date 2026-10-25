@@ -4,6 +4,7 @@ using System.IO;
 using System.Text;
 using Mahjong.Contracts;
 using Mahjong.Domain;
+using Mahjong.Domain.Cheat;
 
 namespace Mahjong.TableRuntime
 {
@@ -276,7 +277,7 @@ namespace Mahjong.TableRuntime
     /// </summary>
     public static class TableCommittedHistoryCodec
     {
-        public const int FormatVersion = 1;
+        public const int FormatVersion = 2;
         private const int Magic = 0x4D4A4843; // MJHC
         private const int MaxEvents = 1_000_000;
 
@@ -327,6 +328,8 @@ namespace Mahjong.TableRuntime
                         writer.Write(payload.Length);
                         writer.Write(payload);
                     }
+
+                    WriteCheat(writer, value.Cheat);
                 }
 
                 writer.Flush();
@@ -393,6 +396,7 @@ namespace Mahjong.TableRuntime
                         }
                     }
 
+                    TableCheatEventRecord? cheat = ReadCheat(reader);
                     events.Add(new TableEventRecord(
                         new EventSeq(seq),
                         new StateVersion(version),
@@ -402,7 +406,8 @@ namespace Mahjong.TableRuntime
                         tile,
                         detail,
                         eventSchema,
-                        eventPayload));
+                        eventPayload,
+                        cheat));
                 }
 
                 if (stream.Position != payload.Length)
@@ -413,6 +418,169 @@ namespace Mahjong.TableRuntime
                 return events;
             }
         }
+
+        private static void WriteCheat(BinaryWriter writer, TableCheatEventRecord? cheat)
+        {
+            writer.Write(cheat != null);
+            if (cheat == null)
+            {
+                return;
+            }
+
+            CheatEvent value = cheat.Event;
+            writer.Write((byte)value.Kind);
+            writer.Write(value.Seat);
+            WriteNullableString(writer, value.EntryId);
+            writer.Write(value.Amount);
+            writer.Write(value.NewBalance);
+            WriteNullableString(writer, value.OfferId);
+            WriteNullableString(writer, value.GroupId);
+            writer.Write(value.Keep.HasValue);
+            if (value.Keep.HasValue)
+            {
+                writer.Write((byte)value.Keep.Value);
+            }
+
+            writer.Write(value.Action.HasValue);
+            if (value.Action.HasValue)
+            {
+                writer.Write((byte)value.Action.Value);
+            }
+
+            WriteNullableString(writer, value.Reason);
+            writer.Write(cheat.TurnNumber);
+            writer.Write(cheat.ResultTile.HasValue);
+            if (cheat.ResultTile.HasValue)
+            {
+                writer.Write(cheat.ResultTile.Value.Value);
+            }
+
+            writer.Write(cheat.HandTile.HasValue);
+            if (cheat.HandTile.HasValue)
+            {
+                writer.Write(cheat.HandTile.Value.Value);
+            }
+
+            writer.Write(cheat.TargetSlot.HasValue);
+            if (cheat.TargetSlot.HasValue)
+            {
+                writer.Write((byte)cheat.TargetSlot.Value.Kind);
+                writer.Write(cheat.TargetSlot.Value.Index);
+            }
+        }
+
+        private static TableCheatEventRecord? ReadCheat(BinaryReader reader)
+        {
+            if (!reader.ReadBoolean())
+            {
+                return null;
+            }
+
+            byte kind = reader.ReadByte();
+            if (!Enum.IsDefined(typeof(CheatEventKind), kind))
+            {
+                throw new InvalidDataException("Committed cheat event kind is invalid.");
+            }
+
+            int seat = reader.ReadInt32();
+            string? entryId = ReadNullableString(reader);
+            int amount = reader.ReadInt32();
+            int balance = reader.ReadInt32();
+            string? offerId = ReadNullableString(reader);
+            string? groupId = ReadNullableString(reader);
+            SleeveBloomKeep? keep = reader.ReadBoolean()
+                ? ReadKeep(reader)
+                : (SleeveBloomKeep?)null;
+            BeamSwapAction? action = reader.ReadBoolean()
+                ? ReadBeamAction(reader)
+                : (BeamSwapAction?)null;
+            string? reason = ReadNullableString(reader);
+            int turn = reader.ReadInt32();
+            TileId? resultTile = reader.ReadBoolean() ? new TileId(reader.ReadInt32()) : (TileId?)null;
+            TileId? handTile = reader.ReadBoolean() ? new TileId(reader.ReadInt32()) : (TileId?)null;
+            BeamSwapSlot? targetSlot = null;
+            if (reader.ReadBoolean())
+            {
+                byte slotKind = reader.ReadByte();
+                int index = reader.ReadInt32();
+                if (!Enum.IsDefined(typeof(BeamSwapSlotKind), slotKind))
+                {
+                    throw new InvalidDataException("Committed cheat target slot kind is invalid.");
+                }
+
+                targetSlot = SlotOf((BeamSwapSlotKind)slotKind, index);
+            }
+
+            CheatEvent value = CheatEvent.Restore(
+                (CheatEventKind)kind,
+                seat,
+                entryId,
+                amount,
+                balance,
+                offerId,
+                groupId,
+                keep,
+                action,
+                reason);
+            return new TableCheatEventRecord(
+                value,
+                offerId,
+                keep,
+                action,
+                resultTile,
+                handTile,
+                targetSlot,
+                turn);
+        }
+
+        private static SleeveBloomKeep ReadKeep(BinaryReader reader)
+        {
+            byte value = reader.ReadByte();
+            if (!Enum.IsDefined(typeof(SleeveBloomKeep), value))
+            {
+                throw new InvalidDataException("Committed cheat keep value is invalid.");
+            }
+
+            return (SleeveBloomKeep)value;
+        }
+
+        private static BeamSwapAction ReadBeamAction(BinaryReader reader)
+        {
+            byte value = reader.ReadByte();
+            if (!Enum.IsDefined(typeof(BeamSwapAction), value))
+            {
+                throw new InvalidDataException("Committed cheat beam action is invalid.");
+            }
+
+            return (BeamSwapAction)value;
+        }
+
+        private static BeamSwapSlot SlotOf(BeamSwapSlotKind kind, int index)
+        {
+            switch (kind)
+            {
+                case BeamSwapSlotKind.WallSlot:
+                    return BeamSwapSlot.Wall(index);
+                case BeamSwapSlotKind.DeadWallSlot:
+                    return BeamSwapSlot.DeadWall(index);
+                case BeamSwapSlotKind.ReplacementSlot:
+                    return BeamSwapSlot.Replacement(index);
+                default:
+                    throw new InvalidDataException("Committed cheat target slot kind is invalid.");
+            }
+        }
+
+        private static void WriteNullableString(BinaryWriter writer, string? value)
+        {
+            writer.Write(value != null);
+            if (value != null)
+            {
+                writer.Write(value);
+            }
+        }
+
+        private static string? ReadNullableString(BinaryReader reader) =>
+            reader.ReadBoolean() ? reader.ReadString() : null;
     }
 
     /// <summary>Deterministic terminal result payload for the unique settlement outbox.</summary>

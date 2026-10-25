@@ -20,7 +20,9 @@ namespace Mahjong.TableRuntime
             long graceMillis = 5000L,
             string? matchId = null,
             bool requireCheatLedger = true,
-            bool requireCommittedFacts = true)
+            bool requireCommittedFacts = true,
+            CheatEconomyConfig? cheatEconomy = null,
+            SleeveBloomConfig? sleeveBloomConfig = null)
         {
             if (string.IsNullOrWhiteSpace(ownerInstance))
             {
@@ -55,6 +57,8 @@ namespace Mahjong.TableRuntime
             MatchId = string.IsNullOrWhiteSpace(matchId) ? null : matchId;
             RequireCheatLedger = requireCheatLedger;
             RequireCommittedFacts = requireCommittedFacts;
+            CheatEconomy = cheatEconomy;
+            SleeveBloomConfig = sleeveBloomConfig;
         }
 
         public string OwnerInstance { get; }
@@ -72,6 +76,11 @@ namespace Mahjong.TableRuntime
         public bool RequireCheatLedger { get; }
 
         public bool RequireCommittedFacts { get; }
+
+        /// <summary>Required to replay N-1b cheat commands during cold recovery.</summary>
+        public CheatEconomyConfig? CheatEconomy { get; }
+
+        public SleeveBloomConfig? SleeveBloomConfig { get; }
     }
 
     public enum TableRecoveryStatus : byte
@@ -361,8 +370,8 @@ namespace Mahjong.TableRuntime
             RoundStateMachine round;
             TableControlCheckpoint control;
             TableTimingCheckpoint timing;
-            TableCheatLedgerCheckpoint? cheat = null;
-            CheatState? recoveredCheat = null;
+            TableCheatLedgerCheckpoint? cheatCheckpoint = null;
+            CheatState? cheat = null;
             IReadOnlyList<TableEventRecord> checkpointHistory = Array.Empty<TableEventRecord>();
             IReadOnlyList<TableCommandBinding> checkpointBindings = Array.Empty<TableCommandBinding>();
             try
@@ -437,8 +446,8 @@ namespace Mahjong.TableRuntime
 
                 if (checkpoint.CheatPayload != null)
                 {
-                    cheat = TableCheatLedgerCheckpointCodec.Decode(checkpoint.CheatPayload);
-                    recoveredCheat = cheat.RestoreCheatState();
+                    cheatCheckpoint = TableCheatLedgerCheckpointCodec.Decode(checkpoint.CheatPayload);
+                    cheat = cheatCheckpoint.RestoreCheatState();
                 }
                 else if (options.RequireCheatLedger)
                 {
@@ -505,29 +514,285 @@ namespace Mahjong.TableRuntime
                 for (ulong version = checkpoint.StateVersion.Value + 1; version <= state.StateVersion.Value; version++)
                 {
                     TableCommandJournalRecord journal = commands[(int)(version - checkpoint.StateVersion.Value - 1)];
-                    if (journal.SchemaVersion != RoundCommandCodec.FormatVersion)
+                    RoundStateMachine next;
+                    IReadOnlyList<RoundEvent> expectedRound;
+                    IReadOnlyList<RoundCheatEvent> expectedCheat = Array.Empty<RoundCheatEvent>();
+                    if (journal.SchemaVersion == RoundCommandCodec.FormatVersion)
+                    {
+                        RoundCommand command = RoundCommandCodec.Decode(journal.CommandPayload);
+                        if (command.Action != RoundActionKind.DrawTile)
+                        {
+                            consumedSeats.Add(command.Seat);
+                        }
+
+                        bool reservationDraw = command.Action == RoundActionKind.DrawTile &&
+                                               cheat != null &&
+                                               options.CheatEconomy != null &&
+                                               options.SleeveBloomConfig != null &&
+                                               (cheat.SleeveBloom.ReservationFor(command.Seat) != null ||
+                                                cheat.SleeveBloom.OffTurnOfferFor(command.Seat) != null);
+                        if (reservationDraw)
+                        {
+                            CheatTurnContext context = BuildRecoveryCheatContext(
+                                round,
+                                cheat!,
+                                CountDrawTurns(round),
+                                0L,
+                                SleeveBloomDrawKind.Normal);
+                            RoundCheatPreparation preparation = RoundCheatTransition.PrepareReservationDraw(
+                                round,
+                                cheat,
+                                context,
+                                command.Seat);
+                            if (!preparation.IsReady)
+                            {
+                                return TableRecoveryResult.Failed(
+                                    TableRuntimeReasonCode.RecoveryReplayMismatch,
+                                    "Reservation draw no longer replays at command " + version + ": " +
+                                    preparation.Message);
+                            }
+
+                            RoundTransition installed = round.Install(preparation.Change!.RoundChange);
+                            if (!installed.IsAccepted || installed.State == null)
+                            {
+                                return TableRecoveryResult.Failed(
+                                    TableRuntimeReasonCode.RecoveryReplayMismatch,
+                                    "Reservation draw candidate did not install at command " + version + ".");
+                            }
+
+                            next = installed.State;
+                            cheat = preparation.Change.CheatState;
+                            expectedRound = installed.Events;
+                            expectedCheat = preparation.Change.Events;
+                        }
+                        else
+                        {
+                            int nextSeat = (command.Seat + 1) % 4;
+                            bool discardDelivery = command.Action == RoundActionKind.DiscardTile &&
+                                                   cheat != null &&
+                                                   options.CheatEconomy != null &&
+                                                   options.SleeveBloomConfig != null &&
+                                                   (command.EligibleSeats == null || command.EligibleSeats.Count == 0) &&
+                                                   (cheat.SleeveBloom.ReservationFor(nextSeat) != null ||
+                                                    cheat.SleeveBloom.OffTurnOfferFor(nextSeat) != null);
+                            if (discardDelivery)
+                            {
+                                RoundCheatPreparation preparation = RoundCheatTransition.PrepareDiscardDelivery(
+                                    round,
+                                    cheat,
+                                    command,
+                                    0L);
+                                if (!preparation.IsReady)
+                                {
+                                    return TableRecoveryResult.Failed(
+                                        TableRuntimeReasonCode.RecoveryReplayMismatch,
+                                        "Discard reservation delivery no longer replays at command " + version + ": " +
+                                        preparation.Message);
+                                }
+
+                                RoundTransition installed = round.Install(preparation.Change!.RoundChange);
+                                if (!installed.IsAccepted || installed.State == null)
+                                {
+                                    return TableRecoveryResult.Failed(
+                                        TableRuntimeReasonCode.RecoveryReplayMismatch,
+                                        "Discard reservation candidate did not install at command " + version + ".");
+                                }
+
+                                next = installed.State;
+                                cheat = preparation.Change.CheatState;
+                                expectedRound = installed.Events;
+                                expectedCheat = preparation.Change.Events;
+                            }
+                            else if (command.Action == RoundActionKind.DrawTile &&
+                                     cheat != null &&
+                                     HasProtectedWallTiles(cheat))
+                            {
+                                CheatState protectedCheat = cheat;
+                                RoundPreparation prepared = round.PrepareDrawProtected(
+                                    command,
+                                    tile => protectedCheat.SleeveBloom.IsProtectedTile(tile));
+                                if (!prepared.IsReady)
+                                {
+                                    return TableRecoveryResult.Failed(
+                                        TableRuntimeReasonCode.RecoveryReplayMismatch,
+                                        "Protected draw no longer replays at command " + version + ": " +
+                                        prepared.Error!.Message);
+                                }
+
+                                RoundTransition installed = round.Install(prepared.Change!);
+                                if (!installed.IsAccepted || installed.State == null)
+                                {
+                                    return TableRecoveryResult.Failed(
+                                        TableRuntimeReasonCode.RecoveryReplayMismatch,
+                                        "Protected draw candidate did not install at command " + version + ".");
+                                }
+
+                                next = installed.State;
+                                expectedRound = installed.Events;
+                            }
+                            else if (command.Action == RoundActionKind.DiscardTile &&
+                                     cheat != null &&
+                                     HasProtectedWallTiles(cheat) &&
+                                     (command.EligibleSeats == null || command.EligibleSeats.Count == 0))
+                            {
+                                CheatState protectedCheat = cheat;
+                                RoundPreparation prepared = round.PrepareDiscardProtected(
+                                    command,
+                                    tile => protectedCheat.SleeveBloom.IsProtectedTile(tile));
+                                if (!prepared.IsReady)
+                                {
+                                    return TableRecoveryResult.Failed(
+                                        TableRuntimeReasonCode.RecoveryReplayMismatch,
+                                        "Protected discard no longer replays at command " + version + ": " +
+                                        prepared.Error!.Message);
+                                }
+
+                                RoundTransition installed = round.Install(prepared.Change!);
+                                if (!installed.IsAccepted || installed.State == null)
+                                {
+                                    return TableRecoveryResult.Failed(
+                                        TableRuntimeReasonCode.RecoveryReplayMismatch,
+                                        "Protected discard candidate did not install at command " + version + ".");
+                                }
+
+                                next = installed.State;
+                                expectedRound = installed.Events;
+                                cheat = cheat.WithSleeveBloom(cheat.SleeveBloom.WithOpenedWindow(
+                                    command.Seat,
+                                    CountDrawTurns(round),
+                                    out _));
+                            }
+                            else
+                            {
+                                RoundTransition transition = round.Execute(command);
+                                if (!transition.IsAccepted || transition.State == null)
+                                {
+                                    return TableRecoveryResult.Failed(
+                                        TableRuntimeReasonCode.RecoveryReplayMismatch,
+                                        "Command version " + version + " no longer replays: " +
+                                        (transition.Error?.Code.ToString() ?? "unknown"));
+                                }
+
+                                next = transition.State;
+                                expectedRound = transition.Events;
+                                if (cheat != null && command.Action == RoundActionKind.DiscardTile)
+                                {
+                                    cheat = cheat.WithSleeveBloom(cheat.SleeveBloom.WithOpenedWindow(
+                                        command.Seat,
+                                        CountDrawTurns(round),
+                                        out _));
+                                }
+                            }
+                        }
+                    }
+                    else if (journal.SchemaVersion == 2)
+                    {
+                        if (cheat == null || options.CheatEconomy == null || options.SleeveBloomConfig == null)
+                        {
+                            return TableRecoveryResult.Failed(
+                                TableRuntimeReasonCode.RecoveryPrivateStateUnsupported,
+                                "Command version " + version + " is a cheat command but no cheat aggregate/config is available.");
+                        }
+
+                        RoundCheatJournal cheatJournal = TableCheatCommandCodec.Decode(journal.CommandPayload);
+                        CheatTurnContext context = BuildRecoveryCheatContext(
+                            round,
+                            cheat,
+                            cheatJournal.TurnNumber,
+                            cheatJournal.NowMillis,
+                            cheatJournal.LastDrawKind,
+                            cheatJournal.RoundOrdinal);
+                        RoundCheatPreparation preparation = RoundCheatTransition.Prepare(
+                            round,
+                            cheat,
+                            cheatJournal.Command,
+                            context,
+                            options.CheatEconomy,
+                            options.SleeveBloomConfig);
+                        if (!preparation.IsReady)
+                        {
+                            return TableRecoveryResult.Failed(
+                                TableRuntimeReasonCode.RecoveryReplayMismatch,
+                                "Cheat command version " + version + " no longer replays: " +
+                                preparation.Message);
+                        }
+
+                        RoundTransition installed = round.Install(preparation.Change!.RoundChange);
+                        if (!installed.IsAccepted || installed.State == null)
+                        {
+                            return TableRecoveryResult.Failed(
+                                TableRuntimeReasonCode.RecoveryReplayMismatch,
+                                "Cheat candidate did not install at command " + version + ".");
+                        }
+
+                        next = installed.State;
+                        cheat = preparation.Change.CheatState;
+                        expectedRound = installed.Events;
+                        expectedCheat = preparation.Change.Events;
+                    }
+                    else if (journal.SchemaVersion == 3)
+                    {
+                        if (cheat == null || options.CheatEconomy == null || options.SleeveBloomConfig == null)
+                        {
+                            return TableRecoveryResult.Failed(
+                                TableRuntimeReasonCode.RecoveryPrivateStateUnsupported,
+                                "Command version " + version + " is a cheat sweep but no cheat aggregate/config is available.");
+                        }
+
+                        TableCheatSystemJournal system = TableCheatSystemCodec.Decode(journal.CommandPayload);
+                        CheatTurnContext context = BuildRecoveryCheatContext(
+                            round,
+                            cheat,
+                            system.TurnNumber,
+                            system.NowMillis,
+                            system.LastDrawKind,
+                            system.RoundOrdinal);
+                        RoundCheatPreparation preparation;
+                        switch (system.Action)
+                        {
+                            case RoundCheatSystemAction.OffTurnExpiry:
+                                preparation = RoundCheatTransition.ExpireOffTurn(round, cheat, context);
+                                break;
+                            case RoundCheatSystemAction.ImmediateExpiry:
+                                preparation = RoundCheatTransition.ExpireImmediate(round, cheat, context, system.Seat);
+                                break;
+                            case RoundCheatSystemAction.BeamExpiry:
+                                preparation = RoundCheatTransition.ExpireBeamSwap(round, cheat, context, system.Seat);
+                                break;
+                            default:
+                                return TableRecoveryResult.Failed(
+                                    TableRuntimeReasonCode.RecoveryReplayMismatch,
+                                    "Unknown cheat sweep action at command " + version + ".");
+                        }
+
+                        if (!preparation.IsReady)
+                        {
+                            return TableRecoveryResult.Failed(
+                                TableRuntimeReasonCode.RecoveryReplayMismatch,
+                                "Cheat sweep version " + version + " no longer replays: " +
+                                preparation.Message);
+                        }
+
+                        RoundTransition installed = round.Install(preparation.Change!.RoundChange);
+                        if (!installed.IsAccepted || installed.State == null)
+                        {
+                            return TableRecoveryResult.Failed(
+                                TableRuntimeReasonCode.RecoveryReplayMismatch,
+                                "Cheat sweep candidate did not install at command " + version + ".");
+                        }
+
+                        next = installed.State;
+                        cheat = preparation.Change.CheatState;
+                        expectedRound = installed.Events;
+                        expectedCheat = preparation.Change.Events;
+                    }
+                    else
                     {
                         return TableRecoveryResult.Failed(
                             TableRuntimeReasonCode.RecoveryCommandMissing,
                             "Command journal version " + version + " has unsupported schema " + journal.SchemaVersion + ".");
                     }
 
-                    RoundCommand command = RoundCommandCodec.Decode(journal.CommandPayload);
-                    if (command.Action != RoundActionKind.DrawTile)
-                    {
-                        consumedSeats.Add(command.Seat);
-                    }
-
-                    RoundTransition transition = round.Execute(command);
-                    if (!transition.IsAccepted || transition.State == null)
-                    {
-                        return TableRecoveryResult.Failed(
-                            TableRuntimeReasonCode.RecoveryReplayMismatch,
-                            "Command version " + version + " no longer replays: " +
-                            (transition.Error?.Code.ToString() ?? "unknown"));
-                    }
-
-                    RoundStateMachine next = transition.State;
                     if (next.Version != round.Version + 1)
                     {
                         return TableRecoveryResult.Failed(
@@ -536,24 +801,33 @@ namespace Mahjong.TableRuntime
                     }
 
                     List<TableEventRecord> committed = eventsByVersion[version];
-                    if (transition.Events.Count != committed.Count)
+                    var roundStored = new List<TableEventRecord>();
+                    var cheatStored = new List<TableEventRecord>();
+                    for (int i = 0; i < committed.Count; i++)
+                    {
+                        if (committed[i].Cheat == null)
+                        {
+                            roundStored.Add(committed[i]);
+                        }
+                        else
+                        {
+                            cheatStored.Add(committed[i]);
+                        }
+                    }
+
+                    if (expectedRound.Count != roundStored.Count)
                     {
                         return TableRecoveryResult.Failed(
                             TableRuntimeReasonCode.RecoveryReplayMismatch,
-                            "Replayed event count differs at command " + version + ".");
+                            "Replayed round event count differs at command " + version + ".");
                     }
 
-                    for (int i = 0; i < committed.Count; i++)
+                    for (int i = 0; i < expectedRound.Count; i++)
                     {
-                        RoundEvent domain = transition.Events[i];
-                        TableEventRecord stored = committed[i];
-                        if (stored.EventSchema != 1)
-                        {
-                            return TableRecoveryResult.Failed(
-                                TableRuntimeReasonCode.RecoveryReplayMismatch,
-                                "Event schema " + stored.EventSchema + " is unsupported at version " + version + ".");
-                        }
-                        if (domain.Type != stored.Type ||
+                        RoundEvent domain = expectedRound[i];
+                        TableEventRecord stored = roundStored[i];
+                        if (stored.EventSchema != 1 ||
+                            domain.Type != stored.Type ||
                             domain.Ordinal != round.Events.Count + i ||
                             domain.Seat != stored.Seat ||
                             !Nullable.Equals(domain.Tile, stored.Tile) ||
@@ -567,18 +841,39 @@ namespace Mahjong.TableRuntime
                                 domain.Tile + "/" + domain.Detail + ".");
                         }
 
-                        if (stored.Payload != null)
+                        VerifyRecoveryFact(stored, next, version, i);
+                    }
+
+                    if (expectedCheat.Count != cheatStored.Count)
+                    {
+                        return TableRecoveryResult.Failed(
+                            TableRuntimeReasonCode.RecoveryReplayMismatch,
+                            "Replayed private cheat event count differs at command " + version + ".");
+                    }
+
+                    for (int i = 0; i < expectedCheat.Count; i++)
+                    {
+                        RoundCheatEvent expected = expectedCheat[i];
+                        TableEventRecord stored = cheatStored[i];
+                        if (stored.Cheat == null ||
+                            stored.Type != RoundEventType.CheatApplied ||
+                            stored.Ordinal != expectedRound.Count + i ||
+                            stored.Seat != expected.Value.Seat ||
+                            !stored.Cheat.Event.Equals(expected.Value) ||
+                            !string.Equals(stored.Cheat.OfferId, expected.OfferId, StringComparison.Ordinal) ||
+                            stored.Cheat.Keep != expected.Keep ||
+                            stored.Cheat.Action != expected.Action ||
+                            !Nullable.Equals(stored.Cheat.ResultTile, expected.ResultTile) ||
+                            !Nullable.Equals(stored.Cheat.HandTile, expected.HandTile) ||
+                            stored.Cheat.TargetSlot != expected.TargetSlot ||
+                            stored.Cheat.TurnNumber != expected.TurnNumber)
                         {
-                            TableEventFact fact = TableEventFactCodec.Decode(stored.Payload);
-                            if (fact.CommandVersion != stored.CommandVersion ||
-                                fact.Ordinal != stored.Ordinal ||
-                                fact.SourceFingerprint != next.SourceFingerprint)
-                            {
-                                return TableRecoveryResult.Failed(
-                                    TableRuntimeReasonCode.RecoveryReplayMismatch,
-                                    "Event fact binding differs at version " + version + " ordinal " + i + ".");
-                            }
+                            return TableRecoveryResult.Failed(
+                                TableRuntimeReasonCode.RecoveryReplayMismatch,
+                                "Replayed private cheat event differs at version " + version + " ordinal " + i + ".");
                         }
+
+                        VerifyRecoveryFact(stored, next, version, expectedRound.Count + i);
                     }
 
                     round = next;
@@ -696,7 +991,7 @@ namespace Mahjong.TableRuntime
             {
                 try
                 {
-                    TableVisibilityProjection.ValidateRecoveredFacts(round, effectiveFacts, recoveredCheat);
+                    TableVisibilityProjection.ValidateRecoveredFacts(round, effectiveFacts, cheat);
                     TableVisibilityProjection.ValidateRecoveredEventFacts(
                         fullHistory,
                         effectiveFacts.EventFacts,
@@ -916,7 +1211,7 @@ namespace Mahjong.TableRuntime
                 new TableControlRecoveryBaseline(control.Snapshot, control.ControlVersion, graceTiming),
                 adjustedTiming.ToRecoveryTiming(),
                 effectiveTimingVersion,
-                recoveredCheat,
+                cheat,
                 effectiveFacts,
                 fullHistory,
                 strictHistory: true,
@@ -940,12 +1235,12 @@ namespace Mahjong.TableRuntime
                 lease.OwnerEpoch,
                 (int)control.ControlVersion,
                 adjustedTiming.Decisions.Count,
-                cheat?.Entries.Count,
+                cheatCheckpoint?.Entries.Count,
                 round.IsFinished,
                 outboxPresent,
                 audit,
                 effectiveTimingVersion,
-                recoveredCheat != null,
+                cheat != null,
                 fullHistory.Count,
                 outboxPresent);
 
@@ -966,6 +1261,78 @@ namespace Mahjong.TableRuntime
             }
 
             return diff == 0;
+        }
+
+        private static CheatTurnContext BuildRecoveryCheatContext(
+            RoundStateMachine round,
+            CheatState cheat,
+            int turnNumber,
+            long nowMillis,
+            SleeveBloomDrawKind lastDrawKind,
+            int roundOrdinal = -1)
+        {
+            return new CheatTurnContext(
+                round.CurrentSeat,
+                round.Phase,
+                round.Window != null,
+                round.RiichiDeclared,
+                turnNumber,
+                round.RoundId,
+                roundOrdinal >= 0 ? roundOrdinal : cheat.TileMarks.DealtRoundOrdinal,
+                lastDrawKind,
+                nowMillis);
+        }
+
+        private static bool HasProtectedWallTiles(CheatState cheat)
+        {
+            for (int value = 0; value < TileId.Count; value++)
+            {
+                if (cheat.SleeveBloom.IsProtectedTile(new TileId(value)))
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        private static int CountDrawTurns(RoundStateMachine round)
+        {
+            int turns = 0;
+            for (int i = 0; i < round.Events.Count; i++)
+            {
+                RoundEventType type = round.Events[i].Type;
+                if (type == RoundEventType.TileDrawn || type == RoundEventType.RinshanDrawn)
+                {
+                    turns++;
+                }
+            }
+
+            return turns;
+        }
+
+        private static void VerifyRecoveryFact(
+            TableEventRecord stored,
+            RoundStateMachine next,
+            ulong version,
+            int ordinal)
+        {
+            if (stored.Payload == null)
+            {
+                throw new RecoveryValidationException(
+                    TableRuntimeReasonCode.RecoveryReplayMismatch,
+                    "Committed event " + stored.Seq + " has no fact binding at version " + version + ".");
+            }
+
+            TableEventFact fact = TableEventFactCodec.Decode(stored.Payload);
+            if (fact.CommandVersion != stored.CommandVersion ||
+                fact.Ordinal != stored.Ordinal ||
+                fact.SourceFingerprint != next.SourceFingerprint)
+            {
+                throw new RecoveryValidationException(
+                    TableRuntimeReasonCode.RecoveryReplayMismatch,
+                    "Event fact binding differs at version " + version + " ordinal " + ordinal + ".");
+            }
         }
 
         private static void ValidateHistory(
@@ -1101,7 +1468,22 @@ namespace Mahjong.TableRuntime
             RoundRecoveryState captured,
             TableCheckpoint checkpoint)
         {
-            int offset = captured.Events.Count - history.Count;
+            var roundHistory = new List<TableEventRecord>(history.Count);
+            for (int i = 0; i < history.Count; i++)
+            {
+                if (history[i].Cheat == null)
+                {
+                    roundHistory.Add(history[i]);
+                }
+                else if (history[i].Payload == null)
+                {
+                    throw new RecoveryValidationException(
+                        TableRuntimeReasonCode.CheckpointInvalid,
+                        "Committed cheat history event has no fact binding.");
+                }
+            }
+
+            int offset = captured.Events.Count - roundHistory.Count;
             if (offset < 0)
             {
                 throw new RecoveryValidationException(
@@ -1121,9 +1503,9 @@ namespace Mahjong.TableRuntime
                 }
             }
 
-            for (int i = 0; i < history.Count; i++)
+            for (int i = 0; i < roundHistory.Count; i++)
             {
-                TableEventRecord record = history[i];
+                TableEventRecord record = roundHistory[i];
                 RoundEvent domain = captured.Events[offset + i];
                 if (domain.Ordinal != offset + i ||
                     domain.Type != record.Type ||

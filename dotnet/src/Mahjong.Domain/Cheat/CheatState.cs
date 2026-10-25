@@ -485,6 +485,35 @@ namespace Mahjong.Domain.Cheat
         public static CheatEvent BeamSwapOfferCleared(int seat, string offerId, string reason) =>
             new CheatEvent(CheatEventKind.BeamSwapOfferCleared, seat, null, 0, -1, offerId, null, null, null, reason);
 
+        /// <summary>
+        /// Rehydrates one already validated event from the durable checkpoint/journal. It is a
+        /// recovery constructor, not a way for callers to fabricate a live transition.
+        /// </summary>
+        public static CheatEvent Restore(
+            CheatEventKind kind,
+            int seat,
+            string? entryId,
+            int amount,
+            int newBalance,
+            string? offerId,
+            string? groupId,
+            SleeveBloomKeep? keep,
+            BeamSwapAction? action,
+            string? reason)
+        {
+            if (!Enum.IsDefined(typeof(CheatEventKind), kind))
+            {
+                throw new ArgumentOutOfRangeException(nameof(kind), kind, "Unknown cheat event kind.");
+            }
+
+            if (seat < 0 || seat > 3)
+            {
+                throw new ArgumentOutOfRangeException(nameof(seat), seat, "Seat must be 0..3.");
+            }
+
+            return new CheatEvent(kind, seat, entryId, amount, newBalance, offerId, groupId, keep, action, reason);
+        }
+
         public bool Equals(CheatEvent? other) =>
             other != null &&
             Kind == other.Kind &&

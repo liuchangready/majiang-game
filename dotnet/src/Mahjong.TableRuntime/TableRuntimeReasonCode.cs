@@ -84,6 +84,121 @@ namespace Mahjong.TableRuntime
         public const string RecoveryPrivateStateUnsupported = "RECOVERY_PRIVATE_STATE_UNSUPPORTED";
         public const string RecoveryStateChanged = "RECOVERY_STATE_CHANGED";
 
+        // G1/N-1b cheat execution additions.
+        public const string CheatNotConfigured = "CHEAT_NOT_CONFIGURED";
+        public const string CheatRejected = "CHEAT_REJECTED";
+        public const string CheatReplayed = "CHEAT_REPLAYED";
+        public const string CheatContextMismatch = "CHEAT_CONTEXT_MISMATCH";
+
+        public static string FromCheat(Mahjong.Domain.RoundCheatErrorCode bridge, Mahjong.Domain.Cheat.CheatErrorCode cheat)
+        {
+            switch (bridge)
+            {
+                case Mahjong.Domain.RoundCheatErrorCode.NotConfigured:
+                    return CheatNotConfigured;
+                case Mahjong.Domain.RoundCheatErrorCode.ContextMismatch:
+                    return CheatContextMismatch;
+                case Mahjong.Domain.RoundCheatErrorCode.RoundFinished:
+                    return "ROUND_FINISHED";
+                case Mahjong.Domain.RoundCheatErrorCode.RoundMismatch:
+                    return RoundMismatch;
+                case Mahjong.Domain.RoundCheatErrorCode.InvalidCommand:
+                    return "INVALID_CHEAT_COMMAND";
+                default:
+                    break;
+            }
+
+            switch (cheat)
+            {
+                case Mahjong.Domain.Cheat.CheatErrorCode.Disabled:
+                    return "CHEAT_DISABLED";
+                case Mahjong.Domain.Cheat.CheatErrorCode.CostNotConfigured:
+                    return "CHEAT_COST_NOT_CONFIGURED";
+                case Mahjong.Domain.Cheat.CheatErrorCode.CostMustBeTen:
+                    return "CHEAT_COST_MUST_BE_TEN";
+                case Mahjong.Domain.Cheat.CheatErrorCode.InvalidSeat:
+                    return "INVALID_SEAT";
+                case Mahjong.Domain.Cheat.CheatErrorCode.InvalidRequest:
+                    return "INVALID_REQUEST";
+                case Mahjong.Domain.Cheat.CheatErrorCode.NotYourTurn:
+                    return "NOT_YOUR_TURN";
+                case Mahjong.Domain.Cheat.CheatErrorCode.WrongPhase:
+                    return "WRONG_PHASE";
+                case Mahjong.Domain.Cheat.CheatErrorCode.ResponseWindowOpen:
+                    return "RESPONSE_WINDOW_OPEN";
+                case Mahjong.Domain.Cheat.CheatErrorCode.RiichiLocked:
+                    return "RIICHI_LOCKED";
+                case Mahjong.Domain.Cheat.CheatErrorCode.NoDrawnTile:
+                    return "NO_DRAWN_TILE";
+                case Mahjong.Domain.Cheat.CheatErrorCode.DrawnTileNotInHand:
+                    return "DRAWN_TILE_NOT_IN_HAND";
+                case Mahjong.Domain.Cheat.CheatErrorCode.DrawKindMismatch:
+                    return "DRAW_KIND_MISMATCH";
+                case Mahjong.Domain.Cheat.CheatErrorCode.DealExtraDraw:
+                    return "DEAL_EXTRA_DRAW";
+                case Mahjong.Domain.Cheat.CheatErrorCode.OfferAlreadyPending:
+                    return "CHEAT_OFFER_ALREADY_PENDING";
+                case Mahjong.Domain.Cheat.CheatErrorCode.OtherOfferPending:
+                    return "CHEAT_OTHER_OFFER_PENDING";
+                case Mahjong.Domain.Cheat.CheatErrorCode.ReservedPending:
+                    return "CHEAT_RESERVATION_PENDING";
+                case Mahjong.Domain.Cheat.CheatErrorCode.AlreadyUsedThisTurn:
+                    return "CHEAT_ALREADY_USED_THIS_TURN";
+                case Mahjong.Domain.Cheat.CheatErrorCode.InsufficientFunds:
+                    return "CHEAT_INSUFFICIENT_FUNDS";
+                case Mahjong.Domain.Cheat.CheatErrorCode.LedgerConflict:
+                    return "CHEAT_LEDGER_CONFLICT";
+                case Mahjong.Domain.Cheat.CheatErrorCode.NoWindow:
+                    return "CHEAT_NO_WINDOW";
+                case Mahjong.Domain.Cheat.CheatErrorCode.WindowMismatch:
+                    return "CHEAT_WINDOW_MISMATCH";
+                case Mahjong.Domain.Cheat.CheatErrorCode.NoPendingOffer:
+                    return "CHEAT_NO_PENDING_OFFER";
+                case Mahjong.Domain.Cheat.CheatErrorCode.OfferMismatch:
+                    return "CHEAT_OFFER_MISMATCH";
+                case Mahjong.Domain.Cheat.CheatErrorCode.WallEmpty:
+                    return "CHEAT_WALL_EMPTY";
+                case Mahjong.Domain.Cheat.CheatErrorCode.NoWallCandidate:
+                    return "CHEAT_NO_WALL_CANDIDATE";
+                case Mahjong.Domain.Cheat.CheatErrorCode.CandidateUnavailable:
+                    return "CHEAT_CANDIDATE_UNAVAILABLE";
+                case Mahjong.Domain.Cheat.CheatErrorCode.DeadlineExpired:
+                    return DeadlineExpired;
+                case Mahjong.Domain.Cheat.CheatErrorCode.StaleOffer:
+                    return "CHEAT_STALE_OFFER";
+                case Mahjong.Domain.Cheat.CheatErrorCode.InvalidSelection:
+                    return "CHEAT_INVALID_SELECTION";
+                case Mahjong.Domain.Cheat.CheatErrorCode.TileNotOwned:
+                    return "CHEAT_TILE_NOT_OWNED";
+                case Mahjong.Domain.Cheat.CheatErrorCode.AlreadyMarked:
+                    return "CHEAT_ALREADY_MARKED";
+                case Mahjong.Domain.Cheat.CheatErrorCode.MarkCapacityExceeded:
+                    return "CHEAT_MARK_CAPACITY_EXCEEDED";
+                case Mahjong.Domain.Cheat.CheatErrorCode.MarkRoundMismatch:
+                    return "CHEAT_MARK_ROUND_MISMATCH";
+                case Mahjong.Domain.Cheat.CheatErrorCode.CandidateNotFound:
+                    return "CHEAT_CANDIDATE_NOT_FOUND";
+                case Mahjong.Domain.Cheat.CheatErrorCode.SlotMismatch:
+                    return "CHEAT_SLOT_MISMATCH";
+                case Mahjong.Domain.Cheat.CheatErrorCode.HandDrift:
+                    return "CHEAT_HAND_DRIFT";
+                case Mahjong.Domain.Cheat.CheatErrorCode.CandidateDrift:
+                    return "CHEAT_CANDIDATE_DRIFT";
+                case Mahjong.Domain.Cheat.CheatErrorCode.PhysicalMoveFailed:
+                    return "CHEAT_PHYSICAL_MOVE_FAILED";
+                case Mahjong.Domain.Cheat.CheatErrorCode.ReservationMissing:
+                    return "CHEAT_RESERVATION_MISSING";
+                case Mahjong.Domain.Cheat.CheatErrorCode.DeliveryNotPossible:
+                    return "CHEAT_DELIVERY_NOT_POSSIBLE";
+                case Mahjong.Domain.Cheat.CheatErrorCode.LedgerOverflow:
+                    return "CHEAT_LEDGER_OVERFLOW";
+                case Mahjong.Domain.Cheat.CheatErrorCode.GroupIdConflict:
+                    return "CHEAT_GROUP_ID_CONFLICT";
+                default:
+                    return CheatRejected;
+            }
+        }
+
         public static string FromDomain(RoundTransitionErrorCode code)
         {
             switch (code)

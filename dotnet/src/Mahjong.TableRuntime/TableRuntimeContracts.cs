@@ -80,6 +80,25 @@ namespace Mahjong.TableRuntime
 
         public DisconnectPolicy? DisconnectPolicy { get; set; }
 
+        /// <summary>
+        /// Explicit in-memory cheat execution configuration. Supplying
+        /// <see cref="InitialCheatState"/> without this economy is an error; a durable actor that
+        /// configures cheat execution must supply both this and <see cref="SleeveBloomConfig"/>.
+        /// Leaving it null keeps the pre-N-1b behaviour (no cheat command is executable).
+        /// </summary>
+        public CheatEconomyConfig? CheatEconomy { get; set; }
+
+        /// <summary>Explicit sleeve bloom/beam swap configuration required by the cheat bridge.</summary>
+        public SleeveBloomConfig? SleeveBloomConfig { get; set; }
+
+        /// <summary>
+        /// Optional initial authoritative cheat aggregate. When supplied it replaces the empty
+        /// wallet; when omitted but <see cref="CheatEconomy"/> is supplied the actor starts from
+        /// <see cref="CheatState.Initialize"/>. The actor owns this state and never reads a stale
+        /// <c>CheatStateProvider</c> into a new command.
+        /// </summary>
+        public CheatState? InitialCheatState { get; set; }
+
         internal void Validate()
         {
             if (string.IsNullOrWhiteSpace(RoomId))
@@ -110,6 +129,27 @@ namespace Mahjong.TableRuntime
             if (InitialTimingVersion < 0)
             {
                 throw new ArgumentOutOfRangeException(nameof(InitialTimingVersion), InitialTimingVersion, "Timing version must be non-negative.");
+            }
+
+            if (CheatEconomy == null && SleeveBloomConfig != null)
+            {
+                throw new ArgumentException(
+                    "SleeveBloomConfig requires an explicit CheatEconomy.",
+                    nameof(SleeveBloomConfig));
+            }
+
+            if (CheatEconomy == null && InitialCheatState != null)
+            {
+                throw new ArgumentException(
+                    "InitialCheatState requires an explicit CheatEconomy.",
+                    nameof(InitialCheatState));
+            }
+
+            if (CheatEconomy != null && SleeveBloomConfig == null)
+            {
+                throw new ArgumentException(
+                    "CheatEconomy requires an explicit SleeveBloomConfig.",
+                    nameof(SleeveBloomConfig));
             }
 
             if (InitialControllers != null)
@@ -209,6 +249,142 @@ namespace Mahjong.TableRuntime
     }
 
     /// <summary>
+    /// One authorized cheat command. It carries a typed <see cref="RoundCheatCommand"/> and
+    /// exactly the same authority identity fields as a normal table command; the actor applies
+    /// the same owner/control/decision/version/recovery/scope guards inside its single serial
+    /// queue. The caller cannot provide a CheatTurnContext, map, ledger, offer or candidate.
+    /// </summary>
+    public sealed class TableCheatCommandEnvelope
+    {
+        public TableCheatCommandEnvelope(
+            RoundCheatCommand cheatCommand,
+            RequestId requestId,
+            StateVersion expectedStateVersion,
+            OwnerEpoch ownerEpoch,
+            ControlEpoch controlEpoch,
+            DecisionId? decisionId = null,
+            long recoveryGeneration = 0L,
+            RequestScopeId? scopeId = null,
+            string? api = null,
+            TablePayloadSha256? payloadSha256 = null)
+        {
+            CheatCommand = cheatCommand ?? throw new ArgumentNullException(nameof(cheatCommand));
+            if (requestId.IsEmpty)
+            {
+                throw new ArgumentException("A cheat command requires a request id.", nameof(requestId));
+            }
+
+            if (recoveryGeneration < 0)
+            {
+                throw new ArgumentOutOfRangeException(
+                    nameof(recoveryGeneration),
+                    recoveryGeneration,
+                    "Recovery generation must be non-negative.");
+            }
+
+            RequestId = requestId;
+            ExpectedStateVersion = expectedStateVersion;
+            OwnerEpoch = ownerEpoch;
+            ControlEpoch = controlEpoch;
+            DecisionId = decisionId;
+            RecoveryGeneration = recoveryGeneration;
+
+            bool hasScope = scopeId.HasValue && !scopeId.Value.IsEmpty;
+            bool hasApi = !string.IsNullOrEmpty(api);
+            bool hasDigest = payloadSha256.HasValue && !payloadSha256.Value.IsEmpty;
+            if (hasScope != hasApi || hasScope != hasDigest)
+            {
+                throw new ArgumentException(
+                    "A durable cheat command identity requires scopeId, api and payloadSha256 together.");
+            }
+
+            ScopeId = hasScope ? scopeId : (RequestScopeId?)null;
+            Api = hasApi ? TableDurableReceipt.RequireApi(api!) : null;
+            PayloadSha256 = hasDigest ? payloadSha256 : (TablePayloadSha256?)null;
+        }
+
+        public RoundCheatCommand CheatCommand { get; }
+
+        public RequestId RequestId { get; }
+
+        public StateVersion ExpectedStateVersion { get; }
+
+        public OwnerEpoch OwnerEpoch { get; }
+
+        public ControlEpoch ControlEpoch { get; }
+
+        public DecisionId? DecisionId { get; }
+
+        public long RecoveryGeneration { get; }
+
+        public RequestScopeId? ScopeId { get; }
+
+        public string? Api { get; }
+
+        public TablePayloadSha256? PayloadSha256 { get; }
+
+        public bool HasDurableIdentity => ScopeId.HasValue && Api != null && PayloadSha256.HasValue;
+    }
+
+    /// <summary>
+    /// Durable authority actions that are not client cheat commands: the off-turn deadline
+    /// sweep and the immediate/beam timeout fallbacks. They share the same atomic commit and
+    /// event/version contracts but have no client receipt.
+    /// </summary>
+    public enum RoundCheatSystemAction : byte
+    {
+        OffTurnExpiry = 0,
+        ImmediateExpiry = 1,
+        BeamExpiry = 2
+    }
+
+    public sealed class TableCheatSystemJournal
+    {
+        public TableCheatSystemJournal(
+            RoundCheatSystemAction action,
+            int seat,
+            int turnNumber,
+            long nowMillis,
+            int roundOrdinal,
+            SleeveBloomDrawKind lastDrawKind)
+        {
+            if (!Enum.IsDefined(typeof(RoundCheatSystemAction), action))
+            {
+                throw new ArgumentOutOfRangeException(nameof(action), action, "Unknown cheat system action.");
+            }
+
+            if (seat < -1 || seat > 3)
+            {
+                throw new ArgumentOutOfRangeException(nameof(seat), seat, "Seat must be -1 or 0..3.");
+            }
+
+            if (turnNumber < 0 || nowMillis < 0 || roundOrdinal < 0)
+            {
+                throw new ArgumentOutOfRangeException(nameof(turnNumber), "Cheat system context must be non-negative.");
+            }
+
+            Action = action;
+            Seat = seat;
+            TurnNumber = turnNumber;
+            NowMillis = nowMillis;
+            RoundOrdinal = roundOrdinal;
+            LastDrawKind = lastDrawKind;
+        }
+
+        public RoundCheatSystemAction Action { get; }
+
+        public int Seat { get; }
+
+        public int TurnNumber { get; }
+
+        public long NowMillis { get; }
+
+        public int RoundOrdinal { get; }
+
+        public SleeveBloomDrawKind LastDrawKind { get; }
+    }
+
+    /// <summary>
     /// One committed room event. <see cref="CommandVersion"/> is the new state version shared by
     /// every event of one accepted command and <see cref="Ordinal"/> is the contiguous
     /// 0..N-1 index inside that command. <see cref="Seq"/> is the independent room event sequence.
@@ -226,7 +402,8 @@ namespace Mahjong.TableRuntime
             TileId? tile,
             string? detail,
             int eventSchema = 1,
-            byte[]? payload = null)
+            byte[]? payload = null,
+            TableCheatEventRecord? cheat = null)
         {
             if (seq.Value == 0)
             {
@@ -267,6 +444,27 @@ namespace Mahjong.TableRuntime
             Detail = detail;
             EventSchema = eventSchema;
             _payload = payload == null ? null : Copy(payload);
+            if (cheat != null)
+            {
+                if (type != RoundEventType.CheatApplied)
+                {
+                    throw new ArgumentException(
+                        "A cheat event record must use the CheatApplied round event marker.",
+                        nameof(cheat));
+                }
+
+                if (seat != cheat.Event.Seat)
+                {
+                    throw new ArgumentException("A cheat event record must use its owner seat.", nameof(seat));
+                }
+
+                if (payload == null)
+                {
+                    throw new ArgumentException("A committed cheat event requires its fact binding payload.", nameof(payload));
+                }
+            }
+
+            Cheat = cheat;
         }
 
         public EventSeq Seq { get; }
@@ -295,12 +493,75 @@ namespace Mahjong.TableRuntime
 
         public bool HasPayload => _payload != null;
 
+        /// <summary>
+        /// Typed private cheat event for this committed record; null for a normal round event
+        /// (including the one <c>CheatApplied</c> bridge marker that binds the command version).
+        /// The cheat facts are owner-scoped and never enter a public snapshot.
+        /// </summary>
+        public TableCheatEventRecord? Cheat { get; }
+
+        public bool IsCheatEvent => Cheat != null;
+
         private static byte[] Copy(byte[] value)
         {
             var copy = new byte[value.Length];
             Array.Copy(value, copy, value.Length);
             return copy;
         }
+    }
+
+    /// <summary>
+    /// Immutable owner-scoped cheat event facts bound to one committed record. It carries the
+    /// typed Domain event plus the exact offer/keep/action/tile/target facts required by the
+    /// frozen protocol 20/21 payloads. It is never a saved candidate or a client-supplied value.
+    /// </summary>
+    public sealed class TableCheatEventRecord
+    {
+        public TableCheatEventRecord(
+            CheatEvent value,
+            string? offerId,
+            SleeveBloomKeep? keep,
+            BeamSwapAction? action,
+            TileId? resultTile,
+            TileId? handTile,
+            BeamSwapSlot? targetSlot,
+            int turnNumber)
+        {
+            Event = value ?? throw new ArgumentNullException(nameof(value));
+            if (turnNumber < 0)
+            {
+                throw new ArgumentOutOfRangeException(nameof(turnNumber), turnNumber, "Turn number must be non-negative.");
+            }
+
+            if (value.Seat < 0 || value.Seat > 3)
+            {
+                throw new ArgumentOutOfRangeException(nameof(value), value.Seat, "Cheat event owner must be 0..3.");
+            }
+
+            OfferId = offerId;
+            Keep = keep;
+            Action = action;
+            ResultTile = resultTile;
+            HandTile = handTile;
+            TargetSlot = targetSlot;
+            TurnNumber = turnNumber;
+        }
+
+        public CheatEvent Event { get; }
+
+        public string? OfferId { get; }
+
+        public SleeveBloomKeep? Keep { get; }
+
+        public BeamSwapAction? Action { get; }
+
+        public TileId? ResultTile { get; }
+
+        public TileId? HandTile { get; }
+
+        public BeamSwapSlot? TargetSlot { get; }
+
+        public int TurnNumber { get; }
     }
 
     /// <summary>
@@ -450,11 +711,12 @@ namespace Mahjong.TableRuntime
                 throw new ArgumentException("A replayed operation requires its original durable receipt.", nameof(receipt));
             }
 
-            if (status != TableOperationStatus.Accepted &&
+            if (receipt != null &&
+                status != TableOperationStatus.Accepted &&
                 status != TableOperationStatus.Replayed &&
-                receipt != null)
+                status != TableOperationStatus.Rejected)
             {
-                throw new ArgumentException("Only an accepted/replayed operation carries a receipt.", nameof(receipt));
+                throw new ArgumentException("Only an accepted/replayed/committed-rejection operation carries a receipt.", nameof(receipt));
             }
 
             Status = status;
@@ -592,6 +854,35 @@ namespace Mahjong.TableRuntime
                 null,
                 null,
                 durableReceipt);
+        }
+
+        /// <summary>
+        /// A committed P1.4 rejection that still installed its forced state (deadline-expired
+        /// off-turn FIRST / stale-offer clear). The caller is told REJECTED, never accepted, but
+        /// the receipt proves the exact evaluated version and the committed private events are
+        /// returned for projection. The state itself was installed under the new version.
+        /// </summary>
+        public static TableOperationResult RejectedWithState(
+            TableCommandReceipt receipt,
+            IReadOnlyList<TableEventRecord> events)
+        {
+            if (receipt == null)
+            {
+                throw new ArgumentNullException(nameof(receipt));
+            }
+
+            if (receipt.Status != ReceiptStatus.Rejected)
+            {
+                throw new ArgumentException("A committed rejection requires a REJECTED receipt.", nameof(receipt));
+            }
+
+            return new TableOperationResult(
+                TableOperationStatus.Rejected,
+                receipt.ReasonCode,
+                "The command was rejected but its authoritative forced state was committed.",
+                receipt.EvaluatedStateVersion,
+                receipt,
+                events);
         }
 
         public static TableOperationResult Failed(
