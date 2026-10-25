@@ -483,7 +483,7 @@ commit，准确 SHA 由调用者回执记录。
 - 修复：`ParsePlans` 对每个对象先断言 `ValueKind=Object`，再调用
   `AssertExactProperties(plan, ["seat","target"])`；`EnumerateObject()` 保留重复键，
   因此第二份 `seat`/`target` 不能藏在 `GetProperty` 的最后值后面。属性顺序无关。
-- 探针：新增 5 个正控制（含 plan/reversed-plan 属性顺序）和 17 个 plan 负例；重复键由
+- 探针：正控制共 5 个（本轮新增 plan/reversed-plan 属性顺序 2 个）和新增 17 个 plan 负例；重复键由
   `RawMutation` 直接写真实 JSON 文本，不经 `ConvertFrom-Json`/`ConvertTo-Json`。
 - 验收：reviewer 的 4 个 plan 场景修复后均 native1/Total4/Errors0/Failed2/Skipped0/NotRun0；
   扩展矩阵 `plan-*`/`reversed-plan-*` 全部 FAIL；`legal-plan-property-order` 与
@@ -514,7 +514,8 @@ commit，准确 SHA 由调用者回执记录。
   `4CA5900D3EE44291B75A123BBBF2B2E4DE0FBADB55C70A705930B9263CE86CD7`；
   原始 `C1EBBD0A...BD5E` 保留在 E 根，不覆盖。
 - 扩展矩阵：76 场景 = 5 正控制 + 71 负例，0 violations；self-negative 77 场景，
-  exit1，仅 `self-negative-legal-control` 一个预期 violation。
+  exit1，仅 `self-negative-legal-control` 一行异常，对应原始 JSON 中 2 条条件违反
+  （合法控制实际 exit0 且 Failed0）。
 - fresh solution/TableRuntime 构建均 0 warning/0 error；五模块 1580/0/0/0/0；
   Kotlin 17/0/0/0；新 reversed 定向 4/0/0/0/0。
 - 仍未改变：旧 fixture `386061B4...`、新 fixture `5A5EA43F...`、exporter `8E3E3821...`；

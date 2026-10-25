@@ -160,6 +160,10 @@ $gitBranch = (& git -C $RepoRoot rev-parse --abbrev-ref HEAD 2>$null | Out-Strin
 $gitStatus = (& git -C $RepoRoot status --porcelain=v1 --untracked-files=all 2>$null | Out-String).Trim()
 
 $fixtureRaw = Get-Content -LiteralPath $fixturePath -Raw -Encoding UTF8
+# Raw plan mutations use LF anchors. Normalize this in-memory copy before matching
+# so a clean core.autocrlf checkout preserves the same real duplicate-key probes.
+# Provenance digests below still read the untouched fixture bytes from disk.
+$fixtureRaw = $fixtureRaw.Replace("`r`n", "`n").Replace("`r", "`n")
 $oldFixtureRaw = Get-Content -LiteralPath $oldFixturePath -Raw -Encoding UTF8
 $original = $fixtureRaw | ConvertFrom-Json
 $oldOriginal = $oldFixtureRaw | ConvertFrom-Json
