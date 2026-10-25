@@ -14,13 +14,14 @@
 |---|---|---|
 | V4 新增 movement exporter | **PASS** | `V5TileMovementGoldenExporterTest` 1/0/0；输出 `tests/v5-golden/movement-v1.json`，8 cases / 22 steps |
 | 导出确定性（同输入两次） | **PASS** | export-9 / export-10 均为 `C2D5469E…7C13`，逐字节相同 |
-| V4 `TileMovementContractTest` | **PASS** | 10/0/0；XML SHA `5BCB352A…3F49` |
-| V4 exporter inert 运行 | **PASS** | 1/0/0；XML SHA `41FFA57A…2437` |
+| V4 `TileMovementContractTest` | **PASS** | 10/0/0；XML SHA `E7D87075…C978` |
+| V4 exporter inert 运行 | **PASS** | 1/0/0；XML SHA `D0454C42…4FBF` |
 | C# Release build | **PASS** | `Mahjong.Domain.Tests` exit 0，0 warnings / 0 errors |
 | C# 新 golden 定向 | **PASS** | 10/0/0/0/0（Total/Errors/Failed/Skipped/Not Run） |
 | C# Domain 全量 | **PASS** | 480/0/0，其中 10 为本任务新增 `[Fact]`；未单独重跑 470 基线 |
-| 变异 probe | **PASS** | baseline 10/0/0/0/0；30 个负例全部 native exit 1 + Failed≥1；5 个正控制 PASS（含 CRLF-only 源行尾）；`-SelfNegative` exit 1 |
-| 独立复核 D-1-01..04 | **PASS（本轮返修后）** | nullable result、slots/group、source-set/command/G-row、probe count gate 全部补强；caller 原 8 个假绿负例现均 exit 1/Failed 1；原假绿汇总 `review-negatives.original.log` 保留 |
+| 变异 probe | **PASS** | baseline 10/0/0/0/0；41 个负例全部 native exit 1 + Failed≥1；6 个正控制 PASS（含 CRLF-only 源行尾与 POSIX 合法命令）；`-SelfNegative` exit 1 |
+| 独立复核 D-1-01..04 | **PASS（第 2 轮返修后）** | nullable result、slots/group、source-set/command/G-row、probe count gate 全部补强；caller 原 8 个假绿负例现均 exit 1/Failed 1 |
+| 独立复核 D-2-01..02 | **PASS（本轮返修后）** | raw seat 在任何工厂归一化前校验；generatedByCommand 改为 Windows/POSIX 精确 allowlist；caller 11 个新假绿负例现均 exit1/Failed1 |
 | 既有 catalog 校验 | **PASS（只证旧目录未改）** | `fixtures=5 requirements=73 cases=10382 facts=42`，exit 0 |
 | 既有五个 fixture | **未改** | 五个 SHA-256 与 manifest 记录逐一致 |
 | G1 / G5 / 平台 / PG / Unity / 远端 CI | **NOT_RUN** | 不在本任务范围；不得由本报告推断 |
@@ -181,10 +182,10 @@ $env:V5_MOVEMENT_GOLDEN_EXPORT='1'
 - **exit 0**。
 - `TileMovementContractTest`：**10 tests / 0 failures / 0 errors / 0 skipped**。
 - `V5TileMovementGoldenExporterTest`（inert）：**1 / 0 / 0 / 0**。
-- 原始日志：`build/codex-movement-review/rework-engine-targeted.log`，SHA-256 `B154F8929D7ED02D47C12541F1946126D23FE9EFD3C9032CD2CB34CD172219D2`。
+- 原始日志：`build/codex-movement-r3-engine-targeted-1.log`，SHA-256 `D844835CA53B1C0BC1C04410FBA7B0403ABDB4BA2701DA01135AB96F88B1B32C`。
 - XML：
-  - `engine/build/test-results/test/TEST-com.majiang.model.TileMovementContractTest.xml`，SHA-256 `5BCB352A635AD32B498CDFA2752FC6DF7FF9DBBBBDA30F40154FCAF072B33F49`；
-  - `...V5TileMovementGoldenExporterTest.xml`，SHA-256 `41FFA57A738CCB1ED7095009C82DAC0E3B32D25032A701DDE42F14823AB82437`。
+  - `engine/build/test-results/test/TEST-com.majiang.model.TileMovementContractTest.xml`，SHA-256 `E7D870751D116E3909F8A73328C681A338D53F21852F2DE8A03D52AAA3E8C978`；
+  - `...V5TileMovementGoldenExporterTest.xml`，SHA-256 `D0454C42DBC04716812D358496E01783BEAC57CCFB3E11AD9CD4BB1C2AD14FBF`。
 
 ### 5.4 C# Release 构建与测试（PASS）
 
@@ -194,16 +195,16 @@ D:/Unity/dotnet/dotnet.exe dotnet/tests/Mahjong.Domain.Tests/bin/Release/net8.0/
 D:/Unity/dotnet/dotnet.exe test dotnet/tests/Mahjong.Domain.Tests/Mahjong.Domain.Tests.csproj -c Release --nologo -v:minimal
 ```
 
-- build：**exit 0**，0 warnings / 0 errors；日志 `build/codex-movement-review/rework-build-2.log`，SHA-256 `4BB394B98A59BA434D06688D1E112800C9B6F6BD281DD5F4C777281108AE67EE`。
-- 新 golden 定向：**Total 10 / Errors 0 / Failed 0 / Skipped 0 / Not Run 0**，exit 0；日志 `build/codex-movement-review/rework-targeted-1.log`，SHA-256 `EA5E21B2732E4CF106CDE9173C7C476D74F8FBCB7B390E8B23DD564935166920`。
-- Domain 全量：**Passed 480 / Failed 0 / Skipped 0 / Total 480**，exit 0；日志 `build/codex-movement-review/rework-domain-full.log`，SHA-256 `99520EE22F8146DEE79C0221628DAAAE82AE545EA03AAC3C35B0D2D43C80CF1D`。
-- 全量 direct runner（生成 XML）：`Total: 480, Errors: 0, Failed: 0, Skipped: 0, Not Run: 0`，exit 0；日志 `build/codex-movement-review/rework-domain-direct.log`，SHA-256 `825D43906CD17B07A6FD00790231EDC18AEE97F4D5FF9B2FFB7203E6DAC8C272`。
-  - `rework-domain-junit.xml`：`5A5F849088F913CFE095DE16428485486E015CF56981404F7CA5B0ED8864FB5C`；
-  - `rework-domain.trx`：`68C8785222A17A6D682CCEB6F55DD1B6CD2525A340394C8BE5C465F12150C948`；
-  - `rework-domain-xunit.xml`：`96FC7E0F13B7BAC88045C8CE7335AB620217E5DEF0475417DCA1AC8F98227DDA`。
+- build：**exit 0**，0 warnings / 0 errors；日志 `build/codex-movement-r3-build-1.log`，SHA-256 `0401DB76B887A21A29C22CEC04E06846348FBCED2C0799CD4282703986834363`。
+- 新 golden 定向：**Total 10 / Errors 0 / Failed 0 / Skipped 0 / Not Run 0**，exit 0；日志 `build/codex-movement-r3-targeted-1.log`，SHA-256 `A199393A5FF5FBAF58F4A2B1235A978E38C4C2BEDB4544BF761A76846630B4F4`。
+- Domain 全量：**Passed 480 / Failed 0 / Skipped 0 / Total 480**，exit 0；日志 `build/codex-movement-r3-domain-full-1.log`，SHA-256 `B4B987D9DB2AA1BDA871060DF4FB42D1F9BFD06E831CA744F5B9BD4D5D87E9B0`。
+- 全量 direct runner（生成 XML）：`Total: 480, Errors: 0, Failed: 0, Skipped: 0, Not Run: 0`，exit 0；日志 `build/codex-movement-r3/domain-direct-1.log`，SHA-256 `9E758C5490250511B166BADAD8D55481FE17EA4C3BA72693054AD2D9E500F2F8`。
+  - `domain-junit-1.xml`：`353E9CA293ECDED05FDFEAACFF0EB04EC37EFAB690F39D7A977B79AD4B4D946D`；
+  - `domain-1.trx`：`FE1BDC8482DC8F9268260B440AF381F6412774F39E22015C6C8B80D6701A7F81`；
+  - `domain-xunit-1.xml`：`934E974F185FFA174201D80CCD0DA1C96CD4121036F71310D2A1D0554A75D652`。
 - 480 中包含本任务 10 个新 Fact；本任务**没有**单独重跑 470 基线，因此不把 470 当作本轮实测。
 
-### 5.5 变异 probe（PASS，返修后 30 负 / 5 正）
+### 5.5 变异 probe（PASS，返修后 41 负 / 6 正）
 
 脚本：`tools/v5-golden/probe-movement-binding.ps1`（`#requires -Version 5.1`，Windows PowerShell 5.1 实跑）。脚本用 `git archive HEAD` 创建独占 TEMP 副本，再把当前三个任务文件叠加进副本；只在副本内变异 `movement-v1.json`（CRLF 正控制只改副本 exporter 源），原工作树 fixture 前后 SHA 均为 `C2D5469E…7C13`。
 
@@ -212,7 +213,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/v5-golden/probe-mo
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/v5-golden/probe-movement-binding.ps1 -SelfNegative
 ```
 
-最终正常运行：`build/codex-movement-review/rework-probe-2.log`，SHA-256 `D29C1D908733F3D5E0AF9C1EA25C69E603EACEE1790F6D618EDD06F2D25B72ED`；证据目录 `build/movement-binding-probe/20261025T073919Z-21396/`，`results.csv` 36 行（baseline + 30 负例 + 5 正例），`summary.txt` 记录 `results=36 failures=0`，原 fixture 前后哈希相同。
+最终正常运行：`build/codex-movement-r3-probe-1.log`，SHA-256 `7BEAB45148E8F733BE77BA8C30DCB7FF67BB73B9A809B8FEC827C6DEBDECE375`；证据目录 `build/movement-binding-probe/20261025T075717Z-43544/`，`results.csv` 48 行（baseline + 41 负例 + 6 正例），`summary.txt` 记录 `results=48 failures=0`，原 fixture 前后哈希相同。
 
 每个 native run 都通过同一 count gate：`Total=10`、`Errors=0`、`Skipped=0`、`NotRun=0`；PASS 必须 `exit=0/Failed=0`，FAIL 必须 `exit=1/Failed>=1`。gate 自身在每次运行前验证以下坏计数均**不得接受**：Total0、Total9、Skipped1、NotRun1、Errors1、PASS 但 Failed1、FAIL 但 exit0、FAIL 但 Total9、FAIL 但 Errors1、FAIL 但 Skipped1、FAIL 但 NotRun1、FAIL 但 exit2；同时验证合法 PASS/FAIL 必须接受。
 
@@ -221,13 +222,14 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/v5-golden/probe-mo
 | baseline | 1 | exit 0，Total10/Errors0/Failed0/Skipped0/NotRun0 |
 | INPUT 负例 | 1 | `negative-input-action-seat` exit1/Failed1 |
 | OUTPUT 负例 | 16 | wall/rinshan pointer、draw result null/wrong、discard result null、rinshan result null、null→value、rejection result、lastDiscard、drawnTile、rinshan slot、hands/rivers/dead-wall/replacements/dora arrays；全部 exit1/Failed≥1 |
-| STRUCTURE 负例 | 5 | initial duplicate、after hand index -1、after duplicate hand slot、wrong meld group、before hand index -1；全部 exit1/Failed1 |
-| META 负例 | 8 | schema、source empty/omitted/duplicate/unknown/hash wrong、command bogus、G-row wrong；全部 exit1/Failed1 |
+| STRUCTURE 负例 | 13 | initial duplicate、after hand index -1、after duplicate hand slot、wrong meld group、before hand index -1；WALL/DEAD_WALL 的 initial/before/after raw seat=99，REPLACEMENT 的 before/after raw seat=99；全部 exit1/Failed1 |
+| META 负例 | 11 | schema、source empty/omitted/duplicate/unknown/hash wrong、command bogus、G-row wrong、export disabled、comment-only、wrong selector；全部 exit1/Failed1 |
 | SOURCE_ONLY 正例 | 1 | `v4TotalKanCount` 改 99，仍 exit0/Failed0 |
 | ORDER 正例 | 3 | placements 逆序、hand slot 交换、meld 组内 offset 交换，均 exit0/Failed0 |
+| META_COMMAND 正例 | 1 | 支持的 POSIX 精确命令，exit0/Failed0 |
 | LINE_ENDING 正例 | 1 | exporter 源 LF→CRLF，exit0/Failed0 |
 
-- `-SelfNegative`：baseline 10/0/0/0/0 后主动 exit **1**；日志 `build/codex-movement-review/rework-selfnegative-2.log`，SHA `6C79D97B7011FFC2F6D474AB523BA0E49CCEBDC6F8BB3BBC4685DDA6C32E6BE6`；证据目录 `build/movement-binding-probe/20261025T074057Z-3276/`。
+- `-SelfNegative`：baseline 10/0/0/0/0 后主动 exit **1**；日志 `build/codex-movement-r3-selfnegative-1.log`，SHA `444FAEF710B232758CBC05EC85B2C9F5E3ACDD804AA9551C3D6E58B22E658D91`；证据目录 `build/movement-binding-probe/20261025T075924Z-25704/`。
 - probe 的负例不是“脚本自己断言失败”：每个负例都真实启动 native xUnit runner，exit 1 且 summary `Failed=1`；正控制真实 exit 0 且 `Failed=0`。probe 没有 skip、空测试或 Total=0。
 - TEMP 清理在 `finally` 中先解析绝对路径，并确认目标以本次创建的 `movement-binding-probe-*` 为叶名且位于系统 TEMP 根下，才执行删除；`-KeepTemp` 时保留并打印路径。
 
@@ -261,8 +263,8 @@ C# `TileMovementGoldenTests` 固定必需 10 个 V4 源路径集合（空/漏/�
 |---|---:|---|
 | `tests/v5-golden/movement-v1.json` | 1,278,595 | `C2D5469E6C532476E5DA48C4478E7C080A401B7F2F41F095B7A8B880AB6C7C13` |
 | `engine/src/test/kotlin/com/majiang/model/V5TileMovementGoldenExporterTest.kt` | 62,520 | `654662DC97BC3B193523DC13426B762A52C76699B6E6577C3217BAF63C496CDC` |
-| `dotnet/tests/Mahjong.Domain.Tests/TileMovementGoldenTests.cs` | 56,338 | `942F2FC675AEF31C63452DECC452742FF2808EBC6DDB6C28E9508F7352997B45` |
-| `tools/v5-golden/probe-movement-binding.ps1` | 26,958 | `5576C8FDCD479B011943D95E8D52B33F1877EE7E87258B1419866305BED16005` |
+| `dotnet/tests/Mahjong.Domain.Tests/TileMovementGoldenTests.cs` | 57,309 | `EE8D26E71F13833D41D81AF49B4CD1CEA809061DFD78AA2F38790125308848AB` |
+| `tools/v5-golden/probe-movement-binding.ps1` | 31,086 | `7AA4A4836B098E2BB5FB4732403DF9F7B786303C1A9E4039B9E682379AC921F9` |
 
 fixture 记录的关键 V4 源（完整列表见 JSON）：
 
@@ -352,7 +354,7 @@ fixture 还记录 `Tile.kt`、`TileLocation.kt`、`TilePool.kt`、`Meld.kt`、`P
 - 修复：
   - 固定必需 10 个 V4 源码路径集合（路径是契约，hash 仍运行时重算），空/漏/重复/未知 source 都失败；
   - `exporterSource.file` 固定；
-  - `generatedByCommand` 必须包含显式 export env、Gradle wrapper、`:engine:test`、`--tests`、exporter 类和 `--rerun-tasks`；
+  - `generatedByCommand` 只接受两个明确支持的精确形式（Windows：`$env:...='1'; .\gradlew.bat :engine:test --tests "<exporter>" --rerun-tasks --console=plain`；POSIX：`V5_MOVEMENT_GOLDEN_EXPORT=1 ./gradlew :engine:test --tests "<exporter>" --rerun-tasks --console=plain`），注释/禁用/错 selector/未知格式全部拒绝；
   - caseId→G 行精确映射（8 case 全表），case 数量/ID/taskPaths 精确；
   - 保留 raw/LF 双哈希与 CRLF 正控制。
 - 新负例：`negative-meta-source-hashes-empty`、`negative-meta-source-omitted`、`negative-meta-source-duplicate`、`negative-meta-source-unknown`、`negative-meta-source-hash-wrong`、`negative-meta-command-bogus`、`negative-meta-grows-wrong`、`negative-meta-schema`；全部真实 `exit 1 / Failed 1`。
@@ -363,8 +365,8 @@ fixture 还记录 `Tile.kt`、`TileLocation.kt`、`TilePool.kt`、`Meld.kt`、`P
 - 位置：`probe-movement-binding.ps1` `Invoke-Mutation` / CRLF positive / `Assert-Baseline`。
 - 原缺陷：负例只查非零 exit + Failed>=1，正例只查 exit0/Failed0/Errors0，未统一约束 Total/Skipped/NotRun/Errors；少发现或 skip 仍可记 PASS。
 - 修复：所有 run 走同一 `Test-CountGate`：Total 必须 10，Errors/Skipped/NotRun 必须 0；PASS 要求 exit0/Failed0，FAIL 要求 exit1/Failed>=1。每次 probe 启动时执行 gate 自检，拒绝 Total0/Total9/Skipped1/NotRun1/Errors1/FAIL-exit0/FAIL-Total9/FAIL-Errors1/FAIL-exit2 等坏计数；TEMP 删除前校验绝对路径位于本次独占 tempRoot 下。
-- 本轮 `rework-probe-2.log`：baseline 10/0/0/0/0；30 负例全部 exit1/Failed≥1；5 正例全部 exit0/Failed0；`results=36 failures=0`。
-- 原 probe 日志 SHA `92FC62E2…A05C` 保留在复核方证据中；本轮复跑为 `9A16B77A…CD1`。
+- 本轮 `r3-probe-1.log`：baseline 10/0/0/0/0；41 负例全部 exit1/Failed≥1；6 正例全部 exit0/Failed0；`results=48 failures=0`。
+- 原 probe 日志 SHA `92FC62E2…A05C` 保留在复核方证据中；第 2 轮复跑为 `9A16B77A…CD1`，第 3 轮为 `7BEAB451…E375`。
 
 ### 10.1 原始复核证据与覆盖说明
 
@@ -373,3 +375,45 @@ fixture 还记录 `Tile.kt`、`TileLocation.kt`、`TilePool.kt`、`Meld.kt`、`P
 - caller 原始 `review-negatives.csv` SHA（复核方提供）：`DBD2E119A23FD9D02DFA77E59A15A891E0C2D0BF3E8996FF6422800397934C66`。本轮运行同名 caller 脚本时，逐例日志和 CSV 被新结果覆盖；原始逐例原始文本不可在当前 worktree 恢复，但原始汇总日志（含每例 exit/summary/log SHA）已备份。当前 CSV 是新结果 SHA `8F6F88D1F82E2337391ADCC5EE5EC72C3D2065E038045E8DAE362D017EC24804`，不冒充原始 CSV。
 - 本轮 caller 复跑：`build/codex-movement-review/review-run-1.log`，8 个原假绿负例全部 exit1/Failed1；两个控制均 exit1/Failed1；baseline exit0/10/0/0/0/0。
 - 原 8 个 case / 22 steps、136 守恒、旧 fixture/catalog 均未改变；本轮没有修改 exporter，因此没有重导 fixture。
+
+---
+
+## 11. 第 3 轮复核返修 D-2-01..D-2-02
+
+复核方新证据目录 `build/codex-movement-r2-37629d5e80dd44ca8749d5eff5bdcc01/` **未被覆写**：脚本 SHA `25383706…D6A8`、CSV SHA `C2EE9B1B…64A2`、log SHA `64B93088…B3CC` 均保持原值。本轮将同一 driver 复制到 `build/codex-movement-r3-cc10bfead7134c7884adba14d84b0e97/` 后运行，副本 SHA 仍为 `25383706…D6A8`；副本 `run.log` SHA `AF6AC5F55F95DD6F6E772D699E8DEFD6C166CC2179FBF2C2C1FCF09264F95091`，`mismatches=0`，exit 0。
+
+### D-2-01 raw seat 被工厂丢弃（MAJOR）
+
+- 位置：`ParsePosition`（原 `TilePosition.Wall/DeadWall/DeadWallReplacement` 忽略 JSON seat）及 `ParseExpectedState`/`BuildInitial` 调用点。
+- 原缺陷：WALL/DEAD_WALL/DEAD_WALL_REPLACEMENT 的 raw `seat=99` 在 `TilePosition` 工厂被重置为 -1，随后的 `Eq(-1, position.Seat)` 永远成立；8 个 initial/before/after 负例全部假绿。
+- 修复：`ParsePosition` 在任何工厂调用前读取原始 JSON `seat/index`：
+  - WALL、DEAD_WALL、DEAD_WALL_REPLACEMENT 原始 `seat` 必须精确 `-1`，否则抛异常；
+  - UNASSIGNED 在本 fixture 中直接拒绝；
+  - HAND/DISCARD/MELD/SLEEVE 仍由 `TilePosition` 工厂严格校验 seat/index。
+  `BuildInitial` 与 `ParseExpectedState` 共用该函数，因此 initial、before、after 与生产输入路径都先校验 raw 值，再 canonicalize。
+- 新负例（probe 与 caller driver 同名）：`raw-initial-wall-seat`、`raw-before-wall-seat`、`raw-after-wall-seat`、`raw-initial-deadwall-seat`、`raw-before-deadwall-seat`、`raw-after-deadwall-seat`、`raw-before-replacement-seat`、`raw-after-replacement-seat`；全部真实 `exit1/Failed1`，Total10、Errors/Skipped/NotRun0。
+- caller 副本复跑：以上 8 行 `matchesExpectation=true`；合法 hand slot 交换仍 PASS。
+
+### D-2-02 generatedByCommand 关键词假绿（MAJOR）
+
+- 位置：`GoldenFileCarriesRealV4ProvenanceAndEightCases` 的 `generatedByCommand` 校验。
+- 原缺陷：只搜 6 个 token，`EXPORT='0'`、`#` 注释整行、`--tests` 指向 ContractTest 并把 exporter 类名放注释，均假绿。
+- 修复：改为**精确 allowlist**，只接受两种明确支持并实际验证过的命令：
+  1. Windows：`$env:V5_MOVEMENT_GOLDEN_EXPORT='1'; .\gradlew.bat :engine:test --tests "com.majiang.model.V5TileMovementGoldenExporterTest" --rerun-tasks --console=plain`
+  2. POSIX：`V5_MOVEMENT_GOLDEN_EXPORT=1 ./gradlew :engine:test --tests "com.majiang.model.V5TileMovementGoldenExporterTest" --rerun-tasks --console=plain`
+  比较前仅 `Trim()`；注释、禁用、错 selector、额外/未知文本全部拒绝。没有执行 fixture 中的任意 shell。
+- 新负例：`meta-export-disabled`、`meta-export-comment-only`、`meta-wrong-selector`；全部真实 `exit1/Failed1`。
+- 新正例：`positive-meta-posix-command` 使用上述 POSIX 精确命令，真实 exit0/Failed0。
+- caller 副本复跑：3 行均 `matchesExpectation=true`；baseline 与合法 hand slot 交换仍 PASS。
+
+### 11.1 本轮命令与计数
+
+- Domain Rebuild：`rework` 前的新鲜 `-t:Rebuild` exit0，0 warnings / 0 errors；日志 `build/codex-movement-r3-build-1.log`，SHA `0401DB76…4363`。
+- 新 golden 定向：10/0/0/0/0，exit0；`build/codex-movement-r3-targeted-1.log`，SHA `A199393A…B4F4`。
+- Domain 全量：480/0/0，exit0；`build/codex-movement-r3-domain-full-1.log`，SHA `B4B987D9…E9B0`。
+- 全量 direct XML：480/0/0/0/0，exit0；`build/codex-movement-r3/domain-direct-1.log`，SHA `9E758C54…F2F8`。
+- V4 定向：`TileMovementContractTest` 10/0/0 + exporter inert 1/0/0，exit0；`build/codex-movement-r3-engine-targeted-1.log`，SHA `D844835C…B32C`。
+- 新 probe：baseline 10/0/0/0/0；41 负例全部 exit1/Failed≥1；6 正例全部 exit0/Failed0；`build/codex-movement-r3-probe-1.log`，SHA `7BEAB451…E375`；证据目录 `build/movement-binding-probe/20261025T075717Z-43544/`，`results=48 failures=0`。
+- SelfNegative：真实 exit1；`build/codex-movement-r3-selfnegative-1.log`，SHA `444FAEF7…8D91`。
+- caller 副本 driver：22 行全部 `matchesExpectation=true`，`mismatches=0`，exit0；CSV `build/codex-movement-r3-cc10bfead7134c7884adba14d84b0e97/review-r2-negatives.csv` SHA `10A7C4FF448D809BE81DA079B2176EAAE67ACF066EE05FCD6337C68BD79D0B12`。
+- 无 exporter 修改，未重导 fixture；`movement-v1.json` 仍为 `C2D5469E…7C13`。旧五个 fixture/catalog/manifest 未改。

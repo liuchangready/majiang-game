@@ -74,6 +74,16 @@ namespace Mahjong.Domain.Tests
             "tools/v5-golden/probe-movement-binding.ps1"
         };
 
+        private const string ExporterSelector = "com.majiang.model.V5TileMovementGoldenExporterTest";
+
+        private static readonly string[] SupportedGenerationCommands =
+        {
+            "$env:V5_MOVEMENT_GOLDEN_EXPORT='1'; .\\gradlew.bat :engine:test --tests \"" +
+            ExporterSelector + "\" --rerun-tasks --console=plain",
+            "V5_MOVEMENT_GOLDEN_EXPORT=1 ./gradlew :engine:test --tests \"" +
+            ExporterSelector + "\" --rerun-tasks --console=plain"
+        };
+
         private static readonly Dictionary<string, string[]> ExpectedGRows =
             new Dictionary<string, string[]>(StringComparer.Ordinal)
             {
@@ -114,13 +124,10 @@ namespace Mahjong.Domain.Tests
                 ExpectedTaskPaths.OrderBy(t => t, StringComparer.Ordinal).ToArray(),
                 tasks.OrderBy(t => t, StringComparer.Ordinal).ToArray());
 
-            string command = Str(root, "generatedByCommand");
-            Assert.Contains("V5_MOVEMENT_GOLDEN_EXPORT", command);
-            Assert.Contains("gradlew", command);
-            Assert.Contains(":engine:test", command);
-            Assert.Contains("--tests", command);
-            Assert.Contains("V5TileMovementGoldenExporterTest", command);
-            Assert.Contains("--rerun-tasks", command);
+            string command = Str(root, "generatedByCommand").Trim();
+            Assert.True(
+                SupportedGenerationCommands.Contains(command, StringComparer.Ordinal),
+                "generatedByCommand is not one of the supported explicit export forms: " + command);
 
             JsonElement generation = root.GetProperty("generationResult");
             Assert.Equal(8, Int(generation, "casesExported"));
@@ -937,12 +944,27 @@ namespace Mahjong.Domain.Tests
             switch (zone)
             {
                 case TileZone.Unassigned:
-                    return TilePosition.Unassigned;
+                    throw new ArgumentException("raw UNASSIGNED placement is not legal in this fixture");
                 case TileZone.Wall:
+                    if (seat != -1)
+                    {
+                        throw new ArgumentException("raw WALL seat must be -1, got " + seat);
+                    }
+
                     return TilePosition.Wall(index);
                 case TileZone.DeadWall:
+                    if (seat != -1)
+                    {
+                        throw new ArgumentException("raw DEAD_WALL seat must be -1, got " + seat);
+                    }
+
                     return TilePosition.DeadWall(index);
                 case TileZone.DeadWallReplacement:
+                    if (seat != -1)
+                    {
+                        throw new ArgumentException("raw DEAD_WALL_REPLACEMENT seat must be -1, got " + seat);
+                    }
+
                     return TilePosition.DeadWallReplacement(index);
                 case TileZone.Hand:
                     return TilePosition.Hand(seat, index);

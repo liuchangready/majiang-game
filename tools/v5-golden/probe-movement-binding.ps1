@@ -11,10 +11,11 @@
     - OUTPUT negative: wall/rinshan pointer, nullable result both directions, rejection
       result, evidence, hands/rivers/dead-wall/replacements/dora arrays
     - STRUCTURE negative: invalid/duplicate hand slots, wrong meld group, before/after
-    - META negative: schema, required source set, source hashes, command, G-row mapping
+    - META negative: schema, required source set, source hashes, command enable/comment/
+      selector, G-row mapping
     - SOURCE_ONLY positive: change v4TotalKanCount (must not affect the physical diff)
     - representation/order positive: reversed placements, swapped hand slots, swapped
-      meld group-internal offsets, CRLF-only exporter checkout
+      meld group-internal offsets, CRLF-only exporter checkout, supported POSIX command
   Every native run passes one exact count gate (Total=10, Errors/Skipped/NotRun=0;
   PASS exit0/Failed0, FAIL exit1/Failed>=1). The gate has its own negative self-check.
   The original worktree fixture is never modified. A -SelfNegative switch performs the
@@ -507,6 +508,78 @@ try {
             }
         },
         @{
+            Name = "negative-raw-initial-wall-seat"
+            Kind = "STRUCTURE"
+            Expected = "FAIL"
+            Apply = {
+                param($json)
+                ($json.cases[0].initialState.placements | Where-Object zone -eq WALL | Select-Object -First 1).seat = 99
+            }
+        },
+        @{
+            Name = "negative-raw-before-wall-seat"
+            Kind = "STRUCTURE"
+            Expected = "FAIL"
+            Apply = {
+                param($json)
+                ($json.cases[0].steps[0].before.placements | Where-Object zone -eq WALL | Select-Object -First 1).seat = 99
+            }
+        },
+        @{
+            Name = "negative-raw-after-wall-seat"
+            Kind = "STRUCTURE"
+            Expected = "FAIL"
+            Apply = {
+                param($json)
+                ($json.cases[0].steps[0].after.placements | Where-Object zone -eq WALL | Select-Object -First 1).seat = 99
+            }
+        },
+        @{
+            Name = "negative-raw-initial-deadwall-seat"
+            Kind = "STRUCTURE"
+            Expected = "FAIL"
+            Apply = {
+                param($json)
+                ($json.cases[0].initialState.placements | Where-Object zone -eq DEAD_WALL | Select-Object -First 1).seat = 99
+            }
+        },
+        @{
+            Name = "negative-raw-before-deadwall-seat"
+            Kind = "STRUCTURE"
+            Expected = "FAIL"
+            Apply = {
+                param($json)
+                ($json.cases[0].steps[0].before.placements | Where-Object zone -eq DEAD_WALL | Select-Object -First 1).seat = 99
+            }
+        },
+        @{
+            Name = "negative-raw-after-deadwall-seat"
+            Kind = "STRUCTURE"
+            Expected = "FAIL"
+            Apply = {
+                param($json)
+                ($json.cases[0].steps[0].after.placements | Where-Object zone -eq DEAD_WALL | Select-Object -First 1).seat = 99
+            }
+        },
+        @{
+            Name = "negative-raw-before-replacement-seat"
+            Kind = "STRUCTURE"
+            Expected = "FAIL"
+            Apply = {
+                param($json)
+                ($json.cases[7].steps[1].before.placements | Where-Object zone -eq DEAD_WALL_REPLACEMENT | Select-Object -First 1).seat = 99
+            }
+        },
+        @{
+            Name = "negative-raw-after-replacement-seat"
+            Kind = "STRUCTURE"
+            Expected = "FAIL"
+            Apply = {
+                param($json)
+                ($json.cases[3].steps[2].after.placements | Where-Object zone -eq DEAD_WALL_REPLACEMENT | Select-Object -First 1).seat = 99
+            }
+        },
+        @{
             Name = "negative-structure-initial-duplicate-position"
             Kind = "STRUCTURE"
             Expected = "FAIL"
@@ -631,6 +704,35 @@ try {
             }
         },
         @{
+            Name = "negative-meta-export-disabled"
+            Kind = "META"
+            Expected = "FAIL"
+            Apply = {
+                param($json)
+                $json.generatedByCommand = $json.generatedByCommand.Replace("EXPORT='1'", "EXPORT='0'")
+            }
+        },
+        @{
+            Name = "negative-meta-export-comment-only"
+            Kind = "META"
+            Expected = "FAIL"
+            Apply = {
+                param($json)
+                $json.generatedByCommand = "# " + $json.generatedByCommand
+            }
+        },
+        @{
+            Name = "negative-meta-wrong-selector"
+            Kind = "META"
+            Expected = "FAIL"
+            Apply = {
+                param($json)
+                $json.generatedByCommand = $json.generatedByCommand.Replace(
+                    '--tests "com.majiang.model.V5TileMovementGoldenExporterTest"',
+                    '--tests "com.majiang.model.TileMovementContractTest" # V5TileMovementGoldenExporterTest')
+            }
+        },
+        @{
             Name = "positive-source-only-kan-count"
             Kind = "SOURCE_ONLY"
             Expected = "PASS"
@@ -674,6 +776,15 @@ try {
                 $first = $meld[0].index
                 $meld[0].index = $meld[1].index
                 $meld[1].index = $first
+            }
+        },
+        @{
+            Name = "positive-meta-posix-command"
+            Kind = "META_COMMAND"
+            Expected = "PASS"
+            Apply = {
+                param($json)
+                $json.generatedByCommand = 'V5_MOVEMENT_GOLDEN_EXPORT=1 ./gradlew :engine:test --tests "com.majiang.model.V5TileMovementGoldenExporterTest" --rerun-tasks --console=plain'
             }
         }
     )
@@ -735,7 +846,7 @@ try {
         exit 1
     }
 
-    Write-Step ("PASS: baseline 10/0/0/0/0; 30 negative cases failed; 5 positive controls passed")
+    Write-Step ("PASS: baseline 10/0/0/0/0; 41 negative cases failed; 6 positive controls passed")
     Write-Step ("evidence: " + $evidenceDir)
     exit 0
 }
