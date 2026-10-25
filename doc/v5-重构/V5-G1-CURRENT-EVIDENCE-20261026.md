@@ -56,7 +56,7 @@
 | Mahjong.TableRuntime.Tests | 373 | 0 | 0 |
 | **合计** | **1767** | **0** | **0** |
 
-另有 solution build PASS exit 0、plugin copy 12 程序集（7 测试 + LocalHost + Contracts.Wire + Google.Protobuf 等）、OVERALL PASS 共 9 行判定。两 run 的 PG wrapper 均为 10 阶段（precheck/start-postgres/ownership-marker/environment/migrate/verify/archive-cluster-evidence/cleanup/env-restore/write-evidence）全 PASS、统一 verifier exit 0、failedStages=0、集群端口 55460、rootDeleted=True、restoredToPreCall=True。
+另有 solution build PASS exit 0、plugin copy 12 个 DLL（7 个 Mahjong 生产程序集 Ai/Client/Contracts/Contracts.Wire/Domain/LocalHost/TableRuntime + Google.Protobuf 3.28.3 + System.Buffers/System.Memory/System.Numerics.Vectors/System.Runtime.CompilerServices.Unsafe 4 个兼容程序集；**零 Tests DLL**；官方 copy 清单见 caller 复核 `findings.log`，SHA256 `f6279cd252429242aefabef945314370489644828d382fa0e29f22d451498268`）；7 个测试项目计数只归属测试统计，不与插件清单混算。OVERALL PASS 共 9 行判定。两 run 的 PG wrapper 均为 10 阶段（precheck/start-postgres/ownership-marker/environment/migrate/verify/archive-cluster-evidence/cleanup/env-restore/write-evidence）全 PASS、统一 verifier exit 0、failedStages=0、集群端口 55460、rootDeleted=True、restoredToPreCall=True。
 
 **Domain 独立复核**：`runs/Mahjong.Domain.Tests/dotnetTest.meta.txt` 内嵌 exit code 0、total 506 / failed 0 / skipped 0 及 HEAD；其引用的框架日志 `Mahjong.Domain.Tests_net8.0_x64.log` SHA256 `50D3C659EA72E6F075813EB2599BB8D5684CFCC7DFD396F1EBAC9B64A35D0299`，与 meta 内嵌哈希一致，本轮重算吻合。
 
@@ -106,7 +106,7 @@
 - 运行证据：Domain 506 两 run 全绿；确定性 golden（洗牌/发牌/守恒）全绿。
 - 残余：无（该门原文条件未加码；不以更细 census 无限重开）。
 
-### 门5 三绝技与 136 守恒 — 建议：核心已销项，**尚不可宣布门 PASS**（残余 N-2 宿主接线，见 D-CUR-1）
+### 门5 三绝技与 136 守恒 — 建议：核心已销项，**门 PASS 尚未达成**（硬前置残余 = N-2 宿主接线 D-CUR-1，按原关闭公式属 G1 判定前须处置项，见 §4；§7.2 负例矩阵随 N-1 验收覆盖，见下）
 
 **N-1a 域动作扩展（已销项，证据在当前头）：**
 - `dotnet/src/Mahjong.Domain/RoundTypes.cs:31-47`：`RoundActionKind` 14 值（0..13，含 DeclareChi=9/DeclarePon=10/DeclareOpenKan=11/DeclareClosedKan=12/DeclareRiichi=13）。注意末值 `DeclareRiichi = 13` 无尾逗号，机械 `grep -c " = [0-9]*,"` 会得 13，实际 14 值。
@@ -134,6 +134,7 @@
 
 - 单一事实源：`dotnet/src/Mahjong.Contracts.Wire/Mahjong.Contracts.Wire.csproj:28` `<Protobuf Include="mahjong.proto" GrpcServices="None" />`（Grpc.Tools 2.68.1 + Google.Protobuf 3.28.3）；生成文件不入库、每次构建重新生成（csproj 注释行明示）。
 - **实际重复生成证据**：`SchemaCompatibilityTests.cs:338` `ProtocGenerationIsRepeatable`——同一 protoc 跑两遍，断言 `Mahjong.cs` 与 descriptor **字节相等**；该 Fact 在 Contracts 149 两 run 中实跑全绿。引入 commit `97831c8` 是冻结头祖先，即该断言对当前头生效。
+- caller 第 1 轮复核新增独立本地实跑（本轮只读读取其记录，非本任务执行）：本树 Contracts Release `--no-incremental` 构建 0 警告 0 错误；direct runner `-class '*SchemaCompatibilityTests'` → **13 PASS / 0 FAIL / 0 SKIP / 0 NOT_RUN**（含 ProtocGenerationIsRepeatable）。记录：`findings.log`（SHA256 `f6279cd252429242aefabef945314370489644828d382fa0e29f22d451498268`）、`schema.xml`（SHA256 `D8CCDA50F94377A7911E9D188A3132B9878904FAAA85914338E204A5C4D976B1`）。
 - 附加冻结护栏（同文件）：`:318` `WholeSchemaFingerprintIsFrozen`、`:279-291` proto↔descriptor 同步、`:235-245` reserved 守卫、`:325-335` 禁 map/Any/Timestamp/float。
 - 本任务未自行把"稳定编码=生成 diff"当作证据；门6 的判定材料就是上述实跑 Fact。
 - 残余：无。
@@ -154,7 +155,7 @@
 
 ### 门9 Unity/IL2CPP 可用平台构建日志与缺口分列 — 建议 PASS（按 P2.2 出口口径：日志✓ + 缺口如实分列）
 
-- 已有原始构建日志：Windows .NET（两 run sln-build PASS exit 0 + 12 程序集 plugin copy）。
+- 已有原始构建日志：Windows .NET（两 run sln-build PASS exit 0 + 12 个 DLL plugin copy——生产+互操作程序集，无 Tests DLL，明细见 §1）。
 - 缺口分列（全部 NOT_RUN/BLOCKED，出处 `doc/v5-重构/UNITY-ENVIRONMENT.md`，2026-10-22）：
   - Unity 许可未激活：Editor 批量退出码 198（`:5` 状态、`:133`），连 Editor 层都未通过；
   - IL2CPP 未构建（`:139-142`）；Android 无 SDK/NDK（`:47`）；iOS 需 macOS+Xcode（`:143`）；真机、跨物理网未测；CI 未配置 Unity job（`:148`）。
@@ -172,8 +173,8 @@
 - 复现：`grep -c "RequireSettlement" dotnet/src/Mahjong.Domain/RoundStateMachine.cs` → 5；`grep -rln "RoundSettlementCalculator\|SettlementCalculation" dotnet/src --include=*.cs | grep -v "/Rules/"` → 空（exit 1）。
 - 实际 vs 期望：实际=结算由调用方供给、宿主未接计算器；期望（原门条件）=N-2 组件接线完成且宿主链闭合。与 N-2 验收残余自述一致，非新发现。
 - 证据：本轮探针 F 段（nine-gate-probes.log）；`CODEX-V5-N2-ACCEPTANCE.md`。
-- 修复要求：按 N-2 验收残余四项（宿主接线、旧自带 settlement 入口收口、裸命令 source 绑定、可信历史认证）在 P4/P5 执行，不在本报告任务内。
-- 验收断言：宿主生产路径存在计算器调用、RequireSettlement 由宿主满足、四项残余各有测试；返修时逐条给命令/exit/计数。
+- 修复要求：宿主接线按原关闭公式（`V5-1-REVIEW.md:462`）是门5/G1 **判定前的硬前置**，由 caller 在 G1 判定前处置（派单完成接线，或对门5 关闭口径另行裁决）；N-2 验收残余四项中其余三项（旧自带 settlement 入口收口、裸命令 source 绑定、可信历史认证）是否同为 G1 前置属歧义，交 caller 裁决。本报告只呈报事实，不执行 N-2/P4/P5 代码。
+- 验收断言：接线落地后宿主生产路径存在计算器调用、RequireSettlement 由宿主满足、残余按 caller 裁决范围各有测试；返修时逐条给命令/exit/计数。
 
 **D-CUR-2 [门2依赖，非缺陷] 99 个 pending 元数据裁决未决（门2 BLOCKED 根因）**
 - 位置：原共享 `V5-G1-N3-CLOSEOUT-LEDGER.md` pending 集合（592=411+82+99；B1:6/B6:11/B8:75/B9:7）。
@@ -210,24 +211,29 @@
 | 2 | BLOCKED→待改判 | caller 对 99 pending 两份 DS 证据的验收记录 + 原共享台账串行改判结果 |
 | 3 | PASS | §2 门3 8 锚点 + 五测试项目两 run 全绿 |
 | 4 | PASS | nine-gate-probes.log C 段（grep exit 1 零命中）+ Domain 506 绿 |
-| 5 | 未闭（核心销项，余 D-CUR-1） | §2 门5 全部锚点 + N1A/N1B/N2 三份验收 + D-CUR-1 处置决定 |
+| 5 | 未闭（核心销项；硬前置 = N-2 接线，G1 判定前处置） | §2 门5 全部锚点 + N1A/N1B/N2 三份验收 + 原关闭公式（`V5-1-REVIEW.md:462`）逐字对照 + D-CUR-1 处置（权在 caller） |
 | 6 | PASS | SchemaCompatibilityTests 149 绿 + ProtocGenerationIsRepeatable 字节相等 Fact |
 | 7 | PASS | 门7 锚点 + 18+8 Facts + 观战拒绝 Fact |
 | 8 | PASS | Table 373 绿 + wrapper-summary.json 10 阶段 + PG 证据事件清单 |
 | 9 | PASS（缺口分列口径） | UNITY-ENVIRONMENT.md 缺口清单 + Windows .NET 构建日志 |
 
-剩余依赖（关闭公式，出处 `V5-1-REVIEW.md` §8）：门2 = N-3 推进至可宣布对齐口径（等 caller）；门5 = N-1a/N-1b 已完成 ✓ + N-2 接线（D-CUR-1，属后阶段执行项）。SF-1 不在关闭公式内。历史 7 PASS/2 FAIL（8ee22eb 报告）与本轮 8 PASS+1 BLOCKED+门5 未闭的差异已逐门给出当前头证据，Codex 可直接对照判定。
+剩余依赖（**原关闭公式逐字出处 `V5-1-REVIEW.md:462`**："G1 关闭 = 门 2（N-3 推进至可宣布的对齐口径）+ 门 5（N-1a/N-1b 完成 + N-2 接线 + §7.2 负例矩阵过）；N-1c 可选；SF-1 不在关闭公式（§7.4）；门 1/3/4/6/7/8/9 维持 PASS"）：
+
+- 门2：等 caller（99 pending 两份 DS 证据验收 + 原共享台账串行改判）。
+- 门5：N-1a/N-1b 已完成 ✓；§7.2 负例矩阵属 N-1 验收断言统一条款（`V5-1-REVIEW.md:387`），随 N-1a/N-1b 已接受验收覆盖，本报告不重开；**N-2 接线未完成（D-CUR-1）——按原公式这是 G1 判定前的硬前置**，其处置（派单完成接线，或 caller 对门5 关闭口径另行裁决）须在 G1 判定前进行，不得列为 G1 批准后才执行。N-2 验收残余四项中其余三项是否同为 G1 前置属歧义，交 caller 裁决。
+- 汇总：本轮**恰 9 门 = 7 PASS（门 1/3/4/6/7/8/9）+ 门2 BLOCKED + 门5 未闭**。历史 8ee22eb 报告为 7 PASS/2 FAIL，差异逐门见 §2 当前头证据，Codex 可直接对照判定。
 
 ## 5. G1 批准后 P4/P5 可并行清单（仅列清单，不派单、不执行）
 
-以下并行前提：文件集互不相离、共享台账仍由 caller 串行更新。
+以下并行前提：各任务**文件集互不重叠（互斥占有）**、共享台账仍由 caller 串行更新。
 
 1. **P4.1 本地宿主**（依赖 I-CUR-6 的重新准备：b43435d 未接受，需按 FAILED 原因重开准备线程，禁止复用 FAILED session）：LocalHost 组合根、AI 组合根接线、SF-1 中 MapAction 扩展前置。
-2. **P4.2 壳层**（其 docs-only 准备已接受：V5-P4.2-SHELL-PREPARATION，冻结 f9fd8e8d）：可先行，与 P4.1 文件不相离。
-3. **N-2 残余四项**（D-CUR-1）：宿主接线、旧自带 settlement 入口收口、裸命令 source 绑定、可信历史认证。
-4. **P5.x 服务端/存储线**：P5.2 事件存储（I-CUR-5 的重启探针归入其验收）、MJ-TCP/1 宿主链路。
-5. **门2 台账改判**（D-CUR-2，caller 串行）：不与代码任务并行冲突。
-6. **Unity 平台线**（门9 缺口清偿：许可、IL2CPP、SDK/NDK、iOS、真机）——按 UNITY-ENVIRONMENT.md 依赖顺序，不借 Editor 冒充。
+2. **P4.2 壳层**（其 docs-only 准备已接受：V5-P4.2-SHELL-PREPARATION，冻结 f9fd8e8d）：可先行，与 P4.1 文件集互不重叠。
+3. **P5.x 服务端/存储线**：P5.2 事件存储（I-CUR-5 的重启探针归入其验收）、HTTPS/WSS 宿主链路（`V5-ARCHITECTURE-DESIGN.md:16/:146`：V5 公网入口为 HTTPS + WSS，**不沿用 MJ-TCP/1 的 `MJTC` 魔数与 12 字节长度帧头**；MJ-TCP/1 仍为 V4 唯一生产传输边界，两者不混淆）。
+4. **门2 台账改判**（D-CUR-2，caller 串行）：不与代码任务并行冲突。
+5. **Unity 平台线**（门9 缺口清偿：许可、IL2CPP、SDK/NDK、iOS、真机）——按 UNITY-ENVIRONMENT.md 依赖顺序，不借 Editor 冒充。
+
+注：N-2 接线**不在上列**——按原关闭公式（`V5-1-REVIEW.md:462`）它是 G1 判定前的硬前置（§4），须由 caller 在 G1 判定前处置；其余三项 N-2 残余的时点交 caller 裁决。
 
 约束不变：V4 是唯一生产基线；G1 未批准前不创建 complete.flag；组件验收不得写成阶段验收；push/PR/合并由 caller 独占。
 
