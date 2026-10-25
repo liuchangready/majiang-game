@@ -4,7 +4,7 @@
 
 工作树：`D:/majiang-wt/n3-ai-adjudication`（独占），分支 `wt/v5-n3-ai-adjudication`，冻结基线 `6c3573620f61e8cbb6a13c8c4b81abef0b173fd9`（PR19 `feat/v5-1-integration` 当前头）
 
-交付文件：本报告 + `V5-N3-P-ALIGN-A-ADJUDICATION.tsv`（18 行，25 列；TSV SHA-256 见 §7）
+交付文件：本报告 + `V5-N3-AI-TEXT-ADJUDICATION.tsv`（18 行，25 列；TSV SHA-256 见 §7）
 
 任务性质：已接受台账 §10 **P-ALIGN-A** 的明确后续；只做 18 条 pending 的逐条举证与 proposedVerdict，供 caller 复核后统一改共享台账。**本报告不宣布门 2、不宣布 G1/G5、不宣布完整移植；V4 仍是唯一生产架构；不创建 `complete.flag`。**
 
@@ -19,11 +19,17 @@
 | proposedVerdict = pending | **2**（B6 `mappingLimits[*]` 的 claimed-discard 与 per-discard riichi 两条） |
 | proposedVerdict = bound | **0** |
 | 复用已接受证据但本轮未重跑 | 历史 AI 48/48 变异矩阵（events 非 text 字段） |
-| 本轮 fresh 构建 / 直接 runner / TEMP 探针 | 全部实际执行，见 §6 |
+| 第 1 轮 fresh 构建 / 直接 runner / TEMP 探针 | 全部实际执行，见 §6；第 2 轮仅交付修订，行为 NOT_RUN（§0.1） |
 
 - **B6**：`mappingBasis` 7 条全部 classified（映射元数据；其描述的结构化行为 `accepted`/`rejectionCode` 已有 C# 值级消费者）；`mappingLimits` 容器 1 条 classified（纯容器）、sleeve 隐私限制 1 条 classified（有意排除、非缺失行为）、claimed-discard 与 per-discard riichi 2 条 **pending**（说明文字存在不能替代值级绑定；冻结 fixture 的 `visibleDiscards=[]`，没有非空实例，也没有 C# 值级断言）。**B6 全包仍无行为变异反证，故不设 bound。**
 - **B9**：7 条 `action.text` 全部 classified（表示差异）。逐条确认其为 Kotlin data class 默认 `toString()`，不进入权威状态/哈希、无稳定跨语言协议合同；同一 case 的 `kind/player/tileId/optionId` 已由 C# 真实 `AiDecisionService.Submit` 与真实回放断言，且本报告用 TEMP 副本证明改 text 通过、改结构化字段失败。**没有借已 classified 的 `events[*].text` 结论搭车。**
 - 当前台账向量仍为 **411 bound / 82 classified / 99 pending**；本批只提议其中 18 条的去向，不改共享 TSV、不改校验器、不改已接受报告。
+
+### 0.1 第 1 轮调用者复核返修（D-AI-01 / D-AI-02）
+
+- **D-AI-01（MINOR，已修）**：按 caller 精确 expectedFiles 将两个交付 `git mv` 为 `V5-N3-AI-TEXT-ADJUDICATION.md` / `.tsv`；报告内文件名、复现命令与引用同步更新；`P-ALIGN-A` 只保留为任务语义名。`base 6c35736..HEAD` 净 diff 仅新增这两个 expectedFiles，旧 `P-ALIGN-A` 交付路径不存在；TSV 18 行 × 25 列，字节内容不变（hash 见 §7）。
+- **D-AI-02（MINOR，已修）**：旧 `evidence-sha256.txt` 原样保留供审计（其中含 1 条自引用行：旧摘要 `0a2cb429…`，该文件实际 SHA-256 为 `097F15FA…`）；新增 `evidence-manifest-v2.txt`，明确排除自身、旧 manifest 与摘要文件，共 **56** 条，逐项校验 **56 OK / 0 missing / 0 mismatch / 0 self / 0 old**（`verify-manifest-v2.log`）。manifest 摘要外置登记见 §7，不再尝试自引用固定点，不覆盖任何原测试日志。
+- **本轮行为 NOT_RUN**：D-AI-01/D-AI-02 只改交付文件名与 manifest，不改源码/测试/fixture；引用 caller 第 1 轮已实跑证据：build.log `5D52156B77DD54063298969D40D57DBB113653049BF434E4A4CC704D48402D94`、baseline.xml `41F359FC526C24C1BA855DDC5A155135719E05F19710BAD8464BEE3A4E417DDB`、P13.log `0E7A11AB05916A7069E085E7817FCBEB8C61FBA31335B1DCC44AEE861C6113BD`、matrix.csv `6C3E4512AEF178611BD5C0CA96C52CB5B6A73BED22F95BD415094C919200FC87`，不重复全套测试。
 
 ---
 
@@ -49,8 +55,10 @@ git worktree list              -> 本路径为 [wt/v5-n3-ai-adjudication]，与 
 
 | # | 文件 | 类型 | 说明 |
 |---|---|---|---|
-| 1 | `doc/v5-重构/V5-N3-P-ALIGN-A-ADJUDICATION.md` | 新增 | 本报告 |
-| 2 | `doc/v5-重构/V5-N3-P-ALIGN-A-ADJUDICATION.tsv` | 新增 | 18 行机器可读裁决记录（原台账 10 个 identity 字段 + 原 fixCommit/evidence/reason + 本轮证据/规则/裁决/owner/revisit） |
+| 1 | `doc/v5-重构/V5-N3-AI-TEXT-ADJUDICATION.md` | 新增 | 本报告 |
+| 2 | `doc/v5-重构/V5-N3-AI-TEXT-ADJUDICATION.tsv` | 新增 | 18 行机器可读裁决记录（原台账 10 个 identity 字段 + 原 fixCommit/evidence/reason + 本轮证据/规则/裁决/owner/revisit） |
+
+上述两个路径是 caller `thread.expectedFiles` 的精确文件名（D-AI-01 返修后）；`P-ALIGN-A` 只保留为任务语义名。
 
 明确未改：`dotnet/src/**`、`dotnet/tests/**`、`tests/v5-golden/**`、`catalog-v1.json`、manifest、`doc/v5-重构/V5-G1-N3-CLOSEOUT-LEDGER.md`、`doc/v5-重构/V5-G1-N3-CLOSEOUT-LEDGER.tsv`、`tools/verify-v5-n3-closeout-ledger.ps1`、任何已接受报告、`V5-0-1-IMPLEMENTATION-TASKS.md`、`DEEPSEEK-V5-MODULE-MIGRATION-PLAN.md`、Unity 环境/Resources/Burst。
 
@@ -257,7 +265,9 @@ fixture 原文（三条，按 `[*]` 下标 0/1/2）：
 
 ---
 
-## 6. 本轮实际命令、exit、计数与日志
+## 6. 第 1 轮实际命令、exit、计数与日志
+
+> 以下为第 1 轮实跑证据。第 2 轮 D-AI-01/D-AI-02 只改交付文件名与 manifest，不改源码/测试/fixture，未重跑；行为结论沿用调用者第 1 轮独立证据（§0.1），本轮行为项记 NOT_RUN。
 
 ### 6.1 restore / fresh build
 
@@ -353,16 +363,18 @@ E = D:/majiang-wt/n3-ai-adjudication/artifacts/TEMP/p-align-a-6ecd555edcd347a48d
 | E-PROBE-SCRIPT | `probe.ps1` | `D76E4E6E5FF709FEB788DB09EC9AE661A7BCB061AF3C9E2660C3F3CFB440B2F8` |
 | E-PROBE-MATRIX | `matrix.csv`（13 例） | `6C3E4512AEF178611BD5C0CA96C52CB5B6A73BED22F95BD415094C919200FC87` |
 | E-PROBE-CONSOLE | `probe-console.log` | `73A04000654909219C0673B36B1278359A99C559585C4C13D1571186471ED365` |
-| E-FROZEN-18 | `frozen-18.json`（18 条 identity + fixture 值） | 由 `evidence-sha256.txt` 逐文件登记 |
-| E-MANIFEST | `evidence-sha256.txt`（57 个证据文件的逐文件 SHA-256） | `097F15FA49BE7BA010E87807954DC7F056E826C55406D942235355C45828DB35` |
+| E-FROZEN-18 | `frozen-18.json`（18 条 identity + fixture 值） | 由 `evidence-manifest-v2.txt` 逐文件登记 |
+| E-MANIFEST-V2 | `evidence-manifest-v2.txt`（56 个非摘要证据文件的逐文件 SHA-256；排除自身、旧 manifest 与摘要文件） | `3CDF4EBBFCB1505B67CFA7E70E70122C227A4EE31ED3671EFAFA0E6EDBC0C1EE` |
+| E-MANIFEST-V1 | `evidence-sha256.txt`（旧 manifest，原样保留供审计；含 1 条自引用行，已由 v2 取代） | `097F15FA49BE7BA010E87807954DC7F056E826C55406D942235355C45828DB35` |
+| E-MANIFEST-V2-VERIFY | `verify-manifest-v2.log`（56 OK / 0 missing / 0 mismatch / 0 self / 0 old） | `CA19F236071AFBCA8773D31D781CB1182E45F0D17DB24B18118C1DAA21EB2A26` |
 
-说明：E-MANIFEST 覆盖证据根下 57 个文件（构建/恢复/runner 日志与 XML、13 个探针的副本/日志/XML、P13、矩阵、脚本、frozen-18、build-delivery、提交日志等）；本报告只列关键项，完整清单以 manifest 为准。每个探针的 `run-P*.log` 与 `result-P*.xml` 都在 manifest 中，可逐项复核 exit/Total/Failed/Errors/Skipped/Not Run。
+说明：E-MANIFEST-V2 覆盖 56 个非摘要证据文件（构建/恢复/runner 日志与 XML、13 个探针的副本/日志/XML、P13、矩阵、脚本、frozen-18、build-delivery、提交日志等），逐项校验 **56/56 PASS，0 missing / 0 mismatch / 0 self / 0 old**；本报告只列关键项，完整清单以 v2 manifest 为准。旧 E-MANIFEST-V1 原样保留供审计，其中 1 条自引用行（该行写旧摘要 `0a2cb429…`，而文件实际 SHA-256 为 `097F15FA…`）已被 v2 取代，不再作为可核验项；本报告不再宣称“57 个文件全部可核验”。每个探针的 `run-P*.log` 与 `result-P*.xml` 都在 v2 manifest 中，可逐项复核 exit/Total/Failed/Errors/Skipped/Not Run。
 
 交付 TSV：
 
 | 文件 | raw SHA-256 | LF SHA-256 | 行数 |
 |---|---|---|---|
-| `doc/v5-重构/V5-N3-P-ALIGN-A-ADJUDICATION.tsv` | `E73A4DC2B2E68E6F4712854706D8B5A5543C6672593D4198584C7230733497C5` | `9916F87FF2DABA65C2B28C246CEE747E6DC40AEC0B9AA28C9F0D39D791F44D12` | 19（表头 + 18） |
+| `doc/v5-重构/V5-N3-AI-TEXT-ADJUDICATION.tsv` | `E73A4DC2B2E68E6F4712854706D8B5A5543C6672593D4198584C7230733497C5` | `9916F87FF2DABA65C2B28C246CEE747E6DC40AEC0B9AA28C9F0D39D791F44D12` | 19（表头 + 18） |
 
 ---
 
@@ -422,11 +434,12 @@ pending    = 2  + P_sib
 
 - 开工 HEAD/branch/status/ownership 与冻结基线一致；工作树干净；独占 worktree 已核实。
 - 18 条 identity（id/package/fixture/caseId/path/idx/kind/parent/histClass/原 verdict + 原 fixCommit/evidence/reason）与冻结台账逐行一致（`bad=0`）。
-- restore exit 0；fresh `--no-incremental --no-restore` build exit 0，**0 warning / 0 error**。
-- 直接 runner 选中恰好 2 类，**6/6 passed，Errors/Failed/Skipped/Not Run 全 0，native exit 0**；XML 逐 test 核对。
-- TEMP 副本 13 例矩阵 + P13 结构检查全部按预期：text/mappingBasis/mappingLimits 改动 PASS；kind/tileId/optionId/rejectionCode/accepted 改动 FAIL；无 Errors/Skipped/Not Run。
+- restore exit 0；fresh `--no-incremental --no-restore` build exit 0，**0 warning / 0 error**（第 1 轮实跑）。
+- 直接 runner 选中恰好 2 类，**6/6 passed，Errors/Failed/Skipped/Not Run 全 0，native exit 0**；XML 逐 test 核对（第 1 轮实跑）。
+- TEMP 副本 13 例矩阵 + P13 结构检查全部按预期：text/mappingBasis/mappingLimits 改动 PASS；kind/tileId/optionId/rejectionCode/accepted 改动 FAIL；无 Errors/Skipped/Not Run（第 1 轮实跑）。
 - 16 条 proposed classified 均有逐行证据链；2 条 proposed pending 均有真实缺口、owner、复访条件。
 - 只新增两个文件；未改生产/测试/fixture/catalog/manifest/已接受报告/共享台账/统一 verifier/Unity 环境。
+- 第 2 轮 D-AI-01/D-AI-02：精确 expectedFiles 重命名完成；v2 manifest 56/56 逐项 PASS；本轮未改代码、未重跑行为。
 
 ### FAIL
 
@@ -439,6 +452,7 @@ pending    = 2  + P_sib
 
 ### NOT_RUN（如实单列，不冒充通过）
 
+- **第 2 轮未重跑**任何构建/runner/probe；行为测试沿用第 1 轮及 caller 独立证据：build.log `5D52156B77DD54063298969D40D57DBB113653049BF434E4A4CC704D48402D94`、baseline.xml `41F359FC526C24C1BA855DDC5A155135719E05F19710BAD8464BEE3A4E417DDB`、P13.log `0E7A11AB05916A7069E085E7817FCBEB8C61FBA31335B1DCC44AEE861C6113BD`、matrix.csv `6C3E4512AEF178611BD5C0CA96C52CB5B6A73BED22F95BD415094C919200FC87`。
 - **历史 AI 48/48 变异矩阵未重跑**；它只覆盖 events 非 text 字段，本报告不引用它证明 action.text/B6。
 - **B6 行为变异反证未建立**；本报告只做了说明文字 PASS + 结构化码 FAIL 的对照，故 B6 不设 bound。
 - Ai.Tests 全量（历史 438）、Domain/TableRuntime/解决方案全量、Gradle/Unity/IL2CPP/PG/WSS/Android/iOS/真机/真实网络/远端 CI：**NOT_RUN**。
@@ -451,7 +465,7 @@ pending    = 2  + P_sib
 
 ## 10. 红线复核
 
-- 仅新增 `doc/v5-重构/V5-N3-P-ALIGN-A-ADJUDICATION.md` 与 `doc/v5-重构/V5-N3-P-ALIGN-A-ADJUDICATION.tsv`；无生产/测试/fixture/catalog/manifest/已接受报告/共享台账/统一 verifier/Unity 资源改动。
+- 仅新增 `doc/v5-重构/V5-N3-AI-TEXT-ADJUDICATION.md` 与 `doc/v5-重构/V5-N3-AI-TEXT-ADJUDICATION.tsv`；无生产/测试/fixture/catalog/manifest/已接受报告/共享台账/统一 verifier/Unity 资源改动。
 - 未读改兄弟未提交工作；未 push、未建 PR、未触发 CI、未转派、未改机器级环境/信任/部署。
 - 18 条没有一条被改成 bound；B6 全包无变异反证的口径保持；classified 不计 full；2 条 pending 有真实缺口与复访条件。
 - 未用“同类 events text 已 classified”替代 action.text 的逐条举证；action.text 有独立 P01-P06 对照。
@@ -483,15 +497,16 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "$E/probe.ps1" `
 # 4) 生成交付 TSV（脚本在证据根，输出到 doc）
 powershell -NoProfile -ExecutionPolicy Bypass -File "$E/build-delivery.ps1" `
   -RepoRoot 'D:/majiang-wt/n3-ai-adjudication' `
-  -OutTsv 'D:/majiang-wt/n3-ai-adjudication/doc/v5-重构/V5-N3-P-ALIGN-A-ADJUDICATION.tsv'
+  -OutTsv 'D:/majiang-wt/n3-ai-adjudication/doc/v5-重构/V5-N3-AI-TEXT-ADJUDICATION.tsv'
 ```
 
 ---
 
 ## 12. 交付记录
 
-- 交付文件：本报告 + `V5-N3-P-ALIGN-A-ADJUDICATION.tsv`（18 行，25 列，原台账 identity 原样保留）。
-- 本轮实际改动仅为上述两个新增文件；提交前 `git status --porcelain` 只应出现这两个未跟踪文件；提交后 clean。
+- 交付文件：本报告 + `V5-N3-AI-TEXT-ADJUDICATION.tsv`（18 行，25 列，原台账 identity 原样保留）。
+- 第 1 轮提交 `e494b14` 使用旧命名；第 2 轮提交按 D-AI-01 `git mv` 为精确 expectedFiles，并按 D-AI-02 生成 v2 manifest。`base 6c35736..HEAD` 净 diff 仅两个 expectedFiles；第 2 轮不重跑行为测试，提交 hash 见交付回执。
+- 本轮实际改动仅为上述两个交付文件（第 1 轮新增、第 2 轮重命名）；提交前 `git status --porcelain` 只应出现这两个交付文件；提交后 clean。
 - 本地最小提交、commit hash、`git diff --check`、clean status 的最终值见本任务交付回执（本文件不自我引用提交哈希；提交信息记录本报告与 TSV 为唯一改动）。
 - 未 push、未建 PR、未触发 CI；caller 负责独立复核、共享台账串行更新与唯一 PR19 集成；本收件人不创建子 MR。
 - V4 仍是唯一生产架构；G1 未批准；G5 未完成；未创建 `complete.flag`。
