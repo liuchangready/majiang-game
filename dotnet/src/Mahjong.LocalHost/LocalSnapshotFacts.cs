@@ -35,6 +35,8 @@ namespace Mahjong.LocalHost
 
         internal TableProjectionContextData? RecoveredFacts { get; set; }
 
+        internal Func<int, bool>? FuritenProvider { get; set; }
+
         public LocalSnapshotFacts(LocalHostEnvironment environment, ITableClock clock)
         {
             _environment = environment;
@@ -245,7 +247,7 @@ namespace Mahjong.LocalHost
                     history.Add(discards[i].TileId);
                 }
 
-                privateFacts.Add(new TableSeatPrivateFacts(seat, false, false, history));
+                privateFacts.Add(new TableSeatPrivateFacts(seat, FuritenProvider?.Invoke(seat) ?? false, false, history));
             }
 
             TableSessionProjection? session = null;

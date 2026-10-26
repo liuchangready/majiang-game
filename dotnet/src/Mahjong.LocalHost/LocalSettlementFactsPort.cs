@@ -14,6 +14,8 @@ namespace Mahjong.LocalHost
     internal sealed class LocalSettlementFactsPort : ITableSettlementFactsPort
     {
         internal Func<Mahjong.Domain.RoundStateMachine?>? RoundProvider { get; set; }
+        internal Func<int, bool>? TemporaryFuritenProvider { get; set; }
+        internal Func<int, bool>? RiichiFuritenProvider { get; set; }
 
         public TableSettlementHostFacts Resolve(TableSettlementSourceRef source, TableSettlementIntent intent)
         {
@@ -75,7 +77,7 @@ namespace Mahjong.LocalHost
                     // expose as a separate event. Keep these false unless a future durable
                     // response-pass fact is available, rather than treating every discard as
                     // a missed win.
-                    temporaryFuriten = false;
+                    temporaryFuriten = TemporaryFuritenProvider?.Invoke(seat) ?? false;
                     int declarationDiscard = -1;
                     if (riichiAt >= 0)
                     {
@@ -94,7 +96,7 @@ namespace Mahjong.LocalHost
                               (lastDiscard < 0 || lastDiscard == declarationDiscard) &&
                               drawsAfterRiichi <= 1 &&
                               (declarationDiscard < 0 || lastDiscard <= declarationDiscard);
-                    riichiFuriten = false;
+                    riichiFuriten = RiichiFuritenProvider?.Invoke(seat) ?? false;
                 }
 
                 seats.Add(new TableSettlementSeatHostFacts(seat, ippatsu, temporaryFuriten, riichiFuriten));

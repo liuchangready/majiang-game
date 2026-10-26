@@ -259,6 +259,15 @@ namespace Mahjong.TableRuntime
             return _pending.TryGetValue(seat, out PendingDecision? pending) ? pending.Key.DecisionId : null;
         }
 
+        /// <summary>Host-only current legal candidates for one pending decision.</summary>
+        public IReadOnlyList<LegalActionOption> GetPendingDecisionCandidates(int seat)
+        {
+            CheckSeat(seat);
+            return _pending.TryGetValue(seat, out PendingDecision? pending)
+                ? pending.Candidates
+                : Array.Empty<LegalActionOption>();
+        }
+
         /// <summary>Host-only last accepted N-2 calculation; immutable authority evidence.</summary>
         public Mahjong.Domain.Rules.RoundSettlementCalculation? LastSettlementCalculation =>
             _lastSettlementCalculation;
