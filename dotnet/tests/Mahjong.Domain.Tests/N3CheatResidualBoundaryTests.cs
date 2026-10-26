@@ -24,7 +24,7 @@ namespace Mahjong.Domain.Tests
     /// deadWallTileIdsInDeadWall filter.  Where the V4 input is not representable the
     /// test records the construction/contract rejection instead of inventing reachability.
     /// </summary>
-    public class N3CheatBoundaryTests
+    public class N3CheatResidualBoundaryTests
     {
         private const int WallOffset = 53;
 
@@ -77,7 +77,7 @@ namespace Mahjong.Domain.Tests
         // ------------------------------------------------------------------
 
         [Fact]
-        public void Backfill_V4AliasAndCanonicalPositionsAreBidirectionallyEquivalent()
+        public void Backfill_V4AliasAndLegalDiscardDrawFollowUp()
         {
             // V4 exporter input: seat 0 has twelve closed tiles, wallPrefix is
             // [33, 29, 25], and drawNormal draws 33 from V4 slot 0 (C# Wall(53)).
@@ -151,14 +151,36 @@ namespace Mahjong.Domain.Tests
                 () => swapped.TileAt(TilePosition.Wall(WallOffset + V4BackfilledIndex)));
             Assert.Contains("No tile at position", noTile.Message, StringComparison.Ordinal);
 
-            // Bidirectional next-draw equivalence: V4 wall[1] is the drawn tile and its
-            // pointer is 1, so the next draw is 33; canonical C# skips the free hole and
-            // draws 33 from Wall(54), leaving the tail 25 in place.
-            TilePositionMap next = swapped.DrawFromWall(0).RequireState();
+            // Legal follow-up, not a same-seat double draw.  V4 source trace (static,
+            // not executed here): discard(0, 29) clears seat0.drawnTile and moves 29 to
+            // the river; availableWallIndices() starts at wallPointer=1 and yields index 1
+            // (33); drawNormal(1) consumes it, sets seat1.drawnTile=33 and pointer=2.
+            // The C# sequence executes the same public discard then draw for seat 1.
+            TransitionResult discardedResult = swapped.Discard(0, new TileId(V4DisplacedTileId));
+            Assert.True(discardedResult.IsSuccess, discardedResult.Error?.ToString());
+            TilePositionMap afterDiscard = discardedResult.RequireState();
+            Assert.Null(afterDiscard.DrawnTile);
+            TilePosition discardPosition = afterDiscard.PositionOf(new TileId(V4DisplacedTileId));
+            Assert.Equal(TileZone.Discard, discardPosition.Zone);
+            Assert.Equal(0, discardPosition.Seat);
+            Assert.InRange(discardPosition.Index, 0, 135);
+            Assert.True(afterDiscard.IsPositionFree(TilePosition.Wall(WallOffset + V4BackfilledIndex)));
+            Assert.Equal(136, DistinctPositionCount(afterDiscard));
+            Assert.Equal(1, CountTile(afterDiscard, V4DisplacedTileId));
+            CheatTestBench.AssertConserved(afterDiscard);
+
+            TransitionResult nextResult = afterDiscard.DrawFromWall(1);
+            Assert.True(nextResult.IsSuccess, nextResult.Error?.ToString());
+            TilePositionMap next = nextResult.RequireState();
             Assert.Equal(V4DrawnTileId, next.DrawnTile!.Value.Tile.Value);
+            Assert.Equal(1, next.DrawnTile.Value.Seat);
+            Assert.Equal(TilePosition.Hand(1, 13), next.PositionOf(new TileId(V4DrawnTileId)));
             Assert.Equal(WallOffset + V4ResolvedIndex + 1, next.WallPointer);
             Assert.Equal(V4WallTailTileId, next.TileAt(TilePosition.Wall(WallOffset + 2)).Value);
+            Assert.True(next.IsPositionFree(TilePosition.Wall(WallOffset + V4BackfilledIndex)));
             Assert.Equal(136, DistinctPositionCount(next));
+            Assert.Equal(1, CountTile(next, V4DrawnTileId));
+            Assert.Equal(1, CountTile(next, V4WallTailTileId));
             CheatTestBench.AssertConserved(next);
         }
 

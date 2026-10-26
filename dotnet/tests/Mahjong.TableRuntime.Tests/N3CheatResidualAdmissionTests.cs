@@ -18,7 +18,7 @@ namespace Mahjong.TableRuntime.Tests
     /// construction rejection and a reachable, clearly-labelled different rejection; they
     /// do not add a null-round port or claim the no-open-decision case is the source case.
     /// </summary>
-    public class N3CheatBoundaryAdmissionTests
+    public class N3CheatResidualAdmissionTests
     {
         [Fact]
         public void NullRoundIsRejectedAtCommandConstructionAndActorConstruction()
