@@ -405,11 +405,13 @@ namespace Mahjong.Unity.Table
     {
         public const int DefaultCapacity = 64;
         private const int RecentKeyLimit = 512;
+        private const int MaxMeldActionRecords = 64;
 
         private readonly int _capacity;
         private readonly Queue<TableAnimationItem> _items = new Queue<TableAnimationItem>();
         private readonly HashSet<string> _seenKeys = new HashSet<string>(StringComparer.Ordinal);
         private readonly Queue<string> _seenOrder = new Queue<string>();
+        private readonly List<MeldActionRecord> _meldActions = new List<MeldActionRecord>();
 
         private ConfirmedAnimationContext? _context;
         private PlayerTableViewState? _lastView;
@@ -577,6 +579,7 @@ namespace Mahjong.Unity.Table
             }
 
             int enqueued = 0;
+            ulong snapshotEventFloor = _lastSnapshotEventSeq;
             int droppedBefore = (int)Math.Min(int.MaxValue, _dropped);
             for (int seat = 0; seat < 4; seat++)
             {
@@ -649,15 +652,15 @@ namespace Mahjong.Unity.Table
                         continue;
                     }
 
-                    var meldKeys = MeldActionKeys(seat, next.EventSeq, meld);
-                    if (AnyKeySeen(meldKeys))
+                    string family = MeldActionFamily(meld.Kind);
+                    if (TryConsumeAwaitingMeldEvent(
+                        seat,
+                        family,
+                        meld.TileIds,
+                        snapshotEventFloor,
+                        next.EventSeq))
                     {
                         continue;
-                    }
-
-                    for (int m = 0; m < meldKeys.Count; m++)
-                    {
-                        Remember(meldKeys[m]);
                     }
 
                     bool privateMeld = current.Own != null &&
@@ -676,6 +679,13 @@ namespace Mahjong.Unity.Table
                             meld,
                             privateMeld,
                             privateMeld ? seat : -1));
+                    AddMeldActionRecord(
+                        MeldActionDirection.AwaitingSnapshotEvent,
+                        seat,
+                        family,
+                        meld.TileIds,
+                        snapshotEventFloor,
+                        next.EventSeq);
                     enqueued++;
                 }
             }
@@ -855,13 +865,19 @@ namespace Mahjong.Unity.Table
                     continue;
                 }
 
-                if (IsMeldEvent(visible.Kind) &&
-                    visible.Seat >= 0 &&
-                    visible.TileId.HasValue &&
-                    Remember(MeldActionKey(visible.Seat, visible.EventSeq, MeldEventFamily(visible.Kind), visible.TileId.Value)))
+                string? meldFamily = null;
+                if (IsMeldEvent(visible.Kind) && visible.Seat >= 0 && visible.TileId.HasValue)
                 {
-                    _lastRejection = TableAnimationCodes.Duplicate;
-                    continue;
+                    meldFamily = MeldEventFamily(visible.Kind);
+                    if (TryConsumeAwaitingMeldSnapshot(
+                        visible.Seat,
+                        meldFamily,
+                        visible.TileId.Value,
+                        visible.EventSeq))
+                    {
+                        _lastRejection = TableAnimationCodes.Duplicate;
+                        continue;
+                    }
                 }
 
                 Enqueue(
@@ -876,6 +892,17 @@ namespace Mahjong.Unity.Table
                         null,
                         visible.Visibility == ConfirmedEventVisibility.Private,
                         visible.OwnerSeat));
+                if (meldFamily != null)
+                {
+                    AddMeldActionRecord(
+                        MeldActionDirection.AwaitingEventSnapshot,
+                        visible.Seat,
+                        meldFamily,
+                        new[] { visible.TileId!.Value },
+                        visible.EventSeq,
+                        visible.EventSeq);
+                }
+
                 enqueued++;
 
                 if (visible.EventSeq > _lastPlayedEventSeq)
@@ -970,49 +997,99 @@ namespace Mahjong.Unity.Table
             }
         }
 
-        private static string MeldActionKey(int seat, ulong eventSeq, string family, uint tileId)
+        private void AddMeldActionRecord(
+            MeldActionDirection direction,
+            int seat,
+            string family,
+            IReadOnlyList<uint> tiles,
+            ulong floor,
+            ulong upper)
         {
-            return MeldActionKey(seat, eventSeq, family, tileId.ToString(System.Globalization.CultureInfo.InvariantCulture));
-        }
-
-        private static string MeldActionKey(int seat, ulong eventSeq, string family, string identity)
-        {
-            return "meld-action/"
-                + seat.ToString(System.Globalization.CultureInfo.InvariantCulture)
-                + "/" + eventSeq.ToString(System.Globalization.CultureInfo.InvariantCulture)
-                + "/" + family
-                + "/" + identity;
-        }
-
-        private static List<string> MeldActionKeys(int seat, ulong eventSeq, PlayerMeldState meld)
-        {
-            string family = MeldActionFamily(meld.Kind);
-            if (meld.IsPlaceholder)
+            var copy = new List<uint>(tiles.Count);
+            for (int i = 0; i < tiles.Count; i++)
             {
-                return new List<string>(1)
+                copy.Add(tiles[i]);
+            }
+
+            _meldActions.Add(new MeldActionRecord(direction, seat, family, copy, floor, upper));
+            while (_meldActions.Count > MaxMeldActionRecords)
+            {
+                _meldActions.RemoveAt(0);
+            }
+        }
+
+        /// <summary>
+        /// A typed meld event is the same confirmed action as a newly appearing
+        /// snapshot meld when the event sequence lies in the snapshot batch
+        /// interval (previous snapshot bound, current bound] and the seat,
+        /// family and at least one physical identity overlap. The snapshot
+        /// event sequence is a batch upper bound, not the action's own seq.
+        /// </summary>
+        private bool TryConsumeAwaitingMeldEvent(
+            int seat,
+            string family,
+            IReadOnlyList<uint> snapshotTiles,
+            ulong snapshotFloor,
+            ulong snapshotUpper)
+        {
+            for (int i = 0; i < _meldActions.Count; i++)
+            {
+                MeldActionRecord record = _meldActions[i];
+                if (record.Consumed ||
+                    record.Direction != MeldActionDirection.AwaitingEventSnapshot ||
+                    record.Seat != seat ||
+                    !string.Equals(record.Family, family, StringComparison.Ordinal) ||
+                    record.Upper <= snapshotFloor ||
+                    record.Upper > snapshotUpper ||
+                    !AnyTileOverlap(record.Tiles, snapshotTiles))
                 {
-                    MeldActionKey(
-                        seat,
-                        eventSeq,
-                        family,
-                        "p" + meld.PlaceholderOrdinal.ToString(System.Globalization.CultureInfo.InvariantCulture))
-                };
+                    continue;
+                }
+
+                record.Consumed = true;
+                return true;
             }
 
-            var keys = new List<string>(meld.TileIds.Count);
-            for (int i = 0; i < meld.TileIds.Count; i++)
-            {
-                keys.Add(MeldActionKey(seat, eventSeq, family, meld.TileIds[i]));
-            }
-
-            return keys;
+            return false;
         }
 
-        private bool AnyKeySeen(IReadOnlyList<string> keys)
+        /// <summary>
+        /// A snapshot meld already produced its visual item; a later typed event
+        /// for the same action must not play it again. The event must fall in the
+        /// snapshot's own batch interval and match seat/family/tile.
+        /// </summary>
+        private bool TryConsumeAwaitingMeldSnapshot(
+            int seat,
+            string family,
+            uint eventTile,
+            ulong eventSeq)
         {
-            for (int i = 0; i < keys.Count; i++)
+            for (int i = 0; i < _meldActions.Count; i++)
             {
-                if (_seenKeys.Contains(keys[i]))
+                MeldActionRecord record = _meldActions[i];
+                if (record.Consumed ||
+                    record.Direction != MeldActionDirection.AwaitingSnapshotEvent ||
+                    record.Seat != seat ||
+                    !string.Equals(record.Family, family, StringComparison.Ordinal) ||
+                    eventSeq <= record.Floor ||
+                    eventSeq > record.Upper ||
+                    !ContainsTile(record.Tiles, eventTile))
+                {
+                    continue;
+                }
+
+                record.Consumed = true;
+                return true;
+            }
+
+            return false;
+        }
+
+        private static bool AnyTileOverlap(IReadOnlyList<uint> left, IReadOnlyList<uint> right)
+        {
+            for (int i = 0; i < left.Count; i++)
+            {
+                if (ContainsTile(right, left[i]))
                 {
                     return true;
                 }
@@ -1388,6 +1465,45 @@ namespace Mahjong.Unity.Table
                 default:
                     return TableAnimationKind.Unknown;
             }
+        }
+
+        private enum MeldActionDirection
+        {
+            AwaitingEventSnapshot = 1,
+            AwaitingSnapshotEvent = 2
+        }
+
+        private sealed class MeldActionRecord
+        {
+            public MeldActionRecord(
+                MeldActionDirection direction,
+                int seat,
+                string family,
+                IReadOnlyList<uint> tiles,
+                ulong floor,
+                ulong upper)
+            {
+                Direction = direction;
+                Seat = seat;
+                Family = family;
+                Tiles = tiles;
+                Floor = floor;
+                Upper = upper;
+            }
+
+            public MeldActionDirection Direction { get; }
+
+            public int Seat { get; }
+
+            public string Family { get; }
+
+            public IReadOnlyList<uint> Tiles { get; }
+
+            public ulong Floor { get; }
+
+            public ulong Upper { get; }
+
+            public bool Consumed { get; set; }
         }
     }
 }

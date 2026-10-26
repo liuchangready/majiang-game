@@ -982,5 +982,115 @@ namespace Mahjong.Unity.TableModel.Tests
                 TableAnimationAudience.Player(0)).Enqueued);
             Assert.Equal(0, queue.PendingCount);
         }
+
+        private static (PlayerTableViewState A, PlayerTableViewState B, PlayerTableViewState C) BatchMeldViews(
+            ManualTableClock clock,
+            bool openKan)
+        {
+            PlayerSnapshot s1 = P43TestData.PlayerSnapshot();
+            PlayerSnapshot s2 = s1.Clone();
+            s2.StateVersion = 6;
+            s2.EventSeq = 108;
+            s2.Cursor.ProjectionSeq++;
+            AddMeld(
+                s2,
+                3,
+                openKan ? MeldType.OpenKan : MeldType.Pon,
+                2,
+                80,
+                openKan ? new uint[] { 80, 81, 82, 83 } : new uint[] { 80, 81, 82 });
+            PlayerSnapshot s3 = s2.Clone();
+            s3.StateVersion = 7;
+            s3.EventSeq = 109;
+            s3.Cursor.ProjectionSeq++;
+            s3.PublicView.Board.Players[3].Melds[0].Type = MeldType.AddedKan;
+            s3.PublicView.Board.Players[3].Melds[0].TileIds.Add(openKan ? 84U : 83U);
+            return (Project(clock, s1), Project(clock, s2), Project(clock, s3));
+        }
+
+        [Theory]
+        [InlineData(false, true)]
+        [InlineData(false, false)]
+        [InlineData(true, true)]
+        [InlineData(true, false)]
+        public void R4_01_BatchHighWaterMeldEventAndSnapshotPlayOnce(bool openKan, bool eventFirst)
+        {
+            var clock = new ManualTableClock();
+            var views = BatchMeldViews(clock, openKan);
+            var queue = new ConfirmedAnimationQueue();
+            queue.AcceptConfirmedBaseline(views.A);
+            ConfirmedVisibleEvent typed = Event(
+                106,
+                0,
+                openKan ? ConfirmedVisibleEventKind.KanDeclared : ConfirmedVisibleEventKind.PonDeclared,
+                ConfirmedEventVisibility.Public,
+                seat: 3,
+                tileId: 80);
+
+            TableAnimationResult eventResult;
+            TableAnimationResult snapshotResult;
+            if (eventFirst)
+            {
+                eventResult = queue.AcceptConfirmedEvents(Context(views.B), new[] { typed }, TableAnimationAudience.Player(0));
+                snapshotResult = queue.AcceptConfirmedDifference(views.A, views.B, false);
+            }
+            else
+            {
+                snapshotResult = queue.AcceptConfirmedDifference(views.A, views.B, false);
+                eventResult = queue.AcceptConfirmedEvents(Context(views.B), new[] { typed }, TableAnimationAudience.Player(0));
+            }
+
+            Assert.True(eventResult.Accepted, eventResult.Code);
+            Assert.True(snapshotResult.Accepted, snapshotResult.Code);
+            Assert.Equal(1, eventResult.Enqueued + snapshotResult.Enqueued);
+            Assert.Equal(1, queue.PendingCount);
+        }
+
+        [Theory]
+        [InlineData(true)]
+        [InlineData(false)]
+        public void R4_01_BatchKanWithRinshanAndDoraKeepsUniqueEvents(bool eventFirst)
+        {
+            var clock = new ManualTableClock();
+            var views = BatchMeldViews(clock, openKan: true);
+            var queue = new ConfirmedAnimationQueue();
+            queue.AcceptConfirmedBaseline(views.A);
+
+            var events = new[]
+            {
+                Event(106, 0, ConfirmedVisibleEventKind.KanDeclared, ConfirmedEventVisibility.Public, seat: 3, tileId: 80),
+                Event(107, 0, ConfirmedVisibleEventKind.RinshanDraw, ConfirmedEventVisibility.Private, ownerSeat: 0, seat: 0, tileId: 84),
+                Event(108, 0, ConfirmedVisibleEventKind.DoraRevealed, ConfirmedEventVisibility.Public, seat: -1, tileId: 90)
+            };
+
+            if (eventFirst)
+            {
+                Assert.Equal(3, queue.AcceptConfirmedEvents(Context(views.B), events, TableAnimationAudience.Player(0)).Enqueued);
+                Assert.Equal(0, queue.AcceptConfirmedDifference(views.A, views.B, false).Enqueued);
+            }
+            else
+            {
+                Assert.Equal(1, queue.AcceptConfirmedDifference(views.A, views.B, false).Enqueued);
+                Assert.Equal(2, queue.AcceptConfirmedEvents(Context(views.B), events, TableAnimationAudience.Player(0)).Enqueued);
+            }
+
+            Assert.Equal(3, queue.PendingCount);
+        }
+
+        [Fact]
+        public void R4_01_BatchMeldThenLaterAddedKanRemainsIndependent()
+        {
+            var clock = new ManualTableClock();
+            var views = BatchMeldViews(clock, openKan: false);
+            var queue = new ConfirmedAnimationQueue();
+            queue.AcceptConfirmedBaseline(views.A);
+            Assert.Equal(1, queue.AcceptConfirmedDifference(views.A, views.B, false).Enqueued);
+            queue.Drain();
+
+            TableAnimationResult addedKan = queue.AcceptConfirmedDifference(views.B, views.C, false);
+
+            Assert.True(addedKan.Accepted, addedKan.Code);
+            Assert.Equal(1, addedKan.Enqueued);
+        }
     }
 }
