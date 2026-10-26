@@ -9,6 +9,18 @@
     are verified without editing this script or the manifest).
 
     Guarantees:
+      - the accepted standalone companion golden-fixture verifier
+        (tools\verify-v5-companion-fixtures.ps1) is ALWAYS executed by the default
+        local/CI entry over the four accepted fixtures. It runs the full CLI
+        (byte counts, raw LF/CRLF SHA-256, strict UTF-8/JSON, schema/fixture
+        identity, provenance pins, case identity and structure). Missing script,
+        missing/zero fixtures, blocked tools, a crash/timeout, or any non-zero
+        native exit fails the whole run even when every .NET project row passed.
+        The raw command, native exit, raw stdout/stderr log and the four
+        certified fixture identities/hashes are written to summary.log and
+        companion-fixtures.meta.txt. Historical freeze-commit blob checks are
+        NOT_RUN by default (shallow CI has no full history); current fixture
+        bytes and embedded provenance are still verified offline.
       - every project (manifest or discovered) is reported with a per-project
         result (PASS/FAIL/BLOCKED/NOT_RUN), real executed test counts and log paths
       - failing projects, zero-test-case projects and missing required projects
@@ -60,15 +72,22 @@
       powershell -ExecutionPolicy Bypass -File tools\verify-v5.ps1 [-Configuration Release]
                  [-DotnetPath D:\Unity\dotnet\dotnet.exe] [-RunnerMode auto|dotnetTest|direct]
                  [-ManifestPath <path>] [-LogDir <path>] [-SkipPluginCopyCheck]
-                 [-NoProjectDiscovery]
+                 [-NoProjectDiscovery] [-CompanionVerifierPath <path>]
+                 [-CompanionFixtureDir <path>] [-CompanionTimeoutSeconds <1..3600>]
 
     -NoProjectDiscovery disables auto-discovery of *.Tests projects under
     dotnet\tests|src; only manifest projects are verified. Used by the isolated
     diagnostics self-test (tools\tests\VerifyV5Diagnostics.Tests.ps1) to verify a
     throwaway fixture project without touching the production tree.
 
-    Exit codes: 0 = every row PASS; 1 = at least one row FAIL; 2 = environment
-    blocked (manifest/solution/dotnet missing).
+    -CompanionVerifierPath / -CompanionFixtureDir are path overrides for the
+    isolated companion-integration self-test only. They are NOT skip switches:
+    the companion gate always executes and still demands the full 4/4 accepted
+    certification. Production/CI runs must keep the defaults.
+
+    Exit codes: 0 = every row PASS and the companion gate PASS; 1 = at least one
+    row FAIL or the companion gate FAIL; 2 = environment blocked (manifest/
+    solution/dotnet missing, or the companion verifier reports BLOCKED).
 #>
 [CmdletBinding()]
 param(
@@ -86,7 +105,16 @@ param(
 
     [switch]$SkipPluginCopyCheck,
 
-    [switch]$NoProjectDiscovery
+    [switch]$NoProjectDiscovery,
+
+    # Path overrides for the isolated companion-integration self-test only.
+    # Defaults are the production verifier and accepted fixture directory.
+    [string]$CompanionVerifierPath,
+
+    [string]$CompanionFixtureDir,
+
+    [ValidateRange(1, 3600)]
+    [int]$CompanionTimeoutSeconds = 600
 )
 
 $ErrorActionPreference = 'Stop'
@@ -160,6 +188,146 @@ function Invoke-Captured {
         catch { Write-Warning "[verify-v5] could not write captured log ${LogPath}: $($_.Exception.Message)" }
     }
     return $exit
+}
+
+function ConvertTo-NativeArgument([string]$Value) {
+    # Child process argument strings are space-joined. Paths containing
+    # whitespace must be quoted so the child PowerShell sees one -File argument.
+    if ($null -eq $Value) { return '""' }
+    if ($Value -notmatch '[\s"]') { return $Value }
+    return '"' + ($Value -replace '"', '\"') + '"'
+}
+
+function Invoke-CompanionVerifier {
+    # Runs the accepted standalone verifier in a hidden, bounded child process.
+    # System.Diagnostics.Process is used directly (not Start-Process -PassThru):
+    # under Windows PowerShell 5.1 the latter can return a null ExitCode for a
+    # process whose output was redirected, which would turn a real PASS into a
+    # false failure. Stdout/stderr are read asynchronously to avoid pipe
+    # deadlocks, then persisted verbatim. A timeout or spawn failure yields a
+    # null exit code and is never treated as 0.
+    param(
+        [string]$VerifierPath,
+        [string]$FixtureDir,
+        [string]$LogPath,
+        [int]$TimeoutSeconds
+    )
+    $hostExe = [System.Diagnostics.Process]::GetCurrentProcess().MainModule.FileName
+    $arguments = @(
+        '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
+        '-File', $VerifierPath,
+        '-RepoRoot', $root,
+        '-FixtureDir', $FixtureDir
+    )
+    $commandText = (@($hostExe) + $arguments | ForEach-Object { ConvertTo-NativeArgument $_ }) -join ' '
+    $argumentText = ($arguments | ForEach-Object { ConvertTo-NativeArgument $_ }) -join ' '
+    $stdoutPath = "$LogPath.stdout.log"
+    $stderrPath = "$LogPath.stderr.log"
+    $exit = $null
+    $timedOut = $false
+    $threw = $null
+    $process = $null
+    $stdout = ''
+    $stderr = ''
+    try {
+        $startInfo = New-Object System.Diagnostics.ProcessStartInfo
+        $startInfo.FileName = $hostExe
+        $startInfo.Arguments = $argumentText
+        $startInfo.WorkingDirectory = $cwd
+        $startInfo.UseShellExecute = $false
+        $startInfo.CreateNoWindow = $true
+        $startInfo.RedirectStandardOutput = $true
+        $startInfo.RedirectStandardError = $true
+        $process = New-Object System.Diagnostics.Process
+        $process.StartInfo = $startInfo
+        if (-not $process.Start()) { throw 'Process.Start() returned false' }
+        $stdoutTask = $process.StandardOutput.ReadToEndAsync()
+        $stderrTask = $process.StandardError.ReadToEndAsync()
+        if (-not $process.WaitForExit($TimeoutSeconds * 1000)) {
+            $timedOut = $true
+            try { $process.Kill() } catch { }
+        }
+        # Drain both pipes with a bounded grace period. After a timeout the kill
+        # is expected to close them immediately; this guard keeps a stuck pipe
+        # from defeating the timeout.
+        try { if ($stdoutTask.Wait(10000)) { $stdout = $stdoutTask.Result } } catch { }
+        try { if ($stderrTask.Wait(10000)) { $stderr = $stderrTask.Result } } catch { }
+        $null = $process.WaitForExit(10000)
+        if (-not $timedOut) { $exit = $process.ExitCode }
+    }
+    catch {
+        $threw = "$($_.Exception.GetType().FullName): $($_.Exception.Message)"
+    }
+    finally {
+        if ($null -ne $process) {
+            try { $process.Dispose() } catch { }
+        }
+    }
+    try { Set-Content -Path $stdoutPath -Value $stdout -Encoding UTF8 } catch { }
+    try { Set-Content -Path $stderrPath -Value $stderr -Encoding UTF8 } catch { }
+    $exitLabel = $(if ($null -ne $exit) { "$exit" } else { 'EXCEPTION (spawn/timeout failure; never treated as 0)' })
+    $logText = @(
+        "# companion verifier raw invocation log"
+        "# command : $commandText"
+        "# cwd     : $cwd"
+        "# timeout : $TimeoutSeconds s"
+        "# exit    : $exitLabel"
+        "# timedout: $timedOut"
+        "# error   : $(if ($threw) { $threw } else { '(none)' })"
+        ""
+        "===== stdout ====="
+        $stdout
+        "===== stderr ====="
+        $stderr
+    ) -join [Environment]::NewLine
+    try { Set-Content -Path $LogPath -Value $logText -Encoding UTF8 } catch { Write-Warning "[verify-v5] could not write companion raw log ${LogPath}: $($_.Exception.Message)" }
+    return [pscustomobject]@{
+        ExitCode = $exit
+        TimedOut = $timedOut
+        Threw    = $threw
+        Command  = $commandText
+        LogPath  = $LogPath
+        Stdout   = $stdout
+        Stderr   = $stderr
+    }
+}
+
+function Get-CompanionFixtureCertification {
+    # Parses the accepted verifier's own PASS certification. This is NOT a
+    # replacement validator: the standalone verifier already performed the full
+    # byte/JSON/structure validation and produced the exit code. The unified
+    # entry only refuses an exit-0 run whose output does not actually certify
+    # all four expected fixtures (e.g. a truncated/fake/zero-sample script).
+    param([string]$Text)
+    $expected = @('movement-v1.json', 'shuffle-reversed-v1.json', 'visibility-v1.json', 'ai-discard-flags-v1.json')
+    $pattern = '^\s*-\s+(?<file>[A-Za-z0-9._-]+\.json)\s+\((?<kind>schema|fixture):\s*(?<identity>[^,]+),\s*(?<cases>\d+)\s+cases,\s*SHA-256 LF:\s*(?<sha>[0-9A-Fa-f]{64})\)\s*$'
+    $entries = @()
+    foreach ($line in @($Text -split "`r?`n")) {
+        $m = [regex]::Match($line, $pattern)
+        if ($m.Success) {
+            $entries += [pscustomobject]@{
+                File     = $m.Groups['file'].Value
+                Kind     = $m.Groups['kind'].Value
+                Identity = $m.Groups['identity'].Value.Trim()
+                Cases    = [int]$m.Groups['cases'].Value
+                Sha256   = $m.Groups['sha'].Value.ToUpperInvariant()
+            }
+        }
+    }
+    $byFile = @{}
+    foreach ($entry in $entries) {
+        if (-not $byFile.ContainsKey($entry.File)) { $byFile[$entry.File] = $entry }
+    }
+    $missing = @($expected | Where-Object { -not $byFile.ContainsKey($_) })
+    $duplicate = ($entries.Count -ne $byFile.Count)
+    $passMarker = ($Text -match '(?m)^PASS: 4/4 companion golden fixtures verified successfully:\s*$')
+    return [pscustomobject]@{
+        Entries   = $entries
+        ByFile    = $byFile
+        Missing   = $missing
+        Duplicate = $duplicate
+        Complete  = ($passMarker -and $missing.Count -eq 0 -and $byFile.Count -eq 4 -and -not $duplicate)
+    }
 }
 
 function Resolve-UnderRoot([string]$Base, [string]$Path) {
@@ -842,6 +1010,103 @@ if (-not $SkipPluginCopyCheck) {
     }
 }
 
+# --- 4b. accepted companion golden fixtures (mandatory unified-entry gate) -----
+# The standalone verifier remains the sole validator. This stage only invokes the
+# FULL CLI (never -InternalStructureTestMode), captures its real native exit and
+# raw output, and fails the whole run on any failure/block/crash/zero output.
+$companionResult = 'FAIL'
+$companionDetail = ''
+$companionVerifier = if ($CompanionVerifierPath) {
+    Resolve-UnderRoot $root $CompanionVerifierPath
+} else {
+    Join-Path $root 'tools\verify-v5-companion-fixtures.ps1'
+}
+$companionFixtures = if ($CompanionFixtureDir) {
+    Resolve-UnderRoot $root $CompanionFixtureDir
+} else {
+    Join-Path $root 'tests\v5-golden'
+}
+$companionLog = Join-Path $LogDir 'companion-fixtures.log'
+$companionMeta = Join-Path $LogDir 'companion-fixtures.meta.txt'
+$companionScriptHash = '(missing)'
+if (Test-Path -LiteralPath $companionVerifier) {
+    try { $companionScriptHash = (Get-FileHash -LiteralPath $companionVerifier -Algorithm SHA256).Hash } catch { $companionScriptHash = '(unavailable)' }
+}
+Write-Step "companion   : $companionVerifier"
+Write-Step "fixtures    : $companionFixtures"
+$companionRun = Invoke-CompanionVerifier -VerifierPath $companionVerifier -FixtureDir $companionFixtures `
+    -LogPath $companionLog -TimeoutSeconds $CompanionTimeoutSeconds
+$companionText = ''
+try { if (Test-Path -LiteralPath $companionLog) { $companionText = Get-Content -LiteralPath $companionLog -Raw -Encoding UTF8 } } catch { }
+$companionCert = Get-CompanionFixtureCertification -Text $companionText
+
+if ($companionRun.TimedOut) {
+    $companionResult = 'FAIL'
+    $companionDetail = "verifier timed out after $CompanionTimeoutSeconds s; native exit not trusted"
+}
+elseif ($companionRun.Threw) {
+    $companionResult = 'FAIL'
+    $companionDetail = "verifier invocation threw: $($companionRun.Threw)"
+}
+elseif ($null -eq $companionRun.ExitCode) {
+    $companionResult = 'FAIL'
+    $companionDetail = 'verifier produced no native exit code (crash/spawn failure; never treated as 0)'
+}
+elseif ($companionRun.ExitCode -eq 2) {
+    $companionResult = 'BLOCKED'
+    $companionDetail = 'verifier native exit 2 (environment BLOCKED)'
+}
+elseif ($companionRun.ExitCode -ne 0) {
+    $firstFailure = @($companionText -split "`r?`n" | Where-Object { $_ -match '^\s*-\s+[A-Z0-9_]+:' } | Select-Object -First 1)
+    $companionResult = 'FAIL'
+    $companionDetail = "verifier native exit $($companionRun.ExitCode)$(if ($firstFailure.Count) { "; first failure: $($firstFailure[0].Trim())" } else { '' })"
+}
+elseif (-not $companionCert.Complete) {
+    $missing = @($companionCert.Missing)
+    $companionResult = 'FAIL'
+    $companionDetail = "verifier native exit 0 but did not certify 4/4 ($($companionCert.ByFile.Count)/4 parsed$(if ($missing.Count) { "; missing: $($missing -join ', ')" } else { '' })$(if ($companionCert.Duplicate) { '; duplicate fixture lines' } else { '' }))"
+}
+else {
+    $companionResult = 'PASS'
+    $companionDetail = '4/4 accepted fixtures certified by the standalone verifier (full CLI; native exit 0)'
+}
+if ($companionResult -eq 'FAIL') { $anyFail = $true }
+
+$companionLogHash = '(unavailable)'
+if (Test-Path -LiteralPath $companionLog) {
+    try { $companionLogHash = (Get-FileHash -LiteralPath $companionLog -Algorithm SHA256).Hash } catch { }
+}
+$companionMetaLines = @(
+    "stage            : companion-fixtures"
+    "verifier         : $companionVerifier"
+    "verifier sha256  : $companionScriptHash"
+    "repo root        : $root"
+    "fixture dir      : $companionFixtures"
+    "command          : $($companionRun.Command)"
+    "cwd              : $cwd"
+    "timeout seconds  : $CompanionTimeoutSeconds"
+    "raw native exit  : $(if ($null -ne $companionRun.ExitCode) { $companionRun.ExitCode } else { 'EXCEPTION (never treated as 0)' })"
+    "timed out        : $($companionRun.TimedOut)"
+    "invoke error     : $(if ($companionRun.Threw) { $companionRun.Threw } else { '(none)' })"
+    "result           : $companionResult"
+    "detail           : $companionDetail"
+    "raw log          : $companionLog"
+    "raw log sha256   : $companionLogHash"
+    "stdout log       : $companionLog.stdout.log"
+    "stderr log       : $companionLog.stderr.log"
+    "git blob pins    : NOT_RUN (not requested; historical freeze blobs are not fetched in shallow CI; current fixture bytes and embedded provenance are verified offline)"
+    "certified fixtures:"
+)
+if ($companionCert.Entries.Count -gt 0) {
+    foreach ($entry in $companionCert.Entries) {
+        $companionMetaLines += ("  {0}  {1}={2}  cases={3}  sha256={4}" -f $entry.File, $entry.Kind, $entry.Identity, $entry.Cases, $entry.Sha256)
+    }
+}
+else {
+    $companionMetaLines += "  (none parsed from the verifier output)"
+}
+try { Set-Content -Path $companionMeta -Value ($companionMetaLines -join [Environment]::NewLine) -Encoding UTF8 } catch { Write-Warning "[verify-v5] could not write companion meta ${companionMeta}: $($_.Exception.Message)" }
+
 # --- 5. summary ----------------------------------------------------------------
 $summaryPath = Join-Path $LogDir 'summary.log'
 $lines = New-Object System.Collections.Generic.List[string]
@@ -854,6 +1119,18 @@ $lines.Add("run identity   : run-info.txt; per-invocation command/exit/counts: r
 $lines.Add("")
 $lines.Add("solution build : $(if ($buildOk) { "PASS (exit $(Format-ExitCode $slnExit))" } else { "FAIL (exit $(Format-ExitCode $slnExit))" })  log: $slnBuildLog")
 $lines.Add("plugin copy    : $pluginResult  ($($pluginDetail))$(if ($pluginLog) { "  log: $pluginLog" })")
+$lines.Add("companion gate : $companionResult  ($companionDetail)  log: $companionLog  meta: $companionMeta")
+$lines.Add("    command    : $($companionRun.Command)")
+$lines.Add("    raw exit   : $(if ($null -ne $companionRun.ExitCode) { $companionRun.ExitCode } else { 'EXCEPTION (never treated as 0)' })  raw log sha256: $companionLogHash")
+if ($companionCert.Entries.Count -gt 0) {
+    foreach ($entry in $companionCert.Entries) {
+        $lines.Add(("    fixture    : {0}  {1}={2}  cases={3}  sha256={4}" -f $entry.File, $entry.Kind, $entry.Identity, $entry.Cases, $entry.Sha256))
+    }
+}
+else {
+    $lines.Add("    fixture    : (none certified/parsed from the verifier output)")
+}
+$lines.Add("    git pins   : NOT_RUN (historical freeze blobs not requested/fetched; current bytes and embedded provenance verified offline)")
 $lines.Add("")
 $lines.Add(("{0,-34} {1,-7} {2,-4} {3,-6} {4,-19} {5,6} {6,7} {7,8} {8,-8} {9}" -f @('PROJECT','KIND','REQ','INSLN','RUNNER','TOTAL','FAILED','SKIPPED','RESULT','LOG')))
 foreach ($project in $ordered) {
@@ -888,14 +1165,14 @@ foreach ($project in $ordered) {
     }
 }
 $lines.Add("")
-$overall = $(if ($anyFail) { 'FAIL' } else { 'PASS' })
+$overall = $(if ($anyFail -or $companionResult -eq 'FAIL') { 'FAIL' } elseif ($companionResult -eq 'BLOCKED') { 'BLOCKED' } else { 'PASS' })
 $passedCount = @($ordered | Where-Object { $_.Result -eq 'PASS' }).Count
 $failedCount = @($ordered | Where-Object { $_.Result -eq 'FAIL' }).Count
 $blockedCount = @($ordered | Where-Object { $_.Result -eq 'BLOCKED' }).Count
 $notRunCount = @($ordered | Where-Object { $_.Result -eq 'NOT_RUN' }).Count
-$lines.Add("OVERALL: $overall  (project rows: $passedCount PASS, $failedCount FAIL, $blockedCount BLOCKED, $notRunCount NOT_RUN)")
+$lines.Add("OVERALL: $overall  (project rows: $passedCount PASS, $failedCount FAIL, $blockedCount BLOCKED, $notRunCount NOT_RUN; companion gate: $companionResult)")
 $lines | Set-Content -Path $summaryPath -Encoding UTF8
 Write-Host ""
 $lines | ForEach-Object { Write-Host $_ }
 
-exit $(if ($anyFail) { 1 } else { 0 })
+exit $(if ($overall -eq 'FAIL') { 1 } elseif ($overall -eq 'BLOCKED') { 2 } else { 0 })
