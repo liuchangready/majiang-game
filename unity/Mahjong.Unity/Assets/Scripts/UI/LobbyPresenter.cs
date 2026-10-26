@@ -1,6 +1,8 @@
+#nullable enable
 using System;
 using UnityEngine;
 using UnityEngine.UI;
+using UnityEngine.InputSystem;
 using TMPro;
 using Mahjong.Unity.UI.Session;
 
@@ -56,8 +58,59 @@ namespace Mahjong.Unity.UI
                 _explanationText.text = "本地对局通道尚未就绪 (LOCAL_HOST_UNAVAILABLE)。P4.2平台壳已就绪，等待P4.1本地工厂对接。";
             }
 
-            var selectables = GetComponentsInChildren<Selectable>(true);
-            _focusRouter.RegisterSelectables(selectables);
+            var list = new System.Collections.Generic.List<Selectable>();
+            if (_backButton != null) list.Add(_backButton);
+            if (_startLocalGameButton != null) list.Add(_startLocalGameButton);
+
+            var canvas = GetComponentInParent<Canvas>();
+            if (canvas != null)
+            {
+                foreach (var s in canvas.GetComponentsInChildren<Selectable>(true))
+                {
+                    if (!list.Contains(s)) list.Add(s);
+                }
+            }
+            else
+            {
+                foreach (var s in GetComponentsInChildren<Selectable>(true))
+                {
+                    if (!list.Contains(s)) list.Add(s);
+                }
+            }
+
+            _focusRouter.RegisterSelectables(list);
+
+            if (_backButton != null)
+            {
+                if (UnityEngine.EventSystems.EventSystem.current != null)
+                {
+                    UnityEngine.EventSystems.EventSystem.current.SetSelectedGameObject(_backButton.gameObject);
+                }
+                else
+                {
+                    _backButton.Select();
+                }
+            }
+        }
+
+        private void Update()
+        {
+            if (Keyboard.current != null)
+            {
+                var kb = Keyboard.current;
+                bool shift = kb.leftShiftKey.isPressed || kb.rightShiftKey.isPressed;
+                if (kb.tabKey.wasPressedThisFrame)
+                {
+                    if (shift)
+                    {
+                        _focusRouter.FocusPrevious();
+                    }
+                    else
+                    {
+                        _focusRouter.FocusNext();
+                    }
+                }
+            }
         }
 
         private void OnDestroy()
@@ -82,6 +135,10 @@ namespace Mahjong.Unity.UI
 
         public void OnBackClicked()
         {
+            if (!UiInputLifecycle.Instance.ConsumeClickOrSubmit())
+            {
+                return;
+            }
             Debug.Log("LOBBY_BACK_CLICKED: Returning to menu...");
             _navigation?.BackToMenu();
         }

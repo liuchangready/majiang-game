@@ -1,6 +1,7 @@
 #nullable enable
 using System;
 using UnityEngine;
+using UnityEngine.EventSystems;
 using UnityEngine.UI;
 using TMPro;
 
@@ -20,6 +21,7 @@ namespace Mahjong.Unity.UI
         private Action? _onCancel;
         private BackRouter? _backRouter;
         private bool _isBackRegistered;
+        private GameObject? _previousSelectedGameObject;
 
         public bool IsOpen => _modalRoot != null && _modalRoot.activeSelf;
 
@@ -44,6 +46,8 @@ namespace Mahjong.Unity.UI
             _onConfirm = onConfirm;
             _onCancel = onCancel;
 
+            _previousSelectedGameObject = EventSystem.current != null ? EventSystem.current.currentSelectedGameObject : null;
+
             if (_titleText != null) _titleText.text = title;
             if (_messageText != null) _messageText.text = message;
             if (_confirmButtonText != null) _confirmButtonText.text = confirmText;
@@ -66,6 +70,12 @@ namespace Mahjong.Unity.UI
                 _modalRoot.SetActive(true);
             }
 
+            var focusTarget = _cancelButton != null ? _cancelButton.gameObject : _confirmButton?.gameObject;
+            if (focusTarget != null && EventSystem.current != null)
+            {
+                EventSystem.current.SetSelectedGameObject(focusTarget);
+            }
+
             if (!_isBackRegistered && _backRouter != null)
             {
                 _backRouter.RegisterModal(Close);
@@ -84,6 +94,7 @@ namespace Mahjong.Unity.UI
                 _backRouter.UnregisterModal(Close);
                 _isBackRegistered = false;
             }
+            RestorePreviousFocus();
             _onCancel?.Invoke();
         }
 
@@ -91,6 +102,11 @@ namespace Mahjong.Unity.UI
 
         private void OnConfirmClicked()
         {
+            if (!UiInputLifecycle.Instance.ConsumeClickOrSubmit())
+            {
+                return;
+            }
+
             if (_modalRoot != null)
             {
                 _modalRoot.SetActive(false);
@@ -100,7 +116,26 @@ namespace Mahjong.Unity.UI
                 _backRouter.UnregisterModal(Close);
                 _isBackRegistered = false;
             }
+            RestorePreviousFocus();
             _onConfirm?.Invoke();
+        }
+
+        private void OnCancelClicked()
+        {
+            if (!UiInputLifecycle.Instance.ConsumeClickOrSubmit())
+            {
+                return;
+            }
+            Close();
+        }
+
+        private void RestorePreviousFocus()
+        {
+            if (_previousSelectedGameObject != null && EventSystem.current != null && _previousSelectedGameObject.activeInHierarchy)
+            {
+                EventSystem.current.SetSelectedGameObject(_previousSelectedGameObject);
+            }
+            _previousSelectedGameObject = null;
         }
 
         private void OnDestroy()
@@ -110,11 +145,6 @@ namespace Mahjong.Unity.UI
                 _backRouter.UnregisterModal(Close);
                 _isBackRegistered = false;
             }
-        }
-
-        private void OnCancelClicked()
-        {
-            Close();
         }
     }
 }

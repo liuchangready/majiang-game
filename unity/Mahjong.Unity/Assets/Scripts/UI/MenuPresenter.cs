@@ -1,6 +1,8 @@
+#nullable enable
 using System;
 using UnityEngine;
 using UnityEngine.UI;
+using UnityEngine.InputSystem;
 using TMPro;
 
 namespace Mahjong.Unity.UI
@@ -51,6 +53,26 @@ namespace Mahjong.Unity.UI
             }
         }
 
+        private void Update()
+        {
+            if (Keyboard.current != null && (_quitModal == null || !_quitModal.IsOpen))
+            {
+                var kb = Keyboard.current;
+                bool shift = kb.leftShiftKey.isPressed || kb.rightShiftKey.isPressed;
+                if (kb.tabKey.wasPressedThisFrame)
+                {
+                    if (shift)
+                    {
+                        _focusRouter.FocusPrevious();
+                    }
+                    else
+                    {
+                        _focusRouter.FocusNext();
+                    }
+                }
+            }
+        }
+
         private void OnDestroy()
         {
             if (_playButton != null) _playButton.onClick.RemoveListener(OnPlayClicked);
@@ -59,6 +81,10 @@ namespace Mahjong.Unity.UI
 
         public void OnPlayClicked()
         {
+            if (_quitModal != null && _quitModal.IsOpen)
+            {
+                return;
+            }
             if (!UiInputLifecycle.Instance.ConsumeClickOrSubmit())
             {
                 return;
@@ -72,6 +98,10 @@ namespace Mahjong.Unity.UI
 
         public void OnQuitClicked()
         {
+            if (_quitModal != null && _quitModal.IsOpen)
+            {
+                return;
+            }
             if (!UiInputLifecycle.Instance.ConsumeClickOrSubmit())
             {
                 return;

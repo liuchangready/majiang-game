@@ -3,6 +3,7 @@ using System;
 using System.Collections;
 using System.IO;
 using UnityEngine;
+using UnityEngine.EventSystems;
 using UnityEngine.UI;
 using Mahjong.Unity.UI;
 
@@ -57,42 +58,45 @@ namespace Mahjong.Unity.App
             Destroy(tex);
         }
 
+        private void DispatchPointerClick(GameObject target)
+        {
+            var data = new PointerEventData(EventSystem.current)
+            {
+                pointerId = -1,
+                button = PointerEventData.InputButton.Left,
+                eligibleForClick = true
+            };
+            ExecuteEvents.Execute(target, data, ExecuteEvents.pointerDownHandler);
+            ExecuteEvents.Execute(target, data, ExecuteEvents.pointerUpHandler);
+            ExecuteEvents.Execute(target, data, ExecuteEvents.pointerClickHandler);
+        }
+
         private IEnumerator RunSmokeSequence(string screenshotDir)
         {
             Directory.CreateDirectory(screenshotDir);
             Debug.Log($"SMOKE_START: Output directory={screenshotDir}");
 
-            // Wait for Menu scene to settle
+            // 1. Wait for Menu scene to settle
             for (int f = 0; f < 10; f++) yield return null;
             yield return new WaitForEndOfFrame();
 
-            // 1. Capture 01-menu.png
             string shot1 = Path.Combine(screenshotDir, "01-menu.png");
             CaptureFrame(shot1);
             yield return new WaitForSeconds(0.2f);
             Debug.Log($"SMOKE_CAPTURED: 01-menu.png (exists={File.Exists(shot1)})");
 
-            // 2. Navigate to Lobby via MenuPresenter / PlayButton
-            var menuPresenter = FindFirstObjectByType<MenuPresenter>();
-            if (menuPresenter != null)
+            // 2. Navigate to Lobby
+            Debug.Log("SMOKE_STEP:NAVIGATE_TO_LOBBY");
+            var playBtn = GameObject.Find("PlayButton");
+            if (playBtn != null)
             {
-                Debug.Log("SMOKE: Clicking PlayButton via MenuPresenter...");
-                menuPresenter.OnPlayClicked();
+                DispatchPointerClick(playBtn);
             }
             else
             {
-                var playBtn = GameObject.Find("PlayButton")?.GetComponent<Button>();
-                if (playBtn != null)
-                {
-                    Debug.Log("SMOKE: Clicking PlayButton directly...");
-                    playBtn.onClick.Invoke();
-                }
-                else
-                {
-                    Debug.LogError("SMOKE_ERROR: PlayButton not found in Menu scene!");
-                    Application.Quit(1);
-                    yield break;
-                }
+                Debug.LogError("SMOKE_ERROR: PlayButton not found!");
+                Application.Quit(1);
+                yield break;
             }
 
             // Wait for Lobby scene to load
@@ -113,33 +117,24 @@ namespace Mahjong.Unity.App
             for (int f = 0; f < 10; f++) yield return null;
             yield return new WaitForEndOfFrame();
 
-            // 3. Capture 02-lobby.png
+            Debug.Log("SMOKE_STEP:LOBBY_LOADED");
             string shot2 = Path.Combine(screenshotDir, "02-lobby.png");
             CaptureFrame(shot2);
             yield return new WaitForSeconds(0.2f);
             Debug.Log($"SMOKE_CAPTURED: 02-lobby.png (exists={File.Exists(shot2)})");
 
-            // 4. Navigate back to Menu via LobbyPresenter / BackButton
-            var lobbyPresenter = FindFirstObjectByType<LobbyPresenter>();
-            if (lobbyPresenter != null)
+            // 3. Navigate back to Menu
+            Debug.Log("SMOKE_STEP:NAVIGATE_TO_MENU");
+            var backBtn = GameObject.Find("BackButton");
+            if (backBtn != null)
             {
-                Debug.Log("SMOKE: Clicking BackButton via LobbyPresenter...");
-                lobbyPresenter.OnBackClicked();
+                DispatchPointerClick(backBtn);
             }
             else
             {
-                var backBtn = GameObject.Find("BackButton")?.GetComponent<Button>();
-                if (backBtn != null)
-                {
-                    Debug.Log("SMOKE: Clicking BackButton directly...");
-                    backBtn.onClick.Invoke();
-                }
-                else
-                {
-                    Debug.LogError("SMOKE_ERROR: BackButton not found in Lobby scene!");
-                    Application.Quit(3);
-                    yield break;
-                }
+                Debug.LogError("SMOKE_ERROR: BackButton not found!");
+                Application.Quit(3);
+                yield break;
             }
 
             // Wait for Menu scene to return
@@ -160,36 +155,87 @@ namespace Mahjong.Unity.App
             for (int f = 0; f < 10; f++) yield return null;
             yield return new WaitForEndOfFrame();
 
-            // 5. Capture 03-menu-returned.png
+            Debug.Log("SMOKE_STEP:MENU_RETURNED");
             string shot3 = Path.Combine(screenshotDir, "03-menu-returned.png");
             CaptureFrame(shot3);
             yield return new WaitForSeconds(0.2f);
             Debug.Log($"SMOKE_CAPTURED: 03-menu-returned.png (exists={File.Exists(shot3)})");
 
-            // 6. Show Quit confirmation modal
-            menuPresenter = FindFirstObjectByType<MenuPresenter>();
-            if (menuPresenter != null)
+            // 4. Open Quit modal
+            var quitBtn = GameObject.Find("QuitButton");
+            if (quitBtn != null)
             {
-                Debug.Log("SMOKE: Clicking QuitButton to open confirmation modal...");
-                menuPresenter.OnQuitClicked();
+                DispatchPointerClick(quitBtn);
             }
             else
             {
-                Debug.LogError("SMOKE_ERROR: MenuPresenter not found after returning to Menu!");
+                Debug.LogError("SMOKE_ERROR: QuitButton not found!");
                 Application.Quit(5);
                 yield break;
             }
 
-            for (int f = 0; f < 10; f++) yield return null;
-            yield return new WaitForEndOfFrame();
+            for (int f = 0; f < 5; f++) yield return null;
+            var modal = FindFirstObjectByType<ModalPresenter>();
+            if (modal == null || !modal.IsOpen)
+            {
+                Debug.LogError("SMOKE_ERROR: ModalPresenter failed to open!");
+                Application.Quit(6);
+                yield break;
+            }
+            Debug.Log("SMOKE_STEP:MODAL_OPEN");
 
-            // 7. Capture 04-quit-modal.png
+            // 5. Cancel Quit modal
+            var cancelBtn = GameObject.Find("CancelButton");
+            if (cancelBtn != null)
+            {
+                DispatchPointerClick(cancelBtn);
+            }
+            else
+            {
+                Debug.LogError("SMOKE_ERROR: CancelButton not found in modal!");
+                Application.Quit(7);
+                yield break;
+            }
+
+            for (int f = 0; f < 5; f++) yield return null;
+            if (modal.IsOpen)
+            {
+                Debug.LogError("SMOKE_ERROR: Modal remained open after CancelButton click!");
+                Application.Quit(8);
+                yield break;
+            }
+            Debug.Log("SMOKE_STEP:MODAL_CANCEL_CLICKED");
+
+            // 6. Reopen Quit modal
+            quitBtn = GameObject.Find("QuitButton");
+            if (quitBtn != null)
+            {
+                DispatchPointerClick(quitBtn);
+            }
+            for (int f = 0; f < 5; f++) yield return null;
+            if (!modal.IsOpen)
+            {
+                Debug.LogError("SMOKE_ERROR: Modal failed to reopen!");
+                Application.Quit(9);
+                yield break;
+            }
+            Debug.Log("SMOKE_STEP:MODAL_REOPENED");
+
+            yield return new WaitForEndOfFrame();
             string shot4 = Path.Combine(screenshotDir, "04-quit-modal.png");
             CaptureFrame(shot4);
             yield return new WaitForSeconds(0.2f);
             Debug.Log($"SMOKE_CAPTURED: 04-quit-modal.png (exists={File.Exists(shot4)})");
 
-            Debug.Log("SMOKE_SUCCESS: All scenes and modals visited and captured successfully.");
+            // 7. Confirm Quit
+            Debug.Log("SMOKE_STEP:MODAL_CONFIRM_CLICKED");
+            var confirmBtn = GameObject.Find("ConfirmButton");
+            if (confirmBtn != null)
+            {
+                DispatchPointerClick(confirmBtn);
+            }
+
+            Debug.Log("SMOKE_SUCCESS");
             yield return new WaitForSeconds(0.2f);
             Application.Quit(0);
         }

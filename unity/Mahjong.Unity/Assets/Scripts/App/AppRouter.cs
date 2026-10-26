@@ -78,6 +78,10 @@ namespace Mahjong.Unity.App
 
                 _currentScene = sceneId;
                 Debug.Log($"SCENE_LOAD_COMPLETED:{sceneId}");
+                if (AppRoot.Instance != null && AppRoot.Instance.Lifecycle != null && !AppRoot.Instance.Lifecycle.IsPaused && UiInputLifecycle.Instance.IsPaused)
+                {
+                    UiInputLifecycle.Instance.OnResume();
+                }
                 SceneLoaded?.Invoke(sceneId);
 
                 // Update BackRouter scene back action

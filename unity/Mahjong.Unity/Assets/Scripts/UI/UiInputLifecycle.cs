@@ -11,14 +11,25 @@ namespace Mahjong.Unity.UI
 
         public const float MaxDragThresholdDesignUnits = 8.0f;
 
+        private enum PointerCycleState
+        {
+            Idle,
+            Armed,
+            Released,
+            Consumed,
+            Cancelled
+        }
+
         private bool _isArmed;
         private int? _primaryPointerId;
         private Vector2 _pointerDownPos;
         private Vector2 _lastDragPos;
         private float _accumulatedDragDistance;
         private long _pressGeneration;
-        private bool _eligibleForClick;
-        private bool _pointerUpCompleted;
+
+        private PointerCycleState _pointerState = PointerCycleState.Idle;
+        private int _consumedFrame = -1;
+        private int _cancelledFrame = -1;
 
         // Independent gate states
         private bool _isPaused;
@@ -41,8 +52,6 @@ namespace Mahjong.Unity.UI
 
         public bool TryArm(int pointerId, Vector2 screenPos, float scale = 1.0f)
         {
-            _pointerUpCompleted = false;
-            _eligibleForClick = false;
             if (!AcceptingInput)
             {
                 return false;
@@ -60,6 +69,8 @@ namespace Mahjong.Unity.UI
             _pointerDownPos = screenPos;
             _lastDragPos = screenPos;
             _accumulatedDragDistance = 0f;
+            _pressGeneration++;
+            _pointerState = PointerCycleState.Armed;
             return true;
         }
 
@@ -84,23 +95,22 @@ namespace Mahjong.Unity.UI
 
         public bool TryRelease(int pointerId, long checkGeneration)
         {
-            _pointerUpCompleted = true;
             if (!_isArmed || _primaryPointerId != pointerId)
             {
-                _eligibleForClick = false;
+                _pointerState = PointerCycleState.Cancelled;
+                _cancelledFrame = Time.frameCount;
                 return false;
             }
 
             if (!AcceptingInput || checkGeneration != _pressGeneration)
             {
                 CancelArm();
-                _eligibleForClick = false;
                 return false;
             }
 
             _isArmed = false;
             _primaryPointerId = null;
-            _eligibleForClick = true;
+            _pointerState = PointerCycleState.Released;
             return true;
         }
 
@@ -111,29 +121,53 @@ namespace Mahjong.Unity.UI
                 return false;
             }
 
-            if (_eligibleForClick)
+            if (_pointerState == PointerCycleState.Released)
             {
-                _eligibleForClick = false;
-                _pointerUpCompleted = false;
+                _pointerState = PointerCycleState.Consumed;
+                _consumedFrame = Time.frameCount;
                 return true;
             }
 
-            if (_pointerUpCompleted)
+            if (_pointerState == PointerCycleState.Consumed)
             {
-                _pointerUpCompleted = false;
+                if (Time.frameCount != _consumedFrame)
+                {
+                    _pointerState = PointerCycleState.Idle;
+                    return true;
+                }
                 return false;
             }
 
+            if (_pointerState == PointerCycleState.Cancelled)
+            {
+                if (Time.frameCount != _cancelledFrame)
+                {
+                    _pointerState = PointerCycleState.Idle;
+                    return true;
+                }
+                return false;
+            }
+
+            if (_pointerState == PointerCycleState.Armed)
+            {
+                return false;
+            }
+
+            // PointerCycleState.Idle: keyboard/gamepad submit
             return true;
         }
 
         public void CancelArm()
         {
+            if (_isArmed || _pointerState == PointerCycleState.Armed || _pointerState == PointerCycleState.Released)
+            {
+                _pointerState = PointerCycleState.Cancelled;
+                _cancelledFrame = Time.frameCount;
+            }
             _isArmed = false;
             _primaryPointerId = null;
             _pressGeneration++;
             _accumulatedDragDistance = 0f;
-            _eligibleForClick = false;
         }
 
         public void OnPause()

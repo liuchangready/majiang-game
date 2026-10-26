@@ -282,26 +282,141 @@ function Test-SingleBoundaryRules([string]$projDir, [string]$policyFile) {
 
     # 8. Assembly Metadata Verification (IGameSession, ITableChannel, Wire DTO)
     if (Test-Path $pluginsDir) {
-        $clientDll = Join-Path $pluginsDir "Mahjong.Client.dll"
-        if (Test-Path $clientDll) {
-            $bytes = [System.IO.File]::ReadAllBytes($clientDll)
-            $str = [System.Text.Encoding]::UTF8.GetString($bytes)
-            $requiredTypes = @("IGameSession", "ITableChannel", "TableSession")
-            foreach ($req in $requiredTypes) {
-                if (-not $str.Contains($req)) {
-                    $errors.Add("METADATA_CHECK_FAILED: Required type or contract '$req' was not found in '$clientDll'.")
-                }
-            }
-        }
-        $probeCsproj = Join-Path $repoRoot "build/tools/metadata-probe/MetadataProbe.csproj"
         $dotnetExe = "D:\Unity\dotnet\dotnet.exe"
         if (-not (Test-Path $dotnetExe)) {
             $dotnetExe = "dotnet"
         }
-        if (Test-Path $probeCsproj) {
-            $metaOut = & $dotnetExe run --project $probeCsproj -- $pluginsDir 2>&1
+
+        $probeDir = Join-Path $projDir "TempBoundaryProbe"
+        if (Test-Path $probeDir) { Remove-Item -Recurse -Force $probeDir }
+        New-Item -ItemType Directory -Force -Path $probeDir | Out-Null
+        try {
+            $csproj = Join-Path $probeDir "Probe.csproj"
+            $csCode = Join-Path $probeDir "Program.cs"
+            Set-Content -Path $csproj -Value '<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><OutputType>Exe</OutputType><TargetFramework>net8.0</TargetFramework></PropertyGroup></Project>' -Encoding UTF8
+            $code = @'
+using System;
+using System.IO;
+using System.Collections.Generic;
+using System.Reflection.Metadata;
+using System.Reflection.PortableExecutable;
+
+class Program
+{
+    static int Main(string[] args)
+    {
+        string dir = args[0];
+        var errors = new List<string>();
+
+        void CheckDll(string filename, string[] requiredTypes)
+        {
+            string path = Path.Combine(dir, filename);
+            if (!File.Exists(path))
+            {
+                errors.Add("Missing DLL: " + filename);
+                return;
+            }
+            try
+            {
+                using var fs = File.OpenRead(path);
+                using var pe = new PEReader(fs);
+                if (!pe.HasMetadata)
+                {
+                    errors.Add("DLL has no CLI metadata: " + filename);
+                    return;
+                }
+                var mr = pe.GetMetadataReader();
+                var definedTypes = new HashSet<string>();
+                foreach (var h in mr.TypeDefinitions)
+                {
+                    var td = mr.GetTypeDefinition(h);
+                    string name = mr.GetString(td.Name);
+                    string ns = mr.GetString(td.Namespace);
+                    string full = string.IsNullOrEmpty(ns) ? name : ns + "." + name;
+                    definedTypes.Add(full);
+                    definedTypes.Add(name);
+                }
+                foreach (var req in requiredTypes)
+                {
+                    if (!definedTypes.Contains(req))
+                    {
+                        errors.Add("DLL '" + filename + "' is missing required TypeDef: " + req);
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                errors.Add("Error reading metadata from " + filename + ": " + ex.Message);
+            }
+        }
+
+        CheckDll("Mahjong.Client.dll", new[] { "Mahjong.Client.IGameSession", "Mahjong.Client.ITableChannel", "Mahjong.Client.TableSession" });
+        CheckDll("Mahjong.Contracts.Wire.dll", new[] { "Mahjong.Contracts.Wire.PlayerSnapshot", "Mahjong.Contracts.Wire.PublicSnapshot", "Mahjong.Contracts.Wire.RoomUpdate" });
+
+        if (errors.Count > 0)
+        {
+            foreach (var err in errors) Console.WriteLine("METADATA_ERROR: " + err);
+            return 1;
+        }
+        return 0;
+    }
+}
+'@
+            Set-Content -Path $csCode -Value $code -Encoding UTF8
+            $probeOut = & $dotnetExe run --project $probeDir -- $pluginsDir 2>&1
             if ($LASTEXITCODE -ne 0) {
-                $errors.Add("METADATA_CHECK_FAILED: $metaOut")
+                $errors.Add("METADATA_CHECK_FAILED: $probeOut")
+            }
+        }
+        finally {
+            if (Test-Path $probeDir) { Remove-Item -Recurse -Force $probeDir }
+        }
+    }
+
+    # 9. Scene Script GUID Resolution Check
+    $scenesDir = Join-Path $projDir "Assets/Scenes"
+    if (Test-Path $scenesDir) {
+        $metaGuids = @{
+            '0cd44c1031e13a943bb63640046fad76' = $true # UnityEngine.EventSystems.EventSystem
+            '4e29b1a8efbd4b44bb3f3716e73f07ff' = $true # UnityEngine.UI.Button
+            'a79441f348de89743a2939f4d699eac1' = $true # Package script
+            '01614664b831546d2ae94a42149d80ac' = $true # InputSystemUIInputModule
+            '073797afb82c5a1438f328866b10b3f0' = $true # UniversalAdditionalCameraData
+            '76c392e42b5098c458856cdf6ecaaaa1' = $true # UnityEngine.InputSystem.PlayerInput
+            'fe87c0e1cc204ed48ad3b37840f39efc' = $true # UnityEngine.UI.Image
+            'f4688fdb7df04437aeb418b961361dc5' = $true # TMPro.TextMeshProUGUI
+            'dc42784cf147c0c48a680349fa168899' = $true # UnityEngine.UI.CanvasScaler
+        }
+        Get-ChildItem -Path (Join-Path $projDir "Assets") -Recurse -Filter "*.meta" | ForEach-Object {
+            $raw = Get-Content $_.FullName -Raw
+            if ($raw -match 'guid:\s*([a-f0-9]{32})') {
+                $metaGuids[$matches[1]] = $true
+            }
+        }
+
+        $sceneFiles = Get-ChildItem -Path $scenesDir -Recurse -Filter "*.unity"
+        foreach ($sc in $sceneFiles) {
+            $content = Get-Content $sc.FullName -Raw
+            $guidMatches = [regex]::Matches($content, 'm_Script:\s*\{fileID:\s*11500000,\s*guid:\s*([a-f0-9]{32})')
+            foreach ($gm in $guidMatches) {
+                $guid = $gm.Groups[1].Value
+                if (-not $metaGuids.ContainsKey($guid)) {
+                    $errors.Add("UNRESOLVED_SCENE_SCRIPT_GUID: Scene '$($sc.FullName)' references script with unknown GUID '$guid'.")
+                }
+            }
+        }
+    }
+
+    # 10. Required Packages Manifest Check
+    $manifestFile = Join-Path $projDir "Packages/manifest.json"
+    if (Test-Path $manifestFile) {
+        $manifestJson = Get-Content $manifestFile -Raw | ConvertFrom-Json
+        if ($manifestJson.dependencies) {
+            $requiredPackages = @("com.unity.inputsystem")
+            foreach ($pkg in $requiredPackages) {
+                if (-not ($manifestJson.dependencies.PSObject.Properties.Name -contains $pkg)) {
+                    $errors.Add("MISSING_REQUIRED_PACKAGE: Required package '$pkg' is not present in '$manifestFile'.")
+                }
             }
         }
     }

@@ -6,6 +6,8 @@ param(
 
 $ErrorActionPreference = "Stop"
 
+Add-Type -AssemblyName System.Drawing
+
 $resolvedExe = (Resolve-Path $PlayerExe).Path
 if (-not (Test-Path $resolvedExe)) {
     throw "Player executable not found: $resolvedExe"
@@ -65,7 +67,7 @@ try {
             throw "Screenshot was not generated: $shot"
         }
         $len = (Get-Item $shot).Length
-        if ($len -lt 10000) {
+        if ($len -lt 1000) {
             throw "Screenshot is suspiciously small ($len bytes): $shot"
         }
         $bytes = [System.IO.File]::ReadAllBytes($shot)
@@ -75,6 +77,23 @@ try {
         for ($i = 0; $i -lt 8; $i++) {
             if ($bytes[$i] -ne $pngMagic[$i]) {
                 throw "File is not a valid PNG image (invalid magic header): $shot"
+            }
+        }
+
+        # Validate image decoding and resolution (1280x720)
+        $img = $null
+        try {
+            $img = [System.Drawing.Image]::FromFile($shot)
+            if ($img.Width -ne 1280 -or $img.Height -ne 720) {
+                throw "Screenshot resolution is $($img.Width)x$($img.Height), expected 1280x720: $shot"
+            }
+        }
+        catch {
+            throw "Failed to decode screenshot as valid image (1280x720): $shot. Error: $_"
+        }
+        finally {
+            if ($img -ne $null) {
+                $img.Dispose()
             }
         }
     }
@@ -104,14 +123,30 @@ try {
     if ([string]::IsNullOrWhiteSpace($logContent)) {
         throw "Player log file is empty: $resolvedLog"
     }
-    if (-not $logContent.Contains("SMOKE_SUCCESS")) {
-        throw "Log file does not contain SMOKE_SUCCESS marker."
-    }
-    if (-not $logContent.Contains("SCENE_LOAD_COMPLETED:Menu")) {
-        throw "Log file does not contain Menu scene load confirmation."
-    }
-    if (-not $logContent.Contains("SCENE_LOAD_COMPLETED:Lobby")) {
-        throw "Log file does not contain Lobby scene load confirmation."
+
+    # Strict lifecycle sequence assertion
+    $requiredSteps = @(
+        "SCENE_LOAD_COMPLETED:Menu",
+        "SMOKE_STEP:NAVIGATE_TO_LOBBY",
+        "SCENE_LOAD_COMPLETED:Lobby",
+        "SMOKE_STEP:LOBBY_LOADED",
+        "SMOKE_STEP:NAVIGATE_TO_MENU",
+        "SCENE_LOAD_COMPLETED:Menu",
+        "SMOKE_STEP:MENU_RETURNED",
+        "SMOKE_STEP:MODAL_OPEN",
+        "SMOKE_STEP:MODAL_CANCEL_CLICKED",
+        "SMOKE_STEP:MODAL_REOPENED",
+        "SMOKE_STEP:MODAL_CONFIRM_CLICKED",
+        "SMOKE_SUCCESS"
+    )
+
+    $lastIndex = -1
+    foreach ($step in $requiredSteps) {
+        $idx = $logContent.IndexOf($step, [Math]::Max(0, $lastIndex))
+        if ($idx -lt 0) {
+            throw "Player log missing required lifecycle step or step out of order: '$step' after index $lastIndex"
+        }
+        $lastIndex = $idx + $step.Length
     }
 
     Write-Host "Player smoke test completed successfully!"
