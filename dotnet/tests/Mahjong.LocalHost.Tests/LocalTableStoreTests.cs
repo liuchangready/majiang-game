@@ -154,6 +154,7 @@ namespace Mahjong.LocalHost.Tests
             };
             harness.Options.FileSystemForTest = fs;
             LocalTableStore store = await OpenFreshStoreAsync(harness, fs, TestContext.Current.CancellationToken);
+            TableStateRow original = (await store.LoadStateAsync(P41Harness.RoomId, TestContext.Current.CancellationToken))!;
             store.Dispose();
             Assert.True(fs.CopyAttempts >= 1, "copy attempts=" + fs.CopyAttempts);
             Assert.True(File.Exists(harness.SavePath));
@@ -169,7 +170,10 @@ namespace Mahjong.LocalHost.Tests
                     P41Harness.RoomId,
                     TestContext.Current.CancellationToken);
                 Assert.NotNull(row);
-                Assert.False(string.IsNullOrEmpty(row!.StateFingerprint.ToString()));
+                Assert.NotNull(row);
+                Assert.Equal(original.StateVersion, row!.StateVersion);
+                Assert.Equal(original.StateFingerprint, row.StateFingerprint);
+                Assert.Equal(original.StateHash, row.StateHash);
             }
             finally
             {

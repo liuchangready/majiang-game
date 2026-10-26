@@ -576,6 +576,11 @@ namespace Mahjong.LocalHost
             {
                 candidates.Add(new LegalActionOption(LegalActionKind.Discard, 0, hand[i]));
             }
+            if (hand.Count == 14 && LooksLikeWinningHand(hand))
+            {
+                candidates.Add(new LegalActionOption(LegalActionKind.Tsumo, 0));
+            }
+
 
             var pending = new PendingDecision(
                 new DecisionKey(snapshot.RoundId, 0, "local-human-initial"),
