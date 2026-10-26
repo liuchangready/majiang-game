@@ -741,6 +741,7 @@ namespace Mahjong.LocalHost
             RoundActionKind hostAction = kind == CommandKind.SubmitAction ? MapActionKind(document) : RoundActionKind.Pass;
             bool passSetsFuriten = false;
             bool passSetsRiichi = false;
+            bool furitenAccepted = false;
             if (kind == CommandKind.SubmitAction && hostAction == RoundActionKind.Pass)
             {
                 IReadOnlyList<LegalActionOption> candidates = _actor.GetPendingDecisionCandidates(_seat);
@@ -837,6 +838,7 @@ namespace Mahjong.LocalHost
 
                 if (result.Status == TableOperationStatus.Accepted)
                 {
+                    furitenAccepted = true;
                     if (passSetsFuriten)
                     {
                         _temporaryFuriten[_seat] = true;
@@ -866,7 +868,13 @@ namespace Mahjong.LocalHost
             {
                 Enqueue(RejectedReceipt(envelope, requestId, expected, exception.Code, exception.Message, payload));
             }
-                _store.ClearPreparedFuriten();
+            finally
+            {
+                if (!furitenAccepted)
+                {
+                    _store.ClearPreparedFuriten();
+                }
+            }
         }
 
         private static bool IsCheatKind(CommandKind kind)

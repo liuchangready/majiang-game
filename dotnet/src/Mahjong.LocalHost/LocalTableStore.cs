@@ -1605,7 +1605,7 @@ namespace Mahjong.LocalHost
         {
             try
             {
-                return TryLoad(_primaryPath, out _) != null || TryLoad(_backupPath, out _) != null;
+                return TryLoad(_primaryPath, out _) != null;
             }
             catch (LocalTableException)
             {
