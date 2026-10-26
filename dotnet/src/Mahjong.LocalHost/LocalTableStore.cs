@@ -37,7 +37,7 @@ namespace Mahjong.LocalHost
         private LocalSave? _save;
         private (string AccountId, RequestScopeId ScopeId, RequestId RequestId, string Digest)? _pendingReceiptDigest;
         private (string AccountId, RequestScopeId ScopeId, RequestId RequestId, string Digest, string Kind)? _pendingControlResult;
-        private (int Seat, bool? Temporary, bool? Riichi)? _pendingFuriten;
+        private (int Seat, bool? Temporary, bool? Riichi, string RoomId, ulong ExpectedStateVersion)? _pendingFuriten;
         private Stream? _lockStream;
         private bool _leaseAcquired;
         private string _leaseOwner = string.Empty;
@@ -779,8 +779,11 @@ namespace Mahjong.LocalHost
                 {
                     candidate.Operations.Clear();
                 }
-                (int Seat, bool? Temporary, bool? Riichi)? pendingFuriten = _pendingFuriten;
-                if (pendingFuriten.HasValue)
+                (int Seat, bool? Temporary, bool? Riichi, string RoomId, ulong ExpectedStateVersion)? pendingFuriten =
+                    _pendingFuriten;
+                if (pendingFuriten.HasValue &&
+                    string.Equals(pendingFuriten.Value.RoomId, request.RoomId, StringComparison.Ordinal) &&
+                    pendingFuriten.Value.ExpectedStateVersion == request.ExpectedStateVersion.Value)
                 {
                     if (pendingFuriten.Value.Temporary.HasValue)
                     {
@@ -1001,11 +1004,16 @@ namespace Mahjong.LocalHost
             }
         }
 
-        internal void PrepareFuriten(int seat, bool? temporary, bool? riichi)
+        internal void PrepareFuriten(
+            int seat,
+            bool? temporary,
+            bool? riichi,
+            string roomId,
+            ulong expectedStateVersion)
         {
             lock (_gate)
             {
-                _pendingFuriten = (seat, temporary, riichi);
+                _pendingFuriten = (seat, temporary, riichi, roomId, expectedStateVersion);
             }
         }
 
