@@ -31,6 +31,10 @@ namespace Mahjong.LocalHost
         private readonly LocalHostEnvironment _environment;
         private readonly ITableClock _clock;
 
+        internal Func<Mahjong.Domain.Rules.RoundSettlementCalculation?>? SettlementProvider { get; set; }
+
+        internal TableProjectionContextData? RecoveredFacts { get; set; }
+
         public LocalSnapshotFacts(LocalHostEnvironment environment, ITableClock clock)
         {
             _environment = environment;
@@ -39,7 +43,32 @@ namespace Mahjong.LocalHost
 
         public RoundStateMachine CreateInitialRound(LocalTableHostOptions options)
         {
-            string roundId = options.RoomId + "-r1";
+            return CreateRound(
+                options,
+                options.RoomId + "-r1",
+                0,
+                1,
+                0,
+                0,
+                new long[] { 25_000L, 25_000L, 25_000L, 25_000L },
+                0);
+        }
+
+        public RoundStateMachine CreateRound(
+            LocalTableHostOptions options,
+            string roundId,
+            int dealerSeat,
+            int roundWind,
+            int roundNumber,
+            int honba,
+            IReadOnlyList<long> scores,
+            int riichiSticks)
+        {
+            if (options == null)
+            {
+                throw new ArgumentNullException(nameof(options));
+            }
+
             var order = new List<TileId>(TileId.Count);
             for (int i = 0; i < TileId.Count; i++)
             {
@@ -55,15 +84,15 @@ namespace Mahjong.LocalHost
             }
 
             RecordedRandomDraw wall = RecordedRandomDraw.Create(roundId + "-wall", order);
-            TilePositionMap dealt = TilePositionMap.CreateDealt(wall, 0);
+            TilePositionMap dealt = TilePositionMap.CreateDealt(wall, dealerSeat);
             var spec = new RoundSpec(
                 roundId,
-                0,
-                1,
-                0,
-                0,
-                new long[] { 25_000L, 25_000L, 25_000L, 25_000L },
-                0);
+                dealerSeat,
+                roundWind,
+                roundNumber,
+                honba,
+                scores,
+                riichiSticks);
             return RoundStateMachine.CreateDealt(spec, dealt, RoundPhase.CheatWindow);
         }
 
@@ -137,39 +166,54 @@ namespace Mahjong.LocalHost
             }
 
             RoundStateMachine round = request.Round;
+            if (RecoveredFacts != null &&
+                string.Equals(RecoveredFacts.RoundId, round.RoundId, StringComparison.Ordinal) &&
+                RecoveredFacts.StateVersion == request.StateVersion)
+            {
+                return RecoveredFacts;
+            }
             var publicFacts = new List<TableSeatPublicFacts>(4);
             var privateFacts = new List<TableSeatPrivateFacts>(4);
             int[] discardCounters = new int[4];
-            var lastDrawn = new TileId?[4];
-            for (int i = 0; i < request.CommittedEvents.Count; i++)
-            {
-                TableEventRecord record = request.CommittedEvents[i];
-                if (record.Type == RoundEventType.TileDrawn && record.Seat >= 0 && record.Seat < 4)
-                {
-                    lastDrawn[record.Seat] = record.Tile;
-                }
-            }
-
             for (int seat = 0; seat < 4; seat++)
             {
                 var discards = new List<DiscardView>();
+                TileId? seatDraw = null;
+                bool riichiPending = false;
                 for (int i = 0; i < request.CommittedEvents.Count; i++)
                 {
                     TableEventRecord record = request.CommittedEvents[i];
-                    if (record.Type != RoundEventType.TileDiscarded || record.Seat != seat || !record.Tile.HasValue)
+                    if (record.Seat != seat)
+                    {
+                        continue;
+                    }
+
+                    if (record.Type == RoundEventType.RiichiDeclared)
+                    {
+                        riichiPending = true;
+                        continue;
+                    }
+
+                    if (record.Type == RoundEventType.TileDrawn || record.Type == RoundEventType.RinshanDrawn)
+                    {
+                        seatDraw = record.Tile;
+                        continue;
+                    }
+
+                    if (record.Type != RoundEventType.TileDiscarded || !record.Tile.HasValue)
                     {
                         continue;
                     }
 
                     discardCounters[seat]++;
-                    bool riichi = round.IsRiichi(seat) && record.Detail != null &&
-                                  record.Detail.IndexOf("riichi", StringComparison.OrdinalIgnoreCase) >= 0;
-                    TileId? drawn = lastDrawn[seat];
-                    bool tsumogiri = drawn.HasValue && record.Tile.HasValue && drawn.Value == record.Tile.Value;                    discards.Add(new DiscardView(
+                    bool tsumogiri = seatDraw.HasValue && seatDraw.Value == record.Tile.Value;
+                    discards.Add(new DiscardView(
                         unchecked((uint)record.Tile.Value.Value),
                         unchecked((uint)discardCounters[seat]),
-                        riichi,
+                        riichiPending,
                         tsumogiri));
+                    riichiPending = false;
+                    seatDraw = null;
                 }
 
                 var melds = new List<TableMeldFact>();
@@ -228,7 +272,7 @@ namespace Mahjong.LocalHost
                 BuildEventFacts(request));
         }
 
-        private static IReadOnlyList<TableProjectionEventFact> BuildEventFacts(TableProjectionContextRequest request)
+        private IReadOnlyList<TableProjectionEventFact> BuildEventFacts(TableProjectionContextRequest request)
         {
             var facts = new List<TableProjectionEventFact>();
             RoundStateMachine round = request.Round;
@@ -297,9 +341,38 @@ namespace Mahjong.LocalHost
                             continue;
                         }
 
+                        Mahjong.Domain.Rules.RoundSettlementCalculation? calculation = SettlementProvider?.Invoke();
+                        IReadOnlyList<YakuView>? yaku = null;
+                        uint? han = null;
+                        uint? fu = null;
+                        long? score = null;
+                        if (calculation != null &&
+                            string.Equals(calculation.SourceRoundId, round.RoundId, StringComparison.Ordinal) &&
+                            calculation.Breakdown != null)
+                        {
+                            var views = new List<YakuView>();
+                            for (int y = 0; y < calculation.Breakdown.Yaku.Count; y++)
+                            {
+                                Mahjong.Domain.Rules.YakuHit hit = calculation.Breakdown.Yaku[y];
+                                if (hit.Han > 0)
+                                {
+                                    views.Add(new YakuView(hit.Code, unchecked((uint)hit.Han)));
+                                }
+                            }
+
+                            yaku = views;
+                            han = unchecked((uint)calculation.Breakdown.TotalYakuHan);
+                            fu = unchecked((uint)calculation.Breakdown.Fu.FinalFu);
+                            score = calculation.Breakdown.TotalPoints;
+                        }
+
                         value = new TableProjectionEventFacts(
                             turnNumber: unchecked((uint)(i + 1)),
                             loserSeat: win.Outcome.LoserSeat >= 0 ? win.Outcome.LoserSeat : (int?)null,
+                            yaku: yaku,
+                            han: han,
+                            fu: fu,
+                            score: score,
                             finalScores: Scores(win.FinalScores));
                         break;
                     case RoundEventType.ExhaustiveDraw:

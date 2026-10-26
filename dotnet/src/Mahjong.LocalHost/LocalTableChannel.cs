@@ -36,6 +36,7 @@ namespace Mahjong.LocalHost
         private Task? _permanentCloseTask;
         private int _openWaiters;
         private int _reopenWaiters;
+        private long _reopenGeneration;
         private string _closeReason = ProtocolErrorCode.LocalClosed;
 
         public LocalTableChannel(LocalTableHostOptions options)
@@ -44,6 +45,19 @@ namespace Mahjong.LocalHost
         }
 
         /// <summary>Test seam: lets a test hold a transient reopen open while it cancels waiters.</summary>
+        internal LocalTableRuntime? RuntimeForMatch => _runtime;
+
+        internal LocalChannelState StateForTest
+        {
+            get
+            {
+                lock (_gate)
+                {
+                    return _state;
+                }
+            }
+        }
+
         internal Func<CancellationToken, Task>? ReopenHookForTest { get; set; }
 
         /// <summary>Test seam: gates initial resource acquisition after waiter registration.</summary>
@@ -250,6 +264,12 @@ namespace Mahjong.LocalHost
 
         private async Task ReopenCoreAsync(TableChannelConnectRequest request, CancellationToken cancellationToken)
         {
+            long generation;
+            lock (_gate)
+            {
+                generation = ++_reopenGeneration;
+            }
+
             if (string.IsNullOrEmpty(request.Ticket))
             {
                 throw new LocalTableException(
@@ -263,15 +283,27 @@ namespace Mahjong.LocalHost
             }
 
             cancellationToken.ThrowIfCancellationRequested();
+            LocalTableRuntime runtime;
             lock (_gate)
             {
-                if (_runtime == null || _state == LocalChannelState.ClosingPermanent ||
-                    _state == LocalChannelState.PermanentlyClosed)
+                if (generation != _reopenGeneration ||
+                    _runtime == null ||
+                    _state != LocalChannelState.TransientClosed)
                 {
-                    throw new TableChannelClosedException(ProtocolErrorCode.LocalClosed, true);
+                    throw new TableChannelClosedException(ProtocolErrorCode.LocalClosed, false);
                 }
 
-                _runtime.Reconnect();
+                runtime = _runtime;
+            }
+
+            await runtime.ReconnectAsync(cancellationToken).ConfigureAwait(false);
+            lock (_gate)
+            {
+                if (generation != _reopenGeneration || _state != LocalChannelState.TransientClosed)
+                {
+                    throw new TableChannelClosedException(ProtocolErrorCode.LocalClosed, false);
+                }
+
                 _state = LocalChannelState.Open;
             }
         }
@@ -280,16 +312,15 @@ namespace Mahjong.LocalHost
         {
             lock (_gate)
             {
+                _reopenGeneration++;
                 _reopenTask = null;
-                if (_state == LocalChannelState.Open)
+                if (_runtime != null)
                 {
-                    // A last-waiter cancellation must not leave an open session with no waiter;
-                    // close it back to transient while keeping the actor and file lock alive.
-                    if (_runtime != null)
-                    {
-                        _runtime.CloseSession();
-                    }
+                    _runtime.CloseSession();
+                }
 
+                if (_state == LocalChannelState.Open || _state == LocalChannelState.TransientClosed)
+                {
                     _state = LocalChannelState.TransientClosed;
                 }
             }
@@ -373,7 +404,9 @@ namespace Mahjong.LocalHost
                 return;
             }
 
-            Task transient;
+            bool canceled = cancellationToken.IsCancellationRequested;
+            Task? open;
+            bool opening;
             lock (_gate)
             {
                 if (_state == LocalChannelState.New || _state == LocalChannelState.TransientClosed ||
@@ -382,18 +415,44 @@ namespace Mahjong.LocalHost
                     return;
                 }
 
-                if (_transientCloseTask == null)
-                {
-                    _transientCloseTask = TransientCloseCoreAsync(reason.Code);
-                }
-
-                transient = _transientCloseTask;
+                open = _openTask;
+                opening = _state == LocalChannelState.Opening;
             }
 
-            await WaitWithCancellationAsync(transient, cancellationToken).ConfigureAwait(false);
+            if (opening && open != null)
+            {
+                try
+                {
+                    await open.ConfigureAwait(false);
+                }
+                catch
+                {
+                    // A failed open already normalized the channel to permanently closed.
+                }
+            }
 
-            // Permanent closure wins: a transient waiter still waits for the real physical
-            // cleanup when a concurrent permanent close upgraded the state.
+            LocalTableRuntime? runtime = null;
+            lock (_gate)
+            {
+                if (_state == LocalChannelState.ClosingPermanent || _state == LocalChannelState.PermanentlyClosed)
+                {
+                    runtime = null;
+                }
+                else
+                {
+                    _state = LocalChannelState.TransientClosed;
+                    _openTask = null;
+                    _reopenTask = null;
+                    _transientCloseTask = null;
+                    runtime = _runtime;
+                }
+            }
+
+            if (runtime != null)
+            {
+                await runtime.CloseSessionAsync(CancellationToken.None).ConfigureAwait(false);
+            }
+
             Task? permanent;
             lock (_gate)
             {
@@ -406,8 +465,13 @@ namespace Mahjong.LocalHost
             {
                 await WaitWithCancellationAsync(permanent, cancellationToken).ConfigureAwait(false);
             }
-        }
 
+            if (canceled)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+            }
+
+        }
         private async Task TransientCloseCoreAsync(string reason)
         {
             Task? open;
@@ -435,10 +499,15 @@ namespace Mahjong.LocalHost
                     return;
                 }
 
-                _runtime?.CloseSession();
                 _state = LocalChannelState.TransientClosed;
                 _openTask = null;
                 _reopenTask = null;
+                _transientCloseTask = null;
+            }
+
+            if (_runtime != null)
+            {
+                await _runtime.CloseSessionAsync(CancellationToken.None).ConfigureAwait(false);
             }
         }
 

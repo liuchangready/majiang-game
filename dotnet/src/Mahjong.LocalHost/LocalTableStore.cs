@@ -262,10 +262,22 @@ namespace Mahjong.LocalHost
                     "The local save format/version is not supported by this host: " + exception.Message,
                     exception);
             }
+            catch (IOException exception)
+            {
+                throw new LocalTableException(
+                    LocalTableErrorKind.Unavailable,
+                    "The local save is temporarily unreadable; it is not treated as corruption: " + exception.Message,
+                    exception);
+            }
+            catch (UnauthorizedAccessException exception)
+            {
+                throw new LocalTableException(
+                    LocalTableErrorKind.Unavailable,
+                    "The local save cannot be read due to a transient permission failure: " + exception.Message,
+                    exception);
+            }
             catch (Exception exception) when (
                 exception is InvalidDataException ||
-                exception is IOException ||
-                exception is UnauthorizedAccessException ||
                 exception is ArgumentException)
             {
                 error = exception.GetType().Name + ": " + exception.Message;
@@ -829,13 +841,64 @@ namespace Mahjong.LocalHost
             lock (_gate)
             {
                 cancellationToken.ThrowIfCancellationRequested();
-                if (_save != null)
+                string key = ReceiptKey(accountId, scopeId, requestId);
+                if (!_faulted && _save != null)
                 {
-                    string key = ReceiptKey(accountId, scopeId, requestId);
                     if (_save.Receipts.TryGetValue(key, out TableDurableReceipt? receipt))
                     {
                         return new ValueTask<TableDurableReceipt?>((TableDurableReceipt?)receipt);
                     }
+
+                    return new ValueTask<TableDurableReceipt?>((TableDurableReceipt?)null);
+                }
+
+                if (_faulted)
+                {
+                    // Never answer an unknown commit from the stale in-memory envelope. Read the
+                    // physically committed primary (or, only when it is genuinely corrupt, the
+                    // previous copy) and report an unknown result when that evidence is missing.
+                    LocalSave? disk = null;
+                    if (_files.FileExists(_primaryPath))
+                    {
+                        disk = TryLoad(_primaryPath, out string? primaryError);
+                        if (disk == null)
+                        {
+                            disk = _files.FileExists(_backupPath)
+                                ? TryLoad(_backupPath, out _)
+                                : null;
+                            if (disk == null)
+                            {
+                                throw new LocalTableException(
+                                    LocalTableErrorKind.Unavailable,
+                                    "The committed primary is unreadable and the previous copy cannot prove the receipt: " +
+                                    primaryError);
+                            }
+                        }
+                    }
+                    else if (_files.FileExists(_backupPath))
+                    {
+                        disk = TryLoad(_backupPath, out _);
+                        if (disk == null)
+                        {
+                            throw new LocalTableException(
+                                LocalTableErrorKind.Unavailable,
+                                "The committed primary is missing and the previous copy is unreadable.");
+                        }
+                    }
+
+                    if (disk == null)
+                    {
+                        return new ValueTask<TableDurableReceipt?>((TableDurableReceipt?)null);
+                    }
+
+                    if (disk.Receipts.TryGetValue(key, out TableDurableReceipt? diskReceipt))
+                    {
+                        return new ValueTask<TableDurableReceipt?>((TableDurableReceipt?)diskReceipt);
+                    }
+
+                    throw new LocalTableException(
+                        LocalTableErrorKind.Unavailable,
+                        "The disk evidence does not contain the queried receipt; the outcome remains unknown.");
                 }
 
                 return new ValueTask<TableDurableReceipt?>((TableDurableReceipt?)null);
@@ -1294,7 +1357,14 @@ namespace Mahjong.LocalHost
 
         private bool ProbeAnyReadable()
         {
-            return TryLoad(_primaryPath, out _) != null || TryLoad(_backupPath, out _) != null;
+            try
+            {
+                return TryLoad(_primaryPath, out _) != null || TryLoad(_backupPath, out _) != null;
+            }
+            catch (LocalTableException)
+            {
+                return false;
+            }
         }
 
         private void WriteTemporary(string path, byte[] bytes)

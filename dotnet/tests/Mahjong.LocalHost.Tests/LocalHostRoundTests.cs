@@ -216,6 +216,9 @@ namespace Mahjong.LocalHost.Tests
             session.SnapshotChanged += handler;
             try
             {
+                Assert.True(
+                    session.State == TableConnectionState.Ready,
+                    "state=" + session.State + " last=" + session.LastError);
                 string roundId = snapshot.RoundId;
                 BusinessPayload payload = CommandPayloadFactory.SubmitAction(
                     roundId,

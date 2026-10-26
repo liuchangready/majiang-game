@@ -4,6 +4,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using Mahjong.Client;
 using Mahjong.Contracts;
+using Mahjong.TableRuntime;
 using Xunit;
 
 namespace Mahjong.LocalHost.Tests
@@ -16,6 +17,7 @@ namespace Mahjong.LocalHost.Tests
         public async Task ColdRestartRestoresCommittedStateVersion()
         {
             await using var harness = new P41Harness();
+            harness.Options.AutoPlay = false;
             CancellationToken ct = TestContext.Current.CancellationToken;
             ulong committedVersion;
             string roundId;
@@ -35,10 +37,16 @@ namespace Mahjong.LocalHost.Tests
                 await CloseAsync(session, channel);
             }
 
+            using (LocalTableStore check = await LocalTableStore.OpenAsync(harness.Options, harness.Clock, null, ct))
+            {
+                TableStateRow row = (await check.LoadStateAsync(P41Harness.RoomId, ct))!;
+                Assert.True(row.StateVersion.Value == committedVersion, "saved=" + row.StateVersion.Value + " committed=" + committedVersion);
+            }
+
             (ITableChannel reopened, TableSession restored) = await OpenSessionAsync(harness, ct);
             try
             {
-                Assert.Equal(committedVersion, restored.PlayerSnapshot!.StateVersion);
+                Assert.True(restored.PlayerSnapshot!.StateVersion == committedVersion, "restored=" + restored.PlayerSnapshot.StateVersion + " committed=" + committedVersion);
                 Assert.Equal(roundId, restored.PlayerSnapshot.RoundId);
             }
             finally
@@ -116,6 +124,77 @@ namespace Mahjong.LocalHost.Tests
             Assert.Equal(3, new FileInfo(harness.SavePath).Length);
         }
 
+        [Fact]
+        public async Task LostReceiptIsReconciledAfterColdReopenWithoutDuplicateSideEffect()
+        {
+            await using var harness = new P41Harness();
+            harness.Options.AutoPlay = false;
+            CancellationToken ct = TestContext.Current.CancellationToken;
+            var outbox = new InMemoryOutboxStore();
+            ITableChannel channel = await LocalTableHost.CreateChannelAsync(harness.Options, ct);
+            string channelTicket = LocalTableHost.IssueTicket(harness.Options);
+            await channel.OpenAsync(new TableChannelConnectRequest(channelTicket, "p41-test", null), ct);
+            var session = new TableSession(channel, outbox);
+            string sessionTicket = LocalTableHost.IssueTicket(harness.Options);
+            await session.OpenAsync(new TableSessionOpenRequest(sessionTicket, "p41-test"), ct);
+            for (int i = 0; i < 20 && session.State != TableConnectionState.Ready; i++)
+            {
+                await session.PumpOnceAsync(ct);
+            }
+
+            Assert.Equal(TableConnectionState.Ready, session.State);
+            PlayerSnapshot baseline = session.PlayerSnapshot!;
+            BusinessPayload payload = CommandPayloadFactory.SubmitAction(
+                baseline.RoundId,
+                "local-direct",
+                0UL,
+                ProtocolActionType.DiscardTile,
+                tileIds: new[] { baseline.PrivateView.ClosedTiles[0] });
+            var command = new ProtocolCommand(
+                CommandKind.SubmitAction,
+                payload,
+                new RequestId("lost-receipt-1"),
+                session.Binding!.Scope.ScopeId,
+                new StateVersion(baseline.StateVersion),
+                new RoundId(baseline.RoundId),
+                decisionId: null,
+                controlEpoch: new ControlEpoch(0));
+            CommandSubmission submission = await session.SubmitAsync(command, ct);
+            Assert.True(submission.Sent);
+
+            // Close before consuming the receipt/push: the outbox still has an unresolved side effect.
+            await channel.CloseAsync(new TableChannelCloseReason("LOST_RECEIPT", true), CancellationToken.None);
+            await session.CloseAsync("LOST_RECEIPT", CancellationToken.None);
+
+            ITableChannel reopened = await LocalTableHost.CreateChannelAsync(harness.Options, ct);
+            string reopenTicket = LocalTableHost.IssueTicket(harness.Options);
+            await reopened.OpenAsync(new TableChannelConnectRequest(reopenTicket, "p41-test", null), ct);
+            var recovered = new TableSession(reopened, outbox);
+            string recoverTicket = LocalTableHost.IssueTicket(harness.Options);
+            using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            cts.CancelAfter(TimeSpan.FromSeconds(5));
+            try
+            {
+                await recovered.OpenAsync(new TableSessionOpenRequest(recoverTicket, "p41-test"), cts.Token);
+                for (int i = 0; i < 50 && recovered.PendingCommands.Count > 0; i++)
+                {
+                    if (recovered.State == TableConnectionState.Ready)
+                    {
+                        await recovered.ReconcilePendingAsync(cts.Token);
+                    }
+
+                    await recovered.PumpOnceAsync(cts.Token);
+                }
+
+                Assert.Empty(recovered.PendingCommands);
+                Assert.Equal(baseline.StateVersion + 1, recovered.PlayerSnapshot!.StateVersion);
+            }
+            finally
+            {
+                await recovered.CloseAsync("TEST_DONE", CancellationToken.None);
+                await reopened.CloseAsync(new TableChannelCloseReason("TEST_DONE", true), CancellationToken.None);
+            }
+        }
         private static async Task<(ITableChannel Channel, TableSession Session)> OpenSessionAsync(
             P41Harness harness,
             CancellationToken cancellationToken)

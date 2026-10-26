@@ -24,6 +24,7 @@ namespace Mahjong.LocalHost
         private readonly object _scopeGate = new object();
         private long _requestCounter;
         private string _lastDecisionKey = string.Empty;
+        private Task? _task;
 
         public LocalTableDriver(
             TableActor actor,
@@ -41,10 +42,17 @@ namespace Mahjong.LocalHost
 
         public void Start()
         {
-            _ = Task.Run(DriveAsync);
+            if (_task != null)
+            {
+                return;
+            }
+
+            _task = Task.Run(DriveAsync);
         }
 
-        public void Stop()
+        public bool IsRunning => _task != null && !_task.IsCompleted;
+
+        public async Task StopAsync()
         {
             try
             {
@@ -52,6 +60,21 @@ namespace Mahjong.LocalHost
             }
             catch (ObjectDisposedException)
             {
+            }
+
+            Task? task = _task;
+            if (task != null)
+            {
+                try
+                {
+                    await task.ConfigureAwait(false);
+                }
+                catch (OperationCanceledException)
+                {
+                }
+                catch
+                {
+                }
             }
         }
 
@@ -112,7 +135,7 @@ namespace Mahjong.LocalHost
             {
                 case RoundPhase.Draw:
                 case RoundPhase.KanDraw:
-                    if (seat >= 1 && seat <= 3)
+                    if (seat != 0)
                     {
                         await SubmitDrawAsync(snapshot, seat).ConfigureAwait(false);
                     }
@@ -120,17 +143,44 @@ namespace Mahjong.LocalHost
                     break;
                 case RoundPhase.CheatWindow:
                 case RoundPhase.Discard:
-                    if (seat >= 1 && seat <= 3)
+                    if (seat == 0)
                     {
-                        await SubmitDiscardAsync(snapshot, seat).ConfigureAwait(false);
+                        break;
+                    }
+
+                    IReadOnlyList<TileId> hand = _actor.GetSeatHandTileIds(seat);
+                    if (hand.Count == 0)
+                    {
+                        return;
+                    }
+
+                    var candidates = new List<LegalActionOption>(hand.Count);
+                    for (int i = 0; i < hand.Count; i++)
+                    {
+                        candidates.Add(new LegalActionOption(LegalActionKind.Discard, seat, hand[i]));
+                    }
+
+                    bool opened = await OpenDecisionAsync(snapshot, seat, candidates, hand[hand.Count - 1])
+                        .ConfigureAwait(false);
+                    if (opened)
+                    {
+                        await CompleteAiDecisionAsync(seat).ConfigureAwait(false);
                     }
 
                     break;
                 case RoundPhase.ResponseWindow:
                 case RoundPhase.ChankanWindow:
-                    for (int aiSeat = 1; aiSeat <= 3; aiSeat++)
+                    for (int responseSeat = 1; responseSeat <= 3; responseSeat++)
                     {
-                        await SubmitPassAsync(snapshot, aiSeat).ConfigureAwait(false);
+                        bool openedResponse = await OpenDecisionAsync(
+                            snapshot,
+                            responseSeat,
+                            new[] { new LegalActionOption(LegalActionKind.Pass, responseSeat) },
+                            null).ConfigureAwait(false);
+                        if (openedResponse)
+                        {
+                            await CompleteAiDecisionAsync(responseSeat).ConfigureAwait(false);
+                        }
                     }
 
                     break;
@@ -149,45 +199,31 @@ namespace Mahjong.LocalHost
             }
         }
 
-        private async Task SubmitPassAsync(TableSnapshot snapshot, int seat)
-        {
-            await DecideAsync(
-                snapshot,
-                seat,
-                new[] { new LegalActionOption(LegalActionKind.Pass, seat) },
-                null).ConfigureAwait(false);
-        }
-
-        private async Task SubmitDiscardAsync(TableSnapshot snapshot, int seat)
-        {
-            IReadOnlyList<TileId> hand = _actor.GetSeatHandTileIds(seat);
-            if (hand.Count == 0)
-            {
-                return;
-            }
-
-            var candidates = new List<LegalActionOption>(hand.Count);
-            for (int i = 0; i < hand.Count; i++)
-            {
-                candidates.Add(new LegalActionOption(LegalActionKind.Discard, seat, hand[i]));
-            }
-
-            await DecideAsync(snapshot, seat, candidates, hand.Count > 0 ? hand[hand.Count - 1] : (TileId?)null)
-                .ConfigureAwait(false);
-        }
-
-        private async Task DecideAsync(
+        private async Task<bool> OpenDecisionAsync(
             TableSnapshot snapshot,
             int seat,
             IReadOnlyList<LegalActionOption> candidates,
             TileId? drawnTile)
         {
+            if (candidates.Count == 0)
+            {
+                return false;
+            }
+
+            if (_actor.GetPendingDecisionId(seat) != null)
+            {
+                _lastDecisionKey = seat.ToString(System.Globalization.CultureInfo.InvariantCulture) + "/" +
+                                   snapshot.StateVersion.Value.ToString(System.Globalization.CultureInfo.InvariantCulture) + "/" +
+                                   snapshot.Phase.ToString();
+                return true;
+            }
+
             string key = seat.ToString(System.Globalization.CultureInfo.InvariantCulture) + "/" +
                          snapshot.StateVersion.Value.ToString(System.Globalization.CultureInfo.InvariantCulture) + "/" +
                          snapshot.Phase.ToString();
             if (string.Equals(_lastDecisionKey, key, StringComparison.Ordinal))
             {
-                return;
+                return false;
             }
 
             string decisionId = "local-ai-" +
@@ -202,10 +238,15 @@ namespace Mahjong.LocalHost
             TableOperationResult opened = await _actor.OpenDecisionAsync(pending, _stop.Token).ConfigureAwait(false);
             if (opened.Status != TableOperationStatus.Configured)
             {
-                return;
+                return false;
             }
 
             _lastDecisionKey = key;
+            return true;
+        }
+
+        private async Task CompleteAiDecisionAsync(int seat)
+        {
             TableAiObservationResult captured = await _actor.CaptureAiObservationAsync(seat, _stop.Token)
                 .ConfigureAwait(false);
             if (!captured.IsCaptured || captured.Observation == null)

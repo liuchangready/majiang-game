@@ -41,6 +41,7 @@ namespace Mahjong.LocalHost
         private string _sessionId = string.Empty;
         private ulong _bindingEpoch;
         private long _syncEpoch;
+        private long _streamGeneration;
         private RequestScopeId? _connectionScopeId;
         private string _connectionAccount = string.Empty;
         private int _seat;
@@ -99,7 +100,11 @@ namespace Mahjong.LocalHost
                             LocalTableErrorKind.CorruptState,
                             "The local save has no base checkpoint.");
                     RoundStateMachine round = RestoreRound(checkpoint);
+                    facts.RecoveredFacts = checkpoint.CommittedFactsPayload == null
+                        ? null
+                        : TableProjectionFactsCodec.Decode(checkpoint.CommittedFactsPayload, round.RoundId, checkpoint.StateVersion);
                     actor = CreateActor(options, environment, clock, store, facts, round, checkpoint, recover: true);
+                    facts.SettlementProvider = () => actor.LastSettlementCalculation;
                     TableRecoveryResult recovered = await actor.RecoverFromStoreAsync(cancellationToken).ConfigureAwait(false);
                     if (!recovered.Recovered)
                     {
@@ -111,10 +116,11 @@ namespace Mahjong.LocalHost
                 }
                 else
                 {
-                    RoundStateMachine round = facts.CreateInitialRound(options);
+                    RoundStateMachine round = options.InitialRound ?? facts.CreateInitialRound(options);
                     TableCheckpoint checkpoint = facts.CreateInitialCheckpoint(options, round);
                     await store.CreateRoomAsync(checkpoint, cancellationToken).ConfigureAwait(false);
                     actor = CreateActor(options, environment, clock, store, facts, round, checkpoint, recover: false);
+                    facts.SettlementProvider = () => actor.LastSettlementCalculation;
                 }
 
                 var runtime = new LocalTableRuntime(options, environment, store, actor, facts);
@@ -211,15 +217,34 @@ namespace Mahjong.LocalHost
                 new LocalSettlementFactsPort());
         }
 
-        public void Reconnect()
+        internal Mahjong.Domain.RoundResult? CurrentRoundResult => _actor.GetRoundResult();
+
+        internal bool DriverRunning => _driver.IsRunning;
+
+        public async Task ReconnectAsync(CancellationToken cancellationToken)
         {
+            TableStreamHandle? previous;
             lock (_gate)
             {
+                previous = _stream;
                 _sessionOpen = true;
+                _streamGeneration++;
                 _outbound.Reset();
                 _pendingSyncCorrelation = null;
                 _stream = null;
                 _sink = null;
+            }
+
+            if (previous != null)
+            {
+                try
+                {
+                    await _actor.UnsubscribeStreamAsync(previous, cancellationToken).ConfigureAwait(false);
+                }
+                catch
+                {
+                    // The generation fence prevents a late frame from the old subscription.
+                }
             }
         }
 
@@ -228,10 +253,38 @@ namespace Mahjong.LocalHost
             lock (_gate)
             {
                 _sessionOpen = false;
+                _streamGeneration++;
                 _outbound.Fail(new TableChannelClosedException(ProtocolErrorCode.LocalClosed, false));
                 _pendingSyncCorrelation = null;
                 _stream = null;
                 _sink = null;
+            }
+        }
+
+        public async Task CloseSessionAsync(CancellationToken cancellationToken)
+        {
+            TableStreamHandle? stream;
+            lock (_gate)
+            {
+                _sessionOpen = false;
+                _streamGeneration++;
+                _outbound.Fail(new TableChannelClosedException(ProtocolErrorCode.LocalClosed, false));
+                _pendingSyncCorrelation = null;
+                stream = _stream;
+                _stream = null;
+                _sink = null;
+            }
+
+            if (stream != null)
+            {
+                try
+                {
+                    await _actor.UnsubscribeStreamAsync(stream, cancellationToken).ConfigureAwait(false);
+                }
+                catch
+                {
+                    // The actor may already be closed; the generation fence drops late frames.
+                }
             }
         }
 
@@ -316,9 +369,11 @@ namespace Mahjong.LocalHost
                 return;
             }
 
-            if (string.IsNullOrEmpty(hello.Ticket))
+            if (!LocalTicketIssuer.TryConsume(hello.Ticket, _options.RoomId))
             {
-                Enqueue(ErrorEnvelope(ProtocolErrorCode.Unauthenticated, "A local ticket is required."));
+                Enqueue(ErrorEnvelope(
+                    ProtocolErrorCode.Unauthenticated,
+                    "The local ticket is missing, expired, already used or bound to another room."));
                 return;
             }
 
@@ -421,6 +476,7 @@ namespace Mahjong.LocalHost
                 return;
             }
 
+            await EnsureInitialHumanDecisionAsync().ConfigureAwait(false);
             TableStreamSink sink;
             TableStreamIdentity identity;
             lock (_gate)
@@ -431,7 +487,7 @@ namespace Mahjong.LocalHost
                     TableStreamAudience.ForSeat(_seat),
                     new BindingEpoch(_bindingEpoch),
                     new SyncEpoch((ulong)_syncEpoch));
-                sink = new TableStreamSink(this);
+                sink = new TableStreamSink(this, _streamGeneration);
                 _sink = sink;
                 _pendingSyncCorrelation = envelope.CorrelationId;
             }
@@ -478,12 +534,46 @@ namespace Mahjong.LocalHost
                 }
             }
         }
+        private async Task EnsureInitialHumanDecisionAsync()
+        {
+            if (_seat != 0 || _actor.GetPendingDecisionId(0) != null)
+            {
+                return;
+            }
 
-        internal void OnFrame(TableStreamFrame frame)
+            TableSnapshot snapshot = await _actor.GetSnapshotAsync(CancellationToken.None).ConfigureAwait(false);
+            if (snapshot.Phase != RoundPhase.CheatWindow && snapshot.Phase != RoundPhase.Discard)
+            {
+                return;
+            }
+
+            IReadOnlyList<TileId> hand = _actor.GetSeatHandTileIds(0);
+            if (hand.Count == 0)
+            {
+                return;
+            }
+
+            var candidates = new List<LegalActionOption>(hand.Count);
+            for (int i = 0; i < hand.Count; i++)
+            {
+                candidates.Add(new LegalActionOption(LegalActionKind.Discard, 0, hand[i]));
+            }
+
+            var pending = new PendingDecision(
+                new DecisionKey(snapshot.RoundId, 0, "local-human-initial"),
+                0L,
+                candidates,
+                hand[hand.Count - 1]);
+            await _actor.OpenDecisionAsync(pending, CancellationToken.None).ConfigureAwait(false);
+        }
+
+
+        internal void OnFrame(TableStreamFrame frame, long generation)
         {
             lock (_gate)
             {
-                if (!_sessionOpen || frame.Identity.SessionId.Value != _sessionId)
+                if (!_sessionOpen || generation != _streamGeneration ||
+                    frame.Identity.SessionId.Value != _sessionId)
                 {
                     return;
                 }
@@ -599,10 +689,19 @@ namespace Mahjong.LocalHost
             TablePayloadSha256 digest = TablePayloadSha256.Compute(canonical);
             OwnerEpoch owner = new OwnerEpoch(envelope.OwnerEpoch == 0 ? _actorLeaseEpoch() : envelope.OwnerEpoch);
             long controlEpoch = envelope.ControlEpoch == 0 ? 0L : unchecked((long)envelope.ControlEpoch);
-            // The local direct-play path has no open pending decision; the wire decision id
-            // is echoed for correlation but is not an authorization token. A future local
-            // decision driver installs the exact pending id here after opening it.
-            DecisionId? decisionId = null;
+            string? pendingDecision = _actor.GetPendingDecisionId(_seat);
+            string? suppliedDecision = envelope.Command.ExpectedDecisionId;
+            if (!string.IsNullOrEmpty(suppliedDecision) &&
+                !string.Equals(suppliedDecision, pendingDecision, StringComparison.Ordinal))
+            {
+                throw new LocalCommandException(
+                    ProtocolErrorCode.DecisionMismatch,
+                    "The command decision id is not the current pending decision.");
+            }
+
+            DecisionId? decisionId = string.IsNullOrEmpty(pendingDecision)
+                ? (DecisionId?)null
+                : new DecisionId(pendingDecision);
             StateVersion expected = new StateVersion(envelope.Command.ExpectedStateVersion);
             string api = ApiName(kind);
 
@@ -624,6 +723,27 @@ namespace Mahjong.LocalHost
                         digest,
                         api,
                         cancellationToken).ConfigureAwait(false);
+                    if (result.Status == TableOperationStatus.Rejected &&
+                        string.Equals(result.ReasonCode, TableRuntimeReasonCode.DecisionMismatch, StringComparison.Ordinal))
+                    {
+                        string? latePendingId = _actor.GetPendingDecisionId(_seat);
+                        if (!string.IsNullOrEmpty(latePendingId))
+                        {
+                            result = await SubmitCheatAsync(
+                                envelope,
+                                document,
+                                payload,
+                                kind,
+                                requestId,
+                                expected,
+                                owner,
+                                controlEpoch,
+                                new DecisionId(latePendingId!),
+                                digest,
+                                api,
+                                cancellationToken).ConfigureAwait(false);
+                        }
+                    }
                 }
                 else if (TableSettlementIntent.IsSettlementAction(MapActionKind(document)))
                 {
@@ -658,6 +778,10 @@ namespace Mahjong.LocalHost
                 }
 
                 await PublishResultAsync(envelope, result, requestId, payload, cancellationToken).ConfigureAwait(false);
+                if (result.Status == TableOperationStatus.Accepted || result.Status == TableOperationStatus.Replayed)
+                {
+                    await EnsureInitialHumanDecisionAsync().ConfigureAwait(false);
+                }
             }
             catch (LocalCommandException exception)
             {
@@ -881,7 +1005,18 @@ namespace Mahjong.LocalHost
             TableOperationResult result,
             BusinessPayload payload)
         {
-            TableCommandReceipt receipt = result.Receipt!;
+            TableCommandReceipt? receipt = result.Receipt;
+            if (receipt == null)
+            {
+                return RejectedReceipt(
+                    source,
+                    requestId,
+                    result.EvaluatedStateVersion,
+                    ProtocolErrorCode.ProtocolViolation,
+                    "The accepted result has no command receipt.",
+                    payload);
+            }
+
             return ReceiptEnvelope(
                 source,
                 requestId,
@@ -890,8 +1025,12 @@ namespace Mahjong.LocalHost
                     Status = WireReceiptStatus.Applied,
                     ReasonCode = receipt.ReasonCode,
                     EvaluatedStateVersion = receipt.EvaluatedStateVersion.Value,
-                    CommandVersion = receipt.CommandVersion!.Value.Value,
-                    EventSeq = receipt.LastEventSeq!.Value.Value,
+                    CommandVersion = receipt.CommandVersion.HasValue
+                        ? receipt.CommandVersion.Value.Value
+                        : 0UL,
+                    EventSeq = receipt.LastEventSeq.HasValue
+                        ? receipt.LastEventSeq.Value.Value
+                        : 0UL,
                     Replayed = result.Replayed,
                     CanonicalPayloadSha256 = CanonicalPayloadDigest.Compute(payload).ToHex()
                 },
@@ -942,17 +1081,35 @@ namespace Mahjong.LocalHost
         {
             if (envelope.ReceiptQuery == null ||
                 string.IsNullOrEmpty(envelope.CorrelationId) ||
-                envelope.Scope == null)
+                string.IsNullOrEmpty(envelope.ReceiptQuery.RequestScopeId) ||
+                string.IsNullOrEmpty(envelope.ReceiptQuery.RequestId))
             {
                 Enqueue(ErrorEnvelope(ProtocolErrorCode.MalformedMessage, "The receipt query is malformed."));
                 return;
             }
 
-            TableDurableReceipt? receipt = await _store.TryGetAsync(
-                envelope.Scope.AccountId,
-                new RequestScopeId(envelope.ReceiptQuery.RequestScopeId),
-                new RequestId(envelope.ReceiptQuery.RequestId),
-                cancellationToken).ConfigureAwait(false);
+            if (!string.IsNullOrEmpty(envelope.SessionId) && !IsCurrentBinding(envelope))
+            {
+                return;
+            }
+
+            RequestScopeId queryScopeId = new RequestScopeId(envelope.ReceiptQuery.RequestScopeId);
+            TableDurableReceipt? receipt;
+            try
+            {
+                receipt = await _store.TryGetAsync(
+                    _connectionAccount,
+                    queryScopeId,
+                    new RequestId(envelope.ReceiptQuery.RequestId),
+                    cancellationToken).ConfigureAwait(false);
+            }
+            catch (LocalTableException)
+            {
+                Enqueue(ReceiptLookupEnvelope(
+                    envelope.CorrelationId,
+                    new ReceiptLookup { Status = LookupStatus.Unknown, CanonicalPayloadSha256 = string.Empty }));
+                return;
+            }
 
             var lookup = new ReceiptLookup
             {
@@ -978,7 +1135,12 @@ namespace Mahjong.LocalHost
                 };
             }
 
-            Enqueue(new Envelope
+            Enqueue(ReceiptLookupEnvelope(envelope.CorrelationId, lookup));
+        }
+
+        private Envelope ReceiptLookupEnvelope(string correlationId, ReceiptLookup lookup)
+        {
+            return new Envelope
             {
                 ProtocolMajor = ProtocolConstants.Major,
                 ProtocolMinor = ProtocolConstants.Minor,
@@ -989,9 +1151,9 @@ namespace Mahjong.LocalHost
                 RoomId = _options.RoomId,
                 SeatId = _seat,
                 BindingEpoch = _bindingEpoch,
-                CorrelationId = envelope.CorrelationId,
+                CorrelationId = correlationId,
                 ReceiptLookup = lookup
-            });
+            };
         }
 
         private RoundCommand BuildRoundCommand(Envelope envelope, LocalCommandPayload document)
@@ -1038,11 +1200,90 @@ namespace Mahjong.LocalHost
                     }
 
                     return RoundCommand.Riichi(roundId, _seat, new TileId(unchecked((int)riichiTiles[0])), null);
+                case RoundActionKind.DeclareChi:
+                {
+                    IReadOnlyList<uint> meld = RequireMeldTiles(document, "Chi", 3);
+                    return RoundCommand.Chi(
+                        roundId,
+                        _seat,
+                        new TileId(unchecked((int)meld[0])),
+                        new TileId(unchecked((int)meld[1])),
+                        new TileId(unchecked((int)meld[2])));
+                }
+
+                case RoundActionKind.DeclarePon:
+                {
+                    IReadOnlyList<uint> meld = RequireMeldTiles(document, "Pon", 3);
+                    return RoundCommand.Pon(
+                        roundId,
+                        _seat,
+                        new TileId(unchecked((int)meld[0])),
+                        new TileId(unchecked((int)meld[1])),
+                        new TileId(unchecked((int)meld[2])));
+                }
+
+                case RoundActionKind.DeclareOpenKan:
+                case RoundActionKind.DeclareClosedKan:
+                case RoundActionKind.DeclareAddedKan:
+                {
+                    uint meldType = document.HasField(CommandPayloadFields.MeldType)
+                        ? document.RequireUInt32(CommandPayloadFields.MeldType, "meldType")
+                        : 0U;
+                    if (action == RoundActionKind.DeclareClosedKan || meldType == 4U)
+                    {
+                        IReadOnlyList<uint> kan = RequireMeldTiles(document, "ClosedKan", 4);
+                        return RoundCommand.ClosedKan(
+                            roundId,
+                            _seat,
+                            new TileId(unchecked((int)kan[0])),
+                            new TileId(unchecked((int)kan[1])),
+                            new TileId(unchecked((int)kan[2])),
+                            new TileId(unchecked((int)kan[3])));
+                    }
+
+                    if (action == RoundActionKind.DeclareAddedKan || meldType == 5U)
+                    {
+                        IReadOnlyList<uint> added = RequireMeldTiles(document, "AddedKan", 1);
+                        return RoundCommand.AddedKan(roundId, _seat, new TileId(unchecked((int)added[0])));
+                    }
+
+                    IReadOnlyList<uint> open = RequireMeldTiles(document, "OpenKan", 4);
+                    return RoundCommand.OpenKan(
+
+                        roundId,
+                        _seat,
+                        new TileId(unchecked((int)open[0])),
+                        new TileId(unchecked((int)open[1])),
+                        new TileId(unchecked((int)open[2])),
+                        new TileId(unchecked((int)open[3])));
+                }
+
                 default:
                     throw new LocalCommandException(
                         ProtocolErrorCode.MalformedMessage,
                         "The local host does not accept action " + action + " as a plain round command.");
             }
+        }
+
+        private static IReadOnlyList<uint> RequireMeldTiles(
+            LocalCommandPayload document,
+            string name,
+            int count)
+        {
+            if (!document.HasField(CommandPayloadFields.TileIds))
+            {
+                throw new LocalCommandException(ProtocolErrorCode.MalformedMessage, name + " requires tile ids.");
+            }
+
+            IReadOnlyList<uint> tiles = document.RequireRepeatedUInt32(CommandPayloadFields.TileIds, "tileIds");
+            if (tiles.Count != count)
+            {
+                throw new LocalCommandException(
+                    ProtocolErrorCode.MalformedMessage,
+                    name + " requires exactly " + count + " tile ids.");
+            }
+
+            return tiles;
         }
 
         private static RoundActionKind MapActionKind(LocalCommandPayload document)
@@ -1175,7 +1416,8 @@ namespace Mahjong.LocalHost
             }
 
             _disposed = true;
-            CloseSession();
+            await _driver.StopAsync().ConfigureAwait(false);
+            await CloseSessionAsync(CancellationToken.None).ConfigureAwait(false);
             try
             {
                 await _actor.CloseAsync(CancellationToken.None).ConfigureAwait(false);
@@ -1242,10 +1484,12 @@ namespace Mahjong.LocalHost
         private sealed class TableStreamSink : ITableStreamSink
         {
             private readonly LocalTableRuntime _runtime;
+            private readonly long _generation;
 
-            public TableStreamSink(LocalTableRuntime runtime)
+            public TableStreamSink(LocalTableRuntime runtime, long generation)
             {
                 _runtime = runtime;
+                _generation = generation;
             }
 
             public TableStreamFrame? LastFrame { get; private set; }
@@ -1253,7 +1497,7 @@ namespace Mahjong.LocalHost
             public ValueTask PublishAsync(TableStreamFrame frame, CancellationToken cancellationToken)
             {
                 LastFrame = frame;
-                _runtime.OnFrame(frame);
+                _runtime.OnFrame(frame, _generation);
                 return default;
             }
         }
@@ -1308,6 +1552,20 @@ namespace Mahjong.LocalHost
         private readonly Queue<byte[]> _frames = new Queue<byte[]>();
         private readonly LinkedList<Waiter> _waiters = new LinkedList<Waiter>();
         private Exception? _failure;
+        private readonly int _maxFrames;
+        private readonly int _maxBytes;
+        private long _bytes;
+
+        public AsyncFrameQueue(int maxFrames = 256, int maxBytes = 1024 * 1024)
+        {
+            if (maxFrames < 1 || maxBytes < 1)
+            {
+                throw new ArgumentOutOfRangeException(nameof(maxFrames));
+            }
+
+            _maxFrames = maxFrames;
+            _maxBytes = maxBytes;
+        }
 
         public int Count
         {
@@ -1342,7 +1600,18 @@ namespace Mahjong.LocalHost
                 }
                 else
                 {
+                    if (_frames.Count >= _maxFrames || _bytes + frame.Length > _maxBytes)
+                    {
+                        _failure = new TableChannelClosedException(
+                            "LOCAL_LOOPBACK_OVERFLOW",
+                            false);
+                        _frames.Clear();
+                        _bytes = 0;
+                        return;
+                    }
+
                     _frames.Enqueue(frame);
+                    _bytes += frame.Length;
                     return;
                 }
             }
@@ -1359,6 +1628,7 @@ namespace Mahjong.LocalHost
                 waiters = new List<Waiter>(_waiters);
                 _waiters.Clear();
                 _frames.Clear();
+                _bytes = 0;
             }
 
             for (int i = 0; i < waiters.Count; i++)

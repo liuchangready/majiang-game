@@ -96,6 +96,7 @@ namespace Mahjong.TableRuntime
         private TableActorLifecycle _lifecycle = TableActorLifecycle.Serving;
         private string _lifecycleReason = string.Empty;
         private string _publicationFault = string.Empty;
+        private Mahjong.Domain.Rules.RoundSettlementCalculation? _lastSettlementCalculation;
         private TaskCompletionSource<bool>? _closeCompletion;
         private int _pumpRunning;
 
@@ -227,6 +228,12 @@ namespace Mahjong.TableRuntime
         /// </summary>
         public long RecoveryGeneration => Volatile.Read(ref _recoveryGeneration);
 
+        /// <summary>Host-only read of the committed round result (immutable).</summary>
+        public Mahjong.Domain.RoundResult? GetRoundResult()
+        {
+            return _round.GetResult();
+        }
+
         /// <summary>
         /// Host-only read of one seat's physical hand for local AI candidate construction. The
         /// returned tile map is immutable; the AI still reasons outside the actor and its result
@@ -237,6 +244,17 @@ namespace Mahjong.TableRuntime
             CheckSeat(seat);
             return _round.Tiles.TilesInZone(TileZone.Hand, seat);
         }
+
+        /// <summary>Host-only current pending decision id for one seat, or null.</summary>
+        public string? GetPendingDecisionId(int seat)
+        {
+            CheckSeat(seat);
+            return _pending.TryGetValue(seat, out PendingDecision? pending) ? pending.Key.DecisionId : null;
+        }
+
+        /// <summary>Host-only last accepted N-2 calculation; immutable authority evidence.</summary>
+        public Mahjong.Domain.Rules.RoundSettlementCalculation? LastSettlementCalculation =>
+            _lastSettlementCalculation;
 
         /// <summary>
         /// Admits a player command to the business mailbox. If the mailbox is full or closing,
@@ -1834,6 +1852,7 @@ namespace Mahjong.TableRuntime
             try
             {
                 calculation.VerifySource(_round);
+                _lastSettlementCalculation = calculation;
             }
             catch (RoundSettlementRejectedException rejected)
             {

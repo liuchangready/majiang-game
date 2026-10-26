@@ -54,6 +54,12 @@ namespace Mahjong.LocalHost
         /// </summary>
         public LocalHostEnvironment? Environment { get; set; }
 
+        /// <summary>Optional pre-built initial round (match coordination).</summary>
+        internal Mahjong.Domain.RoundStateMachine? InitialRound { get; set; }
+
+        /// <summary>Test/controlled hosts may disable the autonomous AI ticker.</summary>
+        internal bool AutoPlay { get; set; } = true;
+
         /// <summary>Test seam only: replaces the file primitives. Production leaves this null.</summary>
         internal ILocalFileSystem? FileSystemForTest { get; set; }
 
