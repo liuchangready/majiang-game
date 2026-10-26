@@ -109,13 +109,15 @@ namespace Mahjong.Client
         private readonly TableSessionRunnerOptions _options;
         private readonly Func<TimeSpan, CancellationToken, Task> _delay;
         private readonly ITableClientClock _clock;
+        private readonly TableSessionOperationQueue? _operations;
         private long? _attemptDeadlineMs;
 
         public TableSessionRunner(
             IGameSession session,
             ITableTicketProvider tickets,
-            TableSessionRunnerOptions? options = null)
-            : this(session, tickets, options ?? new TableSessionRunnerOptions(), null, null)
+            TableSessionRunnerOptions? options = null,
+            TableSessionOperationQueue? operations = null)
+            : this(session, tickets, options ?? new TableSessionRunnerOptions(), null, null, operations)
         {
         }
 
@@ -124,16 +126,29 @@ namespace Mahjong.Client
             ITableTicketProvider tickets,
             TableSessionRunnerOptions options,
             Func<TimeSpan, CancellationToken, Task>? delay,
-            ITableClientClock? clock = null)
+            ITableClientClock? clock = null,
+            TableSessionOperationQueue? operations = null)
         {
             _session = session ?? throw new ArgumentNullException(nameof(session));
             _tickets = tickets ?? throw new ArgumentNullException(nameof(tickets));
             _options = options ?? throw new ArgumentNullException(nameof(options));
             _options.Validate();
+            if (operations != null && !ReferenceEquals(operations.Session, session))
+            {
+                throw new ArgumentException("The operation queue must own the same session instance.", nameof(operations));
+            }
+
             _delay = delay ?? ((duration, token) => Task.Delay(duration, token));
             _clock = clock ?? new SystemTableClientClock();
+            _operations = operations;
             _session.BaselineAdmissionCheck = CanApplyAttemptBaseline;
         }
+
+        private TableConnectionState CurrentState => _operations != null ? _operations.State : _session.State;
+
+        private TableSessionBinding? CurrentBinding => _operations != null ? _operations.Binding : _session.Binding;
+
+        private string? CurrentLastError => _operations != null ? _operations.LastError : _session.LastError;
 
         public async Task<TableSessionRunResult> RunAsync(CancellationToken cancellationToken)
         {
@@ -163,7 +178,16 @@ namespace Mahjong.Client
                     return new TableSessionRunResult(TableSessionRunStop.Canceled, ProtocolErrorCode.LocalClosed, connectionAttempts, failedAttempts);
                 }
 
-                TableConnectionState state = _session.State;
+                if (_operations != null && (_operations.IsClosing || _operations.IsClosed))
+                {
+                    return new TableSessionRunResult(
+                        TableSessionRunStop.Closed,
+                        lastFailure ?? ProtocolErrorCode.LocalClosed,
+                        connectionAttempts,
+                        failedAttempts);
+                }
+
+                TableConnectionState state = CurrentState;
                 if (state == TableConnectionState.Closed)
                 {
                     return new TableSessionRunResult(TableSessionRunStop.Closed, lastFailure ?? ProtocolErrorCode.LocalClosed, connectionAttempts, failedAttempts);
@@ -173,7 +197,7 @@ namespace Mahjong.Client
                 {
                     return new TableSessionRunResult(
                         TableSessionRunStop.Faulted,
-                        lastFailure ?? _session.LastError ?? ProtocolErrorCode.InternalError,
+                        lastFailure ?? CurrentLastError ?? ProtocolErrorCode.InternalError,
                         connectionAttempts,
                         failedAttempts);
                 }
@@ -212,7 +236,7 @@ namespace Mahjong.Client
                         ticket = await _tickets.GetTicketAsync(
                             new TableTicketRequest(
                                 connectionAttempts,
-                                _session.Binding?.SessionId.Value,
+                                CurrentBinding?.SessionId.Value,
                                 lastFailure),
                             cancellationToken).ConfigureAwait(false);
                     }
@@ -260,9 +284,14 @@ namespace Mahjong.Client
                             // Bound the connect/HELLO step by the same absolute
                             // Open->Ready deadline, not only the later pump.
                             openCts.CancelAfter(TimeSpan.FromMilliseconds(remainingMs));
-                            await _session.OpenAsync(
-                                new TableSessionOpenRequest(ticket, _options.ClientBuild),
-                                openCts.Token).ConfigureAwait(false);
+                            Task openTask = _operations != null
+                                ? _operations.OpenAsync(
+                                    new TableSessionOpenRequest(ticket, _options.ClientBuild),
+                                    openCts.Token)
+                                : _session.OpenAsync(
+                                    new TableSessionOpenRequest(ticket, _options.ClientBuild),
+                                    openCts.Token);
+                            await openTask.ConfigureAwait(false);
                         }
                     }
                     catch (OperationCanceledException)
@@ -283,7 +312,7 @@ namespace Mahjong.Client
                         _attemptDeadlineMs = null;
                         lastFailure = ex.Code;
                         failedAttempts++;
-                        if (ex.Permanent || _session.State == TableConnectionState.Faulted)
+                        if (ex.Permanent || CurrentState == TableConnectionState.Faulted)
                         {
                             return new TableSessionRunResult(TableSessionRunStop.Faulted, ex.Code, connectionAttempts, failedAttempts);
                         }
@@ -310,7 +339,7 @@ namespace Mahjong.Client
                     continue;
                 }
 
-                bool awaitingBaseline = _session.State != TableConnectionState.Ready;
+                bool awaitingBaseline = CurrentState != TableConnectionState.Ready;
                 try
                 {
                     using (var pumpCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken))
@@ -340,7 +369,14 @@ namespace Mahjong.Client
                             pumpCts.CancelAfter(TimeSpan.FromMilliseconds(remainingMs));
                         }
 
-                        await _session.PumpOnceAsync(pumpCts.Token).ConfigureAwait(false);
+                        if (_operations != null)
+                        {
+                            await _operations.PumpOnceAsync(pumpCts.Token).ConfigureAwait(false);
+                        }
+                        else
+                        {
+                            await _session.PumpOnceAsync(pumpCts.Token).ConfigureAwait(false);
+                        }
                     }
                 }
                 catch (OperationCanceledException)
@@ -363,7 +399,7 @@ namespace Mahjong.Client
                         continue;
                     }
 
-                    if (_session.State == TableConnectionState.Ready)
+                    if (CurrentState == TableConnectionState.Ready)
                     {
                         retryIndex = 0;
                         continue;
@@ -380,7 +416,7 @@ namespace Mahjong.Client
                     lastFailure = ex.Code;
                     failedAttempts++;
                     _attemptDeadlineMs = null;
-                    if (ex.Permanent || _session.State == TableConnectionState.Faulted)
+                    if (ex.Permanent || CurrentState == TableConnectionState.Faulted)
                     {
                         return new TableSessionRunResult(TableSessionRunStop.Faulted, ex.Code, connectionAttempts, failedAttempts);
                     }
@@ -393,19 +429,19 @@ namespace Mahjong.Client
                     return new TableSessionRunResult(TableSessionRunStop.UnexpectedError, ex.GetType().Name, connectionAttempts, failedAttempts);
                 }
 
-                if (_session.State == TableConnectionState.Faulted)
+                if (CurrentState == TableConnectionState.Faulted)
                 {
                     _attemptDeadlineMs = null;
                     return new TableSessionRunResult(
                         TableSessionRunStop.Faulted,
-                        lastFailure ?? _session.LastError ?? ProtocolErrorCode.InternalError,
+                        lastFailure ?? CurrentLastError ?? ProtocolErrorCode.InternalError,
                         connectionAttempts,
                         failedAttempts);
                 }
 
-                if (_session.State == TableConnectionState.Reconnecting)
+                if (CurrentState == TableConnectionState.Reconnecting)
                 {
-                    lastFailure = _session.LastError ?? WebSocketChannelReason.TransportLost;
+                    lastFailure = CurrentLastError ?? WebSocketChannelReason.TransportLost;
                     failedAttempts++;
                     _attemptDeadlineMs = null;
                     continue;
@@ -424,7 +460,7 @@ namespace Mahjong.Client
                     continue;
                 }
 
-                if (_session.State == TableConnectionState.Ready)
+                if (CurrentState == TableConnectionState.Ready)
                 {
                     // A full baseline for the current binding, completed before
                     // the absolute deadline, is the only successful handshake.
@@ -475,7 +511,7 @@ namespace Mahjong.Client
 
         private async Task TryDisconnectAsync()
         {
-            TableConnectionState state = _session.State;
+            TableConnectionState state = CurrentState;
             if (state == TableConnectionState.Closed ||
                 state == TableConnectionState.Faulted ||
                 state == TableConnectionState.Disconnected)
@@ -485,7 +521,14 @@ namespace Mahjong.Client
 
             try
             {
-                await _session.DisconnectAsync(CancellationToken.None).ConfigureAwait(false);
+                if (_operations != null)
+                {
+                    await _operations.DisconnectAsync(CancellationToken.None).ConfigureAwait(false);
+                }
+                else
+                {
+                    await _session.DisconnectAsync(CancellationToken.None).ConfigureAwait(false);
+                }
             }
             catch (Exception)
             {
