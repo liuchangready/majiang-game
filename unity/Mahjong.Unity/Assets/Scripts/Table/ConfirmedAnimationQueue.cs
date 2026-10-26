@@ -649,7 +649,7 @@ namespace Mahjong.Unity.Table
                         continue;
                     }
 
-                    var meldKeys = MeldEntityKeys(seat, meld);
+                    var meldKeys = MeldActionKeys(seat, next.EventSeq, meld);
                     if (AnyKeySeen(meldKeys))
                     {
                         continue;
@@ -858,7 +858,7 @@ namespace Mahjong.Unity.Table
                 if (IsMeldEvent(visible.Kind) &&
                     visible.Seat >= 0 &&
                     visible.TileId.HasValue &&
-                    Remember(MeldTileKey(visible.Seat, visible.TileId.Value)))
+                    Remember(MeldActionKey(visible.Seat, visible.EventSeq, MeldEventFamily(visible.Kind), visible.TileId.Value)))
                 {
                     _lastRejection = TableAnimationCodes.Duplicate;
                     continue;
@@ -938,25 +938,71 @@ namespace Mahjong.Unity.Table
                 + "/" + tileId.ToString(System.Globalization.CultureInfo.InvariantCulture);
         }
 
-        private static string MeldTileKey(int seat, uint tileId)
+        private static string MeldActionFamily(PlayerMeldKind kind)
         {
-            return "meld/" + seat.ToString(System.Globalization.CultureInfo.InvariantCulture)
-                + "/" + tileId.ToString(System.Globalization.CultureInfo.InvariantCulture);
+            switch (kind)
+            {
+                case PlayerMeldKind.Chi:
+                    return "Chi";
+                case PlayerMeldKind.Pon:
+                    return "Pon";
+                case PlayerMeldKind.OpenKan:
+                case PlayerMeldKind.ClosedKan:
+                case PlayerMeldKind.AddedKan:
+                    return "Kan";
+                default:
+                    return "Other";
+            }
         }
 
-        private static List<string> MeldEntityKeys(int seat, PlayerMeldState meld)
+        private static string MeldEventFamily(ConfirmedVisibleEventKind kind)
         {
-            var keys = new List<string>(Math.Max(1, meld.TileIds.Count));
+            switch (kind)
+            {
+                case ConfirmedVisibleEventKind.ChiDeclared:
+                    return "Chi";
+                case ConfirmedVisibleEventKind.PonDeclared:
+                    return "Pon";
+                case ConfirmedVisibleEventKind.KanDeclared:
+                    return "Kan";
+                default:
+                    return "Other";
+            }
+        }
+
+        private static string MeldActionKey(int seat, ulong eventSeq, string family, uint tileId)
+        {
+            return MeldActionKey(seat, eventSeq, family, tileId.ToString(System.Globalization.CultureInfo.InvariantCulture));
+        }
+
+        private static string MeldActionKey(int seat, ulong eventSeq, string family, string identity)
+        {
+            return "meld-action/"
+                + seat.ToString(System.Globalization.CultureInfo.InvariantCulture)
+                + "/" + eventSeq.ToString(System.Globalization.CultureInfo.InvariantCulture)
+                + "/" + family
+                + "/" + identity;
+        }
+
+        private static List<string> MeldActionKeys(int seat, ulong eventSeq, PlayerMeldState meld)
+        {
+            string family = MeldActionFamily(meld.Kind);
             if (meld.IsPlaceholder)
             {
-                keys.Add("meld/" + seat.ToString(System.Globalization.CultureInfo.InvariantCulture)
-                    + "/placeholder/" + meld.PlaceholderOrdinal.ToString(System.Globalization.CultureInfo.InvariantCulture));
-                return keys;
+                return new List<string>(1)
+                {
+                    MeldActionKey(
+                        seat,
+                        eventSeq,
+                        family,
+                        "p" + meld.PlaceholderOrdinal.ToString(System.Globalization.CultureInfo.InvariantCulture))
+                };
             }
 
+            var keys = new List<string>(meld.TileIds.Count);
             for (int i = 0; i < meld.TileIds.Count; i++)
             {
-                keys.Add(MeldTileKey(seat, meld.TileIds[i]));
+                keys.Add(MeldActionKey(seat, eventSeq, family, meld.TileIds[i]));
             }
 
             return keys;
