@@ -1350,6 +1350,12 @@ namespace Mahjong.Unity.Table
             _items.Clear();
             _seenKeys.Clear();
             _seenOrder.Clear();
+            // R4 action-association records carry a seat/family/tile and a
+            // batch event interval, but no confirmation identity. They must
+            // never outlive a confirmed baseline/reset or an explicit clear:
+            // an old record could otherwise swallow the first action of the
+            // next generation/binding/round as a duplicate.
+            _meldActions.Clear();
         }
 
         private TableAnimationResult Reject(string code)

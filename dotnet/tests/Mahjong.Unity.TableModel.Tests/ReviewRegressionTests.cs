@@ -1092,5 +1092,106 @@ namespace Mahjong.Unity.TableModel.Tests
             Assert.True(addedKan.Accepted, addedKan.Code);
             Assert.Equal(1, addedKan.Enqueued);
         }
+
+        private static PlayerTableViewState ResetMeldView(
+            ManualTableClock clock,
+            bool meld,
+            int context,
+            bool newer,
+            bool snapshotReset)
+        {
+            ulong stateVersion = newer ? 7UL : (snapshotReset ? 7UL : 6UL);
+            ulong eventSeq = newer ? 108UL : 105UL;
+            ulong projection = newer ? 11UL : 10UL;
+            PlayerSnapshot snapshot = P43TestData.PlayerSnapshot(
+                stateVersion: stateVersion,
+                eventSeq: eventSeq,
+                projectionSeq: projection,
+                roundId: context == 3 ? "round-next" : P43TestData.RoundId);
+            if (meld)
+            {
+                AddMeld(snapshot, 3, MeldType.Pon, 2, 80, 80, 81, 82);
+            }
+
+            return Project(
+                clock,
+                snapshot,
+                generation: context == 1 ? 2 : 1,
+                bindingEpoch: context == 2 ? 12UL : P43TestData.BindingEpoch);
+        }
+
+        private static TableAnimationResult R5MeldEvent(
+            ConfirmedAnimationQueue queue,
+            PlayerTableViewState view,
+            ulong eventSeq)
+        {
+            return queue.AcceptConfirmedEvents(
+                Context(view),
+                new[] { Event(eventSeq, 0, ConfirmedVisibleEventKind.PonDeclared, ConfirmedEventVisibility.Public, seat: 3, tileId: 80) },
+                TableAnimationAudience.Player(0));
+        }
+
+        [Theory]
+        [InlineData(false, 0)]
+        [InlineData(false, 1)]
+        [InlineData(false, 2)]
+        [InlineData(false, 3)]
+        [InlineData(true, 0)]
+        [InlineData(true, 1)]
+        [InlineData(true, 2)]
+        [InlineData(true, 3)]
+        public void R5_01_BaselineResetDropsOldMeldActionRecords(bool eventFirst, int context)
+        {
+            var clock = new ManualTableClock();
+            PlayerTableViewState a = ResetMeldView(clock, meld: false, context: 0, newer: false, snapshotReset: false);
+            PlayerTableViewState b = ResetMeldView(clock, meld: true, context: 0, newer: true, snapshotReset: false);
+            var queue = new ConfirmedAnimationQueue();
+            Assert.True(queue.AcceptConfirmedBaseline(a).Accepted);
+
+            TableAnimationResult oldAction = eventFirst
+                ? R5MeldEvent(queue, b, 106)
+                : queue.AcceptConfirmedDifference(a, b, false);
+            Assert.True(oldAction.Accepted);
+            Assert.Equal(1, oldAction.Enqueued);
+
+            PlayerTableViewState reset = ResetMeldView(
+                clock,
+                meld: false,
+                context,
+                newer: false,
+                snapshotReset: !eventFirst);
+            Assert.True(queue.AcceptConfirmedBaseline(reset).Accepted);
+
+            PlayerTableViewState next = ResetMeldView(clock, meld: true, context, newer: true, snapshotReset: false);
+            TableAnimationResult first = eventFirst
+                ? queue.AcceptConfirmedDifference(reset, next, false)
+                : R5MeldEvent(queue, next, 106);
+            Assert.True(first.Accepted, first.Code);
+            Assert.Equal(1, first.Enqueued);
+            Assert.Equal(1, queue.PendingCount);
+
+            TableAnimationResult second = eventFirst
+                ? R5MeldEvent(queue, next, 106)
+                : queue.AcceptConfirmedDifference(reset, next, false);
+            Assert.True(second.Accepted, second.Code);
+            Assert.Equal(0, second.Enqueued);
+            Assert.Equal(1, queue.PendingCount);
+        }
+
+        [Fact]
+        public void R5_01_ExplicitClearDropsMeldActionRecords()
+        {
+            var clock = new ManualTableClock();
+            var views = BatchMeldViews(clock, openKan: false);
+            var queue = new ConfirmedAnimationQueue();
+            Assert.True(queue.AcceptConfirmedBaseline(views.A).Accepted);
+            Assert.Equal(1, queue.AcceptConfirmedDifference(views.A, views.B, false).Enqueued);
+
+            queue.Clear();
+
+            TableAnimationResult eventAfterClear = R5MeldEvent(queue, views.B, 106);
+            Assert.True(eventAfterClear.Accepted, eventAfterClear.Code);
+            Assert.Equal(1, eventAfterClear.Enqueued);
+        }
     }
 }
