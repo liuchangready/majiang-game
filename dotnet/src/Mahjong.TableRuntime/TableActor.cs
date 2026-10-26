@@ -5975,10 +5975,6 @@ namespace Mahjong.TableRuntime
                 utc,
                 message.Reason);
             TableControlResult result = await CommitControlChangeAsync(candidate.Capture(), change).ConfigureAwait(false);
-            if (result.IsChanged)
-            {
-                _pending.Remove(message.Seat);
-            }
 
             return result;
         }
@@ -6053,10 +6049,6 @@ namespace Mahjong.TableRuntime
                 utc,
                 message.Reason);
             TableControlResult result = await CommitControlChangeAsync(candidate.Capture(), change).ConfigureAwait(false);
-            if (result.IsChanged)
-            {
-                _pending.Remove(message.Seat);
-            }
 
             return result;
         }
