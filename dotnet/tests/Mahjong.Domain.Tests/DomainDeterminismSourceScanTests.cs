@@ -295,6 +295,72 @@ namespace Mahjong.Domain.Tests
         }
 
         [Fact]
+        public void NullableTypeQuestionsDoNotLeakIntoFormatColonState()
+        {
+            // D-R3-01: '?' in a nullable type argument/cast/pattern is not a ternary '?'.
+            // Every positive keeps the format-specifier colon at top level and must leave the
+            // outer Guid.NewGuid visible; the same expression with X() => 0 must stay clean.
+            string[] expressions =
+            {
+                "F<int?>()",
+                "default(int? /* nullable comment */)",
+                "new System.Collections.Generic.List<int?>()",
+                "(value as int?)",
+                "((int?)value)",
+                "F<int?>() ?? 0",
+                "F<System.Collections.Generic.List<int?>>()",
+                "F<int? /* nullable comment */>()",
+                "new Func<object>(() => { int? x = null; return x; })()"
+            };
+
+            var failures = new List<string>();
+            foreach (string expression in expressions)
+            {
+                foreach (bool withApi in new[] { true, false })
+                {
+                    string source =
+                        "using System;\n" +
+                        "public class P1 {\n" +
+                        " public static T F<T>() => default(T);\n" +
+                        " public object value = 1;\n" +
+                        " public string S => $\"{" + expression + ":00\\\"DateTime.Now}\";\n" +
+                        " public object X() => " + (withApi ? "Guid.NewGuid();" : "0;") + "\n" +
+                        "}";
+
+                    using TempDomainTree tree = TempDomainTree.Create();
+                    tree.WriteDomain("Syntax.cs", source);
+                    ScanReport report = DomainDeterminismScan.ScanDomainDirectory(tree.DomainRoot);
+
+                    if (!withApi)
+                    {
+                        if (report.Violations.Count != 0)
+                        {
+                            failures.Add(
+                                expression + " [no-api]: expected 0 actual " + report.Violations.Count +
+                                Environment.NewLine + report.FormatDiagnostics());
+                        }
+
+                        continue;
+                    }
+
+                    if (report.Violations.Count != 1 ||
+                        !string.Equals(report.Violations[0].Symbol, "Guid.NewGuid", StringComparison.Ordinal) ||
+                        !string.Equals(report.Violations[0].Location, "Syntax.cs:6:23", StringComparison.Ordinal))
+                    {
+                        failures.Add(
+                            expression + " [api]: expected Guid.NewGuid@Syntax.cs:6:23, actual " +
+                            (report.Violations.Count == 0 ? "none" : report.Violations[0].ToString()) +
+                            Environment.NewLine + report.FormatDiagnostics());
+                    }
+                }
+            }
+
+            Assert.True(
+                failures.Count == 0,
+                "nullable '?' state-leak failures:" + Environment.NewLine + string.Join(Environment.NewLine, failures));
+        }
+
+        [Fact]
         public void GeneratedFoldersAreExcludedAndVacuousScansFailClosed()
         {
             using TempDomainTree tree = TempDomainTree.Create();
@@ -963,6 +1029,7 @@ namespace Mahjong.Domain.Tests
             int parenDepth = 0;
             int bracketDepth = 0;
             int conditionalDepth = 0;
+            var conditionalDepthScopes = new Stack<int>();
 
             while (i < source.Length)
             {
@@ -1010,6 +1077,7 @@ namespace Mahjong.Domain.Tests
 
                 if (current == '{')
                 {
+                    conditionalDepthScopes.Push(conditionalDepth);
                     braceDepth++;
                     i++;
                     continue;
@@ -1017,6 +1085,11 @@ namespace Mahjong.Domain.Tests
 
                 if (current == '}')
                 {
+                    if (conditionalDepthScopes.Count > 0)
+                    {
+                        conditionalDepth = conditionalDepthScopes.Pop();
+                    }
+
                     braceDepth--;
                     i++;
                     if (braceDepth == 0)
@@ -1029,6 +1102,7 @@ namespace Mahjong.Domain.Tests
 
                 if (current == '(')
                 {
+                    conditionalDepthScopes.Push(conditionalDepth);
                     parenDepth++;
                     i++;
                     continue;
@@ -1036,6 +1110,11 @@ namespace Mahjong.Domain.Tests
 
                 if (current == ')')
                 {
+                    if (conditionalDepthScopes.Count > 0)
+                    {
+                        conditionalDepth = conditionalDepthScopes.Pop();
+                    }
+
                     if (parenDepth > 0)
                     {
                         parenDepth--;
@@ -1047,6 +1126,7 @@ namespace Mahjong.Domain.Tests
 
                 if (current == '[')
                 {
+                    conditionalDepthScopes.Push(conditionalDepth);
                     bracketDepth++;
                     i++;
                     continue;
@@ -1054,6 +1134,11 @@ namespace Mahjong.Domain.Tests
 
                 if (current == ']')
                 {
+                    if (conditionalDepthScopes.Count > 0)
+                    {
+                        conditionalDepth = conditionalDepthScopes.Pop();
+                    }
+
                     if (bracketDepth > 0)
                     {
                         bracketDepth--;
@@ -1079,12 +1164,14 @@ namespace Mahjong.Domain.Tests
                         continue;
                     }
 
-                    char nextNonWhitespace = NextNonWhitespace(source, i + 1);
-                    if (nextNonWhitespace == ')' || nextNonWhitespace == ']' ||
-                        nextNonWhitespace == ',' || nextNonWhitespace == ';' ||
-                        nextNonWhitespace == '}')
+                    char nextSignificant = NextSignificantCharacter(source, i + 1);
+                    if (nextSignificant == '>' || nextSignificant == ')' ||
+                        nextSignificant == ']' || nextSignificant == ',' ||
+                        nextSignificant == ';' || nextSignificant == '}' ||
+                        nextSignificant == ':' || nextSignificant == '=')
                     {
-                        // Nullable type in a cast/pattern such as (int?)x or is int?.
+                        // Nullable type marker in generic arguments/casts/patterns,
+                        // e.g. F<int?>(), default(int? /*c*/), (int?)x, int?[].
                         i++;
                         continue;
                     }
@@ -1164,14 +1251,46 @@ namespace Mahjong.Domain.Tests
             MaskRange(masked, start, i);
         }
 
-        private static char NextNonWhitespace(string source, int index)
+        private static char NextSignificantCharacter(string source, int index)
         {
-            for (int i = index; i < source.Length; i++)
+            int i = index;
+            while (i < source.Length)
             {
-                if (!char.IsWhiteSpace(source[i]))
+                if (char.IsWhiteSpace(source[i]))
                 {
-                    return source[i];
+                    i++;
+                    continue;
                 }
+
+                if (source[i] == '/' && i + 1 < source.Length && source[i + 1] == '/')
+                {
+                    i += 2;
+                    while (i < source.Length && source[i] != '\n' && source[i] != '\r')
+                    {
+                        i++;
+                    }
+
+                    continue;
+                }
+
+                if (source[i] == '/' && i + 1 < source.Length && source[i + 1] == '*')
+                {
+                    i += 2;
+                    while (i < source.Length)
+                    {
+                        if (source[i] == '*' && i + 1 < source.Length && source[i + 1] == '/')
+                        {
+                            i += 2;
+                            break;
+                        }
+
+                        i++;
+                    }
+
+                    continue;
+                }
+
+                return source[i];
             }
 
             return '\0';

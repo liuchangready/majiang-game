@@ -9,9 +9,11 @@
 - 新增文件：仅本报告与 `dotnet/tests/Mahjong.Domain.Tests/DomainDeterminismSourceScanTests.cs`
 - 第 2 轮返修：修复 caller D-R1-01（插值孔洞内嵌字符串的词法状态），详见 §10
 - 第 3 轮返修：修复 caller D-R2-01（格式说明中的引号/字符被误当 C# 字面量），详见 §11
-- 本轮证据根：`build/artifacts/domain-determinism-guard/rework-r3/`；第 1/2 轮证据与 caller 的
+- 第 4 轮返修：修复 caller D-R3-01（nullable `?` 残留 conditionDepth 吞掉格式冒号），详见 §12
+- 本轮证据根：`build/artifacts/domain-determinism-guard/rework-r4/`；第 1/2/3 轮证据与 caller 的
   `caller-domain-review-e90f3512a13841fc9c72ab7c9a23b941/`、
-  `caller-domain-r2-987b59932deb443aa5f8db83efe19ab6/` 原样保留，未覆盖
+  `caller-domain-r2-987b59932deb443aa5f8db83efe19ab6/`、
+  `caller-domain-r3-bf37b7f5688a4a40be58760bfb0c5fd3/` 原样保留，未覆盖
 
 ## 1. 目标与判定口径
 
@@ -56,12 +58,13 @@ I-4/S-2 建议项的可回归证据。
    `System.DateTime.UtcNow`，扫描必须失败并报
    `DecisionClock.cs:<注入行>:<列> symbol=DateTime.UtcNow`；测试目录中的探针不得被扫描；
    原仓库 `DecisionClock.cs` 的 SHA-256 前后不变。
-8. **插值孔洞与格式说明词法回归（D-R1-01 / D-R2-01）**：34 个样本覆盖插值孔洞内嵌
-   普通/逐字/插值字符串、转义引号、字符、注释、嵌套花括号、转义花括号、多行形式，
-   以及 6 类格式说明（转义双引号、成对转义双引号、转义单引号、逐字双引号、单引号、
-   简单格式）、对应无外部 API 负控制，和 `?:` / `global::` / 命名参数 / nullable cast
-   对照。孔洞表达式仍不扫描，但内层引号、格式文本不得提前结束外层，且外层之后的
-   真实 API 必须继续命中。另有独立 Fact 断言 `Syntax.cs:4:23` 精确坐标。
+8. **插值孔洞/格式/可空类型词法回归（D-R1-01 / D-R2-01 / D-R3-01）**：34 个样本覆盖
+   插值孔洞内嵌普通/逐字/插值字符串、转义引号、字符、注释、嵌套花括号、转义花括号、
+   多行形式，以及 6 类格式说明、对应无外部 API 负控制、`?:` / `global::` / 命名参数 /
+   nullable cast 对照。另有 8 个 caller nullable 表达式 + 1 个嵌套 block 作用域控制
+   （`int? x` 声明）× 正/负控制，验证 `?` 不残留到格式冒号。孔洞表达式仍不扫描，但内层引号、
+   格式文本、nullable `?` 不得提前结束外层，且外层之后的真实 API 必须继续命中。
+   独立 Fact 分别断言 `Syntax.cs:4:23` 与 `Syntax.cs:6:23` 精确坐标。
 
 ### 2.1 匹配的 12 个禁用组
 
@@ -189,19 +192,23 @@ TEMP 根在递归删除前解析最终绝对路径，校验其仍位于进程 `T
 | **格式对照：命名参数 `:`** | `Echo(name: "DateTime.Now")` + 外层 Guid → 恰 1 |
 | **格式对照：`global::`** | `global::System.DateTime.MinValue:yyyy` + 外层 Guid → 恰 1 |
 | **格式对照：nullable cast `?`** | `(int?)value:format` + 外层 Guid → 恰 1 |
+| **nullable 状态组** | 8 个 caller 表达式（`F<int?>()`、`default(int? /* comment */)`、`new List<int?>()`、`(value as int?)`、`((int?)value)`、`F<int?>() ?? 0`、`F<List<int?>>()`、`F<int? /* comment */>()`）+ 1 个嵌套 block 控制（`int? x` 声明），各加 `X()=>0` 负控制；正例各恰 1，负控制 0 |
 
 配套 `InterpolatedHoleDiagnosticsPointAtTheOuterRealApi` 对关键样例断言外层
 `Guid.NewGuid` 恰 1 条、行号 1、列号 > 1；`FormatSpecifierDiagnosticsMatchCallerCoordinates`
 对 caller 形状断言 `Syntax.cs:4:23 symbol=Guid.NewGuid`，同形状无外部 API 文本为 0。
+`NullableTypeQuestionsDoNotLeakIntoFormatColonState` 对 8 个 caller nullable 表达式与
+1 个嵌套 block 控制逐个断言 `Guid.NewGuid@Syntax.cs:6:23`，并断言其无 API 版本为 0。
 修复前 caller 33 探针本组 7/7 失败；修复后 33/33 通过。D-R2-01 的 6 个格式样例修复前
-3/6 假绿，修复后 6/6 通过（见 §5.5/§5.6 与 §11）。
+3/6 假绿，修复后 6/6 通过。D-R3-01 的 8 个 nullable 样例修复前 6/8 假绿，修复后 8/8
+通过（见 §5.5/§5.6/§5.7 与 §11/§12）。
 
 ## 5. 执行证据（原样命令 / native exit / 真实计数）
 
 ### 5.1 编译先于运行（fresh Release，--no-incremental）
 
 ```powershell
-$env:TEMP='D:\majiang-wt\domain-determinism-guard-20261026\build\artifacts\domain-determinism-guard\rework-r3\tmp'
+$env:TEMP='D:\majiang-wt\domain-determinism-guard-20261026\build\artifacts\domain-determinism-guard\rework-r4\tmp'
 $env:TMP=$env:TEMP
 & 'D:/Unity/dotnet/dotnet.exe' build `
   'dotnet/tests/Mahjong.Domain.Tests/Mahjong.Domain.Tests.csproj' `
@@ -212,8 +219,8 @@ $env:TMP=$env:TEMP
 - 结果：`Mahjong.Domain -> ...\Mahjong.Domain.dll`、
   `Mahjong.Domain.Tests -> ...\Mahjong.Domain.Tests.dll`
 - **0 warnings / 0 errors**
-- 日志：`build/artifacts/domain-determinism-guard/rework-r3/build.log`
-  SHA-256 `034AB5AD7E35D76672F1475C5CE0ABAB1E12DF794A000315763407B76ECA44FD`
+- 日志：`build/artifacts/domain-determinism-guard/rework-r4/build.log`
+  SHA-256 `E68AF2EA48C110BC46BC28917405051344FD6B338B8A3B28AEC26BF6E84916DE`
 
 ### 5.2 新类 direct runner（xUnit v3，-class + -result-xml）
 
@@ -221,13 +228,13 @@ $env:TMP=$env:TEMP
 & 'D:/Unity/dotnet/dotnet.exe' `
   'dotnet/tests/Mahjong.Domain.Tests/bin/Release/net8.0/Mahjong.Domain.Tests.dll' `
   -class Mahjong.Domain.Tests.DomainDeterminismSourceScanTests `
-  -result-xml 'build/artifacts/domain-determinism-guard/rework-r3/source-scan-tests.xml'
+  -result-xml 'build/artifacts/domain-determinism-guard/rework-r4/source-scan-tests.xml'
 ```
 
 - native exit：**0**
-- 控制台：`Total: 10, Errors: 0, Failed: 0, Skipped: 0, Not Run: 0`
-- XML：`total=10, passed=10, failed=0, skipped=0, errors=0`
-- 用例（10）：`RealDomainProductionSourcesContainNoImplicitAuthorityApis`、
+- 控制台：`Total: 11, Errors: 0, Failed: 0, Skipped: 0, Not Run: 0`
+- XML：`total=11, passed=11, failed=0, skipped=0, errors=0`
+- 用例（11）：`RealDomainProductionSourcesContainNoImplicitAuthorityApis`、
   `EveryForbiddenGroupFailsWithFileLineColumnAndSymbol`、
   `CommentsStringsAndLegalLookalikesAreNotFlagged`、
   `InterpolatedHolesDoNotLeakQuotesOrSwallowOuterRealApis`、
@@ -236,9 +243,10 @@ $env:TMP=$env:TEMP
   `GeneratedFoldersAreExcludedAndVacuousScansFailClosed`、
   `RepositoryRootAndEnumerationFailuresAreTerminal`、
   `DiagnosticsCarryExactSourceLinesForMultipleViolations`、
+  `NullableTypeQuestionsDoNotLeakIntoFormatColonState`、
   `InjectedImplicitApiIntoProductionCopyFailsAndLeavesRepositoryUntouched`
-- XML SHA-256 `9E5769FCDC71D8E1FFA7218AB0FC55B720B0D426F660F1B0C850E2EB886045C5`
-- 日志 SHA-256 `872EEF614920977DFF75A1056B8E49111D0A58AEB57A327235AE5D049C68E2DA`
+- XML SHA-256 `1DD60D5F82E288C3EB92EA431D85F4B72AAB651B976A21A3D7BF8D651374405B`
+- 日志 SHA-256 `01EB9C0C1B75547268805E6AB54E223556AA2C5B55E1E222A52B35011BFEF52F`
 
 ### 5.3 原有 Domain 风险补充（显式时间输入）
 
@@ -246,15 +254,15 @@ $env:TMP=$env:TEMP
 & 'D:/Unity/dotnet/dotnet.exe' `
   'dotnet/tests/Mahjong.Domain.Tests/bin/Release/net8.0/Mahjong.Domain.Tests.dll' `
   -class Mahjong.Domain.Tests.DecisionClockTests `
-  -result-xml 'build/artifacts/domain-determinism-guard/rework-r3/decision-clock-tests.xml'
+  -result-xml 'build/artifacts/domain-determinism-guard/rework-r4/decision-clock-tests.xml'
 ```
 
 - native exit：**0**
 - XML：`total=14, passed=14, failed=0, skipped=0, errors=0`
 - 选择理由：`DecisionClock` 是最直接消费显式毫秒输入的域类型；验证 source-scan
   守护未伴随任何行为回归。未重跑 Domain 全量。
-- XML SHA-256 `93722182C0FF9316D1FE5AEC8F05AAAE508E900D536A9CA3CEE324033E7F473D`
-- 日志 SHA-256 `B4DFF9DCDC2EBF34AB2691B6940EA9575365C74C97C0EB72DBF9D2A2D757BAD8`
+- XML SHA-256 `100450CB1743B2F334B342686258D326866F81E06C06C89D96B6B636F582B258`
+- 日志 SHA-256 `FA82AF590602DCDCED4C69324D823E8250A609B1849A0C855DE0E8C062562307`
 
 ### 5.4 两类合并选中（新类 + DecisionClockTests）
 
@@ -263,18 +271,18 @@ $env:TMP=$env:TEMP
   'dotnet/tests/Mahjong.Domain.Tests/bin/Release/net8.0/Mahjong.Domain.Tests.dll' `
   -class Mahjong.Domain.Tests.DomainDeterminismSourceScanTests `
   -class Mahjong.Domain.Tests.DecisionClockTests `
-  -result-xml 'build/artifacts/domain-determinism-guard/rework-r3/targeted.xml'
+  -result-xml 'build/artifacts/domain-determinism-guard/rework-r4/targeted.xml'
 ```
 
 - native exit：**0**
-- XML：`total=24, passed=24, failed=0, skipped=0, errors=0, not-run=0`
-- XML SHA-256 `1FC4BD569EAA53C49A0A69E4A7BE01CBA0282BB6E3EB39BD0978CB77DF7F2B9C`
-- 日志 SHA-256 `2B8121664444DA60AF17AB07688B187C4B884FED54972CCB6A55D1E8AE1BFC8F`
+- XML：`total=25, passed=25, failed=0, skipped=0, errors=0, not-run=0`
+- XML SHA-256 `8383DB76692D850C4C845E1EDE554428FB0E12B852B24C0283569E214CDAEF46`
+- 日志 SHA-256 `6962825EAFBD42B0BAD8314DBE02FD5B7A251B258BBE3A90E18C95CD653BB39D`
 
 ### 5.5 Caller 33 探针（回归）
 
 ```powershell
-$R='D:/majiang-wt/domain-determinism-guard-20261026/build/artifacts/domain-determinism-guard/rework-r3'
+$R='D:/majiang-wt/domain-determinism-guard-20261026/build/artifacts/domain-determinism-guard/rework-r4'
 & 'D:/Unity/dotnet/dotnet.exe' "$R/probe/bin/Release/net8.0/Probe.dll" `
   'D:/majiang-wt/domain-determinism-guard-20261026/dotnet/tests/Mahjong.Domain.Tests/bin/Release/net8.0/Mahjong.Domain.Tests.dll' `
   $R
@@ -282,7 +290,7 @@ $R='D:/majiang-wt/domain-determinism-guard-20261026/build/artifacts/domain-deter
 
 - native exit：**0**
 - `TOTAL=33 FAILED=0`；插值孔洞组全部通过，外层 `Guid.NewGuid` 保留。
-- 日志：`rework-r3/probe-33.log`，SHA-256
+- 日志：`rework-r4/probe-33.log`，SHA-256
   `846B542AE0DE9854FEA1A9D6B2CAF2B0858F5BCEB652B40E61EBD4E0B2BAB6E7`
   （内容与第 2 轮修复后一致）。
 - 第 1 轮修复前历史对照仍为 `FAILED=7`，日志 SHA-256
@@ -292,7 +300,7 @@ $R='D:/majiang-wt/domain-determinism-guard-20261026/build/artifacts/domain-deter
 ### 5.6 Caller 格式说明 6 例（D-R2-01）
 
 ```powershell
-$R='D:/majiang-wt/domain-determinism-guard-20261026/build/artifacts/domain-determinism-guard/rework-r3'
+$R='D:/majiang-wt/domain-determinism-guard-20261026/build/artifacts/domain-determinism-guard/rework-r4'
 & powershell -NoProfile -ExecutionPolicy Bypass -File "$R/run-format-cases.ps1" -EvidenceRoot $R
 ```
 
@@ -300,29 +308,44 @@ $R='D:/majiang-wt/domain-determinism-guard-20261026/build/artifacts/domain-deter
   0 warnings/0 errors（C#9 / TreatWarningsAsErrors）。
 - 六例逐个 native **0**，`TOTAL=6 FAILED=0`；每例恰 1 条：
   `Syntax.cs:4:23 symbol=Guid.NewGuid`。
-- 日志：`rework-r3/format-cases.log`，SHA-256
-  `86DE751128BB7B67928FECBE8BFE7A2768F977682E3ADF5E38E5595FD062B2DD`
-- 脚本（与 caller 同源复制）：`rework-r3/run-format-cases.ps1`，SHA-256
+- 日志：`rework-r4/format-cases.log`，SHA-256
+  `823175892787EDEDB8374FA4E5C91AF25143B86BCCD4D3216B340B8A07063B9F`
+- 脚本（与 caller 同源复制）：`rework-r4/run-format-cases.ps1`，SHA-256
   `CB21EE9AE6A16949EAA00101316F4CD897159B9C4DBB358100BA2BD90A3558A8`
 - caller 原始失败日志 `$E/format-cases.log`（SHA-256
   `D065DF0D49025341035348DD1137E545B8358D42B7940CC139B386A624B55973`）原样保留；
   `$E/format-matrix`、`$E/format-probe` 也未被覆盖。
 
-### 5.7 状态判定
+### 5.7 Caller nullable 8 例（D-R3-01）
+
+```powershell
+$R='D:/majiang-wt/domain-determinism-guard-20261026/build/artifacts/domain-determinism-guard/rework-r4'
+& powershell -NoProfile -ExecutionPolicy Bypass -File "$R/run-nullable-cases.ps1" -EvidenceRoot $R
+```
+
+- probe build native **0**，0 warnings/0 errors；syntax build native **0**，0 warnings/0 errors（C#9 / TreatWarningsAsErrors）。
+- 八例逐个 native **0**，`TOTAL=8 FAILED=0`；每例恰 1 条：`Syntax.cs:6:23 symbol=Guid.NewGuid`。
+- 日志：`rework-r4/nullable-cases.log`，SHA-256 `56212CA0F1BE30068DA24696F93669B07D4A93BE3825D5A9BDE03172C635DA62`
+- 脚本（与 caller 同源复制）：`rework-r4/run-nullable-cases.ps1`，SHA-256 `49E7BEFE3D1829871EF51CD55BB1D47B7EFB5DB20F1ECEF743C6E2E0D9969024`
+- caller 原 `$E/nullable-cases.log`、`nullable-matrix` 未覆盖。
+
+### 5.8 状态判定
 
 | 项 | 状态 | 依据 |
 |---|---|---|
-| 新增 source-scan 守护实现与插值/格式回归 | **PASS** | 10/10，native 0 |
+| 新增 source-scan 守护实现与插值/格式/nullable 回归 | **PASS** | 11/11，native 0 |
 | 真实 Domain 生产源 0 违例 | **PASS** | 44 文件，0 违例 |
 | 12 禁用组/27 写法灵敏度 | **PASS** | 全部失败命中 |
 | 插值/格式统一矩阵 | **PASS** | 34 样本 + 精确外置诊断全绿 |
+| Caller nullable 8 例 | **PASS** | 8/8，每例 `Syntax.cs:6:23` |
 | Caller 33 探针 | **PASS** | 33/33，native 0 |
 | Caller 格式说明 6 例 | **PASS** | 6/6，每例 `Syntax.cs:4:23` |
 | 生产副本注入灵敏度 | **PASS** | 精确文件/行/列/符号；原 SHA 不变 |
 | fresh Release 构建 | **PASS** | 0 warnings / 0 errors |
-| 新类 + DecisionClockTests 合并选中 | **PASS** | 24/24，native 0 |
+| 新类 + DecisionClockTests 合并选中 | **PASS** | 25/25，native 0 |
 | D-R1-01 | **FIXED / PASS** | 见 §10；33/33 |
 | D-R2-01 | **FIXED / PASS** | 见 §11；格式 6/6 |
+| D-R3-01 | **FIXED / PASS** | 见 §12；nullable 8/8 |
 | Domain 全量测试 | **NOT_RUN** | 本任务仅改测试新增文件，不重跑全量 |
 | PG / Unity / Gradle / WSS / CI / 部署 | **NOT_RUN** | 明确不在本任务范围；未触发 |
 | G1/G5 门槛变更、P4/P5 集成 | **NOT_RUN** | 本任务不实施、不等待、不宣称 |
@@ -342,7 +365,9 @@ $R='D:/majiang-wt/domain-determinism-guard-20261026/build/artifacts/domain-deter
    花括号会被正确跨越（D-R1-01）。顶层 `:` 后的格式说明按格式文本处理：其中 `"`、`'`、
    `\`、成对 `""` 与转义 `{{`/`}}` 不再被当作 C# 字面量起点（D-R2-01）；但 `?:`、
    `global::`、命名参数、nullable cast 的 `?` 需依赖小型嵌套/条件启发式，不是完整语法树。
-   不扫描格式文本中的 API，也不声称完整 C# 语义。
+   nullable `?` 通过“下一个有效字符（跳过空白与注释）为 `>`/`)`/`]`/`,`/`;`/`}`/`:`/`=`”
+   识别为类型标记，不进入三元计数（D-R3-01）；这不是完整泛型/类型推断，只是防止状态
+   泄漏到格式冒号的词法启发式。不扫描格式文本中的 API，也不声称完整 C# 语义。
 4. `#if` 预处理分支按当前源码文本保守扫描；不模拟编译条件。
 5. 浮点只覆盖已接受的 `ShuffleConfig` 调参合法例，**不宣称覆盖全部浮点权威数据流**；
    不禁止所有 `double` 关键字。
@@ -367,9 +392,10 @@ $R='D:/majiang-wt/domain-determinism-guard-20261026/build/artifacts/domain-deter
 | 新增 `Mahjong.Domain.Tests/DomainDeterminismSourceScanTests.cs`，不改现有测试 | 仅新增该文件；原测试零修改 |
 | 禁用符号组 = §3.4 regex | 12 组全部覆盖，含 §3.4 的 `new Random`、四个时钟、`Guid.NewGuid`、`Stopwatch`、`Environment.TickCount(64)`、`Thread.Sleep`、`Task.Delay`、`Math.Random`，并纳入同类 `Random.Shared` |
 | 豁免表显式列 `PersistedUtcTime` 消费路径与 `ShuffleConfig` 数值调参并附理由 | 见 §3；不允许全文件豁免 |
-| 内嵌违例自检样本 | 27 样本/12 组 + 34 样本插值/格式矩阵，调用真实扫描函数；另有生产副本注入 |
+| 内嵌违例自检样本 | 27 样本/12 组 + 34 样本插值/格式矩阵 + 8 nullable 正例/8 负控制，调用真实扫描函数；另有生产副本注入 |
 | 插值孔洞内嵌字符串 | 内层引号/注释/花括号不误报，外层真实 API 不漏报；caller 33 探针 33/33 |
 | 格式说明引号/字符 | 6 类格式正例 + 6 负控制全绿；每例外层 `Guid.NewGuid@Syntax.cs:4:23` |
+| nullable `?` 状态 | 8 例（泛型/注释/嵌套/`??`）各恰 1 条 `Guid.NewGuid@Syntax.cs:6:23`；无 API 控制 0 |
 | 枚举/RepoRoot 失败硬失败 | 见 §2/§4；空枚举、缺目录、无仓库根均抛异常 |
 | 不扫描测试目录/生成目录 | 仅 Domain 生产 `.cs`；`bin`/`obj` 排除；测试目录探针不纳入 |
 | 不升格 G1/G5 门槛 | 见 §1/§6；本任务不设门、不改门 |
@@ -377,12 +403,14 @@ $R='D:/majiang-wt/domain-determinism-guard-20261026/build/artifacts/domain-deter
 ## 9. 结论
 
 S-2 已按接受范围落地：Domain 当前 44 个生产 `.cs` 扫描 0 违例；12 个禁用组/27 种写法
-全部能被真实扫描函数检出；34 样本插值/格式矩阵不再泄漏内层引号、吞掉外层 API 或把
-格式文本误当 C# 字面量；注释、字符串与合法标识不误报；真实生产副本注入
-`System.DateTime.UtcNow` 能返回精确文件/行/列/符号诊断，且实仓源哈希不变。
-新增测试类 10/10、原有 `DecisionClockTests` 14/14、两类合并 24/24，fresh Release 构建
-0/0 通过；caller 独立 33 探针修复后 `FAILED=0`，6 例格式矩阵修复后 `FAILED=0`
-（每例 `Syntax.cs:4:23`），native 均 0。
+全部能被真实扫描函数检出；34 样本插值/格式矩阵与 8 caller nullable + 1 嵌套 block
+正例/9 负控制不再泄漏内层引号、吞掉外层 API、把格式文本误当 C# 字面量或把 nullable `?`
+残留为三元状态；
+注释、字符串与合法标识不误报；真实生产副本注入 `System.DateTime.UtcNow` 能返回精确
+文件/行/列/符号诊断，且实仓源哈希不变。
+新增测试类 11/11、原有 `DecisionClockTests` 14/14、两类合并 25/25，fresh Release 构建
+0/0 通过；caller 独立 33 探针 `FAILED=0`，6 例格式矩阵 `FAILED=0`（`Syntax.cs:4:23`），
+8 例 nullable 矩阵 `FAILED=0`（`Syntax.cs:6:23`），native 均 0。
 
 本交付仅新增两个文件，不构成 G1/G5 通过、不改变 V4 唯一生产事实，也不实施任何受
 G1 阻断的 P4/P5 集成。
@@ -485,3 +513,58 @@ G1 阻断的 P4/P5 集成。
 该缺陷不是要求扩大孔洞 API 扫描或完整 C# 语义，而是第 2 轮新增逻辑再次吞掉孔洞外真实
 API，违背原修复验收断言。本轮已批量覆盖同组 3 个假绿与全部格式/对照形式，没有把同类
 问题留到下一轮；未发现其他新缺陷。
+
+## 12. 第 4 轮返修：D-R3-01（MAJOR，已修复）
+
+### 12.1 缺陷记录
+
+| 字段 | 内容 |
+|---|---|
+| ID | **D-R3-01** |
+| 严重级别 | **MAJOR**（BLOCKER/MINOR=0） |
+| 位置 | `DomainDeterminismSourceScanTests.cs` 的 `MaskInterpolationHole`（`conditionalDepth` 与 `'?'` 处理）、`NextSignificantCharacter`；报告 §2/§6/§9/§11 相关能力声明 || 复现 | caller 证据根 `$E=D:/majiang-wt/domain-determinism-guard-20261026/build/artifacts/caller-domain-r3-bf37b7f5688a4a40be58760bfb0c5fd3`；执行 `powershell -NoProfile -ExecutionPolicy Bypass -File "$E/run-nullable-cases.ps1" -EvidenceRoot $E`。脚本 fresh 构建 format-probe 与 8 份同一项目 `Syntax.cs`（LangVersion9.0/TreatWarningsAsErrors=true），调用交付 DLL 真实 `ScanDomainDirectory`，任一非 1 违例返回 native 1。 |
+| 实际（修复前） | `?` 被无条件当作三元运算符：泛型实参 `F<int?>()`、注释后 `default(int? /*c*/)`、`new List<int?>()`、`F<int?>() ?? 0`、嵌套 `F<List<int?>>()`、`F<int? /*c*/>()` 的 `?` 都残留 `conditionalDepth`，导致顶层格式 `:` 被当作三元冒号消费，随后格式转义引号再次按表达式字符串处理，遮蔽范围吞到字符串外。6/8 实际 0（`DOMAIN-DETERMINISM-PASS`），`TOTAL=8 FAILED=6`，native 1；case4 `(value as int?)`、case5 `((int?)value)` 通过。 |
+| 期望 | 8/8，每例恰 1 条外部 `Guid.NewGuid`，精确 `Syntax.cs:6:23`；同形状删除外部 API 为 0；native 0。 |
+| 证据 | caller 原始 `nullable-cases.log` SHA-256 `EC81F105EA45E9ADFD48D54E14B4B7654A512606899EEDBE4E779E2D2C3D7F1B`；`run-nullable-cases.ps1` SHA-256 `49E7BEFE3D1829871EF51CD55BB1D47B7EFB5DB20F1ECEF743C6E2E0D9969024`；`nullable-matrix/case1/Syntax.cs` SHA-256 `464251AA48D620BDE6FC96030561F443B3E94B074D39736575EC6D6C6E96F82D`；caller `build.log` SHA-256 `F9ABF7134D5E19883F053E6F5727F3310F509AF03D72F714C0E7E276FAAD0A69`；caller `targeted.xml` SHA-256 `D0B6B9C8676C90BFD2D5DA5965956F13F1DF73C5CCD2E130AF48811FBCF4698C`；caller `probe33.log` SHA-256 `846B542AE0DE9854FEA1A9D6B2CAF2B0858F5BCEB652B40E61EBD4E0B2BAB6E7`；caller `format-cases.log` SHA-256 `89F1C7CFA824300EEC194AE27EC94DD5BC77335CF96C4A809B7EE989DAF5E5D0`。本轮复制源码/脚本到 `rework-r4/` 后运行，caller 原目录未覆盖。 |
+| 修复要求 | 仅两个 expectedFiles 内解决整组状态泄漏；把 8 例与无外部 API 对照固化为调用真实 scanner 的自检，精确文件/行/列/符号断言；保留旧 34 样本、旧 33 探针、格式 6 例与生产副本注入/fail-closed 扫描；保持显式时间输入/ShuffleConfig 合法；不改生产、原测试、csproj、verifier、fixtures、golden。 |
+| 验收断言 | fresh Release `--no-incremental` native 0/0 warning/0 error 后才跑新 DLL；新类 + DecisionClockTests total>0 且 failed/errors/skipped/not-run 全 0；33/33、格式 6/6、nullable 8/8（每例 `Guid.NewGuid@Syntax.cs:6:23`）；正反控制全绿；真实 44 源 0 违例；枚举失败硬失败；副本注入有效；仓库生产源不变；clean status/diff-check。 |
+
+### 12.2 统一修复映射
+
+| 修复点 | 实现 |
+|---|---|
+| 注释/空白后的有效字符 | `NextSignificantCharacter` 跳过空白、`//` 行注释、`/* ... */` 块注释，避免 `int? /*c*/ )` 把 `/` 当后继 |
+| nullable 类型标记 | `?` 后有效字符为 `>`/`)`/`]`/`,`/`;`/`}`/`:`/`=` 时不增加 `conditionalDepth`，直接按类型标记消费 |
+| 嵌套泛型 | `F<List<int?>>()` 的 `?` 后为 `>`，不残留条件计数；后续 `>>` 正常跨过 |
+| `??` / `?.` / `?[` | 仍按既有特殊分支跳过，不进入三元计数 |
+| nullable cast/pattern | `(int?)value`、`(value as int?)`、`default(int?)` 保持控制通过 |
+| 三元 `?:` | 真分支起首不是 nullable 后继集合时仍增加条件计数，对应 `:` 消费；保留既有 `?:` 对照 |
+| 作用域恢复 | `conditionalDepth` 在 `{`/`(`/`[` 入栈、在对应 `}`/`)`/`]` 出栈恢复，避免嵌套 block 内 `int? x` 声明泄漏到外层格式冒号 |
+| 格式冒号 | 无条件计数残留时，顶层 `:` 仍进入 `MaskFormatSpecifier`，格式文本不按 C# 字面量解析 |
+| 自检 | 新增 `NullableTypeQuestionsDoNotLeakIntoFormatColonState`：8 caller 表达式 + 1 嵌套 block 控制，各配正/负控制；正例断言 `Guid.NewGuid@Syntax.cs:6:23`，负控制 0 |
+
+### 12.3 统一负例矩阵
+
+| # | 孔洞表达式 | 正例 | 负控制 |
+|---|---|---|---|
+| 1 | `F<int?>()` | 恰 1 `Guid.NewGuid@Syntax.cs:6:23` | 0 |
+| 2 | `default(int? /* nullable comment */)` | 恰 1 | 0 |
+| 3 | `new System.Collections.Generic.List<int?>()` | 恰 1 | 0 |
+| 4 | `(value as int?)` | 恰 1（控制） | 0 |
+| 5 | `((int?)value)` | 恰 1（控制） | 0 |
+| 6 | `F<int?>() ?? 0` | 恰 1 | 0 |
+| 7 | `F<System.Collections.Generic.List<int?>>()` | 恰 1 | 0 |
+| 8 | `F<int? /* nullable comment */>()` | 恰 1 | 0 |
+| 9 | `new Func<object>(() => { int? x = null; return x; })()`（嵌套 block 控制） | 恰 1 | 0 |
+
+- 旧 34 样本插值/格式矩阵、旧 33 探针、格式 6 例、生产副本注入、空/缺目录硬失败、
+  `bin`/`obj` 排除均保持 PASS。
+- 真实 44 个 Domain 生产源仍 0 违例；测试未改实仓源。
+
+### 12.4 新增信息说明
+
+本轮缺陷由 caller 的新 nullable 探针首次提供：第 3 轮新增 `conditionalDepth` 和
+`NextNonWhitespace` 时只覆盖了 `?` 后直接 `)` 的 cast，没有覆盖泛型 `>`、注释后 `)`、
+嵌套泛型与 `??`；第 3 轮 34 样本/格式 6 例中也没有这些 nullable 形式，因此此前无法发现。
+本轮已批量覆盖 8 个 caller 样例、1 个嵌套 block 控制及对应负控制，没有把同类状态泄漏
+留到下一轮；未发现其他新缺陷。
