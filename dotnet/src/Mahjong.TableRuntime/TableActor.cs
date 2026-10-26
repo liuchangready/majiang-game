@@ -245,13 +245,6 @@ namespace Mahjong.TableRuntime
             return _round;
         }
 
-        public void DropPendingDecisionForHost(int seat)
-        {
-            if (seat >= 0 && seat <= 3)
-            {
-                _pending.Remove(seat);
-            }
-        }
 
         public IReadOnlyList<TileId> GetSeatHandTileIds(int seat)
         {

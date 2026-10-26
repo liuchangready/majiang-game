@@ -220,12 +220,7 @@ namespace Mahjong.LocalHost
                 return false;
             }
 
-            if (_aiSeats[seat] && _actor.GetPendingDecisionId(seat) != null)
-            {
-                _actor.DropPendingDecisionForHost(seat);
-            }
-
-            if (_actor.GetPendingDecisionId(seat) != null && !_aiSeats[seat])
+            if (_actor.GetPendingDecisionId(seat) != null)
             {
                 _lastDecisionKey = seat.ToString(System.Globalization.CultureInfo.InvariantCulture) + "/" +
                                    snapshot.StateVersion.Value.ToString(System.Globalization.CultureInfo.InvariantCulture) + "/" +
