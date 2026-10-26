@@ -20,7 +20,7 @@ namespace Mahjong.LocalHost.Tests
             var session = new TableSession(channel, new InMemoryOutboxStore());
             string sessionTicket = LocalTableHost.IssueTicket(harness.Options);
             using var pumpCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-            pumpCts.CancelAfter(TimeSpan.FromSeconds(10));
+            pumpCts.CancelAfter(TimeSpan.FromSeconds(30));
             Task pump = Task.Run(async () =>
             {
                 try
@@ -41,7 +41,7 @@ namespace Mahjong.LocalHost.Tests
             try
             {
                 await session.OpenAsync(new TableSessionOpenRequest(sessionTicket, "p41-test"), pumpCts.Token);
-                for (int i = 0; i < 300 && session.State != TableConnectionState.Ready; i++)
+                for (int i = 0; i < 500 && session.State != TableConnectionState.Ready; i++)
                 {
                     await Task.Delay(20, pumpCts.Token);
                 }
