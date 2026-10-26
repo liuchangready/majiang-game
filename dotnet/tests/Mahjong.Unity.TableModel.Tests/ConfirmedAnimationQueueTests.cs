@@ -65,7 +65,13 @@ namespace Mahjong.Unity.TableModel.Tests
                 id.StateVersion,
                 id.EventSeq,
                 id.StreamVersion,
-                id.ProjectionSeq);
+                id.ProjectionSeq,
+                id.Role,
+                id.Seat,
+                id.ScopeId,
+                id.IsPrivateAuthorized,
+                id.OwnerEpoch,
+                id.ConnectionEpoch);
         }
 
         private static ConfirmedVisibleEvent Event(

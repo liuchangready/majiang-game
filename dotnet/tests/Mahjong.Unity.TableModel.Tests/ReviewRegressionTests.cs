@@ -32,14 +32,16 @@ namespace Mahjong.Unity.TableModel.Tests
             PlayerSnapshot? snapshot = null,
             long generation = 1,
             int seat = 0,
-            ulong bindingEpoch = P43TestData.BindingEpoch)
+            ulong bindingEpoch = P43TestData.BindingEpoch,
+            string scopeId = P43TestData.ScopeId)
         {
             return new PlayerTableProjectionMapper(clock).Project(
                 P43TestData.View(
                     snapshot ?? P43TestData.PlayerSnapshot(seat: seat),
                     generation: generation,
                     seat: seat,
-                    bindingEpoch: bindingEpoch));
+                    bindingEpoch: bindingEpoch,
+                    scopeId: scopeId));
         }
 
         private static PlayerTableViewState SpectatorView(ManualTableClock clock)
@@ -75,7 +77,9 @@ namespace Mahjong.Unity.TableModel.Tests
                 id.Role,
                 id.Seat,
                 id.ScopeId,
-                id.IsPrivateAuthorized);
+                id.IsPrivateAuthorized,
+                id.OwnerEpoch,
+                id.ConnectionEpoch);
         }
 
         private static ConfirmedVisibleEvent Event(
@@ -524,7 +528,7 @@ namespace Mahjong.Unity.TableModel.Tests
                 TableAnimationAudience.Player(0));
 
             Assert.False(result.Accepted);
-            Assert.Equal(TableAnimationCodes.AudienceMismatch, result.Code);
+            Assert.Equal(TableAnimationCodes.ContextMismatch, result.Code);
         }
 
         [Fact]
@@ -625,6 +629,243 @@ namespace Mahjong.Unity.TableModel.Tests
                 context,
                 new[] { Event(106, 0, ConfirmedVisibleEventKind.TileDiscarded, ConfirmedEventVisibility.Public, seat: 0, tileId: 80) },
                 TableAnimationAudience.Player(0)).Enqueued);
+        }
+
+        [Fact]
+        public void R2_01_EventContextMustCarryBaselineAuthorization()
+        {
+            var clock = new ManualTableClock();
+            PlayerTableViewState baseline = Project(clock);
+            var queue = new ConfirmedAnimationQueue();
+            queue.AcceptConfirmedBaseline(baseline);
+
+            TableAnimationResult oldScope = queue.AcceptConfirmedEvents(
+                Context(Project(clock, scopeId: "scope-old")),
+                new[] { Event(106, 0, ConfirmedVisibleEventKind.TileDrawn, ConfirmedEventVisibility.Private, ownerSeat: 0, seat: 0, tileId: 80) },
+                TableAnimationAudience.Player(0));
+            Assert.False(oldScope.Accepted);
+            Assert.Equal(TableAnimationCodes.ContextMismatch, oldScope.Code);
+            Assert.Equal(0, queue.PendingCount);
+
+            TableAnimationResult wrongSeat = queue.AcceptConfirmedEvents(
+                Context(Project(clock, seat: 1)),
+                new[] { Event(106, 0, ConfirmedVisibleEventKind.TileDrawn, ConfirmedEventVisibility.Private, ownerSeat: 1, seat: 1, tileId: 80) },
+                TableAnimationAudience.Player(1));
+            Assert.False(wrongSeat.Accepted);
+            Assert.Equal(TableAnimationCodes.ContextMismatch, wrongSeat.Code);
+            Assert.Equal(0, queue.PendingCount);
+
+            // The legacy 9-argument context can still feed public events, but
+            // it must never authorize a private event.
+            var legacy = new ConfirmedAnimationContext(
+                baseline.Identity.Generation,
+                baseline.Identity.SessionId,
+                baseline.Identity.RoomId,
+                baseline.Identity.RoundId,
+                baseline.Identity.BindingEpoch,
+                baseline.Identity.StateVersion,
+                baseline.Identity.EventSeq,
+                baseline.Identity.StreamVersion,
+                baseline.Identity.ProjectionSeq);
+            Assert.Equal(
+                TableAnimationCodes.ContextMismatch,
+                queue.AcceptConfirmedEvents(
+                    legacy,
+                    new[] { Event(106, 0, ConfirmedVisibleEventKind.TileDrawn, ConfirmedEventVisibility.Private, ownerSeat: 0, seat: 0, tileId: 81) },
+                    TableAnimationAudience.Player(0)).Code);
+            Assert.True(queue.AcceptConfirmedEvents(
+                legacy,
+                new[] { Event(106, 0, ConfirmedVisibleEventKind.TileDiscarded, ConfirmedEventVisibility.Public, seat: 0, tileId: 82) },
+                TableAnimationAudience.Player(0)).Accepted);
+        }
+
+        [Fact]
+        public void R2_01_DifferenceCannotRebindAuthorizationScope()
+        {
+            var clock = new ManualTableClock();
+            PlayerTableViewState before = Project(clock);
+            PlayerTableViewState after = Project(
+                clock,
+                P43TestData.PlayerSnapshot(stateVersion: 6, eventSeq: 106),
+                scopeId: "scope-new");
+            var queue = new ConfirmedAnimationQueue();
+            queue.AcceptConfirmedBaseline(before);
+
+            TableAnimationResult result = queue.AcceptConfirmedDifference(before, after, false);
+            Assert.False(result.Accepted);
+            Assert.Equal(TableAnimationCodes.ContextMismatch, result.Code);
+            Assert.Equal(P43TestData.ScopeId, queue.Context!.ScopeId);
+        }
+
+        [Fact]
+        public void R2_02_DrawEventAndSnapshotPlayOnceInEitherOrder()
+        {
+            var clock = new ManualTableClock();
+            PlayerSnapshot s1 = P43TestData.PlayerSnapshot();
+            PlayerSnapshot s2 = s1.Clone();
+            s2.StateVersion = 6;
+            s2.EventSeq = 106;
+            s2.PrivateView.ClosedTiles.Add(13);
+            s2.PrivateView.DrawnTileId = 21;
+            PlayerTableViewState before = Project(clock, s1);
+            PlayerTableViewState after = Project(clock, s2);
+
+            var eventFirst = new ConfirmedAnimationQueue();
+            eventFirst.AcceptConfirmedBaseline(before);
+            Assert.True(eventFirst.AcceptConfirmedEvents(
+                Context(after),
+                new[] { Event(106, 0, ConfirmedVisibleEventKind.TileDrawn, ConfirmedEventVisibility.Private, ownerSeat: 0, seat: 0, tileId: 21) },
+                TableAnimationAudience.Player(0)).Accepted);
+            Assert.True(eventFirst.AcceptConfirmedDifference(before, after, false).Accepted);
+            Assert.Equal(1, eventFirst.PendingCount);
+
+            var snapshotFirst = new ConfirmedAnimationQueue();
+            snapshotFirst.AcceptConfirmedBaseline(before);
+            Assert.True(snapshotFirst.AcceptConfirmedDifference(before, after, false).Accepted);
+            Assert.Equal(0, snapshotFirst.AcceptConfirmedEvents(
+                Context(after),
+                new[] { Event(106, 0, ConfirmedVisibleEventKind.TileDrawn, ConfirmedEventVisibility.Private, ownerSeat: 0, seat: 0, tileId: 21) },
+                TableAnimationAudience.Player(0)).Enqueued);
+            Assert.Equal(1, snapshotFirst.PendingCount);
+        }
+
+        [Fact]
+        public void R2_02_MeldEventAndSnapshotPlayOnceInEitherOrder()
+        {
+            var clock = new ManualTableClock();
+            PlayerSnapshot s1 = P43TestData.PlayerSnapshot();
+            PlayerSnapshot s2 = s1.Clone();
+            s2.StateVersion = 6;
+            s2.EventSeq = 106;
+            AddMeld(s2, 3, MeldType.Pon, 2, 80, 80, 81, 82);
+            PlayerTableViewState before = Project(clock, s1);
+            PlayerTableViewState after = Project(clock, s2);
+
+            var eventFirst = new ConfirmedAnimationQueue();
+            eventFirst.AcceptConfirmedBaseline(before);
+            Assert.True(eventFirst.AcceptConfirmedEvents(
+                Context(after),
+                new[] { Event(106, 0, ConfirmedVisibleEventKind.PonDeclared, ConfirmedEventVisibility.Public, seat: 3, tileId: 80) },
+                TableAnimationAudience.Player(0)).Accepted);
+            Assert.True(eventFirst.AcceptConfirmedDifference(before, after, false).Accepted);
+            Assert.Equal(1, eventFirst.PendingCount);
+
+            var snapshotFirst = new ConfirmedAnimationQueue();
+            snapshotFirst.AcceptConfirmedBaseline(before);
+            Assert.True(snapshotFirst.AcceptConfirmedDifference(before, after, false).Accepted);
+            Assert.Equal(0, snapshotFirst.AcceptConfirmedEvents(
+                Context(after),
+                new[] { Event(106, 0, ConfirmedVisibleEventKind.PonDeclared, ConfirmedEventVisibility.Public, seat: 3, tileId: 80) },
+                TableAnimationAudience.Player(0)).Enqueued);
+            Assert.Equal(1, snapshotFirst.PendingCount);
+        }
+
+        [Fact]
+        public void R2_02_DifferentDrawsAndMeldsAreNotSuppressed()
+        {
+            var clock = new ManualTableClock();
+            PlayerSnapshot s1 = P43TestData.PlayerSnapshot();
+            PlayerSnapshot s2 = s1.Clone();
+            s2.StateVersion = 6;
+            s2.EventSeq = 106;
+            s2.PrivateView.ClosedTiles.Add(13);
+            s2.PrivateView.DrawnTileId = 21;
+            AddMeld(s2, 3, MeldType.Pon, 2, 82, 82, 83, 84);
+            PlayerTableViewState before = Project(clock, s1);
+            PlayerTableViewState after = Project(clock, s2);
+            var queue = new ConfirmedAnimationQueue();
+            queue.AcceptConfirmedBaseline(before);
+
+            Assert.True(queue.AcceptConfirmedEvents(
+                Context(after),
+                new[]
+                {
+                    Event(106, 0, ConfirmedVisibleEventKind.TileDrawn, ConfirmedEventVisibility.Private, ownerSeat: 0, seat: 0, tileId: 80),
+                    Event(106, 1, ConfirmedVisibleEventKind.PonDeclared, ConfirmedEventVisibility.Public, seat: 3, tileId: 80)
+                },
+                TableAnimationAudience.Player(0)).Accepted);
+            Assert.True(queue.AcceptConfirmedDifference(before, after, false).Accepted);
+            Assert.Equal(4, queue.PendingCount);
+        }
+
+        [Fact]
+        public void R2_03_DuplicateSameStateNewCursorDoesNotPoisonNextDifference()
+        {
+            var clock = new ManualTableClock();
+            PlayerSnapshot s1 = P43TestData.PlayerSnapshot();
+            PlayerSnapshot s2 = s1.Clone();
+            s2.Cursor.ProjectionSeq++;
+            PlayerSnapshot s3 = s2.Clone();
+            s3.StateVersion = 6;
+            s3.EventSeq = 106;
+            s3.Cursor.ProjectionSeq++;
+            s3.PublicView.Board.Players[2].Discards.Add(new DiscardView { TileId = 80, TurnNumber = 2 });
+            PlayerTableViewState a = Project(clock, s1);
+            PlayerTableViewState b = Project(clock, s2);
+            PlayerTableViewState c = Project(clock, s3);
+            var queue = new ConfirmedAnimationQueue();
+            queue.AcceptConfirmedBaseline(a);
+
+            TableAnimationResult duplicate = queue.AcceptConfirmedDifference(a, b, false);
+            TableAnimationResult next = queue.AcceptConfirmedDifference(b, c, false);
+
+            Assert.True(duplicate.Accepted);
+            Assert.Equal(TableAnimationCodes.Duplicate, duplicate.Code);
+            Assert.True(next.Accepted, next.Code);
+            Assert.Equal(1, next.Enqueued);
+        }
+
+        [Fact]
+        public void R2_04_ResetSameGenerationRetainsBindingStateAndScopeFloor()
+        {
+            var clock = new ManualTableClock();
+            PlayerSnapshot source = P43TestData.PlayerSnapshot();
+            source.PrivateView.Cheat.SleeveBloom = null;
+            PlayerTableViewState current = Project(clock, source, bindingEpoch: 12);
+            TableInteractionState state = new TableInteractionState(new TableCommandIntentFactory(clock));
+            state.ApplyConfirmedView(current);
+            state.OnBaselineReset(current.Identity.Generation);
+
+            TableInteractionOutcome oldBinding = state.ApplyConfirmedView(Project(clock, source, bindingEpoch: 11));
+            Assert.False(oldBinding.Accepted);
+            Assert.Equal(TableInteractionCodes.IdentityMismatch, oldBinding.Code);
+
+            PlayerSnapshot older = source.Clone();
+            older.StateVersion = 4;
+            older.EventSeq = 104;
+            TableInteractionOutcome oldState = state.ApplyConfirmedView(Project(clock, older, bindingEpoch: 12));
+            Assert.False(oldState.Accepted);
+            Assert.Equal(TableInteractionCodes.StaleState, oldState.Code);
+
+            TableInteractionOutcome oldScope = state.ApplyConfirmedView(
+                Project(clock, source, bindingEpoch: 12, scopeId: "scope-old"));
+            Assert.False(oldScope.Accepted);
+            Assert.Equal(TableInteractionCodes.IdentityMismatch, oldScope.Code);
+            Assert.False(state.BuildIntent(TableIntentKind.SubmitSleeveBloom, Owner()).Accepted);
+
+            PlayerSnapshot newer = source.Clone();
+            newer.StateVersion = 6;
+            newer.EventSeq = 106;
+            Assert.True(state.ApplyConfirmedView(Project(clock, newer, bindingEpoch: 12)).Accepted);
+            Assert.True(state.BuildIntent(TableIntentKind.SubmitSleeveBloom, Owner()).Accepted);
+        }
+
+        [Fact]
+        public void R2_04_ResetNewGenerationAllowsOnlyNewBaseline()
+        {
+            var clock = new ManualTableClock();
+            PlayerSnapshot source = P43TestData.PlayerSnapshot();
+            source.PrivateView.Cheat.SleeveBloom = null;
+            PlayerTableViewState current = Project(clock, source, generation: 1, bindingEpoch: 12);
+            TableInteractionState state = new TableInteractionState(new TableCommandIntentFactory(clock));
+            state.ApplyConfirmedView(current);
+            state.OnBaselineReset(2);
+
+            Assert.False(state.ApplyConfirmedView(Project(clock, source, generation: 1, bindingEpoch: 11)).Accepted);
+            PlayerSnapshot newer = source.Clone();
+            newer.StateVersion = 6;
+            newer.EventSeq = 106;
+            Assert.True(state.ApplyConfirmedView(Project(clock, newer, generation: 2, bindingEpoch: 13)).Accepted);
         }
     }
 }

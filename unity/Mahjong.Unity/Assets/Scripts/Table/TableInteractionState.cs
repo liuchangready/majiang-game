@@ -201,6 +201,7 @@ namespace Mahjong.Unity.Table
         private PlayerTableViewState? _view;
         private PlayerTableIdentity? _requiredIdentity;
         private long _requiredGeneration = -1;
+        private ulong _requiredStateVersion;
         private long _revision;
 
         public TableInteractionState(TableCommandIntentFactory factory)
@@ -252,6 +253,7 @@ namespace Mahjong.Unity.Table
             // older view can never roll the interaction back afterwards.
             _requiredIdentity = null;
             _requiredGeneration = Math.Max(_requiredGeneration, view.Identity.Generation);
+            _requiredStateVersion = view.Identity.StateVersion;
             _view = view;
             _revision++;
             return TableInteractionOutcome.Ok(bindingChanged ? TableInteractionCodes.PendingCleared : TableInteractionCodes.Applied);
@@ -608,10 +610,24 @@ namespace Mahjong.Unity.Table
                 throw new ArgumentOutOfRangeException(nameof(generation));
             }
 
-            _requiredGeneration = Math.Max(
-                _requiredGeneration,
-                Math.Max(generation, _view?.Identity.Generation ?? 0L));
-            _requiredIdentity = null;
+            PlayerTableIdentity? retained = _view?.Identity ?? _requiredIdentity;
+            ulong retainedState = _view?.Identity.StateVersion ?? _requiredStateVersion;
+            if (retained != null && generation <= retained.Generation)
+            {
+                // A same-generation reset must not forget which binding/state
+                // was already accepted: the next view still has to satisfy the
+                // retained binding and state floor.
+                _requiredIdentity = retained;
+                _requiredStateVersion = retainedState;
+                _requiredGeneration = retained.Generation;
+            }
+            else
+            {
+                _requiredIdentity = null;
+                _requiredStateVersion = 0;
+                _requiredGeneration = Math.Max(_requiredGeneration, generation);
+            }
+
             _pending = null;
             _view = null;
             ClearSelectionCore();
@@ -628,6 +644,7 @@ namespace Mahjong.Unity.Table
 
             _requiredGeneration = Math.Max(_requiredGeneration, identity.Generation);
             _requiredIdentity = identity;
+            _requiredStateVersion = identity.StateVersion;
             _pending = null;
             _view = null;
             ClearSelectionCore();
@@ -873,9 +890,18 @@ namespace Mahjong.Unity.Table
                     return TableInteractionCodes.IdentityMismatch;
                 }
 
-                return view.Identity.Generation < _requiredIdentity.Generation
-                    ? TableInteractionCodes.StaleGeneration
-                    : null;
+                if (view.Identity.Generation < _requiredIdentity.Generation)
+                {
+                    return TableInteractionCodes.StaleGeneration;
+                }
+
+                if (view.Identity.Generation == _requiredIdentity.Generation &&
+                    view.Identity.StateVersion < _requiredStateVersion)
+                {
+                    return TableInteractionCodes.StaleState;
+                }
+
+                return null;
             }
 
             if (_view == null)
