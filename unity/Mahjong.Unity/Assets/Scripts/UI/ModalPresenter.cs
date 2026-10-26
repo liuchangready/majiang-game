@@ -1,0 +1,90 @@
+using System;
+using UnityEngine;
+using UnityEngine.UI;
+using TMPro;
+
+namespace Mahjong.Unity.UI
+{
+    public sealed class ModalPresenter : MonoBehaviour
+    {
+        [SerializeField] private GameObject? _modalRoot;
+        [SerializeField] private TextMeshProUGUI? _titleText;
+        [SerializeField] private TextMeshProUGUI? _messageText;
+        [SerializeField] private Button? _confirmButton;
+        [SerializeField] private Button? _cancelButton;
+        [SerializeField] private TextMeshProUGUI? _confirmButtonText;
+        [SerializeField] private TextMeshProUGUI? _cancelButtonText;
+
+        private Action? _onConfirm;
+        private Action? _onCancel;
+        private BackRouter? _backRouter;
+
+        public bool IsOpen => _modalRoot != null && _modalRoot.activeSelf;
+
+        public void SetBackRouter(BackRouter router)
+        {
+            _backRouter = router;
+        }
+
+        public void Show(
+            string title,
+            string message,
+            string confirmText = "确定",
+            string cancelText = "取消",
+            Action? onConfirm = null,
+            Action? onCancel = null)
+        {
+            _onConfirm = onConfirm;
+            _onCancel = onCancel;
+
+            if (_titleText != null) _titleText.text = title;
+            if (_messageText != null) _messageText.text = message;
+            if (_confirmButtonText != null) _confirmButtonText.text = confirmText;
+            if (_cancelButtonText != null) _cancelButtonText.text = cancelText;
+
+            if (_confirmButton != null)
+            {
+                _confirmButton.onClick.RemoveAllListeners();
+                _confirmButton.onClick.AddListener(OnConfirmClicked);
+            }
+
+            if (_cancelButton != null)
+            {
+                _cancelButton.onClick.RemoveAllListeners();
+                _cancelButton.onClick.AddListener(OnCancelClicked);
+            }
+
+            if (_modalRoot != null)
+            {
+                _modalRoot.SetActive(true);
+            }
+
+            _backRouter?.RegisterModal(Close);
+        }
+
+        public void Close()
+        {
+            if (_modalRoot != null)
+            {
+                _modalRoot.SetActive(false);
+            }
+            _backRouter?.UnregisterModal(Close);
+            _onCancel?.Invoke();
+        }
+
+        private void OnConfirmClicked()
+        {
+            if (_modalRoot != null)
+            {
+                _modalRoot.SetActive(false);
+            }
+            _backRouter?.UnregisterModal(Close);
+            _onConfirm?.Invoke();
+        }
+
+        private void OnCancelClicked()
+        {
+            Close();
+        }
+    }
+}
