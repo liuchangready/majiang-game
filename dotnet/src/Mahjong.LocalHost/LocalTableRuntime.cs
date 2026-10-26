@@ -31,6 +31,11 @@ namespace Mahjong.LocalHost
     {
         private readonly object _gate = new object();
         private readonly Dictionary<string, WireReceipt> _controlReceipts = new Dictionary<string, WireReceipt>(StringComparer.Ordinal);
+        private static string FuritenKey(LocalTableHostOptions options)
+        {
+            return LocalTableHostPaths.ResolveSaveDirectory(options.SaveDirectory) + "\0" + options.RoomId;
+        }
+
         private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, FuritenState> _furitenByRoom =
             new System.Collections.Concurrent.ConcurrentDictionary<string, FuritenState>(StringComparer.Ordinal);
         private readonly LocalTableHostOptions _options;
@@ -221,9 +226,9 @@ namespace Mahjong.LocalHost
                 durable,
                 settlementFacts);
             settlementFacts.RoundProvider = () => actor.GetRoundStateForHost();
-            settlementFacts.TemporaryFuritenProvider = seat => _furitenByRoom.GetOrAdd(options.RoomId, _ => new FuritenState()).Temporary[seat];
-            settlementFacts.RiichiFuritenProvider = seat => _furitenByRoom.GetOrAdd(options.RoomId, _ => new FuritenState()).Riichi[seat];
-            facts.FuritenProvider = seat => _furitenByRoom.GetOrAdd(options.RoomId, _ => new FuritenState()).Temporary[seat] || _furitenByRoom.GetOrAdd(options.RoomId, _ => new FuritenState()).Riichi[seat];
+            settlementFacts.TemporaryFuritenProvider = seat => _furitenByRoom.GetOrAdd(FuritenKey(options), _ => new FuritenState()).Temporary[seat];
+            settlementFacts.RiichiFuritenProvider = seat => _furitenByRoom.GetOrAdd(FuritenKey(options), _ => new FuritenState()).Riichi[seat];
+            facts.FuritenProvider = seat => _furitenByRoom.GetOrAdd(FuritenKey(options), _ => new FuritenState()).Temporary[seat] || _furitenByRoom.GetOrAdd(FuritenKey(options), _ => new FuritenState()).Riichi[seat];
             return actor;
         }
 
@@ -738,10 +743,10 @@ namespace Mahjong.LocalHost
                 {
                     if (candidates[i].Kind == LegalActionKind.Ron)
                     {
-                        _furitenByRoom.GetOrAdd(_options.RoomId, _ => new FuritenState()).Temporary[_seat] = true;
+                        _furitenByRoom.GetOrAdd(FuritenKey(_options), _ => new FuritenState()).Temporary[_seat] = true;
                         if (_actor.GetRoundStateForHost().IsRiichi(_seat))
                         {
-                            _furitenByRoom.GetOrAdd(_options.RoomId, _ => new FuritenState()).Riichi[_seat] = true;
+                            _furitenByRoom.GetOrAdd(FuritenKey(_options), _ => new FuritenState()).Riichi[_seat] = true;
                         }
 
                         break;
@@ -824,7 +829,7 @@ namespace Mahjong.LocalHost
                 if (kind == CommandKind.SubmitAction && hostAction == RoundActionKind.DrawTile &&
                     (result.Status == TableOperationStatus.Accepted || result.Status == TableOperationStatus.Replayed))
                 {
-                    _furitenByRoom.GetOrAdd(_options.RoomId, _ => new FuritenState()).Temporary[_seat] = false;
+                    _furitenByRoom.GetOrAdd(FuritenKey(_options), _ => new FuritenState()).Temporary[_seat] = false;
                 }
 
                 await PublishResultAsync(envelope, result, requestId, payload, cancellationToken).ConfigureAwait(false);
