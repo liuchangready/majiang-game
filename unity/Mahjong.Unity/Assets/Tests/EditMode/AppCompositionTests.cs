@@ -92,6 +92,101 @@ namespace Mahjong.Unity.Tests.EditMode
             Assert.IsFalse(result.Quarantined);
         }
 
+        private sealed class TestChannel : ITableChannel, IDisposable
+        {
+            public bool CloseEntered, Disposed;
+            public bool DelayClose;
+            public readonly TaskCompletionSource<bool> CloseRelease = new TaskCompletionSource<bool>();
+            public bool IsOpen => true;
+            public Task OpenAsync(TableChannelConnectRequest r, CancellationToken t) => Task.CompletedTask;
+            public Task SendAsync(ReadOnlyMemory<byte> b, CancellationToken t) => Task.CompletedTask;
+            public Task<ReadOnlyMemory<byte>> ReceiveAsync(CancellationToken t)
+            {
+                var pending = new TaskCompletionSource<ReadOnlyMemory<byte>>();
+                t.Register(() => pending.TrySetCanceled());
+                return pending.Task;
+            }
+            public async Task CloseAsync(TableChannelCloseReason r, CancellationToken t)
+            {
+                CloseEntered = true;
+                if (DelayClose) await CloseRelease.Task;
+            }
+            public void Dispose() { Disposed = true; }
+        }
+
+        private sealed class TestChannelFactory : ITableChannelFactory
+        {
+            public bool Delay;
+            public int Creates;
+            public readonly TestChannel Channel = new TestChannel();
+            public readonly TaskCompletionSource<bool> Release = new TaskCompletionSource<bool>();
+            public async Task<ITableChannel> CreateAsync(TableTransportKind k, CancellationToken t)
+            {
+                Creates++;
+                if (Delay) await Release.Task;
+                return Channel;
+            }
+        }
+
+        [Test]
+        public async Task RepeatedShutdownMustPreserveInflightQuarantine()
+        {
+            var f = new TestChannelFactory { Delay = true };
+            var comp = new AppComposition(
+                new AppConfig { pumpBarrierTimeoutMs = 50, closeTimeoutMs = 50, cancelObservationMs = 10 },
+                new MainThreadDispatcher(), channelFactory: f,
+                persistentDataPath: System.IO.Path.GetFullPath("build/p42/store-" + Guid.NewGuid().ToString("N")));
+            var open = comp.OpenLocalSessionAsync(CancellationToken.None);
+            var first = await comp.ShutdownAsync("RETURN_TO_MENU");
+            Assert.IsTrue(first.Quarantined);
+            f.Release.TrySetResult(true);
+            try { await open; } catch { }
+            var again = await comp.ShutdownAsync("RETURN_TO_MENU");
+            Assert.IsTrue(again.Quarantined && !again.MenuAllowed,
+                "Composition-level quarantine must remain a terminal failure on repeated shutdown, including after late factory cleanup.");
+        }
+
+        [Test]
+        public async Task OpenDuringCloseMustNotReturnClosingCoordinator()
+        {
+            var f = new TestChannelFactory(); f.Channel.DelayClose = true;
+            var comp = new AppComposition(
+                new AppConfig { pumpBarrierTimeoutMs = 2000, closeTimeoutMs = 2000, cancelObservationMs = 10 },
+                new MainThreadDispatcher(), channelFactory: f,
+                persistentDataPath: System.IO.Path.GetFullPath("build/p42/store-" + Guid.NewGuid().ToString("N")));
+            var first = await comp.OpenLocalSessionAsync(CancellationToken.None);
+            Assert.IsNotNull(first);
+            var stop = comp.ShutdownAsync("RETURN_TO_MENU");
+            int attempts = 0;
+            while (!f.Channel.CloseEntered && attempts++ < 100) await Task.Delay(10);
+            Assert.IsTrue(f.Channel.CloseEntered);
+            var secondTask = comp.OpenLocalSessionAsync(CancellationToken.None);
+            bool returnedClosing = secondTask.IsCompleted && !secondTask.IsFaulted && !secondTask.IsCanceled && ReferenceEquals(first, secondTask.Result);
+            f.Channel.CloseRelease.TrySetResult(true);
+            await stop;
+            Assert.IsFalse(returnedClosing, "Open while shutdown is in progress must reject or wait; it must not report a closing/disposed owner as a live session.");
+        }
+
+        [Test]
+        public async Task ConcurrentCompositionShutdownMustShareTaskAndResult()
+        {
+            var f = new TestChannelFactory(); f.Channel.DelayClose = true;
+            var comp = new AppComposition(
+                new AppConfig { pumpBarrierTimeoutMs = 2000, closeTimeoutMs = 2000, cancelObservationMs = 10 },
+                new MainThreadDispatcher(), channelFactory: f,
+                persistentDataPath: System.IO.Path.GetFullPath("build/p42/store-" + Guid.NewGuid().ToString("N")));
+            var open = await comp.OpenLocalSessionAsync(CancellationToken.None);
+            Assert.IsNotNull(open);
+            var first = comp.ShutdownAsync("RETURN_TO_MENU");
+            var second = comp.ShutdownAsync("RETURN_TO_MENU");
+            bool same = ReferenceEquals(first, second);
+            f.Channel.CloseRelease.TrySetResult(true);
+            var res1 = await first;
+            var res2 = await second;
+            Assert.IsTrue(same, "The composition owner must retain and return the same in-progress shutdown task rather than running two completion/reset paths.");
+            Assert.AreEqual(res1.Outcome, res2.Outcome);
+        }
+
         private SessionViewState View(long generation) => new SessionViewState(generation, TableConnectionState.Ready, null, new PlayerSnapshot(), null, null, null, null);
         private SessionCoordinator Coordinator(FakeSession session, MainThreadDispatcher dispatcher, TableSessionOperationQueue? queue = null) =>
             new SessionCoordinator(session, queue, null, dispatcher, new AppConfig { closeTimeoutMs = 50, pumpBarrierTimeoutMs = 50, cancelObservationMs = 10 }, 1);

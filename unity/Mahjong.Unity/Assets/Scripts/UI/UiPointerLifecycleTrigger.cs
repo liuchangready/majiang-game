@@ -13,7 +13,7 @@ namespace Mahjong.Unity.UI
             if (eventData.button != PointerEventData.InputButton.Left) return;
             var canvas = GetComponentInParent<Canvas>();
             float scale = canvas != null ? canvas.scaleFactor : 1.0f;
-            UiInputLifecycle.Instance.TryArm(eventData.pointerId, eventData.position, scale);
+            UiInputLifecycle.Instance.TryArm(eventData.pointerId, eventData.position, scale, gameObject);
         }
 
         public void OnDrag(PointerEventData eventData)
@@ -28,7 +28,7 @@ namespace Mahjong.Unity.UI
         {
             if (eventData.button != PointerEventData.InputButton.Left) return;
             long gen = UiInputLifecycle.Instance.PressGeneration;
-            UiInputLifecycle.Instance.TryRelease(eventData.pointerId, gen);
+            UiInputLifecycle.Instance.TryRelease(eventData.pointerId, gen, gameObject);
         }
 
         public void OnPointerClick(PointerEventData eventData)

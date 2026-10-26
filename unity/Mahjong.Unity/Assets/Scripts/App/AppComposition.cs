@@ -58,6 +58,11 @@ namespace Mahjong.Unity.App
             ChannelFactory = channelFactory ?? new UnavailableLocalTableChannelFactory();
         }
 
+        private static readonly Task<ShutdownResult> CachedCompletedTask = Task.FromResult(ShutdownResult.Completed());
+        private Task<ShutdownResult>? _activeShutdownTask;
+        private ShutdownResult? _quarantinedShutdownResult;
+        private Task<ShutdownResult>? _quarantinedTask;
+
         public Task<SessionCoordinator> OpenLocalSessionAsync(CancellationToken cancellationToken)
         {
             lock (_gate)
@@ -67,9 +72,14 @@ namespace Mahjong.Unity.App
                     return Task.FromException<SessionCoordinator>(new OperationCanceledException("AppComposition is quitting."));
                 }
 
-                if (_isQuarantined || (_sessionCoordinator != null && _sessionCoordinator.IsQuarantined))
+                if (_isQuarantined || _quarantinedShutdownResult != null || (_sessionCoordinator != null && _sessionCoordinator.IsQuarantined))
                 {
                     return Task.FromException<SessionCoordinator>(new InvalidOperationException("Previous coordinator is quarantined; replacement blocked."));
+                }
+
+                if (_isSessionShuttingDown || (_activeShutdownTask != null && !_activeShutdownTask.IsCompleted))
+                {
+                    return Task.FromException<SessionCoordinator>(new InvalidOperationException("Cannot open session while session shutdown is in progress."));
                 }
 
                 if (_sessionCoordinator != null)
@@ -82,7 +92,6 @@ namespace Mahjong.Unity.App
                     return _inFlightOpen;
                 }
 
-                _isSessionShuttingDown = false;
                 _inFlightOpen = OpenLocalSessionInternalAsync(cancellationToken);
                 return _inFlightOpen;
             }
@@ -111,7 +120,7 @@ namespace Mahjong.Unity.App
 
                     lock (_gate)
                     {
-                        if (_isAppQuitting || _isSessionShuttingDown || gen != _generationCounter)
+                        if (_isAppQuitting || _isSessionShuttingDown || _isQuarantined || _quarantinedShutdownResult != null || gen != _generationCounter)
                         {
                             throw new OperationCanceledException("Session open aborted due to shutdown or new generation.");
                         }
@@ -157,7 +166,7 @@ namespace Mahjong.Unity.App
 
                     lock (_gate)
                     {
-                        if (_isAppQuitting || _isSessionShuttingDown || gen != _generationCounter)
+                        if (_isAppQuitting || _isSessionShuttingDown || _isQuarantined || _quarantinedShutdownResult != null || gen != _generationCounter)
                         {
                             throw new OperationCanceledException("Session open aborted due to shutdown or new generation.");
                         }
@@ -178,17 +187,22 @@ namespace Mahjong.Unity.App
                                 {
                                     _sessionCoordinator = coordinator;
                                     _isQuarantined = true;
+                                    _quarantinedShutdownResult = shutResult;
+                                    _quarantinedTask = Task.FromResult(shutResult);
                                 }
                             }
                         }
-                        catch
+                        catch (Exception)
                         {
                             if (coordinator.IsQuarantined)
                             {
+                                var shutResult = ShutdownResult.CloseFault();
                                 lock (_gate)
                                 {
                                     _sessionCoordinator = coordinator;
                                     _isQuarantined = true;
+                                    _quarantinedShutdownResult = shutResult;
+                                    _quarantinedTask = Task.FromResult(shutResult);
                                 }
                             }
                         }
@@ -212,83 +226,134 @@ namespace Mahjong.Unity.App
             }
         }
 
-        public async Task<ShutdownResult> ShutdownAsync(string reason = "APP_QUIT")
+        public Task<ShutdownResult> ShutdownAsync(string reason = "APP_QUIT")
         {
-            Task<SessionCoordinator>? inFlight;
-            SessionCoordinator? coordinator;
             bool isQuit = string.Equals(reason, "APP_QUIT", StringComparison.OrdinalIgnoreCase);
 
             lock (_gate)
             {
+                if (_quarantinedTask != null)
+                {
+                    return _quarantinedTask;
+                }
+
                 if (isQuit)
                 {
                     _isAppQuitting = true;
                     try { _appQuitCts.Cancel(); } catch { }
                 }
+
+                if (_activeShutdownTask != null && !_activeShutdownTask.IsCompleted)
+                {
+                    return _activeShutdownTask;
+                }
+
+                if (_isAppQuitting && _sessionCoordinator == null && (_inFlightOpen == null || _inFlightOpen.IsCompleted))
+                {
+                    return CachedCompletedTask;
+                }
+
+                if (_sessionCoordinator == null && (_inFlightOpen == null || _inFlightOpen.IsCompleted))
+                {
+                    return CachedCompletedTask;
+                }
+
                 _isSessionShuttingDown = true;
                 try { _sessionCts.Cancel(); } catch { }
-
                 Interlocked.Increment(ref _generationCounter);
 
-                inFlight = _inFlightOpen;
-                coordinator = _sessionCoordinator;
+                _activeShutdownTask = ExecuteShutdownAsync(reason, isQuit);
+                return _activeShutdownTask;
             }
+        }
 
-            if (inFlight != null && !inFlight.IsCompleted)
+        private async Task<ShutdownResult> ExecuteShutdownAsync(string reason, bool isQuit)
+        {
+            try
             {
-                int timeoutMs = Math.Max(Config.pumpBarrierTimeoutMs, Config.closeTimeoutMs) + Config.cancelObservationMs;
-                var timeoutTask = Task.Delay(timeoutMs);
-                var completed = await Task.WhenAny(inFlight, timeoutTask).ConfigureAwait(false);
-                if (completed == timeoutTask)
-                {
-                    lock (_gate)
-                    {
-                        _isQuarantined = true;
-                    }
-                    return ShutdownResult.PumpBarrierTimeout();
-                }
-            }
+                Task<SessionCoordinator>? inFlight;
+                SessionCoordinator? coordinator;
 
-            lock (_gate)
-            {
-                coordinator = _sessionCoordinator;
-            }
-
-            if (coordinator != null)
-            {
-                ShutdownResult result = await coordinator.ShutdownAsync(reason).ConfigureAwait(false);
                 lock (_gate)
                 {
-                    if (result.Outcome == ShutdownOutcome.Completed)
-                    {
-                        if (ReferenceEquals(_sessionCoordinator, coordinator))
-                        {
-                            _sessionCoordinator = null;
-                        }
-                        if (!isQuit)
-                        {
-                            _isSessionShuttingDown = false;
-                            _sessionCts = new CancellationTokenSource();
-                        }
-                    }
-                    else
-                    {
-                        _isQuarantined = true;
-                    }
+                    inFlight = _inFlightOpen;
+                    coordinator = _sessionCoordinator;
                 }
-                return result;
-            }
 
-            lock (_gate)
-            {
-                if (!isQuit)
+                if (inFlight != null && !inFlight.IsCompleted)
                 {
-                    _isSessionShuttingDown = false;
-                    _sessionCts = new CancellationTokenSource();
+                    int timeoutMs = Math.Max(Config.pumpBarrierTimeoutMs, Config.closeTimeoutMs) + Config.cancelObservationMs;
+                    var timeoutTask = Task.Delay(timeoutMs);
+                    var completed = await Task.WhenAny(inFlight, timeoutTask).ConfigureAwait(false);
+                    if (completed == timeoutTask)
+                    {
+                        var quarantined = ShutdownResult.PumpBarrierTimeout();
+                        lock (_gate)
+                        {
+                            _isQuarantined = true;
+                            _quarantinedShutdownResult = quarantined;
+                            _quarantinedTask = Task.FromResult(quarantined);
+                        }
+                        return quarantined;
+                    }
                 }
-            }
 
-            return ShutdownResult.Completed();
+                lock (_gate)
+                {
+                    coordinator = _sessionCoordinator;
+                }
+
+                if (coordinator != null)
+                {
+                    ShutdownResult result = await coordinator.ShutdownAsync(reason).ConfigureAwait(false);
+                    lock (_gate)
+                    {
+                        if (result.Outcome == ShutdownOutcome.Completed)
+                        {
+                            if (ReferenceEquals(_sessionCoordinator, coordinator))
+                            {
+                                _sessionCoordinator = null;
+                            }
+                            if (!isQuit && !_isAppQuitting)
+                            {
+                                _isSessionShuttingDown = false;
+                                _sessionCts = new CancellationTokenSource();
+                                _activeShutdownTask = null;
+                            }
+                        }
+                        else
+                        {
+                            _isQuarantined = true;
+                            _quarantinedShutdownResult = result;
+                            _quarantinedTask = Task.FromResult(result);
+                        }
+                    }
+                    return result;
+                }
+
+                lock (_gate)
+                {
+                    if (!isQuit && !_isAppQuitting)
+                    {
+                        _isSessionShuttingDown = false;
+                        _sessionCts = new CancellationTokenSource();
+                        _activeShutdownTask = null;
+                    }
+                }
+
+                return ShutdownResult.Completed();
+            }
+            catch (Exception)
+            {
+                var quarantined = ShutdownResult.CloseFault();
+                lock (_gate)
+                {
+                    _isQuarantined = true;
+                    _quarantinedShutdownResult = quarantined;
+                    _quarantinedTask = Task.FromResult(quarantined);
+                }
+                return quarantined;
+            }
         }
     }
 }

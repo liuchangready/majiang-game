@@ -29,6 +29,8 @@ namespace Mahjong.Unity.UI
         private long _pressGeneration;
 
         private PointerCycleState _pointerState = PointerCycleState.Idle;
+        private GameObject? _armedTarget;
+        private GameObject? _releasedTarget;
         private bool _submitPermit;
         private GameObject? _submitTarget;
         private bool _isPointerClick;
@@ -63,6 +65,11 @@ namespace Mahjong.Unity.UI
             }
             _submitPermit = true;
             _submitTarget = target;
+            _pointerState = PointerCycleState.Idle;
+            _isArmed = false;
+            _primaryPointerId = null;
+            _armedTarget = null;
+            _releasedTarget = null;
         }
 
         public void NotifyPointerClick(GameObject? target = null)
@@ -71,7 +78,7 @@ namespace Mahjong.Unity.UI
             _pointerClickTarget = target;
         }
 
-        public bool TryArm(int pointerId, Vector2 screenPos, float scale = 1.0f)
+        public bool TryArm(int pointerId, Vector2 screenPos, float scale = 1.0f, GameObject? target = null)
         {
             if (!AcceptingInput)
             {
@@ -92,6 +99,8 @@ namespace Mahjong.Unity.UI
             _accumulatedDragDistance = 0f;
             _pressGeneration++;
             _pointerState = PointerCycleState.Armed;
+            _armedTarget = target;
+            _releasedTarget = null;
             _submitPermit = false;
             _submitTarget = null;
             _isPointerClick = false;
@@ -118,11 +127,13 @@ namespace Mahjong.Unity.UI
             }
         }
 
-        public bool TryRelease(int pointerId, long checkGeneration)
+        public bool TryRelease(int pointerId, long checkGeneration, GameObject? target = null)
         {
             if (!_isArmed || _primaryPointerId != pointerId)
             {
                 _pointerState = PointerCycleState.Cancelled;
+                _armedTarget = null;
+                _releasedTarget = null;
                 return false;
             }
 
@@ -135,6 +146,8 @@ namespace Mahjong.Unity.UI
             _isArmed = false;
             _primaryPointerId = null;
             _pointerState = PointerCycleState.Released;
+            _releasedTarget = target ?? _armedTarget;
+            _armedTarget = null;
             return true;
         }
 
@@ -160,21 +173,39 @@ namespace Mahjong.Unity.UI
                 {
                     return true;
                 }
+                return false;
+            }
+
+            if (_pointerState == PointerCycleState.Released)
+            {
+                bool match = _releasedTarget == null || caller == null || ReferenceEquals(_releasedTarget, caller);
+                _pointerState = PointerCycleState.Consumed;
+                _releasedTarget = null;
+                _armedTarget = null;
+                _isPointerClick = false;
+                _pointerClickTarget = null;
+                if (match)
+                {
+                    return true;
+                }
+                return false;
+            }
+
+            if (_pointerState == PointerCycleState.Armed || _pointerState == PointerCycleState.Consumed || _pointerState == PointerCycleState.Cancelled)
+            {
+                _isPointerClick = false;
+                _pointerClickTarget = null;
+                return false;
             }
 
             if (_isPointerClick)
             {
                 _isPointerClick = false;
                 _pointerClickTarget = null;
-                if (_pointerState == PointerCycleState.Released)
-                {
-                    _pointerState = PointerCycleState.Consumed;
-                    return true;
-                }
                 return false;
             }
 
-            // Direct programmatic invocation without pointer click event
+            // Direct programmatic invocation without active pointer cycle
             return true;
         }
 
@@ -186,6 +217,8 @@ namespace Mahjong.Unity.UI
             }
             _isArmed = false;
             _primaryPointerId = null;
+            _armedTarget = null;
+            _releasedTarget = null;
             _pressGeneration++;
             _accumulatedDragDistance = 0f;
             _submitPermit = false;
@@ -217,6 +250,8 @@ namespace Mahjong.Unity.UI
             _pointerState = PointerCycleState.Idle;
             _isArmed = false;
             _primaryPointerId = null;
+            _armedTarget = null;
+            _releasedTarget = null;
             _submitPermit = false;
             _submitTarget = null;
             _isPointerClick = false;

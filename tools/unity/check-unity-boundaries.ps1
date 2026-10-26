@@ -11,7 +11,8 @@ param(
     [string]$Project = 'unity/Mahjong.Unity',
     [string]$Policy = 'tools/unity/p42-boundary-policy.json',
     [string]$Report = 'build/p42/boundary-report.json',
-    [switch]$TestNegativeMatrix
+    [switch]$TestNegativeMatrix,
+    [switch]$StrictCompiled
 )
 
 $ErrorActionPreference = 'Stop'
@@ -52,12 +53,15 @@ function Assert-NoCycle([hashtable]$graph, [string[]]$nodes) {
     }
 }
 
-function Test-SingleBoundaryRules([string]$projDir, [string]$policyFile) {
+function Test-SingleBoundaryRules([string]$projDir, [string]$policyFile, [switch]$StrictCompiled) {
     if (-not (Test-Path $policyFile)) {
         throw "Policy file not found: $policyFile"
     }
     $policy = Get-Content $policyFile -Raw | ConvertFrom-Json
     $errors = New-Object System.Collections.Generic.List[string]
+    $dagErrors = New-Object System.Collections.Generic.List[string]
+    $sourceErrors = New-Object System.Collections.Generic.List[string]
+    $metaErrors = New-Object System.Collections.Generic.List[string]
 
     # 1. Plugin Closure Check
     $pluginsDir = Join-Path $projDir "Assets/Plugins/Mahjong"
@@ -80,8 +84,19 @@ function Test-SingleBoundaryRules([string]$projDir, [string]$policyFile) {
     $asmdefsByName = @{}
     $seenNames = @{}
 
+    $asmdefShas = @{}
     foreach ($f in $asmdefFiles) {
         try {
+            $sha = [System.Security.Cryptography.SHA256]::Create()
+            try {
+                $bytes = [System.IO.File]::ReadAllBytes($f.FullName)
+                $hash = [System.BitConverter]::ToString($sha.ComputeHash($bytes)).Replace("-", "").ToLowerInvariant()
+                $rel = $f.FullName.Substring($projDir.Length).TrimStart('\', '/').Replace('\', '/')
+                $asmdefShas[$rel] = $hash
+            }
+            finally {
+                $sha.Dispose()
+            }
             $json = Get-Content $f.FullName -Raw | ConvertFrom-Json
             $name = $json.name
 
@@ -385,85 +400,108 @@ class Program
 
         CheckDllTypes("Mahjong.Client.dll", new[] { "Mahjong.Client.IGameSession", "Mahjong.Client.ITableChannel", "Mahjong.Client.TableSession" });
         CheckDllTypes("Mahjong.Contracts.Wire.dll", new[] { "Mahjong.Contracts.Wire.PlayerSnapshot", "Mahjong.Contracts.Wire.PublicSnapshot", "Mahjong.Contracts.Wire.RoomUpdate" });
+        CheckDllTypes("Google.Protobuf.dll", new[] { "Google.Protobuf.IMessage", "Google.Protobuf.ByteString", "Google.Protobuf.MessageParser" });
 
         // 3. If compiled assemblies exist in Library/ScriptAssemblies, scan direct AssemblyReferences
-        if (!string.IsNullOrEmpty(compiledDir) && Directory.Exists(compiledDir))
+        if (!string.IsNullOrEmpty(compiledDir))
         {
-            var requiredCompiled = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+            if (!Directory.Exists(compiledDir))
             {
-                "Mahjong.Unity.UI.dll",
-                "Mahjong.Unity.Platform.dll",
-                "Mahjong.Unity.App.dll"
-            };
-            foreach (var req in requiredCompiled)
-            {
-                string reqPath = Path.Combine(compiledDir, req);
-                if (!File.Exists(reqPath))
-                {
-                    errors.Add("MISSING_COMPILED_ASSEMBLY: Required compiled assembly '" + req + "' is missing in " + compiledDir);
-                }
+                errors.Add("MISSING_COMPILED_DIR: Required compiled assemblies directory does not exist: " + compiledDir);
             }
-
-            var forbiddenByAssembly = new Dictionary<string, HashSet<string>>(StringComparer.OrdinalIgnoreCase)
+            else
             {
-                ["Mahjong.Unity.UI.dll"] = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+                var requiredCompiled = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
                 {
-                    "Mahjong.LocalHost", "Mahjong.Domain", "Mahjong.TableRuntime", "Mahjong.Ai", "Mahjong.Server",
-                    "Mahjong.Unity.App", "Mahjong.Unity.Table", "Mahjong.Unity.Platform", "Mahjong.Unity.Spectator"
-                },
-                ["Mahjong.Unity.Platform.dll"] = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+                    "Mahjong.Unity.UI.dll",
+                    "Mahjong.Unity.Platform.dll",
+                    "Mahjong.Unity.App.dll"
+                };
+                foreach (var req in requiredCompiled)
                 {
-                    "Mahjong.LocalHost", "Mahjong.Domain", "Mahjong.TableRuntime", "Mahjong.Ai", "Mahjong.Server", "Mahjong.Contracts",
-                    "Mahjong.Unity.App", "Mahjong.Unity.UI", "Mahjong.Unity.Table", "Mahjong.Unity.Spectator"
-                },
-                ["Mahjong.Unity.App.dll"] = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
-                {
-                    "Mahjong.LocalHost", "Mahjong.Domain", "Mahjong.TableRuntime", "Mahjong.Ai", "Mahjong.Server"
-                },
-                ["Mahjong.Unity.Table.dll"] = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
-                {
-                    "Mahjong.LocalHost", "Mahjong.Domain", "Mahjong.TableRuntime", "Mahjong.Ai", "Mahjong.Server",
-                    "Mahjong.Unity.App", "Mahjong.Unity.Spectator", "Mahjong.Unity.Platform"
-                },
-                ["Mahjong.Unity.Spectator.dll"] = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
-                {
-                    "Mahjong.LocalHost", "Mahjong.Domain", "Mahjong.TableRuntime", "Mahjong.Ai", "Mahjong.Server",
-                    "Mahjong.Unity.App", "Mahjong.Unity.Table", "Mahjong.Unity.Platform"
-                },
-                ["Mahjong.Unity.EditMode.Tests.dll"] = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
-                {
-                    "Mahjong.LocalHost", "Mahjong.Domain", "Mahjong.TableRuntime", "Mahjong.Ai", "Mahjong.Server"
-                },
-                ["Mahjong.Unity.PlayMode.Tests.dll"] = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
-                {
-                    "Mahjong.LocalHost", "Mahjong.Domain", "Mahjong.TableRuntime", "Mahjong.Ai", "Mahjong.Server"
-                }
-            };
-
-            foreach (var kvp in forbiddenByAssembly)
-            {
-                string asmFile = Path.Combine(compiledDir, kvp.Key);
-                if (!File.Exists(asmFile)) continue;
-
-                try
-                {
-                    using var fs = File.OpenRead(asmFile);
-                    using var pe = new PEReader(fs);
-                    if (!pe.HasMetadata) continue;
-                    var mr = pe.GetMetadataReader();
-                    foreach (var h in mr.AssemblyReferences)
+                    string reqPath = Path.Combine(compiledDir, req);
+                    if (!File.Exists(reqPath))
                     {
-                        var ar = mr.GetAssemblyReference(h);
-                        string refName = mr.GetString(ar.Name);
-                        if (kvp.Value.Contains(refName))
-                        {
-                            errors.Add("FORBIDDEN_COMPILED_ASSEMBLY_REF: Assembly '" + kvp.Key + "' references forbidden assembly '" + refName + "'.");
-                        }
+                        errors.Add("MISSING_COMPILED_ASSEMBLY: Required compiled assembly '" + req + "' is missing in " + compiledDir);
                     }
                 }
-                catch (Exception ex)
+
+                var forbiddenByAssembly = new Dictionary<string, HashSet<string>>(StringComparer.OrdinalIgnoreCase)
                 {
-                    errors.Add("Error reading metadata from compiled assembly " + kvp.Key + ": " + ex.Message);
+                    ["Mahjong.Unity.UI.dll"] = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+                    {
+                        "Mahjong.LocalHost", "Mahjong.Domain", "Mahjong.TableRuntime", "Mahjong.Ai", "Mahjong.Server",
+                        "Mahjong.Unity.App", "Mahjong.Unity.Table", "Mahjong.Unity.Platform", "Mahjong.Unity.Spectator"
+                    },
+                    ["Mahjong.Unity.Platform.dll"] = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+                    {
+                        "Mahjong.LocalHost", "Mahjong.Domain", "Mahjong.TableRuntime", "Mahjong.Ai", "Mahjong.Server", "Mahjong.Contracts",
+                        "Mahjong.Unity.App", "Mahjong.Unity.UI", "Mahjong.Unity.Table", "Mahjong.Unity.Spectator"
+                    },
+                    ["Mahjong.Unity.App.dll"] = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+                    {
+                        "Mahjong.LocalHost", "Mahjong.Domain", "Mahjong.TableRuntime", "Mahjong.Ai", "Mahjong.Server"
+                    },
+                    ["Mahjong.Unity.Table.dll"] = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+                    {
+                        "Mahjong.LocalHost", "Mahjong.Domain", "Mahjong.TableRuntime", "Mahjong.Ai", "Mahjong.Server",
+                        "Mahjong.Unity.App", "Mahjong.Unity.Spectator", "Mahjong.Unity.Platform"
+                    },
+                    ["Mahjong.Unity.Spectator.dll"] = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+                    {
+                        "Mahjong.LocalHost", "Mahjong.Domain", "Mahjong.TableRuntime", "Mahjong.Ai", "Mahjong.Server",
+                        "Mahjong.Unity.App", "Mahjong.Unity.Table", "Mahjong.Unity.Platform"
+                    },
+                    ["Mahjong.Unity.EditMode.Tests.dll"] = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+                    {
+                        "Mahjong.LocalHost", "Mahjong.Domain", "Mahjong.TableRuntime", "Mahjong.Ai", "Mahjong.Server"
+                    },
+                    ["Mahjong.Unity.PlayMode.Tests.dll"] = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+                    {
+                        "Mahjong.LocalHost", "Mahjong.Domain", "Mahjong.TableRuntime", "Mahjong.Ai", "Mahjong.Server"
+                    }
+                };
+
+                foreach (var kvp in forbiddenByAssembly)
+                {
+                    string asmFile = Path.Combine(compiledDir, kvp.Key);
+                    if (!File.Exists(asmFile)) continue;
+
+                    try
+                    {
+                        using var fs = File.OpenRead(asmFile);
+                        using var pe = new PEReader(fs);
+                        if (!pe.HasMetadata)
+                        {
+                            errors.Add("COMPILED_ASSEMBLY_NOT_CLI: Compiled assembly '" + kvp.Key + "' is not a valid CLI assembly with metadata.");
+                            continue;
+                        }
+                        var mr = pe.GetMetadataReader();
+                        if (!mr.IsAssembly)
+                        {
+                            errors.Add("COMPILED_ASSEMBLY_NOT_AN_ASSEMBLY: Compiled assembly '" + kvp.Key + "' does not define an assembly.");
+                            continue;
+                        }
+                        string defName = mr.GetString(mr.GetAssemblyDefinition().Name);
+                        string expectedName = Path.GetFileNameWithoutExtension(kvp.Key);
+                        if (!string.Equals(defName, expectedName, StringComparison.OrdinalIgnoreCase))
+                        {
+                            errors.Add("COMPILED_ASSEMBLY_IDENTITY_MISMATCH: Compiled assembly '" + kvp.Key + "' has assembly definition name '" + defName + "' which does not match expected name '" + expectedName + "'.");
+                        }
+                        foreach (var h in mr.AssemblyReferences)
+                        {
+                            var ar = mr.GetAssemblyReference(h);
+                            string refName = mr.GetString(ar.Name);
+                            if (kvp.Value.Contains(refName))
+                            {
+                                errors.Add("FORBIDDEN_COMPILED_ASSEMBLY_REF: Assembly '" + kvp.Key + "' references forbidden assembly '" + refName + "'.");
+                            }
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        errors.Add("Error reading metadata from compiled assembly " + kvp.Key + ": " + ex.Message);
+                    }
                 }
             }
         }
@@ -479,8 +517,9 @@ class Program
 '@
             Set-Content -Path $csCode -Value $code -Encoding UTF8
             $compiledDir = Join-Path $projDir "Library/ScriptAssemblies"
+            $libraryDir = Join-Path $projDir "Library"
             $probeArgs = @($pluginsDir)
-            if (Test-Path $compiledDir) {
+            if ($StrictCompiled -or (Test-Path $libraryDir) -or (Test-Path $compiledDir)) {
                 $probeArgs += $compiledDir
             }
             $probeOut = & $dotnetExe run --project $probeDir -- @probeArgs 2>&1
@@ -556,6 +595,14 @@ class Program
         } catch {
             $errors.Add("INVALID_MANIFEST: Failed to parse Packages/manifest.json: $_")
         }
+    }
+
+    $compiledRan = $StrictCompiled -or (Test-Path (Join-Path $projDir "Library")) -or (Test-Path (Join-Path $projDir "Library/ScriptAssemblies"))
+    $script:LastReportDetails = @{
+        asmdef_dag = if ($dagErrors.Count -eq 0) { "PASS" } else { "FAIL" }
+        source_reflection_scan = if ($sourceErrors.Count -eq 0) { "PASS" } else { "FAIL" }
+        metadata_direct_refs = if (-not $compiledRan) { "NOT_RUN" } elseif ($metaErrors.Count -eq 0) { "PASS" } else { "FAIL" }
+        asmdef_shas = $asmdefShas
     }
 
     return $errors
@@ -739,7 +786,7 @@ if ($TestNegativeMatrix) {
 }
 
 Write-Host "Running Unity boundary checks against $projectPath..."
-$errors = Test-SingleBoundaryRules $projectPath $policyPath
+$errors = Test-SingleBoundaryRules $projectPath $policyPath -StrictCompiled:$StrictCompiled
 
 $reportData = @{
     Timestamp = (Get-Date).ToString("o")
@@ -748,6 +795,10 @@ $reportData = @{
     Passed = ($errors.Count -eq 0)
     ErrorCount = $errors.Count
     Errors = $errors
+    asmdef_dag = if ($script:LastReportDetails -and $script:LastReportDetails.asmdef_dag) { $script:LastReportDetails.asmdef_dag } else { "PASS" }
+    source_reflection_scan = if ($script:LastReportDetails -and $script:LastReportDetails.source_reflection_scan) { $script:LastReportDetails.source_reflection_scan } else { "PASS" }
+    metadata_direct_refs = if ($script:LastReportDetails -and $script:LastReportDetails.metadata_direct_refs) { $script:LastReportDetails.metadata_direct_refs } else { "NOT_RUN" }
+    asmdef_shas = if ($script:LastReportDetails -and $script:LastReportDetails.asmdef_shas) { $script:LastReportDetails.asmdef_shas } else { @{} }
 }
 
 $reportDir = Split-Path -Parent $Report

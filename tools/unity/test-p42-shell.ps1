@@ -137,7 +137,7 @@ $results.PlayModeTests = "PASS ($playPassed/$playTotal)"
 
 # 4. Post-compile compiled assemblies boundary check
 Write-Host "Verifying boundary rules on compiled assemblies in Library/ScriptAssemblies..."
-$bPostOut = & powershell.exe -ExecutionPolicy Bypass -File $boundaryScript
+$bPostOut = & powershell.exe -ExecutionPolicy Bypass -File $boundaryScript -StrictCompiled
 if ($LASTEXITCODE -ne 0) {
     Write-Host $bPostOut
     throw "Post-compile boundary check FAILED (ExitCode: $LASTEXITCODE)"
