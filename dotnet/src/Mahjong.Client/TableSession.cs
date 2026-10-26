@@ -1292,20 +1292,20 @@ namespace Mahjong.Client
             if ((tracked.Entry.Kind == CommandKind.ClaimControl ||
                  tracked.Entry.Kind == CommandKind.ReleaseControl) &&
                 string.Equals(receipt.ReasonCode, "LOCAL_CONTROL", StringComparison.Ordinal) &&
-                (receipt.Status == global::Mahjong.Contracts.Wire.ReceiptStatus.Recorded ||
-                 receipt.Status == global::Mahjong.Contracts.Wire.ReceiptStatus.Applied))
+                receipt.Status == global::Mahjong.Contracts.Wire.ReceiptStatus.Recorded &&
+                !string.IsNullOrEmpty(digest) &&
+                DigestEquals(digest, tracked.Entry.DigestSha256))
             {
                 tracked.LastReceipt = ContractReceiptStatus.Recorded;
                 await ResolveTrackedAsync(
                     tracked,
                     OutboxResolution.ControlApplied(
                         new StateVersion(receipt.EvaluatedStateVersion),
-                        tracked.Entry.DigestSha256,
+                        digest,
                         fromLookup: false),
                     cancellationToken).ConfigureAwait(false);
                 return;
             }
-
             OutboxResolution resolution;
             try
             {

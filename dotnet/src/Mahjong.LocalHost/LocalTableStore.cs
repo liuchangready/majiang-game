@@ -995,6 +995,36 @@ namespace Mahjong.LocalHost
             }
         }
 
+        internal void CommitPreparedControlResultOnly()
+        {
+            lock (_gate)
+            {
+                if (_save == null || !_pendingControlResult.HasValue)
+                {
+                    return;
+                }
+
+                (string AccountId, RequestScopeId ScopeId, RequestId RequestId, string Digest, string Kind) pending =
+                    _pendingControlResult.Value;
+                LocalSave candidate = _save.DeepCloneForCandidate();
+                candidate.ControlResults[ReceiptKey(pending.AccountId, pending.ScopeId, pending.RequestId)] =
+                    new LocalControlRecord(
+                        candidate.CurrentState.StateVersion.Value,
+                        pending.Digest,
+                        pending.Kind);
+                LocalWriteResult write = Persist(candidate, CancellationToken.None);
+                if (write.Verdict != LocalWriteVerdict.Committed)
+                {
+                    throw new LocalTableException(
+                        LocalTableErrorKind.Unavailable,
+                        "The unchanged control result could not be committed.");
+                }
+
+                _save = candidate;
+                _pendingControlResult = null;
+            }
+        }
+
         internal void ClearPreparedControlResult()
         {
             lock (_gate)

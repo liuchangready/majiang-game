@@ -91,6 +91,8 @@ namespace Mahjong.LocalHost.CrashWorker
                 return 5;
             }
 
+            await Task.Delay(100);
+
             File.WriteAllLines(marker, new[]
             {
                 session.Binding.Scope.ScopeId.Value,

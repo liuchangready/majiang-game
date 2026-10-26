@@ -1080,6 +1080,25 @@ namespace Mahjong.LocalHost
                 _store.ClearPreparedControlResult();
                 return;
             }
+            if (control.Status == TableControlStatus.Unchanged)
+            {
+                try
+                {
+                    _store.CommitPreparedControlResultOnly();
+                }
+                catch (LocalTableException)
+                {
+                    Enqueue(RejectedReceipt(
+                        envelope,
+                        requestId,
+                        expected,
+                        ProtocolErrorCode.InternalError,
+                        "The unchanged control result could not be durably recorded.",
+                        payload));
+                    return;
+                }
+            }
+
 
             var receipt = new WireReceipt
             {
