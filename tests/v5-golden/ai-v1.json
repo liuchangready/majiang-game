@@ -1,0 +1,1665 @@
+{
+  "schema": "v5-ai-golden-v1",
+  "generator": "engine/src/test/kotlin/com/majiang/state/V5AiGoldenExporterTest.kt",
+  "generatorVersion": 1,
+  "rulesetVersion": 1,
+  "v4Commit": "205506f07f6a1ccfef6b32cf97390431e3349f8d",
+  "generatedAtHead": "b49911ca3c2010719715982bfb83b2ad70358a1a",
+  "v4TrackedWorkingTreeDirty": true,
+  "v4TrackedDirtyPaths": [
+    " M dotnet/tests/Mahjong.Ai.Tests/AiReplayGoldenTests.cs",
+    " M engine/src/test/kotlin/com/majiang/state/V5AiGoldenExporterTest.kt",
+    " M tests/v5-golden/ai-v1.json"
+  ],
+  "v4ProductionSourceDirty": false,
+  "v4ProductionSourceDirtyPaths": [],
+  "v4TestOnlyTrackedDirtyPaths": [
+    "dotnet/tests/Mahjong.Ai.Tests/AiReplayGoldenTests.cs",
+    "engine/src/test/kotlin/com/majiang/state/V5AiGoldenExporterTest.kt",
+    "tests/v5-golden/ai-v1.json"
+  ],
+  "v4EngineSourceCommit": "3f5370c30983a4047dade0835bb2c49dacc5ebbf",
+  "v4DotnetAiSourceCommit": "a96c195c852e035ff6434584135718bbb8a05d29",
+  "v4DotnetDomainSourceCommit": "5f4f8295297d60011f07115fe9b984a1ef80c4ba",
+  "testOnlyChanges": "The exporter is a test-only Kotlin file and ai-v1.json is a generated test fixture. No V4 production source, Domain/Ai C# production code, manifest, catalog, CI, Unity or solution file is changed.",
+  "sourceFileSha256": [
+    {
+      "path": "engine/src/main/kotlin/com/majiang/authority/TableAuthority.kt",
+      "sha256": "a7f0511c2c4456b4a6cf13126d57cb065ccb1958b3dce535c3558606b84d7b61",
+      "lastCommit": "8271fbdeaea33be86e719e692e64c6cc8a060737"
+    },
+    {
+      "path": "engine/src/main/kotlin/com/majiang/ai/AiDecisionModels.kt",
+      "sha256": "c86e3379300a2824b4736f72b5f55eae9a3c7a275df2f817900f55fa58686371",
+      "lastCommit": "cb58485bcf962b4541d2ac2768b489c2b5a6d9f2"
+    },
+    {
+      "path": "engine/src/main/kotlin/com/majiang/ai/AIStrategy.kt",
+      "sha256": "ff42ea79a743542c9cc6c818a29fa3c4c0534f87cfc2154925bc6d164fb2958c",
+      "lastCommit": "ef0b0f01210e738631319e646fa8fda7df4b95d2"
+    },
+    {
+      "path": "engine/src/main/kotlin/com/majiang/session/PlayerView.kt",
+      "sha256": "2398b660f3f2ef64427b2be2b3eb6d162a3bfdfda92af0150b1df3cc3645b07d",
+      "lastCommit": "e5a0e3f9aa1b1a5526ead886419075a4198a7638"
+    },
+    {
+      "path": "engine/src/main/kotlin/com/majiang/timing/DecisionClock.kt",
+      "sha256": "96caf0ff2616ffe0e802cfe93b639a3895791ff2df229c1678f054b85f48e78e",
+      "lastCommit": "ef0b0f01210e738631319e646fa8fda7df4b95d2"
+    },
+    {
+      "path": "engine/src/test/kotlin/com/majiang/state/UnifiedActionAcceptanceTest.kt",
+      "sha256": "a0bb28b0cc8adeef680df60f1b78fa4a1f293ebd99bbe1be5e4b6e3b39f29e28",
+      "lastCommit": "e5a0e3f9aa1b1a5526ead886419075a4198a7638"
+    },
+    {
+      "path": "engine/src/test/kotlin/com/majiang/state/V5AiGoldenExporterTest.kt",
+      "sha256": "0e4289de81e9bcc31d9d37e1a22d79d63816e807a4619912a70b787e1e3da863",
+      "lastCommit": "b49911ca3c2010719715982bfb83b2ad70358a1a"
+    },
+    {
+      "path": "dotnet/src/Mahjong.Ai/AiDecision.cs",
+      "sha256": "608c0cfca90c23142b3197df90549a6869eb4ce1528703f8e6e147bac4df5b89",
+      "lastCommit": "a96c195c852e035ff6434584135718bbb8a05d29"
+    },
+    {
+      "path": "dotnet/src/Mahjong.Ai/AiDecisionService.cs",
+      "sha256": "d2a399d30bf3e5ee4aa9aadae74b339fceb503ffee200d45b24ff15979e05ff7",
+      "lastCommit": "a96c195c852e035ff6434584135718bbb8a05d29"
+    },
+    {
+      "path": "dotnet/src/Mahjong.Ai/AiObservation.cs",
+      "sha256": "5bc97c5c27d68c4c9a208b2f058e9ba3344c74ff78e8ed808b15c4e470abb30e",
+      "lastCommit": "a96c195c852e035ff6434584135718bbb8a05d29"
+    },
+    {
+      "path": "dotnet/src/Mahjong.Ai/CommandIntent.cs",
+      "sha256": "fddd53e243508006723f23d1788beeee76da2985f8c7998d0c45d52e19f7a4c7",
+      "lastCommit": "a96c195c852e035ff6434584135718bbb8a05d29"
+    },
+    {
+      "path": "dotnet/src/Mahjong.Domain/DeadlinePolicy.cs",
+      "sha256": "7440f0b65ed2a4896fb25fd48cec89beace40f533fac47e8e2651404b6977fa7",
+      "lastCommit": "5f4f8295297d60011f07115fe9b984a1ef80c4ba"
+    },
+    {
+      "path": "dotnet/src/Mahjong.Domain/DecisionClock.cs",
+      "sha256": "e4a878bbd64624ff1aaee805f95bbcc823d6b508c60434a50a1c1667bfc3deee",
+      "lastCommit": "fd51de6582f4b6aae6e7d14400277b8bf9fe65d7"
+    }
+  ],
+  "generatedByCommand": "$env:V5_AI_GOLDEN_EXPORT='1'; .\\gradlew.bat :engine:test --tests \"com.majiang.state.V5AiGoldenExporterTest\" --console=plain",
+  "extractionStatus": "exported",
+  "v4BehaviorSource": "Actual calls to TableAuthority.submitAiChoice and DecisionClock.expired in this test; no expected V4 value is hand-written.",
+  "reproducibility": {
+    "stableAcrossRegeneration": [
+      "schema/generator/generatorVersion/rulesetVersion",
+      "case ids, kinds, option ids and semantic mapping",
+      "V4 receipt status/reason/stateChanged and event type/text",
+      "V4 before/after state summary",
+      "decisionClock opensAt/deadline arithmetic",
+      "mapped PlayerView observation fields"
+    ],
+    "randomOrRunSpecific": [
+      "sessionId (UUID generated by MatchSession)",
+      "roundId (UUID generated by RoundStateMachine)",
+      "decisionId (derived from the random roundId and round version)",
+      "stale-* prefixes embed the random decision identity"
+    ],
+    "note": "Byte-identical file regeneration is not claimed. Re-running the exporter changes the random identities and therefore the file SHA256; semantic fields and V4 outcomes must stay stable."
+  },
+  "decisionClock": {
+    "baseMillis": 3000,
+    "reserveMillis": 20000,
+    "reserveScope": "ROUND",
+    "opensAtMillis": 1000,
+    "deadlineMillis": 24000,
+    "expiredAtDeadlineMinus1": false,
+    "expiredAtDeadline": true
+  },
+  "recordedIntent": {
+    "algorithmId": "v4-golden-deterministic",
+    "algorithmVersion": 1,
+    "selectedLegalActionRef": "L0",
+    "selectedOptionId": "opt-0",
+    "selectedAction": {
+      "type": "DiscardTile",
+      "kind": "Discard",
+      "player": 1,
+      "tileId": 0,
+      "optionId": "opt-0",
+      "text": "DiscardTile(player=1, tile=Tile(suit=MAN, rank=1, copyIndex=0))"
+    }
+  },
+  "v5Observation": {
+    "sessionId": "bf338aec-0b7f-4f51-b3ba-52089f9ac389",
+    "seat": 1,
+    "roundId": "c03f1cb7-256f-4ead-aa3c-b6032415cb62",
+    "decisionId": "turn-c03f1cb7-256f-4ead-aa3c-b6032415cb62-0-1",
+    "controlEpoch": 1,
+    "stateVersion": 0,
+    "deadlineMillis": 24000,
+    "phase": "Discard",
+    "dealerSeat": 1,
+    "roundWind": 1,
+    "roundNumber": 0,
+    "honbaSticks": 0,
+    "riichiSticks": 0,
+    "remainingWallCount": 69,
+    "myHandTileIds": [
+      0,
+      4,
+      8,
+      12,
+      16,
+      20,
+      24,
+      28,
+      32,
+      72,
+      76,
+      36,
+      40,
+      108
+    ],
+    "myDrawnTileId": null,
+    "myMelds": [],
+    "visibleMelds": [],
+    "visibleDiscards": [],
+    "visibleDoraIndicators": [],
+    "scores": [
+      25000,
+      25000,
+      25000,
+      25000
+    ],
+    "legalActions": [
+      {
+        "ref": "L0",
+        "kind": "Discard",
+        "seat": 1,
+        "tileId": 0,
+        "optionId": "opt-0"
+      },
+      {
+        "ref": "L1",
+        "kind": "Discard",
+        "seat": 1,
+        "tileId": 4,
+        "optionId": "opt-1"
+      },
+      {
+        "ref": "L2",
+        "kind": "Discard",
+        "seat": 1,
+        "tileId": 8,
+        "optionId": "opt-2"
+      },
+      {
+        "ref": "L3",
+        "kind": "Discard",
+        "seat": 1,
+        "tileId": 12,
+        "optionId": "opt-3"
+      },
+      {
+        "ref": "L4",
+        "kind": "Discard",
+        "seat": 1,
+        "tileId": 16,
+        "optionId": "opt-4"
+      },
+      {
+        "ref": "L5",
+        "kind": "Discard",
+        "seat": 1,
+        "tileId": 20,
+        "optionId": "opt-5"
+      },
+      {
+        "ref": "L6",
+        "kind": "Discard",
+        "seat": 1,
+        "tileId": 24,
+        "optionId": "opt-6"
+      },
+      {
+        "ref": "L7",
+        "kind": "Discard",
+        "seat": 1,
+        "tileId": 28,
+        "optionId": "opt-7"
+      },
+      {
+        "ref": "L8",
+        "kind": "Discard",
+        "seat": 1,
+        "tileId": 32,
+        "optionId": "opt-8"
+      },
+      {
+        "ref": "L9",
+        "kind": "Discard",
+        "seat": 1,
+        "tileId": 72,
+        "optionId": "opt-9"
+      },
+      {
+        "ref": "L10",
+        "kind": "Discard",
+        "seat": 1,
+        "tileId": 76,
+        "optionId": "opt-10"
+      },
+      {
+        "ref": "L11",
+        "kind": "Discard",
+        "seat": 1,
+        "tileId": 36,
+        "optionId": "opt-11"
+      },
+      {
+        "ref": "L12",
+        "kind": "Discard",
+        "seat": 1,
+        "tileId": 40,
+        "optionId": "opt-12"
+      },
+      {
+        "ref": "L13",
+        "kind": "Discard",
+        "seat": 1,
+        "tileId": 108,
+        "optionId": "opt-13"
+      }
+    ],
+    "mappingLimits": [
+      "PlayerView has no public claimed-discard flag; isClaimed is false.",
+      "riichi status is available as a per-seat flag but is not attached to individual discards by PlayerView; per-discard isRiichi is false.",
+      "sleeve tiles are private and are not part of AiObservation; they are intentionally absent."
+    ]
+  },
+  "cases": [
+    {
+      "id": "AI-002-old-round",
+      "kind": "stale-round",
+      "note": "Only the submitted roundId differs from the live V4 decision.",
+      "v4Call": {
+        "entryPoint": "TableAuthority.submitAiChoice",
+        "seat": 1,
+        "roundId": "stale-round-c03f1cb7-256f-4ead-aa3c-b6032415cb62",
+        "decisionId": "turn-c03f1cb7-256f-4ead-aa3c-b6032415cb62-0-1",
+        "controlEpoch": 1,
+        "optionId": "opt-0",
+        "submittedActionRef": "L0",
+        "action": {
+          "type": "DiscardTile",
+          "kind": "Discard",
+          "player": 1,
+          "tileId": 0,
+          "optionId": "opt-0",
+          "text": "DiscardTile(player=1, tile=Tile(suit=MAN, rank=1, copyIndex=0))"
+        },
+        "nowMillis": 1000,
+        "deadlineMillis": 24000,
+        "nowBeforeDeadline": true
+      },
+      "v4": {
+        "receiptStatus": "REJECTED",
+        "reason": "STALE_AI_SUBMISSION",
+        "stateChanged": false,
+        "eventCount": 0,
+        "events": [],
+        "beforeState": {
+          "roundId": "c03f1cb7-256f-4ead-aa3c-b6032415cb62",
+          "roundVersion": 0,
+          "phase": "DISCARD",
+          "currentPlayer": 1,
+          "dealerSeat": 1,
+          "turnNumber": 12,
+          "wallPointer": 0,
+          "wallEndExclusive": 69,
+          "wallRemaining": 69,
+          "riichiSticks": 0,
+          "honbaSticks": 0,
+          "scores": [
+            25000,
+            25000,
+            25000,
+            25000
+          ],
+          "cheatPoints": [
+            0,
+            0,
+            0,
+            0
+          ],
+          "lastDiscardTileId": null,
+          "lastDiscardPlayer": -1,
+          "seats": [
+            {
+              "seat": 0,
+              "closedCount": 13,
+              "drawnTileId": null,
+              "meldCount": 0,
+              "discardCount": 0,
+              "sleeveCount": 0
+            },
+            {
+              "seat": 1,
+              "closedCount": 14,
+              "drawnTileId": null,
+              "meldCount": 0,
+              "discardCount": 0,
+              "sleeveCount": 0
+            },
+            {
+              "seat": 2,
+              "closedCount": 13,
+              "drawnTileId": null,
+              "meldCount": 0,
+              "discardCount": 0,
+              "sleeveCount": 0
+            },
+            {
+              "seat": 3,
+              "closedCount": 13,
+              "drawnTileId": null,
+              "meldCount": 0,
+              "discardCount": 0,
+              "sleeveCount": 0
+            }
+          ]
+        },
+        "afterState": {
+          "roundId": "c03f1cb7-256f-4ead-aa3c-b6032415cb62",
+          "roundVersion": 0,
+          "phase": "DISCARD",
+          "currentPlayer": 1,
+          "dealerSeat": 1,
+          "turnNumber": 12,
+          "wallPointer": 0,
+          "wallEndExclusive": 69,
+          "wallRemaining": 69,
+          "riichiSticks": 0,
+          "honbaSticks": 0,
+          "scores": [
+            25000,
+            25000,
+            25000,
+            25000
+          ],
+          "cheatPoints": [
+            0,
+            0,
+            0,
+            0
+          ],
+          "lastDiscardTileId": null,
+          "lastDiscardPlayer": -1,
+          "seats": [
+            {
+              "seat": 0,
+              "closedCount": 13,
+              "drawnTileId": null,
+              "meldCount": 0,
+              "discardCount": 0,
+              "sleeveCount": 0
+            },
+            {
+              "seat": 1,
+              "closedCount": 14,
+              "drawnTileId": null,
+              "meldCount": 0,
+              "discardCount": 0,
+              "sleeveCount": 0
+            },
+            {
+              "seat": 2,
+              "closedCount": 13,
+              "drawnTileId": null,
+              "meldCount": 0,
+              "discardCount": 0,
+              "sleeveCount": 0
+            },
+            {
+              "seat": 3,
+              "closedCount": 13,
+              "drawnTileId": null,
+              "meldCount": 0,
+              "discardCount": 0,
+              "sleeveCount": 0
+            }
+          ]
+        }
+      },
+      "v5": {
+        "intentActionRef": "L0",
+        "submittedAtMillis": 1000,
+        "authority": {
+          "seat": 1,
+          "roundId": "stale-round-c03f1cb7-256f-4ead-aa3c-b6032415cb62",
+          "currentDecisionId": "turn-c03f1cb7-256f-4ead-aa3c-b6032415cb62-0-1",
+          "controlEpoch": 1,
+          "seatAutomated": true,
+          "clockPaused": false,
+          "deadlineMillis": 24000,
+          "legalActionRefs": [
+            "L0",
+            "L1",
+            "L2",
+            "L3",
+            "L4",
+            "L5",
+            "L6",
+            "L7",
+            "L8",
+            "L9",
+            "L10",
+            "L11",
+            "L12",
+            "L13"
+          ]
+        },
+        "authorityMapping": {
+          "mode": "stale-round",
+          "derivedFrom": [
+            "v5Observation",
+            "v4Call"
+          ],
+          "isFreshV4Authority": false,
+          "basis": "roundId is replaced by v4Call.roundId; currentDecisionId/epoch/deadline/legal list stay from the frozen observation. This is a relation mapping, not a fresh V4 authority."
+        },
+        "expected": {
+          "accepted": false,
+          "rejectionCode": "StaleRound",
+          "mappingBasis": "V4 compares submitted roundId with the current decision first and collapses every mismatch into STALE_AI_SUBMISSION; V5 reports the round mismatch as StaleRound."
+        }
+      }
+    },
+    {
+      "id": "AI-003-old-decision",
+      "kind": "stale-decision",
+      "note": "Only the submitted decisionId differs from the live V4 decision.",
+      "v4Call": {
+        "entryPoint": "TableAuthority.submitAiChoice",
+        "seat": 1,
+        "roundId": "c03f1cb7-256f-4ead-aa3c-b6032415cb62",
+        "decisionId": "stale-decision-turn-c03f1cb7-256f-4ead-aa3c-b6032415cb62-0-1",
+        "controlEpoch": 1,
+        "optionId": "opt-0",
+        "submittedActionRef": "L0",
+        "action": {
+          "type": "DiscardTile",
+          "kind": "Discard",
+          "player": 1,
+          "tileId": 0,
+          "optionId": "opt-0",
+          "text": "DiscardTile(player=1, tile=Tile(suit=MAN, rank=1, copyIndex=0))"
+        },
+        "nowMillis": 1000,
+        "deadlineMillis": 24000,
+        "nowBeforeDeadline": true
+      },
+      "v4": {
+        "receiptStatus": "REJECTED",
+        "reason": "STALE_AI_SUBMISSION",
+        "stateChanged": false,
+        "eventCount": 0,
+        "events": [],
+        "beforeState": {
+          "roundId": "c03f1cb7-256f-4ead-aa3c-b6032415cb62",
+          "roundVersion": 0,
+          "phase": "DISCARD",
+          "currentPlayer": 1,
+          "dealerSeat": 1,
+          "turnNumber": 12,
+          "wallPointer": 0,
+          "wallEndExclusive": 69,
+          "wallRemaining": 69,
+          "riichiSticks": 0,
+          "honbaSticks": 0,
+          "scores": [
+            25000,
+            25000,
+            25000,
+            25000
+          ],
+          "cheatPoints": [
+            0,
+            0,
+            0,
+            0
+          ],
+          "lastDiscardTileId": null,
+          "lastDiscardPlayer": -1,
+          "seats": [
+            {
+              "seat": 0,
+              "closedCount": 13,
+              "drawnTileId": null,
+              "meldCount": 0,
+              "discardCount": 0,
+              "sleeveCount": 0
+            },
+            {
+              "seat": 1,
+              "closedCount": 14,
+              "drawnTileId": null,
+              "meldCount": 0,
+              "discardCount": 0,
+              "sleeveCount": 0
+            },
+            {
+              "seat": 2,
+              "closedCount": 13,
+              "drawnTileId": null,
+              "meldCount": 0,
+              "discardCount": 0,
+              "sleeveCount": 0
+            },
+            {
+              "seat": 3,
+              "closedCount": 13,
+              "drawnTileId": null,
+              "meldCount": 0,
+              "discardCount": 0,
+              "sleeveCount": 0
+            }
+          ]
+        },
+        "afterState": {
+          "roundId": "c03f1cb7-256f-4ead-aa3c-b6032415cb62",
+          "roundVersion": 0,
+          "phase": "DISCARD",
+          "currentPlayer": 1,
+          "dealerSeat": 1,
+          "turnNumber": 12,
+          "wallPointer": 0,
+          "wallEndExclusive": 69,
+          "wallRemaining": 69,
+          "riichiSticks": 0,
+          "honbaSticks": 0,
+          "scores": [
+            25000,
+            25000,
+            25000,
+            25000
+          ],
+          "cheatPoints": [
+            0,
+            0,
+            0,
+            0
+          ],
+          "lastDiscardTileId": null,
+          "lastDiscardPlayer": -1,
+          "seats": [
+            {
+              "seat": 0,
+              "closedCount": 13,
+              "drawnTileId": null,
+              "meldCount": 0,
+              "discardCount": 0,
+              "sleeveCount": 0
+            },
+            {
+              "seat": 1,
+              "closedCount": 14,
+              "drawnTileId": null,
+              "meldCount": 0,
+              "discardCount": 0,
+              "sleeveCount": 0
+            },
+            {
+              "seat": 2,
+              "closedCount": 13,
+              "drawnTileId": null,
+              "meldCount": 0,
+              "discardCount": 0,
+              "sleeveCount": 0
+            },
+            {
+              "seat": 3,
+              "closedCount": 13,
+              "drawnTileId": null,
+              "meldCount": 0,
+              "discardCount": 0,
+              "sleeveCount": 0
+            }
+          ]
+        }
+      },
+      "v5": {
+        "intentActionRef": "L0",
+        "submittedAtMillis": 1000,
+        "authority": {
+          "seat": 1,
+          "roundId": "c03f1cb7-256f-4ead-aa3c-b6032415cb62",
+          "currentDecisionId": "stale-decision-turn-c03f1cb7-256f-4ead-aa3c-b6032415cb62-0-1",
+          "controlEpoch": 1,
+          "seatAutomated": true,
+          "clockPaused": false,
+          "deadlineMillis": 24000,
+          "legalActionRefs": [
+            "L0",
+            "L1",
+            "L2",
+            "L3",
+            "L4",
+            "L5",
+            "L6",
+            "L7",
+            "L8",
+            "L9",
+            "L10",
+            "L11",
+            "L12",
+            "L13"
+          ]
+        },
+        "authorityMapping": {
+          "mode": "stale-decision",
+          "derivedFrom": [
+            "v5Observation",
+            "v4Call"
+          ],
+          "isFreshV4Authority": false,
+          "basis": "currentDecisionId is replaced by v4Call.decisionId; round/epoch/deadline/legal list stay from the frozen observation. This is a relation mapping, not a fresh V4 authority."
+        },
+        "expected": {
+          "accepted": false,
+          "rejectionCode": "StaleDecision",
+          "mappingBasis": "V4 checks decisionId/timing-key equality and collapses the mismatch into STALE_AI_SUBMISSION; V5 reports a superseded decision as StaleDecision."
+        }
+      }
+    },
+    {
+      "id": "AI-004-old-epoch",
+      "kind": "stale-epoch",
+      "note": "Submitted true older controlEpoch 0, below the live current epoch 1; this is not a future-epoch mismatch.",
+      "v4Call": {
+        "entryPoint": "TableAuthority.submitAiChoice",
+        "seat": 1,
+        "roundId": "c03f1cb7-256f-4ead-aa3c-b6032415cb62",
+        "decisionId": "turn-c03f1cb7-256f-4ead-aa3c-b6032415cb62-0-1",
+        "controlEpoch": 0,
+        "optionId": "opt-0",
+        "submittedActionRef": "L0",
+        "action": {
+          "type": "DiscardTile",
+          "kind": "Discard",
+          "player": 1,
+          "tileId": 0,
+          "optionId": "opt-0",
+          "text": "DiscardTile(player=1, tile=Tile(suit=MAN, rank=1, copyIndex=0))"
+        },
+        "nowMillis": 1000,
+        "deadlineMillis": 24000,
+        "nowBeforeDeadline": true
+      },
+      "v4": {
+        "receiptStatus": "REJECTED",
+        "reason": "STALE_AI_SUBMISSION",
+        "stateChanged": false,
+        "eventCount": 0,
+        "events": [],
+        "beforeState": {
+          "roundId": "c03f1cb7-256f-4ead-aa3c-b6032415cb62",
+          "roundVersion": 0,
+          "phase": "DISCARD",
+          "currentPlayer": 1,
+          "dealerSeat": 1,
+          "turnNumber": 12,
+          "wallPointer": 0,
+          "wallEndExclusive": 69,
+          "wallRemaining": 69,
+          "riichiSticks": 0,
+          "honbaSticks": 0,
+          "scores": [
+            25000,
+            25000,
+            25000,
+            25000
+          ],
+          "cheatPoints": [
+            0,
+            0,
+            0,
+            0
+          ],
+          "lastDiscardTileId": null,
+          "lastDiscardPlayer": -1,
+          "seats": [
+            {
+              "seat": 0,
+              "closedCount": 13,
+              "drawnTileId": null,
+              "meldCount": 0,
+              "discardCount": 0,
+              "sleeveCount": 0
+            },
+            {
+              "seat": 1,
+              "closedCount": 14,
+              "drawnTileId": null,
+              "meldCount": 0,
+              "discardCount": 0,
+              "sleeveCount": 0
+            },
+            {
+              "seat": 2,
+              "closedCount": 13,
+              "drawnTileId": null,
+              "meldCount": 0,
+              "discardCount": 0,
+              "sleeveCount": 0
+            },
+            {
+              "seat": 3,
+              "closedCount": 13,
+              "drawnTileId": null,
+              "meldCount": 0,
+              "discardCount": 0,
+              "sleeveCount": 0
+            }
+          ]
+        },
+        "afterState": {
+          "roundId": "c03f1cb7-256f-4ead-aa3c-b6032415cb62",
+          "roundVersion": 0,
+          "phase": "DISCARD",
+          "currentPlayer": 1,
+          "dealerSeat": 1,
+          "turnNumber": 12,
+          "wallPointer": 0,
+          "wallEndExclusive": 69,
+          "wallRemaining": 69,
+          "riichiSticks": 0,
+          "honbaSticks": 0,
+          "scores": [
+            25000,
+            25000,
+            25000,
+            25000
+          ],
+          "cheatPoints": [
+            0,
+            0,
+            0,
+            0
+          ],
+          "lastDiscardTileId": null,
+          "lastDiscardPlayer": -1,
+          "seats": [
+            {
+              "seat": 0,
+              "closedCount": 13,
+              "drawnTileId": null,
+              "meldCount": 0,
+              "discardCount": 0,
+              "sleeveCount": 0
+            },
+            {
+              "seat": 1,
+              "closedCount": 14,
+              "drawnTileId": null,
+              "meldCount": 0,
+              "discardCount": 0,
+              "sleeveCount": 0
+            },
+            {
+              "seat": 2,
+              "closedCount": 13,
+              "drawnTileId": null,
+              "meldCount": 0,
+              "discardCount": 0,
+              "sleeveCount": 0
+            },
+            {
+              "seat": 3,
+              "closedCount": 13,
+              "drawnTileId": null,
+              "meldCount": 0,
+              "discardCount": 0,
+              "sleeveCount": 0
+            }
+          ]
+        }
+      },
+      "v5": {
+        "intentActionRef": "L0",
+        "submittedAtMillis": 1000,
+        "authority": {
+          "seat": 1,
+          "roundId": "c03f1cb7-256f-4ead-aa3c-b6032415cb62",
+          "currentDecisionId": "turn-c03f1cb7-256f-4ead-aa3c-b6032415cb62-0-1",
+          "controlEpoch": 0,
+          "seatAutomated": true,
+          "clockPaused": false,
+          "deadlineMillis": 24000,
+          "legalActionRefs": [
+            "L0",
+            "L1",
+            "L2",
+            "L3",
+            "L4",
+            "L5",
+            "L6",
+            "L7",
+            "L8",
+            "L9",
+            "L10",
+            "L11",
+            "L12",
+            "L13"
+          ]
+        },
+        "authorityMapping": {
+          "mode": "stale-epoch",
+          "derivedFrom": [
+            "v5Observation",
+            "v4Call"
+          ],
+          "isFreshV4Authority": false,
+          "basis": "controlEpoch is replaced by the true older v4Call.controlEpoch; round/decision/deadline/legal list stay from the frozen observation. This is a relation mapping, not a fresh V4 authority."
+        },
+        "expected": {
+          "accepted": false,
+          "rejectionCode": "StaleEpoch",
+          "mappingBasis": "V4 compares controlEpoch with the current decision and collapses the mismatch into STALE_AI_SUBMISSION; V5 reports it as StaleEpoch."
+        }
+      }
+    },
+    {
+      "id": "AI-005-wrong-seat",
+      "kind": "non-own-seat",
+      "note": "The submitted seat is 0 while the frozen AI observation belongs to seat 1; V5 authority captures seat 0.",
+      "v4Call": {
+        "entryPoint": "TableAuthority.submitAiChoice",
+        "seat": 0,
+        "roundId": "c03f1cb7-256f-4ead-aa3c-b6032415cb62",
+        "decisionId": "turn-c03f1cb7-256f-4ead-aa3c-b6032415cb62-0-1",
+        "controlEpoch": 1,
+        "optionId": "opt-0",
+        "submittedActionRef": "L0",
+        "action": {
+          "type": "DiscardTile",
+          "kind": "Discard",
+          "player": 1,
+          "tileId": 0,
+          "optionId": "opt-0",
+          "text": "DiscardTile(player=1, tile=Tile(suit=MAN, rank=1, copyIndex=0))"
+        },
+        "nowMillis": 1000,
+        "deadlineMillis": 24000,
+        "nowBeforeDeadline": true
+      },
+      "v4": {
+        "receiptStatus": "REJECTED",
+        "reason": "STALE_AI_SUBMISSION",
+        "stateChanged": false,
+        "eventCount": 0,
+        "events": [],
+        "beforeState": {
+          "roundId": "c03f1cb7-256f-4ead-aa3c-b6032415cb62",
+          "roundVersion": 0,
+          "phase": "DISCARD",
+          "currentPlayer": 1,
+          "dealerSeat": 1,
+          "turnNumber": 12,
+          "wallPointer": 0,
+          "wallEndExclusive": 69,
+          "wallRemaining": 69,
+          "riichiSticks": 0,
+          "honbaSticks": 0,
+          "scores": [
+            25000,
+            25000,
+            25000,
+            25000
+          ],
+          "cheatPoints": [
+            0,
+            0,
+            0,
+            0
+          ],
+          "lastDiscardTileId": null,
+          "lastDiscardPlayer": -1,
+          "seats": [
+            {
+              "seat": 0,
+              "closedCount": 13,
+              "drawnTileId": null,
+              "meldCount": 0,
+              "discardCount": 0,
+              "sleeveCount": 0
+            },
+            {
+              "seat": 1,
+              "closedCount": 14,
+              "drawnTileId": null,
+              "meldCount": 0,
+              "discardCount": 0,
+              "sleeveCount": 0
+            },
+            {
+              "seat": 2,
+              "closedCount": 13,
+              "drawnTileId": null,
+              "meldCount": 0,
+              "discardCount": 0,
+              "sleeveCount": 0
+            },
+            {
+              "seat": 3,
+              "closedCount": 13,
+              "drawnTileId": null,
+              "meldCount": 0,
+              "discardCount": 0,
+              "sleeveCount": 0
+            }
+          ]
+        },
+        "afterState": {
+          "roundId": "c03f1cb7-256f-4ead-aa3c-b6032415cb62",
+          "roundVersion": 0,
+          "phase": "DISCARD",
+          "currentPlayer": 1,
+          "dealerSeat": 1,
+          "turnNumber": 12,
+          "wallPointer": 0,
+          "wallEndExclusive": 69,
+          "wallRemaining": 69,
+          "riichiSticks": 0,
+          "honbaSticks": 0,
+          "scores": [
+            25000,
+            25000,
+            25000,
+            25000
+          ],
+          "cheatPoints": [
+            0,
+            0,
+            0,
+            0
+          ],
+          "lastDiscardTileId": null,
+          "lastDiscardPlayer": -1,
+          "seats": [
+            {
+              "seat": 0,
+              "closedCount": 13,
+              "drawnTileId": null,
+              "meldCount": 0,
+              "discardCount": 0,
+              "sleeveCount": 0
+            },
+            {
+              "seat": 1,
+              "closedCount": 14,
+              "drawnTileId": null,
+              "meldCount": 0,
+              "discardCount": 0,
+              "sleeveCount": 0
+            },
+            {
+              "seat": 2,
+              "closedCount": 13,
+              "drawnTileId": null,
+              "meldCount": 0,
+              "discardCount": 0,
+              "sleeveCount": 0
+            },
+            {
+              "seat": 3,
+              "closedCount": 13,
+              "drawnTileId": null,
+              "meldCount": 0,
+              "discardCount": 0,
+              "sleeveCount": 0
+            }
+          ]
+        }
+      },
+      "v5": {
+        "intentActionRef": "L0",
+        "submittedAtMillis": 1000,
+        "authority": {
+          "seat": 0,
+          "roundId": "c03f1cb7-256f-4ead-aa3c-b6032415cb62",
+          "currentDecisionId": "turn-c03f1cb7-256f-4ead-aa3c-b6032415cb62-0-1",
+          "controlEpoch": 1,
+          "seatAutomated": true,
+          "clockPaused": false,
+          "deadlineMillis": 24000,
+          "legalActionRefs": []
+        },
+        "authorityMapping": {
+          "mode": "foreign-seat",
+          "derivedFrom": [
+            "v5Observation",
+            "v4Call"
+          ],
+          "isFreshV4Authority": false,
+          "basis": "seat/currentDecisionId/epoch come from v4Call; the legal list is deliberately empty because a fresh seat-0 V4 authority has no candidate for this decision. This is a relation mapping, not a captured seat-0 authority."
+        },
+        "expected": {
+          "accepted": false,
+          "rejectionCode": "StaleDecision",
+          "mappingBasis": "V4 resolves the decision for the submitted seat and rejects when the seat/decision identity does not match, using STALE_AI_SUBMISSION; V5 reports a seat/decision identity mismatch as StaleDecision."
+        }
+      }
+    },
+    {
+      "id": "AI-006-candidate-not-legal",
+      "kind": "illegal-candidate",
+      "note": "V4 submitted GameAction.Pass(1), which is outside the DISCARD decision options. C# cannot construct a CommandIntent outside its observation, so its authority snapshot narrows the candidate list instead.",
+      "v4Call": {
+        "entryPoint": "TableAuthority.submitAiChoice",
+        "seat": 1,
+        "roundId": "c03f1cb7-256f-4ead-aa3c-b6032415cb62",
+        "decisionId": "turn-c03f1cb7-256f-4ead-aa3c-b6032415cb62-0-1",
+        "controlEpoch": 1,
+        "optionId": null,
+        "submittedActionRef": "outside-options",
+        "action": {
+          "type": "Pass",
+          "kind": "Pass",
+          "player": 1,
+          "tileId": null,
+          "optionId": null,
+          "text": "Pass(player=1)"
+        },
+        "nowMillis": 1000,
+        "deadlineMillis": 24000,
+        "nowBeforeDeadline": true
+      },
+      "v4": {
+        "receiptStatus": "REJECTED",
+        "reason": "STALE_AI_SUBMISSION",
+        "stateChanged": false,
+        "eventCount": 0,
+        "events": [],
+        "beforeState": {
+          "roundId": "c03f1cb7-256f-4ead-aa3c-b6032415cb62",
+          "roundVersion": 0,
+          "phase": "DISCARD",
+          "currentPlayer": 1,
+          "dealerSeat": 1,
+          "turnNumber": 12,
+          "wallPointer": 0,
+          "wallEndExclusive": 69,
+          "wallRemaining": 69,
+          "riichiSticks": 0,
+          "honbaSticks": 0,
+          "scores": [
+            25000,
+            25000,
+            25000,
+            25000
+          ],
+          "cheatPoints": [
+            0,
+            0,
+            0,
+            0
+          ],
+          "lastDiscardTileId": null,
+          "lastDiscardPlayer": -1,
+          "seats": [
+            {
+              "seat": 0,
+              "closedCount": 13,
+              "drawnTileId": null,
+              "meldCount": 0,
+              "discardCount": 0,
+              "sleeveCount": 0
+            },
+            {
+              "seat": 1,
+              "closedCount": 14,
+              "drawnTileId": null,
+              "meldCount": 0,
+              "discardCount": 0,
+              "sleeveCount": 0
+            },
+            {
+              "seat": 2,
+              "closedCount": 13,
+              "drawnTileId": null,
+              "meldCount": 0,
+              "discardCount": 0,
+              "sleeveCount": 0
+            },
+            {
+              "seat": 3,
+              "closedCount": 13,
+              "drawnTileId": null,
+              "meldCount": 0,
+              "discardCount": 0,
+              "sleeveCount": 0
+            }
+          ]
+        },
+        "afterState": {
+          "roundId": "c03f1cb7-256f-4ead-aa3c-b6032415cb62",
+          "roundVersion": 0,
+          "phase": "DISCARD",
+          "currentPlayer": 1,
+          "dealerSeat": 1,
+          "turnNumber": 12,
+          "wallPointer": 0,
+          "wallEndExclusive": 69,
+          "wallRemaining": 69,
+          "riichiSticks": 0,
+          "honbaSticks": 0,
+          "scores": [
+            25000,
+            25000,
+            25000,
+            25000
+          ],
+          "cheatPoints": [
+            0,
+            0,
+            0,
+            0
+          ],
+          "lastDiscardTileId": null,
+          "lastDiscardPlayer": -1,
+          "seats": [
+            {
+              "seat": 0,
+              "closedCount": 13,
+              "drawnTileId": null,
+              "meldCount": 0,
+              "discardCount": 0,
+              "sleeveCount": 0
+            },
+            {
+              "seat": 1,
+              "closedCount": 14,
+              "drawnTileId": null,
+              "meldCount": 0,
+              "discardCount": 0,
+              "sleeveCount": 0
+            },
+            {
+              "seat": 2,
+              "closedCount": 13,
+              "drawnTileId": null,
+              "meldCount": 0,
+              "discardCount": 0,
+              "sleeveCount": 0
+            },
+            {
+              "seat": 3,
+              "closedCount": 13,
+              "drawnTileId": null,
+              "meldCount": 0,
+              "discardCount": 0,
+              "sleeveCount": 0
+            }
+          ]
+        }
+      },
+      "v5": {
+        "intentActionRef": "L0",
+        "submittedAtMillis": 1000,
+        "authority": {
+          "seat": 1,
+          "roundId": "c03f1cb7-256f-4ead-aa3c-b6032415cb62",
+          "currentDecisionId": "turn-c03f1cb7-256f-4ead-aa3c-b6032415cb62-0-1",
+          "controlEpoch": 1,
+          "seatAutomated": true,
+          "clockPaused": false,
+          "deadlineMillis": 24000,
+          "legalActionRefs": [
+            "L1",
+            "L2",
+            "L3",
+            "L4",
+            "L5",
+            "L6",
+            "L7",
+            "L8",
+            "L9",
+            "L10",
+            "L11",
+            "L12",
+            "L13"
+          ]
+        },
+        "authorityMapping": {
+          "mode": "candidate-exclusion",
+          "derivedFrom": [
+            "v5Observation",
+            "v4Call"
+          ],
+          "isFreshV4Authority": false,
+          "basis": "seat/round/decision/epoch/deadline come from the frozen observation; the legal list excludes the recorded selected action to exercise the authority-side candidate check. V4 submitted an outside-options Pass, so this construction is explicitly different and is not a fresh V4 authority capture."
+        },
+        "expected": {
+          "accepted": false,
+          "rejectionCode": "IllegalAction",
+          "mappingBasis": "V4 rejects an action absent from the live option list with the same STALE_AI_SUBMISSION reason; V5 separates the authority-side candidate check as IllegalAction. The C# test keeps the recorded action legal in its frozen observation but removes it from the fresh authority candidate list, so the same authority-side check is exercised."
+        }
+      }
+    },
+    {
+      "id": "AI-007-exact-deadline",
+      "kind": "exact-deadline",
+      "note": "now == deadline. DecisionClock.expired(deadline-1)=false and expired(deadline)=true were recorded before this call.",
+      "v4Call": {
+        "entryPoint": "TableAuthority.submitAiChoice",
+        "seat": 1,
+        "roundId": "c03f1cb7-256f-4ead-aa3c-b6032415cb62",
+        "decisionId": "turn-c03f1cb7-256f-4ead-aa3c-b6032415cb62-0-1",
+        "controlEpoch": 1,
+        "optionId": "opt-0",
+        "submittedActionRef": "L0",
+        "action": {
+          "type": "DiscardTile",
+          "kind": "Discard",
+          "player": 1,
+          "tileId": 0,
+          "optionId": "opt-0",
+          "text": "DiscardTile(player=1, tile=Tile(suit=MAN, rank=1, copyIndex=0))"
+        },
+        "nowMillis": 24000,
+        "deadlineMillis": 24000,
+        "nowBeforeDeadline": false
+      },
+      "v4": {
+        "receiptStatus": "REJECTED",
+        "reason": "STALE_AI_SUBMISSION",
+        "stateChanged": false,
+        "eventCount": 0,
+        "events": [],
+        "beforeState": {
+          "roundId": "c03f1cb7-256f-4ead-aa3c-b6032415cb62",
+          "roundVersion": 0,
+          "phase": "DISCARD",
+          "currentPlayer": 1,
+          "dealerSeat": 1,
+          "turnNumber": 12,
+          "wallPointer": 0,
+          "wallEndExclusive": 69,
+          "wallRemaining": 69,
+          "riichiSticks": 0,
+          "honbaSticks": 0,
+          "scores": [
+            25000,
+            25000,
+            25000,
+            25000
+          ],
+          "cheatPoints": [
+            0,
+            0,
+            0,
+            0
+          ],
+          "lastDiscardTileId": null,
+          "lastDiscardPlayer": -1,
+          "seats": [
+            {
+              "seat": 0,
+              "closedCount": 13,
+              "drawnTileId": null,
+              "meldCount": 0,
+              "discardCount": 0,
+              "sleeveCount": 0
+            },
+            {
+              "seat": 1,
+              "closedCount": 14,
+              "drawnTileId": null,
+              "meldCount": 0,
+              "discardCount": 0,
+              "sleeveCount": 0
+            },
+            {
+              "seat": 2,
+              "closedCount": 13,
+              "drawnTileId": null,
+              "meldCount": 0,
+              "discardCount": 0,
+              "sleeveCount": 0
+            },
+            {
+              "seat": 3,
+              "closedCount": 13,
+              "drawnTileId": null,
+              "meldCount": 0,
+              "discardCount": 0,
+              "sleeveCount": 0
+            }
+          ]
+        },
+        "afterState": {
+          "roundId": "c03f1cb7-256f-4ead-aa3c-b6032415cb62",
+          "roundVersion": 0,
+          "phase": "DISCARD",
+          "currentPlayer": 1,
+          "dealerSeat": 1,
+          "turnNumber": 12,
+          "wallPointer": 0,
+          "wallEndExclusive": 69,
+          "wallRemaining": 69,
+          "riichiSticks": 0,
+          "honbaSticks": 0,
+          "scores": [
+            25000,
+            25000,
+            25000,
+            25000
+          ],
+          "cheatPoints": [
+            0,
+            0,
+            0,
+            0
+          ],
+          "lastDiscardTileId": null,
+          "lastDiscardPlayer": -1,
+          "seats": [
+            {
+              "seat": 0,
+              "closedCount": 13,
+              "drawnTileId": null,
+              "meldCount": 0,
+              "discardCount": 0,
+              "sleeveCount": 0
+            },
+            {
+              "seat": 1,
+              "closedCount": 14,
+              "drawnTileId": null,
+              "meldCount": 0,
+              "discardCount": 0,
+              "sleeveCount": 0
+            },
+            {
+              "seat": 2,
+              "closedCount": 13,
+              "drawnTileId": null,
+              "meldCount": 0,
+              "discardCount": 0,
+              "sleeveCount": 0
+            },
+            {
+              "seat": 3,
+              "closedCount": 13,
+              "drawnTileId": null,
+              "meldCount": 0,
+              "discardCount": 0,
+              "sleeveCount": 0
+            }
+          ]
+        }
+      },
+      "v5": {
+        "intentActionRef": "L0",
+        "submittedAtMillis": 24000,
+        "authority": {
+          "seat": 1,
+          "roundId": "c03f1cb7-256f-4ead-aa3c-b6032415cb62",
+          "currentDecisionId": "turn-c03f1cb7-256f-4ead-aa3c-b6032415cb62-0-1",
+          "controlEpoch": 1,
+          "seatAutomated": true,
+          "clockPaused": false,
+          "deadlineMillis": 24000,
+          "legalActionRefs": [
+            "L0",
+            "L1",
+            "L2",
+            "L3",
+            "L4",
+            "L5",
+            "L6",
+            "L7",
+            "L8",
+            "L9",
+            "L10",
+            "L11",
+            "L12",
+            "L13"
+          ]
+        },
+        "authorityMapping": {
+          "mode": "current",
+          "derivedFrom": [
+            "v5Observation",
+            "v4Call"
+          ],
+          "isFreshV4Authority": false,
+          "basis": "seat/round/currentDecisionId/controlEpoch/deadline and the full legal list come from the frozen observation. This is a relation mapping used to admit the C# replay, not a second V4 authority capture."
+        },
+        "expected": {
+          "accepted": false,
+          "rejectionCode": "DeadlineExpired",
+          "mappingBasis": "V4 requires now < deadline and rejects at the exact deadline with STALE_AI_SUBMISSION; V5 reports DeadlineExpired at or after the deadline."
+        }
+      }
+    },
+    {
+      "id": "AI-001-legal-intent-before-deadline",
+      "kind": "legal-intent",
+      "note": "Accepted at deadline-1 ms. This is the only case that mutates the table; all rejection cases ran first against the same live decision identity.",
+      "v4Call": {
+        "entryPoint": "TableAuthority.submitAiChoice",
+        "seat": 1,
+        "roundId": "c03f1cb7-256f-4ead-aa3c-b6032415cb62",
+        "decisionId": "turn-c03f1cb7-256f-4ead-aa3c-b6032415cb62-0-1",
+        "controlEpoch": 1,
+        "optionId": "opt-0",
+        "submittedActionRef": "L0",
+        "action": {
+          "type": "DiscardTile",
+          "kind": "Discard",
+          "player": 1,
+          "tileId": 0,
+          "optionId": "opt-0",
+          "text": "DiscardTile(player=1, tile=Tile(suit=MAN, rank=1, copyIndex=0))"
+        },
+        "nowMillis": 23999,
+        "deadlineMillis": 24000,
+        "nowBeforeDeadline": true
+      },
+      "v4": {
+        "receiptStatus": "APPLIED",
+        "reason": null,
+        "stateChanged": true,
+        "eventCount": 1,
+        "events": [
+          {
+            "type": "TileDiscarded",
+            "kind": "Discard",
+            "player": 1,
+            "tileId": 0,
+            "structured": true,
+            "text": "TileDiscarded(turnNumber=12, player=1, tile=Tile(suit=MAN, rank=1, copyIndex=0), isRiichiDiscard=false, isTsumogiri=false)"
+          }
+        ],
+        "beforeState": {
+          "roundId": "c03f1cb7-256f-4ead-aa3c-b6032415cb62",
+          "roundVersion": 0,
+          "phase": "DISCARD",
+          "currentPlayer": 1,
+          "dealerSeat": 1,
+          "turnNumber": 12,
+          "wallPointer": 0,
+          "wallEndExclusive": 69,
+          "wallRemaining": 69,
+          "riichiSticks": 0,
+          "honbaSticks": 0,
+          "scores": [
+            25000,
+            25000,
+            25000,
+            25000
+          ],
+          "cheatPoints": [
+            0,
+            0,
+            0,
+            0
+          ],
+          "lastDiscardTileId": null,
+          "lastDiscardPlayer": -1,
+          "seats": [
+            {
+              "seat": 0,
+              "closedCount": 13,
+              "drawnTileId": null,
+              "meldCount": 0,
+              "discardCount": 0,
+              "sleeveCount": 0
+            },
+            {
+              "seat": 1,
+              "closedCount": 14,
+              "drawnTileId": null,
+              "meldCount": 0,
+              "discardCount": 0,
+              "sleeveCount": 0
+            },
+            {
+              "seat": 2,
+              "closedCount": 13,
+              "drawnTileId": null,
+              "meldCount": 0,
+              "discardCount": 0,
+              "sleeveCount": 0
+            },
+            {
+              "seat": 3,
+              "closedCount": 13,
+              "drawnTileId": null,
+              "meldCount": 0,
+              "discardCount": 0,
+              "sleeveCount": 0
+            }
+          ]
+        },
+        "afterState": {
+          "roundId": "c03f1cb7-256f-4ead-aa3c-b6032415cb62",
+          "roundVersion": 1,
+          "phase": "RESPONSE_WINDOW",
+          "currentPlayer": 1,
+          "dealerSeat": 1,
+          "turnNumber": 12,
+          "wallPointer": 0,
+          "wallEndExclusive": 69,
+          "wallRemaining": 69,
+          "riichiSticks": 0,
+          "honbaSticks": 0,
+          "scores": [
+            25000,
+            25000,
+            25000,
+            25000
+          ],
+          "cheatPoints": [
+            0,
+            0,
+            0,
+            0
+          ],
+          "lastDiscardTileId": 0,
+          "lastDiscardPlayer": 1,
+          "seats": [
+            {
+              "seat": 0,
+              "closedCount": 13,
+              "drawnTileId": null,
+              "meldCount": 0,
+              "discardCount": 0,
+              "sleeveCount": 0
+            },
+            {
+              "seat": 1,
+              "closedCount": 13,
+              "drawnTileId": null,
+              "meldCount": 0,
+              "discardCount": 1,
+              "sleeveCount": 0
+            },
+            {
+              "seat": 2,
+              "closedCount": 13,
+              "drawnTileId": null,
+              "meldCount": 0,
+              "discardCount": 0,
+              "sleeveCount": 0
+            },
+            {
+              "seat": 3,
+              "closedCount": 13,
+              "drawnTileId": null,
+              "meldCount": 0,
+              "discardCount": 0,
+              "sleeveCount": 0
+            }
+          ]
+        }
+      },
+      "v5": {
+        "intentActionRef": "L0",
+        "submittedAtMillis": 23999,
+        "authority": {
+          "seat": 1,
+          "roundId": "c03f1cb7-256f-4ead-aa3c-b6032415cb62",
+          "currentDecisionId": "turn-c03f1cb7-256f-4ead-aa3c-b6032415cb62-0-1",
+          "controlEpoch": 1,
+          "seatAutomated": true,
+          "clockPaused": false,
+          "deadlineMillis": 24000,
+          "legalActionRefs": [
+            "L0",
+            "L1",
+            "L2",
+            "L3",
+            "L4",
+            "L5",
+            "L6",
+            "L7",
+            "L8",
+            "L9",
+            "L10",
+            "L11",
+            "L12",
+            "L13"
+          ]
+        },
+        "authorityMapping": {
+          "mode": "current",
+          "derivedFrom": [
+            "v5Observation",
+            "v4Call"
+          ],
+          "isFreshV4Authority": false,
+          "basis": "seat/round/currentDecisionId/controlEpoch/deadline and the full legal list come from the frozen observation. This is a relation mapping used to admit the C# replay, not a second V4 authority capture."
+        },
+        "expected": {
+          "accepted": true,
+          "rejectionCode": "None",
+          "mappingBasis": "V4 returned APPLIED at deadline-1; the stricter boundary (now >= deadline) is rejected, so the accepted boundary is exactly V5 Accept."
+        }
+      }
+    }
+  ],
+  "unexportedOrMappedSamples": [
+    "V4 AiDecisionRecorded event: V4 has no such event type; the recorded CommandIntent fields in this fixture are the replay input, not a fabricated event.",
+    "AI cheat capability intent (tile mark/sleeve bloom/beam swap): not exported here; this fixture covers the ordinary turn decision and P1.6 authority stamps only.",
+    "claim flags on visible discards: V4 PlayerView does not expose them; C# records isRiichi/isClaimed from the public view where available and false otherwise.",
+    "cross-language canonical hash equality: NOT claimed; only same-language C# replay stability is checked by the C# test.",
+    "full 136-placement V4 state digest: this fixture records a bounded state summary, not a V4 hash.",
+    "server.TableHost/AI host integration: NOT wired or tested by this task."
+  ]
+}

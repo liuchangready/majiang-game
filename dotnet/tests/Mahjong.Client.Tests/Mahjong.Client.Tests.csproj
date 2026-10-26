@@ -1,0 +1,44 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Standalone test project for P5.4a. It is intentionally not added to Mahjong.sln
+    (solution edits are out of scope); run it directly:
+      dotnet test dotnet/tests/Mahjong.Client.Tests/Mahjong.Client.Tests.csproj
+  -->
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <OutputType>Exe</OutputType>
+    <IsPackable>false</IsPackable>
+    <TestingPlatformDotnetTestSupport>true</TestingPlatformDotnetTestSupport>
+    <LangVersion>9.0</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <AssemblyName>Mahjong.Client.Tests</AssemblyName>
+    <RootNamespace>Mahjong.Client.Tests</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="xunit.v3" Version="4.0.2" />
+    <PackageReference Include="Google.Protobuf" Version="3.28.3" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\Mahjong.Client\Mahjong.Client.csproj" />
+    <ProjectReference Include="..\..\src\Mahjong.Contracts\Mahjong.Contracts.csproj" />
+    <ProjectReference Include="..\..\src\Mahjong.Contracts.Wire\Mahjong.Contracts.Wire.csproj" />
+    <ProjectReference Include="..\Mahjong.Outbox.CrashWorker\Mahjong.Outbox.CrashWorker.csproj" ReferenceOutputAssembly="false" />
+  </ItemGroup>
+
+  <!-- The crash worker is a real child process in restart tests; it stays out of Mahjong.sln. -->
+  <Target Name="CopyOutboxCrashWorker" AfterTargets="Build">
+    <ItemGroup>
+      <OutboxCrashWorkerFiles Include="$(MSBuildThisFileDirectory)..\Mahjong.Outbox.CrashWorker\bin\$(Configuration)\net8.0\**\*" />
+    </ItemGroup>
+    <Copy
+      SourceFiles="@(OutboxCrashWorkerFiles)"
+      DestinationFiles="@(OutboxCrashWorkerFiles->'$(OutDir)outbox-worker\%(RecursiveDir)%(Filename)%(Extension)')"
+      SkipUnchangedFiles="true" />
+  </Target>
+
+</Project>

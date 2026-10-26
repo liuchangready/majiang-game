@@ -1,0 +1,22 @@
+<linker>
+  <!--
+    P2.2 AOT/link preservation for the generated Wire codec.
+
+    This is deliberately conservative: the Protobuf codec keeps message
+    descriptors and enum metadata alive and the probe assembly is the direct
+    AOT consumer. It is not a substitute for an actual IL2CPP build; see
+    doc/v5-重构/V5-1-AOT-REVIEW.md.
+  -->
+  <assembly fullname="Mahjong.Contracts" preserve="all" />
+  <!--
+    Optional P2.2 probe assemblies. The regular Unity project ships only the
+    five production module DLLs; Wire, the AOT smoke consumer and
+    Google.Protobuf exist only in the generated temp probe project and in a
+    real Wire-enabled player. ignoreIfMissing keeps this descriptor valid for
+    both shapes: the rule is skipped when the assembly is absent and
+    preserve="all" still applies when it is present.
+  -->
+  <assembly fullname="Mahjong.Contracts.Wire" preserve="all" ignoreIfMissing="1" />
+  <assembly fullname="Mahjong.Contracts.Wire.AotSmoke" preserve="all" ignoreIfMissing="1" />
+  <assembly fullname="Google.Protobuf" preserve="all" ignoreIfMissing="1" />
+</linker>

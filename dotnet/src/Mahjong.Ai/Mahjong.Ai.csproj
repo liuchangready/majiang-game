@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <AssemblyName>Mahjong.Ai</AssemblyName>
+    <RootNamespace>Mahjong.Ai</RootNamespace>
+    <TargetFramework>netstandard2.1</TargetFramework>
+    <LangVersion>9.0</LangVersion>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Mahjong.Domain\Mahjong.Domain.csproj" />
+  </ItemGroup>
+
+  <!--
+    P1.6 AI capability boundary. The only Domain dependency is the read-only tile,
+    decision identity and legal-candidate contracts. This assembly deliberately has no
+    Unity, Contracts, TableRuntime, network, clock or random dependency, so an AI result
+    can never reach hidden authoritative state through a compile-time reference.
+  -->
+
+</Project>

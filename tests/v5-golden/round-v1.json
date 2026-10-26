@@ -1,0 +1,1771 @@
+{
+  "schema": "v5-round-golden-v1",
+  "generator": "engine/src/test/kotlin/com/majiang/rules/V5RoundGoldenExportTest.kt",
+  "rulesetVersion": 1,
+  "v4Commit": "21a7d2c495397b943fc1a170dc23ebc0dc77d4e9",
+  "v4EngineSourceCommit": "3f5370c30983a4047dade0835bb2c49dacc5ebbf",
+  "v4DotnetRulesCommit": "21a7d2c495397b943fc1a170dc23ebc0dc77d4e9",
+  "workingTreeDirty": true,
+  "generatedByCommand": "$env:V5_ROUND_GOLDEN_EXPORT='1'; .\\gradlew.bat :engine:test --tests \"com.majiang.rules.V5RoundGoldenExportTest\" --console=plain",
+  "extractionStatus": "exported",
+  "reproducibilityNote": "roundId is fixed by the exporter and all contract observations are deterministic; V4 resultId uses UUID.randomUUID() and therefore changes on regeneration. Byte-identical file regeneration is not claimed.",
+  "exportedAtNote": "all expected values below come from actual V4 production calls; no hash or score was hand-written",
+  "generationResult": {
+    "roundLifecycleSamples": 2,
+    "matchProgressionCases": 16,
+    "decisionClockScenarios": 6,
+    "controllerEpochSamples": 1,
+    "exporterTestResult": "PASSED"
+  },
+  "unexportedSamples": [
+    "full 136-placement V4 state digest: lifecycle observations only in this file",
+    "server.ConnectionControl grace/reclaim: server module not available to this engine exporter; C# tests cover it without a V4 golden",
+    "V4 search/ura dora reveal on added kan: P1.1 tile map has no dora-indicator transition; not exported"
+  ],
+  "roundTerminal": {
+    "sampleId": "RG-001",
+    "kind": "round-terminal",
+    "status": "exported",
+    "source": {
+      "file": "engine/src/main/kotlin/com/majiang/round/RoundStateMachine.kt:152-201",
+      "testClass": "com.majiang.architecture.RoundBoundaryAcceptanceTest",
+      "testMethod": "single round ends without progressing match and can never restart"
+    },
+    "input": {
+      "roundId": "rg-001-terminal",
+      "dealer": 0,
+      "scores": [
+        25000,
+        25000,
+        25000,
+        25000
+      ],
+      "riichiSticks": 0,
+      "phaseBefore": "DISCARD",
+      "versionBefore": 0
+    },
+    "settlement": {
+      "resultId": "2bbdbc77-8c3a-4a5c-a5cd-4fd9c4eab3e9",
+      "outcome": "Tsumo",
+      "winner": 0,
+      "finalScores": [
+        37000,
+        21000,
+        21000,
+        21000
+      ],
+      "totalDeltas": [
+        12000,
+        -4000,
+        -4000,
+        -4000
+      ],
+      "remainingSticks": 0,
+      "completedAtUtc": "2026-10-23T00:00:00.0000000+00:00",
+      "completedAtMonotonicMillis": 1000
+    },
+    "expected": {
+      "versionAfter": 1,
+      "phaseAfter": "ROUND_END",
+      "eventTypes": [
+        "TsumoWin",
+        "ScoreSettled",
+        "RoundEnded"
+      ],
+      "resultOutcome": "Tsumo",
+      "resultFinalScores": [
+        37000,
+        21000,
+        21000,
+        21000
+      ],
+      "resultDeltas": [
+        12000,
+        -4000,
+        -4000,
+        -4000
+      ],
+      "rejectedActions": [
+        "StartStacking",
+        "DeclareTsumo",
+        "DeclareAgariYame"
+      ],
+      "versionAfterRejections": 1
+    }
+  },
+  "chankanRon": {
+    "sampleId": "RG-002",
+    "kind": "round-chankan-ron",
+    "status": "exported",
+    "source": {
+      "file": "engine/src/main/kotlin/com/majiang/round/RoundTransitionPlanner.kt:254-259,671-695",
+      "testClass": "com.majiang.state.UnifiedActionAcceptanceTest",
+      "testMethod": "valid AI added kan waits for remote chankan before modifying meld or rinshan"
+    },
+    "input": {
+      "roundId": "rg-002-chankan",
+      "kanserSeat": 0,
+      "addedTileId": 19,
+      "ronSeat": 1,
+      "eligibleSeats": [
+        1
+      ],
+      "meldTiles": [
+        16,
+        17,
+        18
+      ]
+    },
+    "expected": {
+      "phaseAfterKan": "CHANKAN_WINDOW",
+      "meldTypeAfterKan": "PON",
+      "rinshanPointerAfterKan": 0,
+      "totalKanCountAfterKan": 0,
+      "legalRonSeat1": true,
+      "phaseAfterRon": "ROUND_END",
+      "rinshanPointerAfterRon": 0,
+      "totalKanCountAfterRon": 0,
+      "eventTypes": [
+        "RonWin",
+        "ScoreSettled",
+        "RoundEnded"
+      ],
+      "hasKanDeclared": false,
+      "hasRinshanDraw": false,
+      "resultOutcome": "Ron",
+      "winner": 1,
+      "loser": 0,
+      "finalScores": [
+        22400,
+        27600,
+        25000,
+        25000
+      ],
+      "totalDeltas": [
+        -2600,
+        2600,
+        0,
+        0
+      ],
+      "resultId": "84e2944f-e923-4bf6-a2f8-ffe36e53df7a",
+      "versionAfterRon": 2
+    }
+  },
+  "matchProgression": [
+    {
+      "sampleId": "RG-003a",
+      "kind": "match-progression",
+      "status": "exported",
+      "source": {
+        "file": "engine/src/main/kotlin/com/majiang/match/MatchProgression.kt:211-341",
+        "testClass": "com.majiang.match.MatchProgressionContractTest",
+        "testMethod": "V4 contract matrix"
+      },
+      "config": {
+        "length": "HANCHAN",
+        "targetScore": 30000,
+        "allowWestExtension": true,
+        "allowAgariYame": true,
+        "allowBankruptcy": true,
+        "handsPerWind": 4,
+        "winds": [
+          1,
+          2
+        ],
+        "bankruptcyThreshold": 0,
+        "bankruptcyInclusive": false,
+        "awardRemainingRiichiSticksToFirst": true,
+        "tieBreakSeats": [
+          0,
+          1,
+          2,
+          3
+        ]
+      },
+      "input": {
+        "dealer": 0,
+        "roundWind": 1,
+        "roundNumber": 0,
+        "honba": 2,
+        "scores": [
+          25000,
+          25000,
+          25000,
+          25000
+        ],
+        "remainingRiichiSticks": 0,
+        "dealerDeclaredAgariYame": false,
+        "outcome": {
+          "kind": "Tsumo",
+          "winner": 0,
+          "loser": -1,
+          "tenpai": [],
+          "reason": ""
+        }
+      },
+      "expected": {
+        "type": "NextRound",
+        "roundWind": 1,
+        "roundNumber": 0,
+        "dealer": 0,
+        "honba": 3,
+        "canDealerDeclareAgariYame": false
+      }
+    },
+    {
+      "sampleId": "RG-003b",
+      "kind": "match-progression",
+      "status": "exported",
+      "source": {
+        "file": "engine/src/main/kotlin/com/majiang/match/MatchProgression.kt:211-341",
+        "testClass": "com.majiang.match.MatchProgressionContractTest",
+        "testMethod": "V4 contract matrix"
+      },
+      "config": {
+        "length": "HANCHAN",
+        "targetScore": 30000,
+        "allowWestExtension": true,
+        "allowAgariYame": true,
+        "allowBankruptcy": true,
+        "handsPerWind": 4,
+        "winds": [
+          1,
+          2
+        ],
+        "bankruptcyThreshold": 0,
+        "bankruptcyInclusive": false,
+        "awardRemainingRiichiSticksToFirst": true,
+        "tieBreakSeats": [
+          0,
+          1,
+          2,
+          3
+        ]
+      },
+      "input": {
+        "dealer": 0,
+        "roundWind": 1,
+        "roundNumber": 0,
+        "honba": 2,
+        "scores": [
+          25000,
+          25000,
+          25000,
+          25000
+        ],
+        "remainingRiichiSticks": 0,
+        "dealerDeclaredAgariYame": false,
+        "outcome": {
+          "kind": "Tsumo",
+          "winner": 1,
+          "loser": -1,
+          "tenpai": [],
+          "reason": ""
+        }
+      },
+      "expected": {
+        "type": "NextRound",
+        "roundWind": 1,
+        "roundNumber": 1,
+        "dealer": 1,
+        "honba": 0,
+        "canDealerDeclareAgariYame": false
+      }
+    },
+    {
+      "sampleId": "RG-003c",
+      "kind": "match-progression",
+      "status": "exported",
+      "source": {
+        "file": "engine/src/main/kotlin/com/majiang/match/MatchProgression.kt:211-341",
+        "testClass": "com.majiang.match.MatchProgressionContractTest",
+        "testMethod": "V4 contract matrix"
+      },
+      "config": {
+        "length": "HANCHAN",
+        "targetScore": 30000,
+        "allowWestExtension": true,
+        "allowAgariYame": true,
+        "allowBankruptcy": true,
+        "handsPerWind": 4,
+        "winds": [
+          1,
+          2
+        ],
+        "bankruptcyThreshold": 0,
+        "bankruptcyInclusive": false,
+        "awardRemainingRiichiSticksToFirst": true,
+        "tieBreakSeats": [
+          0,
+          1,
+          2,
+          3
+        ]
+      },
+      "input": {
+        "dealer": 0,
+        "roundWind": 1,
+        "roundNumber": 0,
+        "honba": 2,
+        "scores": [
+          25000,
+          25000,
+          25000,
+          25000
+        ],
+        "remainingRiichiSticks": 0,
+        "dealerDeclaredAgariYame": false,
+        "outcome": {
+          "kind": "ExhaustiveDraw",
+          "winner": -1,
+          "loser": -1,
+          "tenpai": [
+            0,
+            2
+          ],
+          "reason": ""
+        }
+      },
+      "expected": {
+        "type": "NextRound",
+        "roundWind": 1,
+        "roundNumber": 0,
+        "dealer": 0,
+        "honba": 3,
+        "canDealerDeclareAgariYame": false
+      }
+    },
+    {
+      "sampleId": "RG-003d",
+      "kind": "match-progression",
+      "status": "exported",
+      "source": {
+        "file": "engine/src/main/kotlin/com/majiang/match/MatchProgression.kt:211-341",
+        "testClass": "com.majiang.match.MatchProgressionContractTest",
+        "testMethod": "V4 contract matrix"
+      },
+      "config": {
+        "length": "HANCHAN",
+        "targetScore": 30000,
+        "allowWestExtension": true,
+        "allowAgariYame": true,
+        "allowBankruptcy": true,
+        "handsPerWind": 4,
+        "winds": [
+          1,
+          2
+        ],
+        "bankruptcyThreshold": 0,
+        "bankruptcyInclusive": false,
+        "awardRemainingRiichiSticksToFirst": true,
+        "tieBreakSeats": [
+          0,
+          1,
+          2,
+          3
+        ]
+      },
+      "input": {
+        "dealer": 0,
+        "roundWind": 1,
+        "roundNumber": 0,
+        "honba": 2,
+        "scores": [
+          25000,
+          25000,
+          25000,
+          25000
+        ],
+        "remainingRiichiSticks": 0,
+        "dealerDeclaredAgariYame": false,
+        "outcome": {
+          "kind": "ExhaustiveDraw",
+          "winner": -1,
+          "loser": -1,
+          "tenpai": [
+            1,
+            2
+          ],
+          "reason": ""
+        }
+      },
+      "expected": {
+        "type": "NextRound",
+        "roundWind": 1,
+        "roundNumber": 1,
+        "dealer": 1,
+        "honba": 3,
+        "canDealerDeclareAgariYame": false
+      }
+    },
+    {
+      "sampleId": "RG-003e",
+      "kind": "match-progression",
+      "status": "exported",
+      "source": {
+        "file": "engine/src/main/kotlin/com/majiang/match/MatchProgression.kt:211-341",
+        "testClass": "com.majiang.match.MatchProgressionContractTest",
+        "testMethod": "V4 contract matrix"
+      },
+      "config": {
+        "length": "HANCHAN",
+        "targetScore": 30000,
+        "allowWestExtension": true,
+        "allowAgariYame": true,
+        "allowBankruptcy": true,
+        "handsPerWind": 4,
+        "winds": [
+          1,
+          2
+        ],
+        "bankruptcyThreshold": 0,
+        "bankruptcyInclusive": false,
+        "awardRemainingRiichiSticksToFirst": true,
+        "tieBreakSeats": [
+          0,
+          1,
+          2,
+          3
+        ]
+      },
+      "input": {
+        "dealer": 0,
+        "roundWind": 1,
+        "roundNumber": 0,
+        "honba": 2,
+        "scores": [
+          25000,
+          25000,
+          25000,
+          25000
+        ],
+        "remainingRiichiSticks": 0,
+        "dealerDeclaredAgariYame": false,
+        "outcome": {
+          "kind": "AbortiveDraw",
+          "winner": -1,
+          "loser": -1,
+          "tenpai": [],
+          "reason": "NINE_TERMINALS"
+        }
+      },
+      "expected": {
+        "type": "NextRound",
+        "roundWind": 1,
+        "roundNumber": 0,
+        "dealer": 0,
+        "honba": 3,
+        "canDealerDeclareAgariYame": false
+      }
+    },
+    {
+      "sampleId": "RG-003f",
+      "kind": "match-progression",
+      "status": "exported",
+      "source": {
+        "file": "engine/src/main/kotlin/com/majiang/match/MatchProgression.kt:211-341",
+        "testClass": "com.majiang.match.MatchProgressionContractTest",
+        "testMethod": "V4 contract matrix"
+      },
+      "config": {
+        "length": "HANCHAN",
+        "targetScore": 30000,
+        "allowWestExtension": true,
+        "allowAgariYame": true,
+        "allowBankruptcy": true,
+        "handsPerWind": 4,
+        "winds": [
+          1,
+          2
+        ],
+        "bankruptcyThreshold": 0,
+        "bankruptcyInclusive": false,
+        "awardRemainingRiichiSticksToFirst": true,
+        "tieBreakSeats": [
+          0,
+          1,
+          2,
+          3
+        ]
+      },
+      "input": {
+        "dealer": 3,
+        "roundWind": 1,
+        "roundNumber": 3,
+        "honba": 0,
+        "scores": [
+          25000,
+          25000,
+          25000,
+          25000
+        ],
+        "remainingRiichiSticks": 0,
+        "dealerDeclaredAgariYame": false,
+        "outcome": {
+          "kind": "Tsumo",
+          "winner": 1,
+          "loser": -1,
+          "tenpai": [],
+          "reason": ""
+        }
+      },
+      "expected": {
+        "type": "NextRound",
+        "roundWind": 2,
+        "roundNumber": 0,
+        "dealer": 0,
+        "honba": 0,
+        "canDealerDeclareAgariYame": false
+      }
+    },
+    {
+      "sampleId": "RG-003g",
+      "kind": "match-progression",
+      "status": "exported",
+      "source": {
+        "file": "engine/src/main/kotlin/com/majiang/match/MatchProgression.kt:211-341",
+        "testClass": "com.majiang.match.MatchProgressionContractTest",
+        "testMethod": "V4 contract matrix"
+      },
+      "config": {
+        "length": "HANCHAN",
+        "targetScore": 30000,
+        "allowWestExtension": true,
+        "allowAgariYame": true,
+        "allowBankruptcy": true,
+        "handsPerWind": 4,
+        "winds": [
+          1,
+          2
+        ],
+        "bankruptcyThreshold": 0,
+        "bankruptcyInclusive": false,
+        "awardRemainingRiichiSticksToFirst": true,
+        "tieBreakSeats": [
+          0,
+          1,
+          2,
+          3
+        ]
+      },
+      "input": {
+        "dealer": 0,
+        "roundWind": 2,
+        "roundNumber": 3,
+        "honba": 0,
+        "scores": [
+          20000,
+          30000,
+          25000,
+          25000
+        ],
+        "remainingRiichiSticks": 0,
+        "dealerDeclaredAgariYame": false,
+        "outcome": {
+          "kind": "Tsumo",
+          "winner": 1,
+          "loser": -1,
+          "tenpai": [],
+          "reason": ""
+        }
+      },
+      "expected": {
+        "type": "MatchFinished",
+        "finalScores": [
+          20000,
+          30000,
+          25000,
+          25000
+        ],
+        "rankings": [
+          {
+            "rank": 1,
+            "seat": 1,
+            "score": 30000
+          },
+          {
+            "rank": 2,
+            "seat": 2,
+            "score": 25000
+          },
+          {
+            "rank": 3,
+            "seat": 3,
+            "score": 25000
+          },
+          {
+            "rank": 4,
+            "seat": 0,
+            "score": 20000
+          }
+        ],
+        "reason": "NORMAL_COMPLETION",
+        "transferSeat": -1
+      }
+    },
+    {
+      "sampleId": "RG-003h",
+      "kind": "match-progression",
+      "status": "exported",
+      "source": {
+        "file": "engine/src/main/kotlin/com/majiang/match/MatchProgression.kt:211-341",
+        "testClass": "com.majiang.match.MatchProgressionContractTest",
+        "testMethod": "V4 contract matrix"
+      },
+      "config": {
+        "length": "HANCHAN",
+        "targetScore": 30000,
+        "allowWestExtension": true,
+        "allowAgariYame": true,
+        "allowBankruptcy": true,
+        "handsPerWind": 4,
+        "winds": [
+          1,
+          2
+        ],
+        "bankruptcyThreshold": 0,
+        "bankruptcyInclusive": false,
+        "awardRemainingRiichiSticksToFirst": true,
+        "tieBreakSeats": [
+          0,
+          1,
+          2,
+          3
+        ]
+      },
+      "input": {
+        "dealer": 0,
+        "roundWind": 2,
+        "roundNumber": 3,
+        "honba": 0,
+        "scores": [
+          25000,
+          25000,
+          25000,
+          25000
+        ],
+        "remainingRiichiSticks": 0,
+        "dealerDeclaredAgariYame": false,
+        "outcome": {
+          "kind": "Tsumo",
+          "winner": 1,
+          "loser": -1,
+          "tenpai": [],
+          "reason": ""
+        }
+      },
+      "expected": {
+        "type": "NextRound",
+        "roundWind": 3,
+        "roundNumber": 0,
+        "dealer": 1,
+        "honba": 0,
+        "canDealerDeclareAgariYame": false
+      }
+    },
+    {
+      "sampleId": "RG-003i",
+      "kind": "match-progression",
+      "status": "exported",
+      "source": {
+        "file": "engine/src/main/kotlin/com/majiang/match/MatchProgression.kt:211-341",
+        "testClass": "com.majiang.match.MatchProgressionContractTest",
+        "testMethod": "V4 contract matrix"
+      },
+      "config": {
+        "length": "HANCHAN",
+        "targetScore": 30000,
+        "allowWestExtension": true,
+        "allowAgariYame": true,
+        "allowBankruptcy": true,
+        "handsPerWind": 4,
+        "winds": [
+          1,
+          2
+        ],
+        "bankruptcyThreshold": 0,
+        "bankruptcyInclusive": false,
+        "awardRemainingRiichiSticksToFirst": true,
+        "tieBreakSeats": [
+          0,
+          1,
+          2,
+          3
+        ]
+      },
+      "input": {
+        "dealer": 0,
+        "roundWind": 3,
+        "roundNumber": 0,
+        "honba": 0,
+        "scores": [
+          30000,
+          25000,
+          25000,
+          20000
+        ],
+        "remainingRiichiSticks": 0,
+        "dealerDeclaredAgariYame": false,
+        "outcome": {
+          "kind": "Tsumo",
+          "winner": 0,
+          "loser": -1,
+          "tenpai": [],
+          "reason": ""
+        }
+      },
+      "expected": {
+        "type": "MatchFinished",
+        "finalScores": [
+          30000,
+          25000,
+          25000,
+          20000
+        ],
+        "rankings": [
+          {
+            "rank": 1,
+            "seat": 0,
+            "score": 30000
+          },
+          {
+            "rank": 2,
+            "seat": 1,
+            "score": 25000
+          },
+          {
+            "rank": 3,
+            "seat": 2,
+            "score": 25000
+          },
+          {
+            "rank": 4,
+            "seat": 3,
+            "score": 20000
+          }
+        ],
+        "reason": "WEST_COMPLETION",
+        "transferSeat": -1
+      }
+    },
+    {
+      "sampleId": "RG-003j",
+      "kind": "match-progression",
+      "status": "exported",
+      "source": {
+        "file": "engine/src/main/kotlin/com/majiang/match/MatchProgression.kt:211-341",
+        "testClass": "com.majiang.match.MatchProgressionContractTest",
+        "testMethod": "V4 contract matrix"
+      },
+      "config": {
+        "length": "HANCHAN",
+        "targetScore": 30000,
+        "allowWestExtension": true,
+        "allowAgariYame": true,
+        "allowBankruptcy": true,
+        "handsPerWind": 4,
+        "winds": [
+          1,
+          2
+        ],
+        "bankruptcyThreshold": 0,
+        "bankruptcyInclusive": false,
+        "awardRemainingRiichiSticksToFirst": true,
+        "tieBreakSeats": [
+          0,
+          1,
+          2,
+          3
+        ]
+      },
+      "input": {
+        "dealer": 0,
+        "roundWind": 3,
+        "roundNumber": 3,
+        "honba": 0,
+        "scores": [
+          25000,
+          25000,
+          25000,
+          25000
+        ],
+        "remainingRiichiSticks": 0,
+        "dealerDeclaredAgariYame": false,
+        "outcome": {
+          "kind": "Tsumo",
+          "winner": 1,
+          "loser": -1,
+          "tenpai": [],
+          "reason": ""
+        }
+      },
+      "expected": {
+        "type": "MatchFinished",
+        "finalScores": [
+          25000,
+          25000,
+          25000,
+          25000
+        ],
+        "rankings": [
+          {
+            "rank": 1,
+            "seat": 0,
+            "score": 25000
+          },
+          {
+            "rank": 2,
+            "seat": 1,
+            "score": 25000
+          },
+          {
+            "rank": 3,
+            "seat": 2,
+            "score": 25000
+          },
+          {
+            "rank": 4,
+            "seat": 3,
+            "score": 25000
+          }
+        ],
+        "reason": "WEST_COMPLETION",
+        "transferSeat": -1
+      }
+    },
+    {
+      "sampleId": "RG-003k",
+      "kind": "match-progression",
+      "status": "exported",
+      "source": {
+        "file": "engine/src/main/kotlin/com/majiang/match/MatchProgression.kt:211-341",
+        "testClass": "com.majiang.match.MatchProgressionContractTest",
+        "testMethod": "V4 contract matrix"
+      },
+      "config": {
+        "length": "HANCHAN",
+        "targetScore": 30000,
+        "allowWestExtension": true,
+        "allowAgariYame": true,
+        "allowBankruptcy": true,
+        "handsPerWind": 4,
+        "winds": [
+          1,
+          2
+        ],
+        "bankruptcyThreshold": 0,
+        "bankruptcyInclusive": false,
+        "awardRemainingRiichiSticksToFirst": true,
+        "tieBreakSeats": [
+          0,
+          1,
+          2,
+          3
+        ]
+      },
+      "input": {
+        "dealer": 0,
+        "roundWind": 1,
+        "roundNumber": 0,
+        "honba": 0,
+        "scores": [
+          0,
+          40000,
+          30000,
+          30000
+        ],
+        "remainingRiichiSticks": 0,
+        "dealerDeclaredAgariYame": false,
+        "outcome": {
+          "kind": "Tsumo",
+          "winner": 1,
+          "loser": -1,
+          "tenpai": [],
+          "reason": ""
+        }
+      },
+      "expected": {
+        "type": "NextRound",
+        "roundWind": 1,
+        "roundNumber": 1,
+        "dealer": 1,
+        "honba": 0,
+        "canDealerDeclareAgariYame": false
+      }
+    },
+    {
+      "sampleId": "RG-003l",
+      "kind": "match-progression",
+      "status": "exported",
+      "source": {
+        "file": "engine/src/main/kotlin/com/majiang/match/MatchProgression.kt:211-341",
+        "testClass": "com.majiang.match.MatchProgressionContractTest",
+        "testMethod": "V4 contract matrix"
+      },
+      "config": {
+        "length": "HANCHAN",
+        "targetScore": 30000,
+        "allowWestExtension": true,
+        "allowAgariYame": true,
+        "allowBankruptcy": true,
+        "handsPerWind": 4,
+        "winds": [
+          1,
+          2
+        ],
+        "bankruptcyThreshold": 0,
+        "bankruptcyInclusive": false,
+        "awardRemainingRiichiSticksToFirst": true,
+        "tieBreakSeats": [
+          0,
+          1,
+          2,
+          3
+        ]
+      },
+      "input": {
+        "dealer": 0,
+        "roundWind": 1,
+        "roundNumber": 0,
+        "honba": 0,
+        "scores": [
+          -100,
+          40100,
+          30000,
+          30000
+        ],
+        "remainingRiichiSticks": 0,
+        "dealerDeclaredAgariYame": false,
+        "outcome": {
+          "kind": "Tsumo",
+          "winner": 1,
+          "loser": -1,
+          "tenpai": [],
+          "reason": ""
+        }
+      },
+      "expected": {
+        "type": "MatchFinished",
+        "finalScores": [
+          -100,
+          40100,
+          30000,
+          30000
+        ],
+        "rankings": [
+          {
+            "rank": 1,
+            "seat": 1,
+            "score": 40100
+          },
+          {
+            "rank": 2,
+            "seat": 2,
+            "score": 30000
+          },
+          {
+            "rank": 3,
+            "seat": 3,
+            "score": 30000
+          },
+          {
+            "rank": 4,
+            "seat": 0,
+            "score": -100
+          }
+        ],
+        "reason": "BANKRUPTCY",
+        "transferSeat": -1
+      }
+    },
+    {
+      "sampleId": "RG-003m",
+      "kind": "match-progression",
+      "status": "exported",
+      "source": {
+        "file": "engine/src/main/kotlin/com/majiang/match/MatchProgression.kt:211-341",
+        "testClass": "com.majiang.match.MatchProgressionContractTest",
+        "testMethod": "V4 contract matrix"
+      },
+      "config": {
+        "length": "HANCHAN",
+        "targetScore": 30000,
+        "allowWestExtension": true,
+        "allowAgariYame": true,
+        "allowBankruptcy": true,
+        "handsPerWind": 4,
+        "winds": [
+          1,
+          2
+        ],
+        "bankruptcyThreshold": 0,
+        "bankruptcyInclusive": false,
+        "awardRemainingRiichiSticksToFirst": true,
+        "tieBreakSeats": [
+          0,
+          1,
+          2,
+          3
+        ]
+      },
+      "input": {
+        "dealer": 0,
+        "roundWind": 2,
+        "roundNumber": 3,
+        "honba": 0,
+        "scores": [
+          35000,
+          25000,
+          20000,
+          20000
+        ],
+        "remainingRiichiSticks": 0,
+        "dealerDeclaredAgariYame": false,
+        "outcome": {
+          "kind": "Tsumo",
+          "winner": 0,
+          "loser": -1,
+          "tenpai": [],
+          "reason": ""
+        }
+      },
+      "expected": {
+        "type": "NextRound",
+        "roundWind": 2,
+        "roundNumber": 3,
+        "dealer": 0,
+        "honba": 1,
+        "canDealerDeclareAgariYame": true
+      }
+    },
+    {
+      "sampleId": "RG-003n",
+      "kind": "match-progression",
+      "status": "exported",
+      "source": {
+        "file": "engine/src/main/kotlin/com/majiang/match/MatchProgression.kt:211-341",
+        "testClass": "com.majiang.match.MatchProgressionContractTest",
+        "testMethod": "V4 contract matrix"
+      },
+      "config": {
+        "length": "HANCHAN",
+        "targetScore": 30000,
+        "allowWestExtension": true,
+        "allowAgariYame": true,
+        "allowBankruptcy": true,
+        "handsPerWind": 4,
+        "winds": [
+          1,
+          2
+        ],
+        "bankruptcyThreshold": 0,
+        "bankruptcyInclusive": false,
+        "awardRemainingRiichiSticksToFirst": true,
+        "tieBreakSeats": [
+          0,
+          1,
+          2,
+          3
+        ]
+      },
+      "input": {
+        "dealer": 0,
+        "roundWind": 2,
+        "roundNumber": 3,
+        "honba": 0,
+        "scores": [
+          35000,
+          25000,
+          20000,
+          20000
+        ],
+        "remainingRiichiSticks": 0,
+        "dealerDeclaredAgariYame": true,
+        "outcome": {
+          "kind": "Tsumo",
+          "winner": 0,
+          "loser": -1,
+          "tenpai": [],
+          "reason": ""
+        }
+      },
+      "expected": {
+        "type": "MatchFinished",
+        "finalScores": [
+          35000,
+          25000,
+          20000,
+          20000
+        ],
+        "rankings": [
+          {
+            "rank": 1,
+            "seat": 0,
+            "score": 35000
+          },
+          {
+            "rank": 2,
+            "seat": 1,
+            "score": 25000
+          },
+          {
+            "rank": 3,
+            "seat": 2,
+            "score": 20000
+          },
+          {
+            "rank": 4,
+            "seat": 3,
+            "score": 20000
+          }
+        ],
+        "reason": "AGARI_YAME",
+        "transferSeat": -1
+      }
+    },
+    {
+      "sampleId": "RG-003o",
+      "kind": "match-progression",
+      "status": "exported",
+      "source": {
+        "file": "engine/src/main/kotlin/com/majiang/match/MatchProgression.kt:211-341",
+        "testClass": "com.majiang.match.MatchProgressionContractTest",
+        "testMethod": "V4 contract matrix"
+      },
+      "config": {
+        "length": "HANCHAN",
+        "targetScore": 30000,
+        "allowWestExtension": true,
+        "allowAgariYame": true,
+        "allowBankruptcy": true,
+        "handsPerWind": 4,
+        "winds": [
+          1,
+          2
+        ],
+        "bankruptcyThreshold": 0,
+        "bankruptcyInclusive": false,
+        "awardRemainingRiichiSticksToFirst": true,
+        "tieBreakSeats": [
+          0,
+          1,
+          2,
+          3
+        ]
+      },
+      "input": {
+        "dealer": 0,
+        "roundWind": 2,
+        "roundNumber": 3,
+        "honba": 0,
+        "scores": [
+          30000,
+          30000,
+          20000,
+          20000
+        ],
+        "remainingRiichiSticks": 2,
+        "dealerDeclaredAgariYame": false,
+        "outcome": {
+          "kind": "Tsumo",
+          "winner": 1,
+          "loser": -1,
+          "tenpai": [],
+          "reason": ""
+        }
+      },
+      "expected": {
+        "type": "MatchFinished",
+        "finalScores": [
+          32000,
+          30000,
+          20000,
+          20000
+        ],
+        "rankings": [
+          {
+            "rank": 1,
+            "seat": 0,
+            "score": 32000
+          },
+          {
+            "rank": 2,
+            "seat": 1,
+            "score": 30000
+          },
+          {
+            "rank": 3,
+            "seat": 2,
+            "score": 20000
+          },
+          {
+            "rank": 4,
+            "seat": 3,
+            "score": 20000
+          }
+        ],
+        "reason": "NORMAL_COMPLETION",
+        "transferSeat": 0
+      }
+    },
+    {
+      "sampleId": "RG-003p",
+      "kind": "match-progression",
+      "status": "exported",
+      "source": {
+        "file": "engine/src/main/kotlin/com/majiang/match/MatchProgression.kt:211-341",
+        "testClass": "com.majiang.match.MatchProgressionContractTest",
+        "testMethod": "V4 contract matrix"
+      },
+      "config": {
+        "length": "TONPUUSEN",
+        "targetScore": 30000,
+        "allowWestExtension": false,
+        "allowAgariYame": true,
+        "allowBankruptcy": true,
+        "handsPerWind": 4,
+        "winds": [
+          1
+        ],
+        "bankruptcyThreshold": 0,
+        "bankruptcyInclusive": false,
+        "awardRemainingRiichiSticksToFirst": true,
+        "tieBreakSeats": [
+          0,
+          1,
+          2,
+          3
+        ]
+      },
+      "input": {
+        "dealer": 0,
+        "roundWind": 1,
+        "roundNumber": 3,
+        "honba": 0,
+        "scores": [
+          25000,
+          25000,
+          25000,
+          25000
+        ],
+        "remainingRiichiSticks": 0,
+        "dealerDeclaredAgariYame": false,
+        "outcome": {
+          "kind": "Tsumo",
+          "winner": 1,
+          "loser": -1,
+          "tenpai": [],
+          "reason": ""
+        }
+      },
+      "expected": {
+        "type": "MatchFinished",
+        "finalScores": [
+          25000,
+          25000,
+          25000,
+          25000
+        ],
+        "rankings": [
+          {
+            "rank": 1,
+            "seat": 0,
+            "score": 25000
+          },
+          {
+            "rank": 2,
+            "seat": 1,
+            "score": 25000
+          },
+          {
+            "rank": 3,
+            "seat": 2,
+            "score": 25000
+          },
+          {
+            "rank": 4,
+            "seat": 3,
+            "score": 25000
+          }
+        ],
+        "reason": "NORMAL_COMPLETION",
+        "transferSeat": -1
+      }
+    }
+  ],
+  "decisionClock": [
+    {
+      "sampleId": "RG-004a",
+      "kind": "decision-clock",
+      "operations": [
+        {
+          "op": "beginRound",
+          "roundId": "r1",
+          "now": 0
+        },
+        {
+          "op": "open",
+          "roundId": "r1",
+          "seat": 0,
+          "decisionId": "first",
+          "at": 0,
+          "deadline": 23000,
+          "reserveAtOpen": 20000,
+          "generation": 1
+        },
+        {
+          "op": "complete",
+          "roundId": "r1",
+          "seat": 0,
+          "decisionId": "first",
+          "at": 5000,
+          "result": true
+        },
+        {
+          "op": "remainingReserve",
+          "seat": 0,
+          "value": 18000
+        },
+        {
+          "op": "open",
+          "roundId": "r1",
+          "seat": 0,
+          "decisionId": "next",
+          "at": 5000,
+          "deadline": 26000,
+          "reserveAtOpen": 18000,
+          "generation": 2
+        },
+        {
+          "op": "complete",
+          "roundId": "r1",
+          "seat": 0,
+          "decisionId": "next",
+          "at": 7000,
+          "result": true
+        },
+        {
+          "op": "remainingReserve",
+          "seat": 0,
+          "value": 18000
+        }
+      ],
+      "status": "exported",
+      "source": {
+        "file": "engine/src/main/kotlin/com/majiang/timing/DecisionClock.kt:47-363",
+        "testClass": "com.majiang.v3.TimeControlAcceptanceTest",
+        "testMethod": "V4 clock contract scenarios"
+      },
+      "config": {
+        "baseMillis": 3000,
+        "reserveMillis": 20000,
+        "scope": "ROUND"
+      }
+    },
+    {
+      "sampleId": "RG-004b",
+      "kind": "decision-clock",
+      "operations": [
+        {
+          "op": "beginRound",
+          "roundId": "r1",
+          "now": 0
+        },
+        {
+          "op": "open",
+          "roundId": "r1",
+          "seat": 0,
+          "decisionId": "first",
+          "at": 0,
+          "deadline": 23000,
+          "reserveAtOpen": 20000,
+          "generation": 1
+        },
+        {
+          "op": "complete",
+          "roundId": "r1",
+          "seat": 0,
+          "decisionId": "first",
+          "at": 23000,
+          "result": false
+        },
+        {
+          "op": "expired",
+          "at": 23000,
+          "count": 1
+        },
+        {
+          "op": "expire",
+          "roundId": "r1",
+          "seat": 0,
+          "decisionId": "first",
+          "generation": 1,
+          "at": 23000,
+          "result": true
+        },
+        {
+          "op": "remainingReserve",
+          "seat": 0,
+          "value": 0
+        },
+        {
+          "op": "open",
+          "roundId": "r1",
+          "seat": 0,
+          "decisionId": "after-timeout",
+          "at": 23000,
+          "deadline": 26000,
+          "reserveAtOpen": 0,
+          "generation": 2
+        }
+      ],
+      "status": "exported",
+      "source": {
+        "file": "engine/src/main/kotlin/com/majiang/timing/DecisionClock.kt:47-363",
+        "testClass": "com.majiang.v3.TimeControlAcceptanceTest",
+        "testMethod": "V4 clock contract scenarios"
+      },
+      "config": {
+        "baseMillis": 3000,
+        "reserveMillis": 20000,
+        "scope": "ROUND"
+      }
+    },
+    {
+      "sampleId": "RG-004c",
+      "kind": "decision-clock",
+      "operations": [
+        {
+          "op": "beginRound",
+          "roundId": "r1",
+          "now": 0
+        },
+        {
+          "op": "open",
+          "roundId": "r1",
+          "seat": 0,
+          "decisionId": "turn",
+          "at": 0,
+          "deadline": 23000,
+          "reserveAtOpen": 20000,
+          "generation": 1
+        },
+        {
+          "op": "pause",
+          "at": 5000
+        },
+        {
+          "op": "resume",
+          "at": 50000
+        },
+        {
+          "op": "timingDeadline",
+          "seat": 0,
+          "value": 68000
+        },
+        {
+          "op": "complete",
+          "roundId": "r1",
+          "seat": 0,
+          "decisionId": "turn",
+          "at": 52000,
+          "result": true
+        },
+        {
+          "op": "remainingReserve",
+          "seat": 0,
+          "value": 16000
+        }
+      ],
+      "status": "exported",
+      "source": {
+        "file": "engine/src/main/kotlin/com/majiang/timing/DecisionClock.kt:47-363",
+        "testClass": "com.majiang.v3.TimeControlAcceptanceTest",
+        "testMethod": "V4 clock contract scenarios"
+      },
+      "config": {
+        "baseMillis": 3000,
+        "reserveMillis": 20000,
+        "scope": "ROUND"
+      }
+    },
+    {
+      "sampleId": "RG-004d",
+      "kind": "decision-clock",
+      "operations": [
+        {
+          "op": "beginRound",
+          "roundId": "r1",
+          "now": 0
+        },
+        {
+          "op": "open",
+          "roundId": "r1",
+          "seat": 1,
+          "decisionId": "old",
+          "at": 0,
+          "deadline": 23000,
+          "reserveAtOpen": 20000,
+          "generation": 1
+        },
+        {
+          "op": "cancel",
+          "roundId": "r1",
+          "seat": 1,
+          "decisionId": "old",
+          "at": 5000,
+          "result": true
+        },
+        {
+          "op": "remainingReserve",
+          "seat": 1,
+          "value": 18000
+        },
+        {
+          "op": "open",
+          "roundId": "r1",
+          "seat": 1,
+          "decisionId": "new",
+          "at": 5000,
+          "deadline": 26000,
+          "reserveAtOpen": 18000,
+          "generation": 2
+        },
+        {
+          "op": "expire",
+          "roundId": "r1",
+          "seat": 1,
+          "decisionId": "old",
+          "generation": 1,
+          "at": 23000,
+          "result": false
+        },
+        {
+          "op": "timingDeadline",
+          "seat": 1,
+          "value": 26000
+        },
+        {
+          "op": "remainingReserve",
+          "seat": 1,
+          "value": 18000
+        }
+      ],
+      "status": "exported",
+      "source": {
+        "file": "engine/src/main/kotlin/com/majiang/timing/DecisionClock.kt:47-363",
+        "testClass": "com.majiang.v3.TimeControlAcceptanceTest",
+        "testMethod": "V4 clock contract scenarios"
+      },
+      "config": {
+        "baseMillis": 3000,
+        "reserveMillis": 20000,
+        "scope": "ROUND"
+      }
+    },
+    {
+      "sampleId": "RG-004e",
+      "kind": "decision-clock",
+      "operations": [
+        {
+          "op": "beginRound",
+          "roundId": "r1",
+          "now": 0
+        },
+        {
+          "op": "open",
+          "roundId": "r1",
+          "seat": 2,
+          "decisionId": "turn",
+          "at": 0,
+          "deadline": 23000,
+          "reserveAtOpen": 20000,
+          "generation": 1
+        },
+        {
+          "op": "complete",
+          "roundId": "r1",
+          "seat": 2,
+          "decisionId": "turn",
+          "at": 13000,
+          "result": true
+        },
+        {
+          "op": "remainingReserve",
+          "seat": 2,
+          "value": 10000
+        },
+        {
+          "op": "beginRound",
+          "roundId": "r2",
+          "now": 13000
+        },
+        {
+          "op": "remainingReserve",
+          "seat": 2,
+          "value": 20000
+        }
+      ],
+      "status": "exported",
+      "source": {
+        "file": "engine/src/main/kotlin/com/majiang/timing/DecisionClock.kt:47-363",
+        "testClass": "com.majiang.v3.TimeControlAcceptanceTest",
+        "testMethod": "V4 clock contract scenarios"
+      },
+      "config": {
+        "baseMillis": 3000,
+        "reserveMillis": 20000,
+        "scope": "ROUND"
+      }
+    },
+    {
+      "sampleId": "RG-004f",
+      "kind": "decision-clock",
+      "operations": [
+        {
+          "op": "beginRound",
+          "roundId": "r1",
+          "now": 0
+        },
+        {
+          "op": "open",
+          "roundId": "r1",
+          "seat": 2,
+          "decisionId": "turn",
+          "at": 0,
+          "deadline": 23000,
+          "reserveAtOpen": 20000,
+          "generation": 1
+        },
+        {
+          "op": "complete",
+          "roundId": "r1",
+          "seat": 2,
+          "decisionId": "turn",
+          "at": 13000,
+          "result": true
+        },
+        {
+          "op": "remainingReserve",
+          "seat": 2,
+          "value": 10000
+        },
+        {
+          "op": "beginRound",
+          "roundId": "r2",
+          "now": 13000
+        },
+        {
+          "op": "remainingReserve",
+          "seat": 2,
+          "value": 10000
+        }
+      ],
+      "status": "exported",
+      "source": {
+        "file": "engine/src/main/kotlin/com/majiang/timing/DecisionClock.kt:47-363",
+        "testClass": "com.majiang.v3.TimeControlAcceptanceTest",
+        "testMethod": "V4 clock contract scenarios"
+      },
+      "config": {
+        "baseMillis": 3000,
+        "reserveMillis": 20000,
+        "scope": "SESSION"
+      }
+    }
+  ],
+  "controlEpoch": {
+    "sampleId": "RG-005",
+    "kind": "control-epoch",
+    "status": "exported",
+    "source": {
+      "file": "engine/src/main/kotlin/com/majiang/application/ControllerRegistry.kt:11-44",
+      "testClass": "com.majiang.application.ControllerRegistry",
+      "testMethod": "epoch increments on setController and initialize"
+    },
+    "operations": [
+      {
+        "op": "initial",
+        "epochs": [
+          0,
+          0,
+          0,
+          0
+        ],
+        "kinds": [
+          "LocalHuman",
+          "Computer",
+          "Computer",
+          "Computer"
+        ]
+      },
+      {
+        "op": "setController",
+        "seat": 0,
+        "kind": "Computer",
+        "epochs": [
+          1,
+          0,
+          0,
+          0
+        ],
+        "kinds": [
+          "Computer",
+          "Computer",
+          "Computer",
+          "Computer"
+        ]
+      },
+      {
+        "op": "setController",
+        "seat": 0,
+        "kind": "RemoteHuman",
+        "epochs": [
+          2,
+          0,
+          0,
+          0
+        ],
+        "kinds": [
+          "RemoteHuman",
+          "Computer",
+          "Computer",
+          "Computer"
+        ]
+      },
+      {
+        "op": "initialize",
+        "kinds": [
+          "RemoteHuman",
+          "Computer",
+          "Computer",
+          "Takeover"
+        ],
+        "epochs": [
+          3,
+          1,
+          1,
+          1
+        ],
+        "kinds": [
+          "RemoteHuman",
+          "Computer",
+          "Computer",
+          "Takeover"
+        ]
+      },
+      {
+        "op": "validateEpoch",
+        "seat": 0,
+        "expectedEpoch": 2,
+        "result": false
+      },
+      {
+        "op": "validateEpoch",
+        "seat": 0,
+        "expectedEpoch": 3,
+        "result": true
+      }
+    ]
+  }
+}
