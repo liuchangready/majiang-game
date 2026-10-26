@@ -123,6 +123,34 @@ namespace Mahjong.LocalHost.Tests
         }
 
         [Fact]
+        public async Task CorruptPrimaryWithGoodPreviousCopyIsUnknownOnReplaceFailure()
+        {
+            await using var harness = new P41Harness();
+            var fs = new FaultingFileSystem();
+            harness.Options.FileSystemForTest = fs;
+            LocalTableStore store = await OpenFreshStoreAsync(harness, fs, TestContext.Current.CancellationToken);
+            try
+            {
+                byte[] corrupt = File.ReadAllBytes(harness.SavePath);
+                corrupt[corrupt.Length - 1] ^= 0x01;
+                File.WriteAllBytes(harness.SavePath, corrupt);
+                fs.BeforeReplace = _ => new IOException("injected after primary corruption");
+                TableCheckpoint checkpoint = await BuildNextCheckpointAsync(store);
+                TableDurableCommitResult result = await SaveCheckpointAsync(
+                    store,
+                    checkpoint,
+                    expectedTiming: 1L,
+                    TestContext.Current.CancellationToken);
+                Assert.True(
+                    result.Disposition == TableCommitDisposition.OutcomeUnknown,
+                    "corrupt primary + readable prev must be Unknown, actual=" + result.Disposition);
+            }
+            finally
+            {
+                store.Dispose();
+            }
+        }
+        [Fact]
         public async Task ReplaceFailureAfterAtomicReplaceIsRecognizedAsCommitted()
         {
             await using var harness = new P41Harness();
