@@ -26,7 +26,7 @@ namespace Mahjong.Client
     /// Unity main-thread or Domain/TableRuntime dependency; those bindings live
     /// in the platform layer or a later milestone.
     /// </summary>
-    public sealed class TableSession : IGameSession
+    public sealed class TableSession : IGameSession, ITableSessionFrameIngress
     {
         private readonly ITableChannel _channel;
         private readonly IOutboxStore _outbox;
@@ -218,6 +218,51 @@ namespace Mahjong.Client
                 return;
             }
 
+            await ApplyFrameAsyncCore(frame, cancellationToken).ConfigureAwait(false);
+        }
+
+        async Task<ReadOnlyMemory<byte>> ITableSessionFrameIngress.ReceiveFrameAsync(CancellationToken cancellationToken)
+        {
+            return await _channel.ReceiveAsync(cancellationToken).ConfigureAwait(false);
+        }
+
+        async Task ITableSessionFrameIngress.ApplyFrameAsync(
+            ReadOnlyMemory<byte> frame,
+            CancellationToken cancellationToken)
+        {
+            // A late frame from a receive that ignored cancellation must not
+            // revive a terminal session.
+            if (State == TableConnectionState.Closed || State == TableConnectionState.Faulted)
+            {
+                return;
+            }
+
+            await ApplyFrameAsyncCore(frame, cancellationToken).ConfigureAwait(false);
+        }
+
+        Task ITableSessionFrameIngress.ApplyReceiveFaultAsync(
+            Exception exception,
+            CancellationToken cancellationToken)
+        {
+            if (exception == null)
+            {
+                return Task.CompletedTask;
+            }
+
+            if (exception is TableChannelClosedException closed)
+            {
+                HandleTransportFailure(closed);
+                return Task.CompletedTask;
+            }
+
+            Fault(
+                ProtocolErrorCode.InternalError,
+                "Channel receive failed: " + exception.GetType().Name + ": " + exception.Message);
+            return Task.CompletedTask;
+        }
+
+        private async Task ApplyFrameAsyncCore(ReadOnlyMemory<byte> frame, CancellationToken cancellationToken)
+        {
             byte[] raw = frame.ToArray();
             WireDecodeResult decoded;
             try
@@ -1481,8 +1526,13 @@ namespace Mahjong.Client
             {
                 await SendEnvelopeAsync(envelope, cancellationToken).ConfigureAwait(false);
             }
-            catch (TableChannelClosedException)
+            catch
             {
+                // SendAsync is the handoff point. Any failure here - including
+                // caller cancellation after the durable save - may have left
+                // the channel with all or part of the frame. The original
+                // request id, scope and bytes stay in the outbox as an unknown
+                // outcome that must be reconciled, never regenerated.
                 tracked.NeedsReconciliation = true;
                 tracked.DeliveryUnknown = true;
                 throw;
