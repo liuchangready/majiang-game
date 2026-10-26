@@ -11,12 +11,21 @@ Copies the four accepted companion golden fixtures into an isolated exclusive TE
   - tests/v5-golden/ai-discard-flags-v1.json
 
 Executes positive baseline runs and a comprehensive suite of negative mutation cases
-covering single-byte drift, missing files, empty files, truncated/invalid JSON, path escape,
-schema/identity mismatches, duplicate fixture identity collision, invalid/zero source commit
-SHAs (including the D-R2-02 counterexample), case count mismatches, duplicate case IDs, and
-fixture-specific structural violations (such as wall tile counts and required sections).
-Verifies that the validator never writes to the real repository and that all real tracked
-fixture hashes remain 100% untouched.
+covering:
+  - Exact raw byte count and raw SHA-256 drift across accepted Git LF and Windows CRLF profiles
+  - Rejection of BOM and non-UTF-8 encodings (including UTF-16LE and UTF-8 with BOM)
+  - Rejection of mixed line endings
+  - Rejection of corrupt business data in full CLI runs without fake PASS bypass
+  - Verification that 136-tile physical conservation violations are caught
+  - Missing files, empty files, truncated/invalid JSON
+  - Lexical path traversal and NTFS directory junction / reparse point escapes
+  - Schema and fixture identity mismatches and duplicate fixture identity collisions
+  - Invalid/zero source and provenance commit SHAs (including the D-R2-02 counterexample)
+  - Case count mismatches, duplicate case identifiers, and missing required case fields
+  - Structural test mode isolation (-InternalStructureTestMode) without golden certification
+  - Tooling prechecks: missing git dependency exiting with BLOCKED code 2
+  - Safe log path boundary: preventing LogPath from overwriting fixtures or repo files
+  - Safe cleanup assertions ensuring recursive deletions remain strictly within isolated GUID roots
 
 Exit codes: 0 = PASS, 1 = FAIL, 2 = BLOCKED.
 #>
@@ -41,12 +50,32 @@ $repo = if ([string]::IsNullOrWhiteSpace($RepoRoot)) {
     (Resolve-Path $RepoRoot).Path
 }
 
+$canonicalRepo = [System.IO.Path]::GetFullPath($repo)
+if (-not $canonicalRepo.EndsWith([System.IO.Path]::DirectorySeparatorChar.ToString())) {
+    $canonicalRepo += [System.IO.Path]::DirectorySeparatorChar
+}
+
 if ([string]::IsNullOrWhiteSpace($LogPath)) {
-    $artifactDir = Join-Path $repo 'build\companion-fixtures'
+    $artifactDir = Join-Path $canonicalRepo 'build\companion-fixtures'
     if (-not (Test-Path -LiteralPath $artifactDir)) {
         New-Item -ItemType Directory -Force -Path $artifactDir | Out-Null
     }
     $LogPath = Join-Path $artifactDir 'selftest.log'
+} else {
+    $resolvedLog = [System.IO.Path]::GetFullPath($LogPath)
+    $goldenDir = [System.IO.Path]::GetFullPath((Join-Path $canonicalRepo 'tests\v5-golden'))
+    $toolsDir = [System.IO.Path]::GetFullPath((Join-Path $canonicalRepo 'tools'))
+    $allowedBuild = [System.IO.Path]::GetFullPath((Join-Path $canonicalRepo 'build'))
+    $allowedArtifacts = [System.IO.Path]::GetFullPath((Join-Path $canonicalRepo 'artifacts'))
+
+    if ($resolvedLog.StartsWith($goldenDir, [System.StringComparison]::OrdinalIgnoreCase) -or
+        $resolvedLog.StartsWith($toolsDir, [System.StringComparison]::OrdinalIgnoreCase) -or
+        ($resolvedLog.StartsWith($canonicalRepo, [System.StringComparison]::OrdinalIgnoreCase) -and
+         -not ($resolvedLog.StartsWith($allowedBuild, [System.StringComparison]::OrdinalIgnoreCase) -or
+               $resolvedLog.StartsWith($allowedArtifacts, [System.StringComparison]::OrdinalIgnoreCase)))) {
+        Write-Output ("BLOCKED: LogPath '{0}' cannot overwrite golden fixtures, tools, or protected repository files" -f $LogPath)
+        exit 2
+    }
 }
 
 $script:Failures = New-Object System.Collections.Generic.List[string]
@@ -69,7 +98,7 @@ function Read-JsonFile {
 
 function Write-JsonFile {
     param([string]$Path, [object]$Value)
-    $text = $Value | ConvertTo-Json -Depth 30
+    $text = $Value | ConvertTo-Json -Depth 50
     [System.IO.File]::WriteAllText($Path, $text, (New-Object System.Text.UTF8Encoding($false)))
 }
 
@@ -82,7 +111,7 @@ $realCompanionFixtures = @(
 
 $beforeHashes = @{}
 foreach ($name in $realCompanionFixtures) {
-    $fixturePath = Join-Path $repo ('tests\v5-golden\' + $name)
+    $fixturePath = Join-Path $canonicalRepo ('tests\v5-golden\' + $name)
     if (-not (Test-Path -LiteralPath $fixturePath)) {
         Write-Output ("BLOCKED: required companion fixture missing from repo: '{0}'" -f $fixturePath)
         exit 2
@@ -90,9 +119,38 @@ foreach ($name in $realCompanionFixtures) {
     $beforeHashes[$name] = Get-Sha256 $fixturePath
 }
 
+$validatorPathInRepo = Join-Path $canonicalRepo 'tools\verify-v5-companion-fixtures.ps1'
+if (Test-Path -LiteralPath $validatorPathInRepo) {
+    $beforeHashes['verify-v5-companion-fixtures.ps1'] = Get-Sha256 $validatorPathInRepo
+}
+
 $tempRoot = Join-Path $env:TEMP ('v5-companion-fixtures-selftest-' + [guid]::NewGuid().ToString('N'))
 $baseRoot = Join-Path $tempRoot 'base'
 $caseRoot = Join-Path $tempRoot 'case'
+
+function Assert-WithinGuidRoot {
+    param([string]$Path, [string]$GuidRoot)
+    if ([string]::IsNullOrWhiteSpace($Path) -or [string]::IsNullOrWhiteSpace($GuidRoot)) {
+        throw "Assertion failed: path or guidRoot is empty"
+    }
+    $fullPath = [System.IO.Path]::GetFullPath($Path)
+    $fullRoot = [System.IO.Path]::GetFullPath($GuidRoot)
+    if (-not $fullPath.StartsWith($fullRoot, [System.StringComparison]::OrdinalIgnoreCase)) {
+        throw ("Safety boundary violation: path '{0}' is outside GuidRoot '{1}'" -f $fullPath, $fullRoot)
+    }
+}
+
+function Remove-TreeSafely {
+    param([string]$Path, [string]$GuidRoot)
+    Assert-WithinGuidRoot -Path $Path -GuidRoot $GuidRoot
+    if (-not (Test-Path -LiteralPath $Path)) { return }
+    Get-ChildItem -LiteralPath $Path -Recurse -Force -ErrorAction SilentlyContinue | Where-Object {
+        $null -ne $_.Attributes -and (($_.Attributes.value__ -band [System.IO.FileAttributes]::ReparsePoint.value__) -ne 0)
+    } | ForEach-Object {
+        $_.Delete()
+    }
+    Remove-Item -LiteralPath $Path -Recurse -Force -ErrorAction SilentlyContinue
+}
 
 function New-BaseTree {
     param([string]$Root, [string]$SourceRepo)
@@ -114,35 +172,49 @@ function New-BaseTree {
 
 function New-CaseTree {
     param([string]$Base, [string]$Case)
-    if (Test-Path -LiteralPath $Case) {
-        Remove-Item -LiteralPath $Case -Recurse -Force
-    }
+    Remove-TreeSafely -Path $Case -GuidRoot $tempRoot
     Copy-Item -LiteralPath $Base -Destination $Case -Recurse -Force
 }
+
+$psExe = Join-Path $PSHOME 'powershell.exe'
 
 function Invoke-Validator {
     param(
         [string]$Root,
         [string]$FixtureDir = '',
-        [switch]$SkipHashCheck,
-        [switch]$VerifyGitPins
+        [switch]$InternalStructureTestMode,
+        [switch]$VerifyGitPins,
+        [string]$CustomEnvPath = ''
     )
     $validator = Join-Path $Root 'tools\verify-v5-companion-fixtures.ps1'
     $argsList = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $validator, '-RepoRoot', $Root)
     if (-not [string]::IsNullOrWhiteSpace($FixtureDir)) {
         $argsList += @('-FixtureDir', $FixtureDir)
     }
-    if ($SkipHashCheck) {
-        $argsList += '-SkipHashCheck'
+    if ($InternalStructureTestMode) {
+        $argsList += '-InternalStructureTestMode'
     }
     if ($VerifyGitPins) {
         $argsList += '-VerifyGitPins'
     }
-    $output = & powershell.exe @argsList 2>&1
-    $code = $LASTEXITCODE
-    return [pscustomobject]@{
-        Code = $code
-        Output = (@($output) -join "`n")
+
+    $savedPath = $null
+    if (-not [string]::IsNullOrWhiteSpace($CustomEnvPath)) {
+        $savedPath = $env:PATH
+        $env:PATH = $CustomEnvPath
+    }
+    try {
+        $output = & $psExe @argsList 2>&1
+        $code = $LASTEXITCODE
+        return [pscustomobject]@{
+            Code = $code
+            Output = (@($output) -join "`n")
+        }
+    }
+    finally {
+        if ($null -ne $savedPath) {
+            $env:PATH = $savedPath
+        }
     }
 }
 
@@ -154,13 +226,15 @@ function Invoke-NegativeCase {
         [string]$ExpectedCode,
         [scriptblock]$Mutator,
         [string]$FixtureDir = '',
-        [switch]$SkipHashCheck,
-        [switch]$VerifyGitPins
+        [switch]$InternalStructureTestMode,
+        [switch]$VerifyGitPins,
+        [int]$ExpectedExitCode = 1,
+        [string]$CustomEnvPath = ''
     )
     New-CaseTree -Base $baseRoot -Case $caseRoot
     & $Mutator $caseRoot
-    $result = Invoke-Validator -Root $caseRoot -FixtureDir $FixtureDir -SkipHashCheck:$SkipHashCheck -VerifyGitPins:$VerifyGitPins
-    $ok = ($result.Code -eq 1) -and $result.Output.Contains($ExpectedCode)
+    $result = Invoke-Validator -Root $caseRoot -FixtureDir $FixtureDir -InternalStructureTestMode:$InternalStructureTestMode -VerifyGitPins:$VerifyGitPins -CustomEnvPath $CustomEnvPath
+    $ok = ($result.Code -eq $ExpectedExitCode) -and $result.Output.Contains($ExpectedCode)
     $script:CaseResults += [pscustomobject]@{
         Name = $Name
         Expected = $ExpectedCode
@@ -169,13 +243,13 @@ function Invoke-NegativeCase {
         Output = $result.Output
     }
     if (-not $ok) {
-        Add-Failure ('{0}: expected exit1 containing {1}, got exit{2}; output={3}' -f $Name, $ExpectedCode, $result.Code, $result.Output)
+        Add-Failure ('{0}: expected exit{1} containing {2}, got exit{3}; output={4}' -f $Name, $ExpectedExitCode, $ExpectedCode, $result.Code, $result.Output)
     }
 }
 
 try {
     New-Item -ItemType Directory -Force -Path $tempRoot | Out-Null
-    New-BaseTree -Root $baseRoot -SourceRepo $repo
+    New-BaseTree -Root $baseRoot -SourceRepo $canonicalRepo
 
     # -------------------------------------------------------------------------
     # Positive Baselines
@@ -195,7 +269,7 @@ try {
     }
 
     # Baseline 2: On real repository with git pins verified
-    $pos2 = Invoke-Validator -Root $repo -VerifyGitPins
+    $pos2 = Invoke-Validator -Root $canonicalRepo -VerifyGitPins
     $pos2Ok = ($pos2.Code -eq 0) -and $pos2.Output.Contains('PASS: 4/4 companion golden fixtures verified successfully') -and $pos2.Output.Contains('git blobs verified equal')
     $script:CaseResults += [pscustomobject]@{
         Name = 'positive-real-repo-git-pins'
@@ -237,15 +311,50 @@ try {
     }
 
     # -------------------------------------------------------------------------
-    # Group B: Path Escape Negative
+    # Group B: Path Escape & Reparse Point Negatives
     # -------------------------------------------------------------------------
-    Invoke-NegativeCase -Name 'neg-path-escape' -ExpectedCode 'PATH_ESCAPE_DETECTED' -FixtureDir (Join-Path $baseRoot '..\..\escaped') -Mutator {
+    Invoke-NegativeCase -Name 'neg-path-escape-lexical' -ExpectedCode 'PATH_ESCAPE_DETECTED' -FixtureDir (Join-Path $baseRoot '..\..\escaped') -Mutator {
         param($root)
     }
 
+    Invoke-NegativeCase -Name 'neg-path-escape-junction' -ExpectedCode 'PATH_ESCAPE_DETECTED' -Mutator {
+        param($root)
+        $externalDir = Join-Path $tempRoot 'outside-junction-target'
+        New-Item -ItemType Directory -Force -Path $externalDir | Out-Null
+        $juncTarget = Join-Path $root 'tests\escaped-junc'
+        New-Item -ItemType Junction -Path $juncTarget -Target $externalDir | Out-Null
+    } -FixtureDir (Join-Path $caseRoot 'tests\escaped-junc')
+
     # -------------------------------------------------------------------------
-    # Group C: Single-Byte Drift Negatives (Default Full Run with Hash Check)
+    # Group C: Encoding & Single-Byte Drift Negatives (Default Full Run with Hash Check)
     # -------------------------------------------------------------------------
+    Invoke-NegativeCase -Name 'neg-encoding-utf16-le' -ExpectedCode 'INVALID_ENCODING' -Mutator {
+        param($root)
+        $p = Join-Path $root 'tests\v5-golden\movement-v1.json'
+        $txt = [System.IO.File]::ReadAllText($p)
+        [System.IO.File]::WriteAllText($p, $txt, [System.Text.Encoding]::Unicode)
+    }
+
+    Invoke-NegativeCase -Name 'neg-encoding-utf8-bom' -ExpectedCode 'INVALID_ENCODING' -Mutator {
+        param($root)
+        $p = Join-Path $root 'tests\v5-golden\movement-v1.json'
+        $raw = [System.IO.File]::ReadAllBytes($p)
+        $bomBytes = [byte[]](0xEF, 0xBB, 0xBF)
+        $combined = New-Object byte[] ($bomBytes.Length + $raw.Length)
+        [System.Buffer]::BlockCopy($bomBytes, 0, $combined, 0, $bomBytes.Length)
+        [System.Buffer]::BlockCopy($raw, 0, $combined, $bomBytes.Length, $raw.Length)
+        [System.IO.File]::WriteAllBytes($p, $combined)
+    }
+
+    Invoke-NegativeCase -Name 'neg-encoding-mixed-eol' -ExpectedCode 'HASH_MISMATCH' -Mutator {
+        param($root)
+        $p = Join-Path $root 'tests\v5-golden\movement-v1.json'
+        $txt = [System.IO.File]::ReadAllText($p).Replace("`r`n", "`n")
+        $firstNl = $txt.IndexOf("`n")
+        $txt = $txt.Substring(0, $firstNl) + "`r`n" + $txt.Substring($firstNl + 1)
+        [System.IO.File]::WriteAllText($p, $txt, (New-Object System.Text.UTF8Encoding($false)))
+    }
+
     Invoke-NegativeCase -Name 'neg-single-byte-drift-movement' -ExpectedCode 'HASH_MISMATCH' -Mutator {
         param($root)
         $p = Join-Path $root 'tests\v5-golden\movement-v1.json'
@@ -279,16 +388,35 @@ try {
     }
 
     # -------------------------------------------------------------------------
-    # Group D: Truncated & Invalid JSON Syntax Negatives (Tested with -SkipHashCheck)
+    # Group D: Conservation Violation & Anti-Fraud (Full CLI Run vs Internal Structure Test Mode)
     # -------------------------------------------------------------------------
-    Invoke-NegativeCase -Name 'neg-truncated-json' -ExpectedCode 'INVALID_JSON' -SkipHashCheck -Mutator {
+    Invoke-NegativeCase -Name 'neg-duplicate-tile-cli-full' -ExpectedCode 'HASH_MISMATCH' -Mutator {
+        param($root)
+        $p = Join-Path $root 'tests\v5-golden\shuffle-reversed-v1.json'
+        $j = Read-JsonFile $p
+        $j.cases[0].threeCasterWall[0] = $j.cases[0].threeCasterWall[1]
+        Write-JsonFile $p $j
+    }
+
+    Invoke-NegativeCase -Name 'neg-duplicate-tile-structure-mode' -ExpectedCode 'WALL_CONSERVATION_INVALID' -InternalStructureTestMode -Mutator {
+        param($root)
+        $p = Join-Path $root 'tests\v5-golden\shuffle-reversed-v1.json'
+        $j = Read-JsonFile $p
+        $j.cases[0].threeCasterWall[0] = $j.cases[0].threeCasterWall[1]
+        Write-JsonFile $p $j
+    }
+
+    # -------------------------------------------------------------------------
+    # Group E: Truncated & Invalid JSON Syntax Negatives (Tested with -InternalStructureTestMode)
+    # -------------------------------------------------------------------------
+    Invoke-NegativeCase -Name 'neg-truncated-json' -ExpectedCode 'INVALID_JSON' -InternalStructureTestMode -Mutator {
         param($root)
         $p = Join-Path $root 'tests\v5-golden\movement-v1.json'
         $txt = [System.IO.File]::ReadAllText($p, [System.Text.Encoding]::UTF8)
         [System.IO.File]::WriteAllText($p, $txt.Substring(0, 150), [System.Text.Encoding]::UTF8)
     }
 
-    Invoke-NegativeCase -Name 'neg-corrupted-json-syntax' -ExpectedCode 'INVALID_JSON' -SkipHashCheck -Mutator {
+    Invoke-NegativeCase -Name 'neg-corrupted-json-syntax' -ExpectedCode 'INVALID_JSON' -InternalStructureTestMode -Mutator {
         param($root)
         $p = Join-Path $root 'tests\v5-golden\ai-discard-flags-v1.json'
         $txt = "{\`"fixture\`": UNQUOTED_VALUE"
@@ -296,9 +424,9 @@ try {
     }
 
     # -------------------------------------------------------------------------
-    # Group E: Movement Fixture Semantic & Structural Negatives (Tested with -SkipHashCheck)
+    # Group F: Movement Fixture Semantic & Structural Negatives (Tested with -InternalStructureTestMode)
     # -------------------------------------------------------------------------
-    Invoke-NegativeCase -Name 'neg-movement-schema-mismatch' -ExpectedCode 'SCHEMA_MISMATCH' -SkipHashCheck -Mutator {
+    Invoke-NegativeCase -Name 'neg-movement-schema-mismatch' -ExpectedCode 'SCHEMA_MISMATCH' -InternalStructureTestMode -Mutator {
         param($root)
         $p = Join-Path $root 'tests\v5-golden\movement-v1.json'
         $j = Read-JsonFile $p
@@ -306,7 +434,7 @@ try {
         Write-JsonFile $p $j
     }
 
-    Invoke-NegativeCase -Name 'neg-movement-root-case-count-mismatch' -ExpectedCode 'CASE_COUNT_MISMATCH' -SkipHashCheck -Mutator {
+    Invoke-NegativeCase -Name 'neg-movement-root-case-count-mismatch' -ExpectedCode 'CASE_COUNT_MISMATCH' -InternalStructureTestMode -Mutator {
         param($root)
         $p = Join-Path $root 'tests\v5-golden\movement-v1.json'
         $j = Read-JsonFile $p
@@ -314,7 +442,7 @@ try {
         Write-JsonFile $p $j
     }
 
-    Invoke-NegativeCase -Name 'neg-movement-cases-array-mismatch' -ExpectedCode 'CASE_COUNT_MISMATCH' -SkipHashCheck -Mutator {
+    Invoke-NegativeCase -Name 'neg-movement-cases-array-mismatch' -ExpectedCode 'CASE_COUNT_MISMATCH' -InternalStructureTestMode -Mutator {
         param($root)
         $p = Join-Path $root 'tests\v5-golden\movement-v1.json'
         $j = Read-JsonFile $p
@@ -323,7 +451,7 @@ try {
         Write-JsonFile $p $j
     }
 
-    Invoke-NegativeCase -Name 'neg-movement-duplicate-case-id' -ExpectedCode 'DUPLICATE_CASE_ID' -SkipHashCheck -Mutator {
+    Invoke-NegativeCase -Name 'neg-movement-duplicate-case-id' -ExpectedCode 'DUPLICATE_CASE_ID' -InternalStructureTestMode -Mutator {
         param($root)
         $p = Join-Path $root 'tests\v5-golden\movement-v1.json'
         $j = Read-JsonFile $p
@@ -331,7 +459,7 @@ try {
         Write-JsonFile $p $j
     }
 
-    Invoke-NegativeCase -Name 'neg-movement-source-commit-zero' -ExpectedCode 'SOURCE_COMMIT_INVALID' -SkipHashCheck -Mutator {
+    Invoke-NegativeCase -Name 'neg-movement-source-commit-zero' -ExpectedCode 'SOURCE_COMMIT_INVALID' -InternalStructureTestMode -Mutator {
         param($root)
         $p = Join-Path $root 'tests\v5-golden\movement-v1.json'
         $j = Read-JsonFile $p
@@ -339,7 +467,7 @@ try {
         Write-JsonFile $p $j
     }
 
-    Invoke-NegativeCase -Name 'neg-movement-generator-mismatch' -ExpectedCode 'GENERATOR_MISMATCH' -SkipHashCheck -Mutator {
+    Invoke-NegativeCase -Name 'neg-movement-generator-mismatch' -ExpectedCode 'GENERATOR_MISMATCH' -InternalStructureTestMode -Mutator {
         param($root)
         $p = Join-Path $root 'tests\v5-golden\movement-v1.json'
         $j = Read-JsonFile $p
@@ -348,9 +476,9 @@ try {
     }
 
     # -------------------------------------------------------------------------
-    # Group F: Shuffle Reversed Fixture Semantic & Structural Negatives (Tested with -SkipHashCheck)
+    # Group G: Shuffle Reversed Fixture Semantic & Structural Negatives (Tested with -InternalStructureTestMode)
     # -------------------------------------------------------------------------
-    Invoke-NegativeCase -Name 'neg-shuffle-schema-mismatch' -ExpectedCode 'SCHEMA_MISMATCH' -SkipHashCheck -Mutator {
+    Invoke-NegativeCase -Name 'neg-shuffle-schema-mismatch' -ExpectedCode 'SCHEMA_MISMATCH' -InternalStructureTestMode -Mutator {
         param($root)
         $p = Join-Path $root 'tests\v5-golden\shuffle-reversed-v1.json'
         $j = Read-JsonFile $p
@@ -358,7 +486,7 @@ try {
         Write-JsonFile $p $j
     }
 
-    Invoke-NegativeCase -Name 'neg-shuffle-source-commit-zero' -ExpectedCode 'SOURCE_COMMIT_INVALID' -SkipHashCheck -Mutator {
+    Invoke-NegativeCase -Name 'neg-shuffle-source-commit-zero' -ExpectedCode 'SOURCE_COMMIT_INVALID' -InternalStructureTestMode -Mutator {
         param($root)
         $p = Join-Path $root 'tests\v5-golden\shuffle-reversed-v1.json'
         $j = Read-JsonFile $p
@@ -366,7 +494,7 @@ try {
         Write-JsonFile $p $j
     }
 
-    Invoke-NegativeCase -Name 'neg-shuffle-case-count-mismatch' -ExpectedCode 'CASE_COUNT_MISMATCH' -SkipHashCheck -Mutator {
+    Invoke-NegativeCase -Name 'neg-shuffle-case-count-mismatch' -ExpectedCode 'CASE_COUNT_MISMATCH' -InternalStructureTestMode -Mutator {
         param($root)
         $p = Join-Path $root 'tests\v5-golden\shuffle-reversed-v1.json'
         $j = Read-JsonFile $p
@@ -374,7 +502,7 @@ try {
         Write-JsonFile $p $j
     }
 
-    Invoke-NegativeCase -Name 'neg-shuffle-duplicate-seed' -ExpectedCode 'DUPLICATE_CASE_ID' -SkipHashCheck -Mutator {
+    Invoke-NegativeCase -Name 'neg-shuffle-duplicate-seed' -ExpectedCode 'DUPLICATE_CASE_ID' -InternalStructureTestMode -Mutator {
         param($root)
         $p = Join-Path $root 'tests\v5-golden\shuffle-reversed-v1.json'
         $j = Read-JsonFile $p
@@ -382,7 +510,7 @@ try {
         Write-JsonFile $p $j
     }
 
-    Invoke-NegativeCase -Name 'neg-shuffle-wall-size-invalid' -ExpectedCode 'WALL_SIZE_INVALID' -SkipHashCheck -Mutator {
+    Invoke-NegativeCase -Name 'neg-shuffle-wall-size-invalid' -ExpectedCode 'WALL_SIZE_INVALID' -InternalStructureTestMode -Mutator {
         param($root)
         $p = Join-Path $root 'tests\v5-golden\shuffle-reversed-v1.json'
         $j = Read-JsonFile $p
@@ -391,9 +519,9 @@ try {
     }
 
     # -------------------------------------------------------------------------
-    # Group G: Visibility Fixture Semantic & Structural Negatives (Tested with -SkipHashCheck)
+    # Group H: Visibility Fixture Semantic & Structural Negatives (Tested with -InternalStructureTestMode)
     # -------------------------------------------------------------------------
-    Invoke-NegativeCase -Name 'neg-visibility-schema-mismatch' -ExpectedCode 'SCHEMA_MISMATCH' -SkipHashCheck -Mutator {
+    Invoke-NegativeCase -Name 'neg-visibility-schema-mismatch' -ExpectedCode 'SCHEMA_MISMATCH' -InternalStructureTestMode -Mutator {
         param($root)
         $p = Join-Path $root 'tests\v5-golden\visibility-v1.json'
         $j = Read-JsonFile $p
@@ -401,7 +529,7 @@ try {
         Write-JsonFile $p $j
     }
 
-    Invoke-NegativeCase -Name 'neg-visibility-source-commit-zero' -ExpectedCode 'SOURCE_COMMIT_INVALID' -SkipHashCheck -Mutator {
+    Invoke-NegativeCase -Name 'neg-visibility-source-commit-zero' -ExpectedCode 'SOURCE_COMMIT_INVALID' -InternalStructureTestMode -Mutator {
         param($root)
         $p = Join-Path $root 'tests\v5-golden\visibility-v1.json'
         $j = Read-JsonFile $p
@@ -409,7 +537,7 @@ try {
         Write-JsonFile $p $j
     }
 
-    Invoke-NegativeCase -Name 'neg-visibility-render-sha-mismatch' -ExpectedCode 'RENDER_SHA_MISMATCH' -SkipHashCheck -Mutator {
+    Invoke-NegativeCase -Name 'neg-visibility-render-sha-mismatch' -ExpectedCode 'RENDER_SHA_MISMATCH' -InternalStructureTestMode -Mutator {
         param($root)
         $p = Join-Path $root 'tests\v5-golden\visibility-v1.json'
         $j = Read-JsonFile $p
@@ -417,7 +545,7 @@ try {
         Write-JsonFile $p $j
     }
 
-    Invoke-NegativeCase -Name 'neg-visibility-case-count-mismatch' -ExpectedCode 'CASE_COUNT_MISMATCH' -SkipHashCheck -Mutator {
+    Invoke-NegativeCase -Name 'neg-visibility-case-count-mismatch' -ExpectedCode 'CASE_COUNT_MISMATCH' -InternalStructureTestMode -Mutator {
         param($root)
         $p = Join-Path $root 'tests\v5-golden\visibility-v1.json'
         $j = Read-JsonFile $p
@@ -426,7 +554,7 @@ try {
         Write-JsonFile $p $j
     }
 
-    Invoke-NegativeCase -Name 'neg-visibility-duplicate-case-id' -ExpectedCode 'DUPLICATE_CASE_ID' -SkipHashCheck -Mutator {
+    Invoke-NegativeCase -Name 'neg-visibility-duplicate-case-id' -ExpectedCode 'DUPLICATE_CASE_ID' -InternalStructureTestMode -Mutator {
         param($root)
         $p = Join-Path $root 'tests\v5-golden\visibility-v1.json'
         $j = Read-JsonFile $p
@@ -434,7 +562,7 @@ try {
         Write-JsonFile $p $j
     }
 
-    Invoke-NegativeCase -Name 'neg-visibility-missing-input' -ExpectedCode 'CASE_STRUCTURE_INVALID' -SkipHashCheck -Mutator {
+    Invoke-NegativeCase -Name 'neg-visibility-missing-input' -ExpectedCode 'CASE_STRUCTURE_INVALID' -InternalStructureTestMode -Mutator {
         param($root)
         $p = Join-Path $root 'tests\v5-golden\visibility-v1.json'
         $j = Read-JsonFile $p
@@ -443,9 +571,9 @@ try {
     }
 
     # -------------------------------------------------------------------------
-    # Group H: AI Discard Flags Semantic & Structural Negatives (Tested with -SkipHashCheck)
+    # Group I: AI Discard Flags Semantic & Structural Negatives (Tested with -InternalStructureTestMode)
     # -------------------------------------------------------------------------
-    Invoke-NegativeCase -Name 'neg-ai-discard-fixture-identity-mismatch' -ExpectedCode 'FIXTURE_IDENTITY_MISMATCH' -SkipHashCheck -Mutator {
+    Invoke-NegativeCase -Name 'neg-ai-discard-fixture-identity-mismatch' -ExpectedCode 'FIXTURE_IDENTITY_MISMATCH' -InternalStructureTestMode -Mutator {
         param($root)
         $p = Join-Path $root 'tests\v5-golden\ai-discard-flags-v1.json'
         $j = Read-JsonFile $p
@@ -453,8 +581,7 @@ try {
         Write-JsonFile $p $j
     }
 
-    # D-R2-02 counterexample reproduction: provenance.generatedAtHead set to 40 zeroes
-    Invoke-NegativeCase -Name 'neg-ai-discard-provenance-sha-zero' -ExpectedCode 'PROVENANCE_SHA_INVALID' -SkipHashCheck -Mutator {
+    Invoke-NegativeCase -Name 'neg-ai-discard-provenance-sha-zero' -ExpectedCode 'PROVENANCE_SHA_INVALID' -InternalStructureTestMode -Mutator {
         param($root)
         $p = Join-Path $root 'tests\v5-golden\ai-discard-flags-v1.json'
         $j = Read-JsonFile $p
@@ -462,7 +589,7 @@ try {
         Write-JsonFile $p $j
     }
 
-    Invoke-NegativeCase -Name 'neg-ai-discard-v4-engine-commit-zero' -ExpectedCode 'PROVENANCE_SHA_INVALID' -SkipHashCheck -Mutator {
+    Invoke-NegativeCase -Name 'neg-ai-discard-v4-engine-commit-zero' -ExpectedCode 'PROVENANCE_SHA_INVALID' -InternalStructureTestMode -Mutator {
         param($root)
         $p = Join-Path $root 'tests\v5-golden\ai-discard-flags-v1.json'
         $j = Read-JsonFile $p
@@ -470,7 +597,7 @@ try {
         Write-JsonFile $p $j
     }
 
-    Invoke-NegativeCase -Name 'neg-ai-discard-render-sha-mismatch' -ExpectedCode 'RENDER_SHA_MISMATCH' -SkipHashCheck -Mutator {
+    Invoke-NegativeCase -Name 'neg-ai-discard-render-sha-mismatch' -ExpectedCode 'RENDER_SHA_MISMATCH' -InternalStructureTestMode -Mutator {
         param($root)
         $p = Join-Path $root 'tests\v5-golden\ai-discard-flags-v1.json'
         $j = Read-JsonFile $p
@@ -478,7 +605,7 @@ try {
         Write-JsonFile $p $j
     }
 
-    Invoke-NegativeCase -Name 'neg-ai-discard-case-count-mismatch' -ExpectedCode 'CASE_COUNT_MISMATCH' -SkipHashCheck -Mutator {
+    Invoke-NegativeCase -Name 'neg-ai-discard-case-count-mismatch' -ExpectedCode 'CASE_COUNT_MISMATCH' -InternalStructureTestMode -Mutator {
         param($root)
         $p = Join-Path $root 'tests\v5-golden\ai-discard-flags-v1.json'
         $j = Read-JsonFile $p
@@ -486,7 +613,7 @@ try {
         Write-JsonFile $p $j
     }
 
-    Invoke-NegativeCase -Name 'neg-ai-discard-duplicate-case-id' -ExpectedCode 'DUPLICATE_CASE_ID' -SkipHashCheck -Mutator {
+    Invoke-NegativeCase -Name 'neg-ai-discard-duplicate-case-id' -ExpectedCode 'DUPLICATE_CASE_ID' -InternalStructureTestMode -Mutator {
         param($root)
         $p = Join-Path $root 'tests\v5-golden\ai-discard-flags-v1.json'
         $j = Read-JsonFile $p
@@ -494,7 +621,7 @@ try {
         Write-JsonFile $p $j
     }
 
-    Invoke-NegativeCase -Name 'neg-ai-discard-missing-flag-semantics' -ExpectedCode 'STRUCTURE_INVALID' -SkipHashCheck -Mutator {
+    Invoke-NegativeCase -Name 'neg-ai-discard-missing-flag-semantics' -ExpectedCode 'STRUCTURE_INVALID' -InternalStructureTestMode -Mutator {
         param($root)
         $p = Join-Path $root 'tests\v5-golden\ai-discard-flags-v1.json'
         $j = Read-JsonFile $p
@@ -503,30 +630,64 @@ try {
     }
 
     # -------------------------------------------------------------------------
-    # Group I: Duplicate Fixture Identity Collision
+    # Group J: Duplicate Fixture Identity Collision (Tested with -InternalStructureTestMode)
     # -------------------------------------------------------------------------
-    Invoke-NegativeCase -Name 'neg-duplicate-fixture-identity-collision' -ExpectedCode 'DUPLICATE_FIXTURE_IDENTITY' -SkipHashCheck -Mutator {
+    Invoke-NegativeCase -Name 'neg-duplicate-fixture-identity-collision' -ExpectedCode 'DUPLICATE_FIXTURE_IDENTITY' -InternalStructureTestMode -Mutator {
         param($root)
         $src = Join-Path $root 'tests\v5-golden\movement-v1.json'
         $dst = Join-Path $root 'tests\v5-golden\shuffle-reversed-v1.json'
         Copy-Item -LiteralPath $src -Destination $dst -Force
     }
+
+    # -------------------------------------------------------------------------
+    # Group K: Environment & Tooling Prechecks (Exit code 2 BLOCKED)
+    # -------------------------------------------------------------------------
+    Invoke-NegativeCase -Name 'neg-missing-git-dependency' -ExpectedCode 'BLOCKED: missing required tool ''git'' for -VerifyGitPins' -VerifyGitPins -ExpectedExitCode 2 -CustomEnvPath "$env:SystemRoot\System32" -Mutator {
+        param($root)
+    }
+
+    # -------------------------------------------------------------------------
+    # Group L: Test Script LogPath Protection Precheck (Exit code 2 BLOCKED)
+    # -------------------------------------------------------------------------
+    $testScriptPath = $PSCommandPath
+    $protectedLogTarget = Join-Path $canonicalRepo 'tests\v5-golden\movement-v1.json'
+    $logTestOut = & $psExe -NoProfile -ExecutionPolicy Bypass -File $testScriptPath -RepoRoot $canonicalRepo -LogPath $protectedLogTarget 2>&1
+    $logTestCode = $LASTEXITCODE
+    $logTestText = (@($logTestOut) -join "`n")
+    $logTestOk = ($logTestCode -eq 2) -and $logTestText.Contains('cannot overwrite golden fixtures')
+    $script:CaseResults += [pscustomobject]@{
+        Name = 'neg-test-logpath-target-protected'
+        Expected = 'BLOCKED'
+        ExitCode = $logTestCode
+        Ok = $logTestOk
+        Output = $logTestText
+    }
+    if (-not $logTestOk) {
+        Add-Failure ('neg-test-logpath-target-protected: expected exit 2 containing BLOCKED, got exit {0}; output={1}' -f $logTestCode, $logTestText)
+    }
 }
 finally {
     if (Test-Path -LiteralPath $tempRoot) {
-        Remove-Item -LiteralPath $tempRoot -Recurse -Force
+        Remove-TreeSafely -Path $tempRoot -GuidRoot $tempRoot
     }
 }
 
 # -------------------------------------------------------------------------
-# Real Repository Fixture Immutability Verification
+# Real Repository Fixture and Tool Immutability Verification
 # -------------------------------------------------------------------------
 $afterHashes = @{}
 foreach ($name in $realCompanionFixtures) {
-    $fixturePath = Join-Path $repo ('tests\v5-golden\' + $name)
+    $fixturePath = Join-Path $canonicalRepo ('tests\v5-golden\' + $name)
     $afterHashes[$name] = Get-Sha256 $fixturePath
     if ($beforeHashes[$name] -ne $afterHashes[$name]) {
         Add-Failure ('REAL_FIXTURE_MUTATED: {0} hash changed from {1} to {2}' -f $name, $beforeHashes[$name], $afterHashes[$name])
+    }
+}
+
+if ($beforeHashes.ContainsKey('verify-v5-companion-fixtures.ps1')) {
+    $currentValidatorHash = Get-Sha256 $validatorPathInRepo
+    if ($beforeHashes['verify-v5-companion-fixtures.ps1'] -ne $currentValidatorHash) {
+        Add-Failure ('REAL_VALIDATOR_MUTATED: verify-v5-companion-fixtures.ps1 hash changed from {0} to {1}' -f $beforeHashes['verify-v5-companion-fixtures.ps1'], $currentValidatorHash)
     }
 }
 
@@ -535,7 +696,7 @@ foreach ($name in $realCompanionFixtures) {
 # -------------------------------------------------------------------------
 $logLines = @()
 $logLines += ('# V5 Companion Fixtures Validator Regression Test Run - {0}' -f (Get-Date -Format 'o'))
-$logLines += ('RepoRoot: {0}' -f $repo)
+$logLines += ('RepoRoot: {0}' -f $canonicalRepo)
 $logLines += ('LogPath: {0}' -f $LogPath)
 $logLines += ('Real fixtures immutable: {0}' -f ($script:Failures.Count -eq 0))
 $logLines += ''

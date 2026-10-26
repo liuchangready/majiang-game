@@ -8,24 +8,30 @@ Read-only validator for the four accepted V5 companion golden fixtures:
   - tests/v5-golden/ai-discard-flags-v1.json
 
 .DESCRIPTION
-Validates file existence, file size, SHA-256 byte digests (both canonical LF-normalized
-and checkout raw digests), JSON syntax, distinct fixture identity/schema, embedded
-V4/V5 source/provenance commit pins, case counts, uniqueness and exact set of case identifiers,
-and fixture-specific structural invariants.
+Validates file existence, exact byte count, BOM-less UTF-8 encoding, exact raw SHA-256
+digests against accepted Git LF and Windows CRLF profiles, JSON syntax, distinct
+fixture identity/schema, embedded V4/V5 source/provenance commit pins, case counts,
+case identifier uniqueness and completeness, and physical conservation invariants
+(including 136 unique physical tiles 0..135 on shuffle walls).
 Optionally verifies git commit blob pins against historical freeze commits when requested.
-Never modifies repository files, never executes production code, and rejects path escape.
+
+Guarantees:
+  - Completely read-only: never modifies, overwrites, or creates files in the repository.
+  - Strict path boundary: rejects lexical path traversal and directory junctions / reparse points.
+  - No fake pass: full CLI validation ALWAYS enforces byte integrity and raw hashes.
+    Internal structure test mode (-InternalStructureTestMode) is restricted to testing
+    semantic/structure parsing branches without emitting a golden pass certification.
 
 Exit codes:
   0 = PASS (all 4 companion fixtures verified)
   1 = FAIL (validation failure: missing, hash mismatch, syntax error, schema error, etc.)
-  2 = BLOCKED (missing required tools: Get-FileHash, ConvertFrom-Json)
+  2 = BLOCKED (missing required tools: Get-FileHash, ConvertFrom-Json, or git when requested)
 #>
 param(
     [string]$RepoRoot = '',
     [string]$FixtureDir = '',
-    [switch]$SkipHashCheck,
     [switch]$VerifyGitPins,
-    [string]$LogPath = ''
+    [switch]$InternalStructureTestMode
 )
 
 $ErrorActionPreference = 'Stop'
@@ -34,6 +40,13 @@ Set-StrictMode -Version 2
 foreach ($tool in @('Get-FileHash', 'ConvertFrom-Json')) {
     if ($null -eq (Get-Command $tool -ErrorAction SilentlyContinue)) {
         Write-Output ("BLOCKED: missing required tool '{0}'" -f $tool)
+        exit 2
+    }
+}
+
+if ($VerifyGitPins) {
+    if ($null -eq (Get-Command 'git' -ErrorAction SilentlyContinue)) {
+        Write-Output "BLOCKED: missing required tool 'git' for -VerifyGitPins"
         exit 2
     }
 }
@@ -74,14 +87,35 @@ $resolvedFixtureDir = if ([string]::IsNullOrWhiteSpace($FixtureDir)) {
     [System.IO.Path]::GetFullPath($FixtureDir)
 }
 
+function Test-HasReparsePoint {
+    param([string]$PathToCheck)
+    if ([string]::IsNullOrWhiteSpace($PathToCheck)) { return $false }
+    $curr = [System.IO.Path]::GetFullPath($PathToCheck)
+    while (-not [string]::IsNullOrWhiteSpace($curr)) {
+        if (Test-Path -LiteralPath $curr) {
+            $attr = [System.IO.File]::GetAttributes($curr)
+            if (($attr.value__ -band [System.IO.FileAttributes]::ReparsePoint.value__) -ne 0) {
+                return $true
+            }
+        }
+        $parent = [System.IO.Path]::GetDirectoryName($curr)
+        if ($parent -eq $curr -or [string]::IsNullOrWhiteSpace($parent)) { break }
+        $curr = $parent
+    }
+    return $false
+}
+
 function Test-IsInsideRepo {
     param([string]$PathToCheck)
+    if (Test-HasReparsePoint $PathToCheck) {
+        return $false
+    }
     $canonical = [System.IO.Path]::GetFullPath($PathToCheck)
     return $canonical.StartsWith($canonicalRepoRoot, [System.StringComparison]::OrdinalIgnoreCase)
 }
 
 if (-not (Test-IsInsideRepo $resolvedFixtureDir)) {
-    Write-Output ("FAIL: PATH_ESCAPE_DETECTED FixtureDir '{0}' escapes RepoRoot '{1}'" -f $resolvedFixtureDir, $canonicalRepoRoot)
+    Write-Output ("FAIL: PATH_ESCAPE_DETECTED FixtureDir '{0}' escapes RepoRoot '{1}' (reparse points or out-of-boundary paths forbidden)" -f $resolvedFixtureDir, $canonicalRepoRoot)
     exit 1
 }
 
@@ -90,20 +124,6 @@ $script:Failures = New-Object System.Collections.Generic.List[string]
 function Add-Failure {
     param([string]$Code, [string]$Message)
     $script:Failures.Add(('{0}: {1}' -f $Code, $Message)) | Out-Null
-}
-
-function Get-Sha256Lf {
-    param([string]$Path)
-    $text = [System.IO.File]::ReadAllText($Path, [System.Text.Encoding]::UTF8)
-    $textLf = $text.Replace("`r`n", "`n")
-    $bytes = [System.Text.Encoding]::UTF8.GetBytes($textLf)
-    $sha = [System.Security.Cryptography.SHA256]::Create()
-    try {
-        return ([BitConverter]::ToString($sha.ComputeHash($bytes))).Replace('-', '').ToUpperInvariant()
-    }
-    finally {
-        $sha.Dispose()
-    }
 }
 
 function Get-Sha256Raw {
@@ -119,6 +139,23 @@ function Test-ShaFormat {
     return ($Hash -match '^[0-9a-fA-F]{40}$')
 }
 
+function Test-HasBom {
+    param([byte[]]$Bytes)
+    if ($null -eq $Bytes -or $Bytes.Length -lt 2) { return $false }
+    if ($Bytes.Length -ge 3 -and $Bytes[0] -eq 0xEF -and $Bytes[1] -eq 0xBB -and $Bytes[2] -eq 0xBF) {
+        return $true
+    }
+    if ($Bytes[0] -eq 0xFF -and $Bytes[1] -eq 0xFE) { return $true }
+    if ($Bytes[0] -eq 0xFE -and $Bytes[1] -eq 0xFF) { return $true }
+    return $false
+}
+
+function Get-StrictUtf8String {
+    param([byte[]]$Bytes)
+    $utf8Strict = New-Object System.Text.UTF8Encoding($false, $true)
+    return $utf8Strict.GetString($Bytes)
+}
+
 $script:AcceptedCompanionPins = @{
     'movement-v1' = [pscustomobject]@{
         Id = 'movement-v1'
@@ -126,8 +163,10 @@ $script:AcceptedCompanionPins = @{
         RelativePath = 'tests/v5-golden/movement-v1.json'
         IdentityKind = 'schema'
         ExpectedIdentityValue = 'v5-movement-golden-v1'
-        Sha256Lf = 'C2D5469E6C532476E5DA48C4478E7C080A401B7F2F41F095B7A8B880AB6C7C13'
+        Sha256RawLf = 'C2D5469E6C532476E5DA48C4478E7C080A401B7F2F41F095B7A8B880AB6C7C13'
         Sha256RawCrlf = '5927F44A650DB963813C352B9786147A5953772862CA33722FDD9CE3E17FA3C5'
+        BytesLf = 1278595
+        BytesCrlf = 1331161
         FreezeCommit = 'fdd0287b415db3438b23694bb35e4b72d76d50aa'
         GitBlob = '25331005f30edfb2870cba8ee4a1b582400f346b'
         Generator = 'engine/src/test/kotlin/com/majiang/model/V5TileMovementGoldenExporterTest.kt'
@@ -152,8 +191,10 @@ $script:AcceptedCompanionPins = @{
         RelativePath = 'tests/v5-golden/shuffle-reversed-v1.json'
         IdentityKind = 'schema'
         ExpectedIdentityValue = 'v5-shuffle-reversed-golden-v1'
-        Sha256Lf = '5A5EA43F774E8341D740E6B5840AAFD4B671AEDFF9830D59DA161D758C14B619'
+        Sha256RawLf = '5A5EA43F774E8341D740E6B5840AAFD4B671AEDFF9830D59DA161D758C14B619'
         Sha256RawCrlf = '81D21F0A0C0C6FDA6EFFB029364D5BC8F4EE30C84F1431246FDD9DB5309F5902'
+        BytesLf = 75847
+        BytesCrlf = 77359
         FreezeCommit = '8734494936aad0d451511156a454b989d508468b'
         GitBlob = '16ae21dafdf487707bf8f4064a879de22779654f'
         Generator = 'engine/src/test/kotlin/com/majiang/v3/V5ShuffleReversedGoldenExporterTest.kt'
@@ -169,8 +210,10 @@ $script:AcceptedCompanionPins = @{
         RelativePath = 'tests/v5-golden/visibility-v1.json'
         IdentityKind = 'schema'
         ExpectedIdentityValue = 'v5-visibility-golden-v1'
-        Sha256Lf = '30291EC270EFB6F2A7D8C6984D53E7AE2DBD5AE45A41A7114EE69288749F346E'
+        Sha256RawLf = '30291EC270EFB6F2A7D8C6984D53E7AE2DBD5AE45A41A7114EE69288749F346E'
         Sha256RawCrlf = '6506C0729A36E4625E157A5E6EA2CCB79B9C2FF2E4F3F57988BBB9535CC52B94'
+        BytesLf = 141007
+        BytesCrlf = 147185
         FreezeCommit = '4086bf3db898d65b9e2119df3247a9beb89ba121'
         GitBlob = 'eddcc00035978be64bca27efc27ec352ce686bf5'
         Generator = 'engine/src/test/kotlin/com/majiang/projection/V5VisibilityGoldenExporterTest.kt'
@@ -192,8 +235,10 @@ $script:AcceptedCompanionPins = @{
         RelativePath = 'tests/v5-golden/ai-discard-flags-v1.json'
         IdentityKind = 'fixture'
         ExpectedIdentityValue = 'ai-discard-flags-v1'
-        Sha256Lf = '448BAB14DEF9809DBDCC4BE1148CD53370FEE1A44541535794AC7DFBE5B5CBE8'
+        Sha256RawLf = '448BAB14DEF9809DBDCC4BE1148CD53370FEE1A44541535794AC7DFBE5B5CBE8'
         Sha256RawCrlf = 'DB1A872F324A8FB994020FB90700E5F64E4E90ECAA63E1CB3FC3A660CAE10AEE'
+        BytesLf = 14480
+        BytesCrlf = 14984
         FreezeCommit = 'daa834a45fb651b786fc4f13a3d1edfc4d8d4a39'
         GitBlob = 'ef329f5562b47e6e1f9304f247d7a3bb36cf7125'
         Generator = 'engine/src/test/kotlin/com/majiang/state/V5AiDiscardFlagsGoldenExporterTest.kt'
@@ -218,7 +263,7 @@ foreach ($fixtureKey in @('movement-v1', 'shuffle-reversed-v1', 'visibility-v1',
     $filePath = Join-Path $resolvedFixtureDir $pin.FileName
 
     if (-not (Test-IsInsideRepo $filePath)) {
-        Add-Failure 'PATH_ESCAPE_DETECTED' ("{0}: File path '{1}' escapes RepoRoot '{2}'" -f $pin.Id, $filePath, $canonicalRepoRoot)
+        Add-Failure 'PATH_ESCAPE_DETECTED' ("{0}: File path '{1}' escapes RepoRoot '{2}' (reparse points or out-of-boundary paths forbidden)" -f $pin.Id, $filePath, $canonicalRepoRoot)
         continue
     }
 
@@ -227,20 +272,45 @@ foreach ($fixtureKey in @('movement-v1', 'shuffle-reversed-v1', 'visibility-v1',
         continue
     }
 
-    $fileItem = Get-Item -LiteralPath $filePath
-    if ($fileItem.Length -le 0) {
+    $rawBytes = $null
+    try {
+        $rawBytes = [System.IO.File]::ReadAllBytes($filePath)
+    } catch {
+        Add-Failure 'FIXTURE_READ_ERROR' ("{0}: Failed to read raw bytes from '{1}': {2}" -f $pin.Id, $filePath, $_.Exception.Message)
+        continue
+    }
+
+    if ($null -eq $rawBytes -or $rawBytes.Length -eq 0) {
         Add-Failure 'FIXTURE_EMPTY' ("{0}: File size is 0 bytes" -f $pin.Id)
         continue
     }
 
-    if (-not $SkipHashCheck) {
-        $actualShaLf = Get-Sha256Lf $filePath
-        if ($actualShaLf -cne $pin.Sha256Lf) {
-            Add-Failure 'HASH_MISMATCH' ("{0}: LF-normalized SHA-256 mismatch. Expected '{1}', got '{2}'" -f $pin.Id, $pin.Sha256Lf, $actualShaLf)
+    if (Test-HasBom $rawBytes) {
+        Add-Failure 'INVALID_ENCODING' ("{0}: File contains Byte Order Mark (BOM). Golden fixtures must be pure BOM-less UTF-8." -f $pin.Id)
+    }
+
+    if (-not $InternalStructureTestMode) {
+        $actualRawSha = Get-Sha256Raw $filePath
+        $matchedProfile = $null
+        if ($actualRawSha -ceq $pin.Sha256RawLf -and $rawBytes.Length -eq $pin.BytesLf) {
+            $matchedProfile = 'LF'
+        } elseif ($actualRawSha -ceq $pin.Sha256RawCrlf -and $rawBytes.Length -eq $pin.BytesCrlf) {
+            $matchedProfile = 'CRLF'
+        }
+
+        if ($null -eq $matchedProfile) {
+            Add-Failure 'HASH_MISMATCH' ("{0}: raw bytes SHA-256 or length does not match accepted LF or CRLF profiles (actual: SHA={1}, bytes={2}; expected LF=(SHA {3}, {4}B) or CRLF=(SHA {5}, {6}B))" -f $pin.Id, $actualRawSha, $rawBytes.Length, $pin.Sha256RawLf, $pin.BytesLf, $pin.Sha256RawCrlf, $pin.BytesCrlf)
         }
     }
 
-    $rawText = [System.IO.File]::ReadAllText($filePath, [System.Text.Encoding]::UTF8)
+    $rawText = $null
+    try {
+        $rawText = Get-StrictUtf8String $rawBytes
+    } catch {
+        Add-Failure 'INVALID_ENCODING' ("{0}: File content is not valid UTF-8: {1}" -f $pin.Id, $_.Exception.Message)
+        continue
+    }
+
     $json = $null
     try {
         $json = $rawText | ConvertFrom-Json
@@ -417,6 +487,27 @@ foreach ($fixtureKey in @('movement-v1', 'shuffle-reversed-v1', 'visibility-v1',
                 Add-Failure 'WALL_SIZE_INVALID' ("shuffle-reversed-v1: case '{0}' walls must contain exactly 136 tiles (got threeCasterWall={1}, reversedWall={2})" -f $cid, $w3Len, $wrLen)
                 break
             }
+            # Conservation check: exactly 136 unique physical entities (0..135)
+            $seenW3 = @{}
+            $hasDupW3 = $false
+            foreach ($t in @($w3)) {
+                if ($seenW3.ContainsKey($t)) { $hasDupW3 = $true; break }
+                $seenW3[$t] = $true
+            }
+            if ($hasDupW3 -or $seenW3.Count -ne 136) {
+                Add-Failure 'WALL_CONSERVATION_INVALID' ("shuffle-reversed-v1: case '{0}' threeCasterWall contains duplicate tiles, violating 136-tile physical conservation" -f $cid)
+                break
+            }
+            $seenWr = @{}
+            $hasDupWr = $false
+            foreach ($t in @($wr)) {
+                if ($seenWr.ContainsKey($t)) { $hasDupWr = $true; break }
+                $seenWr[$t] = $true
+            }
+            if ($hasDupWr -or $seenWr.Count -ne 136) {
+                Add-Failure 'WALL_CONSERVATION_INVALID' ("shuffle-reversed-v1: case '{0}' reversedWall contains duplicate tiles, violating 136-tile physical conservation" -f $cid)
+                break
+            }
         }
     }
     elseif ($pin.Id -eq 'visibility-v1') {
@@ -446,31 +537,48 @@ foreach ($fixtureKey in @('movement-v1', 'shuffle-reversed-v1', 'visibility-v1',
     }
 
     if ($VerifyGitPins) {
-        $gitCmd = Get-Command 'git' -ErrorAction SilentlyContinue
-        if ($null -eq $gitCmd) {
-            Add-Failure 'GIT_NOT_FOUND' "Git executable is not available for -VerifyGitPins"
-        }
-        else {
-            $gitRef = ("{0}:{1}" -f $pin.FreezeCommit, $pin.RelativePath)
+        $gitRef = ("{0}:{1}" -f $pin.FreezeCommit, $pin.RelativePath)
+        try {
             $gitOut = & git -C $canonicalRepoRoot rev-parse $gitRef 2>&1
             if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($gitOut)) {
-                Add-Failure 'GIT_PIN_MISMATCH' ("{0}: git rev-parse failed for '{1}': {2}" -f $pin.Id, $gitRef, $gitOut)
+                Add-Failure 'GIT_PIN_MISMATCH' ("{0}: git rev-parse failed for '{1}': {2}" -f $pin.Id, $gitRef, ($gitOut -join ' '))
             }
             else {
-                $actualBlob = $gitOut.Trim()
+                $actualBlob = ($gitOut | Select-Object -First 1).Trim()
                 if ($actualBlob -cne $pin.GitBlob) {
                     Add-Failure 'GIT_PIN_MISMATCH' ("{0}: git blob mismatch. Expected '{1}', got '{2}' at commit {3}" -f $pin.Id, $pin.GitBlob, $actualBlob, $pin.FreezeCommit)
                 }
             }
         }
+        catch {
+            Add-Failure 'GIT_PIN_MISMATCH' ("{0}: git execution exception for '{1}': {2}" -f $pin.Id, $gitRef, $_.Exception.Message)
+        }
     }
 }
 
 $outputLines = @()
+if ($InternalStructureTestMode) {
+    $outputLines += ("# V5 Companion Golden Fixtures - Internal Structure Test Mode - {0}" -f (Get-Date -Format 'o'))
+    $outputLines += ("RepoRoot: {0}" -f $canonicalRepoRoot)
+    $outputLines += ("FixtureDir: {0}" -f $resolvedFixtureDir)
+    if ($script:Failures.Count -gt 0) {
+        $outputLines += ""
+        $outputLines += ("[STRUCTURE_TEST_MODE] FAIL: {0} failure(s) detected:" -f $script:Failures.Count)
+        foreach ($err in $script:Failures) {
+            $outputLines += ("  - {0}" -f $err)
+        }
+        Write-Output ($outputLines -join "`n")
+        exit 1
+    }
+    $outputLines += ""
+    $outputLines += "[STRUCTURE_TEST_MODE] PASS: 4/4 companion golden fixtures structural invariants verified."
+    Write-Output ($outputLines -join "`n")
+    exit 0
+}
+
 $outputLines += ("# V5 Companion Golden Fixtures Verification - {0}" -f (Get-Date -Format 'o'))
 $outputLines += ("RepoRoot: {0}" -f $canonicalRepoRoot)
 $outputLines += ("FixtureDir: {0}" -f $resolvedFixtureDir)
-$outputLines += ("SkipHashCheck: {0}" -f [bool]$SkipHashCheck)
 $outputLines += ("VerifyGitPins: {0}" -f [bool]$VerifyGitPins)
 
 if ($script:Failures.Count -gt 0) {
@@ -479,11 +587,7 @@ if ($script:Failures.Count -gt 0) {
     foreach ($err in $script:Failures) {
         $outputLines += ("  - {0}" -f $err)
     }
-    $outputText = $outputLines -join "`n"
-    Write-Output $outputText
-    if (-not [string]::IsNullOrWhiteSpace($LogPath)) {
-        [System.IO.File]::WriteAllText($LogPath, $outputText, (New-Object System.Text.UTF8Encoding($false)))
-    }
+    Write-Output ($outputLines -join "`n")
     exit 1
 }
 
@@ -497,9 +601,5 @@ if ($VerifyGitPins) {
     $outputLines += "All 4 historical freeze commit git blobs verified equal to pinned hashes."
 }
 
-$outputText = $outputLines -join "`n"
-Write-Output $outputText
-if (-not [string]::IsNullOrWhiteSpace($LogPath)) {
-    [System.IO.File]::WriteAllText($LogPath, $outputText, (New-Object System.Text.UTF8Encoding($false)))
-}
+Write-Output ($outputLines -join "`n")
 exit 0
