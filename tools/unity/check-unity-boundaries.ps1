@@ -12,6 +12,7 @@ param(
     [string]$Policy = 'tools/unity/p42-boundary-policy.json',
     [string]$Report = 'build/p42/boundary-report.json',
     [switch]$TestNegativeMatrix,
+    [switch]$GetNegativeMatrixCount,
     [switch]$StrictCompiled
 )
 
@@ -616,8 +617,153 @@ class Program
     return $errors
 }
 
+function Get-NegativeCases() {
+    return @(
+        @{
+            Name = "Case01: Self-loop"
+            ExpectedCategory = "asmdef_dag"
+            Mutate = {
+                param($p)
+                $file = Join-Path $p "Assets/Scripts/UI/Mahjong.Unity.UI.asmdef"
+                $json = Get-Content $file -Raw | ConvertFrom-Json
+                $json.references = @($json.references) + "Mahjong.Unity.UI"
+                $json | ConvertTo-Json -Depth 10 | Set-Content $file -Encoding utf8
+            }
+        },
+        @{
+            Name = "Case02: 2-node cycle (App <-> UI)"
+            ExpectedCategory = "asmdef_dag"
+            Mutate = {
+                param($p)
+                $file = Join-Path $p "Assets/Scripts/UI/Mahjong.Unity.UI.asmdef"
+                $json = Get-Content $file -Raw | ConvertFrom-Json
+                $json.references = @($json.references) + "Mahjong.Unity.App"
+                $json | ConvertTo-Json -Depth 10 | Set-Content $file -Encoding utf8
+            }
+        },
+        @{
+            Name = "Case03: 3-node cycle (App -> UI -> Platform -> App)"
+            ExpectedCategory = "asmdef_dag"
+            Mutate = {
+                param($p)
+                $fUi = Join-Path $p "Assets/Scripts/UI/Mahjong.Unity.UI.asmdef"
+                $jUi = Get-Content $fUi -Raw | ConvertFrom-Json
+                $jUi.references = @($jUi.references) + "Mahjong.Unity.Platform"
+                $jUi | ConvertTo-Json -Depth 10 | Set-Content $fUi -Encoding utf8
+
+                $fPl = Join-Path $p "Assets/Scripts/Platform/Mahjong.Unity.Platform.asmdef"
+                $jPl = Get-Content $fPl -Raw | ConvertFrom-Json
+                $jPl.references = @($jPl.references) + "Mahjong.Unity.App"
+                $jPl | ConvertTo-Json -Depth 10 | Set-Content $fPl -Encoding utf8
+            }
+        },
+        @{
+            Name = "Case04: Missing required reference in UI"
+            ExpectedCategory = "asmdef_dag"
+            Mutate = {
+                param($p)
+                $file = Join-Path $p "Assets/Scripts/UI/Mahjong.Unity.UI.asmdef"
+                $json = Get-Content $file -Raw | ConvertFrom-Json
+                $json.references = @($json.references | Where-Object { $_ -ne "Unity.TextMeshPro" })
+                $json | ConvertTo-Json -Depth 10 | Set-Content $file -Encoding utf8
+            }
+        },
+        @{
+            Name = "Case05: Extra prohibited reference in Platform"
+            ExpectedCategory = "asmdef_dag"
+            Mutate = {
+                param($p)
+                $file = Join-Path $p "Assets/Scripts/Platform/Mahjong.Unity.Platform.asmdef"
+                $json = Get-Content $file -Raw | ConvertFrom-Json
+                $json.references = @($json.references) + "UnityEngine.UI"
+                $json | ConvertTo-Json -Depth 10 | Set-Content $file -Encoding utf8
+            }
+        },
+        @{
+            Name = "Case06: Precompiled DLL in references"
+            ExpectedCategory = "asmdef_dag"
+            Mutate = {
+                param($p)
+                $file = Join-Path $p "Assets/Scripts/App/Mahjong.Unity.App.asmdef"
+                $json = Get-Content $file -Raw | ConvertFrom-Json
+                $json.references = @($json.references) + "Mahjong.Client.dll"
+                $json | ConvertTo-Json -Depth 10 | Set-Content $file -Encoding utf8
+            }
+        },
+        @{
+            Name = "Case07: Forbidden Domain DLL in precompiledReferences of UI"
+            ExpectedCategory = "asmdef_dag"
+            Mutate = {
+                param($p)
+                $file = Join-Path $p "Assets/Scripts/UI/Mahjong.Unity.UI.asmdef"
+                $json = Get-Content $file -Raw | ConvertFrom-Json
+                $json.precompiledReferences = @($json.precompiledReferences) + "Mahjong.Domain.dll"
+                $json | ConvertTo-Json -Depth 10 | Set-Content $file -Encoding utf8
+            }
+        },
+        @{
+            Name = "Case08: Missing precompiledReferences in App"
+            ExpectedCategory = "asmdef_dag"
+            Mutate = {
+                param($p)
+                $file = Join-Path $p "Assets/Scripts/App/Mahjong.Unity.App.asmdef"
+                $json = Get-Content $file -Raw | ConvertFrom-Json
+                $json.precompiledReferences = @($json.precompiledReferences | Where-Object { $_ -ne "Mahjong.Client.dll" })
+                $json | ConvertTo-Json -Depth 10 | Set-Content $file -Encoding utf8
+            }
+        },
+        @{
+            Name = "Case09: overrideReferences set to false"
+            ExpectedCategory = "asmdef_dag"
+            Mutate = {
+                param($p)
+                $file = Join-Path $p "Assets/Scripts/UI/Mahjong.Unity.UI.asmdef"
+                $json = Get-Content $file -Raw | ConvertFrom-Json
+                $json.overrideReferences = $false
+                $json | ConvertTo-Json -Depth 10 | Set-Content $file -Encoding utf8
+            }
+        },
+        @{
+            Name = "Case10: LocalHost namespace used in UI source"
+            ExpectedCategory = "source_reflection_scan"
+            Mutate = {
+                param($p)
+                $file = Join-Path $p "Assets/Scripts/UI/MenuPresenter.cs"
+                "using Mahjong.LocalHost;`n" + (Get-Content $file -Raw) | Set-Content $file -Encoding utf8
+            }
+        },
+        @{
+            Name = "Case11: Forbidden reflection API in App source"
+            ExpectedCategory = "source_reflection_scan"
+            Mutate = {
+                param($p)
+                $file = Join-Path $p "Assets/Scripts/App/SceneId.cs"
+                (Get-Content $file -Raw) + "`n// System.Reflection.Assembly.LoadFrom(`"bad.dll`");" | Set-Content $file -Encoding utf8
+            }
+        },
+        @{
+            Name = "Case12: Missing required plugin DLL in Mahjong plugins dir"
+            ExpectedCategory = "metadata_direct_refs"
+            Mutate = {
+                param($p)
+                $dll = Join-Path $p "Assets/Plugins/Mahjong/Mahjong.Client.dll"
+                if (Test-Path $dll) { Remove-Item -Force $dll }
+            }
+        },
+        @{
+            Name = "Case13: Strict mode with missing compiled assemblies directory"
+            ExpectedCategory = "metadata_direct_refs"
+            Strict = $true
+            Mutate = {
+                param($p)
+            }
+        }
+    )
+}
+
 function Run-NegativeMatrix() {
-    Write-Host "Running 11 negative boundary test cases..." -ForegroundColor Cyan
+    $cases = Get-NegativeCases
+    Write-Host "Running $($cases.Count) negative boundary test cases..." -ForegroundColor Cyan
     $buildDir = (Join-Path (Get-Location).Path "build")
     New-Item -ItemType Directory -Force -Path $buildDir | Out-Null
     $tempBase = Join-Path $buildDir ("p42-neg-" + [Guid]::NewGuid().ToString('N'))
@@ -642,148 +788,6 @@ function Run-NegativeMatrix() {
         if ($script:LastReportDetails.asmdef_dag -ne "PASS" -or $script:LastReportDetails.source_reflection_scan -ne "PASS" -or $script:LastReportDetails.metadata_direct_refs -ne "NOT_RUN") {
             throw "Negative matrix baseline fixture has unexpected status: dag=$($script:LastReportDetails.asmdef_dag), source=$($script:LastReportDetails.source_reflection_scan), meta=$($script:LastReportDetails.metadata_direct_refs)"
         }
-
-        $cases = @(
-            @{
-                Name = "Case01: Self-loop"
-                ExpectedCategory = "asmdef_dag"
-                Mutate = {
-                    param($p)
-                    $file = Join-Path $p "Assets/Scripts/UI/Mahjong.Unity.UI.asmdef"
-                    $json = Get-Content $file -Raw | ConvertFrom-Json
-                    $json.references = @($json.references) + "Mahjong.Unity.UI"
-                    $json | ConvertTo-Json -Depth 10 | Set-Content $file -Encoding utf8
-                }
-            },
-            @{
-                Name = "Case02: 2-node cycle (App <-> UI)"
-                ExpectedCategory = "asmdef_dag"
-                Mutate = {
-                    param($p)
-                    $file = Join-Path $p "Assets/Scripts/UI/Mahjong.Unity.UI.asmdef"
-                    $json = Get-Content $file -Raw | ConvertFrom-Json
-                    $json.references = @($json.references) + "Mahjong.Unity.App"
-                    $json | ConvertTo-Json -Depth 10 | Set-Content $file -Encoding utf8
-                }
-            },
-            @{
-                Name = "Case03: 3-node cycle (App -> UI -> Platform -> App)"
-                ExpectedCategory = "asmdef_dag"
-                Mutate = {
-                    param($p)
-                    $fUi = Join-Path $p "Assets/Scripts/UI/Mahjong.Unity.UI.asmdef"
-                    $jUi = Get-Content $fUi -Raw | ConvertFrom-Json
-                    $jUi.references = @($jUi.references) + "Mahjong.Unity.Platform"
-                    $jUi | ConvertTo-Json -Depth 10 | Set-Content $fUi -Encoding utf8
-
-                    $fPl = Join-Path $p "Assets/Scripts/Platform/Mahjong.Unity.Platform.asmdef"
-                    $jPl = Get-Content $fPl -Raw | ConvertFrom-Json
-                    $jPl.references = @($jPl.references) + "Mahjong.Unity.App"
-                    $jPl | ConvertTo-Json -Depth 10 | Set-Content $fPl -Encoding utf8
-                }
-            },
-            @{
-                Name = "Case04: Missing required reference in UI"
-                ExpectedCategory = "asmdef_dag"
-                Mutate = {
-                    param($p)
-                    $file = Join-Path $p "Assets/Scripts/UI/Mahjong.Unity.UI.asmdef"
-                    $json = Get-Content $file -Raw | ConvertFrom-Json
-                    $json.references = @($json.references | Where-Object { $_ -ne "Unity.TextMeshPro" })
-                    $json | ConvertTo-Json -Depth 10 | Set-Content $file -Encoding utf8
-                }
-            },
-            @{
-                Name = "Case05: Extra prohibited reference in Platform"
-                ExpectedCategory = "asmdef_dag"
-                Mutate = {
-                    param($p)
-                    $file = Join-Path $p "Assets/Scripts/Platform/Mahjong.Unity.Platform.asmdef"
-                    $json = Get-Content $file -Raw | ConvertFrom-Json
-                    $json.references = @($json.references) + "UnityEngine.UI"
-                    $json | ConvertTo-Json -Depth 10 | Set-Content $file -Encoding utf8
-                }
-            },
-            @{
-                Name = "Case06: Precompiled DLL in references"
-                ExpectedCategory = "asmdef_dag"
-                Mutate = {
-                    param($p)
-                    $file = Join-Path $p "Assets/Scripts/App/Mahjong.Unity.App.asmdef"
-                    $json = Get-Content $file -Raw | ConvertFrom-Json
-                    $json.references = @($json.references) + "Mahjong.Client.dll"
-                    $json | ConvertTo-Json -Depth 10 | Set-Content $file -Encoding utf8
-                }
-            },
-            @{
-                Name = "Case07: Forbidden Domain DLL in precompiledReferences of UI"
-                ExpectedCategory = "asmdef_dag"
-                Mutate = {
-                    param($p)
-                    $file = Join-Path $p "Assets/Scripts/UI/Mahjong.Unity.UI.asmdef"
-                    $json = Get-Content $file -Raw | ConvertFrom-Json
-                    $json.precompiledReferences = @($json.precompiledReferences) + "Mahjong.Domain.dll"
-                    $json | ConvertTo-Json -Depth 10 | Set-Content $file -Encoding utf8
-                }
-            },
-            @{
-                Name = "Case08: Missing precompiledReferences in App"
-                ExpectedCategory = "asmdef_dag"
-                Mutate = {
-                    param($p)
-                    $file = Join-Path $p "Assets/Scripts/App/Mahjong.Unity.App.asmdef"
-                    $json = Get-Content $file -Raw | ConvertFrom-Json
-                    $json.precompiledReferences = @($json.precompiledReferences | Where-Object { $_ -ne "Mahjong.Client.dll" })
-                    $json | ConvertTo-Json -Depth 10 | Set-Content $file -Encoding utf8
-                }
-            },
-            @{
-                Name = "Case09: overrideReferences set to false"
-                ExpectedCategory = "asmdef_dag"
-                Mutate = {
-                    param($p)
-                    $file = Join-Path $p "Assets/Scripts/UI/Mahjong.Unity.UI.asmdef"
-                    $json = Get-Content $file -Raw | ConvertFrom-Json
-                    $json.overrideReferences = $false
-                    $json | ConvertTo-Json -Depth 10 | Set-Content $file -Encoding utf8
-                }
-            },
-            @{
-                Name = "Case10: LocalHost namespace used in UI source"
-                ExpectedCategory = "source_reflection_scan"
-                Mutate = {
-                    param($p)
-                    $file = Join-Path $p "Assets/Scripts/UI/MenuPresenter.cs"
-                    "using Mahjong.LocalHost;`n" + (Get-Content $file -Raw) | Set-Content $file -Encoding utf8
-                }
-            },
-            @{
-                Name = "Case11: Forbidden reflection API in App source"
-                ExpectedCategory = "source_reflection_scan"
-                Mutate = {
-                    param($p)
-                    $file = Join-Path $p "Assets/Scripts/App/SceneId.cs"
-                    (Get-Content $file -Raw) + "`n// System.Reflection.Assembly.LoadFrom(`"bad.dll`");" | Set-Content $file -Encoding utf8
-                }
-            },
-            @{
-                Name = "Case12: Missing required plugin DLL in Mahjong plugins dir"
-                ExpectedCategory = "metadata_direct_refs"
-                Mutate = {
-                    param($p)
-                    $dll = Join-Path $p "Assets/Plugins/Mahjong/Mahjong.Client.dll"
-                    if (Test-Path $dll) { Remove-Item -Force $dll }
-                }
-            },
-            @{
-                Name = "Case13: Strict mode with missing compiled assemblies directory"
-                ExpectedCategory = "metadata_direct_refs"
-                Strict = $true
-                Mutate = {
-                    param($p)
-                }
-            }
-        )
 
         $passCount = 0
         $failedCount = 0
@@ -822,6 +826,12 @@ function Run-NegativeMatrix() {
 }
 
 # Execution Entry Point
+if ($GetNegativeMatrixCount) {
+    $cases = Get-NegativeCases
+    Write-Output $cases.Count
+    exit 0
+}
+
 if ($TestNegativeMatrix) {
     Run-NegativeMatrix
     exit 0

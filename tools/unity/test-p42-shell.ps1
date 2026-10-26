@@ -60,14 +60,17 @@ if ($LASTEXITCODE -ne 0) {
 $results.BoundaryCheck = "PASS"
 Write-Host "Boundary check: PASS"
 
-Write-Host "`n[STEP 2/5] Running Boundary Negative Mutation Matrix (11 cases)..."
+$negCount = (& powershell.exe -ExecutionPolicy Bypass -File $boundaryScript -GetNegativeMatrixCount).Trim()
+Write-Host "`n[STEP 2/5] Running Boundary Negative Mutation Matrix ($negCount cases)..."
 $bNegOut = & powershell.exe -ExecutionPolicy Bypass -File $boundaryScript -TestNegativeMatrix
 if ($LASTEXITCODE -ne 0) {
     Write-Host $bNegOut
     throw "Boundary negative matrix FAILED (ExitCode: $LASTEXITCODE)"
 }
-$results.BoundaryNegativeMatrix = "PASS (11/11 blocked)"
-Write-Host "Boundary negative matrix: PASS"
+$passMatch = $bNegOut | Where-Object { $_ -match "All (\d+) negative test cases passed" }
+$actualCount = if ($passMatch -match "All (\d+) negative test cases passed") { $matches[1] } else { $negCount }
+$results.BoundaryNegativeMatrix = "PASS ($actualCount/$actualCount blocked)"
+Write-Host "Boundary negative matrix: PASS ($actualCount/$actualCount blocked)"
 
 # 2. EditMode tests
 Write-Host "`n[STEP 3/5] Running Unity EditMode Tests..."

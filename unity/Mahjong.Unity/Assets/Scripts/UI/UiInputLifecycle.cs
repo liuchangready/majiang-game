@@ -77,6 +77,8 @@ namespace Mahjong.Unity.UI
                 _primaryPointerId = null;
                 _armedTarget = null;
                 _releasedTarget = null;
+                _isPointerClick = false;
+                _pointerClickTarget = null;
                 return;
             }
             _submitPermit = true;
@@ -88,6 +90,8 @@ namespace Mahjong.Unity.UI
             _primaryPointerId = null;
             _armedTarget = null;
             _releasedTarget = null;
+            _isPointerClick = false;
+            _pointerClickTarget = null;
         }
 
         public void NotifyPointerClick(GameObject? target = null)
@@ -252,6 +256,20 @@ namespace Mahjong.Unity.UI
                 return false;
             }
 
+            // Real submit invocation via OnSubmit is always accepted even across consecutive frames
+            if (IsInvokedBySubmit())
+            {
+                _earlySubmitTarget = caller;
+                _consumedSubmitTarget = caller;
+                _isPointerClick = false;
+                _pointerClickTarget = null;
+                if (_pointerState == PointerCycleState.Cancelled)
+                {
+                    _pointerState = PointerCycleState.Idle;
+                }
+                return true;
+            }
+
             if (_pointerState == PointerCycleState.Released)
             {
                 bool match = _releasedTarget == null || caller == null || ReferenceEquals(_releasedTarget, caller);
@@ -280,14 +298,6 @@ namespace Mahjong.Unity.UI
             if (_pointerState == PointerCycleState.Armed || _pointerState == PointerCycleState.Consumed || _pointerState == PointerCycleState.Cancelled)
             {
                 return false;
-            }
-
-            // Real submit invocation via OnSubmit is always accepted even across consecutive frames
-            if (IsInvokedBySubmit())
-            {
-                _earlySubmitTarget = caller;
-                _consumedSubmitTarget = caller;
-                return true;
             }
 
             if (_consumedSubmitTarget != null && (caller == null || ReferenceEquals(_consumedSubmitTarget, caller)))
@@ -338,6 +348,10 @@ namespace Mahjong.Unity.UI
         public void OnResume()
         {
             _isPaused = false;
+            if (_pointerState == PointerCycleState.Cancelled)
+            {
+                _pointerState = PointerCycleState.Idle;
+            }
         }
 
         public void OnTransition()
@@ -371,6 +385,10 @@ namespace Mahjong.Unity.UI
         public void OnFocusGained()
         {
             _isFocusLost = false;
+            if (_pointerState == PointerCycleState.Cancelled)
+            {
+                _pointerState = PointerCycleState.Idle;
+            }
         }
     }
 }

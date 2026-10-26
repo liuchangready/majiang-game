@@ -5,6 +5,7 @@ using NUnit.Framework;
 using UnityEngine;
 using UnityEngine.EventSystems;
 using UnityEngine.TestTools;
+using UnityEngine.UI;
 using Mahjong.Unity.App;
 using Mahjong.Unity.UI;
 
@@ -225,6 +226,85 @@ namespace Mahjong.Unity.Tests.PlayMode
             UiInputLifecycle.Instance.OnResume();
             ExecuteEvents.Execute(target, new BaseEventData(EventSystem.current), ExecuteEvents.submitHandler);
             Assert.AreEqual(1, nav.Plays, "Submit after resume must succeed.");
+        }
+
+        [UnityTest]
+        public IEnumerator ButtonBeforeTriggerTailThenSubmit() => RunOrderScenario(false, "tail");
+
+        [UnityTest]
+        public IEnumerator TriggerBeforeButtonTailThenSubmit() => RunOrderScenario(true, "tail");
+
+        [UnityTest]
+        public IEnumerator ButtonBeforeTriggerCancelledPauseThenSubmit() => RunOrderScenario(false, "pause");
+
+        [UnityTest]
+        public IEnumerator TriggerBeforeButtonCancelledPauseThenSubmit() => RunOrderScenario(true, "pause");
+
+        [UnityTest]
+        public IEnumerator ButtonBeforeTriggerCancelledFocusThenSubmit() => RunOrderScenario(false, "focus");
+
+        [UnityTest]
+        public IEnumerator TriggerBeforeButtonCancelledFocusThenSubmit() => RunOrderScenario(true, "focus");
+
+        private IEnumerator RunOrderScenario(bool triggerFirst, string mode)
+        {
+            var root = AppRoot.EnsureInitialized(new AppConfig());
+            var load = root.Router.LoadAsync(SceneId.Menu);
+            while (!load.IsCompleted) yield return null;
+            Assert.IsTrue(load.Result);
+            yield return null;
+
+            UiInputLifecycle.ResetForTest();
+            var nav = new TestNav();
+            Object.FindFirstObjectByType<MenuPresenter>().Initialize(nav);
+            var target = GameObject.Find("PlayButton");
+
+            if (!triggerFirst)
+            {
+                Object.DestroyImmediate(target.GetComponent<UiPointerLifecycleTrigger>());
+                target.AddComponent<UiPointerLifecycleTrigger>();
+            }
+
+            var components = target.GetComponents<Component>();
+            int triggerIndex = System.Array.FindIndex(components, c => c is UiPointerLifecycleTrigger);
+            int buttonIndex = System.Array.FindIndex(components, c => c is Button);
+            Assert.AreEqual(triggerFirst, triggerIndex < buttonIndex, "Must exercise the stated real component order");
+
+            var pointer = new PointerEventData(EventSystem.current) { pointerId = -1, button = PointerEventData.InputButton.Left, eligibleForClick = true };
+            int expected;
+            if (mode == "tail")
+            {
+                ExecuteEvents.Execute(target, new BaseEventData(EventSystem.current), ExecuteEvents.submitHandler);
+                Assert.AreEqual(1, nav.Plays);
+                yield return null;
+
+                ExecuteEvents.Execute(target, pointer, ExecuteEvents.pointerClickHandler);
+                Assert.AreEqual(1, nav.Plays, "Stale click must remain rejected");
+                expected = 2;
+            }
+            else
+            {
+                ExecuteEvents.Execute(target, pointer, ExecuteEvents.pointerDownHandler);
+                Assert.IsTrue(UiInputLifecycle.Instance.IsArmed);
+
+                if (mode == "pause")
+                {
+                    UiInputLifecycle.Instance.OnPause();
+                    UiInputLifecycle.Instance.OnResume();
+                }
+                else
+                {
+                    UiInputLifecycle.Instance.OnFocusLost();
+                    UiInputLifecycle.Instance.OnFocusGained();
+                }
+
+                Assert.IsFalse(UiInputLifecycle.Instance.IsArmed);
+                expected = 1;
+            }
+
+            yield return null;
+            ExecuteEvents.Execute(target, new BaseEventData(EventSystem.current), ExecuteEvents.submitHandler);
+            Assert.AreEqual(expected, nav.Plays, "First fresh real Submit must succeed after " + mode + " recovery, independent of component order");
         }
     }
 }
