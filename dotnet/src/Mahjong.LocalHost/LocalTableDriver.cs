@@ -163,11 +163,18 @@ namespace Mahjong.LocalHost
                     {
                         return;
                     }
-
-                    var candidates = new List<LegalActionOption>(hand.Count);
-                    for (int i = 0; i < hand.Count; i++)
+                    IReadOnlyList<LegalActionOption> legal = _actor.GetPendingDecisionCandidates(seat);
+                    var candidates = new List<LegalActionOption>();
+                    if (legal.Count > 0)
                     {
-                        candidates.Add(new LegalActionOption(LegalActionKind.Discard, seat, hand[i]));
+                        candidates.AddRange(legal);
+                    }
+                    else
+                    {
+                        for (int i = 0; i < hand.Count; i++)
+                        {
+                            candidates.Add(new LegalActionOption(LegalActionKind.Discard, seat, hand[i]));
+                        }
                     }
 
                     bool opened = await OpenDecisionAsync(snapshot, seat, candidates, hand[hand.Count - 1])
@@ -182,10 +189,17 @@ namespace Mahjong.LocalHost
                 case RoundPhase.ChankanWindow:
                     for (int responseSeat = 0; responseSeat <= 3; responseSeat++)
                     {
+                        IReadOnlyList<LegalActionOption> responseCandidates =
+                            _actor.GetPendingDecisionCandidates(responseSeat);
+                        if (responseCandidates.Count == 0)
+                        {
+                            responseCandidates = new[] { new LegalActionOption(LegalActionKind.Pass, responseSeat) };
+                        }
+
                         bool openedResponse = await OpenDecisionAsync(
                             snapshot,
                             responseSeat,
-                            new[] { new LegalActionOption(LegalActionKind.Pass, responseSeat) },
+                            responseCandidates,
                             null).ConfigureAwait(false);
                         if (openedResponse)
                         {
