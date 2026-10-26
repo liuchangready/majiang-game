@@ -158,6 +158,23 @@ namespace Mahjong.LocalHost.Tests
             Assert.True(fs.CopyAttempts >= 1, "copy attempts=" + fs.CopyAttempts);
             Assert.True(File.Exists(harness.SavePath));
             Assert.False(File.Exists(harness.BackupPath));
+            LocalTableStore reopened = await LocalTableStore.OpenAsync(
+                harness.Options,
+                harness.Clock,
+                null,
+                TestContext.Current.CancellationToken);
+            try
+            {
+                TableStateRow? row = await reopened.LoadStateAsync(
+                    P41Harness.RoomId,
+                    TestContext.Current.CancellationToken);
+                Assert.NotNull(row);
+                Assert.False(string.IsNullOrEmpty(row!.StateFingerprint.ToString()));
+            }
+            finally
+            {
+                reopened.Dispose();
+            }
         }
 
         [Fact]
