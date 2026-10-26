@@ -1,8 +1,8 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <!--
-    Independent P5.2 PostgreSQL test assembly. It is intentionally NOT added to
-    Mahjong.sln; the caller wires solution/CI serially. Every test requires a real
+    P5.2 PostgreSQL test assembly, registered in Mahjong.sln by caller integration.
+    Every test requires a real
     isolated PostgreSQL database: a missing MAHJONG_P52_TEST_POSTGRES fails the
     run instead of returning a fake green skip.
   -->

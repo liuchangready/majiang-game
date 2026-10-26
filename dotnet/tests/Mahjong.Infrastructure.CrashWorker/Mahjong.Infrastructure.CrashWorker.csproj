@@ -2,7 +2,7 @@
 
   <!--
     Test-only crash worker for P5.2. It is not a production entry point and is
-    not added to Mahjong.sln. The real verify wrapper runs writer -> immediate
+    registered in Mahjong.sln as a build-only helper. The wrapper runs writer -> immediate
     PostgreSQL restart -> reader.
   -->
   <PropertyGroup>

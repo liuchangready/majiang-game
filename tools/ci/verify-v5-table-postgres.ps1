@@ -28,11 +28,17 @@
 param(
     [ValidateSet('Debug', 'Release')]
     [string]$Configuration = 'Release',
-    [string]$DotnetPath = 'D:\Unity\dotnet\dotnet.exe',
+    [string]$DotnetPath,
     [int]$Port = 55592,
     [string]$Root,
     [string]$LogDir,
-    [string]$PgZipPath = 'D:\majiang-pg-tmp\cache\postgresql-16.10-1-windows-x64-binaries.zip'
+    [string]$PgZipPath,
+    # Caller integration: keep this table cluster alive while the existing lobby
+    # wrapper runs the unchanged auto-discovering verifier against BOTH stores.
+    [switch]$RunUnifiedVerification,
+    [string]$UnifiedLogDir,
+    [string]$LobbyRoot,
+    [int]$LobbyPort = 55593
 )
 
 $ErrorActionPreference = 'Stop'
@@ -261,13 +267,23 @@ function Initialize-Cluster {
     Assert-OwnedCluster | Out-Null
 
     if (-not (Test-Path -LiteralPath $script:PgCtl)) {
-        if (-not (Test-Path -LiteralPath $PgZipPath)) {
-            throw "BLOCKED: PostgreSQL binaries and cached zip are missing ($PgZipPath)."
-        }
         $downloadDir = Join-Path $Root 'download'
         New-Item -ItemType Directory -Path $downloadDir -Force | Out-Null
         $zipCopy = Join-Path $downloadDir 'postgresql-binaries.zip'
-        Copy-Item -LiteralPath $PgZipPath -Destination $zipCopy -Force
+        if ($PgZipPath) {
+            Copy-Item -LiteralPath $PgZipPath -Destination $zipCopy -Force
+        }
+        elseif (Test-Path -LiteralPath 'D:\majiang-pg-tmp\cache\postgresql-16.10-1-windows-x64-binaries.zip') {
+            Copy-Item -LiteralPath 'D:\majiang-pg-tmp\cache\postgresql-16.10-1-windows-x64-binaries.zip' -Destination $zipCopy
+        }
+        else {
+            $downloadCode = Invoke-Native -FilePath 'curl.exe' -Arguments @(
+                '-L', '--fail', '--silent', '--show-error', '--max-time', '300',
+                '-o', $zipCopy,
+                'https://get.enterprisedb.com/postgresql/postgresql-16.10-1-windows-x64-binaries.zip'
+            ) -LogPath (Join-Path $LogDir 'download.log') -TimeoutSeconds 320
+            if ($downloadCode -ne 0) { throw "PostgreSQL download failed with exit $downloadCode." }
+        }
         $hash = Get-Sha256 $zipCopy
         if ($hash -ne $script:PgZipSha256) {
             throw "BLOCKED: PostgreSQL zip SHA-256 mismatch. Expected $($script:PgZipSha256), got $hash."
@@ -471,6 +487,18 @@ function Assert-XmlGatingSelfTest {
 try {
     New-Item -ItemType Directory -Path $LogDir -Force | Out-Null
     New-Item -ItemType Directory -Path (Join-Path $LogDir 'tmp') -Force | Out-Null
+    if (-not $DotnetPath) {
+        if ($env:DOTNET_ROOT -and (Test-Path -LiteralPath (Join-Path $env:DOTNET_ROOT 'dotnet.exe'))) {
+            $DotnetPath = Join-Path $env:DOTNET_ROOT 'dotnet.exe'
+        }
+        elseif (Get-Command dotnet -ErrorAction SilentlyContinue) {
+            $DotnetPath = (Get-Command dotnet).Source
+        }
+        elseif (Test-Path -LiteralPath 'D:\Unity\dotnet\dotnet.exe') {
+            $DotnetPath = 'D:\Unity\dotnet\dotnet.exe'
+        }
+    }
+    if (-not $DotnetPath) { throw 'BLOCKED: dotnet was not found in DOTNET_ROOT/PATH or the local SDK path.' }
     if (-not (Test-Path -LiteralPath $DotnetPath)) {
         Add-Stage 'guard-dotnet' 'BLOCKED' 2 "dotnet not found: $DotnetPath"
         $script:Exit = 2
@@ -637,6 +665,27 @@ try {
         throw "Restored database did not recover the committed event/receipt/outbox state."
     }
     Add-Stage 'backup-restore' 'PASS' 0 "pg_dump/pg_restore into empty DB; restored events=$restoredEvents; recovery ownerEpoch=$($restoreReader.recoveryOwnerEpoch)"
+
+    if ($RunUnifiedVerification) {
+        if (-not $UnifiedLogDir) { $UnifiedLogDir = Join-Path $LogDir 'unified' }
+        if (-not $LobbyRoot) {
+            $LobbyRoot = Join-Path $script:EnvSnapshot['TEMP'] ('mahjong-batch-lobby-' + [Guid]::NewGuid().ToString('N'))
+        }
+        # Tests start from the live owned database, not the backup restore copy.
+        $env:MAHJONG_P52_TEST_POSTGRES = $runtimeConnection
+        $env:MAHJONG_P52_TEST_POSTGRES_ADMIN = $adminConnection
+        $hostExe = [System.Diagnostics.Process]::GetCurrentProcess().MainModule.FileName
+        $unifiedCode = Invoke-Native -FilePath $hostExe -Arguments @(
+            '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File',
+            (Join-Path $script:RepoRoot 'tools/ci/verify-v5-postgres.ps1'),
+            '-Configuration', $Configuration, '-RunnerMode', 'direct',
+            '-DotnetPath', $DotnetPath, '-Root', $LobbyRoot, '-Port', "$LobbyPort",
+            '-PgZipPath', (Join-Path $Root 'download/postgresql-binaries.zip'),
+            '-LogDir', $UnifiedLogDir
+        ) -LogPath (Join-Path $LogDir 'unified.log') -TimeoutSeconds 1800
+        if ($unifiedCode -ne 0) { throw "Unified verification failed with exit $unifiedCode (see $UnifiedLogDir)." }
+        Add-Stage 'unified-verification' 'PASS' $unifiedCode 'unchanged verifier; real table and lobby PostgreSQL; project discovery and plugin copy enabled'
+    }
 
     Add-Stage 'result' 'PASS' 0 'all P5.2 real-PostgreSQL stages passed'
 }

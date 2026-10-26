@@ -10,7 +10,7 @@ using Xunit;
 namespace Mahjong.Architecture.Tests
 {
     /// <summary>
-    /// Accepted V5 I-5 / S-1 guard: exact project-declaration allowlist for the eight
+    /// Accepted V5 I-5 / S-1 guard: exact project-declaration allowlist for the nine
     /// real src projects plus an assembly-reference allowlist for the assemblies that
     /// were actually emitted by those projects.
     ///
@@ -25,7 +25,7 @@ namespace Mahjong.Architecture.Tests
     ///
     /// BCL and shared-framework references are classified, not rejected wholesale.
     /// Third-party references are always module-specific: only Wire/Client may emit
-    /// Google.Protobuf and only LobbyService may emit Npgsql.
+    /// Google.Protobuf; only LobbyService and Infrastructure may emit Npgsql.
     /// </summary>
     public sealed class DependencyDirectionTests
     {
@@ -36,6 +36,7 @@ namespace Mahjong.Architecture.Tests
             "Mahjong.Contracts",
             "Mahjong.Contracts.Wire",
             "Mahjong.Domain",
+            "Mahjong.Infrastructure",
             "Mahjong.LobbyService",
             "Mahjong.LocalHost",
             "Mahjong.TableRuntime"
@@ -44,16 +45,16 @@ namespace Mahjong.Architecture.Tests
         private static readonly string[] NoStrings = Array.Empty<string>();
 
         [Fact]
-        public void RepositoryHasExactlyEightProductionProjectsAndRules()
+        public void RepositoryHasExactlyNineProductionProjectsAndRules()
         {
             string root = FindRepositoryRoot();
             IReadOnlyList<ProjectGraph> projects = DiscoverProductionProjects(root);
 
-            Assert.True(projects.Count == 8, "Expected exactly 8 production projects under dotnet/src, found " + projects.Count + ".");
+            Assert.True(projects.Count == 9, "Expected exactly 9 production projects under dotnet/src, found " + projects.Count + ".");
             Assert.Equal(Sorted(ExpectedProjectNames), Sorted(projects.Select(project => project.Name)));
 
             IReadOnlyDictionary<string, ModuleRule> rules = BuildRules();
-            Assert.True(rules.Count == 8, "Expected exactly 8 module rules, found " + rules.Count + ".");
+            Assert.True(rules.Count == 9, "Expected exactly 9 module rules, found " + rules.Count + ".");
             Assert.Equal(Sorted(ExpectedProjectNames), Sorted(rules.Keys));
         }
 
@@ -84,7 +85,7 @@ namespace Mahjong.Architecture.Tests
                 assemblies.Add(rule.Name, ReadAssemblyGraph(rule.Name, path));
             }
 
-            Assert.True(assemblies.Count == 8, "Expected exactly 8 production assemblies, found " + assemblies.Count + ".");
+            Assert.True(assemblies.Count == 9, "Expected exactly 9 production assemblies, found " + assemblies.Count + ".");
             Assert.DoesNotContain("Mahjong.Architecture.Tests", assemblies.Keys);
 
             IReadOnlyList<DependencyDiagnostic> diagnostics =
@@ -309,6 +310,8 @@ namespace Mahjong.Architecture.Tests
         [InlineData("Mahjong.LocalHost", "Mahjong.Client")]
         [InlineData("Mahjong.LobbyService", "Mahjong.Domain")]
         [InlineData("Mahjong.LobbyService", "Mahjong.TableRuntime")]
+        [InlineData("Mahjong.Infrastructure", "Mahjong.Client")]
+        [InlineData("Mahjong.Domain", "Mahjong.Infrastructure")]
         public void ForbiddenProjectEdgesAreRejectedWithSpecificDiagnostics(string from, string to)
         {
             SyntheticGraph graph = CreateSyntheticGraph();
@@ -425,6 +428,8 @@ namespace Mahjong.Architecture.Tests
         [InlineData("Mahjong.LocalHost", "Mahjong.Client")]
         [InlineData("Mahjong.LobbyService", "Mahjong.TableRuntime")]
         [InlineData("Mahjong.TableRuntime", "Mahjong.Contracts.Wire")]
+        [InlineData("Mahjong.Infrastructure", "Mahjong.Client")]
+        [InlineData("Mahjong.Domain", "Mahjong.Infrastructure")]
         public void ForbiddenAssemblyMahjongReferencesAreRejectedWithSpecificDiagnostics(string from, string to)
         {
             SyntheticGraph graph = CreateSyntheticGraph();
@@ -476,6 +481,7 @@ namespace Mahjong.Architecture.Tests
         [InlineData("Mahjong.LobbyService", "MySql.Data")]
         [InlineData("Mahjong.Contracts.Wire", "Npgsql")]
         [InlineData("Mahjong.Domain", "Google.Protobuf")]
+        [InlineData("Mahjong.Infrastructure", "Google.Protobuf")]
         public void UnknownThirdPartyAssemblyReferenceIsRejected(string from, string to)
         {
             SyntheticGraph graph = CreateSyntheticGraph();
@@ -735,7 +741,18 @@ namespace Mahjong.Architecture.Tests
                     requiredMahjongAssemblyReferences: NoStrings,
                     allowedThirdPartyAssemblyReferences: new[] { "Npgsql" },
                     requiredThirdPartyAssemblyReferences: new[] { "Npgsql" },
-                    allowSharedFramework: true)
+                    allowSharedFramework: true),
+
+                ["Mahjong.Infrastructure"] = new ModuleRule(
+                    name: "Mahjong.Infrastructure",
+                    targetFramework: "net8.0",
+                    allowedProjectReferences: new[] { "Mahjong.Contracts", "Mahjong.Domain", "Mahjong.TableRuntime" },
+                    allowedPackages: new[] { "Npgsql" },
+                    buildOnlyPackages: NoStrings,
+                    allowedMahjongAssemblyReferences: new[] { "Mahjong.Ai", "Mahjong.Contracts", "Mahjong.Domain", "Mahjong.TableRuntime" },
+                    requiredMahjongAssemblyReferences: new[] { "Mahjong.Contracts", "Mahjong.Domain", "Mahjong.TableRuntime" },
+                    allowedThirdPartyAssemblyReferences: new[] { "Npgsql" },
+                    requiredThirdPartyAssemblyReferences: new[] { "Npgsql" })
             };
 
             return rules;
@@ -760,6 +777,11 @@ namespace Mahjong.Architecture.Tests
                 ["Mahjong.TableRuntime"] = Project("Mahjong.TableRuntime", "Mahjong.Ai", "Mahjong.Contracts", "Mahjong.Domain"),
                 ["Mahjong.Client"] = Project("Mahjong.Client", "Mahjong.Contracts", "Mahjong.Contracts.Wire"),
                 ["Mahjong.LocalHost"] = Project("Mahjong.LocalHost", "Mahjong.TableRuntime"),
+                ["Mahjong.Infrastructure"] = new ProjectGraph(
+                    "Mahjong.Infrastructure",
+                    "synthetic/Mahjong.Infrastructure.csproj",
+                    new[] { "Mahjong.Contracts", "Mahjong.Domain", "Mahjong.TableRuntime" },
+                    new[] { new PackageReferenceFact("Npgsql", "8.0.9", string.Empty) }),
                 ["Mahjong.LobbyService"] = new ProjectGraph(
                     "Mahjong.LobbyService",
                     "synthetic/Mahjong.LobbyService.csproj",
@@ -777,6 +799,8 @@ namespace Mahjong.Architecture.Tests
                 ["Mahjong.Client"] = Assembly("Mahjong.Client", "Google.Protobuf", "Mahjong.Contracts", "Mahjong.Contracts.Wire", "netstandard"),
                 // LocalHost has no source today, so its DLL does not emit the declared TableRuntime edge.
                 ["Mahjong.LocalHost"] = Assembly("Mahjong.LocalHost", "netstandard"),
+                ["Mahjong.Infrastructure"] = Assembly(
+                    "Mahjong.Infrastructure", "Mahjong.Contracts", "Mahjong.Domain", "Mahjong.TableRuntime", "Npgsql", "System.Runtime"),
                 // LobbyService declares Contracts but does not use its types, so that edge is not required at the assembly level.
                 ["Mahjong.LobbyService"] = Assembly(
                     "Mahjong.LobbyService",
@@ -1540,7 +1564,7 @@ namespace Mahjong.Architecture.Tests
                             DiagnosticCodes.ProjectUnknownMahjongReference,
                             rule.Name,
                             reference,
-                            "unknown Mahjong project reference (not one of the eight discovered projects)"));
+                            "unknown Mahjong project reference (not one of the nine discovered projects)"));
                         continue;
                     }
 
@@ -1566,7 +1590,7 @@ namespace Mahjong.Architecture.Tests
                             rule.Name,
                             declaration.RawInclude,
                             "resolved target '" + canonicalReference +
-                            "' is not one of the eight discovered project files; same-basename shadow targets are rejected"));
+                            "' is not one of the nine discovered project files; same-basename shadow targets are rejected"));
                         continue;
                     }
 
@@ -1650,7 +1674,7 @@ namespace Mahjong.Architecture.Tests
                         : DiagnosticCodes.ProjectNotInRuleTable,
                     projectName,
                     "(rules)",
-                    "project exists but is absent from the exact eight-module rule table"));
+                    "project exists but is absent from the exact nine-module rule table"));
             }
 
             return diagnostics;
@@ -1689,7 +1713,7 @@ namespace Mahjong.Architecture.Tests
                                 DiagnosticCodes.AssemblyUnknownMahjongReference,
                                 rule.Name,
                                 reference,
-                                "unknown Mahjong assembly reference (not one of the eight discovered projects)"));
+                                "unknown Mahjong assembly reference (not one of the nine discovered projects)"));
                         }
                         else if (!rule.AllowedMahjongAssemblyReferences.Contains(reference))
                         {
@@ -1757,7 +1781,7 @@ namespace Mahjong.Architecture.Tests
                         : DiagnosticCodes.AssemblyNotInRuleTable,
                     assemblyName,
                     "(rules)",
-                    "assembly was inspected but is absent from the exact eight-module rule table"));
+                    "assembly was inspected but is absent from the exact nine-module rule table"));
             }
 
             return diagnostics;
