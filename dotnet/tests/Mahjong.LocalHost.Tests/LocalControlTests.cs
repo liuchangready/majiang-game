@@ -44,6 +44,7 @@ namespace Mahjong.LocalHost.Tests
 
             RequestScopeId controlScope = default;
             RequestId lastControlRequest = default;
+            string lastControlDigest = string.Empty;
             try
             {
                 await WaitReadyAsync(session, pumpCts.Token);
@@ -57,6 +58,7 @@ namespace Mahjong.LocalHost.Tests
                         : CommandPayloadFactory.ReleaseControl(baseline.RoundId, epoch);
                     var controlRequest = new RequestId("control-" + i + "-" + Guid.NewGuid().ToString("N"));
                     controlScope = session.Binding!.Scope.ScopeId;
+                    lastControlDigest = CanonicalPayloadDigest.Compute(payload).ToHex();
                     lastControlRequest = controlRequest;
                     var command = new ProtocolCommand(
                         claim ? CommandKind.ClaimControl : CommandKind.ReleaseControl,
@@ -101,10 +103,13 @@ namespace Mahjong.LocalHost.Tests
             }
             using (LocalTableStore store = await LocalTableStore.OpenAsync(harness.Options, harness.Clock, null, ct))
             {
-                Assert.NotNull(store.GetControlResult(
+                LocalControlRecord? record = store.GetControlResult(
                     "local-" + P41Harness.RoomId + "-seat0",
                     controlScope,
-                    lastControlRequest));
+                    lastControlRequest);
+                Assert.NotNull(record);
+                Assert.Equal(lastControlDigest, record!.Digest);
+                Assert.Equal("ClaimControl", record.Kind);
             }
         }
 
