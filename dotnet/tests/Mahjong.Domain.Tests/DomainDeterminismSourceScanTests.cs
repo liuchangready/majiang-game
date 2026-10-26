@@ -203,7 +203,23 @@ namespace Mahjong.Domain.Tests
                 ("nested-lambda-block-string", "class P { string S = $\"{new Func<string>(() => { return \"DateTime.Now\"; })()}\"; object X() => Guid.NewGuid(); }", "Guid.NewGuid"),
                 ("multiline-hole-then-outer-guid", "class P\n{\n    string S = $\"{\n        Echo(\"DateTime.Now\")\n    }\";\n    object X() => Guid.NewGuid();\n}", "Guid.NewGuid"),
                 ("format-specifier-literal", "class P { string S = $\"{value:DateTime.Now}\"; }", ""),
-                ("hole-expression-not-scanned-boundary", "class P { string S = $\"{DateTime.Now}\"; }", "")
+                ("hole-expression-not-scanned-boundary", "class P { string S = $\"{DateTime.Now}\"; }", ""),
+                ("format-escaped-double-quote", "class P { string S = $\"{1:00\\\"DateTime.Now}\"; object X() => Guid.NewGuid(); }", "Guid.NewGuid"),
+                ("format-escaped-double-quote-no-api", "class P { string S = $\"{1:00\\\"DateTime.Now}\"; object X() => 0; }", ""),
+                ("format-paired-escaped-quotes", "class P { string S = $\"{DateTime.MinValue:yyyy-MM-dd\\\"T\\\"HH:mm:ss}\"; object X() => Guid.NewGuid(); }", "Guid.NewGuid"),
+                ("format-paired-escaped-quotes-no-api", "class P { string S = $\"{DateTime.MinValue:yyyy-MM-dd\\\"T\\\"HH:mm:ss}\"; object X() => 0; }", ""),
+                ("format-escaped-single-quote", "class P { string S = $\"{1:0\\\\'}\"; object X() => Guid.NewGuid(); }", "Guid.NewGuid"),
+                ("format-escaped-single-quote-no-api", "class P { string S = $\"{1:0\\\\'}\"; object X() => 0; }", ""),
+                ("format-verbatim-paired-quotes", "class P { string S = $@\"{DateTime.MinValue:yyyy-MM-dd\"\"T\"\"HH:mm:ss}\"; object X() => Guid.NewGuid(); }", "Guid.NewGuid"),
+                ("format-verbatim-paired-quotes-no-api", "class P { string S = $@\"{DateTime.MinValue:yyyy-MM-dd\"\"T\"\"HH:mm:ss}\"; object X() => 0; }", ""),
+                ("format-single-quoted-literal", "class P { string S = $\"{DateTime.MinValue:yyyy-MM-dd'T'HH:mm:ss}\"; object X() => Guid.NewGuid(); }", "Guid.NewGuid"),
+                ("format-single-quoted-literal-no-api", "class P { string S = $\"{DateTime.MinValue:yyyy-MM-dd'T'HH:mm:ss}\"; object X() => 0; }", ""),
+                ("format-simple", "class P { string S = $\"{1:0}\"; object X() => Guid.NewGuid(); }", "Guid.NewGuid"),
+                ("format-simple-no-api", "class P { string S = $\"{1:0}\"; object X() => 0; }", ""),
+                ("ternary-with-strings", "class P { string S = $\"{(flag ? \"DateTime.Now\" : \"Guid.NewGuid()\")}\"; object X() => Guid.NewGuid(); }", "Guid.NewGuid"),
+                ("named-argument-colon", "class P { string S = $\"{Echo(name: \"DateTime.Now\")}\"; object X() => Guid.NewGuid(); }", "Guid.NewGuid"),
+                ("global-alias-colon", "class P { string S = $\"{global::System.DateTime.MinValue:yyyy}\"; object X() => Guid.NewGuid(); }", "Guid.NewGuid"),
+                ("nullable-cast-colon", "class P { string S = $\"{(int?)value:format}\"; object X() => Guid.NewGuid(); }", "Guid.NewGuid")
             };
 
             var failures = new List<string>();
@@ -242,6 +258,40 @@ namespace Mahjong.Domain.Tests
             Assert.True(violation.Column > 1);
             Assert.Equal("Probe.cs:1:" + violation.Column, violation.Location);
             Assert.Contains("symbol=Guid.NewGuid", report.FormatDiagnostics(), StringComparison.Ordinal);
+        }
+
+        [Fact]
+        public void FormatSpecifierDiagnosticsMatchCallerCoordinates()
+        {
+            const string source =
+                "using System;\n" +
+                "public class P1 {\n" +
+                " public string S => $\"{1:00\\\"DateTime.Now}\";\n" +
+                " public object X() => Guid.NewGuid();\n" +
+                "}";
+
+            using TempDomainTree tree = TempDomainTree.Create();
+            tree.WriteDomain("Syntax.cs", source);
+            ScanReport report = DomainDeterminismScan.ScanDomainDirectory(tree.DomainRoot);
+
+            Assert.Single(report.Violations);
+            DomainDeterminismViolation violation = report.Violations[0];
+            Assert.Equal("Guid.NewGuid", violation.Symbol);
+            Assert.Equal("Syntax.cs:4:23", violation.Location);
+            Assert.Contains("Syntax.cs:4:23 symbol=Guid.NewGuid", report.FormatDiagnostics(), StringComparison.Ordinal);
+
+            // Same shape without the outer API must be a clean format-text negative control.
+            const string noApi =
+                "using System;\n" +
+                "public class P1 {\n" +
+                " public string S => $\"{1:00\\\"DateTime.Now}\";\n" +
+                " public object X() => 0;\n" +
+                "}";
+
+            using TempDomainTree cleanTree = TempDomainTree.Create();
+            cleanTree.WriteDomain("Syntax.cs", noApi);
+            ScanReport clean = DomainDeterminismScan.ScanDomainDirectory(cleanTree.DomainRoot);
+            Assert.Empty(clean.Violations);
         }
 
         [Fact]
@@ -909,7 +959,10 @@ namespace Mahjong.Domain.Tests
         private static void MaskInterpolationHole(char[] masked, string source, ref int i)
         {
             int start = i;
-            int depth = 0;
+            int braceDepth = 0;
+            int parenDepth = 0;
+            int bracketDepth = 0;
+            int conditionalDepth = 0;
 
             while (i < source.Length)
             {
@@ -957,16 +1010,16 @@ namespace Mahjong.Domain.Tests
 
                 if (current == '{')
                 {
-                    depth++;
+                    braceDepth++;
                     i++;
                     continue;
                 }
 
                 if (current == '}')
                 {
-                    depth--;
+                    braceDepth--;
                     i++;
-                    if (depth == 0)
+                    if (braceDepth == 0)
                     {
                         break;
                     }
@@ -974,10 +1027,154 @@ namespace Mahjong.Domain.Tests
                     continue;
                 }
 
+                if (current == '(')
+                {
+                    parenDepth++;
+                    i++;
+                    continue;
+                }
+
+                if (current == ')')
+                {
+                    if (parenDepth > 0)
+                    {
+                        parenDepth--;
+                    }
+
+                    i++;
+                    continue;
+                }
+
+                if (current == '[')
+                {
+                    bracketDepth++;
+                    i++;
+                    continue;
+                }
+
+                if (current == ']')
+                {
+                    if (bracketDepth > 0)
+                    {
+                        bracketDepth--;
+                    }
+
+                    i++;
+                    continue;
+                }
+
+                if (current == '?')
+                {
+                    // Null-conditional / null-coalescing operators are not ternary '?'.
+                    if (next == '?' || next == '.')
+                    {
+                        i += 2;
+                        continue;
+                    }
+
+                    if (next == '[')
+                    {
+                        // Let the '[' branch account for the bracket depth.
+                        i++;
+                        continue;
+                    }
+
+                    char nextNonWhitespace = NextNonWhitespace(source, i + 1);
+                    if (nextNonWhitespace == ')' || nextNonWhitespace == ']' ||
+                        nextNonWhitespace == ',' || nextNonWhitespace == ';' ||
+                        nextNonWhitespace == '}')
+                    {
+                        // Nullable type in a cast/pattern such as (int?)x or is int?.
+                        i++;
+                        continue;
+                    }
+
+                    conditionalDepth++;
+                    i++;
+                    continue;
+                }
+
+                if (current == ':')
+                {
+                    if (next == ':')
+                    {
+                        // global:: or another alias-qualified name, not a format separator.
+                        i += 2;
+                        continue;
+                    }
+
+                    if (conditionalDepth > 0)
+                    {
+                        // The ':' of a ternary conditional at this nesting level.
+                        conditionalDepth--;
+                        i++;
+                        continue;
+                    }
+
+                    if (braceDepth == 1 && parenDepth == 0 && bracketDepth == 0)
+                    {
+                        MaskFormatSpecifier(masked, source, ref i);
+                        break;
+                    }
+
+                    i++;
+                    continue;
+                }
+
                 i++;
             }
 
             MaskRange(masked, start, i);
+        }
+
+        /// <summary>
+        /// 格式说明从顶层 ':' 开始，到匹配的孔洞 '}' 结束；其中 "、'、\ 都是格式文本，
+        /// 不是新的 C# 字符串/字符字面量。{{ 与 }} 是格式中的转义花括号。
+        /// </summary>
+        private static void MaskFormatSpecifier(char[] masked, string source, ref int i)
+        {
+            int start = i;
+            i++;
+            while (i < source.Length)
+            {
+                char current = source[i];
+                char next = i + 1 < source.Length ? source[i + 1] : '\0';
+
+                if (current == '}' && next == '}')
+                {
+                    i += 2;
+                    continue;
+                }
+
+                if (current == '}')
+                {
+                    i++;
+                    break;
+                }
+
+                if (current == '{' && next == '{')
+                {
+                    i += 2;
+                    continue;
+                }
+
+                i++;
+            }
+
+            MaskRange(masked, start, i);
+        }
+
+        private static char NextNonWhitespace(string source, int index)
+        {
+            for (int i = index; i < source.Length; i++)
+            {
+                if (!char.IsWhiteSpace(source[i]))
+                {
+                    return source[i];
+                }
+            }
+
+            return '\0';
         }
 
         private static bool TryMaskNestedString(char[] masked, string source, ref int i)
