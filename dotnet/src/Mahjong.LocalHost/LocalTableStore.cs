@@ -35,6 +35,7 @@ namespace Mahjong.LocalHost
         private InMemoryTableStore? _inner;
         private InMemoryRequestScopeAuthority? _scopes;
         private LocalSave? _save;
+        private (string AccountId, RequestScopeId ScopeId, RequestId RequestId, string Digest)? _pendingReceiptDigest;
         private Stream? _lockStream;
         private bool _leaseAcquired;
         private string _leaseOwner = string.Empty;
@@ -588,6 +589,11 @@ namespace Mahjong.LocalHost
                 };
                 candidate.Operations.Add(operation);
                 LocalWriteResult write = Persist(candidate, cancellationToken);
+                if (write.Verdict == LocalWriteVerdict.Committed)
+                {
+                    _pendingReceiptDigest = null;
+                }
+
                 return CompleteWrite(write, candidate, result);
             }
         }
@@ -626,6 +632,11 @@ namespace Mahjong.LocalHost
                 candidate.CommandJournals.Clear();
                 candidate.EventJournals.Clear();
                 LocalWriteResult write = Persist(candidate, cancellationToken);
+                if (write.Verdict == LocalWriteVerdict.Committed)
+                {
+                    _pendingReceiptDigest = null;
+                }
+
                 return CompleteWrite(write, candidate, result);
             }
         }
@@ -665,6 +676,11 @@ namespace Mahjong.LocalHost
                 candidate.CommandJournals.Clear();
                 candidate.EventJournals.Clear();
                 LocalWriteResult write = Persist(candidate, cancellationToken);
+                if (write.Verdict == LocalWriteVerdict.Committed)
+                {
+                    _pendingReceiptDigest = null;
+                }
+
                 return CompleteWrite(write, candidate, result);
             }
         }
@@ -743,6 +759,15 @@ namespace Mahjong.LocalHost
 
                 LocalSave candidate = _save!.DeepCloneForCandidate();
                 ApplyCommitToSave(candidate, request);
+                (string AccountId, RequestScopeId ScopeId, RequestId RequestId, string Digest)? pendingDigest =
+                    _pendingReceiptDigest;
+                if (pendingDigest.HasValue)
+                {
+                    candidate.ReceiptDigests[ReceiptKey(
+                        pendingDigest.Value.AccountId,
+                        pendingDigest.Value.ScopeId,
+                        pendingDigest.Value.RequestId)] = pendingDigest.Value.Digest;
+                }
                 var operation = new LocalDurableOperation
                 {
                     Kind = LocalOperationKind.Commit,
@@ -771,6 +796,11 @@ namespace Mahjong.LocalHost
                 }
 
                 LocalWriteResult write = Persist(candidate, cancellationToken);
+                if (write.Verdict == LocalWriteVerdict.Committed)
+                {
+                    _pendingReceiptDigest = null;
+                }
+
                 return CompleteWrite(write, candidate, result);
             }
         }
@@ -902,6 +932,20 @@ namespace Mahjong.LocalHost
                 }
 
                 return new ValueTask<TableDurableReceipt?>((TableDurableReceipt?)null);
+            }
+        }
+
+        internal void PrepareReceiptDigest(
+            string accountId,
+            RequestScopeId scopeId,
+            RequestId requestId,
+            string digest)
+        {
+            lock (_gate)
+            {
+                _pendingReceiptDigest = string.IsNullOrEmpty(digest)
+                    ? null
+                    : (accountId, scopeId, requestId, digest);
             }
         }
 

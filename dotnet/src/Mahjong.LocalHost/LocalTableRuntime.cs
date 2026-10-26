@@ -30,6 +30,7 @@ namespace Mahjong.LocalHost
     internal sealed class LocalTableRuntime : IAsyncDisposable
     {
         private readonly object _gate = new object();
+        private readonly Dictionary<string, WireReceipt> _controlReceipts = new Dictionary<string, WireReceipt>(StringComparer.Ordinal);
         private readonly LocalTableHostOptions _options;
         private readonly LocalHostEnvironment _environment;
         private readonly LocalTableStore _store;
@@ -707,6 +708,12 @@ namespace Mahjong.LocalHost
                 : new DecisionId(pendingDecision);
             StateVersion expected = new StateVersion(envelope.Command.ExpectedStateVersion);
             string api = ApiName(kind);
+            if (kind == CommandKind.ClaimControl || kind == CommandKind.ReleaseControl)
+            {
+                await HandleControlCommandAsync(envelope, document, payload, kind, requestId, owner, expected, cancellationToken).ConfigureAwait(false);
+                return;
+            }
+
 
             try
             {
@@ -777,6 +784,15 @@ namespace Mahjong.LocalHost
                         new RequestScopeId(_connectionScopeId!.Value.Value),
                         api,
                         digest);
+                    if (_connectionScopeId.HasValue)
+                    {
+                        _store.PrepareReceiptDigest(
+                            _connectionAccount,
+                            _connectionScopeId.Value,
+                            requestId,
+                            CanonicalPayloadDigest.Compute(payload).ToHex());
+                    }
+
                     result = await _actor.SubmitAsync(request, cancellationToken).ConfigureAwait(false);
                 }
 
@@ -977,6 +993,68 @@ namespace Mahjong.LocalHost
             return await _actor.SubmitSettlementAsync(request, cancellationToken).ConfigureAwait(false);
         }
 
+        private async Task HandleControlCommandAsync(
+            Envelope envelope,
+            LocalCommandPayload document,
+            BusinessPayload payload,
+            CommandKind kind,
+            RequestId requestId,
+            OwnerEpoch owner,
+            StateVersion expected,
+            CancellationToken cancellationToken)
+        {
+            string key = requestId.Value;
+            if (_controlReceipts.TryGetValue(key, out WireReceipt? prior))
+            {
+                Enqueue(ReceiptEnvelope(envelope, requestId, prior, payload));
+                return;
+            }
+
+            if (!document.HasField(CommandPayloadFields.ExpectedControlEpochV2))
+            {
+                Enqueue(ErrorEnvelope(ProtocolErrorCode.MalformedMessage, "The control command has no expected epoch."));
+                return;
+            }
+
+            ulong epoch = document.RequireUInt64(CommandPayloadFields.ExpectedControlEpochV2, "expectedControlEpoch");
+            TableControlResult control = kind == CommandKind.ClaimControl
+                ? await _actor.ReclaimControlAsync(
+                    _seat,
+                    owner,
+                    new ControlEpoch(epoch),
+                    "LOCAL_CLAIM",
+                    cancellationToken).ConfigureAwait(false)
+                : await _actor.RequestTakeoverAsync(
+                    _seat,
+                    owner,
+                    new ControlEpoch(epoch),
+                    "LOCAL_RELEASE",
+                    cancellationToken).ConfigureAwait(false);
+            if (control.Status != TableControlStatus.Changed && control.Status != TableControlStatus.Unchanged)
+            {
+                Enqueue(RejectedReceipt(
+                    envelope,
+                    requestId,
+                    expected,
+                    string.IsNullOrEmpty(control.ReasonCode) ? "CONTROL_REJECTED" : control.ReasonCode,
+                    control.Detail,
+                    payload));
+                return;
+            }
+
+            var receipt = new WireReceipt
+            {
+                Status = WireReceiptStatus.Recorded,
+                ReasonCode = "LOCAL_CONTROL",
+                EvaluatedStateVersion = control.EvaluatedStateVersion.Value,
+                CommandVersion = 0UL,
+                EventSeq = 0UL,
+                CanonicalPayloadSha256 = CanonicalPayloadDigest.Compute(payload).ToHex()
+            };
+            _controlReceipts[key] = receipt;
+            Enqueue(ReceiptEnvelope(envelope, requestId, receipt, payload));
+        }
+
         private async Task PublishResultAsync(
             Envelope source,
             TableOperationResult result,
@@ -986,6 +1064,15 @@ namespace Mahjong.LocalHost
         {
             if (result.Status == TableOperationStatus.Accepted || result.Status == TableOperationStatus.Replayed)
             {
+                if (_connectionScopeId.HasValue)
+                {
+                    _store.RecordReceiptDigest(
+                        _connectionAccount,
+                        _connectionScopeId.Value,
+                        requestId,
+                        CanonicalPayloadDigest.Compute(payload).ToHex());
+                }
+
                 Enqueue(AppliedReceipt(source, requestId, result, payload));
                 return;
             }
@@ -1114,10 +1201,16 @@ namespace Mahjong.LocalHost
                 return;
             }
 
+            string canonicalDigest = receipt == null
+                ? string.Empty
+                : (_store.GetReceiptDigest(
+                    _connectionAccount,
+                    queryScopeId,
+                    new RequestId(envelope.ReceiptQuery.RequestId)) ?? string.Empty);
             var lookup = new ReceiptLookup
             {
                 Status = receipt == null ? LookupStatus.NotFound : LookupStatus.Found,
-                CanonicalPayloadSha256 = string.Empty
+                CanonicalPayloadSha256 = canonicalDigest
             };
             if (receipt != null)
             {
@@ -1134,7 +1227,7 @@ namespace Mahjong.LocalHost
                     EventSeq = receipt.Receipt.EventSeq.HasValue
                         ? receipt.Receipt.EventSeq.Value.Value
                         : 0UL,
-                    CanonicalPayloadSha256 = string.Empty
+                    CanonicalPayloadSha256 = canonicalDigest
                 };
             }
 

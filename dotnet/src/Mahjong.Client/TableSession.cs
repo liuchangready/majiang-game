@@ -1289,6 +1289,23 @@ namespace Mahjong.Client
                     return;
             }
 
+            if ((tracked.Entry.Kind == CommandKind.ClaimControl ||
+                 tracked.Entry.Kind == CommandKind.ReleaseControl) &&
+                string.Equals(receipt.ReasonCode, "LOCAL_CONTROL", StringComparison.Ordinal) &&
+                (receipt.Status == global::Mahjong.Contracts.Wire.ReceiptStatus.Recorded ||
+                 receipt.Status == global::Mahjong.Contracts.Wire.ReceiptStatus.Applied))
+            {
+                tracked.LastReceipt = ContractReceiptStatus.Recorded;
+                await ResolveTrackedAsync(
+                    tracked,
+                    OutboxResolution.ControlApplied(
+                        new StateVersion(receipt.EvaluatedStateVersion),
+                        tracked.Entry.DigestSha256,
+                        fromLookup: false),
+                    cancellationToken).ConfigureAwait(false);
+                return;
+            }
+
             OutboxResolution resolution;
             try
             {
@@ -1352,12 +1369,18 @@ namespace Mahjong.Client
                         return;
                     }
 
+                    if ((tracked.Entry.Kind == CommandKind.ClaimControl || tracked.Entry.Kind == CommandKind.ReleaseControl) && string.Equals(receipt.ReasonCode, "LOCAL_CONTROL", StringComparison.Ordinal))
+                    {
+                        tracked.LastLookup = ReceiptLookupStatus.Found;
+                        await ResolveTrackedAsync(tracked, OutboxResolution.ControlApplied(new StateVersion(receipt.EvaluatedStateVersion), tracked.Entry.DigestSha256, true), cancellationToken).ConfigureAwait(false);
+                        return;
+                    }
+
                     if (receipt.Status == global::Mahjong.Contracts.Wire.ReceiptStatus.Unknown)
                     {
                         tracked.LastLookup = ReceiptLookupStatus.Unknown;
                         return;
                     }
-
                     OutboxResolution resolution;
                     try
                     {
