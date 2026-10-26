@@ -178,6 +178,73 @@ namespace Mahjong.Domain.Tests
         }
 
         [Fact]
+        public void InterpolatedHolesDoNotLeakQuotesOrSwallowOuterRealApis()
+        {
+            // D-R1-01 regression matrix: nested strings/comments/braces inside an interpolation
+            // hole must not terminate the outer string, leak inner literal text, or mask code
+            // that follows the outer string. Holes themselves stay outside the accepted scan
+            // scope; the control cases with an outer real API prove the masker resumes correctly.
+            (string Name, string Source, string ExpectedSymbols)[] cases =
+            {
+                ("plain-literal-and-hole", "class P { string S = $\"DateTime.Now {value} new Random()\"; }", ""),
+                ("nested-string-datetime", "class P { string S = $\"{Echo(\"DateTime.Now\")}\"; }", ""),
+                ("nested-string-guid", "class P { string S = $\"{Echo(\"Guid.NewGuid()\")}\"; }", ""),
+                ("nested-string-delay", "class P { string S = $\"{Echo(\"Task.Delay(1)\")}\"; }", ""),
+                ("nested-string-then-outer-guid", "class P { string S = $\"{Echo(\"DateTime.Now\")}\"; object X() => Guid.NewGuid(); }", "Guid.NewGuid"),
+                ("nested-escaped-quote-then-outer-guid", "class P { string S = $\"{Echo(\"a\\\"b\")}\"; object X() => Guid.NewGuid(); }", "Guid.NewGuid"),
+                ("verbatim-interpolated-nested-string", "class P { string S = $@\"{Echo(\"DateTime.Now\")}\"; }", ""),
+                ("alternate-verbatim-interpolated-nested-string", "class P { string S = @$\"{Echo(\"DateTime.Now\")}\"; }", ""),
+                ("nested-verbatim-string-in-hole", "class P { string S = $\"{Echo(@\"DateTime.Now\")}\"; }", ""),
+                ("nested-doubled-quote-verbatim-in-hole", "class P { string S = $\"{Echo(@\"a\"\"DateTime.Now\"\"\")}\"; }", ""),
+                ("nested-char-and-comment-braces", "class P { string S = $\"{Echo('{') /* } DateTime.Now */}\"; object X() => Guid.NewGuid(); }", "Guid.NewGuid"),
+                ("nested-string-closing-brace", "class P { string S = $\"{Echo(\"} DateTime.Now\")}\"; object X() => DateTime.UtcNow; }", "DateTime.UtcNow"),
+                ("nested-interpolation-in-hole", "class P { string S = $\"{Echo($\"{DateTime.Now}\")}\"; object X() => Guid.NewGuid(); }", "Guid.NewGuid"),
+                ("escaped-braces-are-literal", "class P { string S = $\"{{DateTime.Now}}\"; }", ""),
+                ("nested-lambda-block-string", "class P { string S = $\"{new Func<string>(() => { return \"DateTime.Now\"; })()}\"; object X() => Guid.NewGuid(); }", "Guid.NewGuid"),
+                ("multiline-hole-then-outer-guid", "class P\n{\n    string S = $\"{\n        Echo(\"DateTime.Now\")\n    }\";\n    object X() => Guid.NewGuid();\n}", "Guid.NewGuid"),
+                ("format-specifier-literal", "class P { string S = $\"{value:DateTime.Now}\"; }", ""),
+                ("hole-expression-not-scanned-boundary", "class P { string S = $\"{DateTime.Now}\"; }", "")
+            };
+
+            var failures = new List<string>();
+            foreach ((string name, string source, string expectedSymbols) in cases)
+            {
+                using TempDomainTree tree = TempDomainTree.Create();
+                tree.WriteDomain("Probe.cs", source);
+                ScanReport report = DomainDeterminismScan.ScanDomainDirectory(tree.DomainRoot);
+                string actualSymbols = string.Join(",", report.Violations.Select(v => v.Symbol));
+
+                if (!string.Equals(expectedSymbols, actualSymbols, StringComparison.Ordinal))
+                {
+                    failures.Add(
+                        name + ": expected symbols [" + expectedSymbols + "] actual [" + actualSymbols + "]" +
+                        Environment.NewLine + report.FormatDiagnostics());
+                }
+            }
+
+            Assert.True(
+                failures.Count == 0,
+                "interpolated-hole regression failures:" + Environment.NewLine + string.Join(Environment.NewLine, failures));
+        }
+
+        [Fact]
+        public void InterpolatedHoleDiagnosticsPointAtTheOuterRealApi()
+        {
+            const string source = "class P { string S = $\"{Echo(\"a\\\"b\")}\"; object X() => Guid.NewGuid(); }";
+            using TempDomainTree tree = TempDomainTree.Create();
+            tree.WriteDomain("Probe.cs", source);
+            ScanReport report = DomainDeterminismScan.ScanDomainDirectory(tree.DomainRoot);
+
+            Assert.Single(report.Violations);
+            DomainDeterminismViolation violation = report.Violations[0];
+            Assert.Equal("Guid.NewGuid", violation.Symbol);
+            Assert.Equal(1, violation.Line);
+            Assert.True(violation.Column > 1);
+            Assert.Equal("Probe.cs:1:" + violation.Column, violation.Location);
+            Assert.Contains("symbol=Guid.NewGuid", report.FormatDiagnostics(), StringComparison.Ordinal);
+        }
+
+        [Fact]
         public void GeneratedFoldersAreExcludedAndVacuousScansFailClosed()
         {
             using TempDomainTree tree = TempDomainTree.Create();
@@ -644,7 +711,8 @@ namespace Mahjong.Domain.Tests
 
         /// <summary>
         /// 把注释、字符串、字符字面量替换为等长空格（保留 \r/\n），使正则只看到代码 token。
-        /// 能力边界：不解析插值字符串孔洞，不展开 #if，不做 C# 语义分析。
+        /// 插值字符串的孔洞表达式不进入扫描，但会跨越其中的嵌套字符串/字符/注释/花括号，
+        /// 避免内层引号提前结束外层；不展开 #if，不做 C# 语义分析。
         /// </summary>
         private static string MaskCommentsAndLiterals(string source)
         {
@@ -682,21 +750,25 @@ namespace Mahjong.Domain.Tests
 
                     MaskRange(masked, start, i);
                 }
-                else if (current == '@' && next == '"')
-                {
-                    MaskVerbatimString(masked, source, ref i, prefixLength: 1);
-                }
                 else if (current == '$' && next == '@' && i + 2 < source.Length && source[i + 2] == '"')
                 {
-                    MaskVerbatimString(masked, source, ref i, prefixLength: 2);
+                    MaskInterpolatedString(masked, source, ref i);
                 }
                 else if (current == '@' && next == '$' && i + 2 < source.Length && source[i + 2] == '"')
                 {
-                    MaskVerbatimString(masked, source, ref i, prefixLength: 2);
+                    MaskInterpolatedString(masked, source, ref i);
                 }
-                else if (current == '"' || (current == '$' && next == '"'))
+                else if (current == '$' && next == '"')
                 {
-                    MaskRegularString(masked, source, ref i, prefixLength: current == '$' ? 1 : 0);
+                    MaskInterpolatedString(masked, source, ref i);
+                }
+                else if (current == '@' && next == '"')
+                {
+                    MaskVerbatimString(masked, source, ref i);
+                }
+                else if (current == '"')
+                {
+                    MaskRegularString(masked, source, ref i);
                 }
                 else if (current == '\'')
                 {
@@ -711,15 +783,10 @@ namespace Mahjong.Domain.Tests
             return new string(masked);
         }
 
-        private static void MaskRegularString(char[] masked, string source, ref int i, int prefixLength)
+        private static void MaskRegularString(char[] masked, string source, ref int i)
         {
             int start = i;
-            i += prefixLength;
-            if (i < source.Length && source[i] == '"')
-            {
-                i++;
-            }
-
+            i++;
             while (i < source.Length)
             {
                 if (source[i] == '\\')
@@ -740,10 +807,10 @@ namespace Mahjong.Domain.Tests
             MaskRange(masked, start, i);
         }
 
-        private static void MaskVerbatimString(char[] masked, string source, ref int i, int prefixLength)
+        private static void MaskVerbatimString(char[] masked, string source, ref int i)
         {
             int start = i;
-            i += prefixLength;
+            i++;
             if (i < source.Length && source[i] == '"')
             {
                 i++;
@@ -767,6 +834,189 @@ namespace Mahjong.Domain.Tests
             }
 
             MaskRange(masked, start, i);
+        }
+
+        /// <summary>
+        /// 遮蔽整个插值字符串。孔洞仍按已接受边界“不扫描表达式”，但必须正确跨过孔洞里
+        /// 的嵌套普通/逐字/插值字符串、字符、注释与花括号，避免内层引号提前结束外层，
+        /// 否则会误报内层字面量或吞掉插值字符串之后的真实 API。
+        /// </summary>
+        private static void MaskInterpolatedString(char[] masked, string source, ref int i)
+        {
+            int start = i;
+            bool verbatim = source[i] == '@' ||
+                (source[i] == '$' && i + 1 < source.Length && source[i + 1] == '@');
+            bool prefixedVerbatim =
+                (source[i] == '$' && i + 1 < source.Length && source[i + 1] == '@') ||
+                (source[i] == '@' && i + 1 < source.Length && source[i + 1] == '$');
+            i += prefixedVerbatim ? 2 : 1;
+            if (i < source.Length && source[i] == '"')
+            {
+                i++;
+            }
+
+            while (i < source.Length)
+            {
+                char current = source[i];
+                char next = i + 1 < source.Length ? source[i + 1] : '\0';
+
+                if (verbatim && current == '"' && next == '"')
+                {
+                    i += 2;
+                    continue;
+                }
+
+                if (!verbatim && current == '\\')
+                {
+                    i = Math.Min(source.Length, i + 2);
+                    continue;
+                }
+
+                if (current == '"')
+                {
+                    i++;
+                    break;
+                }
+
+                if (current == '{')
+                {
+                    if (next == '{')
+                    {
+                        i += 2;
+                        continue;
+                    }
+
+                    MaskInterpolationHole(masked, source, ref i);
+                    continue;
+                }
+
+                if (current == '}' && next == '}')
+                {
+                    i += 2;
+                    continue;
+                }
+
+                i++;
+            }
+
+            MaskRange(masked, start, i);
+        }
+
+        /// <summary>
+        /// 从单个 '{' 开始跨到匹配的 '}'。表达式内容不进入扫描结果，但必须识别其中的
+        /// 注释、字符、普通/逐字/嵌套插值字符串，避免它们的引号或花括号破坏外层状态。
+        /// </summary>
+        private static void MaskInterpolationHole(char[] masked, string source, ref int i)
+        {
+            int start = i;
+            int depth = 0;
+
+            while (i < source.Length)
+            {
+                char current = source[i];
+                char next = i + 1 < source.Length ? source[i + 1] : '\0';
+
+                if (current == '/' && next == '/')
+                {
+                    i += 2;
+                    while (i < source.Length && source[i] != '\n' && source[i] != '\r')
+                    {
+                        i++;
+                    }
+
+                    continue;
+                }
+
+                if (current == '/' && next == '*')
+                {
+                    i += 2;
+                    while (i < source.Length)
+                    {
+                        if (source[i] == '*' && i + 1 < source.Length && source[i + 1] == '/')
+                        {
+                            i += 2;
+                            break;
+                        }
+
+                        i++;
+                    }
+
+                    continue;
+                }
+
+                if (current == '\'')
+                {
+                    MaskCharLiteral(masked, source, ref i);
+                    continue;
+                }
+
+                if (TryMaskNestedString(masked, source, ref i))
+                {
+                    continue;
+                }
+
+                if (current == '{')
+                {
+                    depth++;
+                    i++;
+                    continue;
+                }
+
+                if (current == '}')
+                {
+                    depth--;
+                    i++;
+                    if (depth == 0)
+                    {
+                        break;
+                    }
+
+                    continue;
+                }
+
+                i++;
+            }
+
+            MaskRange(masked, start, i);
+        }
+
+        private static bool TryMaskNestedString(char[] masked, string source, ref int i)
+        {
+            char current = source[i];
+            char next = i + 1 < source.Length ? source[i + 1] : '\0';
+            char afterNext = i + 2 < source.Length ? source[i + 2] : '\0';
+
+            if (current == '$' && next == '@' && afterNext == '"')
+            {
+                MaskInterpolatedString(masked, source, ref i);
+                return true;
+            }
+
+            if (current == '@' && next == '$' && afterNext == '"')
+            {
+                MaskInterpolatedString(masked, source, ref i);
+                return true;
+            }
+
+            if (current == '$' && next == '"')
+            {
+                MaskInterpolatedString(masked, source, ref i);
+                return true;
+            }
+
+            if (current == '@' && next == '"')
+            {
+                MaskVerbatimString(masked, source, ref i);
+                return true;
+            }
+
+            if (current == '"')
+            {
+                MaskRegularString(masked, source, ref i);
+                return true;
+            }
+
+            return false;
         }
 
         private static void MaskCharLiteral(char[] masked, string source, ref int i)

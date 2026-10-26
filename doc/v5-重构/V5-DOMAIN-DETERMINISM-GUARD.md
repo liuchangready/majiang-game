@@ -7,6 +7,9 @@
 - 独占 worktree：`D:/majiang-wt/domain-determinism-guard-20261026`
 - 生产代码/原测试/csproj/统一 verifier/fixtures：**零修改**
 - 新增文件：仅本报告与 `dotnet/tests/Mahjong.Domain.Tests/DomainDeterminismSourceScanTests.cs`
+- 第 2 轮返修：修复 caller D-R1-01（插值孔洞内嵌字符串的词法状态），详见 §10
+- 本轮证据根：`build/artifacts/domain-determinism-guard/rework-r2/`；第 1 轮证据与 caller 的
+  `caller-domain-review-e90f3512a13841fc9c72ab7c9a23b941/` 原样保留，未覆盖
 
 ## 1. 目标与判定口径
 
@@ -51,6 +54,10 @@ I-4/S-2 建议项的可回归证据。
    `System.DateTime.UtcNow`，扫描必须失败并报
    `DecisionClock.cs:<注入行>:<列> symbol=DateTime.UtcNow`；测试目录中的探针不得被扫描；
    原仓库 `DecisionClock.cs` 的 SHA-256 前后不变。
+8. **插值孔洞词法回归（D-R1-01）**：18 个样本覆盖插值孔洞内嵌普通/逐字/插值字符串、
+   转义引号、字符、注释、嵌套花括号、转义花括号、格式说明与多行形式；孔洞表达式仍不
+   扫描，但内层引号不得提前结束外层，且外层之后的真实 API 必须继续命中。另有独立
+   Fact 断言外层 `Guid.NewGuid` 的精确行/列/符号。
 
 ### 2.1 匹配的 12 个禁用组
 
@@ -80,6 +87,11 @@ I-4/S-2 建议项的可回归证据。
 - `//` 行注释、`/* ... */` 块注释（保留 `\r`/`\n`，行号不漂移）；
 - 普通字符串、逐字字符串 `@"..."`、插值字符串 `$"..."` / `$@"..."` / `@$"..."`；
 - 字符字面量与转义。
+
+插值字符串按孔洞结构跨越：字面量中的 `{{` / `}}` 按转义处理；孔洞中的嵌套普通/逐字/
+插值字符串、字符、`//` 与 `/* ... */` 注释、嵌套花括号会被正确跳过。孔洞表达式内容仍
+不进入扫描（已接受边界），但内层引号不会提前结束外层字符串，也不会把外层之后的真实
+API 一并吞掉。这是 D-R1-01 的修复点。
 
 遮蔽后仅对代码 token 运行正则。该实现是小型词法守卫，不引入巨型 C# 解析器。
 
@@ -143,12 +155,39 @@ TEMP 根在递归删除前解析最终绝对路径，校验其仍位于进程 `T
 `D:/majiang-wt/domain-determinism-guard-20261026/build/artifacts/domain-determinism-guard/tmp`
 作为进程级 `TEMP`/`TMP`，不修改机器级环境。
 
+### 4.4 插值孔洞回归（D-R1-01）
+
+`InterpolatedHolesDoNotLeakQuotesOrSwallowOuterRealApis` 的 18 个样本逐例调用真实
+`ScanDomainDirectory`，统一矩阵覆盖：
+
+| 类别 | 样本/期望 |
+|---|---|
+| 普通字面量 + 孔洞变量 | `$"DateTime.Now {value} new Random()"` → 0 |
+| 孔洞内嵌普通字符串 | `$"{Echo("DateTime.Now")}"`、`Guid.NewGuid()`、`Task.Delay(1)` → 各 0 |
+| 孔洞字符串 + 外层真实 API | `$"{Echo("DateTime.Now")}"; ... Guid.NewGuid();` → 恰 1 条 `Guid.NewGuid` |
+| 内层转义引号 + 外层真实 API | `$"{Echo("a\"b")}"; ... Guid.NewGuid();` → 恰 1 条 `Guid.NewGuid`（关键假绿样例） |
+| 逐字插值两种前缀 | `$@"{Echo("DateTime.Now")}"`、`@$"{Echo("DateTime.Now")}"` → 各 0 |
+| 孔洞内嵌逐字字符串/双引号转义 | `$"{Echo(@"DateTime.Now")}"`、`$"{Echo(@"a""DateTime.Now""")}"` → 各 0 |
+| 孔洞内嵌字符/注释/花括号 | `$"{Echo('{') /* } DateTime.Now */}"; ... Guid.NewGuid();` → 恰 1 条外层 Guid |
+| 孔洞字符串含 `}` | `$"{Echo("} DateTime.Now")}"; ... DateTime.UtcNow;` → 恰 1 条外层 UtcNow |
+| 嵌套插值 + 外层真实 API | `$"{Echo($"{DateTime.Now}")}"; ... Guid.NewGuid();` → 恰 1 条外层 Guid |
+| 转义花括号 | `$"{{DateTime.Now}}"` → 0 |
+| 孔洞内 lambda 块/字符串 | `$"{new Func<string>(() => { return "DateTime.Now"; })()}"` + 外层 Guid → 恰 1 条外层 Guid |
+| 多行孔洞 | 多行 `$"{ ... Echo("DateTime.Now") ... }"` + 外层 Guid → 恰 1 条外层 Guid |
+| 格式说明 | `$"{value:DateTime.Now}"` → 0 |
+| 孔洞表达式边界（已接受） | `$"{DateTime.Now}"` → 0（孔洞表达式不扫描） |
+
+配套 `InterpolatedHoleDiagnosticsPointAtTheOuterRealApi` 对关键样例断言：
+`Guid.NewGuid` 恰 1 条、行号 1、列号 > 1、`Location == Probe.cs:1:<column>`，
+诊断含 `symbol=Guid.NewGuid`。修复前 caller 的 33 探针本组 7/7 失败；修复后 33/33 通过
+（见 §5.5 与 §10）。
+
 ## 5. 执行证据（原样命令 / native exit / 真实计数）
 
 ### 5.1 编译先于运行（fresh Release，--no-incremental）
 
 ```powershell
-$env:TEMP='D:\majiang-wt\domain-determinism-guard-20261026\build\artifacts\domain-determinism-guard\tmp'
+$env:TEMP='D:\majiang-wt\domain-determinism-guard-20261026\build\artifacts\domain-determinism-guard\rework-r2\tmp'
 $env:TMP=$env:TEMP
 & 'D:/Unity/dotnet/dotnet.exe' build `
   'dotnet/tests/Mahjong.Domain.Tests/Mahjong.Domain.Tests.csproj' `
@@ -159,8 +198,8 @@ $env:TMP=$env:TEMP
 - 结果：`Mahjong.Domain -> ...\Mahjong.Domain.dll`、
   `Mahjong.Domain.Tests -> ...\Mahjong.Domain.Tests.dll`
 - **0 warnings / 0 errors**
-- 日志：`build/artifacts/domain-determinism-guard/build.log`
-  SHA-256 `E1F7026777539BC82D567A615CB2FBD25635191D8B053E0048E4A58C51E45C67`
+- 日志：`build/artifacts/domain-determinism-guard/rework-r2/build.log`
+  SHA-256 `50EBC3E436BD064A2CD4C8F57ED9F42CFC30313EBED3915B53C9B626D63C43AD`
 
 ### 5.2 新类 direct runner（xUnit v3，-class + -result-xml）
 
@@ -168,21 +207,23 @@ $env:TMP=$env:TEMP
 & 'D:/Unity/dotnet/dotnet.exe' `
   'dotnet/tests/Mahjong.Domain.Tests/bin/Release/net8.0/Mahjong.Domain.Tests.dll' `
   -class Mahjong.Domain.Tests.DomainDeterminismSourceScanTests `
-  -result-xml 'build/artifacts/domain-determinism-guard/source-scan-tests.xml'
+  -result-xml 'build/artifacts/domain-determinism-guard/rework-r2/source-scan-tests.xml'
 ```
 
 - native exit：**0**
-- 控制台：`Total: 7, Errors: 0, Failed: 0, Skipped: 0, Not Run: 0`
-- XML：`total=7, passed=7, failed=0, skipped=0, errors=0`
-- 用例：`RealDomainProductionSourcesContainNoImplicitAuthorityApis`、
+- 控制台：`Total: 9, Errors: 0, Failed: 0, Skipped: 0, Not Run: 0`
+- XML：`total=9, passed=9, failed=0, skipped=0, errors=0`
+- 用例（9）：`RealDomainProductionSourcesContainNoImplicitAuthorityApis`、
   `EveryForbiddenGroupFailsWithFileLineColumnAndSymbol`、
   `CommentsStringsAndLegalLookalikesAreNotFlagged`、
+  `InterpolatedHolesDoNotLeakQuotesOrSwallowOuterRealApis`、
+  `InterpolatedHoleDiagnosticsPointAtTheOuterRealApi`、
   `GeneratedFoldersAreExcludedAndVacuousScansFailClosed`、
   `RepositoryRootAndEnumerationFailuresAreTerminal`、
   `DiagnosticsCarryExactSourceLinesForMultipleViolations`、
   `InjectedImplicitApiIntoProductionCopyFailsAndLeavesRepositoryUntouched`
-- XML SHA-256 `71D111C1F33A6D70F339B4D449A87FA3A1DADE8EA40401F38DDCA91547B579B2`
-- 日志 SHA-256 `0847768B6CAFC3E9984F4347732E6B15F9A02D8285A72C0CCCEC0260B5721CA7`
+- XML SHA-256 `C1DE5FFA8DC7C47F53DF560EDFC3B016AF826154E6613F0FE3EE2F1B11D5801E`
+- 日志 SHA-256 `FD76DFBEDDA1905161D10900D59EE92BDAC468704674EF9873A3915E8B477133`
 
 ### 5.3 原有 Domain 风险补充（显式时间输入）
 
@@ -190,30 +231,68 @@ $env:TMP=$env:TEMP
 & 'D:/Unity/dotnet/dotnet.exe' `
   'dotnet/tests/Mahjong.Domain.Tests/bin/Release/net8.0/Mahjong.Domain.Tests.dll' `
   -class Mahjong.Domain.Tests.DecisionClockTests `
-  -result-xml 'build/artifacts/domain-determinism-guard/decision-clock-tests.xml'
+  -result-xml 'build/artifacts/domain-determinism-guard/rework-r2/decision-clock-tests.xml'
 ```
 
 - native exit：**0**
 - XML：`total=14, passed=14, failed=0, skipped=0, errors=0`
 - 选择理由：`DecisionClock` 是最直接消费显式毫秒输入的域类型；验证 source-scan
   守护未伴随任何行为回归。未重跑 Domain 全量。
-- XML SHA-256 `6D9EF0F4254BFEA181B9F5CAED0C14EDD7D25C02AD6E764B5F9CD5D0530C9901`
+- XML SHA-256 `E2177F2F8DC9CA540F6EAC0746BC10305615F3418C013D547A138D164EAA97EB`
+- 日志 SHA-256 `D7250991C945970AE069CFBB527F0E48030E02C8A2C70C2455F852C317CF0F66`
 
-### 5.4 状态判定
+### 5.4 两类合并选中（新类 + DecisionClockTests）
+
+```powershell
+& 'D:/Unity/dotnet/dotnet.exe' `
+  'dotnet/tests/Mahjong.Domain.Tests/bin/Release/net8.0/Mahjong.Domain.Tests.dll' `
+  -class Mahjong.Domain.Tests.DomainDeterminismSourceScanTests `
+  -class Mahjong.Domain.Tests.DecisionClockTests `
+  -result-xml 'build/artifacts/domain-determinism-guard/rework-r2/targeted.xml'
+```
+
+- native exit：**0**
+- XML：`total=23, passed=23, failed=0, skipped=0, errors=0, not-run=0`
+- XML SHA-256 `9E2D8938B5D887C315E6738E8EF37351DC9F63C8409167890750C831598FC6BA`
+- 日志 SHA-256 `E9CB487C4F97077589AFDF0B0494BD1DB52B4E9C315F3E6C71EA1EA2E49ABFF8`
+
+### 5.5 Caller 33 探针（修复前/后）
+
+```powershell
+$R='D:/majiang-wt/domain-determinism-guard-20261026/build/artifacts/domain-determinism-guard/rework-r2'
+& 'D:/Unity/dotnet/dotnet.exe' "$R/probe/bin/Release/net8.0/Probe.dll" `
+  'D:/majiang-wt/domain-determinism-guard-20261026/dotnet/tests/Mahjong.Domain.Tests/bin/Release/net8.0/Mahjong.Domain.Tests.dll' `
+  $R
+```
+
+- 修复前（同一探针/旧 DLL）：native **1**，`TOTAL=33 FAILED=7`；7 例均为插值孔洞组，
+  其中样例 4 `$"{Echo("a\"b")}"; ... Guid.NewGuid();` 实际 0（假绿）。
+  日志 SHA-256 `69CE3ADCF17047293B0887F936AA17D1EF8FE1D12B4A85F5AEA502FEC795CF00`
+  （与 caller 原 `probe.log` 一致）。
+- 修复后（新 DLL）：native **0**，`TOTAL=33 FAILED=0`；样例 4 实际恰 1 条
+  `Guid.NewGuid`。
+  日志 SHA-256 `846B542AE0DE9854FEA1A9D6B2CAF2B0858F5BCEB652B40E61EBD4E0B2BAB6E7`。
+- 探针与样本复制到本轮自有 `rework-r2/probe`、`rework-r2/samples`；caller 原
+  `$E/probe.log`、`$E/targeted.xml` 等历史产物未覆盖。
+
+### 5.6 状态判定
 
 | 项 | 状态 | 依据 |
 |---|---|---|
-| 新增 source-scan 守护实现与自检 | **PASS** | 7/7，native 0 |
+| 新增 source-scan 守护实现与插值回归 | **PASS** | 9/9，native 0 |
 | 真实 Domain 生产源 0 违例 | **PASS** | 44 文件，0 违例 |
 | 12 禁用组/27 写法灵敏度 | **PASS** | 全部失败命中 |
+| 插值孔洞 18 样本 + 精确外置诊断 | **PASS** | 矩阵/单例全绿 |
+| Caller 33 探针 | **PASS** | 33/33，native 0；样例 4 恰 1 |
 | 生产副本注入灵敏度 | **PASS** | 精确文件/行/列/符号；原 SHA 不变 |
 | fresh Release 构建 | **PASS** | 0 warnings / 0 errors |
-| 原有 Domain 定向风险补充 | **PASS** | DecisionClockTests 14/14 |
+| 新类 + DecisionClockTests 合并选中 | **PASS** | 23/23，native 0 |
+| D-R1-01 | **FIXED / PASS** | 见 §10；修复前 7/7 失败，修复后 33/33 |
 | Domain 全量测试 | **NOT_RUN** | 本任务仅改测试新增文件，不重跑全量 |
 | PG / Unity / Gradle / WSS / CI / 部署 | **NOT_RUN** | 明确不在本任务范围；未触发 |
 | G1/G5 门槛变更、P4/P5 集成 | **NOT_RUN** | 本任务不实施、不等待、不宣称 |
 | 依赖/包缺失 | **BLOCKED：无** | net8.0 + xunit.v3 4.0.2 现有依赖即可 |
-| 已知失败 | **FAIL：无** | 本轮 0 BLOCKER/MAJOR |
+| 其他已知失败 | **FAIL：无** | 本轮无遗留 BLOCKER/MAJOR/MINOR |
 
 ## 6. 能力边界（如实声明，不宣称过度覆盖）
 
@@ -223,7 +302,9 @@ $env:TMP=$env:TEMP
    `using DT = System.DateTime; DT.Now`）、不解析 `nameof` / 反射 / `dynamic` /
    表达式树 / 委托间接调用。
 2. 不分析 IL、JIT、运行时反射或跨模块数据流；不能证明“任何路径都不产生隐式输入”。
-3. 插值字符串整体按字符串遮蔽，**不扫描插值孔洞**；注释/字符串中的相同文本按设计忽略。
+3. 插值字符串按孔洞结构整体遮蔽，**孔洞表达式内容仍不扫描**（例如
+   `$"{DateTime.Now}"` 的孔洞不会命中）；但孔洞内嵌普通/逐字/插值字符串、字符、注释与
+   花括号会被正确跨越，不会误报内层字面量或吞掉外层之后的真实 API（D-R1-01）。
 4. `#if` 预处理分支按当前源码文本保守扫描；不模拟编译条件。
 5. 浮点只覆盖已接受的 `ShuffleConfig` 调参合法例，**不宣称覆盖全部浮点权威数据流**；
    不禁止所有 `double` 关键字。
@@ -248,7 +329,8 @@ $env:TMP=$env:TEMP
 | 新增 `Mahjong.Domain.Tests/DomainDeterminismSourceScanTests.cs`，不改现有测试 | 仅新增该文件；原测试零修改 |
 | 禁用符号组 = §3.4 regex | 12 组全部覆盖，含 §3.4 的 `new Random`、四个时钟、`Guid.NewGuid`、`Stopwatch`、`Environment.TickCount(64)`、`Thread.Sleep`、`Task.Delay`、`Math.Random`，并纳入同类 `Random.Shared` |
 | 豁免表显式列 `PersistedUtcTime` 消费路径与 `ShuffleConfig` 数值调参并附理由 | 见 §3；不允许全文件豁免 |
-| 内嵌违例自检样本 | 27 样本/12 组，调用真实扫描函数；另有生产副本注入 |
+| 内嵌违例自检样本 | 27 样本/12 组 + 18 样本插值孔洞矩阵，调用真实扫描函数；另有生产副本注入 |
+| 插值孔洞内嵌字符串 | 内层引号/注释/花括号不误报，外层真实 API 不漏报；caller 33 探针 33/33 |
 | 枚举/RepoRoot 失败硬失败 | 见 §2/§4；空枚举、缺目录、无仓库根均抛异常 |
 | 不扫描测试目录/生成目录 | 仅 Domain 生产 `.cs`；`bin`/`obj` 排除；测试目录探针不纳入 |
 | 不升格 G1/G5 门槛 | 见 §1/§6；本任务不设门、不改门 |
@@ -256,9 +338,61 @@ $env:TMP=$env:TEMP
 ## 9. 结论
 
 S-2 已按接受范围落地：Domain 当前 44 个生产 `.cs` 扫描 0 违例；12 个禁用组/27 种写法
-全部能被真实扫描函数检出；注释、字符串与合法标识不误报；真实生产副本注入
-`System.DateTime.UtcNow` 能返回精确文件/行/列/符号诊断，且实仓源哈希不变。
-新增测试类 7/7、原有 `DecisionClockTests` 14/14，fresh Release 构建 0/0 通过。
+全部能被真实扫描函数检出；插值孔洞 18 样本不再泄漏内存引号或吞掉外层 API；
+注释、字符串与合法标识不误报；真实生产副本注入 `System.DateTime.UtcNow` 能返回
+精确文件/行/列/符号诊断，且实仓源哈希不变。
+新增测试类 9/9、原有 `DecisionClockTests` 14/14、两类合并 23/23，fresh Release 构建
+0/0 通过；caller 独立 33 探针修复前 `FAILED=7`、修复后 `FAILED=0`（native 0）。
 
 本交付仅新增两个文件，不构成 G1/G5 通过、不改变 V4 唯一生产事实，也不实施任何受
 G1 阻断的 P4/P5 集成。
+
+## 10. 第 2 轮返修：D-R1-01（MAJOR，已修复）
+
+### 10.1 缺陷记录
+
+| 字段 | 内容 |
+|---|---|
+| ID | **D-R1-01** |
+| 严重级别 | **MAJOR**（BLOCKER/MINOR=0） |
+| 位置 | `dotnet/tests/Mahjong.Domain.Tests/DomainDeterminismSourceScanTests.cs` 的 `MaskCommentsAndLiterals` / `MaskRegularString` / `MaskVerbatimString`；报告旧 §2.2/§6 |
+| 复现 | caller 33 探针（反射调用真实 `ScanDomainDirectory`）：
+`& 'D:/Unity/dotnet/dotnet.exe' "$E/probe/bin/Release/net8.0/Probe.dll" 'D:/majiang-wt/domain-determinism-guard-20261026/dotnet/tests/Mahjong.Domain.Tests/bin/Release/net8.0/Mahjong.Domain.Tests.dll' $E`
+其中 `$E=D:/majiang-wt/domain-determinism-guard-20261026/build/artifacts/caller-domain-review-e90f3512a13841fc9c72ab7c9a23b941` |
+| 实际（修复前） | 插值孔洞内嵌字符串的引号被当成外层结束引号：内层 `"DateTime.Now"` / `"Guid.NewGuid()"` / `"Task.Delay(1)"` 各误报 1 条；`$"{Echo("a\"b")}"` 后的外层 `Guid.NewGuid` 被吞掉（0，假绿）；`$@"..."` / `@$"..."` 各误报 1 条。33 探针 `TOTAL=33 FAILED=7`，native 1。 |
+| 期望 | 内层字面量 0 误报；外层真实 `Guid.NewGuid` 恰 1 条；逐字插值 0；33 探针 native 0。 |
+| 证据 | 修复前：`build/artifacts/domain-determinism-guard/rework-r2/probe-before-fix.log` SHA-256 `69CE3ADCF17047293B0887F936AA17D1EF8FE1D12B4A85F5AEA502FEC795CF00`（与 caller 原 `probe.log` 一致）；修复后 `probe-after-fix.log` SHA-256 `846B542AE0DE9854FEA1A9D6B2CAF2B0858F5BCEB652B40E61EBD4E0B2BAB6E7`。caller 原 `$E` 目录未覆盖。 |
+| 修复要求 | 仅两个 expectedFiles 内，小型词法逻辑正确跨越插值孔洞中的普通/逐字/嵌套插值字符串、转义、字符、花括号与注释；孔洞表达式仍不扫描，但不得误报内层或漏掉孔洞外代码。 |
+| 验收断言 | fresh Release `--no-incremental` native 0/0 warning/0 error；新类 + `DecisionClockTests` 选中 total>0、failed/errors/skipped/not-run=0；caller 33 探针 native 0 且样例 4 恰 1；真实 44 源 0 违例；副本注入与 fail-closed 枚举保持；原仓源不改。 |
+
+### 10.2 统一修复映射
+
+| 修复点 | 实现 |
+|---|---|
+| 顶层识别 `$"` / `$@"` / `@$"` | 统一进入 `MaskInterpolatedString`，按前缀确定 verbatim 规则 |
+| 孔洞边界 | `MaskInterpolationHole` 从单个 `{` 起按花括号深度跨到匹配 `}`；`{{`/`}}` 字面量转义单独跳过 |
+| 内层普通字符串 | `MaskRegularString` 处理 `\` 转义，内层 `\"` 不再结束外层 |
+| 内层逐字字符串 | `MaskVerbatimString` 处理 `""` 转义；`$@"..."` / `@$"..."` 用 verbatim 规则 |
+| 内层嵌套插值 | `TryMaskNestedString` 递归进入 `MaskInterpolatedString`，不会把内层 `{`/`}` 误当外层 |
+| 字符/注释/花括号 | 孔洞内 `'...'`、`//`、`/* ... */`、嵌套 `{}` 均被跨越；孔洞整体随后遮蔽 |
+| 外层恢复 | 孔洞结束后回到外层字面量循环，外层关闭引号之后代码继续被正则扫描 |
+| 自检固化 | 新增 18 样本矩阵 + 独立外层精确诊断 Fact（共 9 个 Fact） |
+
+### 10.3 统一负例矩阵与验证
+
+- 18 个插值/孔洞样本：见 §4.4；修复后全部符合期望（0 误报 / 外层恰 1）。
+- caller 33 探针：修复前 `FAILED=7`，修复后 `TOTAL=33 FAILED=0`，native 0；
+  关键样例 `$"{Echo("a\"b")}"; object X() => Guid.NewGuid();` 修复后恰 1 条
+  `Guid.NewGuid`。
+- 真实 Domain 44 源：0 违例；生产副本注入、空/缺目录硬失败、生成目录排除均保持 PASS。
+- 新增测试类：9/9；`DecisionClockTests`：14/14；合并选中：23/23；
+  所有 XML `failed=0, errors=0, skipped=0, not-run=0`。
+- 修复前后均只改 `DomainDeterminismSourceScanTests.cs` 与本报告；未改生产/原测试/
+  csproj/verifier/fixtures/golden，未改 caller 历史产物。
+
+### 10.4 新增信息说明
+
+本轮没有发现 D-R1-01 之外的新缺陷。该缺陷在上一轮无法由既有 27 样本矩阵发现，因为
+矩阵只覆盖“整段字符串中的禁词”和“无嵌套插值”，没有覆盖“孔洞内部再出现字符串”的
+词法状态；caller 的 33 探针首次提供了该反例，故本轮一次性补齐同组全部 7 例及扩展
+嵌套/逐字/注释/花括号形式，没有把同类问题留到下一轮。
