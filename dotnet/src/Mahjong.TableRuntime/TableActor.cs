@@ -1580,6 +1580,66 @@ namespace Mahjong.TableRuntime
                 nextCheat).ConfigureAwait(false);
         }
 
+        /// <summary>
+        /// Binds a typed settlement intent to the authoritative seat before any identity or
+        /// scoring work. Tsumo/Ron use the winner seat; an exhaustive or abortive draw is a
+        /// host-authority action and must still name the current authoritative seat, so it
+        /// cannot borrow another seat's control/decision identity.
+        /// </summary>
+        private TableOperationResult? ValidateSettlementIntentSeat(
+            TableSettlementIntent intent,
+            out int authoritySeat)
+        {
+            authoritySeat = intent.Seat;
+            if (intent.Action == TableSettlementAction.Tsumo)
+            {
+                if (intent.Seat != _round.CurrentSeat)
+                {
+                    return TableOperationResult.Rejected(
+                        _stateVersion,
+                        TableSettlementReasonCode.FromRejection(RoundSettlementRejectionCode.WinnerNotCurrent),
+                        "Tsumo intent seat " + intent.Seat + " is not the current authoritative seat " +
+                        _round.CurrentSeat + ".");
+                }
+
+                DrawnTileEvidence? drawn = _round.Tiles.DrawnTile;
+                if (!drawn.HasValue)
+                {
+                    return TableOperationResult.Rejected(
+                        _stateVersion,
+                        TableSettlementReasonCode.FromRejection(RoundSettlementRejectionCode.NoDrawnTile),
+                        "Tsumo intent seat " + intent.Seat + " has no authoritative drawn tile.");
+                }
+
+                if (drawn.Value.Seat != intent.Seat)
+                {
+                    return TableOperationResult.Rejected(
+                        _stateVersion,
+                        TableSettlementReasonCode.FromRejection(RoundSettlementRejectionCode.DrawnTileMismatch),
+                        "The authoritative drawn tile belongs to seat " + drawn.Value.Seat +
+                        ", not tsumo intent seat " + intent.Seat + ".");
+                }
+
+                return null;
+            }
+
+            if (intent.Action == TableSettlementAction.Ron)
+            {
+                return null;
+            }
+
+            if (intent.Seat != _round.CurrentSeat)
+            {
+                return TableOperationResult.Rejected(
+                    _stateVersion,
+                    TableSettlementReasonCode.SeatMismatch,
+                    "Draw intent seat " + intent.Seat + " is not the current authoritative seat " +
+                    _round.CurrentSeat + ".");
+            }
+
+            return null;
+        }
+
         private async ValueTask<TableOperationResult> ProcessSettlementCoreAsync(
             TableSettlementRequest request)
         {
@@ -1616,9 +1676,17 @@ namespace Mahjong.TableRuntime
             }
 
             PendingDecision? pending;
+            TableOperationResult? seatError = ValidateSettlementIntentSeat(
+                request.Intent,
+                out int authoritySeat);
+            if (seatError != null)
+            {
+                return seatError;
+            }
+
             TableOperationResult? identityError = ValidateAuthorityIdentity(
                 request.Intent.RoundId,
-                request.Intent.Seat,
+                authoritySeat,
                 request.Envelope.ExpectedStateVersion,
                 request.Envelope.OwnerEpoch,
                 request.Envelope.ControlEpoch,
@@ -1756,6 +1824,41 @@ namespace Mahjong.TableRuntime
                     _stateVersion,
                     TableSettlementReasonCode.FromRejection(rejected.Code),
                     rejected.Message);
+            }
+
+            RoundCheatPreparation? offerSettlement = TrySettleOfferForCommand(
+                calculation.Command,
+                now,
+                openDiscardWindow: false);
+            if (offerSettlement != null)
+            {
+                if (!offerSettlement.IsReady)
+                {
+                    return TableOperationResult.Rejected(
+                        _stateVersion,
+                        TableRuntimeReasonCode.FromCheat(
+                            offerSettlement.Error,
+                            offerSettlement.CheatError),
+                        offerSettlement.Message);
+                }
+
+                // The accepted N-1b offer expiry and the terminal settlement are installed as
+                // one RoundCheatChange through the original cheat commit path. The typed fact
+                // source was already verified above; the journal stores the real command, never
+                // the request placeholder.
+                return await CommitCheatAndInstallAsync(
+                    offerSettlement.Change!,
+                    request.Envelope,
+                    cheatEnvelope: null,
+                    calculation.Command,
+                    cheatCommand: null,
+                    systemJournal: null,
+                    BuildCheatContext(now),
+                    pending,
+                    request.Envelope.DecisionId,
+                    now,
+                    _durable != null ? TimingConsumption.Complete : TimingConsumption.None)
+                    .ConfigureAwait(false);
             }
 
             RoundTransition transition;

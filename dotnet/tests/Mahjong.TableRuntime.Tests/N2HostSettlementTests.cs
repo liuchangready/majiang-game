@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Reflection;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
@@ -515,6 +516,365 @@ namespace Mahjong.TableRuntime.Tests
             Assert.False(snapshot.IsFinished);
         }
 
+        [Fact]
+        public async Task TypedTsumoBindsWinnerSeatToAuthorityAndRejectsForeignSeat()
+        {
+            RoundStateMachine round = SettlementFixture.Tsumo();
+            await using var harness = N2Harness.Create(round);
+            var key = new DecisionKey(round.RoundId, 1, "foreign-decision");
+            var pending = new PendingDecision(
+                key,
+                0L,
+                new[] { new LegalActionOption(LegalActionKind.Tsumo, 1) },
+                round.Tiles.DrawnTile?.Tile);
+            Assert.Equal(
+                TableOperationStatus.Configured,
+                (await harness.Actor.OpenDecisionAsync(pending, TestContext.Current.CancellationToken)).Status);
+
+            TableOperationResult spoof = await harness.Actor.SubmitSettlementAsync(
+                harness.Request(
+                    new TableSettlementIntent(round.RoundId, TableSettlementAction.Tsumo, 1),
+                    0,
+                    "spoof-winner",
+                    decisionId: new DecisionId("foreign-decision")),
+                TestContext.Current.CancellationToken);
+            Assert.Equal(TableOperationStatus.Rejected, spoof.Status);
+            Assert.Equal(
+                TableSettlementReasonCode.FromRejection(RoundSettlementRejectionCode.WinnerNotCurrent),
+                spoof.ReasonCode);
+            TableSnapshot afterSpoof = await harness.Actor.GetSnapshotAsync(TestContext.Current.CancellationToken);
+            Assert.False(afterSpoof.IsFinished);
+            Assert.Equal(new long[] { 25000L, 25000L, 25000L, 25000L }, afterSpoof.Scores.ToArray());
+
+            TableOperationResult drawSpoof = await harness.Actor.SubmitSettlementAsync(
+                harness.Request(
+                    new TableSettlementIntent(round.RoundId, TableSettlementAction.ExhaustiveDraw, 1),
+                    0,
+                    "spoof-draw-seat"),
+                TestContext.Current.CancellationToken);
+            Assert.Equal(TableOperationStatus.Rejected, drawSpoof.Status);
+            Assert.Equal(TableSettlementReasonCode.SeatMismatch, drawSpoof.ReasonCode);
+
+            TableOperationResult legal = await harness.Actor.SubmitSettlementAsync(
+                harness.Request(
+                    new TableSettlementIntent(round.RoundId, TableSettlementAction.Tsumo, 0),
+                    0,
+                    "real-winner"),
+                TestContext.Current.CancellationToken);
+            Assert.Equal(TableOperationStatus.Accepted, legal.Status);
+            TableSnapshot afterLegal = await harness.Actor.GetSnapshotAsync(TestContext.Current.CancellationToken);
+            Assert.Equal(100000L, afterLegal.Scores.Sum());
+        }
+
+        [Fact]
+        public async Task PassAndOtherSeatDiscardsDoNotCancelDoubleRiichiAndScoresMatchCalculator()
+        {
+            RoundStateMachine round = SettlementFixture.DoubleRiichiRonWindow();
+            var intent = new TableSettlementIntent(round.RoundId, TableSettlementAction.Ron, 1);
+            var ippatsuPort = new DelegateSettlementFactsPort((source, _) => new TableSettlementHostFacts(
+                source,
+                Enumerable.Range(0, 4).Select(seat => new TableSettlementSeatHostFacts(
+                    seat,
+                    isIppatsu: seat == 1))));
+            RoundSettlementFacts facts = BuildFacts(round, intent, ippatsuPort, "double-riichi-facts");
+            RoundSettlementSeatFacts seat1 = facts.FindSeat(1)!;
+            Assert.True(seat1.IsDoubleRiichi);
+            Assert.True(seat1.IsIppatsu);
+            Assert.False(seat1.IsIppatsuInterruptedByCallOrKan);
+            Assert.True(seat1.IsFirstTurnUninterrupted);
+
+            RoundSettlementCalculation calculation = RoundSettlementCalculator.CalculateRon(round, 1, facts);
+            Assert.Equal("DOUBLE_RIICHI", calculation.Breakdown!.Yaku[0].Code);
+            Assert.Equal("IPPATSU", calculation.Breakdown!.Yaku[1].Code);
+            Assert.True(calculation.Breakdown!.TotalYakuHan >= 3);
+
+            await using var harness = N2Harness.Create(round, ippatsuPort);
+            TableOperationResult result = await harness.Actor.SubmitSettlementAsync(
+                harness.Request(intent, 0, "double-riichi-ron"),
+                TestContext.Current.CancellationToken);
+            Assert.Equal(TableOperationStatus.Accepted, result.Status);
+            TableSnapshot snapshot = await harness.Actor.GetSnapshotAsync(TestContext.Current.CancellationToken);
+            Assert.Equal(calculation.Settlement.FinalScores.ToArray(), snapshot.Scores.ToArray());
+            Assert.Equal(100000L, snapshot.Scores.Sum());
+        }
+
+        [Fact]
+        public async Task PassPreservesFirstTurnAndChiihouYakuman()
+        {
+            RoundStateMachine round = SettlementFixture.ChiihouAfterPass();
+            var intent = new TableSettlementIntent(round.RoundId, TableSettlementAction.Tsumo, 1);
+            RoundSettlementFacts facts = BuildFacts(round, intent, new DefaultSettlementFactsPort(), "chiihou-facts");
+            Assert.True(facts.FindSeat(1)!.IsFirstTurnUninterrupted);
+            Assert.False(facts.FindSeat(1)!.IsIppatsuInterruptedByCallOrKan);
+            RoundSettlementCalculation calculation = RoundSettlementCalculator.CalculateTsumo(round, facts);
+            Assert.Contains(calculation.Breakdown!.Yaku, y => y.Code == "CHIIHOU");
+
+            await using var harness = N2Harness.Create(round);
+            TableOperationResult result = await harness.Actor.SubmitSettlementAsync(
+                harness.Request(intent, 0, "chiihou-pass"),
+                TestContext.Current.CancellationToken);
+            Assert.Equal(TableOperationStatus.Accepted, result.Status);
+            TableSnapshot snapshot = await harness.Actor.GetSnapshotAsync(TestContext.Current.CancellationToken);
+            Assert.Equal(new long[] { 9000L, 57000L, 17000L, 17000L }, snapshot.Scores.ToArray());
+            Assert.Equal(100000L, snapshot.Scores.Sum());
+        }
+
+        [Fact]
+        public async Task TypedTsumoSettlesSleeveOfferAtomicallyAndRollsBackOnCommitFailure()
+        {
+            RoundStateMachine round = SettlementFixture.Tsumo();
+            CheatState cheat = V32Fixtures.WithRegisteredRound(V32Fixtures.Cheat(1000), round.RoundId);
+            var clock = new ManualTableClock { Now = 1000L };
+            var commit = new RecordingCommitPort();
+            var sink = new RecordingPublicationSink(commit);
+            var options = new TableActorOptions
+            {
+                RoomId = "room-1",
+                MailboxCapacity = 16,
+                ControlReserve = 16,
+                DecisionClockConfig = new DecisionClockConfig(1000L, 0L, ReserveScope.Round),
+                InitialControllers = P31Fixtures.Controllers(
+                    SeatControllerKind.RemoteHuman,
+                    SeatControllerKind.RemoteHuman,
+                    SeatControllerKind.RemoteHuman,
+                    SeatControllerKind.RemoteHuman),
+                InitialOwnerEpoch = new OwnerEpoch(1),
+                CheatEconomy = V32Fixtures.Economy(1000),
+                SleeveBloomConfig = V32Fixtures.SleeveConfig(true),
+                InitialCheatState = cheat
+            };
+            await using var actor = new TableActor(
+                options,
+                round,
+                commit,
+                clock,
+                sink,
+                null,
+                null,
+                null,
+                null,
+                new DefaultSettlementFactsPort());
+
+            var offer = new TableCheatCommandEnvelope(
+                new RoundCheatCommand(
+                    round.RoundId,
+                    0,
+                    RoundCheatAction.SubmitSleeveBloom,
+                    "offer-1",
+                    RoundCheatPayload.SleeveBloom()),
+                new RequestId("offer-1"),
+                new StateVersion(0),
+                new OwnerEpoch(1),
+                new ControlEpoch(0),
+                null,
+                0L,
+                new RequestScopeId("offer-scope"),
+                "CHEAT",
+                TablePayloadSha256.Compute(new byte[] { 1 }));
+            Assert.Equal(
+                TableOperationStatus.Accepted,
+                (await actor.SubmitCheatAsync(offer, TestContext.Current.CancellationToken)).Status);
+            Assert.NotNull(GetCheat(actor).SleeveBloom.ImmediateOffer);
+
+            commit.FailNext();
+            TableOperationResult failed = await actor.SubmitSettlementAsync(
+                new TableSettlementRequest(
+                    new TableSettlementIntent(round.RoundId, TableSettlementAction.Tsumo, 0),
+                    new RequestId("offer-tsumo-failed"),
+                    new StateVersion(1),
+                    new OwnerEpoch(1),
+                    new ControlEpoch(0)),
+                TestContext.Current.CancellationToken);
+            Assert.Equal(TableOperationStatus.Failed, failed.Status);
+            Assert.NotNull(GetCheat(actor).SleeveBloom.ImmediateOffer);
+            TableSnapshot afterFailure = await actor.GetSnapshotAsync(TestContext.Current.CancellationToken);
+            Assert.Equal(1UL, afterFailure.StateVersion.Value);
+            Assert.Equal(new long[] { 25000L, 25000L, 25000L, 25000L }, afterFailure.Scores.ToArray());
+
+            TableOperationResult settled = await actor.SubmitSettlementAsync(
+                new TableSettlementRequest(
+                    new TableSettlementIntent(round.RoundId, TableSettlementAction.Tsumo, 0),
+                    new RequestId("offer-tsumo"),
+                    new StateVersion(1),
+                    new OwnerEpoch(1),
+                    new ControlEpoch(0)),
+                TestContext.Current.CancellationToken);
+            Assert.Equal(TableOperationStatus.Accepted, settled.Status);
+            Assert.Contains(settled.Events, record => record.Type == RoundEventType.TsumoWin);
+            Assert.Null(GetCheat(actor).SleeveBloom.ImmediateOffer);
+            TableSnapshot afterSettlement = await actor.GetSnapshotAsync(TestContext.Current.CancellationToken);
+            Assert.Equal(100000L, afterSettlement.Scores.Sum());
+        }
+
+        [Fact]
+        public async Task TypedTsumoSettlesBeamSwapOfferAtomically()
+        {
+            RoundStateMachine round = SettlementFixture.Tsumo();
+            CheatState cheat = V32Fixtures.WithRegisteredRound(V32Fixtures.Cheat(1000), round.RoundId);
+            var clock = new ManualTableClock { Now = 1000L };
+            var commit = new RecordingCommitPort();
+            var sink = new RecordingPublicationSink(commit);
+            var options = new TableActorOptions
+            {
+                RoomId = "room-1",
+                MailboxCapacity = 16,
+                ControlReserve = 16,
+                DecisionClockConfig = new DecisionClockConfig(1000L, 0L, ReserveScope.Round),
+                InitialControllers = P31Fixtures.Controllers(
+                    SeatControllerKind.RemoteHuman,
+                    SeatControllerKind.RemoteHuman,
+                    SeatControllerKind.RemoteHuman,
+                    SeatControllerKind.RemoteHuman),
+                InitialOwnerEpoch = new OwnerEpoch(1),
+                CheatEconomy = V32Fixtures.Economy(1000),
+                SleeveBloomConfig = V32Fixtures.SleeveConfig(true),
+                InitialCheatState = cheat
+            };
+            await using var actor = new TableActor(
+                options,
+                round,
+                commit,
+                clock,
+                sink,
+                null,
+                null,
+                null,
+                null,
+                new DefaultSettlementFactsPort());
+
+            var offer = new TableCheatCommandEnvelope(
+                new RoundCheatCommand(
+                    round.RoundId,
+                    0,
+                    RoundCheatAction.SubmitBeamSwap,
+                    "beam-offer",
+                    RoundCheatPayload.BeamSwap()),
+                new RequestId("beam-offer"),
+                new StateVersion(0),
+                new OwnerEpoch(1),
+                new ControlEpoch(0),
+                null,
+                0L,
+                new RequestScopeId("beam-scope"),
+                "CHEAT",
+                TablePayloadSha256.Compute(new byte[] { 2 }));
+            TableOperationResult activated = await actor.SubmitCheatAsync(
+                offer, TestContext.Current.CancellationToken);
+            Assert.Equal(TableOperationStatus.Accepted, activated.Status);
+            Assert.NotNull(GetCheat(actor).BeamSwap.Offer);
+
+            TableOperationResult settled = await actor.SubmitSettlementAsync(
+                new TableSettlementRequest(
+                    new TableSettlementIntent(round.RoundId, TableSettlementAction.Tsumo, 0),
+                    new RequestId("beam-tsumo"),
+                    new StateVersion(1),
+                    new OwnerEpoch(1),
+                    new ControlEpoch(0)),
+                TestContext.Current.CancellationToken);
+            Assert.Equal(TableOperationStatus.Accepted, settled.Status);
+            Assert.Contains(settled.Events, record => record.Type == RoundEventType.TsumoWin);
+            Assert.Null(GetCheat(actor).BeamSwap.Offer);
+            TableSnapshot snapshot = await actor.GetSnapshotAsync(TestContext.Current.CancellationToken);
+            Assert.Equal(100000L, snapshot.Scores.Sum());
+        }
+
+        [Fact]
+        public async Task DurableSleeveOfferSettlementReplaysAndRecoversWithoutRepeatingCheatOrPayment()
+        {
+            RoundStateMachine round = SettlementFixture.Tsumo();
+            CheatState cheat = V32Fixtures.WithRegisteredRound(V32Fixtures.Cheat(1000), round.RoundId);
+            await using N2DurableHarness harness = await N2DurableHarness.CreateAsync(
+                round,
+                configure: options =>
+                {
+                    options.CheatEconomy = V32Fixtures.Economy(1000);
+                    options.SleeveBloomConfig = V32Fixtures.SleeveConfig(true);
+                    options.InitialCheatState = cheat;
+                });
+
+            var offer = new TableCheatCommandEnvelope(
+                new RoundCheatCommand(
+                    round.RoundId,
+                    0,
+                    RoundCheatAction.SubmitSleeveBloom,
+                    "durable-offer",
+                    RoundCheatPayload.SleeveBloom()),
+                new RequestId("durable-offer"),
+                new StateVersion(0),
+                new OwnerEpoch(1),
+                new ControlEpoch(0),
+                null,
+                0L,
+                harness.Scope.ScopeId,
+                "CHEAT",
+                TablePayloadSha256.Compute(new byte[] { 3 }));
+            Assert.Equal(
+                TableOperationStatus.Accepted,
+                (await harness.Actor.SubmitCheatAsync(offer, TestContext.Current.CancellationToken)).Status);
+            Assert.NotNull(GetCheat(harness.Actor).SleeveBloom.ImmediateOffer);
+
+            TableSettlementRequest request = harness.Request(
+                new TableSettlementIntent(round.RoundId, TableSettlementAction.Tsumo, 0),
+                1,
+                "durable-offer-tsumo",
+                "SETTLEMENT_TSUMO",
+                "durable-offer-payload");
+            TableOperationResult first = await harness.Actor.SubmitSettlementAsync(
+                request, TestContext.Current.CancellationToken);
+            Assert.True(
+                first.Status == TableOperationStatus.Accepted,
+                first.Status + " " + first.ReasonCode + " " + first.Detail);
+            Assert.Equal(1, harness.Store.OutboxCount);
+            Assert.Null(GetCheat(harness.Actor).SleeveBloom.ImmediateOffer);
+
+            TableOperationResult replay = await harness.Actor.SubmitSettlementAsync(
+                request, TestContext.Current.CancellationToken);
+            Assert.Equal(TableOperationStatus.Replayed, replay.Status);
+            Assert.Equal(1, harness.Store.OutboxCount);
+            Assert.Null(GetCheat(harness.Actor).SleeveBloom.ImmediateOffer);
+
+            await using N2DurableHarness recovered = harness.Attach();
+            TableRecoveryResult recovery = await recovered.Actor.RecoverFromStoreAsync(
+                TestContext.Current.CancellationToken);
+            Assert.True(recovery.Recovered, recovery.ReasonCode + ": " + recovery.Detail);
+            Assert.True(recovery.Report!.Terminal);
+            Assert.Equal(1, harness.Store.OutboxCount);
+            Assert.Null(GetCheat(recovered.Actor).SleeveBloom.ImmediateOffer);
+            TableSnapshot snapshot = await recovered.Actor.GetSnapshotAsync(TestContext.Current.CancellationToken);
+            Assert.Equal(100000L, snapshot.Scores.Sum());
+        }
+
+        [Fact]
+        public void RealChiStillInterruptsFirstTurnFactsUnlikePass()
+        {
+            RoundStateMachine round = SettlementFixture.ChiAfterDiscard();
+            var intent = new TableSettlementIntent(round.RoundId, TableSettlementAction.Tsumo, 1);
+            RoundSettlementFacts facts = BuildFacts(
+                round, intent, new DefaultSettlementFactsPort(), "chi-facts");
+            Assert.False(facts.FindSeat(1)!.IsFirstTurnUninterrupted);
+            Assert.False(facts.FindSeat(1)!.IsChiihou);
+            Assert.Contains(
+                round.Events,
+                value => value.Type == RoundEventType.ResponseClaimed && value.Detail == "CHI");
+        }
+
+        private static CheatState GetCheat(TableActor actor)
+        {
+            FieldInfo field = typeof(TableActor).GetField("_cheat", BindingFlags.Instance | BindingFlags.NonPublic)!;
+            return (CheatState)field.GetValue(actor)!;
+        }
+
+        private static RoundSettlementFacts BuildFacts(
+            RoundStateMachine round,
+            TableSettlementIntent intent,
+            ITableSettlementFactsPort port,
+            string resultId)
+        {
+            var source = new TableSettlementSourceRef(round.RoundId, round.Version, round.SourceFingerprint);
+            TableSettlementHostFacts host = port.Resolve(source, intent);
+            return TableSettlementFactBuilder.Build(round, intent, host, resultId, 1000L, 1000L);
+        }
+
         private static async Task AssertRejectedWithoutMutation(
             N2Harness harness,
             Func<TableSettlementSourceRef, TableSettlementSourceRef> rebind,
@@ -700,7 +1060,8 @@ namespace Mahjong.TableRuntime.Tests
             ManualTableClock clock,
             RoundStateMachine initialRound,
             ITableSettlementFactsPort port,
-            ITableProjectionContextSource projectionSource)
+            ITableProjectionContextSource projectionSource,
+            Action<TableActorOptions>? configure)
         {
             Actor = actor;
             Store = store;
@@ -710,6 +1071,7 @@ namespace Mahjong.TableRuntime.Tests
             InitialRound = initialRound;
             Port = port;
             ProjectionSource = projectionSource;
+            Configure = configure;
         }
 
         public TableActor Actor { get; }
@@ -728,9 +1090,12 @@ namespace Mahjong.TableRuntime.Tests
 
         public ITableProjectionContextSource ProjectionSource { get; }
 
+        public Action<TableActorOptions>? Configure { get; }
+
         public static async Task<N2DurableHarness> CreateAsync(
             RoundStateMachine round,
-            ITableSettlementFactsPort? port = null)
+            ITableSettlementFactsPort? port = null,
+            Action<TableActorOptions>? configure = null)
         {
             var clock = new ManualTableClock { Now = 1000L };
             var scopes = new InMemoryRequestScopeAuthority();
@@ -752,7 +1117,7 @@ namespace Mahjong.TableRuntime.Tests
             ITableSettlementFactsPort actualPort = port ?? new DefaultSettlementFactsPort();
             var commit = new RecordingCommitPort();
             var actor = new TableActor(
-                Options(),
+                Options(configure),
                 round,
                 commit,
                 clock,
@@ -762,7 +1127,8 @@ namespace Mahjong.TableRuntime.Tests
                 null,
                 Durable(store, scopes, ledger),
                 actualPort);
-            return new N2DurableHarness(actor, store, scopes, scope, clock, round, actualPort, projectionSource);
+            return new N2DurableHarness(
+                actor, store, scopes, scope, clock, round, actualPort, projectionSource, configure);
         }
 
         public N2DurableHarness Attach()
@@ -770,7 +1136,7 @@ namespace Mahjong.TableRuntime.Tests
             var ledger = DurableHarness.NewLedger();
             var commit = new RecordingCommitPort();
             var actor = new TableActor(
-                Options(),
+                Options(Configure),
                 InitialRound,
                 commit,
                 Clock,
@@ -780,7 +1146,8 @@ namespace Mahjong.TableRuntime.Tests
                 null,
                 Durable(Store, Scopes, ledger),
                 Port);
-            return new N2DurableHarness(actor, Store, Scopes, Scope, Clock, InitialRound, Port, ProjectionSource);
+            return new N2DurableHarness(
+                actor, Store, Scopes, Scope, Clock, InitialRound, Port, ProjectionSource, Configure);
         }
 
         public TableSettlementRequest Request(
@@ -809,9 +1176,9 @@ namespace Mahjong.TableRuntime.Tests
             return Actor.DisposeAsync();
         }
 
-        private static TableActorOptions Options()
+        private static TableActorOptions Options(Action<TableActorOptions>? configure)
         {
-            return new TableActorOptions
+            var options = new TableActorOptions
             {
                 RoomId = Room,
                 MailboxCapacity = 16,
@@ -824,6 +1191,8 @@ namespace Mahjong.TableRuntime.Tests
                     SeatControllerKind.RemoteHuman),
                 InitialOwnerEpoch = new OwnerEpoch(1)
             };
+            configure?.Invoke(options);
+            return options;
         }
 
         private static TableDurableContext Durable(
@@ -967,6 +1336,81 @@ namespace Mahjong.TableRuntime.Tests
             plan.AddDiscard(2, 27, 2);
             plan.AddDiscard(3, 27, 3);
             return plan.Build(Spec("round-abort"));
+        }
+
+        public static RoundStateMachine ChiihouAfterPass()
+        {
+            RoundStateMachine opening = RonOpening();
+            var plan = new SettlementPlan(RoundPhase.CheatWindow)
+            {
+                FillRemainingIntoWall = true,
+                DrawnSeat = 0,
+                DrawnTile = Tile(22, 1),
+                DrawnSource = DrawSource.Wall
+            };
+            plan.AddDora(39);
+            plan.AddWallTop(Tile(22, 3).Value);
+            plan.AddHand(0, opening.Tiles.TilesInZone(TileZone.Hand, 0).ToArray());
+            plan.AddHand(1, opening.Tiles.TilesInZone(TileZone.Hand, 1).ToArray());
+            RoundStateMachine chiOpening = plan.Build(opening.Spec);
+            RoundStateMachine window = Step(
+                chiOpening,
+                RoundCommand.Discard(chiOpening.RoundId, 0, Tile(22, 1), new[] { 2 }));
+            return Step(window, RoundCommand.Pass(window.RoundId, 2));
+        }
+
+        public static RoundStateMachine DoubleRiichiRonWindow()
+        {
+            RoundStateMachine opening = RonOpening();
+            var plan = new SettlementPlan(RoundPhase.CheatWindow)
+            {
+                FillRemainingIntoWall = true,
+                DrawnSeat = 0,
+                DrawnTile = Tile(22, 1),
+                DrawnSource = DrawSource.Wall
+            };
+            plan.AddDora(39);
+            // First wall tile is seat 1's riichi discard; second is seat 2's 5p discard
+            // that seat 1 can Ron. Both are real drawn/discarded physical tiles.
+            plan.AddWallTop(Tile(0, 3).Value, Tile(22, 3).Value);
+            plan.AddHand(0, opening.Tiles.TilesInZone(TileZone.Hand, 0).ToArray());
+            plan.AddHand(1, opening.Tiles.TilesInZone(TileZone.Hand, 1).ToArray());
+            RoundStateMachine first = plan.Build(opening.Spec);
+            RoundStateMachine afterDealerDiscard = Step(
+                first,
+                RoundCommand.Discard(first.RoundId, 0, Tile(22, 1)));
+            RoundStateMachine afterRiichi = Step(
+                afterDealerDiscard,
+                RoundCommand.Riichi(afterDealerDiscard.RoundId, 1, Tile(0, 3), new[] { 2 }));
+            RoundStateMachine afterPass = Step(
+                afterRiichi,
+                RoundCommand.Pass(afterRiichi.RoundId, 2));
+            return Step(
+                afterPass,
+                RoundCommand.Discard(afterPass.RoundId, 2, Tile(22, 3), new[] { 1 }));
+        }
+
+        public static RoundStateMachine ChiAfterDiscard()
+        {
+            RoundStateMachine opening = RonOpening();
+            RoundStateMachine window = Step(
+                opening,
+                RoundCommand.Discard(opening.RoundId, 0, Tile(0, 0), new[] { 1 }));
+            return Step(
+                window,
+                RoundCommand.Chi(window.RoundId, 1, Tile(0, 0), Tile(1, 0), Tile(2, 0)));
+        }
+
+        private static RoundStateMachine Step(RoundStateMachine round, RoundCommand command)
+        {
+            RoundTransition transition = round.Execute(command);
+            if (!transition.IsAccepted || transition.State == null)
+            {
+                throw new InvalidOperationException(
+                    "Fixture command rejected: " + (transition.Error == null ? "unknown" : transition.Error.ToString()));
+            }
+
+            return transition.State;
         }
 
         private static RoundSpec Spec(string roundId)

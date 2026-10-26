@@ -36,6 +36,7 @@ namespace Mahjong.TableRuntime
         public const string SourceVersionStale = "SETTLEMENT_SOURCE_VERSION_STALE";
         public const string SourceFingerprintMismatch = "SETTLEMENT_SOURCE_FINGERPRINT_MISMATCH";
         public const string RawEntryRejected = "SETTLEMENT_RAW_ENTRY_REJECTED";
+        public const string SeatMismatch = "SETTLEMENT_SEAT_MISMATCH";
 
         public static string FromRejection(RoundSettlementRejectionCode code)
         {
@@ -652,11 +653,7 @@ namespace Mahjong.TableRuntime
 
             for (int i = 0; i < round.Events.Count; i++)
             {
-                RoundEventType type = round.Events[i].Type;
-                if (type == RoundEventType.ResponseClaimed ||
-                    type == RoundEventType.ChiDeclared ||
-                    type == RoundEventType.PonDeclared ||
-                    type == RoundEventType.KanDeclared)
+                if (IsRealCallOrKan(round.Events[i]))
                 {
                     return false;
                 }
@@ -667,25 +664,32 @@ namespace Mahjong.TableRuntime
 
         private static bool IsDoubleRiichi(RoundStateMachine round, int seat)
         {
-            int riichiOrdinal = LastRiichiOrdinal(round, seat);
-            if (riichiOrdinal < 0)
+            int riichiIndex = LastRiichiEventIndex(round, seat);
+            if (riichiIndex < 0)
             {
                 return false;
             }
 
-            for (int i = 0; i < round.Events.Count; i++)
+            RoundEvent declaration = round.Events[riichiIndex];
+            for (int i = 0; i < riichiIndex; i++)
             {
                 RoundEvent value = round.Events[i];
-                if (value.Ordinal >= riichiOrdinal)
+                if (value.Type == RoundEventType.TileDiscarded && value.Seat == seat)
                 {
-                    break;
+                    // Some restore/replay shapes emit the riichi discard immediately before
+                    // RiichiDeclared. That discard is the declaration itself, not an earlier go.
+                    bool isDeclarationDiscard =
+                        i == riichiIndex - 1 &&
+                        declaration.Tile.HasValue &&
+                        value.Tile.HasValue &&
+                        value.Tile.Value == declaration.Tile.Value;
+                    if (!isDeclarationDiscard)
+                    {
+                        return false;
+                    }
                 }
 
-                if (value.Type == RoundEventType.TileDiscarded ||
-                    value.Type == RoundEventType.ResponseClaimed ||
-                    value.Type == RoundEventType.ChiDeclared ||
-                    value.Type == RoundEventType.PonDeclared ||
-                    value.Type == RoundEventType.KanDeclared)
+                if (IsRealCallOrKan(value))
                 {
                     return false;
                 }
@@ -710,16 +714,41 @@ namespace Mahjong.TableRuntime
                     continue;
                 }
 
-                if (value.Type == RoundEventType.ResponseClaimed ||
-                    value.Type == RoundEventType.ChiDeclared ||
-                    value.Type == RoundEventType.PonDeclared ||
-                    value.Type == RoundEventType.KanDeclared)
+                if (IsRealCallOrKan(value))
                 {
                     return true;
                 }
             }
 
             return false;
+        }
+
+        private static bool IsRealCallOrKan(RoundEvent value)
+        {
+            if (value.Type == RoundEventType.KanDeclared ||
+                value.Type == RoundEventType.ChiDeclared ||
+                value.Type == RoundEventType.PonDeclared)
+            {
+                return true;
+            }
+
+            return value.Type == RoundEventType.ResponseClaimed &&
+                   !string.Equals(value.Detail, "PASS", StringComparison.Ordinal);
+        }
+
+        private static int LastRiichiEventIndex(RoundStateMachine round, int seat)
+        {
+            int index = -1;
+            for (int i = 0; i < round.Events.Count; i++)
+            {
+                RoundEvent value = round.Events[i];
+                if (value.Type == RoundEventType.RiichiDeclared && value.Seat == seat)
+                {
+                    index = i;
+                }
+            }
+
+            return index;
         }
 
         private static int LastRiichiOrdinal(RoundStateMachine round, int seat)
@@ -759,10 +788,9 @@ namespace Mahjong.TableRuntime
 
             for (int i = 0; i < round.Events.Count; i++)
             {
-                RoundEventType type = round.Events[i].Type;
-                if (type == RoundEventType.TileDiscarded ||
-                    type == RoundEventType.ResponseClaimed ||
-                    type == RoundEventType.KanDeclared)
+                RoundEvent value = round.Events[i];
+                if (value.Type == RoundEventType.TileDiscarded ||
+                    IsRealCallOrKan(value))
                 {
                     return false;
                 }
@@ -794,8 +822,7 @@ namespace Mahjong.TableRuntime
             for (int i = 0; i < round.Events.Count; i++)
             {
                 RoundEvent value = round.Events[i];
-                if (value.Type == RoundEventType.ResponseClaimed ||
-                    value.Type == RoundEventType.KanDeclared ||
+                if (IsRealCallOrKan(value) ||
                     (value.Type == RoundEventType.TileDiscarded && value.Seat == seat))
                 {
                     return false;

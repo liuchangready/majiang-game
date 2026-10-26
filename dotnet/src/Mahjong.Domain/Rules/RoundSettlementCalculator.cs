@@ -522,8 +522,7 @@ namespace Mahjong.Domain.Rules
                     round.Tiles.KanCount != 0 ||
                     round.Tiles.CountAt(TileZone.Discard) != 0 ||
                     HasEvent(round, RoundEventType.TileDiscarded) ||
-                    HasEvent(round, RoundEventType.ResponseClaimed) ||
-                    HasEvent(round, RoundEventType.KanDeclared))
+                    HasRealCallOrKan(round))
                 {
                     throw Reject(
                         RoundSettlementRejectionCode.WinFlagMismatch,
@@ -580,8 +579,7 @@ namespace Mahjong.Domain.Rules
                 for (int i = 0; i < round.Events.Count; i++)
                 {
                     RoundEvent e = round.Events[i];
-                    if (e.Type == RoundEventType.ResponseClaimed ||
-                        e.Type == RoundEventType.KanDeclared ||
+                    if (IsRealCallOrKan(e) ||
                         (e.Type == RoundEventType.TileDiscarded && e.Seat == winner))
                     {
                         throw Reject(
@@ -742,6 +740,36 @@ namespace Mahjong.Domain.Rules
             }
 
             return false;
+        }
+
+        /// <summary>
+        /// A recorded response is a call only when it is not an ordinary PASS. A pass neither
+        /// interrupts ippatsu/first-turn/chiihou nor cancels a four-winds abort.
+        /// </summary>
+        private static bool HasRealCallOrKan(RoundStateMachine round)
+        {
+            for (int i = 0; i < round.Events.Count; i++)
+            {
+                if (IsRealCallOrKan(round.Events[i]))
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        private static bool IsRealCallOrKan(RoundEvent value)
+        {
+            if (value.Type == RoundEventType.KanDeclared ||
+                value.Type == RoundEventType.ChiDeclared ||
+                value.Type == RoundEventType.PonDeclared)
+            {
+                return true;
+            }
+
+            return value.Type == RoundEventType.ResponseClaimed &&
+                   !string.Equals(value.Detail, "PASS", StringComparison.Ordinal);
         }
 
         private static PlayerHand BuildHand(
@@ -1122,8 +1150,7 @@ namespace Mahjong.Domain.Rules
 
                 if (round.Tiles.CountAt(TileZone.Meld) != 0 ||
                     round.Tiles.KanCount != 0 ||
-                    HasEvent(round, RoundEventType.ResponseClaimed) ||
-                    HasEvent(round, RoundEventType.KanDeclared))
+                    HasRealCallOrKan(round))
                 {
                     throw Reject(
                         RoundSettlementRejectionCode.AbortiveReasonMismatch,
