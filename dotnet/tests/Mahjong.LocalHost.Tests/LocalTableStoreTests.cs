@@ -72,8 +72,17 @@ namespace Mahjong.LocalHost.Tests
             }
         }
 
-        public void Copy(string source, string destination, bool overwrite) =>
+        public void Copy(string source, string destination, bool overwrite)
+        {
+            CopyAttempts++;
+            Exception? before = BeforeCopy?.Invoke(destination);
+            if (before != null)
+            {
+                throw before;
+            }
+
             _inner.Copy(source, destination, overwrite);
+        }
 
         public void Delete(string path) => _inner.Delete(path);
 
@@ -83,12 +92,12 @@ namespace Mahjong.LocalHost.Tests
     public sealed class LocalTableStoreTests
     {
         [Fact]
-        public async Task MoveSucceededButCopyReportedFailureStillLeavesReadablePrimary()
+        public async Task MoveCommittedButReportsErrorStillLeavesReadablePrimary()
         {
             await using var harness = new P41Harness();
             var fs = new FaultingFileSystem
             {
-                AfterMove = _ => new IOException("injected copy failure")
+                AfterMove = _ => new IOException("injected post-move report error")
             };
             harness.Options.FileSystemForTest = fs;
             LocalTableStore first = await OpenFreshStoreAsync(harness, fs, TestContext.Current.CancellationToken);
@@ -120,7 +129,25 @@ namespace Mahjong.LocalHost.Tests
             harness.Options.FileSystemForTest = fs;
             await Assert.ThrowsAnyAsync<Exception>(async () =>
                 await OpenFreshStoreAsync(harness, fs, TestContext.Current.CancellationToken));
+            Assert.False(File.Exists(harness.SavePath));
+            Assert.False(File.Exists(harness.BackupPath));
         }
+        [Fact]
+        public async Task FirstCreateCopyFailureKeepsCommittedPrimaryForRepair()
+        {
+            await using var harness = new P41Harness();
+            var fs = new FaultingFileSystem
+            {
+                BeforeCopy = _ => new IOException("injected copy failure")
+            };
+            harness.Options.FileSystemForTest = fs;
+            LocalTableStore store = await OpenFreshStoreAsync(harness, fs, TestContext.Current.CancellationToken);
+            store.Dispose();
+            Assert.True(fs.CopyAttempts >= 1, "copy attempts=" + fs.CopyAttempts);
+            Assert.True(File.Exists(harness.SavePath));
+            Assert.False(File.Exists(harness.BackupPath));
+        }
+
         [Fact]
         public async Task FirstCreateWritesPrimaryAndPreviousCopy()
         {
