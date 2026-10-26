@@ -10,9 +10,14 @@
   "includePlatforms": [],
   "excludePlatforms": [],
   "allowUnsafeCode": false,
-  "overrideReferences": false,
-  "precompiledReferences": [],
-  "autoReferenced": true,
+  "overrideReferences": true,
+  "precompiledReferences": [
+    "Mahjong.Client.dll",
+    "Mahjong.Contracts.dll",
+    "Mahjong.Contracts.Wire.dll",
+    "Google.Protobuf.dll"
+  ],
+  "autoReferenced": false,
   "defineConstraints": [],
   "versionDefines": [],
   "noEngineReferences": false
