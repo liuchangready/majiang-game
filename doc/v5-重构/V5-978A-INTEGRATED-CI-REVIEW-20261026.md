@@ -211,8 +211,8 @@ disposal 口径说明：`TableSessionOperationQueue` 不实现 `IDisposable`；�
 |---|---|---|
 | push run 40273525993 全量（本头精确） | **PASS** | summary OVERALL PASS、1,829/0/0、sln 0W0E、PG 12/12 哈希 |
 | PR run 40273530505 全量（merge ref） | **PASS（含本头，非精确 checkout）** | §1.1 parents 核实 |
-| TableSessionOperationQueueTests 定向 | **PASS** | exit 0，21/21/0/0/0，XML 0FD52989…（完整值见 §3.1） |
-| TableSessionRunnerTests 定向 | **PASS** | exit 0，25/25/0/0/0，XML F2F43F49…（完整值见 §3.1） |
+| TableSessionOperationQueueTests 定向 | **PASS** | exit 0，21/21/0/0/0，XML `0fd5298933b2a8a6ea43f6f6f54d3d8eb6ba8c22b9838fb57dc8d0774e7f8bf1` |
+| TableSessionRunnerTests 定向 | **PASS** | exit 0，25/25/0/0/0，XML `f2f43f49658b496fbe308c30298e59c51fef1ce4fa7f4b01dc0bf077a00ef922` |
 | 本地 fresh Release 构建（两工程） | **PASS** | exit 0，0 警告 0 错误 |
 | P5.4a session operations 验收记录存在性 | **FAIL**（缺口，caller 侧补记） | §6 D-R3-01 |
 | CI per-test 明细 | **NOT_RUN（CI 侧无此证据形态）** | 框架日志 summary 级；per-test 由本地 XML 补齐 |
