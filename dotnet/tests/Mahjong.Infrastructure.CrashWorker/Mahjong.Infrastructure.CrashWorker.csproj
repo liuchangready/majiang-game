@@ -1,0 +1,27 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Test-only crash worker for P5.2. It is not a production entry point and is
+    not added to Mahjong.sln. The real verify wrapper runs writer -> immediate
+    PostgreSQL restart -> reader.
+  -->
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <OutputType>Exe</OutputType>
+    <IsPackable>false</IsPackable>
+    <LangVersion>12.0</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <AssemblyName>Mahjong.Infrastructure.CrashWorker</AssemblyName>
+    <RootNamespace>Mahjong.Infrastructure.CrashWorker</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\Mahjong.Infrastructure\Mahjong.Infrastructure.csproj" />
+    <ProjectReference Include="..\..\src\Mahjong.TableRuntime\Mahjong.TableRuntime.csproj" />
+    <ProjectReference Include="..\..\src\Mahjong.Domain\Mahjong.Domain.csproj" />
+    <ProjectReference Include="..\..\src\Mahjong.Contracts\Mahjong.Contracts.csproj" />
+  </ItemGroup>
+
+</Project>
