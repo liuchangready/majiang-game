@@ -1,3 +1,4 @@
+#nullable enable
 using System;
 using UnityEngine;
 
@@ -13,14 +14,23 @@ namespace Mahjong.Unity.UI
         private bool _isArmed;
         private int? _primaryPointerId;
         private Vector2 _pointerDownPos;
+        private Vector2 _lastDragPos;
         private float _accumulatedDragDistance;
         private long _pressGeneration;
-        private bool _acceptingInput = true;
+
+        // Independent gate states
+        private bool _isPaused;
+        private bool _isTransitioning;
+        private bool _isFocusLost;
 
         public bool IsArmed => _isArmed;
         public int? PrimaryPointerId => _primaryPointerId;
         public long PressGeneration => _pressGeneration;
-        public bool AcceptingInput => _acceptingInput;
+        public bool IsPaused => _isPaused;
+        public bool IsTransitioning => _isTransitioning;
+        public bool IsFocusLost => _isFocusLost;
+
+        public bool AcceptingInput => !_isPaused && !_isTransitioning && !_isFocusLost;
 
         public static void ResetForTest()
         {
@@ -29,7 +39,7 @@ namespace Mahjong.Unity.UI
 
         public bool TryArm(int pointerId, Vector2 screenPos, float scale = 1.0f)
         {
-            if (!_acceptingInput)
+            if (!AcceptingInput)
             {
                 return false;
             }
@@ -44,6 +54,7 @@ namespace Mahjong.Unity.UI
             _isArmed = true;
             _primaryPointerId = pointerId;
             _pointerDownPos = screenPos;
+            _lastDragPos = screenPos;
             _accumulatedDragDistance = 0f;
             return true;
         }
@@ -55,15 +66,15 @@ namespace Mahjong.Unity.UI
                 return;
             }
 
-            float distPixels = Vector2.Distance(_pointerDownPos, currentScreenPos);
+            float delta = Vector2.Distance(_lastDragPos, currentScreenPos);
+            _lastDragPos = currentScreenPos;
             float effectiveScale = scale > 0.001f ? scale : 1.0f;
-            _accumulatedDragDistance = distPixels / effectiveScale;
+            _accumulatedDragDistance += delta / effectiveScale;
 
             if (_accumulatedDragDistance > MaxDragThresholdDesignUnits)
             {
                 // Drag threshold exceeded: cancel arm
-                _isArmed = false;
-                _primaryPointerId = null;
+                CancelArm();
             }
         }
 
@@ -74,19 +85,12 @@ namespace Mahjong.Unity.UI
                 return false;
             }
 
-            if (!_acceptingInput)
+            if (!AcceptingInput || checkGeneration != _pressGeneration)
             {
                 CancelArm();
                 return false;
             }
 
-            if (checkGeneration != _pressGeneration)
-            {
-                CancelArm();
-                return false;
-            }
-
-            // Successfully released within threshold
             _isArmed = false;
             _primaryPointerId = null;
             return true;
@@ -97,40 +101,40 @@ namespace Mahjong.Unity.UI
             _isArmed = false;
             _primaryPointerId = null;
             _pressGeneration++;
-            _acceptingInput = false;
             _accumulatedDragDistance = 0f;
         }
 
         public void OnPause()
         {
+            _isPaused = true;
             CancelArm();
         }
 
         public void OnResume()
         {
-            // Resume only restores acceptingInput, does NOT restore old arm
-            _acceptingInput = true;
+            _isPaused = false;
         }
 
         public void OnTransition()
         {
+            _isTransitioning = true;
             CancelArm();
         }
 
         public void TransitionEnd()
         {
-            // TransitionEnd only restores acceptingInput, does NOT restore old arm
-            _acceptingInput = true;
+            _isTransitioning = false;
         }
 
         public void OnFocusLost()
         {
+            _isFocusLost = true;
             CancelArm();
         }
 
         public void OnFocusGained()
         {
-            _acceptingInput = true;
+            _isFocusLost = false;
         }
     }
 }

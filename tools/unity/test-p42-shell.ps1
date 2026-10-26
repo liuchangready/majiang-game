@@ -91,9 +91,10 @@ if ($procEdit.ExitCode -ne 0 -or -not (Test-Path $editXml)) {
 $editTotal = [int]$xmlEdit.'test-run'.total
 $editPassed = [int]$xmlEdit.'test-run'.passed
 $editFailed = [int]$xmlEdit.'test-run'.failed
-Write-Host "EditMode Tests: Total=$editTotal, Passed=$editPassed, Failed=$editFailed"
-if ($editFailed -gt 0 -or $editTotal -eq 0) {
-    throw "EditMode tests had $editFailed failures (Total: $editTotal)"
+$editSkipped = [int]$xmlEdit.'test-run'.skipped
+Write-Host "EditMode Tests: Total=$editTotal, Passed=$editPassed, Failed=$editFailed, Skipped=$editSkipped"
+if ($editFailed -gt 0 -or $editSkipped -gt 0 -or $editTotal -eq 0 -or $editPassed -ne $editTotal) {
+    throw "EditMode tests had $editFailed failures, $editSkipped skipped (Total: $editTotal)"
 }
 $results.EditModeTests = "PASS ($editPassed/$editTotal)"
 
@@ -119,29 +120,30 @@ if ($procPlay.ExitCode -ne 0 -or -not (Test-Path $playXml)) {
 $playTotal = [int]$xmlPlay.'test-run'.total
 $playPassed = [int]$xmlPlay.'test-run'.passed
 $playFailed = [int]$xmlPlay.'test-run'.failed
-Write-Host "PlayMode Tests: Total=$playTotal, Passed=$playPassed, Failed=$playFailed"
-if ($playFailed -gt 0 -or $playTotal -eq 0) {
-    throw "PlayMode tests had $playFailed failures (Total: $playTotal)"
+$playSkipped = [int]$xmlPlay.'test-run'.skipped
+Write-Host "PlayMode Tests: Total=$playTotal, Passed=$playPassed, Failed=$playFailed, Skipped=$playSkipped"
+if ($playFailed -gt 0 -or $playSkipped -gt 0 -or $playTotal -eq 0 -or $playPassed -ne $playTotal) {
+    throw "PlayMode tests had $playFailed failures, $playSkipped skipped (Total: $playTotal)"
 }
 $results.PlayModeTests = "PASS ($playPassed/$playTotal)"
 
 # 4. Player Smoke Test
 if (-not $SkipPlayer) {
     Write-Host "`n[STEP 5/5] Running Standalone Player Smoke Test & Screenshot Capture..."
-    $playerExe = Join-Path $resolvedOutput "player/Mahjong.exe"
-    if (-not (Test-Path $playerExe)) {
-        Write-Host "Building player executable first..."
-        $playerLog = Join-Path $resolvedLogs "build-player.log"
-        $psiBuild = New-Object System.Diagnostics.ProcessStartInfo
-        $psiBuild.FileName = $resolvedUnity
-        $psiBuild.Arguments = "-batchmode -quit -projectPath `"$resolvedProj`" -buildWindows64Player `"$playerExe`" -logFile `"$playerLog`""
-        $psiBuild.UseShellExecute = $false
-        $psiBuild.CreateNoWindow = $true
-        $procBuild = [System.Diagnostics.Process]::Start($psiBuild)
-        $procBuild.WaitForExit(300000)
-        if ($procBuild.ExitCode -ne 0) {
-            throw "Player build FAILED with exit code $($procBuild.ExitCode)"
-        }
+    $playerDir = Join-Path $resolvedOutput "player"
+    if (Test-Path $playerDir) { Remove-Item $playerDir -Recurse -Force }
+    $playerExe = Join-Path $playerDir "Mahjong.exe"
+    Write-Host "Building fresh player executable: $playerExe..."
+    $playerLog = Join-Path $resolvedLogs "build-player.log"
+    $psiBuild = New-Object System.Diagnostics.ProcessStartInfo
+    $psiBuild.FileName = $resolvedUnity
+    $psiBuild.Arguments = "-batchmode -quit -projectPath `"$resolvedProj`" -buildWindows64Player `"$playerExe`" -logFile `"$playerLog`""
+    $psiBuild.UseShellExecute = $false
+    $psiBuild.CreateNoWindow = $true
+    $procBuild = [System.Diagnostics.Process]::Start($psiBuild)
+    $procBuild.WaitForExit(300000)
+    if ($procBuild.ExitCode -ne 0 -or -not (Test-Path $playerExe)) {
+        throw "Player build FAILED with exit code $($procBuild.ExitCode)"
     }
     $results.PlayerBuild = "PASS"
 

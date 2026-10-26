@@ -18,164 +18,87 @@ $resolvedScreenshotDir = if ([System.IO.Path]::IsPathRooted($ScreenshotDir)) {
 }
 New-Item -ItemType Directory -Force -Path $resolvedScreenshotDir | Out-Null
 
+# Clean any existing screenshots in target directory
+Get-ChildItem -Path $resolvedScreenshotDir -Filter "*.png" | Remove-Item -Force
+
 $resolvedLog = if ([System.IO.Path]::IsPathRooted($LogFile)) {
     $LogFile
 } else {
     Join-Path (Get-Location).Path $LogFile
 }
-
-Add-Type -AssemblyName System.Drawing
-Add-Type -AssemblyName System.Windows.Forms
-
-$win32Def = @"
-using System;
-using System.Drawing;
-using System.Runtime.InteropServices;
-
-public class Win32Capture {
-    [StructLayout(LayoutKind.Sequential)]
-    public struct RECT {
-        public int Left, Top, Right, Bottom;
-    }
-
-    [DllImport("user32.dll")]
-    public static extern bool GetWindowRect(IntPtr hWnd, out RECT lpRect);
-
-    [DllImport("user32.dll")]
-    public static extern bool SetForegroundWindow(IntPtr hWnd);
-
-    [DllImport("user32.dll")]
-    public static extern bool MoveWindow(IntPtr hWnd, int X, int Y, int nWidth, int nHeight, bool bRepaint);
-
-    [DllImport("user32.dll")]
-    public static extern bool SetCursorPos(int X, int Y);
-
-    [DllImport("user32.dll")]
-    public static extern void mouse_event(uint dwFlags, uint dx, uint dy, uint dwData, int dwExtraInfo);
-
-    [DllImport("user32.dll")]
-    public static extern void keybd_event(byte bVk, byte bScan, uint dwFlags, int dwExtraInfo);
-
-    public const uint MOUSEEVENTF_LEFTDOWN = 0x0002;
-    public const uint MOUSEEVENTF_LEFTUP = 0x0004;
-    public const byte VK_ESCAPE = 0x1B;
-    public const uint KEYEVENTF_KEYUP = 0x0002;
-
-    public static void ClickAt(int screenX, int screenY) {
-        SetCursorPos(screenX, screenY);
-        System.Threading.Thread.Sleep(50);
-        mouse_event(MOUSEEVENTF_LEFTDOWN, (uint)screenX, (uint)screenY, 0, 0);
-        System.Threading.Thread.Sleep(50);
-        mouse_event(MOUSEEVENTF_LEFTUP, (uint)screenX, (uint)screenY, 0, 0);
-    }
-
-    public static void SendEscape() {
-        keybd_event(VK_ESCAPE, 0, 0, 0);
-        System.Threading.Thread.Sleep(50);
-        keybd_event(VK_ESCAPE, 0, KEYEVENTF_KEYUP, 0);
-    }
-
-    [DllImport("user32.dll")]
-    public static extern bool PrintWindow(IntPtr hWnd, IntPtr hdcBmp, uint nFlags);
-
-    public static bool CaptureWindow(IntPtr hWnd, string savePath) {
-        RECT rect;
-        if (!GetWindowRect(hWnd, out rect)) {
-            return false;
-        }
-        int width = rect.Right - rect.Left;
-        int height = rect.Bottom - rect.Top;
-        if (width <= 0 || height <= 0) return false;
-
-        using (Bitmap bmp = new Bitmap(width, height)) {
-            using (Graphics g = Graphics.FromImage(bmp)) {
-                IntPtr hdc = g.GetHdc();
-                PrintWindow(hWnd, hdc, 2);
-                g.ReleaseHdc(hdc);
-            }
-            bmp.Save(savePath, System.Drawing.Imaging.ImageFormat.Png);
-        }
-        return true;
-    }
-}
-"@
-if (-not ([System.Management.Automation.PSTypeName]'Win32Capture').Type) {
-    Add-Type -TypeDefinition $win32Def -Language CSharp -ReferencedAssemblies "System.Drawing"
+if (Test-Path $resolvedLog) {
+    Remove-Item $resolvedLog -Force
 }
 
 Write-Host "Launching standalone player: $resolvedExe"
+Write-Host "Screenshots target: $resolvedScreenshotDir"
+Write-Host "Log target: $resolvedLog"
+
 $psi = New-Object System.Diagnostics.ProcessStartInfo
 $psi.FileName = $resolvedExe
-$psi.Arguments = "-screen-width 1280 -screen-height 720 -screen-fullscreen 0 -logfile `"$resolvedLog`""
+$psi.Arguments = "-screen-width 1280 -screen-height 720 -screen-fullscreen 0 -logfile `"$resolvedLog`" -smoke-test `"$resolvedScreenshotDir`""
 $psi.UseShellExecute = $false
 
 $proc = [System.Diagnostics.Process]::Start($psi)
 
 try {
-    # Wait for process to finish loading and window to be ready
-    $waited = 0
-    $hWnd = [IntPtr]::Zero
-    while ($waited -lt 30) {
-        Start-Sleep -Seconds 1
-        $proc.Refresh()
-        $hWnd = $proc.MainWindowHandle
-        if ($hWnd -ne [IntPtr]::Zero -and -not [string]::IsNullOrEmpty($proc.MainWindowTitle)) {
-            Write-Host "Found ready window '$($proc.MainWindowTitle)' (Handle: $hWnd) at second $waited"
-            [Win32Capture]::SetForegroundWindow($hWnd)
-            [Win32Capture]::MoveWindow($hWnd, 50, 50, 1280, 720, $true)
-            Start-Sleep -Seconds 4
-            break
+    Write-Host "Waiting for player process $($proc.Id) to complete automated smoke sequence..."
+    $cleanExit = $proc.WaitForExit(45000)
+    if ($cleanExit) {
+        Write-Host "Player exited cleanly with ExitCode: $($proc.ExitCode)"
+        if ($proc.ExitCode -ne 0) {
+            throw "Player process exited with error ExitCode: $($proc.ExitCode)"
         }
-        $waited++
+    } else {
+        throw "Player smoke test timed out after 45 seconds."
     }
 
-    if ($hWnd -eq [IntPtr]::Zero) {
-        throw "Could not acquire MainWindowHandle within 30 seconds."
-    }
-
-    Write-Host "Player window handle: $hWnd, ProcessId: $($proc.Id)"
-
-    # 1. Capture Menu screen
+    # Assertions on captured screenshots
     $menuShot = Join-Path $resolvedScreenshotDir "01-menu.png"
-    [Win32Capture]::CaptureWindow($hWnd, $menuShot)
-    Write-Host "Captured: $menuShot"
-
-    # Click "进入大厅" (PlayButton)
-    # Window top-left is at (50, 50). Center of window is (50 + 640, 50 + 360) = (690, 410)
-    # PlayButton pos is anchored at y=20 (slightly above center), so ~ (690, 390)
-    [Win32Capture]::SetForegroundWindow($hWnd)
-    [Win32Capture]::ClickAt(690, 390)
-    Start-Sleep -Seconds 2
-
-    # 2. Capture Lobby screen
     $lobbyShot = Join-Path $resolvedScreenshotDir "02-lobby.png"
-    [Win32Capture]::CaptureWindow($hWnd, $lobbyShot)
-    Write-Host "Captured: $lobbyShot"
-
-    # Send Back/Escape to return to Menu
-    [Win32Capture]::SetForegroundWindow($hWnd)
-    [Win32Capture]::SendEscape()
-    Start-Sleep -Seconds 2
-
-    # 3. Capture Menu screen again
     $menuReturnShot = Join-Path $resolvedScreenshotDir "03-menu-returned.png"
-    [Win32Capture]::CaptureWindow($hWnd, $menuReturnShot)
-    Write-Host "Captured: $menuReturnShot"
-
-    # Send Escape to open Quit Confirmation Modal
-    [Win32Capture]::SetForegroundWindow($hWnd)
-    [Win32Capture]::SendEscape()
-    Start-Sleep -Seconds 1
-
-    # 4. Capture Quit Modal
     $modalShot = Join-Path $resolvedScreenshotDir "04-quit-modal.png"
-    [Win32Capture]::CaptureWindow($hWnd, $modalShot)
-    Write-Host "Captured: $modalShot"
+    $shots = @($menuShot, $lobbyShot, $menuReturnShot, $modalShot)
+    foreach ($shot in $shots) {
+        if (-not (Test-Path $shot)) {
+            throw "Screenshot was not generated: $shot"
+        }
+        $len = (Get-Item $shot).Length
+        if ($len -lt 10000) {
+            throw "Screenshot is suspiciously small ($len bytes): $shot"
+        }
+    }
 
-    # Dismiss modal by pressing Escape again (Cancel)
-    [Win32Capture]::SetForegroundWindow($hWnd)
-    [Win32Capture]::SendEscape()
-    Start-Sleep -Seconds 1
+    $hashMenu = (Get-FileHash -Algorithm SHA256 $menuShot).Hash
+    $hashLobby = (Get-FileHash -Algorithm SHA256 $lobbyShot).Hash
+    $hashMenuReturn = (Get-FileHash -Algorithm SHA256 $menuReturnShot).Hash
+    $hashModal = (Get-FileHash -Algorithm SHA256 $modalShot).Hash
+
+    Write-Host "01-menu.png          SHA256: $hashMenu"
+    Write-Host "02-lobby.png         SHA256: $hashLobby"
+    Write-Host "03-menu-returned.png SHA256: $hashMenuReturn"
+    Write-Host "04-quit-modal.png    SHA256: $hashModal"
+
+    if ($hashMenu -eq $hashLobby) {
+        throw "Menu and Lobby screenshots are identical (hash: $hashMenu). Visual navigation failed to render distinct scene."
+    }
+    if ($hashMenu -eq $hashModal) {
+        throw "Menu and Modal screenshots are identical (hash: $hashMenu). Modal overlay failed to render."
+    }
+
+    # Log assertions
+    if (Test-Path $resolvedLog) {
+        $logContent = Get-Content $resolvedLog -Raw
+        if (-not $logContent.Contains("SMOKE_SUCCESS")) {
+            throw "Log file does not contain SMOKE_SUCCESS marker."
+        }
+        if (-not $logContent.Contains("SCENE_LOAD_COMPLETED:Menu")) {
+            throw "Log file does not contain Menu scene load confirmation."
+        }
+        if (-not $logContent.Contains("SCENE_LOAD_COMPLETED:Lobby")) {
+            throw "Log file does not contain Lobby scene load confirmation."
+        }
+    }
 
     Write-Host "Player smoke test completed successfully!"
 }

@@ -1,5 +1,7 @@
+#nullable enable
 using System.Collections.Generic;
 using UnityEngine;
+using UnityEngine.EventSystems;
 using UnityEngine.UI;
 
 namespace Mahjong.Unity.UI
@@ -23,6 +25,7 @@ namespace Mahjong.Unity.UI
                 }
             }
             _currentIndex = _selectables.Count > 0 ? 0 : -1;
+            FocusCurrent();
         }
 
         public Selectable? GetCurrent()
@@ -32,6 +35,15 @@ namespace Mahjong.Unity.UI
                 return _selectables[_currentIndex];
             }
             return null;
+        }
+
+        public void FocusCurrent()
+        {
+            var target = GetCurrent();
+            if (target != null && EventSystem.current != null)
+            {
+                EventSystem.current.SetSelectedGameObject(target.gameObject);
+            }
         }
 
         public Selectable? FocusNext()

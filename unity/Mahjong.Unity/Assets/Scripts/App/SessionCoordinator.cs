@@ -1,3 +1,4 @@
+#nullable enable
 using System;
 using System.Collections.Generic;
 using System.Threading;
@@ -14,7 +15,8 @@ namespace Mahjong.Unity.App
         Completed = 0,
         PumpBarrierTimeout = 1,
         CloseTimeout = 2,
-        AlreadyIncomplete = 3
+        AlreadyIncomplete = 3,
+        CloseFault = 4
     }
 
     public sealed class ShutdownResult
@@ -35,6 +37,7 @@ namespace Mahjong.Unity.App
         public static ShutdownResult Completed() => new ShutdownResult(ShutdownOutcome.Completed, false, true);
         public static ShutdownResult PumpBarrierTimeout() => new ShutdownResult(ShutdownOutcome.PumpBarrierTimeout, true, false);
         public static ShutdownResult CloseTimeout() => new ShutdownResult(ShutdownOutcome.CloseTimeout, true, false);
+        public static ShutdownResult CloseFault() => new ShutdownResult(ShutdownOutcome.CloseFault, true, false);
         public static ShutdownResult AlreadyIncomplete(ShutdownOutcome prior, bool quarantined) =>
             new ShutdownResult(ShutdownOutcome.AlreadyIncomplete, quarantined, false, prior);
     }
@@ -70,6 +73,7 @@ namespace Mahjong.Unity.App
         public long CurrentGeneration => _currentGeneration;
         public bool IsQuarantined => _quarantined;
         public ShutdownResult? TerminalResult => _terminal;
+        public CancellationToken RunToken => _runCts.Token;
 
         public SessionCoordinator(
             IGameSession? session,
@@ -85,6 +89,10 @@ namespace Mahjong.Unity.App
             _dispatcher = dispatcher ?? throw new ArgumentNullException(nameof(dispatcher));
             _config = config ?? new AppConfig();
             _currentGeneration = generation;
+
+            // Synchronize dispatcher generation with session generation
+            _dispatcher.CurrentGeneration = _currentGeneration;
+            _dispatcher.Overflowed += OnDispatcherOverflowed;
 
             _currentViewState = new SessionViewState(
                 _currentGeneration,
@@ -107,23 +115,79 @@ namespace Mahjong.Unity.App
             _pumpTask = pumpTask;
         }
 
+        private void OnDispatcherOverflowed()
+        {
+            lock (_stateGate)
+            {
+                _quarantined = true;
+                _runCts.Cancel();
+                _currentViewState = new SessionViewState(
+                    _currentGeneration,
+                    TableConnectionState.Closed,
+                    _operationQueue?.Binding ?? _session?.Binding,
+                    _currentViewState.PlayerSnapshot,
+                    _currentViewState.PublicSnapshot,
+                    _currentViewState.RoomSnapshot,
+                    _currentViewState.PendingCommands,
+                    "UI_DISPATCH_OVERFLOW");
+            }
+        }
+
         private void OnSessionSnapshotChanged(object? sender, TableSnapshotChangedEventArgs e)
         {
-            if (_terminal != null || _quarantined) return;
+            lock (_stateGate)
+            {
+                if (_terminal != null || _quarantined) return;
+            }
 
             long gen = _currentGeneration;
-            var viewState = new SessionViewState(
-                gen,
-                _operationQueue?.State ?? _session?.State ?? TableConnectionState.Ready,
-                _operationQueue?.Binding ?? _session?.Binding,
-                e.PlayerSnapshot,
-                e.PublicSnapshot,
-                e.RoomSnapshot,
-                _operationQueue?.CaptureAsync(CancellationToken.None).Result?.PendingCommands ??
-                    (IReadOnlyList<PendingCommandSnapshot>)(_session?.PendingCommands ?? Array.Empty<PendingCommandSnapshot>()),
-                _operationQueue?.LastError ?? _session?.LastError);
+            if (_operationQueue != null)
+            {
+                _ = EnqueueCaptureAndPublishAsync(gen, e);
+            }
+            else
+            {
+                var viewState = new SessionViewState(
+                    gen,
+                    _session?.State ?? TableConnectionState.Ready,
+                    _session?.Binding,
+                    e.PlayerSnapshot?.Clone(),
+                    e.PublicSnapshot?.Clone(),
+                    e.RoomSnapshot?.Clone(),
+                    _session?.PendingCommands ?? Array.Empty<PendingCommandSnapshot>(),
+                    _session?.LastError);
 
-            Publish(gen, viewState);
+                Publish(gen, viewState);
+            }
+        }
+
+        private async Task EnqueueCaptureAndPublishAsync(long gen, TableSnapshotChangedEventArgs e)
+        {
+            try
+            {
+                if (_operationQueue == null) return;
+                var capture = await _operationQueue.CaptureAsync(CancellationToken.None).ConfigureAwait(false);
+                lock (_stateGate)
+                {
+                    if (_terminal != null || _quarantined || gen != _currentGeneration) return;
+                }
+
+                var viewState = new SessionViewState(
+                    gen,
+                    _operationQueue.State,
+                    _operationQueue.Binding,
+                    e.PlayerSnapshot?.Clone(),
+                    e.PublicSnapshot?.Clone(),
+                    e.RoomSnapshot?.Clone(),
+                    capture?.PendingCommands ?? (IReadOnlyList<PendingCommandSnapshot>)(_session?.PendingCommands ?? Array.Empty<PendingCommandSnapshot>()),
+                    _operationQueue.LastError);
+
+                Publish(gen, viewState);
+            }
+            catch (Exception ex)
+            {
+                Debug.LogWarning($"Capture exception: {ex.Message}");
+            }
         }
 
         public void Publish(long generation, SessionViewState state)
@@ -147,6 +211,14 @@ namespace Mahjong.Unity.App
 
             _dispatcher.Post(() =>
             {
+                lock (_stateGate)
+                {
+                    if (_terminal != null || _quarantined || generation != _currentGeneration)
+                    {
+                        return;
+                    }
+                }
+
                 Changed?.Invoke(this, state);
             }, generation);
         }
@@ -184,6 +256,7 @@ namespace Mahjong.Unity.App
                     {
                         _quarantined = true;
                         _terminal = ShutdownResult.PumpBarrierTimeout();
+                        CleanupSubscriptions();
                         return _terminal;
                     }
                 }
@@ -217,18 +290,58 @@ namespace Mahjong.Unity.App
                 {
                     _quarantined = true;
                     _terminal = ShutdownResult.CloseTimeout();
+                    CleanupSubscriptions();
                     return _terminal;
                 }
             }
 
-            // Step 3: Dispose channel if applicable
+            // Verify closeTask did not fault or cancel
+            try
+            {
+                await closeTask.ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                Debug.LogWarning($"Session close faulted: {ex.Message}");
+                lock (_stateGate)
+                {
+                    _quarantined = true;
+                    _terminal = ShutdownResult.CloseFault();
+                    CleanupSubscriptions();
+                    return _terminal;
+                }
+            }
+
+            if (closeTask.IsCanceled || closeTask.IsFaulted)
+            {
+                lock (_stateGate)
+                {
+                    _quarantined = true;
+                    _terminal = ShutdownResult.CloseFault();
+                    CleanupSubscriptions();
+                    return _terminal;
+                }
+            }
+
+            // Step 3: Dispose channel ONLY IF cleanly closed
             DisposeChannel();
 
             lock (_stateGate)
             {
                 _terminal = ShutdownResult.Completed();
+                CleanupSubscriptions();
                 return _terminal;
             }
+        }
+
+        private void CleanupSubscriptions()
+        {
+            if (_session != null)
+            {
+                _session.SnapshotChanged -= OnSessionSnapshotChanged;
+            }
+            _dispatcher.Overflowed -= OnDispatcherOverflowed;
+            _currentGeneration++;
         }
 
         private void DisposeChannel()

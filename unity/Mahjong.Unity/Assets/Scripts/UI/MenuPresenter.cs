@@ -22,6 +22,7 @@ namespace Mahjong.Unity.UI
 
         private void Start()
         {
+            Debug.Log("MENU_PRESENTER_STARTED");
             if (_playButton != null)
             {
                 _playButton.onClick.AddListener(OnPlayClicked);
@@ -44,6 +45,7 @@ namespace Mahjong.Unity.UI
 
         public void OnPlayClicked()
         {
+            Debug.Log("PLAY_BUTTON_CLICKED: Opening lobby...");
             if (_navigation != null)
             {
                 _navigation.OpenLobby();
@@ -52,6 +54,7 @@ namespace Mahjong.Unity.UI
 
         public void OnQuitClicked()
         {
+            Debug.Log("QUIT_BUTTON_CLICKED: Showing quit modal...");
             if (_quitModal != null)
             {
                 _quitModal.Show(

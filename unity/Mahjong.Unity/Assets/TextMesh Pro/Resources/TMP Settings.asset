@@ -11,8 +11,8 @@ MonoBehaviour:
   m_EditorHideFlags: 0
   m_Script: {fileID: 11500000, guid: 2705215ac5b84b70bacc50632be6e391, type: 3}
   m_Name: TMP Settings
-  m_EditorClassIdentifier: 
-  assetVersion: 
+  m_EditorClassIdentifier:
+  assetVersion:
   m_TextWrappingMode: 1
   m_enableKerning: 1
   m_ActiveFontFeatures: 00000000
@@ -43,7 +43,7 @@ MonoBehaviour:
   m_EmojiFallbackTextAssets: []
   m_defaultColorGradientPresetsPath: Color Gradient Presets/
   m_defaultStyleSheet: {fileID: 0}
-  m_StyleSheetsResourcePath: 
+  m_StyleSheetsResourcePath:
   m_leadingCharacters: {fileID: 0}
   m_followingCharacters: {fileID: 0}
   m_UseModernHangulLineBreakingRules: 0

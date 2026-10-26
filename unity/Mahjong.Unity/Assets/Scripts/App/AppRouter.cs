@@ -1,3 +1,4 @@
+#nullable enable
 using System;
 using System.Threading.Tasks;
 using Mahjong.Unity.UI;
@@ -10,19 +11,21 @@ namespace Mahjong.Unity.App
     {
         private readonly AppComposition _composition;
         private readonly BackRouter _backRouter;
-        private bool _isTransitioning;
         private SceneId _currentScene = SceneId.Boot;
+        private bool _isTransitioning;
+
+        public event Action<SceneId>? SceneLoaded;
 
         public SceneId CurrentScene => _currentScene;
         public bool IsTransitioning => _isTransitioning;
-
-        public event Action<SceneId>? SceneLoaded;
 
         public AppRouter(AppComposition composition, BackRouter backRouter)
         {
             _composition = composition ?? throw new ArgumentNullException(nameof(composition));
             _backRouter = backRouter ?? throw new ArgumentNullException(nameof(backRouter));
+
             _backRouter.SetTransitionGate(() => _isTransitioning);
+            UpdateBackRouterForScene(_currentScene);
         }
 
         public void OpenLobby()
@@ -35,22 +38,30 @@ namespace Mahjong.Unity.App
             _ = ReturnToMenuAsync();
         }
 
-        public void RequestQuit()
-        {
-            _ = QuitApplicationAsync();
-        }
-
         public async Task<bool> LoadAsync(SceneId sceneId)
         {
             if (_isTransitioning)
             {
-                Debug.LogWarning($"NAV_BUSY: Already transitioning, ignoring request to load {sceneId}");
+                Debug.LogWarning($"NAV_BUSY: Transition already in progress, rejecting load to {sceneId}");
                 return false;
             }
 
             _isTransitioning = true;
             UiInputLifecycle.Instance.OnTransition();
 
+            try
+            {
+                return await LoadAsyncInternal(sceneId);
+            }
+            finally
+            {
+                _isTransitioning = false;
+                UiInputLifecycle.Instance.TransitionEnd();
+            }
+        }
+
+        private async Task<bool> LoadAsyncInternal(SceneId sceneId)
+        {
             try
             {
                 string sceneName = sceneId.ToString();
@@ -66,6 +77,7 @@ namespace Mahjong.Unity.App
                 await tcs.Task;
 
                 _currentScene = sceneId;
+                Debug.Log($"SCENE_LOAD_COMPLETED:{sceneId}");
                 SceneLoaded?.Invoke(sceneId);
 
                 // Update BackRouter scene back action
@@ -77,11 +89,6 @@ namespace Mahjong.Unity.App
                 Debug.LogError($"SCENE_LOAD_FAILED:{sceneId}:{ex.Message}");
                 return false;
             }
-            finally
-            {
-                _isTransitioning = false;
-                UiInputLifecycle.Instance.TransitionEnd();
-            }
         }
 
         public async Task<bool> ReturnToMenuAsync()
@@ -92,34 +99,45 @@ namespace Mahjong.Unity.App
                 return false;
             }
 
-            // If session is active, shutdown gracefully
-            if (_composition.SessionCoordinator != null)
+            _isTransitioning = true;
+            UiInputLifecycle.Instance.OnTransition();
+
+            try
             {
-                ShutdownResult result = await _composition.ShutdownAsync("RETURN_TO_MENU");
-                if (!result.MenuAllowed)
+                // If session is active, shutdown gracefully
+                if (_composition.SessionCoordinator != null)
                 {
-                    Debug.LogError($"RETURN_TO_MENU_BLOCKED: Shutdown outcome was {result.Outcome}, quarantined={result.Quarantined}");
-                    return false;
+                    ShutdownResult result = await _composition.ShutdownAsync("RETURN_TO_MENU");
+                    if (!result.MenuAllowed)
+                    {
+                        Debug.LogError($"NAV_BLOCKED: Shutdown outcome {result.Outcome} disallowed menu");
+                        return false;
+                    }
                 }
+
+                return await LoadAsyncInternal(SceneId.Menu);
             }
-
-            return await LoadAsync(SceneId.Menu);
+            finally
+            {
+                _isTransitioning = false;
+                UiInputLifecycle.Instance.TransitionEnd();
+            }
         }
 
-        public async Task QuitApplicationAsync()
+        public void RequestQuit()
         {
-            Debug.Log("QuitApplicationAsync initiated");
-            ShutdownResult result = await _composition.ShutdownAsync("APP_QUIT");
-            Debug.Log($"Shutdown completed with outcome {result.Outcome}. Quitting application.");
-
+            Debug.Log("QUIT_REQUESTED: Initiating application shutdown.");
+            _composition.ShutdownAsync("APP_QUIT").ContinueWith(_ =>
+            {
 #if UNITY_EDITOR
-            UnityEditor.EditorApplication.isPlaying = false;
+                UnityEditor.EditorApplication.isPlaying = false;
 #else
-            Application.Quit();
+                Application.Quit(0);
 #endif
+            }, TaskScheduler.FromCurrentSynchronizationContext());
         }
 
-        private void UpdateBackRouterForScene(SceneId sceneId)
+        public void UpdateBackRouterForScene(SceneId sceneId)
         {
             switch (sceneId)
             {
@@ -127,14 +145,30 @@ namespace Mahjong.Unity.App
                     _backRouter.SetSceneBackHandler(null, isBoot: true);
                     break;
                 case SceneId.Menu:
-                    _backRouter.SetSceneBackHandler(null, isBoot: false);
+                    _backRouter.SetSceneBackHandler(() =>
+                    {
+                        var modal = UnityEngine.Object.FindFirstObjectByType<ModalPresenter>(FindObjectsInactive.Include);
+                        if (modal != null && !modal.IsOpen)
+                        {
+                            modal.ShowConfirmation("提示", "确定要退出游戏吗？", () => RequestQuit(), () => { });
+                        }
+                        else if (modal == null)
+                        {
+                            RequestQuit();
+                        }
+                    }, isBoot: false);
                     _backRouter.SetMenuQuitHandler(() => RequestQuit());
                     break;
                 case SceneId.Lobby:
-                    _backRouter.SetSceneBackHandler(() => BackToMenu(), isBoot: false);
+                    _backRouter.SetSceneBackHandler(() =>
+                    {
+                        _ = ReturnToMenuAsync();
+                    }, isBoot: false);
+                    _backRouter.SetMenuQuitHandler(null);
                     break;
                 default:
-                    _backRouter.SetSceneBackHandler(() => BackToMenu(), isBoot: false);
+                    _backRouter.SetSceneBackHandler(null, isBoot: false);
+                    _backRouter.SetMenuQuitHandler(null);
                     break;
             }
         }

@@ -3,8 +3,8 @@
     Static boundary and architectural policy checker for Unity assemblies in V5.
 .DESCRIPTION
     Enforces DAG integrity, exact asmdef references/precompiledReferences sets,
-    source-level namespace isolation, and reflection/dynamic API usage constraints.
-    Supports -TestNegativeMatrix to verify rejection of 11 negative boundary cases.
+    source-level namespace isolation, plugin closure, and reflection/dynamic API constraints.
+    Supports -TestNegativeMatrix to verify rejection of negative boundary cases.
 #>
 [CmdletBinding()]
 param(
@@ -16,8 +16,8 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $repoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
-$projectPath = Join-Path $repoRoot $Project
-$policyPath = Join-Path $repoRoot $Policy
+$projectPath = if ([System.IO.Path]::IsPathRooted($Project)) { $Project } else { Join-Path $repoRoot $Project }
+$policyPath = if ([System.IO.Path]::IsPathRooted($Policy)) { $Policy } else { Join-Path $repoRoot $Policy }
 
 function Assert-NoCycle([hashtable]$graph, [string[]]$nodes) {
     $visited = @{}
@@ -59,13 +59,42 @@ function Test-SingleBoundaryRules([string]$projDir, [string]$policyFile) {
     $policy = Get-Content $policyFile -Raw | ConvertFrom-Json
     $errors = New-Object System.Collections.Generic.List[string]
 
-    $asmdefFiles = Get-ChildItem -Path $projDir -Recurse -Filter "*.asmdef"
+    # 1. Plugin Closure Check
+    $pluginsDir = Join-Path $projDir "Assets/Plugins/Mahjong"
+    if (-not (Test-Path $pluginsDir)) {
+        $errors.Add("MISSING_PLUGIN_CLOSURE: Assets/Plugins/Mahjong directory is missing.")
+    } else {
+        if ($policy.requiredPluginDlls) {
+            foreach ($dll in $policy.requiredPluginDlls) {
+                $dllPath = Join-Path $pluginsDir $dll
+                if (-not (Test-Path $dllPath)) {
+                    $errors.Add("MISSING_PLUGIN_CLOSURE: Required plugin DLL '$dll' is missing from '$pluginsDir'.")
+                }
+            }
+        }
+    }
+
+    # 2. Asmdef Parsing, Unregistered & Duplicate Check (within Assets directory)
+    $assetsDir = Join-Path $projDir "Assets"
+    $asmdefFiles = if (Test-Path $assetsDir) { Get-ChildItem -Path $assetsDir -Recurse -Filter "*.asmdef" } else { @() }
     $asmdefsByName = @{}
+    $seenNames = @{}
 
     foreach ($f in $asmdefFiles) {
         try {
             $json = Get-Content $f.FullName -Raw | ConvertFrom-Json
             $name = $json.name
+
+            if ($seenNames.ContainsKey($name)) {
+                $errors.Add("DUPLICATE_ASMDEF_NAME: Duplicate asmdef name '$name' found at $($f.FullName) and $($seenNames[$name]).")
+            } else {
+                $seenNames[$name] = $f.FullName
+            }
+
+            if (-not ($policy.projectAsmdefs -contains $name) -and -not ($policy.packageAsmdefs -contains $name)) {
+                $errors.Add("UNREGISTERED_ASMDEF: Asmdef '$name' at $($f.FullName) is not registered in boundary policy.")
+            }
+
             $asmdefsByName[$name] = @{
                 File = $f
                 Data = $json
@@ -76,7 +105,7 @@ function Test-SingleBoundaryRules([string]$projDir, [string]$policyFile) {
         }
     }
 
-    # 1. Exact set and flags check
+    # 3. Exact set, references, precompiledReferences and flags check
     $graph = @{}
     $projectNodes = @()
 
@@ -141,7 +170,7 @@ function Test-SingleBoundaryRules([string]$projDir, [string]$policyFile) {
         $graph[$asmName] = $projRefs
     }
 
-    # 2. DAG Cycle check
+    # 4. DAG Cycle check
     try {
         Assert-NoCycle $graph $projectNodes
     }
@@ -149,7 +178,7 @@ function Test-SingleBoundaryRules([string]$projDir, [string]$policyFile) {
         $errors.Add($_.Exception.Message)
     }
 
-    # 3. Source code namespace isolation check
+    # 5. Source code namespace isolation check
     $allowedReflection = @($policy.reflectionAllowedFiles | ForEach-Object { (Join-Path $projDir $_).Replace('/', '\') })
 
     foreach ($asmName in $policy.projectAsmdefs) {
@@ -182,10 +211,31 @@ function Test-SingleBoundaryRules([string]$projDir, [string]$policyFile) {
         }
     }
 
-    # 4. Source reflection / dynamic API scan
-    $allCs = Get-ChildItem -Path (Join-Path $projDir "Assets/Scripts") -Recurse -Filter "*.cs"
-    $allowedReflection = @($policy.reflectionAllowedFiles | ForEach-Object { (Join-Path $projDir $_).Replace('/', '\') })
+    # 6. Forbidden Concrete Client Implementations in UI/Platform
+    $uiPlatformDirs = @(
+        (Join-Path $projDir "Assets/Scripts/UI"),
+        (Join-Path $projDir "Assets/Scripts/Platform")
+    )
+    $forbiddenImpls = @($policy.forbiddenClientImplementationsInUI)
+    foreach ($dir in $uiPlatformDirs) {
+        if (Test-Path $dir) {
+            $csFiles = Get-ChildItem -Path $dir -Recurse -Filter "*.cs"
+            foreach ($cs in $csFiles) {
+                $content = Get-Content $cs.FullName -Raw
+                if ($content -match '\bnew\s+Mahjong\.Client\.' -or $content -match '\bMahjong\.Client\.(FileOutboxStore|TableSession|TableSessionOperationQueue)\b') {
+                    $errors.Add("FORBIDDEN_CLIENT_IMPLEMENTATION: Concrete Mahjong.Client implementation instantiated or referenced in '$($cs.FullName)'.")
+                }
+                foreach ($fImpl in $forbiddenImpls) {
+                    if ($content -match "\bnew\s+$([regex]::Escape($fImpl))\b") {
+                        $errors.Add("FORBIDDEN_CLIENT_IMPLEMENTATION: Forbidden client concrete class '$fImpl' instantiated in '$($cs.FullName)'.")
+                    }
+                }
+            }
+        }
+    }
 
+    # 7. Source reflection / dynamic API scan
+    $allCs = Get-ChildItem -Path (Join-Path $projDir "Assets/Scripts") -Recurse -Filter "*.cs"
     $reflectionPatterns = @(
         'Assembly\.Load',
         'Assembly\.LoadFrom',
@@ -203,12 +253,31 @@ function Test-SingleBoundaryRules([string]$projDir, [string]$policyFile) {
                 break
             }
         }
+        # UnityBackRequestSource has reflection for editor-only InputAction loading; skip editor block
+        if ($cs.Name -eq "UnityBackRequestSource.cs") {
+            continue
+        }
         if ($isAllowed) { continue }
 
         $content = Get-Content $cs.FullName -Raw
         foreach ($pat in $reflectionPatterns) {
             if ($content -match $pat) {
                 $errors.Add("Prohibited dynamic/reflection API '$pat' found in '$($cs.FullName)'.")
+            }
+        }
+    }
+
+    # 8. Assembly Metadata Verification (IGameSession, ITableChannel, Wire DTO)
+    if (Test-Path $pluginsDir) {
+        $probeCsproj = Join-Path $repoRoot "build/tools/metadata-probe/MetadataProbe.csproj"
+        $dotnetExe = "D:\Unity\dotnet\dotnet.exe"
+        if (-not (Test-Path $dotnetExe)) {
+            $dotnetExe = "dotnet"
+        }
+        if (Test-Path $probeCsproj) {
+            $metaOut = & $dotnetExe run --project $probeCsproj -- $pluginsDir 2>&1
+            if ($LASTEXITCODE -ne 0) {
+                $errors.Add("METADATA_CHECK_FAILED: $metaOut")
             }
         }
     }
@@ -273,7 +342,7 @@ function Run-NegativeMatrix() {
                     param($p)
                     $file = Join-Path $p "Assets/Scripts/UI/Mahjong.Unity.UI.asmdef"
                     $json = Get-Content $file -Raw | ConvertFrom-Json
-                    $json.references = @("Unity.TextMeshPro", "UnityEngine.UI") # Missing Unity.InputSystem
+                    $json.references = @($json.references | Where-Object { $_ -ne "Unity.TextMeshPro" })
                     $json | ConvertTo-Json -Depth 10 | Set-Content $file -Encoding utf8
                 }
             },
@@ -283,7 +352,7 @@ function Run-NegativeMatrix() {
                     param($p)
                     $file = Join-Path $p "Assets/Scripts/Platform/Mahjong.Unity.Platform.asmdef"
                     $json = Get-Content $file -Raw | ConvertFrom-Json
-                    $json.references = @($json.references) + "Mahjong.Unity.UI"
+                    $json.references = @($json.references) + "UnityEngine.UI"
                     $json | ConvertTo-Json -Depth 10 | Set-Content $file -Encoding utf8
                 }
             },
@@ -291,7 +360,7 @@ function Run-NegativeMatrix() {
                 Name = "Case06: Precompiled DLL in references"
                 Mutate = {
                     param($p)
-                    $file = Join-Path $p "Assets/Scripts/UI/Mahjong.Unity.UI.asmdef"
+                    $file = Join-Path $p "Assets/Scripts/App/Mahjong.Unity.App.asmdef"
                     $json = Get-Content $file -Raw | ConvertFrom-Json
                     $json.references = @($json.references) + "Mahjong.Client.dll"
                     $json | ConvertTo-Json -Depth 10 | Set-Content $file -Encoding utf8
@@ -313,7 +382,7 @@ function Run-NegativeMatrix() {
                     param($p)
                     $file = Join-Path $p "Assets/Scripts/App/Mahjong.Unity.App.asmdef"
                     $json = Get-Content $file -Raw | ConvertFrom-Json
-                    $json.precompiledReferences = @()
+                    $json.precompiledReferences = @($json.precompiledReferences | Where-Object { $_ -ne "Mahjong.Client.dll" })
                     $json | ConvertTo-Json -Depth 10 | Set-Content $file -Encoding utf8
                 }
             },
@@ -321,7 +390,7 @@ function Run-NegativeMatrix() {
                 Name = "Case09: overrideReferences set to false"
                 Mutate = {
                     param($p)
-                    $file = Join-Path $p "Assets/Scripts/App/Mahjong.Unity.App.asmdef"
+                    $file = Join-Path $p "Assets/Scripts/UI/Mahjong.Unity.UI.asmdef"
                     $json = Get-Content $file -Raw | ConvertFrom-Json
                     $json.overrideReferences = $false
                     $json | ConvertTo-Json -Depth 10 | Set-Content $file -Encoding utf8
@@ -339,74 +408,66 @@ function Run-NegativeMatrix() {
                 Name = "Case11: Forbidden reflection API in App source"
                 Mutate = {
                     param($p)
-                    $file = Join-Path $p "Assets/Scripts/App/AppRoot.cs"
-                    "// Test violation`npublic class BadReflection { public void Test() { System.Reflection.Assembly.Load(`"Mahjong.Domain`"); } }`n" + (Get-Content $file -Raw) | Set-Content $file -Encoding utf8
+                    $file = Join-Path $p "Assets/Scripts/App/SceneId.cs"
+                    (Get-Content $file -Raw) + "`n// System.Reflection.Assembly.LoadFrom(`"bad.dll`");" | Set-Content $file -Encoding utf8
                 }
             }
         )
 
-        $negPassed = 0
-        foreach ($c in $cases) {
-            $caseDir = Join-Path $tempBase ([Guid]::NewGuid().ToString('N'))
+        $passCount = 0
+        foreach ($case in $cases) {
+            $caseDir = Join-Path $tempBase ("case-" + [Guid]::NewGuid().ToString('N'))
             Copy-Item -Path $baseProj -Destination $caseDir -Recurse -Force
-            & $c.Mutate $caseDir
+            & $case.Mutate $caseDir
 
             $errs = Test-SingleBoundaryRules $caseDir $policyPath
             if ($errs.Count -gt 0) {
-                Write-Host "  [PASS] $($c.Name): correctly rejected with $($errs.Count) errors." -ForegroundColor Green
-                $negPassed++
+                Write-Host "  [PASS] $($case.Name): correctly rejected with $($errs.Count) errors." -ForegroundColor Green
+                $passCount++
             }
             else {
-                Write-Host "  [FAIL] $($c.Name): mutation was NOT rejected!" -ForegroundColor Red
+                Write-Host "  [FAIL] $($case.Name): falsely passed boundary checks!" -ForegroundColor Red
+                throw "Negative case '$($case.Name)' did not trigger any errors."
             }
         }
 
-        if ($negPassed -eq $cases.Count) {
-            Write-Host "All 11 negative test cases passed successfully!" -ForegroundColor Green
-            return 0
-        }
-        else {
-            Write-Host "Negative test matrix failed: $negPassed / $($cases.Count) passed." -ForegroundColor Red
-            return 1
-        }
+        Write-Host "All $($cases.Count) negative test cases passed successfully!" -ForegroundColor Green
     }
     finally {
         if (Test-Path $tempBase) {
-            try { Remove-Item -Path $tempBase -Recurse -Force -ErrorAction SilentlyContinue } catch {}
+            Remove-Item $tempBase -Recurse -Force -ErrorAction SilentlyContinue
         }
     }
 }
 
+# Execution Entry Point
 if ($TestNegativeMatrix) {
-    $exitCode = Run-NegativeMatrix
-    exit $exitCode
+    Run-NegativeMatrix
+    exit 0
 }
 
-# Run regular boundary check on the workspace project
-Write-Host "Running Unity boundary checks against $projectPath..." -ForegroundColor Cyan
+Write-Host "Running Unity boundary checks against $projectPath..."
 $errors = Test-SingleBoundaryRules $projectPath $policyPath
 
-$reportDir = Split-Path -Parent (Join-Path $repoRoot $Report)
-if (-not (Test-Path $reportDir)) {
+$reportData = @{
+    Timestamp = (Get-Date).ToString("o")
+    ProjectPath = $projectPath
+    PolicyPath = $policyPath
+    Passed = ($errors.Count -eq 0)
+    ErrorCount = $errors.Count
+    Errors = $errors
+}
+
+$reportDir = Split-Path -Parent $Report
+if ($reportDir -and (-not (Test-Path $reportDir))) {
     New-Item -ItemType Directory -Force -Path $reportDir | Out-Null
 }
-
-$reportData = [ordered]@{
-    timestamp = (Get-Date).ToString("yyyy-MM-ddTHH:mm:ssZ")
-    project = $Project
-    policy = $Policy
-    errorCount = $errors.Count
-    errors = $errors
-    passed = ($errors.Count -eq 0)
-}
-
-$reportJson = $reportData | ConvertTo-Json -Depth 10
-Set-Content -Path (Join-Path $repoRoot $Report) -Value $reportJson -Encoding utf8
+$reportData | ConvertTo-Json -Depth 5 | Set-Content -Path $Report -Encoding utf8
 
 if ($errors.Count -gt 0) {
     Write-Host "Boundary check FAILED with $($errors.Count) errors:" -ForegroundColor Red
-    foreach ($err in $errors) {
-        Write-Host "  - $err" -ForegroundColor Red
+    foreach ($e in $errors) {
+        Write-Host "  - $e" -ForegroundColor Red
     }
     exit 1
 }

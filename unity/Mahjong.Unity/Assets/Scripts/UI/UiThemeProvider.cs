@@ -24,6 +24,11 @@ namespace Mahjong.Unity.UI
 
         private UiTheme? _currentTheme;
 
+        public UiThemeProvider(UiTheme? theme = null)
+        {
+            _currentTheme = theme;
+        }
+
         public UiTheme? CurrentTheme
         {
             get => _currentTheme;

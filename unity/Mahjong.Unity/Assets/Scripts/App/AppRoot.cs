@@ -1,9 +1,9 @@
 #nullable enable
 using System;
-using UnityEngine;
-using UnityEngine.EventSystems;
 using Mahjong.Unity.Platform;
 using Mahjong.Unity.UI;
+using UnityEngine;
+using UnityEngine.EventSystems;
 
 namespace Mahjong.Unity.App
 {
@@ -11,110 +11,108 @@ namespace Mahjong.Unity.App
     {
         private static AppRoot? _instance;
         public static AppRoot? Instance => _instance;
-
-        private static int _mainThreadId;
-        public static bool IsMainThread => Environment.CurrentManagedThreadId == _mainThreadId;
+        private static int _mainThreadId = System.Threading.Thread.CurrentThread.ManagedThreadId;
+        public static bool IsMainThread => System.Threading.Thread.CurrentThread.ManagedThreadId == _mainThreadId;
 
         private AppConfig _config = new AppConfig();
-        private MainThreadDispatcher? _dispatcher;
-        private AppLifecycle? _lifecycle;
-        private BackRouter? _backRouter;
-        private IBackRequestSource? _backSource;
         private AppComposition? _composition;
         private AppRouter? _router;
-        private EventSystem? _persistentEventSystem;
+        private BackRouter? _backRouter;
+        private IBackRequestSource? _backSource;
+        private MainThreadDispatcher? _dispatcher;
+        private AppLifecycle? _lifecycle;
 
-        public MainThreadDispatcher? Dispatcher => _dispatcher;
-        public AppLifecycle? Lifecycle => _lifecycle;
-        public BackRouter? BackRouter => _backRouter;
-        public AppComposition? Composition => _composition;
-        public AppRouter? Router => _router;
-        public AppConfig Config => _config;
+        public AppComposition Composition => _composition!;
+        public AppRouter Router => _router!;
+        public BackRouter BackRouter => _backRouter!;
+        public MainThreadDispatcher Dispatcher => _dispatcher!;
+        public AppLifecycle Lifecycle => _lifecycle!;
 
-        [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.SubsystemRegistration)]
-        private static void ResetStaticState()
-        {
-            _instance = null;
-            UiInputLifecycle.ResetForTest();
-        }
-
-        public static AppRoot EnsureInitialized(AppConfig config, UiTheme? theme = null)
+        public static AppRoot EnsureInitialized(AppConfig? config = null, UiTheme? theme = null)
         {
             if (_instance != null)
             {
                 return _instance;
             }
 
-            var existing = FindObjectsByType<AppRoot>(FindObjectsSortMode.None);
-            if (existing.Length > 0)
+            var existing = FindFirstObjectByType<AppRoot>();
+            if (existing != null)
             {
-                _instance = existing[0];
-                for (int i = 1; i < existing.Length; i++)
-                {
-                    Debug.LogWarning("APP_DUPLICATE_BOOTSTRAP: Destroying extra AppRoot instance.");
-                    Destroy(existing[i].gameObject);
-                }
+                _instance = existing;
                 return _instance;
             }
 
-            var go = new GameObject("AppRoot");
-            DontDestroyOnLoad(go);
-            var root = go.AddComponent<AppRoot>();
-            root._config = config ?? new AppConfig();
-
-            if (theme != null)
-            {
-                UiThemeProvider.Instance.SetTheme(theme);
-            }
-
-            root.Initialize();
-            _instance = root;
-            return root;
+            var rootGo = new GameObject("AppRoot");
+            DontDestroyOnLoad(rootGo);
+            _instance = rootGo.AddComponent<AppRoot>();
+            _instance.Initialize(config ?? new AppConfig(), theme);
+            return _instance;
         }
 
-        private void Initialize()
+        private void Awake()
         {
-            _mainThreadId = Environment.CurrentManagedThreadId;
-            Application.targetFrameRate = _config.targetFrameRate;
+            if (_instance != null && _instance != this)
+            {
+                Destroy(gameObject);
+                return;
+            }
+
+            _instance = this;
+            DontDestroyOnLoad(gameObject);
+            EnsureEventSystem();
+        }
+
+        public void Initialize(AppConfig config, UiTheme? theme = null)
+        {
+            _config = config ?? new AppConfig();
+            EnsureEventSystem();
 
             _dispatcher = new MainThreadDispatcher(_config.maxDispatchPerFrame * 8);
             _lifecycle = new AppLifecycle();
+            var themeProvider = theme != null ? new UiThemeProvider(theme) : UiThemeProvider.Instance;
+            _composition = new AppComposition(_config, _dispatcher, themeProvider);
             _backRouter = new BackRouter();
             _backSource = new UnityBackRequestSource();
 
-            _composition = new AppComposition(_config, _dispatcher, UiThemeProvider.Instance);
+            // Bind pause gate to BackRouter
+            _backRouter.SetPauseGate(() => (_lifecycle != null && _lifecycle.IsPaused) || UiInputLifecycle.Instance.IsPaused);
+
             _router = new AppRouter(_composition, _backRouter);
             _router.SceneLoaded += OnSceneLoaded;
 
-            EnsurePersistentEventSystem();
+            // Initialize UiThemeProvider line-breaking rules
+            UiThemeProvider.EnsureLineBreakingRules();
         }
 
-        private void EnsurePersistentEventSystem()
+        private void EnsureEventSystem()
         {
-            var eventSystems = FindObjectsByType<EventSystem>(FindObjectsSortMode.None);
-            if (eventSystems.Length > 0)
+            var eventSystem = FindFirstObjectByType<EventSystem>();
+            if (eventSystem == null)
             {
-                _persistentEventSystem = eventSystems[0];
-                DontDestroyOnLoad(_persistentEventSystem.gameObject);
-
-                for (int i = 1; i < eventSystems.Length; i++)
-                {
-                    Debug.LogWarning("UI_DUPLICATE_EVENTSYSTEM: Destroying extra EventSystem.");
-                    Destroy(eventSystems[i].gameObject);
-                }
+                var eventSystemGo = new GameObject("EventSystem", typeof(EventSystem));
+                DontDestroyOnLoad(eventSystemGo);
+                UnityBackRequestSource.EnsureInputModule(eventSystemGo);
             }
             else
             {
-                var esGo = new GameObject("EventSystem");
-                DontDestroyOnLoad(esGo);
-                _persistentEventSystem = esGo.AddComponent<EventSystem>();
-                UnityBackRequestSource.EnsureInputModule(esGo);
+                DontDestroyOnLoad(eventSystem.gameObject);
+                UnityBackRequestSource.EnsureInputModule(eventSystem.gameObject);
             }
         }
 
         private void OnSceneLoaded(SceneId sceneId)
         {
-            // Inject dependencies into scene presenters
+            EnsureEventSystem();
+
+            var modalPresenters = FindObjectsByType<ModalPresenter>(FindObjectsInactive.Include, FindObjectsSortMode.None);
+            if (_backRouter != null)
+            {
+                foreach (var modal in modalPresenters)
+                {
+                    modal.SetBackRouter(_backRouter);
+                }
+            }
+
             if (sceneId == SceneId.Menu)
             {
                 var menuPresenter = FindFirstObjectByType<MenuPresenter>();
@@ -177,6 +175,30 @@ namespace Mahjong.Unity.App
         private void OnApplicationQuit()
         {
             _lifecycle?.HandleApplicationQuit();
+            try
+            {
+                _composition?.ShutdownAsync("APP_QUIT").Wait(1000);
+            }
+            catch
+            {
+                // Bounded catch on quit
+            }
+        }
+
+        private void OnDestroy()
+        {
+            if (_instance == this)
+            {
+                _instance = null;
+            }
+            try
+            {
+                _composition?.ShutdownAsync("APP_DESTROY").Wait(1000);
+            }
+            catch
+            {
+                // Bounded catch on destroy
+            }
         }
     }
 }

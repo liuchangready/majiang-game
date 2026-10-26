@@ -1,7 +1,10 @@
+#nullable enable
 using System.Collections;
 using NUnit.Framework;
 using UnityEngine;
+using UnityEngine.EventSystems;
 using UnityEngine.TestTools;
+using Mahjong.Unity.App;
 using Mahjong.Unity.UI;
 
 namespace Mahjong.Unity.Tests.PlayMode
@@ -11,9 +14,8 @@ namespace Mahjong.Unity.Tests.PlayMode
         [UnityTest]
         public IEnumerator InputLifecycle_CancelArmOnPause_PreventsDelayedClick()
         {
-            var lifecycle = UiInputLifecycle.Instance;
             UiInputLifecycle.ResetForTest();
-            lifecycle = UiInputLifecycle.Instance;
+            var lifecycle = UiInputLifecycle.Instance;
 
             // 1. Pointer Down arms
             bool armed = lifecycle.TryArm(pointerId: 1, new Vector2(100, 100));
@@ -50,19 +52,43 @@ namespace Mahjong.Unity.Tests.PlayMode
             Assert.IsTrue(armed);
             long downGen = lifecycle.PressGeneration;
 
-            // Transition begins
+            // Scene transition starts
             lifecycle.OnTransition();
             Assert.IsFalse(lifecycle.IsArmed);
+            Assert.IsFalse(lifecycle.AcceptingInput);
+            Assert.Greater(lifecycle.PressGeneration, downGen);
 
-            // Transition ends in next scene
+            // Transition finishes
             lifecycle.TransitionEnd();
+            Assert.IsTrue(lifecycle.AcceptingInput);
             Assert.IsFalse(lifecycle.IsArmed);
 
-            // Release
+            // Old release arrives
             bool released = lifecycle.TryRelease(pointerId: 1, downGen);
             Assert.IsFalse(released);
 
             yield return null;
+        }
+
+        [UnityTest]
+        public IEnumerator RealButtonDownMustArmLifecycle()
+        {
+            var root = AppRoot.EnsureInitialized(new AppConfig());
+            var load = root.Router.LoadAsync(SceneId.Menu);
+            while (!load.IsCompleted) yield return null;
+            yield return null;
+
+            UiInputLifecycle.ResetForTest();
+            var button = GameObject.Find("PlayButton");
+            Assert.IsNotNull(button, "PlayButton must exist in Menu scene.");
+            var data = new PointerEventData(EventSystem.current)
+            {
+                pointerId = -1,
+                button = PointerEventData.InputButton.Left,
+                position = new Vector2(Screen.width / 2f, Screen.height / 2f)
+            };
+            ExecuteEvents.Execute(button, data, ExecuteEvents.pointerDownHandler);
+            Assert.IsTrue(UiInputLifecycle.Instance.IsArmed, "Real UGUI down must reach UiInputLifecycle.TryArm.");
         }
     }
 }

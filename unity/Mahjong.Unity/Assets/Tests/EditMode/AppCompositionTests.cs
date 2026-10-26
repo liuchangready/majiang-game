@@ -1,18 +1,26 @@
 #nullable enable
 using System;
+using System.Collections.Generic;
 using System.Reflection;
 using System.Threading;
 using System.Threading.Tasks;
 using NUnit.Framework;
 using Mahjong.Client;
+using Mahjong.Contracts;
+using Mahjong.Contracts.Wire;
 using Mahjong.Unity.App;
 using Mahjong.Unity.Platform;
 using Mahjong.Unity.UI;
+using Mahjong.Unity.UI.Session;
+using TMPro;
 
 #if UNITY_EDITOR
 using UnityEditor;
 using UnityEditor.SceneManagement;
 using UnityEngine;
+using UnityEngine.InputSystem;
+using UnityEngine.InputSystem.UI;
+using UnityEngine.TextCore.LowLevel;
 using UnityEngine.UI;
 #endif
 
@@ -84,6 +92,145 @@ namespace Mahjong.Unity.Tests.EditMode
             Assert.IsFalse(result.Quarantined);
         }
 
+        private SessionViewState View(long generation) => new SessionViewState(generation, TableConnectionState.Ready, null, new PlayerSnapshot(), null, null, null, null);
+        private SessionCoordinator Coordinator(FakeSession session, MainThreadDispatcher dispatcher, TableSessionOperationQueue? queue = null) =>
+            new SessionCoordinator(session, queue, null, dispatcher, new AppConfig { closeTimeoutMs = 50, pumpBarrierTimeoutMs = 50, cancelObservationMs = 10 }, 1);
+
+        [Test]
+        public async Task CloseFaultMustNotReportCompleted()
+        {
+            var session = new FakeSession { Close = _ => Task.FromException(new InvalidOperationException("CLOSE_FAILED")) };
+            var owner = Coordinator(session, new MainThreadDispatcher());
+            var result = await owner.ShutdownAsync();
+            Assert.AreNotEqual(ShutdownOutcome.Completed, result.Outcome, "Faulted Close must not allow menu/dispose.");
+            Assert.IsFalse(result.MenuAllowed);
+            Assert.IsTrue(result.Quarantined);
+        }
+
+        [Test]
+        public async Task ShutdownMustDetachSessionEvent()
+        {
+            var session = new FakeSession();
+            var owner = Coordinator(session, new MainThreadDispatcher());
+            Assert.AreEqual(1, session.Subscribers);
+            await owner.ShutdownAsync();
+            Assert.AreEqual(0, session.Subscribers, "Shutdown leaves SnapshotChanged owner retained.");
+        }
+
+        [Test]
+        public async Task QueuedPublishMustNotDeliverAfterShutdown()
+        {
+            var dispatcher = new MainThreadDispatcher { CurrentGeneration = 1 };
+            var owner = Coordinator(new FakeSession(), dispatcher);
+            int delivered = 0;
+            owner.Changed += (_, __) => delivered++;
+            owner.Publish(1, View(1));
+            await owner.ShutdownAsync();
+            dispatcher.Update(128, 1000);
+            Assert.AreEqual(0, delivered, "Queued Changed executes after terminal shutdown.");
+        }
+
+        [Test]
+        public void FreshCoordinatorMustPublishToDefaultDispatcher()
+        {
+            var dispatcher = new MainThreadDispatcher();
+            var owner = Coordinator(new FakeSession(), dispatcher);
+            int delivered = 0;
+            owner.Changed += (_, __) => delivered++;
+            owner.Publish(1, View(1));
+            dispatcher.Update(128, 1000);
+            Assert.AreEqual(1, delivered, "Composition/owner never updates dispatcher generation (default 0 vs session 1).");
+        }
+
+        [Test]
+        public async Task SnapshotEventOnOwnerMustNotDeadlockCapture()
+        {
+            var session = new FakeSession { RaiseOnOpen = true };
+            var queue = new TableSessionOperationQueue(session);
+            var owner = Coordinator(session, new MainThreadDispatcher(), queue);
+            var open = Task.Run(() => queue.OpenAsync(new TableSessionOpenRequest("review", "review"), CancellationToken.None));
+            var winner = await Task.WhenAny(open, Task.Delay(500));
+            Assert.AreSame(open, winner, "SnapshotChanged blocks on CaptureAsync.Result queued behind its own running Open.");
+        }
+
+        [Test]
+        public void FocusGainedMustNotOverridePauseGate()
+        {
+            UiInputLifecycle.ResetForTest();
+            var input = UiInputLifecycle.Instance;
+            input.OnPause();
+            input.OnFocusGained();
+            Assert.IsFalse(input.TryArm(1, UnityEngine.Vector2.zero), "Still paused; focus regained must not re-enable input.");
+        }
+
+        [Test]
+        public void FontMaterialMustUseSdfShader()
+        {
+#if UNITY_EDITOR
+            var font = AssetDatabase.LoadAssetAtPath<TMP_FontAsset>("Assets/Art/UI/Fonts/NotoSansSC-Regular SDF.asset");
+            Assert.IsNotNull(font);
+            Assert.That(font.material.shader.name, Does.StartWith("TextMeshPro/"), "UI/Default is incompatible with TMP SDF atlas.");
+#endif
+        }
+
+        [Test]
+        public void Dispatcher_Overflow_TriggersFailureAndQuarantine()
+        {
+            UnityEngine.TestTools.LogAssert.Expect(LogType.Error, "UI_DISPATCH_OVERFLOW: Dispatcher exceeded capacity 4.");
+            var dispatcher = new MainThreadDispatcher(4);
+            var session = new FakeSession();
+            var owner = Coordinator(session, dispatcher);
+
+            Assert.IsFalse(owner.IsQuarantined);
+            for (int i = 0; i < 5; i++)
+            {
+                dispatcher.Post(() => { });
+            }
+
+            Assert.IsTrue(dispatcher.HasOverflowed);
+            Assert.IsTrue(owner.IsQuarantined);
+            Assert.AreEqual("UI_DISPATCH_OVERFLOW", owner.Current.LastError);
+        }
+
+        private sealed class FakeSession : IGameSession
+        {
+            public int Subscribers;
+            private EventHandler<TableSnapshotChangedEventArgs>? _changed;
+            public bool RaiseOnOpen;
+            public Func<CancellationToken, Task> Close = _ => Task.CompletedTask;
+            public TableConnectionState State => TableConnectionState.Ready;
+            public Func<CancellationToken, bool>? BaselineAdmissionCheck { get; set; }
+            public TableSessionBinding? Binding => null;
+            public Mahjong.Contracts.StreamCursor? ConfirmedCursor => null;
+            public PlayerSnapshot? PlayerSnapshot => null;
+            public PublicSnapshot? PublicSnapshot => null;
+            public RoomUpdate? RoomSnapshot => null;
+            public IReadOnlyList<PendingCommandSnapshot> PendingCommands => Array.Empty<PendingCommandSnapshot>();
+            public int EarlyBufferItemCount => 0;
+            public long EarlyBufferByteCount => 0;
+            public long EarlyBufferOverflowCount => 0;
+            public string? LastError => null;
+
+            public event EventHandler<TableSnapshotChangedEventArgs>? SnapshotChanged
+            {
+                add { _changed += value; Subscribers++; }
+                remove { _changed -= value; Subscribers--; }
+            }
+            public event EventHandler<TableReceiptResolvedEventArgs>? ReceiptResolved;
+
+            public Task OpenAsync(TableSessionOpenRequest r, CancellationToken ct)
+            {
+                if (RaiseOnOpen) _changed?.Invoke(this, new TableSnapshotChangedEventArgs(default, true, new PlayerSnapshot(), null, null));
+                return Task.CompletedTask;
+            }
+            public Task PumpOnceAsync(CancellationToken ct) => Task.CompletedTask;
+            public Task DisconnectAsync(CancellationToken ct) => Task.CompletedTask;
+            public Task<CommandSubmission> SubmitAsync(ProtocolCommand c, CancellationToken ct) => throw new NotSupportedException();
+            public Task ReconcilePendingAsync(CancellationToken ct) => Task.CompletedTask;
+            public Task<CommandSubmission> RetryPendingAsync(IdempotencyKey k, CancellationToken ct) => throw new NotSupportedException();
+            public Task CloseAsync(string r, CancellationToken ct) => Close(ct);
+        }
+
 #if UNITY_EDITOR
         public static void BuildAllAssets()
         {
@@ -137,6 +284,9 @@ namespace Mahjong.Unity.Tests.EditMode
             soTheme.FindProperty("backgroundSprite").objectReferenceValue = AssetDatabase.LoadAssetAtPath<Sprite>("Assets/Art/UI/MainMenu/club-background.png");
             soTheme.FindProperty("menuIconsSprite").objectReferenceValue = AssetDatabase.LoadAssetAtPath<Sprite>("Assets/Art/UI/MainMenu/menu-icons.png");
             soTheme.FindProperty("heroSprite").objectReferenceValue = AssetDatabase.LoadAssetAtPath<Sprite>("Assets/Art/UI/MainMenu/octopus-hero.png");
+            soTheme.FindProperty("buttonFontSize").floatValue = 32f;
+            soTheme.FindProperty("bodyFontSize").floatValue = 28f;
+            soTheme.FindProperty("titleFontSize").floatValue = 56f;
             soTheme.ApplyModifiedPropertiesWithoutUndo();
             AssetDatabase.CreateAsset(theme, "Assets/Art/UI/UiTheme.asset");
 
@@ -152,21 +302,45 @@ namespace Mahjong.Unity.Tests.EditMode
 
         private static UnityEngine.Object? CreateFontAsset(Font font)
         {
+            var type = Type.GetType("TMPro.TMP_FontAsset, Unity.TextMeshPro");
+            if (type == null) return null;
+
+            var sdfShader = Shader.Find("TextMeshPro/Mobile/Distance Field");
             var shaderUtilsType = Type.GetType("TMPro.ShaderUtilities, Unity.TextMeshPro");
-            if (shaderUtilsType != null)
+            if (shaderUtilsType != null && sdfShader != null)
             {
                 var field = shaderUtilsType.GetField("k_ShaderRef_MobileSDF", BindingFlags.Static | BindingFlags.NonPublic);
-                if (field != null && field.GetValue(null) == null)
+                if (field != null)
                 {
-                    var fallbackShader = Shader.Find("UI/Default") ?? Shader.Find("Sprites/Default") ?? Shader.Find("Hidden/Internal-Colored");
-                    field.SetValue(null, fallbackShader);
+                    field.SetValue(null, sdfShader);
                 }
             }
 
-            var type = Type.GetType("TMPro.TMP_FontAsset, Unity.TextMeshPro");
-            if (type == null) return null;
-            var method = type.GetMethod("CreateFontAsset", new[] { typeof(Font) });
-            return method?.Invoke(null, new object[] { font }) as UnityEngine.Object;
+            var method = type.GetMethod("CreateFontAsset", new[] {
+                typeof(Font), typeof(int), typeof(int), typeof(GlyphRenderMode), typeof(int), typeof(int), typeof(AtlasPopulationMode), typeof(bool)
+            });
+
+            UnityEngine.Object? fontAsset = null;
+            if (method != null)
+            {
+                fontAsset = method.Invoke(null, new object[] { font, 36, 4, GlyphRenderMode.SDFAA, 1024, 1024, AtlasPopulationMode.Dynamic, true }) as UnityEngine.Object;
+            }
+            else
+            {
+                var simpleMethod = type.GetMethod("CreateFontAsset", new[] { typeof(Font) });
+                fontAsset = simpleMethod?.Invoke(null, new object[] { font }) as UnityEngine.Object;
+            }
+
+            if (fontAsset != null && sdfShader != null)
+            {
+                var matProp = type.GetProperty("material");
+                var mat = matProp?.GetValue(fontAsset) as Material;
+                if (mat != null)
+                {
+                    mat.shader = sdfShader;
+                }
+            }
+            return fontAsset;
         }
 
         private static Component CreateTmpText(GameObject go, string text, UnityEngine.Object? fontAsset, float fontSize, Color color)
@@ -217,6 +391,10 @@ namespace Mahjong.Unity.Tests.EditMode
             var so = new SerializedObject(bootstrapper);
             so.FindProperty("_theme").objectReferenceValue = theme;
             so.ApplyModifiedPropertiesWithoutUndo();
+
+            var eventSystemGo = new GameObject("EventSystem", typeof(UnityEngine.EventSystems.EventSystem));
+            var module = eventSystemGo.AddComponent<InputSystemUIInputModule>();
+            module.actionsAsset = AssetDatabase.LoadAssetAtPath<InputActionAsset>("Assets/Settings/InputSystem_Actions.inputactions");
 
             EditorSceneManager.SaveScene(scene, "Assets/Scenes/Boot.unity");
         }
@@ -278,8 +456,8 @@ namespace Mahjong.Unity.Tests.EditMode
             titleRect.anchoredPosition = new Vector2(0, 180);
             titleRect.sizeDelta = new Vector2(900, 80);
 
-            var playBtnGo = CreateButton("PlayButton", designGo.transform, new Vector2(0, 20), new Vector2(340, 68), "进入大厅", theme, fontAsset);
-            var quitBtnGo = CreateButton("QuitButton", designGo.transform, new Vector2(0, -70), new Vector2(340, 68), "退出游戏", theme, fontAsset);
+            var playBtnGo = CreateButton("PlayButton", designGo.transform, new Vector2(0, 30), new Vector2(400, 88), "进入大厅", theme, fontAsset);
+            var quitBtnGo = CreateButton("QuitButton", designGo.transform, new Vector2(0, -80), new Vector2(400, 88), "退出游戏", theme, fontAsset);
 
             var modalGo = CreateModalDialog("QuitModal", designGo.transform, theme, fontAsset);
 
@@ -359,10 +537,10 @@ namespace Mahjong.Unity.Tests.EditMode
             var bannerPresenter = bannerGo.AddComponent<ConnectionBannerPresenter>();
             var bannerTextGo = new GameObject("BannerText");
             bannerTextGo.transform.SetParent(bannerGo.transform, false);
-            var bannerTmp = CreateTmpText(bannerTextGo, "本地宿主未接入 (LOCAL_HOST_UNAVAILABLE)", fontAsset, 24, theme.warningColor);
+            var bannerTmp = CreateTmpText(bannerTextGo, "本地宿主未接入 (LOCAL_HOST_UNAVAILABLE)", fontAsset, 28, theme.warningColor);
             var bannerRect = bannerGo.AddComponent<RectTransform>();
             bannerRect.anchoredPosition = new Vector2(0, 150);
-            bannerRect.sizeDelta = new Vector2(800, 40);
+            bannerRect.sizeDelta = new Vector2(800, 48);
 
             var soB = new SerializedObject(bannerPresenter);
             soB.FindProperty("_bannerRoot").objectReferenceValue = bannerGo;
@@ -379,15 +557,15 @@ namespace Mahjong.Unity.Tests.EditMode
 
             var expGo = new GameObject("ExplanationText");
             expGo.transform.SetParent(designGo.transform, false);
-            var expTmp = CreateTmpText(expGo, "本地对局通道尚未就绪 (LOCAL_HOST_UNAVAILABLE)。P4.2平台壳已就绪，等待P4.1本地工厂对接。", fontAsset, 22, theme.disabledTextColor);
+            var expTmp = CreateTmpText(expGo, "本地对局通道尚未就绪 (LOCAL_HOST_UNAVAILABLE)。P4.2平台壳已就绪，等待P4.1本地工厂对接。", fontAsset, 28, theme.disabledTextColor);
             var expRect = expGo.GetComponent<RectTransform>();
             expRect.anchoredPosition = new Vector2(0, 30);
-            expRect.sizeDelta = new Vector2(900, 40);
+            expRect.sizeDelta = new Vector2(900, 48);
 
-            var startBtnGo = CreateButton("StartLocalGameButton", designGo.transform, new Vector2(0, -50), new Vector2(360, 68), "开始本地对局 (不可用)", theme, fontAsset);
+            var startBtnGo = CreateButton("StartLocalGameButton", designGo.transform, new Vector2(0, -50), new Vector2(400, 88), "开始本地对局 (不可用)", theme, fontAsset);
             startBtnGo.GetComponent<Button>().interactable = false;
 
-            var backBtnGo = CreateButton("BackButton", designGo.transform, new Vector2(0, -140), new Vector2(340, 68), "返回菜单", theme, fontAsset);
+            var backBtnGo = CreateButton("BackButton", designGo.transform, new Vector2(0, -150), new Vector2(400, 88), "返回菜单", theme, fontAsset);
 
             var presenterGo = new GameObject("LobbyPresenter");
             presenterGo.transform.SetParent(designGo.transform, false);
@@ -418,6 +596,9 @@ namespace Mahjong.Unity.Tests.EditMode
             var btn = btnGo.AddComponent<Button>();
             btn.targetGraphic = img;
 
+            // Attach UiPointerLifecycleTrigger so pointerDown arms UiInputLifecycle
+            btnGo.AddComponent<UiPointerLifecycleTrigger>();
+
             var textGo = new GameObject("Text");
             textGo.transform.SetParent(btnGo.transform, false);
             var textRect = textGo.AddComponent<RectTransform>();
@@ -445,26 +626,26 @@ namespace Mahjong.Unity.Tests.EditMode
             var panelGo = new GameObject("Panel");
             panelGo.transform.SetParent(modalGo.transform, false);
             var panelRect = panelGo.AddComponent<RectTransform>();
-            panelRect.sizeDelta = new Vector2(600, 320);
+            panelRect.sizeDelta = new Vector2(640, 360);
             var panelImg = panelGo.AddComponent<Image>();
             panelImg.color = theme.secondaryColor;
 
             var titleGo = new GameObject("TitleText");
             titleGo.transform.SetParent(panelGo.transform, false);
-            var titleTmp = CreateTmpText(titleGo, "提示", fontAsset, 32, theme.textColor);
+            var titleTmp = CreateTmpText(titleGo, "提示", fontAsset, 36, theme.textColor);
             var titleRect = titleGo.GetComponent<RectTransform>();
-            titleRect.anchoredPosition = new Vector2(0, 90);
-            titleRect.sizeDelta = new Vector2(500, 40);
+            titleRect.anchoredPosition = new Vector2(0, 100);
+            titleRect.sizeDelta = new Vector2(560, 48);
 
             var msgGo = new GameObject("MessageText");
             msgGo.transform.SetParent(panelGo.transform, false);
-            var msgTmp = CreateTmpText(msgGo, "确定要退出游戏吗？", fontAsset, 24, theme.textColor);
+            var msgTmp = CreateTmpText(msgGo, "确定要退出游戏吗？", fontAsset, 28, theme.textColor);
             var msgRect = msgGo.GetComponent<RectTransform>();
             msgRect.anchoredPosition = new Vector2(0, 20);
-            msgRect.sizeDelta = new Vector2(500, 60);
+            msgRect.sizeDelta = new Vector2(560, 60);
 
-            var confirmBtnGo = CreateButton("ConfirmButton", panelGo.transform, new Vector2(-120, -70), new Vector2(180, 50), "确定", theme, fontAsset);
-            var cancelBtnGo = CreateButton("CancelButton", panelGo.transform, new Vector2(120, -70), new Vector2(180, 50), "取消", theme, fontAsset);
+            var confirmBtnGo = CreateButton("ConfirmButton", panelGo.transform, new Vector2(-140, -80), new Vector2(220, 88), "确定", theme, fontAsset);
+            var cancelBtnGo = CreateButton("CancelButton", panelGo.transform, new Vector2(140, -80), new Vector2(220, 88), "取消", theme, fontAsset);
 
             var tmpType = Type.GetType("TMPro.TextMeshProUGUI, Unity.TextMeshPro");
             var modalPresenter = modalGo.AddComponent<ModalPresenter>();

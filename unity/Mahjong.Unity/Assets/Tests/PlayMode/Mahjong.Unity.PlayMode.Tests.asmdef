@@ -3,6 +3,9 @@
   "rootNamespace": "Mahjong.Unity.Tests.PlayMode",
   "references": [
     "UnityEngine.TestRunner",
+    "Unity.TextMeshPro",
+    "UnityEngine.UI",
+    "Unity.InputSystem",
     "Mahjong.Unity.App",
     "Mahjong.Unity.UI",
     "Mahjong.Unity.Platform"

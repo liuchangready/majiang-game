@@ -1,3 +1,4 @@
+#nullable enable
 using System;
 using UnityEngine;
 using UnityEngine.UI;
@@ -24,6 +25,11 @@ namespace Mahjong.Unity.UI
         public void SetBackRouter(BackRouter router)
         {
             _backRouter = router;
+        }
+
+        public void ShowConfirmation(string title, string message, Action onConfirm, Action onCancel)
+        {
+            Show(title, message, "确定", "取消", onConfirm, onCancel);
         }
 
         public void Show(
@@ -71,6 +77,8 @@ namespace Mahjong.Unity.UI
             _backRouter?.UnregisterModal(Close);
             _onCancel?.Invoke();
         }
+
+        public void Dismiss() => Close();
 
         private void OnConfirmClicked()
         {

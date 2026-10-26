@@ -15,6 +15,27 @@
     "UnityEngine.TestRunner",
     "UnityEditor.TestRunner"
   ],
+  "requiredPluginDlls": [
+    "Google.Protobuf.dll",
+    "Mahjong.Ai.dll",
+    "Mahjong.Client.dll",
+    "Mahjong.Contracts.dll",
+    "Mahjong.Contracts.Wire.dll",
+    "Mahjong.Domain.dll",
+    "Mahjong.LocalHost.dll",
+    "Mahjong.TableRuntime.dll",
+    "System.Buffers.dll",
+    "System.Memory.dll",
+    "System.Numerics.Vectors.dll",
+    "System.Runtime.CompilerServices.Unsafe.dll"
+  ],
+  "forbiddenClientImplementationsInUI": [
+    "FileOutboxStore",
+    "TableSession",
+    "TableSessionOperationQueue",
+    "TcpTableChannel",
+    "InProcessTableChannel"
+  ],
   "allowedPrecompiledDlls": [
     "Mahjong.Client.dll",
     "Mahjong.Contracts.dll",
@@ -139,6 +160,9 @@
       "references": [
         "UnityEngine.TestRunner",
         "UnityEditor.TestRunner",
+        "Unity.TextMeshPro",
+        "UnityEngine.UI",
+        "Unity.InputSystem",
         "Mahjong.Unity.App",
         "Mahjong.Unity.UI",
         "Mahjong.Unity.Platform"
@@ -161,6 +185,9 @@
       "path": "Assets/Tests/PlayMode/Mahjong.Unity.PlayMode.Tests.asmdef",
       "references": [
         "UnityEngine.TestRunner",
+        "Unity.TextMeshPro",
+        "UnityEngine.UI",
+        "Unity.InputSystem",
         "Mahjong.Unity.App",
         "Mahjong.Unity.UI",
         "Mahjong.Unity.Platform"

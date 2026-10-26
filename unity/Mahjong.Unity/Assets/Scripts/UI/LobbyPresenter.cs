@@ -32,6 +32,7 @@ namespace Mahjong.Unity.UI
 
         private void Start()
         {
+            Debug.Log("LOBBY_PRESENTER_STARTED");
             if (_backButton != null)
             {
                 _backButton.onClick.AddListener(OnBackClicked);
@@ -81,6 +82,7 @@ namespace Mahjong.Unity.UI
 
         public void OnBackClicked()
         {
+            Debug.Log("LOBBY_BACK_CLICKED: Returning to menu...");
             _navigation?.BackToMenu();
         }
 
