@@ -108,8 +108,8 @@ namespace Mahjong.LocalHost
                         return;
                     }
 
-                    await DriveOneAsync(snapshot).ConfigureAwait(false);
                     await _actor.TickAsync(TableTickRequest.Empty, _stop.Token).ConfigureAwait(false);
+                    await DriveOneAsync(snapshot).ConfigureAwait(false);
                 }
                 catch (OperationCanceledException)
                 {
@@ -132,12 +132,20 @@ namespace Mahjong.LocalHost
 
         private async Task DriveOneAsync(TableSnapshot snapshot)
         {
+            TableControlSnapshot control = await _actor.GetControlSnapshotAsync(_stop.Token).ConfigureAwait(false);
+            for (int i = 0; i < 4; i++)
+            {
+                _controlEpochs[i] = control.Seats[i].ControlEpoch;
+                _aiSeats[i] = control.Seats[i].Kind == SeatControllerKind.Computer ||
+                              control.Seats[i].Kind == SeatControllerKind.Takeover;
+            }
+
             int seat = snapshot.CurrentSeat;
             switch (snapshot.Phase)
             {
                 case RoundPhase.Draw:
                 case RoundPhase.KanDraw:
-                    if (seat != 0)
+                    if (_aiSeats[seat])
                     {
                         await SubmitDrawAsync(snapshot, seat).ConfigureAwait(false);
                     }
@@ -145,7 +153,7 @@ namespace Mahjong.LocalHost
                     break;
                 case RoundPhase.CheatWindow:
                 case RoundPhase.Discard:
-                    if (seat == 0)
+                    if (!_aiSeats[seat])
                     {
                         break;
                     }
@@ -212,7 +220,7 @@ namespace Mahjong.LocalHost
                 return false;
             }
 
-            if (_actor.GetPendingDecisionId(seat) != null)
+            if (_actor.GetPendingDecisionId(seat) != null && !_aiSeats[seat])
             {
                 _lastDecisionKey = seat.ToString(System.Globalization.CultureInfo.InvariantCulture) + "/" +
                                    snapshot.StateVersion.Value.ToString(System.Globalization.CultureInfo.InvariantCulture) + "/" +
@@ -333,17 +341,12 @@ namespace Mahjong.LocalHost
                 _scopes[seat],
                 api,
                 TablePayloadSha256.Compute(business));
-            TableOperationResult result = await _actor.SubmitAsync(envelope, _stop.Token).ConfigureAwait(false);
-            if (result.Status != TableOperationStatus.Accepted && result.Status != TableOperationStatus.Replayed)
-            {
-            }
-
-            return result;
+            return await _actor.SubmitAsync(envelope, _stop.Token).ConfigureAwait(false);
         }
 
-        private static long ControlEpoch(TableSnapshot snapshot, int seat)
+        private long ControlEpoch(TableSnapshot snapshot, int seat)
         {
-            return 0L;
+            return _controlEpochs[seat];
         }
     }
 }
