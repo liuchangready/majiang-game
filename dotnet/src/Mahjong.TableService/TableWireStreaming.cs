@@ -1,9 +1,11 @@
 using System;
+using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Channels;
 using System.Threading.Tasks;
 using Mahjong.Contracts;
 using Mahjong.Contracts.Wire;
+using Mahjong.Domain.Cheat;
 using Mahjong.TableRuntime;
 
 namespace Mahjong.TableService
@@ -61,6 +63,37 @@ namespace Mahjong.TableService
         }
     }
 
+    /// <summary>One leased stream frame whose bytes are still inside the sink budget.</summary>
+    public sealed class WireStreamFrameLease
+    {
+        private readonly WireTableStreamSink _sink;
+        private int _released;
+
+        internal WireStreamFrameLease(WireTableStreamSink sink, byte[] payload)
+        {
+            _sink = sink;
+            Payload = payload;
+        }
+
+        public byte[] Payload { get; }
+
+        public int Length => Payload.Length;
+
+        public bool IsReleased => Volatile.Read(ref _released) != 0;
+
+        /// <summary>
+        /// Releases the frame's reserved bytes back to the sink budget. Exactly once: send
+        /// completion, a send fault and cancellation all funnel through this single release.
+        /// </summary>
+        public void Release()
+        {
+            if (Interlocked.Exchange(ref _released, 1) == 0)
+            {
+                _sink.ReleaseInflight(Payload.Length);
+            }
+        }
+    }
+
     /// <summary>
     /// One connection's outbound stream boundary. The actor calls <see cref="PublishAsync"/>
     /// from its per-stream pump with already-encoded frames; the sink forwards the exact bytes
@@ -71,18 +104,46 @@ namespace Mahjong.TableService
     /// snapshot can arrive before the host binds the returned handle; pre-bind frames are the
     /// subscription's own frames by construction and only post-bind mismatches fault. Nothing
     /// here mutates Domain state and no frame is queued before the actor encoded it.
+    ///
+    /// Byte accounting (D-1-07): the sink owns TWO concatenated ledgers for its whole budget —
+    /// bytes queued in this host channel plus bytes takeIN by the connection's send path that
+    /// have NOT yet been handed to the actual transport. A dequeue therefore does NOT free the
+    /// budget: it MOVES the reservation from the queued ledger into the in-flight ledger, and
+    /// the in-flight reservation is released only when the producer-side send path actually
+    /// completed (success, fault or cancellation) through <see cref="WireStreamFrameLease"/>.
+    /// A sink that would exceed its queued-byte budget — with in-flight bytes counted — or a
+    /// full snapshot above the negotiated snapshot limit terminates the stream instead of
+    /// queuing silently.
+    ///
+    /// D-1-02: every owner stream frame also feeds the trusted beam-swap offer context — the
+    /// candidates come from the actor's own owner projection (the same immutable offer state
+    /// the Domain validates every choice against), so the mapper resolves a raw target slot
+    /// through a REAL offer context instead of guessing a slot kind by numeric range.
     /// </summary>
     public sealed class WireTableStreamSink : ITableStreamSink
     {
         private readonly Channel<byte[]> _outbound;
+        private readonly int _maxQueuedBytes;
+        private readonly int _maxSnapshotBytes;
         private TableStreamHandle? _handle;
         private volatile TableStreamTermination? _termination;
         private readonly object _captureGate = new object();
+        private readonly object _terminationGate = new object();
         private bool _captureNextFullSnapshot;
         private TaskCompletionSource<TableStreamFrame>? _captureSource;
         private TableStreamFrame? _capturedFullSnapshot;
+        private bool _terminating;
 
-        public WireTableStreamSink(int capacity)
+        /// <summary>Mutable bytes still held in this host channel; only advanced under the gate.</summary>
+        private int _queuedBytes;
+
+        /// <summary>Mutable bytes taken by the send path but not yet handed to the transport (D-1-07).</summary>
+        private int _inflightBytes;
+
+        /// <summary>Mutable bytes sent and accounted; subtracted from this ledger.</summary>
+        private long _sentBytes;
+
+        public WireTableStreamSink(int capacity, int maxQueuedBytes, int maxSnapshotBytes)
         {
             _outbound = Channel.CreateBounded<byte[]>(
                 new BoundedChannelOptions(Math.Max(1, capacity))
@@ -91,9 +152,35 @@ namespace Mahjong.TableService
                     SingleWriter = false,
                     FullMode = BoundedChannelFullMode.Wait
                 });
+            if (maxQueuedBytes < 1)
+            {
+                throw new ArgumentOutOfRangeException(nameof(maxQueuedBytes));
+            }
+
+            if (maxSnapshotBytes < 1)
+            {
+                throw new ArgumentOutOfRangeException(nameof(maxSnapshotBytes));
+            }
+
+            _maxQueuedBytes = maxQueuedBytes;
+            _maxSnapshotBytes = maxSnapshotBytes;
         }
 
         public TableStreamHandle? Handle => _handle;
+
+        /// <summary>Total un-released bytes under this sink's budget (queued + in flight).</summary>
+        public int QueuedBytes => Volatile.Read(ref _queuedBytes) + Volatile.Read(ref _inflightBytes);
+
+        public int MaxQueuedBytes => _maxQueuedBytes;
+
+        public int MaxSnapshotBytes => _maxSnapshotBytes;
+
+        public long SentBytes => Volatile.Read(ref _sentBytes);
+
+        public TableStreamTermination? Termination => _termination;
+
+        /// <summary>Raised once from <see cref="NotifyTerminated"/> (actor pump thread).</summary>
+        public Action<TableStreamTermination>? Terminated { get; set; }
 
         /// <summary>Called exactly once, with the handle returned by SubscribeStreamAsync.</summary>
         public void Bind(TableStreamHandle handle)
@@ -111,11 +198,6 @@ namespace Mahjong.TableService
 
         public bool Owns(TableStreamHandle handle) =>
             handle != null && _handle != null && _handle.Equals(handle);
-
-        public TableStreamTermination? Termination => _termination;
-
-        /// <summary>Raised once from <see cref="NotifyTerminated"/> (actor pump thread).</summary>
-        public Action<TableStreamTermination>? Terminated { get; set; }
 
         public ValueTask PublishAsync(TableStreamFrame frame, CancellationToken cancellationToken)
         {
@@ -135,13 +217,238 @@ namespace Mahjong.TableService
                 throw new InvalidOperationException("A stream frame arrived for a different identity.");
             }
 
+            // D-1-02: the trusted offer candidate context follows the actor's own owner
+            // projection; it rides only THIS connection's frames (the identity check above
+            // proves the frame belongs to this connection's seat/audience).
+            if (frame.Player != null && frame.OwnerPrivate != null && frame.OwnerPrivate.Cheat.BeamSwapOffer != null)
+            {
+                NoteBeamSwapOffer(frame.OwnerPrivate.Cheat.BeamSwapOffer);
+            }
+
             // Observe-for-sync runs first; it never diverts the frame (always false today,
             // kept as the seam so the bounded write below remains the only delivery path).
             TryCapture(frame);
 
-            return _outbound.Writer.WriteAsync(frame.EncodedPayload ??
-                throw new InvalidOperationException("A stream frame arrived without an encoded payload."),
-                cancellationToken);
+            lock (this)
+            {
+                if (_terminating)
+                {
+                    // The stream is already closed host-side (over budget / oversize snapshot);
+                    // the actor's pump drains its own outbox, but nothing more is queued here.
+                    return ValueTask.CompletedTask;
+                }
+            }
+
+            byte[] payload = frame.EncodedPayload ??
+                throw new InvalidOperationException("A stream frame arrived without an encoded payload.");
+
+            // D-1-07: the negotiated snapshot limit is executed on the hot path — an oversized
+            // full snapshot is refused with a mapped termination, never silently truncated or
+            // sent in an envelope the negotiated limit says cannot appear on this channel.
+            if (frame.IsFullSnapshot && payload.Length > _maxSnapshotBytes)
+            {
+                Terminate(
+                    TableStreamTerminationKind.MessageTooLarge,
+                    ProtocolErrorCode.MessageTooLarge,
+                    "an encoded full snapshot is " + payload.Length + " bytes, above the negotiated " +
+                    _maxSnapshotBytes + " byte snapshot limit");
+                return ValueTask.CompletedTask;
+            }
+
+            int length = payload.Length;
+            lock (this)
+            {
+                if (_terminating)
+                {
+                    return ValueTask.CompletedTask;
+                }
+
+                if (_queuedBytes + Volatile.Read(ref _inflightBytes) + length > _maxQueuedBytes)
+                {
+                    // Budget exceeded WITH in-flight bytes counted: terminate as a slow
+                    // consumer before queuing anything more. The accounting stays exact
+                    // because the reservation was never made.
+                    Terminate(
+                        TableStreamTerminationKind.SlowConsumer,
+                        ProtocolErrorCode.SlowConsumer,
+                        "the host stream channel would exceed its " + _maxQueuedBytes +
+                        " byte budget (" + _queuedBytes + " queued + " + Volatile.Read(ref _inflightBytes) +
+                        " in flight + " + length + " framed)");
+                    return ValueTask.CompletedTask;
+                }
+
+                // Reserve before the async write so the budget can never cover more bytes
+                // than the sink actually holds.
+                _queuedBytes += length;
+            }
+
+            return new ValueTask(WriteAndReserveAsync(payload, length, cancellationToken));
+        }
+
+        private async Task WriteAndReserveAsync(
+            byte[] payload,
+            int length,
+            CancellationToken cancellationToken)
+        {
+            try
+            {
+                await _outbound.Writer.WriteAsync(payload, cancellationToken).ConfigureAwait(false);
+            }
+            catch
+            {
+                // The write did not land (cancelled/closed channel): the reservation is void.
+                ReleaseQueued(length);
+                throw;
+            }
+        }
+
+        private void ReleaseQueued(int length)
+        {
+            if (length == 0)
+            {
+                return;
+            }
+
+            lock (this)
+            {
+                if (_queuedBytes >= length)
+                {
+                    _queuedBytes -= length;
+                }
+            }
+        }
+
+        /// <summary>Moves a dequeued frame's reservation from the queued ledger to in flight.</summary>
+        private void MoveToInflight(int length)
+        {
+            lock (this)
+            {
+                if (_queuedBytes >= length)
+                {
+                    _queuedBytes -= length;
+                    _inflightBytes += length;
+                }
+                else
+                {
+                    _inflightBytes += length;
+                }
+            }
+        }
+
+        /// <summary>Frees an in-flight reservation once the send path finished the frame.</summary>
+        internal void ReleaseInflight(int length)
+        {
+            lock (this)
+            {
+                if (_inflightBytes >= length)
+                {
+                    _inflightBytes -= length;
+                }
+
+                _sentBytes += length;
+            }
+        }
+
+        /// <summary>
+        /// Test/seam variant: installs an offer context directly (test-only wiring surface).
+        /// </summary>
+        public void NoteBeamSwapOfferContext(TableBeamSwapOfferContext offer)
+        {
+            Volatile.Write(ref _beamOffer, offer);
+        }
+
+        public void NoteBeamSwapOffer(TableOwnerBeamSwapOfferView offer)
+        {
+            var candidates = new List<TableBeamSwapCandidate>(offer.Candidates.Count);
+            for (int i = 0; i < offer.Candidates.Count; i++)
+            {
+                TableOwnerBeamSwapCandidateView candidate = offer.Candidates[i];
+                candidates.Add(new TableBeamSwapCandidate(candidate.SlotKind, candidate.SlotIndex));
+            }
+
+            Volatile.Write(
+                ref _beamOffer,
+                new TableBeamSwapOfferContext(offer.OfferId, offer.Window, candidates));
+        }
+
+        private TableBeamSwapOfferContext? _beamOffer;
+
+        /// <summary>
+        /// D-1-02: resolves a raw wire slot index against the trusted actor's pending beam
+        /// swap offer. Exactly one candidate with that index resolves to its REAL kind; an
+        /// index whose namespace crosses several candidate kinds (dead wall source and
+        /// replacement source share small indices by design) is NEVER silently mapped to any
+        /// one of them — it is refused with the explicit boundary error. Unknown indices are
+        /// also refused; the Domain re-verifies whatever this returns.
+        /// </summary>
+        public TableBeamSwapSlotResolution? ResolveBeamSwapTargetSlot(uint rawIndex)
+        {
+            TableBeamSwapOfferContext? offer = Volatile.Read(ref _beamOffer);
+            if (offer == null || offer.Candidates.Count == 0)
+            {
+                return null;
+            }
+
+            int matches = 0;
+            TableBeamSwapCandidate? single = null;
+            for (int i = 0; i < offer.Candidates.Count; i++)
+            {
+                TableBeamSwapCandidate candidate = offer.Candidates[i];
+                if (candidate.SlotIndex == rawIndex)
+                {
+                    matches++;
+                    single = candidate;
+                    if (matches > 1)
+                    {
+                        return new TableBeamSwapSlotResolution(TableBeamSwapResolutionStatus.Ambiguous, null);
+                    }
+                }
+            }
+
+            if (matches == 0)
+            {
+                return new TableBeamSwapSlotResolution(TableBeamSwapResolutionStatus.UnknownIndex, null);
+            }
+
+            return new TableBeamSwapSlotResolution(TableBeamSwapResolutionStatus.Resolved, single);
+        }
+
+        private void Terminate(TableStreamTerminationKind kind, string reasonCode, string detail)
+        {
+            TableStreamTermination termination;
+            bool first;
+            lock (this)
+            {
+                first = !_terminating;
+                _terminating = true;
+            }
+
+            try
+            {
+                _outbound.Writer.TryComplete();
+            }
+            catch (Exception)
+            {
+                // A completed channel is not a fault; the stream simply has no more frames.
+            }
+
+            lock (_captureGate)
+            {
+                _captureNextFullSnapshot = false;
+            }
+
+            if (!first)
+            {
+                return;
+            }
+
+            termination = new TableStreamTermination(
+                kind,
+                _handle ?? throw new InvalidOperationException("A stream terminated before its handle was bound."),
+                reasonCode,
+                detail);
+            _termination = termination;
+            Terminated?.Invoke(termination);
         }
 
         /// <summary>
@@ -247,11 +554,120 @@ namespace Mahjong.TableService
 
         public void NotifyTerminated(TableStreamTermination termination)
         {
+            lock (this)
+            {
+                if (_terminating)
+                {
+                    return;
+                }
+
+                _terminating = true;
+            }
+
+            try
+            {
+                _outbound.Writer.TryComplete();
+            }
+            catch (Exception)
+            {
+            }
+
+            lock (_captureGate)
+            {
+                _captureNextFullSnapshot = false;
+            }
+
             _termination = termination;
-            _outbound.Writer.TryComplete();
             Terminated?.Invoke(termination);
         }
 
-        public ChannelReader<byte[]> Reader => _outbound.Reader;
+        /// <summary>
+        /// Leasing reader (D-1-07): every read MOVES the frame's bytes from the queued ledger
+        /// into the in-flight ledger; the consumer releases them through
+        /// <see cref="WireStreamFrameLease.Release"/> once the actual WebSocket send finished.
+        /// </summary>
+        public ChannelReader<WireStreamFrameLease> Reader => new LeasingReader(_outbound.Reader, this);
+
+        private sealed class LeasingReader : ChannelReader<WireStreamFrameLease>
+        {
+            private readonly ChannelReader<byte[]> _inner;
+            private readonly WireTableStreamSink _sink;
+
+            public LeasingReader(ChannelReader<byte[]> inner, WireTableStreamSink sink)
+            {
+                _inner = inner;
+                _sink = sink;
+            }
+
+            public override bool TryRead(out WireStreamFrameLease item)
+            {
+                if (!_inner.TryRead(out byte[]? payload) || payload is null)
+                {
+                    item = null!;
+                    return false;
+                }
+
+                _sink.MoveToInflight(payload.Length);
+                item = new WireStreamFrameLease(_sink, payload);
+                return true;
+            }
+
+            public override ValueTask<bool> WaitToReadAsync(CancellationToken cancellationToken = default) =>
+                _inner.WaitToReadAsync(cancellationToken);
+        }
+    }
+
+    public enum TableBeamSwapResolutionStatus : byte
+    {
+        Resolved = 0,
+        Ambiguous = 1,
+        UnknownIndex = 2
+    }
+
+    /// <summary>One trusted beam swap candidate, projected by the actor for the owner.</summary>
+    public sealed class TableBeamSwapCandidate
+    {
+        public TableBeamSwapCandidate(Mahjong.Domain.Cheat.BeamSwapSlotKind kind, int slotIndex)
+        {
+            Kind = kind;
+            SlotIndex = slotIndex;
+        }
+
+        public Mahjong.Domain.Cheat.BeamSwapSlotKind Kind { get; }
+
+        public int SlotIndex { get; }
+    }
+
+    public sealed class TableBeamSwapOfferContext
+    {
+        public TableBeamSwapOfferContext(
+            string offerId,
+            BeamSwapWindow window,
+            IReadOnlyList<TableBeamSwapCandidate> candidates)
+        {
+            OfferId = offerId;
+            Window = window;
+            Candidates = candidates ?? throw new ArgumentNullException(nameof(candidates));
+        }
+
+        public string OfferId { get; }
+
+        public BeamSwapWindow Window { get; }
+
+        public IReadOnlyList<TableBeamSwapCandidate> Candidates { get; }
+    }
+
+    /// <summary>Outcome of resolving one raw wire target slot against the trusted offer context.</summary>
+    public sealed class TableBeamSwapSlotResolution
+    {
+        public TableBeamSwapSlotResolution(TableBeamSwapResolutionStatus status, TableBeamSwapCandidate? candidate)
+        {
+            Status = status;
+            Candidate = candidate;
+        }
+
+        public TableBeamSwapResolutionStatus Status { get; }
+
+        public TableBeamSwapCandidate? Candidate { get; }
     }
 }

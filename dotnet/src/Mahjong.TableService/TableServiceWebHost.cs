@@ -6,6 +6,7 @@ using System.Threading.Tasks;
 using Mahjong.Contracts;
 using Mahjong.Contracts.Wire;
 using Mahjong.TableRuntime;
+using Mahjong.Domain;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Hosting.Server;
@@ -68,13 +69,17 @@ namespace Mahjong.TableService
         /// <summary>
         /// Builds (but does not start) the WebApplication. Loopback-only by default; tests start
         /// it on an OS-assigned port (port 0) and read the actual port from
-        /// <see cref="TableServiceHostRuntime.GetBoundPort"/>.
+        /// <see cref="TableServiceHostRuntime.GetBoundPort"/>. The room runtime source defaults
+        /// to the production cryptographically-random initialization; a test or controlled
+        /// deployment may inject its own <see cref="ITableRoundSource"/> — a registry built
+        /// without any source stays fail-closed and never serves a fabricated table.
         /// </summary>
         public static TableServiceHostRuntime Build(
             TableServiceOptions options,
             ITableTicketKeyProvider ticketKeys,
             IPAddress? bindAddress = null,
-            int bindPort = 0)
+            int bindPort = 0,
+            ITableRoundSource? roundSource = null)
         {
             options.Validate();
 
@@ -106,10 +111,13 @@ namespace Mahjong.TableService
             builder.Services.AddSingleton<ITableSessionDirectory, InMemorySessionDirectory>();
             builder.Services.AddSingleton<ITableStreamContractCodec, WireTableStreamContractCodec>();
             builder.Services.AddSingleton<ITableClock>(SystemTableClock.Instance);
-            builder.Services.AddSingleton<ITableHostRegistry>(sp => new InMemoryTableHostRegistry(
+            builder.Services.AddSingleton<ITableRoundSource>(roundSource ?? CryptographicTableRoundSource.Instance);
+            var hostRegistry = new InMemoryTableHostRegistry(
                 options,
-                sp.GetRequiredService<ITableStreamContractCodec>(),
-                sp.GetRequiredService<ITableClock>()));
+                new WireTableStreamContractCodec(),
+                SystemTableClock.Instance,
+                roundSource ?? CryptographicTableRoundSource.Instance);
+            builder.Services.AddSingleton<ITableHostRegistry>(hostRegistry);
             builder.Services.AddHostedService<TableTickDriver>();
 
             WebApplication app = builder.Build();
@@ -181,13 +189,56 @@ namespace Mahjong.TableService
                 return Task.CompletedTask;
             });
 
-            app.MapGet(ReadyPath, (HttpContext context) =>
+            app.MapGet(ReadyPath, async (HttpContext context) =>
             {
+                // Readiness reflects the REAL serving state (D-1-10): the drain gate OR a
+                // process whose every KNOWN room is fenced off (lease lost / faulted / closed)
+                // is unhealthy — and the authoritative gate is each room's OWN actor
+                // lifecycle snapshot, not a ticker-polled bool. A room registry with NO room
+                // yet is healthy: its runtime source (CSPRNG wall + Domain round) and its
+                // room capacity are ready to admit the first table, and readiness must never
+                // force an operator to bypass the health surface just to serve room #1.
                 DrainState drain = context.RequestServices.GetRequiredService<DrainState>();
-                context.Response.StatusCode = drain.IsDraining
-                    ? StatusCodes.Status503ServiceUnavailable
-                    : StatusCodes.Status200OK;
-                return Task.CompletedTask;
+                ITableHostRegistry hosts = context.RequestServices.GetRequiredService<ITableHostRegistry>();
+                bool canServe;
+                if (drain.IsDraining)
+                {
+                    canServe = false;
+                }
+                else if (hosts is not InMemoryTableHostRegistry registry)
+                {
+                    canServe = true;
+                }
+                else
+                {
+                    bool anyKnownRoom = false;
+                    bool anyServingRoom = false;
+                    foreach (RoomHost room in registry.Hosts)
+                    {
+                        anyKnownRoom = true;
+                        try
+                        {
+                            using var read = new CancellationTokenSource(TimeSpan.FromSeconds(2));
+                            TableSnapshot snapshot = await room.Actor
+                                .GetSnapshotAsync(read.Token)
+                                .ConfigureAwait(false);
+                            if (snapshot.Lifecycle == TableActorLifecycle.Serving)
+                            {
+                                anyServingRoom = true;
+                            }
+                        }
+                        catch (Exception)
+                        {
+                            // An unreachable actor is definitively not serving.
+                        }
+                    }
+
+                    canServe = !anyKnownRoom || anyServingRoom;
+                }
+
+                context.Response.StatusCode = canServe
+                    ? StatusCodes.Status200OK
+                    : StatusCodes.Status503ServiceUnavailable;
             });
 
             app.MapPost(DrainPath, async (HttpContext context) =>
@@ -201,7 +252,7 @@ namespace Mahjong.TableService
                 }
 
                 string? presented = context.Request.Headers["X-Admin-Token"];
-                if (!string.Equals(presented, configured.AdminDrainToken, StringComparison.Ordinal))
+                if (!IsConstantTimeTokenMatch(presented, configured.AdminDrainToken))
                 {
                     context.Response.StatusCode = StatusCodes.Status401Unauthorized;
                     return;
@@ -224,7 +275,30 @@ namespace Mahjong.TableService
                     .ConfigureAwait(false);
             });
 
-            return new TableServiceHostRuntime(app, options);
+            return new TableServiceHostRuntime(app, options, hostRegistry);
+        }
+
+        /// <summary>
+        /// Constant-time admin-token comparison: the presented string and the configured
+        /// secret are digested with the same mechanism, every comparison reads the same number
+        /// of bytes in the same class (D-1-11) — no early length exit, no early first-unequal
+        /// byte leak through timing.
+        /// </summary>
+        private static bool IsConstantTimeTokenMatch(string? presented, string configured)
+        {
+            if (string.IsNullOrEmpty(presented) || string.IsNullOrEmpty(configured))
+            {
+                return false;
+            }
+
+            Span<byte> left = stackalloc byte[System.Security.Cryptography.SHA256.HashSizeInBytes];
+            Span<byte> right = stackalloc byte[System.Security.Cryptography.SHA256.HashSizeInBytes];
+            bool hashedLeft = System.Security.Cryptography.SHA256.TryHashData(
+                System.Text.Encoding.UTF8.GetBytes(presented), left, out _);
+            bool hashedRight = System.Security.Cryptography.SHA256.TryHashData(
+                System.Text.Encoding.UTF8.GetBytes(configured), right, out _);
+            return hashedLeft && hashedRight &&
+                   System.Security.Cryptography.CryptographicOperations.FixedTimeEquals(left, right);
         }
     }
 
@@ -232,16 +306,20 @@ namespace Mahjong.TableService
     public sealed class TableServiceHostRuntime
     {
         private readonly WebApplication _app;
+        private readonly InMemoryTableHostRegistry? _hosts;
 
-        public TableServiceHostRuntime(WebApplication app, TableServiceOptions options)
+        public TableServiceHostRuntime(WebApplication app, TableServiceOptions options, InMemoryTableHostRegistry? hosts = null)
         {
             _app = app;
             Options = options;
+            _hosts = hosts;
         }
 
         public TableServiceOptions Options { get; }
 
         public IServiceProvider Services => _app.Services;
+
+        public InMemoryTableHostRegistry? HostRegistry => _hosts;
 
         public string BoundAddress { get; private set; } = string.Empty;
 
@@ -277,6 +355,12 @@ namespace Mahjong.TableService
         public async Task StopAsync(CancellationToken cancellationToken = default)
         {
             await _app.StopAsync(cancellationToken).ConfigureAwait(false);
+            if (_hosts != null)
+            {
+                // Shutdown disposes every OWNED table actor: no pump, stream or timer of a
+                // table actor outlives the host (D-1-05).
+                await _hosts.DisposeHostsAsync().ConfigureAwait(false);
+            }
         }
     }
 }

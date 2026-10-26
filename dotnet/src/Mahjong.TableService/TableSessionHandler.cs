@@ -17,9 +17,15 @@ namespace Mahjong.TableService
     /// <summary>
     /// One /v1/table WebSocket session. Owns the V5 framing discipline (one complete binary
     /// message = one Envelope, fragments accumulated to EndOfMessage, oversize/concat/text
-    /// refused), the HELLO/WELCOME admission flow, serialized command routing through the
-    /// per-room actor, heartbeat/idle liveness, drain awareness and the frozen close-code map.
-    /// Logging is redacted: ticket strings, payload bytes and full identifiers never reach logs.
+    /// refused, duplicated envelope-level single-value fields detected as merged message
+    /// boundaries at every phase while unknown fields stay compatible), the
+    /// HELLO/WELCOME admission flow as a two-phase admission transaction (provisional
+    /// consumption/subscription and a single final commit where ?????? displacement happens),
+    /// serialized command routing through the per-room actor, heartbeat/idle liveness, drain
+    /// awareness and the frozen close-code map. Every socket write is serialized through the
+    /// send loop: a close decision never races a frame send, and a pending inbound receive is
+    /// always owned, bounded in its timeout and released with its budget. Logging is redacted:
+    /// ticket strings, payload bytes and full identifiers never reach logs.
     /// </summary>
     public sealed class TableSessionHandler
     {
@@ -43,7 +49,28 @@ namespace Mahjong.TableService
         private string? _registeredSessionId;
         private volatile bool _displaced;
 
-        // Outbound: serialized byte writes + terminal close sentinel.
+        /// <summary>Tickets for the uncompromised WELCOME-send failure rollback (D-1-03).
+        /// Set between seat-handover commit and WELCOME delivery; cleared on success.</summary>
+        private string? _committedSeatHandoverFrom;
+
+                private volatile bool _welcomeSent;
+
+        /// <summary>D-1-10: the scope a failed admission must revoke. Set when the scope is
+        /// issued, cleared once the admission genuinely succeeded.</summary>
+        private RequestScopeId? _issuedScopeId;
+
+        // Outbound: serialized byte writes + terminal close sentinel. The queued BYTE volume
+        // (receipts, errors, heartbeats and SYNC_RESPONSE baselines) is bounded in addition to
+        // the frame count: a client that stops reading is closed as a slow consumer instead of
+        // accumulating megabytes without a ledger (D-1-07).
+        /// <summary>
+        /// Wakes the sender wait loops and the liveness timer without touching the socket:
+        /// cancelling a parked WebSocket READ (which shares the linked token) aborts the
+        /// transport and would lose a still-queued close, so the lifecycle child wake is a
+        /// SEPARATE token from the receiver token.
+        /// </summary>
+        private readonly CancellationTokenSource _lifecycleWake = new();
+
         private readonly Channel<OutboundItem> _outbound =
             Channel.CreateBounded<OutboundItem>(new BoundedChannelOptions(256)
             {
@@ -51,6 +78,9 @@ namespace Mahjong.TableService
                 SingleWriter = false,
                 FullMode = BoundedChannelFullMode.Wait
             });
+
+        private readonly object _outboundBytesGate = new object();
+        private int _outboundBytes;
 
         // Ingress token bucket (commands + sync + receipt queries).
         private readonly object _rateGate = new object();
@@ -68,6 +98,12 @@ namespace Mahjong.TableService
 
         /// <summary>True once this session's transport CloseOutput actually completed.</summary>
         private volatile bool _closeOutputSent;
+
+        /// <summary>The CLOSE envelope was placed on the wire successfully (D-1-05).</summary>
+        private int _closeEnvelopeSent;
+
+        /// <summary>The last authoritative close decision, retained for the failure-safe flush.</summary>
+        private CloseDirective? _lastCloseDirective;
 
         public TableSessionHandler(
             WebSocket webSocket,
@@ -158,38 +194,86 @@ namespace Mahjong.TableService
                 TableConnectionIdentity identity = await AdmitAsync(serverStopping).ConfigureAwait(false);
                 _identity = identity;
                 _sessionShort = Short(identity.SessionId);
-                var linked = CancellationTokenSource.CreateLinkedTokenSource(serverStopping);
-                Task sender = SendLoopAsync(linked.Token);
-                Task liveness = LivenessLoopAsync(linked.Token);
+                using var linked = CancellationTokenSource.CreateLinkedTokenSource(serverStopping);
+                using var wake = CancellationTokenSource.CreateLinkedTokenSource(linked.Token, _lifecycleWake.Token);
+                Task sender = SendLoopAsync(wake.Token);
+                Task liveness = LivenessLoopAsync(wake.Token);
+                Task receive = ReceiveLoopAsync(linked);
                 try
                 {
-                    await ReceiveLoopAsync(linked).ConfigureAwait(false);
+                    // Supervised post-admission lifecycle (D-1-05): whichever child ends
+                    // first owns the end of the session; no child can linger unobserved, and
+                    // no mid-send cancellation may destroy a close decision that still had to
+                    // be delivered.
+                    //
+                    // CRITICAL: a pending socket READ must never be released through token
+                    // cancellation early: cancelling a parked WebSocket ReceiveAsync ABORTS
+                    // the underlying transport in the managed stack, which destroys a still
+                    // undelivered close handshake. The pending receive is instead waited for
+                    // (bounded) and, when still parked, ABANDONED while its eventual
+                    // completion is observed quietly; the teardown's own abort releases it.
+                    Task ended = await Task.WhenAny(sender, liveness, receive).ConfigureAwait(false);
+                    if (ended != receive)
+                    {
+                        // The sender/liveness ended first (its fault reserved a close): give
+                        // the sender a bounded window to deliver the queued/reserved close
+                        // itself; its own per-send budget guarantees the exit.
+                        if (!await WaitTaskDoneAsync(
+                                sender,
+                                TimeSpan.FromMilliseconds(SendBudgetMs() + 500)).ConfigureAwait(false))
+                        {
+                            LogRedacted("sender lingered past close budget");
+                        }
+
+                        // The parked read is abandoned IMMEDIATELY when the close decision is
+                        // already in delivery: no extra wait window is allowed to stretch the
+                        // session past the close budgets (the peer's own close answer, when
+                        // any, is read by the same parked task or by the teardown's bounded
+                        // drain; the abort releases everything else).
+                        if (!receive.IsCompleted)
+                        {
+                            LogRedacted("receive abandoned parked");
+                            _ = ObserveChildFiredAsync(receive);
+                        }
+                        else
+                        {
+                            await ObserveChildAsync(receive).ConfigureAwait(false);
+                        }
+
+                        _lifecycleWake.Cancel();
+                        await ObserveChildAsync(sender).ConfigureAwait(false);
+                        await ObserveChildAsync(liveness).ConfigureAwait(false);
+                    }
+                    else
+                    {
+                        // The receive loop ended: give the sender a bounded window to deliver
+                        // the queued/reserved close itself (bounded by its own consistent
+                        // per-send budget), so no mid-send cancellation is ever needed.
+                        if (!await WaitTaskDoneAsync(
+                                sender,
+                                TimeSpan.FromMilliseconds(SendBudgetMs() + 500)).ConfigureAwait(false))
+                        {
+                            LogRedacted("sender lingered past close budget");
+                        }
+
+                        _lifecycleWake.Cancel();
+                        await ObserveChildAsync(sender).ConfigureAwait(false);
+                        await ObserveChildAsync(liveness).ConfigureAwait(false);
+                    }
                 }
                 finally
                 {
-                    // Flush any queued close handshake while the sender's token is still
-                    // live: the peer must always see the close handshake, never an abrupt
-                    // abort (e.g. the peer's own CLOSE envelope ends the receive loop and
-                    // cancellation would otherwise beat the sender to the drain). Only one
-                    // close is ever sent (idempotent guard inside SendCloseAndCloseAsync).
-                    await FlushCloseIfQueuedAsync().ConfigureAwait(false);
+                    // Everything above ended through its own budgets and gates; a token
+                    // cancelled pending read would abort the transport (losing the still
+                    // queued close handshake), so the children are released only here, after
+                    // the close delivery had its chance. The sessions's own children never
+                    // outlive this scope.
                     linked.Cancel();
-                    try
-                    {
-                        await sender.ConfigureAwait(false);
-                    }
-                    catch (OperationCanceledException)
-                    {
-                    }
-
-                    try
-                    {
-                        await liveness.ConfigureAwait(false);
-                    }
-                    catch (OperationCanceledException)
-                    {
-                    }
                 }
+                // Whatever path ended the receive loop (incl. a close the sender could not
+                // drain because the socket died), the socket now has exactly one owner for
+                // writes: the terminal close delivery is the LAST attempt, never a race.
+                await FlushTerminalCloseAsync().ConfigureAwait(false);
             }
             catch (AdmissionClosedException admission)
             {
@@ -204,18 +288,103 @@ namespace Mahjong.TableService
                 // during the admission read): nobody is left to handshake a close with,
                 // and the same abrupt-transport reasoning as the receive loop applies.
             }
+            catch (OperationCanceledException)
+            {
+                // Server-side cancellation of an in-flight send/stop: the close handshake
+                // cannot be delivered anymore; teardown below still runs.
+            }
             finally
             {
                 await TeardownAsync().ConfigureAwait(false);
                 await DrainCloseHandshakeAsync().ConfigureAwait(false);
+                // Unified bounded shutdown: no leftover socket + pending tasks outlive this
+                // session. Abort is safe on every state and is a no-op after a complete
+                // handshake. The accepted socket's disposal belongs to the same ownership
+                // block that owns its entire lifecycle.
+                try
+                {
+                    if (_ws.State != WebSocketState.Closed)
+                    {
+                        _ws.Abort();
+                    }
+                }
+                catch (Exception)
+                {
+                }
+
+                try
+                {
+                    _ws.Dispose();
+                }
+                catch (Exception)
+                {
+                }
             }
         }
 
         /// <summary>
+        /// Upper bound for ONE socket write of this session, including the terminal close: a
+        /// peer that never drains releases the session on this budget instead of wedging the
+        /// whole lifecycle forever (D-1-05 consistent termination budget).
+        /// </summary>
+        private int SendBudgetMs()
+        {
+            return Math.Max(500, _options.CloseGraceMs);
+        }
+
+        /// <summary>Awaits a task's completion or the deadline. True = completed in time.</summary>
+        private static async Task<bool> WaitTaskDoneAsync(Task task, TimeSpan budget)
+        {
+            if (task.IsCompleted)
+            {
+                return true;
+            }
+
+            Task won = await Task.WhenAny(task, Task.Delay(budget)).ConfigureAwait(false);
+            return won == task;
+        }
+
+        /// <summary>Awaits a send/liveness child to completion; transport faults propagate as
+        /// the normal abrupt-peer end, cancellation ends silently.</summary>
+        private static async Task ObserveChildAsync(Task child)
+        {
+            try
+            {
+                await child.ConfigureAwait(false);
+            }
+            catch (Exception exception) when (
+                exception is WebSocketException ||
+                exception is System.IO.IOException ||
+                exception is ObjectDisposedException ||
+                exception is OperationCanceledException ||
+                exception is SessionFaultException)
+            {
+                // drained above: the socket is dead or stopping; the socket write owner is
+                // free again. Everything unusual still bubbles to the main catch.
+            }
+        }
+
+        /// <summary>
+        /// Observes an ABANDONED child's eventual completion without waiting for it now (the
+        /// receive stays parked on a silent peer): the teardown's own abort releases it and
+        /// this quiet observer swallows the transport noise so nothing stays unobserved.
+        /// </summary>
+        private static async Task ObserveChildFiredAsync(Task child)
+        {
+            try
+            {
+                await child.ConfigureAwait(false);
+            }
+            catch (Exception)
+            {
+                // The abandoned task's transport is being torn down; nothing else to do.
+            }
+        }
+        /// <summary>
         /// Half-close drain. Once this session has sent its transport close, the peer must
         /// get the chance to actually complete the handshake: a slow or stalled reader
         /// reaches the close bytes only at its own read rate, and returning immediately
-        /// lets the host abort the connection — destroying the close bytes still sitting in
+        /// lets the host abort the connection ???destroying the close bytes still sitting in
         /// the peer's pipeline and replacing the mapped close code with an abrupt reset.
         /// This drains the inbound direction (ignoring late data frames) until the peer's
         /// close frame arrives or the grace budget ends; every session resource is already
@@ -248,16 +417,35 @@ namespace Mahjong.TableService
             }
             catch (Exception)
             {
-                // Peer gone, or the grace expired — the transport abort is then the honest
+                // Peer gone, or the grace expired ???the transport abort is then the honest
                 // end for a peer that never completed the handshake it was given.
             }
         }
 
         private async Task TeardownAsync()
         {
+            LogRedacted("teardown enter state=" + _ws.State + " closeOut=" + _closeOutputSent);
             TableConnectionIdentity? identity = _identity;
             RoomHost? host = _host;
             TableStreamHandle? handle = _handle;
+            if (!_welcomeSent && _issuedScopeId.HasValue && host != null)
+            {
+                // D-1-10 / D-1-03: an admission that failed before its WELCOME revokes the
+                // scope it consumed instead of leaving a still-valid side-effect surface for
+                // the failed identity. Best effort; the scope expires with the ticket anyway.
+                try
+                {
+                    host.Scopes.Revoke(
+                        _issuedScopeId.Value,
+                        (ulong)DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+                }
+                catch (Exception)
+                {
+                }
+
+                _issuedScopeId = null;
+            }
+
             try
             {
                 if (host != null && handle != null)
@@ -279,35 +467,88 @@ namespace Mahjong.TableService
 
             if (identity != null)
             {
-                _consumption.Release(identity.SessionId);
-                if (identity.IsPlayer && host != null && !_displaced)
+                // The seat-disconnect fence is the CONSUMPTION OWNERSHIP (D-1-08): only the
+                // session that still owns the seat binding at teardown issues
+                // TRANSPORT_CLOSED, and it disconnects with the seat's CURRENT authoritative
+                // control epoch (never a constant zero). A displaced session skips the
+                // disconnect so the handover never puts the seat into grace, and an old
+                // displaced connection can never disconnect a session that took the seat
+                // over. The rollback below is unconditional and idempotent: it finalizes the
+                // jti/assignment records, frees the seat/spectator resources and marks the
+                // seat handable.
+                if (identity.IsPlayer &&
+                    host != null &&
+                    !_displaced &&
+                    _consumption.TryGetSeatOwner(identity.RoomId, identity.Seat, out string? seatOwner) &&
+                    string.Equals(seatOwner, identity.SessionId, StringComparison.Ordinal))
                 {
-                    try
+                    ControlAuthority? seatAuthority = await TryGetSeatAuthorityAsync(host, identity.Seat).ConfigureAwait(false);
+                    if (seatAuthority != null && seatAuthority.Value.Connected)
                     {
-                        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(2));
-                        await host.Actor.DisconnectAsync(
-                            identity.Seat,
-                            host.OwnerEpoch,
-                            new ControlEpoch(0),
-                            "TRANSPORT_CLOSED",
-                            timeout.Token).ConfigureAwait(false);
-                    }
-                    catch (Exception)
-                    {
-                        // P3.3 grace policy governs the seat; a failed notify must not throw
-                        // out of connection teardown.
+                        try
+                        {
+                            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(2));
+                            await host.Actor.DisconnectAsync(
+                                identity.Seat,
+                                host.OwnerEpoch,
+                                new ControlEpoch((ulong)seatAuthority.Value.ControlEpoch),
+                                "TRANSPORT_CLOSED",
+                                timeout.Token).ConfigureAwait(false);
+                        }
+                        catch (Exception)
+                        {
+                            // P3.3 grace policy governs the seat; a failed notify must not throw
+                            // out of connection teardown.
+                        }
                     }
                 }
 
+                _consumption.Release(identity.SessionId);
+
                 LogRedacted("session closed", "session", _sessionShort, "room", identity.RoomId);
+            }
+        }
+
+        private readonly struct ControlAuthority
+        {
+            public ControlAuthority(long controlEpoch, bool connected)
+            {
+                ControlEpoch = controlEpoch;
+                Connected = connected;
+            }
+
+            public long ControlEpoch { get; }
+
+            public bool Connected { get; }
+        }
+
+        /// <summary>Reads the seat's current authoritative control epoch best-effort.</summary>
+        private static async Task<ControlAuthority?> TryGetSeatAuthorityAsync(RoomHost host, int seat)
+        {
+            try
+            {
+                using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(2));
+                TableControlSnapshot control = await host.Actor
+                    .GetControlSnapshotAsync(timeout.Token)
+                    .ConfigureAwait(false);
+                if (seat < 0 || seat >= control.Seats.Count)
+                {
+                    return null;
+                }
+
+                TableSeatControlView state = control.Seats[seat];
+                return new ControlAuthority(state.ControlEpoch, state.IsConnected);
+            }
+            catch (Exception)
+            {
+                return null;
             }
         }
 
         private async Task SendLoopAsync(CancellationToken stopping)
         {
             // Merged drain of the reply channel and (after admission) the actor stream channel.
-            // Both waits are held as Tasks so the loser of a WhenAny race stays awaitable —
-            // a ValueTask must never be consumed twice.
+            // Both waits are held as Tasks so the loser of a WhenAny race stays awaitable ???            // a ValueTask must never be consumed twice.
             Task<bool>? replyTask = null;
             Task<bool>? streamTask = null;
             bool streamCompleted = false;
@@ -318,7 +559,7 @@ namespace Mahjong.TableService
                     // A reserved close directive jumps the queue: once the close decision is
                     // made, queued frames are moot and the close handshake must not depend on
                     // the peer draining the backlog first. Parking below is safe against a
-                    // concurrent reservation only while both channels are empty — and then the
+                    // concurrent reservation only while both channels are empty ???and then the
                     // sentinel TryWrite inside EnqueueClose succeeds and wakes the wait.
                     CloseDirective? reserved = TakePendingClose();
                     if (reserved.HasValue)
@@ -352,13 +593,22 @@ namespace Mahjong.TableService
                                 continue;
                             }
 
-                            while (_sink!.Reader.TryRead(out byte[]? frame))
+                            // D-1-07: the byte reservation of a dequeued stream frame stays in
+                            // the sink's budget until the actual transport write finished; the
+                            // release path covers success, fault and cancellation alike.
+                            while (_sink!.Reader.TryRead(out WireStreamFrameLease? lease))
                             {
-                                await _ws.SendAsync(
-                                    frame,
-                                    WebSocketMessageType.Binary,
-                                    WebSocketMessageFlags.EndOfMessage,
-                                    stopping).ConfigureAwait(false);
+                                try
+                                {
+                                    await SendFrameOrFailAsync(
+                                        lease.Payload,
+                                        WebSocketMessageType.Binary,
+                                        stopping).ConfigureAwait(false);
+                                }
+                                finally
+                                {
+                                    lease.Release();
+                                }
                             }
 
                             continue;
@@ -385,7 +635,9 @@ namespace Mahjong.TableService
             }
         }
 
-        /// <summary>Drains currently-queued reply items. True when the connection must end.</summary>
+        /// <summary>Drains currently-queued reply items. True when the connection must end.
+        /// D-1-07: a reply's byte reservation is dropped from the ledger only after its actual
+        /// send (success, fault, cancellation), not when it was dequeued.</summary>
         private async Task<bool> DrainRepliesAsync(CancellationToken stopping)
         {
             while (_outbound.Reader.TryRead(out OutboundItem? item))
@@ -396,53 +648,79 @@ namespace Mahjong.TableService
                     return true;
                 }
 
-                await _ws.SendAsync(
-                    item.Bytes!,
-                    WebSocketMessageType.Binary,
-                    WebSocketMessageFlags.EndOfMessage,
-                    stopping).ConfigureAwait(false);
+                try
+                {
+                    await SendFrameOrFailAsync(
+                        item.Bytes!,
+                        WebSocketMessageType.Binary,
+                        stopping).ConfigureAwait(false);
+                }
+                finally
+                {
+                    ReportRepliedBytes(item);
+                }
             }
 
             return false;
         }
 
         /// <summary>
-        /// Post-teardown flush: sends a queued close directive the cancelled sender never
-        /// drained. No-op when the channel is empty (the close already went out) or when no
-        /// close was requested.
+        /// Single serialized writer for ONE WebSocket frame with the session's consistent
+        /// terminate budget: a peer that never drains cannot wedge the session forever even if
+        /// the actor/stream backpressure chain has not closed yet (D-1-05). The budget engages
+        /// as a LAST resort — normally the bounded queues + actor slow-consumer fence fire
+        /// long before this.
         /// </summary>
-        private async Task FlushCloseIfQueuedAsync()
+        private async Task SendFrameOrFailAsync(byte[] frame, WebSocketMessageType type, CancellationToken stopping)
         {
-            if (!_closeRequested)
+            using var budget = CancellationTokenSource.CreateLinkedTokenSource(stopping);
+            budget.CancelAfter(TimeSpan.FromMilliseconds(SendBudgetMs()));
+            try
+            {
+                await _ws.SendAsync(
+                    frame,
+                    type,
+                    WebSocketMessageFlags.EndOfMessage,
+                    budget.Token).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (!stopping.IsCancellationRequested)
+            {
+                // The write budget expired without any peer progress: a session that cannot
+                // push ONE frame within the termination budget cannot receive anything more.
+                LogRedacted("write budget expired");
+                throw new SessionFaultException(Directive(ProtocolErrorCode.SlowConsumer));
+            }
+        }
+
+        /// <summary>
+        /// Post-lifecycle flush (D-1-05): delivers a close decision its own writers could
+        /// not deliver. Runs only after the sender lifecycle has fully completed, so no other
+        /// socket writer exists. The last authoritative decision is retained exactly for this
+        /// path — a close taken away by a cancelled/budget-exhausted writer is retried here
+        /// ONCE against the same decision instead of being lost.
+        /// </summary>
+        private async Task FlushTerminalCloseAsync()
+        {
+            CloseDirective? reserved = TakePendingClose();
+            if (!reserved.HasValue)
+            {
+                reserved = _lastCloseDirective;
+            }
+
+            if (!reserved.HasValue)
             {
                 return;
             }
 
-            while (_outbound.Reader.TryRead(out OutboundItem? item))
-            {
-                if (item.Close != null)
-                {
-                    await SendCloseAndCloseAsync(item.Close.Value, CancellationToken.None).ConfigureAwait(false);
-                    return;
-                }
-            }
-
-            // The sentinel never made it into a saturated channel; the reservation is the
-            // authority on the pending close.
-            CloseDirective? reserved = TakePendingClose();
-            if (reserved.HasValue)
-            {
-                await SendCloseAndCloseAsync(reserved.Value, CancellationToken.None).ConfigureAwait(false);
-            }
+            await SendCloseAndCloseAsync(reserved.Value, CancellationToken.None).ConfigureAwait(false);
         }
 
         /// <summary>Actor-side stream death (slow consumer, stale fence, actor fault).</summary>
         private void OnStreamTerminatedFromActor(TableStreamTermination termination)
         {
-            LogRedacted(
-                "stream terminated",
-                "kind", termination.Kind.ToString(),
-                "reason", termination.ReasonCode);
+            // The kind/reason pair is a redacted internal classification (never a ticket,
+            // payload or full identifier), so it is safe on the single-line console log.
+            LogRedacted("stream terminated " + termination.Kind + " " + termination.ReasonCode);
             EnqueueClose(Directive(TerminationCloseCode(termination.Kind)));
         }
 
@@ -462,7 +740,7 @@ namespace Mahjong.TableService
             };
         }
 
-        /// <summary>顶号: a newer valid ticket consumption re-bound this session's seat.</summary>
+        /// <summary>??????: a newer valid ticket consumption re-bound this session's seat.</summary>
         private void OnDisplacedByNewConnection()
         {
             _displaced = true;
@@ -492,7 +770,7 @@ namespace Mahjong.TableService
         }
 
         // ------------------------------------------------------------------
-        // Admission (HELLO -> WELCOME)
+        // Admission (HELLO -> WELCOME) as a two-phase admission transaction
         // ------------------------------------------------------------------
 
         private async Task<TableConnectionIdentity> AdmitAsync(CancellationToken stopping)
@@ -580,30 +858,10 @@ namespace Mahjong.TableService
                 throw new AdmissionClosedException(Directive(ProtocolErrorCode.InvalidToken));
             }
 
-            // 6. One-time consumption + seat uniqueness (顶号 displacement decided here).
+            // 6/7. Room runtime binding BEFORE the consumption transaction: a capacity,
+            // lease or runtime-source failure consumes nothing and evicts nobody (D-1-10).
             string sessionId = Guid.NewGuid().ToString("N");
-            TicketConsumptionOutcome consumed = _consumption.Consume(ticket, sessionId, DateTimeOffset.UtcNow);
-            if (!consumed.IsAccepted)
-            {
-                LogRedacted("ticket consumption refused", "status", consumed.Status.ToString(), "room", _admissionRoom);
-                throw new AdmissionClosedException(Directive(ProtocolErrorCode.InvalidToken));
-            }
-
-            if (consumed.DisplacedSessionId != null)
-            {
-                // 顶号: the newest valid consumption of the same (account, room, seat) closes
-                // the superseded live session. It skips its own seat disconnect at teardown,
-                // so the actor never puts the seat into grace during a live handover.
-                _sessions.Displace(consumed.DisplacedSessionId);
-            }
-
-            // Register before WELCOME: the close directive is only queued here (the send loop
-            // starts after admission returns), so a displacement racing this admission cannot
-            // interleave with the single direct WELCOME write below.
-            _sessions.Register(sessionId, OnDisplacedByNewConnection);
-            _registeredSessionId = sessionId;
-
-            // 7. Per-table host binding (bounded; admission-stopped hosts refuse).
+            _sessionShort = Short(sessionId);
             RoomHost host;
             try
             {
@@ -611,100 +869,285 @@ namespace Mahjong.TableService
             }
             catch (TableServiceCapacityException)
             {
-                _consumption.Release(sessionId);
+                LogRedacted("admission refused", "code", "SERVER_BUSY", "room", _admissionRoom);
                 throw new AdmissionClosedException(Directive(ProtocolErrorCode.ServerBusy));
             }
 
             if (host.AdmissionStopped)
             {
-                _consumption.Release(sessionId);
-                throw new AdmissionClosedException(Directive(ProtocolErrorCode.RoomClosed));
-            }
-
-            // 8. Server-issued request scope (expires with the ticket, never later).
-            long nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-            long expiresMs = ticket.ExpiresAt.ToUnixTimeMilliseconds();
-            TableScopeRecord scope = host.Scopes.Issue(
-                ticket.AccountId,
-                ticket.Role == TableAdmissionRole.Player ? TableScopeRole.Player : TableScopeRole.Spectator,
-                _admissionRoom,
-                (ulong)nowMs,
-                (ulong)expiresMs);
-
-            var identity = new TableConnectionIdentity(
-                sessionId,
-                _admissionRoom,
-                ticket.Role,
-                ticket.SeatId ?? ProtocolConstants.NoSeat,
-                ticket.AccountId,
-                scope.ScopeId.Value,
-                nowMs,
-                expiresMs,
-                ticket.Jti);
-
-            // 9. Atomic baseline + subscription through the actor (never a host-side read).
-            var sink = new WireTableStreamSink(capacity: 64);
-            // The callback must exist before the actor can pump: SubscribeStreamAsync starts
-            // the pump and an immediate termination (encoder/projection fault) would otherwise
-            // fire into a null callback and be lost.
-            sink.Terminated = OnStreamTerminatedFromActor;
-            var subscribe = new TableStreamSubscribeRequest(
-                new TableStreamIdentity(
-                    new SessionId(sessionId),
-                    ticket.Role == TableAdmissionRole.Player
-                        ? TableStreamAudience.ForSeat(identity.Seat)
-                        : TableStreamAudience.Spectator,
-                    new BindingEpoch(1),
-                    new SyncEpoch(1)),
-                host.OwnerEpoch,
-                recoveryGeneration: 0L,
-                sink);
-            TableStreamControlResult subscribed =
-                await host.Actor.SubscribeStreamAsync(subscribe, stopping).ConfigureAwait(false);
-            if (!subscribed.IsAccepted || subscribed.Handle == null)
-            {
+                // A lease-lost/faulted/closed table is mapped to the LeaseLost close family
+                // (4503), and nothing about the ticket was consumed or evicted.
                 LogRedacted(
-                    "stream subscribe refused",
-                    "status", subscribed.Status.ToString(),
-                    "reason", subscribed.ReasonCode,
-                    "detail", subscribed.Detail);
-                _consumption.Release(sessionId);
-                throw new AdmissionClosedException(Directive(ProtocolErrorCode.InternalError));
+                    "admission refused",
+                    "code", string.IsNullOrEmpty(host.AdmissionsStoppedReason) ? "LEASE_LOST" : "LEASE_LOST",
+                    "room", _admissionRoom);
+                throw new AdmissionClosedException(Directive(ProtocolErrorCode.LeaseLost));
             }
 
-            if (sink.Termination != null)
+            // D-1-10: the polled registry flag above is only a fast path. The AUTHORITATIVE
+            // admission gate is the trusted actor's own lifecycle, read inside the same
+            // admission transaction: an actor that entered LeaseLost/Faulted/Closing after the
+            // last ticker observation but before this HELLO must refuse HERE (4503), never
+            // after a ticket, a scope or a subscription was consumed into a dead table.
+            TableSnapshot? authority = null;
+            try
             {
-                // The pump accepted the stream and immediately terminated it; the mapped close
-                // code keeps the client-visible semantics identical to a post-WELCOME death.
-                LogRedacted(
-                    "stream died during admission",
-                    "kind", sink.Termination.Kind.ToString(),
-                    "reason", sink.Termination.ReasonCode);
-                _consumption.Release(sessionId);
-                throw new AdmissionClosedException(Directive(TerminationCloseCode(sink.Termination.Kind)));
+                using var authorityTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(2));
+                using var authorityLinked =
+                    CancellationTokenSource.CreateLinkedTokenSource(stopping, authorityTimeout.Token);
+                authority = await host.Actor.GetSnapshotAsync(authorityLinked.Token).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (!stopping.IsCancellationRequested)
+            {
+                authority = null;
+            }
+            catch (Exception)
+            {
+                authority = null;
             }
 
-            _host = host;
-            sink.Bind(subscribed.Handle);
-            _sink = sink;
-            _handle = subscribed.Handle;
-            host.TrackSink(sink);
+            if (authority == null || authority.Lifecycle != TableActorLifecycle.Serving)
+            {
+                string lifecycle = authority == null ? "ACTOR_UNAVAILABLE" : authority.Lifecycle.ToString();
+                LogRedacted("admission refused", "code", "LEASE_LOST", "lifecycle", lifecycle, "room", _admissionRoom);
+                throw new AdmissionClosedException(Directive(ProtocolErrorCode.LeaseLost));
+            }
 
-            // 10. WELCOME.
-            Envelope welcome = BuildWelcome(identity, host, scope, subscribed);
-            await _ws.SendAsync(
-                WireCodec.Encode(welcome),
-                WebSocketMessageType.Binary,
-                WebSocketMessageFlags.EndOfMessage,
-                stopping).ConfigureAwait(false);
+            // 6. One-time consumption + seat uniqueness reserves ???PROVISIONAL. Every refusal
+            // here has zero side effects.
+            TicketConsumptionOutcome consumed = _consumption.Consume(ticket, sessionId, DateTimeOffset.UtcNow);
+            if (!consumed.IsAccepted)
+            {
+                LogRedacted("ticket consumption refused", "status", consumed.Status.ToString(), "room", _admissionRoom);
+                throw new AdmissionClosedException(Directive(ProtocolErrorCode.InvalidToken));
+            }
 
-            LogRedacted(
-                "session admitted",
-                "room", _admissionRoom,
-                "role", identity.Role.ToString(),
-                "seat", identity.Seat.ToString(CultureInfo.InvariantCulture),
-                "kid", Short(ticket.Kid));
-            return identity;
+            // From here every failure rolls the transaction back through Release(sessionId).
+            try
+            {
+                // Register BEFORE the commit (the displaced side must always be reachable by
+                // the committing side ???the handover race the review pinned).
+                _sessions.Register(sessionId, OnDisplacedByNewConnection);
+                _registeredSessionId = sessionId;
+
+                // 8. Server-issued request scope (expires with the ticket, never later).
+                long nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+                long expiresMs = ticket.ExpiresAt.ToUnixTimeMilliseconds();
+                TableScopeRecord scope = host.Scopes.Issue(
+                    ticket.AccountId,
+                    ticket.Role == TableAdmissionRole.Player ? TableScopeRole.Player : TableScopeRole.Spectator,
+                    _admissionRoom,
+                    (ulong)nowMs,
+                    (ulong)expiresMs);
+                // D-1-10: recorded so a failed admission revokes instead of leaking a scope.
+                _issuedScopeId = scope.ScopeId;
+
+                var identity = new TableConnectionIdentity(
+                    sessionId,
+                    _admissionRoom,
+                    ticket.Role,
+                    ticket.SeatId ?? ProtocolConstants.NoSeat,
+                    ticket.AccountId,
+                    scope.ScopeId.Value,
+                    nowMs,
+                    expiresMs,
+                    ticket.Jti);
+
+                // 9. Atomic baseline + subscription through the actor (never a host-side read).
+                _host = host;
+                var sink = new WireTableStreamSink(
+                    capacity: 64,
+                    host.Options.MaxSnapshotBytes,
+                    host.Options.MaxSnapshotBytes);
+                // The callback must exist before the actor can pump: SubscribeStreamAsync starts
+                // the pump and an immediate termination (encoder/projection fault) would otherwise
+                // fire into a null callback and be lost.
+                sink.Terminated = OnStreamTerminatedFromActor;
+                var subscribe = new TableStreamSubscribeRequest(
+                    new TableStreamIdentity(
+                        new SessionId(sessionId),
+                        ticket.Role == TableAdmissionRole.Player
+                            ? TableStreamAudience.ForSeat(identity.Seat)
+                            : TableStreamAudience.Spectator,
+                        new BindingEpoch(1),
+                        new SyncEpoch(1)),
+                    host.OwnerEpoch,
+                    recoveryGeneration: 0L,
+                    sink);
+                TableStreamControlResult subscribed =
+                    await host.Actor.SubscribeStreamAsync(subscribe, stopping).ConfigureAwait(false);
+                if (!subscribed.IsAccepted || subscribed.Handle == null)
+                {
+                    LogRedacted(
+                        "stream subscribe refused",
+                        "status", subscribed.Status.ToString(),
+                        "reason", subscribed.ReasonCode,
+                        "detail", subscribed.Detail);
+                    throw new AdmissionClosedException(Directive(ProtocolErrorCode.InternalError));
+                }
+
+                if (sink.Termination != null)
+                {
+                    // The pump accepted the stream and immediately terminated it; the mapped close
+                    // code keeps the client-visible semantics identical to a post-WELCOME death.
+                    LogRedacted(
+                        "stream died during admission",
+                        "kind", sink.Termination.Kind.ToString(),
+                        "reason", sink.Termination.ReasonCode);
+                    throw new AdmissionClosedException(Directive(TerminationCloseCode(sink.Termination.Kind)));
+                }
+
+                sink.Bind(subscribed.Handle);
+                _sink = sink;
+                _handle = subscribed.Handle;
+                host.TrackSink(sink);
+
+                // 6b. FINAL COMMIT: the seat/integrity handover linearization. It happens after
+                // room capacity/ownership and the whole subscription are LIVE, so no failure
+                // of THIS admission's own setup can evict an already-working connection and
+                // only one connection passes the fence (D-1-03). The displacement of the
+                // previous owner is deliberately NOT fired here: it only fires after this
+                // session's WELCOME is actually on the wire, so a failed WELCOME can never
+                // evict an old, healthily connected session — instead the seat handover is
+                // rolled back atomically below.
+                TableTicketCommitOutcome commit = _consumption.CommitAdmission(sessionId);
+                if (commit.Status != TicketCommitStatus.Committed)
+                {
+                    LogRedacted(
+                        "admission commit refused",
+                        "status", commit.Status.ToString(),
+                        "room", _admissionRoom);
+                    throw new AdmissionClosedException(Directive(ProtocolErrorCode.InvalidToken));
+                }
+
+                if (commit.DisplacedSessionId != null)
+                {
+                    _committedSeatHandoverFrom = commit.DisplacedSessionId;
+                }
+
+                // 10. WELCOME with its own bounded budget (D-1-05): a peer that stops reading
+                // releases the admission instead of wedging the handler on the raw stopping
+                // token.
+                _welcomeSent = false;
+                Envelope welcome = BuildWelcome(identity, host, scope, subscribed);
+                using (var welcomeBudget = CancellationTokenSource.CreateLinkedTokenSource(stopping))
+                {
+                    welcomeBudget.CancelAfter(TimeSpan.FromMilliseconds(SendBudgetMs()));
+                    try
+                    {
+                        await _ws.SendAsync(
+                            WireCodec.Encode(welcome),
+                            WebSocketMessageType.Binary,
+                            WebSocketMessageFlags.EndOfMessage,
+                            welcomeBudget.Token).ConfigureAwait(false);
+                    }
+                    catch (OperationCanceledException) when (!stopping.IsCancellationRequested)
+                    {
+                        throw new AdmissionClosedException(Directive(ProtocolErrorCode.SlowConsumer));
+                    }
+                }
+
+                _welcomeSent = true;
+                _issuedScopeId = null;
+
+                // Only after the WELCOME is delivered does THIS admission take the displaced
+                // connection down: any WELCOME failure left the previous owner untouched.
+                if (commit.DisplacedSessionId != null)
+                {
+                    _sessions.Displace(commit.DisplacedSessionId);
+                    _committedSeatHandoverFrom = null;
+                }
+
+                // 8b. Seat handover bookkeeping through the CURRENT authority epoch (D-1-08):
+                // a reconnecting player seat is registered as CONNECTED but never reclaims a
+                // takeover automatically; the explicit claim is the only control-taking path.
+                if (identity.IsPlayer)
+                {
+                    await RegisterSeatConnectionAsync(host, identity, stopping).ConfigureAwait(false);
+                }
+
+                LogRedacted(
+                    "session admitted",
+                    "room", _admissionRoom,
+                    "role", identity.Role.ToString(),
+                    "seat", identity.Seat.ToString(CultureInfo.InvariantCulture),
+                    "kid", Short(ticket.Kid));
+                return identity;
+            }
+            catch (Exception admissionFault)
+            {
+                if (admissionFault is not AdmissionClosedException)
+                {
+                    LogRedacted("admission failed", "code", Short(admissionFault.GetType().Name), "room", _admissionRoom);
+                }
+
+                // D-1-03: this admission committed its seat handover but never delivered its
+                // WELCOME — the failure is a THIS-connection failure and must not evict the
+                // previous owner. Restore the previous committed owner atomically (the
+                // displaced side was never notified at this point), then release this
+                // admission's resources. Consumed-ticket evidence is still retained by the
+                // registry's own release semantics (a failed path never re-enables a replay).
+                if (!_welcomeSent && _committedSeatHandoverFrom != null)
+                {
+                    try
+                    {
+                        _consumption.RollbackSeatHandover(sessionId, _committedSeatHandoverFrom);
+                    }
+                    catch (Exception rollbackFault)
+                    {
+                        LogRedacted(
+                            "seathandover rollback failed",
+                            "code", Short(rollbackFault.GetType().Name),
+                            "room", _admissionRoom);
+                    }
+                }
+
+                // Any exception between the reservation and WELCOME rolls the whole
+                // transaction back: no hanging seats, subscriptions or sessions.
+                _consumption.Release(sessionId);
+                throw;
+            }
+        }
+
+        /// <summary>
+        /// Registers the seat as CONNECTED at the actor without auto-reclaiming control: the
+        /// explicit reconnection/claim flow is the only control-taking path (D-1-08). The
+        /// registration is fenced by the actor's own current control epoch for that seat, so a
+        /// stale/foreign seat is simply refused and never changes authority state.
+        /// </summary>
+        private async Task RegisterSeatConnectionAsync(
+            RoomHost host,
+            TableConnectionIdentity identity,
+            CancellationToken stopping)
+        {
+            try
+            {
+                using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(2));
+                TableControlSnapshot control = await host.Actor
+                    .GetControlSnapshotAsync(timeout.Token)
+                    .ConfigureAwait(false);
+                if (identity.Seat < 0 || identity.Seat >= control.Seats.Count)
+                {
+                    return;
+                }
+
+                TableSeatControlView seatState = control.Seats[identity.Seat];
+                await host.Actor.ReconnectAsync(
+                    identity.Seat,
+                    host.OwnerEpoch,
+                    new ControlEpoch((ulong)seatState.ControlEpoch),
+                    "WS_ADMITTED",
+                    timeout.Token).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
+            }
+            catch (Exception)
+            {
+                // Registering network presence must never fail an admission; the seat's
+                // control state is governed by the control flow itself.
+            }
         }
 
         // ------------------------------------------------------------------
@@ -719,14 +1162,23 @@ namespace Mahjong.TableService
                 byte[] message;
                 try
                 {
-                    message = await ReadSingleMessageAsync(stopping, stopping, earlyPhase: false).ConfigureAwait(false);
+                    // Mid-session reads have NO read timeout of their own: a silent peer is
+                    // closed by the liveness fence, and a supervised shutdown ends this loop
+                    // through the linked token. Conflating that wake with a HANDSHAKE timeout
+                    // would steal the reserved close code (D-1-05).
+                    message = await ReadSingleMessageAsync(
+                        CancellationToken.None,
+                        stopping,
+                        earlyPhase: false).ConfigureAwait(false);
                 }
                 catch (OperationCanceledException)
                 {
+                    LogRedacted("receive exit canceled closeRequested=" + _closeRequested);
                     return;
                 }
                 catch (SessionFaultException fault)
                 {
+                    LogRedacted("receive exit fault " + fault.Directive.Code);
                     EnqueueClose(fault.Directive);
                     return;
                 }
@@ -738,8 +1190,10 @@ namespace Mahjong.TableService
                     // Abrupt peer transport abort (reset/EOF mid-frame, or the socket torn
                     // down under us): there is no peer left to handshake a close with, so
                     // end the loop and let the lifecycle finally release the session
-                    // cleanly — surfacing it would land as an unhandled application fault
+                    // cleanly ???surfacing it would land as an unhandled application fault
                     // (Kestrel fail-level noise) on a routine client disconnect.
+                    LogRedacted("receive exit " + transport.GetType().Name + " wsCode=" +
+                        (transport is WebSocketException wse2 ? wse2.WebSocketErrorCode.ToString() : "-"));
                     return;
                 }
 
@@ -843,10 +1297,46 @@ namespace Mahjong.TableService
 
             Interlocked.Exchange(ref _consecutiveOverRate, 0);
             RoomHost host = _host!;
+            string? authoritativeRoundId = null;
+            bool offerChoice = envelope.Command.Type == Contracts.Wire.CommandType.SubmitSleeveBloomChoice ||
+                               envelope.Command.Type == Contracts.Wire.CommandType.SubmitSleeveBloomOffTurnChoice ||
+                               envelope.Command.Type == Contracts.Wire.CommandType.SubmitBeamSwapChoice;
+            if (offerChoice)
+            {
+                // D-1-02: the offer choices carry no round id in the frozen contract. The
+                // round bound to the mapped envelope is resolved from the actor's own
+                // authoritative snapshot at this trusted boundary; the actor still re-fences
+                // everything it admits against its own live state.
+                try
+                {
+                    using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(2));
+                    using var bounded = CancellationTokenSource.CreateLinkedTokenSource(stopping, timeout.Token);
+                    TableSnapshot snapshot = await host.Actor
+                        .GetSnapshotAsync(bounded.Token)
+                        .ConfigureAwait(false);
+                    authoritativeRoundId = snapshot.RoundId;
+                }
+                catch (OperationCanceledException)
+                {
+                    throw;
+                }
+                catch (Exception)
+                {
+                    EnqueueError(ProtocolErrorCode.InternalError, "command.round_id", "ROUND_AUTHORITY_UNAVAILABLE");
+                    return false;
+                }
+            }
+
             TableCommandRoute route;
             try
             {
-                route = TableCommandMapper.Map(identity, envelope, host.OwnerEpoch);
+                // D-1-02: the trusted offer candidate context rides the connection's own sink
+                // (identity-checked actor frames only), so a raw BeamSwap target slot resolves
+                // through the actor's projected pending offer instead of a guessed range.
+                WireTableStreamSink? sink = _sink;
+                Func<uint, TableBeamSwapSlotResolution?>? resolver =
+                    sink == null ? null : raw => sink.ResolveBeamSwapTargetSlot(raw);
+                route = TableCommandMapper.Map(identity, envelope, host.OwnerEpoch, _options, authoritativeRoundId, resolver);
             }
             catch (Exception)
             {
@@ -977,7 +1467,7 @@ namespace Mahjong.TableService
             // validator requires every SYNC_RESPONSE to carry that baseline itself
             // (is_full_snapshot=true plus the matching baseline oneof): an ack-only reply
             // throws inside Enqueue's EnsureStrict. The only honest source of the baseline
-            // is the actor's own stream frame — the host never invents projections — so the
+            // is the actor's own stream frame ???the host never invents projections ???so the
             // sink observation is armed BEFORE the actor call. ProcessSyncStream enqueues the
             // full-snapshot frame into the actor's registration channel and its pump forwards
             // it into this sink asynchronously, so the observation is awaited with a bounded
@@ -1037,6 +1527,18 @@ namespace Mahjong.TableService
                 return;
             }
 
+            // D-1-07: the negotiated snapshot limit is executed on the sync path. The actor
+            // already refused a frame above its own encode cap; this host-side bound is the
+            // configured limit ???a baseline larger than the negotiated limit is never served
+            // (mapped to an internal error instead of silently sending an over-limit
+            // snapshot).
+            if (baseline.EncodedPayload.Length > _options.MaxSnapshotBytes)
+            {
+                sink.DisarmFullSnapshotCapture();
+                EnqueueError(ProtocolErrorCode.InternalError, "sync", "SNAPSHOT_TOO_LARGE");
+                return;
+            }
+
             WireDecodeResult decoded = WireCodec.Decode(baseline.EncodedPayload);
             if (!decoded.IsOk || decoded.Envelope == null)
             {
@@ -1082,11 +1584,23 @@ namespace Mahjong.TableService
             // The frozen client cross-checks a present envelope cursor against the baseline
             // snapshot cursor; the codec stamped the frame cursor on the baseline envelope.
             reply.Cursor = baselineEnvelope.Cursor;
+            // D-1-07: the negotiated limits cover the SYNC reply as it is actually SENT — the
+            // wrapped Envelope (baseline inside) is encoded once and counted against the reply
+            // budget, so a wrapper that would exceed the channel budget is refused here with
+            // an explicit error instead of silently replacing the connection with a close.
+            byte[] replyBytes = WireCodec.Encode(reply);
+            if (replyBytes.Length > _options.MaxReplyQueuedBytes)
+            {
+                sink.DisarmFullSnapshotCapture();
+                EnqueueError(ProtocolErrorCode.InternalError, "sync", "SNAPSHOT_TOO_LARGE");
+                return;
+            }
+
             // The reply carries the baseline itself; the actor's own frame flows to the
             // client through the bounded sink as always (the frozen client ignores a
             // redundant full snapshot by cursor). No host-side duplicate copy is injected
             // here: the sink bound must stay the single trusted backpressure authority.
-            Enqueue(reply);
+            EnqueueEncoded(replyBytes);
         }
 
         private async Task DispatchReceiptQueryAsync(Envelope envelope, CancellationToken stopping)
@@ -1121,14 +1635,17 @@ namespace Mahjong.TableService
                 return;
             }
 
-            if (!string.Equals(scopeId.Value, _identity!.ScopeId, StringComparison.Ordinal))
+            if (!await IsAuthorizedReceiptScopeAsync(host, _identity!, scopeId, stopping).ConfigureAwait(false))
             {
                 EnqueueError(ProtocolErrorCode.MalformedMessage, "receipt_query.request_scope_id", "SCOPE_MISMATCH");
                 return;
             }
 
+            // The presented scope is either the connection's own scope or a historical scope
+            // of the SAME account in the SAME room/role; the actor re-fences the account
+            // binding itself, so a foreign query stays a NotFound with zero leakage (D-1-09).
             ReceiptLookupResult lookup = await host.Actor.QueryReceiptAsync(
-                _identity.AccountId,
+                _identity!.AccountId,
                 scopeId,
                 requestId,
                 stopping).ConfigureAwait(false);
@@ -1149,6 +1666,50 @@ namespace Mahjong.TableService
             }
 
             Enqueue(BuildEnvelope(MessageType.ReceiptLookup, wire, correlationId: envelope.CorrelationId));
+        }
+
+        /// <summary>
+        /// D-1-09: a receipt query is authorized when the presented scope is the connection's
+        /// own scope OR a historical scope owned by the SAME account in the SAME room with the
+        /// SAME role (a reconnect on a fresh scope can still reconcile its own deterministic
+        /// past request ids). Scope expiry does NOT revoke the lookup; Unknown/NotFound is an
+        /// UNKNOWN-RESULT answer, never proof that the request is durably uncommitted and
+        /// never a safe-redo basis — a client may retry its own action, but the service never
+        /// derives "safe to redo" from an unknown lookup; a foreign/other-role/other-room
+        /// scope is refused.
+        /// </summary>
+        private async Task<bool> IsAuthorizedReceiptScopeAsync(
+            RoomHost host,
+            TableConnectionIdentity identity,
+            RequestScopeId scopeId,
+            CancellationToken stopping)
+        {
+            if (string.Equals(scopeId.Value, identity.ScopeId, StringComparison.Ordinal))
+            {
+                return true;
+            }
+
+            try
+            {
+                TableScopeLookup lookup = await host.Scopes.LookupAsync(scopeId, stopping).ConfigureAwait(false);
+                if (!lookup.Found || lookup.Scope == null)
+                {
+                    return false;
+                }
+
+                TableScopeRecord scope = lookup.Scope;
+                return string.Equals(scope.AccountId, identity.AccountId, StringComparison.Ordinal) &&
+                       string.Equals(scope.RoomId, identity.RoomId, StringComparison.Ordinal) &&
+                       scope.Role == (identity.IsPlayer ? TableScopeRole.Player : TableScopeRole.Spectator);
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
+            }
+            catch (Exception)
+            {
+                return false;
+            }
         }
 
         private static Contracts.Wire.Receipt MapLookupReceipt(Contracts.Receipt receipt)
@@ -1184,6 +1745,12 @@ namespace Mahjong.TableService
         // Framing
         // ------------------------------------------------------------------
 
+        /// <summary>
+        /// Reads ONE complete WebSocket message. The pending inbound receive is ALWAYS owned:
+        /// it rides this method's own linked cancellation source, the timeout path completes
+        /// its close handshake with a single bounded budget (output close + receive grace +
+        /// bounded abort), and no task is left unobserved on any exit (D-1-05).
+        /// </summary>
         private async Task<byte[]> ReadSingleMessageAsync(CancellationToken timeoutToken, CancellationToken stopping, bool earlyPhase)
         {
             byte[] buffer = new byte[16 * 1024];
@@ -1191,11 +1758,8 @@ namespace Mahjong.TableService
 
             while (true)
             {
-                // A pending ReceiveAsync must never be cancelled: cancelling it aborts the
-                // socket and destroys the close handshake. The deadline races the receive
-                // instead, and on timeout the close handshake is completed here while the
-                // receive task is still in hand to drain the peer's close response.
-                ValueTask<ValueWebSocketReceiveResult> pending = _ws.ReceiveAsync(buffer.AsMemory(), stopping);
+                using var receiveCts = CancellationTokenSource.CreateLinkedTokenSource(stopping);
+                ValueTask<ValueWebSocketReceiveResult> pending = _ws.ReceiveAsync(buffer.AsMemory(), receiveCts.Token);
                 ValueWebSocketReceiveResult received;
                 if (pending.IsCompletedSuccessfully)
                 {
@@ -1209,24 +1773,29 @@ namespace Mahjong.TableService
                         Task.Delay(Timeout.Infinite, timeoutToken)).ConfigureAwait(false);
                     if (winner != receiveTask)
                     {
+                        // Timeout: complete the close handshake with ONE bounded budget and
+                        // observe the pending receive within the SAME budget (bounded
+                        // cancellation aborts the socket and releases the receive).
                         await CompleteTimeoutCloseAsync(
                             receiveTask,
-                            ProtocolErrorCode.HandshakeTimeout,
-                            stopping).ConfigureAwait(false);
+                            receiveCts,
+                            ProtocolErrorCode.HandshakeTimeout).ConfigureAwait(false);
                         throw new AdmissionClosedException(Directive(ProtocolErrorCode.HandshakeTimeout));
                     }
 
                     try
                     {
-                        received = receiveTask.Result;
+                        received = await receiveTask.ConfigureAwait(false);
                     }
-                    catch (AggregateException aggregate)
-                        when (aggregate.InnerException is OperationCanceledException)
+                    catch (OperationCanceledException)
                     {
                         // Session teardown cancelled the receive; the connection is already
                         // being closed by its owner.
-                        throw new OperationCanceledException(stopping);
+                        throw new OperationCanceledException(receiveCts.Token);
                     }
+                    // Any other receive fault (WebSocketException/IOException/??? is unwrapped
+                    // by this await (never an AggregateException) and handled by the same
+                    // transport filters as every other receive site.
                 }
 
                 if (received.MessageType == WebSocketMessageType.Close)
@@ -1265,27 +1834,61 @@ namespace Mahjong.TableService
         }
 
         /// <summary>
-        /// Closes the send side with the deadline's directive and drains the peer's close
-        /// response, so a timed-out handshake still ends with a complete close handshake.
+        /// Closes the send side with the deadline's directive and gives the pending receive a
+        /// BOUNDED completion budget: output close first (full grace), then the receive is
+        /// cancelled at a bounded sub-budget and its completion is observed (never leaked).
+        /// The close directive this way IS delivered, and no receive task outlives the call.
         /// </summary>
         private async Task CompleteTimeoutCloseAsync(
             Task<ValueWebSocketReceiveResult> pendingReceive,
-            string code,
-            CancellationToken stopping)
+            CancellationTokenSource receiveCts,
+            string code)
         {
+            long closeBudgetMs = Math.Max(500, _options.CloseGraceMs);
             try
             {
-                using var grace = CancellationTokenSource.CreateLinkedTokenSource(stopping);
-                grace.CancelAfter(TimeSpan.FromSeconds(2));
+                using var grace = CancellationTokenSource.CreateLinkedTokenSource(CancellationToken.None);
+                grace.CancelAfter(TimeSpan.FromMilliseconds(closeBudgetMs));
+                Interlocked.CompareExchange(ref _closeSent, 1, 0);
                 await _ws.CloseOutputAsync(
                     (WebSocketCloseStatus)ProtocolErrorCode.ToWebSocketCloseCode(code),
                     code,
                     grace.Token).ConfigureAwait(false);
-                await pendingReceive.ConfigureAwait(false);
+                _closeOutputSent = true;
             }
             catch (Exception)
             {
                 // The peer may already be gone; the close decision was still authoritative.
+            }
+            finally
+            {
+                // The pending receive is owned and bounded: the abort releases it deterministically.
+                try
+                {
+                    receiveCts.CancelAfter(TimeSpan.FromMilliseconds(Math.Max(200, closeBudgetMs / 2)));
+                    Task winner = await Task.WhenAny(
+                        pendingReceive,
+                        Task.Delay(TimeSpan.FromMilliseconds(Math.Max(500, closeBudgetMs)))).ConfigureAwait(false);
+                    if (winner == pendingReceive)
+                    {
+                        await pendingReceive.ConfigureAwait(false);
+                    }
+                    else
+                    {
+                        // The receive never completes on its own (a silent peer holding the
+                        // transport): the bounded abort is the honest end. The task's
+                        // completion (fault/cancel) is observed so no task is leaked.
+                        _ = pendingReceive.ContinueWith(
+                            static (Task<ValueWebSocketReceiveResult> t, object? _) => { _ = t.Exception; },
+                            (object?)null,
+                            CancellationToken.None,
+                            TaskContinuationOptions.ExecuteSynchronously,
+                            TaskScheduler.Default);
+                    }
+                }
+                catch (Exception)
+                {
+                }
             }
         }
 
@@ -1344,30 +1947,244 @@ namespace Mahjong.TableService
                 throw new SessionFaultException(Directive(decoded.ErrorCode));
             }
 
-            // One WebSocket message = one Envelope. Bare protobuf cannot locate a
-            // first-message boundary (Google.Protobuf merges concatenated same-type
-            // messages silently), so on the pre-trust HELLO the decoded envelope is
-            // re-encoded with the frozen codec: canonical output must reproduce the
-            // message byte-for-byte, while a merged concatenation re-encodes strictly
-            // smaller. Encode failures skip the check — preserved unknown fields keep
-            // their compatibility semantics and are never a refusal reason.
-            if (decoded.Envelope.MessageType == MessageType.Hello)
+            // One WebSocket message = one Envelope ???at EVERY phase (D-1-04), verified on the
+            // message boundary itself instead of a re-encode byte comparison:
+            //  * two complete Envelopes in one binary message always duplicate at least one
+            //    envelope-level single-value field (message_type/session_id/room_id/... or the
+            //    body oneof itself) once protobuf merge consumed them ???that duplication is
+            //    refused for HELLO/COMMAND/HEARTBEAT/SYNC/QUERY alike;
+            //  * schema-legal future unknown fields (no duplicate of a known single-value
+            //    field number) stay byte-compatible and are accepted in any position, so a
+            //    client that sends a legal message with preserved unknown fields is never
+            //    punished for its forward compatibility;
+            //  * the Wire schema itself is never touched and nothing ever relies on the
+            //    canonical re-encode of the parsed envelope being byte-identical (that would
+            //    break legal field re-ordering with the same future fields).
+            if (ContainsDuplicateKnownSingleValueField(message))
             {
-                try
-                {
-                    if (!WireCodec.Encode(decoded.Envelope).AsSpan().SequenceEqual(message))
-                    {
-                        throw new SessionFaultException(Directive(ProtocolErrorCode.ProtocolViolation));
-                    }
-                }
-                catch (WireProtocolException)
-                {
-                    // Includes WireMalformedException; unknown-field compatibility wins
-                    // over concat detection and is never a refusal reason.
-                }
+                throw new SessionFaultException(Directive(ProtocolErrorCode.ProtocolViolation));
             }
 
             return decoded.Envelope;
+        }
+
+        /// <summary>Envelope top-level field numbers that can never be schema-legal twice.</summary>
+        private static readonly HashSet<int> EnvelopeSingleValueFieldNumbers = new HashSet<int>
+        {
+            1, // protocol_major
+            2, // protocol_minor
+            3, // ruleset_version
+            4, // projection_version
+            5, // message_type
+            6, // correlation_id
+            7, // request_id
+            8, // scope
+            9, // room_id
+            10, // session_id
+            11, // seat_id
+            12, // binding_epoch
+            13, // control_epoch
+            14, // owner_epoch
+            15, // cursor
+            16, // from_cursor
+            40, // hello
+            41, // welcome
+            42, // command
+            43, // receipt
+            44, // player_snapshot
+            45, // player_snapshot_query
+            46, // public_snapshot
+            47, // public_snapshot_query
+            48, // room_update
+            49, // sync_request
+            50, // sync_response
+            51, // receipt_query
+            52, // receipt_lookup
+            53, // heartbeat
+            54, // error
+            55, // close
+            56, // player_update
+            57 // public_update
+        };
+
+        /// <summary>
+        /// Scans ONLY the top-level wire fields (each nested payload is skipped by its own
+        /// declared length) and reports a violation when one of the single-value field
+        /// numbers above appears twice. Truncated/garbage bytes are already refused by the
+        /// frozen codec above, so a top-level scan can rely on well-formed framing.
+        ///
+        /// D-1-04: schema-legal protobuf GROUP fields (start/end markers) are skipped
+        /// completely and safely — bounded depth, field-number and wire-check — so an unknown
+        /// group anywhere before/between/after known fields can never short-circuit the
+        /// duplicate check and unknown legal fields never misdirect the scan. Fields INSIDE a
+        /// group are not top-level envelope fields and are not counted.
+        /// </summary>
+        private static bool ContainsDuplicateKnownSingleValueField(byte[] message)
+        {
+            var seen = new HashSet<int>();
+            int index = 0;
+            int groupDepth = 0;
+            while (index < message.Length)
+            {
+                if (!TryReadVarint(message, ref index, out ulong rawTag))
+                {
+                    return false; // malformed ???codec already handles it; treat as no violation
+                }
+
+                int fieldNumber = (int)(rawTag >> 3);
+                int wireType = (int)(rawTag & 0x7);
+                if (fieldNumber <= 0)
+                {
+                    return false;
+                }
+
+                if (groupDepth > 0)
+                {
+                    // Inside an unknown group: nothing here is a top-level envelope field;
+                    // only the group envelope itself may close it.
+                    switch (wireType)
+                    {
+                        case 0:
+                            if (!TrySkipVarint(message, ref index))
+                            {
+                                return false;
+                            }
+
+                            break;
+                        case 1:
+                            index += 8;
+                            if (index > message.Length)
+                            {
+                                return false;
+                            }
+
+                            break;
+                        case 2:
+                            if (!TryReadVarint(message, ref index, out ulong innerLength) ||
+                                innerLength > (ulong)(message.Length - index))
+                            {
+                                return false;
+                            }
+
+                            index += (int)innerLength;
+                            break;
+                        case 5:
+                            index += 4;
+                            if (index > message.Length)
+                            {
+                                return false;
+                            }
+
+                            break;
+                        case 3:
+                            groupDepth++;
+                            if (groupDepth > 64)
+                            {
+                                return false;
+                            }
+
+                            break;
+                        case 4:
+                            groupDepth--;
+                            break;
+                        default: // 6, 7 are never legal on this wire
+                            return false;
+                    }
+
+                    continue;
+                }
+
+                switch (wireType)
+                {
+                    case 0: // varint
+                        if (!TrySkipVarint(message, ref index))
+                        {
+                            return false;
+                        }
+
+                        break;
+                    case 1: // 64-bit
+                        index += 8;
+                        if (index > message.Length)
+                        {
+                            return false;
+                        }
+
+                        break;
+                    case 2: // length-delimited
+                        if (!TryReadVarint(message, ref index, out ulong length) ||
+                            length > (ulong)(message.Length - index))
+                        {
+                            return false;
+                        }
+
+                        index += (int)length;
+                        break;
+                    case 5: // 32-bit
+                        index += 4;
+                        if (index > message.Length)
+                        {
+                            return false;
+                        }
+
+                        break;
+                    case 3: // group start (schema-legal unknown field): tracked, skipped, checked
+                        groupDepth++;
+                        if (groupDepth > 64)
+                        {
+                            return false;
+                        }
+
+                        break;
+                    case 4: // stray end group at top level: the frozen codec never accepts it
+                        return false;
+                    default: // 6, 7 are never legal on this wire
+                        return false;
+                }
+
+                if (EnvelopeSingleValueFieldNumbers.Contains(fieldNumber) && !seen.Add(fieldNumber))
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        private static bool TryReadVarint(byte[] bytes, ref int index, out ulong value)
+        {
+            value = 0;
+            int shift = 0;
+            while (shift < 64 && index < bytes.Length)
+            {
+                byte b = bytes[index++];
+                value |= (ulong)(b & 0x7F) << shift;
+                if ((b & 0x80) == 0)
+                {
+                    return shift < 64;
+                }
+
+                shift += 7;
+            }
+
+            return false;
+        }
+
+        private static bool TrySkipVarint(byte[] bytes, ref int index)
+        {
+            int shift = 0;
+            while (shift < 64 && index < bytes.Length)
+            {
+                byte b = bytes[index++];
+                if ((b & 0x80) == 0)
+                {
+                    return true;
+                }
+
+                shift += 7;
+            }
+
+            return false;
         }
 
         /// <summary>
@@ -1444,6 +2261,16 @@ namespace Mahjong.TableService
             }
 
             return envelope;
+        }
+
+        private static string Short(string? value)
+        {
+            if (string.IsNullOrEmpty(value))
+            {
+                return string.Empty;
+            }
+
+            return value.Length <= 8 ? value : value.Substring(0, 8);
         }
 
         private Envelope BuildWelcome(
@@ -1568,6 +2395,13 @@ namespace Mahjong.TableService
 
         private void Enqueue(Envelope envelope)
         {
+            WireCodec.EnsureStrict(envelope);
+            EnqueueEncoded(WireCodec.Encode(envelope));
+        }
+
+        /// <summary>Queues already-encoded reply bytes under the reply ledger (D-1-07).</summary>
+        private void EnqueueEncoded(byte[] bytes)
+        {
             if (_closeRequested)
             {
                 // A close decision is authoritative: nothing may follow it on the wire
@@ -1575,12 +2409,40 @@ namespace Mahjong.TableService
                 return;
             }
 
-            WireCodec.EnsureStrict(envelope);
-            if (!_outbound.Writer.TryWrite(new OutboundItem(WireCodec.Encode(envelope))))
+            // D-1-07: the reply queue carries a byte ledger as well as the frame bound. When
+            // the negotiated reply budget would be exceeded, the connection is closed as a
+            // slow consumer instead of growing without a limit; small normal traffic is
+            // never affected.
+            lock (_outboundBytesGate)
             {
-                // Outbound bound exceeded: the client cannot keep up even with the reply path;
-                // drop the connection rather than queue unbounded.
-                EnqueueClose(Directive(ProtocolErrorCode.SlowConsumer));
+                if (_outboundBytes + bytes.Length > _options.MaxReplyQueuedBytes)
+                {
+                    EnqueueCloseOutsideLedger(Directive(ProtocolErrorCode.SlowConsumer));
+                    return;
+                }
+
+                _outboundBytes += bytes.Length;
+                if (!_outbound.Writer.TryWrite(new OutboundItem(bytes)))
+                {
+                    _outboundBytes -= bytes.Length;
+                    // Outbound bound exceeded: the client cannot keep up even with the reply path;
+                    // drop the connection rather than queue unbounded.
+                    EnqueueCloseOutsideLedger(Directive(ProtocolErrorCode.SlowConsumer));
+                }
+            }
+        }
+
+        /// <summary>Drops a reply's bytes from the ledger once the send loop took it.</summary>
+        private void ReportRepliedBytes(OutboundItem item)
+        {
+            if (item.Bytes == null)
+            {
+                return;
+            }
+
+            lock (_outboundBytesGate)
+            {
+                _outboundBytes -= item.Bytes.Length;
             }
         }
 
@@ -1600,13 +2462,25 @@ namespace Mahjong.TableService
 
                 // The pending slot is the delivery guarantee: the sentinel TryWrite can fail
                 // on a channel already saturated by a stalled reader (256 frames deep), and
-                // every later Enqueue no-ops once _closeRequested is set — without the slot
+                // every later Enqueue no-ops once _closeRequested is set ???without the slot
                 // the close would sit behind a backlog the peer only starts reading after it
                 // began waiting for the close itself.
                 _pendingClose = directive;
+                _lastCloseDirective = directive;
                 _closeRequested = true;
+                LogRedacted("close reserved " + directive.Code);
                 _outbound.Writer.TryWrite(new OutboundItem(directive));
             }
+        }
+
+        /// <summary>
+        /// Close reservation that does NOT touch the byte ledger (only used when the reply
+        /// budget was just exceeded or the channel rejected an item); the close sentinel
+        /// follows the reserved-slot guarantee.
+        /// </summary>
+        private void EnqueueCloseOutsideLedger(CloseDirective directive)
+        {
+            EnqueueClose(directive);
         }
 
         /// <summary>Takes the reserved close directive, if one is waiting to be sent.</summary>
@@ -1622,12 +2496,11 @@ namespace Mahjong.TableService
 
         private async Task SendCloseAndCloseAsync(CloseDirective directive, CancellationToken stopping)
         {
-            if (Interlocked.Exchange(ref _closeSent, 1) != 0)
-            {
-                return;
-            }
-
+            Interlocked.Exchange(ref _closeSent, 1);
+            // The last authoritative decision is retained for the failure-safe flush (D-1-05).
+            _lastCloseDirective = directive;
             _closeRequested = true;
+            LogRedacted("close sending " + directive.Code + " state=" + _ws.State + " closeOut=" + _closeOutputSent);
             try
             {
                 // One shared grace budget for the whole close handshake (envelope + transport
@@ -1638,7 +2511,7 @@ namespace Mahjong.TableService
                 // drains still ends at the budget.
                 using var grace = CancellationTokenSource.CreateLinkedTokenSource(stopping);
                 grace.CancelAfter(TimeSpan.FromMilliseconds(Math.Max(500, _options.CloseGraceMs)));
-                if (_identity != null)
+                if (_identity != null && Volatile.Read(ref _closeEnvelopeSent) == 0)
                 {
                     var close = new Close
                     {
@@ -1653,6 +2526,7 @@ namespace Mahjong.TableService
                         WebSocketMessageType.Binary,
                         WebSocketMessageFlags.EndOfMessage,
                         grace.Token).ConfigureAwait(false);
+                    Volatile.Write(ref _closeEnvelopeSent, 1);
                 }
 
                 await _ws.CloseOutputAsync(
@@ -1660,10 +2534,19 @@ namespace Mahjong.TableService
                     directive.Code,
                     grace.Token).ConfigureAwait(false);
                 _closeOutputSent = true;
+                LogRedacted("close delivered code=" + directive.Code);
             }
-            catch (Exception)
+            catch (Exception transport) when (
+                transport is WebSocketException ||
+                transport is System.IO.IOException ||
+                transport is OperationCanceledException ||
+                transport is ObjectDisposedException)
             {
-                // The socket may already be gone; the close decision was still authoritative.
+                // The socket may already be gone (or the close budget expired with a peer that
+                // never drained); the close decision was still authoritative and stays
+                // retained for the single post-lifecycle flush. A dead transport keeps the
+                // send-side state machine from spinning.
+                LogRedacted("close send fault " + transport.GetType().Name + (transport is WebSocketException wse ? " wsErr=" + wse.WebSocketErrorCode.ToString() : string.Empty));
             }
         }
 
@@ -1728,16 +2611,6 @@ namespace Mahjong.TableService
         private static string ReasonOrFallback(string reasonCode)
         {
             return ProtocolErrorCode.IsWellFormed(reasonCode) ? reasonCode : ProtocolErrorCode.InternalError;
-        }
-
-        private static string Short(string? value)
-        {
-            if (string.IsNullOrEmpty(value))
-            {
-                return string.Empty;
-            }
-
-            return value.Length <= 8 ? value : value.Substring(0, 8);
         }
 
         private void LogRedacted(string message, params string?[] pairs)

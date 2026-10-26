@@ -65,6 +65,7 @@ namespace Mahjong.TableService
             options.HeartbeatIntervalMs = RequireInt("HEARTBEAT_INTERVAL_MS", options.HeartbeatIntervalMs);
             options.IdleDeadMs = RequireInt("IDLE_DEAD_MS", options.IdleDeadMs);
             options.HandshakeTimeoutMs = RequireInt("HANDSHAKE_TIMEOUT_MS", options.HandshakeTimeoutMs);
+            options.CloseGraceMs = RequireInt("CLOSE_GRACE_MS", options.CloseGraceMs);
             options.MaxEarlyBufferItems = RequireInt("MAX_EARLY_BUFFER_ITEMS", options.MaxEarlyBufferItems);
             options.MaxEarlyBufferBytes = RequireInt("MAX_EARLY_BUFFER_BYTES", options.MaxEarlyBufferBytes);
             options.CommandRatePerSecond = RequireInt("COMMAND_RATE_PER_SECOND", options.CommandRatePerSecond);
@@ -72,6 +73,7 @@ namespace Mahjong.TableService
             options.MaxRooms = RequireInt("MAX_ROOMS", options.MaxRooms);
             options.MaxSpectatorsPerRoom = RequireInt("MAX_SPECTATORS_PER_ROOM", options.MaxSpectatorsPerRoom);
             options.MaxStreamsPerRoom = RequireInt("MAX_STREAMS_PER_ROOM", options.MaxStreamsPerRoom);
+            options.MaxRetainedConsumedTickets = RequireInt("MAX_RETAINED_CONSUMED_TICKETS", options.MaxRetainedConsumedTickets);
             options.RoomTickIntervalMs = RequireInt("ROOM_TICK_INTERVAL_MS", options.RoomTickIntervalMs);
             options.LeaseTtlSeconds = RequireInt("LEASE_TTL_SECONDS", options.LeaseTtlSeconds);
             options.AdminDrainToken = OptionalString("ADMIN_DRAIN_TOKEN");

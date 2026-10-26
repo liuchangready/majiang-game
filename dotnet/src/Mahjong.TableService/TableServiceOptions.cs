@@ -70,6 +70,15 @@ namespace Mahjong.TableService
 
         public int MaxStreamsPerRoom { get; set; } = 64;
 
+        /// <summary>
+        /// Upper bound on retained one-time-ticket records (D-1-06). Consumed jti and
+        /// assignment ids are kept exactly until their ticket's expiry + clock skew and are
+        /// never evicted earlier, so a still-valid ticket can never replay. When the bound
+        /// would be exceeded after expiry purging, admission fails closed instead of growing
+        /// the store without a limit.
+        /// </summary>
+        public int MaxRetainedConsumedTickets { get; set; } = 65_536;
+
         // Actor tick cadence. The platform tick driver never runs on a WebSocket thread, so
         // transport heartbeats cannot block actor rule deadlines.
         public int RoomTickIntervalMs { get; set; } = 250;
@@ -79,6 +88,15 @@ namespace Mahjong.TableService
 
         // Operator drain endpoint. Disabled (404) unless a token is configured.
         public string? AdminDrainToken { get; set; }
+
+        /// <summary>
+        /// Queued-byte cap for one connection's reply channel (D-1-07). The reply path carries
+        /// receipts, errors, heartbeat echoes and SYNC_RESPONSE envelopes whose largest
+        /// legitimate member is one baseline snapshot, so the negotiated snapshot limit is the
+        /// honest upper bound: when queued reply bytes exceed it, the connection is closed as
+        /// a slow consumer instead of growing without a byte ledger.
+        /// </summary>
+        public int MaxReplyQueuedBytes => MaxSnapshotBytes;
 
         // Optional loopback WSS termination for controlled-ingress tests. Production TLS
         // terminates at a controlled ingress; this certificate is never a trust bypass — the
@@ -106,6 +124,7 @@ namespace Mahjong.TableService
             RequireRange(MaxRooms, 1, 4096, nameof(MaxRooms));
             RequireRange(MaxSpectatorsPerRoom, 0, 1024, nameof(MaxSpectatorsPerRoom));
             RequireRange(MaxStreamsPerRoom, 4, 4096, nameof(MaxStreamsPerRoom));
+            RequireRange(MaxRetainedConsumedTickets, 1024, 16_777_216, nameof(MaxRetainedConsumedTickets));
             RequireRange(RoomTickIntervalMs, 10, 60_000, nameof(RoomTickIntervalMs));
             RequireRange(LeaseTtlSeconds, 5, 3_600, nameof(LeaseTtlSeconds));
         }
@@ -129,8 +148,10 @@ namespace Mahjong.TableService
 
     /// <summary>
     /// Process-wide drain gate. While draining, new admissions are refused (HTTP 503 at the
-    /// WebSocket handshake and readiness reports unhealthy) but established connections keep
-    /// operating until they end or the operator cancels the drain.
+    /// WebSocket handshake and readiness reports unhealthy). An established session keeps its
+    /// stream and liveness answering, but it is NOT allowed to start new side effects: a
+    /// COMMAND arrives while draining is refused with the retryable SERVER_BUSY(DRAINING)
+    /// session error, and SYNC/queries are still answered from read-only paths.
     /// </summary>
     public sealed class DrainState
     {

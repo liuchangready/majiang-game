@@ -154,7 +154,10 @@ namespace Mahjong.TableService
         public static TableCommandRoute Map(
             TableConnectionIdentity identity,
             Envelope envelope,
-            OwnerEpoch currentOwnerEpoch)
+            OwnerEpoch currentOwnerEpoch,
+            TableServiceOptions options,
+            string? authoritativeRoundId,
+            Func<uint, TableBeamSwapSlotResolution?>? beamSwapSlotResolver = null)
         {
             Command command = envelope.Command;
 
@@ -222,7 +225,10 @@ namespace Mahjong.TableService
 
             var kind = (CommandKind)(int)command.Type;
             byte[] payloadBytes = command.CanonicalPayload.ToByteArray();
-            if (payloadBytes.Length > 64 * 1024)
+            // D-1-07: the negotiated limit is executed on the ingress path — never the frozen
+            // default inside the mapper.
+            int maxCommandPayloadBytes = Math.Max(1, options.MaxCommandPayloadBytes);
+            if (payloadBytes.Length > maxCommandPayloadBytes)
             {
                 return new TableCommandRoute.PreActorRejection(
                     ProtocolErrorCode.MessageTooLarge, "command.canonical_payload", "PAYLOAD_TOO_LARGE");
@@ -268,7 +274,8 @@ namespace Mahjong.TableService
                 case CommandKind.SubmitBeamSwap:
                 case CommandKind.SubmitBeamSwapChoice:
                     return MapCheat(
-                        identity, kind, requestId, payload, expectedStateVersion, ownerEpoch, controlEpoch, digest);
+                        identity, kind, requestId, payload, expectedStateVersion, ownerEpoch, controlEpoch, digest,
+                        options, authoritativeRoundId, beamSwapSlotResolver);
 
                 case CommandKind.ClaimControl:
                 case CommandKind.ReleaseControl:
@@ -401,7 +408,10 @@ namespace Mahjong.TableService
             StateVersion expectedStateVersion,
             OwnerEpoch ownerEpoch,
             ControlEpoch controlEpoch,
-            TablePayloadSha256 digest)
+            TablePayloadSha256 digest,
+            TableServiceOptions options,
+            string? authoritativeRoundId,
+            Func<uint, TableBeamSwapSlotResolution?>? beamSwapSlotResolver)
         {
             CanonicalPayloadDocument document = CanonicalPayloadParser.Parse(payload);
             var action = kind switch
@@ -414,6 +424,35 @@ namespace Mahjong.TableService
                 CommandKind.SubmitBeamSwap => RoundCheatAction.SubmitBeamSwap,
                 _ => RoundCheatAction.SubmitBeamSwapChoice
             };
+
+            // D-1-02: choice commands (SleeveBloomChoice / OffTurnChoice / BeamSwapChoice) carry
+            // NO round id in the frozen contract — their field 1 is the offer id. The round id
+            // in the mapped envelope is the ACTOR'S authoritative current round, resolved at
+            // this trusted boundary, never a client field and never re-parsed from the offer
+            // id string.
+            bool isOfferChoice =
+                action == RoundCheatAction.SubmitSleeveBloomChoice ||
+                action == RoundCheatAction.SubmitSleeveBloomOffTurnChoice ||
+                action == RoundCheatAction.SubmitBeamSwapChoice;
+            string roundId;
+            if (isOfferChoice)
+            {
+                if (string.IsNullOrEmpty(authoritativeRoundId))
+                {
+                    // Fail closed instead of guessing a round that could silently drift from
+                    // the actor's authority.
+                    return new TableCommandRoute.PreActorRejection(
+                        ProtocolErrorCode.InternalError, "command.round_id", "ROUND_AUTHORITY_UNAVAILABLE");
+                }
+
+                roundId = authoritativeRoundId;
+            }
+            else
+            {
+                roundId = document.HasField(CommandPayloadFields.RoundIdField)
+                    ? RequireStringField(document, CommandPayloadFields.RoundIdField, "roundId")
+                    : throw new InvalidOperationException("Validator guarantees a round id for cheat kinds.");
+            }
 
             RoundCheatPayload cheatPayload;
             string? decisionId = null;
@@ -435,6 +474,7 @@ namespace Mahjong.TableService
                     cheatPayload = RoundCheatPayload.SleeveBloom();
                     break;
                 case RoundCheatAction.SubmitSleeveBloomChoice:
+                case RoundCheatAction.SubmitSleeveBloomOffTurnChoice:
                     cheatPayload = RoundCheatPayload.SleeveBloomChoice(
                         RequireStringField(document, CommandPayloadFields.OfferId, "offerId"),
                         ParseKeep(document.RequireUInt32(CommandPayloadFields.Choice, "choice")));
@@ -443,11 +483,6 @@ namespace Mahjong.TableService
                     decisionId = RequireStringField(document, CommandPayloadFields.DecisionIdField, "decisionId");
                     cheatPayload = RoundCheatPayload.OffTurn(
                         RequireStringField(document, CommandPayloadFields.WindowId, "windowId"));
-                    break;
-                case RoundCheatAction.SubmitSleeveBloomOffTurnChoice:
-                    cheatPayload = RoundCheatPayload.OffTurnChoice(
-                        RequireStringField(document, CommandPayloadFields.OfferId, "offerId"),
-                        ParseKeep(document.RequireUInt32(CommandPayloadFields.Choice, "choice")));
                     break;
                 case RoundCheatAction.SubmitBeamSwap:
                     decisionId = RequireStringField(document, CommandPayloadFields.DecisionIdField, "decisionId");
@@ -464,20 +499,58 @@ namespace Mahjong.TableService
                     }
                     else
                     {
-                        // The frozen wire field carries a raw slot index 0..135 only. Binding a
-                        // raw index to an authoritative offer slot (kind + index) is the
-                        // actor/authority boundary (P4.x); the host never invents the kind.
-                        return new TableCommandRoute.PreActorRejection(
-                            ProtocolErrorCode.MalformedMessage, "command.canonical_payload.targetSlot", BeamSwapSlotDetail);
+                        // D-1-02: the frozen wire carries the target as one raw numeric slot.
+                        // The KIND is resolved at this trusted boundary through the REAL offer
+                        // candidate context the actor projected for this connection's owner
+                        // stream — the same immutable offer state the Domain re-verifies every
+                        // choice against. A slot index the context cannot resolve uniquely
+                        // (a dead-wall source and a replacement source share small indices by
+                        // design, so a numeric range is NOT a non-overlapping namespace) is
+                        // never silently mapped to any one of the colliding entities: every
+                        // unclear case fails closed here with an explicit boundary error.
+                        uint rawIndex = document.RequireUInt32(CommandPayloadFields.TargetSlot, "targetSlot");
+                        if (beamSwapSlotResolver == null)
+                        {
+                            return new TableCommandRoute.PreActorRejection(
+                                ProtocolErrorCode.InternalError,
+                                "command.canonical_payload.targetSlot",
+                                BeamSwapSlotDetail);
+                        }
+
+                        TableBeamSwapSlotResolution? resolution = beamSwapSlotResolver(rawIndex);
+                        if (resolution == null || resolution.Status == TableBeamSwapResolutionStatus.Ambiguous)
+                        {
+                            return new TableCommandRoute.PreActorRejection(
+                                ProtocolErrorCode.InternalError,
+                                "command.canonical_payload.targetSlot",
+                                BeamSwapSlotDetail);
+                        }
+
+                        if (resolution.Status == TableBeamSwapResolutionStatus.UnknownIndex)
+                        {
+                            return new TableCommandRoute.PreActorRejection(
+                                ProtocolErrorCode.MalformedMessage,
+                                "command.canonical_payload.targetSlot",
+                                "BEAM_SWAP_SLOT_UNKNOWN");
+                        }
+
+                        TableBeamSwapCandidate candidate = resolution.Candidate!;
+                        Mahjong.Domain.Cheat.BeamSwapSlotKind resolvedKind = candidate.Kind;
+                        cheatPayload = RoundCheatPayload.BeamSwapChoice(
+                            offerId,
+                            BeamSwapAction.Swap,
+                            new TileId((int)document.RequireUInt32(CommandPayloadFields.HandTileId, "handTileId")),
+                            resolvedKind switch
+                            {
+                                Mahjong.Domain.Cheat.BeamSwapSlotKind.WallSlot => BeamSwapSlot.Wall(candidate.SlotIndex),
+                                Mahjong.Domain.Cheat.BeamSwapSlotKind.DeadWallSlot => BeamSwapSlot.DeadWall(candidate.SlotIndex),
+                                _ => BeamSwapSlot.Replacement(candidate.SlotIndex)
+                            });
                     }
 
                     break;
                 }
             }
-
-            string roundId = document.HasField(CommandPayloadFields.RoundIdField)
-                ? RequireStringField(document, CommandPayloadFields.RoundIdField, "roundId")
-                : throw new InvalidOperationException("Validator guarantees a round id for cheat kinds.");
 
             var cheatCommand = new RoundCheatCommand(
                 roundId,

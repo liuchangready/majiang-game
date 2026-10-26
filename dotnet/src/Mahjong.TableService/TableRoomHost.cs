@@ -3,6 +3,7 @@ using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Globalization;
+using System.Security.Cryptography;
 using System.Threading;
 using System.Threading.Tasks;
 using Mahjong.Contracts;
@@ -116,12 +117,79 @@ namespace Mahjong.TableService
     }
 
     /// <summary>
+    /// Trusted room-initialization seam (D-1-01). Production binds the cryptographically
+    /// random source below; a test assembly may inject its own trusted real-Domain round for
+    /// a deterministic scenario, and a host registry without any source is fail-closed: it
+    /// refuses to serve the table rather than falling back to a known fixed wall order, a
+    /// fabricated projection or any fixture wall as a playable room.
+    /// </summary>
+    public interface ITableRoundSource
+    {
+        /// <summary>
+        /// Returns a freshly dealt real Domain round (RoundStateMachine.CreateDealt over a
+        /// complete 136-tile permutation from a trusted shuffle authority). The wall order of
+        /// the returned round must never be derivable from the room id or any other
+        /// client-visible value: a fixed/predictable order makes every room's concealed tiles
+        /// predictable.
+        /// </summary>
+        RoundStateMachine CreateRound(string roomId);
+    }
+
+    /// <summary>
+    /// The safe real local initialization available on the accepted Domain ports (D-1-01): a
+    /// complete 136-tile physical permutation produced by the process cryptographic RNG 鈥?    /// never from an id/seed string 鈥?and then the Domain's own dealt-round construction. No
+    /// schema or Domain rule changes; the recorded-draw pipeline stays an explicit caller
+    /// input and a room name can no longer predict any concealed tile.
+    /// </summary>
+    public sealed class CryptographicTableRoundSource : ITableRoundSource
+    {
+        public static readonly CryptographicTableRoundSource Instance = new CryptographicTableRoundSource();
+
+        public RoundStateMachine CreateRound(string roomId)
+        {
+            var order = new TileId[TileId.Count];
+            for (int i = 0; i < order.Length; i++)
+            {
+                order[i] = new TileId(i);
+            }
+
+            for (int i = order.Length - 1; i > 0; i--)
+            {
+                int j = RandomNumberGenerator.GetInt32(0, i + 1);
+                (order[i], order[j]) = (order[j], order[i]);
+            }
+
+            var spec = new RoundSpec(
+                roomId + "-r1",
+                0,
+                1,
+                0,
+                0,
+                new long[] { 25000, 25000, 25000, 25000 },
+                0);
+            TilePositionMap dealt = TilePositionMap.CreateDealt(
+                RecordedRandomDraw.Create(roomId + "-wall", order),
+                0);
+            return RoundStateMachine.CreateDealt(spec, dealt, RoundPhase.CheatWindow);
+        }
+    }
+
+    /// <summary>
     /// One isolated table: its own actor, its own in-memory store/scope authority (accepted
     /// P3.4 ports), its own commit port and its own wire codec. Rooms never share state.
     /// </summary>
     public sealed class RoomHost : ITableStreamTerminationSink
     {
         public const long InitialOwnerEpochValue = 1;
+
+        /// <summary>
+        /// The service domain's authoritative decision clock (D-1-01): one RoomHost's real
+        /// decision deadlines come from the platform's V4 timing contract (3s of per-turn
+        /// thinking over a 20s round reserve). The bootstrap checkpoint and the tick driver
+        /// must use the SAME config so a persisted checkpoint never modelled different deadline
+        /// semantics than a live decision actually reports.
+        /// </summary>
+        public static DecisionClockConfig ServiceDecisionClockConfig { get; } = new DecisionClockConfig();
 
         private readonly List<WeakReference<WireTableStreamSink>> _liveSinks = new List<WeakReference<WireTableStreamSink>>();
         private readonly object _sinkGate = new object();
@@ -134,7 +202,8 @@ namespace Mahjong.TableService
             InMemoryTableStore store,
             TableServiceCommitPort commitPort,
             TableDurableContext durable,
-            OwnerEpoch ownerEpoch)
+            OwnerEpoch ownerEpoch,
+            TableRoomDecisionState decisionState)
         {
             RoomId = roomId;
             Options = options;
@@ -144,6 +213,7 @@ namespace Mahjong.TableService
             CommitPort = commitPort;
             Durable = durable;
             OwnerEpoch = ownerEpoch;
+            DecisionState = decisionState ?? throw new ArgumentNullException(nameof(decisionState));
         }
 
         public string RoomId { get; }
@@ -162,9 +232,15 @@ namespace Mahjong.TableService
 
         public OwnerEpoch OwnerEpoch { get; }
 
+        /// <summary>
+        /// D-1-01: the room's decision runtime state 鈥?the trusted opening seam that derives a
+        /// real Domain-backed decision for the currently acting seat and projects it honestly
+        /// (decision id, epoch, candidates, deadline) through the trusted context source.
+        /// </summary>
+        public TableRoomDecisionState DecisionState { get; }
+
         /// <summary>Set when the table lease is lost: admission stops, existing streams keep draining.</summary>
         public volatile bool AdmissionStopped;
-
         public DateTimeOffset CreatedAt { get; } = DateTimeOffset.UtcNow;
 
         public long LastRenewUtcMs;
@@ -205,27 +281,70 @@ namespace Mahjong.TableService
             sink?.NotifyTerminated(termination);
         }
 
+        /// <summary>
+        /// D-1-01: after the drive opened a decision, every LIVE subscribed stream gets one
+        /// authoritative re-baseline so the seat's frozen DecisionView (decision id, control
+        /// epoch, deadline, legal actions) reaches the client on the wire — the actor publishes
+        /// frames only on commits, and an OPEN decision is not a commit; without this refresh
+        /// a client would have no honest way to learn the decision id it must act with.
+        /// Fired through the actor's own sync path, so the frame is still actor-encoded truth.
+        /// </summary>
+        public void PublishDecisionViewsToLiveStreams()
+        {
+            List<TableStreamHandle> handles = new List<TableStreamHandle>();
+            lock (_sinkGate)
+            {
+                foreach (WeakReference<WireTableStreamSink> reference in _liveSinks)
+                {
+                    if (reference.TryGetTarget(out WireTableStreamSink? candidate) &&
+                        candidate.Handle != null &&
+                        candidate.Termination == null)
+                    {
+                        handles.Add(candidate.Handle);
+                    }
+                }
+            }
+
+            foreach (TableStreamHandle handle in handles)
+            {
+                try
+                {
+                    _ = Actor.SyncStreamAsync(new TableStreamSyncRequest(
+                        handle,
+                        new Contracts.StreamCursor(new StreamVersion(0), new ProjectionSeq(0))));
+                }
+                catch (Exception)
+                {
+                    // A dead stream simply does not receive the refresh; its termination path
+                    // governs.
+                }
+            }
+        }
+
         public void StopAdmission(string reason)
         {
             AdmissionStopped = true;
+            AdmissionsStoppedReason = reason;
         }
 
-        /// <summary>Deterministic initial round for the P5.1 host: a dealt CheatWindow round
-        /// from the Domain's own recorded-draw path. Match orchestration (P5.3) replaces this.</summary>
-        public static RoundStateMachine CreateInitialRound(string roomId)
+        /// <summary>Redacted reason recorded when the admission gate closed.</summary>
+        public string AdmissionsStoppedReason { get; private set; } = string.Empty;
+
+        /// <summary>
+        /// Trusted initial-round creation seam. The production default is the cryptographic
+        /// random source above; a test assembly injects its own source through the registry.
+        /// There is no fixed-wall fallback anywhere in this component.
+        /// </summary>
+        public static RoundStateMachine CreateInitialRound(
+            string roomId,
+            ITableRoundSource roundSource)
         {
-            var spec = new RoundSpec(
-                roomId + "-r1",
-                0,
-                1,
-                0,
-                0,
-                new long[] { 25000, 25000, 25000, 25000 },
-                0);
-            TilePositionMap dealt = TilePositionMap.CreateDealt(
-                RecordedRandomDraw.Standard("tablesvc-" + roomId),
-                0);
-            return RoundStateMachine.CreateDealt(spec, dealt, RoundPhase.CheatWindow);
+            if (roundSource == null)
+            {
+                throw new ArgumentNullException(nameof(roundSource));
+            }
+
+            return roundSource.CreateRound(roomId);
         }
 
         public static TableActor CreateActor(
@@ -237,13 +356,15 @@ namespace Mahjong.TableService
             TableStreamOptions streamOptions,
             TableDurableContext? durable,
             OwnerEpoch initialOwnerEpoch,
-            RoundStateMachine round)
+            RoundStateMachine round,
+            TableRoomDecisionState decisionState)
         {
             var actorOptions = new TableActorOptions
             {
                 RoomId = roomId,
                 InitialControllers = InitialControllers(),
                 InitialOwnerEpoch = initialOwnerEpoch,
+                DecisionClockConfig = ServiceDecisionClockConfig,
                 CheatEconomy = TableProjectionContextSource.DefaultEconomy,
                 SleeveBloomConfig = TableProjectionContextSource.DefaultSleeveConfig
             };
@@ -254,7 +375,7 @@ namespace Mahjong.TableService
                 clock,
                 publicationSink,
                 controlCommitPort: null,
-                projectionContextSource: new TableProjectionContextSource(),
+                projectionContextSource: new TableProjectionContextSource(decisionState),
                 streamOptions,
                 durable,
                 settlementFactsPort: null);
@@ -276,7 +397,7 @@ namespace Mahjong.TableService
             string bootId,
             ulong utcMs)
         {
-            var clockConfig = new DecisionClockConfig(1000L, 0L, ReserveScope.Round);
+            var clockConfig = ServiceDecisionClockConfig;
             var decisionClock = new DecisionClock(clockConfig);
             decisionClock.BeginRound(round.RoundId, 0L);
             TableTimingCheckpoint timing = TableCheckpointFactory.CaptureTiming(
@@ -378,15 +499,30 @@ namespace Mahjong.TableService
         private readonly ConcurrentDictionary<string, RoomHost> _hosts =
             new ConcurrentDictionary<string, RoomHost>(StringComparer.Ordinal);
 
+        /// <summary>
+        /// Create/reserve gate (D-1-06): the room-capacity check and the per-room creation run
+        /// under one lock, so a barrier of concurrent GetOrAdd calls can never exceed
+        /// MaxRooms, can never run the same room's factory twice and can never create an
+        /// orphan actor for a room whose dictionary slot was then handed to another host. The
+        /// store/lease bootstrap inside the lock is in-memory, short and synchronous.
+        /// </summary>
+        private readonly object _createGate = new object();
+
         private readonly TableServiceOptions _options;
         private readonly ITableStreamContractCodec _codec;
         private readonly ITableClock _clock;
+        private readonly ITableRoundSource? _roundSource;
 
-        public InMemoryTableHostRegistry(TableServiceOptions options, ITableStreamContractCodec codec, ITableClock clock)
+        public InMemoryTableHostRegistry(
+            TableServiceOptions options,
+            ITableStreamContractCodec codec,
+            ITableClock clock,
+            ITableRoundSource? roundSource = null)
         {
             _options = options ?? throw new ArgumentNullException(nameof(options));
             _codec = codec ?? throw new ArgumentNullException(nameof(codec));
             _clock = clock ?? throw new ArgumentNullException(nameof(clock));
+            _roundSource = roundSource;
         }
 
         public IEnumerable<RoomHost> Hosts => _hosts.Values;
@@ -397,20 +533,70 @@ namespace Mahjong.TableService
             return host != null;
         }
 
-        public RoomHost GetOrAdd(string roomId)
+        /// <summary>True when at least one room can still admit (health/readiness input).</summary>
+        public bool HasServingRoom
         {
-            return _hosts.GetOrAdd(roomId, CreateHost);
+            get
+            {
+                foreach (RoomHost host in _hosts.Values)
+                {
+                    if (!host.AdmissionStopped)
+                    {
+                        return true;
+                    }
+                }
+
+                return false;
+            }
         }
 
-        private RoomHost CreateHost(string roomId)
+
+        /// <summary>
+        /// D-1-10 readiness input: an EMPTY registry is genuinely able to admit (its runtime
+        /// source, room capacity and lease machinery all exist); only a registry whose every
+        /// known room stopped admitting is unhealthy.
+        /// </summary>
+        public bool AdmittingRoomsCountableOrEmpty => _hosts.Count == 0 || HasServingRoom;
+
+        public RoomHost GetOrAdd(string roomId)
+        {
+            if (_hosts.TryGetValue(roomId, out RoomHost? existing))
+            {
+                return existing;
+            }
+
+            lock (_createGate)
+            {
+                if (_hosts.TryGetValue(roomId, out RoomHost? found))
+                {
+                    return found;
+                }
+
+                RoomHost created = CreateHostLocked(roomId);
+                _hosts[roomId] = created;
+                return created;
+            }
+        }
+
+        private RoomHost CreateHostLocked(string roomId)
         {
             if (_hosts.Count >= _options.MaxRooms)
             {
                 throw new TableServiceCapacityException("ROOM_CAPACITY", "The host registry is at its room capacity.");
             }
 
+            if (_roundSource == null)
+            {
+                // D-1-01 fail-closed: no trusted round source is bound, the registry never
+                // materializes a table from a fabricated wall/projection.
+                throw new TableServiceCapacityException(
+                    "RUNTIME_SOURCE_UNAVAILABLE",
+                    "No trusted room runtime source is configured; the table cannot be served.");
+            }
+
             var scopes = new InMemoryRequestScopeAuthority();
             var store = new InMemoryTableStore(_clock, scopes);
+            var decisionState = new TableRoomDecisionState();
             string ownerInstance = "tablesvc-" + Environment.ProcessId.ToString(CultureInfo.InvariantCulture);
             // The room's checkpoint-0 row must exist before the first accepted commit (the
             // store answers CHECKPOINT_MISSING "Room is not initialized." otherwise), and the
@@ -418,7 +604,7 @@ namespace Mahjong.TableService
             // against a missing row and the actor would enter LEASE_LOST (accepted P3.4
             // harness creates the room and acquires the lease before constructing the actor
             // for exactly these reasons).
-            RoundStateMachine round = RoomHost.CreateInitialRound(roomId);
+            RoundStateMachine round = RoomHost.CreateInitialRound(roomId, _roundSource);
             CheatLedger ledger = CheatLedger.Initialize(TableProjectionContextSource.DefaultEconomy);
             store.CreateRoomAsync(
                     RoomHost.CreateInitialCheckpoint(
@@ -459,16 +645,43 @@ namespace Mahjong.TableService
                 new TileMarkState(),
                 new SleeveBloomState(),
                 new BeamSwapState());
-            RoomHost host = new RoomHost(
+            return new RoomHost(
                 roomId,
                 _options,
-                RoomHost.CreateActor(roomId, _options, commitPort, _clock, null, CreateStreamOptionsLazy(roomId), durable, initialEpoch, round),
+                RoomHost.CreateActor(roomId, _options, commitPort, _clock, null, CreateStreamOptionsLazy(roomId), durable, initialEpoch, round, decisionState),
                 scopes,
                 store,
                 commitPort,
                 durable,
-                initialEpoch);
-            return host;
+                initialEpoch,
+                decisionState);
+        }
+
+        /// <summary>
+        /// Stops every owned actor exactly once (server shutdown / runtime stop): the actor's
+        /// pump, its streams and its timers never outlive the host (D-1-05).
+        /// </summary>
+        internal async Task DisposeHostsAsync()
+        {
+            lock (_createGate)
+            {
+                foreach (RoomHost host in _hosts.Values)
+                {
+                    host.StopAdmission("SERVER_STOPPING");
+                }
+            }
+
+            foreach (RoomHost host in _hosts.Values)
+            {
+                try
+                {
+                    await host.Actor.DisposeAsync().ConfigureAwait(false);
+                }
+                catch (Exception)
+                {
+                    // Shutdown never fails because of one actor's disposal fault.
+                }
+            }
         }
 
         private TableStreamOptions CreateStreamOptionsLazy(string roomId)
@@ -522,6 +735,13 @@ namespace Mahjong.TableService
     /// Platform tick driver. It advances every live table actor from a single background loop
     /// that is fully independent of WebSocket traffic, so transport heartbeats can never
     /// starve actor decision/rule deadlines. Ticks are mailbox-serialized inside the actor.
+    ///
+    /// D-1-10: the tick AND lease-renewal RESULTS are authoritative entry points 鈥?a failed
+    /// renewal, a terminal tick status or a lease-lost/faulted actor lifecycle stops that
+    /// table's admission immediately while every other table keeps serving. The Domain
+    /// deadlines (player decision deadlines, cheat-offer expiry sweeps) are driven exactly
+    /// here on every tick; decision OPENING stays the acting owner's duty (P3.3 timing seam),
+    /// so the driver never fabricates a candidate that the Domain has not created.
     /// </summary>
     public sealed class TableTickDriver : BackgroundService
     {
@@ -548,12 +768,61 @@ namespace Mahjong.TableService
 
                     try
                     {
-                        await host.Actor.TickAsync(request: null, cancellationToken: stoppingToken).ConfigureAwait(false);
+                        TableTickResult tick = await host.Actor
+                            .TickAsync(request: null, cancellationToken: stoppingToken)
+                            .ConfigureAwait(false);
+                        if (tick.Status == TableOperationStatus.Closed)
+                        {
+                            // The actor is terminal (closed): stop this table's admission
+                            // without touching any other table.
+                            host.StopAdmission("TABLE_CLOSED");
+                            continue;
+                        }
+
+                        if (tick.Status == TableOperationStatus.Rejected &&
+                            (string.Equals(tick.ReasonCode, TableRuntimeReasonCode.LeaseLost, StringComparison.Ordinal)))
+                        {
+                            // The tick itself reported lease loss: stop accepting new
+                            // connections before they can be consumed into the dead table.
+                            host.StopAdmission("LEASE_LOST");
+                            continue;
+                        }
+
+                        // D-1-10: a returned tick FAILURE (not just a thrown exception) is
+                        // authoritative state: stop admission into a dead table.
+                        if (tick.Status == TableOperationStatus.Failed &&
+                            string.Equals(tick.ReasonCode, TableRuntimeReasonCode.InternalError, StringComparison.Ordinal))
+                        {
+                            host.StopAdmission("ACTOR_FAULT");
+                            continue;
+                        }
+
+                        // D-1-01: the acting seat the last committed Domain state requires a
+                        // decision for gets its REAL decision opened here (the platform opening
+                        // seam), so a legal client action always points at a truly open,
+                        // Domain-derived decision instead of a fabricated projection.
+                        int opened = await host.DecisionState.DriveOpenDecisionsAsync(host.Actor).ConfigureAwait(false);
+                        if (opened > 0)
+                        {
+                            host.PublishDecisionViewsToLiveStreams();
+                        }
+
                         long nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
                         long elapsed = nowMs - Interlocked.Read(ref host.LastRenewUtcMs);
                         if (elapsed > _options.LeaseTtlSeconds * 500L)
                         {
-                            await host.Actor.RenewLeaseAsync(stoppingToken).ConfigureAwait(false);
+                            TableLeaseRenewResult renew = await host.Actor
+                                .RenewLeaseAsync(stoppingToken)
+                                .ConfigureAwait(false);
+                            if (!renew.Renewed)
+                            {
+                                // Renewal returned a failure (not just a thrown exception): the
+                                // lease authority is gone; admission stops before the next
+                                // connection can be consumed into a dead table.
+                                host.StopAdmission("LEASE_LOST");
+                                continue;
+                            }
+
                             Interlocked.Exchange(ref host.LastRenewUtcMs, nowMs);
                         }
                     }
