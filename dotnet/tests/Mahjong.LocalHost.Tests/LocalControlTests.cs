@@ -94,6 +94,18 @@ namespace Mahjong.LocalHost.Tests
                 await session.CloseAsync("TEST_DONE", CancellationToken.None);
                 await channel.CloseAsync(new TableChannelCloseReason("TEST_DONE", true), CancellationToken.None);
             }
+            var controlScope = new RequestScopeId("control-scope");
+            var controlRequest = new RequestId("unchanged-control");
+            using (LocalTableStore store = await LocalTableStore.OpenAsync(harness.Options, harness.Clock, null, ct))
+            {
+                store.PrepareControlResult("local-control", controlScope, controlRequest, new string('a', 64), "ClaimControl");
+                store.CommitPreparedControlResultOnly();
+            }
+
+            using (LocalTableStore reopened = await LocalTableStore.OpenAsync(harness.Options, harness.Clock, null, ct))
+            {
+                Assert.NotNull(reopened.GetControlResult("local-control", controlScope, controlRequest));
+            }
         }
 
         private static async Task WaitReadyAsync(TableSession session, CancellationToken ct)
