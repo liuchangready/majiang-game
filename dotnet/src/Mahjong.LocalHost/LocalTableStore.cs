@@ -905,6 +905,50 @@ namespace Mahjong.LocalHost
             }
         }
 
+        internal string? GetReceiptDigest(string accountId, RequestScopeId scopeId, RequestId requestId)
+        {
+            lock (_gate)
+            {
+                string key = ReceiptKey(accountId, scopeId, requestId);
+                return _save != null && _save.ReceiptDigests.TryGetValue(key, out string? digest)
+                    ? digest
+                    : null;
+            }
+        }
+
+        internal void RecordReceiptDigest(string accountId, RequestScopeId scopeId, RequestId requestId, string digest)
+        {
+            lock (_gate)
+            {
+                if (_save == null || string.IsNullOrEmpty(digest))
+                {
+                    return;
+                }
+
+                string key = ReceiptKey(accountId, scopeId, requestId);
+                if (_save.ReceiptDigests.TryGetValue(key, out string? existing) &&
+                    string.Equals(existing, digest, StringComparison.Ordinal))
+                {
+                    return;
+                }
+
+                LocalSave candidate = _save.DeepCloneForCandidate();
+                candidate.ReceiptDigests[key] = digest;
+                try
+                {
+                    LocalWriteResult write = Persist(candidate, CancellationToken.None);
+                    if (write.Verdict == LocalWriteVerdict.Committed)
+                    {
+                        _save = candidate;
+                    }
+                }
+                catch
+                {
+                    // The receipt itself is already durable; digest metadata is best effort.
+                }
+            }
+        }
+
         public ValueTask<TableLeaseAcquireResult> AcquireAsync(
             string roomId,
             string ownerInstance,

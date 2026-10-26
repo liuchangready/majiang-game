@@ -645,7 +645,7 @@ namespace Mahjong.LocalHost
             {
                 // A valid previous copy restores the last confirmed match state. Publish it
                 // atomically through a temp file rather than using it in place.
-                SaveInternal(path, backup, expectedVersion: null);
+                PublishRecovered(path, backup);
                 return backup;
             }
 
@@ -670,6 +670,75 @@ namespace Mahjong.LocalHost
             }
 
             SaveInternal(path, state, expectedVersion);
+        }
+
+        private static void PublishRecovered(string path, LocalMatchState state)
+        {
+            byte[] payload = Encode(state);
+            byte[] envelope;
+            using (var stream = new MemoryStream())
+            using (var writer = new BinaryWriter(stream, Utf8, true))
+            {
+                writer.Write(Magic);
+                writer.Write(EnvelopeVersion);
+                writer.Write(payload.Length);
+                writer.Write(TablePayloadSha256.Compute(payload).ToArray());
+                writer.Write(payload);
+                writer.Flush();
+                envelope = stream.ToArray();
+            }
+
+            string tmp = path + ".tmp." + Guid.NewGuid().ToString("N");
+            string quarantine = path + ".corrupt." + Guid.NewGuid().ToString("N");
+            using (var stream = new FileStream(tmp, FileMode.CreateNew, FileAccess.Write, FileShare.None))
+            {
+                stream.Write(envelope, 0, envelope.Length);
+                stream.Flush(true);
+            }
+
+            bool moved = false;
+            try
+            {
+                if (File.Exists(path))
+                {
+                    File.Move(path, quarantine);
+                    moved = true;
+                }
+
+                File.Move(tmp, path);
+                if (moved)
+                {
+                    File.Delete(quarantine);
+                }
+            }
+            catch
+            {
+                if (!File.Exists(path) && moved && File.Exists(quarantine))
+                {
+                    try
+                    {
+                        File.Move(quarantine, path);
+                    }
+                    catch
+                    {
+                    }
+                }
+
+                try
+                {
+                    if (File.Exists(tmp))
+                    {
+                        File.Delete(tmp);
+                    }
+                }
+                catch
+                {
+                }
+
+                throw new LocalTableException(
+                    LocalTableErrorKind.Unavailable,
+                    "The verified previous match state could not be published.");
+            }
         }
 
         private static void SaveInternal(string path, LocalMatchState state, int? expectedVersion)
@@ -839,9 +908,10 @@ namespace Mahjong.LocalHost
                         sum += scores[i];
                     }
 
-                    if (sum != 100_000L)
+                    long tableTotal = checked(sum + ((long)sticks * 1000L));
+                    if (tableTotal != 100_000L)
                     {
-                        throw new InvalidDataException("The match state scores violate zero-sum conservation.");
+                        throw new InvalidDataException("The match state scores + riichi sticks violate zero-sum conservation.");
                     }
 
                     var state = new LocalMatchState();

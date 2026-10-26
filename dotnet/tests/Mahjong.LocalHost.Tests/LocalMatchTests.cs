@@ -6,6 +6,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using Mahjong.Client;
 using Mahjong.Contracts;
+using Mahjong.Domain;
 using Xunit;
 using PlayerSnapshot = Mahjong.Contracts.Wire.PlayerSnapshot;
 using WireGamePhase = Mahjong.Contracts.Wire.GamePhase;
@@ -142,6 +143,72 @@ namespace Mahjong.LocalHost.Tests
             catch (LocalTableException exception)
             {
                 Assert.Equal(LocalTableErrorKind.CorruptState, exception.ErrorKind);
+            }
+        }
+        [Fact]
+        public void MatchCodecPermitsRiichiSticksAndKeepsGoodPreviousCopy()
+        {
+            string root = Path.Combine(Path.GetTempPath(), "p41-match-codec-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(root);
+            try
+            {
+                string path = Path.Combine(root, "m.match");
+                LocalMatchState state = LocalMatchState.Create("m");
+                state.Restore(
+                    "m",
+                    1,
+                    1,
+                    "m-r1",
+                    "m-r1",
+                    0,
+                    1,
+                    0,
+                    0,
+                    1,
+                    new long[] { 24_000L, 25_000L, 25_000L, 25_000L },
+                    Array.Empty<long>(),
+                    false,
+                    string.Empty,
+                    new List<RankingEntry>(),
+                    new List<LocalMatchRoundRecord>());
+                LocalMatchStateCodec.Save(path, state, 0);
+                LocalMatchState loaded = LocalMatchStateCodec.Load(path)!;
+                Assert.Equal(1, loaded.RiichiSticks);
+                Assert.Equal(24_000L, loaded.Scores[0]);
+
+                // Create a good prev at version 2, then corrupt primary twice.
+                LocalMatchState second = LocalMatchState.Create("m");
+                second.Restore(
+                    "m",
+                    2,
+                    1,
+                    "m-r1",
+                    "m-r1",
+                    0,
+                    1,
+                    0,
+                    0,
+                    1,
+                    new long[] { 24_000L, 25_000L, 25_000L, 25_000L },
+                    Array.Empty<long>(),
+                    false,
+                    string.Empty,
+                    new List<RankingEntry>(),
+                    new List<LocalMatchRoundRecord>());
+                LocalMatchStateCodec.Save(path, second, 1);
+                byte[] corrupt = File.ReadAllBytes(path);
+                corrupt[corrupt.Length - 1] ^= 0x01;
+                File.WriteAllBytes(path, corrupt);
+                Assert.Equal(1, LocalMatchStateCodec.Load(path)!.RiichiSticks);
+
+                corrupt = File.ReadAllBytes(path);
+                corrupt[corrupt.Length - 1] ^= 0x01;
+                File.WriteAllBytes(path, corrupt);
+                Assert.Equal(1, LocalMatchStateCodec.Load(path)!.RiichiSticks);
+            }
+            finally
+            {
+                Directory.Delete(root, true);
             }
         }
         private static async Task<(TableSession Session, PlayerSnapshot Final)> PlayRoundAsync(

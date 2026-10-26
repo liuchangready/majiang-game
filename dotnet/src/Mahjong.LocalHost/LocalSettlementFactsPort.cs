@@ -70,10 +70,31 @@ namespace Mahjong.LocalHost
                         }
                     }
 
-                    temporaryFuriten = lastDiscard > lastDraw;
+                    // A discard alone is not furiten: temporary/riichi furiten require
+                    // passing a legal Ron, which the current round event vocabulary does not
+                    // expose as a separate event. Keep these false unless a future durable
+                    // response-pass fact is available, rather than treating every discard as
+                    // a missed win.
+                    temporaryFuriten = false;
+                    int declarationDiscard = -1;
+                    if (riichiAt >= 0)
+                    {
+                        for (int i = riichiAt + 1; i < round.Events.Count; i++)
+                        {
+                            if (round.Events[i].Type == Mahjong.Domain.RoundEventType.TileDiscarded &&
+                                round.Events[i].Seat == seat)
+                            {
+                                declarationDiscard = i;
+                                break;
+                            }
+                        }
+                    }
+
                     ippatsu = riichiAt >= 0 && lastCallOrKan < riichiAt &&
-                              lastDiscard < riichiAt && drawsAfterRiichi <= 1;
-                    riichiFuriten = riichiAt >= 0 && lastDiscard > riichiAt;
+                              (lastDiscard < 0 || lastDiscard == declarationDiscard) &&
+                              drawsAfterRiichi <= 1 &&
+                              (declarationDiscard < 0 || lastDiscard <= declarationDiscard);
+                    riichiFuriten = false;
                 }
 
                 seats.Add(new TableSettlementSeatHostFacts(seat, ippatsu, temporaryFuriten, riichiFuriten));

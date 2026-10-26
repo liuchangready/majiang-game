@@ -147,6 +147,13 @@ namespace Mahjong.LocalHost
                     WriteReceipt(writer, pair.Value);
                 }
 
+                writer.Write(save.ReceiptDigests.Count);
+                foreach (KeyValuePair<string, string> pair in save.ReceiptDigests)
+                {
+                    WriteString(writer, pair.Key);
+                    WriteString(writer, pair.Value);
+                }
+
                 writer.Write(save.Outbox.Count);
                 foreach (KeyValuePair<string, TableSettlementOutboxRecord> pair in save.Outbox)
                 {
@@ -231,6 +238,13 @@ namespace Mahjong.LocalHost
                 {
                     string key = ReadString(reader);
                     save.Receipts.Add(key, ReadReceipt(reader));
+                }
+
+                int digestCount = ReadCount(reader, "receipt digests");
+                for (int i = 0; i < digestCount; i++)
+                {
+                    string key = ReadString(reader);
+                    save.ReceiptDigests.Add(key, ReadString(reader));
                 }
 
                 int outboxCount = ReadCount(reader, "outbox");

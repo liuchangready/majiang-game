@@ -119,6 +119,10 @@ namespace Mahjong.LocalHost
         public Dictionary<string, TableSettlementOutboxRecord> Outbox { get; set; } =
             new Dictionary<string, TableSettlementOutboxRecord>(StringComparer.Ordinal);
 
+        /// <summary>Canonical business digest per durable receipt key (MJC1 original bytes).</summary>
+        public Dictionary<string, string> ReceiptDigests { get; set; } =
+            new Dictionary<string, string>(StringComparer.Ordinal);
+
         public LocalSaveTerminalState TerminalState { get; set; }
         public string? TerminalResultId { get; set; }
         public int? TerminalResultVersion { get; set; }
@@ -186,6 +190,11 @@ namespace Mahjong.LocalHost
             foreach (KeyValuePair<string, TableSettlementOutboxRecord> pair in Outbox)
             {
                 copy.Outbox.Add(pair.Key, pair.Value);
+            }
+
+            foreach (KeyValuePair<string, string> pair in ReceiptDigests)
+            {
+                copy.ReceiptDigests.Add(pair.Key, pair.Value);
             }
 
             copy.Operations.AddRange(Operations);

@@ -221,7 +221,7 @@ namespace Mahjong.LocalHost.Tests
             string marker = Path.Combine(harness.Root, "crash-marker.txt");
             var start = new System.Diagnostics.ProcessStartInfo
             {
-                FileName = "D:/Unity/dotnet/dotnet.exe",
+                FileName = Environment.ProcessPath ?? "dotnet",
                 Arguments = "\"" + workerDll + "\" \"" + harness.Options.SaveDirectory + "\" \"" +
                             P41Harness.RoomId + "\" \"" + marker + "\"",
                 UseShellExecute = false,
