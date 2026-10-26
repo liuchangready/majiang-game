@@ -37,6 +37,7 @@ namespace Mahjong.LocalHost
         private LocalSave? _save;
         private (string AccountId, RequestScopeId ScopeId, RequestId RequestId, string Digest)? _pendingReceiptDigest;
         private (string AccountId, RequestScopeId ScopeId, RequestId RequestId, string Digest, string Kind)? _pendingControlResult;
+        private (int Seat, bool? Temporary, bool? Riichi)? _pendingFuriten;
         private Stream? _lockStream;
         private bool _leaseAcquired;
         private string _leaseOwner = string.Empty;
@@ -778,6 +779,20 @@ namespace Mahjong.LocalHost
                 {
                     candidate.Operations.Clear();
                 }
+                (int Seat, bool? Temporary, bool? Riichi)? pendingFuriten = _pendingFuriten;
+                if (pendingFuriten.HasValue)
+                {
+                    if (pendingFuriten.Value.Temporary.HasValue)
+                    {
+                        candidate.TemporaryFuriten[pendingFuriten.Value.Seat] = pendingFuriten.Value.Temporary.Value;
+                    }
+
+                    if (pendingFuriten.Value.Riichi.HasValue)
+                    {
+                        candidate.RiichiFuriten[pendingFuriten.Value.Seat] = pendingFuriten.Value.Riichi.Value;
+                    }
+                }
+
 
                 (string AccountId, RequestScopeId ScopeId, RequestId RequestId, string Digest)? pendingDigest =
                     _pendingReceiptDigest;
@@ -966,6 +981,38 @@ namespace Mahjong.LocalHost
                 _pendingReceiptDigest = string.IsNullOrEmpty(digest)
                     ? null
                     : (accountId, scopeId, requestId, digest);
+            }
+        }
+
+        internal bool[] LoadTemporaryFuriten()
+        {
+            lock (_gate)
+            {
+                return _save == null ? new bool[4] : (bool[])_save.TemporaryFuriten.Clone();
+            }
+        }
+
+        internal bool[] LoadRiichiFuriten()
+        {
+            lock (_gate)
+            {
+                return _save == null ? new bool[4] : (bool[])_save.RiichiFuriten.Clone();
+            }
+        }
+
+        internal void PrepareFuriten(int seat, bool? temporary, bool? riichi)
+        {
+            lock (_gate)
+            {
+                _pendingFuriten = (seat, temporary, riichi);
+            }
+        }
+
+        internal void ClearPreparedFuriten()
+        {
+            lock (_gate)
+            {
+                _pendingFuriten = null;
             }
         }
 

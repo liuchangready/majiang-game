@@ -130,6 +130,9 @@ namespace Mahjong.LocalHost
             new Dictionary<string, TableSettlementOutboxRecord>(StringComparer.Ordinal);
 
         /// <summary>Canonical business digest per durable receipt key (MJC1 original bytes).</summary>
+        public bool[] TemporaryFuriten { get; set; } = new bool[4];
+        public bool[] RiichiFuriten { get; set; } = new bool[4];
+
         public Dictionary<string, LocalControlRecord> ControlResults { get; set; } =
             new Dictionary<string, LocalControlRecord>(StringComparer.Ordinal);
 

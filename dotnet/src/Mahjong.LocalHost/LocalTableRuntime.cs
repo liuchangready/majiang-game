@@ -31,13 +31,8 @@ namespace Mahjong.LocalHost
     {
         private readonly object _gate = new object();
         private readonly Dictionary<string, WireReceipt> _controlReceipts = new Dictionary<string, WireReceipt>(StringComparer.Ordinal);
-        private static string FuritenKey(LocalTableHostOptions options)
-        {
-            return LocalTableHostPaths.ResolveSaveDirectory(options.SaveDirectory) + "\0" + options.RoomId;
-        }
-
-        private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, FuritenState> _furitenByRoom =
-            new System.Collections.Concurrent.ConcurrentDictionary<string, FuritenState>(StringComparer.Ordinal);
+        private readonly bool[] _temporaryFuriten;
+        private readonly bool[] _riichiFuriten;
         private readonly LocalTableHostOptions _options;
         private readonly LocalHostEnvironment _environment;
         private readonly LocalTableStore _store;
@@ -71,6 +66,8 @@ namespace Mahjong.LocalHost
             _store = store;
             _actor = actor;
             _facts = facts;
+            _temporaryFuriten = store.LoadTemporaryFuriten();
+            _riichiFuriten = store.LoadRiichiFuriten();
 
             var scopes = new RequestScopeId[4];
             ulong now = (ulong)Math.Max(0L, environment.ResolveClock().UtcNowMs);
@@ -112,7 +109,7 @@ namespace Mahjong.LocalHost
                     facts.RecoveredFacts = checkpoint.CommittedFactsPayload == null
                         ? null
                         : TableProjectionFactsCodec.Decode(checkpoint.CommittedFactsPayload, round.RoundId, checkpoint.StateVersion);
-                    actor = CreateActor(options, environment, clock, store, facts, round, checkpoint, recover: true);
+                    actor = CreateActor(options, environment, clock, store, facts, round, checkpoint, recover: true, store.LoadTemporaryFuriten(), store.LoadRiichiFuriten());
                     facts.SettlementProvider = () => actor.LastSettlementCalculation;
                     TableRecoveryResult recovered = await actor.RecoverFromStoreAsync(cancellationToken).ConfigureAwait(false);
                     if (!recovered.Recovered)
@@ -128,7 +125,7 @@ namespace Mahjong.LocalHost
                     RoundStateMachine round = options.InitialRound ?? facts.CreateInitialRound(options);
                     TableCheckpoint checkpoint = facts.CreateInitialCheckpoint(options, round);
                     await store.CreateRoomAsync(checkpoint, cancellationToken).ConfigureAwait(false);
-                    actor = CreateActor(options, environment, clock, store, facts, round, checkpoint, recover: false);
+                    actor = CreateActor(options, environment, clock, store, facts, round, checkpoint, recover: false, store.LoadTemporaryFuriten(), store.LoadRiichiFuriten());
                     facts.SettlementProvider = () => actor.LastSettlementCalculation;
                 }
 
@@ -166,7 +163,9 @@ namespace Mahjong.LocalHost
             LocalSnapshotFacts facts,
             RoundStateMachine round,
             TableCheckpoint checkpoint,
-            bool recover)
+            bool recover,
+            bool[] temporaryFuriten,
+            bool[] riichiFuriten)
         {
             var controllers = new Dictionary<int, SeatControllerKind>
             {
@@ -226,9 +225,9 @@ namespace Mahjong.LocalHost
                 durable,
                 settlementFacts);
             settlementFacts.RoundProvider = () => actor.GetRoundStateForHost();
-            settlementFacts.TemporaryFuritenProvider = seat => _furitenByRoom.GetOrAdd(FuritenKey(options), _ => new FuritenState()).Temporary[seat];
-            settlementFacts.RiichiFuritenProvider = seat => _furitenByRoom.GetOrAdd(FuritenKey(options), _ => new FuritenState()).Riichi[seat];
-            facts.FuritenProvider = seat => _furitenByRoom.GetOrAdd(FuritenKey(options), _ => new FuritenState()).Temporary[seat] || _furitenByRoom.GetOrAdd(FuritenKey(options), _ => new FuritenState()).Riichi[seat];
+            settlementFacts.TemporaryFuritenProvider = seat => temporaryFuriten![seat];
+            settlementFacts.RiichiFuritenProvider = seat => riichiFuriten![seat];
+            facts.FuritenProvider = seat => temporaryFuriten![seat] || riichiFuriten![seat];
             return actor;
         }
 
@@ -736,6 +735,8 @@ namespace Mahjong.LocalHost
 
 
             RoundActionKind hostAction = kind == CommandKind.SubmitAction ? MapActionKind(document) : RoundActionKind.Pass;
+            bool passSetsFuriten = false;
+            bool passSetsRiichi = false;
             if (kind == CommandKind.SubmitAction && hostAction == RoundActionKind.Pass)
             {
                 IReadOnlyList<LegalActionOption> candidates = _actor.GetPendingDecisionCandidates(_seat);
@@ -743,17 +744,21 @@ namespace Mahjong.LocalHost
                 {
                     if (candidates[i].Kind == LegalActionKind.Ron)
                     {
-                        _furitenByRoom.GetOrAdd(FuritenKey(_options), _ => new FuritenState()).Temporary[_seat] = true;
-                        if (_actor.GetRoundStateForHost().IsRiichi(_seat))
-                        {
-                            _furitenByRoom.GetOrAdd(FuritenKey(_options), _ => new FuritenState()).Riichi[_seat] = true;
-                        }
-
+                        passSetsFuriten = true;
+                        passSetsRiichi = _actor.GetRoundStateForHost().IsRiichi(_seat);
                         break;
                     }
                 }
-            }
 
+                if (passSetsFuriten)
+                {
+                    _store.PrepareFuriten(_seat, true, passSetsRiichi ? true : (bool?)null);
+                }
+            }
+            else if (kind == CommandKind.SubmitAction && hostAction == RoundActionKind.DrawTile)
+            {
+                _store.PrepareFuriten(_seat, false, null);
+            }
             try
             {
                 TableOperationResult result;
@@ -826,12 +831,26 @@ namespace Mahjong.LocalHost
                     result = await _actor.SubmitAsync(request, cancellationToken).ConfigureAwait(false);
                 }
 
-                if (kind == CommandKind.SubmitAction && hostAction == RoundActionKind.DrawTile &&
-                    (result.Status == TableOperationStatus.Accepted || result.Status == TableOperationStatus.Replayed))
+                if ((result.Status == TableOperationStatus.Accepted || result.Status == TableOperationStatus.Replayed))
                 {
-                    _furitenByRoom.GetOrAdd(FuritenKey(_options), _ => new FuritenState()).Temporary[_seat] = false;
-                }
+                    if (passSetsFuriten)
+                    {
+                        _temporaryFuriten[_seat] = true;
+                        if (passSetsRiichi)
+                        {
+                            _riichiFuriten[_seat] = true;
+                        }
+                    }
 
+                    if (kind == CommandKind.SubmitAction && hostAction == RoundActionKind.DrawTile)
+                    {
+                        _temporaryFuriten[_seat] = false;
+                    }
+                }
+                else
+                {
+                    _store.ClearPreparedFuriten();
+                }
                 await PublishResultAsync(envelope, result, requestId, payload, cancellationToken).ConfigureAwait(false);
             }
             catch (LocalCommandException exception)

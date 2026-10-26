@@ -154,6 +154,12 @@ namespace Mahjong.LocalHost
                     WriteString(writer, pair.Value);
                 }
 
+                for (int i = 0; i < 4; i++)
+                {
+                    writer.Write(save.TemporaryFuriten[i]);
+                    writer.Write(save.RiichiFuriten[i]);
+                }
+
                 writer.Write(save.ControlResults.Count);
                 foreach (KeyValuePair<string, LocalControlRecord> pair in save.ControlResults)
                 {
@@ -254,6 +260,12 @@ namespace Mahjong.LocalHost
                 {
                     string key = ReadString(reader);
                     save.ReceiptDigests.Add(key, ReadString(reader));
+                }
+
+                for (int i = 0; i < 4; i++)
+                {
+                    save.TemporaryFuriten[i] = reader.ReadBoolean();
+                    save.RiichiFuriten[i] = reader.ReadBoolean();
                 }
 
                 int controlCount = ReadCount(reader, "control results");
