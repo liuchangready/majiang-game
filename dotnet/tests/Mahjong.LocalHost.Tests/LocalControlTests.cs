@@ -140,9 +140,22 @@ namespace Mahjong.LocalHost.Tests
                     controlEpoch: new ControlEpoch(0));
                 CommandSubmission submission = await session.SubmitAsync(command, ct);
                 Assert.True(submission.Sent);
-                for (int i = 0; i < 100 && session.PendingCommands.Count == 0 && session.State != TableConnectionState.Faulted; i++)
+                for (int i = 0; i < 200 && channel.Mutations == 0 && session.State != TableConnectionState.Faulted; i++)
                 {
                     await session.PumpOnceAsync(ct);
+                }
+
+                Assert.True(channel.Mutations > 0, "empty control digest receipt was not consumed");
+                for (int i = 0; i < 5 && session.State != TableConnectionState.Faulted; i++)
+                {
+                    try
+                    {
+                        await session.PumpOnceAsync(ct);
+                    }
+                    catch (TableChannelClosedException)
+                    {
+                        break;
+                    }
                 }
 
                 Assert.True(
@@ -159,6 +172,7 @@ namespace Mahjong.LocalHost.Tests
         private sealed class EmptyControlDigestChannel : ITableChannel
         {
             private readonly ITableChannel _inner;
+            public int Mutations { get; private set; }
             public EmptyControlDigestChannel(ITableChannel inner) { _inner = inner; }
             public bool IsOpen => _inner.IsOpen;
             public Task OpenAsync(TableChannelConnectRequest request, CancellationToken cancellationToken) => _inner.OpenAsync(request, cancellationToken);
@@ -170,6 +184,7 @@ namespace Mahjong.LocalHost.Tests
                 var envelope = Mahjong.Contracts.Wire.Envelope.Parser.ParseFrom(bytes.ToArray());
                 if (envelope.Receipt != null && string.Equals(envelope.Receipt.ReasonCode, "LOCAL_CONTROL", StringComparison.Ordinal))
                 {
+                    Mutations++;
                     envelope.Receipt.CanonicalPayloadSha256 = string.Empty;
                     return Mahjong.Contracts.Wire.WireCodec.Encode(envelope);
                 }
