@@ -1,8 +1,2 @@
 ﻿<Solution>
-  <Project Path="Mahjong.Unity.App.csproj" />
-  <Project Path="Mahjong.Unity.EditMode.Tests.csproj" />
-  <Project Path="CodexP42Review.csproj" />
-  <Project Path="Mahjong.Unity.UI.csproj" />
-  <Project Path="Mahjong.Unity.Platform.csproj" />
-  <Project Path="Mahjong.Unity.PlayMode.Tests.csproj" />
 </Solution>

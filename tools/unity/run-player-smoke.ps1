@@ -59,6 +59,7 @@ try {
     $menuReturnShot = Join-Path $resolvedScreenshotDir "03-menu-returned.png"
     $modalShot = Join-Path $resolvedScreenshotDir "04-quit-modal.png"
     $shots = @($menuShot, $lobbyShot, $menuReturnShot, $modalShot)
+    $pngMagic = [byte[]]@(0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A)
     foreach ($shot in $shots) {
         if (-not (Test-Path $shot)) {
             throw "Screenshot was not generated: $shot"
@@ -66,6 +67,15 @@ try {
         $len = (Get-Item $shot).Length
         if ($len -lt 10000) {
             throw "Screenshot is suspiciously small ($len bytes): $shot"
+        }
+        $bytes = [System.IO.File]::ReadAllBytes($shot)
+        if ($bytes.Length -lt 8) {
+            throw "Screenshot file is too small to be a valid PNG: $shot"
+        }
+        for ($i = 0; $i -lt 8; $i++) {
+            if ($bytes[$i] -ne $pngMagic[$i]) {
+                throw "File is not a valid PNG image (invalid magic header): $shot"
+            }
         }
     }
 
@@ -87,17 +97,21 @@ try {
     }
 
     # Log assertions
-    if (Test-Path $resolvedLog) {
-        $logContent = Get-Content $resolvedLog -Raw
-        if (-not $logContent.Contains("SMOKE_SUCCESS")) {
-            throw "Log file does not contain SMOKE_SUCCESS marker."
-        }
-        if (-not $logContent.Contains("SCENE_LOAD_COMPLETED:Menu")) {
-            throw "Log file does not contain Menu scene load confirmation."
-        }
-        if (-not $logContent.Contains("SCENE_LOAD_COMPLETED:Lobby")) {
-            throw "Log file does not contain Lobby scene load confirmation."
-        }
+    if (-not (Test-Path $resolvedLog)) {
+        throw "Player log file was not generated: $resolvedLog"
+    }
+    $logContent = Get-Content $resolvedLog -Raw
+    if ([string]::IsNullOrWhiteSpace($logContent)) {
+        throw "Player log file is empty: $resolvedLog"
+    }
+    if (-not $logContent.Contains("SMOKE_SUCCESS")) {
+        throw "Log file does not contain SMOKE_SUCCESS marker."
+    }
+    if (-not $logContent.Contains("SCENE_LOAD_COMPLETED:Menu")) {
+        throw "Log file does not contain Menu scene load confirmation."
+    }
+    if (-not $logContent.Contains("SCENE_LOAD_COMPLETED:Lobby")) {
+        throw "Log file does not contain Lobby scene load confirmation."
     }
 
     Write-Host "Player smoke test completed successfully!"

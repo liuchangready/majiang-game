@@ -19,6 +19,7 @@ namespace Mahjong.Unity.UI
         private Action? _onConfirm;
         private Action? _onCancel;
         private BackRouter? _backRouter;
+        private bool _isBackRegistered;
 
         public bool IsOpen => _modalRoot != null && _modalRoot.activeSelf;
 
@@ -65,7 +66,11 @@ namespace Mahjong.Unity.UI
                 _modalRoot.SetActive(true);
             }
 
-            _backRouter?.RegisterModal(Close);
+            if (!_isBackRegistered && _backRouter != null)
+            {
+                _backRouter.RegisterModal(Close);
+                _isBackRegistered = true;
+            }
         }
 
         public void Close()
@@ -74,7 +79,11 @@ namespace Mahjong.Unity.UI
             {
                 _modalRoot.SetActive(false);
             }
-            _backRouter?.UnregisterModal(Close);
+            if (_isBackRegistered && _backRouter != null)
+            {
+                _backRouter.UnregisterModal(Close);
+                _isBackRegistered = false;
+            }
             _onCancel?.Invoke();
         }
 
@@ -86,8 +95,21 @@ namespace Mahjong.Unity.UI
             {
                 _modalRoot.SetActive(false);
             }
-            _backRouter?.UnregisterModal(Close);
+            if (_isBackRegistered && _backRouter != null)
+            {
+                _backRouter.UnregisterModal(Close);
+                _isBackRegistered = false;
+            }
             _onConfirm?.Invoke();
+        }
+
+        private void OnDestroy()
+        {
+            if (_isBackRegistered && _backRouter != null)
+            {
+                _backRouter.UnregisterModal(Close);
+                _isBackRegistered = false;
+            }
         }
 
         private void OnCancelClicked()

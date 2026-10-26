@@ -33,8 +33,22 @@ namespace Mahjong.Unity.UI
                 _quitButton.onClick.AddListener(OnQuitClicked);
             }
 
-            var selectables = GetComponentsInChildren<Selectable>(true);
+            var selectables = new System.Collections.Generic.List<Selectable>();
+            if (_playButton != null) selectables.Add(_playButton);
+            if (_quitButton != null) selectables.Add(_quitButton);
             _focusRouter.RegisterSelectables(selectables);
+
+            if (_playButton != null)
+            {
+                if (UnityEngine.EventSystems.EventSystem.current != null)
+                {
+                    UnityEngine.EventSystems.EventSystem.current.SetSelectedGameObject(_playButton.gameObject);
+                }
+                else
+                {
+                    _playButton.Select();
+                }
+            }
         }
 
         private void OnDestroy()
@@ -45,6 +59,10 @@ namespace Mahjong.Unity.UI
 
         public void OnPlayClicked()
         {
+            if (!UiInputLifecycle.Instance.ConsumeClickOrSubmit())
+            {
+                return;
+            }
             Debug.Log("PLAY_BUTTON_CLICKED: Opening lobby...");
             if (_navigation != null)
             {
@@ -54,6 +72,10 @@ namespace Mahjong.Unity.UI
 
         public void OnQuitClicked()
         {
+            if (!UiInputLifecycle.Instance.ConsumeClickOrSubmit())
+            {
+                return;
+            }
             Debug.Log("QUIT_BUTTON_CLICKED: Showing quit modal...");
             if (_quitModal != null)
             {

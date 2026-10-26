@@ -125,6 +125,21 @@ function Test-SingleBoundaryRules([string]$projDir, [string]$policyFile) {
             continue
         }
 
+        # Check asmdef path against policy specification
+        if ($spec.path) {
+            $normProj = [System.IO.Path]::GetFullPath($projDir).TrimEnd('\', '/') + '\'
+            $normFile = [System.IO.Path]::GetFullPath($asm.File.FullName)
+            $actualRel = if ($normFile.StartsWith($normProj, [System.StringComparison]::OrdinalIgnoreCase)) {
+                $normFile.Substring($normProj.Length).Replace('\', '/')
+            } else {
+                $asm.File.FullName
+            }
+            $expectedRel = $spec.path.Replace('\', '/')
+            if ($actualRel -ne $expectedRel) {
+                $errors.Add("ASMDEF_PATH_MISMATCH: Asmdef '$asmName' is located at '$actualRel', but policy requires '$expectedRel'.")
+            }
+        }
+
         # Check flags
         if ($data.overrideReferences -ne $true) {
             $errors.Add("Asmdef '$asmName' must have overrideReferences=true.")
@@ -253,15 +268,13 @@ function Test-SingleBoundaryRules([string]$projDir, [string]$policyFile) {
                 break
             }
         }
-        # UnityBackRequestSource has reflection for editor-only InputAction loading; skip editor block
-        if ($cs.Name -eq "UnityBackRequestSource.cs") {
-            continue
-        }
         if ($isAllowed) { continue }
 
         $content = Get-Content $cs.FullName -Raw
+        # Strip #if UNITY_EDITOR ... #endif blocks so editor-only reflection is ignored, but production runtime reflection is caught
+        $cleanContent = [regex]::Replace($content, '(?s)#if\s+UNITY_EDITOR.*?#endif', '')
         foreach ($pat in $reflectionPatterns) {
-            if ($content -match $pat) {
+            if ($cleanContent -match $pat) {
                 $errors.Add("Prohibited dynamic/reflection API '$pat' found in '$($cs.FullName)'.")
             }
         }
@@ -269,6 +282,17 @@ function Test-SingleBoundaryRules([string]$projDir, [string]$policyFile) {
 
     # 8. Assembly Metadata Verification (IGameSession, ITableChannel, Wire DTO)
     if (Test-Path $pluginsDir) {
+        $clientDll = Join-Path $pluginsDir "Mahjong.Client.dll"
+        if (Test-Path $clientDll) {
+            $bytes = [System.IO.File]::ReadAllBytes($clientDll)
+            $str = [System.Text.Encoding]::UTF8.GetString($bytes)
+            $requiredTypes = @("IGameSession", "ITableChannel", "TableSession")
+            foreach ($req in $requiredTypes) {
+                if (-not $str.Contains($req)) {
+                    $errors.Add("METADATA_CHECK_FAILED: Required type or contract '$req' was not found in '$clientDll'.")
+                }
+            }
+        }
         $probeCsproj = Join-Path $repoRoot "build/tools/metadata-probe/MetadataProbe.csproj"
         $dotnetExe = "D:\Unity\dotnet\dotnet.exe"
         if (-not (Test-Path $dotnetExe)) {

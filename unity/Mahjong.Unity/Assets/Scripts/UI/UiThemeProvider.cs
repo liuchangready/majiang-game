@@ -45,6 +45,7 @@ namespace Mahjong.Unity.UI
         {
             try
             {
+                FontFallbackResolver.InitializeDefault();
                 var settings = TMP_Settings.instance;
                 if (settings != null)
                 {

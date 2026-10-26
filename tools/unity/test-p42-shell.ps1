@@ -82,7 +82,11 @@ $psiEdit.UseShellExecute = $false
 $psiEdit.CreateNoWindow = $true
 
 $procEdit = [System.Diagnostics.Process]::Start($psiEdit)
-$procEdit.WaitForExit(300000)
+$cleanEdit = $procEdit.WaitForExit(300000)
+if (-not $cleanEdit) {
+    $procEdit.Kill()
+    throw "EditMode test run timed out after 300 seconds"
+}
 if ($procEdit.ExitCode -ne 0 -or -not (Test-Path $editXml)) {
     throw "EditMode test run FAILED with exit code $($procEdit.ExitCode)"
 }
@@ -111,7 +115,11 @@ $psiPlay.UseShellExecute = $false
 $psiPlay.CreateNoWindow = $true
 
 $procPlay = [System.Diagnostics.Process]::Start($psiPlay)
-$procPlay.WaitForExit(300000)
+$cleanPlay = $procPlay.WaitForExit(300000)
+if (-not $cleanPlay) {
+    $procPlay.Kill()
+    throw "PlayMode test run timed out after 300 seconds"
+}
 if ($procPlay.ExitCode -ne 0 -or -not (Test-Path $playXml)) {
     throw "PlayMode test run FAILED with exit code $($procPlay.ExitCode)"
 }
@@ -141,7 +149,11 @@ if (-not $SkipPlayer) {
     $psiBuild.UseShellExecute = $false
     $psiBuild.CreateNoWindow = $true
     $procBuild = [System.Diagnostics.Process]::Start($psiBuild)
-    $procBuild.WaitForExit(300000)
+    $cleanBuild = $procBuild.WaitForExit(300000)
+    if (-not $cleanBuild) {
+        $procBuild.Kill()
+        throw "Player build timed out after 300 seconds"
+    }
     if ($procBuild.ExitCode -ne 0 -or -not (Test-Path $playerExe)) {
         throw "Player build FAILED with exit code $($procBuild.ExitCode)"
     }

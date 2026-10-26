@@ -16,7 +16,8 @@ namespace Mahjong.Unity.App
         PumpBarrierTimeout = 1,
         CloseTimeout = 2,
         AlreadyIncomplete = 3,
-        CloseFault = 4
+        CloseFault = 4,
+        PumpFault = 5
     }
 
     public sealed class ShutdownResult
@@ -38,6 +39,7 @@ namespace Mahjong.Unity.App
         public static ShutdownResult PumpBarrierTimeout() => new ShutdownResult(ShutdownOutcome.PumpBarrierTimeout, true, false);
         public static ShutdownResult CloseTimeout() => new ShutdownResult(ShutdownOutcome.CloseTimeout, true, false);
         public static ShutdownResult CloseFault() => new ShutdownResult(ShutdownOutcome.CloseFault, true, false);
+        public static ShutdownResult PumpFault() => new ShutdownResult(ShutdownOutcome.PumpFault, true, false);
         public static ShutdownResult AlreadyIncomplete(ShutdownOutcome prior, bool quarantined) =>
             new ShutdownResult(ShutdownOutcome.AlreadyIncomplete, quarantined, false, prior);
     }
@@ -244,93 +246,138 @@ namespace Mahjong.Unity.App
 
         private async Task<ShutdownResult> RunShutdownOnceAsync(string reason)
         {
-            _runCts.Cancel();
-
-            // Step 1: Pump barrier timeout
-            if (_pumpTask != null && !_pumpTask.IsCompleted)
+            try
             {
-                Task pumpBarrier = await Task.WhenAny(_pumpTask, Task.Delay(_config.pumpBarrierTimeoutMs)).ConfigureAwait(false);
-                if (pumpBarrier != _pumpTask)
+                _runCts.Cancel();
+
+                // Step 1: Pump barrier timeout & fault check
+                if (_pumpTask != null)
                 {
+                    if (!_pumpTask.IsCompleted)
+                    {
+                        Task pumpBarrier = await Task.WhenAny(_pumpTask, Task.Delay(_config.pumpBarrierTimeoutMs)).ConfigureAwait(false);
+                        if (pumpBarrier != _pumpTask)
+                        {
+                            lock (_stateGate)
+                            {
+                                _quarantined = true;
+                                _terminal = ShutdownResult.PumpBarrierTimeout();
+                                CleanupSubscriptions();
+                                return _terminal;
+                            }
+                        }
+                    }
+
+                    if (_pumpTask.IsFaulted)
+                    {
+                        lock (_stateGate)
+                        {
+                            _quarantined = true;
+                            _terminal = ShutdownResult.PumpFault();
+                            CleanupSubscriptions();
+                            return _terminal;
+                        }
+                    }
+                }
+
+                // Step 2: Independent close CTS
+                using var closeCts = new CancellationTokenSource();
+                Task closeTask;
+                try
+                {
+                    if (_operationQueue != null)
+                    {
+                        closeTask = _operationQueue.CloseAsync(reason, closeCts.Token);
+                    }
+                    else if (_session != null)
+                    {
+                        closeTask = _session.CloseAsync(reason, closeCts.Token);
+                    }
+                    else
+                    {
+                        closeTask = Task.CompletedTask;
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Debug.LogWarning($"Session close threw synchronously: {ex.Message}");
                     lock (_stateGate)
                     {
                         _quarantined = true;
-                        _terminal = ShutdownResult.PumpBarrierTimeout();
+                        _terminal = ShutdownResult.CloseFault();
                         CleanupSubscriptions();
                         return _terminal;
                     }
                 }
-            }
 
-            // Step 2: Independent close CTS
-            using var closeCts = new CancellationTokenSource();
-            Task closeTask;
-            if (_operationQueue != null)
-            {
-                closeTask = _operationQueue.CloseAsync(reason, closeCts.Token);
-            }
-            else if (_session != null)
-            {
-                closeTask = _session.CloseAsync(reason, closeCts.Token);
-            }
-            else
-            {
-                closeTask = Task.CompletedTask;
-            }
+                Task closeWait = await Task.WhenAny(closeTask, Task.Delay(_config.closeTimeoutMs)).ConfigureAwait(false);
+                if (closeWait != closeTask)
+                {
+                    // Timeout: must explicitly cancel close CTS
+                    closeCts.Cancel();
+                    // Bounded observation window
+                    await Task.WhenAny(closeTask, Task.Delay(_config.cancelObservationMs)).ConfigureAwait(false);
 
-            Task closeWait = await Task.WhenAny(closeTask, Task.Delay(_config.closeTimeoutMs)).ConfigureAwait(false);
-            if (closeWait != closeTask)
-            {
-                // Timeout: must explicitly cancel close CTS
-                closeCts.Cancel();
-                // Bounded observation window
-                await Task.WhenAny(closeTask, Task.Delay(_config.cancelObservationMs)).ConfigureAwait(false);
+                    lock (_stateGate)
+                    {
+                        _quarantined = true;
+                        _terminal = ShutdownResult.CloseTimeout();
+                        CleanupSubscriptions();
+                        return _terminal;
+                    }
+                }
+
+                // Verify closeTask did not fault or cancel
+                try
+                {
+                    await closeTask.ConfigureAwait(false);
+                }
+                catch (Exception ex)
+                {
+                    Debug.LogWarning($"Session close faulted: {ex.Message}");
+                    lock (_stateGate)
+                    {
+                        _quarantined = true;
+                        _terminal = ShutdownResult.CloseFault();
+                        CleanupSubscriptions();
+                        return _terminal;
+                    }
+                }
+
+                if (closeTask.IsCanceled || closeTask.IsFaulted)
+                {
+                    lock (_stateGate)
+                    {
+                        _quarantined = true;
+                        _terminal = ShutdownResult.CloseFault();
+                        CleanupSubscriptions();
+                        return _terminal;
+                    }
+                }
+
+                // Step 3: Dispose channel ONLY IF cleanly closed
+                DisposeChannel();
 
                 lock (_stateGate)
                 {
-                    _quarantined = true;
-                    _terminal = ShutdownResult.CloseTimeout();
+                    _terminal = ShutdownResult.Completed();
                     CleanupSubscriptions();
                     return _terminal;
                 }
-            }
-
-            // Verify closeTask did not fault or cancel
-            try
-            {
-                await closeTask.ConfigureAwait(false);
             }
             catch (Exception ex)
             {
-                Debug.LogWarning($"Session close faulted: {ex.Message}");
+                Debug.LogWarning($"Shutdown unexpected exception: {ex.Message}");
                 lock (_stateGate)
                 {
                     _quarantined = true;
-                    _terminal = ShutdownResult.CloseFault();
+                    if (_terminal == null)
+                    {
+                        _terminal = ShutdownResult.CloseFault();
+                    }
                     CleanupSubscriptions();
                     return _terminal;
                 }
-            }
-
-            if (closeTask.IsCanceled || closeTask.IsFaulted)
-            {
-                lock (_stateGate)
-                {
-                    _quarantined = true;
-                    _terminal = ShutdownResult.CloseFault();
-                    CleanupSubscriptions();
-                    return _terminal;
-                }
-            }
-
-            // Step 3: Dispose channel ONLY IF cleanly closed
-            DisposeChannel();
-
-            lock (_stateGate)
-            {
-                _terminal = ShutdownResult.Completed();
-                CleanupSubscriptions();
-                return _terminal;
             }
         }
 

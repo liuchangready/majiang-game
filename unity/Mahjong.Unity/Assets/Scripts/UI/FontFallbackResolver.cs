@@ -11,6 +11,69 @@ namespace Mahjong.Unity.UI
         private readonly HashSet<int> _missingGlyphsLogged = new HashSet<int>();
         private readonly object _gate = new object();
 
+        private static FontFallbackResolver? _instance;
+        private static bool _eventHooked;
+
+        public static FontFallbackResolver Instance => _instance ??= InitializeDefault();
+
+        public static FontFallbackResolver InitializeDefault(UiFontCatalog? catalog = null)
+        {
+            if (_instance != null)
+            {
+                HookEvent();
+                return _instance;
+            }
+
+            if (catalog == null)
+            {
+                catalog = ScriptableObject.CreateInstance<UiFontCatalog>();
+            }
+            _instance = new FontFallbackResolver(catalog);
+            HookEvent();
+            return _instance;
+        }
+
+        public static void HookEvent()
+        {
+            if (_eventHooked) return;
+            _eventHooked = true;
+            TMPro_EventManager.TEXT_CHANGED_EVENT.Add(OnTextChanged);
+        }
+
+        private static void OnTextChanged(UnityEngine.Object obj)
+        {
+            if (obj is TMP_Text tmp)
+            {
+                var resolver = Instance;
+                if (resolver._catalog.PrimaryFont == null && tmp.font != null)
+                {
+                    resolver._catalog.PrimaryFont = tmp.font;
+                }
+
+                if (tmp.font != null && tmp.font.fallbackFontAssetTable != null)
+                {
+                    foreach (var fb in tmp.font.fallbackFontAssetTable)
+                    {
+                        if (fb != null) resolver._catalog.AddFallback(fb);
+                    }
+                }
+
+                string s = tmp.text;
+                if (!string.IsNullOrEmpty(s))
+                {
+                    for (int i = 0; i < s.Length; i++)
+                    {
+                        int codepoint = char.ConvertToUtf32(s, i);
+                        if (char.IsSurrogatePair(s, i))
+                        {
+                            i++;
+                        }
+                        resolver.ResolveCharacter(codepoint, out _);
+                    }
+                }
+            }
+        }
+
         public FontFallbackResolver(UiFontCatalog catalog)
         {
             _catalog = catalog ?? throw new ArgumentNullException(nameof(catalog));

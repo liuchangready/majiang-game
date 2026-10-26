@@ -30,6 +30,7 @@ namespace Mahjong.Unity.App
 
         public static AppRoot EnsureInitialized(AppConfig? config = null, UiTheme? theme = null)
         {
+            UiInputLifecycle.ResetForTest();
             if (_instance != null)
             {
                 return _instance;

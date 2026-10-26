@@ -40,6 +40,11 @@ namespace Mahjong.Unity.App
 
         public async Task<SessionCoordinator> OpenLocalSessionAsync(CancellationToken cancellationToken)
         {
+            if (_sessionCoordinator != null && _sessionCoordinator.TerminalResult == null && !_sessionCoordinator.IsQuarantined)
+            {
+                return _sessionCoordinator;
+            }
+
             long gen = Interlocked.Increment(ref _generationCounter);
 
             // ChannelFactory will throw LocalTableUnavailableException in P4.2-core
@@ -51,6 +56,24 @@ namespace Mahjong.Unity.App
             var session = new TableSession(channel, outbox, new TableSessionOptions());
             var queue = new TableSessionOperationQueue(session);
             var coordinator = new SessionCoordinator(session, queue, channel, Dispatcher, Config, gen);
+
+            // Start pump task and attach to coordinator
+            var pumpToken = coordinator.RunToken;
+            var pumpTask = Task.Run(async () =>
+            {
+                try
+                {
+                    while (!pumpToken.IsCancellationRequested)
+                    {
+                        await queue.PumpOnceAsync(pumpToken).ConfigureAwait(false);
+                    }
+                }
+                catch (OperationCanceledException)
+                {
+                    // Clean cancellation on shutdown
+                }
+            }, pumpToken);
+            coordinator.SetPumpTask(pumpTask);
 
             _sessionCoordinator = coordinator;
             return coordinator;

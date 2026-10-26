@@ -36,36 +36,22 @@ namespace Mahjong.Unity.Platform
                 var map = module.actionsAsset.FindActionMap("MahjongUi") ?? module.actionsAsset.FindActionMap("UI");
                 if (map != null)
                 {
-                    if (module.point == null)
-                    {
-                        var a = map.FindAction("Point");
-                        if (a != null) module.point = InputActionReference.Create(a);
-                    }
-                    if (module.leftClick == null)
-                    {
-                        var a = map.FindAction("LeftClick") ?? map.FindAction("Click");
-                        if (a != null) module.leftClick = InputActionReference.Create(a);
-                    }
-                    if (module.move == null)
-                    {
-                        var a = map.FindAction("Navigate") ?? map.FindAction("Move");
-                        if (a != null) module.move = InputActionReference.Create(a);
-                    }
-                    if (module.submit == null)
-                    {
-                        var a = map.FindAction("Submit");
-                        if (a != null) module.submit = InputActionReference.Create(a);
-                    }
-                    if (module.cancel == null)
-                    {
-                        var a = map.FindAction("Cancel");
-                        if (a != null) module.cancel = InputActionReference.Create(a);
-                    }
-                    if (module.scrollWheel == null)
-                    {
-                        var a = map.FindAction("ScrollWheel");
-                        if (a != null) module.scrollWheel = InputActionReference.Create(a);
-                    }
+                    var aPoint = map.FindAction("Point");
+                    if (aPoint != null) module.point = InputActionReference.Create(aPoint);
+
+                    var aClick = map.FindAction("LeftClick") ?? map.FindAction("Click");
+                    if (aClick != null) module.leftClick = InputActionReference.Create(aClick);
+
+                    var aMove = map.FindAction("Navigate") ?? map.FindAction("Move");
+                    if (aMove != null) module.move = InputActionReference.Create(aMove);
+
+                    var aSubmit = map.FindAction("Submit");
+                    if (aSubmit != null) module.submit = InputActionReference.Create(aSubmit);
+
+                    var aScroll = map.FindAction("ScrollWheel");
+                    if (aScroll != null) module.scrollWheel = InputActionReference.Create(aScroll);
+
+                    module.cancel = null;
                 }
             }
         }

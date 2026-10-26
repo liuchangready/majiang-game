@@ -17,6 +17,8 @@ namespace Mahjong.Unity.UI
         private Vector2 _lastDragPos;
         private float _accumulatedDragDistance;
         private long _pressGeneration;
+        private bool _eligibleForClick;
+        private bool _pointerUpCompleted;
 
         // Independent gate states
         private bool _isPaused;
@@ -39,6 +41,8 @@ namespace Mahjong.Unity.UI
 
         public bool TryArm(int pointerId, Vector2 screenPos, float scale = 1.0f)
         {
+            _pointerUpCompleted = false;
+            _eligibleForClick = false;
             if (!AcceptingInput)
             {
                 return false;
@@ -80,19 +84,46 @@ namespace Mahjong.Unity.UI
 
         public bool TryRelease(int pointerId, long checkGeneration)
         {
+            _pointerUpCompleted = true;
             if (!_isArmed || _primaryPointerId != pointerId)
             {
+                _eligibleForClick = false;
                 return false;
             }
 
             if (!AcceptingInput || checkGeneration != _pressGeneration)
             {
                 CancelArm();
+                _eligibleForClick = false;
                 return false;
             }
 
             _isArmed = false;
             _primaryPointerId = null;
+            _eligibleForClick = true;
+            return true;
+        }
+
+        public bool ConsumeClickOrSubmit()
+        {
+            if (!AcceptingInput)
+            {
+                return false;
+            }
+
+            if (_eligibleForClick)
+            {
+                _eligibleForClick = false;
+                _pointerUpCompleted = false;
+                return true;
+            }
+
+            if (_pointerUpCompleted)
+            {
+                _pointerUpCompleted = false;
+                return false;
+            }
+
             return true;
         }
 
@@ -102,6 +133,7 @@ namespace Mahjong.Unity.UI
             _primaryPointerId = null;
             _pressGeneration++;
             _accumulatedDragDistance = 0f;
+            _eligibleForClick = false;
         }
 
         public void OnPause()
