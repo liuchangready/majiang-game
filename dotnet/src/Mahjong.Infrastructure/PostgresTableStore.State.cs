@@ -219,7 +219,7 @@ SELECT payload_blob, payload_sha256
             }
 
             const string sql = @"
-SELECT seq, command_version, event_ordinal, event_type, event_schema, seat, tile, detail,
+SELECT seq, command_version, event_ordinal, event_type, event_schema, seat,
        event_blob, event_blob_sha256
   FROM table_store.table_event
  WHERE room_id = @room_id AND seq > @after_seq
@@ -240,11 +240,11 @@ SELECT seq, command_version, event_ordinal, event_type, event_schema, seat, tile
                         "Event gap: expected seq " + expected + ", found " + seq + ".");
                 }
 
-                byte[] blob = reader.GetFieldValue<byte[]>(8);
+                byte[] blob = reader.GetFieldValue<byte[]>(6);
                 byte[] payload = _protector.Open(
                     blob,
                     Aad("event", roomId + "|" + seq.ToString(System.Globalization.CultureInfo.InvariantCulture)));
-                if (TablePayloadSha256.Compute(payload) != ReadHash(reader, 9))
+                if (TablePayloadSha256.Compute(payload) != ReadHash(reader, 7))
                 {
                     throw new InvalidDataException("Event payload hash does not match for seq " + seq + ".");
                 }
@@ -261,9 +261,7 @@ SELECT seq, command_version, event_ordinal, event_type, event_schema, seat, tile
                     record.Ordinal != reader.GetInt32(2) ||
                     (int)record.Type != reader.GetInt32(3) ||
                     record.EventSchema != reader.GetInt32(4) ||
-                    record.Seat != reader.GetInt32(5) ||
-                    (record.Tile.HasValue ? record.Tile.Value.Value : -1) != (reader.IsDBNull(6) ? -1 : reader.GetInt32(6)) ||
-                    !string.Equals(record.Detail, reader.IsDBNull(7) ? null : reader.GetString(7), StringComparison.Ordinal))
+                    record.Seat != reader.GetInt32(5))
                 {
                     throw new InvalidDataException("Event row metadata does not match its payload at seq " + seq + ".");
                 }
@@ -380,6 +378,8 @@ SELECT command_version, evaluated_state_version, request_id, account_id, scope_i
             await using NpgsqlTransaction transaction = await connection.BeginTransactionAsync(
                 System.Data.IsolationLevel.ReadCommitted,
                 cancellationToken).ConfigureAwait(false);
+            bool commitIssued = false;
+            bool committed = false;
             try
             {
                 await AcquireRoomLockAsync(connection, transaction, fence.RoomId, cancellationToken)
@@ -490,23 +490,43 @@ SELECT command_version, evaluated_state_version, request_id, account_id, scope_i
                     checkpoint.RoomId,
                     checkpoint.TimingVersion,
                     cancellationToken).ConfigureAwait(false);
-                await TouchLeaseAsync(connection, transaction, checkpoint.RoomId, cancellationToken)
-                    .ConfigureAwait(false);
+                bool liveLease = await RefreshLeaseFenceAsync(
+                    connection,
+                    transaction,
+                    checkpoint.RoomId,
+                    fence.OwnerInstance,
+                    fence.ExpectedOwnerEpoch,
+                    cancellationToken).ConfigureAwait(false);
+                if (!liveLease)
+                {
+                    await SafeRollbackAsync(transaction).ConfigureAwait(false);
+                    return TableDurableCommitResult.StaleOwner(
+                        "The table lease expired before the checkpoint commit fence.");
+                }
+
                 _ = timing;
+                commitIssued = true;
                 await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+                committed = true;
                 return TableDurableCommitResult.Committed(null);
             }
             catch (OperationCanceledException)
             {
                 await SafeRollbackAsync(transaction).ConfigureAwait(false);
-                return TableDurableCommitResult.Cancelled("Checkpoint save was cancelled before commit.");
+                return committed || commitIssued
+                    ? TableDurableCommitResult.OutcomeUnknown(
+                        "The checkpoint COMMIT may have reached PostgreSQL without an acknowledgement.")
+                    : TableDurableCommitResult.Cancelled("Checkpoint save was cancelled before commit.");
             }
             catch (Exception exception)
             {
                 await SafeRollbackAsync(transaction).ConfigureAwait(false);
-                return TableDurableCommitResult.Failed(
-                    TableRuntimeReasonCode.CommitFailed,
-                    SafeDatabaseDetail(exception));
+                return committed || commitIssued
+                    ? TableDurableCommitResult.OutcomeUnknown(
+                        "The checkpoint COMMIT may have reached PostgreSQL without an acknowledgement.")
+                    : TableDurableCommitResult.Failed(
+                        TableRuntimeReasonCode.CommitFailed,
+                        SafeDatabaseDetail(exception));
             }
         }
 
@@ -523,6 +543,8 @@ SELECT command_version, evaluated_state_version, request_id, account_id, scope_i
             await using NpgsqlTransaction transaction = await connection.BeginTransactionAsync(
                 System.Data.IsolationLevel.ReadCommitted,
                 cancellationToken).ConfigureAwait(false);
+            bool commitIssued = false;
+            bool committed = false;
             try
             {
                 await AcquireRoomLockAsync(connection, transaction, request.RoomId, cancellationToken)
@@ -583,21 +605,42 @@ SELECT command_version, evaluated_state_version, request_id, account_id, scope_i
                     cancellationToken).ConfigureAwait(false);
                 await UpdateStateTimingAsync(connection, transaction, request.RoomId, nextVersion, cancellationToken)
                     .ConfigureAwait(false);
-                await TouchLeaseAsync(connection, transaction, request.RoomId, cancellationToken).ConfigureAwait(false);
+                bool liveLease = await RefreshLeaseFenceAsync(
+                    connection,
+                    transaction,
+                    request.RoomId,
+                    request.OwnerInstance,
+                    request.ExpectedOwnerEpoch,
+                    cancellationToken).ConfigureAwait(false);
+                if (!liveLease)
+                {
+                    await SafeRollbackAsync(transaction).ConfigureAwait(false);
+                    return TableDurableCommitResult.StaleOwner(
+                        "The table lease expired before the timing commit fence.");
+                }
+
+                commitIssued = true;
                 await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+                committed = true;
                 return TableDurableCommitResult.Committed(null);
             }
             catch (OperationCanceledException)
             {
                 await SafeRollbackAsync(transaction).ConfigureAwait(false);
-                return TableDurableCommitResult.Cancelled("Timing append was cancelled before commit.");
+                return committed || commitIssued
+                    ? TableDurableCommitResult.OutcomeUnknown(
+                        "The timing COMMIT may have reached PostgreSQL without an acknowledgement.")
+                    : TableDurableCommitResult.Cancelled("Timing append was cancelled before commit.");
             }
             catch (Exception exception)
             {
                 await SafeRollbackAsync(transaction).ConfigureAwait(false);
-                return TableDurableCommitResult.Failed(
-                    TableRuntimeReasonCode.CommitFailed,
-                    SafeDatabaseDetail(exception));
+                return committed || commitIssued
+                    ? TableDurableCommitResult.OutcomeUnknown(
+                        "The timing COMMIT may have reached PostgreSQL without an acknowledgement.")
+                    : TableDurableCommitResult.Failed(
+                        TableRuntimeReasonCode.CommitFailed,
+                        SafeDatabaseDetail(exception));
             }
         }
 
@@ -627,6 +670,8 @@ SELECT command_version, evaluated_state_version, request_id, account_id, scope_i
             await using NpgsqlTransaction transaction = await connection.BeginTransactionAsync(
                 System.Data.IsolationLevel.ReadCommitted,
                 cancellationToken).ConfigureAwait(false);
+            bool commitIssued = false;
+            bool committed = false;
             try
             {
                 await AcquireRoomLockAsync(connection, transaction, request.RoomId, cancellationToken)
@@ -751,21 +796,42 @@ UPDATE table_store.table_state
                     await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
                 }
 
-                await TouchLeaseAsync(connection, transaction, request.RoomId, cancellationToken).ConfigureAwait(false);
+                bool liveLease = await RefreshLeaseFenceAsync(
+                    connection,
+                    transaction,
+                    request.RoomId,
+                    request.OwnerInstance,
+                    request.OwnerEpoch,
+                    cancellationToken).ConfigureAwait(false);
+                if (!liveLease)
+                {
+                    await SafeRollbackAsync(transaction).ConfigureAwait(false);
+                    return TableDurableCommitResult.StaleOwner(
+                        "The table lease expired before the control commit fence.");
+                }
+
+                commitIssued = true;
                 await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+                committed = true;
                 return TableDurableCommitResult.Committed(null);
             }
             catch (OperationCanceledException)
             {
                 await SafeRollbackAsync(transaction).ConfigureAwait(false);
-                return TableDurableCommitResult.Cancelled("Control commit was cancelled before commit.");
+                return committed || commitIssued
+                    ? TableDurableCommitResult.OutcomeUnknown(
+                        "The control COMMIT may have reached PostgreSQL without an acknowledgement.")
+                    : TableDurableCommitResult.Cancelled("Control commit was cancelled before commit.");
             }
             catch (Exception exception)
             {
                 await SafeRollbackAsync(transaction).ConfigureAwait(false);
-                return TableDurableCommitResult.Failed(
-                    TableRuntimeReasonCode.CommitFailed,
-                    SafeDatabaseDetail(exception));
+                return committed || commitIssued
+                    ? TableDurableCommitResult.OutcomeUnknown(
+                        "The control COMMIT may have reached PostgreSQL without an acknowledgement.")
+                    : TableDurableCommitResult.Failed(
+                        TableRuntimeReasonCode.CommitFailed,
+                        SafeDatabaseDetail(exception));
             }
         }
 
@@ -1204,19 +1270,28 @@ UPDATE table_store.table_state
             await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
         }
 
-        private static async Task TouchLeaseAsync(
+        private static async Task<bool> RefreshLeaseFenceAsync(
             NpgsqlConnection connection,
             NpgsqlTransaction transaction,
             string roomId,
+            string ownerInstance,
+            OwnerEpoch ownerEpoch,
             CancellationToken cancellationToken)
         {
             const string sql = @"
 UPDATE table_store.table_lease
    SET updated_at = clock_timestamp()
- WHERE room_id = @room_id";
+ WHERE room_id = @room_id
+   AND owner_instance = @owner_instance
+   AND owner_epoch = @owner_epoch
+   AND lease_expires_at > clock_timestamp()
+RETURNING 1";
             await using NpgsqlCommand command = new NpgsqlCommand(sql, connection, transaction);
             AddText(command, "room_id", roomId);
-            await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+            AddText(command, "owner_instance", ownerInstance);
+            Add(command, "owner_epoch", checked((long)ownerEpoch.Value), NpgsqlDbType.Bigint);
+            object? result = await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
+            return result != null && result != DBNull.Value;
         }
 
         private async Task InsertControlJournalAsync(

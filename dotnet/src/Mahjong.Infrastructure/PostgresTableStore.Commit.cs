@@ -411,7 +411,20 @@ SELECT 1
                     }
                 }
 
-                await TouchLeaseAsync(connection, transaction, request.RoomId, cancellationToken).ConfigureAwait(false);
+                bool liveLease = await RefreshLeaseFenceAsync(
+                    connection,
+                    transaction,
+                    request.RoomId,
+                    request.OwnerInstance,
+                    request.ExpectedOwnerEpoch,
+                    cancellationToken).ConfigureAwait(false);
+                if (!liveLease)
+                {
+                    await SafeRollbackAsync(transaction).ConfigureAwait(false);
+                    return TableDurableCommitResult.StaleOwner(
+                        "The table lease expired before the final commit fence.");
+                }
+
                 commitIssued = true;
                 await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
                 committed = true;
@@ -436,9 +449,9 @@ SELECT 1
             catch (Exception exception)
             {
                 await SafeRollbackAsync(transaction).ConfigureAwait(false);
-                return committed
+                return committed || commitIssued
                     ? TableDurableCommitResult.OutcomeUnknown(
-                        "The commit reached PostgreSQL but its response was lost.")
+                        "The COMMIT may have reached PostgreSQL but its acknowledgement was lost.")
                     : TableDurableCommitResult.Failed(
                         TableRuntimeReasonCode.CommitFailed,
                         SafeDatabaseDetail(exception));
@@ -598,7 +611,7 @@ SELECT 1
         {
             const string sql = @"
 SELECT api, payload_sha256, status, reason_code, evaluated_state_version,
-       command_version, event_seq,
+       command_version, event_seq, committed_at_utc_ms, canonical_payload_digest,
        (extract(epoch from created_at) * 1000)::bigint,
        (extract(epoch from expires_at) * 1000)::bigint,
        response_blob
@@ -623,9 +636,11 @@ SELECT api, payload_sha256, status, reason_code, evaluated_state_version,
             var evaluated = new StateVersion(checked((ulong)reader.GetInt64(4)));
             long? commandVersion = reader.IsDBNull(5) ? (long?)null : reader.GetInt64(5);
             long? seq = reader.IsDBNull(6) ? (long?)null : reader.GetInt64(6);
-            ulong createdAt = checked((ulong)reader.GetInt64(7));
-            ulong expiresAt = checked((ulong)reader.GetInt64(8));
-            byte[] response = reader.GetFieldValue<byte[]>(9);
+            ulong? committedAt = reader.IsDBNull(7) ? (ulong?)null : checked((ulong)reader.GetInt64(7));
+            PayloadDigest? canonical = ReadOptionalPayloadDigest(reader, 8);
+            ulong createdAt = checked((ulong)reader.GetInt64(9));
+            ulong expiresAt = checked((ulong)reader.GetInt64(10));
+            byte[] response = reader.GetFieldValue<byte[]>(11);
             string detail = System.Text.Encoding.UTF8.GetString(
                 _protector.Open(response, Aad("receipt", accountId + "|" + scopeId.Value + "|" + requestId.Value)));
             return new TableDurableReceipt(
@@ -634,7 +649,7 @@ SELECT api, payload_sha256, status, reason_code, evaluated_state_version,
                 requestId,
                 api,
                 digest,
-                RestoreReceipt(status, reason, evaluated, commandVersion, seq, createdAt),
+                RestoreReceipt(status, reason, evaluated, commandVersion, seq, committedAt, canonical),
                 detail,
                 createdAt,
                 expiresAt);
@@ -653,10 +668,10 @@ SELECT api, payload_sha256, status, reason_code, evaluated_state_version,
                 Aad("event", roomId + "|" + record.Seq.Value.ToString(System.Globalization.CultureInfo.InvariantCulture)));
             const string sql = @"
 INSERT INTO table_store.table_event
-    (room_id, seq, command_version, event_ordinal, event_type, event_schema, seat, tile, detail,
+    (room_id, seq, command_version, event_ordinal, event_type, event_schema, seat,
      event_blob, event_blob_sha256)
 VALUES
-    (@room_id, @seq, @command_version, @event_ordinal, @event_type, @event_schema, @seat, @tile, @detail,
+    (@room_id, @seq, @command_version, @event_ordinal, @event_type, @event_schema, @seat,
      @blob, @hash)";
             await using NpgsqlCommand command = Command(sql, connection, transaction);
             AddText(command, "room_id", roomId);
@@ -666,8 +681,6 @@ VALUES
             Add(command, "event_type", (int)record.Type, NpgsqlDbType.Integer);
             Add(command, "event_schema", record.EventSchema, NpgsqlDbType.Integer);
             Add(command, "seat", record.Seat, NpgsqlDbType.Integer);
-            Add(command, "tile", record.Tile.HasValue ? (object)record.Tile.Value.Value : DBNull.Value, NpgsqlDbType.Integer);
-            AddText(command, "detail", record.Detail);
             AddBytea(command, "blob", blob);
             AddBytea(command, "hash", TablePayloadSha256.Compute(payload).ToArray());
             await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
@@ -733,10 +746,12 @@ VALUES
             const string sql = @"
 INSERT INTO table_store.request_receipt
     (account_id, scope_id, request_id, room_id, api, payload_sha256, status, reason_code,
-     evaluated_state_version, command_version, event_seq, response_blob, created_at, expires_at)
+     evaluated_state_version, command_version, event_seq, committed_at_utc_ms,
+     canonical_payload_digest, response_blob, created_at, expires_at)
 VALUES
     (@account_id, @scope_id, @request_id, @room_id, @api, @payload_sha256, @status, @reason_code,
-     @evaluated_state_version, @command_version, @event_seq, @response_blob, @created_at, @expires_at)";
+     @evaluated_state_version, @command_version, @event_seq, @committed_at,
+     @canonical_digest, @response_blob, @created_at, @expires_at)";
             await using NpgsqlCommand command = Command(sql, connection, transaction);
             AddText(command, "account_id", receipt.AccountId);
             AddText(command, "scope_id", receipt.ScopeId.Value);
@@ -751,6 +766,18 @@ VALUES
             AddBigint(command, "evaluated_state_version", checked((long)receipt.Receipt.EvaluatedStateVersion.Value));
             AddNullableBigint(command, "command_version", commandVersion);
             AddNullableBigint(command, "event_seq", eventSeq);
+            AddNullableBigint(
+                command,
+                "committed_at",
+                receipt.Receipt.CommittedAtMs.HasValue
+                    ? checked((long)receipt.Receipt.CommittedAtMs.Value)
+                    : (long?)null);
+            AddBytea(
+                command,
+                "canonical_digest",
+                receipt.Receipt.CanonicalPayloadDigest.HasValue
+                    ? receipt.Receipt.CanonicalPayloadDigest.Value.AsSpan().ToArray()
+                    : null);
             AddBytea(command, "response_blob", response);
             AddTimestamp(command, "created_at", FromMs(checked((long)receipt.CreatedAtUtcMs)));
             AddTimestamp(command, "expires_at", FromMs(checked((long)receipt.ExpiresAtUtcMs)));

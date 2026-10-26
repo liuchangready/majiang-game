@@ -57,8 +57,6 @@ CREATE TABLE IF NOT EXISTS table_store.table_event (
     event_type integer NOT NULL,
     event_schema integer NOT NULL,
     seat integer NOT NULL,
-    tile integer NULL,
-    detail text NULL,
     event_blob bytea NOT NULL,
     event_blob_sha256 bytea NOT NULL,
     created_at timestamptz NOT NULL DEFAULT clock_timestamp(),
@@ -69,6 +67,13 @@ CREATE TABLE IF NOT EXISTS table_store.table_event (
     CONSTRAINT ck_table_event_schema CHECK (event_schema >= 1),
     CONSTRAINT ck_table_event_hash CHECK (octet_length(event_blob_sha256) = 32)
 );
+
+-- Security upgrade for databases created by an earlier P5.2 candidate: private
+-- tile identities and free-form details must live only inside the authenticated
+-- encrypted event blob, never in plaintext shadow columns.
+ALTER TABLE table_store.table_event
+    DROP COLUMN IF EXISTS tile,
+    DROP COLUMN IF EXISTS detail;
 
 CREATE INDEX IF NOT EXISTS ix_table_event_version
     ON table_store.table_event (room_id, command_version, event_ordinal);
@@ -106,6 +111,8 @@ CREATE TABLE IF NOT EXISTS table_store.request_receipt (
     evaluated_state_version bigint NOT NULL,
     command_version bigint NULL,
     event_seq bigint NULL,
+    committed_at_utc_ms bigint NULL,
+    canonical_payload_digest bytea NULL,
     response_blob bytea NOT NULL,
     created_at timestamptz NOT NULL,
     expires_at timestamptz NOT NULL,
@@ -119,8 +126,17 @@ CREATE TABLE IF NOT EXISTS table_store.request_receipt (
     CONSTRAINT ck_receipt_status_fields CHECK (
         (status = 'REJECTED' AND command_version IS NULL AND event_seq IS NULL AND reason_code IS NOT NULL) OR
         (status IN ('APPLIED', 'RECORDED') AND command_version IS NOT NULL AND event_seq IS NOT NULL)),
+    CONSTRAINT ck_receipt_committed CHECK (committed_at_utc_ms IS NULL OR committed_at_utc_ms > 0),
+    CONSTRAINT ck_receipt_canonical CHECK (
+        canonical_payload_digest IS NULL OR octet_length(canonical_payload_digest) = 32),
     CONSTRAINT ck_receipt_expiry CHECK (expires_at > created_at)
 );
+
+-- Security/upgrade path for an earlier P5.2 candidate: preserve the complete
+-- original Receipt, not a re-derived committed_at or a dropped canonical digest.
+ALTER TABLE table_store.request_receipt
+    ADD COLUMN IF NOT EXISTS committed_at_utc_ms bigint NULL,
+    ADD COLUMN IF NOT EXISTS canonical_payload_digest bytea NULL;
 
 CREATE INDEX IF NOT EXISTS ix_request_receipt_expiry
     ON table_store.request_receipt (expires_at);

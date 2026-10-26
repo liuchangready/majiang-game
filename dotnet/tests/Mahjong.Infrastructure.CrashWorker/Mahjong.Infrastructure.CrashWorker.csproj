@@ -24,4 +24,8 @@
     <ProjectReference Include="..\..\src\Mahjong.Contracts\Mahjong.Contracts.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <Compile Include="..\Mahjong.Infrastructure.Tests\P52TerminalAndLedgerSupport.cs" Link="P52TerminalAndLedgerSupport.cs" />
+  </ItemGroup>
+
 </Project>

@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
+using System.Reflection;
 using System.Security.Cryptography;
 using System.Threading;
 using System.Threading.Tasks;
@@ -183,21 +184,64 @@ namespace Mahjong.Infrastructure
             StateVersion evaluated,
             long? command,
             long? seq,
-            ulong? committedAtMs)
+            ulong? committedAtMs,
+            PayloadDigest? canonicalDigest)
         {
             StateVersion? commandVersion = command.HasValue ? new StateVersion((ulong)command.Value) : (StateVersion?)null;
             EventSeq? eventSeq = seq.HasValue ? new EventSeq((ulong)seq.Value) : (EventSeq?)null;
             switch (value)
             {
                 case "APPLIED":
-                    return Receipt.Applied(evaluated, commandVersion!.Value, eventSeq!.Value, reason, committedAtMs);
+                    return Receipt.Applied(
+                        evaluated,
+                        commandVersion!.Value,
+                        eventSeq!.Value,
+                        reason,
+                        committedAtMs,
+                        canonicalDigest);
                 case "RECORDED":
-                    return Receipt.Recorded(evaluated, commandVersion!.Value, eventSeq!.Value, reason, committedAtMs);
+                    return Receipt.Recorded(
+                        evaluated,
+                        commandVersion!.Value,
+                        eventSeq!.Value,
+                        reason,
+                        committedAtMs,
+                        canonicalDigest);
                 case "REJECTED":
-                    return Receipt.Rejected(evaluated, reason ?? string.Empty);
+                    return Receipt.Rejected(evaluated, reason ?? string.Empty, canonicalDigest);
                 default:
                     throw new InvalidDataException("Stored receipt status is invalid.");
             }
+        }
+
+        private static readonly ConstructorInfo PayloadDigestConstructor =
+            typeof(PayloadDigest).GetConstructor(
+                BindingFlags.Instance | BindingFlags.NonPublic,
+                binder: null,
+                types: new[] { typeof(byte[]) },
+                modifiers: null) ??
+            throw new InvalidOperationException("The frozen PayloadDigest constructor is unavailable.");
+
+        /// <summary>
+        /// The frozen Contracts API exposes PayloadDigest creation only through its internal
+        /// constructor. The service-side store restores the exact original digest bytes through
+        /// that constructor; no public Contracts file is changed.
+        /// </summary>
+        private static PayloadDigest RestorePayloadDigest(byte[] bytes)
+        {
+            if (bytes.Length != PayloadDigest.SizeBytes)
+            {
+                throw new InvalidDataException("Stored canonical payload digest has an invalid length.");
+            }
+
+            return (PayloadDigest)PayloadDigestConstructor.Invoke(new object[] { (byte[])bytes.Clone() });
+        }
+
+        private static PayloadDigest? ReadOptionalPayloadDigest(NpgsqlDataReader reader, int ordinal)
+        {
+            return reader.IsDBNull(ordinal)
+                ? (PayloadDigest?)null
+                : RestorePayloadDigest(reader.GetFieldValue<byte[]>(ordinal));
         }
 
         private static TableScopeRole ParseRole(string value)

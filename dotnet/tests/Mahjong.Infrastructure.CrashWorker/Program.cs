@@ -6,7 +6,9 @@ using System.Threading;
 using System.Threading.Tasks;
 using Mahjong.Contracts;
 using Mahjong.Domain;
+using Mahjong.Domain.Cheat;
 using Mahjong.Infrastructure;
+using Mahjong.Infrastructure.Tests;
 using Mahjong.TableRuntime;
 using Npgsql;
 
@@ -19,7 +21,6 @@ internal static class Program
     private const string Scope = "p52-crash-scope";
     private const string Request = "p52-crash-request";
     private const string Match = "p52-crash-match";
-    private const string OutboxText = "p52-crash-outbox-payload";
     private const string RuntimeVariable = "MAHJONG_P52_TEST_POSTGRES";
     private const string AdminVariable = "MAHJONG_P52_TEST_POSTGRES_ADMIN";
     private const string MarkerVariable = "MAHJONG_P52_CRASH_MARKER";
@@ -32,10 +33,9 @@ internal static class Program
             return 2;
         }
 
-        string mode = args[0];
         try
         {
-            switch (mode)
+            switch (args[0])
             {
                 case "reset":
                     await ResetAsync(CancellationToken.None).ConfigureAwait(false);
@@ -48,7 +48,7 @@ internal static class Program
                     await ReaderAsync(CancellationToken.None).ConfigureAwait(false);
                     return 0;
                 default:
-                    Console.Error.WriteLine("unknown mode: " + mode);
+                    Console.Error.WriteLine("unknown mode: " + args[0]);
                     return 2;
             }
         }
@@ -100,8 +100,21 @@ CASCADE";
         await using var store = new PostgresTableStore(options);
 
         ulong nowUtc = (ulong)DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-        RoundStateMachine round = Dealt("round-p52-crash");
-        TableCheckpoint initial = InitialCheckpoint(round, nowUtc);
+        RoundStateMachine preTerminal = P52TerminalFixture.ExhaustiveDrawReady();
+        CheatState cheat = P52TerminalFixture.NonEmptyCheatState();
+        TableTimingCheckpoint initialTiming = Timing(preTerminal.RoundId, nowUtc);
+        TableCheckpoint initial = P52TerminalFixture.BuildCheckpoint(
+            Room,
+            preTerminal,
+            new StateVersion(0),
+            new EventSeq(0),
+            cheat,
+            null,
+            null,
+            initialTiming,
+            1L,
+            nowUtc,
+            Boot);
         await store.CreateRoomAsync(initial, cancellationToken).ConfigureAwait(false);
         await store.IssueScopeAsync(
             new TableScopeRecord(
@@ -122,13 +135,14 @@ CASCADE";
             throw new InvalidOperationException("Could not acquire the crash-worker lease.");
         }
 
-        RoundCommand command = DiscardCommand(round);
-        RoundTransition transition = round.Execute(command);
-        if (!transition.IsAccepted || transition.State == null)
+        RoundCommand command = P52TerminalFixture.ExhaustiveDrawCommand(preTerminal);
+        RoundTransition transition = preTerminal.Execute(command);
+        if (!transition.IsAccepted || transition.State?.Result == null)
         {
-            throw new InvalidOperationException("The crash-worker command was not accepted.");
+            throw new InvalidOperationException("The crash-worker terminal command was not accepted.");
         }
 
+        RoundStateMachine terminal = transition.State;
         StateVersion commandVersion = new StateVersion(1);
         var events = new List<TableEventRecord>();
         ulong seq = 0;
@@ -145,10 +159,10 @@ CASCADE";
                 domainEvent.Tile,
                 domainEvent.Detail,
                 1,
-                TableEventFactCodec.Encode(commandVersion, i, transition.State.SourceFingerprint)));
+                TableEventFactCodec.Encode(commandVersion, i, terminal.SourceFingerprint)));
         }
 
-        byte[] statePayload = RoundRecoveryCodec.Encode(RoundRecovery.Capture(transition.State));
+        byte[] statePayload = RoundRecoveryCodec.Encode(RoundRecovery.Capture(terminal));
         byte[] commandPayload = RoundCommandCodec.Encode(command);
         TablePayloadSha256 digest = TablePayloadSha256.Compute(Encoding.UTF8.GetBytes(Request + "|" + command.Action));
         var receipt = new TableDurableReceipt(
@@ -171,14 +185,19 @@ CASCADE";
             digest,
             commandPayload,
             RoundCommandCodec.FormatVersion);
-        byte[] outboxPayload = Encoding.UTF8.GetBytes(OutboxText);
+        byte[] outboxPayload = TableSettlementPayloadCodec.Encode(Room, terminal.Result!);
         var outbox = new TableSettlementOutboxRecord(
             Match,
             1,
             outboxPayload,
             TablePayloadSha256.Compute(outboxPayload),
             nowUtc);
-        TableTimingCheckpoint timing = Timing(transition.State.RoundId, nowUtc);
+        byte[] facts = P52TerminalFixture.BuildFacts(
+            terminal,
+            new StateVersion(1),
+            cheat,
+            events);
+        TableTimingCheckpoint timing = Timing(terminal.RoundId, nowUtc + 1UL);
         var request = new TableDurableCommitRequest(
             Room,
             Owner,
@@ -191,14 +210,19 @@ CASCADE";
             new[] { outbox },
             null,
             statePayload,
-            transition.State.SourceFingerprint,
+            terminal.SourceFingerprint,
             true,
             timing,
-            2L);
+            2L,
+            facts,
+            TablePayloadSha256.Compute(facts),
+            cheat.Version,
+            cheat.Fingerprint);
         TableDurableCommitResult committed = await store.CommitAsync(request, cancellationToken).ConfigureAwait(false);
         if (!committed.IsCommitted)
         {
-            throw new InvalidOperationException("The crash-worker commit failed: " + committed.Disposition + " " + committed.Detail);
+            throw new InvalidOperationException(
+                "The crash-worker commit failed: " + committed.Disposition + " " + committed.Detail);
         }
 
         string marker = Require(MarkerVariable);
@@ -211,7 +235,9 @@ CASCADE";
             "\"accountId\":\"" + Account + "\"," +
             "\"matchId\":\"" + Match + "\"," +
             "\"outboxResultVersion\":1," +
-            "\"outboxSha256\":\"" + TablePayloadSha256.Compute(outboxPayload).ToHex() + "\"," +
+            "\"outboxSha256\":\"" + outbox.PayloadSha256.ToHex() + "\"," +
+            "\"cheatVersion\":" + cheat.Version.ToString(System.Globalization.CultureInfo.InvariantCulture) + "," +
+            "\"cheatFingerprint\":" + cheat.Fingerprint.ToString(System.Globalization.CultureInfo.InvariantCulture) + "," +
             "\"committedAtUtcMs\":" + nowUtc.ToString(System.Globalization.CultureInfo.InvariantCulture) +
             "}";
         using (var stream = new FileStream(marker, FileMode.Create, FileAccess.Write, FileShare.Read))
@@ -222,9 +248,8 @@ CASCADE";
             stream.Flush(true);
         }
 
-        // The durable commit already returned and the marker is flushed. Stay alive
-        // without publishing anything until the verification wrapper kills this
-        // process, then restarts PostgreSQL and runs the independent reader.
+        // The durable commit and marker are complete. Stay alive without publishing
+        // anything; the wrapper kills this process, restarts PostgreSQL and runs reader.
         Thread.Sleep(Timeout.Infinite);
     }
 
@@ -233,15 +258,10 @@ CASCADE";
         var options = new PostgresTableOptions(Require(RuntimeVariable), Require("MAHJONG_TABLE_PG_PAYLOAD_KEY"));
         await using var store = new PostgresTableStore(options);
         TableStateRow? state = await store.LoadStateAsync(Room, cancellationToken).ConfigureAwait(false);
-        if (state == null)
-        {
-            throw new InvalidOperationException("The restored/crashed table_state row is missing.");
-        }
-
         TableCheckpoint? checkpoint = await store.LoadCheckpointAsync(Room, cancellationToken).ConfigureAwait(false);
-        if (checkpoint == null)
+        if (state == null || checkpoint == null)
         {
-            throw new InvalidOperationException("The restored/crashed checkpoint is missing.");
+            throw new InvalidOperationException("The crashed/restored table state or checkpoint is missing.");
         }
 
         IReadOnlyList<TableEventRecord> events = await store.LoadEventsAfterAsync(
@@ -273,8 +293,8 @@ CASCADE";
                 TimeSpan.FromMinutes(10),
                 0L,
                 Match,
-                requireCheatLedger: false,
-                requireCommittedFacts: false),
+                requireCheatLedger: true,
+                requireCommittedFacts: true),
             cancellationToken).ConfigureAwait(false);
         if (!recovered.Recovered)
         {
@@ -285,17 +305,13 @@ CASCADE";
         if (recovered.Report!.FinalStateVersion != state.StateVersion ||
             recovered.Report.FinalEventSeq != state.LastEventSeq ||
             recovered.Report.FinalStateHash != state.StateHash ||
-            recovered.Report.FinalFingerprint != state.StateFingerprint)
+            recovered.Report.FinalFingerprint != state.StateFingerprint ||
+            !recovered.Report.Terminal ||
+            !recovered.Report.OutboxPresent ||
+            !recovered.Report.OutboxPayloadMatches ||
+            !recovered.Report.CheatStateRestored)
         {
-            throw new InvalidOperationException("Recovered state does not match the durable rows.");
-        }
-
-        // The normal discard round is not terminal, so recovery intentionally does
-        // not enter the terminal-only outbox branch. The outbox row is still loaded
-        // independently and its SHA-256 is compared by the wrapper.
-        if (outbox.PayloadSha256.ToHex() != TablePayloadSha256.Compute(Encoding.UTF8.GetBytes(OutboxText)).ToHex())
-        {
-            throw new InvalidOperationException("Persisted settlement outbox payload changed across restart.");
+            throw new InvalidOperationException("Recovered terminal/outbox/cheat state does not match the durable rows.");
         }
 
         string result = "{" +
@@ -306,6 +322,11 @@ CASCADE";
             "\"receiptStatus\":\"" + receipt.Receipt.Status + "\"," +
             "\"outboxPublished\":" + (outbox.PublishedAtUtcMs.HasValue ? "true" : "false") + "," +
             "\"outboxSha256\":\"" + outbox.PayloadSha256.ToHex() + "\"," +
+            "\"terminal\":true," +
+            "\"outboxPresent\":true," +
+            "\"outboxPayloadMatches\":true," +
+            "\"cheatStateRestored\":true," +
+            "\"cheatVersion\":" + recovered.Report.CheatLedgerVersion.GetValueOrDefault().ToString(System.Globalization.CultureInfo.InvariantCulture) + "," +
             "\"recoveryOwnerEpoch\":" + recovered.Report.CurrentOwnerEpoch.Value.ToString(System.Globalization.CultureInfo.InvariantCulture) + "," +
             "\"recovered\":true" +
             "}";
@@ -318,51 +339,6 @@ CASCADE";
         Console.WriteLine("READER-OK " + result);
     }
 
-    private static RoundStateMachine Dealt(string roundId)
-    {
-        var spec = new RoundSpec(
-            roundId,
-            0,
-            1,
-            0,
-            0,
-            new long[] { 25000, 25000, 25000, 25000 },
-            0);
-        TilePositionMap dealt = TilePositionMap.CreateDealt(
-            RecordedRandomDraw.Standard("p52-crash-dealt-" + roundId),
-            0);
-        return RoundStateMachine.CreateDealt(spec, dealt, RoundPhase.CheatWindow);
-    }
-
-    private static TableCheckpoint InitialCheckpoint(RoundStateMachine round, ulong nowUtc)
-    {
-        TableTimingCheckpoint timing = Timing(round.RoundId, nowUtc);
-        var registry = new ControlRegistry(
-            new DisconnectPolicy(),
-            new Dictionary<int, SeatControllerKind>
-            {
-                [0] = SeatControllerKind.RemoteHuman,
-                [1] = SeatControllerKind.RemoteHuman,
-                [2] = SeatControllerKind.RemoteHuman,
-                [3] = SeatControllerKind.RemoteHuman
-            });
-        return TableCheckpointFactory.Create(
-            Room,
-            round,
-            new StateVersion(0),
-            new EventSeq(0),
-            new TableControlCheckpoint(registry.Capture(), 0L),
-            timing,
-            1,
-            Boot,
-            nowUtc,
-            cheat: null,
-            committedFactsPayload: null,
-            timingVersion: 1L,
-            capturedMonotonicMillis: 0L,
-            committedHistory: null);
-    }
-
     private static TableTimingCheckpoint Timing(string roundId, ulong capturedAtUtcMs)
     {
         var clock = new DecisionClock(new DecisionClockConfig(1000L, 0L, ReserveScope.Round));
@@ -373,13 +349,6 @@ CASCADE";
             0L,
             capturedAtUtcMs,
             Boot);
-    }
-
-    private static RoundCommand DiscardCommand(RoundStateMachine round)
-    {
-        int seat = round.CurrentSeat;
-        TileId tile = round.Tiles.TilesInZone(TileZone.Hand, seat)[0];
-        return RoundCommand.Discard(round.RoundId, seat, tile);
     }
 
     private sealed class WorkerClock : ITableClock

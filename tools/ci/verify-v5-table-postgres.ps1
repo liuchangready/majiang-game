@@ -410,14 +410,62 @@ function Get-XmlCounts([string]$XmlPath) {
     [xml]$doc = Get-Content -LiteralPath $XmlPath -Raw
     $assembly = $doc.SelectSingleNode('//assembly')
     if ($null -eq $assembly) { throw "Result XML has no assembly element: $XmlPath" }
+    foreach ($attribute in @('total', 'passed', 'failed', 'skipped', 'errors', 'not-run')) {
+        if (-not $assembly.HasAttribute($attribute)) {
+            throw "Result XML is missing required assembly attribute '$attribute': $XmlPath"
+        }
+    }
+
     return [ordered]@{
         total = [int]$assembly.GetAttribute('total')
         passed = [int]$assembly.GetAttribute('passed')
         failed = [int]$assembly.GetAttribute('failed')
         skipped = [int]$assembly.GetAttribute('skipped')
         errors = [int]$assembly.GetAttribute('errors')
-        notRun = if ($assembly.HasAttribute('notRun')) { [int]$assembly.GetAttribute('notRun') } else { 0 }
+        notRun = [int]$assembly.GetAttribute('not-run')
     }
+}
+
+function Test-XmlCountsPass($Counts) {
+    return $Counts.total -gt 0 -and
+        $Counts.passed -eq $Counts.total -and
+        $Counts.failed -eq 0 -and
+        $Counts.errors -eq 0 -and
+        $Counts.skipped -eq 0 -and
+        $Counts.notRun -eq 0
+}
+
+function Assert-XmlGatingSelfTest {
+    $tmp = Join-Path $script:LogDir 'tmp\xml-selfcheck'
+    New-Item -ItemType Directory -Path $tmp -Force | Out-Null
+    $cases = @(
+        [ordered]@{ name = 'zero-tests'; attrs = 'total="0" passed="0" failed="0" skipped="0" errors="0" not-run="0"' },
+        [ordered]@{ name = 'failed'; attrs = 'total="1" passed="0" failed="1" skipped="0" errors="0" not-run="0"' },
+        [ordered]@{ name = 'errors'; attrs = 'total="1" passed="0" failed="0" skipped="0" errors="1" not-run="0"' },
+        [ordered]@{ name = 'skipped'; attrs = 'total="1" passed="0" failed="0" skipped="1" errors="0" not-run="0"' },
+        [ordered]@{ name = 'not-run'; attrs = 'total="1" passed="0" failed="0" skipped="0" errors="0" not-run="1"' },
+        [ordered]@{ name = 'passed-mismatch'; attrs = 'total="2" passed="1" failed="0" skipped="0" errors="0" not-run="0"' },
+        [ordered]@{ name = 'missing-not-run'; attrs = 'total="1" passed="1" failed="0" skipped="0" errors="0"' }
+    )
+    $checked = 0
+    foreach ($case in $cases) {
+        $path = Join-Path $tmp ($case.name + '.xml')
+        $xml = '<assemblies schema-version="3"><assembly ' + $case.attrs + ' /></assemblies>'
+        Set-Content -LiteralPath $path -Value $xml -Encoding utf8
+        $green = $false
+        try {
+            $counts = Get-XmlCounts $path
+            $green = Test-XmlCountsPass $counts
+        }
+        catch {
+            if ($case.name -ne 'missing-not-run') { throw }
+            $green = $false
+        }
+        if ($green) { throw "XML gating self-check accepted negative case '$($case.name)'." }
+        $checked++
+    }
+
+    return $checked
 }
 
 try {
@@ -438,6 +486,9 @@ try {
     $dataDirectory = Get-PgDataDirectory
     Add-Stage 'cluster' 'PASS' 0 "server=$serverVersion data_directory=$dataDirectory port=$Port"
 
+    $xmlSelfChecks = Assert-XmlGatingSelfTest
+    Add-Stage 'xml-gating-selfcheck' 'PASS' 0 "negative XML cases=$xmlSelfChecks"
+
     $keyBytes = New-Object byte[] 32
     $rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
     try { $rng.GetBytes($keyBytes) } finally { $rng.Dispose() }
@@ -453,8 +504,8 @@ try {
 
     $testsProject = Join-Path $script:RepoRoot 'dotnet\tests\Mahjong.Infrastructure.Tests\Mahjong.Infrastructure.Tests.csproj'
     $workerProject = Join-Path $script:RepoRoot 'dotnet\tests\Mahjong.Infrastructure.CrashWorker\Mahjong.Infrastructure.CrashWorker.csproj'
-    $testsDll = Join-Path $script:RepoRoot 'dotnet\tests\Mahjong.Infrastructure.Tests\bin\Release\net8.0\Mahjong.Infrastructure.Tests.dll'
-    $workerDll = Join-Path $script:RepoRoot 'dotnet\tests\Mahjong.Infrastructure.CrashWorker\bin\Release\net8.0\Mahjong.Infrastructure.CrashWorker.dll'
+    $testsDll = Join-Path $script:RepoRoot ("dotnet\tests\Mahjong.Infrastructure.Tests\bin\$Configuration\net8.0\Mahjong.Infrastructure.Tests.dll")
+    $workerDll = Join-Path $script:RepoRoot ("dotnet\tests\Mahjong.Infrastructure.CrashWorker\bin\$Configuration\net8.0\Mahjong.Infrastructure.CrashWorker.dll")
 
     $buildTestsLog = Join-Path $LogDir 'build-tests.log'
     $buildTestsCode = Invoke-Native -FilePath $DotnetPath -Arguments @(
@@ -474,10 +525,11 @@ try {
         $testsDll, '-noColor', '-noLogo', '-result-xml', $testsXml
     ) -LogPath $testsLog -TimeoutSeconds 900
     $counts = Get-XmlCounts $testsXml
-    if ($testsCode -ne 0 -or $counts.total -le 0 -or $counts.failed -ne 0 -or $counts.errors -ne 0 -or $counts.skipped -ne 0 -or $counts.notRun -ne 0) {
+    if ($testsCode -ne 0 -or -not (Test-XmlCountsPass $counts)) {
         throw "Tests failed: exit=$testsCode total=$($counts.total) passed=$($counts.passed) failed=$($counts.failed) errors=$($counts.errors) skipped=$($counts.skipped) notRun=$($counts.notRun)."
     }
-    Add-Stage 'tests' 'PASS' $testsCode "total=$($counts.total) passed=$($counts.passed) failed=0 skipped=0 notRun=0"
+    $testsDllSha256 = (Get-FileHash -LiteralPath $testsDll -Algorithm SHA256).Hash
+    Add-Stage 'tests' 'PASS' $testsCode "dll=$testsDll sha256=$testsDllSha256 total=$($counts.total) passed=$($counts.passed) failed=0 skipped=0 notRun=0"
 
     $targetXml = Join-Path $LogDir 'tests-targeted.xml'
     $targetLog = Join-Path $LogDir 'tests-targeted.log'
@@ -487,8 +539,8 @@ try {
         '-result-xml', $targetXml
     ) -LogPath $targetLog -TimeoutSeconds 600
     $targetCounts = Get-XmlCounts $targetXml
-    if ($targetCode -ne 0 -or $targetCounts.total -le 0 -or $targetCounts.failed -ne 0 -or $targetCounts.errors -ne 0 -or $targetCounts.skipped -ne 0 -or $targetCounts.notRun -ne 0) {
-        throw "Targeted class run failed: exit=$targetCode total=$($targetCounts.total) passed=$($targetCounts.passed) failed=$($targetCounts.failed) errors=$($targetCounts.errors) skipped=$($targetCounts.skipped)."
+    if ($targetCode -ne 0 -or -not (Test-XmlCountsPass $targetCounts)) {
+        throw "Targeted class run failed: exit=$targetCode total=$($targetCounts.total) passed=$($targetCounts.passed) failed=$($targetCounts.failed) errors=$($targetCounts.errors) skipped=$($targetCounts.skipped) notRun=$($targetCounts.notRun)."
     }
     Add-Stage 'tests-targeted' 'PASS' $targetCode "class=PostgresTableStoreTests total=$($targetCounts.total) passed=$($targetCounts.passed) failed=0 skipped=0"
 
@@ -526,10 +578,14 @@ try {
         [int]$readerJson.eventCount -ne [int]$markerJson.eventCount -or
         $readerJson.receiptStatus -ne 'Applied' -or
         $readerJson.outboxSha256 -ne $markerJson.outboxSha256 -or
+        -not [bool]$readerJson.terminal -or
+        -not [bool]$readerJson.outboxPresent -or
+        -not [bool]$readerJson.outboxPayloadMatches -or
+        -not [bool]$readerJson.cheatStateRestored -or
         -not [bool]$readerJson.recovered) {
-        throw "Crash reader did not reproduce receipt/136/hash/outbox state from the marker."
+        throw "Crash reader did not reproduce terminal receipt/136/hash/ledger/outbox state from the marker."
     }
-    Add-Stage 'crash-reader' 'PASS' $readerCode "state=$($readerJson.stateVersion) seq=$($readerJson.lastEventSeq) receipt=$($readerJson.receiptStatus) outbox=$($readerJson.outboxSha256.Substring(0,12))..."
+    Add-Stage 'crash-reader' 'PASS' $readerCode "state=$($readerJson.stateVersion) seq=$($readerJson.lastEventSeq) terminal=$($readerJson.terminal) receipt=$($readerJson.receiptStatus) cheatVersion=$($readerJson.cheatVersion) outbox=$($readerJson.outboxSha256.Substring(0,12))..."
 
     $dumpPath = Join-Path $LogDir 'table_store.dump'
     $dumpLog = Join-Path $LogDir 'pg-dump.log'

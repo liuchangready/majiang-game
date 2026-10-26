@@ -168,13 +168,15 @@ namespace Mahjong.Infrastructure.Tests
             long? scopeIssuedUtcMs = null,
             long? scopeExpiresUtcMs = null,
             bool acquireLease = true,
-            int commandTimeoutSeconds = 15)
+            int commandTimeoutSeconds = 15,
+            TableCheckpoint? initialCheckpoint = null,
+            RoundStateMachine? initialRound = null)
         {
             await PostgresTableTestEnvironment.ResetAsync(cancellationToken).ConfigureAwait(false);
             var clock = new ManualTableClock { Now = 1000L };
             ulong nowUtc = (ulong)DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-            RoundStateMachine round = Dealt("round-p52");
-            TableCheckpoint checkpoint = InitialCheckpointFor(round, nowUtc, Boot);
+            RoundStateMachine round = initialRound ?? Dealt("round-p52");
+            TableCheckpoint checkpoint = initialCheckpoint ?? InitialCheckpointFor(round, nowUtc, Boot);
             var options = PostgresTableTestEnvironment.NewOptions(commandTimeoutSeconds);
             var store = new PostgresTableStore(options);
             await store.CreateRoomAsync(checkpoint, cancellationToken).ConfigureAwait(false);
@@ -306,11 +308,20 @@ namespace Mahjong.Infrastructure.Tests
             int outboxResultVersion = 1,
             string? outboxPayload = null,
             string? committedFacts = null,
-            long? timingVersion = null)
+            long? timingVersion = null,
+            Receipt? receiptOverride = null,
+            ulong? committedAtMs = null,
+            PayloadDigest? canonicalDigest = null,
+            ReceiptStatus receiptStatus = ReceiptStatus.Applied,
+            RoundCommand? command = null,
+            byte[]? outboxPayloadBytes = null,
+            byte[]? committedFactsPayload = null,
+            long nextCheatVersion = 0L,
+            ulong nextCheatFingerprint = 0UL)
         {
             TableScopeRecord actualScope = scope ?? Scope;
-            RoundCommand command = DiscardCommand(state);
-            RoundTransition transition = state.Execute(command);
+            RoundCommand actualCommand = command ?? DiscardCommand(state);
+            RoundTransition transition = state.Execute(actualCommand);
             if (!transition.IsAccepted || transition.State == null)
             {
                 throw new InvalidOperationException("The direct fixture command was not accepted.");
@@ -337,18 +348,34 @@ namespace Mahjong.Infrastructure.Tests
             }
 
             byte[] statePayload = RoundRecoveryCodec.Encode(RoundRecovery.Capture(next));
-            byte[] commandPayload = RoundCommandCodec.Encode(command);
+            byte[] commandPayload = RoundCommandCodec.Encode(actualCommand);
             byte[] businessBytes = Encoding.UTF8.GetBytes(
                 businessPayload ?? (api + "|" + requestId));
             TablePayloadSha256 digest = TablePayloadSha256.Compute(businessBytes);
             ulong nowMs = (ulong)DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+            Receipt receiptValue = receiptOverride ??
+                (receiptStatus == ReceiptStatus.Recorded
+                    ? Receipt.Recorded(
+                        expectedStateVersion,
+                        commandVersion,
+                        new EventSeq(seq),
+                        null,
+                        committedAtMs,
+                        canonicalDigest)
+                    : Receipt.Applied(
+                        expectedStateVersion,
+                        commandVersion,
+                        new EventSeq(seq),
+                        null,
+                        committedAtMs,
+                        canonicalDigest));
             TableDurableReceipt receipt = new TableDurableReceipt(
                 actualScope.AccountId,
                 actualScope.ScopeId,
                 new RequestId(requestId),
                 api,
                 digest,
-                Receipt.Applied(expectedStateVersion, commandVersion, new EventSeq(seq)),
+                receiptValue,
                 string.Empty,
                 nowMs,
                 nowMs + 3_600_000UL);
@@ -366,7 +393,8 @@ namespace Mahjong.Infrastructure.Tests
             var outbox = new List<TableSettlementOutboxRecord>();
             if (terminal && outboxMatchId != null)
             {
-                byte[] payload = Encoding.UTF8.GetBytes(outboxPayload ?? ("OUTBOX|" + outboxMatchId + "|" + outboxResultVersion));
+                byte[] payload = outboxPayloadBytes ??
+                    Encoding.UTF8.GetBytes(outboxPayload ?? ("OUTBOX|" + outboxMatchId + "|" + outboxResultVersion));
                 outbox.Add(new TableSettlementOutboxRecord(
                     outboxMatchId,
                     outboxResultVersion,
@@ -375,7 +403,8 @@ namespace Mahjong.Infrastructure.Tests
                     nowMs));
             }
 
-            byte[]? facts = committedFacts == null ? null : Encoding.UTF8.GetBytes(committedFacts);
+            byte[]? facts = committedFactsPayload ??
+                (committedFacts == null ? null : Encoding.UTF8.GetBytes(committedFacts));
             TableTimingCheckpoint timing = Timing(next.RoundId, Boot, nowMs, Clock.Now);
             long actualTimingVersion = timingVersion ?? 2L;
             var request = new TableDurableCommitRequest(
@@ -395,8 +424,45 @@ namespace Mahjong.Infrastructure.Tests
                 timing,
                 actualTimingVersion,
                 facts,
-                facts == null ? (TablePayloadSha256?)null : TablePayloadSha256.Compute(facts));
+                facts == null ? (TablePayloadSha256?)null : TablePayloadSha256.Compute(facts),
+                nextCheatVersion,
+                nextCheatFingerprint);
             return new DirectCommitCandidate(request, next, new EventSeq(seq), events.Count);
+        }
+
+        internal TableDurableCommitRequest BuildRejectedCommit(
+            StateVersion expectedStateVersion,
+            string requestId,
+            Receipt receipt,
+            TableScopeRecord? scope = null,
+            string api = "P52_REJECT")
+        {
+            TableScopeRecord actualScope = scope ?? Scope;
+            ulong nowMs = (ulong)DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+            var durable = new TableDurableReceipt(
+                actualScope.AccountId,
+                actualScope.ScopeId,
+                new RequestId(requestId),
+                api,
+                TablePayloadSha256.Compute(Encoding.UTF8.GetBytes("reject|" + requestId)),
+                receipt,
+                string.Empty,
+                nowMs,
+                nowMs + 3_600_000UL);
+            return new TableDurableCommitRequest(
+                Room,
+                OwnerInstance,
+                Lease.OwnerEpoch,
+                expectedStateVersion,
+                durable,
+                false,
+                Array.Empty<TableEventRecord>(),
+                null,
+                Array.Empty<TableSettlementOutboxRecord>(),
+                null,
+                null,
+                0UL,
+                false);
         }
 
         public async ValueTask DisposeAsync()

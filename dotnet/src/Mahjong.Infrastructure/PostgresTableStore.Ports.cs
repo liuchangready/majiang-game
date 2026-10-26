@@ -359,6 +359,7 @@ SELECT owner_instance, owner_epoch,
             const string sql = @"
 SELECT room_id, api, payload_sha256, status, reason_code,
        evaluated_state_version, command_version, event_seq,
+       committed_at_utc_ms, canonical_payload_digest,
        (extract(epoch from created_at) * 1000)::bigint,
        (extract(epoch from expires_at) * 1000)::bigint,
        response_blob
@@ -382,12 +383,21 @@ SELECT room_id, api, payload_sha256, status, reason_code,
             var evaluated = new StateVersion(checked((ulong)reader.GetInt64(5)));
             long? commandVersion = reader.IsDBNull(6) ? (long?)null : reader.GetInt64(6);
             long? eventSeq = reader.IsDBNull(7) ? (long?)null : reader.GetInt64(7);
-            ulong createdAt = checked((ulong)reader.GetInt64(8));
-            ulong expiresAt = checked((ulong)reader.GetInt64(9));
-            byte[] response = reader.GetFieldValue<byte[]>(10);
+            ulong? committedAt = reader.IsDBNull(8) ? (ulong?)null : checked((ulong)reader.GetInt64(8));
+            PayloadDigest? canonical = ReadOptionalPayloadDigest(reader, 9);
+            ulong createdAt = checked((ulong)reader.GetInt64(10));
+            ulong expiresAt = checked((ulong)reader.GetInt64(11));
+            byte[] response = reader.GetFieldValue<byte[]>(12);
             string detail = System.Text.Encoding.UTF8.GetString(
                 _protector.Open(response, Aad("receipt", accountId + "|" + scopeId.Value + "|" + requestId.Value)));
-            Receipt receipt = RestoreReceipt(status, reason, evaluated, commandVersion, eventSeq, createdAt);
+            Receipt receipt = RestoreReceipt(
+                status,
+                reason,
+                evaluated,
+                commandVersion,
+                eventSeq,
+                committedAt,
+                canonical);
             return new TableDurableReceipt(
                 accountId,
                 scopeId,
