@@ -278,26 +278,22 @@ namespace Mahjong.Infrastructure.Tests
                 requestId: "r1-receipt-recorded");
 
             PayloadDigest rejectedDigest = CanonicalPayloadDigest.Compute(Encoding.UTF8.GetBytes("canonical-rejected"));
-            await using P52Fixture rejectedFixture = await P52Fixture.CreateAsync();
-            TableDurableCommitRequest rejectedRequest = rejectedFixture.BuildRejectedCommit(
-                new StateVersion(0),
-                "r1-receipt-rejected",
-                Receipt.Rejected(new StateVersion(0), "P52_REJECTED_TEST", rejectedDigest));
-            Assert.True((await rejectedFixture.Store.CommitAsync(
-                rejectedRequest,
-                TestContext.Current.CancellationToken)).IsCommitted);
-            TableDurableReceipt? rejected = await rejectedFixture.Store.TryGetAsync(
-                P52Fixture.Account,
-                rejectedFixture.Scope.ScopeId,
-                new RequestId("r1-receipt-rejected"),
-                TestContext.Current.CancellationToken);
-            Assert.NotNull(rejected);
-            Assert.Equal(ReceiptStatus.Rejected, rejected!.Receipt.Status);
-            Assert.Equal(rejectedDigest, rejected.Receipt.CanonicalPayloadDigest);
-            Assert.Null(rejected.Receipt.CommittedAtMs);
-            Assert.Equal(0UL, (await rejectedFixture.Store.LoadStateAsync(
-                P52Fixture.Room,
-                TestContext.Current.CancellationToken))!.StateVersion.Value);
+            await AssertRejectedReceiptRoundTripAsync(
+                null,
+                null,
+                "r1-receipt-rejected-null-null");
+            await AssertRejectedReceiptRoundTripAsync(
+                null,
+                rejectedDigest,
+                "r1-receipt-rejected-null-digest");
+            await AssertRejectedReceiptRoundTripAsync(
+                1777777777779UL,
+                null,
+                "r1-receipt-rejected-time-null");
+            await AssertRejectedReceiptRoundTripAsync(
+                1777777777779UL,
+                rejectedDigest,
+                "r1-receipt-rejected-time-digest");
         }
 
         [Fact]
@@ -540,12 +536,71 @@ namespace Mahjong.Infrastructure.Tests
                 fixture.Scope.ScopeId,
                 new RequestId(requestId),
                 TestContext.Current.CancellationToken))!;
-            AssertSameReceipt(candidate.Request.Receipt!.Receipt, loaded.Receipt);
+            AssertSameDurableReceipt(candidate.Request.Receipt!, loaded);
             TableDurableCommitResult replay = await fixture.Store.CommitAsync(
                 candidate.Request,
                 TestContext.Current.CancellationToken);
             Assert.Equal(TableCommitDisposition.Replayed, replay.Disposition);
-            AssertSameReceipt(candidate.Request.Receipt!.Receipt, replay.Receipt!.Receipt);
+            AssertSameDurableReceipt(candidate.Request.Receipt!, replay.Receipt!);
+        }
+
+        private static async Task AssertRejectedReceiptRoundTripAsync(
+            ulong? committedAtMs,
+            PayloadDigest? canonicalDigest,
+            string requestId)
+        {
+            await using P52Fixture fixture = await P52Fixture.CreateAsync();
+            var original = new Receipt(
+                ReceiptStatus.Rejected,
+                "P52_REVIEW_REJECT",
+                new StateVersion(0),
+                null,
+                null,
+                committedAtMs,
+                canonicalDigest);
+            TableDurableCommitRequest request = fixture.BuildRejectedCommit(
+                new StateVersion(0),
+                requestId,
+                original);
+            Assert.True((await fixture.Store.CommitAsync(
+                request,
+                TestContext.Current.CancellationToken)).IsCommitted);
+
+            TableDurableReceipt loaded = (await fixture.Store.TryGetAsync(
+                P52Fixture.Account,
+                fixture.Scope.ScopeId,
+                new RequestId(requestId),
+                TestContext.Current.CancellationToken))!;
+            AssertSameDurableReceipt(request.Receipt!, loaded);
+            Assert.Equal(committedAtMs, loaded.Receipt.CommittedAtMs);
+
+            TableDurableCommitResult replay = await fixture.Store.CommitAsync(
+                request,
+                TestContext.Current.CancellationToken);
+            Assert.Equal(TableCommitDisposition.Replayed, replay.Disposition);
+            AssertSameDurableReceipt(request.Receipt!, replay.Receipt!);
+            Assert.Equal(committedAtMs, replay.Receipt!.Receipt.CommittedAtMs);
+
+            TableStateRow state = (await fixture.Store.LoadStateAsync(
+                P52Fixture.Room,
+                TestContext.Current.CancellationToken))!;
+            Assert.Equal(0UL, state.StateVersion.Value);
+            Assert.Equal(0L, await PostgresTableTestEnvironment.CountAsync(
+                "SELECT count(*) FROM table_store.table_event",
+                TestContext.Current.CancellationToken));
+        }
+
+        private static void AssertSameDurableReceipt(TableDurableReceipt expected, TableDurableReceipt actual)
+        {
+            Assert.Equal(expected.AccountId, actual.AccountId);
+            Assert.Equal(expected.ScopeId, actual.ScopeId);
+            Assert.Equal(expected.RequestId, actual.RequestId);
+            Assert.Equal(expected.Api, actual.Api);
+            Assert.Equal(expected.PayloadSha256, actual.PayloadSha256);
+            Assert.Equal(expected.Detail, actual.Detail);
+            Assert.Equal(expected.CreatedAtUtcMs, actual.CreatedAtUtcMs);
+            Assert.Equal(expected.ExpiresAtUtcMs, actual.ExpiresAtUtcMs);
+            AssertSameReceipt(expected.Receipt, actual.Receipt);
         }
 
         private static void AssertSameReceipt(Receipt expected, Receipt actual)

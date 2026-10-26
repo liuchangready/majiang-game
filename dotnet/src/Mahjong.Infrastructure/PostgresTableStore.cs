@@ -208,7 +208,17 @@ namespace Mahjong.Infrastructure
                         committedAtMs,
                         canonicalDigest);
                 case "REJECTED":
-                    return Receipt.Rejected(evaluated, reason ?? string.Empty, canonicalDigest);
+                    // The convenience factory fixes committedAtMs to null. The frozen public
+                    // Receipt constructor allows a legal definitive REJECTED receipt to carry a
+                    // positive original commit time, so restore every stored field through it.
+                    return new Receipt(
+                        ReceiptStatus.Rejected,
+                        reason ?? string.Empty,
+                        evaluated,
+                        null,
+                        null,
+                        committedAtMs,
+                        canonicalDigest);
                 default:
                     throw new InvalidDataException("Stored receipt status is invalid.");
             }
