@@ -19,7 +19,7 @@ Anti 报告 2bb0dcf 通过独立静态复核，approve_task 成功。原 P4.1 �
 
 命令和原始证据在本树 ignored artifacts/progress-20261026-1010/：verify-boundaries.ps1、test-summary.json、两个 build/test 日志及 XML、static-review.ps1/json/log。前者先检查 fresh build 的 numeric exit，再执行 DLL；XML 要求非空、零失败/跳过/errors，并逐名确认新增类数量。静态检查是静态检查，不作为 LocalHost 冷恢复运行 PASS。
 
-台账校验首次执行 FAIL（803 cascading failures）：新 worktree 缺少七份原审查 ignored 日志，三个已登记文档被 core.autocrlf 转为 CRLF 而与原始证据 hash 不同。原失败日志 ledger.log 保留。只从已接受集成树复制七份历史原件至本树 ignored 证据位置，三个文档恢复为 HEAD Git blob 的原始字节并逐一验证既有 pin 与文本等价；不刷新 pin，不修改 verifier，不把历史日志当新实跑。evidence-provisioning.json 记录来源与 hash。一次 Python 别名启动未产生 provisioning 文件，未作为成功，改由带 numeric exit 和强断言的 PowerShell 脚本实际完成 10 项 provisioning；中间失败运行保留。
+台账校验首次执行 FAIL（803 cascading failures）：新 worktree 缺少七份原审查 ignored 日志，三个已登记文档被 core.autocrlf 转为 CRLF 而与原始证据 hash 不同。原失败日志 ledger.log 保留。只从已接受集成树复制七份历史原件至本树 ignored 证据位置，三个文档恢复为 HEAD Git blob 的原始字节并逐一验证既有 pin 与文本等价；不刷新 pin，不修改 verifier，不把历史日志当新实跑。evidence-provisioning.json 记录来源与 hash。一次 Python 别名启动未产生 provisioning 文件，未作为成功，改由带 numeric exit 和强断言的 PowerShell 脚本实际完成 10 项 provisioning；中间失败运行保留。最终同一未修改校验器复验 exit0，24 CHECK-OK / 0 CHECK-FAIL，37 evidence pins 与14 adjudication digests全通过，实际向量仍411/175/6（ledger-final.log）。
 
 ## 最新已完成 CI 的实际证据
 
