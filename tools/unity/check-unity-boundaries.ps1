@@ -63,16 +63,20 @@ function Test-SingleBoundaryRules([string]$projDir, [string]$policyFile, [switch
     $sourceErrors = New-Object System.Collections.Generic.List[string]
     $metaErrors = New-Object System.Collections.Generic.List[string]
 
+    function Add-Dag([string]$msg) { $errors.Add($msg); $dagErrors.Add($msg) }
+    function Add-Source([string]$msg) { $errors.Add($msg); $sourceErrors.Add($msg) }
+    function Add-Meta([string]$msg) { $errors.Add($msg); $metaErrors.Add($msg) }
+
     # 1. Plugin Closure Check
     $pluginsDir = Join-Path $projDir "Assets/Plugins/Mahjong"
     if (-not (Test-Path $pluginsDir)) {
-        $errors.Add("MISSING_PLUGIN_CLOSURE: Assets/Plugins/Mahjong directory is missing.")
+        Add-Meta "MISSING_PLUGIN_CLOSURE: Assets/Plugins/Mahjong directory is missing."
     } else {
         if ($policy.requiredPluginDlls) {
             foreach ($dll in $policy.requiredPluginDlls) {
                 $dllPath = Join-Path $pluginsDir $dll
                 if (-not (Test-Path $dllPath)) {
-                    $errors.Add("MISSING_PLUGIN_CLOSURE: Required plugin DLL '$dll' is missing from '$pluginsDir'.")
+                    Add-Meta "MISSING_PLUGIN_CLOSURE: Required plugin DLL '$dll' is missing from '$pluginsDir'."
                 }
             }
         }
@@ -101,13 +105,13 @@ function Test-SingleBoundaryRules([string]$projDir, [string]$policyFile, [switch
             $name = $json.name
 
             if ($seenNames.ContainsKey($name)) {
-                $errors.Add("DUPLICATE_ASMDEF_NAME: Duplicate asmdef name '$name' found at $($f.FullName) and $($seenNames[$name]).")
+                Add-Dag "DUPLICATE_ASMDEF_NAME: Duplicate asmdef name '$name' found at $($f.FullName) and $($seenNames[$name])."
             } else {
                 $seenNames[$name] = $f.FullName
             }
 
             if (-not ($policy.projectAsmdefs -contains $name) -and -not ($policy.packageAsmdefs -contains $name)) {
-                $errors.Add("UNREGISTERED_ASMDEF: Asmdef '$name' at $($f.FullName) is not registered in boundary policy.")
+                Add-Dag "UNREGISTERED_ASMDEF: Asmdef '$name' at $($f.FullName) is not registered in boundary policy."
             }
 
             $asmdefsByName[$name] = @{
@@ -116,7 +120,7 @@ function Test-SingleBoundaryRules([string]$projDir, [string]$policyFile, [switch
             }
         }
         catch {
-            $errors.Add("Failed to parse asmdef JSON at $($f.FullName): $_")
+            Add-Dag "Failed to parse asmdef JSON at $($f.FullName): $_"
         }
     }
 
@@ -127,7 +131,7 @@ function Test-SingleBoundaryRules([string]$projDir, [string]$policyFile, [switch
     foreach ($asmName in $policy.projectAsmdefs) {
         $projectNodes += $asmName
         if (-not $asmdefsByName.ContainsKey($asmName)) {
-            $errors.Add("Missing required project asmdef: $asmName")
+            Add-Dag "Missing required project asmdef: $asmName"
             continue
         }
 
@@ -136,7 +140,7 @@ function Test-SingleBoundaryRules([string]$projDir, [string]$policyFile, [switch
         $spec = $policy.assemblies.$asmName
 
         if ($null -eq $spec) {
-            $errors.Add("Asmdef '$asmName' present in projectAsmdefs but missing spec in policy.")
+            Add-Dag "Asmdef '$asmName' present in projectAsmdefs but missing spec in policy."
             continue
         }
 
@@ -151,26 +155,26 @@ function Test-SingleBoundaryRules([string]$projDir, [string]$policyFile, [switch
             }
             $expectedRel = $spec.path.Replace('\', '/')
             if ($actualRel -ne $expectedRel) {
-                $errors.Add("ASMDEF_PATH_MISMATCH: Asmdef '$asmName' is located at '$actualRel', but policy requires '$expectedRel'.")
+                Add-Dag "ASMDEF_PATH_MISMATCH: Asmdef '$asmName' is located at '$actualRel', but policy requires '$expectedRel'."
             }
         }
 
         # Check flags
         if ($data.overrideReferences -ne $true) {
-            $errors.Add("Asmdef '$asmName' must have overrideReferences=true.")
+            Add-Dag "Asmdef '$asmName' must have overrideReferences=true."
         }
         if ($data.autoReferenced -ne $false) {
-            $errors.Add("Asmdef '$asmName' must have autoReferenced=false.")
+            Add-Dag "Asmdef '$asmName' must have autoReferenced=false."
         }
         if ($data.allowUnsafeCode -ne $false) {
-            $errors.Add("Asmdef '$asmName' must have allowUnsafeCode=false.")
+            Add-Dag "Asmdef '$asmName' must have allowUnsafeCode=false."
         }
 
         # Test define constraints
         if ($asmName -like "*Tests") {
             $constraints = @($data.defineConstraints)
             if (-not ($constraints -contains "UNITY_INCLUDE_TESTS")) {
-                $errors.Add("Test asmdef '$asmName' must include UNITY_INCLUDE_TESTS in defineConstraints.")
+                Add-Dag "Test asmdef '$asmName' must include UNITY_INCLUDE_TESTS in defineConstraints."
             }
         }
 
@@ -179,7 +183,7 @@ function Test-SingleBoundaryRules([string]$projDir, [string]$policyFile, [switch
         $expectedRefs = if ($spec.references) { @($spec.references) | Sort-Object } else { @() }
         $diff1 = if ($actualRefs.Count -ne $expectedRefs.Count) { $true } elseif ($actualRefs.Count -gt 0) { Compare-Object $actualRefs $expectedRefs } else { $null }
         if ($diff1) {
-            $errors.Add("Asmdef '$asmName' references mismatch. Expected: [$(($expectedRefs)-join ', ')], Actual: [$(($actualRefs)-join ', ')]")
+            Add-Dag "Asmdef '$asmName' references mismatch. Expected: [$(($expectedRefs)-join ', ')], Actual: [$(($actualRefs)-join ', ')]"
         }
 
         # Check precompiledReferences: exact match
@@ -187,7 +191,7 @@ function Test-SingleBoundaryRules([string]$projDir, [string]$policyFile, [switch
         $expectedPre = if ($spec.precompiledReferences) { @($spec.precompiledReferences) | Sort-Object } else { @() }
         $diff2 = if ($actualPre.Count -ne $expectedPre.Count) { $true } elseif ($actualPre.Count -gt 0) { Compare-Object $actualPre $expectedPre } else { $null }
         if ($diff2) {
-            $errors.Add("Asmdef '$asmName' precompiledReferences mismatch. Expected: [$(($expectedPre)-join ', ')], Actual: [$(($actualPre)-join ', ')]")
+            Add-Dag "Asmdef '$asmName' precompiledReferences mismatch. Expected: [$(($expectedPre)-join ', ')], Actual: [$(($actualPre)-join ', ')]"
         }
 
         # Build graph for project asmdef references only
@@ -205,7 +209,7 @@ function Test-SingleBoundaryRules([string]$projDir, [string]$policyFile, [switch
         Assert-NoCycle $graph $projectNodes
     }
     catch {
-        $errors.Add($_.Exception.Message)
+        Add-Dag $_.Exception.Message
     }
 
     # 5. Source code namespace isolation check
@@ -234,7 +238,7 @@ function Test-SingleBoundaryRules([string]$projDir, [string]$policyFile, [switch
                 foreach ($forb in $forbidden) {
                     $pattern = "\busing\s+$([regex]::Escape($forb))\b|\b$([regex]::Escape($forb))\."
                     if ($content -match $pattern) {
-                        $errors.Add("Forbidden namespace/type '$forb' referenced in '$($cs.FullName)'.")
+                        Add-Source "Forbidden namespace/type '$forb' referenced in '$($cs.FullName)'."
                     }
                 }
             }
@@ -253,11 +257,11 @@ function Test-SingleBoundaryRules([string]$projDir, [string]$policyFile, [switch
             foreach ($cs in $csFiles) {
                 $content = Get-Content $cs.FullName -Raw
                 if ($content -match '\bnew\s+Mahjong\.Client\.' -or $content -match '\bMahjong\.Client\.(FileOutboxStore|TableSession|TableSessionOperationQueue)\b') {
-                    $errors.Add("FORBIDDEN_CLIENT_IMPLEMENTATION: Concrete Mahjong.Client implementation instantiated or referenced in '$($cs.FullName)'.")
+                    Add-Source "FORBIDDEN_CLIENT_IMPLEMENTATION: Concrete Mahjong.Client implementation instantiated or referenced in '$($cs.FullName)'."
                 }
                 foreach ($fImpl in $forbiddenImpls) {
                     if ($content -match "\bnew\s+$([regex]::Escape($fImpl))\b") {
-                        $errors.Add("FORBIDDEN_CLIENT_IMPLEMENTATION: Forbidden client concrete class '$fImpl' instantiated in '$($cs.FullName)'.")
+                        Add-Source "FORBIDDEN_CLIENT_IMPLEMENTATION: Forbidden client concrete class '$fImpl' instantiated in '$($cs.FullName)'."
                     }
                 }
             }
@@ -290,7 +294,7 @@ function Test-SingleBoundaryRules([string]$projDir, [string]$policyFile, [switch
         $cleanContent = [regex]::Replace($content, '(?s)#if\s+UNITY_EDITOR.*?#endif', '')
         foreach ($pat in $reflectionPatterns) {
             if ($cleanContent -match $pat) {
-                $errors.Add("Prohibited dynamic/reflection API '$pat' found in '$($cs.FullName)'.")
+                Add-Source "Prohibited dynamic/reflection API '$pat' found in '$($cs.FullName)'."
             }
         }
     }
@@ -300,6 +304,10 @@ function Test-SingleBoundaryRules([string]$projDir, [string]$policyFile, [switch
         $dotnetExe = "D:\Unity\dotnet\dotnet.exe"
         if (-not (Test-Path $dotnetExe)) {
             $dotnetExe = "dotnet"
+        }
+        $dotnetCmd = Get-Command $dotnetExe -ErrorAction SilentlyContinue
+        if (-not $dotnetCmd -and -not (Test-Path $dotnetExe)) {
+            Add-Meta "MISSING_DOTNET: dotnet runtime executable not found at '$dotnetExe' or in PATH."
         }
 
         $probeDir = Join-Path $projDir "TempBoundaryProbe"
@@ -524,7 +532,7 @@ class Program
             }
             $probeOut = & $dotnetExe run --project $probeDir -- @probeArgs 2>&1
             if ($LASTEXITCODE -ne 0) {
-                $errors.Add("METADATA_CHECK_FAILED: $probeOut")
+                Add-Meta "METADATA_CHECK_FAILED: $probeOut"
             }
         }
         finally {
@@ -569,7 +577,7 @@ class Program
             foreach ($gm in $guidMatches) {
                 $guid = $gm.Groups[1].Value
                 if (-not $metaGuids.ContainsKey($guid)) {
-                    $errors.Add("UNRESOLVED_SCENE_SCRIPT_GUID: Scene '$($sc.FullName)' references script with unknown GUID '$guid'.")
+                    Add-Dag "UNRESOLVED_SCENE_SCRIPT_GUID: Scene '$($sc.FullName)' references script with unknown GUID '$guid'."
                 }
             }
         }
@@ -578,22 +586,22 @@ class Program
     # 10. Required Packages Manifest Check
     $manifestFile = Join-Path $projDir "Packages/manifest.json"
     if (-not (Test-Path $manifestFile)) {
-        $errors.Add("MISSING_MANIFEST: Packages/manifest.json not found at '$manifestFile'.")
+        Add-Dag "MISSING_MANIFEST: Packages/manifest.json not found at '$manifestFile'."
     } else {
         try {
             $manifestJson = Get-Content $manifestFile -Raw | ConvertFrom-Json
             if (-not $manifestJson.dependencies) {
-                $errors.Add("INVALID_MANIFEST: Packages/manifest.json has no 'dependencies' object.")
+                Add-Dag "INVALID_MANIFEST: Packages/manifest.json has no 'dependencies' object."
             } else {
                 $requiredPackages = @("com.unity.inputsystem")
                 foreach ($pkg in $requiredPackages) {
                     if (-not ($manifestJson.dependencies.PSObject.Properties.Name -contains $pkg)) {
-                        $errors.Add("MISSING_REQUIRED_PACKAGE: Required package '$pkg' is not present in '$manifestFile'.")
+                        Add-Dag "MISSING_REQUIRED_PACKAGE: Required package '$pkg' is not present in '$manifestFile'."
                     }
                 }
             }
         } catch {
-            $errors.Add("INVALID_MANIFEST: Failed to parse Packages/manifest.json: $_")
+            Add-Dag "INVALID_MANIFEST: Failed to parse Packages/manifest.json: $_"
         }
     }
 
@@ -601,7 +609,7 @@ class Program
     $script:LastReportDetails = @{
         asmdef_dag = if ($dagErrors.Count -eq 0) { "PASS" } else { "FAIL" }
         source_reflection_scan = if ($sourceErrors.Count -eq 0) { "PASS" } else { "FAIL" }
-        metadata_direct_refs = if (-not $compiledRan) { "NOT_RUN" } elseif ($metaErrors.Count -eq 0) { "PASS" } else { "FAIL" }
+        metadata_direct_refs = if ($metaErrors.Count -gt 0) { "FAIL" } elseif (-not $compiledRan) { "NOT_RUN" } else { "PASS" }
         asmdef_shas = $asmdefShas
     }
 
@@ -631,10 +639,14 @@ function Run-NegativeMatrix() {
         if ($baselineErrs.Count -gt 0) {
             throw "Negative matrix baseline fixture has $($baselineErrs.Count) errors: $($baselineErrs -join '; ')"
         }
+        if ($script:LastReportDetails.asmdef_dag -ne "PASS" -or $script:LastReportDetails.source_reflection_scan -ne "PASS" -or $script:LastReportDetails.metadata_direct_refs -ne "NOT_RUN") {
+            throw "Negative matrix baseline fixture has unexpected status: dag=$($script:LastReportDetails.asmdef_dag), source=$($script:LastReportDetails.source_reflection_scan), meta=$($script:LastReportDetails.metadata_direct_refs)"
+        }
 
         $cases = @(
             @{
                 Name = "Case01: Self-loop"
+                ExpectedCategory = "asmdef_dag"
                 Mutate = {
                     param($p)
                     $file = Join-Path $p "Assets/Scripts/UI/Mahjong.Unity.UI.asmdef"
@@ -645,6 +657,7 @@ function Run-NegativeMatrix() {
             },
             @{
                 Name = "Case02: 2-node cycle (App <-> UI)"
+                ExpectedCategory = "asmdef_dag"
                 Mutate = {
                     param($p)
                     $file = Join-Path $p "Assets/Scripts/UI/Mahjong.Unity.UI.asmdef"
@@ -655,6 +668,7 @@ function Run-NegativeMatrix() {
             },
             @{
                 Name = "Case03: 3-node cycle (App -> UI -> Platform -> App)"
+                ExpectedCategory = "asmdef_dag"
                 Mutate = {
                     param($p)
                     $fUi = Join-Path $p "Assets/Scripts/UI/Mahjong.Unity.UI.asmdef"
@@ -670,6 +684,7 @@ function Run-NegativeMatrix() {
             },
             @{
                 Name = "Case04: Missing required reference in UI"
+                ExpectedCategory = "asmdef_dag"
                 Mutate = {
                     param($p)
                     $file = Join-Path $p "Assets/Scripts/UI/Mahjong.Unity.UI.asmdef"
@@ -680,6 +695,7 @@ function Run-NegativeMatrix() {
             },
             @{
                 Name = "Case05: Extra prohibited reference in Platform"
+                ExpectedCategory = "asmdef_dag"
                 Mutate = {
                     param($p)
                     $file = Join-Path $p "Assets/Scripts/Platform/Mahjong.Unity.Platform.asmdef"
@@ -690,6 +706,7 @@ function Run-NegativeMatrix() {
             },
             @{
                 Name = "Case06: Precompiled DLL in references"
+                ExpectedCategory = "asmdef_dag"
                 Mutate = {
                     param($p)
                     $file = Join-Path $p "Assets/Scripts/App/Mahjong.Unity.App.asmdef"
@@ -700,6 +717,7 @@ function Run-NegativeMatrix() {
             },
             @{
                 Name = "Case07: Forbidden Domain DLL in precompiledReferences of UI"
+                ExpectedCategory = "asmdef_dag"
                 Mutate = {
                     param($p)
                     $file = Join-Path $p "Assets/Scripts/UI/Mahjong.Unity.UI.asmdef"
@@ -710,6 +728,7 @@ function Run-NegativeMatrix() {
             },
             @{
                 Name = "Case08: Missing precompiledReferences in App"
+                ExpectedCategory = "asmdef_dag"
                 Mutate = {
                     param($p)
                     $file = Join-Path $p "Assets/Scripts/App/Mahjong.Unity.App.asmdef"
@@ -720,6 +739,7 @@ function Run-NegativeMatrix() {
             },
             @{
                 Name = "Case09: overrideReferences set to false"
+                ExpectedCategory = "asmdef_dag"
                 Mutate = {
                     param($p)
                     $file = Join-Path $p "Assets/Scripts/UI/Mahjong.Unity.UI.asmdef"
@@ -730,6 +750,7 @@ function Run-NegativeMatrix() {
             },
             @{
                 Name = "Case10: LocalHost namespace used in UI source"
+                ExpectedCategory = "source_reflection_scan"
                 Mutate = {
                     param($p)
                     $file = Join-Path $p "Assets/Scripts/UI/MenuPresenter.cs"
@@ -738,10 +759,28 @@ function Run-NegativeMatrix() {
             },
             @{
                 Name = "Case11: Forbidden reflection API in App source"
+                ExpectedCategory = "source_reflection_scan"
                 Mutate = {
                     param($p)
                     $file = Join-Path $p "Assets/Scripts/App/SceneId.cs"
                     (Get-Content $file -Raw) + "`n// System.Reflection.Assembly.LoadFrom(`"bad.dll`");" | Set-Content $file -Encoding utf8
+                }
+            },
+            @{
+                Name = "Case12: Missing required plugin DLL in Mahjong plugins dir"
+                ExpectedCategory = "metadata_direct_refs"
+                Mutate = {
+                    param($p)
+                    $dll = Join-Path $p "Assets/Plugins/Mahjong/Mahjong.Client.dll"
+                    if (Test-Path $dll) { Remove-Item -Force $dll }
+                }
+            },
+            @{
+                Name = "Case13: Strict mode with missing compiled assemblies directory"
+                ExpectedCategory = "metadata_direct_refs"
+                Strict = $true
+                Mutate = {
+                    param($p)
                 }
             }
         )
@@ -753,13 +792,16 @@ function Run-NegativeMatrix() {
             Copy-Item -Path $baseProj -Destination $caseDir -Recurse -Force
             & $case.Mutate $caseDir
 
-            $errs = Test-SingleBoundaryRules $caseDir $policyPath
-            if ($errs.Count -gt 0) {
-                Write-Host "  [PASS] $($case.Name): correctly rejected with $($errs.Count) errors." -ForegroundColor Green
+            $isStrict = [bool]$case.Strict
+            $errs = Test-SingleBoundaryRules $caseDir $policyPath -StrictCompiled:$isStrict
+            $cat = $case.ExpectedCategory
+            $catStatus = if ($cat) { $script:LastReportDetails[$cat] } else { $null }
+            if ($errs.Count -gt 0 -and (-not $cat -or $catStatus -eq "FAIL")) {
+                Write-Host "  [PASS] $($case.Name): correctly rejected with $($errs.Count) errors ($cat=$catStatus)." -ForegroundColor Green
                 $passCount++
             }
             else {
-                Write-Host "  [FAIL] $($case.Name): falsely passed boundary checks!" -ForegroundColor Red
+                Write-Host "  [FAIL] $($case.Name): falsely passed boundary checks! (errs=$($errs.Count), $cat=$catStatus)" -ForegroundColor Red
                 $failedCount++
             }
         }

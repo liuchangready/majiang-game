@@ -84,5 +84,147 @@ namespace Mahjong.Unity.Tests.PlayMode
             ExecuteEvents.Execute(target, p, ExecuteEvents.pointerClickHandler);
             Assert.AreEqual(1, nav.Plays, "Pointer activation must consume the gesture independent of component order and reject its duplicate tail event.");
         }
+
+        [UnityTest]
+        public IEnumerator ButtonBeforeTriggerSubmitAfterPointerMustActivateBoth()
+        {
+            var root = AppRoot.EnsureInitialized(new AppConfig());
+            var load = root.Router.LoadAsync(SceneId.Menu);
+            while (!load.IsCompleted) yield return null;
+            Assert.IsTrue(load.Result);
+            yield return null;
+            UiInputLifecycle.ResetForTest();
+            var nav = new TestNav();
+            Object.FindFirstObjectByType<MenuPresenter>().Initialize(nav);
+            var target = GameObject.Find("PlayButton");
+            Object.DestroyImmediate(target.GetComponent<UiPointerLifecycleTrigger>());
+            target.AddComponent<UiPointerLifecycleTrigger>();
+
+            var p = new PointerEventData(EventSystem.current) { pointerId = -1, button = PointerEventData.InputButton.Left, eligibleForClick = true };
+            ExecuteEvents.Execute(target, p, ExecuteEvents.pointerDownHandler);
+            ExecuteEvents.Execute(target, p, ExecuteEvents.pointerUpHandler);
+            ExecuteEvents.Execute(target, p, ExecuteEvents.pointerClickHandler);
+            Assert.AreEqual(1, nav.Plays);
+            yield return null;
+
+            ExecuteEvents.Execute(target, new BaseEventData(EventSystem.current), ExecuteEvents.submitHandler);
+            Assert.AreEqual(2, nav.Plays, "First real keyboard Submit after consumed pointer must activate exactly once independent of component order.");
+        }
+
+        [UnityTest]
+        public IEnumerator ButtonBeforeTriggerSubmitMustNotAuthorizePointerTail()
+        {
+            var root = AppRoot.EnsureInitialized(new AppConfig());
+            var load = root.Router.LoadAsync(SceneId.Menu);
+            while (!load.IsCompleted) yield return null;
+            Assert.IsTrue(load.Result);
+            yield return null;
+            UiInputLifecycle.ResetForTest();
+            var nav = new TestNav();
+            Object.FindFirstObjectByType<MenuPresenter>().Initialize(nav);
+            var target = GameObject.Find("PlayButton");
+            Object.DestroyImmediate(target.GetComponent<UiPointerLifecycleTrigger>());
+            target.AddComponent<UiPointerLifecycleTrigger>();
+
+            ExecuteEvents.Execute(target, new BaseEventData(EventSystem.current), ExecuteEvents.submitHandler);
+            Assert.AreEqual(1, nav.Plays);
+            yield return null;
+
+            var p = new PointerEventData(EventSystem.current) { pointerId = -1, button = PointerEventData.InputButton.Left, eligibleForClick = true };
+            ExecuteEvents.Execute(target, p, ExecuteEvents.pointerClickHandler);
+            Assert.AreEqual(1, nav.Plays, "A completed Submit must not leave a permit for a later click without a pointer gesture.");
+        }
+
+        [UnityTest]
+        public IEnumerator TriggerBeforeButtonSubmitAfterPointerMustActivateBoth()
+        {
+            var root = AppRoot.EnsureInitialized(new AppConfig());
+            var load = root.Router.LoadAsync(SceneId.Menu);
+            while (!load.IsCompleted) yield return null;
+            Assert.IsTrue(load.Result);
+            yield return null;
+            UiInputLifecycle.ResetForTest();
+            var nav = new TestNav();
+            Object.FindFirstObjectByType<MenuPresenter>().Initialize(nav);
+            var target = GameObject.Find("PlayButton");
+
+            var p = new PointerEventData(EventSystem.current) { pointerId = -1, button = PointerEventData.InputButton.Left, eligibleForClick = true };
+            ExecuteEvents.Execute(target, p, ExecuteEvents.pointerDownHandler);
+            ExecuteEvents.Execute(target, p, ExecuteEvents.pointerUpHandler);
+            ExecuteEvents.Execute(target, p, ExecuteEvents.pointerClickHandler);
+            Assert.AreEqual(1, nav.Plays);
+            yield return null;
+
+            ExecuteEvents.Execute(target, new BaseEventData(EventSystem.current), ExecuteEvents.submitHandler);
+            Assert.AreEqual(2, nav.Plays, "Submit after pointer with standard trigger order must activate both.");
+        }
+
+        [UnityTest]
+        public IEnumerator TriggerBeforeButtonSubmitMustNotAuthorizePointerTail()
+        {
+            var root = AppRoot.EnsureInitialized(new AppConfig());
+            var load = root.Router.LoadAsync(SceneId.Menu);
+            while (!load.IsCompleted) yield return null;
+            Assert.IsTrue(load.Result);
+            yield return null;
+            UiInputLifecycle.ResetForTest();
+            var nav = new TestNav();
+            Object.FindFirstObjectByType<MenuPresenter>().Initialize(nav);
+            var target = GameObject.Find("PlayButton");
+
+            ExecuteEvents.Execute(target, new BaseEventData(EventSystem.current), ExecuteEvents.submitHandler);
+            Assert.AreEqual(1, nav.Plays);
+            yield return null;
+
+            var p = new PointerEventData(EventSystem.current) { pointerId = -1, button = PointerEventData.InputButton.Left, eligibleForClick = true };
+            ExecuteEvents.Execute(target, p, ExecuteEvents.pointerClickHandler);
+            Assert.AreEqual(1, nav.Plays, "A completed Submit in standard order must not leave permit for tail click.");
+        }
+
+        [UnityTest]
+        public IEnumerator ButtonBeforeTriggerConsecutiveSubmitsAcrossFramesMustActivate()
+        {
+            var root = AppRoot.EnsureInitialized(new AppConfig());
+            var load = root.Router.LoadAsync(SceneId.Menu);
+            while (!load.IsCompleted) yield return null;
+            Assert.IsTrue(load.Result);
+            yield return null;
+            UiInputLifecycle.ResetForTest();
+            var nav = new TestNav();
+            Object.FindFirstObjectByType<MenuPresenter>().Initialize(nav);
+            var target = GameObject.Find("PlayButton");
+            Object.DestroyImmediate(target.GetComponent<UiPointerLifecycleTrigger>());
+            target.AddComponent<UiPointerLifecycleTrigger>();
+
+            ExecuteEvents.Execute(target, new BaseEventData(EventSystem.current), ExecuteEvents.submitHandler);
+            Assert.AreEqual(1, nav.Plays);
+            yield return null;
+
+            ExecuteEvents.Execute(target, new BaseEventData(EventSystem.current), ExecuteEvents.submitHandler);
+            Assert.AreEqual(2, nav.Plays, "Consecutive Submits across frames must activate independently.");
+        }
+
+        [UnityTest]
+        public IEnumerator SubmitAfterPauseResume_GateBehavior()
+        {
+            var root = AppRoot.EnsureInitialized(new AppConfig());
+            var load = root.Router.LoadAsync(SceneId.Menu);
+            while (!load.IsCompleted) yield return null;
+            Assert.IsTrue(load.Result);
+            yield return null;
+            UiInputLifecycle.ResetForTest();
+            var nav = new TestNav();
+            Object.FindFirstObjectByType<MenuPresenter>().Initialize(nav);
+            var target = GameObject.Find("PlayButton");
+
+            UiInputLifecycle.Instance.OnPause();
+            ExecuteEvents.Execute(target, new BaseEventData(EventSystem.current), ExecuteEvents.submitHandler);
+            Assert.AreEqual(0, nav.Plays, "Submit during pause must be blocked.");
+            yield return null;
+
+            UiInputLifecycle.Instance.OnResume();
+            ExecuteEvents.Execute(target, new BaseEventData(EventSystem.current), ExecuteEvents.submitHandler);
+            Assert.AreEqual(1, nav.Plays, "Submit after resume must succeed.");
+        }
     }
 }

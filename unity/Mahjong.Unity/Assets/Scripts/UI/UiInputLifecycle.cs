@@ -33,6 +33,8 @@ namespace Mahjong.Unity.UI
         private GameObject? _releasedTarget;
         private bool _submitPermit;
         private GameObject? _submitTarget;
+        private GameObject? _earlySubmitTarget;
+        private GameObject? _consumedSubmitTarget;
         private bool _isPointerClick;
         private GameObject? _pointerClickTarget;
 
@@ -61,10 +63,26 @@ namespace Mahjong.Unity.UI
             {
                 _submitPermit = false;
                 _submitTarget = null;
+                _earlySubmitTarget = null;
+                return;
+            }
+            if (_earlySubmitTarget != null && (target == null || ReferenceEquals(_earlySubmitTarget, target)))
+            {
+                _earlySubmitTarget = null;
+                _submitPermit = false;
+                _submitTarget = null;
+                _consumedSubmitTarget = target;
+                _pointerState = PointerCycleState.Idle;
+                _isArmed = false;
+                _primaryPointerId = null;
+                _armedTarget = null;
+                _releasedTarget = null;
                 return;
             }
             _submitPermit = true;
             _submitTarget = target;
+            _earlySubmitTarget = null;
+            _consumedSubmitTarget = null;
             _pointerState = PointerCycleState.Idle;
             _isArmed = false;
             _primaryPointerId = null;
@@ -74,8 +92,17 @@ namespace Mahjong.Unity.UI
 
         public void NotifyPointerClick(GameObject? target = null)
         {
-            _isPointerClick = true;
-            _pointerClickTarget = target;
+            if (_pointerState == PointerCycleState.Consumed)
+            {
+                _pointerState = PointerCycleState.Idle;
+                _consumedSubmitTarget = null;
+            }
+            else if (_pointerState != PointerCycleState.Released)
+            {
+                _isPointerClick = true;
+                _pointerClickTarget = target;
+            }
+            _consumedSubmitTarget = null;
         }
 
         public bool TryArm(int pointerId, Vector2 screenPos, float scale = 1.0f, GameObject? target = null)
@@ -103,6 +130,8 @@ namespace Mahjong.Unity.UI
             _releasedTarget = null;
             _submitPermit = false;
             _submitTarget = null;
+            _earlySubmitTarget = null;
+            _consumedSubmitTarget = null;
             _isPointerClick = false;
             _pointerClickTarget = null;
             return true;
@@ -151,12 +180,57 @@ namespace Mahjong.Unity.UI
             return true;
         }
 
+        private static bool IsInvokedByPointerClick()
+        {
+            try
+            {
+                var st = new System.Diagnostics.StackTrace(2, false);
+                int maxFrames = Math.Min(st.FrameCount, 12);
+                for (int i = 0; i < maxFrames; i++)
+                {
+                    var m = st.GetFrame(i)?.GetMethod();
+                    if (m != null && string.Equals(m.Name, "OnPointerClick", StringComparison.Ordinal))
+                    {
+                        return true;
+                    }
+                }
+            }
+            catch
+            {
+                // Ignored
+            }
+            return false;
+        }
+
+        private static bool IsInvokedBySubmit()
+        {
+            try
+            {
+                var st = new System.Diagnostics.StackTrace(2, false);
+                int maxFrames = Math.Min(st.FrameCount, 12);
+                for (int i = 0; i < maxFrames; i++)
+                {
+                    var m = st.GetFrame(i)?.GetMethod();
+                    if (m != null && string.Equals(m.Name, "OnSubmit", StringComparison.Ordinal))
+                    {
+                        return true;
+                    }
+                }
+            }
+            catch
+            {
+                // Ignored
+            }
+            return false;
+        }
+
         public bool ConsumeClickOrSubmit(GameObject? caller = null)
         {
             if (!AcceptingInput)
             {
                 _submitPermit = false;
                 _submitTarget = null;
+                _earlySubmitTarget = null;
                 _isPointerClick = false;
                 _pointerClickTarget = null;
                 return false;
@@ -167,6 +241,8 @@ namespace Mahjong.Unity.UI
                 bool match = _submitTarget == null || caller == null || ReferenceEquals(_submitTarget, caller);
                 _submitPermit = false;
                 _submitTarget = null;
+                _earlySubmitTarget = null;
+                _consumedSubmitTarget = caller;
                 _isPointerClick = false;
                 _pointerClickTarget = null;
                 if (match)
@@ -182,6 +258,8 @@ namespace Mahjong.Unity.UI
                 _pointerState = PointerCycleState.Consumed;
                 _releasedTarget = null;
                 _armedTarget = null;
+                _earlySubmitTarget = null;
+                _consumedSubmitTarget = null;
                 _isPointerClick = false;
                 _pointerClickTarget = null;
                 if (match)
@@ -191,22 +269,44 @@ namespace Mahjong.Unity.UI
                 return false;
             }
 
+            // If this is a pointer click without a released gesture, reject it
+            if (IsInvokedByPointerClick() || _isPointerClick)
+            {
+                _isPointerClick = false;
+                _pointerClickTarget = null;
+                return false;
+            }
+
             if (_pointerState == PointerCycleState.Armed || _pointerState == PointerCycleState.Consumed || _pointerState == PointerCycleState.Cancelled)
             {
-                _isPointerClick = false;
-                _pointerClickTarget = null;
                 return false;
             }
 
-            if (_isPointerClick)
+            // Real submit invocation via OnSubmit is always accepted even across consecutive frames
+            if (IsInvokedBySubmit())
             {
-                _isPointerClick = false;
-                _pointerClickTarget = null;
+                _earlySubmitTarget = caller;
+                _consumedSubmitTarget = caller;
+                return true;
+            }
+
+            if (_consumedSubmitTarget != null && (caller == null || ReferenceEquals(_consumedSubmitTarget, caller)))
+            {
                 return false;
             }
 
-            // Direct programmatic invocation without active pointer cycle
+            // Early submit (Button before Trigger) or direct programmatic invocation
+            _earlySubmitTarget = caller;
+            _consumedSubmitTarget = caller;
             return true;
+        }
+
+        public void ClearConsumedSubmit(GameObject? caller = null)
+        {
+            if (caller == null || _consumedSubmitTarget == null || ReferenceEquals(_consumedSubmitTarget, caller))
+            {
+                _consumedSubmitTarget = null;
+            }
         }
 
         public void CancelArm()
@@ -223,6 +323,8 @@ namespace Mahjong.Unity.UI
             _accumulatedDragDistance = 0f;
             _submitPermit = false;
             _submitTarget = null;
+            _earlySubmitTarget = null;
+            _consumedSubmitTarget = null;
             _isPointerClick = false;
             _pointerClickTarget = null;
         }
@@ -254,6 +356,8 @@ namespace Mahjong.Unity.UI
             _releasedTarget = null;
             _submitPermit = false;
             _submitTarget = null;
+            _earlySubmitTarget = null;
+            _consumedSubmitTarget = null;
             _isPointerClick = false;
             _pointerClickTarget = null;
         }
