@@ -1,4 +1,4 @@
-# V5 G1 重审 — 运行时侧独立复审报告（八门：1/1b/3/4/5/6/7/8/9）
+# V5 G1 重审 — 运行时侧独立复审报告（八门：1/3/4/5/6/7/8/9）
 
 日期：2026-10-26
 审查者：Claude Code（glm-5.3-flash），独立审查线程（G1 runtime 侧八门）
@@ -18,7 +18,7 @@
 | 2 | 已导出黄金样本对齐率 100%，未导出单列 | **NOT_RUN（本任务）** | 属并行 Anti 门 2 任务，本线程不重做 |
 | 3 | 依赖方向静态测试通过 | **PASS** | 8 处静态断言锚点逐个核实 + 新鲜构建定向探针 13+59+7 全绿（§3） |
 | 4 | Domain 不含隐式随机/时钟/浮点权威 | **PASS** | 严格 grep **0 命中** + Domain 零包引用（§4） |
-| 5 | 三绝技与 136 守恒通过 | **PASS** | N-1a/N-1b/N-2 三组件源码接线逐锚点核实 + 85 个权威测试 + §7.2 负例矩阵逐类映射（§5） |
+| 5 | 三绝技与 136 守恒通过 | **PASS** | N-1a/N-1b/N-2 三组件源码接线逐锚点核实 + 权威测试展开用例 **88**（定义 24/41/22 → 用例 24/42/22；88 为 caller 第 2 轮定向实跑复核，本线程第 1 轮未单独实跑这三类，详见 §5.0/§16） + §7.2 负例矩阵逐类映射（§5） |
 | 6 | Wire 可重复生成 | **PASS** | SchemaCompatibility(13)+ProjectionWireMapper(16) 新鲜构建探针全绿，CI 149 全绿（§6） |
 | 7 | 按座位/观战私有性通过 | **PASS** | VisibilityGolden 8 + 观战命令前置拒绝 5 探针全绿 + PrivateTypes 六类冻结（§7） |
 | 8 | TableRuntime 并发、版本与恢复合同通过 | **PASS** | checkpoint 3 探针 + CI 397 全绿；回执重放/冲突、双栅栏、恢复不重复结算有具名测试（§8） |
@@ -134,22 +134,33 @@ caller 指定 runs `40266679969` 与 `40266677478`；本线程以 gh 只读下�
 
 ## 5. 门 5 三绝技与 136 守恒（N-1a/N-1b/N-2 宿主实 closure + §7.2 负例矩阵）— PASS
 
-上轮门 5 FAIL 的三组件在本头全部具备**源码接线 + 真实测试 + 已接受组件级验收记录**三重证据，本线程逐锚点重验源码（非转抄）：
+### 5.0 权威测试计数口径（定义数 vs 展开用例数，第 2 轮核正）
+
+| 类 | 源码定义（本线程属性盘点） | 展开用例（xUnit 实跑） | 实跑者 |
+|---|---|---|---|
+| RoundDecisionTests（Domain.Tests） | 24 Fact（无 Theory） | **24**（24/24，native 0） | caller 第 2 轮定向实跑；本线程第 1 轮未单独实跑 |
+| N1bCheatExecutionTests（TableRuntime.Tests） | 41 = 40 Fact + 1 Theory（2 InlineData） | **42**（42/42，native 0） | 同上 |
+| N2HostSettlementTests（TableRuntime.Tests） | 22 Fact（无 Theory） | **22**（22/22，native 0） | 同上 |
+| 合计 | 87 定义 | **88** | — |
+
+**归属声明**：本线程第 1 轮对这三类只做了源码方法名/属性盘点（且当时把 N1b 的 40 个 Fact 属性误当用例数、把 N2 数成 21），**未单独实跑这三类**；这三类的真实执行证据 = 本头 Gate 1 全量 1,808/0/0 与 CI 双 run 1,808/0/0（类级包含）。"24/42/22=88、均 native 0 且 failed/skipped/notRun=0" 来自 **caller 第 2 轮**在 db48534（生产树=08c4a75）对 5 个相关测试项目 `--no-incremental` Release 重建后的 `-class + -result-xml` 定向实跑（证据根 `E=D:/mj-g1rt-caller-20261026-1305`，`tests.json` SHA-256 `B0A3C6A63F318D2625201B08232281ACE0A71898D61BF4C3B4D758CB8690CE9B`，10 类合计 199/199）。本线程第 2 轮已按原始源码属性盘点复核定义数（24 Fact / 40 Fact+1 Theory×2 InlineData / 22 Fact）并与 caller XML 一致。
 
 ### 5.1 N-1a（域侧决策动作）
+
+上轮门 5 FAIL 的三组件在本头全部具备**源码接线 + 真实测试 + 已接受组件级验收记录**三重证据，本线程逐锚点重验源码（非转抄）：
 - `RoundTypes.cs:31-47`：RoundActionKind 实有 **14 值**（含 DeclareChi=9/DeclarePon=10/DeclareOpenKan=11/DeclareClosedKan=12/DeclareRiichi=13）；AgariYame 由 MatchSession.ChooseDealerEnd 承接（已接受口径）。
 - `RoundDecisionTests.cs`（Domain.Tests）**24 Fact**：资格类（ChiRejectsNonShimocha…、RiichiRejectsInsufficientPointsNonTenpaiAndOpenHands、InvalidPhysicalTilesAndMeldShapesNeverRecordAClaim、ClosedKanAfterRiichiRejectsAStructuralChange）、窗口类（DuplicateResponsesAndExpiredWindowsRejectWithoutMutation、LowPriorityFirstClaimCannotStealAnUnclosedWindow、ChiAndPonAreUnavailableInAChankanWindow、RonOutranksPon…、NewDecisionCandidatesRejectStaleForeignAndTerminalInstall）、原子性（PrepareFailureLeavesNoEventVersionOrTileChange、AssertRejectedWithoutMutation）、恢复（RecoveryRoundTrips…×4、CommandJournalRoundTripsN1aCommandsAndRejectsMissingMeldTiles）。
 - 玩家 envelope 通道 `TableActor.cs:175→:1039→:1151` 直达域执行（上轮已正名的真实入口）。
 
 ### 5.2 N-1b（出千执行层接线）
 - `TableActor.cs:257` `SubmitCheatAsync`：7 出千命令走**同一权威 mailbox**（与玩家命令同队列串行），跨 BootId offer journal、cheat fingerprint 绑定、旧 schema fail-closed 均在源码核实。
-- `N1bCheatExecutionTests.cs` **40 测试**，§7.2 五类负例逐类有具名覆盖：资格（tile_mark_from_the_wrong_seat…zero_side_effects、frozen_missing_wall_candidate…、inner_and_outer_request_ids_must_match…）、窗口/期限（pending_decision_and_authoritative_deadline_bind_cheat_commands、expired_off_turn_choice…reports_rejection、authoritative_off_turn_sweep…late_manual_choice_is_rejected）、旧 epoch/旧代（stale_owner_control_version_round_and_recovery_generation…、old_owner_epoch_is_rejected_after_recovery、durable_recovery_fence_rejects_a_delayed_cheat_command_from_the_old_generation）、原子性（commit_failure_rolls_back_every_cheat_side_effect、sleeve_activation_commit_failure_publishes_nothing…、durable_commit_fault_leaves_no_cheat_state_version_or_charge）、回执幂等（same_request_id_with_a_different_payload_digest_is_a_conflict、business_rejection_replays_after_turn_changes…）；**136 守恒**（beam_swap_swap_moves_exactly_the_frozen_hand_and_wall_entities_and_keeps_136_unique）；恢复（durable_checkpoint_and_journal_cold_recovery…、cross_boot_offer 系列 ×5）。
+- `N1bCheatExecutionTests.cs` **42 用例**（源码 41 个定义：40 Fact + 1 Theory×2 InlineData；caller 第 2 轮实跑 42/42，见 §5.0），§7.2 五类负例逐类有具名覆盖：资格（tile_mark_from_the_wrong_seat…zero_side_effects、frozen_missing_wall_candidate…、inner_and_outer_request_ids_must_match…）、窗口/期限（pending_decision_and_authoritative_deadline_bind_cheat_commands、expired_off_turn_choice…reports_rejection、authoritative_off_turn_sweep…late_manual_choice_is_rejected）、旧 epoch/旧代（stale_owner_control_version_round_and_recovery_generation…、old_owner_epoch_is_rejected_after_recovery、durable_recovery_fence_rejects_a_delayed_cheat_command_from_the_old_generation）、原子性（commit_failure_rolls_back_every_cheat_side_effect、sleeve_activation_commit_failure_publishes_nothing…、durable_commit_fault_leaves_no_cheat_state_version_or_charge）、回执幂等（same_request_id_with_a_different_payload_digest_is_a_conflict、business_rejection_replays_after_turn_changes…）；**136 守恒**（beam_swap_swap_moves_exactly_the_frozen_hand_and_wall_entities_and_keeps_136_unique）；恢复（durable_checkpoint_and_journal_cold_recovery…、cross_boot_offer 系列 ×5）。
 
 ### 5.3 N-2（结算权威链）
 - `TableActor.cs:289` `SubmitSettlementAsync`；`TableSettlementCommands.cs`（typed intent 不携带 han/fu/payments；9 个 reason code；`ITableSettlementFactsPort` :346）。
 - 权威计算：`TableActor.cs:1777-1786` 调 `RoundSettlementCalculator.CalculateTsumo/Ron/ExhaustiveDraw/AbortiveDraw`（Domain/Rules），链至 `WinningScoreEvaluator.Explain`（`RoundSettlementCalculator.cs:379`）——结算分值出自冻结域计算器，不信调用方。
 - 旧/raw settlement 收口（**authority-mode 边界，双入口**）：玩家路径 `:1177-1188`（`IsSettlementAction && port!=null → RawEntryRejected`）、AI/超时路径 `:3259-3271` 同栅栏；port 注入时 raw envelope 在读取任何调用方分数/番/符/支付前被拒。**port 未注入时 raw envelope 落回既有 legacy 域执行——这是有意保留的 legacy 模式（port 为可选构造注入 :54/:191），且当前生产代码无任何 port 设置点（唯一注入者为测试 N2HostSettlementTests），即当前真实默认姿态是 fail-closed（typed 提交遇无 port → `:1670-1676` AuthorityUnavailable 拒绝）。** 该边界语义已如实记录；P4.1/P5.1 组合根未开工是阶段事实（SF-1），**不作为本头 G1 新阻断**（任务书门文本无宿主组合根条款）。
-- `N2HostSettlementTests.cs` **21 测试**：RawSettlementEnvelopeIsRefused…、StaleOrForeignSourceFacts…、OldRoundVersionOwnerControlAndDecision…、ForgedHostFactsAreRejectedByTheFrozenCalculator（结算错误注入类）、TerminalRoundRejectsASecondSettlement…、CommitFailureDoesNotConsumeTheDecisionClockOrState、DurableSettlementReplaysIdenticallyAndConflictsOnDifferentPayload、RecoveryDoesNotRepeatTheSettlementPaymentOrOutbox、TrustedFuritenFactRejectsRonAndFailingPortFailsClosed、TypedTsumo 绑定/原子结算 sleeve/beam offer 等。
+- `N2HostSettlementTests.cs` **22 测试**（22 Fact 定义 = 22 用例；caller 第 2 轮实跑 22/22，见 §5.0）：RawSettlementEnvelopeIsRefused…、StaleOrForeignSourceFacts…、OldRoundVersionOwnerControlAndDecision…、ForgedHostFactsAreRejectedByTheFrozenCalculator（结算错误注入类）、TerminalRoundRejectsASecondSettlement…、CommitFailureDoesNotConsumeTheDecisionClockOrState、DurableSettlementReplaysIdenticallyAndConflictsOnDifferentPayload、RecoveryDoesNotRepeatTheSettlementPaymentOrOutbox、TrustedFuritenFactRejectsRonAndFailingPortFailsClosed、TypedTsumo 绑定/原子结算 sleeve/beam offer 等。
 
 ### 5.4 §7.2 统一负例矩阵映射（对真实新增入口，自动阶段权限保留）
 
@@ -168,7 +179,7 @@ caller 指定 runs `40266679969` 与 `40266677478`；本线程以 gh 只读下�
 ## 6. 门 6 Wire 可重复生成 — PASS
 
 - 事件面冻结断言 `SchemaCompatibilityTests.cs:409`（19+2 私有事件）在新构建探针中实跑通过（13/13 含 4 处依赖方向断言）。
-- `ProjectionWireMapperTests`（Contracts.Tests）**16/16** 探针全绿；Contracts.Tests 全量 149 在本地 Gate 1 与 CI 双 run 均 0/0/0 全绿。
+- `ProjectionWireMapperTests`（Contracts.Tests）**16/16** 探针全绿；Contracts.Tests 全量在本地 Gate 1 与 CI 双 run 中均为 **total=149、passed=149、failed=0、skipped=0**（计数口径：total 不为 0）。
 - 上轮 §3.6 的稳定字节/字段号/错误码 Fact 群仍在本头且全绿（包含于上述计数）。**判定 PASS。**
 
 ## 7. 门 7 按座位/观战私有性 — PASS
@@ -220,7 +231,7 @@ Unity 许可激活（本头接受证据=BLOCKED/exit 198，在途分支声称已
 
 | ID | 严重级别 | 位置 | 复现 | 实际 vs 期望 | 证据 | 修复要求 | 验收断言 |
 |---|---|---|---|---|---|---|---|
-| D-1-01 | MINOR（测试覆盖缺口，非行为缺陷） | `dotnet/src/Mahjong.TableRuntime/TableActor.cs:1670-1676`（分支本体）；`dotnet/tests/Mahjong.TableRuntime.Tests/N2HostSettlementTests.cs`（缺负例） | `grep -rn "AuthorityUnavailable" dotnet/tests/` → 0 命中；N2HostSettlementTests 21 测试全部经 `SetFactsPort` 注入 port | 实际：`SubmitSettlementAsync` 在**未注入** `ITableSettlementFactsPort` 时的 fail-closed 拒绝分支（ReasonCode=AuthorityUnavailable，零状态变更）无任何行为测试；期望：该分支有专测 | 本报告 §5.3 源码锚点 + grep 输出（`CODEX-V5-N2-ACCEPTANCE.md` 亦未声称覆盖该分支，无验收声明冲突） | 新增一条负例测试：不注入 port 直接 `SubmitSettlementAsync`，断言 Rejected(AuthorityUnavailable) 且零事件/版本不变/无结算副作用 | 测试在 `dotnet test` 全绿；XML/框架日志计数含该用例；不修改生产代码 |
+| D-1-01 | MINOR（测试覆盖缺口，非行为缺陷） | `dotnet/src/Mahjong.TableRuntime/TableActor.cs:1670-1676`（分支本体）；`dotnet/tests/Mahjong.TableRuntime.Tests/N2HostSettlementTests.cs`（缺负例） | `grep -rn "AuthorityUnavailable" dotnet/tests/` → 0 命中；N2HostSettlementTests 22 测试全部经 `SetFactsPort` 注入 port | 实际：`SubmitSettlementAsync` 在**未注入** `ITableSettlementFactsPort` 时的 fail-closed 拒绝分支（ReasonCode=AuthorityUnavailable，零状态变更）无任何行为测试；期望：该分支有专测 | 本报告 §5.3 源码锚点 + grep 输出（`CODEX-V5-N2-ACCEPTANCE.md` 亦未声称覆盖该分支，无验收声明冲突） | 新增一条负例测试：不注入 port 直接 `SubmitSettlementAsync`，断言 Rejected(AuthorityUnavailable) 且零事件/版本不变/无结算副作用 | 测试在 `dotnet test` 全绿；XML/框架日志计数含该用例；不修改生产代码 |
 
 除 D-1-01 外，**我负责的八门范围内未发现其他 FAIL/BLOCKED 级缺陷**。门 5 判定不受 D-1-01 影响（分支方向为拒绝，fail-closed，不可能产生错误放行）。
 
@@ -277,7 +288,7 @@ Unity 许可激活（本头接受证据=BLOCKED/exit 198，在途分支声称已
 - **门 3**：非完整白名单（I-5 三条建议边）；BCL 层面仅 Domain ✗ System.Net/System.Data 等已断言，其余程序集未逐一遍历。
 - **门 4**：无 source-scan 守护测试（I-4）；确定性以现状 grep + 测试保证，未升格为门。
 - **门 5**：N-1c 未实施（可选）；AuthorityUnavailable 分支无专测（D-1-01）；P4.1 LocalHost 空壳/P5.1 未开工（SF-1 阶段事实）——typed 结算/出千到"生产宿主"的最后一跳在 G2/V5-3 落地。
-- **门 6**：探针为类级实跑；未在本线程重跑独立字节级再生成对比（依赖既有稳定字节 Fact 群 + 149 全绿）。
+- **门 6**：探针为类级实跑。**字节级再生成可重复性已在本轮 13/13 探针内真实运行**：`SchemaCompatibilityTests.ProtocGenerationIsRepeatable`（`SchemaCompatibilityTests.cs:338` 定义；:354-355 对同一 proto 两次 `RunProtoc`；:363-364 断言生成代码 `Mahjong.cs` 与 descriptor **字节逐一相等**）。第 1 轮所述"未额外跑第三套独立探针"仅指未另起第三套脚本，不等于未运行字节级再生成测试；类内其余稳定字节/字段号/错误码 Fact 群由 13/16 类级探针与 Contracts.Tests 全量 total=149 全绿共同覆盖。
 - **门 7**：覆盖实测的座位/观战向量（可见性黄金 8 + 观战拒绝 5 + 私有事件面冻结）；未穷举声明"所有可能泄漏路径"。
 - **门 8**：恢复合同覆盖进程内 checkpoint/journal/cold-recovery/租约/回执重放冲突；PG server-restart 场景不在 CI/本地 gate（I-1）。
 - **门 9**：本头无任何 Unity/IL2CPP 构建日志（全部 BLOCKED）；P22 三类在途证据未审未计；Android 0xC0000409、iOS、真机、跨物理网络、TLS/WSS 明确残余。
@@ -286,6 +297,15 @@ Unity 许可激活（本头接受证据=BLOCKED/exit 198，在途分支声称已
 ## 15. 声明
 
 1. 本报告是 caller 判定 G1 的输入，**不构成 G1 批准**；不 push、不建 PR、不触发 CI、不合并 v5、不部署、不转派/启动其他代理、不创建 complete.flag。
-2. 本次对仓库的唯一改动 = 新增本报告文件；生产/测试/fixture/台账/catalog/verifier/既有报告零改动（提交后 `git status` 干净、`git diff --check` 干净可复核）。
+2. 本次对仓库的唯一净改动 = 本报告一个文件（基线 08c4a75 之上仅此一个 A；第 1 轮曾误用非授权路径 `V5-G1-RUNTIME-REVIEW-INDEPENDENT-20261026.md`，第 2 轮已按 D-R1-01 `git mv` 至唯一授权路径 `V5-G1-RUNTIME-REVIEW-20261026.md`，净 diff 旧路径不存在）；生产/测试/fixture/台账/catalog/verifier/既有报告零改动（提交后 `git status` 干净、`git diff --check` 干净可复核）。
 3. 两个 DeepSeek 返修线程（thread_20261026_103011_054d / thread_20261026_103011_957d）的未提交产物未被读取或合入；其实现未被重复审查。
 4. 所有退出码为原生数值退出码；所有计数为真实计数；无跳过、无旧产物冒绿、无零测试或 skip 顶替。
+
+## 16. 第 2 轮返修逐组映射（caller 复核 E=`D:/mj-g1rt-caller-20261026-1305`；本轮 2 组 MINOR，0 BLOCKER/MAJOR；一次性修完）
+
+| 组 | 缺陷 | 本轮处理 | 落点/验收 |
+|---|---|---|---|
+| R2-1 | **D-R1-01** MINOR（授权路径不符）：expectedFiles 唯一允许 `doc/v5-重构/V5-G1-RUNTIME-REVIEW-20261026.md`，第 1 轮实际新增 `…REVIEW-INDEPENDENT-20261026.md`；标题含不存在的单独"门 1b"编号 | `git mv` 至唯一授权路径并更新 §15.2 自引用；标题改为"八门：1/3/4/5/6/7/8/9"（正文 §1 门 1（A）/§2 门 1（B）小节结构保留） | 基线 `08c4a75` 至最终 HEAD 的 `git diff --name-status` 恰为一个 `A` 且精确等于 expectedFiles；旧路径在 HEAD 树中不存在；`git status` clean；`git diff --check` rc=0 |
+| R2-2 | **D-R1-02** MINOR（用例计数与覆盖描述）：§0/§5 把 grep 方法盘点当用例数（85=24+40+21，N1b 漏 1 Theory 展开与 N2 漏 1 Fact）；§6"0/0/0 全绿"可误读为 total=0；§14 门 6 未说明字节级再生成测试已包含在 13/13 探针内 | 新增 §5.0 计数口径表：定义 24 / 41（40 Fact+1 Theory×2 InlineData）/ 22 → 用例 24/42/22=**88**，并归属 caller 第 2 轮定向实跑（本线程第 1 轮未单独实跑这三类，如实声明）；§0/§5.2/§5.3/D-1-01 行数字同步核正；§6 改写为 total=149、passed=149、failed=0、skipped=0；§14 门 6 明确 `ProtocGenerationIsRepeatable`（:338/:354-355/:363-364）已含于 13/13 探针 | 报告各处数字一致且可按 XML 重算（caller tests.json SHA `B0A3C6A6…0CE9B`：24/42/22 均 native 0）；**1,808 整体数与全部旧证据未变更、未刷新**；未重跑 PG/CI/Unity/全量；D-1-01 原 MINOR 测试债务保留（非本轮实施要求） |
+
+第 2 轮未发现新缺陷，无 BLOCKER/MAJOR；除上述两组外未改动任何内容。门 2（Anti 并行任务）与在途 P22 仍不计入本头 PASS；V4 唯一生产；G1 尚未最终批准；G5 未完成。
