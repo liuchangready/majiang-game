@@ -36,6 +36,7 @@ namespace Mahjong.LocalHost
         private InMemoryRequestScopeAuthority? _scopes;
         private LocalSave? _save;
         private (string AccountId, RequestScopeId ScopeId, RequestId RequestId, string Digest)? _pendingReceiptDigest;
+        private (string AccountId, RequestScopeId ScopeId, RequestId RequestId, string Digest, string Kind)? _pendingControlResult;
         private Stream? _lockStream;
         private bool _leaseAcquired;
         private string _leaseOwner = string.Empty;
@@ -675,10 +676,24 @@ namespace Mahjong.LocalHost
                 candidate.Operations.Clear();
                 candidate.CommandJournals.Clear();
                 candidate.EventJournals.Clear();
+                (string AccountId, RequestScopeId ScopeId, RequestId RequestId, string Digest, string Kind)? pendingControl =
+                    _pendingControlResult;
+                if (pendingControl.HasValue)
+                {
+                    candidate.ControlResults[ReceiptKey(
+                        pendingControl.Value.AccountId,
+                        pendingControl.Value.ScopeId,
+                        pendingControl.Value.RequestId)] = new LocalControlRecord(
+                        candidate.CurrentState.StateVersion.Value,
+                        pendingControl.Value.Digest,
+                        pendingControl.Value.Kind);
+                }
+
                 LocalWriteResult write = Persist(candidate, cancellationToken);
                 if (write.Verdict == LocalWriteVerdict.Committed)
                 {
                     _pendingReceiptDigest = null;
+                    _pendingControlResult = null;
                 }
 
                 return CompleteWrite(write, candidate, result);
@@ -962,6 +977,29 @@ namespace Mahjong.LocalHost
                 return _save != null && _save.ControlResults.TryGetValue(key, out LocalControlRecord? record)
                     ? record
                     : null;
+            }
+        }
+
+        internal void PrepareControlResult(
+            string accountId,
+            RequestScopeId scopeId,
+            RequestId requestId,
+            string digest,
+            string kind)
+        {
+            lock (_gate)
+            {
+                _pendingControlResult = string.IsNullOrEmpty(digest)
+                    ? null
+                    : (accountId, scopeId, requestId, digest, kind);
+            }
+        }
+
+        internal void ClearPreparedControlResult()
+        {
+            lock (_gate)
+            {
+                _pendingControlResult = null;
             }
         }
 

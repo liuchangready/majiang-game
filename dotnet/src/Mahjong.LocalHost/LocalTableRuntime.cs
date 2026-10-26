@@ -1045,6 +1045,16 @@ namespace Mahjong.LocalHost
             }
 
             ulong epoch = document.RequireUInt64(CommandPayloadFields.ExpectedControlEpochV2, "expectedControlEpoch");
+            if (_connectionScopeId.HasValue)
+            {
+                _store.PrepareControlResult(
+                    _connectionAccount,
+                    _connectionScopeId.Value,
+                    requestId,
+                    canonical,
+                    kind.ToString());
+            }
+
             TableControlResult control = kind == CommandKind.ClaimControl
                 ? await _actor.ReclaimControlAsync(
                     _seat,
@@ -1067,6 +1077,7 @@ namespace Mahjong.LocalHost
                     string.IsNullOrEmpty(control.ReasonCode) ? "CONTROL_REJECTED" : control.ReasonCode,
                     control.Detail,
                     payload));
+                _store.ClearPreparedControlResult();
                 return;
             }
 
@@ -1079,16 +1090,6 @@ namespace Mahjong.LocalHost
                 EventSeq = 0UL,
                 CanonicalPayloadSha256 = canonical
             };
-            if (_connectionScopeId.HasValue)
-            {
-                _store.RecordControlResult(
-                    _connectionAccount,
-                    _connectionScopeId.Value,
-                    requestId,
-                    control.EvaluatedStateVersion.Value,
-                    canonical,
-                    kind.ToString());
-            }
 
             Enqueue(ReceiptEnvelope(envelope, requestId, receipt, payload));
         }
