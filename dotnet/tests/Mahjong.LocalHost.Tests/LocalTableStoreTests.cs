@@ -127,10 +127,22 @@ namespace Mahjong.LocalHost.Tests
                 BeforeMove = _ => new IOException("injected move failure")
             };
             harness.Options.FileSystemForTest = fs;
-            await Assert.ThrowsAnyAsync<Exception>(async () =>
+            await Assert.ThrowsAsync<LocalTableException>(async () =>
                 await OpenFreshStoreAsync(harness, fs, TestContext.Current.CancellationToken));
             Assert.False(File.Exists(harness.SavePath));
             Assert.False(File.Exists(harness.BackupPath));
+            LocalTableStore recovered = await OpenFreshStoreAsync(
+                harness,
+                new FaultingFileSystem(),
+                TestContext.Current.CancellationToken);
+            try
+            {
+                Assert.NotNull(await recovered.LoadStateAsync(P41Harness.RoomId, TestContext.Current.CancellationToken));
+            }
+            finally
+            {
+                recovered.Dispose();
+            }
         }
         [Fact]
         public async Task FirstCreateCopyFailureKeepsCommittedPrimaryForRepair()
@@ -311,8 +323,16 @@ namespace Mahjong.LocalHost.Tests
             var facts = new LocalSnapshotFacts(harness.Options.Environment!, harness.Clock);
             var round = facts.CreateInitialRound(harness.Options);
             TableCheckpoint checkpoint = facts.CreateInitialCheckpoint(harness.Options, round);
-            await store.CreateRoomAsync(checkpoint, cancellationToken);
-            return store;
+            try
+            {
+                await store.CreateRoomAsync(checkpoint, cancellationToken);
+                return store;
+            }
+            catch
+            {
+                store.Dispose();
+                throw;
+            }
         }
 
         private static async Task<TableCheckpoint> BuildNextCheckpointAsync(LocalTableStore store)
