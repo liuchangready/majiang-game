@@ -42,6 +42,8 @@ namespace Mahjong.LocalHost.Tests
                 }
             }, TestContext.Current.CancellationToken);
 
+            RequestScopeId controlScope = default;
+            RequestId lastControlRequest = default;
             try
             {
                 await WaitReadyAsync(session, pumpCts.Token);
@@ -53,11 +55,14 @@ namespace Mahjong.LocalHost.Tests
                     BusinessPayload payload = claim
                         ? CommandPayloadFactory.ClaimControl(baseline.RoundId, epoch)
                         : CommandPayloadFactory.ReleaseControl(baseline.RoundId, epoch);
+                    var controlRequest = new RequestId("control-" + i + "-" + Guid.NewGuid().ToString("N"));
+                    controlScope = session.Binding!.Scope.ScopeId;
+                    lastControlRequest = controlRequest;
                     var command = new ProtocolCommand(
                         claim ? CommandKind.ClaimControl : CommandKind.ReleaseControl,
                         payload,
-                        new RequestId("control-" + i + "-" + Guid.NewGuid().ToString("N")),
-                        session.Binding!.Scope.ScopeId,
+                        controlRequest,
+                        controlScope,
                         new StateVersion(baseline.StateVersion),
                         new RoundId(baseline.RoundId),
                         decisionId: null,
@@ -94,17 +99,12 @@ namespace Mahjong.LocalHost.Tests
                 await session.CloseAsync("TEST_DONE", CancellationToken.None);
                 await channel.CloseAsync(new TableChannelCloseReason("TEST_DONE", true), CancellationToken.None);
             }
-            var controlScope = new RequestScopeId("control-scope");
-            var controlRequest = new RequestId("unchanged-control");
             using (LocalTableStore store = await LocalTableStore.OpenAsync(harness.Options, harness.Clock, null, ct))
             {
-                store.PrepareControlResult("local-control", controlScope, controlRequest, new string('a', 64), "ClaimControl");
-                store.CommitPreparedControlResultOnly();
-            }
-
-            using (LocalTableStore reopened = await LocalTableStore.OpenAsync(harness.Options, harness.Clock, null, ct))
-            {
-                Assert.NotNull(reopened.GetControlResult("local-control", controlScope, controlRequest));
+                Assert.NotNull(store.GetControlResult(
+                    "local-" + P41Harness.RoomId + "-seat0",
+                    controlScope,
+                    lastControlRequest));
             }
         }
 
