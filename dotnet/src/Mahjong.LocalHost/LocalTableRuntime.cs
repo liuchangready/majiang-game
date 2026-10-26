@@ -797,10 +797,6 @@ namespace Mahjong.LocalHost
                 }
 
                 await PublishResultAsync(envelope, result, requestId, payload, cancellationToken).ConfigureAwait(false);
-                if (result.Status == TableOperationStatus.Accepted || result.Status == TableOperationStatus.Replayed)
-                {
-                    await EnsureInitialHumanDecisionAsync().ConfigureAwait(false);
-                }
             }
             catch (LocalCommandException exception)
             {

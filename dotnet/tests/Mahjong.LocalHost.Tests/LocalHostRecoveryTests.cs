@@ -267,6 +267,25 @@ namespace Mahjong.LocalHost.Tests
                 Assert.True(row.StateVersion.Value >= committed);
             }
         }
+        private static async Task WaitForStableStateAsync(TableSession session, CancellationToken ct)
+        {
+            ulong last = session.PlayerSnapshot!.StateVersion;
+            int stable = 0;
+            for (int i = 0; i < 100 && stable < 5; i++)
+            {
+                await Task.Delay(20, ct);
+                ulong current = session.PlayerSnapshot!.StateVersion;
+                if (current == last)
+                {
+                    stable++;
+                }
+                else
+                {
+                    last = current;
+                    stable = 0;
+                }
+            }
+        }
         private static async Task<(ITableChannel Channel, TableSession Session)> OpenSessionAsync(
             P41Harness harness,
             CancellationToken cancellationToken)
