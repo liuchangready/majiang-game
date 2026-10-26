@@ -23,6 +23,10 @@ namespace Mahjong.LocalHost.Tests
 
         public Action? DuringReplace { get; set; }
 
+        public Func<string, Exception?>? BeforeCopy { get; set; }
+
+        public int CopyAttempts { get; private set; }
+
         public bool FileExists(string path) => _inner.FileExists(path);
 
         public void CreateDirectory(string path) => _inner.CreateDirectory(path);
