@@ -170,34 +170,41 @@ function Test-WallTilesConservation {
         if ($item -is [string] -or $item -is [bool]) {
             return @{ Code = 'WALL_CONSERVATION_INVALID'; Message = ("shuffle-reversed-v1: case '{0}' {1} contains non-integer tile value '{2}' (type={3})" -f $CaseId, $WallName, $item, $item.GetType().Name) }
         }
-        $isWideInt = $false
-        $wideVal = [long]0
-        if ($item -is [int] -or $item -is [long] -or $item -is [int16] -or $item -is [byte] -or $item -is [sbyte] -or $item -is [uint16] -or $item -is [uint32] -or $item -is [uint64]) {
+        $val = -1
+        if ($item -is [int]) {
+            $val = [int]$item
+            if ($val -lt 0 -or $val -gt 135) {
+                return @{ Code = 'WALL_CONSERVATION_INVALID'; Message = ("shuffle-reversed-v1: case '{0}' {1} contains tile out of range [0..135]: {2}" -f $CaseId, $WallName, $val) }
+            }
+        } elseif ($item -is [long] -or $item -is [int16] -or $item -is [byte] -or $item -is [sbyte] -or $item -is [uint16] -or $item -is [uint32] -or $item -is [uint64]) {
             try {
                 $wideVal = [long]$item
-                $isWideInt = $true
+                if ($wideVal -lt 0 -or $wideVal -gt 135) {
+                    return @{ Code = 'WALL_CONSERVATION_INVALID'; Message = ("shuffle-reversed-v1: case '{0}' {1} contains tile out of range [0..135]: {2}" -f $CaseId, $WallName, $wideVal) }
+                }
+                $val = [int]$wideVal
             } catch {
                 return @{ Code = 'WALL_CONSERVATION_INVALID'; Message = ("shuffle-reversed-v1: case '{0}' {1} contains tile out of range [0..135]: {2}" -f $CaseId, $WallName, $item) }
             }
         } elseif ($item -is [double] -or $item -is [float] -or $item -is [decimal]) {
-            $d = [double]$item
-            if ([Math]::Floor($d) -ne $d) {
-                return @{ Code = 'WALL_CONSERVATION_INVALID'; Message = ("shuffle-reversed-v1: case '{0}' {1} contains non-integer fractional tile value {2}" -f $CaseId, $WallName, $d) }
+            try {
+                $d = [double]$item
+                if ([double]::IsNaN($d) -or [double]::IsInfinity($d)) {
+                    return @{ Code = 'WALL_CONSERVATION_INVALID'; Message = ("shuffle-reversed-v1: case '{0}' {1} contains non-finite tile value {2}" -f $CaseId, $WallName, $d) }
+                }
+                if ([Math]::Floor($d) -ne $d) {
+                    return @{ Code = 'WALL_CONSERVATION_INVALID'; Message = ("shuffle-reversed-v1: case '{0}' {1} contains non-integer fractional tile value {2}" -f $CaseId, $WallName, $d) }
+                }
+                if ($d -lt 0 -or $d -gt 135) {
+                    return @{ Code = 'WALL_CONSERVATION_INVALID'; Message = ("shuffle-reversed-v1: case '{0}' {1} contains tile out of range [0..135]: {2}" -f $CaseId, $WallName, $d) }
+                }
+                $val = [int]$d
+            } catch {
+                return @{ Code = 'WALL_CONSERVATION_INVALID'; Message = ("shuffle-reversed-v1: case '{0}' {1} contains tile out of range [0..135]: {2}" -f $CaseId, $WallName, $item) }
             }
-            if ($d -lt [long]::MinValue -or $d -gt [long]::MaxValue) {
-                return @{ Code = 'WALL_CONSERVATION_INVALID'; Message = ("shuffle-reversed-v1: case '{0}' {1} contains tile out of range [0..135]: {2}" -f $CaseId, $WallName, $d) }
-            }
-            $wideVal = [long]$d
-            $isWideInt = $true
         } else {
             return @{ Code = 'WALL_CONSERVATION_INVALID'; Message = ("shuffle-reversed-v1: case '{0}' {1} contains invalid tile object of type {2}" -f $CaseId, $WallName, $item.GetType().FullName) }
         }
-
-        if ($wideVal -lt 0 -or $wideVal -gt 135) {
-            return @{ Code = 'WALL_CONSERVATION_INVALID'; Message = ("shuffle-reversed-v1: case '{0}' {1} contains tile out of range [0..135]: {2}" -f $CaseId, $WallName, $wideVal) }
-        }
-
-        $val = [int]$wideVal
         if (-not $seen.Add($val)) {
             return @{ Code = 'WALL_CONSERVATION_INVALID'; Message = ("shuffle-reversed-v1: case '{0}' {1} contains duplicate tile {2}, violating 136-tile physical conservation" -f $CaseId, $WallName, $val) }
         }

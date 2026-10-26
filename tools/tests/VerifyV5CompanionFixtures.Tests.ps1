@@ -631,6 +631,22 @@ try {
         Write-JsonFile $p $j
     }
 
+    Invoke-NegativeCase -Name 'neg-shuffle-double-int64-edge-three-caster-wall' -ExpectedCode 'WALL_CONSERVATION_INVALID' -InternalStructureTestMode -Mutator {
+        param($root)
+        $p = Join-Path $root 'tests\v5-golden\shuffle-reversed-v1.json'
+        $j = Read-JsonFile $p
+        $j.cases[0].threeCasterWall[0] = [double]9223372036854775808.0
+        Write-JsonFile $p $j
+    }
+
+    Invoke-NegativeCase -Name 'neg-shuffle-double-int64-edge-reversed-wall' -ExpectedCode 'WALL_CONSERVATION_INVALID' -InternalStructureTestMode -Mutator {
+        param($root)
+        $p = Join-Path $root 'tests\v5-golden\shuffle-reversed-v1.json'
+        $j = Read-JsonFile $p
+        $j.cases[0].reversedWall[0] = [double]9223372036854775808.0
+        Write-JsonFile $p $j
+    }
+
     # -------------------------------------------------------------------------
     # Group F: Truncated & Invalid JSON Syntax Negatives (Tested with -InternalStructureTestMode)
     # -------------------------------------------------------------------------

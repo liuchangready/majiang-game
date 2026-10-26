@@ -3,7 +3,7 @@
 **日期**：2026-10-26
 **执行角色**：Anti 独立任务（2026-10-26 授权之最多 4 个独立任务之一）
 **冻结工作树基线**：`978a15667f80094ed63c86f69c53195439c95a2c`（分支 `wt/v5-companion-verifier-anti-20261026`）
-**任务依据**：落实已接受文档 `doc/v5-重构/V5-G1-GOLDEN-REVIEW-ANTI-20261026.md` §4 中 **REC-G2-02** 独立自动化维护建议，并在本轮完成对第 1 轮（D-R1-01 至 D-R1-06）、第 2 轮（D-R2-01 至 D-R2-02）以及第 3 轮（D-R3-01 / D-R2-01 遗留、D-R3-02 / D-R2-02）独立检视意见的全面闭环批量修复。
+**任务依据**：落实已接受文档 `doc/v5-重构/V5-G1-GOLDEN-REVIEW-ANTI-20261026.md` §4 中 **REC-G2-02** 独立自动化维护建议，并在本轮完成对第 1 轮（D-R1-01 至 D-R1-06）、第 2 轮（D-R2-01 至 D-R2-02）、第 3 轮（D-R3-01 / D-R2-01 遗留、D-R3-02 / D-R2-02）以及第 4 轮（D-R4-01）独立检视意见的全面闭环批量修复。
 
 ---
 
@@ -30,8 +30,8 @@
 | 动作 | 文件路径 | 类型 / 职责 |
 |---|---|---|
 | **新增** | [`tools/verify-v5-companion-fixtures.ps1`](file:///D:/majiang-wt/companion-verifier-anti-20261026/tools/verify-v5-companion-fixtures.ps1) | 独立只读伴随黄金样本校验器 (PowerShell 5.1 兼容，实现全字节防御、强类型物理守恒校验与来源 Git Pin 溯源) |
-| **新增** | [`tools/tests/VerifyV5CompanionFixtures.Tests.ps1`](file:///D:/majiang-wt/companion-verifier-anti-20261026/tools/tests/VerifyV5CompanionFixtures.Tests.ps1) | 伴随校验器回归测试套件 (包含 69 项正负用例、Junction/HardLink 别名免疫防御与进程内清理断言) |
-| **新增** | [`doc/v5-重构/V5-COMPANION-FIXTURE-VERIFIER.md`](file:///D:/majiang-wt/companion-verifier-anti-20261026/doc/v5-重构/V5-COMPANION-FIXTURE-VERIFIER.md) | 本实施与验收报告（修正原命名不匹配缺陷 [D-R1-06]，包含 R1/R2/R3 全量闭环记录） |
+| **新增** | [`tools/tests/VerifyV5CompanionFixtures.Tests.ps1`](file:///D:/majiang-wt/companion-verifier-anti-20261026/tools/tests/VerifyV5CompanionFixtures.Tests.ps1) | 伴随校验器回归测试套件 (包含 71 项正负用例、Junction/HardLink 别名免疫防御与进程内清理断言) |
+| **新增** | [`doc/v5-重构/V5-COMPANION-FIXTURE-VERIFIER.md`](file:///D:/majiang-wt/companion-verifier-anti-20261026/doc/v5-重构/V5-COMPANION-FIXTURE-VERIFIER.md) | 本实施与验收报告（修正原命名不匹配缺陷 [D-R1-06]，包含 R1/R2/R3/R4 全量闭环记录） |
 
 **绝对零修改确认**：
 - `tools/verify-v5.ps1`：**未修改**（保持既有统一 CI 入口不变）
@@ -45,9 +45,17 @@
 
 ---
 
-## 3. 检视缺陷闭环修复映射 (R1、R2 与 R3 全量闭环)
+## 3. 检视缺陷闭环修复映射 (R1、R2、R3 与 R4 全量闭环)
 
-### 3.1 第 3 轮检视缺陷闭环映射 (D-R3-01 与 D-R3-02)
+### 3.1 第 4 轮检视缺陷闭环映射 (D-R4-01)
+
+| 缺陷 ID | 严重级别 | 根因与修复措施 | 验证命令 / 复现证据 | 验收判定 |
+|---|---|---|---|---|
+| **[D-R4-01]** | **MINOR** | **浮点转换分支在 Int64 上界因 double 舍入产生未处理溢出**：<br/>1. **根因**：上一轮引入的浮点数转换分支中，使用了 `$d -gt [long]::MaxValue` 逻辑。由于 IEEE 754 双精度浮点（53 位尾数精度）将 `[long]::MaxValue`（$2^{63}-1$）舍入为 $2^{63}$（`9223372036854775808.0`），导致当输入为 `[double]9223372036854775808.0` 时，`$d -gt [long]::MaxValue` 判定为 `$false`；随后执行 `$wideVal = [long]$d` 强制转换时抛出未处理的 `InvalidCastException: Cannot convert value ... to type System.Int64`；<br/>2. **修复措施**：<br/>- 业务闭环范围前置：直接在浮点数分支对 `$d` 进行有限性与业务范围检验。首先验证 `[double]::IsNaN($d) -or [double]::IsInfinity($d)`，再检验非整数浮点 `[Math]::Floor($d) -ne $d`，随后直接基于业务闭环范围 `[0..135]` 进行比较（`if ($d -lt 0 -or $d -gt 135)`）；<br/>- 彻底消除宽整型溢出风险：对 `[double]9223372036854775808.0`，直接由 `$d -gt 135` 命中并受控返回 `WALL_CONSERVATION_INVALID`，绝不在范围检查前尝试强转 `[long]` 或 `[int]`；并在浮点与宽整型分支均配置可靠的 `try / catch` 兜底保护；<br/>- 回归测试套件扩充：在 `VerifyV5CompanionFixtures.Tests.ps1` 中对 `threeCasterWall` 与 `reversedWall` 均固化 `double-int64-edge` 测试用例（`[double]9223372036854775808.0`），实测退出码 1 且输出 `WALL_CONSERVATION_INVALID`；<br/>- 独立探针验收：调用方 `extended-probes.ps1` 包含的 22 项测试全部满足预期，原生退出码 0，`FAILURES=0`。 | `build/companion-caller-review-r4/extended-probes.ps1` 原样复跑：<br/>- 22 项测试全部通过（`FAILURES=0`，Exit 0）：<br/>- 4 项 HardLink 别名拦截：EXIT=2，UNCHANGED=True<br/>- 2 项 Valid 牌山：EXIT=0，OK=True<br/>- 16 项变异测试（含 `threeCasterWall` 与 `reversedWall` 的 `double-int64-edge`）：**EXIT=1，OK=True，均准确输出 `WALL_CONSERVATION_INVALID`** | **CLOSED** |
+
+---
+
+### 3.2 第 3 轮检视缺陷闭环映射 (D-R3-01 与 D-R3-02)
 
 | 缺陷 ID | 严重级别 | 根因与修复措施 | 验证命令 / 复现证据 | 验收判定 |
 |---|---|---|---|---|
@@ -56,7 +64,7 @@
 
 ---
 
-### 3.2 第 2 轮检视缺陷闭环映射 (D-R2-01 与 D-R2-02)
+### 3.3 第 2 轮检视缺陷闭环映射 (D-R2-01 与 D-R2-02)
 
 | 缺陷 ID | 严重级别 | 根因与修复措施 | 验证命令 / 复现证据 | 验收判定 |
 |---|---|---|---|---|
@@ -65,7 +73,7 @@
 
 ---
 
-### 3.3 第 1 轮检视缺陷闭环汇总 (D-R1-01 至 D-R1-06)
+### 3.4 第 1 轮检视缺陷闭环汇总 (D-R1-01 至 D-R1-06)
 
 - **[D-R1-01] 全字节/UTF-8 校验被自动解码绕过**：已实现 BOM 严格检测（`Test-HasBom`）与非宽松 UTF-8 解码（`Get-StrictUtf8String`），固化双形态 raw SHA-256 与 byte profiles。四 fixture 的 LF、CRLF 两种接受形态均 4/4 native 0；四 fixture 均分别覆盖 UTF16/BOM/混合换行变异退出 1。
 - **[D-R1-02] 公开 `-SkipHashCheck` 认证虚假 PASS**：已移除公开开关，替换为仅供内部结构分支测试的 `-InternalStructureTestMode`，明确打印 `[STRUCTURE_TEST_MODE]` 标记且绝不输出黄金认证 PASS 与静态哈希；增加 136 牌物理守恒严格校验。
@@ -110,21 +118,47 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/verify-v5-companio
 
 ### 5.2 调用方独立复现探针复跑验证
 
-#### 1) 第 3 轮探针复跑 (`build/companion-caller-review-r3/probes-r3.ps1`)
+#### 1) 第 4 轮扩展探针复跑 (`build/companion-caller-review-r4/extended-probes.ps1`)
+- **执行结果**：`FAILURES=0`，原生 Exit Code: `0`
+- **用例明细**：
+  - `CASE=hardlink-tests/v5-golden/movement-v1.json EXIT=2 UNCHANGED=True`
+  - `CASE=hardlink-tools/verify-v5-companion-fixtures.ps1 EXIT=2 UNCHANGED=True`
+  - `CASE=hardlink-tools/tests/VerifyV5CompanionFixtures.Tests.ps1 EXIT=2 UNCHANGED=True`
+  - `CASE=hardlink-build.gradle EXIT=2 UNCHANGED=True`
+  - `CASE=threeCasterWall-valid EXIT=0 OK=True`
+  - `CASE=threeCasterWall-string EXIT=1 OK=True`（输出 `WALL_CONSERVATION_INVALID`）
+  - `CASE=threeCasterWall-null EXIT=1 OK=True`（输出 `WALL_CONSERVATION_INVALID`）
+  - `CASE=threeCasterWall-bool EXIT=1 OK=True`（输出 `WALL_CONSERVATION_INVALID`）
+  - `CASE=threeCasterWall-fractional EXIT=1 OK=True`（输出 `WALL_CONSERVATION_INVALID`）
+  - `CASE=threeCasterWall-large-int EXIT=1 OK=True`（输出 `WALL_CONSERVATION_INVALID`）
+  - `CASE=threeCasterWall-negative EXIT=1 OK=True`（输出 `WALL_CONSERVATION_INVALID`）
+  - `CASE=threeCasterWall-duplicate EXIT=1 OK=True`（输出 `WALL_CONSERVATION_INVALID`）
+  - `CASE=threeCasterWall-double-int64-edge EXIT=1 OK=True`（输出 `WALL_CONSERVATION_INVALID`）
+  - `CASE=reversedWall-valid EXIT=0 OK=True`
+  - `CASE=reversedWall-string EXIT=1 OK=True`（输出 `WALL_CONSERVATION_INVALID`）
+  - `CASE=reversedWall-null EXIT=1 OK=True`（输出 `WALL_CONSERVATION_INVALID`）
+  - `CASE=reversedWall-bool EXIT=1 OK=True`（输出 `WALL_CONSERVATION_INVALID`）
+  - `CASE=reversedWall-fractional EXIT=1 OK=True`（输出 `WALL_CONSERVATION_INVALID`）
+  - `CASE=reversedWall-large-int EXIT=1 OK=True`（输出 `WALL_CONSERVATION_INVALID`）
+  - `CASE=reversedWall-negative EXIT=1 OK=True`（输出 `WALL_CONSERVATION_INVALID`）
+  - `CASE=reversedWall-duplicate EXIT=1 OK=True`（输出 `WALL_CONSERVATION_INVALID`）
+  - `CASE=reversedWall-double-int64-edge EXIT=1 OK=True`（输出 `WALL_CONSERVATION_INVALID`）
+
+#### 2) 第 3 轮探针复跑 (`build/companion-caller-review-r3/probes-r3.ps1`)
 - `CASE=selftest-logpath-hardlink-fixture`：**NATIVE_EXIT=2**，输出 `BLOCKED: LogPath '...' is a hard link alias (link count=2)`，`LINK_REPARSE_POINT=False`，`FIXTURE_OVERWRITTEN=False`
 - `CASE=structure-wall-numeric-string`：**NATIVE_EXIT=1**，输出 `WALL_CONSERVATION_INVALID: shuffle-reversed-v1: case '0' threeCasterWall contains non-integer tile value '0' (type=String)`
 - `CASE=structure-wall-fractional-number`：**NATIVE_EXIT=1**，输出 `WALL_CONSERVATION_INVALID: shuffle-reversed-v1: case '0' threeCasterWall contains non-integer fractional tile value 0.5`
 - `CASE=structure-wall-large-integer`：**NATIVE_EXIT=1**，输出 `WALL_CONSERVATION_INVALID: shuffle-reversed-v1: case '0' threeCasterWall contains tile out of range [0..135]: 2147483648`
 
-#### 2) 第 2 轮探针复跑 (`build/companion-caller-review-r2/probes-r2.ps1`)
+#### 3) 第 2 轮探针复跑 (`build/companion-caller-review-r2/probes-r2.ps1`)
 - `CASE=selftest-logpath-junction-alias`：**NATIVE_EXIT=2**，输出 `BLOCKED: LogPath ... contains reparse points or junction aliases`，`FIXTURE_OVERWRITTEN=False`
 - `CASE=structure-mode-out-of-range-wall`：**NATIVE_EXIT=1**，输出 `WALL_CONSERVATION_INVALID: shuffle-reversed-v1: case '0' threeCasterWall contains tile out of range [0..135]: 136`
 
-#### 3) 清理断言边界探针复跑 (`build/companion-caller-review-r2/cleanup-probe.ps1`)
+#### 4) 清理断言边界探针复跑 (`build/companion-caller-review-r2/cleanup-probe.ps1`)
 - `CASE=cleanup-prefix-boundary`：`OUTSIDE_GUID_ACCEPTED=False`
 - `CASE=cleanup-external-junction`：`EXTERNAL_NESTED_LINK_DELETED=False`
 
-#### 4) 第 1 轮探针复跑 (`build/companion-caller-review/probes.ps1`)
+#### 5) 第 1 轮探针复跑 (`build/companion-caller-review/probes.ps1`)
 - `utf16-default`：**NATIVE_EXIT=1**（拦截 BOM 与无效 UTF-8，检测到哈希不符）
 - `mixed-eol-default`：**NATIVE_EXIT=1**（检测到原始字节与 SHA 不符）
 - `duplicate-tile-skiphash`：**NATIVE_EXIT=1**（检测到 HASH_MISMATCH 与 WALL_CONSERVATION_INVALID）
@@ -137,13 +171,13 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/verify-v5-companio
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/tests/VerifyV5CompanionFixtures.Tests.ps1 -LogPath build/companion-fixtures/selftest.log
 ```
 - **原生退出码**：`0`
-- **用例总数**：`69`
+- **用例总数**：`71`
 - **正例基线 (Positives)**：`3`
   - `positive-all-lf-profile`（全 4 fixture LF 纯净形态沙箱验证，Exit 0）
   - `positive-all-crlf-profile`（全 4 fixture CRLF 纯净形态沙箱验证，Exit 0）
   - `positive-real-repo-git-pins`（真实仓库 Git Pin 校验，Exit 0）
-- **负例变异 (Negatives)**：`66`
-  - **原生 Exit 1**：`59` 项（哈希单字节漂移、编码错误、物理守恒违规、非整型牌值、宽整型溢出、结构缺失等）
+- **负例变异 (Negatives)**：`68`
+  - **原生 Exit 1**：`61` 项（哈希单字节漂移、编码错误、物理守恒违规、非整型牌值、宽整型溢出、双精度 Int64 上界变异、结构缺失等）
   - **原生 Exit 2 (BLOCKED)**：`6` 项：
     - `neg-missing-git-dependency`（缺少 git 命令依赖）
     - `neg-test-logpath-target-protected-fixture`（LogPath 指向真实黄金 fixture）
@@ -154,10 +188,10 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/tests/VerifyV5Comp
   - **进程内断言 (In-Process Assertions)**：`1` 项：
     - `neg-cleanup-prefix-boundary`（验证 `Assert-WithinGuidRoot` 严格拒绝外部同前缀兄弟目录，抛出安全违规异常）
 - **失败用例 (Failures)**：`0`
-- **执行口径总结**：`total=69 (native0=3, native1=59, native2=6, in_process_assertions=1), failures=0`
+- **执行口径总结**：`total=71 (native0=3, native1=61, native2=6, in_process_assertions=1), failures=0`
 - **真实仓库未篡改确认**：`real_fixtures_unchanged=true`（且位于写日志之后执行，零时序漏洞）
 - **自测原始日志**：`build/companion-fixtures/selftest.log`
-- **日志 SHA-256**：`C190EB5B52AC1292B860283BDDB155548BE0936E6C37C81BC5CE78355C5A1BEA`
+- **日志 SHA-256**：`2D04D243FAF953DFBA79682F7DD41DF31A8F3896D94471A89331ED379EF114FA`
 
 ### 5.4 既有六基准目录校验器回归 (`tools/verify-v5-golden-catalog.ps1`)
 ```powershell
@@ -175,9 +209,9 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/verify-v5-golden-c
 
 | 产物 / 文件路径 | 状态 | 字节数 (Bytes) | SHA-256 完整哈希 |
 |---|---|---|---|
-| [`tools/verify-v5-companion-fixtures.ps1`](file:///D:/majiang-wt/companion-verifier-anti-20261026/tools/verify-v5-companion-fixtures.ps1) | 完善交付 | 28,784 | `C2025A1122A7284B878C06EF9283D9DBE7DB5697BD2F6DBE4FE82F09E02029A9` |
-| [`tools/tests/VerifyV5CompanionFixtures.Tests.ps1`](file:///D:/majiang-wt/companion-verifier-anti-20261026/tools/tests/VerifyV5CompanionFixtures.Tests.ps1) | 完善交付 | 50,018 | `419B0AA141D4165310BF1C19CAC6E444860EC06D53010BE4EE5358F3E9DA1AD7` |
-| `build/companion-fixtures/selftest.log` | 本地自测日志 (ignored) | 53,369 | `C190EB5B52AC1292B860283BDDB155548BE0936E6C37C81BC5CE78355C5A1BEA` |
+| [`tools/verify-v5-companion-fixtures.ps1`](file:///D:/majiang-wt/companion-verifier-anti-20261026/tools/verify-v5-companion-fixtures.ps1) | 完善交付 | 29,508 | `A1E80B5C56D56828DEE54F8085AA94BC9A9095AB15A3FE9B47083D2B31A4D047` |
+| [`tools/tests/VerifyV5CompanionFixtures.Tests.ps1`](file:///D:/majiang-wt/companion-verifier-anti-20261026/tools/tests/VerifyV5CompanionFixtures.Tests.ps1) | 完善交付 | 50,791 | `734DC480965BDF95C8C5D599E677B290B29C98CFC25DF4B4CCC85EC43BABBBD8` |
+| `build/companion-fixtures/selftest.log` | 本地自测日志 (ignored) | 54,678 | `2D04D243FAF953DFBA79682F7DD41DF31A8F3896D94471A89331ED379EF114FA` |
 
 ---
 
