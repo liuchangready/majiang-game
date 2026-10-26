@@ -105,5 +105,77 @@ namespace Mahjong.LocalHost.Tests
 
             Assert.Equal(TableConnectionState.Ready, session.State);
         }
+
+        [Fact]
+        public async Task EmptyControlDigestDoesNotResolveTheOutbox()
+        {
+            await using var harness = new P41Harness();
+            harness.Options.AutoPlay = false;
+            CancellationToken ct = TestContext.Current.CancellationToken;
+            ITableChannel raw = await LocalTableHost.CreateChannelAsync(harness.Options, ct);
+            string channelTicket = LocalTableHost.IssueTicket(harness.Options);
+            await raw.OpenAsync(new TableChannelConnectRequest(channelTicket, "p41-test", null), ct);
+            var channel = new EmptyControlDigestChannel(raw);
+            var session = new TableSession(channel, new InMemoryOutboxStore());
+            string sessionTicket = LocalTableHost.IssueTicket(harness.Options);
+            await session.OpenAsync(new TableSessionOpenRequest(sessionTicket, "p41-test"), ct);
+            try
+            {
+                for (int i = 0; i < 50 && session.State != TableConnectionState.Ready; i++)
+                {
+                    await session.PumpOnceAsync(ct);
+                }
+
+                Assert.Equal(TableConnectionState.Ready, session.State);
+                PlayerSnapshot baseline = session.PlayerSnapshot!;
+                BusinessPayload payload = CommandPayloadFactory.ReleaseControl(baseline.RoundId, 0);
+                var command = new ProtocolCommand(
+                    CommandKind.ReleaseControl,
+                    payload,
+                    new RequestId("empty-digest-control"),
+                    session.Binding!.Scope.ScopeId,
+                    new StateVersion(baseline.StateVersion),
+                    new RoundId(baseline.RoundId),
+                    decisionId: null,
+                    controlEpoch: new ControlEpoch(0));
+                CommandSubmission submission = await session.SubmitAsync(command, ct);
+                Assert.True(submission.Sent);
+                for (int i = 0; i < 100 && session.PendingCommands.Count == 0 && session.State != TableConnectionState.Faulted; i++)
+                {
+                    await session.PumpOnceAsync(ct);
+                }
+
+                Assert.True(
+                    session.PendingCommands.Count > 0 || session.State == TableConnectionState.Faulted,
+                    "empty control digest resolved the outbox");
+            }
+            finally
+            {
+                await session.CloseAsync("TEST_DONE", CancellationToken.None);
+                await raw.CloseAsync(new TableChannelCloseReason("TEST_DONE", true), CancellationToken.None);
+            }
+        }
+
+        private sealed class EmptyControlDigestChannel : ITableChannel
+        {
+            private readonly ITableChannel _inner;
+            public EmptyControlDigestChannel(ITableChannel inner) { _inner = inner; }
+            public bool IsOpen => _inner.IsOpen;
+            public Task OpenAsync(TableChannelConnectRequest request, CancellationToken cancellationToken) => _inner.OpenAsync(request, cancellationToken);
+            public Task SendAsync(ReadOnlyMemory<byte> wireEnvelope, CancellationToken cancellationToken) => _inner.SendAsync(wireEnvelope, cancellationToken);
+            public Task CloseAsync(TableChannelCloseReason reason, CancellationToken cancellationToken) => _inner.CloseAsync(reason, cancellationToken);
+            public async Task<ReadOnlyMemory<byte>> ReceiveAsync(CancellationToken cancellationToken)
+            {
+                var bytes = await _inner.ReceiveAsync(cancellationToken);
+                var envelope = Mahjong.Contracts.Wire.Envelope.Parser.ParseFrom(bytes.ToArray());
+                if (envelope.Receipt != null && string.Equals(envelope.Receipt.ReasonCode, "LOCAL_CONTROL", StringComparison.Ordinal))
+                {
+                    envelope.Receipt.CanonicalPayloadSha256 = string.Empty;
+                    return Mahjong.Contracts.Wire.WireCodec.Encode(envelope);
+                }
+
+                return bytes;
+            }
+        }
     }
 }
