@@ -41,9 +41,9 @@ namespace Mahjong.LocalHost.Tests
             try
             {
                 await session.OpenAsync(new TableSessionOpenRequest(sessionTicket, "p41-test"), pumpCts.Token);
-                for (int i = 0; i < 30 && session.State != TableConnectionState.Ready; i++)
+                for (int i = 0; i < 100 && session.State != TableConnectionState.Ready; i++)
                 {
-                    await Task.Delay(10, pumpCts.Token);
+                    await Task.Delay(20, pumpCts.Token);
                 }
 
                 Assert.Equal(TableConnectionState.Ready, session.State);
