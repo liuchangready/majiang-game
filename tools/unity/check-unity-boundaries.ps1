@@ -330,6 +330,12 @@ class Program
                         errors.Add("DLL is not a CLI assembly: " + filename);
                         continue;
                     }
+                    string asmName = mr.GetString(mr.GetAssemblyDefinition().Name);
+                    string expectedName = Path.GetFileNameWithoutExtension(filename);
+                    if (!string.Equals(asmName, expectedName, StringComparison.OrdinalIgnoreCase))
+                    {
+                        errors.Add("DLL assembly name mismatch: " + filename + " defines assembly '" + asmName + "' but expected '" + expectedName + "'.");
+                    }
                 }
                 catch (Exception ex)
                 {
@@ -383,6 +389,21 @@ class Program
         // 3. If compiled assemblies exist in Library/ScriptAssemblies, scan direct AssemblyReferences
         if (!string.IsNullOrEmpty(compiledDir) && Directory.Exists(compiledDir))
         {
+            var requiredCompiled = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+            {
+                "Mahjong.Unity.UI.dll",
+                "Mahjong.Unity.Platform.dll",
+                "Mahjong.Unity.App.dll"
+            };
+            foreach (var req in requiredCompiled)
+            {
+                string reqPath = Path.Combine(compiledDir, req);
+                if (!File.Exists(reqPath))
+                {
+                    errors.Add("MISSING_COMPILED_ASSEMBLY: Required compiled assembly '" + req + "' is missing in " + compiledDir);
+                }
+            }
+
             var forbiddenByAssembly = new Dictionary<string, HashSet<string>>(StringComparer.OrdinalIgnoreCase)
             {
                 ["Mahjong.Unity.UI.dll"] = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
@@ -554,6 +575,15 @@ function Run-NegativeMatrix() {
         if (Test-Path (Join-Path $projectPath "ProjectSettings")) {
             Copy-Item -Path (Join-Path $projectPath "ProjectSettings") -Destination (Join-Path $baseProj "ProjectSettings") -Recurse -Force
         }
+        if (Test-Path (Join-Path $projectPath "Packages")) {
+            Copy-Item -Path (Join-Path $projectPath "Packages") -Destination (Join-Path $baseProj "Packages") -Recurse -Force
+        }
+
+        # Assert baseline passes cleanly
+        $baselineErrs = Test-SingleBoundaryRules $baseProj $policyPath
+        if ($baselineErrs.Count -gt 0) {
+            throw "Negative matrix baseline fixture has $($baselineErrs.Count) errors: $($baselineErrs -join '; ')"
+        }
 
         $cases = @(
             @{
@@ -670,6 +700,7 @@ function Run-NegativeMatrix() {
         )
 
         $passCount = 0
+        $failedCount = 0
         foreach ($case in $cases) {
             $caseDir = Join-Path $tempBase ("case-" + [Guid]::NewGuid().ToString('N'))
             Copy-Item -Path $baseProj -Destination $caseDir -Recurse -Force
@@ -682,11 +713,17 @@ function Run-NegativeMatrix() {
             }
             else {
                 Write-Host "  [FAIL] $($case.Name): falsely passed boundary checks!" -ForegroundColor Red
-                throw "Negative case '$($case.Name)' did not trigger any errors."
+                $failedCount++
             }
         }
 
+        if ($failedCount -gt 0) {
+            Write-Host "Negative boundary matrix failed: $failedCount of $($cases.Count) cases did not trigger errors." -ForegroundColor Red
+            exit 1
+        }
+
         Write-Host "All $($cases.Count) negative test cases passed successfully!" -ForegroundColor Green
+        exit 0
     }
     finally {
         if (Test-Path $tempBase) {

@@ -90,7 +90,7 @@ namespace Mahjong.Unity.UI
             {
                 return;
             }
-            if (!UiInputLifecycle.Instance.ConsumeClickOrSubmit())
+            if (!UiInputLifecycle.Instance.ConsumeClickOrSubmit(_playButton != null ? _playButton.gameObject : null))
             {
                 return;
             }
@@ -107,7 +107,7 @@ namespace Mahjong.Unity.UI
             {
                 return;
             }
-            if (!UiInputLifecycle.Instance.ConsumeClickOrSubmit())
+            if (!UiInputLifecycle.Instance.ConsumeClickOrSubmit(_quitButton != null ? _quitButton.gameObject : null))
             {
                 return;
             }

@@ -108,15 +108,11 @@ namespace Mahjong.Unity.App
 
             try
             {
-                // If session is active, shutdown gracefully
-                if (_composition.SessionCoordinator != null)
+                ShutdownResult result = await _composition.ShutdownAsync("RETURN_TO_MENU");
+                if (!result.MenuAllowed)
                 {
-                    ShutdownResult result = await _composition.ShutdownAsync("RETURN_TO_MENU");
-                    if (!result.MenuAllowed)
-                    {
-                        Debug.LogError($"NAV_BLOCKED: Shutdown outcome {result.Outcome} disallowed menu");
-                        return false;
-                    }
+                    Debug.LogWarning($"NAV_BLOCKED: Shutdown outcome {result.Outcome} disallowed menu");
+                    return false;
                 }
 
                 return await LoadAsyncInternal(SceneId.Menu);
@@ -131,8 +127,33 @@ namespace Mahjong.Unity.App
         public void RequestQuit()
         {
             Debug.Log("QUIT_REQUESTED: Initiating application shutdown.");
-            _composition.ShutdownAsync("APP_QUIT").ContinueWith(_ =>
+            _composition.ShutdownAsync("APP_QUIT").ContinueWith(task =>
             {
+                if (task.IsFaulted || task.IsCanceled)
+                {
+                    Debug.LogError($"QUIT_SHUTDOWN_FAULT: Shutdown task faulted or canceled: {task.Exception}");
+#if UNITY_EDITOR
+                    UnityEditor.EditorApplication.isPlaying = false;
+#else
+                    Application.Quit(11);
+#endif
+                    return;
+                }
+
+                ShutdownResult result = task.Result;
+                Debug.Log($"QUIT_SHUTDOWN_RESULT: Outcome={result.Outcome}, Quarantined={result.Quarantined}, MenuAllowed={result.MenuAllowed}");
+
+                if (result.Outcome != ShutdownOutcome.Completed || result.Quarantined)
+                {
+                    Debug.LogError($"SMOKE_ERROR: Application shutdown failed or quarantined: {result.Outcome} (Quarantined={result.Quarantined})");
+#if UNITY_EDITOR
+                    UnityEditor.EditorApplication.isPlaying = false;
+#else
+                    Application.Quit(13);
+#endif
+                    return;
+                }
+
                 Debug.Log("SMOKE_SUCCESS: Application shutdown completed cleanly.");
 #if UNITY_EDITOR
                 UnityEditor.EditorApplication.isPlaying = false;

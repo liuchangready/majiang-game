@@ -135,7 +135,7 @@ namespace Mahjong.Unity.UI
 
         public void OnBackClicked()
         {
-            if (!UiInputLifecycle.Instance.ConsumeClickOrSubmit())
+            if (!UiInputLifecycle.Instance.ConsumeClickOrSubmit(_backButton != null ? _backButton.gameObject : null))
             {
                 return;
             }

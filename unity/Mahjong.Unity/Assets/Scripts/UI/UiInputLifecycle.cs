@@ -29,7 +29,10 @@ namespace Mahjong.Unity.UI
         private long _pressGeneration;
 
         private PointerCycleState _pointerState = PointerCycleState.Idle;
-        private bool _isSubmit;
+        private bool _submitPermit;
+        private GameObject? _submitTarget;
+        private bool _isPointerClick;
+        private GameObject? _pointerClickTarget;
 
         // Independent gate states
         private bool _isPaused;
@@ -50,9 +53,22 @@ namespace Mahjong.Unity.UI
             _instance = new UiInputLifecycle();
         }
 
-        public void NotifySubmit()
+        public void NotifySubmit(GameObject? target = null)
         {
-            _isSubmit = true;
+            if (!AcceptingInput)
+            {
+                _submitPermit = false;
+                _submitTarget = null;
+                return;
+            }
+            _submitPermit = true;
+            _submitTarget = target;
+        }
+
+        public void NotifyPointerClick(GameObject? target = null)
+        {
+            _isPointerClick = true;
+            _pointerClickTarget = target;
         }
 
         public bool TryArm(int pointerId, Vector2 screenPos, float scale = 1.0f)
@@ -76,6 +92,10 @@ namespace Mahjong.Unity.UI
             _accumulatedDragDistance = 0f;
             _pressGeneration++;
             _pointerState = PointerCycleState.Armed;
+            _submitPermit = false;
+            _submitTarget = null;
+            _isPointerClick = false;
+            _pointerClickTarget = null;
             return true;
         }
 
@@ -118,34 +138,43 @@ namespace Mahjong.Unity.UI
             return true;
         }
 
-        public bool ConsumeClickOrSubmit()
+        public bool ConsumeClickOrSubmit(GameObject? caller = null)
         {
             if (!AcceptingInput)
             {
-                _isSubmit = false;
+                _submitPermit = false;
+                _submitTarget = null;
+                _isPointerClick = false;
+                _pointerClickTarget = null;
                 return false;
             }
 
-            if (_isSubmit)
+            if (_submitPermit)
             {
-                _isSubmit = false;
-                return true;
+                bool match = _submitTarget == null || caller == null || ReferenceEquals(_submitTarget, caller);
+                _submitPermit = false;
+                _submitTarget = null;
+                _isPointerClick = false;
+                _pointerClickTarget = null;
+                if (match)
+                {
+                    return true;
+                }
             }
 
-            if (_pointerState == PointerCycleState.Released)
+            if (_isPointerClick)
             {
-                _pointerState = PointerCycleState.Consumed;
-                return true;
-            }
-
-            if (_pointerState == PointerCycleState.Armed ||
-                _pointerState == PointerCycleState.Consumed ||
-                _pointerState == PointerCycleState.Cancelled)
-            {
+                _isPointerClick = false;
+                _pointerClickTarget = null;
+                if (_pointerState == PointerCycleState.Released)
+                {
+                    _pointerState = PointerCycleState.Consumed;
+                    return true;
+                }
                 return false;
             }
 
-            // PointerCycleState.Idle: keyboard/gamepad submit or direct programmatic invocation
+            // Direct programmatic invocation without pointer click event
             return true;
         }
 
@@ -159,6 +188,10 @@ namespace Mahjong.Unity.UI
             _primaryPointerId = null;
             _pressGeneration++;
             _accumulatedDragDistance = 0f;
+            _submitPermit = false;
+            _submitTarget = null;
+            _isPointerClick = false;
+            _pointerClickTarget = null;
         }
 
         public void OnPause()
@@ -184,6 +217,10 @@ namespace Mahjong.Unity.UI
             _pointerState = PointerCycleState.Idle;
             _isArmed = false;
             _primaryPointerId = null;
+            _submitPermit = false;
+            _submitTarget = null;
+            _isPointerClick = false;
+            _pointerClickTarget = null;
         }
 
         public void OnFocusLost()

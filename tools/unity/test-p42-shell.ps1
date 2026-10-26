@@ -135,7 +135,16 @@ if ($playFailed -gt 0 -or $playSkipped -gt 0 -or $playTotal -eq 0 -or $playPasse
 }
 $results.PlayModeTests = "PASS ($playPassed/$playTotal)"
 
-# 4. Player Smoke Test
+# 4. Post-compile compiled assemblies boundary check
+Write-Host "Verifying boundary rules on compiled assemblies in Library/ScriptAssemblies..."
+$bPostOut = & powershell.exe -ExecutionPolicy Bypass -File $boundaryScript
+if ($LASTEXITCODE -ne 0) {
+    Write-Host $bPostOut
+    throw "Post-compile boundary check FAILED (ExitCode: $LASTEXITCODE)"
+}
+Write-Host "Post-compile boundary check: PASS"
+
+# 5. Player Smoke Test
 if (-not $SkipPlayer) {
     Write-Host "`n[STEP 5/5] Running Standalone Player Smoke Test & Screenshot Capture..."
     $playerDir = Join-Path $resolvedOutput "player"

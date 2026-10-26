@@ -527,8 +527,8 @@ GameObject:
   - component: {fileID: 365012744}
   - component: {fileID: 365012743}
   - component: {fileID: 365012741}
-  - component: {fileID: 365012740}
   - component: {fileID: 365012742}
+  - component: {fileID: 365012740}
   m_Layer: 0
   m_Name: PlayButton
   m_TagString: Untagged
@@ -661,8 +661,8 @@ GameObject:
   - component: {fileID: 465900784}
   - component: {fileID: 465900783}
   - component: {fileID: 465900781}
-  - component: {fileID: 465900780}
   - component: {fileID: 465900782}
+  - component: {fileID: 465900780}
   m_Layer: 0
   m_Name: QuitButton
   m_TagString: Untagged
@@ -1178,8 +1178,8 @@ GameObject:
   - component: {fileID: 1364978219}
   - component: {fileID: 1364978222}
   - component: {fileID: 1364978221}
-  - component: {fileID: 1364978223}
   - component: {fileID: 1364978220}
+  - component: {fileID: 1364978223}
   m_Layer: 0
   m_Name: CancelButton
   m_TagString: Untagged
@@ -1449,8 +1449,8 @@ GameObject:
   - component: {fileID: 1429841373}
   - component: {fileID: 1429841376}
   - component: {fileID: 1429841375}
-  - component: {fileID: 1429841377}
   - component: {fileID: 1429841374}
+  - component: {fileID: 1429841377}
   m_Layer: 0
   m_Name: ConfirmButton
   m_TagString: Untagged

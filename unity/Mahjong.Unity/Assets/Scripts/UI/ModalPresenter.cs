@@ -105,7 +105,7 @@ namespace Mahjong.Unity.UI
 
         private void OnConfirmClicked()
         {
-            if (!UiInputLifecycle.Instance.ConsumeClickOrSubmit())
+            if (!UiInputLifecycle.Instance.ConsumeClickOrSubmit(_confirmButton != null ? _confirmButton.gameObject : null))
             {
                 return;
             }
@@ -125,7 +125,7 @@ namespace Mahjong.Unity.UI
 
         private void OnCancelClicked()
         {
-            if (!UiInputLifecycle.Instance.ConsumeClickOrSubmit())
+            if (!UiInputLifecycle.Instance.ConsumeClickOrSubmit(_cancelButton != null ? _cancelButton.gameObject : null))
             {
                 return;
             }

@@ -398,8 +398,8 @@ GameObject:
   - component: {fileID: 1040454316}
   - component: {fileID: 1040454315}
   - component: {fileID: 1040454313}
-  - component: {fileID: 1040454312}
   - component: {fileID: 1040454314}
+  - component: {fileID: 1040454312}
   m_Layer: 0
   m_Name: BackButton
   m_TagString: Untagged

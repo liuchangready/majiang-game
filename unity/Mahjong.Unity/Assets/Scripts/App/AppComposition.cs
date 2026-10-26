@@ -21,8 +21,11 @@ namespace Mahjong.Unity.App
         private readonly object _gate = new object();
         private SessionCoordinator? _sessionCoordinator;
         private Task<SessionCoordinator>? _inFlightOpen;
-        private readonly CancellationTokenSource _shutdownCts = new CancellationTokenSource();
-        private bool _isShuttingDown;
+        private CancellationTokenSource _sessionCts = new CancellationTokenSource();
+        private readonly CancellationTokenSource _appQuitCts = new CancellationTokenSource();
+        private bool _isAppQuitting;
+        private bool _isSessionShuttingDown;
+        private bool _isQuarantined;
         private long _generationCounter = 0;
 
         public SessionCoordinator? SessionCoordinator
@@ -59,17 +62,18 @@ namespace Mahjong.Unity.App
         {
             lock (_gate)
             {
-                if (_isShuttingDown)
+                if (_isAppQuitting)
                 {
-                    return Task.FromException<SessionCoordinator>(new OperationCanceledException("AppComposition is shutting down."));
+                    return Task.FromException<SessionCoordinator>(new OperationCanceledException("AppComposition is quitting."));
+                }
+
+                if (_isQuarantined || (_sessionCoordinator != null && _sessionCoordinator.IsQuarantined))
+                {
+                    return Task.FromException<SessionCoordinator>(new InvalidOperationException("Previous coordinator is quarantined; replacement blocked."));
                 }
 
                 if (_sessionCoordinator != null)
                 {
-                    if (_sessionCoordinator.IsQuarantined)
-                    {
-                        return Task.FromException<SessionCoordinator>(new InvalidOperationException("Previous coordinator is quarantined; replacement blocked."));
-                    }
                     return Task.FromResult(_sessionCoordinator);
                 }
 
@@ -78,6 +82,7 @@ namespace Mahjong.Unity.App
                     return _inFlightOpen;
                 }
 
+                _isSessionShuttingDown = false;
                 _inFlightOpen = OpenLocalSessionInternalAsync(cancellationToken);
                 return _inFlightOpen;
             }
@@ -85,114 +90,124 @@ namespace Mahjong.Unity.App
 
         private async Task<SessionCoordinator> OpenLocalSessionInternalAsync(CancellationToken cancellationToken)
         {
-            using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, _shutdownCts.Token);
-            var token = linkedCts.Token;
-
-            ITableChannel? channel = null;
-            SessionCoordinator? coordinator = null;
-            try
+            long gen;
+            CancellationTokenSource linkedCts;
+            lock (_gate)
             {
-                if (_isShuttingDown)
-                {
-                    throw new OperationCanceledException(token);
-                }
-
-                long gen = Interlocked.Increment(ref _generationCounter);
-
-                // ChannelFactory will throw LocalTableUnavailableException in P4.2-core default
-                channel = await ChannelFactory.CreateAsync(TableTransportKind.Local, token).ConfigureAwait(false);
-
-                if (_isShuttingDown)
-                {
-                    throw new OperationCanceledException(token);
-                }
-
-                Paths.EnsureDirectoriesCreated();
-                var outbox = new FileOutboxStore(Paths.OutboxDirectory);
-                var session = new TableSession(channel, outbox, new TableSessionOptions());
-                var queue = new TableSessionOperationQueue(session);
-                coordinator = new SessionCoordinator(session, queue, channel, Dispatcher, Config, gen);
-
-                var pumpToken = coordinator.RunToken;
-                var pumpTask = Task.Run(async () =>
-                {
-                    try
-                    {
-                        while (!pumpToken.IsCancellationRequested)
-                        {
-                            await queue.PumpOnceAsync(pumpToken).ConfigureAwait(false);
-                        }
-                    }
-                    catch (OperationCanceledException)
-                    {
-                        // Clean cancellation on shutdown
-                    }
-
-                    try
-                    {
-                        var unfinishedField = typeof(TableSessionOperationQueue).GetField("_unfinishedReceive", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
-                        if (unfinishedField?.GetValue(queue) is Task unfinishedTask && !unfinishedTask.IsCompleted)
-                        {
-                            await unfinishedTask.ConfigureAwait(false);
-                        }
-                    }
-                    catch
-                    {
-                        // Ignore cancellation/faults on pump shutdown
-                    }
-                }, pumpToken);
-                coordinator.SetPumpTask(pumpTask);
-
-                await queue.OpenAsync(new TableSessionOpenRequest("local", "local"), token).ConfigureAwait(false);
-
-                lock (_gate)
-                {
-                    if (_isShuttingDown)
-                    {
-                        // If shutdown arrived while opening, abort publication
-                        throw new OperationCanceledException(token);
-                    }
-                    _sessionCoordinator = coordinator;
-                }
-                return coordinator;
+                gen = Interlocked.Increment(ref _generationCounter);
+                linkedCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, _sessionCts.Token, _appQuitCts.Token);
             }
-            catch
+
+            using (linkedCts)
             {
-                if (coordinator != null)
+                var token = linkedCts.Token;
+                ITableChannel? channel = null;
+                SessionCoordinator? coordinator = null;
+                try
                 {
-                    try
+                    token.ThrowIfCancellationRequested();
+
+                    channel = await ChannelFactory.CreateAsync(TableTransportKind.Local, token).ConfigureAwait(false);
+
+                    lock (_gate)
                     {
-                        var shutResult = await coordinator.ShutdownAsync("OPEN_FAILED").ConfigureAwait(false);
-                        if (shutResult.Quarantined || coordinator.IsQuarantined)
+                        if (_isAppQuitting || _isSessionShuttingDown || gen != _generationCounter)
                         {
-                            lock (_gate)
+                            throw new OperationCanceledException("Session open aborted due to shutdown or new generation.");
+                        }
+                    }
+
+                    Paths.EnsureDirectoriesCreated();
+                    var outbox = new FileOutboxStore(Paths.OutboxDirectory);
+                    var session = new TableSession(channel, outbox, new TableSessionOptions());
+                    var queue = new TableSessionOperationQueue(session);
+                    coordinator = new SessionCoordinator(session, queue, channel, Dispatcher, Config, gen);
+
+                    var pumpToken = coordinator.RunToken;
+                    var pumpTask = Task.Run(async () =>
+                    {
+                        try
+                        {
+                            while (!pumpToken.IsCancellationRequested)
                             {
-                                _sessionCoordinator = coordinator;
+                                await queue.PumpOnceAsync(pumpToken).ConfigureAwait(false);
+                            }
+                        }
+                        catch (OperationCanceledException)
+                        {
+                            // Clean cancellation on shutdown
+                        }
+
+                        try
+                        {
+                            var unfinishedField = typeof(TableSessionOperationQueue).GetField("_unfinishedReceive", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
+                            if (unfinishedField?.GetValue(queue) is Task unfinishedTask && !unfinishedTask.IsCompleted)
+                            {
+                                await unfinishedTask.ConfigureAwait(false);
+                            }
+                        }
+                        catch
+                        {
+                            // Ignore cancellation/faults on pump shutdown
+                        }
+                    }, pumpToken);
+                    coordinator.SetPumpTask(pumpTask);
+
+                    await queue.OpenAsync(new TableSessionOpenRequest("local", "local"), token).ConfigureAwait(false);
+
+                    lock (_gate)
+                    {
+                        if (_isAppQuitting || _isSessionShuttingDown || gen != _generationCounter)
+                        {
+                            throw new OperationCanceledException("Session open aborted due to shutdown or new generation.");
+                        }
+                        _sessionCoordinator = coordinator;
+                    }
+                    return coordinator;
+                }
+                catch
+                {
+                    if (coordinator != null)
+                    {
+                        try
+                        {
+                            var shutResult = await coordinator.ShutdownAsync("OPEN_FAILED").ConfigureAwait(false);
+                            if (shutResult.Quarantined || coordinator.IsQuarantined)
+                            {
+                                lock (_gate)
+                                {
+                                    _sessionCoordinator = coordinator;
+                                    _isQuarantined = true;
+                                }
+                            }
+                        }
+                        catch
+                        {
+                            if (coordinator.IsQuarantined)
+                            {
+                                lock (_gate)
+                                {
+                                    _sessionCoordinator = coordinator;
+                                    _isQuarantined = true;
+                                }
                             }
                         }
                     }
-                    catch
+                    else if (channel is IDisposable disposable)
                     {
-                        if (coordinator.IsQuarantined)
+                        try { disposable.Dispose(); } catch { }
+                    }
+                    throw;
+                }
+                finally
+                {
+                    lock (_gate)
+                    {
+                        if (_inFlightOpen != null && _inFlightOpen.IsCompleted)
                         {
-                            lock (_gate)
-                            {
-                                _sessionCoordinator = coordinator;
-                            }
+                            _inFlightOpen = null;
                         }
                     }
-                }
-                else if (channel is IDisposable disposable)
-                {
-                    try { disposable.Dispose(); } catch { }
-                }
-                throw;
-            }
-            finally
-            {
-                lock (_gate)
-                {
-                    _inFlightOpen = null;
                 }
             }
         }
@@ -201,17 +216,37 @@ namespace Mahjong.Unity.App
         {
             Task<SessionCoordinator>? inFlight;
             SessionCoordinator? coordinator;
+            bool isQuit = string.Equals(reason, "APP_QUIT", StringComparison.OrdinalIgnoreCase);
+
             lock (_gate)
             {
-                _isShuttingDown = true;
-                try { _shutdownCts.Cancel(); } catch { }
+                if (isQuit)
+                {
+                    _isAppQuitting = true;
+                    try { _appQuitCts.Cancel(); } catch { }
+                }
+                _isSessionShuttingDown = true;
+                try { _sessionCts.Cancel(); } catch { }
+
+                Interlocked.Increment(ref _generationCounter);
+
                 inFlight = _inFlightOpen;
                 coordinator = _sessionCoordinator;
             }
 
-            if (inFlight != null)
+            if (inFlight != null && !inFlight.IsCompleted)
             {
-                try { await inFlight.ConfigureAwait(false); } catch { }
+                int timeoutMs = Math.Max(Config.pumpBarrierTimeoutMs, Config.closeTimeoutMs) + Config.cancelObservationMs;
+                var timeoutTask = Task.Delay(timeoutMs);
+                var completed = await Task.WhenAny(inFlight, timeoutTask).ConfigureAwait(false);
+                if (completed == timeoutTask)
+                {
+                    lock (_gate)
+                    {
+                        _isQuarantined = true;
+                    }
+                    return ShutdownResult.PumpBarrierTimeout();
+                }
             }
 
             lock (_gate)
@@ -222,17 +257,35 @@ namespace Mahjong.Unity.App
             if (coordinator != null)
             {
                 ShutdownResult result = await coordinator.ShutdownAsync(reason).ConfigureAwait(false);
-                if (result.Outcome == ShutdownOutcome.Completed)
+                lock (_gate)
                 {
-                    lock (_gate)
+                    if (result.Outcome == ShutdownOutcome.Completed)
                     {
                         if (ReferenceEquals(_sessionCoordinator, coordinator))
                         {
                             _sessionCoordinator = null;
                         }
+                        if (!isQuit)
+                        {
+                            _isSessionShuttingDown = false;
+                            _sessionCts = new CancellationTokenSource();
+                        }
+                    }
+                    else
+                    {
+                        _isQuarantined = true;
                     }
                 }
                 return result;
+            }
+
+            lock (_gate)
+            {
+                if (!isQuit)
+                {
+                    _isSessionShuttingDown = false;
+                    _sessionCts = new CancellationTokenSource();
+                }
             }
 
             return ShutdownResult.Completed();

@@ -123,6 +123,9 @@ try {
     if ([string]::IsNullOrWhiteSpace($logContent)) {
         throw "Player log file is empty: $resolvedLog"
     }
+    if ($logContent -match 'SMOKE_ERROR:' -or $logContent -match 'QUIT_SHUTDOWN_FAULT:') {
+        throw "Player log contains fatal error: $($matches[0])"
+    }
 
     # Strict lifecycle sequence assertion
     $requiredSteps = @(
