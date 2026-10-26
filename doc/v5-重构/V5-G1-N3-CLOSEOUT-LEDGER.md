@@ -1,6 +1,6 @@
 # V5-G1-N3 销账台账（N3 closeout ledger：592 个 GAP 实例的 bound / classified / pending 三选一）
 
-**当前持久化结果（caller 串行裁决，2026-10-26）：592 = 411 bound / 175 classified / 6 pending。** 本次只应用同批已接受的 81 条 note 与 18 条 AI 文本举证：93 条 pending 改为 classified，6 条保留 pending 并补齐具体义务；411 条 bound 和另外 82 条原 classified 均不变。classified 仍是未覆盖分类，不计 full；不宣告 N3、门2、G1 或 G5 通过，V4 继续是唯一生产架构。当前逐包向量、规则、剩余六条和 pins 见 **§14** 及 TSV/校验器。
+**当前候选裁决（caller 串行准备，2026-10-26）：592 = 411 bound / 181 classified / 0 pending。** 在已接受集成头 7606c5c 上，仅对剩余六个冻结 identity 应用已接受证据及 caller 明文分类规则；586 条非目标 raw 行、全部 411 bound、历史身份和 census 不变。此补丁尚待独立复核与集成，不把候选状态写作已批准门禁。classified 仍是未覆盖分类，不计 full；不宣告门2、G1 或 G5 通过，V4 继续是唯一生产架构。当前裁决见 **§15**；§14 的 411/175/6 及之前章节均为保留的历史记录。
 
 **历史记录边界：下列原日期至 §13 保留原验收时点。** 其中 411/82/99、§5–6 的分类和 pending 清单、§10 的两个待办组合均为串行裁决前的历史事实，已由 §14 的当前裁决取代；历史实测、原 census、原 accepted 报告与日志不改写。
 
@@ -295,3 +295,36 @@ G-049 维持未裁决（catalog 口径 none、审计建议 partial、N3-C1 calle
 Caller 本轮在 note 工作区 fresh Domain/TableRuntime build 均 exit0、0 warnings/errors；direct runner/XML 精确选择 Domain 95/95、actor 7/7；81 note 全部替换仍 95/95、7/7；B1 结构化负例 3 FAIL，B8 Domain/actor 各2 FAIL，native exit1 均符合预期；无类控制0test，8/8矩阵通过。subset14项和容量纠错10项通过。集成树源码/测试/fixture 与实测交付树一致；当前台账校验24项、37 evidence hashes、14 digests 通过，catalog 仍6 fixtures/73 requirements/10389 cases/45 Facts，full17/partial21/none32/V5-only3。具体命令、重拒绝探针与日志 hashes 见独立 caller 记录 `CODEX-V5-N3-NOTE-ACCEPTANCE.md`。
 
 这次裁决不重跑全量、PG/WSS、Unity/IL2CPP、Gradle、设备、物理网络或远端CI；不把历史同批 G1 证据报告的九门建议当作批准。六条 pending、N-2 宿主接线与最终 G1 重审仍按既有规则处理，不在本次自动闭环中宣告完成。复用唯一 PR19，不创建组件 MR。
+
+## 15. 最后六条的 caller 分类候选（2026-10-26，待独立复核）
+
+本补丁基于已发布且已接受的 `7606c5c1daf2523f1bdb653e439fcc4f3f278cca`，独占树 `D:/majiang-wt/codex-n3-final-adjudication-20261026-1045`。仅修改本文件、TSV 和台账专属校验器；不修改统一 verifier、源码、fixture、manifest/catalog 或历史已接受报告。此前 §14 的六项义务已分别收到证据，本节显式应用 caller 裁决，不用存在级断言或空集合冒充值级行为。
+
+| 冻结实例（均为原 note/mappingLimits） | 本次明确裁决及证据 | 保留的未覆盖边界 |
+|---|---|---|
+| B1 mv-swap-drawn-with-wall-backfill | 依据已接受 residual 报告及 `CODEX-V5-PROGRESS-20261026-0955.md` 四项裁决，接受 V4 alias/旧槽物化表示差异；合法 discard29 → seat1 draw33 的行为证据保持 | 精确双运行时 backfill 物化未复现，完整双向运行 NOT_RUN；不免除可达规则和136守恒 |
+| B8 tm-capacity-tiles | 接受 V4 groups=2 且 marked12 与 C# exactly-four-group 的表示边界；12+4拒绝和8+4成功证据保留 | 原 note 算术笔误及 SHA 不改，绝不引入错误算术规则 |
+| B8 tm-decision-mismatch | 接受无活跃局输入不能构造 concrete-round actor 的边界；null-round 构造拒绝与现局无 decision 分别举证 | 两者均不称为原 V4 case 的等价回放 |
+| B8 bm-activate-deadwall-empty | 接受 V4 空 eligibility filter 的非规范表示边界；pointer4下候选14/9及13实体构造拒绝已有证据 | 不把空过滤说成物理死山为空；可达空候选仍须拒绝、零费用/零 offer |
+| B6 mappingLimits idx1 isClaimed | caller 明确接受 `29e11c1` 伴随 fixture 增量：实际非空 river/claimed discards、C# flag值消费及翻旗负例满足 §14.1 的行为复访条件，原说明串归为分类元数据 | 原 ai-v1 仍为空且冻结；PlayerView 没有 per-discard flag；原行不计 bound/full |
+| B6 mappingLimits idx2 isRiichi | 同上，实际立直弃牌及 claimed riichi 组合、public事件推导、C#值消费和三类翻旗负例已有独立验收 | 同上；伴随样本证据不伪称原 ai-v1 有非空实例 |
+
+前四条引用 `V5-N3-CHEAT-RESIDUAL-BOUNDARIES.md/.tsv`、其 caller acceptance 和0955明文裁决。后两条引用 `V5-N3-AI-DISCARD-FLAGS.md/.tsv` 及其 caller acceptance（含独立6正例和五组翻旗失败计数2/2/1/2/2）。这些是已接受的历史实跑，本补丁不宣称重新执行行为测试。每条仍保留 P1.4/P1.6 + caller、2026-11-30复访日期与精确触发条件；分类不免除未来新增生产适配入口的行为验证。
+
+| 包 | bound | classified | pending | 本次变化 |
+|---|---:|---:|---:|---|
+| B1 | 18 | 6 | 0 | 1 pending→classified |
+| B6 | 0 | 11 | 0 | 2 pending→classified |
+| B8 | 108 | 83 | 0 | 3 pending→classified |
+| 其余11包 | 285 | 81 | 0 | 全部raw行不变 |
+| 总计 | **411** | **181** | **0** | **592冻结实例不变** |
+
+校验器的原37个 evidence pins 完全保留，新增7个（44个）：EV-RES-DOC/SUB/ACC/DEC 与 EV-B6F-DOC/SUB/ACC。新文件逐个从已接受Git内容取SHA；没有为漂移旧文件刷新pin。仅B1/B6/B8三个canonical digest随六条合法裁决重算，其他11个digest不变；schema、census、history、真实锚点、祖先、义务、证据、blocked-set检查保持。`patch-summary.json` 记录六个精确identity、586 raw行保留与digest。校验输入所需七份历史ignored日志从已接受1010集成树复制，原始hash须由原校验器重验；只作历史来源，不充当本次实跑。
+
+本补丁的验证范围是台账与分类，不是生产恢复、PG/WSS、Unity/IL2CPP或设备运行。独立复核仍须核对六项裁决的证据、完整identity保真、586行不变、原411条bound不变、11个digest及37个旧pins不变，并执行台账校验及拒绝负例。候选review通过后caller才可经唯一PR19普通push集成。新伴随fixture的目录增量登记仍须按既有规则检查，不借零pending跳过；随后才对同一最终集成头进行一次G1九门重审。G5未完成，V4仍唯一生产，不创建complete.flag。
+
+本轮原始证据根 `artifacts/TEMP/caller-final-adjudication/`：`prepare.ps1` numeric exit0，`patch-summary.json` 实测六行改判及586行/历史身份不变（SHA256 `1ACADE348647EEFA25D317480E5EA312AE75BD96C3D60F797C7806455A154BF4`）；`provisioning.json` 记录18份旧pin对应文件的纯换行恢复，另三份先行恢复，均无内容差异或pin刷新。首次完整校验 `ledger.log` exit1、1911条级联报错，原因为旧文件raw换行不匹配，14个裁决digest本身一致。恢复原raw证据后第二次 `ledger-final.log` 已确认44/44文件SHA匹配、census/rules/路径/节点pins通过；完整重推导结果以原始日志终态为准，在未读到numeric exit0前不声称24项全通过。临时换行恢复文件不纳入补丁。拒绝负例脚本已准备，独立审查需实际执行并报告结果，不预报PASS。
+
+本轮另只读下载、验证当前发布头CI：push [40260010463](https://github.com/liuchangready/majiang-game/actions/runs/40260010463) 实际checkout `7606c5c1daf2523f1bdb653e439fcc4f3f278cca`；PR [40260015059](https://github.com/liuchangready/majiang-game/actions/runs/40260015059) 实际checkout `6dfc93a2fd1562c430968daa8bde7bd1f559d9ff`，不混同API headSha。两者每份7个项目合计1808 passed/0failed/0skipped，solution build exit0、12 DLL scratch copy PASS、7份框架日志SHA逐一吻合各自meta，真实PG rollback/concurrency事件存在、owned root已删除、wrapper plannedExit0/failedStages空。`review-ci.ps1` numeric exit0，`ci-review.json` SHA256 `38B330FEF2EB239760E8B05CBC2A28B468BBEFE9A9FBADAF6D321549AB004B21`；原bundle及完整文件SHA表保留。此为远端实跑、本轮读取；未重跑CI，且不替本地未发布分类候选提供行为PASS。历史39970580589框架日志缺失仍未解决，不称flaky或已修复。
+
+最终原始终态现已读取：第二次完整校验 numeric exit0、24 CHECK-OK / 0 CHECK-FAIL、44 evidence SHA及14 digests全部通过；ledger-final.log SHA256 `0A67C4838C9F6075708954A2BC36BB819836634E993F59DECD9B83A2B47E87CB`。校验完整重推导655145节点/592 GAP/17 UNA，闭合411/181/0。首次失败保留。校验完成后，21份临时换行恢复文件回到HEAD原字节，最终diff仅三份候选文件；没有提交任何旧文档或生产文件的换行变化。此项机械PASS仍不替代独立分类复核、负例和G1九门验收。
