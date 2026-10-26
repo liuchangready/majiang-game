@@ -55,6 +55,11 @@ namespace Mahjong.Unity.UI
 
         private void Update()
         {
+            if (!UiInputLifecycle.Instance.AcceptingInput)
+            {
+                return;
+            }
+
             if (Keyboard.current != null && (_quitModal == null || !_quitModal.IsOpen))
             {
                 var kb = Keyboard.current;
@@ -114,7 +119,11 @@ namespace Mahjong.Unity.UI
                     "确定要退出千术麻将吗？",
                     confirmText: "确定",
                     cancelText: "取消",
-                    onConfirm: () => _navigation?.RequestQuit(),
+                    onConfirm: () =>
+                    {
+                        Debug.Log("QUIT_CONFIRMED: Application quit confirmed by user.");
+                        _navigation?.RequestQuit();
+                    },
                     onCancel: null);
             }
             else

@@ -1,6 +1,7 @@
 #nullable enable
 using System;
 using UnityEngine;
+using UnityEngine.InputSystem;
 
 namespace Mahjong.Unity.UI
 {
@@ -28,8 +29,7 @@ namespace Mahjong.Unity.UI
         private long _pressGeneration;
 
         private PointerCycleState _pointerState = PointerCycleState.Idle;
-        private int _consumedFrame = -1;
-        private int _cancelledFrame = -1;
+        private bool _isSubmit;
 
         // Independent gate states
         private bool _isPaused;
@@ -48,6 +48,11 @@ namespace Mahjong.Unity.UI
         public static void ResetForTest()
         {
             _instance = new UiInputLifecycle();
+        }
+
+        public void NotifySubmit()
+        {
+            _isSubmit = true;
         }
 
         public bool TryArm(int pointerId, Vector2 screenPos, float scale = 1.0f)
@@ -98,7 +103,6 @@ namespace Mahjong.Unity.UI
             if (!_isArmed || _primaryPointerId != pointerId)
             {
                 _pointerState = PointerCycleState.Cancelled;
-                _cancelledFrame = Time.frameCount;
                 return false;
             }
 
@@ -118,42 +122,30 @@ namespace Mahjong.Unity.UI
         {
             if (!AcceptingInput)
             {
+                _isSubmit = false;
                 return false;
+            }
+
+            if (_isSubmit)
+            {
+                _isSubmit = false;
+                return true;
             }
 
             if (_pointerState == PointerCycleState.Released)
             {
                 _pointerState = PointerCycleState.Consumed;
-                _consumedFrame = Time.frameCount;
                 return true;
             }
 
-            if (_pointerState == PointerCycleState.Consumed)
-            {
-                if (Time.frameCount != _consumedFrame)
-                {
-                    _pointerState = PointerCycleState.Idle;
-                    return true;
-                }
-                return false;
-            }
-
-            if (_pointerState == PointerCycleState.Cancelled)
-            {
-                if (Time.frameCount != _cancelledFrame)
-                {
-                    _pointerState = PointerCycleState.Idle;
-                    return true;
-                }
-                return false;
-            }
-
-            if (_pointerState == PointerCycleState.Armed)
+            if (_pointerState == PointerCycleState.Armed ||
+                _pointerState == PointerCycleState.Consumed ||
+                _pointerState == PointerCycleState.Cancelled)
             {
                 return false;
             }
 
-            // PointerCycleState.Idle: keyboard/gamepad submit
+            // PointerCycleState.Idle: keyboard/gamepad submit or direct programmatic invocation
             return true;
         }
 
@@ -162,7 +154,6 @@ namespace Mahjong.Unity.UI
             if (_isArmed || _pointerState == PointerCycleState.Armed || _pointerState == PointerCycleState.Released)
             {
                 _pointerState = PointerCycleState.Cancelled;
-                _cancelledFrame = Time.frameCount;
             }
             _isArmed = false;
             _primaryPointerId = null;
@@ -190,6 +181,9 @@ namespace Mahjong.Unity.UI
         public void TransitionEnd()
         {
             _isTransitioning = false;
+            _pointerState = PointerCycleState.Idle;
+            _isArmed = false;
+            _primaryPointerId = null;
         }
 
         public void OnFocusLost()

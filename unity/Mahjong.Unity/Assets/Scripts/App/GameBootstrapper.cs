@@ -228,16 +228,28 @@ namespace Mahjong.Unity.App
             Debug.Log($"SMOKE_CAPTURED: 04-quit-modal.png (exists={File.Exists(shot4)})");
 
             // 7. Confirm Quit
-            Debug.Log("SMOKE_STEP:MODAL_CONFIRM_CLICKED");
             var confirmBtn = GameObject.Find("ConfirmButton");
-            if (confirmBtn != null)
+            if (confirmBtn == null)
             {
-                DispatchPointerClick(confirmBtn);
+                Debug.LogError("SMOKE_ERROR: ConfirmButton not found in modal!");
+                Application.Quit(10);
+                yield break;
             }
 
-            Debug.Log("SMOKE_SUCCESS");
-            yield return new WaitForSeconds(0.2f);
-            Application.Quit(0);
+            Debug.Log("SMOKE_STEP:MODAL_CONFIRM_CLICKED");
+            DispatchPointerClick(confirmBtn);
+
+            // Wait for shutdown and application quit to be triggered by RequestQuit()
+            float quitTimer = 0f;
+            while (quitTimer < 5.0f)
+            {
+                quitTimer += Time.unscaledDeltaTime;
+                yield return null;
+            }
+
+            // If we are still running after 5 seconds, the quit flow did not complete
+            Debug.LogError("SMOKE_ERROR: Application did not quit after modal confirmation!");
+            Application.Quit(12);
         }
     }
 }

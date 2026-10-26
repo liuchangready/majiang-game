@@ -6,7 +6,7 @@ using UnityEngine.UI;
 namespace Mahjong.Unity.UI
 {
     [RequireComponent(typeof(Selectable))]
-    public sealed class UiPointerLifecycleTrigger : MonoBehaviour, IPointerDownHandler, IPointerUpHandler, IDragHandler
+    public sealed class UiPointerLifecycleTrigger : MonoBehaviour, IPointerDownHandler, IPointerUpHandler, IDragHandler, ISubmitHandler
     {
         public void OnPointerDown(PointerEventData eventData)
         {
@@ -29,6 +29,11 @@ namespace Mahjong.Unity.UI
             if (eventData.button != PointerEventData.InputButton.Left) return;
             long gen = UiInputLifecycle.Instance.PressGeneration;
             UiInputLifecycle.Instance.TryRelease(eventData.pointerId, gen);
+        }
+
+        public void OnSubmit(BaseEventData eventData)
+        {
+            UiInputLifecycle.Instance.NotifySubmit();
         }
     }
 }

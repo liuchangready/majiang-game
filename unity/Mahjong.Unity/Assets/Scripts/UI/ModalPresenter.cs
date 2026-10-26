@@ -46,7 +46,10 @@ namespace Mahjong.Unity.UI
             _onConfirm = onConfirm;
             _onCancel = onCancel;
 
-            _previousSelectedGameObject = EventSystem.current != null ? EventSystem.current.currentSelectedGameObject : null;
+            if (!IsOpen)
+            {
+                _previousSelectedGameObject = EventSystem.current != null ? EventSystem.current.currentSelectedGameObject : null;
+            }
 
             if (_titleText != null) _titleText.text = title;
             if (_messageText != null) _messageText.text = message;
@@ -145,6 +148,7 @@ namespace Mahjong.Unity.UI
                 _backRouter.UnregisterModal(Close);
                 _isBackRegistered = false;
             }
+            RestorePreviousFocus();
         }
     }
 }

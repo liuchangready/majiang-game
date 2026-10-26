@@ -133,6 +133,7 @@ namespace Mahjong.Unity.App
             Debug.Log("QUIT_REQUESTED: Initiating application shutdown.");
             _composition.ShutdownAsync("APP_QUIT").ContinueWith(_ =>
             {
+                Debug.Log("SMOKE_SUCCESS: Application shutdown completed cleanly.");
 #if UNITY_EDITOR
                 UnityEditor.EditorApplication.isPlaying = false;
 #else
@@ -154,7 +155,11 @@ namespace Mahjong.Unity.App
                         var modal = UnityEngine.Object.FindFirstObjectByType<ModalPresenter>(FindObjectsInactive.Include);
                         if (modal != null && !modal.IsOpen)
                         {
-                            modal.ShowConfirmation("提示", "确定要退出游戏吗？", () => RequestQuit(), () => { });
+                            modal.ShowConfirmation("提示", "确定要退出游戏吗？", () =>
+                            {
+                                Debug.Log("QUIT_CONFIRMED: Application quit confirmed by user.");
+                                RequestQuit();
+                            }, () => { });
                         }
                         else if (modal == null)
                         {

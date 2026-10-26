@@ -137,7 +137,9 @@ try {
         "SMOKE_STEP:MODAL_CANCEL_CLICKED",
         "SMOKE_STEP:MODAL_REOPENED",
         "SMOKE_STEP:MODAL_CONFIRM_CLICKED",
-        "SMOKE_SUCCESS"
+        "QUIT_CONFIRMED: Application quit confirmed by user.",
+        "QUIT_REQUESTED: Initiating application shutdown.",
+        "SMOKE_SUCCESS: Application shutdown completed cleanly."
     )
 
     $lastIndex = -1

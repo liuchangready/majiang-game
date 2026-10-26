@@ -21,6 +21,8 @@ namespace Mahjong.Unity.App
         private readonly object _gate = new object();
         private SessionCoordinator? _sessionCoordinator;
         private Task<SessionCoordinator>? _inFlightOpen;
+        private readonly CancellationTokenSource _shutdownCts = new CancellationTokenSource();
+        private bool _isShuttingDown;
         private long _generationCounter = 0;
 
         public SessionCoordinator? SessionCoordinator
@@ -57,8 +59,17 @@ namespace Mahjong.Unity.App
         {
             lock (_gate)
             {
+                if (_isShuttingDown)
+                {
+                    return Task.FromException<SessionCoordinator>(new OperationCanceledException("AppComposition is shutting down."));
+                }
+
                 if (_sessionCoordinator != null)
                 {
+                    if (_sessionCoordinator.IsQuarantined)
+                    {
+                        return Task.FromException<SessionCoordinator>(new InvalidOperationException("Previous coordinator is quarantined; replacement blocked."));
+                    }
                     return Task.FromResult(_sessionCoordinator);
                 }
 
@@ -74,14 +85,27 @@ namespace Mahjong.Unity.App
 
         private async Task<SessionCoordinator> OpenLocalSessionInternalAsync(CancellationToken cancellationToken)
         {
+            using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, _shutdownCts.Token);
+            var token = linkedCts.Token;
+
             ITableChannel? channel = null;
             SessionCoordinator? coordinator = null;
             try
             {
+                if (_isShuttingDown)
+                {
+                    throw new OperationCanceledException(token);
+                }
+
                 long gen = Interlocked.Increment(ref _generationCounter);
 
                 // ChannelFactory will throw LocalTableUnavailableException in P4.2-core default
-                channel = await ChannelFactory.CreateAsync(TableTransportKind.Local, cancellationToken).ConfigureAwait(false);
+                channel = await ChannelFactory.CreateAsync(TableTransportKind.Local, token).ConfigureAwait(false);
+
+                if (_isShuttingDown)
+                {
+                    throw new OperationCanceledException(token);
+                }
 
                 Paths.EnsureDirectoriesCreated();
                 var outbox = new FileOutboxStore(Paths.OutboxDirectory);
@@ -103,13 +127,31 @@ namespace Mahjong.Unity.App
                     {
                         // Clean cancellation on shutdown
                     }
+
+                    try
+                    {
+                        var unfinishedField = typeof(TableSessionOperationQueue).GetField("_unfinishedReceive", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
+                        if (unfinishedField?.GetValue(queue) is Task unfinishedTask && !unfinishedTask.IsCompleted)
+                        {
+                            await unfinishedTask.ConfigureAwait(false);
+                        }
+                    }
+                    catch
+                    {
+                        // Ignore cancellation/faults on pump shutdown
+                    }
                 }, pumpToken);
                 coordinator.SetPumpTask(pumpTask);
 
-                await queue.OpenAsync(new TableSessionOpenRequest("local", "local"), cancellationToken).ConfigureAwait(false);
+                await queue.OpenAsync(new TableSessionOpenRequest("local", "local"), token).ConfigureAwait(false);
 
                 lock (_gate)
                 {
+                    if (_isShuttingDown)
+                    {
+                        // If shutdown arrived while opening, abort publication
+                        throw new OperationCanceledException(token);
+                    }
                     _sessionCoordinator = coordinator;
                 }
                 return coordinator;
@@ -118,7 +160,27 @@ namespace Mahjong.Unity.App
             {
                 if (coordinator != null)
                 {
-                    try { await coordinator.ShutdownAsync("OPEN_FAILED").ConfigureAwait(false); } catch { }
+                    try
+                    {
+                        var shutResult = await coordinator.ShutdownAsync("OPEN_FAILED").ConfigureAwait(false);
+                        if (shutResult.Quarantined || coordinator.IsQuarantined)
+                        {
+                            lock (_gate)
+                            {
+                                _sessionCoordinator = coordinator;
+                            }
+                        }
+                    }
+                    catch
+                    {
+                        if (coordinator.IsQuarantined)
+                        {
+                            lock (_gate)
+                            {
+                                _sessionCoordinator = coordinator;
+                            }
+                        }
+                    }
                 }
                 else if (channel is IDisposable disposable)
                 {
@@ -137,7 +199,21 @@ namespace Mahjong.Unity.App
 
         public async Task<ShutdownResult> ShutdownAsync(string reason = "APP_QUIT")
         {
+            Task<SessionCoordinator>? inFlight;
             SessionCoordinator? coordinator;
+            lock (_gate)
+            {
+                _isShuttingDown = true;
+                try { _shutdownCts.Cancel(); } catch { }
+                inFlight = _inFlightOpen;
+                coordinator = _sessionCoordinator;
+            }
+
+            if (inFlight != null)
+            {
+                try { await inFlight.ConfigureAwait(false); } catch { }
+            }
+
             lock (_gate)
             {
                 coordinator = _sessionCoordinator;

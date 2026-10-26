@@ -280,7 +280,7 @@ function Test-SingleBoundaryRules([string]$projDir, [string]$policyFile) {
         }
     }
 
-    # 8. Assembly Metadata Verification (IGameSession, ITableChannel, Wire DTO)
+    # 8. Assembly Metadata Verification (IGameSession, ITableChannel, Wire DTO, and Compiled Assemblies)
     if (Test-Path $pluginsDir) {
         $dotnetExe = "D:\Unity\dotnet\dotnet.exe"
         if (-not (Test-Path $dotnetExe)) {
@@ -305,12 +305,43 @@ class Program
 {
     static int Main(string[] args)
     {
-        string dir = args[0];
+        string pluginsDir = args[0];
+        string compiledDir = args.Length > 1 ? args[1] : "";
         var errors = new List<string>();
 
-        void CheckDll(string filename, string[] requiredTypes)
+        // 1. Verify all DLLs in pluginsDir have valid PE CLI metadata
+        if (Directory.Exists(pluginsDir))
         {
-            string path = Path.Combine(dir, filename);
+            foreach (var dllPath in Directory.GetFiles(pluginsDir, "*.dll"))
+            {
+                string filename = Path.GetFileName(dllPath);
+                try
+                {
+                    using var fs = File.OpenRead(dllPath);
+                    using var pe = new PEReader(fs);
+                    if (!pe.HasMetadata)
+                    {
+                        errors.Add("DLL has no CLI metadata: " + filename);
+                        continue;
+                    }
+                    var mr = pe.GetMetadataReader();
+                    if (!mr.IsAssembly)
+                    {
+                        errors.Add("DLL is not a CLI assembly: " + filename);
+                        continue;
+                    }
+                }
+                catch (Exception ex)
+                {
+                    errors.Add("Error reading metadata from " + filename + ": " + ex.Message);
+                }
+            }
+        }
+
+        // 2. Check required TypeDefs in specific plugin DLLs
+        void CheckDllTypes(string filename, string[] requiredTypes)
+        {
+            string path = Path.Combine(pluginsDir, filename);
             if (!File.Exists(path))
             {
                 errors.Add("Missing DLL: " + filename);
@@ -320,11 +351,7 @@ class Program
             {
                 using var fs = File.OpenRead(path);
                 using var pe = new PEReader(fs);
-                if (!pe.HasMetadata)
-                {
-                    errors.Add("DLL has no CLI metadata: " + filename);
-                    return;
-                }
+                if (!pe.HasMetadata) return;
                 var mr = pe.GetMetadataReader();
                 var definedTypes = new HashSet<string>();
                 foreach (var h in mr.TypeDefinitions)
@@ -346,12 +373,79 @@ class Program
             }
             catch (Exception ex)
             {
-                errors.Add("Error reading metadata from " + filename + ": " + ex.Message);
+                errors.Add("Error reading types from " + filename + ": " + ex.Message);
             }
         }
 
-        CheckDll("Mahjong.Client.dll", new[] { "Mahjong.Client.IGameSession", "Mahjong.Client.ITableChannel", "Mahjong.Client.TableSession" });
-        CheckDll("Mahjong.Contracts.Wire.dll", new[] { "Mahjong.Contracts.Wire.PlayerSnapshot", "Mahjong.Contracts.Wire.PublicSnapshot", "Mahjong.Contracts.Wire.RoomUpdate" });
+        CheckDllTypes("Mahjong.Client.dll", new[] { "Mahjong.Client.IGameSession", "Mahjong.Client.ITableChannel", "Mahjong.Client.TableSession" });
+        CheckDllTypes("Mahjong.Contracts.Wire.dll", new[] { "Mahjong.Contracts.Wire.PlayerSnapshot", "Mahjong.Contracts.Wire.PublicSnapshot", "Mahjong.Contracts.Wire.RoomUpdate" });
+
+        // 3. If compiled assemblies exist in Library/ScriptAssemblies, scan direct AssemblyReferences
+        if (!string.IsNullOrEmpty(compiledDir) && Directory.Exists(compiledDir))
+        {
+            var forbiddenByAssembly = new Dictionary<string, HashSet<string>>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["Mahjong.Unity.UI.dll"] = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+                {
+                    "Mahjong.LocalHost", "Mahjong.Domain", "Mahjong.TableRuntime", "Mahjong.Ai", "Mahjong.Server",
+                    "Mahjong.Unity.App", "Mahjong.Unity.Table", "Mahjong.Unity.Platform", "Mahjong.Unity.Spectator"
+                },
+                ["Mahjong.Unity.Platform.dll"] = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+                {
+                    "Mahjong.LocalHost", "Mahjong.Domain", "Mahjong.TableRuntime", "Mahjong.Ai", "Mahjong.Server", "Mahjong.Contracts",
+                    "Mahjong.Unity.App", "Mahjong.Unity.UI", "Mahjong.Unity.Table", "Mahjong.Unity.Spectator"
+                },
+                ["Mahjong.Unity.App.dll"] = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+                {
+                    "Mahjong.LocalHost", "Mahjong.Domain", "Mahjong.TableRuntime", "Mahjong.Ai", "Mahjong.Server"
+                },
+                ["Mahjong.Unity.Table.dll"] = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+                {
+                    "Mahjong.LocalHost", "Mahjong.Domain", "Mahjong.TableRuntime", "Mahjong.Ai", "Mahjong.Server",
+                    "Mahjong.Unity.App", "Mahjong.Unity.Spectator", "Mahjong.Unity.Platform"
+                },
+                ["Mahjong.Unity.Spectator.dll"] = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+                {
+                    "Mahjong.LocalHost", "Mahjong.Domain", "Mahjong.TableRuntime", "Mahjong.Ai", "Mahjong.Server",
+                    "Mahjong.Unity.App", "Mahjong.Unity.Table", "Mahjong.Unity.Platform"
+                },
+                ["Mahjong.Unity.EditMode.Tests.dll"] = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+                {
+                    "Mahjong.LocalHost", "Mahjong.Domain", "Mahjong.TableRuntime", "Mahjong.Ai", "Mahjong.Server"
+                },
+                ["Mahjong.Unity.PlayMode.Tests.dll"] = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+                {
+                    "Mahjong.LocalHost", "Mahjong.Domain", "Mahjong.TableRuntime", "Mahjong.Ai", "Mahjong.Server"
+                }
+            };
+
+            foreach (var kvp in forbiddenByAssembly)
+            {
+                string asmFile = Path.Combine(compiledDir, kvp.Key);
+                if (!File.Exists(asmFile)) continue;
+
+                try
+                {
+                    using var fs = File.OpenRead(asmFile);
+                    using var pe = new PEReader(fs);
+                    if (!pe.HasMetadata) continue;
+                    var mr = pe.GetMetadataReader();
+                    foreach (var h in mr.AssemblyReferences)
+                    {
+                        var ar = mr.GetAssemblyReference(h);
+                        string refName = mr.GetString(ar.Name);
+                        if (kvp.Value.Contains(refName))
+                        {
+                            errors.Add("FORBIDDEN_COMPILED_ASSEMBLY_REF: Assembly '" + kvp.Key + "' references forbidden assembly '" + refName + "'.");
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    errors.Add("Error reading metadata from compiled assembly " + kvp.Key + ": " + ex.Message);
+                }
+            }
+        }
 
         if (errors.Count > 0)
         {
@@ -363,7 +457,12 @@ class Program
 }
 '@
             Set-Content -Path $csCode -Value $code -Encoding UTF8
-            $probeOut = & $dotnetExe run --project $probeDir -- $pluginsDir 2>&1
+            $compiledDir = Join-Path $projDir "Library/ScriptAssemblies"
+            $probeArgs = @($pluginsDir)
+            if (Test-Path $compiledDir) {
+                $probeArgs += $compiledDir
+            }
+            $probeOut = & $dotnetExe run --project $probeDir -- @probeArgs 2>&1
             if ($LASTEXITCODE -ne 0) {
                 $errors.Add("METADATA_CHECK_FAILED: $probeOut")
             }
@@ -388,9 +487,18 @@ class Program
             'dc42784cf147c0c48a680349fa168899' = $true # UnityEngine.UI.CanvasScaler
         }
         Get-ChildItem -Path (Join-Path $projDir "Assets") -Recurse -Filter "*.meta" | ForEach-Object {
+            $name = $_.Name
+            $isScriptMeta = ($name -like "*.cs.meta") -or ($name -like "*.dll.meta")
             $raw = Get-Content $_.FullName -Raw
-            if ($raw -match 'guid:\s*([a-f0-9]{32})') {
-                $metaGuids[$matches[1]] = $true
+            if (-not $isScriptMeta) {
+                if ($raw -match 'MonoImporter:') {
+                    $isScriptMeta = $true
+                }
+            }
+            if ($isScriptMeta) {
+                if ($raw -match 'guid:\s*([a-f0-9]{32})') {
+                    $metaGuids[$matches[1]] = $true
+                }
             }
         }
 
@@ -409,15 +517,23 @@ class Program
 
     # 10. Required Packages Manifest Check
     $manifestFile = Join-Path $projDir "Packages/manifest.json"
-    if (Test-Path $manifestFile) {
-        $manifestJson = Get-Content $manifestFile -Raw | ConvertFrom-Json
-        if ($manifestJson.dependencies) {
-            $requiredPackages = @("com.unity.inputsystem")
-            foreach ($pkg in $requiredPackages) {
-                if (-not ($manifestJson.dependencies.PSObject.Properties.Name -contains $pkg)) {
-                    $errors.Add("MISSING_REQUIRED_PACKAGE: Required package '$pkg' is not present in '$manifestFile'.")
+    if (-not (Test-Path $manifestFile)) {
+        $errors.Add("MISSING_MANIFEST: Packages/manifest.json not found at '$manifestFile'.")
+    } else {
+        try {
+            $manifestJson = Get-Content $manifestFile -Raw | ConvertFrom-Json
+            if (-not $manifestJson.dependencies) {
+                $errors.Add("INVALID_MANIFEST: Packages/manifest.json has no 'dependencies' object.")
+            } else {
+                $requiredPackages = @("com.unity.inputsystem")
+                foreach ($pkg in $requiredPackages) {
+                    if (-not ($manifestJson.dependencies.PSObject.Properties.Name -contains $pkg)) {
+                        $errors.Add("MISSING_REQUIRED_PACKAGE: Required package '$pkg' is not present in '$manifestFile'.")
+                    }
                 }
             }
+        } catch {
+            $errors.Add("INVALID_MANIFEST: Failed to parse Packages/manifest.json: $_")
         }
     }
 
