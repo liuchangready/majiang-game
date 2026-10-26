@@ -233,18 +233,19 @@ namespace Mahjong.LocalHost.Tests
             {
                 using var waitCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
                 waitCts.CancelAfter(TimeSpan.FromSeconds(30));
+                Task<string> stdoutTask = process.StandardOutput.ReadToEndAsync(waitCts.Token);
+                Task<string> stderrTask = process.StandardError.ReadToEndAsync(waitCts.Token);
                 try
                 {
                     await process.WaitForExitAsync(waitCts.Token);
+                    await Task.WhenAll(stdoutTask, stderrTask);
                 }
                 catch (OperationCanceledException)
                 {
                     process.Kill(true);
-                    throw new TimeoutException("CrashWorker did not exit within the bounded timeout.");
+                    throw new TimeoutException("CrashWorker did not exit/drain within the bounded timeout.");
                 }
 
-                string stdout = await process.StandardOutput.ReadToEndAsync(ct);
-                string stderr = await process.StandardError.ReadToEndAsync(ct);
                 Assert.NotEqual(0, process.ExitCode);
             }
 

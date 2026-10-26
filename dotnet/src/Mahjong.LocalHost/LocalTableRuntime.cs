@@ -714,6 +714,15 @@ namespace Mahjong.LocalHost
                 return;
             }
 
+            if (_connectionScopeId.HasValue)
+            {
+                _store.PrepareReceiptDigest(
+                    _connectionAccount,
+                    _connectionScopeId.Value,
+                    requestId,
+                    CanonicalPayloadDigest.Compute(payload).ToHex());
+            }
+
 
             try
             {
@@ -784,15 +793,6 @@ namespace Mahjong.LocalHost
                         new RequestScopeId(_connectionScopeId!.Value.Value),
                         api,
                         digest);
-                    if (_connectionScopeId.HasValue)
-                    {
-                        _store.PrepareReceiptDigest(
-                            _connectionAccount,
-                            _connectionScopeId.Value,
-                            requestId,
-                            CanonicalPayloadDigest.Compute(payload).ToHex());
-                    }
-
                     result = await _actor.SubmitAsync(request, cancellationToken).ConfigureAwait(false);
                 }
 
@@ -1003,13 +1003,45 @@ namespace Mahjong.LocalHost
             StateVersion expected,
             CancellationToken cancellationToken)
         {
-            string key = requestId.Value;
-            if (_controlReceipts.TryGetValue(key, out WireReceipt? prior))
+            string requestKey = requestId.Value;
+            string canonical = CanonicalPayloadDigest.Compute(payload).ToHex();
+            if (_connectionScopeId.HasValue)
             {
-                Enqueue(ReceiptEnvelope(envelope, requestId, prior, payload));
-                return;
-            }
+                LocalControlRecord? prior = _store.GetControlResult(
+                    _connectionAccount,
+                    _connectionScopeId.Value,
+                    requestId);
+                if (prior != null)
+                {
+                    if (!string.Equals(prior.Digest, canonical, StringComparison.Ordinal) ||
+                        !string.Equals(prior.Kind, kind.ToString(), StringComparison.Ordinal))
+                    {
+                        Enqueue(RejectedReceipt(
+                            envelope,
+                            requestId,
+                            expected,
+                            ProtocolErrorCode.RequestIdConflict,
+                            "The same control request id was used with different bytes or kind.",
+                            payload));
+                        return;
+                    }
 
+                    Enqueue(ReceiptEnvelope(
+                        envelope,
+                        requestId,
+                        new WireReceipt
+                        {
+                            Status = WireReceiptStatus.Recorded,
+                            ReasonCode = "LOCAL_CONTROL",
+                            EvaluatedStateVersion = prior.EvaluatedStateVersion,
+                            CommandVersion = 0UL,
+                            EventSeq = 0UL,
+                            CanonicalPayloadSha256 = prior.Digest
+                        },
+                        payload));
+                    return;
+                }
+            }
             if (!document.HasField(CommandPayloadFields.ExpectedControlEpochV2))
             {
                 Enqueue(ErrorEnvelope(ProtocolErrorCode.MalformedMessage, "The control command has no expected epoch."));
@@ -1049,9 +1081,19 @@ namespace Mahjong.LocalHost
                 EvaluatedStateVersion = control.EvaluatedStateVersion.Value,
                 CommandVersion = 0UL,
                 EventSeq = 0UL,
-                CanonicalPayloadSha256 = CanonicalPayloadDigest.Compute(payload).ToHex()
+                CanonicalPayloadSha256 = canonical
             };
-            _controlReceipts[key] = receipt;
+            if (_connectionScopeId.HasValue)
+            {
+                _store.RecordControlResult(
+                    _connectionAccount,
+                    _connectionScopeId.Value,
+                    requestId,
+                    control.EvaluatedStateVersion.Value,
+                    canonical,
+                    kind.ToString());
+            }
+
             Enqueue(ReceiptEnvelope(envelope, requestId, receipt, payload));
         }
 
@@ -1064,15 +1106,6 @@ namespace Mahjong.LocalHost
         {
             if (result.Status == TableOperationStatus.Accepted || result.Status == TableOperationStatus.Replayed)
             {
-                if (_connectionScopeId.HasValue)
-                {
-                    _store.RecordReceiptDigest(
-                        _connectionAccount,
-                        _connectionScopeId.Value,
-                        requestId,
-                        CanonicalPayloadDigest.Compute(payload).ToHex());
-                }
-
                 Enqueue(AppliedReceipt(source, requestId, result, payload));
                 return;
             }
@@ -1207,6 +1240,34 @@ namespace Mahjong.LocalHost
                     _connectionAccount,
                     queryScopeId,
                     new RequestId(envelope.ReceiptQuery.RequestId)) ?? string.Empty);
+            if (receipt == null && _connectionScopeId.HasValue)
+            {
+                LocalControlRecord? control = _store.GetControlResult(
+                    _connectionAccount,
+                    queryScopeId,
+                    new RequestId(envelope.ReceiptQuery.RequestId));
+                if (control != null)
+                {
+                    Enqueue(ReceiptLookupEnvelope(
+                        envelope.CorrelationId,
+                        new ReceiptLookup
+                        {
+                            Status = LookupStatus.Found,
+                            CanonicalPayloadSha256 = control.Digest,
+                            Receipt = new WireReceipt
+                            {
+                                Status = WireReceiptStatus.Recorded,
+                                ReasonCode = "LOCAL_CONTROL",
+                                EvaluatedStateVersion = control.EvaluatedStateVersion,
+                                CommandVersion = 0UL,
+                                EventSeq = 0UL,
+                                CanonicalPayloadSha256 = control.Digest
+                            }
+                        }));
+                    return;
+                }
+            }
+
             var lookup = new ReceiptLookup
             {
                 Status = receipt == null ? LookupStatus.NotFound : LookupStatus.Found,

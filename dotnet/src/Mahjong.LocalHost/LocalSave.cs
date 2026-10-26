@@ -25,6 +25,20 @@ namespace Mahjong.LocalHost
     /// Canonical state row. It is the only owner of state/control/timing/cheat versions in the
     /// envelope; the outer container never repeats those fields.
     /// </summary>
+    public sealed class LocalControlRecord
+    {
+        public LocalControlRecord(ulong evaluatedStateVersion, string digest, string kind)
+        {
+            EvaluatedStateVersion = evaluatedStateVersion;
+            Digest = digest ?? string.Empty;
+            Kind = kind ?? string.Empty;
+        }
+
+        public ulong EvaluatedStateVersion { get; }
+        public string Digest { get; }
+        public string Kind { get; }
+    }
+
     public sealed class LocalSaveState
     {
         public StateVersion StateVersion { get; set; }
@@ -87,10 +101,6 @@ namespace Mahjong.LocalHost
         }
     }
 
-    /// <summary>
-    /// Complete local save envelope. It is serialized as one file and replaced atomically; the
-    /// checkpoint is the base and the journals/operations are the replayable tail.
-    /// </summary>
     public sealed class LocalSave
     {
         public int FileFormatVersion { get; set; } = 1;
@@ -120,6 +130,9 @@ namespace Mahjong.LocalHost
             new Dictionary<string, TableSettlementOutboxRecord>(StringComparer.Ordinal);
 
         /// <summary>Canonical business digest per durable receipt key (MJC1 original bytes).</summary>
+        public Dictionary<string, LocalControlRecord> ControlResults { get; set; } =
+            new Dictionary<string, LocalControlRecord>(StringComparer.Ordinal);
+
         public Dictionary<string, string> ReceiptDigests { get; set; } =
             new Dictionary<string, string>(StringComparer.Ordinal);
 
@@ -195,6 +208,11 @@ namespace Mahjong.LocalHost
             foreach (KeyValuePair<string, string> pair in ReceiptDigests)
             {
                 copy.ReceiptDigests.Add(pair.Key, pair.Value);
+            }
+
+            foreach (KeyValuePair<string, LocalControlRecord> pair in ControlResults)
+            {
+                copy.ControlResults.Add(pair.Key, pair.Value);
             }
 
             copy.Operations.AddRange(Operations);

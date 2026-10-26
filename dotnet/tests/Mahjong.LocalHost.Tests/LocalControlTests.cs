@@ -19,7 +19,8 @@ namespace Mahjong.LocalHost.Tests
             ITableChannel channel = await LocalTableHost.CreateChannelAsync(harness.Options, ct);
             string channelTicket = LocalTableHost.IssueTicket(harness.Options);
             await channel.OpenAsync(new TableChannelConnectRequest(channelTicket, "p41-test", null), ct);
-            var session = new TableSession(channel, new InMemoryOutboxStore());
+            string outboxPath = System.IO.Path.Combine(harness.Root, "control-outbox");
+            var session = new TableSession(channel, new FileOutboxStore(outboxPath));
             string sessionTicket = LocalTableHost.IssueTicket(harness.Options);
             await session.OpenAsync(new TableSessionOpenRequest(sessionTicket, "p41-test"), ct);
             using var pumpCts = CancellationTokenSource.CreateLinkedTokenSource(ct);

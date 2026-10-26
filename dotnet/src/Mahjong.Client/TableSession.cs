@@ -1369,7 +1369,7 @@ namespace Mahjong.Client
                         return;
                     }
 
-                    if ((tracked.Entry.Kind == CommandKind.ClaimControl || tracked.Entry.Kind == CommandKind.ReleaseControl) && string.Equals(receipt.ReasonCode, "LOCAL_CONTROL", StringComparison.Ordinal))
+                    if ((tracked.Entry.Kind == CommandKind.ClaimControl || tracked.Entry.Kind == CommandKind.ReleaseControl) && string.Equals(receipt.ReasonCode, "LOCAL_CONTROL", StringComparison.Ordinal) && receipt.Status == global::Mahjong.Contracts.Wire.ReceiptStatus.Recorded && !string.IsNullOrEmpty(receiptDigest) && DigestEquals(receiptDigest, tracked.Entry.DigestSha256))
                     {
                         tracked.LastLookup = ReceiptLookupStatus.Found;
                         await ResolveTrackedAsync(tracked, OutboxResolution.ControlApplied(new StateVersion(receipt.EvaluatedStateVersion), tracked.Entry.DigestSha256, true), cancellationToken).ConfigureAwait(false);

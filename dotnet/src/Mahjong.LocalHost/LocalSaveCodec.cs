@@ -154,6 +154,15 @@ namespace Mahjong.LocalHost
                     WriteString(writer, pair.Value);
                 }
 
+                writer.Write(save.ControlResults.Count);
+                foreach (KeyValuePair<string, LocalControlRecord> pair in save.ControlResults)
+                {
+                    WriteString(writer, pair.Key);
+                    writer.Write(pair.Value.EvaluatedStateVersion);
+                    WriteString(writer, pair.Value.Digest);
+                    WriteString(writer, pair.Value.Kind);
+                }
+
                 writer.Write(save.Outbox.Count);
                 foreach (KeyValuePair<string, TableSettlementOutboxRecord> pair in save.Outbox)
                 {
@@ -245,6 +254,16 @@ namespace Mahjong.LocalHost
                 {
                     string key = ReadString(reader);
                     save.ReceiptDigests.Add(key, ReadString(reader));
+                }
+
+                int controlCount = ReadCount(reader, "control results");
+                for (int i = 0; i < controlCount; i++)
+                {
+                    string key = ReadString(reader);
+                    ulong evaluated = reader.ReadUInt64();
+                    string digest = ReadString(reader);
+                    string kind = ReadString(reader);
+                    save.ControlResults.Add(key, new LocalControlRecord(evaluated, digest, kind));
                 }
 
                 int outboxCount = ReadCount(reader, "outbox");

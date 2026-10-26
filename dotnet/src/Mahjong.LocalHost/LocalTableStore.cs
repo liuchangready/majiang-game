@@ -759,6 +759,11 @@ namespace Mahjong.LocalHost
 
                 LocalSave candidate = _save!.DeepCloneForCandidate();
                 ApplyCommitToSave(candidate, request);
+                if (request.Checkpoint != null)
+                {
+                    candidate.Operations.Clear();
+                }
+
                 (string AccountId, RequestScopeId ScopeId, RequestId RequestId, string Digest)? pendingDigest =
                     _pendingReceiptDigest;
                 if (pendingDigest.HasValue)
@@ -946,6 +951,43 @@ namespace Mahjong.LocalHost
                 _pendingReceiptDigest = string.IsNullOrEmpty(digest)
                     ? null
                     : (accountId, scopeId, requestId, digest);
+            }
+        }
+
+        internal LocalControlRecord? GetControlResult(string accountId, RequestScopeId scopeId, RequestId requestId)
+        {
+            lock (_gate)
+            {
+                string key = ReceiptKey(accountId, scopeId, requestId);
+                return _save != null && _save.ControlResults.TryGetValue(key, out LocalControlRecord? record)
+                    ? record
+                    : null;
+            }
+        }
+
+        internal void RecordControlResult(
+            string accountId,
+            RequestScopeId scopeId,
+            RequestId requestId,
+            ulong evaluatedStateVersion,
+            string digest,
+            string kind)
+        {
+            lock (_gate)
+            {
+                if (_save == null)
+                {
+                    return;
+                }
+
+                string key = ReceiptKey(accountId, scopeId, requestId);
+                LocalSave candidate = _save.DeepCloneForCandidate();
+                candidate.ControlResults[key] = new LocalControlRecord(evaluatedStateVersion, digest, kind);
+                LocalWriteResult write = Persist(candidate, CancellationToken.None);
+                if (write.Verdict == LocalWriteVerdict.Committed)
+                {
+                    _save = candidate;
+                }
             }
         }
 

@@ -21,6 +21,8 @@ namespace Mahjong.LocalHost
         private readonly RequestScopeId[] _scopes;
         private readonly Func<bool> _isActive;
         private readonly CancellationTokenSource _stop = new CancellationTokenSource();
+        private readonly long[] _controlEpochs = new long[4];
+        private readonly bool[] _aiSeats = new bool[4];
         private readonly object _scopeGate = new object();
         private long _requestCounter;
         private string _lastDecisionKey = string.Empty;
@@ -170,7 +172,7 @@ namespace Mahjong.LocalHost
                     break;
                 case RoundPhase.ResponseWindow:
                 case RoundPhase.ChankanWindow:
-                    for (int responseSeat = 1; responseSeat <= 3; responseSeat++)
+                    for (int responseSeat = 0; responseSeat <= 3; responseSeat++)
                     {
                         bool openedResponse = await OpenDecisionAsync(
                             snapshot,
