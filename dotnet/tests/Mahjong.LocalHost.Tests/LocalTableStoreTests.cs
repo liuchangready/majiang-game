@@ -79,6 +79,45 @@ namespace Mahjong.LocalHost.Tests
     public sealed class LocalTableStoreTests
     {
         [Fact]
+        public async Task MoveSucceededButCopyReportedFailureStillLeavesReadablePrimary()
+        {
+            await using var harness = new P41Harness();
+            var fs = new FaultingFileSystem
+            {
+                AfterMove = _ => new IOException("injected copy failure")
+            };
+            harness.Options.FileSystemForTest = fs;
+            LocalTableStore first = await OpenFreshStoreAsync(harness, fs, TestContext.Current.CancellationToken);
+            first.Dispose();
+            Assert.True(File.Exists(harness.SavePath));
+
+            LocalTableStore reopened = await LocalTableStore.OpenAsync(
+                harness.Options,
+                harness.Clock,
+                null,
+                TestContext.Current.CancellationToken);
+            try
+            {
+                Assert.NotNull(await reopened.LoadStateAsync(P41Harness.RoomId, TestContext.Current.CancellationToken));
+            }
+            finally
+            {
+                reopened.Dispose();
+            }
+        }
+        [Fact]
+        public async Task FirstCreateMoveFailureDoesNotLeaveAnAuthoritativePrimary()
+        {
+            await using var harness = new P41Harness();
+            var fs = new FaultingFileSystem
+            {
+                BeforeMove = _ => new IOException("injected move failure")
+            };
+            harness.Options.FileSystemForTest = fs;
+            await Assert.ThrowsAnyAsync<Exception>(async () =>
+                await OpenFreshStoreAsync(harness, fs, TestContext.Current.CancellationToken));
+        }
+        [Fact]
         public async Task FirstCreateWritesPrimaryAndPreviousCopy()
         {
             await using var harness = new P41Harness();
