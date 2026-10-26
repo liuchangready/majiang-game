@@ -32,6 +32,10 @@
     <None Include="..\..\..\tests\v5-golden\ai-v1.json"
           Link="ai-v1.json"
           CopyToOutputDirectory="PreserveNewest" />
+    <!-- N3-B6 companion fixture: generated only by V5AiDiscardFlagsGoldenExporterTest; consumed read-only. -->
+    <None Include="..\..\..\tests\v5-golden\ai-discard-flags-v1.json"
+          Link="ai-discard-flags-v1.json"
+          CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
 </Project>

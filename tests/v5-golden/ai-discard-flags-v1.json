@@ -1,0 +1,504 @@
+{
+  "fixture": "ai-discard-flags-v1",
+  "version": 1,
+  "description": "Per-discard isRiichi/isClaimed behavior evidence exported from real V4 domain play. Cases are driven through ApplicationCoordinator legal actions; every value is read from the published GameEvent stream, the public PlayerView projection or PlayerHand.discardHistory. No expected value is hand-written.",
+  "flagSemantics": {
+    "isRiichi": "true iff the matching GameEvent.TileDiscarded published by V4 for this physical tile had isRiichiDiscard=true (set by the DeclareRiichi transition).",
+    "isClaimed": "V4 PlayerView.discards holds only tiles not yet claimed, so every river entry exports isClaimed=false. A tile claimed by pon leaves the active river, stays in PlayerHand.discardHistory and is identified by public meld metadata (Meld.calledTile + Meld.fromPlayer, published via PonDeclared); such tiles are exported as claimedDiscards entries with isClaimed=true.",
+    "sourceBoundary": "V4 PlayerView exposes no per-discard claimed/riichi boolean. Both flags here are derived only from public events, the public projection and public meld metadata. No V4 production code was modified to manufacture them."
+  },
+  "provenance": {
+    "generator": "engine/src/test/kotlin/com/majiang/state/V5AiDiscardFlagsGoldenExporterTest.kt",
+    "generatorVersion": 1,
+    "generatedByCommandPosix": "V5_AI_DISCARD_FLAGS_EXPORT=1 ./gradlew :engine:test --tests \"com.majiang.state.V5AiDiscardFlagsGoldenExporterTest\" --rerun-tasks --console=plain",
+    "generatedByCommandPowershell": "$env:V5_AI_DISCARD_FLAGS_EXPORT='1'; .\\gradlew.bat :engine:test --tests \"com.majiang.state.V5AiDiscardFlagsGoldenExporterTest\" --console=plain",
+    "nativeExitCode": 0,
+    "nativeExitCodeNote": "This file is written only after every exporter assertion passed, so the exporting Gradle test invocation exited 0. The observed numeric exit code and the full log SHA-256 are additionally recorded in the delivery report.",
+    "v4EngineLastCommit": "3f5370c30983a4047dade0835bb2c49dacc5ebbf",
+    "generatedAtHead": "85134e9ce4fd67556f6d2f355249c14f4d3b42d4",
+    "trackedDirtyPaths": [
+      "dotnet/tests/Mahjong.Ai.Tests/Mahjong.Ai.Tests.csproj"
+    ],
+    "trackedDirtyClass": "test-only",
+    "renderSha256": "caf13b8250b7421e89f0e879631d4f9ed6264badda0ea39fbad0d0dbb305e4b8",
+    "sourceHashes": [
+      {
+        "path": "engine/src/main/kotlin/com/majiang/session/PlayerView.kt",
+        "sha256": "2398b660f3f2ef64427b2be2b3eb6d162a3bfdfda92af0150b1df3cc3645b07d",
+        "sha256Lf": "64a021e4fc1d20a8a88320e475ba1dab9ea420c18f106e47d2a71ee58db5ed0b",
+        "lastCommit": "e5a0e3f9aa1b1a5526ead886419075a4198a7638"
+      },
+      {
+        "path": "engine/src/main/kotlin/com/majiang/event/GameEvent.kt",
+        "sha256": "7911872e7639e790b643c276d7372375a08a090acd97cce49acb4591f20d9c25",
+        "sha256Lf": "a571d59f5afca6fc2a9f2fd7ca0ecf2905028cf9117be026bb4051d5bfd46190",
+        "lastCommit": "e5a0e3f9aa1b1a5526ead886419075a4198a7638"
+      },
+      {
+        "path": "engine/src/main/kotlin/com/majiang/round/RoundTransitionPlanner.kt",
+        "sha256": "ea7a444e1e0a311c0ec5afb6046551e0a83a32442a4248ae0dff1ca92f4dff62",
+        "sha256Lf": "8d9f9c5bad66d28f98990e00c8485f59ab85d74e9cecda139bdd513522ba86af",
+        "lastCommit": "20c79ab07e9aa3ae81c0dbb1aa2e4ae7fa2cc035"
+      },
+      {
+        "path": "engine/src/main/kotlin/com/majiang/model/TileMovement.kt",
+        "sha256": "f89cf112dad6404b679002438f1a3f6a1a222d7e4377dc247c2580c15336a4e0",
+        "sha256Lf": "51f085bd0ad124c16b6a279d699012aaf9a848373cc2c26310211f3a4d7565f8",
+        "lastCommit": "20c79ab07e9aa3ae81c0dbb1aa2e4ae7fa2cc035"
+      },
+      {
+        "path": "engine/src/main/kotlin/com/majiang/model/PlayerHand.kt",
+        "sha256": "8218dcd2777515b5487894e7190402e030c2ef1cfe5f302205e28de90e6925d6",
+        "sha256Lf": "4ed564c0fb0155eec15409dfb76bc76951661745d9bd950fa970f757e0cacdd9",
+        "lastCommit": "cca271a0b5c2a257ad7b3affda6bb14eed221ebd"
+      },
+      {
+        "path": "engine/src/main/kotlin/com/majiang/model/Meld.kt",
+        "sha256": "3849948cb752c1ec3b66df71a9c9a93be666a6ba56b8174cde51a97381fafb19",
+        "sha256Lf": "4f8925892a449ff9c40d2cb1e677fe669da4b5cbbcb2cf7ea2dbb5321ee15abb",
+        "lastCommit": "ef0b0f01210e738631319e646fa8fda7df4b95d2"
+      },
+      {
+        "path": "engine/src/main/kotlin/com/majiang/model/Tile.kt",
+        "sha256": "c65d42c2fc9b68eccea6ac3402ee7a9786d0f3c58f92932f3a86921e45dcea45",
+        "sha256Lf": "6657290cc42efa0d3c58893ffd00d92b78e3d871ebfb426194caccd6770072b0",
+        "lastCommit": "ef0b0f01210e738631319e646fa8fda7df4b95d2"
+      },
+      {
+        "path": "engine/src/main/kotlin/com/majiang/state/GameAction.kt",
+        "sha256": "94cc1eca043bb6dfd4fbe05db24d841f34e11a99686ab9add98ef878b97b243c",
+        "sha256Lf": "0491ae414ddd6d74dfb9a8182d31fe0b3d01759041a9b209b969bddd90fbe91e",
+        "lastCommit": "e5a0e3f9aa1b1a5526ead886419075a4198a7638"
+      },
+      {
+        "path": "engine/src/test/kotlin/com/majiang/state/V5AiDiscardFlagsGoldenExporterTest.kt",
+        "sha256": "3a38d87dc9f411b763c0fe1a961178af9b683258a576495068e14cf2bcb7ee57",
+        "sha256Lf": "3a38d87dc9f411b763c0fe1a961178af9b683258a576495068e14cf2bcb7ee57",
+        "lastCommit": "unknown"
+      },
+      {
+        "path": "dotnet/src/Mahjong.Ai/AiObservation.cs",
+        "sha256": "e5285f0a6214056b7187773430a82e21246cabb5f6eaad228f9e800af11bd35f",
+        "sha256Lf": "6511136fc79920a713b439d00c59ddff33a6a453297d3832e8de496c2bda3d8f",
+        "lastCommit": "f464789c76f0c83369eecc71a16f92296ccf0f35"
+      },
+      {
+        "path": "dotnet/src/Mahjong.TableRuntime/TableActor.cs",
+        "sha256": "f3459c42224f997948c60ab07a99e2a36118b79a4cf1f9b59454bbb1b00655cf",
+        "sha256Lf": "4391525581fe14b303b63ea80ee8bf6e2b4c44d6b6aa25d96d4fe2ee3562bb60",
+        "lastCommit": "7f3c444ef2c530099b96811e02bceb4eb9995c80"
+      }
+    ]
+  },
+  "cases": [
+    {
+      "caseId": "riichi-river",
+      "viewerSeat": 3,
+      "recordedActions": [
+        {
+          "action": "DeclareRiichi",
+          "player": 0,
+          "discardTileId": 108
+        },
+        {
+          "action": "DiscardTile",
+          "player": 1,
+          "tileId": 62
+        },
+        {
+          "action": "DiscardTile",
+          "player": 2,
+          "tileId": 63
+        },
+        {
+          "action": "DiscardTile",
+          "player": 3,
+          "tileId": 64
+        }
+      ],
+      "recordedEvents": [
+        {
+          "type": "RiichiDeclared",
+          "turnNumber": 12,
+          "player": 0,
+          "discardTileId": 108,
+          "isDoubleRiichi": false
+        },
+        {
+          "type": "TileDiscarded",
+          "turnNumber": 12,
+          "player": 0,
+          "tileId": 108,
+          "isRiichiDiscard": true,
+          "isTsumogiri": false
+        },
+        {
+          "type": "TileDiscarded",
+          "turnNumber": 13,
+          "player": 1,
+          "tileId": 62,
+          "isRiichiDiscard": false,
+          "isTsumogiri": true
+        },
+        {
+          "type": "TileDiscarded",
+          "turnNumber": 14,
+          "player": 2,
+          "tileId": 63,
+          "isRiichiDiscard": false,
+          "isTsumogiri": true
+        },
+        {
+          "type": "TileDiscarded",
+          "turnNumber": 15,
+          "player": 3,
+          "tileId": 64,
+          "isRiichiDiscard": false,
+          "isTsumogiri": true
+        },
+        {
+          "type": "TileDiscarded",
+          "turnNumber": 16,
+          "player": 0,
+          "tileId": 65,
+          "isRiichiDiscard": false,
+          "isTsumogiri": true
+        }
+      ],
+      "river": [
+        {
+          "seat": 0,
+          "riverIndex": 0,
+          "tileId": 108,
+          "isRiichi": true,
+          "isClaimed": false
+        },
+        {
+          "seat": 0,
+          "riverIndex": 1,
+          "tileId": 65,
+          "isRiichi": false,
+          "isClaimed": false
+        },
+        {
+          "seat": 1,
+          "riverIndex": 0,
+          "tileId": 62,
+          "isRiichi": false,
+          "isClaimed": false
+        },
+        {
+          "seat": 2,
+          "riverIndex": 0,
+          "tileId": 63,
+          "isRiichi": false,
+          "isClaimed": false
+        },
+        {
+          "seat": 3,
+          "riverIndex": 0,
+          "tileId": 64,
+          "isRiichi": false,
+          "isClaimed": false
+        }
+      ],
+      "riichiStatusBySeat": [
+        true,
+        false,
+        false,
+        false
+      ],
+      "claimedDiscards": [],
+      "publicMelds": [],
+      "discardHistoryBySeat": [
+        {
+          "seat": 0,
+          "discardHistoryTileIds": [
+            108,
+            65
+          ]
+        },
+        {
+          "seat": 1,
+          "discardHistoryTileIds": [
+            62
+          ]
+        },
+        {
+          "seat": 2,
+          "discardHistoryTileIds": [
+            63
+          ]
+        },
+        {
+          "seat": 3,
+          "discardHistoryTileIds": [
+            64
+          ]
+        }
+      ],
+      "postCaseScores": [
+        24000,
+        25000,
+        25000,
+        25000
+      ],
+      "riichiSticks": 1
+    },
+    {
+      "caseId": "claimed-discard",
+      "viewerSeat": 3,
+      "recordedActions": [
+        {
+          "action": "DiscardTile",
+          "player": 1,
+          "tileId": 0
+        },
+        {
+          "action": "Pass",
+          "player": 0
+        },
+        {
+          "action": "DeclarePon",
+          "player": 2,
+          "tileIds": [
+            1,
+            2
+          ]
+        },
+        {
+          "action": "DiscardTile",
+          "player": 2,
+          "tileId": 96
+        }
+      ],
+      "recordedEvents": [
+        {
+          "type": "TileDiscarded",
+          "turnNumber": 12,
+          "player": 1,
+          "tileId": 0,
+          "isRiichiDiscard": false,
+          "isTsumogiri": true
+        },
+        {
+          "type": "PonDeclared",
+          "turnNumber": 12,
+          "player": 2,
+          "calledTileId": 0,
+          "fromPlayer": 1
+        },
+        {
+          "type": "TileDiscarded",
+          "turnNumber": 12,
+          "player": 2,
+          "tileId": 96,
+          "isRiichiDiscard": false,
+          "isTsumogiri": false
+        }
+      ],
+      "river": [
+        {
+          "seat": 2,
+          "riverIndex": 0,
+          "tileId": 96,
+          "isRiichi": false,
+          "isClaimed": false
+        }
+      ],
+      "riichiStatusBySeat": [
+        false,
+        false,
+        false,
+        false
+      ],
+      "claimedDiscards": [
+        {
+          "seat": 1,
+          "tileId": 0,
+          "isRiichi": false,
+          "isClaimed": true,
+          "absentFromActiveRiver": true,
+          "presentInDiscardHistory": true,
+          "derivedFrom": {
+            "eventType": "PonDeclared",
+            "meldSeat": 2,
+            "calledTileId": 0,
+            "fromPlayer": 1
+          }
+        }
+      ],
+      "publicMelds": [
+        {
+          "seat": 2,
+          "type": "PON",
+          "tileIds": [
+            1,
+            2,
+            0
+          ],
+          "calledTileId": 0,
+          "fromPlayer": 1
+        }
+      ],
+      "discardHistoryBySeat": [
+        {
+          "seat": 0,
+          "discardHistoryTileIds": []
+        },
+        {
+          "seat": 1,
+          "discardHistoryTileIds": [
+            0
+          ]
+        },
+        {
+          "seat": 2,
+          "discardHistoryTileIds": [
+            96
+          ]
+        },
+        {
+          "seat": 3,
+          "discardHistoryTileIds": []
+        }
+      ],
+      "postCaseScores": [
+        25000,
+        25000,
+        25000,
+        25000
+      ],
+      "riichiSticks": 0
+    },
+    {
+      "caseId": "riichi-discard-claimed",
+      "viewerSeat": 3,
+      "recordedActions": [
+        {
+          "action": "DeclareRiichi",
+          "player": 0,
+          "discardTileId": 108
+        },
+        {
+          "action": "DeclarePon",
+          "player": 1,
+          "tileIds": [
+            110,
+            111
+          ]
+        },
+        {
+          "action": "DiscardTile",
+          "player": 1,
+          "tileId": 52
+        }
+      ],
+      "recordedEvents": [
+        {
+          "type": "RiichiDeclared",
+          "turnNumber": 12,
+          "player": 0,
+          "discardTileId": 108,
+          "isDoubleRiichi": false
+        },
+        {
+          "type": "TileDiscarded",
+          "turnNumber": 12,
+          "player": 0,
+          "tileId": 108,
+          "isRiichiDiscard": true,
+          "isTsumogiri": false
+        },
+        {
+          "type": "PonDeclared",
+          "turnNumber": 12,
+          "player": 1,
+          "calledTileId": 108,
+          "fromPlayer": 0
+        },
+        {
+          "type": "TileDiscarded",
+          "turnNumber": 12,
+          "player": 1,
+          "tileId": 52,
+          "isRiichiDiscard": false,
+          "isTsumogiri": false
+        }
+      ],
+      "river": [
+        {
+          "seat": 1,
+          "riverIndex": 0,
+          "tileId": 52,
+          "isRiichi": false,
+          "isClaimed": false
+        }
+      ],
+      "riichiStatusBySeat": [
+        true,
+        false,
+        false,
+        false
+      ],
+      "claimedDiscards": [
+        {
+          "seat": 0,
+          "tileId": 108,
+          "isRiichi": true,
+          "isClaimed": true,
+          "absentFromActiveRiver": true,
+          "presentInDiscardHistory": true,
+          "derivedFrom": {
+            "eventType": "PonDeclared",
+            "meldSeat": 1,
+            "calledTileId": 108,
+            "fromPlayer": 0
+          }
+        }
+      ],
+      "publicMelds": [
+        {
+          "seat": 1,
+          "type": "PON",
+          "tileIds": [
+            110,
+            111,
+            108
+          ],
+          "calledTileId": 108,
+          "fromPlayer": 0
+        }
+      ],
+      "discardHistoryBySeat": [
+        {
+          "seat": 0,
+          "discardHistoryTileIds": [
+            108
+          ]
+        },
+        {
+          "seat": 1,
+          "discardHistoryTileIds": [
+            52
+          ]
+        },
+        {
+          "seat": 2,
+          "discardHistoryTileIds": []
+        },
+        {
+          "seat": 3,
+          "discardHistoryTileIds": []
+        }
+      ],
+      "postCaseScores": [
+        24000,
+        25000,
+        25000,
+        25000
+      ],
+      "riichiSticks": 1
+    }
+  ]
+}
