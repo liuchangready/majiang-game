@@ -59,15 +59,17 @@ namespace Mahjong.LocalHost
             LocalHostEnvironment environment,
             LocalTableStore store,
             TableActor actor,
-            LocalSnapshotFacts facts)
+            LocalSnapshotFacts facts,
+            bool[] temporaryFuriten,
+            bool[] riichiFuriten)
         {
             _options = options;
             _environment = environment;
             _store = store;
             _actor = actor;
             _facts = facts;
-            _temporaryFuriten = store.LoadTemporaryFuriten();
-            _riichiFuriten = store.LoadRiichiFuriten();
+            _temporaryFuriten = temporaryFuriten;
+            _riichiFuriten = riichiFuriten;
 
             var scopes = new RequestScopeId[4];
             ulong now = (ulong)Math.Max(0L, environment.ResolveClock().UtcNowMs);
@@ -95,6 +97,8 @@ namespace Mahjong.LocalHost
             ITableClock clock = environment.ResolveClock();
             LocalTableStore store = await LocalTableStore.OpenAsync(options, clock, options.FileSystemForTest, cancellationToken)
                 .ConfigureAwait(false);
+            bool[] temporaryFuriten = store.LoadTemporaryFuriten();
+            bool[] riichiFuriten = store.LoadRiichiFuriten();
             try
             {
                 var facts = new LocalSnapshotFacts(environment, clock);
@@ -109,7 +113,7 @@ namespace Mahjong.LocalHost
                     facts.RecoveredFacts = checkpoint.CommittedFactsPayload == null
                         ? null
                         : TableProjectionFactsCodec.Decode(checkpoint.CommittedFactsPayload, round.RoundId, checkpoint.StateVersion);
-                    actor = CreateActor(options, environment, clock, store, facts, round, checkpoint, recover: true, store.LoadTemporaryFuriten(), store.LoadRiichiFuriten());
+                    actor = CreateActor(options, environment, clock, store, facts, round, checkpoint, recover: true, temporaryFuriten, riichiFuriten);
                     facts.SettlementProvider = () => actor.LastSettlementCalculation;
                     TableRecoveryResult recovered = await actor.RecoverFromStoreAsync(cancellationToken).ConfigureAwait(false);
                     if (!recovered.Recovered)
@@ -125,11 +129,11 @@ namespace Mahjong.LocalHost
                     RoundStateMachine round = options.InitialRound ?? facts.CreateInitialRound(options);
                     TableCheckpoint checkpoint = facts.CreateInitialCheckpoint(options, round);
                     await store.CreateRoomAsync(checkpoint, cancellationToken).ConfigureAwait(false);
-                    actor = CreateActor(options, environment, clock, store, facts, round, checkpoint, recover: false, store.LoadTemporaryFuriten(), store.LoadRiichiFuriten());
+                    actor = CreateActor(options, environment, clock, store, facts, round, checkpoint, recover: false, temporaryFuriten, riichiFuriten);
                     facts.SettlementProvider = () => actor.LastSettlementCalculation;
                 }
 
-                var runtime = new LocalTableRuntime(options, environment, store, actor, facts);
+                var runtime = new LocalTableRuntime(options, environment, store, actor, facts, temporaryFuriten, riichiFuriten);
                 return runtime;
             }
             catch
@@ -831,7 +835,7 @@ namespace Mahjong.LocalHost
                     result = await _actor.SubmitAsync(request, cancellationToken).ConfigureAwait(false);
                 }
 
-                if ((result.Status == TableOperationStatus.Accepted || result.Status == TableOperationStatus.Replayed))
+                if (result.Status == TableOperationStatus.Accepted)
                 {
                     if (passSetsFuriten)
                     {
@@ -847,6 +851,11 @@ namespace Mahjong.LocalHost
                         _temporaryFuriten[_seat] = false;
                     }
                 }
+                else if (result.Status == TableOperationStatus.Replayed)
+                {
+                    _store.ClearPreparedFuriten();
+                }
+
                 else
                 {
                     _store.ClearPreparedFuriten();
@@ -857,6 +866,7 @@ namespace Mahjong.LocalHost
             {
                 Enqueue(RejectedReceipt(envelope, requestId, expected, exception.Code, exception.Message, payload));
             }
+                _store.ClearPreparedFuriten();
         }
 
         private static bool IsCheatKind(CommandKind kind)
@@ -1956,4 +1966,5 @@ namespace Mahjong.LocalHost
             public CancellationTokenRegistration Registration { get; set; }
         }
     }
+
 }

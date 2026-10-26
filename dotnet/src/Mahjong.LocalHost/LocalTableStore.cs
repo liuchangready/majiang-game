@@ -834,6 +834,7 @@ namespace Mahjong.LocalHost
                 if (write.Verdict == LocalWriteVerdict.Committed)
                 {
                     _pendingReceiptDigest = null;
+                    _pendingFuriten = null;
                 }
 
                 return CompleteWrite(write, candidate, result);

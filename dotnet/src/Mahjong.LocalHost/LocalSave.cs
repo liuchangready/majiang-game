@@ -195,6 +195,12 @@ namespace Mahjong.LocalHost
                 TerminalResultId = TerminalResultId,
                 TerminalResultVersion = TerminalResultVersion
             };
+            for (int i = 0; i < 4; i++)
+            {
+                copy.TemporaryFuriten[i] = TemporaryFuriten[i];
+                copy.RiichiFuriten[i] = RiichiFuriten[i];
+            }
+
 
             copy.CommandJournals.AddRange(CommandJournals);
             copy.EventJournals.AddRange(EventJournals);

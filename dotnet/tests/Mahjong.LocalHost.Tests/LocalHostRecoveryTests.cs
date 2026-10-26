@@ -286,6 +286,18 @@ namespace Mahjong.LocalHost.Tests
                 }
             }
         }
+        [Fact]
+        public void CandidateClonePreservesFuritenFacts()
+        {
+            var save = new LocalSave();
+            save.TemporaryFuriten[1] = true;
+            save.RiichiFuriten[1] = true;
+            LocalSave clone = save.DeepCloneForCandidate();
+            Assert.True(clone.TemporaryFuriten[1]);
+            Assert.True(clone.RiichiFuriten[1]);
+            clone.TemporaryFuriten[1] = false;
+            Assert.True(save.TemporaryFuriten[1]);
+        }
         private static async Task<(ITableChannel Channel, TableSession Session)> OpenSessionAsync(
             P41Harness harness,
             CancellationToken cancellationToken)
