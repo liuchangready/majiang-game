@@ -77,19 +77,21 @@
 
 过程证据（同目录）：export-run-1..9（含失败迭代）、validate-run-1..5、`xunit-mut-*.log/xml`、`node-count.txt`。失败迭代的原因均已定位并修复：同包 top-level 声明冲突（JSON 辅助类型改嵌套）、`casesSection` 切片次序缺陷（trimEnd 先于 removeSuffix 会把 `]\n` 留在切片内；文件尾 LF 又使 removeSuffix 失配——最终改为按文档最后一个 `]` 精确切片）、重推导需按文档嵌入缩进（indent 2）渲染。
 
-## 8. §8a 增量登记（原增量算法，只登新 fixture，不重算全量）
+## 8. §8a 增量登记（沿用原 Visit 增量算法，只登新 fixture，不重算全量）
 
-`ai-discard-flags-v1.json` 按共享台账 §8a 计数规则（root/object/array 计 node；含 null 的全部标量计 leaf；数组路径归一 `[*]`）：
+`ai-discard-flags-v1.json` 按已接受原脚本（n3-closeout-ledger `artifacts/TEMP/r3/incremental-census-repro.ps1` 的 `Visit`）逐节点计数：root 路径 `$`；**每个 value 在类型分发前即 nodes++ 并登记 path（标量既计 node 也计 leaf）**；object 子项走 `path+'.'+name`，数组子项走 `path+'[*]'`；含 null 的标量计 leaf。
 
 | fixture | Paths | LeafPaths | NodeInstances | LeafInstances |
 |---|---:|---:|---:|---:|
-| `tests/v5-golden/ai-discard-flags-v1.json` | 26 | 63 | 109 | 292 |
+| `tests/v5-golden/ai-discard-flags-v1.json` | 89 | 63 | 401 | 292 |
 
-不入 592 GAP 分母、不改 1516 paths / 655145 nodes 历史全量、不升任何旧 73 条为 full。计数脚本与结果：`artifacts/TEMP/n3-b6-discard-flags/count-fixture-nodes.ps1`、`node-count.txt`。
+- 计数命令 exit 0：`powershell -NoProfile -ExecutionPolicy Bypass -File artifacts/TEMP/n3-b6-discard-flags/count-fixture-nodes-visit-v2.ps1 -FixturePath <fixture绝对路径> -OutPath <输出路径>`；结果 `node-count-v2.txt`（fixture sha256=`448bab14def9809dbdcc4be1148cd53370fee1a44541535794ac7dfbe5b5cbe8`）、运行日志 `node-count-v2-run.log`（SHA256 见 §15）。
+- **历史错误记录（保留不覆盖）**：本轮首版 `count-fixture-nodes.ps1`/`node-count.txt` 曾报 26/63/109/292——其 Walk 仅对容器递增 nodes/paths，漏算全部标量的 node/path 登记（26=89−63 恰为容器路径数、109=401−292 恰为容器实例数），非原算法。原脚本与日志原样保留于 `artifacts/TEMP/n3-b6-discard-flags/`，仅作历史，不再作为有效 PASS。
+- 不入 592 GAP 分母、不改 1516 paths / 655145 nodes 历史全量、不升任何旧 73 条为 full。
 
 ## 9. 新 TSV（2 条，identity+history 原样保留）
 
-`V5-N3-B6-DISCARD-FLAGS-ADJUDICATION.tsv`：恰好两行，id/package/fixture/caseId/path/idx/kind/parent 与 histClass/originalVerdict/orig* 列**逐字保留原 TSV 值**；新增 proposedVerdict、行为锚点、命令、反证、owner、revisit 与独立 sourceBoundary 列。原 mappingLimits 说明文字（idx3 隐私、容器行）不因本批改变。行级 proposedVerdict 均为 **classified-proposal**（是否接受由 caller 串行裁决），不是 bound/full。
+`V5-N3-AI-DISCARD-FLAGS.tsv`：恰好两行，id/package/fixture/caseId/path/idx/kind/parent 与 histClass/originalVerdict/orig* 列**逐字保留原 TSV 值**；新增 proposedVerdict、行为锚点、命令、反证、owner、revisit 与独立 sourceBoundary 列。原 mappingLimits 说明文字（idx3 隐私、容器行）不因本批改变。行级 proposedVerdict 均为 **classified-proposal**（是否接受由 caller 串行裁决），不是 bound/full。
 
 ## 10. 残余与新证据的分离
 
@@ -103,7 +105,7 @@
 | 真实 V4 非空 isRiichi/isClaimed 源 + C# 值级消费 | **PASS** |
 | companion fixture 仅由真实 exporter 生成、无手填 golden | **PASS** |
 | 原件 6/6 通过 + 5 变异值级失败（非空选择） | **PASS** |
-| §8a 增量登记（26/63/109/292） | **PASS** |
+| §8a 增量登记（89/63/401/292，原 Visit 算法） | **PASS** |
 | 新 TSV 2 条 + 新报告 | **PASS** |
 | ai-v1 原行改账（升 classified） | **NOT_RUN**（caller 串行裁决权） |
 | 共享台账/校验器/manifest 改写 | **NOT_RUN**（禁改） |
@@ -126,11 +128,21 @@ D:/Unity/dotnet/dotnet.exe bin/Release/net8.0/Mahjong.Ai.Tests.dll -class Mahjon
 # 变异反证（TEMP）
 bash artifacts/TEMP/n3-b6-discard-flags/make-mutants.sh tests/v5-golden/ai-discard-flags-v1.json
 MAHJONG_AI_DISCARD_FLAGS_GOLDEN=<mut>.json D:/Unity/dotnet/dotnet.exe bin/Release/net8.0/Mahjong.Ai.Tests.dll -class Mahjong.Ai.Tests.AiDiscardFlagsGoldenTests
-# §8a 计数
-powershell -NoProfile -ExecutionPolicy Bypass -File artifacts/TEMP/n3-b6-discard-flags/count-fixture-nodes.ps1 -FixturePath <fixture绝对路径> -OutPath <输出路径>
+# §8a 计数（原 Visit 算法复刻）
+powershell -NoProfile -ExecutionPolicy Bypass -File artifacts/TEMP/n3-b6-discard-flags/count-fixture-nodes-visit-v2.ps1 -FixturePath <fixture绝对路径> -OutPath <输出路径>
 ```
 
 ## 14. 交付记录
 
 - 本报告与新 TSV 随最小提交进入工作树（提交 SHA 见交付消息）；`artifacts/TEMP/` 不入库。
-- 提交清单（6 文件）：`engine/src/test/kotlin/com/majiang/state/V5AiDiscardFlagsGoldenExporterTest.kt`、`tests/v5-golden/ai-discard-flags-v1.json`、`dotnet/tests/Mahjong.Ai.Tests/AiDiscardFlagsGoldenTests.cs`、`dotnet/tests/Mahjong.Ai.Tests/Mahjong.Ai.Tests.csproj`、`doc/v5-重构/V5-N3-B6-DISCARD-FLAGS-BINDING.md`、`doc/v5-重构/V5-N3-B6-DISCARD-FLAGS-ADJUDICATION.tsv`。
+- 提交清单（6 文件）：`engine/src/test/kotlin/com/majiang/state/V5AiDiscardFlagsGoldenExporterTest.kt`、`tests/v5-golden/ai-discard-flags-v1.json`、`dotnet/tests/Mahjong.Ai.Tests/AiDiscardFlagsGoldenTests.cs`、`dotnet/tests/Mahjong.Ai.Tests/Mahjong.Ai.Tests.csproj`、`doc/v5-重构/V5-N3-AI-DISCARD-FLAGS.md`、`doc/v5-重构/V5-N3-AI-DISCARD-FLAGS.tsv`。
+
+## 15. 返修记录（第 2 轮，D-B6-01/02/03 一次修毕）
+
+| 缺陷 | 修复映射 | 验收证据 |
+|---|---|---|
+| D-B6-01 MAJOR：首版计数 26/63/109/292 为自造算法（漏算标量 node/path） | §8 改用原 Visit 逐节点复刻脚本 `count-fixture-nodes-visit-v2.ps1`，按 89/63/401/292 登记；旧脚本/日志原样保留为历史错误记录；冻结分母与历史全量不动 | 计数 exit 0（`COUNT_EXIT=0`）；结果 fixture sha256=`448bab14def9809dbdcc4be1148cd53370fee1a44541535794ac7dfbe5b5cbe8`；`node-count-v2-run.log` SHA256=`856bf03396ef9df8ac01aaef721cedc75aa01095e460e370bf143cee8f35e39b`；`node-count-v2.txt` SHA256=`6ad281f6a456ceecaa3eef1a3c1aef6901bc93794f2047af12934caf0bcf2bd0` |
+| D-B6-02 MAJOR：新 TSV 两行 package 误为 ai-v1 | 两行 package 改回 `GAP:N3-B6`（fixture 列保持 ai-v1）；`fix-verify-tsv-identity.pl` 按 id 对冻结原行（CRLF 容错读取，仅比较不回写）逐列核对 13 个 identity/history 列 | 核对 exit 0、mismatch=0（26/26 MATCH，恰 2 行 × 32 列）；`tsv-identity-verify.log` SHA256=`9083cc0816395ebc373d3ea7e7d674e396556732f195a1407ed6af15721432f2` |
+| D-B6-03 MINOR：两个文档路径不符 expectedFiles | `git mv` 为 `doc/v5-重构/V5-N3-AI-DISCARD-FLAGS.md` / `doc/v5-重构/V5-N3-AI-DISCARD-FLAGS.tsv`；§9/§14 内部引用同步更新；B6 仅作语义名称保留 | `git diff --name-status 85134e9..HEAD` 恰 6 个 expectedFiles；旧 B6 命名路径不存在；`git diff --check` 干净 |
+
+行为证据标注：exporter/fixture/C# 测试源码字节本轮**未变**（HEAD `daa834a` 行为面被 caller 独立复验 PASS）；本轮对行为测试标 **NOT_RUN（源码字节未变，不伪装重跑）**。未创建 complete.flag；不宣告门 2/G1/G5；修毕交回 caller 统一 PR19 集成。
