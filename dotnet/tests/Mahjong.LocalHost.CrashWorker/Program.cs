@@ -91,7 +91,22 @@ namespace Mahjong.LocalHost.CrashWorker
                 return 5;
             }
 
-            await Task.Delay(100);
+            for (int i = 0; i < 500 && session.PendingCommands.Count > 0; i++)
+            {
+                if (session.State == TableConnectionState.Ready)
+                {
+                    try
+                    {
+                        await session.PumpOnceAsync(CancellationToken.None);
+                    }
+                    catch
+                    {
+                        break;
+                    }
+                }
+
+                await Task.Delay(10);
+            }
 
             File.WriteAllLines(marker, new[]
             {
