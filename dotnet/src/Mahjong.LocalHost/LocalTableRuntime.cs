@@ -204,7 +204,8 @@ namespace Mahjong.LocalHost
                 Encoder = new ContractsStreamFrameEncoder(new LocalStreamContractCodec()),
                 MaxQueuedFrames = 128
             };
-            return new TableActor(
+            var settlementFacts = new LocalSettlementFactsPort();
+            var actor = new TableActor(
                 actorOptions,
                 round,
                 new NoopCommitPort(),
@@ -214,7 +215,9 @@ namespace Mahjong.LocalHost
                 facts,
                 streamOptions,
                 durable,
-                new LocalSettlementFactsPort());
+                settlementFacts);
+            settlementFacts.RoundProvider = () => actor.GetRoundStateForHost();
+            return actor;
         }
 
         internal Mahjong.Domain.RoundResult? CurrentRoundResult => _actor.GetRoundResult();

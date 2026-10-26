@@ -82,6 +82,68 @@ namespace Mahjong.LocalHost.Tests
             }
         }
 
+        [Fact]
+        public async Task MatchLockRejectsASecondLiveCoordinator()
+        {
+            await using var harness = new P41Harness();
+            CancellationToken ct = TestContext.Current.CancellationToken;
+            var options = new LocalMatchHostOptions
+            {
+                SaveDirectory = Path.Combine(harness.Root, "lock"),
+                MatchId = "lock-1",
+                Environment = harness.Options.Environment
+            };
+            LocalMatchCoordinator first = await LocalMatchCoordinator.OpenAsync(options, ct);
+            try
+            {
+                await Assert.ThrowsAsync<LocalTableException>(
+                    async () => await LocalMatchCoordinator.OpenAsync(options, ct));
+            }
+            finally
+            {
+                await first.DisposeAsync();
+            }
+        }
+
+        [Fact]
+        public async Task CorruptMatchPrimaryFallsBackToPreviousOrIsRejected()
+        {
+            await using var harness = new P41Harness();
+            CancellationToken ct = TestContext.Current.CancellationToken;
+            string root = Path.Combine(harness.Root, "corrupt");
+            var options = new LocalMatchHostOptions
+            {
+                SaveDirectory = root,
+                MatchId = "corrupt-1",
+                Environment = harness.Options.Environment
+            };
+            LocalMatchCoordinator first = await LocalMatchCoordinator.OpenAsync(options, ct);
+            string path = Path.Combine(root, "corrupt-1.match");
+            await first.DisposeAsync();
+            Assert.True(File.Exists(path));
+
+            byte[] bytes = File.ReadAllBytes(path);
+            bytes[bytes.Length - 1] ^= 0x01;
+            File.WriteAllBytes(path, bytes);
+
+            try
+            {
+                LocalMatchCoordinator restored = await LocalMatchCoordinator.OpenAsync(options, ct);
+                try
+                {
+                    Assert.Equal(4, restored.Snapshot.Scores.Count);
+                    Assert.Equal(100_000L, restored.Snapshot.Scores.Sum());
+                }
+                finally
+                {
+                    await restored.DisposeAsync();
+                }
+            }
+            catch (LocalTableException exception)
+            {
+                Assert.Equal(LocalTableErrorKind.CorruptState, exception.ErrorKind);
+            }
+        }
         private static async Task<(TableSession Session, PlayerSnapshot Final)> PlayRoundAsync(
             LocalMatchRound round,
             CancellationToken ct)

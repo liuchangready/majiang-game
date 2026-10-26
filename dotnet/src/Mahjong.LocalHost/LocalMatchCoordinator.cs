@@ -160,6 +160,8 @@ namespace Mahjong.LocalHost
         private readonly LocalSnapshotFacts _facts;
         private readonly ITableClock _clock;
         private readonly string _statePath;
+        private readonly string _lockPath;
+        private FileStream? _lockStream;
         private readonly object _gate = new object();
 
         private LocalMatchState _state;
@@ -172,12 +174,16 @@ namespace Mahjong.LocalHost
             LocalSnapshotFacts facts,
             ITableClock clock,
             string statePath,
+            string lockPath,
+            FileStream lockStream,
             LocalMatchState state)
         {
             _options = options;
             _facts = facts;
             _clock = clock;
             _statePath = statePath;
+            _lockPath = lockPath;
+            _lockStream = lockStream;
             _state = state;
         }
 
@@ -195,12 +201,46 @@ namespace Mahjong.LocalHost
             string root = LocalTableHostPaths.ResolveSaveDirectory(options.SaveDirectory);
             Directory.CreateDirectory(root);
             string statePath = Path.Combine(root, options.MatchId + ".match");
-            LocalHostEnvironment environment = options.Environment ?? LocalHostEnvironment.System;
-            var facts = new LocalSnapshotFacts(environment, environment.ResolveClock());
-            LocalMatchState state = LocalMatchStateCodec.Load(statePath)
-                ?? LocalMatchState.Create(options.MatchId);
-            return new ValueTask<LocalMatchCoordinator>(
-                new LocalMatchCoordinator(options, facts, environment.ResolveClock(), statePath, state));
+            string lockPath = statePath + ".lock";
+            FileStream lockStream;
+            try
+            {
+                lockStream = new FileStream(lockPath, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None);
+            }
+            catch (IOException exception)
+            {
+                throw new LocalTableException(
+                    LocalTableErrorKind.LeaseConflict,
+                    "The match is already open by another coordinator/process.",
+                    exception);
+            }
+
+            try
+            {
+                LocalHostEnvironment environment = options.Environment ?? LocalHostEnvironment.System;
+                var facts = new LocalSnapshotFacts(environment, environment.ResolveClock());
+                LocalMatchState? loaded = LocalMatchStateCodec.Load(statePath);
+                LocalMatchState state = loaded ?? LocalMatchState.Create(options.MatchId);
+                if (loaded == null)
+                {
+                    LocalMatchStateCodec.Save(statePath, state, 0);
+                }
+
+                return new ValueTask<LocalMatchCoordinator>(
+                    new LocalMatchCoordinator(
+                        options,
+                        facts,
+                        environment.ResolveClock(),
+                        statePath,
+                        lockPath,
+                        lockStream,
+                        state));
+            }
+            catch
+            {
+                lockStream.Dispose();
+                throw;
+            }
         }
 
         public LocalMatchSnapshot Snapshot
@@ -312,7 +352,7 @@ namespace Mahjong.LocalHost
                 }
 
                 next = _state.ApplyResult(result, _options.MatchId, _options.Rules, _options.DeclareAgariYameAtFinalRound);
-                LocalMatchStateCodec.Save(_statePath, next);
+                LocalMatchStateCodec.Save(_statePath, next, _state.Version);
                 _state = next;
             }
 
@@ -350,6 +390,17 @@ namespace Mahjong.LocalHost
                 catch
                 {
                 }
+            }
+            try
+            {
+                _lockStream?.Dispose();
+            }
+            catch
+            {
+            }
+            finally
+            {
+                _lockStream = null;
             }
         }
 
@@ -547,95 +598,119 @@ namespace Mahjong.LocalHost
     internal static class LocalMatchStateCodec
     {
         private const int Magic = 0x4D415443; // MATC
+        private const int EnvelopeVersion = 1;
         private static readonly UTF8Encoding Utf8 = new UTF8Encoding(false, true);
 
         public static LocalMatchState? Load(string path)
         {
-            if (!File.Exists(path))
+            bool primaryExists = File.Exists(path);
+            string? primaryError = null;
+            LocalMatchState? primary = null;
+            if (primaryExists)
+            {
+                try
+                {
+                    primary = Decode(File.ReadAllBytes(path));
+                }
+                catch (Exception exception) when (
+                    exception is InvalidDataException || exception is IOException ||
+                    exception is UnauthorizedAccessException || exception is ArgumentException)
+                {
+                    primaryError = exception.Message;
+                }
+            }
+
+            if (primary != null)
+            {
+                return primary;
+            }
+
+            string previous = path + ".prev";
+            LocalMatchState? backup = null;
+            if (File.Exists(previous))
+            {
+                try
+                {
+                    backup = Decode(File.ReadAllBytes(previous));
+                }
+                catch (Exception exception) when (
+                    exception is InvalidDataException || exception is IOException ||
+                    exception is UnauthorizedAccessException || exception is ArgumentException)
+                {
+                    primaryError = (primaryError ?? string.Empty) + " / prev=" + exception.Message;
+                }
+            }
+
+            if (backup != null)
+            {
+                // A valid previous copy restores the last confirmed match state. Publish it
+                // atomically through a temp file rather than using it in place.
+                SaveInternal(path, backup, expectedVersion: null);
+                return backup;
+            }
+
+            if (!primaryExists && !File.Exists(previous))
             {
                 return null;
             }
 
-            using (var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read))
-            using (var reader = new BinaryReader(stream, Utf8, true))
-            {
-                if (reader.ReadInt32() != Magic || reader.ReadInt32() != 1)
-                {
-                    throw new LocalTableException(LocalTableErrorKind.CorruptState, "The match state format is invalid.");
-                }
-
-                string matchId = reader.ReadString();
-                int version = reader.ReadInt32();
-                int ordinal = reader.ReadInt32();
-                string roomId = reader.ReadString();
-                string roundId = reader.ReadString();
-                int dealer = reader.ReadInt32();
-                int wind = reader.ReadInt32();
-                int number = reader.ReadInt32();
-                int honba = reader.ReadInt32();
-                int sticks = reader.ReadInt32();
-                long[] scores = ReadScores(reader);
-                long[] finalScores = ReadScores(reader);
-                bool finished = reader.ReadBoolean();
-                string reason = reader.ReadString();
-                int rankCount = reader.ReadInt32();
-                var rankings = new List<RankingEntry>(rankCount);
-                for (int i = 0; i < rankCount; i++)
-                {
-                    rankings.Add(new RankingEntry(reader.ReadInt32(), reader.ReadInt32(), reader.ReadInt64()));
-                }
-
-                int recordCount = reader.ReadInt32();
-                var records = new List<LocalMatchRoundRecord>(recordCount);
-                for (int i = 0; i < recordCount; i++)
-                {
-                    string recordRound = reader.ReadString();
-                    string resultId = reader.ReadString();
-                    var kind = (RoundOutcomeKind)reader.ReadByte();
-                    int winner = reader.ReadInt32();
-                    int loser = reader.ReadInt32();
-                    long[] recordScores = ReadScores(reader);
-                    int recordSticks = reader.ReadInt32();
-                    records.Add(new LocalMatchRoundRecord(
-                        recordRound,
-                        resultId,
-                        kind,
-                        winner,
-                        loser,
-                        recordScores,
-                        recordSticks));
-                }
-
-                var state = new LocalMatchState();
-                state.Restore(
-                    matchId,
-                    version,
-                    ordinal,
-                    roomId,
-                    roundId,
-                    dealer,
-                    wind,
-                    number,
-                    honba,
-                    sticks,
-                    scores,
-                    finalScores,
-                    finished,
-                    reason,
-                    rankings,
-                    records);
-                return state;
-            }
+            throw new LocalTableException(
+                LocalTableErrorKind.CorruptState,
+                "The match state and its previous copy are both unreadable: " + primaryError);
         }
 
-        public static void Save(string path, LocalMatchState state)
+        public static void Save(string path, LocalMatchState state, int expectedVersion)
         {
-            string tmp = path + ".tmp." + Guid.NewGuid().ToString("N");
-            using (var stream = new FileStream(tmp, FileMode.CreateNew, FileAccess.Write, FileShare.None))
+            LocalMatchState? current = File.Exists(path) ? Load(path) : null;
+            if (current != null && current.Version != expectedVersion)
+            {
+                throw new LocalTableException(
+                    LocalTableErrorKind.LeaseConflict,
+                    "The match state advanced concurrently; refusing to overwrite it.");
+            }
+
+            SaveInternal(path, state, expectedVersion);
+        }
+
+        private static void SaveInternal(string path, LocalMatchState state, int? expectedVersion)
+        {
+            byte[] payload = Encode(state);
+            byte[] envelope;
+            using (var stream = new MemoryStream())
             using (var writer = new BinaryWriter(stream, Utf8, true))
             {
                 writer.Write(Magic);
-                writer.Write(1);
+                writer.Write(EnvelopeVersion);
+                writer.Write(payload.Length);
+                writer.Write(TablePayloadSha256.Compute(payload).ToArray());
+                writer.Write(payload);
+                writer.Flush();
+                envelope = stream.ToArray();
+            }
+
+            string tmp = path + ".tmp." + Guid.NewGuid().ToString("N");
+            using (var stream = new FileStream(tmp, FileMode.CreateNew, FileAccess.Write, FileShare.None))
+            {
+                stream.Write(envelope, 0, envelope.Length);
+                stream.Flush(true);
+            }
+
+            if (File.Exists(path))
+            {
+                File.Replace(tmp, path, path + ".prev", true);
+            }
+            else
+            {
+                File.Move(tmp, path);
+                File.Copy(path, path + ".prev", true);
+            }
+        }
+
+        private static byte[] Encode(LocalMatchState state)
+        {
+            using (var stream = new MemoryStream())
+            using (var writer = new BinaryWriter(stream, Utf8, true))
+            {
                 writer.Write(state.MatchId);
                 writer.Write(state.Version);
                 writer.Write(state.Ordinal);
@@ -672,16 +747,123 @@ namespace Mahjong.LocalHost
                 }
 
                 writer.Flush();
-                stream.Flush(true);
+                return stream.ToArray();
+            }
+        }
+
+        private static LocalMatchState Decode(byte[] bytes)
+        {
+            if (bytes == null || bytes.Length < 48)
+            {
+                throw new InvalidDataException("The match state is truncated.");
             }
 
-            if (File.Exists(path))
+            using (var stream = new MemoryStream(bytes, false))
+            using (var reader = new BinaryReader(stream, Utf8, true))
             {
-                File.Replace(tmp, path, null, true);
-            }
-            else
-            {
-                File.Move(tmp, path);
+                if (reader.ReadInt32() != Magic || reader.ReadInt32() != EnvelopeVersion)
+                {
+                    throw new InvalidDataException("The match state envelope is invalid.");
+                }
+
+                int length = reader.ReadInt32();
+                if (length <= 0 || length > bytes.Length - 44)
+                {
+                    throw new InvalidDataException("The match state payload length is invalid.");
+                }
+
+                byte[] expected = reader.ReadBytes(32);
+                byte[] payload = reader.ReadBytes(length);
+                if (payload.Length != length ||
+                    TablePayloadSha256.Compute(payload).ToArray().AsSpan().SequenceEqual(expected) == false)
+                {
+                    throw new InvalidDataException("The match state checksum does not match.");
+                }
+
+                using (var body = new MemoryStream(payload, false))
+                using (var bodyReader = new BinaryReader(body, Utf8, true))
+                {
+                    string matchId = bodyReader.ReadString();
+                    int version = bodyReader.ReadInt32();
+                    int ordinal = bodyReader.ReadInt32();
+                    string roomId = bodyReader.ReadString();
+                    string roundId = bodyReader.ReadString();
+                    int dealer = bodyReader.ReadInt32();
+                    int wind = bodyReader.ReadInt32();
+                    int number = bodyReader.ReadInt32();
+                    int honba = bodyReader.ReadInt32();
+                    int sticks = bodyReader.ReadInt32();
+                    long[] scores = ReadScores(bodyReader);
+                    long[] finalScores = ReadScores(bodyReader);
+                    bool finished = bodyReader.ReadBoolean();
+                    string reason = bodyReader.ReadString();
+                    int rankCount = bodyReader.ReadInt32();
+                    var rankings = new List<RankingEntry>(rankCount);
+                    for (int i = 0; i < rankCount; i++)
+                    {
+                        rankings.Add(new RankingEntry(
+                            bodyReader.ReadInt32(),
+                            bodyReader.ReadInt32(),
+                            bodyReader.ReadInt64()));
+                    }
+
+                    int recordCount = bodyReader.ReadInt32();
+                    var records = new List<LocalMatchRoundRecord>(recordCount);
+                    for (int i = 0; i < recordCount; i++)
+                    {
+                        string recordRound = bodyReader.ReadString();
+                        string resultId = bodyReader.ReadString();
+                        var kind = (RoundOutcomeKind)bodyReader.ReadByte();
+                        int winner = bodyReader.ReadInt32();
+                        int loser = bodyReader.ReadInt32();
+                        long[] recordScores = ReadScores(bodyReader);
+                        int recordSticks = bodyReader.ReadInt32();
+                        records.Add(new LocalMatchRoundRecord(
+                            recordRound,
+                            resultId,
+                            kind,
+                            winner,
+                            loser,
+                            recordScores,
+                            recordSticks));
+                    }
+
+                    if (scores.Length != 4 || finalScores.Length != 0 && finalScores.Length != 4)
+                    {
+                        throw new InvalidDataException("The match state score cardinality is invalid.");
+                    }
+
+                    long sum = 0;
+                    for (int i = 0; i < scores.Length; i++)
+                    {
+                        sum += scores[i];
+                    }
+
+                    if (sum != 100_000L)
+                    {
+                        throw new InvalidDataException("The match state scores violate zero-sum conservation.");
+                    }
+
+                    var state = new LocalMatchState();
+                    state.Restore(
+                        matchId,
+                        version,
+                        ordinal,
+                        roomId,
+                        roundId,
+                        dealer,
+                        wind,
+                        number,
+                        honba,
+                        sticks,
+                        scores,
+                        finalScores,
+                        finished,
+                        reason,
+                        rankings,
+                        records);
+                    return state;
+                }
             }
         }
 
@@ -699,7 +881,7 @@ namespace Mahjong.LocalHost
             int count = reader.ReadInt32();
             if (count < 0 || count > 4)
             {
-                throw new LocalTableException(LocalTableErrorKind.CorruptState, "The match score count is invalid.");
+                throw new InvalidDataException("The match score count is invalid.");
             }
 
             var values = new long[count];

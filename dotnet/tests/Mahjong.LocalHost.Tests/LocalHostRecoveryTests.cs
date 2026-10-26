@@ -166,6 +166,12 @@ namespace Mahjong.LocalHost.Tests
             await channel.CloseAsync(new TableChannelCloseReason("LOST_RECEIPT", true), CancellationToken.None);
             await session.CloseAsync("LOST_RECEIPT", CancellationToken.None);
 
+            using (LocalTableStore check = await LocalTableStore.OpenAsync(harness.Options, harness.Clock, null, ct))
+            {
+                TableStateRow saved = (await check.LoadStateAsync(P41Harness.RoomId, ct))!;
+                Assert.Equal(baseline.StateVersion + 1UL, saved.StateVersion.Value);
+            }
+
             ITableChannel reopened = await LocalTableHost.CreateChannelAsync(harness.Options, ct);
             string reopenTicket = LocalTableHost.IssueTicket(harness.Options);
             await reopened.OpenAsync(new TableChannelConnectRequest(reopenTicket, "p41-test", null), ct);
@@ -193,6 +199,71 @@ namespace Mahjong.LocalHost.Tests
             {
                 await recovered.CloseAsync("TEST_DONE", CancellationToken.None);
                 await reopened.CloseAsync(new TableChannelCloseReason("TEST_DONE", true), CancellationToken.None);
+            }
+        }
+        [Fact]
+        public async Task CrashWorkerRealProcessKillLeavesDurableReceipt()
+        {
+            await using var harness = new P41Harness();
+            harness.Options.AutoPlay = false;
+            CancellationToken ct = TestContext.Current.CancellationToken;
+            string root = P41Harness.FindRepositoryRoot();
+            string workerDll = Path.Combine(
+                root,
+                "dotnet",
+                "tests",
+                "Mahjong.LocalHost.CrashWorker",
+                "bin",
+                "Release",
+                "net8.0",
+                "Mahjong.LocalHost.CrashWorker.dll");
+            Assert.True(File.Exists(workerDll), "CrashWorker was not built: " + workerDll);
+            string marker = Path.Combine(harness.Root, "crash-marker.txt");
+            var start = new System.Diagnostics.ProcessStartInfo
+            {
+                FileName = "D:/Unity/dotnet/dotnet.exe",
+                Arguments = "\"" + workerDll + "\" \"" + harness.Options.SaveDirectory + "\" \"" +
+                            P41Harness.RoomId + "\" \"" + marker + "\"",
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true
+            };
+            using (System.Diagnostics.Process process = System.Diagnostics.Process.Start(start)!)
+            {
+                string stdout = await process.StandardOutput.ReadToEndAsync(ct);
+                string stderr = await process.StandardError.ReadToEndAsync(ct);
+                using var waitCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                waitCts.CancelAfter(TimeSpan.FromSeconds(30));
+                try
+                {
+                    await process.WaitForExitAsync(waitCts.Token);
+                }
+                catch (OperationCanceledException)
+                {
+                    process.Kill(true);
+                    throw new TimeoutException("CrashWorker did not exit; stdout=" + stdout + " stderr=" + stderr);
+                }
+
+                Assert.NotEqual(0, process.ExitCode);
+            }
+
+            string[] markerLines = File.ReadAllLines(marker);
+            Assert.Equal(3, markerLines.Length);
+            var scopeId = new RequestScopeId(markerLines[0]);
+            var requestId = new RequestId(markerLines[1]);
+            ulong committed = ulong.Parse(markerLines[2], System.Globalization.CultureInfo.InvariantCulture);
+
+            using (LocalTableStore store = await LocalTableStore.OpenAsync(harness.Options, harness.Clock, null, ct))
+            {
+                TableDurableReceipt? receipt = await store.TryGetAsync(
+                    "local-" + P41Harness.RoomId + "-seat0",
+                    scopeId,
+                    requestId,
+                    ct);
+                Assert.NotNull(receipt);
+                TableStateRow row = (await store.LoadStateAsync(P41Harness.RoomId, ct))!;
+                Assert.True(row.StateVersion.Value >= committed);
             }
         }
         private static async Task<(ITableChannel Channel, TableSession Session)> OpenSessionAsync(

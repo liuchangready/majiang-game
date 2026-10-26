@@ -239,6 +239,12 @@ namespace Mahjong.TableRuntime
         /// returned tile map is immutable; the AI still reasons outside the actor and its result
         /// is re-validated through the normal decision path.
         /// </summary>
+        /// <summary>Host-only immutable round state for trusted settlement/private facts.</summary>
+        public Mahjong.Domain.RoundStateMachine GetRoundStateForHost()
+        {
+            return _round;
+        }
+
         public IReadOnlyList<TileId> GetSeatHandTileIds(int seat)
         {
             CheckSeat(seat);
