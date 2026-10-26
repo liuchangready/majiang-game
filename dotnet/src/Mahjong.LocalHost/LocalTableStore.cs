@@ -37,7 +37,7 @@ namespace Mahjong.LocalHost
         private LocalSave? _save;
         private (string AccountId, RequestScopeId ScopeId, RequestId RequestId, string Digest)? _pendingReceiptDigest;
         private (string AccountId, RequestScopeId ScopeId, RequestId RequestId, string Digest, string Kind)? _pendingControlResult;
-        private (int Seat, bool? Temporary, bool? Riichi, string RoomId, ulong ExpectedStateVersion)? _pendingFuriten;
+        private (int Seat, bool? Temporary, bool? Riichi, string RoomId, ulong ExpectedStateVersion, RequestId RequestId)? _pendingFuriten;
         private Stream? _lockStream;
         private bool _leaseAcquired;
         private string _leaseOwner = string.Empty;
@@ -779,11 +779,13 @@ namespace Mahjong.LocalHost
                 {
                     candidate.Operations.Clear();
                 }
-                (int Seat, bool? Temporary, bool? Riichi, string RoomId, ulong ExpectedStateVersion)? pendingFuriten =
+                (int Seat, bool? Temporary, bool? Riichi, string RoomId, ulong ExpectedStateVersion, RequestId RequestId)? pendingFuriten =
                     _pendingFuriten;
                 if (pendingFuriten.HasValue &&
                     string.Equals(pendingFuriten.Value.RoomId, request.RoomId, StringComparison.Ordinal) &&
-                    pendingFuriten.Value.ExpectedStateVersion == request.ExpectedStateVersion.Value)
+                    pendingFuriten.Value.ExpectedStateVersion == request.ExpectedStateVersion.Value &&
+                    request.CommandJournal != null &&
+                    pendingFuriten.Value.RequestId == request.CommandJournal.RequestId)
                 {
                     if (pendingFuriten.Value.Temporary.HasValue)
                     {
@@ -1009,11 +1011,12 @@ namespace Mahjong.LocalHost
             bool? temporary,
             bool? riichi,
             string roomId,
-            ulong expectedStateVersion)
+            ulong expectedStateVersion,
+            RequestId requestId)
         {
             lock (_gate)
             {
-                _pendingFuriten = (seat, temporary, riichi, roomId, expectedStateVersion);
+                _pendingFuriten = (seat, temporary, riichi, roomId, expectedStateVersion, requestId);
             }
         }
 

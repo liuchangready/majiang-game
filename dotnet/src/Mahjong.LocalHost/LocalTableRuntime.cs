@@ -757,12 +757,12 @@ namespace Mahjong.LocalHost
 
                 if (passSetsFuriten)
                 {
-                    _store.PrepareFuriten(_seat, true, passSetsRiichi ? true : (bool?)null, _options.RoomId, expected.Value);
+                    _store.PrepareFuriten(_seat, true, passSetsRiichi ? true : (bool?)null, _options.RoomId, expected.Value, requestId);
                 }
             }
             else if (kind == CommandKind.SubmitAction && hostAction == RoundActionKind.DrawTile)
             {
-                _store.PrepareFuriten(_seat, false, null, _options.RoomId, expected.Value);
+                _store.PrepareFuriten(_seat, false, null, _options.RoomId, expected.Value, requestId);
             }
             try
             {
