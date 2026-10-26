@@ -586,6 +586,108 @@ namespace Mahjong.LocalHost
         }
 
 
+        private static bool LooksLikeWinningHand(IReadOnlyList<TileId> hand)
+        {
+            var counts = new int[34];
+            for (int i = 0; i < hand.Count; i++)
+            {
+                int index = hand[i].Value / 4;
+                if (index < 0 || index >= counts.Length)
+                {
+                    return false;
+                }
+
+                counts[index]++;
+                if (counts[index] > 4)
+                {
+                    return false;
+                }
+            }
+
+            int pairs = 0;
+            for (int i = 0; i < counts.Length; i++)
+            {
+                if (counts[i] == 2)
+                {
+                    pairs++;
+                }
+                else if (counts[i] != 0 && counts[i] != 2)
+                {
+                    pairs = -1;
+                    break;
+                }
+            }
+
+            if (pairs == 7)
+            {
+                return true;
+            }
+
+            for (int pair = 0; pair < counts.Length; pair++)
+            {
+                if (counts[pair] < 2)
+                {
+                    continue;
+                }
+
+                counts[pair] -= 2;
+                bool win = CanFormMelds(counts);
+                counts[pair] += 2;
+                if (win)
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        private static bool CanFormMelds(int[] counts)
+        {
+            int first = -1;
+            for (int i = 0; i < counts.Length; i++)
+            {
+                if (counts[i] > 0)
+                {
+                    first = i;
+                    break;
+                }
+            }
+
+            if (first < 0)
+            {
+                return true;
+            }
+
+            if (counts[first] >= 3)
+            {
+                counts[first] -= 3;
+                bool triplet = CanFormMelds(counts);
+                counts[first] += 3;
+                if (triplet)
+                {
+                    return true;
+                }
+            }
+
+            if (first < 27 && first % 9 <= 6 &&
+                counts[first + 1] > 0 && counts[first + 2] > 0)
+            {
+                counts[first]--;
+                counts[first + 1]--;
+                counts[first + 2]--;
+                bool sequence = CanFormMelds(counts);
+                counts[first]++;
+                counts[first + 1]++;
+                counts[first + 2]++;
+                if (sequence)
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
         internal void OnFrame(TableStreamFrame frame, long generation)
         {
             lock (_gate)
