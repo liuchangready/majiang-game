@@ -1,5 +1,9 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
+using System.Security.Cryptography;
+using System.Text;
+using Google.Protobuf;
 using Mahjong.Client;
 using Mahjong.Contracts.Wire;
 using Mahjong.Unity.UI.Session;
@@ -17,12 +21,20 @@ namespace Mahjong.Unity.Table
     /// an opponent closed kan is represented by an identity-free placeholder.
     /// If the binding, session, seat, room or ready/sync state disagrees, the
     /// private part is dropped instead of being shown for another identity.
+    /// One mapper instance is the countdown observation context: reuse it for
+    /// the lifetime of a table view so a repainted/re-sent confirmed sample does
+    /// not renew its server-relative deadline. It is single-owner UI state and
+    /// is not thread-safe.
     /// </summary>
     public sealed class PlayerTableProjectionMapper
     {
         private const int PlayerSeatCount = 4;
+        private const int MaxObservationAnchors = 32;
 
         private readonly ITableClientClock _clock;
+        private readonly Dictionary<string, long> _observationAnchors =
+            new Dictionary<string, long>(StringComparer.Ordinal);
+        private readonly Queue<string> _observationOrder = new Queue<string>();
 
         public PlayerTableProjectionMapper(ITableClientClock clock)
         {
@@ -37,6 +49,9 @@ namespace Mahjong.Unity.Table
             }
 
             long now = _clock.MonotonicMilliseconds;
+            long observedAt = ResolveObservationAnchor(
+                BuildConfirmationFingerprint(sessionView),
+                now);
             var gaps = new List<string>();
             AddStructuralGaps(gaps);
 
@@ -176,7 +191,7 @@ namespace Mahjong.Unity.Table
             IReadOnlyList<PlayerMeldState> ownMelds = PlayerTableCopy.Empty<PlayerMeldState>();
             if (privateAuthorized && player?.PrivateView != null && playerBinding)
             {
-                own = MapOwn(player.PrivateView, player.RoundId, now, gaps, out ownMelds);
+                own = MapOwn(player.PrivateView, player.RoundId, observedAt, gaps, out ownMelds);
             }
 
             var seats = new List<PlayerSeatState>(PlayerSeatCount);
@@ -250,7 +265,7 @@ namespace Mahjong.Unity.Table
             }
 
             PlayerBoardState board = MapBoard(publicMatch);
-            IReadOnlyList<PlayerClockState> clocks = MapClocks(publicMatch, now);
+            IReadOnlyList<PlayerClockState> clocks = MapClocks(publicMatch, observedAt);
 
             var identity = new PlayerTableIdentity(
                 sessionView.Generation,
@@ -807,6 +822,75 @@ namespace Mahjong.Unity.Table
                 case BeamSwapSlotKind.Replacement: return PlayerBeamSwapSlotKind.Replacement;
                 default: return PlayerBeamSwapSlotKind.Unknown;
             }
+        }
+
+        private long ResolveObservationAnchor(string fingerprint, long now)
+        {
+            if (_observationAnchors.TryGetValue(fingerprint, out long existing))
+            {
+                return existing;
+            }
+
+            _observationAnchors[fingerprint] = now;
+            _observationOrder.Enqueue(fingerprint);
+            while (_observationOrder.Count > MaxObservationAnchors)
+            {
+                string expired = _observationOrder.Dequeue();
+                _observationAnchors.Remove(expired);
+            }
+
+            return now;
+        }
+
+        /// <summary>
+        /// Identity of one confirmed sample for countdown anchoring. It includes
+        /// generation/session/binding/round/scope plus the actual snapshot bytes
+        /// (cursor, state version, event sequence and content), so a repaint of
+        /// the same sample cannot renew a deadline and a different projection
+        /// with a reused state version is still a new sample. Connection state,
+        /// pending commands and last-error notifications are deliberately not
+        /// part of this fingerprint: they do not carry a new deadline.
+        /// </summary>
+        private static string BuildConfirmationFingerprint(SessionViewState sessionView)
+        {
+            using var buffer = new MemoryStream();
+            using (var writer = new BinaryWriter(buffer, new UTF8Encoding(false), leaveOpen: true))
+            {
+                writer.Write(sessionView.Generation);
+                SessionBindingView? binding = sessionView.Binding;
+                writer.Write(binding != null);
+                if (binding != null)
+                {
+                    writer.Write(binding.SessionId);
+                    writer.Write(binding.RoomId);
+                    writer.Write(binding.TableId);
+                    writer.Write(binding.Role);
+                    writer.Write(binding.SeatId);
+                    writer.Write(binding.ConnectionEpoch);
+                    writer.Write(binding.OwnerEpoch);
+                    writer.Write(binding.BindingEpoch);
+                    writer.Write(binding.ScopeId);
+                    writer.Write(binding.AccountId);
+                }
+
+                WriteSnapshot(writer, sessionView.PlayerSnapshot);
+                WriteSnapshot(writer, sessionView.PublicSnapshot);
+            }
+
+            using var sha = SHA256.Create();
+            return Convert.ToBase64String(sha.ComputeHash(buffer.ToArray()));
+        }
+
+        private static void WriteSnapshot(BinaryWriter writer, Google.Protobuf.IMessage? message)
+        {
+            if (message == null)
+            {
+                writer.Write(false);
+                return;
+            }
+
+            writer.Write(true);
+            writer.Write(message.ToByteArray());
         }
 
         private static void AddStructuralGaps(List<string> gaps)

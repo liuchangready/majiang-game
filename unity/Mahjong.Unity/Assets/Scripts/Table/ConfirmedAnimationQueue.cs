@@ -18,8 +18,10 @@ namespace Mahjong.Unity.Table
         public const string PrivateNotAuthorized = "PRIVATE_EVENT_NOT_AUTHORIZED";
         public const string PrivateOwnerMissing = "PRIVATE_EVENT_OWNER_MISSING";
         public const string EventVisibilityMismatch = "EVENT_VISIBILITY_MISMATCH";
+        public const string AudienceMismatch = "ANIMATION_AUDIENCE_MISMATCH";
         public const string UnsupportedEvent = "UNSUPPORTED_VISIBLE_EVENT";
         public const string NoPreviousSnapshot = "NO_PREVIOUS_SNAPSHOT";
+        public const string StalePrevious = "STALE_PREVIOUS_SNAPSHOT";
     }
 
     public enum ConfirmedEventVisibility
@@ -88,11 +90,20 @@ namespace Mahjong.Unity.Table
             ulong stateVersion,
             ulong eventSeq,
             ulong streamVersion,
-            ulong projectionSeq)
+            ulong projectionSeq,
+            PlayerTableRole role = PlayerTableRole.Unknown,
+            int seat = -1,
+            string? scopeId = null,
+            bool isPrivateAuthorized = false)
         {
             if (generation < 0)
             {
                 throw new ArgumentOutOfRangeException(nameof(generation));
+            }
+
+            if (seat < -1 || seat > 3)
+            {
+                throw new ArgumentOutOfRangeException(nameof(seat));
             }
 
             Generation = generation;
@@ -104,6 +115,10 @@ namespace Mahjong.Unity.Table
             EventSeq = eventSeq;
             StreamVersion = streamVersion;
             ProjectionSeq = projectionSeq;
+            Role = role;
+            Seat = seat;
+            ScopeId = scopeId ?? string.Empty;
+            IsPrivateAuthorized = isPrivateAuthorized;
         }
 
         public long Generation { get; }
@@ -128,6 +143,16 @@ namespace Mahjong.Unity.Table
         /// <summary>Per-stream emission sequence, separate from every version above.</summary>
         public ulong ProjectionSeq { get; }
 
+        /// <summary>Confirmed baseline role; events cannot override it.</summary>
+        public PlayerTableRole Role { get; }
+
+        /// <summary>Confirmed baseline seat; -1 for a non-player binding.</summary>
+        public int Seat { get; }
+
+        public string ScopeId { get; }
+
+        public bool IsPrivateAuthorized { get; }
+
         internal static ConfirmedAnimationContext FromIdentity(PlayerTableIdentity identity)
         {
             return new ConfirmedAnimationContext(
@@ -139,7 +164,11 @@ namespace Mahjong.Unity.Table
                 identity.StateVersion,
                 identity.EventSeq,
                 identity.StreamVersion,
-                identity.ProjectionSeq);
+                identity.ProjectionSeq,
+                identity.Role,
+                identity.Seat,
+                identity.ScopeId,
+                identity.IsPrivateAuthorized);
         }
 
         internal bool SameIdentity(ConfirmedAnimationContext other)
@@ -340,9 +369,11 @@ namespace Mahjong.Unity.Table
         private readonly Queue<string> _seenOrder = new Queue<string>();
 
         private ConfirmedAnimationContext? _context;
+        private PlayerTableViewState? _lastView;
         private ulong _lastStateVersion;
-        private ulong _lastEventSeq;
-        private uint _lastEventOrdinal;
+        private ulong _lastSnapshotEventSeq;
+        private ulong _lastPlayedEventSeq;
+        private uint _lastPlayedEventOrdinal;
         private long _sequence;
         private long _dropped;
         private string _lastRejection = string.Empty;
@@ -413,9 +444,11 @@ namespace Mahjong.Unity.Table
 
             ClearItems();
             _context = next;
+            _lastView = current;
             _lastStateVersion = next.StateVersion;
-            _lastEventSeq = next.EventSeq;
-            _lastEventOrdinal = 0;
+            _lastSnapshotEventSeq = next.EventSeq;
+            _lastPlayedEventSeq = next.EventSeq;
+            _lastPlayedEventOrdinal = uint.MaxValue;
             _lastRejection = string.Empty;
             return TableAnimationResult.Ok(TableAnimationCodes.BaselineReset, 0, 0);
         }
@@ -450,6 +483,11 @@ namespace Mahjong.Unity.Table
                 return Reject(TableAnimationCodes.NoBaseline);
             }
 
+            if (!IsCurrentPrevious(previous))
+            {
+                return Reject(TableAnimationCodes.StalePrevious);
+            }
+
             ConfirmedAnimationContext next = ConfirmedAnimationContext.FromIdentity(current.Identity);
             if (!_context.SameIdentity(next))
             {
@@ -472,7 +510,7 @@ namespace Mahjong.Unity.Table
                 return TableAnimationResult.Ok(TableAnimationCodes.Duplicate, 0, 0);
             }
 
-            if (next.EventSeq < _lastEventSeq)
+            if (next.EventSeq < _lastSnapshotEventSeq)
             {
                 return Reject(TableAnimationCodes.EventSeqRegression);
             }
@@ -515,6 +553,11 @@ namespace Mahjong.Unity.Table
                         continue;
                     }
 
+                    if (Remember(DiscardEntityKey(seat, discard.TileId)))
+                    {
+                        continue;
+                    }
+
                     Enqueue(
                         new TableAnimationItem(
                             ++_sequence,
@@ -551,6 +594,10 @@ namespace Mahjong.Unity.Table
                         continue;
                     }
 
+                    bool privateMeld = current.Own != null &&
+                                       current.Own.Seat == seat &&
+                                       meld.IsConcealedKan &&
+                                       !meld.IsPlaceholder;
                     Enqueue(
                         new TableAnimationItem(
                             ++_sequence,
@@ -561,8 +608,8 @@ namespace Mahjong.Unity.Table
                             meld.TileIds.Count > 0 ? meld.TileIds[0] : (uint?)null,
                             null,
                             meld,
-                            false,
-                            -1));
+                            privateMeld,
+                            privateMeld ? seat : -1));
                     enqueued++;
                 }
             }
@@ -596,8 +643,9 @@ namespace Mahjong.Unity.Table
             }
 
             _context = next;
+            _lastView = current;
             _lastStateVersion = next.StateVersion;
-            _lastEventSeq = next.EventSeq;
+            _lastSnapshotEventSeq = next.EventSeq;
             _lastRejection = string.Empty;
 
             int dropped = (int)Math.Min(int.MaxValue, _dropped) - droppedBefore;
@@ -644,6 +692,11 @@ namespace Mahjong.Unity.Table
                 return Reject(TableAnimationCodes.ContextMismatch);
             }
 
+            if (!AudienceMatchesBaseline(audience))
+            {
+                return Reject(TableAnimationCodes.AudienceMismatch);
+            }
+
             for (int i = 0; i < events.Count; i++)
             {
                 ConfirmedVisibleEvent visible = events[i];
@@ -684,8 +737,8 @@ namespace Mahjong.Unity.Table
             for (int i = 0; i < events.Count; i++)
             {
                 ConfirmedVisibleEvent visible = events[i];
-                if (visible.EventSeq < _lastEventSeq ||
-                    (visible.EventSeq == _lastEventSeq && visible.EventOrdinal <= _lastEventOrdinal))
+                if (visible.EventSeq < _lastPlayedEventSeq ||
+                    (visible.EventSeq == _lastPlayedEventSeq && visible.EventOrdinal <= _lastPlayedEventOrdinal))
                 {
                     _lastRejection = TableAnimationCodes.StaleEventSeq;
                     continue;
@@ -695,6 +748,15 @@ namespace Mahjong.Unity.Table
                     + "/" + visible.EventOrdinal.ToString(System.Globalization.CultureInfo.InvariantCulture)
                     + "/" + ((int)visible.Kind).ToString(System.Globalization.CultureInfo.InvariantCulture);
                 if (Remember(key))
+                {
+                    _lastRejection = TableAnimationCodes.Duplicate;
+                    continue;
+                }
+
+                if (visible.Kind == ConfirmedVisibleEventKind.TileDiscarded &&
+                    visible.Seat >= 0 &&
+                    visible.TileId.HasValue &&
+                    Remember(DiscardEntityKey(visible.Seat, visible.TileId.Value)))
                 {
                     _lastRejection = TableAnimationCodes.Duplicate;
                     continue;
@@ -714,14 +776,14 @@ namespace Mahjong.Unity.Table
                         visible.OwnerSeat));
                 enqueued++;
 
-                if (visible.EventSeq > _lastEventSeq)
+                if (visible.EventSeq > _lastPlayedEventSeq)
                 {
-                    _lastEventSeq = visible.EventSeq;
-                    _lastEventOrdinal = visible.EventOrdinal;
+                    _lastPlayedEventSeq = visible.EventSeq;
+                    _lastPlayedEventOrdinal = visible.EventOrdinal;
                 }
-                else if (visible.EventOrdinal > _lastEventOrdinal)
+                else if (visible.EventOrdinal > _lastPlayedEventOrdinal)
                 {
-                    _lastEventOrdinal = visible.EventOrdinal;
+                    _lastPlayedEventOrdinal = visible.EventOrdinal;
                 }
             }
 
@@ -762,6 +824,32 @@ namespace Mahjong.Unity.Table
             ClearItems();
         }
 
+        private static string DiscardEntityKey(int seat, uint tileId)
+        {
+            return "discard/" + seat.ToString(System.Globalization.CultureInfo.InvariantCulture)
+                + "/" + tileId.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        }
+
+        private bool IsCurrentPrevious(PlayerTableViewState previous)
+        {
+            if (_lastView == null)
+            {
+                return false;
+            }
+
+            PlayerTableIdentity before = previous.Identity;
+            PlayerTableIdentity current = _lastView.Identity;
+            return before.Generation == current.Generation &&
+                   string.Equals(before.SessionId, current.SessionId, StringComparison.Ordinal) &&
+                   string.Equals(before.RoomId, current.RoomId, StringComparison.Ordinal) &&
+                   string.Equals(before.RoundId, current.RoundId, StringComparison.Ordinal) &&
+                   before.BindingEpoch == current.BindingEpoch &&
+                   before.StateVersion == current.StateVersion &&
+                   before.EventSeq == current.EventSeq &&
+                   before.StreamVersion == current.StreamVersion &&
+                   before.ProjectionSeq == current.ProjectionSeq;
+        }
+
         private TableAnimationResult? ValidateSnapshotMonotonic(PlayerTableViewState previous, PlayerTableViewState current)
         {
             for (int seat = 0; seat < 4; seat++)
@@ -775,53 +863,177 @@ namespace Mahjong.Unity.Table
 
                 if (before.HasPublicData && !after.HasPublicData)
                 {
-                    return Reject(TableAnimationCodes.NonMonotonicSnapshot);
-                }
-
-                if (after.Discards.Count < before.Discards.Count ||
-                    after.Melds.Count < before.Melds.Count)
-                {
-                    return Reject(TableAnimationCodes.NonMonotonicSnapshot);
+                    return RejectAndClear(TableAnimationCodes.NonMonotonicSnapshot);
                 }
 
                 for (int i = 0; i < before.Discards.Count; i++)
                 {
-                    bool present = false;
-                    for (int j = 0; j < after.Discards.Count; j++)
+                    PlayerDiscardState discard = before.Discards[i];
+                    if (ContainsDiscard(after.Discards, discard.EntityKey))
                     {
-                        if (string.Equals(before.Discards[i].EntityKey, after.Discards[j].EntityKey, StringComparison.Ordinal))
-                        {
-                            present = true;
-                            break;
-                        }
+                        continue;
                     }
 
-                    if (!present)
+                    if (MovesToNewMeld(previous, current, seat, discard))
                     {
-                        return Reject(TableAnimationCodes.NonMonotonicSnapshot);
+                        continue;
                     }
+
+                    return RejectAndClear(TableAnimationCodes.NonMonotonicSnapshot);
                 }
 
                 for (int i = 0; i < before.Melds.Count; i++)
                 {
-                    bool present = false;
-                    for (int j = 0; j < after.Melds.Count; j++)
+                    PlayerMeldState meld = before.Melds[i];
+                    if (ContainsMeld(after.Melds, meld.EntityKey))
                     {
-                        if (string.Equals(before.Melds[i].EntityKey, after.Melds[j].EntityKey, StringComparison.Ordinal))
-                        {
-                            present = true;
-                            break;
-                        }
+                        continue;
                     }
 
-                    if (!present)
+                    if (IsConfirmedMeldUpgrade(current, seat, meld))
                     {
-                        return Reject(TableAnimationCodes.NonMonotonicSnapshot);
+                        continue;
                     }
+
+                    return RejectAndClear(TableAnimationCodes.NonMonotonicSnapshot);
                 }
             }
 
             return null;
+        }
+
+        private static bool ContainsDiscard(IReadOnlyList<PlayerDiscardState> discards, string key)
+        {
+            for (int i = 0; i < discards.Count; i++)
+            {
+                if (string.Equals(discards[i].EntityKey, key, StringComparison.Ordinal))
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        private static bool ContainsMeld(IReadOnlyList<PlayerMeldState> melds, string key)
+        {
+            for (int i = 0; i < melds.Count; i++)
+            {
+                if (string.Equals(melds[i].EntityKey, key, StringComparison.Ordinal))
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        /// <summary>
+        /// A river tile may leave the river because it was called into a new
+        /// meld. Only the already-confirmed before/after facts are compared:
+        /// the new meld's called_tile_id and from_seat must identify the removed
+        /// discard, and that meld must not already have existed.
+        /// </summary>
+        private static bool MovesToNewMeld(
+            PlayerTableViewState previous,
+            PlayerTableViewState current,
+            int fromSeat,
+            PlayerDiscardState discard)
+        {
+            for (int seat = 0; seat < 4; seat++)
+            {
+                PlayerSeatState? after = current.Seat(seat);
+                PlayerSeatState? before = previous.Seat(seat);
+                if (after == null || before == null)
+                {
+                    continue;
+                }
+
+                for (int i = 0; i < after.Melds.Count; i++)
+                {
+                    PlayerMeldState meld = after.Melds[i];
+                    if (!meld.CalledTileId.HasValue ||
+                        meld.CalledTileId.Value != discard.TileId ||
+                        meld.FromSeat != fromSeat ||
+                        ContainsMeld(before.Melds, meld.EntityKey))
+                    {
+                        continue;
+                    }
+
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        /// <summary>
+        /// Pon -> added/open kan and other confirmed meld upgrades keep the old
+        /// tiles and add at least one physical identity on the same seat. This
+        /// is a position migration, not a snapshot rollback.
+        /// </summary>
+        private static bool IsConfirmedMeldUpgrade(
+            PlayerTableViewState current,
+            int seat,
+            PlayerMeldState before)
+        {
+            if (before.IsPlaceholder)
+            {
+                return false;
+            }
+
+            PlayerSeatState? after = current.Seat(seat);
+            if (after == null)
+            {
+                return false;
+            }
+
+            for (int i = 0; i < after.Melds.Count; i++)
+            {
+                PlayerMeldState candidate = after.Melds[i];
+                if (candidate.IsPlaceholder ||
+                    candidate.FromSeat != before.FromSeat ||
+                    candidate.TileIds.Count <= before.TileIds.Count)
+                {
+                    continue;
+                }
+
+                bool covers = true;
+                for (int t = 0; t < before.TileIds.Count; t++)
+                {
+                    if (!ContainsTile(candidate.TileIds, before.TileIds[t]))
+                    {
+                        covers = false;
+                        break;
+                    }
+                }
+
+                if (covers)
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        private static bool ContainsTile(IReadOnlyList<uint> tiles, uint tile)
+        {
+            for (int i = 0; i < tiles.Count; i++)
+            {
+                if (tiles[i] == tile)
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        private TableAnimationResult RejectAndClear(string code)
+        {
+            ClearItems();
+            return Reject(code);
         }
 
         private void Enqueue(TableAnimationItem item)
@@ -891,6 +1103,21 @@ namespace Mahjong.Unity.Table
                 default:
                     return false;
             }
+        }
+
+        private bool AudienceMatchesBaseline(TableAnimationAudience audience)
+        {
+            if (_context == null)
+            {
+                return false;
+            }
+
+            if (_context.Role == PlayerTableRole.Player && _context.IsPrivateAuthorized)
+            {
+                return !audience.IsSpectator && audience.Seat == _context.Seat;
+            }
+
+            return audience.IsSpectator;
         }
 
         private static bool IsPrivateOnly(ConfirmedVisibleEventKind kind)

@@ -56,6 +56,10 @@ namespace Mahjong.Unity.Table
         public const string PendingCleared = "PENDING_CLEARED";
         public const string InvalidIntentKind = "INTENT_KIND_UNSUPPORTED";
         public const string InvalidConfirmedData = "INVALID_CONFIRMED_DATA";
+        public const string StaleGeneration = "STALE_GENERATION";
+        public const string StaleBinding = "STALE_BINDING";
+        public const string StaleState = "STALE_STATE";
+        public const string IdentityMismatch = "IDENTITY_MISMATCH";
     }
 
     public sealed class TableSelection
@@ -195,6 +199,8 @@ namespace Mahjong.Unity.Table
         private TableSelection _selection = TableSelection.None;
         private TablePendingIntent? _pending;
         private PlayerTableViewState? _view;
+        private PlayerTableIdentity? _requiredIdentity;
+        private long _requiredGeneration = -1;
         private long _revision;
 
         public TableInteractionState(TableCommandIntentFactory factory)
@@ -217,10 +223,16 @@ namespace Mahjong.Unity.Table
                 throw new ArgumentNullException(nameof(view));
             }
 
-            bool identityChanged = _view != null && !SameIdentity(_view.Identity, view.Identity);
+            string? rejection = EvaluateViewFence(view);
+            if (rejection != null)
+            {
+                return Reject(rejection, "The confirmed view does not satisfy the accepted interaction identity fence.");
+            }
+
+            bool bindingChanged = _view != null && !SameBindingIdentity(_view.Identity, view.Identity);
             bool privateDisappeared = view.Own == null;
 
-            if (identityChanged)
+            if (bindingChanged)
             {
                 _pending = null;
                 ClearSelectionCore();
@@ -235,9 +247,14 @@ namespace Mahjong.Unity.Table
                 ClearStaleSelection(view);
             }
 
+            // A reset/identity switch is satisfied by the first view that
+            // passes the fence. The monotonic generation floor remains, so an
+            // older view can never roll the interaction back afterwards.
+            _requiredIdentity = null;
+            _requiredGeneration = Math.Max(_requiredGeneration, view.Identity.Generation);
             _view = view;
             _revision++;
-            return TableInteractionOutcome.Ok(identityChanged ? TableInteractionCodes.PendingCleared : TableInteractionCodes.Applied);
+            return TableInteractionOutcome.Ok(bindingChanged ? TableInteractionCodes.PendingCleared : TableInteractionCodes.Applied);
         }
 
         public TableInteractionOutcome SelectAction(PlayerLegalActionState action)
@@ -591,7 +608,12 @@ namespace Mahjong.Unity.Table
                 throw new ArgumentOutOfRangeException(nameof(generation));
             }
 
+            _requiredGeneration = Math.Max(
+                _requiredGeneration,
+                Math.Max(generation, _view?.Identity.Generation ?? 0L));
+            _requiredIdentity = null;
             _pending = null;
+            _view = null;
             ClearSelectionCore();
             _revision++;
             return TableInteractionOutcome.Ok(TableInteractionCodes.PendingCleared);
@@ -604,7 +626,10 @@ namespace Mahjong.Unity.Table
                 throw new ArgumentNullException(nameof(identity));
             }
 
+            _requiredGeneration = Math.Max(_requiredGeneration, identity.Generation);
+            _requiredIdentity = identity;
             _pending = null;
+            _view = null;
             ClearSelectionCore();
             _revision++;
             return TableInteractionOutcome.Ok(TableInteractionCodes.PendingCleared);
@@ -834,20 +859,82 @@ namespace Mahjong.Unity.Table
             }
         }
 
+        private string? EvaluateViewFence(PlayerTableViewState view)
+        {
+            if (_requiredGeneration >= 0 && view.Identity.Generation < _requiredGeneration)
+            {
+                return TableInteractionCodes.StaleGeneration;
+            }
+
+            if (_requiredIdentity != null)
+            {
+                if (!SameBindingIdentity(view.Identity, _requiredIdentity))
+                {
+                    return TableInteractionCodes.IdentityMismatch;
+                }
+
+                return view.Identity.Generation < _requiredIdentity.Generation
+                    ? TableInteractionCodes.StaleGeneration
+                    : null;
+            }
+
+            if (_view == null)
+            {
+                return null;
+            }
+
+            PlayerTableIdentity current = _view.Identity;
+            if (view.Identity.Generation < current.Generation)
+            {
+                return TableInteractionCodes.StaleGeneration;
+            }
+
+            if (view.Identity.Generation == current.Generation)
+            {
+                if (view.Identity.BindingEpoch < current.BindingEpoch)
+                {
+                    return TableInteractionCodes.StaleBinding;
+                }
+
+                if (view.Identity.BindingEpoch == current.BindingEpoch)
+                {
+                    if (!SameBindingIdentity(view.Identity, current))
+                    {
+                        return TableInteractionCodes.IdentityMismatch;
+                    }
+
+                    if (view.Identity.StateVersion < current.StateVersion)
+                    {
+                        return TableInteractionCodes.StaleState;
+                    }
+
+                    if (!string.Equals(view.Identity.RoundId, current.RoundId, StringComparison.Ordinal) &&
+                        view.Identity.StateVersion == current.StateVersion)
+                    {
+                        return TableInteractionCodes.StaleState;
+                    }
+                }
+            }
+
+            return null;
+        }
+
         private void ClearSelectionCore()
         {
             _selection = TableSelection.None;
         }
 
-        private static bool SameIdentity(PlayerTableIdentity left, PlayerTableIdentity right)
+        private static bool SameBindingIdentity(PlayerTableIdentity left, PlayerTableIdentity right)
         {
             return left.Generation == right.Generation &&
                    string.Equals(left.SessionId, right.SessionId, StringComparison.Ordinal) &&
                    string.Equals(left.RoomId, right.RoomId, StringComparison.Ordinal) &&
-                   string.Equals(left.RoundId, right.RoundId, StringComparison.Ordinal) &&
                    left.Role == right.Role &&
                    left.Seat == right.Seat &&
-                   left.BindingEpoch == right.BindingEpoch;
+                   left.BindingEpoch == right.BindingEpoch &&
+                   string.Equals(left.ScopeId, right.ScopeId, StringComparison.Ordinal) &&
+                   left.ConnectionEpoch == right.ConnectionEpoch &&
+                   left.OwnerEpoch == right.OwnerEpoch;
         }
 
         private static bool SameAction(PlayerDecisionState decision, PlayerLegalActionState action)

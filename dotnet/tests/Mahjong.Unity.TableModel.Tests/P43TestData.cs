@@ -346,10 +346,13 @@ namespace Mahjong.Unity.TableModel.Tests
             ProtocolRole role = ProtocolRole.Player,
             string sessionId = SessionId,
             string roomId = RoomId,
-            ulong bindingEpoch = BindingEpoch)
+            ulong bindingEpoch = BindingEpoch,
+            ulong connectionEpoch = 1,
+            ulong ownerEpoch = 3,
+            string scopeId = ScopeId)
         {
             var scope = new ContractScope(
-                new RequestScopeId(ScopeId),
+                new RequestScopeId(scopeId),
                 AccountId,
                 role,
                 new RoomId(roomId),
@@ -365,8 +368,8 @@ namespace Mahjong.Unity.TableModel.Tests
                 "table-p43",
                 role,
                 seat,
-                new ConnectionEpoch(1),
-                new OwnerEpoch(3),
+                new ConnectionEpoch(connectionEpoch),
+                new OwnerEpoch(ownerEpoch),
                 new BindingEpoch(bindingEpoch),
                 scope,
                 baseline);
@@ -382,12 +385,15 @@ namespace Mahjong.Unity.TableModel.Tests
             string sessionId = SessionId,
             string roomId = RoomId,
             ulong bindingEpoch = BindingEpoch,
-            long generation = 1)
+            long generation = 1,
+            ulong connectionEpoch = 1,
+            ulong ownerEpoch = 3,
+            string scopeId = ScopeId)
         {
             return new SessionViewState(
                 generation,
                 state,
-                Binding(seat, role, sessionId, roomId, bindingEpoch),
+                Binding(seat, role, sessionId, roomId, bindingEpoch, connectionEpoch, ownerEpoch, scopeId),
                 player,
                 publicSnapshot,
                 room,

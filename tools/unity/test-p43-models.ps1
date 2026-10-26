@@ -290,10 +290,15 @@ $branch = (& git -C $repo rev-parse --abbrev-ref HEAD 2>$null | Out-String).Trim
 
 $prodFiles = @(
     "unity/Mahjong.Unity/Assets/Scripts/Table/PlayerTableViewState.cs",
+    "unity/Mahjong.Unity/Assets/Scripts/Table/PlayerTableViewState.cs.meta",
     "unity/Mahjong.Unity/Assets/Scripts/Table/PlayerTableProjectionMapper.cs",
+    "unity/Mahjong.Unity/Assets/Scripts/Table/PlayerTableProjectionMapper.cs.meta",
     "unity/Mahjong.Unity/Assets/Scripts/Table/TableInteractionState.cs",
+    "unity/Mahjong.Unity/Assets/Scripts/Table/TableInteractionState.cs.meta",
     "unity/Mahjong.Unity/Assets/Scripts/Table/TableCommandIntentFactory.cs",
-    "unity/Mahjong.Unity/Assets/Scripts/Table/ConfirmedAnimationQueue.cs"
+    "unity/Mahjong.Unity/Assets/Scripts/Table/TableCommandIntentFactory.cs.meta",
+    "unity/Mahjong.Unity/Assets/Scripts/Table/ConfirmedAnimationQueue.cs",
+    "unity/Mahjong.Unity/Assets/Scripts/Table/ConfirmedAnimationQueue.cs.meta"
 )
 $testFiles = @(
     "dotnet/tests/Mahjong.Unity.TableModel.Tests/Mahjong.Unity.TableModel.Tests.csproj",

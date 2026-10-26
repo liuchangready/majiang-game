@@ -317,7 +317,7 @@ namespace Mahjong.Unity.TableModel.Tests
                     TableAnimationAudience.Player(0)).Code);
 
             Assert.Equal(
-                TableAnimationCodes.PrivateNotAuthorized,
+                TableAnimationCodes.AudienceMismatch,
                 queue.AcceptConfirmedEvents(
                     context,
                     new[] { Event(108, 0, ConfirmedVisibleEventKind.BeamSwapResolved, ConfirmedEventVisibility.Private, ownerSeat: 0, seat: 0) },
@@ -335,7 +335,8 @@ namespace Mahjong.Unity.TableModel.Tests
         public void PublicEventsAreAllowedForSpectators()
         {
             var clock = new ManualTableClock();
-            PlayerTableViewState view = View(clock);
+            PlayerTableViewState view = new PlayerTableProjectionMapper(clock).Project(
+                P43TestData.View(null, P43TestData.PublicSnapshot(), seat: -1, role: Mahjong.Contracts.ProtocolRole.Spectator));
             var queue = new ConfirmedAnimationQueue();
             queue.AcceptConfirmedBaseline(view);
             ConfirmedAnimationContext context = Context(view);
