@@ -3,7 +3,7 @@
 **日期**：2026-10-26
 **执行角色**：Anti 独立任务（2026-10-26 授权之最多 4 个独立任务之一）
 **冻结工作树基线**：`978a15667f80094ed63c86f69c53195439c95a2c`（分支 `wt/v5-companion-verifier-anti-20261026`）
-**任务依据**：落实已接受文档 `doc/v5-重构/V5-G1-GOLDEN-REVIEW-ANTI-20261026.md` §4 中 **REC-G2-02** 独立自动化维护建议，并在本轮完成对第 1 轮（D-R1-01 至 D-R1-06）及第 2 轮（D-R2-01 至 D-R2-02）独立检视意见的全面闭环批量修复。
+**任务依据**：落实已接受文档 `doc/v5-重构/V5-G1-GOLDEN-REVIEW-ANTI-20261026.md` §4 中 **REC-G2-02** 独立自动化维护建议，并在本轮完成对第 1 轮（D-R1-01 至 D-R1-06）、第 2 轮（D-R2-01 至 D-R2-02）以及第 3 轮（D-R3-01 / D-R2-01 遗留、D-R3-02 / D-R2-02）独立检视意见的全面闭环批量修复。
 
 ---
 
@@ -29,9 +29,9 @@
 
 | 动作 | 文件路径 | 类型 / 职责 |
 |---|---|---|
-| **新增** | `tools/verify-v5-companion-fixtures.ps1` | 独立只读伴随黄金样本校验器 (PowerShell 5.1 兼容) |
-| **新增** | `tools/tests/VerifyV5CompanionFixtures.Tests.ps1` | 伴随校验器回归测试套件 (包含 64 项正负例) |
-| **新增** | `doc/v5-重构/V5-COMPANION-FIXTURE-VERIFIER.md` | 本实施与验收报告（修正原命名不匹配缺陷 [D-R1-06]） |
+| **新增** | [`tools/verify-v5-companion-fixtures.ps1`](file:///D:/majiang-wt/companion-verifier-anti-20261026/tools/verify-v5-companion-fixtures.ps1) | 独立只读伴随黄金样本校验器 (PowerShell 5.1 兼容，实现全字节防御、强类型物理守恒校验与来源 Git Pin 溯源) |
+| **新增** | [`tools/tests/VerifyV5CompanionFixtures.Tests.ps1`](file:///D:/majiang-wt/companion-verifier-anti-20261026/tools/tests/VerifyV5CompanionFixtures.Tests.ps1) | 伴随校验器回归测试套件 (包含 69 项正负用例、Junction/HardLink 别名免疫防御与进程内清理断言) |
+| **新增** | [`doc/v5-重构/V5-COMPANION-FIXTURE-VERIFIER.md`](file:///D:/majiang-wt/companion-verifier-anti-20261026/doc/v5-重构/V5-COMPANION-FIXTURE-VERIFIER.md) | 本实施与验收报告（修正原命名不匹配缺陷 [D-R1-06]，包含 R1/R2/R3 全量闭环记录） |
 
 **绝对零修改确认**：
 - `tools/verify-v5.ps1`：**未修改**（保持既有统一 CI 入口不变）
@@ -45,16 +45,27 @@
 
 ---
 
-## 3. 检视缺陷闭环修复映射 (R1 与 R2 全量闭环)
+## 3. 检视缺陷闭环修复映射 (R1、R2 与 R3 全量闭环)
 
-### 3.1 第 2 轮检视缺陷闭环映射 (D-R2-01 与 D-R2-02)
+### 3.1 第 3 轮检视缺陷闭环映射 (D-R3-01 与 D-R3-02)
+
+| 缺陷 ID | 严重级别 | 根因与修复措施 | 验证命令 / 复现证据 | 验收判定 |
+|---|---|---|---|---|
+| **[D-R3-01 / D-R2-01 遗留]** | **MAJOR** | **硬链接文件别名绕过 LogPath 保护与真实 fixture 覆写**：<br/>1. **根因**：上一轮仅针对 ReparsePoint（Junction/Symlink）做检测，但 NTFS 硬链接的 `FileAttributes.ReparsePoint` 属性为 `0`（`LINK_REPARSE_POINT=False`）。如果 LogPath 传入位于 `build\` 下但 hardlink 到真实黄金 fixture（如 `movement-v1.json`）的硬链接别名，`Test-PathHasReparsePoint` 无法发现，写日志会直接破坏真实黄金样本；<br/>2. **修复措施**：<br/>- 引入 Win32 `GetFileInformationByHandle` P/Invoke 接口（`V5CompanionFileInfoHelper` 类），获取文件底层物理信息（`BY_HANDLE_FILE_INFORMATION`）；<br/>- 在测试脚本最早期且在任何测试逻辑和日志写入前，强校验 `$resolvedLog` 的 `NumberOfLinks > 1`。若大于 1，立即判定为硬链接别名，报 `BLOCKED: LogPath '...' is a hard link alias (link count=...)` 并以退出码 2 退出；<br/>- 提取文件唯一物理标识（`VolumeSerialNumber:FileIndexHigh:FileIndexLow`），与受保护的关键文件（`tests/v5-golden/*`、`build.gradle`、`settings.gradle`、`tools/*.ps1`）对比；若标识匹配，立即报 `BLOCKED` 退出 2；<br/>- 测试套件新增负例 `neg-test-logpath-target-hardlink-fixture`，沙箱构建硬链接并实测退出 2 `BLOCKED`。 | `probes-r3.ps1` 探针复跑：<br/>- `CASE=selftest-logpath-hardlink-fixture`：<br/>`LINK_REPARSE_POINT=False`<br/>`NATIVE_EXIT=2`<br/>`BLOCKED: LogPath ... is a hard link alias (link count=2)`<br/>`FIXTURE_OVERWRITTEN=False` | **CLOSED** |
+| **[D-R3-02 / D-R2-02]** | **MINOR** | **Test-WallTilesConservation 类型/异常安全性与证据口径**：<br/>1. **根因**：上一轮对 `threeCasterWall` 的类型检查通过 `[int]::TryParse([string]$item, [ref]$val)` 转换，导致数字字符串 `"0"`..`"135"` 被错误当成合法整数放行；且未处理 `[long]` 超宽整数或异常溢出（`[long]2147483648` 导致未捕获溢出异常）；此外报告统计口径未明确区分原生进程退出码（native exit 0/1/2）与进程内安全断言（in-process assertions）；<br/>2. **修复措施**：<br/>- 强类型重构：重写 `Test-WallTilesConservation`。明确拒绝 `[string]`（字符串形式数字）、`[bool]` 及 `$null`，报 `WALL_CONSERVATION_INVALID` 并退出 1；<br/>- 宽整型安全处理：对 `long`、`uint32`、`uint64` 等类型，首先安全转换为 `long`，并在类型转换至 `[int]` 前先执行数值区间 `[0..135]` 检查，彻底杜绝 `OverflowException` 或 `InvalidCastException`；<br/>- 浮点数类型拦截：对 `double`、`float`、`decimal` 显式检测是否为整型浮点，非整数浮点（如 `0.5`）或超宽浮点立即报 `WALL_CONSERVATION_INVALID`；<br/>- 测试套件与报告口径规范化：测试套件新增 3 项 shuffle-reversed 类型与越界变异测试；并在报告和摘要中显式细分统计：`native0=3, native1=59, native2=6, in_process_assertions=1, total=69`，明确区分原生进程退出码与进程内断言。 | `probes-r3.ps1` 探针复跑：<br/>- `CASE=structure-wall-numeric-string`：<br/>`NATIVE_EXIT=1`<br/>`WALL_CONSERVATION_INVALID: shuffle-reversed-v1: case '0' threeCasterWall contains non-integer tile value '0' (type=String)`<br/>- `CASE=structure-wall-fractional-number`：<br/>`NATIVE_EXIT=1`<br/>`WALL_CONSERVATION_INVALID: shuffle-reversed-v1: case '0' threeCasterWall contains non-integer fractional tile value 0.5`<br/>- `CASE=structure-wall-large-integer`：<br/>`NATIVE_EXIT=1`<br/>`WALL_CONSERVATION_INVALID: shuffle-reversed-v1: case '0' threeCasterWall contains tile out of range [0..135]: 2147483648` | **CLOSED** |
+
+---
+
+### 3.2 第 2 轮检视缺陷闭环映射 (D-R2-01 与 D-R2-02)
 
 | 缺陷 ID | 严重级别 | 根因与修复措施 | 验证命令 / 复现证据 | 验收判定 |
 |---|---|---|---|---|
 | **[D-R2-01]** | **MAJOR** | **自测 LogPath 保护与析构前缀绕过**：<br/>1. 测试脚本 `VerifyV5CompanionFixtures.Tests.ps1` 的 `$allowedBuild` 缺少末尾目录分隔符，导致 `build.gradle` 发生前缀误匹配；<br/>2. 仅做字符串前缀检查未检测 `ReparsePoint`，导致 `build/alias` Junction 指向 `tests/v5-golden` 时绕过白名单覆盖黄金样本；<br/>3. `Assert-WithinGuidRoot` 仅用 `StartsWith($fullRoot)`，导致根外同前缀兄弟目录（如 `guidRoot-sibling`）被误判在根内；<br/>4. 测试脚本在校验真实仓库未篡改后再执行最终写日志，导致通过别名覆写输入时仍产生假绿。<br/>**修复措施**：<br/>1. 早期边界防御：强制要求 `$LogPath` 严格位于规范化 `$canonicalRepo\build\` 或 `$canonicalRepo\artifacts\` 下（带目录分隔符，阻断 `build.gradle`）；<br/>2. ReparsePoint 检测：实现 `Test-PathHasReparsePoint` 向上递归遍历，发现任何祖先目录或目标包含 Junction / Symlink 即刻报 `BLOCKED` 退出 2；<br/>3. 前缀边界修正：`Assert-WithinGuidRoot` 使用 `$rootWithSlash`，严格拒绝前缀相似的外部兄弟目录；<br/>4. 执行时序调优：先写入最终日志文件，随后再强校验真实仓库所有黄金样本、校验器与构建文件的 SHA-256，彻底消除时序窗口。 | `probes-r2.ps1` 探针复跑：<br/>- `CASE=selftest-logpath-junction-alias`：**NATIVE_EXIT=2**<br/>`BLOCKED: LogPath ... contains reparse points or junction aliases`<br/>`FIXTURE_OVERWRITTEN=False`<br/>`cleanup-probe.ps1` 探针复跑：<br/>- `CASE=cleanup-prefix-boundary`：<br/>`OUTSIDE_GUID_ACCEPTED=False`<br/>- `CASE=cleanup-external-junction`：<br/>`EXTERNAL_NESTED_LINK_DELETED=False` | **CLOSED** |
-| **[D-R2-02]** | **MINOR** | **物理守恒范围断言未严格校验 0..135**：原 `shuffle-reversed-v1` 守恒检查仅统计去重元素数量为 136，未验证元素为整数且在 `[0..135]` 物理闭环范围内（如 `136..271` 被放行）。<br/>**修复措施**：<br/>提取并实现 `Test-WallTilesConservation`：<br/>1. 验证牌山数组长度严格为 136；<br/>2. 验证每个牌元素必须为合法整数（兼容 `int/long/int16/byte`，阻断非整数与 null）；<br/>3. 验证牌面数值必须在 `[0..135]` 闭环区间内（阻断 `<0` 或 `>135`）；<br/>4. 验证 136 个实体完全互斥且无重合，完全覆盖 0..135 每一张物理实体牌。<br/>违背任何一项均报 `WALL_CONSERVATION_INVALID` 并退出 1。 | `probes-r2.ps1` 探针复跑：<br/>- `CASE=structure-mode-out-of-range-wall`：**NATIVE_EXIT=1**<br/>`[STRUCTURE_TEST_MODE] FAIL: 1 failure(s) detected:`<br/>`- WALL_CONSERVATION_INVALID: shuffle-reversed-v1: case '0' threeCasterWall contains tile out of range [0..135]: 136` | **CLOSED** |
+| **[D-R2-02]** | **MINOR** | **物理守恒范围断言未严格校验 0..135**：原 `shuffle-reversed-v1` 守恒检查仅统计去重元素数量为 136，未验证元素为整数且在 `[0..135]` 物理闭环范围内（如 `136..271` 被放行）。<br/>**修复措施**：<br/>提取并实现 `Test-WallTilesConservation`，严格检查 136 张牌严格互斥覆盖 0..135 物理实体。 | `probes-r2.ps1` 探针复跑：<br/>- `CASE=structure-mode-out-of-range-wall`：**NATIVE_EXIT=1**<br/>`[STRUCTURE_TEST_MODE] FAIL: 1 failure(s) detected:`<br/>`- WALL_CONSERVATION_INVALID: shuffle-reversed-v1: case '0' threeCasterWall contains tile out of range [0..135]: 136` | **CLOSED** |
 
-### 3.2 第 1 轮检视缺陷闭环汇总 (D-R1-01 至 D-R1-06)
+---
+
+### 3.3 第 1 轮检视缺陷闭环汇总 (D-R1-01 至 D-R1-06)
 
 - **[D-R1-01] 全字节/UTF-8 校验被自动解码绕过**：已实现 BOM 严格检测（`Test-HasBom`）与非宽松 UTF-8 解码（`Get-StrictUtf8String`），固化双形态 raw SHA-256 与 byte profiles。四 fixture 的 LF、CRLF 两种接受形态均 4/4 native 0；四 fixture 均分别覆盖 UTF16/BOM/混合换行变异退出 1。
 - **[D-R1-02] 公开 `-SkipHashCheck` 认证虚假 PASS**：已移除公开开关，替换为仅供内部结构分支测试的 `-InternalStructureTestMode`，明确打印 `[STRUCTURE_TEST_MODE]` 标记且绝不输出黄金认证 PASS 与静态哈希；增加 136 牌物理守恒严格校验。
@@ -99,15 +110,21 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/verify-v5-companio
 
 ### 5.2 调用方独立复现探针复跑验证
 
-#### 1) 第 2 轮探针复跑 (`build/companion-caller-review-r2/probes-r2.ps1`)
+#### 1) 第 3 轮探针复跑 (`build/companion-caller-review-r3/probes-r3.ps1`)
+- `CASE=selftest-logpath-hardlink-fixture`：**NATIVE_EXIT=2**，输出 `BLOCKED: LogPath '...' is a hard link alias (link count=2)`，`LINK_REPARSE_POINT=False`，`FIXTURE_OVERWRITTEN=False`
+- `CASE=structure-wall-numeric-string`：**NATIVE_EXIT=1**，输出 `WALL_CONSERVATION_INVALID: shuffle-reversed-v1: case '0' threeCasterWall contains non-integer tile value '0' (type=String)`
+- `CASE=structure-wall-fractional-number`：**NATIVE_EXIT=1**，输出 `WALL_CONSERVATION_INVALID: shuffle-reversed-v1: case '0' threeCasterWall contains non-integer fractional tile value 0.5`
+- `CASE=structure-wall-large-integer`：**NATIVE_EXIT=1**，输出 `WALL_CONSERVATION_INVALID: shuffle-reversed-v1: case '0' threeCasterWall contains tile out of range [0..135]: 2147483648`
+
+#### 2) 第 2 轮探针复跑 (`build/companion-caller-review-r2/probes-r2.ps1`)
 - `CASE=selftest-logpath-junction-alias`：**NATIVE_EXIT=2**，输出 `BLOCKED: LogPath ... contains reparse points or junction aliases`，`FIXTURE_OVERWRITTEN=False`
 - `CASE=structure-mode-out-of-range-wall`：**NATIVE_EXIT=1**，输出 `WALL_CONSERVATION_INVALID: shuffle-reversed-v1: case '0' threeCasterWall contains tile out of range [0..135]: 136`
 
-#### 2) 清理断言边界探针复跑 (`build/companion-caller-review-r2/cleanup-probe.ps1`)
+#### 3) 清理断言边界探针复跑 (`build/companion-caller-review-r2/cleanup-probe.ps1`)
 - `CASE=cleanup-prefix-boundary`：`OUTSIDE_GUID_ACCEPTED=False`
 - `CASE=cleanup-external-junction`：`EXTERNAL_NESTED_LINK_DELETED=False`
 
-#### 3) 第 1 轮探针复跑 (`build/companion-caller-review/probes.ps1`)
+#### 4) 第 1 轮探针复跑 (`build/companion-caller-review/probes.ps1`)
 - `utf16-default`：**NATIVE_EXIT=1**（拦截 BOM 与无效 UTF-8，检测到哈希不符）
 - `mixed-eol-default`：**NATIVE_EXIT=1**（检测到原始字节与 SHA 不符）
 - `duplicate-tile-skiphash`：**NATIVE_EXIT=1**（检测到 HASH_MISMATCH 与 WALL_CONSERVATION_INVALID）
@@ -117,21 +134,30 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/verify-v5-companio
 
 ### 5.3 回归测试套件全量执行 (`tools/tests/VerifyV5CompanionFixtures.Tests.ps1`)
 ```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/tests/VerifyV5CompanionFixtures.Tests.ps1
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/tests/VerifyV5CompanionFixtures.Tests.ps1 -LogPath build/companion-fixtures/selftest.log
 ```
 - **原生退出码**：`0`
-- **用例总数**：`64`
+- **用例总数**：`69`
 - **正例基线 (Positives)**：`3`
   - `positive-all-lf-profile`（全 4 fixture LF 纯净形态沙箱验证，Exit 0）
   - `positive-all-crlf-profile`（全 4 fixture CRLF 纯净形态沙箱验证，Exit 0）
   - `positive-real-repo-git-pins`（真实仓库 Git Pin 校验，Exit 0）
-- **负例变异 (Negatives)**：`61`
-  - 56 项 Exit 1（哈希变异、编码错误、物理守恒违规、结构缺失等）
-  - 5 项 Exit 2 BLOCKED（缺失 git、LogPath 越界或指向受保护 fixture / build.gradle / Junction 别名）
+- **负例变异 (Negatives)**：`66`
+  - **原生 Exit 1**：`59` 项（哈希单字节漂移、编码错误、物理守恒违规、非整型牌值、宽整型溢出、结构缺失等）
+  - **原生 Exit 2 (BLOCKED)**：`6` 项：
+    - `neg-missing-git-dependency`（缺少 git 命令依赖）
+    - `neg-test-logpath-target-protected-fixture`（LogPath 指向真实黄金 fixture）
+    - `neg-test-logpath-target-build-gradle`（LogPath 指向构建脚本 build.gradle）
+    - `neg-test-logpath-target-junction-alias`（LogPath 经由 Junction 别名指向受保护 fixture）
+    - `neg-test-logpath-target-hardlink-fixture`（LogPath 为硬链接别名指向真实黄金 fixture）
+    - `neg-test-logpath-outside-repo`（LogPath 越出仓库 build/artifacts 目录）
+  - **进程内断言 (In-Process Assertions)**：`1` 项：
+    - `neg-cleanup-prefix-boundary`（验证 `Assert-WithinGuidRoot` 严格拒绝外部同前缀兄弟目录，抛出安全违规异常）
 - **失败用例 (Failures)**：`0`
+- **执行口径总结**：`total=69 (native0=3, native1=59, native2=6, in_process_assertions=1), failures=0`
 - **真实仓库未篡改确认**：`real_fixtures_unchanged=true`（且位于写日志之后执行，零时序漏洞）
 - **自测原始日志**：`build/companion-fixtures/selftest.log`
-- **日志 SHA-256**：`C91D7498713ACEE3C3CED92B4AB047362AC07E8A8A9A960EE4E71F144FF4E6C8`
+- **日志 SHA-256**：`C190EB5B52AC1292B860283BDDB155548BE0936E6C37C81BC5CE78355C5A1BEA`
 
 ### 5.4 既有六基准目录校验器回归 (`tools/verify-v5-golden-catalog.ps1`)
 ```powershell
@@ -144,17 +170,19 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/verify-v5-golden-c
 
 ## 6. 产物与测试证据 SHA-256 汇总表
 
+> [!NOTE]
+> 遵循独立复核规范，产物表仅记录实际交付的代码产物与外部自测日志，不写入本报告自身的自指哈希。
+
 | 产物 / 文件路径 | 状态 | 字节数 (Bytes) | SHA-256 完整哈希 |
 |---|---|---|---|
-| [`tools/verify-v5-companion-fixtures.ps1`](file:///D:/majiang-wt/companion-verifier-anti-20261026/tools/verify-v5-companion-fixtures.ps1) | 完善提交 | 27,571 | `5049F1CC506680A99BF549BEFCEC416D9F341EAA80E479354D4C13F00DD18CFA` |
-| [`tools/tests/VerifyV5CompanionFixtures.Tests.ps1`](file:///D:/majiang-wt/companion-verifier-anti-20261026/tools/tests/VerifyV5CompanionFixtures.Tests.ps1) | 完善提交 | 42,178 | `F614D1E1275AC9E2A257DB3CEE5A9B956B958F0B539D006E1C75F211D51D7455` |
-| [`doc/v5-重构/V5-COMPANION-FIXTURE-VERIFIER.md`](file:///D:/majiang-wt/companion-verifier-anti-20261026/doc/v5-重构/V5-COMPANION-FIXTURE-VERIFIER.md) | 迁移完善 | 19,305 | `B670BE6B1DA7FE4B3E0C1F5C6EFD91CF04EC1A893475FFD382BBE40C93950553` |
-| `build/companion-fixtures/selftest.log` | 本地自测日志 (ignored) | 49,399 | `C91D7498713ACEE3C3CED92B4AB047362AC07E8A8A9A960EE4E71F144FF4E6C8` |
+| [`tools/verify-v5-companion-fixtures.ps1`](file:///D:/majiang-wt/companion-verifier-anti-20261026/tools/verify-v5-companion-fixtures.ps1) | 完善交付 | 28,784 | `C2025A1122A7284B878C06EF9283D9DBE7DB5697BD2F6DBE4FE82F09E02029A9` |
+| [`tools/tests/VerifyV5CompanionFixtures.Tests.ps1`](file:///D:/majiang-wt/companion-verifier-anti-20261026/tools/tests/VerifyV5CompanionFixtures.Tests.ps1) | 完善交付 | 50,018 | `419B0AA141D4165310BF1C19CAC6E444860EC06D53010BE4EE5358F3E9DA1AD7` |
+| `build/companion-fixtures/selftest.log` | 本地自测日志 (ignored) | 53,369 | `C190EB5B52AC1292B860283BDDB155548BE0936E6C37C81BC5CE78355C5A1BEA` |
 
 ---
 
 ## 7. 未覆盖项、依赖与状态声明
 
 1. **统一 CI 调度未接入声明**：本校验器为 standalone 工具，按授权约束严禁修改 `tools/verify-v5.ps1`，在全系统自动化流水线中标记为 **`NOT_RUN`**。
-2. **业务逻辑与全字节防御边界界定**：本工具负责静态全字节防篡改、物理守恒律（136 牌实体守恒，精确包含 0..135 互斥整数）与来源 Pin 锚定，不执行 C# 运行时代码，不宣称替代 C# 业务单元测试对规则、摸打与立直时序的动态业务断言；两者互为补充。
+2. **业务逻辑与全字节防御边界界定**：本工具负责静态全字节防篡改、物理守恒律（136 牌实体守恒，精确包含 0..135 互斥整数，防注入防非整数/超宽溢出）与来源 Pin 锚定，不执行 C# 运行时代码，不宣称替代 C# 业务单元测试对规则、摸打与立直时序的动态业务断言；两者互为补充。
 3. **环境与运行时缺口**：PG、WSS、Unity Editor、IL2CPP 构建、Android 运行时及远端 CI 均未在本次执行，如实记录为 **`NOT_RUN`**。

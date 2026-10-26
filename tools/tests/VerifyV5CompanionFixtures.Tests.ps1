@@ -20,6 +20,7 @@ covering:
   - Rejection of single-byte drift across ALL 4 fixtures
   - Rejection of corrupt business data in full CLI runs without fake PASS bypass
   - Verification that 136-tile physical conservation violations are caught (duplicate, <0, >135, non-integer)
+  - Rejection of non-integer types (string, boolean, fractional double, Int64 overflow) on shuffle walls
   - Missing files, empty files, truncated/invalid JSON
   - Lexical path traversal and NTFS directory junction / reparse point escapes
   - Schema and fixture identity mismatches and duplicate fixture identity collisions
@@ -27,7 +28,7 @@ covering:
   - Case count mismatches, duplicate case identifiers, and missing required case fields
   - Structural test mode isolation (-InternalStructureTestMode) without golden certification
   - Tooling prechecks: missing git dependency exiting with BLOCKED code 2
-  - Safe log path boundary: preventing LogPath from overwriting fixtures, repo files, build.gradle, or junction aliases
+  - Safe log path boundary: preventing LogPath from overwriting fixtures, repo files, build.gradle, junction aliases, or hardlink aliases
   - Safe cleanup assertions ensuring recursive deletions remain strictly within isolated GUID roots
 
 Exit codes: 0 = PASS, 1 = FAIL, 2 = BLOCKED.
@@ -58,6 +59,63 @@ if (-not $canonicalRepo.EndsWith([System.IO.Path]::DirectorySeparatorChar.ToStri
     $canonicalRepo += [System.IO.Path]::DirectorySeparatorChar
 }
 
+if (-not ('V5CompanionFileInfoHelper' -as [type])) {
+    Add-Type -TypeDefinition @'
+using System;
+using System.IO;
+using System.Runtime.InteropServices;
+
+public static class V5CompanionFileInfoHelper {
+    [StructLayout(LayoutKind.Sequential)]
+    public struct BY_HANDLE_FILE_INFORMATION {
+        public uint FileAttributes;
+        public System.Runtime.InteropServices.ComTypes.FILETIME CreationTime;
+        public System.Runtime.InteropServices.ComTypes.FILETIME LastAccessTime;
+        public System.Runtime.InteropServices.ComTypes.FILETIME LastWriteTime;
+        public uint VolumeSerialNumber;
+        public uint FileSizeHigh;
+        public uint FileSizeLow;
+        public uint NumberOfLinks;
+        public uint FileIndexHigh;
+        public uint FileIndexLow;
+    }
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    public static extern bool GetFileInformationByHandle(IntPtr hFile, out BY_HANDLE_FILE_INFORMATION lpFileInformation);
+
+    public static uint GetLinkCount(string path) {
+        if (string.IsNullOrWhiteSpace(path) || !File.Exists(path)) {
+            return 0;
+        }
+        try {
+            using (var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite)) {
+                BY_HANDLE_FILE_INFORMATION info;
+                if (GetFileInformationByHandle(fs.SafeFileHandle.DangerousGetHandle(), out info)) {
+                    return info.NumberOfLinks;
+                }
+            }
+        } catch { }
+        return 0;
+    }
+
+    public static string GetFileId(string path) {
+        if (string.IsNullOrWhiteSpace(path) || !File.Exists(path)) {
+            return string.Empty;
+        }
+        try {
+            using (var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite)) {
+                BY_HANDLE_FILE_INFORMATION info;
+                if (GetFileInformationByHandle(fs.SafeFileHandle.DangerousGetHandle(), out info)) {
+                    return info.VolumeSerialNumber.ToString("X8") + ":" + info.FileIndexHigh.ToString("X8") + info.FileIndexLow.ToString("X8");
+                }
+            }
+        } catch { }
+        return string.Empty;
+    }
+}
+'@
+}
+
 function Test-PathHasReparsePoint {
     param([string]$PathToCheck)
     if ([string]::IsNullOrWhiteSpace($PathToCheck)) { return $false }
@@ -77,7 +135,7 @@ function Test-PathHasReparsePoint {
 }
 
 # -------------------------------------------------------------------------
-# LogPath Strict Boundary & Alias Protection
+# LogPath Strict Boundary & Alias Protection (Junction & HardLink Defense)
 # -------------------------------------------------------------------------
 if ([string]::IsNullOrWhiteSpace($LogPath)) {
     $LogPath = Join-Path $canonicalRepo 'build\companion-fixtures\selftest.log'
@@ -107,7 +165,37 @@ if (Test-Path -LiteralPath $resolvedLog -PathType Container) {
     exit 2
 }
 
-# 4. Safe to ensure parent directory exists
+# 4. Hard link & File Identity Protection (Rejecting HardLink aliases to protected files)
+if (Test-Path -LiteralPath $resolvedLog -PathType Leaf) {
+    $linkCount = [V5CompanionFileInfoHelper]::GetLinkCount($resolvedLog)
+    if ($linkCount -gt 1) {
+        Write-Output ("BLOCKED: LogPath '{0}' is a hard link alias (link count={1})" -f $LogPath, $linkCount)
+        exit 2
+    }
+    $logFileId = [V5CompanionFileInfoHelper]::GetFileId($resolvedLog)
+    if (-not [string]::IsNullOrWhiteSpace($logFileId)) {
+        $protectedCheckFiles = @(
+            (Join-Path $canonicalRepo 'tests\v5-golden\movement-v1.json'),
+            (Join-Path $canonicalRepo 'tests\v5-golden\shuffle-reversed-v1.json'),
+            (Join-Path $canonicalRepo 'tests\v5-golden\visibility-v1.json'),
+            (Join-Path $canonicalRepo 'tests\v5-golden\ai-discard-flags-v1.json'),
+            (Join-Path $canonicalRepo 'tools\verify-v5-companion-fixtures.ps1'),
+            (Join-Path $canonicalRepo 'tools\tests\VerifyV5CompanionFixtures.Tests.ps1'),
+            (Join-Path $canonicalRepo 'build.gradle'),
+            (Join-Path $canonicalRepo 'settings.gradle')
+        )
+        foreach ($pcf in $protectedCheckFiles) {
+            if (Test-Path -LiteralPath $pcf) {
+                if ([V5CompanionFileInfoHelper]::GetFileId($pcf) -eq $logFileId) {
+                    Write-Output ("BLOCKED: LogPath '{0}' shares file identity with protected repository file '{1}'" -f $LogPath, $pcf)
+                    exit 2
+                }
+            }
+        }
+    }
+}
+
+# 5. Safe to ensure parent directory exists
 $logParent = [System.IO.Path]::GetDirectoryName($resolvedLog)
 if (-not [string]::IsNullOrWhiteSpace($logParent) -and -not (Test-Path -LiteralPath $logParent)) {
     New-Item -ItemType Directory -Force -Path $logParent | Out-Null
@@ -284,6 +372,8 @@ function Invoke-NegativeCase {
         Name = $Name
         Expected = $ExpectedCode
         ExitCode = $result.Code
+        IsNative = $true
+        Mode = if ($InternalStructureTestMode) { 'StructureTestMode' } elseif ($VerifyGitPins) { 'GitPins' } else { 'CLI' }
         Ok = $ok
         Output = $result.Output
     }
@@ -313,6 +403,8 @@ try {
         Name = 'positive-all-lf-profile'
         Expected = 'PASS'
         ExitCode = $posLf.Code
+        IsNative = $true
+        Mode = 'CLI'
         Ok = $posLfOk
         Output = $posLf.Output
     }
@@ -334,6 +426,8 @@ try {
         Name = 'positive-all-crlf-profile'
         Expected = 'PASS'
         ExitCode = $posCrlf.Code
+        IsNative = $true
+        Mode = 'CLI'
         Ok = $posCrlfOk
         Output = $posCrlf.Output
     }
@@ -348,6 +442,8 @@ try {
         Name = 'positive-real-repo-git-pins'
         Expected = 'PASS'
         ExitCode = $posReal.Code
+        IsNative = $true
+        Mode = 'GitPins'
         Ok = $posRealOk
         Output = $posReal.Output
     }
@@ -461,7 +557,7 @@ try {
     }
 
     # -------------------------------------------------------------------------
-    # Group E: Physical Conservation & Range Invariants (CLI Fraud & Structure Mode)
+    # Group E: Physical Conservation & Range/Type Invariants (CLI Fraud & Structure Mode)
     # -------------------------------------------------------------------------
     Invoke-NegativeCase -Name 'neg-shuffle-duplicate-tile-cli-full' -ExpectedCode 'HASH_MISMATCH' -Mutator {
         param($root)
@@ -495,11 +591,43 @@ try {
         Write-JsonFile $p $j
     }
 
-    Invoke-NegativeCase -Name 'neg-shuffle-non-integer-tile-structure-mode' -ExpectedCode 'WALL_CONSERVATION_INVALID' -InternalStructureTestMode -Mutator {
+    Invoke-NegativeCase -Name 'neg-shuffle-numeric-string-tile-structure-mode' -ExpectedCode 'WALL_CONSERVATION_INVALID' -InternalStructureTestMode -Mutator {
         param($root)
         $p = Join-Path $root 'tests\v5-golden\shuffle-reversed-v1.json'
         $j = Read-JsonFile $p
-        $j.cases[0].reversedWall[0] = 'not-a-tile-number'
+        $j.cases[0].threeCasterWall = @(0..135 | ForEach-Object { [string]$_ })
+        Write-JsonFile $p $j
+    }
+
+    Invoke-NegativeCase -Name 'neg-shuffle-fractional-tile-structure-mode' -ExpectedCode 'WALL_CONSERVATION_INVALID' -InternalStructureTestMode -Mutator {
+        param($root)
+        $p = Join-Path $root 'tests\v5-golden\shuffle-reversed-v1.json'
+        $j = Read-JsonFile $p
+        $j.cases[0].threeCasterWall[0] = 0.5
+        Write-JsonFile $p $j
+    }
+
+    Invoke-NegativeCase -Name 'neg-shuffle-large-integer-tile-structure-mode' -ExpectedCode 'WALL_CONSERVATION_INVALID' -InternalStructureTestMode -Mutator {
+        param($root)
+        $p = Join-Path $root 'tests\v5-golden\shuffle-reversed-v1.json'
+        $j = Read-JsonFile $p
+        $j.cases[0].threeCasterWall[0] = [long]2147483648
+        Write-JsonFile $p $j
+    }
+
+    Invoke-NegativeCase -Name 'neg-shuffle-boolean-tile-structure-mode' -ExpectedCode 'WALL_CONSERVATION_INVALID' -InternalStructureTestMode -Mutator {
+        param($root)
+        $p = Join-Path $root 'tests\v5-golden\shuffle-reversed-v1.json'
+        $j = Read-JsonFile $p
+        $j.cases[0].reversedWall[0] = $true
+        Write-JsonFile $p $j
+    }
+
+    Invoke-NegativeCase -Name 'neg-shuffle-null-tile-structure-mode' -ExpectedCode 'WALL_CONSERVATION_INVALID' -InternalStructureTestMode -Mutator {
+        param($root)
+        $p = Join-Path $root 'tests\v5-golden\shuffle-reversed-v1.json'
+        $j = Read-JsonFile $p
+        $j.cases[0].reversedWall[0] = $null
         Write-JsonFile $p $j
     }
 
@@ -758,6 +886,8 @@ try {
         Name = 'neg-test-logpath-target-protected-fixture'
         Expected = 'BLOCKED'
         ExitCode = $logTestCode1
+        IsNative = $true
+        Mode = 'Tooling'
         Ok = $logTestOk1
         Output = $logTestText1
     }
@@ -775,6 +905,8 @@ try {
         Name = 'neg-test-logpath-target-build-gradle'
         Expected = 'BLOCKED'
         ExitCode = $logTestCode2
+        IsNative = $true
+        Mode = 'Tooling'
         Ok = $logTestOk2
         Output = $logTestText2
     }
@@ -797,6 +929,8 @@ try {
         Name = 'neg-test-logpath-target-junction-alias'
         Expected = 'BLOCKED'
         ExitCode = $logTestCode3
+        IsNative = $true
+        Mode = 'Tooling'
         Ok = $logTestOk3
         Output = $logTestText3
     }
@@ -804,25 +938,51 @@ try {
         Add-Failure ('neg-test-logpath-target-junction-alias: expected exit 2 containing BLOCKED, got exit {0}; output={1}' -f $logTestCode3, $logTestText3)
     }
 
-    # M4: Arbitrary external log location outside repository
-    $externalLogTarget = Join-Path $tempRoot 'external-log\selftest.log'
-    $logTestOut4 = & $psExe -NoProfile -ExecutionPolicy Bypass -File $testScriptPath -RepoRoot $canonicalRepo -LogPath $externalLogTarget 2>&1
+    # M4: HardLink alias under build/ pointing to fixture movement-v1.json
+    $probeHardlinkRoot = Join-Path $tempRoot 'hardlink-probe-repo'
+    New-BaseTree -Root $probeHardlinkRoot -SourceRepo $canonicalRepo
+    New-Item -ItemType Directory -Force -Path (Join-Path $probeHardlinkRoot 'build') | Out-Null
+    $hlTargetFixture = Join-Path $probeHardlinkRoot 'tests\v5-golden\movement-v1.json'
+    $hlLogTarget = Join-Path $probeHardlinkRoot 'build\hardlink-movement.log'
+    New-Item -ItemType HardLink -Path $hlLogTarget -Target $hlTargetFixture | Out-Null
+    $logTestOut4 = & $psExe -NoProfile -ExecutionPolicy Bypass -File $testScriptPath -RepoRoot $probeHardlinkRoot -LogPath $hlLogTarget 2>&1
     $logTestCode4 = $LASTEXITCODE
     $logTestText4 = (@($logTestOut4) -join "`n")
-    $logTestOk4 = ($logTestCode4 -eq 2) -and $logTestText4.Contains("strictly inside 'build\' or 'artifacts\'")
+    $logTestOk4 = ($logTestCode4 -eq 2) -and ($logTestText4.Contains('hard link alias') -or $logTestText4.Contains('shares file identity'))
     $script:CaseResults += [pscustomobject]@{
-        Name = 'neg-test-logpath-outside-repo'
+        Name = 'neg-test-logpath-target-hardlink-fixture'
         Expected = 'BLOCKED'
         ExitCode = $logTestCode4
+        IsNative = $true
+        Mode = 'Tooling'
         Ok = $logTestOk4
         Output = $logTestText4
     }
     if (-not $logTestOk4) {
-        Add-Failure ('neg-test-logpath-outside-repo: expected exit 2 containing BLOCKED, got exit {0}; output={1}' -f $logTestCode4, $logTestText4)
+        Add-Failure ('neg-test-logpath-target-hardlink-fixture: expected exit 2 containing BLOCKED, got exit {0}; output={1}' -f $logTestCode4, $logTestText4)
+    }
+
+    # M5: Arbitrary external log location outside repository
+    $externalLogTarget = Join-Path $tempRoot 'external-log\selftest.log'
+    $logTestOut5 = & $psExe -NoProfile -ExecutionPolicy Bypass -File $testScriptPath -RepoRoot $canonicalRepo -LogPath $externalLogTarget 2>&1
+    $logTestCode5 = $LASTEXITCODE
+    $logTestText5 = (@($logTestOut5) -join "`n")
+    $logTestOk5 = ($logTestCode5 -eq 2) -and $logTestText5.Contains("strictly inside 'build\' or 'artifacts\'")
+    $script:CaseResults += [pscustomobject]@{
+        Name = 'neg-test-logpath-outside-repo'
+        Expected = 'BLOCKED'
+        ExitCode = $logTestCode5
+        IsNative = $true
+        Mode = 'Tooling'
+        Ok = $logTestOk5
+        Output = $logTestText5
+    }
+    if (-not $logTestOk5) {
+        Add-Failure ('neg-test-logpath-outside-repo: expected exit 2 containing BLOCKED, got exit {0}; output={1}' -f $logTestCode5, $logTestText5)
     }
 
     # -------------------------------------------------------------------------
-    # Group N: Cleanup Safety Assertion Boundary Verification
+    # Group N: Cleanup Safety Assertion Boundary Verification (In-Process Assertion)
     # -------------------------------------------------------------------------
     $cleanupProbeOk = $false
     try {
@@ -834,7 +994,9 @@ try {
     $script:CaseResults += [pscustomobject]@{
         Name = 'neg-cleanup-prefix-boundary'
         Expected = 'Safety boundary violation'
-        ExitCode = 1
+        ExitCode = 'N/A'
+        IsNative = $false
+        Mode = 'Assertion'
         Ok = $cleanupProbeOk
         Output = 'Rejected sibling directory outside GuidRoot'
     }
@@ -859,7 +1021,7 @@ $logLines += ''
 
 foreach ($c in $script:CaseResults) {
     $statusStr = if ($c.Ok) { 'PASS' } else { 'FAIL' }
-    $logLines += ('[{0}] {1} (Expected: {2}, Exit: {3})' -f $statusStr, $c.Name, $c.Expected, $c.ExitCode)
+    $logLines += ('[{0}] {1} (Expected: {2}, Exit: {3}, Mode: {4})' -f $statusStr, $c.Name, $c.Expected, $c.ExitCode, $c.Mode)
     $logLines += $c.Output
     $logLines += ''
 }
@@ -878,9 +1040,13 @@ if ($script:Failures.Count -gt 0) {
 
 $positiveCount = @($script:CaseResults | Where-Object { $_.Name -like 'positive*' }).Count
 $negativeCount = @($script:CaseResults | Where-Object { $_.Name -like 'neg*' }).Count
+$nativeExit0 = @($script:CaseResults | Where-Object { $_.IsNative -and $_.ExitCode -eq 0 }).Count
+$nativeExit1 = @($script:CaseResults | Where-Object { $_.IsNative -and $_.ExitCode -eq 1 }).Count
+$nativeExit2 = @($script:CaseResults | Where-Object { $_.IsNative -and $_.ExitCode -eq 2 }).Count
+$inProcessAssertions = @($script:CaseResults | Where-Object { -not $_.IsNative }).Count
 $totalCount = $script:CaseResults.Count
 
-$summaryLine = ('SELFTEST PASS: total={0} positives={1} negatives={2} failures=0 log={3}' -f $totalCount, $positiveCount, $negativeCount, $LogPath)
+$summaryLine = ('SELFTEST PASS: total={0} positives={1} negatives={2} (native0={3}, native1={4}, native2={5}, in_process_assertions={6}) failures=0 log={7}' -f $totalCount, $positiveCount, $negativeCount, $nativeExit0, $nativeExit1, $nativeExit2, $inProcessAssertions, $LogPath)
 $logLines += $summaryLine
 $logText = $logLines -join "`n"
 
