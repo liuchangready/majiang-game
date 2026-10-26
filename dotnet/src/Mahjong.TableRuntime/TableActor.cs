@@ -222,6 +222,23 @@ namespace Mahjong.TableRuntime
         public string PublicationFault => _publicationFault;
 
         /// <summary>
+        /// Current recovery generation for host composition (stream subscription/command
+        /// admission). It is read-only and never authorizes a mutation by itself.
+        /// </summary>
+        public long RecoveryGeneration => Volatile.Read(ref _recoveryGeneration);
+
+        /// <summary>
+        /// Host-only read of one seat's physical hand for local AI candidate construction. The
+        /// returned tile map is immutable; the AI still reasons outside the actor and its result
+        /// is re-validated through the normal decision path.
+        /// </summary>
+        public IReadOnlyList<TileId> GetSeatHandTileIds(int seat)
+        {
+            CheckSeat(seat);
+            return _round.Tiles.TilesInZone(TileZone.Hand, seat);
+        }
+
+        /// <summary>
         /// Admits a player command to the business mailbox. If the mailbox is full or closing,
         /// the command is not admitted and no version/commit/publication occurs. Once admitted it
         /// is never dropped: cancellation of the caller token after admission does not cancel the
