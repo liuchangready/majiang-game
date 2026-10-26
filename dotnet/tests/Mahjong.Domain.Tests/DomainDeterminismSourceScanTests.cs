@@ -361,6 +361,75 @@ namespace Mahjong.Domain.Tests
         }
 
         [Fact]
+        public void NullableArrayAndConditionalAccessSpacingDoNotLeakIntoFormatColonState()
+        {
+            // D-R4-01: nullable arrays and null-conditional access may have whitespace or
+            // comments between '?' and '[' / '.'. They are still not ternary '?'.
+            string[] expressions =
+            {
+                "F<int?[]>()",
+                "F<int? []>()",
+                "F<int? /* gap */ []>()",
+                "F<int? [,]>()",
+                "new System.Collections.Generic.List<int? []>()",
+                "value as int? []",
+                "F<int? /* gap */ []>() ?? null",
+                "value?.ToString()",
+                "value ? .ToString()",
+                "value? /* gap */ .ToString()",
+                "new int[] {1} ? [0]",
+                "new int[] {1}? /* gap */ [0]"
+            };
+
+            var failures = new List<string>();
+            foreach (string expression in expressions)
+            {
+                foreach (bool withApi in new[] { true, false })
+                {
+                    string source =
+                        "using System;\n" +
+                        "public class P1 {\n" +
+                        " public static T F<T>() => default(T);\n" +
+                        " public object value = 1;\n" +
+                        " public string S => $\"{" + expression + ":00\\\"DateTime.Now}\";\n" +
+                        " public object X() => " + (withApi ? "Guid.NewGuid();" : "0;") + "\n" +
+                        "}";
+
+                    using TempDomainTree tree = TempDomainTree.Create();
+                    tree.WriteDomain("Syntax.cs", source);
+                    ScanReport report = DomainDeterminismScan.ScanDomainDirectory(tree.DomainRoot);
+
+                    if (!withApi)
+                    {
+                        if (report.Violations.Count != 0)
+                        {
+                            failures.Add(
+                                expression + " [no-api]: expected 0 actual " + report.Violations.Count +
+                                Environment.NewLine + report.FormatDiagnostics());
+                        }
+
+                        continue;
+                    }
+
+                    if (report.Violations.Count != 1 ||
+                        !string.Equals(report.Violations[0].Symbol, "Guid.NewGuid", StringComparison.Ordinal) ||
+                        !string.Equals(report.Violations[0].Location, "Syntax.cs:6:23", StringComparison.Ordinal))
+                    {
+                        failures.Add(
+                            expression + " [api]: expected Guid.NewGuid@Syntax.cs:6:23, actual " +
+                            (report.Violations.Count == 0 ? "none" : report.Violations[0].ToString()) +
+                            Environment.NewLine + report.FormatDiagnostics());
+                    }
+                }
+            }
+
+            Assert.True(
+                failures.Count == 0,
+                "nullable-array/conditional-access state-leak failures:" +
+                Environment.NewLine + string.Join(Environment.NewLine, failures));
+        }
+
+        [Fact]
         public void GeneratedFoldersAreExcludedAndVacuousScansFailClosed()
         {
             using TempDomainTree tree = TempDomainTree.Create();
@@ -1150,21 +1219,36 @@ namespace Mahjong.Domain.Tests
 
                 if (current == '?')
                 {
-                    // Null-conditional / null-coalescing operators are not ternary '?'.
-                    if (next == '?' || next == '.')
+                    // Adjacent ?. / ?[ / ?? are operators, never ternary '?'.
+                    if (next == '?')
                     {
                         i += 2;
                         continue;
                     }
 
-                    if (next == '[')
+                    int nextIndex = NextSignificantIndex(source, i + 1);
+                    char nextSignificant = nextIndex < source.Length ? source[nextIndex] : '\0';
+
+                    if (nextSignificant == '.')
                     {
-                        // Let the '[' branch account for the bracket depth.
+                        int afterDotIndex = NextSignificantIndex(source, nextIndex + 1);
+                        bool numericLiteral = afterDotIndex < source.Length && char.IsDigit(source[afterDotIndex]);
+                        if (!numericLiteral)
+                        {
+                            // ?.member with optional whitespace/comments between '?' and '.'.
+                            i++;
+                            continue;
+                        }
+                    }
+
+                    if (nextSignificant == '[')
+                    {
+                        // nullable array (int? []) or null-conditional element access (?[0]),
+                        // including whitespace/comments between '?' and '['.
                         i++;
                         continue;
                     }
 
-                    char nextSignificant = NextSignificantCharacter(source, i + 1);
                     if (nextSignificant == '>' || nextSignificant == ')' ||
                         nextSignificant == ']' || nextSignificant == ',' ||
                         nextSignificant == ';' || nextSignificant == '}' ||
@@ -1251,7 +1335,7 @@ namespace Mahjong.Domain.Tests
             MaskRange(masked, start, i);
         }
 
-        private static char NextSignificantCharacter(string source, int index)
+        private static int NextSignificantIndex(string source, int index)
         {
             int i = index;
             while (i < source.Length)
@@ -1290,10 +1374,10 @@ namespace Mahjong.Domain.Tests
                     continue;
                 }
 
-                return source[i];
+                return i;
             }
 
-            return '\0';
+            return source.Length;
         }
 
         private static bool TryMaskNestedString(char[] masked, string source, ref int i)
