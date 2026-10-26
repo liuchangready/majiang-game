@@ -129,6 +129,22 @@ namespace Mahjong.Unity.App
                     lobbyPresenter.Initialize(_router, _composition?.SessionView);
                 }
             }
+            else if (sceneId == SceneId.Spectator)
+            {
+                var spectatorPresenter = FindFirstObjectByType<Mahjong.Unity.Spectator.SpectatorPresenter>();
+                if (spectatorPresenter != null && _router != null)
+                {
+                    spectatorPresenter.Initialize(_router, _composition?.SessionView, () => _router.OpenSettlement());
+                }
+            }
+            else if (sceneId == SceneId.Settlement)
+            {
+                var settlementPresenter = FindFirstObjectByType<Mahjong.Unity.Spectator.SettlementPresenter>();
+                if (settlementPresenter != null && _router != null)
+                {
+                    settlementPresenter.Initialize(_router, _composition?.SessionView);
+                }
+            }
         }
 
         private void Update()

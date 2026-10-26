@@ -9,7 +9,8 @@
     "Unity.InputSystem",
     "Mahjong.Unity.App",
     "Mahjong.Unity.UI",
-    "Mahjong.Unity.Platform"
+    "Mahjong.Unity.Platform",
+    "Mahjong.Unity.Spectator"
   ],
   "includePlatforms": [
     "Editor"
