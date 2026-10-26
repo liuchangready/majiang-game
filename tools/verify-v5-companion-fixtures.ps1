@@ -156,6 +156,43 @@ function Get-StrictUtf8String {
     return $utf8Strict.GetString($Bytes)
 }
 
+function Test-WallTilesConservation {
+    param([object]$Wall, [string]$WallName, [string]$CaseId)
+    $len = Get-ArrayLength $Wall
+    if ($len -ne 136) {
+        return @{ Code = 'WALL_SIZE_INVALID'; Message = ("shuffle-reversed-v1: case '{0}' {1} must contain exactly 136 tiles (got {2})" -f $CaseId, $WallName, $len) }
+    }
+    $seen = New-Object 'System.Collections.Generic.HashSet[int]'
+    foreach ($item in @($Wall)) {
+        if ($null -eq $item) {
+            return @{ Code = 'WALL_CONSERVATION_INVALID'; Message = ("shuffle-reversed-v1: case '{0}' {1} contains null tile" -f $CaseId, $WallName) }
+        }
+        $val = 0
+        $isInt = $false
+        if ($item -is [int] -or $item -is [long] -or $item -is [int16] -or $item -is [byte]) {
+            $val = [int]$item
+            $isInt = $true
+        } elseif ([int]::TryParse([string]$item, [ref]$val)) {
+            if ([string]$item -match '^-?\d+$') {
+                $isInt = $true
+            }
+        }
+        if (-not $isInt) {
+            return @{ Code = 'WALL_CONSERVATION_INVALID'; Message = ("shuffle-reversed-v1: case '{0}' {1} contains non-integer tile value '{2}'" -f $CaseId, $WallName, $item) }
+        }
+        if ($val -lt 0 -or $val -gt 135) {
+            return @{ Code = 'WALL_CONSERVATION_INVALID'; Message = ("shuffle-reversed-v1: case '{0}' {1} contains tile out of range [0..135]: {2}" -f $CaseId, $WallName, $val) }
+        }
+        if (-not $seen.Add($val)) {
+            return @{ Code = 'WALL_CONSERVATION_INVALID'; Message = ("shuffle-reversed-v1: case '{0}' {1} contains duplicate tile {2}, violating 136-tile physical conservation" -f $CaseId, $WallName, $val) }
+        }
+    }
+    if ($seen.Count -ne 136) {
+        return @{ Code = 'WALL_CONSERVATION_INVALID'; Message = ("shuffle-reversed-v1: case '{0}' {1} does not contain all 136 unique tiles in 0..135 (count={2})" -f $CaseId, $WallName, $seen.Count) }
+    }
+    return $null
+}
+
 $script:AcceptedCompanionPins = @{
     'movement-v1' = [pscustomobject]@{
         Id = 'movement-v1'
@@ -481,31 +518,16 @@ foreach ($fixtureKey in @('movement-v1', 'shuffle-reversed-v1', 'visibility-v1',
             $cid = [string](Get-Prop $c 'seed')
             $w3 = Get-Prop $c 'threeCasterWall'
             $wr = Get-Prop $c 'reversedWall'
-            $w3Len = Get-ArrayLength $w3
-            $wrLen = Get-ArrayLength $wr
-            if ($w3Len -ne 136 -or $wrLen -ne 136) {
-                Add-Failure 'WALL_SIZE_INVALID' ("shuffle-reversed-v1: case '{0}' walls must contain exactly 136 tiles (got threeCasterWall={1}, reversedWall={2})" -f $cid, $w3Len, $wrLen)
+
+            $resW3 = Test-WallTilesConservation -Wall $w3 -WallName 'threeCasterWall' -CaseId $cid
+            if ($null -ne $resW3) {
+                Add-Failure $resW3.Code $resW3.Message
                 break
             }
-            # Conservation check: exactly 136 unique physical entities (0..135)
-            $seenW3 = @{}
-            $hasDupW3 = $false
-            foreach ($t in @($w3)) {
-                if ($seenW3.ContainsKey($t)) { $hasDupW3 = $true; break }
-                $seenW3[$t] = $true
-            }
-            if ($hasDupW3 -or $seenW3.Count -ne 136) {
-                Add-Failure 'WALL_CONSERVATION_INVALID' ("shuffle-reversed-v1: case '{0}' threeCasterWall contains duplicate tiles, violating 136-tile physical conservation" -f $cid)
-                break
-            }
-            $seenWr = @{}
-            $hasDupWr = $false
-            foreach ($t in @($wr)) {
-                if ($seenWr.ContainsKey($t)) { $hasDupWr = $true; break }
-                $seenWr[$t] = $true
-            }
-            if ($hasDupWr -or $seenWr.Count -ne 136) {
-                Add-Failure 'WALL_CONSERVATION_INVALID' ("shuffle-reversed-v1: case '{0}' reversedWall contains duplicate tiles, violating 136-tile physical conservation" -f $cid)
+
+            $resWr = Test-WallTilesConservation -Wall $wr -WallName 'reversedWall' -CaseId $cid
+            if ($null -ne $resWr) {
+                Add-Failure $resWr.Code $resWr.Message
                 break
             }
         }
