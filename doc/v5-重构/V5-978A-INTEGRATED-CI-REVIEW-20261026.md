@@ -4,7 +4,8 @@
 执行者：Claude Code / glm-5.3-flash 独立任务（agent-mesh-bridge 授权的四个独立任务之一）。
 工作树：`D:\majiang-wt\integrated-ci-glm-20261026`（自有 temporary git worktree，分支 `wt/v5-integrated-ci-glm-20261026`）。
 冻结基线：`978a15667f80094ed63c86f69c53195439c95a2c`（PR19 已发布头，工作树 clean，与远端 PR19 headRefOid 一致）。
-本任务唯一新增文件：本报告。未修改任何生产/测试/fixture/verifier/旧验收/CLAUDE.md/PROMPTS.md/Unity 环境。P2.2（thread_20261026_103011_957d）未读取、未计入。未触发任何 retry/rerun/dispatch/push/CI。G1 总判定、complete.flag 均不在本任务权限内。
+本任务唯一授权交付文件：`doc/v5-重构/V5-978A-INTEGRATED-CI-REVIEW-20261026.md`（即本报告）。
+版本溯源：第 1 轮曾误以 `doc/v5-重构/V5-P54A-SESSIONOPS-NEWHEAD-EVIDENCE-20261026.md` 路径交付（commit `8910f13`）；第 2 轮按返修 D-C1-01 移至本唯一授权路径并按 D-C1-02 补齐证据完整性，内容主体与实测数据不变。未修改任何生产/测试/fixture/verifier/旧验收/CLAUDE.md/PROMPTS.md/Unity 环境。P2.2（thread_20261026_103011_957d）未读取、未计入。未触发任何 retry/rerun/dispatch/push/CI。G1 总判定、complete.flag 均不在本任务权限内。
 
 结论先行：**978a156 已具备"新头集成证据"**——push run 对本头的精确 checkout 全绿、P5.4a session operations 增量的 21 个新用例以计数闭合方式确认在新头 CI 中真实执行、四个增量文件在本头字节级保留、本地 fresh Release 定向 direct runner 46 用例（21+25）全绿。该结论是**增量级集成证据**，不是 G1 通过、不是全量本地重跑替代、也不是对 39970580589 的根因结论。
 
@@ -31,7 +32,21 @@ gh run download 40273525993 --repo liuchangready/majiang-game -D artifacts/ci-97
 gh run download 40273530505 --repo liuchangready/majiang-game -D artifacts/ci-978a156-20261026/run-40273530505   # exit 0
 ```
 
-各 62 文件。全量 SHA256 清单：`artifacts/ci-978a156-20261026/sha256-push-run.txt`（62 行，SHA `F6F83D4B5600E89CEB6A9C136ADBDFA175877751A7268222A8009BCFB0F0E527`）、`artifacts/ci-978a156-20261026/sha256-pr-run.txt`（62 行，SHA `DBC56ED49EE0FA749B588827D8B72ACFDC6847601D0A4B5AB99AF2727938836E`）。元数据 JSON：`run-40273525993-meta.json`（SHA `CF5E3FE1…BBB2`）、`run-40273530505-meta.json`（SHA `9EBDEB8D…B35C`）。
+**原始 archive 条目与本地派生文件口径（D-C1-02 修正）**：两 run 下载后的即时 `find -type f | wc -l` 均为 **62**（该计数在生成任何本地派生文件之前取得），且下述两份 62 行清单在生成时以 `find ! -name "evidence-sha256-unix.txt"` 显式排除本地派生项——因此 **62 = CI 原始 archive 条目数，两份清单 = 原始条目全量 SHA256，不含任何本地文件**。当前本地目录额外含 **3 个本地派生校验文件**（非 CI 产物）：push run 根 `20261026-051901-pg-d8c01017/evidence-sha256-unix.txt`、push run `pg/evidence-sha256-unix.txt`、PR run `pg/evidence-sha256-unix.txt`（均为 `pg/evidence-sha256.txt` 的 CRLF→LF/反斜杠→正斜杠转换副本，供 `sha256sum -c` 使用；push 目录现状 64 文件、PR 目录现状 63 文件）。另有 2 份本地生成的清单文件。全部原始/派生/清单文件均位于 ignored `artifacts/`，不入库。
+
+全量 SHA256 清单（本地生成，62 行=原始条目）：
+
+| 清单 | SHA256（完整） |
+|---|---|
+| `artifacts/ci-978a156-20261026/sha256-push-run.txt` | `f6f83d4b5600e89ceb6a9c136adbdfa175877751a7268222a8009bcfb0f0e527` |
+| `artifacts/ci-978a156-20261026/sha256-pr-run.txt` | `dbc56ed49ee0fa749b588827d8b72acfdc6847601d0a4b5ab99af2727938836e` |
+
+run 元数据 JSON（gh 只读取得）：
+
+| 文件 | SHA256（完整） |
+|---|---|
+| `artifacts/ci-978a156-20261026/run-40273525993-meta.json` | `cf5e3fe1e82d51814d67d819fe8e1661f0203c2c73293310478fc1209fab4bb2` |
+| `artifacts/ci-978a156-20261026/run-40273530505-meta.json` | `9ebdeb8da636244bd1de668c1423240298376a8055697d12b85e19d19811b35c` |
 
 PR merge commit 已核实：`a3ac2fef` 的 parents 为 `457274c9b74643a9e7dc73cabfb64cc8a2eed223`（main）+ `978a15667f80094ed63c86f69c53195439c95a2c`（PR19 head）——PR run 绿是"含本头的 merge 树"绿；**本头精确证据以 push run 为准**（与 08c4a75 时代 G1 审查的口径一致）。
 
@@ -62,7 +77,7 @@ push run `pg/wrapper-summary.json`（SHA `3A227756B1BFF86FCF63CBDF63C73C9BE757F4
 
 - 10 阶段全 PASS exit 0：precheck（端口空闲）→ start-postgres（身份已验证）→ ownership-marker → environment（为子进程设 4 变量）→ migrate（001_lobby.sql 应用两次 exit 0）→ verify（verifier exit 逐字传播）→ archive-cluster-evidence → cleanup（owned cluster 已删除，rootDeleted=true）→ env-restore（`restoredToPreCall=true`，4 变量恢复为 pre-call absent）→ write-evidence。failedStages=[]，plannedExit=0。
 - PG 实体：PostgreSQL 16.10，端口 55460，库 mahjong_lobby_test，cluster root 位于 runneradmin Temp 下的专用目录，ownership="owned"。
-- `pg/evidence-sha256.txt` 12 项哈希两 run 各自 `sha256sum -c` 全 OK（CRLF/反斜杠转换后校验，exit 0）：cleanup.log、env-restore.jsonl、migrate.log、owner-marker.json、postgres-evidence.jsonl、start-postgres.log、verifier-console.log、wrapper-steps.log、wrapper-summary.json、root-logs×3。保留全部原始日志（无失败日志——两 run PG 路径零失败）。
+- `pg/evidence-sha256.txt` 12 项哈希两 run 各自 `sha256sum -c` 全 OK（经上述派生转换副本校验，exit 0）：cleanup.log、env-restore.jsonl、migrate.log、owner-marker.json、postgres-evidence.jsonl、start-postgres.log、verifier-console.log、wrapper-steps.log、wrapper-summary.json、root-logs×3。保留全部原始日志（无失败日志——两 run PG 路径零失败）。
 - `postgres-evidence.jsonl` 实际内容：server.identity（PG 16.10）、terminal.projection（ROOM_CLOSED/assignment CANCELLED/新加入拒绝）、receipt.terminalReplay（join/spectate/issue 重放、同载荷）、recovery.expiredReservation、migration.repeated（迁移 3 次、lobby 8 表、唯一索引断言）、concurrency.crossRoomJoin（ALREADY_ASSIGNED 拒绝）。
 - **归属口径**：以上全部为 **Lobby 存储层（P5.3 侧）验证**；本任务不将其冒充为 P5.2（TableRuntime 持久化）证据。
 
@@ -83,9 +98,9 @@ push run `pg/wrapper-summary.json`（SHA `3A227756B1BFF86FCF63CBDF63C73C9BE757F4
 
 ```
 D:/Unity/dotnet/dotnet.exe build dotnet/tests/Mahjong.Client.Tests/Mahjong.Client.Tests.csproj -c Release --no-incremental --nologo
-  → exit 0，已成功生成，0 个警告 0 个错误（build-Client.Tests.log，SHA 89218F9C…6FE2）
+  → exit 0，已成功生成，0 个警告 0 个错误
 D:/Unity/dotnet/dotnet.exe build dotnet/tests/Mahjong.Client.Wss.Tests/Mahjong.Client.Wss.Tests.csproj -c Release --no-incremental --nologo
-  → exit 0，已成功生成，0 个警告 0 个错误（build-Client.Wss.Tests.log，SHA 17D1FC3C…C62F）
+  → exit 0，已成功生成，0 个警告 0 个错误
 ```
 
 真实类名核实：`Mahjong.Client.Tests.TableSessionOperationQueueTests`（dotnet/tests/Mahjong.Client.Tests/TableSessionOperationQueueTests.cs，本头新增）；`Mahjong.Client.Wss.Tests.TableSessionRunnerTests`（dotnet/tests/Mahjong.Client.Wss.Tests/TableSessionRunnerTests.cs，属 **Client.Wss.Tests** 工程而非 Client.Tests，故两工程各做 fresh 构建；该文件本头未改动，Wss.Tests 计数 80 与旧头一致）。无需以完整 suite 替代。
@@ -96,12 +111,10 @@ D:/Unity/dotnet/dotnet.exe build dotnet/tests/Mahjong.Client.Wss.Tests/Mahjong.C
 D:/Unity/dotnet/dotnet.exe dotnet/tests/Mahjong.Client.Tests/bin/Release/net8.0/Mahjong.Client.Tests.dll -noColor -noLogo -class Mahjong.Client.Tests.TableSessionOperationQueueTests -result-xml artifacts/local-978a156-20261026/operationqueue.xml
   → native exit 0；EXECUTION SUMMARY：Total 21, Errors 0, Failed 0, Skipped 0, Not Run 0
   → XML assembly 行：total="21" passed="21" failed="0" skipped="0" not-run="0" errors="0"（21 个结果全部 result="Pass"，0 Fail/Skip；选择非 0 核对通过）
-  → operationqueue.xml SHA 0FD5298933B2A8A6EA43F6F6F54D3D8EB6BA8C22B9838FB57DC8D0774E7F8BF1
 
 D:/Unity/dotnet/dotnet.exe dotnet/tests/Mahjong.Client.Wss.Tests/bin/Release/net8.0/Mahjong.Client.Wss.Tests.dll -noColor -noLogo -class Mahjong.Client.Wss.Tests.TableSessionRunnerTests -result-xml artifacts/local-978a156-20261026/runner.xml
   → native exit 0；EXECUTION SUMMARY：Total 25, Errors 0, Failed 0, Skipped 0, Not Run 0
   → XML assembly 行：total="25" passed="25" failed="0" skipped="0" not-run="0" errors="0"（25 个结果全部 result="Pass"；选择非 0 核对通过）
-  → runner.xml SHA F2F43F49658B496FBE308C30298E59C51FEF1CE4FA7F4B01DC0BF077A00EF922
 ```
 
 要求行为的用例覆盖映射（全部实跑全绿，名称取自 XML `name` 属性）：
@@ -115,6 +128,29 @@ D:/Unity/dotnet/dotnet.exe dotnet/tests/Mahjong.Client.Wss.Tests/bin/Release/net
 | 未知结果不盲重做（P5.4a 门槛语义） | `ReconnectAppliesBaselineBeforeQueryingAndNeverResendsBlindly`、`CancellationAfterDurableSaveKeepsIdentityAndReconcilesById`、`SpectatorAdmissionFailsBeforePersistenceAndSend` |
 
 disposal 口径说明：`TableSessionOperationQueue` 不实现 `IDisposable`；资源终局以 `CloseAsync(reasonCode)`（IsClosing/IsClosed 幂等门）表达，迟到的 receive 帧被 `ITableSessionFrameIngress.ApplyFrameAsync` 的终态门丢弃，CancellationTokenRegistration 均在终态路径显式 Dispose。上述 close/cancel 序用例即其顺序覆盖。
+
+### 3.1 本地证据完整 SHA256 总表（D-C1-02 修正，全部完整 64 hex，无一缩写）
+
+| 证据文件 | SHA256 |
+|---|---|
+| `artifacts/local-978a156-20261026/build-Client.Tests.log` | `89218f9c86b704d3e7dfbfcd5d684c97cb35de36f8cbd111eacded74eb716fe2` |
+| `artifacts/local-978a156-20261026/build-Client.Wss.Tests.log` | `17d1fc3ce30e76b7a90a6c082eb5782e6851ce813d74fea116e450a43eabc62f` |
+| `artifacts/local-978a156-20261026/run-OperationQueueTests.log` | `28d157a673adf0b2e294eaef64a65cf224c9b62ec504951fa457a884e8a4b8a9` |
+| `artifacts/local-978a156-20261026/run-RunnerTests.log` | `3f579b192ae8540533b8cf28532dd5ab00498a475d0f94087e4ad7c5401d2fd4` |
+| `artifacts/local-978a156-20261026/operationqueue.xml` | `0fd5298933b2a8a6ea43f6f6f54d3d8eb6ba8c22b9838fb57dc8d0774e7f8bf1` |
+| `artifacts/local-978a156-20261026/runner.xml` | `f2f43f49658b496fbe308c30298e59c51fef1ce4fa7f4b01dc0bf077a00ef922` |
+| `artifacts/ci-978a156-20261026/run-40273525993-meta.json` | `cf5e3fe1e82d51814d67d819fe8e1661f0203c2c73293310478fc1209fab4bb2` |
+| `artifacts/ci-978a156-20261026/run-40273530505-meta.json` | `9ebdeb8da636244bd1de668c1423240298376a8055697d12b85e19d19811b35c` |
+| `artifacts/ci-978a156-20261026/sha256-push-run.txt` | `f6f83d4b5600e89ceb6a9c136adbdfa175877751a7268222a8009bcfb0f0e527` |
+| `artifacts/ci-978a156-20261026/sha256-pr-run.txt` | `dbc56ed49ee0fa749b588827d8b72acfdc6847601d0a4b5ab99af2727938836e` |
+| CI push run `summary.log` | `81d794f34a53e5ee6eb4d01497c6683f9e0b112ac506815ae3f1f8ebda755e58` |
+| CI push run Client.Tests 框架日志 | `24a62057b639774da57f03d7753f904957393f777d074f4fd6cc88fc126683c1` |
+| CI push run Client.Wss.Tests 框架日志 | `7b420e10d4d3209fa2c84898dc8e862c4fb101ef9c81989534ab75dea4b9d6aa` |
+| CI push run `pg/wrapper-summary.json` | `3a227756b1bff86fcf63cbdf63c73c9be757f4e0f09e001095368cd1e320a992` |
+| CI PR run `summary.log` | `721a8774bb232dc54b2f9c45231c38c1915aed0743c6d542dba4e35e3e3702a3` |
+| CI PR run `pg/wrapper-summary.json` | `c16fc4bb052fb484ef38b091318f02548e1bf5e25a52cc71cde213da7697e3e6` |
+
+注：XML 含运行时间戳/GUID，每轮独立生成必然不同哈希；caller 复验轮自产的 operationqueue.xml（`E813B611CEEDEB09756154AF3F1324E84312DBC46A1FB20D95C13EBD9E464A9E`）/runner.xml（`84151D9CC09EE8BC4CD1850FA416AC63480D7E59AB91DD7FA5B41F14FAFECBEE`）与本报告所载本任务 XML 属不同运行实例，两者各自与自身日志/exit 自洽，互不替代。本任务 XML 与日志字节未因返修改动。
 
 ## 4. 集成遗漏审查（对照"已接受"增量，非抄 CI 标签）
 
@@ -132,7 +168,7 @@ disposal 口径说明：`TableSessionOperationQueue` 不实现 `IDisposable`；�
 
 ## 6. 缺陷清单（按 V5-REVIEW-REWORK-PROTOCOL §1.3 格式，一次给全）
 
-本轮缺陷总数：**1**（MINOR 1，BLOCKER 0，MAJOR 0）。无上一轮遗留（本任务为首轮）；无已知可复现的功能缺陷被隐匿。
+第 1 轮缺陷总数：**1**（MINOR 1）；第 2 轮返修新增对交付自身的缺陷 2 组（D-C1-01 MAJOR、D-C1-02 MINOR，均已在第 2 轮修正，见版本溯源）。
 
 ```text
 [D-R3-01]
@@ -149,9 +185,22 @@ disposal 口径说明：`TableSessionOperationQueue` 不实现 `IDisposable`；�
 证据：本报告 §2；artifacts/ci-978a156-20261026/（本报告 §1 全部哈希）；artifacts/local-978a156-20261026/（§3）
 修复要求：由 caller/P5.4a owner 将原始验收记录（bridge ledger 中如存在）固化为 doc/v5-重构/ 下的验收文档，
       或在 V5-0-TRACEABILITY.md / progress 文档补一行登记该增量（内容 bfc0839、集成 74216a7、本报告为其
-      新头证据）；禁止回写改写任何既有验收文档内容。
+      新头证据）；禁止回写改写任何既有验收文档内容。该项为 caller 侧追溯补记，本轮返修不要求执行。
 验收断言：下一头 `git log --all --name-only | grep -i "SESSION-OPERATIONS"` 非空且新文档引用 bfc0839/74216a7
       与本报告路径；`grep -c "TableSessionOperationQueue" doc/v5-重构/*.md` ≥ 2。
+
+[D-C1-01]（第 2 轮返修项，已修正）
+严重级别：MAJOR（交付路径）
+位置：第 1 轮 commit 8910f13 新增 doc/v5-重构/V5-P54A-SESSIONOPS-NEWHEAD-EVIDENCE-20261026.md
+修复记录：本报告已移至唯一授权路径 doc/v5-重构/V5-978A-INTEGRATED-CI-REVIEW-20261026.md（本文件），
+      原错误路径已删除；后续最小 commit 保留既有提交历史，未 amend/rebase。
+[D-C1-02]（第 2 轮返修项，已修正）
+严重级别：MINOR（证据完整性/来源口径）
+位置：原报告 §1.1（SHA 缩写、62 文件口径）、§3（build/run 日志 SHA）
+修复记录：§1.1 补原始 archive（62 条/ run，下载后即时 find 计数在派生文件产生前取得）与本地派生
+      （3 个 evidence-sha256-unix.txt + 2 份清单）的明确边界；§3.1 新增完整 64-hex SHA 总表 16 项
+      （metadata×2、build×2、run 日志×2、XML×2、清单×2、CI summary/框架日志/wrapper-summary×6）；
+      正文缩写 SHA 全部替换或补全。
 ```
 
 未登记为缺陷的三项已知边界（§5 已述，供返修方与复核方对齐口径）：队列未接线生产入口（P4 计划内）、两 pump 路径接收异常停止类别差异（接线时定夺）、CI 框架日志无 per-test 明细（验证器设计如此，未经本任务修改）。
@@ -162,10 +211,10 @@ disposal 口径说明：`TableSessionOperationQueue` 不实现 `IDisposable`；�
 |---|---|---|
 | push run 40273525993 全量（本头精确） | **PASS** | summary OVERALL PASS、1,829/0/0、sln 0W0E、PG 12/12 哈希 |
 | PR run 40273530505 全量（merge ref） | **PASS（含本头，非精确 checkout）** | §1.1 parents 核实 |
-| TableSessionOperationQueueTests 定向 | **PASS** | exit 0，21/21/0/0/0，XML 0FD52989… |
-| TableSessionRunnerTests 定向 | **PASS** | exit 0，25/25/0/0/0，XML F2F43F49… |
+| TableSessionOperationQueueTests 定向 | **PASS** | exit 0，21/21/0/0/0，XML 0FD52989…（完整值见 §3.1） |
+| TableSessionRunnerTests 定向 | **PASS** | exit 0，25/25/0/0/0，XML F2F43F49…（完整值见 §3.1） |
 | 本地 fresh Release 构建（两工程） | **PASS** | exit 0，0 警告 0 错误 |
-| P5.4a session operations 验收记录存在性 | **FAIL**（缺口） | §6 D-R3-01 |
+| P5.4a session operations 验收记录存在性 | **FAIL**（缺口，caller 侧补记） | §6 D-R3-01 |
 | CI per-test 明细 | **NOT_RUN（CI 侧无此证据形态）** | 框架日志 summary 级；per-test 由本地 XML 补齐 |
 | P5.2 持久化、Unity/IL2CPP、真机、弱网、跨物理网络 | **NOT_RUN** | 本任务范围外，未冒充 |
 | 历史失败 run 39970580589 根因 | **UNRESOLVED（承继）** | 未重试、未重跑、不称 flaky |
