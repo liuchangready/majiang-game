@@ -168,6 +168,103 @@ namespace Mahjong.Architecture.Tests
         }
 
         [Fact]
+        public void RedirectedProjectReferenceToUndiscoveredPathIsRejected()
+        {
+            string root = FindRepositoryRoot();
+            string tempRoot = CreateProductionXmlSandbox(root);
+            try
+            {
+                string tableRuntimeProject = Path.Combine(
+                    tempRoot, "dotnet", "src", "Mahjong.TableRuntime", "Mahjong.TableRuntime.csproj");
+                XDocument document = XDocument.Load(tableRuntimeProject, LoadOptions.None);
+                XElement reference = document.Descendants("ProjectReference")
+                    .First(element => element.Attribute("Include")!.Value.Contains("Mahjong.Domain", StringComparison.Ordinal));
+                reference.SetAttributeValue("Include", @"..\..\shadow\Mahjong.Domain.csproj");
+                document.Save(tableRuntimeProject);
+
+                IReadOnlyList<DependencyDiagnostic> diagnostics = ValidateProductionXmlSandbox(tempRoot);
+
+                DependencyDiagnostic diagnostic =
+                    Assert.Single(diagnostics, item => item.Code == DiagnosticCodes.ProjectReferenceTargetNotDiscovered);
+                Assert.Equal("Mahjong.TableRuntime", diagnostic.From);
+                Assert.True(
+                    diagnostic.To.Contains("shadow", StringComparison.OrdinalIgnoreCase),
+                    "Diagnostic must retain the raw shadow target, got: " + diagnostic);
+                Assert.True(
+                    diagnostic.Detail.Contains("same-basename", StringComparison.OrdinalIgnoreCase),
+                    "Diagnostic must explain the same-basename shadow rejection, got: " + diagnostic);
+            }
+            finally
+            {
+                DeleteOwnedTempRoot(tempRoot);
+            }
+        }
+
+        [Fact]
+        public void RawAssemblyReferenceDeclarationIsRejected()
+        {
+            string root = FindRepositoryRoot();
+            string tempRoot = CreateProductionXmlSandbox(root);
+            try
+            {
+                string tableRuntimeProject = Path.Combine(
+                    tempRoot, "dotnet", "src", "Mahjong.TableRuntime", "Mahjong.TableRuntime.csproj");
+                XDocument document = XDocument.Load(tableRuntimeProject, LoadOptions.None);
+                document.Root!.Add(new XElement(
+                    "ItemGroup",
+                    new XElement("Reference", new XAttribute("Include", "Newtonsoft.Json"))));
+                document.Save(tableRuntimeProject);
+
+                IReadOnlyList<DependencyDiagnostic> diagnostics = ValidateProductionXmlSandbox(tempRoot);
+
+                DependencyDiagnostic diagnostic =
+                    Assert.Single(diagnostics, item => item.Code == DiagnosticCodes.ProjectUnsupportedDeclaration);
+                Assert.Equal("Mahjong.TableRuntime", diagnostic.From);
+                Assert.Equal("Reference", diagnostic.To);
+                Assert.True(
+                    diagnostic.Detail.Contains("fails closed", StringComparison.OrdinalIgnoreCase),
+                    "Diagnostic must state the fail-closed decision, got: " + diagnostic);
+            }
+            finally
+            {
+                DeleteOwnedTempRoot(tempRoot);
+            }
+        }
+
+        [Theory]
+        [InlineData(@"<ItemGroup><ProjectReference Include=""..\Mahjong.Domain\*.csproj"" /></ItemGroup>", "ProjectReference")]
+        [InlineData(@"<ItemGroup><ProjectReference Include=""..\Mahjong.Domain\Mahjong.Domain.csproj;..\Mahjong.Ai\Mahjong.Ai.csproj"" /></ItemGroup>", "ProjectReference")]
+        [InlineData(@"<Import Project=""..\evil.props"" />", "Import")]
+        [InlineData(@"<ItemGroup><PackageReference Include=""$(UnknownPackage)"" Version=""1.0"" /></ItemGroup>", "PackageReference")]
+        [InlineData(@"<ItemGroup><Reference Include=""Newtonsoft.Json"" /></ItemGroup>", "Reference")]
+        [InlineData(@"<ItemGroup><ReferencePath Include=""..\evil\Newtonsoft.Json.dll"" /></ItemGroup>", "ReferencePath")]
+        public void UnsupportedDeclarationFormsFailClosed(string fragment, string expectedElement)
+        {
+            string root = FindRepositoryRoot();
+            string tempRoot = CreateProductionXmlSandbox(root);
+            try
+            {
+                string tableRuntimeProject = Path.Combine(
+                    tempRoot, "dotnet", "src", "Mahjong.TableRuntime", "Mahjong.TableRuntime.csproj");
+                XDocument document = XDocument.Load(tableRuntimeProject, LoadOptions.None);
+                document.Root!.Add(XElement.Parse(fragment));
+                document.Save(tableRuntimeProject);
+
+                IReadOnlyList<DependencyDiagnostic> diagnostics = ValidateProductionXmlSandbox(tempRoot);
+
+                Assert.Contains(
+                    diagnostics,
+                    item => item.Code == DiagnosticCodes.ProjectUnsupportedDeclaration &&
+                            item.From == "Mahjong.TableRuntime" &&
+                            item.To == expectedElement);
+            }
+            finally
+            {
+                DeleteOwnedTempRoot(tempRoot);
+            }
+        }
+
+        [Fact]
         public void RuleTableCannotWidenAnAssemblyAllowlistBeyondTheProjectClosure()
         {
             var rules = new Dictionary<string, ModuleRule>(BuildRules(), StringComparer.Ordinal);
@@ -446,6 +543,75 @@ namespace Mahjong.Architecture.Tests
                 "BCL/shared-framework and per-module approved third-party references must not be rejected:" + Environment.NewLine + Describe(diagnostics));
         }
 
+        [Fact]
+        public void FrameworkCatalogUsesExactRealAssemblyIdentity()
+        {
+            Assert.True(FrameworkAssemblyCatalog.PlatformAssemblyCount > 100, "Platform framework catalogue is unexpectedly small.");
+            Assert.True(FrameworkAssemblyCatalog.SharedFrameworkAssemblyCount > 50, "Shared-framework catalogue is unexpectedly small.");
+
+            Assert.Equal(ReferenceKind.Bcl, ReferenceClassifier.Classify("netstandard"));
+            Assert.Equal(ReferenceKind.Bcl, ReferenceClassifier.Classify("System.Collections"));
+            Assert.Equal(ReferenceKind.SharedFramework, ReferenceClassifier.Classify("Microsoft.AspNetCore.Http"));
+            Assert.Equal(ReferenceKind.SharedFramework, ReferenceClassifier.Classify("Microsoft.Extensions.Logging.Abstractions"));
+
+            Assert.Equal(ReferenceKind.ThirdParty, ReferenceClassifier.Classify("System.Reactive"));
+            Assert.Equal(ReferenceKind.ThirdParty, ReferenceClassifier.Classify("System.IO.Abstractions"));
+            Assert.Equal(ReferenceKind.ThirdParty, ReferenceClassifier.Classify("Microsoft.Extensions.UnknownVendor"));
+        }
+
+        [Theory]
+        [InlineData("System.Reactive", DiagnosticCodes.AssemblyForbiddenThirdParty)]
+        [InlineData("System.IO.Abstractions", DiagnosticCodes.AssemblyForbiddenThirdParty)]
+        [InlineData("Microsoft.AspNetCore.Http", DiagnosticCodes.AssemblyUnauthorizedSharedFramework)]
+        [InlineData("Microsoft.Extensions.UnknownVendor", DiagnosticCodes.AssemblyForbiddenThirdParty)]
+        public void DomainCannotBorrowSystemOrMicrosoftPrefixesAsCover(string reference, string expectedCode)
+        {
+            SyntheticGraph graph = CreateSyntheticGraph();
+            Dictionary<string, AssemblyGraph> assemblies = CopyAssemblies(graph);
+            assemblies["Mahjong.Domain"] = assemblies["Mahjong.Domain"].WithReference(reference);
+
+            IReadOnlyList<DependencyDiagnostic> diagnostics =
+                ModuleDependencyValidator.ValidateAssemblyGraph(graph.KnownProjects, assemblies, graph.Rules);
+
+            DependencyDiagnostic diagnostic = Assert.Single(diagnostics, item => item.Code == expectedCode);
+            Assert.Equal("Mahjong.Domain", diagnostic.From);
+            Assert.Equal(reference, diagnostic.To);
+            Assert.True(
+                diagnostic.Detail.Contains("third-party", StringComparison.OrdinalIgnoreCase) ||
+                diagnostic.Detail.Contains("shared-framework", StringComparison.OrdinalIgnoreCase),
+                "Diagnostic must explain why the prefix is not a BCL/framework passport: " + diagnostic);
+        }
+
+        [Fact]
+        public void LobbyUnknownMicrosoftExtensionsVendorIsRejected()
+        {
+            SyntheticGraph graph = CreateSyntheticGraph();
+            Dictionary<string, AssemblyGraph> assemblies = CopyAssemblies(graph);
+            assemblies["Mahjong.LobbyService"] =
+                assemblies["Mahjong.LobbyService"].WithReference("Microsoft.Extensions.UnknownVendor");
+
+            IReadOnlyList<DependencyDiagnostic> diagnostics =
+                ModuleDependencyValidator.ValidateAssemblyGraph(graph.KnownProjects, assemblies, graph.Rules);
+
+            DependencyDiagnostic diagnostic = Assert.Single(diagnostics, item => item.Code == DiagnosticCodes.AssemblyForbiddenThirdParty);
+            Assert.Equal("Mahjong.LobbyService", diagnostic.From);
+            Assert.Equal("Microsoft.Extensions.UnknownVendor", diagnostic.To);
+        }
+
+        [Fact]
+        public void LobbyRealSharedFrameworkReferenceIsAuthorized()
+        {
+            SyntheticGraph graph = CreateSyntheticGraph();
+            Dictionary<string, AssemblyGraph> assemblies = CopyAssemblies(graph);
+            assemblies["Mahjong.LobbyService"] =
+                assemblies["Mahjong.LobbyService"].WithReference("Microsoft.AspNetCore.Http");
+
+            IReadOnlyList<DependencyDiagnostic> diagnostics =
+                ModuleDependencyValidator.ValidateAssemblyGraph(graph.KnownProjects, assemblies, graph.Rules);
+
+            Assert.True(diagnostics.Count == 0, "Lobby must be allowed to use the real ASP.NET Core shared framework:" + Environment.NewLine + Describe(diagnostics));
+        }
+
         [Theory]
         [InlineData("Mahjong.Domain", ReferenceKind.Mahjong)]
         [InlineData("Mahjong.Contracts.Wire", ReferenceKind.Mahjong)]
@@ -464,6 +630,9 @@ namespace Mahjong.Architecture.Tests
         [InlineData("Newtonsoft.Json", ReferenceKind.ThirdParty)]
         [InlineData("Microsoft.Data.SqlClient", ReferenceKind.ThirdParty)]
         [InlineData("Grpc.Core", ReferenceKind.ThirdParty)]
+        [InlineData("System.Reactive", ReferenceKind.ThirdParty)]
+        [InlineData("System.IO.Abstractions", ReferenceKind.ThirdParty)]
+        [InlineData("Microsoft.Extensions.UnknownVendor", ReferenceKind.ThirdParty)]
         public void ReferenceClassifierSeparatesBclFrameworkMahjongAndThirdParty(string name, ReferenceKind expected)
         {
             Assert.Equal(expected, ReferenceClassifier.Classify(name));
@@ -565,7 +734,8 @@ namespace Mahjong.Architecture.Tests
                     allowedMahjongAssemblyReferences: new[] { "Mahjong.Contracts" },
                     requiredMahjongAssemblyReferences: NoStrings,
                     allowedThirdPartyAssemblyReferences: new[] { "Npgsql" },
-                    requiredThirdPartyAssemblyReferences: new[] { "Npgsql" })
+                    requiredThirdPartyAssemblyReferences: new[] { "Npgsql" },
+                    allowSharedFramework: true)
             };
 
             return rules;
@@ -658,37 +828,133 @@ namespace Mahjong.Architecture.Tests
                     "Project file name '" + name + "' does not match its directory '" + directory + "'.");
 
                 XDocument document = XDocument.Load(projectFile, LoadOptions.None);
+                XmlDeclarations declarations = ReadXmlDeclarations(document, projectFile);
                 projects.Add(new ProjectGraph(
                     name,
-                    projectFile,
-                    ReadProjectReferences(document),
-                    ReadPackageReferences(document)));
+                    Path.GetFullPath(projectFile),
+                    declarations.ProjectReferences,
+                    declarations.Packages,
+                    declarations.Problems));
             }
 
             return projects;
         }
 
-        private static IReadOnlyList<string> ReadProjectReferences(XDocument document)
+        private static XmlDeclarations ReadXmlDeclarations(XDocument document, string projectPath)
         {
-            return document.Descendants()
-                .Where(element => element.Name.LocalName == "ProjectReference")
-                .Select(element => NormalizeProjectReference((string?)element.Attribute("Include")))
-                .Where(name => name.Length > 0)
-                .OrderBy(name => name, StringComparer.Ordinal)
-                .ToArray();
+            var result = new XmlDeclarations();
+            string projectDirectory = Path.GetDirectoryName(Path.GetFullPath(projectPath))
+                ?? throw new InvalidOperationException("Cannot determine the directory of " + projectPath + ".");
+
+            foreach (XElement element in document.Descendants())
+            {
+                string localName = element.Name.LocalName;
+                if (string.Equals(localName, "ProjectReference", StringComparison.Ordinal))
+                {
+                    string? include = (string?)element.Attribute("Include");
+                    string problem = ValidateSimpleInclude(element, include, "ProjectReference");
+                    if (problem.Length > 0)
+                    {
+                        result.Problems.Add(new DeclarationProblem("ProjectReference", problem));
+                        continue;
+                    }
+
+                    string canonical;
+                    try
+                    {
+                        canonical = Path.GetFullPath(Path.Combine(projectDirectory, include!.Replace('\\', '/')));
+                    }
+                    catch (Exception exception)
+                    {
+                        result.Problems.Add(new DeclarationProblem(
+                            "ProjectReference",
+                            "cannot resolve Include '" + include + "': " + exception.Message));
+                        continue;
+                    }
+
+                    string targetName = Path.GetFileNameWithoutExtension(canonical);
+                    if (targetName.Length == 0)
+                    {
+                        result.Problems.Add(new DeclarationProblem(
+                            "ProjectReference",
+                            "Include '" + include + "' does not resolve to a project file name"));
+                        continue;
+                    }
+
+                    result.ProjectReferences.Add(new ProjectReferenceFact(include!, targetName, canonical));
+                }
+                else if (string.Equals(localName, "PackageReference", StringComparison.Ordinal))
+                {
+                    string? include = (string?)element.Attribute("Include");
+                    string problem = ValidateSimpleInclude(element, include, "PackageReference");
+                    if (problem.Length > 0)
+                    {
+                        result.Problems.Add(new DeclarationProblem("PackageReference", problem));
+                        continue;
+                    }
+
+                    result.Packages.Add(new PackageReferenceFact(
+                        include!,
+                        ReadAttributeOrChild(element, "Version"),
+                        ReadAttributeOrChild(element, "PrivateAssets")));
+                }
+                else if (string.Equals(localName, "Reference", StringComparison.Ordinal) ||
+                         string.Equals(localName, "ReferencePath", StringComparison.Ordinal) ||
+                         string.Equals(localName, "COMReference", StringComparison.Ordinal) ||
+                         string.Equals(localName, "FrameworkReference", StringComparison.Ordinal) ||
+                         string.Equals(localName, "Import", StringComparison.Ordinal))
+                {
+                    result.Problems.Add(new DeclarationProblem(localName, DescribeUnsupportedDeclaration(element, localName)));
+                }
+            }
+
+            return result;
         }
 
-        private static IReadOnlyList<PackageReferenceFact> ReadPackageReferences(XDocument document)
+        private static string ValidateSimpleInclude(XElement element, string? include, string kind)
         {
-            return document.Descendants()
-                .Where(element => element.Name.LocalName == "PackageReference")
-                .Select(element => new PackageReferenceFact(
-                    (string?)element.Attribute("Include") ?? string.Empty,
-                    ReadAttributeOrChild(element, "Version"),
-                    ReadAttributeOrChild(element, "PrivateAssets")))
-                .Where(package => package.Name.Length > 0)
-                .OrderBy(package => package.Name, StringComparer.Ordinal)
-                .ToArray();
+            if (element.AncestorsAndSelf().Any(ancestor => ancestor.Attribute("Condition") != null))
+            {
+                return kind + " under a Condition is not modeled; the declaration graph fails closed";
+            }
+
+            if (element.Attribute("Update") != null || element.Attribute("Remove") != null)
+            {
+                return kind + " Update/Remove is not modeled; the declaration graph fails closed";
+            }
+
+            if (string.IsNullOrWhiteSpace(include))
+            {
+                return kind + " has no non-empty Include; the declaration graph fails closed";
+            }
+
+            if (include!.IndexOf(';') >= 0)
+            {
+                return kind + " with multiple Include items is not modeled; the declaration graph fails closed";
+            }
+
+            if (include.IndexOf('*') >= 0 || include.IndexOf('?') >= 0)
+            {
+                return kind + " with a wildcard Include is not modeled; the declaration graph fails closed";
+            }
+
+            if (include.Contains("$(", StringComparison.Ordinal) ||
+                include.Contains("@(", StringComparison.Ordinal) ||
+                include.Contains("%(", StringComparison.Ordinal))
+            {
+                return kind + " with an MSBuild property/item expression is not modeled; the declaration graph fails closed";
+            }
+
+            return string.Empty;
+        }
+
+        private static string DescribeUnsupportedDeclaration(XElement element, string localName)
+        {
+            string? include = (string?)element.Attribute("Include")
+                ?? (string?)element.Attribute("Project")
+                ?? (string?)element.Attribute("Update");
+            return "<" + localName + "> declaration '" + (include ?? "(none)") +
+                "' is not modeled; the project declaration graph fails closed instead of ignoring it";
         }
 
         private static string ReadAttributeOrChild(XElement element, string name)
@@ -701,17 +967,6 @@ namespace Mahjong.Architecture.Tests
 
             XElement? child = element.Elements().FirstOrDefault(candidate => candidate.Name.LocalName == name);
             return child == null ? string.Empty : child.Value.Trim();
-        }
-
-        private static string NormalizeProjectReference(string? include)
-        {
-            if (string.IsNullOrWhiteSpace(include))
-            {
-                return string.Empty;
-            }
-
-            string normalized = include!.Replace('\\', '/');
-            return Path.GetFileNameWithoutExtension(normalized);
         }
 
         private static string FindRepositoryRoot()
@@ -734,6 +989,29 @@ namespace Mahjong.Architecture.Tests
             throw new InvalidOperationException(
                 "Repository root (AGENTS.md + tools/verify-v5.ps1 + dotnet/src/Mahjong.Domain) was not found above " +
                 AppContext.BaseDirectory + ".");
+        }
+
+        private static string CreateProductionXmlSandbox(string repositoryRoot)
+        {
+            string tempRoot = Path.Combine(Path.GetTempPath(), "mahjong-arch-guard-" + Guid.NewGuid().ToString("N"));
+            string sourceRoot = Path.Combine(repositoryRoot, "dotnet", "src");
+            foreach (string directory in Directory.GetDirectories(sourceRoot))
+            {
+                string sourceProject = Directory.GetFiles(directory, "*.csproj", SearchOption.TopDirectoryOnly).Single();
+                string targetDirectory = Path.Combine(tempRoot, "dotnet", "src", new DirectoryInfo(directory).Name);
+                Directory.CreateDirectory(targetDirectory);
+                File.Copy(sourceProject, Path.Combine(targetDirectory, Path.GetFileName(sourceProject)));
+            }
+
+            return tempRoot;
+        }
+
+        private static IReadOnlyList<DependencyDiagnostic> ValidateProductionXmlSandbox(string tempRoot)
+        {
+            IReadOnlyList<ProjectGraph> projects = DiscoverProductionProjects(tempRoot);
+            IReadOnlyDictionary<string, ProjectGraph> byName =
+                projects.ToDictionary(project => project.Name, project => project, StringComparer.Ordinal);
+            return ModuleDependencyValidator.ValidateProjectGraph(ExpectedProjectNames, byName, BuildRules());
         }
 
         private static void DeleteOwnedTempRoot(string path)
@@ -802,6 +1080,13 @@ namespace Mahjong.Architecture.Tests
             return lines.Length == 0 ? "(none)" : string.Join(Environment.NewLine, lines);
         }
 
+        private sealed class XmlDeclarations
+        {
+            public List<ProjectReferenceFact> ProjectReferences { get; } = new List<ProjectReferenceFact>();
+            public List<PackageReferenceFact> Packages { get; } = new List<PackageReferenceFact>();
+            public List<DeclarationProblem> Problems { get; } = new List<DeclarationProblem>();
+        }
+
         private sealed class SyntheticGraph
         {
             public SyntheticGraph(
@@ -830,21 +1115,62 @@ namespace Mahjong.Architecture.Tests
             string path,
             IEnumerable<string> projectReferences,
             IEnumerable<PackageReferenceFact> packageReferences)
+            : this(
+                name,
+                path,
+                SynthesizeDeclarations(path, projectReferences),
+                packageReferences,
+                Array.Empty<DeclarationProblem>())
+        {
+        }
+
+        public ProjectGraph(
+            string name,
+            string path,
+            IEnumerable<ProjectReferenceFact> declaredProjectReferences,
+            IEnumerable<PackageReferenceFact> packageReferences,
+            IEnumerable<DeclarationProblem> declarationProblems)
         {
             Name = name;
             Path = path;
-            ProjectReferences = new List<string>(projectReferences).OrderBy(value => value, StringComparer.Ordinal).ToArray();
-            PackageReferences = new List<PackageReferenceFact>(packageReferences).OrderBy(value => value.Name, StringComparer.Ordinal).ToArray();
+            DeclaredProjectReferences = new List<ProjectReferenceFact>(declaredProjectReferences)
+                .OrderBy(value => value.TargetName, StringComparer.Ordinal)
+                .ThenBy(value => value.RawInclude, StringComparer.Ordinal)
+                .ToArray();
+            ProjectReferences = DeclaredProjectReferences
+                .Select(value => value.TargetName)
+                .Distinct(StringComparer.Ordinal)
+                .OrderBy(value => value, StringComparer.Ordinal)
+                .ToArray();
+            PackageReferences = new List<PackageReferenceFact>(packageReferences)
+                .OrderBy(value => value.Name, StringComparer.Ordinal)
+                .ToArray();
+            DeclarationProblems = new List<DeclarationProblem>(declarationProblems)
+                .OrderBy(value => value.Element, StringComparer.Ordinal)
+                .ThenBy(value => value.Detail, StringComparer.Ordinal)
+                .ToArray();
         }
 
         public string Name { get; }
         public string Path { get; }
         public IReadOnlyList<string> ProjectReferences { get; }
+        public IReadOnlyList<ProjectReferenceFact> DeclaredProjectReferences { get; }
         public IReadOnlyList<PackageReferenceFact> PackageReferences { get; }
+        public IReadOnlyList<DeclarationProblem> DeclarationProblems { get; }
 
         public ProjectGraph WithProjectReference(string reference)
         {
-            return new ProjectGraph(Name, Path, ProjectReferences.Append(reference), PackageReferences);
+            string directory = System.IO.Path.GetDirectoryName(Path) ?? string.Empty;
+            var declaration = new ProjectReferenceFact(
+                reference + ".csproj",
+                reference,
+                System.IO.Path.Combine(directory, reference + ".csproj"));
+            return new ProjectGraph(
+                Name,
+                Path,
+                DeclaredProjectReferences.Append(declaration),
+                PackageReferences,
+                DeclarationProblems);
         }
 
         public ProjectGraph WithoutProjectReference(string reference)
@@ -852,8 +1178,9 @@ namespace Mahjong.Architecture.Tests
             return new ProjectGraph(
                 Name,
                 Path,
-                ProjectReferences.Where(value => !string.Equals(value, reference, StringComparison.Ordinal)),
-                PackageReferences);
+                DeclaredProjectReferences.Where(value => !string.Equals(value.TargetName, reference, StringComparison.Ordinal)),
+                PackageReferences,
+                DeclarationProblems);
         }
 
         public ProjectGraph WithPackage(string name, string version, string privateAssets)
@@ -861,10 +1188,11 @@ namespace Mahjong.Architecture.Tests
             return new ProjectGraph(
                 Name,
                 Path,
-                ProjectReferences,
+                DeclaredProjectReferences,
                 PackageReferences
                     .Where(package => !string.Equals(package.Name, name, StringComparison.Ordinal))
-                    .Append(new PackageReferenceFact(name, version, privateAssets)));
+                    .Append(new PackageReferenceFact(name, version, privateAssets)),
+                DeclarationProblems);
         }
 
         public ProjectGraph WithoutPackage(string name)
@@ -872,9 +1200,48 @@ namespace Mahjong.Architecture.Tests
             return new ProjectGraph(
                 Name,
                 Path,
-                ProjectReferences,
-                PackageReferences.Where(package => !string.Equals(package.Name, name, StringComparison.Ordinal)));
+                DeclaredProjectReferences,
+                PackageReferences.Where(package => !string.Equals(package.Name, name, StringComparison.Ordinal)),
+                DeclarationProblems);
         }
+
+        private static IEnumerable<ProjectReferenceFact> SynthesizeDeclarations(
+            string projectPath,
+            IEnumerable<string> projectReferences)
+        {
+            string directory = System.IO.Path.GetDirectoryName(projectPath) ?? string.Empty;
+            foreach (string reference in projectReferences)
+            {
+                string canonical = System.IO.Path.Combine(directory, reference + ".csproj");
+                yield return new ProjectReferenceFact(reference + ".csproj", reference, canonical);
+            }
+        }
+    }
+
+    internal sealed class ProjectReferenceFact
+    {
+        public ProjectReferenceFact(string rawInclude, string targetName, string canonicalPath)
+        {
+            RawInclude = rawInclude;
+            TargetName = targetName;
+            CanonicalPath = canonicalPath;
+        }
+
+        public string RawInclude { get; }
+        public string TargetName { get; }
+        public string CanonicalPath { get; }
+    }
+
+    internal sealed class DeclarationProblem
+    {
+        public DeclarationProblem(string element, string detail)
+        {
+            Element = element;
+            Detail = detail;
+        }
+
+        public string Element { get; }
+        public string Detail { get; }
     }
 
     internal sealed class PackageReferenceFact
@@ -929,7 +1296,8 @@ namespace Mahjong.Architecture.Tests
             IEnumerable<string> allowedMahjongAssemblyReferences,
             IEnumerable<string> requiredMahjongAssemblyReferences,
             IEnumerable<string> allowedThirdPartyAssemblyReferences,
-            IEnumerable<string> requiredThirdPartyAssemblyReferences)
+            IEnumerable<string> requiredThirdPartyAssemblyReferences,
+            bool allowSharedFramework = false)
         {
             Name = name;
             TargetFramework = targetFramework;
@@ -940,6 +1308,7 @@ namespace Mahjong.Architecture.Tests
             RequiredMahjongAssemblyReferences = new HashSet<string>(requiredMahjongAssemblyReferences, StringComparer.Ordinal);
             AllowedThirdPartyAssemblyReferences = new HashSet<string>(allowedThirdPartyAssemblyReferences, StringComparer.Ordinal);
             RequiredThirdPartyAssemblyReferences = new HashSet<string>(requiredThirdPartyAssemblyReferences, StringComparer.Ordinal);
+            AllowSharedFramework = allowSharedFramework;
         }
 
         public string Name { get; }
@@ -951,6 +1320,7 @@ namespace Mahjong.Architecture.Tests
         public HashSet<string> RequiredMahjongAssemblyReferences { get; }
         public HashSet<string> AllowedThirdPartyAssemblyReferences { get; }
         public HashSet<string> RequiredThirdPartyAssemblyReferences { get; }
+        public bool AllowSharedFramework { get; }
 
         public ModuleRule WithMahjongAssemblyAllowlist(IEnumerable<string> allowedMahjongAssemblyReferences)
         {
@@ -963,7 +1333,8 @@ namespace Mahjong.Architecture.Tests
                 allowedMahjongAssemblyReferences,
                 RequiredMahjongAssemblyReferences,
                 AllowedThirdPartyAssemblyReferences,
-                RequiredThirdPartyAssemblyReferences);
+                RequiredThirdPartyAssemblyReferences,
+                AllowSharedFramework);
         }
     }
 
@@ -999,6 +1370,12 @@ namespace Mahjong.Architecture.Tests
         public const string ProjectMissingPackage = "PROJECT_MISSING_PACKAGE";
         public const string ProjectBuildOnlyPackageLeaked = "PROJECT_BUILD_ONLY_PACKAGE_LEAKED";
         public const string ProjectNotInRuleTable = "PROJECT_NOT_IN_RULE_TABLE";
+        public const string ProjectUnsupportedDeclaration = "PROJECT_UNSUPPORTED_DECLARATION";
+        public const string ProjectReferenceTargetNotDiscovered = "PROJECT_REFERENCE_TARGET_NOT_DISCOVERED";
+        public const string ProjectReferenceIdentityMismatch = "PROJECT_REFERENCE_IDENTITY_MISMATCH";
+        public const string ProjectInvalidReferencePath = "PROJECT_INVALID_REFERENCE_PATH";
+        public const string ProjectInvalidProjectPath = "PROJECT_INVALID_PROJECT_PATH";
+        public const string ProjectDuplicateCanonicalPath = "PROJECT_DUPLICATE_CANONICAL_PATH";
         public const string AssemblyMissing = "ASSEMBLY_MISSING";
         public const string AssemblyForbiddenMahjongReference = "ASSEMBLY_FORBIDDEN_MAHJONG_REFERENCE";
         public const string AssemblyMissingMahjongReference = "ASSEMBLY_MISSING_MAHJONG_REFERENCE";
@@ -1006,6 +1383,7 @@ namespace Mahjong.Architecture.Tests
         public const string AssemblyUnknownMahjongAssembly = "ASSEMBLY_UNKNOWN_MAHJONG_ASSEMBLY";
         public const string AssemblyForbiddenThirdParty = "ASSEMBLY_FORBIDDEN_THIRD_PARTY";
         public const string AssemblyMissingThirdParty = "ASSEMBLY_MISSING_THIRD_PARTY";
+        public const string AssemblyUnauthorizedSharedFramework = "ASSEMBLY_UNAUTHORIZED_SHARED_FRAMEWORK";
         public const string AssemblyNotInRuleTable = "ASSEMBLY_NOT_IN_RULE_TABLE";
         public const string RuleInconsistent = "RULE_INCONSISTENT";
     }
@@ -1018,37 +1396,83 @@ namespace Mahjong.Architecture.Tests
         ThirdParty
     }
 
+    /// <summary>
+    /// Exact identity catalogue of the real shared frameworks installed next to the
+    /// running CLR. Membership is decided by actual framework assembly file names,
+    /// never by a System.* / Microsoft.Extensions.* prefix, so a NuGet package such as
+    /// System.Reactive or System.IO.Abstractions cannot masquerade as BCL.
+    /// </summary>
+    internal static class FrameworkAssemblyCatalog
+    {
+        private static readonly Lazy<HashSet<string>> PlatformNames = new Lazy<HashSet<string>>(LoadPlatform);
+        private static readonly Lazy<HashSet<string>> SharedFrameworkNames = new Lazy<HashSet<string>>(LoadSharedFramework);
+
+        public static int PlatformAssemblyCount => PlatformNames.Value.Count;
+        public static int SharedFrameworkAssemblyCount => SharedFrameworkNames.Value.Count;
+
+        public static bool IsPlatform(string name)
+        {
+            return PlatformNames.Value.Contains(name);
+        }
+
+        public static bool IsSharedFramework(string name)
+        {
+            return SharedFrameworkNames.Value.Contains(name);
+        }
+
+        private static HashSet<string> LoadPlatform()
+        {
+            string directory = Path.GetDirectoryName(typeof(object).Assembly.Location)
+                ?? throw new InvalidOperationException("Cannot locate the running Microsoft.NETCore.App directory.");
+            HashSet<string> names = LoadAssemblyNames(directory);
+            if (names.Count == 0)
+            {
+                throw new InvalidOperationException("No platform assemblies found in " + directory + ".");
+            }
+
+            return names;
+        }
+
+        private static HashSet<string> LoadSharedFramework()
+        {
+            string platformDirectory = Path.GetDirectoryName(typeof(object).Assembly.Location)
+                ?? throw new InvalidOperationException("Cannot locate the running Microsoft.NETCore.App directory.");
+            // <dotnet>/shared/Microsoft.NETCore.App/<version> -> <dotnet>/shared
+            string sharedRoot = Path.GetFullPath(Path.Combine(platformDirectory, "..", ".."));
+            string aspNetCoreRoot = Path.Combine(sharedRoot, "Microsoft.AspNetCore.App");
+            if (!Directory.Exists(aspNetCoreRoot))
+            {
+                throw new InvalidOperationException("Microsoft.AspNetCore.App shared framework not found under " + aspNetCoreRoot + ".");
+            }
+
+            var names = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (string versionDirectory in Directory.GetDirectories(aspNetCoreRoot))
+            {
+                names.UnionWith(LoadAssemblyNames(versionDirectory));
+            }
+
+            if (names.Count == 0)
+            {
+                throw new InvalidOperationException("No shared-framework assemblies found under " + aspNetCoreRoot + ".");
+            }
+
+            return names;
+        }
+
+        private static HashSet<string> LoadAssemblyNames(string directory)
+        {
+            var names = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (string file in Directory.GetFiles(directory, "*.dll"))
+            {
+                names.Add(Path.GetFileNameWithoutExtension(file));
+            }
+
+            return names;
+        }
+    }
+
     internal static class ReferenceClassifier
     {
-        private static readonly string[] BclExact =
-        {
-            "Microsoft.CSharp",
-            "Microsoft.VisualBasic",
-            "Microsoft.Win32",
-            "WindowsBase",
-            "mscorlib",
-            "netstandard",
-            "System"
-        };
-
-        private static readonly string[] BclPrefixes =
-        {
-            "Microsoft.Win32.",
-            "System."
-        };
-
-        private static readonly string[] SharedFrameworkExact =
-        {
-            "Microsoft.AspNetCore"
-        };
-
-        private static readonly string[] SharedFrameworkPrefixes =
-        {
-            "Microsoft.AspNetCore.",
-            "Microsoft.Extensions.",
-            "Microsoft.Net.Http."
-        };
-
         public static ReferenceKind Classify(string name)
         {
             if (name.StartsWith("Mahjong.", StringComparison.Ordinal))
@@ -1056,14 +1480,12 @@ namespace Mahjong.Architecture.Tests
                 return ReferenceKind.Mahjong;
             }
 
-            if (BclExact.Contains(name, StringComparer.Ordinal) ||
-                BclPrefixes.Any(prefix => name.StartsWith(prefix, StringComparison.Ordinal)))
+            if (FrameworkAssemblyCatalog.IsPlatform(name))
             {
                 return ReferenceKind.Bcl;
             }
 
-            if (SharedFrameworkExact.Contains(name, StringComparer.Ordinal) ||
-                SharedFrameworkPrefixes.Any(prefix => name.StartsWith(prefix, StringComparison.Ordinal)))
+            if (FrameworkAssemblyCatalog.IsSharedFramework(name))
             {
                 return ReferenceKind.SharedFramework;
             }
@@ -1074,6 +1496,9 @@ namespace Mahjong.Architecture.Tests
 
     internal static class ModuleDependencyValidator
     {
+        private static readonly StringComparer FilePathComparer =
+            Path.DirectorySeparatorChar == '\\' ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal;
+
         public static IReadOnlyList<DependencyDiagnostic> ValidateProjectGraph(
             IReadOnlyCollection<string> knownProjects,
             IReadOnlyDictionary<string, ProjectGraph> projects,
@@ -1081,6 +1506,7 @@ namespace Mahjong.Architecture.Tests
         {
             var diagnostics = new List<DependencyDiagnostic>();
             var known = new HashSet<string>(knownProjects, StringComparer.Ordinal);
+            Dictionary<string, string> canonicalProjects = BuildCanonicalProjectMap(projects, diagnostics);
 
             foreach (ModuleRule rule in rules.Values.OrderBy(value => value.Name, StringComparer.Ordinal))
             {
@@ -1096,8 +1522,18 @@ namespace Mahjong.Architecture.Tests
                     continue;
                 }
 
-                foreach (string reference in project.ProjectReferences)
+                foreach (DeclarationProblem problem in project.DeclarationProblems)
                 {
+                    diagnostics.Add(new DependencyDiagnostic(
+                        DiagnosticCodes.ProjectUnsupportedDeclaration,
+                        rule.Name,
+                        problem.Element,
+                        problem.Detail));
+                }
+
+                foreach (ProjectReferenceFact declaration in project.DeclaredProjectReferences)
+                {
+                    string reference = declaration.TargetName;
                     if (ReferenceClassifier.Classify(reference) == ReferenceKind.Mahjong && !known.Contains(reference))
                     {
                         diagnostics.Add(new DependencyDiagnostic(
@@ -1105,6 +1541,43 @@ namespace Mahjong.Architecture.Tests
                             rule.Name,
                             reference,
                             "unknown Mahjong project reference (not one of the eight discovered projects)"));
+                        continue;
+                    }
+
+                    string canonicalReference;
+                    try
+                    {
+                        canonicalReference = Path.GetFullPath(declaration.CanonicalPath);
+                    }
+                    catch (Exception exception)
+                    {
+                        diagnostics.Add(new DependencyDiagnostic(
+                            DiagnosticCodes.ProjectInvalidReferencePath,
+                            rule.Name,
+                            declaration.RawInclude,
+                            "cannot resolve the declared target path: " + exception.Message));
+                        continue;
+                    }
+
+                    if (!canonicalProjects.TryGetValue(canonicalReference, out string? resolvedName))
+                    {
+                        diagnostics.Add(new DependencyDiagnostic(
+                            DiagnosticCodes.ProjectReferenceTargetNotDiscovered,
+                            rule.Name,
+                            declaration.RawInclude,
+                            "resolved target '" + canonicalReference +
+                            "' is not one of the eight discovered project files; same-basename shadow targets are rejected"));
+                        continue;
+                    }
+
+                    if (!string.Equals(resolvedName, reference, StringComparison.Ordinal))
+                    {
+                        diagnostics.Add(new DependencyDiagnostic(
+                            DiagnosticCodes.ProjectReferenceIdentityMismatch,
+                            rule.Name,
+                            declaration.RawInclude,
+                            "target path resolves to project '" + resolvedName +
+                            "' but the declared file name identifies '" + reference + "'"));
                         continue;
                     }
 
@@ -1227,6 +1700,14 @@ namespace Mahjong.Architecture.Tests
                                 "forbidden Mahjong assembly reference: " + rule.Name + " -> " + reference));
                         }
                     }
+                    else if (kind == ReferenceKind.SharedFramework && !rule.AllowSharedFramework)
+                    {
+                        diagnostics.Add(new DependencyDiagnostic(
+                            DiagnosticCodes.AssemblyUnauthorizedSharedFramework,
+                            rule.Name,
+                            reference,
+                            "shared-framework assembly is not authorized for this module: " + rule.Name + " -> " + reference));
+                    }
                     else if (kind == ReferenceKind.ThirdParty &&
                              !rule.AllowedThirdPartyAssemblyReferences.Contains(reference))
                     {
@@ -1280,6 +1761,44 @@ namespace Mahjong.Architecture.Tests
             }
 
             return diagnostics;
+        }
+
+        private static Dictionary<string, string> BuildCanonicalProjectMap(
+            IReadOnlyDictionary<string, ProjectGraph> projects,
+            List<DependencyDiagnostic> diagnostics)
+        {
+            var canonical = new Dictionary<string, string>(FilePathComparer);
+            foreach (KeyValuePair<string, ProjectGraph> pair in projects.OrderBy(value => value.Key, StringComparer.Ordinal))
+            {
+                string fullPath;
+                try
+                {
+                    fullPath = Path.GetFullPath(pair.Value.Path);
+                }
+                catch (Exception exception)
+                {
+                    diagnostics.Add(new DependencyDiagnostic(
+                        DiagnosticCodes.ProjectInvalidProjectPath,
+                        pair.Key,
+                        pair.Value.Path,
+                        "cannot resolve the project file path: " + exception.Message));
+                    continue;
+                }
+
+                if (canonical.TryGetValue(fullPath, out string? existing))
+                {
+                    diagnostics.Add(new DependencyDiagnostic(
+                        DiagnosticCodes.ProjectDuplicateCanonicalPath,
+                        pair.Key,
+                        existing,
+                        "two graph nodes resolve to the same project file: " + fullPath));
+                    continue;
+                }
+
+                canonical.Add(fullPath, pair.Key);
+            }
+
+            return canonical;
         }
 
         private static void CheckRuleConsistency(
