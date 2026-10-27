@@ -174,14 +174,17 @@ namespace Mahjong.Infrastructure.Tests
         {
             await PostgresTableTestEnvironment.ResetAsync(cancellationToken).ConfigureAwait(false);
             var clock = new ManualTableClock { Now = 1000L };
-            ulong nowUtc = (ulong)DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+            ulong nowUtc = checked((ulong)clock.UtcNowMs);
             RoundStateMachine round = initialRound ?? Dealt("round-p52");
             TableCheckpoint checkpoint = initialCheckpoint ?? InitialCheckpointFor(round, nowUtc, Boot);
             var options = PostgresTableTestEnvironment.NewOptions(commandTimeoutSeconds);
             var store = new PostgresTableStore(options);
             await store.CreateRoomAsync(checkpoint, cancellationToken).ConfigureAwait(false);
-            long issued = scopeIssuedUtcMs ?? checked((long)nowUtc);
-            long expires = scopeExpiresUtcMs ?? checked((long)nowUtc + 3_600_000L);
+            // Scope issue/expiry/revocation are database-clock lifecycle checks,
+            // not durable recovery timestamps. Keep them on wall time so an
+            // injected-clock origin can never place issue time after revocation.
+            long issued = scopeIssuedUtcMs ?? DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+            long expires = scopeExpiresUtcMs ?? checked(issued + 3_600_000L);
             TableScopeRecord scope = await store.IssueScopeAsync(
                 new TableScopeRecord(
                     new RequestScopeId("p52-scope-" + Guid.NewGuid().ToString("N")),
@@ -352,7 +355,7 @@ namespace Mahjong.Infrastructure.Tests
             byte[] businessBytes = Encoding.UTF8.GetBytes(
                 businessPayload ?? (api + "|" + requestId));
             TablePayloadSha256 digest = TablePayloadSha256.Compute(businessBytes);
-            ulong nowMs = (ulong)DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+            ulong nowMs = checked((ulong)Clock.UtcNowMs);
             Receipt receiptValue = receiptOverride ??
                 (receiptStatus == ReceiptStatus.Recorded
                     ? Receipt.Recorded(
@@ -438,7 +441,7 @@ namespace Mahjong.Infrastructure.Tests
             string api = "P52_REJECT")
         {
             TableScopeRecord actualScope = scope ?? Scope;
-            ulong nowMs = (ulong)DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+            ulong nowMs = checked((ulong)Clock.UtcNowMs);
             var durable = new TableDurableReceipt(
                 actualScope.AccountId,
                 actualScope.ScopeId,

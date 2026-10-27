@@ -357,7 +357,7 @@ namespace Mahjong.Infrastructure.Tests
                 new StateVersion(1),
                 cheat,
                 first.Request.Events);
-            ulong checkpointUtc = (ulong)DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+            ulong checkpointUtc = checked((ulong)fixture.Clock.UtcNowMs);
             TableTimingCheckpoint checkpointTiming = P52Fixture.Timing(
                 first.NextRound.RoundId,
                 P52Fixture.Boot,
@@ -450,6 +450,74 @@ namespace Mahjong.Infrastructure.Tests
             Assert.Equal<int?>(checked((int)cheat.Ledger.Version), recovery.Report.CheatLedgerVersion);
             Assert.Equal(2UL, recovery.Report.FinalStateVersion.Value);
             Assert.Equal(1, recovery.Report.ReplayedCommands);
+        }
+
+        [Fact]
+        public async Task CrossBootRecovery_UsesInjectedUtcTimeline_NotWallClockElapsed()
+        {
+            await using P52Fixture fixture = await P52Fixture.CreateAsync();
+            // Reproduce a loaded CI worker deterministically: move the injected
+            // UTC origin backwards instead of sleeping. Durable timestamps and
+            // recovery must share this one clock, not wall time plus an offset.
+            fixture.Clock.UtcBase = checked(fixture.Clock.UtcBase - 10_000UL);
+
+            DirectCommitCandidate candidate = fixture.BuildCommit(
+                fixture.Round,
+                new StateVersion(0),
+                new EventSeq(0),
+                "r1-cross-boot-clock-source");
+            Assert.True((await fixture.Store.CommitAsync(
+                candidate.Request,
+                TestContext.Current.CancellationToken)).IsCommitted);
+
+            TableTimingJournalRecord? persistedTiming = await fixture.Store.LoadTimingAsync(
+                P52Fixture.Room,
+                TestContext.Current.CancellationToken);
+            Assert.NotNull(persistedTiming);
+
+            TableRecoveryResult recovery = await RecoverAsync(
+                fixture,
+                null,
+                requireCheatLedger: false,
+                requireCommittedFacts: false);
+            Assert.True(
+                recovery.Recovered,
+                recovery.ReasonCode + ": " + recovery.Detail +
+                "; persistedTimingUtc=" + persistedTiming!.CapturedAtUtcMs +
+                "; recoveryClockUtc=" + checked((ulong)fixture.Clock.UtcNowMs) +
+                "; wallUtc=" + checked((ulong)DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()));
+            Assert.Equal(
+                checked((ulong)fixture.Clock.UtcNowMs),
+                persistedTiming.CapturedAtUtcMs);
+        }
+
+        [Fact]
+        public async Task CrossBootRecovery_RejectsGenuineUtcRollback_WithInjectedClock()
+        {
+            await using P52Fixture fixture = await P52Fixture.CreateAsync();
+            DirectCommitCandidate candidate = fixture.BuildCommit(
+                fixture.Round,
+                new StateVersion(0),
+                new EventSeq(0),
+                "r1-cross-boot-genuine-rollback");
+            Assert.True((await fixture.Store.CommitAsync(
+                candidate.Request,
+                TestContext.Current.CancellationToken)).IsCommitted);
+
+            // Same injected clock, but its UTC source now moves strictly backwards.
+            fixture.Clock.UtcBase = checked(fixture.Clock.UtcBase - 5_000UL);
+            TableRecoveryResult recovery = await RecoverAsync(
+                fixture,
+                null,
+                requireCheatLedger: false,
+                requireCommittedFacts: false);
+
+            Assert.Equal(TableRecoveryStatus.Failed, recovery.Status);
+            Assert.Equal(TableRuntimeReasonCode.ClockRegression, recovery.ReasonCode);
+            Assert.Contains(
+                "UTC time moved backwards across boot.",
+                recovery.Detail,
+                StringComparison.Ordinal);
         }
 
         [Fact]
