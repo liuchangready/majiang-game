@@ -166,8 +166,7 @@
         "Mahjong.Unity.App",
         "Mahjong.Unity.UI",
         "Mahjong.Unity.Platform",
-        "Mahjong.Unity.Spectator",
-        "Mahjong.Unity.Table"
+        "Mahjong.Unity.Spectator"
       ],
       "precompiledReferences": [
         "nunit.framework.dll",
@@ -193,8 +192,7 @@
         "Mahjong.Unity.App",
         "Mahjong.Unity.UI",
         "Mahjong.Unity.Platform",
-        "Mahjong.Unity.Spectator",
-        "Mahjong.Unity.Table"
+        "Mahjong.Unity.Spectator"
       ],
       "precompiledReferences": [
         "nunit.framework.dll",

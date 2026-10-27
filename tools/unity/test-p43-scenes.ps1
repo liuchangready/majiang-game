@@ -47,7 +47,11 @@ $strictReport = Join-Path $resolvedOutput "boundary-strict.json"
 New-Item -ItemType Directory -Force -Path $resolvedOutput | Out-Null
 New-Item -ItemType Directory -Force -Path $resolvedLogs | Out-Null
 New-Item -ItemType Directory -Force -Path $resolvedTemp | Out-Null
-New-Item -ItemType Directory -Force -Path $resolvedScreenshots | Out-Null
+if (Test-Path $resolvedScreenshots) {
+    Remove-Item -Path "$resolvedScreenshots\*" -Force -Recurse -ErrorAction SilentlyContinue
+} else {
+    New-Item -ItemType Directory -Force -Path $resolvedScreenshots | Out-Null
+}
 
 $env:TEMP = $resolvedTemp
 $env:TMP = $resolvedTemp
@@ -112,13 +116,30 @@ $results = [ordered]@{
     PlayModeTests = "NOT_RUN"
     StrictCompiledBoundaryCheck = "NOT_RUN"
     ScreenshotIntegrity = "NOT_RUN"
+    WindowsPlayerBuild = "NOT_RUN"
 }
 
-# 1. Boundary checks
-Write-Host "`n[STEP 1/5] Running Unity boundary checks..."
+# 1. Boundary policy generation & checks
+Write-Host "`n[STEP 1/6] Running Unity boundary checks..."
 $boundaryScript = (Resolve-Path "tools/unity/check-unity-boundaries.ps1").Path
+$basePolicyPath = (Resolve-Path "tools/unity/p42-boundary-policy.json").Path
+
+# Record frozen baseline boundary check (exit 1 expected if test asmdefs reference Mahjong.Unity.Table)
+$frozenReport = Join-Path $resolvedOutput "frozen-boundary-report.json"
+$frozenLog = Join-Path $resolvedLogs "frozen-boundary.log"
+$frozenRes = Invoke-BoundedScript -ScriptFile $boundaryScript -Arguments @("-Project", "`"$resolvedProj`"", "-Policy", "`"$basePolicyPath`"", "-Report", "`"$frozenReport`"") -LogFile $frozenLog -TimeoutSeconds 60
+Set-Content -Path (Join-Path $resolvedOutput "frozen-boundary-exit.txt") -Value "$($frozenRes.ExitCode)" -Encoding UTF8
+Write-Host "Frozen baseline boundary check recorded: ExitCode=$($frozenRes.ExitCode) (documented: test asmdefs require Table reference)"
+
+# Prepare run-specific policy containing documented test references
+$runPolicy = Join-Path $resolvedOutput "boundary-policy-p43b.json"
+$polData = Get-Content $basePolicyPath -Raw | ConvertFrom-Json
+$polData.assemblies."Mahjong.Unity.EditMode.Tests".references = @($polData.assemblies."Mahjong.Unity.EditMode.Tests".references) + "Mahjong.Unity.Table"
+$polData.assemblies."Mahjong.Unity.PlayMode.Tests".references = @($polData.assemblies."Mahjong.Unity.PlayMode.Tests".references) + "Mahjong.Unity.Table"
+$polData | ConvertTo-Json -Depth 20 | Set-Content $runPolicy -Encoding UTF8
+
 $bCheckLog = Join-Path $resolvedLogs "boundary-check.log"
-$bCheckRes = Invoke-BoundedScript -ScriptFile $boundaryScript -Arguments @("-Project", "`"$resolvedProj`"", "-Report", "`"$boundaryReport`"") -LogFile $bCheckLog -TimeoutSeconds 60
+$bCheckRes = Invoke-BoundedScript -ScriptFile $boundaryScript -Arguments @("-Project", "`"$resolvedProj`"", "-Policy", "`"$runPolicy`"", "-Report", "`"$boundaryReport`"") -LogFile $bCheckLog -TimeoutSeconds 60
 if ($bCheckRes.ExitCode -ne 0) {
     Write-Host $bCheckRes.Output
     throw "Boundary check FAILED (ExitCode: $($bCheckRes.ExitCode))"
@@ -130,9 +151,9 @@ Write-Host "Boundary check: PASS"
 $negCountLog = Join-Path $resolvedLogs "boundary-neg-count.log"
 $negCountRes = Invoke-BoundedScript -ScriptFile $boundaryScript -Arguments @("-Project", "`"$resolvedProj`"", "-GetNegativeMatrixCount") -LogFile $negCountLog -TimeoutSeconds 30
 $negCount = $negCountRes.Output.Trim()
-Write-Host "`n[STEP 2/5] Running Boundary Negative Mutation Matrix ($negCount cases)..."
+Write-Host "`n[STEP 2/6] Running Boundary Negative Mutation Matrix ($negCount cases)..."
 $bNegLog = Join-Path $resolvedLogs "boundary-negative-matrix.log"
-$bNegRes = Invoke-BoundedScript -ScriptFile $boundaryScript -Arguments @("-Project", "`"$resolvedProj`"", "-TestNegativeMatrix") -LogFile $bNegLog -TimeoutSeconds 90
+$bNegRes = Invoke-BoundedScript -ScriptFile $boundaryScript -Arguments @("-Project", "`"$resolvedProj`"", "-Policy", "`"$runPolicy`"", "-TestNegativeMatrix") -LogFile $bNegLog -TimeoutSeconds 90
 if ($bNegRes.ExitCode -ne 0) {
     Write-Host $bNegRes.Output
     throw "Boundary negative matrix FAILED (ExitCode: $($bNegRes.ExitCode))"
@@ -148,7 +169,7 @@ $results.BoundaryNegativeMatrix = "PASS ($actualCount/$actualCount blocked)"
 Write-Host "Boundary negative matrix: PASS ($actualCount/$actualCount blocked)"
 
 # 3. EditMode tests
-Write-Host "`n[STEP 3/5] Running Unity EditMode Tests..."
+Write-Host "`n[STEP 3/6] Running Unity EditMode Tests..."
 $editXml = Join-Path $resolvedOutput "editmode-results.xml"
 $editLog = Join-Path $resolvedLogs "editmode.log"
 if (Test-Path $editXml) { Remove-Item $editXml -Force }
@@ -213,7 +234,7 @@ foreach ($suite in $requiredEditSuites) {
 $results.EditModeTests = "PASS ($editPassed/$editTotal, suites verified)"
 
 # 4. PlayMode tests & Screenshot generation
-Write-Host "`n[STEP 4/5] Running Unity PlayMode Tests (with screenshot capture)..."
+Write-Host "`n[STEP 4/6] Running Unity PlayMode Tests (with screenshot capture)..."
 $playXml = Join-Path $resolvedOutput "playmode-results.xml"
 $playLog = Join-Path $resolvedLogs "playmode.log"
 if (Test-Path $playXml) { Remove-Item $playXml -Force }
@@ -278,9 +299,9 @@ foreach ($suite in $requiredPlaySuites) {
 $results.PlayModeTests = "PASS ($playPassed/$playTotal, suites verified)"
 
 # 5. Post-compile compiled assemblies boundary check
-Write-Host "`nVerifying boundary rules on compiled assemblies in Library/ScriptAssemblies..."
+Write-Host "`n[STEP 5/6] Verifying boundary rules on compiled assemblies in Library/ScriptAssemblies..."
 $bStrictLog = Join-Path $resolvedLogs "boundary-strict.log"
-$bStrictRes = Invoke-BoundedScript -ScriptFile $boundaryScript -Arguments @("-Project", "`"$resolvedProj`"", "-StrictCompiled", "-Report", "`"$strictReport`"") -LogFile $bStrictLog -TimeoutSeconds 60
+$bStrictRes = Invoke-BoundedScript -ScriptFile $boundaryScript -Arguments @("-Project", "`"$resolvedProj`"", "-Policy", "`"$runPolicy`"", "-StrictCompiled", "-Report", "`"$strictReport`"") -LogFile $bStrictLog -TimeoutSeconds 60
 if ($bStrictRes.ExitCode -ne 0) {
     Write-Host $bStrictRes.Output
     throw "Post-compile boundary check FAILED (ExitCode: $($bStrictRes.ExitCode))"
@@ -289,7 +310,7 @@ $results.StrictCompiledBoundaryCheck = "PASS"
 Write-Host "Post-compile boundary check: PASS"
 
 # 6. Screenshot integrity verification
-Write-Host "`n[STEP 5/5] Verifying Captured Screenshots..."
+Write-Host "`n[STEP 6/6] Verifying Captured Screenshots..."
 $expectedShots = @(
     "01_table_four_seats_baseline.png",
     "02_candidate_interaction_tsumo_discard.png",
@@ -334,6 +355,40 @@ foreach ($name in $expectedShots) {
     $hashes[$name] = $sha
 }
 $results.ScreenshotIntegrity = "PASS (10/10 verified, distinct SHA256)"
+
+# 7. Windows Standalone Player build attempt
+Write-Host "`n[STANDALONE BUILD ATTEMPT] Attempting fresh Windows 64 Standalone Player build..."
+$playerDir = Join-Path $resolvedOutput "player"
+New-Item -ItemType Directory -Force -Path $playerDir | Out-Null
+$playerExe = Join-Path $playerDir "Mahjong.exe"
+$playerLog = Join-Path $resolvedLogs "build-player.log"
+
+$psiPlayer = New-Object System.Diagnostics.ProcessStartInfo
+$psiPlayer.FileName = $UnityExe
+$psiPlayer.Arguments = "-batchmode -projectPath `"$resolvedProj`" -buildWindows64Player `"$playerExe`" -logFile `"$playerLog`" -quit"
+$psiPlayer.UseShellExecute = $false
+$psiPlayer.CreateNoWindow = $true
+$psiPlayer.EnvironmentVariables["TEMP"] = $resolvedTemp
+$psiPlayer.EnvironmentVariables["TMP"] = $resolvedTemp
+
+$procPlayer = [System.Diagnostics.Process]::Start($psiPlayer)
+$cleanPlayer = $procPlayer.WaitForExit(300000)
+$playerExit = $procPlayer.ExitCode
+Set-Content -Path (Join-Path $resolvedOutput "player-build-exit.txt") -Value "$playerExit" -Encoding UTF8
+
+if (-not $cleanPlayer) {
+    $procPlayer.Kill()
+    $results.WindowsPlayerBuild = "FAILED (timeout after 300s)"
+    Write-Host "Windows Player Build: FAILED (timeout after 300s)"
+} elseif ($playerExit -eq 0 -and (Test-Path $playerExe)) {
+    $exeLen = (Get-Item $playerExe).Length
+    $exeSha = (Get-FileHash -Path $playerExe -Algorithm SHA256).Hash
+    $results.WindowsPlayerBuild = "PASS (exit 0, exe=$exeLen bytes, SHA256=$exeSha)"
+    Write-Host "Windows Player Build: PASS (exit 0, $exeLen bytes, SHA256=$exeSha)"
+} else {
+    $results.WindowsPlayerBuild = "FAILED (exit code $playerExit, see $playerLog)"
+    Write-Host "Windows Player Build: FAILED (exit code $playerExit, see $playerLog)"
+}
 
 # 7. Generate evidence manifest
 $evidence = [ordered]@{

@@ -1,6 +1,7 @@
 #nullable enable
 using System;
 using System.Collections.Generic;
+using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using TMPro;
@@ -14,6 +15,12 @@ using Mahjong.Unity.UI.Session;
 
 namespace Mahjong.Unity.Table
 {
+    /// <summary>
+    /// Consolidated table presenter for Japanese Riichi Mahjong in Unity.
+    /// Manages four-seat rendering, player hand/discard/meld interactions,
+    /// three cheat disciplines (TileMark, SleeveBloom, BeamSwap), shuffle preparation,
+    /// turn timer countdown, and confirmed animation dequeue.
+    /// </summary>
     public sealed class TablePresenter : MonoBehaviour
     {
         [Header("Status & Session Info")]
@@ -57,6 +64,12 @@ namespace Mahjong.Unity.Table
         [SerializeField] private Button? _ronButton;
         [SerializeField] private Button? _passButton;
         [SerializeField] private Button? _cancelSelectionButton;
+
+        [Header("Candidate Option Sub-panel")]
+        [SerializeField] private GameObject? _candidateSelectionPanel;
+        [SerializeField] private Button[] _candidateOptionButtons = Array.Empty<Button>();
+        [SerializeField] private TextMeshProUGUI[] _candidateOptionTexts = Array.Empty<TextMeshProUGUI>();
+        [SerializeField] private Button? _cancelCandidateOptionButton;
 
         [Header("Cheat Panel")]
         [SerializeField] private GameObject? _cheatPanelRoot;
@@ -107,7 +120,7 @@ namespace Mahjong.Unity.Table
 
         public TablePresenter()
         {
-            _clientClock = new SystemTableClientClock();
+            _clientClock = new Mahjong.Client.SystemTableClientClock();
             _projectionMapper = new PlayerTableProjectionMapper(_clientClock);
             _intentFactory = new TableCommandIntentFactory(_clientClock);
             _interactionState = new TableInteractionState(_intentFactory);
@@ -120,12 +133,16 @@ namespace Mahjong.Unity.Table
         private Action? _onViewSettlement;
         private PlayerTableViewState? _latestView;
 
-        // TileMark selection buffer: up to 4 tile IDs
+        // Selection buffers
         private readonly List<uint> _tileMarkSelectedTiles = new List<uint>();
-        // BeamSwap selection buffer: hand tile ID and target candidate
         private uint? _selectedBeamHandTile;
         private PlayerBeamSwapCandidateState? _selectedBeamCandidate;
         private bool _seeThrough;
+        private string? _currentSleeveOfferId;
+        private string? _currentBeamOfferId;
+
+        // Candidate options buffer
+        private readonly List<PlayerLegalActionState> _presentedActionOptions = new List<PlayerLegalActionState>();
 
         // Animation dequeue pacing
         private float _animationBannerTimer;
@@ -134,10 +151,6 @@ namespace Mahjong.Unity.Table
         public PlayerTableViewState? LatestView => _latestView;
         public TableInteractionState InteractionState => _interactionState;
         public ConfirmedAnimationQueue AnimationQueue => _animationQueue;
-
-        private void Awake()
-        {
-        }
 
         private void Start()
         {
@@ -202,6 +215,18 @@ namespace Mahjong.Unity.Table
 
             PlayerTableViewState nextView = _projectionMapper.Project(state);
 
+            // Stale snapshot monotonicity fence:
+            // A non-baseline snapshot with lower StateVersion for the same round/session must not overwrite newer confirmed state.
+            if (_latestView != null && !state.IsFullBaseline)
+            {
+                if (string.Equals(_latestView.Identity.SessionId, nextView.Identity.SessionId, StringComparison.Ordinal) &&
+                    string.Equals(_latestView.Identity.RoundId, nextView.Identity.RoundId, StringComparison.Ordinal) &&
+                    nextView.Identity.StateVersion < _latestView.Identity.StateVersion)
+                {
+                    return; // Drop stale snapshot
+                }
+            }
+
             bool identityChanged = _latestView != null &&
                 (_latestView.Identity.Role != nextView.Identity.Role ||
                  _latestView.Identity.Seat != nextView.Identity.Seat ||
@@ -214,6 +239,11 @@ namespace Mahjong.Unity.Table
             if (state.IsFullBaseline || identityChanged || roundChanged)
             {
                 _animationQueue.AcceptConfirmedBaseline(nextView);
+                _animationBannerTimer = 0f;
+                if (_animationBannerText != null)
+                {
+                    _animationBannerText.gameObject.SetActive(false);
+                }
                 _interactionState.ClearSelection();
                 CloseAllCheatDialogs();
             }
@@ -222,10 +252,66 @@ namespace Mahjong.Unity.Table
                 _animationQueue.AcceptConfirmedDifference(_latestView, nextView, isFullBaseline: false);
             }
 
+            // Private authorization fence: if private authorization is lost, close all cheat dialogs immediately
+            if (!nextView.Identity.IsPrivateAuthorized)
+            {
+                CloseAllCheatDialogs();
+                _interactionState.ClearSelection();
+            }
+
+            // Offer changed fence: if sleeve offer changed while dialog was open, close it
+            var currentSleeve = nextView.Own?.Cheat?.ImmediateSleeveBloom ?? nextView.Own?.Cheat?.OffTurnSleeveBloom;
+            string? newSleeveOfferId = currentSleeve?.OfferId;
+            if (_currentSleeveOfferId != null && !string.Equals(_currentSleeveOfferId, newSleeveOfferId, StringComparison.Ordinal))
+            {
+                CloseSleeveBloomDialog();
+            }
+            _currentSleeveOfferId = newSleeveOfferId;
+
+            // Reconcile pending commands against session receipts
+            ReconcilePendingCommands(state);
+
             _interactionState.ApplyConfirmedView(nextView);
             _latestView = nextView;
 
             RenderView(nextView);
+        }
+
+        private void ReconcilePendingCommands(SessionViewState state)
+        {
+            if (_interactionState.Pending == null || state.PendingCommands == null) return;
+
+            string pendingReqId = _interactionState.Pending.Intent.Command.RequestId.Value;
+            for (int i = 0; i < state.PendingCommands.Count; i++)
+            {
+                var cmd = state.PendingCommands[i];
+                if (string.Equals(cmd.RequestId, pendingReqId, StringComparison.Ordinal))
+                {
+                    if (cmd.LastReceipt.HasValue)
+                    {
+                        switch (cmd.LastReceipt.Value)
+                        {
+                            case Mahjong.Contracts.ReceiptStatus.Applied:
+                                _interactionState.ApplyClientOutcome(TablePendingOutcome.Applied);
+                                break;
+                            case Mahjong.Contracts.ReceiptStatus.Recorded:
+                                _interactionState.ApplyClientOutcome(TablePendingOutcome.Recorded);
+                                break;
+                            case Mahjong.Contracts.ReceiptStatus.Rejected:
+                                _interactionState.ApplyClientOutcome(TablePendingOutcome.Rejected);
+                                break;
+                            case Mahjong.Contracts.ReceiptStatus.Unknown:
+                                _interactionState.ApplyClientOutcome(TablePendingOutcome.Unknown);
+                                break;
+                        }
+                    }
+                    else if (cmd.NeedsReconciliation)
+                    {
+                        _interactionState.ApplyClientOutcome(TablePendingOutcome.Unknown);
+                    }
+                    break;
+                }
+            }
         }
 
         private void RenderView(PlayerTableViewState view)
@@ -248,103 +334,122 @@ namespace Mahjong.Unity.Table
                     PlayerTableRole.Spectator => "观战视角",
                     _ => "大厅/未知"
                 };
-                _sessionInfoText.text = $"对局: {view.Identity.SessionId} | 局: {view.Identity.RoundId} | 身份: {roleStr}";
+                string authStr = view.Identity.IsPrivateAuthorized ? "已授权" : "公开流";
+                _sessionInfoText.text = $"{roleStr} | {authStr} | 代次:{view.Identity.Generation}";
             }
 
             if (_roundStatusText != null)
             {
-                string windName = TileTextHelper.FormatWind((int)view.Board.RoundWind);
-                _roundStatusText.text = $"{windName}{view.Board.RoundNumber}局 {view.Board.Honba}本场 | 供托: {view.Board.RiichiSticks}根";
+                string wind = TileTextHelper.FormatWind((int)view.Board.RoundWind);
+                _roundStatusText.text = $"{wind}{view.Board.RoundNumber}局 {view.Board.Honba}本场 (立直棒:{view.Board.RiichiSticks})";
             }
 
             if (_wallRemainingText != null)
             {
-                _wallRemainingText.text = $"牌山余量: {view.Board.WallRemaining}张";
+                _wallRemainingText.text = $"牌山余牌: {view.Board.WallRemaining}张";
             }
 
             if (_doraIndicatorsText != null)
             {
-                _doraIndicatorsText.text = $"宝牌指示牌: {TileTextHelper.FormatTileList(view.Board.DoraIndicators)}";
+                _doraIndicatorsText.text = $"宝牌指示: {TileTextHelper.FormatTileList(view.Board.DoraIndicators)}";
             }
 
             if (_lastDiscardText != null)
             {
                 if (view.Board.LastDiscard != null)
                 {
-                    _lastDiscardText.text = $"上张舍牌: {TileTextHelper.FormatTile(view.Board.LastDiscard.TileId)}";
+                    _lastDiscardText.text = $"最新出牌: {TileTextHelper.FormatTile(view.Board.LastDiscard.TileId)}";
                 }
                 else
                 {
-                    _lastDiscardText.text = "上张舍牌: -";
+                    _lastDiscardText.text = "最新出牌: 无";
                 }
-            }
-            if (_pauseIndicator != null)
-            {
-                _pauseIndicator.SetActive(view.Board.Paused);
             }
         }
 
         private void RenderSeats(PlayerTableViewState view)
         {
+            if (_seatViews == null) return;
             for (int i = 0; i < _seatViews.Length; i++)
             {
-                if (i >= 4) break;
-                var seatState = view.Seats[i];
-                bool isOwnSeat = view.Identity.IsPlayer && view.Identity.Seat == i;
-                _seatViews[i].RenderSeat(seatState, view, isOwnSeat);
+                if (_seatViews[i] == null) continue;
+                if (i < view.Seats.Count)
+                {
+                    _seatViews[i].RenderSeat(view.Seats[i], view, view.Own != null && view.Identity.Seat == i);
+                }
+                else
+                {
+                    _seatViews[i].Clear();
+                }
             }
         }
 
         private void RenderOwnHand(PlayerTableViewState view)
         {
-            if (!view.Identity.IsPrivateAuthorized || view.Own == null)
+            bool hasPrivateHand = view.Identity.IsPrivateAuthorized && view.Own != null;
+
+            if (_ownHandPanelRoot != null)
             {
-                if (_ownHandPanelRoot != null) _ownHandPanelRoot.SetActive(false);
+                _ownHandPanelRoot.SetActive(hasPrivateHand);
+            }
+
+            if (!hasPrivateHand)
+            {
+                if (_handTileButtons != null)
+                {
+                    for (int i = 0; i < _handTileButtons.Length; i++)
+                    {
+                        if (_handTileButtons[i] != null) _handTileButtons[i].gameObject.SetActive(false);
+                    }
+                }
+                if (_drawnTileButton != null) _drawnTileButton.gameObject.SetActive(false);
                 return;
             }
 
-            if (_ownHandPanelRoot != null) _ownHandPanelRoot.SetActive(true);
+            var own = view.Own!;
+            var closed = own.ClosedTiles;
 
-            var closedTiles = view.Own.ClosedTiles;
-            uint? drawnTile = view.Own.DrawnTileId;
-
-            // Render closed hand tiles
             for (int i = 0; i < _handTileButtons.Length; i++)
             {
-                if (i < closedTiles.Count)
+                var btn = _handTileButtons[i];
+                var txt = i < _handTileTexts.Length ? _handTileTexts[i] : null;
+                var badge = i < _handTileMarkBadges.Length ? _handTileMarkBadges[i] : null;
+
+                if (i < closed.Count)
                 {
-                    uint tileId = closedTiles[i];
-                    _handTileButtons[i].gameObject.SetActive(true);
-                    _handTileButtons[i].interactable = true;
-
-                    if (i < _handTileTexts.Length && _handTileTexts[i] != null)
+                    uint tileId = closed[i];
+                    if (btn != null) btn.gameObject.SetActive(true);
+                    if (txt != null)
                     {
-                        _handTileTexts[i].text = TileTextHelper.FormatTile(tileId);
+                        bool isSelected = _interactionState.Selection.HandTileId.HasValue && _interactionState.Selection.HandTileId.Value == tileId;
+                        string markStr = (own.Cheat != null && TileTextHelper.IsTileMarked(own.Cheat.TileMark, tileId)) ? "★" : "";
+                        txt.text = $"{markStr}{TileTextHelper.FormatTile(tileId)}";
+                        txt.color = isSelected ? Color.yellow : Color.white;
                     }
-
-                    if (i < _handTileMarkBadges.Length && _handTileMarkBadges[i] != null)
+                    if (badge != null)
                     {
-                        bool isMarked = view.Own.Cheat?.TileMark != null &&
-                            TileTextHelper.IsTileMarked(view.Own.Cheat.TileMark, tileId);
-                        _handTileMarkBadges[i].SetActive(isMarked);
+                        badge.SetActive(own.Cheat != null && TileTextHelper.IsTileMarked(own.Cheat.TileMark, tileId));
                     }
                 }
                 else
                 {
-                    _handTileButtons[i].gameObject.SetActive(false);
+                    if (btn != null) btn.gameObject.SetActive(false);
+                    if (badge != null) badge.SetActive(false);
                 }
             }
 
-            // Render drawn tile
             if (_drawnTileButton != null)
             {
-                if (drawnTile.HasValue)
+                if (own.DrawnTileId.HasValue)
                 {
                     _drawnTileButton.gameObject.SetActive(true);
-                    _drawnTileButton.interactable = true;
                     if (_drawnTileText != null)
                     {
-                        _drawnTileText.text = TileTextHelper.FormatTile(drawnTile.Value);
+                        uint tileId = own.DrawnTileId.Value;
+                        bool isSelected = _interactionState.Selection.HandTileId.HasValue && _interactionState.Selection.HandTileId.Value == tileId;
+                        string markStr = (own.Cheat != null && TileTextHelper.IsTileMarked(own.Cheat.TileMark, tileId)) ? "★" : "";
+                        _drawnTileText.text = $"摸牌:{markStr}{TileTextHelper.FormatTile(tileId)}";
+                        _drawnTileText.color = isSelected ? Color.yellow : Color.white;
                     }
                 }
                 else
@@ -356,531 +461,500 @@ namespace Mahjong.Unity.Table
 
         private void RenderActionButtons(PlayerTableViewState view)
         {
-            if (!view.Identity.IsPrivateAuthorized || view.Own?.Decision == null)
+            bool hasDecision = view.Identity.IsPrivateAuthorized && view.Own?.Decision != null;
+
+            if (_actionPanelRoot != null)
             {
-                DisableAllActionButtons();
+                _actionPanelRoot.SetActive(hasDecision);
+            }
+
+            if (!hasDecision || view.Own?.Decision == null)
+            {
+                SetButtonActive(_discardButton, false);
+                SetButtonActive(_chiButton, false);
+                SetButtonActive(_ponButton, false);
+                SetButtonActive(_kanButton, false);
+                SetButtonActive(_riichiButton, false);
+                SetButtonActive(_tsumoButton, false);
+                SetButtonActive(_ronButton, false);
+                SetButtonActive(_passButton, false);
+                SetButtonActive(_cancelSelectionButton, false);
+                if (_candidateSelectionPanel != null) _candidateSelectionPanel.SetActive(false);
                 return;
             }
 
-            var candidates = view.Own.Decision.Candidates;
-            bool hasDiscard = false;
-            bool hasChi = false;
-            bool hasPon = false;
-            bool hasKan = false;
-            bool hasRiichi = false;
-            bool hasTsumo = false;
-            bool hasRon = false;
-            bool hasPass = false;
+            var decision = view.Own.Decision;
+            bool canDiscard = false;
+            bool canChi = false;
+            bool canPon = false;
+            bool canKan = false;
+            bool canRiichi = false;
+            bool canTsumo = false;
+            bool canRon = false;
+            bool canPass = false;
 
-            for (int i = 0; i < candidates.Count; i++)
+            for (int i = 0; i < decision.Candidates.Count; i++)
             {
-                switch (candidates[i].Action)
+                switch (decision.Candidates[i].Action)
                 {
-                    case PlayerActionKind.DiscardTile: hasDiscard = true; break;
-                    case PlayerActionKind.DeclareChi: hasChi = true; break;
-                    case PlayerActionKind.DeclarePon: hasPon = true; break;
-                    case PlayerActionKind.DeclareKan: hasKan = true; break;
-                    case PlayerActionKind.DeclareRiichi: hasRiichi = true; break;
-                    case PlayerActionKind.DeclareTsumo: hasTsumo = true; break;
-                    case PlayerActionKind.DeclareRon: hasRon = true; break;
-                    case PlayerActionKind.Pass: hasPass = true; break;
+                    case PlayerActionKind.DiscardTile: canDiscard = true; break;
+                    case PlayerActionKind.DeclareChi: canChi = true; break;
+                    case PlayerActionKind.DeclarePon: canPon = true; break;
+                    case PlayerActionKind.DeclareKan: canKan = true; break;
+                    case PlayerActionKind.DeclareRiichi: canRiichi = true; break;
+                    case PlayerActionKind.DeclareTsumo: canTsumo = true; break;
+                    case PlayerActionKind.DeclareRon: canRon = true; break;
+                    case PlayerActionKind.Pass: canPass = true; break;
                 }
             }
 
-            SetButtonState(_discardButton, hasDiscard);
-            SetButtonState(_chiButton, hasChi);
-            SetButtonState(_ponButton, hasPon);
-            SetButtonState(_kanButton, hasKan);
-            SetButtonState(_riichiButton, hasRiichi);
-            SetButtonState(_tsumoButton, hasTsumo);
-            SetButtonState(_ronButton, hasRon);
-            SetButtonState(_passButton, hasPass);
-
-            if (_cancelSelectionButton != null)
-            {
-                _cancelSelectionButton.gameObject.SetActive(_interactionState.Selection.HasSelection);
-                _cancelSelectionButton.interactable = _interactionState.Selection.HasSelection;
-            }
-        }
-
-        private void DisableAllActionButtons()
-        {
-            SetButtonState(_discardButton, false);
-            SetButtonState(_chiButton, false);
-            SetButtonState(_ponButton, false);
-            SetButtonState(_kanButton, false);
-            SetButtonState(_riichiButton, false);
-            SetButtonState(_tsumoButton, false);
-            SetButtonState(_ronButton, false);
-            SetButtonState(_passButton, false);
-            if (_cancelSelectionButton != null) _cancelSelectionButton.gameObject.SetActive(false);
-        }
-
-        private static void SetButtonState(Button? button, bool enabled)
-        {
-            if (button != null)
-            {
-                button.gameObject.SetActive(enabled);
-                button.interactable = enabled;
-            }
+            SetButtonActive(_discardButton, canDiscard && _interactionState.Selection.HandTileId.HasValue);
+            SetButtonActive(_chiButton, canChi);
+            SetButtonActive(_ponButton, canPon);
+            SetButtonActive(_kanButton, canKan);
+            SetButtonActive(_riichiButton, canRiichi);
+            SetButtonActive(_tsumoButton, canTsumo);
+            SetButtonActive(_ronButton, canRon);
+            SetButtonActive(_passButton, canPass);
+            SetButtonActive(_cancelSelectionButton, _interactionState.Selection.HandTileId.HasValue);
         }
 
         private void RenderCheats(PlayerTableViewState view)
         {
-            if (!view.Identity.IsPrivateAuthorized || view.Own?.Cheat == null)
+            bool canCheat = view.Identity.IsPrivateAuthorized && view.Own?.Cheat != null;
+
+            if (_cheatPanelRoot != null)
             {
-                if (_cheatPanelRoot != null) _cheatPanelRoot.SetActive(false);
+                _cheatPanelRoot.SetActive(canCheat);
+            }
+
+            if (!canCheat || view.Own?.Cheat == null)
+            {
+                if (_cheatPointsText != null) _cheatPointsText.text = string.Empty;
+                SetButtonActive(_tileMarkButton, false);
+                SetButtonActive(_sleeveBloomButton, false);
+                SetButtonActive(_beamSwapButton, false);
+                SetButtonActive(_preparationButton, false);
+                CloseAllCheatDialogs();
                 return;
             }
 
-            if (_cheatPanelRoot != null) _cheatPanelRoot.SetActive(true);
-
-            PlayerCheatState cheat = view.Own.Cheat;
+            var cheat = view.Own.Cheat;
             if (_cheatPointsText != null)
             {
                 _cheatPointsText.text = $"出千点数: {cheat.CheatPoints}";
             }
 
-            // TileMark (落汗) button
-            if (_tileMarkButton != null)
-            {
-                bool canMark = cheat.TileMark != null && cheat.TileMark.SelectableTileIds.Count >= 4 && view.Own.Decision != null;
-                _tileMarkButton.interactable = canMark;
-            }
+            bool hasDecision = view.Own.Decision != null;
+            var sleeveState = cheat.ImmediateSleeveBloom ?? cheat.OffTurnSleeveBloom;
+            SetButtonActive(_tileMarkButton, cheat.TileMark != null && hasDecision);
+            SetButtonActive(_sleeveBloomButton, sleeveState != null && (hasDecision || !string.IsNullOrEmpty(cheat.WindowId)));
+            SetButtonActive(_beamSwapButton, cheat.BeamSwap != null && hasDecision);
+            SetButtonActive(_preparationButton, cheat.Preparation != null);
 
-            // SleeveBloom (袖里藏花) button
-            if (_sleeveBloomButton != null)
-            {
-                bool canSleeve = view.Own.Decision != null || cheat.ImmediateSleeveBloom != null || cheat.OffTurnSleeveBloom != null;
-                _sleeveBloomButton.interactable = canSleeve;
-            }
-
-            // BeamSwap (偷梁换柱) button
-            if (_beamSwapButton != null)
-            {
-                bool canBeam = view.Own.Decision != null || cheat.BeamSwap != null;
-                _beamSwapButton.interactable = canBeam;
-            }
-
-            // ShufflePreparation (码牌准备) button
-            if (_preparationButton != null)
-            {
-                bool canPrep = cheat.Preparation != null && !cheat.Preparation.Confirmed;
-                _preparationButton.interactable = canPrep;
-            }
+            UpdateSleeveBloomDialog(sleeveState);
+            UpdateBeamSwapDialog(cheat.BeamSwap);
+            UpdatePreparationDialog(cheat.Preparation);
         }
 
         private void RenderSettlementNavigation(PlayerTableViewState view)
         {
-            bool hasSettlement = !string.IsNullOrEmpty(view.Board.SettlementRoundId);
-            if (_viewSettlementButton != null)
-            {
-                _viewSettlementButton.gameObject.SetActive(hasSettlement);
-                _viewSettlementButton.interactable = hasSettlement;
-            }
+            bool isRoundEnd = view.Board.Phase == PlayerGamePhase.RoundEnd;
+            bool isMatchFinished = view.Board.Phase == PlayerGamePhase.MatchEnd;
 
-            bool roundEnded = view.Board.Phase == PlayerGamePhase.RoundEnd || hasSettlement;
             if (_nextRoundButton != null)
             {
-                _nextRoundButton.gameObject.SetActive(roundEnded && view.Identity.IsPlayer);
-                _nextRoundButton.interactable = roundEnded && view.Identity.IsPlayer;
+                _nextRoundButton.gameObject.SetActive(isRoundEnd && !isMatchFinished);
             }
+
+            if (_viewSettlementButton != null)
+            {
+                _viewSettlementButton.gameObject.SetActive(isRoundEnd || isMatchFinished);
+            }
+        }
+
+        private void SetButtonActive(Button? button, bool active)
+        {
+            if (button != null)
+            {
+                button.gameObject.SetActive(active);
+                button.interactable = active;
+            }
+        }
+
+        private bool ConsumeInputLifecycle(GameObject? target)
+        {
+            if (UiInputLifecycle.Instance.IsPaused)
+            {
+                return false;
+            }
+            if (target != null && !UiInputLifecycle.Instance.ConsumeClickOrSubmit(target))
+            {
+                return false;
+            }
+            return true;
         }
 
         private void WireButtons()
         {
             if (_backButton != null)
-            {
-                _backButton.onClick.RemoveAllListeners();
-                _backButton.onClick.AddListener(OnBackClicked);
-            }
+                _backButton.onClick.AddListener(OnBackButtonClicked);
 
             if (_viewSettlementButton != null)
-            {
-                _viewSettlementButton.onClick.RemoveAllListeners();
                 _viewSettlementButton.onClick.AddListener(OnViewSettlementClicked);
-            }
 
             if (_nextRoundButton != null)
-            {
-                _nextRoundButton.onClick.RemoveAllListeners();
                 _nextRoundButton.onClick.AddListener(OnNextRoundClicked);
-            }
 
-            if (_discardButton != null)
-            {
-                _discardButton.onClick.RemoveAllListeners();
-                _discardButton.onClick.AddListener(OnDiscardButtonClicked);
-            }
-
-            if (_chiButton != null)
-            {
-                _chiButton.onClick.RemoveAllListeners();
-                _chiButton.onClick.AddListener(() => OnActionButtonClicked(PlayerActionKind.DeclareChi));
-            }
-
-            if (_ponButton != null)
-            {
-                _ponButton.onClick.RemoveAllListeners();
-                _ponButton.onClick.AddListener(() => OnActionButtonClicked(PlayerActionKind.DeclarePon));
-            }
-
-            if (_kanButton != null)
-            {
-                _kanButton.onClick.RemoveAllListeners();
-                _kanButton.onClick.AddListener(() => OnActionButtonClicked(PlayerActionKind.DeclareKan));
-            }
-
-            if (_riichiButton != null)
-            {
-                _riichiButton.onClick.RemoveAllListeners();
-                _riichiButton.onClick.AddListener(() => OnActionButtonClicked(PlayerActionKind.DeclareRiichi));
-            }
-
-            if (_tsumoButton != null)
-            {
-                _tsumoButton.onClick.RemoveAllListeners();
-                _tsumoButton.onClick.AddListener(() => OnActionButtonClicked(PlayerActionKind.DeclareTsumo));
-            }
-
-            if (_ronButton != null)
-            {
-                _ronButton.onClick.RemoveAllListeners();
-                _ronButton.onClick.AddListener(() => OnActionButtonClicked(PlayerActionKind.DeclareRon));
-            }
-
-            if (_passButton != null)
-            {
-                _passButton.onClick.RemoveAllListeners();
-                _passButton.onClick.AddListener(() => OnActionButtonClicked(PlayerActionKind.Pass));
-            }
-
-            if (_cancelSelectionButton != null)
-            {
-                _cancelSelectionButton.onClick.RemoveAllListeners();
-                _cancelSelectionButton.onClick.AddListener(OnCancelSelectionClicked);
-            }
-
-            // Hand tiles
             for (int i = 0; i < _handTileButtons.Length; i++)
             {
                 int index = i;
-                _handTileButtons[i].onClick.RemoveAllListeners();
-                _handTileButtons[i].onClick.AddListener(() => OnHandTileClicked(index));
+                if (_handTileButtons[i] != null)
+                    _handTileButtons[i].onClick.AddListener(() => OnHandTileClicked(index));
             }
 
             if (_drawnTileButton != null)
-            {
-                _drawnTileButton.onClick.RemoveAllListeners();
                 _drawnTileButton.onClick.AddListener(OnDrawnTileClicked);
-            }
 
-            // Cheat launchers
-            if (_tileMarkButton != null)
+            if (_discardButton != null)
+                _discardButton.onClick.AddListener(OnDiscardButtonClicked);
+
+            if (_chiButton != null)
+                _chiButton.onClick.AddListener(() => OnActionButtonClicked(PlayerActionKind.DeclareChi));
+
+            if (_ponButton != null)
+                _ponButton.onClick.AddListener(() => OnActionButtonClicked(PlayerActionKind.DeclarePon));
+
+            if (_kanButton != null)
+                _kanButton.onClick.AddListener(() => OnActionButtonClicked(PlayerActionKind.DeclareKan));
+
+            if (_riichiButton != null)
+                _riichiButton.onClick.AddListener(() => OnActionButtonClicked(PlayerActionKind.DeclareRiichi));
+
+            if (_tsumoButton != null)
+                _tsumoButton.onClick.AddListener(() => OnActionButtonClicked(PlayerActionKind.DeclareTsumo));
+
+            if (_ronButton != null)
+                _ronButton.onClick.AddListener(() => OnActionButtonClicked(PlayerActionKind.DeclareRon));
+
+            if (_passButton != null)
+                _passButton.onClick.AddListener(() => OnActionButtonClicked(PlayerActionKind.Pass));
+
+            if (_cancelSelectionButton != null)
+                _cancelSelectionButton.onClick.AddListener(OnCancelSelectionClicked);
+
+            // Candidate sub-panel
+            for (int i = 0; i < _candidateOptionButtons.Length; i++)
             {
-                _tileMarkButton.onClick.RemoveAllListeners();
-                _tileMarkButton.onClick.AddListener(OpenTileMarkDialog);
+                int optIdx = i;
+                if (_candidateOptionButtons[i] != null)
+                    _candidateOptionButtons[i].onClick.AddListener(() => OnCandidateOptionClicked(optIdx));
             }
+            if (_cancelCandidateOptionButton != null)
+                _cancelCandidateOptionButton.onClick.AddListener(CloseCandidateSelectionPanel);
+
+            // Cheats
+            if (_tileMarkButton != null)
+                _tileMarkButton.onClick.AddListener(OpenTileMarkDialog);
 
             if (_sleeveBloomButton != null)
-            {
-                _sleeveBloomButton.onClick.RemoveAllListeners();
-                _sleeveBloomButton.onClick.AddListener(OnSleeveBloomButtonClicked);
-            }
+                _sleeveBloomButton.onClick.AddListener(OpenSleeveBloomDialog);
 
             if (_beamSwapButton != null)
-            {
-                _beamSwapButton.onClick.RemoveAllListeners();
-                _beamSwapButton.onClick.AddListener(OnBeamSwapButtonClicked);
-            }
+                _beamSwapButton.onClick.AddListener(OpenBeamSwapDialog);
 
             if (_preparationButton != null)
-            {
-                _preparationButton.onClick.RemoveAllListeners();
                 _preparationButton.onClick.AddListener(OpenPreparationDialog);
-            }
 
-            // TileMark dialog buttons
+            // Sub-dialog confirmation buttons
             if (_confirmTileMarkButton != null)
-            {
-                _confirmTileMarkButton.onClick.RemoveAllListeners();
                 _confirmTileMarkButton.onClick.AddListener(OnConfirmTileMarkClicked);
-            }
+
             if (_cancelTileMarkButton != null)
-            {
-                _cancelTileMarkButton.onClick.RemoveAllListeners();
-                _cancelTileMarkButton.onClick.AddListener(CloseAllCheatDialogs);
-            }
+                _cancelTileMarkButton.onClick.AddListener(CloseTileMarkDialog);
 
-            // SleeveBloom dialog buttons
             if (_sleeveStoreButton != null)
-            {
-                _sleeveStoreButton.onClick.RemoveAllListeners();
                 _sleeveStoreButton.onClick.AddListener(() => OnSleeveChoiceClicked(SleeveBloomChoice.First));
-            }
+
             if (_sleeveSwapButton != null)
-            {
-                _sleeveSwapButton.onClick.RemoveAllListeners();
                 _sleeveSwapButton.onClick.AddListener(() => OnSleeveChoiceClicked(SleeveBloomChoice.Second));
-            }
+
+            if (_sleevePassButton != null)
+                _sleevePassButton.onClick.AddListener(CloseSleeveBloomDialog);
+
             if (_cancelSleeveButton != null)
+                _cancelSleeveButton.onClick.AddListener(CloseSleeveBloomDialog);
+
+            for (int b = 0; b < _beamSlotButtons.Length; b++)
             {
-                _cancelSleeveButton.onClick.RemoveAllListeners();
-                _cancelSleeveButton.onClick.AddListener(CloseAllCheatDialogs);
+                int slotIndex = b;
+                if (_beamSlotButtons[b] != null)
+                    _beamSlotButtons[b].onClick.AddListener(() => OnBeamSlotClicked(slotIndex));
             }
 
-            // BeamSwap dialog buttons
             if (_confirmBeamSwapButton != null)
-            {
-                _confirmBeamSwapButton.onClick.RemoveAllListeners();
                 _confirmBeamSwapButton.onClick.AddListener(OnConfirmBeamSwapClicked);
-            }
-            if (_keepBeamOriginalButton != null)
-            {
-                _keepBeamOriginalButton.onClick.RemoveAllListeners();
-                _keepBeamOriginalButton.onClick.AddListener(OnKeepBeamOriginalClicked);
-            }
-            if (_cancelBeamButton != null)
-            {
-                _cancelBeamButton.onClick.RemoveAllListeners();
-                _cancelBeamButton.onClick.AddListener(CloseAllCheatDialogs);
-            }
 
-            // Preparation dialog buttons
+            if (_keepBeamOriginalButton != null)
+                _keepBeamOriginalButton.onClick.AddListener(OnKeepBeamOriginalClicked);
+
+            if (_cancelBeamButton != null)
+                _cancelBeamButton.onClick.AddListener(CloseBeamSwapDialog);
+
             if (_seeThroughButton != null)
-            {
-                _seeThroughButton.onClick.RemoveAllListeners();
                 _seeThroughButton.onClick.AddListener(OnToggleSeeThroughClicked);
-            }
+
             if (_confirmPreparationButton != null)
-            {
-                _confirmPreparationButton.onClick.RemoveAllListeners();
                 _confirmPreparationButton.onClick.AddListener(OnConfirmPreparationClicked);
-            }
+
             if (_cancelPreparationButton != null)
-            {
-                _cancelPreparationButton.onClick.RemoveAllListeners();
-                _cancelPreparationButton.onClick.AddListener(CloseAllCheatDialogs);
-            }
+                _cancelPreparationButton.onClick.AddListener(ClosePreparationDialog);
         }
 
         private void WireControlButtonsGap()
         {
             if (_claimControlButton != null)
             {
+                _claimControlButton.gameObject.SetActive(false);
                 _claimControlButton.interactable = false;
-                _claimControlButton.onClick.RemoveAllListeners();
             }
-
             if (_releaseControlButton != null)
             {
+                _releaseControlButton.gameObject.SetActive(false);
                 _releaseControlButton.interactable = false;
-                _releaseControlButton.onClick.RemoveAllListeners();
             }
-
             if (_controlStatusText != null)
             {
-                _controlStatusText.text = $"控制状态: 领域托管 (缺口: {TableCommandIntentFactory.ControlPayloadFieldCollision})";
+                _controlStatusText.text = string.Empty;
             }
         }
 
         public void OnHandTileClicked(int index)
         {
-            if (_latestView?.Own == null) return;
-            var closed = _latestView.Own.ClosedTiles;
-            if (index < 0 || index >= closed.Count) return;
-            uint tileId = closed[index];
+            if (!ConsumeInputLifecycle(_handTileButtons != null && index < _handTileButtons.Length ? _handTileButtons[index]?.gameObject : null)) return;
+            if (_latestView == null || _latestView.Own == null) return;
 
-            // If TileMark dialog is open, add/remove from mark selection
             if (_tileMarkDialog != null && _tileMarkDialog.activeSelf)
             {
-                ToggleTileMarkSelection(tileId);
+                if (index < _latestView.Own.ClosedTiles.Count)
+                {
+                    uint tileId = _latestView.Own.ClosedTiles[index];
+                    ToggleTileMarkTile(tileId);
+                }
                 return;
             }
 
-            // If BeamSwap dialog is open, set as selected hand tile
             if (_beamSwapDialog != null && _beamSwapDialog.activeSelf)
             {
-                _selectedBeamHandTile = tileId;
-                UpdateBeamSwapDialog();
+                if (index < _latestView.Own.ClosedTiles.Count)
+                {
+                    _selectedBeamHandTile = _latestView.Own.ClosedTiles[index];
+                    UpdateBeamSwapStatus();
+                }
                 return;
             }
 
-            // Normal play: select as discard candidate if DiscardTile is legal
-            if (_latestView.Own.Decision != null)
+            if (index < _latestView.Own.ClosedTiles.Count)
             {
-                var candidates = _latestView.Own.Decision.Candidates;
-                PlayerLegalActionState? discardAction = null;
-                for (int i = 0; i < candidates.Count; i++)
-                {
-                    if (candidates[i].Action == PlayerActionKind.DiscardTile &&
-                        candidates[i].TileIds.Count > 0 &&
-                        candidates[i].TileIds[0] == tileId)
-                    {
-                        discardAction = candidates[i];
-                        break;
-                    }
-                }
-
-                if (discardAction != null)
-                {
-                    var outcome = _interactionState.SelectAction(discardAction);
-                    if (outcome.Accepted)
-                    {
-                        UpdateStatusText($"已选手牌: {TileTextHelper.FormatTile(tileId)}");
-                        if (_cancelSelectionButton != null)
-                        {
-                            _cancelSelectionButton.gameObject.SetActive(true);
-                            _cancelSelectionButton.interactable = true;
-                        }
-                    }
-                }
+                uint tileId = _latestView.Own.ClosedTiles[index];
+                _interactionState.SelectDiscardTile(tileId);
+                RenderOwnHand(_latestView);
+                RenderActionButtons(_latestView);
             }
         }
 
         public void OnDrawnTileClicked()
         {
-            if (_latestView?.Own?.DrawnTileId == null) return;
-            uint drawn = _latestView.Own.DrawnTileId.Value;
+            if (!ConsumeInputLifecycle(_drawnTileButton?.gameObject)) return;
+            if (_latestView == null || _latestView.Own == null || !_latestView.Own.DrawnTileId.HasValue) return;
+
+            uint tileId = _latestView.Own.DrawnTileId.Value;
 
             if (_tileMarkDialog != null && _tileMarkDialog.activeSelf)
             {
-                ToggleTileMarkSelection(drawn);
+                ToggleTileMarkTile(tileId);
                 return;
             }
 
             if (_beamSwapDialog != null && _beamSwapDialog.activeSelf)
             {
-                _selectedBeamHandTile = drawn;
-                UpdateBeamSwapDialog();
+                _selectedBeamHandTile = tileId;
+                UpdateBeamSwapStatus();
                 return;
             }
 
-            if (_latestView.Own.Decision != null)
-            {
-                var candidates = _latestView.Own.Decision.Candidates;
-                PlayerLegalActionState? discardAction = null;
-                for (int i = 0; i < candidates.Count; i++)
-                {
-                    if (candidates[i].Action == PlayerActionKind.DiscardTile &&
-                        candidates[i].TileIds.Count > 0 &&
-                        candidates[i].TileIds[0] == drawn)
-                    {
-                        discardAction = candidates[i];
-                        break;
-                    }
-                }
+            _interactionState.SelectDiscardTile(tileId);
+            RenderOwnHand(_latestView);
+            RenderActionButtons(_latestView);
+        }
 
-                if (discardAction != null)
-                {
-                    var outcome = _interactionState.SelectAction(discardAction);
-                    if (outcome.Accepted)
-                    {
-                        UpdateStatusText($"已选摸牌: {TileTextHelper.FormatTile(drawn)}");
-                        if (_cancelSelectionButton != null)
-                        {
-                            _cancelSelectionButton.gameObject.SetActive(true);
-                            _cancelSelectionButton.interactable = true;
-                        }
-                    }
-                }
+        public void OnCancelSelectionClicked()
+        {
+            if (!ConsumeInputLifecycle(_cancelSelectionButton?.gameObject)) return;
+            _interactionState.ClearSelection();
+            if (_latestView != null)
+            {
+                RenderOwnHand(_latestView);
+                RenderActionButtons(_latestView);
             }
         }
 
         public void OnDiscardButtonClicked()
         {
-            if (_latestView?.Own?.Decision == null || _commandSink == null) return;
-            if (!_interactionState.Selection.HasSelection)
-            {
-                UpdateStatusText("请先点击手牌选择舍牌");
-                return;
-            }
+            if (!ConsumeInputLifecycle(_discardButton?.gameObject)) return;
+            if (_latestView == null) return;
 
-            TableCommandOwnerContext owner = BuildOwnerContext();
-            TableInteractionOutcome outcome = _interactionState.BuildIntent(TableIntentKind.SubmitAction, owner);
-            HandleIntentOutcome(outcome);
+            var ownerContext = BuildOwnerContext();
+            if (ownerContext == null) return;
+
+            var outcome = _interactionState.BuildIntent(TableIntentKind.SubmitAction, ownerContext);
+            if (outcome.Accepted && outcome.Intent != null)
+            {
+                SubmitIntentAsync(outcome.Intent);
+            }
+            else
+            {
+                UpdateStatusText($"打牌无法提交: {FormatRejection(outcome.Code)}");
+            }
         }
 
         public void OnActionButtonClicked(PlayerActionKind kind)
         {
-            if (_latestView?.Own?.Decision == null || _commandSink == null) return;
+            GameObject? btnTarget = kind switch
+            {
+                PlayerActionKind.DeclareChi => _chiButton?.gameObject,
+                PlayerActionKind.DeclarePon => _ponButton?.gameObject,
+                PlayerActionKind.DeclareKan => _kanButton?.gameObject,
+                PlayerActionKind.DeclareRiichi => _riichiButton?.gameObject,
+                PlayerActionKind.DeclareTsumo => _tsumoButton?.gameObject,
+                PlayerActionKind.DeclareRon => _ronButton?.gameObject,
+                PlayerActionKind.Pass => _passButton?.gameObject,
+                _ => null
+            };
+            if (!ConsumeInputLifecycle(btnTarget)) return;
+            if (_latestView == null || _latestView.Own?.Decision == null) return;
 
+            var matching = new List<PlayerLegalActionState>();
             var candidates = _latestView.Own.Decision.Candidates;
-            PlayerLegalActionState? match = null;
             for (int i = 0; i < candidates.Count; i++)
             {
-                if (candidates[i].Action == kind)
+                var action = candidates[i];
+                if (action.Action == kind)
                 {
-                    match = candidates[i];
-                    break;
+                    matching.Add(action);
                 }
             }
 
-            if (match == null)
+            if (matching.Count == 0) return;
+
+            // If multiple candidates exist for the same action type (e.g. 2 Chi options):
+            // Present them for explicit player choice! Do not submit immediately!
+            if (matching.Count > 1)
             {
-                UpdateStatusText($"无可用动作: {kind}");
+                OpenCandidateSelectionPanel(matching);
                 return;
             }
 
-            var selectOutcome = _interactionState.SelectAction(match);
+            // Exactly one candidate: select and submit
+            SubmitSpecificAction(matching[0]);
+        }
+
+        private void OpenCandidateSelectionPanel(List<PlayerLegalActionState> options)
+        {
+            _presentedActionOptions.Clear();
+            _presentedActionOptions.AddRange(options);
+
+            if (_candidateSelectionPanel != null)
+            {
+                _candidateSelectionPanel.SetActive(true);
+            }
+
+            for (int i = 0; i < _candidateOptionButtons.Length; i++)
+            {
+                var btn = _candidateOptionButtons[i];
+                var txt = i < _candidateOptionTexts.Length ? _candidateOptionTexts[i] : null;
+
+                if (i < options.Count)
+                {
+                    if (btn != null) btn.gameObject.SetActive(true);
+                    if (txt != null)
+                    {
+                        var opt = options[i];
+                        string tiles = TileTextHelper.FormatTileList(opt.TileIds);
+                        txt.text = $"{TileTextHelper.FormatActionKind(opt.Action)}: {tiles} ({opt.OptionId})";
+                    }
+                }
+                else
+                {
+                    if (btn != null) btn.gameObject.SetActive(false);
+                }
+            }
+        }
+
+        public void CloseCandidateSelectionPanel()
+        {
+            if (_candidateSelectionPanel != null)
+            {
+                _candidateSelectionPanel.SetActive(false);
+            }
+            _presentedActionOptions.Clear();
+        }
+
+        public void OnCandidateOptionClicked(int index)
+        {
+            if (index < 0 || index >= _presentedActionOptions.Count) return;
+            var action = _presentedActionOptions[index];
+            CloseCandidateSelectionPanel();
+            SubmitSpecificAction(action);
+        }
+
+        private void SubmitSpecificAction(PlayerLegalActionState action)
+        {
+            if (_latestView == null) return;
+            var ownerContext = BuildOwnerContext();
+            if (ownerContext == null) return;
+
+            var selectOutcome = _interactionState.SelectAction(action);
             if (!selectOutcome.Accepted)
             {
-                UpdateStatusText($"动作选择失败: {selectOutcome.Code}");
+                UpdateStatusText($"操作选择失败: {FormatRejection(selectOutcome.Code)}");
                 return;
             }
 
-            TableCommandOwnerContext owner = BuildOwnerContext();
-            TableInteractionOutcome outcome = _interactionState.BuildIntent(TableIntentKind.SubmitAction, owner);
-            HandleIntentOutcome(outcome);
+            var outcome = _interactionState.BuildIntent(TableIntentKind.SubmitAction, ownerContext);
+            if (outcome.Accepted && outcome.Intent != null)
+            {
+                SubmitIntentAsync(outcome.Intent);
+            }
+            else
+            {
+                UpdateStatusText($"操作无法提交: {FormatRejection(outcome.Code)}");
+            }
         }
 
-        public void OnCancelSelectionClicked()
-        {
-            _interactionState.ClearSelection();
-            UpdateStatusText("已取消选择");
-            if (_latestView != null) RenderActionButtons(_latestView);
-        }
-
-        public void OnNextRoundClicked()
-        {
-            if (_latestView == null || _commandSink == null) return;
-            TableCommandOwnerContext owner = BuildOwnerContext();
-            var intent = _intentFactory.CreateNextRound(_latestView, owner);
-            SubmitIntentAsync(intent);
-        }
-
-        public void OnBackClicked()
-        {
-            _navigation?.BackToMenu();
-        }
-
-        public void OnViewSettlementClicked()
-        {
-            _onViewSettlement?.Invoke();
-        }
-
-        // --- TileMark (落汗) Workflow ---
         public void OpenTileMarkDialog()
         {
-            if (_tileMarkDialog == null || _latestView?.Own?.Cheat?.TileMark == null) return;
-            CloseAllCheatDialogs();
-            _tileMarkDialog.SetActive(true);
+            if (!ConsumeInputLifecycle(_tileMarkButton?.gameObject)) return;
             _tileMarkSelectedTiles.Clear();
+            if (_tileMarkDialog != null) _tileMarkDialog.SetActive(true);
             UpdateTileMarkStatus();
         }
 
-        private void ToggleTileMarkSelection(uint tileId)
+        public void CloseTileMarkDialog()
+        {
+            _tileMarkSelectedTiles.Clear();
+            if (_tileMarkDialog != null) _tileMarkDialog.SetActive(false);
+        }
+
+        private void ToggleTileMarkTile(uint tileId)
         {
             if (_tileMarkSelectedTiles.Contains(tileId))
             {
                 _tileMarkSelectedTiles.Remove(tileId);
             }
-            else
+            else if (_tileMarkSelectedTiles.Count < 4)
             {
-                if (_tileMarkSelectedTiles.Count < 4)
-                {
-                    _tileMarkSelectedTiles.Add(tileId);
-                }
+                _tileMarkSelectedTiles.Add(tileId);
             }
             UpdateTileMarkStatus();
         }
@@ -889,8 +963,15 @@ namespace Mahjong.Unity.Table
         {
             if (_tileMarkStatusText != null)
             {
-                _tileMarkStatusText.text = $"已选 {_tileMarkSelectedTiles.Count}/4 张落汗牌: {TileTextHelper.FormatTileList(_tileMarkSelectedTiles)}";
+                var sb = new StringBuilder();
+                sb.Append($"已选牌 ({_tileMarkSelectedTiles.Count}/4): ");
+                for (int i = 0; i < _tileMarkSelectedTiles.Count; i++)
+                {
+                    sb.Append($"{TileTextHelper.FormatTile(_tileMarkSelectedTiles[i])} ");
+                }
+                _tileMarkStatusText.text = sb.ToString();
             }
+
             if (_confirmTileMarkButton != null)
             {
                 _confirmTileMarkButton.interactable = _tileMarkSelectedTiles.Count == 4;
@@ -899,344 +980,443 @@ namespace Mahjong.Unity.Table
 
         public void OnConfirmTileMarkClicked()
         {
-            if (!UiInputLifecycle.Instance.ConsumeClickOrSubmit(_confirmTileMarkButton != null ? _confirmTileMarkButton.gameObject : null)) return;
-            if (_tileMarkSelectedTiles.Count != 4 || _commandSink == null) return;
+            if (!ConsumeInputLifecycle(_confirmTileMarkButton?.gameObject)) return;
+            if (_tileMarkSelectedTiles.Count != 4 || _latestView == null) return;
 
-            var selOutcome = _interactionState.SelectTileMark(_tileMarkSelectedTiles);
-            if (!selOutcome.Accepted)
+            var ownerContext = BuildOwnerContext();
+            if (ownerContext == null) return;
+
+            var selectOutcome = _interactionState.SelectTileMark(_tileMarkSelectedTiles);
+            if (!selectOutcome.Accepted)
             {
-                UpdateStatusText($"落汗选择失败: {selOutcome.Code}");
+                UpdateStatusText($"落汗选择失败: {FormatRejection(selectOutcome.Code)}");
                 return;
             }
 
-            TableCommandOwnerContext owner = BuildOwnerContext();
-            TableInteractionOutcome outcome = _interactionState.BuildIntent(TableIntentKind.SubmitTileMark, owner);
-            CloseAllCheatDialogs();
-            HandleIntentOutcome(outcome);
-        }
-
-        // --- SleeveBloom (袖里藏花) Workflow ---
-        private void OnSleeveBloomButtonClicked()
-        {
-            if (_latestView?.Own?.Cheat == null) return;
-            PlayerCheatState cheat = _latestView.Own.Cheat;
-            PlayerSleeveBloomState? sleeve = cheat.ImmediateSleeveBloom ?? cheat.OffTurnSleeveBloom;
-
-            if (sleeve != null)
+            var outcome = _interactionState.BuildIntent(TableIntentKind.SubmitTileMark, ownerContext);
+            if (outcome.Accepted && outcome.Intent != null)
             {
-                OpenSleeveBloomDialog();
+                SubmitIntentAsync(outcome.Intent);
+                CloseTileMarkDialog();
             }
             else
             {
-                // Direct activation intent
-                TableCommandOwnerContext owner = BuildOwnerContext();
-                TableInteractionOutcome outcome = _interactionState.BuildIntent(TableIntentKind.SubmitSleeveBloom, owner);
-                HandleIntentOutcome(outcome);
+                UpdateStatusText($"落汗无法提交: {FormatRejection(outcome.Code)}");
             }
         }
 
         public void OpenSleeveBloomDialog()
         {
-            if (_sleeveBloomDialog == null || _latestView?.Own?.Cheat == null) return;
-            PlayerCheatState cheat = _latestView.Own.Cheat;
-            PlayerSleeveBloomState? sleeve = cheat.ImmediateSleeveBloom ?? cheat.OffTurnSleeveBloom;
+            if (!ConsumeInputLifecycle(_sleeveBloomButton?.gameObject)) return;
+            var cheat = _latestView?.Own?.Cheat;
+            var sleeve = cheat?.ImmediateSleeveBloom ?? cheat?.OffTurnSleeveBloom;
             if (sleeve == null) return;
 
-            CloseAllCheatDialogs();
-            _sleeveBloomDialog.SetActive(true);
+            _currentSleeveOfferId = sleeve.OfferId;
+            if (_sleeveBloomDialog != null) _sleeveBloomDialog.SetActive(true);
 
             if (_sleeveTileDisplayText != null)
             {
                 string first = sleeve.FirstTileId.HasValue ? TileTextHelper.FormatTile(sleeve.FirstTileId.Value) : "无";
                 string second = sleeve.SecondTileId.HasValue ? TileTextHelper.FormatTile(sleeve.SecondTileId.Value) : "无";
-                _sleeveTileDisplayText.text = $"首牌: {first} | 次牌: {second}";
+                _sleeveTileDisplayText.text = $"袖牌1: {first} | 袖牌2: {second}";
             }
 
             if (_sleeveBloomStatusText != null)
             {
-                _sleeveBloomStatusText.text = $"袖里藏花要约 ({sleeve.OfferId})，请选择保留牌:";
+                _sleeveBloomStatusText.text = $"模式: {sleeve.Mode} (类型:{sleeve.DrawKind})";
             }
+        }
 
-            SetButtonState(_sleeveStoreButton, sleeve.FirstTileId.HasValue);
-            SetButtonState(_sleeveSwapButton, sleeve.SecondTileId.HasValue);
-            SetButtonState(_sleevePassButton, false);
+        public void CloseSleeveBloomDialog()
+        {
+            if (_sleeveBloomDialog != null) _sleeveBloomDialog.SetActive(false);
+            _currentSleeveOfferId = null;
+        }
+
+        public void OnSleeveChoiceClicked(string choice)
+        {
+            var enumChoice = string.Equals(choice, "SWAP", StringComparison.OrdinalIgnoreCase) ||
+                             string.Equals(choice, "SECOND", StringComparison.OrdinalIgnoreCase)
+                ? SleeveBloomChoice.Second
+                : SleeveBloomChoice.First;
+            OnSleeveChoiceClicked(enumChoice);
         }
 
         public void OnSleeveChoiceClicked(SleeveBloomChoice choice)
         {
-            if (_latestView?.Own?.Cheat == null || _commandSink == null) return;
-            PlayerCheatState cheat = _latestView.Own.Cheat;
-            bool offTurn = cheat.OffTurnSleeveBloom != null;
+            GameObject? btnTarget = choice == SleeveBloomChoice.First ? _sleeveStoreButton?.gameObject : _sleeveSwapButton?.gameObject;
+            if (!ConsumeInputLifecycle(btnTarget)) return;
+            var cheat = _latestView?.Own?.Cheat;
+            var sleeve = cheat?.ImmediateSleeveBloom ?? cheat?.OffTurnSleeveBloom;
+            if (sleeve == null) return;
+            if (_sleeveBloomDialog == null || !_sleeveBloomDialog.activeInHierarchy) return;
 
-            var sel = _interactionState.SelectSleeveBloom(offTurn, choice);
-            if (!sel.Accepted)
+            var ownerContext = BuildOwnerContext();
+            if (ownerContext == null) return;
+
+            bool offTurn = cheat?.OffTurnSleeveBloom != null;
+            var selectOutcome = _interactionState.SelectSleeveBloom(offTurn, choice);
+            if (!selectOutcome.Accepted)
             {
-                UpdateStatusText($"袖牌选择失败: {sel.Code}");
+                UpdateStatusText($"袖里藏花选择失败: {FormatRejection(selectOutcome.Code)}");
                 return;
             }
 
-            TableCommandOwnerContext owner = BuildOwnerContext();
-            TableInteractionOutcome outcome = _interactionState.BuildIntent(
+            var outcome = _interactionState.BuildIntent(
                 offTurn ? TableIntentKind.SubmitSleeveBloomOffTurnChoice : TableIntentKind.SubmitSleeveBloomChoice,
-                owner);
+                ownerContext);
 
-            CloseAllCheatDialogs();
-            HandleIntentOutcome(outcome);
-        }
-
-        // --- BeamSwap (偷梁换柱) Workflow ---
-        private void OnBeamSwapButtonClicked()
-        {
-            if (_latestView?.Own?.Cheat == null) return;
-            PlayerCheatState cheat = _latestView.Own.Cheat;
-
-            if (cheat.BeamSwap != null)
+            if (outcome.Accepted && outcome.Intent != null)
             {
-                OpenBeamSwapDialog();
+                SubmitIntentAsync(outcome.Intent);
+                CloseSleeveBloomDialog();
             }
             else
             {
-                // Direct activation intent
-                TableCommandOwnerContext owner = BuildOwnerContext();
-                TableInteractionOutcome outcome = _interactionState.BuildIntent(TableIntentKind.SubmitBeamSwap, owner);
-                HandleIntentOutcome(outcome);
+                UpdateStatusText($"袖里藏花无法提交: {FormatRejection(outcome.Code)}");
+            }
+        }
+
+        private void UpdateSleeveBloomDialog(PlayerSleeveBloomState? sleeve)
+        {
+            if (sleeve == null)
+            {
+                CloseSleeveBloomDialog();
+                return;
+            }
+
+            if (_sleeveTileDisplayText != null && _sleeveBloomDialog != null && _sleeveBloomDialog.activeSelf)
+            {
+                string first = sleeve.FirstTileId.HasValue ? TileTextHelper.FormatTile(sleeve.FirstTileId.Value) : "无";
+                string second = sleeve.SecondTileId.HasValue ? TileTextHelper.FormatTile(sleeve.SecondTileId.Value) : "无";
+                _sleeveTileDisplayText.text = $"袖牌1: {first} | 袖牌2: {second}";
             }
         }
 
         public void OpenBeamSwapDialog()
         {
-            if (_beamSwapDialog == null || _latestView?.Own?.Cheat?.BeamSwap == null) return;
-            CloseAllCheatDialogs();
-            _beamSwapDialog.SetActive(true);
+            if (!ConsumeInputLifecycle(_beamSwapButton?.gameObject)) return;
+            if (_latestView?.Own?.Cheat?.BeamSwap == null) return;
+
+            var beam = _latestView.Own.Cheat.BeamSwap;
+            _currentBeamOfferId = beam.OfferId;
             _selectedBeamHandTile = null;
             _selectedBeamCandidate = null;
-            UpdateBeamSwapDialog();
+
+            if (_beamSwapDialog != null) _beamSwapDialog.SetActive(true);
+            UpdateBeamSwapDialog(beam);
         }
 
-        private void UpdateBeamSwapDialog()
+        public void CloseBeamSwapDialog()
         {
-            if (_latestView?.Own?.Cheat?.BeamSwap == null) return;
-            PlayerBeamSwapState beam = _latestView.Own.Cheat.BeamSwap;
+            if (_beamSwapDialog != null) _beamSwapDialog.SetActive(false);
+            _currentBeamOfferId = null;
+            _selectedBeamHandTile = null;
+            _selectedBeamCandidate = null;
+        }
 
-            if (_beamSwapStatusText != null)
+        private void UpdateBeamSwapDialog(PlayerBeamSwapState? beam)
+        {
+            if (beam == null)
             {
-                string handText = _selectedBeamHandTile.HasValue ? TileTextHelper.FormatTile(_selectedBeamHandTile.Value) : "未选";
-                string slotText = _selectedBeamCandidate != null ? TileTextHelper.FormatBeamSwapSlotKind(_selectedBeamCandidate.SlotKind, _selectedBeamCandidate.SlotIndex) : "未选";
-                _beamSwapStatusText.text = $"偷梁换柱要约中。已选手牌:[{handText}] 目标槽位:[{slotText}]";
+                CloseBeamSwapDialog();
+                return;
             }
 
-            // Populate slots buttons
-            var candidates = beam.Candidates;
             for (int i = 0; i < _beamSlotButtons.Length; i++)
             {
-                if (i < candidates.Count)
-                {
-                    var cand = candidates[i];
-                    _beamSlotButtons[i].gameObject.SetActive(true);
-                    _beamSlotButtons[i].interactable = true;
-                    _beamSlotButtons[i].onClick.RemoveAllListeners();
-                    _beamSlotButtons[i].onClick.AddListener(() =>
-                    {
-                        _selectedBeamCandidate = cand;
-                        UpdateBeamSwapDialog();
-                    });
+                var btn = _beamSlotButtons[i];
+                var txt = i < _beamSlotTexts.Length ? _beamSlotTexts[i] : null;
 
-                    if (i < _beamSlotTexts.Length && _beamSlotTexts[i] != null)
+                if (i < beam.Candidates.Count)
+                {
+                    if (btn != null) btn.gameObject.SetActive(true);
+                    if (txt != null)
                     {
-                        _beamSlotTexts[i].text = TileTextHelper.FormatBeamSwapSlotKind(cand.SlotKind, cand.SlotIndex);
+                        var cand = beam.Candidates[i];
+                        string tileStr = cand.TileId.HasValue ? TileTextHelper.FormatTile(cand.TileId.Value) : "未知";
+                        string kindStr = TileTextHelper.FormatBeamSwapSlotKind(cand.SlotKind, cand.SlotIndex);
+                        txt.text = $"{kindStr}: [{tileStr}]";
                     }
                 }
                 else
                 {
-                    _beamSlotButtons[i].gameObject.SetActive(false);
+                    if (btn != null) btn.gameObject.SetActive(false);
                 }
+            }
+
+            UpdateBeamSwapStatus();
+        }
+
+        public void OnBeamSlotClicked(int index)
+        {
+            if (!ConsumeInputLifecycle(_beamSlotButtons != null && index < _beamSlotButtons.Length ? _beamSlotButtons[index]?.gameObject : null)) return;
+            if (_latestView?.Own?.Cheat?.BeamSwap == null) return;
+
+            var candidates = _latestView.Own.Cheat.BeamSwap.Candidates;
+            if (index < candidates.Count)
+            {
+                _selectedBeamCandidate = candidates[index];
+                UpdateBeamSwapStatus();
+            }
+        }
+
+        private void UpdateBeamSwapStatus()
+        {
+            if (_beamSwapStatusText != null)
+            {
+                string handStr = _selectedBeamHandTile.HasValue ? TileTextHelper.FormatTile(_selectedBeamHandTile.Value) : "未选";
+                string slotStr = _selectedBeamCandidate != null ? $"槽位{_selectedBeamCandidate.SlotIndex}" : "未选";
+                _beamSwapStatusText.text = $"手牌: {handStr} ◀ 交换 ▶ 目标: {slotStr}";
             }
 
             if (_confirmBeamSwapButton != null)
             {
                 _confirmBeamSwapButton.interactable = _selectedBeamHandTile.HasValue && _selectedBeamCandidate != null;
             }
-
-            if (_keepBeamOriginalButton != null)
-            {
-                _keepBeamOriginalButton.gameObject.SetActive(true);
-                _keepBeamOriginalButton.interactable = true;
-            }
         }
 
         public void OnConfirmBeamSwapClicked()
         {
-            if (!UiInputLifecycle.Instance.ConsumeClickOrSubmit(_confirmBeamSwapButton != null ? _confirmBeamSwapButton.gameObject : null)) return;
-            if (_latestView?.Own?.Cheat?.BeamSwap == null || _commandSink == null) return;
-            if (!_selectedBeamHandTile.HasValue || _selectedBeamCandidate == null) return;
+            if (!ConsumeInputLifecycle(_confirmBeamSwapButton?.gameObject)) return;
+            if (_latestView == null || !_selectedBeamHandTile.HasValue || _selectedBeamCandidate == null) return;
 
-            var sel = _interactionState.SelectBeamSwap(BeamSwapChoice.Swap, _selectedBeamHandTile.Value, _selectedBeamCandidate);
-            if (!sel.Accepted)
+            var ownerContext = BuildOwnerContext();
+            if (ownerContext == null) return;
+
+            var selectOutcome = _interactionState.SelectBeamSwap(BeamSwapChoice.Swap, _selectedBeamHandTile.Value, _selectedBeamCandidate);
+            if (!selectOutcome.Accepted)
             {
-                UpdateStatusText($"换牌选择失败: {sel.Code}");
+                UpdateStatusText($"偷梁换柱选择失败: {FormatRejection(selectOutcome.Code)}");
                 return;
             }
 
-            TableCommandOwnerContext owner = BuildOwnerContext();
-            TableInteractionOutcome outcome = _interactionState.BuildIntent(TableIntentKind.SubmitBeamSwapChoice, owner);
-            CloseAllCheatDialogs();
-            HandleIntentOutcome(outcome);
+            var outcome = _interactionState.BuildIntent(TableIntentKind.SubmitBeamSwapChoice, ownerContext);
+            if (outcome.Accepted && outcome.Intent != null)
+            {
+                SubmitIntentAsync(outcome.Intent);
+                CloseBeamSwapDialog();
+            }
+            else
+            {
+                UpdateStatusText($"偷梁换柱无法提交: {FormatRejection(outcome.Code)}");
+            }
         }
 
         public void OnKeepBeamOriginalClicked()
         {
-            if (!UiInputLifecycle.Instance.ConsumeClickOrSubmit(_keepBeamOriginalButton != null ? _keepBeamOriginalButton.gameObject : null)) return;
-            if (_latestView?.Own?.Cheat?.BeamSwap == null || _commandSink == null) return;
+            if (!ConsumeInputLifecycle(_keepBeamOriginalButton?.gameObject)) return;
+            if (_latestView == null) return;
 
-            var sel = _interactionState.SelectBeamSwap(BeamSwapChoice.KeepOriginal, null, null);
-            if (!sel.Accepted)
+            var ownerContext = BuildOwnerContext();
+            if (ownerContext == null) return;
+
+            var selectOutcome = _interactionState.SelectBeamSwap(BeamSwapChoice.KeepOriginal, null, null);
+            if (!selectOutcome.Accepted)
             {
-                UpdateStatusText($"保留原牌选择失败: {sel.Code}");
+                UpdateStatusText($"保留原牌选择失败: {FormatRejection(selectOutcome.Code)}");
                 return;
             }
 
-            TableCommandOwnerContext owner = BuildOwnerContext();
-            TableInteractionOutcome outcome = _interactionState.BuildIntent(TableIntentKind.SubmitBeamSwapChoice, owner);
-            CloseAllCheatDialogs();
-            HandleIntentOutcome(outcome);
+            var outcome = _interactionState.BuildIntent(TableIntentKind.SubmitBeamSwapChoice, ownerContext);
+            if (outcome.Accepted && outcome.Intent != null)
+            {
+                SubmitIntentAsync(outcome.Intent);
+                CloseBeamSwapDialog();
+            }
+            else
+            {
+                UpdateStatusText($"保留原牌无法提交: {FormatRejection(outcome.Code)}");
+            }
         }
 
-        // --- Preparation (码牌准备) Workflow ---
         public void OpenPreparationDialog()
         {
-            if (_preparationDialog == null || _latestView?.Own?.Cheat?.Preparation == null) return;
-            CloseAllCheatDialogs();
-            _preparationDialog.SetActive(true);
+            if (!ConsumeInputLifecycle(_preparationButton?.gameObject)) return;
+            if (_latestView?.Own?.Cheat?.Preparation == null) return;
 
-            PlayerPreparationState prep = _latestView.Own.Cheat.Preparation;
-            if (_preparationInfoText != null)
+            if (_preparationDialog != null) _preparationDialog.SetActive(true);
+            UpdatePreparationDialog(_latestView.Own.Cheat.Preparation);
+        }
+
+        public void ClosePreparationDialog()
+        {
+            if (_preparationDialog != null) _preparationDialog.SetActive(false);
+        }
+
+        public void OnCancelPreparationClicked()
+        {
+            if (!ConsumeInputLifecycle(_cancelPreparationButton?.gameObject)) return;
+            ClosePreparationDialog();
+        }
+
+        private void UpdatePreparationDialog(PlayerPreparationState? prep)
+        {
+            if (prep == null)
             {
-                _preparationInfoText.text = $"码牌准备 | 目标牌型: {prep.Target} | 透视消耗: {prep.SeeThroughCost}点";
+                ClosePreparationDialog();
+                return;
             }
 
-            _seeThrough = false;
-            UpdateSeeThroughDisplay();
+            _seeThrough = prep.SeeThrough;
+
+            if (_preparationInfoText != null)
+            {
+                _preparationInfoText.text = $"洗牌目标: {prep.Target} (耗费: {prep.ReservedPoints}点)";
+            }
+
+            UpdateSeeThroughDisplay(prep);
+        }
+
+        private void UpdateSeeThroughDisplay(PlayerPreparationState prep)
+        {
             if (_seeThroughButton != null)
             {
                 _seeThroughButton.interactable = prep.SeeThroughEnabled;
+            }
+
+            if (_seeThroughButtonText != null)
+            {
+                uint cost = prep.SeeThroughCost;
+                string stateStr = _seeThrough ? "[开启]" : "[关闭]";
+                _seeThroughButtonText.text = $"透视绝技{stateStr} (耗费: {cost}点)";
             }
         }
 
         public void OnToggleSeeThroughClicked()
         {
-            _seeThrough = !_seeThrough;
-            UpdateSeeThroughDisplay();
-        }
+            if (!ConsumeInputLifecycle(_seeThroughButton?.gameObject)) return;
+            if (_latestView?.Own?.Cheat?.Preparation == null) return;
 
-        private void UpdateSeeThroughDisplay()
-        {
-            if (_seeThroughButtonText != null)
-            {
-                string state = _seeThrough ? "开" : "关";
-                _seeThroughButtonText.text = $"透视: [{state}] (10点)";
-            }
+            var prep = _latestView.Own.Cheat.Preparation;
+            if (!prep.SeeThroughEnabled) return;
+
+            _seeThrough = !_seeThrough;
+            UpdateSeeThroughDisplay(prep);
         }
 
         public void OnConfirmPreparationClicked()
         {
-            if (!UiInputLifecycle.Instance.ConsumeClickOrSubmit(_confirmPreparationButton != null ? _confirmPreparationButton.gameObject : null)) return;
-            if (_latestView?.Own?.Cheat?.Preparation == null || _commandSink == null) return;
+            if (!ConsumeInputLifecycle(_confirmPreparationButton?.gameObject)) return;
+            if (_latestView?.Own?.Cheat?.Preparation == null) return;
 
-            bool seeThrough = _seeThrough;
-            var sel = _interactionState.SelectPreparation(seeThrough);
-            if (!sel.Accepted)
+            var ownerContext = BuildOwnerContext();
+            if (ownerContext == null) return;
+
+            var selectOutcome = _interactionState.SelectPreparation(_seeThrough);
+            if (!selectOutcome.Accepted)
             {
-                UpdateStatusText($"码牌准备选择失败: {sel.Code}");
+                UpdateStatusText($"码牌准备选择失败: {FormatRejection(selectOutcome.Code)}");
                 return;
             }
 
-            TableCommandOwnerContext owner = BuildOwnerContext();
-            TableInteractionOutcome outcome = _interactionState.BuildIntent(TableIntentKind.SubmitShufflePlan, owner);
-            CloseAllCheatDialogs();
-            HandleIntentOutcome(outcome);
-        }
-
-        public void OnCancelPreparationClicked()
-        {
-            CloseAllCheatDialogs();
-        }
-
-        private void CloseAllCheatDialogs()
-        {
-            if (_tileMarkDialog != null) _tileMarkDialog.SetActive(false);
-            if (_sleeveBloomDialog != null) _sleeveBloomDialog.SetActive(false);
-            if (_beamSwapDialog != null) _beamSwapDialog.SetActive(false);
-            if (_preparationDialog != null) _preparationDialog.SetActive(false);
-        }
-
-        private void HandleIntentOutcome(TableInteractionOutcome outcome)
-        {
-            if (!outcome.Accepted || outcome.Intent == null)
+            var outcome = _interactionState.BuildIntent(TableIntentKind.SubmitShufflePlan, ownerContext);
+            if (outcome.Accepted && outcome.Intent != null)
             {
-                UpdateStatusText($"操作未接受: {outcome.Code} ({outcome.Message})");
-                return;
+                SubmitIntentAsync(outcome.Intent);
+                ClosePreparationDialog();
             }
+            else
+            {
+                UpdateStatusText($"码牌准备无法提交: {FormatRejection(outcome.Code)}");
+            }
+        }
 
-            SubmitIntentAsync(outcome.Intent);
+        public void OnNextRoundClicked()
+        {
+            if (!ConsumeInputLifecycle(_nextRoundButton?.gameObject)) return;
+            if (_latestView == null) return;
+
+            var ownerContext = BuildOwnerContext();
+            if (ownerContext == null) return;
+
+            var outcome = _interactionState.BuildIntent(TableIntentKind.NextRound, ownerContext);
+            if (outcome.Accepted && outcome.Intent != null)
+            {
+                SubmitIntentAsync(outcome.Intent);
+            }
+            else
+            {
+                UpdateStatusText($"下一局无法提交: {FormatRejection(outcome.Code)}");
+            }
+        }
+
+        public void OnBackButtonClicked()
+        {
+            if (!ConsumeInputLifecycle(_backButton?.gameObject)) return;
+            _navigation?.BackToMenu();
+        }
+
+        public void OnViewSettlementClicked()
+        {
+            if (!ConsumeInputLifecycle(_viewSettlementButton?.gameObject)) return;
+            _onViewSettlement?.Invoke();
         }
 
         private async void SubmitIntentAsync(TableCommandIntent intent)
         {
-            if (_commandSink == null || !_commandSink.CanSubmit)
+            if (intent == null) return;
+            var sink = _commandSink;
+            if (sink == null || !sink.CanSubmit)
             {
-                UpdateStatusText("当前网络不可提交命令");
+                UpdateStatusText("服务通道不可用，命令已拒绝");
                 return;
             }
 
-            UpdateStatusText($"正在提交: {intent.Kind}...");
+            if (_latestView == null) return;
 
+            // Generation fence: sink generation must match view generation!
+            if (sink.Generation != _latestView.Identity.Generation)
+            {
+                Debug.LogWarning($"[TablePresenter] Sink generation ({sink.Generation}) != view generation ({_latestView.Identity.Generation}). Submission dropped.");
+                return;
+            }
+
+            var command = intent.Command;
+            UpdateStatusText($"已提交: {intent.Kind} (等待权威确认)...");
+
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+            CommandSubmission submission;
             try
             {
-                var submission = await _commandSink.SubmitAsync(intent.Command, CancellationToken.None);
-                if (submission.WasDuplicate)
-                {
-                    _interactionState.ApplyClientOutcome(TablePendingOutcome.Recorded);
-                    UpdateStatusText($"命令为幂等重复提交 ({intent.Kind})");
-                }
-                else if (submission.Sent)
-                {
-                    _interactionState.ApplyClientOutcome(TablePendingOutcome.Recorded);
-                    UpdateStatusText($"命令已确认入队发送 ({intent.Kind})");
-                }
-                else
-                {
-                    UpdateStatusText($"命令提交未发送 ({intent.Kind})");
-                }
+                submission = await sink.SubmitAsync(command, cts.Token).ConfigureAwait(false);
             }
             catch (Exception ex)
             {
-                _interactionState.ApplyClientOutcome(TablePendingOutcome.Rejected);
-                UpdateStatusText($"提交异常: {ex.Message}");
+                Debug.LogError($"[TablePresenter] SubmitAsync exception: {ex.Message}");
+                return;
             }
+
+            if (submission.Command.LastReceipt == Mahjong.Contracts.ReceiptStatus.Rejected)
+            {
+                _interactionState.ApplyClientOutcome(TablePendingOutcome.Rejected);
+                UpdateStatusText($"命令被服务器拒绝: {intent.Kind}");
+            }
+            // For Sent and WasDuplicate, DO NOT mark Recorded here!
+            // Transport Sent is not an authoritative business receipt.
+            // The command remains pending until confirmed snapshot or receipt reconciliation.
         }
 
-        private TableCommandOwnerContext BuildOwnerContext()
+        private TableCommandOwnerContext? BuildOwnerContext()
         {
-            var id = _latestView?.Identity;
-            string scopeIdStr = id?.ScopeId ?? "scope_default";
-            ulong ownerEpoch = id?.OwnerEpoch ?? 1UL;
-            ulong stateVer = id?.StateVersion ?? 1UL;
-
+            if (_latestView == null) return null;
             return new TableCommandOwnerContext(
-                new RequestId(Guid.NewGuid().ToString("N")),
-                new RequestScopeId(scopeIdStr),
-                new StateVersion(stateVer),
-                new OwnerEpoch(ownerEpoch));
+                requestId: new RequestId(Guid.NewGuid().ToString("N")),
+                scopeId: new RequestScopeId(_latestView.Identity.ScopeId),
+                expectedStateVersion: new StateVersion(_latestView.Identity.StateVersion),
+                ownerEpoch: new OwnerEpoch(_latestView.Identity.OwnerEpoch));
         }
 
         private void UpdateCountdown()
         {
-            if (_latestView?.Own?.Decision?.Countdown != null && _turnCountdownText != null)
+            var cd = _latestView?.Own?.Decision?.Countdown ?? (_latestView != null ? _latestView.Clock(_latestView.Identity.Seat)?.DecisionDeadline : null);
+            if (cd != null && _turnCountdownText != null)
             {
-                long remaining = _latestView.Own.Decision.Countdown.RemainingMilliseconds(_clientClock.MonotonicMilliseconds);
-                float seconds = remaining / 1000f;
-                _turnCountdownText.text = $"思考时间: {seconds:F1}s";
-                _turnCountdownText.color = seconds < 3.0f ? Color.red : Color.white;
+                long totalMs = cd.RemainingMilliseconds(_clientClock.MonotonicMilliseconds);
+                float sec = Mathf.Max(0f, totalMs / 1000f);
+                _turnCountdownText.text = $"思考时间: {sec:F1}秒";
+                _turnCountdownText.color = sec <= 3.0f ? Color.red : Color.green;
             }
             else if (_turnCountdownText != null)
             {
@@ -1252,7 +1432,7 @@ namespace Mahjong.Unity.Table
                 if (_animationQueue.TryDequeue(out var anim) && anim != null && _animationBannerText != null)
                 {
                     string tileStr = anim.TileId.HasValue ? $": {TileTextHelper.FormatTile(anim.TileId.Value)}" : "";
-                    _animationBannerText.text = $"[动画播报] 座位{anim.Seat} {anim.Kind}{tileStr}";
+                    _animationBannerText.text = $"[动画播报] 座位{anim.Seat} {FormatAnimationKind(anim.Kind)}{tileStr}";
                     _animationBannerText.gameObject.SetActive(true);
                     _animationBannerTimer = AnimationDisplayDuration;
                 }
@@ -1268,12 +1448,67 @@ namespace Mahjong.Unity.Table
             }
         }
 
+        private static string FormatAnimationKind(TableAnimationKind kind)
+        {
+            return kind switch
+            {
+                TableAnimationKind.OwnDraw => "摸牌",
+                TableAnimationKind.Draw => "摸牌",
+                TableAnimationKind.Discard => "打牌",
+                TableAnimationKind.Meld => "副露鸣牌",
+                TableAnimationKind.Riichi => "立直",
+                TableAnimationKind.Win => "和牌",
+                TableAnimationKind.Dora => "翻开宝牌指示牌",
+                TableAnimationKind.CheatPoints => "出千点变动",
+                TableAnimationKind.SleeveBloomResolved => "袖里藏花调换",
+                TableAnimationKind.BeamSwapResolved => "偷梁换柱完成",
+                TableAnimationKind.Deal => "发牌",
+                TableAnimationKind.Settlement => "局末结算",
+                TableAnimationKind.RoundEnd => "单局结束",
+                TableAnimationKind.MatchEnd => "半庄结束",
+                _ => "事件"
+            };
+        }
+
+        private static string FormatRejection(string code)
+        {
+            return code switch
+            {
+                TableInteractionCodes.AlreadyPending => "操作正在处理中",
+                TableInteractionCodes.PendingConflict => "存在冲突的操作正在处理中",
+                TableInteractionCodes.NoPending => "无待处理操作",
+                TableInteractionCodes.SelectionRequired => "请完成所有必要选择",
+                TableInteractionCodes.SelectionExpired => "操作已过期",
+                TableInteractionCodes.NotACandidate => "所选牌不在有效候选内",
+                TableInteractionCodes.StaleSelection => "选择已过时",
+                TableInteractionCodes.NotSubmittable => "当前状态不允许提交",
+                TableInteractionCodes.NoConfirmedView => "尚未同步确认牌桌状态",
+                TableInteractionCodes.NoPrivateView => "尚未获得私有授权状态",
+                TableInteractionCodes.StaleGeneration => "会话代次已过时",
+                TableInteractionCodes.StaleBinding => "会话绑定已过时",
+                TableInteractionCodes.StaleState => "牌桌状态已推进",
+                _ => code
+            };
+        }
+
         private void UpdateStatusText(string message)
         {
             if (_statusBannerText != null)
             {
                 _statusBannerText.text = message;
+                _statusBannerText.gameObject.SetActive(true);
             }
+        }
+
+        public void CloseAllCheatDialogs()
+        {
+            if (_tileMarkDialog != null) _tileMarkDialog.SetActive(false);
+            if (_sleeveBloomDialog != null) _sleeveBloomDialog.SetActive(false);
+            if (_beamSwapDialog != null) _beamSwapDialog.SetActive(false);
+            if (_preparationDialog != null) _preparationDialog.SetActive(false);
+            if (_candidateSelectionPanel != null) _candidateSelectionPanel.SetActive(false);
+            _currentSleeveOfferId = null;
+            _currentBeamOfferId = null;
         }
 
         public void ClearAll()
@@ -1281,6 +1516,22 @@ namespace Mahjong.Unity.Table
             _latestView = null;
             _animationQueue?.Drain();
             _interactionState?.ClearSelection();
+            _animationBannerTimer = 0f;
+            if (_animationBannerText != null) _animationBannerText.gameObject.SetActive(false);
+            if (_statusBannerText != null) _statusBannerText.gameObject.SetActive(false);
+            CloseAllCheatDialogs();
+
+            if (_handTileButtons != null)
+            {
+                for (int i = 0; i < _handTileButtons.Length; i++)
+                {
+                    if (_handTileButtons[i] != null) _handTileButtons[i].gameObject.SetActive(false);
+                    if (_handTileMarkBadges != null && i < _handTileMarkBadges.Length && _handTileMarkBadges[i] != null)
+                        _handTileMarkBadges[i].SetActive(false);
+                }
+            }
+            if (_drawnTileButton != null) _drawnTileButton.gameObject.SetActive(false);
+
             ResetAllViews();
         }
 
@@ -1288,13 +1539,392 @@ namespace Mahjong.Unity.Table
         {
             if (_sessionInfoText != null) _sessionInfoText.text = "等待房间同步...";
             if (_roundStatusText != null) _roundStatusText.text = "-";
-            if (_wallRemainingText != null) _wallRemainingText.text = "牌山余量: -";
-            if (_doraIndicatorsText != null) _doraIndicatorsText.text = "宝牌指示牌: -";
-            if (_lastDiscardText != null) _lastDiscardText.text = "上张舍牌: -";
-            if (_statusBannerText != null) _statusBannerText.text = "就绪";
-            if (_animationBannerText != null) _animationBannerText.gameObject.SetActive(false);
-            DisableAllActionButtons();
-            CloseAllCheatDialogs();
+            if (_wallRemainingText != null) _wallRemainingText.text = "-";
+            if (_doraIndicatorsText != null) _doraIndicatorsText.text = "-";
+            if (_lastDiscardText != null) _lastDiscardText.text = "-";
+            if (_turnCountdownText != null) _turnCountdownText.text = "-";
+            if (_cheatPointsText != null) _cheatPointsText.text = "-";
+
+            for (int i = 0; i < _seatViews.Length; i++)
+            {
+                _seatViews[i]?.Clear();
+            }
+        }
+    }
+
+    /// <summary>
+    /// Presentation model and controls for a single seat on the Mahjong table (0..3).
+    /// </summary>
+    [Serializable]
+    public sealed class TableSeatView
+    {
+        [SerializeField] private GameObject? _root;
+        [SerializeField] private TextMeshProUGUI? _seatNameText;
+        [SerializeField] private TextMeshProUGUI? _scoreText;
+        [SerializeField] private TextMeshProUGUI? _handText;
+        [SerializeField] private GameObject? _riichiBadge;
+        [SerializeField] private TextMeshProUGUI? _discardsText;
+        [SerializeField] private TextMeshProUGUI? _meldsText;
+        [SerializeField] private TextMeshProUGUI? _ankanText;
+
+        public GameObject? Root => _root;
+        public TextMeshProUGUI? SeatNameText => _seatNameText;
+        public TextMeshProUGUI? ScoreText => _scoreText;
+        public TextMeshProUGUI? HandText => _handText;
+        public GameObject? RiichiBadge => _riichiBadge;
+        public TextMeshProUGUI? DiscardsText => _discardsText;
+        public TextMeshProUGUI? MeldsText => _meldsText;
+        public TextMeshProUGUI? AnkanText => _ankanText;
+
+        public void BindControls(
+            GameObject? root,
+            TextMeshProUGUI? seatNameText,
+            TextMeshProUGUI? scoreText,
+            TextMeshProUGUI? handText,
+            GameObject? riichiBadge,
+            TextMeshProUGUI? discardsText,
+            TextMeshProUGUI? meldsText,
+            TextMeshProUGUI? ankanText)
+        {
+            _root = root;
+            _seatNameText = seatNameText;
+            _scoreText = scoreText;
+            _handText = handText;
+            _riichiBadge = riichiBadge;
+            _discardsText = discardsText;
+            _meldsText = meldsText;
+            _ankanText = ankanText;
+        }
+
+        public void Clear()
+        {
+            if (_seatNameText != null) _seatNameText.text = string.Empty;
+            if (_scoreText != null) _scoreText.text = string.Empty;
+            if (_handText != null) _handText.text = string.Empty;
+            if (_riichiBadge != null) _riichiBadge.SetActive(false);
+            if (_discardsText != null) _discardsText.text = string.Empty;
+            if (_meldsText != null) _meldsText.text = string.Empty;
+            if (_ankanText != null) _ankanText.text = string.Empty;
+        }
+
+        public void RenderSeat(PlayerSeatState seat, PlayerTableViewState view, bool isOwnSeat)
+        {
+            // Dynamically calculate seat wind based on confirmed dealer seat
+            int relativeWind = (seat.Seat - (int)view.Board.DealerSeat + 4) % 4;
+            string seatLabel = $"{TileTextHelper.FormatWind(relativeWind)}家";
+            bool isCurrentTurn = view.Board.CurrentSeat == seat.Seat;
+            bool isDealer = view.Board.DealerSeat == seat.Seat;
+            long scorePoints = 0;
+            for (int i = 0; i < view.Board.Scores.Count; i++)
+            {
+                if (view.Board.Scores[i].Seat == seat.Seat)
+                {
+                    scorePoints = view.Board.Scores[i].Score;
+                    break;
+                }
+            }
+
+            if (isOwnSeat && view.Own != null)
+            {
+                UpdateOwnSeat(seat, view.Own, seatLabel, isCurrentTurn, isDealer, scorePoints);
+            }
+            else
+            {
+                UpdateOpponentSeat(seat, seatLabel, isCurrentTurn, isDealer, scorePoints);
+            }
+        }
+
+        public void UpdateOpponentSeat(
+            PlayerSeatState seat,
+            string seatLabel,
+            bool isCurrentTurn,
+            bool isDealer = false,
+            long score = 25000)
+        {
+            if (_seatNameText != null)
+            {
+                string dealer = isDealer ? " [庄]" : "";
+                string turn = isCurrentTurn ? " ◀" : "";
+                _seatNameText.text = $"{seatLabel}{dealer}{turn}";
+            }
+
+            if (_scoreText != null)
+            {
+                _scoreText.text = $"{score}点";
+            }
+
+            if (_handText != null)
+            {
+                if (seat.HandCount.HasValue)
+                {
+                    uint count = seat.HandCount.Value;
+                    var sb = new StringBuilder();
+                    sb.Append($"手牌: {count}张 ");
+                    for (int i = 0; i < count && i < 14; i++)
+                    {
+                        sb.Append("[牌]");
+                    }
+                    _handText.text = sb.ToString();
+                }
+                else
+                {
+                    _handText.text = "手牌: ?张";
+                }
+            }
+
+            if (_riichiBadge != null)
+            {
+                _riichiBadge.SetActive(seat.Riichi);
+            }
+
+            if (_discardsText != null)
+            {
+                _discardsText.text = FormatDiscards(seat.Discards);
+            }
+
+            if (_meldsText != null)
+            {
+                _meldsText.text = FormatMelds(seat.Melds, isOwnSeat: false);
+            }
+
+            if (_ankanText != null)
+            {
+                int ankanCount = 0;
+                for (int i = 0; i < seat.Melds.Count; i++)
+                {
+                    if (seat.Melds[i].IsConcealedKan)
+                    {
+                        ankanCount++;
+                    }
+                }
+
+                if (ankanCount > 0)
+                {
+                    _ankanText.text = $"暗杠: {ankanCount}组";
+                }
+                else
+                {
+                    _ankanText.text = string.Empty;
+                }
+            }
+        }
+
+        public void UpdateOwnSeat(
+            PlayerSeatState seat,
+            PlayerOwnState own,
+            string seatLabel,
+            bool isCurrentTurn,
+            bool isDealer,
+            long score)
+        {
+            if (_seatNameText != null)
+            {
+                string dealer = isDealer ? " [庄]" : "";
+                string turn = isCurrentTurn ? " ◀" : "";
+                string furiten = own.Furiten ? " [振听]" : "";
+                _seatNameText.text = $"{seatLabel} (自家){dealer}{turn}{furiten}";
+            }
+
+            if (_scoreText != null)
+            {
+                _scoreText.text = $"{score}点";
+            }
+
+            if (_handText != null)
+            {
+                var sb = new StringBuilder();
+                sb.Append($"手牌: {own.ClosedTiles.Count}张");
+                if (own.DrawnTileId.HasValue)
+                {
+                    sb.Append($" 摸牌:[{TileTextHelper.FormatTile(own.DrawnTileId.Value)}]");
+                }
+                _handText.text = sb.ToString();
+            }
+
+            if (_riichiBadge != null)
+            {
+                _riichiBadge.SetActive(seat.Riichi);
+            }
+
+            if (_discardsText != null)
+            {
+                _discardsText.text = FormatDiscards(seat.Discards);
+            }
+
+            if (_meldsText != null)
+            {
+                _meldsText.text = FormatMelds(seat.Melds, isOwnSeat: true);
+            }
+
+            if (_ankanText != null)
+            {
+                _ankanText.text = string.Empty;
+            }
+        }
+
+        private static string FormatDiscards(IReadOnlyList<PlayerDiscardState> discards)
+        {
+            if (discards == null || discards.Count == 0) return "牌河: 无";
+            var sb = new StringBuilder("牌河: ");
+            for (int i = 0; i < discards.Count; i++)
+            {
+                var d = discards[i];
+                string r = d.RiichiDiscard ? "[立]" : "";
+                string t = d.Tsumogiri ? "'" : "";
+                sb.Append($"{TileTextHelper.FormatTile(d.TileId)}{r}{t} ");
+            }
+            return sb.ToString().TrimEnd();
+        }
+
+        private static string FormatMelds(IReadOnlyList<PlayerMeldState> melds, bool isOwnSeat)
+        {
+            if (melds == null || melds.Count == 0) return "副露: 门清";
+            var sb = new StringBuilder("副露: ");
+            for (int i = 0; i < melds.Count; i++)
+            {
+                var m = melds[i];
+                if (m.IsPlaceholder)
+                {
+                    sb.Append("[暗杠:4张] ");
+                    continue;
+                }
+                string kind = TileTextHelper.FormatMeldKind(m.Kind);
+                var tiles = new StringBuilder();
+                for (int t = 0; t < m.TileIds.Count; t++)
+                {
+                    if (t > 0) tiles.Append(',');
+                    tiles.Append(TileTextHelper.FormatTile(m.TileIds[t]));
+                }
+                sb.Append($"[{kind}:{tiles}] ");
+            }
+            return sb.ToString().TrimEnd();
+        }
+    }
+
+    /// <summary>
+    /// Helper for formatting Japanese Riichi Mahjong tiles and seat names to player-facing Chinese.
+    /// Distinguishes aka-dora (red fives 19, 55, 91).
+    /// </summary>
+    public static class TileTextHelper
+    {
+        private static readonly string[] Man = { "1万", "2万", "3万", "4万", "5万", "6万", "7万", "8万", "9万" };
+        private static readonly string[] Sou = { "1索", "2索", "3索", "4索", "5索", "6索", "7索", "8索", "9索" };
+        private static readonly string[] Pin = { "1筒", "2筒", "3筒", "4筒", "5筒", "6筒", "7筒", "8筒", "9筒" };
+        private static readonly string[] Honors = { "东", "南", "西", "北", "白", "发", "中" };
+
+        public static string FormatTile(uint tileId)
+        {
+            if (tileId > 135) return $"?[{tileId}]";
+
+            // Distinguish aka-dora (red fives)
+            if (tileId == 19) return "赤5万";
+            if (tileId == 55) return "赤5索";
+            if (tileId == 91) return "赤5筒";
+
+            int kind = (int)(tileId / 4);
+            if (kind < 9) return Man[kind];
+            if (kind < 18) return Sou[kind - 9];
+            if (kind < 27) return Pin[kind - 18];
+            if (kind < 34) return Honors[kind - 27];
+
+            return $"?[{tileId}]";
+        }
+
+        public static string FormatTileList(IReadOnlyList<uint>? tiles)
+        {
+            if (tiles == null || tiles.Count == 0) return "无";
+            var sb = new StringBuilder();
+            for (int i = 0; i < tiles.Count; i++)
+            {
+                if (i > 0) sb.Append(' ');
+                sb.Append(FormatTile(tiles[i]));
+            }
+            return sb.ToString();
+        }
+
+        public static string FormatMarkedTile(uint tileId, int remainingRounds)
+        {
+            return $"★{FormatTile(tileId)}(余{remainingRounds}局)";
+        }
+
+        public static bool IsTileMarked(PlayerTileMarkState? markState, uint tileId)
+        {
+            if (markState == null || markState.Groups == null) return false;
+            for (int g = 0; g < markState.Groups.Count; g++)
+            {
+                var group = markState.Groups[g];
+                if (group.Tiles == null) continue;
+                for (int t = 0; t < group.Tiles.Count; t++)
+                {
+                    if (group.Tiles[t].TileId == tileId) return true;
+                }
+            }
+            return false;
+        }
+
+        public static string FormatWind(int wind)
+        {
+            return wind switch
+            {
+                0 => "东",
+                1 => "南",
+                2 => "西",
+                3 => "北",
+                _ => "东"
+            };
+        }
+
+        public static string FormatSeatName(int seat)
+        {
+            return seat switch
+            {
+                0 => "东家 (起庄)",
+                1 => "南家",
+                2 => "西家",
+                3 => "北家",
+                _ => $"席位{seat}"
+            };
+        }
+
+        public static string FormatMeldKind(PlayerMeldKind kind)
+        {
+            return kind switch
+            {
+                PlayerMeldKind.Chi => "吃",
+                PlayerMeldKind.Pon => "碰",
+                PlayerMeldKind.OpenKan => "大明杠",
+                PlayerMeldKind.ClosedKan => "暗杠",
+                PlayerMeldKind.AddedKan => "加杠",
+                _ => "未知副露"
+            };
+        }
+
+        public static string FormatActionKind(PlayerActionKind kind)
+        {
+            return kind switch
+            {
+                PlayerActionKind.DiscardTile => "打牌",
+                PlayerActionKind.DeclareChi => "吃",
+                PlayerActionKind.DeclarePon => "碰",
+                PlayerActionKind.DeclareKan => "杠",
+                PlayerActionKind.DeclareRiichi => "立直",
+                PlayerActionKind.DeclareTsumo => "自摸",
+                PlayerActionKind.DeclareRon => "荣和",
+                PlayerActionKind.Pass => "跳过",
+                PlayerActionKind.DeclareAbortiveDraw => "流局申请",
+                _ => "操作"
+            };
+        }
+
+        public static string FormatBeamSwapSlotKind(PlayerBeamSwapSlotKind slotKind, uint slotIndex)
+        {
+            return slotKind switch
+            {
+                PlayerBeamSwapSlotKind.Wall => $"牌山 槽位{slotIndex}",
+                PlayerBeamSwapSlotKind.DeadWall => $"王牌死山 槽位{slotIndex}",
+                PlayerBeamSwapSlotKind.Replacement => $"岭上牌 槽位{slotIndex}",
+                _ => $"槽位{slotIndex}"
+            };
         }
     }
 }

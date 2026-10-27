@@ -6,7 +6,6 @@ using System.Threading.Tasks;
 using Mahjong.Client;
 using Mahjong.Contracts;
 using Mahjong.Contracts.Wire;
-using Mahjong.Unity.Table;
 using Mahjong.Unity.UI.Session;
 using UnityEngine;
 

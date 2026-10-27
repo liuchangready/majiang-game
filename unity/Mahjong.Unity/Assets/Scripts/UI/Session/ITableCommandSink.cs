@@ -4,7 +4,7 @@ using System.Threading.Tasks;
 using Mahjong.Client;
 using Mahjong.Contracts;
 
-namespace Mahjong.Unity.Table
+namespace Mahjong.Unity.UI.Session
 {
     /// <summary>
     /// Command sink interface for Table UI components.
