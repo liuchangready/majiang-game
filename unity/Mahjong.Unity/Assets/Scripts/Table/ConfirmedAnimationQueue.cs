@@ -20,6 +20,7 @@ namespace Mahjong.Unity.Table
         public const string EventVisibilityMismatch = "EVENT_VISIBILITY_MISMATCH";
         public const string AudienceMismatch = "ANIMATION_AUDIENCE_MISMATCH";
         public const string UnsupportedEvent = "UNSUPPORTED_VISIBLE_EVENT";
+        public const string StateOnly = "STATE_ONLY_VISIBLE_EVENT";
         public const string NoPreviousSnapshot = "NO_PREVIOUS_SNAPSHOT";
         public const string StalePrevious = "STALE_PREVIOUS_SNAPSHOT";
     }
@@ -764,20 +765,11 @@ namespace Mahjong.Unity.Table
                 return Reject(TableAnimationCodes.NoBaseline);
             }
 
-            bool legacyContext = !context.HasAuthorizationIdentity;
-            if (legacyContext)
+            bool legacyContext;
+            string? invalid = ValidateEventContext(context, out legacyContext);
+            if (invalid != null)
             {
-                // Compatibility for the original 9-argument public event API:
-                // it may carry public events only and can never authorize a
-                // private event.
-                if (!_context.SameLegacyIdentity(context))
-                {
-                    return Reject(TableAnimationCodes.ContextMismatch);
-                }
-            }
-            else if (!_context.SameIdentity(context) || context.Generation < _context.Generation)
-            {
-                return Reject(TableAnimationCodes.ContextMismatch);
+                return Reject(invalid);
             }
 
             if (!AudienceMatchesBaseline(audience))
@@ -785,47 +777,238 @@ namespace Mahjong.Unity.Table
                 return Reject(TableAnimationCodes.AudienceMismatch);
             }
 
+            invalid = ValidateEventBatch(events, legacyContext, audience);
+            if (invalid != null)
+            {
+                return Reject(invalid);
+            }
+
+            int enqueued = EnqueueEventBatch(context, events);
+            if (enqueued == 0)
+            {
+                return TableAnimationResult.Ok(TableAnimationCodes.Duplicate, 0, 0);
+            }
+
+            return TableAnimationResult.Ok(TableAnimationCodes.Accepted, enqueued, 0);
+        }
+
+        /// <summary>
+        /// Atomically accepts the confirmed snapshot, its exact typed event
+        /// batch and the resulting visual items. The snapshot difference is not
+        /// replayed, so a real typed batch is the single animation source and
+        /// one action cannot be animated twice. All validation completes before
+        /// any item, version or baseline is mutated.
+        /// </summary>
+        public TableAnimationResult AcceptConfirmedIncremental(
+            PlayerTableViewState previous,
+            PlayerTableViewState current,
+            ConfirmedAnimationContext context,
+            IReadOnlyList<ConfirmedVisibleEvent> events,
+            TableAnimationAudience audience)
+        {
+            if (previous == null)
+            {
+                throw new ArgumentNullException(nameof(previous));
+            }
+
+            if (current == null)
+            {
+                throw new ArgumentNullException(nameof(current));
+            }
+
+            if (context == null)
+            {
+                throw new ArgumentNullException(nameof(context));
+            }
+
+            if (events == null)
+            {
+                throw new ArgumentNullException(nameof(events));
+            }
+
+            if (audience == null)
+            {
+                throw new ArgumentNullException(nameof(audience));
+            }
+
+            if (_context == null)
+            {
+                return Reject(TableAnimationCodes.NoBaseline);
+            }
+
+            if (!IsCurrentPrevious(previous))
+            {
+                return Reject(TableAnimationCodes.StalePrevious);
+            }
+
+            ConfirmedAnimationContext next = ConfirmedAnimationContext.FromIdentity(current.Identity);
+            if (!_context.SameIdentity(next) ||
+                next.Generation < _context.Generation ||
+                context.Generation != next.Generation ||
+                !context.SameIdentity(next))
+            {
+                return Reject(TableAnimationCodes.ContextMismatch);
+            }
+
+            if (next.StateVersion < _lastStateVersion)
+            {
+                return Reject(TableAnimationCodes.StaleStateVersion);
+            }
+
+            if (next.EventSeq < _lastSnapshotEventSeq)
+            {
+                return Reject(TableAnimationCodes.EventSeqRegression);
+            }
+
+            if (next.StateVersion == _lastStateVersion)
+            {
+                // A repeated confirmed state may carry a newer stream cursor but
+                // no new action. Keep the previous view/context behavior; only
+                // strictly newer event coordinates can enqueue.
+                TableAnimationResult duplicate = AcceptConfirmedEvents(context, events, audience);
+                if (duplicate.Accepted)
+                {
+                    _context = next;
+                    _lastView = current;
+                    if (next.EventSeq > _lastSnapshotEventSeq)
+                    {
+                        _lastSnapshotEventSeq = next.EventSeq;
+                    }
+                }
+
+                return duplicate;
+            }
+
+            if (context.StateVersion != next.StateVersion ||
+                context.EventSeq != next.EventSeq)
+            {
+                return Reject(TableAnimationCodes.ContextMismatch);
+            }
+
+            TableAnimationResult? invalidSnapshot = ValidateSnapshotMonotonic(previous, current);
+            if (invalidSnapshot != null)
+            {
+                return invalidSnapshot;
+            }
+
+            if (!AudienceMatchesBaseline(audience))
+            {
+                return Reject(TableAnimationCodes.AudienceMismatch);
+            }
+
+            bool legacyContext;
+            string? invalid = ValidateEventContext(context, out legacyContext);
+            if (invalid != null)
+            {
+                return Reject(invalid);
+            }
+
+            invalid = ValidateEventBatch(events, legacyContext, audience);
+            if (invalid != null)
+            {
+                return Reject(invalid);
+            }
+
+            int enqueued = EnqueueEventBatch(context, events);
+            _context = next;
+            _lastView = current;
+            _lastStateVersion = next.StateVersion;
+            _lastSnapshotEventSeq = next.EventSeq;
+            _lastRejection = enqueued == 0 && events.Count == 0
+                ? TableAnimationCodes.StateOnly
+                : enqueued == 0
+                    ? TableAnimationCodes.Duplicate
+                    : string.Empty;
+
+            if (enqueued == 0)
+            {
+                return TableAnimationResult.Ok(
+                    events.Count == 0 ? TableAnimationCodes.StateOnly : TableAnimationCodes.Duplicate,
+                    0,
+                    0);
+            }
+
+            return TableAnimationResult.Ok(TableAnimationCodes.Accepted, enqueued, 0);
+        }
+
+        private string? ValidateEventContext(ConfirmedAnimationContext context, out bool legacyContext)
+        {
+            legacyContext = !context.HasAuthorizationIdentity;
+            if (legacyContext)
+            {
+                // Compatibility for the original 9-argument public event API:
+                // it may carry public events only and can never authorize a
+                // private event.
+                return _context != null && _context.SameLegacyIdentity(context)
+                    ? null
+                    : TableAnimationCodes.ContextMismatch;
+            }
+
+            return _context != null &&
+                   _context.SameIdentity(context) &&
+                   context.Generation >= _context.Generation
+                ? null
+                : TableAnimationCodes.ContextMismatch;
+        }
+
+        private string? ValidateEventBatch(
+            IReadOnlyList<ConfirmedVisibleEvent> events,
+            bool legacyContext,
+            TableAnimationAudience audience)
+        {
             for (int i = 0; i < events.Count; i++)
             {
                 ConfirmedVisibleEvent visible = events[i];
+                if (visible == null)
+                {
+                    return TableAnimationCodes.UnsupportedEvent;
+                }
+
                 if (!IsSupported(visible.Kind))
                 {
-                    return Reject(TableAnimationCodes.UnsupportedEvent);
+                    return TableAnimationCodes.UnsupportedEvent;
                 }
 
                 if (IsPrivateOnly(visible.Kind) && visible.Visibility != ConfirmedEventVisibility.Private)
                 {
-                    return Reject(TableAnimationCodes.EventVisibilityMismatch);
+                    return TableAnimationCodes.EventVisibilityMismatch;
                 }
 
                 if (IsPublicOnly(visible.Kind) && visible.Visibility != ConfirmedEventVisibility.Public)
                 {
-                    return Reject(TableAnimationCodes.EventVisibilityMismatch);
+                    return TableAnimationCodes.EventVisibilityMismatch;
                 }
 
                 if (visible.Visibility == ConfirmedEventVisibility.Private)
                 {
                     if (legacyContext)
                     {
-                        return Reject(TableAnimationCodes.ContextMismatch);
+                        return TableAnimationCodes.ContextMismatch;
                     }
 
                     if (visible.OwnerSeat < 0)
                     {
-                        return Reject(TableAnimationCodes.PrivateOwnerMissing);
+                        return TableAnimationCodes.PrivateOwnerMissing;
                     }
 
                     if (audience.IsSpectator || visible.OwnerSeat != audience.Seat)
                     {
-                        return Reject(TableAnimationCodes.PrivateNotAuthorized);
+                        return TableAnimationCodes.PrivateNotAuthorized;
                     }
                 }
                 else if (visible.Visibility != ConfirmedEventVisibility.Public)
                 {
-                    return Reject(TableAnimationCodes.UnsupportedEvent);
+                    return TableAnimationCodes.UnsupportedEvent;
                 }
             }
 
+            return null;
+        }
+
+        private int EnqueueEventBatch(
+            ConfirmedAnimationContext context,
+            IReadOnlyList<ConfirmedVisibleEvent> events)
+        {
             int enqueued = 0;
             for (int i = 0; i < events.Count; i++)
             {
@@ -916,12 +1099,7 @@ namespace Mahjong.Unity.Table
                 }
             }
 
-            if (enqueued == 0)
-            {
-                return TableAnimationResult.Ok(TableAnimationCodes.Duplicate, 0, 0);
-            }
-
-            return TableAnimationResult.Ok(TableAnimationCodes.Accepted, enqueued, 0);
+            return enqueued;
         }
 
         public bool TryDequeue(out TableAnimationItem? item)

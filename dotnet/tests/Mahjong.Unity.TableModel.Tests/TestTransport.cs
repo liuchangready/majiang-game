@@ -54,6 +54,23 @@ namespace Mahjong.Unity.TableModel.Tests
 
         public Func<Envelope, bool>? OnSend { get; set; }
 
+        /// <summary>Enqueues one real WireCodec frame for the next pump.</summary>
+        public void EnqueueInbound(byte[] frame)
+        {
+            if (frame == null)
+            {
+                throw new ArgumentNullException(nameof(frame));
+            }
+
+            Channel<byte[]> inbound;
+            lock (_gate)
+            {
+                inbound = _inbound;
+            }
+
+            inbound.Writer.TryWrite(frame);
+        }
+
         public bool IsOpen
         {
             get

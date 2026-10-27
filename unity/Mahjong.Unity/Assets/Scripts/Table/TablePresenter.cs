@@ -133,6 +133,7 @@ namespace Mahjong.Unity.Table
         private ISessionView? _sessionView;
         private Action? _onViewSettlement;
         private PlayerTableViewState? _latestView;
+        private ClientVisibleEventMapping? _lastVisibleEventMapping;
 
         // Selection buffers
         private readonly List<uint> _tileMarkSelectedTiles = new List<uint>();
@@ -161,6 +162,13 @@ namespace Mahjong.Unity.Table
         public PlayerTableViewState? LatestView => _latestView;
         public TableInteractionState InteractionState => _interactionState;
         public ConfirmedAnimationQueue AnimationQueue => _animationQueue;
+
+        /// <summary>
+        /// Last successfully mapped typed batch for diagnostics and directed
+        /// tests. Null when the last accepted update used the legacy snapshot
+        /// difference path or a baseline.
+        /// </summary>
+        public ClientVisibleEventMapping? LastVisibleEventMapping => _lastVisibleEventMapping;
 
         private void Start()
         {
@@ -261,6 +269,7 @@ namespace Mahjong.Unity.Table
             ClearAll();
             ScrubPrivateDisplay();
             _latestView = null;
+            _lastVisibleEventMapping = null;
             _interactionState?.ClearSelection();
             CloseAllCheatDialogs();
             CloseCandidateSelectionPanel();
@@ -441,6 +450,19 @@ namespace Mahjong.Unity.Table
             return false;
         }
 
+        private static TableAnimationAudience AnimationAudienceFor(PlayerTableViewState view)
+        {
+            if (view.Identity.Role == PlayerTableRole.Player &&
+                view.Identity.IsPrivateAuthorized &&
+                view.Identity.Seat >= 0 &&
+                view.Identity.Seat <= 3)
+            {
+                return TableAnimationAudience.Player(view.Identity.Seat);
+            }
+
+            return TableAnimationAudience.Spectator();
+        }
+
         private static bool SameBindingIdentity(PlayerTableIdentity left, PlayerTableIdentity right)
         {
             return left.Generation == right.Generation &&
@@ -501,8 +523,14 @@ namespace Mahjong.Unity.Table
 
             bool authorizationLost = !nextView.Identity.IsPrivateAuthorized || state.State != TableConnectionState.Ready || nextView.Own == null;
 
+            TableVisibleEventBatch batch = state.VisibleEventBatch ?? TableVisibleEventBatch.Empty;
+            bool batchBaseline = batch.Kind == TableVisibleEventBatchKind.Baseline;
+            bool hasPlayableEvents = batch.Kind == TableVisibleEventBatchKind.Incremental &&
+                                     batch.PlayableEvents.Count > 0;
+
             bool isBaselineTransition = _latestView == null ||
                 state.IsFullBaseline ||
+                batchBaseline ||
                 identityChanged ||
                 roundChanged ||
                 authorizationChanged;
@@ -510,6 +538,10 @@ namespace Mahjong.Unity.Table
             // 3. Animation queue fence: MUST validate animation queue BEFORE mutating interaction state or latestView!
             if (isBaselineTransition)
             {
+                // A baseline resets the visual queue and redraws from its
+                // snapshot. Its reconciliation-only batch Events are never
+                // replayed as new animations.
+                _lastVisibleEventMapping = null;
                 var baselineResult = _animationQueue.AcceptConfirmedBaseline(nextView);
                 if (!baselineResult.Accepted)
                 {
@@ -517,8 +549,41 @@ namespace Mahjong.Unity.Table
                     return; // Dropped by animation baseline fence
                 }
             }
+            else if (hasPlayableEvents)
+            {
+                // A real incremental typed batch is the only animation source.
+                // Map it against the exact projected snapshot and commit the
+                // snapshot + event batch atomically. The snapshot difference is
+                // deliberately not replayed, so one confirmed action cannot be
+                // animated twice.
+                ClientVisibleEventMapping mapping = new ClientVisibleEventMapper().Map(batch, nextView, state.Generation);
+                if (!mapping.Accepted || mapping.Context == null)
+                {
+                    Debug.LogWarning($"[TablePresenter] Visible event mapping rejected: {mapping.Code}");
+                    return;
+                }
+
+                TableAnimationResult eventResult = _animationQueue.AcceptConfirmedIncremental(
+                    _latestView!,
+                    nextView,
+                    mapping.Context,
+                    mapping.AnimatedEvents,
+                    AnimationAudienceFor(nextView));
+                if (!eventResult.Accepted)
+                {
+                    Debug.LogWarning($"[TablePresenter] AnimationQueue rejected incremental batch: {eventResult.Code}");
+                    return;
+                }
+
+                _lastVisibleEventMapping = mapping;
+            }
             else
             {
+                // Legacy fake sessions, empty batches and snapshots with no
+                // playable events keep the confirmed snapshot-difference
+                // fallback. This is not used when a typed batch has playable
+                // events, so the two sources cannot double-animate.
+                _lastVisibleEventMapping = null;
                 var diffResult = _animationQueue.AcceptConfirmedDifference(_latestView!, nextView, isFullBaseline: false);
                 if (!diffResult.Accepted)
                 {

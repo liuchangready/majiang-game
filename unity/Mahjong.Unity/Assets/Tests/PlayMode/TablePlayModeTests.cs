@@ -42,6 +42,7 @@ using SleeveBloomChoice = Mahjong.Contracts.SleeveBloomChoice;
 using ReceiptStatus = Mahjong.Contracts.ReceiptStatus;
 using ReceiptLookupStatus = Mahjong.Contracts.ReceiptLookupStatus;
 using IdempotencyKey = Mahjong.Contracts.IdempotencyKey;
+using WireEventType = Mahjong.Contracts.Wire.EventType;
 
 namespace Mahjong.Unity.Tests.PlayMode
 {
@@ -1392,6 +1393,154 @@ namespace Mahjong.Unity.Tests.PlayMode
             _presenter.OnSessionViewChanged(this, FormalProbeView(expiredSnap));
             _presenter.OpenSleeveBloomDialog();
             Assert.IsFalse(sleeveDialog.activeInHierarchy, "expired offer with 0 remaining ms must not open");
+        }
+
+        private static EventEnvelope B2bEvent(
+            ulong eventSeq,
+            uint ordinal,
+            WireEventType type,
+            EventVisibility visibility,
+            ulong commandVersion,
+            Action<EventEnvelope> body)
+        {
+            var envelope = new EventEnvelope
+            {
+                EventSchemaVersion = ProtocolConstants.EventSchemaVersion,
+                EventSeq = eventSeq,
+                CommandVersion = commandVersion,
+                EventOrdinal = ordinal,
+                EventType = type,
+                Visibility = visibility
+            };
+            body(envelope);
+            return envelope;
+        }
+
+        private static Envelope B2bTypedPush(
+            PlayerSnapshot snapshot,
+            ulong fromProjection,
+            ulong toProjection,
+            bool isFullSnapshot,
+            params EventEnvelope[] events)
+        {
+            var update = new PlayerUpdate
+            {
+                Snapshot = snapshot,
+                FromCursor = isFullSnapshot
+                    ? null
+                    : new Mahjong.Contracts.Wire.StreamCursor { StreamVersion = 1, ProjectionSeq = fromProjection },
+                Cursor = new Mahjong.Contracts.Wire.StreamCursor { StreamVersion = 1, ProjectionSeq = toProjection },
+                IsFullSnapshot = isFullSnapshot
+            };
+            for (int i = 0; i < events.Length; i++)
+            {
+                update.VisibleEvents.Add(events[i]);
+            }
+
+            return new Envelope
+            {
+                ProtocolMajor = ProtocolConstants.Major,
+                ProtocolMinor = ProtocolConstants.Minor,
+                RulesetVersion = ProtocolConstants.RulesetVersion,
+                ProjectionVersion = ProtocolConstants.ProjectionVersion,
+                MessageType = MessageType.PlayerUpdate,
+                SessionId = "session_table_1",
+                RoomId = "room_table_1",
+                SeatId = 0,
+                BindingEpoch = 1,
+                PlayerUpdate = update
+            };
+        }
+
+        private IEnumerator PumpAndDispatch()
+        {
+            var pump = _session!.PumpOnceAsync(CancellationToken.None);
+            while (!pump.IsCompleted) yield return null;
+            Assert.IsFalse(pump.IsFaulted, pump.Exception?.ToString());
+            for (int i = 0; i < 40; i++)
+            {
+                _dispatcher!.Update();
+                yield return null;
+            }
+        }
+
+        [UnityTest]
+        public IEnumerator B2bFormalProbe01_RealTypedBatchAnimatesOnceAndSuppressesSnapshotDouble()
+        {
+            yield return LoadAndBindTableSceneAsync();
+            Assert.IsNotNull(_presenter);
+            Assert.IsNotNull(_session);
+            // Keep the queue deterministic: the normal MonoBehaviour Update
+            // would dequeue one animation before the assertion.
+            _presenter!.enabled = false;
+
+            PlayerSnapshot snapshot = CreatePlayerPushEnvelope(stateVersion: 2, eventSeq: 106, projectionSeq: 2).PlayerUpdate.Snapshot;
+            snapshot.PublicView.Board.Players[1].Discards.Add(new DiscardView
+            {
+                TileId = 44,
+                TurnNumber = 2,
+                Tsumogiri = false
+            });
+            snapshot.PrivateView.DrawnTileId = 27;
+
+            Envelope push = B2bTypedPush(
+                snapshot,
+                1,
+                2,
+                false,
+                B2bEvent(106, 0, WireEventType.TileDiscarded, EventVisibility.Public, 2,
+                    e => e.TileDiscarded = new TileDiscarded { TurnNumber = 2, Player = 1, TileId = 44 }),
+                B2bEvent(106, 1, WireEventType.TileDrawn, EventVisibility.Private, 2,
+                    e => e.TileDrawn = new TileDrawn { TurnNumber = 2, Player = 0, TileId = 27, WallRemaining = 67 }));
+            _channel!.EnqueueEnvelope(push);
+            yield return PumpAndDispatch();
+
+            Assert.IsNotNull(_presenter!.LastVisibleEventMapping, "real typed batch must reach the presenter");
+            Assert.True(_presenter.LastVisibleEventMapping!.Accepted, _presenter.LastVisibleEventMapping.Code);
+            Assert.AreEqual(2, _presenter.LastVisibleEventMapping.AnimatedEvents.Count);
+            Assert.AreEqual(2, _presenter.AnimationQueue.PendingCount,
+                "the same snapshot discard/draw must not be replayed by the snapshot difference; rejected=" +
+                _presenter.AnimationQueue.LastRejection + "; events=" + string.Join(",", System.Linq.Enumerable.Select(_presenter.LastVisibleEventMapping.AnimatedEvents, e => e.Kind + "@" + e.EventSeq + "/" + e.EventOrdinal)));
+
+            typeof(TablePresenter).GetMethod("UpdateAnimationBanner", BindingFlags.NonPublic | BindingFlags.Instance)!.Invoke(_presenter, null);
+            var banner = FormalField<TextMeshProUGUI>("_animationBannerText");
+            Assert.IsTrue(banner.gameObject.activeSelf);
+            StringAssert.Contains("1", banner.text);
+            Assert.IsNotEmpty(banner.text, "the renderer banner must show the confirmed animation");
+
+            var remaining = _presenter.AnimationQueue.Drain();
+            Assert.AreEqual(1, remaining.Count);
+            Assert.AreEqual(TableAnimationKind.Draw, remaining[0].Kind);
+            Assert.AreEqual(27U, remaining[0].TileId);
+            CaptureScreen("11_b2b_typed_event_animation.png");
+        }
+
+        [UnityTest]
+        public IEnumerator B2bFormalProbe02_FullBaselineEventsNeverAnimateAndResetClearsQueue()
+        {
+            yield return LoadAndBindTableSceneAsync();
+            PlayerSnapshot snapshot = CreatePlayerPushEnvelope(stateVersion: 2, eventSeq: 106, projectionSeq: 2, isFullSnapshot: true).PlayerUpdate.Snapshot;
+            snapshot.PublicView.Board.Players[1].Discards.Add(new DiscardView
+            {
+                TileId = 44,
+                TurnNumber = 2,
+                Tsumogiri = false
+            });
+            Envelope baselinePush = B2bTypedPush(
+                snapshot,
+                0,
+                2,
+                true,
+                B2bEvent(106, 0, WireEventType.TileDiscarded, EventVisibility.Public, 2,
+                    e => e.TileDiscarded = new TileDiscarded { TurnNumber = 2, Player = 1, TileId = 44 }));
+            _channel!.EnqueueEnvelope(baselinePush);
+            yield return PumpAndDispatch();
+
+            Assert.IsNull(_presenter!.LastVisibleEventMapping, "baseline events are reconciliation only");
+            Assert.AreEqual(0, _presenter.AnimationQueue.PendingCount, "baseline event must not be replayed as animation");
+            typeof(TablePresenter).GetMethod("UpdateAnimationBanner", BindingFlags.NonPublic | BindingFlags.Instance)!.Invoke(_presenter, null);
+            var banner = FormalField<TextMeshProUGUI>("_animationBannerText");
+            Assert.IsFalse(banner.gameObject.activeSelf);
         }
 
         private sealed class FormalSessionSnapshotView : ISessionView

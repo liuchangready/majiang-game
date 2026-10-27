@@ -158,30 +158,61 @@ namespace Mahjong.Unity.App
                 if (_terminal != null || _quarantined) return;
             }
 
+            // Copy the snapshot at the instant the Client accepted it. The
+            // session may publish a later binding/snapshot before the owner
+            // capture below completes; an old event must never be paired with
+            // that later identity.
+            PlayerSnapshot? player = e.PlayerSnapshot?.Clone();
+            PublicSnapshot? publicSnapshot = e.PublicSnapshot?.Clone();
+            RoomUpdate? room = e.RoomSnapshot?.Clone();
+            TableVisibleEventBatch batch = e.VisibleEventBatch ?? TableVisibleEventBatch.Empty;
+
             long gen = _currentGeneration;
             if (_operationQueue != null)
             {
-                _ = EnqueueCaptureAndPublishAsync(gen, e);
+                _ = EnqueueCaptureAndPublishAsync(
+                    gen,
+                    e.IsFullBaseline,
+                    e.Cursor,
+                    player,
+                    publicSnapshot,
+                    room,
+                    batch);
             }
             else
             {
+                TableSessionBinding? binding = _session?.Binding;
+                if (!BatchMatchesAccepted(batch, binding, player, publicSnapshot))
+                {
+                    Debug.LogWarning("[SessionCoordinator] Dropped snapshot whose typed batch identity no longer matches the accepted binding/snapshot.");
+                    return;
+                }
+
                 var viewState = new SessionViewState(
                     gen,
                     _session?.State ?? TableConnectionState.Ready,
-                    _session?.Binding,
-                    e.PlayerSnapshot?.Clone(),
-                    e.PublicSnapshot?.Clone(),
-                    e.RoomSnapshot?.Clone(),
+                    binding,
+                    player,
+                    publicSnapshot,
+                    room,
                     _session?.PendingCommands ?? Array.Empty<PendingCommandSnapshot>(),
                     _session?.LastError,
                     e.IsFullBaseline,
-                    e.Cursor);
+                    e.Cursor,
+                    batch);
 
                 Publish(gen, viewState);
             }
         }
 
-        private async Task EnqueueCaptureAndPublishAsync(long gen, TableSnapshotChangedEventArgs e)
+        private async Task EnqueueCaptureAndPublishAsync(
+            long gen,
+            bool isFullBaseline,
+            Mahjong.Contracts.StreamCursor? cursor,
+            PlayerSnapshot? player,
+            PublicSnapshot? publicSnapshot,
+            RoomUpdate? room,
+            TableVisibleEventBatch batch)
         {
             try
             {
@@ -192,17 +223,25 @@ namespace Mahjong.Unity.App
                     if (_terminal != null || _quarantined || gen != _currentGeneration) return;
                 }
 
+                TableSessionBinding? binding = capture?.Binding ?? _session?.Binding;
+                if (!BatchMatchesAccepted(batch, binding, player, publicSnapshot))
+                {
+                    Debug.LogWarning("[SessionCoordinator] Dropped a delayed snapshot that a newer binding/epoch superseded; no stale event was rebased.");
+                    return;
+                }
+
                 var viewState = new SessionViewState(
                     gen,
-                    _operationQueue.State,
-                    _operationQueue.Binding,
-                    e.PlayerSnapshot?.Clone(),
-                    e.PublicSnapshot?.Clone(),
-                    e.RoomSnapshot?.Clone(),
+                    capture?.State ?? _operationQueue.State,
+                    binding,
+                    player,
+                    publicSnapshot,
+                    room,
                     capture?.PendingCommands ?? (IReadOnlyList<PendingCommandSnapshot>)(_session?.PendingCommands ?? Array.Empty<PendingCommandSnapshot>()),
-                    _operationQueue.LastError,
-                    e.IsFullBaseline,
-                    e.Cursor);
+                    capture?.LastError ?? _operationQueue.LastError,
+                    isFullBaseline,
+                    cursor,
+                    batch);
 
                 Publish(gen, viewState);
             }
@@ -210,6 +249,58 @@ namespace Mahjong.Unity.App
             {
                 Debug.LogWarning($"Capture exception: {ex.Message}");
             }
+        }
+
+        private static bool BatchMatchesAccepted(
+            TableVisibleEventBatch batch,
+            TableSessionBinding? binding,
+            PlayerSnapshot? player,
+            PublicSnapshot? publicSnapshot)
+        {
+            if (batch == null || batch.Kind == TableVisibleEventBatchKind.None)
+            {
+                // Legacy fake session: no typed batch identity to cross-check.
+                return true;
+            }
+
+            if (binding == null)
+            {
+                return false;
+            }
+
+            if (!string.Equals(batch.SessionId, binding.SessionId.Value, StringComparison.Ordinal) ||
+                !string.Equals(batch.RoomId, binding.RoomId.Value, StringComparison.Ordinal) ||
+                batch.Role != binding.Role ||
+                batch.Seat != binding.SeatId ||
+                batch.BindingEpoch != binding.BindingEpoch.Value ||
+                batch.ConnectionEpoch != binding.ConnectionEpoch.Value ||
+                batch.OwnerEpoch != binding.OwnerEpoch.Value ||
+                !string.Equals(batch.ScopeId, binding.Scope.ScopeId.Value, StringComparison.Ordinal))
+            {
+                return false;
+            }
+
+            ulong? stateVersion = player?.StateVersion ?? publicSnapshot?.StateVersion;
+            ulong? eventSeq = player?.EventSeq ?? publicSnapshot?.EventSeq;
+            string? roundId = player?.RoundId ?? publicSnapshot?.RoundId;
+            if (stateVersion.HasValue && stateVersion.Value != batch.StateVersion)
+            {
+                return false;
+            }
+
+            if (eventSeq.HasValue && eventSeq.Value != batch.EventSeq)
+            {
+                return false;
+            }
+
+            if (!string.IsNullOrEmpty(roundId) &&
+                !string.IsNullOrEmpty(batch.RoundId) &&
+                !string.Equals(roundId, batch.RoundId, StringComparison.Ordinal))
+            {
+                return false;
+            }
+
+            return true;
         }
 
         private void OnSessionReceiptResolved(object? sender, TableReceiptResolvedEventArgs e)

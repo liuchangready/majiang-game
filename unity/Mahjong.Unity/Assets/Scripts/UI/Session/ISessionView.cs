@@ -49,7 +49,8 @@ namespace Mahjong.Unity.UI.Session
             IReadOnlyList<PendingCommandSnapshot>? pendingCommands,
             string? lastError,
             bool isFullBaseline = false,
-            StreamCursor? cursor = null)
+            StreamCursor? cursor = null,
+            TableVisibleEventBatch? visibleEventBatch = null)
         {
             Generation = generation;
             State = state;
@@ -74,6 +75,9 @@ namespace Mahjong.Unity.UI.Session
             LastError = lastError;
             IsFullBaseline = isFullBaseline;
             Cursor = cursor;
+            // The batch is already immutable and tied to the accepted snapshot;
+            // never clone or replace its identity from a later session read.
+            VisibleEventBatch = visibleEventBatch ?? TableVisibleEventBatch.Empty;
         }
 
         public long Generation { get; }
@@ -86,6 +90,13 @@ namespace Mahjong.Unity.UI.Session
         public string? LastError { get; }
         public bool IsFullBaseline { get; }
         public StreamCursor? Cursor { get; }
+
+        /// <summary>
+        /// Immutable typed batch emitted for exactly this accepted snapshot.
+        /// It is <see cref="TableVisibleEventBatch.Empty"/> only for legacy fake
+        /// sessions; a real Client always supplies the same-batch identity.
+        /// </summary>
+        public TableVisibleEventBatch VisibleEventBatch { get; }
     }
 
     public interface ISessionView

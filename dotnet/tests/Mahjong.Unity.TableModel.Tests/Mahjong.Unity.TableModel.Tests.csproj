@@ -37,6 +37,7 @@
     <Compile Include="$(MSBuildThisFileDirectory)..\..\..\unity\Mahjong.Unity\Assets\Scripts\Table\TableInteractionState.cs" Link="Production\TableInteractionState.cs" />
     <Compile Include="$(MSBuildThisFileDirectory)..\..\..\unity\Mahjong.Unity\Assets\Scripts\Table\TableCommandIntentFactory.cs" Link="Production\TableCommandIntentFactory.cs" />
     <Compile Include="$(MSBuildThisFileDirectory)..\..\..\unity\Mahjong.Unity\Assets\Scripts\Table\ConfirmedAnimationQueue.cs" Link="Production\ConfirmedAnimationQueue.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)..\..\..\unity\Mahjong.Unity\Assets\Scripts\Table\ClientVisibleEventMapper.cs" Link="Production\ClientVisibleEventMapper.cs" />
     <Compile Include="$(MSBuildThisFileDirectory)..\..\..\unity\Mahjong.Unity\Assets\Scripts\UI\Session\ISessionView.cs" Link="Production\ISessionView.cs" />
   </ItemGroup>
 
