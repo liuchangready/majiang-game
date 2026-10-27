@@ -355,7 +355,7 @@ namespace Mahjong.Unity.Tests.EditMode
             var candPanelGo = CreateUiObject("CandidateSelectionPanel", designRootGo.transform);
             var candRect = candPanelGo.GetComponent<RectTransform>();
             candRect.anchoredPosition = new Vector2(0, -150);
-            candRect.sizeDelta = new Vector2(680, 60);
+            candRect.sizeDelta = new Vector2(720, 85);
             var candBg = candPanelGo.AddComponent<Image>();
             candBg.color = new Color(0.12f, 0.18f, 0.25f, 0.95f);
 
@@ -363,15 +363,16 @@ namespace Mahjong.Unity.Tests.EditMode
             var candOptionTexts = new TextMeshProUGUI[6];
             for (int i = 0; i < 6; i++)
             {
-                float x = -250f + (i * 90f);
+                float x = -240f + ((i % 4) * 115f);
+                float y = 18f - ((i / 4) * 36f);
                 var btn = CreateButton($"CandidateOption_{i}", candPanelGo.transform, font, 11f,
-                    new Vector2(x, 0), new Vector2(85, 40), $"选项 {i + 1}");
+                    new Vector2(x, y), new Vector2(105, 32), $"选项 {i + 1}");
                 candOptionButtons[i] = btn;
                 candOptionTexts[i] = btn.GetComponentInChildren<TextMeshProUGUI>();
                 btn.gameObject.SetActive(false);
             }
             var cancelCandBtn = CreateButton("CancelCandidateOptionButton", candPanelGo.transform, font, 12f,
-                new Vector2(290, 0), new Vector2(70, 40), "取消");
+                new Vector2(280, 0), new Vector2(70, 40), "取消");
             candPanelGo.SetActive(false);
 
             // --- Cheat Panel ---
@@ -445,35 +446,37 @@ namespace Mahjong.Unity.Tests.EditMode
             var beamDlg = CreateUiObject("BeamSwapDialog", designRootGo.transform);
             var bmRect = beamDlg.GetComponent<RectTransform>();
             bmRect.anchoredPosition = Vector2.zero;
-            bmRect.sizeDelta = new Vector2(560, 220);
+            bmRect.sizeDelta = new Vector2(580, 250);
             var bmBg = beamDlg.AddComponent<Image>();
             bmBg.color = new Color(0.12f, 0.18f, 0.22f, 0.95f);
 
             CreateText("BMTitle", beamDlg.transform, font, 16f, TextAlignmentOptions.Top,
-                new Vector2(0, 90), new Vector2(500, 30), "偷梁换柱 (牌山/死山等额互换)", Color.white, FontStyles.Bold);
+                new Vector2(0, 100), new Vector2(520, 30), "偷梁换柱 (牌山/死山等额互换)", Color.white, FontStyles.Bold);
 
             var bmStatus = CreateText("BMStatus", beamDlg.transform, font, 13f, TextAlignmentOptions.Center,
-                new Vector2(0, 60), new Vector2(500, 24), "请选择1张自家手牌及1个候选目标槽位", new Color(1f, 0.9f, 0.4f));
+                new Vector2(0, 75), new Vector2(520, 24), "请选择1张自家手牌及1个候选目标槽位", new Color(1f, 0.9f, 0.4f));
 
             // Support up to 8 beam candidate slots
             var beamSlotButtons = new Button[8];
             var beamSlotTexts = new TextMeshProUGUI[8];
             for (int b = 0; b < 8; b++)
             {
-                float bx = -210f + ((b % 4) * 140f);
-                float by = b < 4 ? 20f : -25f;
+                int col = b % 4;
+                int row = b / 4;
+                float bx = -210f + (col * 140f);
+                float by = 35f - (row * 38f);
                 var bBtn = CreateButton($"BeamSlot_{b}", beamDlg.transform, font, 11f,
-                    new Vector2(bx, by), new Vector2(135, 36), $"槽位{b}");
+                    new Vector2(bx, by), new Vector2(135, 34), $"槽位{b}");
                 beamSlotButtons[b] = bBtn;
                 beamSlotTexts[b] = bBtn.GetComponentInChildren<TextMeshProUGUI>();
             }
 
             var bmConfirm = CreateButton("ConfirmBeamSwapButton", beamDlg.transform, font, 13f,
-                new Vector2(-140, -75), new Vector2(120, 36), "确认调换");
+                new Vector2(-140, -95), new Vector2(120, 36), "确认调换");
             var bmKeep = CreateButton("KeepBeamOriginalButton", beamDlg.transform, font, 13f,
-                new Vector2(0, -75), new Vector2(120, 36), "保留原手牌");
+                new Vector2(0, -95), new Vector2(120, 36), "保留原手牌");
             var bmCancel = CreateButton("CancelBeamButton", beamDlg.transform, font, 13f,
-                new Vector2(140, -75), new Vector2(100, 36), "取消");
+                new Vector2(140, -95), new Vector2(100, 36), "取消");
             beamDlg.SetActive(false);
 
             // --- Sub-Dialog: Preparation ---

@@ -453,6 +453,7 @@ namespace Mahjong.Unity.App
             if (_session != null)
             {
                 _session.SnapshotChanged -= OnSessionSnapshotChanged;
+                _session.ReceiptResolved -= OnSessionReceiptResolved;
             }
             _dispatcher.Overflowed -= OnDispatcherOverflowed;
             _currentGeneration++;

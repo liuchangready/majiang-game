@@ -15,6 +15,8 @@ param(
     [string]$UnityExe = "D:\Unity\Hub\Editor\6000.3.27f1\Editor\Unity.exe",
     [string]$ProjectPath = "unity/Mahjong.Unity",
     [string]$OutputDir = ("build/p43b-run-" + (Get-Date -Format "yyyyMMdd-HHmmss")),
+    [string]$Policy = "tools/unity/p42-boundary-policy.json",
+    [string]$CandidatePolicy = $null,
     [string]$LogDir = $null,
     [string]$TempDir = $null,
     [switch]$Force
@@ -122,21 +124,28 @@ $results = [ordered]@{
 # 1. Boundary policy generation & checks
 Write-Host "`n[STEP 1/6] Running Unity boundary checks..."
 $boundaryScript = (Resolve-Path "tools/unity/check-unity-boundaries.ps1").Path
-$basePolicyPath = (Resolve-Path "tools/unity/p42-boundary-policy.json").Path
+$basePolicyPath = (Resolve-Path $Policy).Path
 
-# Record frozen baseline boundary check (exit 1 expected if test asmdefs reference Mahjong.Unity.Table)
+# Record baseline boundary check (exit 1 expected if test asmdefs reference Mahjong.Unity.Table)
 $frozenReport = Join-Path $resolvedOutput "frozen-boundary-report.json"
 $frozenLog = Join-Path $resolvedLogs "frozen-boundary.log"
 $frozenRes = Invoke-BoundedScript -ScriptFile $boundaryScript -Arguments @("-Project", "`"$resolvedProj`"", "-Policy", "`"$basePolicyPath`"", "-Report", "`"$frozenReport`"") -LogFile $frozenLog -TimeoutSeconds 60
 Set-Content -Path (Join-Path $resolvedOutput "frozen-boundary-exit.txt") -Value "$($frozenRes.ExitCode)" -Encoding UTF8
-Write-Host "Frozen baseline boundary check recorded: ExitCode=$($frozenRes.ExitCode) (documented: test asmdefs require Table reference)"
+Write-Host "Baseline boundary check ($Policy): ExitCode=$($frozenRes.ExitCode)"
 
-# Prepare run-specific policy containing documented test references
-$runPolicy = Join-Path $resolvedOutput "boundary-policy-p43b.json"
-$polData = Get-Content $basePolicyPath -Raw | ConvertFrom-Json
-$polData.assemblies."Mahjong.Unity.EditMode.Tests".references = @($polData.assemblies."Mahjong.Unity.EditMode.Tests".references) + "Mahjong.Unity.Table"
-$polData.assemblies."Mahjong.Unity.PlayMode.Tests".references = @($polData.assemblies."Mahjong.Unity.PlayMode.Tests".references) + "Mahjong.Unity.Table"
-$polData | ConvertTo-Json -Depth 20 | Set-Content $runPolicy -Encoding UTF8
+# Determine effective verification policy for functional suite:
+$runPolicy = $basePolicyPath
+if ($CandidatePolicy -and (Test-Path $CandidatePolicy)) {
+    $runPolicy = (Resolve-Path $CandidatePolicy).Path
+    Write-Host "Using explicit CandidatePolicy: $runPolicy"
+} elseif ($frozenRes.ExitCode -ne 0) {
+    Write-Host "Baseline policy exit code is $($frozenRes.ExitCode) (documented: test asmdefs reference Table). Generating candidate integration policy for functional verification..."
+    $runPolicy = Join-Path $resolvedOutput "boundary-policy-p43b.json"
+    $polData = Get-Content $basePolicyPath -Raw | ConvertFrom-Json
+    $polData.assemblies."Mahjong.Unity.EditMode.Tests".references = @($polData.assemblies."Mahjong.Unity.EditMode.Tests".references) + "Mahjong.Unity.Table"
+    $polData.assemblies."Mahjong.Unity.PlayMode.Tests".references = @($polData.assemblies."Mahjong.Unity.PlayMode.Tests".references) + "Mahjong.Unity.Table"
+    $polData | ConvertTo-Json -Depth 20 | Set-Content $runPolicy -Encoding UTF8
+}
 
 $bCheckLog = Join-Path $resolvedLogs "boundary-check.log"
 $bCheckRes = Invoke-BoundedScript -ScriptFile $boundaryScript -Arguments @("-Project", "`"$resolvedProj`"", "-Policy", "`"$runPolicy`"", "-Report", "`"$boundaryReport`"") -LogFile $bCheckLog -TimeoutSeconds 60

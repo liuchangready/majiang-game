@@ -1004,6 +1004,109 @@ namespace Mahjong.Unity.Tests.PlayMode
             Assert.IsTrue(sleeve && beam, "factory-supported activations must be reachable before offers; sleeve=" + sleeve + " beam=" + beam);
         }
 
+        [UnityTest]
+        public IEnumerator R3FormalProbe01_AuthorizationLossMustScrubInactivePrivateText()
+        {
+            yield return LoadAndBindTableSceneAsync();
+            var texts = FormalField<TextMeshProUGUI[]>("_handTileTexts");
+            Assert.IsNotEmpty(texts[0].text);
+            var snap = CreatePlayerBaselineEnvelope(stateVersion: 2).SyncResponse.Player;
+            _presenter!.OnSessionViewChanged(this, FormalProbeView(snap, false, TableConnectionState.Closed));
+            Assert.IsNull(_presenter.LatestView!.Own);
+            Assert.IsFalse(texts[0].gameObject.activeInHierarchy);
+            Assert.IsEmpty(texts[0].text, "revoked private tile retained in inactive object");
+        }
+
+        [UnityTest]
+        public IEnumerator R3FormalProbe02_UnbindMustClearVisiblePrivateState()
+        {
+            yield return LoadAndBindTableSceneAsync();
+            var panel = FormalField<GameObject>("_ownHandPanelRoot");
+            Assert.IsTrue(panel.activeInHierarchy);
+            _presenter!.Unbind();
+            Assert.IsTrue(!panel.activeInHierarchy || string.IsNullOrEmpty(FormalField<TextMeshProUGUI[]>("_handTileTexts")[0].text), "Unbind left old private hand visible");
+        }
+
+        [UnityTest]
+        public IEnumerator R3FormalProbe03_NinthBeamCandidateMustHaveDistinctClickablePosition()
+        {
+            yield return LoadAndBindTableSceneAsync();
+            var snap = CreatePlayerBaselineEnvelope(stateVersion: 2).SyncResponse.Player;
+            snap.PrivateView.Cheat.BeamSwap = new BeamSwapView { OfferId = "beam_nine", HasDeadline = true, DeadlineRemainingMs = 10000 };
+            snap.PrivateView.Cheat.BeamSwap.SelectableHandTileIds.Add(0);
+            for (uint i = 0; i < 9; i++) snap.PrivateView.Cheat.BeamSwap.Candidates.Add(new BeamSwapCandidateView { Slot = i, SlotKind = BeamSwapSlotKind.Wall, SlotIndex = i, TileId = 36 + i });
+            _presenter!.OnSessionViewChanged(this, FormalProbeView(snap));
+            _presenter.OpenBeamSwapDialog();
+            Canvas.ForceUpdateCanvases();
+            var first = (RectTransform)FormalButton("BeamSlot_0").transform;
+            var last = (RectTransform)FormalButton("BeamSlot_8").transform;
+            CaptureScreen("r3_nine_beam_candidates.png");
+            Assert.Greater(Vector3.Distance(first.position, last.position), 1f, "slot 8 overlays slot 0: first=" + first.position + " last=" + last.position);
+        }
+
+        [UnityTest]
+        public IEnumerator R3FormalProbe04_SeventhActionCandidateMustHaveDistinctClickablePosition()
+        {
+            yield return LoadAndBindTableSceneAsync();
+            var snap = CreatePlayerBaselineEnvelope(stateVersion: 2).SyncResponse.Player;
+            snap.PrivateView.Decision.Actions.Clear();
+            for (int i = 0; i < 7; i++) snap.PrivateView.Decision.Actions.Add(new LegalActionView { ActionType = 5, OptionId = "chi_" + i, TileIds = { 0, 4 } });
+            _presenter!.OnSessionViewChanged(this, FormalProbeView(snap));
+            _presenter.OnActionButtonClicked(PlayerActionKind.DeclareChi);
+            Canvas.ForceUpdateCanvases();
+            var first = (RectTransform)FormalButton("CandidateOption_0").transform;
+            var last = (RectTransform)FormalButton("CandidateOption_6").transform;
+            CaptureScreen("r3_seven_action_candidates.png");
+            Assert.Greater(Vector3.Distance(first.position, last.position), 1f, "option 6 overlays option 0: first=" + first.position + " last=" + last.position);
+        }
+
+        [UnityTest]
+        public IEnumerator R3FormalProbe05_ControlEpochChangeMustInvalidateLocalTileMarkSelection()
+        {
+            yield return LoadAndBindTableSceneAsync();
+            _presenter!.OpenTileMarkDialog();
+            for (int i = 0; i < 4; i++) _presenter.OnHandTileClicked(i);
+            Assert.AreEqual(4, FormalField<List<uint>>("_tileMarkSelectedTiles").Count);
+            var snap = CreatePlayerBaselineEnvelope(stateVersion: 2).SyncResponse.Player;
+            snap.Cursor.ProjectionSeq = 2;
+            snap.PrivateView.Decision.ControlEpoch = 2;
+            _presenter.OnSessionViewChanged(this, FormalProbeView(snap));
+            var confirm = FormalButton("ConfirmTileMarkButton");
+            if (confirm.gameObject.activeInHierarchy) FormalClick(confirm);
+            for (int i = 0; i < 30; i++) yield return null;
+            Assert.AreEqual(0, GetUnresolvedOutboxCount(), "old local tile-mark selection silently retargeted new control epoch");
+        }
+
+        [UnityTest]
+        public IEnumerator R3FormalProbe06_AnimationFenceRejectionMustNotCommitDisplay()
+        {
+            yield return LoadAndBindTableSceneAsync();
+            Assert.AreEqual(101UL, _presenter!.LatestView!.Identity.EventSeq);
+            var snap = CreatePlayerBaselineEnvelope(stateVersion: 2, eventSeq: 100).SyncResponse.Player;
+            snap.Cursor.ProjectionSeq = 2;
+            snap.PrivateView.DrawnTileId = 128;
+            _presenter.OnSessionViewChanged(this, FormalProbeView(snap));
+            Assert.AreEqual(101UL, _presenter.LatestView!.Identity.EventSeq, "animation queue rejected EventSeqRegression but presenter committed regressed snapshot: rejection=" + _presenter.AnimationQueue.LastRejection);
+        }
+
+        [UnityTest]
+        public IEnumerator R3FormalProbe07_OffTurnWindowMustUseOffTurnActivationCommand()
+        {
+            yield return LoadAndBindTableSceneAsync();
+            var snap = CreatePlayerBaselineEnvelope(stateVersion: 2).SyncResponse.Player;
+            snap.Cursor.ProjectionSeq = 2;
+            snap.PublicView.Board.CurrentSeat = 1;
+            snap.PrivateView.Cheat.WindowId = "window_offturn_confirmed";
+            _presenter!.OnSessionViewChanged(this, FormalProbeView(snap));
+            var view = _presenter.LatestView!;
+            var owner = new TableCommandOwnerContext(new RequestId("offturn_probe"), new RequestScopeId(view.Identity.ScopeId), new StateVersion(view.Identity.StateVersion), new OwnerEpoch(view.Identity.OwnerEpoch));
+            Assert.DoesNotThrow(() => new TableCommandIntentFactory(new SystemTableClientClock()).CreateSubmitSleeveBloomOffTurn(view, owner));
+            FormalClick(FormalButton("SleeveBloomButton"));
+            for (int i = 0; i < 30; i++) yield return null;
+            Assert.AreEqual(1, GetUnresolvedOutboxCount());
+            Assert.AreEqual(CommandKind.SubmitSleeveBloomOffTurn, _presenter.InteractionState.Pending!.Intent.Kind, "confirmed off-turn window sent immediate activation instead");
+        }
+
         private static ProtocolCommand TestCommand()
         {
             var payload = CommandPayloadFactory.SubmitAction(
