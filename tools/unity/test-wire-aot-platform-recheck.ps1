@@ -84,7 +84,7 @@ $TaskProfiles = @{
         AllowedPaths = @(
             '^tools/unity/repair-android-toolchain\.ps1$',
             '^tools/unity/test-wire-aot-platform-recheck\.ps1$',
-            '^tools/unity/test-repair-android-toolchain\.ps1$',
+            '^tools/tests/VerifyV5AndroidToolchain\.Tests\.ps1$',
             '^doc/.+/V5-P2\.2-ANDROID-TOOLCHAIN-REPAIR-DELIVERY\.md$'
         )
     }
@@ -629,6 +629,15 @@ function Invoke-Git {
     return [pscustomobject]@{ ExitCode = $LASTEXITCODE; Text = (($output | Out-String).Trim()) }
 }
 
+function Invoke-GitRaw {
+    param([string[]]$Arguments)
+    $output = & git -C $RepoRoot @Arguments 2>&1
+    return [pscustomobject]@{
+        ExitCode = $LASTEXITCODE
+        Text     = (($output | ForEach-Object { [string]$_ }) -join "`n")
+    }
+}
+
 # ---------------------------------------------------------------------------
 # Guard: frozen baseline, expected branch, clean tracked worktree.
 # ---------------------------------------------------------------------------
@@ -637,6 +646,10 @@ try {
     $head = (Invoke-Git @('rev-parse', 'HEAD')).Text
     $branch = (Invoke-Git @('rev-parse', '--abbrev-ref', 'HEAD')).Text
     $status = (Invoke-Git @('-c', 'core.quotepath=false', 'status', '--porcelain=v1')).Text
+    $hasRawStatus = [bool](Get-Command Invoke-GitRaw -CommandType Function -ErrorAction SilentlyContinue)
+    $statusRaw = if ($hasRawStatus) {
+        (Invoke-GitRaw @('-c', 'core.quotepath=false', 'status', '--porcelain=v1', '-z')).Text
+    } else { '' }
     $guardLines.Add("head=$head")
     $guardLines.Add("branch=$branch")
     $guardLines.Add("status=$status")
@@ -659,7 +672,7 @@ try {
     if ($head -ne $BaselineCommit) {
         $ancestor = (Invoke-Git @('merge-base', '--is-ancestor', $BaselineCommit, $head)).ExitCode
         if ($ancestor -ne 0) { throw "HEAD is not a descendant of $BaselineCommit : $head" }
-        $diffText = (Invoke-Git @('-c', 'core.quotepath=false', 'diff', '--name-only', "$BaselineCommit..$head")).Text
+        $diffText = (Invoke-Git @('-c', 'core.quotepath=false', 'diff', '--no-renames', '--name-only', "$BaselineCommit..$head")).Text
         $baselineDiff = @($diffText -split "`r?`n" | Where-Object { $_ })
         $unexpectedDiff = @($baselineDiff | Where-Object { -not (& $isAllowedPath $_) })
         if ($unexpectedDiff.Count -gt 0) {
@@ -670,25 +683,53 @@ try {
     $guardLines.Add("head_mode=$headMode")
     $guardLines.Add("baseline_diff=$($baselineDiff -join ',')")
 
-    # Dirty/untracked paths are checked against the same whitelist. A tracked
-    # modification is allowed only for a whitelisted delivery file; everything
-    # else, including sibling task output, must stay clean.
-    $statusLines = @($status -split "`r?`n" | Where-Object { $_ })
+    # Parse porcelain v1 -z so a rename/copy cannot hide an unauthorized source.
+    # In -z mode there is no " -> " separator: an R/C entry is
+    # "XY destination\0source\0" (destination first). Both ends must be allowed.
     $unexpected = New-Object System.Collections.Generic.List[string]
-    foreach ($line in $statusLines) {
-        # Invoke-Git trims the leading space of " M path"; parse the XY code
-        # with a regex rather than assuming a fixed substring offset.
-        $path = $null
-        if ($line -match '^(?<xy>\?\?|[A-Z]{1,2})\s+(?<path>.+)$') {
-            $path = $Matches['path'].Trim().Trim('"')
+    if ($hasRawStatus) {
+        $statusEntries = @(
+            $statusRaw.TrimEnd([char]0).Split([char]0) | Where-Object { $_ -ne '' }
+        )
+        for ($entryIndex = 0; $entryIndex -lt $statusEntries.Count; $entryIndex++) {
+            $entry = $statusEntries[$entryIndex]
+            if ($entry.Length -lt 4) {
+                throw "Cannot parse git status entry: [$entry]"
+            }
+            $xy = $entry.Substring(0, 2)
+            if ($xy -notmatch '^(\?\?|[ A-Z?]{2})$') {
+                throw "Cannot parse git status code: [$xy] in [$entry]"
+            }
+            $paths = @($entry.Substring(3))
+            if ($xy -match '[RC]') {
+                $entryIndex++
+                if ($entryIndex -ge $statusEntries.Count) {
+                    throw "Cannot parse rename/copy source for status entry: [$entry]"
+                }
+                $paths += $statusEntries[$entryIndex]
+            }
+            foreach ($path in $paths) {
+                if (-not (& $isAllowedPath $path)) {
+                    $unexpected.Add("$xy $path")
+                }
+            }
         }
-        else {
-            $path = $line.Substring(3).Trim().Trim('"')
+    }
+    else {
+        # Review harnesses may expose only Invoke-Git (unquoted status text).
+        # Check both ends of any rename/copy rather than dropping the source.
+        foreach ($line in @($status -split "`r?`n" | Where-Object { $_ })) {
+            if ($line -notmatch '^(?<xy>\?\?|[ A-Z?]{1,2})\s+(?<path>.+)$') {
+                throw "Cannot parse git status entry: [$line]"
+            }
+            $xy = $Matches['xy']
+            $paths = @($Matches['path'] -split ' -> ')
+            foreach ($path in $paths) {
+                if (-not (& $isAllowedPath $path.Trim().Trim('"'))) {
+                    $unexpected.Add("$xy $path")
+                }
+            }
         }
-        if ($path -match ' -> ') {
-            $path = @($path -split ' -> ')[-1].Trim().Trim('"')
-        }
-        if (-not (& $isAllowedPath $path)) { $unexpected.Add($line) }
     }
     if ($unexpected.Count -gt 0) { throw "Worktree has unexpected changes: $($unexpected.ToArray() -join '; ')" }
     $guardLines.Add("allowed_paths=$($ProfileInfo.AllowedPaths -join ',')")

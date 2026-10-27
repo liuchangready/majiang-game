@@ -104,20 +104,17 @@ Start-Transcript -Path (Join-Path $runDir 'tests.log') -Force | Out-Null
 
 try {
     # Load the actual wrapper functions. Invoke-NativeProcess depends on the
-    # argument converter, a writer and the owned-process tree stopper.
+    # argument converter, a writer and the production owned-process stopper.
     Invoke-Expression (Get-AstFunctionText -Path $wrapperPath -Name 'ConvertTo-NativeArgument')
-    function Stop-OwnedProcessTree {
-        param([System.Diagnostics.Process]$Process, [hashtable]$TrackedInstances = @{}, [object]$RootCreationDate = $null, [string]$EvidencePath)
-        if ($Process -and -not $Process.HasExited) {
-            & taskkill.exe /PID $Process.Id /T /F 2>&1 | Out-Null
-        }
-    }
+    Invoke-Expression (Get-AstFunctionText -Path $wrapperPath -Name 'Stop-OwnedProcessTree')
     Invoke-Expression (Get-AstFunctionText -Path $wrapperPath -Name 'Invoke-NativeProcess')
     Invoke-Expression (Get-AstFunctionText -Path $wrapperPath -Name 'Get-AndroidBuildVerdict')
     Invoke-Expression (Get-AstFunctionText -Path $wrapperPath -Name 'New-ExclusiveRunDirectory')
     Invoke-Expression (Get-AstFunctionText -Path $wrapperPath -Name 'Test-AndroidApk')
     Invoke-Expression (Get-AstFunctionText -Path $repairPath -Name 'Assert-PrivateToolPath')
     Invoke-Expression (Get-AstFunctionText -Path $repairPath -Name 'Compare-SharedFingerprint')
+    Invoke-Expression (Get-AstFunctionText -Path $repairPath -Name 'Stop-BoundedProcessTree')
+    Invoke-Expression (Get-AstFunctionText -Path $repairPath -Name 'Invoke-BoundedProcess')
 
     # -----------------------------------------------------------------------
     # Native process behavior
@@ -158,6 +155,191 @@ try {
         -TimeoutSeconds 20 -LogPrefix (Join-Path $runDir 'native-spaces')
     Assert-Case -Name 'native path with spaces' -Condition ($spaceRun.ExitCode -eq 9 -and $spaceRun.Stdout -match 'SPACE_OK') `
         -Detail "exit=$($spaceRun.ExitCode) stdout=$($spaceRun.Stdout.Trim())"
+
+    # -----------------------------------------------------------------------
+    # Real repair runner (not the wrapper runner): bounded output, bounded
+    # timeout, inherited-pipe failure, large stdout/stderr and spaces.
+    # -----------------------------------------------------------------------
+    $repairNormal = Invoke-BoundedProcess -FilePath 'cmd.exe' -Arguments @('/d', '/c', 'echo REPAIR_OK') -TimeoutSeconds 20
+    Assert-Case -Name 'repair runner normal exit' -Condition ($repairNormal.ExitCode -eq 0 -and -not $repairNormal.TimedOut -and $repairNormal.OutputDrained -and $repairNormal.Stdout -match 'REPAIR_OK') `
+        -Detail "exit=$($repairNormal.ExitCode) timedOut=$($repairNormal.TimedOut) drained=$($repairNormal.OutputDrained)"
+
+    $repairNonzero = Invoke-BoundedProcess -FilePath 'cmd.exe' -Arguments @('/d', '/c', 'exit 7') -TimeoutSeconds 20
+    Assert-Case -Name 'repair runner nonzero exit' -Condition ($repairNonzero.ExitCode -eq 7 -and -not $repairNonzero.TimedOut -and $repairNonzero.OutputDrained) `
+        -Detail "exit=$($repairNonzero.ExitCode) timedOut=$($repairNonzero.TimedOut) drained=$($repairNonzero.OutputDrained)"
+
+    $repairMissing = Join-Path $runDir ("missing-repair-{0}.exe" -f [guid]::NewGuid().ToString('N'))
+    $repairMissingThrew = $false
+    try { $null = Invoke-BoundedProcess -FilePath $repairMissing -Arguments @() -TimeoutSeconds 5 }
+    catch { $repairMissingThrew = $true }
+    Assert-Case -Name 'repair runner missing executable throws' -Condition $repairMissingThrew -Detail "path=$repairMissing"
+
+    $repairTimeoutScript = Join-Path $runDir 'repair-timeout-child.ps1'
+    Write-Utf8NoBom -Path $repairTimeoutScript -Text ("Start-Sleep -Seconds 30`r`n")
+    $repairTimeout = Invoke-BoundedProcess -FilePath 'powershell.exe' -Arguments @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $repairTimeoutScript) `
+        -TimeoutSeconds $TimeoutCaseSeconds
+    Start-Sleep -Milliseconds 500
+    $repairTimeoutLeft = Get-ChildProcessCount -Marker $repairTimeoutScript
+    Assert-Case -Name 'repair runner timeout is bounded' `
+        -Condition ($repairTimeout.TimedOut -and $repairTimeout.ExitCode -eq -1 -and $repairTimeout.DurationSec -lt ($TimeoutCaseSeconds + 10) -and -not $repairTimeout.OutputDrained) `
+        -Detail "timedOut=$($repairTimeout.TimedOut) exit=$($repairTimeout.ExitCode) elapsed=$($repairTimeout.DurationSec)s drained=$($repairTimeout.OutputDrained)"
+    Assert-Case -Name 'repair runner timeout leaves no owned child' -Condition ($repairTimeoutLeft -eq 0) -Detail "children=$repairTimeoutLeft"
+
+    $repairSpaceScript = Join-Path $spaceDir 'repair probe.ps1'
+    Write-Utf8NoBom -Path $repairSpaceScript -Text ("Write-Output 'REPAIR_SPACE_OK'`r`nexit 9`r`n")
+    $repairSpace = Invoke-BoundedProcess -FilePath 'powershell.exe' -Arguments @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $repairSpaceScript) -TimeoutSeconds 20
+    Assert-Case -Name 'repair runner path with spaces' -Condition ($repairSpace.ExitCode -eq 9 -and $repairSpace.Stdout -match 'REPAIR_SPACE_OK' -and $repairSpace.OutputDrained) `
+        -Detail "exit=$($repairSpace.ExitCode) drained=$($repairSpace.OutputDrained)"
+
+    $largeScript = Join-Path $runDir 'repair-large-output.ps1'
+    Write-Utf8NoBom -Path $largeScript -Text (
+        "[Console]::Out.Write(('O' * 150000)); [Console]::Out.Flush();`r`n" +
+        "[Console]::Error.Write(('E' * 150000)); [Console]::Error.Flush();`r`nexit 3`r`n"
+    )
+    $largeRun = Invoke-BoundedProcess -FilePath 'powershell.exe' -Arguments @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $largeScript) -TimeoutSeconds 30
+    Assert-Case -Name 'repair runner drains large stdout/stderr' `
+        -Condition ($largeRun.ExitCode -eq 3 -and $largeRun.OutputDrained -and $largeRun.Stdout.Length -ge 100000 -and $largeRun.Stderr.Length -ge 100000) `
+        -Detail "exit=$($largeRun.ExitCode) drained=$($largeRun.OutputDrained) out=$($largeRun.Stdout.Length) err=$($largeRun.Stderr.Length)"
+
+    # Parent exits 0 but a child keeps the inherited pipe open: this must not be
+    # reported as success, and the runner must return within the deadline.
+    $pipeChild = Join-Path $runDir 'repair-pipe-child.ps1'
+    $pipeMarker = Join-Path $runDir 'repair-pipe-child.txt'
+    Write-Utf8NoBom -Path $pipeChild -Text (
+        "Set-Content -LiteralPath '$pipeMarker' -Value ('pid=' + `$PID)`r`n" +
+        "Start-Sleep -Seconds 6`r`nWrite-Output 'PIPE_CHILD_DONE'`r`n"
+    )
+    $pipeLauncher = Join-Path $runDir 'repair-pipe-launcher.cmd'
+    Write-Utf8NoBom -Path $pipeLauncher -Text (
+        "@echo off`r`nstart `"`" /b powershell.exe -NoProfile -ExecutionPolicy Bypass -File `"$pipeChild`"`r`nexit /b 0`r`n"
+    )
+    $pipeRun = Invoke-BoundedProcess -FilePath 'cmd.exe' -RawArguments ('/d /c ""' + $pipeLauncher + '""') -TimeoutSeconds 2
+    $pipeSafe = ($pipeRun.ExitCode -ne 0 -or $pipeRun.TimedOut) -and $pipeRun.DurationSec -lt 7 -and -not $pipeRun.OutputDrained
+    Assert-Case -Name 'repair runner fails on undrained inherited pipe' -Condition $pipeSafe `
+        -Detail "exit=$($pipeRun.ExitCode) timedOut=$($pipeRun.TimedOut) drained=$($pipeRun.OutputDrained) elapsed=$($pipeRun.DurationSec)s"
+    # Let this bounded fixture expire naturally; never kill an unproven PID.
+    $pipeDeadline = (Get-Date).AddSeconds(9)
+    Start-Sleep -Milliseconds 200
+    while ((Get-ChildProcessCount -Marker $pipeChild) -gt 0 -and (Get-Date) -lt $pipeDeadline) { Start-Sleep -Milliseconds 200 }
+
+    # -----------------------------------------------------------------------
+    # Real repair stopper: exact PID+creation ownership, no /T, preserve
+    # unknown/mismatched/stale instances. taskkill and CIM are intercepted; the
+    # only real process is a test-owned self-expiring dummy root.
+    # -----------------------------------------------------------------------
+    $dummy = Start-Process -FilePath 'powershell.exe' -ArgumentList @('-NoProfile', '-Command', 'Start-Sleep -Seconds 60') -PassThru -WindowStyle Hidden
+    Start-Sleep -Milliseconds 500
+    $dummyDate = $null
+    try { $dummyDate = (Get-CimInstance Win32_Process -Filter "ProcessId=$($dummy.Id)").CreationDate } catch { }
+    $stopperRows = & {
+        function Get-CimInstance {
+            param($ClassName, $Filter, $ErrorAction)
+            $m = [regex]::Match([string]$Filter, 'ProcessId=(\d+)')
+            if (-not $m.Success) { return @() }
+            $id = [int]$m.Groups[1].Value
+            return $script:MockCimById[$id]
+        }
+        function taskkill.exe { $script:MockKills.Add(@($args)) }
+        $childPid = 990002
+        $childDate = [datetime]'2026-10-28T01:00:00'
+        $staleDate = $childDate.AddSeconds(-5)
+        $rows = @()
+        foreach ($case in @(
+            @{ name = 'stopper preserves when expected identity is absent'; expected = $null; map = @{}; tracked = @{}; expectRoot = $false; expectChild = $false },
+            @{ name = 'stopper preserves when current CIM is absent'; expected = $dummyDate; map = @{}; tracked = @{}; expectRoot = $false; expectChild = $false },
+            @{ name = 'stopper preserves on creation mismatch'; expected = ([datetime]$dummyDate).AddSeconds(1); map = @{ $dummy.Id = [pscustomobject]@{ ProcessId = $dummy.Id; CreationDate = $dummyDate } }; tracked = @{}; expectRoot = $false; expectChild = $false },
+            @{ name = 'stopper kills only matched root without /T'; expected = $dummyDate; map = @{ $dummy.Id = [pscustomobject]@{ ProcessId = $dummy.Id; CreationDate = $dummyDate } }; tracked = @{}; expectRoot = $true; expectChild = $false },
+            @{ name = 'stopper kills verified descendant instance'; expected = $dummyDate; map = @{ $dummy.Id = [pscustomobject]@{ ProcessId = $dummy.Id; CreationDate = $dummyDate }; $childPid = [pscustomobject]@{ ProcessId = $childPid; CreationDate = $childDate } }; tracked = @{ ([string]$childPid) = $childDate }; expectRoot = $true; expectChild = $true },
+            @{ name = 'stopper preserves stale descendant instance'; expected = $dummyDate; map = @{ $dummy.Id = [pscustomobject]@{ ProcessId = $dummy.Id; CreationDate = $dummyDate }; $childPid = [pscustomobject]@{ ProcessId = $childPid; CreationDate = $childDate } }; tracked = @{ ([string]$childPid) = $staleDate }; expectRoot = $true; expectChild = $false }
+        )) {
+            $script:MockCimById = $case.map
+            $script:MockKills = New-Object System.Collections.Generic.List[object]
+            Stop-BoundedProcessTree -Process $dummy -ExpectedCreationDate $case.expected -TrackedInstances $case.tracked
+            $flat = @($script:MockKills | ForEach-Object { @($_) })
+            $rootKilled = @($flat | Where-Object { $_ -contains ([string]$dummy.Id) } | Select-Object -First 1).Count -gt 0
+            $childKilled = @($flat | Where-Object { $_ -contains ([string]$childPid) } | Select-Object -First 1).Count -gt 0
+            $hasT = @($flat | Where-Object { $_ -contains '/T' }).Count -gt 0
+            $rows += [pscustomobject]@{
+                name = $case.name
+                pass = ($rootKilled -eq $case.expectRoot) -and ($childKilled -eq $case.expectChild) -and (-not $hasT)
+                detail = ("calls={0}; root={1}; child={2}; slashT={3}" -f $script:MockKills.Count, $rootKilled, $childKilled, $hasT)
+            }
+        }
+        return $rows
+    }
+    if (-not $dummy.HasExited) { Stop-Process -Id $dummy.Id -Force -ErrorAction SilentlyContinue }
+    foreach ($row in $stopperRows) {
+        Assert-Case -Name $row.name -Condition $row.pass -Detail $row.detail
+    }
+
+    # -----------------------------------------------------------------------
+    # Actual wrapper guard: -z rename/copy must check both source and
+    # destination; no " -> " shortcut may hide an unauthorized source.
+    # -----------------------------------------------------------------------
+    $nul = [char]0
+    $allowedRepair = 'tools/unity/repair-android-toolchain.ps1'
+    $allowedTest = 'tools/tests/VerifyV5AndroidToolchain.Tests.ps1'
+    $allowedWrapper = 'tools/unity/test-wire-aot-platform-recheck.ps1'
+    $foreign = 'tools/unity/test-wire-aot.ps1'
+    $guardRows = & {
+        $tokens = $null
+        $errors = $null
+        $ast = [System.Management.Automation.Language.Parser]::ParseFile($wrapperPath, [ref]$tokens, [ref]$errors)
+        if ($errors.Count) { throw 'Parse failure' }
+        $profiles = $ast.Find({ param($n) $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and $n.Left.Extent.Text -eq '$TaskProfiles' }, $true).Extent.Text
+        $guard = $ast.Find({ param($n) $n -is [System.Management.Automation.Language.TryStatementAst] -and $n.Body.Extent.Text.Contains('Branch mismatch:') }, $true).Extent.Text
+        if (-not $profiles -or -not $guard) { throw 'Guard AST missing' }
+
+        function Invoke-Git {
+            param([string[]]$Arguments)
+            $text = ''
+            if (($Arguments -join ' ') -eq 'rev-parse HEAD') { $text = $BaselineCommit }
+            elseif ($Arguments -contains '--abbrev-ref') { $text = $ExpectedBranch }
+            elseif ($Arguments -contains 'check-ignore') { return [pscustomobject]@{ ExitCode = 0; Text = '' } }
+            elseif ($Arguments -contains 'status') { $text = 'fixture' }
+            return [pscustomobject]@{ ExitCode = 0; Text = $text }
+        }
+        function Invoke-GitRaw {
+            param([string[]]$Arguments)
+            return [pscustomobject]@{ ExitCode = 0; Text = $script:MockStatusZ }
+        }
+        function Write-Utf8NoBom { param($Path, $Text) }
+        function Add-Result { param($Name, $Status, $Detail, $ExitCode) $script:GuardStatus = $Status }
+
+        $rows = @()
+        foreach ($case in @(
+            @{ name = 'guard rejects rename foreign source -> allowed destination'; z = "R  $allowedRepair$nul$foreign$nul"; expected = $false },
+            @{ name = 'guard rejects rename allowed source -> foreign destination'; z = "R  $foreign$nul$allowedRepair$nul"; expected = $false },
+            @{ name = 'guard accepts rename between allowed paths'; z = "R  $allowedTest$nul$allowedRepair$nul"; expected = $true },
+            @{ name = 'guard rejects copy from foreign source'; z = "C  $allowedRepair$nul$foreign$nul"; expected = $false },
+            @{ name = 'guard accepts allowed tracked modification'; z = " M $allowedWrapper$nul"; expected = $true },
+            @{ name = 'guard rejects foreign untracked path'; z = "?? tools/foreign.ps1$nul"; expected = $false }
+        )) {
+            Invoke-Expression $profiles
+            $TaskProfile = 'AndroidToolchain'
+            $ProfileInfo = $TaskProfiles[$TaskProfile]
+            $BaselineCommit = $ProfileInfo.Baseline
+            $ExpectedBranch = $ProfileInfo.Branch
+            $RepoRoot = $runDir
+            $RunDir = $runDir
+            $Stamp = 'guard-fixture'
+            $script:MockStatusZ = $case.z
+            $script:GuardStatus = $null
+            $script:GuardError = $null
+            $guardLines = New-Object System.Collections.Generic.List[string]
+            try { Invoke-Expression $guard } catch { $script:GuardError = $_.Exception.Message }
+            $accepted = $script:GuardStatus -eq 'PASS'
+            $rows += [pscustomobject]@{
+                name = $case.name
+                pass = ($accepted -eq $case.expected)
+                detail = "accepted=$accepted expected=$($case.expected) error=$($script:GuardError)"
+            }
+        }
+        return $rows
+    }
+    foreach ($row in $guardRows) {
+        Assert-Case -Name $row.name -Condition $row.pass -Detail $row.detail
+    }
 
     # -----------------------------------------------------------------------
     # Android build verdict negatives
@@ -297,22 +479,16 @@ add_custom_target(hello ALL COMMAND `${CMAKE_COMMAND} -E echo NINJA_OK)
     New-Item -ItemType Directory -Force -Path $checkDir | Out-Null
     $checkLog = Join-Path $runDir 'check-only.stdout.log'
     $checkErr = Join-Path $runDir 'check-only.stderr.log'
-    $checkPsi = New-Object System.Diagnostics.ProcessStartInfo
-    $checkPsi.FileName = 'powershell.exe'
-    $checkPsi.Arguments = "-NoProfile -ExecutionPolicy Bypass -File `"$repairPath`" -CheckOnly"
-    $checkPsi.UseShellExecute = $false
-    $checkPsi.CreateNoWindow = $true
-    $checkPsi.RedirectStandardOutput = $true
-    $checkPsi.RedirectStandardError = $true
-    $checkProc = New-Object System.Diagnostics.Process
-    $checkProc.StartInfo = $checkPsi
-    $null = $checkProc.Start()
-    $checkOut = $checkProc.StandardOutput.ReadToEnd()
-    $checkErrText = $checkProc.StandardError.ReadToEnd()
-    $checkProc.WaitForExit()
+    $checkRun = Invoke-BoundedProcess -FilePath 'powershell.exe' -Arguments @(
+        '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $repairPath, '-CheckOnly'
+    ) -TimeoutSeconds 300
+    $checkOut = $checkRun.Stdout
+    $checkErrText = $checkRun.Stderr
     Write-Utf8NoBom -Path $checkLog -Text $checkOut
     Write-Utf8NoBom -Path $checkErr -Text $checkErrText
-    Assert-Case -Name 'repair check-only exits 0' -Condition ($checkProc.ExitCode -eq 0) -Detail "exit=$($checkProc.ExitCode) log=$checkLog"
+    Assert-Case -Name 'repair check-only exits 0' `
+        -Condition ($checkRun.ExitCode -eq 0 -and -not $checkRun.TimedOut -and $checkRun.OutputDrained) `
+        -Detail "exit=$($checkRun.ExitCode) timedOut=$($checkRun.TimedOut) drained=$($checkRun.OutputDrained) log=$checkLog"
 
     $checkEvidence = $null
     $evidenceMatch = [regex]::Match($checkOut, 'evidence=(.+)')

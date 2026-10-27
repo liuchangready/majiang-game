@@ -124,17 +124,55 @@ function Assert-PrivateToolPath {
 function Stop-BoundedProcessTree {
     param(
         [Parameter(Mandatory)][System.Diagnostics.Process]$Process,
-        [object]$ExpectedCreationDate
+        [object]$ExpectedCreationDate,
+        [hashtable]$TrackedInstances = @{}
     )
-    $creation = $null
+
+    # Root identity must be proven by an exact PID + creation-time instance. If
+    # either side is unavailable or differs, preserve everything: a bare PID or
+    # ParentProcessId is not ownership. Descendants are only eligible when the
+    # same creation-time instance was tracked while the root was alive.
+    if (-not $ExpectedCreationDate) { return }
+    $rootCurrent = $null
     try {
-        $creation = (Get-CimInstance Win32_Process -Filter ("ProcessId=$($Process.Id)") -ErrorAction SilentlyContinue).CreationDate
+        $rootCurrent = Get-CimInstance Win32_Process -Filter ("ProcessId=$($Process.Id)") -ErrorAction SilentlyContinue
     }
     catch { }
-    if ($ExpectedCreationDate -and $creation -and ([datetime]$creation -ne [datetime]$ExpectedCreationDate)) {
-        return
+    if (-not $rootCurrent) { return }
+    $rootDate = $null
+    try { $rootDate = [datetime]$rootCurrent.CreationDate } catch { }
+    if (-not $rootDate -or $rootDate -ne [datetime]$ExpectedCreationDate) { return }
+
+    $verified = New-Object System.Collections.Generic.List[int]
+    foreach ($key in $TrackedInstances.Keys) {
+        $trackedId = 0
+        if (-not [int]::TryParse([string]$key, [ref]$trackedId)) { continue }
+        if ($trackedId -le 0 -or $trackedId -eq $PID -or $trackedId -eq $Process.Id) { continue }
+        $current = $null
+        try {
+            $current = Get-CimInstance Win32_Process -Filter ("ProcessId=$trackedId") -ErrorAction SilentlyContinue
+        }
+        catch { }
+        if (-not $current) { continue }
+        $currentId = 0
+        try { $currentId = [int]$current.ProcessId } catch { $currentId = 0 }
+        if ($currentId -ne $trackedId) { continue }
+        $trackedDate = $null
+        $currentDate = $null
+        try { $trackedDate = [datetime]$TrackedInstances[$key] } catch { }
+        try { $currentDate = [datetime]$current.CreationDate } catch { }
+        if ($trackedDate -and $currentDate -and $currentDate -eq $trackedDate) {
+            $verified.Add($trackedId)
+        }
     }
-    & taskkill.exe /PID $Process.Id /T /F 2>&1 | Out-Null
+
+    # No /T: recursive taskkill can expand to a reused PID or an unproven child.
+    foreach ($targetId in $verified) {
+        try { & taskkill.exe /PID $targetId /F 2>&1 | Out-Null } catch { }
+    }
+    if (-not $Process.HasExited) {
+        try { & taskkill.exe /PID $Process.Id /F 2>&1 | Out-Null } catch { }
+    }
 }
 
 function Invoke-BoundedProcess {
@@ -177,27 +215,82 @@ function Invoke-BoundedProcess {
     catch { }
     $stdoutTask = $process.StandardOutput.ReadToEndAsync()
     $stderrTask = $process.StandardError.ReadToEndAsync()
+
+    $deadline = (Get-Date).AddSeconds([Math]::Max(1, $TimeoutSeconds))
     $timedOut = $false
-    if (-not $process.WaitForExit([Math]::Max(0, $TimeoutSeconds * 1000))) {
-        $timedOut = $true
-        Stop-BoundedProcessTree -Process $process -ExpectedCreationDate $creationDate
+    $trackedInstances = @{}
+    while (-not $process.HasExited) {
+        # Snapshot while the root is alive; each edge must carry a creation time
+        # not earlier than its already-proven direct parent.
+        $snapshot = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue)
+        $current = @{}
+        $byParent = @{}
+        foreach ($item in $snapshot) {
+            $current[[int]$item.ProcessId] = $item
+            $parentId = [int]$item.ParentProcessId
+            if (-not $byParent.ContainsKey($parentId)) {
+                $byParent[$parentId] = New-Object System.Collections.Generic.List[int]
+            }
+            $byParent[$parentId].Add([int]$item.ProcessId)
+        }
+        if ($current.ContainsKey($process.Id)) {
+            $rootDate = $null
+            try { $rootDate = [datetime]$current[$process.Id].CreationDate } catch { }
+            if ($rootDate -and (-not $creationDate)) { $creationDate = $rootDate }
+            if ($rootDate -and $creationDate -and $rootDate -eq [datetime]$creationDate) {
+                $queue = New-Object System.Collections.Generic.Queue[int]
+                $queue.Enqueue($process.Id)
+                while ($queue.Count -gt 0) {
+                    $currentId = $queue.Dequeue()
+                    if (-not $byParent.ContainsKey($currentId)) { continue }
+                    $parentDate = $null
+                    try { $parentDate = [datetime]$current[$currentId].CreationDate } catch { }
+                    if (-not $parentDate) { continue }
+                    foreach ($childId in $byParent[$currentId]) {
+                        $childDate = $null
+                        try { $childDate = [datetime]$current[$childId].CreationDate } catch { }
+                        if ($childDate -and $childDate -ge $parentDate) {
+                            $trackedInstances[[string]$childId] = $childDate
+                            $queue.Enqueue($childId)
+                        }
+                    }
+                }
+            }
+        }
+        $remainingMs = [int][Math]::Max(0, ($deadline - (Get-Date)).TotalMilliseconds)
+        if ($remainingMs -le 0) { $timedOut = $true; break }
+        $sliceMs = [int][Math]::Min(250, $remainingMs)
+        if ($process.WaitForExit($sliceMs)) { break }
+    }
+
+    $outputDrained = $false
+    if (-not $timedOut -and $process.HasExited) {
+        $drainMs = [int][Math]::Max(0, ($deadline - (Get-Date)).TotalMilliseconds)
+        # The result of WaitAll is authoritative: an exited parent can leave a
+        # descendant holding stdout/stderr, which must not be reported as success.
+        $outputDrained = [System.Threading.Tasks.Task]::WaitAll(@($stdoutTask, $stderrTask), $drainMs)
+        if (-not $outputDrained) { $timedOut = $true }
+    }
+
+    if ($timedOut) {
+        Stop-BoundedProcessTree -Process $process -ExpectedCreationDate $creationDate -TrackedInstances $trackedInstances
         try { $process.StandardOutput.Close() } catch { }
         try { $process.StandardError.Close() } catch { }
+        try { [System.Threading.Tasks.Task]::WaitAll(@($stdoutTask, $stderrTask), 500) | Out-Null } catch { }
+        try { $process.WaitForExit(500) | Out-Null } catch { }
     }
-    try {
-        [System.Threading.Tasks.Task]::WaitAll(@($stdoutTask, $stderrTask), 1000) | Out-Null
-    }
-    catch { }
     $stdout = if ($stdoutTask.IsCompleted) { $stdoutTask.Result } else { '<drain timeout>' }
     $stderr = if ($stderrTask.IsCompleted) { $stderrTask.Result } else { '<drain timeout>' }
+    if (-not $stdoutTask.IsCompleted -or -not $stderrTask.IsCompleted) { $outputDrained = $false }
     $exitCode = if ($timedOut) { -1 } else { $process.ExitCode }
     return [pscustomobject]@{
-        ExitCode    = $exitCode
-        TimedOut    = $timedOut
-        Stdout      = $stdout
-        Stderr      = $stderr
-        DurationSec = [Math]::Round(((Get-Date) - $started).TotalSeconds, 2)
-        CommandLine = "$FilePath $argumentLine"
+        ExitCode     = $exitCode
+        TimedOut     = $timedOut
+        OutputDrained = $outputDrained
+        Stdout       = $stdout
+        Stderr       = $stderr
+        DurationSec  = [Math]::Round(((Get-Date) - $started).TotalSeconds, 2)
+        CommandLine  = "$FilePath $argumentLine"
     }
 }
 
