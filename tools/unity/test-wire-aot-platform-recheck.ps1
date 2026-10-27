@@ -48,32 +48,74 @@ param(
 
     [int]$AndroidBuildTimeoutSec = 3600,
 
-    [int]$PlayerTimeoutSec = 300
+    [int]$PlayerTimeoutSec = 300,
+
+    [ValidateSet('LegacyPlatform', 'AndroidToolchain')]
+    [string]$TaskProfile = 'LegacyPlatform',
+
+    [string]$AndroidToolchainManifest,
+
+    [string]$AndroidCliBin,
+
+    [string]$AndroidNinjaDir,
+
+    [string]$AndroidJdkHome
 )
 
 $ErrorActionPreference = 'Stop'
-$BaselineCommit = '00c71cd72b3786c1d41c5d48951824f2150867ee'
-$ExpectedBranch = 'wt/v5-p22-platform-recheck-20261026'
-$Stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
-$RepoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
-$ArtifactRoot = Join-Path $RepoRoot 'build\p22-platform-recheck'
-New-Item -ItemType Directory -Force -Path $ArtifactRoot | Out-Null
-$RunDir = $null
-for ($attempt = 0; $attempt -lt 10; $attempt++) {
-    $RunId = "$Stamp-$([guid]::NewGuid().ToString('N').Substring(0, 12))"
-    $candidate = Join-Path $ArtifactRoot $RunId
-    if (Test-Path -LiteralPath $candidate) { continue }
-    try {
-        New-Item -ItemType Directory -Path $candidate -ErrorAction Stop | Out-Null
-        $RunDir = $candidate
-        break
+
+# Explicit profiles. The guard never accepts an arbitrary baseline or diff; the
+# only way to run from a delivery commit is to name a profile whose frozen SHA
+# and exact file whitelist are compiled in here.
+$TaskProfiles = @{
+    LegacyPlatform = [ordered]@{
+        Baseline     = '00c71cd72b3786c1d41c5d48951824f2150867ee'
+        Branch       = 'wt/v5-p22-platform-recheck-20261026'
+        ArtifactRoot = 'build\p22-platform-recheck'
+        AllowedPaths = @(
+            '^tools/unity/test-wire-aot-platform-recheck\.ps1$',
+            '^doc/.+/V5-P2\.2-PLATFORM-RECHECK-20261026\.md$'
+        )
     }
-    catch {
-        if (Test-Path -LiteralPath $candidate) { continue }
-        throw
+    AndroidToolchain = [ordered]@{
+        Baseline     = '36014038bcbe61f7b9acdd4fad4694f329bbd4d2'
+        Branch       = 'wt/v5-android-toolchain-ds-20261027'
+        ArtifactRoot = 'build\android-toolchain-repair\recheck'
+        AllowedPaths = @(
+            '^tools/unity/repair-android-toolchain\.ps1$',
+            '^tools/unity/test-wire-aot-platform-recheck\.ps1$',
+            '^tools/unity/test-repair-android-toolchain\.ps1$',
+            '^doc/.+/V5-P2\.2-ANDROID-TOOLCHAIN-REPAIR-DELIVERY\.md$'
+        )
     }
 }
-if (-not $RunDir) { throw "Could not allocate a fresh artifact directory under $ArtifactRoot" }
+$ProfileInfo = $TaskProfiles[$TaskProfile]
+$BaselineCommit = $ProfileInfo.Baseline
+$ExpectedBranch = $ProfileInfo.Branch
+
+function New-ExclusiveRunDirectory {
+    param([Parameter(Mandatory)][string]$Root, [Parameter(Mandatory)][string]$Stamp)
+    New-Item -ItemType Directory -Force -Path $Root | Out-Null
+    for ($attempt = 0; $attempt -lt 10; $attempt++) {
+        $runId = "$Stamp-$([guid]::NewGuid().ToString('N').Substring(0, 12))"
+        $candidate = Join-Path $Root $runId
+        if (Test-Path -LiteralPath $candidate) { continue }
+        try {
+            New-Item -ItemType Directory -Path $candidate -ErrorAction Stop | Out-Null
+            return $candidate
+        }
+        catch {
+            if (Test-Path -LiteralPath $candidate) { continue }
+            throw
+        }
+    }
+    throw "Could not allocate a fresh artifact directory under $Root"
+}
+
+$Stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
+$RepoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
+$ArtifactRoot = Join-Path $RepoRoot $ProfileInfo.ArtifactRoot
+$RunDir = New-ExclusiveRunDirectory -Root $ArtifactRoot -Stamp $Stamp
 
 $script:Results = New-Object System.Collections.Generic.List[object]
 $script:Artifacts = New-Object System.Collections.Generic.List[object]
@@ -136,6 +178,115 @@ function ConvertTo-NativeArgument {
     }
 
     return '"' + ($Value -replace '(\\*)"', '$1$1\"') + '"'
+}
+
+function Get-AndroidBuildVerdict {
+    param(
+        [bool]$TimedOut,
+        [int]$ExitCode,
+        [bool]$ApkExists,
+        [bool]$ApkFresh,
+        [bool]$ApkValid,
+        [bool]$MarkerFound,
+        [string]$MarkerTarget,
+        [string]$MarkerBackend,
+        [string]$MarkerResult,
+        [int]$MarkerErrors,
+        [bool]$MarkerOutputMatches
+    )
+
+    $reasons = New-Object System.Collections.Generic.List[string]
+    if ($TimedOut) { $reasons.Add('timeout') }
+    if ($ExitCode -ne 0) { $reasons.Add("exit=$ExitCode") }
+    if (-not $ApkExists) { $reasons.Add('apk-missing') }
+    elseif (-not $ApkFresh) { $reasons.Add('apk-stale') }
+    if ($ApkExists -and $ApkFresh -and -not $ApkValid) { $reasons.Add('apk-invalid') }
+    if (-not $MarkerFound) { $reasons.Add('marker-missing') }
+    if ($MarkerTarget -ne 'Android') { $reasons.Add("marker-target=$MarkerTarget") }
+    if ($MarkerBackend -ne 'IL2CPP') { $reasons.Add("marker-backend=$MarkerBackend") }
+    if ($MarkerResult -ne 'Succeeded') { $reasons.Add("marker-result=$MarkerResult") }
+    if ($MarkerErrors -ne 0) { $reasons.Add("marker-errors=$MarkerErrors") }
+    if (-not $MarkerOutputMatches) { $reasons.Add('marker-output-mismatch') }
+    return [pscustomobject]@{ Pass = ($reasons.Count -eq 0); Reasons = $reasons.ToArray() }
+}
+
+function Test-AndroidApk {
+    param(
+        [Parameter(Mandatory)][string]$Path,
+        [string]$SdkRoot,
+        [string]$LogPrefix,
+        [int]$TimeoutSec = 120
+    )
+
+    $result = [ordered]@{
+        Valid = $false
+        Reason = ''
+        ZipSignature = $false
+        HasManifestEntry = $false
+        Aapt2 = $null
+        AaptExit = -999
+        Package = ''
+        Bytes = $null
+        Sha256 = $null
+    }
+    if (-not (Test-Path -LiteralPath $Path)) {
+        $result.Reason = 'apk-missing'
+        return [pscustomobject]$result
+    }
+    $result.Bytes = (Get-Item -LiteralPath $Path).Length
+    $result.Sha256 = Get-Sha256 -Path $Path
+    try {
+        $stream = [System.IO.File]::OpenRead($Path)
+        try {
+            $signature = New-Object byte[] 4
+            $read = $stream.Read($signature, 0, 4)
+            $result.ZipSignature = ($read -eq 4 -and $signature[0] -eq 0x50 -and $signature[1] -eq 0x4B -and $signature[2] -eq 0x03 -and $signature[3] -eq 0x04)
+        }
+        finally { $stream.Dispose() }
+    }
+    catch {
+        $result.Reason = "apk-open-failed: $($_.Exception.Message)"
+        return [pscustomobject]$result
+    }
+    try {
+        Add-Type -AssemblyName System.IO.Compression.FileSystem -ErrorAction Stop
+        $zip = [System.IO.Compression.ZipFile]::OpenRead($Path)
+        try {
+            $result.HasManifestEntry = [bool]($zip.Entries | Where-Object { $_.FullName -eq 'AndroidManifest.xml' } | Select-Object -First 1)
+        }
+        finally { $zip.Dispose() }
+    }
+    catch {
+        $result.Reason = "apk-zip-failed: $($_.Exception.Message)"
+        return [pscustomobject]$result
+    }
+
+    if ($SdkRoot -and (Test-Path -LiteralPath (Join-Path $SdkRoot 'build-tools'))) {
+        $aapt2 = Get-ChildItem -LiteralPath (Join-Path $SdkRoot 'build-tools') -Directory -ErrorAction SilentlyContinue |
+            Sort-Object Name -Descending |
+            ForEach-Object { Join-Path $_.FullName 'aapt2.exe' } |
+            Where-Object { Test-Path -LiteralPath $_ } |
+            Select-Object -First 1
+        $result.Aapt2 = $aapt2
+    }
+    if ($result.Aapt2) {
+        $badging = Invoke-NativeProcess -FilePath $result.Aapt2 -Arguments @('dump', 'badging', $Path) -TimeoutSeconds $TimeoutSec `
+            -LogPrefix $LogPrefix
+        $result.AaptExit = $badging.ExitCode
+        $packageMatch = [regex]::Match($badging.Stdout, "package: name='([^']+)'")
+        if ($packageMatch.Success) { $result.Package = $packageMatch.Groups[1].Value }
+        $result.Valid = (-not $badging.TimedOut) -and ($badging.ExitCode -eq 0) -and
+            $result.ZipSignature -and $result.HasManifestEntry -and
+            ($result.Package -eq 'com.mahjong.aotsmoke')
+        if (-not $result.Valid) {
+            $result.Reason = ("aapt2 exit={0} timedOut={1} package='{2}' zip={3} manifest={4}" -f `
+                $badging.ExitCode, $badging.TimedOut, $result.Package, $result.ZipSignature, $result.HasManifestEntry)
+        }
+    }
+    else {
+        $result.Reason = 'aapt2-missing'
+    }
+    return [pscustomobject]$result
 }
 
 function Stop-OwnedProcessTree {
@@ -370,7 +521,20 @@ function Invoke-NativeProcess {
 function Get-Sha256 {
     param([Parameter(Mandatory)][string]$Path)
     if (-not (Test-Path -LiteralPath $Path)) { return $null }
-    return (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash
+    # Unity can leave a short-lived child (ILPP/AutoQuitter) holding the log or
+    # artifact handle after the root exits. Retry the read instead of turning a
+    # transient sharing violation into a false build failure.
+    $lastError = $null
+    for ($attempt = 0; $attempt -lt 20; $attempt++) {
+        try {
+            return (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash
+        }
+        catch {
+            $lastError = $_
+            Start-Sleep -Milliseconds 500
+        }
+    }
+    throw "Cannot hash $Path after retries: $($lastError.Exception.Message)"
 }
 
 function Add-Artifact {
@@ -478,9 +642,18 @@ try {
     $guardLines.Add("status=$status")
     if ($branch -ne $ExpectedBranch) { throw "Branch mismatch: $branch != $ExpectedBranch" }
 
+    # The profile's exact file whitelist is the only diff this task may carry.
+    # It is never widened to "any diff": each regex is anchored and compiled in.
+    $isAllowedPath = {
+        param([string]$Path)
+        foreach ($pattern in $ProfileInfo.AllowedPaths) {
+            if ($Path -match $pattern) { return $true }
+        }
+        return $false
+    }
+
     # Accept the frozen baseline itself, or a delivery commit that is a
-    # descendant of it and only adds this task's wrapper/report. This keeps the
-    # guard runnable from the committed delivery without weakening the baseline.
+    # descendant of it and only changes this profile's whitelisted files.
     $headMode = 'frozen-baseline'
     $baselineDiff = @()
     if ($head -ne $BaselineCommit) {
@@ -488,33 +661,40 @@ try {
         if ($ancestor -ne 0) { throw "HEAD is not a descendant of $BaselineCommit : $head" }
         $diffText = (Invoke-Git @('-c', 'core.quotepath=false', 'diff', '--name-only', "$BaselineCommit..$head")).Text
         $baselineDiff = @($diffText -split "`r?`n" | Where-Object { $_ })
-        $unexpectedDiff = @($baselineDiff | Where-Object {
-            $file = $_
-            $file -ne 'tools/unity/test-wire-aot-platform-recheck.ps1' -and
-            $file -notmatch '^doc/.+/V5-P2\.2-PLATFORM-RECHECK-20261026\.md$'
-        })
+        $unexpectedDiff = @($baselineDiff | Where-Object { -not (& $isAllowedPath $_) })
         if ($unexpectedDiff.Count -gt 0) {
-            throw "HEAD changes files outside this task: $($unexpectedDiff -join '; ')"
+            throw "HEAD changes files outside profile $TaskProfile`: $($unexpectedDiff -join '; ')"
         }
         $headMode = 'delivery-commit'
     }
     $guardLines.Add("head_mode=$headMode")
     $guardLines.Add("baseline_diff=$($baselineDiff -join ',')")
 
-    # This task is allowed to create its own wrapper and report. Nothing else may
-    # be dirty or untracked when the recheck starts.
-    $wrapperRel = $PSCommandPath.Substring($RepoRoot.Length + 1).Replace('\', '/')
-    $allowedUntracked = @($wrapperRel)
+    # Dirty/untracked paths are checked against the same whitelist. A tracked
+    # modification is allowed only for a whitelisted delivery file; everything
+    # else, including sibling task output, must stay clean.
     $statusLines = @($status -split "`r?`n" | Where-Object { $_ })
-    $unexpected = @($statusLines | Where-Object {
-        $line = $_
-        $line -ne "?? $wrapperRel" -and
-        $line -notmatch '^\?\? doc/.+/V5-P2\.2-PLATFORM-RECHECK-20261026\.md$'
-    })
-    if ($unexpected.Count -gt 0) { throw "Worktree has unexpected changes: $($unexpected -join '; ')" }
-    $guardLines.Add("allowed_untracked=$($allowedUntracked -join ',')")
-    if (-not ((Invoke-Git @('check-ignore', '-q', "build/p22-platform-recheck/$Stamp")).ExitCode -eq 0)) {
-        throw 'build/p22-platform-recheck is not git-ignored'
+    $unexpected = New-Object System.Collections.Generic.List[string]
+    foreach ($line in $statusLines) {
+        # Invoke-Git trims the leading space of " M path"; parse the XY code
+        # with a regex rather than assuming a fixed substring offset.
+        $path = $null
+        if ($line -match '^(?<xy>\?\?|[A-Z]{1,2})\s+(?<path>.+)$') {
+            $path = $Matches['path'].Trim().Trim('"')
+        }
+        else {
+            $path = $line.Substring(3).Trim().Trim('"')
+        }
+        if ($path -match ' -> ') {
+            $path = @($path -split ' -> ')[-1].Trim().Trim('"')
+        }
+        if (-not (& $isAllowedPath $path)) { $unexpected.Add($line) }
+    }
+    if ($unexpected.Count -gt 0) { throw "Worktree has unexpected changes: $($unexpected.ToArray() -join '; ')" }
+    $guardLines.Add("allowed_paths=$($ProfileInfo.AllowedPaths -join ',')")
+    $artifactRel = $ProfileInfo.ArtifactRoot.Replace('\', '/')
+    if (-not ((Invoke-Git @('check-ignore', '-q', "$artifactRel/$Stamp")).ExitCode -eq 0)) {
+        throw "$artifactRel is not git-ignored"
     }
     Write-Utf8NoBom -Path (Join-Path $RunDir 'baseline-guard.txt') -Text (($guardLines -join "`r`n") + "`r`n")
     Add-Result -Name 'Baseline guard' -Status PASS -Detail "HEAD=$head mode=$headMode branch=$branch clean=true" -ExitCode 0
@@ -710,6 +890,87 @@ try {
         })
     } else { @() }
 
+    # -----------------------------------------------------------------------
+    # Process-scoped Android tool overrides. Only the Unity child inherits
+    # these; shared tools, registry, EditorPrefs and global PATH are untouched.
+    # -----------------------------------------------------------------------
+    $androidToolError = $null
+    $androidToolInfo = [ordered]@{}
+    $androidToolEnv = @{}
+    if ($TaskProfile -eq 'AndroidToolchain') {
+        $manifest = $null
+        $manifestPath = $AndroidToolchainManifest
+        if ($manifestPath) {
+            if (-not (Test-Path -LiteralPath $manifestPath)) {
+                $androidToolError = "AndroidToolchainManifest missing: $manifestPath"
+            }
+            else {
+                try {
+                    $manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
+                    $androidToolInfo['manifest'] = $manifestPath
+                    $androidToolInfo['manifestSha256'] = Get-Sha256 -Path $manifestPath
+                }
+                catch {
+                    $androidToolError = "Cannot parse Android toolchain manifest: $($_.Exception.Message)"
+                }
+            }
+        }
+        if ($manifest) {
+            if (-not $AndroidCliBin) { $AndroidCliBin = [string]$manifest.androidCliBin }
+            if (-not $AndroidNinjaDir) { $AndroidNinjaDir = [string]$manifest.ninjaDir }
+            if (-not $AndroidJdkHome) { $AndroidJdkHome = [string]$manifest.jdkHome }
+        }
+
+        $prepend = New-Object System.Collections.Generic.List[string]
+        if ($AndroidJdkHome) {
+            $javaOverride = Join-Path $AndroidJdkHome 'bin\java.exe'
+            if (Test-Path -LiteralPath $javaOverride) {
+                $androidToolEnv['JAVA_HOME'] = $AndroidJdkHome
+                $prepend.Add((Join-Path $AndroidJdkHome 'bin'))
+                $javaOverrideRun = Invoke-NativeProcess -FilePath $javaOverride -Arguments @('-version') -TimeoutSeconds 20 `
+                    -LogPrefix (Join-Path $RunDir 'env-java-override')
+                $javaOverrideLine = (($javaOverrideRun.Stderr + "`n" + $javaOverrideRun.Stdout) -split "`r?`n" | Where-Object { $_ -match 'version "' } | Select-Object -First 1)
+                $androidToolInfo['jdk'] = [ordered]@{ home = $AndroidJdkHome; java = $javaOverride; version = $javaOverrideLine; sha256 = (Get-Sha256 -Path $javaOverride) }
+            }
+            else {
+                $androidToolError = "AndroidJdkHome has no bin\java.exe: $AndroidJdkHome"
+            }
+        }
+
+        if ($AndroidNinjaDir) {
+            $ninjaOverride = Join-Path $AndroidNinjaDir 'ninja.exe'
+            if (Test-Path -LiteralPath $ninjaOverride) {
+                $prepend.Add($AndroidNinjaDir)
+                $ninjaVersion = ((& $ninjaOverride --version 2>&1 | Out-String).Trim() -split "`r?`n" | Select-Object -First 1)
+                $androidToolInfo['ninja'] = [ordered]@{ dir = $AndroidNinjaDir; exe = $ninjaOverride; version = $ninjaVersion; sha256 = (Get-Sha256 -Path $ninjaOverride) }
+            }
+            else {
+                $androidToolError = "AndroidNinjaDir has no ninja.exe: $AndroidNinjaDir"
+            }
+        }
+
+        if ($AndroidCliBin) {
+            if (Test-Path -LiteralPath $AndroidCliBin) {
+                $androidToolEnv['ANDROID_CLI_BIN'] = $AndroidCliBin
+                $androidToolInfo['androidCli'] = [ordered]@{ path = $AndroidCliBin; sha256 = (Get-Sha256 -Path $AndroidCliBin) }
+            }
+            else {
+                $androidToolError = "AndroidCliBin missing: $AndroidCliBin"
+            }
+        }
+
+        if ($prepend.Count -gt 0) {
+            $androidToolEnv['PATH'] = (($prepend.ToArray() + $env:PATH) -join ';')
+            $androidToolInfo['pathPrepend'] = $prepend.ToArray()
+        }
+        if ($androidToolError) {
+            $androidToolInfo['error'] = $androidToolError
+        }
+        Write-Utf8NoBom -Path (Join-Path $RunDir 'android-tool-overrides.txt') -Text (
+            (($androidToolInfo | ConvertTo-Json -Depth 6) + "`r`n")
+        )
+    }
+
     $script:EnvironmentInfo['host'] = [ordered]@{
         computerName = $env:COMPUTERNAME
         os = (Get-CimInstance Win32_OperatingSystem | Select-Object Caption, Version, BuildNumber, OSArchitecture)
@@ -740,6 +1001,7 @@ try {
         windowsSdkInclude = $(if ($winSdkInclude) { $winSdkInclude.FullName } else { $null })
         androidPlayerJunctions = $junctionInfo
         licenseFiles = $licenseInfo
+        androidToolOverrides = $androidToolInfo
     }
     Write-Utf8NoBom -Path (Join-Path $RunDir 'environment.json') -Text ($script:EnvironmentInfo | ConvertTo-Json -Depth 8)
 
@@ -981,6 +1243,7 @@ try {
     # -----------------------------------------------------------------------
     # Isolated Unity project helper.
     # -----------------------------------------------------------------------
+    $probeExtraAssemblies = @()
     function New-ProbeProject {
         param([Parameter(Mandatory)][string]$Leaf)
 
@@ -990,6 +1253,69 @@ try {
             Copy-Item -LiteralPath (Join-Path $RepoRoot "unity\Mahjong.Unity\$part") -Destination $project -Recurse -Force
         }
 
+        # Git does not store empty directories. A tracked folder .meta without
+        # its folder makes Unity log "folder ... can't be found, and has been
+        # created" on every import; those warnings are counted in the Android
+        # build summary. Materialize the folder in the isolated copy only.
+        foreach ($meta in @(Get-ChildItem -LiteralPath (Join-Path $project 'Assets') -Recurse -File -Filter '*.meta' -ErrorAction SilentlyContinue)) {
+            $metaText = Get-Content -LiteralPath $meta.FullName -TotalCount 8 -ErrorAction SilentlyContinue
+            if (($metaText -join "`n") -match 'folderAsset:\s*yes') {
+                $folderPath = $meta.FullName.Substring(0, $meta.FullName.Length - 5)
+                if (-not (Test-Path -LiteralPath $folderPath)) {
+                    New-Item -ItemType Directory -Force -Path $folderPath | Out-Null
+                }
+            }
+        }
+
+        # The Android toolchain task is a Wire AOT probe, not a full-game build.
+        # The frozen project now also contains P4.2 UI/App code whose asmdefs
+        # require Mahjong.Client.dll and whose TextMeshPro use adds three
+        # IL2CPP large-method messages to BuildSummary.totalErrors. Keep only
+        # the probe script so the APK is the same wire smoke the P2.2 wrapper
+        # defines, without compiling unrelated game UI.
+        if ($TaskProfile -eq 'AndroidToolchain') {
+            $scriptsRoot = Join-Path $project 'Assets\Scripts'
+            foreach ($leaf in @('App', 'UI', 'Table', 'Spectator')) {
+                $path = Join-Path $scriptsRoot $leaf
+                if (Test-Path -LiteralPath $path) { Remove-CheckedTree -Path $path }
+            }
+            $platformDir = Join-Path $scriptsRoot 'Platform'
+            if (Test-Path -LiteralPath $platformDir) {
+                Get-ChildItem -LiteralPath $platformDir -File -Force |
+                    Where-Object { $_.Name -notin @('WireAotSmoke.cs', 'WireAotSmoke.cs.meta') } |
+                    ForEach-Object { Remove-Item -LiteralPath $_.FullName -Force }
+            }
+            $testsRoot = Join-Path $project 'Assets\Tests'
+            if (Test-Path -LiteralPath $testsRoot) { Remove-CheckedTree -Path $testsRoot }
+
+            # The full project enables Boot/Menu/Lobby/Table/Spectator/Settlement,
+            # all of which use TextMeshPro. The wire probe only needs a scene to
+            # host RuntimeInitializeOnLoadMethod, so pin the isolated build to
+            # SampleScene in the temp copy.
+            $sampleMeta = Join-Path $project 'Assets\Scenes\SampleScene.unity.meta'
+            $sampleGuid = $null
+            if (Test-Path -LiteralPath $sampleMeta) {
+                $guidLine = Select-String -LiteralPath $sampleMeta -Pattern '^guid:\s*([0-9a-f]+)' | Select-Object -First 1
+                if ($guidLine) { $sampleGuid = $guidLine.Matches[0].Groups[1].Value }
+            }
+            if (-not $sampleGuid) { throw "Cannot read SampleScene GUID from $sampleMeta" }
+            $buildSettings = @(
+                '%YAML 1.1',
+                '%TAG !u! tag:unity3d.com,2011:',
+                '--- !u!1045 &1',
+                'EditorBuildSettings:',
+                '  m_ObjectHideFlags: 0',
+                '  serializedVersion: 2',
+                '  m_Scenes:',
+                '  - enabled: 1',
+                '    path: Assets/Scenes/SampleScene.unity',
+                ("    guid: " + $sampleGuid),
+                '  m_configObjects: {}',
+                '  m_UseUCBPForAssetBundles: 0'
+            )
+            Write-Utf8NoBom -Path (Join-Path $project 'ProjectSettings\EditorBuildSettings.asset') -Text (($buildSettings -join "`r`n") + "`r`n")
+        }
+
         $pluginDir = Join-Path $project 'Assets\Plugins\Mahjong'
         if (Test-Path -LiteralPath $pluginDir) { Remove-CheckedTree -Path $pluginDir }
         New-Item -ItemType Directory -Force -Path $pluginDir | Out-Null
@@ -997,6 +1323,10 @@ try {
             $source = Join-Path $probeBin "$name.dll"
             if (-not (Test-Path -LiteralPath $source)) { throw "Missing probe assembly in closure: $source" }
             Copy-Item -LiteralPath $source -Destination $pluginDir -Force
+        }
+        foreach ($extra in @($probeExtraAssemblies)) {
+            if (-not ($extra -and (Test-Path -LiteralPath $extra))) { throw "Missing extra probe assembly: $extra" }
+            Copy-Item -LiteralPath $extra -Destination $pluginDir -Force
         }
 
         return $project
@@ -1242,6 +1572,7 @@ try {
     if (-not $androidNdk) { $androidMissing += 'Android NDK' }
     if (-not $javaPath) { $androidMissing += 'JDK java.exe' }
     if (-not $adbPath) { $androidMissing += 'adb' }
+    if ($TaskProfile -eq 'AndroidToolchain' -and $androidToolError) { $androidMissing += $androidToolError }
 
     $androidBuildStatus = 'NOT_RUN'
     $androidRuntimeStatus = 'NOT_RUN'
@@ -1311,13 +1642,17 @@ public static class WireAotSmokeNonce
                     Format-List | Out-String | Set-Content -LiteralPath $processSnapshotBefore -Encoding UTF8
                 Add-Artifact -Path $processSnapshotBefore -Role 'android-process-snapshot-before'
 
+                $androidBuildEnv = @{}
+                foreach ($key in $androidToolEnv.Keys) { $androidBuildEnv[$key] = $androidToolEnv[$key] }
+                $androidBuildEnv['MAHJONG_AOT_TARGET'] = 'Android'
+                $androidBuildEnv['MAHJONG_AOT_OUTPUT'] = $androidOutput
                 $androidBuild = Invoke-NativeProcess -FilePath $unity -Arguments @(
                     '-batchmode', '-quit', '-nographics',
                     '-projectPath', $androidProject,
                     '-executeMethod', 'MahjongIl2cppSmokeBuild.Build',
                     '-logFile', $androidLog
                 ) -TimeoutSeconds $AndroidBuildTimeoutSec -LogPrefix (Join-Path $RunDir 'unity-il2cpp-android') `
-                    -Environment @{ MAHJONG_AOT_TARGET = 'Android'; MAHJONG_AOT_OUTPUT = $androidOutput }
+                    -Environment $androidBuildEnv
 
                 # Do not kill Gradle daemons on a global before/after diff. With
                 # no per-run proof of ownership, preserve them and record the
@@ -1350,14 +1685,17 @@ public static class WireAotSmokeNonce
                     }
                 }
 
-                $buildPass = (-not $androidBuild.TimedOut) -and
-                    ($androidBuild.ExitCode -eq 0) -and
-                    $apkExists -and $apkFresh -and $markerMatch.Success -and
-                    ($markerTarget -eq 'Android') -and
-                    ($markerBackend -eq 'IL2CPP') -and
-                    ($markerResult -eq 'Succeeded') -and
-                    ($markerErrors -eq 0) -and
-                    $markerOutputMatches
+                $apkValidity = Test-AndroidApk -Path $androidOutput -SdkRoot $androidSdk `
+                    -LogPrefix (Join-Path $RunDir 'android-apk-badging')
+                if ($apkExists) {
+                    Add-Artifact -Path "$RunDir\android-apk-badging.stdout.log" -Role 'android-apk-badging-stdout'
+                    Add-Artifact -Path "$RunDir\android-apk-badging.stderr.log" -Role 'android-apk-badging-stderr'
+                }
+                $verdict = Get-AndroidBuildVerdict -TimedOut $androidBuild.TimedOut -ExitCode $androidBuild.ExitCode `
+                    -ApkExists $apkExists -ApkFresh $apkFresh -ApkValid $apkValidity.Valid -MarkerFound $markerMatch.Success `
+                    -MarkerTarget $markerTarget -MarkerBackend $markerBackend -MarkerResult $markerResult `
+                    -MarkerErrors $markerErrors -MarkerOutputMatches $markerOutputMatches
+                $buildPass = $verdict.Pass
 
                 if ($androidBuild.TimedOut) {
                     Add-Result -Name 'Android IL2CPP build' -Status FAIL -Detail "timeout after ${AndroidBuildTimeoutSec}s; log=$androidLog" -ExitCode -1 `
@@ -1413,7 +1751,7 @@ public static class WireAotSmokeNonce
 
                     $crashMatch = [regex]::Match($androidAll, 'exit code:\s*(-?\d+|0x[0-9A-Fa-f]+)')
                     Add-Result -Name 'Android IL2CPP build' -Status FAIL `
-                        -Detail ("exit=$($androidBuild.ExitCode); apkExists=$apkExists; apkFresh=$apkFresh; markerTarget=$markerTarget; backend=$markerBackend; result=$markerResult; errors=$markerErrors; markerOutputMatches=$markerOutputMatches; sdkmanagerExit=$($crashMatch.Groups[1].Value); log=$androidLog") `
+                        -Detail ("exit=$($androidBuild.ExitCode); apkExists=$apkExists; apkFresh=$apkFresh; apkValid=$($apkValidity.Valid); apkReason=$($apkValidity.Reason); markerTarget=$markerTarget; backend=$markerBackend; result=$markerResult; errors=$markerErrors; markerOutputMatches=$markerOutputMatches; verdict=$($verdict.Reasons -join ','); sdkmanagerExit=$($crashMatch.Groups[1].Value); log=$androidLog") `
                         -ExitCode $androidBuild.ExitCode -DurationSec $androidBuild.DurationSec -Evidence $androidLog
                     $androidBuildStatus = 'FAIL'
                 }
@@ -1421,7 +1759,7 @@ public static class WireAotSmokeNonce
                     Add-Artifact -Path $androidOutput -Role 'android-apk'
                     $apkHash = Get-Sha256 -Path $androidOutput
                     Add-Result -Name 'Android IL2CPP build' -Status PASS `
-                        -Detail ("exit=0; marker target=Android backend=IL2CPP result=Succeeded errors=0; apk=$apkHash; bytes=$((Get-Item -LiteralPath $androidOutput).Length); log=$androidLog") -ExitCode 0 `
+                        -Detail ("exit=0; marker target=Android backend=IL2CPP result=Succeeded errors=0; apk=$apkHash; bytes=$($apkValidity.Bytes); apkParse=aapt2 exit=$($apkValidity.AaptExit) package=$($apkValidity.Package); log=$androidLog") -ExitCode 0 `
                         -DurationSec $androidBuild.DurationSec -Evidence $androidLog
                     $androidBuildStatus = 'PASS'
                 }
