@@ -3,7 +3,7 @@
   <!--
     V5 module dependency-direction guard (accepted I-5 / S-1).
 
-    This project is a test-only consumer of the nine production assemblies. It is
+    This project is a test-only consumer of the ten production assemblies. It is
     deliberately NOT added to Mahjong.sln and does not modify any production csproj,
     the unified verify script, fixtures or an existing test project: tools/verify-v5.ps1
     auto-discovers every *.Tests project under dotnet/tests (header lines 6-8, glob
@@ -32,7 +32,7 @@
 
   <ItemGroup>
     <!--
-      References exist only to force a fresh Release build of all nine production
+      References exist only to force a fresh Release build of all ten production
       projects before this test executable runs. The guard reads their bin/Release
       outputs and project files, not the test project's own reference closure.
     -->
@@ -44,6 +44,7 @@
     <ProjectReference Include="..\..\src\Mahjong.Client\Mahjong.Client.csproj" />
     <ProjectReference Include="..\..\src\Mahjong.LocalHost\Mahjong.LocalHost.csproj" />
     <ProjectReference Include="..\..\src\Mahjong.LobbyService\Mahjong.LobbyService.csproj" />
+    <ProjectReference Include="..\..\src\Mahjong.TableService\Mahjong.TableService.csproj" />
     <ProjectReference Include="..\..\src\Mahjong.Infrastructure\Mahjong.Infrastructure.csproj" />
   </ItemGroup>
 

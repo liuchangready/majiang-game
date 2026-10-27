@@ -1,8 +1,8 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <!--
-    Standalone P5.1 test project. It is intentionally not added to Mahjong.sln
-    (solution edits are out of the receiver's scope); run it directly:
+    P5.1 test project, registered in Mahjong.sln by the caller after acceptance.
+    The unified verifier discovers this project automatically; run it directly:
       dotnet test dotnet/tests/Mahjong.TableService.Tests/Mahjong.TableService.Tests.csproj
   -->
   <PropertyGroup>

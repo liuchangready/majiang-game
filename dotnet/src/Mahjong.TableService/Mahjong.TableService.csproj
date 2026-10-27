@@ -3,8 +3,8 @@
   <!--
     P5.1 table transport host: the /v1/table WSS admission + binding surface.
 
-    Standalone service project (not registered in dotnet/Mahjong.sln; solution
-    registration and the Architecture whitelist entry are caller integration steps).
+    Registered in dotnet/Mahjong.sln and the exact Architecture allowlist by the
+    caller after independent P5.1 acceptance. Direct project builds remain supported.
 
     Direct references stay at the accepted V5 binding surface: Contracts (protocol
     constants/error codes), Contracts.Wire (frozen protobuf envelope + WireCodec)
