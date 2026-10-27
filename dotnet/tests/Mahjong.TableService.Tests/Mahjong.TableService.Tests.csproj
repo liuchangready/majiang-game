@@ -24,6 +24,14 @@
     <PackageReference Include="xunit.v3" Version="4.0.2" />
   </ItemGroup>
 
+  <!-- Every test here starts a real Kestrel host and drives real sockets; the
+    default processor-count collection parallelism oversubscribes the box and
+    turns scheduling pressure into cross-test starvation flake. 4 keeps the
+    suite parallel and deterministic (the per-test assertions are unchanged). -->
+  <ItemGroup>
+    <Content Include="xunit.runner.json" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
   <ItemGroup>
     <FrameworkReference Include="Microsoft.AspNetCore.App" />
     <ProjectReference Include="..\..\src\Mahjong.TableService\Mahjong.TableService.csproj" />

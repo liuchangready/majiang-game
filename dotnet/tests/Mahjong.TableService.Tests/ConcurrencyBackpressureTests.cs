@@ -242,16 +242,22 @@ namespace Mahjong.TableService.Tests
             // so a sustained flood against a trickle reader makes consumption fall behind
             // production until the bounded reply channel, then the bounded sink → the actor's
             // bounded outbox saturates — whichever fence fires first closes the session as a
-            // slow consumer → close 4429. The connection rides a raw socket with a pinned
-            // tiny kernel receive buffer: loopback autotuning otherwise absorbs megabytes
-            // undrained and no server-side bound ever engages; with the window pinned the
-            // server's send path blocks deterministically after a few hundred undrained
-            // frames and the bounded chain actually fills.
+            // slow consumer → close 4429. The idle-dead fence is opened with them: the stall
+            // verdict must come from the saturation fence, never from the 30s inbound-idle
+            // fence preempting a flood that heavy suite-wide load has slowed below its own
+            // send pace (measured under two concurrent full suites: HEARTBEAT_TIMEOUT won
+            // the race before the reply chain ever filled). The connection rides a raw
+            // socket with a pinned tiny kernel receive buffer: loopback autotuning otherwise
+            // absorbs megabytes undrained and no server-side bound ever engages; with the
+            // window pinned the server's send path blocks deterministically after a few
+            // hundred undrained frames and the bounded chain actually fills.
             await using TableServiceTestHost host = await TableServiceTestHost.StartAsync(
                 options =>
                 {
                     options.CommandRatePerSecond = 10_000;
                     options.CommandBurstCapacity = 10_000;
+                    options.HeartbeatIntervalMs = 600_000;
+                    options.IdleDeadMs = 3_600_000;
                 });
             TableTestClient staller = await host.ConnectPlayerOverThrottledSocketAsync(
                 "room-stall", "acct-stall", 0, receiveBufferSize: 4096);

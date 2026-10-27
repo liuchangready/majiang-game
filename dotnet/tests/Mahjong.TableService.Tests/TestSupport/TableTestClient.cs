@@ -344,23 +344,6 @@ namespace Mahjong.TableService.Tests
                     }
 
                     Envelope envelope = decoded.Envelope;
-                    if (Environment.GetEnvironmentVariable("R5TRACE") == "1")
-                    {
-                        Console.WriteLine("R5TRACE type=" + envelope.MessageType +
-                            " full=" + (envelope.PlayerUpdate?.IsFullSnapshot ?? false) +
-                            " sv=" + (envelope.PlayerUpdate?.Snapshot != null
-                                ? envelope.PlayerUpdate.Snapshot.StateVersion.ToString()
-                                : (envelope.PublicUpdate?.Snapshot != null
-                                    ? envelope.PublicUpdate.Snapshot.StateVersion.ToString()
-                                    : "-")) +
-                            " cur=" + envelope.PlayerUpdate?.Snapshot.PublicView?.Board.CurrentSeat +
-                            " phase=" + envelope.PlayerUpdate?.Snapshot.PublicView?.Board.Phase +
-                            " p0river=" + (envelope.PlayerUpdate?.Snapshot.PublicView?.Board.Players.Count > 0
-                                ? envelope.PlayerUpdate.Snapshot.PublicView.Board.Players[0].Discards.Count.ToString()
-                                : "-") +
-                            " pv=" + (envelope.PlayerUpdate?.Snapshot.PrivateView != null).ToString() +
-                            " dec=" + (envelope.PlayerUpdate?.Snapshot.PrivateView?.Decision != null).ToString());
-                    }
                     if (envelope.PlayerUpdate != null && envelope.PlayerUpdate.IsFullSnapshot)
                     {
                         Interlocked.Exchange(

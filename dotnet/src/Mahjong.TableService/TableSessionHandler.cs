@@ -69,6 +69,23 @@ namespace Mahjong.TableService
         /// </summary>
         private readonly CancellationTokenSource _lifecycleWake = new();
 
+        /// <summary>
+        /// The receiver-linked CTS of the supervised lifecycle, hoisted to a field because
+        /// the terminal teardown finally sits outside its using scope. An ABANDONED parked
+        /// read shares this token: cancelling it while the read is still pending aborts the
+        /// transport and destroys a close handshake the peer has not consumed yet, so the
+        /// cancel is deferred until after the terminal close delivery + drain budget.
+        /// </summary>
+        private CancellationTokenSource? _receiveLinked;
+
+        /// <summary>
+        /// The supervised receive-loop task, hoisted for the same reason: the peer's close
+        /// echo is consumed by its parked read (a second concurrent ReceiveAsync is
+        /// illegal), so the close-grace window waits on THIS task before the transport is
+        /// released.
+        /// </summary>
+        private Task? _receiveLoop;
+
         private readonly Channel<OutboundItem> _outbound =
             Channel.CreateBounded<OutboundItem>(new BoundedChannelOptions(256)
             {
@@ -192,86 +209,109 @@ namespace Mahjong.TableService
                 TableConnectionIdentity identity = await AdmitAsync(serverStopping).ConfigureAwait(false);
                 _identity = identity;
                 _sessionShort = Short(identity.SessionId);
-                using var linked = CancellationTokenSource.CreateLinkedTokenSource(serverStopping);
-                using var wake = CancellationTokenSource.CreateLinkedTokenSource(linked.Token, _lifecycleWake.Token);
-                Task sender = SendLoopAsync(wake.Token);
-                Task liveness = LivenessLoopAsync(wake.Token);
-                Task receive = ReceiveLoopAsync(linked);
+                // Manual ownership (never `using`): the terminal teardown below must still
+                // be able to CANCEL the receiver token after the close-grace window — a
+                // using-scoped source is disposed when the try block ends, and cancelling
+                // a disposed source throws.
+                CancellationTokenSource linked = _receiveLinked =
+                    CancellationTokenSource.CreateLinkedTokenSource(serverStopping);
+                CancellationTokenSource wake = CancellationTokenSource.CreateLinkedTokenSource(
+                    linked.Token, _lifecycleWake.Token);
                 try
                 {
-                    // Supervised post-admission lifecycle (D-1-05): whichever child ends
-                    // first owns the end of the session; no child can linger unobserved, and
-                    // no mid-send cancellation may destroy a close decision that still had to
-                    // be delivered.
-                    //
-                    // CRITICAL: a pending socket READ must never be released through token
-                    // cancellation early: cancelling a parked WebSocket ReceiveAsync ABORTS
-                    // the underlying transport in the managed stack, which destroys a still
-                    // undelivered close handshake. The pending receive is instead waited for
-                    // (bounded) and, when still parked, ABANDONED while its eventual
-                    // completion is observed quietly; the teardown's own abort releases it.
-                    Task ended = await Task.WhenAny(sender, liveness, receive).ConfigureAwait(false);
-                    if (ended != receive)
+                    Task sender = SendLoopAsync(wake.Token);
+                    Task liveness = LivenessLoopAsync(wake.Token);
+                    Task receive = _receiveLoop = ReceiveLoopAsync(linked);
+                    try
                     {
-                        // The sender/liveness ended first (its fault reserved a close): give
-                        // the sender a bounded window to deliver the queued/reserved close
-                        // itself; its own per-send budget guarantees the exit.
-                        if (!await WaitTaskDoneAsync(
-                                sender,
-                                TimeSpan.FromMilliseconds(SendBudgetMs() + 500)).ConfigureAwait(false))
+                        // Supervised post-admission lifecycle (D-1-05): whichever child ends
+                        // first owns the end of the session; no child can linger unobserved, and
+                        // no mid-send cancellation may destroy a close decision that still had to
+                        // be delivered.
+                        //
+                        // CRITICAL: a pending socket READ must never be released through token
+                        // cancellation early: cancelling a parked WebSocket ReceiveAsync ABORTS
+                        // the underlying transport in the managed stack, which destroys a still
+                        // undelivered close handshake. The pending receive is instead waited for
+                        // (bounded) and, when still parked, ABANDONED while its eventual
+                        // completion is observed quietly; the teardown's own abort releases it.
+                        Task ended = await Task.WhenAny(sender, liveness, receive).ConfigureAwait(false);
+                        if (ended != receive)
                         {
-                            LogRedacted("sender lingered past close budget");
-                        }
+                            // The sender/liveness ended first (its fault reserved a close): give
+                            // the sender a bounded window to deliver the queued/reserved close
+                            // itself; its own per-send budget guarantees the exit.
+                            if (!await WaitTaskDoneAsync(
+                                    sender,
+                                    TimeSpan.FromMilliseconds(SendBudgetMs() + 500)).ConfigureAwait(false))
+                            {
+                                LogRedacted("sender lingered past close budget");
+                            }
 
-                        // The parked read is abandoned IMMEDIATELY when the close decision is
-                        // already in delivery: no extra wait window is allowed to stretch the
-                        // session past the close budgets (the peer's own close answer, when
-                        // any, is read by the same parked task or by the teardown's bounded
-                        // drain; the abort releases everything else).
-                        if (!receive.IsCompleted)
-                        {
-                            LogRedacted("receive abandoned parked");
-                            _ = ObserveChildFiredAsync(receive);
+                            // The parked read is abandoned IMMEDIATELY when the close decision is
+                            // already in delivery: no extra wait window is allowed to stretch the
+                            // session past the close budgets (the peer's own close answer, when
+                            // any, is read by the same parked task or by the teardown's bounded
+                            // drain; the abort releases everything else).
+                            if (!receive.IsCompleted)
+                            {
+                                LogRedacted("receive abandoned parked");
+                                _ = ObserveChildFiredAsync(receive);
+                            }
+                            else
+                            {
+                                await ObserveChildAsync(receive).ConfigureAwait(false);
+                            }
+
+                            _lifecycleWake.Cancel();
+                            await ObserveChildAsync(sender).ConfigureAwait(false);
+                            await ObserveChildAsync(liveness).ConfigureAwait(false);
                         }
                         else
                         {
-                            await ObserveChildAsync(receive).ConfigureAwait(false);
-                        }
+                            // The receive loop ended: give the sender a bounded window to deliver
+                            // the queued/reserved close itself (bounded by its own consistent
+                            // per-send budget), so no mid-send cancellation is ever needed.
+                            if (!await WaitTaskDoneAsync(
+                                    sender,
+                                    TimeSpan.FromMilliseconds(SendBudgetMs() + 500)).ConfigureAwait(false))
+                            {
+                                LogRedacted("sender lingered past close budget");
+                            }
 
-                        _lifecycleWake.Cancel();
-                        await ObserveChildAsync(sender).ConfigureAwait(false);
-                        await ObserveChildAsync(liveness).ConfigureAwait(false);
+                            _lifecycleWake.Cancel();
+                            await ObserveChildAsync(sender).ConfigureAwait(false);
+                            await ObserveChildAsync(liveness).ConfigureAwait(false);
+                        }
                     }
-                    else
+                    finally
                     {
-                        // The receive loop ended: give the sender a bounded window to deliver
-                        // the queued/reserved close itself (bounded by its own consistent
-                        // per-send budget), so no mid-send cancellation is ever needed.
-                        if (!await WaitTaskDoneAsync(
-                                sender,
-                                TimeSpan.FromMilliseconds(SendBudgetMs() + 500)).ConfigureAwait(false))
+                        // Everything above ended through its own budgets and gates; the
+                        // children are released WITHOUT cancelling the receiver token here:
+                        // an abandoned parked read still shares it, and cancelling a pending
+                        // read aborts the transport before the terminal close delivery +
+                        // drain below ever ran (measured loss: the peer's buffered close
+                        // frames destroyed by the abort RST). A COMPLETED receive has no
+                        // pending read to lose, so its token cancels eagerly; a parked one
+                        // is released in the teardown after the drain budget.
+                        if (receive.IsCompleted)
                         {
-                            LogRedacted("sender lingered past close budget");
+                            linked.Cancel();
                         }
-
-                        _lifecycleWake.Cancel();
-                        await ObserveChildAsync(sender).ConfigureAwait(false);
-                        await ObserveChildAsync(liveness).ConfigureAwait(false);
                     }
+
+                    // Whatever path ended the receive loop (incl. a close the sender could not
+                    // drain because the socket died), the socket now has exactly one owner for
+                    // writes: the terminal close delivery is the LAST attempt, never a race.
+                    await FlushTerminalCloseAsync().ConfigureAwait(false);
                 }
                 finally
                 {
-                    // Everything above ended through its own budgets and gates; a token
-                    // cancelled pending read would abort the transport (losing the still
-                    // queued close handshake), so the children are released only here, after
-                    // the close delivery had its chance. The sessions's own children never
-                    // outlive this scope.
-                    linked.Cancel();
+                    // The supervised children are ended and observed above; the wake source
+                    // (their token hub) dies with this scope. The receiver source outlives
+                    // it — the teardown below still cancels it after the grace window.
+                    wake.Dispose();
                 }
-                // Whatever path ended the receive loop (incl. a close the sender could not
-                // drain because the socket died), the socket now has exactly one owner for
-                // writes: the terminal close delivery is the LAST attempt, never a race.
-                await FlushTerminalCloseAsync().ConfigureAwait(false);
             }
             catch (AdmissionClosedException admission)
             {
@@ -294,7 +334,32 @@ namespace Mahjong.TableService
             finally
             {
                 await TeardownAsync().ConfigureAwait(false);
+                // The peer's close echo (when the peer sends one) is consumed by the
+                // session's OWN parked read — a second concurrent ReceiveAsync on the
+                // same socket is illegal, so the classic drain below can only run once
+                // that read is done. While the read lives, the peer keeps the full
+                // close-grace budget to consume the delivered close frames (and echo);
+                // releasing the transport through a cancel here would RST-destroy the
+                // buffered close frames a loaded peer has not read yet (measured: the
+                // displaced session's 4403 arrived as a bare connection end).
+                Task? parkedReceive = _receiveLoop;
+                if (_closeOutputSent && parkedReceive != null && !parkedReceive.IsCompleted)
+                {
+                    await WaitTaskDoneAsync(
+                        parkedReceive,
+                        TimeSpan.FromMilliseconds(Math.Max(500, _options.CloseGraceMs)))
+                        .ConfigureAwait(false);
+                }
+
                 await DrainCloseHandshakeAsync().ConfigureAwait(false);
+                // The grace window above is over: whatever read is STILL parked now rides
+                // the receiver token's release (its completion stays observed by the
+                // quiet observer hooked at the abandonment site), and the drain/abort
+                // sequence finishes the socket with no close handshake left to lose.
+                CancellationTokenSource? receiverLinked = _receiveLinked;
+                _receiveLinked = null;
+                receiverLinked?.Cancel();
+                receiverLinked?.Dispose();
                 // Unified bounded shutdown: no leftover socket + pending tasks outlive this
                 // session. Abort is safe on every state and is a no-op after a complete
                 // handshake. The accepted socket's disposal belongs to the same ownership
