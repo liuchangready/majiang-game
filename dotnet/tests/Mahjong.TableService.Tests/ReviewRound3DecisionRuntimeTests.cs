@@ -99,9 +99,15 @@ namespace Mahjong.TableService.Tests
 
                 // The routed neighbour turn: the initial discard carries the DEAL-EXTRA
                 // tsumogiri fact of the Domain's closed world plus its riichi marker.
-                PlayerSnapshot seat1Turn = await WaitForTurnDecisionAsync(clients[1], 1);
+                // Waited on the PUBLIC river only — a decision-shaped wait here would
+                // consume seat 1's discard-turn decision as a peek and the rotation loop
+                // below would starve on it (the publish path twins every decision).
+                PlayerSnapshot seat1River = await WaitForPlayerSnapshotAsync(
+                    clients[1],
+                    item => item.MessageType == MessageType.PlayerUpdate &&
+                            item.PlayerUpdate.Snapshot.PublicView!.Board.Players[0].Discards.Count == 1);
                 Contracts.Wire.DiscardView seat0Discard = Assert.Single(
-                    seat1Turn.PublicView!.Board.Players[0].Discards);
+                    seat1River.PublicView!.Board.Players[0].Discards);
                 Assert.True(seat0Discard.Tsumogiri, "the riichi discard of the drawn tile 80 is a tsumogiri");
                 Assert.True(seat0Discard.RiichiDiscard, "the discard is the seat's own declared riichi discard");
                 Assert.Equal(80u, seat0Discard.TileId);
@@ -131,7 +137,14 @@ namespace Mahjong.TableService.Tests
                     }
 
                     // The seat-0 discard of this rotation must again be its locked tsumogiri.
-                    PlayerSnapshot after = await WaitForTurnDecisionAsync(clients[1], 1);
+                    // Waited on the PUBLIC river count only: a decision-shaped wait here
+                    // would consume seat 1's NEXT turn decision as a peek and starve the
+                    // next rotation's turn wait (the publish path twins every decision).
+                    PlayerSnapshot after = await WaitForPlayerSnapshotAsync(
+                        clients[1],
+                        item => item.MessageType == MessageType.PlayerUpdate &&
+                                item.PlayerUpdate.Snapshot.PublicView!.Board.Players[0].Discards.Count ==
+                                    (rotation == 0 ? 2 : 3));
                     Contracts.Wire.DiscardView lastSeat0Discard = after.PublicView!.Board.Players[0].Discards[^1];
                     Assert.True(
                         lastSeat0Discard.Tsumogiri,
@@ -405,12 +418,20 @@ namespace Mahjong.TableService.Tests
             int seat,
             int seconds = 30)
         {
-            return await WaitForPlayerSnapshotAsync(
+            // The publish path delivers each open decision twice (delta plus full-snapshot
+            // twin); a seat's NEXT-decision wait must never resurface a decision a previous
+            // wait on this client already returned for the seat — that twin is the stale
+            // candidate set of an older turn.
+            PlayerSnapshot snapshot = await WaitForPlayerSnapshotAsync(
                 client,
                 item => item.MessageType == MessageType.PlayerUpdate &&
                         item.PlayerUpdate.Snapshot.PrivateView?.Decision != null &&
-                        (int)item.PlayerUpdate.Snapshot.PublicView!.Board.CurrentSeat == seat,
+                        (int)item.PlayerUpdate.Snapshot.PublicView!.Board.CurrentSeat == seat &&
+                        !client.IsDecisionSeen(
+                            seat, item.PlayerUpdate.Snapshot.PrivateView.Decision.DecisionId),
                 seconds);
+            client.MarkDecisionSeen(seat, snapshot.PrivateView!.Decision!.DecisionId);
+            return snapshot;
         }
 
         private static async Task<PlayerSnapshot> WaitForPlayerSnapshotAsync(

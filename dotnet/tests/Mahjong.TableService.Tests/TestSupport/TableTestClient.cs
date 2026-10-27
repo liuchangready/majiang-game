@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Net.Sockets;
 using System.Net.WebSockets;
@@ -50,9 +51,92 @@ namespace Mahjong.TableService.Tests
 
         private long _lastBaselineStateVersion;
 
+        /// <summary>Decision ids this client already handed to a consumer, per seat. The
+        /// publish path delivers every open decision twice (transition delta plus the
+        /// follow-up full snapshot), so a seat's NEXT-decision wait must be able to
+        /// exclude the decision a previous wait already returned — otherwise the twin of
+        /// an OLD turn resurfaces as the fresh candidate set under load.</summary>
+        private readonly HashSet<string>[] _seenDecisionIdsPerSeat =
+            new HashSet<string>[4] { new(), new(), new(), new() };
+
+        private readonly object _seenDecisionGate = new();
+
+        /// <summary>Frames a ReadUntilAsync consumed past without matching. The wire is
+        /// consume-only, so without this buffer a frame that failed an earlier predicate
+        /// is lost forever and a later wait on the same stream starves under load.</summary>
+        private readonly List<TableWireMessage> _replay = new();
+
+        private readonly object _replayGate = new();
+
+        private const int MaxReplayFrames = 512;
+
+        /// <summary>Highest snapshot state version any wait on this client has returned.
+        /// A frame OLDER than the watermark is a leftover of an already-consumed past
+        /// (river sizes are not monotonic — a claim takes the claimed tile back out) and
+        /// must never satisfy a later wait.</summary>
+        private long _stateVersionWatermark;
+
         private TableTestClient(WebSocket ws)
         {
             _ws = ws;
+        }
+
+        private static long? SnapshotStateVersion(TableWireMessage message)
+        {
+            if (message.Envelope?.PlayerUpdate?.Snapshot != null)
+            {
+                return (long)message.Envelope.PlayerUpdate.Snapshot.StateVersion;
+            }
+
+            if (message.Envelope?.PublicUpdate?.Snapshot != null)
+            {
+                return (long)message.Envelope.PublicUpdate.Snapshot.StateVersion;
+            }
+
+            return null;
+        }
+
+        private bool IsStale(TableWireMessage message)
+        {
+            return SnapshotStateVersion(message) is long version &&
+                   version < Interlocked.Read(ref _stateVersionWatermark);
+        }
+
+        private void AdvanceWatermark(TableWireMessage message)
+        {
+            if (SnapshotStateVersion(message) is long version)
+            {
+                long current = Interlocked.Read(ref _stateVersionWatermark);
+                while (version > current &&
+                       Interlocked.CompareExchange(ref _stateVersionWatermark, version, current) != current)
+                {
+                    current = Interlocked.Read(ref _stateVersionWatermark);
+                }
+            }
+        }
+
+        /// <summary>Whether the seat's next-decision waits must skip this decision id
+        /// (a previous wait on this client already returned it for that seat).</summary>
+        public bool IsDecisionSeen(int seat, string decisionId)
+        {
+            lock (_seenDecisionGate)
+            {
+                return seat >= 0 && seat <= 3 && _seenDecisionIdsPerSeat[seat].Contains(decisionId);
+            }
+        }
+
+        /// <summary>Records a decision id as consumed for the seat.</summary>
+        public void MarkDecisionSeen(int seat, string decisionId)
+        {
+            if (seat < 0 || seat > 3)
+            {
+                return;
+            }
+
+            lock (_seenDecisionGate)
+            {
+                _seenDecisionIdsPerSeat[seat].Add(decisionId);
+            }
         }
 
         public Welcome? Welcome { get; private set; }
@@ -260,6 +344,23 @@ namespace Mahjong.TableService.Tests
                     }
 
                     Envelope envelope = decoded.Envelope;
+                    if (Environment.GetEnvironmentVariable("R5TRACE") == "1")
+                    {
+                        Console.WriteLine("R5TRACE type=" + envelope.MessageType +
+                            " full=" + (envelope.PlayerUpdate?.IsFullSnapshot ?? false) +
+                            " sv=" + (envelope.PlayerUpdate?.Snapshot != null
+                                ? envelope.PlayerUpdate.Snapshot.StateVersion.ToString()
+                                : (envelope.PublicUpdate?.Snapshot != null
+                                    ? envelope.PublicUpdate.Snapshot.StateVersion.ToString()
+                                    : "-")) +
+                            " cur=" + envelope.PlayerUpdate?.Snapshot.PublicView?.Board.CurrentSeat +
+                            " phase=" + envelope.PlayerUpdate?.Snapshot.PublicView?.Board.Phase +
+                            " p0river=" + (envelope.PlayerUpdate?.Snapshot.PublicView?.Board.Players.Count > 0
+                                ? envelope.PlayerUpdate.Snapshot.PublicView.Board.Players[0].Discards.Count.ToString()
+                                : "-") +
+                            " pv=" + (envelope.PlayerUpdate?.Snapshot.PrivateView != null).ToString() +
+                            " dec=" + (envelope.PlayerUpdate?.Snapshot.PrivateView?.Decision != null).ToString());
+                    }
                     if (envelope.PlayerUpdate != null && envelope.PlayerUpdate.IsFullSnapshot)
                     {
                         Interlocked.Exchange(
@@ -278,7 +379,15 @@ namespace Mahjong.TableService.Tests
             }
         }
 
-        /// <summary>Reads (skipping heartbeat frames) until the predicate matches; else timeout.</summary>
+        /// <summary>
+        /// Reads (skipping heartbeat pings) until the predicate matches; else timeout.
+        /// Frames that fail the predicate are RETAINED in a bounded replay buffer and
+        /// re-offered to later waits oldest-first — the wire itself is consume-only, so
+        /// without the buffer a frame that failed an earlier interleaved predicate would
+        /// be lost forever and a later wait on the same stream could starve. A match
+        /// consumes the buffer through the matched frame (strict order), so a wait can
+        /// never return a frame OLDER than one a previous wait already passed over.
+        /// </summary>
         public async Task<Envelope> ReadUntilAsync(
             Func<Envelope, bool> predicate,
             TimeSpan? timeout = null)
@@ -286,6 +395,42 @@ namespace Mahjong.TableService.Tests
             long deadline = Environment.TickCount64 + (long)(timeout ?? TestTimeout.Default).TotalMilliseconds;
             while (true)
             {
+                lock (_replayGate)
+                {
+                    for (int i = 0; i < _replay.Count; i++)
+                    {
+                        TableWireMessage candidate = _replay[i];
+                        if (candidate.IsClose)
+                        {
+                            throw new InvalidOperationException(
+                                "Connection closed while waiting: " +
+                                candidate.WsCloseCode + " " + candidate.WsCloseReason);
+                        }
+
+                        if (candidate.Envelope!.MessageType == MessageType.Heartbeat &&
+                            candidate.Envelope.Heartbeat.BeatCase == Heartbeat.BeatOneofCase.Ping)
+                        {
+                            _replay.RemoveAt(i);
+                            i--;
+                            continue;
+                        }
+
+                        if (IsStale(candidate))
+                        {
+                            _replay.RemoveAt(i);
+                            i--;
+                            continue;
+                        }
+
+                        if (predicate(candidate.Envelope))
+                        {
+                            _replay.RemoveRange(0, i + 1);
+                            AdvanceWatermark(candidate);
+                            return candidate.Envelope;
+                        }
+                    }
+                }
+
                 TimeSpan remaining = TimeSpan.FromMilliseconds(Math.Max(1, deadline - Environment.TickCount64));
                 TableWireMessage message = await ReceiveAsync(remaining).ConfigureAwait(false);
                 if (message.IsClose)
@@ -303,9 +448,24 @@ namespace Mahjong.TableService.Tests
                     continue;
                 }
 
+                if (IsStale(message))
+                {
+                    continue;
+                }
+
                 if (predicate(message.Envelope))
                 {
+                    AdvanceWatermark(message);
                     return message.Envelope;
+                }
+
+                lock (_replayGate)
+                {
+                    _replay.Add(message);
+                    if (_replay.Count > MaxReplayFrames)
+                    {
+                        _replay.RemoveRange(0, _replay.Count - MaxReplayFrames);
+                    }
                 }
             }
         }

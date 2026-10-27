@@ -466,16 +466,16 @@ namespace Mahjong.TableService
 
             if (need.KanAvailable)
             {
-                // Provable closed-kan candidates (four physical copies in the hand).
-                if (menzen)
+                // Provable closed-kan candidates (four physical copies in the hand). The
+                // Domain's PrepareClosedKan has NO menzen requirement — an open hand may
+                // still close-kan a fully concealed set — so this scan must not mask on
+                // menzen (round 5 D-1-01 c). Riichi-locked seats never reach here.
+                foreach (KeyValuePair<int, int> entry in copiesByType)
                 {
-                    foreach (KeyValuePair<int, int> entry in copiesByType)
+                    if (entry.Value >= 4)
                     {
-                        if (entry.Value >= 4)
-                        {
-                            candidates.Add(new LegalActionOption(
-                                LegalActionKind.Kan, seat, TileId.FromTypeIndex(entry.Key, 0)));
-                        }
+                        candidates.Add(new LegalActionOption(
+                            LegalActionKind.Kan, seat, TileId.FromTypeIndex(entry.Key, 0)));
                     }
                 }
 
@@ -631,13 +631,16 @@ namespace Mahjong.TableService
                 possessed.Add(hand[i].TypeIndex);
             }
 
-            // Pair (rank-2, rank-1), (rank-1, rank+1), (rank+1, rank+2).
+            // Pair (rank-2, rank-1), (rank-1, rank+1), (rank+1, rank+2). Every rank side
+            // condition guards its own pair: without the middle pair's rank>=2, a rank-1
+            // target's baseType-1 alias is the PREVIOUS suit's rank 9 — a cross-suit pair
+            // the Domain would rightly refuse (round 5 D-1-01 c).
             if (rank >= 3 && possessed.Contains(baseType + rank - 3) && possessed.Contains(baseType + rank - 2))
             {
                 return true;
             }
 
-            if (rank + 1 <= 9 && possessed.Contains(baseType + rank - 2) && possessed.Contains(baseType + rank))
+            if (rank >= 2 && rank + 1 <= 9 && possessed.Contains(baseType + rank - 2) && possessed.Contains(baseType + rank))
             {
                 return true;
             }

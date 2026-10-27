@@ -97,6 +97,43 @@ namespace Mahjong.TableService
         public string? DisplacedSessionId { get; }
     }
 
+    /// <summary>The eviction verdict <see cref="ITicketConsumptionRegistry.EvictOnWelcome"/>
+    /// hands back once a WELCOME reached the wire (round 5 D-1-03).</summary>
+    public enum TableEvictionKind
+    {
+        /// <summary>No previous live owner exists to displace; this welcome simply owns the seat.</summary>
+        None,
+
+        /// <summary>This welcome is the seat's newest live owner;
+        /// <see cref="TableEvictionDecision.SessionId"/> names the previous live connection
+        /// to displace (it leaves the chain with its eviction).</summary>
+        DisplacedOther,
+
+        /// <summary>A NEWER handover already delivered its own WELCOME: this late welcome
+        /// LOST the seat. Its own chain entry is removed by the registry; the caller must
+        /// close this connection instead of registering it, so two live owners can never
+        /// coexist and a later failure of the winner can never resurrect the loser.</summary>
+        SelfSuperseded
+    }
+
+    /// <summary>The immutable eviction verdict: which connection moves after a welcome.</summary>
+    public readonly struct TableEvictionDecision
+    {
+        public TableEvictionDecision(TableEvictionKind kind, string? sessionId = null)
+        {
+            Kind = kind;
+            SessionId = sessionId;
+        }
+
+        public static TableEvictionDecision None { get; } =
+            new TableEvictionDecision(TableEvictionKind.None);
+
+        public TableEvictionKind Kind { get; }
+
+        /// <summary>The displaced session for <see cref="TableEvictionKind.DisplacedOther"/>; null otherwise.</summary>
+        public string? SessionId { get; }
+    }
+
     /// <summary>
     /// One-time table-ticket consumption port with a two-phase admission transaction:
     /// <see cref="Consume"/> reserves the one-time jti/assignment records, the seat spectator
@@ -127,15 +164,17 @@ namespace Mahjong.TableService
         TableTicketCommitOutcome CommitAdmission(string sessionId);
 
         /// <summary>
-        /// D-1-03: called AFTER WELCOME was delivered (players only). Returns the session id
-        /// whose live connection may now be displaced — the closest earlier committed entry of
-        /// THIS seat that (a) delivered its own WELCOME and (b) is not already superseded — or
-        /// null when this session is not the seat's current authoritative owner (a newer
-        /// handover already took the seat; the loser never displaces anybody). This is the
-        /// ONLY eviction decision point: commit-time displaced ids are a reservation hint, a
-        /// failed or superseded admission can never evict a working connection.
+        /// D-1-03: called AFTER WELCOME was delivered (players only). Returns the eviction
+        /// verdict that keeps EXACTLY ONE live owner per seat whatever order welcomes arrive
+        /// in: DisplacedOther names the previous live connection to take down (this welcome
+        /// is the seat's newest live owner); SelfSuperseded means a newer handover already
+        /// delivered its own WELCOME — this late welcome lost the seat, its chain entry is
+        /// removed by the registry and the CALLER's connection must be closed instead of
+        /// registered. This is the ONLY eviction decision point: commit-time displaced ids
+        /// are a reservation hint, a failed or superseded admission can never evict a
+        /// working connection.
         /// </summary>
-        string? EvictOnWelcome(string sessionId);
+        TableEvictionDecision EvictOnWelcome(string sessionId);
 
         /// <summary>
         /// Rolls back an admission that never reached WELCOME, or frees the session resources
@@ -417,17 +456,22 @@ namespace Mahjong.TableService
         }
 
         /// <summary>
-        /// D-1-03: the eviction decision AFTER WELCOME delivery. Only the seat's current
-        /// authoritative owner may displace; the closest earlier WELCOME-successful entry that
-        /// is still on the chain is the superseded connection to evict (and it leaves the
-        /// chain with its eviction). An entry that committed earlier but never welcomed is
-        /// skipped: it is about to be rolled back by its own failure path.
+        /// D-1-03 (round 5): the eviction decision AFTER WELCOME delivery — exactly ONE live
+        /// owner per seat, whatever order welcomes arrive in. A welcome whose newer chain
+        /// entry already delivered its own WELCOME has LOST the seat: it is NOT recorded
+        /// welcomed (a losing welcome owns nothing, not even the commit-only fallback), its
+        /// entry leaves the chain and the verdict is SelfSuperseded, so the caller closes
+        /// THIS connection and a later failure of the winner can never resurrect it.
+        /// Otherwise the welcome takes the seat: the closest earlier WELCOME-successful
+        /// entry is the previous live owner and leaves the chain with its eviction
+        /// (DisplacedOther); an entry that committed earlier but never welcomed is skipped —
+        /// it is about to be rolled back by its own failure path and owns nothing.
         /// </summary>
-        public string? EvictOnWelcome(string sessionId)
+        public TableEvictionDecision EvictOnWelcome(string sessionId)
         {
             if (string.IsNullOrWhiteSpace(sessionId))
             {
-                return null;
+                return TableEvictionDecision.None;
             }
 
             lock (_gate)
@@ -436,13 +480,13 @@ namespace Mahjong.TableService
                     record.Spectator ||
                     !record.Seat.HasValue)
                 {
-                    return null;
+                    return TableEvictionDecision.None;
                 }
 
                 string seatKey = SeatKey(record.RoomId, record.Seat.Value);
                 if (!_seatBindings.TryGetValue(seatKey, out SeatLease? lease))
                 {
-                    return null;
+                    return TableEvictionDecision.None;
                 }
 
                 int selfIndex = -1;
@@ -457,15 +501,27 @@ namespace Mahjong.TableService
 
                 if (selfIndex < 0)
                 {
-                    return null;
+                    return TableEvictionDecision.None;
+                }
+
+                // A NEWER handover already welcomed: this welcome lost the seat. Its entry
+                // leaves the chain unrecorded-as-welcomed, so the seat's live-owner identity
+                // — LiveOwner's newest-welcomed scan, TryGetSeatOwner's disconnect fence and
+                // the commit-only fallback — can never name this closed connection.
+                for (int i = selfIndex + 1; i < lease.Commits.Count; i++)
+                {
+                    if (lease.Commits[i].Welcomed)
+                    {
+                        lease.Commits.RemoveAt(selfIndex);
+                        return new TableEvictionDecision(TableEvictionKind.SelfSuperseded);
+                    }
                 }
 
                 // THIS call is the single "WELCOME reached the wire" witness: the entry is
                 // recorded welcomed here (and only here), so the seat's live-owner identity —
-                // LiveOwner's Consume account gate, TryGetSeatOwner's disconnect fence and the
-                // eviction scan below — is exactly "the newest delivered welcome", never an
-                // unwelcomed commit. A losing welcome is recorded too: its welcome DID arrive,
-                // so it stays the last successful welcome if every newer handover fails.
+                // LiveOwner's newest-welcomed scan, TryGetSeatOwner's disconnect fence and
+                // the eviction scan below — is exactly "the newest delivered welcome", never
+                // an unwelcomed commit.
                 SeatLeaseEntry self = lease.Commits[selfIndex];
                 if (!self.Welcomed)
                 {
@@ -473,25 +529,23 @@ namespace Mahjong.TableService
                         self.AccountId, self.SessionId, self.Seq, welcomed: true);
                 }
 
-                // A NEWER commit is on the chain: either it still awaits its WELCOME (a
-                // in-flight newer handover owns the next step) or it already welcomed and won.
-                // A losing welcome never displaces; its own failed/late teardown releases it.
-                if (selfIndex < lease.Commits.Count - 1)
-                {
-                    return null;
-                }
-
+                // Displace exactly the previous live owner: the closest earlier WELCOMED
+                // entry, which leaves the chain with its eviction. An entry that committed
+                // earlier but never welcomed is skipped: it is about to be rolled back by
+                // its own failure path and owns nothing.
                 for (int i = selfIndex - 1; i >= 0; i--)
                 {
-                    SeatLeaseEntry candidate = lease.Commits[i];
-                    if (candidate.Welcomed)
+                    if (lease.Commits[i].Welcomed)
                     {
+                        SeatLeaseEntry displaced = lease.Commits[i];
                         lease.Commits.RemoveAt(i);
-                        return candidate.SessionId;
+                        return new TableEvictionDecision(
+                            TableEvictionKind.DisplacedOther,
+                            displaced.SessionId);
                     }
                 }
 
-                return null;
+                return TableEvictionDecision.None;
             }
         }
 

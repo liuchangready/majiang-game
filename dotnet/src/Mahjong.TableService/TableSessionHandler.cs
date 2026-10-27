@@ -1043,27 +1043,37 @@ namespace Mahjong.TableService
                 _welcomeSent = true;
                 _issuedScopeId = null;
 
-                // Only after the WELCOME is delivered does THIS admission take the superseded
-                // connection down (D-1-03 round 3): EVICT-ON-WELCOME is the registry's own
-                // authoritative decision — the WELCOME-successful session that is STILL the
-                // seat's current owner evicts the closest earlier welcomed owner; a welcome
-                // that raced against a newer handover never displaces anybody, and a commit
-                // whose WELCOME failed is removed from the seat's chain by RollbackSeatHandover.
-                string? evicted = identity.IsPlayer
-                    ? _consumption.EvictOnWelcome(sessionId)
-                    : null;
-                if (!string.IsNullOrEmpty(evicted))
+                // Only after the WELCOME is delivered does THIS admission resolve the seat
+                // handover (D-1-03 round 5): EVICT-ON-WELCOME is the registry's own
+                // authoritative decision, and exactly ONE live owner per seat survives it.
+                // DisplacedOther takes the previous live connection down; SelfSuperseded
+                // means a NEWER handover already delivered its own WELCOME — THIS late
+                // connection lost the seat and must be closed (4403) instead of registered.
+                if (identity.IsPlayer)
                 {
-                    try
-                    {
-                        _sessions.Displace(evicted!);
-                    }
-                    catch (Exception displacementFault)
+                    TableEvictionDecision eviction = _consumption.EvictOnWelcome(sessionId);
+                    if (eviction.Kind == TableEvictionKind.SelfSuperseded)
                     {
                         LogRedacted(
-                            "displacement failed",
-                            "code", Short(displacementFault.GetType().Name),
+                            "welcome lost to a newer seat handover",
                             "room", _admissionRoom);
+                        throw new AdmissionClosedException(
+                            Directive(ProtocolErrorCode.DisplacedByNewConnection));
+                    }
+
+                    if (eviction.Kind == TableEvictionKind.DisplacedOther)
+                    {
+                        try
+                        {
+                            _sessions.Displace(eviction.SessionId!);
+                        }
+                        catch (Exception displacementFault)
+                        {
+                            LogRedacted(
+                                "displacement failed",
+                                "code", Short(displacementFault.GetType().Name),
+                                "room", _admissionRoom);
+                        }
                     }
                 }
 
@@ -2038,14 +2048,27 @@ namespace Mahjong.TableService
         /// <summary>
         /// Scans ONLY the top-level wire fields (each nested payload is skipped by its own
         /// declared length) and reports a violation when one of the single-value field
-        /// numbers above appears twice. Truncated/garbage bytes are already refused by the
-        /// frozen codec above, so a top-level scan can rely on well-formed framing.
+        /// numbers above appears twice.
         ///
-        /// D-1-04: schema-legal protobuf GROUP fields (start/end markers) are skipped
-        /// completely and safely — bounded depth, field-number and wire-check — so an unknown
-        /// group anywhere before/between/after known fields can never short-circuit the
-        /// duplicate check and unknown legal fields never misdirect the scan. Fields INSIDE a
-        /// group are not top-level envelope fields and are not counted.
+        /// D-1-04 (round 5): the scan interprets tags EXACTLY like the frozen codec's
+        /// ReadTag — an at-most-10-byte varint TRUNCATED to uint32, then field number and
+        /// wire type split on that 32-bit value. The previous 64-bit interpretation let a
+        /// high-varint tag (e.g. (1UL&lt;&lt;34)|(100UL&lt;&lt;3), which the codec truncates to the
+        /// legal unknown field 100) cast to a NEGATIVE field number and short-circuit the
+        /// whole scan as "no violation" — everything behind it, including the tail of a
+        /// concatenated second Envelope, went unswept and the concatenation was accepted.
+        ///
+        /// Fail-closed framing: every path where this scan cannot honestly frame the message
+        /// (malformed or overlong varint, tag 0, wire types 6/7, stray or unbalanced
+        /// end-group) is a framing the frozen codec itself rejects — bytes that reach this
+        /// scanner have already passed Decode, so hitting one here means the scan's remaining
+        /// view cannot be trusted and the message is refused, never accepted as "scan
+        /// complete, no duplicate". Schema-legal unknown GROUP fields are skipped completely
+        /// and safely — iterative, O(1) state, NO artificial depth cap (each nesting level
+        /// costs at least two wire bytes, so the depth is bounded by the frozen inbound
+        /// message cap and the scan always reaches the real end of the message or a genuine
+        /// framing error). Fields INSIDE a group are not top-level envelope fields and are
+        /// not counted.
         /// </summary>
         private static bool ContainsDuplicateKnownSingleValueField(byte[] message)
         {
@@ -2056,16 +2079,19 @@ namespace Mahjong.TableService
             {
                 if (!TryReadVarint(message, ref index, out ulong rawTag))
                 {
-                    return false; // malformed ???codec already handles it; treat as no violation
+                    return true; // malformed or overlong varint: a codec-rejected framing
                 }
 
-                int fieldNumber = (int)(rawTag >> 3);
-                int wireType = (int)(rawTag & 0x7);
-                if (fieldNumber <= 0)
+                // Mirror the frozen codec's ReadTag exactly: 32-bit truncation FIRST, then
+                // the field-number/wire-type split on that 32-bit value.
+                uint tag = (uint)rawTag;
+                if (tag == 0)
                 {
-                    return false;
+                    return true; // the codec throws InvalidProtocolBufferException (invalid tag)
                 }
 
+                int fieldNumber = (int)(tag >> 3); // uint >> 3 is never negative
+                int wireType = (int)(tag & 0x7);
                 if (groupDepth > 0)
                 {
                     // Inside an unknown group: nothing here is a top-level envelope field;
@@ -2075,7 +2101,7 @@ namespace Mahjong.TableService
                         case 0:
                             if (!TrySkipVarint(message, ref index))
                             {
-                                return false;
+                                return true;
                             }
 
                             break;
@@ -2083,7 +2109,7 @@ namespace Mahjong.TableService
                             index += 8;
                             if (index > message.Length)
                             {
-                                return false;
+                                return true;
                             }
 
                             break;
@@ -2091,7 +2117,7 @@ namespace Mahjong.TableService
                             if (!TryReadVarint(message, ref index, out ulong innerLength) ||
                                 innerLength > (ulong)(message.Length - index))
                             {
-                                return false;
+                                return true;
                             }
 
                             index += (int)innerLength;
@@ -2100,35 +2126,32 @@ namespace Mahjong.TableService
                             index += 4;
                             if (index > message.Length)
                             {
-                                return false;
+                                return true;
                             }
 
                             break;
                         case 3:
                             groupDepth++;
 
-                            // D-1-04 round 3: NO artificial depth cap. A nesting depth the scan
-                            // refuses to follow is exactly the old fail-open: the scan stopped
+                            // D-1-04: NO artificial depth cap. A nesting depth the scan refuses
+                            // to follow is exactly the old fail-open: the scan stopped
                             // mid-message and everything behind it (including the tail of a
                             // concatenated second Envelope) went unswept. The walkthrough is
                             // iterative (no recursion, O(1) state), each extra nesting level
                             // costs at least two wire bytes, so the depth is bounded by the
                             // frozen inbound message cap and the scan ALWAYS reaches the real
-                            // end of the message or hits a genuine framing error below.
+                            // end of the message or hits a genuine framing error above.
                             break;
                         case 4:
                             groupDepth--;
                             if (groupDepth < 0)
                             {
-                                // Unbalanced end group: the frozen codec never produced this
-                                // message, but this scan never treats bytes it cannot frame
-                                // as "no duplicate".
-                                return false;
+                                return true; // unbalanced end group: a codec-rejected framing
                             }
 
                             break;
                         default: // 6, 7 are never legal on this wire
-                            return false;
+                            return true;
                     }
 
                     continue;
@@ -2139,7 +2162,7 @@ namespace Mahjong.TableService
                     case 0: // varint
                         if (!TrySkipVarint(message, ref index))
                         {
-                            return false;
+                            return true;
                         }
 
                         break;
@@ -2147,7 +2170,7 @@ namespace Mahjong.TableService
                         index += 8;
                         if (index > message.Length)
                         {
-                            return false;
+                            return true;
                         }
 
                         break;
@@ -2155,7 +2178,7 @@ namespace Mahjong.TableService
                         if (!TryReadVarint(message, ref index, out ulong length) ||
                             length > (ulong)(message.Length - index))
                         {
-                            return false;
+                            return true;
                         }
 
                         index += (int)length;
@@ -2164,17 +2187,17 @@ namespace Mahjong.TableService
                         index += 4;
                         if (index > message.Length)
                         {
-                            return false;
+                            return true;
                         }
 
                         break;
-                    case 3: // group start (schema-legal unknown field): tracked, skipped, checked — no depth cap (D-1-04)
+                    case 3: // group start (schema-legal unknown field): tracked and skipped, no depth cap (D-1-04)
                         groupDepth++;
                         break;
                     case 4: // stray end group at top level: the frozen codec never accepts it
-                        return false;
+                        return true;
                     default: // 6, 7 are never legal on this wire
-                        return false;
+                        return true;
                 }
 
                 if (EnvelopeSingleValueFieldNumbers.Contains(fieldNumber) && !seen.Add(fieldNumber))
@@ -2183,7 +2206,11 @@ namespace Mahjong.TableService
                 }
             }
 
-            return false;
+            // The boolean answers "is this message a violation". An unclosed group never
+            // survives the codec, so a sweep that ends inside one is reported as a framing
+            // violation; only a clean full sweep with every group balanced honestly reports
+            // "no duplicate".
+            return groupDepth != 0;
         }
 
         private static bool TryReadVarint(byte[] bytes, ref int index, out ulong value)

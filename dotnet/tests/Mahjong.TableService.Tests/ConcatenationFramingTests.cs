@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Linq;
 using System.Threading.Tasks;
 using Mahjong.Contracts;
@@ -234,6 +235,266 @@ namespace Mahjong.TableService.Tests
                 await client.SendAsync(frame);
                 (int code, _, _) = await client.ExpectCloseAsync(TimeSpan.FromSeconds(10));
                 Assert.Equal(4400, code);
+            }
+            finally
+            {
+                await client.DisposeAsync();
+            }
+        }
+
+        // ==================================================================
+        // D-1-04 round 5: CODEC-ALLOWED OVERLONG TAGS (the review probe).
+        // The frozen codec's ReadTag reads an at-most-10-byte varint and
+        // TRUNCATES it to uint32 before the field/wire-type split — so
+        // (1UL<<34)|(100UL<<3) arrives at the schema as the legal unknown
+        // field 100, and the same truncation makes wide-tagged KNOWN fields
+        // count for the dedup scan. A tag the scan misreads as negative must
+        // never again short-circuit the sweep.
+        // ==================================================================
+
+        /// <summary>Overlong varint encoding of value (canonical minimal bytes).</summary>
+        private static byte[] OverlongVarint(ulong value)
+        {
+            var bytes = new List<byte>();
+            do
+            {
+                byte group = (byte)(value & 0x7F);
+                value >>= 7;
+                if (value > 0)
+                {
+                    group |= 0x80;
+                }
+
+                bytes.Add(group);
+            }
+            while (value > 0);
+            return bytes.ToArray();
+        }
+
+        /// <summary>A tag the codec truncates to (fieldNumber, wireType): the 34th bit is
+        /// discarded by the uint32 cast, exactly like the frozen codec's ReadTag.</summary>
+        private static byte[] WideTag(uint fieldNumber, int wireType)
+        {
+            return OverlongVarint((1UL << 34) | ((ulong)fieldNumber << 3) | (ulong)(uint)wireType);
+        }
+
+        private static readonly byte[][] WidePaddings =
+        {
+            WideTag(100, 0).Concat(new byte[] { 0x01 }).ToArray(),              // unknown varint field 100
+            WideTag(100, 1).Concat(new byte[] { 1, 2, 3, 4, 5, 6, 7, 8 }).ToArray(), // unknown fixed64
+            WideTag(100, 5).Concat(new byte[] { 1, 2, 3, 4 }).ToArray(),        // unknown fixed32
+            WideTag(100, 2).Concat(new byte[] { 0x02, 0x01, 0x02 }).ToArray(),  // unknown bytes
+            WideTag(100, 3).Concat(WideTag(100, 4)).ToArray()                   // unknown empty group
+        };
+
+        public static TheoryData<int, int> WideLegality => new TheoryData<int, int>
+        {
+            { 0, 0 }, { 0, 1 }, { 0, 2 },
+            { 1, 0 }, { 1, 1 }, { 1, 2 },
+            { 2, 0 }, { 2, 1 }, { 2, 2 },
+            { 3, 0 }, { 3, 1 }, { 3, 2 },
+            { 4, 0 }, { 4, 1 }, { 4, 2 }
+        };
+
+        /// <summary>position 0 = in front of the envelope, 1 = between the envelope's known
+        /// scalar fields and its heartbeat body (a true between-known-fields splice at the
+        /// field-53 tag boundary), 2 = behind the envelope.</summary>
+        private static byte[] WidePaddedHeartbeat(int paddingIndex, int position, string nonce)
+        {
+            byte[] ping = WireCodec.Encode(TableWire.HeartbeatPing(nonce));
+            byte[] padding = WidePaddings[paddingIndex];
+            return position switch
+            {
+                0 => padding.Concat(ping).ToArray(),
+                1 => ping.Take(Array.IndexOf(ping, (byte)0xaa))
+                    .Concat(padding)
+                    .Concat(ping.Skip(Array.IndexOf(ping, (byte)0xaa))).ToArray(),
+                _ => ping.Concat(padding).ToArray()
+            };
+        }
+
+        /// <summary>Every codec-allowed overlong tag shape around a SINGLE legal heartbeat
+        /// stays accepted and answered — at the front, splitting the envelope, and behind it.</summary>
+        [Theory]
+        [MemberData(nameof(WideLegality))]
+        public async Task WideTagUnknownField_SingleEnvelope_IsStillAnswered(int paddingIndex, int position)
+        {
+            await using TableServiceTestHost host = await TableServiceTestHost.StartAsync();
+            TableTestClient client = await host.ConnectPlayerAsync("room-wide", "acct-wide", 0);
+            try
+            {
+                await TableTestClientTestsCommon.DrainBaselineAsync(client);
+                string nonce = TableWire.RandomNonce();
+                await client.SendAsync(WidePaddedHeartbeat(paddingIndex, position, nonce));
+                Assert.True(
+                    await TableTestClientTestsCommon.WaitPongAsync(client, nonce),
+                    "a wide-tagged unknown field must decode (and scan) exactly like the codec's own " +
+                    "truncated view — the heartbeat stays answered (padding " + paddingIndex +
+                    ", position " + position + ")");
+            }
+            finally
+            {
+                await client.DisposeAsync();
+            }
+        }
+
+        /// <summary>The review's original attack: a wide-tagged unknown field must not stop
+        /// the sweep — the concatenated SECOND envelope behind it is still refused.</summary>
+        [Theory]
+        [MemberData(nameof(WideLegality))]
+        public async Task WideTagUnknownField_Concatenation_IsStillRefused(int paddingIndex, int position)
+        {
+            await using TableServiceTestHost host = await TableServiceTestHost.StartAsync();
+            TableTestClient client = await TableTestClient.ConnectAsync(host.WsUrl + "?room=room-wide-c");
+            string nonce1 = TableWire.RandomNonce();
+            string nonce2 = TableWire.RandomNonce();
+            byte[] padding = WidePaddings[paddingIndex];
+            byte[] payload = position switch
+            {
+                0 => padding.Concat(WireCodec.Encode(TableWire.HeartbeatPing(nonce1)))
+                    .Concat(WireCodec.Encode(TableWire.HeartbeatPing(nonce2))).ToArray(),
+                2 => WireCodec.Encode(TableWire.HeartbeatPing(nonce1)).Concat(padding)
+                    .Concat(WireCodec.Encode(TableWire.HeartbeatPing(nonce2))).ToArray(),
+                _ => WireCodec.Encode(TableWire.HeartbeatPing(nonce1))
+                    .Concat(WireCodec.Encode(TableWire.HeartbeatPing(nonce2))).Concat(padding).ToArray()
+            };
+            await client.SendAsync(payload);
+            (int code, string reason, _) = await client.ExpectCloseAsync(TimeSpan.FromSeconds(10));
+            Assert.Equal(4400, code);
+            Assert.Equal(ProtocolErrorCode.ProtocolViolation, reason);
+            await client.DisposeAsync();
+        }
+
+        /// <summary>A KNOWN single-value envelope field (53 = heartbeat) delivered with a
+        /// codec-allowed overlong tag is the SAME field number to the scan: twice in one
+        /// message is a duplicate, refused — even though the codec itself would merge
+        /// last-wins.</summary>
+        [Fact]
+        public async Task WideTagKnownField_Duplicate_IsRefusedEvenThoughCodecMerges()
+        {
+            await using TableServiceTestHost host = await TableServiceTestHost.StartAsync();
+            TableTestClient client = await host.ConnectPlayerAsync("room-wide-dup", "acct-wdup", 0);
+            try
+            {
+                await TableTestClientTestsCommon.DrainBaselineAsync(client);
+                byte[] ping = WireCodec.Encode(TableWire.HeartbeatPing(TableWire.RandomNonce()));
+                // Slice out EXACTLY the field-53 heartbeat body (tag 0xAA 0x03 + length
+                // varint + declared bytes) so the duplicated entry is a well-formed
+                // protobuf field — only the scanner may refuse it, not the codec.
+                int tagAt = Array.IndexOf(ping, (byte)0xaa);
+                int cursor = tagAt + 2;
+                int bodyLen = 0;
+                int shift = 0;
+                while (true)
+                {
+                    byte lengthByte = ping[cursor++];
+                    bodyLen |= (lengthByte & 0x7F) << shift;
+                    if ((lengthByte & 0x80) == 0)
+                    {
+                        break;
+                    }
+
+                    shift += 7;
+                }
+
+                byte[] heartbeatBody = ping.Skip(cursor).Take(bodyLen).ToArray();
+                byte[] wide53 = WideTag(53, 2);
+                byte[] duplicated = ping
+                    .Concat(wide53)
+                    .Concat(OverlongVarint((ulong)heartbeatBody.Length))
+                    .Concat(heartbeatBody)
+                    .ToArray();
+                await client.SendAsync(duplicated);
+                (int code, string reason, _) = await client.ExpectCloseAsync(TimeSpan.FromSeconds(10));
+                Assert.Equal(4400, code);
+                Assert.Equal(ProtocolErrorCode.ProtocolViolation, reason);
+            }
+            finally
+            {
+                await client.DisposeAsync();
+            }
+        }
+
+        /// <summary>HELLO phase: a wide-tagged unknown field before the legal HELLO must
+        /// still complete admission (the scan answers the same bytes the codec sees).</summary>
+        [Fact]
+        public async Task WideTagPadding_HelloPhase_IsAdmitted()
+        {
+            await using TableServiceTestHost host = await TableServiceTestHost.StartAsync();
+            TableTestClient client = await TableTestClient.ConnectAsync(host.WsUrl + "?room=room-wide-h");
+            try
+            {
+                byte[] padding = WideTag(100, 0).Concat(new byte[] { 0x01 }).ToArray();
+                string ticket = host.Signer.Sign(new TableTestTicket(
+                    "acct-wide-h", "room-wide-h", TableAdmissionRole.Player, 1));
+                byte[] hello = padding.Concat(
+                    WireCodec.Encode(TableWire.Hello(ticket))).ToArray();
+                await client.SendAsync(hello);
+                Envelope welcome = await client.ReadUntilAsync(
+                    envelope => envelope.MessageType == MessageType.Welcome,
+                    TimeSpan.FromSeconds(15));
+                Assert.False(string.IsNullOrEmpty(welcome.Welcome.SessionId));
+            }
+            finally
+            {
+                await client.DisposeAsync();
+            }
+        }
+
+        /// <summary>Post-admission SYNC and QUERY envelopes with wide-tagged unknown padding
+        /// are still decoded and executed (sync answers frames, the receipt query answers a
+        /// lookup) — the scan never downgrades codec-legal traffic into a close.</summary>
+        [Fact]
+        public async Task WideTagPadding_SyncAndQuery_AreStillExecuted()
+        {
+            await using TableServiceTestHost host = await TableServiceTestHost.StartAsync();
+            TableTestClient client = await host.ConnectPlayerAsync("room-wide-sq", "acct-wsq", 0);
+            try
+            {
+                await TableTestClientTestsCommon.DrainBaselineAsync(client);
+                byte[] padding = WideTag(100, 0).Concat(new byte[] { 0x01 }).ToArray();
+
+                await client.SendAsync(padding.Concat(
+                    WireCodec.Encode(TableWire.SyncRequest(
+                        client.Welcome!, playerStream: true, streamVersion: 0, projectionSeq: 0))).ToArray());
+                Envelope sync = await client.ReadUntilAsync(
+                    envelope => envelope.MessageType == MessageType.SyncResponse ||
+                                envelope.MessageType == MessageType.PlayerUpdate,
+                    TimeSpan.FromSeconds(15));
+                Assert.NotEqual(MessageType.Error, sync.MessageType);
+
+                await client.SendAsync(padding.Concat(
+                    WireCodec.Encode(TableWire.ReceiptQuery(
+                        client.Welcome!, client.Welcome!.Scope.ScopeId, TableWire.RandomId("wide")))).ToArray());
+                Envelope lookup = await client.ReadUntilAsync(
+                    envelope => envelope.MessageType == MessageType.ReceiptLookup ||
+                                envelope.MessageType == MessageType.Error,
+                    TimeSpan.FromSeconds(15));
+                Assert.Equal(MessageType.ReceiptLookup, lookup.MessageType);
+            }
+            finally
+            {
+                await client.DisposeAsync();
+            }
+        }
+
+        /// <summary>A wide-tagged padded single message split across WebSocket fragments is
+        /// still one Envelope — accepted and answered.</summary>
+        [Fact]
+        public async Task WideTagPadding_FragmentedSingle_IsStillAnswered()
+        {
+            await using TableServiceTestHost host = await TableServiceTestHost.StartAsync();
+            TableTestClient client = await host.ConnectPlayerAsync("room-wide-f", "acct-wf", 0);
+            try
+            {
+                await TableTestClientTestsCommon.DrainBaselineAsync(client);
+                string nonce = TableWire.RandomNonce();
+                byte[] padded = WidePaddings[3].Concat(
+                    WireCodec.Encode(TableWire.HeartbeatPing(nonce))).ToArray();
+                await client.SendFragmentedAsync(padded, 4);
+                Assert.True(
+                    await TableTestClientTestsCommon.WaitPongAsync(client, nonce),
+                    "a fragmented wide-tagged padded heartbeat must still be answered");
             }
             finally
             {
