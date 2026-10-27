@@ -2675,6 +2675,76 @@ namespace Mahjong.Unity.Tests.PlayMode
         }
 
         [UnityTest]
+        public IEnumerator B2bFormalProbe27_ControlledDispatcherMustNeverShowSupersededPrivateFrame()
+        {
+            yield return LoadAndBindTableSceneAsync();
+            _presenter!.enabled = false;
+            SessionCoordinator seed = _coordinator!;
+
+            var controlled = new MainThreadDispatcher(64);
+            var coordinator = new SessionCoordinator(
+                _session,
+                _queue,
+                _channel,
+                controlled,
+                new AppConfig(),
+                generation: 1);
+            _coordinator = coordinator;
+            _presenter.Bind(coordinator, _mockNav, coordinator, () => _mockNav!.OpenSettlement());
+            coordinator.Publish(1, seed.Current);
+            for (int i = 0; i < 10 && _presenter.LatestView == null; i++)
+            {
+                controlled.Update(1, 1000f);
+                yield return null;
+            }
+
+            Assert.IsNotNull(_presenter.LatestView);
+            Assert.IsTrue(_presenter.LatestView!.Identity.IsPrivateAuthorized);
+
+            PlayerSnapshot old = _session!.PlayerSnapshot!.Clone();
+            old.StateVersion = 2;
+            old.EventSeq = 102;
+            old.Cursor = new Mahjong.Contracts.Wire.StreamCursor { StreamVersion = 1, ProjectionSeq = 2 };
+            old.PrivateView.DrawnTileId = 27;
+            _channel!.EnqueueEnvelope(B2bTypedPush(
+                old, 1, 2, false,
+                B2bEvent(102, 0, WireEventType.TileDrawn, EventVisibility.Private, 2,
+                    e => e.TileDrawn = new TileDrawn { TurnNumber = 2, Player = 0, TileId = 27, WallRemaining = 67 })));
+            var pump = _session.PumpOnceAsync(CancellationToken.None);
+            while (!pump.IsCompleted) yield return null;
+            for (int i = 0; i < 30 && coordinator.Current.PlayerSnapshot?.StateVersion < 2; i++)
+            {
+                yield return null;
+            }
+
+            Assert.AreEqual(2UL, coordinator.Current.PlayerSnapshot!.StateVersion);
+            Assert.GreaterOrEqual(controlled.PendingCount, 1,
+                "old private publication must still be queued when the spectator binding is accepted");
+
+            yield return ReconnectBinding("room_table_1", Role.Spectator, -1, 2, 2, 2, null, dispatch: false);
+            Assert.AreEqual((int)Mahjong.Contracts.ProtocolRole.Spectator, coordinator.Current.Binding!.Role);
+            Assert.GreaterOrEqual(controlled.PendingCount, 2,
+                "the old private publication and new spectator baseline must both be pending");
+
+            var banner = FormalField<TextMeshProUGUI>("_animationBannerText");
+            int guard = 0;
+            while (controlled.PendingCount > 0 && guard++ < 30)
+            {
+                controlled.Update(1, 1000f);
+                Assert.AreEqual(0, _presenter.AnimationQueue.PendingCount,
+                    "a superseded private publication must never enter the animation queue");
+                typeof(TablePresenter).GetMethod("UpdateAnimationBanner", BindingFlags.NonPublic | BindingFlags.Instance)!.Invoke(_presenter, null);
+                Assert.IsFalse(banner.gameObject.activeSelf,
+                    "a superseded private publication must never display its tile");
+                yield return null;
+            }
+
+            Assert.AreEqual(PlayerTableRole.Spectator, _presenter.LatestView!.Identity.Role);
+            Assert.AreEqual(0, _presenter.AnimationQueue.PendingCount);
+            Assert.IsNull(_presenter.LastVisibleEventMapping);
+        }
+
+        [UnityTest]
         public IEnumerator B2bFormalProbe06_DelayedCaptureWithNewBindingMustNotRebaseOldBatch()
         {
             yield return LoadAndBindTableSceneAsync();
