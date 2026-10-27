@@ -85,7 +85,7 @@ namespace Mahjong.LocalHost
                     environment.ResolveId()).ScopeId;
             }
 
-            _driver = new LocalTableDriver(actor, options, store, scopes, () => _sessionOpen);
+            _driver = new LocalTableDriver(actor, options, store, scopes, () => _sessionOpen, _temporaryFuriten, _riichiFuriten);
             _driver.Start();
         }
 
@@ -214,7 +214,8 @@ namespace Mahjong.LocalHost
             var streamOptions = new TableStreamOptions
             {
                 Encoder = new ContractsStreamFrameEncoder(new LocalStreamContractCodec()),
-                MaxQueuedFrames = 128
+                MaxQueuedFrames = 128,
+                TerminationSink = new DebugTerminationSink()
             };
             var settlementFacts = new LocalSettlementFactsPort();
             var actor = new TableActor(
@@ -236,6 +237,7 @@ namespace Mahjong.LocalHost
         }
 
         internal Mahjong.Domain.RoundResult? CurrentRoundResult => _actor.GetRoundResult();
+        internal TableActor ActorForTest => _actor;
 
         internal bool DriverRunning => _driver.IsRunning;
 
@@ -559,139 +561,62 @@ namespace Mahjong.LocalHost
                 return;
             }
 
+            RoundStateMachine round = _actor.GetRoundStateForHost();
+            if (round.IsFinished)
+            {
+                return;
+            }
+
             TableSnapshot snapshot = await _actor.GetSnapshotAsync(CancellationToken.None).ConfigureAwait(false);
-            if (snapshot.Phase != RoundPhase.CheatWindow && snapshot.Phase != RoundPhase.Discard)
+            if (snapshot.Phase == RoundPhase.CheatWindow || snapshot.Phase == RoundPhase.Discard)
             {
-                return;
-            }
-
-            IReadOnlyList<TileId> hand = _actor.GetSeatHandTileIds(0);
-            if (hand.Count == 0)
-            {
-                return;
-            }
-
-            var candidates = new List<LegalActionOption>(hand.Count);
-            for (int i = 0; i < hand.Count; i++)
-            {
-                candidates.Add(new LegalActionOption(LegalActionKind.Discard, 0, hand[i]));
-            }
-            if (hand.Count == 14 && LooksLikeWinningHand(hand))
-            {
-                candidates.Add(new LegalActionOption(LegalActionKind.Tsumo, 0));
-            }
-
-
-            var pending = new PendingDecision(
-                new DecisionKey(snapshot.RoundId, 0, "local-human-initial"),
-                0L,
-                candidates,
-                hand[hand.Count - 1]);
-            await _actor.OpenDecisionAsync(pending, CancellationToken.None).ConfigureAwait(false);
-        }
-
-
-        private static bool LooksLikeWinningHand(IReadOnlyList<TileId> hand)
-        {
-            var counts = new int[34];
-            for (int i = 0; i < hand.Count; i++)
-            {
-                int index = hand[i].Value / 4;
-                if (index < 0 || index >= counts.Length)
+                if (snapshot.CurrentSeat != 0)
                 {
-                    return false;
+                    return;
                 }
 
-                counts[index]++;
-                if (counts[index] > 4)
+                IReadOnlyList<LegalActionOption> candidates = LocalCandidateProvider.DeriveTurnCandidates(
+                    round,
+                    0,
+                    _temporaryFuriten,
+                    _riichiFuriten);
+                if (candidates.Count == 0)
                 {
-                    return false;
+                    return;
                 }
-            }
 
-            int pairs = 0;
-            for (int i = 0; i < counts.Length; i++)
+                TileId? drawn = round.Tiles.DrawnTile?.Seat == 0 ? round.Tiles.DrawnTile?.Tile : null;
+                var pending = new PendingDecision(
+                    new DecisionKey(snapshot.RoundId, 0, "local-human-initial"),
+                    0L,
+                    candidates,
+                    drawn);
+                await _actor.OpenDecisionAsync(pending, CancellationToken.None).ConfigureAwait(false);
+            }
+            else if (snapshot.Phase == RoundPhase.ResponseWindow || snapshot.Phase == RoundPhase.ChankanWindow)
             {
-                if (counts[i] == 2)
+                RoundResponseWindow? window = round.Window;
+                if (window != null && window.EligibleSeats.Contains(0) && !window.HasResponded(0))
                 {
-                    pairs++;
-                }
-                else if (counts[i] != 0 && counts[i] != 2)
-                {
-                    pairs = -1;
-                    break;
-                }
-            }
+                    IReadOnlyList<LegalActionOption> candidates = LocalCandidateProvider.DeriveResponseCandidates(
+                        round,
+                        0,
+                        window,
+                        _temporaryFuriten,
+                        _riichiFuriten);
+                    if (candidates.Count == 0)
+                    {
+                        return;
+                    }
 
-            if (pairs == 7)
-            {
-                return true;
-            }
-
-            for (int pair = 0; pair < counts.Length; pair++)
-            {
-                if (counts[pair] < 2)
-                {
-                    continue;
-                }
-
-                counts[pair] -= 2;
-                bool win = CanFormMelds(counts);
-                counts[pair] += 2;
-                if (win)
-                {
-                    return true;
+                    var pending = new PendingDecision(
+                        new DecisionKey(snapshot.RoundId, 0, "local-human-initial-response"),
+                        0L,
+                        candidates,
+                        null);
+                    await _actor.OpenDecisionAsync(pending, CancellationToken.None).ConfigureAwait(false);
                 }
             }
-
-            return false;
-        }
-
-        private static bool CanFormMelds(int[] counts)
-        {
-            int first = -1;
-            for (int i = 0; i < counts.Length; i++)
-            {
-                if (counts[i] > 0)
-                {
-                    first = i;
-                    break;
-                }
-            }
-
-            if (first < 0)
-            {
-                return true;
-            }
-
-            if (counts[first] >= 3)
-            {
-                counts[first] -= 3;
-                bool triplet = CanFormMelds(counts);
-                counts[first] += 3;
-                if (triplet)
-                {
-                    return true;
-                }
-            }
-
-            if (first < 27 && first % 9 <= 6 &&
-                counts[first + 1] > 0 && counts[first + 2] > 0)
-            {
-                counts[first]--;
-                counts[first + 1]--;
-                counts[first + 2]--;
-                bool sequence = CanFormMelds(counts);
-                counts[first]++;
-                counts[first + 1]++;
-                counts[first + 2]++;
-                if (sequence)
-                {
-                    return true;
-                }
-            }
-
-            return false;
         }
         internal void OnFrame(TableStreamFrame frame, long generation)
         {
@@ -1537,7 +1462,15 @@ namespace Mahjong.LocalHost
                         throw new LocalCommandException(ProtocolErrorCode.MalformedMessage, "Discard requires exactly one tile id.");
                     }
 
-                    return RoundCommand.Discard(roundId, _seat, new TileId(unchecked((int)tiles[0])));
+                    var discardTile = new TileId(unchecked((int)tiles[0]));
+                    RoundStateMachine roundForDiscard = _actor.GetRoundStateForHost();
+                    IReadOnlyList<int> discardEligible = LocalCandidateProvider.DeriveEligibleSeatsForDiscard(
+                        roundForDiscard,
+                        _seat,
+                        discardTile,
+                        _temporaryFuriten,
+                        _riichiFuriten);
+                    return RoundCommand.Discard(roundId, _seat, discardTile, discardEligible);
                 case RoundActionKind.Pass:
                     return RoundCommand.Pass(roundId, _seat);
                 case RoundActionKind.DeclareRiichi:
@@ -1552,27 +1485,136 @@ namespace Mahjong.LocalHost
                         throw new LocalCommandException(ProtocolErrorCode.MalformedMessage, "Riichi requires exactly one discard tile.");
                     }
 
-                    return RoundCommand.Riichi(roundId, _seat, new TileId(unchecked((int)riichiTiles[0])), null);
+                    var riichiTile = new TileId(unchecked((int)riichiTiles[0]));
+                    RoundStateMachine roundForRiichi = _actor.GetRoundStateForHost();
+                    IReadOnlyList<int> riichiEligible = LocalCandidateProvider.DeriveEligibleSeatsForDiscard(
+                        roundForRiichi,
+                        _seat,
+                        riichiTile,
+                        _temporaryFuriten,
+                        _riichiFuriten);
+                    return RoundCommand.Riichi(roundId, _seat, riichiTile, riichiEligible);
                 case RoundActionKind.DeclareChi:
                 {
-                    IReadOnlyList<uint> meld = RequireMeldTiles(document, "Chi", 3);
-                    return RoundCommand.Chi(
-                        roundId,
-                        _seat,
-                        new TileId(unchecked((int)meld[0])),
-                        new TileId(unchecked((int)meld[1])),
-                        new TileId(unchecked((int)meld[2])));
+                    RoundStateMachine round = _actor.GetRoundStateForHost();
+                    RoundResponseWindow? window = round.Window;
+                    IReadOnlyList<uint> meld = document.HasField(CommandPayloadFields.TileIds)
+                        ? document.RequireRepeatedUInt32(CommandPayloadFields.TileIds, "tileIds")
+                        : Array.Empty<uint>();
+                    TileId calledTile;
+                    TileId handA;
+                    TileId handB;
+                    if (meld.Count == 3)
+                    {
+                        if (window != null && window.TargetTile.Value == (int)meld[0])
+                        {
+                            calledTile = window.TargetTile;
+                            handA = new TileId(unchecked((int)meld[1]));
+                            handB = new TileId(unchecked((int)meld[2]));
+                        }
+                        else if (window != null && window.TargetTile.Value == (int)meld[2])
+                        {
+                            calledTile = window.TargetTile;
+                            handA = new TileId(unchecked((int)meld[0]));
+                            handB = new TileId(unchecked((int)meld[1]));
+                        }
+                        else if (window != null && window.TargetTile.Value == (int)meld[1])
+                        {
+                            calledTile = window.TargetTile;
+                            handA = new TileId(unchecked((int)meld[0]));
+                            handB = new TileId(unchecked((int)meld[2]));
+                        }
+                        else
+                        {
+                            calledTile = new TileId(unchecked((int)meld[0]));
+                            handA = new TileId(unchecked((int)meld[1]));
+                            handB = new TileId(unchecked((int)meld[2]));
+                        }
+                    }
+                    else if (meld.Count == 2 && window != null)
+                    {
+                        calledTile = window.TargetTile;
+                        handA = new TileId(unchecked((int)meld[0]));
+                        handB = new TileId(unchecked((int)meld[1]));
+                    }
+                    else if (window != null)
+                    {
+                        (TileId a, TileId b)? found = LocalCandidateProvider.FindChiTiles(
+                            round.Tiles.TilesInZone(TileZone.Hand, _seat),
+                            window.TargetTile);
+                        if (found == null)
+                        {
+                            throw new LocalCommandException(ProtocolErrorCode.MalformedMessage, "No valid chi hand tiles found.");
+                        }
+
+                        calledTile = window.TargetTile;
+                        handA = found.Value.a;
+                        handB = found.Value.b;
+                    }
+                    else
+                    {
+                        throw new LocalCommandException(ProtocolErrorCode.MalformedMessage, "Chi requires tile ids.");
+                    }
+
+                    return RoundCommand.Chi(roundId, _seat, calledTile, handA, handB);
                 }
 
                 case RoundActionKind.DeclarePon:
                 {
-                    IReadOnlyList<uint> meld = RequireMeldTiles(document, "Pon", 3);
-                    return RoundCommand.Pon(
-                        roundId,
-                        _seat,
-                        new TileId(unchecked((int)meld[0])),
-                        new TileId(unchecked((int)meld[1])),
-                        new TileId(unchecked((int)meld[2])));
+                    RoundStateMachine round = _actor.GetRoundStateForHost();
+                    RoundResponseWindow? window = round.Window;
+                    IReadOnlyList<uint> meld = document.HasField(CommandPayloadFields.TileIds)
+                        ? document.RequireRepeatedUInt32(CommandPayloadFields.TileIds, "tileIds")
+                        : Array.Empty<uint>();
+                    TileId calledTile;
+                    TileId handA;
+                    TileId handB;
+                    if (meld.Count == 3)
+                    {
+                        uint targetVal = window != null ? unchecked((uint)window.TargetTile.Value) : meld[0];
+                        var handList = new List<TileId>(2);
+                        bool targetSkipped = false;
+                        for (int i = 0; i < 3; i++)
+                        {
+                            if (!targetSkipped && meld[i] == targetVal)
+                            {
+                                targetSkipped = true;
+                            }
+                            else
+                            {
+                                handList.Add(new TileId(unchecked((int)meld[i])));
+                            }
+                        }
+
+                        calledTile = new TileId(unchecked((int)targetVal));
+                        handA = handList[0];
+                        handB = handList[1];
+                    }
+                    else if (meld.Count == 2 && window != null)
+                    {
+                        calledTile = window.TargetTile;
+                        handA = new TileId(unchecked((int)meld[0]));
+                        handB = new TileId(unchecked((int)meld[1]));
+                    }
+                    else if (window != null)
+                    {
+                        IReadOnlyList<TileId> handTiles = round.Tiles.TilesInZone(TileZone.Hand, _seat);
+                        var matches = handTiles.Where(t => t.TypeIndex == window.TargetTile.TypeIndex).Take(2).ToList();
+                        if (matches.Count < 2)
+                        {
+                            throw new LocalCommandException(ProtocolErrorCode.MalformedMessage, "No matching tiles in hand for Pon.");
+                        }
+
+                        calledTile = window.TargetTile;
+                        handA = matches[0];
+                        handB = matches[1];
+                    }
+                    else
+                    {
+                        throw new LocalCommandException(ProtocolErrorCode.MalformedMessage, "Pon requires tile ids.");
+                    }
+
+                    return RoundCommand.Pon(roundId, _seat, calledTile, handA, handB);
                 }
 
                 case RoundActionKind.DeclareOpenKan:
@@ -1582,33 +1624,112 @@ namespace Mahjong.LocalHost
                     uint meldType = document.HasField(CommandPayloadFields.MeldType)
                         ? document.RequireUInt32(CommandPayloadFields.MeldType, "meldType")
                         : 0U;
+                    RoundStateMachine round = _actor.GetRoundStateForHost();
                     if (action == RoundActionKind.DeclareClosedKan || meldType == 4U)
                     {
-                        IReadOnlyList<uint> kan = RequireMeldTiles(document, "ClosedKan", 4);
-                        return RoundCommand.ClosedKan(
-                            roundId,
-                            _seat,
-                            new TileId(unchecked((int)kan[0])),
-                            new TileId(unchecked((int)kan[1])),
-                            new TileId(unchecked((int)kan[2])),
-                            new TileId(unchecked((int)kan[3])));
+                        IReadOnlyList<uint> kan = document.HasField(CommandPayloadFields.TileIds)
+                            ? document.RequireRepeatedUInt32(CommandPayloadFields.TileIds, "tileIds")
+                            : Array.Empty<uint>();
+                        if (kan.Count == 4)
+                        {
+                            return RoundCommand.ClosedKan(
+                                roundId,
+                                _seat,
+                                new TileId(unchecked((int)kan[0])),
+                                new TileId(unchecked((int)kan[1])),
+                                new TileId(unchecked((int)kan[2])),
+                                new TileId(unchecked((int)kan[3])));
+                        }
+
+                        if (kan.Count == 1)
+                        {
+                            var t = new TileId(unchecked((int)kan[0]));
+                            var matches = round.Tiles.TilesInZone(TileZone.Hand, _seat).Where(tile => tile.TypeIndex == t.TypeIndex).Take(4).ToList();
+                            if (matches.Count == 4)
+                            {
+                                return RoundCommand.ClosedKan(roundId, _seat, matches[0], matches[1], matches[2], matches[3]);
+                            }
+                        }
+
+                        throw new LocalCommandException(ProtocolErrorCode.MalformedMessage, "ClosedKan requires 4 tile ids.");
                     }
 
                     if (action == RoundActionKind.DeclareAddedKan || meldType == 5U)
                     {
                         IReadOnlyList<uint> added = RequireMeldTiles(document, "AddedKan", 1);
-                        return RoundCommand.AddedKan(roundId, _seat, new TileId(unchecked((int)added[0])));
+                        var addedTile = new TileId(unchecked((int)added[0]));
+                        IReadOnlyList<int> chankanEligible = LocalCandidateProvider.DeriveEligibleSeatsForAddedKan(
+                            round,
+                            _seat,
+                            addedTile,
+                            _temporaryFuriten,
+                            _riichiFuriten);
+                        return RoundCommand.AddedKan(roundId, _seat, addedTile, chankanEligible);
                     }
 
-                    IReadOnlyList<uint> open = RequireMeldTiles(document, "OpenKan", 4);
-                    return RoundCommand.OpenKan(
+                    RoundResponseWindow? window = round.Window;
+                    IReadOnlyList<uint> open = document.HasField(CommandPayloadFields.TileIds)
+                        ? document.RequireRepeatedUInt32(CommandPayloadFields.TileIds, "tileIds")
+                        : Array.Empty<uint>();
+                    TileId openCalledTile;
+                    TileId openHandA;
+                    TileId openHandB;
+                    TileId openHandC;
+                    if (open.Count == 4)
+                    {
+                        uint targetVal = window != null ? unchecked((uint)window.TargetTile.Value) : open[0];
+                        var handList = new List<TileId>(3);
+                        bool targetSkipped = false;
+                        for (int i = 0; i < 4; i++)
+                        {
+                            if (!targetSkipped && open[i] == targetVal)
+                            {
+                                targetSkipped = true;
+                            }
+                            else
+                            {
+                                handList.Add(new TileId(unchecked((int)open[i])));
+                            }
+                        }
 
+                        openCalledTile = new TileId(unchecked((int)targetVal));
+                        openHandA = handList[0];
+                        openHandB = handList[1];
+                        openHandC = handList[2];
+                    }
+                    else if (open.Count == 3 && window != null)
+                    {
+                        openCalledTile = window.TargetTile;
+                        openHandA = new TileId(unchecked((int)open[0]));
+                        openHandB = new TileId(unchecked((int)open[1]));
+                        openHandC = new TileId(unchecked((int)open[2]));
+                    }
+                    else if (window != null)
+                    {
+                        IReadOnlyList<TileId> handTiles = round.Tiles.TilesInZone(TileZone.Hand, _seat);
+                        var matches = handTiles.Where(t => t.TypeIndex == window.TargetTile.TypeIndex).Take(3).ToList();
+                        if (matches.Count < 3)
+                        {
+                            throw new LocalCommandException(ProtocolErrorCode.MalformedMessage, "No matching tiles in hand for OpenKan.");
+                        }
+
+                        openCalledTile = window.TargetTile;
+                        openHandA = matches[0];
+                        openHandB = matches[1];
+                        openHandC = matches[2];
+                    }
+                    else
+                    {
+                        throw new LocalCommandException(ProtocolErrorCode.MalformedMessage, "OpenKan requires tile ids.");
+                    }
+
+                    return RoundCommand.OpenKan(
                         roundId,
                         _seat,
-                        new TileId(unchecked((int)open[0])),
-                        new TileId(unchecked((int)open[1])),
-                        new TileId(unchecked((int)open[2])),
-                        new TileId(unchecked((int)open[3])));
+                        openCalledTile,
+                        openHandA,
+                        openHandB,
+                        openHandC);
                 }
 
                 default:
@@ -1856,45 +1977,65 @@ namespace Mahjong.LocalHost
         }
     }
 
+    internal sealed class DebugTerminationSink : ITableStreamTerminationSink
+    {
+        public static TableStreamTermination? LastTermination;
+
+        public void OnStreamTerminated(TableStreamTermination termination)
+        {
+            LastTermination = termination;
+        }
+    }
+
     /// <summary>Frozen Contracts -> strict wire codec used only by the loopback bridge.</summary>
     internal sealed class LocalStreamContractCodec : ITableStreamContractCodec
     {
+        public static Exception? LastEncodeException;
+
         public byte[] Encode(TableStreamContractFrame frame)
         {
-            if (frame == null)
+            try
             {
-                throw new ArgumentNullException(nameof(frame));
-            }
+                if (frame == null)
+                {
+                    throw new ArgumentNullException(nameof(frame));
+                }
 
-            Envelope envelope = new Envelope
-            {
-                ProtocolMajor = ProtocolConstants.Major,
-                ProtocolMinor = ProtocolConstants.Minor,
-                RulesetVersion = ProtocolConstants.RulesetVersion,
-                ProjectionVersion = ProtocolConstants.ProjectionVersion,
-                MessageType = MessageType.PlayerUpdate,
-                SessionId = frame.SessionId.Value,
-                RoomId = frame.RoomId,
-                SeatId = frame.Audience.Seat,
-                BindingEpoch = frame.BindingEpoch.Value,
-                Cursor = ProjectionWireMapper.MapCursor(frame.Cursor),
-                PlayerUpdate = ProjectionWireMapper.MapPlayerUpdate(
-                    frame.Player!,
-                    frame.Events,
-                    frame.FromCursor,
-                    frame.IsFullSnapshot)
-            };
-            WireCodec.EnsureStrict(envelope);
-            byte[] bytes = WireCodec.Encode(envelope);
-            WireDecodeResult decoded = WireCodec.Decode(bytes);
-            if (!decoded.IsOk || decoded.Envelope == null)
-            {
-                throw new WireProtocolException(
-                    "The local codec could not decode its own output: " + decoded.ErrorCode,
-                    decoded.ErrorCode);
-            }
+                Envelope envelope = new Envelope
+                {
+                    ProtocolMajor = ProtocolConstants.Major,
+                    ProtocolMinor = ProtocolConstants.Minor,
+                    RulesetVersion = ProtocolConstants.RulesetVersion,
+                    ProjectionVersion = ProtocolConstants.ProjectionVersion,
+                    MessageType = MessageType.PlayerUpdate,
+                    SessionId = frame.SessionId.Value,
+                    RoomId = frame.RoomId,
+                    SeatId = frame.Audience.Seat,
+                    BindingEpoch = frame.BindingEpoch.Value,
+                    Cursor = ProjectionWireMapper.MapCursor(frame.Cursor),
+                    PlayerUpdate = ProjectionWireMapper.MapPlayerUpdate(
+                        frame.Player!,
+                        frame.Events,
+                        frame.FromCursor,
+                        frame.IsFullSnapshot)
+                };
+                WireCodec.EnsureStrict(envelope);
+                byte[] bytes = WireCodec.Encode(envelope);
+                WireDecodeResult decoded = WireCodec.Decode(bytes);
+                if (!decoded.IsOk || decoded.Envelope == null)
+                {
+                    throw new WireProtocolException(
+                        "The local codec could not decode its own output: " + decoded.ErrorCode,
+                        decoded.ErrorCode);
+                }
 
-            return bytes;
+                return bytes;
+            }
+            catch (Exception ex)
+            {
+                LastEncodeException = ex;
+                throw;
+            }
         }
     }
 

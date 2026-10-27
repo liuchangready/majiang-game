@@ -126,7 +126,10 @@ namespace Mahjong.LocalHost.Tests
                         break;
                     }
 
-                    if (snapshot.PublicView.Board.CurrentSeat == 0 &&
+                    bool isMyTurn = snapshot.PublicView.Board.CurrentSeat == 0;
+                    bool isResponse = snapshot.PublicView.Board.Phase == WireGamePhase.ResponseWindow ||
+                                      snapshot.PublicView.Board.Phase == WireGamePhase.ChankanWindow;
+                    if ((isMyTurn || isResponse) &&
                         snapshot.PrivateView != null &&
                         snapshot.PrivateView.Seat == 0)
                     {

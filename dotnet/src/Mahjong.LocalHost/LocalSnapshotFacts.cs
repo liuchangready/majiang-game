@@ -233,11 +233,22 @@ namespace Mahjong.LocalHost
                         tiles.Add(unchecked((uint)meld.Tiles[t].Value));
                     }
 
-                    melds.Add(new TableMeldFact(
-                        MapMeld(meld.Kind),
-                        tiles,
-                        unchecked((uint)meld.CalledTile.Value),
-                        meld.FromSeat));
+                    if (meld.Kind == RoundMeldKind.ClosedKan)
+                    {
+                        melds.Add(new TableMeldFact(
+                            ProtocolMeldType.ClosedKan,
+                            tiles,
+                            null,
+                            ProtocolConstants.NoSeat));
+                    }
+                    else
+                    {
+                        melds.Add(new TableMeldFact(
+                            MapMeld(meld.Kind),
+                            tiles,
+                            unchecked((uint)meld.CalledTile.Value),
+                            meld.FromSeat));
+                    }
                 }
 
                 publicFacts.Add(new TableSeatPublicFacts(seat, round.IsRiichi(seat), melds, discards));
@@ -330,7 +341,69 @@ namespace Mahjong.LocalHost
                         break;
                     case RoundEventType.KanDeclared:
                         type = ProtocolEventType.KanDeclared;
-                        value = new TableProjectionEventFacts(turnNumber: unchecked((uint)(i + 1)));
+                        RoundMeld? kanMeld = null;
+                        for (int m = round.Melds.Count - 1; m >= 0; m--)
+                        {
+                            RoundMeld candidate = round.Melds[m];
+                            if (candidate.Seat == record.Seat &&
+                                (candidate.Kind == RoundMeldKind.ClosedKan ||
+                                 candidate.Kind == RoundMeldKind.OpenKan ||
+                                 candidate.Kind == RoundMeldKind.AddedKan))
+                            {
+                                if (record.Tile.HasValue &&
+                                    (candidate.CalledTile == record.Tile.Value || MeldContainsTile(candidate, record.Tile.Value)))
+                                {
+                                    kanMeld = candidate;
+                                    break;
+                                }
+                            }
+                        }
+
+                        value = new TableProjectionEventFacts(
+                            turnNumber: unchecked((uint)(i + 1)),
+                            meld: kanMeld != null ? ToMeldView(kanMeld) : null,
+                            fromSeat: kanMeld?.Kind == RoundMeldKind.ClosedKan ? ProtocolConstants.NoSeat : kanMeld?.FromSeat);
+                        break;
+                    case RoundEventType.ChiDeclared:
+                        type = ProtocolEventType.ChiDeclared;
+                        RoundMeld? chiMeld = null;
+                        for (int m = round.Melds.Count - 1; m >= 0; m--)
+                        {
+                            if (round.Melds[m].Seat == record.Seat && round.Melds[m].Kind == RoundMeldKind.Chi)
+                            {
+                                chiMeld = round.Melds[m];
+                                break;
+                            }
+                        }
+
+                        value = new TableProjectionEventFacts(
+                            turnNumber: unchecked((uint)(i + 1)),
+                            meld: chiMeld != null ? ToMeldView(chiMeld) : null,
+                            fromSeat: chiMeld?.FromSeat);
+                        break;
+                    case RoundEventType.PonDeclared:
+                        type = ProtocolEventType.PonDeclared;
+                        RoundMeld? ponMeld = null;
+                        for (int m = round.Melds.Count - 1; m >= 0; m--)
+                        {
+                            if (round.Melds[m].Seat == record.Seat && round.Melds[m].Kind == RoundMeldKind.Pon)
+                            {
+                                ponMeld = round.Melds[m];
+                                break;
+                            }
+                        }
+
+                        value = new TableProjectionEventFacts(
+                            turnNumber: unchecked((uint)(i + 1)),
+                            meld: ponMeld != null ? ToMeldView(ponMeld) : null,
+                            fromSeat: ponMeld?.FromSeat);
+                        break;
+                    case RoundEventType.RiichiDeclared:
+                        type = ProtocolEventType.RiichiDeclared;
+                        value = new TableProjectionEventFacts(
+                            turnNumber: unchecked((uint)(i + 1)),
+                            discardTileId: record.Tile.HasValue ? unchecked((uint)record.Tile.Value.Value) : (uint?)null,
+                            doubleRiichi: false);
                         break;
                     case RoundEventType.TsumoWin:
                     case RoundEventType.RonWin:
@@ -438,6 +511,43 @@ namespace Mahjong.LocalHost
                 case RoundMeldKind.ClosedKan: return ProtocolMeldType.ClosedKan;
                 default: throw new ArgumentOutOfRangeException(nameof(kind), kind, "Unknown meld kind.");
             }
+        }
+
+        private static MeldView ToMeldView(RoundMeld meld)
+        {
+            var tiles = new List<uint>(meld.Tiles.Count);
+            for (int t = 0; t < meld.Tiles.Count; t++)
+            {
+                tiles.Add(unchecked((uint)meld.Tiles[t].Value));
+            }
+
+            if (meld.Kind == RoundMeldKind.ClosedKan)
+            {
+                return new MeldView(
+                    ProtocolMeldType.ClosedKan,
+                    tiles,
+                    null,
+                    ProtocolConstants.NoSeat);
+            }
+
+            return new MeldView(
+                MapMeld(meld.Kind),
+                tiles,
+                unchecked((uint)meld.CalledTile.Value),
+                meld.FromSeat);
+        }
+
+        private static bool MeldContainsTile(RoundMeld meld, TileId tile)
+        {
+            for (int i = 0; i < meld.Tiles.Count; i++)
+            {
+                if (meld.Tiles[i] == tile)
+                {
+                    return true;
+                }
+            }
+
+            return false;
         }
 
         private ulong NowUtc()
