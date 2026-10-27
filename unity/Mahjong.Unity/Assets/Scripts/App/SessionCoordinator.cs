@@ -45,7 +45,7 @@ namespace Mahjong.Unity.App
             new ShutdownResult(ShutdownOutcome.AlreadyIncomplete, quarantined, false, prior);
     }
 
-    public sealed class SessionCoordinator : ISessionView, ITableCommandSink
+    public sealed class SessionCoordinator : ISessionView, ISessionViewLifecycleFence, ITableCommandSink
     {
         private readonly IGameSession? _session;
         private readonly TableSessionOperationQueue? _operationQueue;
@@ -62,6 +62,7 @@ namespace Mahjong.Unity.App
         private readonly object _stateGate = new object();
         private SessionViewState _currentViewState;
         private long _currentGeneration;
+        private long _acceptedSequence;
 
         private readonly CancellationTokenSource _runCts = new CancellationTokenSource();
         private Task? _pumpTask;
@@ -97,6 +98,12 @@ namespace Mahjong.Unity.App
         }
 
         public long Generation => _currentGeneration;
+
+        /// <summary>
+        /// Highest snapshot acceptance sequence assigned before owner capture.
+        /// It advances even while the view publication is still pending.
+        /// </summary>
+        public long AcceptedSequence => Interlocked.Read(ref _acceptedSequence);
 
         public SessionCoordinator(
             IGameSession? session,
@@ -174,6 +181,7 @@ namespace Mahjong.Unity.App
             PublicSnapshot? publicSnapshot = e.PublicSnapshot?.Clone();
             RoomUpdate? room = e.RoomSnapshot?.Clone();
             TableVisibleEventBatch batch = e.VisibleEventBatch ?? TableVisibleEventBatch.Empty;
+            long acceptedSequence = Interlocked.Increment(ref _acceptedSequence);
 
             long gen = _currentGeneration;
             if (_operationQueue != null)
@@ -185,7 +193,8 @@ namespace Mahjong.Unity.App
                     player,
                     publicSnapshot,
                     room,
-                    batch);
+                    batch,
+                    acceptedSequence);
             }
             else
             {
@@ -207,7 +216,8 @@ namespace Mahjong.Unity.App
                     _session?.LastError,
                     e.IsFullBaseline,
                     e.Cursor,
-                    batch);
+                    batch,
+                    acceptedSequence);
 
                 Publish(gen, viewState);
             }
@@ -220,7 +230,8 @@ namespace Mahjong.Unity.App
             PlayerSnapshot? player,
             PublicSnapshot? publicSnapshot,
             RoomUpdate? room,
-            TableVisibleEventBatch batch)
+            TableVisibleEventBatch batch,
+            long acceptedSequence)
         {
             try
             {
@@ -251,7 +262,8 @@ namespace Mahjong.Unity.App
                     capture?.LastError ?? _operationQueue.LastError,
                     isFullBaseline,
                     cursor,
-                    batch);
+                    batch,
+                    acceptedSequence);
 
                 Publish(gen, viewState);
             }

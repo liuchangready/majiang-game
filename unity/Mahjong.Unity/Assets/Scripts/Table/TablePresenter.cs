@@ -143,6 +143,9 @@ namespace Mahjong.Unity.Table
         private bool _focusLostForAnimations;
         private bool _sessionViewDetachedForLifecycle;
         private bool _forceAnimationBaseline;
+        private bool _hasLifecycleAcceptedFence;
+        private long _lifecycleAcceptedFence;
+        private string _lifecycleFenceSessionId = string.Empty;
 
         // Selection buffers
         private readonly List<uint> _tileMarkSelectedTiles = new List<uint>();
@@ -247,6 +250,17 @@ namespace Mahjong.Unity.Table
             _commandSink = commandSink;
             _navigation = navigation;
             _sessionView = sessionView;
+            if (_hasLifecycleAcceptedFence)
+            {
+                string nextSessionId = _sessionView?.Current?.Binding?.SessionId ?? string.Empty;
+                if (string.IsNullOrEmpty(nextSessionId) ||
+                    !string.Equals(nextSessionId, _lifecycleFenceSessionId, StringComparison.Ordinal))
+                {
+                    _hasLifecycleAcceptedFence = false;
+                    _lifecycleAcceptedFence = 0;
+                    _lifecycleFenceSessionId = string.Empty;
+                }
+            }
             if (onOpenSettlement != null)
             {
                 _onViewSettlement = onOpenSettlement;
@@ -362,6 +376,15 @@ namespace Mahjong.Unity.Table
 
         private void SuspendAnimationsForLifecycle()
         {
+            if (_sessionView is ISessionViewLifecycleFence fence && fence.AcceptedSequence > 0)
+            {
+                _hasLifecycleAcceptedFence = true;
+                _lifecycleAcceptedFence = Math.Max(_lifecycleAcceptedFence, fence.AcceptedSequence);
+                _lifecycleFenceSessionId = _latestView?.Identity.SessionId ??
+                                           _sessionView.Current?.Binding?.SessionId ??
+                                           string.Empty;
+            }
+
             if (_sessionView != null)
             {
                 _sessionView.Changed -= OnSessionViewChanged;
@@ -554,7 +577,10 @@ namespace Mahjong.Unity.Table
         {
             if (state == null) return;
 
-            bool forceAnimationBaseline = _forceAnimationBaseline;
+            bool lifecycleStale = _hasLifecycleAcceptedFence &&
+                                  state.AcceptanceSequence > 0 &&
+                                  state.AcceptanceSequence <= _lifecycleAcceptedFence;
+            bool forceAnimationBaseline = _forceAnimationBaseline || lifecycleStale;
             _forceAnimationBaseline = false;
             if (_sessionViewDetachedForLifecycle && !forceAnimationBaseline)
             {

@@ -1716,6 +1716,469 @@ namespace Mahjong.Unity.Tests.PlayMode
             Assert.IsTrue(banner.gameObject.activeSelf);
         }
 
+        private IEnumerator RunPendingCaptureLifecycleScenario(
+            bool pause,
+            bool focus,
+            bool releaseBeforeBoundary,
+            bool rebindWhileSuspended)
+        {
+            yield return LoadAndBindTableSceneAsync();
+            _presenter!.enabled = false;
+
+            var gate = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            int captures = 0;
+            var delayedCoordinator = new SessionCoordinator(
+                _session,
+                _queue,
+                _channel,
+                _dispatcher!,
+                new AppConfig(),
+                1,
+                async () =>
+                {
+                    int call = Interlocked.Increment(ref captures);
+                    if (call == 1)
+                    {
+                        await gate.Task;
+                    }
+
+                    return await _queue!.CaptureAsync(CancellationToken.None);
+                });
+            _coordinator = delayedCoordinator;
+            _presenter.Bind(delayedCoordinator, _mockNav, delayedCoordinator, () => _mockNav!.OpenSettlement());
+
+            PlayerSnapshot oldSnapshot = _session!.PlayerSnapshot!.Clone();
+            oldSnapshot.StateVersion = 2;
+            oldSnapshot.EventSeq = 102;
+            oldSnapshot.Cursor = new Mahjong.Contracts.Wire.StreamCursor { StreamVersion = 1, ProjectionSeq = 2 };
+            oldSnapshot.PublicView.Board.Players[1].Discards.Add(new DiscardView
+            {
+                TileId = 44,
+                TurnNumber = 2,
+                Tsumogiri = false
+            });
+            _channel!.EnqueueEnvelope(B2bTypedPush(
+                oldSnapshot,
+                1,
+                2,
+                false,
+                B2bEvent(102, 0, WireEventType.TileDiscarded, EventVisibility.Public, 2,
+                    e => e.TileDiscarded = new TileDiscarded { TurnNumber = 2, Player = 1, TileId = 44 })));
+            var oldPump = _session.PumpOnceAsync(CancellationToken.None);
+            while (!oldPump.IsCompleted) yield return null;
+            for (int i = 0; i < 30 && Volatile.Read(ref captures) == 0; i++)
+            {
+                yield return null;
+            }
+
+            Assert.GreaterOrEqual(Volatile.Read(ref captures), 1);
+            Assert.IsNull(_coordinator.Current.PlayerSnapshot,
+                "the old event is accepted but its capture is still pending");
+
+            if (releaseBeforeBoundary)
+            {
+                gate.SetResult(true);
+                for (int i = 0; i < 50; i++)
+                {
+                    PlayerSnapshot? current = _coordinator.Current.PlayerSnapshot;
+                    if (current != null && current.StateVersion >= 2)
+                    {
+                        break;
+                    }
+
+                    yield return null;
+                }
+
+                Assert.IsNotNull(_coordinator.Current.PlayerSnapshot);
+                Assert.AreEqual(2UL, _coordinator.Current.PlayerSnapshot!.StateVersion,
+                    "capture has completed and published, but dispatcher has not delivered it");
+            }
+
+            if (pause)
+            {
+                _presenter.SendMessage("OnApplicationPause", true, SendMessageOptions.DontRequireReceiver);
+            }
+
+            if (focus)
+            {
+                _presenter.SendMessage("OnApplicationFocus", false, SendMessageOptions.DontRequireReceiver);
+            }
+
+            var banner = FormalField<TextMeshProUGUI>("_animationBannerText");
+            Assert.AreEqual(0, _presenter.AnimationQueue.PendingCount, "lifecycle boundary must clear pending animation");
+            Assert.IsFalse(banner.gameObject.activeInHierarchy, "lifecycle boundary must hide the animation banner");
+
+            if (rebindWhileSuspended)
+            {
+                _presenter.Unbind();
+                _presenter.Bind(delayedCoordinator, _mockNav, delayedCoordinator, () => _mockNav!.OpenSettlement());
+            }
+
+            if (pause)
+            {
+                _presenter.SendMessage("OnApplicationPause", false, SendMessageOptions.DontRequireReceiver);
+            }
+
+            if (focus)
+            {
+                _presenter.SendMessage("OnApplicationFocus", true, SendMessageOptions.DontRequireReceiver);
+            }
+
+            if (!releaseBeforeBoundary)
+            {
+                gate.SetResult(true);
+            }
+
+            for (int i = 0; i < 60; i++)
+            {
+                _dispatcher!.Update();
+                yield return null;
+            }
+
+            Assert.AreEqual(2UL, _presenter.LatestView!.Identity.StateVersion,
+                "the stale publication may advance state but may not be dropped or rolled back");
+            Assert.AreEqual(0, _presenter.AnimationQueue.PendingCount,
+                "the pre-lifecycle capture must not enqueue an old animation");
+            Assert.IsNull(_presenter.LastVisibleEventMapping);
+            typeof(TablePresenter).GetMethod("UpdateAnimationBanner", BindingFlags.NonPublic | BindingFlags.Instance)!.Invoke(_presenter, null);
+            Assert.IsFalse(banner.gameObject.activeSelf);
+
+            yield return SendTypedDiscard(3, 103, 2, 3, 45);
+            Assert.IsTrue(_presenter.LastVisibleEventMapping!.Accepted, _presenter.LastVisibleEventMapping.Code);
+            Assert.AreEqual(1, _presenter.AnimationQueue.PendingCount,
+                "a genuinely new post-resume action must still play exactly once");
+        }
+
+        [UnityTest]
+        public IEnumerator B2bFormalProbe07_PendingCaptureAcrossPauseMustNotReviveAnimation()
+        {
+            yield return RunPendingCaptureLifecycleScenario(pause: true, focus: false, releaseBeforeBoundary: false, rebindWhileSuspended: false);
+        }
+
+        [UnityTest]
+        public IEnumerator B2bFormalProbe08_PendingCaptureAcrossFocusLossMustNotReviveAnimation()
+        {
+            yield return RunPendingCaptureLifecycleScenario(pause: false, focus: true, releaseBeforeBoundary: false, rebindWhileSuspended: false);
+        }
+
+        [UnityTest]
+        public IEnumerator B2bFormalProbe09_PendingCaptureAcrossPauseAndFocusMustNotReviveAnimation()
+        {
+            yield return RunPendingCaptureLifecycleScenario(pause: true, focus: true, releaseBeforeBoundary: false, rebindWhileSuspended: false);
+        }
+
+        [UnityTest]
+        public IEnumerator B2bFormalProbe10_PublishedUndispatchedCaptureAcrossPauseMustNotReviveAnimation()
+        {
+            yield return RunPendingCaptureLifecycleScenario(pause: true, focus: false, releaseBeforeBoundary: true, rebindWhileSuspended: false);
+        }
+
+        [UnityTest]
+        public IEnumerator B2bFormalProbe11_PendingCaptureAcrossUnbindRebindMustNotReviveAnimation()
+        {
+            yield return RunPendingCaptureLifecycleScenario(pause: true, focus: false, releaseBeforeBoundary: false, rebindWhileSuspended: true);
+        }
+
+        private IEnumerator ReconnectBinding(
+            string roomId,
+            Role role,
+            int seat,
+            int bindingEpoch,
+            ulong connectionEpoch,
+            ulong ownerEpoch,
+            PlayerSnapshot? player)
+        {
+            var disconnect = _session!.DisconnectAsync(CancellationToken.None);
+            while (!disconnect.IsCompleted) yield return null;
+            var reopen = _session.OpenAsync(
+                new TableSessionOpenRequest("ticket_1", "client_1"),
+                CancellationToken.None);
+            while (!reopen.IsCompleted) yield return null;
+
+            Envelope welcome = PlayModeScriptedTableChannel.CreateWelcome(
+                "session_table_1",
+                roomId,
+                role,
+                seat,
+                bindingEpoch);
+            welcome.Welcome.ConnectionEpoch = connectionEpoch;
+            welcome.Welcome.OwnerEpoch = ownerEpoch;
+            welcome.Welcome.Scope.RoomId = roomId;
+            _channel!.EnqueueEnvelope(welcome);
+            var welcomePump = _session.PumpOnceAsync(CancellationToken.None);
+            while (!welcomePump.IsCompleted) yield return null;
+
+            string? correlation = _channel.SentEnvelopes[_channel.SentEnvelopes.Count - 1].CorrelationId;
+            Envelope sync;
+            if (role == Role.Player)
+            {
+                sync = CreatePlayerBaselineEnvelope(
+                    sessionId: "session_table_1",
+                    roomId: roomId,
+                    seatId: seat,
+                    stateVersion: 5,
+                    eventSeq: 105,
+                    correlationId: correlation);
+                sync.BindingEpoch = (ulong)bindingEpoch;
+                if (player != null)
+                {
+                    sync.SyncResponse.Player = player.Clone();
+                }
+            }
+            else
+            {
+                sync = PlayModeScriptedTableChannel.CreatePublicSync(
+                    "session_table_1",
+                    roomId,
+                    bindingEpoch,
+                    68,
+                    correlation);
+                sync.SyncResponse.StateVersion = 2;
+                sync.SyncResponse.EventSeq = 102;
+                sync.SyncResponse.Public.StateVersion = 2;
+                sync.SyncResponse.Public.EventSeq = 102;
+                sync.SyncResponse.Public.Cursor = new Mahjong.Contracts.Wire.StreamCursor
+                {
+                    StreamVersion = 1,
+                    ProjectionSeq = 2
+                };
+            }
+
+            _channel.EnqueueEnvelope(sync);
+            var syncPump = _session.PumpOnceAsync(CancellationToken.None);
+            while (!syncPump.IsCompleted) yield return null;
+            for (int i = 0; i < 50; i++)
+            {
+                _dispatcher!.Update();
+                yield return null;
+            }
+        }
+
+        [UnityTest]
+        public IEnumerator B2bFormalProbe12_PrivateQueueThenSpectatorRebindMustClearRenderer()
+        {
+            yield return LoadAndBindTableSceneAsync();
+            _presenter!.enabled = false;
+
+            PlayerSnapshot draw = _session!.PlayerSnapshot!.Clone();
+            draw.StateVersion = 2;
+            draw.EventSeq = 102;
+            draw.Cursor = new Mahjong.Contracts.Wire.StreamCursor { StreamVersion = 1, ProjectionSeq = 2 };
+            draw.PrivateView.DrawnTileId = 27;
+            _channel!.EnqueueEnvelope(B2bTypedPush(
+                draw,
+                1,
+                2,
+                false,
+                B2bEvent(102, 0, WireEventType.TileDrawn, EventVisibility.Private, 2,
+                    e => e.TileDrawn = new TileDrawn { TurnNumber = 2, Player = 0, TileId = 27, WallRemaining = 67 })));
+            yield return PumpAndDispatch();
+            Assert.AreEqual(1, _presenter.AnimationQueue.PendingCount);
+            typeof(TablePresenter).GetMethod("UpdateAnimationBanner", BindingFlags.NonPublic | BindingFlags.Instance)!.Invoke(_presenter, null);
+            var banner = FormalField<TextMeshProUGUI>("_animationBannerText");
+            Assert.IsTrue(banner.gameObject.activeSelf, "private queue/banner must exist before the role boundary");
+
+            yield return ReconnectBinding(
+                "room_table_1",
+                Role.Spectator,
+                -1,
+                2,
+                2,
+                2,
+                null);
+
+            Assert.AreEqual(TableConnectionState.Ready, _session.State, "spectator rebind session state");
+            Assert.IsNotNull(_session.PublicSnapshot, "spectator rebind public baseline");
+            Assert.AreEqual(Mahjong.Contracts.ProtocolRole.Spectator, _session.Binding!.Role, "real session role after spectator rebind");
+            Assert.AreEqual(PlayerTableRole.Spectator, (PlayerTableRole)_coordinator.Current.Binding!.Role, "coordinator binding role after spectator rebind");
+            Assert.AreEqual(PlayerTableRole.Spectator, _presenter.LatestView!.Identity.Role);
+            Assert.IsFalse(_presenter.LatestView.Identity.IsPrivateAuthorized);
+            Assert.IsNull(_presenter.LatestView.Own);
+            Assert.AreEqual(0, _presenter.AnimationQueue.PendingCount, "role switch must clear the prior private queue");
+            typeof(TablePresenter).GetMethod("UpdateAnimationBanner", BindingFlags.NonPublic | BindingFlags.Instance)!.Invoke(_presenter, null);
+            Assert.IsFalse(banner.gameObject.activeSelf, "role switch must hide the prior private banner");
+        }
+
+        [UnityTest]
+        public IEnumerator B2bFormalProbe13_PrivateQueueThenPrivateRevokeMustClearRenderer()
+        {
+            yield return LoadAndBindTableSceneAsync();
+            _presenter!.enabled = false;
+
+            PlayerSnapshot draw = _session!.PlayerSnapshot!.Clone();
+            draw.StateVersion = 2;
+            draw.EventSeq = 102;
+            draw.Cursor = new Mahjong.Contracts.Wire.StreamCursor { StreamVersion = 1, ProjectionSeq = 2 };
+            draw.PrivateView.DrawnTileId = 27;
+            _channel!.EnqueueEnvelope(B2bTypedPush(
+                draw,
+                1,
+                2,
+                false,
+                B2bEvent(102, 0, WireEventType.TileDrawn, EventVisibility.Private, 2,
+                    e => e.TileDrawn = new TileDrawn { TurnNumber = 2, Player = 0, TileId = 27, WallRemaining = 67 })));
+            yield return PumpAndDispatch();
+            typeof(TablePresenter).GetMethod("UpdateAnimationBanner", BindingFlags.NonPublic | BindingFlags.Instance)!.Invoke(_presenter, null);
+            var banner = FormalField<TextMeshProUGUI>("_animationBannerText");
+            Assert.IsTrue(banner.gameObject.activeSelf);
+
+            // The frozen Wire contract rejects a player snapshot without a
+            // private view (ValidatePrivatePlayerView). The minimal test
+            // channel therefore models the actual authorization-loss boundary
+            // as a closed confirmed state on the same binding; the real
+            // session path is exercised by the spectator rebind and room/epoch
+            // probes. The Wire rejection itself remains pinned below.
+            Envelope invalidPrivate = CreatePlayerBaselineEnvelope(
+                stateVersion: 5,
+                eventSeq: 105);
+            invalidPrivate.SyncResponse.Player.PrivateView = null;
+            Assert.Throws<WireMalformedException>(() => WireCodec.Encode(invalidPrivate),
+                "player private revocation is not representable on the frozen player wire");
+
+            var revoked = new SessionViewState(
+                1,
+                TableConnectionState.Closed,
+                _session!.Binding,
+                _session.PlayerSnapshot!.Clone(),
+                null,
+                null,
+                null,
+                "PRIVATE_REVOKED",
+                false,
+                null);
+            _presenter!.OnSessionViewChanged(this, revoked);
+
+            Assert.IsFalse(_presenter.LatestView!.Identity.IsPrivateAuthorized,
+                "private revocation must reach the presenter");
+            Assert.IsNull(_presenter.LatestView.Own);
+            Assert.AreEqual(0, _presenter.AnimationQueue.PendingCount);
+            typeof(TablePresenter).GetMethod("UpdateAnimationBanner", BindingFlags.NonPublic | BindingFlags.Instance)!.Invoke(_presenter, null);
+            Assert.IsFalse(banner.gameObject.activeSelf);
+        }
+
+        [UnityTest]
+        public IEnumerator B2bFormalProbe14_RoomConnectionOwnerRebindMustClearPrivateQueue()
+        {
+            yield return LoadAndBindTableSceneAsync();
+            _presenter!.enabled = false;
+
+            PlayerSnapshot draw = _session!.PlayerSnapshot!.Clone();
+            draw.StateVersion = 2;
+            draw.EventSeq = 102;
+            draw.Cursor = new Mahjong.Contracts.Wire.StreamCursor { StreamVersion = 1, ProjectionSeq = 2 };
+            draw.PrivateView.DrawnTileId = 27;
+            _channel!.EnqueueEnvelope(B2bTypedPush(
+                draw,
+                1,
+                2,
+                false,
+                B2bEvent(102, 0, WireEventType.TileDrawn, EventVisibility.Private, 2,
+                    e => e.TileDrawn = new TileDrawn { TurnNumber = 2, Player = 0, TileId = 27, WallRemaining = 67 })));
+            yield return PumpAndDispatch();
+            Assert.AreEqual(1, _presenter.AnimationQueue.PendingCount);
+
+            PlayerSnapshot reboundPlayer = CreatePlayerBaselineEnvelope(
+                sessionId: "session_table_1",
+                roomId: "room_next",
+                stateVersion: 5,
+                eventSeq: 105).SyncResponse.Player;
+            yield return ReconnectBinding(
+                "room_next",
+                Role.Player,
+                0,
+                3,
+                7,
+                9,
+                reboundPlayer);
+
+            Assert.AreEqual("room_next", _presenter.LatestView!.Identity.RoomId);
+            Assert.AreEqual(3UL, _presenter.LatestView.Identity.BindingEpoch);
+            Assert.AreEqual(7UL, _presenter.LatestView.Identity.ConnectionEpoch);
+            Assert.AreEqual(9UL, _presenter.LatestView.Identity.OwnerEpoch);
+            Assert.AreEqual(0, _presenter.AnimationQueue.PendingCount, "room/epoch rebind must clear the old private queue");
+            typeof(TablePresenter).GetMethod("UpdateAnimationBanner", BindingFlags.NonPublic | BindingFlags.Instance)!.Invoke(_presenter, null);
+            Assert.IsFalse(FormalField<TextMeshProUGUI>("_animationBannerText").gameObject.activeSelf);
+        }
+
+        [UnityTest]
+        public IEnumerator B2bFormalProbe15_RoundResetMustClearPrivateQueueAndKeepNewAction()
+        {
+            yield return LoadAndBindTableSceneAsync();
+            _presenter!.enabled = false;
+
+            PlayerSnapshot draw = _session!.PlayerSnapshot!.Clone();
+            draw.StateVersion = 2;
+            draw.EventSeq = 102;
+            draw.Cursor = new Mahjong.Contracts.Wire.StreamCursor { StreamVersion = 1, ProjectionSeq = 2 };
+            draw.PrivateView.DrawnTileId = 27;
+            _channel!.EnqueueEnvelope(B2bTypedPush(
+                draw,
+                1,
+                2,
+                false,
+                B2bEvent(102, 0, WireEventType.TileDrawn, EventVisibility.Private, 2,
+                    e => e.TileDrawn = new TileDrawn { TurnNumber = 2, Player = 0, TileId = 27, WallRemaining = 67 })));
+            yield return PumpAndDispatch();
+            Assert.AreEqual(1, _presenter.AnimationQueue.PendingCount);
+
+            PlayerSnapshot nextRound = CreatePlayerPushEnvelope(
+                stateVersion: 3,
+                eventSeq: 103,
+                projectionSeq: 3,
+                isFullSnapshot: true).PlayerUpdate.Snapshot;
+            nextRound.RoundId = "round_next";
+            nextRound.PublicView.Board.RoundNumber = 2;
+            _channel.EnqueueEnvelope(B2bTypedPush(nextRound, 0, 3, true));
+            yield return PumpAndDispatch();
+
+            Assert.AreEqual("round_next", _presenter.LatestView!.Identity.RoundId);
+            Assert.AreEqual(0, _presenter.AnimationQueue.PendingCount);
+            typeof(TablePresenter).GetMethod("UpdateAnimationBanner", BindingFlags.NonPublic | BindingFlags.Instance)!.Invoke(_presenter, null);
+            var banner = FormalField<TextMeshProUGUI>("_animationBannerText");
+            Assert.IsFalse(banner.gameObject.activeSelf);
+
+            yield return SendTypedDiscard(4, 104, 3, 4, 45);
+            Assert.IsTrue(_presenter.LastVisibleEventMapping!.Accepted, _presenter.LastVisibleEventMapping.Code);
+            Assert.AreEqual(1, _presenter.AnimationQueue.PendingCount);
+        }
+
+        [UnityTest]
+        public IEnumerator B2bFormalProbe16_LegacyEmptyBatchKeepsDifferenceFallback()
+        {
+            yield return LoadAndBindTableSceneAsync();
+            _presenter!.enabled = false;
+
+            PlayerSnapshot next = _session!.PlayerSnapshot!.Clone();
+            next.StateVersion = 3;
+            next.EventSeq = 103;
+            next.Cursor = new Mahjong.Contracts.Wire.StreamCursor { StreamVersion = 1, ProjectionSeq = 3 };
+            next.PublicView.Board.Players[1].Discards.Add(new DiscardView
+            {
+                TileId = 44,
+                TurnNumber = 3,
+                Tsumogiri = false
+            });
+
+            var legacyView = new SessionViewState(
+                1,
+                TableConnectionState.Ready,
+                _session.Binding,
+                next,
+                null,
+                null,
+                null,
+                null,
+                false,
+                new StreamCursor(new StreamVersion(next.Cursor.StreamVersion), new ProjectionSeq(next.Cursor.ProjectionSeq)));
+            _presenter.OnSessionViewChanged(this, legacyView);
+
+            Assert.IsNull(_presenter.LastVisibleEventMapping);
+            Assert.AreEqual(1, _presenter.AnimationQueue.PendingCount,
+                "Kind=None legacy batch must retain the confirmed difference fallback");
+            Assert.IsTrue(_presenter.AnimationQueue.TryDequeue(out TableAnimationItem? item));
+            Assert.AreEqual(TableAnimationKind.Discard, item!.Kind);
+        }
+
         [UnityTest]
         public IEnumerator B2bFormalProbe06_DelayedCaptureWithNewBindingMustNotRebaseOldBatch()
         {

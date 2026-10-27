@@ -50,7 +50,8 @@ namespace Mahjong.Unity.UI.Session
             string? lastError,
             bool isFullBaseline = false,
             StreamCursor? cursor = null,
-            TableVisibleEventBatch? visibleEventBatch = null)
+            TableVisibleEventBatch? visibleEventBatch = null,
+            long acceptanceSequence = 0)
         {
             Generation = generation;
             State = state;
@@ -78,6 +79,7 @@ namespace Mahjong.Unity.UI.Session
             // The batch is already immutable and tied to the accepted snapshot;
             // never clone or replace its identity from a later session read.
             VisibleEventBatch = visibleEventBatch ?? TableVisibleEventBatch.Empty;
+            AcceptanceSequence = acceptanceSequence;
         }
 
         public long Generation { get; }
@@ -97,11 +99,28 @@ namespace Mahjong.Unity.UI.Session
         /// sessions; a real Client always supplies the same-batch identity.
         /// </summary>
         public TableVisibleEventBatch VisibleEventBatch { get; }
+
+        /// <summary>
+        /// Monotonic acceptance sequence assigned when the Client published
+        /// this snapshot, before any asynchronous owner capture completes.
+        /// A lifecycle boundary can therefore fence an already-accepted but
+        /// still pending publication, not only one already dispatched.
+        /// </summary>
+        public long AcceptanceSequence { get; }
     }
 
     public interface ISessionView
     {
         SessionViewState Current { get; }
         event EventHandler<SessionViewState>? Changed;
+    }
+
+    /// <summary>
+    /// Optional lifecycle fence surface. A real SessionCoordinator implements
+    /// it; legacy/fake views that do not are unaffected and report no fence.
+    /// </summary>
+    public interface ISessionViewLifecycleFence
+    {
+        long AcceptedSequence { get; }
     }
 }
