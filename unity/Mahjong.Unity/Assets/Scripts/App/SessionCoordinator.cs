@@ -388,10 +388,17 @@ namespace Mahjong.Unity.App
                     return;
                 }
 
-                _currentViewState = state;
-                if (state.AcceptanceSequence > 0)
+                // A late capture may carry an older acceptance sequence than a
+                // newer accepted revocation/binding. It must never roll the
+                // authoritative view or authority back to the old identity.
+                if (state.AcceptanceSequence <= 0 ||
+                    _currentViewState.AcceptanceSequence <= state.AcceptanceSequence)
                 {
-                    _acceptedAuthority = SessionAuthority.FromView(state);
+                    _currentViewState = state;
+                    if (state.AcceptanceSequence > 0)
+                    {
+                        _acceptedAuthority = SessionAuthority.FromView(state);
+                    }
                 }
             }
 
