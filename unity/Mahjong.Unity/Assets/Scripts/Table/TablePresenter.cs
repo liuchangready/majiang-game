@@ -266,6 +266,11 @@ namespace Mahjong.Unity.Table
                 _onViewSettlement = onOpenSettlement;
             }
 
+            // Include publications accepted while no view was attached (plain
+            // unbind/rebind), so the first re-attached view is a non-animating
+            // baseline rather than a revived old action.
+            RecordLifecycleFence();
+
             if (_sessionView != null)
             {
                 if (AnimationsSuspended)
@@ -288,6 +293,7 @@ namespace Mahjong.Unity.Table
 
         public void Unbind()
         {
+            RecordLifecycleFence();
             if (_sessionView != null)
             {
                 _sessionView.Changed -= OnSessionViewChanged;
@@ -374,7 +380,7 @@ namespace Mahjong.Unity.Table
             }
         }
 
-        private void SuspendAnimationsForLifecycle()
+        private void RecordLifecycleFence()
         {
             if (_sessionView is ISessionViewLifecycleFence fence && fence.AcceptedSequence > 0)
             {
@@ -382,8 +388,13 @@ namespace Mahjong.Unity.Table
                 _lifecycleAcceptedFence = Math.Max(_lifecycleAcceptedFence, fence.AcceptedSequence);
                 _lifecycleFenceSessionId = _latestView?.Identity.SessionId ??
                                            _sessionView.Current?.Binding?.SessionId ??
-                                           string.Empty;
+                                           _lifecycleFenceSessionId;
             }
+        }
+
+        private void SuspendAnimationsForLifecycle()
+        {
+            RecordLifecycleFence();
 
             if (_sessionView != null)
             {
@@ -403,6 +414,10 @@ namespace Mahjong.Unity.Table
             {
                 return;
             }
+
+            // Include every publication accepted while the view feed was
+            // detached, not only the sequence known at suspend entry.
+            RecordLifecycleFence();
 
             if (_sessionView != null && _sessionViewDetachedForLifecycle)
             {
