@@ -4,6 +4,7 @@ using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
 using Mahjong.Client;
+using Mahjong.Contracts;
 using Mahjong.Contracts.Wire;
 using Mahjong.Unity.UI.Session;
 using UnityEngine;
@@ -44,7 +45,7 @@ namespace Mahjong.Unity.App
             new ShutdownResult(ShutdownOutcome.AlreadyIncomplete, quarantined, false, prior);
     }
 
-    public sealed class SessionCoordinator : ISessionView
+    public sealed class SessionCoordinator : ISessionView, ITableCommandSink
     {
         private readonly IGameSession? _session;
         private readonly TableSessionOperationQueue? _operationQueue;
@@ -63,6 +64,7 @@ namespace Mahjong.Unity.App
         private bool _quarantined;
 
         public event EventHandler<SessionViewState>? Changed;
+        public event EventHandler<TableReceiptResolvedEventArgs>? ReceiptResolved;
 
         public SessionViewState Current
         {
@@ -76,6 +78,19 @@ namespace Mahjong.Unity.App
         public bool IsQuarantined => _quarantined;
         public ShutdownResult? TerminalResult => _terminal;
         public CancellationToken RunToken => _runCts.Token;
+
+        public bool CanSubmit
+        {
+            get
+            {
+                lock (_stateGate)
+                {
+                    return _terminal == null && !_quarantined && _operationQueue != null && _operationQueue.State == TableConnectionState.Ready;
+                }
+            }
+        }
+
+        public long Generation => _currentGeneration;
 
         public SessionCoordinator(
             IGameSession? session,
@@ -109,6 +124,7 @@ namespace Mahjong.Unity.App
             if (_session != null)
             {
                 _session.SnapshotChanged += OnSessionSnapshotChanged;
+                _session.ReceiptResolved += OnSessionReceiptResolved;
             }
         }
 
@@ -157,7 +173,9 @@ namespace Mahjong.Unity.App
                     e.PublicSnapshot?.Clone(),
                     e.RoomSnapshot?.Clone(),
                     _session?.PendingCommands ?? Array.Empty<PendingCommandSnapshot>(),
-                    _session?.LastError);
+                    _session?.LastError,
+                    e.IsFullBaseline,
+                    e.Cursor);
 
                 Publish(gen, viewState);
             }
@@ -182,7 +200,9 @@ namespace Mahjong.Unity.App
                     e.PublicSnapshot?.Clone(),
                     e.RoomSnapshot?.Clone(),
                     capture?.PendingCommands ?? (IReadOnlyList<PendingCommandSnapshot>)(_session?.PendingCommands ?? Array.Empty<PendingCommandSnapshot>()),
-                    _operationQueue.LastError);
+                    _operationQueue.LastError,
+                    e.IsFullBaseline,
+                    e.Cursor);
 
                 Publish(gen, viewState);
             }
@@ -190,6 +210,30 @@ namespace Mahjong.Unity.App
             {
                 Debug.LogWarning($"Capture exception: {ex.Message}");
             }
+        }
+
+        private void OnSessionReceiptResolved(object? sender, TableReceiptResolvedEventArgs e)
+        {
+            if (e == null) return;
+            long gen;
+            lock (_stateGate)
+            {
+                if (_terminal != null || _quarantined) return;
+                gen = _currentGeneration;
+            }
+
+            _dispatcher.Post(() =>
+            {
+                lock (_stateGate)
+                {
+                    if (_terminal != null || _quarantined || gen != _currentGeneration)
+                    {
+                        return;
+                    }
+                }
+
+                ReceiptResolved?.Invoke(this, e);
+            }, gen);
         }
 
         public void Publish(long generation, SessionViewState state)
@@ -223,6 +267,29 @@ namespace Mahjong.Unity.App
 
                 Changed?.Invoke(this, state);
             }, generation);
+        }
+
+        public async Task<CommandSubmission> SubmitAsync(ProtocolCommand command, CancellationToken cancellationToken)
+        {
+            if (command == null) throw new ArgumentNullException(nameof(command));
+
+            TableSessionOperationQueue? queue;
+            lock (_stateGate)
+            {
+                if (_terminal != null || _quarantined)
+                {
+                    throw new InvalidOperationException($"SessionCoordinator is closed or quarantined (Outcome={_terminal?.Outcome}, Quarantined={_quarantined}).");
+                }
+
+                queue = _operationQueue;
+                if (queue == null)
+                {
+                    throw new InvalidOperationException("No active TableSessionOperationQueue to submit command.");
+                }
+            }
+
+            using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, _runCts.Token);
+            return await queue.SubmitAsync(command, linkedCts.Token).ConfigureAwait(false);
         }
 
         public Task<ShutdownResult> ShutdownAsync(string reason = "APP_QUIT")
@@ -386,6 +453,7 @@ namespace Mahjong.Unity.App
             if (_session != null)
             {
                 _session.SnapshotChanged -= OnSessionSnapshotChanged;
+                _session.ReceiptResolved -= OnSessionReceiptResolved;
             }
             _dispatcher.Overflowed -= OnDispatcherOverflowed;
             _currentGeneration++;

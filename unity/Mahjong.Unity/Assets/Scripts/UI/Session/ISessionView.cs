@@ -1,7 +1,10 @@
+#nullable enable
 using System;
 using System.Collections.Generic;
 using Mahjong.Client;
+using Mahjong.Contracts;
 using Mahjong.Contracts.Wire;
+using StreamCursor = Mahjong.Contracts.StreamCursor;
 
 namespace Mahjong.Unity.UI.Session
 {
@@ -44,7 +47,9 @@ namespace Mahjong.Unity.UI.Session
             PublicSnapshot? publicSnapshot,
             RoomUpdate? roomSnapshot,
             IReadOnlyList<PendingCommandSnapshot>? pendingCommands,
-            string? lastError)
+            string? lastError,
+            bool isFullBaseline = false,
+            StreamCursor? cursor = null)
         {
             Generation = generation;
             State = state;
@@ -67,6 +72,8 @@ namespace Mahjong.Unity.UI.Session
                 PendingCommands = copy.AsReadOnly();
             }
             LastError = lastError;
+            IsFullBaseline = isFullBaseline;
+            Cursor = cursor;
         }
 
         public long Generation { get; }
@@ -77,6 +84,8 @@ namespace Mahjong.Unity.UI.Session
         public RoomUpdate? RoomSnapshot { get; }
         public IReadOnlyList<PendingCommandSnapshot> PendingCommands { get; }
         public string? LastError { get; }
+        public bool IsFullBaseline { get; }
+        public StreamCursor? Cursor { get; }
     }
 
     public interface ISessionView
