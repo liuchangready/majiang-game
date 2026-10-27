@@ -1107,6 +1107,140 @@ namespace Mahjong.Unity.Tests.PlayMode
             Assert.AreEqual(CommandKind.SubmitSleeveBloomOffTurn, _presenter.InteractionState.Pending!.Intent.Kind, "confirmed off-turn window sent immediate activation instead");
         }
 
+        [UnityTest]
+        public IEnumerator R4FormalProbe01_RejectedRoundBaselineMustNotPoisonAnimationContext()
+        {
+            yield return LoadAndBindTableSceneAsync();
+            var rejected = CreatePlayerBaselineEnvelope().SyncResponse.Player;
+            rejected.RoundId = "round_invalid_same_version";
+            _presenter!.OnSessionViewChanged(this, FormalProbeView(rejected, true));
+            Assert.AreEqual("round_1", _presenter.LatestView!.Identity.RoundId);
+            var valid = CreatePlayerBaselineEnvelope(stateVersion: 2).SyncResponse.Player;
+            valid.Cursor.ProjectionSeq = 2;
+            _presenter.OnSessionViewChanged(this, FormalProbeView(valid));
+            Assert.AreEqual(2UL, _presenter.LatestView!.Identity.StateVersion, "valid update frozen after model rejection; queue=" + _presenter.AnimationQueue.LastRejection);
+        }
+
+        [UnityTest]
+        public IEnumerator R4FormalProbe02_AuthorizationRestoreWithoutBaselineMustResume()
+        {
+            yield return LoadAndBindTableSceneAsync();
+            var revoked = CreatePlayerBaselineEnvelope(stateVersion: 2).SyncResponse.Player;
+            revoked.Cursor.ProjectionSeq = 2;
+            _presenter!.OnSessionViewChanged(this, FormalProbeView(revoked, false, TableConnectionState.Closed));
+            Assert.IsNull(_presenter.LatestView!.Own);
+            var restored = CreatePlayerBaselineEnvelope(stateVersion: 3).SyncResponse.Player;
+            restored.Cursor.ProjectionSeq = 3;
+            _presenter.OnSessionViewChanged(this, FormalProbeView(restored));
+            Assert.IsNotNull(_presenter.LatestView!.Own, "authorized snapshot rejected after loss; queue=" + _presenter.AnimationQueue.LastRejection);
+            Assert.AreEqual(3UL, _presenter.LatestView.Identity.StateVersion);
+            restored.StateVersion = 4;
+            restored.Cursor.ProjectionSeq = 4;
+            _presenter.OnSessionViewChanged(this, FormalProbeView(restored));
+            Assert.AreEqual(4UL, _presenter.LatestView.Identity.StateVersion);
+        }
+
+        [UnityTest]
+        public IEnumerator R4FormalProbe03_AuthorizationRestoreWithBaselineMustResume()
+        {
+            yield return LoadAndBindTableSceneAsync();
+            var revoked = CreatePlayerBaselineEnvelope(stateVersion: 2).SyncResponse.Player;
+            revoked.Cursor.ProjectionSeq = 2;
+            _presenter!.OnSessionViewChanged(this, FormalProbeView(revoked, false, TableConnectionState.Closed));
+            var restored = CreatePlayerBaselineEnvelope(stateVersion: 3).SyncResponse.Player;
+            restored.Cursor.ProjectionSeq = 3;
+            _presenter.OnSessionViewChanged(this, FormalProbeView(restored, true));
+            Assert.IsNotNull(_presenter.LatestView!.Own);
+            restored.StateVersion = 4;
+            restored.Cursor.ProjectionSeq = 4;
+            _presenter.OnSessionViewChanged(this, FormalProbeView(restored));
+            Assert.AreEqual(4UL, _presenter.LatestView!.Identity.StateVersion);
+        }
+
+        [UnityTest]
+        public IEnumerator R4FormalProbe04_UnchangedNoDecisionOfferMustKeepDialogOpenAndSubmittable()
+        {
+            yield return LoadAndBindTableSceneAsync(false);
+            var snap = CreatePlayerBaselineEnvelope(stateVersion: 2, hasDecision: false).SyncResponse.Player;
+            snap.Cursor.ProjectionSeq = 2;
+            snap.PrivateView.Cheat.SleeveBloom = new SleeveBloomView
+            {
+                OfferId = "stable_offer",
+                Mode = "IMMEDIATE",
+                DrawKind = SleeveBloomDrawKind.Normal,
+                FirstTileId = 0,
+                SecondTileId = 4,
+                HasDeadline = true,
+                DeadlineRemainingMs = 10000
+            };
+            _presenter!.OnSessionViewChanged(this, FormalProbeView(snap));
+            _presenter.OpenSleeveBloomDialog();
+            var dialog = FormalField<GameObject>("_sleeveBloomDialog");
+            Assert.IsTrue(dialog.activeInHierarchy, "offer must open");
+
+            // 1. Duplicate snapshot: dialog remains open
+            _presenter.OnSessionViewChanged(this, FormalProbeView(snap));
+            Assert.IsTrue(dialog.activeInHierarchy, "unchanged confirmed offer was closed by duplicate snapshot");
+
+            // 2. Cursor update: dialog remains open
+            snap.Cursor.ProjectionSeq = 3;
+            _presenter.OnSessionViewChanged(this, FormalProbeView(snap));
+            Assert.IsTrue(dialog.activeInHierarchy, "unchanged confirmed offer was closed by stream cursor advance");
+
+            // 3. Public state update in same round: dialog remains open
+            snap.Cursor.ProjectionSeq = 4;
+            snap.PublicView.Board.WallRemaining = 60;
+            _presenter.OnSessionViewChanged(this, FormalProbeView(snap));
+            Assert.IsTrue(dialog.activeInHierarchy, "unchanged confirmed offer was closed by public board update");
+
+            // 4. Verify actual click submits to canonical outbox
+            FormalClick(FormalButton("SleeveStoreButton"));
+            for (int i = 0; i < 30; i++) yield return null;
+            Assert.AreEqual(1, GetUnresolvedOutboxCount(), "clicking choice button must emit to outbox even without normal decision");
+            Assert.AreEqual(CommandKind.SubmitSleeveBloomChoice, _presenter.InteractionState.Pending!.Intent.Kind);
+
+            // 5. Negative matrix: offer changed closes dialog
+            snap.StateVersion = 3;
+            snap.Cursor.ProjectionSeq = 5;
+            snap.PrivateView.Cheat.SleeveBloom.OfferId = "new_offer";
+            _presenter.OnSessionViewChanged(this, FormalProbeView(snap));
+            Assert.IsFalse(dialog.activeInHierarchy, "dialog must close when offer id changes");
+
+            // 6. Reopen with new offer, then verify authorization loss closes dialog
+            _presenter.OpenSleeveBloomDialog();
+            Assert.IsTrue(dialog.activeInHierarchy);
+            _presenter.OnSessionViewChanged(this, FormalProbeView(snap, false, TableConnectionState.Closed));
+            Assert.IsFalse(dialog.activeInHierarchy, "dialog must close when authorization is lost");
+        }
+
+        [UnityTest]
+        public IEnumerator R4FormalProbe05_RebindToCurrentNonBaselineMustResume()
+        {
+            yield return LoadAndBindTableSceneAsync();
+            var snap = CreatePlayerBaselineEnvelope(stateVersion: 2).SyncResponse.Player;
+            snap.Cursor.ProjectionSeq = 2;
+            _presenter!.OnSessionViewChanged(this, FormalProbeView(snap));
+            snap.StateVersion = 3;
+            snap.Cursor.ProjectionSeq = 3;
+            _presenter.Bind(_coordinator, _mockNav, new FormalSessionSnapshotView(FormalProbeView(snap)));
+            Assert.AreEqual(3UL, _presenter.LatestView!.Identity.StateVersion);
+            snap.StateVersion = 4;
+            snap.Cursor.ProjectionSeq = 4;
+            _presenter.OnSessionViewChanged(this, FormalProbeView(snap));
+            Assert.AreEqual(4UL, _presenter.LatestView!.Identity.StateVersion, "rebind froze confirmation; queue=" + _presenter.AnimationQueue.LastRejection);
+            snap.StateVersion = 5;
+            snap.Cursor.ProjectionSeq = 5;
+            _presenter.OnSessionViewChanged(this, FormalProbeView(snap));
+            Assert.AreEqual(5UL, _presenter.LatestView!.Identity.StateVersion, "subsequent diff after rebind frozen; queue=" + _presenter.AnimationQueue.LastRejection);
+        }
+
+        private sealed class FormalSessionSnapshotView : ISessionView
+        {
+            public FormalSessionSnapshotView(SessionViewState current) { Current = current; }
+            public SessionViewState Current { get; }
+            public event EventHandler<SessionViewState>? Changed { add { } remove { } }
+        }
+
         private static ProtocolCommand TestCommand()
         {
             var payload = CommandPayloadFactory.SubmitAction(

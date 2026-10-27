@@ -146,6 +146,7 @@ namespace Mahjong.Unity.Table
         private string? _lastRoundId;
         private string? _lastDecisionId;
         private ulong? _lastControlEpoch;
+        private ulong? _lastOwnerEpoch;
         private string? _tileMarkSelectionRoundId;
         private string? _tileMarkSelectionDecisionId;
         private ulong? _tileMarkSelectionEpoch;
@@ -334,6 +335,94 @@ namespace Mahjong.Unity.Table
             }
         }
 
+        private static bool WouldInteractionStateReject(TableInteractionState interactionState, PlayerTableViewState view)
+        {
+            if (view == null) return true;
+
+            try
+            {
+                var reqIdentField = typeof(TableInteractionState).GetField("_requiredIdentity", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+                if (reqIdentField != null)
+                {
+                    var reqIdent = reqIdentField.GetValue(interactionState) as PlayerTableIdentity;
+                    if (reqIdent != null)
+                    {
+                        if (!SameBindingIdentity(view.Identity, reqIdent)) return true;
+                        if (view.Identity.Generation < reqIdent.Generation) return true;
+                        var reqStateVerField = typeof(TableInteractionState).GetField("_requiredStateVersion", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+                        ulong reqStateVer = reqStateVerField != null ? (ulong)reqStateVerField.GetValue(interactionState)! : 0;
+                        if (view.Identity.Generation == reqIdent.Generation && view.Identity.StateVersion < reqStateVer) return true;
+                        return false;
+                    }
+                }
+            }
+            catch { }
+
+            try
+            {
+                var reqGenField = typeof(TableInteractionState).GetField("_requiredGeneration", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+                if (reqGenField != null)
+                {
+                    long reqGen = (long)reqGenField.GetValue(interactionState)!;
+                    if (reqGen >= 0 && view.Identity.Generation < reqGen) return true;
+                }
+            }
+            catch { }
+
+            if (interactionState.View == null)
+            {
+                return false;
+            }
+
+            PlayerTableIdentity current = interactionState.View.Identity;
+            if (view.Identity.Generation < current.Generation)
+            {
+                return true;
+            }
+
+            if (view.Identity.Generation == current.Generation)
+            {
+                if (view.Identity.BindingEpoch < current.BindingEpoch)
+                {
+                    return true;
+                }
+
+                if (view.Identity.BindingEpoch == current.BindingEpoch)
+                {
+                    if (!SameBindingIdentity(view.Identity, current))
+                    {
+                        return true;
+                    }
+
+                    if (view.Identity.StateVersion < current.StateVersion)
+                    {
+                        return true;
+                    }
+
+                    if (!string.Equals(view.Identity.RoundId, current.RoundId, StringComparison.Ordinal) &&
+                        view.Identity.StateVersion == current.StateVersion)
+                    {
+                        return true;
+                    }
+                }
+            }
+
+            return false;
+        }
+
+        private static bool SameBindingIdentity(PlayerTableIdentity left, PlayerTableIdentity right)
+        {
+            return left.Generation == right.Generation &&
+                   string.Equals(left.SessionId, right.SessionId, StringComparison.Ordinal) &&
+                   string.Equals(left.RoomId, right.RoomId, StringComparison.Ordinal) &&
+                   left.Role == right.Role &&
+                   left.Seat == right.Seat &&
+                   left.BindingEpoch == right.BindingEpoch &&
+                   string.Equals(left.ScopeId, right.ScopeId, StringComparison.Ordinal) &&
+                   left.ConnectionEpoch == right.ConnectionEpoch &&
+                   left.OwnerEpoch == right.OwnerEpoch;
+        }
+
         public void OnSessionViewChanged(object? sender, SessionViewState state)
         {
             if (state == null) return;
@@ -359,6 +448,13 @@ namespace Mahjong.Unity.Table
                 }
             }
 
+            // Pre-check interaction state fence: if interaction state would reject, abort BEFORE mutating animation queue!
+            if (WouldInteractionStateReject(_interactionState, nextView))
+            {
+                Debug.LogWarning("[TablePresenter] Pre-check: InteractionState would reject confirmed view");
+                return;
+            }
+
             bool identityChanged = _latestView != null &&
                 (_latestView.Identity.Role != nextView.Identity.Role ||
                  _latestView.Identity.Seat != nextView.Identity.Seat ||
@@ -368,10 +464,20 @@ namespace Mahjong.Unity.Table
             bool roundChanged = _latestView != null &&
                 !string.Equals(_latestView.Identity.RoundId, nextView.Identity.RoundId, StringComparison.Ordinal);
 
+            bool authorizationChanged = _latestView != null &&
+                (_latestView.Identity.IsPrivateAuthorized != nextView.Identity.IsPrivateAuthorized ||
+                 (_latestView.Own == null) != (nextView.Own == null));
+
             bool authorizationLost = !nextView.Identity.IsPrivateAuthorized || state.State != TableConnectionState.Ready || nextView.Own == null;
 
+            bool isBaselineTransition = _latestView == null ||
+                state.IsFullBaseline ||
+                identityChanged ||
+                roundChanged ||
+                authorizationChanged;
+
             // 3. Animation queue fence: MUST validate animation queue BEFORE mutating interaction state or latestView!
-            if (state.IsFullBaseline || identityChanged || roundChanged)
+            if (isBaselineTransition)
             {
                 var baselineResult = _animationQueue.AcceptConfirmedBaseline(nextView);
                 if (!baselineResult.Accepted)
@@ -380,13 +486,9 @@ namespace Mahjong.Unity.Table
                     return; // Dropped by animation baseline fence
                 }
             }
-            else if (authorizationLost)
+            else
             {
-                _animationQueue.Drain();
-            }
-            else if (_latestView != null)
-            {
-                var diffResult = _animationQueue.AcceptConfirmedDifference(_latestView, nextView, isFullBaseline: false);
+                var diffResult = _animationQueue.AcceptConfirmedDifference(_latestView!, nextView, isFullBaseline: false);
                 if (!diffResult.Accepted)
                 {
                     Debug.LogWarning($"[TablePresenter] AnimationQueue rejected difference: {diffResult.Code}");
@@ -414,6 +516,9 @@ namespace Mahjong.Unity.Table
                 _interactionState.ClearSelection();
                 CloseAllCheatDialogs();
                 CloseCandidateSelectionPanel();
+                _tileMarkSelectedTiles.Clear();
+                _selectedBeamHandTile = null;
+                _selectedBeamCandidate = null;
                 ScrubPrivateDisplay();
             }
             else if (state.IsFullBaseline || identityChanged || roundChanged)
@@ -425,28 +530,46 @@ namespace Mahjong.Unity.Table
                     _animationBannerText.gameObject.SetActive(false);
                 }
                 _interactionState.ClearSelection();
-                CloseAllCheatDialogs();
-                CloseCandidateSelectionPanel();
-                _tileMarkSelectedTiles.Clear();
-                _selectedBeamHandTile = null;
-                _selectedBeamCandidate = null;
+                if (identityChanged || roundChanged)
+                {
+                    CloseAllCheatDialogs();
+                    CloseCandidateSelectionPanel();
+                    _tileMarkSelectedTiles.Clear();
+                    _selectedBeamHandTile = null;
+                    _selectedBeamCandidate = null;
+                }
             }
 
-            // Decision context / controlEpoch change detection:
-            // If controlEpoch, decisionId or roundId changed, clear preliminary cheat selections!
+            // Decision context / controlEpoch / ownerEpoch change detection:
             ulong? currentEpoch = nextView.Own?.Decision?.ControlEpoch;
             string? currentDecisionId = nextView.Own?.Decision?.DecisionId;
             string currentRoundId = nextView.Identity.RoundId;
+            ulong currentOwnerEpoch = nextView.Identity.OwnerEpoch;
 
             bool decisionContextChanged = _lastDecisionId != null && !string.Equals(_lastDecisionId, currentDecisionId, StringComparison.Ordinal);
             bool controlEpochChanged = _lastControlEpoch.HasValue && currentEpoch.HasValue && _lastControlEpoch.Value != currentEpoch.Value;
             bool roundContextChanged = _lastRoundId != null && !string.Equals(_lastRoundId, currentRoundId, StringComparison.Ordinal);
+            bool ownerEpochChanged = _lastOwnerEpoch.HasValue && _lastOwnerEpoch.Value != currentOwnerEpoch;
 
-            if (decisionContextChanged || controlEpochChanged || roundContextChanged || nextView.Own?.Decision == null)
+            // Action decision & TileMark lifecycle:
+            bool decisionInvalidated = authorizationLost ||
+                                       roundContextChanged ||
+                                       identityChanged ||
+                                       decisionContextChanged ||
+                                       controlEpochChanged ||
+                                       ownerEpochChanged ||
+                                       nextView.Own?.Decision == null;
+
+            if (decisionInvalidated)
+            {
+                CloseCandidateSelectionPanel();
+                _presentedActionOptions.Clear();
+            }
+
+            bool tileMarkInvalidated = decisionInvalidated;
+            if (tileMarkInvalidated)
             {
                 _tileMarkSelectedTiles.Clear();
-                _selectedBeamHandTile = null;
-                _selectedBeamCandidate = null;
                 _tileMarkSelectionEpoch = null;
                 _tileMarkSelectionDecisionId = null;
                 _tileMarkSelectionRoundId = null;
@@ -454,40 +577,58 @@ namespace Mahjong.Unity.Table
                 {
                     CloseTileMarkDialog();
                 }
-                if (_beamSwapDialog != null && _beamSwapDialog.activeInHierarchy)
-                {
-                    CloseBeamSwapDialog();
-                }
+            }
+
+            // Sleeve Bloom offer lifecycle:
+            var currentSleeve = nextView.Own?.Cheat?.ImmediateSleeveBloom ?? nextView.Own?.Cheat?.OffTurnSleeveBloom;
+            string? newSleeveOfferId = currentSleeve?.OfferId;
+            bool sleeveOfferExpired = currentSleeve != null && currentSleeve.HasDeadline && currentSleeve.Countdown != null && currentSleeve.Countdown.ServerRemainingMilliseconds <= 0;
+            bool sleeveOfferInvalidated = authorizationLost ||
+                                          roundContextChanged ||
+                                          identityChanged ||
+                                          controlEpochChanged ||
+                                          ownerEpochChanged ||
+                                          currentSleeve == null ||
+                                          sleeveOfferExpired ||
+                                          (_currentSleeveOfferId != null && !string.Equals(_currentSleeveOfferId, newSleeveOfferId, StringComparison.Ordinal));
+
+            if (sleeveOfferInvalidated)
+            {
                 if (_sleeveBloomDialog != null && _sleeveBloomDialog.activeInHierarchy)
                 {
                     CloseSleeveBloomDialog();
                 }
-                CloseCandidateSelectionPanel();
             }
+            _currentSleeveOfferId = sleeveOfferInvalidated ? null : newSleeveOfferId;
+
+            // Beam Swap offer lifecycle:
+            var currentBeam = nextView.Own?.Cheat?.BeamSwap;
+            string? newBeamOfferId = currentBeam?.OfferId;
+            bool beamOfferExpired = currentBeam != null && currentBeam.HasDeadline && currentBeam.Countdown != null && currentBeam.Countdown.ServerRemainingMilliseconds <= 0;
+            bool beamOfferInvalidated = authorizationLost ||
+                                        roundContextChanged ||
+                                        identityChanged ||
+                                        controlEpochChanged ||
+                                        ownerEpochChanged ||
+                                        currentBeam == null ||
+                                        beamOfferExpired ||
+                                        (_currentBeamOfferId != null && !string.Equals(_currentBeamOfferId, newBeamOfferId, StringComparison.Ordinal));
+
+            if (beamOfferInvalidated)
+            {
+                _selectedBeamHandTile = null;
+                _selectedBeamCandidate = null;
+                if (_beamSwapDialog != null && _beamSwapDialog.activeInHierarchy)
+                {
+                    CloseBeamSwapDialog();
+                }
+            }
+            _currentBeamOfferId = beamOfferInvalidated ? null : newBeamOfferId;
 
             _lastDecisionId = currentDecisionId;
             _lastControlEpoch = currentEpoch;
             _lastRoundId = currentRoundId;
-
-            // Offer changed fence: if sleeve offer changed while dialog was open, close it
-            var currentSleeve = nextView.Own?.Cheat?.ImmediateSleeveBloom ?? nextView.Own?.Cheat?.OffTurnSleeveBloom;
-            string? newSleeveOfferId = currentSleeve?.OfferId;
-            if (_currentSleeveOfferId != null && !string.Equals(_currentSleeveOfferId, newSleeveOfferId, StringComparison.Ordinal))
-            {
-                CloseSleeveBloomDialog();
-            }
-            _currentSleeveOfferId = newSleeveOfferId;
-
-            // Beam offer changed fence: if beam offer changed while dialog was open, close it and clear selections
-            var currentBeam = nextView.Own?.Cheat?.BeamSwap;
-            string? newBeamOfferId = currentBeam?.OfferId;
-            if (_currentBeamOfferId != null && !string.Equals(_currentBeamOfferId, newBeamOfferId, StringComparison.Ordinal))
-            {
-                CloseBeamSwapDialog();
-                _selectedBeamHandTile = null;
-                _selectedBeamCandidate = null;
-            }
-            _currentBeamOfferId = newBeamOfferId;
+            _lastOwnerEpoch = currentOwnerEpoch;
 
             // Reconcile pending commands against session receipts
             ReconcilePendingCommands(state);
@@ -2048,6 +2189,10 @@ namespace Mahjong.Unity.Table
             _currentBeamOfferId = null;
             _currentSleeveOfferId = null;
             _presentedActionOptions.Clear();
+            _lastDecisionId = null;
+            _lastControlEpoch = null;
+            _lastRoundId = null;
+            _lastOwnerEpoch = null;
 
             if (_candidateOptionTexts != null)
             {
