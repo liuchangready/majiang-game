@@ -2180,6 +2180,73 @@ namespace Mahjong.Unity.Tests.PlayMode
         }
 
         [UnityTest]
+        public IEnumerator B2bFormalProbe17_DuplicateRollbackSparseStateOnlyAndEmptyDeltaMatrix()
+        {
+            yield return LoadAndBindTableSceneAsync();
+            _presenter!.enabled = false;
+
+            yield return SendTypedDiscard(2, 102, 1, 2, 44);
+            Assert.AreEqual(1, _presenter.AnimationQueue.PendingCount);
+
+            // Replaying the exact accepted frame must not create a second item.
+            PlayerSnapshot duplicate = _session!.PlayerSnapshot!.Clone();
+            duplicate.StateVersion = 2;
+            duplicate.EventSeq = 102;
+            duplicate.Cursor = new Mahjong.Contracts.Wire.StreamCursor { StreamVersion = 1, ProjectionSeq = 2 };
+            _channel!.EnqueueEnvelope(B2bTypedPush(
+                duplicate,
+                1,
+                2,
+                false,
+                B2bEvent(102, 0, WireEventType.TileDiscarded, EventVisibility.Public, 2,
+                    e => e.TileDiscarded = new TileDiscarded { TurnNumber = 2, Player = 1, TileId = 44 })));
+            yield return PumpAndDispatch();
+            Assert.AreEqual(1, _presenter.AnimationQueue.PendingCount, "duplicate frame must not replay");
+
+            // A rollback frame is ignored by the real Client and cannot enqueue.
+            PlayerSnapshot rollback = CreatePlayerPushEnvelope(
+                stateVersion: 2,
+                eventSeq: 101,
+                projectionSeq: 1).PlayerUpdate.Snapshot;
+            _channel.EnqueueEnvelope(B2bTypedPush(rollback, 0, 1, false));
+            yield return PumpAndDispatch();
+            Assert.AreEqual(1, _presenter.AnimationQueue.PendingCount, "rollback frame must not replay");
+
+            // A sparse event seq above the watermark is legal.
+            yield return SendTypedDiscard(3, 108, 2, 3, 45);
+            Assert.IsTrue(_presenter.LastVisibleEventMapping!.Accepted, _presenter.LastVisibleEventMapping.Code);
+            Assert.AreEqual(2, _presenter.AnimationQueue.PendingCount, "sparse event is one new animation");
+
+            // Legal state-only event: state fact, no fabricated animation.
+            PlayerSnapshot stateOnly = _session.PlayerSnapshot!.Clone();
+            stateOnly.StateVersion = 4;
+            stateOnly.EventSeq = 109;
+            stateOnly.Cursor = new Mahjong.Contracts.Wire.StreamCursor { StreamVersion = 1, ProjectionSeq = 4 };
+            _channel.EnqueueEnvelope(B2bTypedPush(
+                stateOnly,
+                3,
+                4,
+                false,
+                B2bEvent(109, 0, WireEventType.StackingStarted, EventVisibility.Public, 4,
+                    e => e.StackingStarted = new StackingStarted { TurnNumber = 4 })));
+            yield return PumpAndDispatch();
+            Assert.IsTrue(_presenter.LastVisibleEventMapping!.Accepted, _presenter.LastVisibleEventMapping.Code);
+            Assert.AreEqual(1, _presenter.LastVisibleEventMapping.StateOnlyEvents.Count);
+            Assert.AreEqual(2, _presenter.AnimationQueue.PendingCount, "state-only must not fabricate an animation");
+
+            // A legal incremental with no events at all also advances without animation.
+            PlayerSnapshot emptyDelta = _session.PlayerSnapshot!.Clone();
+            emptyDelta.StateVersion = 5;
+            emptyDelta.EventSeq = 109;
+            emptyDelta.Cursor = new Mahjong.Contracts.Wire.StreamCursor { StreamVersion = 1, ProjectionSeq = 5 };
+            _channel.EnqueueEnvelope(B2bTypedPush(emptyDelta, 4, 5, false));
+            yield return PumpAndDispatch();
+            Assert.IsTrue(_presenter.LastVisibleEventMapping!.Accepted, _presenter.LastVisibleEventMapping.Code);
+            Assert.AreEqual(0, _presenter.LastVisibleEventMapping.AnimatedEvents.Count);
+            Assert.AreEqual(2, _presenter.AnimationQueue.PendingCount, "empty delta must not animate");
+        }
+
+        [UnityTest]
         public IEnumerator B2bFormalProbe06_DelayedCaptureWithNewBindingMustNotRebaseOldBatch()
         {
             yield return LoadAndBindTableSceneAsync();
