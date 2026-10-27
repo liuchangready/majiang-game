@@ -321,6 +321,7 @@ namespace Mahjong.Unity.Table
             _navigation = null;
             _onViewSettlement = null;
             ClearAll();
+            _animationQueue.Reset();
             ScrubPrivateDisplay();
             _latestView = null;
             _latestSessionView = null;
@@ -605,64 +606,34 @@ namespace Mahjong.Unity.Table
 
         private bool IsSupersededByAcceptedAuthority(SessionViewState state)
         {
-            SessionViewState? current = _sessionView?.Current;
-            if (current == null || ReferenceEquals(state, current))
+            SessionAuthority? accepted = (_sessionView as ISessionViewLifecycleFence)?.AcceptedAuthority;
+            if (accepted == null || state.AcceptanceSequence <= 0)
             {
                 return false;
             }
 
-            if (state.AcceptanceSequence <= 0 ||
-                current.AcceptanceSequence <= state.AcceptanceSequence)
+            if (accepted.AcceptanceSequence <= state.AcceptanceSequence)
             {
                 return false;
             }
 
-            return !SameAcceptedAuthority(state, current);
+            return !accepted.Matches(state);
         }
 
         private bool LatestViewSupersededByAcceptedAuthority()
         {
-            SessionViewState? current = _sessionView?.Current;
-            if (current == null || _latestSessionView == null || _latestViewAcceptanceSequence <= 0)
+            SessionAuthority? accepted = (_sessionView as ISessionViewLifecycleFence)?.AcceptedAuthority;
+            if (accepted == null || _latestSessionView == null || _latestViewAcceptanceSequence <= 0)
             {
                 return false;
             }
 
-            if (current.AcceptanceSequence <= _latestViewAcceptanceSequence)
+            if (accepted.AcceptanceSequence <= _latestViewAcceptanceSequence)
             {
                 return false;
             }
 
-            return !SameAcceptedAuthority(_latestSessionView, current);
-        }
-
-        private static bool SameAcceptedAuthority(SessionViewState left, SessionViewState right)
-        {
-            SessionBindingView? a = left.Binding;
-            SessionBindingView? b = right.Binding;
-            if (a == null || b == null)
-            {
-                return a == null && b == null && left.State == right.State;
-            }
-
-            return left.State == right.State &&
-                   string.Equals(a.SessionId, b.SessionId, StringComparison.Ordinal) &&
-                   string.Equals(a.RoomId, b.RoomId, StringComparison.Ordinal) &&
-                   string.Equals(a.TableId, b.TableId, StringComparison.Ordinal) &&
-                   a.Role == b.Role &&
-                   a.SeatId == b.SeatId &&
-                   a.BindingEpoch == b.BindingEpoch &&
-                   string.Equals(a.ScopeId, b.ScopeId, StringComparison.Ordinal) &&
-                   a.ConnectionEpoch == b.ConnectionEpoch &&
-                   a.OwnerEpoch == b.OwnerEpoch &&
-                   string.Equals(ViewRoundId(left), ViewRoundId(right), StringComparison.Ordinal);
-        }
-
-        private static string ViewRoundId(SessionViewState state)
-        {
-            return state.PlayerSnapshot?.RoundId ??
-                   state.PublicSnapshot?.RoundId ??
-                   string.Empty;
+            return !accepted.Matches(_latestSessionView);
         }
 
         public void OnSessionViewChanged(object? sender, SessionViewState state)

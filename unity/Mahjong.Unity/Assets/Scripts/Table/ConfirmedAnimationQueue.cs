@@ -1131,6 +1131,20 @@ namespace Mahjong.Unity.Table
             ClearItems();
         }
 
+        /// <summary>Reset for a new owner/session binding.</summary>
+        public void Reset()
+        {
+            ClearItems();
+            _context = null;
+            _lastView = null;
+            _lastStateVersion = 0;
+            _lastSnapshotEventSeq = 0;
+            _lastPlayedEventSeq = 0;
+            _lastPlayedEventOrdinal = 0;
+            _sequence = 0;
+            _lastRejection = string.Empty;
+        }
+
         private static string DiscardEntityKey(int seat, uint tileId)
         {
             return "discard/" + seat.ToString(System.Globalization.CultureInfo.InvariantCulture)

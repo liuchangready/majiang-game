@@ -2745,6 +2745,176 @@ namespace Mahjong.Unity.Tests.PlayMode
         }
 
         [UnityTest]
+        public IEnumerator B2bFormalProbe28_AcceptedSpectatorPendingCaptureMustFenceOldPrivatePublication()
+        {
+            yield return LoadAndBindTableSceneAsync();
+            _presenter!.enabled = false;
+            SessionCoordinator seed = _coordinator!;
+
+            var controlled = new MainThreadDispatcher(64);
+            var gate = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            int captures = 0;
+            var coordinator = new SessionCoordinator(
+                _session, _queue, _channel, controlled, new AppConfig(), 1,
+                async () =>
+                {
+                    if (Interlocked.Increment(ref captures) == 2) await gate.Task;
+                    return await _queue!.CaptureAsync(CancellationToken.None);
+                });
+            _coordinator = coordinator;
+            _presenter.Bind(coordinator, _mockNav, coordinator, () => _mockNav!.OpenSettlement());
+            coordinator.Publish(1, seed.Current);
+            for (int i = 0; i < 10 && _presenter.LatestView == null; i++) { controlled.Update(1, 1000f); yield return null; }
+
+            PlayerSnapshot old = _session!.PlayerSnapshot!.Clone();
+            old.StateVersion = 2;
+            old.EventSeq = 102;
+            old.Cursor = new Mahjong.Contracts.Wire.StreamCursor { StreamVersion = 1, ProjectionSeq = 2 };
+            old.PrivateView.DrawnTileId = 27;
+            _channel!.EnqueueEnvelope(B2bTypedPush(
+                old, 1, 2, false,
+                B2bEvent(102, 0, WireEventType.TileDrawn, EventVisibility.Private, 2,
+                    e => e.TileDrawn = new TileDrawn { TurnNumber = 2, Player = 0, TileId = 27, WallRemaining = 67 })));
+            var pump = _session.PumpOnceAsync(CancellationToken.None);
+            while (!pump.IsCompleted) yield return null;
+            for (int i = 0; i < 30 && coordinator.Current.PlayerSnapshot?.StateVersion < 2; i++) yield return null;
+            Assert.AreEqual(2UL, coordinator.Current.PlayerSnapshot!.StateVersion);
+            Assert.GreaterOrEqual(controlled.PendingCount, 1);
+
+            yield return ReconnectBinding("room_table_1", Role.Spectator, -1, 2, 2, 2, null, dispatch: false);
+            Assert.AreEqual((int)Mahjong.Contracts.ProtocolRole.Spectator, coordinator.AcceptedAuthority!.Role);
+            Assert.AreEqual((int)Mahjong.Contracts.ProtocolRole.Player, coordinator.Current.Binding!.Role,
+                "the new spectator capture is still pending");
+            Assert.GreaterOrEqual(Volatile.Read(ref captures), 2);
+
+            var banner = FormalField<TextMeshProUGUI>("_animationBannerText");
+            controlled.Update(1, 1000f);
+            Assert.AreEqual(0, _presenter.AnimationQueue.PendingCount,
+                "an accepted-but-pending spectator identity must fence the old private publication");
+            typeof(TablePresenter).GetMethod("UpdateAnimationBanner", BindingFlags.NonPublic | BindingFlags.Instance)!.Invoke(_presenter, null);
+            Assert.IsFalse(banner.gameObject.activeSelf);
+
+            gate.SetResult(true);
+            for (int i = 0; i < 40; i++) { controlled.Update(1, 1000f); yield return null; }
+            Assert.AreEqual(PlayerTableRole.Spectator, _presenter.LatestView!.Identity.Role);
+            Assert.AreEqual(0, _presenter.AnimationQueue.PendingCount);
+        }
+
+        [UnityTest]
+        public IEnumerator B2bFormalProbe29_PublishedAcceptanceOfPrivateRevocationMustFenceOldPublication()
+        {
+            yield return LoadAndBindTableSceneAsync();
+            _presenter!.enabled = false;
+            SessionCoordinator seed = _coordinator!;
+            var controlled = new MainThreadDispatcher(64);
+            var coordinator = new SessionCoordinator(
+                _session, _queue, _channel, controlled, new AppConfig(), 1);
+            _coordinator = coordinator;
+            _presenter.Bind(coordinator, _mockNav, coordinator, () => _mockNav!.OpenSettlement());
+            coordinator.Publish(1, seed.Current);
+            for (int i = 0; i < 10 && _presenter.LatestView == null; i++) { controlled.Update(1, 1000f); yield return null; }
+
+            PlayerSnapshot old = _session!.PlayerSnapshot!.Clone();
+            old.StateVersion = 2;
+            old.EventSeq = 102;
+            old.Cursor = new Mahjong.Contracts.Wire.StreamCursor { StreamVersion = 1, ProjectionSeq = 2 };
+            old.PrivateView.DrawnTileId = 27;
+            _channel!.EnqueueEnvelope(B2bTypedPush(
+                old, 1, 2, false,
+                B2bEvent(102, 0, WireEventType.TileDrawn, EventVisibility.Private, 2,
+                    e => e.TileDrawn = new TileDrawn { TurnNumber = 2, Player = 0, TileId = 27, WallRemaining = 67 })));
+            var pump = _session.PumpOnceAsync(CancellationToken.None);
+            while (!pump.IsCompleted) yield return null;
+            for (int i = 0; i < 30 && coordinator.Current.PlayerSnapshot?.StateVersion < 2; i++) yield return null;
+            Assert.GreaterOrEqual(controlled.PendingCount, 1);
+
+            PlayerSnapshot revokedSnapshot = _session.PlayerSnapshot!.Clone();
+            revokedSnapshot.StateVersion = 3;
+            revokedSnapshot.EventSeq = 103;
+            revokedSnapshot.Cursor = new Mahjong.Contracts.Wire.StreamCursor { StreamVersion = 1, ProjectionSeq = 3 };
+            revokedSnapshot.PrivateView = null;
+            var revoked = new SessionViewState(
+                1,
+                TableConnectionState.Ready,
+                _session.Binding,
+                revokedSnapshot,
+                null,
+                null,
+                null,
+                "PRIVATE_REVOKED",
+                false,
+                null,
+                null,
+                coordinator.AcceptedAuthority!.AcceptanceSequence + 1);
+            coordinator.Publish(1, revoked);
+            Assert.IsFalse(SessionAuthority.FromView(coordinator.Current).IsPrivateAuthorized);
+
+            var banner = FormalField<TextMeshProUGUI>("_animationBannerText");
+            controlled.Update(1, 1000f);
+            Assert.AreEqual(0, _presenter.AnimationQueue.PendingCount,
+                "published private revocation must fence the older private publication");
+            typeof(TablePresenter).GetMethod("UpdateAnimationBanner", BindingFlags.NonPublic | BindingFlags.Instance)!.Invoke(_presenter, null);
+            Assert.IsFalse(banner.gameObject.activeSelf);
+        }
+
+        [UnityTest]
+        public IEnumerator B2bFormalProbe30_AppliedOldAnimationMustBeClearedWhenPrivateRevocationPublishes()
+        {
+            yield return LoadAndBindTableSceneAsync();
+            _presenter!.enabled = false;
+            SessionCoordinator seed = _coordinator!;
+            var controlled = new MainThreadDispatcher(64);
+            var coordinator = new SessionCoordinator(
+                _session, _queue, _channel, controlled, new AppConfig(), 1);
+            _coordinator = coordinator;
+            _presenter.Bind(coordinator, _mockNav, coordinator, () => _mockNav!.OpenSettlement());
+            coordinator.Publish(1, seed.Current);
+            for (int i = 0; i < 10 && _presenter.LatestView == null; i++) { controlled.Update(1, 1000f); yield return null; }
+
+            PlayerSnapshot old = _session!.PlayerSnapshot!.Clone();
+            old.StateVersion = 2;
+            old.EventSeq = 102;
+            old.Cursor = new Mahjong.Contracts.Wire.StreamCursor { StreamVersion = 1, ProjectionSeq = 2 };
+            old.PrivateView.DrawnTileId = 27;
+            _channel!.EnqueueEnvelope(B2bTypedPush(
+                old, 1, 2, false,
+                B2bEvent(102, 0, WireEventType.TileDrawn, EventVisibility.Private, 2,
+                    e => e.TileDrawn = new TileDrawn { TurnNumber = 2, Player = 0, TileId = 27, WallRemaining = 67 })));
+            var pump = _session.PumpOnceAsync(CancellationToken.None);
+            while (!pump.IsCompleted) yield return null;
+            for (int i = 0; i < 30 && coordinator.Current.PlayerSnapshot?.StateVersion < 2; i++) yield return null;
+            controlled.Update(1, 1000f);
+            Assert.AreEqual(1, _presenter.AnimationQueue.PendingCount,
+                "old private animation is applied but not yet displayed");
+
+            PlayerSnapshot revokedSnapshot = _session.PlayerSnapshot!.Clone();
+            revokedSnapshot.StateVersion = 3;
+            revokedSnapshot.EventSeq = 103;
+            revokedSnapshot.Cursor = new Mahjong.Contracts.Wire.StreamCursor { StreamVersion = 1, ProjectionSeq = 3 };
+            revokedSnapshot.PrivateView = null;
+            var revoked = new SessionViewState(
+                1,
+                TableConnectionState.Ready,
+                _session.Binding,
+                revokedSnapshot,
+                null,
+                null,
+                null,
+                "PRIVATE_REVOKED",
+                false,
+                null,
+                null,
+                coordinator.AcceptedAuthority!.AcceptanceSequence + 1);
+            coordinator.Publish(1, revoked);
+
+            var banner = FormalField<TextMeshProUGUI>("_animationBannerText");
+            typeof(TablePresenter).GetMethod("UpdateAnimationBanner", BindingFlags.NonPublic | BindingFlags.Instance)!.Invoke(_presenter, null);
+            Assert.AreEqual(0, _presenter.AnimationQueue.PendingCount,
+                "display boundary must clear an already-applied animation after private revocation");
+            Assert.IsFalse(banner.gameObject.activeSelf);
+        }
+
+        [UnityTest]
         public IEnumerator B2bFormalProbe06_DelayedCaptureWithNewBindingMustNotRebaseOldBatch()
         {
             yield return LoadAndBindTableSceneAsync();

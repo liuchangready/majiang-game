@@ -63,6 +63,7 @@ namespace Mahjong.Unity.App
         private SessionViewState _currentViewState;
         private long _currentGeneration;
         private long _acceptedSequence;
+        private SessionAuthority? _acceptedAuthority;
 
         private readonly CancellationTokenSource _runCts = new CancellationTokenSource();
         private Task? _pumpTask;
@@ -104,6 +105,15 @@ namespace Mahjong.Unity.App
         /// It advances even while the view publication is still pending.
         /// </summary>
         public long AcceptedSequence => Interlocked.Read(ref _acceptedSequence);
+
+        /// <summary>Newest accepted authorization identity, before capture.</summary>
+        public SessionAuthority? AcceptedAuthority
+        {
+            get
+            {
+                lock (_stateGate) return _acceptedAuthority;
+            }
+        }
 
         public SessionCoordinator(
             IGameSession? session,
@@ -182,6 +192,19 @@ namespace Mahjong.Unity.App
             RoomUpdate? room = e.RoomSnapshot?.Clone();
             TableVisibleEventBatch batch = e.VisibleEventBatch ?? TableVisibleEventBatch.Empty;
             long acceptedSequence = Interlocked.Increment(ref _acceptedSequence);
+            if (batch.Kind != TableVisibleEventBatchKind.None)
+            {
+                SessionAuthority authority = SessionAuthority.FromAccepted(
+                    acceptedSequence,
+                    batch,
+                    player,
+                    publicSnapshot,
+                    _session?.State ?? _operationQueue?.State ?? TableConnectionState.Ready);
+                lock (_stateGate)
+                {
+                    _acceptedAuthority = authority;
+                }
+            }
 
             long gen = _currentGeneration;
             if (_operationQueue != null)
@@ -366,6 +389,10 @@ namespace Mahjong.Unity.App
                 }
 
                 _currentViewState = state;
+                if (state.AcceptanceSequence > 0)
+                {
+                    _acceptedAuthority = SessionAuthority.FromView(state);
+                }
             }
 
             _dispatcher.Post(() =>
