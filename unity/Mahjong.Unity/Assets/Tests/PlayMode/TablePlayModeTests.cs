@@ -494,6 +494,11 @@ namespace Mahjong.Unity.Tests.PlayMode
             public bool CanSubmit => _sink.CanSubmit;
             public long Generation => _sink.Generation + 1;
             public Task<CommandSubmission> SubmitAsync(ProtocolCommand c, CancellationToken t) => _sink.SubmitAsync(c, t);
+            public event EventHandler<TableReceiptResolvedEventArgs>? ReceiptResolved
+            {
+                add => _sink.ReceiptResolved += value;
+                remove => _sink.ReceiptResolved -= value;
+            }
         }
 
         [UnityTest]
@@ -850,6 +855,153 @@ namespace Mahjong.Unity.Tests.PlayMode
             {
                 _presenter.OnCancelSelectionClicked();
             });
+        }
+
+        private T FormalField<T>(string name) => (T)typeof(TablePresenter).GetField(name, BindingFlags.NonPublic | BindingFlags.Instance)!.GetValue(_presenter);
+
+        private Button FormalButton(string name) => Array.Find(_presenter!.GetComponentsInChildren<Button>(true), b => b.name == name)!;
+
+        private void FormalClick(Button b)
+        {
+            var e = new PointerEventData(EventSystem.current) { button = PointerEventData.InputButton.Left, pointerId = -1, position = new Vector2(640, 360) };
+            ExecuteEvents.Execute(b.gameObject, e, ExecuteEvents.pointerDownHandler);
+            ExecuteEvents.Execute(b.gameObject, e, ExecuteEvents.pointerUpHandler);
+            ExecuteEvents.Execute(b.gameObject, e, ExecuteEvents.pointerClickHandler);
+        }
+
+        [UnityTest]
+        public IEnumerator R2FormalProbe01_RealAppliedReceipt_MustReleasePresenterPending()
+        {
+            yield return LoadAndBindTableSceneAsync();
+            _presenter!.OnHandTileClicked(0); _presenter.OnDiscardButtonClicked();
+            for (int i = 0; i < 25; i++) yield return null;
+            Assert.AreEqual(1, GetUnresolvedOutboxCount());
+            Envelope? sent = null;
+            foreach (var env in _channel!.SentEnvelopes) if (env.MessageType == MessageType.Command) sent = env;
+            Assert.IsNotNull(sent);
+            var receipt = sent!.Clone(); receipt.Command = null; receipt.MessageType = MessageType.Receipt;
+            receipt.Receipt = new Mahjong.Contracts.Wire.Receipt { Status = Mahjong.Contracts.Wire.ReceiptStatus.Applied, CommandVersion = 2, EventSeq = 102, EvaluatedStateVersion = 1 };
+            var decoded = WireCodec.Decode(WireCodec.Encode(receipt));
+            Assert.IsTrue(decoded.IsOk, "receipt decoding: " + decoded.Status + " / " + decoded.ErrorCode);
+            _channel.EnqueueEnvelope(receipt);
+            var pump = _session!.PumpOnceAsync(CancellationToken.None);
+            while (!pump.IsCompleted) yield return null;
+            for (int i = 0; i < 25; i++) { _dispatcher!.Update(); yield return null; }
+            Assert.AreEqual(0, GetUnresolvedOutboxCount(), "probe requires Client accepted receipt; state=" + _session.State + " error=" + _session.LastError);
+            Assert.IsNull(_presenter.InteractionState.Pending, "real Client ReceiptResolved must reach UI");
+        }
+
+        [UnityTest]
+        public IEnumerator R2FormalProbe02_StaleFullBaseline_MustRespectModelRejection()
+        {
+            yield return LoadAndBindTableSceneAsync();
+            _presenter!.OnSessionViewChanged(this, FormalProbeView(CreatePlayerBaselineEnvelope(stateVersion: 10).SyncResponse.Player));
+            _presenter.OnSessionViewChanged(this, FormalProbeView(CreatePlayerBaselineEnvelope(stateVersion: 1).SyncResponse.Player, true));
+            Assert.AreEqual(10UL, _presenter.LatestView!.Identity.StateVersion, "baseline does not authorize state rollback");
+        }
+
+        [UnityTest]
+        public IEnumerator R2FormalProbe03_OlderGeneration_MustNotReplaceNewIdentity()
+        {
+            yield return LoadAndBindTableSceneAsync();
+            var snap = CreatePlayerBaselineEnvelope(stateVersion: 2).SyncResponse.Player;
+            _presenter!.OnSessionViewChanged(this, new SessionViewState(2, TableConnectionState.Ready, _session!.Binding, snap, null, null, null, null, true));
+            _presenter.OnSessionViewChanged(this, FormalProbeView(snap, true));
+            Assert.AreEqual(2, _presenter.LatestView!.Identity.Generation);
+        }
+
+        [UnityTest]
+        public IEnumerator R2FormalProbe04_AuthorizationLost_MustCancelVisiblePrivateAnimation()
+        {
+            yield return LoadAndBindTableSceneAsync();
+            var snap = CreatePlayerBaselineEnvelope(stateVersion: 2).SyncResponse.Player; snap.Cursor.ProjectionSeq = 2; snap.PrivateView.DrawnTileId = 128;
+            _presenter!.OnSessionViewChanged(this, FormalProbeView(snap));
+            typeof(TablePresenter).GetMethod("UpdateAnimationBanner", BindingFlags.NonPublic | BindingFlags.Instance)!.Invoke(_presenter, null);
+            var banner = FormalField<TextMeshProUGUI>("_animationBannerText");
+            Assert.IsTrue(banner.gameObject.activeSelf);
+            _presenter.OnSessionViewChanged(this, FormalProbeView(snap, false, TableConnectionState.Closed));
+            Assert.IsFalse(banner.gameObject.activeInHierarchy, "private confirmed tile still visible after authorization loss");
+        }
+
+        [UnityTest]
+        public IEnumerator R2FormalProbe05_ClearAll_MustScrubInactivePrivateText()
+        {
+            yield return LoadAndBindTableSceneAsync();
+            var texts = FormalField<TextMeshProUGUI[]>("_handTileTexts"); Assert.IsNotEmpty(texts[0].text);
+            _presenter!.ClearAll();
+            Assert.IsEmpty(texts[0].text, "inactive hand objects must not retain private text");
+        }
+
+        [UnityTest]
+        public IEnumerator R2FormalProbe06_PausedCandidatePointer_MustNotSubmit()
+        {
+            yield return LoadAndBindTableSceneAsync();
+            var snap = CreatePlayerBaselineEnvelope(stateVersion: 2).SyncResponse.Player;
+            snap.PrivateView.Decision.Actions.Clear();
+            snap.PrivateView.Decision.Actions.Add(new LegalActionView { ActionType = 5, OptionId = "chi_A", TileIds = { 0, 4 } });
+            snap.PrivateView.Decision.Actions.Add(new LegalActionView { ActionType = 5, OptionId = "chi_B", TileIds = { 4, 8 } });
+            _presenter!.OnSessionViewChanged(this, FormalProbeView(snap)); _presenter.OnActionButtonClicked(PlayerActionKind.DeclareChi);
+            UiInputLifecycle.Instance.OnPause();
+            FormalClick(FormalButton("CandidateOption_1"));
+            for (int i = 0; i < 25; i++) yield return null;
+            UiInputLifecycle.Instance.OnResume();
+            Assert.AreEqual(0, GetUnresolvedOutboxCount(), "candidate selection must obey pause gate");
+        }
+
+        [UnityTest]
+        public IEnumerator R2FormalProbe07_SevenBeamCandidates_MustAllBeReachable()
+        {
+            yield return LoadAndBindTableSceneAsync();
+            var snap = CreatePlayerBaselineEnvelope(stateVersion: 2).SyncResponse.Player;
+            snap.PrivateView.Cheat.BeamSwap = new BeamSwapView { OfferId = "beam_seven", HasDeadline = true, DeadlineRemainingMs = 10000 };
+            snap.PrivateView.Cheat.BeamSwap.SelectableHandTileIds.Add(0);
+            for (uint i = 0; i < 7; i++) snap.PrivateView.Cheat.BeamSwap.Candidates.Add(new BeamSwapCandidateView { Slot = i, SlotKind = BeamSwapSlotKind.Wall, SlotIndex = i, TileId = 36 + i });
+            _presenter!.OnSessionViewChanged(this, FormalProbeView(snap)); _presenter.OpenBeamSwapDialog();
+            int reachable = 0; foreach (var b in _presenter.GetComponentsInChildren<Button>()) if (b.name.StartsWith("BeamSlot_")) reachable++;
+            Assert.GreaterOrEqual(reachable, 7, "all server candidates must be reachable or paginated");
+        }
+
+        [UnityTest]
+        public IEnumerator R2FormalProbe08_PauseResume_MustInvalidateOldDiscardSelection()
+        {
+            yield return LoadAndBindTableSceneAsync();
+            _presenter!.OnHandTileClicked(0); Assert.IsTrue(_presenter.InteractionState.Selection.HasSelection);
+            _presenter.SendMessage("OnApplicationPause", true, SendMessageOptions.DontRequireReceiver);
+            UiInputLifecycle.Instance.OnPause(); yield return null;
+            _presenter.SendMessage("OnApplicationPause", false, SendMessageOptions.DontRequireReceiver);
+            UiInputLifecycle.Instance.OnResume();
+            Assert.IsFalse(_presenter.InteractionState.Selection.HasSelection, "old selection must expire across pause/resume");
+        }
+
+        [UnityTest]
+        public IEnumerator R2FormalProbe09_BeamOfferChanged_MustRequireExplicitReselection()
+        {
+            yield return LoadAndBindTableSceneAsync();
+            var snap = CreatePlayerBaselineEnvelope(stateVersion: 2).SyncResponse.Player;
+            snap.PrivateView.Cheat.BeamSwap = new BeamSwapView { OfferId = "beam_old", HasDeadline = true, DeadlineRemainingMs = 10000 };
+            snap.PrivateView.Cheat.BeamSwap.SelectableHandTileIds.Add(0);
+            snap.PrivateView.Cheat.BeamSwap.Candidates.Add(new BeamSwapCandidateView { Slot = 0, SlotKind = BeamSwapSlotKind.Wall, SlotIndex = 0, TileId = 36 });
+            _presenter!.OnSessionViewChanged(this, FormalProbeView(snap)); _presenter.OpenBeamSwapDialog();
+            _presenter.OnHandTileClicked(0); _presenter.OnBeamSlotClicked(0);
+            snap.StateVersion = 3; snap.Cursor.ProjectionSeq = 3; snap.PrivateView.Cheat.BeamSwap.OfferId = "beam_new";
+            _presenter.OnSessionViewChanged(this, FormalProbeView(snap));
+            var confirm = FormalButton("ConfirmBeamSwapButton"); if (confirm.gameObject.activeInHierarchy) FormalClick(confirm);
+            for (int i = 0; i < 25; i++) yield return null;
+            Assert.AreEqual(0, GetUnresolvedOutboxCount(), "old beam choice must not target new offer");
+        }
+
+        [UnityTest]
+        public IEnumerator R2FormalProbe10_AvailableCheatActivation_MustHaveReachableButtons()
+        {
+            yield return LoadAndBindTableSceneAsync();
+            var factory = new TableCommandIntentFactory(new SystemTableClientClock());
+            var view = _presenter!.LatestView!;
+            var owner = new TableCommandOwnerContext(new RequestId("activation_probe"), new RequestScopeId(view.Identity.ScopeId), new StateVersion(view.Identity.StateVersion), new OwnerEpoch(view.Identity.OwnerEpoch));
+            Assert.DoesNotThrow(() => factory.CreateSubmitSleeveBloom(view, owner));
+            Assert.DoesNotThrow(() => factory.CreateSubmitBeamSwap(view, owner));
+            bool sleeve = FormalButton("SleeveBloomButton").gameObject.activeInHierarchy;
+            bool beam = FormalButton("BeamSwapButton").gameObject.activeInHierarchy;
+            Assert.IsTrue(sleeve && beam, "factory-supported activations must be reachable before offers; sleeve=" + sleeve + " beam=" + beam);
         }
 
         private static ProtocolCommand TestCommand()

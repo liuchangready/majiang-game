@@ -345,8 +345,23 @@ foreach ($name in $expectedShots) {
         }
     }
 
+    # Verify PNG dimensions via IHDR chunk (bytes 16..19 width, 20..23 height)
+    if ($bytes.Length -ge 24) {
+        $w = ([int]$bytes[16] * 16777216) + ([int]$bytes[17] * 65536) + ([int]$bytes[18] * 256) + [int]$bytes[19]
+        $h = ([int]$bytes[20] * 16777216) + ([int]$bytes[21] * 65536) + ([int]$bytes[22] * 256) + [int]$bytes[23]
+        if ($name -eq "10_table_21x9_ultrawide.png") {
+            if ($w -ne 2560 -or $h -ne 1080) {
+                throw "Screenshot $name expected 2560x1080, got ${w}x${h}"
+            }
+        } else {
+            if ($w -ne 1280 -or $h -ne 720) {
+                throw "Screenshot $name expected 1280x720, got ${w}x${h}"
+            }
+        }
+    }
+
     $sha = (Get-FileHash -Path $shotPath -Algorithm SHA256).Hash
-    Write-Host ("  {0,-44} : {1,7} bytes | SHA256: {2}" -f $name, $fileInfo.Length, $sha)
+    Write-Host ("  {0,-44} : {1,7} bytes | {2}x{3} | SHA256: {4}" -f $name, $fileInfo.Length, $w, $h, $sha)
 
     if ($hashes.ContainsValue($sha)) {
         $duplicateName = ($hashes.GetEnumerator() | Where-Object { $_.Value -eq $sha }).Key
@@ -373,21 +388,24 @@ $psiPlayer.EnvironmentVariables["TMP"] = $resolvedTemp
 
 $procPlayer = [System.Diagnostics.Process]::Start($psiPlayer)
 $cleanPlayer = $procPlayer.WaitForExit(300000)
-$playerExit = $procPlayer.ExitCode
-Set-Content -Path (Join-Path $resolvedOutput "player-build-exit.txt") -Value "$playerExit" -Encoding UTF8
 
 if (-not $cleanPlayer) {
-    $procPlayer.Kill()
+    try { $procPlayer.Kill() } catch {}
+    Set-Content -Path (Join-Path $resolvedOutput "player-build-exit.txt") -Value "TIMEOUT" -Encoding UTF8
     $results.WindowsPlayerBuild = "FAILED (timeout after 300s)"
     Write-Host "Windows Player Build: FAILED (timeout after 300s)"
-} elseif ($playerExit -eq 0 -and (Test-Path $playerExe)) {
-    $exeLen = (Get-Item $playerExe).Length
-    $exeSha = (Get-FileHash -Path $playerExe -Algorithm SHA256).Hash
-    $results.WindowsPlayerBuild = "PASS (exit 0, exe=$exeLen bytes, SHA256=$exeSha)"
-    Write-Host "Windows Player Build: PASS (exit 0, $exeLen bytes, SHA256=$exeSha)"
 } else {
-    $results.WindowsPlayerBuild = "FAILED (exit code $playerExit, see $playerLog)"
-    Write-Host "Windows Player Build: FAILED (exit code $playerExit, see $playerLog)"
+    $playerExit = $procPlayer.ExitCode
+    Set-Content -Path (Join-Path $resolvedOutput "player-build-exit.txt") -Value "$playerExit" -Encoding UTF8
+    if ($playerExit -eq 0 -and (Test-Path $playerExe)) {
+        $exeLen = (Get-Item $playerExe).Length
+        $exeSha = (Get-FileHash -Path $playerExe -Algorithm SHA256).Hash
+        $results.WindowsPlayerBuild = "PASS (exit 0, exe=$exeLen bytes, SHA256=$exeSha)"
+        Write-Host "Windows Player Build: PASS (exit 0, $exeLen bytes, SHA256=$exeSha)"
+    } else {
+        $results.WindowsPlayerBuild = "FAILED (exit code $playerExit, see $playerLog)"
+        Write-Host "Windows Player Build: FAILED (exit code $playerExit, see $playerLog)"
+    }
 }
 
 # 7. Generate evidence manifest
@@ -419,5 +437,17 @@ foreach ($k in $results.Keys) {
 }
 Write-Host ("{0,-30} : {1:N2}s" -f "Total Duration", $swTotal.Elapsed.TotalSeconds)
 Write-Host "=========================================================="
-Write-Host "ALL CHECKS PASSED (exit code 0)"
-exit 0
+
+$hasFailure = $false
+foreach ($k in $results.Keys) {
+    if ($results[$k] -like "*FAILED*") {
+        $hasFailure = $true
+    }
+}
+if ($hasFailure) {
+    Write-Host "TEST SUITE COMPLETED WITH FAILURES (exit code 1)"
+    exit 1
+} else {
+    Write-Host "ALL CHECKS PASSED (exit code 0)"
+    exit 0
+}

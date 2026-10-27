@@ -52,6 +52,7 @@ namespace Mahjong.Unity.Table
         [SerializeField] private GameObject[] _handTileMarkBadges = Array.Empty<GameObject>();
         [SerializeField] private Button? _drawnTileButton;
         [SerializeField] private TextMeshProUGUI? _drawnTileText;
+        [SerializeField] private GameObject? _drawnTileMarkBadge;
 
         [Header("Action Candidates")]
         [SerializeField] private GameObject? _actionPanelRoot;
@@ -161,6 +162,17 @@ namespace Mahjong.Unity.Table
 
         private void Update()
         {
+            if (UiInputLifecycle.Instance.IsPaused || !UiInputLifecycle.Instance.AcceptingInput)
+            {
+                if (_interactionState.Selection.HasSelection)
+                {
+                    _interactionState.OnPause(true);
+                    if (_discardButton != null) _discardButton.interactable = false;
+                    if (_tsumoButton != null) _tsumoButton.interactable = false;
+                    if (_riichiButton != null) _riichiButton.interactable = false;
+                }
+            }
+
             UpdateCountdown();
             UpdateAnimationBanner();
         }
@@ -171,10 +183,7 @@ namespace Mahjong.Unity.Table
             ISessionView? sessionView,
             Action? onOpenSettlement = null)
         {
-            if (_sessionView != null)
-            {
-                _sessionView.Changed -= OnSessionViewChanged;
-            }
+            Unbind();
 
             _commandSink = commandSink;
             _navigation = navigation;
@@ -189,6 +198,26 @@ namespace Mahjong.Unity.Table
                 _sessionView.Changed += OnSessionViewChanged;
                 OnSessionViewChanged(this, _sessionView.Current);
             }
+            if (_commandSink != null)
+            {
+                _commandSink.ReceiptResolved += OnReceiptResolved;
+            }
+        }
+
+        public void Unbind()
+        {
+            if (_sessionView != null)
+            {
+                _sessionView.Changed -= OnSessionViewChanged;
+                _sessionView = null;
+            }
+            if (_commandSink != null)
+            {
+                _commandSink.ReceiptResolved -= OnReceiptResolved;
+                _commandSink = null;
+            }
+            _navigation = null;
+            _onViewSettlement = null;
         }
 
         public void Initialize(
@@ -203,9 +232,90 @@ namespace Mahjong.Unity.Table
 
         private void OnDestroy()
         {
-            if (_sessionView != null)
+            Unbind();
+            ClearAll();
+        }
+
+        private void OnApplicationPause(bool paused)
+        {
+            _interactionState?.OnPause(paused);
+            if (paused)
             {
-                _sessionView.Changed -= OnSessionViewChanged;
+                _interactionState?.ClearSelection();
+                CloseAllCheatDialogs();
+                CloseCandidateSelectionPanel();
+                _tileMarkSelectedTiles.Clear();
+                _selectedBeamHandTile = null;
+                _selectedBeamCandidate = null;
+                if (_discardButton != null) _discardButton.interactable = false;
+                if (_tsumoButton != null) _tsumoButton.interactable = false;
+                if (_riichiButton != null) _riichiButton.interactable = false;
+            }
+        }
+
+        private void OnApplicationFocus(bool hasFocus)
+        {
+            if (!hasFocus)
+            {
+                _interactionState?.OnFocusLost();
+                _interactionState?.ClearSelection();
+                CloseAllCheatDialogs();
+                CloseCandidateSelectionPanel();
+                _tileMarkSelectedTiles.Clear();
+                _selectedBeamHandTile = null;
+                _selectedBeamCandidate = null;
+                if (_discardButton != null) _discardButton.interactable = false;
+                if (_tsumoButton != null) _tsumoButton.interactable = false;
+                if (_riichiButton != null) _riichiButton.interactable = false;
+            }
+        }
+
+        public void OnReceiptResolved(object? sender, TableReceiptResolvedEventArgs e)
+        {
+            if (e == null || e.Command == null || _interactionState.Pending == null) return;
+
+            var pending = _interactionState.Pending;
+            var pendingCmd = pending.Intent.Command;
+
+            // Must match full scope and request id!
+            if (!string.Equals(pendingCmd.RequestId.Value, e.Command.RequestId, StringComparison.Ordinal) ||
+                !string.Equals(pendingCmd.ScopeId?.Value, e.Command.ScopeId, StringComparison.Ordinal))
+            {
+                return;
+            }
+
+            // Verify identity fence if view exists
+            if (_latestView != null)
+            {
+                if (!string.Equals(_latestView.Identity.ScopeId, e.Command.ScopeId, StringComparison.Ordinal))
+                {
+                    return;
+                }
+            }
+
+            var disposition = e.Resolution.Disposition;
+            var receiptStatus = e.Resolution.ReceiptStatus;
+
+            if (disposition == OutboxDisposition.Applied || receiptStatus == Mahjong.Contracts.ReceiptStatus.Applied)
+            {
+                _interactionState.ApplyClientOutcome(TablePendingOutcome.Applied);
+                UpdateStatusText("操作已确认执行");
+            }
+            else if (disposition == OutboxDisposition.Recorded || receiptStatus == Mahjong.Contracts.ReceiptStatus.Recorded)
+            {
+                _interactionState.ApplyClientOutcome(TablePendingOutcome.Recorded);
+                UpdateStatusText("操作已由权威服务器记录");
+            }
+            else if (disposition == OutboxDisposition.Rejected || receiptStatus == Mahjong.Contracts.ReceiptStatus.Rejected)
+            {
+                _interactionState.ApplyClientOutcome(TablePendingOutcome.Rejected);
+                string reason = FormatRejectionReason(e.Resolution.ReasonCode);
+                UpdateStatusText($"操作被服务器拒绝: {reason}");
+            }
+            else if (receiptStatus == Mahjong.Contracts.ReceiptStatus.Unknown)
+            {
+                _interactionState.ApplyClientOutcome(TablePendingOutcome.Unknown);
+                UpdateStatusText("操作状态未知，等待对账中...");
             }
         }
 
@@ -216,15 +326,30 @@ namespace Mahjong.Unity.Table
             PlayerTableViewState nextView = _projectionMapper.Project(state);
 
             // Stale snapshot monotonicity fence:
-            // A non-baseline snapshot with lower StateVersion for the same round/session must not overwrite newer confirmed state.
-            if (_latestView != null && !state.IsFullBaseline)
+            if (_latestView != null)
             {
-                if (string.Equals(_latestView.Identity.SessionId, nextView.Identity.SessionId, StringComparison.Ordinal) &&
+                // 1. Generation monotonicity fence: older generation cannot replace newer generation
+                if (nextView.Identity.Generation < _latestView.Identity.Generation)
+                {
+                    return;
+                }
+
+                // 2. StateVersion monotonicity fence: for same session, round and generation, older StateVersion cannot roll back state (even on baseline!)
+                if (nextView.Identity.Generation == _latestView.Identity.Generation &&
+                    string.Equals(_latestView.Identity.SessionId, nextView.Identity.SessionId, StringComparison.Ordinal) &&
                     string.Equals(_latestView.Identity.RoundId, nextView.Identity.RoundId, StringComparison.Ordinal) &&
                     nextView.Identity.StateVersion < _latestView.Identity.StateVersion)
                 {
-                    return; // Drop stale snapshot
+                    return; // Drop stale snapshot rollback
                 }
+            }
+
+            // 3. Model interaction fence: respect TableInteractionState evaluation
+            var applyOutcome = _interactionState.ApplyConfirmedView(nextView);
+            if (!applyOutcome.Accepted)
+            {
+                Debug.LogWarning($"[TablePresenter] InteractionState rejected confirmed view: {applyOutcome.Code} {applyOutcome.Message}");
+                return; // Dropped by model fence
             }
 
             bool identityChanged = _latestView != null &&
@@ -236,27 +361,34 @@ namespace Mahjong.Unity.Table
             bool roundChanged = _latestView != null &&
                 !string.Equals(_latestView.Identity.RoundId, nextView.Identity.RoundId, StringComparison.Ordinal);
 
-            if (state.IsFullBaseline || identityChanged || roundChanged)
+            bool authorizationLost = !nextView.Identity.IsPrivateAuthorized || state.State != TableConnectionState.Ready || nextView.Own == null;
+
+            if (state.IsFullBaseline || identityChanged || roundChanged || authorizationLost)
             {
-                _animationQueue.AcceptConfirmedBaseline(nextView);
+                if (authorizationLost)
+                {
+                    _animationQueue.Drain();
+                }
+                else
+                {
+                    _animationQueue.AcceptConfirmedBaseline(nextView);
+                }
                 _animationBannerTimer = 0f;
                 if (_animationBannerText != null)
                 {
+                    _animationBannerText.text = string.Empty;
                     _animationBannerText.gameObject.SetActive(false);
                 }
                 _interactionState.ClearSelection();
                 CloseAllCheatDialogs();
+                CloseCandidateSelectionPanel();
+                _tileMarkSelectedTiles.Clear();
+                _selectedBeamHandTile = null;
+                _selectedBeamCandidate = null;
             }
             else if (_latestView != null)
             {
                 _animationQueue.AcceptConfirmedDifference(_latestView, nextView, isFullBaseline: false);
-            }
-
-            // Private authorization fence: if private authorization is lost, close all cheat dialogs immediately
-            if (!nextView.Identity.IsPrivateAuthorized)
-            {
-                CloseAllCheatDialogs();
-                _interactionState.ClearSelection();
             }
 
             // Offer changed fence: if sleeve offer changed while dialog was open, close it
@@ -268,12 +400,21 @@ namespace Mahjong.Unity.Table
             }
             _currentSleeveOfferId = newSleeveOfferId;
 
+            // Beam offer changed fence: if beam offer changed while dialog was open, close it and clear selections
+            var currentBeam = nextView.Own?.Cheat?.BeamSwap;
+            string? newBeamOfferId = currentBeam?.OfferId;
+            if (_currentBeamOfferId != null && !string.Equals(_currentBeamOfferId, newBeamOfferId, StringComparison.Ordinal))
+            {
+                CloseBeamSwapDialog();
+                _selectedBeamHandTile = null;
+                _selectedBeamCandidate = null;
+            }
+            _currentBeamOfferId = newBeamOfferId;
+
             // Reconcile pending commands against session receipts
             ReconcilePendingCommands(state);
 
-            _interactionState.ApplyConfirmedView(nextView);
             _latestView = nextView;
-
             RenderView(nextView);
         }
 
@@ -335,7 +476,7 @@ namespace Mahjong.Unity.Table
                     _ => "大厅/未知"
                 };
                 string authStr = view.Identity.IsPrivateAuthorized ? "已授权" : "公开流";
-                _sessionInfoText.text = $"{roleStr} | {authStr} | 代次:{view.Identity.Generation}";
+                _sessionInfoText.text = $"{roleStr} | {authStr}";
             }
 
             if (_roundStatusText != null)
@@ -443,18 +584,27 @@ namespace Mahjong.Unity.Table
                 if (own.DrawnTileId.HasValue)
                 {
                     _drawnTileButton.gameObject.SetActive(true);
+                    uint tileId = own.DrawnTileId.Value;
+                    bool isSelected = _interactionState.Selection.HandTileId.HasValue && _interactionState.Selection.HandTileId.Value == tileId;
+                    bool isMarked = own.Cheat != null && TileTextHelper.IsTileMarked(own.Cheat.TileMark, tileId);
                     if (_drawnTileText != null)
                     {
-                        uint tileId = own.DrawnTileId.Value;
-                        bool isSelected = _interactionState.Selection.HandTileId.HasValue && _interactionState.Selection.HandTileId.Value == tileId;
-                        string markStr = (own.Cheat != null && TileTextHelper.IsTileMarked(own.Cheat.TileMark, tileId)) ? "★" : "";
+                        string markStr = isMarked ? "★" : "";
                         _drawnTileText.text = $"摸牌:{markStr}{TileTextHelper.FormatTile(tileId)}";
                         _drawnTileText.color = isSelected ? Color.yellow : Color.white;
+                    }
+                    if (_drawnTileMarkBadge != null)
+                    {
+                        _drawnTileMarkBadge.SetActive(isMarked);
                     }
                 }
                 else
                 {
                     _drawnTileButton.gameObject.SetActive(false);
+                    if (_drawnTileMarkBadge != null)
+                    {
+                        _drawnTileMarkBadge.SetActive(false);
+                    }
                 }
             }
         }
@@ -548,8 +698,8 @@ namespace Mahjong.Unity.Table
             bool hasDecision = view.Own.Decision != null;
             var sleeveState = cheat.ImmediateSleeveBloom ?? cheat.OffTurnSleeveBloom;
             SetButtonActive(_tileMarkButton, cheat.TileMark != null && hasDecision);
-            SetButtonActive(_sleeveBloomButton, sleeveState != null && (hasDecision || !string.IsNullOrEmpty(cheat.WindowId)));
-            SetButtonActive(_beamSwapButton, cheat.BeamSwap != null && hasDecision);
+            SetButtonActive(_sleeveBloomButton, sleeveState != null || hasDecision || !string.IsNullOrEmpty(cheat.WindowId));
+            SetButtonActive(_beamSwapButton, cheat.BeamSwap != null || hasDecision);
             SetButtonActive(_preparationButton, cheat.Preparation != null);
 
             UpdateSleeveBloomDialog(sleeveState);
@@ -869,6 +1019,28 @@ namespace Mahjong.Unity.Table
                 _candidateSelectionPanel.SetActive(true);
             }
 
+            if (_candidateOptionButtons != null && _candidateOptionButtons.Length > 0 && options.Count > _candidateOptionButtons.Length)
+            {
+                var parent = _candidateOptionButtons[0].transform.parent;
+                var newButtons = new List<Button>(_candidateOptionButtons);
+                var newTexts = new List<TextMeshProUGUI>(_candidateOptionTexts);
+                for (int i = _candidateOptionButtons.Length; i < options.Count; i++)
+                {
+                    var template = _candidateOptionButtons[0].gameObject;
+                    var clone = UnityEngine.Object.Instantiate(template, parent);
+                    clone.name = $"CandidateOption_{i}";
+                    var btn = clone.GetComponent<Button>();
+                    var txt = clone.GetComponentInChildren<TextMeshProUGUI>();
+                    int optIdx = i;
+                    btn.onClick.RemoveAllListeners();
+                    btn.onClick.AddListener(() => OnCandidateOptionClicked(optIdx));
+                    newButtons.Add(btn);
+                    newTexts.Add(txt);
+                }
+                _candidateOptionButtons = newButtons.ToArray();
+                _candidateOptionTexts = newTexts.ToArray();
+            }
+
             for (int i = 0; i < _candidateOptionButtons.Length; i++)
             {
                 var btn = _candidateOptionButtons[i];
@@ -881,12 +1053,13 @@ namespace Mahjong.Unity.Table
                     {
                         var opt = options[i];
                         string tiles = TileTextHelper.FormatTileList(opt.TileIds);
-                        txt.text = $"{TileTextHelper.FormatActionKind(opt.Action)}: {tiles} ({opt.OptionId})";
+                        txt.text = $"{TileTextHelper.FormatActionKind(opt.Action)}: {tiles}";
                     }
                 }
                 else
                 {
                     if (btn != null) btn.gameObject.SetActive(false);
+                    if (txt != null) txt.text = string.Empty;
                 }
             }
         }
@@ -902,6 +1075,9 @@ namespace Mahjong.Unity.Table
 
         public void OnCandidateOptionClicked(int index)
         {
+            var btn = (_candidateOptionButtons != null && index >= 0 && index < _candidateOptionButtons.Length) ? _candidateOptionButtons[index]?.gameObject : null;
+            if (!ConsumeInputLifecycle(btn)) return;
+
             if (index < 0 || index >= _presentedActionOptions.Count) return;
             var action = _presentedActionOptions[index];
             CloseCandidateSelectionPanel();
@@ -1009,8 +1185,27 @@ namespace Mahjong.Unity.Table
         {
             if (!ConsumeInputLifecycle(_sleeveBloomButton?.gameObject)) return;
             var cheat = _latestView?.Own?.Cheat;
-            var sleeve = cheat?.ImmediateSleeveBloom ?? cheat?.OffTurnSleeveBloom;
-            if (sleeve == null) return;
+            if (cheat == null) return;
+
+            var sleeve = cheat.ImmediateSleeveBloom ?? cheat.OffTurnSleeveBloom;
+            if (sleeve == null)
+            {
+                var ownerContext = BuildOwnerContext();
+                if (ownerContext == null) return;
+
+                bool hasDecision = _latestView?.Own?.Decision != null;
+                var kind = hasDecision ? TableIntentKind.SubmitSleeveBloom : TableIntentKind.SubmitSleeveBloomOffTurn;
+                var outcome = _interactionState.BuildIntent(kind, ownerContext);
+                if (outcome.Accepted && outcome.Intent != null)
+                {
+                    SubmitIntentAsync(outcome.Intent);
+                }
+                else
+                {
+                    UpdateStatusText($"袖里藏花无法发动: {FormatRejection(outcome.Code)}");
+                }
+                return;
+            }
 
             _currentSleeveOfferId = sleeve.OfferId;
             if (_sleeveBloomDialog != null) _sleeveBloomDialog.SetActive(true);
@@ -1024,7 +1219,7 @@ namespace Mahjong.Unity.Table
 
             if (_sleeveBloomStatusText != null)
             {
-                _sleeveBloomStatusText.text = $"模式: {sleeve.Mode} (类型:{sleeve.DrawKind})";
+                _sleeveBloomStatusText.text = $"绝技类型: {FormatSleeveMode(sleeve.Mode)} ({FormatSleeveDrawKind(sleeve.DrawKind)})";
             }
         }
 
@@ -1092,14 +1287,37 @@ namespace Mahjong.Unity.Table
                 string second = sleeve.SecondTileId.HasValue ? TileTextHelper.FormatTile(sleeve.SecondTileId.Value) : "无";
                 _sleeveTileDisplayText.text = $"袖牌1: {first} | 袖牌2: {second}";
             }
+
+            if (_sleeveBloomStatusText != null && _sleeveBloomDialog != null && _sleeveBloomDialog.activeSelf)
+            {
+                _sleeveBloomStatusText.text = $"绝技类型: {FormatSleeveMode(sleeve.Mode)} ({FormatSleeveDrawKind(sleeve.DrawKind)})";
+            }
         }
 
         public void OpenBeamSwapDialog()
         {
             if (!ConsumeInputLifecycle(_beamSwapButton?.gameObject)) return;
-            if (_latestView?.Own?.Cheat?.BeamSwap == null) return;
+            var cheat = _latestView?.Own?.Cheat;
+            if (cheat == null) return;
 
-            var beam = _latestView.Own.Cheat.BeamSwap;
+            if (cheat.BeamSwap == null)
+            {
+                var ownerContext = BuildOwnerContext();
+                if (ownerContext == null) return;
+
+                var outcome = _interactionState.BuildIntent(TableIntentKind.SubmitBeamSwap, ownerContext);
+                if (outcome.Accepted && outcome.Intent != null)
+                {
+                    SubmitIntentAsync(outcome.Intent);
+                }
+                else
+                {
+                    UpdateStatusText($"偷梁换柱无法发动: {FormatRejection(outcome.Code)}");
+                }
+                return;
+            }
+
+            var beam = cheat.BeamSwap;
             _currentBeamOfferId = beam.OfferId;
             _selectedBeamHandTile = null;
             _selectedBeamCandidate = null;
@@ -1124,6 +1342,28 @@ namespace Mahjong.Unity.Table
                 return;
             }
 
+            if (_beamSlotButtons != null && _beamSlotButtons.Length > 0 && beam.Candidates.Count > _beamSlotButtons.Length)
+            {
+                var parent = _beamSlotButtons[0].transform.parent;
+                var newButtons = new List<Button>(_beamSlotButtons);
+                var newTexts = new List<TextMeshProUGUI>(_beamSlotTexts);
+                for (int i = _beamSlotButtons.Length; i < beam.Candidates.Count; i++)
+                {
+                    var template = _beamSlotButtons[0].gameObject;
+                    var clone = UnityEngine.Object.Instantiate(template, parent);
+                    clone.name = $"BeamSlot_{i}";
+                    var btn = clone.GetComponent<Button>();
+                    var txt = clone.GetComponentInChildren<TextMeshProUGUI>();
+                    int slotIndex = i;
+                    btn.onClick.RemoveAllListeners();
+                    btn.onClick.AddListener(() => OnBeamSlotClicked(slotIndex));
+                    newButtons.Add(btn);
+                    newTexts.Add(txt);
+                }
+                _beamSlotButtons = newButtons.ToArray();
+                _beamSlotTexts = newTexts.ToArray();
+            }
+
             for (int i = 0; i < _beamSlotButtons.Length; i++)
             {
                 var btn = _beamSlotButtons[i];
@@ -1143,6 +1383,7 @@ namespace Mahjong.Unity.Table
                 else
                 {
                     if (btn != null) btn.gameObject.SetActive(false);
+                    if (txt != null) txt.text = string.Empty;
                 }
             }
 
@@ -1151,7 +1392,8 @@ namespace Mahjong.Unity.Table
 
         public void OnBeamSlotClicked(int index)
         {
-            if (!ConsumeInputLifecycle(_beamSlotButtons != null && index < _beamSlotButtons.Length ? _beamSlotButtons[index]?.gameObject : null)) return;
+            var btn = (_beamSlotButtons != null && index < _beamSlotButtons.Length) ? _beamSlotButtons[index]?.gameObject : null;
+            if (!ConsumeInputLifecycle(btn)) return;
             if (_latestView?.Own?.Cheat?.BeamSwap == null) return;
 
             var candidates = _latestView.Own.Cheat.BeamSwap.Candidates;
@@ -1182,6 +1424,15 @@ namespace Mahjong.Unity.Table
             if (!ConsumeInputLifecycle(_confirmBeamSwapButton?.gameObject)) return;
             if (_latestView == null || !_selectedBeamHandTile.HasValue || _selectedBeamCandidate == null) return;
 
+            var currentBeam = _latestView.Own?.Cheat?.BeamSwap;
+            if (currentBeam == null || !string.Equals(currentBeam.OfferId, _currentBeamOfferId, StringComparison.Ordinal))
+            {
+                CloseBeamSwapDialog();
+                _selectedBeamHandTile = null;
+                _selectedBeamCandidate = null;
+                return;
+            }
+
             var ownerContext = BuildOwnerContext();
             if (ownerContext == null) return;
 
@@ -1209,6 +1460,13 @@ namespace Mahjong.Unity.Table
             if (!ConsumeInputLifecycle(_keepBeamOriginalButton?.gameObject)) return;
             if (_latestView == null) return;
 
+            var currentBeam = _latestView.Own?.Cheat?.BeamSwap;
+            if (currentBeam == null || !string.Equals(currentBeam.OfferId, _currentBeamOfferId, StringComparison.Ordinal))
+            {
+                CloseBeamSwapDialog();
+                return;
+            }
+
             var ownerContext = BuildOwnerContext();
             if (ownerContext == null) return;
 
@@ -1227,7 +1485,7 @@ namespace Mahjong.Unity.Table
             }
             else
             {
-                UpdateStatusText($"保留原牌无法提交: {FormatRejection(outcome.Code)}");
+                UpdateStatusText($"偷梁换柱无法提交: {FormatRejection(outcome.Code)}");
             }
         }
 
@@ -1366,21 +1624,26 @@ namespace Mahjong.Unity.Table
 
             if (_latestView == null) return;
 
+            long initialGeneration = _latestView.Identity.Generation;
+            string initialScopeId = _latestView.Identity.ScopeId;
+            string initialRequestId = intent.Command.RequestId.Value;
+
             // Generation fence: sink generation must match view generation!
-            if (sink.Generation != _latestView.Identity.Generation)
+            if (sink.Generation != initialGeneration)
             {
-                Debug.LogWarning($"[TablePresenter] Sink generation ({sink.Generation}) != view generation ({_latestView.Identity.Generation}). Submission dropped.");
+                Debug.LogWarning($"[TablePresenter] Sink generation ({sink.Generation}) != view generation ({initialGeneration}). Submission dropped.");
                 return;
             }
 
             var command = intent.Command;
-            UpdateStatusText($"已提交: {intent.Kind} (等待权威确认)...");
+            string opName = FormatCommandKind(intent.Kind);
+            UpdateStatusText($"已提交: {opName} (等待权威确认)...");
 
             using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
             CommandSubmission submission;
             try
             {
-                submission = await sink.SubmitAsync(command, cts.Token).ConfigureAwait(false);
+                submission = await sink.SubmitAsync(command, cts.Token);
             }
             catch (Exception ex)
             {
@@ -1388,14 +1651,24 @@ namespace Mahjong.Unity.Table
                 return;
             }
 
+            // Main-thread guard and identity fence check
+            if (this == null || !gameObject.activeInHierarchy) return;
+            if (_latestView == null || _latestView.Identity.Generation != initialGeneration ||
+                !string.Equals(_latestView.Identity.ScopeId, initialScopeId, StringComparison.Ordinal))
+            {
+                return; // Generation or identity changed while awaiting
+            }
+            if (_interactionState.Pending == null ||
+                !string.Equals(_interactionState.Pending.Intent.Command.RequestId.Value, initialRequestId, StringComparison.Ordinal))
+            {
+                return; // Pending changed while awaiting
+            }
+
             if (submission.Command.LastReceipt == Mahjong.Contracts.ReceiptStatus.Rejected)
             {
                 _interactionState.ApplyClientOutcome(TablePendingOutcome.Rejected);
-                UpdateStatusText($"命令被服务器拒绝: {intent.Kind}");
+                UpdateStatusText($"操作被服务器拒绝: {opName}");
             }
-            // For Sent and WasDuplicate, DO NOT mark Recorded here!
-            // Transport Sent is not an authoritative business receipt.
-            // The command remains pending until confirmed snapshot or receipt reconciliation.
         }
 
         private TableCommandOwnerContext? BuildOwnerContext()
@@ -1427,6 +1700,17 @@ namespace Mahjong.Unity.Table
 
         private void UpdateAnimationBanner()
         {
+            if (_latestView == null || !_latestView.Identity.IsPrivateAuthorized || _latestView.Own == null)
+            {
+                _animationBannerTimer = 0f;
+                if (_animationBannerText != null)
+                {
+                    _animationBannerText.text = string.Empty;
+                    _animationBannerText.gameObject.SetActive(false);
+                }
+                return;
+            }
+
             if (_animationQueue.PendingCount > 0 && _animationBannerTimer <= 0f)
             {
                 if (_animationQueue.TryDequeue(out var anim) && anim != null && _animationBannerText != null)
@@ -1470,6 +1754,63 @@ namespace Mahjong.Unity.Table
             };
         }
 
+        private static string FormatCommandKind(CommandKind kind)
+        {
+            return kind switch
+            {
+                CommandKind.SubmitAction => "打牌/鸣牌",
+                CommandKind.SubmitTileMark => "落汗标记",
+                CommandKind.SubmitSleeveBloom => "发动袖里藏花",
+                CommandKind.SubmitSleeveBloomChoice => "袖牌调换",
+                CommandKind.SubmitSleeveBloomOffTurn => "鸣牌发动袖里藏花",
+                CommandKind.SubmitSleeveBloomOffTurnChoice => "鸣牌袖牌调换",
+                CommandKind.SubmitBeamSwap => "发动偷梁换柱",
+                CommandKind.SubmitBeamSwapChoice => "偷梁换柱调换",
+                CommandKind.SubmitShufflePlan => "码牌准备计划",
+                CommandKind.NextRound => "进入下一局",
+                CommandKind.ClaimControl => "收回控制权",
+                CommandKind.ReleaseControl => "托管给电脑",
+                _ => "操作"
+            };
+        }
+
+        private static string FormatSleeveMode(string mode)
+        {
+            return mode switch
+            {
+                "IMMEDIATE" => "自家摸牌调换",
+                "OFF_TURN" => "别家舍牌偷换",
+                _ => mode
+            };
+        }
+
+        private static string FormatSleeveDrawKind(PlayerSleeveBloomDrawKind drawKind)
+        {
+            return drawKind switch
+            {
+                PlayerSleeveBloomDrawKind.DealExtra => "配牌补花",
+                PlayerSleeveBloomDrawKind.Normal => "普通摸牌",
+                PlayerSleeveBloomDrawKind.Rinshan => "岭上开花摸牌",
+                _ => "未知摸牌"
+            };
+        }
+
+        private static string FormatRejectionReason(string reasonCode)
+        {
+            if (string.IsNullOrEmpty(reasonCode)) return "操作未获批准";
+            return reasonCode switch
+            {
+                "RULE_VIOLATION" => "规则判定不符",
+                "NOT_YOUR_TURN" => "非自家摸打轮次",
+                "DECISION_EXPIRED" => "出牌思考超时",
+                "INSUFFICIENT_CHEAT_POINTS" => "千术点数不足",
+                "INVALID_TARGET" => "目标对象无效",
+                "CONCURRENCY_CONFLICT" => "操作时序冲突",
+                "ALREADY_PROCESSED" => "已处理过相同操作",
+                _ => "服务器未批准此操作"
+            };
+        }
+
         private static string FormatRejection(string code)
         {
             return code switch
@@ -1478,16 +1819,22 @@ namespace Mahjong.Unity.Table
                 TableInteractionCodes.PendingConflict => "存在冲突的操作正在处理中",
                 TableInteractionCodes.NoPending => "无待处理操作",
                 TableInteractionCodes.SelectionRequired => "请完成所有必要选择",
-                TableInteractionCodes.SelectionExpired => "操作已过期",
+                TableInteractionCodes.SelectionExpired => "操作决策时间已耗尽",
                 TableInteractionCodes.NotACandidate => "所选牌不在有效候选内",
-                TableInteractionCodes.StaleSelection => "选择已过时",
+                TableInteractionCodes.StaleSelection => "之前的选择已失效，请重新选择",
                 TableInteractionCodes.NotSubmittable => "当前状态不允许提交",
                 TableInteractionCodes.NoConfirmedView => "尚未同步确认牌桌状态",
                 TableInteractionCodes.NoPrivateView => "尚未获得私有授权状态",
-                TableInteractionCodes.StaleGeneration => "会话代次已过时",
-                TableInteractionCodes.StaleBinding => "会话绑定已过时",
+                TableInteractionCodes.StaleGeneration => "会话已重置，请重试",
+                TableInteractionCodes.StaleBinding => "会话绑定已变更",
                 TableInteractionCodes.StaleState => "牌桌状态已推进",
-                _ => code
+                TableInteractionCodes.IdentityMismatch => "玩家身份不匹配",
+                TableInteractionCodes.InvalidIntentKind => "不支持的操作类型",
+                TableInteractionCodes.InvalidConfirmedData => "权威确认数据异常",
+                TableInteractionCodes.PendingCleared => "待处理操作已被清除",
+                TableInteractionCodes.Applied => "操作已应用",
+                TableInteractionCodes.SelectionCleared => "选择已清除",
+                _ => "操作无法执行，请重试"
             };
         }
 
@@ -1517,9 +1864,25 @@ namespace Mahjong.Unity.Table
             _animationQueue?.Drain();
             _interactionState?.ClearSelection();
             _animationBannerTimer = 0f;
-            if (_animationBannerText != null) _animationBannerText.gameObject.SetActive(false);
-            if (_statusBannerText != null) _statusBannerText.gameObject.SetActive(false);
+            if (_animationBannerText != null)
+            {
+                _animationBannerText.text = string.Empty;
+                _animationBannerText.gameObject.SetActive(false);
+            }
+            if (_statusBannerText != null)
+            {
+                _statusBannerText.text = string.Empty;
+                _statusBannerText.gameObject.SetActive(false);
+            }
             CloseAllCheatDialogs();
+            CloseCandidateSelectionPanel();
+
+            _tileMarkSelectedTiles.Clear();
+            _selectedBeamHandTile = null;
+            _selectedBeamCandidate = null;
+            _currentBeamOfferId = null;
+            _currentSleeveOfferId = null;
+            _presentedActionOptions.Clear();
 
             if (_handTileButtons != null)
             {
@@ -1528,9 +1891,28 @@ namespace Mahjong.Unity.Table
                     if (_handTileButtons[i] != null) _handTileButtons[i].gameObject.SetActive(false);
                     if (_handTileMarkBadges != null && i < _handTileMarkBadges.Length && _handTileMarkBadges[i] != null)
                         _handTileMarkBadges[i].SetActive(false);
+                    if (_handTileTexts != null && i < _handTileTexts.Length && _handTileTexts[i] != null)
+                        _handTileTexts[i].text = string.Empty;
                 }
             }
             if (_drawnTileButton != null) _drawnTileButton.gameObject.SetActive(false);
+            if (_drawnTileText != null) _drawnTileText.text = string.Empty;
+            if (_drawnTileMarkBadge != null) _drawnTileMarkBadge.SetActive(false);
+
+            if (_tileMarkStatusText != null) _tileMarkStatusText.text = string.Empty;
+            if (_sleeveBloomStatusText != null) _sleeveBloomStatusText.text = string.Empty;
+            if (_sleeveTileDisplayText != null) _sleeveTileDisplayText.text = string.Empty;
+            if (_beamSwapStatusText != null) _beamSwapStatusText.text = string.Empty;
+            if (_beamSlotTexts != null)
+            {
+                for (int i = 0; i < _beamSlotTexts.Length; i++)
+                    if (_beamSlotTexts[i] != null) _beamSlotTexts[i].text = string.Empty;
+            }
+            if (_candidateOptionTexts != null)
+            {
+                for (int i = 0; i < _candidateOptionTexts.Length; i++)
+                    if (_candidateOptionTexts[i] != null) _candidateOptionTexts[i].text = string.Empty;
+            }
 
             ResetAllViews();
         }

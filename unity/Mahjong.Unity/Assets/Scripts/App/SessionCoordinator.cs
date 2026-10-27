@@ -64,6 +64,7 @@ namespace Mahjong.Unity.App
         private bool _quarantined;
 
         public event EventHandler<SessionViewState>? Changed;
+        public event EventHandler<TableReceiptResolvedEventArgs>? ReceiptResolved;
 
         public SessionViewState Current
         {
@@ -123,6 +124,7 @@ namespace Mahjong.Unity.App
             if (_session != null)
             {
                 _session.SnapshotChanged += OnSessionSnapshotChanged;
+                _session.ReceiptResolved += OnSessionReceiptResolved;
             }
         }
 
@@ -208,6 +210,30 @@ namespace Mahjong.Unity.App
             {
                 Debug.LogWarning($"Capture exception: {ex.Message}");
             }
+        }
+
+        private void OnSessionReceiptResolved(object? sender, TableReceiptResolvedEventArgs e)
+        {
+            if (e == null) return;
+            long gen;
+            lock (_stateGate)
+            {
+                if (_terminal != null || _quarantined) return;
+                gen = _currentGeneration;
+            }
+
+            _dispatcher.Post(() =>
+            {
+                lock (_stateGate)
+                {
+                    if (_terminal != null || _quarantined || gen != _currentGeneration)
+                    {
+                        return;
+                    }
+                }
+
+                ReceiptResolved?.Invoke(this, e);
+            }, gen);
         }
 
         public void Publish(long generation, SessionViewState state)

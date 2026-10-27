@@ -289,13 +289,13 @@ namespace Mahjong.Unity.Tests.EditMode
             handRect.anchoredPosition = new Vector2(0, -290);
             handRect.sizeDelta = new Vector2(1040, 90);
 
-            var handTileButtons = new Button[13];
-            var handTileTexts = new TextMeshProUGUI[13];
-            var handTileMarkBadges = new GameObject[14]; // 13 hand + 1 drawn
+            var handTileButtons = new Button[14];
+            var handTileTexts = new TextMeshProUGUI[14];
+            var handTileMarkBadges = new GameObject[14];
 
-            for (int i = 0; i < 13; i++)
+            for (int i = 0; i < 14; i++)
             {
-                float x = -440f + (i * 62f);
+                float x = -440f + (i * 60f);
                 var btn = CreateButton($"HandTile_{i}", handPanelGo.transform, font, 13f,
                     new Vector2(x, 0), new Vector2(58, 80), $"-");
                 handTileButtons[i] = btn;
@@ -316,7 +316,7 @@ namespace Mahjong.Unity.Tests.EditMode
 
             // Drawn tile
             var drawnBtn = CreateButton("DrawnTile", handPanelGo.transform, font, 13f,
-                new Vector2(420, 0), new Vector2(62, 80), "摸:-");
+                new Vector2(430, 0), new Vector2(62, 80), "摸:-");
             var drawnTxt = drawnBtn.GetComponentInChildren<TextMeshProUGUI>();
 
             var drawnBadge = CreateUiObject("DrawnMarkBadge", drawnBtn.transform);
@@ -328,7 +328,6 @@ namespace Mahjong.Unity.Tests.EditMode
             CreateText("★", drawnBadge.transform, font, 10f, TextAlignmentOptions.Center,
                 Vector2.zero, new Vector2(16, 16), "★", Color.black, FontStyles.Bold);
             drawnBadge.SetActive(false);
-            handTileMarkBadges[13] = drawnBadge;
 
             // --- Action Candidates Panel ---
             var actionPanelGo = CreateUiObject("ActionPanel", designRootGo.transform);
@@ -356,23 +355,23 @@ namespace Mahjong.Unity.Tests.EditMode
             var candPanelGo = CreateUiObject("CandidateSelectionPanel", designRootGo.transform);
             var candRect = candPanelGo.GetComponent<RectTransform>();
             candRect.anchoredPosition = new Vector2(0, -150);
-            candRect.sizeDelta = new Vector2(600, 60);
+            candRect.sizeDelta = new Vector2(680, 60);
             var candBg = candPanelGo.AddComponent<Image>();
             candBg.color = new Color(0.12f, 0.18f, 0.25f, 0.95f);
 
-            var candOptionButtons = new Button[4];
-            var candOptionTexts = new TextMeshProUGUI[4];
-            for (int i = 0; i < 4; i++)
+            var candOptionButtons = new Button[6];
+            var candOptionTexts = new TextMeshProUGUI[6];
+            for (int i = 0; i < 6; i++)
             {
-                float x = -200f + (i * 120f);
-                var btn = CreateButton($"CandidateOption_{i}", candPanelGo.transform, font, 12f,
-                    new Vector2(x, 0), new Vector2(110, 40), $"选项 {i + 1}");
+                float x = -250f + (i * 90f);
+                var btn = CreateButton($"CandidateOption_{i}", candPanelGo.transform, font, 11f,
+                    new Vector2(x, 0), new Vector2(85, 40), $"选项 {i + 1}");
                 candOptionButtons[i] = btn;
                 candOptionTexts[i] = btn.GetComponentInChildren<TextMeshProUGUI>();
                 btn.gameObject.SetActive(false);
             }
             var cancelCandBtn = CreateButton("CancelCandidateOptionButton", candPanelGo.transform, font, 12f,
-                new Vector2(250, 0), new Vector2(80, 40), "取消");
+                new Vector2(290, 0), new Vector2(70, 40), "取消");
             candPanelGo.SetActive(false);
 
             // --- Cheat Panel ---
@@ -456,15 +455,15 @@ namespace Mahjong.Unity.Tests.EditMode
             var bmStatus = CreateText("BMStatus", beamDlg.transform, font, 13f, TextAlignmentOptions.Center,
                 new Vector2(0, 60), new Vector2(500, 24), "请选择1张自家手牌及1个候选目标槽位", new Color(1f, 0.9f, 0.4f));
 
-            // Support up to 6 beam candidate slots
-            var beamSlotButtons = new Button[6];
-            var beamSlotTexts = new TextMeshProUGUI[6];
-            for (int b = 0; b < 6; b++)
+            // Support up to 8 beam candidate slots
+            var beamSlotButtons = new Button[8];
+            var beamSlotTexts = new TextMeshProUGUI[8];
+            for (int b = 0; b < 8; b++)
             {
-                float bx = -200f + ((b % 3) * 200f);
-                float by = b < 3 ? 20f : -25f;
+                float bx = -210f + ((b % 4) * 140f);
+                float by = b < 4 ? 20f : -25f;
                 var bBtn = CreateButton($"BeamSlot_{b}", beamDlg.transform, font, 11f,
-                    new Vector2(bx, by), new Vector2(190, 36), $"槽位{b}");
+                    new Vector2(bx, by), new Vector2(135, 36), $"槽位{b}");
                 beamSlotButtons[b] = bBtn;
                 beamSlotTexts[b] = bBtn.GetComponentInChildren<TextMeshProUGUI>();
             }
@@ -545,16 +544,17 @@ namespace Mahjong.Unity.Tests.EditMode
             // Own Hand
             soPresenter.FindProperty("_ownHandPanelRoot").objectReferenceValue = handPanelGo;
             var handBtnsProp = soPresenter.FindProperty("_handTileButtons");
-            handBtnsProp.arraySize = 13;
+            handBtnsProp.arraySize = 14;
             var handTxtsProp = soPresenter.FindProperty("_handTileTexts");
-            handTxtsProp.arraySize = 13;
-            for (int i = 0; i < 13; i++)
+            handTxtsProp.arraySize = 14;
+            for (int i = 0; i < 14; i++)
             {
                 handBtnsProp.GetArrayElementAtIndex(i).objectReferenceValue = handTileButtons[i];
                 handTxtsProp.GetArrayElementAtIndex(i).objectReferenceValue = handTileTexts[i];
             }
             soPresenter.FindProperty("_drawnTileButton").objectReferenceValue = drawnBtn;
             soPresenter.FindProperty("_drawnTileText").objectReferenceValue = drawnTxt;
+            soPresenter.FindProperty("_drawnTileMarkBadge").objectReferenceValue = drawnBadge;
 
             // Hand tile mark badges (14 elements)
             var badgesProp = soPresenter.FindProperty("_handTileMarkBadges");
@@ -579,10 +579,10 @@ namespace Mahjong.Unity.Tests.EditMode
             // Candidate sub-panel
             soPresenter.FindProperty("_candidateSelectionPanel").objectReferenceValue = candPanelGo;
             var candBtnsProp = soPresenter.FindProperty("_candidateOptionButtons");
-            candBtnsProp.arraySize = 4;
+            candBtnsProp.arraySize = 6;
             var candTxtsProp = soPresenter.FindProperty("_candidateOptionTexts");
-            candTxtsProp.arraySize = 4;
-            for (int i = 0; i < 4; i++)
+            candTxtsProp.arraySize = 6;
+            for (int i = 0; i < 6; i++)
             {
                 candBtnsProp.GetArrayElementAtIndex(i).objectReferenceValue = candOptionButtons[i];
                 candTxtsProp.GetArrayElementAtIndex(i).objectReferenceValue = candOptionTexts[i];
@@ -614,10 +614,10 @@ namespace Mahjong.Unity.Tests.EditMode
             soPresenter.FindProperty("_beamSwapDialog").objectReferenceValue = beamDlg;
             soPresenter.FindProperty("_beamSwapStatusText").objectReferenceValue = bmStatus;
             var beamBtnsProp = soPresenter.FindProperty("_beamSlotButtons");
-            beamBtnsProp.arraySize = 6;
+            beamBtnsProp.arraySize = 8;
             var beamTxtsProp = soPresenter.FindProperty("_beamSlotTexts");
-            beamTxtsProp.arraySize = 6;
-            for (int b = 0; b < 6; b++)
+            beamTxtsProp.arraySize = 8;
+            for (int b = 0; b < 8; b++)
             {
                 beamBtnsProp.GetArrayElementAtIndex(b).objectReferenceValue = beamSlotButtons[b];
                 beamTxtsProp.GetArrayElementAtIndex(b).objectReferenceValue = beamSlotTexts[b];
@@ -644,6 +644,12 @@ namespace Mahjong.Unity.Tests.EditMode
 
             // Save scene
             EditorSceneManager.SaveScene(scene, TableScenePath);
+            if (File.Exists(TableScenePath))
+            {
+                var raw = File.ReadAllLines(TableScenePath);
+                for (int i = 0; i < raw.Length; i++) raw[i] = raw[i].TrimEnd();
+                File.WriteAllLines(TableScenePath, raw);
+            }
         }
 
         private static GameObject CreateUiObject(string name, Transform parent)

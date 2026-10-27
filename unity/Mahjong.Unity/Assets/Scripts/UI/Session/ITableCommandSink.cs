@@ -1,4 +1,5 @@
 #nullable enable
+using System;
 using System.Threading;
 using System.Threading.Tasks;
 using Mahjong.Client;
@@ -16,5 +17,6 @@ namespace Mahjong.Unity.UI.Session
         bool CanSubmit { get; }
         long Generation { get; }
         Task<CommandSubmission> SubmitAsync(ProtocolCommand command, CancellationToken cancellationToken);
+        event EventHandler<TableReceiptResolvedEventArgs>? ReceiptResolved;
     }
 }
