@@ -242,15 +242,23 @@ namespace Mahjong.TableService
             byte[] payload = frame.EncodedPayload ??
                 throw new InvalidOperationException("A stream frame arrived without an encoded payload.");
 
-            // D-1-07: the negotiated snapshot limit is executed on the hot path — an oversized
-            // full snapshot is refused with a mapped termination, never silently truncated or
-            // sent in an envelope the negotiated limit says cannot appear on this channel.
-            if (frame.IsFullSnapshot && payload.Length > _maxSnapshotBytes)
+            // D-1-07: the negotiated snapshot limit is executed on the hot path — an encoded
+            // frame that carries the complete authoritative snapshot is refused with a mapped
+            // termination, never silently truncated or sent in an envelope the negotiated
+            // limit says cannot appear on this channel. Round 3: the frozen P3.2 stream
+            // contract is "PUSH always contains the complete snapshot plus its visible
+            // events"; every actor frame therefore carries the full state, and the limit is
+            // enforced for EVERY frame — the initial baseline AND every non-baseline update
+            // (a mid-stream update frame is exactly as oversized as its baseline twin). The
+            // per-frame limit stays separate from the accumulated queued+in-flight budget:
+            // one legitimate big frame above the negotiated per-frame cap is MessageTooLarge,
+            // while budget exhaustion (many small frames) stays SlowConsumer.
+            if (payload.Length > _maxSnapshotBytes)
             {
                 Terminate(
                     TableStreamTerminationKind.MessageTooLarge,
                     ProtocolErrorCode.MessageTooLarge,
-                    "an encoded full snapshot is " + payload.Length + " bytes, above the negotiated " +
+                    "an encoded stream frame is " + payload.Length + " bytes, above the negotiated " +
                     _maxSnapshotBytes + " byte snapshot limit");
                 return ValueTask.CompletedTask;
             }

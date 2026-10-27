@@ -115,6 +115,132 @@ namespace Mahjong.TableService.Tests
             await client.DisposeAsync();
         }
 
+        /// <summary>D-1-04 round 3: unknown field-100 GROUP nesting at the review's exact
+        /// boundary depths (the frozen codec's own accepted range). The codec accepts every
+        /// depth below, so the scan must walk ALL of them: a depth the scan refuses to follow
+        /// is exactly the old fail-open (everything behind it — including a concatenated
+        /// second Envelope — went unswept).</summary>
+        public static TheoryData<int> BoundaryDepths => new TheoryData<int> { 63, 64, 65 };
+
+        /// <summary>N nested unknown groups: field-100 group starts (A3 06) then group ends
+        /// (A4 06) — schema-legal protobuf the frozen codec accepts at every depth here.</summary>
+        private static byte[] NestedGroups(int depth)
+        {
+            byte[] bytes = new byte[depth * 4];
+            for (int i = 0; i < depth; i++)
+            {
+                bytes[i * 2] = 0xa3;
+                bytes[i * 2 + 1] = 0x06;
+                bytes[depth * 2 + i * 2] = 0xa4;
+                bytes[depth * 2 + i * 2 + 1] = 0x06;
+            }
+
+            return bytes;
+        }
+
+        [Theory]
+        [MemberData(nameof(BoundaryDepths))]
+        public async Task DeepUnknownGroups_SingleEnvelope_IsStillAnswered(int depth)
+        {
+            await using TableServiceTestHost host = await TableServiceTestHost.StartAsync();
+            TableTestClient client = await host.ConnectPlayerAsync("room-deep", "acct-deep", 0);
+            try
+            {
+                await TableTestClientTestsCommon.DrainBaselineAsync(client);
+                string nonce = TableWire.RandomNonce();
+                byte[] frame = NestedGroups(depth).Concat(WireCodec.Encode(TableWire.HeartbeatPing(nonce))).ToArray();
+                await client.SendAsync(frame);
+                Assert.True(
+                    await TableTestClientTestsCommon.WaitPongAsync(client, nonce),
+                    "a legally nested unknown-group padding must stay accepted at depth " + depth);
+            }
+            finally
+            {
+                await client.DisposeAsync();
+            }
+        }
+
+        [Theory]
+        [MemberData(nameof(BoundaryDepths))]
+        public async Task DeepUnknownGroups_Concatenation_IsStillRefused(int depth)
+        {
+            await using TableServiceTestHost host = await TableServiceTestHost.StartAsync();
+            TableTestClient client = await TableTestClient.ConnectAsync(host.WsUrl + "?room=room-deep-c");
+            string nonce1 = TableWire.RandomNonce();
+            string nonce2 = TableWire.RandomNonce();
+            byte[] concatenated = NestedGroups(depth)
+                .Concat(WireCodec.Encode(TableWire.HeartbeatPing(nonce1)))
+                .Concat(WireCodec.Encode(TableWire.HeartbeatPing(nonce2)))
+                .ToArray();
+            await client.SendAsync(concatenated);
+            (int code, string reason, _) = await client.ExpectCloseAsync(TimeSpan.FromSeconds(10));
+            Assert.Equal(4400, code);
+            Assert.Equal(ProtocolErrorCode.ProtocolViolation, reason);
+            await client.DisposeAsync();
+        }
+
+        [Fact]
+        public async Task HelloPhase_DeepGroupConcatenation_IsRefusedToo()
+        {
+            await using TableServiceTestHost host = await TableServiceTestHost.StartAsync();
+            TableTestClient client = await TableTestClient.ConnectAsync(host.WsUrl + "?room=room-deep-h");
+            string nonce1 = TableWire.RandomNonce();
+            string nonce2 = TableWire.RandomNonce();
+            byte[] concatenated = NestedGroups(65)
+                .Concat(WireCodec.Encode(TableWire.HeartbeatPing(nonce1)))
+                .Concat(WireCodec.Encode(TableWire.HeartbeatPing(nonce2)))
+                .ToArray();
+            await client.SendAsync(concatenated);
+            (int code, string reason, _) = await client.ExpectCloseAsync(TimeSpan.FromSeconds(10));
+            Assert.Equal(4400, code);
+            Assert.Equal(ProtocolErrorCode.ProtocolViolation, reason);
+            await client.DisposeAsync();
+        }
+
+        /// <summary>Above the frozen codec's own accepted nesting range the codec itself
+        /// refuses the message before the scan ever sees it — the upstream fail-closed the
+        /// scan's unbounded walk is allowed to lean on. Pinned once so a widening of the
+        /// codec range can never silently reopen the D-1-04 question.</summary>
+        [Fact]
+        public async Task BeyondCodecNestingRange_IsCodecFailClosed()
+        {
+            await using TableServiceTestHost host = await TableServiceTestHost.StartAsync();
+            TableTestClient client = await TableTestClient.ConnectAsync(host.WsUrl + "?room=room-deep-x");
+            string nonce = TableWire.RandomNonce();
+            byte[] frame = NestedGroups(200).Concat(WireCodec.Encode(TableWire.HeartbeatPing(nonce))).ToArray();
+            await client.SendAsync(frame);
+            (int code, string reason, _) = await client.ExpectCloseAsync(TimeSpan.FromSeconds(10));
+            Assert.Equal(4400, code);
+            Assert.Equal(ProtocolErrorCode.MalformedMessage, reason);
+            await client.DisposeAsync();
+        }
+
+        /// <summary>The scanner's framing-error branches may only rely on the frozen codec's
+        /// own rejection: an unbalanced end group and an illegal wire type must NEVER come
+        /// back answered — pinning the codec-side fail-closed the scan's false-returns lean on.</summary>
+        [Theory]
+        [InlineData(new byte[] { 0xa4, 0x06 })] // stray end group at top level
+        [InlineData(new byte[] { 0xa3, 0x06, 0xa4, 0x06, 0xa4, 0x06 })] // one end group too many
+        [InlineData(new byte[] { 0xae, 0x06, 0x01 })] // wire type 6 is never legal
+        public async Task FramingGarbage_IsNeverAnswered(byte[] garbage)
+        {
+            await using TableServiceTestHost host = await TableServiceTestHost.StartAsync();
+            TableTestClient client = await host.ConnectPlayerAsync("room-garbage", "acct-garbage", 0);
+            try
+            {
+                await TableTestClientTestsCommon.DrainBaselineAsync(client);
+                string nonce = TableWire.RandomNonce();
+                byte[] frame = garbage.Concat(WireCodec.Encode(TableWire.HeartbeatPing(nonce))).ToArray();
+                await client.SendAsync(frame);
+                (int code, _, _) = await client.ExpectCloseAsync(TimeSpan.FromSeconds(10));
+                Assert.Equal(4400, code);
+            }
+            finally
+            {
+                await client.DisposeAsync();
+            }
+        }
+
         internal static class TableTestClientTestsCommon
         {
             public static async Task<bool> WaitPongAsync(TableTestClient client, string nonce)

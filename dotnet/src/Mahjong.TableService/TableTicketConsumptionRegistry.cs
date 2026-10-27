@@ -64,7 +64,7 @@ namespace Mahjong.TableService
     public enum TicketCommitStatus : byte
     {
         /// <summary>The admission is final; <see cref="TableTicketCommitOutcome.DisplacedSessionId"/> carries the
-        /// superseded live session (??????), if any. Displacement happens here, never earlier.</summary>
+        /// superseded live session, if any. Displacement happens here, never earlier.</summary>
         Committed = 0,
 
         /// <summary>A newer provisional admission already superseded this one; the connection
@@ -91,7 +91,9 @@ namespace Mahjong.TableService
 
         public TicketCommitStatus Status { get; }
 
-        /// <summary>Live session id to close with DISPLACED_BY_NEW_CONNECTION (??????), if any.</summary>
+        /// <summary>Live session id whose connection may be closed with
+        /// DISPLACED_BY_NEW_CONNECTION AFTER this admission's WELCOME succeeded on the wire
+        /// (evict-on-welcome through <see cref="ITicketConsumptionRegistry.EvictOnWelcome"/>) — never earlier.</summary>
         public string? DisplacedSessionId { get; }
     }
 
@@ -99,24 +101,49 @@ namespace Mahjong.TableService
     /// One-time table-ticket consumption port with a two-phase admission transaction:
     /// <see cref="Consume"/> reserves the one-time jti/assignment records, the seat spectator
     /// capacity and the account-seat lease PROVISIONALLY; <see cref="CommitAdmission"/> is the
-    /// only place that finalizes the handover and fires ?????? displacement (after the room,
-    /// subscription and stream are actually bound, so a failed newer admission can never
-    /// evict an already-working connection); <see cref="Release"/> rolls back the provisional
-    /// reservation or frees the ended session's live resources. A committed jti stays backed
-    /// until ticket expiry + skew; a failed pre-commit admission frees everything it touched.
-    /// The frozen Lobby consumption flow stays the authoritative one-time ledger (P5.3);
-    /// the table host enforces identical explicit semantics locally until then.
+    /// only place that finalizes the handover and reserves the seat-owner displacement (after
+    /// the room, subscription and stream are actually bound, so a failed newer admission can
+    /// never evict an already-working connection); <see cref="Release"/> rolls back the
+    /// provisional reservation or frees the ended session's live resources. A committed jti
+    /// stays backed until ticket expiry + skew; a failed pre-commit admission frees everything
+    /// it touched. The frozen Lobby consumption flow stays the authoritative one-time ledger
+    /// (P5.3); the table host enforces identical explicit semantics locally until then.
+    ///
+    /// D-1-03 (round 3): the seat handover is a COMMIT CHAIN, not a single overwritten owner.
+    /// Every committed admission appends its own immutable entry (account, session, sequence,
+    /// welcomed flag) to the seat's lease, so a failure chain that supersedes an older failed
+    /// admission always rolls back to the last session that actually delivered its WELCOME —
+    /// independent of the order in which the failures and newer commits interleaved, and
+    /// independent of the expirable jti table (the account/role/room/seat identity lives ON the
+    /// seat lease entry itself). The displacement of the previous LIVE connection is decided by
+    /// <see cref="EvictOnWelcome"/> AFTER the WELCOME reached the wire, so a welcome that
+    /// succeeds out of commit order can never displace a seat its session no longer owns.
     /// </summary>
     public interface ITicketConsumptionRegistry
     {
         TicketConsumptionOutcome Consume(ValidatedTableTicket ticket, string sessionId, DateTimeOffset now);
 
-        /// <summary>Finalizes a previously consumed admission; the ONLY displacement point.</summary>
+        /// <summary>Finalizes a previously consumed admission; the ONLY displacement reservation point.</summary>
         TableTicketCommitOutcome CommitAdmission(string sessionId);
 
         /// <summary>
+        /// D-1-03: called AFTER WELCOME was delivered (players only). Returns the session id
+        /// whose live connection may now be displaced — the closest earlier committed entry of
+        /// THIS seat that (a) delivered its own WELCOME and (b) is not already superseded — or
+        /// null when this session is not the seat's current authoritative owner (a newer
+        /// handover already took the seat; the loser never displaces anybody). This is the
+        /// ONLY eviction decision point: commit-time displaced ids are a reservation hint, a
+        /// failed or superseded admission can never evict a working connection.
+        /// </summary>
+        string? EvictOnWelcome(string sessionId);
+
+        /// <summary>
         /// Rolls back an admission that never reached WELCOME, or frees the session resources
-        /// of an ended live session. Idempotent; unknown session ids are a no-op.
+        /// of an ended live session. Idempotent; unknown session ids are a no-op. A not-yet-
+        /// welcomed commit entry is simply removed from the seat's commit chain: the handover
+        /// reverts to the last WELCOME-successful owner regardless of which newer/older
+        /// entries existed around it. The jti/assignment consumption evidence is NOT reverted
+        /// (a failed path never re-enables a replay).
         /// </summary>
         void Release(string sessionId);
 
@@ -124,19 +151,19 @@ namespace Mahjong.TableService
         /// True when (room, seat) is currently bound to the given committed session
         /// (D-1-08): the seat-disconnect fence a teardown consults BEFORE it releases, so a
         /// displaced or handover-lost connection can never disconnect the newer session's
-        /// seat.
+        /// seat. The LIVE seat identity is the newest WELCOME-delivered owner: an entry whose
+        /// WELCOME never arrived owns nothing and its own failure path governs it.
         /// </summary>
         bool TryGetSeatOwner(string roomId, int seat, out string? sessionId);
 
         /// <summary>
-        /// D-1-03 WELCOME-failure safety: reverts a seat handover whose committing session
-        /// then failed to deliver its WELCOME, so a failed admission never evicts a working
-        /// previous owner. Only valid when <paramref name="sessionId"/> is the seat's CURRENT
-        /// committed owner and <paramref name="previousSessionId"/> passed the same account
-        /// gate; otherwise nothing changes. The jti/assignment consumption evidence is NOT
-        /// reverted (a failed path never re-enables a replay).
+        /// D-1-03 WELCOME-failure safety: removes a seat-handover committed entry whose
+        /// committing session then failed to deliver its WELCOME, so a failed admission never
+        /// evicts or hides a working previous owner. Valid for that session's own not-yet-
+        /// welcomed entry regardless of newer/older entries in the chain; a WELCOMED entry
+        /// (its WELCOME did arrive) must never be reverted by a post-hoc failure. Idempotent.
         /// </summary>
-        void RollbackSeatHandover(string sessionId, string previousSessionId);
+        void RollbackSeatHandover(string sessionId);
     }
 
     /// <summary>In-memory P5.1 implementation. Cross-instance uniqueness arrives with P5.2.</summary>
@@ -153,7 +180,7 @@ namespace Mahjong.TableService
         private readonly Dictionary<string, AssignmentRecord> _assignments =
             new Dictionary<string, AssignmentRecord>(StringComparer.Ordinal);
 
-        /// <summary>room#seat ???seat lease history (current provisional + committed winner).</summary>
+        /// <summary>room#seat ???seat lease history (provisional + the whole committed chain).</summary>
         private readonly Dictionary<string, SeatLease> _seatBindings =
             new Dictionary<string, SeatLease>(StringComparer.Ordinal);
 
@@ -240,13 +267,19 @@ namespace Mahjong.TableService
                 else
                 {
                     seatKey = SeatKey(ticket.RoomId, ticket.SeatId!.Value);
-                    if (_seatBindings.TryGetValue(seatKey, out SeatLease? lease) &&
-                        lease.Committed != null &&
-                        !string.Equals(lease.Committed.AccountId, ticket.AccountId, StringComparison.Ordinal))
+                    if (_seatBindings.TryGetValue(seatKey, out SeatLease? lease))
                     {
-                        return new TicketConsumptionOutcome(
-                            TicketConsumptionStatus.SeatOccupiedByOtherAccount,
-                            lease.Committed.AccountId);
+                        // D-1-03: the LIVE seat identity is the newest WELCOME-delivered owner
+                        // entry on the lease chain — the same in-memory record this rollback
+                        // restores, never an expirable jti/replay table row.
+                        SeatLeaseEntry? liveOwner = LiveOwner(lease);
+                        if (liveOwner != null &&
+                            !string.Equals(liveOwner.AccountId, ticket.AccountId, StringComparison.Ordinal))
+                        {
+                            return new TicketConsumptionOutcome(
+                                TicketConsumptionStatus.SeatOccupiedByOtherAccount,
+                                liveOwner.AccountId);
+                        }
                     }
                 }
 
@@ -264,7 +297,11 @@ namespace Mahjong.TableService
                 {
                     seq = ++_nextSeatSeq;
                     SeatLease lease = _seatBindings.TryGetValue(seatKey, out SeatLease? existing) ? existing : new SeatLease();
-                    lease.Provisional = new SeatLeaseEntry(ticket.AccountId, sessionId, seq);
+                    lease.Provisional = new SeatLeaseEntry(
+                        ticket.AccountId,
+                        sessionId,
+                        seq,
+                        welcomed: false);
                     _seatBindings[seatKey] = lease;
                 }
 
@@ -305,7 +342,8 @@ namespace Mahjong.TableService
                     spectator,
                     ticket.Jti,
                     consumed.AssignmentId,
-                    ticket.SeatId);
+                    ticket.SeatId,
+                    ticket.AccountId);
 
                 return new TicketConsumptionOutcome(TicketConsumptionStatus.Accepted, null);
             }
@@ -353,12 +391,20 @@ namespace Mahjong.TableService
                 }
 
                 SeatLeaseEntry provisional = lease.Provisional;
-                string? displaced =
-                    lease.Committed != null &&
-                    !string.Equals(lease.Committed.SessionId, sessionId, StringComparison.Ordinal)
-                        ? lease.Committed.SessionId
+                SeatLeaseEntry? displaced =
+                    LiveOwner(lease) is SeatLeaseEntry live &&
+                    !string.Equals(live.SessionId, sessionId, StringComparison.Ordinal)
+                        ? live
                         : null;
-                lease.Committed = provisional;
+
+                // The commit CHAIN (D-1-03): the entry is immutable, its account is part of the
+                // seat/lease resource itself (never re-derived from an expirable table), and
+                // every failure of THIS handover only removes this one entry.
+                lease.Commits.Add(new SeatLeaseEntry(
+                    provisional.AccountId,
+                    sessionId,
+                    provisional.Seq,
+                    welcomed: false));
                 lease.Provisional = null;
 
                 if (_consumedJtis.TryGetValue(record.Jti, out ConsumedTicket? consumed))
@@ -366,19 +412,99 @@ namespace Mahjong.TableService
                     _consumedJtis[record.Jti] = consumed.WithCommitted();
                 }
 
-                return new TableTicketCommitOutcome(TicketCommitStatus.Committed, displaced);
+                return new TableTicketCommitOutcome(TicketCommitStatus.Committed, displaced?.SessionId);
+            }
+        }
+
+        /// <summary>
+        /// D-1-03: the eviction decision AFTER WELCOME delivery. Only the seat's current
+        /// authoritative owner may displace; the closest earlier WELCOME-successful entry that
+        /// is still on the chain is the superseded connection to evict (and it leaves the
+        /// chain with its eviction). An entry that committed earlier but never welcomed is
+        /// skipped: it is about to be rolled back by its own failure path.
+        /// </summary>
+        public string? EvictOnWelcome(string sessionId)
+        {
+            if (string.IsNullOrWhiteSpace(sessionId))
+            {
+                return null;
+            }
+
+            lock (_gate)
+            {
+                if (!_sessions.TryGetValue(sessionId, out SessionRecord? record) ||
+                    record.Spectator ||
+                    !record.Seat.HasValue)
+                {
+                    return null;
+                }
+
+                string seatKey = SeatKey(record.RoomId, record.Seat.Value);
+                if (!_seatBindings.TryGetValue(seatKey, out SeatLease? lease))
+                {
+                    return null;
+                }
+
+                int selfIndex = -1;
+                for (int i = 0; i < lease.Commits.Count; i++)
+                {
+                    if (string.Equals(lease.Commits[i].SessionId, sessionId, StringComparison.Ordinal))
+                    {
+                        selfIndex = i;
+                        break;
+                    }
+                }
+
+                if (selfIndex < 0)
+                {
+                    return null;
+                }
+
+                // THIS call is the single "WELCOME reached the wire" witness: the entry is
+                // recorded welcomed here (and only here), so the seat's live-owner identity —
+                // LiveOwner's Consume account gate, TryGetSeatOwner's disconnect fence and the
+                // eviction scan below — is exactly "the newest delivered welcome", never an
+                // unwelcomed commit. A losing welcome is recorded too: its welcome DID arrive,
+                // so it stays the last successful welcome if every newer handover fails.
+                SeatLeaseEntry self = lease.Commits[selfIndex];
+                if (!self.Welcomed)
+                {
+                    lease.Commits[selfIndex] = new SeatLeaseEntry(
+                        self.AccountId, self.SessionId, self.Seq, welcomed: true);
+                }
+
+                // A NEWER commit is on the chain: either it still awaits its WELCOME (a
+                // in-flight newer handover owns the next step) or it already welcomed and won.
+                // A losing welcome never displaces; its own failed/late teardown releases it.
+                if (selfIndex < lease.Commits.Count - 1)
+                {
+                    return null;
+                }
+
+                for (int i = selfIndex - 1; i >= 0; i--)
+                {
+                    SeatLeaseEntry candidate = lease.Commits[i];
+                    if (candidate.Welcomed)
+                    {
+                        lease.Commits.RemoveAt(i);
+                        return candidate.SessionId;
+                    }
+                }
+
+                return null;
             }
         }
 
         /// <summary>
         /// D-1-03: reverts a committed seat handover whose new connection then failed before
-        /// its WELCOME reached the wire. The handover was never announced (the displaced side
-        /// is not notified until after WELCOME succeeds), so restoring the previous owner
-        /// keeps the working old connection untouched. Atomic inside the registry gate.
+        /// its WELCOME reached the wire by REMOVING this session's own not-yet-welcomed entry
+        /// from the seat's commit chain. The prior owner is whoever the chain still holds —
+        /// no lookup race against a previously released session, no dependency on the
+        /// expirable jti table. Atomic inside the registry gate; idempotent.
         /// </summary>
-        public void RollbackSeatHandover(string sessionId, string previousSessionId)
+        public void RollbackSeatHandover(string sessionId)
         {
-            if (string.IsNullOrWhiteSpace(sessionId) || string.IsNullOrWhiteSpace(previousSessionId))
+            if (string.IsNullOrWhiteSpace(sessionId))
             {
                 return;
             }
@@ -396,31 +522,29 @@ namespace Mahjong.TableService
                 }
 
                 string seatKey = SeatKey(record.RoomId, record.Seat.Value);
-                if (!_seatBindings.TryGetValue(seatKey, out SeatLease? lease) || lease.Committed == null)
+                if (!_seatBindings.TryGetValue(seatKey, out SeatLease? lease))
                 {
                     return;
                 }
 
-                if (!string.Equals(lease.Committed.SessionId, sessionId, StringComparison.Ordinal))
+                for (int i = lease.Commits.Count - 1; i >= 0; i--)
                 {
-                    // A newer admission already superseded this one; its own handover governs.
-                    return;
-                }
+                    SeatLeaseEntry entry = lease.Commits[i];
+                    if (string.Equals(entry.SessionId, sessionId, StringComparison.Ordinal))
+                    {
+                        if (!entry.Welcomed)
+                        {
+                            // The WELCOME never made it: this handover is undone. Every other
+                            // entry stays exactly where the interleaved commits put it, so a
+                            // B/or-C failure chain always reverts to the last WELCOME-success
+                            // owner regardless of removal order.
+                            lease.Commits.RemoveAt(i);
+                        }
 
-                SessionRecord? previous = _sessions.TryGetValue(previousSessionId, out SessionRecord? found)
-                    ? found
-                    : null;
-                if (previous == null || previous.Spectator)
-                {
-                    return;
+                        // A WELCOMED entry must never be reverted by a post-hoc failure call.
+                        return;
+                    }
                 }
-
-                string previousAccount =
-                    _consumedJtis.TryGetValue(previous.Jti, out ConsumedTicket? previousConsumed)
-                        ? previousConsumed.AccountId
-                        : string.Empty;
-                var restored = new SeatLeaseEntry(previousAccount, previousSessionId, lease.Committed.Seq);
-                lease.Committed = restored;
             }
         }
 
@@ -463,28 +587,32 @@ namespace Mahjong.TableService
                     string seatKey = SeatKey(record.RoomId, record.Seat.Value);
                     if (_seatBindings.TryGetValue(seatKey, out SeatLease? lease))
                     {
-                        if (lease.Committed != null &&
-                            string.Equals(lease.Committed.SessionId, sessionId, StringComparison.Ordinal))
+                        // D-1-03: remove THIS session's own commit-chain entry (the newest
+                        // unwelcomed one is the common failed-admission case; a welcomed entry
+                        // belongs to a session that ended while it owned the seat). The chain
+                        // keeps every other entry, so a same-account reconnect, a cross-account
+                        // refusal and a late-displaced teardown all keep their exact semantics.
+                        for (int i = lease.Commits.Count - 1; i >= 0; i--)
                         {
-                            if (lease.Provisional != null)
+                            if (string.Equals(lease.Commits[i].SessionId, sessionId, StringComparison.Ordinal))
                             {
-                                // A NEWER provisional is already waiting on this seat: its
-                                // reservation survives; only this session's ownership ends.
-                                lease.Committed = null;
-                            }
-                            else
-                            {
-                                // The session ENDED while it owned the seat: the seat is free
-                                // again (a same-account reconnect takes a fresh consumption).
-                                _seatBindings.Remove(seatKey);
+                                lease.Commits.RemoveAt(i);
+                                break;
                             }
                         }
-                        else if (lease.Provisional != null &&
-                                 string.Equals(lease.Provisional.SessionId, sessionId, StringComparison.Ordinal))
+
+                        if (lease.Provisional != null &&
+                            string.Equals(lease.Provisional.SessionId, sessionId, StringComparison.Ordinal))
                         {
-                            // Failed before commit: the provisional reservation goes away,
-                            // leaving any newer provisional (a different session) intact.
+                            // Failed before commit: the provisional reservation goes away.
                             lease.Provisional = null;
+                        }
+
+                        if (lease.Provisional == null && lease.Commits.Count == 0)
+                        {
+                            // Nothing left on this seat: the binding is free again (a
+                            // same-account reconnect takes a fresh consumption).
+                            _seatBindings.Remove(seatKey);
                         }
                     }
                 }
@@ -502,15 +630,37 @@ namespace Mahjong.TableService
             lock (_gate)
             {
                 if (_seatBindings.TryGetValue(SeatKey(roomId, seat), out SeatLease? lease) &&
-                    lease.Committed != null)
+                    LiveOwner(lease) is SeatLeaseEntry live)
                 {
-                    sessionId = lease.Committed.SessionId;
+                    sessionId = live.SessionId;
                     return true;
                 }
 
                 sessionId = null;
                 return false;
             }
+        }
+
+        /// <summary>The seat's LIVE owner: the newest WELCOME-delivered entry on the chain.
+        /// An entry whose WELCOME never arrived (still in flight or already failed) owns
+        /// nothing once a delivered welcome exists anywhere on the chain — its own rollback
+        /// removes it. A chain that has never delivered a WELCOME (the plain commit-only
+        /// lifecycle: commit is still the admission contract there) falls back to its newest
+        /// commit, so a seat is never ownerless merely for skipping the eviction scan.</summary>
+        private static SeatLeaseEntry? LiveOwner(SeatLease lease)
+        {
+            SeatLeaseEntry? newest = null;
+            for (int i = lease.Commits.Count - 1; i >= 0; i--)
+            {
+                if (lease.Commits[i].Welcomed)
+                {
+                    return lease.Commits[i];
+                }
+
+                newest ??= lease.Commits[i];
+            }
+
+            return newest;
         }
 
         /// <summary>
@@ -654,20 +804,19 @@ namespace Mahjong.TableService
             public long ExpiresRetainAtMs { get; }
         }
 
-        private sealed class SeatLease
-        {
-            public SeatLeaseEntry? Provisional;
-
-            public SeatLeaseEntry? Committed;
-        }
-
+        /// <summary>
+        /// One immutable committed (or provisional) seat handover entry. The account identity
+        /// lives HERE — on the seat/lease resource itself — so a rollback or the live-owner
+        /// check never depends on the expirable jti replay evidence (D-1-03).
+        /// </summary>
         private sealed class SeatLeaseEntry
         {
-            public SeatLeaseEntry(string accountId, string sessionId, long seq)
+            public SeatLeaseEntry(string accountId, string sessionId, long seq, bool welcomed)
             {
                 AccountId = accountId;
                 SessionId = sessionId;
                 Seq = seq;
+                Welcomed = welcomed;
             }
 
             public string AccountId { get; }
@@ -675,6 +824,17 @@ namespace Mahjong.TableService
             public string SessionId { get; }
 
             public long Seq { get; }
+
+            public bool Welcomed { get; }
+        }
+
+        /// <summary>The per-seat lease: the provisional reservation plus the whole committed
+        /// handover chain (ordered by sequence number; commit order is the handover order).</summary>
+        private sealed class SeatLease
+        {
+            public SeatLeaseEntry? Provisional;
+
+            public List<SeatLeaseEntry> Commits = new List<SeatLeaseEntry>();
         }
 
         private sealed class SessionRecord
@@ -685,7 +845,8 @@ namespace Mahjong.TableService
                 bool spectator,
                 string jti,
                 string? assignmentId,
-                int? seat)
+                int? seat,
+                string accountId)
             {
                 RoomId = roomId;
                 Role = role;
@@ -693,6 +854,7 @@ namespace Mahjong.TableService
                 Jti = jti;
                 AssignmentId = assignmentId;
                 Seat = seat;
+                AccountId = accountId;
             }
 
             public string RoomId { get; }
@@ -706,6 +868,9 @@ namespace Mahjong.TableService
             public string? AssignmentId { get; }
 
             public int? Seat { get; }
+
+            /// <summary>The session's own account: part of the session resource itself (D-1-03).</summary>
+            public string AccountId { get; }
         }
     }
 }

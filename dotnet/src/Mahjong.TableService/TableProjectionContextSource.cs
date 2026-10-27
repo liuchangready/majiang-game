@@ -57,9 +57,31 @@ namespace Mahjong.TableService
 
         private readonly TableRoomDecisionState? _decisionState;
 
-        public TableProjectionContextSource(TableRoomDecisionState? decisionState = null)
+        /// <summary>Version-0 anchor (round captured Round-0). The trusted pointer from 0 to 1.</summary>
+        private readonly RoundStateMachine? _initialRound;
+
+        /// <summary>Per-round chain truth: the committed per-seat pending-drawn witnesses.</summary>
+        private readonly Dictionary<string, IReadOnlyList<TileId>?> _drawnEvidenceBySource = new Dictionary<string, IReadOnlyList<TileId>?>(StringComparer.Ordinal);
+
+        /// <summary>D-1-01 round 3: last captured round (capture happens per commit into the chain).</summary>
+        private readonly object _chainGate = new object();
+        private long _trackedVersion = -1;
+        private RoundStateMachine? _trackedRound;
+        private int _trackedEventCount;
+
+        /// <summary>
+        /// The per-seq committed-discard tsumogiri truth derived AT COMMIT TIME (the only
+        /// moment the parent state's DrawnTileEvidence still exists): an in-chain derivation
+        /// reconstructs everything the chain records (draw events); the committed-truth map
+        /// covers what the chain cannot (the initial deal-extra tile the Domain records as
+        /// evidence, removed silently by the seat's own first discard).
+        /// </summary>
+        private readonly Dictionary<string, bool> _committedTsumogiri = new Dictionary<string, bool>(StringComparer.Ordinal);
+
+        public TableProjectionContextSource(TableRoomDecisionState? decisionState = null, RoundStateMachine? initialRound = null)
         {
             _decisionState = decisionState;
+            _initialRound = initialRound;
         }
 
         public TableProjectionContextData Capture(TableProjectionContextRequest request)
@@ -74,14 +96,20 @@ namespace Mahjong.TableService
                     request.RoomId,
                     request.Round,
                     request.StateVersion.Value,
-                    request.MonotonicMillis);            }
+                    request.MonotonicMillis);
+            }
+
+            // D-1-01 round 3: the capture boundary is the ONLY place where the parent state's
+            // per-discard DrawnTileEvidence still exists; record the tsumogiri truth of every
+            // newly committed discard BEFORE the fact is consumed by the projection below.
+            TrackCommittedDiscards(request);
 
             return new TableProjectionContextData(
                 request.Round.RoundId,
                 request.StateVersion,
                 1UL,
                 cheat: CheatState.Initialize(DefaultEconomy), // seat streams require a non-null trusted aggregate; the actor overlays its own
-                BuildPublicFacts(request.Round),
+                BuildPublicFacts(this, request),
                 BuildPrivateFacts(request.Round),
                 new TableSessionProjection(false, null, null, null),
                 new TableProjectionPolicy(),
@@ -98,13 +126,123 @@ namespace Mahjong.TableService
         }
 
         /// <summary>
+        /// True when the committed chain can PROVE this discard was the seat's drawn tile
+        /// (a committed TileDrawn/RinshanDrawn event for that seat exists between the seat's
+        /// previous discard and this one). Anything else — above all a round's very first
+        /// discard of an already-dealt round (the Domain's deal-EXTRA evidence) — is not
+        /// chain-provable and must fail closed rather than publish a silent false.
+        /// </summary>
+        private static bool TsumogiriFromChain(TableProjectionContextRequest request, RoundEvent discardEvent)
+        {
+            IReadOnlyList<RoundEvent> events = request.Round.Events;
+            int seat = discardEvent.Seat;
+            for (int i = discardEvent.Ordinal - 1; i >= 0; i--)
+            {
+                RoundEvent previous = events[i];
+                if (previous.Seat != seat)
+                {
+                    continue;
+                }
+
+                switch (previous.Type)
+                {
+                    case RoundEventType.TileDrawn:
+                    case RoundEventType.RinshanDrawn:
+                        return previous.Tile.HasValue && previous.Tile.Value.Equals(discardEvent.Tile!.Value);
+                    case RoundEventType.TileDiscarded:
+                        // An earlier own discard with no draw between: never a drawn tile.
+                        return false;
+                }
+            }
+
+            // No committed draw ever touched this seat: the discard came from the deal
+            // itself — chain-unprovable (the trust map must have recorded it at commit).
+            throw new InvalidOperationException(
+                "A committed discard seat " + seat + " seq " + discardEvent.Ordinal +
+                " has no committed drawn evidence or recorded at-commit tsumogiri truth; the projection refuses to guess.");
+        }
+
+        /// <summary>Event key inside the room's committed chain (seq is room-global and stable).</summary>
+        private static string Key(string roundId, ulong chainOrdinal)
+        {
+            return roundId + "/" + chainOrdinal.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        }
+
+        /// <summary>
+        /// Records the tsumogiri truth of every newly committed discard event D-1-01 round 3.
+        /// Capture runs serially inside the actor per commit, so the previous captured round
+        /// is the discarded state's PARENT for the normal commit cadence (version+1). The
+        /// parent's own DrawnTileEvidence (wall draw, rinshan draw or deal-extra) is the
+        /// authoritative pending-drawn the Domain kept exactly until this discard; that is
+        /// the fact the frozen chain cannot express for the deal-extra case above all.
+        /// </summary>
+        private void TrackCommittedDiscards(TableProjectionContextRequest request)
+        {
+            RoundStateMachine round = request.Round;
+            lock (_chainGate)
+            {
+                long version = round.Version;
+                if (_trackedRound != null && version <= _trackedVersion)
+                {
+                    // Idempotent re-capture of the same committed state (stream baselines).
+                    return;
+                }
+
+                RoundStateMachine? parent = null;
+                if (_trackedRound == null)
+                {
+                    // First capture ever seen by THIS room's source. The natural parent is
+                    // the version-0 anchor (the round the registry created the room from)
+                    // when the room's first commit produced version exactly 1.
+                    parent = version == 1 ? _initialRound : null;
+                }
+                else if (version == _trackedVersion + 1)
+                {
+                    parent = _trackedRound;
+                }
+                // version > tracked+1 with no anchor: a capture-skip gap; already-unknown
+                // discards keep failing closed below instead of being silently re-published.
+
+                if (parent != null)
+                {
+                    DrawnTileEvidence? parentDrawn = parent.Tiles.DrawnTile;
+                    for (int i = _trackedRound == null ? 0 : _trackedEventCount; i < request.CommittedEvents.Count; i++)
+                    {
+                        TableEventRecord record = request.CommittedEvents[i];
+                        if (record.Type != RoundEventType.TileDiscarded || !record.Tile.HasValue)
+                        {
+                            continue;
+                        }
+
+                        string key = Key(request.Round.RoundId, (ulong)record.Ordinal);
+                        if (_committedTsumogiri.ContainsKey(key))
+                        {
+                            continue;
+                        }
+
+                        bool tsumogiri = parentDrawn.HasValue &&
+                                        parentDrawn.Value.Seat == record.Seat &&
+                                        parentDrawn.Value.Tile.Equals(record.Tile!.Value);
+                        _committedTsumogiri[key] = tsumogiri;
+                    }
+                }
+
+                _trackedRound = round;
+                _trackedVersion = version;
+                _trackedEventCount = request.CommittedEvents.Count;
+            }
+        }
+
+        /// <summary>
         /// Full-chain replay (D-1-01): one pass over the round's own committed event chain in
         /// chronological order. A drawn tile stays the seat's "pending drawn" only until that
         /// seat's next discard; a riichi declaration stays pending until that seat's next
         /// discard. Both histories are kept per chronological discard so the earlier river
-        /// entries keep their own exact identity.
+        /// entries keep their own exact identity. Round 3: a discard whose tsumogiri identity
+        /// is not chain-provable is resolved ONLY from the at-commit truth map and never
+        /// silently defaulted to false — a discard with no provenance at all fails closed.
         /// </summary>
-        private static DiscardReplay[] BuildReplay(RoundStateMachine round)
+        private DiscardReplay[] BuildReplay(TableProjectionContextRequest request)
         {
             var replay = new DiscardReplay[4];
             for (int seat = 0; seat < 4; seat++)
@@ -114,7 +252,7 @@ namespace Mahjong.TableService
 
             var pendingDrawn = new TileId?[4];
             var riichiPending = new bool[4];
-            IReadOnlyList<RoundEvent> events = round.Events;
+            IReadOnlyList<RoundEvent> events = request.Round.Events;
             for (int i = 0; i < events.Count; i++)
             {
                 RoundEvent roundEvent = events[i];
@@ -140,8 +278,20 @@ namespace Mahjong.TableService
                             continue;
                         }
 
-                        bool tsumogiri = pendingDrawn[seat].HasValue &&
-                                         pendingDrawn[seat]!.Value.Equals(roundEvent.Tile.Value);
+                        bool tsumogiri;
+                        if (pendingDrawn[seat].HasValue && pendingDrawn[seat]!.Value.Equals(roundEvent.Tile.Value))
+                        {
+                            tsumogiri = true;
+                        }
+                        else
+                        {
+                            tsumogiri = _committedTsumogiri.TryGetValue(
+                                Key(request.Round.RoundId, (ulong)roundEvent.Ordinal),
+                                out bool recorded)
+                                ? recorded
+                                : TsumogiriFromChain(request, roundEvent);
+                        }
+
                         replay[seat].Tsumogiri.Add(tsumogiri);
                         replay[seat].RiichiDiscard.Add(riichiPending[seat]);
                         pendingDrawn[seat] = null;
@@ -164,9 +314,12 @@ namespace Mahjong.TableService
             return replay;
         }
 
-        private static IReadOnlyList<TableSeatPublicFacts> BuildPublicFacts(RoundStateMachine round)
+        private static IReadOnlyList<TableSeatPublicFacts> BuildPublicFacts(
+            TableProjectionContextSource source,
+            TableProjectionContextRequest request)
         {
-            DiscardReplay[] replay = BuildReplay(round);
+            DiscardReplay[] replay = source.BuildReplay(request);
+            RoundStateMachine round = request.Round;
             var result = new List<TableSeatPublicFacts>(4);
             for (int seat = 0; seat < 4; seat++)
             {
@@ -257,7 +410,7 @@ namespace Mahjong.TableService
             return result;
         }
 
-        private static IReadOnlyList<TableProjectionEventFact> BuildEventFacts(
+        private IReadOnlyList<TableProjectionEventFact> BuildEventFacts(
             TableProjectionContextRequest request)
         {
             // Reconstruct each draw's wall count by replaying the committed draw events
@@ -335,11 +488,12 @@ namespace Mahjong.TableService
         ///  - the honest turn ordinal (1 through the opening draw turn, +1 for every later new
         ///    draw turn);
         ///  - the per-discard tsumogiri/riichi-discard flags from the same chain order the
-        ///    river reconstruction uses;
+        ///    river reconstruction uses (D-1-01 round 3: a chain-unprovable discard falls back
+        ///    to the at-commit truth map — never to a silent false);
         ///  - the exact Domain meld record for a kan event, so the projector never needs a
         ///    fabricated meld shape.
         /// </summary>
-        private static void BuildChainFacts(
+        private void BuildChainFacts(
             TableProjectionContextRequest request,
             Dictionary<ulong, uint> turnBySeq,
             Dictionary<ulong, DiscardFacts> discardBySeq,
@@ -362,14 +516,17 @@ namespace Mahjong.TableService
                 {
                     case RoundEventType.TileDrawn:
                     case RoundEventType.RinshanDrawn:
-                        turnBySeq[seq] = turn;
+                        // D-1-01 round 3 (review's BuildChainFacts turn audit): a draw event
+                        // OPENS the next turn, so its own turn ordinal is the NEW turn — the
+                        // increment must happen BEFORE the assignment, not after (a drawn
+                        // event that belonged to the previous turn made every subsequent
+                        // event's turns off by one).
                         if (sawFirstDraw)
                         {
-                            // Every new draw after the opening turn advances the turn ordinal;
-                            // the opening draw turn itself stays turn 1.
                             turn++;
                         }
 
+                        turnBySeq[seq] = turn;
                         sawFirstDraw = true;
                         if (validSeat && record.Tile.HasValue)
                         {
@@ -382,8 +539,25 @@ namespace Mahjong.TableService
                         if (validSeat && record.Tile.HasValue)
                         {
                             TileId discarded = record.Tile.Value;
-                            bool tsumogiri = pendingDrawn[seat].HasValue &&
-                                             pendingDrawn[seat]!.Value.Equals(discarded);
+                            bool tsumogiri;
+                            if (pendingDrawn[seat].HasValue && pendingDrawn[seat]!.Value.Equals(discarded))
+                            {
+                                tsumogiri = true;
+                            }
+                            else
+                            {
+                                tsumogiri = _committedTsumogiri.TryGetValue(
+                                    Key(request.Round.RoundId, (ulong)record.Ordinal),
+                                    out bool recorded)
+                                    ? recorded
+                                    : TsumogiriFromChain(request, new RoundEvent(
+                                        record.Type,
+                                        record.Ordinal,
+                                        record.Seat,
+                                        record.Tile,
+                                        record.Detail));
+                            }
+
                             bool riichi = riichiPending[seat];
                             pendingDrawn[seat] = null;
                             riichiPending[seat] = false;

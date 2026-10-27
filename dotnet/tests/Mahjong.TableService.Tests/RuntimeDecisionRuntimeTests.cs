@@ -85,7 +85,8 @@ namespace Mahjong.TableService.Tests
                 Contracts.Wire.PlayerSnapshot after = await ReadPlayerSnapshotAsync(
                     observer,
                     predicate: s => s.StateVersion >= receipt.Receipt.CommandVersion &&
-                                    s.PrivateView != null);
+                                    s.PrivateView != null &&
+                                    (int)s.PublicView!.Board.CurrentSeat == 1);
                 Assert.True(
                     receipt.Receipt.CommandVersion >= stateVersionBefore + 1UL,
                     "the applied commit must own its own command version");

@@ -203,7 +203,8 @@ namespace Mahjong.TableService
             TableServiceCommitPort commitPort,
             TableDurableContext durable,
             OwnerEpoch ownerEpoch,
-            TableRoomDecisionState decisionState)
+            TableRoomDecisionState decisionState,
+            TableScopeRecord serviceScope)
         {
             RoomId = roomId;
             Options = options;
@@ -214,6 +215,7 @@ namespace Mahjong.TableService
             Durable = durable;
             OwnerEpoch = ownerEpoch;
             DecisionState = decisionState ?? throw new ArgumentNullException(nameof(decisionState));
+            ServiceScope = serviceScope;
         }
 
         public string RoomId { get; }
@@ -221,6 +223,15 @@ namespace Mahjong.TableService
         public TableServiceOptions Options { get; }
 
         public TableActor Actor { get; }
+
+        /// <summary>
+        /// D-1-01 (round 3): the room's own trusted service scope the auto-draw envelope rides
+        /// through the actor's durable pipeline. It is issued at room creation with the room's
+        /// lifetime, belongs to the service authority itself (never a player ticket account),
+        /// and only ever carries the service's own RotateCommand — a player's scope remains the
+        /// only real client identity surface.
+        /// </summary>
+        public TableScopeRecord ServiceScope { get; }
 
         public InMemoryRequestScopeAuthority Scopes { get; }
 
@@ -375,7 +386,7 @@ namespace Mahjong.TableService
                 clock,
                 publicationSink,
                 controlCommitPort: null,
-                projectionContextSource: new TableProjectionContextSource(decisionState),
+                projectionContextSource: new TableProjectionContextSource(decisionState, round),
                 streamOptions,
                 durable,
                 settlementFactsPort: null);
@@ -606,6 +617,26 @@ namespace Mahjong.TableService
             // for exactly these reasons).
             RoundStateMachine round = RoomHost.CreateInitialRound(roomId, _roundSource);
             CheatLedger ledger = CheatLedger.Initialize(TableProjectionContextSource.DefaultEconomy);
+            TableScopeRecord serviceScope;
+            try
+            {
+                // D-1-01 (round 3): the room-level trusted service scope for the auto-draw
+                // pipeline (a draw turn advances through SubmitAsync like any other durable
+                // command; its identity is the ROOM's own authority, never a client ticket).
+                serviceScope = scopes.Issue(
+                    TableRoomHostAutoDraw.ServiceAccountId,
+                    TableScopeRole.Player,
+                    roomId,
+                    (ulong)_clock.UtcNowMs,
+                    (ulong)(_clock.UtcNowMs + TableRoomHostAutoDraw.ServiceScopeLifetimeMs));
+            }
+            catch (Exception exception)
+            {
+                throw new TableServiceCapacityException(
+                    "SERVICE_SCOPE_UNAVAILABLE",
+                    "The room's own service scope could not be issued: " + exception.Message);
+            }
+
             store.CreateRoomAsync(
                     RoomHost.CreateInitialCheckpoint(
                         roomId,
@@ -654,7 +685,8 @@ namespace Mahjong.TableService
                 commitPort,
                 durable,
                 initialEpoch,
-                decisionState);
+                decisionState,
+                serviceScope);
         }
 
         /// <summary>
@@ -800,8 +832,10 @@ namespace Mahjong.TableService
                         // D-1-01: the acting seat the last committed Domain state requires a
                         // decision for gets its REAL decision opened here (the platform opening
                         // seam), so a legal client action always points at a truly open,
-                        // Domain-derived decision instead of a fabricated projection.
-                        int opened = await host.DecisionState.DriveOpenDecisionsAsync(host.Actor).ConfigureAwait(false);
+                        // Domain-derived decision instead of a fabricated projection. Round 3:
+                        // the drive also owns the phase-DRAW trusted auto-draw (no decision
+                        // fabricature for a draw turn, ever).
+                        int opened = await host.DecisionState.DriveAsync(host).ConfigureAwait(false);
                         if (opened > 0)
                         {
                             host.PublishDecisionViewsToLiveStreams();

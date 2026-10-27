@@ -51,8 +51,6 @@ namespace Mahjong.TableService
 
         /// <summary>Tickets for the uncompromised WELCOME-send failure rollback (D-1-03).
         /// Set between seat-handover commit and WELCOME delivery; cleared on success.</summary>
-        private string? _committedSeatHandoverFrom;
-
                 private volatile bool _welcomeSent;
 
         /// <summary>D-1-10: the scope a failed admission must revoke. Set when the scope is
@@ -1020,11 +1018,6 @@ namespace Mahjong.TableService
                     throw new AdmissionClosedException(Directive(ProtocolErrorCode.InvalidToken));
                 }
 
-                if (commit.DisplacedSessionId != null)
-                {
-                    _committedSeatHandoverFrom = commit.DisplacedSessionId;
-                }
-
                 // 10. WELCOME with its own bounded budget (D-1-05): a peer that stops reading
                 // releases the admission instead of wedging the handler on the raw stopping
                 // token.
@@ -1050,12 +1043,28 @@ namespace Mahjong.TableService
                 _welcomeSent = true;
                 _issuedScopeId = null;
 
-                // Only after the WELCOME is delivered does THIS admission take the displaced
-                // connection down: any WELCOME failure left the previous owner untouched.
-                if (commit.DisplacedSessionId != null)
+                // Only after the WELCOME is delivered does THIS admission take the superseded
+                // connection down (D-1-03 round 3): EVICT-ON-WELCOME is the registry's own
+                // authoritative decision — the WELCOME-successful session that is STILL the
+                // seat's current owner evicts the closest earlier welcomed owner; a welcome
+                // that raced against a newer handover never displaces anybody, and a commit
+                // whose WELCOME failed is removed from the seat's chain by RollbackSeatHandover.
+                string? evicted = identity.IsPlayer
+                    ? _consumption.EvictOnWelcome(sessionId)
+                    : null;
+                if (!string.IsNullOrEmpty(evicted))
                 {
-                    _sessions.Displace(commit.DisplacedSessionId);
-                    _committedSeatHandoverFrom = null;
+                    try
+                    {
+                        _sessions.Displace(evicted!);
+                    }
+                    catch (Exception displacementFault)
+                    {
+                        LogRedacted(
+                            "displacement failed",
+                            "code", Short(displacementFault.GetType().Name),
+                            "room", _admissionRoom);
+                    }
                 }
 
                 // 8b. Seat handover bookkeeping through the CURRENT authority epoch (D-1-08):
@@ -1083,15 +1092,16 @@ namespace Mahjong.TableService
 
                 // D-1-03: this admission committed its seat handover but never delivered its
                 // WELCOME — the failure is a THIS-connection failure and must not evict the
-                // previous owner. Restore the previous committed owner atomically (the
-                // displaced side was never notified at this point), then release this
-                // admission's resources. Consumed-ticket evidence is still retained by the
-                // registry's own release semantics (a failed path never re-enables a replay).
-                if (!_welcomeSent && _committedSeatHandoverFrom != null)
+                // previous owner. The registry removes THIS session's own not-yet-welcomed
+                // chain entry, so the seat reverts to the last WELCOME-successful owner no
+                // matter how newer/older commits interleaved; then this admission's resources
+                // are released. Consumed-ticket evidence is still retained by the registry's
+                // own release semantics (a failed path never re-enables a replay).
+                if (!_welcomeSent)
                 {
                     try
                     {
-                        _consumption.RollbackSeatHandover(sessionId, _committedSeatHandoverFrom);
+                        _consumption.RollbackSeatHandover(sessionId);
                     }
                     catch (Exception rollbackFault)
                     {
@@ -1336,7 +1346,25 @@ namespace Mahjong.TableService
                 WireTableStreamSink? sink = _sink;
                 Func<uint, TableBeamSwapSlotResolution?>? resolver =
                     sink == null ? null : raw => sink.ResolveBeamSwapTargetSlot(raw);
-                route = TableCommandMapper.Map(identity, envelope, host.OwnerEpoch, _options, authoritativeRoundId, resolver);
+
+                // D-1-01 (b): the trusted response-window eligibility source for discards and
+                // riichi discards is the room's own decision state (the committed Domain round
+                // at the command's expected state version).
+                TableRoomDecisionState decisionState = host.DecisionState;
+                Func<int, Mahjong.Domain.TileId, ulong, TableCommandRouteResponseEligibility?>? eligibility =
+                    (seat, tile, expectedVersion) =>
+                        decisionState.DeriveResponseEligibility(seat, tile, expectedVersion);
+                route = TableCommandMapper.Map(
+                    identity, envelope, host.OwnerEpoch, _options, authoritativeRoundId, resolver, eligibility);
+            }
+            catch (ResponseEligibilityUnavailableException)
+            {
+                EnqueueError(
+                    ProtocolErrorCode.InternalError,
+                    "command",
+                    TableCommandMapper.ResponseEligibilityDetail,
+                    retryable: true);
+                return false;
             }
             catch (Exception)
             {
@@ -2078,14 +2106,26 @@ namespace Mahjong.TableService
                             break;
                         case 3:
                             groupDepth++;
-                            if (groupDepth > 64)
-                            {
-                                return false;
-                            }
 
+                            // D-1-04 round 3: NO artificial depth cap. A nesting depth the scan
+                            // refuses to follow is exactly the old fail-open: the scan stopped
+                            // mid-message and everything behind it (including the tail of a
+                            // concatenated second Envelope) went unswept. The walkthrough is
+                            // iterative (no recursion, O(1) state), each extra nesting level
+                            // costs at least two wire bytes, so the depth is bounded by the
+                            // frozen inbound message cap and the scan ALWAYS reaches the real
+                            // end of the message or hits a genuine framing error below.
                             break;
                         case 4:
                             groupDepth--;
+                            if (groupDepth < 0)
+                            {
+                                // Unbalanced end group: the frozen codec never produced this
+                                // message, but this scan never treats bytes it cannot frame
+                                // as "no duplicate".
+                                return false;
+                            }
+
                             break;
                         default: // 6, 7 are never legal on this wire
                             return false;
@@ -2128,13 +2168,8 @@ namespace Mahjong.TableService
                         }
 
                         break;
-                    case 3: // group start (schema-legal unknown field): tracked, skipped, checked
+                    case 3: // group start (schema-legal unknown field): tracked, skipped, checked — no depth cap (D-1-04)
                         groupDepth++;
-                        if (groupDepth > 64)
-                        {
-                            return false;
-                        }
-
                         break;
                     case 4: // stray end group at top level: the frozen codec never accepts it
                         return false;

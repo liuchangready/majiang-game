@@ -2,9 +2,12 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Net.WebSockets;
+using System.Threading;
 using System.Threading.Tasks;
 using Mahjong.Contracts;
 using Mahjong.Contracts.Wire;
+using Mahjong.Domain;
+using Mahjong.TableRuntime;
 using Xunit;
 
 namespace Mahjong.TableService.Tests
@@ -123,10 +126,118 @@ namespace Mahjong.TableService.Tests
             }
         }
 
+        /// <summary>
+        /// D-1-07 round 3: the negotiated snapshot limit is a PER-FRAME rule over every
+        /// encoded stream frame — the frozen P3.2 stream contract makes every PUSH carry the
+        /// complete authoritative snapshot, so a NON-baseline update frame is exactly as
+        /// oversized as its baseline twin. Real actor-encoded frames (baseline + the trusted
+        /// auto-draw's committed non-baseline update) against real sink limits: one byte over
+        /// the per-frame cap is MessageTooLarge on BOTH frame kinds, while the minimum
+        /// production-allowed limit (1024) accepts both untouched.
+        /// </summary>
+        [Fact]
+        public async Task SnapshotLimit_AppliesToBaselineAndEveryFullStateUpdate()
+        {
+            var clock = new ProbeClock { Now = 100 };
+            var registry = new InMemoryTableHostRegistry(
+                new TableServiceOptions { LeaseTtlSeconds = 90 },
+                new WireTableStreamContractCodec(),
+                clock,
+                new FixedRoundSource(roomId => new N1aTable { Dealer = 0 }.Build(roomId + "-r1", RoundPhase.Draw)));
+            RoomHost host = registry.GetOrAdd("snaplimit");
+            try
+            {
+                var capture = new FrameCaptureSink();
+                TableStreamControlResult subscribed = await host.Actor.SubscribeStreamAsync(
+                    new TableStreamSubscribeRequest(
+                        new TableStreamIdentity(
+                            new SessionId("snaplimit"),
+                            TableStreamAudience.Spectator,
+                            new BindingEpoch(1),
+                            new SyncEpoch(1)),
+                        host.OwnerEpoch,
+                        recoveryGeneration: 0,
+                        capture));
+                TableStreamHandle streamHandle = subscribed.Handle ??
+                    throw new InvalidOperationException("the subscription returned without a handle");
+
+                TableStreamFrame baseline = await capture.Frames.Reader.ReadAsync();
+                byte[] baselinePayload = baseline.EncodedPayload ??
+                    throw new InvalidOperationException("the baseline arrived without an encoded payload");
+
+                // The trusted draw commits a NON-baseline full-state update frame.
+                await host.DecisionState.DriveAsync(host);
+                TableStreamFrame update = await capture.Frames.Reader.ReadAsync();
+                byte[] updatePayload = update.EncodedPayload ??
+                    throw new InvalidOperationException("the update arrived without an encoded payload");
+                Assert.False(
+                    update.IsFullSnapshot,
+                    "the regression shape requires a NON-baseline frame that still carries the full state");
+                Assert.True(updatePayload.Length > 0 && baselinePayload.Length > 0);
+
+                // The baseline above a tight per-frame cap: MessageTooLarge (never queued).
+                // Production binds every sink to its subscription handle before frames flow,
+                // and the sink's termination record requires that handle — the probe binds the
+                // real one too (the identity check then also proves the frames are this
+                // subscription's own).
+                var tightForBaseline = new WireTableStreamSink(
+                    64, 4 * 1024 * 1024, baselinePayload.Length - 1);
+                tightForBaseline.Bind(streamHandle);
+                await tightForBaseline.PublishAsync(baseline, CancellationToken.None);
+                Assert.NotNull(tightForBaseline.Termination);
+                Assert.Equal(
+                    TableStreamTerminationKind.MessageTooLarge,
+                    tightForBaseline.Termination!.Kind);
+
+                // The exact review case: the NON-baseline full-state update is refused by the
+                // same per-frame rule (one byte over) instead of riding a SlowConsumer fall-
+                // through or skipping the snapshot check entirely.
+                var tightForUpdate = new WireTableStreamSink(
+                    64, 4 * 1024 * 1024, updatePayload.Length - 1);
+                tightForUpdate.Bind(streamHandle);
+                await tightForUpdate.PublishAsync(update, CancellationToken.None);
+                Assert.NotNull(tightForUpdate.Termination);
+                Assert.Equal(
+                    TableStreamTerminationKind.MessageTooLarge,
+                    tightForUpdate.Termination!.Kind);
+
+                // The minimum production-allowed configuration (1024) accepts both frames and
+                // stays a normal bounded queue (no termination at all).
+                var loose = new WireTableStreamSink(64, 4 * 1024 * 1024, 1024);
+                loose.Bind(streamHandle);
+                await loose.PublishAsync(baseline, CancellationToken.None);
+                await loose.PublishAsync(update, CancellationToken.None);
+                Assert.Null(loose.Termination);
+            }
+            finally
+            {
+                await host.Actor.DisposeAsync();
+            }
+        }
+
+        private sealed class FrameCaptureSink : ITableStreamSink
+        {
+            public System.Threading.Channels.Channel<TableStreamFrame> Frames =
+                System.Threading.Channels.Channel.CreateUnbounded<TableStreamFrame>();
+
+            public ValueTask PublishAsync(TableStreamFrame frame, CancellationToken cancellationToken)
+            {
+                return Frames.Writer.WriteAsync(frame, cancellationToken);
+            }
+        }
+
+        private sealed class ProbeClock : ITableClock
+        {
+            public long Now = 100;
+
+            public long MonotonicMillis => Now;
+
+            public long UtcNowMs => 1_760_000_000_000L + Now;
+        }
+
         [Fact]
         public async Task DownstreamStall_TriggersActorSlowConsumerTermination()
-        {
-            // High ingress limits so the bounded backpressure chain (not the rate bucket) is
+        {            // High ingress limits so the bounded backpressure chain (not the rate bucket) is
             // what stops a stalled client: every accepted sync queues a full baseline frame,
             // so a sustained flood against a trickle reader makes consumption fall behind
             // production until the bounded reply channel, then the bounded sink → the actor's

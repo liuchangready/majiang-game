@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
@@ -96,23 +97,174 @@ namespace Mahjong.TableService.Tests
             // The old, working owner.
             Assert.Equal(TicketConsumptionStatus.Accepted, registry.Consume(old, "old-live", DateTimeOffset.UtcNow).Status);
             Assert.Equal(TicketCommitStatus.Committed, registry.CommitAdmission("old-live").Status);
+            Assert.True(registry.EvictOnWelcome("old-live") == null, "the first welcomed owner has nobody to evict");
 
             // A newer PROVISIONAL admission that never delivers its WELCOME.
             Assert.Equal(TicketConsumptionStatus.Accepted, registry.Consume(next, "new-conn", DateTimeOffset.UtcNow).Status);
             TableTicketCommitOutcome handover = registry.CommitAdmission("new-conn");
             Assert.Equal(TicketCommitStatus.Committed, handover.Status);
             Assert.Equal("old-live", handover.DisplacedSessionId);
-            Assert.True(registry.TryGetSeatOwner("reg4", 0, out string? displacedOwner));
-            Assert.Equal("new-conn", displacedOwner);
+            Assert.True(registry.EvictOnWelcome("old-live") == null,
+                "an older owner never evicts through its own (already-delivered) welcome");
 
-            // The WELCOME never made it: the failed admission's rollback restores the
-            // previous owner atomically (the displaced side was never notified).
-            string handoverFrom = handover.DisplacedSessionId!;
-            registry.RollbackSeatHandover("new-conn", handoverFrom);
+            // The WELCOME never made it: the failed admission's rollback removes its own
+            // chain entry, so the seat reverts to the last WELCOME-successful owner.
+            registry.RollbackSeatHandover("new-conn");
             registry.Release("new-conn");
 
             Assert.True(registry.TryGetSeatOwner("reg4", 0, out string? restoredOwner));
             Assert.Equal("old-live", restoredOwner);
+            Assert.True(registry.EvictOnWelcome("old-live") == null,
+                "the restored owner has nobody further to evict");
+        }
+
+        /// <summary>
+        /// D-1-03 (round 3): the exact A/B/C failure-chain order the review pinned — B commits
+        /// its handover, C commits another handover over it, THEN B's WELCOME fails and then
+        /// C's WELCOME fails. No eviction ever fired, and the last committed handover chain
+        /// must end at the still-working original owner A with its exact account identity —
+        /// even though the two failures happened after a newer commit superseded them.
+        /// </summary>
+        [Fact]
+        public void FailureChain_UnwelcomedCommitsRevertToLastWelcome_OwnerIdentityNeverLost()
+        {
+            TableServiceOptions options = Options();
+            var registry = new InMemoryTicketConsumptionRegistry(options);
+            var sessions = new InMemorySessionDirectory();
+            TableTestSigner signer = new TableTestSigner("chain-key");
+
+            ValidatedTableTicket a = SignValidated(
+                signer, options, new TableTestTicket("acct-alpha", "chain", TableAdmissionRole.Player, 0));
+            ValidatedTableTicket b = SignValidated(
+                signer, options, new TableTestTicket("acct-alpha", "chain", TableAdmissionRole.Player, 0));
+            ValidatedTableTicket c = SignValidated(
+                signer, options, new TableTestTicket("acct-alpha", "chain", TableAdmissionRole.Player, 0));
+
+            Assert.Equal(TicketConsumptionStatus.Accepted, registry.Consume(a, "old-live", DateTimeOffset.UtcNow).Status);
+            Assert.Equal(TicketCommitStatus.Committed, registry.CommitAdmission("old-live").Status);
+            // A's WELCOME was delivered (the real handler's post-WELCOME step): recorded
+            // welcomed on the chain, nobody to evict.
+            Assert.Null(registry.EvictOnWelcome("old-live"));
+            sessions.Register("old-live", () => throw new InvalidOperationException("A must never be displaced"));
+
+            Assert.Equal(TicketConsumptionStatus.Accepted, registry.Consume(b, "conn-b", DateTimeOffset.UtcNow).Status);
+            Assert.Equal(TicketCommitStatus.Committed, registry.CommitAdmission("conn-b").Status);
+            Assert.Equal(TicketConsumptionStatus.Accepted, registry.Consume(c, "conn-c", DateTimeOffset.UtcNow).Status);
+            Assert.Equal(TicketCommitStatus.Committed, registry.CommitAdmission("conn-c").Status);
+
+            // Both Welcomes fail, current owner never notified, newest-first restoration; the
+            // removal order is deliberately REVERSED (C first, then B): the rollback of a
+            // superseded failed admission must stay effective regardless of removal order.
+            registry.RollbackSeatHandover("conn-c");
+            registry.Release("conn-c");
+            registry.RollbackSeatHandover("conn-b");
+            registry.Release("conn-b");
+
+            Assert.True(registry.TryGetSeatOwner("chain", 0, out string? owner));
+            Assert.Equal("old-live", owner);
+            Assert.Equal(TicketConsumptionStatus.Accepted,
+                registry.Consume(c, "acceptable-again", DateTimeOffset.UtcNow.AddHours(1)).Status);
+        }
+
+        /// <summary>D-1-03 (round 3): seat identity lives on the seat lease entry itself — a
+        /// rollback restores the EXACT account even when the jti/assignment retention rows of
+        /// the previous owner were already purged by expiry.</summary>
+        [Fact]
+        public void RollbackAfterExpiryPurge_RestoresExactAccountId_SameAccountReconnectAccepted()
+        {
+            TableServiceOptions options = Options();
+            var registry = new InMemoryTicketConsumptionRegistry(options);
+            TableTestSigner signer = new TableTestSigner("purge-key");
+
+            ValidatedTableTicket old = SignValidated(
+                signer, options, new TableTestTicket("acct-online", "purge", TableAdmissionRole.Player, 0));
+            ValidatedTableTicket handover = SignValidated(
+                signer, options, new TableTestTicket("acct-online", "purge", TableAdmissionRole.Player, 0));
+
+            Assert.Equal(TicketConsumptionStatus.Accepted, registry.Consume(old, "old-live", DateTimeOffset.UtcNow).Status);
+            Assert.Equal(TicketCommitStatus.Committed, registry.CommitAdmission("old-live").Status);
+            // The old owner's WELCOME was delivered (the real handler's post-WELCOME step).
+            Assert.Null(registry.EvictOnWelcome("old-live"));
+
+            // Advance the retention clock: the previous owner's retained records are purged,
+            // while the LIVE session keeps owning the resource.
+            DateTimeOffset purgedClock = DateTimeOffset.UtcNow.AddMinutes(10);
+            Assert.Equal(TicketConsumptionStatus.Accepted,
+                registry.Consume(handover, "new-conn", purgedClock).Status);
+            Assert.Equal(1, ConsumedJtiCount(registry)); // the old retained rows are gone
+
+            Assert.Equal(TicketCommitStatus.Committed, registry.CommitAdmission("new-conn").Status);
+            registry.RollbackSeatHandover("new-conn");
+            registry.Release("new-conn");
+
+            // The restored owner is the LIVE session with its EXACT account — not an empty
+            // string derived from a purged jti row — so a fresh ticket of the SAME account is
+            // accepted again and a foreign account is refused.
+            Assert.True(registry.TryGetSeatOwner("purge", 0, out string? live));
+            Assert.Equal("old-live", live);
+            ValidatedTableTicket reconnect = SignValidated(
+                signer, options, new TableTestTicket("acct-online", "purge", TableAdmissionRole.Player, 0));
+            Assert.Equal(
+                TicketConsumptionStatus.Accepted,
+                registry.Consume(reconnect, "reconnect", purgedClock).Status);
+
+            var foreignRegistry = new InMemoryTicketConsumptionRegistry(options);
+            ValidatedTableTicket foreignOld = SignValidated(
+                signer, options, new TableTestTicket("acct-foreign", "purge2", TableAdmissionRole.Player, 0));
+            foreignRegistry.Consume(foreignOld, "foreign-old", DateTimeOffset.UtcNow);
+            foreignRegistry.CommitAdmission("foreign-old");
+            Assert.Null(foreignRegistry.EvictOnWelcome("foreign-old"));
+            ValidatedTableTicket foreignPurged = SignValidated(
+                signer, options, new TableTestTicket("other", "purge2", TableAdmissionRole.Player, 0));
+            foreignRegistry.Consume(foreignPurged, "foreign-new", DateTimeOffset.UtcNow.AddMinutes(10));
+            foreignRegistry.CommitAdmission("foreign-new");
+            foreignRegistry.RollbackSeatHandover("foreign-new");
+            Assert.Equal(
+                TicketConsumptionStatus.SeatOccupiedByOtherAccount,
+                foreignRegistry.Consume(foreignPurged, "foreign-takeover", DateTimeOffset.UtcNow.AddMinutes(10)).Status);
+        }
+
+        /// <summary>D-1-03 (round 3): a WELCOME that succeeds out of commit order can never
+        /// displace a seat its session no longer owns (the loser welcome never evicts).</summary>
+        [Fact]
+        public void OutOfOrderWelcome_LosingWelcomeNeverDisplacesAnybody()
+        {
+            TableServiceOptions options = Options();
+            var registry = new InMemoryTicketConsumptionRegistry(options);
+            var sessions = new InMemorySessionDirectory();
+            TableTestSigner signer = new TableTestSigner("racer-key");
+
+            ValidatedTableTicket a = SignValidated(
+                signer, options, new TableTestTicket("acct-a", "racer", TableAdmissionRole.Player, 0));
+            Assert.Equal(TicketConsumptionStatus.Accepted, registry.Consume(a, "live-a", DateTimeOffset.UtcNow).Status);
+            Assert.Equal(TicketCommitStatus.Committed, registry.CommitAdmission("live-a").Status);
+            // live-a's WELCOME was delivered (the real handler's post-WELCOME step).
+            Assert.Null(registry.EvictOnWelcome("live-a"));
+
+            bool displaced = false;
+            sessions.Register("live-a", () => displaced = true);
+
+            ValidatedTableTicket b = SignValidated(
+                signer, options, new TableTestTicket("acct-a", "racer", TableAdmissionRole.Player, 0));
+            Assert.Equal(TicketConsumptionStatus.Accepted, registry.Consume(b, "conn-b", DateTimeOffset.UtcNow).Status);
+            Assert.Equal(TicketCommitStatus.Committed, registry.CommitAdmission("conn-b").Status);
+            ValidatedTableTicket c = SignValidated(
+                signer, options, new TableTestTicket("acct-a", "racer", TableAdmissionRole.Player, 0));
+            Assert.Equal(TicketConsumptionStatus.Accepted, registry.Consume(c, "conn-c", DateTimeOffset.UtcNow).Status);
+            Assert.Equal(TicketCommitStatus.Committed, registry.CommitAdmission("conn-c").Status);
+
+            // The NEWEST handover (C) delivers its WELCOME first: it evicts the closest
+            // earlier welcomed owner (A), and the LOSING welcome B is never displaced.
+            Assert.Equal("live-a", registry.EvictOnWelcome("conn-c"));
+            Assert.Null(registry.EvictOnWelcome("conn-b"));
+            Assert.False(displaced, "only the winning welcome drives the actual displacement");
+
+            // ...and B's own eventual failure releases its stale chain entry without touching
+            // the live winner's seat.
+            registry.RollbackSeatHandover("conn-b");
+            registry.Release("conn-b");
+            Assert.True(registry.TryGetSeatOwner("racer", 0, out string? owner));
+            Assert.Equal("conn-c", owner);
         }
 
         [Fact]
@@ -211,6 +363,8 @@ namespace Mahjong.TableService.Tests
                 signer, options, new TableTestTicket("acct-old", "room-wf", TableAdmissionRole.Player, 0));
             Assert.Equal(TicketConsumptionStatus.Accepted, registry.Consume(old, "old-live", DateTimeOffset.UtcNow).Status);
             Assert.Equal(TicketCommitStatus.Committed, registry.CommitAdmission("old-live").Status);
+            // The old owner's WELCOME was delivered (the real handler's post-WELCOME step).
+            Assert.Null(registry.EvictOnWelcome("old-live"));
 
             bool displaced = false;
             sessions.Register("old-live", () => displaced = true);
@@ -246,6 +400,109 @@ namespace Mahjong.TableService.Tests
             }
         }
 
+        /// <summary>
+        /// D-1-03 (round 3): the review's REAL-HANDLER interleave — B and C both commit their
+        /// seat handovers while parked inside their WELCOME write (TCS-gated sockets, no
+        /// sleeps), then B's WELCOME faults first and C's second. No failed welcome may evict
+        /// or hide the still-working original owner A, in that exact commit/failure order, and
+        /// the seat identity must survive with its exact account for a same-account reconnect.
+        /// </summary>
+        [Fact]
+        public async Task GatedRealHandlers_TwoFailedWelcomes_OriginalOwnerNeverLost()
+        {
+            TableServiceOptions options = Options();
+            InMemoryTableHostRegistry hostRegistry = new InMemoryTableHostRegistry(
+                options,
+                new WireTableStreamContractCodec(),
+                SystemTableClock.Instance,
+                CryptographicTableRoundSource.Instance);
+            ITicketConsumptionRegistry registry = new InMemoryTicketConsumptionRegistry(options);
+            ITableSessionDirectory sessions = new InMemorySessionDirectory();
+            TableTestSigner signer = new TableTestSigner("abc-gate-key");
+            var keys = new StaticTableTicketKeyProvider(
+                new[] { (signer.PublicKeyPem, (string?)signer.Kid) }, DateTimeOffset.UtcNow);
+            var validator = new TableTicketValidator(keys, options);
+
+            // A: the live, welcomed owner of the seat.
+            ValidatedTableTicket a = SignValidated(
+                signer, options, new TableTestTicket("acct-abc", "room-abc", TableAdmissionRole.Player, 0));
+            Assert.Equal(TicketConsumptionStatus.Accepted, registry.Consume(a, "old-live", DateTimeOffset.UtcNow).Status);
+            Assert.Equal(TicketCommitStatus.Committed, registry.CommitAdmission("old-live").Status);
+            Assert.Null(registry.EvictOnWelcome("old-live"));
+            bool displaced = false;
+            sessions.Register("old-live", () => displaced = true);
+
+            // B runs the REAL handler: it consumes, commits its handover and parks INSIDE its
+            // WELCOME write (the socket gates the first send). The ticket is presented only
+            // through the handler's own admission — the jti is never pre-consumed here.
+            var socketB = new GatedFailWelcomeWebSocket(WireCodec.Encode(TableWire.Hello(signer.Sign(
+                new TableTestTicket("acct-abc", "room-abc", TableAdmissionRole.Player, 0)))));
+            Task handlerB = new TableSessionHandler(
+                socketB, "room-abc", options, new DrainState(), validator, registry, sessions,
+                hostRegistry, new Microsoft.Extensions.Logging.Abstractions.NullLogger<TableSessionHandler>(), 2)
+                .RunAsync(CancellationToken.None);
+            await socketB.WelcomeAttempted.Task.WaitAsync(TimeSpan.FromSeconds(30)); // B parked inside its (first) WELCOME write
+            List<(string SessionId, bool Welcomed)> chainAtB = SeatChain(registry, "room-abc", 0);
+            Assert.Equal(2, chainAtB.Count);
+            Assert.Equal(("old-live", true), (chainAtB[0].SessionId, chainAtB[0].Welcomed));
+            Assert.NotEqual("old-live", chainAtB[1].SessionId);
+            Assert.False(chainAtB[1].Welcomed, "B's handover commit is durable before its WELCOME write begins");
+            string sessionB = chainAtB[1].SessionId;
+
+            // C commits its handover OVER the parked B (same real-handler path).
+            var socketC = new GatedFailWelcomeWebSocket(WireCodec.Encode(TableWire.Hello(signer.Sign(
+                new TableTestTicket("acct-abc", "room-abc", TableAdmissionRole.Player, 0)))));
+            Task handlerC = new TableSessionHandler(
+                socketC, "room-abc", options, new DrainState(), validator, registry, sessions,
+                hostRegistry, new Microsoft.Extensions.Logging.Abstractions.NullLogger<TableSessionHandler>(), 3)
+                .RunAsync(CancellationToken.None);
+            await socketC.WelcomeAttempted.Task.WaitAsync(TimeSpan.FromSeconds(30)); // C committed, parked inside its WELCOME write
+            List<(string SessionId, bool Welcomed)> chainAtC = SeatChain(registry, "room-abc", 0);
+            Assert.Equal(3, chainAtC.Count);
+            Assert.False(chainAtC[2].Welcomed);
+            string sessionC = chainAtC[2].SessionId;
+            Assert.NotEqual(sessionB, sessionC);
+
+            // B's WELCOME faults first, then C's — the review's exact failure order.
+            socketB.Gate.Release();
+            await Task.WhenAny(handlerB, Task.Delay(TimeSpan.FromSeconds(30)));
+            Assert.True(handlerB.IsCompleted, "the failed welcome B must end its handler");
+            Assert.False(displaced, "no failed welcome ever displaces the working owner");
+
+            // After B's rollback the seat STILL belongs to A (C's entry is its own business).
+            Assert.True(registry.TryGetSeatOwner("room-abc", 0, out string? ownerAfterB));
+            Assert.Equal("old-live", ownerAfterB);
+            List<(string SessionId, bool Welcomed)> chainAfterBRollback = SeatChain(registry, "room-abc", 0);
+            Assert.Equal(2, chainAfterBRollback.Count);
+            Assert.Equal(sessionC, chainAfterBRollback[1].SessionId);
+
+            socketC.Gate.Release();
+            await Task.WhenAny(handlerC, Task.Delay(TimeSpan.FromSeconds(30)));
+            Assert.True(handlerC.IsCompleted, "the failed welcome C must end its handler");
+
+            // The full failure chain reverted to the last welcome-successful owner — never
+            // ownerless, never a newer failed admission.
+            Assert.True(registry.TryGetSeatOwner("room-abc", 0, out string? ownerAfterC));
+            Assert.Equal("old-live", ownerAfterC);
+            (string EndSession, bool EndWelcomed) = Assert.Single(SeatChain(registry, "room-abc", 0));
+            Assert.Equal("old-live", EndSession);
+            Assert.True(EndWelcomed);
+            Assert.False(displaced);
+
+            // The seat identity survived with its EXACT account: a fresh same-account ticket
+            // is admitted again (the exact review positive after the purged-rollback fix).
+            ValidatedTableTicket reconnect = SignValidated(
+                signer, options, new TableTestTicket("acct-abc", "room-abc", TableAdmissionRole.Player, 0));
+            Assert.Equal(
+                TicketConsumptionStatus.Accepted,
+                registry.Consume(reconnect, "reconnect", DateTimeOffset.UtcNow).Status);
+
+            foreach (RoomHost active in hostRegistry.Hosts)
+            {
+                await active.Actor.DisposeAsync();
+            }
+        }
+
         private static int ConsumedJtiCount(InMemoryTicketConsumptionRegistry registry)
         {
             System.Reflection.PropertyInfo? property = typeof(InMemoryTicketConsumptionRegistry).GetProperty(
@@ -253,6 +510,41 @@ namespace Mahjong.TableService.Tests
                 System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
             Assert.True(property != null, "the consumption count accessor must exist");
             return (int)property!.GetValue(registry)!;
+        }
+
+        /// <summary>The seat's committed handover chain as (session, welcomed) pairs, in
+        /// commit order — the deterministic observation for the gated interleave test
+        /// (no sleeps, no guessed session ids).</summary>
+        private static List<(string SessionId, bool Welcomed)> SeatChain(
+            ITicketConsumptionRegistry registry,
+            string roomId,
+            int seat)
+        {
+            System.Reflection.FieldInfo? bindings = typeof(InMemoryTicketConsumptionRegistry).GetField(
+                "_seatBindings",
+                System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+            Assert.True(bindings != null, "the seat binding map accessor must exist");
+            var map = (System.Collections.IDictionary)bindings!.GetValue(registry)!;
+            var chain = new List<(string SessionId, bool Welcomed)>();
+            if (!map.Contains(roomId + "#" + seat))
+            {
+                return chain;
+            }
+
+            object lease = map[roomId + "#" + seat]!;
+            System.Reflection.FieldInfo? commits = lease.GetType().GetField(
+                "Commits",
+                System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Public |
+                System.Reflection.BindingFlags.Instance);
+            Assert.True(commits != null, "the seat lease chain accessor must exist");
+            foreach (object entry in (System.Collections.IEnumerable)commits!.GetValue(lease)!)
+            {
+                string? entrySession = (string?)entry.GetType().GetProperty("SessionId")!.GetValue(entry);
+                bool welcomed = (bool)entry.GetType().GetProperty("Welcomed")!.GetValue(entry)!;
+                chain.Add((entrySession!, welcomed));
+            }
+
+            return chain;
         }
 
         private static ValidatedTableTicket SignValidated(
@@ -321,6 +613,88 @@ namespace Mahjong.TableService.Tests
                 System.Net.WebSockets.WebSocketMessageType messageType,
                 bool endOfMessage,
                 CancellationToken cancellationToken) => throw new System.IO.IOException("review failed WELCOME write");
+        }
+
+        /// <summary>A socket whose WELCOME write parks on a deterministic gate and THEN faults:
+        /// the commit is provably done (the send runs strictly after CommitAdmission) while a
+        /// newer admission interleaves, reproducing the review's A/B/C ordering with zero
+        /// sleeps.</summary>
+        private sealed class GatedFailWelcomeWebSocket : System.Net.WebSockets.WebSocket
+        {
+            private readonly byte[] _hello;
+
+            public GatedFailWelcomeWebSocket(byte[] hello)
+            {
+                _hello = hello;
+                WelcomeAttempted = new TaskCompletionSource<bool>(
+                    TaskCreationOptions.RunContinuationsAsynchronously);
+                Gate = new SemaphoreSlim(0, 1);
+            }
+
+            /// <summary>Set when the WELCOME send began (the commit is already durable).</summary>
+            public TaskCompletionSource<bool> WelcomeAttempted { get; }
+
+            /// <summary>Released by the test to let the WELCOME write fault.</summary>
+            public SemaphoreSlim Gate { get; }
+
+            public override System.Net.WebSockets.WebSocketCloseStatus? CloseStatus => null;
+
+            public override string? CloseStatusDescription => null;
+
+            public override System.Net.WebSockets.WebSocketState State => System.Net.WebSockets.WebSocketState.Open;
+
+            public override string? SubProtocol => null;
+
+            public override void Abort()
+            {
+            }
+
+            public override void Dispose()
+            {
+                Gate.Dispose();
+            }
+
+            public override Task CloseAsync(
+                System.Net.WebSockets.WebSocketCloseStatus closeStatus,
+                string? statusDescription,
+                CancellationToken cancellationToken) => Task.CompletedTask;
+
+            public override Task CloseOutputAsync(
+                System.Net.WebSockets.WebSocketCloseStatus closeStatus,
+                string? statusDescription,
+                CancellationToken cancellationToken) => Task.CompletedTask;
+
+            public override Task<System.Net.WebSockets.WebSocketReceiveResult> ReceiveAsync(
+                ArraySegment<byte> buffer,
+                CancellationToken cancellationToken)
+            {
+                _hello.AsSpan().CopyTo(buffer);
+                return Task.FromResult(new System.Net.WebSockets.WebSocketReceiveResult(
+                    _hello.Length,
+                    System.Net.WebSockets.WebSocketMessageType.Binary,
+                    true));
+            }
+
+            public override async Task SendAsync(
+                ArraySegment<byte> buffer,
+                System.Net.WebSockets.WebSocketMessageType messageType,
+                bool endOfMessage,
+                CancellationToken cancellationToken)
+            {
+                WelcomeAttempted.TrySetResult(true);
+                if (Interlocked.Exchange(ref _gatedUsed, 1) == 1)
+                {
+                    // Every send AFTER the gated WELCOME faults immediately: the transport is
+                    // dead exactly like a real failed write, and a close-path retry can never
+                    // park on an already-consumed gate.
+                    throw new System.IO.IOException("post-failure writes are dead too");
+                }
+
+                await Gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+                throw new System.IO.IOException("gated failed WELCOME write");
+            }
+
+            private int _gatedUsed;
         }
     }
 }

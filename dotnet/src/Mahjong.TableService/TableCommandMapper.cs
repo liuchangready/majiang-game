@@ -130,6 +130,19 @@ namespace Mahjong.TableService
     }
 
     /// <summary>
+    /// D-1-01 (b): the trusted response-window authority is unavailable for this discard —
+    /// the mapped route must fail closed (retryable) instead of silently skipping a possible
+    /// legal claim window.
+    /// </summary>
+    public sealed class ResponseEligibilityUnavailableException : Exception
+    {
+        public ResponseEligibilityUnavailableException()
+            : base("The trusted response-window authority is unavailable for this discard.")
+        {
+        }
+    }
+
+    /// <summary>
     /// Maps one inbound wire COMMAND onto the accepted TableRuntime actor surface.
     ///
     /// Frozen facts enforced here (never derived from client claims):
@@ -151,13 +164,16 @@ namespace Mahjong.TableService
 
         public const string BeamSwapSlotDetail = "BEAM_SWAP_SLOT_KIND_UNRESOLVED";
 
+        public const string ResponseEligibilityDetail = "RESPONSE_WINDOW_AUTHORITY_UNAVAILABLE";
+
         public static TableCommandRoute Map(
             TableConnectionIdentity identity,
             Envelope envelope,
             OwnerEpoch currentOwnerEpoch,
             TableServiceOptions options,
             string? authoritativeRoundId,
-            Func<uint, TableBeamSwapSlotResolution?>? beamSwapSlotResolver = null)
+            Func<uint, TableBeamSwapSlotResolution?>? beamSwapSlotResolver = null,
+            Func<int, TileId, ulong, TableCommandRouteResponseEligibility?>? responseEligibilityResolver = null)
         {
             Command command = envelope.Command;
 
@@ -264,7 +280,8 @@ namespace Mahjong.TableService
             {
                 case CommandKind.SubmitAction:
                     return MapSubmitAction(
-                        identity, requestId, payload, expectedStateVersion, ownerEpoch, digest);
+                        identity, requestId, payload, expectedStateVersion, ownerEpoch, digest,
+                        responseEligibilityResolver);
 
                 case CommandKind.SubmitTileMark:
                 case CommandKind.SubmitSleeveBloom:
@@ -315,7 +332,8 @@ namespace Mahjong.TableService
             BusinessPayload payload,
             StateVersion expectedStateVersion,
             OwnerEpoch ownerEpoch,
-            TablePayloadSha256 digest)
+            TablePayloadSha256 digest,
+            Func<int, TileId, ulong, TableCommandRouteResponseEligibility?>? responseEligibilityResolver)
         {
             CanonicalPayloadDocument document = CanonicalPayloadParser.Parse(payload);
             string roundId = RequireStringField(document, CommandPayloadFields.RoundIdField, "roundId");
@@ -334,7 +352,15 @@ namespace Mahjong.TableService
                     roundCommand = RoundCommand.Draw(roundId, identity.Seat);
                     break;
                 case ProtocolActionType.DiscardTile:
-                    roundCommand = RoundCommand.Discard(roundId, identity.Seat, RequireTile(tileIds, 0));
+                    TileId discardTile = RequireTile(tileIds, 0);
+                    // D-1-01 (b): the response window that a discard can legally open belongs to
+                    // the TRUSTED table (the actor's own committed round at the exact expected
+                    // state version), never to a client claim. A discard whose trusted
+                    // eligibility cannot be computed fails closed at this boundary — it never
+                    // silently advances past a window other seats may legitimately need.
+                    roundCommand = RoundCommand.Discard(
+                        roundId, identity.Seat, discardTile, RequiredEligibleSeats(
+                            responseEligibilityResolver, identity.Seat, discardTile, expectedStateVersion.Value));
                     break;
                 case ProtocolActionType.DeclareChi:
                     roundCommand = RoundCommand.Chi(
@@ -365,7 +391,11 @@ namespace Mahjong.TableService
 
                     break;
                 case ProtocolActionType.DeclareRiichi:
-                    roundCommand = RoundCommand.Riichi(roundId, identity.Seat, RequireTile(tileIds, 0));
+                    TileId riichiDiscardTile = RequireTile(tileIds, 0);
+                    // A riichi discard opens the same trusted claim right as any other discard.
+                    roundCommand = RoundCommand.Riichi(
+                        roundId, identity.Seat, riichiDiscardTile, RequiredEligibleSeats(
+                            responseEligibilityResolver, identity.Seat, riichiDiscardTile, expectedStateVersion.Value));
                     break;
                 case ProtocolActionType.Pass:
                     roundCommand = RoundCommand.Pass(roundId, identity.Seat);
@@ -643,6 +673,35 @@ namespace Mahjong.TableService
             }
 
             return new TileId((int)tileIds[index]);
+        }
+
+        /// <summary>
+        /// D-1-01 (b): the response-window eligibility the mapper attaches to a discard/riichi
+        /// command is derived by the trusted room runtime at this exact state version. A null
+        /// (unusable) trusted result fails closed at the mapper boundary — the rejection is
+        /// retryable and carries a distinct boundary detail: the freeze never maps a discard
+        /// that quietly skips a legal claim window. An EMPTY set is an honest "no seat can
+        /// legitimately claim this tile" — the Domain then auto-advances the next draw.
+        /// </summary>
+        private static IReadOnlyList<int>? RequiredEligibleSeats(
+            Func<int, TileId, ulong, TableCommandRouteResponseEligibility?>? resolver,
+            int actingSeat,
+            TileId discardedTile,
+            ulong expectedStateVersion)
+        {
+            if (resolver == null)
+            {
+                throw new CanonicalEncodingException(
+                    "A discard/riichi command requires the trusted response-window resolver.");
+            }
+
+            TableCommandRouteResponseEligibility? trusted = resolver(actingSeat, discardedTile, expectedStateVersion);
+            if (trusted == null)
+            {
+                throw new ResponseEligibilityUnavailableException();
+            }
+
+            return trusted.EligibleSeats;
         }
 
         /// <summary>Maps one authoritative operation result onto the frozen wire receipt.</summary>
