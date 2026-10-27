@@ -26,6 +26,7 @@ namespace Mahjong.LocalHost
         private readonly object _gate = new object();
         private readonly LocalTableHostOptions _options;
         private readonly ITableClock _clock;
+        private readonly ReplayClockProxy _replayClock;
         private readonly string _saveDirectory;
         private readonly string _primaryPath;
         private readonly string _backupPath;
@@ -55,6 +56,7 @@ namespace Mahjong.LocalHost
         {
             _options = options;
             _clock = clock;
+            _replayClock = new ReplayClockProxy(clock);
             _files = files;
             _saveDirectory = saveDirectory;
             _primaryPath = Path.Combine(saveDirectory, options.RoomId + SaveSuffix);
@@ -293,13 +295,13 @@ namespace Mahjong.LocalHost
             LocalSave save = _save ?? throw new InvalidOperationException("No save is loaded.");
             TableCheckpoint checkpoint = LocalSaveCodec.DecodeCheckpoint(save.BaseCheckpointBlob);
             _scopes = new InMemoryRequestScopeAuthority();
-            _inner = new InMemoryTableStore(_clock, _scopes);
+            _inner = new InMemoryTableStore(_replayClock, _scopes);
             await _inner.CreateRoomAsync(checkpoint, cancellationToken).ConfigureAwait(false);
 
             TableLeaseAcquireResult acquired = await _inner.AcquireAsync(
                 save.RoomId,
                 _options.OwnerInstanceId,
-                _options.LeaseDuration,
+                TimeSpan.FromDays(36500),
                 cancellationToken).ConfigureAwait(false);
             if (!acquired.Acquired || acquired.Lease == null)
             {
@@ -338,9 +340,20 @@ namespace Mahjong.LocalHost
                     LocalTableErrorKind.CorruptState,
                     "Replayed store state does not match the persisted state row.");
             }
+            _replayClock.SetOverrideUtc(null);
+            TableLeaseRenewResult renewed = await _inner.RenewAsync(
+                save.RoomId,
+                _options.OwnerInstanceId,
+                _leaseEpoch,
+                _options.LeaseDuration,
+                cancellationToken).ConfigureAwait(false);
+            if (renewed.Renewed && renewed.Lease != null)
+            {
+                _leaseExpiresUtcMs = renewed.Lease.ExpiresAtUtcMs;
+            }
         }
 
-        private ValueTask<TableDurableCommitResult> ReplayOperationAsync(
+        private async ValueTask<TableDurableCommitResult> ReplayOperationAsync(
             LocalDurableOperation operation,
             CancellationToken cancellationToken)
         {
@@ -354,21 +367,16 @@ namespace Mahjong.LocalHost
                 {
                     if (!operation.InternalCommand && operation.Receipt != null && _scopes != null)
                     {
-                        ulong issued = operation.Receipt.CreatedAtUtcMs;
-                        ulong now = (ulong)Math.Max(0L, _clock.UtcNowMs);
-                        ulong expires = Math.Max(operation.Receipt.ExpiresAtUtcMs, now + 3600_000UL);
-                        if (expires <= issued)
+                        if (_scopes.ReadScopeForCommit(operation.Receipt.ScopeId) == null)
                         {
-                            expires = issued + 3600_000UL;
+                            _scopes.Issue(
+                                operation.Receipt.AccountId,
+                                TableScopeRole.Player,
+                                room,
+                                operation.Receipt.CreatedAtUtcMs,
+                                operation.Receipt.ExpiresAtUtcMs,
+                                operation.Receipt.ScopeId.Value);
                         }
-
-                        _scopes.Issue(
-                            operation.Receipt.AccountId,
-                            TableScopeRole.Player,
-                            room,
-                            issued,
-                            expires,
-                            operation.Receipt.ScopeId.Value);
                     }
 
                     TableCheckpoint? checkpoint = operation.CheckpointBlob == null
@@ -397,7 +405,20 @@ namespace Mahjong.LocalHost
                         operation.CommittedFactsPayloadSha256,
                         operation.NextCheatVersion,
                         operation.NextCheatFingerprint);
-                    return inner.CommitAsync(request, cancellationToken);
+
+                    if (operation.Receipt != null && operation.Receipt.CreatedAtUtcMs > 0)
+                    {
+                        _replayClock.SetOverrideUtc((long)operation.Receipt.CreatedAtUtcMs);
+                    }
+
+                    try
+                    {
+                        return await inner.CommitAsync(request, cancellationToken).ConfigureAwait(false);
+                    }
+                    finally
+                    {
+                        _replayClock.SetOverrideUtc(null);
+                    }
                 }
 
                 case LocalOperationKind.SaveCheckpoint:
@@ -410,7 +431,7 @@ namespace Mahjong.LocalHost
                         new StateVersion(operation.ExpectedStateVersion),
                         operation.ExpectedControlVersion,
                         operation.ExpectedTimingVersion);
-                    return inner.SaveCheckpointAsync(checkpoint, fence, cancellationToken);
+                    return await inner.SaveCheckpointAsync(checkpoint, fence, cancellationToken).ConfigureAwait(false);
                 }
 
                 case LocalOperationKind.CommitControl:
@@ -425,7 +446,7 @@ namespace Mahjong.LocalHost
                         operation.RoundId ?? string.Empty,
                         operation.ControlChange!,
                         owner);
-                    return inner.CommitControlAsync(request, checkpoint, cancellationToken);
+                    return await inner.CommitControlAsync(request, checkpoint, cancellationToken).ConfigureAwait(false);
                 }
 
                 case LocalOperationKind.AppendTiming:
@@ -439,16 +460,14 @@ namespace Mahjong.LocalHost
                         operation.ExpectedControlVersion,
                         operation.ExpectedTimingVersion,
                         timing);
-                    return inner.AppendTimingAsync(request, cancellationToken);
+                    return await inner.AppendTimingAsync(request, cancellationToken).ConfigureAwait(false);
                 }
 
                 case LocalOperationKind.AppendAudit:
-                    return new ValueTask<TableDurableCommitResult>(
-                        TableDurableCommitResult.Committed(null));
+                    return TableDurableCommitResult.Committed(null);
 
                 default:
-                    return new ValueTask<TableDurableCommitResult>(
-                        TableDurableCommitResult.Failed("LOCAL_BAD_OP", "Unknown local operation."));
+                    return TableDurableCommitResult.Failed("LOCAL_BAD_OP", "Unknown local operation.");
             }
         }
 
@@ -1439,7 +1458,7 @@ namespace Mahjong.LocalHost
             }
 
             _scopes = new InMemoryRequestScopeAuthority();
-            _inner = new InMemoryTableStore(_clock, _scopes);
+            _inner = new InMemoryTableStore(_replayClock, _scopes);
         }
 
         private void EnsureLeaseAcquired()
@@ -1757,6 +1776,26 @@ namespace Mahjong.LocalHost
                 _disposed = true;
                 ReleaseLock();
             }
+        }
+
+        private sealed class ReplayClockProxy : ITableClock
+        {
+            private readonly ITableClock _underlying;
+            private long? _overrideUtcNowMs;
+
+            public ReplayClockProxy(ITableClock underlying)
+            {
+                _underlying = underlying ?? throw new ArgumentNullException(nameof(underlying));
+            }
+
+            public void SetOverrideUtc(long? utcNowMs)
+            {
+                _overrideUtcNowMs = utcNowMs;
+            }
+
+            public long MonotonicMillis => _underlying.MonotonicMillis;
+
+            public long UtcNowMs => _overrideUtcNowMs ?? _underlying.UtcNowMs;
         }
     }
 

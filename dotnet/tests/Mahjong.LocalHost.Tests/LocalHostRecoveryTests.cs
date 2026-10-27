@@ -209,6 +209,7 @@ namespace Mahjong.LocalHost.Tests
         {
             await using var harness = new P41Harness();
             harness.Options.AutoPlay = false;
+            harness.Options.Environment = LocalHostEnvironment.System;
             CancellationToken ct = TestContext.Current.CancellationToken;
             string root = P41Harness.FindRepositoryRoot();
             string workerDll = Path.Combine(
@@ -253,60 +254,177 @@ namespace Mahjong.LocalHost.Tests
             }
 
             string[] markerLines = File.ReadAllLines(marker);
-            Assert.Equal(3, markerLines.Length);
+            Assert.True(markerLines.Length >= 7 + 136, "Marker file line count was " + markerLines.Length);
             var scopeId = new RequestScopeId(markerLines[0]);
             var requestId = new RequestId(markerLines[1]);
             ulong committed = ulong.Parse(markerLines[2], System.Globalization.CultureInfo.InvariantCulture);
+            string expectedAccount = markerLines[3];
+            string expectedDigestHex = markerLines[4];
+            string[] balancesStr = markerLines[5].Split(',');
+            ulong expectedStateHash = ulong.Parse(markerLines[6], System.Globalization.CultureInfo.InvariantCulture);
+
+            var expectedTiles = new (TileZone Zone, int Index)[136];
+            for (int i = 0; i < 136; i++)
+            {
+                string[] parts = markerLines[7 + i].Split(':');
+                int tileId = int.Parse(parts[0], System.Globalization.CultureInfo.InvariantCulture);
+                var zone = (TileZone)int.Parse(parts[1], System.Globalization.CultureInfo.InvariantCulture);
+                int idx = int.Parse(parts[2], System.Globalization.CultureInfo.InvariantCulture);
+                expectedTiles[tileId] = (zone, idx);
+            }
 
             using (LocalTableStore store = await LocalTableStore.OpenAsync(harness.Options, harness.Clock, null, ct))
             {
                 // 1) Receipt real-value verification
                 TableDurableReceipt? receipt = await store.TryGetAsync(
-                    "local-" + P41Harness.RoomId + "-seat0",
+                    expectedAccount,
                     scopeId,
                     requestId,
                     ct);
                 Assert.NotNull(receipt);
-                Assert.Equal("local-" + P41Harness.RoomId + "-seat0", receipt.AccountId);
+                Assert.Equal(expectedAccount, receipt.AccountId);
                 Assert.Equal(scopeId, receipt.ScopeId);
                 Assert.Equal(requestId, receipt.RequestId);
                 Assert.Equal(ReceiptStatus.Applied, receipt.Receipt.Status);
                 Assert.True(receipt.IsAccepted);
 
-                // 2) Digest real-value verification
-                Assert.False(string.IsNullOrEmpty(receipt.PayloadSha256.ToHex()));
-                Assert.Equal(64, receipt.PayloadSha256.ToHex().Length);
+                // 2) Digest real-value verification (exact hex equality, not just length)
+                Assert.Equal(expectedDigestHex, receipt.PayloadSha256.ToHex());
 
+                // 3) Exact state version match
                 TableStateRow row = (await store.LoadStateAsync(P41Harness.RoomId, ct))!;
-                Assert.True(row.StateVersion.Value >= committed);
+                Assert.Equal(committed, row.StateVersion.Value);
 
-                // 3) 136 Physical entities conservation verification
+                // 4) Outbox is empty for non-terminal discard action
+                IReadOnlyList<TableSettlementOutboxRecord> outbox = await store.ListUnpublishedAsync(ct);
+                Assert.NotNull(outbox);
+                Assert.Empty(outbox);
+
+                // 5) Cheat Ledger balances and cheat state exact matching
                 TableCheckpoint checkpoint = (await store.LoadCheckpointAsync(P41Harness.RoomId, ct))!;
-                RoundRecoveryState recoveryState = RoundRecoveryCodec.Decode(checkpoint.StatePayload);
-                ConservationReport report = TilePositionMap.Validate(recoveryState.Tiles);
-                Assert.True(report.IsValid, string.Join("; ", report.Errors));
-                Assert.Equal(136, report.AssignedCount);
-                Assert.Equal(0, report.UnassignedCount);
-                for (int i = 0; i < 136; i++)
-                {
-                    Assert.NotEqual(TileZone.Unassigned, recoveryState.Tiles[i].Zone);
-                }
-
-                // 4) Cheat Ledger real-value verification
                 Assert.NotNull(checkpoint.CheatPayload);
                 TableCheatLedgerCheckpoint cheatCp = TableCheatLedgerCheckpointCodec.Decode(checkpoint.CheatPayload!);
                 CheatLedger ledger = cheatCp.Restore();
                 Assert.NotNull(ledger);
                 Assert.Equal(4, cheatCp.Balances.Count);
+                for (int s = 0; s < 4; s++)
+                {
+                    Assert.Equal(long.Parse(balancesStr[s], System.Globalization.CultureInfo.InvariantCulture), cheatCp.Balances[s]);
+                }
                 CheatState cheatState = cheatCp.RestoreCheatState();
                 Assert.NotNull(cheatState);
                 Assert.NotNull(cheatState.TileMarks);
                 Assert.NotNull(cheatState.SleeveBloom);
                 Assert.NotNull(cheatState.BeamSwap);
+            }
 
-                // 5) Outbox real-value verification
+            // 6) 136 Physical entities conservation & exact position match through authoritative cold recovery
+            await using (LocalTableRuntime runtime = await LocalTableRuntime.OpenAsync(
+                harness.Options,
+                ct))
+            {
+                RoundStateMachine recoveredRound = runtime.ActorForTest.GetRoundStateForHost();
+                TilePositionMap recoveredTiles = recoveredRound.Tiles;
+                ConservationReport report = TilePositionMap.Validate(recoveredTiles);
+                Assert.True(report.IsValid, string.Join("; ", report.Errors));
+                Assert.Equal(136, report.AssignedCount);
+                Assert.Equal(0, report.UnassignedCount);
+                for (int i = 0; i < 136; i++)
+                {
+                    Assert.True(
+                        expectedTiles[i].Zone == recoveredTiles[i].Zone && expectedTiles[i].Index == recoveredTiles[i].Index,
+                        $"Tile {i} differs: expected {expectedTiles[i].Zone}:{expectedTiles[i].Index}, actual {recoveredTiles[i].Zone}:{recoveredTiles[i].Index}");
+                }
+                Assert.Equal(expectedStateHash, report.StateHash);
+            }
+        }
+
+        [Fact]
+        public async Task CrashWorkerRealProcessKill_SettlementOutboxLeavesDurableOutbox()
+        {
+            await using var harness = new P41Harness();
+            harness.Options.AutoPlay = false;
+            CancellationToken ct = TestContext.Current.CancellationToken;
+            string root = P41Harness.FindRepositoryRoot();
+            string workerDll = Path.Combine(
+                root,
+                "dotnet",
+                "tests",
+                "Mahjong.LocalHost.CrashWorker",
+                "bin",
+                "Release",
+                "net8.0",
+                "Mahjong.LocalHost.CrashWorker.dll");
+            Assert.True(File.Exists(workerDll), "CrashWorker was not built: " + workerDll);
+            string marker = Path.Combine(harness.Root, "crash-settlement-marker.txt");
+
+            var start = new System.Diagnostics.ProcessStartInfo
+            {
+                FileName = Environment.ProcessPath ?? "dotnet",
+                Arguments = "\"" + workerDll + "\" \"" + harness.Options.SaveDirectory + "\" \"" +
+                            P41Harness.RoomId + "\" \"" + marker + "\" settlement",
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true
+            };
+
+            using (System.Diagnostics.Process process = System.Diagnostics.Process.Start(start)!)
+            {
+                using var waitCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                waitCts.CancelAfter(TimeSpan.FromSeconds(30));
+                Task<string> stdoutTask = process.StandardOutput.ReadToEndAsync(waitCts.Token);
+                Task<string> stderrTask = process.StandardError.ReadToEndAsync(waitCts.Token);
+                try
+                {
+                    await process.WaitForExitAsync(waitCts.Token);
+                    await Task.WhenAll(stdoutTask, stderrTask);
+                }
+                catch (OperationCanceledException)
+                {
+                    process.Kill(true);
+                    throw new TimeoutException("CrashWorker settlement mode did not exit within timeout.");
+                }
+
+                Assert.NotEqual(0, process.ExitCode);
+            }
+
+            string[] markerLines = File.ReadAllLines(marker);
+            Assert.Equal(5, markerLines.Length);
+            string matchId = markerLines[0];
+            int resultVersion = int.Parse(markerLines[1], System.Globalization.CultureInfo.InvariantCulture);
+            string expectedHashHex = markerLines[2];
+            string expectedPayloadHex = markerLines[3];
+            string expectedStatus = markerLines[4];
+            Assert.Equal("unpublished", expectedStatus);
+
+            using (LocalTableStore store = await LocalTableStore.OpenAsync(harness.Options, harness.Clock, null, ct))
+            {
                 IReadOnlyList<TableSettlementOutboxRecord> outbox = await store.ListUnpublishedAsync(ct);
-                Assert.NotNull(outbox);
+                Assert.Single(outbox);
+                Assert.Equal(matchId, outbox[0].MatchId);
+                Assert.Equal(resultVersion, outbox[0].ResultVersion);
+                Assert.Equal(expectedHashHex, outbox[0].PayloadSha256.ToHex());
+                Assert.Equal(expectedPayloadHex, Convert.ToHexString(outbox[0].Payload));
+                Assert.Null(outbox[0].PublishedAtUtcMs);
+
+                TableSettlementOutboxRecord? record = await store.TryGetAsync(matchId, resultVersion, ct);
+                Assert.NotNull(record);
+                Assert.Equal(matchId, record!.MatchId);
+                Assert.Equal(resultVersion, record.ResultVersion);
+                Assert.Equal(expectedHashHex, record.PayloadSha256.ToHex());
+                Assert.Equal(expectedPayloadHex, Convert.ToHexString(record.Payload));
+
+                // Mark published and assert removal from unpublished list
+                bool marked = await store.MarkPublishedAsync(matchId, resultVersion, 1_700_000_100_000UL, ct);
+                Assert.True(marked);
+
+                IReadOnlyList<TableSettlementOutboxRecord> afterPublish = await store.ListUnpublishedAsync(ct);
+                Assert.Empty(afterPublish);
+
+                TableSettlementOutboxRecord? publishedRecord = await store.TryGetAsync(matchId, resultVersion, ct);
+                Assert.NotNull(publishedRecord);
+                Assert.Equal(1_700_000_100_000UL, publishedRecord!.PublishedAtUtcMs);
             }
         }
         private static async Task WaitForStableStateAsync(TableSession session, CancellationToken ct)
