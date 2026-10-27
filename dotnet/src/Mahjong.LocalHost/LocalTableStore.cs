@@ -352,6 +352,25 @@ namespace Mahjong.LocalHost
             {
                 case LocalOperationKind.Commit:
                 {
+                    if (!operation.InternalCommand && operation.Receipt != null && _scopes != null)
+                    {
+                        ulong issued = operation.Receipt.CreatedAtUtcMs;
+                        ulong now = (ulong)Math.Max(0L, _clock.UtcNowMs);
+                        ulong expires = Math.Max(operation.Receipt.ExpiresAtUtcMs, now + 3600_000UL);
+                        if (expires <= issued)
+                        {
+                            expires = issued + 3600_000UL;
+                        }
+
+                        _scopes.Issue(
+                            operation.Receipt.AccountId,
+                            TableScopeRole.Player,
+                            room,
+                            issued,
+                            expires,
+                            operation.Receipt.ScopeId.Value);
+                    }
+
                     TableCheckpoint? checkpoint = operation.CheckpointBlob == null
                         ? null
                         : LocalSaveCodec.DecodeCheckpoint(operation.CheckpointBlob);
@@ -364,7 +383,7 @@ namespace Mahjong.LocalHost
                         epoch,
                         new StateVersion(operation.ExpectedStateVersion),
                         operation.Receipt,
-                        true,
+                        operation.InternalCommand,
                         operation.Events,
                         operation.Journal,
                         operation.Outbox,

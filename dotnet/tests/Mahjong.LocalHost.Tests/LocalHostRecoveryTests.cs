@@ -1,9 +1,12 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Threading;
 using System.Threading.Tasks;
 using Mahjong.Client;
 using Mahjong.Contracts;
+using Mahjong.Domain;
+using Mahjong.Domain.Cheat;
 using Mahjong.TableRuntime;
 using Xunit;
 
@@ -257,14 +260,53 @@ namespace Mahjong.LocalHost.Tests
 
             using (LocalTableStore store = await LocalTableStore.OpenAsync(harness.Options, harness.Clock, null, ct))
             {
+                // 1) Receipt real-value verification
                 TableDurableReceipt? receipt = await store.TryGetAsync(
                     "local-" + P41Harness.RoomId + "-seat0",
                     scopeId,
                     requestId,
                     ct);
                 Assert.NotNull(receipt);
+                Assert.Equal("local-" + P41Harness.RoomId + "-seat0", receipt.AccountId);
+                Assert.Equal(scopeId, receipt.ScopeId);
+                Assert.Equal(requestId, receipt.RequestId);
+                Assert.Equal(ReceiptStatus.Applied, receipt.Receipt.Status);
+                Assert.True(receipt.IsAccepted);
+
+                // 2) Digest real-value verification
+                Assert.False(string.IsNullOrEmpty(receipt.PayloadSha256.ToHex()));
+                Assert.Equal(64, receipt.PayloadSha256.ToHex().Length);
+
                 TableStateRow row = (await store.LoadStateAsync(P41Harness.RoomId, ct))!;
                 Assert.True(row.StateVersion.Value >= committed);
+
+                // 3) 136 Physical entities conservation verification
+                TableCheckpoint checkpoint = (await store.LoadCheckpointAsync(P41Harness.RoomId, ct))!;
+                RoundRecoveryState recoveryState = RoundRecoveryCodec.Decode(checkpoint.StatePayload);
+                ConservationReport report = TilePositionMap.Validate(recoveryState.Tiles);
+                Assert.True(report.IsValid, string.Join("; ", report.Errors));
+                Assert.Equal(136, report.AssignedCount);
+                Assert.Equal(0, report.UnassignedCount);
+                for (int i = 0; i < 136; i++)
+                {
+                    Assert.NotEqual(TileZone.Unassigned, recoveryState.Tiles[i].Zone);
+                }
+
+                // 4) Cheat Ledger real-value verification
+                Assert.NotNull(checkpoint.CheatPayload);
+                TableCheatLedgerCheckpoint cheatCp = TableCheatLedgerCheckpointCodec.Decode(checkpoint.CheatPayload!);
+                CheatLedger ledger = cheatCp.Restore();
+                Assert.NotNull(ledger);
+                Assert.Equal(4, cheatCp.Balances.Count);
+                CheatState cheatState = cheatCp.RestoreCheatState();
+                Assert.NotNull(cheatState);
+                Assert.NotNull(cheatState.TileMarks);
+                Assert.NotNull(cheatState.SleeveBloom);
+                Assert.NotNull(cheatState.BeamSwap);
+
+                // 5) Outbox real-value verification
+                IReadOnlyList<TableSettlementOutboxRecord> outbox = await store.ListUnpublishedAsync(ct);
+                Assert.NotNull(outbox);
             }
         }
         private static async Task WaitForStableStateAsync(TableSession session, CancellationToken ct)
