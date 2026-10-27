@@ -53,6 +53,12 @@ namespace Mahjong.Unity.App
         private readonly MainThreadDispatcher _dispatcher;
         private readonly AppConfig _config;
 
+        // Test-only barrier around the owner capture. Production passes null
+        // and always uses TableSessionOperationQueue.CaptureAsync; the overload
+        // lets directed tests hold an accepted batch across a rebind without
+        // creating a second coordinator/UI or reading live session state.
+        private readonly Func<Task<TableSessionQueueSnapshot?>>? _captureProvider;
+
         private readonly object _stateGate = new object();
         private SessionViewState _currentViewState;
         private long _currentGeneration;
@@ -98,7 +104,8 @@ namespace Mahjong.Unity.App
             ITableChannel? channel,
             MainThreadDispatcher dispatcher,
             AppConfig config,
-            long generation = 1)
+            long generation = 1,
+            Func<Task<TableSessionQueueSnapshot?>>? captureProvider = null)
         {
             _session = session;
             _operationQueue = operationQueue;
@@ -106,6 +113,7 @@ namespace Mahjong.Unity.App
             _dispatcher = dispatcher ?? throw new ArgumentNullException(nameof(dispatcher));
             _config = config ?? new AppConfig();
             _currentGeneration = generation;
+            _captureProvider = captureProvider;
 
             // Synchronize dispatcher generation with session generation
             _dispatcher.CurrentGeneration = _currentGeneration;
@@ -217,7 +225,9 @@ namespace Mahjong.Unity.App
             try
             {
                 if (_operationQueue == null) return;
-                var capture = await _operationQueue.CaptureAsync(CancellationToken.None).ConfigureAwait(false);
+                var capture = _captureProvider != null
+                    ? await _captureProvider().ConfigureAwait(false)
+                    : await _operationQueue.CaptureAsync(CancellationToken.None).ConfigureAwait(false);
                 lock (_stateGate)
                 {
                     if (_terminal != null || _quarantined || gen != _currentGeneration) return;

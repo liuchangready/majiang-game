@@ -135,6 +135,15 @@ namespace Mahjong.Unity.Table
         private PlayerTableViewState? _latestView;
         private ClientVisibleEventMapping? _lastVisibleEventMapping;
 
+        // Lifecycle fence: a pause/focus loss detaches the confirmed view feed,
+        // clears pending and displayed animation, and lets a resume re-render
+        // as a non-animating baseline. Late callbacks captured before the
+        // boundary therefore cannot revive old private content.
+        private bool _pausedForAnimations;
+        private bool _focusLostForAnimations;
+        private bool _sessionViewDetachedForLifecycle;
+        private bool _forceAnimationBaseline;
+
         // Selection buffers
         private readonly List<uint> _tileMarkSelectedTiles = new List<uint>();
         private uint? _selectedBeamHandTile;
@@ -195,6 +204,8 @@ namespace Mahjong.Unity.Table
             UpdateAnimationBanner();
         }
 
+        private bool AnimationsSuspended => _pausedForAnimations || _focusLostForAnimations;
+
         private void UpdateCheatOfferExpirations()
         {
             if (_latestView?.Own?.Cheat == null) return;
@@ -243,8 +254,17 @@ namespace Mahjong.Unity.Table
 
             if (_sessionView != null)
             {
-                _sessionView.Changed += OnSessionViewChanged;
-                OnSessionViewChanged(this, _sessionView.Current);
+                if (AnimationsSuspended)
+                {
+                    _sessionViewDetachedForLifecycle = true;
+                    _forceAnimationBaseline = true;
+                    OnSessionViewChanged(this, _sessionView.Current);
+                }
+                else
+                {
+                    _sessionView.Changed += OnSessionViewChanged;
+                    OnSessionViewChanged(this, _sessionView.Current);
+                }
             }
             if (_commandSink != null)
             {
@@ -259,6 +279,8 @@ namespace Mahjong.Unity.Table
                 _sessionView.Changed -= OnSessionViewChanged;
                 _sessionView = null;
             }
+            _sessionViewDetachedForLifecycle = false;
+            _forceAnimationBaseline = false;
             if (_commandSink != null)
             {
                 _commandSink.ReceiptResolved -= OnReceiptResolved;
@@ -295,6 +317,7 @@ namespace Mahjong.Unity.Table
         private void OnApplicationPause(bool paused)
         {
             _interactionState?.OnPause(paused);
+            _pausedForAnimations = paused;
             if (paused)
             {
                 _interactionState?.ClearSelection();
@@ -306,11 +329,17 @@ namespace Mahjong.Unity.Table
                 if (_discardButton != null) _discardButton.interactable = false;
                 if (_tsumoButton != null) _tsumoButton.interactable = false;
                 if (_riichiButton != null) _riichiButton.interactable = false;
+                SuspendAnimationsForLifecycle();
+            }
+            else
+            {
+                ResumeAnimationsAfterLifecycle();
             }
         }
 
         private void OnApplicationFocus(bool hasFocus)
         {
+            _focusLostForAnimations = !hasFocus;
             if (!hasFocus)
             {
                 _interactionState?.OnFocusLost();
@@ -323,6 +352,51 @@ namespace Mahjong.Unity.Table
                 if (_discardButton != null) _discardButton.interactable = false;
                 if (_tsumoButton != null) _tsumoButton.interactable = false;
                 if (_riichiButton != null) _riichiButton.interactable = false;
+                SuspendAnimationsForLifecycle();
+            }
+            else
+            {
+                ResumeAnimationsAfterLifecycle();
+            }
+        }
+
+        private void SuspendAnimationsForLifecycle()
+        {
+            if (_sessionView != null)
+            {
+                _sessionView.Changed -= OnSessionViewChanged;
+                _sessionViewDetachedForLifecycle = true;
+            }
+
+            _forceAnimationBaseline = false;
+            _lastVisibleEventMapping = null;
+            _animationQueue.Clear();
+            ClearAnimationBanner();
+        }
+
+        private void ResumeAnimationsAfterLifecycle()
+        {
+            if (AnimationsSuspended)
+            {
+                return;
+            }
+
+            if (_sessionView != null && _sessionViewDetachedForLifecycle)
+            {
+                _sessionView.Changed += OnSessionViewChanged;
+                _sessionViewDetachedForLifecycle = false;
+                _forceAnimationBaseline = true;
+                OnSessionViewChanged(this, _sessionView.Current);
+            }
+        }
+
+        private void ClearAnimationBanner()
+        {
+            _animationBannerTimer = 0f;
+            if (_animationBannerText != null)
+            {
+                _animationBannerText.text = string.Empty;
+                _animationBannerText.gameObject.SetActive(false);
             }
         }
 
@@ -480,6 +554,15 @@ namespace Mahjong.Unity.Table
         {
             if (state == null) return;
 
+            bool forceAnimationBaseline = _forceAnimationBaseline;
+            _forceAnimationBaseline = false;
+            if (_sessionViewDetachedForLifecycle && !forceAnimationBaseline)
+            {
+                // A callback captured before the lifecycle boundary must not
+                // reattach itself or replay old private animation.
+                return;
+            }
+
             PlayerTableViewState nextView = _projectionMapper.Project(state);
 
             // Stale snapshot monotonicity fence:
@@ -525,10 +608,21 @@ namespace Mahjong.Unity.Table
 
             TableVisibleEventBatch batch = state.VisibleEventBatch ?? TableVisibleEventBatch.Empty;
             bool batchBaseline = batch.Kind == TableVisibleEventBatchKind.Baseline;
-            bool hasPlayableEvents = batch.Kind == TableVisibleEventBatchKind.Incremental &&
-                                     batch.PlayableEvents.Count > 0;
+            // A real incremental batch is the source even when its playable
+            // list is empty: the Client may have filtered a historical event at
+            // or below the accepted baseline watermark. Only the legacy Empty
+            // sentinel (Kind=None) may use the snapshot-difference fallback.
+            bool hasTypedIncremental = batch.Kind == TableVisibleEventBatchKind.Incremental;
 
-            bool isBaselineTransition = _latestView == null ||
+            bool duplicateConfirmedBaseline = _latestView != null &&
+                state.IsFullBaseline &&
+                SameBindingIdentity(_latestView.Identity, nextView.Identity) &&
+                _latestView.Identity.StateVersion == nextView.Identity.StateVersion &&
+                _latestView.Identity.EventSeq == nextView.Identity.EventSeq &&
+                string.Equals(_latestView.Identity.RoundId, nextView.Identity.RoundId, StringComparison.Ordinal);
+
+            bool isBaselineTransition = forceAnimationBaseline ||
+                _latestView == null ||
                 state.IsFullBaseline ||
                 batchBaseline ||
                 identityChanged ||
@@ -549,7 +643,7 @@ namespace Mahjong.Unity.Table
                     return; // Dropped by animation baseline fence
                 }
             }
-            else if (hasPlayableEvents)
+            else if (hasTypedIncremental)
             {
                 // A real incremental typed batch is the only animation source.
                 // Map it against the exact projected snapshot and commit the
@@ -625,14 +719,18 @@ namespace Mahjong.Unity.Table
                     _animationBannerText.text = string.Empty;
                     _animationBannerText.gameObject.SetActive(false);
                 }
-                _interactionState.ClearSelection();
-                if (identityChanged || roundChanged)
+
+                if (!duplicateConfirmedBaseline)
                 {
-                    CloseAllCheatDialogs();
-                    CloseCandidateSelectionPanel();
-                    _tileMarkSelectedTiles.Clear();
-                    _selectedBeamHandTile = null;
-                    _selectedBeamCandidate = null;
+                    _interactionState.ClearSelection();
+                    if (identityChanged || roundChanged)
+                    {
+                        CloseAllCheatDialogs();
+                        CloseCandidateSelectionPanel();
+                        _tileMarkSelectedTiles.Clear();
+                        _selectedBeamHandTile = null;
+                        _selectedBeamCandidate = null;
+                    }
                 }
             }
 
@@ -2098,14 +2196,13 @@ namespace Mahjong.Unity.Table
 
         private void UpdateAnimationBanner()
         {
-            if (_latestView == null || !_latestView.Identity.IsPrivateAuthorized || _latestView.Own == null)
+            if (AnimationsSuspended ||
+                _sessionViewDetachedForLifecycle ||
+                _latestView == null ||
+                !_latestView.Identity.IsPrivateAuthorized ||
+                _latestView.Own == null)
             {
-                _animationBannerTimer = 0f;
-                if (_animationBannerText != null)
-                {
-                    _animationBannerText.text = string.Empty;
-                    _animationBannerText.gameObject.SetActive(false);
-                }
+                ClearAnimationBanner();
                 return;
             }
 
