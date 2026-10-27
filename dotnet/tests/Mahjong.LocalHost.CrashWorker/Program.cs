@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Reflection;
 using System.Threading;
 using System.Threading.Tasks;
@@ -20,7 +21,7 @@ namespace Mahjong.LocalHost.CrashWorker
         {
             if (args.Length < 3)
             {
-                Console.Error.WriteLine("usage: <saveDir> <roomId> <markerPath> [settlement]");
+                Console.Error.WriteLine("usage: <saveDir> <roomId> <markerPath> [mode]");
                 return 2;
             }
 
@@ -116,6 +117,254 @@ namespace Mahjong.LocalHost.CrashWorker
                     });
 
                     // Real kill without dispose
+                    System.Diagnostics.Process.GetCurrentProcess().Kill();
+                    return 0;
+                }
+            }
+
+            if (mode == "cheat")
+            {
+                var clock = SystemTableClock.Instance;
+                using (LocalTableStore cheatStore = await LocalTableStore.OpenAsync(options, clock, null, CancellationToken.None))
+                {
+                    var facts = new LocalSnapshotFacts(LocalHostEnvironment.System, clock);
+                    var initialRound = facts.CreateInitialRound(options);
+                    TableCheckpoint initialCheckpoint = facts.CreateInitialCheckpoint(options, initialRound);
+                    await cheatStore.CreateRoomAsync(initialCheckpoint, CancellationToken.None);
+
+                    long now = clock.UtcNowMs;
+                    ulong nowUtc = (ulong)now;
+                    string accountId = "local-" + roomId + "-seat0";
+                    var scopeId = new RequestScopeId("crash-cheat-scope");
+                    cheatStore.IssueScope(
+                        accountId,
+                        TableScopeRole.Player,
+                        roomId,
+                        issuedAtUtcMs: nowUtc - 1000UL,
+                        expiresAtUtcMs: nowUtc + 3600000UL,
+                        scopeId: scopeId.Value);
+
+                    TableLeaseAcquireResult acquireRes = await cheatStore.AcquireAsync(roomId, options.OwnerInstanceId, TimeSpan.FromMinutes(5), CancellationToken.None);
+                    TableLeaseSnapshot lease = acquireRes.Lease!;
+
+                    // 1. Physical tile swap: seat 0 hand tile with live wall slot 53
+                    TilePositionMap cwTiles = initialRound.Tiles;
+                    IReadOnlyList<TileId> handTiles = cwTiles.TilesInZone(TileZone.Hand, 0);
+                    TileId handTile = handTiles[0];
+                    TransitionResult swapRes = cwTiles.SwapHandWithWall(0, handTile, 53);
+                    if (!swapRes.IsSuccess)
+                    {
+                        Console.Error.WriteLine("SwapHandWithWall failed: " + swapRes.Error);
+                        return 7;
+                    }
+                    TilePositionMap tilesSwapped = swapRes.RequireState();
+
+                    // 2. CheatLedger deductions: -25 for sleeve, -15 for beam (seat 0: 100 - 40 = 60)
+                    TableCheatLedgerCheckpoint initialCheatCp = TableCheatLedgerCheckpointCodec.Decode(initialCheckpoint.CheatPayload!);
+                    CheatLedger ledger = initialCheatCp.Restore();
+                    CheatLedgerApplyResult lr1 = ledger.Apply("entry-cw-sleeve", 0, -25, "cheat:sleeve-bloom");
+                    ledger = lr1.Ledger!;
+                    CheatLedgerApplyResult lr2 = ledger.Apply("entry-cw-beam", 0, -15, "cheat:beam-swap");
+                    ledger = lr2.Ledger!;
+
+                    // 3. Tricks mutations
+                    var group1 = new TileMarkGroup("group-cw-1", 0, new[] { new TileId(10), new TileId(11), new TileId(12), new TileId(13) }, initialRound.Spec.RoundId, 1);
+                    var marksState = TileMarkState.Restore(1L, 1, new[] { initialRound.Spec.RoundId }, Array.Empty<string>(), new[] { group1 });
+                    var res2 = new SleeveBloomReservation(0, "sleeve-cw-1", new TileId(20), "win-cw", 1000L);
+                    var sleeveState = SleeveBloomState.Restore(null, Array.Empty<SleeveBloomOffer>(), new[] { res2 }, new string?[4], 1, 0, 1L);
+                    var cand3 = new BeamSwapCandidate(handTile, BeamSwapSlot.Wall(53));
+                    var offer3 = new BeamSwapOffer("beam-cw-1", 0, BeamSwapWindow.Wall, new[] { cand3 }, new[] { new TileId(40) }, new TileId(50), 0);
+                    var beamState = BeamSwapState.Restore(offer3, 0, 1L);
+                    var cheatState = new CheatState(ledger, marksState, sleeveState, beamState);
+
+                    BusinessPayload payloadMarks = CommandPayloadFactory.SubmitTileMark(initialRound.Spec.RoundId, "dec-cw-1", 0UL, new uint[] { 10, 11, 12, 13 });
+                    BusinessPayload payloadSleeve = CommandPayloadFactory.SubmitSleeveBloom(initialRound.Spec.RoundId, "dec-cw-2", 0UL);
+                    BusinessPayload payloadBeam = CommandPayloadFactory.SubmitBeamSwap(initialRound.Spec.RoundId, "dec-cw-3", 0UL);
+                    byte[] marksBytes = payloadMarks.CopyBytes();
+                    byte[] sleeveBytes = payloadSleeve.CopyBytes();
+                    byte[] beamBytes = payloadBeam.CopyBytes();
+
+                    // 4. Construct round and checkpoint
+                    RoundStateMachine roundSwapped = CreateRoundWithEvents(
+                        initialRound.Spec,
+                        1L,
+                        RoundPhase.CheatWindow,
+                        0,
+                        tilesSwapped,
+                        initialRound.Events);
+
+                    var cheatEvent = new TableCheatEventRecord(
+                        CheatEvent.BeamSwapResolved(0, "beam-cw-1", BeamSwapAction.Swap),
+                        "beam-cw-1",
+                        null,
+                        BeamSwapAction.Swap,
+                        handTile,
+                        handTile,
+                        BeamSwapSlot.Wall(53),
+                        1);
+
+                    byte[] eventFactPayload = TableEventFactCodec.Encode(new StateVersion(1UL), 0, roundSwapped.SourceFingerprint);
+                    var cmdEvent = new TableEventRecord(
+                        new EventSeq(1UL),
+                        new StateVersion(1UL),
+                        0,
+                        RoundEventType.CheatApplied,
+                        0,
+                        null,
+                        "CHEAT_BEAM_SWAP",
+                        1,
+                        eventFactPayload,
+                        cheatEvent);
+
+                    var binding = new TableCommandBinding(1UL, 1, roundSwapped.SourceFingerprint);
+
+                    TableTimingCheckpoint initialTiming = TableTimingCheckpointCodec.Decode(initialCheckpoint.TimingPayload);
+                    TableTimingCheckpoint timing1 = new TableTimingCheckpoint(
+                        initialTiming.RoundId,
+                        initialTiming.SeatReservesMillis,
+                        initialTiming.Decisions,
+                        nowUtc,
+                        initialTiming.CapturedMonotonicMillis,
+                        initialTiming.BootId);
+
+                    TableProjectionContextData factsData = facts.Capture(new TableProjectionContextRequest(
+                        roomId,
+                        roundSwapped,
+                        new StateVersion(1UL),
+                        new EventSeq(1UL),
+                        lease.OwnerEpoch,
+                        0L,
+                        initialCheckpoint.TimingVersion + 1L,
+                        0L,
+                        now,
+                        new[] { cmdEvent }));
+                    var cheatFacts = new TableProjectionEventFacts(
+                        turnNumber: 1U,
+                        offerId: "beam-cw-1",
+                        beamSwapResolution: ProjectionBeamSwapResolution.Swap,
+                        handTileId: (uint)handTile.Value,
+                        targetSlot: 53U);
+                    var cheatInput = TableEventProjection.FromRoundEvent(cmdEvent)!;
+                    var eventFact = new TableProjectionEventFact(
+                        cheatInput.Type,
+                        cmdEvent.Seq,
+                        cmdEvent.CommandVersion,
+                        (uint)cmdEvent.Ordinal,
+                        cheatFacts);
+
+                    var mergedFactsData = new TableProjectionContextData(
+                        factsData.RoundId,
+                        factsData.StateVersion,
+                        factsData.SessionVersion,
+                        cheatState,
+                        factsData.PublicFacts,
+                        factsData.PrivateFacts,
+                        factsData.Session,
+                        factsData.Policy,
+                        new[] { eventFact });
+                    byte[] factsPayload = TableProjectionFactsCodec.Encode(mergedFactsData);
+
+                    TableCheatLedgerCheckpoint cheatCp1 = TableCheatLedgerCheckpoint.FromCheatState(cheatState);
+
+                    TableCheckpoint cp1 = TableCheckpointFactory.Create(
+                        roomId,
+                        roundSwapped,
+                        new StateVersion(1UL),
+                        new EventSeq(1UL),
+                        TableControlCheckpointCodec.Decode(initialCheckpoint.ControlPayload),
+                        timing1,
+                        options.RulesetVersion,
+                        initialCheckpoint.BootId,
+                        nowUtc,
+                        cheatCp1,
+                        factsPayload,
+                        initialCheckpoint.TimingVersion + 1L,
+                        0L,
+                        new[] { cmdEvent },
+                        new[] { binding });
+
+                    var requestId = new RequestId("crash-cheat-req");
+                    byte[] cheatCmdPayload = payloadBeam.CopyBytes();
+                    var receiptDigest = TablePayloadSha256.Compute(cheatCmdPayload);
+                    var receipt = new TableDurableReceipt(
+                        accountId,
+                        scopeId,
+                        requestId,
+                        "CHEAT_BEAM_SWAP",
+                        receiptDigest,
+                        Receipt.Applied(
+                            new StateVersion(0UL),
+                            new StateVersion(1UL),
+                            new EventSeq(1UL),
+                            null,
+                            nowUtc),
+                        string.Empty,
+                        nowUtc,
+                        nowUtc + 600000UL);
+
+                    var cmdJournal = new TableCommandJournalRecord(
+                        new StateVersion(1UL),
+                        new StateVersion(0UL),
+                        requestId,
+                        accountId,
+                        scopeId,
+                        "CHEAT_BEAM_SWAP",
+                        receiptDigest,
+                        cheatCmdPayload);
+
+                    var commitReq = new TableDurableCommitRequest(
+                        roomId,
+                        options.OwnerInstanceId,
+                        lease.OwnerEpoch,
+                        new StateVersion(0UL),
+                        receipt,
+                        false,
+                        new[] { cmdEvent },
+                        cmdJournal,
+                        Array.Empty<TableSettlementOutboxRecord>(),
+                        cp1,
+                        cp1.StatePayload,
+                        cp1.StateFingerprint,
+                        false,
+                        timing1,
+                        initialCheckpoint.TimingVersion + 1L);
+
+                    TableDurableCommitResult commitRes = await cheatStore.CommitAsync(commitReq, CancellationToken.None);
+                    if (!commitRes.IsCommitted)
+                    {
+                        Console.Error.WriteLine("Cheat commit failed: " + commitRes.ReasonCode + " " + commitRes.Detail);
+                        return 8;
+                    }
+
+                    // Export marker file
+                    var markerLines = new List<string>
+                    {
+                        scopeId.Value,                                          // 0
+                        requestId.Value,                                        // 1
+                        "1",                                                    // 2: committed version
+                        accountId,                                              // 3
+                        receiptDigest.ToHex(),                                  // 4
+                        $"{ledger.BalanceOf(0)},{ledger.BalanceOf(1)},{ledger.BalanceOf(2)},{ledger.BalanceOf(3)}", // 5
+                        TilePositionMap.Validate(tilesSwapped).StateHash.ToString(System.Globalization.CultureInfo.InvariantCulture), // 6
+                        receipt.Api,                                            // 7
+                        receipt.Receipt.EvaluatedStateVersion.Value.ToString(System.Globalization.CultureInfo.InvariantCulture), // 8
+                        receipt.Receipt.CommandVersion!.Value.Value.ToString(System.Globalization.CultureInfo.InvariantCulture), // 9
+                        receipt.Receipt.EventSeq!.Value.Value.ToString(System.Globalization.CultureInfo.InvariantCulture),        // 10
+                        receipt.CreatedAtUtcMs.ToString(System.Globalization.CultureInfo.InvariantCulture),                        // 11
+                        receipt.ExpiresAtUtcMs.ToString(System.Globalization.CultureInfo.InvariantCulture),                        // 12
+                        Convert.ToHexString(marksBytes),                        // 13
+                        Convert.ToHexString(sleeveBytes),                       // 14
+                        Convert.ToHexString(beamBytes),                         // 15
+                        ledger.Entries.Count.ToString(System.Globalization.CultureInfo.InvariantCulture)                         // 16
+                    };
+                    for (int i = 0; i < 136; i++)
+                    {
+                        TilePosition pos = tilesSwapped[i];
+                        markerLines.Add($"{i}:{(int)pos.Zone}:{pos.Index}");
+                    }
+                    File.WriteAllLines(marker, markerLines);
+
+                    // Kill without dispose
                     System.Diagnostics.Process.GetCurrentProcess().Kill();
                     return 0;
                 }
@@ -258,6 +507,10 @@ namespace Mahjong.LocalHost.CrashWorker
             TableStateRow? authorState = store != null ? await store.LoadStateAsync(roomId, CancellationToken.None) : null;
             ulong authorVersion = authorState?.StateVersion.Value ?? session.PlayerSnapshot.StateVersion;
 
+            string rKey = "local-" + roomId + "-seat0\u001f" + session.Binding!.Scope.ScopeId.Value + "\u001fcrash-request-1";
+            LocalDurableOperation? lastOp = save?.Operations.LastOrDefault(o => o.Receipt != null && o.Receipt.RequestId.Value == "crash-request-1");
+            TableDurableReceipt? actionReceipt = (save != null && save.Receipts.TryGetValue(rKey, out TableDurableReceipt? r)) ? r : lastOp?.Receipt;
+
             var lines = new List<string>
             {
                 session.Binding!.Scope.ScopeId.Value,
@@ -268,6 +521,16 @@ namespace Mahjong.LocalHost.CrashWorker
                 $"{b0},{b1},{b2},{b3}",
                 tiles != null ? TilePositionMap.Validate(tiles).StateHash.ToString(System.Globalization.CultureInfo.InvariantCulture) : "0"
             };
+
+            if (actionReceipt != null)
+            {
+                lines.Add(actionReceipt.Api);
+                lines.Add(actionReceipt.Receipt.EvaluatedStateVersion.Value.ToString(System.Globalization.CultureInfo.InvariantCulture));
+                lines.Add(actionReceipt.Receipt.CommandVersion!.Value.Value.ToString(System.Globalization.CultureInfo.InvariantCulture));
+                lines.Add(actionReceipt.Receipt.EventSeq!.Value.Value.ToString(System.Globalization.CultureInfo.InvariantCulture));
+                lines.Add(actionReceipt.CreatedAtUtcMs.ToString(System.Globalization.CultureInfo.InvariantCulture));
+                lines.Add(actionReceipt.ExpiresAtUtcMs.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            }
 
             if (tiles != null)
             {
@@ -283,6 +546,41 @@ namespace Mahjong.LocalHost.CrashWorker
             // Real crash: no actor close, no channel close, no store dispose.
             System.Diagnostics.Process.GetCurrentProcess().Kill();
             return 0;
+        }
+
+        private static RoundStateMachine CreateRoundWithEvents(
+            RoundSpec spec,
+            long version,
+            RoundPhase phase,
+            int currentSeat,
+            TilePositionMap tiles,
+            IReadOnlyList<RoundEvent> events,
+            IReadOnlyList<long>? scores = null,
+            int? riichiSticks = null,
+            IReadOnlyList<bool>? riichiDeclared = null,
+            IReadOnlyList<RoundMeld>? melds = null,
+            int pendingKanDoraCount = 0)
+        {
+            var dummyState = new RoundRecoveryState(
+                spec, version, phase, currentSeat, tiles, null, null, events,
+                sourceFingerprint: 0UL,
+                scores, riichiSticks, riichiDeclared, melds, pendingKanDoraCount);
+            ulong realFingerprint = 0UL;
+            try
+            {
+                RoundRecovery.Restore(dummyState);
+            }
+            catch (InvalidDataException ex) when (ex.Message.StartsWith("Recovered round fingerprint "))
+            {
+                string[] parts = ex.Message.Split(' ');
+                realFingerprint = ulong.Parse(parts[3], System.Globalization.CultureInfo.InvariantCulture);
+            }
+
+            var realState = new RoundRecoveryState(
+                spec, version, phase, currentSeat, tiles, null, null, events,
+                realFingerprint,
+                scores, riichiSticks, riichiDeclared, melds, pendingKanDoraCount);
+            return RoundRecovery.Restore(realState);
         }
     }
 }

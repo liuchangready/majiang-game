@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using Mahjong.Client;
@@ -223,16 +224,7 @@ namespace Mahjong.LocalHost.Tests
                 "Mahjong.LocalHost.CrashWorker.dll");
             Assert.True(File.Exists(workerDll), "CrashWorker was not built: " + workerDll);
             string marker = Path.Combine(harness.Root, "crash-marker.txt");
-            var start = new System.Diagnostics.ProcessStartInfo
-            {
-                FileName = Environment.ProcessPath ?? "dotnet",
-                Arguments = "\"" + workerDll + "\" \"" + harness.Options.SaveDirectory + "\" \"" +
-                            P41Harness.RoomId + "\" \"" + marker + "\"",
-                UseShellExecute = false,
-                CreateNoWindow = true,
-                RedirectStandardOutput = true,
-                RedirectStandardError = true
-            };
+            var start = CreateWorkerStartInfo(workerDll, harness.Options.SaveDirectory, P41Harness.RoomId, marker);
             using (System.Diagnostics.Process process = System.Diagnostics.Process.Start(start)!)
             {
                 using var waitCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
@@ -255,6 +247,8 @@ namespace Mahjong.LocalHost.Tests
 
             string[] markerLines = File.ReadAllLines(marker);
             Assert.True(markerLines.Length >= 7 + 136, "Marker file line count was " + markerLines.Length);
+            bool hasReceiptMeta = markerLines.Length >= 13 + 136;
+            int tileOffset = hasReceiptMeta ? 13 : 7;
             var scopeId = new RequestScopeId(markerLines[0]);
             var requestId = new RequestId(markerLines[1]);
             ulong committed = ulong.Parse(markerLines[2], System.Globalization.CultureInfo.InvariantCulture);
@@ -266,7 +260,7 @@ namespace Mahjong.LocalHost.Tests
             var expectedTiles = new (TileZone Zone, int Index)[136];
             for (int i = 0; i < 136; i++)
             {
-                string[] parts = markerLines[7 + i].Split(':');
+                string[] parts = markerLines[tileOffset + i].Split(':');
                 int tileId = int.Parse(parts[0], System.Globalization.CultureInfo.InvariantCulture);
                 var zone = (TileZone)int.Parse(parts[1], System.Globalization.CultureInfo.InvariantCulture);
                 int idx = int.Parse(parts[2], System.Globalization.CultureInfo.InvariantCulture);
@@ -283,6 +277,20 @@ namespace Mahjong.LocalHost.Tests
                     ct);
                 Assert.NotNull(receipt);
                 Assert.Equal(expectedAccount, receipt.AccountId);
+                Assert.Equal(scopeId, receipt.ScopeId);
+                Assert.Equal(requestId, receipt.RequestId);
+                Assert.Equal(ReceiptStatus.Applied, receipt.Receipt.Status);
+                Assert.True(receipt.IsAccepted);
+
+                if (hasReceiptMeta)
+                {
+                    Assert.Equal(markerLines[7], receipt.Api);
+                    Assert.Equal(ulong.Parse(markerLines[8], System.Globalization.CultureInfo.InvariantCulture), receipt.Receipt.EvaluatedStateVersion.Value);
+                    Assert.Equal(ulong.Parse(markerLines[9], System.Globalization.CultureInfo.InvariantCulture), receipt.Receipt.CommandVersion!.Value.Value);
+                    Assert.Equal(ulong.Parse(markerLines[10], System.Globalization.CultureInfo.InvariantCulture), receipt.Receipt.EventSeq!.Value.Value);
+                    Assert.Equal(ulong.Parse(markerLines[11], System.Globalization.CultureInfo.InvariantCulture), receipt.CreatedAtUtcMs);
+                    Assert.Equal(ulong.Parse(markerLines[12], System.Globalization.CultureInfo.InvariantCulture), receipt.ExpiresAtUtcMs);
+                }
                 Assert.Equal(scopeId, receipt.ScopeId);
                 Assert.Equal(requestId, receipt.RequestId);
                 Assert.Equal(ReceiptStatus.Applied, receipt.Receipt.Status);
@@ -340,10 +348,185 @@ namespace Mahjong.LocalHost.Tests
         }
 
         [Fact]
+        public async Task CrashWorkerRealProcessKill_NonInitialCheatLeavesDurableCheatState()
+        {
+            await using var harness = new P41Harness();
+            harness.Options.AutoPlay = false;
+            harness.Options.Environment = LocalHostEnvironment.System;
+            CancellationToken ct = TestContext.Current.CancellationToken;
+            string root = P41Harness.FindRepositoryRoot();
+            string workerDll = Path.Combine(
+                root,
+                "dotnet",
+                "tests",
+                "Mahjong.LocalHost.CrashWorker",
+                "bin",
+                "Release",
+                "net8.0",
+                "Mahjong.LocalHost.CrashWorker.dll");
+
+            Assert.True(File.Exists(workerDll), "CrashWorker DLL not found at: " + workerDll);
+
+            string marker = Path.Combine(harness.Root, "crash-cheat-marker.txt");
+            var startInfo = CreateWorkerStartInfo(workerDll, harness.Options.SaveDirectory, P41Harness.RoomId, marker, "cheat");
+
+            string stdout;
+            string stderr;
+            int exitCode;
+            using (var process = System.Diagnostics.Process.Start(startInfo)!)
+            {
+                using var waitCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                waitCts.CancelAfter(TimeSpan.FromSeconds(30));
+                Task<string> stdoutTask = process.StandardOutput.ReadToEndAsync(waitCts.Token);
+                Task<string> stderrTask = process.StandardError.ReadToEndAsync(waitCts.Token);
+                try
+                {
+                    await process.WaitForExitAsync(waitCts.Token);
+                    stdout = await stdoutTask;
+                    stderr = await stderrTask;
+                    exitCode = process.ExitCode;
+                }
+                catch (OperationCanceledException)
+                {
+                    process.Kill(true);
+                    throw new TimeoutException("CrashWorker cheat mode did not exit/drain within bounded timeout.");
+                }
+
+                Assert.NotEqual(0, process.ExitCode);
+            }
+
+            Assert.True(File.Exists(marker), $"Marker not found. ExitCode: {exitCode}, Stderr: {stderr}, Stdout: {stdout}");
+
+            string[] markerLines = File.ReadAllLines(marker);
+            Assert.True(markerLines.Length >= 17 + 136, "Marker file line count was " + markerLines.Length);
+            var scopeId = new RequestScopeId(markerLines[0]);
+            var requestId = new RequestId(markerLines[1]);
+            ulong committedVersion = ulong.Parse(markerLines[2], System.Globalization.CultureInfo.InvariantCulture);
+            string expectedAccount = markerLines[3];
+            string expectedDigestHex = markerLines[4];
+            string[] balancesStr = markerLines[5].Split(',');
+            ulong expectedStateHash = ulong.Parse(markerLines[6], System.Globalization.CultureInfo.InvariantCulture);
+
+            string expectedApi = markerLines[7];
+            ulong expectedEvalVersion = ulong.Parse(markerLines[8], System.Globalization.CultureInfo.InvariantCulture);
+            ulong expectedCommittedVersion = ulong.Parse(markerLines[9], System.Globalization.CultureInfo.InvariantCulture);
+            ulong expectedEventSeq = ulong.Parse(markerLines[10], System.Globalization.CultureInfo.InvariantCulture);
+            ulong expectedCreatedUtc = ulong.Parse(markerLines[11], System.Globalization.CultureInfo.InvariantCulture);
+            ulong expectedExpiresUtc = ulong.Parse(markerLines[12], System.Globalization.CultureInfo.InvariantCulture);
+
+            string expectedMarksHex = markerLines[13];
+            string expectedSleeveHex = markerLines[14];
+            string expectedBeamHex = markerLines[15];
+            int expectedLedgerCount = int.Parse(markerLines[16], System.Globalization.CultureInfo.InvariantCulture);
+
+            var expectedTiles = new (TileZone Zone, int Index)[136];
+            for (int i = 0; i < 136; i++)
+            {
+                string[] parts = markerLines[17 + i].Split(':');
+                int tileId = int.Parse(parts[0], System.Globalization.CultureInfo.InvariantCulture);
+                var zone = (TileZone)int.Parse(parts[1], System.Globalization.CultureInfo.InvariantCulture);
+                int idx = int.Parse(parts[2], System.Globalization.CultureInfo.InvariantCulture);
+                expectedTiles[tileId] = (zone, idx);
+            }
+
+            // 1) Verify durable store recovery
+            using (LocalTableStore store = await LocalTableStore.OpenAsync(harness.Options, harness.Clock, null, ct))
+            {
+                TableDurableReceipt? receipt = await store.TryGetAsync(expectedAccount, scopeId, requestId, ct);
+                Assert.NotNull(receipt);
+                Assert.Equal(expectedAccount, receipt.AccountId);
+                Assert.Equal(scopeId, receipt.ScopeId);
+                Assert.Equal(requestId, receipt.RequestId);
+                Assert.Equal(ReceiptStatus.Applied, receipt.Receipt.Status);
+                Assert.True(receipt.IsAccepted);
+
+                // Full receipt fields
+                Assert.Equal(expectedApi, receipt.Api);
+                Assert.Equal(expectedEvalVersion, receipt.Receipt.EvaluatedStateVersion.Value);
+                Assert.Equal(expectedCommittedVersion, receipt.Receipt.CommandVersion!.Value.Value);
+                Assert.Equal(expectedEventSeq, receipt.Receipt.EventSeq!.Value.Value);
+                Assert.Equal(expectedCreatedUtc, receipt.CreatedAtUtcMs);
+                Assert.Equal(expectedExpiresUtc, receipt.ExpiresAtUtcMs);
+                Assert.Equal(expectedDigestHex, receipt.PayloadSha256.ToHex());
+
+                // State row cheat bindings
+                TableStateRow row = (await store.LoadStateAsync(P41Harness.RoomId, ct))!;
+                Assert.Equal(committedVersion, row.StateVersion.Value);
+                Assert.True(row.CheatBound);
+                Assert.True(row.CheatVersion > 0L);
+
+                // Cheat state and ledger
+                TableCheckpoint checkpoint = (await store.LoadCheckpointAsync(P41Harness.RoomId, ct))!;
+                Assert.NotNull(checkpoint.CheatPayload);
+                TableCheatLedgerCheckpoint cheatCp = TableCheatLedgerCheckpointCodec.Decode(checkpoint.CheatPayload!);
+                CheatState restoredCheat = cheatCp.RestoreCheatState();
+                Assert.NotNull(restoredCheat);
+                Assert.Equal(4, cheatCp.Balances.Count);
+                for (int s = 0; s < 4; s++)
+                {
+                    Assert.Equal(long.Parse(balancesStr[s], System.Globalization.CultureInfo.InvariantCulture), cheatCp.Balances[s]);
+                }
+                Assert.Equal(80, restoredCheat.Ledger.BalanceOf(0));
+                Assert.Equal(expectedLedgerCount, restoredCheat.Ledger.Entries.Count);
+
+                // Canonical byte verification of 3 tricks
+                BusinessPayload pMarks = CommandPayloadFactory.SubmitTileMark(checkpoint.RoomId + "-r1", "dec-cw-1", 0UL, new uint[] { 10, 11, 12, 13 });
+                BusinessPayload pSleeve = CommandPayloadFactory.SubmitSleeveBloom(checkpoint.RoomId + "-r1", "dec-cw-2", 0UL);
+                BusinessPayload pBeam = CommandPayloadFactory.SubmitBeamSwap(checkpoint.RoomId + "-r1", "dec-cw-3", 0UL);
+                Assert.Equal(expectedMarksHex, Convert.ToHexString(pMarks.CopyBytes()));
+                Assert.Equal(expectedSleeveHex, Convert.ToHexString(pSleeve.CopyBytes()));
+                Assert.Equal(expectedBeamHex, Convert.ToHexString(pBeam.CopyBytes()));
+            }
+
+            // 2) Authoritative cold recovery through LocalTableRuntime
+            await using (LocalTableRuntime runtime = await LocalTableRuntime.OpenAsync(harness.Options, ct))
+            {
+                RoundStateMachine recoveredRound = runtime.ActorForTest.GetRoundStateForHost();
+                TilePositionMap recoveredTiles = recoveredRound.Tiles;
+                ConservationReport report = TilePositionMap.Validate(recoveredTiles);
+                Assert.True(report.IsValid, string.Join("; ", report.Errors));
+                Assert.Equal(136, report.AssignedCount);
+                Assert.Equal(0, report.UnassignedCount);
+
+                for (int i = 0; i < 136; i++)
+                {
+                    Assert.True(
+                        expectedTiles[i].Zone == recoveredTiles[i].Zone && expectedTiles[i].Index == recoveredTiles[i].Index,
+                        $"Tile {i} differs: expected {expectedTiles[i].Zone}:{expectedTiles[i].Index}, actual {recoveredTiles[i].Zone}:{recoveredTiles[i].Index}");
+                }
+                Assert.Equal(expectedStateHash, report.StateHash);
+
+                // Hand tile physically in wall at slot 53
+                int handTileAtWall53 = -1;
+                for (int i = 0; i < 136; i++)
+                {
+                    if (recoveredTiles[i].Zone == TileZone.Wall && recoveredTiles[i].Index == 53)
+                    {
+                        handTileAtWall53 = i;
+                        break;
+                    }
+                }
+                Assert.True(handTileAtWall53 >= 0);
+
+                // Authoritative actor cheat state
+                var cheatField = typeof(TableActor).GetField("_cheat", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+                var actorCheat = cheatField?.GetValue(runtime.ActorForTest) as CheatState;
+                Assert.NotNull(actorCheat);
+                Assert.Equal(80, actorCheat.Ledger.BalanceOf(0));
+                Assert.Equal(expectedLedgerCount, actorCheat.Ledger.Entries.Count);
+                Assert.NotEmpty(actorCheat.TileMarks.Groups);
+                Assert.NotEmpty(actorCheat.SleeveBloom.Reservations);
+                Assert.NotNull(actorCheat.BeamSwap.Offer);
+                Assert.Equal(53, actorCheat.BeamSwap.Offer.Candidates[0].Slot.Index);
+            }
+        }
+
+        [Fact]
         public async Task CrashWorkerRealProcessKill_SettlementOutboxLeavesDurableOutbox()
         {
             await using var harness = new P41Harness();
             harness.Options.AutoPlay = false;
+            harness.Options.Environment = LocalHostEnvironment.System;
             CancellationToken ct = TestContext.Current.CancellationToken;
             string root = P41Harness.FindRepositoryRoot();
             string workerDll = Path.Combine(
@@ -357,17 +540,7 @@ namespace Mahjong.LocalHost.Tests
                 "Mahjong.LocalHost.CrashWorker.dll");
             Assert.True(File.Exists(workerDll), "CrashWorker was not built: " + workerDll);
             string marker = Path.Combine(harness.Root, "crash-settlement-marker.txt");
-
-            var start = new System.Diagnostics.ProcessStartInfo
-            {
-                FileName = Environment.ProcessPath ?? "dotnet",
-                Arguments = "\"" + workerDll + "\" \"" + harness.Options.SaveDirectory + "\" \"" +
-                            P41Harness.RoomId + "\" \"" + marker + "\" settlement",
-                UseShellExecute = false,
-                CreateNoWindow = true,
-                RedirectStandardOutput = true,
-                RedirectStandardError = true
-            };
+            var start = CreateWorkerStartInfo(workerDll, harness.Options.SaveDirectory, P41Harness.RoomId, marker, "settlement");
 
             using (System.Diagnostics.Process process = System.Diagnostics.Process.Start(start)!)
             {
@@ -556,6 +729,71 @@ namespace Mahjong.LocalHost.Tests
         {
             await session.CloseAsync("TEST_DONE", CancellationToken.None);
             await channel.CloseAsync(new TableChannelCloseReason("TEST_DONE", true), CancellationToken.None);
+        }
+
+        private static System.Diagnostics.ProcessStartInfo CreateWorkerStartInfo(
+            string workerDll,
+            string saveDirectory,
+            string roomId,
+            string markerPath,
+            string? mode = null)
+        {
+            string dotnet = ResolveDotnetPath();
+            string args = "\"" + workerDll + "\" \"" + saveDirectory + "\" \"" + roomId + "\" \"" + markerPath + "\"";
+            if (!string.IsNullOrEmpty(mode))
+            {
+                args += " " + mode;
+            }
+
+            var startInfo = new System.Diagnostics.ProcessStartInfo
+            {
+                FileName = dotnet,
+                Arguments = args,
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true
+            };
+
+            string dotnetRoot = Environment.GetEnvironmentVariable("DOTNET_ROOT") ?? string.Empty;
+            if (string.IsNullOrEmpty(dotnetRoot) && File.Exists("D:/Unity/dotnet/dotnet.exe"))
+            {
+                dotnetRoot = "D:/Unity/dotnet";
+            }
+
+            if (!string.IsNullOrEmpty(dotnetRoot))
+            {
+                startInfo.Environment["DOTNET_ROOT"] = dotnetRoot;
+            }
+
+            return startInfo;
+        }
+
+        private static string ResolveDotnetPath()
+        {
+            string? processPath = Environment.ProcessPath;
+            if (!string.IsNullOrEmpty(processPath) &&
+                Path.GetFileNameWithoutExtension(processPath).Equals("dotnet", StringComparison.OrdinalIgnoreCase))
+            {
+                return processPath;
+            }
+
+            string dotnetRoot = Environment.GetEnvironmentVariable("DOTNET_ROOT") ?? string.Empty;
+            if (!string.IsNullOrEmpty(dotnetRoot))
+            {
+                string candidate = Path.Combine(dotnetRoot, OperatingSystem.IsWindows() ? "dotnet.exe" : "dotnet");
+                if (File.Exists(candidate))
+                {
+                    return candidate;
+                }
+            }
+
+            if (File.Exists("D:/Unity/dotnet/dotnet.exe"))
+            {
+                return "D:/Unity/dotnet/dotnet.exe";
+            }
+
+            return "dotnet";
         }
     }
 }

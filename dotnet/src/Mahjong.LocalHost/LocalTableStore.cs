@@ -297,6 +297,10 @@ namespace Mahjong.LocalHost
             _scopes = new InMemoryRequestScopeAuthority();
             _inner = new InMemoryTableStore(_replayClock, _scopes);
             await _inner.CreateRoomAsync(checkpoint, cancellationToken).ConfigureAwait(false);
+            if (save.CurrentState.CheatBound)
+            {
+                _inner.SetCheatBindingForTest(save.RoomId, save.CurrentState.CheatVersion, save.CurrentState.CheatFingerprint);
+            }
 
             TableLeaseAcquireResult acquired = await _inner.AcquireAsync(
                 save.RoomId,
@@ -316,9 +320,31 @@ namespace Mahjong.LocalHost
             _leaseExpiresUtcMs = acquired.Lease.ExpiresAtUtcMs;
 
             var replayedScopes = new List<RequestScopeId>();
+            if (_scopes != null)
+            {
+                foreach (TableDurableReceipt receipt in save.Receipts.Values)
+                {
+                    if (_scopes.ReadScopeForCommit(receipt.ScopeId) == null)
+                    {
+                        _scopes.Issue(
+                            receipt.AccountId,
+                            TableScopeRole.Player,
+                            save.RoomId,
+                            receipt.CreatedAtUtcMs,
+                            receipt.ExpiresAtUtcMs,
+                            receipt.ScopeId.Value);
+                        replayedScopes.Add(receipt.ScopeId);
+                    }
+                }
+            }
+
             for (int i = 0; i < save.Operations.Count; i++)
             {
                 cancellationToken.ThrowIfCancellationRequested();
+                if (save.Operations[i].ExpectedStateVersion < checkpoint.StateVersion.Value)
+                {
+                    continue;
+                }
                 TableDurableCommitResult result = await ReplayOperationAsync(save.Operations[i], replayedScopes, cancellationToken)
                     .ConfigureAwait(false);
                 if (!result.IsCommitted && !result.IsReplayed)
@@ -764,9 +790,23 @@ namespace Mahjong.LocalHost
                 var copy = new List<TableEventRecord>();
                 if (_save != null)
                 {
+                    TableCheckpoint cp = LocalSaveCodec.DecodeCheckpoint(_save.BaseCheckpointBlob);
+                    if (cp.CommittedHistoryPayload != null)
+                    {
+                        IReadOnlyList<TableEventRecord> history = TableCommittedHistoryCodec.Decode(cp.CommittedHistoryPayload);
+                        for (int i = 0; i < history.Count; i++)
+                        {
+                            if (history[i].Seq.Value > afterSeq.Value)
+                            {
+                                copy.Add(history[i]);
+                            }
+                        }
+                    }
+
                     for (int i = 0; i < _save.EventJournals.Count; i++)
                     {
-                        if (_save.EventJournals[i].Seq.Value > afterSeq.Value)
+                        if (_save.EventJournals[i].Seq.Value > afterSeq.Value &&
+                            (cp.CommittedHistoryPayload == null || _save.EventJournals[i].Seq.Value > cp.LastEventSeq.Value))
                         {
                             copy.Add(_save.EventJournals[i]);
                         }
@@ -816,6 +856,23 @@ namespace Mahjong.LocalHost
                 }
 
                 EnsureRoom(request.RoomId);
+
+                if (request.Receipt != null && _save != null)
+                {
+                    string receiptKey = ReceiptKey(request.Receipt.AccountId, request.Receipt.ScopeId, request.Receipt.RequestId);
+                    if (_save.Receipts.TryGetValue(receiptKey, out TableDurableReceipt? existingReceipt))
+                    {
+                        if (existingReceipt.Matches(request.Receipt.Api, request.Receipt.PayloadSha256))
+                        {
+                            return new ValueTask<TableDurableCommitResult>(
+                                TableDurableCommitResult.Replayed(existingReceipt));
+                        }
+
+                        return new ValueTask<TableDurableCommitResult>(
+                            TableDurableCommitResult.Conflict("The same request id was used with a different API/payload."));
+                    }
+                }
+
                 TableDurableCommitResult result = _inner!
                     .CommitAsync(request, cancellationToken)
                     .AsTask().GetAwaiter().GetResult();
@@ -1460,6 +1517,14 @@ namespace Mahjong.LocalHost
             {
                 save.LatestCommittedFactsPayload = checkpoint.CommittedFactsPayload;
                 save.LatestCommittedFactsPayloadSha256 = checkpoint.CommittedFactsPayloadSha256;
+            }
+            if (checkpoint.CheatPayload != null)
+            {
+                TableCheatLedgerCheckpoint cpCheat = TableCheatLedgerCheckpointCodec.Decode(checkpoint.CheatPayload);
+                var restoredCheat = cpCheat.RestoreCheatState();
+                save.CurrentState.CheatVersion = restoredCheat.Version;
+                save.CurrentState.CheatFingerprint = restoredCheat.Fingerprint;
+                save.CurrentState.CheatBound = true;
             }
         }
 
