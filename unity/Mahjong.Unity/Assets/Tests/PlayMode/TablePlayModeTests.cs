@@ -38,6 +38,7 @@ using CommandKind = Mahjong.Contracts.CommandKind;
 using RequestId = Mahjong.Contracts.RequestId;
 using CommandPayloadFactory = Mahjong.Contracts.CommandPayloadFactory;
 using ProtocolActionType = Mahjong.Contracts.ProtocolActionType;
+using SleeveBloomChoice = Mahjong.Contracts.SleeveBloomChoice;
 using ReceiptStatus = Mahjong.Contracts.ReceiptStatus;
 using ReceiptLookupStatus = Mahjong.Contracts.ReceiptLookupStatus;
 using IdempotencyKey = Mahjong.Contracts.IdempotencyKey;
@@ -1232,6 +1233,165 @@ namespace Mahjong.Unity.Tests.PlayMode
             snap.Cursor.ProjectionSeq = 5;
             _presenter.OnSessionViewChanged(this, FormalProbeView(snap));
             Assert.AreEqual(5UL, _presenter.LatestView!.Identity.StateVersion, "subsequent diff after rebind frozen; queue=" + _presenter.AnimationQueue.LastRejection);
+        }
+
+        [UnityTest]
+        public IEnumerator R5FormalProbe01_ExpiredSleeveOfferMustCloseOnDuplicateRedraw()
+        {
+            yield return LoadAndBindTableSceneAsync(false);
+            var snap = CreatePlayerBaselineEnvelope(stateVersion: 2, hasDecision: false).SyncResponse.Player;
+            snap.Cursor.ProjectionSeq = 2;
+            snap.PrivateView.Cheat.SleeveBloom = new SleeveBloomView
+            {
+                OfferId = "expiry_sleeve_01",
+                Mode = "IMMEDIATE",
+                DrawKind = SleeveBloomDrawKind.Normal,
+                FirstTileId = 0,
+                SecondTileId = 4,
+                HasDeadline = true,
+                DeadlineRemainingMs = 300
+            };
+            _presenter!.OnSessionViewChanged(this, FormalProbeView(snap));
+            _presenter.OpenSleeveBloomDialog();
+            var dialog = FormalField<GameObject>("_sleeveBloomDialog");
+            Assert.IsTrue(dialog.activeInHierarchy);
+            yield return new WaitForSecondsRealtime(0.5f);
+            _presenter.OnSessionViewChanged(this, FormalProbeView(snap));
+            Assert.IsTrue(_presenter.LatestView!.Own!.Cheat!.ImmediateSleeveBloom!.Countdown!.IsExpired(FormalField<ITableClientClock>("_clientClock").MonotonicMilliseconds), "precondition: model deadline expired");
+            Assert.IsFalse(dialog.activeInHierarchy, "expired sleeve dialog survives duplicate confirmed snapshot");
+
+            // Negative assertion: clicking choice on expired offer must not submit command to outbox
+            _presenter.OnSleeveChoiceClicked(SleeveBloomChoice.First);
+            for (int i = 0; i < 20; i++) yield return null;
+            Assert.AreEqual(0, GetUnresolvedOutboxCount(), "expired sleeve choice must not submit intent to outbox");
+        }
+
+        [UnityTest]
+        public IEnumerator R5FormalProbe02_ExpiredBeamOfferMustCloseOnDuplicateRedraw()
+        {
+            yield return LoadAndBindTableSceneAsync(false);
+            var snap = CreatePlayerBaselineEnvelope(stateVersion: 2, hasDecision: false).SyncResponse.Player;
+            snap.Cursor.ProjectionSeq = 2;
+            snap.PrivateView.Cheat.BeamSwap = new BeamSwapView
+            {
+                OfferId = "expiry_beam_01",
+                HasDeadline = true,
+                DeadlineRemainingMs = 300
+            };
+            snap.PrivateView.Cheat.BeamSwap.SelectableHandTileIds.Add(0);
+            snap.PrivateView.Cheat.BeamSwap.Candidates.Add(new BeamSwapCandidateView { Slot = 0, SlotKind = BeamSwapSlotKind.Wall, SlotIndex = 0, TileId = 36 });
+            _presenter!.OnSessionViewChanged(this, FormalProbeView(snap));
+            _presenter.OpenBeamSwapDialog();
+            var dialog = FormalField<GameObject>("_beamSwapDialog");
+            Assert.IsTrue(dialog.activeInHierarchy);
+            yield return new WaitForSecondsRealtime(0.5f);
+            _presenter.OnSessionViewChanged(this, FormalProbeView(snap));
+            Assert.IsTrue(_presenter.LatestView!.Own!.Cheat!.BeamSwap!.Countdown!.IsExpired(FormalField<ITableClientClock>("_clientClock").MonotonicMilliseconds), "precondition: model deadline expired");
+            Assert.IsFalse(dialog.activeInHierarchy, "expired beam dialog survives duplicate confirmed snapshot");
+
+            // Negative assertion: clicking confirm or keep original on expired offer must not submit command to outbox
+            _presenter.OnHandTileClicked(0);
+            _presenter.OnBeamSlotClicked(0);
+            _presenter.OnConfirmBeamSwapClicked();
+            _presenter.OnKeepBeamOriginalClicked();
+            for (int i = 0; i < 20; i++) yield return null;
+            Assert.AreEqual(0, GetUnresolvedOutboxCount(), "expired beam choice must not submit intent to outbox");
+        }
+
+        [UnityTest]
+        public IEnumerator R5FormalProbe03_MonotonicTimePassageMustCloseExpiredOffersWithoutNewSnapshots()
+        {
+            yield return LoadAndBindTableSceneAsync(false);
+            var snap = CreatePlayerBaselineEnvelope(stateVersion: 2, hasDecision: false).SyncResponse.Player;
+            snap.Cursor.ProjectionSeq = 2;
+            snap.PrivateView.Cheat.SleeveBloom = new SleeveBloomView
+            {
+                OfferId = "expiry_time_passage_sleeve",
+                Mode = "IMMEDIATE",
+                DrawKind = SleeveBloomDrawKind.Normal,
+                FirstTileId = 0,
+                SecondTileId = 4,
+                HasDeadline = true,
+                DeadlineRemainingMs = 300
+            };
+            snap.PrivateView.Cheat.BeamSwap = new BeamSwapView
+            {
+                OfferId = "expiry_time_passage_beam",
+                HasDeadline = true,
+                DeadlineRemainingMs = 300
+            };
+            snap.PrivateView.Cheat.BeamSwap.SelectableHandTileIds.Add(0);
+            snap.PrivateView.Cheat.BeamSwap.Candidates.Add(new BeamSwapCandidateView { Slot = 0, SlotKind = BeamSwapSlotKind.Wall, SlotIndex = 0, TileId = 36 });
+            _presenter!.OnSessionViewChanged(this, FormalProbeView(snap));
+
+            // Open sleeve dialog and wait for natural expiration via Update()
+            _presenter.OpenSleeveBloomDialog();
+            var sleeveDialog = FormalField<GameObject>("_sleeveBloomDialog");
+            Assert.IsTrue(sleeveDialog.activeInHierarchy);
+            yield return new WaitForSecondsRealtime(0.5f);
+            Assert.IsFalse(sleeveDialog.activeInHierarchy, "sleeve dialog must auto-close on monotonic deadline expiration via Update()");
+
+            // Open beam dialog with fresh offer
+            snap.StateVersion = 3;
+            snap.Cursor.ProjectionSeq = 3;
+            snap.PrivateView.Cheat.BeamSwap.OfferId = "expiry_time_passage_beam_2";
+            snap.PrivateView.Cheat.BeamSwap.DeadlineRemainingMs = 300;
+            _presenter.OnSessionViewChanged(this, FormalProbeView(snap));
+            _presenter.OpenBeamSwapDialog();
+            _presenter.OnHandTileClicked(0);
+            _presenter.OnBeamSlotClicked(0);
+            var beamDialog = FormalField<GameObject>("_beamSwapDialog");
+            Assert.IsTrue(beamDialog.activeInHierarchy);
+            yield return new WaitForSecondsRealtime(0.5f);
+            Assert.IsFalse(beamDialog.activeInHierarchy, "beam dialog must auto-close on monotonic deadline expiration via Update()");
+            Assert.IsNull(FormalField<uint?>("_selectedBeamHandTile"), "beam hand tile selection must be cleared upon expiration");
+            Assert.IsNull(FormalField<PlayerBeamSwapCandidateState?>("_selectedBeamCandidate"), "beam candidate selection must be cleared upon expiration");
+        }
+
+        [UnityTest]
+        public IEnumerator R5FormalProbe04_UnexpiredCheatOffersMustRemainOpenAcrossPublicDiffAndCursorAdvance()
+        {
+            yield return LoadAndBindTableSceneAsync(false);
+            var snap = CreatePlayerBaselineEnvelope(stateVersion: 2, hasDecision: false).SyncResponse.Player;
+            snap.Cursor.ProjectionSeq = 2;
+            snap.PrivateView.Cheat.SleeveBloom = new SleeveBloomView
+            {
+                OfferId = "long_lived_sleeve",
+                Mode = "IMMEDIATE",
+                DrawKind = SleeveBloomDrawKind.Normal,
+                FirstTileId = 0,
+                SecondTileId = 4,
+                HasDeadline = true,
+                DeadlineRemainingMs = 15000
+            };
+            _presenter!.OnSessionViewChanged(this, FormalProbeView(snap));
+            _presenter.OpenSleeveBloomDialog();
+            var sleeveDialog = FormalField<GameObject>("_sleeveBloomDialog");
+            Assert.IsTrue(sleeveDialog.activeInHierarchy);
+
+            // Advance cursor and public board state
+            snap.StateVersion = 3;
+            snap.Cursor.ProjectionSeq = 3;
+            snap.PublicView.Board.WallRemaining = 65;
+            _presenter.OnSessionViewChanged(this, FormalProbeView(snap));
+            Assert.IsTrue(sleeveDialog.activeInHierarchy, "unexpired sleeve dialog must remain open across non-decision public updates");
+
+            // Negative: expired offer cannot be re-opened
+            var expiredSnap = CreatePlayerBaselineEnvelope(stateVersion: 4, hasDecision: false).SyncResponse.Player;
+            expiredSnap.Cursor.ProjectionSeq = 4;
+            expiredSnap.PrivateView.Cheat.SleeveBloom = new SleeveBloomView
+            {
+                OfferId = "already_expired_sleeve",
+                Mode = "IMMEDIATE",
+                DrawKind = SleeveBloomDrawKind.Normal,
+                FirstTileId = 0,
+                SecondTileId = 4,
+                HasDeadline = true,
+                DeadlineRemainingMs = 0
+            };
+            _presenter.OnSessionViewChanged(this, FormalProbeView(expiredSnap));
+            _presenter.OpenSleeveBloomDialog();
+            Assert.IsFalse(sleeveDialog.activeInHierarchy, "expired offer with 0 remaining ms must not open");
         }
 
         private sealed class FormalSessionSnapshotView : ISessionView

@@ -183,7 +183,38 @@ namespace Mahjong.Unity.Table
             }
 
             UpdateCountdown();
+            UpdateCheatOfferExpirations();
             UpdateAnimationBanner();
+        }
+
+        private void UpdateCheatOfferExpirations()
+        {
+            if (_latestView?.Own?.Cheat == null) return;
+
+            var cheat = _latestView.Own.Cheat;
+            long now = _clientClock.MonotonicMilliseconds;
+
+            if (_sleeveBloomDialog != null && _sleeveBloomDialog.activeInHierarchy)
+            {
+                var sleeve = cheat.ImmediateSleeveBloom ?? cheat.OffTurnSleeveBloom;
+                if (sleeve != null && sleeve.HasDeadline && (sleeve.Countdown == null || sleeve.Countdown.IsExpired(now)))
+                {
+                    CloseSleeveBloomDialog();
+                    _currentSleeveOfferId = null;
+                }
+            }
+
+            if (_beamSwapDialog != null && _beamSwapDialog.activeInHierarchy)
+            {
+                var beam = cheat.BeamSwap;
+                if (beam != null && beam.HasDeadline && (beam.Countdown == null || beam.Countdown.IsExpired(now)))
+                {
+                    _selectedBeamHandTile = null;
+                    _selectedBeamCandidate = null;
+                    CloseBeamSwapDialog();
+                    _currentBeamOfferId = null;
+                }
+            }
         }
 
         public void Bind(
@@ -582,7 +613,8 @@ namespace Mahjong.Unity.Table
             // Sleeve Bloom offer lifecycle:
             var currentSleeve = nextView.Own?.Cheat?.ImmediateSleeveBloom ?? nextView.Own?.Cheat?.OffTurnSleeveBloom;
             string? newSleeveOfferId = currentSleeve?.OfferId;
-            bool sleeveOfferExpired = currentSleeve != null && currentSleeve.HasDeadline && currentSleeve.Countdown != null && currentSleeve.Countdown.ServerRemainingMilliseconds <= 0;
+            bool sleeveOfferExpired = currentSleeve != null && currentSleeve.HasDeadline &&
+                (currentSleeve.Countdown == null || currentSleeve.Countdown.IsExpired(_clientClock.MonotonicMilliseconds));
             bool sleeveOfferInvalidated = authorizationLost ||
                                           roundContextChanged ||
                                           identityChanged ||
@@ -604,7 +636,8 @@ namespace Mahjong.Unity.Table
             // Beam Swap offer lifecycle:
             var currentBeam = nextView.Own?.Cheat?.BeamSwap;
             string? newBeamOfferId = currentBeam?.OfferId;
-            bool beamOfferExpired = currentBeam != null && currentBeam.HasDeadline && currentBeam.Countdown != null && currentBeam.Countdown.ServerRemainingMilliseconds <= 0;
+            bool beamOfferExpired = currentBeam != null && currentBeam.HasDeadline &&
+                (currentBeam.Countdown == null || currentBeam.Countdown.IsExpired(_clientClock.MonotonicMilliseconds));
             bool beamOfferInvalidated = authorizationLost ||
                                         roundContextChanged ||
                                         identityChanged ||
@@ -1467,6 +1500,13 @@ namespace Mahjong.Unity.Table
                 return;
             }
 
+            if (sleeve.HasDeadline && (sleeve.Countdown == null || sleeve.Countdown.IsExpired(_clientClock.MonotonicMilliseconds)))
+            {
+                UpdateStatusText("袖里藏花已过期");
+                CloseSleeveBloomDialog();
+                return;
+            }
+
             _currentSleeveOfferId = sleeve.OfferId;
             if (_sleeveBloomDialog != null) _sleeveBloomDialog.SetActive(true);
 
@@ -1506,6 +1546,13 @@ namespace Mahjong.Unity.Table
             var sleeve = cheat?.ImmediateSleeveBloom ?? cheat?.OffTurnSleeveBloom;
             if (sleeve == null) return;
             if (_sleeveBloomDialog == null || !_sleeveBloomDialog.activeInHierarchy) return;
+
+            if (sleeve.HasDeadline && (sleeve.Countdown == null || sleeve.Countdown.IsExpired(_clientClock.MonotonicMilliseconds)))
+            {
+                UpdateStatusText("袖里藏花已过期");
+                CloseSleeveBloomDialog();
+                return;
+            }
 
             var ownerContext = BuildOwnerContext();
             if (ownerContext == null) return;
@@ -1578,6 +1625,13 @@ namespace Mahjong.Unity.Table
             }
 
             var beam = cheat.BeamSwap;
+            if (beam.HasDeadline && (beam.Countdown == null || beam.Countdown.IsExpired(_clientClock.MonotonicMilliseconds)))
+            {
+                UpdateStatusText("偷梁换柱已过期");
+                CloseBeamSwapDialog();
+                return;
+            }
+
             _currentBeamOfferId = beam.OfferId;
             _selectedBeamHandTile = null;
             _selectedBeamCandidate = null;
@@ -1698,11 +1752,13 @@ namespace Mahjong.Unity.Table
             if (_latestView == null || !_selectedBeamHandTile.HasValue || _selectedBeamCandidate == null) return;
 
             var currentBeam = _latestView.Own?.Cheat?.BeamSwap;
-            if (currentBeam == null || !string.Equals(currentBeam.OfferId, _currentBeamOfferId, StringComparison.Ordinal))
+            if (currentBeam == null || !string.Equals(currentBeam.OfferId, _currentBeamOfferId, StringComparison.Ordinal) ||
+                (currentBeam.HasDeadline && (currentBeam.Countdown == null || currentBeam.Countdown.IsExpired(_clientClock.MonotonicMilliseconds))))
             {
                 CloseBeamSwapDialog();
                 _selectedBeamHandTile = null;
                 _selectedBeamCandidate = null;
+                UpdateStatusText("偷梁换柱已过期");
                 return;
             }
 
@@ -1734,9 +1790,13 @@ namespace Mahjong.Unity.Table
             if (_latestView == null) return;
 
             var currentBeam = _latestView.Own?.Cheat?.BeamSwap;
-            if (currentBeam == null || !string.Equals(currentBeam.OfferId, _currentBeamOfferId, StringComparison.Ordinal))
+            if (currentBeam == null || !string.Equals(currentBeam.OfferId, _currentBeamOfferId, StringComparison.Ordinal) ||
+                (currentBeam.HasDeadline && (currentBeam.Countdown == null || currentBeam.Countdown.IsExpired(_clientClock.MonotonicMilliseconds))))
             {
                 CloseBeamSwapDialog();
+                _selectedBeamHandTile = null;
+                _selectedBeamCandidate = null;
+                UpdateStatusText("偷梁换柱已过期");
                 return;
             }
 

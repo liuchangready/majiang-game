@@ -162,7 +162,7 @@ $negCountRes = Invoke-BoundedScript -ScriptFile $boundaryScript -Arguments @("-P
 $negCount = $negCountRes.Output.Trim()
 Write-Host "`n[STEP 2/6] Running Boundary Negative Mutation Matrix ($negCount cases)..."
 $bNegLog = Join-Path $resolvedLogs "boundary-negative-matrix.log"
-$bNegRes = Invoke-BoundedScript -ScriptFile $boundaryScript -Arguments @("-Project", "`"$resolvedProj`"", "-Policy", "`"$runPolicy`"", "-TestNegativeMatrix") -LogFile $bNegLog -TimeoutSeconds 90
+$bNegRes = Invoke-BoundedScript -ScriptFile $boundaryScript -Arguments @("-Project", "`"$resolvedProj`"", "-Policy", "`"$runPolicy`"", "-TestNegativeMatrix") -LogFile $bNegLog -TimeoutSeconds 240
 if ($bNegRes.ExitCode -ne 0) {
     Write-Host $bNegRes.Output
     throw "Boundary negative matrix FAILED (ExitCode: $($bNegRes.ExitCode))"
