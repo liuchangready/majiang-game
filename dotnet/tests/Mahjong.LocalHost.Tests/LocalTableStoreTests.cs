@@ -6,6 +6,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using Mahjong.Contracts;
 using Mahjong.Domain;
+using Mahjong.Domain.Cheat;
 using Mahjong.TableRuntime;
 using Xunit;
 
@@ -483,6 +484,31 @@ namespace Mahjong.LocalHost.Tests
                     Assert.Equal(checkpoint.CommittedFactsPayloadSha256, TablePayloadSha256.Compute(checkpoint.CommittedFactsPayload));
                 }
 
+                // Initial payload/hash negative controls verified at checkpoint construction boundary
+                byte[] tamperedInitState = (byte[])checkpoint.StatePayload.Clone();
+                tamperedInitState[tamperedInitState.Length - 1] ^= 0x01;
+                Assert.Throws<ArgumentException>(() => new TableCheckpoint(
+                    checkpoint.RoomId, checkpoint.StateVersion, checkpoint.LastEventSeq,
+                    checkpoint.StateFingerprint, checkpoint.RulesetVersion,
+                    tamperedInitState, checkpoint.StatePayloadSha256,
+                    checkpoint.ControlVersion, checkpoint.ControlPayload, checkpoint.ControlPayloadSha256,
+                    checkpoint.TimingPayload, checkpoint.TimingPayloadSha256,
+                    checkpoint.CheatPayload, checkpoint.CheatPayloadSha256,
+                    checkpoint.CommittedFactsPayload, checkpoint.CommittedFactsPayloadSha256,
+                    checkpoint.CreatedAtUtcMs, checkpoint.BootId));
+
+                byte[] tamperedInitControl = (byte[])checkpoint.ControlPayload.Clone();
+                tamperedInitControl[tamperedInitControl.Length - 1] ^= 0x01;
+                Assert.Throws<ArgumentException>(() => new TableCheckpoint(
+                    checkpoint.RoomId, checkpoint.StateVersion, checkpoint.LastEventSeq,
+                    checkpoint.StateFingerprint, checkpoint.RulesetVersion,
+                    checkpoint.StatePayload, checkpoint.StatePayloadSha256,
+                    checkpoint.ControlVersion, tamperedInitControl, checkpoint.ControlPayloadSha256,
+                    checkpoint.TimingPayload, checkpoint.TimingPayloadSha256,
+                    checkpoint.CheatPayload, checkpoint.CheatPayloadSha256,
+                    checkpoint.CommittedFactsPayload, checkpoint.CommittedFactsPayloadSha256,
+                    checkpoint.CreatedAtUtcMs, checkpoint.BootId));
+
                 await store.CreateRoomAsync(checkpoint, ct);
 
                 LocalTableException duplicate = await Assert.ThrowsAsync<LocalTableException>(
@@ -696,7 +722,7 @@ namespace Mahjong.LocalHost.Tests
                 await store.AcquireAsync(P41Harness.RoomId, "owner-local", TimeSpan.FromMinutes(5), ct);
                 TableCheckpoint checkpoint = await BuildNextCheckpointAsync(store);
 
-                // 1) Owner fence negative
+                // 1) Owner fence negative: wrong owner instance
                 var wrongOwnerFence = new TableCheckpointFence(
                     P41Harness.RoomId,
                     "wrong-owner",
@@ -707,6 +733,18 @@ namespace Mahjong.LocalHost.Tests
                 TableDurableCommitResult wrongOwnerRes = await store.SaveCheckpointAsync(checkpoint, wrongOwnerFence, ct);
                 Assert.Equal(TableCommitDisposition.StaleOwner, wrongOwnerRes.Disposition);
                 Assert.Equal(TableRuntimeReasonCode.StaleOwnerEpoch, wrongOwnerRes.ReasonCode);
+
+                // 1b) Owner fence negative: wrong owner epoch
+                var wrongOwnerEpochFence = new TableCheckpointFence(
+                    P41Harness.RoomId,
+                    "owner-local",
+                    new OwnerEpoch(store.LeaseEpoch.Value + 99UL),
+                    checkpoint.StateVersion,
+                    checkpoint.ControlVersion,
+                    1L);
+                TableDurableCommitResult wrongEpochRes = await store.SaveCheckpointAsync(checkpoint, wrongOwnerEpochFence, ct);
+                Assert.Equal(TableCommitDisposition.StaleOwner, wrongEpochRes.Disposition);
+                Assert.Equal(TableRuntimeReasonCode.StaleOwnerEpoch, wrongEpochRes.ReasonCode);
 
                 // 2) State fence negative
                 var staleStateFence = new TableCheckpointFence(
@@ -773,6 +811,48 @@ namespace Mahjong.LocalHost.Tests
                     checkpoint.CommittedHistoryPayloadSha256,
                     checkpoint.CommittedCommandBindingsPayload,
                     checkpoint.CommittedCommandBindingsPayloadSha256));
+
+                // 5b) Committed facts payload hash mismatch rejected at checkpoint construction boundary
+                byte[] tamperedFacts = (byte[])checkpoint.CommittedFactsPayload!.Clone();
+                tamperedFacts[tamperedFacts.Length - 1] ^= 0x01;
+                Assert.Throws<ArgumentException>(() => new TableCheckpoint(
+                    checkpoint.RoomId,
+                    checkpoint.StateVersion,
+                    checkpoint.LastEventSeq,
+                    checkpoint.StateFingerprint,
+                    checkpoint.RulesetVersion,
+                    checkpoint.StatePayload,
+                    checkpoint.StatePayloadSha256,
+                    checkpoint.ControlVersion,
+                    checkpoint.ControlPayload,
+                    checkpoint.ControlPayloadSha256,
+                    checkpoint.TimingPayload,
+                    checkpoint.TimingPayloadSha256,
+                    checkpoint.CheatPayload,
+                    checkpoint.CheatPayloadSha256,
+                    tamperedFacts,
+                    checkpoint.CommittedFactsPayloadSha256,
+                    checkpoint.CreatedAtUtcMs,
+                    checkpoint.BootId,
+                    checkpoint.SchemaVersion,
+                    checkpoint.TimingVersion,
+                    checkpoint.CapturedMonotonicMillis,
+                    checkpoint.CommittedHistoryPayload,
+                    checkpoint.CommittedHistoryPayloadSha256,
+                    checkpoint.CommittedCommandBindingsPayload,
+                    checkpoint.CommittedCommandBindingsPayloadSha256));
+
+                // Verify negative attempts have zero side effects on store state
+                TableStateRow preSaveState = (await store.LoadStateAsync(P41Harness.RoomId, ct))!;
+                Assert.Equal(checkpoint.StateVersion, preSaveState.StateVersion);
+                Assert.Equal(checkpoint.ControlVersion, preSaveState.ControlVersion);
+                Assert.Equal(1L, preSaveState.TimingVersion);
+                Assert.Equal(checkpoint.TimingVersion - 1L, preSaveState.TimingVersion);
+                Assert.Equal(checkpoint.StatePayloadSha256, preSaveState.StateHash);
+                Assert.Equal(checkpoint.StateFingerprint, preSaveState.StateFingerprint);
+                Assert.Empty(await store.LoadCommandsAfterAsync(P41Harness.RoomId, checkpoint.StateVersion, ct));
+                Assert.Empty(await store.LoadEventsAfterAsync(P41Harness.RoomId, checkpoint.LastEventSeq, ct));
+                Assert.Empty(await store.ListUnpublishedAsync(ct));
 
                 var validFence = new TableCheckpointFence(
                     P41Harness.RoomId,
@@ -1338,6 +1418,17 @@ namespace Mahjong.LocalHost.Tests
             CancellationToken ct = TestContext.Current.CancellationToken;
             ulong nowUtc = (ulong)harness.Clock.UtcNowMs;
 
+            TableDurableCommitRequest? discardReq1 = null;
+            TableDurableCommitRequest? markReq1 = null;
+            TableDurableCommitRequest? sleeveReq1 = null;
+            TableDurableCommitRequest? beamReq1 = null;
+            TableDurableCommitRequest? settleReq1 = null;
+            CheatState? cheat3 = null;
+            byte[]? discardStatePayload = null;
+            ulong discardFingerprint = 0UL;
+            TilePositionMap? tilesAfterBeam = null;
+            byte[] outboxPayload = new byte[] { 170, 180, 190 };
+
             using (LocalTableStore store = await OpenFreshStoreAsync(harness, fs, ct))
             {
                 await store.AcquireAsync(P41Harness.RoomId, "owner-local", TimeSpan.FromMinutes(5), ct);
@@ -1374,8 +1465,8 @@ namespace Mahjong.LocalHost.Tests
                     null,
                     Array.Empty<RoundEvent>(),
                     checkpoint.StateFingerprint + 1UL);
-                byte[] discardStatePayload = RoundRecoveryCodec.Encode(roundAfterDiscard);
-                ulong discardFingerprint = checkpoint.StateFingerprint + 1UL;
+                discardStatePayload = RoundRecoveryCodec.Encode(roundAfterDiscard);
+                discardFingerprint = roundAfterDiscard.SourceFingerprint;
 
                 // Pre-commit baseline assertions: 0 events, 0 commands, 0 outbox, 0 state version
                 Assert.Empty(await store.LoadEventsAfterAsync(P41Harness.RoomId, new EventSeq(0), ct));
@@ -1383,7 +1474,7 @@ namespace Mahjong.LocalHost.Tests
                 Assert.Empty(await store.ListUnpublishedAsync(ct));
 
                 TableTimingCheckpoint timing1 = AdvanceTiming(timing);
-                var discardReq1 = BuildPlayerCommitRequest(
+                discardReq1 = BuildPlayerCommitRequest(
                     P41Harness.RoomId,
                     "owner-local",
                     store.LeaseEpoch,
@@ -1419,7 +1510,6 @@ namespace Mahjong.LocalHost.Tests
                 Assert.Equal(1UL, stateAfterReplay.StateVersion.Value);
                 Assert.Equal(discardFingerprint, stateAfterReplay.StateFingerprint);
                 Assert.Equal(TablePayloadSha256.Compute(discardStatePayload), stateAfterReplay.StateHash);
-                // Real values do not duplicate!
                 Assert.Single(await store.LoadEventsAfterAsync(P41Harness.RoomId, new EventSeq(0), ct));
                 Assert.Single(await store.LoadCommandsAfterAsync(P41Harness.RoomId, new StateVersion(0), ct));
                 Assert.Empty(await store.ListUnpublishedAsync(ct));
@@ -1447,14 +1537,37 @@ namespace Mahjong.LocalHost.Tests
                 Assert.Single(await store.LoadCommandsAfterAsync(P41Harness.RoomId, new StateVersion(0), ct));
                 Assert.Empty(await store.ListUnpublishedAsync(ct));
 
-                // --- 2. Three Cheats: TileMark, SleeveBloom, BeamSwap ---
-                // 2A. Cheat 1: TileMark (落汗)
+                // --- 2. Three Cheats: TileMark, SleeveBloom, BeamSwap with real domain changes ---
+                CheatState cheat0 = TableCheatLedgerCheckpointCodec.Decode(checkpoint.CheatPayload!).RestoreCheatState();
+
+                // 2A. Cheat 1: TileMark (落汗) with real 4-tile group and 10 pt ledger deduction
                 var markReqId = new RequestId("cheat-mark-1");
                 byte[] markPayloadA = new byte[] { 31, 32, 33 };
                 byte[] markPayloadB = new byte[] { 34, 35, 36 };
 
+                var group1 = new TileMarkGroup("group-1", 0, new[] { new TileId(10), new TileId(11), new TileId(12), new TileId(13) }, initialRound.Spec.RoundId, 1);
+                var marks1 = TileMarkState.Restore(1L, 1, new[] { initialRound.Spec.RoundId }, Array.Empty<string>(), new[] { group1 });
+                CheatLedgerApplyResult ledgerRes1 = cheat0.Ledger.Apply("entry-mark-1", 0, -10, "cheat:tile-mark");
+                Assert.True(ledgerRes1.Success);
+                CheatLedger ledger1 = ledgerRes1.Ledger!;
+                Assert.Equal(110, ledger1.BalanceOf(0));
+                var cheat1 = new CheatState(ledger1, marks1, cheat0.SleeveBloom, cheat0.BeamSwap);
+
+                var roundAfterMark = new RoundRecoveryState(
+                    roundAfterDiscard.Spec,
+                    2L,
+                    RoundPhase.CheatWindow,
+                    0,
+                    tilesAfterDiscard,
+                    null,
+                    null,
+                    Array.Empty<RoundEvent>(),
+                    discardFingerprint + 1UL);
+                byte[] markStatePayload = RoundRecoveryCodec.Encode(roundAfterMark);
+                ulong markFingerprint = roundAfterMark.SourceFingerprint;
+
                 TableTimingCheckpoint timing2 = AdvanceTiming(timing1);
-                var markReq1 = BuildPlayerCommitRequest(
+                markReq1 = BuildPlayerCommitRequest(
                     P41Harness.RoomId,
                     "owner-local",
                     store.LeaseEpoch,
@@ -1468,15 +1581,17 @@ namespace Mahjong.LocalHost.Tests
                     "CHEAT_TILE_MARK",
                     markPayloadA,
                     eventType: RoundEventType.CheatApplied,
-                    nextCheatVersion: 1L,
-                    nextCheatFingerprint: 101UL);
+                    nextCheatVersion: cheat1.Version,
+                    nextCheatFingerprint: cheat1.Fingerprint,
+                    nextStatePayload: markStatePayload,
+                    nextStateFingerprint: markFingerprint);
 
                 TableDurableCommitResult markRes1 = await store.CommitAsync(markReq1, ct);
                 Assert.True(markRes1.IsCommitted);
                 TableStateRow stateAfterMark = (await store.LoadStateAsync(P41Harness.RoomId, ct))!;
                 Assert.Equal(2UL, stateAfterMark.StateVersion.Value);
-                Assert.Equal(1L, stateAfterMark.CheatVersion);
-                Assert.Equal(101UL, stateAfterMark.CheatFingerprint);
+                Assert.Equal(cheat1.Version, stateAfterMark.CheatVersion);
+                Assert.Equal(cheat1.Fingerprint, stateAfterMark.CheatFingerprint);
                 Assert.True(stateAfterMark.CheatBound);
                 Assert.Equal(2, (await store.LoadEventsAfterAsync(P41Harness.RoomId, new EventSeq(0), ct)).Count);
                 Assert.Equal(2, (await store.LoadCommandsAfterAsync(P41Harness.RoomId, new StateVersion(0), ct)).Count);
@@ -1485,8 +1600,8 @@ namespace Mahjong.LocalHost.Tests
                 Assert.True(markReplay.IsReplayed);
                 TableStateRow stateAfterMarkReplay = (await store.LoadStateAsync(P41Harness.RoomId, ct))!;
                 Assert.Equal(2UL, stateAfterMarkReplay.StateVersion.Value);
-                Assert.Equal(1L, stateAfterMarkReplay.CheatVersion);
-                Assert.Equal(101UL, stateAfterMarkReplay.CheatFingerprint);
+                Assert.Equal(cheat1.Version, stateAfterMarkReplay.CheatVersion);
+                Assert.Equal(cheat1.Fingerprint, stateAfterMarkReplay.CheatFingerprint);
                 Assert.Equal(2, (await store.LoadEventsAfterAsync(P41Harness.RoomId, new EventSeq(0), ct)).Count);
                 Assert.Equal(2, (await store.LoadCommandsAfterAsync(P41Harness.RoomId, new StateVersion(0), ct)).Count);
 
@@ -1504,21 +1619,44 @@ namespace Mahjong.LocalHost.Tests
                     "CHEAT_TILE_MARK",
                     markPayloadB,
                     eventType: RoundEventType.CheatApplied,
-                    nextCheatVersion: 1L,
-                    nextCheatFingerprint: 101UL);
+                    nextCheatVersion: cheat1.Version,
+                    nextCheatFingerprint: cheat1.Fingerprint,
+                    nextStatePayload: markStatePayload,
+                    nextStateFingerprint: markFingerprint);
                 TableDurableCommitResult markConflictRes = await store.CommitAsync(markConflictReq, ct);
                 Assert.Equal(TableCommitDisposition.Conflict, markConflictRes.Disposition);
                 Assert.Equal(ProtocolErrorCode.RequestIdConflict, markConflictRes.ReasonCode);
                 Assert.Equal(2, (await store.LoadEventsAfterAsync(P41Harness.RoomId, new EventSeq(0), ct)).Count);
                 Assert.Equal(2, (await store.LoadCommandsAfterAsync(P41Harness.RoomId, new StateVersion(0), ct)).Count);
 
-                // 2B. Cheat 2: SleeveBloom (袖里藏花)
+                // 2B. Cheat 2: SleeveBloom (袖里藏花) with real reservation and 10 pt ledger deduction
                 var sleeveReqId = new RequestId("cheat-sleeve-1");
                 byte[] sleevePayloadA = new byte[] { 40, 50, 60 };
                 byte[] sleevePayloadB = new byte[] { 44, 55, 66 };
 
+                var res2 = new SleeveBloomReservation(0, "sleeve-res-1", new TileId(20), "win-1", 1000L);
+                var sleeve2 = SleeveBloomState.Restore(null, Array.Empty<SleeveBloomOffer>(), new[] { res2 }, new string?[4], 1, 0, 1L);
+                CheatLedgerApplyResult ledgerRes2 = ledger1.Apply("entry-sleeve-1", 0, -10, "cheat:sleeve-bloom");
+                Assert.True(ledgerRes2.Success);
+                CheatLedger ledger2 = ledgerRes2.Ledger!;
+                Assert.Equal(100, ledger2.BalanceOf(0));
+                var cheat2 = new CheatState(ledger2, marks1, sleeve2, cheat0.BeamSwap);
+
+                var roundAfterSleeve = new RoundRecoveryState(
+                    roundAfterDiscard.Spec,
+                    3L,
+                    RoundPhase.CheatWindow,
+                    0,
+                    tilesAfterDiscard,
+                    null,
+                    null,
+                    Array.Empty<RoundEvent>(),
+                    markFingerprint + 1UL);
+                byte[] sleeveStatePayload = RoundRecoveryCodec.Encode(roundAfterSleeve);
+                ulong sleeveFingerprint = roundAfterSleeve.SourceFingerprint;
+
                 TableTimingCheckpoint timing3 = AdvanceTiming(timing2);
-                var sleeveReq1 = BuildPlayerCommitRequest(
+                sleeveReq1 = BuildPlayerCommitRequest(
                     P41Harness.RoomId,
                     "owner-local",
                     store.LeaseEpoch,
@@ -1532,15 +1670,17 @@ namespace Mahjong.LocalHost.Tests
                     "CHEAT_SLEEVE_BLOOM",
                     sleevePayloadA,
                     eventType: RoundEventType.CheatApplied,
-                    nextCheatVersion: 2L,
-                    nextCheatFingerprint: 102UL);
+                    nextCheatVersion: cheat2.Version,
+                    nextCheatFingerprint: cheat2.Fingerprint,
+                    nextStatePayload: sleeveStatePayload,
+                    nextStateFingerprint: sleeveFingerprint);
 
                 TableDurableCommitResult sleeveRes1 = await store.CommitAsync(sleeveReq1, ct);
                 Assert.True(sleeveRes1.IsCommitted);
                 TableStateRow stateAfterSleeve = (await store.LoadStateAsync(P41Harness.RoomId, ct))!;
                 Assert.Equal(3UL, stateAfterSleeve.StateVersion.Value);
-                Assert.Equal(2L, stateAfterSleeve.CheatVersion);
-                Assert.Equal(102UL, stateAfterSleeve.CheatFingerprint);
+                Assert.Equal(cheat2.Version, stateAfterSleeve.CheatVersion);
+                Assert.Equal(cheat2.Fingerprint, stateAfterSleeve.CheatFingerprint);
                 Assert.Equal(3, (await store.LoadEventsAfterAsync(P41Harness.RoomId, new EventSeq(0), ct)).Count);
                 Assert.Equal(3, (await store.LoadCommandsAfterAsync(P41Harness.RoomId, new StateVersion(0), ct)).Count);
 
@@ -1548,8 +1688,8 @@ namespace Mahjong.LocalHost.Tests
                 Assert.True(sleeveReplay.IsReplayed);
                 TableStateRow stateAfterSleeveReplay = (await store.LoadStateAsync(P41Harness.RoomId, ct))!;
                 Assert.Equal(3UL, stateAfterSleeveReplay.StateVersion.Value);
-                Assert.Equal(2L, stateAfterSleeveReplay.CheatVersion);
-                Assert.Equal(102UL, stateAfterSleeveReplay.CheatFingerprint);
+                Assert.Equal(cheat2.Version, stateAfterSleeveReplay.CheatVersion);
+                Assert.Equal(cheat2.Fingerprint, stateAfterSleeveReplay.CheatFingerprint);
                 Assert.Equal(3, (await store.LoadEventsAfterAsync(P41Harness.RoomId, new EventSeq(0), ct)).Count);
                 Assert.Equal(3, (await store.LoadCommandsAfterAsync(P41Harness.RoomId, new StateVersion(0), ct)).Count);
 
@@ -1567,21 +1707,61 @@ namespace Mahjong.LocalHost.Tests
                     "CHEAT_SLEEVE_BLOOM",
                     sleevePayloadB,
                     eventType: RoundEventType.CheatApplied,
-                    nextCheatVersion: 2L,
-                    nextCheatFingerprint: 102UL);
+                    nextCheatVersion: cheat2.Version,
+                    nextCheatFingerprint: cheat2.Fingerprint,
+                    nextStatePayload: sleeveStatePayload,
+                    nextStateFingerprint: sleeveFingerprint);
                 TableDurableCommitResult sleeveConflictRes = await store.CommitAsync(sleeveConflictReq, ct);
                 Assert.Equal(TableCommitDisposition.Conflict, sleeveConflictRes.Disposition);
                 Assert.Equal(ProtocolErrorCode.RequestIdConflict, sleeveConflictRes.ReasonCode);
                 Assert.Equal(3, (await store.LoadEventsAfterAsync(P41Harness.RoomId, new EventSeq(0), ct)).Count);
                 Assert.Equal(3, (await store.LoadCommandsAfterAsync(P41Harness.RoomId, new StateVersion(0), ct)).Count);
 
-                // 2C. Cheat 3: BeamSwap (偷梁换柱)
+                // 2C. Cheat 3: BeamSwap (偷梁换柱) with real tile swap in physical map, candidate offer, and 10 pt deduction
                 var beamReqId = new RequestId("cheat-beam-1");
                 byte[] beamPayloadA = new byte[] { 51, 52, 53 };
                 byte[] beamPayloadB = new byte[] { 54, 55, 56 };
 
+                IReadOnlyList<TileId> handTilesBeforeSwap = tilesAfterDiscard.TilesInZone(TileZone.Hand, 0);
+                TileId handTileToSwap = handTilesBeforeSwap[0];
+                int targetWallIndex = -1;
+                for (int w = tilesAfterDiscard.WallPointer; w < tilesAfterDiscard.WallEndExclusive; w++)
+                {
+                    if (tilesAfterDiscard.TryGetTileAt(TilePosition.Wall(w), out _))
+                    {
+                        targetWallIndex = w;
+                        break;
+                    }
+                }
+                Assert.True(targetWallIndex >= 0);
+                TransitionResult beamTransition = tilesAfterDiscard.SwapHandWithWall(0, handTileToSwap, targetWallIndex);
+                Assert.True(beamTransition.IsSuccess, beamTransition.Error?.Message ?? "SwapHandWithWall failed");
+                tilesAfterBeam = beamTransition.RequireState();
+
+                var cand3 = new BeamSwapCandidate(handTileToSwap, BeamSwapSlot.Wall(targetWallIndex));
+                var offer3 = new BeamSwapOffer("beam-offer-1", 0, BeamSwapWindow.Wall, new[] { cand3 }, new[] { new TileId(40) }, new TileId(50), 0);
+                var beam3 = BeamSwapState.Restore(offer3, 0, 1L);
+                CheatLedgerApplyResult ledgerRes3 = ledger2.Apply("entry-beam-1", 0, -10, "cheat:beam-swap");
+                Assert.True(ledgerRes3.Success);
+                CheatLedger ledger3 = ledgerRes3.Ledger!;
+                Assert.Equal(90, ledger3.BalanceOf(0));
+                cheat3 = new CheatState(ledger3, marks1, sleeve2, beam3);
+
+                var roundAfterBeam = new RoundRecoveryState(
+                    roundAfterDiscard.Spec,
+                    4L,
+                    RoundPhase.CheatWindow,
+                    0,
+                    tilesAfterBeam,
+                    null,
+                    null,
+                    Array.Empty<RoundEvent>(),
+                    sleeveFingerprint + 1UL);
+                byte[] beamStatePayload = RoundRecoveryCodec.Encode(roundAfterBeam);
+                ulong beamFingerprint = roundAfterBeam.SourceFingerprint;
+
                 TableTimingCheckpoint timing4 = AdvanceTiming(timing3);
-                var beamReq1 = BuildPlayerCommitRequest(
+                beamReq1 = BuildPlayerCommitRequest(
                     P41Harness.RoomId,
                     "owner-local",
                     store.LeaseEpoch,
@@ -1595,15 +1775,17 @@ namespace Mahjong.LocalHost.Tests
                     "CHEAT_BEAM_SWAP",
                     beamPayloadA,
                     eventType: RoundEventType.CheatApplied,
-                    nextCheatVersion: 3L,
-                    nextCheatFingerprint: 103UL);
+                    nextCheatVersion: cheat3.Version,
+                    nextCheatFingerprint: cheat3.Fingerprint,
+                    nextStatePayload: beamStatePayload,
+                    nextStateFingerprint: beamFingerprint);
 
                 TableDurableCommitResult beamRes1 = await store.CommitAsync(beamReq1, ct);
                 Assert.True(beamRes1.IsCommitted);
                 TableStateRow stateAfterBeam = (await store.LoadStateAsync(P41Harness.RoomId, ct))!;
                 Assert.Equal(4UL, stateAfterBeam.StateVersion.Value);
-                Assert.Equal(3L, stateAfterBeam.CheatVersion);
-                Assert.Equal(103UL, stateAfterBeam.CheatFingerprint);
+                Assert.Equal(cheat3.Version, stateAfterBeam.CheatVersion);
+                Assert.Equal(cheat3.Fingerprint, stateAfterBeam.CheatFingerprint);
                 Assert.Equal(4, (await store.LoadEventsAfterAsync(P41Harness.RoomId, new EventSeq(0), ct)).Count);
                 Assert.Equal(4, (await store.LoadCommandsAfterAsync(P41Harness.RoomId, new StateVersion(0), ct)).Count);
 
@@ -1611,8 +1793,8 @@ namespace Mahjong.LocalHost.Tests
                 Assert.True(beamReplay.IsReplayed);
                 TableStateRow stateAfterBeamReplay = (await store.LoadStateAsync(P41Harness.RoomId, ct))!;
                 Assert.Equal(4UL, stateAfterBeamReplay.StateVersion.Value);
-                Assert.Equal(3L, stateAfterBeamReplay.CheatVersion);
-                Assert.Equal(103UL, stateAfterBeamReplay.CheatFingerprint);
+                Assert.Equal(cheat3.Version, stateAfterBeamReplay.CheatVersion);
+                Assert.Equal(cheat3.Fingerprint, stateAfterBeamReplay.CheatFingerprint);
                 Assert.Equal(4, (await store.LoadEventsAfterAsync(P41Harness.RoomId, new EventSeq(0), ct)).Count);
                 Assert.Equal(4, (await store.LoadCommandsAfterAsync(P41Harness.RoomId, new StateVersion(0), ct)).Count);
 
@@ -1630,19 +1812,20 @@ namespace Mahjong.LocalHost.Tests
                     "CHEAT_BEAM_SWAP",
                     beamPayloadB,
                     eventType: RoundEventType.CheatApplied,
-                    nextCheatVersion: 3L,
-                    nextCheatFingerprint: 103UL);
+                    nextCheatVersion: cheat3.Version,
+                    nextCheatFingerprint: cheat3.Fingerprint,
+                    nextStatePayload: beamStatePayload,
+                    nextStateFingerprint: beamFingerprint);
                 TableDurableCommitResult beamConflictRes = await store.CommitAsync(beamConflictReq, ct);
                 Assert.Equal(TableCommitDisposition.Conflict, beamConflictRes.Disposition);
                 Assert.Equal(ProtocolErrorCode.RequestIdConflict, beamConflictRes.ReasonCode);
                 Assert.Equal(4, (await store.LoadEventsAfterAsync(P41Harness.RoomId, new EventSeq(0), ct)).Count);
                 Assert.Equal(4, (await store.LoadCommandsAfterAsync(P41Harness.RoomId, new StateVersion(0), ct)).Count);
 
-                // --- 3. Settlement Action: Tsumo with Outbox ---
+                // --- 3. Settlement Action: Tsumo with Outbox and terminal state ---
                 var settleReqId = new RequestId("settle-tsumo-1");
                 byte[] settlePayloadA = new byte[] { 70, 80, 90 };
                 byte[] settlePayloadB = new byte[] { 77, 88, 99 };
-                byte[] outboxPayload = new byte[] { 170, 180, 190 };
                 var settlementOutbox = new List<TableSettlementOutboxRecord>
                 {
                     new TableSettlementOutboxRecord(
@@ -1653,8 +1836,21 @@ namespace Mahjong.LocalHost.Tests
                         nowUtc)
                 };
 
+                var roundAfterSettle = new RoundRecoveryState(
+                    roundAfterDiscard.Spec,
+                    5L,
+                    RoundPhase.Discard,
+                    0,
+                    tilesAfterBeam,
+                    null,
+                    null,
+                    Array.Empty<RoundEvent>(),
+                    beamFingerprint + 1UL);
+                byte[] settleStatePayload = RoundRecoveryCodec.Encode(roundAfterSettle);
+                ulong settleFingerprint = roundAfterSettle.SourceFingerprint;
+
                 TableTimingCheckpoint timing5 = AdvanceTiming(timing4);
-                var settleReq1 = BuildPlayerCommitRequest(
+                settleReq1 = BuildPlayerCommitRequest(
                     P41Harness.RoomId,
                     "owner-local",
                     store.LeaseEpoch,
@@ -1668,10 +1864,12 @@ namespace Mahjong.LocalHost.Tests
                     "DECLARE_TSUMO",
                     settlePayloadA,
                     eventType: RoundEventType.TsumoWin,
-                    nextCheatVersion: 3L,
-                    nextCheatFingerprint: 103UL,
+                    nextCheatVersion: cheat3.Version,
+                    nextCheatFingerprint: cheat3.Fingerprint,
                     terminal: true,
-                    outbox: settlementOutbox);
+                    outbox: settlementOutbox,
+                    nextStatePayload: settleStatePayload,
+                    nextStateFingerprint: settleFingerprint);
 
                 // 3a. First commit succeeds
                 TableDurableCommitResult settleRes1 = await store.CommitAsync(settleReq1, ct);
@@ -1710,10 +1908,12 @@ namespace Mahjong.LocalHost.Tests
                     "DECLARE_TSUMO",
                     settlePayloadB,
                     eventType: RoundEventType.TsumoWin,
-                    nextCheatVersion: 3L,
-                    nextCheatFingerprint: 103UL,
+                    nextCheatVersion: cheat3.Version,
+                    nextCheatFingerprint: cheat3.Fingerprint,
                     terminal: true,
-                    outbox: settlementOutbox);
+                    outbox: settlementOutbox,
+                    nextStatePayload: settleStatePayload,
+                    nextStateFingerprint: settleFingerprint);
                 TableDurableCommitResult settleConflictRes = await store.CommitAsync(settleConflictReq, ct);
                 Assert.Equal(TableCommitDisposition.Conflict, settleConflictRes.Disposition);
                 Assert.Equal(ProtocolErrorCode.RequestIdConflict, settleConflictRes.ReasonCode);
@@ -1761,20 +1961,55 @@ namespace Mahjong.LocalHost.Tests
                 TableStateRow cold1State = (await cold1.LoadStateAsync(P41Harness.RoomId, ct))!;
                 Assert.Equal(5UL, cold1State.StateVersion.Value);
                 Assert.Equal(6L, cold1State.TimingVersion);
-                Assert.Equal(3L, cold1State.CheatVersion);
-                Assert.Equal(103UL, cold1State.CheatFingerprint);
+                Assert.Equal(cheat3.Version, cold1State.CheatVersion);
+                Assert.Equal(cheat3.Fingerprint, cold1State.CheatFingerprint);
                 Assert.True(cold1State.CheatBound);
 
-                // All 5 receipts exist and match original fields
-                Assert.NotNull(await cold1.TryGetAsync("player-account-0", new RequestScopeId("scope-valid-1"), new RequestId("action-discard-1"), ct));
-                Assert.NotNull(await cold1.TryGetAsync("player-account-0", new RequestScopeId("scope-valid-1"), new RequestId("cheat-mark-1"), ct));
-                Assert.NotNull(await cold1.TryGetAsync("player-account-0", new RequestScopeId("scope-valid-1"), new RequestId("cheat-sleeve-1"), ct));
-                Assert.NotNull(await cold1.TryGetAsync("player-account-0", new RequestScopeId("scope-valid-1"), new RequestId("cheat-beam-1"), ct));
-                Assert.NotNull(await cold1.TryGetAsync("player-account-0", new RequestScopeId("scope-valid-1"), new RequestId("settle-tsumo-1"), ct));
+                // All 5 receipts exist and match original fields exactly
+                TableDurableReceipt rDiscard = (await cold1.TryGetAsync("player-account-0", new RequestScopeId("scope-valid-1"), new RequestId("action-discard-1"), ct))!;
+                AssertReceiptMatches(discardReq1.Receipt!, rDiscard);
+
+                TableDurableReceipt rMark = (await cold1.TryGetAsync("player-account-0", new RequestScopeId("scope-valid-1"), new RequestId("cheat-mark-1"), ct))!;
+                AssertReceiptMatches(markReq1.Receipt!, rMark);
+
+                TableDurableReceipt rSleeve = (await cold1.TryGetAsync("player-account-0", new RequestScopeId("scope-valid-1"), new RequestId("cheat-sleeve-1"), ct))!;
+                AssertReceiptMatches(sleeveReq1.Receipt!, rSleeve);
+
+                TableDurableReceipt rBeam = (await cold1.TryGetAsync("player-account-0", new RequestScopeId("scope-valid-1"), new RequestId("cheat-beam-1"), ct))!;
+                AssertReceiptMatches(beamReq1.Receipt!, rBeam);
+
+                TableDurableReceipt rSettle = (await cold1.TryGetAsync("player-account-0", new RequestScopeId("scope-valid-1"), new RequestId("settle-tsumo-1"), ct))!;
+                AssertReceiptMatches(settleReq1.Receipt!, rSettle);
+
+                // Exact event records verification
+                IReadOnlyList<TableEventRecord> events = await cold1.LoadEventsAfterAsync(P41Harness.RoomId, new EventSeq(0), ct);
+                Assert.Equal(5, events.Count);
+                Assert.Equal(RoundEventType.TileDiscarded, events[0].Type);
+                Assert.Equal(RoundEventType.CheatApplied, events[1].Type);
+                Assert.Equal(RoundEventType.CheatApplied, events[2].Type);
+                Assert.Equal(RoundEventType.CheatApplied, events[3].Type);
+                Assert.Equal(RoundEventType.TsumoWin, events[4].Type);
+
+                // Exact command journals verification
+                IReadOnlyList<TableCommandJournalRecord> commands = await cold1.LoadCommandsAfterAsync(P41Harness.RoomId, new StateVersion(0), ct);
+                Assert.Equal(5, commands.Count);
+                Assert.Equal("DISCARD_TILE", commands[0].Api);
+                Assert.Equal("CHEAT_TILE_MARK", commands[1].Api);
+                Assert.Equal("CHEAT_SLEEVE_BLOOM", commands[2].Api);
+                Assert.Equal("CHEAT_BEAM_SWAP", commands[3].Api);
+                Assert.Equal("DECLARE_TSUMO", commands[4].Api);
 
                 // Outbox persisted
-                Assert.NotNull(await cold1.TryGetAsync("match-settle-1", 1, ct));
+                TableSettlementOutboxRecord? outboxRec = await cold1.TryGetAsync("match-settle-1", 1, ct);
+                Assert.NotNull(outboxRec);
+                Assert.Equal(TablePayloadSha256.Compute(outboxPayload), outboxRec!.PayloadSha256);
                 Assert.Single(await cold1.ListUnpublishedAsync(ct));
+
+                // 136 Physical entities conservation holds across discard and beam swap
+                ConservationReport report = TilePositionMap.Validate(tilesAfterBeam);
+                Assert.True(report.IsValid, string.Join("; ", report.Errors));
+                Assert.Equal(136, report.AssignedCount);
+                Assert.Equal(0, report.UnassignedCount);
 
                 // Replay re-commit returns IsReplayed without advancing state
                 var replayDiscard = await cold1.CommitAsync(
@@ -1783,7 +2018,9 @@ namespace Mahjong.LocalHost.Tests
                         AdvanceTiming(TableTimingCheckpointCodec.Decode((await cold1.LoadCheckpointAsync(P41Harness.RoomId, ct))!.TimingPayload)),
                         (await cold1.LoadCheckpointAsync(P41Harness.RoomId, ct))!,
                         "player-account-0", new RequestScopeId("scope-valid-1"), new RequestId("action-discard-1"),
-                        "DISCARD_TILE", new byte[] { 10, 20, 30 }),
+                        "DISCARD_TILE", new byte[] { 10, 20, 30 },
+                        nextStatePayload: discardStatePayload,
+                        nextStateFingerprint: discardFingerprint),
                     ct);
                 Assert.True(replayDiscard.IsReplayed);
                 TableStateRow stateAfterColdReplay = (await cold1.LoadStateAsync(P41Harness.RoomId, ct))!;
@@ -1795,8 +2032,17 @@ namespace Mahjong.LocalHost.Tests
             {
                 TableStateRow cold2State = (await cold2.LoadStateAsync(P41Harness.RoomId, ct))!;
                 Assert.Equal(5UL, cold2State.StateVersion.Value);
-                Assert.NotNull(await cold2.TryGetAsync("player-account-0", new RequestScopeId("scope-valid-1"), new RequestId("action-discard-1"), ct));
-                Assert.NotNull(await cold2.TryGetAsync("player-account-0", new RequestScopeId("scope-valid-1"), new RequestId("settle-tsumo-1"), ct));
+                Assert.Equal(cheat3.Version, cold2State.CheatVersion);
+                Assert.Equal(cheat3.Fingerprint, cold2State.CheatFingerprint);
+
+                TableDurableReceipt rDiscard2 = (await cold2.TryGetAsync("player-account-0", new RequestScopeId("scope-valid-1"), new RequestId("action-discard-1"), ct))!;
+                AssertReceiptMatches(discardReq1.Receipt!, rDiscard2);
+                TableDurableReceipt rSettle2 = (await cold2.TryGetAsync("player-account-0", new RequestScopeId("scope-valid-1"), new RequestId("settle-tsumo-1"), ct))!;
+                AssertReceiptMatches(settleReq1.Receipt!, rSettle2);
+
+                Assert.Equal(5, (await cold2.LoadEventsAfterAsync(P41Harness.RoomId, new EventSeq(0), ct)).Count);
+                Assert.Equal(5, (await cold2.LoadCommandsAfterAsync(P41Harness.RoomId, new StateVersion(0), ct)).Count);
+                Assert.Single(await cold2.ListUnpublishedAsync(ct));
             }
 
             // 5c. Advance clock past scope expiry: historical receipts remain queryable, but NEW requests are rejected
@@ -1813,7 +2059,9 @@ namespace Mahjong.LocalHost.Tests
                         AdvanceTiming(TableTimingCheckpointCodec.Decode((await cold3.LoadCheckpointAsync(P41Harness.RoomId, ct))!.TimingPayload)),
                         (await cold3.LoadCheckpointAsync(P41Harness.RoomId, ct))!,
                         "player-account-0", new RequestScopeId("scope-valid-1"), new RequestId("action-discard-1"),
-                        "DISCARD_TILE", new byte[] { 10, 20, 30 }),
+                        "DISCARD_TILE", new byte[] { 10, 20, 30 },
+                        nextStatePayload: discardStatePayload,
+                        nextStateFingerprint: discardFingerprint),
                     ct);
                 Assert.True(historicalReplay.IsReplayed);
 
@@ -1843,6 +2091,134 @@ namespace Mahjong.LocalHost.Tests
                 TableStateRow finalState = (await cold3.LoadStateAsync(P41Harness.RoomId, ct))!;
                 Assert.Equal(5UL, finalState.StateVersion.Value);
             }
+        }
+
+        [Fact]
+        public async Task ReviewerProbe_ScopeRetentionDoesNotExtendAuthorization()
+        {
+            await using var harness = new P41Harness();
+            var fs = new FaultingFileSystem();
+            harness.Options.FileSystemForTest = fs;
+            CancellationToken ct = TestContext.Current.CancellationToken;
+
+            string accountId = "probe-account";
+            string scopeIdStr = "probe-short-scope";
+            var scopeId = new RequestScopeId(scopeIdStr);
+            var req1Id = new RequestId("req-1");
+            var req2Id = new RequestId("req-2");
+
+            ulong nowUtc;
+            using (LocalTableStore store = await OpenFreshStoreAsync(harness, fs, ct))
+            {
+                await store.AcquireAsync(P41Harness.RoomId, "owner-local", TimeSpan.FromMinutes(5), ct);
+                nowUtc = (ulong)harness.Clock.UtcNowMs;
+
+                // Scope validity: 60 seconds (now - 1000 to now + 60_000)
+                store.IssueScope(
+                    accountId,
+                    TableScopeRole.Player,
+                    P41Harness.RoomId,
+                    issuedAtUtcMs: nowUtc - 1_000UL,
+                    expiresAtUtcMs: nowUtc + 60_000UL,
+                    scopeId: scopeIdStr);
+
+                TableCheckpoint cp0 = (await store.LoadCheckpointAsync(P41Harness.RoomId, ct))!;
+                TableTimingCheckpoint timing0 = TableTimingCheckpointCodec.Decode(cp0.TimingPayload);
+                TableTimingCheckpoint timing1 = AdvanceTiming(timing0);
+
+                // Commit 1: receipt retention is 10 minutes (now to now + 600_000)
+                var commitReq1 = BuildPlayerCommitRequest(
+                    P41Harness.RoomId,
+                    "owner-local",
+                    store.LeaseEpoch,
+                    expectedStateVersion: 0UL,
+                    timingVersion: 2L,
+                    timing: timing1,
+                    checkpoint: cp0,
+                    accountId: accountId,
+                    scopeId: scopeId,
+                    requestId: req1Id,
+                    api: "DISCARD_TILE",
+                    businessPayload: new byte[] { 1, 2, 3 },
+                    createdAtUtcMs: nowUtc,
+                    expiresAtUtcMs: nowUtc + 600_000UL);
+
+                TableDurableCommitResult res1 = await store.CommitAsync(commitReq1, ct);
+                Assert.True(res1.IsCommitted, "res1=" + res1.Disposition + " " + res1.ReasonCode);
+            }
+
+            // Advance clock by 120 seconds (now + 120_000): well past 60s scope expiration,
+            // but still within the 600s receipt retention window.
+            harness.Clock.UtcNowMs += 120_000L;
+
+            using (LocalTableStore cold = await LocalTableStore.OpenAsync(harness.Options, harness.Clock, fs, ct))
+            {
+                // Old receipt is still queryable under historical retention
+                TableDurableReceipt? oldReceipt = await cold.TryGetAsync(accountId, scopeId, req1Id, ct);
+                Assert.NotNull(oldReceipt);
+                Assert.Equal(req1Id, oldReceipt.RequestId);
+
+                // Submitting identical request 1 again succeeds as Replayed (idempotent replay)
+                TableCheckpoint cpCold = (await cold.LoadCheckpointAsync(P41Harness.RoomId, ct))!;
+                TableTimingCheckpoint timingCold = AdvanceTiming(TableTimingCheckpointCodec.Decode(cpCold.TimingPayload));
+                var replayReq1 = BuildPlayerCommitRequest(
+                    P41Harness.RoomId,
+                    "owner-local",
+                    cold.LeaseEpoch,
+                    expectedStateVersion: 0UL,
+                    timingVersion: 2L,
+                    timing: timingCold,
+                    checkpoint: cpCold,
+                    accountId: accountId,
+                    scopeId: scopeId,
+                    requestId: req1Id,
+                    api: "DISCARD_TILE",
+                    businessPayload: new byte[] { 1, 2, 3 },
+                    createdAtUtcMs: nowUtc,
+                    expiresAtUtcMs: nowUtc + 600_000UL);
+                TableDurableCommitResult replayRes1 = await cold.CommitAsync(replayReq1, ct);
+                Assert.True(replayRes1.IsReplayed);
+
+                // But submitting a brand NEW request with this scope is strictly rejected!
+                // Receipt retention does NOT extend authorization for new requests.
+                ulong nowCold = (ulong)harness.Clock.UtcNowMs;
+                TableTimingCheckpoint timingColdNext = AdvanceTiming(AdvanceTiming(timingCold));
+                var newReq2 = BuildPlayerCommitRequest(
+                    P41Harness.RoomId,
+                    "owner-local",
+                    cold.LeaseEpoch,
+                    expectedStateVersion: 1UL,
+                    timingVersion: 3L,
+                    timing: timingColdNext,
+                    checkpoint: cpCold,
+                    accountId: accountId,
+                    scopeId: scopeId,
+                    requestId: req2Id,
+                    api: "DISCARD_TILE",
+                    businessPayload: new byte[] { 4, 5, 6 },
+                    createdAtUtcMs: nowCold,
+                    expiresAtUtcMs: nowCold + 600_000UL);
+
+                TableDurableCommitResult res2 = await cold.CommitAsync(newReq2, ct);
+                Assert.Equal(TableCommitDisposition.ScopeRejected, res2.Disposition);
+                Assert.Equal(ProtocolErrorCode.RequestScopeExpired, res2.ReasonCode);
+            }
+        }
+
+        private static void AssertReceiptMatches(TableDurableReceipt expected, TableDurableReceipt? actual)
+        {
+            Assert.NotNull(actual);
+            Assert.Equal(expected.AccountId, actual!.AccountId);
+            Assert.Equal(expected.ScopeId, actual.ScopeId);
+            Assert.Equal(expected.RequestId, actual.RequestId);
+            Assert.Equal(expected.Api, actual.Api);
+            Assert.Equal(expected.PayloadSha256, actual.PayloadSha256);
+            Assert.Equal(expected.Receipt.EvaluatedStateVersion, actual.Receipt.EvaluatedStateVersion);
+            Assert.Equal(expected.Receipt.CommandVersion, actual.Receipt.CommandVersion);
+            Assert.Equal(expected.Receipt.EventSeq, actual.Receipt.EventSeq);
+            Assert.Equal(expected.Receipt.Status, actual.Receipt.Status);
+            Assert.Equal(expected.CreatedAtUtcMs, actual.CreatedAtUtcMs);
+            Assert.Equal(expected.ExpiresAtUtcMs, actual.ExpiresAtUtcMs);
         }
 
         private static async Task<LocalTableStore> OpenFreshStoreAsync(

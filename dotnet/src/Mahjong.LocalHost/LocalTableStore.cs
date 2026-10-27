@@ -315,10 +315,11 @@ namespace Mahjong.LocalHost
             _leaseEpoch = acquired.Lease.OwnerEpoch;
             _leaseExpiresUtcMs = acquired.Lease.ExpiresAtUtcMs;
 
+            var replayedScopes = new List<RequestScopeId>();
             for (int i = 0; i < save.Operations.Count; i++)
             {
                 cancellationToken.ThrowIfCancellationRequested();
-                TableDurableCommitResult result = await ReplayOperationAsync(save.Operations[i], cancellationToken)
+                TableDurableCommitResult result = await ReplayOperationAsync(save.Operations[i], replayedScopes, cancellationToken)
                     .ConfigureAwait(false);
                 if (!result.IsCommitted && !result.IsReplayed)
                 {
@@ -341,6 +342,16 @@ namespace Mahjong.LocalHost
                     "Replayed store state does not match the persisted state row.");
             }
             _replayClock.SetOverrideUtc(null);
+            ulong finishNow = (ulong)Math.Max(0L, _clock.UtcNowMs);
+            if (_scopes != null)
+            {
+                foreach (RequestScopeId replayedScopeId in replayedScopes)
+                {
+                    TableScopeRecord? rec = _scopes.ReadScopeForCommit(replayedScopeId);
+                    ulong revokeAt = rec != null && rec.IssuedAtUtcMs > finishNow ? rec.IssuedAtUtcMs : finishNow;
+                    _scopes.Revoke(replayedScopeId, revokeAt);
+                }
+            }
             TableLeaseRenewResult renewed = await _inner.RenewAsync(
                 save.RoomId,
                 _options.OwnerInstanceId,
@@ -355,6 +366,7 @@ namespace Mahjong.LocalHost
 
         private async ValueTask<TableDurableCommitResult> ReplayOperationAsync(
             LocalDurableOperation operation,
+            List<RequestScopeId> replayedScopes,
             CancellationToken cancellationToken)
         {
             InMemoryTableStore inner = _inner!;
@@ -376,6 +388,7 @@ namespace Mahjong.LocalHost
                                 operation.Receipt.CreatedAtUtcMs,
                                 operation.Receipt.ExpiresAtUtcMs,
                                 operation.Receipt.ScopeId.Value);
+                            replayedScopes.Add(operation.Receipt.ScopeId);
                         }
                     }
 
