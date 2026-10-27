@@ -146,6 +146,7 @@ namespace Mahjong.Unity.Table
         private bool _hasLifecycleAcceptedFence;
         private long _lifecycleAcceptedFence;
         private string _lifecycleFenceSessionId = string.Empty;
+        private ISessionView? _lifecycleFenceSource;
 
         // Selection buffers
         private readonly List<uint> _tileMarkSelectedTiles = new List<uint>();
@@ -253,18 +254,27 @@ namespace Mahjong.Unity.Table
             if (_hasLifecycleAcceptedFence)
             {
                 string nextSessionId = _sessionView?.Current?.Binding?.SessionId ?? string.Empty;
-                if (string.IsNullOrEmpty(nextSessionId) ||
-                    !string.Equals(nextSessionId, _lifecycleFenceSessionId, StringComparison.Ordinal))
+                bool sourceChanged = _lifecycleFenceSource != null &&
+                                     !ReferenceEquals(_lifecycleFenceSource, sessionView);
+                bool sessionChanged = string.IsNullOrEmpty(nextSessionId) ||
+                                      !string.Equals(nextSessionId, _lifecycleFenceSessionId, StringComparison.Ordinal);
+                if (sourceChanged || sessionChanged)
                 {
+                    // A different coordinator instance owns a different
+                    // AcceptedSequence counter. Never carry the old instance's
+                    // numeric high-water mark into the new counter domain.
                     _hasLifecycleAcceptedFence = false;
                     _lifecycleAcceptedFence = 0;
                     _lifecycleFenceSessionId = string.Empty;
+                    _lifecycleFenceSource = null;
                 }
             }
             if (onOpenSettlement != null)
             {
                 _onViewSettlement = onOpenSettlement;
             }
+
+            _lifecycleFenceSource = _sessionView;
 
             // Include publications accepted while no view was attached (plain
             // unbind/rebind), so the first re-attached view is a non-animating
@@ -385,6 +395,7 @@ namespace Mahjong.Unity.Table
             if (_sessionView is ISessionViewLifecycleFence fence && fence.AcceptedSequence > 0)
             {
                 _hasLifecycleAcceptedFence = true;
+                _lifecycleFenceSource = _sessionView;
                 _lifecycleAcceptedFence = Math.Max(_lifecycleAcceptedFence, fence.AcceptedSequence);
                 _lifecycleFenceSessionId = _latestView?.Identity.SessionId ??
                                            _sessionView.Current?.Binding?.SessionId ??
