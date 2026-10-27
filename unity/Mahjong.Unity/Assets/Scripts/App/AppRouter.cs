@@ -33,6 +33,11 @@ namespace Mahjong.Unity.App
             _ = LoadAsync(SceneId.Lobby);
         }
 
+        public void OpenTable()
+        {
+            _ = LoadAsync(SceneId.Table);
+        }
+
         public void OpenSpectator()
         {
             _ = LoadAsync(SceneId.Spectator);
@@ -200,6 +205,13 @@ namespace Mahjong.Unity.App
                     _backRouter.SetMenuQuitHandler(() => RequestQuit());
                     break;
                 case SceneId.Lobby:
+                    _backRouter.SetSceneBackHandler(() =>
+                    {
+                        _ = ReturnToMenuAsync();
+                    }, isBoot: false);
+                    _backRouter.SetMenuQuitHandler(null);
+                    break;
+                case SceneId.Table:
                     _backRouter.SetSceneBackHandler(() =>
                     {
                         _ = ReturnToMenuAsync();
