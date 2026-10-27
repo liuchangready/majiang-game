@@ -284,7 +284,17 @@ namespace Mahjong.TableService.Tests
         [Fact]
         public async Task IllegalAction_AndWrongDecisionCannotAdvanceTheAuthority()
         {
-            await using TableServiceTestHost host = await TableServiceTestHost.StartAsync();
+            // A separate drawn tile is also owned. Pin tile 0 as that tile so
+            // the negative-input helper cannot accidentally submit a legal
+            // tsumogiri and make the result depend on the cryptographic deal.
+            await using TableServiceTestHost host = await TableServiceTestHost.StartAsync(
+                roundSource: new FixedRoundSource(roomId =>
+                {
+                    var fixture = new N1aTable { Dealer = 0 };
+                    fixture.Hand(0, Enumerable.Range(1, 13).Select(id => new TileId(id)).ToArray());
+                    fixture.Drawn(0, new TileId(0));
+                    return fixture.Build(roomId + "-r1");
+                }));
             TableTestClient client = await host.ConnectPlayerAsync("room-neg", "acct-neg", 0);
             try
             {
@@ -294,7 +304,9 @@ namespace Mahjong.TableService.Tests
                 ulong stateVersion = snapshot.StateVersion;
 
                 // A legal-LOOKING discard that names a tile the seat does not hold.
-                uint ownTile = decision.Actions[0].TileIds[0];
+                Assert.True(snapshot.PrivateView!.HasDrawnTileId);
+                Assert.Equal(0u, snapshot.PrivateView.DrawnTileId);
+                uint ownTile = snapshot.PrivateView.ClosedTiles[0];
                 uint foreignTile = TileOutOfRange(snapshot, ownTile);
                 byte[] payload = TableWire.SubmitActionPayload(
                     snapshot.RoundId,
@@ -395,6 +407,10 @@ namespace Mahjong.TableService.Tests
             {
                 except
             };
+            if (snapshot.PrivateView.HasDrawnTileId)
+            {
+                unavailable.Add(snapshot.PrivateView.DrawnTileId);
+            }
             for (uint tile = 0; tile < 136; tile++)
             {
                 if (!unavailable.Contains(tile))

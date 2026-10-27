@@ -140,6 +140,11 @@ function Invoke-Native {
         }
     }) -join ' '
     $process = Start-Process -FilePath $FilePath -ArgumentList $argumentLine -WindowStyle Hidden -PassThru -RedirectStandardOutput $out -RedirectStandardError $err
+    # Windows PowerShell 5.1 can otherwise lose the native exit code after
+    # WaitForExit: ExitCode becomes null, and [int]null silently becomes 0.
+    # Retain the process handle while it is running and fail closed if the
+    # platform still cannot supply an exit code.
+    $null = $process.Handle
     if (-not $process.WaitForExit($TimeoutSeconds * 1000)) {
         try { $process.Kill() } catch { }
         throw "Command timed out after $TimeoutSeconds seconds: $FilePath"
@@ -152,7 +157,9 @@ function Invoke-Native {
         if ($errorText) { $text += $errorText }
     }
     Set-Content -LiteralPath $LogPath -Value $text -Encoding utf8
-    return [int]$process.ExitCode
+    $nativeExit = $process.ExitCode
+    if ($null -eq $nativeExit) { throw "Native exit code unavailable: $FilePath" }
+    return [int]$nativeExit
 }
 
 function Wait-PgReady([int]$TimeoutSeconds = 60) {
@@ -176,6 +183,7 @@ function Invoke-WriterAndKill {
     $err = $LogPath + '.stderr'
     Remove-Item -LiteralPath $out, $err, $MarkerPath -Force -ErrorAction SilentlyContinue
     $process = Start-Process -FilePath $DotnetPath -ArgumentList ('"' + $WorkerDll + '" writer') -WindowStyle Hidden -PassThru -RedirectStandardOutput $out -RedirectStandardError $err
+    $null = $process.Handle
     $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
     while (-not (Test-Path -LiteralPath $MarkerPath)) {
         if ($process.HasExited) {
@@ -193,12 +201,14 @@ function Invoke-WriterAndKill {
     $writerPid = $process.Id
     Stop-Process -Id $process.Id -Force
     $process.WaitForExit()
+    $nativeExit = $process.ExitCode
+    if ($null -eq $nativeExit) { throw 'Crash writer native exit code unavailable.' }
     $killRecord = [ordered]@{
         pid = $writerPid
         marker = $MarkerPath
         markerSha256 = (Get-Sha256 $MarkerPath)
         killedUtc = (Get-Date).ToUniversalTime().ToString('o')
-        exitCode = $process.ExitCode
+        exitCode = $nativeExit
         forced = $true
     }
     $killRecord | ConvertTo-Json | Set-Content -LiteralPath ($LogPath + '.kill.json') -Encoding utf8
@@ -206,7 +216,7 @@ function Invoke-WriterAndKill {
     if (Test-Path -LiteralPath $out) { $text += (Get-Content -LiteralPath $out -Raw) }
     if (Test-Path -LiteralPath $err) { $text += (Get-Content -LiteralPath $err -Raw) }
     Set-Content -LiteralPath $LogPath -Value $text -Encoding utf8
-    return [ordered]@{ killed = $true; pid = $writerPid; exitCode = [int]$process.ExitCode }
+    return [ordered]@{ killed = $true; pid = $writerPid; exitCode = [int]$nativeExit }
 }
 
 function Get-PgScalar([string]$Database, [string]$Sql) {

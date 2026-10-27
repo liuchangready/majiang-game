@@ -52,6 +52,10 @@ jobs:
       # does not exist on CI runners, and the wrapper never hardcodes it.
       # Use the same Windows PowerShell 5.1 host used for caller acceptance.
       # Both wrappers keep their existing ownership checks and finally cleanup.
+      - name: Verify native failure exit propagation
+        shell: powershell
+        run: ./tools/ci/test-v5-native-exit.ps1
+
       - name: Run unified V5 verification
         shell: powershell
         run: ./tools/ci/verify-v5-table-postgres.ps1 -Configuration Release -RunUnifiedVerification -LogDir artifacts/verify-v5/table -UnifiedLogDir artifacts/verify-v5/unified
@@ -64,6 +68,8 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: v5-verify-logs-${{ github.run_id }}-${{ github.run_attempt }}
-          path: artifacts/verify-v5/**
+          path: |
+            artifacts/verify-v5/**
+            artifacts/native-exit-*/**
           if-no-files-found: error
           retention-days: 30
