@@ -1024,6 +1024,34 @@ namespace Mahjong.Client
                    (eventSeq == _eventSeq && eventOrdinal <= _eventOrdinal);
         }
 
+        /// <summary>
+        /// A baseline/reset confirms every event up to its snapshot event_seq as
+        /// history, whether or not that frame carried the individual events.
+        /// Marking the whole sequence as consumed prevents an unseen historical
+        /// event from becoming playable later; sparse new sequences above the
+        /// watermark remain legal.
+        /// </summary>
+        public void AdvanceWatermark(ulong eventSeq)
+        {
+            if (eventSeq == 0)
+            {
+                return;
+            }
+
+            if (!_hasValue || eventSeq > _eventSeq)
+            {
+                _hasValue = true;
+                _eventSeq = eventSeq;
+                _eventOrdinal = uint.MaxValue;
+                return;
+            }
+
+            if (eventSeq == _eventSeq && _eventOrdinal < uint.MaxValue)
+            {
+                _eventOrdinal = uint.MaxValue;
+            }
+        }
+
         public void Advance(ulong eventSeq, uint eventOrdinal)
         {
             if (!_hasValue ||

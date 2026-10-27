@@ -840,6 +840,10 @@ namespace Mahjong.Client
                 acceptedStateVersion,
                 acceptedEventSeq,
                 baselineRoundId);
+            // A baseline confirms its snapshot event_seq as the history
+            // watermark even when the wire baseline carries no visible events.
+            // Later incremental frames may only replay events above it.
+            _visibleEventFence.AdvanceWatermark(acceptedEventSeq);
             RaiseSnapshotChanged(baselineCursor, true, baselineBatch);
 
             if (!cursor.HasValue)
@@ -1102,6 +1106,15 @@ namespace Mahjong.Client
             {
                 TableVisibleEvent visible = batch.Events[i];
                 _visibleEventFence.Advance(visible.EventSeq, visible.EventOrdinal);
+            }
+
+            if (isFullSnapshot)
+            {
+                // A full baseline confirms the whole snapshot event sequence as
+                // history, not only the events it happened to carry. This is
+                // the difference between a baseline watermark and "delivered
+                // event pair" bookkeeping; drift here replayed unseen history.
+                _visibleEventFence.AdvanceWatermark(batch.EventSeq);
             }
 
             RaiseSnapshotChanged(cursor, isFullSnapshot, batch);

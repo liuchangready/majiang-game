@@ -134,6 +134,253 @@ namespace Mahjong.Client.Tests
             Assert.Equal(107UL, batch.Events[1].EventSeq);
         }
 
+        [Theory]
+        [InlineData(0)]
+        [InlineData(1)]
+        [InlineData(2)]
+        [InlineData(3)]
+        public async Task InitialSyncWatermarkPreventsUnseenHistoricalEventReplay(int seat)
+        {
+            (TableSession session, FakeTableChannel channel) = await ConnectedPlayerAsync(seat);
+            var notifications = new List<TableSnapshotChangedEventArgs>();
+            session.SnapshotChanged += (_, e) => notifications.Add(e);
+
+            channel.Enqueue(PlayerPush(
+                11,
+                seat,
+                5,
+                10,
+                6,
+                11,
+                isFullSnapshot: false,
+                PrivateDraw(seat, 20, 104, 5, 0),
+                PrivateDraw(seat, 21, 105, 5, 3),
+                PrivateDraw(seat, 22, 106, 6, 0)));
+            await session.PumpOnceAsync(CancellationToken.None);
+
+            TableVisibleEventBatch batch = Assert.Single(notifications).VisibleEventBatch;
+            TableVisibleEvent playable = Assert.Single(batch.PlayableEvents);
+            Assert.Equal(106UL, playable.EventSeq);
+            Assert.DoesNotContain(batch.PlayableEvents, visible => visible.EventSeq <= 105UL);
+            Assert.Equal(TableConnectionState.Ready, session.State);
+        }
+
+        [Fact]
+        public async Task EmptyFullPushWatermarkPreventsUnseenHistoricalEventReplay()
+        {
+            (TableSession session, FakeTableChannel channel) = await ConnectedPlayerAsync(0);
+            var notifications = new List<TableSnapshotChangedEventArgs>();
+            session.SnapshotChanged += (_, e) => notifications.Add(e);
+
+            channel.Enqueue(PlayerPush(
+                11,
+                0,
+                5,
+                10,
+                6,
+                11,
+                isFullSnapshot: true));
+            await session.PumpOnceAsync(CancellationToken.None);
+
+            TableSnapshotChangedEventArgs baseline = Assert.Single(notifications);
+            Assert.True(baseline.IsFullBaseline);
+            Assert.Empty(baseline.VisibleEventBatch.Events);
+            Assert.Equal(107UL, baseline.VisibleEventBatch.EventSeq);
+            notifications.Clear();
+
+            channel.Enqueue(PlayerPush(
+                11,
+                0,
+                6,
+                11,
+                7,
+                12,
+                isFullSnapshot: false,
+                PrivateDraw(0, 20, 106, 6, 0),
+                PrivateDraw(0, 21, 107, 6, 2),
+                PrivateDraw(0, 22, 108, 7, 0)));
+            await session.PumpOnceAsync(CancellationToken.None);
+
+            TableVisibleEventBatch batch = Assert.Single(notifications).VisibleEventBatch;
+            TableVisibleEvent playable = Assert.Single(batch.PlayableEvents);
+            Assert.Equal(108UL, playable.EventSeq);
+            Assert.DoesNotContain(batch.PlayableEvents, visible => visible.EventSeq <= 107UL);
+        }
+
+        [Fact]
+        public async Task FullBaselineWithEventsWatermarkPreventsHistoricalReplay()
+        {
+            (TableSession session, FakeTableChannel channel) = await ConnectedPlayerAsync(0);
+            var notifications = new List<TableSnapshotChangedEventArgs>();
+            session.SnapshotChanged += (_, e) => notifications.Add(e);
+
+            channel.Enqueue(PlayerPush(
+                11,
+                0,
+                5,
+                10,
+                6,
+                11,
+                isFullSnapshot: true,
+                PrivateDraw(0, 20, 106, 6, 0)));
+            await session.PumpOnceAsync(CancellationToken.None);
+
+            TableSnapshotChangedEventArgs baseline = Assert.Single(notifications);
+            Assert.Single(baseline.VisibleEventBatch.Events);
+            Assert.Empty(baseline.VisibleEventBatch.PlayableEvents);
+            notifications.Clear();
+
+            channel.Enqueue(PlayerPush(
+                11,
+                0,
+                6,
+                11,
+                7,
+                12,
+                isFullSnapshot: false,
+                PrivateDraw(0, 20, 106, 6, 0),
+                PrivateDraw(0, 21, 107, 6, 1),
+                PrivateDraw(0, 22, 108, 7, 0)));
+            await session.PumpOnceAsync(CancellationToken.None);
+
+            TableVisibleEventBatch batch = Assert.Single(notifications).VisibleEventBatch;
+            Assert.Equal(108UL, Assert.Single(batch.PlayableEvents).EventSeq);
+        }
+
+        [Fact]
+        public async Task SpectatorSyncWatermarkPreventsHistoricalPublicEventReplay()
+        {
+            (TableSession session, FakeTableChannel channel) = await ConnectedSpectatorAsync();
+            var notifications = new List<TableSnapshotChangedEventArgs>();
+            session.SnapshotChanged += (_, e) => notifications.Add(e);
+
+            channel.Enqueue(PublicPush(
+                11,
+                5,
+                10,
+                6,
+                11,
+                SpectatorDiscard(1, 40, 104, 5, 0),
+                SpectatorDiscard(1, 41, 105, 5, 2),
+                SpectatorDiscard(1, 42, 106, 6, 0)));
+            await session.PumpOnceAsync(CancellationToken.None);
+
+            TableVisibleEventBatch batch = Assert.Single(notifications).VisibleEventBatch;
+            Assert.Equal(106UL, Assert.Single(batch.PlayableEvents).EventSeq);
+            Assert.Equal(TableConnectionState.Ready, session.State);
+        }
+
+        [Fact]
+        public async Task SparseFreshEventsRemainAllowedAboveTheBaselineWatermark()
+        {
+            (TableSession session, FakeTableChannel channel) = await ConnectedPlayerAsync(0);
+            var notifications = new List<TableSnapshotChangedEventArgs>();
+            session.SnapshotChanged += (_, e) => notifications.Add(e);
+
+            Envelope push = PlayerPush(
+                11,
+                0,
+                5,
+                10,
+                6,
+                11,
+                isFullSnapshot: false,
+                PrivateDraw(0, 20, 109, 6, 0));
+            push.PlayerUpdate.Snapshot.EventSeq = 110;
+            channel.Enqueue(push);
+            await session.PumpOnceAsync(CancellationToken.None);
+
+            TableVisibleEventBatch batch = Assert.Single(notifications).VisibleEventBatch;
+            Assert.Equal(109UL, Assert.Single(batch.PlayableEvents).EventSeq);
+            Assert.Equal(TableConnectionState.Ready, session.State);
+        }
+
+        [Fact]
+        public async Task RoundResetWatermarkPreventsUnseenHistoricalEventReplay()
+        {
+            (TableSession session, FakeTableChannel channel) = await ConnectedPlayerAsync(0);
+            var notifications = new List<TableSnapshotChangedEventArgs>();
+            session.SnapshotChanged += (_, e) => notifications.Add(e);
+
+            channel.Enqueue(PlayerPush(
+                11,
+                0,
+                5,
+                10,
+                7,
+                12,
+                isFullSnapshot: true,
+                roundId: "round-2"));
+            await session.PumpOnceAsync(CancellationToken.None);
+
+            Assert.True(Assert.Single(notifications).IsFullBaseline);
+            notifications.Clear();
+
+            channel.Enqueue(PlayerPush(
+                11,
+                0,
+                7,
+                12,
+                8,
+                13,
+                isFullSnapshot: false,
+                roundId: "round-2",
+                PrivateDraw(0, 20, 107, 7, 0),
+                PrivateDraw(0, 21, 109, 8, 0)));
+            await session.PumpOnceAsync(CancellationToken.None);
+
+            TableVisibleEventBatch batch = Assert.Single(notifications).VisibleEventBatch;
+            Assert.Equal(109UL, Assert.Single(batch.PlayableEvents).EventSeq);
+        }
+
+        [Fact]
+        public async Task ReconnectBindingWatermarkPreventsUnseenHistoricalEventReplay()
+        {
+            (TableSession session, FakeTableChannel channel) = await ConnectedPlayerAsync(0);
+            var notifications = new List<TableSnapshotChangedEventArgs>();
+            session.SnapshotChanged += (_, e) => notifications.Add(e);
+
+            channel.Enqueue(PlayerPush(
+                11,
+                0,
+                5,
+                10,
+                6,
+                11,
+                isFullSnapshot: false,
+                PrivateDraw(0, 20, 106, 6, 0)));
+            await session.PumpOnceAsync(CancellationToken.None);
+            Assert.Single(notifications);
+
+            await session.DisconnectAsync(CancellationToken.None);
+            await session.OpenAsync(
+                new TableSessionOpenRequest("ticket-1", "client-build-1"),
+                CancellationToken.None);
+            channel.Enqueue(TestWire.Welcome(12, "scope-2", 7, 20, seatId: 0));
+            await session.PumpOnceAsync(CancellationToken.None);
+            channel.Enqueue(PlayerSync(channel, 12, 0, 7, 20));
+            await session.PumpOnceAsync(CancellationToken.None);
+            Assert.Equal(TableConnectionState.Ready, session.State);
+            notifications.Clear();
+
+            channel.Enqueue(PlayerPush(
+                12,
+                0,
+                7,
+                20,
+                8,
+                21,
+                isFullSnapshot: false,
+                PrivateDraw(0, 20, 106, 6, 0),
+                PrivateDraw(0, 21, 107, 7, 0),
+                PrivateDraw(0, 22, 108, 8, 0)));
+            await session.PumpOnceAsync(CancellationToken.None);
+
+            TableVisibleEventBatch batch = Assert.Single(notifications).VisibleEventBatch;
+            Assert.Equal(108UL, Assert.Single(batch.PlayableEvents).EventSeq);
+            Assert.Equal(12UL, batch.BindingEpoch);
+        }
+
         [Fact]
         public async Task DuplicateFrameAndDuplicateEventAreNotNotifiedTwice()
         {
@@ -539,16 +786,16 @@ namespace Mahjong.Client.Tests
                 0,
                 6,
                 11,
-                6,
+                7,
                 12,
                 isFullSnapshot: false,
-                PrivateDraw(0, 21, 107, 6, 0)));
+                PrivateDraw(0, 21, 108, 7, 0)));
             await session.PumpOnceAsync(CancellationToken.None);
 
             TableSnapshotChangedEventArgs next = notifications[1];
             Assert.Equal(TableVisibleEventBatchKind.Incremental, next.VisibleEventBatch.Kind);
             Assert.Single(next.VisibleEventBatch.PlayableEvents);
-            Assert.Equal(107UL, next.VisibleEventBatch.PlayableEvents[0].EventSeq);
+            Assert.Equal(108UL, next.VisibleEventBatch.PlayableEvents[0].EventSeq);
         }
 
         [Fact]
