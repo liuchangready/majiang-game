@@ -39,6 +39,19 @@
         whose log shows no build errors may fall back to the official in-process
         runner (xunit.v3 / Microsoft.Testing.Platform executable) of the same
         test assembly; the summary states which runner produced the counts
+      - each real in-process direct invocation writes the runner's native
+        per-case result XML (-result-xml) to
+        <log dir>\direct-xml\<project>\direct-results.xml, a path unique to this
+        run/project/mode that is cleared immediately before the invocation. The
+        XML is parsed and structurally checked (schema, exact assembly identity,
+        collection aggregates and test case nodes) and must agree with the raw
+        console summary and the native exit: missing, malformed, empty,
+        truncated, stale, wrong-assembly or count-mismatched XML fails the row
+        and the run, and a console summary can never substitute for it. The
+        exact XML path and SHA-256 are recorded in the meta/summary, so CI's
+        artifacts/verify-v5/** upload contains the evidence. The raw framework
+        failure logs/meta provenance are retained unchanged; dotnetTest-only
+        mode never claims a direct XML run.
       - every test execution is attributable: run-info.txt records the exact head
         SHA / branch / CI run identity, and runs\<project>\<mode>.meta.txt records
         the exact command line, working directory, exit code (or the fact that
@@ -361,11 +374,14 @@ function Get-TestSummaryFromVstest([string]$logPath) {
     }
 }
 
-function Get-TestSummaryFromDirectRunner([string]$logPath) {
+function Get-DirectRunnerCounts([string]$logPath) {
     # xunit.v3 / MTP direct summary. The runner omits all-zero suffixes, so both
     # forms must parse:
     #      Mahjong.Domain.Tests  Total: 233, Errors: 0, Failed: 0, Skipped: 0, Not Run: 0, Time: 3.058s
     #      ProbeZero.Tests  Total: 0
+    # Passed is derived from the other four counters because the console summary
+    # does not print it. A negative derived value means the line was not a real
+    # summary for this assembly and is rejected by the evidence gate.
     $line = Select-String -Path $logPath -Pattern 'Total:\s*(\d+)(?:,\s*Errors:\s*(\d+))?(?:,\s*Failed:\s*(\d+))?(?:,\s*Skipped:\s*(\d+))?(?:,\s*Not Run:\s*(\d+))?' |
         Select-Object -Last 1
     if (-not $line) { return $null }
@@ -373,11 +389,272 @@ function Get-TestSummaryFromDirectRunner([string]$logPath) {
     $failed = $(if ($line.Matches[0].Groups[3].Success) { [int]$line.Matches[0].Groups[3].Value } else { 0 })
     $skipped = $(if ($line.Matches[0].Groups[4].Success) { [int]$line.Matches[0].Groups[4].Value } else { 0 })
     $notRun = $(if ($line.Matches[0].Groups[5].Success) { [int]$line.Matches[0].Groups[5].Value } else { 0 })
-    return @{
-        Total   = [int]$line.Matches[0].Groups[1].Value
-        Failed  = $errors + $failed
-        Skipped = $skipped + $notRun
+    $total = [int]$line.Matches[0].Groups[1].Value
+    return [ordered]@{
+        Total   = $total
+        Passed  = $total - $errors - $failed - $skipped - $notRun
+        Failed  = $failed
+        Skipped = $skipped
+        Errors  = $errors
+        NotRun  = $notRun
     }
+}
+
+function Get-TestSummaryFromDirectRunner([string]$logPath) {
+    $counts = Get-DirectRunnerCounts $logPath
+    if ($null -eq $counts) { return $null }
+    return @{
+        Total   = $counts.Total
+        Failed  = $counts.Errors + $counts.Failed
+        Skipped = $counts.Skipped + $counts.NotRun
+    }
+}
+
+function Read-DirectResultXml {
+    # Parse and structurally validate the xUnit.net v3 -result-xml document that
+    # the direct runner produced for THIS invocation. This is a real framework
+    # result file, never a console-derived or hand-written substitute: test case
+    # nodes, collection aggregates and assembly totals are all cross-checked.
+    # The function only reports structural validity; Test-DirectInvocationEvidence
+    # applies the current-run path/freshness, assembly identity, console and
+    # native-exit gates.
+    param(
+        [string]$XmlPath,
+        [string]$ExpectedAssemblyName
+    )
+    $result = [ordered]@{
+        Ok              = $false
+        Reason          = ''
+        AssemblyName    = ''
+        SchemaVersion   = ''
+        TestNodeCount   = 0
+        CollectionCount = 0
+        ErrorNodeCount  = 0
+        Counts          = $null
+    }
+    try {
+        if (-not (Test-Path -LiteralPath $XmlPath)) { throw "result XML is missing: $XmlPath" }
+        $settings = New-Object System.Xml.XmlReaderSettings
+        $settings.DtdProcessing = [System.Xml.DtdProcessing]::Prohibit
+        $settings.XmlResolver = $null
+        $reader = [System.Xml.XmlReader]::Create($XmlPath, $settings)
+        try {
+            $doc = New-Object System.Xml.XmlDocument
+            $doc.XmlResolver = $null
+            $doc.Load($reader)
+        }
+        finally { $reader.Dispose() }
+
+        if ($doc.DocumentElement -and $doc.DocumentElement.LocalName -ne 'assemblies') {
+            throw "result XML root element is '$($doc.DocumentElement.LocalName)', expected 'assemblies'"
+        }
+        $root = $doc.DocumentElement
+        $schemaVersion = $root.GetAttribute('schema-version')
+        if ([string]::IsNullOrWhiteSpace($schemaVersion) -or $schemaVersion -notmatch '^\d+$') {
+            throw "result XML has no integer assemblies/@schema-version"
+        }
+        $result.SchemaVersion = $schemaVersion
+
+        $assemblies = @($root.SelectNodes('./assembly'))
+        if ($assemblies.Count -ne 1) { throw "result XML must contain exactly one <assembly> element (found $($assemblies.Count))" }
+        $assembly = $assemblies[0]
+        $assemblyName = $assembly.GetAttribute('name')
+        if ([string]::IsNullOrWhiteSpace($assemblyName)) { throw 'result XML assembly/@name is missing' }
+        $result.AssemblyName = $assemblyName
+        $actualLeaf = [IO.Path]::GetFileNameWithoutExtension($assemblyName)
+        if ([string]::IsNullOrWhiteSpace($ExpectedAssemblyName) -or $actualLeaf -ine $ExpectedAssemblyName) {
+            throw "result XML assembly identity mismatch: expected '$ExpectedAssemblyName', got '$assemblyName'"
+        }
+        $framework = $assembly.GetAttribute('test-framework')
+        if ([string]::IsNullOrWhiteSpace($framework) -or $framework -notlike 'xUnit.net v3*') {
+            throw "result XML is not an xUnit.net v3 result (test-framework='$framework')"
+        }
+
+        $required = @('total', 'passed', 'failed', 'skipped', 'errors', 'not-run')
+        $attrs = @{}
+        foreach ($attribute in $required) {
+            if (-not $assembly.HasAttribute($attribute)) { throw "result XML assembly is missing required attribute '$attribute'" }
+            $raw = $assembly.GetAttribute($attribute)
+            if ($raw -notmatch '^\d+$') { throw "result XML assembly attribute '$attribute' is not a non-negative integer: '$raw'" }
+            $attrs[$attribute] = [int]$raw
+        }
+
+        $tests = @($assembly.SelectNodes('.//test'))
+        $result.TestNodeCount = $tests.Count
+        $testIds = @{}
+        $nodePassed = 0
+        $nodeFailed = 0
+        $nodeSkipped = 0
+        $nodeNotRun = 0
+        foreach ($test in $tests) {
+            $id = $test.GetAttribute('id')
+            $name = $test.GetAttribute('name')
+            $testResult = $test.GetAttribute('result')
+            if ([string]::IsNullOrWhiteSpace($id)) { throw 'result XML contains a <test> without @id' }
+            if ([string]::IsNullOrWhiteSpace($name)) { throw "result XML test '$id' has no @name" }
+            if ($testIds.ContainsKey($id)) { throw "result XML contains duplicate test id '$id'" }
+            $testIds[$id] = $true
+            switch ($testResult) {
+                'Pass' { $nodePassed++ }
+                'Fail' { $nodeFailed++ }
+                'Skip' { $nodeSkipped++ }
+                'NotRun' { $nodeNotRun++ }
+                default { throw "result XML test '$name' has unsupported result '$testResult'" }
+            }
+        }
+
+        $collections = @($assembly.SelectNodes('./collection'))
+        $result.CollectionCount = $collections.Count
+        if ($tests.Count -gt 0 -and $collections.Count -eq 0) {
+            throw 'result XML has test case nodes but no <collection> aggregates'
+        }
+        $collectionTotal = 0
+        foreach ($collection in $collections) {
+            $collectionName = $collection.GetAttribute('name')
+            if ([string]::IsNullOrWhiteSpace($collectionName)) { throw 'result XML <collection> has no @name' }
+            foreach ($attribute in @('total', 'passed', 'failed', 'skipped', 'not-run')) {
+                if (-not $collection.HasAttribute($attribute)) {
+                    throw "result XML collection '$collectionName' is missing required attribute '$attribute'"
+                }
+                if ($collection.GetAttribute($attribute) -notmatch '^\d+$') {
+                    throw "result XML collection '$collectionName' attribute '$attribute' is not a non-negative integer"
+                }
+            }
+            $childTests = @($collection.SelectNodes('./test'))
+            $cp = 0; $cf = 0; $cs = 0; $cn = 0
+            foreach ($test in $childTests) {
+                switch ($test.GetAttribute('result')) {
+                    'Pass' { $cp++ }
+                    'Fail' { $cf++ }
+                    'Skip' { $cs++ }
+                    'NotRun' { $cn++ }
+                }
+            }
+            $ct = [int]$collection.GetAttribute('total')
+            if ($ct -ne $childTests.Count) {
+                throw "result XML collection '$collectionName' total=$ct but contains $($childTests.Count) test case node(s)"
+            }
+            if ([int]$collection.GetAttribute('passed') -ne $cp -or
+                [int]$collection.GetAttribute('failed') -ne $cf -or
+                [int]$collection.GetAttribute('skipped') -ne $cs -or
+                [int]$collection.GetAttribute('not-run') -ne $cn) {
+                throw "result XML collection '$collectionName' aggregate counts do not match its test case nodes"
+            }
+            $collectionTotal += $ct
+        }
+        if ($collectionTotal -ne $tests.Count) {
+            throw "result XML collection totals ($collectionTotal) do not match test case nodes ($($tests.Count))"
+        }
+        if ($attrs['total'] -ne $tests.Count) {
+            throw "result XML assembly total=$($attrs['total']) but $($tests.Count) test case node(s) exist"
+        }
+        if ($attrs['passed'] -ne $nodePassed -or
+            $attrs['failed'] -ne $nodeFailed -or
+            $attrs['skipped'] -ne $nodeSkipped -or
+            $attrs['not-run'] -ne $nodeNotRun) {
+            throw "result XML assembly counts (passed=$($attrs['passed']), failed=$($attrs['failed']), skipped=$($attrs['skipped']), not-run=$($attrs['not-run'])) do not match test case nodes (passed=$nodePassed, failed=$nodeFailed, skipped=$nodeSkipped, not-run=$nodeNotRun)"
+        }
+        if ($attrs['total'] -ne ($attrs['passed'] + $attrs['failed'] + $attrs['skipped'] + $attrs['not-run'])) {
+            throw "result XML assembly total=$($attrs['total']) is not the sum of passed/failed/skipped/not-run"
+        }
+
+        $errorNodes = @($assembly.SelectNodes('.//errors/error'))
+        $result.ErrorNodeCount = $errorNodes.Count
+        # Collection-level failures/exceptions are legitimate framework output and
+        # must never be dropped just because no <test> node represents them. The
+        # evidence gate rejects any non-zero errors below; here we only ensure a
+        # positive errors attribute is backed by a real error node (or vice versa).
+        if (($attrs['errors'] -gt 0) -ne ($errorNodes.Count -gt 0)) {
+            throw "result XML errors=$($attrs['errors']) but $($errorNodes.Count) framework error node(s) exist"
+        }
+
+        $result.Counts = [ordered]@{
+            Total   = $attrs['total']
+            Passed  = $attrs['passed']
+            Failed  = $attrs['failed']
+            Skipped = $attrs['skipped']
+            Errors  = $attrs['errors']
+            NotRun  = $attrs['not-run']
+        }
+        $result.Ok = $true
+        $result.Reason = 'structurally valid xUnit.net v3 result XML'
+    }
+    catch {
+        $result.Ok = $false
+        $result.Reason = "invalid direct result XML: $($_.Exception.Message)"
+    }
+    return [pscustomobject]$result
+}
+
+function Test-DirectInvocationEvidence {
+    # Production decision for one direct runner invocation. It is deliberately
+    # strict: the current-run XML must exist under this run's LogDir, be fresh,
+    # identify the exact test assembly, agree with the raw console summary and
+    # with the native exit, and contain a non-empty all-Pass test case set with
+    # zero errors/skips/not-run. A console summary alone can never stand in for
+    # XML, and XML can never override a non-zero native exit.
+    param(
+        [string]$XmlPath,
+        [string]$ExpectedAssemblyName,
+        [string]$LogDir,
+        [datetime]$RunStartedUtc,
+        [object]$ConsoleCounts,
+        [object]$NativeExit
+    )
+    $result = [ordered]@{
+        Ok            = $false
+        Reason        = ''
+        XmlCounts     = $null
+        TestNodeCount = 0
+        AssemblyName  = ''
+        XmlSha256     = ''
+        XmlLastWriteUtc = $null
+    }
+    try {
+        if ([string]::IsNullOrWhiteSpace($XmlPath)) { throw 'no direct result XML path was assigned' }
+        if (-not (Test-Path -LiteralPath $XmlPath)) { throw "direct result XML is missing: $XmlPath" }
+        $fullXml = [IO.Path]::GetFullPath($XmlPath)
+        $fullLog = [IO.Path]::GetFullPath($LogDir).TrimEnd('\', '/') + [IO.Path]::DirectorySeparatorChar
+        if (-not $fullXml.StartsWith($fullLog, [StringComparison]::OrdinalIgnoreCase)) {
+            throw "direct result XML is outside this run's LogDir: $fullXml"
+        }
+        $lastWrite = (Get-Item -LiteralPath $fullXml).LastWriteTimeUtc
+        $result.XmlLastWriteUtc = $lastWrite
+        if ($lastWrite -lt $RunStartedUtc.AddSeconds(-5)) {
+            throw "direct result XML predates this invocation (last write $($lastWrite.ToString('o')) < start $($RunStartedUtc.ToString('o')))"
+        }
+        try { $result.XmlSha256 = (Get-FileHash -LiteralPath $fullXml -Algorithm SHA256).Hash } catch { }
+
+        $xml = Read-DirectResultXml -XmlPath $fullXml -ExpectedAssemblyName $ExpectedAssemblyName
+        $result.TestNodeCount = $xml.TestNodeCount
+        $result.AssemblyName = $xml.AssemblyName
+        if (-not $xml.Ok) { throw $xml.Reason }
+        $result.XmlCounts = $xml.Counts
+        $c = $xml.Counts
+
+        if ($null -eq $NativeExit) { throw 'native exit is unknown (invocation threw); never treated as 0' }
+        if ([int]$NativeExit -ne 0) { throw "native exit is $NativeExit, not 0" }
+        if ($c.Total -le 0) { throw 'result XML contains zero executed test cases' }
+        if ($c.Total -ne $xml.TestNodeCount) { throw "result XML total=$($c.Total) but $($xml.TestNodeCount) test case node(s) exist" }
+        if ($c.Failed -gt 0 -or $c.Errors -gt 0 -or $c.Skipped -gt 0 -or $c.NotRun -gt 0) {
+            throw "result XML is not green: failed=$($c.Failed), errors=$($c.Errors), skipped=$($c.Skipped), not-run=$($c.NotRun)"
+        }
+        if ($c.Passed -ne $c.Total) { throw "result XML passed=$($c.Passed) does not equal total=$($c.Total)" }
+        if ($null -eq $ConsoleCounts) { throw 'raw console summary is missing/unparseable; XML cannot be cross-checked' }
+        foreach ($name in @('Total', 'Passed', 'Failed', 'Skipped', 'Errors', 'NotRun')) {
+            if ([int]$ConsoleCounts[$name] -ne [int]$c[$name]) {
+                throw "result XML $name=$($c[$name]) does not match console summary $name=$($ConsoleCounts[$name])"
+            }
+        }
+
+        $result.Ok = $true
+        $result.Reason = "$($c.Total)/$($c.Total) test cases Pass; XML matches console and native exit 0"
+    }
+    catch {
+        $result.Ok = $false
+        $result.Reason = $_.Exception.Message
+    }
+    return [pscustomobject]$result
 }
 
 # --- run identity / diagnostics collection helpers ------------------------------
@@ -598,7 +875,8 @@ function Write-RunMetaFile {
         [string]$Name, [string]$ProjectPath, [string]$Kind, [string]$Mode,
         [string]$RunnerTag, [string]$Runner, [string]$Command, [string]$Cwd,
         [object]$ExitCode, [object]$Total, [object]$Failed, [object]$Skipped,
-        [string[]]$Collected, [string[]]$ExcludedStale, [object[]]$PurgeStatuses, [hashtable]$Head
+        [string[]]$Collected, [string[]]$ExcludedStale, [object[]]$PurgeStatuses, [hashtable]$Head,
+        [string]$ResultXml = '', [string]$ResultXmlSha256 = '', [string]$XmlGate = ''
     )
     try {
         $dir = Join-Path $LogDir (Join-Path 'runs' $Name)
@@ -619,6 +897,11 @@ function Write-RunMetaFile {
             "head        : $($Head.Head)"
             "TestResults purge before this invocation:"
         )
+        if ($ResultXml) {
+            $text += "result xml  : $ResultXml"
+            $text += "result xml sha256: $(if ($ResultXmlSha256) { $ResultXmlSha256 } else { '(unavailable)' })"
+            $text += "result xml gate  : $XmlGate"
+        }
         foreach ($status in $PurgeStatuses) {
             $label = 'cleared'
             if (-not $status.Cleared) {
@@ -923,18 +1206,37 @@ foreach ($project in $ordered) {
         $directResultsDirs = @(Get-TestResultsCandidates -ProjectDir $directProjectDir -Configuration $Configuration -Tfm $tfm)
         $directPurges = @(Clear-TestResultsDirs -Dirs $directResultsDirs)
         Write-Step "direct run  : $name"
-        $directRunnerArgs = @($manifest.testRunner.directRunnerArgs) -join ' '
-        $directCommand = "$DotnetPath $testDll $directRunnerArgs"
-        $exit = Invoke-Captured -LogPath $project.DirectLog -Command { & $DotnetPath $testDll @($manifest.testRunner.directRunnerArgs) }
+
+        # Every real direct invocation writes the runner's native per-case XML to
+        # its own path inside this run's LogDir. The path is unique per project
+        # and mode, is cleared immediately before the invocation, and is recorded
+        # in the meta/summary so a stale or shared file can never pose as current.
+        $project.ResultXml = Join-Path $LogDir (Join-Path 'direct-xml' (Join-Path $name 'direct-results.xml'))
+        $resultXmlDir = Split-Path $project.ResultXml -Parent
+        if (-not (Test-Path -LiteralPath $resultXmlDir)) { New-Item -ItemType Directory -Force -Path $resultXmlDir | Out-Null }
+        if (Test-Path -LiteralPath $project.ResultXml -PathType Leaf) { Remove-Item -LiteralPath $project.ResultXml -Force }
+        elseif (Test-Path -LiteralPath $project.ResultXml) { Remove-Item -LiteralPath $project.ResultXml -Recurse -Force }
+
+        # Manifest runner args stay authoritative; only a pre-existing result-xml
+        # argument is replaced so this invocation cannot write outside its path.
+        $directArgs = New-Object System.Collections.Generic.List[string]
+        $manifestDirectArgs = @($manifest.testRunner.directRunnerArgs)
+        for ($argIndex = 0; $argIndex -lt $manifestDirectArgs.Count; $argIndex++) {
+            if ("$($manifestDirectArgs[$argIndex])" -eq '-result-xml') { $argIndex++; continue }
+            $directArgs.Add([string]$manifestDirectArgs[$argIndex])
+        }
+        $directArgs.Add('-result-xml')
+        $directArgs.Add($project.ResultXml)
+        $directCommand = (@(@($DotnetPath, $testDll) + @($directArgs.ToArray())) | ForEach-Object { ConvertTo-NativeArgument ([string]$_) }) -join ' '
+        $directRunStartedUtc = [DateTime]::UtcNow
+        $exit = Invoke-Captured -LogPath $project.DirectLog -Command { & $DotnetPath $testDll @($directArgs.ToArray()) }
         $directSaved = Save-TestResults -ProjectName $name -Mode 'direct' -ProjectDir $directProjectDir -Dirs $directResultsDirs -PurgeStatuses $directPurges
+        $consoleCounts = Get-DirectRunnerCounts $project.DirectLog
         $summary = Get-TestSummaryFromDirectRunner $project.DirectLog
-        Write-RunMetaFile -Name $name -ProjectPath $project.Path -Kind $project.Kind -Mode $RunnerMode `
-            -RunnerTag 'direct' -Runner 'in-process (direct)' -Command $directCommand -Cwd $cwd -ExitCode $exit `
-            -Total $(if ($summary) { $summary.Total } else { '(no parseable summary)' }) `
-            -Failed $(if ($summary) { $summary.Failed } else { '-' }) `
-            -Skipped $(if ($summary) { $summary.Skipped } else { '-' }) `
-            -Collected @($directSaved.Collected) -ExcludedStale @($directSaved.ExcludedStale) `
-            -PurgeStatuses $directPurges -Head $headInfo
+        $evidence = Test-DirectInvocationEvidence -XmlPath $project.ResultXml -ExpectedAssemblyName $assemblyName `
+            -LogDir $LogDir -RunStartedUtc $directRunStartedUtc -ConsoleCounts $consoleCounts -NativeExit $exit
+        $project.DirectEvidence = $evidence
+        $project.XmlGate = $(if ($evidence.Ok) { 'PASS' } else { 'FAIL' })
         if ($summary) {
             $project.Runner = $(if ($project.Runner -eq 'none') { 'in-process (direct)' } else { $project.Runner })
             $project.Total = $summary.Total
@@ -942,9 +1244,23 @@ foreach ($project in $ordered) {
             $project.Skipped = $summary.Skipped
             $project.ExitCode = $(if ($null -ne $exit) { $exit } else { 'EXCEPTION' })
         }
-        else {
-            $project.Result = 'BLOCKED'
-            $project.Detail = "no test summary from either runner (exit $exit); see logs"
+        Write-RunMetaFile -Name $name -ProjectPath $project.Path -Kind $project.Kind -Mode $RunnerMode `
+            -RunnerTag 'direct' -Runner 'in-process (direct)' -Command $directCommand -Cwd $cwd -ExitCode $exit `
+            -Total $(if ($summary) { $summary.Total } else { '(no parseable summary)' }) `
+            -Failed $(if ($summary) { $summary.Failed } else { '-' }) `
+            -Skipped $(if ($summary) { $summary.Skipped } else { '-' }) `
+            -Collected @($directSaved.Collected) -ExcludedStale @($directSaved.ExcludedStale) `
+            -PurgeStatuses $directPurges -Head $headInfo `
+            -ResultXml $project.ResultXml -ResultXmlSha256 $evidence.XmlSha256 -XmlGate "$($project.XmlGate): $($evidence.Reason)"
+        if (-not $evidence.Ok) {
+            $project.Result = 'FAIL'
+            $project.Detail = "direct result XML gate FAIL: $($evidence.Reason); see $($project.ResultXml) and $($project.DirectLog)"
+            $anyFail = $true
+            continue
+        }
+        if (-not $summary) {
+            $project.Result = 'FAIL'
+            $project.Detail = "no parseable console summary for the direct runner (exit $(Format-ExitCode $exit)); XML cannot be cross-checked; see $($project.DirectLog)"
             $anyFail = $true
             continue
         }
@@ -1115,7 +1431,7 @@ $lines.Add("dotnet SDK     : $sdkVersion  path: $DotnetPath  cwd: $cwd  log: $sd
 $ciLines = Get-CiProvenanceLines
 $lines.Add("head           : $($headInfo.Head)  branch: $($headInfo.Branch)")
 $lines.Add("ci provenance  : $(if ($ciLines.Count) { $ciLines -join ' ' } else { '(none - local run)' })")
-$lines.Add("run identity   : run-info.txt; per-invocation command/exit/counts: runs\<project>\<mode>.meta.txt; raw framework logs: test-results\<project>\")
+$lines.Add("run identity   : run-info.txt; per-invocation command/exit/counts/result-xml: runs\<project>\<mode>.meta.txt; raw framework logs: test-results\<project>\; direct runner XML: direct-xml\<project>\direct-results.xml")
 $lines.Add("")
 $lines.Add("solution build : $(if ($buildOk) { "PASS (exit $(Format-ExitCode $slnExit))" } else { "FAIL (exit $(Format-ExitCode $slnExit))" })  log: $slnBuildLog")
 $lines.Add("plugin copy    : $pluginResult  ($($pluginDetail))$(if ($pluginLog) { "  log: $pluginLog" })")
@@ -1156,6 +1472,9 @@ foreach ($project in $ordered) {
     }
     if ($project.Detail) {
         $lines.Add("    detail   : $($project.Detail)")
+    }
+    if ($project.ResultXml) {
+        $lines.Add("    direct xml: $($project.ResultXml)  sha256: $(if ($project.DirectEvidence) { $project.DirectEvidence.XmlSha256 } else { '(unavailable)' })  gate: $(if ($project.DirectEvidence) { "$($project.XmlGate) - $($project.DirectEvidence.Reason)" } else { '(not evaluated)' })")
     }
     if ($project.BuildNote) {
         $lines.Add("    build    : $($project.BuildNote)")
