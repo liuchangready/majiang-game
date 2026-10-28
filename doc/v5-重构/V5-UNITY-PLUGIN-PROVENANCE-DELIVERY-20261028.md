@@ -70,7 +70,7 @@
 ### D-R3-01（MAJOR，本轮新增）Directory.Packages.props 中央输入
 - **问题**：上一轮为修正项目相对语义，移除了对根/dotnet/dotnet/src `Directory.Packages.props` 的解析；SDK/NuGet 自动导入的中央 props 可声明 Compile，真实源码变化会漏收。
 - **修复**：按消费项目求最近生效 `Directory.Packages.props`，在项目上下文解析 Compile/Protobuf/EmbeddedResource/ProjectReference（普通相对按项目目录、`$(MSBuildThisFileDirectory)` 按文件目录、窄 Condition）；root/dotnet/dotnet/src 全部存在层级统一做 Import/输出布局边界检查；非生效中央 props 若声明编译输入/Import 则 fail closed，避免“未导入即可绕过”。
-- **验证**：P40 真实中央 Compile 输入写入 manifest；改真实 `central-linked.cs` → `SOURCE_CHANGED`；P41 根级中央 Import、P42 dotnet/src 级中央 Import 均在 build/check 前拒绝。caller 的 `caller-du01-r3-central-probe` 在本树 fixture 用 716fa19 工具复跑后 Before=0、After=1（SOURCE_CHANGED）。
+- **验证**：P40 真实中央 Compile 输入写入 manifest；改真实 `central-linked.cs` → `SOURCE_CHANGED`；P41 根级中央 Import、P42 dotnet/src 级中央 Import 均在 build/check 前拒绝。caller 的 `caller-du01-r3-central-probe` 在本树 fixture 用本轮修复工具复跑后 Before=0、After=1（SOURCE_CHANGED）；`716fa19` 是返修前版本，不是这次复跑的工具版本。
 ## 4. 验证（本轮实际）
 
 ### 4.1 完整矩阵
@@ -78,7 +78,7 @@
 
 ```powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/unity/test-shared-plugin-provenance.ps1 `
-  -EvidenceRoot build/d-r1-matrix6-d260f3d32ee7 -UnityTimeoutSeconds 600 -BuildTimeoutSeconds 900
+  -EvidenceRoot build/d-r3-matrix-b80b32fe821c -UnityTimeoutSeconds 600 -BuildTimeoutSeconds 900
 ```
 
 结果：**42/42 PASS，0 FAIL，0 NOT_RUN**，wrapper exit 0；JUnit `tests=42 failures=0 skipped=0 partial=false time=5859.055`。覆盖 P01–P15b/P16/P17/P18/P19/P20/P21/P22/P24–P42，包括：
@@ -113,3 +113,52 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/unity/test-shared-
 - 提交仅含本任务工具/Editor/测试/本报告；无 DLL/PDB/Library/Player/日志。未 push、未建 PR/MR、未合并 v5、未部署、未改 scheduler、未创建 `complete.flag`。
 - 历史 D-U-01 的 Player 证据仍属 `392b973`/报告 `97a38c5`；本报告不重写历史，只记录本轮修复。
 - B2b 300s 超时根因仍未关闭；P4.2-B/P4.5/LocalHost/整场/Android/iOS/跨网/G2–G5 均 **NOT_RUN**。
+
+## 6. Caller 第 4 轮独立验收与 PR20 集成（2026-10-28）
+
+**PASS，仅限 D-U-01 / D-R3-01。** 审查并实际复验 receiver `4418c7eef6ac59c75d354d844d58dcf4da2efc65`；未发现本任务范围内剩余编译、测试或功能阻断。交付的 516 个 manifest 条目逐项重哈希，0 缺失、0 不匹配；完整与 partial JSON/XML 分母一致，partial 为 42 total / 25 pass / 17 skipped / partial=true / OverallFail=true。
+
+Caller 在同一工作区实际运行：
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/unity/test-shared-plugin-provenance.ps1 `
+  -EvidenceRoot build/caller-du01-r4-20261028 -UnityTimeoutSeconds 600 -BuildTimeoutSeconds 900
+```
+
+2026-10-28T14:25:52.6101067Z–14:38:10.3621222Z，**native exit 0，42/42 PASS，0 failed / skipped / NOT_RUN，partial=false**。JUnit 实际 42 个 testcase。P40 确认中央真实编译输入入 manifest、源码变化 exit 1；P41/P42 的根级与 src 级中央 Import 均 build/check 非零且无新证据。原有 props/targets 相对路径与 decoy、自定义输出拒绝、保留 mtime 的真实编译、scratch 隔离及失败/构建中变化回归全部通过。
+
+真实 Unity 入口结果：
+
+| 用例 | native exit | 实测 |
+|---|---:|---|
+| P15 BuildPlayer 缺证据 | 1 | `BUILD_BLOCKED` + `EVIDENCE_MISSING`，无 exe，120.555s |
+| P15b BuildPlayer DLL 漂移 | 1 | `BUILD_BLOCKED` + `PLUGIN_CORRUPT`，无 exe，28.587s |
+| P16 Play 缺证据 | 42 | blocked=true，enteredPlay=false，48.034s |
+| P17 合法同步后 Play | 0 | blocked=false，enteredPlay=true，37.845s |
+
+另用独占真实源码 fixture 重做上一轮中央 Compile 漏收复现，调用生产 build/check：Build=0、Before=0、AfterSourceChange=1 (`SOURCE_CHANGED`)、Rebuild=0，manifest 含 `central-linked.cs`。同一路径真实 DLL SHA 从 `D75D144AC679ADC5EA07C243B72EE61C2E83C83B292BD11ECD4A248861ED6C03` 变为 `128B98E35437F6385391D4F796FA01B380E8CFA9B68AEE819BD4DD3CDB5A9A02`，独立断言 exit 0。
+
+随后无冲突汇入已有 PR20 远端头 `0eb694d20051af45afb69d95abb7e94248cd2fa6`，得到受测集成头 `3298b484d59c959388431cf1aeefe2cc1ad4ae93`。七个共享项目、Unity 与本任务工具相对 receiver 完全无差异；新增远端内容均为已接受的 verifier、PG 测试和报告。本任务在该集成头再次实际验证：
+
+- 强制 fresh Release build-shared：native 0，35.678s，0 warning/error，131 inputs / 19 outputs / 5 packages；生产 checker native 0。
+- fresh Unity 6000.3.27f1 Windows64 Mono Player：native 0，238.716s，正式 guard `BUILD_OK` 与 `Build Finished, Result: Success`；Player 的 7/7 自有 DLL 与 fresh provenance 逐字节一致。
+- 既有 `run-player-smoke.ps1`：wrapper 与 Player native 0，20.212s；菜单/大厅/返回/退出流程与 4 张 1280×720 PNG 断言通过。菜单与大厅截图已目视复核；大厅仍显示未接入 LocalHost，既有文字间距观察不属于本任务。
+- `check-unity-boundaries.ps1 -StrictCompiled`：native 0，Passed=true、ErrorCount=0、asmdef_dag/source_reflection_scan/metadata_direct_refs 全 PASS。
+
+Player exe SHA256 为 `F083B0E879A9298CDCF9933A8F3B4F2B013E13F7D3E51221FC0D756B79E28807`。上述证据属于本次 fresh 构建；未用历史 Player 代替。测试后备份 17 个现存生成文件、记录 4 个被 Unity 删除的 Resources 文件，再逐路径恢复这 21 个 tracked 文件；完整矩阵后的 17 个生成文件也已先备份再精确恢复。未提交二进制。恢复原 tracked 插件后生产 checker 按设计 native 1，14 个 `PLUGIN_CORRUPT`；开发者须先运行 build-shared，不能静默使用旧插件。
+
+原始证据均在 `D:/majiang-wt/unity-plugin-provenance-ds-20261028/` 下：
+
+| 证据 | SHA256 |
+|---|---|
+| `build/caller-du01-r4-20261028/test-results.xml` | `FA17B9F62D2647F777AA24428E0A6171E742881CB2A9B88A5DF9F57517CBC127` |
+| `build/caller-du01-r4-20261028/test-summary.json` | `461BD50087C29DFD8EAA488607ADCE8DC1BBF4BB4B0BD5A58D19BC19A27420E4` |
+| `build/caller-du01-r4-console.log` | `196B8531B975D393B6E5DCED2CCDECB62A87CFDB863E325CBD9903BC26CE3C87` |
+| `build/caller-du01-r4-independent-45619ce133394ce4a3f6841fb4f62c8f/summary.json` | `EE67682EE6BA00211AF240B0D74A087813AD38E8A831DA80198D1D1D819F478B` |
+| `build/caller-du01-r4-acceptance-v2/summary.json` | `B227A6C2CA8366F9DF353B1484EF6EBCBD28B2F0095C11657634464DFA3F5A26` |
+
+`build/caller-du01-r4-acceptance-v2/` 保留每个命令参数、原生 exit、耗时、stdout/stderr、Unity 原始日志、fresh provenance、Player、7-DLL 比较表、截图及 StrictCompiled JSON。`build/caller-du01-r4-evidence-manifest.csv` 列出本次矩阵、集成验证与独立复现的 556 文件 / 146,642,009 bytes，manifest SHA256 `31017747D151B9DE60C8805A7F4BA5F853D588C4D3F2B72D2EF887190468E868`。
+
+Caller 夹具的两次未完成尝试（缺两份 golden 数据；合并 stderr 导致 JSON 解析失败）以及 `build/caller-du01-r4-acceptance/` 首次包装脚本未捕获原生 exit 的失败均保留，未计 PASS。修正仅限 ignored 验收脚本；最终各步均有真实退出码。上文 §4.1 的旧示例证据目录、§3 的旧工具版本笔误已在本次文档修正。
+
+仅复用已有唯一批次 [PR20](https://github.com/liuchangready/majiang-game/pull/20)，目标 `v5`；本任务以外在途实现不纳入本次发布，也不用于否决 D-U-01。新发布头的远端 CI 另计，未宣称已通过。V4 仍生产，G1 已批准，G2–G5 未批准，181 classified、LocalHost/整场/设备/跨网缺口不因本验收关闭；不合并 v5、不部署。
