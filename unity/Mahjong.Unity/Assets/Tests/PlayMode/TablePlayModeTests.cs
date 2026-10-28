@@ -3134,11 +3134,24 @@ namespace Mahjong.Unity.Tests.PlayMode
             yield return LoadAndBindTableSceneAsync();
             _presenter!.enabled = false;
 
+            Assert.AreEqual(1UL, _session!.PlayerSnapshot!.StateVersion);
+            Assert.AreEqual(101UL, _session.PlayerSnapshot.EventSeq);
+
             yield return ReconnectBinding("room_table_1", Role.Spectator, -1, 2, 2, 2, null);
             Assert.AreEqual(TableConnectionState.Ready, _session!.State);
             Assert.IsNotNull(_session.PublicSnapshot);
             Assert.AreEqual(Mahjong.Contracts.ProtocolRole.Spectator, _session.Binding!.Role);
+            Assert.AreEqual(1UL, _session.PlayerSnapshot!.StateVersion, "inactive player cache stays at its original coordinates");
+            Assert.AreEqual(101UL, _session.PlayerSnapshot.EventSeq);
+            Assert.AreEqual(2UL, _session.PublicSnapshot!.StateVersion);
+            Assert.AreEqual(102UL, _session.PublicSnapshot.EventSeq);
+            Assert.AreEqual((int)Mahjong.Contracts.ProtocolRole.Spectator, _coordinator!.Current.Binding!.Role);
+            Assert.AreEqual(2UL, _coordinator.Current.Binding.BindingEpoch);
+            Assert.AreEqual(2UL, _coordinator.Current.PublicSnapshot!.StateVersion);
+            Assert.AreEqual(102UL, _coordinator.Current.PublicSnapshot.EventSeq);
             Assert.AreEqual(PlayerTableRole.Spectator, _presenter.LatestView!.Identity.Role);
+            Assert.AreEqual(2UL, _presenter.LatestView.Identity.StateVersion);
+            Assert.AreEqual(102UL, _presenter.LatestView.Identity.EventSeq);
             Assert.IsFalse(_presenter.LatestView.Identity.IsPrivateAuthorized);
 
             SessionCoordinator seed = _coordinator!;
