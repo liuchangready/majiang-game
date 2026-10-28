@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
@@ -22,11 +23,26 @@ namespace Mahjong.Infrastructure.Tests
             await using TableActor actor = fixture.CreateActor(sink);
             TableCommandEnvelope envelope = fixture.DiscardEnvelope("req-actor-1");
 
+            var submit = Stopwatch.StartNew();
             TableOperationResult result = await actor.SubmitAsync(
                 envelope,
                 TestContext.Current.CancellationToken);
+            submit.Stop();
+            if (result.Status != TableOperationStatus.Accepted)
+            {
+                await P52Diagnostics.RecordActorFailureAsync(
+                    "ActorCommit_RoundTripsRealEventsReceiptAndColdRecovery",
+                    result,
+                    submit.Elapsed,
+                    TestContext.Current.CancellationToken);
+            }
 
-            Assert.Equal(TableOperationStatus.Accepted, result.Status);
+            Assert.True(
+                result.Status == TableOperationStatus.Accepted,
+                "Actor commit was not accepted: status=" + result.Status +
+                "; reason=" + result.ReasonCode +
+                "; detail=" + P52Diagnostics.Sanitize(result.Detail) +
+                "; elapsedMs=" + ((long)submit.Elapsed.TotalMilliseconds));
             Assert.True(result.Events.Count > 0);
             Assert.Equal(new StateVersion(1), result.CommandVersion);
             Assert.Single(sink.Publications);
@@ -318,41 +334,30 @@ namespace Mahjong.Infrastructure.Tests
         [Fact]
         public async Task ExpiryAtCommitBoundary_WaitsForLockThenUsesDatabaseClockAndRejects()
         {
-            long now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-            await using P52Fixture fixture = await P52Fixture.CreateAsync(
-                scopeExpiresUtcMs: now + 700L);
+            // The fixture must finish its reset/room/scope preparation first. Only
+            // then is a valid scope issued, so a slow prepare cannot consume the
+            // scope lifetime before the boundary under test even starts.
+            await using P52Fixture fixture = await P52Fixture.CreateAsync();
+            Assert.True(
+                fixture.Scope.ExpiresAtUtcMs > fixture.Scope.IssuedAtUtcMs,
+                "The fixture scope must be valid before the boundary is exercised.");
             DirectCommitCandidate candidate = fixture.BuildCommit(
                 fixture.Round,
                 new StateVersion(0),
                 new EventSeq(0),
                 "req-expiry-race");
 
-            await using var blocker = new NpgsqlConnection(PostgresTableTestEnvironment.AdminConnectionString);
-            await blocker.OpenAsync(TestContext.Current.CancellationToken);
-            await using NpgsqlTransaction hold = await blocker.BeginTransactionAsync(TestContext.Current.CancellationToken);
-            await using (var lockCommand = new NpgsqlCommand(
-                "SELECT scope_id FROM table_store.request_scope WHERE scope_id = @scope FOR UPDATE",
-                blocker,
-                hold))
-            {
-                lockCommand.Parameters.AddWithValue("scope", fixture.Scope.ScopeId.Value);
-                Assert.Equal(fixture.Scope.ScopeId.Value, await lockCommand.ExecuteScalarAsync(TestContext.Current.CancellationToken));
-            }
-
-            Task<TableDurableCommitResult> commit = fixture.Store.CommitAsync(
-                candidate.Request,
-                TestContext.Current.CancellationToken).AsTask();
-            await WaitForRowLockWaitAsync();
-            Assert.False(commit.IsCompleted);
-
-            long waitUntil = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() + 1_000L;
-            while (DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() < waitUntil)
-            {
-                await Task.Delay(50, TestContext.Current.CancellationToken);
-            }
-
-            await hold.CommitAsync(TestContext.Current.CancellationToken);
-            TableDurableCommitResult result = await commit;
+            // The helper observes the blocked commit backend's xact_start, writes
+            // an expiry strictly between that transaction start and the database
+            // clock at release, and releases only after the clock crossed it. A
+            // transaction-start/cached-clock implementation still sees a valid
+            // scope at xact_start and accepts; the real clock_timestamp
+            // implementation rejects at the resumed boundary.
+            TableDurableCommitResult result =
+                await P52ScopeBoundary.CommitAfterExpiryCrossesTransactionStartAsync(
+                    fixture,
+                    candidate,
+                    TestContext.Current.CancellationToken);
             Assert.Equal(TableCommitDisposition.ScopeRejected, result.Disposition);
             Assert.Equal(ProtocolErrorCode.RequestScopeExpired, result.ReasonCode);
             await AssertNoSideEffectsAsync();
