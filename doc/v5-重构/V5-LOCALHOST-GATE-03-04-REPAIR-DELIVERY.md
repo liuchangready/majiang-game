@@ -12,6 +12,7 @@
 | 项目 | 结论 |
 |---|---|
 | D-LH-GATE-03 | **本任务范围修复完成（本地候选）**：`tests/v5-golden/visibility-v1.json` 已恢复为 accepted blob `eddcc00`；accepted companion 4/4 PASS，负例按预期失败。 |
+| D-LH-GATE-03-SHALLOW | **本任务范围修复完成（本地候选，第 2 轮新增）**：移除对完整 Git 历史的依赖；accepted v1 字节 pin + 离线 provenance 校验；full-history、depth=1 shallow、无 `.git` 快照均 8/8。 |
 | D-LH-GATE-04 | **本任务范围修复完成（本地候选）**：冷恢复测试改为在确定性静止边界捕获，并通过独立 OS 进程比较 state/event 版本、roundId、136 实体、账本与回执；LocalHost 102/102（本地串行、PG 负载、重复运行）。 |
 | D-LH-GATE-01 | **未修复，继续 OPEN**：TableService 控制 tag 映射不在本任务范围，未触碰 TableService/Contracts。 |
 | D-LH-GATE-02 | **未修复，继续 OPEN/BLOCKED**：LocalTableRuntime/Store/ControlTests 的拒绝持久化不在本任务范围，未触碰。 |
@@ -121,6 +122,61 @@ powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass `
 
 结果：PASS，`fixtures=6 requirements=73 cases=10389`，catalog SHA `236C8E0EE9B7FFB86187CB7D3AB650C9EA13FC0A4C47675E044B64BB0C93116D`，native exit 0。证据：`build/lh-gate-repair-20261029/catalog-crlf.log`，SHA-256 `C028FFCD2DEE6B384338F4A4F3CC2B7F54F4B809979738A4FD2630EBB89AA8F3`。catalog 不校验四个 companion fixture；本报告没有用它替代 companion。
 
+### 2.7 D-LH-GATE-03-SHALLOW 返修（第 2 轮新增 MAJOR）
+
+**ID / 严重级别 / 位置**
+
+- `D-LH-GATE-03-SHALLOW` / MAJOR / 返修新引入的本任务 CI 兼容性回归。
+- 位置：`dotnet/tests/Mahjong.TableRuntime.Tests/VisibilityGoldenTests.cs` 的 `AssertSourceHash` / `ReadGitBlob`；`.github/workflows/v5-verify.yml` 的 `actions/checkout@v4` 未设置 fetch-depth，默认浅克隆。
+- 新增信息：R1 为恢复 v1 后消费对齐新增 `ReadGitBlob`，依赖完整 Git 历史；冻结代码和默认 CI 均不保证该历史对象存在，因此上一轮无法发现。
+
+**复现**
+
+```powershell
+D:/Unity/dotnet/dotnet.exe build dotnet/tests/Mahjong.LocalHost.Tests/Mahjong.LocalHost.Tests.csproj `
+  -c Release --no-incremental --nologo -m:1 -nr:false -p:UseSharedCompilation=false
+git clone --depth 1 --single-branch --branch wt/v5-lh-gate-repair-ds-20261029 `
+  --no-checkout file:///D:/majiang <shallow>
+git -C <shallow> -c core.autocrlf=true checkout --force HEAD
+# 复制 fresh dotnet/tests/Mahjong.TableRuntime.Tests/bin/Release/net8.0
+D:/Unity/dotnet/dotnet.exe <shallow>/.../Mahjong.TableRuntime.Tests.dll `
+  -class Mahjong.TableRuntime.Tests.VisibilityGoldenTests -result-xml <shallow-visibility.xml>
+```
+
+**实际（修复前）**
+
+- `<shallow>/git rev-parse --is-shallow-repository` = `true`；HEAD = `ec6243dcd198a10d2bb32156fa47d55f561218c1`；baseline blob `git cat-file -e` exit 1。
+- 8 total / 7 passed / 1 failed / 0 errors / 0 skipped / 0 not-run，native exit 1；`GoldenMetaProvenanceAndCaseIdentityAreReal` 失败：
+  `git cat-file failed for 1432d...:dotnet/src/Mahjong.TableRuntime/TableVisibilityProjection.cs exit=128`。
+- 本树复现证据：`build/lh-gate-repair-20261029/shallow-before.xml`（SHA-256 `047035F69DE9BBF13953CB6BB8F18CEFB44FFFEC46C427401060B218BE88B2D1`）、`shallow-before.log`（`DC4333F0FD172A0F4D382BB65025BFC12CD56D8CB5AEAC8F9532BCF7B31DC4AA`）。
+- caller 原证据根 `build/caller-lh0304-834e2156d9a143bea9efd4653b3ff2b7/` 保留未覆盖；其 shallow XML SHA `9427F8F5C88425567A5F8A73C6A7CA4F65D078D955CCE94CFB3EC5630F1731AF`、log SHA `448F2345FE5E9D50AC94A2532E5E08786918609CBA07E52FB74E1EC499BA4659`。
+
+**修复**
+
+- 删除 `ReadGitBlob` 及 `git cat-file` 依赖，不再要求工作树拥有 `v5BaselineCommit` 历史对象。
+- 在测试内固定 accepted `visibility-v1` 的 LF/CRLF 精确字节身份（`30291E.../141,007`、`6506C0.../147,185`）；每次 provenance 检查先验证 fixture 本身是 accepted 冻结字节。
+- 对当前源码仍与 fixture 相等的条目，保留原 exact raw/LF/行尾校验；对因后续 accepted 组件变化而不再相等的历史条目，验证 fixture 内部 raw/LF/bytes/lineEndings 元数据自洽，并以 accepted fixture 字节 pin 作为离线审计锚。任何 fixture 字节篡改（包括 source hash 修改后重算 render 使其自洽）都会命中 accepted-bytes pin；render 篡改仍命中 `VerifyRenderHash` 与/或 pin。
+- 未新增 fixture/v2、未刷新旧 pin、未修改 companion/catalog verifier、统一 verifier、CI/workflow fetch-depth；未联网补历史；未 skip 或放宽为只检查字符串长度。
+
+**验收（本轮新跑）**
+
+| 场景 | 结果 | native exit | 证据 |
+|---|---|---:|---|
+| full-history VisibilityGolden | **8 / 8** | 0 | `shallow-fix/full-visibility.xml` SHA `EDA75C587E4867ACA8C3BB2FC494B97037C8F1A924ADF69E114A5D54B8E34824` |
+| depth=1 shallow VisibilityGolden | **8 / 8** | 0 | `shallow-after.xml` SHA `E47A46547AA02FD7216636458E9DDC170C0372E72B9CBF1277F0FE5EF0F49FED`；restored 复跑 `shallow-restored.xml` `C051E80174FA5BFBC8626EF78867DFF6E16C2AC8E3F0DF1F8677651C9D1423A5` |
+| 无 `.git` 源码快照 VisibilityGolden | **8 / 8** | 0 | `nogit-after.xml` SHA `7CB6014C7FEB278A1ADA8F1F51A90D64E3EBBF5539147DFD5AB99E5483E8B479` |
+| full TableRuntime | **413 / 413** | 0 | `shallow-fix/full-tableruntime.xml` SHA `4A8FAAEFE8A69B090019F0BB73068E06E0659BDA11C60B24F26F7D86CEABAB6D` |
+
+负例矩阵（均 8 total / 7 passed / 1 failed / native 1）：
+
+| 负例 | 结果 | 证据 |
+|---|---|---|
+| source provenance 字节篡改（并重算 render 自洽） | accepted fixture pin 失败：`visibility-v1 is not the accepted frozen fixture` | `shallow-fix/neg-source-selfconsistent2.xml` SHA `690F9D6DBB83567B80ADE7C490E1EA3DE3041AD24AAC36741322FD04793E996C` |
+| 简单 source 篡改 | fixture/render 一致性失败 | `shallow-fix/neg-source.xml` SHA `3DE59B19511D2CF9EC9E949CD18096D92263B7E803BEC22EB29D051CC796F6E5` |
+| render 字段篡改 | `VerifyRenderHash` 失败 | `shallow-fix/neg-render.xml` SHA `59A8409BB8B2512594808E03EE54CA089DEF5F1AA08C739568C9CD997072BAB0` |
+
+修复构建：`build/lh-gate-repair-20261029/build/tableruntime-shallow-fix-build2.log`，0 warnings/0 errors，SHA `92909265DCC4466600E2040A04A3B97E9EA634D21CB5EF915AE367FFDF972375`；TableRuntime.Tests fresh DLL `301174150921F34A6009EBDB3A91D8BCFCBC0B74FCEC0F31D9EA32E9EF2A3C82`。
+
 ## 3. D-LH-GATE-04 — MAJOR — 冷恢复断言捕获了不同权威版本边界
 
 ### 3.1 位置与原始失败
@@ -193,19 +249,21 @@ fresh Release 构建：
 
 直接运行 fresh DLL 的回归：
 
-| 工程 | total / passed | failed / errors / skipped / not-run | native exit | XML SHA-256 |
-|---|---:|---|---:|---|
-| LocalHost | 102 / 102 | 0 / 0 / 0 / 0 | 0 | `36A463EC...` |
-| TableRuntime | 413 / 413 | 0 / 0 / 0 / 0 | 0 | `85B8B926E1DCF98FDAEFF2CA3569C846EE1FF0382B3A35F3E9E6DA5D4620B342` |
-| VisibilityGolden | 8 / 8 | 0 / 0 / 0 / 0 | 0 | `D38B28F25268CF9995FA2FB9DB168AC766FD6658DC3AD536660574B893EC4DDA` |
-| Client | 182 / 182 | 0 / 0 / 0 / 0 | 0 | `D241D697FCBFCD82EBB4845260E54C01CA8CB1CCE0CFE164A0F08AB936E3F65B` |
-| Architecture | 130 / 130 | 0 / 0 / 0 / 0 | 0 | `1CE84BD20CF154BDDCAB96B00B9445BA2219C524A9D6748B7EE5B3F142B28C33` |
+本轮（D-LH-GATE-03-SHALLOW 返修后）新跑：TableRuntime 413/413 与 VisibilityGolden 8/8；full-history、depth=1 shallow、无 `.git` 快照的 VisibilityGolden 均 8/8。LocalHost 102/102、Client 182/182、Architecture 130/130 本轮未重跑，保留 caller 本轮 fresh 运行及上一轮证据，仅作为历史引用；后续测试改动只涉及 `VisibilityGoldenTests.cs`，未改这些工程的生产源码。
+
+| 工程 | total / passed | failed / errors / skipped / not-run | native exit | XML SHA-256 | 来源 |
+|---|---:|---|---:|---|---|
+| LocalHost | 102 / 102 | 0 / 0 / 0 / 0 | 0 | `36A463ECE4BD0159FEA32CFD6EED35E35120E5E1F77FE03AB9A8CC093CBD5C6D` | 上一轮 + caller 本轮 |
+| TableRuntime | 413 / 413 | 0 / 0 / 0 / 0 | 0 | `4A8FAAEFE8A69B090019F0BB73068E06E0659BDA11C60B24F26F7D86CEABAB6D` | 本轮新跑 |
+| VisibilityGolden | 8 / 8 | 0 / 0 / 0 / 0 | 0 | `EDA75C587E4867ACA8C3BB2FC494B97037C8F1A924ADF69E114A5D54B8E34824` | 本轮新跑 |
+| Client | 182 / 182 | 0 / 0 / 0 / 0 | 0 | `D241D697FCBFCD82EBB4845260E54C01CA8CB1CCE0CFE164A0F08AB936E3F65B` | 上一轮 + caller 本轮 |
+| Architecture | 130 / 130 | 0 / 0 / 0 / 0 | 0 | `1CE84BD20CF154BDDCAB96B00B9445BA2219C524A9D6748B7EE5B3F142B28C33` | 上一轮 |
 
 其他：
-- accepted companion：4/4 PASS（`companion-verify-final.log`）。
-- catalog：6 fixtures / 73 requirements / 10,389 cases PASS（CRLF accepted 表示；`catalog-crlf.log`）。
+- accepted companion：4/4 PASS（`companion-verify-final.log`）；caller 本轮也复核 4/4 native 0。
+- catalog：6 fixtures / 73 requirements / 10,389 cases PASS（CRLF accepted 表示；`catalog-crlf.log`）；caller 本轮 CRLF 精确候选复核同数。
 - LocalHost 并行模式 3 次中 2 次 102/102；第 3 次出现既有 `LocalHostConcurrencyTests.PartialCancellationOfConcurrentInitialOpenLetsTheOtherWaiterSucceed` 单测 flake（与本任务文件/断言无交集），该单测随后单独运行 1/1 PASS。此 flake 保留记录，不冒充本任务通过，也没有为了它修改产品代码或测试。
-- 关键 DLL SHA-256：LocalHost `0DC3D1201F6DF9E5DD9C498357F3AA1F76542B5B43D3E414FA9063474BC4883D`；TableRuntime `E523FB113247414B73EDB8E7D5F121EF6259D5EFDE52D3C705A05D65D7F700A1`；Client `7A3DDC4B07E0268B6E0D71A9D5E32B4F901520A6FC9EEF9437B2CD43667C13C0`；CrashWorker `1C54F069E6330CBE8F1642ED7AE704490897055DE9725EA816C9FEA851547FBB`；LocalHost.Tests `07347404CDBB81EDCF9A872F9F9EABF156704071242643D89A73B8E494587DC1`；TableRuntime.Tests `F6D05C6561C58D3895B107424D866E938678925AA0158F5CF6D6D52690B2FCCD`。
+- 当前最终构建产物 SHA-256：LocalHost `C23CF8714073706C985D1F2718068D01529F88DCD0A60F331DB271A094D96C34`；TableRuntime `C0846D673F61256A8E2A2E05ECB3ACE09A2E0E3016000AC64CB93937B9E57D74`；Client `34F0F704810B9B75D3B345AB6DDEE17EED82C22777992E477B6675254BF6E39B`；CrashWorker `1C54F069E6330CBE8F1642ED7AE704490897055DE9725EA816C9FEA851547FBB`；LocalHost.Tests `0461A3BDB347085D8744776BBAD1D6BA7D5A597AC58A451336DDDE85793E1A5E`；TableRuntime.Tests `301174150921F34A6009EBDB3A91D8BCFCBC0B74FCEC0F31D9EA32E9EF2A3C82`。
 
 逐 XML 的 total/passed/failed/errors/skipped/not-run 与 SHA 汇总见 `build/lh-gate-repair-20261029/test-counts-final.tsv`；完整 ignored 证据清单见 `build/lh-gate-repair-20261029/final-evidence-sha256.tsv`。原始日志、构建日志、PG 证据和负例均在该 ignored 目录。没有使用 skip、空测试、旧 DLL、`Total=0` 或刷新摘要冲绿。
 
@@ -215,7 +273,7 @@ fresh Release 构建：
 - `tests/v5-golden/visibility-v1.json`：恢复 accepted 精确字节。
 - `dotnet/tests/Mahjong.LocalHost.Tests/LocalHostRecoveryTests.cs`：D-04 确定性边界、冷 OS 比较、双时序测试。
 - `dotnet/tests/Mahjong.LocalHost.CrashWorker/Program.cs`：新增只读冷进程边界证据模式。
-- `dotnet/tests/Mahjong.TableRuntime.Tests/VisibilityGoldenTests.cs`：D-03 冻结 fixture 的历史 baseline 消费对齐。
+- `dotnet/tests/Mahjong.TableRuntime.Tests/VisibilityGoldenTests.cs`：D-03 冻结 fixture 的历史 baseline 消费对齐，以及 D-LH-GATE-03-SHALLOW 的离线 accepted-bytes/provenance 校验（无 Git 历史依赖）。
 - 本报告。
 
 未修改：
@@ -240,7 +298,7 @@ fresh Release 构建：
 
 ## 7. 交付与 handoff
 
-- 本任务只关闭 D-LH-GATE-03/04；D-01/02、P4.2-B、P4.5、G2–G5 仍需各自线程/最终整合复验。
+- 本任务只关闭 D-LH-GATE-03/04（含第 2 轮 D-LH-GATE-03-SHALLOW）；D-01/02、P4.2-B、P4.5、G2–G5 仍需各自线程/最终整合复验。
 - caller 继续独立验收并将 accepted delta 整合到唯一 PR20 `https://github.com/liuchangready/majiang-game/pull/20`；receiver 不 push、不建/改 PR/MR、不 merge/deploy、不创建 `complete.flag`。
 - 临时 worktree 的 bridge merge-back 义务仍由 caller 记录与执行；本任务不删除/改写其它工作树、用户文件或 Resources/Burst。
 - 本报告所在提交即最终本地交付提交；其 SHA 由 `git log -1 --format=%H -- doc/v5-重构/V5-LOCALHOST-GATE-03-04-REPAIR-DELIVERY.md` 读取。
