@@ -26,6 +26,7 @@
     <ProjectReference Include="..\..\src\Mahjong.Contracts.Wire\Mahjong.Contracts.Wire.csproj" />
     <ProjectReference Include="..\..\src\Mahjong.Client\Mahjong.Client.csproj" />
     <ProjectReference Include="..\Mahjong.LocalHost.CrashWorker\Mahjong.LocalHost.CrashWorker.csproj" ReferenceOutputAssembly="false" />
+    <ProjectReference Include="..\Mahjong.TableRuntime.Tests\Mahjong.TableRuntime.Tests.csproj" ReferenceOutputAssembly="false" />
   </ItemGroup>
 
 </Project>

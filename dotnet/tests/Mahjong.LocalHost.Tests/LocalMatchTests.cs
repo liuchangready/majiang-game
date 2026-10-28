@@ -84,6 +84,64 @@ namespace Mahjong.LocalHost.Tests
         }
 
         [Fact]
+        public async Task PersistedRiichiStickIsCarriedIntoTheNextRoundTable()
+        {
+            await using var harness = new P41Harness();
+            CancellationToken ct = TestContext.Current.CancellationToken;
+            string root = Path.Combine(harness.Root, "match-sticks");
+            var options = new LocalMatchHostOptions
+            {
+                SaveDirectory = root,
+                MatchId = "match-sticks",
+                OwnerInstanceId = "owner-match",
+                LeaseDuration = TimeSpan.FromMinutes(5),
+                Environment = harness.Options.Environment,
+                Rules = new Mahjong.Domain.MatchRuleConfig(
+                    Mahjong.Domain.MatchLength.Tonpuusen,
+                    handsPerWind: 2,
+                    allowWestExtension: false)
+            };
+
+            Directory.CreateDirectory(root);
+            LocalMatchState state = LocalMatchState.Create(options.MatchId);
+            state.Restore(
+                state.MatchId,
+                state.Version,
+                state.Ordinal,
+                state.CurrentRoomId,
+                state.CurrentRoundId,
+                state.DealerSeat,
+                state.RoundWind,
+                state.RoundNumber,
+                state.Honba,
+                1,
+                new long[] { 24_000L, 25_000L, 25_000L, 25_000L },
+                Array.Empty<long>(),
+                false,
+                string.Empty,
+                new List<RankingEntry>(),
+                new List<LocalMatchRoundRecord>());
+            LocalMatchStateCodec.Save(Path.Combine(root, options.MatchId + ".match"), state, 0);
+
+            LocalMatchCoordinator match = await LocalMatchCoordinator.OpenAsync(options, ct);
+            try
+            {
+                LocalMatchRound round = await match.OpenRoundAsync(ct);
+                await round.Channel.OpenAsync(
+                    new TableChannelConnectRequest(round.Ticket, "match-sticks", null),
+                    ct);
+                Assert.Equal(1, match.Snapshot.RiichiSticks);
+                var runtime = ((LocalTableChannel)round.Channel).RuntimeForMatch;
+                Assert.NotNull(runtime);
+                Assert.Equal(1, runtime!.ActorForTest.GetRoundStateForHost().RiichiSticks);
+            }
+            finally
+            {
+                await match.DisposeAsync();
+            }
+        }
+
+        [Fact]
         public async Task MatchLockRejectsASecondLiveCoordinator()
         {
             await using var harness = new P41Harness();

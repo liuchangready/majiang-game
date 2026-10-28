@@ -63,10 +63,7 @@ namespace Mahjong.LocalHost
                         {
                             lastDiscard = i;
                         }
-                        else if (e.Type == Mahjong.Domain.RoundEventType.ResponseClaimed ||
-                                 e.Type == Mahjong.Domain.RoundEventType.KanDeclared ||
-                                 e.Type == Mahjong.Domain.RoundEventType.ChiDeclared ||
-                                 e.Type == Mahjong.Domain.RoundEventType.PonDeclared)
+                        else if (IsRealCallOrKan(e))
                         {
                             lastCallOrKan = i;
                         }
@@ -103,6 +100,24 @@ namespace Mahjong.LocalHost
             }
 
             return new TableSettlementHostFacts(source, seats);
+        }
+
+        /// <summary>
+        /// A response pass is not a call. Treating PASS as an interruption broke ippatsu whenever
+        /// another seat passed after the riichi declaration; only real chi/pon/open-or-added-kan
+        /// and non-PASS response claims interrupt the one-turn ippatsu window.
+        /// </summary>
+        private static bool IsRealCallOrKan(Mahjong.Domain.RoundEvent value)
+        {
+            if (value.Type == Mahjong.Domain.RoundEventType.KanDeclared ||
+                value.Type == Mahjong.Domain.RoundEventType.ChiDeclared ||
+                value.Type == Mahjong.Domain.RoundEventType.PonDeclared)
+            {
+                return true;
+            }
+
+            return value.Type == Mahjong.Domain.RoundEventType.ResponseClaimed &&
+                   !string.Equals(value.Detail, "PASS", StringComparison.Ordinal);
         }
     }
 }

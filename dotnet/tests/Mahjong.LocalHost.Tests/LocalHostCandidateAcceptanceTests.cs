@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
@@ -1103,6 +1104,451 @@ namespace Mahjong.LocalHost.Tests
         }
 
         [Fact]
+        public async Task ClientPassFuritenBlocksSecondRealRonUntilTheNextDraw()
+        {
+            await using var harness = new P41Harness();
+            CancellationToken ct = TestContext.Current.CancellationToken;
+
+            // Seat 0: 1-9m, 3p pair (44,45), 1s pair (72,73), discard 132. It waits on the third
+            // 3p. Seat 1 draws/discards 44 (first Ron chance), seat 2 draws/discards 45 (second
+            // wait tile). The second discard also lets seat 0 Pon, so the response window and a
+            // real pending decision exist even though furiten removes the Ron option.
+            var specific = new Dictionary<int, int>();
+            int[] seat0Tiles = { 0, 4, 8, 12, 16, 20, 24, 28, 32, 44, 45, 72, 73, 132 };
+            int[] seat0Slots = { 0, 1, 2, 3, 16, 17, 18, 19, 32, 33, 34, 35, 48, 52 };
+            for (int i = 0; i < seat0Slots.Length; i++)
+            {
+                specific[seat0Slots[i]] = seat0Tiles[i];
+            }
+
+            specific[53] = 46;
+            specific[54] = 47;
+            specific[55] = 133;
+            specific[56] = 134;
+            specific[57] = 74;
+            harness.Options.InitialRound = BuildRoundWithSpecificSlots(specific);
+
+            string roundId = string.Empty;
+            (ITableChannel channel, TableSession session) = await OpenAsync(harness, ct);
+            try
+            {
+                using var pumpCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                pumpCts.CancelAfter(TimeSpan.FromSeconds(30));
+                Task pump = StartPump(session, pumpCts.Token);
+
+                PlayerSnapshot snapshot = await WaitForDecisionAsync(session, pumpCts.Token);
+                roundId = snapshot.RoundId;
+                DecisionView decision = snapshot.PrivateView.Decision!;
+                TableReceiptResolvedEventArgs discard = await SubmitDecisionActionAsync(
+                    session,
+                    snapshot,
+                    decision,
+                    ProtocolActionType.DiscardTile,
+                    "furiten-real-discard",
+                    new uint[] { 132u },
+                    null,
+                    pumpCts.Token);
+                Assert.Equal(ReceiptStatus.Applied, discard.Resolution.ReceiptStatus);
+
+                PlayerSnapshot firstRon = await WaitForActionTypeAsync(
+                    session,
+                    ProtocolActionType.DeclareRon,
+                    pumpCts.Token);
+                await Task.Delay(150, pumpCts.Token);
+                firstRon = session.PlayerSnapshot!;
+                DecisionView firstRonDecision = firstRon.PrivateView.Decision!;
+                Assert.Contains(
+                    firstRonDecision.Actions,
+                    a => a.ActionType == (uint)ProtocolActionType.DeclareRon);
+                TableReceiptResolvedEventArgs firstPass = await SubmitDecisionActionAsync(
+                    session,
+                    firstRon,
+                    firstRonDecision,
+                    ProtocolActionType.Pass,
+                    "furiten-real-pass-1",
+                    null,
+                    null,
+                    pumpCts.Token);
+                Assert.Equal(ReceiptStatus.Applied, firstPass.Resolution.ReceiptStatus);
+
+                for (int i = 0; i < 50 && session.PlayerSnapshot?.PrivateView?.Furiten != true; i++)
+                {
+                    await Task.Delay(20, pumpCts.Token);
+                }
+
+                Assert.True(session.PlayerSnapshot!.PrivateView.Furiten);
+                Assert.True(((LocalTableChannel)channel).RuntimeForMatch!.ActorForTest.FuritenForHost.IsTemporary(0));
+
+                pumpCts.Cancel();
+                await pump;
+            }
+            finally
+            {
+                await session.CloseAsync("TEST_DONE", CancellationToken.None);
+                await channel.CloseAsync(new TableChannelCloseReason("TEST_DONE", true), CancellationToken.None);
+            }
+
+            // Real separate-process cold read. The committed temp bit must be visible there.
+            string marker = Path.Combine(harness.Root, "furiten-read-marker.txt");
+            string workerDll = Path.Combine(
+                P41Harness.FindRepositoryRoot(),
+                "dotnet",
+                "tests",
+                "Mahjong.LocalHost.CrashWorker",
+                "bin",
+                "Release",
+                "net8.0",
+                "Mahjong.LocalHost.CrashWorker.dll");
+            Assert.True(File.Exists(workerDll), "CrashWorker was not built: " + workerDll);
+            var startInfo = new System.Diagnostics.ProcessStartInfo
+            {
+                FileName = Environment.ProcessPath ?? "dotnet",
+                Arguments = "\"" + workerDll + "\" \"" + harness.Options.SaveDirectory + "\" \"" +
+                            P41Harness.RoomId + "\" \"" + marker + "\" furiten-read " +
+                            harness.Clock.MonotonicMillis.ToString(System.Globalization.CultureInfo.InvariantCulture) + " " +
+                            harness.Clock.UtcNowMs.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true
+            };
+            using (System.Diagnostics.Process process = System.Diagnostics.Process.Start(startInfo)!)
+            {
+                using var waitCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                waitCts.CancelAfter(TimeSpan.FromSeconds(30));
+                Task<string> stdoutTask = process.StandardOutput.ReadToEndAsync(waitCts.Token);
+                Task<string> stderrTask = process.StandardError.ReadToEndAsync(waitCts.Token);
+                try
+                {
+                    await process.WaitForExitAsync(waitCts.Token);
+                    await Task.WhenAll(stdoutTask, stderrTask);
+                }
+                catch (OperationCanceledException)
+                {
+                    process.Kill(true);
+                    throw new TimeoutException("furiten-read worker did not exit in time.");
+                }
+
+                Assert.True(
+                    process.ExitCode == 0,
+                    "furiten-read worker exit=" + process.ExitCode + " stderr=" + await stderrTask);
+            }
+
+            string[] markerLines = File.ReadAllLines(marker);
+            Assert.Equal(4, markerLines.Length);
+            Assert.Equal(roundId, markerLines[0]);
+            Assert.True((int.Parse(markerLines[2], System.Globalization.CultureInfo.InvariantCulture) & 1) != 0);
+
+            // Continue the same round after the cold read. The second real wait-tile discard
+            // must open a window with Pon/Pass but no Ron, and a Ron with that real decision must
+            // be rejected by the furiten rule rather than by stale/phase checks.
+            (ITableChannel reopened, TableSession restored) = await OpenAsync(harness, ct);
+            try
+            {
+                using var pumpCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                pumpCts.CancelAfter(TimeSpan.FromSeconds(30));
+                Task pump = StartPump(restored, pumpCts.Token);
+
+                PlayerSnapshot secondWindow = await WaitForActionTypeAsync(
+                    restored,
+                    ProtocolActionType.DeclarePon,
+                    pumpCts.Token);
+                await Task.Delay(150, pumpCts.Token);
+                secondWindow = restored.PlayerSnapshot!;
+                DecisionView secondDecision = secondWindow.PrivateView.Decision!;
+                Assert.DoesNotContain(
+                    secondDecision.Actions,
+                    a => a.ActionType == (uint)ProtocolActionType.DeclareRon);
+
+                TableReceiptResolvedEventArgs rejected = await SubmitDecisionActionAsync(
+                    restored,
+                    secondWindow,
+                    secondDecision,
+                    ProtocolActionType.DeclareRon,
+                    "furiten-real-second-ron",
+                    null,
+                    null,
+                    pumpCts.Token);
+                Assert.Equal(ReceiptStatus.Rejected, rejected.Resolution.ReceiptStatus);
+                Assert.Equal(
+                    TableSettlementReasonCode.FromRejection(RoundSettlementRejectionCode.FuritenRon),
+                    rejected.Resolution.ReasonCode);
+
+                TableReceiptResolvedEventArgs secondPass = await SubmitDecisionActionAsync(
+                    restored,
+                    secondWindow,
+                    secondDecision,
+                    ProtocolActionType.Pass,
+                    "furiten-real-pass-2",
+                    null,
+                    null,
+                    pumpCts.Token);
+                Assert.Equal(ReceiptStatus.Applied, secondPass.Resolution.ReceiptStatus);
+
+                PlayerSnapshot? afterDraw = null;
+                for (int i = 0; i < 100; i++)
+                {
+                    afterDraw = restored.PlayerSnapshot;
+                    if (afterDraw != null &&
+                        afterDraw.StateVersion > secondWindow.StateVersion &&
+                        afterDraw.PrivateView.Decision != null &&
+                        !string.Equals(
+                            afterDraw.PrivateView.Decision.DecisionId,
+                            secondDecision.DecisionId,
+                            StringComparison.Ordinal))
+                    {
+                        break;
+                    }
+
+                    afterDraw = null;
+                    await Task.Delay(20, pumpCts.Token);
+                }
+
+                Assert.NotNull(afterDraw);
+                Assert.True(afterDraw!.StateVersion > secondWindow.StateVersion);
+                Assert.False(afterDraw.PrivateView.Furiten, "the owner draw must clear temporary furiten");
+                DecisionView discardDecision = afterDraw.PrivateView.Decision!;
+                uint drawn = afterDraw.PrivateView.HasDrawnTileId
+                    ? afterDraw.PrivateView.DrawnTileId
+                    : afterDraw.PrivateView.ClosedTiles[0];
+                TableReceiptResolvedEventArgs clearedDiscard = await SubmitDecisionActionAsync(
+                    restored,
+                    afterDraw,
+                    discardDecision,
+                    ProtocolActionType.DiscardTile,
+                    "furiten-real-cleared-discard",
+                    new[] { drawn },
+                    null,
+                    pumpCts.Token);
+                Assert.Equal(ReceiptStatus.Applied, clearedDiscard.Resolution.ReceiptStatus);
+
+                PlayerSnapshot thirdRon = await WaitForActionTypeAsync(
+                    restored,
+                    ProtocolActionType.DeclareRon,
+                    pumpCts.Token);
+                await Task.Delay(150, pumpCts.Token);
+                thirdRon = restored.PlayerSnapshot!;
+                DecisionView thirdDecision = thirdRon.PrivateView.Decision!;
+                Assert.Contains(
+                    thirdDecision.Actions,
+                    a => a.ActionType == (uint)ProtocolActionType.DeclareRon);
+                TableReceiptResolvedEventArgs accepted = await SubmitDecisionActionAsync(
+                    restored,
+                    thirdRon,
+                    thirdDecision,
+                    ProtocolActionType.DeclareRon,
+                    "furiten-real-third-ron",
+                    null,
+                    null,
+                    pumpCts.Token);
+                Assert.Equal(ReceiptStatus.Applied, accepted.Resolution.ReceiptStatus);
+
+                for (int i = 0; i < 30 &&
+                     restored.PlayerSnapshot!.PublicView.Board.Phase != GamePhase.RoundEnd; i++)
+                {
+                    await Task.Delay(20, pumpCts.Token);
+                }
+
+                Assert.Equal(GamePhase.RoundEnd, restored.PlayerSnapshot!.PublicView.Board.Phase);
+                pumpCts.Cancel();
+                await pump;
+            }
+            finally
+            {
+                await restored.CloseAsync("TEST_DONE", CancellationToken.None);
+                await reopened.CloseAsync(new TableChannelCloseReason("TEST_DONE", true), CancellationToken.None);
+            }
+        }
+
+        [Fact]
+        public async Task ClientRiichiFuritenStillBlocksRonAfterTheNextDraw()
+        {
+            await using var harness = new P41Harness();
+            CancellationToken ct = TestContext.Current.CancellationToken;
+
+            var specific = new Dictionary<int, int>();
+            int[] seat0Tiles = { 0, 4, 8, 12, 16, 20, 24, 28, 32, 44, 45, 72, 73, 132 };
+            int[] seat0Slots = { 0, 1, 2, 3, 16, 17, 18, 19, 32, 33, 34, 35, 48, 52 };
+            for (int i = 0; i < seat0Slots.Length; i++)
+            {
+                specific[seat0Slots[i]] = seat0Tiles[i];
+            }
+
+            specific[53] = 46;
+            specific[54] = 47;
+            specific[55] = 133;
+            specific[56] = 134;
+            specific[57] = 74;
+            harness.Options.InitialRound = BuildRoundWithSpecificSlots(specific);
+
+            (ITableChannel channel, TableSession session) = await OpenAsync(harness, ct);
+            try
+            {
+                using var pumpCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                pumpCts.CancelAfter(TimeSpan.FromSeconds(30));
+                Task pump = StartPump(session, pumpCts.Token);
+
+                PlayerSnapshot snapshot = await WaitForActionTypeAsync(
+                    session,
+                    ProtocolActionType.DeclareRiichi,
+                    pumpCts.Token);
+                DecisionView decision = snapshot.PrivateView.Decision!;
+                LegalActionView riichi = decision.Actions.First(
+                    a => a.ActionType == (uint)ProtocolActionType.DeclareRiichi);
+                TableReceiptResolvedEventArgs riichiReceipt = await SubmitDecisionActionAsync(
+                    session,
+                    snapshot,
+                    decision,
+                    ProtocolActionType.DeclareRiichi,
+                    "riichi-furiten-declare",
+                    new uint[] { 132u },
+                    riichi.OptionId,
+                    pumpCts.Token);
+                Assert.Equal(ReceiptStatus.Applied, riichiReceipt.Resolution.ReceiptStatus);
+
+                PlayerSnapshot firstRon = await WaitForActionTypeAsync(
+                    session,
+                    ProtocolActionType.DeclareRon,
+                    pumpCts.Token);
+                await Task.Delay(150, pumpCts.Token);
+                firstRon = session.PlayerSnapshot!;
+                DecisionView firstRonDecision = firstRon.PrivateView.Decision!;
+                TableReceiptResolvedEventArgs firstPass = await SubmitDecisionActionAsync(
+                    session,
+                    firstRon,
+                    firstRonDecision,
+                    ProtocolActionType.Pass,
+                    "riichi-furiten-pass-1",
+                    null,
+                    null,
+                    pumpCts.Token);
+                Assert.Equal(ReceiptStatus.Applied, firstPass.Resolution.ReceiptStatus);
+
+                for (int i = 0; i < 50 && session.PlayerSnapshot?.PrivateView?.Furiten != true; i++)
+                {
+                    await Task.Delay(20, pumpCts.Token);
+                }
+
+                Assert.True(session.PlayerSnapshot!.PrivateView.Furiten);
+                LocalTableRuntime runtime = ((LocalTableChannel)channel).RuntimeForMatch!;
+                Assert.True(runtime.ActorForTest.FuritenForHost.IsTemporary(0));
+                Assert.True(runtime.ActorForTest.FuritenForHost.IsRiichi(0));
+
+                // A riichi player cannot Pon/Chi, so furiten removes seat 0 from every later
+                // window entirely. Wait for its own next turn (after the draw) and prove the
+                // owner projection still carries furiten and no Ron action is ever offered.
+                PlayerSnapshot? afterDraw = null;
+                for (int i = 0; i < 150; i++)
+                {
+                    afterDraw = session.PlayerSnapshot;
+                    if (afterDraw != null &&
+                        afterDraw.StateVersion > firstRon.StateVersion &&
+                        afterDraw.PrivateView.Decision != null &&
+                        afterDraw.PrivateView.Decision.Actions.Any(
+                            a => a.ActionType == (uint)ProtocolActionType.DiscardTile))
+                    {
+                        break;
+                    }
+
+                    afterDraw = null;
+                    await Task.Delay(20, pumpCts.Token);
+                }
+
+                Assert.NotNull(afterDraw);
+                Assert.True(afterDraw!.PrivateView.Furiten, "riichi furiten must survive the owner draw");
+                Assert.DoesNotContain(
+                    afterDraw.PrivateView.Decision!.Actions,
+                    a => a.ActionType == (uint)ProtocolActionType.DeclareRon);
+                Assert.True(runtime.ActorForTest.FuritenForHost.IsRiichi(0));
+                DecisionView discardDecision = afterDraw.PrivateView.Decision!;
+                uint drawn = afterDraw.PrivateView.HasDrawnTileId
+                    ? afterDraw.PrivateView.DrawnTileId
+                    : afterDraw.PrivateView.ClosedTiles[0];
+                ulong beforeDiscard = afterDraw.StateVersion;
+                TableReceiptResolvedEventArgs clearedDiscard = await SubmitDecisionActionAsync(
+                    session,
+                    afterDraw,
+                    discardDecision,
+                    ProtocolActionType.DiscardTile,
+                    "riichi-furiten-discard",
+                    new[] { drawn },
+                    null,
+                    pumpCts.Token);
+                Assert.Equal(ReceiptStatus.Applied, clearedDiscard.Resolution.ReceiptStatus);
+
+                bool sawRonAfterDraw = false;
+                for (int i = 0; i < 100; i++)
+                {
+                    PlayerSnapshot current = session.PlayerSnapshot!;
+                    DecisionView? currentDecision = current.PrivateView?.Decision;
+                    if (currentDecision != null &&
+                        currentDecision.Actions.Any(a => a.ActionType == (uint)ProtocolActionType.DeclareRon))
+                    {
+                        sawRonAfterDraw = true;
+                    }
+
+                    if (current.StateVersion > beforeDiscard + 1)
+                    {
+                        break;
+                    }
+
+                    await Task.Delay(20, pumpCts.Token);
+                }
+
+                Assert.False(sawRonAfterDraw, "riichi furiten must not offer Ron after the draw");
+                Assert.True(runtime.ActorForTest.FuritenForHost.IsRiichi(0));
+
+                PlayerSnapshot afterWindow = session.PlayerSnapshot!;
+                var rejectedRon = new TaskCompletionSource<TableReceiptResolvedEventArgs>(
+                    TaskCreationOptions.RunContinuationsAsynchronously);
+                EventHandler<TableReceiptResolvedEventArgs> handler = (_, args) =>
+                {
+                    if (args.Command.Key.RequestId.Value == "riichi-furiten-ron-after-window")
+                    {
+                        rejectedRon.TrySetResult(args);
+                    }
+                };
+                session.ReceiptResolved += handler;
+                try
+                {
+                    BusinessPayload ronPayload = CommandPayloadFactory.SubmitAction(
+                        afterWindow.RoundId,
+                        "local-direct",
+                        0UL,
+                        ProtocolActionType.DeclareRon);
+                    await session.SubmitAsync(
+                        new ProtocolCommand(
+                            CommandKind.SubmitAction,
+                            ronPayload,
+                            new RequestId("riichi-furiten-ron-after-window"),
+                            session.Binding!.Scope.ScopeId,
+                            new StateVersion(afterWindow.StateVersion),
+                            new RoundId(afterWindow.RoundId),
+                            decisionId: null,
+                            controlEpoch: new ControlEpoch(0)),
+                        pumpCts.Token);
+                    TableReceiptResolvedEventArgs afterDrawRon = await LocalHostCommandTests.WithTimeoutAsync(
+                        rejectedRon.Task,
+                        pumpCts.Token);
+                    Assert.NotEqual(ReceiptStatus.Applied, afterDrawRon.Resolution.ReceiptStatus);
+                    Assert.NotEqual(GamePhase.RoundEnd, session.PlayerSnapshot!.PublicView.Board.Phase);
+                }
+                finally
+                {
+                    session.ReceiptResolved -= handler;
+                }
+
+                pumpCts.Cancel();
+                await pump;
+            }
+            finally
+            {
+                await session.CloseAsync("TEST_DONE", CancellationToken.None);
+                await channel.CloseAsync(new TableChannelCloseReason("TEST_DONE", true), CancellationToken.None);
+            }
+        }
+
+        [Fact]
         public async Task AddedKanAndRinshanTsumoTest()
         {
             await using var harness = new P41Harness();
@@ -2177,6 +2623,55 @@ namespace Mahjong.LocalHost.Tests
             {
                 await session.CloseAsync("TEST_DONE", CancellationToken.None);
                 await channel.CloseAsync(new TableChannelCloseReason("TEST_DONE", true), CancellationToken.None);
+            }
+        }
+
+        private static async Task<TableReceiptResolvedEventArgs> SubmitDecisionActionAsync(
+            TableSession session,
+            PlayerSnapshot snapshot,
+            DecisionView decision,
+            ProtocolActionType action,
+            string requestId,
+            uint[]? tiles,
+            string? optionId,
+            CancellationToken cancellationToken)
+        {
+            var resolved = new TaskCompletionSource<TableReceiptResolvedEventArgs>(
+                TaskCreationOptions.RunContinuationsAsynchronously);
+            EventHandler<TableReceiptResolvedEventArgs> handler = (_, args) =>
+            {
+                if (string.Equals(args.Command.Key.RequestId.Value, requestId, StringComparison.Ordinal))
+                {
+                    resolved.TrySetResult(args);
+                }
+            };
+            session.ReceiptResolved += handler;
+            try
+            {
+                BusinessPayload payload = CommandPayloadFactory.SubmitAction(
+                    snapshot.RoundId,
+                    decision.DecisionId,
+                    decision.ControlEpoch,
+                    action,
+                    optionId: optionId,
+                    tileIds: tiles);
+                CommandSubmission submission = await session.SubmitAsync(
+                    new ProtocolCommand(
+                        CommandKind.SubmitAction,
+                        payload,
+                        new RequestId(requestId),
+                        session.Binding!.Scope.ScopeId,
+                        new StateVersion(snapshot.StateVersion),
+                        new RoundId(snapshot.RoundId),
+                        decisionId: new DecisionId(decision.DecisionId),
+                        controlEpoch: new ControlEpoch(decision.ControlEpoch)),
+                    cancellationToken);
+                Assert.True(submission.Sent, "command was not sent: " + requestId);
+                return await LocalHostCommandTests.WithTimeoutAsync(resolved.Task, cancellationToken);
+            }
+            finally
+            {
+                session.ReceiptResolved -= handler;
             }
         }
 

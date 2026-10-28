@@ -1463,6 +1463,48 @@ namespace Mahjong.TableRuntime.Tests
                 RoundCommand.Discard(afterPon.RoundId, 0, Tile(22, 0), new[] { 1 }));
         }
 
+        /// <summary>Same as RiichiPonThenRonWindow, but the interruption is a real OpenKan.</summary>
+        public static RoundStateMachine RiichiKanThenRonWindow()
+        {
+            RoundStateMachine opening = RonOpening();
+            var plan = new SettlementPlan(RoundPhase.CheatWindow)
+            {
+                FillRemainingIntoWall = true,
+                DrawnSeat = 0,
+                DrawnTile = Tile(22, 1),
+                DrawnSource = DrawSource.Wall
+            };
+            plan.AddDora(39);
+            plan.AddWallTop(Tile(0, 3).Value, Tile(22, 3).Value, Tile(8, 3).Value);
+            plan.AddHand(0, opening.Tiles.TilesInZone(TileZone.Hand, 0).ToArray());
+            plan.AddHand(1, opening.Tiles.TilesInZone(TileZone.Hand, 1).ToArray());
+            RoundStateMachine first = plan.Build(opening.Spec);
+            RoundStateMachine afterDealerDiscard = Step(
+                first,
+                RoundCommand.Discard(first.RoundId, 0, Tile(22, 1)));
+            RoundStateMachine afterRiichi = Step(
+                afterDealerDiscard,
+                RoundCommand.Riichi(afterDealerDiscard.RoundId, 1, Tile(0, 3), new[] { 2 }));
+            RoundStateMachine afterPass = Step(
+                afterRiichi,
+                RoundCommand.Pass(afterRiichi.RoundId, 2));
+            RoundStateMachine ronWindow = Step(
+                afterPass,
+                RoundCommand.Discard(afterPass.RoundId, 2, Tile(22, 3), new[] { 1 }));
+            RoundStateMachine afterFirstPass = Step(
+                ronWindow,
+                RoundCommand.Pass(ronWindow.RoundId, 1));
+            RoundStateMachine kanWindow = Step(
+                afterFirstPass,
+                RoundCommand.Discard(afterFirstPass.RoundId, 3, Tile(8, 3), new[] { 0 }));
+            RoundStateMachine afterKan = Step(
+                kanWindow,
+                RoundCommand.OpenKan(kanWindow.RoundId, 0, Tile(8, 3), Tile(8, 0), Tile(8, 1), Tile(8, 2)));
+            return Step(
+                afterKan,
+                RoundCommand.Discard(afterKan.RoundId, 0, Tile(22, 0), new[] { 1 }));
+        }
+
         public static RoundStateMachine ChiAfterDiscard()
         {
             RoundStateMachine opening = RonOpening();

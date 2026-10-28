@@ -15,6 +15,19 @@ using PlayerSnapshot = Mahjong.Contracts.Wire.PlayerSnapshot;
 
 namespace Mahjong.LocalHost.CrashWorker
 {
+    internal sealed class FixedWorkerClock : ITableClock
+    {
+        public FixedWorkerClock(long monotonicMillis, long utcNowMs)
+        {
+            MonotonicMillis = monotonicMillis;
+            UtcNowMs = utcNowMs;
+        }
+
+        public long MonotonicMillis { get; }
+
+        public long UtcNowMs { get; }
+    }
+
     internal static class Program
     {
         private static async Task<int> Main(string[] args)
@@ -37,6 +50,36 @@ namespace Mahjong.LocalHost.CrashWorker
                 OwnerInstanceId = "crash-owner",
                 AutoPlay = false
             };
+            if (args.Length >= 6)
+            {
+                options.Environment = new LocalHostEnvironment
+                {
+                    Clock = new FixedWorkerClock(
+                        long.Parse(args[4], System.Globalization.CultureInfo.InvariantCulture),
+                        long.Parse(args[5], System.Globalization.CultureInfo.InvariantCulture))
+                };
+            }
+
+            if (mode == "furiten-read")
+            {
+                // Cold-process evidence: open the existing committed save in a separate OS
+                // process, run the real recovery path, and report the recovered snapshot.
+                await using (LocalTableRuntime readRuntime = await LocalTableRuntime.OpenAsync(
+                    options,
+                    CancellationToken.None))
+                {
+                    TableFuritenSnapshot furiten = readRuntime.ActorForTest.FuritenForHost;
+                    File.WriteAllLines(marker, new[]
+                    {
+                        furiten.RoundId,
+                        readRuntime.ActorForTest.GetRoundStateForHost().Version.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                        furiten.TemporaryMask.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                        furiten.RiichiMask.ToString(System.Globalization.CultureInfo.InvariantCulture)
+                    });
+                }
+
+                return 0;
+            }
 
             if (mode == "settlement")
             {

@@ -1,8 +1,10 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
+using Mahjong.Ai;
 using Mahjong.Contracts;
 using Mahjong.Domain;
 using Mahjong.Domain.Cheat;
@@ -230,6 +232,143 @@ namespace Mahjong.TableRuntime.Tests
             TableFuritenSnapshot furiten = harness.Actor.FuritenForHost;
             Assert.True(furiten.IsTemporary(1));
             Assert.True(furiten.IsRiichi(1));
+        }
+
+        [Fact]
+        public async Task AuthoritativeAiPassUsesTheSameFuritenDerivation()
+        {
+            CancellationToken ct = TestContext.Current.CancellationToken;
+            RoundStateMachine round = SettlementFixture.DoubleRiichiRonWindow();
+            await using N2DurableHarness harness = await N2DurableHarness.CreateAsync(
+                round,
+                configure: options => options.InitialControllers = new Dictionary<int, SeatControllerKind>
+                {
+                    { 0, SeatControllerKind.RemoteHuman },
+                    { 1, SeatControllerKind.Computer },
+                    { 2, SeatControllerKind.Computer },
+                    { 3, SeatControllerKind.Computer }
+                });
+
+            TableOperationResult opened = await harness.Actor.OpenDecisionAsync(
+                new PendingDecision(
+                    new DecisionKey(round.RoundId, 1, "furiten-ai-pass"),
+                    0L,
+                    new[]
+                    {
+                        new LegalActionOption(LegalActionKind.Ron, 1, Tile(22, 3), "ron"),
+                        new LegalActionOption(LegalActionKind.Pass, 1, null, "pass")
+                    },
+                    null),
+                ct);
+            Assert.Equal(TableOperationStatus.Configured, opened.Status);
+
+            TableAiObservationResult captured = await harness.Actor.CaptureAiObservationAsync(1, ct);
+            Assert.True(captured.IsCaptured);
+            LegalActionOption pass = captured.Observation!.LegalActions.First(
+                action => action.Kind == LegalActionKind.Pass);
+            var intent = new CommandIntent(captured.Observation, pass, "furiten-ai", 1);
+            TableTickResult tick = await harness.Actor.CompleteAiAsync(
+                new AiDecision(captured.Observation, intent, 0.5d),
+                ct);
+
+            Assert.Contains(
+                tick.Entries,
+                entry => entry.Seat == 1 &&
+                         entry.Transition != null &&
+                         entry.Transition.Status == TableOperationStatus.Accepted);
+            Assert.True(harness.Actor.FuritenForHost.IsTemporary(1));
+            Assert.True(harness.Actor.FuritenForHost.IsRiichi(1));
+        }
+
+        [Fact]
+        public async Task FailedOrCancelledCommitDoesNotInstallFuriten()
+        {
+            CancellationToken ct = TestContext.Current.CancellationToken;
+            foreach (bool cancel in new[] { false, true })
+            {
+                RoundStateMachine round = SettlementFixture.DoubleRiichiRonWindow();
+                await using N2Harness harness = N2Harness.Create(round);
+                Assert.Equal(
+                    TableOperationStatus.Configured,
+                    (await harness.Actor.OpenDecisionAsync(
+                        new PendingDecision(
+                            new DecisionKey(round.RoundId, 1, "furiten-failed-" + cancel),
+                            0L,
+                            new[]
+                            {
+                                new LegalActionOption(LegalActionKind.Ron, 1, Tile(22, 3), "ron"),
+                                new LegalActionOption(LegalActionKind.Pass, 1, null, "pass")
+                            },
+                            null),
+                        ct)).Status);
+
+                if (cancel)
+                {
+                    harness.CommitPort.CancelNext();
+                }
+                else
+                {
+                    harness.CommitPort.FailNext();
+                }
+
+                TableOperationResult result = await harness.Actor.SubmitAsync(
+                    new TableCommandEnvelope(
+                        RoundCommand.Pass(round.RoundId, 1),
+                        new RequestId("furiten-failed-pass-" + cancel),
+                        new StateVersion(0UL),
+                        new OwnerEpoch(1),
+                        new ControlEpoch(0),
+                        new DecisionId("furiten-failed-" + cancel)),
+                    ct);
+
+                Assert.NotEqual(TableOperationStatus.Accepted, result.Status);
+                Assert.False(harness.Actor.FuritenForHost.IsTemporary(1));
+                Assert.False(harness.Actor.FuritenForHost.IsRiichi(1));
+                TableSnapshot snapshot = await harness.Actor.GetSnapshotAsync(ct);
+                Assert.Equal(0UL, snapshot.StateVersion.Value);
+            }
+        }
+
+        [Fact]
+        public async Task ForeignScopeOrWrongSeatDoesNotWriteFuriten()
+        {
+            CancellationToken ct = TestContext.Current.CancellationToken;
+            RoundStateMachine round = SettlementFixture.DoubleRiichiRonWindow();
+            await using N2DurableHarness harness = await N2DurableHarness.CreateAsync(round);
+
+            TableScopeRecord foreignScope = harness.Scopes.Issue(
+                "foreign-account",
+                TableScopeRole.Player,
+                "foreign-room",
+                0UL,
+                ulong.MaxValue,
+                "foreign-scope");
+            byte[] payload = Encoding.UTF8.GetBytes("foreign-scope-pass");
+            var foreign = new TableCommandEnvelope(
+                RoundCommand.Pass(round.RoundId, 1),
+                new RequestId("furiten-foreign-scope"),
+                new StateVersion(0UL),
+                new OwnerEpoch(1),
+                new ControlEpoch(0),
+                null,
+                0L,
+                foreignScope.ScopeId,
+                "TEST_PASS",
+                TablePayloadSha256.Compute(payload));
+            TableOperationResult foreignResult = await harness.Actor.SubmitAsync(foreign, ct);
+            Assert.Equal(TableRuntimeReasonCode.ScopeRoomMismatch, foreignResult.ReasonCode);
+            Assert.False(harness.Actor.FuritenForHost.IsFuriten(1));
+
+            TableOperationResult wrongSeat = await harness.Actor.SubmitAsync(
+                Envelope(
+                    harness,
+                    RoundCommand.Pass(round.RoundId, 2),
+                    "furiten-wrong-seat",
+                    0UL),
+                ct);
+            Assert.NotEqual(TableOperationStatus.Accepted, wrongSeat.Status);
+            Assert.False(harness.Actor.FuritenForHost.IsFuriten(2));
+            Assert.False(harness.Actor.FuritenForHost.IsFuriten(1));
         }
 
         [Fact]
