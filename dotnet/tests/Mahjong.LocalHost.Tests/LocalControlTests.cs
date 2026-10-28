@@ -7,6 +7,7 @@ using System.Threading.Tasks;
 using Google.Protobuf;
 using Mahjong.Client;
 using Mahjong.Contracts;
+using Mahjong.Domain;
 using Mahjong.TableRuntime;
 using Xunit;
 using Xunit.Sdk;
@@ -19,7 +20,9 @@ using WireEnvelope = Mahjong.Contracts.Wire.Envelope;
 using WireHello = Mahjong.Contracts.Wire.Hello;
 using WireMessageType = Mahjong.Contracts.Wire.MessageType;
 using WireReceipt = Mahjong.Contracts.Wire.Receipt;
+using WireReceiptQuery = Mahjong.Contracts.Wire.ReceiptQuery;
 using WireReceiptStatus = Mahjong.Contracts.Wire.ReceiptStatus;
+using WireLookupStatus = Mahjong.Contracts.Wire.LookupStatus;
 using WireScope = Mahjong.Contracts.Wire.RequestScope;
 
 namespace Mahjong.LocalHost.Tests
@@ -876,6 +879,882 @@ namespace Mahjong.LocalHost.Tests
             Assert.Equal(2L, afterClaim.Seats[0].ControlEpoch);
         }
 
+        [Fact]
+        public async Task DroppedStaleControlRejectionReconcilesFromPersistentOutboxOnReconnect()
+        {
+            await using var harness = new P41Harness();
+            CancellationToken ct = TestContext.Current.CancellationToken;
+            string outboxPath = System.IO.Path.Combine(harness.Root, "stale-rejection-outbox");
+            var outbox = new FileOutboxStore(outboxPath);
+            DropRejectedControlReceiptChannel? dropper = null;
+            await using LiveSession live = await LiveSession.OpenAsync(
+                harness,
+                outbox,
+                ct,
+                inner => dropper = new DropRejectedControlReceiptChannel(inner, 1));
+
+            PlayerSnapshot snapshot = await live.WaitForDecisionAsync(ct);
+            string decisionId = snapshot.PrivateView!.Decision!.DecisionId;
+            harness.Clock.MonotonicMillis += 30_000L;
+            harness.Clock.UtcNowMs += 30_000L;
+            await WaitUntilAsync(
+                () => !string.Equals(live.Runtime.ActorForTest.GetPendingDecisionId(0), decisionId, StringComparison.Ordinal),
+                "the authoritative decision to retire",
+                ct);
+
+            const string requestId = "stale-rejection-reconnect";
+            RequestScopeId scope = live.Scope;
+            CommandSubmission submission = await live.SubmitControlAsync(
+                CommandKind.ReleaseControl,
+                0UL,
+                requestId,
+                new DecisionId(decisionId),
+                ct);
+            Assert.True(submission.Sent);
+            string digest = submission.Command.DigestSha256;
+
+            await WaitUntilAsync(
+                () => dropper != null && dropper.DroppedCount == 1 &&
+                      live.Session.PendingCommands.Count == 1,
+                "the rejected control receipt to be dropped with the outbox still pending",
+                ct);
+            Assert.True(live.Session.PendingCommands[0].NeedsReconciliation);
+
+            // The rejection must be durable before its receipt is published: the
+            // store answers the query with the original reason, status, digest and
+            // control kind, and no LOCAL_CONTROL record is fabricated for it.
+            TableDurableReceipt? durable = await live.Runtime.StoreForTest.TryGetAsync(
+                SeatAccount,
+                scope,
+                new RequestId(requestId),
+                ct);
+            Assert.NotNull(durable);
+            Assert.Equal(ContractReceiptStatus.Rejected, durable!.Receipt.Status);
+            Assert.Equal(ProtocolErrorCode.DecisionMismatch, durable.Receipt.ReasonCode);
+            Assert.Equal("RELEASE_CONTROL", durable.Api);
+            Assert.Null(durable.Receipt.CommandVersion);
+            Assert.Null(durable.Receipt.EventSeq);
+            Assert.Equal(
+                digest,
+                live.Runtime.StoreForTest.GetReceiptDigest(SeatAccount, scope, new RequestId(requestId)));
+            Assert.Null(live.Runtime.StoreForTest.GetControlResult(SeatAccount, scope, new RequestId(requestId)));
+            Assert.Equal(0L, live.Runtime.StoreForTest.ControlVersionForTest);
+            TableControlSnapshot beforeReconnect = await live.ControlSnapshotAsync(ct);
+            Assert.Equal(0L, beforeReconnect.ControlVersion);
+            Assert.Equal(0L, beforeReconnect.Seats[0].ControlEpoch);
+
+            await live.DisconnectAndReopenAsync(harness, ct);
+
+            TableReceiptResolvedEventArgs resolved = await live.WaitResolutionAsync(
+                args => string.Equals(args.Command.RequestId, requestId, StringComparison.Ordinal),
+                "the reconnected stale-rejection receipt lookup",
+                ct);
+            Assert.Equal(OutboxDisposition.Rejected, resolved.Resolution.Disposition);
+            Assert.Equal(ContractReceiptStatus.Rejected, resolved.Resolution.ReceiptStatus);
+            Assert.Equal(ProtocolErrorCode.DecisionMismatch, resolved.Resolution.ReasonCode);
+            Assert.True(resolved.Resolution.FromReceiptLookup, "the reconnect resolution must come from RECEIPT_QUERY");
+            Assert.Equal(CommandKind.ReleaseControl, resolved.Command.Kind);
+            Assert.Equal(digest, resolved.Command.DigestSha256);
+            Assert.Equal(digest, resolved.Resolution.CanonicalPayloadSha256);
+            Assert.Empty(live.Session.PendingCommands);
+
+            var rebound = new FileOutboxStore(outboxPath);
+            Assert.Empty(await rebound.LoadUnresolvedAsync(ct));
+
+            // The durable record is unchanged by the reconciliation: same receipt,
+            // no second record, and zero control movement.
+            TableDurableReceipt? afterReconcile = await live.Runtime.StoreForTest.TryGetAsync(
+                SeatAccount,
+                scope,
+                new RequestId(requestId),
+                ct);
+            Assert.NotNull(afterReconcile);
+            Assert.Equal(durable!.CreatedAtUtcMs, afterReconcile!.CreatedAtUtcMs);
+            Assert.Equal(durable.ExpiresAtUtcMs, afterReconcile.ExpiresAtUtcMs);
+            Assert.Equal(ProtocolErrorCode.DecisionMismatch, afterReconcile.Receipt.ReasonCode);
+            Assert.Equal(0L, live.Runtime.StoreForTest.ControlVersionForTest);
+            TableControlSnapshot afterReconcileControl = await live.ControlSnapshotAsync(ct);
+            Assert.Equal(0L, afterReconcileControl.ControlVersion);
+            Assert.Equal(0L, afterReconcileControl.Seats[0].ControlEpoch);
+        }
+
+        [Fact]
+        public async Task PersistedStaleControlRejectionSurvivesColdProcessRestartUnchanged()
+        {
+            await using var harness = new P41Harness();
+            // Match the crash worker's fixed owner so the save can be read by it.
+            harness.Options.OwnerInstanceId = "crash-owner";
+            CancellationToken ct = TestContext.Current.CancellationToken;
+            string outboxPath = System.IO.Path.Combine(harness.Root, "stale-rejection-cold-outbox");
+            var outbox = new FileOutboxStore(outboxPath);
+            DropRejectedControlReceiptChannel? dropper = null;
+            LiveSession live = await LiveSession.OpenAsync(
+                harness,
+                outbox,
+                ct,
+                inner => dropper = new DropRejectedControlReceiptChannel(inner, 1));
+
+            const string requestId = "stale-rejection-cold";
+            RequestScopeId scope = live.Scope;
+            string digest;
+            ulong evaluated;
+            ulong createdAt;
+            ulong expiresAt;
+            ulong stateVersion;
+            ulong lastEventSeq;
+            try
+            {
+                PlayerSnapshot snapshot = await live.WaitForDecisionAsync(ct);
+                string decisionId = snapshot.PrivateView!.Decision!.DecisionId;
+                harness.Clock.MonotonicMillis += 30_000L;
+                harness.Clock.UtcNowMs += 30_000L;
+                await WaitUntilAsync(
+                    () => !string.Equals(live.Runtime.ActorForTest.GetPendingDecisionId(0), decisionId, StringComparison.Ordinal),
+                    "the authoritative decision to retire before the cold restart",
+                    ct);
+
+                CommandSubmission submission = await live.SubmitControlAsync(
+                    CommandKind.ClaimControl,
+                    0UL,
+                    requestId,
+                    new DecisionId(decisionId),
+                    ct);
+                Assert.True(submission.Sent);
+                digest = submission.Command.DigestSha256;
+                await WaitUntilAsync(
+                    () => dropper != null && dropper.DroppedCount == 1 &&
+                          live.Session.PendingCommands.Count == 1,
+                    "the cold-restart stale rejection receipt to be dropped",
+                    ct);
+
+                TableDurableReceipt? durable = await live.Runtime.StoreForTest.TryGetAsync(
+                    SeatAccount,
+                    scope,
+                    new RequestId(requestId),
+                    ct);
+                Assert.NotNull(durable);
+                Assert.Equal(ContractReceiptStatus.Rejected, durable!.Receipt.Status);
+                Assert.Equal(ProtocolErrorCode.DecisionMismatch, durable.Receipt.ReasonCode);
+                Assert.Equal("CLAIM_CONTROL", durable.Api);
+                evaluated = durable.Receipt.EvaluatedStateVersion.Value;
+                createdAt = durable.CreatedAtUtcMs;
+                expiresAt = durable.ExpiresAtUtcMs;
+                Assert.Equal(0L, live.Runtime.StoreForTest.ControlVersionForTest);
+            }
+            finally
+            {
+                await live.DisposeAsync();
+            }
+
+            // The cold process will read the committed save, so the baseline the
+            // restart must preserve is the durable state on disk (the live
+            // runtime's in-memory view can sit ahead of it) — read it through the
+            // real store exactly like the recovery-boundary evidence does.
+            using (LocalTableStore baseline = await LocalTableStore.OpenAsync(
+                harness.Options,
+                harness.Clock,
+                null,
+                ct))
+            {
+                TableStateRow state = (await baseline.LoadStateAsync(P41Harness.RoomId, ct))!;
+                stateVersion = state.StateVersion.Value;
+                lastEventSeq = state.LastEventSeq.Value;
+                TableDurableReceipt? durableOnDisk = await baseline.TryGetAsync(
+                    SeatAccount,
+                    scope,
+                    new RequestId(requestId),
+                    ct);
+                Assert.NotNull(durableOnDisk);
+                Assert.Equal(createdAt, durableOnDisk!.CreatedAtUtcMs);
+                Assert.Equal(expiresAt, durableOnDisk.ExpiresAtUtcMs);
+                Assert.Equal(evaluated, durableOnDisk.Receipt.EvaluatedStateVersion.Value);
+                Assert.Equal(0L, baseline.ControlVersionForTest);
+            }
+
+            string workerDll = System.IO.Path.Combine(
+                P41Harness.FindRepositoryRoot(),
+                "dotnet",
+                "tests",
+                "Mahjong.LocalHost.CrashWorker",
+                "bin",
+                "Release",
+                "net8.0",
+                "Mahjong.LocalHost.CrashWorker.dll");
+            Assert.True(File.Exists(workerDll), "CrashWorker was not built: " + workerDll);
+            string marker = System.IO.Path.Combine(harness.Root, "stale-rejection-marker.txt");
+            System.Diagnostics.ProcessStartInfo start = CreateWorkerStartInfo(
+                workerDll,
+                harness.Options.SaveDirectory,
+                P41Harness.RoomId,
+                marker,
+                "rejected-receipt-read",
+                harness.Clock.MonotonicMillis.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                harness.Clock.UtcNowMs.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                SeatAccount,
+                scope.Value,
+                requestId);
+            using (System.Diagnostics.Process process = System.Diagnostics.Process.Start(start)!)
+            {
+                using var waitCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                waitCts.CancelAfter(TimeSpan.FromSeconds(45));
+                Task<string> stdout = process.StandardOutput.ReadToEndAsync(waitCts.Token);
+                Task<string> stderr = process.StandardError.ReadToEndAsync(waitCts.Token);
+                try
+                {
+                    await process.WaitForExitAsync(waitCts.Token);
+                    await Task.WhenAll(stdout, stderr);
+                }
+                catch (OperationCanceledException)
+                {
+                    process.Kill(true);
+                    throw new TimeoutException("The cold-process rejected-receipt reader did not exit in time.");
+                }
+
+                Assert.True(
+                    process.ExitCode == 0,
+                    "The cold-process rejected-receipt reader failed: exit=" + process.ExitCode +
+                    " stderr=" + await stderr);
+            }
+
+            string[] lines = File.ReadAllLines(marker);
+            Assert.Contains("mode=rejected-receipt-read", lines);
+            Assert.Contains("receipt_found=1", lines);
+            Assert.Contains("receipt_status=Rejected", lines);
+            Assert.Contains("receipt_reason=" + ProtocolErrorCode.DecisionMismatch, lines);
+            Assert.Contains("receipt_api=CLAIM_CONTROL", lines);
+            Assert.Contains(
+                "receipt_evaluated=" + evaluated.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                lines);
+            Assert.Contains(
+                "receipt_created=" + createdAt.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                lines);
+            Assert.Contains(
+                "receipt_expires=" + expiresAt.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                lines);
+            Assert.Contains("receipt_command_version_present=0", lines);
+            Assert.Contains("receipt_event_seq_present=0", lines);
+            Assert.Contains("digest_hex=" + digest, lines);
+            Assert.Contains("control_record_present=0", lines);
+            Assert.Contains("control_version=0", lines);
+            Assert.Contains(
+                "state_version=" + stateVersion.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                lines);
+            Assert.Contains(
+                "last_event_seq=" + lastEventSeq.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                lines);
+
+            // A second live runtime recovers from the same committed save and the
+            // real reconciliation path resolves the entry from the rejection the
+            // separate process just verified — same reason, same digest, no
+            // second record, and zero control or state movement.
+            var secondOutbox = new FileOutboxStore(outboxPath);
+            await using LiveSession second = await LiveSession.OpenAsync(harness, secondOutbox, ct);
+            Assert.True(
+                second.Runtime.ActorForTest.RecoveryGeneration > 0,
+                "the second runtime must be a cold recovery, not a fresh room");
+            TableReceiptResolvedEventArgs resolved = await second.WaitResolutionAsync(
+                args => string.Equals(args.Command.RequestId, requestId, StringComparison.Ordinal),
+                "the cold-restart stale-rejection receipt lookup",
+                ct);
+            Assert.Equal(OutboxDisposition.Rejected, resolved.Resolution.Disposition);
+            Assert.Equal(ProtocolErrorCode.DecisionMismatch, resolved.Resolution.ReasonCode);
+            Assert.True(resolved.Resolution.FromReceiptLookup);
+            Assert.Equal(CommandKind.ClaimControl, resolved.Command.Kind);
+            Assert.Equal(digest, resolved.Resolution.CanonicalPayloadSha256);
+            Assert.Empty(second.Session.PendingCommands);
+            Assert.Empty(await secondOutbox.LoadUnresolvedAsync(ct));
+
+            TableDurableReceipt? cold = await second.Runtime.StoreForTest.TryGetAsync(
+                SeatAccount,
+                scope,
+                new RequestId(requestId),
+                ct);
+            Assert.NotNull(cold);
+            Assert.Equal(createdAt, cold!.CreatedAtUtcMs);
+            Assert.Equal(expiresAt, cold.ExpiresAtUtcMs);
+            Assert.Equal(0L, second.Runtime.StoreForTest.ControlVersionForTest);
+            TableControlSnapshot control = await second.ControlSnapshotAsync(ct);
+            Assert.Equal(0L, control.ControlVersion);
+            Assert.Equal(0L, control.Seats[0].ControlEpoch);
+        }
+
+        [Fact]
+        public async Task PersistedStaleControlRejectionExactReplayAndConflictKeepSingleRecord()
+        {
+            await using var harness = new P41Harness();
+            CancellationToken ct = TestContext.Current.CancellationToken;
+            await using RawControlConnection client = await RawControlConnection.OpenAsync(harness, ct);
+            RequestScopeId scope = new RequestScopeId(client.ScopeId);
+
+            await WaitUntilAsync(
+                () => !string.IsNullOrEmpty(client.Runtime.ActorForTest.GetPendingDecisionId(0)),
+                "a live decision to retire",
+                ct);
+            string decision = client.Runtime.ActorForTest.GetPendingDecisionId(0)!;
+            harness.Clock.MonotonicMillis += 30_000L;
+            harness.Clock.UtcNowMs += 30_000L;
+            await WaitUntilAsync(
+                () => !string.Equals(client.Runtime.ActorForTest.GetPendingDecisionId(0), decision, StringComparison.Ordinal),
+                "the decision to retire",
+                ct);
+
+            const string requestId = "persisted-rejection-replay";
+            byte[] staleBytes = client.BuildCommandBytes(
+                CommandKind.ReleaseControl,
+                0,
+                requestId,
+                payloadBytes: null,
+                decisionId: decision);
+            WireEnvelope rejected = await client.SendRawAsync(staleBytes, requestId, ct);
+            AssertReceipt(rejected, WireReceiptStatus.Rejected, "the stale-decision ReleaseControl");
+            Assert.Equal(ProtocolErrorCode.DecisionMismatch, rejected.Receipt.ReasonCode);
+            string digest = rejected.Receipt.CanonicalPayloadSha256;
+
+            TableDurableReceipt? first = await client.Store.TryGetAsync(SeatAccount, scope, new RequestId(requestId), ct);
+            Assert.NotNull(first);
+            ulong createdAt = first!.CreatedAtUtcMs;
+
+            // The exact same bytes replay the stored rejection; the record is not
+            // rewritten and no second record appears.
+            WireEnvelope replay = await client.SendRawAsync(staleBytes, requestId, ct);
+            AssertReceipt(replay, WireReceiptStatus.Rejected, "the exact-byte replay of the stale rejection");
+            Assert.Equal(ProtocolErrorCode.DecisionMismatch, replay.Receipt.ReasonCode);
+            Assert.True(replay.Receipt.Replayed, "the replayed rejection must be marked as replayed");
+            Assert.Equal(digest, replay.Receipt.CanonicalPayloadSha256);
+            Assert.Equal(rejected.Receipt.EvaluatedStateVersion, replay.Receipt.EvaluatedStateVersion);
+            TableDurableReceipt? afterReplay = await client.Store.TryGetAsync(SeatAccount, scope, new RequestId(requestId), ct);
+            Assert.NotNull(afterReplay);
+            Assert.Equal(createdAt, afterReplay!.CreatedAtUtcMs);
+
+            // Different bytes under the same request id conflict without touching
+            // the durable record.
+            byte[] conflictingBytes = client.BuildCommandBytes(
+                CommandKind.ReleaseControl,
+                1,
+                requestId,
+                payloadBytes: null,
+                decisionId: decision);
+            WireEnvelope conflict = await client.SendRawAsync(conflictingBytes, requestId, ct);
+            AssertReceipt(conflict, WireReceiptStatus.Rejected, "the different-byte replay");
+            Assert.Equal(ProtocolErrorCode.RequestIdConflict, conflict.Receipt.ReasonCode);
+            TableDurableReceipt? afterConflict = await client.Store.TryGetAsync(SeatAccount, scope, new RequestId(requestId), ct);
+            Assert.NotNull(afterConflict);
+            Assert.Equal(createdAt, afterConflict!.CreatedAtUtcMs);
+            Assert.Equal(ProtocolErrorCode.DecisionMismatch, afterConflict.Receipt.ReasonCode);
+
+            // A different control kind under the same request id conflicts too.
+            byte[] otherKindBytes = client.BuildCommandBytes(
+                CommandKind.ClaimControl,
+                0,
+                requestId,
+                payloadBytes: null,
+                decisionId: decision);
+            WireEnvelope otherKind = await client.SendRawAsync(otherKindBytes, requestId, ct);
+            AssertReceipt(otherKind, WireReceiptStatus.Rejected, "the different-kind replay");
+            Assert.Equal(ProtocolErrorCode.RequestIdConflict, otherKind.Receipt.ReasonCode);
+            TableDurableReceipt? afterOtherKind = await client.Store.TryGetAsync(SeatAccount, scope, new RequestId(requestId), ct);
+            Assert.NotNull(afterOtherKind);
+            Assert.Equal(createdAt, afterOtherKind!.CreatedAtUtcMs);
+            Assert.Equal("RELEASE_CONTROL", afterOtherKind.Api);
+
+            Assert.Equal(0L, client.Store.ControlVersionForTest);
+            TableControlSnapshot control = await client.ControlSnapshotAsync(ct);
+            Assert.Equal(0L, control.ControlVersion);
+            Assert.Equal(0L, control.Seats[0].ControlEpoch);
+        }
+
+        [Fact]
+        public async Task AppliedCommandReplayAfterDecisionRetirementReplaysInsteadOfStaleRejection()
+        {
+            await using var harness = new P41Harness();
+            CancellationToken ct = TestContext.Current.CancellationToken;
+            await using RawControlConnection client = await RawControlConnection.OpenAsync(harness, ct);
+            RequestScopeId scope = new RequestScopeId(client.ScopeId);
+
+            await WaitUntilAsync(
+                () => !string.IsNullOrEmpty(client.Runtime.ActorForTest.GetPendingDecisionId(0)),
+                "a live decision before the applied command",
+                ct);
+            string decision = client.Runtime.ActorForTest.GetPendingDecisionId(0)!;
+
+            RoundStateMachine round = client.Runtime.ActorForTest.GetRoundStateForHost();
+            TileId handTile = round.Tiles.TilesInZone(TileZone.Hand, 0)[0];
+            BusinessPayload actionPayload = CommandPayloadFactory.SubmitAction(
+                round.RoundId,
+                "raw-applied",
+                0UL,
+                ProtocolActionType.DiscardTile,
+                tileIds: new[] { (uint)handTile.Value });
+            byte[] actionBytes = actionPayload.CopyBytes();
+
+            const string requestId = "applied-then-retired";
+            byte[] originalBytes = client.BuildCommandBytes(
+                CommandKind.SubmitAction,
+                0,
+                requestId,
+                actionBytes,
+                decisionId: null);
+            WireEnvelope original = await client.SendRawAsync(originalBytes, requestId, ct);
+            AssertReceipt(original, WireReceiptStatus.Applied, "the original discard with a live decision");
+            Assert.False(original.Receipt.Replayed);
+
+            TableDurableReceipt? applied = await client.Store.TryGetAsync(SeatAccount, scope, new RequestId(requestId), ct);
+            Assert.NotNull(applied);
+            Assert.Equal(ContractReceiptStatus.Applied, applied!.Receipt.Status);
+            Assert.Equal("SUBMIT_ACTION", applied.Api);
+            ulong createdAt = applied.CreatedAtUtcMs;
+            TableStateRow appliedState = (await client.Store.LoadStateAsync(P41Harness.RoomId, ct))!;
+
+            harness.Clock.MonotonicMillis += 30_000L;
+            harness.Clock.UtcNowMs += 30_000L;
+            await WaitUntilAsync(
+                () => !string.Equals(client.Runtime.ActorForTest.GetPendingDecisionId(0), decision, StringComparison.Ordinal),
+                "the decision to retire after the applied command",
+                ct);
+
+            // The exact same request replayed after its decision retired must replay
+            // the committed APPLIED receipt; it must never be re-judged as a stale
+            // decision rejection just because the early check runs first.
+            byte[] replayBytes = client.BuildCommandBytes(
+                CommandKind.SubmitAction,
+                0,
+                requestId,
+                actionBytes,
+                decisionId: decision);
+            WireEnvelope replay = await client.SendRawAsync(replayBytes, requestId, ct);
+            AssertReceipt(replay, WireReceiptStatus.Applied, "the exact replay after decision retirement");
+            Assert.True(replay.Receipt.Replayed, "the applied replay must be marked as replayed");
+            Assert.Equal(original.Receipt.CanonicalPayloadSha256, replay.Receipt.CanonicalPayloadSha256);
+            Assert.Equal(original.Receipt.EvaluatedStateVersion, replay.Receipt.EvaluatedStateVersion);
+            TableDurableReceipt? afterReplay = await client.Store.TryGetAsync(SeatAccount, scope, new RequestId(requestId), ct);
+            Assert.NotNull(afterReplay);
+            Assert.Equal(ContractReceiptStatus.Applied, afterReplay!.Receipt.Status);
+            Assert.Equal(createdAt, afterReplay.CreatedAtUtcMs);
+            TableStateRow replayedState = (await client.Store.LoadStateAsync(P41Harness.RoomId, ct))!;
+            Assert.Equal(appliedState.StateVersion.Value, replayedState.StateVersion.Value);
+            Assert.Equal(appliedState.LastEventSeq.Value, replayedState.LastEventSeq.Value);
+
+            // A genuinely new normal command carrying the retired decision id is
+            // still rejected deterministically — and that rejection is durable now.
+            RoundStateMachine freshRound = client.Runtime.ActorForTest.GetRoundStateForHost();
+            TileId nextTile = freshRound.Tiles.TilesInZone(TileZone.Hand, 0)[0];
+            if (nextTile == handTile)
+            {
+                IReadOnlyList<TileId> hand = freshRound.Tiles.TilesInZone(TileZone.Hand, 0);
+                nextTile = hand.Count > 1 ? hand[1] : hand[0];
+            }
+
+            BusinessPayload stalePayload = CommandPayloadFactory.SubmitAction(
+                freshRound.RoundId,
+                "raw-stale",
+                0UL,
+                ProtocolActionType.DiscardTile,
+                tileIds: new[] { (uint)nextTile.Value });
+            const string staleRequestId = "stale-normal-new";
+            byte[] staleBytes = client.BuildCommandBytes(
+                CommandKind.SubmitAction,
+                0,
+                staleRequestId,
+                stalePayload.CopyBytes(),
+                decisionId: decision);
+            WireEnvelope stale = await client.SendRawAsync(staleBytes, staleRequestId, ct);
+            AssertReceipt(stale, WireReceiptStatus.Rejected, "the new normal command with a retired decision");
+            Assert.Equal(ProtocolErrorCode.DecisionMismatch, stale.Receipt.ReasonCode);
+            TableDurableReceipt? staleDurable = await client.Store.TryGetAsync(
+                SeatAccount,
+                scope,
+                new RequestId(staleRequestId),
+                ct);
+            Assert.NotNull(staleDurable);
+            Assert.Equal(ContractReceiptStatus.Rejected, staleDurable!.Receipt.Status);
+            Assert.Equal(ProtocolErrorCode.DecisionMismatch, staleDurable.Receipt.ReasonCode);
+            Assert.Equal("SUBMIT_ACTION", staleDurable.Api);
+            Assert.Equal(
+                stale.Receipt.CanonicalPayloadSha256,
+                client.Store.GetReceiptDigest(SeatAccount, scope, new RequestId(staleRequestId)));
+            TableStateRow afterStale = (await client.Store.LoadStateAsync(P41Harness.RoomId, ct))!;
+            Assert.Equal(replayedState.StateVersion.Value, afterStale.StateVersion.Value);
+            Assert.Equal(replayedState.LastEventSeq.Value, afterStale.LastEventSeq.Value);
+            Assert.Equal(0L, client.Store.ControlVersionForTest);
+        }
+
+        [Fact]
+        public async Task StaleNormalCommandRejectionReconcilesFromPersistentOutboxOnReconnect()
+        {
+            await using var harness = new P41Harness();
+            CancellationToken ct = TestContext.Current.CancellationToken;
+            string outboxPath = System.IO.Path.Combine(harness.Root, "stale-normal-rejection-outbox");
+            var outbox = new FileOutboxStore(outboxPath);
+            DropRejectedControlReceiptChannel? dropper = null;
+            await using LiveSession live = await LiveSession.OpenAsync(
+                harness,
+                outbox,
+                ct,
+                inner => dropper = new DropRejectedControlReceiptChannel(inner, 1));
+
+            PlayerSnapshot snapshot = await live.WaitForDecisionAsync(ct);
+            string decisionId = snapshot.PrivateView!.Decision!.DecisionId;
+            harness.Clock.MonotonicMillis += 30_000L;
+            harness.Clock.UtcNowMs += 30_000L;
+            await WaitUntilAsync(
+                () => !string.Equals(live.Runtime.ActorForTest.GetPendingDecisionId(0), decisionId, StringComparison.Ordinal),
+                "the authoritative decision to retire",
+                ct);
+
+            // The decision deadline itself may advance the authoritative state;
+            // the rejection under test must not move it any further.
+            TableStateRow baseline = (await live.Runtime.StoreForTest.LoadStateAsync(P41Harness.RoomId, ct))!;
+
+            const string requestId = "stale-normal-rejection";
+            RequestScopeId scope = live.Scope;
+            CommandSubmission submission = await live.SubmitActionAsync(requestId, new DecisionId(decisionId), ct);
+            Assert.True(submission.Sent);
+            string digest = submission.Command.DigestSha256;
+
+            await WaitUntilAsync(
+                () => dropper != null && dropper.DroppedCount == 1 &&
+                      live.Session.PendingCommands.Count == 1,
+                "the rejected normal-command receipt to be dropped with the outbox still pending",
+                ct);
+
+            TableDurableReceipt? durable = await live.Runtime.StoreForTest.TryGetAsync(
+                SeatAccount,
+                scope,
+                new RequestId(requestId),
+                ct);
+            Assert.NotNull(durable);
+            Assert.Equal(ContractReceiptStatus.Rejected, durable!.Receipt.Status);
+            Assert.Equal(ProtocolErrorCode.DecisionMismatch, durable.Receipt.ReasonCode);
+            Assert.Equal("SUBMIT_ACTION", durable.Api);
+            Assert.Equal(
+                digest,
+                live.Runtime.StoreForTest.GetReceiptDigest(SeatAccount, scope, new RequestId(requestId)));
+            TableStateRow afterReject = (await live.Runtime.StoreForTest.LoadStateAsync(P41Harness.RoomId, ct))!;
+            Assert.Equal(baseline.StateVersion.Value, afterReject.StateVersion.Value);
+            Assert.Equal(baseline.LastEventSeq.Value, afterReject.LastEventSeq.Value);
+
+            await live.DisconnectAndReopenAsync(harness, ct);
+
+            TableReceiptResolvedEventArgs resolved = await live.WaitResolutionAsync(
+                args => string.Equals(args.Command.RequestId, requestId, StringComparison.Ordinal),
+                "the reconnected stale normal-command receipt lookup",
+                ct);
+            Assert.Equal(OutboxDisposition.Rejected, resolved.Resolution.Disposition);
+            Assert.Equal(ProtocolErrorCode.DecisionMismatch, resolved.Resolution.ReasonCode);
+            Assert.True(resolved.Resolution.FromReceiptLookup);
+            Assert.Equal(CommandKind.SubmitAction, resolved.Command.Kind);
+            Assert.Equal(digest, resolved.Resolution.CanonicalPayloadSha256);
+            Assert.Empty(live.Session.PendingCommands);
+            Assert.Empty(await new FileOutboxStore(outboxPath).LoadUnresolvedAsync(ct));
+        }
+
+        [Fact]
+        public async Task ExpiredScopeStaleDecisionStaysTransportOnlyWithoutDurableRecord()
+        {
+            await using var harness = new P41Harness();
+            CancellationToken ct = TestContext.Current.CancellationToken;
+            await using RawControlConnection client = await RawControlConnection.OpenAsync(harness, ct);
+            RequestScopeId scope = new RequestScopeId(client.ScopeId);
+
+            await WaitUntilAsync(
+                () => !string.IsNullOrEmpty(client.Runtime.ActorForTest.GetPendingDecisionId(0)),
+                "a live decision to retire",
+                ct);
+            string decision = client.Runtime.ActorForTest.GetPendingDecisionId(0)!;
+
+            // One clock advance expires the issued scope (24h) and retires the
+            // decision (authoritative deadline). The authorization boundary runs
+            // before the stale-decision rejection, so an expired scope can never
+            // borrow the durable rejection path.
+            harness.Clock.MonotonicMillis += (long)TimeSpan.FromHours(24).TotalMilliseconds + 30_000L;
+            harness.Clock.UtcNowMs += (long)TimeSpan.FromHours(24).TotalMilliseconds + 30_000L;
+            await WaitUntilAsync(
+                () => !string.Equals(client.Runtime.ActorForTest.GetPendingDecisionId(0), decision, StringComparison.Ordinal),
+                "the decision to retire with the scope expiry",
+                ct);
+
+            const string requestId = "expired-stale-claim";
+            byte[] expiredBytes = client.BuildCommandBytes(
+                CommandKind.ClaimControl,
+                0,
+                requestId,
+                payloadBytes: null,
+                decisionId: decision);
+            WireEnvelope rejected = await client.SendRawAsync(expiredBytes, requestId, ct);
+            AssertReceipt(rejected, WireReceiptStatus.Rejected, "the expired-scope stale-decision ClaimControl");
+            Assert.Equal(ProtocolErrorCode.RequestScopeExpired, rejected.Receipt.ReasonCode);
+
+            // Transport-only: no durable receipt, no digest, no control movement,
+            // and the receipt query finds nothing.
+            Assert.Null(await client.Store.TryGetAsync(SeatAccount, scope, new RequestId(requestId), ct));
+            Assert.Null(client.Store.GetReceiptDigest(SeatAccount, scope, new RequestId(requestId)));
+            Assert.Null(client.Store.GetControlResult(SeatAccount, scope, new RequestId(requestId)));
+            Assert.Equal(0L, client.Store.ControlVersionForTest);
+            WireEnvelope lookup = await client.SendReceiptQueryAsync(
+                scope.Value,
+                requestId,
+                "expired-scope-lookup",
+                ct);
+            Assert.Equal(WireLookupStatus.NotFound, lookup.ReceiptLookup!.Status);
+        }
+
+        [Fact]
+        public async Task ConcurrentStaleControlRejectionsPersistExactlyOncePerRequest()
+        {
+            await using var harness = new P41Harness();
+            CancellationToken ct = TestContext.Current.CancellationToken;
+            await using RawControlConnection client = await RawControlConnection.OpenAsync(harness, ct);
+            RequestScopeId scope = new RequestScopeId(client.ScopeId);
+
+            await WaitUntilAsync(
+                () => !string.IsNullOrEmpty(client.Runtime.ActorForTest.GetPendingDecisionId(0)),
+                "a live decision to retire",
+                ct);
+            string decision = client.Runtime.ActorForTest.GetPendingDecisionId(0)!;
+            harness.Clock.MonotonicMillis += 30_000L;
+            harness.Clock.UtcNowMs += 30_000L;
+            await WaitUntilAsync(
+                () => !string.Equals(client.Runtime.ActorForTest.GetPendingDecisionId(0), decision, StringComparison.Ordinal),
+                "the decision to retire",
+                ct);
+
+            byte[] claimBytes = client.BuildCommandBytes(
+                CommandKind.ClaimControl,
+                0,
+                "concurrent-stale-claim",
+                payloadBytes: null,
+                decisionId: decision);
+            byte[] releaseBytes = client.BuildCommandBytes(
+                CommandKind.ReleaseControl,
+                0,
+                "concurrent-stale-release",
+                payloadBytes: null,
+                decisionId: decision);
+            await Task.WhenAll(
+                client.Channel.SendAsync(claimBytes, ct),
+                client.Channel.SendAsync(releaseBytes, ct));
+            WireEnvelope first = await client.ReceiveCommandResultAsync(null, ct);
+            WireEnvelope second = await client.ReceiveCommandResultAsync(null, ct);
+            foreach (WireEnvelope receipt in new[] { first, second })
+            {
+                Assert.Equal(WireReceiptStatus.Rejected, receipt.Receipt.Status);
+                Assert.Equal(ProtocolErrorCode.DecisionMismatch, receipt.Receipt.ReasonCode);
+                Assert.False(receipt.Receipt.Replayed);
+            }
+
+            TableDurableReceipt? claimDurable = await client.Store.TryGetAsync(
+                SeatAccount,
+                scope,
+                new RequestId("concurrent-stale-claim"),
+                ct);
+            TableDurableReceipt? releaseDurable = await client.Store.TryGetAsync(
+                SeatAccount,
+                scope,
+                new RequestId("concurrent-stale-release"),
+                ct);
+            Assert.NotNull(claimDurable);
+            Assert.NotNull(releaseDurable);
+            Assert.Equal("CLAIM_CONTROL", claimDurable!.Api);
+            Assert.Equal("RELEASE_CONTROL", releaseDurable!.Api);
+            Assert.NotEqual(claimDurable.PayloadSha256, releaseDurable.PayloadSha256);
+
+            // Two concurrent identical submissions of one stale request race the
+            // durable commit: exactly one record is written and the loser replays.
+            const string sameRequestId = "concurrent-stale-same";
+            byte[] sameBytes = client.BuildCommandBytes(
+                CommandKind.ReleaseControl,
+                0,
+                sameRequestId,
+                payloadBytes: null,
+                decisionId: decision);
+            await Task.WhenAll(
+                client.Channel.SendAsync(sameBytes, ct),
+                client.Channel.SendAsync(sameBytes, ct));
+            WireEnvelope sameFirst = await client.ReceiveCommandResultAsync(sameRequestId, ct);
+            WireEnvelope sameSecond = await client.ReceiveCommandResultAsync(sameRequestId, ct);
+            foreach (WireEnvelope receipt in new[] { sameFirst, sameSecond })
+            {
+                Assert.Equal(WireReceiptStatus.Rejected, receipt.Receipt.Status);
+                Assert.Equal(ProtocolErrorCode.DecisionMismatch, receipt.Receipt.ReasonCode);
+            }
+
+            Assert.Contains(
+                new[] { sameFirst, sameSecond },
+                receipt => receipt.Receipt.Replayed);
+            TableDurableReceipt? sameDurable = await client.Store.TryGetAsync(
+                SeatAccount,
+                scope,
+                new RequestId(sameRequestId),
+                ct);
+            Assert.NotNull(sameDurable);
+            Assert.Equal(sameFirst.Receipt.EvaluatedStateVersion, sameSecond.Receipt.EvaluatedStateVersion);
+            Assert.Equal(0L, client.Store.ControlVersionForTest);
+            TableControlSnapshot control = await client.ControlSnapshotAsync(ct);
+            Assert.Equal(0L, control.ControlVersion);
+            Assert.Equal(0L, control.Seats[0].ControlEpoch);
+        }
+
+        [Fact]
+        public async Task RejectedReceiptCommitFailureLeavesOutcomeUnresolved()
+        {
+            await using var harness = new P41Harness();
+            CancellationToken ct = TestContext.Current.CancellationToken;
+            var faulting = new FaultingFileSystem();
+            harness.Options.FileSystemForTest = faulting;
+            string outboxPath = System.IO.Path.Combine(harness.Root, "stale-rejection-fault-outbox");
+            var outbox = new FileOutboxStore(outboxPath);
+            LiveSession live = await LiveSession.OpenAsync(harness, outbox, ct);
+            RequestScopeId scope = live.Scope;
+            const string requestId = "write-fail-rejection";
+            try
+            {
+                PlayerSnapshot snapshot = await live.WaitForDecisionAsync(ct);
+                string decisionId = snapshot.PrivateView!.Decision!.DecisionId;
+                harness.Clock.MonotonicMillis += 30_000L;
+                harness.Clock.UtcNowMs += 30_000L;
+                await WaitUntilAsync(
+                    () => !string.Equals(live.Runtime.ActorForTest.GetPendingDecisionId(0), decisionId, StringComparison.Ordinal),
+                    "the authoritative decision to retire",
+                    ct);
+
+                // The durable commit fails before its atomic install: the runtime
+                // must not publish a rejection that claims durability. The client
+                // observes a transport error and keeps the entry for explicit
+                // reconciliation.
+                // A committed save already exists, so the atomic install goes
+                // through Replace; arm both hooks to cover either install path.
+                faulting.BeforeMove = _ => new IOException("injected rejection write failure");
+                faulting.BeforeReplace = _ => new IOException("injected rejection write failure");
+                CommandSubmission submission = await live.SubmitControlAsync(
+                    CommandKind.ReleaseControl,
+                    0UL,
+                    requestId,
+                    new DecisionId(decisionId),
+                    ct);
+                Assert.True(submission.Sent);
+                await WaitUntilAsync(
+                    () => faulting.BeforeMoveHits + faulting.BeforeReplaceHits > 0,
+                    "the injected rejection write failure",
+                    ct);
+                // Disarm immediately so the injected fault cannot leak into an
+                // unrelated autopilot write while the assertions run.
+                faulting.BeforeMove = null;
+                faulting.BeforeReplace = null;
+
+                // The failed commit publishes an internal error; the client
+                // session keeps the entry handed-but-unresolved for explicit
+                // reconciliation.
+                await WaitUntilAsync(
+                    () => live.Session.PendingCommands.Count == 1 &&
+                          live.Session.PendingCommands[0].NeedsReconciliation,
+                    "the client entry to stay unresolved after the write failure",
+                    ct);
+
+                // The receipt must not be durably readable. A store that has
+                // since observed an unknown-outcome write refuses to claim
+                // absence from its stale in-memory view, so accept either the
+                // plain null or the explicit unknown-outcome exception.
+                async Task<TableDurableReceipt?> ReadReceiptOrThrowAsync()
+                {
+                    try
+                    {
+                        return await live.Runtime.StoreForTest.TryGetAsync(SeatAccount, scope, new RequestId(requestId), ct);
+                    }
+                    catch (LocalTableException exception)
+                    {
+                        Assert.Contains("the outcome remains unknown", exception.Message);
+                        return null;
+                    }
+                }
+
+                Assert.Null(await ReadReceiptOrThrowAsync());
+                Assert.Null(live.Runtime.StoreForTest.GetReceiptDigest(SeatAccount, scope, new RequestId(requestId)));
+                Assert.Null(live.Runtime.StoreForTest.GetControlResult(SeatAccount, scope, new RequestId(requestId)));
+                Assert.Equal(0L, live.Runtime.StoreForTest.ControlVersionForTest);
+                Assert.Single(live.Session.PendingCommands);
+                Assert.True(live.Session.PendingCommands[0].NeedsReconciliation);
+                Assert.Null(live.Session.PendingCommands[0].LastLookup);
+            }
+            finally
+            {
+                faulting.BeforeMove = null;
+                faulting.BeforeReplace = null;
+                await live.DisposeAsync();
+            }
+
+            // A recovered runtime answers the receipt query with NotFound — the
+            // failed commit never pretended to be durable — and the entry stays
+            // unresolved for explicit reconciliation.
+            var reopened = new FileOutboxStore(outboxPath);
+            await using LiveSession second = await LiveSession.OpenAsync(harness, reopened, ct);
+            for (int i = 0; i < 500 && second.Session.PendingCommands[0].LastLookup == null; i++)
+            {
+                await Task.Delay(10, ct);
+            }
+
+            Assert.Equal(ReceiptLookupStatus.NotFound, second.Session.PendingCommands[0].LastLookup);
+            Assert.Single(second.Session.PendingCommands);
+            Assert.Null(await second.Runtime.StoreForTest.TryGetAsync(SeatAccount, scope, new RequestId(requestId), ct));
+            Assert.Equal(0L, second.Runtime.StoreForTest.ControlVersionForTest);
+        }
+
+        [Fact]
+        public async Task PersistedRejectionIsScopedToItsAccountAndScope()
+        {
+            await using var harness = new P41Harness();
+            CancellationToken ct = TestContext.Current.CancellationToken;
+            await using RawControlConnection client = await RawControlConnection.OpenAsync(harness, ct);
+            RequestScopeId scope = new RequestScopeId(client.ScopeId);
+
+            await WaitUntilAsync(
+                () => !string.IsNullOrEmpty(client.Runtime.ActorForTest.GetPendingDecisionId(0)),
+                "a live decision to retire",
+                ct);
+            string decision = client.Runtime.ActorForTest.GetPendingDecisionId(0)!;
+            harness.Clock.MonotonicMillis += 30_000L;
+            harness.Clock.UtcNowMs += 30_000L;
+            await WaitUntilAsync(
+                () => !string.Equals(client.Runtime.ActorForTest.GetPendingDecisionId(0), decision, StringComparison.Ordinal),
+                "the decision to retire",
+                ct);
+
+            const string requestId = "scoped-rejection";
+            byte[] staleBytes = client.BuildCommandBytes(
+                CommandKind.ReleaseControl,
+                0,
+                requestId,
+                payloadBytes: null,
+                decisionId: decision);
+            WireEnvelope rejected = await client.SendRawAsync(staleBytes, requestId, ct);
+            AssertReceipt(rejected, WireReceiptStatus.Rejected, "the scoped stale-decision ReleaseControl");
+
+            // The issuing account and scope read the rejection back.
+            Assert.NotNull(await client.Store.TryGetAsync(SeatAccount, scope, new RequestId(requestId), ct));
+            WireEnvelope ownScope = await client.SendReceiptQueryAsync(
+                scope.Value,
+                requestId,
+                "own-scope-lookup",
+                ct);
+            Assert.Equal(WireLookupStatus.Found, ownScope.ReceiptLookup!.Status);
+            Assert.Equal(WireReceiptStatus.Rejected, ownScope.ReceiptLookup!.Receipt!.Status);
+            Assert.Equal(ProtocolErrorCode.DecisionMismatch, ownScope.ReceiptLookup!.Receipt!.ReasonCode);
+            Assert.Equal(rejected.Receipt.CanonicalPayloadSha256, ownScope.ReceiptLookup!.CanonicalPayloadSha256);
+
+            // A different scope or a different request id finds nothing.
+            WireEnvelope foreignScope = await client.SendReceiptQueryAsync(
+                "foreign-scope-0000000000000000000000000000000",
+                requestId,
+                "foreign-scope-lookup",
+                ct);
+            Assert.Equal(WireLookupStatus.NotFound, foreignScope.ReceiptLookup!.Status);
+            WireEnvelope foreignRequest = await client.SendReceiptQueryAsync(
+                scope.Value,
+                "never-submitted-request",
+                "foreign-request-lookup",
+                ct);
+            Assert.Equal(WireLookupStatus.NotFound, foreignRequest.ReceiptLookup!.Status);
+        }
+
         private static string SeatAccount => "local-" + P41Harness.RoomId + "-seat0";
 
         private static async Task WaitReadyAsync(TableSession session, CancellationToken ct)
@@ -1095,6 +1974,33 @@ namespace Mahjong.LocalHost.Tests
                     new RoundId(baseline.RoundId),
                     decisionId,
                     new ControlEpoch(epoch));
+                CommandSubmission submission = await Session.SubmitAsync(command, ct);
+                Assert.True(submission.Sent);
+                return submission;
+            }
+
+            public async Task<CommandSubmission> SubmitActionAsync(
+                string requestId,
+                DecisionId? decisionId,
+                CancellationToken ct)
+            {
+                PlayerSnapshot baseline = Session.PlayerSnapshot ??
+                    throw new InvalidOperationException("The session has no player baseline.");
+                BusinessPayload payload = CommandPayloadFactory.SubmitAction(
+                    baseline.RoundId,
+                    decisionId?.Value ?? "local-direct",
+                    0UL,
+                    ProtocolActionType.DiscardTile,
+                    tileIds: new[] { baseline.PrivateView!.ClosedTiles[0] });
+                var command = new ProtocolCommand(
+                    CommandKind.SubmitAction,
+                    payload,
+                    new RequestId(requestId),
+                    Session.Binding!.Scope.ScopeId,
+                    new StateVersion(baseline.StateVersion),
+                    new RoundId(baseline.RoundId),
+                    decisionId,
+                    new ControlEpoch(0));
                 CommandSubmission submission = await Session.SubmitAsync(command, ct);
                 Assert.True(submission.Sent);
                 return submission;
@@ -1353,6 +2259,39 @@ namespace Mahjong.LocalHost.Tests
                 return await SendRawAsync(bytes, requestId, ct);
             }
 
+            public async Task<WireEnvelope> SendReceiptQueryAsync(
+                string scopeId,
+                string requestId,
+                string correlation,
+                CancellationToken ct)
+            {
+                var envelope = new WireEnvelope
+                {
+                    ProtocolMajor = ProtocolConstants.Major,
+                    ProtocolMinor = ProtocolConstants.Minor,
+                    RulesetVersion = ProtocolConstants.RulesetVersion,
+                    ProjectionVersion = ProtocolConstants.ProjectionVersion,
+                    MessageType = WireMessageType.ReceiptQuery,
+                    SessionId = Welcome.SessionId,
+                    RoomId = P41Harness.RoomId,
+                    SeatId = Welcome.SeatId,
+                    BindingEpoch = Welcome.BindingEpoch,
+                    CorrelationId = correlation,
+                    ReceiptQuery = new WireReceiptQuery
+                    {
+                        RequestScopeId = scopeId,
+                        RequestId = requestId
+                    }
+                };
+                await Channel.SendAsync(WireCodec.Encode(envelope), ct);
+                return await ReceiveUntilAsync(
+                    Channel,
+                    candidate => candidate.ReceiptLookup != null &&
+                                 string.Equals(candidate.CorrelationId, correlation, StringComparison.Ordinal),
+                    "the receipt lookup for " + requestId,
+                    ct);
+            }
+
             public Task<WireEnvelope> ReceiveCommandResultAsync(string? requestId, CancellationToken ct)
             {
                 return ReceiveUntilAsync(
@@ -1445,6 +2384,55 @@ namespace Mahjong.LocalHost.Tests
                     if (_remaining > 0 &&
                         envelope.Receipt != null &&
                         string.Equals(envelope.Receipt.ReasonCode, ControlReason, StringComparison.Ordinal))
+                    {
+                        _remaining--;
+                        DroppedCount++;
+                        continue;
+                    }
+
+                    return bytes;
+                }
+            }
+        }
+
+        /// <summary>
+        /// Drops the first DECISION_MISMATCH rejection receipts so the outbox entry
+        /// can only be resolved by a durable receipt query.
+        /// </summary>
+        private sealed class DropRejectedControlReceiptChannel : ITableChannel
+        {
+            private readonly ITableChannel _inner;
+            private int _remaining;
+
+            public DropRejectedControlReceiptChannel(ITableChannel inner, int dropCount)
+            {
+                _inner = inner;
+                _remaining = dropCount;
+            }
+
+            public int DroppedCount { get; private set; }
+
+            public bool IsOpen => _inner.IsOpen;
+
+            public Task OpenAsync(TableChannelConnectRequest request, CancellationToken cancellationToken) =>
+                _inner.OpenAsync(request, cancellationToken);
+
+            public Task SendAsync(ReadOnlyMemory<byte> wireEnvelope, CancellationToken cancellationToken) =>
+                _inner.SendAsync(wireEnvelope, cancellationToken);
+
+            public Task CloseAsync(TableChannelCloseReason reason, CancellationToken cancellationToken) =>
+                _inner.CloseAsync(reason, cancellationToken);
+
+            public async Task<ReadOnlyMemory<byte>> ReceiveAsync(CancellationToken cancellationToken)
+            {
+                while (true)
+                {
+                    ReadOnlyMemory<byte> bytes = await _inner.ReceiveAsync(cancellationToken);
+                    WireEnvelope envelope = WireEnvelope.Parser.ParseFrom(bytes.ToArray());
+                    if (_remaining > 0 &&
+                        envelope.Receipt != null &&
+                        envelope.Receipt.Status == WireReceiptStatus.Rejected &&
+                        string.Equals(envelope.Receipt.ReasonCode, ProtocolErrorCode.DecisionMismatch, StringComparison.Ordinal))
                     {
                         _remaining--;
                         DroppedCount++;

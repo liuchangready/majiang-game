@@ -308,6 +308,83 @@ namespace Mahjong.LocalHost.CrashWorker
                 return 0;
             }
 
+            if (mode == "rejected-receipt-read")
+            {
+                // Cold-process evidence for the durable early-exit rejection: a
+                // separate OS process opens the committed save through the real
+                // store and reports the persisted rejection receipt, its canonical
+                // digest, the control record absence, and the untouched durable
+                // state/event versions. The parent test compares these lines
+                // against its own pre-restart store reading.
+                if (args.Length < 9)
+                {
+                    Console.Error.WriteLine(
+                        "rejected-receipt-read requires <account> <scopeId> <requestId> after the clock.");
+                    return 2;
+                }
+
+                string rejectionAccount = args[6];
+                string rejectionScope = args[7];
+                string rejectionRequest = args[8];
+                ITableClock rejectionClock = options.Environment?.ResolveClock() ?? SystemTableClock.Instance;
+                using (LocalTableStore rejectionStore = await LocalTableStore.OpenAsync(
+                    options,
+                    rejectionClock,
+                    null,
+                    CancellationToken.None))
+                {
+                    TableDurableReceipt? rejection = await rejectionStore.TryGetAsync(
+                        rejectionAccount,
+                        new RequestScopeId(rejectionScope),
+                        new RequestId(rejectionRequest),
+                        CancellationToken.None);
+                    if (rejection == null)
+                    {
+                        Console.Error.WriteLine("rejected-receipt-read receipt not found");
+                        return 5;
+                    }
+
+                    TableStateRow? rejectionState = await rejectionStore.LoadStateAsync(
+                        roomId,
+                        CancellationToken.None);
+                    LocalControlRecord? rejectionControl = rejectionStore.GetControlResult(
+                        rejectionAccount,
+                        new RequestScopeId(rejectionScope),
+                        new RequestId(rejectionRequest));
+                    string? rejectionDigest = rejectionStore.GetReceiptDigest(
+                        rejectionAccount,
+                        new RequestScopeId(rejectionScope),
+                        new RequestId(rejectionRequest));
+                    var rejectionLines = new List<string>
+                    {
+                        "mode=rejected-receipt-read",
+                        "receipt_found=1",
+                        "receipt_status=" + rejection.Receipt.Status,
+                        "receipt_reason=" + rejection.Receipt.ReasonCode,
+                        "receipt_api=" + rejection.Api,
+                        "receipt_evaluated=" + rejection.Receipt.EvaluatedStateVersion.Value.ToString(
+                            System.Globalization.CultureInfo.InvariantCulture),
+                        "receipt_created=" + rejection.CreatedAtUtcMs.ToString(
+                            System.Globalization.CultureInfo.InvariantCulture),
+                        "receipt_expires=" + rejection.ExpiresAtUtcMs.ToString(
+                            System.Globalization.CultureInfo.InvariantCulture),
+                        "receipt_command_version_present=" + (rejection.Receipt.CommandVersion.HasValue ? "1" : "0"),
+                        "receipt_event_seq_present=" + (rejection.Receipt.EventSeq.HasValue ? "1" : "0"),
+                        "digest_hex=" + (rejectionDigest ?? string.Empty),
+                        "control_record_present=" + (rejectionControl == null ? "0" : "1"),
+                        "control_version=" + rejectionStore.ControlVersionForTest.ToString(
+                            System.Globalization.CultureInfo.InvariantCulture),
+                        "state_version=" + (rejectionState?.StateVersion.Value ?? 0UL).ToString(
+                            System.Globalization.CultureInfo.InvariantCulture),
+                        "last_event_seq=" + (rejectionState?.LastEventSeq.Value ?? 0UL).ToString(
+                            System.Globalization.CultureInfo.InvariantCulture)
+                    };
+                    File.WriteAllLines(marker, rejectionLines);
+                }
+
+                return 0;
+            }
+
             if (mode == "settlement")
             {
                 var clock = SystemTableClock.Instance;
