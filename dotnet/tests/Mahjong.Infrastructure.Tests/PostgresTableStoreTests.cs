@@ -347,43 +347,17 @@ namespace Mahjong.Infrastructure.Tests
                 new EventSeq(0),
                 "req-expiry-race");
 
-            await using var blocker = new NpgsqlConnection(PostgresTableTestEnvironment.AdminConnectionString);
-            await blocker.OpenAsync(TestContext.Current.CancellationToken);
-            await using NpgsqlTransaction hold = await blocker.BeginTransactionAsync(TestContext.Current.CancellationToken);
-            await using (var lockCommand = new NpgsqlCommand(
-                "SELECT scope_id FROM table_store.request_scope WHERE scope_id = @scope FOR UPDATE",
-                blocker,
-                hold))
-            {
-                lockCommand.Parameters.AddWithValue("scope", fixture.Scope.ScopeId.Value);
-                Assert.Equal(fixture.Scope.ScopeId.Value, await lockCommand.ExecuteScalarAsync(TestContext.Current.CancellationToken));
-            }
-
-            Task<TableDurableCommitResult> commit = fixture.Store.CommitAsync(
-                candidate.Request,
-                TestContext.Current.CancellationToken).AsTask();
-            await WaitForRowLockWaitAsync();
-            Assert.False(commit.IsCompleted);
-
-            // Cross the expiry while the committing transaction is provably blocked
-            // on the scope row. Both timestamps use the database clock; the row is
-            // expired before the lock is released, so the resumed commit must use
-            // the database clock and reject.
-            await using (var expire = new NpgsqlCommand(
-                @"UPDATE table_store.request_scope
-                     SET issued_at_utc_ms = (EXTRACT(EPOCH FROM clock_timestamp()) * 1000)::bigint - 5000,
-                         expires_at_utc_ms = (EXTRACT(EPOCH FROM clock_timestamp()) * 1000)::bigint - 1000
-                   WHERE scope_id = @scope",
-                blocker,
-                hold))
-            {
-                expire.Parameters.AddWithValue("scope", fixture.Scope.ScopeId.Value);
-                Assert.Equal(1, await expire.ExecuteNonQueryAsync(TestContext.Current.CancellationToken));
-            }
-
-            Assert.False(commit.IsCompleted);
-            await hold.CommitAsync(TestContext.Current.CancellationToken);
-            TableDurableCommitResult result = await commit;
+            // The helper observes the blocked commit backend's xact_start, writes
+            // an expiry strictly between that transaction start and the database
+            // clock at release, and releases only after the clock crossed it. A
+            // transaction-start/cached-clock implementation still sees a valid
+            // scope at xact_start and accepts; the real clock_timestamp
+            // implementation rejects at the resumed boundary.
+            TableDurableCommitResult result =
+                await P52ScopeBoundary.CommitAfterExpiryCrossesTransactionStartAsync(
+                    fixture,
+                    candidate,
+                    TestContext.Current.CancellationToken);
             Assert.Equal(TableCommitDisposition.ScopeRejected, result.Disposition);
             Assert.Equal(ProtocolErrorCode.RequestScopeExpired, result.ReasonCode);
             await AssertNoSideEffectsAsync();

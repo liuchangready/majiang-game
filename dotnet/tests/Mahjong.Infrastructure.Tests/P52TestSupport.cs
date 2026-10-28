@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Globalization;
 using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading;
@@ -117,6 +118,215 @@ namespace Mahjong.Infrastructure.Tests
         }
     }
 
+    /// <summary>
+    /// Real database-clock scope boundary helper. It identifies the blocked P52
+    /// transaction, derives an expiry strictly between that transaction's
+    /// xact_start and the database clock observed just before releasing the row
+    /// lock, and only then releases it. A transaction-start/cached clock mutant
+    /// therefore sees a scope that is still valid at xact_start and accepts it,
+    /// while the real clock_timestamp implementation rejects it.
+    /// </summary>
+    internal static class P52ScopeBoundary
+    {
+        internal static async Task<TableDurableCommitResult> CommitAfterExpiryCrossesTransactionStartAsync(
+            P52Fixture fixture,
+            DirectCommitCandidate candidate,
+            CancellationToken cancellationToken)
+        {
+            await using var blocker = new NpgsqlConnection(PostgresTableTestEnvironment.AdminConnectionString);
+            await blocker.OpenAsync(cancellationToken).ConfigureAwait(false);
+            await using NpgsqlTransaction hold = await blocker.BeginTransactionAsync(cancellationToken)
+                .ConfigureAwait(false);
+            await using (var lockCommand = new NpgsqlCommand(
+                "SELECT scope_id FROM table_store.request_scope WHERE scope_id = @scope FOR UPDATE",
+                blocker,
+                hold))
+            {
+                lockCommand.Parameters.AddWithValue("scope", fixture.Scope.ScopeId.Value);
+                object? locked = await lockCommand.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
+                if (!string.Equals(locked as string, fixture.Scope.ScopeId.Value, StringComparison.Ordinal))
+                {
+                    throw new InvalidOperationException("The fixture scope row was not locked.");
+                }
+            }
+
+            Task<TableDurableCommitResult> commit = fixture.Store.CommitAsync(
+                candidate.Request,
+                cancellationToken).AsTask();
+            await WaitForRowLockWaitAsync(cancellationToken).ConfigureAwait(false);
+            if (commit.IsCompleted)
+            {
+                throw new InvalidOperationException("The commit completed before the scope row lock was observed.");
+            }
+
+            ScopeBoundaryObservation observation = await ObserveBlockedCommitAsync(cancellationToken)
+                .ConfigureAwait(false);
+            long issued = checked((long)fixture.Scope.IssuedAtUtcMs);
+            long transactionStart = observation.TransactionStartUtcMs;
+            long expiry = Math.Max(transactionStart + 1L, checked(issued + 1L));
+            if (expiry <= transactionStart)
+            {
+                throw new InvalidOperationException(
+                    "Could not place the expiry after the blocked transaction start: txnStart=" +
+                    transactionStart + "; expiry=" + expiry);
+            }
+
+            if (issued >= expiry)
+            {
+                throw new InvalidOperationException(
+                    "The scope issue time is not before the constructed expiry: issued=" +
+                    issued + "; expiry=" + expiry);
+            }
+
+            await using (var expire = new NpgsqlCommand(
+                @"UPDATE table_store.request_scope
+                     SET expires_at_utc_ms = @expiry
+                   WHERE scope_id = @scope",
+                blocker,
+                hold))
+            {
+                expire.Parameters.AddWithValue("expiry", expiry);
+                expire.Parameters.AddWithValue("scope", fixture.Scope.ScopeId.Value);
+                int updated = await expire.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+                if (updated != 1)
+                {
+                    throw new InvalidOperationException("The scope expiry update did not affect exactly one row.");
+                }
+            }
+
+            long releaseDbNow = await DbNowMsAsync(cancellationToken).ConfigureAwait(false);
+            DateTimeOffset deadline = DateTimeOffset.UtcNow.AddSeconds(5);
+            while (releaseDbNow < expiry && DateTimeOffset.UtcNow < deadline)
+            {
+                await Task.Delay(1, cancellationToken).ConfigureAwait(false);
+                releaseDbNow = await DbNowMsAsync(cancellationToken).ConfigureAwait(false);
+            }
+
+            if (releaseDbNow < expiry)
+            {
+                throw new InvalidOperationException(
+                    "The database clock did not cross the constructed expiry within 5s: expiry=" +
+                    expiry + "; releaseDbNow=" + releaseDbNow);
+            }
+
+            if (transactionStart >= expiry || expiry > releaseDbNow)
+            {
+                throw new InvalidOperationException(
+                    "The expiry is not strictly between the blocked transaction start and the release clock: " +
+                    "txnStart=" + transactionStart + "; expiry=" + expiry + "; releaseDbNow=" + releaseDbNow);
+            }
+
+            PostgresTableTestEnvironment.AppendEvidence(
+                "scope-expiry-boundary-" + DateTime.UtcNow.ToString("yyyyMMddTHHmmssfffZ") + ".txt",
+                "pid=" + observation.Pid + Environment.NewLine +
+                "issuedUtcMs=" + issued + Environment.NewLine +
+                "transactionStartUtcMs=" + transactionStart + Environment.NewLine +
+                "expiryUtcMs=" + expiry + Environment.NewLine +
+                "observedDbNowUtcMs=" + observation.DbNowUtcMs + Environment.NewLine +
+                "releaseDbNowUtcMs=" + releaseDbNow + Environment.NewLine);
+
+            if (commit.IsCompleted)
+            {
+                throw new InvalidOperationException("The commit completed while the expiry was being written.");
+            }
+
+            await hold.CommitAsync(cancellationToken).ConfigureAwait(false);
+            return await commit.ConfigureAwait(false);
+        }
+
+        private sealed class ScopeBoundaryObservation
+        {
+            internal ScopeBoundaryObservation(int pid, long transactionStartUtcMs, long dbNowUtcMs)
+            {
+                Pid = pid;
+                TransactionStartUtcMs = transactionStartUtcMs;
+                DbNowUtcMs = dbNowUtcMs;
+            }
+
+            internal int Pid { get; }
+
+            internal long TransactionStartUtcMs { get; }
+
+            internal long DbNowUtcMs { get; }
+        }
+
+        private static async Task<ScopeBoundaryObservation> ObserveBlockedCommitAsync(
+            CancellationToken cancellationToken)
+        {
+            await using var connection = new NpgsqlConnection(PostgresTableTestEnvironment.AdminConnectionString);
+            await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
+            await using var command = new NpgsqlCommand(
+                @"SELECT pid,
+                         (EXTRACT(EPOCH FROM xact_start) * 1000)::bigint,
+                         (EXTRACT(EPOCH FROM clock_timestamp()) * 1000)::bigint
+                    FROM pg_stat_activity
+                   WHERE application_name = 'mahjong-table-p52'
+                     AND wait_event_type = 'Lock'
+                     AND query LIKE '%request_scope%'
+                     AND xact_start IS NOT NULL",
+                connection);
+            await using NpgsqlDataReader reader = await command.ExecuteReaderAsync(cancellationToken)
+                .ConfigureAwait(false);
+            var rows = new List<ScopeBoundaryObservation>();
+            while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+            {
+                rows.Add(new ScopeBoundaryObservation(
+                    reader.GetInt32(0),
+                    reader.GetInt64(1),
+                    reader.GetInt64(2)));
+            }
+
+            if (rows.Count != 1)
+            {
+                throw new InvalidOperationException(
+                    "Expected exactly one blocked P52 scope transaction, observed " + rows.Count + ".");
+            }
+
+            return rows[0];
+        }
+
+        private static async Task<long> DbNowMsAsync(CancellationToken cancellationToken)
+        {
+            object? value = await PostgresTableTestEnvironment.ScalarAsync(
+                "SELECT (EXTRACT(EPOCH FROM clock_timestamp()) * 1000)::bigint",
+                cancellationToken).ConfigureAwait(false);
+            if (value == null || value is DBNull)
+            {
+                throw new InvalidOperationException("The database clock returned no value.");
+            }
+
+            return Convert.ToInt64(value, CultureInfo.InvariantCulture);
+        }
+
+        private static async Task WaitForRowLockWaitAsync(CancellationToken cancellationToken)
+        {
+            DateTimeOffset deadline = DateTimeOffset.UtcNow.AddSeconds(5);
+            while (DateTimeOffset.UtcNow < deadline)
+            {
+                long waiting = await PostgresTableTestEnvironment.CountAsync(
+                    @"SELECT count(*) FROM pg_stat_activity
+                       WHERE application_name = 'mahjong-table-p52'
+                         AND wait_event_type = 'Lock'
+                         AND query LIKE '%request_scope%'",
+                    cancellationToken).ConfigureAwait(false);
+                if (waiting == 1)
+                {
+                    return;
+                }
+
+                if (waiting > 1)
+                {
+                    throw new InvalidOperationException(
+                        "Expected one blocked P52 scope transaction, observed " + waiting + ".");
+                }
+
+                await Task.Delay(25, cancellationToken).ConfigureAwait(false);
+            }
+
+            throw new InvalidOperationException("The committing transaction never blocked on the scope row lock.");
+        }
+    }
+
     internal sealed class ManualTableClock : ITableClock
     {
         internal long Now { get; set; }
@@ -177,7 +387,9 @@ namespace Mahjong.Infrastructure.Tests
             TableCheckpoint initialCheckpoint,
             TableScopeRecord scope,
             TableLeaseSnapshot lease,
-            string owner)
+            string owner,
+            ulong scopePreparationCompletedAtUtcMs,
+            TimeSpan scopePreparationElapsed)
         {
             Store = store;
             Clock = clock;
@@ -186,6 +398,8 @@ namespace Mahjong.Infrastructure.Tests
             Scope = scope;
             Lease = lease;
             OwnerInstance = owner;
+            ScopePreparationCompletedAtUtcMs = scopePreparationCompletedAtUtcMs;
+            ScopePreparationElapsed = scopePreparationElapsed;
         }
 
         internal PostgresTableStore Store { get; }
@@ -201,6 +415,12 @@ namespace Mahjong.Infrastructure.Tests
         internal TableLeaseSnapshot Lease { get; }
 
         internal string OwnerInstance { get; }
+
+        /// <summary>The database/wall clock instant immediately after room preparation.</summary>
+        internal ulong ScopePreparationCompletedAtUtcMs { get; }
+
+        /// <summary>The measured room-preparation delay, independent of later scheduling.</summary>
+        internal TimeSpan ScopePreparationElapsed { get; }
 
         internal static RoundStateMachine Dealt(string roundId)
         {
@@ -280,21 +500,16 @@ namespace Mahjong.Infrastructure.Tests
             TableCheckpoint? initialCheckpoint = null,
             RoundStateMachine? initialRound = null,
             TimeSpan scopePreparationDelay = default,
-            TimeSpan? scopeLifetime = null)
+            TimeSpan afterScopeIssueDelay = default)
         {
-            if (scopeExpiresUtcMs.HasValue && scopeLifetime.HasValue)
-            {
-                throw new ArgumentException("Pass either an absolute scope expiry or a relative lifetime, not both.");
-            }
-
-            if (scopeLifetime.HasValue && scopeLifetime.Value <= TimeSpan.Zero)
-            {
-                throw new ArgumentOutOfRangeException(nameof(scopeLifetime), "The scope lifetime must be positive.");
-            }
-
             if (scopePreparationDelay < TimeSpan.Zero)
             {
                 throw new ArgumentOutOfRangeException(nameof(scopePreparationDelay), "The preparation delay cannot be negative.");
+            }
+
+            if (afterScopeIssueDelay < TimeSpan.Zero)
+            {
+                throw new ArgumentOutOfRangeException(nameof(afterScopeIssueDelay), "The post-issue delay cannot be negative.");
             }
 
             var elapsed = Stopwatch.StartNew();
@@ -315,22 +530,27 @@ namespace Mahjong.Infrastructure.Tests
                 await store.CreateRoomAsync(checkpoint, cancellationToken).ConfigureAwait(false);
 
                 // A caller may deliberately model a slow deployment/room preparation.
-                // The scope clock starts only after that preparation completes, so a
-                // slow prepare can never consume a short scope lifetime.
+                // The scope clock starts only after that preparation completes. The
+                // completion timestamp is exposed so tests can assert the causal
+                // order without bounding later legitimate scheduling.
+                TimeSpan preparationElapsed = TimeSpan.Zero;
                 if (scopePreparationDelay > TimeSpan.Zero)
                 {
                     phase = "scope-preparation";
+                    var preparationWatch = Stopwatch.StartNew();
                     await Task.Delay(scopePreparationDelay, cancellationToken).ConfigureAwait(false);
+                    preparationWatch.Stop();
+                    preparationElapsed = preparationWatch.Elapsed;
                 }
 
+                ulong preparationCompletedAtUtcMs = checked(
+                    (ulong)DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
                 phase = "issue-scope";
                 // Scope issue/expiry/revocation are database-clock lifecycle checks,
                 // not durable recovery timestamps. Keep them on wall time so an
                 // injected-clock origin can never place issue time after revocation.
                 long issued = scopeIssuedUtcMs ?? DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-                TimeSpan lifetime = scopeLifetime ?? TimeSpan.FromHours(1);
-                long expires = scopeExpiresUtcMs ??
-                    checked(issued + checked((long)lifetime.TotalMilliseconds));
+                long expires = scopeExpiresUtcMs ?? checked(issued + 3_600_000L);
                 if (expires <= issued)
                 {
                     throw new ArgumentOutOfRangeException(
@@ -347,6 +567,12 @@ namespace Mahjong.Infrastructure.Tests
                         checked((ulong)issued),
                         checked((ulong)expires)),
                     cancellationToken).ConfigureAwait(false);
+                if (afterScopeIssueDelay > TimeSpan.Zero)
+                {
+                    phase = "post-scope-issue";
+                    await Task.Delay(afterScopeIssueDelay, cancellationToken).ConfigureAwait(false);
+                }
+
                 TableLeaseSnapshot? lease = null;
                 if (acquireLease)
                 {
@@ -364,7 +590,16 @@ namespace Mahjong.Infrastructure.Tests
                     lease = acquired.Lease;
                 }
 
-                return new P52Fixture(store, clock, round, checkpoint, scope, lease!, owner);
+                return new P52Fixture(
+                    store,
+                    clock,
+                    round,
+                    checkpoint,
+                    scope,
+                    lease!,
+                    owner,
+                    preparationCompletedAtUtcMs,
+                    preparationElapsed);
             }
             catch (Exception exception)
             {

@@ -21,24 +21,41 @@ namespace Mahjong.Infrastructure.Tests
         public async Task DelayedScopePreparation_EstablishesScopeAfterPreparationAndCommits()
         {
             TimeSpan preparation = TimeSpan.FromSeconds(2);
-            TimeSpan lifetime = TimeSpan.FromSeconds(3);
+            TimeSpan afterIssue = TimeSpan.FromMilliseconds(1_100);
             var elapsed = Stopwatch.StartNew();
             await using P52Fixture fixture = await P52Fixture.CreateAsync(
                 scopePreparationDelay: preparation,
-                scopeLifetime: lifetime);
+                afterScopeIssueDelay: afterIssue);
             elapsed.Stop();
 
             Assert.True(
-                elapsed.Elapsed >= preparation,
-                "The fixture did not actually delay preparation: elapsedMs=" +
+                fixture.ScopePreparationElapsed >= preparation,
+                "The fixture did not actually delay preparation: preparationMs=" +
+                ((long)fixture.ScopePreparationElapsed.TotalMilliseconds));
+            Assert.True(
+                elapsed.Elapsed >= preparation + afterIssue,
+                "The post-issue scheduling delay was not exercised: elapsedMs=" +
                 ((long)elapsed.Elapsed.TotalMilliseconds));
 
+            // Causal order, not a speed bound: scope issue must happen after the
+            // preparation completion instant. A mutant that captures the issue
+            // time before preparation necessarily violates this assertion.
+            Assert.True(
+                fixture.Scope.IssuedAtUtcMs >= fixture.ScopePreparationCompletedAtUtcMs,
+                "The scope was issued before preparation completed: issued=" +
+                fixture.Scope.IssuedAtUtcMs + "; prepared=" +
+                fixture.ScopePreparationCompletedAtUtcMs);
+
+            // The post-issue delay makes the scope older than one second. With a
+            // valid default lifetime the commit must still be accepted; this is
+            // deliberately not an upper-bound machine-speed assertion.
             long wallNow = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-            long issuedAgeMs = wallNow - checked((long)fixture.Scope.IssuedAtUtcMs);
-            Assert.InRange(issuedAgeMs, 0L, 1_000L);
-            Assert.Equal(
-                (ulong)lifetime.TotalMilliseconds,
-                fixture.Scope.ExpiresAtUtcMs - fixture.Scope.IssuedAtUtcMs);
+            Assert.True(
+                wallNow - checked((long)fixture.Scope.IssuedAtUtcMs) >= 1_000L,
+                "The post-issue delay did not actually elapse after scope issue.");
+            Assert.True(
+                fixture.Scope.ExpiresAtUtcMs > fixture.Scope.IssuedAtUtcMs,
+                "The default fixture scope is not valid.");
 
             DirectCommitCandidate candidate = fixture.BuildCommit(
                 fixture.Round,
@@ -73,13 +90,11 @@ namespace Mahjong.Infrastructure.Tests
                 new EventSeq(0),
                 "req-delayed-expiry");
 
-            TableDurableCommitResult result = await CommitWhileScopeLockedAsync(
-                fixture,
-                candidate,
-                @"UPDATE table_store.request_scope
-                     SET issued_at_utc_ms = (EXTRACT(EPOCH FROM clock_timestamp()) * 1000)::bigint - 5000,
-                         expires_at_utc_ms = (EXTRACT(EPOCH FROM clock_timestamp()) * 1000)::bigint - 1000
-                   WHERE scope_id = @scope");
+            TableDurableCommitResult result =
+                await P52ScopeBoundary.CommitAfterExpiryCrossesTransactionStartAsync(
+                    fixture,
+                    candidate,
+                    TestContext.Current.CancellationToken);
             Assert.Equal(TableCommitDisposition.ScopeRejected, result.Disposition);
             Assert.Equal(ProtocolErrorCode.RequestScopeExpired, result.ReasonCode);
             await AssertNoSideEffectsAsync();
