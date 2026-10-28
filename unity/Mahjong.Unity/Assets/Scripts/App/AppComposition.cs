@@ -44,6 +44,16 @@ namespace Mahjong.Unity.App
             }
         }
 
+        /// <summary>
+        /// Whether the wired channel factory can back a real local table session.
+        /// The P4.2-core production default (<see cref="UnavailableLocalTableChannelFactory"/>)
+        /// reports false; the P4.2-B activation wires <c>LocalTableChannelFactory</c> over the
+        /// accepted pure .NET Mahjong.LocalHost and reports true. Explicitly injected test
+        /// factories also report true so the UI state machine and lifecycle error paths can be
+        /// exercised; that is never production evidence of a real host.
+        /// </summary>
+        public bool SupportsLocalStart => !(ChannelFactory is UnavailableLocalTableChannelFactory);
+
         public AppComposition(
             AppConfig config,
             MainThreadDispatcher dispatcher,

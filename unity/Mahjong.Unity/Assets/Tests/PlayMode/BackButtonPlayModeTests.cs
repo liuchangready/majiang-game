@@ -19,6 +19,9 @@ namespace Mahjong.Unity.Tests.PlayMode
             public void OpenLobby() { Plays++; }
             public void BackToMenu() { }
             public void RequestQuit() { }
+            public bool IsLocalGameStartAvailable => false;
+            public System.Threading.Tasks.Task<LocalGameStartResult> StartLocalGameAsync() =>
+                System.Threading.Tasks.Task.FromResult(LocalGameStartResult.Failed(LocalGameStartResult.LocalHostUnavailableCode));
         }
 
         [UnityTest]

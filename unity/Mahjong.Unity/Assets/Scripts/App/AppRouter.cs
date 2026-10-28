@@ -1,5 +1,6 @@
 #nullable enable
 using System;
+using System.Threading;
 using System.Threading.Tasks;
 using Mahjong.Unity.UI;
 using UnityEngine;
@@ -51,6 +52,58 @@ namespace Mahjong.Unity.App
         public void BackToMenu()
         {
             _ = ReturnToMenuAsync();
+        }
+
+        public bool IsLocalGameStartAvailable => _composition.SupportsLocalStart;
+
+        public async Task<LocalGameStartResult> StartLocalGameAsync()
+        {
+            if (_isTransitioning)
+            {
+                Debug.LogWarning("NAV_BUSY: StartLocalGameAsync rejected, transition already in progress");
+                return LocalGameStartResult.Busy();
+            }
+
+            SceneId sceneAtStart = _currentScene;
+            try
+            {
+                await _composition.OpenLocalSessionAsync(CancellationToken.None);
+            }
+            catch (LocalTableUnavailableException)
+            {
+                return LocalGameStartResult.Failed(LocalGameStartResult.LocalHostUnavailableCode);
+            }
+            catch (OperationCanceledException)
+            {
+                // Shutdown/back/cancel aborted the open; never surfaced as an error.
+                return LocalGameStartResult.Cancelled();
+            }
+            catch (Exception)
+            {
+                // Quarantined composition, lease conflicts, corrupt saves and other host
+                // failures surface as one stable generic code here. They are never mapped
+                // to LOCAL_HOST_UNAVAILABLE and never clear saves or silently open a new
+                // room. The P4.2-B activation patch refines this mapping with the accepted
+                // LocalTableErrorKind values once the real host is integrable.
+                return LocalGameStartResult.Failed(LocalGameStartResult.LocalHostStartFailedCode);
+            }
+
+            if (_currentScene != sceneAtStart)
+            {
+                // The user left the lobby while the open was in flight. Do not yank the UI
+                // to Table late; release the already-opened session so no host, actor or
+                // file lock is orphaned.
+                await _composition.ShutdownAsync("OPEN_ABANDONED");
+                return LocalGameStartResult.Cancelled();
+            }
+
+            if (!await LoadAsync(SceneId.Table))
+            {
+                await _composition.ShutdownAsync("TABLE_SCENE_LOAD_FAILED");
+                return LocalGameStartResult.Failed(LocalGameStartResult.TableSceneUnavailableCode);
+            }
+
+            return LocalGameStartResult.Started();
         }
 
         public async Task<bool> LoadAsync(SceneId sceneId)
