@@ -362,9 +362,28 @@ namespace Mahjong.LocalHost
                 innerState.ControlVersion != save.CurrentState.ControlVersion ||
                 innerState.TimingVersion != save.CurrentState.TimingVersion)
             {
+                var operationParts = new List<string>(save.Operations.Count);
+                for (int i = 0; i < save.Operations.Count; i++)
+                {
+                    LocalDurableOperation operation = save.Operations[i];
+                    operationParts.Add(
+                        operation.Kind + "@" +
+                        operation.ExpectedStateVersion.ToString(CultureInfo.InvariantCulture) +
+                        "/t" + operation.ExpectedTimingVersion.ToString(CultureInfo.InvariantCulture));
+                }
+
+                string operations = string.Join(",", operationParts);
                 throw new LocalTableException(
                     LocalTableErrorKind.CorruptState,
-                    "Replayed store state does not match the persisted state row.");
+                    "Replayed store state does not match the persisted state row. " +
+                    "inner=" + DescribeState(innerState) +
+                    " saved=" + DescribeState(save.CurrentState) +
+                    " checkpoint(v=" + checkpoint.StateVersion.Value.ToString(CultureInfo.InvariantCulture) +
+                    ",seq=" + checkpoint.LastEventSeq.Value.ToString(CultureInfo.InvariantCulture) +
+                    ",ctrl=" + checkpoint.ControlVersion.ToString(CultureInfo.InvariantCulture) +
+                    ",timing=" + checkpoint.TimingVersion.ToString(CultureInfo.InvariantCulture) + ")" +
+                    " ops=" + save.Operations.Count.ToString(CultureInfo.InvariantCulture) +
+                    "[" + operations + "]");
             }
             _replayClock.SetOverrideUtc(null);
             ulong finishNow = (ulong)Math.Max(0L, _clock.UtcNowMs);
@@ -387,6 +406,24 @@ namespace Mahjong.LocalHost
             {
                 _leaseExpiresUtcMs = renewed.Lease.ExpiresAtUtcMs;
             }
+        }
+
+        private static string DescribeState(TableStateRow? state)
+        {
+            return state == null
+                ? "<null>"
+                : "(v=" + state.StateVersion.Value.ToString(CultureInfo.InvariantCulture) +
+                  ",seq=" + state.LastEventSeq.Value.ToString(CultureInfo.InvariantCulture) +
+                  ",ctrl=" + state.ControlVersion.ToString(CultureInfo.InvariantCulture) +
+                  ",timing=" + state.TimingVersion.ToString(CultureInfo.InvariantCulture) + ")";
+        }
+
+        private static string DescribeState(LocalSaveState state)
+        {
+            return "(v=" + state.StateVersion.Value.ToString(CultureInfo.InvariantCulture) +
+                   ",seq=" + state.LastEventSeq.Value.ToString(CultureInfo.InvariantCulture) +
+                   ",ctrl=" + state.ControlVersion.ToString(CultureInfo.InvariantCulture) +
+                   ",timing=" + state.TimingVersion.ToString(CultureInfo.InvariantCulture) + ")";
         }
 
         private async ValueTask<TableDurableCommitResult> ReplayOperationAsync(
@@ -1391,20 +1428,32 @@ namespace Mahjong.LocalHost
 
         private void ApplyCommitToSave(LocalSave save, TableDurableCommitRequest request)
         {
-            save.CurrentState.StateVersion = request.CommandVersion;
-            save.CurrentState.LastEventSeq = request.Events.Count == 0
-                ? save.CurrentState.LastEventSeq
-                : request.Events[request.Events.Count - 1].Seq;
+            // A rejected receipt commit has no events and no next state. Its CommandVersion is
+            // still defined as expected+1 by the contract, but it must not advance the persisted
+            // state row; doing so made cold hydration compare a rejected receipt against an
+            // advanced save row.
             if (request.Events.Count > 0)
             {
+                save.CurrentState.StateVersion = request.CommandVersion;
+                save.CurrentState.LastEventSeq = request.Events[request.Events.Count - 1].Seq;
                 save.CurrentState.StateFingerprint = request.NextStateFingerprint;
                 save.CurrentState.StateHash = TablePayloadSha256.Compute(request.NextStatePayload!);
                 save.EventJournals.AddRange(request.Events);
             }
 
-            save.CurrentState.TimingVersion = request.TimingVersion;
+            // A rejected receipt commit carries no timing snapshot and timingVersion 0. It must
+            // not regress the store's timing version, because AppendTiming operations committed
+            // after it are replayed independently during hydration.
             if (request.Timing != null)
             {
+                if (request.TimingVersion < 1)
+                {
+                    throw new LocalTableException(
+                        LocalTableErrorKind.CorruptState,
+                        "A commit with a timing snapshot must carry a positive timing version.");
+                }
+
+                save.CurrentState.TimingVersion = request.TimingVersion;
                 byte[] timing = TableTimingCheckpointCodec.Encode(request.Timing);
                 save.LatestTimingPayload = timing;
                 save.LatestTimingPayloadSha256 = TablePayloadSha256.Compute(timing);

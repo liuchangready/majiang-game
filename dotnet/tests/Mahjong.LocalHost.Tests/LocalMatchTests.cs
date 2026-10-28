@@ -16,6 +16,7 @@ using WireGamePhase = Mahjong.Contracts.Wire.GamePhase;
 
 namespace Mahjong.LocalHost.Tests
 {
+    [Collection("LocalHostSerial")]
     public sealed class LocalMatchTests
     {
         [Fact]

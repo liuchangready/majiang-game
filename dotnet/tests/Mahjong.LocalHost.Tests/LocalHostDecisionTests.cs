@@ -7,6 +7,7 @@ using Xunit;
 
 namespace Mahjong.LocalHost.Tests
 {
+    [Collection("LocalHostSerial")]
     public sealed class LocalHostDecisionTests
     {
         [Fact]

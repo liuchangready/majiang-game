@@ -1082,6 +1082,79 @@ namespace Mahjong.LocalHost.Tests
         }
 
         [Fact]
+        public async Task RejectedReceiptCommitDoesNotRegressStateOrTimingVersion()
+        {
+            await using var harness = new P41Harness();
+            var fs = new FaultingFileSystem();
+            harness.Options.FileSystemForTest = fs;
+            CancellationToken ct = TestContext.Current.CancellationToken;
+
+            using (LocalTableStore store = await OpenFreshStoreAsync(harness, fs, ct))
+            {
+                await store.AcquireAsync(P41Harness.RoomId, "owner-local", TimeSpan.FromMinutes(5), ct);
+                TableCheckpoint checkpoint = (await store.LoadCheckpointAsync(P41Harness.RoomId, ct))!;
+                TableTimingCheckpoint timing = TableTimingCheckpointCodec.Decode(checkpoint.TimingPayload);
+                var append = new TableTimingAppendRequest(
+                    checkpoint.RoomId,
+                    "owner-local",
+                    store.LeaseEpoch,
+                    checkpoint.StateVersion,
+                    checkpoint.ControlVersion,
+                    1L,
+                    AdvanceTiming(timing));
+                Assert.True((await store.AppendTimingAsync(append, ct)).IsCommitted);
+
+                TableScopeRecord scope = store.IssueScope(
+                    "acct-rejected",
+                    TableScopeRole.Player,
+                    P41Harness.RoomId,
+                    1_700_000_000_000UL,
+                    1_700_000_600_000UL,
+                    "scope-rejected");
+                byte[] payload = new byte[] { 1, 2, 3 };
+                var receipt = new TableDurableReceipt(
+                    scope.AccountId,
+                    scope.ScopeId,
+                    new RequestId("rejected-receipt"),
+                    "TEST_REJECT",
+                    TablePayloadSha256.Compute(payload),
+                    Receipt.Rejected(new StateVersion(0), "TEST_REJECTED"),
+                    "rejected",
+                    1_700_000_000_000UL,
+                    1_700_000_600_000UL);
+                var request = new TableDurableCommitRequest(
+                    P41Harness.RoomId,
+                    "owner-local",
+                    store.LeaseEpoch,
+                    new StateVersion(0),
+                    receipt,
+                    internalCommand: false,
+                    events: null,
+                    commandJournal: null,
+                    outbox: null,
+                    checkpoint: null,
+                    nextStatePayload: null,
+                    nextStateFingerprint: 0,
+                    terminal: false,
+                    timing: null,
+                    timingVersion: 0);
+                TableDurableCommitResult committed = await store.CommitAsync(request, ct);
+                Assert.True(committed.IsCommitted, committed.ReasonCode + " " + committed.Detail);
+
+                TableStateRow after = (await store.LoadStateAsync(P41Harness.RoomId, ct))!;
+                Assert.Equal(0UL, after.StateVersion.Value);
+                Assert.Equal(2L, after.TimingVersion);
+            }
+
+            using (LocalTableStore reopened = await LocalTableStore.OpenAsync(harness.Options, harness.Clock, fs, ct))
+            {
+                TableStateRow after = (await reopened.LoadStateAsync(P41Harness.RoomId, ct))!;
+                Assert.Equal(0UL, after.StateVersion.Value);
+                Assert.Equal(2L, after.TimingVersion);
+            }
+        }
+
+        [Fact]
         public async Task AppendTiming_FencesClockPayloadAndHash()
         {
             await using var harness = new P41Harness();

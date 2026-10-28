@@ -18,6 +18,7 @@ using PlayerSnapshot = Mahjong.Contracts.Wire.PlayerSnapshot;
 
 namespace Mahjong.LocalHost.Tests
 {
+    [Collection("LocalHostSerial")]
     public sealed class LocalHostCandidateAcceptanceTests
     {
         [Fact]
@@ -1523,8 +1524,23 @@ namespace Mahjong.LocalHost.Tests
                             e => e.Type + ":" + e.Seat + ":" + (e.Tile.HasValue ? e.Tile.Value.Value.ToString() : "-"))));
                 RoundStateMachine third = thirdWaitWindow!;
                 Assert.True(third.IsRiichi(0));
+                var thirdEvents = third.Events.ToList();
+                int waitDiscardIndex = thirdEvents.FindLastIndex(
+                    e => e.Type == RoundEventType.TileDiscarded &&
+                         e.Seat == 1 &&
+                         e.Tile.HasValue &&
+                         e.Tile.Value.Value == 74);
+                Assert.True(waitDiscardIndex > 0);
+                Assert.Contains(
+                    thirdEvents.Take(waitDiscardIndex),
+                    e => e.Type == RoundEventType.TileDrawn && e.Seat == 0);
+                Assert.Contains(
+                    thirdEvents.Take(waitDiscardIndex),
+                    e => e.Type == RoundEventType.TileDiscarded && e.Seat == 0);
                 if (third.Window != null)
                 {
+                    Assert.Equal(74, third.Window.TargetTile.Value);
+                    Assert.Equal(1, third.Window.FromSeat);
                     Assert.DoesNotContain(0, third.Window.EligibleSeats);
                 }
 
@@ -1551,15 +1567,15 @@ namespace Mahjong.LocalHost.Tests
                 Assert.Equal(13_000L, positive.Breakdown.TotalPoints);
                 Assert.Contains(positive.Breakdown.Yaku, y => y.Code == "IPPATSU");
 
-                // Actual LocalHost port + builder + calculator at the real riichi-furiten state:
-                // the legal window shape is the captured first response window, while the facts
-                // are the post-draw riichi/temporary bits of the real actor.
+                // Actual LocalHost port + builder on the real third-round state/source. The
+                // calculator needs a legal window carrier; the captured first window is the
+                // same real hand/wait state before the pass and is used only for that shape.
                 TableSettlementHostFacts furitenHost = ResolveSettlementHost(
-                    firstWindowRound,
+                    third,
                     _ => false,
                     seat => runtime.ActorForTest.FuritenForHost.IsRiichi(seat),
                     0);
-                RoundSettlementFacts furitenFacts = BuildSettlementFacts(firstWindowRound, furitenHost, 0);
+                RoundSettlementFacts furitenFacts = BuildSettlementFacts(third, furitenHost, 0);
                 Assert.True(furitenFacts.FindSeat(0)!.IsRiichiFuriten);
                 Assert.False(furitenFacts.FindSeat(0)!.IsTemporaryFuriten);
                 RoundSettlementRejectedException rejected = Assert.Throws<RoundSettlementRejectedException>(
