@@ -552,3 +552,42 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass `
 | D-R1-01 / D-R1-02 | 保持 CLOSED（报告） | 原接受记录不变 | 未重做 |
 
 结论：本轮修复的是一个**测试测量边界**，不是生产计时变更；严格“实际至少 2s 准备 + 至少 1.1s issue 后调度 + issue 在 preparation 之后 + 有效 scope 真实提交 + 过期/撤销零副作用”的原义务全部保留并加强。远端 8a0c8cb 的失败是真实失败，已由新代码修复；但**本轮没有发远端 CI**，远端 CI 为 **NOT_RUN**，receiver 未 push、未重跑 CI。G1 保持 APPROVED；G2–G5 未批准；V4 仍生产；181 classified 缺口保留；未合并 `v5`、未部署、未改 scheduler/`complete.flag`。最终 tracked HEAD 与 `git diff --check 8a0c8cb..HEAD` 由提交后 `git rev-parse HEAD` / `git diff --check` 核验，要求 tracked clean 且 exit 0。
+
+## 10. Codex 调用者独立验收与统一发布（2026-10-28）
+
+同一线程 `thread_20261028_182408_3497` 已调用 `approve_task`，桥接返回 **COMPLETED**。D-CI-DELAY-01 本任务范围 **PASS / CLOSED**，没有发起返修或新任务。审查与实际运行的 HEAD 为 `69ba5246cf54d1effcab8414a4e77c2a3a1f9f64`；本节后续提交只补验收记录，不改变被测代码。
+
+调用者检查 `8a0c8cb..69ba524`：只改两个测试/fixture 与本既有交付报告。以既有报告延续证据链，没有另建任务书列出的 followup 报告。生产代码、SQL、统一 verifier/CI、工程配置与二进制均未改。严格单调等待下界、scope 签发因果、真实有效 Commit、过期/撤销零副作用均保留；未发现本任务范围的编译错误、测试失败或功能缺陷。
+
+调用者在本工作树实际执行原脚本：
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/ci/verify-v5-table-postgres.ps1 `
+  -Configuration Release -DotnetPath D:/Unity/dotnet/dotnet.exe `
+  -Port 55874 -Root artifacts/caller-delay-review/pg -LogDir artifacts/caller-delay-review/logs `
+  -PgZipPath D:/majiang-pg-tmp/cache/postgresql-16.10-1-windows-x64-binaries.zip `
+  -RunUnifiedVerification -UnifiedLogDir artifacts/caller-delay-review/logs/unified `
+  -LobbyRoot D:/majiang-pg-tmp/caller-delay-review-lobby-55875 -LobbyPort 55875
+```
+
+真实 PostgreSQL 16.10；fresh Release 测试构建与 solution 构建均 **0 warnings / 0 errors**。新 DLL 直接运行：Infrastructure **42/42**、targeted **13/13**，统一 11 工程 **2299/2299**；所有用例 failed/errors/skipped/not-run 均为 0，正常命令 native exit 0。12-DLL 闭包、companion **4/4（47 cases）** 通过；可选历史 git blob pins 未请求，仍为 NOT_RUN。最外层 **P52-TABLE-POSTGRES-PASS / exit 0**。
+
+writer pid 50960 在 durable commit 后、publication 前被预期强杀；PG postmaster 从 `2026-10-28 11:13:30.939591+00` 变为 `11:15:06.221695+00`，自动恢复记录 3 行。独立冷读得到 stateVersion=1、lastEventSeq=2、terminal=true、receipt=Applied、cheatVersion=1；空库恢复 events=2、recoveryOwnerEpoch=3。表与 Lobby 集群均经 ownership 校验清理，55874/55875 无监听且两个集群根目录不存在。
+
+调用者独立审计 `artifacts/audit-delay-evidence.ps1` **1103 checks / 0 failures / exit 0**：27 个报告 SHA 全匹配；receiver 与三个负变体清单的非自引用条目逐个核对哈希/长度；本次及 receiver 的 11 份 direct XML、full/targeted、旧双 CI 和三个变体 XML 均按节点核对真实分母。变体 A 清单包含无法自校验的 `manifest.sha256.json` 自引用，审计单列 `SELF_REFERENCE_NOT_VERIFIABLE`，不宣称该条通过。这是未改动 wrapper 的证据清单问题，不影响独立固定的 XML/日志哈希或本次功能验收。调用者没有重跑变体；其源码差异与原 XML 预期红分别为 **41/42、40/42、40/42**，不得写成本次重新执行。
+
+证据根 `D:/majiang-wt/pg-delay-followup-ds-20261028-1822/`：
+
+| 证据 | SHA256 |
+|---|---|
+| `artifacts/caller-delay-review/logs/tests.xml` | `C7CCC37137BB879FE6FBE6119AA633DC393D9810AE6D67B62FAD50C0EE715234` |
+| `artifacts/caller-delay-review/logs/tests-targeted.xml` | `B02795FC273219452F375937472F45B2C12DA96EE82F7C38709387CCE5107D34` |
+| `artifacts/caller-delay-review/logs/wrapper-summary.json` | `8783DFEFF9EA7D4724A8949092F4E8EF7722050DB955FD8964B9EA476B8C4F10` |
+| `artifacts/caller-delay-review/logs/unified/summary.log` | `86E2D823FF5114DBADA9C49253DCDBF3B7BD21467696DA576C2682E56DDA52E1` |
+| `artifacts/caller-delay-audit.txt` | `7BFFC141240E109A8474294DABD13D11C4BB122B01FD305F013B25C871D54C45` |
+
+完整命令输出在 `artifacts/caller-delay-review-console.log`；各 native 日志、XML、meta 和恢复 JSON 在上述 logs 根。本次被测 DLL SHA256 为 `2E9D32673DB217E9AB7FD5296B6DD486693AD8BDA1028E115A52DACB2ACC59CD`。
+
+统一发布沿用既有唯一草稿 [PR20](https://github.com/liuchangready/majiang-game/pull/20)，源 `feat/v5-post-g1-batch`，目标 `v5`；仅纳入本任务两个修复提交与调用者验收记录。其余已验收组件已有发布记录；Unity 来源校验与持久宿主仍在各自交付链，LocalHost 另由其既有调用者管理，不混入未验收/他人工作树改动。最终发布 SHA、远端回读和 MR 同步以同线程 `record_merge_request` 为准。
+
+`8a0c8cb` 双 CI 的原始 1999ms 失败保留。§9 的远端 NOT_RUN 指 receiver 交付状态；调用者推送后自动触发的新头 CI 须独立验证，本次本地 PASS 不等于远端 PASS。D-PG-SUP-02 原始根因仍 UNRESOLVED；G2–G5 未批准、V4 生产、181 classified 与设备/跨网缺口不变。未合并 `v5`、未部署、未改 scheduler/`complete.flag`。
