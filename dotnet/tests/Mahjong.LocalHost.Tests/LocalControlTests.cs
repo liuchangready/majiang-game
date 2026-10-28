@@ -29,6 +29,42 @@ namespace Mahjong.LocalHost.Tests
         private const string ControlReason = "LOCAL_CONTROL";
 
         [Fact]
+        public async Task ReviewerProbe_ControlReplaySurvivesDecisionRetirement()
+        {
+            await using var harness = new P41Harness();
+            CancellationToken ct = TestContext.Current.CancellationToken;
+            await using RawControlConnection client = await RawControlConnection.OpenAsync(harness, ct);
+            await WaitUntilAsync(
+                () => !string.IsNullOrEmpty(client.Runtime.ActorForTest.GetPendingDecisionId(0)),
+                "a live decision before recording the control request",
+                ct);
+            string decision = client.Runtime.ActorForTest.GetPendingDecisionId(0)!;
+            const string requestId = "reviewer-control-replay-retired-decision";
+            byte[] originalBytes = client.BuildCommandBytes(
+                CommandKind.ClaimControl, 0, requestId, payloadBytes: null, decisionId: decision);
+            WireEnvelope original = await client.SendRawAsync(originalBytes, requestId, ct);
+            AssertReceipt(original, WireReceiptStatus.Recorded, "the original control request with a live decision");
+            LocalControlRecord? record = client.Store.GetControlResult(
+                SeatAccount, new RequestScopeId(client.ScopeId), new RequestId(requestId));
+            Assert.NotNull(record);
+            Assert.Equal(original.Receipt.CanonicalPayloadSha256, record!.Digest);
+
+            harness.Clock.MonotonicMillis += 30_000L;
+            harness.Clock.UtcNowMs += 30_000L;
+            await WaitUntilAsync(
+                () => !string.Equals(client.Runtime.ActorForTest.GetPendingDecisionId(0), decision, StringComparison.Ordinal),
+                "the recorded request's decision to retire",
+                ct);
+
+            WireEnvelope replay = await client.SendRawAsync(originalBytes, requestId, ct);
+            AssertReceipt(replay, WireReceiptStatus.Recorded, "the exact-byte replay after decision retirement");
+            Assert.True(replay.Receipt.Replayed);
+            Assert.Equal(original.Receipt.CanonicalPayloadSha256, replay.Receipt.CanonicalPayloadSha256);
+            Assert.Equal(original.Receipt.EvaluatedStateVersion, replay.Receipt.EvaluatedStateVersion);
+            Assert.Equal(0L, client.Store.ControlVersionForTest);
+        }
+
+        [Fact]
         public async Task ClientClaimReleaseProducesDurableRecordedResults()
         {
             await using var harness = new P41Harness();
