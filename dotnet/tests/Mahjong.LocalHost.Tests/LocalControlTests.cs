@@ -62,6 +62,40 @@ namespace Mahjong.LocalHost.Tests
             Assert.Equal(original.Receipt.CanonicalPayloadSha256, replay.Receipt.CanonicalPayloadSha256);
             Assert.Equal(original.Receipt.EvaluatedStateVersion, replay.Receipt.EvaluatedStateVersion);
             Assert.Equal(0L, client.Store.ControlVersionForTest);
+
+            // The same request id with different bytes stays a conflict even though the
+            // decision that accompanied the original request has retired.
+            byte[] conflictingBytes = client.BuildCommandBytes(
+                CommandKind.ClaimControl,
+                1,
+                requestId,
+                payloadBytes: null,
+                decisionId: decision);
+            WireEnvelope conflict = await client.SendRawAsync(conflictingBytes, requestId, ct);
+            AssertReceipt(conflict, WireReceiptStatus.Rejected, "the different-byte replay after decision retirement");
+            Assert.Equal(ProtocolErrorCode.RequestIdConflict, conflict.Receipt.ReasonCode);
+            Assert.Equal(0L, client.Store.ControlVersionForTest);
+
+            // A genuinely new request carrying the retired decision id is still rejected
+            // deterministically; the replay ordering fix must not loosen this guard.
+            const string staleRequestId = "reviewer-new-stale-decision-after-retirement";
+            byte[] staleBytes = client.BuildCommandBytes(
+                CommandKind.ClaimControl,
+                0,
+                staleRequestId,
+                payloadBytes: null,
+                decisionId: decision);
+            WireEnvelope stale = await client.SendRawAsync(staleBytes, staleRequestId, ct);
+            AssertReceipt(stale, WireReceiptStatus.Rejected, "the new control request with a retired decision");
+            Assert.Equal(ProtocolErrorCode.DecisionMismatch, stale.Receipt.ReasonCode);
+            Assert.Null(client.Store.GetControlResult(
+                SeatAccount,
+                new RequestScopeId(client.ScopeId),
+                new RequestId(staleRequestId)));
+            Assert.Equal(0L, client.Store.ControlVersionForTest);
+            TableControlSnapshot control = await client.ControlSnapshotAsync(ct);
+            Assert.Equal(0L, control.ControlVersion);
+            Assert.Equal(0L, control.Seats[0].ControlEpoch);
         }
 
         [Fact]
