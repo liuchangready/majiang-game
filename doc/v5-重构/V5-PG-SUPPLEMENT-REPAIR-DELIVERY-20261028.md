@@ -275,3 +275,64 @@ normal run（`artifacts/pgsup-r2-run`）和 final run 的 scope boundary evidenc
 最终 tracked HEAD 由提交后 `git rev-parse HEAD` 核验；代码修复提交为 `f1aff487f505e8fd554a37bd850a90b1938b9f7d`。`git diff --check 6b6a5f9..HEAD` 必须为 exit 0；工作树 tracked clean。
 
 G1 保持 APPROVED；G2–G5 未批准；V4 仍生产；181 classified 仍未覆盖；远端提交 CI **NOT_RUN**；未 push/建 PR/MR。Unity/Android 真机/iOS/跨物理网络/完整 LocalHost/持久宿主/整场/远端 E2E 非本任务范围。
+
+---
+
+## 8. Codex 调用者第 2 轮独立验收（2026-10-28）
+
+**本任务范围 PASS。D-R1-01、D-R1-02 关闭；D-PG-SUP-01 CLOSED；D-PG-SUP-02 的原始四项失败根因仍 UNRESOLVED。** 上轮明确允许 D02 保留未归因，本次批准测试时序修复、诊断与如实报告，不把新的通过结果当作原始四项失败已修复。同批 LocalHost、持久宿主、Unity 插件任务的状态不用于否决本组件，也不随本次批准。
+
+审核并实际测试的 HEAD 为 `8d54e4f22480ebcaf306a4372eaa82ec79465b39`；本节之后的调用者提交只增加本报告，不改变已测试的代码。相对冻结基线 `6b6a5f9`，净范围为三份 Infrastructure 测试/fixture 与本报告，生产代码、SQL、工程文件、wrapper 和统一 verifier 均无改动。审核前 tracked clean；`git diff --check 6b6a5f9..HEAD` exit 0。
+
+### 8.1 本工作区独立实跑
+
+调用者重新检查独占端口 55842/55843 无监听，使用原 wrapper、原包 pin、独立目录运行：
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass `
+  -File tools/ci/verify-v5-table-postgres.ps1 `
+  -Configuration Release -DotnetPath D:/Unity/dotnet/dotnet.exe `
+  -Port 55842 -Root artifacts/cx-r2-pg -LogDir artifacts/cx-r2-review `
+  -PgZipPath D:/majiang-pg-tmp/cache/postgresql-16.10-1-windows-x64-binaries.zip `
+  -RunUnifiedVerification -UnifiedLogDir artifacts/cx-r2-review/unified `
+  -LobbyRoot D:/majiang-pg-tmp/cx-r2-sup-lobby-55843 -LobbyPort 55843
+```
+
+最外层 native exit **0**，`P52-TABLE-POSTGRES-PASS`。真实 PostgreSQL **16.10**；fresh Release 测试与 CrashWorker 构建成功，0 warning / 0 error；测试 DLL SHA256 为 `29A2D80F708229237EBED5625C11A314E7341482C0965347DBBEBF76822C27BD`。solution 构建同为 0 warning / 0 error。
+
+| 阶段 | selected | passed | failed | errors | skipped | not-run | native exit |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| Infrastructure 独立 full | 40 | 40 | 0 | 0 | 0 | 0 | 0 |
+| 原定向测试 | 13 | 13 | 0 | 0 | 0 | 0 | 0 |
+| 原统一入口的 11 个 direct runner | 2297 | 2297 | 0 | 0 | 0 | 0 | 0 |
+| companion fixture 门槛 | 4 | 4 | 0 | 0 | 0 | 0 | 0 |
+
+独立 full 耗时 83.639s；统一入口的 Infrastructure 40 项耗时 69.610s、TableService 152 项耗时 91.383s。原 37 个测试名全部保留，新增 3 项有意义回归；统一总数仍为 2294 + 3，未删分母。12 DLL 闭包通过。
+
+writer pid 52340 在 durable commit 后、publication 前强杀；PG immediate restart 的 postmaster 时间从 `09:22:22.789863Z` 变为 `09:25:23.534851Z`，自动恢复记录 3 行。独立 cold reader 验证 `stateVersion=1,lastEventSeq=2,terminal=true,receiptStatus=Applied,cheatVersion=1,recoveryOwnerEpoch=2`；空库 restore 验证 2 个事件及 `recoveryOwnerEpoch=3`，outbox/cheat 恢复一致。两个集群均经 ownership 校验清理，最终目录不存在、55842/55843 无监听。
+
+### 8.2 代码、负例与证据独立核对
+
+- 阅读完整本任务净 diff：scope 在准备后签发；慢准备实际 2s、issue 后合法调度 1.1s，由因果顺序断言检查；原 expiry 测试名和零副作用断言保留。
+- 实跑边界记录确认 `txnStart < expiry <= releaseDbNow`。例如 `1793179418942 < 1793179418943 <= 1793179419115`；被阻塞 backend 唯一，scope issue 早于 expiry，commit 放锁前尚未完成。
+- 本轮未再次执行变异；独立审计 receiver 本轮原生 XML、console、manifest 和源码副本。冻结时钟变异恰为 38/40，两个 expiry 测试均因实际 Committed 而失败；提前取 issued 变异恰为 39/40，唯一失败为因果顺序断言。每份副本对照 385 个归档输入，忽略纯换行差异后，分别只有声明的两处生产时钟修改和一处测试 fixture 修改，没有其它源码变化。
+- 直接重读原始 XML 堆栈：Revocation 与 StoreFailure 两项在测试 helper 建连；TerminalOutbox 一项在生产 IssueScope 建连。报告更正与原证据一一对应。原始 53/53 文件重哈希一致，未用 fresh 资源观测排除原始失败窗口的假设；D02 仍 UNRESOLVED。
+- 调用者审计脚本 `artifacts/cx-r2-audit.ps1` 完成交付证据 **405 checks / 0 failures**；`artifacts/cx-r2-runtime-audit.ps1` 合并独立实跑证据后为 **650 checks / 0 failures**。涵盖报告 23 个哈希、原始 53 份、receiver final 194 份、两个变异各 55 份、本次 wrapper 194 份 manifest 条目，以及本次 11 个 XML 节点数、console、meta/native exit、XML SHA、测试 HEAD、恢复/清理、companion 和闭包。
+
+独立实跑和审计证据根：`D:/majiang-wt/pg-sup-repair-ds-20261028-1545/artifacts/`。
+
+| 证据 | 相对上述证据根的路径 | SHA256 |
+|---|---|---|
+| caller full XML | `cx-r2-review/tests.xml` | `541EAF3BD7130D42E7C66547CEACD88DE63412A7DC59DF403758DF96EC4BD432` |
+| caller targeted XML | `cx-r2-review/tests-targeted.xml` | `C80987CC7E6A902E6AF11BD6B6EF76B8B549423ACF9BE103BEF4EF576DD673F2` |
+| caller unified summary | `cx-r2-review/unified/summary.log` | `B07B8215CEB09DC2646BA5EFB10C946577934E85A63FB2E5EBA9BC0828D10762` |
+| caller wrapper summary | `cx-r2-review/wrapper-summary.json` | `3D6B939F07EECCA309DAF85B43473253F914AC6C10725972D569342DCBC1FF8B` |
+| caller 194-file manifest | `cx-r2-review/manifest.sha256.json` | `32D8D5F79AA9359A0770414A828BA095CE135CC51B8BA674C2D3449F47B19CC8` |
+| caller 650-check audit | `cx-r2-runtime-audit.json` | `07EAECE89318940D40255AB2B44781D025714BC1D130C8C71B51C70A3213E720` |
+| mutant source comparison | `cx-r2-mutant-source-audit.json` | `81226F4625E2AF4B9BC702B0787663EC286794925166AA17D5D2D4A699D5129B` |
+
+### 8.3 批次发布边界
+
+本任务沿用 `thread_20261028_154729_a893` 与既有调用者会话，由调用者批准后统一推送现有唯一草稿 [PR20](https://github.com/liuchangready/majiang-game/pull/20)，源分支 `feat/v5-post-g1-batch`，目标 `v5`。本轮检查时同批已接受任务均已同步；其余三项仍返修，未纳入。未新建任务/会话或转派，没有额外子任务 MR。
+
+本文 §1–7 的“未 push”描述 receiver 交付时状态；最终推送 SHA、PR 同步结果由 bridge `record_merge_request` 记录。新头远端 CI 须按其自身运行验证，当前本地结果不把新 CI 标为通过。G1 不重开，G2–G5 保持未批准；V4 仍生产，181 classified 缺口和所有设备/跨物理网络缺口保留。未合并 `v5`、未部署、未改 scheduler 或 `complete.flag`。
