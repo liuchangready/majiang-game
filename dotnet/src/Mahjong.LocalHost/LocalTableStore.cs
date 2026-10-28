@@ -38,7 +38,6 @@ namespace Mahjong.LocalHost
         private LocalSave? _save;
         private (string AccountId, RequestScopeId ScopeId, RequestId RequestId, string Digest)? _pendingReceiptDigest;
         private (string AccountId, RequestScopeId ScopeId, RequestId RequestId, string Digest, string Kind)? _pendingControlResult;
-        private (int Seat, bool? Temporary, bool? Riichi, string RoomId, ulong ExpectedStateVersion, RequestId RequestId)? _pendingFuriten;
         private Stream? _lockStream;
         private bool _leaseAcquired;
         private string _leaseOwner = string.Empty;
@@ -883,29 +882,11 @@ namespace Mahjong.LocalHost
 
                 LocalSave candidate = _save!.DeepCloneForCandidate();
                 ApplyCommitToSave(candidate, request);
+                ApplyCommittedFuritenToSave(candidate, request);
                 if (request.Checkpoint != null)
                 {
                     candidate.Operations.Clear();
                 }
-                (int Seat, bool? Temporary, bool? Riichi, string RoomId, ulong ExpectedStateVersion, RequestId RequestId)? pendingFuriten =
-                    _pendingFuriten;
-                if (pendingFuriten.HasValue &&
-                    string.Equals(pendingFuriten.Value.RoomId, request.RoomId, StringComparison.Ordinal) &&
-                    pendingFuriten.Value.ExpectedStateVersion == request.ExpectedStateVersion.Value &&
-                    request.CommandJournal != null &&
-                    pendingFuriten.Value.RequestId == request.CommandJournal.RequestId)
-                {
-                    if (pendingFuriten.Value.Temporary.HasValue)
-                    {
-                        candidate.TemporaryFuriten[pendingFuriten.Value.Seat] = pendingFuriten.Value.Temporary.Value;
-                    }
-
-                    if (pendingFuriten.Value.Riichi.HasValue)
-                    {
-                        candidate.RiichiFuriten[pendingFuriten.Value.Seat] = pendingFuriten.Value.Riichi.Value;
-                    }
-                }
-
 
                 (string AccountId, RequestScopeId ScopeId, RequestId RequestId, string Digest)? pendingDigest =
                     _pendingReceiptDigest;
@@ -947,7 +928,6 @@ namespace Mahjong.LocalHost
                 if (write.Verdict == LocalWriteVerdict.Committed)
                 {
                     _pendingReceiptDigest = null;
-                    _pendingFuriten = null;
                 }
 
                 return CompleteWrite(write, candidate, result);
@@ -1111,28 +1091,6 @@ namespace Mahjong.LocalHost
             lock (_gate)
             {
                 return _save == null ? new bool[4] : (bool[])_save.RiichiFuriten.Clone();
-            }
-        }
-
-        internal void PrepareFuriten(
-            int seat,
-            bool? temporary,
-            bool? riichi,
-            string roomId,
-            ulong expectedStateVersion,
-            RequestId requestId)
-        {
-            lock (_gate)
-            {
-                _pendingFuriten = (seat, temporary, riichi, roomId, expectedStateVersion, requestId);
-            }
-        }
-
-        internal void ClearPreparedFuriten()
-        {
-            lock (_gate)
-            {
-                _pendingFuriten = null;
             }
         }
 
@@ -1495,6 +1453,45 @@ namespace Mahjong.LocalHost
             if (request.Terminal)
             {
                 save.TerminalState = LocalSaveTerminalState.RoundFinished;
+            }
+        }
+
+        /// <summary>
+        /// Mirrors the actor-derived furiten bits into the local save from the same committed
+        /// projection-facts payload that carries the post-command private facts. The write is part
+        /// of the same candidate save as state/timing/receipt, so a failed commit cannot leave a
+        /// furiten side effect behind and a cold open sees exactly the committed bits.
+        /// </summary>
+        private static void ApplyCommittedFuritenToSave(LocalSave save, TableDurableCommitRequest request)
+        {
+            if (request.CommittedFactsPayload == null || request.CommandJournal == null)
+            {
+                return;
+            }
+
+            TableProjectionFactsCodec.TableProjectionFactsIdentity identity =
+                TableProjectionFactsCodec.ReadIdentity(request.CommittedFactsPayload);
+            if (identity.StateVersion != request.CommandJournal.CommandVersion)
+            {
+                // A synthetic/legacy commit may carry the previous checkpoint's facts payload.
+                // They are not this command's facts and must never be applied to it.
+                return;
+            }
+
+            TableProjectionContextData facts = TableProjectionFactsCodec.Decode(
+                request.CommittedFactsPayload,
+                identity.RoundId,
+                identity.StateVersion);
+            for (int i = 0; i < facts.PrivateFacts.Count; i++)
+            {
+                TableSeatPrivateFacts fact = facts.PrivateFacts[i];
+                if (fact.Seat < 0 || fact.Seat > 3)
+                {
+                    continue;
+                }
+
+                save.TemporaryFuriten[fact.Seat] = fact.TemporaryFuriten;
+                save.RiichiFuriten[fact.Seat] = fact.RiichiFuriten;
             }
         }
 

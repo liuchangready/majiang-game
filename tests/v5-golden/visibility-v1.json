@@ -340,10 +340,10 @@
     },
     {
       "file": "dotnet/src/Mahjong.TableRuntime/TableVisibilityContexts.cs",
-      "bytesRaw": 18475,
-      "sha256RawBytes": "afc7354adafbec30a7d30aac4ce79ce871290a4ec08fb398066fd4fc3003184a",
-      "sha256LfNormalized": "de876fa50d4e69c2f8d3e04646fb62671c2625dae7e93ca255f435b35165de94",
-      "crlfCount": 519,
+      "bytesRaw": 18933,
+      "sha256RawBytes": "e9466246617045696a9e6a1023f2b1297c85e1f620f31ecc4523f2c0157cc7a7",
+      "sha256LfNormalized": "e31025dc0ab2af5562c15f8375f3010ee76563cca275e1c7ce9719c8401ae92a",
+      "crlfCount": 529,
       "lfOnlyCount": 0,
       "lineEndings": "CRLF",
       "algorithm": "SHA-256; sha256RawBytes over raw file bytes; sha256LfNormalized over UTF-8 text with CRLF replaced by LF"
@@ -429,7 +429,7 @@
     "lineEndings": "LF",
     "algorithm": "SHA-256; sha256RawBytes over raw file bytes; sha256LfNormalized over UTF-8 text with CRLF replaced by LF"
   },
-  "renderSha256LfNormalized": "77e7f997b2a8b677c676849bbbea269480dbfdf9c7c47b3298227240be852e04",
+  "renderSha256LfNormalized": "e8d8f1a543f0554adeed88383060f49ea0392e56e8e8648a0cb7caab1edce502",
   "scope": {
     "manifestEntriesTargeted": 4,
     "manifestEntriesExportedByThisRun": 4,

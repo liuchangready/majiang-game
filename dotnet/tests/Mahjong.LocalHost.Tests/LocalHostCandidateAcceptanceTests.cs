@@ -898,6 +898,211 @@ namespace Mahjong.LocalHost.Tests
         }
 
         [Fact]
+        public async Task ClientPassOnRonSetsFuritenAndColdRestartKeepsItUntilTheNextDraw()
+        {
+            await using var harness = new P41Harness();
+            CancellationToken ct = TestContext.Current.CancellationToken;
+
+            // Same legal wall as RonCandidateAndSubmissionTest: seat 0 waits on 3p (44) and
+            // seat 1 draws/discards the winning tile. Here seat 0 passes instead of Ron.
+            var specific = new Dictionary<int, int>();
+            int[] seat0Tiles = { 0, 4, 8, 12, 16, 20, 24, 28, 32, 36, 40, 72, 73, 132 };
+            int[] seat0Slots = { 0, 1, 2, 3, 16, 17, 18, 19, 32, 33, 34, 35, 48, 52 };
+            for (int i = 0; i < seat0Slots.Length; i++)
+            {
+                specific[seat0Slots[i]] = seat0Tiles[i];
+            }
+
+            specific[53] = 44;
+            harness.Options.InitialRound = BuildRoundWithSpecificSlots(specific);
+
+            ulong versionAfterPass;
+            (ITableChannel channel, TableSession session) = await OpenAsync(harness, ct);
+            try
+            {
+                using var pumpCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                pumpCts.CancelAfter(TimeSpan.FromSeconds(30));
+                Task pump = StartPump(session, pumpCts.Token);
+
+                PlayerSnapshot snapshot = await WaitForDecisionAsync(session, pumpCts.Token);
+                DecisionView decision = snapshot.PrivateView.Decision!;
+                var discardResolved = new TaskCompletionSource<TableReceiptResolvedEventArgs>(
+                    TaskCreationOptions.RunContinuationsAsynchronously);
+                session.ReceiptResolved += (_, args) =>
+                {
+                    if (args.Command.Key.RequestId.Value == "furiten-seat0-discard")
+                    {
+                        discardResolved.TrySetResult(args);
+                    }
+                };
+                BusinessPayload discardPayload = CommandPayloadFactory.SubmitAction(
+                    snapshot.RoundId,
+                    decision.DecisionId,
+                    decision.ControlEpoch,
+                    ProtocolActionType.DiscardTile,
+                    tileIds: new uint[] { 132u });
+                await session.SubmitAsync(
+                    new ProtocolCommand(
+                        CommandKind.SubmitAction,
+                        discardPayload,
+                        new RequestId("furiten-seat0-discard"),
+                        session.Binding!.Scope.ScopeId,
+                        new StateVersion(snapshot.StateVersion),
+                        new RoundId(snapshot.RoundId),
+                        decisionId: new DecisionId(decision.DecisionId),
+                        controlEpoch: new ControlEpoch(decision.ControlEpoch)),
+                    pumpCts.Token);
+                TableReceiptResolvedEventArgs discardReceipt = await LocalHostCommandTests.WithTimeoutAsync(
+                    discardResolved.Task,
+                    pumpCts.Token);
+                Assert.Equal(ReceiptStatus.Applied, discardReceipt.Resolution.ReceiptStatus);
+
+                PlayerSnapshot ronSnapshot = await WaitForActionTypeAsync(
+                    session,
+                    ProtocolActionType.DeclareRon,
+                    pumpCts.Token);
+                await Task.Delay(150, pumpCts.Token);
+                ronSnapshot = session.PlayerSnapshot!;
+                DecisionView ronDecision = ronSnapshot.PrivateView.Decision!;
+                Assert.NotNull(ronDecision);
+                Assert.Contains(
+                    ronDecision.Actions,
+                    action => action.ActionType == (uint)ProtocolActionType.DeclareRon);
+
+                var passResolved = new TaskCompletionSource<TableReceiptResolvedEventArgs>(
+                    TaskCreationOptions.RunContinuationsAsynchronously);
+                session.ReceiptResolved += (_, args) =>
+                {
+                    if (args.Command.Key.RequestId.Value == "furiten-seat0-pass")
+                    {
+                        passResolved.TrySetResult(args);
+                    }
+                };
+                BusinessPayload passPayload = CommandPayloadFactory.SubmitAction(
+                    ronSnapshot.RoundId,
+                    ronDecision.DecisionId,
+                    ronDecision.ControlEpoch,
+                    ProtocolActionType.Pass);
+                await session.SubmitAsync(
+                    new ProtocolCommand(
+                        CommandKind.SubmitAction,
+                        passPayload,
+                        new RequestId("furiten-seat0-pass"),
+                        session.Binding!.Scope.ScopeId,
+                        new StateVersion(ronSnapshot.StateVersion),
+                        new RoundId(ronSnapshot.RoundId),
+                        decisionId: new DecisionId(ronDecision.DecisionId),
+                        controlEpoch: new ControlEpoch(ronDecision.ControlEpoch)),
+                    pumpCts.Token);
+                TableReceiptResolvedEventArgs passReceipt = await LocalHostCommandTests.WithTimeoutAsync(
+                    passResolved.Task,
+                    pumpCts.Token);
+                Assert.Equal(ReceiptStatus.Applied, passReceipt.Resolution.ReceiptStatus);
+
+                for (int i = 0; i < 50 && session.PlayerSnapshot?.PrivateView?.Furiten != true; i++)
+                {
+                    await Task.Delay(20, pumpCts.Token);
+                }
+
+                PlayerSnapshot afterPass = session.PlayerSnapshot!;
+                Assert.True(afterPass.PrivateView.Furiten, "the owner projection must carry temporary furiten");
+                versionAfterPass = afterPass.StateVersion;
+                LocalTableRuntime? runtime = ((LocalTableChannel)channel).RuntimeForMatch;
+                Assert.NotNull(runtime);
+                Assert.True(runtime!.ActorForTest.FuritenForHost.IsTemporary(0));
+                Assert.False(runtime.ActorForTest.FuritenForHost.IsTemporary(1));
+
+                // The pass closed the only response window. A forged Ron on the current state is
+                // never applied, and it cannot end the round through a furiten win.
+                var ronResolved = new TaskCompletionSource<TableReceiptResolvedEventArgs>(
+                    TaskCreationOptions.RunContinuationsAsynchronously);
+                session.ReceiptResolved += (_, args) =>
+                {
+                    if (args.Command.Key.RequestId.Value == "furiten-ron-after-pass")
+                    {
+                        ronResolved.TrySetResult(args);
+                    }
+                };
+                BusinessPayload forgedRon = CommandPayloadFactory.SubmitAction(
+                    afterPass.RoundId,
+                    "local-direct",
+                    0UL,
+                    ProtocolActionType.DeclareRon);
+                await session.SubmitAsync(
+                    new ProtocolCommand(
+                        CommandKind.SubmitAction,
+                        forgedRon,
+                        new RequestId("furiten-ron-after-pass"),
+                        session.Binding!.Scope.ScopeId,
+                        new StateVersion(afterPass.StateVersion),
+                        new RoundId(afterPass.RoundId),
+                        decisionId: null,
+                        controlEpoch: new ControlEpoch(0)),
+                    pumpCts.Token);
+                TableReceiptResolvedEventArgs rejectedRon = await LocalHostCommandTests.WithTimeoutAsync(
+                    ronResolved.Task,
+                    pumpCts.Token);
+                Assert.NotEqual(ReceiptStatus.Applied, rejectedRon.Resolution.ReceiptStatus);
+                Assert.NotEqual(GamePhase.RoundEnd, session.PlayerSnapshot!.PublicView.Board.Phase);
+
+                pumpCts.Cancel();
+                await pump;
+            }
+            finally
+            {
+                await session.CloseAsync("TEST_DONE", CancellationToken.None);
+                await channel.CloseAsync(new TableChannelCloseReason("TEST_DONE", true), CancellationToken.None);
+            }
+
+            // The same committed write that returned the receipt also persisted the bits and the
+            // latest projection facts; inspect them before any recovery path can normalize them.
+            using (LocalTableStore store = await LocalTableStore.OpenAsync(harness.Options, harness.Clock, null, ct))
+            {
+                Assert.True(store.LoadTemporaryFuriten()[0]);
+                Assert.False(store.LoadRiichiFuriten()[0]);
+                TableCommittedFactsSnapshot facts = Assert.IsType<TableCommittedFactsSnapshot>(
+                    await store.LoadCommittedFactsAsync(P41Harness.RoomId, ct));
+                TableProjectionFactsCodec.TableProjectionFactsIdentity identity =
+                    TableProjectionFactsCodec.ReadIdentity(facts.Payload);
+                TableProjectionContextData decoded = TableProjectionFactsCodec.Decode(
+                    facts.Payload,
+                    identity.RoundId,
+                    identity.StateVersion);
+                Assert.True(decoded.PrivateFacts[0].TemporaryFuriten);
+                Assert.False(decoded.PrivateFacts[1].TemporaryFuriten);
+            }
+
+            // Cold restart: the furiten bit must come from the committed projection facts, not
+            // from process memory, and must survive until seat 0 actually draws.
+            (ITableChannel reopened, TableSession restored) = await OpenAsync(harness, ct);
+            try
+            {
+                using var pumpCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                pumpCts.CancelAfter(TimeSpan.FromSeconds(30));
+                Task pump = StartPump(restored, pumpCts.Token);
+                for (int i = 0; i < 50 && restored.PlayerSnapshot?.PrivateView?.Furiten != true; i++)
+                {
+                    await Task.Delay(20, pumpCts.Token);
+                }
+
+                Assert.True(restored.PlayerSnapshot!.PrivateView.Furiten, "cold restart lost the committed furiten fact");
+                Assert.True(restored.PlayerSnapshot.StateVersion >= versionAfterPass);
+
+                PlayerSnapshot nextTurn = await WaitForDecisionAsync(restored, pumpCts.Token);
+                Assert.True(nextTurn.StateVersion > versionAfterPass);
+                Assert.False(nextTurn.PrivateView.Furiten, "the next draw must clear temporary furiten");
+
+                pumpCts.Cancel();
+                await pump;
+            }
+            finally
+            {
+                await restored.CloseAsync("TEST_DONE", CancellationToken.None);
+                await reopened.CloseAsync(new TableChannelCloseReason("TEST_DONE", true), CancellationToken.None);
+            }
+        }
+
+        [Fact]
         public async Task AddedKanAndRinshanTsumoTest()
         {
             await using var harness = new P41Harness();

@@ -37,6 +37,10 @@ namespace Mahjong.LocalHost
 
         internal Func<int, bool>? FuritenProvider { get; set; }
 
+        internal Func<int, bool>? TemporaryFuritenProvider { get; set; }
+
+        internal Func<int, bool>? RiichiFuritenProvider { get; set; }
+
         public LocalSnapshotFacts(LocalHostEnvironment environment, ITableClock clock)
         {
             _environment = environment;
@@ -264,7 +268,36 @@ namespace Mahjong.LocalHost
                     history.Add(discards[i].TileId);
                 }
 
-                privateFacts.Add(new TableSeatPrivateFacts(seat, FuritenProvider?.Invoke(seat) ?? false, false, history));
+                bool temporaryFuriten;
+                bool riichiFuriten;
+                if (request.Furiten != null &&
+                    string.Equals(request.Furiten.RoundId, round.RoundId, StringComparison.Ordinal))
+                {
+                    temporaryFuriten = request.Furiten.IsTemporary(seat);
+                    riichiFuriten = request.Furiten.IsRiichi(seat);
+                }
+                else
+                {
+                    temporaryFuriten = TemporaryFuritenProvider?.Invoke(seat) ?? false;
+                    riichiFuriten = RiichiFuritenProvider?.Invoke(seat) ?? false;
+                }
+
+                bool furiten = temporaryFuriten || riichiFuriten;
+                if (!furiten &&
+                    TemporaryFuritenProvider == null &&
+                    RiichiFuritenProvider == null &&
+                    FuritenProvider != null)
+                {
+                    furiten = FuritenProvider(seat);
+                }
+
+                privateFacts.Add(new TableSeatPrivateFacts(
+                    seat,
+                    furiten,
+                    false,
+                    history,
+                    temporaryFuriten,
+                    riichiFuriten));
             }
 
             TableSessionProjection? session = null;

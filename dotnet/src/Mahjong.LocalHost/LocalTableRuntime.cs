@@ -133,6 +133,16 @@ namespace Mahjong.LocalHost
                     facts.SettlementProvider = () => actor.LastSettlementCalculation;
                 }
 
+                // The actor is the authority for furiten. A recovered actor has already installed
+                // the last committed snapshot; mirror it once here so candidate derivation and the
+                // settlement fact port start from exactly the durable facts.
+                TableFuritenSnapshot committedFuriten = actor.FuritenForHost;
+                for (int seat = 0; seat < 4; seat++)
+                {
+                    temporaryFuriten[seat] = committedFuriten.IsTemporary(seat);
+                    riichiFuriten[seat] = committedFuriten.IsRiichi(seat);
+                }
+
                 var runtime = new LocalTableRuntime(options, environment, store, actor, facts, temporaryFuriten, riichiFuriten);
                 return runtime;
             }
@@ -190,7 +200,15 @@ namespace Mahjong.LocalHost
                 DecisionClockConfig = new DecisionClockConfig(20_000L, 3_000L, ReserveScope.Round),
                 CheatEconomy = LocalSnapshotFacts.CheatEconomy,
                 SleeveBloomConfig = LocalSnapshotFacts.SleeveBloom,
-                InitialCheatState = LocalSnapshotFacts.InitialCheatState
+                InitialCheatState = LocalSnapshotFacts.InitialCheatState,
+                FuritenCommitted = snapshot =>
+                {
+                    for (int seat = 0; seat < 4; seat++)
+                    {
+                        temporaryFuriten[seat] = snapshot.IsTemporary(seat);
+                        riichiFuriten[seat] = snapshot.IsRiichi(seat);
+                    }
+                }
             };
 
             var durable = new TableDurableContext(
@@ -233,6 +251,8 @@ namespace Mahjong.LocalHost
             settlementFacts.TemporaryFuritenProvider = seat => temporaryFuriten![seat];
             settlementFacts.RiichiFuritenProvider = seat => riichiFuriten![seat];
             facts.FuritenProvider = seat => temporaryFuriten![seat] || riichiFuriten![seat];
+            facts.TemporaryFuritenProvider = seat => temporaryFuriten![seat];
+            facts.RiichiFuritenProvider = seat => riichiFuriten![seat];
             return actor;
         }
 
@@ -772,31 +792,6 @@ namespace Mahjong.LocalHost
 
 
             RoundActionKind hostAction = kind == CommandKind.SubmitAction ? MapActionKind(document) : RoundActionKind.Pass;
-            bool passSetsFuriten = false;
-            bool passSetsRiichi = false;
-            bool furitenAccepted = false;
-            if (kind == CommandKind.SubmitAction && hostAction == RoundActionKind.Pass)
-            {
-                IReadOnlyList<LegalActionOption> candidates = _actor.GetPendingDecisionCandidates(_seat);
-                for (int i = 0; i < candidates.Count; i++)
-                {
-                    if (candidates[i].Kind == LegalActionKind.Ron)
-                    {
-                        passSetsFuriten = true;
-                        passSetsRiichi = _actor.GetRoundStateForHost().IsRiichi(_seat);
-                        break;
-                    }
-                }
-
-                if (passSetsFuriten)
-                {
-                    _store.PrepareFuriten(_seat, true, passSetsRiichi ? true : (bool?)null, _options.RoomId, expected.Value, requestId);
-                }
-            }
-            else if (kind == CommandKind.SubmitAction && hostAction == RoundActionKind.DrawTile)
-            {
-                _store.PrepareFuriten(_seat, false, null, _options.RoomId, expected.Value, requestId);
-            }
             try
             {
                 TableOperationResult result;
@@ -901,45 +896,12 @@ namespace Mahjong.LocalHost
                     }
                 }
 
-                if (result.Status == TableOperationStatus.Accepted)
-                {
-                    furitenAccepted = true;
-                    if (passSetsFuriten)
-                    {
-                        _temporaryFuriten[_seat] = true;
-                        if (passSetsRiichi)
-                        {
-                            _riichiFuriten[_seat] = true;
-                        }
-                    }
-
-                    if (kind == CommandKind.SubmitAction && hostAction == RoundActionKind.DrawTile)
-                    {
-                        _temporaryFuriten[_seat] = false;
-                    }
-                }
-                else if (result.Status == TableOperationStatus.Replayed)
-                {
-                    _store.ClearPreparedFuriten();
-                }
-
-                else
-                {
-                    _store.ClearPreparedFuriten();
-                }
                 LastSettlementResult = result;
                 await PublishResultAsync(envelope, result, requestId, payload, cancellationToken).ConfigureAwait(false);
             }
             catch (LocalCommandException exception)
             {
                 Enqueue(RejectedReceipt(envelope, requestId, expected, exception.Code, exception.Message, payload));
-            }
-            finally
-            {
-                if (!furitenAccepted)
-                {
-                    _store.ClearPreparedFuriten();
-                }
             }
         }
 

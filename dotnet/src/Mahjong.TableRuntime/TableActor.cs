@@ -79,6 +79,7 @@ namespace Mahjong.TableRuntime
         private ulong _nextStreamHandle;
 
         private RoundStateMachine _round;
+        private TableFuritenSnapshot _furiten;
         private CheatState? _cheat;
         private readonly CheatEconomyConfig? _cheatEconomy;
         private readonly SleeveBloomConfig? _sleeveConfig;
@@ -166,6 +167,7 @@ namespace Mahjong.TableRuntime
             _options = options ?? throw new ArgumentNullException(nameof(options));
             _options.Validate();
             _round = initialRound ?? throw new ArgumentNullException(nameof(initialRound));
+            _furiten = TableFuritenSnapshot.Empty(_round.RoundId);
             _cheatEconomy = options.CheatEconomy;
             _sleeveConfig = options.SleeveBloomConfig;
             if (_cheatEconomy != null)
@@ -233,6 +235,12 @@ namespace Mahjong.TableRuntime
         {
             return _round.GetResult();
         }
+
+        /// <summary>
+        /// Host-only immutable furiten facts for the current committed state. It is derived on
+        /// the actor consumer and installed only after the same commit as state/timing/receipt.
+        /// </summary>
+        public TableFuritenSnapshot FuritenForHost => _furiten;
 
         /// <summary>
         /// Host-only read of one seat's physical hand for local AI candidate construction. The
@@ -3563,6 +3571,11 @@ namespace Mahjong.TableRuntime
                 requestId);
 
             RoundStateMachine nextState = transition.State!;
+            TableFuritenSnapshot candidateFuriten = AdvanceFuriten(
+                commandForJournal,
+                pending,
+                nextState,
+                transition.Events);
             if (_durable != null)
             {
                 try
@@ -3578,6 +3591,7 @@ namespace Mahjong.TableRuntime
                         pending,
                         decisionId,
                         now,
+                        candidateFuriten,
                         commandForJournal,
                         timingConsumption,
                         nextCheat).ConfigureAwait(false);
@@ -3637,6 +3651,7 @@ namespace Mahjong.TableRuntime
             // The commit is durable. From this point the in-memory state/receipt/publication
             // must follow it; no failure below may report a business rejection.
             _round = nextState;
+            InstallFuriten(candidateFuriten);
             if (nextCheat != null)
             {
                 _cheat = nextCheat;
@@ -3686,6 +3701,7 @@ namespace Mahjong.TableRuntime
             PendingDecision? pending,
             DecisionId? decisionId,
             long now,
+            TableFuritenSnapshot candidateFuriten,
             RoundCommand? commandForJournal = null,
             TimingConsumption timingConsumption = TimingConsumption.None,
             CheatState? nextCheat = null)
@@ -3826,7 +3842,8 @@ namespace Mahjong.TableRuntime
                     now,
                     timingVersionOverride: nextTimingVersion,
                     extraHistory: records,
-                    timingOverride: timingSnapshot);
+                    timingOverride: timingSnapshot,
+                    furitenOverride: candidateFuriten);
                 byte[] payload = TableSettlementPayloadCodec.Encode(_options.RoomId, nextState.Result);
                 outbox = new[]
                 {
@@ -3846,7 +3863,8 @@ namespace Mahjong.TableRuntime
                 lastEventSeq,
                 records,
                 now,
-                createdUtc);
+                createdUtc,
+                candidateFuriten);
             byte[]? factsPayload = projectionFacts == null
                 ? null
                 : TableProjectionFactsCodec.Encode(projectionFacts);
@@ -3929,6 +3947,7 @@ namespace Mahjong.TableRuntime
             // The commit is durable. The candidate timing was persisted in the same transaction,
             // so installing it cannot drift from the recovered reserve/decision state.
             _round = nextState;
+            InstallFuriten(candidateFuriten);
             if (nextCheat != null)
             {
                 _cheat = nextCheat;
@@ -4003,6 +4022,9 @@ namespace Mahjong.TableRuntime
             }
 
             RoundStateMachine nextState = installed.State;
+            TableFuritenSnapshot candidateFuriten = change.Accepted
+                ? AdvanceFuriten(roundCommand, pending, nextState, installed.Events)
+                : _furiten;
             List<TableEventRecord> records = BuildCheatEventRecords(
                 commandVersion,
                 new EventSeq(_lastEventSeq.Value + 1),
@@ -4058,6 +4080,7 @@ namespace Mahjong.TableRuntime
                 }
 
                 InstallCommittedCheat(nextState, change.CheatState, commandVersion, lastEventSeq, records, pending, decisionId, now, receipt, timingConsumption);
+                InstallFuriten(candidateFuriten);
                 TableOperationResult result = change.Accepted
                     ? TableOperationResult.Accepted(receipt, records)
                     : TableOperationResult.RejectedWithState(receipt, records);
@@ -4204,7 +4227,8 @@ namespace Mahjong.TableRuntime
                 lastEventSeq,
                 records,
                 now,
-                createdUtc);
+                createdUtc,
+                candidateFuriten);
             byte[]? factsPayload = projectionFacts == null
                 ? null
                 : TableProjectionFactsCodec.Encode(projectionFacts);
@@ -4233,7 +4257,8 @@ namespace Mahjong.TableRuntime
                     timingVersionOverride: nextTimingVersion,
                     extraHistory: records,
                     timingOverride: timingSnapshot,
-                    cheatOverride: change.CheatState);
+                    cheatOverride: change.CheatState,
+                    furitenOverride: candidateFuriten);
                 byte[] settlementPayload = TableSettlementPayloadCodec.Encode(_options.RoomId, nextState.Result);
                 outbox = new[]
                 {
@@ -4314,6 +4339,7 @@ namespace Mahjong.TableRuntime
             }
 
             _round = nextState;
+            InstallFuriten(candidateFuriten);
             _cheat = change.CheatState;
             _stateVersion = commandVersion;
             _lastEventSeq = lastEventSeq;
@@ -4523,13 +4549,134 @@ namespace Mahjong.TableRuntime
             }
         }
 
+        /// <summary>
+        /// Derives the post-command furiten facts from the exact pending decision that admitted
+        /// this command. This runs on the actor consumer (never from a host pre-enqueue slot):
+        /// a pass over an authoritative Ron candidate sets temporary furiten (and riichi furiten
+        /// when the seat is in riichi); a draw clears only that seat's temporary bit. A different
+        /// round starts from zero.
+        /// </summary>
+        private TableFuritenSnapshot AdvanceFuriten(
+            RoundCommand? command,
+            PendingDecision? pending,
+            RoundStateMachine nextState,
+            IReadOnlyList<RoundEvent>? committedEvents)
+        {
+            if (!string.Equals(_furiten.RoundId, nextState.RoundId, StringComparison.Ordinal))
+            {
+                return TableFuritenSnapshot.Empty(nextState.RoundId);
+            }
+
+            TableFuritenSnapshot next = _furiten;
+            if (command == null || command.Seat < 0 || command.Seat > 3)
+            {
+                return next;
+            }
+
+            int seat = command.Seat;
+            if (command.Action == RoundActionKind.Pass &&
+                pending != null &&
+                pending.Key.Seat == seat &&
+                HasRonCandidate(pending.Candidates))
+            {
+                next = next.WithTemporary(seat, true);
+                if (nextState.IsRiichi(seat))
+                {
+                    next = next.WithRiichi(seat, true);
+                }
+            }
+
+            // A draw can be the command's own action or an automatic draw committed by a
+            // discard/window resolution (Domain advances to the next player's draw). In both
+            // cases the drawing seat's temporary furiten ends; riichi furiten is untouched.
+            if (committedEvents != null)
+            {
+                for (int i = 0; i < committedEvents.Count; i++)
+                {
+                    RoundEvent committed = committedEvents[i];
+                    if ((committed.Type == RoundEventType.TileDrawn ||
+                         committed.Type == RoundEventType.RinshanDrawn) &&
+                        committed.Seat >= 0 &&
+                        committed.Seat <= 3)
+                    {
+                        next = next.WithTemporary(committed.Seat, false);
+                    }
+                }
+            }
+            else if (command.Action == RoundActionKind.DrawTile)
+            {
+                next = next.WithTemporary(seat, false);
+            }
+
+            return next;
+        }
+
+        private static bool HasRonCandidate(IReadOnlyList<LegalActionOption>? candidates)
+        {
+            if (candidates == null)
+            {
+                return false;
+            }
+
+            for (int i = 0; i < candidates.Count; i++)
+            {
+                if (candidates[i] != null && candidates[i].Kind == LegalActionKind.Ron)
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        private void InstallFuriten(TableFuritenSnapshot snapshot)
+        {
+            _furiten = snapshot;
+            _options.FuritenCommitted?.Invoke(snapshot);
+        }
+
+        private static TableFuritenSnapshot FuritenFromProjectionFacts(
+            RoundStateMachine round,
+            TableProjectionContextData? facts)
+        {
+            if (facts == null ||
+                !string.Equals(facts.RoundId, round.RoundId, StringComparison.Ordinal))
+            {
+                return TableFuritenSnapshot.Empty(round.RoundId);
+            }
+
+            int temporary = 0;
+            int riichi = 0;
+            for (int i = 0; i < facts.PrivateFacts.Count; i++)
+            {
+                TableSeatPrivateFacts fact = facts.PrivateFacts[i];
+                if (fact.Seat < 0 || fact.Seat > 3)
+                {
+                    continue;
+                }
+
+                if (fact.TemporaryFuriten)
+                {
+                    temporary |= 1 << fact.Seat;
+                }
+
+                if (fact.RiichiFuriten)
+                {
+                    riichi |= 1 << fact.Seat;
+                }
+            }
+
+            return new TableFuritenSnapshot(round.RoundId, temporary, riichi);
+        }
+
         private TableProjectionContextData? CaptureProjectionFacts(
             RoundStateMachine round,
             StateVersion stateVersion,
             EventSeq lastEventSeq,
             IReadOnlyList<TableEventRecord>? extraEvents,
             long now,
-            ulong utcNow)
+            ulong utcNow,
+            TableFuritenSnapshot? furiten = null)
         {
             if (_durable == null ||
                 (_durable.ProjectionFactsProvider == null && _projectionContextSource == null))
@@ -4556,7 +4703,8 @@ namespace Mahjong.TableRuntime
                 _recoveryGeneration,
                 now,
                 (long)utcNow,
-                events);
+                events,
+                furiten);
             TableProjectionContextData? facts = _durable.ProjectionFactsProvider != null
                 ? _durable.ProjectionFactsProvider(request)
                 : _projectionContextSource!.Capture(request);
@@ -4621,7 +4769,8 @@ namespace Mahjong.TableRuntime
             long? timingVersionOverride = null,
             IReadOnlyList<TableEventRecord>? extraHistory = null,
             TableTimingCheckpoint? timingOverride = null,
-            CheatState? cheatOverride = null)
+            CheatState? cheatOverride = null,
+            TableFuritenSnapshot? furitenOverride = null)
         {
             TableDurableContext durable = _durable!;
             ControlRegistrySnapshot control = controlOverride ?? _control.Capture();
@@ -4705,7 +4854,8 @@ namespace Mahjong.TableRuntime
                 lastEventSeq,
                 extraHistory,
                 now,
-                utcNow);
+                utcNow,
+                furitenOverride);
             byte[]? factsPayload = projectionFacts == null
                 ? null
                 : TableProjectionFactsCodec.Encode(projectionFacts);
@@ -5516,6 +5666,7 @@ namespace Mahjong.TableRuntime
             }
 
             _round = baseline.Round;
+            InstallFuriten(FuritenFromProjectionFacts(baseline.Round, baseline.ProjectionFacts));
             if (baseline.Cheat != null)
             {
                 _cheat = baseline.Cheat;
