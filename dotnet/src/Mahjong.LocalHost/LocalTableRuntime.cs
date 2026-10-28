@@ -227,7 +227,7 @@ namespace Mahjong.LocalHost
             durable.ProjectionFactsProvider = facts.Capture;
             durable.RecoveryStateSink = new LocalRecoverySink(options.RoomId);
             durable.RequireCommittedFacts = true;
-            durable.ReceiptRetention = TimeSpan.FromHours(24);
+            durable.ReceiptRetention = RejectedReceiptRetention;
 
             var streamOptions = new TableStreamOptions
             {
@@ -776,7 +776,8 @@ namespace Mahjong.LocalHost
                 return;
             }
 
-            if (TryRejectStaleDecision(envelope, requestId, expected, payload, out string? pendingDecision))
+            string? pendingDecision = _actor.GetPendingDecisionId(_seat);
+            if (RejectStaleDecision(envelope, kind, requestId, expected, payload, pendingDecision))
             {
                 return;
             }
@@ -1104,32 +1105,224 @@ namespace Mahjong.LocalHost
             return await _actor.SubmitSettlementAsync(request, cancellationToken).ConfigureAwait(false);
         }
 
-        private bool TryRejectStaleDecision(
+        private bool RejectStaleDecision(
             Envelope envelope,
+            CommandKind kind,
             RequestId requestId,
             StateVersion expected,
             BusinessPayload payload,
-            out string? pendingDecision)
+            string? pendingDecision)
         {
-            pendingDecision = _actor.GetPendingDecisionId(_seat);
             string suppliedDecision = envelope.Command?.ExpectedDecisionId ?? string.Empty;
             if (!string.IsNullOrEmpty(suppliedDecision) &&
                 !string.Equals(suppliedDecision, pendingDecision, StringComparison.Ordinal))
             {
                 // A stale decision identity is a definitive rejection of this request,
                 // not a transport fault: the outbox entry must receive a RECEIPT and be
-                // resolved exactly like any other rejected side effect.
-                Enqueue(RejectedReceipt(
+                // resolved exactly like any other rejected side effect. The rejection
+                // is durably committed first so a lost reply packet still reconciles
+                // by receipt query.
+                RejectDurably(
                     envelope,
+                    kind,
                     requestId,
                     expected,
                     ProtocolErrorCode.DecisionMismatch,
                     "The command decision id is not the current pending decision.",
-                    payload));
+                    payload);
                 return true;
             }
 
             return false;
+        }
+
+        /// <summary>
+        /// Persists a definitive rejection under the request idempotency key, then
+        /// publishes the rejection receipt. An already-committed record under the
+        /// same key is replayed when the bytes and kind match and conflicts
+        /// otherwise; it is never overwritten. A failed commit publishes a
+        /// transport error instead and leaves the outcome to explicit
+        /// reconciliation — the rejection never claims a durability it does not
+        /// have.
+        /// </summary>
+        private void RejectDurably(
+            Envelope envelope,
+            CommandKind kind,
+            RequestId requestId,
+            StateVersion expected,
+            string reasonCode,
+            string detail,
+            BusinessPayload payload)
+        {
+            string canonicalHex = CanonicalPayloadDigest.Compute(payload).ToHex();
+            if (!_connectionScopeId.HasValue)
+            {
+                // Without an issued scope there is no idempotency key to persist
+                // under; the rejection stays transport-only.
+                Enqueue(RejectedReceipt(envelope, requestId, expected, reasonCode, detail, payload));
+                return;
+            }
+
+            RequestScopeId scopeId = new RequestScopeId(_connectionScopeId.Value.Value);
+            ulong now = (ulong)Math.Max(0L, _environment.ResolveClock().UtcNowMs);
+            TablePayloadSha256 payloadSha256 = TablePayloadSha256.Compute(payload.CopyBytes());
+            TableDurableReceipt? existing;
+            try
+            {
+                existing = _store.TryCommitRejectedReceipt(
+                    new TableDurableReceipt(
+                        _connectionAccount,
+                        scopeId,
+                        requestId,
+                        DurableReceiptApi(kind),
+                        payloadSha256,
+                        Mahjong.Contracts.Receipt.Rejected(expected, reasonCode),
+                        detail,
+                        now,
+                        now + (ulong)RejectedReceiptRetention.TotalMilliseconds),
+                    canonicalHex);
+            }
+            catch (LocalTableException)
+            {
+                Enqueue(ErrorEnvelope(
+                    ProtocolErrorCode.InternalError,
+                    "The rejection could not be durably committed."));
+                return;
+            }
+
+            if (existing != null)
+            {
+                Enqueue(ReplayOrConflictReceipt(
+                    envelope,
+                    requestId,
+                    expected,
+                    existing,
+                    DurableReceiptApi(kind),
+                    payloadSha256,
+                    canonicalHex,
+                    payload));
+                return;
+            }
+
+            Enqueue(RejectedReceipt(envelope, requestId, expected, reasonCode, detail, payload));
+        }
+
+        /// <summary>
+        /// Control-path guard: a durable receipt under this idempotency key is
+        /// decisive before any authority-state validation runs. An exact replay
+        /// replays the stored outcome; different bytes or kind conflict. Neither
+        /// overwrites the record nor re-judges a committed request against a
+        /// retired decision.
+        /// </summary>
+        private async Task<bool> RejectFromDurableReceiptAsync(
+            Envelope envelope,
+            CommandKind kind,
+            RequestId requestId,
+            StateVersion expected,
+            BusinessPayload payload,
+            RequestScopeId scopeId,
+            CancellationToken cancellationToken)
+        {
+            if (!_connectionScopeId.HasValue)
+            {
+                return false;
+            }
+
+            TableDurableReceipt? existing;
+            try
+            {
+                existing = await _store.TryGetAsync(
+                    _connectionAccount,
+                    scopeId,
+                    requestId,
+                    cancellationToken).ConfigureAwait(false);
+            }
+            catch (LocalTableException)
+            {
+                // Durable evidence is unreadable: do not guess and do not write.
+                // The transport error keeps the outbox entry unresolved for
+                // explicit reconciliation.
+                Enqueue(ErrorEnvelope(
+                    ProtocolErrorCode.InternalError,
+                    "The durable receipt evidence could not be read."));
+                return true;
+            }
+
+            if (existing == null)
+            {
+                return false;
+            }
+
+            Enqueue(ReplayOrConflictReceipt(
+                envelope,
+                requestId,
+                expected,
+                existing,
+                DurableReceiptApi(kind),
+                TablePayloadSha256.Compute(payload.CopyBytes()),
+                CanonicalPayloadDigest.Compute(payload).ToHex(),
+                payload));
+            return true;
+        }
+
+        /// <summary>
+        /// Maps a durable receipt under the request key to its wire answer: the
+        /// stored outcome when the API and payload digest match the original
+        /// commit, a request-id conflict otherwise.
+        /// </summary>
+        private Envelope ReplayOrConflictReceipt(
+            Envelope source,
+            RequestId requestId,
+            StateVersion expected,
+            TableDurableReceipt existing,
+            string api,
+            TablePayloadSha256 payloadSha256,
+            string canonicalHex,
+            BusinessPayload payload)
+        {
+            if (!existing.Matches(api, payloadSha256))
+            {
+                return RejectedReceipt(
+                    source,
+                    requestId,
+                    expected,
+                    ProtocolErrorCode.RequestIdConflict,
+                    "The same request id was used with different bytes or kind.",
+                    payload);
+            }
+
+            return ReceiptEnvelope(
+                source,
+                requestId,
+                new WireReceipt
+                {
+                    Status = existing.Receipt.Status == Mahjong.Contracts.ReceiptStatus.Recorded
+                        ? WireReceiptStatus.Recorded
+                        : existing.Receipt.Status == Mahjong.Contracts.ReceiptStatus.Rejected
+                            ? WireReceiptStatus.Rejected
+                            : WireReceiptStatus.Applied,
+                    ReasonCode = existing.Receipt.ReasonCode,
+                    EvaluatedStateVersion = existing.Receipt.EvaluatedStateVersion.Value,
+                    CommandVersion = existing.Receipt.CommandVersion.HasValue
+                        ? existing.Receipt.CommandVersion.Value.Value
+                        : 0UL,
+                    EventSeq = existing.Receipt.EventSeq.HasValue
+                        ? existing.Receipt.EventSeq.Value.Value
+                        : 0UL,
+                    Replayed = true,
+                    CanonicalPayloadSha256 = canonicalHex
+                },
+                payload);
+        }
+
+        private static string DurableReceiptApi(CommandKind kind)
+        {
+            return kind switch
+            {
+                CommandKind.ClaimControl => "CLAIM_CONTROL",
+                CommandKind.ReleaseControl => "RELEASE_CONTROL",
+                _ => ApiName(kind)
+            };
         }
 
         private async Task HandleControlCommandAsync(
@@ -1184,10 +1377,18 @@ namespace Mahjong.LocalHost
                     return;
                 }
 
-                // Only a genuinely new control request is checked against the current
-                // decision. The durable replay/conflict decisions above are independent of
-                // later decision retirement.
-                if (TryRejectStaleDecision(envelope, requestId, expected, payload, out _))
+                // A durable receipt under this idempotency key is decisive: an exact
+                // replay replays the stored outcome, different bytes or kind conflict,
+                // and neither may overwrite the record nor re-judge a committed
+                // request against a retired decision.
+                if (await RejectFromDurableReceiptAsync(
+                        envelope,
+                        kind,
+                        requestId,
+                        expected,
+                        payload,
+                        scopeId,
+                        cancellationToken).ConfigureAwait(false))
                 {
                     return;
                 }
@@ -1196,6 +1397,8 @@ namespace Mahjong.LocalHost
                     .ConfigureAwait(false);
                 if (scopeError != null)
                 {
+                    // An expired or revoked scope stays transport-only: it must not
+                    // borrow the durable rejection path to gain a persisted record.
                     Enqueue(RejectedReceipt(
                         envelope,
                         requestId,
@@ -1203,6 +1406,15 @@ namespace Mahjong.LocalHost
                         scopeError.Code,
                         scopeError.Message,
                         payload));
+                    return;
+                }
+
+                // Only a genuinely new, authorized control request is checked against
+                // the current decision; its rejection is durably committed before the
+                // receipt is published so a lost reply still reconciles by query.
+                string? pendingDecision = _actor.GetPendingDecisionId(_seat);
+                if (RejectStaleDecision(envelope, kind, requestId, expected, payload, pendingDecision))
+                {
                     return;
                 }
 
@@ -2015,6 +2227,12 @@ namespace Mahjong.LocalHost
         internal static Exception? LastEnqueueException;
         internal static TableOperationResult? LastSettlementResult;
         internal static Exception? LastCommandException;
+
+        /// <summary>
+        /// How long a rejection receipt stays queryable. Shared by the actor commit
+        /// path and the early-exit rejection path so both horizons stay identical.
+        /// </summary>
+        internal static readonly TimeSpan RejectedReceiptRetention = TimeSpan.FromHours(24);
 
         private void Enqueue(Envelope envelope)
         {
