@@ -268,6 +268,14 @@ namespace Mahjong.TableRuntime
                 : Array.Empty<LegalActionOption>();
         }
 
+        public bool HasActiveCheatOffer(int seat)
+        {
+            CheckSeat(seat);
+            return _cheat != null &&
+                   (_cheat.SleeveBloom.ImmediateOffer?.Seat == seat ||
+                    _cheat.BeamSwap.Offer?.Seat == seat);
+        }
+
         /// <summary>Host-only last accepted N-2 calculation; immutable authority evidence.</summary>
         public Mahjong.Domain.Rules.RoundSettlementCalculation? LastSettlementCalculation =>
             _lastSettlementCalculation;

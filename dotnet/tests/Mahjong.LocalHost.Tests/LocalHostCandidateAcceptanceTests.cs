@@ -473,6 +473,9 @@ namespace Mahjong.LocalHost.Tests
             specific[53] = 133; // Seat 1 draw
             specific[54] = 134; // Seat 2 draw
             specific[55] = 8;   // Seat 3 draw: 3m (8)
+            specific[100] = 9;  // Put other 3m tiles late in the wall so AI seats cannot Pon 3m
+            specific[101] = 10;
+            specific[102] = 11;
 
             harness.Options.InitialRound = BuildRoundWithSpecificSlots(specific);
 
@@ -821,6 +824,441 @@ namespace Mahjong.LocalHost.Tests
             }
         }
 
+        [Fact]
+        public async Task AddedKanAndRinshanTsumoTest()
+        {
+            await using var harness = new P41Harness();
+            CancellationToken ct = TestContext.Current.CancellationToken;
+
+            int[] handTiles = { 0, 1, 4, 5, 6, 8, 9, 10, 12, 13, 14, 16, 17, 132 };
+            int[] dealerSlots = { 0, 1, 2, 3, 16, 17, 18, 19, 32, 33, 34, 35, 48, 52 };
+            var specific = new Dictionary<int, int>();
+            for (int i = 0; i < dealerSlots.Length; i++)
+            {
+                specific[dealerSlots[i]] = handTiles[i];
+            }
+
+            specific[53] = 2;   // Seat 1 draw: tile 2 (1m) -> discards 2
+            specific[54] = 133; // Seat 1 round 2 draw
+            specific[55] = 134; // Seat 2 round 2 draw
+            specific[56] = 135; // Seat 3 round 2 draw
+            specific[57] = 3;   // Seat 0 round 2 draw: tile 3 (1m, the 4th 1m for AddedKan)
+            specific[100] = 19; // 4th 5m late in the wall so AI cannot Pon 17
+            specific[122] = 18; // Rinshan draw: tile 18 (5m, winning tile!)
+
+            harness.Options.InitialRound = BuildRoundWithSpecificSlots(specific);
+
+            (ITableChannel channel, TableSession session) = await OpenAsync(harness, ct);
+            try
+            {
+                using var pumpCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                pumpCts.CancelAfter(TimeSpan.FromSeconds(10));
+                Task pump = StartPump(session, pumpCts.Token);
+
+                // 1. Seat 0 discards 132
+                PlayerSnapshot snapshot = await WaitForDecisionAsync(session, pumpCts.Token);
+                DecisionView decision = snapshot.PrivateView.Decision!;
+
+                var discardResolved = new TaskCompletionSource<TableReceiptResolvedEventArgs>(
+                    TaskCreationOptions.RunContinuationsAsynchronously);
+                session.ReceiptResolved += (_, args) =>
+                {
+                    if (args.Command.Key.RequestId.Value == "seat0-discard-132")
+                    {
+                        discardResolved.TrySetResult(args);
+                    }
+                };
+
+                BusinessPayload discardPayload = CommandPayloadFactory.SubmitAction(
+                    snapshot.RoundId,
+                    decision.DecisionId,
+                    decision.ControlEpoch,
+                    ProtocolActionType.DiscardTile,
+                    tileIds: new uint[] { 132u });
+                var discardCommand = new ProtocolCommand(
+                    CommandKind.SubmitAction,
+                    discardPayload,
+                    new RequestId("seat0-discard-132"),
+                    session.Binding!.Scope.ScopeId,
+                    new StateVersion(snapshot.StateVersion),
+                    new RoundId(snapshot.RoundId),
+                    decisionId: new DecisionId(decision.DecisionId),
+                    controlEpoch: new ControlEpoch(decision.ControlEpoch));
+
+                await session.SubmitAsync(discardCommand, pumpCts.Token);
+                await LocalHostCommandTests.WithTimeoutAsync(discardResolved.Task, pumpCts.Token);
+
+                // 2. Seat 1 draws 2 (1m) and discards it. Seat 0 receives DeclarePon!
+                PlayerSnapshot ponSnapshot = await WaitForActionTypeAsync(
+                    session,
+                    ProtocolActionType.DeclarePon,
+                    pumpCts.Token);
+                Assert.NotNull(ponSnapshot.PrivateView.Decision);
+                DecisionView ponDecision = ponSnapshot.PrivateView.Decision;
+
+                var ponResolved = new TaskCompletionSource<TableReceiptResolvedEventArgs>(
+                    TaskCreationOptions.RunContinuationsAsynchronously);
+                session.ReceiptResolved += (_, args) =>
+                {
+                    if (args.Command.Key.RequestId.Value == "seat0-pon-1")
+                    {
+                        ponResolved.TrySetResult(args);
+                    }
+                };
+
+                BusinessPayload ponPayload = CommandPayloadFactory.SubmitAction(
+                    ponSnapshot.RoundId,
+                    ponDecision.DecisionId,
+                    ponDecision.ControlEpoch,
+                    ProtocolActionType.DeclarePon,
+                    tileIds: new uint[] { 2u, 0u, 1u });
+                var ponCommand = new ProtocolCommand(
+                    CommandKind.SubmitAction,
+                    ponPayload,
+                    new RequestId("seat0-pon-1"),
+                    session.Binding!.Scope.ScopeId,
+                    new StateVersion(session.PlayerSnapshot!.StateVersion),
+                    new RoundId(ponSnapshot.RoundId),
+                    decisionId: new DecisionId(ponDecision.DecisionId),
+                    controlEpoch: new ControlEpoch(ponDecision.ControlEpoch));
+
+                await session.SubmitAsync(ponCommand, pumpCts.Token);
+                await LocalHostCommandTests.WithTimeoutAsync(ponResolved.Task, pumpCts.Token);
+
+                // 3. Seat 0 must discard a tile after calling Pon. Discard 17 (5m).
+                PlayerSnapshot afterPonSnapshot = await WaitForActionTypeAsync(
+                    session,
+                    ProtocolActionType.DiscardTile,
+                    pumpCts.Token);
+                DecisionView afterPonDecision = afterPonSnapshot.PrivateView.Decision!;
+
+                var afterPonResolved = new TaskCompletionSource<TableReceiptResolvedEventArgs>(
+                    TaskCreationOptions.RunContinuationsAsynchronously);
+                session.ReceiptResolved += (_, args) =>
+                {
+                    if (args.Command.Key.RequestId.Value == "seat0-discard-after-pon")
+                    {
+                        afterPonResolved.TrySetResult(args);
+                    }
+                };
+
+                BusinessPayload afterPonPayload = CommandPayloadFactory.SubmitAction(
+                    afterPonSnapshot.RoundId,
+                    afterPonDecision.DecisionId,
+                    afterPonDecision.ControlEpoch,
+                    ProtocolActionType.DiscardTile,
+                    tileIds: new uint[] { 17u });
+                var afterPonCommand = new ProtocolCommand(
+                    CommandKind.SubmitAction,
+                    afterPonPayload,
+                    new RequestId("seat0-discard-after-pon"),
+                    session.Binding!.Scope.ScopeId,
+                    new StateVersion(session.PlayerSnapshot!.StateVersion),
+                    new RoundId(afterPonSnapshot.RoundId),
+                    decisionId: new DecisionId(afterPonDecision.DecisionId),
+                    controlEpoch: new ControlEpoch(afterPonDecision.ControlEpoch));
+
+                await session.SubmitAsync(afterPonCommand, pumpCts.Token);
+                await LocalHostCommandTests.WithTimeoutAsync(afterPonResolved.Task, pumpCts.Token);
+
+                // 4. Seats 1, 2, 3 discard 133, 134, 135.
+                // Seat 0 draws tile 3 (1m). Seat 0 receives DeclareKan (AddedKan candidate)!
+                PlayerSnapshot kanSnapshot = await WaitForActionTypeAsync(
+                    session,
+                    ProtocolActionType.DeclareKan,
+                    pumpCts.Token);
+                Assert.NotNull(kanSnapshot.PrivateView.Decision);
+                DecisionView kanDecision = kanSnapshot.PrivateView.Decision;
+                LegalActionView? addedKanAction = kanDecision.Actions.FirstOrDefault(
+                    a => a.ActionType == (uint)ProtocolActionType.DeclareKan &&
+                         a.OptionId.StartsWith("added-kan", StringComparison.Ordinal));
+                Assert.NotNull(addedKanAction);
+
+                var kanResolved = new TaskCompletionSource<TableReceiptResolvedEventArgs>(
+                    TaskCreationOptions.RunContinuationsAsynchronously);
+                session.ReceiptResolved += (_, args) =>
+                {
+                    if (args.Command.Key.RequestId.Value == "seat0-added-kan-1")
+                    {
+                        kanResolved.TrySetResult(args);
+                    }
+                };
+
+                BusinessPayload kanPayload = CommandPayloadFactory.SubmitAction(
+                    kanSnapshot.RoundId,
+                    kanDecision.DecisionId,
+                    kanDecision.ControlEpoch,
+                    ProtocolActionType.DeclareKan,
+                    optionId: addedKanAction.OptionId,
+                    tileIds: new uint[] { 3u },
+                    meldType: 5u);
+                var kanCommand = new ProtocolCommand(
+                    CommandKind.SubmitAction,
+                    kanPayload,
+                    new RequestId("seat0-added-kan-1"),
+                    session.Binding!.Scope.ScopeId,
+                    new StateVersion(session.PlayerSnapshot!.StateVersion),
+                    new RoundId(kanSnapshot.RoundId),
+                    decisionId: new DecisionId(kanDecision.DecisionId),
+                    controlEpoch: new ControlEpoch(kanDecision.ControlEpoch));
+
+                await session.SubmitAsync(kanCommand, pumpCts.Token);
+                TableReceiptResolvedEventArgs kanReceipt = await LocalHostCommandTests.WithTimeoutAsync(
+                    kanResolved.Task,
+                    pumpCts.Token);
+                Assert.Equal(ReceiptStatus.Applied, kanReceipt.Resolution.ReceiptStatus);
+
+                // 5. Rinshan drawn (tile 18, 5m), completing the hand!
+                // Seat 0 receives DeclareTsumo!
+                PlayerSnapshot tsumoSnapshot = await WaitForActionTypeAsync(
+                    session,
+                    ProtocolActionType.DeclareTsumo,
+                    pumpCts.Token);
+                Assert.NotNull(tsumoSnapshot.PrivateView.Decision);
+                DecisionView tsumoDecision = tsumoSnapshot.PrivateView.Decision;
+
+                var tsumoResolved = new TaskCompletionSource<TableReceiptResolvedEventArgs>(
+                    TaskCreationOptions.RunContinuationsAsynchronously);
+                session.ReceiptResolved += (_, args) =>
+                {
+                    if (args.Command.Key.RequestId.Value == "seat0-rinshan-tsumo")
+                    {
+                        tsumoResolved.TrySetResult(args);
+                    }
+                };
+
+                BusinessPayload tsumoPayload = CommandPayloadFactory.SubmitAction(
+                    tsumoSnapshot.RoundId,
+                    tsumoDecision.DecisionId,
+                    tsumoDecision.ControlEpoch,
+                    ProtocolActionType.DeclareTsumo);
+                var tsumoCommand = new ProtocolCommand(
+                    CommandKind.SubmitAction,
+                    tsumoPayload,
+                    new RequestId("seat0-rinshan-tsumo"),
+                    session.Binding!.Scope.ScopeId,
+                    new StateVersion(session.PlayerSnapshot!.StateVersion),
+                    new RoundId(tsumoSnapshot.RoundId),
+                    decisionId: new DecisionId(tsumoDecision.DecisionId),
+                    controlEpoch: new ControlEpoch(tsumoDecision.ControlEpoch));
+
+                await session.SubmitAsync(tsumoCommand, pumpCts.Token);
+                TableReceiptResolvedEventArgs tsumoReceipt;
+                try
+                {
+                    tsumoReceipt = await LocalHostCommandTests.WithTimeoutAsync(
+                        tsumoResolved.Task,
+                        pumpCts.Token);
+                }
+                catch (OperationCanceledException)
+                {
+                    throw new Exception($"tsumoResolved timed out! LastSettlementResult={LocalTableRuntime.LastSettlementResult?.Status}: {LocalTableRuntime.LastSettlementResult?.ReasonCode} {LocalTableRuntime.LastSettlementResult?.Detail}, LastCommandException={LocalTableRuntime.LastCommandException}");
+                }
+                Assert.Equal(ReceiptStatus.Applied, tsumoReceipt.Resolution.ReceiptStatus);
+
+                for (int i = 0; i < 20 &&
+                     session.PlayerSnapshot!.PublicView.Board.Phase != GamePhase.RoundEnd; i++)
+                {
+                    await Task.Delay(20, pumpCts.Token);
+                }
+
+                Assert.Equal(GamePhase.RoundEnd, session.PlayerSnapshot!.PublicView.Board.Phase);
+
+                pumpCts.Cancel();
+                await pump;
+            }
+            finally
+            {
+                await session.CloseAsync("TEST_DONE", CancellationToken.None);
+                await channel.CloseAsync(new TableChannelCloseReason("TEST_DONE", true), CancellationToken.None);
+            }
+        }
+
+        [Fact]
+        public async Task ChankanRonCandidateAndSubmissionTest()
+        {
+            await using var harness = new P41Harness();
+            CancellationToken ct = TestContext.Current.CancellationToken;
+
+            // Seat 0 hand starts in Iishanten:
+            // 2m (4), 3m (8) -> needs 1m or 4m
+            // 5-6-7m (16, 20, 24)
+            // 2-3-4p (40, 44, 48)
+            // 2-3s (76, 80) -> needs 1s or 4s
+            // 8-8s (100, 101) -> pair
+            // 130 -> dummy tile to discard on turn 2
+            // 132 -> dummy tile to discard on turn 1
+            int[] seat0Tiles = { 4, 8, 16, 20, 24, 40, 44, 48, 76, 80, 100, 101, 130, 132 };
+            int[] dealerSlots = { 0, 1, 2, 3, 16, 17, 18, 19, 32, 33, 34, 35, 48, 52 };
+            var specific = new Dictionary<int, int>();
+            for (int i = 0; i < dealerSlots.Length; i++)
+            {
+                specific[dealerSlots[i]] = seat0Tiles[i];
+            }
+
+            // Seat 1 hand has two 1m tiles (0 and 1)
+            specific[4] = 0;
+            specific[5] = 1;
+
+            // Draws:
+            specific[53] = 120; // Seat 1 turn 1 draw -> discards 120
+            specific[54] = 2;   // Seat 2 turn 1 draw -> tile 2 (1m) -> Seat 2 discards 2! Seat 1 calls Pon on 2! (Seat 0 cannot Ron because Seat 0 is in Iishanten)
+            specific[55] = 121; // Seat 2 turn 2 draw -> discards 121
+            specific[56] = 122; // Seat 3 turn 2 draw -> discards 122
+            specific[57] = 84;  // Seat 0 turn 2 draw -> tile 84 (4s) completes 2-3-4s! Seat 0 enters Tenpai waiting on 1m/4m! Discards 130!
+            specific[58] = 3;   // Seat 1 turn 2 draw -> tile 3 (4th 1m) -> Seat 1 calls AddedKan! Chankan window opens!
+
+            harness.Options.InitialRound = BuildRoundWithSpecificSlots(specific);
+
+            (ITableChannel channel, TableSession session) = await OpenAsync(harness, ct);
+            try
+            {
+                using var pumpCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                pumpCts.CancelAfter(TimeSpan.FromSeconds(10));
+                Task pump = StartPump(session, pumpCts.Token);
+
+                // 1. Seat 0 discards 132
+                PlayerSnapshot snapshot = await WaitForDecisionAsync(session, pumpCts.Token);
+                DecisionView decision = snapshot.PrivateView.Decision!;
+
+                var discardResolved = new TaskCompletionSource<TableReceiptResolvedEventArgs>(
+                    TaskCreationOptions.RunContinuationsAsynchronously);
+                session.ReceiptResolved += (_, args) =>
+                {
+                    if (args.Command.Key.RequestId.Value == "seat0-discard-132")
+                    {
+                        discardResolved.TrySetResult(args);
+                    }
+                };
+
+                BusinessPayload discardPayload = CommandPayloadFactory.SubmitAction(
+                    snapshot.RoundId,
+                    decision.DecisionId,
+                    decision.ControlEpoch,
+                    ProtocolActionType.DiscardTile,
+                    tileIds: new uint[] { 132u });
+                var discardCommand = new ProtocolCommand(
+                    CommandKind.SubmitAction,
+                    discardPayload,
+                    new RequestId("seat0-discard-132"),
+                    session.Binding!.Scope.ScopeId,
+                    new StateVersion(snapshot.StateVersion),
+                    new RoundId(snapshot.RoundId),
+                    decisionId: new DecisionId(decision.DecisionId),
+                    controlEpoch: new ControlEpoch(decision.ControlEpoch));
+
+                await session.SubmitAsync(discardCommand, pumpCts.Token);
+                await LocalHostCommandTests.WithTimeoutAsync(discardResolved.Task, pumpCts.Token);
+
+                // 2. Seat 0 draws tile 84 (4s) on turn 2, completing 2-3-4s (reaches Tenpai), discards 130
+                PlayerSnapshot turn2Snapshot = await WaitForActionTypeAsync(
+                    session,
+                    ProtocolActionType.DiscardTile,
+                    pumpCts.Token);
+                DecisionView turn2Decision = turn2Snapshot.PrivateView.Decision!;
+
+                var discard2Resolved = new TaskCompletionSource<TableReceiptResolvedEventArgs>(
+                    TaskCreationOptions.RunContinuationsAsynchronously);
+                session.ReceiptResolved += (_, args) =>
+                {
+                    if (args.Command.Key.RequestId.Value == "seat0-discard-130")
+                    {
+                        discard2Resolved.TrySetResult(args);
+                    }
+                };
+
+                BusinessPayload discard2Payload = CommandPayloadFactory.SubmitAction(
+                    turn2Snapshot.RoundId,
+                    turn2Decision.DecisionId,
+                    turn2Decision.ControlEpoch,
+                    ProtocolActionType.DiscardTile,
+                    tileIds: new uint[] { 130u });
+                var discard2Command = new ProtocolCommand(
+                    CommandKind.SubmitAction,
+                    discard2Payload,
+                    new RequestId("seat0-discard-130"),
+                    session.Binding!.Scope.ScopeId,
+                    new StateVersion(session.PlayerSnapshot!.StateVersion),
+                    new RoundId(turn2Snapshot.RoundId),
+                    decisionId: new DecisionId(turn2Decision.DecisionId),
+                    controlEpoch: new ControlEpoch(turn2Decision.ControlEpoch));
+
+                await session.SubmitAsync(discard2Command, pumpCts.Token);
+                await LocalHostCommandTests.WithTimeoutAsync(discard2Resolved.Task, pumpCts.Token);
+
+                // 3. Seat 1 draws tile 3 (1m) and declares AddedKan!
+                // Seat 0 receives DeclareRon in ChankanWindow!
+                PlayerSnapshot ronSnapshot = await WaitForActionTypeAsync(
+                    session,
+                    ProtocolActionType.DeclareRon,
+                    pumpCts.Token);
+                await Task.Delay(150, pumpCts.Token);
+                ronSnapshot = session.PlayerSnapshot!;
+                Assert.NotNull(ronSnapshot.PrivateView.Decision);
+                DecisionView ronDecision = ronSnapshot.PrivateView.Decision;
+
+                var ronResolved = new TaskCompletionSource<TableReceiptResolvedEventArgs>(
+                    TaskCreationOptions.RunContinuationsAsynchronously);
+                session.ReceiptResolved += (_, args) =>
+                {
+                    if (args.Command.Key.RequestId.Value == "seat0-chankan-ron-1")
+                    {
+                        ronResolved.TrySetResult(args);
+                    }
+                };
+
+                BusinessPayload ronPayload = CommandPayloadFactory.SubmitAction(
+                    ronSnapshot.RoundId,
+                    ronDecision.DecisionId,
+                    ronDecision.ControlEpoch,
+                    ProtocolActionType.DeclareRon);
+                var ronCommand = new ProtocolCommand(
+                    CommandKind.SubmitAction,
+                    ronPayload,
+                    new RequestId("seat0-chankan-ron-1"),
+                    session.Binding!.Scope.ScopeId,
+                    new StateVersion(session.PlayerSnapshot!.StateVersion),
+                    new RoundId(ronSnapshot.RoundId),
+                    decisionId: new DecisionId(ronDecision.DecisionId),
+                    controlEpoch: new ControlEpoch(ronDecision.ControlEpoch));
+
+                CommandSubmission ronSub = await session.SubmitAsync(ronCommand, pumpCts.Token);
+                Assert.True(ronSub.Sent);
+
+                TableReceiptResolvedEventArgs ronReceipt;
+                try
+                {
+                    ronReceipt = await LocalHostCommandTests.WithTimeoutAsync(
+                        ronResolved.Task,
+                        pumpCts.Token);
+                }
+                catch (OperationCanceledException)
+                {
+                    throw new Exception($"ronResolved timed out! LastSettlementResult={LocalTableRuntime.LastSettlementResult?.Status}: {LocalTableRuntime.LastSettlementResult?.ReasonCode} {LocalTableRuntime.LastSettlementResult?.Detail}, LastCommandException={LocalTableRuntime.LastCommandException}");
+                }
+
+                Assert.True(
+                    ronReceipt.Resolution.ReceiptStatus == ReceiptStatus.Applied,
+                    "ron rejected: " + ronReceipt.Resolution.ReasonCode);
+
+                for (int i = 0; i < 20 &&
+                     session.PlayerSnapshot!.PublicView.Board.Phase != GamePhase.RoundEnd; i++)
+                {
+                    await Task.Delay(20, pumpCts.Token);
+                }
+
+                Assert.Equal(GamePhase.RoundEnd, session.PlayerSnapshot!.PublicView.Board.Phase);
+
+                pumpCts.Cancel();
+                await pump;
+            }
+            finally
+            {
+                await session.CloseAsync("TEST_DONE", CancellationToken.None);
+                await channel.CloseAsync(new TableChannelCloseReason("TEST_DONE", true), CancellationToken.None);
+            }
+        }
+
         private static Task StartPump(TableSession session, CancellationToken token)
         {
             return Task.Run(async () =>
@@ -945,5 +1383,6 @@ namespace Mahjong.LocalHost.Tests
                 0);
             return RoundStateMachine.CreateDealt(spec, dealt, RoundPhase.CheatWindow);
         }
+
     }
 }

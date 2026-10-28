@@ -157,7 +157,15 @@ namespace Mahjong.LocalHost
                 case RoundPhase.KanDraw:
                     if (_aiSeats[seat])
                     {
-                        await SubmitDrawAsync(snapshot, seat).ConfigureAwait(false);
+                        RoundStateMachine round = _actor.GetRoundStateForHost();
+                        if (round.Tiles.WallRemaining == 0)
+                        {
+                            await SubmitExhaustiveDrawAsync(snapshot, seat).ConfigureAwait(false);
+                        }
+                        else
+                        {
+                            await SubmitDrawAsync(snapshot, seat).ConfigureAwait(false);
+                        }
                     }
 
                     break;
@@ -165,6 +173,11 @@ namespace Mahjong.LocalHost
                 case RoundPhase.CheatWindow:
                 case RoundPhase.Discard:
                 {
+                    if (!_aiSeats[seat] && _actor.HasActiveCheatOffer(seat))
+                    {
+                        break;
+                    }
+
                     RoundStateMachine round = _actor.GetRoundStateForHost();
                     if (round.IsFinished)
                     {
@@ -343,6 +356,36 @@ namespace Mahjong.LocalHost
                 }
             }
 
+            // Next prioritize AddedKan (加杠)
+            if (chosen == null)
+            {
+                for (int i = 0; i < observation.LegalActions.Count; i++)
+                {
+                    LegalActionOption option = observation.LegalActions[i];
+                    if (option.Kind == LegalActionKind.Kan &&
+                        option.OptionId != null &&
+                        option.OptionId.StartsWith("added-kan", StringComparison.Ordinal))
+                    {
+                        chosen = option;
+                        break;
+                    }
+                }
+            }
+
+            // Next prioritize Pon (碰) in response windows
+            if (chosen == null)
+            {
+                for (int i = 0; i < observation.LegalActions.Count; i++)
+                {
+                    LegalActionOption option = observation.LegalActions[i];
+                    if (option.Kind == LegalActionKind.Pon)
+                    {
+                        chosen = option;
+                        break;
+                    }
+                }
+            }
+
             // Next prefer discard (prefer tsumogiri discard if available)
             if (chosen == null && observation.MyDrawnTileId.HasValue)
             {
@@ -426,6 +469,51 @@ namespace Mahjong.LocalHost
             {
                 await SubmitSettlementAsync(snapshot, seat, TableSettlementAction.Ron, decId).ConfigureAwait(false);
             }
+            else if (chosen.Kind == LegalActionKind.Pon)
+            {
+                RoundResponseWindow? window = round.Window;
+                if (window != null)
+                {
+                    IReadOnlyList<TileId> hand = round.Tiles.TilesInZone(TileZone.Hand, seat);
+                    var matched = new List<TileId>(2);
+                    for (int i = 0; i < hand.Count && matched.Count < 2; i++)
+                    {
+                        if (hand[i].SameType(window.TargetTile))
+                        {
+                            matched.Add(hand[i]);
+                        }
+                    }
+
+                    if (matched.Count == 2)
+                    {
+                        RoundCommand command = RoundCommand.Pon(
+                            snapshot.RoundId,
+                            seat,
+                            window.TargetTile,
+                            matched[0],
+                            matched[1]);
+                        await SubmitAsync(snapshot, seat, command, "AI_PON", decId).ConfigureAwait(false);
+                    }
+                }
+            }
+            else if (chosen.Kind == LegalActionKind.Kan &&
+                     chosen.OptionId != null &&
+                     chosen.OptionId.StartsWith("added-kan", StringComparison.Ordinal) &&
+                     chosen.Tile.HasValue)
+            {
+                IReadOnlyList<int> eligible = LocalCandidateProvider.DeriveEligibleSeatsForAddedKan(
+                    round,
+                    seat,
+                    chosen.Tile.Value,
+                    _temporaryFuriten,
+                    _riichiFuriten);
+                RoundCommand command = RoundCommand.AddedKan(
+                    snapshot.RoundId,
+                    seat,
+                    chosen.Tile.Value,
+                    eligible);
+                await SubmitAsync(snapshot, seat, command, "AI_ADDED_KAN", decId).ConfigureAwait(false);
+            }
             else
             {
                 var intent = new Mahjong.Ai.CommandIntent(observation, chosen, "local-ai", 1);
@@ -490,10 +578,6 @@ namespace Mahjong.LocalHost
                 api,
                 TablePayloadSha256.Compute(business));
             TableOperationResult result = await _actor.SubmitSettlementAsync(request, _stop.Token).ConfigureAwait(false);
-            if (result.Status == TableOperationStatus.Rejected || result.Status == TableOperationStatus.Failed)
-            {
-                Console.WriteLine($"[DRIVER_REJECTED] {api} seat={seat} status={result.Status} code={result.ReasonCode} detail={result.Detail}");
-            }
             return result;
         }
 
@@ -521,10 +605,6 @@ namespace Mahjong.LocalHost
                 api,
                 TablePayloadSha256.Compute(business));
             TableOperationResult result = await _actor.SubmitAsync(envelope, _stop.Token).ConfigureAwait(false);
-            if (result.Status == TableOperationStatus.Rejected || result.Status == TableOperationStatus.Failed)
-            {
-                Console.WriteLine($"[DRIVER_REJECTED] {api} seat={seat} status={result.Status} code={result.ReasonCode} detail={result.Detail}");
-            }
             return result;
         }
 

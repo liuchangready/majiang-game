@@ -365,6 +365,7 @@ namespace Mahjong.LocalHost
             }
             catch (Exception exception)
             {
+                LastCommandException = exception;
                 Enqueue(ErrorEnvelope(ProtocolErrorCode.InternalError, exception.GetType().Name + ": " + exception.Message));
             }
         }
@@ -815,25 +816,23 @@ namespace Mahjong.LocalHost
                         api,
                         cancellationToken).ConfigureAwait(false);
                     if (result.Status == TableOperationStatus.Rejected &&
-                        string.Equals(result.ReasonCode, TableRuntimeReasonCode.DecisionMismatch, StringComparison.Ordinal))
+                        string.Equals(result.ReasonCode, TableRuntimeReasonCode.DecisionMismatch, StringComparison.Ordinal) &&
+                        string.IsNullOrEmpty(suppliedDecision))
                     {
                         string? latePendingId = _actor.GetPendingDecisionId(_seat);
-                        if (!string.IsNullOrEmpty(latePendingId))
-                        {
-                            result = await SubmitCheatAsync(
-                                envelope,
-                                document,
-                                payload,
-                                kind,
-                                requestId,
-                                expected,
-                                owner,
-                                controlEpoch,
-                                new DecisionId(latePendingId!),
-                                digest,
-                                api,
-                                cancellationToken).ConfigureAwait(false);
-                        }
+                        result = await SubmitCheatAsync(
+                            envelope,
+                            document,
+                            payload,
+                            kind,
+                            new RequestId(requestId.Value + "-retry"),
+                            expected,
+                            owner,
+                            controlEpoch,
+                            string.IsNullOrEmpty(latePendingId) ? null : new DecisionId(latePendingId!),
+                            digest,
+                            api,
+                            cancellationToken).ConfigureAwait(false);
                     }
                 }
                 else if (TableSettlementIntent.IsSettlementAction(MapActionKind(document)))
@@ -851,6 +850,22 @@ namespace Mahjong.LocalHost
                         api,
                         cancellationToken).ConfigureAwait(false);
                 }
+                else if (hostAction == RoundActionKind.DrawTile && _actor.GetRoundStateForHost().Tiles.WallRemaining == 0)
+                {
+                    result = await SubmitSettlementAsync(
+                        envelope,
+                        document,
+                        payload,
+                        requestId,
+                        expected,
+                        owner,
+                        controlEpoch,
+                        decisionId,
+                        digest,
+                        "SUBMIT_EXHAUSTIVE_DRAW",
+                        cancellationToken,
+                        overrideSettlementAction: TableSettlementAction.ExhaustiveDraw).ConfigureAwait(false);
+                }
                 else
                 {
                     RoundCommand command = BuildRoundCommand(envelope, document);
@@ -866,6 +881,24 @@ namespace Mahjong.LocalHost
                         api,
                         digest);
                     result = await _actor.SubmitAsync(request, cancellationToken).ConfigureAwait(false);
+                    if (result.Status == TableOperationStatus.Rejected &&
+                        string.Equals(result.ReasonCode, TableRuntimeReasonCode.DecisionMismatch, StringComparison.Ordinal) &&
+                        string.IsNullOrEmpty(suppliedDecision))
+                    {
+                        string? latePendingId = _actor.GetPendingDecisionId(_seat);
+                        var retryRequest = new TableCommandEnvelope(
+                            command,
+                            new RequestId(requestId.Value + "-retry"),
+                            expected,
+                            owner,
+                            new ControlEpoch(unchecked((ulong)controlEpoch)),
+                            string.IsNullOrEmpty(latePendingId) ? null : new DecisionId(latePendingId!),
+                            _actor.RecoveryGeneration,
+                            new RequestScopeId(_connectionScopeId!.Value.Value),
+                            api,
+                            digest);
+                        result = await _actor.SubmitAsync(retryRequest, cancellationToken).ConfigureAwait(false);
+                    }
                 }
 
                 if (result.Status == TableOperationStatus.Accepted)
@@ -894,6 +927,7 @@ namespace Mahjong.LocalHost
                 {
                     _store.ClearPreparedFuriten();
                 }
+                LastSettlementResult = result;
                 await PublishResultAsync(envelope, result, requestId, payload, cancellationToken).ConfigureAwait(false);
             }
             catch (LocalCommandException exception)
@@ -1043,26 +1077,34 @@ namespace Mahjong.LocalHost
             DecisionId? decisionId,
             TablePayloadSha256 digest,
             string api,
-            CancellationToken cancellationToken)
+            CancellationToken cancellationToken,
+            TableSettlementAction? overrideSettlementAction = null)
         {
-            RoundActionKind action = MapActionKind(document);
             TableSettlementAction settlementAction;
-            switch (action)
+            if (overrideSettlementAction.HasValue)
             {
-                case RoundActionKind.DeclareTsumo:
-                    settlementAction = TableSettlementAction.Tsumo;
-                    break;
-                case RoundActionKind.DeclareRon:
-                    settlementAction = TableSettlementAction.Ron;
-                    break;
-                case RoundActionKind.DeclareExhaustiveDraw:
-                    settlementAction = TableSettlementAction.ExhaustiveDraw;
-                    break;
-                case RoundActionKind.DeclareAbortiveDraw:
-                    settlementAction = TableSettlementAction.AbortiveDraw;
-                    break;
-                default:
-                    throw new LocalCommandException(ProtocolErrorCode.MalformedMessage, "Unsupported settlement action.");
+                settlementAction = overrideSettlementAction.Value;
+            }
+            else
+            {
+                RoundActionKind action = MapActionKind(document);
+                switch (action)
+                {
+                    case RoundActionKind.DeclareTsumo:
+                        settlementAction = TableSettlementAction.Tsumo;
+                        break;
+                    case RoundActionKind.DeclareRon:
+                        settlementAction = TableSettlementAction.Ron;
+                        break;
+                    case RoundActionKind.DeclareExhaustiveDraw:
+                        settlementAction = TableSettlementAction.ExhaustiveDraw;
+                        break;
+                    case RoundActionKind.DeclareAbortiveDraw:
+                        settlementAction = TableSettlementAction.AbortiveDraw;
+                        break;
+                    default:
+                        throw new LocalCommandException(ProtocolErrorCode.MalformedMessage, "Unsupported settlement action.");
+                }
             }
 
             string roundId = document.HasField(CommandPayloadFields.RoundIdField)
@@ -1463,14 +1505,7 @@ namespace Mahjong.LocalHost
                     }
 
                     var discardTile = new TileId(unchecked((int)tiles[0]));
-                    RoundStateMachine roundForDiscard = _actor.GetRoundStateForHost();
-                    IReadOnlyList<int> discardEligible = LocalCandidateProvider.DeriveEligibleSeatsForDiscard(
-                        roundForDiscard,
-                        _seat,
-                        discardTile,
-                        _temporaryFuriten,
-                        _riichiFuriten);
-                    return RoundCommand.Discard(roundId, _seat, discardTile, discardEligible);
+                    return RoundCommand.Discard(roundId, _seat, discardTile);
                 case RoundActionKind.Pass:
                     return RoundCommand.Pass(roundId, _seat);
                 case RoundActionKind.DeclareRiichi:
@@ -1486,14 +1521,7 @@ namespace Mahjong.LocalHost
                     }
 
                     var riichiTile = new TileId(unchecked((int)riichiTiles[0]));
-                    RoundStateMachine roundForRiichi = _actor.GetRoundStateForHost();
-                    IReadOnlyList<int> riichiEligible = LocalCandidateProvider.DeriveEligibleSeatsForDiscard(
-                        roundForRiichi,
-                        _seat,
-                        riichiTile,
-                        _temporaryFuriten,
-                        _riichiFuriten);
-                    return RoundCommand.Riichi(roundId, _seat, riichiTile, riichiEligible);
+                    return RoundCommand.Riichi(roundId, _seat, riichiTile, null);
                 case RoundActionKind.DeclareChi:
                 {
                     RoundStateMachine round = _actor.GetRoundStateForHost();
@@ -1625,7 +1653,16 @@ namespace Mahjong.LocalHost
                         ? document.RequireUInt32(CommandPayloadFields.MeldType, "meldType")
                         : 0U;
                     RoundStateMachine round = _actor.GetRoundStateForHost();
-                    if (action == RoundActionKind.DeclareClosedKan || meldType == 4U)
+                    string? optionId = document.HasField(CommandPayloadFields.OptionId)
+                        ? document.RequireString(CommandPayloadFields.OptionId, "optionId")
+                        : null;
+                    bool isClosed = action == RoundActionKind.DeclareClosedKan ||
+                                    meldType == 4U ||
+                                    (optionId != null && optionId.StartsWith("closed-kan", StringComparison.Ordinal));
+                    bool isAdded = action == RoundActionKind.DeclareAddedKan ||
+                                   meldType == 5U ||
+                                   (optionId != null && optionId.StartsWith("added-kan", StringComparison.Ordinal));
+                    if (isClosed)
                     {
                         IReadOnlyList<uint> kan = document.HasField(CommandPayloadFields.TileIds)
                             ? document.RequireRepeatedUInt32(CommandPayloadFields.TileIds, "tileIds")
@@ -1654,9 +1691,16 @@ namespace Mahjong.LocalHost
                         throw new LocalCommandException(ProtocolErrorCode.MalformedMessage, "ClosedKan requires 4 tile ids.");
                     }
 
-                    if (action == RoundActionKind.DeclareAddedKan || meldType == 5U)
+                    if (isAdded)
                     {
-                        IReadOnlyList<uint> added = RequireMeldTiles(document, "AddedKan", 1);
+                        IReadOnlyList<uint> added = document.HasField(CommandPayloadFields.TileIds)
+                            ? document.RequireRepeatedUInt32(CommandPayloadFields.TileIds, "tileIds")
+                            : Array.Empty<uint>();
+                        if (added.Count == 0)
+                        {
+                            throw new LocalCommandException(ProtocolErrorCode.MalformedMessage, "AddedKan requires at least 1 tile id.");
+                        }
+
                         var addedTile = new TileId(unchecked((int)added[0]));
                         IReadOnlyList<int> chankanEligible = LocalCandidateProvider.DeriveEligibleSeatsForAddedKan(
                             round,
@@ -1825,6 +1869,10 @@ namespace Mahjong.LocalHost
             return _store.LeaseEpoch.Value;
         }
 
+        internal static Exception? LastEnqueueException;
+        internal static TableOperationResult? LastSettlementResult;
+        internal static Exception? LastCommandException;
+
         private void Enqueue(Envelope envelope)
         {
             try
@@ -1835,6 +1883,7 @@ namespace Mahjong.LocalHost
             }
             catch (Exception exception)
             {
+                LastEnqueueException = exception;
                 byte[] fallback = WireCodec.Encode(ErrorEnvelope(
                     ProtocolErrorCode.InternalError,
                     "The local loopback response was rejected: " + exception.Message));
