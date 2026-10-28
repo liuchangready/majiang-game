@@ -357,3 +357,26 @@ native_exit=0
 - 未提交 DLL/PDB/Player/截图/日志；未 push、未创建 PR/MR、未合并 v5、未部署、未创建 `complete.flag`。
 - 最终由 caller 审查后把本报告并入唯一 PR20：`https://github.com/liuchangready/majiang-game/pull/20`；不创建组件 PR。
 - 本报告只证明当前已接受完整 Unity 集成项目的 Windows Player fresh 构建与既有 shell 运行；不把历史通过或组件通过扩大为迁移完成。
+
+## 12. Caller 独立验收（2026-10-28）
+
+**本任务范围接受。** 冻结源码仍为 `392b973`；交付报告提交为 `97a38c58504b6d97daf58c9c5b1bf538b88052f5`。Caller 未重新构建 Player，以已保留的 fresh 构建日志、原生退出记录、完整输出和源码闭包逐字节一致性核验该次构建；随后独立实际重跑该 Player。
+
+- 实际重跑交付的 `scripts/verify-evidence.ps1`：**29 checks / 0 failures，native exit 0**。
+- 对 manifest 的全部 **332 文件**重新计算长度与 SHA256，**0 差异**；manifest 自身 SHA256 与 §11 一致。另对当前工作区与验证前清单的 **310 个 tracked Unity 文件**逐一重算，**0 差异**，而非只比较两份历史 CSV。
+- 独立执行原 `tools/unity/run-player-smoke.ps1`，输入为本任务 fresh `player/win64-d39f48d9/Mahjong.exe`，输出写入独占 `build/codex-player-review-3ab6a34cc18c4af1a71259ff3a39028f/`：Player **PID 50160、native exit 0**，wrapper **exit 0**，完整生命周期顺序和截图断言通过。新生成的四张 PNG 与交付四图逐一同 SHA256。
+- Caller 实际查看四张原始 PNG：菜单、返回菜单、退出弹窗文字与按钮可读，大厅显示 `LOCAL_HOST_UNAVAILABLE` 和不可用的开始按钮。大厅标题与黄色状态文案局部间距偏紧、相互贴近，作为既有壳的视觉观察保留；本次接受构建与 shell 行为，不宣称视觉品质验收或完整游戏可玩。交付方 §5.2 的“人工目视 NOT_RUN”仍准确描述其自身执行，本节补充的是 caller 目视证据。
+
+**边界复跑的环境失败与替代核验分别记录：**
+
+1. 原入口加 `-StrictCompiled` 的 caller 复跑真实 **exit 1**：`MISSING_COMPILED_DIR`，当前 ignored `unity/Mahjong.Unity/Library/ScriptAssemblies` 已不存在。该次不记 PASS，不推断缓存消失原因；交付阶段 §6 原始 StrictCompiled PASS 报告及日志仍由 manifest 完整校验，不能用本次缺缓存改写历史结果。
+2. 当前源码按原入口不加 `-StrictCompiled` 复跑 **exit 0**：`asmdef_dag=PASS`、`source_reflection_scan=PASS`、`metadata_direct_refs=NOT_RUN`。结果在 `build/codex-current-player-static.json`，失败记录在 `build/codex-current-player-strict.json`。
+3. 为独立核验实际运行的二进制，caller 将原 `check-unity-boundaries.ps1` 内嵌 C# metadata probe **原样提取**到上述独占目录的 `player-metadata-probe/`，使用相同 `net8.0` 项目配置，执行：
+
+   ```powershell
+   D:/Unity/dotnet/dotnet.exe run --project <caller-evidence>/player-metadata-probe/Probe.csproj -- <fresh-player>/Mahjong_Data/Managed <fresh-player>/Mahjong_Data/Managed
+   ```
+
+   **native exit 0**，无 metadata 错误。此项检查真实 Player 的 CLI/type metadata 和五个 Unity 运行程序集的禁止直接引用；不把 Player DLL 复制成 Editor 缓存，不修改检查器/策略，也不冒充当前 Editor StrictCompiled 重跑通过。PlayMode/EditMode 测试程序集不属于该 Player 检查。
+
+Caller 未发现阻止本任务 fresh Windows64 Mono 构建及既有 shell 运行的功能缺陷。D-U-01 仍保留：先执行 `build-shared.ps1` 是本次有效前置，未经此步骤的陈旧 tracked 插件不获接受。原 B2b 300 秒超时根因、P4.2-B、P4.5、LocalHost、远端完整 E2E、设备与 G2–G5 等边界保持不变；新增报告提交的远端 CI 必须与冻结源码的历史 CI 分开审查。
