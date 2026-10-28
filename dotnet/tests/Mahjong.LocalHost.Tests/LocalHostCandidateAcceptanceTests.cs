@@ -1785,13 +1785,28 @@ namespace Mahjong.LocalHost.Tests
 
                 // 2. Seat 0 is now in Discard phase with concealed hand: 1-9m + Hatsu pair.
                 // Although the hand shape looks like a winning hand (CanWin=true), DrawnTile is null!
-                // CRITICAL ASSERTION: Must NOT offer DeclareTsumo!
-                PlayerSnapshot afterPonSnapshot = await WaitForActionTypeAsync(
+                // CRITICAL ASSERTION: Must NOT offer DeclareTsumo! The pon receipt and the
+                // post-call PUSH are separate; require a new decision at/after the pon
+                // command version so a stale pre-call snapshot cannot satisfy this block.
+                Assert.True(ponReceipt.Resolution.CommandVersion.HasValue, "pon receipt has no command version.");
+                Assert.True(ponReceipt.Resolution.EventSeq.HasValue, "pon receipt has no event seq.");
+                PlayerSnapshot afterPonSnapshot = await LocalHostCommandTests.WaitForPlayerSnapshotAsync(
                     session,
-                    ProtocolActionType.DiscardTile,
+                    candidate => HasNewDecisionAfter(
+                        candidate,
+                        ponSnapshot.RoundId,
+                        ponDecision.DecisionId,
+                        ponReceipt.Resolution.CommandVersion!.Value.Value,
+                        ponReceipt.Resolution.EventSeq!.Value.Value,
+                        ProtocolActionType.DiscardTile),
+                    "seat0 discard decision after seat0-pon-white-1",
                     pumpCts.Token);
                 Assert.NotNull(afterPonSnapshot.PrivateView.Decision);
-                DecisionView afterPonDecision = afterPonSnapshot.PrivateView.Decision;
+                DecisionView afterPonDecision = afterPonSnapshot.PrivateView.Decision!;
+                Assert.NotEqual(ponDecision.DecisionId, afterPonDecision.DecisionId);
+                Assert.True(
+                    afterPonSnapshot.StateVersion >= ponReceipt.Resolution.CommandVersion!.Value.Value,
+                    "post-pon snapshot regressed below the applied pon command version.");
 
                 Assert.DoesNotContain(afterPonDecision.Actions,
                     a => a.ActionType == (uint)ProtocolActionType.DeclareTsumo);
@@ -1823,20 +1838,70 @@ namespace Mahjong.LocalHost.Tests
                     discardPayload,
                     new RequestId("seat0-discard-after-call"),
                     session.Binding!.Scope.ScopeId,
-                    new StateVersion(session.PlayerSnapshot!.StateVersion),
+                    new StateVersion(afterPonSnapshot.StateVersion),
                     new RoundId(afterPonSnapshot.RoundId),
                     decisionId: new DecisionId(afterPonDecision.DecisionId),
                     controlEpoch: new ControlEpoch(afterPonDecision.ControlEpoch));
 
-                await session.SubmitAsync(discardCommand, pumpCts.Token);
-                TableReceiptResolvedEventArgs discardReceipt = await LocalHostCommandTests.WithTimeoutAsync(
-                    discardResolved.Task,
-                    pumpCts.Token);
-                Assert.Equal(ReceiptStatus.Applied, discardReceipt.Resolution.ReceiptStatus);
-                // debug removed
+                CommandSubmission discardSubmission = await session.SubmitAsync(discardCommand, pumpCts.Token);
+                Assert.True(
+                    discardSubmission.Sent,
+                    "seat0-discard-after-call was not handed to the transport. " +
+                    LocalHostCommandTests.DescribeSession(session));
+                TableReceiptResolvedEventArgs discardReceipt;
+                try
+                {
+                    discardReceipt = await LocalHostCommandTests.WithTimeoutAsync(
+                        discardResolved.Task,
+                        pumpCts.Token);
+                }
+                catch (TimeoutException exception)
+                {
+                    throw new TimeoutException(
+                        "seat0-discard-after-call receipt timed out; decision=" +
+                        afterPonDecision.DecisionId +
+                        " stateVersion=" + afterPonSnapshot.StateVersion +
+                        " sent=" + discardSubmission.Sent +
+                        ". " + LocalHostCommandTests.DescribeSession(session),
+                        exception);
+                }
 
-                // Confirm Seat 0's discard is committed onto public board
-                Assert.Contains(session.PlayerSnapshot!.PublicView.Board.Players[0].Discards, d => d.TileId == 109u);
+                Assert.True(
+                    discardReceipt.Resolution.ReceiptStatus == ReceiptStatus.Applied,
+                    "seat0-discard-after-call rejected: " + discardReceipt.Resolution.ReasonCode +
+                    " evaluated=" + discardReceipt.Resolution.EvaluatedStateVersion +
+                    ". " + LocalHostCommandTests.DescribeSession(session));
+                Assert.True(discardReceipt.Resolution.CommandVersion.HasValue, "discard receipt has no command version.");
+                Assert.True(discardReceipt.Resolution.EventSeq.HasValue, "discard receipt has no event seq.");
+
+                // Confirm Seat 0's discard is committed onto the public board at the
+                // applied command version. ReceiptResolved can arrive before the PUSH
+                // that carries the public board, so the assertion itself stays exact
+                // while the wait is driven by the snapshot's authoritative versions.
+                PlayerSnapshot discardedSnapshot = await LocalHostCommandTests.WaitForPlayerSnapshotAsync(
+                    session,
+                    candidate => candidate.StateVersion >= discardReceipt.Resolution.CommandVersion!.Value.Value &&
+                                 candidate.EventSeq >= discardReceipt.Resolution.EventSeq!.Value.Value &&
+                                 candidate.PublicView.Board.Players[0].Discards.Any(d => d.TileId == 109u),
+                    "public board contains seat0 discard 109 at the applied discard version",
+                    pumpCts.Token);
+                Assert.Contains(discardedSnapshot.PublicView.Board.Players[0].Discards, d => d.TileId == 109u);
+                Assert.False(
+                    discardedSnapshot.PrivateView.Decision != null &&
+                    discardedSnapshot.PrivateView.Decision.Actions.Any(
+                        action => action.ActionType == (uint)ProtocolActionType.DeclareTsumo),
+                    "a discard decision offered DeclareTsumo without a drawn tile.");
+
+                RoundStateMachine roundAfterDiscard = ((LocalTableChannel)channel).RuntimeForMatch!
+                    .ActorForTest.GetRoundStateForHost();
+                Assert.Contains(
+                    roundAfterDiscard.Tiles.TilesInZone(TileZone.Discard, 0),
+                    tile => tile.Value == 109);
+                ConservationReport conservation = TilePositionMap.Validate(roundAfterDiscard.Tiles);
+                Assert.True(
+                    conservation.IsValid,
+                    "physical conservation failed after seat0-discard-after-call: " + conservation);
+                Assert.Equal(136, conservation.AssignedCount);
 
                 pumpCts.Cancel();
                 await pump;
@@ -1947,6 +2012,31 @@ namespace Mahjong.LocalHost.Tests
             }
 
             throw new TimeoutException("Player snapshot did not receive an open decision in time.");
+        }
+
+        private static bool HasNewDecisionAfter(
+            PlayerSnapshot snapshot,
+            string roundId,
+            string previousDecisionId,
+            ulong minStateVersion,
+            ulong minEventSeq,
+            ProtocolActionType actionType)
+        {
+            if (!string.Equals(snapshot.RoundId, roundId, StringComparison.Ordinal) ||
+                snapshot.StateVersion < minStateVersion ||
+                snapshot.EventSeq < minEventSeq)
+            {
+                return false;
+            }
+
+            DecisionView? decision = snapshot.PrivateView?.Decision;
+            if (decision == null ||
+                string.Equals(decision.DecisionId, previousDecisionId, StringComparison.Ordinal))
+            {
+                return false;
+            }
+
+            return decision.Actions.Any(action => action.ActionType == (uint)actionType);
         }
 
         private static Task<PlayerSnapshot> WaitForActionTypeAsync(

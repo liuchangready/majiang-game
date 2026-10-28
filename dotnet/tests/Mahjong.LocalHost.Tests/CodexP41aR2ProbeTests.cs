@@ -78,7 +78,7 @@ namespace Mahjong.LocalHost.Tests
             specific[54] = 2;   // Seat 2 turn 1 draw -> tile 2 (1m) -> Seat 2 discards 2! Seat 1 calls Pon on 2! (Seat 0 cannot Ron because Seat 0 is in Iishanten)
             specific[55] = 121; // Seat 2 turn 2 draw -> discards 121
             specific[56] = 122; // Seat 3 turn 2 draw -> discards 122
-            specific[57] = 104;  // Seat 0 turn 2 draw -> tile 84 (4s) completes 2-3-4s! Seat 0 enters Tenpai waiting on 1m/4m! Discards 130!
+            specific[57] = 104;  // Seat 0 turn 2 draw -> the actual drawn entity is 104 (the fixture, not the stale 84 comment); discards 130
             specific[58] = 3;   // Seat 1 turn 2 draw -> tile 3 (4th 1m) -> Seat 1 calls AddedKan! Chankan window opens!
 
             harness.Options.InitialRound = BuildRoundWithSpecificSlots(specific);
@@ -91,7 +91,12 @@ namespace Mahjong.LocalHost.Tests
                 Task pump = StartPump(session, pumpCts.Token);
 
                 // 1. Seat 0 discards 132
-                PlayerSnapshot snapshot = await WaitForDecisionAsync(session, pumpCts.Token);
+                PlayerSnapshot snapshot = await LocalHostCommandTests.WaitForPlayerSnapshotAsync(
+                    session,
+                    candidate => candidate.PrivateView?.Decision != null &&
+                                 candidate.PrivateView.Decision.Actions.Count > 0,
+                    "seat0 opening decision",
+                    pumpCts.Token);
                 DecisionView decision = snapshot.PrivateView.Decision!;
 
                 var discardResolved = new TaskCompletionSource<TableReceiptResolvedEventArgs>(
@@ -120,15 +125,68 @@ namespace Mahjong.LocalHost.Tests
                     decisionId: new DecisionId(decision.DecisionId),
                     controlEpoch: new ControlEpoch(decision.ControlEpoch));
 
-                await session.SubmitAsync(discardCommand, pumpCts.Token);
-                await LocalHostCommandTests.WithTimeoutAsync(discardResolved.Task, pumpCts.Token);
+                CommandSubmission discardSubmission = await session.SubmitAsync(discardCommand, pumpCts.Token);
+                Assert.True(
+                    discardSubmission.Sent,
+                    "seat0-discard-132 was not handed to the transport. " +
+                    LocalHostCommandTests.DescribeSession(session));
+                TableReceiptResolvedEventArgs discardReceipt;
+                try
+                {
+                    discardReceipt = await LocalHostCommandTests.WithTimeoutAsync(
+                        discardResolved.Task,
+                        pumpCts.Token);
+                }
+                catch (TimeoutException exception)
+                {
+                    throw new TimeoutException(
+                        "seat0-discard-132 receipt timed out; decision=" + decision.DecisionId +
+                        " stateVersion=" + snapshot.StateVersion +
+                        " sent=" + discardSubmission.Sent +
+                        ". " + LocalHostCommandTests.DescribeSession(session) +
+                        " lastSettlement=" + DescribeLastSettlement(),
+                        exception);
+                }
 
-                // 2. Seat 0 draws tile 84 (4s) on turn 2, completing 2-3-4s (reaches Tenpai), discards 130
-                PlayerSnapshot turn2Snapshot = await WaitForActionTypeAsync(
+                Assert.True(
+                    discardReceipt.Resolution.ReceiptStatus == ReceiptStatus.Applied,
+                    "seat0-discard-132 rejected: " + discardReceipt.Resolution.ReasonCode +
+                    " evaluated=" + discardReceipt.Resolution.EvaluatedStateVersion +
+                    ". " + LocalHostCommandTests.DescribeSession(session));
+                Assert.True(discardReceipt.Resolution.CommandVersion.HasValue, "discard-132 receipt has no command version.");
+                Assert.True(discardReceipt.Resolution.EventSeq.HasValue, "discard-132 receipt has no event seq.");
+
+                // 2. Seat 0 draws the fixture's entity 104 on turn 2 and discards 130.
+                // The receipt only proves the discard committed; the next decision is a
+                // separate PUSH. Require the post-discard version/event floor, a new
+                // decision id, the actual draw (104) and the 130 candidate entity.
+                ulong afterFirstDiscardVersion = discardReceipt.Resolution.CommandVersion!.Value.Value;
+                ulong afterFirstDiscardEventSeq = discardReceipt.Resolution.EventSeq!.Value.Value;
+                PlayerSnapshot turn2Snapshot = await LocalHostCommandTests.WaitForPlayerSnapshotAsync(
                     session,
-                    ProtocolActionType.DiscardTile,
+                    candidate => IsNewDiscardDecision(
+                        candidate,
+                        snapshot.RoundId,
+                        decision.DecisionId,
+                        afterFirstDiscardVersion,
+                        afterFirstDiscardEventSeq,
+                        requiredTileId: 130u,
+                        expectedDrawnTileId: 104u),
+                    "seat0 turn-2 discard decision after seat0-discard-132",
                     pumpCts.Token);
                 DecisionView turn2Decision = turn2Snapshot.PrivateView.Decision!;
+                LegalActionView turn2Discard = turn2Decision.Actions.First(
+                    action => action.ActionType == (uint)ProtocolActionType.DiscardTile &&
+                              action.TileIds.Contains(130u));
+                Assert.Equal(turn2Snapshot.RoundId, snapshot.RoundId);
+                Assert.NotEqual(decision.DecisionId, turn2Decision.DecisionId);
+                Assert.True(turn2Snapshot.StateVersion > afterFirstDiscardVersion);
+                Assert.True(turn2Snapshot.EventSeq > afterFirstDiscardEventSeq);
+                Assert.True(
+                    turn2Snapshot.PrivateView.HasDrawnTileId &&
+                    turn2Snapshot.PrivateView.DrawnTileId == 104u,
+                    "turn-2 decision did not carry the configured draw 104.");
+                Assert.Contains(130u, turn2Discard.TileIds);
 
                 var discard2Resolved = new TaskCompletionSource<TableReceiptResolvedEventArgs>(
                     TaskCreationOptions.RunContinuationsAsynchronously);
@@ -145,30 +203,70 @@ namespace Mahjong.LocalHost.Tests
                     turn2Decision.DecisionId,
                     turn2Decision.ControlEpoch,
                     ProtocolActionType.DiscardTile,
-                    tileIds: new uint[] { 130u });
+                    tileIds: turn2Discard.TileIds.ToArray());
                 var discard2Command = new ProtocolCommand(
                     CommandKind.SubmitAction,
                     discard2Payload,
                     new RequestId("seat0-discard-130"),
                     session.Binding!.Scope.ScopeId,
-                    new StateVersion(session.PlayerSnapshot!.StateVersion),
+                    new StateVersion(turn2Snapshot.StateVersion),
                     new RoundId(turn2Snapshot.RoundId),
                     decisionId: new DecisionId(turn2Decision.DecisionId),
                     controlEpoch: new ControlEpoch(turn2Decision.ControlEpoch));
 
-                await session.SubmitAsync(discard2Command, pumpCts.Token);
-                await LocalHostCommandTests.WithTimeoutAsync(discard2Resolved.Task, pumpCts.Token);
+                CommandSubmission discard2Submission = await session.SubmitAsync(discard2Command, pumpCts.Token);
+                Assert.True(
+                    discard2Submission.Sent,
+                    "seat0-discard-130 was not handed to the transport; decision=" +
+                    turn2Decision.DecisionId + " stateVersion=" + turn2Snapshot.StateVersion +
+                    ". " + LocalHostCommandTests.DescribeSession(session));
+                TableReceiptResolvedEventArgs discard2Receipt;
+                try
+                {
+                    discard2Receipt = await LocalHostCommandTests.WithTimeoutAsync(
+                        discard2Resolved.Task,
+                        pumpCts.Token);
+                }
+                catch (TimeoutException exception)
+                {
+                    throw new TimeoutException(
+                        "seat0-discard-130 receipt timed out; decision=" + turn2Decision.DecisionId +
+                        " stateVersion=" + turn2Snapshot.StateVersion +
+                        " sent=" + discard2Submission.Sent +
+                        ". " + LocalHostCommandTests.DescribeSession(session) +
+                        " lastSettlement=" + DescribeLastSettlement(),
+                        exception);
+                }
+
+                Assert.True(
+                    discard2Receipt.Resolution.ReceiptStatus == ReceiptStatus.Applied,
+                    "seat0-discard-130 rejected: " + discard2Receipt.Resolution.ReasonCode +
+                    " evaluated=" + discard2Receipt.Resolution.EvaluatedStateVersion +
+                    ". " + LocalHostCommandTests.DescribeSession(session));
+                Assert.True(discard2Receipt.Resolution.CommandVersion.HasValue, "discard-130 receipt has no command version.");
+                Assert.True(discard2Receipt.Resolution.EventSeq.HasValue, "discard-130 receipt has no event seq.");
+                Assert.Equal(turn2Snapshot.StateVersion + 1, discard2Receipt.Resolution.CommandVersion!.Value.Value);
 
                 // 3. Seat 1 draws tile 3 (1m) and declares AddedKan!
-                // Seat 0 receives DeclareRon in ChankanWindow!
-                PlayerSnapshot ronSnapshot = await WaitForActionTypeAsync(
+                // Seat 0 receives DeclareRon in ChankanWindow. The chankan window is
+                // a new decision after the discard-130 receipt; wait for exactly that
+                // decision rather than any snapshot that still carries the old one.
+                ulong afterSecondDiscardVersion = discard2Receipt.Resolution.CommandVersion!.Value.Value;
+                ulong afterSecondDiscardEventSeq = discard2Receipt.Resolution.EventSeq!.Value.Value;
+                PlayerSnapshot ronSnapshot = await LocalHostCommandTests.WaitForPlayerSnapshotAsync(
                     session,
-                    ProtocolActionType.DeclareRon,
+                    candidate => IsNewActionDecision(
+                        candidate,
+                        turn2Snapshot.RoundId,
+                        turn2Decision.DecisionId,
+                        afterSecondDiscardVersion,
+                        afterSecondDiscardEventSeq,
+                        ProtocolActionType.DeclareRon),
+                    "seat0 chankan DeclareRon decision after seat0-discard-130",
                     pumpCts.Token);
-                await Task.Delay(150, pumpCts.Token);
-                ronSnapshot = session.PlayerSnapshot!;
                 Assert.NotNull(ronSnapshot.PrivateView.Decision);
-                DecisionView ronDecision = ronSnapshot.PrivateView.Decision;
+                DecisionView ronDecision = ronSnapshot.PrivateView.Decision!;
+                Assert.NotEqual(turn2Decision.DecisionId, ronDecision.DecisionId);
 
                 var ronResolved = new TaskCompletionSource<TableReceiptResolvedEventArgs>(
                     TaskCreationOptions.RunContinuationsAsynchronously);
@@ -190,13 +288,17 @@ namespace Mahjong.LocalHost.Tests
                     ronPayload,
                     new RequestId("seat0-chankan-ron-1"),
                     session.Binding!.Scope.ScopeId,
-                    new StateVersion(session.PlayerSnapshot!.StateVersion),
+                    new StateVersion(ronSnapshot.StateVersion),
                     new RoundId(ronSnapshot.RoundId),
                     decisionId: new DecisionId(ronDecision.DecisionId),
                     controlEpoch: new ControlEpoch(ronDecision.ControlEpoch));
 
                 CommandSubmission ronSub = await session.SubmitAsync(ronCommand, pumpCts.Token);
-                Assert.True(ronSub.Sent);
+                Assert.True(
+                    ronSub.Sent,
+                    "seat0-chankan-ron-1 was not handed to the transport; decision=" +
+                    ronDecision.DecisionId + " stateVersion=" + ronSnapshot.StateVersion +
+                    ". " + LocalHostCommandTests.DescribeSession(session));
 
                 TableReceiptResolvedEventArgs ronReceipt;
                 try
@@ -205,22 +307,32 @@ namespace Mahjong.LocalHost.Tests
                         ronResolved.Task,
                         pumpCts.Token);
                 }
-                catch (OperationCanceledException)
+                catch (TimeoutException exception)
                 {
-                    throw new Exception($"ronResolved timed out! LastSettlementResult={LocalTableRuntime.LastSettlementResult?.Status}: {LocalTableRuntime.LastSettlementResult?.ReasonCode} {LocalTableRuntime.LastSettlementResult?.Detail}, LastCommandException={LocalTableRuntime.LastCommandException}");
+                    throw new TimeoutException(
+                        "seat0-chankan-ron-1 receipt timed out; decision=" + ronDecision.DecisionId +
+                        " stateVersion=" + ronSnapshot.StateVersion +
+                        " sent=" + ronSub.Sent + ". " +
+                        LocalHostCommandTests.DescribeSession(session) +
+                        " lastSettlement=" + DescribeLastSettlement(),
+                        exception);
                 }
 
                 Assert.True(
                     ronReceipt.Resolution.ReceiptStatus == ReceiptStatus.Applied,
-                    "ron rejected: " + ronReceipt.Resolution.ReasonCode);
+                    "ron rejected: " + ronReceipt.Resolution.ReasonCode +
+                    ". " + LocalHostCommandTests.DescribeSession(session));
+                Assert.True(ronReceipt.Resolution.CommandVersion.HasValue, "ron receipt has no command version.");
+                Assert.True(ronReceipt.Resolution.EventSeq.HasValue, "ron receipt has no event seq.");
 
-                for (int i = 0; i < 20 &&
-                     session.PlayerSnapshot!.PublicView.Board.Phase != GamePhase.RoundEnd; i++)
-                {
-                    await Task.Delay(20, pumpCts.Token);
-                }
-
-                Assert.Equal(GamePhase.RoundEnd, session.PlayerSnapshot!.PublicView.Board.Phase);
+                PlayerSnapshot terminalSnapshot = await LocalHostCommandTests.WaitForPlayerSnapshotAsync(
+                    session,
+                    candidate => candidate.PublicView.Board.Phase == GamePhase.RoundEnd &&
+                                 candidate.StateVersion >= ronReceipt.Resolution.CommandVersion!.Value.Value &&
+                                 candidate.EventSeq >= ronReceipt.Resolution.EventSeq!.Value.Value,
+                    "public snapshot reaches RoundEnd at the applied ron version",
+                    pumpCts.Token);
+                Assert.Equal(GamePhase.RoundEnd, terminalSnapshot.PublicView.Board.Phase);
 
                 RoundSettlementCalculation? chankanCalc = ((LocalTableChannel)channel).RuntimeForMatch?.ActorForTest.LastSettlementCalculation;
                 Assert.NotNull(chankanCalc);
@@ -267,46 +379,83 @@ namespace Mahjong.LocalHost.Tests
             }, token);
         }
 
-        private static async Task<PlayerSnapshot> WaitForDecisionAsync(
-            TableSession session,
-            CancellationToken cancellationToken)
+        private static bool IsNewDiscardDecision(
+            PlayerSnapshot snapshot,
+            string roundId,
+            string previousDecisionId,
+            ulong minStateVersion,
+            ulong minEventSeq,
+            uint requiredTileId,
+            uint expectedDrawnTileId)
         {
-            for (int i = 0; i < 50; i++)
+            if (!string.Equals(snapshot.RoundId, roundId, StringComparison.Ordinal) ||
+                snapshot.StateVersion < minStateVersion ||
+                snapshot.EventSeq < minEventSeq)
             {
-                PlayerSnapshot? snapshot = session.PlayerSnapshot;
-                if (snapshot?.PrivateView?.Decision != null &&
-                    snapshot.PrivateView.Decision.Actions.Count > 0)
-                {
-                    return snapshot;
-                }
-
-                await Task.Delay(20, cancellationToken);
+                return false;
             }
 
-            throw new TimeoutException("Player snapshot did not receive an open decision in time.");
+            var privateView = snapshot.PrivateView;
+            DecisionView? decision = privateView?.Decision;
+            if (privateView == null || decision == null || decision.Actions.Count == 0)
+            {
+                return false;
+            }
+
+            if (string.Equals(decision.DecisionId, previousDecisionId, StringComparison.Ordinal))
+            {
+                return false;
+            }
+
+            if (!privateView.HasDrawnTileId ||
+                privateView.DrawnTileId != expectedDrawnTileId)
+            {
+                return false;
+            }
+
+            if (!privateView.ClosedTiles.Contains(requiredTileId))
+            {
+                return false;
+            }
+
+            return decision.Actions.Any(
+                action => action.ActionType == (uint)ProtocolActionType.DiscardTile &&
+                          action.TileIds.Contains(requiredTileId));
         }
 
-        private static async Task<PlayerSnapshot> WaitForActionTypeAsync(
-            TableSession session,
-            ProtocolActionType actionType,
-            CancellationToken cancellationToken)
+        private static bool IsNewActionDecision(
+            PlayerSnapshot snapshot,
+            string roundId,
+            string previousDecisionId,
+            ulong minStateVersion,
+            ulong minEventSeq,
+            ProtocolActionType actionType)
         {
-            for (int i = 0; i < 50; i++)
+            if (!string.Equals(snapshot.RoundId, roundId, StringComparison.Ordinal) ||
+                snapshot.StateVersion < minStateVersion ||
+                snapshot.EventSeq < minEventSeq)
             {
-                PlayerSnapshot? snapshot = session.PlayerSnapshot;
-                if (snapshot?.PrivateView?.Decision != null &&
-                    snapshot.PrivateView.Decision.Actions.Any(a => a.ActionType == (uint)actionType))
-                {
-                    return snapshot;
-                }
-
-                await Task.Delay(20, cancellationToken);
+                return false;
             }
 
-            var current = session.PlayerSnapshot?.PrivateView?.Decision;
-            var actionsStr = current == null ? "null" : string.Join(",", current.Actions.Select(a => ((ProtocolActionType)a.ActionType).ToString() + ":" + a.OptionId));
-            var handStr = session.PlayerSnapshot?.PrivateView?.ClosedTiles == null ? "null" : string.Join(",", session.PlayerSnapshot.PrivateView.ClosedTiles);
-            throw new TimeoutException($"Player snapshot did not receive action {actionType} in time. Current decision: {actionsStr}, hand: {handStr}, stateVersion: {session.PlayerSnapshot?.StateVersion}");
+            DecisionView? decision = snapshot.PrivateView?.Decision;
+            if (decision == null ||
+                string.Equals(decision.DecisionId, previousDecisionId, StringComparison.Ordinal))
+            {
+                return false;
+            }
+
+            return decision.Actions.Any(action => action.ActionType == (uint)actionType);
+        }
+
+        private static string DescribeLastSettlement()
+        {
+            TableOperationResult? settlement = LocalTableRuntime.LastSettlementResult;
+            return settlement == null
+                ? "<none>"
+                : settlement.Status + "/" + settlement.ReasonCode + "/" + settlement.Detail +
+                  " lastCommandException=" + (LocalTableRuntime.LastCommandException?.GetType().Name ?? "<none>") +
+                  ":" + (LocalTableRuntime.LastCommandException?.Message ?? "<none>");
         }
 
         private static async Task<(ITableChannel, TableSession)> OpenAsync(

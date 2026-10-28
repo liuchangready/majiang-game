@@ -1,4 +1,6 @@
 using System;
+using System.Linq;
+using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using Mahjong.Client;
@@ -8,7 +10,9 @@ using Xunit;
 
 namespace Mahjong.LocalHost.Tests
 {
+    using ContractCursor = Mahjong.Contracts.StreamCursor;
     using PlayerSnapshot = Mahjong.Contracts.Wire.PlayerSnapshot;
+    using WireDecisionView = Mahjong.Contracts.Wire.DecisionView;
 
     public sealed class LocalHostCommandTests
     {
@@ -144,6 +148,158 @@ namespace Mahjong.LocalHost.Tests
             }
 
             return await task;
+        }
+
+        /// <summary>
+        /// Waits for an applied PUSH snapshot (not a receipt) that satisfies the
+        /// caller's authoritative version/event/decision predicate. The loop is
+        /// driven by SnapshotChanged, so a receipt arriving before its PUSH can
+        /// never satisfy a condition that still describes the previous state.
+        /// </summary>
+        internal static async Task<PlayerSnapshot> WaitForPlayerSnapshotAsync(
+            TableSession session,
+            Func<PlayerSnapshot, bool> predicate,
+            string description,
+            CancellationToken cancellationToken)
+        {
+            if (session == null)
+            {
+                throw new ArgumentNullException(nameof(session));
+            }
+
+            if (predicate == null)
+            {
+                throw new ArgumentNullException(nameof(predicate));
+            }
+
+            var found = new TaskCompletionSource<PlayerSnapshot>(
+                TaskCreationOptions.RunContinuationsAsynchronously);
+            EventHandler<TableSnapshotChangedEventArgs> handler = (_, args) =>
+            {
+                PlayerSnapshot? snapshot = args.PlayerSnapshot;
+                if (snapshot == null)
+                {
+                    return;
+                }
+
+                try
+                {
+                    if (predicate(snapshot))
+                    {
+                        found.TrySetResult(snapshot);
+                    }
+                }
+                catch (Exception exception)
+                {
+                    found.TrySetException(exception);
+                }
+            };
+
+            session.SnapshotChanged += handler;
+            try
+            {
+                PlayerSnapshot? current = session.PlayerSnapshot;
+                if (current != null && predicate(current))
+                {
+                    return current;
+                }
+
+                try
+                {
+                    return await found.Task
+                        .WaitAsync(TimeSpan.FromSeconds(10), cancellationToken)
+                        .ConfigureAwait(false);
+                }
+                catch (TimeoutException exception)
+                {
+                    throw new TimeoutException(
+                        description + " timed out after 10s. " + DescribeSession(session),
+                        exception);
+                }
+            }
+            finally
+            {
+                session.SnapshotChanged -= handler;
+            }
+        }
+
+        internal static string DescribeSession(TableSession session)
+        {
+            PlayerSnapshot? snapshot = session.PlayerSnapshot;
+            WireDecisionView? decision = snapshot?.PrivateView?.Decision;
+            string actions = decision == null
+                ? "<none>"
+                : string.Join(
+                    ",",
+                    decision.Actions.Select(
+                        action => ((ProtocolActionType)action.ActionType).ToString() +
+                                  ":" + action.OptionId +
+                                  ":" + string.Join("/", action.TileIds)));
+            string closed = snapshot?.PrivateView?.ClosedTiles == null
+                ? "<none>"
+                : string.Join(",", snapshot.PrivateView.ClosedTiles);
+            string pending;
+            try
+            {
+                System.Collections.Generic.IReadOnlyList<PendingCommandSnapshot> commands =
+                    session.PendingCommands;
+                pending = commands.Count == 0
+                    ? "<none>"
+                    : string.Join(
+                        ";",
+                        commands.Select(
+                            command => command.RequestId +
+                                       ":" + command.Kind +
+                                       ":" + (command.LastReceipt?.ToString() ?? "<none>") +
+                                       ":" + (command.NeedsReconciliation ? "needs-reconcile" : "resolved")));
+            }
+            catch (Exception exception)
+            {
+                // PendingCommands is a live view; a pump may resolve an entry while
+                // diagnostics enumerate it. Diagnostic output must never replace the
+                // real failure with a concurrent-collection exception.
+                pending = "<unavailable:" + exception.GetType().Name + ">";
+            }
+
+            ContractCursor? cursor = session.ConfirmedCursor;
+            return "sessionState=" + session.State +
+                   " lastError=" + (session.LastError ?? "<none>") +
+                   " cursor=" + (cursor.HasValue
+                       ? cursor.Value.StreamVersion.Value + "/" + cursor.Value.ProjectionSeq.Value
+                       : "<none>") +
+                   " stateVersion=" + (snapshot == null ? "<none>" : snapshot.StateVersion.ToString()) +
+                   " eventSeq=" + (snapshot == null ? "<none>" : snapshot.EventSeq.ToString()) +
+                   " round=" + (snapshot?.RoundId ?? "<none>") +
+                   " decision=" + (decision?.DecisionId ?? "<none>") +
+                   " decisionEpoch=" + (decision == null ? "<none>" : decision.ControlEpoch.ToString()) +
+                   " actions=[" + actions + "]" +
+                   " drawn=" + (snapshot?.PrivateView != null && snapshot.PrivateView.HasDrawnTileId
+                       ? snapshot.PrivateView.DrawnTileId.ToString()
+                       : "<none>") +
+                   " closed=[" + closed + "]" +
+                   " pending=[" + pending + "]" +
+                   " board=" + DescribeBoard(snapshot);
+        }
+
+        private static string DescribeBoard(PlayerSnapshot? snapshot)
+        {
+            if (snapshot?.PublicView?.Board == null)
+            {
+                return "<none>";
+            }
+
+            var board = snapshot.PublicView.Board;
+            var text = new StringBuilder();
+            text.Append("phase=").Append(board.Phase)
+                .Append(" seat=").Append(board.CurrentSeat);
+            for (int seat = 0; seat < board.Players.Count; seat++)
+            {
+                text.Append(" p").Append(seat).Append(".discards=[")
+                    .Append(string.Join(",", board.Players[seat].Discards.Select(discard => discard.TileId)))
+                    .Append(']');
+            }
+
+            return text.ToString();
         }
     }
 }
