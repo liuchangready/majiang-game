@@ -37,7 +37,8 @@ namespace Mahjong.LocalHost
         private InMemoryRequestScopeAuthority? _scopes;
         private LocalSave? _save;
         private (string AccountId, RequestScopeId ScopeId, RequestId RequestId, string Digest)? _pendingReceiptDigest;
-        private (string AccountId, RequestScopeId ScopeId, RequestId RequestId, string Digest, string Kind)? _pendingControlResult;
+        private readonly Dictionary<string, PendingControlResult> _pendingControlResults =
+            new Dictionary<string, PendingControlResult>(StringComparer.Ordinal);
         private Stream? _lockStream;
         private bool _leaseAcquired;
         private string _leaseOwner = string.Empty;
@@ -790,24 +791,39 @@ namespace Mahjong.LocalHost
                 candidate.Operations.Clear();
                 candidate.CommandJournals.Clear();
                 candidate.EventJournals.Clear();
-                (string AccountId, RequestScopeId ScopeId, RequestId RequestId, string Digest, string Kind)? pendingControl =
-                    _pendingControlResult;
-                if (pendingControl.HasValue)
+                string? pendingControlKey = null;
+                PendingControlResult? pendingControl = null;
+                TableControlEvent change = request.Change;
+                foreach (KeyValuePair<string, PendingControlResult> pair in _pendingControlResults)
                 {
-                    candidate.ControlResults[ReceiptKey(
-                        pendingControl.Value.AccountId,
-                        pendingControl.Value.ScopeId,
-                        pendingControl.Value.RequestId)] = new LocalControlRecord(
+                    PendingControlResult candidateControl = pair.Value;
+                    if (candidateControl.Seat == change.Seat &&
+                        candidateControl.ChangeKind == change.Kind &&
+                        change.PreviousEpoch.HasValue &&
+                        candidateControl.ExpectedEpoch == change.PreviousEpoch.Value)
+                    {
+                        pendingControlKey = pair.Key;
+                        pendingControl = candidateControl;
+                        break;
+                    }
+                }
+
+                if (pendingControl != null)
+                {
+                    candidate.ControlResults[pendingControlKey!] = new LocalControlRecord(
                         candidate.CurrentState.StateVersion.Value,
-                        pendingControl.Value.Digest,
-                        pendingControl.Value.Kind);
+                        pendingControl.Digest,
+                        pendingControl.Kind);
                 }
 
                 LocalWriteResult write = Persist(candidate, cancellationToken);
                 if (write.Verdict == LocalWriteVerdict.Committed)
                 {
                     _pendingReceiptDigest = null;
-                    _pendingControlResult = null;
+                    if (pendingControlKey != null)
+                    {
+                        _pendingControlResults.Remove(pendingControlKey);
+                    }
                 }
 
                 return CompleteWrite(write, candidate, result);
@@ -1131,6 +1147,17 @@ namespace Mahjong.LocalHost
             }
         }
 
+        internal long ControlVersionForTest
+        {
+            get
+            {
+                lock (_gate)
+                {
+                    return _save == null ? 0L : _save.CurrentState.ControlVersion;
+                }
+            }
+        }
+
         internal LocalControlRecord? GetControlResult(string accountId, RequestScopeId scopeId, RequestId requestId)
         {
             lock (_gate)
@@ -1147,29 +1174,44 @@ namespace Mahjong.LocalHost
             RequestScopeId scopeId,
             RequestId requestId,
             string digest,
-            string kind)
+            string kind,
+            int seat,
+            long expectedEpoch,
+            TableControlChangeKind changeKind)
         {
             lock (_gate)
             {
-                _pendingControlResult = string.IsNullOrEmpty(digest)
-                    ? null
-                    : (accountId, scopeId, requestId, digest, kind);
+                string key = ReceiptKey(accountId, scopeId, requestId);
+                if (string.IsNullOrEmpty(digest))
+                {
+                    _pendingControlResults.Remove(key);
+                    return;
+                }
+
+                _pendingControlResults[key] = new PendingControlResult(
+                    seat,
+                    expectedEpoch,
+                    changeKind,
+                    digest,
+                    kind);
             }
         }
 
-        internal void CommitPreparedControlResultOnly()
+        internal void CommitPreparedControlResultOnly(
+            string accountId,
+            RequestScopeId scopeId,
+            RequestId requestId)
         {
             lock (_gate)
             {
-                if (_save == null || !_pendingControlResult.HasValue)
+                string key = ReceiptKey(accountId, scopeId, requestId);
+                if (_save == null || !_pendingControlResults.TryGetValue(key, out PendingControlResult? pending))
                 {
                     return;
                 }
 
-                (string AccountId, RequestScopeId ScopeId, RequestId RequestId, string Digest, string Kind) pending =
-                    _pendingControlResult.Value;
                 LocalSave candidate = _save.DeepCloneForCandidate();
-                candidate.ControlResults[ReceiptKey(pending.AccountId, pending.ScopeId, pending.RequestId)] =
+                candidate.ControlResults[key] =
                     new LocalControlRecord(
                         candidate.CurrentState.StateVersion.Value,
                         pending.Digest,
@@ -1183,15 +1225,18 @@ namespace Mahjong.LocalHost
                 }
 
                 _save = candidate;
-                _pendingControlResult = null;
+                _pendingControlResults.Remove(key);
             }
         }
 
-        internal void ClearPreparedControlResult()
+        internal void ClearPreparedControlResult(
+            string accountId,
+            RequestScopeId scopeId,
+            RequestId requestId)
         {
             lock (_gate)
             {
-                _pendingControlResult = null;
+                _pendingControlResults.Remove(ReceiptKey(accountId, scopeId, requestId));
             }
         }
 
@@ -1900,6 +1945,33 @@ namespace Mahjong.LocalHost
                 _disposed = true;
                 ReleaseLock();
             }
+        }
+
+        private sealed class PendingControlResult
+        {
+            public PendingControlResult(
+                int seat,
+                long expectedEpoch,
+                TableControlChangeKind changeKind,
+                string digest,
+                string kind)
+            {
+                Seat = seat;
+                ExpectedEpoch = expectedEpoch;
+                ChangeKind = changeKind;
+                Digest = digest;
+                Kind = kind;
+            }
+
+            public int Seat { get; }
+
+            public long ExpectedEpoch { get; }
+
+            public TableControlChangeKind ChangeKind { get; }
+
+            public string Digest { get; }
+
+            public string Kind { get; }
         }
 
         private sealed class ReplayClockProxy : ITableClock

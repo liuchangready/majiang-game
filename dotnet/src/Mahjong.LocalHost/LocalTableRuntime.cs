@@ -30,7 +30,7 @@ namespace Mahjong.LocalHost
     internal sealed class LocalTableRuntime : IAsyncDisposable
     {
         private readonly object _gate = new object();
-        private readonly Dictionary<string, WireReceipt> _controlReceipts = new Dictionary<string, WireReceipt>(StringComparer.Ordinal);
+        private readonly SemaphoreSlim _controlGate = new SemaphoreSlim(1, 1);
         private readonly bool[] _temporaryFuriten;
         private readonly bool[] _riichiFuriten;
         private readonly LocalTableHostOptions _options;
@@ -258,6 +258,8 @@ namespace Mahjong.LocalHost
 
         internal Mahjong.Domain.RoundResult? CurrentRoundResult => _actor.GetRoundResult();
         internal TableActor ActorForTest => _actor;
+
+        internal LocalTableStore StoreForTest => _store;
 
         internal bool DriverRunning => _driver.IsRunning;
 
@@ -767,9 +769,17 @@ namespace Mahjong.LocalHost
             if (!string.IsNullOrEmpty(suppliedDecision) &&
                 !string.Equals(suppliedDecision, pendingDecision, StringComparison.Ordinal))
             {
-                throw new LocalCommandException(
+                // A stale decision identity is a definitive rejection of this request,
+                // not a transport fault: the outbox entry must receive a RECEIPT and be
+                // resolved exactly like any other rejected side effect.
+                Enqueue(RejectedReceipt(
+                    envelope,
+                    requestId,
+                    new StateVersion(envelope.Command.ExpectedStateVersion),
                     ProtocolErrorCode.DecisionMismatch,
-                    "The command decision id is not the current pending decision.");
+                    "The command decision id is not the current pending decision.",
+                    payload));
+                return;
             }
 
             DecisionId? decisionId = string.IsNullOrEmpty(pendingDecision)
@@ -1110,14 +1120,16 @@ namespace Mahjong.LocalHost
             StateVersion expected,
             CancellationToken cancellationToken)
         {
-            string requestKey = requestId.Value;
-            string canonical = CanonicalPayloadDigest.Compute(payload).ToHex();
-            if (_connectionScopeId.HasValue)
+            // Control commands are serialized so a prepare/commit pair can never observe or
+            // consume another in-flight control request's durable record.
+            await _controlGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+            try
             {
-                LocalControlRecord? prior = _store.GetControlResult(
-                    _connectionAccount,
-                    _connectionScopeId.Value,
-                    requestId);
+                string canonical = CanonicalPayloadDigest.Compute(payload).ToHex();
+                RequestScopeId scopeId = _connectionScopeId ?? default;
+                LocalControlRecord? prior = _connectionScopeId.HasValue
+                    ? _store.GetControlResult(_connectionAccount, scopeId, requestId)
+                    : null;
                 if (prior != null)
                 {
                     if (!string.Equals(prior.Digest, canonical, StringComparison.Ordinal) ||
@@ -1143,85 +1155,219 @@ namespace Mahjong.LocalHost
                             EvaluatedStateVersion = prior.EvaluatedStateVersion,
                             CommandVersion = 0UL,
                             EventSeq = 0UL,
+                            Replayed = true,
                             CanonicalPayloadSha256 = prior.Digest
                         },
                         payload));
                     return;
                 }
-            }
-            if (!document.HasField(CommandPayloadFields.ExpectedControlEpochV2))
-            {
-                Enqueue(ErrorEnvelope(ProtocolErrorCode.MalformedMessage, "The control command has no expected epoch."));
-                return;
-            }
 
-            ulong epoch = document.RequireUInt64(CommandPayloadFields.ExpectedControlEpochV2, "expectedControlEpoch");
-            if (_connectionScopeId.HasValue)
-            {
-                _store.PrepareControlResult(
-                    _connectionAccount,
-                    _connectionScopeId.Value,
-                    requestId,
-                    canonical,
-                    kind.ToString());
-            }
-
-            TableControlResult control = kind == CommandKind.ClaimControl
-                ? await _actor.ReclaimControlAsync(
-                    _seat,
-                    owner,
-                    new ControlEpoch(epoch),
-                    "LOCAL_CLAIM",
-                    cancellationToken).ConfigureAwait(false)
-                : await _actor.RequestTakeoverAsync(
-                    _seat,
-                    owner,
-                    new ControlEpoch(epoch),
-                    "LOCAL_RELEASE",
-                    cancellationToken).ConfigureAwait(false);
-            if (control.Status != TableControlStatus.Changed && control.Status != TableControlStatus.Unchanged)
-            {
-                Enqueue(RejectedReceipt(
-                    envelope,
-                    requestId,
-                    expected,
-                    string.IsNullOrEmpty(control.ReasonCode) ? "CONTROL_REJECTED" : control.ReasonCode,
-                    control.Detail,
-                    payload));
-                _store.ClearPreparedControlResult();
-                return;
-            }
-            if (control.Status == TableControlStatus.Unchanged)
-            {
-                try
-                {
-                    _store.CommitPreparedControlResultOnly();
-                }
-                catch (LocalTableException)
+                LocalCommandException? scopeError = await ValidateControlScopeAsync(cancellationToken)
+                    .ConfigureAwait(false);
+                if (scopeError != null)
                 {
                     Enqueue(RejectedReceipt(
                         envelope,
                         requestId,
                         expected,
-                        ProtocolErrorCode.InternalError,
-                        "The unchanged control result could not be durably recorded.",
+                        scopeError.Code,
+                        scopeError.Message,
                         payload));
                     return;
                 }
+
+                if (!document.HasField(CommandPayloadFields.ExpectedControlEpochV2))
+                {
+                    Enqueue(ErrorEnvelope(ProtocolErrorCode.MalformedMessage, "The control command has no expected epoch."));
+                    return;
+                }
+
+                ulong epoch = document.RequireUInt64(CommandPayloadFields.ExpectedControlEpochV2, "expectedControlEpoch");
+                if (epoch > long.MaxValue)
+                {
+                    Enqueue(RejectedReceipt(
+                        envelope,
+                        requestId,
+                        expected,
+                        TableRuntimeReasonCode.StaleControlEpoch,
+                        "The expected control epoch exceeds the domain range.",
+                        payload));
+                    return;
+                }
+
+                long expectedEpoch = unchecked((long)epoch);
+                TableControlChangeKind changeKind = kind == CommandKind.ClaimControl
+                    ? TableControlChangeKind.Reclaimed
+                    : TableControlChangeKind.ExplicitTakeover;
+                _store.PrepareControlResult(
+                    _connectionAccount,
+                    scopeId,
+                    requestId,
+                    canonical,
+                    kind.ToString(),
+                    _seat,
+                    expectedEpoch,
+                    changeKind);
+
+                bool durablyRecorded = false;
+                try
+                {
+                    TableControlResult control = kind == CommandKind.ClaimControl
+                        ? await _actor.ReclaimControlAsync(
+                            _seat,
+                            owner,
+                            new ControlEpoch(epoch),
+                            "LOCAL_CLAIM",
+                            cancellationToken).ConfigureAwait(false)
+                        : await _actor.RequestTakeoverAsync(
+                            _seat,
+                            owner,
+                            new ControlEpoch(epoch),
+                            "LOCAL_RELEASE",
+                            cancellationToken).ConfigureAwait(false);
+                    if (control.Status != TableControlStatus.Changed && control.Status != TableControlStatus.Unchanged)
+                    {
+                        Enqueue(RejectedReceipt(
+                            envelope,
+                            requestId,
+                            expected,
+                            string.IsNullOrEmpty(control.ReasonCode) ? "CONTROL_REJECTED" : control.ReasonCode,
+                            control.Detail,
+                            payload));
+                        return;
+                    }
+
+                    if (control.Status == TableControlStatus.Unchanged)
+                    {
+                        try
+                        {
+                            _store.CommitPreparedControlResultOnly(
+                                _connectionAccount,
+                                scopeId,
+                                requestId);
+                        }
+                        catch (LocalTableException)
+                        {
+                            Enqueue(RejectedReceipt(
+                                envelope,
+                                requestId,
+                                expected,
+                                ProtocolErrorCode.InternalError,
+                                "The unchanged control result could not be durably recorded.",
+                                payload));
+                            return;
+                        }
+                    }
+
+                    // The receipt is emitted only after the durable record is readable. A
+                    // Changed result is recorded inside the same atomic control commit; an
+                    // Unchanged result was just written above.
+                    LocalControlRecord? recorded = _store.GetControlResult(
+                        _connectionAccount,
+                        scopeId,
+                        requestId);
+                    if (recorded == null ||
+                        !string.Equals(recorded.Digest, canonical, StringComparison.Ordinal) ||
+                        !string.Equals(recorded.Kind, kind.ToString(), StringComparison.Ordinal))
+                    {
+                        Enqueue(RejectedReceipt(
+                            envelope,
+                            requestId,
+                            expected,
+                            ProtocolErrorCode.InternalError,
+                            "The control result was not durably recorded.",
+                            payload));
+                        return;
+                    }
+
+                    durablyRecorded = true;
+                    Enqueue(ReceiptEnvelope(
+                        envelope,
+                        requestId,
+                        new WireReceipt
+                        {
+                            Status = WireReceiptStatus.Recorded,
+                            ReasonCode = "LOCAL_CONTROL",
+                            EvaluatedStateVersion = recorded.EvaluatedStateVersion,
+                            CommandVersion = 0UL,
+                            EventSeq = 0UL,
+                            CanonicalPayloadSha256 = recorded.Digest
+                        },
+                        payload));
+                }
+                finally
+                {
+                    if (!durablyRecorded)
+                    {
+                        _store.ClearPreparedControlResult(_connectionAccount, scopeId, requestId);
+                    }
+                }
+            }
+            finally
+            {
+                _controlGate.Release();
+            }
+        }
+
+        private async ValueTask<LocalCommandException?> ValidateControlScopeAsync(CancellationToken cancellationToken)
+        {
+            if (!_connectionScopeId.HasValue)
+            {
+                return new LocalCommandException(
+                    ProtocolErrorCode.Unauthenticated,
+                    "The control command has no issued request scope.");
             }
 
-
-            var receipt = new WireReceipt
+            TableScopeLookup lookup;
+            try
             {
-                Status = WireReceiptStatus.Recorded,
-                ReasonCode = "LOCAL_CONTROL",
-                EvaluatedStateVersion = control.EvaluatedStateVersion.Value,
-                CommandVersion = 0UL,
-                EventSeq = 0UL,
-                CanonicalPayloadSha256 = canonical
-            };
+                lookup = await _store.Scopes.LookupAsync(_connectionScopeId.Value, cancellationToken)
+                    .ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
+            }
+            catch (Exception exception)
+            {
+                return new LocalCommandException(
+                    ProtocolErrorCode.InternalError,
+                    "The request scope could not be read: " + exception.Message);
+            }
 
-            Enqueue(ReceiptEnvelope(envelope, requestId, receipt, payload));
+            if (!lookup.Found || lookup.Scope == null)
+            {
+                return new LocalCommandException(
+                    ProtocolErrorCode.Unauthenticated,
+                    "The issued request scope is not known.");
+            }
+
+            TableScopeRecord scope = lookup.Scope;
+            if (scope.Role != TableScopeRole.Player ||
+                !string.Equals(scope.AccountId, _connectionAccount, StringComparison.Ordinal) ||
+                !string.Equals(scope.RoomId, _options.RoomId, StringComparison.Ordinal))
+            {
+                return new LocalCommandException(
+                    ProtocolErrorCode.Unauthenticated,
+                    "The request scope does not belong to this connection.");
+            }
+
+            ulong now = (ulong)Math.Max(0L, _environment.ResolveClock().UtcNowMs);
+            if (scope.IsRevoked)
+            {
+                return new LocalCommandException(
+                    ProtocolErrorCode.RequestScopeExpired,
+                    "The request scope was revoked.");
+            }
+
+            if (scope.IsExpiredAt(now))
+            {
+                return new LocalCommandException(
+                    ProtocolErrorCode.RequestScopeExpired,
+                    "The request scope expired.");
+            }
+
+            return null;
         }
 
         private async Task PublishResultAsync(
@@ -1338,7 +1484,10 @@ namespace Mahjong.LocalHost
                 return;
             }
 
-            if (!string.IsNullOrEmpty(envelope.SessionId) && !IsCurrentBinding(envelope))
+            // A receipt lookup is a read of an already committed outcome, so it is bound to
+            // the current transport session but may carry a scope issued to an earlier
+            // connection (including one from before a cold process restart).
+            if (!IsCurrentBinding(envelope))
             {
                 return;
             }
@@ -1367,7 +1516,7 @@ namespace Mahjong.LocalHost
                     _connectionAccount,
                     queryScopeId,
                     new RequestId(envelope.ReceiptQuery.RequestId)) ?? string.Empty);
-            if (receipt == null && _connectionScopeId.HasValue)
+            if (receipt == null)
             {
                 LocalControlRecord? control = _store.GetControlResult(
                     _connectionAccount,
