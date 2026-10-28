@@ -816,6 +816,16 @@ try {
             ) -LogPath (Join-Path $logsDir "$id.log") -TimeoutSeconds 300
         }
 
+        # Root NuGet.config added to a baseline that did not record it must
+        # produce BUILD_CONFIG_ADDED; removing it returns to PASS.
+        $rootNuGetEarly = Join-Path $fixtureRepo 'NuGet.config'
+        [System.IO.File]::WriteAllText($rootNuGetEarly, "<configuration><packageSources><add key=`"caller-proof`" value=`"https://example.invalid/index.json`" /></packageSources></configuration>`r`n", $utf8)
+        $rootNuGetEarlyAdded = & $fixtureCheckRun 'P38-root-nuget-added'
+        Remove-Item -LiteralPath $rootNuGetEarly -Force
+        $rootNuGetEarlyRemoved = & $fixtureCheckRun 'P38b-root-nuget-added-removed'
+        $rootNuGetEarlyOk = ($rootNuGetEarlyAdded.ExitCode -ne 0) -and ($rootNuGetEarlyAdded.Output -match 'BUILD_CONFIG_ADDED') -and ($rootNuGetEarlyRemoved.ExitCode -eq 0)
+        Add-TestCase -Id 'P38' -Name 'root NuGet.config added to an unrecorded baseline fails closed' -Status $(if ($rootNuGetEarlyOk) { 'PASS' } else { 'FAIL' }) -Detail "added=$($rootNuGetEarlyAdded.ExitCode); removed=$($rootNuGetEarlyRemoved.ExitCode)" -LogPath $rootNuGetEarlyAdded.LogPath -Seconds 0
+
         # Preserved mtime + invalid C#: the forced clean-output build must fail
         # and must not leave a green record.
         try {
@@ -966,6 +976,14 @@ try {
     }
     else {
         Add-TestCase -Id 'P14' -Name 'fixture build failure / mid-build drift' -Status 'NOT_RUN' -Detail 'skipped by -SkipFixtureBuild' -LogPath $null -Seconds 0
+        Add-TestCase -Id 'P31' -Name 'preserved-mtime invalid source' -Status 'NOT_RUN' -Detail 'skipped by -SkipFixtureBuild' -LogPath $null -Seconds 0
+        Add-TestCase -Id 'P32' -Name 'preserved-mtime valid semantic change' -Status 'NOT_RUN' -Detail 'skipped by -SkipFixtureBuild' -LogPath $null -Seconds 0
+        Add-TestCase -Id 'P33' -Name 'props-linked Compile/EmbeddedResource inputs' -Status 'NOT_RUN' -Detail 'skipped by -SkipFixtureBuild' -LogPath $null -Seconds 0
+        Add-TestCase -Id 'P34' -Name 'recorded repository NuGet.config removal' -Status 'NOT_RUN' -Detail 'skipped by -SkipFixtureBuild' -LogPath $null -Seconds 0
+        Add-TestCase -Id 'P35' -Name 'recorded root NuGet.config add/modify/delete' -Status 'NOT_RUN' -Detail 'skipped by -SkipFixtureBuild' -LogPath $null -Seconds 0
+        Add-TestCase -Id 'P36' -Name 'unsupported MSBuild property expression' -Status 'NOT_RUN' -Detail 'skipped by -SkipFixtureBuild' -LogPath $null -Seconds 0
+        Add-TestCase -Id 'P37' -Name 'props ProjectReference outside the seven projects' -Status 'NOT_RUN' -Detail 'skipped by -SkipFixtureBuild' -LogPath $null -Seconds 0
+        Add-TestCase -Id 'P38' -Name 'root NuGet.config added to an unrecorded baseline' -Status 'NOT_RUN' -Detail 'skipped by -SkipFixtureBuild' -LogPath $null -Seconds 0
     }
 
     # -----------------------------------------------------------------------

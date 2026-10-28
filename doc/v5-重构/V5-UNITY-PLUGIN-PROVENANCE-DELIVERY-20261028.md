@@ -63,7 +63,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/unity/test-shared-
   -EvidenceRoot build/d-r1-matrix6-d260f3d32ee7 -UnityTimeoutSeconds 600 -BuildTimeoutSeconds 900
 ```
 
-结果：**37/37 PASS，0 FAIL，0 NOT_RUN**，wrapper exit 0；JUnit `tests=37 failures=0 skipped=0 partial=false time=743.006`。覆盖 P01–P15b/P16/P17/P18/P19/P20/P21/P22/P24–P37，包括：
+结果：**38/38 PASS，0 FAIL，0 NOT_RUN**，wrapper exit 0；JUnit `tests=38 failures=0 skipped=0 partial=false time=620.764`。覆盖 P01–P15b/P16/P17/P18/P19/P20/P21/P22/P24–P38，包括：
 - 保留旧 mtime 的非法源码真实编译失败、无记录；保留旧 mtime 的合法语义变更生成新 DLL；
 - props 级 linked `Compile`/`EmbeddedResource` 纳入并检测源码变化；
 - 根 NuGet.config / dotnet/src NuGet.config 的 added/changed/removed；
@@ -72,16 +72,16 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/unity/test-shared-
 - 缺证据真实 BuildPlayer 阻断（native 1）、坏 DLL 真实 BuildPlayer 阻断（PLUGIN_CORRUPT）、缺证据真实 Play 取消（native 42）、有效同步真实 Play 进入（native 0）。
 
 ### 4.2 partial 真实运行
-`-SkipUnity -SkipFixtureBuild`（未加 `-AllowPartial`）：exit **1**；`tests=30 pass=25 fail=0 not_run=5 partial=true`；XML `skipped=5`、5 个 `<skipped/>`、`partial=true`。默认完整运行 0 NOT_RUN。
+`-SkipUnity -SkipFixtureBuild`（未加 `-AllowPartial`）：exit **1**；`tests=38 pass=25 fail=0 not_run=13 partial=true`；XML `skipped=13`、13 个 `<skipped/>`、`partial=true`。默认完整运行 0 NOT_RUN。
 
 ### 4.3 路径边界负例
 `-EvidenceRoot` 分别指向 `%TEMP%\du01-outside`、`<repo>\buildfoo`、仓库根、`<repo>\build`：均在写入前 exit 1，外部目录未创建。
 
 ### 4.4 真实 fresh shared/Player/smoke/boundary
-本轮 acceptance（与最终代码同一工作树；证据根 `build/d-r1-matrix6-d260f3d32ee7/`）：
+本轮 acceptance（与最终代码同一工作树；证据根 `build/d-r1-matrix8-1f2511e24c24/`）：
 - 删除 7 工程 Release 输出后 `build-shared -Configuration Release`：exit 0，0 warning/0 error，copied 19，inputs 131 / outputs 19 / packages 5；
 - checker：exit 0，7/7 自有 DLL 与 fresh bin 一致，5/5 包闭包一致；
-- 真实 Unity `-buildWindows64Player`：exit 0，192.1s，`Build Finished, Result: Success.`，Mono，6 levels；
+- 真实 Unity `-buildWindows64Player`：exit 0，105.8s，`Build Finished, Result: Success.`，Mono，6 levels；
 - Player managed 7/7 与 fresh 源码逐字节一致；
 - 既有 `run-player-smoke.ps1`：Player native exit 0，4 张 PNG；
 - `check-unity-boundaries.ps1 -StrictCompiled`：exit 0，`Passed=true`，`asmdef_dag=PASS`，`metadata_direct_refs=PASS`。
