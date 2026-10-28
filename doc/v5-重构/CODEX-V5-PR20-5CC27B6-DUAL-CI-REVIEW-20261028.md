@@ -454,3 +454,37 @@ runner XML 没有 `@selected`。本报告把 `total` 同时作为 selected，不
 ## 12. 明确不宣称
 
 本报告不宣称 P4.2-B、P4.5、G2、G3、整场、Unity、IL2CPP、Android/iOS 真机、跨物理网络、PG 性能或 D-PG-SUP-02 已通过。它只确认：在 `5cc27b6` 的这两个远端 run 上，已取得的原始证据支持构建、11 个 direct runner、PG 16.10 42/42 与 targeted 13/13、companion 4/4、native exit 6/6 和恢复/清理链的本次 PASS，并如实保留上述 NOT_RECORDED 缺口与历史失败。
+
+## 13. Codex 调用者独立验收与 MR 收口（2026-10-28）
+
+调用者在本工作树审查 `2964377bd9a4bca845f9fd27215a50a4b8f721c8`，直接父为冻结头 `5cc27b6`，净变更仅本报告；tracked clean，`git diff --check 5cc27b6..HEAD` exit 0。原交付报告 SHA256 为 `25C5B8B4A74E696B6457FEED1E7A5CD69DADFAABC785E10648DB21C8E85E0F36`，本节是随后补充的验收记录。
+
+已对同一线程 `thread_20261028_194640_0048` 调用 `approve_task`，桥接返回 **COMPLETED**。本任务范围 PASS；没有发起返修、新任务或转派，也没有以同批在途组件否决本任务。
+
+调用者实际运行：
+
+```powershell
+powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File artifacts/caller-ci-independent.ps1
+powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File tools/ci/test-v5-native-exit.ps1
+```
+
+- 独立审计 **2689 checks / 0 failures / native exit 0**。原始非自引用 manifest 的 507 条 SHA256 与长度全部匹配；两个 ZIP 各 242 项的流 SHA256/长度与解包文件逐项一致，未只校验解包摘要。两 run 各 11 个 direct XML 按真实 test 节点加总 **2299/2299**，无 fail/error/skip/not-run；PG full **42/42**、targeted **13/13**；各 10 份 JSON 均实际解析成功。
+- 原生产 native-exit 定向脚本 **6/6 / native exit 0**：0/1/2/17 退出传播、timeout 与 forced writer 全部通过。证据为 `artifacts/native-exit-5d1e7598c7274709ab94e7531be20ef4/`，未启动 PG。
+- 原 `audit.ps1` 未改动，复制到独占 ignored `artifacts/caller-ci-review-20261028/` 重放：**397 checks / 372 PASS / 24 NOT_RECORDED / 1 FAIL / native exit 1**。唯一 FAIL 是 §8 预先说明的 `git.head`：当前 HEAD 是报告子提交 `2964377`，而脚本固定检查 `5cc27b6`。其余证据检查全部通过；调用者独立检查直接父与唯一报告差异，未把这个原始非零退出写成 0，也未改动冻结头检查或生产 verifier。原证据目录及其摘要保持不变。
+- fresh GitHub API 回读两 run 均为 attempt 1、`completed/success`、`head_sha=5cc27b6`；artifact id/size/digest 与 §2 完全相符且未过期。Git 对象独立确认 PR 实际 checkout `696338afcaed1daadff9edc53dd2b5233df6ead1` 的双父与 tree，未用 API head 代替合成提交。
+
+调用者证据根为本工作树 `artifacts/`：
+
+| 证据 | SHA256 |
+|---|---|
+| `caller-ci-independent.ps1` | `92DA8C165AEE8EE538712095331FCBC439E7D826DA5FEA23A51EADB2E2A0CB38` |
+| `caller-ci-independent-result.json` | `50C96D603BD66116D75719F3D722AADB335452C22029E0F6BFFAD94C88B3695C` |
+| `caller-ci-independent.log` | `9767CDD18520F937424AF0476EE04B03EB58FC4A9F6D19DC9DA7819E593367CB` |
+| `caller-ci-review-replay.log` | `B4CD36483D9F2DE26C78C29B891E43FA65BCFAE2CDB4749BE9B2A636972C2EBC` |
+| `native-exit-5d1e7598c7274709ab94e7531be20ef4/results.json` | `3886116BC8BC9272683E1D9E16E2402CE6F1809EEC8EBC2BD8A98ADD1D0E3DD0` |
+
+独立清单首轮使用 Windows PowerShell 普通路径 API 时，40 个超长 analyzer 路径未被识别；改用真实 `\\?\` 文件流后 507 条全部匹配。独立脚本初次执行因 PowerShell 5.1 将无 BOM UTF-8 中文路径按本机代码页读取而在“唯一报告”检查失败；显式 UTF-8 BOM 后最终 2689 项通过。这两项是调用者审计工具适配问题，没有修改被审原始证据或产品代码。
+
+统一发布沿用既有唯一 [PR20](https://github.com/liuchangready/majiang-game/pull/20)，源 `feat/v5-post-g1-batch`，目标 `v5`。发布前 fetch 确认远端源头仍为 `5cc27b6`、目标为 `8fd7c6c`；本轮只推送本报告和本节验收记录，不混入仍在交付的 provenance/持久宿主增量，不操作另一 owner 的 PR21。最终提交与远端回读以同线程 `record_merge_request` 为准。两个已核验 CI 的冻结头仍是 `5cc27b6`；后续报告提交触发的新 CI 必须另按其 SHA 判断，不能借用这两个 run 宣称新 SHA 已通过。
+
+保留 §0/§9/§10 的证据缺口与历史失败；本轮没有重跑 PG、Unity 或 .NET 全量，没有批准 G2–G5、没有关闭 D-PG-SUP-02、没有覆盖 181 classified，设备/跨网缺口不变。没有 merge `v5`、部署或更改 scheduler/`complete.flag`。
