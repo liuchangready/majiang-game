@@ -172,6 +172,17 @@ namespace Mahjong.TableService
                 opening.Seat == seat &&
                 opening.Tile.Equals(discarded))
             {
+                if (!opening.HasVerdict)
+                {
+                    // The checkpoint was structurally valid but carried no persisted
+                    // tsumogiri fact for this opening discard (a synthetic/legacy payload
+                    // can omit the event facts). Never guess: the projection refuses at
+                    // the exact moment the value would be published.
+                    throw new InvalidOperationException(
+                        "The recovered opening discard (seat " + seat + ", tile " +
+                        discarded.Value + ") has no persisted tsumogiri verdict; the projection refuses to guess.");
+                }
+
                 return opening.Tsumogiri;
             }
 
@@ -736,14 +747,34 @@ namespace Mahjong.TableService
 
     /// <summary>
     /// D-R1-01 tier 2: the verified opening-discard tsumogiri verdict of the deal-extra seat,
-    /// derived by the recovery path from the room's own checkpoint (the seat's first river
-    /// entry in the checkpoint's published facts, cross-checked against the captured chain's
-    /// drawless discard event). It answers exactly one (seat, tile) question; every other
-    /// drawless shape still fails closed in <see cref="TableProjectionContextSource"/>.
+    /// derived by the recovery path from the room's own checkpoint (D-R2-01: the persisted
+    /// event fact of the exact committed discard ordinal, not the mutable current river).
+    /// It answers exactly one (seat, tile) question; every other drawless shape still fails
+    /// closed in <see cref="TableProjectionContextSource"/>.
+    ///
+    /// The verdict is optional by construction: a structurally valid synthetic checkpoint can
+    /// omit the event-fact window entirely. Construction deliberately does not guess in that
+    /// case — the anchor carries no verdict and the projection fails closed the first time the
+    /// value would actually be published.
     /// </summary>
     public sealed class TablePersistedOpeningAnchor
     {
         public TablePersistedOpeningAnchor(int seat, TileId tile, bool tsumogiri)
+            : this(seat, tile, (bool?)tsumogiri)
+        {
+        }
+
+        /// <summary>
+        /// Creates an evidence-free anchor. It is never a guessed verdict: any capture that
+        /// actually needs the opening discard's tsumogiri refuses through
+        /// <see cref="TableProjectionContextSource"/>.
+        /// </summary>
+        public TablePersistedOpeningAnchor(int seat, TileId tile)
+            : this(seat, tile, (bool?)null)
+        {
+        }
+
+        private TablePersistedOpeningAnchor(int seat, TileId tile, bool? tsumogiri)
         {
             if (seat < 0 || seat > 3)
             {
@@ -752,13 +783,21 @@ namespace Mahjong.TableService
 
             Seat = seat;
             Tile = tile;
-            Tsumogiri = tsumogiri;
+            _tsumogiri = tsumogiri;
         }
+
+        private readonly bool? _tsumogiri;
 
         public int Seat { get; }
 
         public TileId Tile { get; }
 
-        public bool Tsumogiri { get; }
+        public bool HasVerdict => _tsumogiri.HasValue;
+
+        public bool Tsumogiri => _tsumogiri ??
+            throw new InvalidOperationException(
+                "This opening-discard anchor carries no persisted tsumogiri verdict.");
+
+        internal bool? VerdictOrNull => _tsumogiri;
     }
 }

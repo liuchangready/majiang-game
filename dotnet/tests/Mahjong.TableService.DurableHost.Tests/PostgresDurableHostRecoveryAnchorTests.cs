@@ -252,6 +252,7 @@ namespace Mahjong.TableService.DurableHost.Tests
             string room = RoomBase + "-history";
             TableServiceHostRuntime? first = null;
             TableServiceHostRuntime? second = null;
+            var extraClients = new List<TableTestClient>();
             try
             {
                 string requestId;
@@ -259,11 +260,9 @@ namespace Mahjong.TableService.DurableHost.Tests
                 ulong commandVersion;
                 DiscardFact before;
                 {
-                    // This test rides the V4 deadline cadence (absent seats auto-resolve
-                    // on their own schedule) and waits up to 90s per read; the default
-                    // 60s idle-dead would kill the recovered room while the cadence is
-                    // still turning under suite load. Nothing here relaxes an assertion —
-                    // it only stops the harness from closing the room mid-wait.
+                    // The recovered room is held well beyond the harness's default idle
+                    // dead while the test drives it; this is a liveness bound, not relaxed
+                    // correctness.
                     first = await StartHostAsync(
                         PostgresOptions(o => o.IdleDeadMs = 240_000),
                         signer,
@@ -298,99 +297,397 @@ namespace Mahjong.TableService.DurableHost.Tests
                 Assert.Equal(Contracts.Wire.LookupStatus.Found, lookup.ReceiptLookup.Status);
                 Assert.Equal(commandVersion, lookup.ReceiptLookup.Receipt.CommandVersion);
 
-                // The recovered room keeps playing. The journal of earlier runs pins the V4
-                // deadline cadence at ~23s per turn, and deadline auto-play applies whether
-                // or not the seat is connected — seat 1's stale pre-crash decision resolves
-                // itself right on schedule. So the test rides that cadence instead of
-                // fighting it: waits are sized in multiples of it, and the moment a client's
-                // decision opens the submission lands (milliseconds, versus a ~23s deadline).
-                // Turn order from the recovered baseline: seat 3 resolves on its deadline,
-                // then seat 0 plays a REAL client discard, which opens seat 1's decision in
-                // the same commit wave; the loop then lands seat 1's own real discard. Only
-                // a DISCARD action advances the river, so every submission targets it.
-                await using TableTestClient seat1 = await ConnectPlayerAsync(
-                    second, signer, room, "acct-anchor-history-1", 1);
-
-                Envelope seat0Decision = await recovered.ReadUntilAsync(
-                    message => message.PlayerUpdate?.Snapshot?.PrivateView?.Decision != null,
-                    TimeSpan.FromSeconds(90));
-                Contracts.Wire.PlayerSnapshot seat0Snapshot = seat0Decision.PlayerUpdate!.Snapshot;
-                Contracts.Wire.DecisionView seat0View = seat0Snapshot.PrivateView!.Decision!;
-                Contracts.Wire.LegalActionView? seat0Discard = seat0View.Actions.FirstOrDefault(
-                    candidate => candidate.ActionType == (uint)ProtocolActionType.DiscardTile);
-                Assert.NotNull(seat0Discard);
-                string seat0Request = TableWire.RandomId("req");
-                await recovered.SendAsync(TableWire.Command(
-                    recovered.Welcome!,
-                    seat0Request,
-                    Contracts.CommandKind.SubmitAction,
-                    TableWire.SubmitActionPayload(
-                        seat0Snapshot.RoundId,
-                        seat0View.DecisionId,
-                        seat0View.ControlEpoch,
-                        seat0Discard.ActionType,
-                        seat0Discard.TileIds.ToArray()),
-                    expectedStateVersion: seat0Snapshot.StateVersion));
-                Envelope seat0Receipt = await recovered.ReadUntilAsync(
-                    candidate => candidate.MessageType == MessageType.Receipt &&
-                                 candidate.RequestId == seat0Request,
-                    TimeSpan.FromSeconds(90));
-                Assert.Equal(Contracts.Wire.ReceiptStatus.Applied, seat0Receipt.Receipt.Status);
-
-                bool applied = false;
-                Envelope seat1Receipt = null!;
-                for (int attempt = 0; attempt < 5 && !applied; attempt++)
+                // D-R2-02: drive the room from its OWN authoritative board. Recovery is not
+                // guaranteed to land on seat 3 or to offer seat 0's decision next: the first
+                // host's ~30s graceful shutdown keeps ticking (absent seats auto-play on
+                // their ~23s deadlines), so the recovered baseline can be on ANY seat.
+                // Waiting for a fixed seat spends one deadline per intervening seat — the
+                // exact race that timed out under suite load. Every action below targets the
+                // board's current seat, connects that seat, and submits the decision it is
+                // actually offered. No fixed seat, no fixed order, no timing guess.
+                var seatClients = new Dictionary<int, TableTestClient> { [0] = recovered };
+                ulong lastVersion = after.Snapshot.StateVersion;
+                int appliedActions = 0;
+                var appliedRequests = new List<string>();
+                for (int attempt = 0; attempt < 8 && appliedActions < 2; attempt++)
                 {
-                    Envelope seat1Decision = await seat1.ReadUntilAsync(
-                        message => message.PlayerUpdate?.Snapshot?.PrivateView?.Decision != null,
-                        TimeSpan.FromSeconds(90));
-                    Contracts.Wire.PlayerSnapshot seat1Snapshot = seat1Decision.PlayerUpdate!.Snapshot;
-                    Contracts.Wire.DecisionView seat1View = seat1Snapshot.PrivateView!.Decision!;
-                    Contracts.Wire.LegalActionView? discard = seat1View.Actions.FirstOrDefault(
+                    Contracts.Wire.PublicBoardView board = await WaitForActionableBoardAsync(
+                        recovered, lastVersion, TimeSpan.FromSeconds(120));
+                    int seat = board.CurrentSeat;
+                    if (!seatClients.TryGetValue(seat, out TableTestClient? actor))
+                    {
+                        actor = await ConnectPlayerAsync(
+                            second, signer, room, "acct-anchor-history-" + seat, seat);
+                        seatClients[seat] = actor;
+                        extraClients.Add(actor);
+                    }
+
+                    Envelope decisionEnvelope = await actor.ReadUntilAsync(
+                        message => message.PlayerUpdate?.Snapshot is Contracts.Wire.PlayerSnapshot snapshot &&
+                                   snapshot.PrivateView?.Decision != null &&
+                                   snapshot.PublicView?.Board.CurrentSeat == seat &&
+                                   snapshot.StateVersion >= lastVersion,
+                        TimeSpan.FromSeconds(120));
+                    Contracts.Wire.PlayerSnapshot snapshot = decisionEnvelope.PlayerUpdate!.Snapshot;
+                    Contracts.Wire.DecisionView decision = snapshot.PrivateView!.Decision!;
+                    Contracts.Wire.LegalActionView? discard = decision.Actions.FirstOrDefault(
                         candidate => candidate.ActionType == (uint)ProtocolActionType.DiscardTile);
                     if (discard == null)
                     {
+                        // A draw/terminal shape carries no client decision; the trusted
+                        // driver advances it. Wait for the next actionable board.
+                        lastVersion = snapshot.StateVersion;
                         continue;
                     }
 
-                    string seat1Request = TableWire.RandomId("req");
-                    await seat1.SendAsync(TableWire.Command(
-                        seat1.Welcome!,
-                        seat1Request,
+                    string actionRequest = TableWire.RandomId("req");
+                    await actor.SendAsync(TableWire.Command(
+                        actor.Welcome!,
+                        actionRequest,
                         Contracts.CommandKind.SubmitAction,
                         TableWire.SubmitActionPayload(
-                            seat1Snapshot.RoundId,
-                            seat1View.DecisionId,
-                            seat1View.ControlEpoch,
+                            snapshot.RoundId,
+                            decision.DecisionId,
+                            decision.ControlEpoch,
                             discard.ActionType,
                             discard.TileIds.ToArray()),
-                        expectedStateVersion: seat1Snapshot.StateVersion));
-                    seat1Receipt = await seat1.ReadUntilAsync(
+                        expectedStateVersion: snapshot.StateVersion));
+                    Envelope receipt = await actor.ReadUntilAsync(
                         candidate => candidate.MessageType == MessageType.Receipt &&
-                                     candidate.RequestId == seat1Request,
-                        TimeSpan.FromSeconds(90));
-                    applied = seat1Receipt.Receipt.Status == Contracts.Wire.ReceiptStatus.Applied;
+                                     candidate.RequestId == actionRequest,
+                        TimeSpan.FromSeconds(120));
+                    if (receipt.Receipt.Status == Contracts.Wire.ReceiptStatus.Applied)
+                    {
+                        Assert.False(receipt.Receipt.Replayed);
+                        appliedActions++;
+                        appliedRequests.Add(actionRequest);
+                        lastVersion = receipt.Receipt.CommandVersion;
+                    }
+                    else
+                    {
+                        // A deadline/state race changed nothing; the next authoritative
+                        // decision drives the next attempt.
+                        lastVersion = snapshot.StateVersion;
+                    }
                 }
 
-                Assert.True(applied, "seat 1 could not land a real post-recovery discard in five decision cycles");
+                Assert.True(
+                    appliedActions == 2,
+                    "the recovered room did not land two real authoritative discards (applied=" + appliedActions + ")");
 
                 // The committed history stays exactly what recovery served — the opening
-                // discard is neither rewritten nor duplicated by the continued play. The
-                // post-play read anchors on the receipt's committed command version (the
-                // replay queue legitimately still carries older snapshots, including
-                // seat 1's deadline auto-play), so only a board at or past the submitted
-                // command can satisfy it.
-                Envelope advanced = await seat1.ReadUntilAsync(
+                // discard is neither rewritten nor duplicated by the continued play.
+                Envelope advanced = await recovered.ReadUntilAsync(
                     message => message.PlayerUpdate?.Snapshot is Contracts.Wire.PlayerSnapshot snapshot &&
-                               snapshot.StateVersion >= seat1Receipt.Receipt.CommandVersion &&
-                               snapshot.PublicView?.Board.Players
-                                   .Any(p => p.Seat == 1 && p.Discards.Count > 0) == true,
-                    TimeSpan.FromSeconds(90));
+                               snapshot.StateVersion >= lastVersion,
+                    TimeSpan.FromSeconds(120));
                 PublicHistory played = PublicHistoryCapture(advanced.PlayerUpdate!.Snapshot);
                 Contracts.Wire.PlayerPublicView seat0 = advanced.PlayerUpdate!.Snapshot.PublicView!.Board.Players[0];
                 Assert.True(seat0.Discards[0].Tsumogiri);
                 Assert.Equal(127u, seat0.Discards[0].TileId);
                 AssertHistoryExtends("post-play", after.History, played);
+
+                // The durable ledger carries exactly the pre-crash discard plus the two
+                // post-recovery actions: no replayed/duplicated side effect.
+                long appliedRows = await DurableTableHostEnvironment.CountAsync(
+                    "SELECT count(*) FROM table_store.request_receipt WHERE room_id = @room AND status = 'APPLIED'",
+                    ("room", room));
+                Assert.Equal(3L, appliedRows);
+                foreach (string appliedRequest in appliedRequests)
+                {
+                    long rows = await DurableTableHostEnvironment.CountAsync(
+                        "SELECT count(*) FROM table_store.request_receipt " +
+                        " WHERE room_id = @room AND request_id = @request AND status = 'APPLIED'",
+                        ("room", room),
+                        ("request", appliedRequest));
+                    Assert.Equal(1L, rows);
+                }
+
+                // 136-tile conservation and the opening fact, read from a REAL post-play
+                // checkpoint through the accepted recovery codec.
+                await CheckpointAsync(second, room, lastVersion);
+                PostgresTableHostRegistry registry =
+                    Assert.IsAssignableFrom<PostgresTableHostRegistry>(second.HostRegistry);
+                Assert.True(registry.TryGet(room, out RoomHost? served), "the recovered room must still be served");
+                TableCheckpoint postPlay = await served!.Store.LoadCheckpointAsync(room, CancellationToken.None)
+                    ?? throw new InvalidOperationException("the post-play checkpoint is missing");
+                RoundRecoveryState replay = RoundRecoveryCodec.Decode(postPlay.StatePayload);
+                Assert.Equal(136, CountAllTiles(replay.Tiles));
+                Assert.Equal(0, replay.Tiles.CountAt(TileZone.Unassigned));
+
+                Assert.NotNull(postPlay.CommittedFactsPayload);
+                TableProjectionContextData postFacts = TableProjectionFactsCodec.Decode(
+                    postPlay.CommittedFactsPayload!,
+                    replay.Spec.RoundId,
+                    postPlay.StateVersion);
+                Assert.NotNull(postPlay.CommittedHistoryPayload);
+                IReadOnlyList<TableEventRecord> postHistory =
+                    TableCommittedHistoryCodec.Decode(postPlay.CommittedHistoryPayload!);
+                TableEventRecord openingRecord = postHistory.First(record =>
+                    record.Type == RoundEventType.TileDiscarded &&
+                    record.Seat == 0 &&
+                    record.Tile.HasValue &&
+                    record.Tile.Value.Value == 127);
+                TableProjectionEventFact openingFact = postFacts.EventFacts.Single(fact =>
+                    fact.EventSeq == openingRecord.Seq);
+                Assert.Equal(ProtocolEventType.TileDiscarded, openingFact.Type);
+                Assert.Equal(unchecked((uint)openingRecord.Ordinal), openingFact.EventOrdinal);
+                Assert.True(openingFact.Facts.Tsumogiri, "the post-play checkpoint must keep the opening tsumogiri fact");
+                Assert.Equal(127u, openingFact.Facts.DiscardTileId);
+
+                await second.StopAsync();
+                second = null;
+            }
+            finally
+            {
+                foreach (TableTestClient extra in extraClients)
+                {
+                    try { await extra.DisposeAsync(); } catch (Exception) { }
+                }
+
+                await StopQuietlyAsync(first);
+                await StopQuietlyAsync(second);
+            }
+        }
+
+        // ------------------------------------------------------------------
+        // D-R2-01: a legally claimed opening discard removes the claimed tile from the
+        // discarder's current river. The successor host must still recover the exact
+        // persisted tsumogiri fact from the checkpoint's committed history/event facts —
+        // never from the mutable river. This real-PostgreSQL + real-WebSocket chain covers
+        // chi and pon end to end (post-claim checkpoint, claimant receipt, continued play,
+        // 136-tile conservation, ledger uniqueness). OpenKan cannot be cold-recovered by
+        // the accepted runtime at all (CHECKPOINT_INVALID "Kan/replacement-draw wall
+        // evidence is not modeled"), so its anchor/projection is covered by the pure
+        // matrix and the runtime boundary is reported to the caller instead of hidden.
+        // ------------------------------------------------------------------
+
+        [Fact]
+        public async Task ColdRecovery_LegallyClaimedOpeningDiscard_ChiAndPon()
+        {
+            await DurableTableHostEnvironment.ResetAsync();
+            var signer = new TableTestSigner("anchor-claimed-key");
+            var cases = new List<ClaimedCase>();
+            TableServiceHostRuntime? first = null;
+            TableServiceHostRuntime? second = null;
+            try
+            {
+                first = await StartHostAsync(
+                    PostgresOptions(o => o.IdleDeadMs = 240_000),
+                    signer,
+                    ClaimRoundSource());
+
+                // OpenKan is intentionally NOT in this real-PostgreSQL recovery loop: the
+                // accepted TableRuntime refuses even a legal open-kan recovery state with
+                // CHECKPOINT_INVALID "Kan/replacement-draw wall evidence is not modeled"
+                // (and refuses to persist such a checkpoint). That is an accepted-runtime
+                // boundary outside this task's allowed files, evidenced in the delivery
+                // report; the OpenKan anchor/projection is covered by the pure matrix.
+                foreach (string claim in new[] { "Chi", "Pon" })
+                {
+                    // Chi/Pon persist an explicit post-claim checkpoint (tier 2).
+                    string form = "ckpt";
+                    {
+                        string room = "p54b-claim-" + claim.ToLowerInvariant();
+                        int target = claim == "Chi" ? 8 : 127;
+                        ProtocolActionType action = claim == "Chi"
+                            ? ProtocolActionType.DeclareChi
+                            : claim == "Pon"
+                                ? ProtocolActionType.DeclarePon
+                                : ProtocolActionType.DeclareKan;
+                        uint[] meldTiles = claim == "Chi"
+                            ? new uint[] { 8, 0, 4 }
+                            : claim == "OpenKan"
+                                ? new uint[] { 127, 124, 125, 126 }
+                                : new uint[] { 127, 124, 125 };
+                        uint? meldType = claim == "OpenKan" ? (uint)Contracts.Wire.MeldType.OpenKan : (uint?)null;
+
+                        await using TableTestClient zero = await ConnectPlayerAsync(
+                            first, signer, room, "acct-" + room + "-0", 0);
+                        await using TableTestClient one = await ConnectPlayerAsync(
+                            first, signer, room, "acct-" + room + "-1", 1);
+                        DiscardFact opening = await DiscardTileAsync(zero, tile: target);
+                        Assert.True(opening.Discard.Tsumogiri);
+
+                        Envelope claimDecision = await one.ReadUntilAsync(
+                            message => message.PlayerUpdate?.Snapshot?.PrivateView?.Decision is Contracts.Wire.DecisionView view &&
+                                       view.Actions.Any(candidate => candidate.ActionType == (uint)action),
+                            TimeSpan.FromSeconds(30));
+                        Contracts.Wire.PlayerSnapshot claimSnapshot = claimDecision.PlayerUpdate!.Snapshot;
+                        Contracts.Wire.DecisionView claimView = claimSnapshot.PrivateView!.Decision!;
+                        string claimRequest = TableWire.RandomId("req");
+                        await one.SendAsync(TableWire.Command(
+                            one.Welcome!,
+                            claimRequest,
+                            Contracts.CommandKind.SubmitAction,
+                            CommandPayloadFactory.SubmitAction(
+                                claimSnapshot.RoundId,
+                                claimView.DecisionId,
+                                claimView.ControlEpoch,
+                                action,
+                                tileIds: meldTiles,
+                                meldType: meldType).CopyBytes(),
+                            expectedStateVersion: claimSnapshot.StateVersion));
+                        Envelope claimReceipt = await one.ReadUntilAsync(
+                            candidate => candidate.MessageType == MessageType.Receipt &&
+                                         candidate.RequestId == claimRequest,
+                            TimeSpan.FromSeconds(30));
+                        Assert.Equal(Contracts.Wire.ReceiptStatus.Applied, claimReceipt.Receipt.Status);
+                        Assert.False(claimReceipt.Receipt.Replayed);
+
+                        Envelope claimed = await zero.ReadUntilAsync(
+                            message => message.PlayerUpdate?.Snapshot is Contracts.Wire.PlayerSnapshot snapshot &&
+                                       snapshot.StateVersion >= claimReceipt.Receipt.CommandVersion,
+                            TimeSpan.FromSeconds(30));
+                        Contracts.Wire.PlayerSnapshot claimedSnapshot = claimed.PlayerUpdate!.Snapshot;
+                        Contracts.Wire.PlayerPublicView claimedSeat0 = claimedSnapshot.PublicView!.Board.Players[0];
+                        Contracts.Wire.PlayerPublicView claimedSeat1 = claimedSnapshot.PublicView.Board.Players[1];
+                        Assert.Empty(claimedSeat0.Discards);
+                        Contracts.Wire.MeldView claimedMeld = Assert.Single(claimedSeat1.Melds);
+                        Assert.Equal(ExpectedMeldType(claim), claimedMeld.Type);
+
+                        if (form == "ckpt")
+                        {
+                            await CheckpointAsync(first, room, claimReceipt.Receipt.CommandVersion);
+                        }
+
+                        cases.Add(new ClaimedCase(
+                            room,
+                            claim,
+                            form,
+                            target,
+                            claimRequest,
+                            one.Welcome!.Scope.ScopeId,
+                            claimReceipt.Receipt.CommandVersion,
+                            PublicHistoryCapture(claimedSnapshot)));
+                    }
+                }
+
+                await first.StopAsync();
+                first = null;
+
+                foreach (ClaimedCase claimCase in cases.Where(item => item.Form == "ckpt"))
+                {
+                    long maxCheckpoint = await DurableTableHostEnvironment.CountAsync(
+                        "SELECT COALESCE(max(state_version), 0) FROM table_store.table_checkpoint WHERE room_id = @room",
+                        ("room", claimCase.Room));
+                    Assert.True(
+                        (ulong)maxCheckpoint >= claimCase.ClaimVersion,
+                        "the tier-2 room must carry a post-claim checkpoint (max=" + maxCheckpoint + ")");
+                }
+
+                await Task.Delay(LeaseAgeOut);
+
+                // The successor is built with a DIFFERENT deal: the pre-fix fresh anchor
+                // would rewrite the claimed opening fact; the persisted history must win.
+                second = await StartHostAsync(
+                    PostgresOptions(o => o.IdleDeadMs = 240_000),
+                    signer,
+                    AnchorRoundSource(handStart: 109, drawn: 108));
+
+                foreach (ClaimedCase claimCase in cases)
+                {
+                    await using TableTestClient recovered = await ConnectPlayerAsync(
+                        second, signer, claimCase.Room, "acct-" + claimCase.Room + "-0", 0);
+                    Envelope recoveredFrame = await recovered.ReadUntilAsync(
+                        message => message.PlayerUpdate?.Snapshot is Contracts.Wire.PlayerSnapshot snapshot &&
+                                   snapshot.StateVersion >= claimCase.ClaimVersion,
+                        TimeSpan.FromSeconds(60));
+                    Contracts.Wire.PlayerSnapshot recoveredSnapshot = recoveredFrame.PlayerUpdate!.Snapshot;
+                    Contracts.Wire.PlayerPublicView seat0 = recoveredSnapshot.PublicView!.Board.Players[0];
+                    Contracts.Wire.PlayerPublicView seat1 = recoveredSnapshot.PublicView.Board.Players[1];
+                    Assert.Empty(seat0.Discards);
+                    Contracts.Wire.MeldView meld = Assert.Single(seat1.Melds);
+                    Assert.Equal(ExpectedMeldType(claimCase.Claim), meld.Type);
+                    AssertHistoryExtends(
+                        "claimed recovery " + claimCase.Room,
+                        claimCase.BeforeCrash,
+                        PublicHistoryCapture(recoveredSnapshot));
+
+                    // The pre-crash claim receipt survives the cold recovery and is still
+                    // owned by the CLAIMANT's identity (seat 1's scope, not seat 0's).
+                    await using TableTestClient recoveredOne = await ConnectPlayerAsync(
+                        second, signer, claimCase.Room, "acct-" + claimCase.Room + "-1", 1);
+                    await recoveredOne.SendAsync(TableWire.ReceiptQuery(
+                        recoveredOne.Welcome!,
+                        claimCase.ScopeId,
+                        claimCase.RequestId));
+                    Envelope lookup = await recoveredOne.ReadUntilAsync(
+                        message => message.MessageType == MessageType.ReceiptLookup,
+                        TimeSpan.FromSeconds(30));
+                    Assert.Equal(Contracts.Wire.LookupStatus.Found, lookup.ReceiptLookup.Status);
+                    Assert.Equal(claimCase.ClaimVersion, lookup.ReceiptLookup.Receipt.CommandVersion);
+
+                    // One real legal post-recovery action; the opening fact and the 136-tile
+                    // conservation must survive it.
+                    ulong lastVersion = recoveredSnapshot.StateVersion;
+                    List<TableTestClient> created = new List<TableTestClient>();
+                    try
+                    {
+                        var seatClients = new Dictionary<int, TableTestClient>
+                        {
+                            [0] = recovered,
+                            [1] = recoveredOne
+                        };
+                        Envelope postReceipt = await PlayOneAuthoritativeDiscardAsync(
+                            second,
+                            signer,
+                            claimCase.Room,
+                            recovered,
+                            lastVersion,
+                            seatClients,
+                            created);
+                        Assert.Equal(Contracts.Wire.ReceiptStatus.Applied, postReceipt.Receipt.Status);
+                        Assert.False(postReceipt.Receipt.Replayed);
+                        lastVersion = postReceipt.Receipt.CommandVersion;
+                    }
+                    finally
+                    {
+                        foreach (TableTestClient extra in created)
+                        {
+                            await extra.DisposeAsync();
+                        }
+                    }
+
+                    await CheckpointAsync(second, claimCase.Room, lastVersion);
+                    PostgresTableHostRegistry registry =
+                        Assert.IsAssignableFrom<PostgresTableHostRegistry>(second.HostRegistry);
+                    Assert.True(registry.TryGet(claimCase.Room, out RoomHost? served));
+                    TableCheckpoint postPlay = await served!.Store
+                        .LoadCheckpointAsync(claimCase.Room, CancellationToken.None)
+                        ?? throw new InvalidOperationException("the post-play checkpoint is missing");
+                    RoundRecoveryState state = RoundRecoveryCodec.Decode(postPlay.StatePayload);
+                    Assert.Equal(136, CountAllTiles(state.Tiles));
+                    Assert.Equal(0, state.Tiles.CountAt(TileZone.Unassigned));
+                    Assert.DoesNotContain(
+                        state.Tiles.TilesInZone(TileZone.Discard, 0),
+                        tile => tile.Value == claimCase.Target);
+                    Assert.NotNull(postPlay.CommittedHistoryPayload);
+                    Assert.NotNull(postPlay.CommittedFactsPayload);
+                    IReadOnlyList<TableEventRecord> history =
+                        TableCommittedHistoryCodec.Decode(postPlay.CommittedHistoryPayload!);
+                    TableEventRecord openingRecord = history.First(record =>
+                        record.Type == RoundEventType.TileDiscarded &&
+                        record.Seat == 0 &&
+                        record.Tile.HasValue &&
+                        record.Tile.Value.Value == claimCase.Target);
+                    TableProjectionContextData postFacts = TableProjectionFactsCodec.Decode(
+                        postPlay.CommittedFactsPayload!,
+                        state.Spec.RoundId,
+                        postPlay.StateVersion);
+                    TableProjectionEventFact openingFact = postFacts.EventFacts.Single(fact =>
+                        fact.EventSeq == openingRecord.Seq);
+                    Assert.True(openingFact.Facts.Tsumogiri);
+                    Assert.Equal((uint)claimCase.Target, openingFact.Facts.DiscardTileId);
+
+                    // Exactly the opening discard + claim + one post-recovery discard: no
+                    // replayed or duplicated ledger side effect.
+                    long appliedRows = await DurableTableHostEnvironment.CountAsync(
+                        "SELECT count(*) FROM table_store.request_receipt " +
+                        " WHERE room_id = @room AND status = 'APPLIED'",
+                        ("room", claimCase.Room));
+                    Assert.Equal(3L, appliedRows);
+                }
 
                 await second.StopAsync();
                 second = null;
@@ -400,6 +697,132 @@ namespace Mahjong.TableService.DurableHost.Tests
                 await StopQuietlyAsync(first);
                 await StopQuietlyAsync(second);
             }
+        }
+
+        private readonly record struct ClaimedCase(
+            string Room,
+            string Claim,
+            string Form,
+            int Target,
+            string RequestId,
+            string ScopeId,
+            ulong ClaimVersion,
+            PublicHistory BeforeCrash);
+
+        private static Contracts.Wire.MeldType ExpectedMeldType(string claim)
+        {
+            return claim == "Chi"
+                ? Contracts.Wire.MeldType.Chi
+                : claim == "Pon"
+                    ? Contracts.Wire.MeldType.Pon
+                    : Contracts.Wire.MeldType.OpenKan;
+        }
+
+        /// <summary>
+        /// Plays exactly one real discard on the room's OWN current authoritative seat and
+        /// returns its applied receipt. The caller owns/disposes the clients it opened.
+        /// </summary>
+        private static async Task<Envelope> PlayOneAuthoritativeDiscardAsync(
+            TableServiceHostRuntime host,
+            TableTestSigner signer,
+            string room,
+            TableTestClient observer,
+            ulong minVersion,
+            Dictionary<int, TableTestClient> seatClients,
+            List<TableTestClient> created)
+        {
+            for (int attempt = 0; attempt < 6; attempt++)
+            {
+                Contracts.Wire.PublicBoardView board;
+                try
+                {
+                    board = await WaitForActionableBoardAsync(
+                        observer, minVersion, TimeSpan.FromSeconds(120));
+                }
+                catch (Exception exception) when (
+                    exception is TaskCanceledException || exception is OperationCanceledException)
+                {
+                    throw new TimeoutException(
+                        "room " + room + " produced no actionable board at/after version " + minVersion +
+                        " within 120s.", exception);
+                }
+
+                int seat = board.CurrentSeat;
+                if (!seatClients.TryGetValue(seat, out TableTestClient? actor))
+                {
+                    actor = await ConnectPlayerAsync(
+                        host, signer, room, "acct-" + room + "-post-" + seat, seat);
+                    seatClients[seat] = actor;
+                    created.Add(actor);
+                }
+
+                Envelope decisionEnvelope = await actor.ReadUntilAsync(
+                    message => message.PlayerUpdate?.Snapshot is Contracts.Wire.PlayerSnapshot snapshot &&
+                               snapshot.PrivateView?.Decision != null &&
+                               snapshot.PublicView?.Board.CurrentSeat == seat &&
+                               snapshot.StateVersion >= minVersion,
+                    TimeSpan.FromSeconds(120));
+                Contracts.Wire.PlayerSnapshot snapshot = decisionEnvelope.PlayerUpdate!.Snapshot;
+                Contracts.Wire.DecisionView decision = snapshot.PrivateView!.Decision!;
+                Contracts.Wire.LegalActionView? discard = decision.Actions.FirstOrDefault(
+                    candidate => candidate.ActionType == (uint)ProtocolActionType.DiscardTile);
+                if (discard == null)
+                {
+                    minVersion = snapshot.StateVersion;
+                    continue;
+                }
+
+                string request = TableWire.RandomId("req");
+                await actor.SendAsync(TableWire.Command(
+                    actor.Welcome!,
+                    request,
+                    Contracts.CommandKind.SubmitAction,
+                    TableWire.SubmitActionPayload(
+                        snapshot.RoundId,
+                        decision.DecisionId,
+                        decision.ControlEpoch,
+                        discard.ActionType,
+                        discard.TileIds.ToArray()),
+                    expectedStateVersion: snapshot.StateVersion));
+                Envelope receipt = await actor.ReadUntilAsync(
+                    candidate => candidate.MessageType == MessageType.Receipt &&
+                                 candidate.RequestId == request,
+                    TimeSpan.FromSeconds(120));
+                if (receipt.Receipt.Status == Contracts.Wire.ReceiptStatus.Applied)
+                {
+                    return receipt;
+                }
+
+                minVersion = snapshot.StateVersion;
+            }
+
+            throw new InvalidOperationException("no authoritative discard could be applied in six attempts");
+        }
+
+        private static ITableRoundSource ClaimRoundSource()
+        {
+            return new FixedRoundSource(roomId =>
+            {
+                string lower = roomId.ToLowerInvariant();
+                int target = lower.Contains("chi") ? 8 : 127;
+                int[] pair = lower.Contains("chi")
+                    ? new[] { 0, 4 }
+                    : lower.Contains("openkan")
+                        ? new[] { 124, 125, 126 }
+                        : new[] { 124, 125 };
+                var fixture = new N1aTable { Dealer = 0 };
+                fixture.Hand(0, Enumerable.Range(108, 13).Select(t => new TileId(t)).ToArray());
+                fixture.Drawn(0, new TileId(target));
+                fixture.Hand(1, pair.Select(t => new TileId(t)).ToArray());
+                // Seats 2/3 never hold a tile that could claim the opening discard, so the
+                // ONLY response decision is the claimant's (consumed by the claim). This
+                // keeps the fixture focused on the opening-fact recovery; the accepted
+                // runtime's stale other-seat response-decision behavior is reported
+                // separately and is not silently exercised here.
+                fixture.Hand(2, Enumerable.Range(20, 13).Select(t => new TileId(t)).ToArray());
+                fixture.Hand(3, Enumerable.Range(40, 13).Select(t => new TileId(t)).ToArray());
+                return fixture.Build(roomId + "-r1");
+            });
         }
 
         // ------------------------------------------------------------------
@@ -637,7 +1060,8 @@ namespace Mahjong.TableService.DurableHost.Tests
             string ScopeId,
             ulong CommandVersion,
             Mahjong.Contracts.Wire.DiscardView Discard,
-            PublicHistory History);
+            PublicHistory History,
+            Contracts.Wire.PlayerSnapshot Snapshot);
 
         /// <summary>One seat's committed public history, entry by entry.</summary>
         private sealed class SeatHistory
@@ -667,8 +1091,10 @@ namespace Mahjong.TableService.DurableHost.Tests
             Mahjong.Contracts.Wire.PublicBoardView board = snapshot.PublicView!.Board;
             var history = new PublicHistory
             {
+                // Phase/current seat are LIVE control state and legitimately advance when
+                // continued play opens a response window; they are not committed history.
+                // The immutable board facts are the round identity, dora and scores.
                 BoardConstants =
-                    "phase" + board.Phase +
                     " wind" + board.RoundWind +
                     " number" + board.RoundNumber +
                     " honba" + board.Honba +
@@ -795,6 +1221,10 @@ namespace Mahjong.TableService.DurableHost.Tests
             Assert.True(registry.TryGet(room, out RoomHost? host), "the serving room must be registered");
             TableOperationResult result = await host!.Actor.SaveCheckpointAsync();
             Assert.True(result.Admitted, "the checkpoint must be admitted: " + result.ReasonCode);
+            Assert.True(
+                result.Status == TableOperationStatus.Configured,
+                "the checkpoint must actually commit: status=" + result.Status +
+                " reason=" + result.ReasonCode + " detail=" + result.Detail);
 
             // The accepted API completes through the actor's own mailbox checkpoint path —
             // the durable row must exist by the time the call returns.
@@ -904,7 +1334,47 @@ namespace Mahjong.TableService.DurableHost.Tests
                 client.Welcome!.Scope.ScopeId,
                 receipt.Receipt.CommandVersion,
                 discard,
-                PublicHistoryCapture(publishedSnapshot));
+                PublicHistoryCapture(publishedSnapshot),
+                publishedSnapshot);
+        }
+
+        /// <summary>
+        /// Waits for the room's OWN next actionable board: a committed snapshot at or past
+        /// <paramref name="minVersion"/> whose phase actually requires one acting seat. The
+        /// caller then targets that seat instead of assuming a fixed turn order.
+        /// </summary>
+        private static async Task<Contracts.Wire.PublicBoardView> WaitForActionableBoardAsync(
+            TableTestClient observer,
+            ulong minVersion,
+            TimeSpan timeout)
+        {
+            Envelope envelope = await observer.ReadUntilAsync(
+                message => message.PlayerUpdate?.Snapshot is Contracts.Wire.PlayerSnapshot snapshot &&
+                           snapshot.StateVersion >= minVersion &&
+                           snapshot.PublicView?.Board is Contracts.Wire.PublicBoardView board &&
+                           (board.Phase == Contracts.Wire.GamePhase.CheatWindow ||
+                            board.Phase == Contracts.Wire.GamePhase.Discard) &&
+                           board.CurrentSeat >= 0 &&
+                           board.CurrentSeat <= 3,
+                timeout);
+            return envelope.PlayerUpdate!.Snapshot.PublicView!.Board;
+        }
+
+        /// <summary>Every physical tile in the recovered round, across all zones (136).</summary>
+        private static int CountAllTiles(TilePositionMap tiles)
+        {
+            int total = tiles.CountAt(TileZone.Wall) +
+                        tiles.CountAt(TileZone.DeadWall) +
+                        tiles.CountAt(TileZone.DeadWallReplacement);
+            for (int seat = 0; seat < 4; seat++)
+            {
+                total += tiles.CountAt(TileZone.Hand, seat);
+                total += tiles.CountAt(TileZone.Discard, seat);
+                total += tiles.CountAt(TileZone.Meld, seat);
+                total += tiles.CountAt(TileZone.Sleeve, seat);
+            }
+
+            return total;
         }
 
         /// <summary>Reads the opening discard's public fact from a (recovered) room.</summary>
@@ -919,7 +1389,8 @@ namespace Mahjong.TableService.DurableHost.Tests
                 string.Empty,
                 0UL,
                 snapshot.PublicView!.Board.Players[0].Discards[0],
-                PublicHistoryCapture(snapshot));
+                PublicHistoryCapture(snapshot),
+                snapshot);
         }
     }
 }

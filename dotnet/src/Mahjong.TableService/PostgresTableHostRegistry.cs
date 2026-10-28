@@ -527,7 +527,9 @@ namespace Mahjong.TableService
         /// the projection's own replay exactly: a discard is anchor-decidable only when its
         /// seat has neither a chain draw nor an own meld — in a realizable chain that is the
         /// deal-extra seat's opening discard, the one discard whose tsumogiri identity the
-        /// event chain alone cannot express.
+        /// event chain alone cannot express. D-R2-01: the persisted verdict is read from the
+        /// event fact of that exact committed ordinal, never from the mutable current river
+        /// (a legal chi/pon/open-kan takes the claimed tile out of it).
         /// </summary>
         private static TableProjectionContextSource BuildRecoveryProjectionSource(
             TableCheckpoint checkpoint,
@@ -575,8 +577,12 @@ namespace Mahjong.TableService
             {
                 // Tier 2: the deal seat's opening discard already committed before the
                 // checkpoint, so no pending deal-extra evidence survives in the payload.
-                // The checkpoint's published river fact carries that discard's verified
-                // tsumogiri identity, cross-checked against the captured chain's event.
+                // D-R2-01: the anchor must come from evidence that CANNOT disappear when the
+                // tile is legally claimed. A chi/pon/open-kan physically moves the claimed
+                // tile out of the discarder's river into the claimant's meld, so the current
+                // river (and its first entry in particular) is not a stable anchor. The
+                // checkpoint's persisted event facts carry the exact committed discard
+                // ordinal with its verified tsumogiri identity — claimed away or not.
                 if (checkpoint.CommittedFactsPayload == null)
                 {
                     throw new InvalidOperationException(
@@ -593,18 +599,163 @@ namespace Mahjong.TableService
                         "The published facts carry no entry for the opening seat " + openingSeat + ".");
                 }
 
-                IReadOnlyList<Mahjong.Contracts.DiscardView> discards = facts.PublicFacts[openingSeat].Discards;
-                if (discards.Count == 0 ||
-                    discards[0].TileId != unchecked((uint)openingTile.Value))
+                // The projection facts' EventOrdinal is the ordinal WITHIN its commit (the
+                // accepted runtime's TableEventRecord.Ordinal), not the round ordinal, so it
+                // is not unique across a multi-commit history. The checkpoint's committed
+                // history is the authoritative global sequence: locate the opening discard's
+                // exact TableEventRecord there (seat + physical tile uniquely identify it),
+                // then bind its globally unique EventSeq to the published event fact.
+                TableProjectionEventFact? openingFact = null;
+                if (checkpoint.CommittedHistoryPayload != null)
                 {
-                    throw new InvalidOperationException(
-                        "The opening discard's published river entry is missing or does not match the captured chain.");
+                    IReadOnlyList<TableEventRecord> history =
+                        TableCommittedHistoryCodec.Decode(checkpoint.CommittedHistoryPayload);
+                    TableEventRecord? openingRecord = null;
+                    // An EMPTY history is the checkpoint-0 shape (or a synthetic capture);
+                    // it carries no verdict, so fall through to the river/unresolved path
+                    // below. A NON-EMPTY history that lacks the opening record is a real
+                    // provenance divergence and fails closed.
+                    for (int i = 0; i < history.Count; i++)
+                    {
+                        TableEventRecord record = history[i];
+                        if (record.Type == RoundEventType.TileDiscarded &&
+                            record.Seat == openingSeat &&
+                            record.Tile.HasValue &&
+                            record.Tile.Value.Equals(openingTile))
+                        {
+                            openingRecord = record;
+                            break;
+                        }
+                    }
+
+                    if (openingRecord == null && history.Count > 0)
+                    {
+                        throw new InvalidOperationException(
+                            "The checkpoint's committed history carries no record for the opening discard.");
+                    }
+
+                    if (openingRecord != null &&
+                        openingRecord.CommandVersion.Value > checkpoint.StateVersion.Value)
+                    {
+                        throw new InvalidOperationException(
+                            "The opening discard's committed record is bound to command version " +
+                            openingRecord.CommandVersion.Value +
+                            ", beyond the checkpoint state version " + checkpoint.StateVersion.Value + ".");
+                    }
+
+                    if (openingRecord != null)
+                    {
+                        for (int i = 0; i < facts.EventFacts.Count; i++)
+                        {
+                            TableProjectionEventFact candidate = facts.EventFacts[i];
+                            if (candidate.EventSeq != openingRecord.Seq)
+                            {
+                                continue;
+                            }
+
+                            if (openingFact != null)
+                            {
+                                throw new InvalidOperationException(
+                                    "The published event facts carry the opening discard sequence " +
+                                    openingRecord.Seq.Value + " more than once.");
+                            }
+
+                            openingFact = candidate;
+                        }
+
+                        if (openingFact == null)
+                        {
+                            throw new InvalidOperationException(
+                                "The published event facts carry no fact for the opening discard's committed sequence " +
+                                openingRecord.Seq.Value + ".");
+                        }
+
+                        if (openingFact.EventOrdinal != unchecked((uint)openingRecord.Ordinal) ||
+                            openingFact.CommandVersion != openingRecord.CommandVersion)
+                        {
+                            throw new InvalidOperationException(
+                                "The opening discard's event fact does not match its committed history provenance.");
+                        }
+                    }
                 }
 
+                if (openingFact != null)
+                {
+                    if (openingFact.Type != ProtocolEventType.TileDiscarded)
+                    {
+                        throw new InvalidOperationException(
+                            "The published event fact for the opening discard is not a TileDiscarded event.");
+                    }
+
+                    if (openingFact.CommandVersion.Value > checkpoint.StateVersion.Value)
+                    {
+                        throw new InvalidOperationException(
+                            "The opening discard's event fact is bound to command version " +
+                            openingFact.CommandVersion.Value +
+                            ", beyond the checkpoint state version " + checkpoint.StateVersion.Value + ".");
+                    }
+
+                    TableProjectionEventFacts persisted = openingFact.Facts;
+                    if (!persisted.Tsumogiri.HasValue)
+                    {
+                        throw new InvalidOperationException(
+                            "The opening discard's persisted event fact carries no tsumogiri verdict.");
+                    }
+
+                    if (!persisted.DiscardTileId.HasValue ||
+                        persisted.DiscardTileId.Value != unchecked((uint)openingTile.Value))
+                    {
+                        throw new InvalidOperationException(
+                            "The opening discard's persisted event fact tile does not match the captured chain.");
+                    }
+
+                    return new TableProjectionContextSource(
+                        decisionState,
+                        null,
+                        new TablePersistedOpeningAnchor(openingSeat, openingTile, persisted.Tsumogiri.Value));
+                }
+
+                // A synthetic/legacy checkpoint may not carry the event-fact window at all.
+                // The current river is still usable ONLY while the exact physical opening
+                // tile is in it (physical ids are unique, so this cannot be confused with a
+                // later discard of the same tile). The public fact is paired by the SAME
+                // river index the projection itself will replay.
+                IReadOnlyList<TileId> river = captured.Tiles.TilesInZone(TileZone.Discard, openingSeat);
+                int riverIndex = -1;
+                for (int i = 0; i < river.Count; i++)
+                {
+                    if (river[i].Equals(openingTile))
+                    {
+                        riverIndex = i;
+                        break;
+                    }
+                }
+
+                IReadOnlyList<Mahjong.Contracts.DiscardView> discards = facts.PublicFacts[openingSeat].Discards;
+                if (riverIndex >= 0)
+                {
+                    if (riverIndex >= discards.Count ||
+                        discards[riverIndex].TileId != unchecked((uint)openingTile.Value))
+                    {
+                        throw new InvalidOperationException(
+                            "The opening discard is still in the river but its published river fact " +
+                            "is missing or does not match the captured chain.");
+                    }
+
+                    return new TableProjectionContextSource(
+                        decisionState,
+                        null,
+                        new TablePersistedOpeningAnchor(openingSeat, openingTile, discards[riverIndex].Tsumogiri));
+                }
+
+                // The opening discard was claimed away and no event-fact window survived in
+                // this facts payload: no persisted tsumogiri truth exists. Never guess — the
+                // anchor stays verdict-free and the projection refuses the first time the
+                // value would actually be published.
                 return new TableProjectionContextSource(
                     decisionState,
                     null,
-                    new TablePersistedOpeningAnchor(openingSeat, openingTile, discards[0].Tsumogiri));
+                    new TablePersistedOpeningAnchor(openingSeat, openingTile));
             }
 
             // Tier 1: the pending deal-extra evidence (or a later draw's pending evidence no

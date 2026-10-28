@@ -1,4 +1,4 @@
-#requires -Version 5.1
+﻿#requires -Version 5.1
 <#
 .SYNOPSIS
     Real end-to-end verification for the P5.4b-A durable table host: the accepted
@@ -576,7 +576,21 @@ function Assert-ClusterRemovalSelfTest {
 
 function Get-XmlCounts([string]$XmlPath) {
     if (-not (Test-Path -LiteralPath $XmlPath)) { throw "Result XML is missing: $XmlPath" }
-    [xml]$doc = Get-Content -LiteralPath $XmlPath -Raw
+    # D-R2-03: PS 5.1's default Get-Content decoding is the ANSI code page; an NUnit XML
+    # declaring UTF-8 with a Chinese failure message then decodes into mojibake that no
+    # longer matches its own end tags. XmlDocument.Load honours the file's BOM/declared
+    # encoding exactly, so a real failing run is counted instead of being misreported as
+    # "bad XML". Malformed XML still throws (the gating self-check pins that).
+    $doc = New-Object System.Xml.XmlDocument
+    $doc.PreserveWhitespace = $false
+    try {
+        $doc.Load($XmlPath)
+    }
+    catch [System.Xml.XmlException] {
+        $message = $_.Exception.Message
+        if ($message.Length -gt 300) { $message = $message.Substring(0, 300) + '…' }
+        throw "Result XML is not well-formed: $XmlPath ($message)"
+    }
     $assembly = $doc.SelectSingleNode('//assembly')
     if ($null -eq $assembly) { throw "Result XML has no assembly element: $XmlPath" }
     foreach ($attribute in @('total', 'passed', 'failed', 'skipped', 'errors', 'not-run')) {
@@ -593,6 +607,121 @@ function Get-XmlCounts([string]$XmlPath) {
         errors = [int]$assembly.GetAttribute('errors')
         notRun = [int]$assembly.GetAttribute('not-run')
     }
+}
+
+function Get-StableEvidenceFiles([string]$Directory) {
+    # D-R2-03: the runner points TEMP/TMP at "$LogDir\tmp", so Roslyn's
+    # VBCSCompiler/AnalyzerAssemblyLoader caches live INSIDE the evidence tree and vanish
+    # whenever the compiler server shuts down. Temporary build state is not acceptance
+    # evidence: isolate it by enumerating every stable top-level entry and never descending
+    # into "tmp". Everything returned here IS stable evidence.
+    if (-not (Test-Path -LiteralPath $Directory)) { return @() }
+    $files = New-Object System.Collections.Generic.List[object]
+    foreach ($file in @(Get-ChildItem -LiteralPath $Directory -File -Force -ErrorAction Stop)) {
+        if ($file.Name -ne 'manifest.sha256.json' -and $file.Name -ne 'manifest.errors.json') {
+            $files.Add($file)
+        }
+    }
+
+    foreach ($dir in @(Get-ChildItem -LiteralPath $Directory -Directory -Force -ErrorAction Stop)) {
+        if ([string]::Equals($dir.Name, 'tmp', [StringComparison]::OrdinalIgnoreCase)) { continue }
+        foreach ($file in @(Get-ChildItem -LiteralPath $dir.FullName -File -Recurse -Force -ErrorAction Stop)) {
+            $files.Add($file)
+        }
+    }
+
+    return @($files | Sort-Object FullName)
+}
+
+function Write-EvidenceManifest {
+    param(
+        [Parameter(Mandatory = $true)][string]$Directory,
+        [scriptblock]$BeforeHash
+    )
+    $manifestPath = Join-Path $Directory 'manifest.sha256.json'
+    $errorsPath = Join-Path $Directory 'manifest.errors.json'
+    $files = @(Get-StableEvidenceFiles $Directory)
+    if ($BeforeHash) { & $BeforeHash $files }
+    $entries = New-Object System.Collections.Generic.List[object]
+    $errors = New-Object System.Collections.Generic.List[object]
+    foreach ($file in $files) {
+        $relative = $file.FullName.Substring($Directory.Length).TrimStart('\')
+        try {
+            if (-not (Test-Path -LiteralPath $file.FullName)) {
+                throw 'stable evidence vanished between enumeration and hashing'
+            }
+
+            $entries.Add([ordered]@{
+                path = $relative
+                sha256 = Get-Sha256 $file.FullName
+                bytes = (Get-Item -LiteralPath $file.FullName -Force).Length
+            })
+        }
+        catch {
+            $errors.Add([ordered]@{ path = $relative; error = $_.Exception.Message })
+        }
+    }
+
+    # Both files are always written: a vanished file must never cost the manifest for the
+    # remaining stable evidence, and the loss itself stays recorded. The caller turns a
+    # non-zero error count into FAIL (never into a silent green).
+    $entryArray = $entries.ToArray()
+    $errorArray = $errors.ToArray()
+    $entryJson = if ($entryArray.Count -eq 0) { '[]' } else { $entryArray | ConvertTo-Json -Depth 4 }
+    $errorJson = if ($errorArray.Count -eq 0) { '[]' } else { $errorArray | ConvertTo-Json -Depth 4 }
+    Set-Content -LiteralPath $manifestPath -Value $entryJson -Encoding utf8
+    Set-Content -LiteralPath $errorsPath -Value $errorJson -Encoding utf8
+    return $errors.Count
+}
+
+function Assert-EvidenceManifestSelfTest {
+    $root = Join-Path $script:LogDir 'tmp\evidence-manifest-selfcheck'
+    if (Test-Path -LiteralPath $root) { Remove-Item -LiteralPath $root -Recurse -Force }
+    New-Item -ItemType Directory -Path (Join-Path $root 'tmp\VBCSCompiler') -Force | Out-Null
+    New-Item -ItemType Directory -Path (Join-Path $root 'logs') -Force | Out-Null
+    [System.IO.File]::WriteAllText((Join-Path $root 'logs\a.xml'), '<assemblies/>')
+    [System.IO.File]::WriteAllText((Join-Path $root 'logs\b.log'), 'stable log')
+    [System.IO.File]::WriteAllText((Join-Path $root 'tmp\VBCSCompiler\volatile.dll'), 'temporary compiler cache')
+
+    $listed = @(Get-StableEvidenceFiles $root)
+    if (@($listed | Where-Object { $_.Name -eq 'volatile.dll' }).Count -ne 0) {
+        throw 'evidence manifest self-check: a temporary compiler cache entered the stable set.'
+    }
+    if (@($listed | Where-Object { $_.Name -eq 'a.xml' }).Count -ne 1 -or
+        @($listed | Where-Object { $_.Name -eq 'b.log' }).Count -ne 1) {
+        throw 'evidence manifest self-check: a stable log/XML was excluded.'
+    }
+
+    # A stable evidence file disappearing between enumeration and hashing must leave the
+    # OTHER stable entries hashed, record the loss, and report one error.
+    $errors = Write-EvidenceManifest -Directory $root -BeforeHash {
+        param($files)
+        Remove-Item -LiteralPath (Join-Path $root 'logs\a.xml') -Force
+    }
+    if ($errors -ne 1) {
+        throw "evidence manifest self-check: expected exactly one vanished-file error, got $errors."
+    }
+    $manifest = @(Get-Content -LiteralPath (Join-Path $root 'manifest.sha256.json') -Raw | ConvertFrom-Json)
+    if (@($manifest | Where-Object { $_.path -eq 'logs\b.log' }).Count -ne 1) {
+        throw 'evidence manifest self-check: the surviving stable log was not hashed.'
+    }
+    if (@($manifest | Where-Object { $_.path -eq 'tmp\VBCSCompiler\volatile.dll' }).Count -ne 0) {
+        throw 'evidence manifest self-check: the temporary compiler cache was hashed.'
+    }
+    $errorList = @(Get-Content -LiteralPath (Join-Path $root 'manifest.errors.json') -Raw | ConvertFrom-Json)
+    if (@($errorList | Where-Object { $_.path -eq 'logs\a.xml' }).Count -ne 1) {
+        throw 'evidence manifest self-check: the vanished stable file was not recorded.'
+    }
+
+    # Normal shape: all stable files hashed, zero errors.
+    [System.IO.File]::WriteAllText((Join-Path $root 'logs\a.xml'), '<assemblies/>')
+    $cleanErrors = Write-EvidenceManifest -Directory $root
+    if ($cleanErrors -ne 0) {
+        throw "evidence manifest self-check: clean stable evidence reported $cleanErrors error(s)."
+    }
+
+    Remove-Item -LiteralPath $root -Recurse -Force
+    return 2
 }
 
 function Test-XmlCountsPass($Counts) {
@@ -633,6 +762,38 @@ function Assert-XmlGatingSelfTest {
         if ($green) { throw "XML gating self-check accepted negative case '$($case.name)'." }
         $checked++
     }
+
+    # D-R2-03: the exact shape that broke the caller run — a UTF-8 NUnit XML whose failure
+    # message contains Chinese text and whose counts are a real red (19/20). It must parse
+    # (the counts are read) and still be refused by the gate.
+    $chinese = Join-Path $tmp 'failed-chinese.xml'
+    $chineseXml = @'
+<?xml version="1.0" encoding="utf-8"?>
+<assemblies schema-version="3">
+  <assembly total="20" passed="19" failed="1" skipped="0" errors="0" not-run="0">
+    <test name="ColdRecovery_Continued" result="Fail">
+      <failure><message>由于线程退出或应用程序请求，已中止 I/O 操作。</message></failure>
+    </test>
+  </assembly>
+</assemblies>
+'@
+    [System.IO.File]::WriteAllText($chinese, $chineseXml, (New-Object System.Text.UTF8Encoding($false)))
+    $chineseCounts = Get-XmlCounts $chinese
+    if ($chineseCounts.total -ne 20 -or $chineseCounts.passed -ne 19 -or $chineseCounts.failed -ne 1) {
+        throw "XML gating self-check misread the UTF-8/Chinese failure XML: total=$($chineseCounts.total) passed=$($chineseCounts.passed) failed=$($chineseCounts.failed)."
+    }
+    if (Test-XmlCountsPass $chineseCounts) {
+        throw "XML gating self-check accepted the UTF-8/Chinese 19-of-20 red result."
+    }
+    $checked++
+
+    # Genuinely malformed XML must still be refused, not silently counted as zero.
+    $malformed = Join-Path $tmp 'malformed.xml'
+    [System.IO.File]::WriteAllText($malformed, '<assemblies><assembly total="1" passed="1"', (New-Object System.Text.UTF8Encoding($false)))
+    $threw = $false
+    try { $null = Get-XmlCounts $malformed } catch { $threw = $true }
+    if (-not $threw) { throw "XML gating self-check accepted malformed XML." }
+    $checked++
 
     return $checked
 }
@@ -984,6 +1145,9 @@ try {
 
     $removalSelfChecks = Assert-ClusterRemovalSelfTest
     Add-Stage 'cluster-removal-selfcheck' 'PASS' 0 "long-path removal cases=$removalSelfChecks"
+
+    $manifestSelfChecks = Assert-EvidenceManifestSelfTest
+    Add-Stage 'evidence-manifest-selfcheck' 'PASS' 0 "stable-evidence manifest cases=$manifestSelfChecks"
 
     $keyBytes = New-Object byte[] 32
     $rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
@@ -1432,17 +1596,26 @@ finally {
         }
         $summary | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $LogDir 'wrapper-summary.json') -Encoding utf8
         $script:Lines | Set-Content -LiteralPath (Join-Path $LogDir 'wrapper.log') -Encoding utf8
-        $manifest = @()
-        Get-ChildItem -LiteralPath $LogDir -File -Recurse | Sort-Object FullName | ForEach-Object {
-            $manifest += [ordered]@{
-                path = $_.FullName.Substring($LogDir.Length).TrimStart('\')
-                sha256 = Get-Sha256 $_.FullName
-                bytes = $_.Length
-            }
-        }
-        $manifest | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (Join-Path $LogDir 'manifest.sha256.json') -Encoding utf8
     }
-    catch { Write-Step ("evidence manifest warning: " + $_.Exception.Message) }
+    catch { Write-Step ("wrapper summary warning: " + $_.Exception.Message) }
+
+    # D-R2-03: the evidence manifest is a hard gate, not a best-effort warning. Stable
+    # logs/XML/results always get a manifest; a stable file lost between enumeration and
+    # hashing is recorded in manifest.errors.json and turns the run FAIL. Temporary build
+    # state under "$LogDir\tmp" is isolated and can never wipe out the whole manifest.
+    try {
+        $manifestErrors = Write-EvidenceManifest -Directory $LogDir
+        if ($manifestErrors -gt 0) {
+            Write-Step ("evidence manifest: $manifestErrors stable evidence file(s) could not be hashed (see manifest.errors.json)")
+            Add-Stage 'evidence-manifest' 'FAIL' 1 "$manifestErrors stable evidence file(s) missing or unreadable"
+            $script:Exit = 1
+        }
+    }
+    catch {
+        Write-Step ("evidence manifest FAILURE: " + $_.Exception.Message)
+        Add-Stage 'evidence-manifest' 'FAIL' 1 $_.Exception.Message
+        $script:Exit = 1
+    }
 }
 
 if ($script:Exit -eq 0) { Write-Host 'P54B-DURABLE-TABLE-HOST-PASS' } else { Write-Host 'P54B-DURABLE-TABLE-HOST-FAIL' }
