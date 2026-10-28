@@ -4,6 +4,7 @@ using System.IO;
 using System.Linq;
 using System.Reflection.Metadata;
 using System.Reflection.PortableExecutable;
+using System.Security.Cryptography;
 using System.Xml.Linq;
 using Xunit;
 
@@ -15,8 +16,14 @@ namespace Mahjong.Architecture.Tests
     /// were actually emitted by those projects.
     ///
     /// The two graphs are intentionally different:
-    ///   * project declarations are an EXACT allow/deny set (every declared edge must
-    ///     be allowed, every allowed edge must be declared);
+    ///   * project declarations are checked against an EXACT per-module allow set
+    ///     (every declared edge must be allowed) and against a required positive set
+    ///     (every required edge must be declared). For nine modules the required set
+    ///     equals the allowed set, so the historical exact allow/deny contract is
+    ///     unchanged. LocalHost is the accepted empty shell baseline: its four
+    ///     contract edges (TableRuntime/Contracts/Contracts.Wire/Client) are authorized
+    ///     now, while only TableRuntime is required until the real host lands. The
+    ///     real-XML fixture below proves all four are accepted together;
     ///   * compiled assemblies are checked against the transitive closure of the
     ///     allowed project edges, but only the edges the code actually needs are
     ///     required to be present. The compiler is free not to emit a declared but
@@ -26,6 +33,8 @@ namespace Mahjong.Architecture.Tests
     /// BCL and shared-framework references are classified, not rejected wholesale.
     /// Third-party references are always module-specific: only Wire/Client/TableService
     /// may emit Google.Protobuf; only LobbyService and Infrastructure may emit Npgsql.
+    /// LocalHost additionally has a narrow network-capability deny set so the accepted
+    /// in-process host cannot grow an HTTP/socket/server dependency through BCL names.
     /// </summary>
     public sealed class DependencyDirectionTests
     {
@@ -44,6 +53,53 @@ namespace Mahjong.Architecture.Tests
         };
 
         private static readonly string[] NoStrings = Array.Empty<string>();
+
+        // The four direct project edges accepted for the LocalHost port adapters.
+        // Source: git show c60061133be2a3350792d90d5c3c70ca2d0fa8a4:dotnet/src/Mahjong.LocalHost/Mahjong.LocalHost.csproj
+        // Git blob: f70e62d7cfe7576a1787f7ab25da09df022e6c9d
+        // Exact blob SHA-256: 71652DDE5C005470D7F9432C4A10AF19C642740F08F644C94B239536B65755F5
+        private static readonly string[] AcceptedLocalHostContractProjectReferences =
+        {
+            "Mahjong.Client",
+            "Mahjong.Contracts",
+            "Mahjong.Contracts.Wire",
+            "Mahjong.TableRuntime"
+        };
+
+        // The accepted LocalHost is an in-process host. These BCL names are still
+        // classified as BCL by the shared classifier, so they need an explicit,
+        // module-local capability deny rather than a fake third-party classification.
+        private static readonly string[] LocalHostForbiddenNetworkAssemblies =
+        {
+            "System.Net.Http",
+            "System.Net.Mail",
+            "System.Net.NameResolution",
+            "System.Net.NetworkInformation",
+            "System.Net.Quic",
+            "System.Net.Requests",
+            "System.Net.Security",
+            "System.Net.Sockets",
+            "System.Net.WebSockets"
+        };
+
+        private const string AcceptedLocalHostContractProjectXml = @"<Project Sdk=""Microsoft.NET.Sdk"">
+
+  <PropertyGroup>
+    <AssemblyName>Mahjong.LocalHost</AssemblyName>
+    <RootNamespace>Mahjong.LocalHost</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include=""..\Mahjong.TableRuntime\Mahjong.TableRuntime.csproj"" />
+    <ProjectReference Include=""..\Mahjong.Contracts\Mahjong.Contracts.csproj"" />
+    <ProjectReference Include=""..\Mahjong.Contracts.Wire\Mahjong.Contracts.Wire.csproj"" />
+    <ProjectReference Include=""..\Mahjong.Client\Mahjong.Client.csproj"" />
+  </ItemGroup>
+
+  <!-- In-process table host with injectable clock and local save. Used by Unity offline play. -->
+
+</Project>
+";
 
         [Fact]
         public void RepositoryHasExactlyTenProductionProjectsAndRules()
@@ -130,18 +186,9 @@ namespace Mahjong.Architecture.Tests
         public void ForbiddenEdgeInjectedIntoARealProjectFileIsDetectedThroughXmlParsing()
         {
             string root = FindRepositoryRoot();
-            string tempRoot = Path.Combine(Path.GetTempPath(), "mahjong-arch-guard-" + Guid.NewGuid().ToString("N"));
+            string tempRoot = CreateProductionXmlSandbox(root);
             try
             {
-                string sourceRoot = Path.Combine(root, "dotnet", "src");
-                foreach (string directory in Directory.GetDirectories(sourceRoot))
-                {
-                    string sourceProject = Directory.GetFiles(directory, "*.csproj", SearchOption.TopDirectoryOnly).Single();
-                    string targetDirectory = Path.Combine(tempRoot, "dotnet", "src", new DirectoryInfo(directory).Name);
-                    Directory.CreateDirectory(targetDirectory);
-                    File.Copy(sourceProject, Path.Combine(targetDirectory, Path.GetFileName(sourceProject)));
-                }
-
                 string tableRuntimeProject = Path.Combine(
                     tempRoot, "dotnet", "src", "Mahjong.TableRuntime", "Mahjong.TableRuntime.csproj");
                 XDocument document = XDocument.Load(tableRuntimeProject, LoadOptions.None);
@@ -152,14 +199,10 @@ namespace Mahjong.Architecture.Tests
                 document.Root!.Add(injectedGroup);
                 document.Save(tableRuntimeProject);
 
-                IReadOnlyList<ProjectGraph> projects = DiscoverProductionProjects(tempRoot);
-                IReadOnlyDictionary<string, ProjectGraph> byName =
-                    projects.ToDictionary(project => project.Name, project => project, StringComparer.Ordinal);
+                IReadOnlyList<DependencyDiagnostic> diagnostics = ValidateProductionXmlSandbox(tempRoot);
 
-                IReadOnlyList<DependencyDiagnostic> diagnostics =
-                    ModuleDependencyValidator.ValidateProjectGraph(ExpectedProjectNames, byName, BuildRules());
-
-                DependencyDiagnostic diagnostic = Assert.Single(diagnostics, item => item.Code == DiagnosticCodes.ProjectForbiddenEdge);
+                DependencyDiagnostic diagnostic = Assert.Single(diagnostics);
+                Assert.Equal(DiagnosticCodes.ProjectForbiddenEdge, diagnostic.Code);
                 Assert.Equal("Mahjong.TableRuntime", diagnostic.From);
                 Assert.Equal("Mahjong.Client", diagnostic.To);
             }
@@ -300,6 +343,8 @@ namespace Mahjong.Architecture.Tests
 
         [Theory]
         [InlineData("Mahjong.Domain", "Mahjong.Contracts")]
+        [InlineData("Mahjong.Domain", "Mahjong.Client")]
+        [InlineData("Mahjong.Domain", "Mahjong.Contracts.Wire")]
         [InlineData("Mahjong.Contracts", "Mahjong.Contracts.Wire")]
         [InlineData("Mahjong.Contracts.Wire", "Mahjong.Domain")]
         [InlineData("Mahjong.Contracts.Wire", "Mahjong.Client")]
@@ -308,7 +353,7 @@ namespace Mahjong.Architecture.Tests
         [InlineData("Mahjong.TableRuntime", "Mahjong.LocalHost")]
         [InlineData("Mahjong.Client", "Mahjong.Domain")]
         [InlineData("Mahjong.Client", "Mahjong.TableRuntime")]
-        [InlineData("Mahjong.LocalHost", "Mahjong.Client")]
+        [InlineData("Mahjong.LocalHost", "Mahjong.LobbyService")]
         [InlineData("Mahjong.LobbyService", "Mahjong.Domain")]
         [InlineData("Mahjong.LobbyService", "Mahjong.TableRuntime")]
         [InlineData("Mahjong.Infrastructure", "Mahjong.Client")]
@@ -326,7 +371,8 @@ namespace Mahjong.Architecture.Tests
             IReadOnlyList<DependencyDiagnostic> diagnostics =
                 ModuleDependencyValidator.ValidateProjectGraph(graph.KnownProjects, projects, graph.Rules);
 
-            DependencyDiagnostic diagnostic = Assert.Single(diagnostics, item => item.Code == DiagnosticCodes.ProjectForbiddenEdge);
+            DependencyDiagnostic diagnostic = Assert.Single(diagnostics);
+            Assert.Equal(DiagnosticCodes.ProjectForbiddenEdge, diagnostic.Code);
             Assert.Equal(from, diagnostic.From);
             Assert.Equal(to, diagnostic.To);
             Assert.True(
@@ -344,9 +390,133 @@ namespace Mahjong.Architecture.Tests
             IReadOnlyList<DependencyDiagnostic> diagnostics =
                 ModuleDependencyValidator.ValidateProjectGraph(graph.KnownProjects, projects, graph.Rules);
 
-            DependencyDiagnostic diagnostic = Assert.Single(diagnostics, item => item.Code == DiagnosticCodes.ProjectMissingEdge);
+            DependencyDiagnostic diagnostic = Assert.Single(diagnostics);
+            Assert.Equal(DiagnosticCodes.ProjectMissingEdge, diagnostic.Code);
             Assert.Equal("Mahjong.TableRuntime", diagnostic.From);
             Assert.Equal("Mahjong.Domain", diagnostic.To);
+        }
+
+        [Fact]
+        public void AcceptedLocalHostContractProjectEdgesAreAuthorized()
+        {
+            SyntheticGraph graph = CreateSyntheticGraph();
+            Dictionary<string, ProjectGraph> projects = CopyProjects(graph);
+            projects["Mahjong.LocalHost"] = Project(
+                "Mahjong.LocalHost",
+                AcceptedLocalHostContractProjectReferences);
+
+            IReadOnlyList<DependencyDiagnostic> diagnostics =
+                ModuleDependencyValidator.ValidateProjectGraph(graph.KnownProjects, projects, graph.Rules);
+
+            Assert.True(
+                diagnostics.Count == 0,
+                "The accepted LocalHost contract project edges must be authorized:" + Environment.NewLine + Describe(diagnostics));
+        }
+
+        [Fact]
+        public void LocalHostStillRequiresTheTableRuntimeProjectEdge()
+        {
+            SyntheticGraph graph = CreateSyntheticGraph();
+            Dictionary<string, ProjectGraph> projects = CopyProjects(graph);
+            projects["Mahjong.LocalHost"] =
+                projects["Mahjong.LocalHost"].WithoutProjectReference("Mahjong.TableRuntime");
+
+            IReadOnlyList<DependencyDiagnostic> diagnostics =
+                ModuleDependencyValidator.ValidateProjectGraph(graph.KnownProjects, projects, graph.Rules);
+
+            DependencyDiagnostic diagnostic = Assert.Single(diagnostics);
+            Assert.Equal(DiagnosticCodes.ProjectMissingEdge, diagnostic.Code);
+            Assert.Equal("Mahjong.LocalHost", diagnostic.From);
+            Assert.Equal("Mahjong.TableRuntime", diagnostic.To);
+        }
+
+        [Theory]
+        [InlineData("Mahjong.LocalHost", "Mahjong.Ai")]
+        [InlineData("Mahjong.LocalHost", "Mahjong.Domain")]
+        [InlineData("Mahjong.LocalHost", "Mahjong.LobbyService")]
+        [InlineData("Mahjong.LocalHost", "Mahjong.TableService")]
+        [InlineData("Mahjong.LocalHost", "Mahjong.Infrastructure")]
+        [InlineData("Mahjong.Client", "Mahjong.LocalHost")]
+        [InlineData("Mahjong.Domain", "Mahjong.LocalHost")]
+        public void LocalHostTransitiveServiceAndReverseProjectEdgesRemainForbidden(string from, string to)
+        {
+            SyntheticGraph graph = CreateSyntheticGraph();
+            Dictionary<string, ProjectGraph> projects = CopyProjects(graph);
+            projects[from] = projects[from].WithProjectReference(to);
+
+            IReadOnlyList<DependencyDiagnostic> diagnostics =
+                ModuleDependencyValidator.ValidateProjectGraph(graph.KnownProjects, projects, graph.Rules);
+
+            DependencyDiagnostic diagnostic = Assert.Single(diagnostics);
+            Assert.Equal(DiagnosticCodes.ProjectForbiddenEdge, diagnostic.Code);
+            Assert.Equal(from, diagnostic.From);
+            Assert.Equal(to, diagnostic.To);
+            Assert.True(
+                diagnostic.Detail.Contains("forbidden declared project edge", StringComparison.Ordinal),
+                "Diagnostic must name the forbidden edge, got: " + diagnostic);
+        }
+
+        [Fact]
+        public void AcceptedLocalHostContractProjectGraphIsGreenInIsolatedRealXmlFixture()
+        {
+            string root = FindRepositoryRoot();
+            string tempRoot = CreateProductionXmlSandbox(root);
+            try
+            {
+                XDocument fixture = XDocument.Parse(AcceptedLocalHostContractProjectXml);
+                Assert.Equal(4, fixture.Descendants("ProjectReference").Count());
+
+                byte[] fixtureBytes = System.Text.Encoding.UTF8.GetBytes(AcceptedLocalHostContractProjectText);
+                Assert.Equal(652, fixtureBytes.Length);
+                Assert.Equal(
+                    "71652DDE5C005470D7F9432C4A10AF19C642740F08F644C94B239536B65755F5",
+                    Convert.ToHexString(SHA256.HashData(fixtureBytes)));
+
+                InstallAcceptedLocalHostContractProject(tempRoot);
+                IReadOnlyList<DependencyDiagnostic> diagnostics = ValidateProductionXmlSandbox(tempRoot);
+
+                Assert.True(
+                    diagnostics.Count == 0,
+                    "The accepted four-edge LocalHost real-XML fixture must be green:" + Environment.NewLine + Describe(diagnostics));
+            }
+            finally
+            {
+                DeleteOwnedTempRoot(tempRoot);
+            }
+        }
+
+        [Fact]
+        public void ForbiddenServiceEdgeInjectedIntoAcceptedLocalHostXmlFixtureIsDetectedExactlyOnce()
+        {
+            string root = FindRepositoryRoot();
+            string tempRoot = CreateProductionXmlSandbox(root);
+            try
+            {
+                InstallAcceptedLocalHostContractProject(tempRoot);
+                string localHostProject = Path.Combine(
+                    tempRoot, "dotnet", "src", "Mahjong.LocalHost", "Mahjong.LocalHost.csproj");
+                XDocument document = XDocument.Load(localHostProject, LoadOptions.None);
+                document.Root!.Add(new XElement(
+                    "ItemGroup",
+                    new XElement(
+                        "ProjectReference",
+                        new XAttribute("Include", @"..\Mahjong.LobbyService\Mahjong.LobbyService.csproj"))));
+                document.Save(localHostProject);
+
+                IReadOnlyList<DependencyDiagnostic> diagnostics = ValidateProductionXmlSandbox(tempRoot);
+
+                DependencyDiagnostic diagnostic = Assert.Single(diagnostics);
+                Assert.Equal(DiagnosticCodes.ProjectForbiddenEdge, diagnostic.Code);
+                Assert.Equal("Mahjong.LocalHost", diagnostic.From);
+                Assert.Equal("Mahjong.LobbyService", diagnostic.To);
+                Assert.True(
+                    diagnostic.Detail.Contains("forbidden declared project edge", StringComparison.Ordinal),
+                    "Diagnostic must name the forbidden edge, got: " + diagnostic);
+            }
+            finally
+            {
+                DeleteOwnedTempRoot(tempRoot);
+            }
         }
 
         [Fact]
@@ -425,12 +595,13 @@ namespace Mahjong.Architecture.Tests
 
         [Theory]
         [InlineData("Mahjong.Domain", "Mahjong.Contracts")]
+        [InlineData("Mahjong.Domain", "Mahjong.Client")]
         [InlineData("Mahjong.Contracts.Wire", "Mahjong.Domain")]
         [InlineData("Mahjong.Contracts.Wire", "Mahjong.Client")]
         [InlineData("Mahjong.Ai", "Mahjong.Contracts")]
         [InlineData("Mahjong.Client", "Mahjong.Domain")]
         [InlineData("Mahjong.Client", "Mahjong.TableRuntime")]
-        [InlineData("Mahjong.LocalHost", "Mahjong.Client")]
+        [InlineData("Mahjong.LocalHost", "Mahjong.LobbyService")]
         [InlineData("Mahjong.LobbyService", "Mahjong.TableRuntime")]
         [InlineData("Mahjong.TableRuntime", "Mahjong.Contracts.Wire")]
         [InlineData("Mahjong.Infrastructure", "Mahjong.Client")]
@@ -448,7 +619,8 @@ namespace Mahjong.Architecture.Tests
             IReadOnlyList<DependencyDiagnostic> diagnostics =
                 ModuleDependencyValidator.ValidateAssemblyGraph(graph.KnownProjects, assemblies, graph.Rules);
 
-            DependencyDiagnostic diagnostic = Assert.Single(diagnostics, item => item.Code == DiagnosticCodes.AssemblyForbiddenMahjongReference);
+            DependencyDiagnostic diagnostic = Assert.Single(diagnostics);
+            Assert.Equal(DiagnosticCodes.AssemblyForbiddenMahjongReference, diagnostic.Code);
             Assert.Equal(from, diagnostic.From);
             Assert.Equal(to, diagnostic.To);
             Assert.True(
@@ -492,6 +664,9 @@ namespace Mahjong.Architecture.Tests
         [InlineData("Mahjong.Domain", "Google.Protobuf")]
         [InlineData("Mahjong.Infrastructure", "Google.Protobuf")]
         [InlineData("Mahjong.TableService", "Npgsql")]
+        [InlineData("Mahjong.Domain", "UnityEngine.CoreModule")]
+        [InlineData("Mahjong.TableRuntime", "UnityEngine.CoreModule")]
+        [InlineData("Mahjong.Client", "UnityEngine.CoreModule")]
         public void UnknownThirdPartyAssemblyReferenceIsRejected(string from, string to)
         {
             SyntheticGraph graph = CreateSyntheticGraph();
@@ -501,7 +676,8 @@ namespace Mahjong.Architecture.Tests
             IReadOnlyList<DependencyDiagnostic> diagnostics =
                 ModuleDependencyValidator.ValidateAssemblyGraph(graph.KnownProjects, assemblies, graph.Rules);
 
-            DependencyDiagnostic diagnostic = Assert.Single(diagnostics, item => item.Code == DiagnosticCodes.AssemblyForbiddenThirdParty);
+            DependencyDiagnostic diagnostic = Assert.Single(diagnostics);
+            Assert.Equal(DiagnosticCodes.AssemblyForbiddenThirdParty, diagnostic.Code);
             Assert.Equal(from, diagnostic.From);
             Assert.Equal(to, diagnostic.To);
             Assert.True(
@@ -537,6 +713,102 @@ namespace Mahjong.Architecture.Tests
             DependencyDiagnostic diagnostic = Assert.Single(diagnostics, item => item.Code == DiagnosticCodes.AssemblyMissingThirdParty);
             Assert.Equal("Mahjong.Contracts.Wire", diagnostic.From);
             Assert.Equal("Google.Protobuf", diagnostic.To);
+        }
+
+        [Fact]
+        public void AcceptedLocalHostAssemblyClosureIsAuthorized()
+        {
+            SyntheticGraph graph = CreateSyntheticGraph();
+            Dictionary<string, AssemblyGraph> assemblies = CopyAssemblies(graph);
+            assemblies["Mahjong.LocalHost"] = Assembly(
+                "Mahjong.LocalHost",
+                "Google.Protobuf",
+                "Mahjong.Ai",
+                "Mahjong.Client",
+                "Mahjong.Contracts",
+                "Mahjong.Contracts.Wire",
+                "Mahjong.Domain",
+                "Mahjong.TableRuntime",
+                "netstandard");
+
+            IReadOnlyList<DependencyDiagnostic> diagnostics =
+                ModuleDependencyValidator.ValidateAssemblyGraph(graph.KnownProjects, assemblies, graph.Rules);
+
+            Assert.True(
+                diagnostics.Count == 0,
+                "The accepted Client/Wire/Protobuf LocalHost assembly closure must be authorized:" + Environment.NewLine + Describe(diagnostics));
+        }
+
+        [Fact]
+        public void LocalHostEmptyShellIsNotRequiredToEmitUnusedAssemblyEdges()
+        {
+            SyntheticGraph graph = CreateSyntheticGraph();
+            Dictionary<string, AssemblyGraph> assemblies = CopyAssemblies(graph);
+            // The accepted baseline LocalHost has no source, so its DLL only references
+            // netstandard. Authorized-but-unused Client/Wire/Protobuf edges are not
+            // required at the assembly layer until the real host is integrated.
+            assemblies["Mahjong.LocalHost"] = Assembly("Mahjong.LocalHost", "netstandard");
+
+            IReadOnlyList<DependencyDiagnostic> diagnostics =
+                ModuleDependencyValidator.ValidateAssemblyGraph(graph.KnownProjects, assemblies, graph.Rules);
+
+            Assert.True(
+                diagnostics.Count == 0,
+                "The accepted empty LocalHost shell must stay green at the assembly layer:" + Environment.NewLine + Describe(diagnostics));
+        }
+
+        [Theory]
+        [InlineData("Mahjong.LocalHost", "Mahjong.LobbyService")]
+        [InlineData("Mahjong.LocalHost", "Mahjong.TableService")]
+        [InlineData("Mahjong.LocalHost", "Mahjong.Infrastructure")]
+        [InlineData("Mahjong.Client", "Mahjong.LocalHost")]
+        [InlineData("Mahjong.TableRuntime", "Mahjong.LocalHost")]
+        [InlineData("Mahjong.Domain", "Mahjong.LocalHost")]
+        [InlineData("Mahjong.TableRuntime", "Mahjong.Client")]
+        [InlineData("Mahjong.Domain", "Mahjong.Contracts.Wire")]
+        public void LocalHostServiceAndReverseAssemblyEdgesRemainForbidden(string from, string to)
+        {
+            SyntheticGraph graph = CreateSyntheticGraph();
+            Dictionary<string, AssemblyGraph> assemblies = CopyAssemblies(graph);
+            assemblies[from] = assemblies[from].WithReference(to);
+
+            IReadOnlyList<DependencyDiagnostic> diagnostics =
+                ModuleDependencyValidator.ValidateAssemblyGraph(graph.KnownProjects, assemblies, graph.Rules);
+
+            DependencyDiagnostic diagnostic = Assert.Single(diagnostics);
+            Assert.Equal(DiagnosticCodes.AssemblyForbiddenMahjongReference, diagnostic.Code);
+            Assert.Equal(from, diagnostic.From);
+            Assert.Equal(to, diagnostic.To);
+            Assert.True(
+                diagnostic.Detail.Contains("forbidden Mahjong assembly reference", StringComparison.Ordinal),
+                "Diagnostic must name the forbidden assembly edge, got: " + diagnostic);
+        }
+
+        [Theory]
+        [InlineData("UnityEngine.CoreModule", DiagnosticCodes.AssemblyForbiddenThirdParty)]
+        [InlineData("UnityEngine.UI", DiagnosticCodes.AssemblyForbiddenThirdParty)]
+        [InlineData("WebSocketSharp", DiagnosticCodes.AssemblyForbiddenThirdParty)]
+        [InlineData("Google.Cloud.Storage.V1", DiagnosticCodes.AssemblyForbiddenThirdParty)]
+        [InlineData("Newtonsoft.Json", DiagnosticCodes.AssemblyForbiddenThirdParty)]
+        [InlineData("MySql.Data", DiagnosticCodes.AssemblyForbiddenThirdParty)]
+        [InlineData("Npgsql", DiagnosticCodes.AssemblyForbiddenThirdParty)]
+        [InlineData("Microsoft.AspNetCore.Http", DiagnosticCodes.AssemblyUnauthorizedSharedFramework)]
+        [InlineData("System.Net.Http", DiagnosticCodes.AssemblyForbiddenCapability)]
+        [InlineData("System.Net.Sockets", DiagnosticCodes.AssemblyForbiddenCapability)]
+        [InlineData("System.Net.WebSockets", DiagnosticCodes.AssemblyForbiddenCapability)]
+        public void LocalHostThirdPartyNetworkAndServerAssemblyReferencesAreRejected(string reference, string expectedCode)
+        {
+            SyntheticGraph graph = CreateSyntheticGraph();
+            Dictionary<string, AssemblyGraph> assemblies = CopyAssemblies(graph);
+            assemblies["Mahjong.LocalHost"] = assemblies["Mahjong.LocalHost"].WithReference(reference);
+
+            IReadOnlyList<DependencyDiagnostic> diagnostics =
+                ModuleDependencyValidator.ValidateAssemblyGraph(graph.KnownProjects, assemblies, graph.Rules);
+
+            DependencyDiagnostic diagnostic = Assert.Single(diagnostics);
+            Assert.Equal(expectedCode, diagnostic.Code);
+            Assert.Equal("Mahjong.LocalHost", diagnostic.From);
+            Assert.Equal(reference, diagnostic.To);
         }
 
         [Fact]
@@ -724,22 +996,33 @@ namespace Mahjong.Architecture.Tests
                     allowedThirdPartyAssemblyReferences: new[] { "Google.Protobuf" },
                     requiredThirdPartyAssemblyReferences: new[] { "Google.Protobuf" }),
 
+                // Accepted P4.1/P4.2 LocalHost contract: the port adapter composes
+                // ITableChannel (Client), the local save/lease/checkpoint types
+                // (TableRuntime + Contracts) and the protobuf wire envelope
+                // (Contracts.Wire + Google.Protobuf). The accepted baseline is still
+                // an empty shell, so only TableRuntime is a required direct project
+                // edge; the other three contract edges are authorized but optional
+                // until the real host lands. Domain/Ai remain transitive only.
                 ["Mahjong.LocalHost"] = new ModuleRule(
                     name: "Mahjong.LocalHost",
                     targetFramework: "netstandard2.1",
-                    allowedProjectReferences: new[] { "Mahjong.TableRuntime" },
+                    allowedProjectReferences: AcceptedLocalHostContractProjectReferences,
                     allowedPackages: NoStrings,
                     buildOnlyPackages: NoStrings,
                     allowedMahjongAssemblyReferences: new[]
                     {
                         "Mahjong.Ai",
+                        "Mahjong.Client",
                         "Mahjong.Contracts",
+                        "Mahjong.Contracts.Wire",
                         "Mahjong.Domain",
                         "Mahjong.TableRuntime"
                     },
                     requiredMahjongAssemblyReferences: NoStrings,
-                    allowedThirdPartyAssemblyReferences: NoStrings,
-                    requiredThirdPartyAssemblyReferences: NoStrings),
+                    allowedThirdPartyAssemblyReferences: new[] { "Google.Protobuf" },
+                    requiredThirdPartyAssemblyReferences: NoStrings,
+                    requiredProjectReferences: new[] { "Mahjong.TableRuntime" },
+                    forbiddenAssemblyReferences: LocalHostForbiddenNetworkAssemblies),
 
                 ["Mahjong.LobbyService"] = new ModuleRule(
                     name: "Mahjong.LobbyService",
@@ -798,6 +1081,8 @@ namespace Mahjong.Architecture.Tests
                 ["Mahjong.Ai"] = Project("Mahjong.Ai", "Mahjong.Domain"),
                 ["Mahjong.TableRuntime"] = Project("Mahjong.TableRuntime", "Mahjong.Ai", "Mahjong.Contracts", "Mahjong.Domain"),
                 ["Mahjong.Client"] = Project("Mahjong.Client", "Mahjong.Contracts", "Mahjong.Contracts.Wire"),
+                // Accepted shell baseline: only TableRuntime is declared today. The
+                // four-edge contract fixture is exercised separately.
                 ["Mahjong.LocalHost"] = Project("Mahjong.LocalHost", "Mahjong.TableRuntime"),
                 ["Mahjong.TableService"] = Project("Mahjong.TableService", "Mahjong.Contracts", "Mahjong.Contracts.Wire", "Mahjong.TableRuntime"),
                 ["Mahjong.Infrastructure"] = new ProjectGraph(
@@ -820,7 +1105,8 @@ namespace Mahjong.Architecture.Tests
                 ["Mahjong.Ai"] = Assembly("Mahjong.Ai", "Mahjong.Domain", "netstandard"),
                 ["Mahjong.TableRuntime"] = Assembly("Mahjong.TableRuntime", "Mahjong.Ai", "Mahjong.Contracts", "Mahjong.Domain", "netstandard"),
                 ["Mahjong.Client"] = Assembly("Mahjong.Client", "Google.Protobuf", "Mahjong.Contracts", "Mahjong.Contracts.Wire", "netstandard"),
-                // LocalHost has no source today, so its DLL does not emit the declared TableRuntime edge.
+                // LocalHost has no source today, so its DLL does not emit the declared
+                // TableRuntime edge. Client/Wire/Protobuf are authorized but optional.
                 ["Mahjong.LocalHost"] = Assembly("Mahjong.LocalHost", "netstandard"),
                 ["Mahjong.TableService"] = Assembly(
                     "Mahjong.TableService", "Mahjong.Contracts", "Mahjong.Contracts.Wire", "Mahjong.Domain", "Mahjong.TableRuntime",
@@ -1055,6 +1341,16 @@ namespace Mahjong.Architecture.Tests
 
             return tempRoot;
         }
+
+        private static void InstallAcceptedLocalHostContractProject(string tempRoot)
+        {
+            string localHostProject = Path.Combine(
+                tempRoot, "dotnet", "src", "Mahjong.LocalHost", "Mahjong.LocalHost.csproj");
+            File.WriteAllText(localHostProject, AcceptedLocalHostContractProjectText);
+        }
+
+        private static string AcceptedLocalHostContractProjectText =>
+            AcceptedLocalHostContractProjectXml.Replace("\r\n", "\n");
 
         private static IReadOnlyList<DependencyDiagnostic> ValidateProductionXmlSandbox(string tempRoot)
         {
@@ -1347,29 +1643,40 @@ namespace Mahjong.Architecture.Tests
             IEnumerable<string> requiredMahjongAssemblyReferences,
             IEnumerable<string> allowedThirdPartyAssemblyReferences,
             IEnumerable<string> requiredThirdPartyAssemblyReferences,
-            bool allowSharedFramework = false)
+            bool allowSharedFramework = false,
+            IEnumerable<string>? requiredProjectReferences = null,
+            IEnumerable<string>? forbiddenAssemblyReferences = null)
         {
             Name = name;
             TargetFramework = targetFramework;
-            AllowedProjectReferences = new HashSet<string>(allowedProjectReferences, StringComparer.Ordinal);
+            HashSet<string> allowedProjects = new HashSet<string>(allowedProjectReferences, StringComparer.Ordinal);
+            AllowedProjectReferences = allowedProjects;
+            RequiredProjectReferences = new HashSet<string>(
+                requiredProjectReferences ?? (IEnumerable<string>)allowedProjects,
+                StringComparer.Ordinal);
             AllowedPackages = new HashSet<string>(allowedPackages, StringComparer.Ordinal);
             BuildOnlyPackages = new HashSet<string>(buildOnlyPackages, StringComparer.Ordinal);
             AllowedMahjongAssemblyReferences = new HashSet<string>(allowedMahjongAssemblyReferences, StringComparer.Ordinal);
             RequiredMahjongAssemblyReferences = new HashSet<string>(requiredMahjongAssemblyReferences, StringComparer.Ordinal);
             AllowedThirdPartyAssemblyReferences = new HashSet<string>(allowedThirdPartyAssemblyReferences, StringComparer.Ordinal);
             RequiredThirdPartyAssemblyReferences = new HashSet<string>(requiredThirdPartyAssemblyReferences, StringComparer.Ordinal);
+            ForbiddenAssemblyReferences = new HashSet<string>(
+                forbiddenAssemblyReferences ?? Array.Empty<string>(),
+                StringComparer.Ordinal);
             AllowSharedFramework = allowSharedFramework;
         }
 
         public string Name { get; }
         public string TargetFramework { get; }
         public HashSet<string> AllowedProjectReferences { get; }
+        public HashSet<string> RequiredProjectReferences { get; }
         public HashSet<string> AllowedPackages { get; }
         public HashSet<string> BuildOnlyPackages { get; }
         public HashSet<string> AllowedMahjongAssemblyReferences { get; }
         public HashSet<string> RequiredMahjongAssemblyReferences { get; }
         public HashSet<string> AllowedThirdPartyAssemblyReferences { get; }
         public HashSet<string> RequiredThirdPartyAssemblyReferences { get; }
+        public HashSet<string> ForbiddenAssemblyReferences { get; }
         public bool AllowSharedFramework { get; }
 
         public ModuleRule WithMahjongAssemblyAllowlist(IEnumerable<string> allowedMahjongAssemblyReferences)
@@ -1384,7 +1691,9 @@ namespace Mahjong.Architecture.Tests
                 RequiredMahjongAssemblyReferences,
                 AllowedThirdPartyAssemblyReferences,
                 RequiredThirdPartyAssemblyReferences,
-                AllowSharedFramework);
+                AllowSharedFramework,
+                RequiredProjectReferences,
+                ForbiddenAssemblyReferences);
         }
     }
 
@@ -1434,6 +1743,7 @@ namespace Mahjong.Architecture.Tests
         public const string AssemblyForbiddenThirdParty = "ASSEMBLY_FORBIDDEN_THIRD_PARTY";
         public const string AssemblyMissingThirdParty = "ASSEMBLY_MISSING_THIRD_PARTY";
         public const string AssemblyUnauthorizedSharedFramework = "ASSEMBLY_UNAUTHORIZED_SHARED_FRAMEWORK";
+        public const string AssemblyForbiddenCapability = "ASSEMBLY_FORBIDDEN_CAPABILITY";
         public const string AssemblyNotInRuleTable = "ASSEMBLY_NOT_IN_RULE_TABLE";
         public const string RuleInconsistent = "RULE_INCONSISTENT";
     }
@@ -1641,7 +1951,7 @@ namespace Mahjong.Architecture.Tests
                     }
                 }
 
-                foreach (string expected in rule.AllowedProjectReferences.OrderBy(value => value, StringComparer.Ordinal))
+                foreach (string expected in rule.RequiredProjectReferences.OrderBy(value => value, StringComparer.Ordinal))
                 {
                     if (!project.ProjectReferences.Contains(expected))
                     {
@@ -1730,6 +2040,16 @@ namespace Mahjong.Architecture.Tests
 
                 foreach (string reference in assembly.References)
                 {
+                    if (rule.ForbiddenAssemblyReferences.Contains(reference))
+                    {
+                        diagnostics.Add(new DependencyDiagnostic(
+                            DiagnosticCodes.AssemblyForbiddenCapability,
+                            rule.Name,
+                            reference,
+                            "assembly is outside this module's accepted capability boundary: " + rule.Name + " -> " + reference));
+                        continue;
+                    }
+
                     ReferenceKind kind = ReferenceClassifier.Classify(reference);
                     if (kind == ReferenceKind.Mahjong)
                     {
@@ -1857,6 +2177,31 @@ namespace Mahjong.Architecture.Tests
             List<DependencyDiagnostic> diagnostics)
         {
             HashSet<string> projectClosure = ProjectReferenceClosure(rule, rules);
+            foreach (string required in rule.RequiredProjectReferences)
+            {
+                if (!rule.AllowedProjectReferences.Contains(required))
+                {
+                    diagnostics.Add(new DependencyDiagnostic(
+                        DiagnosticCodes.RuleInconsistent,
+                        rule.Name,
+                        required,
+                        "required project reference is not also allowed"));
+                }
+            }
+
+            foreach (string forbidden in rule.ForbiddenAssemblyReferences)
+            {
+                if (rule.AllowedMahjongAssemblyReferences.Contains(forbidden) ||
+                    rule.AllowedThirdPartyAssemblyReferences.Contains(forbidden))
+                {
+                    diagnostics.Add(new DependencyDiagnostic(
+                        DiagnosticCodes.RuleInconsistent,
+                        rule.Name,
+                        forbidden,
+                        "assembly is both forbidden and allowed by this module"));
+                }
+            }
+
             foreach (string allowed in rule.AllowedMahjongAssemblyReferences)
             {
                 if (!projectClosure.Contains(allowed))
