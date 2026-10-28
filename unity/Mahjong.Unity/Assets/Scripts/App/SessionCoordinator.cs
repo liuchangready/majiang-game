@@ -389,14 +389,24 @@ namespace Mahjong.Unity.App
                 }
 
                 // A late capture may carry an older acceptance sequence than a
-                // newer accepted revocation/binding. It must never roll the
-                // authoritative view or authority back to the old identity.
-                if (state.AcceptanceSequence <= 0 ||
-                    _currentViewState.AcceptanceSequence <= state.AcceptanceSequence)
+                // newer accepted revocation/binding/round. It must never roll
+                // the authoritative view or AcceptedAuthority back to the old
+                // identity, even when Current still holds an even older view.
+                if (state.AcceptanceSequence <= 0)
                 {
                     _currentViewState = state;
-                    if (state.AcceptanceSequence > 0)
+                }
+                else
+                {
+                    long accepted = Interlocked.Read(ref _acceptedSequence);
+                    if (state.AcceptanceSequence >= accepted)
                     {
+                        if (state.AcceptanceSequence > accepted)
+                        {
+                            Interlocked.Exchange(ref _acceptedSequence, state.AcceptanceSequence);
+                        }
+
+                        _currentViewState = state;
                         _acceptedAuthority = SessionAuthority.FromView(state);
                     }
                 }
