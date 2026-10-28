@@ -1154,7 +1154,7 @@ namespace Mahjong.TableRuntime
                         fullHistory,
                         effectiveFacts.EventFacts,
                         effectiveFacts.Policy,
-                        HasKanOrRinshan(fullHistory) ? null : round);
+                        round);
                 }
                 catch (Exception exception) when (
                     exception is ArgumentException ||
@@ -1887,19 +1887,6 @@ namespace Mahjong.TableRuntime
             {
                 SeatControlState state = control.Seats[seat];
                 if (state.Status == ConnectionStatus.Disconnected && state.GraceDeadlineMillis.HasValue)
-                {
-                    return true;
-                }
-            }
-
-            return false;
-        }
-
-        private static bool HasKanOrRinshan(IReadOnlyList<TableEventRecord> history)
-        {
-            for (int i = 0; i < history.Count; i++)
-            {
-                if (history[i].Type == RoundEventType.KanDeclared || history[i].Type == RoundEventType.RinshanDrawn)
                 {
                     return true;
                 }

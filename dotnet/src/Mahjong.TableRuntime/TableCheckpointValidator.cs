@@ -140,20 +140,7 @@ namespace Mahjong.TableRuntime
                 history,
                 facts.EventFacts,
                 facts.Policy,
-                HasKanOrRinshan(history) ? null : round);
-        }
-
-        private static bool HasKanOrRinshan(IReadOnlyList<TableEventRecord> history)
-        {
-            for (int i = 0; i < history.Count; i++)
-            {
-                if (history[i].Type == RoundEventType.KanDeclared || history[i].Type == RoundEventType.RinshanDrawn)
-                {
-                    return true;
-                }
-            }
-
-            return false;
+                round);
         }
 
         /// <summary>

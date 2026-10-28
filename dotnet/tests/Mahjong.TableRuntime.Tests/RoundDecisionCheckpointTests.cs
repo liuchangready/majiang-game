@@ -135,7 +135,7 @@ namespace Mahjong.TableRuntime.Tests
                 round.RoundId,
                 new long[] { 0L, 0L, 0L, 0L },
                 Array.Empty<TableRecoveredDecision>(),
-                1UL,
+                1L,
                 0L,
                 Boot);
             TableCheckpoint checkpoint = TableCheckpointFactory.Create(
@@ -284,6 +284,86 @@ namespace Mahjong.TableRuntime.Tests
             TableCheckpoint schemaOne = CreateCheckpoint(round, schemaVersion: 1);
             Assert.False(TableCheckpointValidator.TryValidate(schemaOne, out string schemaReason, out _));
             Assert.Equal(TableRuntimeReasonCode.CheckpointInvalid, schemaReason);
+        }
+        [Fact]
+        public void KanAndRinshanRecoveryValidatesDomainEventFactsAndRejectsTamperedWall()
+        {
+            var fixedSlots = new Dictionary<int, TileId>
+            {
+                [0] = Man(1, 0),
+                [1] = Man(1, 1),
+                [2] = Man(1, 2),
+                [3] = Man(1, 3),
+                [52] = Man(9, 0)
+            };
+            RoundStateMachine round = BuildDealt("checkpoint-kan-rinshan", fixedSlots);
+            RoundTransition kan = round.Execute(
+                RoundCommand.ClosedKan("checkpoint-kan-rinshan", 0, Man(1, 0), Man(1, 1), Man(1, 2), Man(1, 3)));
+            Assert.True(kan.IsAccepted, kan.Error?.ToString());
+            round = kan.State!;
+
+            RoundTransition discard = round.Execute(
+                RoundCommand.Discard("checkpoint-kan-rinshan", 0, Man(9, 0), Array.Empty<int>()));
+            Assert.True(discard.IsAccepted, discard.Error?.ToString());
+            round = discard.State!;
+
+            Assert.Contains(round.Events, e => e.Type == RoundEventType.KanDeclared);
+            Assert.Contains(round.Events, e => e.Type == RoundEventType.RinshanDrawn);
+            Assert.Contains(round.Events, e => e.Type == RoundEventType.TileDrawn);
+
+            var history = new List<TableEventRecord>();
+            for (int i = 0; i < round.Events.Count; i++)
+            {
+                RoundEvent e = round.Events[i];
+                history.Add(new TableEventRecord(
+                    new EventSeq((ulong)(i + 1)),
+                    new StateVersion(1),
+                    i,
+                    e.Type,
+                    e.Seat,
+                    e.Tile,
+                    e.Detail));
+            }
+
+            var request = new TableProjectionContextRequest(
+                Room,
+                round,
+                new StateVersion(1),
+                new EventSeq((ulong)history.Count),
+                new OwnerEpoch(1),
+                0L,
+                0L,
+                0L,
+                1L,
+                history);
+            var kanMeld = new MeldView(
+                ProtocolMeldType.ClosedKan,
+                new uint[] { 0, 1, 2, 3 },
+                0u,
+                0);
+            IReadOnlyList<TableProjectionEventFact> eventFacts = WireEventFacts.Build(
+                request,
+                new WireEventFactOptions { KanMeld = kanMeld });
+            var policy = new TableProjectionPolicy(false, settlementBatch: true, revealSettlementUra: true);
+
+            // 1. Positive validation: Domain reverse reconstruction with Kan and Rinshan events succeeds
+            TableVisibilityProjection.ValidateRecoveredEventFacts(history, eventFacts, policy, round);
+
+            // 2. Negative validation: tamper WallRemaining on a TileDrawn fact, ensuring tampered wall is rejected
+            TableProjectionEventFact[] tamperedFacts = eventFacts.ToArray();
+            int drawIdx = Array.FindIndex(tamperedFacts, f => f.Type == ProtocolEventType.TileDrawn);
+            Assert.True(drawIdx >= 0);
+            TableProjectionEventFact origDraw = tamperedFacts[drawIdx];
+            tamperedFacts[drawIdx] = new TableProjectionEventFact(
+                origDraw.Type,
+                origDraw.EventSeq,
+                origDraw.CommandVersion,
+                origDraw.EventOrdinal,
+                new TableProjectionEventFacts(turnNumber: origDraw.Facts.TurnNumber, wallRemaining: 999U));
+
+            var ex = Assert.Throws<TableProjectionException>(() =>
+                TableVisibilityProjection.ValidateRecoveredEventFacts(history, tamperedFacts, policy, round));
+            Assert.Contains("wallRemaining", ex.Message);
         }
     }
 }

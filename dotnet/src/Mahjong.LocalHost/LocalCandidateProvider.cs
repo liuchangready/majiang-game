@@ -83,6 +83,77 @@ namespace Mahjong.LocalHost
             return null;
         }
 
+        public static IReadOnlyList<(TileId a, TileId b)> FindAllChiCombinations(IReadOnlyList<TileId> hand, TileId targetTile)
+        {
+            if (!targetTile.IsNumberTile)
+            {
+                return Array.Empty<(TileId, TileId)>();
+            }
+
+            int rank = targetTile.Rank;
+            TileSuit suit = targetTile.Suit;
+            var list = new List<(TileId, TileId)>();
+
+            List<TileId> FindAll(int r)
+            {
+                var matches = new List<TileId>();
+                for (int i = 0; i < hand.Count; i++)
+                {
+                    TileId tile = hand[i];
+                    if (tile.IsNumberTile && tile.Suit == suit && tile.Rank == r)
+                    {
+                        matches.Add(tile);
+                    }
+                }
+
+                return matches;
+            }
+
+            // Pattern 1: targetTile is highest (rank-2, rank-1, target)
+            if (rank >= 3)
+            {
+                List<TileId> list1 = FindAll(rank - 2);
+                List<TileId> list2 = FindAll(rank - 1);
+                foreach (TileId a in list1)
+                {
+                    foreach (TileId b in list2)
+                    {
+                        list.Add((a, b));
+                    }
+                }
+            }
+
+            // Pattern 2: targetTile is middle (rank-1, target, rank+1)
+            if (rank >= 2 && rank <= 8)
+            {
+                List<TileId> list1 = FindAll(rank - 1);
+                List<TileId> list2 = FindAll(rank + 1);
+                foreach (TileId a in list1)
+                {
+                    foreach (TileId b in list2)
+                    {
+                        list.Add((a, b));
+                    }
+                }
+            }
+
+            // Pattern 3: targetTile is lowest (target, rank+1, rank+2)
+            if (rank <= 7)
+            {
+                List<TileId> list1 = FindAll(rank + 1);
+                List<TileId> list2 = FindAll(rank + 2);
+                foreach (TileId a in list1)
+                {
+                    foreach (TileId b in list2)
+                    {
+                        list.Add((a, b));
+                    }
+                }
+            }
+
+            return list;
+        }
+
         public static int CountSameType(IReadOnlyList<TileId> hand, TileId targetTile)
         {
             int count = 0;
@@ -137,6 +208,95 @@ namespace Mahjong.LocalHost
             return false;
         }
 
+        public static Meld[] BuildMeldsForSeat(RoundStateMachine round, int seat)
+        {
+            var melds = new List<Meld>();
+            for (int i = 0; i < round.Melds.Count; i++)
+            {
+                RoundMeld meld = round.Melds[i];
+                if (meld.Seat != seat)
+                {
+                    continue;
+                }
+
+                MeldType type = meld.Kind switch
+                {
+                    RoundMeldKind.Chi => MeldType.Chi,
+                    RoundMeldKind.Pon => MeldType.Pon,
+                    RoundMeldKind.OpenKan => MeldType.OpenKan,
+                    RoundMeldKind.ClosedKan => MeldType.ClosedKan,
+                    RoundMeldKind.AddedKan => MeldType.AddedKan,
+                    _ => throw new ArgumentOutOfRangeException(nameof(meld.Kind), meld.Kind, null)
+                };
+
+                melds.Add(new Meld(
+                    type,
+                    meld.Tiles,
+                    meld.Kind == RoundMeldKind.ClosedKan ? -1 : meld.FromSeat,
+                    meld.CalledTile));
+            }
+
+            return melds.ToArray();
+        }
+
+        public static bool HasWinningYaku(
+            RoundStateMachine round,
+            int seat,
+            IReadOnlyList<TileId> hand,
+            TileId winTile,
+            bool isTsumo)
+        {
+            Meld[] melds = BuildMeldsForSeat(round, seat);
+            bool isClosed = melds.All(m => !m.IsOpen);
+            int seatWind = ((seat - round.DealerSeat + 4) % 4) + 1;
+            int roundWind = round.RoundWind;
+            bool isDealer = seat == round.DealerSeat;
+            bool isRiichi = round.IsRiichi(seat);
+
+            bool isRinshan = isTsumo &&
+                             round.Tiles.DrawnTile.HasValue &&
+                             round.Tiles.DrawnTile.Value.Seat == seat &&
+                             round.Tiles.DrawnTile.Value.Source == DrawSource.Rinshan;
+            bool isHaitei = isTsumo && !isRinshan && round.Tiles.WallRemaining == 0;
+            bool isHoutei = !isTsumo && round.Tiles.WallRemaining == 0;
+            bool isChankan = !isTsumo && round.Window != null && round.Window.IsChankan;
+
+            PlayerHand playerHand;
+            if (isTsumo)
+            {
+                var closed = new List<TileId>(hand.Count);
+                bool removed = false;
+                for (int i = 0; i < hand.Count; i++)
+                {
+                    if (!removed && hand[i] == winTile)
+                    {
+                        removed = true;
+                        continue;
+                    }
+                    closed.Add(hand[i]);
+                }
+                playerHand = new PlayerHand(closed, melds, winTile);
+            }
+            else
+            {
+                playerHand = new PlayerHand(hand, melds);
+            }
+
+            var context = new WinContext(
+                winTile,
+                isTsumo,
+                isClosed,
+                seatWind,
+                roundWind,
+                isRiichi: isRiichi,
+                isRinshan: isRinshan,
+                isHaitei: isHaitei,
+                isHoutei: isHoutei,
+                isChankan: isChankan);
+
+            return WinningScoreEvaluator.CanWinWithYaku(playerHand, context, isDealer);
+        }
+
         public static bool CanRon(
             RoundStateMachine round,
             int seat,
@@ -153,7 +313,12 @@ namespace Mahjong.LocalHost
             var testHand = new List<TileId>(hand.Count + 1);
             testHand.AddRange(hand);
             testHand.Add(targetTile);
-            return HandDecomposer.CanWin(testHand);
+            if (!HandDecomposer.CanWin(testHand))
+            {
+                return false;
+            }
+
+            return HasWinningYaku(round, seat, hand, targetTile, isTsumo: false);
         }
 
         public static IReadOnlyList<int> DeriveEligibleSeatsForDiscard(
@@ -243,33 +408,39 @@ namespace Mahjong.LocalHost
             {
                 if (round.Tiles.DrawnTile.HasValue && round.Tiles.DrawnTile.Value.Seat == seat)
                 {
-                    candidates.Add(new LegalActionOption(LegalActionKind.Discard, seat, round.Tiles.DrawnTile.Value.Tile));
+                    TileId t = round.Tiles.DrawnTile.Value.Tile;
+                    candidates.Add(new LegalActionOption(LegalActionKind.Discard, seat, t, tiles: new[] { t }));
                 }
                 else
                 {
-                    candidates.Add(new LegalActionOption(LegalActionKind.Discard, seat, hand[hand.Count - 1]));
+                    TileId t = hand[hand.Count - 1];
+                    candidates.Add(new LegalActionOption(LegalActionKind.Discard, seat, t, tiles: new[] { t }));
                 }
             }
             else
             {
                 for (int i = 0; i < hand.Count; i++)
                 {
-                    candidates.Add(new LegalActionOption(LegalActionKind.Discard, seat, hand[i]));
+                    TileId t = hand[i];
+                    candidates.Add(new LegalActionOption(LegalActionKind.Discard, seat, t, tiles: new[] { t }));
                 }
             }
 
             // 2. Tsumo (Standard, Chiitoitsu, Kokushi Musou, Rinshan Kaihou)
             if (hand.Count % 3 == 2 && HandDecomposer.CanWin(hand))
             {
-                TileId? drawn = round.Tiles.DrawnTile?.Seat == seat ? round.Tiles.DrawnTile?.Tile : null;
-                candidates.Add(new LegalActionOption(LegalActionKind.Tsumo, seat, drawn));
+                TileId drawn = round.Tiles.DrawnTile?.Seat == seat ? round.Tiles.DrawnTile.Value.Tile : hand[hand.Count - 1];
+                if (HasWinningYaku(round, seat, hand, drawn, isTsumo: true))
+                {
+                    candidates.Add(new LegalActionOption(LegalActionKind.Tsumo, seat, drawn, tiles: new[] { drawn }));
+                }
             }
 
             // 3. Riichi
             if (!round.IsRiichi(seat) &&
                 round.Scores[seat] >= 1000 &&
                 round.Tiles.WallRemaining >= 4 &&
-                round.Tiles.CountAt(TileZone.Meld, seat) == 0 &&
+                round.Melds.All(m => m.Seat != seat || !m.IsOpen) &&
                 hand.Count % 3 == 2)
             {
                 var testedTypes = new HashSet<int>();
@@ -283,7 +454,7 @@ namespace Mahjong.LocalHost
 
                     if (round.Prepare(RoundCommand.Riichi(round.RoundId, seat, t, null)).IsReady)
                     {
-                        candidates.Add(new LegalActionOption(LegalActionKind.Riichi, seat, t, "riichi-" + t.Value));
+                        candidates.Add(new LegalActionOption(LegalActionKind.Riichi, seat, t, "riichi-" + t.Value, new[] { t }));
                     }
                 }
             }
@@ -323,13 +494,14 @@ namespace Mahjong.LocalHost
                                 LegalActionKind.Kan,
                                 seat,
                                 pair.Value[0],
-                                "closed-kan-" + pair.Key));
+                                "closed-kan-" + pair.Key,
+                                pair.Value.ToArray()));
                         }
                     }
                 }
             }
 
-            // 5. Added Kan (加杠/小明杠)
+            // 5. Added Kan (加杠/小明�?
             if (!round.IsRiichi(seat) &&
                 round.Tiles.WallRemaining > 0 &&
                 round.Tiles.RinshanPointer < 4 &&
@@ -370,7 +542,8 @@ namespace Mahjong.LocalHost
                                 LegalActionKind.Kan,
                                 seat,
                                 matchingInHand.Value,
-                                "added-kan-" + typeIndex));
+                                "added-kan-" + typeIndex,
+                                new[] { matchingInHand.Value, meld.Tiles[0], meld.Tiles[1], meld.Tiles[2] }));
                         }
                     }
                 }
@@ -397,26 +570,42 @@ namespace Mahjong.LocalHost
             // 1. Ron
             if (CanRon(round, seat, hand, window.TargetTile, tempFuriten, riichiFuriten))
             {
-                candidates.Add(new LegalActionOption(LegalActionKind.Ron, seat, window.TargetTile));
+                candidates.Add(new LegalActionOption(LegalActionKind.Ron, seat, window.TargetTile, tiles: new[] { window.TargetTile }));
             }
 
             // 2. Calls (not in Chankan, and not in Riichi)
             if (!window.IsChankan && !round.IsRiichi(seat))
             {
-                int count = CountSameType(hand, window.TargetTile);
-
-                // Pon
-                if (count >= 2)
+                var matching = new List<TileId>();
+                for (int i = 0; i < hand.Count; i++)
                 {
-                    candidates.Add(new LegalActionOption(
-                        LegalActionKind.Pon,
-                        seat,
-                        window.TargetTile,
-                        "pon-" + window.TargetTile.TypeIndex));
+                    if (hand[i].TypeIndex == window.TargetTile.TypeIndex)
+                    {
+                        matching.Add(hand[i]);
+                    }
+                }
+
+                // Pon: enumerate distinct pairs
+                if (matching.Count >= 2)
+                {
+                    for (int i = 0; i < matching.Count; i++)
+                    {
+                        for (int j = i + 1; j < matching.Count; j++)
+                        {
+                            TileId a = matching[i];
+                            TileId b = matching[j];
+                            candidates.Add(new LegalActionOption(
+                                LegalActionKind.Pon,
+                                seat,
+                                window.TargetTile,
+                                "pon-" + a.Value + "-" + b.Value,
+                                new[] { window.TargetTile, a, b }));
+                        }
+                    }
                 }
 
                 // OpenKan
-                if (count >= 3 &&
+                if (matching.Count >= 3 &&
                     round.Tiles.WallRemaining > 0 &&
                     round.Tiles.RinshanPointer < 4 &&
                     round.Tiles.KanCount < 4)
@@ -425,22 +614,29 @@ namespace Mahjong.LocalHost
                         LegalActionKind.Kan,
                         seat,
                         window.TargetTile,
-                        "open-kan-" + window.TargetTile.TypeIndex));
+                        "open-kan-" + window.TargetTile.TypeIndex,
+                        new[] { window.TargetTile, matching[0], matching[1], matching[2] }));
                 }
 
                 // Chi
-                if (seat == (window.FromSeat + 1) % 4 && CanChi(hand, window.TargetTile))
+                if (seat == (window.FromSeat + 1) % 4)
                 {
-                    candidates.Add(new LegalActionOption(
-                        LegalActionKind.Chi,
-                        seat,
-                        window.TargetTile,
-                        "chi-" + window.TargetTile.TypeIndex));
+                    IReadOnlyList<(TileId a, TileId b)> chiCombos = FindAllChiCombinations(hand, window.TargetTile);
+                    for (int c = 0; c < chiCombos.Count; c++)
+                    {
+                        (TileId a, TileId b) = chiCombos[c];
+                        candidates.Add(new LegalActionOption(
+                            LegalActionKind.Chi,
+                            seat,
+                            window.TargetTile,
+                            "chi-" + a.Value + "-" + b.Value,
+                            new[] { window.TargetTile, a, b }));
+                    }
                 }
             }
 
             // 3. Pass
-            candidates.Add(new LegalActionOption(LegalActionKind.Pass, seat));
+            candidates.Add(new LegalActionOption(LegalActionKind.Pass, seat, tiles: Array.Empty<TileId>()));
 
             return candidates;
         }

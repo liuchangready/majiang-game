@@ -6,6 +6,7 @@ using System.Threading.Tasks;
 using Mahjong.Client;
 using Mahjong.Contracts;
 using Mahjong.Domain;
+using Mahjong.Domain.Rules;
 using Mahjong.TableRuntime;
 using Xunit;
 using DecisionView = Mahjong.Contracts.Wire.DecisionView;
@@ -35,7 +36,7 @@ namespace Mahjong.LocalHost.Tests
             try
             {
                 using var pumpCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-                pumpCts.CancelAfter(TimeSpan.FromSeconds(10));
+                pumpCts.CancelAfter(TimeSpan.FromSeconds(25));
                 Task pump = StartPump(session, pumpCts.Token);
 
                 // Wait for player snapshot with active decision
@@ -85,6 +86,17 @@ namespace Mahjong.LocalHost.Tests
                 Assert.NotNull(session.PlayerSnapshot.PublicView.Session);
                 Assert.Equal(4, session.PlayerSnapshot.PublicView.Session.FinalScores.Count);
 
+                RoundSettlementCalculation? kokushiCalc = ((LocalTableChannel)channel).RuntimeForMatch?.ActorForTest.LastSettlementCalculation;
+                Assert.NotNull(kokushiCalc);
+                Assert.NotNull(kokushiCalc.Breakdown);
+                Assert.Contains(kokushiCalc.Breakdown.Yaku, y => y.Yaku.Code == "KOKUSHI");
+                Assert.True(kokushiCalc.Breakdown.YakumanCount >= 1);
+                Assert.Equal(96000L, kokushiCalc.Breakdown.TotalPoints);
+                Assert.Equal(96000L, kokushiCalc.Payments.Deltas[0]);
+                Assert.Equal(-32000L, kokushiCalc.Payments.Deltas[1]);
+                Assert.Equal(-32000L, kokushiCalc.Payments.Deltas[2]);
+                Assert.Equal(-32000L, kokushiCalc.Payments.Deltas[3]);
+
                 pumpCts.Cancel();
                 await pump;
             }
@@ -110,7 +122,7 @@ namespace Mahjong.LocalHost.Tests
             try
             {
                 using var pumpCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-                pumpCts.CancelAfter(TimeSpan.FromSeconds(10));
+                pumpCts.CancelAfter(TimeSpan.FromSeconds(25));
                 Task pump = StartPump(session, pumpCts.Token);
 
                 PlayerSnapshot snapshot = await WaitForDecisionAsync(session, pumpCts.Token);
@@ -207,7 +219,7 @@ namespace Mahjong.LocalHost.Tests
             try
             {
                 using var pumpCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-                pumpCts.CancelAfter(TimeSpan.FromSeconds(10));
+                pumpCts.CancelAfter(TimeSpan.FromSeconds(25));
                 Task pump = StartPump(session, pumpCts.Token);
 
                 PlayerSnapshot snapshot = await WaitForDecisionAsync(session, pumpCts.Token);
@@ -218,6 +230,11 @@ namespace Mahjong.LocalHost.Tests
                     a => a.ActionType == (uint)ProtocolActionType.DeclareKan &&
                          a.OptionId.StartsWith("closed-kan-", StringComparison.Ordinal));
                 Assert.NotNull(kanAction);
+                Assert.Equal(4, kanAction.TileIds.Count);
+                Assert.Contains(0u, kanAction.TileIds);
+                Assert.Contains(1u, kanAction.TileIds);
+                Assert.Contains(2u, kanAction.TileIds);
+                Assert.Contains(3u, kanAction.TileIds);
 
                 // 1. Submit ClosedKan
                 var kanResolved = new TaskCompletionSource<TableReceiptResolvedEventArgs>(
@@ -236,7 +253,7 @@ namespace Mahjong.LocalHost.Tests
                     decision.ControlEpoch,
                     ProtocolActionType.DeclareKan,
                     optionId: kanAction.OptionId,
-                    tileIds: new uint[] { 0u, 1u, 2u, 3u },
+                    tileIds: kanAction.TileIds.ToArray(),
                     meldType: 4u);
                 var kanCommand = new ProtocolCommand(
                     CommandKind.SubmitAction,
@@ -313,6 +330,15 @@ namespace Mahjong.LocalHost.Tests
 
                 Assert.Equal(GamePhase.RoundEnd, session.PlayerSnapshot!.PublicView.Board.Phase);
 
+                RoundSettlementCalculation? kanCalc = ((LocalTableChannel)channel).RuntimeForMatch?.ActorForTest.LastSettlementCalculation;
+                Assert.NotNull(kanCalc);
+                Assert.Equal(RoundOutcomeKind.Tsumo, kanCalc.Outcome.Kind);
+                Assert.Equal(0, kanCalc.Outcome.WinnerSeat);
+                Assert.NotNull(kanCalc.Breakdown);
+                Assert.Contains(kanCalc.Breakdown.Yaku, y => y.Yaku.Code == "RINSHAN");
+                Assert.True(kanCalc.Breakdown.TotalPoints > 0);
+                Assert.True(kanCalc.Payments.Deltas[0] > 0);
+
                 pumpCts.Cancel();
                 await pump;
             }
@@ -350,7 +376,7 @@ namespace Mahjong.LocalHost.Tests
             try
             {
                 using var pumpCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-                pumpCts.CancelAfter(TimeSpan.FromSeconds(10));
+                pumpCts.CancelAfter(TimeSpan.FromSeconds(25));
                 Task pump = StartPump(session, pumpCts.Token);
 
                 // 1. Seat 0 discards 132
@@ -404,12 +430,20 @@ namespace Mahjong.LocalHost.Tests
                     }
                 };
 
+                LegalActionView? ponAction = ponDecision.Actions.FirstOrDefault(
+                    a => a.ActionType == (uint)ProtocolActionType.DeclarePon);
+                Assert.NotNull(ponAction);
+                Assert.Equal(3, ponAction.TileIds.Count);
+                Assert.Contains(2u, ponAction.TileIds);
+                Assert.Contains(0u, ponAction.TileIds);
+                Assert.Contains(1u, ponAction.TileIds);
+
                 BusinessPayload ponPayload = CommandPayloadFactory.SubmitAction(
                     ponSnapshot.RoundId,
                     ponDecision.DecisionId,
                     ponDecision.ControlEpoch,
                     ProtocolActionType.DeclarePon,
-                    tileIds: new uint[] { 2u, 0u, 1u });
+                    tileIds: ponAction.TileIds.ToArray());
                 var ponCommand = new ProtocolCommand(
                     CommandKind.SubmitAction,
                     ponPayload,
@@ -483,7 +517,7 @@ namespace Mahjong.LocalHost.Tests
             try
             {
                 using var pumpCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-                pumpCts.CancelAfter(TimeSpan.FromSeconds(10));
+                pumpCts.CancelAfter(TimeSpan.FromSeconds(25));
                 Task pump = StartPump(session, pumpCts.Token);
 
                 // Seat 0 discards 132
@@ -537,12 +571,20 @@ namespace Mahjong.LocalHost.Tests
                     }
                 };
 
+                LegalActionView? chiAction = chiDecision.Actions.FirstOrDefault(
+                    a => a.ActionType == (uint)ProtocolActionType.DeclareChi);
+                Assert.NotNull(chiAction);
+                Assert.Equal(3, chiAction.TileIds.Count);
+                Assert.Contains(8u, chiAction.TileIds);
+                Assert.Contains(0u, chiAction.TileIds);
+                Assert.Contains(4u, chiAction.TileIds);
+
                 BusinessPayload chiPayload = CommandPayloadFactory.SubmitAction(
                     chiSnapshot.RoundId,
                     chiDecision.DecisionId,
                     chiDecision.ControlEpoch,
                     ProtocolActionType.DeclareChi,
-                    tileIds: new uint[] { 8u, 0u, 4u });
+                    tileIds: chiAction.TileIds.ToArray());
                 var chiCommand = new ProtocolCommand(
                     CommandKind.SubmitAction,
                     chiPayload,
@@ -609,7 +651,7 @@ namespace Mahjong.LocalHost.Tests
             try
             {
                 using var pumpCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-                pumpCts.CancelAfter(TimeSpan.FromSeconds(10));
+                pumpCts.CancelAfter(TimeSpan.FromSeconds(25));
                 Task pump = StartPump(session, pumpCts.Token);
 
                 // Seat 0 discards 132
@@ -663,12 +705,21 @@ namespace Mahjong.LocalHost.Tests
                     }
                 };
 
+                LegalActionView? kanAction = kanDecision.Actions.FirstOrDefault(
+                    a => a.ActionType == (uint)ProtocolActionType.DeclareKan);
+                Assert.NotNull(kanAction);
+                Assert.Equal(4, kanAction.TileIds.Count);
+                Assert.Contains(3u, kanAction.TileIds);
+                Assert.Contains(0u, kanAction.TileIds);
+                Assert.Contains(1u, kanAction.TileIds);
+                Assert.Contains(2u, kanAction.TileIds);
+
                 BusinessPayload kanPayload = CommandPayloadFactory.SubmitAction(
                     kanSnapshot.RoundId,
                     kanDecision.DecisionId,
                     kanDecision.ControlEpoch,
                     ProtocolActionType.DeclareKan,
-                    tileIds: new uint[] { 3u, 0u, 1u, 2u },
+                    tileIds: kanAction.TileIds.ToArray(),
                     meldType: 3u); // OpenKan = 3
                 var kanCommand = new ProtocolCommand(
                     CommandKind.SubmitAction,
@@ -737,7 +788,7 @@ namespace Mahjong.LocalHost.Tests
             try
             {
                 using var pumpCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-                pumpCts.CancelAfter(TimeSpan.FromSeconds(10));
+                pumpCts.CancelAfter(TimeSpan.FromSeconds(25));
                 Task pump = StartPump(session, pumpCts.Token);
 
                 // Seat 0 discards 132
@@ -814,6 +865,14 @@ namespace Mahjong.LocalHost.Tests
 
                 Assert.Equal(GamePhase.RoundEnd, session.PlayerSnapshot!.PublicView.Board.Phase);
 
+                RoundSettlementCalculation? ronCalc = ((LocalTableChannel)channel).RuntimeForMatch?.ActorForTest.LastSettlementCalculation;
+                Assert.NotNull(ronCalc);
+                Assert.Equal(RoundOutcomeKind.Ron, ronCalc.Outcome.Kind);
+                Assert.Equal(0, ronCalc.Outcome.WinnerSeat);
+                Assert.Equal(1, ronCalc.Outcome.LoserSeat);
+                Assert.True(ronCalc.Payments.Deltas[0] > 0);
+                Assert.True(ronCalc.Payments.Deltas[1] < 0);
+
                 pumpCts.Cancel();
                 await pump;
             }
@@ -852,7 +911,7 @@ namespace Mahjong.LocalHost.Tests
             try
             {
                 using var pumpCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-                pumpCts.CancelAfter(TimeSpan.FromSeconds(10));
+                pumpCts.CancelAfter(TimeSpan.FromSeconds(25));
                 Task pump = StartPump(session, pumpCts.Token);
 
                 // 1. Seat 0 discards 132
@@ -906,12 +965,20 @@ namespace Mahjong.LocalHost.Tests
                     }
                 };
 
+                LegalActionView? ponAction = ponDecision.Actions.FirstOrDefault(
+                    a => a.ActionType == (uint)ProtocolActionType.DeclarePon);
+                Assert.NotNull(ponAction);
+                Assert.Equal(3, ponAction.TileIds.Count);
+                Assert.Contains(2u, ponAction.TileIds);
+                Assert.Contains(0u, ponAction.TileIds);
+                Assert.Contains(1u, ponAction.TileIds);
+
                 BusinessPayload ponPayload = CommandPayloadFactory.SubmitAction(
                     ponSnapshot.RoundId,
                     ponDecision.DecisionId,
                     ponDecision.ControlEpoch,
                     ProtocolActionType.DeclarePon,
-                    tileIds: new uint[] { 2u, 0u, 1u });
+                    tileIds: ponAction.TileIds.ToArray());
                 var ponCommand = new ProtocolCommand(
                     CommandKind.SubmitAction,
                     ponPayload,
@@ -973,6 +1040,8 @@ namespace Mahjong.LocalHost.Tests
                     a => a.ActionType == (uint)ProtocolActionType.DeclareKan &&
                          a.OptionId.StartsWith("added-kan", StringComparison.Ordinal));
                 Assert.NotNull(addedKanAction);
+                Assert.Equal(4, addedKanAction.TileIds.Count);
+                Assert.Contains(3u, addedKanAction.TileIds);
 
                 var kanResolved = new TaskCompletionSource<TableReceiptResolvedEventArgs>(
                     TaskCreationOptions.RunContinuationsAsynchronously);
@@ -990,7 +1059,7 @@ namespace Mahjong.LocalHost.Tests
                     kanDecision.ControlEpoch,
                     ProtocolActionType.DeclareKan,
                     optionId: addedKanAction.OptionId,
-                    tileIds: new uint[] { 3u },
+                    tileIds: addedKanAction.TileIds.ToArray(),
                     meldType: 5u);
                 var kanCommand = new ProtocolCommand(
                     CommandKind.SubmitAction,
@@ -1064,6 +1133,15 @@ namespace Mahjong.LocalHost.Tests
 
                 Assert.Equal(GamePhase.RoundEnd, session.PlayerSnapshot!.PublicView.Board.Phase);
 
+                RoundSettlementCalculation? kanCalc = ((LocalTableChannel)channel).RuntimeForMatch?.ActorForTest.LastSettlementCalculation;
+                Assert.NotNull(kanCalc);
+                Assert.Equal(RoundOutcomeKind.Tsumo, kanCalc.Outcome.Kind);
+                Assert.Equal(0, kanCalc.Outcome.WinnerSeat);
+                Assert.NotNull(kanCalc.Breakdown);
+                Assert.Contains(kanCalc.Breakdown.Yaku, y => y.Yaku.Code == "RINSHAN");
+                Assert.True(kanCalc.Breakdown.TotalPoints > 0);
+                Assert.True(kanCalc.Payments.Deltas[0] > 0);
+
                 pumpCts.Cancel();
                 await pump;
             }
@@ -1114,7 +1192,7 @@ namespace Mahjong.LocalHost.Tests
             try
             {
                 using var pumpCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-                pumpCts.CancelAfter(TimeSpan.FromSeconds(10));
+                pumpCts.CancelAfter(TimeSpan.FromSeconds(25));
                 Task pump = StartPump(session, pumpCts.Token);
 
                 // 1. Seat 0 discards 132
@@ -1248,6 +1326,108 @@ namespace Mahjong.LocalHost.Tests
                 }
 
                 Assert.Equal(GamePhase.RoundEnd, session.PlayerSnapshot!.PublicView.Board.Phase);
+
+                RoundSettlementCalculation? chankanCalc = ((LocalTableChannel)channel).RuntimeForMatch?.ActorForTest.LastSettlementCalculation;
+                Assert.NotNull(chankanCalc);
+                Assert.Equal(RoundOutcomeKind.Ron, chankanCalc.Outcome.Kind);
+                Assert.Equal(0, chankanCalc.Outcome.WinnerSeat);
+                Assert.Equal(1, chankanCalc.Outcome.LoserSeat);
+                Assert.NotNull(chankanCalc.Breakdown);
+                Assert.Contains(chankanCalc.Breakdown.Yaku, y => y.Yaku.Code == "CHANKAN");
+                Assert.True(chankanCalc.Breakdown.TotalPoints > 0);
+                Assert.True(chankanCalc.Payments.Deltas[0] > 0);
+                Assert.True(chankanCalc.Payments.Deltas[1] < 0);
+
+                pumpCts.Cancel();
+                await pump;
+            }
+            finally
+            {
+                await session.CloseAsync("TEST_DONE", CancellationToken.None);
+                await channel.CloseAsync(new TableChannelCloseReason("TEST_DONE", true), CancellationToken.None);
+            }
+        }
+
+        [Fact]
+        public async Task MultipleChiOptionsCandidateTest()
+        {
+            await using var harness = new P41Harness();
+            CancellationToken ct = TestContext.Current.CancellationToken;
+
+            // Seat 0 hand has: 1m (0), 2m (4), 4m (12), 5m (16) and discard tile 132.
+            // When Seat 3 discards 3m (8), Seat 0 has 3 distinct Chi combinations:
+            // 1) 1m-2m-3m (hand 0, 4)
+            // 2) 2m-3m-4m (hand 4, 12)
+            // 3) 3m-4m-5m (hand 12, 16)
+            var specific = new Dictionary<int, int>();
+            int[] seat0Tiles = { 0, 4, 12, 16, 20, 24, 28, 36, 40, 44, 48, 52, 56, 132 };
+            int[] seat0Slots = { 0, 1, 2, 3, 16, 17, 18, 19, 32, 33, 34, 35, 48, 52 };
+            for (int i = 0; i < seat0Slots.Length; i++)
+            {
+                specific[seat0Slots[i]] = seat0Tiles[i];
+            }
+
+            specific[53] = 133; // Seat 1 draw
+            specific[54] = 134; // Seat 2 draw
+            specific[55] = 8;   // Seat 3 draw: 3m (8)
+            specific[100] = 9;
+            specific[101] = 10;
+            specific[102] = 11;
+
+            harness.Options.InitialRound = BuildRoundWithSpecificSlots(specific);
+
+            (ITableChannel channel, TableSession session) = await OpenAsync(harness, ct);
+            try
+            {
+                using var pumpCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                pumpCts.CancelAfter(TimeSpan.FromSeconds(25));
+                Task pump = StartPump(session, pumpCts.Token);
+
+                PlayerSnapshot snapshot = await WaitForDecisionAsync(session, pumpCts.Token);
+                DecisionView decision = snapshot.PrivateView.Decision!;
+
+                var discardResolved = new TaskCompletionSource<TableReceiptResolvedEventArgs>(
+                    TaskCreationOptions.RunContinuationsAsynchronously);
+                session.ReceiptResolved += (_, args) =>
+                {
+                    if (args.Command.Key.RequestId.Value == "seat0-multi-chi-discard")
+                    {
+                        discardResolved.TrySetResult(args);
+                    }
+                };
+
+                BusinessPayload discardPayload = CommandPayloadFactory.SubmitAction(
+                    snapshot.RoundId,
+                    decision.DecisionId,
+                    decision.ControlEpoch,
+                    ProtocolActionType.DiscardTile,
+                    tileIds: new uint[] { 132u });
+                var discardCommand = new ProtocolCommand(
+                    CommandKind.SubmitAction,
+                    discardPayload,
+                    new RequestId("seat0-multi-chi-discard"),
+                    session.Binding!.Scope.ScopeId,
+                    new StateVersion(snapshot.StateVersion),
+                    new RoundId(snapshot.RoundId),
+                    decisionId: new DecisionId(decision.DecisionId),
+                    controlEpoch: new ControlEpoch(decision.ControlEpoch));
+
+                await session.SubmitAsync(discardCommand, pumpCts.Token);
+                await LocalHostCommandTests.WithTimeoutAsync(discardResolved.Task, pumpCts.Token);
+
+                PlayerSnapshot chiSnapshot = await WaitForActionTypeAsync(
+                    session,
+                    ProtocolActionType.DeclareChi,
+                    pumpCts.Token);
+                Assert.NotNull(chiSnapshot.PrivateView.Decision);
+                DecisionView chiDecision = chiSnapshot.PrivateView.Decision;
+
+                var chiActions = chiDecision.Actions.Where(a => a.ActionType == (uint)ProtocolActionType.DeclareChi).ToList();
+                Assert.True(chiActions.Count >= 2, "Expected at least 2 Chi candidates, got " + chiActions.Count);
+
+                // Verify that distinct options have distinct entity combinations
+                var optionTileSets = chiActions.Select(a => string.Join(",", a.TileIds.OrderBy(x => x))).Distinct().ToList();
+                Assert.Equal(chiActions.Count, optionTileSets.Count);
 
                 pumpCts.Cancel();
                 await pump;

@@ -8027,9 +8027,7 @@ namespace Mahjong.TableRuntime
                         continue;
                     }
 
-                    uint[] tiles = candidate.Tile.HasValue
-                        ? new[] { unchecked((uint)candidate.Tile.Value.Value) }
-                        : Array.Empty<uint>();
+                    uint[] tiles = BuildCandidateTiles(candidate);
                     actions.Add(new LegalActionView(
                         actionType,
                         candidate.OptionId ?? string.Empty,
@@ -8047,6 +8045,27 @@ namespace Mahjong.TableRuntime
             }
 
             return decisions;
+        }
+
+        private static uint[] BuildCandidateTiles(LegalActionOption candidate)
+        {
+            if (candidate.Tiles != null && candidate.Tiles.Count > 0)
+            {
+                var tiles = new uint[candidate.Tiles.Count];
+                for (int t = 0; t < candidate.Tiles.Count; t++)
+                {
+                    tiles[t] = unchecked((uint)candidate.Tiles[t].Value);
+                }
+
+                return tiles;
+            }
+
+            if (candidate.Tile.HasValue)
+            {
+                return new[] { unchecked((uint)candidate.Tile.Value.Value) };
+            }
+
+            return Array.Empty<uint>();
         }
 
         private static ProtocolActionType MapProtocolAction(LegalActionKind kind)
