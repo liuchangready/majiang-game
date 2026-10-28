@@ -444,3 +444,40 @@ git status --porcelain=v1     -> 仅两条 scope 路径
    - 不存在网络/服务端/基础设施/Unity 能力；
    - required positive edges 与真实实现一致。
 5. 本报告不构成 PR21、G2、G3、G4、G5 或远端 CI 的通过声明；V4 仍是唯一生产架构。
+
+## 9. Caller 独立验收（2026-10-29）
+
+候选提交 `e52d8ac1e3242ffa397d92244b567efca050b6ed` 的本任务范围 **PASS**。原 thread `thread_20261028_234801_a724` 已通过 `approve_task` 完成验收，未新建任务或会话。调用者实际审阅十模块规则、allowed/required 语义、项目与程序集正负矩阵及真实 XML fixture；候选只修改两条授权路径，tracked clean，`git diff --check HEAD^ HEAD` native exit 0。
+
+以下均为调用者在本工作区重新执行，证据根目录为 ignored `build/artifacts/caller-localhost-arch-20261029/`，没有借用 receiver 的旧 DLL 或日志。
+
+| 验证 | 实际结果 | native exit |
+|---|---|---:|
+| Architecture Release build `--no-incremental` | 0 warning / 0 error | 0 |
+| 实际 Architecture Release DLL | 130/130，0 errors/failed/skipped/not-run | 0 |
+| solution Release build `--no-incremental` | 0 warning / 0 error | 0 |
+| 实际 Client Release DLL | 182/182，0 errors/failed/skipped/not-run | 0 |
+| 实际 Contracts Release DLL | 149/149，0 errors/failed/skipped/not-run | 0 |
+
+合计 **461/461**。Architecture 全套包含原三项失败、四边真实 XML 正例、非法服务边精确单诊断、合法程序集闭包及反向/Unity/vendor/网络拒绝矩阵；不以合成图替代完整 host 集成。另以 Git 核实 PR21 csproj blob 为 `f70e62d7cfe7576a1787f7ab25da09df022e6c9d`、652 bytes，与 fixture 来源一致。
+
+复现命令（每个进程单独记录 `$LASTEXITCODE`）：
+
+```powershell
+& D:/Unity/dotnet/dotnet.exe build dotnet/tests/Mahjong.Architecture.Tests/Mahjong.Architecture.Tests.csproj -c Release --no-incremental --nologo
+& D:/Unity/dotnet/dotnet.exe dotnet/tests/Mahjong.Architecture.Tests/bin/Release/net8.0/Mahjong.Architecture.Tests.dll -noLogo -reporter default -result-xml build/artifacts/caller-localhost-arch-20261029/architecture.xml
+& D:/Unity/dotnet/dotnet.exe build dotnet/Mahjong.sln -c Release --no-incremental --nologo
+& D:/Unity/dotnet/dotnet.exe dotnet/tests/Mahjong.Client.Tests/bin/Release/net8.0/Mahjong.Client.Tests.dll -noLogo -reporter default -result-xml build/artifacts/caller-localhost-arch-20261029/client.xml
+& D:/Unity/dotnet/dotnet.exe dotnet/tests/Mahjong.Contracts.Tests/bin/Release/net8.0/Mahjong.Contracts.Tests.dll -noLogo -reporter default -result-xml build/artifacts/caller-localhost-arch-20261029/contracts.xml
+```
+
+| 调用者证据文件 | SHA-256 |
+|---|---|
+| `architecture.xml` | `D3961E4A9073D15BD39D30D223EED08F19E1368F8D75385CE84809D2305F3E36` |
+| `client.xml` | `61985AF207EB267A75763F8BD9D6B5BFED8E978BFDA2F4CFFBB2E0046967469C` |
+| `contracts.xml` | `FB80060261F8E9B33FC044999A287DAA6E76FE66977CD2CEF17E5B7A40C2742B` |
+| `Mahjong.Architecture.Tests.dll`（本次 fresh build） | `9384CF00F918A05FD0E24CD1A18AA33905B3FB28AD590D8D9F32BC88C9B60EAB` |
+
+调用者将本任务与现有 PR20 头 `0809a71ca6ed1effc546e3108fdfafdca5376cb6` 汇总，集成提交为 `9725431`；相对已测候选只增加原 caller 进度报告，不改变生产源码或测试。统一交付到现有 Draft [PR20](https://github.com/liuchangready/majiang-game/pull/20)，源分支 `feat/v5-post-g1-batch`、目标 `v5`，不另建子任务 MR。P4.1d/P5.4b-A 在途及 P4.2-B 待审改动尚未经本轮验收，不混入本次已接受增量。没有合并到 `v5` 或部署。
+
+本地组件通过不证明新头远端 CI 已通过。`D-LH-CI-GOLDEN`、`D-LH-CI-COLD`、companion/PG wrapper 原失败、完整 LocalHost 集成与 G2–G5 状态仍按原证据保留；本轮未跑 PG/WSS/Unity/IL2CPP/设备/跨网，也未创建 `complete.flag`。
