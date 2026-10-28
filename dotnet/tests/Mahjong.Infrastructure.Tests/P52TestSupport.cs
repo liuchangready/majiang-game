@@ -389,7 +389,8 @@ namespace Mahjong.Infrastructure.Tests
             TableLeaseSnapshot lease,
             string owner,
             ulong scopePreparationCompletedAtUtcMs,
-            TimeSpan scopePreparationElapsed)
+            TimeSpan scopePreparationElapsed,
+            TimeSpan afterScopeIssueElapsed)
         {
             Store = store;
             Clock = clock;
@@ -400,6 +401,7 @@ namespace Mahjong.Infrastructure.Tests
             OwnerInstance = owner;
             ScopePreparationCompletedAtUtcMs = scopePreparationCompletedAtUtcMs;
             ScopePreparationElapsed = scopePreparationElapsed;
+            AfterScopeIssueElapsed = afterScopeIssueElapsed;
         }
 
         internal PostgresTableStore Store { get; }
@@ -421,6 +423,9 @@ namespace Mahjong.Infrastructure.Tests
 
         /// <summary>The measured room-preparation delay, independent of later scheduling.</summary>
         internal TimeSpan ScopePreparationElapsed { get; }
+
+        /// <summary>The measured scheduling delay after scope issue.</summary>
+        internal TimeSpan AfterScopeIssueElapsed { get; }
 
         internal static RoundStateMachine Dealt(string roundId)
         {
@@ -489,6 +494,38 @@ namespace Mahjong.Infrastructure.Tests
                 committedHistory: null);
         }
 
+        /// <summary>
+        /// Waits until a monotonic stopwatch has observed at least <paramref name="minimum"/>.
+        /// <see cref="Task.Delay(TimeSpan, CancellationToken)"/> is a timer notification, not
+        /// an exact-duration guarantee: it can complete a fraction of a millisecond before the
+        /// requested span. Continuing to await the remaining monotonic time keeps the fixture's
+        /// "actually delayed" assertions exact without weakening them to "about 2 seconds".
+        /// Every slice is cancellable and never longer than the remaining minimum.
+        /// </summary>
+        internal static async Task DelayAtLeastAsync(
+            TimeSpan minimum,
+            CancellationToken cancellationToken,
+            Func<TimeSpan, CancellationToken, Task>? delayAsync = null)
+        {
+            if (minimum <= TimeSpan.Zero)
+            {
+                return;
+            }
+
+            Func<TimeSpan, CancellationToken, Task> wait = delayAsync ?? Task.Delay;
+            var watch = Stopwatch.StartNew();
+            while (true)
+            {
+                TimeSpan remaining = minimum - watch.Elapsed;
+                if (remaining <= TimeSpan.Zero)
+                {
+                    return;
+                }
+
+                await wait(remaining, cancellationToken).ConfigureAwait(false);
+            }
+        }
+
         internal static async Task<P52Fixture> CreateAsync(
             CancellationToken cancellationToken = default,
             string owner = Owner,
@@ -500,7 +537,8 @@ namespace Mahjong.Infrastructure.Tests
             TableCheckpoint? initialCheckpoint = null,
             RoundStateMachine? initialRound = null,
             TimeSpan scopePreparationDelay = default,
-            TimeSpan afterScopeIssueDelay = default)
+            TimeSpan afterScopeIssueDelay = default,
+            Func<TimeSpan, CancellationToken, Task>? delayAsync = null)
         {
             if (scopePreparationDelay < TimeSpan.Zero)
             {
@@ -534,11 +572,15 @@ namespace Mahjong.Infrastructure.Tests
                 // completion timestamp is exposed so tests can assert the causal
                 // order without bounding later legitimate scheduling.
                 TimeSpan preparationElapsed = TimeSpan.Zero;
+                TimeSpan afterIssueElapsed = TimeSpan.Zero;
                 if (scopePreparationDelay > TimeSpan.Zero)
                 {
                     phase = "scope-preparation";
                     var preparationWatch = Stopwatch.StartNew();
-                    await Task.Delay(scopePreparationDelay, cancellationToken).ConfigureAwait(false);
+                    await DelayAtLeastAsync(
+                        scopePreparationDelay,
+                        cancellationToken,
+                        delayAsync).ConfigureAwait(false);
                     preparationWatch.Stop();
                     preparationElapsed = preparationWatch.Elapsed;
                 }
@@ -570,7 +612,13 @@ namespace Mahjong.Infrastructure.Tests
                 if (afterScopeIssueDelay > TimeSpan.Zero)
                 {
                     phase = "post-scope-issue";
-                    await Task.Delay(afterScopeIssueDelay, cancellationToken).ConfigureAwait(false);
+                    var afterIssueWatch = Stopwatch.StartNew();
+                    await DelayAtLeastAsync(
+                        afterScopeIssueDelay,
+                        cancellationToken,
+                        delayAsync).ConfigureAwait(false);
+                    afterIssueWatch.Stop();
+                    afterIssueElapsed = afterIssueWatch.Elapsed;
                 }
 
                 TableLeaseSnapshot? lease = null;
@@ -599,7 +647,8 @@ namespace Mahjong.Infrastructure.Tests
                     lease!,
                     owner,
                     preparationCompletedAtUtcMs,
-                    preparationElapsed);
+                    preparationElapsed,
+                    afterIssueElapsed);
             }
             catch (Exception exception)
             {

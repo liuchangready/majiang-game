@@ -1,5 +1,6 @@
 using System;
 using System.Diagnostics;
+using System.Threading;
 using System.Threading.Tasks;
 using Mahjong.Contracts;
 using Mahjong.TableRuntime;
@@ -36,6 +37,10 @@ namespace Mahjong.Infrastructure.Tests
                 elapsed.Elapsed >= preparation + afterIssue,
                 "The post-issue scheduling delay was not exercised: elapsedMs=" +
                 ((long)elapsed.Elapsed.TotalMilliseconds));
+            Assert.True(
+                fixture.AfterScopeIssueElapsed >= afterIssue,
+                "The fixture did not actually delay after scope issue: afterIssueMs=" +
+                ((long)fixture.AfterScopeIssueElapsed.TotalMilliseconds));
 
             // Causal order, not a speed bound: scope issue must happen after the
             // preparation completion instant. A mutant that captures the issue
@@ -77,6 +82,63 @@ namespace Mahjong.Infrastructure.Tests
             Assert.Equal((long)candidate.EventCount, await PostgresTableTestEnvironment.CountAsync(
                 "SELECT count(*) FROM table_store.table_event",
                 TestContext.Current.CancellationToken));
+        }
+
+        [Fact]
+        public async Task EarlyWakePreparationDelay_CannotIssueScopeBeforeMinimumElapsed()
+        {
+            TimeSpan preparation = TimeSpan.FromMilliseconds(300);
+            TimeSpan afterIssue = TimeSpan.FromMilliseconds(150);
+            int delayCalls = 0;
+
+            // A controlled timer that wakes far too early: the first five
+            // notifications complete instantly instead of waiting for the
+            // requested span. This is the deterministic form of the remote
+            // 1999ms race, not a claim that the duration was rounded up.
+            Func<TimeSpan, CancellationToken, Task> earlyWake = (requested, token) =>
+            {
+                int call = Interlocked.Increment(ref delayCalls);
+                return call <= 5 ? Task.CompletedTask : Task.Delay(requested, token);
+            };
+
+            await using P52Fixture fixture = await P52Fixture.CreateAsync(
+                scopePreparationDelay: preparation,
+                afterScopeIssueDelay: afterIssue,
+                delayAsync: earlyWake);
+
+            Assert.True(
+                delayCalls >= 1,
+                "The controlled early wake was not exercised: delayCalls=" + delayCalls);
+            Assert.True(
+                fixture.ScopePreparationElapsed >= preparation,
+                "An early timer notification shortened preparation: preparationMs=" +
+                ((long)fixture.ScopePreparationElapsed.TotalMilliseconds));
+            Assert.True(
+                fixture.AfterScopeIssueElapsed >= afterIssue,
+                "An early timer notification shortened the post-issue delay: afterIssueMs=" +
+                ((long)fixture.AfterScopeIssueElapsed.TotalMilliseconds));
+            Assert.True(
+                fixture.Scope.IssuedAtUtcMs >= fixture.ScopePreparationCompletedAtUtcMs,
+                "The scope was issued before preparation completed after an early wake: issued=" +
+                fixture.Scope.IssuedAtUtcMs + "; prepared=" +
+                fixture.ScopePreparationCompletedAtUtcMs);
+        }
+
+        [Fact]
+        public async Task DelayAtLeast_IsCancellableBeforeTheFullMinimumElapses()
+        {
+            using var cancellation = new CancellationTokenSource();
+            var watch = Stopwatch.StartNew();
+            Task waiting = P52Fixture.DelayAtLeastAsync(
+                TimeSpan.FromSeconds(30),
+                cancellation.Token);
+            await Task.Delay(100);
+            cancellation.Cancel();
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => waiting);
+            Assert.True(
+                watch.Elapsed < TimeSpan.FromSeconds(10),
+                "Cancellation did not end the bounded wait promptly: elapsedMs=" +
+                ((long)watch.Elapsed.TotalMilliseconds));
         }
 
         [Fact]
