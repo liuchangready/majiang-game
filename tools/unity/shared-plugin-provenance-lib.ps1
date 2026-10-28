@@ -235,7 +235,11 @@ function Resolve-SharedPluginMsBuildInput {
         throw "Unsupported MSBuild item metadata expression '$Include' in $Context"
     }
 
-    $candidate = if ([System.IO.Path]::IsPathRooted($value)) { $value } else { Join-Path $BaseDirectory $value }
+    # MSBuild resolves a plain relative Include against the importing project's
+    # directory, not against the imported .props/.targets file. Only the
+    # explicit $(MSBuildThisFileDirectory) form is file-relative.
+    $relativeBase = if ($ProjectDirectory) { $ProjectDirectory } else { $BaseDirectory }
+    $candidate = if ([System.IO.Path]::IsPathRooted($value)) { $value } else { Join-Path $relativeBase $value }
     $full = Resolve-SharedPluginFullPath $candidate
     if (-not (Test-Path -LiteralPath $full -PathType Leaf)) {
         throw "Declared MSBuild input does not exist: $Include ($Context)"
@@ -337,6 +341,62 @@ function Assert-SharedPluginMsBuildConfigBoundary {
     }
 }
 
+# Evaluate the narrow condition form used by the supported props/targets
+# boundary. Anything more complex is rejected instead of being assumed true.
+function Test-SharedPluginMsBuildCondition {
+    param(
+        [string]$Condition,
+        [string]$ProjectName,
+        [Parameter(Mandatory = $true)][string]$Context
+    )
+    if ([string]::IsNullOrWhiteSpace($Condition)) { return $true }
+    $value = $Condition.Trim()
+    while ($value.StartsWith('(') -and $value.EndsWith(')')) {
+        $value = $value.Substring(1, $value.Length - 2).Trim()
+    }
+    if ($value -match "^\s*'?\`$\(MSBuildProjectName\)'?\s*(==|!=)\s*['""]([^'""]+)['""]\s*$") {
+        $equals = ($Matches[1] -eq '==')
+        $same = ($ProjectName -ieq $Matches[2])
+        return $(if ($equals) { $same } else { -not $same })
+    }
+    throw "Unsupported MSBuild Condition '$Condition' in $Context; the provenance boundary cannot evaluate it"
+}
+
+function Get-SharedPluginEffectiveBuildFile {
+    param(
+        [Parameter(Mandatory = $true)][string]$RepoRoot,
+        [Parameter(Mandatory = $true)][string]$ProjectDirectory,
+        [Parameter(Mandatory = $true)][string]$FileName
+    )
+    $root = Resolve-SharedPluginFullPath $RepoRoot
+    $directory = Resolve-SharedPluginFullPath $ProjectDirectory
+    while ((Test-SharedPluginPathWithin -Path $directory -Root $root)) {
+        $candidate = Join-Path $directory $FileName
+        if (Test-Path -LiteralPath $candidate -PathType Leaf) { return $candidate }
+        if ($directory -ieq $root) { break }
+        $directory = Split-Path -Parent $directory
+    }
+    return $null
+}
+
+# Custom output/intermediate layouts make the fixed clean-output step unable to
+# guarantee that the recorded sources were actually compiled. Reject them
+# before a PASS record can be written instead of recursively deleting arbitrary
+# MSBuild-controlled paths.
+function Assert-SharedPluginNoCustomOutputLayout {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    $xml = New-Object System.Xml.XmlDocument
+    $xml.Load($Path)
+    $names = @('IntermediateOutputPath', 'BaseIntermediateOutputPath', 'MSBuildProjectExtensionsPath', 'OutputPath', 'BaseOutputPath', 'OutDir')
+    $nodes = $xml.SelectNodes('//*[local-name()="IntermediateOutputPath" or local-name()="BaseIntermediateOutputPath" or local-name()="MSBuildProjectExtensionsPath" or local-name()="OutputPath" or local-name()="BaseOutputPath" or local-name()="OutDir"]')
+    foreach ($node in $nodes) {
+        if (-not [string]::IsNullOrWhiteSpace($node.InnerText)) {
+            throw "Unsupported custom MSBuild output layout '$($node.LocalName)' in '$Path'; the forced-clean-output provenance boundary cannot guarantee the actual intermediate path"
+        }
+    }
+}
+
 # Add Compile/Protobuf/EmbeddedResource/ProjectReference items declared in one
 # csproj/props/targets file. This is what makes a Directory.Build.props-level
 # linked source part of the recorded closure instead of a silent extra input.
@@ -346,6 +406,7 @@ function Add-SharedPluginMsBuildDeclaredInputs {
         [Parameter(Mandatory = $true)][string]$RepoRoot,
         [Parameter(Mandatory = $true)][scriptblock]$AddFile,
         [string]$ProjectDirectory,
+        [string]$ProjectName,
         [bool]$AllowProjectDirectory = $false
     )
 
@@ -357,6 +418,21 @@ function Add-SharedPluginMsBuildDeclaredInputs {
     foreach ($node in $items) {
         $include = $node.GetAttribute('Include')
         if ([string]::IsNullOrWhiteSpace($include)) { continue }
+
+        $scopeNode = $node
+        $enabled = $true
+        while ($scopeNode -and $scopeNode.LocalName -ne 'Project') {
+            $condition = $scopeNode.GetAttribute('Condition')
+            if (-not [string]::IsNullOrWhiteSpace($condition)) {
+                if (-not (Test-SharedPluginMsBuildCondition -Condition $condition -ProjectName $ProjectName -Context $fullConfig)) {
+                    $enabled = $false
+                    break
+                }
+            }
+            $scopeNode = $scopeNode.ParentNode
+        }
+        if (-not $enabled) { continue }
+
         $resolved = Resolve-SharedPluginMsBuildInput -Include $include -BaseDirectory $baseDirectory -ConfigPath $fullConfig -ProjectDirectory $ProjectDirectory -AllowProjectDirectory $AllowProjectDirectory -Context $fullConfig
 
         if ($node.LocalName -eq 'ProjectReference') {
@@ -428,7 +504,21 @@ function Get-SharedPluginInputClosure {
             throw "Unsupported MSBuild removal, external Reference/Analyzer/AdditionalFiles item in $project.csproj; declare a supported boundary instead"
         }
 
-        Add-SharedPluginMsBuildDeclaredInputs -ConfigPath $csproj -RepoRoot $root -AddFile $addFile -ProjectDirectory $projectDir -AllowProjectDirectory $true
+        Assert-SharedPluginNoCustomOutputLayout $csproj
+        Add-SharedPluginMsBuildDeclaredInputs -ConfigPath $csproj -RepoRoot $root -AddFile $addFile -ProjectDirectory $projectDir -ProjectName $project -AllowProjectDirectory $true
+
+        # Directory.Build.props/targets are resolved by MSBuild per consuming
+        # project (nearest ancestor wins). Parse the effective one in each
+        # project's context so a plain relative Include is project-relative.
+        foreach ($buildFileName in @('Directory.Build.props', 'Directory.Build.targets')) {
+            $effective = Get-SharedPluginEffectiveBuildFile -RepoRoot $root -ProjectDirectory $projectDir -FileName $buildFileName
+            if ($effective) {
+                Assert-SharedPluginMsBuildConfigBoundary $effective
+                Assert-SharedPluginNoCustomOutputLayout $effective
+                & $addFile $effective
+                Add-SharedPluginMsBuildDeclaredInputs -ConfigPath $effective -RepoRoot $root -AddFile $addFile -ProjectDirectory $projectDir -ProjectName $project -AllowProjectDirectory $true
+            }
+        }
 
         $files = Get-ChildItem -LiteralPath $projectDir -Recurse -File -Force
         foreach ($file in $files) {
@@ -438,7 +528,8 @@ function Get-SharedPluginInputClosure {
             if ($script:SharedPluginInputExtensions -notcontains $extension) { continue }
             if ($extension -eq '.props' -or $extension -eq '.targets') {
                 Assert-SharedPluginMsBuildConfigBoundary $file.FullName
-                Add-SharedPluginMsBuildDeclaredInputs -ConfigPath $file.FullName -RepoRoot $root -AddFile $addFile -ProjectDirectory $projectDir -AllowProjectDirectory $true
+                Assert-SharedPluginNoCustomOutputLayout $file.FullName
+                Add-SharedPluginMsBuildDeclaredInputs -ConfigPath $file.FullName -RepoRoot $root -AddFile $addFile -ProjectDirectory $projectDir -ProjectName $project -AllowProjectDirectory $true
             }
             & $addFile $file.FullName
         }
@@ -468,10 +559,6 @@ function Get-SharedPluginInputClosure {
     )) {
         $full = Join-Path $root ($relative.Replace('/', '\'))
         if (-not (Test-Path -LiteralPath $full -PathType Leaf)) { continue }
-        if ($relative -match '\.(props|targets)$') {
-            Assert-SharedPluginMsBuildConfigBoundary $full
-            Add-SharedPluginMsBuildDeclaredInputs -ConfigPath $full -RepoRoot $root -AddFile $addFile -ProjectDirectory $null -AllowProjectDirectory $false
-        }
         & $addFile $full
     }
 

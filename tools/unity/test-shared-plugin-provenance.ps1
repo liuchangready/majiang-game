@@ -90,6 +90,31 @@ if (-not (Test-Path -LiteralPath $UnityExe -PathType Leaf) -and -not $SkipUnity)
 }
 
 $buildRoot = Resolve-SharedPluginFullPath (Join-Path $repoRoot 'build')
+
+function Assert-NoReparsePointInPath {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string]$Root
+    )
+    $full = Resolve-SharedPluginFullPath $Path
+    $rootFull = Resolve-SharedPluginFullPath $Root
+    if (-not $full.StartsWith($rootFull + [System.IO.Path]::DirectorySeparatorChar, [System.StringComparison]::OrdinalIgnoreCase)) {
+        throw "Path is outside the approved root: $full (root: $rootFull)"
+    }
+    $relative = $full.Substring($rootFull.Length).TrimStart('\', '/')
+    $current = $rootFull
+    foreach ($segment in ($relative -split '[\\/]')) {
+        if ([string]::IsNullOrWhiteSpace($segment)) { continue }
+        $current = Join-Path $current $segment
+        if (Test-Path -LiteralPath $current) {
+            $item = Get-Item -LiteralPath $current -Force
+            if (($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+                throw "Refusing EvidenceRoot containing a reparse point/junction at '$current'; physical destination cannot be proven inside $rootFull before any write/delete."
+            }
+        }
+    }
+}
+
 if (-not $EvidenceRoot) {
     $suffix = [guid]::NewGuid().ToString('N').Substring(0, 16)
     $EvidenceRoot = Join-Path $buildRoot "shared-plugin-provenance-ds-20261028-$suffix"
@@ -102,6 +127,7 @@ if (($EvidenceRoot -ieq $buildRoot) -or
     (-not $EvidenceRoot.StartsWith($buildRoot + [System.IO.Path]::DirectorySeparatorChar, [System.StringComparison]::OrdinalIgnoreCase))) {
     throw "EvidenceRoot must be a dedicated directory under $buildRoot; refusing '$EvidenceRoot' before any write/delete."
 }
+Assert-NoReparsePointInPath -Path $EvidenceRoot -Root $repoRoot
 $runId = [guid]::NewGuid().ToString('N').Substring(0, 12)
 New-Item -ItemType Directory -Force -Path $EvidenceRoot | Out-Null
 $logsDir = Join-Path $EvidenceRoot 'logs'
@@ -755,6 +781,7 @@ try {
         if (-not (Test-SharedPluginPathWithin -Path $fixtureRepo -Root $EvidenceRoot) -or (Test-Path -LiteralPath $fixtureRepo)) {
             throw "Refusing to use a fixture directory that is outside this run's evidence root or already exists: $fixtureRepo"
         }
+        Assert-NoReparsePointInPath -Path $fixtureRepo -Root $EvidenceRoot
         New-Item -ItemType Directory -Force -Path (Join-Path $fixtureRepo 'tools\unity'), (Join-Path $fixtureRepo 'unity\Mahjong.Unity\Assets\Plugins\Mahjong') | Out-Null
         foreach ($file in @(Get-ChildItem -LiteralPath (Join-Path $repoRoot 'dotnet') -Recurse -File)) {
             $relative = $file.FullName.Substring((Join-Path $repoRoot 'dotnet').Length).TrimStart('\')
@@ -860,33 +887,58 @@ try {
                       $preSemanticHash -and $postSemanticHash -and ($preSemanticHash -ne $postSemanticHash)
         Add-TestCase -Id 'P32' -Name 'preserved-mtime valid semantic change produces a new DLL' -Status $(if ($semanticOk) { 'PASS' } else { 'FAIL' }) -Detail "pre=$preSemanticHash; post=$postSemanticHash; build=$($semanticBuild.ExitCode); check=$($semanticCheck.ExitCode)" -LogPath $semanticBuild.LogPath -Seconds 0
 
-        # Supported props-level Compile/EmbeddedResource includes become inputs;
-        # changing the linked source invalidates the record.
+        # Supported props/targets-level Compile/EmbeddedResource includes become
+        # inputs. Plain relative Includes are project-relative; only
+        # $(MSBuildThisFileDirectory) is file-relative. A same-named decoy must
+        # never be accepted as the real compiler input.
         $linkedDir = Join-Path $fixtureRepo 'linked'
         $linkedSource = Join-Path $linkedDir 'ProvenanceLinked.cs'
         $linkedData = Join-Path $linkedDir 'provenance-data.txt'
+        $projectLinked = Join-Path $fixtureRepo 'dotnet\src\caller-linked.cs'
+        $decoyLinked = Join-Path $fixtureRepo 'caller-linked.cs'
+        $targetsLinked = Join-Path $fixtureRepo 'dotnet\src\targets-linked.cs'
+        $fixtureTargets = Join-Path $fixtureRepo 'dotnet\Directory.Build.targets'
         $fixtureNuGet = Join-Path $fixtureRepo 'dotnet\src\NuGet.config'
         $rootNuGet = Join-Path $fixtureRepo 'NuGet.config'
         New-Item -ItemType Directory -Force -Path $linkedDir | Out-Null
         [System.IO.File]::WriteAllText($linkedSource, "namespace Mahjong.Ai { internal static class ProvenanceLinked { } }`r`n", $utf8)
         [System.IO.File]::WriteAllText($linkedData, "provenance-data`r`n", $utf8)
+        [System.IO.File]::WriteAllText($projectLinked, "namespace CallerProbe { public class Linked { public const int Value = 1; } }`r`n", $utf8)
+        [System.IO.File]::WriteAllText($decoyLinked, "// Not a compiler input. Exposes props-relative resolution.`r`n", $utf8)
+        [System.IO.File]::WriteAllText($targetsLinked, "namespace CallerProbe { public class TargetsLinked { public const int Value = 1; } }`r`n", $utf8)
+        [System.IO.File]::WriteAllText($fixtureTargets, "<Project>`r`n  <ItemGroup Condition=`"'`$(MSBuildProjectName)' == 'Mahjong.Ai'`">`r`n    <Compile Include=`"../targets-linked.cs`" />`r`n  </ItemGroup>`r`n</Project>`r`n", $utf8)
         [System.IO.File]::WriteAllText($fixtureNuGet, "<configuration>`r`n</configuration>`r`n", $utf8)
         [System.IO.File]::WriteAllText($rootNuGet, "<configuration>`r`n</configuration>`r`n", $utf8)
-        $linkedProps = $fixturePropsOriginal.Replace('</Project>', '  <ItemGroup>' + "`r`n" + '    <Compile Include="$(MSBuildThisFileDirectory)../linked/ProvenanceLinked.cs" />' + "`r`n" + '    <EmbeddedResource Include="$(MSBuildThisFileDirectory)../linked/provenance-data.txt" />' + "`r`n" + '  </ItemGroup>' + "`r`n" + '</Project>')
+        $linkedProps = $fixturePropsOriginal.Replace('</Project>', '  <ItemGroup>' + "`r`n" + '    <Compile Include="$(MSBuildThisFileDirectory)../linked/ProvenanceLinked.cs" />' + "`r`n" + '    <EmbeddedResource Include="$(MSBuildThisFileDirectory)../linked/provenance-data.txt" />' + "`r`n" + '  </ItemGroup>' + "`r`n" + '  <ItemGroup Condition="''$(MSBuildProjectName)'' == ''Mahjong.Ai''">' + "`r`n" + '    <Compile Include="../caller-linked.cs" />' + "`r`n" + '  </ItemGroup>' + "`r`n" + '</Project>')
         [System.IO.File]::WriteAllText($fixtureProps, $linkedProps, $utf8)
         $linkedBuild = & $fixtureBuildRun 'P33-props-linked-build'
         $linkedManifest = if (Test-Path -LiteralPath $fixtureEvidence) { Get-Content -LiteralPath $fixtureEvidence -Raw | ConvertFrom-Json } else { $null }
         $linkedInput = if ($linkedManifest) { @($linkedManifest.inputs | Where-Object { ([string]$_.Path) -eq 'linked/ProvenanceLinked.cs' }).Count } else { 0 }
         $resourceInput = if ($linkedManifest) { @($linkedManifest.inputs | Where-Object { ([string]$_.Path) -eq 'linked/provenance-data.txt' }).Count } else { 0 }
-        [System.IO.File]::WriteAllText($linkedSource, "namespace Mahjong.Ai { internal static class ProvenanceLinked { public const int Value = 2; } }`r`n", $utf8)
-        $linkedChanged = & $fixtureCheckRun 'P33b-linked-source-changed'
-        $linkedChangedOk = (($linkedChanged.ExitCode -ne 0) -and (($linkedChanged.Output -match 'SOURCE_CHANGED') -or ($linkedChanged.Output -match 'INPUT_CHANGED')))
-        $linkedOk = ($linkedBuild.ExitCode -eq 0) -and ($linkedInput -eq 1) -and ($resourceInput -eq 1) -and $linkedChangedOk
-        Add-TestCase -Id 'P33' -Name 'props-linked Compile/EmbeddedResource inputs are recorded and drift fails' -Status $(if ($linkedOk) { 'PASS' } else { 'FAIL' }) -Detail "build=$($linkedBuild.ExitCode); linkedInput=$linkedInput; resourceInput=$resourceInput; changedExit=$($linkedChanged.ExitCode)" -LogPath $linkedBuild.LogPath -Seconds 0
+        $projectLinkedInput = if ($linkedManifest) { @($linkedManifest.inputs | Where-Object { ([string]$_.Path) -eq 'dotnet/src/caller-linked.cs' }).Count } else { 0 }
+        $decoyInput = if ($linkedManifest) { @($linkedManifest.inputs | Where-Object { ([string]$_.Path) -eq 'caller-linked.cs' }).Count } else { 0 }
+        $targetsLinkedInput = if ($linkedManifest) { @($linkedManifest.inputs | Where-Object { ([string]$_.Path) -eq 'dotnet/src/targets-linked.cs' }).Count } else { 0 }
 
-        # Restore the linked source to the bytes that were recorded before
+        [System.IO.File]::WriteAllText($decoyLinked, "// decoy changed, still not a compiler input`r`n", $utf8)
+        $decoyChanged = & $fixtureCheckRun 'P33b-decoy-changed'
+        [System.IO.File]::WriteAllText($projectLinked, "namespace CallerProbe { public class Linked { public const int Value = 2; } }`r`n", $utf8)
+        $linkedChanged = & $fixtureCheckRun 'P33c-project-relative-changed'
+        [System.IO.File]::WriteAllText($targetsLinked, "namespace CallerProbe { public class TargetsLinked { public const int Value = 2; } }`r`n", $utf8)
+        $targetsChanged = & $fixtureCheckRun 'P33d-targets-relative-changed'
+        $linkedChangedOk = (($linkedChanged.ExitCode -ne 0) -and (($linkedChanged.Output -match 'SOURCE_CHANGED') -or ($linkedChanged.Output -match 'INPUT_CHANGED')))
+        $targetsChangedOk = (($targetsChanged.ExitCode -ne 0) -and (($targetsChanged.Output -match 'SOURCE_CHANGED') -or ($targetsChanged.Output -match 'INPUT_CHANGED')))
+        $decoyOk = ($decoyChanged.ExitCode -eq 0)
+        $linkedOk = ($linkedBuild.ExitCode -eq 0) -and ($linkedInput -eq 1) -and ($resourceInput -eq 1) -and
+                    ($projectLinkedInput -eq 1) -and ($decoyInput -eq 0) -and ($targetsLinkedInput -eq 1) -and
+                    $linkedChangedOk -and $targetsChangedOk -and $decoyOk
+        Add-TestCase -Id 'P33' -Name 'props/targets relative and file-relative inputs; decoy not accepted' -Status $(if ($linkedOk) { 'PASS' } else { 'FAIL' }) -Detail "build=$($linkedBuild.ExitCode); thisFile=$linkedInput; resource=$resourceInput; projectRelative=$projectLinkedInput; targets=$targetsLinkedInput; decoy=$decoyInput; decoyExit=$($decoyChanged.ExitCode); linkedExit=$($linkedChanged.ExitCode); targetsExit=$($targetsChanged.ExitCode)" -LogPath $linkedBuild.LogPath -Seconds 0
+
+        # Restore the linked sources to the bytes that were recorded before
         # exercising the NuGet.config cases.
         [System.IO.File]::WriteAllText($linkedSource, "namespace Mahjong.Ai { internal static class ProvenanceLinked { } }`r`n", $utf8)
+        [System.IO.File]::WriteAllText($projectLinked, "namespace CallerProbe { public class Linked { public const int Value = 1; } }`r`n", $utf8)
+        [System.IO.File]::WriteAllText($decoyLinked, "// Not a compiler input. Exposes props-relative resolution.`r`n", $utf8)
+        [System.IO.File]::WriteAllText($targetsLinked, "namespace CallerProbe { public class TargetsLinked { public const int Value = 1; } }`r`n", $utf8)
 
         # A recorded repository NuGet.config deletion fails; restoring passes.
         Remove-Item -LiteralPath $fixtureNuGet -Force
@@ -934,6 +986,20 @@ try {
         $outsideBuild = & $fixtureBuildRun 'P37-outside-project-reference'
         $outsideNoEvidence = -not (Test-Path -LiteralPath $fixtureEvidence)
         $outsideOk = ($outsideBuild.ExitCode -ne 0) -and $outsideNoEvidence -and ($outsideBuild.Output -match 'ProjectReference outside the seven shared projects')
+
+        # D-R2-02: a custom intermediate/output layout is rejected before a
+        # PASS record can be written; the fixed clean-output step is not claimed
+        # to cover arbitrary MSBuild cache locations.
+        $customProps = $linkedProps.Replace('</Project>', '  <PropertyGroup>' + "`r`n" + '    <IntermediateOutputPath>obj/provenance-cache/$(Configuration)/</IntermediateOutputPath>' + "`r`n" + '  </PropertyGroup>' + "`r`n" + '</Project>')
+        [System.IO.File]::WriteAllText($fixtureProps, $customProps, $utf8)
+        $customBuild = & $fixtureBuildRun 'P39-custom-intermediate-output'
+        $customNoEvidence = -not (Test-Path -LiteralPath $fixtureEvidence)
+        $customCheck = & $fixtureCheckRun 'P39b-custom-intermediate-check'
+        $customOk = ($customBuild.ExitCode -ne 0) -and $customNoEvidence -and
+                    ($customBuild.Output -match 'Unsupported custom MSBuild output layout') -and
+                    ($customCheck.ExitCode -ne 0)
+        Add-TestCase -Id 'P39' -Name 'custom IntermediateOutputPath fails closed before PASS' -Status $(if ($customOk) { 'PASS' } else { 'FAIL' }) -Detail "buildExit=$($customBuild.ExitCode); noEvidence=$customNoEvidence; checkExit=$($customCheck.ExitCode); marker=$([bool]($customBuild.Output -match 'Unsupported custom MSBuild output layout'))" -LogPath $customBuild.LogPath -Seconds 0
+
         [System.IO.File]::WriteAllText($fixtureProps, $linkedProps, $utf8)
         $finalFixtureBuild = & $fixtureBuildRun 'P37b-final-fixture-rebuild'
         $finalFixtureCheck = & $fixtureCheckRun 'P37c-final-fixture-check'
@@ -984,6 +1050,7 @@ try {
         Add-TestCase -Id 'P36' -Name 'unsupported MSBuild property expression' -Status 'NOT_RUN' -Detail 'skipped by -SkipFixtureBuild' -LogPath $null -Seconds 0
         Add-TestCase -Id 'P37' -Name 'props ProjectReference outside the seven projects' -Status 'NOT_RUN' -Detail 'skipped by -SkipFixtureBuild' -LogPath $null -Seconds 0
         Add-TestCase -Id 'P38' -Name 'root NuGet.config added to an unrecorded baseline' -Status 'NOT_RUN' -Detail 'skipped by -SkipFixtureBuild' -LogPath $null -Seconds 0
+        Add-TestCase -Id 'P39' -Name 'custom IntermediateOutputPath fails closed' -Status 'NOT_RUN' -Detail 'skipped by -SkipFixtureBuild' -LogPath $null -Seconds 0
     }
 
     # -----------------------------------------------------------------------
@@ -1150,6 +1217,7 @@ finally {
         $resolvedFixture = Resolve-SharedPluginFullPath $fixtureRepo
         if (Test-SharedPluginPathWithin -Path $resolvedFixture -Root $EvidenceRoot) {
             try {
+                Assert-NoReparsePointInPath -Path $resolvedFixture -Root $EvidenceRoot
                 Remove-Item -LiteralPath $resolvedFixture -Recurse -Force -ErrorAction Stop
             }
             catch {
