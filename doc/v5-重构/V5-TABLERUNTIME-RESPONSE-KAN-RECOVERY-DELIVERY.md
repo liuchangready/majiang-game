@@ -1,12 +1,12 @@
 # V5 TableRuntime 响应窗口失效与鸣牌墙证据恢复交付
 
-日期：2026-10-29（第 2 轮返修后）
+日期：2026-10-29（第 3 轮返修后）
 工作树：`D:/majiang-wt/runtime-response-kan-ds-20261029`
 分支：`wt/v5-runtime-response-kan-ds-20261029`
 冻结基线：`183e378da273081075a5eb54472ffe6dfd29f670`
-代码提交：`662e1bb949904eb269f847ac083719843ed67554`（第 1 轮）、`aa37074`（第 2 轮批量返修）
+代码提交：`662e1bb949904eb269f847ac083719843ed67554`（第 1 轮）、`aa37074`（第 2 轮）、`b1f3ba5`（第 3 轮）
 文档提交：本轮 docs commit（`git log -1`）
-状态：**本任务自身范围的两项缺陷 + 第 2 轮 4 项复核缺陷已修复并本地验证；不是 G2/G3/G4/G5 通过，不是真实 PG/WSS 验收，不是发布。**
+状态：**本任务自身范围的两项缺陷 + 第 2/3 轮复核缺陷已修复并本地验证；不是 G2/G3/G4/G5 通过，不是真实 PG/WSS 验收，不是发布。**
 
 ---
 
@@ -19,9 +19,10 @@
 | D-R1-RESP-KAN-01 / MAJOR | **PASS**：恢复过滤器不再把 `Kan` 一概视为 turn；非当前座的 `[Kan,Pass]` 过期响应被清除，当前合法 turn decision 保留。 |
 | D-R1-RECOVERY-FENCE-02 / MAJOR | **PASS**：先对全部原始 recovered decisions 执行 finished/roundId/重复座位/controlEpoch/timing 校验，再做过期对账；错代次仍拒绝且保持 Recovering。 |
 | D-R1-RESP-CHEAT-03 / MAJOR | **PASS**：非 durable `CommitCheatAndInstallAsync` 走同一 candidateClock/pendingAfter 原子安装；deferred SleeveBloom delivery 成功后清除 closed-window peers。 |
-| D-R1-KAN-EVIDENCE-04 / MAJOR | **PASS（本任务内存范围）**：新增真实 `InMemoryTableStore` + `TableRecoveryService` + actor `CompleteRecoveryAsync` 的 checkpoint0+tail / final checkpoint 恢复，覆盖 Open/Closed/Added(chankan Pass)/多杠/chankan Ron 终态；墙耗尽/最后可补牌明确 NOT_RUN。 |
-| 正式全量 | **426 / 427 PASS，1 FAIL**：唯一失败为黄金 source-hash pin；未刷新 pin/摘要。 |
-| 独立复核探针 | **3 / 3 PASS**（同一 fresh 生产源码 + 探针 targets；未改 tracked 生产/测试/fixture）。 |
+| D-R1-KAN-EVIDENCE-04 / MAJOR | **PASS（本任务内存范围）**：真实 checkpoint0+tail / final checkpoint 恢复覆盖 Open/Closed/Added(chankan Pass)/多杠/chankan Ron 终态；新增最后可补牌→墙归零、WallExhausted/Draw、ExhaustiveDraw 继续，以及 WallRemaining=0 / KanCount=4 / RinshanPointer=4 的 Kan 拒绝零消耗。 |
+| D-R2-TURN-KAN-01 / MAJOR | **PASS**：恢复当前座合法 ClosedKan/AddedKan（Kan-only 与含 Discard）保留 key/timing/deadline/reserve 并可执行；非当前座过期 `[Kan,Pass]` 仍清除；未重新引入过期 OpenKan。 |
+| 正式全量 | **434 / 435 PASS，1 FAIL**：唯一失败为黄金 source-hash pin；未刷新 pin/摘要。 |
+| 独立复核探针 | **3 / 3 PASS**（原 3 探针）；**4 / 4 PASS**（本轮补充 4 探针）；同一 fresh 生产源码 + 探针 targets，未改 tracked 生产/测试/fixture。 |
 | 真实 PG/WSS 新进程 | **NOT_RUN**：由原 93fb/runtime delta 集成后执行；不宣称其 49 项。 |
 | 跨模块 TableService provider | **BLOCKED**：`RinshanDrawn` 反向 wall 计数缺失；真实服务 ClosedKan/AddedKan/多杠在普通摸牌后仍会被 fail closed，需原 owner 修 provider（不在本任务范围）。 |
 | G1 / G2–G5 | G1 仍 APPROVED；G2–G5 未批准；V4 唯一生产基线；181 classified 未覆盖未动。 |
@@ -140,7 +141,28 @@ git status --porcelain=v1                  -> 0 lines (tracked clean)
 **修复前实际**：仅 `history.Skip` 后调用 `ValidateRecoveredEventFacts`；没有 checkpoint0/journal tail/TableRecoveryService/actor 安装；`LegalKanCheckpoint...` 只对 OpenKan 调 `TryValidate`；文档却写“OpenKan/ClosedKan/Added/多杠/checkpoint0+tail 均通过 TableCheckpointValidator”，超出实际断言。
 **修复后实际**：新增真实内存恢复链（见 §3），用 `InMemoryTableStore` + `TableRecoveryService.RecoverAsync` + 新 actor `BeginRecoveryAsync/CompleteRecoveryAsync`，断言 state/source fingerprint/history/facts/136/pending/timing/后续命令一致；文档口径改为实际执行内容。
 
-**未覆盖并明确 NOT_RUN**：墙耗尽/最后可补牌边界、真实 PG/WSS 新进程、真实设备/整场。原因：需要构造接近墙尾的 kan 物理牌局与真实服务进程；本任务不伪造。抢杠 Ron 终态已通过纯事实 + 真实 checkpoint0+tail 恢复覆盖。
+**第 3 轮补齐**：最后可补牌 OpenKan→Rinshan→dead-wall 补位→`WallRemaining=0`，两种 anchor 真实恢复；随后弃牌产生 `WallExhausted`/`Draw`，按该 phase 提交 `ExhaustiveDraw` 终态；`WallRemaining=0`、`KanCount=4`、`RinshanPointer=4` 时 Domain/runtime 拒绝进一步 Kan，且 state/event/receipt/pending/timing/reserve 零消耗。真实 PG/WSS 新进程、真实设备/整场仍 **NOT_RUN**，由原 owner 执行。
+
+### 2.5 D-R2-TURN-KAN-01（MAJOR）：第 2 轮恢复过滤器误删当前合法 Kan-only turn decision
+
+**位置**：`TableResponseDecisionReconciliation.cs` `IsStillValid`/`HasLegalTurnKan`；`TableActor` 恢复对账段。
+
+**复现**：合法 136 实体状态，当前 seat0 持 Dragon2 四张，Domain `ClosedKan` 真实 `Execute` 先证明 Accepted；actor `OpenDecisionAsync` 只含 `LegalActionKind.Kan` 的 decision 返回 Configured；恢复前 PendingKey 存在。同一 round/seat/key/controlEpoch/正确 timing 作为 baseline 完成恢复。
+
+**修复前实际**：`CompleteRecovery` 返回 Configured，但 `PendingKey` 从 `r2-current-kan/0/legal-closed-kan` 变 null、Timing 被清除；`includeDiscard:true` 对照 PASS。
+**修复后实际**：Kan-only 与含 Discard 两种均保留 key/Timing/deadline/reserve，恢复后原 decision 提交 ClosedKan Accepted；AddedKan 同样。
+**期望**：已有 API 接纳且 Domain 当前真实合法的暗杠/加杠 turn decision 必须保留；不能仅因候选集合没有 Discard 等无关伴随动作而删除。
+
+**修复**：
+- 当前座无窗口时，除 turn/settlement anchor 外，增加 `HasLegalTurnKan`：
+  - phase 必须 `CheatWindow`/`Discard`；
+  - 候选不得含 `Pass`（避免把 `[Kan,Pass]` 过期响应保留）；
+  - `KanCount<4`、`RinshanPointer<4`、`WallRemaining>0`；
+  - 候选 tile 对应真实物理形态：手牌四张同型（ClosedKan）或已有同型 Pon + 手牌第四张（AddedKan）。
+- 非当前座仍一律清除；当前座不满足上述 Domain 形态的旧 OpenKan 候选仍清除。
+- 原有原始恢复校验（roundId/controlEpoch/重复座位/timing）前置不变。
+
+**验收断言**：探针 `CurrentLegalClosedKanMustSurviveRecovery(false/true)` PASS；正式 `CurrentLegalClosedKanSurvivesRecovery(false/true)`、`CurrentLegalAddedKanSurvivesRecovery(false/true)` PASS；非当前座过期 `[Kan,Pass]`、当前座非法 OpenKan 仍清除；开放窗口未响应 decision 仍保留；非法恢复输入仍拒绝且无部分安装。
 
 ---
 
@@ -150,11 +172,15 @@ git status --porcelain=v1                  -> 0 lines (tracked clean)
 
 | 形态 | checkpoint0+tail 真实恢复 | final checkpoint 真实恢复 | 断言 |
 |---|---|---|---|
-| OpenKan + 普通摸牌 | PASS | PASS | state/fingerprint、136、pending/timing、恢复后弃牌 Accepted |
-| ClosedKan + 普通摸牌 | PASS | — | 同上 |
-| AddedKan + chankan window + Pass | PASS | — | 同上 |
-| 多杠（OpenKan + ClosedKan） | PASS | — | 同上；KanCount=2、RinshanPointer=2 |
-| AddedKan + chankan Ron 终态 | PASS | — | terminal baseline 安装、pending 清空、不继续动作 |
+| OpenKan + 普通摸牌 | PASS | PASS | state/fingerprint/events、136、pending/timing、恢复后弃牌 Accepted |
+| ClosedKan + 普通摸牌 | PASS | PASS | 同上 |
+| AddedKan + chankan window + Pass | PASS | PASS | 同上 |
+| 多杠（OpenKan + ClosedKan） | PASS | PASS | 同上；KanCount=2、RinshanPointer=2 |
+| AddedKan + chankan Ron 终态 | PASS | PASS | terminal baseline 安装、pending 清空、终态不复活 |
+| 最后可补牌 OpenKan→Rinshan→墙归零 | PASS | PASS | WallRemaining=0、RinshanPointer=1、136、恢复后 ExhaustiveDraw |
+| `WallExhausted`/`Draw` phase | PASS | PASS | phase Draw、wall 0、提交 ExhaustiveDraw Accepted |
+| `WallRemaining=0` ClosedKan 拒绝 | PASS | — | Rejected；state/event/receipt/pending/timing/reserve 零消耗 |
+| `KanCount=4` / `RinshanPointer=4` 拒绝 | PASS | — | Rejected；无 commit、pending/timing/reserve 不变 |
 | 合法 checkpoint 全套校验 | PASS（OpenKan `TryValidate`） | — | 历史/binding/facts/136 |
 
 实现方式：
@@ -176,25 +202,25 @@ git status --porcelain=v1                  -> 0 lines (tracked clean)
 ```powershell
 D:/Unity/dotnet/dotnet.exe build `
   dotnet/tests/Mahjong.TableRuntime.Tests/Mahjong.TableRuntime.Tests.csproj `
-  --no-incremental --artifacts-path artifacts/response-kan-ds/r2-fresh-93ac749f10854e90a3d51b6f8c71bafd `
+  --no-incremental --artifacts-path artifacts/response-kan-ds/r3-fresh2-fc4bff57c7a545a7adb167aa2f59b06e `
   -v:minimal
 ```
 
 native exit 0；0 warnings / 0 errors。fresh DLL：
-`artifacts/response-kan-ds/r2-fresh-93ac749f10854e90a3d51b6f8c71bafd/bin/Mahjong.TableRuntime.Tests/debug/Mahjong.TableRuntime.Tests.dll`
+`artifacts/response-kan-ds/r3-fresh2-fc4bff57c7a545a7adb167aa2f59b06e/bin/Mahjong.TableRuntime.Tests/debug/Mahjong.TableRuntime.Tests.dll`
 
 ### 4.2 正式新增定向
 
 | 套件 | native exit | total | passed | failed | skipped | errors | notRun |
 |---|---:|---:|---:|---:|---:|---:|---:|
-| `TableResponseDecisionInvalidationTests` | 0 | 10 | 10 | 0 | 0 | 0 | 0 |
-| `TableKanRecoveryEvidenceTests` | 0 | 17 | 17 | 0 | 0 | 0 | 0 |
+| `TableResponseDecisionInvalidationTests` | 0 | 17 | 17 | 0 | 0 | 0 | 0 |
+| `TableKanRecoveryEvidenceTests` | 0 | 18 | 18 | 0 | 0 | 0 | 0 |
 
 ### 4.3 正式 fresh 全量
 
 | native exit | total | passed | failed | skipped | errors | notRun |
 |---:|---:|---:|---:|---:|---:|---:|
-| 1 | 427 | 426 | 1 | 0 | 0 | 0 |
+| 1 | 435 | 434 | 1 | 0 | 0 | 0 |
 
 唯一失败：`GoldenMetaProvenanceAndCaseIdentityAreReal`。
 - 原测试失败确认为 `tests/v5-golden/visibility-v1.json` 对 `TableVisibilityProjection.cs` 的 source hash 失配：
@@ -209,16 +235,29 @@ $reviewDir='artifacts/codex-response-kan-review-d51afca323824ea4b854125d9d0f3cc8
 $targetsPath=(Resolve-Path "$reviewDir/ReviewProbes.targets").Path
 D:/Unity/dotnet/dotnet.exe build `
   dotnet/tests/Mahjong.TableRuntime.Tests/Mahjong.TableRuntime.Tests.csproj `
-  --no-incremental --artifacts-path artifacts/response-kan-ds/r2-probe-36a4420a597849e4b6b659b9846b8cd3/build `
+  --no-incremental --artifacts-path artifacts/response-kan-ds/r3-probe-original/build `
   "-p:CustomAfterMicrosoftCommonTargets=$targetsPath" -v:minimal
 D:/Unity/dotnet/dotnet.exe exec `
-  artifacts/response-kan-ds/r2-probe-36a4420a597849e4b6b659b9846b8cd3/build/bin/Mahjong.TableRuntime.Tests/debug/Mahjong.TableRuntime.Tests.dll `
+  artifacts/response-kan-ds/r3-probe-original/build/bin/Mahjong.TableRuntime.Tests/debug/Mahjong.TableRuntime.Tests.dll `
   -noColor -automated -class Mahjong.TableRuntime.Tests.CodexIndependentReviewProbes `
-  -result-nunit artifacts/response-kan-ds/r2-probe-36a4420a597849e4b6b659b9846b8cd3/probes.xml
+  -result-nunit artifacts/response-kan-ds/r3-probe-original/probes.xml
+
+$reviewRoot='artifacts/codex-response-kan-r2-2afa5376c7eb4d44a2f3d812b82d72c0'
+$additionalTargets=(Resolve-Path "$reviewRoot/AdditionalProbes.targets").Path
+D:/Unity/dotnet/dotnet.exe build `
+  dotnet/tests/Mahjong.TableRuntime.Tests/Mahjong.TableRuntime.Tests.csproj `
+  --no-incremental --artifacts-path artifacts/response-kan-ds/r3-probe-additional/build `
+  "-p:CustomAfterMicrosoftCommonTargets=$additionalTargets" -v:minimal
+D:/Unity/dotnet/dotnet.exe exec `
+  artifacts/response-kan-ds/r3-probe-additional/build/bin/Mahjong.TableRuntime.Tests/debug/Mahjong.TableRuntime.Tests.dll `
+  -noColor -automated -class Mahjong.TableRuntime.Tests.Round2AdditionalProbes `
+  -result-nunit artifacts/response-kan-ds/r3-probe-additional/probes.xml
 ```
 
-结果：build exit 0，0 warnings/0 errors；probes **3 total / 3 passed / 0 failed / 0 skipped / 0 notRun**，native exit 0。
-未修改 tracked 生产/测试/fixture；探针通过 `CustomAfterMicrosoftCommonTargets` 追加到测试项目。
+结果（本任务 fresh 组装，均未修改 tracked 生产/测试/fixture）：
+- 原 3 探针：**3 total / 3 passed / 0 failed / 0 skipped / 0 notRun**，native exit 0。
+- 第 3 轮补充 4 探针：**4 total / 4 passed / 0 failed / 0 skipped / 0 notRun**，native exit 0。
+- 两套 build 均 0 warnings / 0 errors。
 
 ### 4.5 focused 回归
 
@@ -246,8 +285,11 @@ D:/Unity/dotnet/dotnet.exe exec `
 | 缺 Rinshan | `MissingReplacementDrawFailsClosed` | PASS |
 | 篡改 kan meld | `TamperedKanMeldFailsClosed` | PASS |
 | history 乱序 | `ReorderedHistoryFailsClosed` | PASS |
-| 合法 Open/Closed/Added/多杠/chankan Ron | 真实内存恢复矩阵 | PASS |
-| 墙耗尽/最后可补牌 | — | **NOT_RUN**（未构造；不伪造） |
+| 合法 Open/Closed/Added/多杠/chankan Ron | 真实内存恢复矩阵（两种 anchor） | PASS |
+| 当前合法 ClosedKan/AddedKan（Kan-only / 含 Discard） | `CurrentLegalClosedKanSurvivesRecovery`、`CurrentLegalAddedKanSurvivesRecovery` | PASS；key/timing/deadline/reserve 保留且原 decision 可执行 |
+| 最后可补牌 + 墙归零 + ExhaustiveDraw | `LastLiveWallOpenKanRecoveryThenExhaustiveDraw` | PASS |
+| WallRemaining=0 ClosedKan | `WallZeroClosedKanRejectedWithoutConsumption` | PASS；零消耗 |
+| KanCount=4 / RinshanPointer=4 | `KanLimitRejectedWithoutConsumption` | PASS；零消耗 |
 | 真实 PG/WSS/设备/整场 | — | **NOT_RUN/BLOCKED**（原 owner） |
 
 ---
@@ -287,10 +329,10 @@ else if (events[i].Type == RoundEventType.RinshanDrawn)
 
 ### PASS
 
-- D-TR-RESP-01、D-TR-KAN-02、D-R1-RESP-KAN-01、D-R1-RECOVERY-FENCE-02、D-R1-RESP-CHEAT-03、D-R1-KAN-EVIDENCE-04（本任务内存范围）。
-- 正式定向：response 10/10，kan 17/17。
-- 独立探针：3/3。
-- 正式全量：426/427。
+- D-TR-RESP-01、D-TR-KAN-02、D-R1-RESP-KAN-01、D-R1-RECOVERY-FENCE-02、D-R1-RESP-CHEAT-03、D-R1-KAN-EVIDENCE-04（本任务内存范围）、D-R2-TURN-KAN-01。
+- 正式定向：response 17/17，kan 18/18。
+- 独立探针：原 3/3 + 第 3 轮补充 4/4。
+- 正式全量：434/435。
 - Domain focused 24/24、23/23；Architecture 130/130。
 - `git status` tracked clean；`git diff --check 183e378..HEAD` exit 0。
 
@@ -307,7 +349,6 @@ else if (events[i].Type == RoundEventType.RinshanDrawn)
 
 ### NOT_RUN
 
-- 墙耗尽/最后可补牌真实 kan 边界（未构造，不伪造）。
 - 真实四人对局整场、真实设备/Android/iOS/Unity/IL2CPP、跨物理网络、TLS/WSS 生产入口、容量/混沌、发布/灰度/回退。
 - 真实 PostgreSQL `SaveCheckpointAsync`/冷恢复/账本唯一性。
 - G2/G3/G4/G5 门槛；本任务不宣称阶段完成。
@@ -316,25 +357,25 @@ else if (events[i].Type == RoundEventType.RinshanDrawn)
 
 ## 9. 证据与 SHA256 manifest
 
-fresh 目录：`artifacts/response-kan-ds/r2-fresh-93ac749f10854e90a3d51b6f8c71bafd/`
-probe 目录：`artifacts/response-kan-ds/r2-probe-36a4420a597849e4b6b659b9846b8cd3/`
+fresh 目录：`artifacts/response-kan-ds/r3-fresh2-fc4bff57c7a545a7adb167aa2f59b06e/`
+probe 目录：`artifacts/response-kan-ds/r3-probe-original/`、`artifacts/response-kan-ds/r3-probe-additional/`
 
-关键 SHA256（完整清单见 `r2-manifest.json`）：
+关键 SHA256（完整清单见 `r3-manifest.json`）：
 
 | 文件 | bytes | SHA256 |
 |---|---:|---|
 | `TableActor.cs` | 398546 | `80E6089AD2099017C2025B048AD2B261315E2E2A6F642E7CECDBD2B3940E83B6` |
-| `TableResponseDecisionReconciliation.cs` | 7249 | `A0F240EE238FD6E066F32689EF0C5242C1B4AAAD131DEA24273E55890ED24646` |
+| `TableResponseDecisionReconciliation.cs` | 9751 | `40ED3929C22EF41139356EAA06F8BF67C778B8C44068150B301B60FB38D2D5B4` |
 | `TableKanWallEvidence.cs` | 16557 | `6E3967541CE665023131E7E6569843989FA314DB16BD8B67512BDAFC35B5C6CD` |
-| `TableResponseDecisionInvalidationTests.cs` | 32444 | `9221B39C412C7D713C543C22A7B8C92AD292DDC48F1988258D0A76C46D4DF345` |
-| `TableKanRecoveryEvidenceTests.cs` | 57991 | `612AB69CBD48722EF4523E44D32991831207DABA7F8944B7ED1C85811B562557` |
-| fresh `build.log` | 4520 | `23C41F5BECA4268005E997DCD0031F46EAF03B4713494421DB8EA4B666A882B7` |
-| fresh `response.xml` | 7660 | `B73B70BB8A0EEDA884B72625C6A33BF8F6A2D05E027467359AD863077A66A9EB` |
-| fresh `kan.xml` | 10389 | `375956449CF61960DE13F9A58B73E40935EF392122BA0FC287B97C262F70F327` |
-| fresh `full.xml` | 263714 | `18382485A6FE8A9A9875C25809C994E2903EDB29FD2D370CD605381801A6544C` |
-| probe `probes.xml` | 3992 | `8CE49A4F5A1C1651E24D1E658792F2DE80AE63E23A2356BD391D32CC2CBA3263` |
+| `TableResponseDecisionInvalidationTests.cs` | 43772 | `899FE807112CAEF4FB3406B559F2F4D0F91D6F44B898F083C0E964CB1D65353F` |
+| `TableKanRecoveryEvidenceTests.cs` | 64878 | `E7FABD2FADF312F6E96DE22093C99EF99EC52C2D068A98068F97FF0E5DADDDFF` |
+| fresh `build.log` | 4534 | `6E239A967B34EC40272D9D3E31D1F8F35073FB831E683CB3C0A15893C0AC0106` |
+| fresh `response.xml` | 11059 | `D8680CC40DB5C4DE6906556C183F4AEDB429D8BE7A8E1AFB49EB15A707770626` |
+| fresh `kan.xml` | 10819 | `3F9366942A4584926445097F106540E4A1D8E15134340C6730F90139A3A74293` |
+| fresh `full.xml` | 267540 | `8BF380C49A4BF6006A465981C62A70980E743036649D8975A0B0CEA4A4A2FE93` |
+| probe original `probes.xml` | 3920 | `46F53A832556F34F4BF345A29C61ABF2B628B34C7C6562AE5D83A9A91367220B`<br>probe additional `probes.xml` | 4282 | `80BC7E0F26C9816D24151E3A30A83FB6F61AD6E80E289F8DA8D799AEBBF73C04` |
 
-完整机器可读 manifest：`artifacts/response-kan-ds/r2-manifest.json`，逐文件记录 path/bytes/SHA256，覆盖：
+完整机器可读 manifest：`artifacts/response-kan-ds/r3-manifest.json`，逐文件记录 path/bytes/SHA256，覆盖：
 
 - 4 个生产源文件、2 个正式测试文件；
 - fresh `build.log`、`response.xml/log`、`kan.xml/log`、`full.xml/log`；
