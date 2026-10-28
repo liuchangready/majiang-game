@@ -259,8 +259,15 @@ namespace Mahjong.TableService.DurableHost.Tests
                 ulong commandVersion;
                 DiscardFact before;
                 {
+                    // This test rides the V4 deadline cadence (absent seats auto-resolve
+                    // on their own schedule) and waits up to 90s per read; the default
+                    // 60s idle-dead would kill the recovered room while the cadence is
+                    // still turning under suite load. Nothing here relaxes an assertion —
+                    // it only stops the harness from closing the room mid-wait.
                     first = await StartHostAsync(
-                        PostgresOptions(), signer, AnchorRoundSource(handStart: 108, drawn: 127));
+                        PostgresOptions(o => o.IdleDeadMs = 240_000),
+                        signer,
+                        AnchorRoundSource(handStart: 108, drawn: 127));
                     await using TableTestClient client = await ConnectPlayerAsync(
                         first, signer, room, "acct-anchor-history", 0);
                     before = await DiscardTileAsync(client, tile: 127);
@@ -273,7 +280,9 @@ namespace Mahjong.TableService.DurableHost.Tests
                 await Task.Delay(LeaseAgeOut);
 
                 second = await StartHostAsync(
-                    PostgresOptions(), signer, AnchorRoundSource(handStart: 108, drawn: 126));
+                    PostgresOptions(o => o.IdleDeadMs = 240_000),
+                    signer,
+                    AnchorRoundSource(handStart: 108, drawn: 126));
                 await using TableTestClient recovered = await ConnectPlayerAsync(
                     second, signer, room, "acct-anchor-history", 0);
                 DiscardFact after = await ReadOpeningDiscardAsync(recovered);
@@ -394,16 +403,16 @@ namespace Mahjong.TableService.DurableHost.Tests
         }
 
         // ------------------------------------------------------------------
-        // D-R1-03 (rework): the bounded cold-recovery retry. The frozen install
-        // fence claims the lease first, rebuilds the room on the serial queue and
-        // re-verifies last — nothing renews the lease in between, so on a cold
-        // process that window can outlive a minimum-sized lease TTL and the fence
-        // then refuses its own claim with RECOVERY_STATE_CHANGED (observed once in
-        // the wild: run artifacts/p54b-durable-host-20261028-*, host-b.stderr.log).
-        // The registry retries ONCE. These tests drive the fence refusal
-        // deterministically by expiring the lease ROW in PostgreSQL the moment the
-        // recovery attempt claims it — the exact arithmetic the fence checks, no
-        // fake clocks, no production hooks.
+        // The bounded cold-recovery retry. The frozen install path claims the lease
+        // first, rebuilds the room on the serial queue and re-verifies at two points
+        // — nothing renews the lease in between, so on a cold or loaded process that
+        // window can outlive a minimum-sized lease TTL (measured at 7431ms against a
+        // 5s TTL in the run that motivated this pair) and the fence refuses its own
+        // claim: RECOVERY_STATE_CHANGED at the verification fence or
+        // STALE_OWNER_EPOCH at the installation fence. The registry retries ONCE
+        // after either. These tests drive the refusals deterministically by expiring
+        // the lease ROW in PostgreSQL the moment the recovery attempt claims it —
+        // the exact arithmetic the fences check, no fake clocks, no production hooks.
         // ------------------------------------------------------------------
 
         [Fact]
@@ -426,11 +435,17 @@ namespace Mahjong.TableService.DurableHost.Tests
                 }
 
                 await first.StopAsync();
+                await Task.Delay(LeaseAgeOut);
                 long baseEpoch = await LeaseEpochAsync(room);
                 Assert.True(baseEpoch >= 1, "the first host must leave a claimed lease row behind");
 
                 // Expire EXACTLY the next epoch's lease the moment attempt one claims
-                // it, then stand down: attempt two's fresh claim must stay valid.
+                // it, then stand down: attempt two's fresh claim must stay valid. Which
+                // of the fence's two install-time checkpoints reads the flipped row
+                // first is a race (verification fence → RECOVERY_STATE_CHANGED,
+                // installation fence → STALE_OWNER_EPOCH) — the registry must retry
+                // either, because both mean "the claimed lease expired inside the
+                // unrenewed recovery window".
                 Task flipper = FlipLeaseOnceForEpochAsync(room, baseEpoch + 1, flipperCts.Token);
 
                 second = await StartHostAsync(
@@ -480,12 +495,14 @@ namespace Mahjong.TableService.DurableHost.Tests
                 }
 
                 await first.StopAsync();
+                await Task.Delay(LeaseAgeOut);
                 long baseEpoch = await LeaseEpochAsync(room);
                 Assert.True(baseEpoch >= 1, "the first host must leave a claimed lease row behind");
 
                 // Expire EVERY claim from the next epoch upward, for as long as the
-                // admission runs: both attempts must trip the fence, and the second
-                // refusal must be final for that admission.
+                // admission runs: both attempts must trip a fence (either install-time
+                // checkpoint — see the retry test above), and the second refusal must
+                // be final for that admission.
                 Task flipper = FlipLeaseFromEpochOnwardAsync(room, baseEpoch + 1, flipperCts.Token);
 
                 second = await StartHostAsync(
@@ -503,9 +520,15 @@ namespace Mahjong.TableService.DurableHost.Tests
                     Assert.IsAssignableFrom<PostgresTableHostRegistry>(second.HostRegistry);
                 Assert.True(
                     registry.FailedRooms.TryGetValue(room, out string? code) &&
-                    code.Contains("RECOVERY_STATE_CHANGED", StringComparison.Ordinal),
-                    "the final refusal must register the room with the fence's reason code");
+                    (code.Contains("RECOVERY_STATE_CHANGED", StringComparison.Ordinal) ||
+                     code.Contains("STALE_OWNER_EPOCH", StringComparison.Ordinal)),
+                    "the final refusal must register the room with the fence's reason code: " +
+                    (code ?? "<none>"));
                 Assert.False(registry.TryGet(room, out _), "no room host may be served after the final refusal");
+
+                // Both attempts claimed a lease (the refusal is the SECOND one's).
+                long finalEpoch = await LeaseEpochAsync(room);
+                Assert.Equal(baseEpoch + 2, finalEpoch);
 
                 flipperCts.Cancel();
                 await flipper;

@@ -302,16 +302,22 @@ namespace Mahjong.TableService
                 await RunRecoveryAttemptAsync(roomId).ConfigureAwait(false);
             TableRecoveryResult recovery = attempt.Result;
 
-            // One bounded retry, and ONLY for the fence's optimistic-concurrency refusal.
-            // The frozen install fence claims the lease first, rebuilds the whole room on
-            // the serial queue (nothing renews the lease in between) and re-verifies last;
-            // on a cold process that rebuild can outlive a minimum-sized lease TTL and the
-            // fence then refuses its OWN claim with RECOVERY_STATE_CHANGED. Re-running the
-            // complete verified recovery is not a guess: every integrity check and the
-            // install fence execute again, so a real integrity surprise still fails closed
-            // — permanently, on this second refusal, exactly like the first.
-            if (!recovery.Recovered && recovery.ReasonCode == TableRuntimeReasonCode.RecoveryStateChanged)
+            // One bounded retry, and ONLY for the fence's optimistic-concurrency
+            // refusals. The frozen install path claims the lease first, rebuilds the
+            // whole room on the serial queue (nothing renews the lease in between) and
+            // re-verifies at TWO points before install; on a cold or loaded process that
+            // rebuild can outlive a minimum-sized lease TTL and the fence then refuses
+            // its OWN claim — RECOVERY_STATE_CHANGED (verification fence) or
+            // STALE_OWNER_EPOCH (installation fence). Both mean the same thing: the
+            // world the fence verified moved before it installed. Re-running the
+            // complete verified recovery is not a guess: every integrity check and both
+            // fences execute again, so a real integrity surprise still fails closed —
+            // permanently, on this second refusal, exactly like the first.
+            if (!recovery.Recovered &&
+                (recovery.ReasonCode == TableRuntimeReasonCode.RecoveryStateChanged ||
+                 recovery.ReasonCode == TableRuntimeReasonCode.StaleOwnerEpoch))
             {
+                string refusedCode = recovery.ReasonCode;
                 try
                 {
                     await attempt.Actor.DisposeAsync().ConfigureAwait(false);
@@ -323,7 +329,8 @@ namespace Mahjong.TableService
                 await WaitForAbandonedLeaseExpiryAsync(roomId).ConfigureAwait(false);
                 Console.Error.WriteLine(
                     "tablesvc: cold recovery retry room=" + roomId +
-                    " after=RECOVERY_STATE_CHANGED attempt=2 (bounded; second refusal is final)");
+                    " after=" + refusedCode +
+                    " attempt=2 (bounded; second refusal is final)");
                 attempt = await RunRecoveryAttemptAsync(roomId).ConfigureAwait(false);
                 recovery = attempt.Result;
             }

@@ -1059,8 +1059,10 @@ try {
 
     # The durable-host suite is the real-PostgreSQL fail-closed gate for the wiring
     # itself: build refusals, bootstrap rows, cold recovery, dual-host fencing,
-    # tampered hash, event gap, revoked scope, graceful stop.
-    Invoke-TestRun -Name 'tests-durablehost' -DllPath $durableTestsDll -TimeoutSeconds 900
+    # tampered hash, event gap, revoked scope, graceful stop, plus the D-R1-01 anchor
+    # matrix and the bounded-recovery-retry pair. The 20-test suite has measured at
+    # ~850-950s on this box; a 900s cap would kill it mid-run.
+    Invoke-TestRun -Name 'tests-durablehost' -DllPath $durableTestsDll -TimeoutSeconds 1500
 
     # A leftover durable host would make the suite below ambiguous: the regression
     # suites above already reset the shared database they used.
