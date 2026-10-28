@@ -7,6 +7,9 @@
 
   <ItemGroup>
     <ProjectReference Include="..\Mahjong.TableRuntime\Mahjong.TableRuntime.csproj" />
+    <ProjectReference Include="..\Mahjong.Contracts\Mahjong.Contracts.csproj" />
+    <ProjectReference Include="..\Mahjong.Contracts.Wire\Mahjong.Contracts.Wire.csproj" />
+    <ProjectReference Include="..\Mahjong.Client\Mahjong.Client.csproj" />
   </ItemGroup>
 
   <!-- In-process table host with injectable clock and local save. Used by Unity offline play. -->

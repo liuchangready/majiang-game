@@ -279,6 +279,16 @@ namespace Mahjong.Client
                     {
                         throw new ArgumentException("Outbox accepted disposition and receipt status disagree.", nameof(resolution));
                     }
+                    if (string.Equals(resolution.ReasonCode, "LOCAL_CONTROL", StringComparison.Ordinal))
+                    {
+                        if (resolution.CommandVersion.HasValue || resolution.EventSeq.HasValue)
+                        {
+                            throw new ArgumentException("A control resolution must not carry state versions.", nameof(resolution));
+                        }
+
+                        break;
+                    }
+
 
                     if (!resolution.CommandVersion.HasValue)
                     {

@@ -437,9 +437,9 @@ namespace Mahjong.TableRuntime
         /// Adds Domain-verifiable cross-checks when the recovered final round is supplied:
         /// each TileDrawn fact's wallRemaining is reconstructed backwards from the trusted
         /// checkpoint/final wall; RoundEnded roundWind/roundNumber must equal the immutable
-        /// round spec; draw tenpai and win loser must equal the committed result. Histories
-        /// containing kan/replacement draws are rejected because live-wall inverse evidence is
-        /// not modeled rather than guessed.
+        /// round spec; draw tenpai and win loser must equal the committed result. KanDeclared
+        /// does not deduct live wall; RinshanDrawn deducts live wall to replenish dead wall,
+        /// and is reversed during backwards reconstruction.
         /// </summary>
         public static void ValidateRecoveredEventFacts(
             IReadOnlyList<TableEventRecord> history,
@@ -500,12 +500,22 @@ namespace Mahjong.TableRuntime
                 for (int i = history.Count - 1; i >= 0; i--)
                 {
                     TableEventRecord record = history[i];
-                    if (record.Type == RoundEventType.KanDeclared ||
-                        record.Type == RoundEventType.RinshanDrawn)
+                    if (record.Type == RoundEventType.KanDeclared)
                     {
-                        throw new TableProjectionException(
-                            TableProjectionErrorCode.InvalidContext,
-                            "Kan/replacement-draw wall evidence is not modeled; refusing to guess.");
+                        continue;
+                    }
+
+                    if (record.Type == RoundEventType.RinshanDrawn)
+                    {
+                        if (wall < 0)
+                        {
+                            throw new TableProjectionException(
+                                TableProjectionErrorCode.InvalidContext,
+                                "Recovered wall remaining underflowed during event validation.");
+                        }
+
+                        wall++;
+                        continue;
                     }
 
                     if (record.Type == RoundEventType.TileDrawn)

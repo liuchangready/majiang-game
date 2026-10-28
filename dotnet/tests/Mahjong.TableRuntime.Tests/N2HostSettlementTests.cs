@@ -858,6 +858,33 @@ namespace Mahjong.TableRuntime.Tests
                 value => value.Type == RoundEventType.ResponseClaimed && value.Detail == "CHI");
         }
 
+        [Fact]
+        public void RealPonAfterRiichiInterruptsIppatsuAndRemovesTheYaku()
+        {
+            RoundStateMachine round = SettlementFixture.RiichiPonThenRonWindow();
+            var intent = new TableSettlementIntent(round.RoundId, TableSettlementAction.Ron, 1);
+            RoundSettlementFacts facts = BuildFacts(
+                round, intent, new DefaultSettlementFactsPort(), "pon-ippatsu-facts");
+            RoundSettlementSeatFacts seat1 = facts.FindSeat(1)!;
+            Assert.True(seat1.IsDoubleRiichi);
+            Assert.False(seat1.IsIppatsu);
+            Assert.True(seat1.IsIppatsuInterruptedByCallOrKan);
+            Assert.False(seat1.IsFirstTurnUninterrupted);
+            Assert.Contains(
+                round.Events,
+                value => value.Type == RoundEventType.PonDeclared && value.Seat == 0);
+
+            RoundSettlementCalculation calculation = RoundSettlementCalculator.CalculateRon(round, 1, facts);
+            Assert.Equal("DOUBLE_RIICHI", calculation.Breakdown!.Yaku[0].Code);
+            Assert.DoesNotContain(calculation.Breakdown.Yaku, y => y.Code == "IPPATSU");
+            Assert.Equal(4, calculation.Breakdown.TotalYakuHan);
+            Assert.Equal(40, calculation.Breakdown.Fu.FinalFu);
+            Assert.Equal(9000L, calculation.Breakdown.TotalPoints);
+            Assert.Equal(
+                new[] { "DOUBLE_RIICHI", "TANYAO", "IIPEIKO" },
+                calculation.Breakdown.Yaku.Select(y => y.Code).ToArray());
+        }
+
         private static CheatState GetCheat(TableActor actor)
         {
             FieldInfo field = typeof(TableActor).GetField("_cheat", BindingFlags.Instance | BindingFlags.NonPublic)!;
@@ -1388,6 +1415,94 @@ namespace Mahjong.TableRuntime.Tests
             return Step(
                 afterPass,
                 RoundCommand.Discard(afterPass.RoundId, 2, Tile(22, 3), new[] { 1 }));
+        }
+
+        /// <summary>
+        /// Seat 1 declares riichi, passes on the first Ron chance, then seat 3 discards a tile
+        /// seat 0 really Pons; seat 0's next discard opens a fresh Ron window for seat 1. This
+        /// proves the host fact builder sees a real call as an ippatsu interruption.
+        /// </summary>
+        public static RoundStateMachine RiichiPonThenRonWindow()
+        {
+            RoundStateMachine opening = RonOpening();
+            var plan = new SettlementPlan(RoundPhase.CheatWindow)
+            {
+                FillRemainingIntoWall = true,
+                DrawnSeat = 0,
+                DrawnTile = Tile(22, 1),
+                DrawnSource = DrawSource.Wall
+            };
+            plan.AddDora(39);
+            plan.AddWallTop(Tile(0, 3).Value, Tile(22, 3).Value, Tile(8, 3).Value);
+            plan.AddHand(0, opening.Tiles.TilesInZone(TileZone.Hand, 0).ToArray());
+            plan.AddHand(1, opening.Tiles.TilesInZone(TileZone.Hand, 1).ToArray());
+            RoundStateMachine first = plan.Build(opening.Spec);
+            RoundStateMachine afterDealerDiscard = Step(
+                first,
+                RoundCommand.Discard(first.RoundId, 0, Tile(22, 1)));
+            RoundStateMachine afterRiichi = Step(
+                afterDealerDiscard,
+                RoundCommand.Riichi(afterDealerDiscard.RoundId, 1, Tile(0, 3), new[] { 2 }));
+            RoundStateMachine afterPass = Step(
+                afterRiichi,
+                RoundCommand.Pass(afterRiichi.RoundId, 2));
+            RoundStateMachine ronWindow = Step(
+                afterPass,
+                RoundCommand.Discard(afterPass.RoundId, 2, Tile(22, 3), new[] { 1 }));
+            RoundStateMachine afterFirstPass = Step(
+                ronWindow,
+                RoundCommand.Pass(ronWindow.RoundId, 1));
+            RoundStateMachine ponWindow = Step(
+                afterFirstPass,
+                RoundCommand.Discard(afterFirstPass.RoundId, 3, Tile(8, 3), new[] { 0 }));
+            RoundStateMachine afterPon = Step(
+                ponWindow,
+                RoundCommand.Pon(ponWindow.RoundId, 0, Tile(8, 3), Tile(8, 0), Tile(8, 1)));
+            return Step(
+                afterPon,
+                RoundCommand.Discard(afterPon.RoundId, 0, Tile(22, 0), new[] { 1 }));
+        }
+
+        /// <summary>Same as RiichiPonThenRonWindow, but the interruption is a real OpenKan.</summary>
+        public static RoundStateMachine RiichiKanThenRonWindow()
+        {
+            RoundStateMachine opening = RonOpening();
+            var plan = new SettlementPlan(RoundPhase.CheatWindow)
+            {
+                FillRemainingIntoWall = true,
+                DrawnSeat = 0,
+                DrawnTile = Tile(22, 1),
+                DrawnSource = DrawSource.Wall
+            };
+            plan.AddDora(39);
+            plan.AddWallTop(Tile(0, 3).Value, Tile(22, 3).Value, Tile(8, 3).Value);
+            plan.AddHand(0, opening.Tiles.TilesInZone(TileZone.Hand, 0).ToArray());
+            plan.AddHand(1, opening.Tiles.TilesInZone(TileZone.Hand, 1).ToArray());
+            RoundStateMachine first = plan.Build(opening.Spec);
+            RoundStateMachine afterDealerDiscard = Step(
+                first,
+                RoundCommand.Discard(first.RoundId, 0, Tile(22, 1)));
+            RoundStateMachine afterRiichi = Step(
+                afterDealerDiscard,
+                RoundCommand.Riichi(afterDealerDiscard.RoundId, 1, Tile(0, 3), new[] { 2 }));
+            RoundStateMachine afterPass = Step(
+                afterRiichi,
+                RoundCommand.Pass(afterRiichi.RoundId, 2));
+            RoundStateMachine ronWindow = Step(
+                afterPass,
+                RoundCommand.Discard(afterPass.RoundId, 2, Tile(22, 3), new[] { 1 }));
+            RoundStateMachine afterFirstPass = Step(
+                ronWindow,
+                RoundCommand.Pass(ronWindow.RoundId, 1));
+            RoundStateMachine kanWindow = Step(
+                afterFirstPass,
+                RoundCommand.Discard(afterFirstPass.RoundId, 3, Tile(8, 3), new[] { 0 }));
+            RoundStateMachine afterKan = Step(
+                kanWindow,
+                RoundCommand.OpenKan(kanWindow.RoundId, 0, Tile(8, 3), Tile(8, 0), Tile(8, 1), Tile(8, 2)));
+            return Step(
+                afterKan,
+                RoundCommand.Discard(afterKan.RoundId, 0, Tile(22, 0), new[] { 1 }));
         }
 
         public static RoundStateMachine ChiAfterDiscard()

@@ -240,6 +240,9 @@ namespace Mahjong.TableRuntime.Tests
 
         public IReadOnlyList<TablePublicConcealedMeldFact>? ConcealedMeldFacts { get; set; }
 
+        /// <summary>Trusted furiten facts used when the request does not carry an actor snapshot.</summary>
+        public TableFuritenSnapshot? FuritenOverride { get; set; }
+
         public TableProjectionContextData Capture(TableProjectionContextRequest request)
         {
             Calls++;
@@ -259,7 +262,7 @@ namespace Mahjong.TableRuntime.Tests
                 7UL,
                 CheatOverride ?? (IncludeCheat ? V32Fixtures.Cheat() : null),
                 PublicFactsOverride ?? V32Fixtures.BuildPublicFacts(request.Round),
-                V32Fixtures.BuildPrivateFacts(request.Round),
+                V32Fixtures.BuildPrivateFacts(request.Round, furitenSnapshot: request.Furiten ?? FuritenOverride),
                 Session,
                 Policy,
                 facts,

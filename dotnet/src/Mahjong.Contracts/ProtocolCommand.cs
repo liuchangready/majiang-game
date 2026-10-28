@@ -223,6 +223,12 @@ namespace Mahjong.Contracts
         public const ushort HandTileId = 3;
         public const ushort TargetSlot = 4;
         public const ushort ExpectedControlEpoch = 1;
+
+        /// <summary>Dedicated Claim/Release control round id tag (avoids tag 1).</summary>
+        public const ushort ControlRoundId = 20;
+
+        /// <summary>Dedicated Claim/Release expected control epoch tag (avoids tag 1).</summary>
+        public const ushort ExpectedControlEpochV2 = 21;
         public const ushort SessionIdField = 1;
         public const ushort StreamVersionField = 2;
         public const ushort ProjectionSeqField = 3;
@@ -369,8 +375,8 @@ namespace Mahjong.Contracts
                     break;
                 case CommandKind.ClaimControl:
                 case CommandKind.ReleaseControl:
-                    RequireUInt64(document, CommandPayloadFields.ExpectedControlEpoch, "expectedControlEpoch");
-                    RequireString(document, CommandPayloadFields.RoundIdField, "roundId");
+                    RequireUInt64(document, CommandPayloadFields.ExpectedControlEpochV2, "expectedControlEpoch");
+                    RequireString(document, CommandPayloadFields.ControlRoundId, "roundId");
                     break;
                 case CommandKind.ResumeSpectator:
                     RequireString(document, CommandPayloadFields.ResumeToken, "resumeToken");
@@ -679,6 +685,22 @@ namespace Mahjong.Contracts
                 writer.WriteUInt32(CommandPayloadFields.TargetSlot, targetSlot.Value);
             }
 
+            return writer.Build();
+        }
+
+        public static BusinessPayload ClaimControl(string roundId, ulong expectedControlEpoch)
+        {
+            var writer = new CanonicalPayloadWriter((ushort)CommandKind.ClaimControl);
+            writer.WriteString(CommandPayloadFields.ControlRoundId, roundId);
+            writer.WriteUInt64(CommandPayloadFields.ExpectedControlEpochV2, expectedControlEpoch);
+            return writer.Build();
+        }
+
+        public static BusinessPayload ReleaseControl(string roundId, ulong expectedControlEpoch)
+        {
+            var writer = new CanonicalPayloadWriter((ushort)CommandKind.ReleaseControl);
+            writer.WriteString(CommandPayloadFields.ControlRoundId, roundId);
+            writer.WriteUInt64(CommandPayloadFields.ExpectedControlEpochV2, expectedControlEpoch);
             return writer.Build();
         }
 

@@ -129,6 +129,17 @@ namespace Mahjong.TableRuntime.Tests
             for (int i = request.CommittedEvents.Count - 1; i >= 0; i--)
             {
                 TableEventRecord record = request.CommittedEvents[i];
+                if (record.Type == RoundEventType.KanDeclared)
+                {
+                    continue;
+                }
+
+                if (record.Type == RoundEventType.RinshanDrawn)
+                {
+                    wall++;
+                    continue;
+                }
+
                 if (record.Type == RoundEventType.TileDrawn)
                 {
                     wallBySeq[record.Seq.Value] = unchecked((uint)wall);
