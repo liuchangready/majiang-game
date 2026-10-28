@@ -1406,13 +1406,32 @@ namespace Mahjong.LocalHost.Tests
                     pumpCts.Token);
                 Assert.Equal(ReceiptStatus.Applied, riichiReceipt.Resolution.ReceiptStatus);
 
-                PlayerSnapshot firstRon = await WaitForActionTypeAsync(
-                    session,
-                    ProtocolActionType.DeclareRon,
-                    pumpCts.Token);
+                LocalTableRuntime runtime = ((LocalTableChannel)channel).RuntimeForMatch!;
+                PlayerSnapshot firstRon;
+                try
+                {
+                    firstRon = await WaitForActionTypeAsync(
+                        session,
+                        ProtocolActionType.DeclareRon,
+                        pumpCts.Token);
+                }
+                catch (TimeoutException)
+                {
+                    throw new Exception(
+                        "riichi first Ron missing; events=" +
+                        string.Join(
+                            ";",
+                            runtime.ActorForTest.GetRoundStateForHost().Events.Select(
+                                e => e.Type + ":" + e.Seat + ":" +
+                                     (e.Tile.HasValue ? e.Tile.Value.Value.ToString() : "-") +
+                                     ":" + e.Detail)));
+                }
                 await Task.Delay(150, pumpCts.Token);
                 firstRon = session.PlayerSnapshot!;
                 DecisionView firstRonDecision = firstRon.PrivateView.Decision!;
+                RoundStateMachine firstWindowRound = runtime.ActorForTest.GetRoundStateForHost();
+                Assert.NotNull(firstWindowRound.Window);
+                Assert.Contains(0, firstWindowRound.Window!.EligibleSeats);
                 TableReceiptResolvedEventArgs firstPass = await SubmitDecisionActionAsync(
                     session,
                     firstRon,
@@ -1430,7 +1449,6 @@ namespace Mahjong.LocalHost.Tests
                 }
 
                 Assert.True(session.PlayerSnapshot!.PrivateView.Furiten);
-                LocalTableRuntime runtime = ((LocalTableChannel)channel).RuntimeForMatch!;
                 Assert.True(runtime.ActorForTest.FuritenForHost.IsTemporary(0));
                 Assert.True(runtime.ActorForTest.FuritenForHost.IsRiichi(0));
 
@@ -1464,7 +1482,6 @@ namespace Mahjong.LocalHost.Tests
                 uint drawn = afterDraw.PrivateView.HasDrawnTileId
                     ? afterDraw.PrivateView.DrawnTileId
                     : afterDraw.PrivateView.ClosedTiles[0];
-                ulong beforeDiscard = afterDraw.StateVersion;
                 TableReceiptResolvedEventArgs clearedDiscard = await SubmitDecisionActionAsync(
                     session,
                     afterDraw,
@@ -1476,67 +1493,78 @@ namespace Mahjong.LocalHost.Tests
                     pumpCts.Token);
                 Assert.Equal(ReceiptStatus.Applied, clearedDiscard.Resolution.ReceiptStatus);
 
-                bool sawRonAfterDraw = false;
-                for (int i = 0; i < 100; i++)
+                // Stop exactly on the real response window opened by another seat's discard of
+                // the third physical wait tile (74). Seat 0 is riichi, temporary already cleared
+                // by its own draw, and riichi furiten keeps it out of candidates/window.
+                RoundStateMachine? thirdWaitWindow = null;
+                for (int i = 0; i < 150; i++)
                 {
-                    PlayerSnapshot current = session.PlayerSnapshot!;
-                    DecisionView? currentDecision = current.PrivateView?.Decision;
-                    if (currentDecision != null &&
-                        currentDecision.Actions.Any(a => a.ActionType == (uint)ProtocolActionType.DeclareRon))
+                    RoundStateMachine current = runtime.ActorForTest.GetRoundStateForHost();
+                    bool sawWaitDiscard = current.Events.Any(
+                        e => e.Type == RoundEventType.TileDiscarded &&
+                             e.Seat == 1 &&
+                             e.Tile.HasValue &&
+                             e.Tile.Value.Value == 74);
+                    if (sawWaitDiscard)
                     {
-                        sawRonAfterDraw = true;
-                    }
-
-                    if (current.StateVersion > beforeDiscard + 1)
-                    {
+                        thirdWaitWindow = current;
                         break;
                     }
 
                     await Task.Delay(20, pumpCts.Token);
                 }
 
-                Assert.False(sawRonAfterDraw, "riichi furiten must not offer Ron after the draw");
-                Assert.True(runtime.ActorForTest.FuritenForHost.IsRiichi(0));
+                Assert.True(
+                    thirdWaitWindow != null,
+                    "third wait window missing; events=" +
+                    string.Join(
+                        ";",
+                        runtime.ActorForTest.GetRoundStateForHost().Events.Select(
+                            e => e.Type + ":" + e.Seat + ":" + (e.Tile.HasValue ? e.Tile.Value.Value.ToString() : "-"))));
+                RoundStateMachine third = thirdWaitWindow!;
+                Assert.True(third.IsRiichi(0));
+                if (third.Window != null)
+                {
+                    Assert.DoesNotContain(0, third.Window.EligibleSeats);
+                }
 
-                PlayerSnapshot afterWindow = session.PlayerSnapshot!;
-                var rejectedRon = new TaskCompletionSource<TableReceiptResolvedEventArgs>(
-                    TaskCreationOptions.RunContinuationsAsynchronously);
-                EventHandler<TableReceiptResolvedEventArgs> handler = (_, args) =>
-                {
-                    if (args.Command.Key.RequestId.Value == "riichi-furiten-ron-after-window")
-                    {
-                        rejectedRon.TrySetResult(args);
-                    }
-                };
-                session.ReceiptResolved += handler;
-                try
-                {
-                    BusinessPayload ronPayload = CommandPayloadFactory.SubmitAction(
-                        afterWindow.RoundId,
-                        "local-direct",
-                        0UL,
-                        ProtocolActionType.DeclareRon);
-                    await session.SubmitAsync(
-                        new ProtocolCommand(
-                            CommandKind.SubmitAction,
-                            ronPayload,
-                            new RequestId("riichi-furiten-ron-after-window"),
-                            session.Binding!.Scope.ScopeId,
-                            new StateVersion(afterWindow.StateVersion),
-                            new RoundId(afterWindow.RoundId),
-                            decisionId: null,
-                            controlEpoch: new ControlEpoch(0)),
-                        pumpCts.Token);
-                    TableReceiptResolvedEventArgs afterDrawRon = await LocalHostCommandTests.WithTimeoutAsync(
-                        rejectedRon.Task,
-                        pumpCts.Token);
-                    Assert.NotEqual(ReceiptStatus.Applied, afterDrawRon.Resolution.ReceiptStatus);
-                    Assert.NotEqual(GamePhase.RoundEnd, session.PlayerSnapshot!.PublicView.Board.Phase);
-                }
-                finally
-                {
-                    session.ReceiptResolved -= handler;
-                }
+                Assert.Null(runtime.ActorForTest.GetPendingDecisionId(0));
+                TableFuritenSnapshot furitenAtThird = runtime.ActorForTest.FuritenForHost;
+                Assert.False(furitenAtThird.IsTemporary(0));
+                Assert.True(furitenAtThird.IsRiichi(0));
+                Assert.True(session.PlayerSnapshot!.PrivateView.Furiten);
+
+                // Positive control: the same real first-Ron window without riichi furiten must
+                // produce a legal Ron with exact N2 values.
+                TableSettlementHostFacts positiveHost = ResolveSettlementHost(
+                    firstWindowRound,
+                    _ => false,
+                    _ => false,
+                    0);
+                RoundSettlementFacts positiveFacts = BuildSettlementFacts(firstWindowRound, positiveHost, 0);
+                RoundSettlementCalculation positive = RoundSettlementCalculator.CalculateRon(
+                    firstWindowRound,
+                    0,
+                    positiveFacts);
+                Assert.Equal(5, positive.Breakdown!.TotalYakuHan);
+                Assert.Equal(40, positive.Breakdown.Fu.FinalFu);
+                Assert.Equal(13_000L, positive.Breakdown.TotalPoints);
+                Assert.Contains(positive.Breakdown.Yaku, y => y.Code == "IPPATSU");
+
+                // Actual LocalHost port + builder + calculator at the real riichi-furiten state:
+                // the legal window shape is the captured first response window, while the facts
+                // are the post-draw riichi/temporary bits of the real actor.
+                TableSettlementHostFacts furitenHost = ResolveSettlementHost(
+                    firstWindowRound,
+                    _ => false,
+                    seat => runtime.ActorForTest.FuritenForHost.IsRiichi(seat),
+                    0);
+                RoundSettlementFacts furitenFacts = BuildSettlementFacts(firstWindowRound, furitenHost, 0);
+                Assert.True(furitenFacts.FindSeat(0)!.IsRiichiFuriten);
+                Assert.False(furitenFacts.FindSeat(0)!.IsTemporaryFuriten);
+                RoundSettlementRejectedException rejected = Assert.Throws<RoundSettlementRejectedException>(
+                    () => RoundSettlementCalculator.CalculateRon(firstWindowRound, 0, furitenFacts));
+                Assert.Equal(RoundSettlementRejectionCode.FuritenRon, rejected.Code);
 
                 pumpCts.Cancel();
                 await pump;
@@ -2673,6 +2701,38 @@ namespace Mahjong.LocalHost.Tests
             {
                 session.ReceiptResolved -= handler;
             }
+        }
+
+        private static TableSettlementHostFacts ResolveSettlementHost(
+            RoundStateMachine round,
+            Func<int, bool> temporaryFuriten,
+            Func<int, bool> riichiFuriten,
+            int winnerSeat)
+        {
+            var port = new LocalSettlementFactsPort
+            {
+                RoundProvider = () => round,
+                TemporaryFuritenProvider = temporaryFuriten,
+                RiichiFuritenProvider = riichiFuriten
+            };
+            var source = new TableSettlementSourceRef(round.RoundId, round.Version, round.SourceFingerprint);
+            var intent = new TableSettlementIntent(round.RoundId, TableSettlementAction.Ron, winnerSeat);
+            return port.Resolve(source, intent);
+        }
+
+        private static RoundSettlementFacts BuildSettlementFacts(
+            RoundStateMachine round,
+            TableSettlementHostFacts host,
+            int winnerSeat)
+        {
+            var source = new TableSettlementSourceRef(round.RoundId, round.Version, round.SourceFingerprint);
+            var intent = new TableSettlementIntent(round.RoundId, TableSettlementAction.Ron, winnerSeat);
+            Type builder = typeof(TableActor).Assembly.GetType(
+                "Mahjong.TableRuntime.TableSettlementFactBuilder",
+                throwOnError: true)!;
+            return (RoundSettlementFacts)builder
+                .GetMethod("Build", System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static)!
+                .Invoke(null, new object[] { round, intent, host, "riichi-furiten-proof", 1000L, 1000L })!;
         }
 
         private static Task StartPump(TableSession session, CancellationToken token)

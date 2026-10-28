@@ -25,6 +25,13 @@ namespace Mahjong.LocalHost
 
         public bool DeclareAgariYameAtFinalRound { get; set; }
 
+        /// <summary>
+        /// Test-only deterministic round seam. Production leaves this null and uses the trusted
+        /// environment wall; acceptance tests may inject a legal, repeatable wall while the
+        /// coordinator still owns persistence, progression and score/stick carry-over.
+        /// </summary>
+        internal Func<LocalMatchState, LocalTableHostOptions, RoundStateMachine>? RoundFactory { get; set; }
+
         internal void Validate()
         {
             LocalTableHostPaths.ResolveSaveDirectory(SaveDirectory);
@@ -296,8 +303,11 @@ namespace Mahjong.LocalHost
                 RulesetVersion = _options.RulesetVersion,
                 OwnerInstanceId = _options.OwnerInstanceId,
                 LeaseDuration = _options.LeaseDuration,
-                Environment = _options.Environment,
-                InitialRound = _facts.CreateRound(
+                Environment = _options.Environment
+            };
+            RoundStateMachine initialRound = _options.RoundFactory != null
+                ? _options.RoundFactory(state, roundOptions)
+                : _facts.CreateRound(
                     new LocalTableHostOptions { RoomId = state.CurrentRoomId, SaveDirectory = root },
                     state.CurrentRoundId,
                     state.DealerSeat,
@@ -305,8 +315,15 @@ namespace Mahjong.LocalHost
                     state.RoundNumber,
                     state.Honba,
                     state.Scores,
-                    state.RiichiSticks)
-            };
+                    state.RiichiSticks);
+            if (!string.Equals(initialRound.RoundId, state.CurrentRoundId, StringComparison.Ordinal))
+            {
+                throw new InvalidOperationException(
+                    "The match round factory produced round '" + initialRound.RoundId +
+                    "' but the coordinator expected '" + state.CurrentRoundId + "'.");
+            }
+
+            roundOptions.InitialRound = initialRound;
             var channel = (LocalTableChannel)await LocalTableHost.CreateChannelAsync(roundOptions, cancellationToken);
             string ticket = LocalTableHost.IssueTicket(roundOptions);
             lock (_gate)

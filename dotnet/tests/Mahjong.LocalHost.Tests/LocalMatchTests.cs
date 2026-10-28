@@ -7,7 +7,10 @@ using System.Threading.Tasks;
 using Mahjong.Client;
 using Mahjong.Contracts;
 using Mahjong.Domain;
+using Mahjong.Domain.Rules;
 using Xunit;
+using DecisionView = Mahjong.Contracts.Wire.DecisionView;
+using LegalActionView = Mahjong.Contracts.Wire.LegalActionView;
 using PlayerSnapshot = Mahjong.Contracts.Wire.PlayerSnapshot;
 using WireGamePhase = Mahjong.Contracts.Wire.GamePhase;
 
@@ -84,15 +87,15 @@ namespace Mahjong.LocalHost.Tests
         }
 
         [Fact]
-        public async Task PersistedRiichiStickIsCarriedIntoTheNextRoundTable()
+        public async Task RealClientRiichiWinPaysStickOnceAndNextRoundStartsClean()
         {
             await using var harness = new P41Harness();
             CancellationToken ct = TestContext.Current.CancellationToken;
-            string root = Path.Combine(harness.Root, "match-sticks");
+            string root = Path.Combine(harness.Root, "match-real-stick");
             var options = new LocalMatchHostOptions
             {
                 SaveDirectory = root,
-                MatchId = "match-sticks",
+                MatchId = "match-real-stick",
                 OwnerInstanceId = "owner-match",
                 LeaseDuration = TimeSpan.FromMinutes(5),
                 Environment = harness.Options.Environment,
@@ -101,44 +104,150 @@ namespace Mahjong.LocalHost.Tests
                     handsPerWind: 2,
                     allowWestExtension: false)
             };
-
-            Directory.CreateDirectory(root);
-            LocalMatchState state = LocalMatchState.Create(options.MatchId);
-            state.Restore(
-                state.MatchId,
-                state.Version,
-                state.Ordinal,
-                state.CurrentRoomId,
+            options.RoundFactory = (state, _) => BuildRiichiWinRound(
                 state.CurrentRoundId,
-                state.DealerSeat,
-                state.RoundWind,
-                state.RoundNumber,
-                state.Honba,
-                1,
-                new long[] { 24_000L, 25_000L, 25_000L, 25_000L },
-                Array.Empty<long>(),
-                false,
-                string.Empty,
-                new List<RankingEntry>(),
-                new List<LocalMatchRoundRecord>());
-            LocalMatchStateCodec.Save(Path.Combine(root, options.MatchId + ".match"), state, 0);
+                state.Scores,
+                state.RiichiSticks);
 
+            string firstRoundId;
+            long[] firstFinalScores;
+            int han;
+            int fu;
+            long points;
             LocalMatchCoordinator match = await LocalMatchCoordinator.OpenAsync(options, ct);
             try
             {
                 LocalMatchRound round = await match.OpenRoundAsync(ct);
+                firstRoundId = round.RoundId;
                 await round.Channel.OpenAsync(
-                    new TableChannelConnectRequest(round.Ticket, "match-sticks", null),
+                    new TableChannelConnectRequest(round.Ticket, "match-stick", null),
                     ct);
-                Assert.Equal(1, match.Snapshot.RiichiSticks);
-                var runtime = ((LocalTableChannel)round.Channel).RuntimeForMatch;
-                Assert.NotNull(runtime);
-                Assert.Equal(1, runtime!.ActorForTest.GetRoundStateForHost().RiichiSticks);
+                var session = new TableSession(round.Channel, new InMemoryOutboxStore());
+                await session.OpenAsync(
+                    new TableSessionOpenRequest(round.Ticket, "match-stick"),
+                    ct);
+                using var pumpCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                pumpCts.CancelAfter(TimeSpan.FromSeconds(30));
+                Task pump = Task.Run(async () =>
+                {
+                    try
+                    {
+                        while (!pumpCts.IsCancellationRequested)
+                        {
+                            await session.PumpOnceAsync(pumpCts.Token);
+                        }
+                    }
+                    catch (Exception exception) when (
+                        exception is OperationCanceledException ||
+                        exception is TableChannelClosedException ||
+                        exception is InvalidOperationException)
+                    {
+                    }
+                }, TestContext.Current.CancellationToken);
+
+                PlayerSnapshot snapshot = await WaitForActionAsync(
+                    session,
+                    ProtocolActionType.DeclareRiichi,
+                    pumpCts.Token);
+                DecisionView decision = snapshot.PrivateView.Decision!;
+                LegalActionView riichi = decision.Actions.First(
+                    a => a.ActionType == (uint)ProtocolActionType.DeclareRiichi);
+                TableReceiptResolvedEventArgs riichiReceipt = await SubmitActionAsync(
+                    session,
+                    snapshot,
+                    decision,
+                    ProtocolActionType.DeclareRiichi,
+                    "real-match-riichi",
+                    new uint[] { 132u },
+                    riichi.OptionId,
+                    pumpCts.Token);
+                Assert.Equal(ReceiptStatus.Applied, riichiReceipt.Resolution.ReceiptStatus);
+
+                LocalTableRuntime runtime = ((LocalTableChannel)round.Channel).RuntimeForMatch!;
+                RoundStateMachine afterRiichi = runtime.ActorForTest.GetRoundStateForHost();
+                Assert.Equal(1, afterRiichi.RiichiSticks);
+                Assert.Equal(24_000L, afterRiichi.Scores[0]);
+
+                PlayerSnapshot ronSnapshot = await WaitForActionAsync(
+                    session,
+                    ProtocolActionType.DeclareRon,
+                    pumpCts.Token);
+                await Task.Delay(100, pumpCts.Token);
+                ronSnapshot = session.PlayerSnapshot!;
+                DecisionView ronDecision = ronSnapshot.PrivateView.Decision!;
+                TableReceiptResolvedEventArgs ronReceipt = await SubmitActionAsync(
+                    session,
+                    ronSnapshot,
+                    ronDecision,
+                    ProtocolActionType.DeclareRon,
+                    "real-match-ron",
+                    null,
+                    null,
+                    pumpCts.Token);
+                Assert.Equal(ReceiptStatus.Applied, ronReceipt.Resolution.ReceiptStatus);
+
+                for (int i = 0; i < 50 &&
+                     session.PlayerSnapshot!.PublicView.Board.Phase != WireGamePhase.RoundEnd; i++)
+                {
+                    await Task.Delay(20, pumpCts.Token);
+                }
+
+                Assert.Equal(WireGamePhase.RoundEnd, session.PlayerSnapshot!.PublicView.Board.Phase);
+                RoundSettlementCalculation calculation = runtime.ActorForTest.LastSettlementCalculation!;
+                Assert.Equal(RoundOutcomeKind.Ron, calculation.Outcome.Kind);
+                Assert.Equal(0, calculation.Outcome.WinnerSeat);
+                Assert.Equal(0, calculation.Settlement.RemainingRiichiSticks);
+                han = calculation.Breakdown!.TotalYakuHan;
+                fu = calculation.Breakdown.Fu.FinalFu;
+                points = calculation.Breakdown.TotalPoints;
+                firstFinalScores = calculation.Settlement.FinalScores.ToArray();
+                Assert.Equal(100_000L, firstFinalScores.Sum());
+
+                pumpCts.Cancel();
+                await pump;
+                LocalMatchSnapshot after = await match.CompleteRoundAsync(ct);
+                await session.CloseAsync("TEST_DONE", CancellationToken.None);
+                Assert.Equal(0, after.RiichiSticks);
+                Assert.Equal(firstFinalScores, after.Scores);
+                Assert.Single(after.Records);
+                Assert.Equal(0, after.Records[0].RemainingRiichiSticks);
             }
             finally
             {
                 await match.DisposeAsync();
             }
+
+            LocalMatchCoordinator restored = await LocalMatchCoordinator.OpenAsync(options, ct);
+            try
+            {
+                Assert.Equal(0, restored.Snapshot.RiichiSticks);
+                Assert.Equal(firstFinalScores, restored.Snapshot.Scores);
+                LocalMatchRound next = await restored.OpenRoundAsync(ct);
+                Assert.NotEqual(firstRoundId, next.RoundId);
+                await next.Channel.OpenAsync(
+                    new TableChannelConnectRequest(next.Ticket, "match-stick-2", null),
+                    ct);
+                LocalTableRuntime nextRuntime = ((LocalTableChannel)next.Channel).RuntimeForMatch!;
+                RoundStateMachine nextRound = nextRuntime.ActorForTest.GetRoundStateForHost();
+                Assert.Equal(0, nextRound.RiichiSticks);
+                Assert.Equal(firstFinalScores, nextRound.Scores.ToArray());
+                ConservationReport report = TilePositionMap.Validate(nextRound.Tiles);
+                Assert.True(report.IsValid, string.Join("; ", report.Errors));
+                Assert.Equal(136, report.AssignedCount);
+                for (int seat = 0; seat < 4; seat++)
+                {
+                    Assert.False(nextRuntime.ActorForTest.FuritenForHost.IsFuriten(seat));
+                }
+            }
+            finally
+            {
+                await restored.DisposeAsync();
+            }
+
+            Assert.Equal(5, han);
+            Assert.Equal(40, fu);
+            Assert.Equal(13_000L, points);
+            Assert.Equal(new long[] { 37_000L, 13_000L, 25_000L, 25_000L }, firstFinalScores);
         }
 
         [Fact]
@@ -404,6 +513,114 @@ namespace Mahjong.LocalHost.Tests
             {
                 session.SnapshotChanged -= handler;
             }
+        }
+
+        private static async Task<PlayerSnapshot> WaitForActionAsync(
+            TableSession session,
+            ProtocolActionType action,
+            CancellationToken ct)
+        {
+            for (int i = 0; i < 150; i++)
+            {
+                PlayerSnapshot? snapshot = session.PlayerSnapshot;
+                if (snapshot?.PrivateView?.Decision != null &&
+                    snapshot.PrivateView.Decision.Actions.Any(
+                        a => a.ActionType == (uint)action))
+                {
+                    return snapshot;
+                }
+
+                await Task.Delay(20, ct);
+            }
+
+            throw new TimeoutException("Timed out waiting for action " + action + ".");
+        }
+
+        private static async Task<TableReceiptResolvedEventArgs> SubmitActionAsync(
+            TableSession session,
+            PlayerSnapshot snapshot,
+            DecisionView decision,
+            ProtocolActionType action,
+            string requestId,
+            uint[]? tiles,
+            string? optionId,
+            CancellationToken ct)
+        {
+            var resolved = new TaskCompletionSource<TableReceiptResolvedEventArgs>(
+                TaskCreationOptions.RunContinuationsAsynchronously);
+            EventHandler<TableReceiptResolvedEventArgs> handler = (_, args) =>
+            {
+                if (string.Equals(args.Command.Key.RequestId.Value, requestId, StringComparison.Ordinal))
+                {
+                    resolved.TrySetResult(args);
+                }
+            };
+            session.ReceiptResolved += handler;
+            try
+            {
+                BusinessPayload payload = CommandPayloadFactory.SubmitAction(
+                    snapshot.RoundId,
+                    decision.DecisionId,
+                    decision.ControlEpoch,
+                    action,
+                    optionId: optionId,
+                    tileIds: tiles);
+                CommandSubmission submission = await session.SubmitAsync(
+                    new ProtocolCommand(
+                        CommandKind.SubmitAction,
+                        payload,
+                        new RequestId(requestId),
+                        session.Binding!.Scope.ScopeId,
+                        new StateVersion(snapshot.StateVersion),
+                        new RoundId(snapshot.RoundId),
+                        decisionId: new DecisionId(decision.DecisionId),
+                        controlEpoch: new ControlEpoch(decision.ControlEpoch)),
+                    ct);
+                Assert.True(submission.Sent);
+                return await LocalHostCommandTests.WithTimeoutAsync(resolved.Task, ct);
+            }
+            finally
+            {
+                session.ReceiptResolved -= handler;
+            }
+        }
+
+        private static RoundStateMachine BuildRiichiWinRound(
+            string roundId,
+            IReadOnlyList<long> scores,
+            int riichiSticks)
+        {
+            const int Dealer = 0;
+            var specific = new Dictionary<int, int>();
+            int[] seat0Tiles = { 0, 4, 8, 12, 16, 20, 24, 28, 32, 44, 45, 72, 73, 132 };
+            int[] seat0Slots = { 0, 1, 2, 3, 16, 17, 18, 19, 32, 33, 34, 35, 48, 52 };
+            for (int i = 0; i < seat0Slots.Length; i++)
+            {
+                specific[seat0Slots[i]] = seat0Tiles[i];
+            }
+
+            specific[53] = 46;
+            var used = new HashSet<int>(specific.Values);
+            var remaining = new Queue<int>(Enumerable.Range(0, TileId.Count).Where(id => !used.Contains(id)));
+            var order = new int[TileId.Count];
+            for (int i = 0; i < TileId.Count; i++)
+            {
+                order[i] = specific.TryGetValue(i, out int entity) ? entity : remaining.Dequeue();
+            }
+
+            RecordedRandomDraw wall = RecordedRandomDraw.Create(
+                roundId + "-wall",
+                order.Select(id => new TileId(id)).ToArray());
+            TilePositionMap dealt = TilePositionMap.CreateDealt(wall, Dealer);
+            var spec = new RoundSpec(
+                roundId,
+                Dealer,
+                1,
+                0,
+                0,
+                scores,
+                riichiSticks);
+            return RoundStateMachine.CreateDealt(spec, dealt, RoundPhase.CheatWindow);
         }
     }
 }
