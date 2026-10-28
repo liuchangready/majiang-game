@@ -163,8 +163,8 @@ D:/Unity/dotnet/dotnet.exe <shallow>/.../Mahjong.TableRuntime.Tests.dll `
 | 场景 | 结果 | native exit | 证据 |
 |---|---|---:|---|
 | full-history VisibilityGolden | **8 / 8** | 0 | `shallow-fix/full-visibility.xml` SHA `EDA75C587E4867ACA8C3BB2FC494B97037C8F1A924ADF69E114A5D54B8E34824` |
-| depth=1 shallow VisibilityGolden | **8 / 8** | 0 | `shallow-after.xml` SHA `E47A46547AA02FD7216636458E9DDC170C0372E72B9CBF1277F0FE5EF0F49FED`；restored 复跑 `shallow-restored.xml` `C051E80174FA5BFBC8626EF78867DFF6E16C2AC8E3F0DF1F8677651C9D1423A5` |
-| 无 `.git` 源码快照 VisibilityGolden | **8 / 8** | 0 | `nogit-after.xml` SHA `7CB6014C7FEB278A1ADA8F1F51A90D64E3EBBF5539147DFD5AB99E5483E8B479` |
+| depth=1 shallow VisibilityGolden（final HEAD `10ae8b2`） | **8 / 8** | 0 | `shallow-final.xml` SHA `5C16BF9407944A0DEECF34F1549F2C3BC2A9E43C017F2281B5B7B98AA602DD54`；修复中复跑 `shallow-after.xml` `E47A46547AA02FD7216636458E9DDC170C0372E72B9CBF1277F0FE5EF0F49FED` |
+| 无 `.git` 源码快照 VisibilityGolden（final HEAD `10ae8b2`） | **8 / 8** | 0 | `nogit-final.xml` SHA `EF696EB257BD44E9506063DB858FB3B22AC3EACBD618936C02B873FA62F3E5D3`；修复中复跑 `nogit-after.xml` `7CB6014C7FEB278A1ADA8F1F51A90D64E3EBBF5539147DFD5AB99E5483E8B479` |
 | full TableRuntime | **413 / 413** | 0 | `shallow-fix/full-tableruntime.xml` SHA `4A8FAAEFE8A69B090019F0BB73068E06E0659BDA11C60B24F26F7D86CEABAB6D` |
 
 负例矩阵（均 8 total / 7 passed / 1 failed / native 1）：
