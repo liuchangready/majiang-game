@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Globalization;
 using System.IO;
 using System.Linq;
@@ -1578,20 +1579,73 @@ namespace Mahjong.TableRuntime.Tests
             int crlf = Count(text, "\r\n");
             int lfOnly = Count(text, "\n") - crlf;
             string actualKind = ClassifyLineEndings(crlf, lfOnly);
-            Assert.Equal(Str(source, "sha256LfNormalized"), Sha256(Encoding.UTF8.GetBytes(lf)));
-            if (string.Equals(Str(source, "lineEndings"), actualKind, StringComparison.Ordinal))
+            string expectedLf = Str(source, "sha256LfNormalized");
+            if (string.Equals(Sha256(Encoding.UTF8.GetBytes(lf)), expectedLf, StringComparison.Ordinal))
             {
-                Assert.Equal(Int(source, "bytesRaw"), raw.Length);
-                Assert.Equal(Str(source, "sha256RawBytes"), Sha256(raw));
-                Assert.Equal(Int(source, "crlfCount"), crlf);
-                Assert.Equal(Int(source, "lfOnlyCount"), lfOnly);
+                if (string.Equals(Str(source, "lineEndings"), actualKind, StringComparison.Ordinal))
+                {
+                    Assert.Equal(Int(source, "bytesRaw"), raw.Length);
+                    Assert.Equal(Str(source, "sha256RawBytes"), Sha256(raw));
+                    Assert.Equal(Int(source, "crlfCount"), crlf);
+                    Assert.Equal(Int(source, "lfOnlyCount"), lfOnly);
+                }
+                else
+                {
+                    Assert.NotEqual(Str(source, "sha256RawBytes"), Sha256(raw));
+                    Assert.NotEqual(Int(source, "bytesRaw"), raw.Length);
+                    Assert.Contains(actualKind, new[] { "CRLF", "LF", "MIXED", "NONE" });
+                }
+
+                return;
             }
-            else
+
+            // visibility-v1 is a frozen audit sample: its sourceHashes describe the
+            // baseline commit recorded in the fixture, not whatever HEAD contains after
+            // later accepted component work. Verify the exact frozen bytes rather than
+            // refreshing the fixture or weakening the provenance check.
+            byte[] baseline = ReadGitBlob(BaselineCommit, relative);
+            string baselineText = Encoding.UTF8.GetString(baseline);
+            string baselineLf = baselineText.Replace("\r\n", "\n");
+            string expectedKind = Str(source, "lineEndings");
+            if (string.Equals(expectedKind, "CRLF", StringComparison.Ordinal))
             {
-                Assert.NotEqual(Str(source, "sha256RawBytes"), Sha256(raw));
-                Assert.NotEqual(Int(source, "bytesRaw"), raw.Length);
-                Assert.Contains(actualKind, new[] { "CRLF", "LF", "MIXED", "NONE" });
+                baseline = Encoding.UTF8.GetBytes(baselineLf.Replace("\n", "\r\n"));
+                baselineText = Encoding.UTF8.GetString(baseline);
             }
+
+            int baselineCrlf = Count(baselineText, "\r\n");
+            int baselineLfOnly = Count(baselineText, "\n") - baselineCrlf;
+            Assert.Equal(expectedLf, Sha256(Encoding.UTF8.GetBytes(baselineLf)));
+            Assert.Equal(expectedKind, ClassifyLineEndings(baselineCrlf, baselineLfOnly));
+            Assert.Equal(Int(source, "bytesRaw"), baseline.Length);
+            Assert.Equal(Str(source, "sha256RawBytes"), Sha256(baseline));
+            Assert.Equal(Int(source, "crlfCount"), baselineCrlf);
+            Assert.Equal(Int(source, "lfOnlyCount"), baselineLfOnly);
+        }
+
+        private static byte[] ReadGitBlob(string commit, string relative)
+        {
+            var startInfo = new ProcessStartInfo("git")
+            {
+                WorkingDirectory = RepositoryRoot(),
+                UseShellExecute = false,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                CreateNoWindow = true
+            };
+            startInfo.ArgumentList.Add("cat-file");
+            startInfo.ArgumentList.Add("blob");
+            startInfo.ArgumentList.Add(commit + ":" + relative);
+            using var process = Process.Start(startInfo) ??
+                                throw new InvalidOperationException("git process could not be started");
+            using var buffer = new MemoryStream();
+            process.StandardOutput.BaseStream.CopyTo(buffer);
+            string error = process.StandardError.ReadToEnd();
+            process.WaitForExit();
+            Assert.True(
+                process.ExitCode == 0,
+                "git cat-file failed for " + commit + ":" + relative + " exit=" + process.ExitCode + " stderr=" + error);
+            return buffer.ToArray();
         }
 
         // ------------------------------------------------------------------

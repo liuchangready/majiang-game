@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
@@ -24,9 +24,9 @@ using PlayerSnapshot = Mahjong.Contracts.Wire.PlayerSnapshot;
         public async Task ColdRestartRestoresCommittedStateVersion()
         {
             await using var harness = new P41Harness();
-            harness.Options.AutoPlay = false;
             CancellationToken ct = TestContext.Current.CancellationToken;
-            ulong committedVersion;
+            DiscardObservation discard;
+            PlayerSnapshot final;
             string roundId;
 
             (ITableChannel channel, TableSession session) = await OpenSessionAsync(harness, ct);
@@ -35,31 +35,134 @@ using PlayerSnapshot = Mahjong.Contracts.Wire.PlayerSnapshot;
                 PlayerSnapshot baseline = session.PlayerSnapshot!;
                 roundId = baseline.RoundId;
                 uint tile = baseline.PrivateView.ClosedTiles[0];
-                await SubmitDiscardAsync(session, baseline, tile, "restart-1", ct);
-                committedVersion = session.PlayerSnapshot!.StateVersion;
-                Assert.True(committedVersion > 0);
+                discard = await SubmitDiscardAsync(session, baseline, tile, "restart-1", ct);
+
+                // The diagnostic snapshot read after the receipt is deliberately not the
+                // authority: the driver may commit the next automatic action (the next
+                // seat's discard after the discard command's atomic draw) before the matching
+                // PUSH is observed. Wait until no autonomous follow-up is possible without a
+                // human decision, then compare that exact boundary with the durable store.
+                using var pumpCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                pumpCts.CancelAfter(TimeSpan.FromSeconds(10));
+                Task pump = PumpAsync(session, pumpCts.Token);
+                try
+                {
+                    final = await WaitForQuiescentSnapshotAsync(session, discard.CommandVersion, ct);
+                }
+                finally
+                {
+                    pumpCts.Cancel();
+                    await pump;
+                }
+
+                Assert.Equal(1UL, discard.CommandVersion);
+                Assert.True(
+                    final.StateVersion > discard.CommandVersion,
+                    "the automatic follow-up did not advance beyond the discard; observed=" +
+                    final.StateVersion + " discard=" + discard.CommandVersion);
             }
             finally
             {
                 await CloseAsync(session, channel);
             }
 
-            using (LocalTableStore check = await LocalTableStore.OpenAsync(harness.Options, harness.Clock, null, ct))
-            {
-                TableStateRow row = (await check.LoadStateAsync(P41Harness.RoomId, ct))!;
-                Assert.True(row.StateVersion.Value == committedVersion, "saved=" + row.StateVersion.Value + " committed=" + committedVersion);
-            }
+            await AssertRecoveryBoundaryAsync(harness, discard, final, roundId, ct);
+        }
 
-            (ITableChannel reopened, TableSession restored) = await OpenSessionAsync(harness, ct);
+        [Fact]
+        public async Task ColdRestartBoundaryIsStableBeforeAndAfterAutomaticFollowUp()
+        {
+            await using var harness = new P41Harness();
+            CancellationToken ct = TestContext.Current.CancellationToken;
+            DiscardObservation discard;
+            PlayerSnapshot final;
+            string roundId;
+            TableStateRow observedState;
+            IReadOnlyList<TableEventRecord> observedEvents;
+
+            (ITableChannel channel, TableSession session) = await OpenSessionAsync(harness, ct);
             try
             {
-                Assert.True(restored.PlayerSnapshot!.StateVersion == committedVersion, "restored=" + restored.PlayerSnapshot.StateVersion + " committed=" + committedVersion);
-                Assert.Equal(roundId, restored.PlayerSnapshot.RoundId);
+                var runtime = ((LocalTableChannel)channel).RuntimeForMatch!;
+                var followUpChosen = new TaskCompletionSource<int>(
+                    TaskCreationOptions.RunContinuationsAsynchronously);
+                var releaseFollowUp = new TaskCompletionSource<bool>(
+                    TaskCreationOptions.RunContinuationsAsynchronously);
+                int blocked = 0;
+                runtime.DriverForTest.BeforeAiSubmitForTest = async (seat, _) =>
+                {
+                    if (Interlocked.CompareExchange(ref blocked, 1, 0) == 0)
+                    {
+                        followUpChosen.TrySetResult(seat);
+                        await releaseFollowUp.Task.ConfigureAwait(false);
+                    }
+                };
+
+                PlayerSnapshot baseline = session.PlayerSnapshot!;
+                roundId = baseline.RoundId;
+                uint tile = baseline.PrivateView.ClosedTiles[0];
+                discard = await SubmitDiscardAsync(session, baseline, tile, "restart-observed-1", ct);
+
+                using var pumpCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                pumpCts.CancelAfter(TimeSpan.FromSeconds(10));
+                Task pump = PumpAsync(session, pumpCts.Token);
+                try
+                {
+                    int followUpSeat = await LocalHostCommandTests.WithTimeoutAsync(
+                        followUpChosen.Task,
+                        pumpCts.Token);
+                    Assert.Equal(1, followUpSeat);
+
+                    // The discard command atomically contains the next seat's draw. The
+                    // following AI discard has been chosen but not submitted, so this is the
+                    // "discard observed before automatic follow-up commit" ordering.
+                    PlayerSnapshot observed = await LocalHostCommandTests.WaitForPlayerSnapshotAsync(
+                        session,
+                        snapshot => snapshot.StateVersion == discard.CommandVersion,
+                        "the discard snapshot before the automatic follow-up commit",
+                        ct);
+                    Assert.Equal(discard.CommandVersion, observed.StateVersion);
+
+                    observedState = (await runtime.StoreForTest.LoadStateAsync(P41Harness.RoomId, ct))!;
+                    observedEvents = await runtime.StoreForTest.LoadEventsAfterAsync(
+                        P41Harness.RoomId,
+                        new EventSeq(0),
+                        ct);
+                    Assert.Equal(discard.CommandVersion, observedState.StateVersion.Value);
+                    Assert.DoesNotContain(observedEvents, e => e.CommandVersion.Value > discard.CommandVersion);
+                    Assert.Contains(
+                        observedEvents,
+                        e => e.CommandVersion.Value == discard.CommandVersion &&
+                             e.Type == RoundEventType.TileDrawn &&
+                             e.Seat == 1);
+                }
+                finally
+                {
+                    releaseFollowUp.TrySetResult(true);
+                    runtime.DriverForTest.BeforeAiSubmitForTest = null;
+                }
+
+                try
+                {
+                    final = await WaitForQuiescentSnapshotAsync(session, discard.CommandVersion, ct);
+                }
+                finally
+                {
+                    pumpCts.Cancel();
+                    await pump;
+                }
+
+                Assert.True(
+                    final.StateVersion > discard.CommandVersion,
+                    "the automatic follow-up did not commit after release; observed=" +
+                    final.StateVersion + " discard=" + discard.CommandVersion);
             }
             finally
             {
-                await CloseAsync(restored, reopened);
+                await CloseAsync(session, channel);
             }
+
+            await AssertRecoveryBoundaryAsync(harness, discard, final, roundId, ct);
         }
 
         [Fact]
@@ -653,7 +756,64 @@ using PlayerSnapshot = Mahjong.Contracts.Wire.PlayerSnapshot;
             return (channel, session);
         }
 
-        private static async Task SubmitDiscardAsync(
+        private sealed class DiscardObservation
+        {
+            public ulong CommandVersion { get; set; }
+
+            public ulong EventSeq { get; set; }
+
+            public string AccountId { get; set; } = string.Empty;
+
+            public string ScopeId { get; set; } = string.Empty;
+
+            public string RequestId { get; set; } = string.Empty;
+
+            public uint Tile { get; set; }
+        }
+
+        private static Task PumpAsync(TableSession session, CancellationToken cancellationToken)
+        {
+            return Task.Run(async () =>
+            {
+                try
+                {
+                    while (!cancellationToken.IsCancellationRequested)
+                    {
+                        await session.PumpOnceAsync(cancellationToken);
+                    }
+                }
+                catch (Exception exception) when (
+                    exception is OperationCanceledException ||
+                    exception is TableChannelClosedException ||
+                    exception is InvalidOperationException)
+                {
+                }
+            }, TestContext.Current.CancellationToken);
+        }
+
+        private static async Task<PlayerSnapshot> WaitForQuiescentSnapshotAsync(
+            TableSession session,
+            ulong minimumVersion,
+            CancellationToken cancellationToken)
+        {
+            // The local driver only advances AI seats. A pending decision for our human seat,
+            // a terminal round, or the human Draw phase means no autonomous command can commit
+            // until the test explicitly submits one. The version floor prevents the initial
+            // pre-discard snapshot from satisfying the boundary condition.
+            return await LocalHostCommandTests.WaitForPlayerSnapshotAsync(
+                session,
+                snapshot =>
+                    snapshot.StateVersion >= minimumVersion &&
+                    (snapshot.PublicView?.Session?.Finished == true ||
+                     snapshot.PublicView?.Board?.Phase == Mahjong.Contracts.Wire.GamePhase.RoundEnd ||
+                     snapshot.PrivateView?.Decision != null ||
+                     (snapshot.PublicView?.Board?.CurrentSeat == 0 &&
+                      snapshot.PublicView?.Board?.Phase == Mahjong.Contracts.Wire.GamePhase.Draw)),
+                "the next human decision or terminal boundary after all automatic follow-ups",
+                cancellationToken);
+        }
+
+        private static async Task<DiscardObservation> SubmitDiscardAsync(
             TableSession session,
             PlayerSnapshot baseline,
             uint tile,
@@ -662,17 +822,8 @@ using PlayerSnapshot = Mahjong.Contracts.Wire.PlayerSnapshot;
         {
             var resolved = new TaskCompletionSource<TableReceiptResolvedEventArgs>(
                 TaskCreationOptions.RunContinuationsAsynchronously);
-            var advanced = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
             EventHandler<TableReceiptResolvedEventArgs> receiptHandler = (_, args) => resolved.TrySetResult(args);
-            EventHandler<TableSnapshotChangedEventArgs> snapshotHandler = (_, _) =>
-            {
-                if (session.PlayerSnapshot != null && session.PlayerSnapshot.StateVersion > baseline.StateVersion)
-                {
-                    advanced.TrySetResult(true);
-                }
-            };
             session.ReceiptResolved += receiptHandler;
-            session.SnapshotChanged += snapshotHandler;
             try
             {
                 BusinessPayload payload = CommandPayloadFactory.SubmitAction(
@@ -699,8 +850,7 @@ using PlayerSnapshot = Mahjong.Contracts.Wire.PlayerSnapshot;
                 {
                     try
                     {
-                        while (!pumpCts.IsCancellationRequested &&
-                               (!resolved.Task.IsCompleted || !advanced.Task.IsCompleted))
+                        while (!pumpCts.IsCancellationRequested && !resolved.Task.IsCompleted)
                         {
                             await session.PumpOnceAsync(pumpCts.Token);
                         }
@@ -713,18 +863,27 @@ using PlayerSnapshot = Mahjong.Contracts.Wire.PlayerSnapshot;
                 TableReceiptResolvedEventArgs receipt = await LocalHostCommandTests.WithTimeoutAsync(
                     resolved.Task,
                     pumpCts.Token);
+                pumpCts.Cancel();
+                await pump;
                 Assert.True(
                     receipt.Resolution.ReceiptStatus == Mahjong.Contracts.ReceiptStatus.Applied,
                     "reason=" + receipt.Resolution.ReasonCode);
                 Assert.Equal(64, receipt.Resolution.CanonicalPayloadSha256.Length);
-                await LocalHostCommandTests.WithTimeoutAsync(advanced.Task, pumpCts.Token);
-                pumpCts.Cancel();
-                await pump;
+                Assert.True(receipt.Resolution.CommandVersion.HasValue, "the applied receipt has no command version");
+                Assert.True(receipt.Resolution.EventSeq.HasValue, "the applied receipt has no event sequence");
+                return new DiscardObservation
+                {
+                    CommandVersion = receipt.Resolution.CommandVersion!.Value.Value,
+                    EventSeq = receipt.Resolution.EventSeq!.Value.Value,
+                    AccountId = session.Binding!.Scope.AccountId,
+                    ScopeId = session.Binding.Scope.ScopeId.Value,
+                    RequestId = requestId,
+                    Tile = tile
+                };
             }
             finally
             {
                 session.ReceiptResolved -= receiptHandler;
-                session.SnapshotChanged -= snapshotHandler;
             }
         }
 
@@ -732,6 +891,259 @@ using PlayerSnapshot = Mahjong.Contracts.Wire.PlayerSnapshot;
         {
             await session.CloseAsync("TEST_DONE", CancellationToken.None);
             await channel.CloseAsync(new TableChannelCloseReason("TEST_DONE", true), CancellationToken.None);
+        }
+
+        private static async Task AssertRecoveryBoundaryAsync(
+            P41Harness harness,
+            DiscardObservation discard,
+            PlayerSnapshot finalSnapshot,
+            string expectedRoundId,
+            CancellationToken cancellationToken)
+        {
+            string root = P41Harness.FindRepositoryRoot();
+            string workerDll = Path.Combine(
+                root,
+                "dotnet",
+                "tests",
+                "Mahjong.LocalHost.CrashWorker",
+                "bin",
+                "Release",
+                "net8.0",
+                "Mahjong.LocalHost.CrashWorker.dll");
+            Assert.True(File.Exists(workerDll), "CrashWorker was not built: " + workerDll);
+
+            List<string> expected;
+            TableStateRow state;
+            TableCheckpoint checkpoint;
+            IReadOnlyList<TableEventRecord> events;
+            TableDurableReceipt receipt;
+            TableCheatLedgerCheckpoint cheat;
+            using (LocalTableStore store = await LocalTableStore.OpenAsync(
+                harness.Options,
+                harness.Clock,
+                null,
+                cancellationToken))
+            {
+                state = (await store.LoadStateAsync(P41Harness.RoomId, cancellationToken))!;
+                checkpoint = (await store.LoadCheckpointAsync(P41Harness.RoomId, cancellationToken))!;
+                events = await store.LoadEventsAfterAsync(
+                    P41Harness.RoomId,
+                    new EventSeq(0),
+                    cancellationToken);
+                TableDurableReceipt? found = await store.TryGetAsync(
+                    discard.AccountId,
+                    new RequestScopeId(discard.ScopeId),
+                    new RequestId(discard.RequestId),
+                    cancellationToken);
+
+                Assert.Equal(finalSnapshot.StateVersion, state.StateVersion.Value);
+                Assert.Equal(expectedRoundId, finalSnapshot.RoundId);
+                Assert.Equal(1UL, discard.CommandVersion);
+                Assert.NotNull(found);
+                receipt = found!;
+                Assert.Equal(discard.AccountId, receipt.AccountId);
+                Assert.Equal(discard.ScopeId, receipt.ScopeId.Value);
+                Assert.Equal(discard.RequestId, receipt.RequestId.Value);
+                Assert.Equal(Mahjong.Contracts.ReceiptStatus.Applied, receipt.Receipt.Status);
+                Assert.Equal(discard.CommandVersion, receipt.Receipt.CommandVersion!.Value.Value);
+                Assert.Equal(discard.EventSeq, receipt.Receipt.EventSeq!.Value.Value);
+
+                Assert.NotEmpty(events);
+                Assert.Equal(state.LastEventSeq.Value, events[^1].Seq.Value);
+                Assert.Equal(events.Count, events.Select(e => e.Seq.Value).Distinct().Count());
+
+                // The discard command atomically contains the next seat's draw. Every
+                // accepted state version from 1..N must have at least one committed event,
+                // and the follow-up automatic action must be a later version, not a
+                // re-interpretation of the discard snapshot.
+                Assert.Contains(
+                    events,
+                    e => e.CommandVersion.Value == discard.CommandVersion &&
+                         e.Type == RoundEventType.TileDiscarded &&
+                         e.Seat == 0 &&
+                         e.Tile.HasValue &&
+                         e.Tile.Value.Value == discard.Tile);
+                Assert.Contains(
+                    events,
+                    e => e.CommandVersion.Value == discard.CommandVersion &&
+                         e.Type == RoundEventType.TileDrawn &&
+                         e.Seat == 1);
+                Assert.Contains(events, e => e.CommandVersion.Value > discard.CommandVersion);
+                ulong[] eventVersions = events
+                    .Select(e => e.CommandVersion.Value)
+                    .Distinct()
+                    .OrderBy(v => v)
+                    .ToArray();
+                Assert.Equal(
+                    Enumerable.Range(1, checked((int)state.StateVersion.Value)).Select(v => (ulong)v).ToArray(),
+                    eventVersions);
+
+                cheat = TableCheatLedgerCheckpointCodec.Decode(checkpoint.CheatPayload!);
+            }
+
+            ulong tilesHash;
+            string recoveredRoundId;
+            await using (LocalTableRuntime parentRecovery = await LocalTableRuntime.OpenAsync(
+                harness.Options,
+                cancellationToken))
+            {
+                RoundStateMachine recoveredRound = parentRecovery.ActorForTest.GetRoundStateForHost();
+                recoveredRoundId = recoveredRound.RoundId;
+                ConservationReport conservation = TilePositionMap.Validate(recoveredRound.Tiles);
+                Assert.True(conservation.IsValid, string.Join("; ", conservation.Errors));
+                Assert.Equal(136, conservation.AssignedCount);
+                Assert.Equal(0, conservation.UnassignedCount);
+                tilesHash = conservation.StateHash;
+            }
+
+            Assert.Equal(expectedRoundId, recoveredRoundId);
+            expected = BuildBoundaryLines(
+                state,
+                checkpoint,
+                events,
+                receipt,
+                recoveredRoundId,
+                tilesHash,
+                cheat);
+
+            string marker = Path.Combine(harness.Root, "recovery-boundary-marker.txt");
+            System.Diagnostics.ProcessStartInfo start = CreateWorkerStartInfo(
+                workerDll,
+                harness.Options.SaveDirectory,
+                P41Harness.RoomId,
+                marker,
+                "recovery-boundary-read");
+            start.Arguments +=
+                " " + harness.Clock.MonotonicMillis.ToString(System.Globalization.CultureInfo.InvariantCulture) +
+                " " + harness.Clock.UtcNowMs.ToString(System.Globalization.CultureInfo.InvariantCulture) +
+                " " + discard.AccountId +
+                " " + discard.ScopeId +
+                " " + discard.RequestId;
+
+            using (System.Diagnostics.Process process = System.Diagnostics.Process.Start(start)!)
+            {
+                using var waitCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+                waitCts.CancelAfter(TimeSpan.FromSeconds(30));
+                Task<string> stdoutTask = process.StandardOutput.ReadToEndAsync(waitCts.Token);
+                Task<string> stderrTask = process.StandardError.ReadToEndAsync(waitCts.Token);
+                try
+                {
+                    await process.WaitForExitAsync(waitCts.Token);
+                    await Task.WhenAll(stdoutTask, stderrTask);
+                }
+                catch (OperationCanceledException)
+                {
+                    process.Kill(true);
+                    throw new TimeoutException("recovery-boundary-read worker did not exit within timeout.");
+                }
+
+                Assert.True(
+                    process.ExitCode == 0,
+                    "recovery-boundary-read worker exit=" + process.ExitCode +
+                    " stdout=" + await stdoutTask +
+                    " stderr=" + await stderrTask);
+            }
+
+            string[] actual = File.ReadAllLines(marker);
+            Assert.Equal(expected.Count, actual.Length);
+            for (int i = 0; i < expected.Count; i++)
+            {
+                Assert.Equal(expected[i], actual[i]);
+            }
+        }
+
+        private static List<string> BuildBoundaryLines(
+            TableStateRow state,
+            TableCheckpoint checkpoint,
+            IReadOnlyList<TableEventRecord> events,
+            TableDurableReceipt receipt,
+            string roundId,
+            ulong tilesHash,
+            TableCheatLedgerCheckpoint cheat)
+        {
+            var lines = new List<string>
+            {
+                "mode=recovery-boundary-read",
+                "state_version=" + state.StateVersion.Value.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                "last_event_seq=" + state.LastEventSeq.Value.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                "state_fingerprint=" + state.StateFingerprint.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                "state_hash=" + state.StateHash.ToHex(),
+                "checkpoint_state_version=" + checkpoint.StateVersion.Value.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                "checkpoint_last_event_seq=" + checkpoint.LastEventSeq.Value.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                "round_id=" + roundId,
+                "tiles_hash=" + tilesHash.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                "ledger_balances=" + string.Join(",", cheat.Balances),
+                "ledger_entries=" + cheat.Entries.Count.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                "ledger_digest=" + LedgerDigest(cheat),
+                "event_count=" + events.Count.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                "event_summary=" + EventSummary(events),
+                "event_digest=" + EventDigest(events),
+                "receipt_request_id=" + receipt.RequestId.Value,
+                "receipt_scope_id=" + receipt.ScopeId.Value,
+                "receipt_status=" + receipt.Receipt.Status,
+                "receipt_evaluated=" + receipt.Receipt.EvaluatedStateVersion.Value.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                "receipt_command_version=" + receipt.Receipt.CommandVersion!.Value.Value.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                "receipt_event_seq=" + receipt.Receipt.EventSeq!.Value.Value.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                "receipt_payload_sha256=" + receipt.PayloadSha256.ToHex()
+            };
+            return lines;
+        }
+
+        private static string LedgerDigest(TableCheatLedgerCheckpoint cheat)
+        {
+            if (cheat.Entries.Count == 0)
+            {
+                return "-";
+            }
+
+            var text = new System.Text.StringBuilder();
+            for (int i = 0; i < cheat.Entries.Count; i++)
+            {
+                CheatLedgerEntry entry = cheat.Entries[i];
+                text.Append(entry.EntryId).Append('|')
+                    .Append(entry.Seat.ToString(System.Globalization.CultureInfo.InvariantCulture)).Append('|')
+                    .Append(entry.Amount.ToString(System.Globalization.CultureInfo.InvariantCulture)).Append('|')
+                    .Append(entry.BalanceAfter.ToString(System.Globalization.CultureInfo.InvariantCulture)).Append('|')
+                    .Append(entry.Reason).Append('\n');
+            }
+
+            return TablePayloadSha256.Compute(System.Text.Encoding.UTF8.GetBytes(text.ToString())).ToHex();
+        }
+
+        private static string EventSummary(IReadOnlyList<TableEventRecord> events)
+        {
+            return string.Join(
+                ";",
+                events
+                    .GroupBy(e => e.CommandVersion.Value)
+                    .OrderBy(g => g.Key)
+                    .Select(g => "v" + g.Key.ToString(System.Globalization.CultureInfo.InvariantCulture) + ":" +
+                                 string.Join(
+                                     ",",
+                                     g.OrderBy(e => e.Ordinal)
+                                         .Select(e => e.Type + "/" + e.Seat.ToString(System.Globalization.CultureInfo.InvariantCulture)))));
+        }
+
+        private static string EventDigest(IReadOnlyList<TableEventRecord> events)
+        {
+            var text = new System.Text.StringBuilder();
+            foreach (TableEventRecord record in events.OrderBy(e => e.Seq.Value))
+            {
+                text.Append(record.Seq.Value.ToString(System.Globalization.CultureInfo.InvariantCulture)).Append('|')
+                    .Append(record.CommandVersion.Value.ToString(System.Globalization.CultureInfo.InvariantCulture)).Append('|')
+                    .Append(record.Ordinal.ToString(System.Globalization.CultureInfo.InvariantCulture)).Append('|')
+                    .Append(((int)record.Type).ToString(System.Globalization.CultureInfo.InvariantCulture)).Append('|')
+                    .Append(record.Seat.ToString(System.Globalization.CultureInfo.InvariantCulture)).Append('|')
+                    .Append((record.Tile?.Value ?? -1).ToString(System.Globalization.CultureInfo.InvariantCulture)).Append('|')
+                    .Append(record.Detail ?? string.Empty).Append('|')
+                    .Append(record.EventSchema.ToString(System.Globalization.CultureInfo.InvariantCulture)).Append('|')
+                    .Append(record.HasPayload
+                        ? TablePayloadSha256.Compute(record.Payload!).ToHex()
+                        : "-")
+                    .Append('\n');
+            }
+
+            return TablePayloadSha256.Compute(System.Text.Encoding.UTF8.GetBytes(text.ToString())).ToHex();
         }
 
         private static System.Diagnostics.ProcessStartInfo CreateWorkerStartInfo(

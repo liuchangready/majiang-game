@@ -81,6 +81,84 @@ namespace Mahjong.LocalHost.CrashWorker
                 return 0;
             }
 
+            if (mode == "recovery-boundary-read")
+            {
+                // Cold-process evidence for the D-LH-GATE-04 authoritative boundary:
+                // a separate OS process opens the same committed save through the real
+                // LocalTableRuntime recovery path and reports the durable state/event
+                // versions, round identity, 136-tile hash, ledger and receipt. The parent
+                // test compares these lines byte-for-byte with its own store reading.
+                if (args.Length < 9)
+                {
+                    Console.Error.WriteLine(
+                        "recovery-boundary-read requires <account> <scopeId> <requestId> after the clock.");
+                    return 2;
+                }
+
+                string boundaryAccount = args[6];
+                string boundaryScope = args[7];
+                string boundaryRequest = args[8];
+                await using (LocalTableRuntime boundaryRuntime = await LocalTableRuntime.OpenAsync(
+                    options,
+                    CancellationToken.None))
+                {
+                    LocalTableStore boundaryStore = boundaryRuntime.StoreForTest;
+                    TableStateRow boundaryState = (await boundaryStore.LoadStateAsync(
+                        roomId,
+                        CancellationToken.None))!;
+                    TableCheckpoint boundaryCheckpoint = (await boundaryStore.LoadCheckpointAsync(
+                        roomId,
+                        CancellationToken.None))!;
+                    IReadOnlyList<TableEventRecord> boundaryEvents = await boundaryStore.LoadEventsAfterAsync(
+                        roomId,
+                        new EventSeq(0),
+                        CancellationToken.None);
+                    TableDurableReceipt? boundaryReceipt = await boundaryStore.TryGetAsync(
+                        boundaryAccount,
+                        new RequestScopeId(boundaryScope),
+                        new RequestId(boundaryRequest),
+                        CancellationToken.None);
+                    if (boundaryReceipt == null)
+                    {
+                        Console.Error.WriteLine("recovery-boundary-read receipt not found");
+                        return 5;
+                    }
+
+                    RoundStateMachine boundaryRound = boundaryRuntime.ActorForTest.GetRoundStateForHost();
+                    TableCheatLedgerCheckpoint boundaryCheat = TableCheatLedgerCheckpointCodec.Decode(
+                        boundaryCheckpoint.CheatPayload!);
+                    ConservationReport boundaryConservation = TilePositionMap.Validate(boundaryRound.Tiles);
+                    var boundaryLines = new List<string>
+                    {
+                        "mode=recovery-boundary-read",
+                        "state_version=" + boundaryState.StateVersion.Value.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                        "last_event_seq=" + boundaryState.LastEventSeq.Value.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                        "state_fingerprint=" + boundaryState.StateFingerprint.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                        "state_hash=" + boundaryState.StateHash.ToHex(),
+                        "checkpoint_state_version=" + boundaryCheckpoint.StateVersion.Value.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                        "checkpoint_last_event_seq=" + boundaryCheckpoint.LastEventSeq.Value.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                        "round_id=" + boundaryRound.RoundId,
+                        "tiles_hash=" + boundaryConservation.StateHash.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                        "ledger_balances=" + string.Join(",", boundaryCheat.Balances),
+                        "ledger_entries=" + boundaryCheat.Entries.Count.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                        "ledger_digest=" + BoundaryLedgerDigest(boundaryCheat),
+                        "event_count=" + boundaryEvents.Count.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                        "event_summary=" + BoundaryEventSummary(boundaryEvents),
+                        "event_digest=" + BoundaryEventDigest(boundaryEvents),
+                        "receipt_request_id=" + boundaryReceipt.RequestId.Value,
+                        "receipt_scope_id=" + boundaryReceipt.ScopeId.Value,
+                        "receipt_status=" + boundaryReceipt.Receipt.Status,
+                        "receipt_evaluated=" + boundaryReceipt.Receipt.EvaluatedStateVersion.Value.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                        "receipt_command_version=" + boundaryReceipt.Receipt.CommandVersion!.Value.Value.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                        "receipt_event_seq=" + boundaryReceipt.Receipt.EventSeq!.Value.Value.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                        "receipt_payload_sha256=" + boundaryReceipt.PayloadSha256.ToHex()
+                    };
+                    File.WriteAllLines(marker, boundaryLines);
+                }
+
+                return 0;
+            }
+
             if (mode == "control-outbox-reconcile")
             {
                 // Cold-process evidence: a separate OS process opens a fresh local runtime
@@ -738,6 +816,63 @@ namespace Mahjong.LocalHost.CrashWorker
             // Real crash: no actor close, no channel close, no store dispose.
             System.Diagnostics.Process.GetCurrentProcess().Kill();
             return 0;
+        }
+
+        private static string BoundaryLedgerDigest(TableCheatLedgerCheckpoint cheat)
+        {
+            if (cheat.Entries.Count == 0)
+            {
+                return "-";
+            }
+
+            var text = new System.Text.StringBuilder();
+            for (int i = 0; i < cheat.Entries.Count; i++)
+            {
+                CheatLedgerEntry entry = cheat.Entries[i];
+                text.Append(entry.EntryId).Append('|')
+                    .Append(entry.Seat.ToString(System.Globalization.CultureInfo.InvariantCulture)).Append('|')
+                    .Append(entry.Amount.ToString(System.Globalization.CultureInfo.InvariantCulture)).Append('|')
+                    .Append(entry.BalanceAfter.ToString(System.Globalization.CultureInfo.InvariantCulture)).Append('|')
+                    .Append(entry.Reason).Append('\n');
+            }
+
+            return TablePayloadSha256.Compute(System.Text.Encoding.UTF8.GetBytes(text.ToString())).ToHex();
+        }
+
+        private static string BoundaryEventSummary(IReadOnlyList<TableEventRecord> events)
+        {
+            return string.Join(
+                ";",
+                events
+                    .GroupBy(e => e.CommandVersion.Value)
+                    .OrderBy(g => g.Key)
+                    .Select(g => "v" + g.Key.ToString(System.Globalization.CultureInfo.InvariantCulture) + ":" +
+                                 string.Join(
+                                     ",",
+                                     g.OrderBy(e => e.Ordinal)
+                                         .Select(e => e.Type + "/" + e.Seat.ToString(System.Globalization.CultureInfo.InvariantCulture)))));
+        }
+
+        private static string BoundaryEventDigest(IReadOnlyList<TableEventRecord> events)
+        {
+            var text = new System.Text.StringBuilder();
+            foreach (TableEventRecord record in events.OrderBy(e => e.Seq.Value))
+            {
+                text.Append(record.Seq.Value.ToString(System.Globalization.CultureInfo.InvariantCulture)).Append('|')
+                    .Append(record.CommandVersion.Value.ToString(System.Globalization.CultureInfo.InvariantCulture)).Append('|')
+                    .Append(record.Ordinal.ToString(System.Globalization.CultureInfo.InvariantCulture)).Append('|')
+                    .Append(((int)record.Type).ToString(System.Globalization.CultureInfo.InvariantCulture)).Append('|')
+                    .Append(record.Seat.ToString(System.Globalization.CultureInfo.InvariantCulture)).Append('|')
+                    .Append((record.Tile?.Value ?? -1).ToString(System.Globalization.CultureInfo.InvariantCulture)).Append('|')
+                    .Append(record.Detail ?? string.Empty).Append('|')
+                    .Append(record.EventSchema.ToString(System.Globalization.CultureInfo.InvariantCulture)).Append('|')
+                    .Append(record.HasPayload
+                        ? TablePayloadSha256.Compute(record.Payload!).ToHex()
+                        : "-")
+                    .Append('\n');
+            }
+
+            return TablePayloadSha256.Compute(System.Text.Encoding.UTF8.GetBytes(text.ToString())).ToHex();
         }
 
         private static RoundStateMachine CreateRoundWithEvents(
