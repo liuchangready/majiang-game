@@ -8,17 +8,33 @@ using UnityEngine.SceneManagement;
 
 namespace Mahjong.Unity.App
 {
+    /// <summary>
+    /// Distinguishes a rejected scene transition from a scene that actually failed
+    /// to load. Callers must never tear down another owner on Busy.
+    /// </summary>
+    public enum SceneLoadOutcome
+    {
+        Loaded = 0,
+        Busy = 1,
+        Failed = 2
+    }
+
     public sealed class AppRouter : IAppNavigation
     {
         private readonly AppComposition _composition;
         private readonly BackRouter _backRouter;
         private SceneId _currentScene = SceneId.Boot;
         private bool _isTransitioning;
+        private int _startInFlight;
+        private long _navigationGeneration;
 
         public event Action<SceneId>? SceneLoaded;
 
         public SceneId CurrentScene => _currentScene;
         public bool IsTransitioning => _isTransitioning;
+
+        /// <summary>True while one owner is inside StartLocalGameAsync.</summary>
+        public bool IsStartInFlight => Volatile.Read(ref _startInFlight) != 0;
 
         public AppRouter(AppComposition composition, BackRouter backRouter)
         {
@@ -58,60 +74,154 @@ namespace Mahjong.Unity.App
 
         public async Task<LocalGameStartResult> StartLocalGameAsync()
         {
+            // One owner per router. The second concurrent call is rejected before it
+            // can enter AppComposition, load a scene or run any shutdown/cleanup.
+            if (Interlocked.CompareExchange(ref _startInFlight, 1, 0) != 0)
+            {
+                Debug.LogWarning("NAV_BUSY: StartLocalGameAsync rejected, another local start is in flight");
+                return LocalGameStartResult.Busy();
+            }
+
             if (_isTransitioning)
             {
+                Volatile.Write(ref _startInFlight, 0);
                 Debug.LogWarning("NAV_BUSY: StartLocalGameAsync rejected, transition already in progress");
                 return LocalGameStartResult.Busy();
             }
 
+            long generationAtStart = Interlocked.Read(ref _navigationGeneration);
             SceneId sceneAtStart = _currentScene;
             try
             {
-                await _composition.OpenLocalSessionAsync(CancellationToken.None);
-            }
-            catch (LocalTableUnavailableException)
-            {
-                return LocalGameStartResult.Failed(LocalGameStartResult.LocalHostUnavailableCode);
-            }
-            catch (OperationCanceledException)
-            {
-                // Shutdown/back/cancel aborted the open; never surfaced as an error.
-                return LocalGameStartResult.Cancelled();
-            }
-            catch (Exception)
-            {
-                // Quarantined composition, lease conflicts, corrupt saves and other host
-                // failures surface as one stable generic code here. They are never mapped
-                // to LOCAL_HOST_UNAVAILABLE and never clear saves or silently open a new
-                // room. The P4.2-B activation patch refines this mapping with the accepted
-                // LocalTableErrorKind values once the real host is integrable.
-                return LocalGameStartResult.Failed(LocalGameStartResult.LocalHostStartFailedCode);
-            }
+                if (!_composition.SupportsLocalStart)
+                {
+                    if (_composition.IsTerminal)
+                    {
+                        return TerminalStartResult();
+                    }
 
-            if (_currentScene != sceneAtStart)
-            {
-                // The user left the lobby while the open was in flight. Do not yank the UI
-                // to Table late; release the already-opened session so no host, actor or
-                // file lock is orphaned.
-                await _composition.ShutdownAsync("OPEN_ABANDONED");
-                return LocalGameStartResult.Cancelled();
-            }
+                    if (_composition.IsShutdownInProgress)
+                    {
+                        // Do not issue a start against a closing owner; this is not a
+                        // retryable host failure and must not create a session.
+                        return LocalGameStartResult.Busy();
+                    }
 
-            if (!await LoadAsync(SceneId.Table))
-            {
-                await _composition.ShutdownAsync("TABLE_SCENE_LOAD_FAILED");
-                return LocalGameStartResult.Failed(LocalGameStartResult.TableSceneUnavailableCode);
-            }
+                    return LocalGameStartResult.Failed(LocalGameStartResult.LocalHostUnavailableCode);
+                }
 
-            return LocalGameStartResult.Started();
+                try
+                {
+                    await _composition.OpenLocalSessionAsync(CancellationToken.None);
+                }
+                catch (LocalTableUnavailableException)
+                {
+                    if (_composition.IsTerminal) return TerminalStartResult();
+                    return LocalGameStartResult.Failed(LocalGameStartResult.LocalHostUnavailableCode);
+                }
+                catch (OperationCanceledException)
+                {
+                    // A real cancellation is benign only when the composition is still
+                    // healthy. If the same cancellation raced a terminal quarantine or a
+                    // shutdown, expose the terminal result instead of hiding it.
+                    if (_composition.IsTerminal) return TerminalStartResult();
+                    if (_composition.IsShutdownInProgress) return LocalGameStartResult.Busy();
+                    return LocalGameStartResult.Cancelled();
+                }
+                catch (Exception)
+                {
+                    // Quarantined composition, lease conflicts, corrupt saves and other host
+                    // failures surface as one stable generic code here. They are never mapped
+                    // to LOCAL_HOST_UNAVAILABLE and never clear saves or silently open a new
+                    // room. The P4.2-B activation patch refines this mapping with the accepted
+                    // LocalTableErrorKind values once the real host is integrable.
+                    if (_composition.IsTerminal) return TerminalStartResult();
+                    if (_composition.IsShutdownInProgress) return LocalGameStartResult.Busy();
+                    return LocalGameStartResult.Failed(LocalGameStartResult.LocalHostStartFailedCode);
+                }
+
+                if (_currentScene != sceneAtStart ||
+                    Interlocked.Read(ref _navigationGeneration) != generationAtStart)
+                {
+                    // The user left the lobby (or began another navigation, including a
+                    // same-scene reload) while the open was in flight. Do not yank the UI
+                    // to Table late; release the already-opened session so no host, actor
+                    // or file lock is orphaned. A quarantine during that release is a
+                    // terminal result, never a benign cancellation.
+                    ShutdownResult abandon = await _composition.ShutdownAsync("OPEN_ABANDONED");
+                    if (IsTerminalShutdown(abandon) || _composition.IsTerminal)
+                    {
+                        return TerminalStartResult();
+                    }
+
+                    return LocalGameStartResult.Cancelled();
+                }
+
+                SceneLoadOutcome loadOutcome = await LoadForStartOwnerAsync(SceneId.Table);
+                if (loadOutcome == SceneLoadOutcome.Busy)
+                {
+                    // Another navigation owner holds the transition. Returning Busy is
+                    // deliberate: this start must not shut down a session the other owner
+                    // (for example ReturnToMenu) is already draining.
+                    Debug.LogWarning("NAV_BUSY: Table scene load deferred to the active navigation owner");
+                    return LocalGameStartResult.Busy();
+                }
+
+                if (loadOutcome != SceneLoadOutcome.Loaded)
+                {
+                    ShutdownResult cleanup = await _composition.ShutdownAsync("TABLE_SCENE_LOAD_FAILED");
+                    if (IsTerminalShutdown(cleanup) || _composition.IsTerminal)
+                    {
+                        return TerminalStartResult();
+                    }
+
+                    return LocalGameStartResult.Failed(LocalGameStartResult.TableSceneUnavailableCode);
+                }
+
+                if (_composition.IsTerminal)
+                {
+                    return TerminalStartResult();
+                }
+
+                return LocalGameStartResult.Started();
+            }
+            finally
+            {
+                // Only the owner that acquired the gate may release it.
+                Volatile.Write(ref _startInFlight, 0);
+            }
+        }
+
+        private LocalGameStartResult TerminalStartResult() =>
+            LocalGameStartResult.Terminal(LocalGameStartResult.LocalHostTerminalCode);
+
+        private static bool IsTerminalShutdown(ShutdownResult result)
+        {
+            if (result == null) return true;
+            if (result.Quarantined) return true;
+            return result.Outcome != ShutdownOutcome.Completed &&
+                   result.Outcome != ShutdownOutcome.AlreadyIncomplete;
         }
 
         public async Task<bool> LoadAsync(SceneId sceneId)
         {
+            return await TryLoadAsync(sceneId) == SceneLoadOutcome.Loaded;
+        }
+
+        /// <summary>
+        /// Public scene-load entry that preserves the difference between a rejected
+        /// (Busy) transition and a genuinely failed load. Every accepted navigation
+        /// intent advances the generation so an in-flight local start cannot complete
+        /// late into Table, including a same-scene reload.
+        /// </summary>
+        public async Task<SceneLoadOutcome> TryLoadAsync(SceneId sceneId)
+        {
+            Interlocked.Increment(ref _navigationGeneration);
+
             if (_isTransitioning)
             {
                 Debug.LogWarning($"NAV_BUSY: Transition already in progress, rejecting load to {sceneId}");
-                return false;
+                return SceneLoadOutcome.Busy;
             }
 
             _isTransitioning = true;
@@ -119,7 +229,28 @@ namespace Mahjong.Unity.App
 
             try
             {
-                return await LoadAsyncInternal(sceneId);
+                return await LoadAsyncInternal(sceneId) ? SceneLoadOutcome.Loaded : SceneLoadOutcome.Failed;
+            }
+            finally
+            {
+                _isTransitioning = false;
+                UiInputLifecycle.Instance.TransitionEnd();
+            }
+        }
+
+        private async Task<SceneLoadOutcome> LoadForStartOwnerAsync(SceneId sceneId)
+        {
+            if (_isTransitioning)
+            {
+                return SceneLoadOutcome.Busy;
+            }
+
+            _isTransitioning = true;
+            UiInputLifecycle.Instance.OnTransition();
+
+            try
+            {
+                return await LoadAsyncInternal(sceneId) ? SceneLoadOutcome.Loaded : SceneLoadOutcome.Failed;
             }
             finally
             {
@@ -165,6 +296,10 @@ namespace Mahjong.Unity.App
 
         public async Task<bool> ReturnToMenuAsync()
         {
+            // A menu intent invalidates any in-flight local start before shutdown
+            // begins, even if the scene name later returns to Lobby.
+            Interlocked.Increment(ref _navigationGeneration);
+
             if (_isTransitioning)
             {
                 Debug.LogWarning("NAV_BUSY: Already transitioning");

@@ -21,25 +21,54 @@ namespace Mahjong.Unity.UI
         private ISessionView? _sessionView;
         private FocusRouter _focusRouter = new FocusRouter();
         private bool _destroyed;
+        private bool _started;
         private bool _startInFlight;
+        private bool _terminal;
+        private string _terminalCode = LocalGameStartResult.LocalHostTerminalCode;
 
         /// <summary>True while one start-local-game attempt is still in flight.</summary>
         public bool IsStartInFlight => _startInFlight;
 
+        /// <summary>True once this lobby observed a stable terminal result.</summary>
+        public bool IsTerminal => _terminal;
+
         public void Initialize(IAppNavigation navigation, ISessionView? sessionView = null)
         {
+            if (_destroyed)
+            {
+                return;
+            }
+
             _navigation = navigation;
-            _sessionView = sessionView;
+
+            if (!ReferenceEquals(_sessionView, sessionView))
+            {
+                DetachSessionView();
+                _sessionView = sessionView;
+            }
 
             if (_sessionView != null)
             {
+                // Idempotent rebind: remove first so repeated Initialize calls never
+                // accumulate duplicate listeners on the same view.
+                _sessionView.Changed -= OnSessionChanged;
                 _sessionView.Changed += OnSessionChanged;
                 UpdateSessionState(_sessionView.Current);
             }
+
+            // Initialize can legitimately arrive after Start (scene rebuild or late
+            // binding); apply the capability immediately so both orders converge.
+            ApplyLocalGameStartCapability();
         }
 
         private void Start()
         {
+            if (_started)
+            {
+                return;
+            }
+
+            _started = true;
             Debug.Log("LOBBY_PRESENTER_STARTED");
             if (_backButton != null)
             {
@@ -93,7 +122,15 @@ namespace Mahjong.Unity.UI
             _destroyed = true;
             if (_backButton != null) _backButton.onClick.RemoveListener(OnBackClicked);
             if (_startLocalGameButton != null) _startLocalGameButton.onClick.RemoveListener(OnStartLocalGameClicked);
-            if (_sessionView != null) _sessionView.Changed -= OnSessionChanged;
+            DetachSessionView();
+        }
+
+        private void DetachSessionView()
+        {
+            if (_sessionView != null)
+            {
+                _sessionView.Changed -= OnSessionChanged;
+            }
         }
 
         /// <summary>
@@ -103,7 +140,12 @@ namespace Mahjong.Unity.UI
         /// </summary>
         private void ApplyLocalGameStartCapability()
         {
-            bool available = _navigation != null && _navigation.IsLocalGameStartAvailable;
+            if (_destroyed)
+            {
+                return;
+            }
+
+            bool available = !_terminal && _navigation != null && _navigation.IsLocalGameStartAvailable;
             if (_startLocalGameButton != null)
             {
                 _startLocalGameButton.interactable = available && !_startInFlight;
@@ -112,6 +154,21 @@ namespace Mahjong.Unity.UI
                 {
                     label.text = available ? "开始本地对局" : "开始本地对局 (不可用)";
                 }
+            }
+
+            if (_terminal)
+            {
+                if (_statusText != null)
+                {
+                    _statusText.text = "本地对局不可用 (" + _terminalCode + ")";
+                }
+
+                if (_explanationText != null)
+                {
+                    _explanationText.text = "本地对局已进入终态隔离，本次进程内不可再次启动。";
+                }
+
+                return;
             }
 
             if (_statusText != null)
@@ -149,6 +206,7 @@ namespace Mahjong.Unity.UI
 
         private void OnSessionChanged(object? sender, SessionViewState state)
         {
+            if (_destroyed) return;
             UpdateSessionState(state);
         }
 
@@ -172,9 +230,10 @@ namespace Mahjong.Unity.UI
 
         public void OnStartLocalGameClicked()
         {
-            if (_destroyed || _startInFlight)
+            if (_destroyed || _startInFlight || _terminal)
             {
-                // Concurrent double-clicks create at most one open attempt.
+                // Concurrent double-clicks create at most one open attempt; a terminal
+                // composition is never retried from the UI.
                 return;
             }
 
@@ -228,18 +287,38 @@ namespace Mahjong.Unity.UI
                 case LocalGameStartStatus.Cancelled:
                     ApplyLocalGameStartCapability();
                     break;
+                case LocalGameStartStatus.Terminal:
+                    _terminal = true;
+                    _terminalCode = result.StableErrorCode ?? LocalGameStartResult.LocalHostTerminalCode;
+                    ApplyLocalGameStartCapability();
+                    break;
                 case LocalGameStartStatus.Failed:
+                    bool retryable = _navigation != null && _navigation.IsLocalGameStartAvailable;
                     if (_startLocalGameButton != null)
                     {
-                        _startLocalGameButton.interactable = _navigation != null && _navigation.IsLocalGameStartAvailable;
+                        _startLocalGameButton.interactable = retryable;
                     }
-                    if (_statusText != null)
+                    if (retryable)
                     {
-                        _statusText.text = "本地对局打开失败 (" + result.StableErrorCode + ")，可重试";
+                        if (_statusText != null)
+                        {
+                            _statusText.text = "本地对局打开失败 (" + result.StableErrorCode + ")，可重试";
+                        }
+                        if (_explanationText != null)
+                        {
+                            _explanationText.text = "打开未成功，可再次点击重试。错误码: " + result.StableErrorCode;
+                        }
                     }
-                    if (_explanationText != null)
+                    else
                     {
-                        _explanationText.text = "打开未成功，可再次点击重试。错误码: " + result.StableErrorCode;
+                        if (_statusText != null)
+                        {
+                            _statusText.text = "本地对局不可用 (" + result.StableErrorCode + ")";
+                        }
+                        if (_explanationText != null)
+                        {
+                            _explanationText.text = "本地对局当前不可用，不会自动重试。错误码: " + result.StableErrorCode;
+                        }
                     }
                     break;
             }

@@ -52,7 +52,75 @@ namespace Mahjong.Unity.App
         /// factories also report true so the UI state machine and lifecycle error paths can be
         /// exercised; that is never production evidence of a real host.
         /// </summary>
-        public bool SupportsLocalStart => !(ChannelFactory is UnavailableLocalTableChannelFactory);
+        public bool SupportsLocalStart
+        {
+            get
+            {
+                lock (_gate)
+                {
+                    if (_isAppQuitting || _isSessionShuttingDown || _isQuarantined || _quarantinedShutdownResult != null)
+                    {
+                        return false;
+                    }
+
+                    if (_activeShutdownTask != null && !_activeShutdownTask.IsCompleted)
+                    {
+                        return false;
+                    }
+
+                    if (_sessionCoordinator != null && _sessionCoordinator.IsQuarantined)
+                    {
+                        return false;
+                    }
+
+                    return !(ChannelFactory is UnavailableLocalTableChannelFactory);
+                }
+            }
+        }
+
+        /// <summary>
+        /// True once this composition reached a terminal failure (quarantine, close
+        /// fault or bounded timeout). A terminal composition is never reusable in
+        /// this process and must not advertise local-start capability.
+        /// </summary>
+        public bool IsTerminal
+        {
+            get
+            {
+                lock (_gate)
+                {
+                    return _isQuarantined ||
+                           _quarantinedShutdownResult != null ||
+                           (_sessionCoordinator != null && _sessionCoordinator.IsQuarantined);
+                }
+            }
+        }
+
+        /// <summary>Terminal shutdown result, or null while the composition is healthy.</summary>
+        public ShutdownResult? TerminalResult
+        {
+            get
+            {
+                lock (_gate) { return _quarantinedShutdownResult; }
+            }
+        }
+
+        /// <summary>
+        /// True while a shutdown or application quit is in progress. New starts must
+        /// be rejected rather than entering a closing owner.
+        /// </summary>
+        public bool IsShutdownInProgress
+        {
+            get
+            {
+                lock (_gate)
+                {
+                    return _isAppQuitting ||
+                           _isSessionShuttingDown ||
+                           (_activeShutdownTask != null && !_activeShutdownTask.IsCompleted);
+                }
+            }
+        }
 
         public AppComposition(
             AppConfig config,

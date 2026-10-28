@@ -7,7 +7,13 @@ namespace Mahjong.Unity.UI
         Started = 0,
         Busy = 1,
         Cancelled = 2,
-        Failed = 3
+        Failed = 3,
+        /// <summary>
+        /// Stable terminal state (quarantine, close fault or bounded shutdown
+        /// timeout). The composition is not reusable in this process and the UI
+        /// must not offer a retry.
+        /// </summary>
+        Terminal = 4
     }
 
     /// <summary>
@@ -18,6 +24,7 @@ namespace Mahjong.Unity.UI
     {
         public const string LocalHostUnavailableCode = "LOCAL_HOST_UNAVAILABLE";
         public const string LocalHostStartFailedCode = "LOCAL_HOST_START_FAILED";
+        public const string LocalHostTerminalCode = "LOCAL_HOST_TERMINAL";
         public const string TableSceneUnavailableCode = "TABLE_SCENE_UNAVAILABLE";
         public const string UnexpectedFailureCode = "LOCAL_GAME_START_FAILED";
 
@@ -35,6 +42,9 @@ namespace Mahjong.Unity.UI
 
         public string? StableErrorCode { get; }
 
+        /// <summary>True only for the stable terminal status.</summary>
+        public bool IsTerminal => Status == LocalGameStartStatus.Terminal;
+
         public static LocalGameStartResult Started() => StartedResult;
 
         public static LocalGameStartResult Busy() => BusyResult;
@@ -43,6 +53,9 @@ namespace Mahjong.Unity.UI
 
         public static LocalGameStartResult Failed(string stableErrorCode) =>
             new LocalGameStartResult(LocalGameStartStatus.Failed, stableErrorCode);
+
+        public static LocalGameStartResult Terminal(string stableErrorCode) =>
+            new LocalGameStartResult(LocalGameStartStatus.Terminal, stableErrorCode);
     }
 
     public interface IAppNavigation
