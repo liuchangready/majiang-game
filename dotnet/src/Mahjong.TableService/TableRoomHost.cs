@@ -386,7 +386,8 @@ namespace Mahjong.TableService
             TableDurableContext? durable,
             OwnerEpoch initialOwnerEpoch,
             RoundStateMachine round,
-            TableRoomDecisionState decisionState)
+            TableRoomDecisionState decisionState,
+            TableProjectionContextSource? projectionContextSource = null)
         {
             var actorOptions = new TableActorOptions
             {
@@ -404,7 +405,10 @@ namespace Mahjong.TableService
                 clock,
                 publicationSink,
                 controlCommitPort: null,
-                projectionContextSource: new TableProjectionContextSource(decisionState, round),
+                // D-R1-01: cold recovery injects a source anchored on the room's own verified
+                // checkpoint so tsumogiri derivation never consults this process's freshly
+                // drawn placeholder round; every other path keeps the bootstrap anchor.
+                projectionContextSource: projectionContextSource ?? new TableProjectionContextSource(decisionState, round),
                 streamOptions,
                 durable,
                 settlementFactsPort: null);

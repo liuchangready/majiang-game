@@ -297,27 +297,41 @@ namespace Mahjong.TableService
         /// </summary>
         private async Task<RoomHost> RecoverExistingRoomAsync(string roomId)
         {
-            RoundStateMachine round = RoomHost.CreateInitialRound(roomId, _roundSource!);
-            CheatLedger ledger = CheatLedger.Initialize(TableProjectionContextSource.DefaultEconomy);
-            TableServiceCommitPort commitPort = new TableServiceCommitPort(
-                new OwnerEpoch(RoomHost.InitialOwnerEpochValue));
-            TableDurableContext durable = BuildDurableContext(roomId, ledger);
-            var decisionState = new TableRoomDecisionState();
-            TableActor actor = RoomHost.CreateActor(
-                roomId,
-                _options,
-                commitPort,
-                _clock,
-                null,
-                RoomHost.CreateStreamOptions(_options, _codec, new LazyRoomTerminationShim(this, roomId)),
-                durable,
-                new OwnerEpoch(RoomHost.InitialOwnerEpochValue),
-                round,
-                decisionState);
+            (TableActor Actor, TableDurableContext Durable, TableServiceCommitPort CommitPort,
+                TableRoomDecisionState DecisionState, TableRecoveryResult Result) attempt =
+                await RunRecoveryAttemptAsync(roomId).ConfigureAwait(false);
+            TableRecoveryResult recovery = attempt.Result;
 
-            TableRecoveryResult recovery = await actor
-                .RecoverFromStoreAsync(CancellationToken.None)
-                .ConfigureAwait(false);
+            // One bounded retry, and ONLY for the fence's optimistic-concurrency refusal.
+            // The frozen install fence claims the lease first, rebuilds the whole room on
+            // the serial queue (nothing renews the lease in between) and re-verifies last;
+            // on a cold process that rebuild can outlive a minimum-sized lease TTL and the
+            // fence then refuses its OWN claim with RECOVERY_STATE_CHANGED. Re-running the
+            // complete verified recovery is not a guess: every integrity check and the
+            // install fence execute again, so a real integrity surprise still fails closed
+            // — permanently, on this second refusal, exactly like the first.
+            if (!recovery.Recovered && recovery.ReasonCode == TableRuntimeReasonCode.RecoveryStateChanged)
+            {
+                try
+                {
+                    await attempt.Actor.DisposeAsync().ConfigureAwait(false);
+                }
+                catch (Exception)
+                {
+                }
+
+                await WaitForAbandonedLeaseExpiryAsync(roomId).ConfigureAwait(false);
+                Console.Error.WriteLine(
+                    "tablesvc: cold recovery retry room=" + roomId +
+                    " after=RECOVERY_STATE_CHANGED attempt=2 (bounded; second refusal is final)");
+                attempt = await RunRecoveryAttemptAsync(roomId).ConfigureAwait(false);
+                recovery = attempt.Result;
+            }
+
+            TableActor actor = attempt.Actor;
+            TableDurableContext durable = attempt.Durable;
+            TableServiceCommitPort commitPort = attempt.CommitPort;
+            TableRoomDecisionState decisionState = attempt.DecisionState;
             if (!recovery.Recovered || recovery.Baseline == null)
             {
                 try
@@ -361,6 +375,234 @@ namespace Mahjong.TableService
                 decisionState,
                 serviceScope,
                 control.RecoveryGeneration);
+        }
+
+        /// <summary>
+        /// One full cold-recovery attempt: a fresh placeholder round, a fresh projection
+        /// anchor read (D-R1-01), a fresh actor, and the accepted verified recovery. The
+        /// recovery window is bounded by the lease the recovery service acquires FIRST and
+        /// re-verifies LAST (the frozen actor fence): nothing renews it while the serial
+        /// queue rebuilds the room, so the attempt also logs the real window — lease
+        /// sizing gets evidence instead of folklore.
+        /// </summary>
+        private async Task<(
+            TableActor Actor,
+            TableDurableContext Durable,
+            TableServiceCommitPort CommitPort,
+            TableRoomDecisionState DecisionState,
+            TableRecoveryResult Result)> RunRecoveryAttemptAsync(string roomId)
+        {
+            RoundStateMachine round = RoomHost.CreateInitialRound(roomId, _roundSource!);
+            CheatLedger ledger = CheatLedger.Initialize(TableProjectionContextSource.DefaultEconomy);
+            TableServiceCommitPort commitPort = new TableServiceCommitPort(
+                new OwnerEpoch(RoomHost.InitialOwnerEpochValue));
+            TableDurableContext durable = BuildDurableContext(roomId, ledger);
+            var decisionState = new TableRoomDecisionState();
+            // D-R1-01: the projection source must derive tsumogiri from the room's OWN
+            // verified persisted state — never from this process's freshly drawn placeholder
+            // round (a different shuffle would silently rewrite the opening discard's
+            // tsumogiri identity across recovery). The placeholder round still exists only
+            // as the actor's construction argument; the accepted recovery replaces it with
+            // the verified baseline after the final fence. The anchor read happens BEFORE
+            // the recovery service claims the lease, so it never widens the verify window.
+            TableProjectionContextSource projectionSource = await LoadRecoveryProjectionSourceAsync(roomId, decisionState).ConfigureAwait(false);
+            TableActor actor = RoomHost.CreateActor(
+                roomId,
+                _options,
+                commitPort,
+                _clock,
+                null,
+                RoomHost.CreateStreamOptions(_options, _codec, new LazyRoomTerminationShim(this, roomId)),
+                durable,
+                new OwnerEpoch(RoomHost.InitialOwnerEpochValue),
+                round,
+                decisionState,
+                projectionSource);
+
+            var recoveryWatch = System.Diagnostics.Stopwatch.StartNew();
+            TableRecoveryResult recovery = await actor
+                .RecoverFromStoreAsync(CancellationToken.None)
+                .ConfigureAwait(false);
+            recoveryWatch.Stop();
+            Console.Error.WriteLine(
+                "tablesvc: cold recovery window room=" + roomId +
+                " ms=" + recoveryWatch.ElapsedMilliseconds +
+                " recovered=" + recovery.Recovered +
+                " code=" + recovery.ReasonCode);
+            return (actor, durable, commitPort, decisionState, recovery);
+        }
+
+        /// <summary>
+        /// Bounded wait so the retry's lease acquire arbitrates against a row it can
+        /// actually take. The usual case needs no wait at all: the refused attempt
+        /// abandoned OUR OWN lease, and the lease acquire's upsert re-acquires a live row
+        /// held by the same owner instance. Only a FOREIGN live owner (a successor host
+        /// claiming the room while we recover) is worth a bounded pause for; the acquire
+        /// itself stays the sole authority and fails closed on anything it refuses.
+        /// </summary>
+        private async Task WaitForAbandonedLeaseExpiryAsync(string roomId)
+        {
+            ulong deadlineMs = (ulong)_clock.UtcNowMs + (ulong)_leaseTtl.TotalMilliseconds + 2000;
+            while (true)
+            {
+                TableLeaseSnapshot? lease = await _store
+                    .GetAsync(roomId, CancellationToken.None)
+                    .ConfigureAwait(false);
+                ulong nowMs = (ulong)_clock.UtcNowMs;
+                if (lease == null ||
+                    lease.IsExpiredAt(nowMs) ||
+                    string.Equals(lease.OwnerInstance, _ownerInstance, StringComparison.Ordinal))
+                {
+                    return;
+                }
+
+                if (nowMs >= deadlineMs)
+                {
+                    return;
+                }
+
+                await Task.Delay(200, CancellationToken.None).ConfigureAwait(false);
+            }
+        }
+
+        /// <summary>
+        /// D-R1-01: the projection source a cold-recovered room is served with, anchored on
+        /// the room's own checkpoint instead of this process's freshly drawn placeholder
+        /// round. Every integrity surprise fails closed (a clean admission refusal), never a
+        /// guessed tsumogiri value.
+        /// </summary>
+        private async Task<TableProjectionContextSource> LoadRecoveryProjectionSourceAsync(
+            string roomId,
+            TableRoomDecisionState decisionState)
+        {
+            TableCheckpoint? checkpoint;
+            try
+            {
+                checkpoint = await _store
+                    .LoadCheckpointAsync(roomId, CancellationToken.None)
+                    .ConfigureAwait(false);
+            }
+            catch (Exception exception)
+            {
+                _failedRooms[roomId] = "RECOVERY_ANCHOR_UNAVAILABLE";
+                throw new TableServiceCapacityException(
+                    "RECOVERY_ANCHOR_UNAVAILABLE",
+                    "The room's checkpoint could not be read for projection anchoring: " + Redact(exception));
+            }
+
+            if (checkpoint == null)
+            {
+                // No durable checkpoint: the accepted recovery refuses this room downstream
+                // (CHECKPOINT_MISSING). The anchor path adds no behavior of its own.
+                return new TableProjectionContextSource(decisionState);
+            }
+
+            try
+            {
+                return BuildRecoveryProjectionSource(checkpoint, decisionState);
+            }
+            catch (Exception exception)
+            {
+                _failedRooms[roomId] = "RECOVERY_ANCHOR_UNAVAILABLE";
+                Console.Error.WriteLine(
+                    "tablesvc: recovery projection anchor refused room=" + roomId +
+                    " stateVersion=" + checkpoint.StateVersion.Value +
+                    " detail=" + Redact(exception));
+                throw new TableServiceCapacityException(
+                    "RECOVERY_ANCHOR_UNAVAILABLE",
+                    "The room's persisted projection anchor could not be verified: " + Redact(exception));
+            }
+        }
+
+        /// <summary>
+        /// The anchor derivation over one checkpoint row (the checkpoint type already
+        /// validated every payload against its own digest at load). The chain walk mirrors
+        /// the projection's own replay exactly: a discard is anchor-decidable only when its
+        /// seat has neither a chain draw nor an own meld — in a realizable chain that is the
+        /// deal-extra seat's opening discard, the one discard whose tsumogiri identity the
+        /// event chain alone cannot express.
+        /// </summary>
+        private static TableProjectionContextSource BuildRecoveryProjectionSource(
+            TableCheckpoint checkpoint,
+            TableRoomDecisionState decisionState)
+        {
+            RoundRecoveryState captured = RoundRecoveryCodec.Decode(checkpoint.StatePayload);
+            int openingSeat = -1;
+            TileId openingTile = default;
+            var chainDrawn = new bool[4];
+            var chainMelded = new bool[4];
+            IReadOnlyList<RoundEvent> events = captured.Events;
+            for (int i = 0; i < events.Count && openingSeat < 0; i++)
+            {
+                RoundEvent roundEvent = events[i];
+                switch (roundEvent.Type)
+                {
+                    case RoundEventType.TileDrawn:
+                    case RoundEventType.RinshanDrawn:
+                        chainDrawn[roundEvent.Seat] = true;
+                        break;
+                    case RoundEventType.ChiDeclared:
+                    case RoundEventType.PonDeclared:
+                    case RoundEventType.KanDeclared:
+                        chainMelded[roundEvent.Seat] = true;
+                        break;
+                    case RoundEventType.TileDiscarded:
+                        if (!chainDrawn[roundEvent.Seat] && !chainMelded[roundEvent.Seat])
+                        {
+                            if (!roundEvent.Tile.HasValue)
+                            {
+                                throw new InvalidOperationException(
+                                    "The captured chain's opening discard carries no tile (ordinal " +
+                                    roundEvent.Ordinal + ").");
+                            }
+
+                            openingSeat = roundEvent.Seat;
+                            openingTile = roundEvent.Tile.Value;
+                        }
+
+                        break;
+                }
+            }
+
+            if (openingSeat >= 0)
+            {
+                // Tier 2: the deal seat's opening discard already committed before the
+                // checkpoint, so no pending deal-extra evidence survives in the payload.
+                // The checkpoint's published river fact carries that discard's verified
+                // tsumogiri identity, cross-checked against the captured chain's event.
+                if (checkpoint.CommittedFactsPayload == null)
+                {
+                    throw new InvalidOperationException(
+                        "The captured chain contains an opening discard but the checkpoint carries no published facts.");
+                }
+
+                TableProjectionContextData facts = TableProjectionFactsCodec.Decode(
+                    checkpoint.CommittedFactsPayload,
+                    captured.Spec.RoundId,
+                    checkpoint.StateVersion);
+                if (openingSeat >= facts.PublicFacts.Count)
+                {
+                    throw new InvalidOperationException(
+                        "The published facts carry no entry for the opening seat " + openingSeat + ".");
+                }
+
+                IReadOnlyList<Mahjong.Contracts.DiscardView> discards = facts.PublicFacts[openingSeat].Discards;
+                if (discards.Count == 0 ||
+                    discards[0].TileId != unchecked((uint)openingTile.Value))
+                {
+                    throw new InvalidOperationException(
+                        "The opening discard's published river entry is missing or does not match the captured chain.");
+                }
+
+                return new TableProjectionContextSource(
+                    decisionState,
+                    null,
+                    new TablePersistedOpeningAnchor(openingSeat, openingTile, discards[0].Tsumogiri));
+            }
+
+            // Tier 1: the pending deal-extra evidence (or a later draw's pending evidence no
+            // drawless discard can ever consult) travels in the checkpoint payload itself.
+            return new TableProjectionContextSource(decisionState, captured.Tiles.DrawnTile, null);
         }
 
         /// <summary>

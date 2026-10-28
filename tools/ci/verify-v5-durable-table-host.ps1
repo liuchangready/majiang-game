@@ -30,23 +30,35 @@
       4. regression gates: TableService (152), TableRuntime (400), Infrastructure
          (35) direct xUnit v3 DLL runs - every count attribute gated, zero skips
       5. durable-host test suite (real PG, fail-closed env guard)
-      6. E2E: phase-1 (bootstrap + APPLIED + same-key replay, session held open)
-         -> kill -9 the host while the client is still connected (the true crash
-         shape: no graceful teardown can poison the checkpoint) -> phase-2 cold
-         recovery in a NEW process (receipt query; same-key retry fails closed;
-         APPLIED ledger row unchanged)
-      7. dual host over one DB: foreign live lease refuses, first host still serves
-      8. DB-unavailable host refuses to start (fail closed, no listener)
-      9. revoked scope: recorded receipt still queryable, zero new side effects
-     10. cross-account receipt query refused (SCOPE_MISMATCH), unknown request inert
-     11. tampered event hash / event gap: each corrupted room is killed mid-session
+      6. E2E over CONTROLLED WSS (worker certgen test root/leaf; every host serves
+         the leaf, every probe validates it with a strict per-connection
+         CustomRootTrust callback - name and validity included):
+         phase-1 (bootstrap + APPLIED + same-key replay + the public discard fact
+         recorded, session held open) -> kill -9 the host while the client is still
+         connected (the true crash shape: no graceful teardown can poison the
+         checkpoint) -> phase-2 cold recovery in a NEW process (receipt query;
+         same-key retry fails closed; APPLIED ledger row unchanged; the pre-crash
+         public discard history re-read from the live successor must still START
+         with the recorded tiles - a re-dealt wall cannot)
+      7. controlled-WSS refusal negatives: a foreign root, a wrong-name leaf and an
+         expired leaf are each refused by the strict per-connection trust on the
+         real persistent host chain (no global trust, no bypass callback)
+      8. dual host over one DB: foreign live lease refuses, first host still serves
+      9. DB-unavailable host refuses to start (fail closed, no listener)
+     10. revoked scope: recorded receipt still queryable, zero new side effects
+     11. cross-account receipt query refused (SCOPE_MISMATCH), unknown request inert
+     12. tampered event hash / event gap: each corrupted room is killed mid-session
          (crash shape), and a successor process refuses the room and readiness
          reports known-and-not-serving (503)
-     12. ownership-verified stop/delete, logs, XML, SHA-256 manifest and summary
+     13. ownership-verified stop/delete, logs, XML, SHA-256 manifest and summary
 
-    NOT covered by design (NOT_RUN for the next P5.4b batch): production TLS/WSS
-    termination, Lobby HTTPS ticket issuance, multi-client full-match play,
-    account asset settlement and cross-physical-network paths.
+    NOT covered by design (NOT_RUN for the next P5.4b batch): PRODUCTION TLS/WSS
+    termination (real CA-issued certificates, public endpoints, Lobby HTTPS ticket
+    issuance), multi-client full-match play, account asset settlement and
+    cross-physical-network paths. Everything above runs on CONTROLLED WSS with the
+    test root the worker itself generates - it proves the persistent host chain
+    terminates TLS and enforces per-connection validation, not a production
+    certificate deployment.
 
     A missing PG binary/key/dotnet path is BLOCKED (exit 2), never a skipped or
     zero-test green.
@@ -121,6 +133,7 @@ $script:EnvNames = @(
     'TABLESERVICE_HANDSHAKE_TIMEOUT_MS',
     'TABLESERVICE_LEASE_TTL_SECONDS',
     'TABLESERVICE_TLS_PFX',
+    'TABLESERVICE_TLS_PFX_PASSWORD',
     'DOTNET_CLI_UI_LANGUAGE',
     'DOTNET_CLI_TELEMETRY_OPTOUT',
     'DOTNET_NOLOGO',
@@ -479,9 +492,86 @@ function Stop-And-RemoveCluster {
         throw "A postgres.exe process still references $($script:DataDir); refusing deletion."
     }
 
-    Remove-Item -LiteralPath $safeRoot -Recurse -Force
-    if (Test-Path -LiteralPath $safeRoot) { throw "Cleanup failed: $safeRoot still exists." }
+    Remove-TreeLongPath $safeRoot
+    if ([System.IO.Directory]::Exists('\\?\' + $safeRoot)) { throw "Cleanup failed: $safeRoot still exists." }
     Write-Step "ownership-verified cluster removed: $safeRoot"
+}
+
+function Remove-TreeLongPath {
+    # D-R1-04: recursive deletion that survives MAX_PATH. PS 5.1's Remove-Item
+    # -Recurse walks every child through the legacy normalization limit, so a deep
+    # artifacts cluster Root (PG relation names stack fast) dies mid-delete and
+    # leaves the directory half-removed. The \\?\ extended-length form hands the
+    # tree to System.IO.Directory.Delete verbatim — no registry pivot
+    # (LongPathsEnabled stays untouched), no shell out, no worker process.
+    # Ownership discipline lives with the CALLER: every guard in
+    # Stop-And-RemoveCluster runs before this, and a failure here propagates so
+    # the wrapper's cleanup gate turns the run FAIL — never a quiet PASS over a
+    # half-deleted cluster.
+    param([Parameter(Mandatory = $true)][string]$Path)
+    if ([string]::IsNullOrWhiteSpace($Path)) { throw 'Remove-TreeLongPath: refusing an empty path.' }
+    # Refuse relative input on the RAW path: GetFullPath would silently resolve it
+    # against the process CWD and turn the refusal into a no-op deletion elsewhere.
+    if (-not [System.IO.Path]::IsPathRooted($Path)) { throw "Remove-TreeLongPath: refusing a relative path: $Path" }
+    # \\?\ disables normalization, so the input must already be canonical: fullpath
+    # it (legal here — guarded callers pass short roots; only the CHILDREN are deep).
+    $full = [System.IO.Path]::GetFullPath($Path).TrimEnd('\')
+    $extended = '\\?\' + $full
+    if (-not [System.IO.Directory]::Exists($extended)) { return }
+    [System.IO.Directory]::Delete($extended, $true)
+    if ([System.IO.Directory]::Exists($extended)) {
+        throw "Remove-TreeLongPath: the tree still exists after delete: $full"
+    }
+}
+
+function Assert-ClusterRemovalSelfTest {
+    # D-R1-04: the removal mechanics, exercised on the production shape (a SHORT
+    # root whose CHILDREN overflow MAX_PATH) plus the two failure disciplines:
+    # a locked tree must propagate the failure (never swallow), and a relative
+    # path must be refused. Deep paths are built through \\?\ creation itself,
+    # because PS 5.1's plain CreateDirectory hits the same 260 limit it is being
+    # tested against.
+    $tmp = Join-Path $script:LogDir 'tmp\cluster-removal-selfcheck'
+    New-Item -ItemType Directory -Path $tmp -Force | Out-Null
+
+    $pad = 'relational-map-segment-with-long-name-'
+    $deep = $tmp
+    for ($i = 0; $i -lt 8; $i++) { $deep = Join-Path $deep ($pad + $i) }
+    $deepFile = Join-Path $deep 'pg_filenode.map.bin'
+    if ($deepFile.Length -le 260) { throw 'cluster removal self-check: the probe tree did not reach MAX_PATH depth.' }
+    New-Item -ItemType Directory -Path ('\\?\' + $deep) -Force | Out-Null
+    [System.IO.File]::WriteAllText(('\\?\' + $deepFile), 'probe')
+
+    $checked = 0
+    Remove-TreeLongPath $tmp
+    if ([System.IO.Directory]::Exists('\\?\' + $deep)) {
+        throw "cluster removal self-check: the deep tree survived deletion at '$deep'."
+    }
+    $checked++
+
+    # Locked tree: an exclusive handle on a child must surface as a THROW — a
+    # silent partial delete would let the wrapper report a clean cluster removal.
+    New-Item -ItemType Directory -Path ('\\?\' + $deep) -Force | Out-Null
+    [System.IO.File]::WriteAllText(('\\?\' + $deepFile), 'locked')
+    $lock = [System.IO.File]::Open(('\\?\' + $deepFile), 'Open', 'Read', 'None')
+    try {
+        $threw = $false
+        try { Remove-TreeLongPath $tmp } catch { $threw = $true }
+        if (-not $threw) { throw 'cluster removal self-check: deleting a locked tree did not fail loudly.' }
+    }
+    finally { $lock.Dispose() }
+    Remove-TreeLongPath $tmp
+    if ([System.IO.Directory]::Exists('\\?\' + $deep)) {
+        throw 'cluster removal self-check: the locked tree could not be removed after the handle was released.'
+    }
+    $checked++
+
+    $threw = $false
+    try { Remove-TreeLongPath (Join-Path 'relative' 'tree') } catch { $threw = $true }
+    if (-not $threw) { throw 'cluster removal self-check: a relative path was not refused.' }
+    $checked++
+
+    return $checked
 }
 
 function Get-XmlCounts([string]$XmlPath) {
@@ -547,6 +637,66 @@ function Assert-XmlGatingSelfTest {
     return $checked
 }
 
+function Assert-WorkerGateSelfTest {
+    # D-R1-03: the hold gate must survive every stdout shape a live worker can
+    # produce mid-flush. Each case pins one observed hazard: a zero-byte file
+    # (Get-Content -Raw yields $null — a bare .IndexOf on it crashed the runner),
+    # evidence JSON landing before the marker line, a segmented partial write, the
+    # healthy marker, crash output with no flushed evidence, and the vanished-file
+    # TOCTOU outcome. The negative cases must stay red, the healthy case green.
+    $tmp = Join-Path $script:LogDir 'tmp\worker-gate-selfcheck'
+    New-Item -ItemType Directory -Path $tmp -Force | Out-Null
+    $evidence = Join-Path $tmp 'evidence.json'
+    Set-Content -LiteralPath $evidence -Value '{"room":"selfcheck"}' -Encoding utf8
+    $missing = Join-Path $tmp 'missing.json'
+
+    $empty = Join-Path $tmp 'empty.log'
+    [System.IO.File]::WriteAllText($empty, '')  # true zero-byte file, not a newline
+    $jsonFirst = Join-Path $tmp 'json-first.log'
+    Set-Content -LiteralPath $jsonFirst -Value '{"room":"selfcheck"}' -Encoding utf8
+    $segmented = Join-Path $tmp 'segmented.log'
+    Set-Content -LiteralPath $segmented -Value 'evidence written, holding-sess' -Encoding utf8
+    $marked = Join-Path $tmp 'marked.log'
+    Set-Content -LiteralPath $marked -Value "evidence written`r`nholding-session-open" -Encoding utf8
+
+    $checked = 0
+    $emptyText = Read-WorkerText $empty
+    if ($null -eq $emptyText -or $emptyText -ne '') {
+        throw 'worker gate self-check: a zero-byte stdout must snapshot as an empty string.'
+    }
+    if (Test-WorkerHeldOpen -EvidencePath $evidence -StdoutText $emptyText) {
+        throw "worker gate self-check accepted case 'empty'."
+    }
+    $checked++
+
+    if (Test-WorkerHeldOpen -EvidencePath $evidence -StdoutText (Read-WorkerText $jsonFirst)) {
+        throw "worker gate self-check accepted case 'json-first'."
+    }
+    $checked++
+
+    if (Test-WorkerHeldOpen -EvidencePath $evidence -StdoutText (Read-WorkerText $segmented)) {
+        throw "worker gate self-check accepted case 'segmented'."
+    }
+    $checked++
+
+    if (-not (Test-WorkerHeldOpen -EvidencePath $evidence -StdoutText (Read-WorkerText $marked))) {
+        throw "worker gate self-check rejected case 'marked'."
+    }
+    $checked++
+
+    if (Test-WorkerHeldOpen -EvidencePath $missing -StdoutText (Read-WorkerText $marked)) {
+        throw "worker gate self-check accepted case 'no-evidence'."
+    }
+    $checked++
+
+    if (Test-WorkerHeldOpen -EvidencePath $evidence -StdoutText (Read-WorkerText (Join-Path $tmp 'vanished.log'))) {
+        throw "worker gate self-check accepted case 'vanished'."
+    }
+    $checked++
+
+    return $checked
+}
+
 function Invoke-TestRun {
     param(
         [Parameter(Mandatory = $true)][string]$Name,
@@ -596,30 +746,31 @@ function Invoke-Worker {
     return $code
 }
 
-function Get-HttpStatus([string]$Url) {
-    try {
-        $request = [System.Net.HttpWebRequest]::Create($Url)
-        $request.Method = 'GET'
-        $request.Timeout = 3000
-        $request.ReadWriteTimeout = 3000
-        $response = $request.GetResponse()
-        $status = [int]$response.StatusCode
-        $response.Close()
-        return $status
-    }
-    catch [System.Net.WebException] {
-        if ($_.Exception.Response) {
-            return [int]$_.Exception.Response.StatusCode
-        }
-        return 0
-    }
-    catch { return 0 }
+function Invoke-HostHealth {
+    # D-R1-02: readiness under the controlled-WSS shape rides the SAME strict
+    # per-connection trust as the admissions themselves — the worker's health mode
+    # validates the served certificate (isolated root, name, validity) and exits 0
+    # only on the EXACT expected status. Expect 200 for liveness (Start-TableHost
+    # owns that call), 503 for known-and-not-serving readiness below. A plain
+    # PowerShell GET could not tell a live host from a wrong-certificate impostor,
+    # so there is deliberately no unvalidated fallback.
+    param(
+        [Parameter(Mandatory = $true)][int]$HostPort,
+        [Parameter(Mandatory = $true)][string]$Name
+    )
+    return Invoke-Native -FilePath $DotnetPath -Arguments @(
+        $script:WorkerDll, 'health',
+        '--url', "https://127.0.0.1:$HostPort/health/ready",
+        '--ca-root', $script:TlsRootPem,
+        '--expect', '503') -LogPath (Join-Path $script:LogDir ($Name + '.log')) -TimeoutSeconds 30
 }
 
 function Start-TableHost {
     param(
         [Parameter(Mandatory = $true)][int]$HostPort,
-        [Parameter(Mandatory = $true)][string]$Name
+        [Parameter(Mandatory = $true)][string]$Name,
+        [string]$TlsPfx = $script:TlsLeafPfx,
+        [switch]$SkipHealthGate
     )
     $out = Join-Path $script:LogDir ($Name + '.stdout.log')
     $err = Join-Path $script:LogDir ($Name + '.stderr.log')
@@ -628,7 +779,18 @@ function Start-TableHost {
     # admission/health endpoints are reachable at a known address — never an ephemeral
     # one the wrapper would have to scrape out of stdout.
     $env:TABLESERVICE_HTTP_PORT = "$HostPort"
+    if ($TlsPfx) {
+        # Windows snapshots the child's environment block at process creation, so the
+        # per-host leaf is set here and cleared right after Start: each host reads ITS
+        # OWN leaf even though later stages spawn different hosts from this process.
+        $env:TABLESERVICE_TLS_PFX = $TlsPfx
+        $env:TABLESERVICE_TLS_PFX_PASSWORD = ''
+    }
     $process = Start-Process -FilePath $DotnetPath -ArgumentList ('"' + $script:HostDll + '"') -WindowStyle Hidden -PassThru -RedirectStandardOutput $out -RedirectStandardError $err
+    if ($TlsPfx) {
+        Remove-Item -LiteralPath 'env:TABLESERVICE_TLS_PFX' -ErrorAction SilentlyContinue
+        Remove-Item -LiteralPath 'env:TABLESERVICE_TLS_PFX_PASSWORD' -ErrorAction SilentlyContinue
+    }
     $script:HostProcesses.Add($process) | Out-Null
     $deadline = (Get-Date).AddSeconds(60)
     while ((Get-Date) -lt $deadline) {
@@ -639,16 +801,34 @@ function Start-TableHost {
             # processes (measured), and the stderr text is the real diagnosis anyway.
             throw "Table host $Name exited before becoming live (see stderr): $stderrText"
         }
-        $live = Get-HttpStatus ("http://127.0.0.1:$HostPort/health/live")
-        if ($live -eq 200) {
-            Write-Step "host $Name live on 127.0.0.1:$HostPort (pid $($process.Id))"
-            return $process
-        }
+        # Plain TCP bound is only the WAIT signal (a raw connect proves a listener, not
+        # TLS); the strict health gate below is the real liveness proof.
+        if (Test-PortInUse -Value $HostPort) { break }
         Start-Sleep -Milliseconds 200
     }
 
-    try { Stop-Process -Id $process.Id -Force } catch { }
-    throw "Table host $Name did not become live within 60 seconds."
+    if (-not (Test-PortInUse -Value $HostPort)) {
+        try { Stop-Process -Id $process.Id -Force } catch { }
+        throw "Table host $Name never bound 127.0.0.1:$HostPort within 60 seconds."
+    }
+
+    if (-not $SkipHealthGate) {
+        # Liveness = a worker HTTPS health GET through the SAME strict per-connection
+        # root trust as the WSS admissions (isolated root.pem; no OS store, no global
+        # callback). An http:// probe here would silently bless a host serving no TLS.
+        $healthLog = Join-Path $script:LogDir ($Name + '.health.log')
+        $healthCode = Invoke-Native -FilePath $DotnetPath -Arguments @(
+            $script:WorkerDll, 'health',
+            '--url', "https://127.0.0.1:$HostPort/health/live",
+            '--ca-root', $script:TlsRootPem,
+            '--expect', '200') -LogPath $healthLog -TimeoutSeconds 60
+        if ($healthCode -ne 0) {
+            throw "Table host $Name failed the strict TLS health gate (exit $healthCode, see $healthLog)."
+        }
+    }
+
+    Write-Step "host $Name live on wss://127.0.0.1:$HostPort (pid $($process.Id), leaf $([System.IO.Path]::GetFileName($TlsPfx)))"
+    return $process
 }
 
 function Stop-TableHost {
@@ -677,6 +857,43 @@ function Stop-TableHost {
     Write-Step "host $Name force-killed (pid $($Process.Id))"
 }
 
+function Read-WorkerText {
+    # D-R1-03: a LOCAL SNAPSHOT of a live worker's redirected stream file, with the
+    # empty case made explicit. Test-Path alone is a TOCTOU lie — the worker can
+    # create, truncate or lock the file between the probe and the read — and
+    # Get-Content -Raw returns $null for a zero-byte file, so a bare
+    # $snapshot.IndexOf(...) crashed the runner ("You cannot call a method on a
+    # null-valued expression") instead of reporting the worker's own diagnosis.
+    # Always returns a string: '' when the file is absent, empty, unreadable or
+    # mid-flush; the full text otherwise.
+    param([Parameter(Mandatory = $true)][AllowEmptyString()][string]$Path)
+    # Materialize before returning: `return [string](Get-Content ...)` on a zero-byte
+    # file emits NOTHING from the cast expression and the caller receives $null again —
+    # the exact hole this helper exists to close (measured, PS 5.1.19041).
+    $text = ''
+    try {
+        if (Test-Path -LiteralPath $Path) {
+            $raw = Get-Content -LiteralPath $Path -Raw -ErrorAction SilentlyContinue
+            if ($null -ne $raw) { $text = [string]$raw }
+        }
+    }
+    catch { $text = '' }
+    return $text
+}
+
+function Test-WorkerHeldOpen {
+    # D-R1-03: the hold gate as a PURE function of (evidence file, stdout snapshot).
+    # Both facts are required: evidence JSON alone (written before the marker) and a
+    # marker line alone (crash output with no flushed evidence) each hold the gate
+    # closed. The self-test matrix exercises exactly this predicate.
+    param(
+        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$EvidencePath,
+        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$StdoutText
+    )
+    if ([string]::IsNullOrEmpty($EvidencePath) -or -not (Test-Path -LiteralPath $EvidencePath)) { return $false }
+    return $StdoutText.IndexOf('holding-session-open', [StringComparison]::Ordinal) -ge 0
+}
+
 function Start-WorkerHold {
     # Runs a --hold-open worker phase as a LIVE process: the worker writes its evidence
     # JSON while the ticketed session stays open, then blocks forever. The runner polls
@@ -700,16 +917,13 @@ function Start-WorkerHold {
     $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
     while ((Get-Date) -lt $deadline) {
         if ($process.HasExited) {
-            $stderrText = ''
-            $stdoutText = ''
-            if (Test-Path -LiteralPath $err) { $stderrText = Get-Content -LiteralPath $err -Raw }
-            if (Test-Path -LiteralPath $out) { $stdoutText = Get-Content -LiteralPath $out -Raw }
             # No exit code cited here: PS 5.1 Start-Process loses ExitCode on redirected
             # processes (measured); the worker's own stderr line carries the real reason.
+            $stderrText = Read-WorkerText $err
+            $stdoutText = Read-WorkerText $out
             throw "worker $Name exited before holding its session open (see stderr/stdout). stderr: $stderrText stdout: $stdoutText"
         }
-        if ((Test-Path -LiteralPath $EvidencePath) -and (Test-Path -LiteralPath $out) -and
-            ((Get-Content -LiteralPath $out -Raw).IndexOf('holding-session-open', [StringComparison]::Ordinal) -ge 0)) {
+        if (Test-WorkerHeldOpen -EvidencePath $EvidencePath -StdoutText (Read-WorkerText $out)) {
             Write-Step "worker $Name evidence ready, session held open (pid $($process.Id))"
             return $process
         }
@@ -764,6 +978,12 @@ try {
 
     $xmlSelfChecks = Assert-XmlGatingSelfTest
     Add-Stage 'xml-gating-selfcheck' 'PASS' 0 "negative XML cases=$xmlSelfChecks"
+
+    $workerGateSelfChecks = Assert-WorkerGateSelfTest
+    Add-Stage 'worker-gate-selfcheck' 'PASS' 0 "hold-gate cases=$workerGateSelfChecks"
+
+    $removalSelfChecks = Assert-ClusterRemovalSelfTest
+    Add-Stage 'cluster-removal-selfcheck' 'PASS' 0 "long-path removal cases=$removalSelfChecks"
 
     $keyBytes = New-Object byte[] 32
     $rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
@@ -854,6 +1074,22 @@ try {
     }
     Add-Stage 'e2e-keygen' 'PASS' 0 "keys=$keysDir (public.pem served to hosts; private half never leaves the run directory)"
 
+    # D-R1-02: the persistent chain runs CONTROLLED WSS. The test worker generates an
+    # ISOLATED root/leaf pair (plus wrong-name / expired / foreign-root negatives) on
+    # disk; every host serves the good leaf, every probe and health GET validates it
+    # through a strict per-connection CustomRootTrust callback. No machine store, no
+    # global callback, no production CA dependency.
+    $script:TlsDir = Join-Path $LogDir 'tls'
+    $script:TlsRootPem = Join-Path $script:TlsDir 'root.pem'
+    $script:TlsLeafPfx = Join-Path $script:TlsDir 'leaf.pfx'
+    $null = Invoke-Worker -Name 'e2e-certgen' -Arguments @('certgen', '--out', $script:TlsDir) -TimeoutSeconds 120
+    foreach ($tlsArtifact in @('root.pem', 'leaf.pfx', 'leaf-wrongname.pfx', 'leaf-expired.pfx', 'root-other.pem')) {
+        if (-not (Test-Path -LiteralPath (Join-Path $script:TlsDir $tlsArtifact))) {
+            throw "certgen did not produce $tlsArtifact — the controlled-WSS chain cannot start."
+        }
+    }
+    Add-Stage 'e2e-certgen' 'PASS' 0 "tls=$($script:TlsDir) (isolated test root + leaf/wrong-name/expired/foreign-root negatives; controlled WSS only — production TLS NOT_RUN)"
+
     $env:TABLESERVICE_STORE = 'postgres'
     $env:TABLESERVICE_PG_CONNECTION = $runtimeConnection
     $env:TABLESERVICE_PG_PAYLOAD_KEY = $payloadKey
@@ -867,11 +1103,16 @@ try {
 
     $mainRoom = 'p54b-e2e-main'
     $hashRoom = 'p54b-e2e-hash'
+    $gapRoom = 'p54b-e2e-gap'
     $phase1State = Join-Path $LogDir 'phase1-state.json'
+    # Every E2E probe rides CONTROLLED WSS: wss:// + the isolated test root, validated
+    # per-connection by the worker's strict callback. No ws:// remains on this chain.
+    $tableUrl = [scriptblock] { param($port, $room) "wss://127.0.0.1:$port/v1/table?room=$room" }
     $workerArgs = @('phase1',
-        '--url', "ws://127.0.0.1:$HostPort1/v1/table?room=$mainRoom",
+        '--url', (& $tableUrl $HostPort1 $mainRoom),
         '--keys', $keysDir, '--room', $mainRoom, '--account', 'acct-e2e-0', '--seat', '0',
-        '--out', $phase1State)
+        '--out', $phase1State,
+        '--ca-root', $script:TlsRootPem)
 
     # ---- E2E phase 1: bootstrap + APPLIED + same-key replay, on a REAL host process.
     # The worker HOLDS its ticketed session open after flushing the evidence: the host
@@ -905,9 +1146,10 @@ try {
     $phase2State = Join-Path $LogDir 'phase2-state.json'
     $hostB = Start-TableHost -HostPort $HostPort2 -Name 'host-b'
     $null = Invoke-Worker -Name 'e2e-phase2-cold-recovery' -Arguments @('phase2',
-        '--url', "ws://127.0.0.1:$HostPort2/v1/table?room=$mainRoom",
+        '--url', (& $tableUrl $HostPort2 $mainRoom),
         '--keys', $keysDir, '--room', $mainRoom, '--account', 'acct-e2e-0', '--seat', '0',
-        '--state', $phase1State, '--out', $phase2State) -TimeoutSeconds 180
+        '--state', $phase1State, '--out', $phase2State,
+        '--ca-root', $script:TlsRootPem) -TimeoutSeconds 180
     $phase2 = Get-Content -LiteralPath $phase2State -Raw | ConvertFrom-Json
     if (-not $phase2.receiptFound -or -not $phase2.sameKeyRetryFailedClosed) {
         throw 'Cold recovery did not answer the historical receipt / fail-closed same-key retry.'
@@ -915,29 +1157,36 @@ try {
     if ($phase2.ledgerRows -ne 1) {
         throw "The historical APPLIED ledger row was rewritten or duplicated (rows $($phase2.ledgerRows))."
     }
-    Add-Stage 'e2e-phase2-cold-recovery' 'PASS' 0 "recoveredVersion=$($phase2.recoveredBaselineStateVersion) receiptVersion=$($phase2.receiptCommandVersion) ledgerRows=$($phase2.ledgerRows) (fail-closed retry, ledger unchanged)"
+    # D-R1-01: the successor's projection is re-read from the LIVE new process — the
+    # pre-crash public discard history must still start with the recorded tiles.
+    if (-not $phase2.discardsSurvivedRecovery) {
+        throw 'Cold recovery lost the pre-crash public discard fact (re-dealt wall suspicion).'
+    }
+    Add-Stage 'e2e-phase2-cold-recovery' 'PASS' 0 "recoveredVersion=$($phase2.recoveredBaselineStateVersion) receiptVersion=$($phase2.receiptCommandVersion) ledgerRows=$($phase2.ledgerRows) discardTiles=$($phase2.publicDiscardTiles) (fail-closed retry, ledger + public fact unchanged)"
 
     # ---- dual host over the same DB: the foreign live lease fails closed.
     $probePath = Join-Path $LogDir 'dualhost-probe.json'
     $hostC = Start-TableHost -HostPort $HostPort3 -Name 'host-c'
     $null = Invoke-Worker -Name 'e2e-dualhost-probe' -Arguments @('admitprobe',
-        '--url', "ws://127.0.0.1:$HostPort3/v1/table?room=$mainRoom",
+        '--url', (& $tableUrl $HostPort3 $mainRoom),
         '--keys', $keysDir, '--room', $mainRoom, '--account', 'acct-e2e-0', '--seat', '0',
-        '--out', $probePath) -TimeoutSeconds 120
+        '--out', $probePath,
+        '--ca-root', $script:TlsRootPem) -TimeoutSeconds 120
     $probe = Get-Content -LiteralPath $probePath -Raw | ConvertFrom-Json
     if ($probe.welcomed) { throw 'The second host WELCOMED an admission for a room it does not own.' }
-    $readyC = Get-HttpStatus ("http://127.0.0.1:$HostPort3/health/ready")
-    if ($readyC -ne 503) { throw "The foreign-lease host readiness reported $readyC (expected 503 known-not-serving)." }
+    $readyC = Invoke-HostHealth -HostPort $HostPort3 -Name 'host-c-ready'
+    if ($readyC -ne 0) { throw "The foreign-lease host readiness did not report 503 through the strict TLS gate (exit $readyC)." }
     Stop-TableHost -Process $hostC -Name 'host-c'
-    Add-Stage 'e2e-dualhost-fencing' 'PASS' 0 "second host welcomed=$($probe.welcomed) readiness=503; first host untouched"
+    Add-Stage 'e2e-dualhost-fencing' 'PASS' 0 "second host welcomed=$($probe.welcomed) readiness=503 (strict TLS); first host untouched"
 
     # ---- revoked scope: the recorded receipt stays queryable with zero new side effects.
     $phase2Revoked = Join-Path $LogDir 'phase2-revoked-scope.json'
     $null = Invoke-Worker -Name 'e2e-tamper-scope-revoke' -Arguments @('tamper-scope-revoke', '--state', $phase1State) -TimeoutSeconds 60
     $null = Invoke-Worker -Name 'e2e-phase2-revoked-scope' -Arguments @('phase2',
-        '--url', "ws://127.0.0.1:$HostPort2/v1/table?room=$mainRoom",
+        '--url', (& $tableUrl $HostPort2 $mainRoom),
         '--keys', $keysDir, '--room', $mainRoom, '--account', 'acct-e2e-0', '--seat', '0',
-        '--state', $phase1State, '--out', $phase2Revoked, '--expect-revoked-scope') -TimeoutSeconds 180
+        '--state', $phase1State, '--out', $phase2Revoked, '--expect-revoked-scope',
+        '--ca-root', $script:TlsRootPem) -TimeoutSeconds 180
     # The worker's exit gate alone is not the evidence: assert the recorded run — the
     # revoked historical scope's receipt is still FOUND, the re-admission produced a
     # FRESH scope id, the same-key retry failed closed and the ledger kept exactly its
@@ -960,14 +1209,65 @@ try {
     # ---- cross-account: a foreign account's receipt query is refused; unknown is inert.
     $crossPath = Join-Path $LogDir 'crossaccount.json'
     $null = Invoke-Worker -Name 'e2e-crossaccount' -Arguments @('crossaccount',
-        '--url', "ws://127.0.0.1:$HostPort2/v1/table?room=$mainRoom",
+        '--url', (& $tableUrl $HostPort2 $mainRoom),
         '--keys', $keysDir, '--room', $mainRoom, '--state', $phase1State,
-        '--account-b', 'acct-e2e-1', '--out', $crossPath) -TimeoutSeconds 120
+        '--account-b', 'acct-e2e-1', '--out', $crossPath,
+        '--ca-root', $script:TlsRootPem) -TimeoutSeconds 120
     $cross = Get-Content -LiteralPath $crossPath -Raw | ConvertFrom-Json
     if (-not $cross.foreignQueryRefused -or $cross.ledgerRows -ne 1) {
         throw 'Cross-account refusal or unknown-request inertness failed.'
     }
     Add-Stage 'e2e-crossaccount' 'PASS' 0 "foreign refused ($($cross.foreignDetail)); unknown inert; ledger unchanged (rows=$($cross.ledgerRows))"
+
+    # ---- controlled-WSS refusal negatives (D-R1-02). Each negative is differential:
+    # the SAME worker, SAME host chain and SAME probe validated positively with the
+    # good leaf moments earlier (phase2 / dualhost / crossaccount above), so a nonzero
+    # exit here is attributable to certificate validation alone. The untrusted-root
+    # case rides the LIVE main host; the wrong-name and expired cases spawn throwaway
+    # hosts whose ONLY difference from the good chain is the served leaf (liveness is
+    # deliberately the plain TCP gate there — validating the bad leaf would be
+    # self-contradictory — and each throwaway is killed right after its probe).
+    $negRoom = 'p54b-e2e-wss-neg'
+    $untrustedExit = Invoke-Native -FilePath $DotnetPath -Arguments @(
+        $script:WorkerDll, 'admitprobe',
+        '--url', (& $tableUrl $HostPort2 $negRoom),
+        '--ca-root', (Join-Path $script:TlsDir 'root-other.pem'),
+        '--keys', $keysDir, '--room', $negRoom, '--account', 'acct-e2e-0', '--seat', '0',
+        '--out', (Join-Path $LogDir 'wss-untrusted-root.json')) -LogPath (Join-Path $LogDir 'e2e-wss-untrusted-root.log') -TimeoutSeconds 120
+    if ($untrustedExit -eq 0) { throw 'The host chain admitted a probe trusting a FOREIGN root certificate.' }
+    Add-Stage 'e2e-wss-untrusted-root' 'PASS' $untrustedExit "exit=$untrustedExit (nonzero) — foreign root refused on the live host chain"
+
+    $wrongHost = Start-TableHost -HostPort $HostPort3 -Name 'host-wrongname' -TlsPfx (Join-Path $script:TlsDir 'leaf-wrongname.pfx') -SkipHealthGate
+    try {
+        $wrongNameExit = Invoke-Native -FilePath $DotnetPath -Arguments @(
+            $script:WorkerDll, 'admitprobe',
+            '--url', (& $tableUrl $HostPort3 $negRoom),
+            '--ca-root', $script:TlsRootPem,
+            '--keys', $keysDir, '--room', $negRoom, '--account', 'acct-e2e-0', '--seat', '0',
+            '--out', (Join-Path $LogDir 'wss-wrong-name.json')) -LogPath (Join-Path $LogDir 'e2e-wss-wrong-name.log') -TimeoutSeconds 120
+        if ($wrongNameExit -eq 0) { throw 'The host chain admitted a probe whose server certificate names ANOTHER endpoint.' }
+        if ($wrongHost.HasExited) {
+            throw 'The wrong-name throwaway host exited during its negative probe; the refusal is not attributable to TLS validation.'
+        }
+    }
+    finally { Stop-TableHost -Process $wrongHost -Name 'host-wrongname' }
+    Add-Stage 'e2e-wss-wrong-name' 'PASS' $wrongNameExit "exit=$wrongNameExit (nonzero) — wrong-name leaf refused with the CORRECT root (listener alive throughout)"
+
+    $expiredHost = Start-TableHost -HostPort $HostPort3 -Name 'host-expired' -TlsPfx (Join-Path $script:TlsDir 'leaf-expired.pfx') -SkipHealthGate
+    try {
+        $expiredExit = Invoke-Native -FilePath $DotnetPath -Arguments @(
+            $script:WorkerDll, 'admitprobe',
+            '--url', (& $tableUrl $HostPort3 $negRoom),
+            '--ca-root', $script:TlsRootPem,
+            '--keys', $keysDir, '--room', $negRoom, '--account', 'acct-e2e-0', '--seat', '0',
+            '--out', (Join-Path $LogDir 'wss-expired.json')) -LogPath (Join-Path $LogDir 'e2e-wss-expired.log') -TimeoutSeconds 120
+        if ($expiredExit -eq 0) { throw 'The host chain admitted a probe whose server certificate is EXPIRED.' }
+        if ($expiredHost.HasExited) {
+            throw 'The expired-leaf throwaway host exited during its negative probe; the refusal is not attributable to TLS validation.'
+        }
+    }
+    finally { Stop-TableHost -Process $expiredHost -Name 'host-expired' }
+    Add-Stage 'e2e-wss-expired-leaf' 'PASS' $expiredExit "exit=$expiredExit (nonzero) — expired leaf refused with the CORRECT root (listener alive throughout)"
 
     # ---- a second room for the corruption scenarios, on the SAME live host process.
     # This phase-1 also HOLDS its session open: host-b is later killed -9 with the
@@ -975,11 +1275,12 @@ try {
     # shape and the successor's refusal below is attributable to the TAMPERING alone
     # (never to a teardown-committed grace deadline).
     $hashState = Join-Path $LogDir 'hash-room-phase1.json'
-    $hashWorker = Start-WorkerHold -Name 'e2e-phase1-hash-room' -Arguments @('phase1',
-        '--url', "ws://127.0.0.1:$HostPort2/v1/table?room=$hashRoom",
+    $hashWorker = Start-WorkerHold -Name 'e2e-phase1-hash-room' -Arguments (@('phase1',
+        '--url', (& $tableUrl $HostPort2 $hashRoom),
         '--keys', $keysDir, '--room', $hashRoom, '--account', 'acct-e2e-hash', '--seat', '0',
-        '--out', $hashState, '--hold-open') -EvidencePath $hashState -TimeoutSeconds 180
-    Add-Stage 'e2e-second-room' 'PASS' 0 "room=$hashRoom bootstrapped on host-b (session held for crash shape)"
+        '--out', $hashState, '--hold-open',
+        '--ca-root', $script:TlsRootPem)) -EvidencePath $hashState -TimeoutSeconds 180
+    Add-Stage 'e2e-second-room' 'PASS' 0 "room=$hashRoom bootstrapped on host-b over controlled WSS (session held for crash shape)"
 
     # ---- DB unavailable: the host refuses to start, exits nonzero, no listener.
     # Launched through Invoke-Native so the exit code is REAL: the fail-closed gate
@@ -999,8 +1300,7 @@ try {
         throw ('The DB-unavailable host did NOT refuse to start within 60 seconds. ' + $_.Exception.Message)
     }
 
-    $stderrText = ''
-    if (Test-Path -LiteralPath $dbDownErr) { $stderrText = (Get-Content -LiteralPath $dbDownErr -Raw) }
+    $stderrText = Read-WorkerText $dbDownErr
     if ($dbDownExit -eq 0) { throw 'The DB-unavailable host exited 0; fail-closed refused to hold.' }
     if ($stderrText.IndexOf('host build refused', [StringComparison]::OrdinalIgnoreCase) -lt 0) {
         throw "The DB-unavailable host stderr carried no 'host build refused' line: $stderrText"
@@ -1018,14 +1318,15 @@ try {
     $hostD = Start-TableHost -HostPort $HostPort2 -Name 'host-d'
     $hashProbePath = Join-Path $LogDir 'tamper-hash-probe.json'
     $null = Invoke-Worker -Name 'e2e-tamper-hash-probe' -Arguments @('admitprobe',
-        '--url', "ws://127.0.0.1:$HostPort2/v1/table?room=$hashRoom",
+        '--url', (& $tableUrl $HostPort2 $hashRoom),
         '--keys', $keysDir, '--room', $hashRoom, '--account', 'acct-e2e-hash', '--seat', '0',
-        '--out', $hashProbePath) -TimeoutSeconds 120
+        '--out', $hashProbePath,
+        '--ca-root', $script:TlsRootPem) -TimeoutSeconds 120
     $hashProbe = Get-Content -LiteralPath $hashProbePath -Raw | ConvertFrom-Json
     if ($hashProbe.welcomed) { throw 'A hash-corrupted journal was SERVED by the successor process.' }
-    $readyD = Get-HttpStatus ("http://127.0.0.1:$HostPort2/health/ready")
-    if ($readyD -ne 503) { throw "The hash-corrupt host readiness reported $readyD (expected 503)." }
-    Add-Stage 'e2e-tamper-event-hash' 'PASS' 0 "room=$hashRoom welcomed=$($hashProbe.welcomed) readiness=503"
+    $readyD = Invoke-HostHealth -HostPort $HostPort2 -Name 'host-d-ready'
+    if ($readyD -ne 0) { throw "The hash-corrupt host readiness did not report 503 through the strict TLS gate (exit $readyD)." }
+    Add-Stage 'e2e-tamper-event-hash' 'PASS' 0 "room=$hashRoom welcomed=$($hashProbe.welcomed) readiness=503 (strict TLS)"
 
     # ---- event gap: the same fail-closed discipline, on a room whose ONLY durable
     # defect is the deleted event row. A THIRD room is crash-shaped on host-d (session
@@ -1033,13 +1334,13 @@ try {
     # attributable to the gap alone — the main room's earlier phases ended with clean
     # client exits and legitimately carry teardown grace, which would muddy the
     # refusal reason.
-    $gapRoom = 'p54b-e2e-gap'
     $gapState = Join-Path $LogDir 'gap-room-phase1.json'
-    $gapWorker = Start-WorkerHold -Name 'e2e-phase1-gap-room' -Arguments @('phase1',
-        '--url', "ws://127.0.0.1:$HostPort2/v1/table?room=$gapRoom",
+    $gapWorker = Start-WorkerHold -Name 'e2e-phase1-gap-room' -Arguments (@('phase1',
+        '--url', (& $tableUrl $HostPort2 $gapRoom),
         '--keys', $keysDir, '--room', $gapRoom, '--account', 'acct-e2e-gap', '--seat', '0',
-        '--out', $gapState, '--hold-open') -EvidencePath $gapState -TimeoutSeconds 180
-    Add-Stage 'e2e-gap-room' 'PASS' 0 "room=$gapRoom bootstrapped on host-d (session held for crash shape)"
+        '--out', $gapState, '--hold-open',
+        '--ca-root', $script:TlsRootPem)) -EvidencePath $gapState -TimeoutSeconds 180
+    Add-Stage 'e2e-gap-room' 'PASS' 0 "room=$gapRoom bootstrapped on host-d over controlled WSS (session held for crash shape)"
     Stop-TableHost -Process $hostD -Name 'host-d'
     Stop-HeldWorker -Process $gapWorker -Name 'e2e-phase1-gap-room'
     Start-Sleep -Seconds ([int]$env:TABLESERVICE_LEASE_TTL_SECONDS + 3)
@@ -1047,15 +1348,16 @@ try {
     $hostE = Start-TableHost -HostPort $HostPort1 -Name 'host-e'
     $gapProbePath = Join-Path $LogDir 'tamper-gap-probe.json'
     $null = Invoke-Worker -Name 'e2e-tamper-gap-probe' -Arguments @('admitprobe',
-        '--url', "ws://127.0.0.1:$HostPort1/v1/table?room=$gapRoom",
+        '--url', (& $tableUrl $HostPort1 $gapRoom),
         '--keys', $keysDir, '--room', $gapRoom, '--account', 'acct-e2e-gap', '--seat', '0',
-        '--out', $gapProbePath) -TimeoutSeconds 120
+        '--out', $gapProbePath,
+        '--ca-root', $script:TlsRootPem) -TimeoutSeconds 120
     $gapProbe = Get-Content -LiteralPath $gapProbePath -Raw | ConvertFrom-Json
     if ($gapProbe.welcomed) { throw 'A journal with a missing committed event was SERVED.' }
-    $readyE = Get-HttpStatus ("http://127.0.0.1:$HostPort1/health/ready")
-    if ($readyE -ne 503) { throw "The gap host readiness reported $readyE (expected 503)." }
+    $readyE = Invoke-HostHealth -HostPort $HostPort1 -Name 'host-e-ready'
+    if ($readyE -ne 0) { throw "The gap host readiness did not report 503 through the strict TLS gate (exit $readyE)." }
     Stop-TableHost -Process $hostE -Name 'host-e'
-    Add-Stage 'e2e-tamper-event-gap' 'PASS' 0 "room=$gapRoom welcomed=$($gapProbe.welcomed) readiness=503"
+    Add-Stage 'e2e-tamper-event-gap' 'PASS' 0 "room=$gapRoom welcomed=$($gapProbe.welcomed) readiness=503 (strict TLS)"
 
     Add-Stage 'result' 'PASS' 0 'all P5.4b-A durable-host stages passed'
 }
@@ -1117,6 +1419,10 @@ finally {
             p52Database = $script:P52Database
             hostPorts = @($HostPort1, $HostPort2, $HostPort3)
             payloadKeyRecorded = $false
+            # D-R1-02 scope honesty: the chain above IS WSS end to end, but on the
+            # CONTROLLED test root the worker certgen produced — never a production
+            # certificate deployment, which stays explicitly NOT_RUN.
+            wssMode = 'controlled WSS (worker certgen test root, strict per-connection CustomRootTrust; production TLS/WSS termination NOT_RUN)'
             notRunNextBatch = @('production TLS/WSS termination', 'Lobby HTTPS ticket issuance', 'multi-client full match', 'account asset settlement', 'cross-physical-network')
             stages = $script:Stages
             lines = $script:Lines

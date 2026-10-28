@@ -3,6 +3,10 @@ using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
 using System.Linq;
+using System.Net.Http;
+using System.Net.Security;
+using System.Security.Cryptography;
+using System.Security.Cryptography.X509Certificates;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
@@ -19,6 +23,9 @@ namespace Mahjong.TableService.PersistenceWorker
     ///   keygen              write the run's ticket signing keypair (private.pem/public.pem/kid.txt)
     ///   migrate             apply the idempotent table_store migration twice, assert ready
     ///   reset               truncate every table_store table (admin DDL owner connection)
+    ///   certgen             mint the run's ISOLATED TLS chain (test root + loopback leaf +
+    ///                       wrong-name/expired negative leaves + an unrelated root) on disk;
+    ///                       the machine trust store is never touched
     ///   phase1              admit through a REAL host, apply one legal action, same-key replay, record state
     ///   phase2              re-admit after cold recovery, explicit receipt query + same-key replay
     ///   admitprobe          attempt one admission and report the exact refusal shape (expect NO welcome)
@@ -27,12 +34,20 @@ namespace Mahjong.TableService.PersistenceWorker
     ///   tamper-event-gap    delete one committed event row (fail-closed recovery probe)
     ///   tamper-scope-revoke mark the phase-1 request scope revoked directly in the database
     ///   counts              dump per-room durable row counts as JSON evidence
+    ///   health              one HTTPS health GET validated by the same strict per-connection
+    ///                       root trust as the WSS chain; exit 0 iff the status equals --expect
     ///
     /// Database connections arrive ONLY through the MAHJONG_P54B_TEST_PG (runtime DML role)
     /// and MAHJONG_P54B_TEST_PG_ADMIN (migration/reset) environment variables; the payload key
     /// travels through MAHJONG_P54B_TEST_PG_KEY. Nothing here logs a connection string, key,
     /// ticket or private payload. Fault injection lives only in this test worker — the
     /// production service carries no failpoint.
+    ///
+    /// D-R1-02 transport discipline: every wss:// connect requires an explicit --ca-root
+    /// (PEM/DER on disk) and is validated by a per-connection CustomRootTrust callback that
+    /// replicates strict validation — chain to the injected root AND name AND freshness —
+    /// and never returns true blindly. There is no global trust pivot and no machine-store
+    /// dependency anywhere in this process.
     /// </summary>
     public static class Program
     {
@@ -59,6 +74,8 @@ namespace Mahjong.TableService.PersistenceWorker
                         return await RunMigrateAsync(options).ConfigureAwait(false);
                     case "reset":
                         return await RunResetAsync(options).ConfigureAwait(false);
+                    case "certgen":
+                        return RunCertgen(options);
                     case "phase1":
                         return await RunPhase1Async(options).ConfigureAwait(false);
                     case "phase2":
@@ -75,6 +92,8 @@ namespace Mahjong.TableService.PersistenceWorker
                         return await RunTamperScopeRevokeAsync(options).ConfigureAwait(false);
                     case "counts":
                         return await RunCountsAsync(options).ConfigureAwait(false);
+                    case "health":
+                        return await RunHealthAsync(options).ConfigureAwait(false);
                     default:
                         Console.Error.WriteLine("unknown mode: " + args[0]);
                         return ExitFailed;
@@ -85,6 +104,11 @@ namespace Mahjong.TableService.PersistenceWorker
                 // Every failure is a real exit-code failure; the message is a redacted
                 // identity only (exception type + message), never a connection string.
                 Console.Error.WriteLine("worker failed: " + exception.GetType().Name + ": " + exception.Message);
+                if (Environment.GetEnvironmentVariable("WORKER_DEBUG_STACK") == "1")
+                {
+                    Console.Error.WriteLine(exception.StackTrace);
+                }
+
                 return ExitFailed;
             }
         }
@@ -280,6 +304,219 @@ CASCADE";
         }
 
         // ------------------------------------------------------------------
+        // D-R1-02: controlled WSS — isolated chain minting, strict per-connection
+        // root trust, fail-closed connect helper, validated health probe
+        // ------------------------------------------------------------------
+
+        /// <summary>
+        /// Mints the run's TLS material on disk with the same isolated-chain recipe the
+        /// accepted <c>TlsCertificateTests</c> use: an ECDSA P-256 test root (CA:KEYCERTSIGN)
+        /// signs a server-auth leaf carrying SAN DNS "localhost" + IP 127.0.0.1, so a host
+        /// bound to the loopback passes strict name validation. The negatives are real
+        /// material, not toggles: a leaf naming some other host entirely, a leaf whose
+        /// validity window has passed, and a second UNRELATED root for the untrusted-issuer
+        /// case. Everything lands under --out; the OS trust store is never read or written.
+        /// </summary>
+        private static int RunCertgen(Dictionary<string, string> options)
+        {
+            string outputDirectory = Require(options, "out");
+            Directory.CreateDirectory(outputDirectory);
+
+            DateTimeOffset now = DateTimeOffset.UtcNow;
+            // The issuer's notBefore bounds its leaves: the root is backdated so the
+            // expired negative leaf's long-past validity window can be issued at all
+            // (same recipe the accepted TLS tests use). Certificates are deliberately
+            // not disposed: this CLI process exits immediately after writing them.
+            (X509Certificate2 root, byte[] rootPfx) = CreateTestRoot(now.AddDays(-40), now.AddYears(2));
+            (X509Certificate2 leaf, byte[] leafPfx) = CreateLeaf(
+                root, "localhost", includeLoopback: true,
+                now.AddMinutes(-10), now.AddDays(30), serialTail: 0x02);
+            (X509Certificate2 wrongName, byte[] wrongNamePfx) = CreateLeaf(
+                root, "real-table-service.example", includeLoopback: false,
+                now.AddMinutes(-10), now.AddDays(30), serialTail: 0x01);
+            (X509Certificate2 expired, byte[] expiredPfx) = CreateLeaf(
+                root, "localhost", includeLoopback: true,
+                now.AddDays(-30), now.AddDays(-1), serialTail: 0x03);
+            (X509Certificate2 otherRoot, byte[] otherRootPfx) = CreateTestRoot(now.AddMinutes(-10), now.AddYears(2));
+
+            // The PFX bytes are written exactly once, from the ORIGINAL export: a
+            // re-imported certificate's key arrives as an EPHEMERAL Windows CNG key,
+            // and a second PFX export of an ephemeral key fails with "key not valid
+            // for use in specified state" (measured). PEM output is public material
+            // and unaffected.
+            File.WriteAllBytes(Path.Combine(outputDirectory, "root.pfx"), rootPfx);
+            File.WriteAllText(Path.Combine(outputDirectory, "root.pem"), root.ExportCertificatePem());
+            File.WriteAllBytes(Path.Combine(outputDirectory, "leaf.pfx"), leafPfx);
+            File.WriteAllBytes(Path.Combine(outputDirectory, "leaf-wrongname.pfx"), wrongNamePfx);
+            File.WriteAllBytes(Path.Combine(outputDirectory, "leaf-expired.pfx"), expiredPfx);
+            File.WriteAllBytes(Path.Combine(outputDirectory, "root-other.pfx"), otherRootPfx);
+            File.WriteAllText(Path.Combine(outputDirectory, "root-other.pem"), otherRoot.ExportCertificatePem());
+
+            Console.WriteLine("certgen ok dir=" + outputDirectory);
+            return ExitOk;
+        }
+
+        /// <summary>The isolated-chain recipe: same shape as the accepted TLS tests.</summary>
+        private static (X509Certificate2 Certificate, byte[] Pfx) CreateTestRoot(DateTimeOffset notBefore, DateTimeOffset notAfter)
+        {
+            using ECDsa key = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+            var request = new CertificateRequest(
+                "CN=TableService P5.4b Verification Root",
+                key,
+                HashAlgorithmName.SHA256);
+            request.CertificateExtensions.Add(new X509BasicConstraintsExtension(true, false, 0, true));
+            request.CertificateExtensions.Add(
+                new X509KeyUsageExtension(X509KeyUsageFlags.KeyCertSign, true));
+            using X509Certificate2 selfSigned = request.CreateSelfSigned(notBefore, notAfter);
+            // Export once and re-import so the returned certificate owns its key
+            // independent of the builder; the SAME bytes go to disk.
+            byte[] pfx = selfSigned.Export(X509ContentType.Pfx);
+            return (new X509Certificate2(pfx), pfx);
+        }
+
+        private static (X509Certificate2 Certificate, byte[] Pfx) CreateLeaf(
+            X509Certificate2 issuer,
+            string subjectName,
+            bool includeLoopback,
+            DateTimeOffset notBefore,
+            DateTimeOffset notAfter,
+            byte serialTail)
+        {
+            using ECDsa key = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+            var request = new CertificateRequest(
+                "CN=" + subjectName,
+                key,
+                HashAlgorithmName.SHA256);
+            request.CertificateExtensions.Add(new X509BasicConstraintsExtension(false, false, 0, true));
+            var san = new SubjectAlternativeNameBuilder();
+            san.AddDnsName(subjectName);
+            if (includeLoopback)
+            {
+                san.AddIpAddress(System.Net.IPAddress.Loopback);
+            }
+
+            request.CertificateExtensions.Add(san.Build());
+            request.CertificateExtensions.Add(
+                new X509EnhancedKeyUsageExtension(new OidCollection { new Oid("1.3.6.1.5.5.7.3.1") }, true));
+            // One DISTINCT issuer+serial pair per leaf: duplicate serials from a single
+            // issuer are broken chain semantics.
+            using X509Certificate2 publicLeaf = request.Create(
+                issuer,
+                notBefore,
+                notAfter,
+                new byte[] { 0x50, 0x35, 0x34, 0x62, serialTail });
+            using X509Certificate2 withKey = publicLeaf.CopyWithPrivateKey(key);
+            byte[] pfx = withKey.Export(X509ContentType.Pfx);
+            return (new X509Certificate2(pfx), pfx);
+        }
+
+        /// <summary>
+        /// The strict per-connection validation every wss:// and https:// probe of this
+        /// worker rides. The OS handshake always reports RemoteCertificateChainErrors for
+        /// an untrusted test root — that one error is exactly what the CustomRootTrust
+        /// build re-validates, so it alone is masked; name mismatch and every other policy
+        /// error stay fatal, and the chain build itself re-checks issuer trust AND validity
+        /// periods. It never returns true blindly.
+        /// </summary>
+        private static bool ValidateAgainstTrustedRoot(
+            X509Certificate2 trustedRoot,
+            X509Certificate2? certificate,
+            SslPolicyErrors sslPolicyErrors)
+        {
+            if (certificate == null)
+            {
+                return false;
+            }
+
+            if ((sslPolicyErrors & ~SslPolicyErrors.RemoteCertificateChainErrors) != SslPolicyErrors.None)
+            {
+                return false;
+            }
+
+            using X509Chain custom = new X509Chain();
+            custom.ChainPolicy.TrustMode = X509ChainTrustMode.CustomRootTrust;
+            custom.ChainPolicy.CustomTrustStore.Add(trustedRoot);
+            custom.ChainPolicy.RevocationMode = X509RevocationMode.NoCheck;
+            return custom.Build(certificate);
+        }
+
+        private static RemoteCertificateValidationCallback BuildStrictRootCallback(X509Certificate2 trustedRoot)
+        {
+            return (sender, certificate, chain, sslPolicyErrors) =>
+                ValidateAgainstTrustedRoot(
+                    trustedRoot,
+                    certificate == null ? null : new X509Certificate2(certificate),
+                    sslPolicyErrors);
+        }
+
+        private static Func<HttpRequestMessage, X509Certificate2?, X509Chain?, SslPolicyErrors, bool>
+            BuildStrictHttpRootCallback(X509Certificate2 trustedRoot)
+        {
+            return (request, certificate, chain, sslPolicyErrors) =>
+                ValidateAgainstTrustedRoot(trustedRoot, certificate, sslPolicyErrors);
+        }
+
+        /// <summary>Loads the root the worker was told to trust — disk file, explicit, no store.</summary>
+        private static X509Certificate2 LoadTrustedRoot(string path)
+        {
+            if (!File.Exists(path))
+            {
+                throw new FileNotFoundException("The trusted root certificate file does not exist.", path);
+            }
+
+            // X509Certificate2(string) sniffs PEM and DER alike, so .pem and .pfx both load.
+            return new X509Certificate2(path);
+        }
+
+        /// <summary>
+        /// Fail-closed connect: a wss:// URL without an explicit --ca-root is refused —
+        /// the worker never falls back to machine trust. Plain ws:// keeps the prior
+        /// behavior so the memory-mode harnesses are untouched.
+        /// </summary>
+        private static Task<TableTestClient> ConnectTableClientAsync(Dictionary<string, string> options, string url)
+        {
+            if (url.StartsWith("wss://", StringComparison.OrdinalIgnoreCase))
+            {
+                X509Certificate2 root = LoadTrustedRoot(Require(options, "ca-root"));
+                return TableTestClient.ConnectAsync(url, BuildStrictRootCallback(root));
+            }
+
+            return TableTestClient.ConnectAsync(url);
+        }
+
+        /// <summary>
+        /// One health GET through the same strict per-connection trust as the WSS chain.
+        /// Exit 0 iff the server answers with exactly --expect; TLS validation failures,
+        /// connection failures and status mismatches all fail the run. This keeps the
+        /// health surface OUT of any bypass: under the controlled WSS shape the health
+        /// endpoints terminate on the same TLS listener and are validated identically.
+        /// </summary>
+        private static async Task<int> RunHealthAsync(Dictionary<string, string> options)
+        {
+            string url = Require(options, "url");
+            int expected = int.Parse(Require(options, "expect"), CultureInfo.InvariantCulture);
+
+            using var handler = new HttpClientHandler();
+            if (url.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
+            {
+                handler.ServerCertificateCustomValidationCallback =
+                    BuildStrictHttpRootCallback(LoadTrustedRoot(Require(options, "ca-root")));
+            }
+
+            using var httpClient = new HttpClient(handler) { Timeout = TimeSpan.FromSeconds(10) };
+            using HttpResponseMessage response = await httpClient.GetAsync(url).ConfigureAwait(false);
+            int status = (int)response.StatusCode;
+            Console.WriteLine("health status=" + status);
+            if (status != expected)
+            {
+                Console.Error.WriteLine("health expected " + expected + " got " + status);
+                return ExitFailed;
+            }
+
+            return ExitOk;
+        }
+
+        // ------------------------------------------------------------------
         // phase1: real admission + one legal applied action + same-key replay
         // ------------------------------------------------------------------
 
@@ -293,9 +530,7 @@ CASCADE";
             string outputPath = Require(options, "out");
 
             WorkerTicketSigner signer = await WorkerTicketSigner.LoadAsync(keysDirectory).ConfigureAwait(false);
-            await using TableTestClient client = await TableTestClient
-                .ConnectAsync(url)
-                .ConfigureAwait(false);
+            await using TableTestClient client = await ConnectTableClientAsync(options, url).ConfigureAwait(false);
             Welcome welcome = await client
                 .AdmitAsync(signer.SignTicket(account, room, seat))
                 .ConfigureAwait(false);
@@ -312,7 +547,15 @@ CASCADE";
                 throw new InvalidOperationException("The opened decision has no candidate actions.");
             }
 
-            Contracts.Wire.LegalActionView action = decision.Actions[0];
+            // D-R1-01: the E2E crash shape needs a PUBLIC discard fact to carry across
+            // the forced kill. A discard moves a physical tile into the seat's public
+            // pond, which a re-dealt successor room (fresh shuffle) could never
+            // reproduce — so phase 2 pins the recovered projection to the PERSISTED
+            // journal instead of a re-drawn initial anchor. Prefer the discard
+            // candidate; fall back to the first action only if none exists.
+            Contracts.Wire.LegalActionView action = decision.Actions.FirstOrDefault(
+                candidate => candidate.ActionType == (uint)ProtocolActionType.DiscardTile) ??
+                decision.Actions[0];
             ulong baselineStateVersion = snapshot.StateVersion;
             string requestId = TableWire.RandomId("req");
             byte[] payload = TableWire.SubmitActionPayload(
@@ -344,6 +587,20 @@ CASCADE";
                     replay.Receipt.Replayed + " version " + replay.Receipt.CommandVersion + ").");
             }
 
+            // The applied command must already be visible in the PUBLIC projection
+            // before the kill: the recorded discard tiles are the exact fact phase 2
+            // re-reads from the recovered host's projection.
+            Envelope discardUpdate = await client.ReadUntilAsync(
+                envelope => envelope.PlayerUpdate?.Snapshot is Contracts.Wire.PlayerSnapshot discardSnapshot &&
+                            discardSnapshot.PublicView?.Board.Players
+                                .Any(player => player.Seat == seat && player.Discards.Count > 0) == true,
+                TimeSpan.FromSeconds(30)).ConfigureAwait(false);
+            Contracts.Wire.PlayerPublicView publicSelf = discardUpdate.PlayerUpdate!.Snapshot.PublicView!
+                .Board.Players.First(player => player.Seat == seat);
+            string discardTiles = string.Join(
+                ',',
+                publicSelf.Discards.Select(tile => tile.TileId.ToString(CultureInfo.InvariantCulture)));
+
             var evidence = new Dictionary<string, object>
             {
                 ["room"] = room,
@@ -355,7 +612,11 @@ CASCADE";
                 ["baselineStateVersion"] = (long)baselineStateVersion,
                 ["commandVersion"] = (long)commandVersion,
                 ["replayed"] = true,
-                ["payloadBase64"] = Convert.ToBase64String(payload)
+                ["payloadBase64"] = Convert.ToBase64String(payload),
+                ["publicDiscardSeat"] = seat,
+                ["publicDiscardCount"] = publicSelf.Discards.Count,
+                ["publicDiscardTiles"] = discardTiles,
+                ["publicDiscardStateVersion"] = (long)discardUpdate.PlayerUpdate!.Snapshot.StateVersion
             };
 
             if (options.ContainsKey("hold-open"))
@@ -432,9 +693,7 @@ CASCADE";
             byte[] payload = Convert.FromBase64String(state.GetProperty("payloadBase64").GetString()!);
 
             WorkerTicketSigner signer = await WorkerTicketSigner.LoadAsync(keysDirectory).ConfigureAwait(false);
-            await using TableTestClient client = await TableTestClient
-                .ConnectAsync(url)
-                .ConfigureAwait(false);
+            await using TableTestClient client = await ConnectTableClientAsync(options, url).ConfigureAwait(false);
             Welcome welcome = await client
                 .AdmitAsync(signer.SignTicket(account, room, seat))
                 .ConfigureAwait(false);
@@ -453,6 +712,37 @@ CASCADE";
             if (string.Equals(freshScopeId, scopeId, StringComparison.Ordinal))
             {
                 throw new InvalidOperationException("A fresh admission reissued the historical scope id.");
+            }
+
+            // D-R1-01: the recovered projection must STILL show the pre-crash public
+            // discard fact with the SAME physical tiles. A successor that re-dealt a
+            // fresh room would present an empty pond for this seat (or different tile
+            // ids), so this equality — read from the LIVE successor process — is the
+            // proof the projection was rebuilt from the persisted journal, never from
+            // a re-drawn initial anchor. The recorded pond must appear VERBATIM as a
+            // prefix: the room's own deadline auto-play may legally append further
+            // seat discards between the kill and this read, but it can never rewrite
+            // or reorder what the journal already committed.
+            string expectedTiles = state.GetProperty("publicDiscardTiles").GetString()!;
+            int expectedCount = state.GetProperty("publicDiscardCount").GetInt32();
+            Envelope recoveredProjection = await client.ReadUntilAsync(
+                envelope => envelope.PlayerUpdate?.Snapshot is Contracts.Wire.PlayerSnapshot recoveredSnapshot &&
+                            recoveredSnapshot.StateVersion >= commandVersion &&
+                            recoveredSnapshot.PublicView?.Board.Players
+                                .Any(player => player.Seat == seat && player.Discards.Count > 0) == true,
+                TimeSpan.FromSeconds(30)).ConfigureAwait(false);
+            Contracts.Wire.PlayerPublicView recoveredSelf = recoveredProjection.PlayerUpdate!.Snapshot.PublicView!
+                .Board.Players.First(player => player.Seat == seat);
+            string recoveredTiles = string.Join(
+                ',',
+                recoveredSelf.Discards.Select(tile => tile.TileId.ToString(CultureInfo.InvariantCulture)));
+            if (recoveredSelf.Discards.Count < expectedCount ||
+                (!string.Equals(recoveredTiles, expectedTiles, StringComparison.Ordinal) &&
+                 !recoveredTiles.StartsWith(expectedTiles + ",", StringComparison.Ordinal)))
+            {
+                throw new InvalidOperationException(
+                    "The recovered public projection lost or rewrote the pre-crash discard fact (seat " +
+                    seat + " expected tiles '" + expectedTiles + "' got '" + recoveredTiles + "').");
             }
 
             int eventsBefore = await CountRoomEventsAsync(room).ConfigureAwait(false);
@@ -518,11 +808,15 @@ CASCADE";
                 ["sameKeyRetryFailedClosed"] = true,
                 ["ledgerRows"] = ledgerRows,
                 ["eventCountBefore"] = eventsBefore,
-                ["expectRevokedScope"] = expectRevokedScope
+                ["expectRevokedScope"] = expectRevokedScope,
+                ["discardsSurvivedRecovery"] = true,
+                ["publicDiscardCount"] = recoveredSelf.Discards.Count,
+                ["publicDiscardTiles"] = recoveredTiles
             }).ConfigureAwait(false);
             Console.WriteLine(
                 "phase2 ok recoveredVersion=" + recoveredVersion.ToString(CultureInfo.InvariantCulture) +
-                " ledgerRows=" + ledgerRows.ToString(CultureInfo.InvariantCulture));
+                " ledgerRows=" + ledgerRows.ToString(CultureInfo.InvariantCulture) +
+                " discardTiles=" + recoveredTiles);
             return ExitOk;
         }
 
@@ -545,9 +839,7 @@ CASCADE";
             int closeCode = 0;
             string closeReason = string.Empty;
             string errorDetail = string.Empty;
-            await using TableTestClient client = await TableTestClient
-                .ConnectAsync(url)
-                .ConfigureAwait(false);
+            await using TableTestClient client = await ConnectTableClientAsync(options, url).ConfigureAwait(false);
             await client.SendAsync(TableWire.Hello(ticket)).ConfigureAwait(false);
             TableWireMessage message = await client.ReceiveAsync(TimeSpan.FromSeconds(20)).ConfigureAwait(false);
             if (message.Envelope != null && message.Envelope.BodyCase == Envelope.BodyOneofCase.Welcome)
@@ -597,9 +889,7 @@ CASCADE";
             long commandVersionA = state.GetProperty("commandVersion").GetInt64();
 
             WorkerTicketSigner signer = await WorkerTicketSigner.LoadAsync(keysDirectory).ConfigureAwait(false);
-            await using TableTestClient clientB = await TableTestClient
-                .ConnectAsync(url)
-                .ConfigureAwait(false);
+            await using TableTestClient clientB = await ConnectTableClientAsync(options, url).ConfigureAwait(false);
             Welcome welcomeB = await clientB
                 .AdmitAsync(signer.SignTicket(accountB, room, seatB))
                 .ConfigureAwait(false);
