@@ -129,48 +129,33 @@ namespace Mahjong.TableRuntime
                        !window.HasResponded(decision.Key.Seat);
             }
 
-            if (decision.Key.Seat == round.CurrentSeat)
+            // With no response window, only the acting seat can legitimately own a decision.
+            // Any decision for another seat is a stale response, including a Kan candidate:
+            // OpenKan is a response call, and there is no window in which it could execute.
+            if (decision.Key.Seat != round.CurrentSeat)
             {
-                // In a non-window phase the acting seat may legitimately own a turn decision.
-                // A response-only candidate set (Pass/Chi/Pon/OpenKan/Ron) is stale; it can no
-                // longer be applied because the Domain has no response window.
-                return !IsResponseOnly(decision.Candidates);
+                return false;
             }
 
-            // No window, not the acting seat: no turn decision can be current. A settlement
-            // authority decision is not a response and is left to its own typed validation.
-            return !IsResponseOnly(decision.Candidates) && !HasDiscard(decision.Candidates);
+            // A current-turn decision must be anchored in a turn/settlement action. A stale
+            // response set can contain Kan/Pass (and even Pon/Chi) while no window exists; Kan
+            // alone is deliberately not a turn anchor because the real host always offers the
+            // turn's discard candidates alongside closed/added kan.
+            return HasTurnAnchor(decision.Candidates);
         }
 
-        private static bool IsResponseOnly(IReadOnlyList<LegalActionOption> candidates)
-        {
-            bool any = false;
-            for (int i = 0; i < candidates.Count; i++)
-            {
-                LegalActionKind kind = candidates[i].Kind;
-                if (kind != LegalActionKind.Pass &&
-                    kind != LegalActionKind.Chi &&
-                    kind != LegalActionKind.Pon &&
-                    kind != LegalActionKind.Ron)
-                {
-                    // Open/closed/added kan are also turn actions; treat only the pure response
-                    // set as conclusive. A Kan-only turn decision is kept for Domain validation.
-                    return false;
-                }
-
-                any = true;
-            }
-
-            return any;
-        }
-
-        private static bool HasDiscard(IReadOnlyList<LegalActionOption> candidates)
+        private static bool HasTurnAnchor(IReadOnlyList<LegalActionOption> candidates)
         {
             for (int i = 0; i < candidates.Count; i++)
             {
-                if (candidates[i].Kind == LegalActionKind.Discard)
+                switch (candidates[i].Kind)
                 {
-                    return true;
+                    case LegalActionKind.Discard:
+                    case LegalActionKind.Tsumo:
+                    case LegalActionKind.Riichi:
+                    case LegalActionKind.Cheat:
+                    case LegalActionKind.Other:
+                        return true;
                 }
             }
 

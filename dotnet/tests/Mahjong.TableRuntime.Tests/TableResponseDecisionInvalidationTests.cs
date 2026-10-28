@@ -5,6 +5,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using Mahjong.Contracts;
 using Mahjong.Domain;
+using Mahjong.Domain.Cheat;
 using Xunit;
 
 namespace Mahjong.TableRuntime.Tests
@@ -179,6 +180,126 @@ namespace Mahjong.TableRuntime.Tests
         }
 
         [Fact]
+        public async Task RecoveredStaleOpenKanResponseIsDropped()
+        {
+            RoundStateMachine round = BuildClosedOpenKanRound();
+            await using ActorHarness harness = CreateActor(round);
+            var stale = new TableRecoveredDecision(
+                new DecisionKey(round.RoundId, 2, "stale-openkan"),
+                0L,
+                new[]
+                {
+                    new LegalActionOption(LegalActionKind.Kan, 2, Man(3, 3)),
+                    new LegalActionOption(LegalActionKind.Pass, 2)
+                },
+                null,
+                1000L,
+                0L,
+                0L);
+            await harness.BeginRecoveryAsync("probe-openkan");
+            TableOperationResult result = await harness.CompleteRecoveryAsync(
+                RecoveryBaseline(round, stale));
+            Assert.True(
+                result.Status == TableOperationStatus.Configured,
+                result.ReasonCode + ": " + result.Detail);
+            TableTimingSnapshot timing = await harness.GetTimingSnapshotAsync();
+            Assert.Null(timing.Seats[2].PendingKey);
+            Assert.Null(timing.Seats[2].Timing);
+        }
+
+        [Fact]
+        public async Task RecoveredInvalidControlEpochStillRejectsBeforeFiltering()
+        {
+            RoundStateMachine round = BuildClosedOpenKanRound();
+            await using ActorHarness harness = CreateActor(round);
+            var invalid = new TableRecoveredDecision(
+                new DecisionKey(round.RoundId, 2, "stale-bad-epoch"),
+                99L,
+                new[]
+                {
+                    new LegalActionOption(LegalActionKind.Pon, 2, Man(3, 3)),
+                    new LegalActionOption(LegalActionKind.Pass, 2)
+                },
+                null,
+                1000L,
+                0L,
+                0L);
+            await harness.BeginRecoveryAsync("probe-bad-epoch");
+            TableOperationResult result = await harness.CompleteRecoveryAsync(
+                RecoveryBaseline(round, invalid));
+            Assert.Equal(TableOperationStatus.Rejected, result.Status);
+            Assert.Equal(TableRuntimeReasonCode.RecoveryTimingInvalid, result.ReasonCode);
+            Assert.Equal(
+                TableActorLifecycle.Recovering,
+                (await harness.GetSnapshotAsync()).Lifecycle);
+        }
+
+        [Fact]
+        public async Task NonDurableDeferredSleeveDeliveryClearsClosedWindowPeers()
+        {
+            RoundStateMachine round = BuildWindowRound();
+            CheatState cheat = V32Fixtures.WithRegisteredRound(V32Fixtures.Cheat(1000), round.RoundId);
+            TileId tile = round.Tiles.TileAt(TilePosition.Wall(round.Tiles.WallPointer));
+            cheat = cheat.WithSleeveBloom(
+                cheat.SleeveBloom.WithReservation(
+                    new SleeveBloomReservation(1, "reserved", tile, "window", 0)));
+            var clock = new ManualTableClock { Now = 1000L };
+            var port = new RecordingCommitPort();
+            var sink = new RecordingPublicationSink(port);
+            var options = new TableActorOptions
+            {
+                RoomId = "room-1",
+                MailboxCapacity = 16,
+                ControlReserve = 16,
+                DecisionClockConfig = new DecisionClockConfig(1000L, 0L, ReserveScope.Round),
+                InitialControllers = P31Fixtures.Controllers(
+                    SeatControllerKind.Computer,
+                    SeatControllerKind.Computer,
+                    SeatControllerKind.Computer,
+                    SeatControllerKind.Computer),
+                CheatEconomy = V32Fixtures.Economy(1000),
+                SleeveBloomConfig = V32Fixtures.SleeveConfig(),
+                InitialCheatState = cheat
+            };
+            await using var harness = new ActorHarness(
+                new TableActor(options, round, port, clock, sink),
+                clock,
+                port,
+                sink,
+                round);
+
+            PendingDecision Pass(int seat, string id) => new PendingDecision(
+                new DecisionKey(round.RoundId, seat, id),
+                0L,
+                new[] { new LegalActionOption(LegalActionKind.Pass, seat) },
+                null);
+
+            await harness.OpenDecisionAsync(Pass(1, "p1"));
+            await harness.OpenDecisionAsync(Pass(2, "p2"));
+            TableOperationResult first = await harness.SubmitAsync(P31Fixtures.Command(
+                RoundCommand.Pass(round.RoundId, 1),
+                0,
+                "pass1",
+                new DecisionId("p1")));
+            Assert.Equal(TableOperationStatus.Accepted, first.Status);
+
+            clock.Now = 1500L;
+            Assert.Equal(
+                TableOperationStatus.Configured,
+                (await harness.OpenDecisionAsync(Pass(1, "stale1"))).Status);
+            clock.Now = 2000L;
+            TableTickResult tick = await harness.TickAsync();
+            Assert.Single(tick.Entries);
+            Assert.Equal(TableOperationStatus.Accepted, tick.Entries[0].Transition!.Status);
+            Assert.Contains(
+                tick.Entries[0].Transition!.Events,
+                value => value.Cheat?.Event.Kind == CheatEventKind.SleeveBloomReservationDelivered);
+            TableTimingSnapshot timing = await harness.GetTimingSnapshotAsync();
+            Assert.Null(timing.Seats[1].PendingKey);
+            Assert.Null(timing.Seats[1].Timing);
+        }
+
+        [Fact]
         public async Task FailedCommitDoesNotConsumeOrInvalidateAnyResponseDecision()
         {
             await using ActorHarness harness = CreateWindowHarness();
@@ -290,7 +411,7 @@ namespace Mahjong.TableRuntime.Tests
                         new[] { new LegalActionOption(LegalActionKind.Chi, 1, target) },
                         null,
                         1000L,
-                        1000L,
+                        0L,
                         0L),
                     new TableRecoveredDecision(
                         new DecisionKey(finalRound.RoundId, 2, "stale-pon"),
@@ -298,7 +419,7 @@ namespace Mahjong.TableRuntime.Tests
                         new[] { new LegalActionOption(LegalActionKind.Pon, 2, target) },
                         null,
                         1000L,
-                        1000L,
+                        0L,
                         0L)
                 };
                 ControlRegistrySnapshot control = P31Fixtures.ControlSnapshot(
@@ -348,6 +469,46 @@ namespace Mahjong.TableRuntime.Tests
                     " detail=" + applied.Detail);
                 Assert.Equal(3UL, (await harness.GetSnapshotAsync()).StateVersion.Value);
             }
+        }
+
+        private static TableRecoveryBaseline RecoveryBaseline(
+            RoundStateMachine round,
+            TableRecoveredDecision decision)
+        {
+            ControlRegistrySnapshot control = P31Fixtures.ControlSnapshot(
+                Enumerable.Range(0, 4)
+                    .Select(seat => P31Fixtures.Connected(SeatControllerKind.Computer, 0L, seat))
+                    .ToArray());
+            return new TableRecoveryBaseline(
+                round,
+                new StateVersion(2),
+                new EventSeq(3),
+                new OwnerEpoch(1),
+                new TableControlRecoveryBaseline(control, 0L),
+                new TableRecoveryTiming(new[] { decision }, new long[] { 0L, 0L, 0L, 0L }));
+        }
+
+        private static RoundStateMachine BuildClosedOpenKanRound()
+        {
+            RoundStateMachine window = BuildWindowRound();
+            TileId target = Man(3, 3);
+            RoundTransition openKan = window.Execute(
+                RoundCommand.OpenKan(
+                    window.RoundId,
+                    2,
+                    target,
+                    Man(3, 0),
+                    Man(3, 1),
+                    Man(3, 2)));
+            Assert.True(openKan.IsAccepted, openKan.Error?.ToString());
+
+            RoundTransition chi = window.Execute(
+                RoundCommand.Chi(window.RoundId, 1, target, Man(1, 0), Man(2, 0)));
+            Assert.True(chi.IsAccepted, chi.Error?.ToString());
+            RoundTransition closed = chi.State!.Execute(RoundCommand.Pass(window.RoundId, 2));
+            Assert.True(closed.IsAccepted, closed.Error?.ToString());
+            Assert.Null(closed.State!.Window);
+            return closed.State!;
         }
 
         private static ActorHarness CreateWindowHarness()
@@ -436,8 +597,9 @@ namespace Mahjong.TableRuntime.Tests
             TileId target = Man(3, 3);
             Place(Man(1, 0), TilePosition.Hand(1, 11));
             Place(Man(2, 0), TilePosition.Hand(1, 12));
-            Place(Man(3, 0), TilePosition.Hand(2, 11));
-            Place(Man(3, 1), TilePosition.Hand(2, 12));
+            Place(Man(3, 0), TilePosition.Hand(2, 10));
+            Place(Man(3, 1), TilePosition.Hand(2, 11));
+            Place(Man(3, 2), TilePosition.Hand(2, 12));
             Place(target, TilePosition.Hand(0, 13));
 
             int cursor = 0;
@@ -471,7 +633,7 @@ namespace Mahjong.TableRuntime.Tests
                         continue;
                     }
 
-                    if (seat == 2 && slot >= 11)
+                    if (seat == 2 && slot >= 10)
                     {
                         continue;
                     }

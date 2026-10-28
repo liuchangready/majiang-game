@@ -1,8 +1,11 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Threading;
+using System.Threading.Tasks;
 using Mahjong.Contracts;
 using Mahjong.Domain;
+using Mahjong.Domain.Cheat;
 using Xunit;
 
 namespace Mahjong.TableRuntime.Tests
@@ -80,6 +83,55 @@ namespace Mahjong.TableRuntime.Tests
             Assert.True(
                 TableCheckpointValidator.TryValidate(checkpoint, out string reason, out string detail),
                 reason + ": " + detail);
+        }
+
+        [Fact]
+        public async Task CheckpointZeroTailOpenKanRecoveryInstallsAndContinues()
+        {
+            await AssertRealRecovery(OpenKanScript(), checkpointAtEnd: false);
+        }
+
+        [Fact]
+        public async Task CheckpointZeroTailClosedKanRecoveryInstallsAndContinues()
+        {
+            await AssertRealRecovery(ClosedKanScript(), checkpointAtEnd: false);
+        }
+
+        [Fact]
+        public async Task CheckpointZeroTailAddedKanChankanPassRecoveryInstallsAndContinues()
+        {
+            await AssertRealRecovery(AddedKanScript(chankan: true), checkpointAtEnd: false);
+        }
+
+        [Fact]
+        public void ChankanRonTerminalEvidenceValidates()
+        {
+            Script script = AddedKanRonScript();
+            Assert.True(script.Round.IsFinished);
+            Evidence evidence = BuildEvidence(script);
+            TableVisibilityProjection.ValidateRecoveredEventFacts(
+                evidence.History,
+                evidence.Facts,
+                evidence.Policy,
+                script.Round);
+        }
+
+        [Fact]
+        public async Task CheckpointZeroTailChankanRonRecoveryInstallsTerminal()
+        {
+            await AssertRealRecovery(AddedKanRonScript(), checkpointAtEnd: false);
+        }
+
+        [Fact]
+        public async Task CheckpointZeroTailMultiKanRecoveryInstallsAndContinues()
+        {
+            await AssertRealRecovery(MultiKanScript(), checkpointAtEnd: false);
+        }
+
+        [Fact]
+        public async Task FinalCheckpointOpenKanRecoveryInstallsAndContinues()
+        {
+            await AssertRealRecovery(OpenKanScript(), checkpointAtEnd: true);
         }
 
         [Fact]
@@ -253,12 +305,17 @@ namespace Mahjong.TableRuntime.Tests
         {
             public Script(RoundStateMachine round)
             {
+                InitialRound = round;
                 Round = round;
             }
+
+            public RoundStateMachine InitialRound { get; }
 
             public RoundStateMachine Round { get; set; }
 
             public int NextVersion { get; set; } = 1;
+
+            public List<RoundCommand> Commands { get; } = new List<RoundCommand>();
 
             public List<EventDraft> Drafts { get; } = new List<EventDraft>();
         }
@@ -420,6 +477,7 @@ namespace Mahjong.TableRuntime.Tests
         {
             RoundTransition transition = script.Round.Execute(command);
             Assert.True(transition.IsAccepted, transition.Error?.ToString());
+            script.Commands.Add(command);
             script.Round = transition.State!;
             int version = script.NextVersion++;
             for (int i = 0; i < transition.Events.Count; i++)
@@ -432,6 +490,503 @@ namespace Mahjong.TableRuntime.Tests
                     : null;
                 script.Drafts.Add(new EventDraft(version, value, eventMeld));
             }
+        }
+
+        private static async Task AssertRealRecovery(Script script, bool checkpointAtEnd)
+        {
+            const string room = DurableHarness.Room;
+            const string owner = DurableHarness.Owner;
+            const string account = "acct-kan-recovery";
+            var source = new RecoveryProjectionSource();
+            var clock = new ManualTableClock { Now = 1000L };
+            var scopes = new InMemoryRequestScopeAuthority();
+            TableScopeRecord scope = scopes.Issue(
+                account,
+                TableScopeRole.Player,
+                room,
+                (ulong)DurableHarness.UtcBase,
+                (ulong)DurableHarness.UtcBase + 3_600_000UL);
+            var store = new InMemoryTableStore(clock, scopes);
+            CheatLedger ledger = DurableHarness.NewLedger();
+            CheatLedgerApplyResult seed = ledger.Apply("kan-recovery-seed", 0, 0, "seed");
+            Assert.True(seed.Success, seed.Error.ToString());
+            ledger = seed.Ledger!;
+            await store.CreateRoomAsync(
+                BuildZeroCheckpoint(script.InitialRound, ledger),
+                CancellationToken.None);
+            TableLeaseAcquireResult lease = await store.AcquireAsync(
+                room,
+                owner,
+                TimeSpan.FromMinutes(10),
+                CancellationToken.None);
+            Assert.True(lease.Acquired, lease.Detail);
+            var durable = new TableDurableContext(
+                store,
+                store,
+                store,
+                store,
+                scopes,
+                owner,
+                TimeSpan.FromMinutes(10),
+                "boot-1",
+                1,
+                room)
+            {
+                RecoveryStateSink = new RecordingRecoveryStateSink()
+            };
+            durable.CheatLedgerProvider = () => ledger;
+            durable.CheatStateProvider = () => new CheatState(
+                ledger,
+                new TileMarkState(),
+                new SleeveBloomState(),
+                new BeamSwapState());
+            TableActorOptions Options(OwnerEpoch epoch) => new TableActorOptions
+            {
+                RoomId = room,
+                MailboxCapacity = 16,
+                ControlReserve = 16,
+                DecisionClockConfig = new DecisionClockConfig(1000L, 0L, ReserveScope.Round),
+                InitialControllers = P31Fixtures.Controllers(
+                    SeatControllerKind.RemoteHuman,
+                    SeatControllerKind.RemoteHuman,
+                    SeatControllerKind.RemoteHuman,
+                    SeatControllerKind.RemoteHuman),
+                InitialOwnerEpoch = epoch
+            };
+            TableCommandEnvelope Envelope(
+                RoundCommand command,
+                int expectedVersion,
+                string requestId,
+                ulong ownerEpoch,
+                long recoveryGeneration,
+                string? decisionId = null)
+            {
+                byte[] payload = System.Text.Encoding.UTF8.GetBytes(
+                    "KAN_RECOVERY|" + requestId + "|" + command.RoundId + "|" + command.Action);
+                return new TableCommandEnvelope(
+                    command,
+                    new RequestId(requestId),
+                    new StateVersion((ulong)expectedVersion),
+                    new OwnerEpoch(ownerEpoch),
+                    new ControlEpoch(0),
+                    decisionId == null ? (DecisionId?)null : new DecisionId(decisionId),
+                    recoveryGeneration,
+                    scope.ScopeId,
+                    "KAN_RECOVERY",
+                    TablePayloadSha256.Compute(payload));
+            }
+
+            var legacy = new RecordingCommitPort();
+            var sink = new RecordingPublicationSink(legacy);
+            var first = new TableActor(
+                Options(lease.Lease!.OwnerEpoch),
+                script.InitialRound,
+                legacy,
+                clock,
+                sink,
+                null,
+                source,
+                null,
+                durable);
+            try
+            {
+                TableRecoveryResult installed = await first.RecoverFromStoreAsync(
+                    TestContext.Current.CancellationToken);
+                Assert.True(installed.Recovered, installed.ReasonCode + ": " + installed.Detail);
+                TableSnapshot installedSnapshot = await first.GetSnapshotAsync(
+                    TestContext.Current.CancellationToken);
+
+                for (int i = 0; i < script.Commands.Count; i++)
+                {
+                    TableOperationResult result = await first.SubmitAsync(Envelope(
+                        script.Commands[i],
+                        i,
+                        "kan-rec-" + i,
+                        installedSnapshot.OwnerEpoch.Value,
+                        1L));
+                    Assert.True(
+                        result.Status == TableOperationStatus.Accepted,
+                        "command " + i + " " + result.ReasonCode + ": " + result.Detail);
+                    Assert.Equal((ulong)(i + 1), result.CommandVersion!.Value.Value);
+                }
+
+                if (checkpointAtEnd)
+                {
+                    TableOperationResult saved = await first.SaveCheckpointAsync(
+                        TestContext.Current.CancellationToken);
+                    Assert.Equal(TableOperationStatus.Configured, saved.Status);
+                }
+
+                await first.CloseAsync(TestContext.Current.CancellationToken);
+                clock.Now += 1000L;
+                var service = new TableRecoveryService(store, store, store, clock);
+                TableRecoveryResult recovered = await service.RecoverAsync(
+                    room,
+                    new TableRecoveryOptions(
+                        owner,
+                        "boot-2",
+                        1,
+                        TimeSpan.FromMinutes(10),
+                        0L,
+                        room,
+                        requireCheatLedger: false),
+                    TestContext.Current.CancellationToken);
+                Assert.True(recovered.Recovered, recovered.ReasonCode + ": " + recovered.Detail);
+                Assert.NotNull(recovered.Baseline);
+                TableRecoveryBaseline baseline = recovered.Baseline!;
+                Assert.Equal((ulong)script.Commands.Count, baseline.StateVersion.Value);
+                Assert.Equal(script.Round.SourceFingerprint, baseline.Round.SourceFingerprint);
+                ConservationReport conservation = TilePositionMap.Validate(baseline.Round.Tiles);
+                Assert.True(conservation.IsValid, conservation.ToString());
+                Assert.Equal(136, conservation.AssignedCount);
+                Assert.Equal(0, conservation.UnassignedCount);
+
+                var second = new TableActor(
+                    Options(baseline.OwnerEpoch),
+                    script.InitialRound,
+                    new RecordingCommitPort(),
+                    clock,
+                    new RecordingPublicationSink(new RecordingCommitPort()),
+                    null,
+                    source,
+                    null,
+                    durable);
+                try
+                {
+                    Assert.Equal(
+                        TableOperationStatus.Configured,
+                        (await second.BeginRecoveryAsync(
+                            "kan-proof",
+                            TestContext.Current.CancellationToken)).Status);
+                    TableOperationResult completed = await second.CompleteRecoveryAsync(
+                        baseline,
+                        TestContext.Current.CancellationToken);
+                    Assert.True(
+                        completed.Status == TableOperationStatus.Configured,
+                        completed.ReasonCode + ": " + completed.Detail);
+                    TableTimingSnapshot timing = await second.GetTimingSnapshotAsync(
+                        TestContext.Current.CancellationToken);
+                    Assert.All(timing.Seats, seat => Assert.Null(seat.PendingKey));
+
+                    RoundStateMachine round = baseline.Round;
+                    if (!round.IsFinished)
+                    {
+                        int seat = round.CurrentSeat;
+                        TileId tile = round.Tiles.TilesInZone(TileZone.Hand, seat)[0];
+                        var decision = new PendingDecision(
+                            new DecisionKey(round.RoundId, seat, "post-recovery"),
+                            0L,
+                            new[] { new LegalActionOption(LegalActionKind.Discard, seat, tile) },
+                            tile);
+                        Assert.Equal(
+                            TableOperationStatus.Configured,
+                            (await second.OpenDecisionAsync(
+                                decision,
+                                TestContext.Current.CancellationToken)).Status);
+                        TableOperationResult applied = await second.SubmitAsync(Envelope(
+                            RoundCommand.Discard(round.RoundId, seat, tile),
+                            script.Commands.Count,
+                            "post-recovery",
+                            baseline.OwnerEpoch.Value,
+                            1L,
+                            "post-recovery"));
+                        Assert.True(
+                            applied.Status == TableOperationStatus.Accepted,
+                            applied.ReasonCode + ": " + applied.Detail);
+                        Assert.Equal(
+                            (ulong)(script.Commands.Count + 1),
+                            (await second.GetSnapshotAsync(
+                                TestContext.Current.CancellationToken)).StateVersion.Value);
+                    }
+                }
+                finally
+                {
+                    await second.DisposeAsync();
+                }
+            }
+            finally
+            {
+                await first.DisposeAsync();
+            }
+        }
+
+        private static TableCheckpoint BuildZeroCheckpoint(
+            RoundStateMachine round,
+            CheatLedger ledger)
+        {
+            var control = new TableControlCheckpoint(DurableHarness.DefaultControl(), 0L);
+            var timing = new TableTimingCheckpoint(
+                round.RoundId,
+                new long[] { 0L, 0L, 0L, 0L },
+                Array.Empty<TableRecoveredDecision>(),
+                (ulong)DurableHarness.UtcBase,
+                0L,
+                DurableHarness.Boot);
+            var source = new RecoveryProjectionSource();
+            TableProjectionContextData data = source.Capture(new TableProjectionContextRequest(
+                DurableHarness.Room,
+                round,
+                new StateVersion(0),
+                new EventSeq(0),
+                new OwnerEpoch(1),
+                0L,
+                0L,
+                0L,
+                DurableHarness.UtcBase,
+                Array.Empty<TableEventRecord>()));
+            byte[] facts = TableProjectionFactsCodec.Encode(data);
+            return TableCheckpointFactory.Create(
+                DurableHarness.Room,
+                round,
+                new StateVersion(0),
+                new EventSeq(0),
+                control,
+                timing,
+                1,
+                DurableHarness.Boot,
+                (ulong)DurableHarness.UtcBase,
+                cheat: TableCheatLedgerCheckpoint.FromLedger(ledger),
+                committedFactsPayload: facts,
+                timingVersion: 1L,
+                capturedMonotonicMillis: 0L,
+                committedHistory: Array.Empty<TableEventRecord>(),
+                committedCommandBindings: Array.Empty<TableCommandBinding>());
+        }
+
+        private sealed class RecoveryProjectionSource : ITableProjectionContextSource
+        {
+            public TableProjectionContextData Capture(TableProjectionContextRequest request)
+            {
+                return new TableProjectionContextData(
+                    request.Round.RoundId,
+                    request.StateVersion,
+                    7UL,
+                    null,
+                    BuildPublicFacts(request.Round),
+                    BuildPrivateFacts(request.Round),
+                    null,
+                    new TableProjectionPolicy(false, settlementBatch: true, revealSettlementUra: true),
+                    BuildRequestFacts(request));
+            }
+
+            private static IReadOnlyList<TableSeatPublicFacts> BuildPublicFacts(RoundStateMachine round)
+            {
+                var result = new List<TableSeatPublicFacts>(4);
+                for (int seat = 0; seat < 4; seat++)
+                {
+                    var melds = new List<TableMeldFact>();
+                    for (int i = 0; i < round.Melds.Count; i++)
+                    {
+                        RoundMeld meld = round.Melds[i];
+                        if (meld.Seat != seat)
+                        {
+                            continue;
+                        }
+
+                        var tiles = new uint[meld.Tiles.Count];
+                        for (int t = 0; t < tiles.Length; t++)
+                        {
+                            tiles[t] = unchecked((uint)meld.Tiles[t].Value);
+                        }
+
+                        bool closed = meld.Kind == RoundMeldKind.ClosedKan;
+                        ProtocolMeldType type = meld.Kind == RoundMeldKind.Chi
+                            ? ProtocolMeldType.Chi
+                            : meld.Kind == RoundMeldKind.Pon
+                                ? ProtocolMeldType.Pon
+                                : meld.Kind == RoundMeldKind.OpenKan
+                                    ? ProtocolMeldType.OpenKan
+                                    : closed
+                                        ? ProtocolMeldType.ClosedKan
+                                        : ProtocolMeldType.AddedKan;
+                        melds.Add(new TableMeldFact(
+                            type,
+                            tiles,
+                            closed ? (uint?)null : unchecked((uint)meld.CalledTile.Value),
+                            closed ? ProtocolConstants.NoSeat : meld.FromSeat));
+                    }
+
+                    IReadOnlyList<TileId> river = round.Tiles.TilesInZone(TileZone.Discard, seat);
+                    var discards = new List<DiscardView>(river.Count);
+                    for (int i = 0; i < river.Count; i++)
+                    {
+                        discards.Add(new DiscardView(unchecked((uint)river[i].Value), 0, false, false));
+                    }
+
+                    result.Add(new TableSeatPublicFacts(seat, round.IsRiichi(seat), melds, discards));
+                }
+
+                return result;
+            }
+
+            private static IReadOnlyList<TableSeatPrivateFacts> BuildPrivateFacts(RoundStateMachine round)
+            {
+                var result = new List<TableSeatPrivateFacts>(4);
+                for (int seat = 0; seat < 4; seat++)
+                {
+                    IReadOnlyList<TileId> river = round.Tiles.TilesInZone(TileZone.Discard, seat);
+                    var history = new uint[river.Count];
+                    for (int i = 0; i < river.Count; i++)
+                    {
+                        history[i] = unchecked((uint)river[i].Value);
+                    }
+
+                    result.Add(new TableSeatPrivateFacts(seat, false, false, history));
+                }
+
+                return result;
+            }
+        }
+
+        private static IReadOnlyList<TableProjectionEventFact> BuildRequestFacts(
+            TableProjectionContextRequest request)
+        {
+            IReadOnlyList<TableEventRecord> records = request.CommittedEvents;
+            var wallBySeq = new Dictionary<ulong, uint>();
+            long wall = request.Round.Tiles.WallRemaining;
+            for (int i = records.Count - 1; i >= 0; i--)
+            {
+                if (records[i].Type == RoundEventType.TileDrawn)
+                {
+                    wallBySeq[records[i].Seq.Value] = unchecked((uint)wall);
+                    wall++;
+                }
+                else if (records[i].Type == RoundEventType.RinshanDrawn)
+                {
+                    wall++;
+                }
+            }
+
+            var used = new Dictionary<int, HashSet<int>>();
+            var facts = new List<TableProjectionEventFact>(records.Count);
+            for (int i = 0; i < records.Count; i++)
+            {
+                TableEventRecord record = records[i];
+                TableEventProjectionInput? input = TableEventProjection.FromRoundEvent(record);
+                if (input == null)
+                {
+                    continue;
+                }
+
+                uint turn = unchecked((uint)(i + 1));
+                TableProjectionEventFacts values;
+                switch (record.Type)
+                {
+                    case RoundEventType.TileDrawn:
+                        values = new TableProjectionEventFacts(
+                            turnNumber: turn,
+                            wallRemaining: wallBySeq[record.Seq.Value]);
+                        break;
+                    case RoundEventType.TileDiscarded:
+                        values = new TableProjectionEventFacts(
+                            turnNumber: turn,
+                            riichiDiscard: false,
+                            tsumogiri: true,
+                            discardTileId: unchecked((uint)record.Tile!.Value.Value));
+                        break;
+                    case RoundEventType.ChiDeclared:
+                    case RoundEventType.PonDeclared:
+                    case RoundEventType.KanDeclared:
+                        MeldView meld = FindMeld(request.Round, record, used);
+                        values = new TableProjectionEventFacts(
+                            turnNumber: turn,
+                            meld: meld,
+                            fromSeat: record.Type == RoundEventType.KanDeclared
+                                ? (int?)null
+                                : meld.FromSeat);
+                        break;
+                    case RoundEventType.RonWin:
+                        values = new TableProjectionEventFacts(
+                            turnNumber: turn,
+                            loserSeat: 1,
+                            yaku: new[] { new YakuView("CHANKAN", 1U) },
+                            han: 1U,
+                            fu: 30U,
+                            score: 1000L);
+                        break;
+                    case RoundEventType.RoundEnded:
+                        values = new TableProjectionEventFacts(
+                            turnNumber: turn,
+                            roundWind: unchecked((uint)request.Round.RoundWind),
+                            roundNumber: unchecked((uint)request.Round.RoundNumber));
+                        break;
+                    default:
+                        values = new TableProjectionEventFacts(turnNumber: turn);
+                        break;
+                }
+
+                facts.Add(new TableProjectionEventFact(
+                    input.Type,
+                    record.Seq,
+                    record.CommandVersion,
+                    unchecked((uint)record.Ordinal),
+                    values));
+            }
+
+            return facts;
+        }
+
+        private static MeldView FindMeld(
+            RoundStateMachine round,
+            TableEventRecord record,
+            Dictionary<int, HashSet<int>> used)
+        {
+            if (!record.Tile.HasValue)
+            {
+                throw new InvalidOperationException("A declared meld event requires a tile.");
+            }
+
+            if (!used.TryGetValue(record.Seat, out HashSet<int>? indices))
+            {
+                indices = new HashSet<int>();
+                used[record.Seat] = indices;
+            }
+
+            for (int i = 0; i < round.Melds.Count; i++)
+            {
+                if (indices.Contains(i) || round.Melds[i].Seat != record.Seat)
+                {
+                    continue;
+                }
+
+                RoundMeld meld = round.Melds[i];
+                bool kindMatches = record.Type == RoundEventType.ChiDeclared
+                    ? meld.Kind == RoundMeldKind.Chi
+                    : record.Type == RoundEventType.PonDeclared
+                        ? meld.Kind == RoundMeldKind.Pon
+                        : meld.Kind == RoundMeldKind.OpenKan ||
+                          meld.Kind == RoundMeldKind.ClosedKan ||
+                          meld.Kind == RoundMeldKind.AddedKan;
+                if (!kindMatches || !meld.Tiles.Contains(record.Tile.Value))
+                {
+                    continue;
+                }
+
+                indices.Add(i);
+                var tiles = new uint[meld.Tiles.Count];
+                for (int t = 0; t < tiles.Length; t++)
+                {
+                    tiles[t] = unchecked((uint)meld.Tiles[t].Value);
+                }
+
+                bool closed = meld.Kind == RoundMeldKind.ClosedKan;
+                ProtocolMeldType type = meld.Kind == RoundMeldKind.Chi
+                    ? ProtocolMeldType.Chi
+                    : meld.Kind == RoundMeldKind.Pon
+                        ? ProtocolMeldType.Pon
+                        : meld.Kind == RoundMeldKind.OpenKan
+                            ? ProtocolMeldType.OpenKan
+                            : closed
+                                ? ProtocolMeldType.ClosedKan
+                                : ProtocolMeldType.AddedKan;
+                return new MeldView(
+                    type,
+                    tiles,
+                    closed ? (uint?)null : unchecked((uint)meld.CalledTile.Value),
+                    closed ? ProtocolConstants.NoSeat : meld.FromSeat);
+            }
+
+            throw new InvalidOperationException("No matching recovered meld for " + record.Seq + ".");
         }
 
         private static Evidence BuildEvidence(Script script)
@@ -521,6 +1076,21 @@ namespace Mahjong.TableRuntime.Tests
                             fromSeat: record.Type == RoundEventType.KanDeclared
                                 ? (int?)null
                                 : meld.FromSeat);
+                        break;
+                    case RoundEventType.RonWin:
+                        values = new TableProjectionEventFacts(
+                            turnNumber: turn,
+                            loserSeat: 1,
+                            yaku: new[] { new YakuView("CHANKAN", 1U) },
+                            han: 1U,
+                            fu: 30U,
+                            score: 1000L);
+                        break;
+                    case RoundEventType.RoundEnded:
+                        values = new TableProjectionEventFacts(
+                            turnNumber: turn,
+                            roundWind: unchecked((uint)script.Round.RoundWind),
+                            roundNumber: unchecked((uint)script.Round.RoundNumber));
                         break;
                     default:
                         values = new TableProjectionEventFacts(turnNumber: turn);
@@ -639,6 +1209,45 @@ namespace Mahjong.TableRuntime.Tests
             }
 
             Execute(script, RoundCommand.Discard(round.RoundId, 1, script.Round.Tiles.DrawnTile!.Value.Tile));
+            return script;
+        }
+
+        private static Script AddedKanRonScript()
+        {
+            RoundStateMachine round = BuildDealt(
+                "added-kan-ron",
+                new Dictionary<int, TileId[]>
+                {
+                    [1] = new[] { Dragon(1, 0), Dragon(1, 1), Dragon(1, 2) }
+                },
+                Dragon(1, 3));
+            var script = new Script(round);
+            TileId target = Dragon(1, 3);
+            Execute(script, RoundCommand.Discard(round.RoundId, 0, target, new[] { 1 }));
+            Execute(
+                script,
+                RoundCommand.Pon(round.RoundId, 1, target, Dragon(1, 0), Dragon(1, 1)),
+                new MeldView(
+                    ProtocolMeldType.Pon,
+                    new uint[] { 124, 125, 127 },
+                    127,
+                    0));
+            Execute(
+                script,
+                RoundCommand.AddedKan(round.RoundId, 1, Dragon(1, 2), new[] { 2 }),
+                new MeldView(
+                    ProtocolMeldType.AddedKan,
+                    new uint[] { 124, 125, 127, 126 },
+                    127,
+                    0));
+            var settlement = new RoundSettlement(
+                "chankan-ron",
+                RoundOutcome.Ron(2, 1),
+                script.Round.Scores.ToArray(),
+                script.Round.RiichiSticks,
+                new PersistedUtcTime(DateTimeOffset.UnixEpoch),
+                1000L);
+            Execute(script, RoundCommand.Ron(script.Round.RoundId, 2, settlement));
             return script;
         }
 
