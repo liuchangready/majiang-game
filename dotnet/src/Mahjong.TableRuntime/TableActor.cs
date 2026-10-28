@@ -2772,16 +2772,9 @@ namespace Mahjong.TableRuntime
                         continue;
                     }
 
-                    bool completed = _durable == null
-                        ? _decisionClock.Complete(aiTiming.Key, actionNow)
-                        : true;
-                    if (!completed)
-                    {
-                        SetFaulted(new InvalidOperationException(
-                            "The decision clock no longer matched the committed AI transition."));
-                    }
-
-                    _pending.Remove(entry.Seat);
+                    // The accepted commit installed the consumed timing and pending entry
+                    // atomically. Re-applying Complete/Remove here would fault the actor on its
+                    // own committed command.
                 }
                 else if (result.Status == TableOperationStatus.Failed)
                 {
@@ -3029,17 +3022,8 @@ namespace Mahjong.TableRuntime
                 pending,
                 TimingConsumption.Expire).ConfigureAwait(false);
 
-            if (result.Status == TableOperationStatus.Accepted && !_round.IsFinished && _durable == null)
-            {
-                bool expired = _decisionClock.Expire(timing.Key, timing.Generation, now);
-                if (!expired)
-                {
-                    SetFaulted(new InvalidOperationException(
-                        "The decision clock no longer matched the committed timeout transition."));
-                }
-
-                _pending.Remove(seat);
-            }
+            // The accepted commit installed the consumed timing and pending entry atomically.
+            // Re-applying Expire/Remove here would fault the actor on its own committed command.
 
             return new TableTickEntry(
                 TickEntryKind.Timeout,
@@ -3499,17 +3483,15 @@ namespace Mahjong.TableRuntime
             CheatState? nextCheat = command.Action == RoundActionKind.DiscardTile
                 ? OpenDiscardWindow(_cheat, command.Seat)
                 : null;
-            PendingDecision? timingPending = _durable != null ? pending : null;
-            DecisionId? durableTimingDecision = _durable != null ? timingDecision : null;
             return await CommitAndInstallAsync(
                 transition,
                 requestId,
-                timingPending,
-                durableTimingDecision,
+                pending,
+                timingDecision,
                 now,
                 null,
                 command,
-                _durable != null ? timingConsumption : TimingConsumption.None,
+                timingConsumption,
                 nextCheat).ConfigureAwait(false);
         }
 
@@ -3524,6 +3506,7 @@ namespace Mahjong.TableRuntime
             TimingConsumption timingConsumption = TimingConsumption.None,
             CheatState? nextCheat = null)
         {
+            RoundResponseWindow? priorWindow = _round.Window;
             StateVersion evaluated = _stateVersion;
             StateVersion commandVersion;
             try
@@ -3576,6 +3559,48 @@ namespace Mahjong.TableRuntime
                 pending,
                 nextState,
                 transition.Events);
+
+            // The non-durable path must make exactly the same pending/timing decision as the
+            // durable path, but it may only install it after the commit port succeeds. Build the
+            // candidate from a clone so a failed/cancelled commit consumes neither a decision nor
+            // its reserve.
+            DecisionClock candidateClock = _decisionClock.Clone();
+            int consumedSeat = -1;
+            if (pending != null &&
+                decisionId.HasValue &&
+                string.Equals(decisionId.Value.Value, pending.Key.DecisionId, StringComparison.Ordinal))
+            {
+                DecisionTiming? timing = candidateClock.Timing(pending.Key.Seat);
+                if (timing == null || timing.Key != pending.Key)
+                {
+                    return TableOperationResult.Failed(
+                        evaluated,
+                        TableRuntimeReasonCode.DecisionMismatch,
+                        "The open timing no longer matches the command's decision.");
+                }
+
+                bool closed = timingConsumption == TimingConsumption.Expire
+                    ? candidateClock.Expire(pending.Key, timing.Generation, now)
+                    : candidateClock.Complete(pending.Key, now);
+                if (!closed)
+                {
+                    return TableOperationResult.Failed(
+                        evaluated,
+                        TableRuntimeReasonCode.DecisionMismatch,
+                        "The candidate timing could not close the committed decision.");
+                }
+
+                consumedSeat = pending.Key.Seat;
+            }
+
+            List<PendingDecision> nonDurablePending = CopyPendingExcept(consumedSeat);
+            nonDurablePending = TableResponseDecisionReconciliation.FilterAfterTransition(
+                priorWindow,
+                nextState,
+                nonDurablePending,
+                candidateClock,
+                now);
+
             if (_durable != null)
             {
                 try
@@ -3659,25 +3684,12 @@ namespace Mahjong.TableRuntime
 
             _stateVersion = commandVersion;
             _lastEventSeq = lastEventSeq;
-
-            if (pending != null &&
-                decisionId.HasValue &&
-                string.Equals(decisionId.Value.Value, pending.Key.DecisionId, StringComparison.Ordinal))
+            _decisionClock = candidateClock;
+            _pending.Clear();
+            for (int i = 0; i < nonDurablePending.Count; i++)
             {
-                bool closed = _decisionClock.Complete(pending.Key, now);
-                if (!closed)
-                {
-                    SetFaulted(new InvalidOperationException(
-                        "The decision clock could not close the committed player command."));
-                }
-
-                _pending.Remove(pending.Key.Seat);
-            }
-
-            if (_round.IsFinished)
-            {
-                _pending.Clear();
-                _decisionClock.Reset();
+                PendingDecision value = nonDurablePending[i];
+                _pending[value.Key.Seat] = value;
             }
 
             AppendRecent(records);
@@ -3688,6 +3700,25 @@ namespace Mahjong.TableRuntime
             TableSnapshot snapshot = BuildSnapshot();
             Publish(new TablePublication(TablePublicationKind.Applied, snapshot, records, receipt));
             return TableOperationResult.Accepted(receipt, records);
+        }
+
+        private List<PendingDecision> CopyPendingExcept(int consumedSeat)
+        {
+            var pending = new List<PendingDecision>(4);
+            for (int seat = 0; seat < 4; seat++)
+            {
+                if (seat == consumedSeat)
+                {
+                    continue;
+                }
+
+                if (_pending.TryGetValue(seat, out PendingDecision? value))
+                {
+                    pending.Add(value);
+                }
+            }
+
+            return pending;
         }
 
         private async ValueTask<TableOperationResult> CommitDurableAcceptedAsync(
@@ -3706,6 +3737,7 @@ namespace Mahjong.TableRuntime
             TimingConsumption timingConsumption = TimingConsumption.None,
             CheatState? nextCheat = null)
         {
+            RoundResponseWindow? priorWindow = _round.Window;
             TableDurableContext durable = _durable!;
             ulong createdUtc = NowUtc();
             string accountId = "system";
@@ -3796,25 +3828,13 @@ namespace Mahjong.TableRuntime
                 consumedSeat = pending.Key.Seat;
             }
 
-            var pendingAfter = new List<PendingDecision>(4);
-            for (int seat = 0; seat < 4; seat++)
-            {
-                if (seat == consumedSeat)
-                {
-                    continue;
-                }
-
-                if (_pending.TryGetValue(seat, out PendingDecision? value))
-                {
-                    pendingAfter.Add(value);
-                }
-            }
-
-            if (nextState.IsFinished)
-            {
-                candidateClock.Reset();
-                pendingAfter.Clear();
-            }
+            List<PendingDecision> pendingAfter = CopyPendingExcept(consumedSeat);
+            pendingAfter = TableResponseDecisionReconciliation.FilterAfterTransition(
+                priorWindow,
+                nextState,
+                pendingAfter,
+                candidateClock,
+                now);
 
             long nextTimingVersion = checked(_timingVersion + 1L);
             TableTimingCheckpoint timingSnapshot = TableCheckpointFactory.CaptureTiming(
@@ -3988,6 +4008,7 @@ namespace Mahjong.TableRuntime
             long now,
             TimingConsumption timingConsumption = TimingConsumption.Complete)
         {
+            RoundResponseWindow? priorWindow = _round.Window;
             StateVersion evaluated = _stateVersion;
             StateVersion commandVersion;
             try
@@ -4043,6 +4064,43 @@ namespace Mahjong.TableRuntime
                 ? TableCommandReceipt.Applied(evaluated, commandVersion, lastEventSeq, requestId)
                 : TableCommandReceipt.Rejected(evaluated, reasonCode, requestId);
 
+            DecisionClock cheatClock = _decisionClock.Clone();
+            int cheatConsumedSeat = -1;
+            if (change.Accepted &&
+                pending != null &&
+                decisionId.HasValue &&
+                string.Equals(decisionId.Value.Value, pending.Key.DecisionId, StringComparison.Ordinal))
+            {
+                DecisionTiming? timing = cheatClock.Timing(pending.Key.Seat);
+                if (timing == null || timing.Key != pending.Key)
+                {
+                    return TableOperationResult.Failed(
+                        evaluated,
+                        TableRuntimeReasonCode.DecisionMismatch,
+                        "The open timing no longer matches the cheat command's decision.");
+                }
+
+                if (!(timingConsumption == TimingConsumption.Expire
+                        ? cheatClock.Expire(pending.Key, timing.Generation, now)
+                        : cheatClock.Complete(pending.Key, now)))
+                {
+                    return TableOperationResult.Failed(
+                        evaluated,
+                        TableRuntimeReasonCode.DecisionMismatch,
+                        "The candidate timing could not close the committed cheat decision.");
+                }
+
+                cheatConsumedSeat = pending.Key.Seat;
+            }
+
+            List<PendingDecision> cheatPendingAfter = CopyPendingExcept(cheatConsumedSeat);
+            cheatPendingAfter = TableResponseDecisionReconciliation.FilterAfterTransition(
+                priorWindow,
+                nextState,
+                cheatPendingAfter,
+                cheatClock,
+                now);
+
             if (_durable == null)
             {
                 var request = new TableCommitRequest(
@@ -4079,7 +4137,15 @@ namespace Mahjong.TableRuntime
                         : CommitFailure(evaluated, commit);
                 }
 
-                InstallCommittedCheat(nextState, change.CheatState, commandVersion, lastEventSeq, records, pending, decisionId, now, receipt, timingConsumption);
+                InstallCommittedCheat(
+                    nextState,
+                    change.CheatState,
+                    commandVersion,
+                    lastEventSeq,
+                    records,
+                    cheatClock,
+                    cheatPendingAfter,
+                    receipt);
                 InstallFuriten(candidateFuriten);
                 TableOperationResult result = change.Accepted
                     ? TableOperationResult.Accepted(receipt, records)
@@ -4169,53 +4235,10 @@ namespace Mahjong.TableRuntime
                 commandPayload,
                 journalSchema);
 
-            DecisionClock candidateClock = _decisionClock.Clone();
-            int consumedSeat = -1;
-            if (change.Accepted &&
-                pending != null &&
-                decisionId.HasValue &&
-                string.Equals(decisionId.Value.Value, pending.Key.DecisionId, StringComparison.Ordinal))
-            {
-                DecisionTiming? timing = candidateClock.Timing(pending.Key.Seat);
-                if (timing == null || timing.Key != pending.Key)
-                {
-                    return TableOperationResult.Failed(
-                        evaluated,
-                        TableRuntimeReasonCode.DecisionMismatch,
-                        "The open timing no longer matches the cheat command's decision.");
-                }
-
-                if (!(timingConsumption == TimingConsumption.Expire
-                        ? candidateClock.Expire(pending.Key, timing.Generation, now)
-                        : candidateClock.Complete(pending.Key, now)))
-                {
-                    return TableOperationResult.Failed(
-                        evaluated,
-                        TableRuntimeReasonCode.DecisionMismatch,
-                        "The candidate timing could not close the committed cheat decision.");
-                }
-
-                consumedSeat = pending.Key.Seat;
-            }
-
-            var pendingAfter = new List<PendingDecision>(4);
-            for (int seat = 0; seat < 4; seat++)
-            {
-                if (seat == consumedSeat)
-                {
-                    continue;
-                }
-
-                if (_pending.TryGetValue(seat, out PendingDecision? value))
-                {
-                    pendingAfter.Add(value);
-                }
-            }
-
             long nextTimingVersion = checked(_timingVersion + 1L);
             TableTimingCheckpoint timingSnapshot = TableCheckpointFactory.CaptureTiming(
-                candidateClock,
-                pendingAfter,
+                cheatClock,
+                cheatPendingAfter,
                 now,
                 createdUtc,
                 durable.BootId);
@@ -4343,12 +4366,12 @@ namespace Mahjong.TableRuntime
             _cheat = change.CheatState;
             _stateVersion = commandVersion;
             _lastEventSeq = lastEventSeq;
-            _decisionClock = candidateClock;
+            _decisionClock = cheatClock;
             _timingVersion = nextTimingVersion;
             _pending.Clear();
-            for (int i = 0; i < pendingAfter.Count; i++)
+            for (int i = 0; i < cheatPendingAfter.Count; i++)
             {
-                PendingDecision value = pendingAfter[i];
+                PendingDecision value = cheatPendingAfter[i];
                 _pending[value.Key.Seat] = value;
             }
 
@@ -4371,31 +4394,20 @@ namespace Mahjong.TableRuntime
             StateVersion commandVersion,
             EventSeq lastEventSeq,
             IReadOnlyList<TableEventRecord> records,
-            PendingDecision? pending,
-            DecisionId? decisionId,
-            long now,
-            TableCommandReceipt receipt,
-            TimingConsumption timingConsumption)
+            DecisionClock decisionClock,
+            IReadOnlyList<PendingDecision> pendingAfter,
+            TableCommandReceipt receipt)
         {
             _round = nextState;
             _cheat = nextCheat;
             _stateVersion = commandVersion;
             _lastEventSeq = lastEventSeq;
-            if (pending != null &&
-                decisionId.HasValue &&
-                string.Equals(decisionId.Value.Value, pending.Key.DecisionId, StringComparison.Ordinal))
+            _decisionClock = decisionClock;
+            _pending.Clear();
+            for (int i = 0; i < pendingAfter.Count; i++)
             {
-                DecisionTiming? timing = _decisionClock.Timing(pending.Key.Seat);
-                bool closed = timing != null &&
-                              (timingConsumption == TimingConsumption.Expire
-                                  ? _decisionClock.Expire(pending.Key, timing.Generation, now)
-                                  : _decisionClock.Complete(pending.Key, now));
-                if (!closed)
-                {
-                    SetFaulted(new InvalidOperationException("The decision clock could not close the committed cheat command."));
-                }
-
-                _pending.Remove(pending.Key.Seat);
+                PendingDecision value = pendingAfter[i];
+                _pending[value.Key.Seat] = value;
             }
 
             AppendRecent(records);
@@ -5525,6 +5537,9 @@ namespace Mahjong.TableRuntime
                 }
             }
 
+            // Validate every raw recovered decision first. Filtering before this fence could let
+            // a malformed decision (wrong roundId/epoch, duplicate seat, invalid timing) bypass
+            // fail-closed recovery checks simply because it would later be considered stale.
             for (int i = 0; i < baseline.Timing.Decisions.Count; i++)
             {
                 TableRecoveredDecision recovered = baseline.Timing.Decisions[i];
@@ -5594,6 +5609,41 @@ namespace Mahjong.TableRuntime
                     recovered.ControlEpoch,
                     recovered.Candidates,
                     recovered.DrawnTile);
+            }
+
+            // Only after every raw row passed the existing structural/identity/epoch/timing
+            // fences may the runtime discard decisions that the recovered Domain no longer
+            // requires. A stale decision is a legal row; an invalid row remains a rejection.
+            IReadOnlyList<TableRecoveredDecision> keptDecisions =
+                TableResponseDecisionReconciliation.FilterRecovered(
+                    baseline.Round,
+                    baseline.Timing.Decisions);
+            var keptKeys = new HashSet<DecisionKey>();
+            for (int i = 0; i < keptDecisions.Count; i++)
+            {
+                keptKeys.Add(keptDecisions[i].Key);
+            }
+
+            var pendingSeats = new int[candidatePending.Count];
+            candidatePending.Keys.CopyTo(pendingSeats, 0);
+            for (int i = 0; i < pendingSeats.Length; i++)
+            {
+                int seat = pendingSeats[i];
+                PendingDecision pending = candidatePending[seat];
+                if (keptKeys.Contains(pending.Key))
+                {
+                    continue;
+                }
+
+                if (!candidateClock.Cancel(pending.Key, now))
+                {
+                    return TableOperationResult.Rejected(
+                        _stateVersion,
+                        TableRuntimeReasonCode.RecoveryTimingInvalid,
+                        "A stale response decision could not be removed from the recovered timing.");
+                }
+
+                candidatePending.Remove(seat);
             }
 
             if (baseline.StrictHistory &&
