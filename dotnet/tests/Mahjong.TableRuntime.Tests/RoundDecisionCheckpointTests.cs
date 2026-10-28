@@ -340,8 +340,8 @@ namespace Mahjong.TableRuntime.Tests
             var kanMeld = new MeldView(
                 ProtocolMeldType.ClosedKan,
                 new uint[] { 0, 1, 2, 3 },
-                0u,
-                0);
+                null,
+                ProtocolConstants.NoSeat);
             IReadOnlyList<TableProjectionEventFact> eventFacts = WireEventFacts.Build(
                 request,
                 new WireEventFactOptions { KanMeld = kanMeld });
