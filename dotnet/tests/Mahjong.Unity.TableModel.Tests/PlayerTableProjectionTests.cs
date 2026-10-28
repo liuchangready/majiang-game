@@ -317,7 +317,7 @@ namespace Mahjong.Unity.TableModel.Tests
             Assert.True(view.HasGap(PlayerTableGapCodes.ControlStateNotRepresentable));
             Assert.True(view.HasGap(PlayerTableGapCodes.LegalActionMeldTypeNotRepresentable));
             Assert.True(view.HasGap(PlayerTableGapCodes.AbsoluteDeadlineNotRepresentable));
-            Assert.True(view.HasGap(PlayerTableGapCodes.VisibleEventsNotExposedBySessionView));
+            Assert.False(view.HasGap(PlayerTableGapCodes.VisibleEventsNotExposedBySessionView));
             Assert.True(view.HasGap(PlayerTableGapCodes.ShuffleTargetCandidatesNotRepresentable));
             Assert.True(view.HasGap(PlayerTableGapCodes.BeamSlotKindNotInCommand));
         }

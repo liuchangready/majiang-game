@@ -899,7 +899,6 @@ namespace Mahjong.Unity.Table
             AddGap(gaps, PlayerTableGapCodes.ControlStateNotRepresentable);
             AddGap(gaps, PlayerTableGapCodes.LegalActionMeldTypeNotRepresentable);
             AddGap(gaps, PlayerTableGapCodes.AbsoluteDeadlineNotRepresentable);
-            AddGap(gaps, PlayerTableGapCodes.VisibleEventsNotExposedBySessionView);
             AddGap(gaps, PlayerTableGapCodes.ShuffleTargetCandidatesNotRepresentable);
             AddGap(gaps, PlayerTableGapCodes.BeamSlotKindNotInCommand);
         }

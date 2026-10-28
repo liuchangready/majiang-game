@@ -45,7 +45,7 @@ namespace Mahjong.Unity.App
             new ShutdownResult(ShutdownOutcome.AlreadyIncomplete, quarantined, false, prior);
     }
 
-    public sealed class SessionCoordinator : ISessionView, ITableCommandSink
+    public sealed class SessionCoordinator : ISessionView, ISessionViewLifecycleFence, ITableCommandSink
     {
         private readonly IGameSession? _session;
         private readonly TableSessionOperationQueue? _operationQueue;
@@ -53,9 +53,17 @@ namespace Mahjong.Unity.App
         private readonly MainThreadDispatcher _dispatcher;
         private readonly AppConfig _config;
 
+        // Test-only barrier around the owner capture. Production passes null
+        // and always uses TableSessionOperationQueue.CaptureAsync; the overload
+        // lets directed tests hold an accepted batch across a rebind without
+        // creating a second coordinator/UI or reading live session state.
+        private readonly Func<Task<TableSessionQueueSnapshot?>>? _captureProvider;
+
         private readonly object _stateGate = new object();
         private SessionViewState _currentViewState;
         private long _currentGeneration;
+        private long _acceptedSequence;
+        private SessionAuthority? _acceptedAuthority;
 
         private readonly CancellationTokenSource _runCts = new CancellationTokenSource();
         private Task? _pumpTask;
@@ -92,13 +100,29 @@ namespace Mahjong.Unity.App
 
         public long Generation => _currentGeneration;
 
+        /// <summary>
+        /// Highest snapshot acceptance sequence assigned before owner capture.
+        /// It advances even while the view publication is still pending.
+        /// </summary>
+        public long AcceptedSequence => Interlocked.Read(ref _acceptedSequence);
+
+        /// <summary>Newest accepted authorization identity, before capture.</summary>
+        public SessionAuthority? AcceptedAuthority
+        {
+            get
+            {
+                lock (_stateGate) return _acceptedAuthority;
+            }
+        }
+
         public SessionCoordinator(
             IGameSession? session,
             TableSessionOperationQueue? operationQueue,
             ITableChannel? channel,
             MainThreadDispatcher dispatcher,
             AppConfig config,
-            long generation = 1)
+            long generation = 1,
+            Func<Task<TableSessionQueueSnapshot?>>? captureProvider = null)
         {
             _session = session;
             _operationQueue = operationQueue;
@@ -106,6 +130,7 @@ namespace Mahjong.Unity.App
             _dispatcher = dispatcher ?? throw new ArgumentNullException(nameof(dispatcher));
             _config = config ?? new AppConfig();
             _currentGeneration = generation;
+            _captureProvider = captureProvider;
 
             // Synchronize dispatcher generation with session generation
             _dispatcher.CurrentGeneration = _currentGeneration;
@@ -158,51 +183,110 @@ namespace Mahjong.Unity.App
                 if (_terminal != null || _quarantined) return;
             }
 
+            // Copy the snapshot at the instant the Client accepted it. The
+            // session may publish a later binding/snapshot before the owner
+            // capture below completes; an old event must never be paired with
+            // that later identity.
+            PlayerSnapshot? player = e.PlayerSnapshot?.Clone();
+            PublicSnapshot? publicSnapshot = e.PublicSnapshot?.Clone();
+            RoomUpdate? room = e.RoomSnapshot?.Clone();
+            TableVisibleEventBatch batch = e.VisibleEventBatch ?? TableVisibleEventBatch.Empty;
+            long acceptedSequence = Interlocked.Increment(ref _acceptedSequence);
+            if (batch.Kind != TableVisibleEventBatchKind.None)
+            {
+                SessionAuthority authority = SessionAuthority.FromAccepted(
+                    acceptedSequence,
+                    batch,
+                    player,
+                    publicSnapshot,
+                    _session?.State ?? _operationQueue?.State ?? TableConnectionState.Ready);
+                lock (_stateGate)
+                {
+                    _acceptedAuthority = authority;
+                }
+            }
+
             long gen = _currentGeneration;
             if (_operationQueue != null)
             {
-                _ = EnqueueCaptureAndPublishAsync(gen, e);
+                _ = EnqueueCaptureAndPublishAsync(
+                    gen,
+                    e.IsFullBaseline,
+                    e.Cursor,
+                    player,
+                    publicSnapshot,
+                    room,
+                    batch,
+                    acceptedSequence);
             }
             else
             {
+                TableSessionBinding? binding = _session?.Binding;
+                if (!BatchMatchesAccepted(batch, binding, player, publicSnapshot))
+                {
+                    Debug.LogWarning("[SessionCoordinator] Dropped snapshot whose typed batch identity no longer matches the accepted binding/snapshot.");
+                    return;
+                }
+
                 var viewState = new SessionViewState(
                     gen,
                     _session?.State ?? TableConnectionState.Ready,
-                    _session?.Binding,
-                    e.PlayerSnapshot?.Clone(),
-                    e.PublicSnapshot?.Clone(),
-                    e.RoomSnapshot?.Clone(),
+                    binding,
+                    player,
+                    publicSnapshot,
+                    room,
                     _session?.PendingCommands ?? Array.Empty<PendingCommandSnapshot>(),
                     _session?.LastError,
                     e.IsFullBaseline,
-                    e.Cursor);
+                    e.Cursor,
+                    batch,
+                    acceptedSequence);
 
                 Publish(gen, viewState);
             }
         }
 
-        private async Task EnqueueCaptureAndPublishAsync(long gen, TableSnapshotChangedEventArgs e)
+        private async Task EnqueueCaptureAndPublishAsync(
+            long gen,
+            bool isFullBaseline,
+            Mahjong.Contracts.StreamCursor? cursor,
+            PlayerSnapshot? player,
+            PublicSnapshot? publicSnapshot,
+            RoomUpdate? room,
+            TableVisibleEventBatch batch,
+            long acceptedSequence)
         {
             try
             {
                 if (_operationQueue == null) return;
-                var capture = await _operationQueue.CaptureAsync(CancellationToken.None).ConfigureAwait(false);
+                var capture = _captureProvider != null
+                    ? await _captureProvider().ConfigureAwait(false)
+                    : await _operationQueue.CaptureAsync(CancellationToken.None).ConfigureAwait(false);
                 lock (_stateGate)
                 {
                     if (_terminal != null || _quarantined || gen != _currentGeneration) return;
                 }
 
+                TableSessionBinding? binding = capture?.Binding ?? _session?.Binding;
+                if (!BatchMatchesAccepted(batch, binding, player, publicSnapshot))
+                {
+                    Debug.LogWarning("[SessionCoordinator] Dropped a delayed snapshot that a newer binding/epoch superseded; no stale event was rebased.");
+                    return;
+                }
+
                 var viewState = new SessionViewState(
                     gen,
-                    _operationQueue.State,
-                    _operationQueue.Binding,
-                    e.PlayerSnapshot?.Clone(),
-                    e.PublicSnapshot?.Clone(),
-                    e.RoomSnapshot?.Clone(),
+                    capture?.State ?? _operationQueue.State,
+                    binding,
+                    player,
+                    publicSnapshot,
+                    room,
                     capture?.PendingCommands ?? (IReadOnlyList<PendingCommandSnapshot>)(_session?.PendingCommands ?? Array.Empty<PendingCommandSnapshot>()),
-                    _operationQueue.LastError,
-                    e.IsFullBaseline,
-                    e.Cursor);
+                    capture?.LastError ?? _operationQueue.LastError,
+                    isFullBaseline,
+                    cursor,
+                    batch,
+                    acceptedSequence);
 
                 Publish(gen, viewState);
             }
@@ -210,6 +294,63 @@ namespace Mahjong.Unity.App
             {
                 Debug.LogWarning($"Capture exception: {ex.Message}");
             }
+        }
+
+        private static bool BatchMatchesAccepted(
+            TableVisibleEventBatch batch,
+            TableSessionBinding? binding,
+            PlayerSnapshot? player,
+            PublicSnapshot? publicSnapshot)
+        {
+            if (batch == null || batch.Kind == TableVisibleEventBatchKind.None)
+            {
+                // Legacy fake session: no typed batch identity to cross-check.
+                return true;
+            }
+
+            if (binding == null)
+            {
+                return false;
+            }
+
+            if (!string.Equals(batch.SessionId, binding.SessionId.Value, StringComparison.Ordinal) ||
+                !string.Equals(batch.RoomId, binding.RoomId.Value, StringComparison.Ordinal) ||
+                batch.Role != binding.Role ||
+                batch.Seat != binding.SeatId ||
+                batch.BindingEpoch != binding.BindingEpoch.Value ||
+                batch.ConnectionEpoch != binding.ConnectionEpoch.Value ||
+                batch.OwnerEpoch != binding.OwnerEpoch.Value ||
+                !string.Equals(batch.ScopeId, binding.Scope.ScopeId.Value, StringComparison.Ordinal))
+            {
+                return false;
+            }
+
+            // The Client intentionally retains the old PlayerSnapshot when the
+            // binding becomes Spectator. Validate against the snapshot owned by
+            // the accepted batch role, never another role's cache.
+            PlayerSnapshot? rolePlayer = batch.Role == ProtocolRole.Player ? player : null;
+            PublicSnapshot? rolePublic = batch.Role == ProtocolRole.Spectator ? publicSnapshot : null;
+            ulong? stateVersion = rolePlayer?.StateVersion ?? rolePublic?.StateVersion;
+            ulong? eventSeq = rolePlayer?.EventSeq ?? rolePublic?.EventSeq;
+            string? roundId = rolePlayer?.RoundId ?? rolePublic?.RoundId;
+            if (stateVersion.HasValue && stateVersion.Value != batch.StateVersion)
+            {
+                return false;
+            }
+
+            if (eventSeq.HasValue && eventSeq.Value != batch.EventSeq)
+            {
+                return false;
+            }
+
+            if (!string.IsNullOrEmpty(roundId) &&
+                !string.IsNullOrEmpty(batch.RoundId) &&
+                !string.Equals(roundId, batch.RoundId, StringComparison.Ordinal))
+            {
+                return false;
+            }
+
+            return true;
         }
 
         private void OnSessionReceiptResolved(object? sender, TableReceiptResolvedEventArgs e)
@@ -252,7 +393,28 @@ namespace Mahjong.Unity.App
                     return;
                 }
 
-                _currentViewState = state;
+                // A late capture may carry an older acceptance sequence than a
+                // newer accepted revocation/binding/round. It must never roll
+                // the authoritative view or AcceptedAuthority back to the old
+                // identity, even when Current still holds an even older view.
+                if (state.AcceptanceSequence <= 0)
+                {
+                    _currentViewState = state;
+                }
+                else
+                {
+                    long accepted = Interlocked.Read(ref _acceptedSequence);
+                    if (state.AcceptanceSequence >= accepted)
+                    {
+                        if (state.AcceptanceSequence > accepted)
+                        {
+                            Interlocked.Exchange(ref _acceptedSequence, state.AcceptanceSequence);
+                        }
+
+                        _currentViewState = state;
+                        _acceptedAuthority = SessionAuthority.FromView(state);
+                    }
+                }
             }
 
             _dispatcher.Post(() =>

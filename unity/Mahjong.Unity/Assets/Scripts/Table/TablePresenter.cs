@@ -133,6 +133,22 @@ namespace Mahjong.Unity.Table
         private ISessionView? _sessionView;
         private Action? _onViewSettlement;
         private PlayerTableViewState? _latestView;
+        private SessionViewState? _latestSessionView;
+        private ClientVisibleEventMapping? _lastVisibleEventMapping;
+
+        // Lifecycle fence: a pause/focus loss detaches the confirmed view feed,
+        // clears pending and displayed animation, and lets a resume re-render
+        // as a non-animating baseline. Late callbacks captured before the
+        // boundary therefore cannot revive old private content.
+        private bool _pausedForAnimations;
+        private bool _focusLostForAnimations;
+        private bool _sessionViewDetachedForLifecycle;
+        private bool _forceAnimationBaseline;
+        private bool _hasLifecycleAcceptedFence;
+        private long _lifecycleAcceptedFence;
+        private string _lifecycleFenceSessionId = string.Empty;
+        private ISessionView? _lifecycleFenceSource;
+        private long _latestViewAcceptanceSequence;
 
         // Selection buffers
         private readonly List<uint> _tileMarkSelectedTiles = new List<uint>();
@@ -162,6 +178,13 @@ namespace Mahjong.Unity.Table
         public TableInteractionState InteractionState => _interactionState;
         public ConfirmedAnimationQueue AnimationQueue => _animationQueue;
 
+        /// <summary>
+        /// Last successfully mapped typed batch for diagnostics and directed
+        /// tests. Null when the last accepted update used the legacy snapshot
+        /// difference path or a baseline.
+        /// </summary>
+        public ClientVisibleEventMapping? LastVisibleEventMapping => _lastVisibleEventMapping;
+
         private void Start()
         {
             WireButtons();
@@ -186,6 +209,8 @@ namespace Mahjong.Unity.Table
             UpdateCheatOfferExpirations();
             UpdateAnimationBanner();
         }
+
+        private bool AnimationsSuspended => _pausedForAnimations || _focusLostForAnimations;
 
         private void UpdateCheatOfferExpirations()
         {
@@ -228,15 +253,49 @@ namespace Mahjong.Unity.Table
             _commandSink = commandSink;
             _navigation = navigation;
             _sessionView = sessionView;
+            if (_hasLifecycleAcceptedFence)
+            {
+                string nextSessionId = _sessionView?.Current?.Binding?.SessionId ?? string.Empty;
+                bool sourceChanged = _lifecycleFenceSource != null &&
+                                     !ReferenceEquals(_lifecycleFenceSource, sessionView);
+                bool sessionChanged = string.IsNullOrEmpty(nextSessionId) ||
+                                      !string.Equals(nextSessionId, _lifecycleFenceSessionId, StringComparison.Ordinal);
+                if (sourceChanged || sessionChanged)
+                {
+                    // A different coordinator instance owns a different
+                    // AcceptedSequence counter. Never carry the old instance's
+                    // numeric high-water mark into the new counter domain.
+                    _hasLifecycleAcceptedFence = false;
+                    _lifecycleAcceptedFence = 0;
+                    _lifecycleFenceSessionId = string.Empty;
+                    _lifecycleFenceSource = null;
+                }
+            }
             if (onOpenSettlement != null)
             {
                 _onViewSettlement = onOpenSettlement;
             }
 
+            _lifecycleFenceSource = _sessionView;
+
+            // Include publications accepted while no view was attached (plain
+            // unbind/rebind), so the first re-attached view is a non-animating
+            // baseline rather than a revived old action.
+            RecordLifecycleFence();
+
             if (_sessionView != null)
             {
-                _sessionView.Changed += OnSessionViewChanged;
-                OnSessionViewChanged(this, _sessionView.Current);
+                if (AnimationsSuspended)
+                {
+                    _sessionViewDetachedForLifecycle = true;
+                    _forceAnimationBaseline = true;
+                    OnSessionViewChanged(this, _sessionView.Current);
+                }
+                else
+                {
+                    _sessionView.Changed += OnSessionViewChanged;
+                    OnSessionViewChanged(this, _sessionView.Current);
+                }
             }
             if (_commandSink != null)
             {
@@ -246,11 +305,14 @@ namespace Mahjong.Unity.Table
 
         public void Unbind()
         {
+            RecordLifecycleFence();
             if (_sessionView != null)
             {
                 _sessionView.Changed -= OnSessionViewChanged;
                 _sessionView = null;
             }
+            _sessionViewDetachedForLifecycle = false;
+            _forceAnimationBaseline = false;
             if (_commandSink != null)
             {
                 _commandSink.ReceiptResolved -= OnReceiptResolved;
@@ -259,8 +321,12 @@ namespace Mahjong.Unity.Table
             _navigation = null;
             _onViewSettlement = null;
             ClearAll();
+            _animationQueue.Reset();
             ScrubPrivateDisplay();
             _latestView = null;
+            _latestSessionView = null;
+            _latestViewAcceptanceSequence = 0;
+            _lastVisibleEventMapping = null;
             _interactionState?.ClearSelection();
             CloseAllCheatDialogs();
             CloseCandidateSelectionPanel();
@@ -286,6 +352,7 @@ namespace Mahjong.Unity.Table
         private void OnApplicationPause(bool paused)
         {
             _interactionState?.OnPause(paused);
+            _pausedForAnimations = paused;
             if (paused)
             {
                 _interactionState?.ClearSelection();
@@ -297,11 +364,17 @@ namespace Mahjong.Unity.Table
                 if (_discardButton != null) _discardButton.interactable = false;
                 if (_tsumoButton != null) _tsumoButton.interactable = false;
                 if (_riichiButton != null) _riichiButton.interactable = false;
+                SuspendAnimationsForLifecycle();
+            }
+            else
+            {
+                ResumeAnimationsAfterLifecycle();
             }
         }
 
         private void OnApplicationFocus(bool hasFocus)
         {
+            _focusLostForAnimations = !hasFocus;
             if (!hasFocus)
             {
                 _interactionState?.OnFocusLost();
@@ -314,6 +387,70 @@ namespace Mahjong.Unity.Table
                 if (_discardButton != null) _discardButton.interactable = false;
                 if (_tsumoButton != null) _tsumoButton.interactable = false;
                 if (_riichiButton != null) _riichiButton.interactable = false;
+                SuspendAnimationsForLifecycle();
+            }
+            else
+            {
+                ResumeAnimationsAfterLifecycle();
+            }
+        }
+
+        private void RecordLifecycleFence()
+        {
+            if (_sessionView is ISessionViewLifecycleFence fence && fence.AcceptedSequence > 0)
+            {
+                _hasLifecycleAcceptedFence = true;
+                _lifecycleFenceSource = _sessionView;
+                _lifecycleAcceptedFence = Math.Max(_lifecycleAcceptedFence, fence.AcceptedSequence);
+                _lifecycleFenceSessionId = _latestView?.Identity.SessionId ??
+                                           _sessionView.Current?.Binding?.SessionId ??
+                                           _lifecycleFenceSessionId;
+            }
+        }
+
+        private void SuspendAnimationsForLifecycle()
+        {
+            RecordLifecycleFence();
+
+            if (_sessionView != null)
+            {
+                _sessionView.Changed -= OnSessionViewChanged;
+                _sessionViewDetachedForLifecycle = true;
+            }
+
+            _forceAnimationBaseline = false;
+            _lastVisibleEventMapping = null;
+            _animationQueue.Clear();
+            ClearAnimationBanner();
+        }
+
+        private void ResumeAnimationsAfterLifecycle()
+        {
+            if (AnimationsSuspended)
+            {
+                return;
+            }
+
+            // Include every publication accepted while the view feed was
+            // detached, not only the sequence known at suspend entry.
+            RecordLifecycleFence();
+
+            if (_sessionView != null && _sessionViewDetachedForLifecycle)
+            {
+                _sessionView.Changed += OnSessionViewChanged;
+                _sessionViewDetachedForLifecycle = false;
+                _forceAnimationBaseline = true;
+                OnSessionViewChanged(this, _sessionView.Current);
+            }
+        }
+
+        private void ClearAnimationBanner()
+        {
+            _animationBannerTimer = 0f;
+            if (_animationBannerText != null)
+            {
+                _animationBannerText.text = string.Empty;
+                _animationBannerText.gameObject.SetActive(false);
             }
         }
 
@@ -441,6 +578,19 @@ namespace Mahjong.Unity.Table
             return false;
         }
 
+        private static TableAnimationAudience AnimationAudienceFor(PlayerTableViewState view)
+        {
+            if (view.Identity.Role == PlayerTableRole.Player &&
+                view.Identity.IsPrivateAuthorized &&
+                view.Identity.Seat >= 0 &&
+                view.Identity.Seat <= 3)
+            {
+                return TableAnimationAudience.Player(view.Identity.Seat);
+            }
+
+            return TableAnimationAudience.Spectator();
+        }
+
         private static bool SameBindingIdentity(PlayerTableIdentity left, PlayerTableIdentity right)
         {
             return left.Generation == right.Generation &&
@@ -454,9 +604,57 @@ namespace Mahjong.Unity.Table
                    left.OwnerEpoch == right.OwnerEpoch;
         }
 
+        private bool IsSupersededByAcceptedAuthority(SessionViewState state)
+        {
+            SessionAuthority? accepted = (_sessionView as ISessionViewLifecycleFence)?.AcceptedAuthority;
+            if (accepted == null || state.AcceptanceSequence <= 0)
+            {
+                return false;
+            }
+
+            if (accepted.AcceptanceSequence <= state.AcceptanceSequence)
+            {
+                return false;
+            }
+
+            return !accepted.Matches(state);
+        }
+
+        private bool LatestViewSupersededByAcceptedAuthority()
+        {
+            SessionAuthority? accepted = (_sessionView as ISessionViewLifecycleFence)?.AcceptedAuthority;
+            if (accepted == null || _latestSessionView == null || _latestViewAcceptanceSequence <= 0)
+            {
+                return false;
+            }
+
+            if (accepted.AcceptanceSequence <= _latestViewAcceptanceSequence)
+            {
+                return false;
+            }
+
+            return !accepted.Matches(_latestSessionView);
+        }
+
         public void OnSessionViewChanged(object? sender, SessionViewState state)
         {
             if (state == null) return;
+            if (IsSupersededByAcceptedAuthority(state))
+            {
+                return;
+            }
+
+            bool lifecycleStale = _hasLifecycleAcceptedFence &&
+                                  state.AcceptanceSequence > 0 &&
+                                  state.AcceptanceSequence <= _lifecycleAcceptedFence;
+            bool forceAnimationBaseline = _forceAnimationBaseline || lifecycleStale;
+            _forceAnimationBaseline = false;
+            if (_sessionViewDetachedForLifecycle && !forceAnimationBaseline)
+            {
+                // A callback captured before the lifecycle boundary must not
+                // reattach itself or replay old private animation.
+                return;
+            }
 
             PlayerTableViewState nextView = _projectionMapper.Project(state);
 
@@ -501,8 +699,25 @@ namespace Mahjong.Unity.Table
 
             bool authorizationLost = !nextView.Identity.IsPrivateAuthorized || state.State != TableConnectionState.Ready || nextView.Own == null;
 
-            bool isBaselineTransition = _latestView == null ||
+            TableVisibleEventBatch batch = state.VisibleEventBatch ?? TableVisibleEventBatch.Empty;
+            bool batchBaseline = batch.Kind == TableVisibleEventBatchKind.Baseline;
+            // A real incremental batch is the source even when its playable
+            // list is empty: the Client may have filtered a historical event at
+            // or below the accepted baseline watermark. Only the legacy Empty
+            // sentinel (Kind=None) may use the snapshot-difference fallback.
+            bool hasTypedIncremental = batch.Kind == TableVisibleEventBatchKind.Incremental;
+
+            bool duplicateConfirmedBaseline = _latestView != null &&
+                state.IsFullBaseline &&
+                SameBindingIdentity(_latestView.Identity, nextView.Identity) &&
+                _latestView.Identity.StateVersion == nextView.Identity.StateVersion &&
+                _latestView.Identity.EventSeq == nextView.Identity.EventSeq &&
+                string.Equals(_latestView.Identity.RoundId, nextView.Identity.RoundId, StringComparison.Ordinal);
+
+            bool isBaselineTransition = forceAnimationBaseline ||
+                _latestView == null ||
                 state.IsFullBaseline ||
+                batchBaseline ||
                 identityChanged ||
                 roundChanged ||
                 authorizationChanged;
@@ -510,6 +725,10 @@ namespace Mahjong.Unity.Table
             // 3. Animation queue fence: MUST validate animation queue BEFORE mutating interaction state or latestView!
             if (isBaselineTransition)
             {
+                // A baseline resets the visual queue and redraws from its
+                // snapshot. Its reconciliation-only batch Events are never
+                // replayed as new animations.
+                _lastVisibleEventMapping = null;
                 var baselineResult = _animationQueue.AcceptConfirmedBaseline(nextView);
                 if (!baselineResult.Accepted)
                 {
@@ -517,8 +736,41 @@ namespace Mahjong.Unity.Table
                     return; // Dropped by animation baseline fence
                 }
             }
+            else if (hasTypedIncremental)
+            {
+                // A real incremental typed batch is the only animation source.
+                // Map it against the exact projected snapshot and commit the
+                // snapshot + event batch atomically. The snapshot difference is
+                // deliberately not replayed, so one confirmed action cannot be
+                // animated twice.
+                ClientVisibleEventMapping mapping = new ClientVisibleEventMapper().Map(batch, nextView, state.Generation);
+                if (!mapping.Accepted || mapping.Context == null)
+                {
+                    Debug.LogWarning($"[TablePresenter] Visible event mapping rejected: {mapping.Code}");
+                    return;
+                }
+
+                TableAnimationResult eventResult = _animationQueue.AcceptConfirmedIncremental(
+                    _latestView!,
+                    nextView,
+                    mapping.Context,
+                    mapping.AnimatedEvents,
+                    AnimationAudienceFor(nextView));
+                if (!eventResult.Accepted)
+                {
+                    Debug.LogWarning($"[TablePresenter] AnimationQueue rejected incremental batch: {eventResult.Code}");
+                    return;
+                }
+
+                _lastVisibleEventMapping = mapping;
+            }
             else
             {
+                // Legacy fake sessions, empty batches and snapshots with no
+                // playable events keep the confirmed snapshot-difference
+                // fallback. This is not used when a typed batch has playable
+                // events, so the two sources cannot double-animate.
+                _lastVisibleEventMapping = null;
                 var diffResult = _animationQueue.AcceptConfirmedDifference(_latestView!, nextView, isFullBaseline: false);
                 if (!diffResult.Accepted)
                 {
@@ -560,14 +812,18 @@ namespace Mahjong.Unity.Table
                     _animationBannerText.text = string.Empty;
                     _animationBannerText.gameObject.SetActive(false);
                 }
-                _interactionState.ClearSelection();
-                if (identityChanged || roundChanged)
+
+                if (!duplicateConfirmedBaseline)
                 {
-                    CloseAllCheatDialogs();
-                    CloseCandidateSelectionPanel();
-                    _tileMarkSelectedTiles.Clear();
-                    _selectedBeamHandTile = null;
-                    _selectedBeamCandidate = null;
+                    _interactionState.ClearSelection();
+                    if (identityChanged || roundChanged)
+                    {
+                        CloseAllCheatDialogs();
+                        CloseCandidateSelectionPanel();
+                        _tileMarkSelectedTiles.Clear();
+                        _selectedBeamHandTile = null;
+                        _selectedBeamCandidate = null;
+                    }
                 }
             }
 
@@ -667,6 +923,8 @@ namespace Mahjong.Unity.Table
             ReconcilePendingCommands(state);
 
             _latestView = nextView;
+            _latestSessionView = state;
+            _latestViewAcceptanceSequence = state.AcceptanceSequence;
             RenderView(nextView);
         }
 
@@ -2033,14 +2291,21 @@ namespace Mahjong.Unity.Table
 
         private void UpdateAnimationBanner()
         {
-            if (_latestView == null || !_latestView.Identity.IsPrivateAuthorized || _latestView.Own == null)
+            if (LatestViewSupersededByAcceptedAuthority())
             {
-                _animationBannerTimer = 0f;
-                if (_animationBannerText != null)
-                {
-                    _animationBannerText.text = string.Empty;
-                    _animationBannerText.gameObject.SetActive(false);
-                }
+                _animationQueue.Clear();
+                ClearAnimationBanner();
+                ScrubPrivateDisplay();
+                return;
+            }
+
+            if (AnimationsSuspended ||
+                _sessionViewDetachedForLifecycle ||
+                _latestView == null ||
+                !_latestView.Identity.IsPrivateAuthorized ||
+                _latestView.Own == null)
+            {
+                ClearAnimationBanner();
                 return;
             }
 
