@@ -458,3 +458,58 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass `
 - 不宣称 G2/G3/G4/G5、Windows Player、Android 真机、iOS、跨网、LocalHost 整场、
   持久 WSS 宿主或完整 V5 通过。
 - V4 仍是生产基线；G1 仍为既有 APPROVED；G2–G5 未批准；181 classified 未覆盖。
+
+---
+
+## 11. Caller 独立验收（2026-10-28）
+
+验收源码冻结为 `ed9c307b69d7e5b6a5a5bd01fd5f62829dbedfbb`，生产 verifier SHA-256
+为 `793FB63289B5EAD748E69535959858216D69538F32B21AA248E86F5820F86571`。
+独立检查确认相对 `5930315` 仅三个授权文件发生变化，工作树干净、`git diff --check`
+退出 0；未发现本任务范围内需返修的编译、测试或功能缺陷。
+
+Caller 实际重新运行：
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/ci/test-v5-direct-results.ps1
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/ci/test-v5-native-exit.ps1
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/tests/VerifyV5Diagnostics.Tests.ps1 `
+  -DotnetPath D:/Unity/dotnet/dotnet.exe -KeepWorkspace
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/ci/verify-v5-table-postgres.ps1 `
+  -Configuration Release -DotnetPath D:/Unity/dotnet/dotnet.exe `
+  -Port 55782 -Root artifacts/p52cr `
+  -LogDir artifacts/caller-direct-xml-20261028/table `
+  -PgZipPath D:/majiang-pg-tmp/cache/postgresql-16.10-1-windows-x64-binaries.zip `
+  -RunUnifiedVerification -UnifiedLogDir artifacts/caller-direct-xml-20261028/unified `
+  -LobbyRoot D:/majiang-pg-tmp/lobby-caller-xml-20261028 -LobbyPort 55783
+powershell.exe -NoProfile -ExecutionPolicy Bypass `
+  -File artifacts/caller-direct-xml-20261028/audit-direct-xml.ps1
+```
+
+| 独立复验 | 结果 |
+|---|---|
+| 新 XML 判定边界矩阵 | 19/19，native exit 0；证据 `artifacts/direct-results-selftest-bf0989b6105346779c61193c4fb91b26` |
+| 原有 native exit 探针 | 6/6，native exit 0；证据 `artifacts/native-exit-8bd74ba271b54eb099849d95d2dffe65` |
+| 原有诊断回归 | 88/88，native exit 0；真实失败计数、原始失败日志、锁定历史日志排除和异常退出均保持 |
+| 真 PG 统一入口 | 全阶段 PASS，wrapper native exit 0；表 37/37、定向 13/13、强杀/重启/冷读/空库恢复及 ownership cleanup 通过 |
+| 统一 verifier | 14 PASS / 0 FAIL / 0 BLOCKED / 0 NOT_RUN，companion PASS；Release solution build 0 warnings/errors |
+| 独立 XML/console/meta 审计 | 190 检查通过；11 份原生 XML、2294/2294 Pass、0 failed/errors/skipped/notrun；每份精确路径、SHA、console 和 meta native exit 0 一致 |
+| 真实含空格路径 | Domain runner 529/529，native exit 0；真实 XML 再经生产 `Test-DirectInvocationEvidence` 判定 PASS，独立于 2294 分母 |
+
+本次统一运行中 Infrastructure runner 报告耗时 `2232.979s`；状态查询也出现异常长延迟。
+最终原始结果为 37/37、native exit 0。未删改日志、缩小测试集或将这段耗时改写为普通耗时。
+
+本轮证据绝对根：`D:/majiang-wt/ci-direct-xml-ds-20261028/artifacts/caller-direct-xml-20261028`。
+下表路径相对该根；`direct-xml-audit.json` 包含全部 11 个程序集的节点数及完整 XML SHA。
+
+| 产物 | SHA-256 |
+|---|---|
+| `direct-xml-audit.json` | `B0D8CD76F96D5DD3F2E20AA5EB6C66685F1D6DD7D926AB2831F95C873E982A57` |
+| `unified/summary.log` | `80587440D3ADC461E04342DE30EF721CDD4A594C7B9C286A1481A98057EBB82C` |
+| `table/wrapper-summary.json` | `378598D4F1A36C495199EEB794AB79EE8CB6A8C15DAB1FB8BE68A7C6DC8DAEE9` |
+| `table/manifest.sha256.json` | `E8FB467B1AA7539498303CB34659514C561A3551FA7B047FE0377E04EACE8018` |
+| `diagnostics-console.log` | `DCAF363ADACDA17DE2F9FEA36013A3A32FA82B58EAF8D948A71ED450ECF6B0F8` |
+
+结论：本任务范围独立验收 **PASS**，可批准并并入既有唯一 PR20。此次是本地源码验收；
+新发布头的远端 CI 必须单独记录，不把本地结果倒填为远端结果。Windows Player 报告等已接受
+同批改动沿用 PR20，未接受的并行实现不混入。V4/G1/G2–G5 与 181 classified 边界不变。
