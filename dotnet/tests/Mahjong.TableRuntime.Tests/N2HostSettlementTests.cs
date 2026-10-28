@@ -877,7 +877,12 @@ namespace Mahjong.TableRuntime.Tests
             RoundSettlementCalculation calculation = RoundSettlementCalculator.CalculateRon(round, 1, facts);
             Assert.Equal("DOUBLE_RIICHI", calculation.Breakdown!.Yaku[0].Code);
             Assert.DoesNotContain(calculation.Breakdown.Yaku, y => y.Code == "IPPATSU");
-            Assert.True(calculation.Breakdown.TotalYakuHan >= 2);
+            Assert.Equal(4, calculation.Breakdown.TotalYakuHan);
+            Assert.Equal(40, calculation.Breakdown.Fu.FinalFu);
+            Assert.Equal(9000L, calculation.Breakdown.TotalPoints);
+            Assert.Equal(
+                new[] { "DOUBLE_RIICHI", "TANYAO", "IIPEIKO" },
+                calculation.Breakdown.Yaku.Select(y => y.Code).ToArray());
         }
 
         private static CheatState GetCheat(TableActor actor)
