@@ -261,6 +261,8 @@ namespace Mahjong.LocalHost
 
         internal bool DriverRunning => _driver.IsRunning;
 
+        internal LocalTableDriver DriverForTest => _driver;
+
         public async Task ReconnectAsync(CancellationToken cancellationToken)
         {
             TableStreamHandle? previous;

@@ -1388,6 +1388,21 @@ namespace Mahjong.LocalHost.Tests
                 using var pumpCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
                 pumpCts.CancelAfter(TimeSpan.FromSeconds(30));
                 Task pump = StartPump(session, pumpCts.Token);
+                LocalTableRuntime runtime = ((LocalTableChannel)channel).RuntimeForMatch!;
+                var thirdDrawReached = new TaskCompletionSource<bool>(
+                    TaskCreationOptions.RunContinuationsAsynchronously);
+                var releaseThirdDraw = new TaskCompletionSource<bool>(
+                    TaskCreationOptions.RunContinuationsAsynchronously);
+                runtime.DriverForTest.BeforeAiSubmitForTest = async (seat, observation) =>
+                {
+                    if (seat == 1 &&
+                        observation.MyDrawnTileId.HasValue &&
+                        observation.MyDrawnTileId.Value.Value == 74)
+                    {
+                        thirdDrawReached.TrySetResult(true);
+                        await releaseThirdDraw.Task.ConfigureAwait(false);
+                    }
+                };
 
                 PlayerSnapshot snapshot = await WaitForActionTypeAsync(
                     session,
@@ -1407,7 +1422,6 @@ namespace Mahjong.LocalHost.Tests
                     pumpCts.Token);
                 Assert.Equal(ReceiptStatus.Applied, riichiReceipt.Resolution.ReceiptStatus);
 
-                LocalTableRuntime runtime = ((LocalTableChannel)channel).RuntimeForMatch!;
                 PlayerSnapshot firstRon;
                 try
                 {
@@ -1494,93 +1508,114 @@ namespace Mahjong.LocalHost.Tests
                     pumpCts.Token);
                 Assert.Equal(ReceiptStatus.Applied, clearedDiscard.Resolution.ReceiptStatus);
 
-                // Stop exactly on the real response window opened by another seat's discard of
-                // the third physical wait tile (74). Seat 0 is riichi, temporary already cleared
-                // by its own draw, and riichi furiten keeps it out of candidates/window.
-                RoundStateMachine? thirdWaitWindow = null;
-                for (int i = 0; i < 150; i++)
-                {
-                    RoundStateMachine current = runtime.ActorForTest.GetRoundStateForHost();
-                    bool sawWaitDiscard = current.Events.Any(
-                        e => e.Type == RoundEventType.TileDiscarded &&
-                             e.Seat == 1 &&
-                             e.Tile.HasValue &&
-                             e.Tile.Value.Value == 74);
-                    if (sawWaitDiscard)
-                    {
-                        thirdWaitWindow = current;
-                        break;
-                    }
+                // Deterministic third-draw gate: the AI has drawn 74 and not yet discarded.
+                await LocalHostCommandTests.WithTimeoutAsync(thirdDrawReached.Task, pumpCts.Token);
+                RoundStateMachine preThirdDiscard = runtime.ActorForTest.GetRoundStateForHost();
+                Assert.Equal(1, preThirdDiscard.CurrentSeat);
+                Assert.True(preThirdDiscard.Tiles.DrawnTile.HasValue);
+                Assert.Equal(1, preThirdDiscard.Tiles.DrawnTile!.Value.Seat);
+                Assert.Equal(74, preThirdDiscard.Tiles.DrawnTile.Value.Tile.Value);
+                Assert.DoesNotContain(
+                    preThirdDiscard.Events,
+                    e => e.Type == RoundEventType.TileDiscarded &&
+                         e.Seat == 1 &&
+                         e.Tile.HasValue &&
+                         e.Tile.Value.Value == 74);
+                TableFuritenSnapshot furitenAtThird = runtime.ActorForTest.FuritenForHost;
+                Assert.False(furitenAtThird.IsTemporary(0));
+                Assert.True(furitenAtThird.IsRiichi(0));
 
-                    await Task.Delay(20, pumpCts.Token);
-                }
-
+                // Authorized domain settlement branch: same hand/wall/events/timing and the same
+                // third discard, with seat 0 explicitly eligible only for the settlement proof.
+                RoundTransition branchTransition = preThirdDiscard.Execute(
+                    RoundCommand.Discard(
+                        preThirdDiscard.RoundId,
+                        1,
+                        new TileId(74),
+                        new[] { 0 }));
                 Assert.True(
-                    thirdWaitWindow != null,
-                    "third wait window missing; events=" +
-                    string.Join(
-                        ";",
-                        runtime.ActorForTest.GetRoundStateForHost().Events.Select(
-                            e => e.Type + ":" + e.Seat + ":" + (e.Tile.HasValue ? e.Tile.Value.Value.ToString() : "-"))));
-                RoundStateMachine third = thirdWaitWindow!;
-                Assert.True(third.IsRiichi(0));
-                var thirdEvents = third.Events.ToList();
-                int waitDiscardIndex = thirdEvents.FindLastIndex(
+                    branchTransition.IsAccepted,
+                    branchTransition.Error == null ? "branch rejected" : branchTransition.Error.ToString());
+                RoundStateMachine thirdBranch = branchTransition.State!;
+                Assert.NotNull(thirdBranch.Window);
+                Assert.Equal(74, thirdBranch.Window!.TargetTile.Value);
+                Assert.Equal(1, thirdBranch.Window.FromSeat);
+                Assert.Contains(0, thirdBranch.Window.EligibleSeats);
+                var branchEvents = thirdBranch.Events.ToList();
+                int waitDiscardIndex = branchEvents.FindLastIndex(
                     e => e.Type == RoundEventType.TileDiscarded &&
                          e.Seat == 1 &&
                          e.Tile.HasValue &&
                          e.Tile.Value.Value == 74);
                 Assert.True(waitDiscardIndex > 0);
                 Assert.Contains(
-                    thirdEvents.Take(waitDiscardIndex),
+                    branchEvents.Take(waitDiscardIndex),
                     e => e.Type == RoundEventType.TileDrawn && e.Seat == 0);
                 Assert.Contains(
-                    thirdEvents.Take(waitDiscardIndex),
+                    branchEvents.Take(waitDiscardIndex),
                     e => e.Type == RoundEventType.TileDiscarded && e.Seat == 0);
-                if (third.Window != null)
+
+                // Resume the real production flow and confirm the actual candidate result:
+                // seat 0 has no pending decision and is absent from the actual window.
+                runtime.DriverForTest.BeforeAiSubmitForTest = null;
+                releaseThirdDraw.TrySetResult(true);
+                RoundStateMachine? actualThird = null;
+                for (int i = 0; i < 150; i++)
                 {
-                    Assert.Equal(74, third.Window.TargetTile.Value);
-                    Assert.Equal(1, third.Window.FromSeat);
-                    Assert.DoesNotContain(0, third.Window.EligibleSeats);
+                    RoundStateMachine current = runtime.ActorForTest.GetRoundStateForHost();
+                    if (current.Events.Any(
+                        e => e.Type == RoundEventType.TileDiscarded &&
+                             e.Seat == 1 &&
+                             e.Tile.HasValue &&
+                             e.Tile.Value.Value == 74))
+                    {
+                        actualThird = current;
+                        break;
+                    }
+
+                    await Task.Delay(20, pumpCts.Token);
+                }
+
+                Assert.NotNull(actualThird);
+                if (actualThird!.Window != null)
+                {
+                    Assert.DoesNotContain(0, actualThird.Window.EligibleSeats);
                 }
 
                 Assert.Null(runtime.ActorForTest.GetPendingDecisionId(0));
-                TableFuritenSnapshot furitenAtThird = runtime.ActorForTest.FuritenForHost;
-                Assert.False(furitenAtThird.IsTemporary(0));
-                Assert.True(furitenAtThird.IsRiichi(0));
                 Assert.True(session.PlayerSnapshot!.PrivateView.Furiten);
 
-                // Positive control: the same real first-Ron window without riichi furiten must
-                // produce a legal Ron with exact N2 values.
-                TableSettlementHostFacts positiveHost = ResolveSettlementHost(
-                    firstWindowRound,
-                    _ => false,
-                    _ => false,
-                    0);
-                RoundSettlementFacts positiveFacts = BuildSettlementFacts(firstWindowRound, positiveHost, 0);
-                RoundSettlementCalculation positive = RoundSettlementCalculator.CalculateRon(
-                    firstWindowRound,
-                    0,
-                    positiveFacts);
-                Assert.Equal(5, positive.Breakdown!.TotalYakuHan);
-                Assert.Equal(40, positive.Breakdown.Fu.FinalFu);
-                Assert.Equal(13_000L, positive.Breakdown.TotalPoints);
-                Assert.Contains(positive.Breakdown.Yaku, y => y.Code == "IPPATSU");
-
-                // Actual LocalHost port + builder on the real third-round state/source. The
-                // calculator needs a legal window carrier; the captured first window is the
-                // same real hand/wait state before the pass and is used only for that shape.
+                // Same third branch, same captured temporary/riichi snapshot, actual host port.
                 TableSettlementHostFacts furitenHost = ResolveSettlementHost(
-                    third,
-                    _ => false,
-                    seat => runtime.ActorForTest.FuritenForHost.IsRiichi(seat),
+                    thirdBranch,
+                    seat => furitenAtThird.IsTemporary(seat),
+                    seat => furitenAtThird.IsRiichi(seat),
                     0);
-                RoundSettlementFacts furitenFacts = BuildSettlementFacts(third, furitenHost, 0);
+                RoundSettlementFacts furitenFacts = BuildSettlementFacts(thirdBranch, furitenHost, 0);
                 Assert.True(furitenFacts.FindSeat(0)!.IsRiichiFuriten);
                 Assert.False(furitenFacts.FindSeat(0)!.IsTemporaryFuriten);
                 RoundSettlementRejectedException rejected = Assert.Throws<RoundSettlementRejectedException>(
-                    () => RoundSettlementCalculator.CalculateRon(firstWindowRound, 0, furitenFacts));
+                    () => RoundSettlementCalculator.CalculateRon(thirdBranch, 0, furitenFacts));
                 Assert.Equal(RoundSettlementRejectionCode.FuritenRon, rejected.Code);
+
+                // Positive control on the exact same third branch/state, only removing furiten.
+                TableSettlementHostFacts positiveHost = ResolveSettlementHost(
+                    thirdBranch,
+                    _ => false,
+                    _ => false,
+                    0);
+                RoundSettlementFacts positiveFacts = BuildSettlementFacts(thirdBranch, positiveHost, 0);
+                RoundSettlementCalculation positive = RoundSettlementCalculator.CalculateRon(
+                    thirdBranch,
+                    0,
+                    positiveFacts);
+                Assert.Equal(4, positive.Breakdown!.TotalYakuHan);
+                Assert.Equal(40, positive.Breakdown.Fu.FinalFu);
+                Assert.Equal(13_000L, positive.Breakdown.TotalPoints);
+                Assert.Equal(
+                    new[] { "DOUBLE_RIICHI", "ITTSU" },
+                    positive.Breakdown.Yaku.Select(y => y.Code).ToArray());
+                Assert.DoesNotContain(positive.Breakdown.Yaku, y => y.Code == "IPPATSU");
 
                 pumpCts.Cancel();
                 await pump;

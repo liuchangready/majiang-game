@@ -30,6 +30,9 @@ namespace Mahjong.LocalHost
         private long _requestCounter;
         private Task? _task;
 
+        /// <summary>Test-only gate after an AI decision is chosen and before it is submitted.</summary>
+        internal Func<int, Mahjong.Ai.AiObservation, Task>? BeforeAiSubmitForTest { get; set; }
+
         public LocalTableDriver(
             TableActor actor,
             LocalTableHostOptions options,
@@ -438,6 +441,11 @@ namespace Mahjong.LocalHost
             if (chosen == null)
             {
                 return;
+            }
+
+            if (BeforeAiSubmitForTest != null)
+            {
+                await BeforeAiSubmitForTest(seat, observation).ConfigureAwait(false);
             }
 
             string? pendingId = _actor.GetPendingDecisionId(seat);
