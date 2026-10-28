@@ -764,34 +764,28 @@ namespace Mahjong.LocalHost
             TablePayloadSha256 digest = TablePayloadSha256.Compute(canonical);
             OwnerEpoch owner = new OwnerEpoch(envelope.OwnerEpoch == 0 ? _actorLeaseEpoch() : envelope.OwnerEpoch);
             long controlEpoch = envelope.ControlEpoch == 0 ? 0L : unchecked((long)envelope.ControlEpoch);
-            string? pendingDecision = _actor.GetPendingDecisionId(_seat);
-            string? suppliedDecision = envelope.Command.ExpectedDecisionId;
-            if (!string.IsNullOrEmpty(suppliedDecision) &&
-                !string.Equals(suppliedDecision, pendingDecision, StringComparison.Ordinal))
-            {
-                // A stale decision identity is a definitive rejection of this request,
-                // not a transport fault: the outbox entry must receive a RECEIPT and be
-                // resolved exactly like any other rejected side effect.
-                Enqueue(RejectedReceipt(
-                    envelope,
-                    requestId,
-                    new StateVersion(envelope.Command.ExpectedStateVersion),
-                    ProtocolErrorCode.DecisionMismatch,
-                    "The command decision id is not the current pending decision.",
-                    payload));
-                return;
-            }
-
-            DecisionId? decisionId = string.IsNullOrEmpty(pendingDecision)
-                ? (DecisionId?)null
-                : new DecisionId(pendingDecision);
             StateVersion expected = new StateVersion(envelope.Command.ExpectedStateVersion);
-            string api = ApiName(kind);
+
+            // Control commands must consult their durable idempotency record before any
+            // validation that depends on mutable authority state (the current decision id).
+            // Otherwise an exact replay of a committed request changes from the original
+            // RECORDED receipt to DECISION_MISMATCH once the decision retires.
             if (kind == CommandKind.ClaimControl || kind == CommandKind.ReleaseControl)
             {
                 await HandleControlCommandAsync(envelope, document, payload, kind, requestId, owner, expected, cancellationToken).ConfigureAwait(false);
                 return;
             }
+
+            if (TryRejectStaleDecision(envelope, requestId, expected, payload, out string? pendingDecision))
+            {
+                return;
+            }
+
+            string suppliedDecision = envelope.Command?.ExpectedDecisionId ?? string.Empty;
+            DecisionId? decisionId = string.IsNullOrEmpty(pendingDecision)
+                ? (DecisionId?)null
+                : new DecisionId(pendingDecision);
+            string api = ApiName(kind);
 
             if (_connectionScopeId.HasValue)
             {
@@ -1110,6 +1104,34 @@ namespace Mahjong.LocalHost
             return await _actor.SubmitSettlementAsync(request, cancellationToken).ConfigureAwait(false);
         }
 
+        private bool TryRejectStaleDecision(
+            Envelope envelope,
+            RequestId requestId,
+            StateVersion expected,
+            BusinessPayload payload,
+            out string? pendingDecision)
+        {
+            pendingDecision = _actor.GetPendingDecisionId(_seat);
+            string suppliedDecision = envelope.Command?.ExpectedDecisionId ?? string.Empty;
+            if (!string.IsNullOrEmpty(suppliedDecision) &&
+                !string.Equals(suppliedDecision, pendingDecision, StringComparison.Ordinal))
+            {
+                // A stale decision identity is a definitive rejection of this request,
+                // not a transport fault: the outbox entry must receive a RECEIPT and be
+                // resolved exactly like any other rejected side effect.
+                Enqueue(RejectedReceipt(
+                    envelope,
+                    requestId,
+                    expected,
+                    ProtocolErrorCode.DecisionMismatch,
+                    "The command decision id is not the current pending decision.",
+                    payload));
+                return true;
+            }
+
+            return false;
+        }
+
         private async Task HandleControlCommandAsync(
             Envelope envelope,
             LocalCommandPayload document,
@@ -1159,6 +1181,14 @@ namespace Mahjong.LocalHost
                             CanonicalPayloadSha256 = prior.Digest
                         },
                         payload));
+                    return;
+                }
+
+                // Only a genuinely new control request is checked against the current
+                // decision. The durable replay/conflict decisions above are independent of
+                // later decision retirement.
+                if (TryRejectStaleDecision(envelope, requestId, expected, payload, out _))
+                {
                     return;
                 }
 
